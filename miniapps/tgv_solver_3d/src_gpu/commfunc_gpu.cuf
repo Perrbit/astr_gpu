@@ -8,40 +8,26 @@ module commfunc_gpu
 
    attributes(device) subroutine tridiagonal_thomas_solver_gpu(ac, d, x)
       implicit none
-      ! ac(1,i): upper
-      ! ac(2,i): diagonal (after preprocessing, e.g. 1/b)
-      ! ac(3,i): lower (after preprocessing, e.g. c/b)
+      ! ac(i,1): upper
+      ! ac(i,2): diagonal (after preprocessing, e.g. 1/b)
+      ! ac(i,3): lower (after preprocessing, e.g. c/b)
       real(8), intent(in)    :: ac(:, :)
       real(8), intent(inout) :: d(:)
-      real(8), intent(out)   :: x(:)
+      real(8), intent(out)   :: x(size(d))
       integer :: i, n
 
-      real(8) :: di_prev, di_curr
-      real(8) :: xi_next, xi_curr
+        n=size(d)
 
-      n = size(d)
+        do i=2,n
+            d(i)=d(i)*ac(i,2)-d(i-1)*ac(i,3)
+        enddo
 
-      ! forward elimination
-      di_prev = d(1)
+        x(n)=d(n)
+        do i=n-1,1,-1
+            x(i)=d(i)-ac(i,1)*x(i+1)
+        enddo
 
-      do i = 2, n
-         di_curr = d(i)
-         di_curr = di_curr * ac(2,i) - di_prev * ac(3,i)
-         d(i) = di_curr
-         di_prev = di_curr
-      end do
-
-      ! backward substitution
-      xi_next = d(n)
-      x(n) = xi_next
-
-      do i = n-1, 1, -1
-         xi_curr = d(i) - ac(1,i) * xi_next
-         x(i) = xi_curr
-         xi_next = xi_curr
-      end do
+        return
    end subroutine tridiagonal_thomas_solver_gpu
 
-
-   
 end module commfunc_gpu

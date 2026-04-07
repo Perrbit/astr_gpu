@@ -1,120 +1,140 @@
 module solver_gpu
-    use derivative_gpu
-    use filter_gpu
-    implicit none
-    contains
+   use derivative_gpu
+   use filter_gpu
+   implicit none
+   ! ========== 导数系数数组（用于convection, gradcal, diffusion） ==========
+   real(8), device, allocatable, save :: ac_i_d(:, :)
+   real(8), device, allocatable, save :: ac_j_d(:, :)
+   real(8), device, allocatable, save :: ac_k_d(:, :)
 
-   attributes(global) subroutine gradcal_2d_kernel_i( dx, dy, dz, ac_i_d,im, jm, km, ncolm, first_node, last_node, nbctype)
+   !  ========== 滤波系数数组（用于filterq） ==========
+   real(8), device, allocatable, save :: ac_filter_i_d(:, :)
+   real(8), device, allocatable, save :: ac_filter_j_d(:, :)
+   real(8), device, allocatable, save :: ac_filter_k_d(:, :)
+
+   contains
+   !初始化AC数组
+   subroutine init_solver_ac_arrays
+      use derivative, only : fds,fds_compact_i,fds_compact_j,fds_compact_k
+      implicit none
+
+      integer :: dim_i, dim_j, dim_k
+      integer :: i
+   
+      ! 分配转置布局 (节点数, 3)
+      allocate(ac_i_d(size(fds_compact_i%ac, 2),3))
+      allocate(ac_j_d(size(fds_compact_j%ac, 2),3))
+      allocate(ac_k_d(size(fds_compact_k%ac, 2),3))
+
+      ! 使用转置复制
+
+      ac_i_d=TRANSPOSE(fds_compact_i%ac)
+      ac_j_d=TRANSPOSE(fds_compact_j%ac)
+      ac_k_d=TRANSPOSE(fds_compact_k%ac)
+
+   end subroutine init_solver_ac_arrays
+
+   !初始化AC_filter数组
+   subroutine init_solver_ac_filter_arrays
+      use filter,   only : compact_filter,filter_i,filter_j,filter_k
+      implicit none
+    
+      ! 分配转置布局 (节点数, 3)
+      allocate(ac_filter_i_d(size(filter_i%ac, 1), size(filter_i%ac, 2)))
+      allocate(ac_filter_j_d(size(filter_j%ac, 1), size(filter_j%ac, 2)))
+      allocate(ac_filter_k_d(size(filter_k%ac, 1), size(filter_k%ac, 2)))
+
+      ! 使用转置复制
+
+      ac_filter_i_d=filter_i%ac
+      ac_filter_j_d=filter_j%ac
+      ac_filter_k_d=filter_k%ac
+
+   end subroutine init_solver_ac_filter_arrays
+
+   attributes(device) subroutine gradcal_2d_kernel_i( j,k ,dx, dy, dz,im, jm, km, ncolm, first_node, last_node, nbctype)
       use commvar, only: hm
       use commarray_gpu,only: vel_d,tmp_d,dvel_d,dtmp_d
       implicit none
 
-      real(8), device, intent(in) :: ac_i_d(:, :)
 
-
-      integer, value :: im, jm, km, ncolm, first_node, last_node, nbctype
+      integer, value :: im, jm, km, ncolm, first_node, last_node, nbctype,j,k
       real(8), value :: dx, dy, dz
-      integer ::  i, j, k, n
 
-      real(8) :: ff(-hm:im + hm, ncolm)
-      real(8) :: df(0:im, ncolm)
-
-      j = (blockIdx%x - 1)*blockDim%x + threadIdx%x - 1
-      k = (blockIdx%y - 1)*blockDim%y + threadIdx%y - 1
+      real(8) :: ff(-hm:im+hm)
 
       ! 边界判断
       if (j >= 0 .and. j <= jm .and. k >= 0 .and. k <= km) then
-            ff(:, 1) = vel_d(:, j, k, 1)
-            ff(:, 2) = vel_d(:, j, k, 2)
-            ff(:, 3) = vel_d(:, j, k, 3)
-            ff(:, 4) = tmp_d(:, j, k)
+            
+            ff=vel_d(-hm:im + hm, j, k, 1)
+            dvel_d(:, j, k, 1, 1) = df_compact_gpu(first_node, last_node, nbctype, ac_i_d, ff, im) / dx
 
-         do n=1,ncolm
-            df(:, n) = df_compact_gpu(first_node, last_node, nbctype, ac_i_d, ff(:, n), im)
-         end do
+            ff=vel_d(-hm:im + hm, j, k, 2)
+            dvel_d(:, j, k, 2, 1) = df_compact_gpu(first_node, last_node, nbctype, ac_i_d, ff, im) / dx
 
-            dvel_d(:, j, k, 1, 1) = df(:, 1)/dx
-            dvel_d(:, j, k, 2, 1) = df(:, 2)/dx
-            dvel_d(:, j, k, 3, 1) = df(:, 3)/dx
+            ff=vel_d(-hm:im + hm, j, k, 3)
+            dvel_d(:, j, k, 3, 1) = df_compact_gpu(first_node, last_node, nbctype, ac_i_d, ff, im) / dx
 
-            dtmp_d(:, j, k, 1) = df(:, 4)/dx
+            ff=tmp_d(-hm:im + hm, j, k)
+            dtmp_d(:, j, k, 1) = df_compact_gpu(first_node, last_node, nbctype, ac_i_d, ff, im) / dx
 
       end if
 
    end subroutine gradcal_2d_kernel_i
 
-   attributes(global) subroutine gradcal_2d_kernel_j( dx, dy, dz, ac_j_d,im, jm, km, ncolm, first_node, last_node, nbctype)
+   attributes(device) subroutine gradcal_2d_kernel_j( i,k,dx, dy, dz,im, jm, km, ncolm, first_node, last_node, nbctype)
       use commvar, only: hm
       use commarray_gpu,only: vel_d,tmp_d,dvel_d,dtmp_d
       implicit none
 
-      real(8), device, intent(in) :: ac_j_d(:, :)
 
-
-      integer, value :: im, jm, km, ncolm, first_node, last_node, nbctype
+      integer, value :: im, jm, km, ncolm, first_node, last_node, nbctype,i,k
       real(8), value :: dx, dy, dz
-      integer ::  i, j, k, n
 
-      real(8) :: ff(-hm:jm + hm, ncolm)
-      real(8) :: df(0:jm, ncolm)
-
-      k = (blockIdx%x - 1)*blockDim%x + threadIdx%x - 1
-      i = (blockIdx%y - 1)*blockDim%y + threadIdx%y - 1
+      real(8) :: ff(-hm:jm+hm)
 
       ! 边界判断
       if (k >= 0 .and. k <= km .and. i >= 0 .and. i <= im) then
-            ff(:, 1) = vel_d(i, :, k, 1)
-            ff(:, 2) = vel_d(i, :, k, 2)
-            ff(:, 3) = vel_d(i, :, k, 3)
-            ff(:, 4) = tmp_d(i, :, k)
+            ff=vel_d(i, -hm:jm + hm, k, 1)
+            dvel_d(i, :, k, 1, 2) = df_compact_gpu(first_node, last_node, nbctype, ac_j_d, ff, jm) / dy
 
-         do n=1,ncolm
-            df(:, n) = df_compact_gpu(first_node, last_node, nbctype, ac_j_d, ff(:, n), jm)
-         end do
+            ff=vel_d(i, -hm:jm + hm, k, 2)
+            dvel_d(i, :, k, 2, 2) = df_compact_gpu(first_node, last_node, nbctype, ac_j_d, ff, jm) / dy
 
-            dvel_d(i, :, k, 1, 2) = df(:, 1)/dy
-            dvel_d(i, :, k, 2, 2) = df(:, 2)/dy
-            dvel_d(i, :, k, 3, 2) = df(:, 3)/dy
+            ff=vel_d(i, -hm:jm + hm, k, 3)
+            dvel_d(i, :, k, 3, 2) = df_compact_gpu(first_node, last_node, nbctype, ac_j_d, ff, jm) / dy
 
-            dtmp_d(i, :, k, 2) = df(:, 4)/dy
+            ff=tmp_d(i, -hm:jm + hm, k)
+            dtmp_d(i, :, k, 2) = df_compact_gpu(first_node, last_node, nbctype, ac_j_d, ff, jm) / dy
 
       end if
 
    end subroutine gradcal_2d_kernel_j
 
-   attributes(global) subroutine gradcal_2d_kernel_k( dx, dy, dz, ac_k_d,im, jm, km, ncolm, first_node, last_node, nbctype)
+   attributes(device) subroutine gradcal_2d_kernel_k( i,j,dx, dy, dz,im, jm, km, ncolm, first_node, last_node, nbctype)
       use commvar, only: hm
       use commarray_gpu,only: vel_d,tmp_d,dvel_d,dtmp_d
       implicit none
 
-      real(8), device, intent(in) :: ac_k_d(:, :)
-
-      integer, value :: im, jm, km, ncolm, first_node, last_node, nbctype
+      integer, value :: im, jm, km, ncolm, first_node, last_node, nbctype,i,j
       real(8), value :: dx, dy, dz
-      integer ::  i, j, k, n
 
-      real(8) :: ff(-hm:km + hm, ncolm)
-      real(8) :: df(0:km, ncolm)
-
-      i = (blockIdx%x - 1)*blockDim%x + threadIdx%x - 1
-      j = (blockIdx%y - 1)*blockDim%y + threadIdx%y - 1
+      real(8) :: ff(-hm:km+hm)
 
       ! 边界判断
       if (i >= 0 .and. i <= im .and. j >= 0 .and. j <= jm) then
-            ff(:, 1) = vel_d(i, j, :, 1)
-            ff(:, 2) = vel_d(i, j, :, 2)
-            ff(:, 3) = vel_d(i, j, :, 3)
-            ff(:, 4) = tmp_d(i, j, :)
 
-         do n=1,ncolm
-            df(:, n) = df_compact_gpu(first_node, last_node, nbctype, ac_k_d, ff(:, n), km)
-         end do
+         ff = vel_d(i, j, -hm:km+hm, 1)
+         dvel_d(i, j, :, 1, 3) = df_compact_gpu(first_node, last_node, nbctype, ac_k_d, ff, km) / dz
 
-            dvel_d(i, j, :, 1, 3) = df(:, 1)/dz
-            dvel_d(i, j, :, 2, 3) = df(:, 2)/dz
-            dvel_d(i, j, :, 3, 3) = df(:, 3)/dz
+         ff = vel_d(i, j, -hm:km+hm, 2)
+         dvel_d(i, j, :, 2, 3) = df_compact_gpu(first_node, last_node, nbctype, ac_k_d, ff, km) / dz
 
-            dtmp_d(i, j, :, 3) = df(:, 4)/dz
+         ff = vel_d(i, j, -hm:km+hm, 3)
+         dvel_d(i, j, :, 3, 3) = df_compact_gpu(first_node, last_node, nbctype, ac_k_d, ff, km) / dz
+
+         ff = tmp_d(i, j, -hm:km+hm)
+         dtmp_d(i, j, :, 3) = df_compact_gpu(first_node, last_node, nbctype, ac_k_d, ff, km) / dz
 
       end if
 
@@ -123,213 +143,114 @@ module solver_gpu
    subroutine gradcal
       use cudafor
       use commarray_gpu,only: vel_d,dvel_d,dtmp_d,qrhs_d,tmp_d
-        use commvar,    only : im,jm,km,hm
-        use commarray,  only : dx,dy,dz
-        use derivative, only : fds,fds_compact_i,fds_compact_j,fds_compact_k
+      use commvar,    only : im,jm,km,hm
+      use commarray,  only : dx,dy,dz
+      use derivative, only : fds,fds_compact_i,fds_compact_j,fds_compact_k
       implicit none
       ! 输入输出参数
-      integer :: ncolm=4
+      integer :: ncolm=4,i,j,k
       
 
       integer :: first_node, last_node, nbctype, istat
-      integer :: blksz=16
-
-      type(dim3) :: grid, block
-
-
-      real(8), device, allocatable::  ac_i_d(:, :)
-      real(8), device, allocatable::  ac_j_d(:, :)
-      real(8), device, allocatable::  ac_k_d(:, :)
-
-
-      allocate (ac_i_d(size(fds_compact_i%ac, 1), size(fds_compact_i%ac, 2)))
-      allocate (ac_j_d(size(fds_compact_j%ac, 1), size(fds_compact_j%ac, 2)))
-      allocate (ac_k_d(size(fds_compact_k%ac, 1), size(fds_compact_k%ac, 2)))
 
 
       first_node = fds_compact_i%first_node
       last_node = fds_compact_i%last_node
       nbctype = fds_compact_i%nbctype
-      ac_i_d = fds_compact_i%ac
 
-      block = dim3(blksz, blksz, 1)
-      grid%x = ceiling(real(jm+1)/blksz)
-      grid%y = ceiling(real(km+1)/blksz)
-      grid%z = 1
-      call gradcal_2d_kernel_i <<< grid, block >>> ( dx, dy, dz, ac_i_d,im, jm, km, ncolm, first_node, last_node, nbctype)
-      istat = cudaGetLastError()
-      if (istat /= 0) then
-         print *, "Launch error:", istat
-         stop
-      end if
-      istat = cudaDeviceSynchronize()
-      if (istat /= 0) then
-         print *, "CUDA Error: ", istat
-         stop
-      end if
+      !$cuf kernel do(2) <<<*,*>>>
+      do k=0,km
+      do j=0,jm
+      call gradcal_2d_kernel_i( j,k ,dx, dy, dz,im, jm, km, ncolm, first_node, last_node, nbctype)
+      end do
+      end do
       
       first_node = fds_compact_j%first_node
       last_node = fds_compact_j%last_node
       nbctype = fds_compact_j%nbctype
-      ac_j_d = fds_compact_j%ac
 
-      block = dim3(blksz, blksz, 1)
-      grid%x = ceiling(real(km+1)/blksz)
-      grid%y = ceiling(real(im+1)/blksz)
-      grid%z = 1
-      call gradcal_2d_kernel_j <<< grid, block >>> ( dx, dy, dz, ac_j_d,im, jm, km, ncolm, first_node, last_node, nbctype)
-      istat = cudaGetLastError()
-      if (istat /= 0) then
-         print *, "Launch error:", istat
-         stop
-      end if
-      istat = cudaDeviceSynchronize()
-      if (istat /= 0) then
-         print *, "CUDA Error: ", istat
-         stop
-      end if
+      !$cuf kernel do(2) <<<*,*>>>
+      do i=0,im
+      do k=0,km
+      call gradcal_2d_kernel_j ( i,k,dx, dy, dz,im, jm, km, ncolm, first_node, last_node, nbctype)
+      end do
+      end do
       
       first_node = fds_compact_k%first_node
       last_node = fds_compact_k%last_node
       nbctype = fds_compact_k%nbctype
-      ac_k_d = fds_compact_k%ac
 
-      block = dim3(blksz, blksz, 1)
-      grid%x = ceiling(real(im+1)/blksz)
-      grid%y = ceiling(real(jm+1)/blksz)
-      grid%z = 1
-      call gradcal_2d_kernel_k <<< grid, block >>> ( dx, dy, dz, ac_k_d,im, jm, km, ncolm, first_node, last_node, nbctype)
-      istat = cudaGetLastError()
-      if (istat /= 0) then
-         print *, "Launch error:", istat
-         stop
-      end if
-      istat = cudaDeviceSynchronize()
-      if (istat /= 0) then
-         print *, "CUDA Error: ", istat
-         stop
-      end if
-      
-      deallocate(ac_i_d,ac_j_d,ac_k_d)
-
+      !$cuf kernel do(2) <<<*,*>>>
+      do i=0,im
+      do j=0,jm
+      call gradcal_2d_kernel_k( i,j,dx, dy, dz,im, jm, km, ncolm, first_node, last_node, nbctype)
+      end do
+      end do
 
    end subroutine gradcal
 
    subroutine convection
       use cudafor
       use commarray_gpu,only: q_d,vel_d,prs_d,qrhs_d
-        use commvar,  only: im,jm,km,hm,numq
-        use commarray,only: dx,dy,dz
-        use derivative,only : fds,fds_compact_i,fds_compact_j,fds_compact_k
+      use commvar,  only: im,jm,km,hm,numq
+      use commarray,only: dx,dy,dz
+      use derivative,only : fds,fds_compact_i,fds_compact_j,fds_compact_k
+
       implicit none
       ! 输入输出参数
 
-
-
       
-      integer :: first_node, last_node, nbctype, istat
-      integer :: blksz=16
-
-      type(dim3) :: grid, block
-
-
-      real(8), device, allocatable::  ac_i_d(:, :)
-      real(8), device, allocatable::  ac_j_d(:, :)
-      real(8), device, allocatable::  ac_k_d(:, :)
-
-
-      allocate (ac_i_d(size(fds_compact_i%ac, 1), size(fds_compact_i%ac, 2)))
-      allocate (ac_j_d(size(fds_compact_j%ac, 1), size(fds_compact_j%ac, 2)))
-      allocate (ac_k_d(size(fds_compact_k%ac, 1), size(fds_compact_k%ac, 2)))
+      integer :: first_node, last_node, nbctype, istat,i,j,k
 
 
       first_node = fds_compact_i%first_node
       last_node = fds_compact_i%last_node
       nbctype = fds_compact_i%nbctype
-      ac_i_d = fds_compact_i%ac
 
-      block = dim3(blksz, blksz, 1)
-      grid%x = ceiling(real(jm+1)/blksz)
-      grid%y = ceiling(real(km+1)/blksz)
-      grid%z = 1
-      call convection_2d_kernel_i <<< grid, block >>>( ac_i_d, dx, dy, dz, im, jm, km, numq, first_node, last_node, nbctype)
-      istat = cudaGetLastError()
-      if (istat /= 0) then
-         print *, "Launch error:", istat
-         stop
-      end if
-      istat = cudaDeviceSynchronize()
-      if (istat /= 0) then
-         print *, "CUDA Error: ", istat
-         stop
-      end if
+      !$cuf kernel do(2) <<<*,*>>>
+      do k=0,km
+      do j=0,jm
+      call convection_2d_kernel_i (j,k,dx, dy, dz, im, jm, km, numq, first_node, last_node, nbctype)
+      end do
+      end do
       
 
       first_node = fds_compact_j%first_node
       last_node = fds_compact_j%last_node
       nbctype = fds_compact_j%nbctype
-      ac_j_d = fds_compact_j%ac
 
-      block = dim3(blksz, blksz, 1)
-      grid%x = ceiling(real(km+1)/blksz)
-      grid%y = ceiling(real(im+1)/blksz)
-      grid%z = 1
-      call convection_2d_kernel_j <<< grid, block >>>( ac_j_d, dx, dy, dz, im, jm, km, numq, first_node, last_node, nbctype)
-      istat = cudaGetLastError()
-      if (istat /= 0) then
-         print *, "Launch error:", istat
-         stop
-      end if
-      istat = cudaDeviceSynchronize()
-      if (istat /= 0) then
-         print *, "CUDA Error: ", istat
-         stop
-      end if
+      !$cuf kernel do(2) <<<*,*>>>
+      do i=0,im
+      do k=0,km
+      call convection_2d_kernel_j (i,k,dx, dy, dz, im, jm, km, numq, first_node, last_node, nbctype)
+      end do
+      end do
       
       
       first_node = fds_compact_k%first_node
       last_node = fds_compact_k%last_node
       nbctype = fds_compact_k%nbctype
-      ac_k_d = fds_compact_k%ac
 
-      block = dim3(blksz, blksz, 1)
-      grid%x = ceiling(real(im+1)/blksz)
-      grid%y = ceiling(real(jm+1)/blksz)
-      grid%z = 1
-      call convection_2d_kernel_k <<< grid, block >>>( ac_k_d, dx, dy, dz, im, jm, km, numq, first_node, last_node, nbctype)
-      istat = cudaGetLastError()
-      if (istat /= 0) then
-         print *, "Launch error:", istat
-         stop
-      end if
-      istat = cudaDeviceSynchronize()
-      if (istat /= 0) then
-         print *, "CUDA Error: ", istat
-         stop
-      end if
-      
-      deallocate(ac_i_d,ac_j_d,ac_k_d)
+      !$cuf kernel do(2) <<<*,*>>>
+      do i=0,im
+      do j=0,jm
+      call convection_2d_kernel_k (i,j,dx, dy, dz, im, jm, km, numq, first_node, last_node, nbctype)
+      end do
+      end do
 
    end subroutine convection
 
-   attributes(global) subroutine convection_2d_kernel_i( ac_i_d, dx, dy, dz, im, jm, km, numq, first_node, last_node, nbctype)
+   attributes(device) subroutine convection_2d_kernel_i(j,k,dx, dy, dz, im, jm, km, numq, first_node, last_node, nbctype)
       use commvar, only: hm
       use commarray_gpu,only: q_d,vel_d,prs_d,qrhs_d
 
       implicit none
 
-
-      real(8), device, intent(in) :: ac_i_d(:, :)
-
-
-      integer, value :: im, jm, km, numq, first_node, last_node, nbctype
+      integer, value :: im, jm, km, numq, first_node, last_node, nbctype,j,k
       real(8), value :: dx, dy, dz
-      integer ::  i, j, k, n
 
       real(8) :: fcs(-hm:im + hm, 1:numq), dfcs(0:im, 1:numq), uu(-hm:im + hm)
-
-      j = (blockIdx%x - 1)*blockDim%x + threadIdx%x - 1
-      k = (blockIdx%y - 1)*blockDim%y + threadIdx%y - 1
+      integer :: n
 
       ! 边界判断
       if (j >= 0 .and. j <= jm .and. k >= 0 .and. k <= km) then
@@ -349,23 +270,17 @@ module solver_gpu
 
    end subroutine convection_2d_kernel_i
 
-   attributes(global) subroutine convection_2d_kernel_j( ac_j_d, dx, dy, dz, im, jm, km, numq, first_node, last_node, nbctype)
+   attributes(device) subroutine convection_2d_kernel_j(i,k,dx, dy, dz, im, jm, km, numq, first_node, last_node, nbctype)
       use commvar, only: hm
       use commarray_gpu,only: q_d,vel_d,prs_d,qrhs_d
 
       implicit none
 
-      real(8), device, intent(in) :: ac_j_d(:, :)
-
-
-      integer, value :: im, jm, km, numq, first_node, last_node, nbctype
+      integer, value :: im, jm, km, numq, first_node, last_node, nbctype,i,k
       real(8), value :: dx, dy, dz
-      integer ::  i, j, k, n
 
       real(8) :: fcs(-hm:jm + hm, 1:numq), dfcs(0:jm, 1:numq), uu(-hm:jm + hm)
-
-      k = (blockIdx%x - 1)*blockDim%x + threadIdx%x - 1
-      i = (blockIdx%y - 1)*blockDim%y + threadIdx%y - 1
+      integer :: n
 
       ! 边界判断
       if (k >= 0 .and. k <= km .and. i >= 0 .and. i <= im) then
@@ -385,23 +300,17 @@ module solver_gpu
 
    end subroutine convection_2d_kernel_j
 
-   attributes(global) subroutine convection_2d_kernel_k( ac_k_d, dx, dy, dz, im, jm, km, numq, first_node, last_node, nbctype)
+   attributes(device) subroutine convection_2d_kernel_k(i,j,dx, dy, dz, im, jm, km, numq, first_node, last_node, nbctype)
       use commvar, only: hm
       use commarray_gpu,only: q_d,vel_d,prs_d,qrhs_d
 
       implicit none
 
-      real(8), device, intent(in) :: ac_k_d(:, :)
-
-
-      integer, value :: im, jm, km, numq, first_node, last_node, nbctype
+      integer, value :: im, jm, km, numq, first_node, last_node, nbctype,i,j
       real(8), value :: dx, dy, dz
-      integer ::  i, j, k, n
 
       real(8) :: fcs(-hm:km + hm, 1:numq), dfcs(0:km, 1:numq), uu(-hm:km + hm)
-
-      i = (blockIdx%x - 1)*blockDim%x + threadIdx%x - 1
-      j = (blockIdx%y - 1)*blockDim%y + threadIdx%y - 1
+      integer :: n
 
       ! 边界判断
       if (i >= 0 .and. i <= im .and. j >= 0 .and. j <= jm) then
@@ -431,18 +340,15 @@ module solver_gpu
       use commarray, only: dx,dy,dz
       use derivative, only : fds,fds_compact_i,fds_compact_j,fds_compact_k
       use bc_gpu, only : bchomovec_gpu
+
       use cudafor
 
 
       real(8), device, allocatable, save :: sigma_d(:,:,:,:)
       real(8), device, allocatable, save :: qflux_d(:,:,:,:)
 
-      real(8), device, allocatable::  ac_i_d(:, :)
-      real(8), device, allocatable::  ac_j_d(:, :)
-      real(8), device, allocatable::  ac_k_d(:, :)
-
       integer :: first_node, last_node, nbctype, istat
-      integer :: blksz=16
+      integer :: blkszx=32,blkszy=16
 
       type(dim3) :: block,grid
 
@@ -497,85 +403,45 @@ module solver_gpu
       enddo
       enddo
       enddo
-        istat = cudaGetLastError()
 
       call bchomovec_gpu(sigma_d, 0, im, jm, km, hm, 6)
-            istat = cudaGetLastError()
 
       call bchomovec_gpu(qflux_d, 0, im, jm, km, hm, 3)
-            istat = cudaGetLastError()
 
       ncolm=5
-
-      allocate (ac_i_d(size(fds_compact_i%ac, 1), size(fds_compact_i%ac, 2)))
-      allocate (ac_j_d(size(fds_compact_j%ac, 1), size(fds_compact_j%ac, 2)))
-      allocate (ac_k_d(size(fds_compact_k%ac, 1), size(fds_compact_k%ac, 2)))
 
       first_node = fds_compact_i%first_node
       last_node = fds_compact_i%last_node
       nbctype = fds_compact_i%nbctype
-      ac_i_d = fds_compact_i%ac
 
-      block = dim3(blksz, blksz, 1)
-      grid%x = ceiling(real(jm+1)/blksz)
-      grid%y = ceiling(real(km+1)/blksz)
-      grid%z = 1
-      call diffusion_2d_kernel_i <<< grid, block >>>(sigma_d,qflux_d,ncolm,im, jm, km,dx, dy, dz,ac_i_d,first_node, last_node, nbctype)
-      istat = cudaGetLastError()
-      if (istat /= 0) then
-         print *, "Launch error:", istat
-         stop
-      end if
-      istat = cudaDeviceSynchronize()
-      if (istat /= 0) then
-         print *, "CUDA Error: ", istat
-         stop
-      end if
-      
+      !$cuf kernel do(2) <<<*,*>>>
+      do k=0,km
+      do j=0,jm
+      call diffusion_2d_kernel_i (j,k,sigma_d,qflux_d,ncolm,im, jm, km,dx, dy, dz,first_node, last_node, nbctype)
+      end do
+      end do
 
       first_node = fds_compact_j%first_node
       last_node = fds_compact_j%last_node
       nbctype = fds_compact_j%nbctype
-      ac_j_d = fds_compact_j%ac
 
-      block = dim3(blksz, blksz, 1)
-      grid%x = ceiling(real(km+1)/blksz)
-      grid%y = ceiling(real(im+1)/blksz)
-      grid%z = 1
-      call diffusion_2d_kernel_j <<< grid, block >>>(sigma_d,qflux_d,ncolm,im, jm, km,dx, dy, dz,ac_j_d,first_node, last_node, nbctype)
-      istat = cudaGetLastError()
-      if (istat /= 0) then
-         print *, "Launch error:", istat
-         stop
-      end if
-      istat = cudaDeviceSynchronize()
-      if (istat /= 0) then
-         print *, "CUDA Error: ", istat
-         stop
-      end if
-      
+      !$cuf kernel do(2) <<<*,*>>>
+      do i=0,im
+      do k=0,km
+      call diffusion_2d_kernel_j (i,k,sigma_d,qflux_d,ncolm,im, jm, km,dx, dy, dz,first_node, last_node, nbctype)
+      end do
+      end do
       
       first_node = fds_compact_k%first_node
       last_node = fds_compact_k%last_node
       nbctype = fds_compact_k%nbctype
-      ac_k_d = fds_compact_k%ac
 
-      block = dim3(blksz, blksz, 1)
-      grid%x = ceiling(real(im+1)/blksz)
-      grid%y = ceiling(real(jm+1)/blksz)
-      grid%z = 1
-      call diffusion_2d_kernel_k <<< grid, block >>>(sigma_d,qflux_d,ncolm,im, jm, km,dx, dy, dz,ac_k_d,first_node, last_node, nbctype)
-      if (istat /= 0) then
-         print *, "Launch error:", istat
-         stop
-      end if
-      istat = cudaDeviceSynchronize()
-      if (istat /= 0) then
-         print *, "CUDA Error: ", istat
-         stop
-      end if
-
-      deallocate(ac_i_d,ac_j_d,ac_k_d)
+      !$cuf kernel do(2) <<<*,*>>>
+      do i=0,im
+      do j=0,jm
+      call diffusion_2d_kernel_k (i,j,sigma_d,qflux_d,ncolm,im, jm, km,dx, dy, dz,first_node, last_node, nbctype)
+      end do
+      end do
 
    end subroutine diffusion
 
@@ -631,24 +497,21 @@ module solver_gpu
 
    end subroutine viscous_flux
 
-   attributes(global) subroutine diffusion_2d_kernel_i(sigma_d,qflux_d,ncolm,im, jm, km, dx, dy, dz,ac_i_d,first_node, last_node, nbctype)
+   attributes(device) subroutine diffusion_2d_kernel_i(j,k,sigma_d,qflux_d,ncolm,im, jm, km, dx, dy, dz,first_node, last_node, nbctype)
       use commvar, only: hm
       use commarray_gpu,only:qrhs_d
 
       implicit none
 
       real(8), device, intent(inout) :: sigma_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:6),qflux_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-      real(8), device, intent(in) :: ac_i_d(:, :)
       real(8) :: ff(-hm:im + hm, ncolm)
       real(8) :: df(0:im, ncolm)
 
 
-      integer, value :: im, jm, km,ncolm,first_node, last_node, nbctype
+      integer, value :: im, jm, km,ncolm,first_node, last_node, nbctype,j,k
       real(8), value :: dx, dy, dz
-      integer ::  i, j, k, n
+      integer :: i,n
 
-      j = (blockIdx%x - 1)*blockDim%x + threadIdx%x - 1
-      k = (blockIdx%y - 1)*blockDim%y + threadIdx%y - 1
 
       if (j >= 0 .and. j <= jm .and. k >= 0 .and. k <= km) then
           !
@@ -679,24 +542,20 @@ module solver_gpu
 
    end subroutine diffusion_2d_kernel_i
    
-   attributes(global) subroutine diffusion_2d_kernel_j(sigma_d,qflux_d,ncolm,im, jm, km, dx, dy, dz,ac_j_d,first_node, last_node, nbctype)
+   attributes(device) subroutine diffusion_2d_kernel_j(i,k,sigma_d,qflux_d,ncolm,im, jm, km, dx, dy, dz,first_node, last_node, nbctype)
       use commvar, only: hm
       use commarray_gpu,only:qrhs_d
 
       implicit none
 
       real(8), device, intent(inout) :: sigma_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:6),qflux_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-      real(8), device, intent(in) :: ac_j_d(:, :)
       real(8) :: ff(-hm:jm + hm, ncolm)
       real(8) :: df(0:jm, ncolm)
 
 
-      integer, value :: im, jm, km,ncolm,first_node, last_node, nbctype
+      integer, value :: im, jm, km,ncolm,first_node, last_node, nbctype,i,k
       real(8), value :: dx, dy, dz
-      integer ::  i, j, k, n
-
-      k = (blockIdx%x - 1)*blockDim%x + threadIdx%x - 1
-      i = (blockIdx%y - 1)*blockDim%y + threadIdx%y - 1
+      integer :: j,n
 
       if (k >= 0 .and. k <= km .and. i >= 0 .and. i <= im) then
           !
@@ -727,24 +586,20 @@ module solver_gpu
 
    end subroutine diffusion_2d_kernel_j
 
-   attributes(global) subroutine diffusion_2d_kernel_k(sigma_d,qflux_d,ncolm,im, jm, km, dx, dy, dz,ac_k_d,first_node, last_node, nbctype)
+   attributes(device) subroutine diffusion_2d_kernel_k(i,j,sigma_d,qflux_d,ncolm,im, jm, km, dx, dy, dz,first_node, last_node, nbctype)
       use commvar, only: hm
       use commarray_gpu,only:qrhs_d
 
       implicit none
 
       real(8), device, intent(inout) :: sigma_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:6),qflux_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-      real(8), device, intent(in) :: ac_k_d(:, :)
       real(8) :: ff(-hm:km + hm, ncolm)
       real(8) :: df(0:km, ncolm)
 
 
-      integer, value :: im, jm, km,ncolm,first_node, last_node, nbctype
+      integer, value :: im, jm, km,ncolm,first_node, last_node, nbctype,i,j
       real(8), value :: dx, dy, dz
-      integer ::  i, j, k, n
-
-      i = (blockIdx%x - 1)*blockDim%x + threadIdx%x - 1
-      j = (blockIdx%y - 1)*blockDim%y + threadIdx%y - 1
+      integer :: k,n
 
       if (i >= 0 .and. i <= im .and. j >= 0 .and. j <= jm) then
           !
@@ -775,22 +630,17 @@ module solver_gpu
 
    end subroutine diffusion_2d_kernel_k
 
-    attributes(global) subroutine compact_filter_2d_kernel_i( ac_d, im, jm, km, numq, first_node, last_node, nbctype)
+   attributes(device) subroutine compact_filter_2d_kernel_i(j,k,im, jm, km, numq, first_node, last_node, nbctype)
       use commvar, only: hm
       use commarray_gpu, only: q_d
       implicit none
-      real(8), device, intent(in) :: ac_d(:, :)
-      integer, value :: im, jm, km, numq, first_node, last_node, nbctype
-      integer ::  i, j, k, n
+
+      integer, value :: im, jm, km, numq, first_node, last_node, nbctype,j,k
+      integer :: n
 
       real(8) :: f(-hm:im + hm)
       real(8) :: ff(0:im)
-
-      ! 计算全局 j,k 索引
-      j = (blockIdx%x - 1)*blockDim%x + threadIdx%x - 1
-      k = (blockIdx%y - 1)*blockDim%y + threadIdx%y - 1
       
-
       ! 边界判断
       if (j >= 0 .and. j <= jm .and. k >= 0 .and. k <= km) then
          do n=1,numq
@@ -798,7 +648,7 @@ module solver_gpu
             f(-hm:im+hm) = q_d( -hm:im+hm, j, k, n)
 
             ! filter
-            ff = compact_filter_gpu(first_node, last_node, nbctype, ac_d, f, im)
+            ff = compact_filter_gpu(first_node, last_node, nbctype, ac_filter_i_d, f, im)
 
             ! scatter
             q_d(0:im, j, k, n) = ff(0:im)
@@ -807,21 +657,17 @@ module solver_gpu
 
    end subroutine compact_filter_2d_kernel_i
 
-   attributes(global) subroutine compact_filter_2d_kernel_j( ac_d, im, jm, km, numq, first_node, last_node, nbctype)
+   attributes(device) subroutine compact_filter_2d_kernel_j(i,k,im, jm, km, numq, first_node, last_node, nbctype)
       use commvar, only: hm
       use commarray_gpu, only: q_d
 
+
       implicit none
-      real(8), device, intent(in) :: ac_d(:, :)
-      integer, value :: im, jm, km, numq, first_node, last_node, nbctype
-      integer ::  i, j, k, n
+      integer, value :: im, jm, km, numq, first_node, last_node, nbctype,i,k
+      integer :: n
 
       real(8) :: f(-hm:jm + hm)
       real(8) :: ff(0:jm)
-
-      ! 计算全局 k,i 索引
-      k = (blockIdx%x - 1)*blockDim%x + threadIdx%x - 1
-      i = (blockIdx%y - 1)*blockDim%y + threadIdx%y - 1
       
       ! 边界判断
       if (k >= 0 .and. k <= km .and. i >= 0 .and. i <= im) then
@@ -831,7 +677,7 @@ module solver_gpu
             f(-hm:jm+hm) = q_d(i, -hm:jm+hm, k, n)
 
             ! filter
-            ff = compact_filter_gpu(first_node, last_node, nbctype, ac_d, f, jm)
+            ff = compact_filter_gpu(first_node, last_node, nbctype, ac_filter_j_d, f, jm)
 
             ! scatter
             q_d(i, 0:jm, k, n) = ff(0:jm)
@@ -841,21 +687,16 @@ module solver_gpu
 
    end subroutine compact_filter_2d_kernel_j
 
-   attributes(global) subroutine compact_filter_2d_kernel_k( ac_d, im, jm, km, numq, first_node, last_node, nbctype)
+   attributes(device) subroutine compact_filter_2d_kernel_k(i,j,im, jm, km, numq, first_node, last_node, nbctype)
       use commvar, only: hm
       use commarray_gpu, only: q_d
 
-      implicit none
-      real(8), device, intent(in) :: ac_d(:, :)
-      integer, value :: im, jm, km, numq, first_node, last_node, nbctype
-      integer ::  i, j, k, n
 
+      implicit none
+      integer, value :: im, jm, km, numq, first_node, last_node, nbctype,i,j
+      integer :: n
       real(8) :: f(-hm:km + hm)
       real(8) :: ff(0:km)
-
-      ! 计算全局 i,j 索引
-      i = (blockIdx%x - 1)*blockDim%x + threadIdx%x - 1
-      j = (blockIdx%y - 1)*blockDim%y + threadIdx%y - 1
 
       ! 边界判断
       if (i >= 0 .and. i <= im .and. j >= 0 .and. j <= jm) then
@@ -864,7 +705,7 @@ module solver_gpu
             f(-hm:km+hm) = q_d( i, j, -hm:km+hm, n)
 
             ! filter
-            ff = compact_filter_gpu(first_node, last_node, nbctype, ac_d, f, km)
+            ff = compact_filter_gpu(first_node, last_node, nbctype, ac_filter_k_d, f, km)
 
             ! scatter
             q_d(i, j, 0:km, n) = ff(0:km)
@@ -875,65 +716,52 @@ module solver_gpu
 
    subroutine filterq
       use commvar,  only : im,jm,km,hm,numq
-      use filter,   only : compact_filter,filter_i,filter_j,filter_k
       use filter_gpu
+      use filter,   only : compact_filter,filter_i,filter_j,filter_k
       use cudafor
       use commarray_gpu, only: q_d
       use bc_gpu, only: bchomovec_gpu
+
       implicit none
       ! 输入输出参数
 
-      integer :: first_node, last_node, nbctype, istat
-      integer :: blksz=16
-      real(8), device, allocatable::  ac_d(:, :)
+      integer :: first_node, last_node, nbctype, istat,i,j,k
 
-      type(dim3) :: grid, block
       call copy_coeff_to_gpu_cal()
 
-
-      allocate (ac_d(size(filter_i%ac, 1), size(filter_i%ac, 2)))
       first_node = filter_i%first_node
       last_node = filter_i%last_node
       nbctype = filter_i%nbctype
-      ac_d = filter_i%ac
       call bchomovec_gpu(q_d, 1, im, jm, km, hm, numq)
-      block = dim3(blksz, blksz, 1)
-      grid%x = ceiling(real(jm+1)/blksz)
-      grid%y = ceiling(real(km+1)/blksz)
-      grid%z = 1
-      call compact_filter_2d_kernel_i <<< grid, block >>> ( ac_d, im, jm, km, numq, &
-                                                                   first_node, last_node, nbctype)
-      istat = cudaDeviceSynchronize()
+      !$cuf kernel do(2) <<<*,*>>>
+      do k=0,km
+      do j=0,jm
+      call compact_filter_2d_kernel_i (j,k,im, jm, km, numq, first_node, last_node, nbctype)
+      end do
+      end do
 
-      deallocate(ac_d)
-      allocate (ac_d(size(filter_j%ac, 1), size(filter_j%ac, 2)))
       first_node = filter_j%first_node
       last_node = filter_j%last_node
       nbctype = filter_j%nbctype
-      ac_d = filter_j%ac
       call bchomovec_gpu(q_d, 2, im, jm, km, hm, numq)
-      block = dim3(blksz, blksz, 1)
-      grid%x = ceiling(real(km+1)/blksz)
-      grid%y = ceiling(real(im+1)/blksz)
-      grid%z = 1
-      call compact_filter_2d_kernel_j <<< grid, block >>> ( ac_d, im, jm, km, numq, &
-                                                                   first_node, last_node, nbctype)
-      istat = cudaDeviceSynchronize()
+      !$cuf kernel do(2) <<<*,*>>>
+      do i=0,im
+      do k=0,km
+      call compact_filter_2d_kernel_j (i,k,im, jm, km, numq, first_node, last_node, nbctype)
+      end do
+      end do
 
-      deallocate(ac_d)
-      allocate (ac_d(size(filter_k%ac, 1), size(filter_k%ac, 2)))
+
       first_node = filter_k%first_node
       last_node = filter_k%last_node
       nbctype = filter_k%nbctype
-      ac_d = filter_k%ac
       call bchomovec_gpu(q_d, 3, im, jm, km, hm, numq)
-      block = dim3(blksz, blksz, 1)
-      grid%x = ceiling(real(im+1)/blksz)
-      grid%y = ceiling(real(jm+1)/blksz)
-      grid%z = 1
-      call compact_filter_2d_kernel_k <<< grid, block >>> ( ac_d, im, jm, km, numq, &
-                                                                   first_node, last_node, nbctype)
-      istat = cudaDeviceSynchronize()
+      !$cuf kernel do(2) <<<*,*>>>
+      do i=0,im
+      do j=0,jm
+      call compact_filter_2d_kernel_k (i,j,im, jm, km, numq, first_node, last_node, nbctype)
+      end do
+      end do
       
    end subroutine filterq
     
