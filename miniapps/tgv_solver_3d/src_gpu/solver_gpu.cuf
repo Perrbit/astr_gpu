@@ -40,15 +40,15 @@ module solver_gpu
       implicit none
     
       ! 分配转置布局 (节点数, 3)
-      allocate(ac_filter_i_d(size(filter_i%ac, 1), size(filter_i%ac, 2)))
-      allocate(ac_filter_j_d(size(filter_j%ac, 1), size(filter_j%ac, 2)))
-      allocate(ac_filter_k_d(size(filter_k%ac, 1), size(filter_k%ac, 2)))
+      allocate(ac_filter_i_d(size(filter_i%ac, 2), 3))
+      allocate(ac_filter_j_d(size(filter_j%ac, 2), 3))
+      allocate(ac_filter_k_d(size(filter_k%ac, 2), 3))
 
       ! 使用转置复制
 
-      ac_filter_i_d=filter_i%ac
-      ac_filter_j_d=filter_j%ac
-      ac_filter_k_d=filter_k%ac
+      ac_filter_i_d=TRANSPOSE(filter_i%ac)
+      ac_filter_j_d=TRANSPOSE(filter_j%ac)
+      ac_filter_k_d=TRANSPOSE(filter_k%ac)
 
    end subroutine init_solver_ac_filter_arrays
 
