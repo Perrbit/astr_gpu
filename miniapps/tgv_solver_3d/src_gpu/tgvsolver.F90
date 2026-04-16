@@ -786,7 +786,7 @@ module solver
       !
       use commvar,  only : im,jm,km,hm,numq
       use commarray,only : q
-      use filter, only : coef6e
+      use filter, only : coef10e
       use bc, only : bchomovec
       !
       ! local data
@@ -801,10 +801,12 @@ module solver
       do i=0,im
          do n = 1, numq
          qbuf(i,j,k,n) = &
-            coef6e(0)*(2*q(i,j,k,n)) + &
-            coef6e(1)*(q(i-1,j,k,n)+q(i+1,j,k,n)) + &
-            coef6e(2)*(q(i-2,j,k,n)+q(i+2,j,k,n)) + &
-            coef6e(3)*(q(i-3,j,k,n)+q(i+3,j,k,n))
+            coef10e(0)*(2*q(i,j,k,n)) + &
+            coef10e(1)*(q(i-1,j,k,n)+q(i+1,j,k,n)) + &
+            coef10e(2)*(q(i-2,j,k,n)+q(i+2,j,k,n)) + &
+            coef10e(3)*(q(i-3,j,k,n)+q(i+3,j,k,n)) + &
+            coef10e(4)*(q(i-4,j,k,n)+q(i+4,j,k,n)) + &
+            coef10e(5)*(q(i-5,j,k,n)+q(i+5,j,k,n))
          end do
       end do
       end do
@@ -822,10 +824,12 @@ module solver
       do i=0,im
          do n = 1, numq
          q(i,j,k,n) = &
-            coef6e(0)*(2*qbuf(i,j,k,n)) + &
-            coef6e(1)*(qbuf(i,j-1,k,n)+qbuf(i,j+1,k,n)) + &
-            coef6e(2)*(qbuf(i,j-2,k,n)+qbuf(i,j+2,k,n)) + &
-            coef6e(3)*(qbuf(i,j-3,k,n)+qbuf(i,j+3,k,n))
+            coef10e(0)*(2*qbuf(i,j,k,n)) + &
+            coef10e(1)*(qbuf(i,j-1,k,n)+qbuf(i,j+1,k,n)) + &
+            coef10e(2)*(qbuf(i,j-2,k,n)+qbuf(i,j+2,k,n)) + &
+            coef10e(3)*(qbuf(i,j-3,k,n)+qbuf(i,j+3,k,n)) + &
+            coef10e(4)*(qbuf(i,j-4,k,n)+qbuf(i,j+4,k,n)) + &
+            coef10e(5)*(qbuf(i,j-5,k,n)+qbuf(i,j+5,k,n))
          end do
       end do
       end do
@@ -844,10 +848,12 @@ module solver
       do k=0,km
          do n = 1, numq
          qbuf(i,j,k,n) = &
-            coef6e(0)*(2*q(i,j,k,n)) + &
-            coef6e(1)*(q(i,j,k-1,n)+q(i,j,k+1,n)) + &
-            coef6e(2)*(q(i,j,k-2,n)+q(i,j,k+2,n)) + &
-            coef6e(3)*(q(i,j,k-3,n)+q(i,j,k+3,n))
+            coef10e(0)*(2*q(i,j,k,n)) + &
+            coef10e(1)*(q(i,j,k-1,n)+q(i,j,k+1,n)) + &
+            coef10e(2)*(q(i,j,k-2,n)+q(i,j,k+2,n)) + &
+            coef10e(3)*(q(i,j,k-3,n)+q(i,j,k+3,n)) + &
+            coef10e(4)*(q(i,j,k-4,n)+q(i,j,k+4,n)) + &
+            coef10e(5)*(q(i,j,k-5,n)+q(i,j,k+5,n))
          end do
       end do
       end do

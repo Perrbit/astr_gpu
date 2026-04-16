@@ -786,10 +786,12 @@ implicit none
       if (i >= 0 .and. i <= im .and. j >= 0 .and. j <= jm .and. k >= 0 .and. k <= km) then
          do n = 1, numq
          q_out(i,j,k,n) = &
-            coef6e_d(0)*(2*q_in(i,j,k,n)) + &
-            coef6e_d(1)*(q_in(i-1,j,k,n)+q_in(i+1,j,k,n)) + &
-            coef6e_d(2)*(q_in(i-2,j,k,n)+q_in(i+2,j,k,n)) + &
-            coef6e_d(3)*(q_in(i-3,j,k,n)+q_in(i+3,j,k,n))
+            coef10e_d(0)*(2*q_in(i,j,k,n)) + &
+            coef10e_d(1)*(q_in(i-1,j,k,n)+q_in(i+1,j,k,n)) + &
+            coef10e_d(2)*(q_in(i-2,j,k,n)+q_in(i+2,j,k,n)) + &
+            coef10e_d(3)*(q_in(i-3,j,k,n)+q_in(i+3,j,k,n)) + &
+            coef10e_d(4)*(q_in(i-4,j,k,n)+q_in(i+4,j,k,n)) + &
+            coef10e_d(5)*(q_in(i-5,j,k,n)+q_in(i+5,j,k,n))
          end do
       end if
 
@@ -813,10 +815,12 @@ implicit none
       if (i >= 0 .and. i <= im .and. j >= 0 .and. j <= jm .and. k >= 0 .and. k <= km) then
          do n = 1, numq
          q_out(i,j,k,n) = &
-            coef6e_d(0)*(2*q_in(i,j,k,n)) + &
-            coef6e_d(1)*(q_in(i,j-1,k,n)+q_in(i,j+1,k,n)) + &
-            coef6e_d(2)*(q_in(i,j-2,k,n)+q_in(i,j+2,k,n)) + &
-            coef6e_d(3)*(q_in(i,j-3,k,n)+q_in(i,j+3,k,n))
+            coef10e_d(0)*(2*q_in(i,j,k,n)) + &
+            coef10e_d(1)*(q_in(i,j-1,k,n)+q_in(i,j+1,k,n)) + &
+            coef10e_d(2)*(q_in(i,j-2,k,n)+q_in(i,j+2,k,n)) + &
+            coef10e_d(3)*(q_in(i,j-3,k,n)+q_in(i,j+3,k,n)) + &
+            coef10e_d(4)*(q_in(i,j-4,k,n)+q_in(i,j+4,k,n)) + &
+            coef10e_d(5)*(q_in(i,j-5,k,n)+q_in(i,j+5,k,n))
          end do
       end if
 
@@ -840,10 +844,12 @@ implicit none
       if (i >= 0 .and. i <= im .and. j >= 0 .and. j <= jm .and. k >= 0 .and. k <= km) then
          do n = 1, numq
          q_out(i,j,k,n) = &
-            coef6e_d(0)*(2*q_in(i,j,k,n)) + &
-            coef6e_d(1)*(q_in(i,j,k-1,n)+q_in(i,j,k+1,n)) + &
-            coef6e_d(2)*(q_in(i,j,k-2,n)+q_in(i,j,k+2,n)) + &
-            coef6e_d(3)*(q_in(i,j,k-3,n)+q_in(i,j,k+3,n))
+            coef10e_d(0)*(2*q_in(i,j,k,n)) + &
+            coef10e_d(1)*(q_in(i,j,k-1,n)+q_in(i,j,k+1,n)) + &
+            coef10e_d(2)*(q_in(i,j,k-2,n)+q_in(i,j,k+2,n)) + &
+            coef10e_d(3)*(q_in(i,j,k-3,n)+q_in(i,j,k+3,n)) + &
+            coef10e_d(4)*(q_in(i,j,k-4,n)+q_in(i,j,k+4,n)) + &
+            coef10e_d(5)*(q_in(i,j,k-5,n)+q_in(i,j,k+5,n))
          end do
       end if
 
