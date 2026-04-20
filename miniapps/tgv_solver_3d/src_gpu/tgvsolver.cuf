@@ -155,15 +155,15 @@ module initilise
 
         numq=5
 
-        im=256
-        jm=256
-        km=256
+        im=345
+        jm=345
+        km=345
 
         difschm='643c'
 
         alfa_filter=0.49d0
 
-        maxstep=100
+        maxstep=20000
 
         write(*,'(3(A,I0))')'  ** dimension set: ',im,' x ',jm,' x ',km
 
@@ -488,7 +488,7 @@ module mainloop
     use commvar_gpu
     use commarray_gpu
     use vtkio
-    integer, parameter :: nout = 10000
+    integer, parameter :: nout = 50
     character(len=100) :: filename
     character(len=20)  :: step_str
 
@@ -504,17 +504,14 @@ module mainloop
 
       !=====vtk流场输出=====
       if (mod(nstep, nout) == 0) then
-        rho=rho_d
         vel=vel_d
-        prs=prs_d
-        tmp=tmp_d
 
         ! ===== 生成带编号文件名 =====
         write(step_str, '(I6.6)') nstep   ! 6位，不足补0
 
         filename = 'flow_' // trim(step_str) // '.vtk'
 
-        call write_vtk_binary(filename, rho, vel, prs, tmp)
+        call write_vtk_binary(filename, vel=vel)
         print *, 'Saved vtk file: ', trim(filename)
       endif
 
