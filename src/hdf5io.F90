@@ -43,6 +43,7 @@ module hdf5io
     module procedure h5_readarray1d
     module procedure h5_read1rl8
     module procedure h5_read1int
+    module procedure h5_readarray2d
     module procedure h5_readarray3d
     !
   end Interface h5sread
@@ -53,6 +54,7 @@ module hdf5io
     module procedure h5_write1rl8
     module procedure h5_writearray1dint
     module procedure h5_writearray1d
+    module procedure h5_writearray2d
     module procedure h5_writearray3d
     !
   end Interface h5srite
@@ -1246,7 +1248,69 @@ module hdf5io
 #endif 
     !
   end subroutine h5_writearray1d
-  !
+  
+  subroutine h5_writearray2d(var,varname,filename,explicit,newfile)
+    !
+    real(8),intent(in) :: var(:,:)
+    character(len=*),intent(in) :: varname,filename
+    logical,intent(in), optional:: explicit,newfile
+    !
+    integer :: dim1,dim2
+    logical :: lexplicit,lnew
+    logical :: lfilalive
+    !
+#ifdef HDF5
+    !
+    integer(hid_t) :: file_id
+    ! file identifier
+    integer(hid_t) :: dset_id1
+    ! dataset identifier
+    integer :: h5error ! error flag
+    integer(hsize_t) :: dimt(2)
+    !
+    if (present(explicit)) then
+       lexplicit = explicit
+    else
+       lexplicit = .true.
+    end if
+    if (present(newfile)) then
+       lnew      = newfile
+    else
+       lnew = .false. 
+    end if
+    !
+    dim1=size(var,1)
+    dim2=size(var,2)
+    !
+    call h5open_f(h5error)
+    !
+    if(lnew) then
+      call h5fcreate_f(filename,h5f_acc_trunc_f,file_id,h5error)
+    else
+      call h5fopen_f(filename,h5f_acc_rdwr_f,file_id,h5error)
+    endif
+    !
+    if(h5error.ne.0)  stop ' !! error in h5_writearray3d 1'
+    !
+    dimt=(/dim1,dim2/)
+    !
+    ! write the dataset.
+    call h5ltmake_dataset_f(file_id,varname,2,dimt,h5t_native_double,var,h5error)
+    if(h5error .ne. 0) stop 'h5 write error h5_writearray3d'
+    if(lexplicit) print*,' << ',varname,' to ',filename
+    if(h5error.ne.0)  stop ' !! error in h5_writearray3d 2'
+    !
+    call h5fclose_f(file_id, h5error)
+    if(h5error.ne.0)  stop ' !! error in h5_writearray3d 3'
+    !
+    ! close fortran interface.
+    call h5close_f(h5error)
+    if(h5error.ne.0)  stop ' !! error in h5_writearray3d 4'
+    !
+#endif 
+    !
+  end subroutine h5_writearray2d
+
   subroutine h5_writearray3d(var,varname,filename,explicit,newfile)
     !
     real(8),intent(in) :: var(:,:,:)
@@ -1499,6 +1563,63 @@ module hdf5io
   !| This end of the subroutine h5_readarray1d.                        |
   !+-------------------------------------------------------------------+
   !
+
+  subroutine h5_readarray2d(varin,vname,dim1,dim2,fname,explicit)
+    !
+    integer :: dim1,dim2
+    real(8) :: varin(0:dim1,0:dim2)
+    character(len=*),intent(in) :: vname,fname
+    logical,intent(in), optional:: explicit
+    logical :: lexplicit
+    !
+#ifdef HDF5
+    !
+    integer(hid_t) :: file_id
+    ! file identifier
+    integer(hid_t) :: dset_id1
+    ! dataset identifier
+    integer :: h5error ! error flag
+    integer(hsize_t) :: dimt(2)
+    !
+    if (present(explicit)) then
+       lexplicit = explicit
+    else
+       lexplicit = .true.
+    end if
+    !
+    call h5open_f(h5error)
+    if(h5error.ne.0)  stop ' !! error in h5_readarray3d 1'
+    !
+    call h5fopen_f(fname,h5f_acc_rdwr_f,file_id,h5error)
+    if(h5error.ne.0)  stop ' !! error in h5_readarray3d 2'
+
+    ! open an existing dataset.
+    call h5dopen_f(file_id,vname,dset_id1,h5error)
+    if(h5error.ne.0)  stop ' !! error in h5_readarray3d 3'
+    !
+    dimt=(/dim1+1,dim2+1/)
+    !
+    ! read the dataset.
+    call h5dread_f(dset_id1,h5t_native_double,varin,dimt,h5error)
+    if(h5error.ne.0)  stop ' !! error in h5_readarray3d 4'
+    !
+    ! close the dataset
+    call h5dclose_f(dset_id1, h5error)
+    if(h5error.ne.0)  stop ' !! error in h5_readarray3d 5'
+    ! close the file.
+    call h5fclose_f(file_id, h5error)
+    if(h5error.ne.0)  stop ' !! error in h5_readarray3d 6'
+    !
+    ! close fortran interface.
+    call h5close_f(h5error)
+    if(h5error.ne.0)  stop ' !! error in h5_readarray3d 7'
+    !
+    if(lexplicit) print*,' >> ',vname,' from ',fname,' ... done'
+    !
+#endif 
+    !
+  end subroutine h5_readarray2d
+
   subroutine h5_readarray3d(varin,vname,dim1,dim2,dim3,fname,explicit)
     !
     integer :: dim1,dim2,dim3

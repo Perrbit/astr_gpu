@@ -7,7 +7,7 @@ module pastr_utility
     private
 
     public :: get_cmd_argument,isnum,make_dir,sort_unique,add_new_element,remove_element
-    public :: cube_root
+    public :: cube_root,progress_bar
 
     interface sort_unique
       module procedure  :: sort_unique_int

@@ -47,22 +47,52 @@ contains
 
    end function linear1d_search_array
 
-   pure function linear1d_array2array(x,y,xx) result(yy)
+   function linear1d_array2array(x,y,xx,mode) result(yy)
 
       real(wp),intent(in) :: x(:),y(:),xx(:)
       real(wp) :: yy(size(xx))
+      character(len=3),intent(in),optional :: mode
 
       integer :: i,m,n,j
+      character(len=3) :: act_mod
 
       m=size(x)
       n=size(xx)
 
+      if(present(mode)) then
+        act_mod=mode
+      else
+        act_mod='lin'
+      endif
+
       do j=1,n
 
         if(xx(j)<=x(1)) then
-          yy(j)=linear1d_s(x(1),x(2),y(1),y(2),xx(j))
+          if(act_mod=='lin') then
+            yy(j)=linear1d_s(x(1),x(2),y(1),y(2),xx(j))
+          elseif(act_mod=='end') then
+            yy(j)=y(1)
+          elseif(act_mod=='dec') then
+            yy(j)=y(1)*exp(-5.d0*(x(1)-xx(j)))
+          elseif(act_mod=='zer') then
+            yy(j)=0.d0
+          else
+            print*,'act_mod',act_mod
+            stop ' erro 1 @ linear1d_array2array'
+          endif
         elseif(xx(j)>=x(m)) then
-          yy(j)=linear1d_s(x(m-1),x(m),y(m-1),y(m),xx(j))
+          if(act_mod=='lin') then
+            yy(j)=linear1d_s(x(m-1),x(m),y(m-1),y(m),xx(j))
+          elseif(act_mod=='end') then
+            yy(j)=y(m)
+          elseif(act_mod=='dec') then
+            yy(j)=y(m)*exp(-5.d0*(xx(j)-x(m)))
+          elseif(act_mod=='zer') then
+            yy(j)=0.d0
+          else
+            stop ' erro 2 @ linear1d_array2array'
+          endif
+
         else
           do i=2,m
             if(xx(j)>=x(i-1) .and. xx(j)<=x(i)) then
@@ -71,6 +101,8 @@ contains
             endif
           enddo
         endif
+
+        if(abs(yy(j))<1.d-16) yy(j)=0.d0 
 
       enddo
 

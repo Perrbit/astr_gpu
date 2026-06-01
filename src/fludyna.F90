@@ -225,7 +225,7 @@ module fludyna
       enddo
       enddo
       !
-    elseif(trim(turbmode)=='none' .or. trim(turbmode)=='udf1') then
+    else
       !
       call q2fvar(q=q(0:im,0:jm,0:km,:),                               &
                                      density=rho(0:im,0:jm,0:km),      &
@@ -234,9 +234,6 @@ module fludyna
                                  temperature=tmp(0:im,0:jm,0:km),      &
                                      species=spc(0:im,0:jm,0:km,:) )
       !
-    else
-      print*,' !! ERROR @ updatefvar'
-      stop
     endif
     !
   end subroutine updatefvar
@@ -268,8 +265,7 @@ module fludyna
                           tke=tke(0:im,0:jm,0:km),                     &
                         omega=omg(0:im,0:jm,0:km)                      )
       !
-    elseif(trim(turbmode)=='none' .or. trim(turbmode)=='udf1') then
-      !
+    else
       call fvar2q(          q=  q(0:im,0:jm,0:km,:),                   &
                       density=rho(0:im,0:jm,0:km),                     &
                      velocity=vel(0:im,0:jm,0:km,:),                   &
@@ -292,9 +288,6 @@ module fludyna
       enddo
       enddo
       !
-    else
-      print*,' !! ERROR @ updatefvar'
-      stop
     endif
     !
   end subroutine updateq

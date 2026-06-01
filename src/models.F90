@@ -8,8 +8,9 @@
 !+---------------------------------------------------------------------+
 module models
   !
+  use commvar,only : im,jm,km,hm,Reynolds,num_species
   use parallel, only : mpirank,mpistop,irk,jrk,krk
-  use commarray,only : tke,omg,miut,dtke,domg
+  use commarray,only : tke,omg,miut,dtke,domg,dvel
   use constdef
   !
   implicit none
@@ -37,8 +38,6 @@ module models
   !| 09-Aug-2020: Created by J. Fang @ STFC Daresbury Laboratory       |
   !+-------------------------------------------------------------------+
   subroutine init_komegasst
-    !
-    use commvar,only : im,jm,km,hm
     !
     integer :: lallo
     !
@@ -93,8 +92,7 @@ module models
   !| 09-08-2021: Created by J. Fang @ Warrington.                      |
   !+-------------------------------------------------------------------+
   subroutine src_komega
-    !
-    use commvar,  only : im,jm,km,Reynolds,num_species
+
     use commarray,only : dis2wall,rho,tmp,vor,dvel,jacob,qrhs
     use fludyna,  only : miucal
     !
@@ -190,42 +188,246 @@ module models
   !| The end of the subroutine src_komega.                             |
   !+-------------------------------------------------------------------+
   !
-  ! subroutine komega_src
-  !   !
-  !   ! add source term to the k-omega transport equations
-  !   !
-  !   ! add production term
-  !   do k=ks,ke
-  !   do j=js,je
-  !   do i=is,ie
-  !     !
-  !     s11=sigma(i,j,k,1)
-  !     s12=sigma(i,j,k,2)
-  !     s13=sigma(i,j,k,3)
-  !     s22=sigma(i,j,k,4)
-  !     s23=sigma(i,j,k,5)
-  !     s33=sigma(i,j,k,6)
-  !     !
-  !     d11=dvel(i,j,k,1,1); d12=dvel(i,j,k,1,2); d13=dvel(i,j,k,1,3)
-  !     d21=dvel(i,j,k,2,1); d22=dvel(i,j,k,2,2); d23=dvel(i,j,k,2,3)
-  !     d31=dvel(i,j,k,3,1); d32=dvel(i,j,k,3,2); d33=dvel(i,j,k,3,3)
-  !     !
-  !     var1= s11*d11   +    s12*(d12+d21)  +   s13*(d13+d31) + &
-  !                          s22*d22        +   s23*(d23+d32) + &
-  !                                             s33*d33
-  !     miueddy=max(miut(i,j,k),1.d-9)
-  !     var2=var1*komega%gamma(i,j,k)*rho(i,j,k)/miueddy
-  !     !
-  !     n=5+num_species
-  !     !
-  !     qrhs(i,j,ks:ke,1+n)=qrhs(i,j,ks:ke,1+n) + var1*jacob(i,j,k)
-  !     qrhs(i,j,ks:ke,2+n)=qrhs(i,j,ks:ke,2+n) + var2*jacob(i,j,k)
-  !     !
-  !   enddo
-  !   enddo
-  !   enddo
-  !   !
-  ! end subroutine komega_src
+  !--------------------------------------------------------------------
+  ! Baldwin-Lomax model on one wall-normal line.
+  !
+  ! Inputs
+  !   n        : number of points on the wall-normal line
+  !   y(n)     : wall distance, y(1)=0 at wall, increasing outward
+  !   rho(n)   : density
+  !   mu(n)    : molecular dynamic viscosity
+  !   ut(n)    : tangential velocity component along the wall
+  !   vt(n)    : second tangential velocity component (set to 0 for 2D)
+  !   omega(n) : magnitude of local vorticity or shear measure
+  !              for 2D BL, omega = abs(du_t/dy)
+  !   tauw     : wall shear stress magnitude
+  !
+  ! Outputs
+  !   mut(n)        : turbulent dynamic viscosity
+  !   mut_inner(n)  : inner-layer contribution
+  !   mut_outer(n)  : outer-layer contribution
+  !   y_max         : location of F maximum used by the model
+  !   f_max         : maximum of F(y)
+  !
+  ! Notes
+  !   1) This routine assumes an attached boundary-layer-style BL model.
+  !   2) For 3D wall-bounded flow, ut and vt should be the two velocity
+  !      components tangent to the wall along the wall-normal cut.
+  !   3) In ASTR, call this along each wall-normal stencil/ray.
+  !--------------------------------------------------------------------
+  subroutine baldwin_lomax_line
+
+    use commarray,only : dis2wall,rho,tmp,dvel,vel,miut,bnorm_j0,x
+    use parallel, only : ia,ja,ka,ig0,jg0,kg0,pmax,mpirankname,irk,jrk,krk
+    use fludyna,  only : miucal
+    use tecio
+
+    real(8), parameter :: kappa  = 0.4d0
+    real(8), parameter :: Aplus  = 26.d0
+    real(8), parameter :: Ccp    = 1.6d0
+    real(8), parameter :: Cwk    = 0.25d0
+    real(8), parameter :: Ckleb  = 0.30d0
+    real(8), parameter :: Kbl    = 0.0168d0
+    real(8), parameter :: tinyv  = 1.0d-10
+
+    integer :: i,j,k,imax
+    real(8) :: miu,utau,nuw, yplus, Lm, fkleb, fwake
+    real(8) :: umin, umax, omega,F
+    real(8) :: miut_inner,miut_outer
+    real(8),allocatable :: utaw(:,:),miuw(:,:),f_max(:,:),f2_max(:,:),y_max(:,:),udiff(:,:)
+
+    logical,save :: lfirstcall=.true.
+
+    if(lfirstcall) then
+      allocate(   miut(0:im,0:jm,0:km) )
+    endif
+
+    allocate(utaw(0:ia,0:ka),miuw(0:ia,0:ka))
+
+    utaw=0.d0
+    miuw=0.d0
+
+    if(jrk==0) then
+
+      j=0
+
+      do k=0,km
+      do i=0,im
+        miu=miucal(tmp(i,j,k))/Reynolds
+
+        miuw(i+ig0,k+kg0)=miu
+
+        utaw(i+ig0,k+kg0)=tau_cal(grad_u=dvel(i,j,k,:,:),normal=bnorm_j0(i,k,:),mu=miu)
+        utaw(i+ig0,k+kg0)=sqrt(utaw(i+ig0,k+kg0)/rho(i,j,k))
+      enddo
+      enddo
+
+    endif
+
+    utaw=pmax(utaw)
+    miuw=pmax(miuw)
+
+    allocate(f_max(0:ia,0:ka),f2_max(0:ia,0:ka),y_max(0:ia,0:ka),udiff(0:ia,0:ka))
+
+    f_max=0.d0
+    y_max=0.d0
+    udiff=0.d0
+    do k=0,km
+    do i=0,im
+      do j=0,jm
+
+        utau=utaw(i+ig0,k+kg0)
+
+        nuw =miuw(i+ig0,k+kg0)
+
+        yplus = rho(i,j,k) * dis2wall(i,j,k) * utau / max(nuw, tinyv)
+
+        omega=abs(dvel(i,j,k,1,2)-dvel(i,j,k,2,1))
+
+        F = dis2wall(i,j,k) * omega * (1.0d0 - exp(-yplus / Aplus))
+
+        ! if(F>10.d0) print*,x(i,j,k,2),F
+
+        if(F>=f_max(i+ig0,k+kg0)) then
+          f_max(i+ig0,k+kg0)=F
+          y_max(i+ig0,k+kg0)=dis2wall(i,j,k)
+        endif
+
+        udiff(i+ig0,k+kg0)=sqrt(vel(i,j,k,1)*vel(i,j,k,1) + vel(i,j,k,2)*vel(i,j,k,2) + vel(i,j,k,3)*vel(i,j,k,3))
+
+      enddo
+    enddo
+    enddo
+
+    udiff=pmax(udiff)
+
+    f2_max=pmax(f_max)
+
+    do k=0,km
+    do i=0,im
+      if(f_max(i+ig0,k+kg0)==f2_max(i+ig0,k+kg0)) then
+      else
+        y_max(i+ig0,k+kg0)=0.d0
+      endif
+    enddo
+    enddo
+
+    f_max=f2_max
+    y_max=pmax(y_max)
+
+      ! call tecbin('testout/tec_fymax'//mpirankname//'.plt',x(0:im,0,0:km,1),'x', &
+      !                                                     x(0:im,0,0:km,2),'y', &
+      !                                                     x(0:im,0,0:km,3),'z', &
+      !                                                    f_max(ig0:ig0+im,kg0:kg0+km),'f_max', &
+      !                                                    y_max(ig0:ig0+im,kg0:kg0+km),'y_max' )
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+
+        utau=utaw(i+ig0,k+kg0)
+
+        nuw =miuw(i+ig0,k+kg0)
+
+        !--------------------------------------------------------------
+        ! Outer-layer wake function:
+        !   Fwake = min( y_max * F_max, Cwk * y_max * Udiff^2 / F_max )
+        !--------------------------------------------------------------
+        fwake = min(y_max(i+ig0,k+kg0) * f_max(i+ig0,k+kg0),  &
+                          Cwk *y_max(i+ig0,k+kg0)* udiff(i+ig0,k+kg0)**2/ max(f_max(i+ig0,k+kg0), tinyv))
+
+
+        yplus = rho(i,j,k) * dis2wall(i,j,k) * utau / max(nuw, tinyv)
+
+        ! Mixing length
+        Lm = kappa * dis2wall(i,j,k) * (1.0d0 - exp(-yplus / Aplus))
+
+        ! Inner layer
+        omega=abs(dvel(i,j,k,1,2)-dvel(i,j,k,2,1))
+        miut_inner = rho(i,j,k) * Lm*Lm * omega
+
+        ! Klebanoff intermittency factor
+        fkleb = 1.0d0 / (1.0d0 + 5.5d0 * (Ckleb * dis2wall(i,j,k) / y_max(i+ig0,k+kg0))**6)
+
+        ! Outer layer
+        miut_outer = rho(i,j,k) * Kbl * Ccp * fwake * fkleb
+
+        ! Baldwin-Lomax final value
+        miut(i,j,k) = min(miut_inner, miut_outer)
+
+    enddo
+    enddo
+    enddo
+
+    if(lfirstcall) then
+      ! call tecbin('testout/tec_miut'//mpirankname//'.plt',x(0:im,0:jm,0:km,1),'x', &
+      !                                                    x(0:im,0:jm,0:km,2),'y', &
+      !                                                    x(0:im,0:jm,0:km,3),'z', &
+      !                                                    miut(0:im,0:jm,0:km),'miut')
+      lfirstcall=.false.
+    endif
+
+    ! call mpistop
+
+  end subroutine baldwin_lomax_line
+
+  function tau_cal(grad_u, normal, mu) result(tau_mag)
+
+    real(8), intent(in)  :: grad_u(3,3)
+    real(8), intent(in)  :: normal(3)
+    real(8), intent(in)  :: mu
+    real(8) :: tau_mag
+
+    real(8) :: n(3), nnorm
+    real(8) :: sigma(3,3)
+    real(8) :: traction(3)
+    real(8) :: divu, tn
+    real(8) :: tau_vec(3)
+    integer :: i, j
+
+    ! ---- normalize wall normal ----
+    nnorm = sqrt(normal(1)**2 + normal(2)**2 + normal(3)**2)
+    if (nnorm <= 1.0d-30) then
+      tau_vec = 0.0d0
+      tau_mag = 0.0d0
+      return
+    end if
+    n = normal / nnorm
+
+    ! ---- divergence ----
+    divu = grad_u(1,1) + grad_u(2,2) + grad_u(3,3)
+
+    ! ---- viscous stress tensor sigma ----
+    sigma = 0.0d0
+    do i = 1, 3
+      do j = 1, 3
+        sigma(i,j) = mu * (grad_u(i,j) + grad_u(j,i))
+      end do
+    end do
+
+    sigma(1,1) = sigma(1,1) - (2.0d0/3.0d0) * mu * divu
+    sigma(2,2) = sigma(2,2) - (2.0d0/3.0d0) * mu * divu
+    sigma(3,3) = sigma(3,3) - (2.0d0/3.0d0) * mu * divu
+
+    ! ---- traction = sigma . n ----
+    traction = 0.0d0
+    do i = 1, 3
+      do j = 1, 3
+        traction(i) = traction(i) + sigma(i,j) * n(j)
+      end do
+    end do
+
+    ! ---- remove normal component to get tangential wall shear ----
+    tn = traction(1)*n(1) + traction(2)*n(2) + traction(3)*n(3)
+
+    tau_vec(1) = traction(1) - tn * n(1)
+    tau_vec(2) = traction(2) - tn * n(2)
+    tau_vec(3) = traction(3) - tn * n(3)
+
+    tau_mag = sqrt(tau_vec(1)**2 + tau_vec(2)**2 + tau_vec(3)**2)
+
+    return
+
+  end function tau_cal
   !
 end module models
 !+---------------------------------------------------------------------+

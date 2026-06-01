@@ -25,7 +25,8 @@ contains
                                            g0_guess_store,uin,uout
       real(wp),allocatable :: f(:,:),g(:,:),t(:),ro(:),u(:),v(:),y(:),dudy(:),yplus(:),uplus(:)
       real(wp),allocatable :: yinl(:),roinl(:),uinl(:),vinl(:),tinl(:)
-      real(wp) :: thick1,thick2,thick3,delta_target,miu,tau,utau,lvis
+      real(wp) :: thick1,thick2,thick3,delta_target,miu,tau,utau,lvis,vvalue
+      character(len=32) :: vname
 
       integer :: m,nguess
       integer :: i,j,io,jm
@@ -67,8 +68,16 @@ contains
 
       if(lexist) then
         open(12,file='bldef.txt')
-        read(12,*,iostat=io)Me,Re,ref_t,xin,delta_target
-        read(12,*,iostat=io)Twall
+        io=0
+        do while(io==0)
+          read(12,*,iostat=io)vname,vvalue
+          if(trim(vname)=='Me')           Me          =vvalue
+          if(trim(vname)=='Re')           Re          =vvalue
+          if(trim(vname)=='ref_t')        ref_t       =vvalue
+          if(trim(vname)=='xin')          xin         =vvalue
+          if(trim(vname)=='delta_target') delta_target=vvalue
+          if(trim(vname)=='Twall')        Twall       =vvalue
+        enddo
         close(12)
         print*,' >> bldef.txt'
       endif
@@ -83,13 +92,17 @@ contains
         xin=(delta_target/5.29_wp)**2*Re
       else
         delta_target=5.29_wp*sqrt(xin/Re)
+        print*,' ** target BL thickness:',delta_target
       endif
-
 
       if(.not.lexist) then
         open(13,file='bldef.txt')
-        write(13,*)Me,Re,ref_t,xin,delta_target
-        write(13,*)Twall
+        write(13,*)'Me           ',Me
+        write(13,*)'Re           ',Re
+        write(13,*)'ref_t        ',ref_t
+        write(13,*)'xin          ',xin
+        write(13,*)'delta_target ',delta_target
+        write(13,*)'Twall        ',Twall
         close(13)
         print*,' << bldef.txt'
       endif
@@ -224,10 +237,10 @@ contains
         close(12)
         print*,' >> gridy.dat'
 
-        roinl=interpolat(y,ro,yinl)
-        uinl =interpolat(y,u,yinl)
-        vinl =interpolat(y,v,yinl)
-        tinl =interpolat(y,t,yinl)
+        roinl=interpolat(y,ro,yinl,mode='lin')
+        uinl =interpolat(y,u, yinl,mode='lin')
+        vinl =interpolat(y,v, yinl,mode='lin')
+        tinl =interpolat(y,t, yinl,mode='lin')
 
         open(16,file='inlet.prof')    
         write(16,"(A26)")'# parameters of inlet flow'
@@ -297,9 +310,9 @@ contains
       print*,' << tbl_stat.dat'
 
       open(18,file='profile_spalding.dat')
-      write(18,'(2(1X,A20))')'yplus','uplus'
+      write(18,'(4(1X,A20))')'yplus','uplus','y','u'
       do i=0,n
-        write(18,'(2(1X,E20.13E2))')yplus(i),uplus(i)
+        write(18,'(4(1X,E20.13E2))')yplus(i),uplus(i),y(i),u(i)
       enddo
       close(18)
       print*,' << profile_spalding.dat'

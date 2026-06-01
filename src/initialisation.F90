@@ -1480,7 +1480,8 @@ module initialisation
       ! vel_prof(:,1)=vel_prof(:,1) + 1.d0
       !
       if(nondimen) then 
-        prs_prof=thermal(density=rho_prof,temperature=tmp_prof,dim=jm+1)
+        prs_prof=pinf
+        rho_prof=thermal(pressure=prs_prof,temperature=tmp_prof,dim=jm+1)
       else
         !
 #ifdef COMB
@@ -1520,8 +1521,7 @@ module initialisation
           spc_prof(:,i) = spcinf(i)
         enddo
         !
-        prs_prof=pinf
-        rho_prof=thermal(pressure=prs_prof,temperature=tmp_prof,species=spc_prof,dim=jm+1)
+        prs_prof=thermal(density=rho_prof,temperature=tmp_prof,species=spc_prof,dim=jm+1)
 #endif        
       endif
       !
@@ -1870,7 +1870,7 @@ module initialisation
     specr(spcindex('N2'))=1.d0-sum(specr)
     !
     ! pinf=5.d0*pinf
-    uinf=0.97d0
+    uinf=0.d0
     vinf=0.d0
     winf=0.d0
     tinf=300.d0
@@ -1903,11 +1903,12 @@ module initialisation
     endif
     !
     tmpr=300.d0
-    xloc=3.d0*xmax/4.d0
+    ! xloc=4.d0*xmax/5.d0
+    xloc=0.d0
     xwid=xmax/(12.d0*5.3d0*2.d0)
     !
     !products
-    tmpp=1814.32d0
+    tmpp=2814.32d0
     !
     ! pthick=1.d-4
     !
@@ -1929,13 +1930,13 @@ module initialisation
       tmp(i,j,k)=tmpr+prgvar*(tmpp-tmpr)
       !
       prs(i,j,k)=pinf
+      ! if(xc>0.04d0) prs(i,j,k)=2.d0*pinf
       !
       rho(i,j,k)=thermal(pressure=prs(i,j,k),temperature=tmp(i,j,k), &
                           species=spc(i,j,k,:))
     enddo
     enddo
     enddo
-    !
     !
     if(lio)  write(*,'(A,I1,A)')'  ** onedflame initialised.'
     !

@@ -21,11 +21,62 @@ contains
       if(trim(gtype)=='bl') then
         print*,' ** to generate a boundary layer grid'
         call grid_bl()
+      elseif(trim(gtype)=='zextent') then
+        print*,' ** to extent a 2D mesh in z-direction'
+        call grid_zextent()
       else
         stop '  !! gtype not defined !! @ gridgen'
       endif
 
     end subroutine gridgen
+
+    subroutine grid_zextent
+
+      use pastr_io,     only: parse_command_line
+      use pastr_h5io
+      use pastr_tecio
+
+      integer :: i,j,k,im,jm,km,dims(3)
+      real(wp),allocatable,dimension(:,:) :: x2d,y2d
+      real(wp),allocatable,dimension(:,:,:) :: x,y,z
+      character(len=128) :: gridin
+      real(wp) :: lenz
+
+      call parse_command_line( string=gridin )
+      call parse_command_line( inumber=km )
+      call parse_command_line( rnumber=lenz )
+
+      dims=h5_getdimensio('x',trim(gridin))
+      im=dims(1)-1
+      jm=dims(2)-1
+      allocate(x2d(0:im,0:jm))
+      allocate(y2d(0:im,0:jm))
+
+      call H5ReadSubset(x2d,im,jm,km,'x',trim(gridin),kslice=0)
+      call H5ReadSubset(y2d,im,jm,km,'y',trim(gridin),kslice=0)
+
+      allocate(x(0:im,0:jm,0:km))
+      allocate(y(0:im,0:jm,0:km))
+      allocate(z(0:im,0:jm,0:km))
+
+      do k=0,km
+      do j=0,jm
+      do i=0,im
+        x(i,j,k)=x2d(i,j)
+        y(i,j,k)=y2d(i,j)
+        z(i,j,k)=lenz/dble(km)*dble(k)
+      enddo
+      enddo
+      enddo
+
+      call tecbin('tecgrid_xy.plt',x(:,:,0),'x',y(:,:,0),'y')
+      call tecbin('tecgrid_xz.plt',x(:,0,:),'x',z(:,0,:),'z')
+
+      call h5_writearray3d(x,im,jm,km,'x','grid.h5')
+      call h5_writearray3d(y,im,jm,km,'y','grid.h5')
+      call h5_writearray3d(z,im,jm,km,'z','grid.h5')
+
+    end subroutine grid_zextent
 
     subroutine grid_bl
 
@@ -58,8 +109,9 @@ contains
       xlen=bl_thickness*40.d0
       xmax=50.d0
       ymax=real(int(bl_thickness*10.d0))
-      zmax=real(int(bl_thickness*3.d0))
+      zmax=real(int(bl_thickness*6.d0))
 
+      print*,' ** xlen:',xlen
       print*,' ** xmax:',xmax
       print*,' ** ymax:',ymax
       print*,' ** zmax:',zmax
@@ -619,5 +671,185 @@ contains
       return
       !
     end function signpower
+
+    subroutine normextrude(xl,yl,dim,dim2,x2d,y2d,yh,ymax,icor1,icor2)
+      !
+      integer,intent(in) :: dim,dim2
+      real(wp),intent(in),optional :: yh(0:dim2),ymax ! mesh extrude space function
+      real(wp) :: xl(0:dim),yl(0:dim)
+      real(wp),intent(out) :: x2d(0:dim,0:dim2),y2d(0:dim,0:dim2)
+      integer,intent(in),optional :: icor1,icor2
+      !
+      integer :: i,j
+      real(wp) :: var1,var2,var3,nx,ny,delta,dx,dy,ratio,sx,sy,dxmax,dymax,crit,dalfa,norx,nory
+      real(wp) :: meshdir(2,0:dim,0:dim2),deltadir(2,0:dim,0:dim2),alfa(0:dim2)
+      logical :: lrescale
+      !
+      x2d(0:dim,0)=xl(0:dim)
+      y2d(0:dim,0)=yl(0:dim)
+      !
+      ratio=1.01_wp
+      !
+      if(present(yh)) then
+        delta=yh(1)
+      else
+        delta=1.d-3
+      endif
+      !
+      do i=0,dim
+        !
+        if(i==0) then
+          ! when periodic in i
+          ! var1=xl(1)-(xl(0)-(xl(dim)-xl(dim-1)))
+          ! var2=yl(1)-(yl(0)-(yl(dim)-yl(dim-1)))
+          ! non-periodic
+          var1=xl(1)-xl(0)
+          var2=yl(1)-yl(0)
+          !var1=0
+          !var2=1
+        elseif(i==dim) then
+          ! var1=xl(i)-xl(i-1)
+          ! var2=yl(i)-yl(i-1)
+          !
+          ! when periodic in i
+          ! var1=xl(dim)+(xl(1)-xl(0))-xl(dim-1)
+          ! var2=yl(dim)+(yl(1)-yl(0))-yl(dim-1)
+          ! non-periodic
+          var1=xl(dim)-xl(dim-1)
+          var2=yl(dim)-yl(dim-1)
+        else
+          var1=xl(i+1)-xl(i-1)
+          var2=yl(i+1)-yl(i-1)
+        endif
+        !
+        norx=-var2/sqrt(var1**2+var2**2)
+        nory=var1/sqrt(var1**2+var2**2)
+        !
+        meshdir(1,i,0)=norx
+        meshdir(2,i,0)=nory
+        !
+        if(present(icor1)) then
+          !
+          if(i>=icor1 .and. i<=icor1+20) then
+            meshdir(1,i,0)=norx*0.05*(i-icor1)
+            meshdir(2,i,0)=1._wp+(nory-1._wp)*0.05*(i-icor1)
+          endif
+          !
+        endif
+        !
+        if(present(icor2)) then
+          !
+          if(i<=icor2 .and. i>=icor2-20) then
+            meshdir(1,i,0)=norx*0.05*(icor2-i)
+            meshdir(2,i,0)=1._wp+(nory-1._wp)*0.05*(icor2-i)
+          endif
+          !
+        endif
+        !
+        !
+        meshdir(1,i,dim2)=0._wp
+        meshdir(2,i,dim2)=1._wp
+        !
+        alfa(0)=avec(meshdir(:,i,0))
+        alfa(dim2)=avec(meshdir(:,i,dim2))
+        dalfa=alfa(dim2)-alfa(0)
+        sx=sign(1._wp,dalfa)
+        dalfa=abs(dalfa)
+        !
+        do j=1,dim2
+          !
+          if(j<=5) then
+            ! normal with in the closest 5 mesh
+            alfa(j)=alfa(j-1)
+            !
+          elseif(j<=25) then
+            ! var1=expfun(xmin=0.6_wp,ymin=1.d-5,xmax=1.5_wp,ymax=dalfa,x=0.1_wp*j)
+            var1=dalfa/20._wp
+            alfa(j)=alfa(j-1)+var1*sx
+          else
+            alfa(j)=alfa(j-1)
+          endif
+          !
+        enddo
+        !
+        do j=1,dim2-1
+          !
+          meshdir(1,i,j)=cos(alfa(j))
+          meshdir(2,i,j)=sin(alfa(j))
+          !
+        enddo
+        !
+      enddo
+      !
+      !
+      do i=0,dim
+        !
+        lrescale=.true.
+        ratio=1._wp
+        do while(lrescale)
+          !
+          lrescale=.false.
+          !
+          do j=1,dim2
+            !
+            if(present(yh)) then
+              delta=(yh(j)-yh(j-1))*ratio
+            else
+              delta=delta*ratio
+              ratio=ratio**1.004_wp
+            endif
+            !
+            x2d(i,j)=x2d(i,j-1)+delta*meshdir(1,i,j)
+            !
+            if(i>0) then
+              if(x2d(i,j)<=x2d(i-1,j)) then
+                ! mesh overlap
+                x2d(i,j)=x2d(i,j-1)
+              endif
+            endif
+            !
+            y2d(i,j)=y2d(i,j-1)+delta*meshdir(2,i,j)
+            !
+          enddo
+          !
+          if(present(ymax)) then
+            !
+            if(abs(y2d(i,dim2)-ymax)>1.d-10) then
+              ! the upper boundary not reached, rescale the mesh in j direction
+              ratio=(ymax-y2d(i,0))/(y2d(i,dim2)-y2d(i,0))
+              lrescale=.true.
+              !
+              ! print*,ymax,y2d(i,dim2),ratio
+              !
+            else
+              ratio=1._wp
+            endif
+            !
+          endif
+          !
+        enddo
+        !
+      enddo
+      !
+    end subroutine normextrude
+
+
+    real(wp) function avec(a)
+      !
+      real(wp) :: a(2)
+      !
+      real(wp) :: var1,var2
+      !
+      var1=a(1)
+      var2=sqrt(a(1)**2+a(2)**2)
+      !
+      !
+      if(a(2)>=0._wp) then
+        avec=acos(var1/var2)
+      else
+        avec=2._wp*pi-acos(var1/var2)
+      endif
+      !
+    end function avec
 
 end module pastr_grid

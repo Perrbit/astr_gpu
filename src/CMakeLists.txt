@@ -26,6 +26,7 @@ add_executable(astr
                     interp.F90
                     mainloop.F90
                     models.F90
+                    mpiio.F90
                     parallel.F90
                     pp.F90
                     readwrite.F90

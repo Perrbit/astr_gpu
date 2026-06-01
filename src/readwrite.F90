@@ -129,7 +129,7 @@ module readwrite
                         spg_def,lchardecomp,recon_schem,               &
                         lrestart,limmbou,solidfile,bfacmpld,           &
                         turbmode,schmidt,ibmode,gridfile,testmode
-    use bc,      only : bctype,twall,xslip,turbinf,xrhjump,angshk
+    use bc,      only : bctype,twall,xslip,turbinf,xrhjump,angshk,pout
     use sponge_layer, only : spg_i0,spg_im,spg_j0,spg_jm,spg_k0,spg_km
 #ifdef COMB
     use commvar, only : odetype,lcomb
@@ -363,9 +363,11 @@ module readwrite
         elseif(bctype(n)==13) then
           write(*,'(44X,I0,2(A))')bctype(n),' fixed bc at: ',bcdir(n)
         elseif(bctype(n)==21) then
-          write(*,'(45X,I0,2(A))')bctype(n),' outflow at: ',bcdir(n)
+          write(*,'(15X,I0,3(A),F6.2)')bctype(n),' outflow at: ',bcdir(n), &
+                                       '. pressure ratio, pout= ',pout
         elseif(bctype(n)==22) then
-          write(*,'(39X,I0,2(A))')bctype(n),' nscbc outflow at: ',bcdir(n)
+          write(*,'(9X,I0,3(A),F6.2)')bctype(n),' nscbc outflow at: ',bcdir(n), &
+                                  '. pressure ratio, pout= ',pout
         elseif(bctype(n)==23) then
           write(*,'(36X,I0,2(A))')bctype(n),' gc-nscbc outflow at: ',bcdir(n)
         elseif(bctype(n)==31) then
@@ -404,6 +406,8 @@ module readwrite
         write(*,'(35X,A)')'          no turbulence model'
       elseif(trim(turbmode)=='k-omega') then
         write(*,'(35X,A)')' the Menter SST k-omega model'
+      elseif(trim(turbmode)=='B-L') then
+        write(*,'(35X,A)')' the Baldwin-Lomax model'
       elseif(trim(turbmode)=='udf1') then
         write(*,'(35X,A)')'         user defined model 1'
       else
@@ -479,7 +483,7 @@ module readwrite
     use sponge_layer, only : spg_i0,spg_im,spg_j0,spg_jm,spg_k0,spg_km
     use parallel,only : bcast
     use cmdefne, only : readkeyboad
-    use bc,      only : bctype,twall,xslip,turbinf,xrhjump,angshk
+    use bc,      only : bctype,twall,xslip,turbinf,xrhjump,angshk,pout
     use utility, only : line_2_strings
     !
 #ifdef COMB
@@ -575,6 +579,17 @@ module readwrite
         if(bctype(n)==11) then
           backspace(fh)
           read(fh,*)bctype(n),turbinf
+        endif
+        if(bctype(n)==21 .or. bctype(n)==22) then
+          backspace(fh)
+          read(fh,'(A)')lineread
+          strings=line_2_strings(lineread)
+          read(strings(1),*)bctype(n)
+          if(size(strings)==1) then
+            pout=1.d0
+          else
+            read(strings(2),*)pout
+          endif
         endif
         if(bctype(n)==51) then
           if(trim(flowtype)=='swbli') then
@@ -676,6 +691,7 @@ module readwrite
     call bcast(twall)
     call bcast(xslip)
     call bcast(ninit)
+    call bcast(pout)
     !
     call bcast(spg_i0)
     call bcast(spg_im)
@@ -1247,6 +1263,8 @@ module readwrite
     use commarray, only : rho,vel,prs,tmp,spc
     use fludyna,   only : thermal
     use hdf5io
+    use parallel,  only : ia,ja,ig0,jg0,bcast
+    use mpiio
 #ifdef COMB
     use thermchem, only: spcindex
 #endif
@@ -1255,16 +1273,41 @@ module readwrite
     !
     integer :: jsp,i,j,k
     real(8) :: time_ini,nstep_ini
+    real(8),allocatable :: temp(:,:)
     character(len=3) :: spname
-    !
-    call h5io_init(filename='datin/flowini2d.h5',mode='read')
-    !
-    call h5read(varname='ro', var=rho(0:im,0:jm,0),  dir='k')
-    call h5read(varname='u1', var=vel(0:im,0:jm,0,1),dir='k')
-    call h5read(varname='u2', var=vel(0:im,0:jm,0,2),dir='k')
-    call h5read(varname='t',  var=tmp(0:im,0:jm,0),  dir='k')
-    !
-    call h5io_end
+    
+    allocate(temp(0:ia,0:ja))
+    if(mpirank==0) then
+      call h5sread(temp,'ro',ia,ja,'datin/flowini2d.h5')
+    endif
+    call bcast(temp)
+    rho(0:im,0:jm,0)=temp(ig0:ig0+im,jg0:jg0+jm)
+    if(mpirank==0) then
+      call h5sread(temp,'u1',ia,ja,'datin/flowini2d.h5')
+    endif
+    call bcast(temp)
+    vel(0:im,0:jm,0,1)=temp(ig0:ig0+im,jg0:jg0+jm)
+    if(mpirank==0) then
+      call h5sread(temp,'u2',ia,ja,'datin/flowini2d.h5')
+    endif
+    call bcast(temp)
+    vel(0:im,0:jm,0,2)=temp(ig0:ig0+im,jg0:jg0+jm)
+    if(mpirank==0) then
+      call h5sread(temp,'t',ia,ja,'datin/flowini2d.h5')
+    endif
+    call bcast(temp)
+    tmp(0:im,0:jm,0)=temp(ig0:ig0+im,jg0:jg0+jm)
+
+    deallocate(temp)
+    
+    ! call h5io_init(filename='datin/flowini2d.h5',mode='read')
+    ! !
+    ! call h5read(varname='ro', var=rho(0:im,0:jm,0),  dir='k')
+    ! call h5read(varname='u1', var=vel(0:im,0:jm,0,1),dir='k')
+    ! call h5read(varname='u2', var=vel(0:im,0:jm,0,2),dir='k')
+    ! call h5read(varname='t',  var=tmp(0:im,0:jm,0),  dir='k')
+    ! !
+    ! call h5io_end
     
     do k=0,km
     do j=0,jm
@@ -1892,12 +1935,12 @@ module readwrite
     !
     if(ndims==1) then
       !
-      open(18,file='outdat/profile'//trim(stepname)//mpirankname//'.dat')
-      write(18,"(5(1X,A15))")'x','ro','u','p','t'
-      write(18,"(5(1X,E15.7E3))")(x(i,0,0,1),rho(i,0,0),vel(i,0,0,1),  &
-                                  prs(i,0,0),tmp(i,0,0),i=0,im)
-      close(18)
-      print*,' << outdat/profile',trim(stepname),mpirankname,'.dat'
+      ! open(18,file='outdat/profile'//trim(stepname)//mpirankname//'.dat')
+      ! write(18,"(5(1X,A15))")'x','ro','u','p','t'
+      ! write(18,"(5(1X,E15.7E3))")(x(i,0,0,1),rho(i,0,0),vel(i,0,0,1),  &
+      !                             prs(i,0,0),tmp(i,0,0),i=0,im)
+      ! close(18)
+      ! print*,' << outdat/profile',trim(stepname),mpirankname,'.dat'
       !
     elseif(ndims==2) then
       !
@@ -1933,7 +1976,7 @@ module readwrite
   
   subroutine write_io_tree(file2write)
 
-    use commvar,  only : im,jm,km,lwsequ,turbmode,feqwsequ,force,ymin,ymax,ka
+    use commvar,  only : im,jm,km,lwsequ,turbmode,feqwsequ,force,ymin,ymax,ka,num_species
     use commarray,only : rho,vel,prs,tmp,spc,q,ssf,lshock,crinod
     use models,   only : tke,omg,miut
     use hdf5io
@@ -1951,8 +1994,10 @@ module readwrite
     type(dacoll),allocatable :: data_gather(:)
     real(8),allocatable,dimension(:,:,:) :: data2write
     integer(8) :: offset(3)
+    integer :: jsp
+    character(len=3) :: spname
 
-    numvar=6
+    numvar=6+num_species
 
     allocate(data_gather(numvar))
 
@@ -1962,6 +2007,9 @@ module readwrite
     call pgather_across_k(array=vel(0:im,0:jm,1:km,3),data=data_gather(4)%data,communicator=mpi_kgroup)
     call pgather_across_k(array=prs(0:im,0:jm,1:km),  data=data_gather(5)%data,communicator=mpi_kgroup)
     call pgather_across_k(array=tmp(0:im,0:jm,1:km),  data=data_gather(6)%data,communicator=mpi_kgroup)
+    do jsp=1,num_species
+      call pgather_across_k(array=spc(0:im,0:jm,1:km,jsp),  data=data_gather(6+jsp)%data,communicator=mpi_kgroup)
+    enddo
 
     if(krk==0) then
       offset=(/ig0,jg0,0/)
@@ -1982,6 +2030,11 @@ module readwrite
       call h5wa3d_r8_struct(varname='p', var=data2write,offset=offset)
       data2write=add_kface(tmp(0:im,0:jm,0),  data_gather(6)%data)
       call h5wa3d_r8_struct(varname='t', var=data2write,offset=offset)
+      do jsp=1,num_species
+        write(spname,'(i3.3)')jsp
+        data2write=add_kface(spc(0:im,0:jm,0,jsp),  data_gather(6+jsp)%data)
+        call h5wa3d_r8_struct(varname='sp'//spname, var=data2write,offset=offset)
+      enddo
 
       call h5io_end
 

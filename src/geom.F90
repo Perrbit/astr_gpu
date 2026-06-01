@@ -11,7 +11,7 @@ module geom
   use constdef
   use parallel, only : mpirankname,mpistop,mpirank,lio,dataswap,       &
                        datasync,ptime,irk,jrk,krk,ig0,jg0,kg0,         &
-                       mpirankmax,psum,pmax
+                       irkm,jrkm,krkm,mpirankmax,psum,pmax
   use commvar,  only : ndims,ks,ke,hm,hm,lfftk,ctime,im,jm,km,         &
                        npdci,npdcj,npdck,ltimrpt
   use tecio
@@ -98,13 +98,13 @@ module geom
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   subroutine gridgeom
     !
-    use commvar,   only : ia,ja,ka,hm,npdci,npdcj,npdck,               &
+    use commvar,   only : ia,ja,ka,is,ie,js,je,ks,ke,hm,npdci,npdcj,npdck, &
                           xmax,xmin,ymax,ymin,zmax,zmin,voldom,difschm,&
                           dxyzmax,dxyzmin
     use commarray, only : x,jacob,dxi,cell,dgrid,dis2wall,bnorm_i0,    &
                           bnorm_im,bnorm_j0,bnorm_jm,bnorm_k0,bnorm_km
     use parallel,  only : gridsendrecv,jsize,ksize,psum,pmax,pmin,jrkm
-    use commfunc,  only : volhex,arquad
+    use commfunc,  only : volhex,arquad,dis2point
     use tecio
     use derivative, only : fds,fds_compact_i,fds_compact_j,fds_compact_k
     use bc,       only : geombc,xyzbc
@@ -112,13 +112,14 @@ module geom
     ! local data
     character(len=4) :: cscheme
     integer :: nscheme
-    integer :: i,j,k,m
+    integer :: i,j,k,m,i1,j1,k1,i2,j2,k2
     real(8) :: alfa(3)
     real(8), allocatable, dimension(:,:) :: gci,gcj,gck
     real(8), allocatable :: dx(:,:,:,:,:)
     real(8),allocatable :: phi(:),can(:,:,:,:)
     real(8) :: can1av,can2av,can3av,can1var,can2var,can3var
     real(8) :: var1,var2,var3,vec1(3)
+    real(8),allocatable :: xyzwall(:,:,:)
     !
     allocate( dx(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3,1:3) )
     !
@@ -842,19 +843,44 @@ module geom
       !
     endif
     !
-    allocate(dis2wall(0:im,0:jm,0:km) )
-    !
-    do k=0,km
-    do j=0,jm
-    do i=0,im
-      ! ! only for channel flow.
-      ! dis2wall(i,j,k)=min(x(i,j,k,2),2.d0-x(i,j,k,2))
-      ! only for flat plate boundary layer flow.
-      dis2wall(i,j,k)=x(i,j,k,2)
-    enddo
-    enddo
-    enddo
-    !
+    ! calculate the distance to wall
+    ! allocate(xyzwall(0:ia,0:ka,1:3))
+    ! allocate(dis2wall(0:im,0:jm,0:km) )
+
+    ! xyzwall=0.d0
+    ! i2=im-1
+    ! j2=jm-1
+    ! k2=km-1
+    ! if(irk==irkm) i2=im
+    ! if(jrk==jrkm) j2=jm
+    ! if(krk==krkm) k2=km
+    ! do k=0,k2
+    ! do i=0,i2
+    !   if(jrk==0) xyzwall(i+ig0,k+kg0,1:3)=x(i,0,k,1:3)
+    ! enddo
+    ! enddo
+    ! xyzwall=psum(xyzwall)
+
+    ! do k=0,km
+    ! do j=0,jm
+    ! do i=0,im
+    !   ! ! only for channel flow.
+    !   ! dis2wall(i,j,k)=min(x(i,j,k,2),2.d0-x(i,j,k,2))
+    !   ! only for flat plate boundary layer flow.
+
+    !   dis2wall(i,j,k)=1.d10
+    !   do k1=0,ka
+    !   do i1=0,ia
+    !     var1=dis2point(x(i,j,k,:),xyzwall(i1,k1,:))
+    !     dis2wall(i,j,k)=min(dis2wall(i,j,k),var1)
+    !   enddo
+    !   enddo
+
+    ! enddo
+    ! enddo
+    ! enddo
+    ! deallocate(xyzwall)
+
     if(lio) then
       !
       write(*,'(2X,62A)')('-',i=1,62)
@@ -4623,13 +4649,13 @@ module geom
     real(8) :: dis1,dis2
     real(8) :: step_upper_y,step_right_x
     !
-    step_right_x=7.32d0
-    step_upper_y=3.05d0
+    step_right_x=7.324749976d-02
+    step_upper_y=0.d0
     !
-    if(.not.nondimen)then 
-      step_right_x=step_right_x*1.d-3
-      step_upper_y=step_upper_y*1.d-3
-    endif 
+    ! if(.not.nondimen)then 
+    !   step_right_x=step_right_x*1.d-3
+    !   step_upper_y=step_upper_y*1.d-3
+    ! endif 
     !
     if(xp(2)<step_upper_y .and. xp(1)<=step_right_x) then
       !

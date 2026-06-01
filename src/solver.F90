@@ -2363,7 +2363,7 @@ module solver
     use derivative, only : fds,fds_compact_i,fds_compact_j,fds_compact_k
     use comsolver, only : alfa_dif,dci,dcj,dck
     use fludyna,   only : miucal
-    use models,    only : komega,src_komega
+    use models,    only : komega,src_komega,baldwin_lomax_line
     use tecio
     use parallel,  only : yflux_sendrecv
 #ifdef COMB
@@ -2429,6 +2429,7 @@ module solver
     if(firstcall) firstcall=.false.
     !
     if(trim(turbmode)=='k-omega') call src_komega
+    if(trim(turbmode)=='B-L') call baldwin_lomax_line
     !
     do k=0,km
     do j=0,jm
@@ -2493,6 +2494,12 @@ module solver
         !
         dkflux(i,j,k,:)=miu3*dtke(i,j,k,:)
         doflux(i,j,k,:)=miu4*domg(i,j,k,:)
+      elseif(trim(turbmode)=='B-L') then
+
+        miu2=2.d0*(miu+miut(i,j,k))
+        !
+        hcc=(miu/prandtl+miut(i,j,k)/0.9d0)/const5
+
       elseif(trim(turbmode)=='udf1') then
         !
         ! miu2=2.d0*(miu+miut(i,j,k))

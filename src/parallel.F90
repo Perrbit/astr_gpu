@@ -4900,7 +4900,7 @@ module parallel
                                          species=spc(-hm:0,0:jm,0:km,:), &
                                              tke=tke(-hm:0,0:jm,0:km),   &
                                            omega=omg(-hm:0,0:jm,0:km)    )
-        elseif(trim(turbmode)=='none' .or. trim(turbmode)=='udf1') then
+        else
           call q2fvar(q=q(im:im+hm,0:jm,0:km,:),                         &
                                        density=rho(im:im+hm,0:jm,0:km),  &
                                       velocity=vel(im:im+hm,0:jm,0:km,:),&
@@ -4913,8 +4913,6 @@ module parallel
                                         pressure=prs(-hm:0,0:jm,0:km),   &
                                      temperature=tmp(-hm:0,0:jm,0:km),   &
                                          species=spc(-hm:0,0:jm,0:km,:)  )
-        else
-          stop ' !! ERROR 1 turbmode @ qswap'
         endif
         !
       endif
@@ -4964,15 +4962,13 @@ module parallel
                                        species=spc(im:im+hm,0:jm,0:km,:),&
                                            tke=tke(im:im+hm,0:jm,0:km),  &
                                          omega=omg(im:im+hm,0:jm,0:km) )
-        elseif(trim(turbmode)=='none' .or. trim(turbmode)=='udf1') then
+        else
           call q2fvar(q=q(im:im+hm,0:jm,0:km,:),                         &
                                        density=rho(im:im+hm,0:jm,0:km),  &
                                       velocity=vel(im:im+hm,0:jm,0:km,:),&
                                       pressure=prs(im:im+hm,0:jm,0:km),  &
                                    temperature=tmp(im:im+hm,0:jm,0:km),  &
                                        species=spc(im:im+hm,0:jm,0:km,:) )
-        else
-          stop ' !! ERROR 1 turbmode @ qswap'
         endif
         !
       end if
@@ -4994,15 +4990,13 @@ module parallel
                                          species=spc(-hm:0,0:jm,0:km,:), &
                                              tke=tke(-hm:0,0:jm,0:km),   &
                                            omega=omg(-hm:0,0:jm,0:km)    )
-        elseif(trim(turbmode)=='none' .or. trim(turbmode)=='udf1') then
+        else
           call q2fvar(q=q(-hm:0,0:jm,0:km,:),                            &
                                          density=rho(-hm:0,0:jm,0:km),   &
                                         velocity=vel(-hm:0,0:jm,0:km,:), &
                                         pressure=prs(-hm:0,0:jm,0:km),   &
                                      temperature=tmp(-hm:0,0:jm,0:km),   &
                                          species=spc(-hm:0,0:jm,0:km,:)  )
-        else
-          stop ' !! ERROR 2 turbmode @ qswap'
         endif
         ! 
       end if
@@ -5046,7 +5040,7 @@ module parallel
                                   species=spc(0:im,jm:jm+hm,0:km,:),   &
                                       tke=tke(0:im,jm:jm+hm,0:km),     &
                                     omega=omg(0:im,jm:jm+hm,0:km)      )
-      elseif(trim(turbmode)=='none' .or. trim(turbmode)=='udf1') then
+      else
         call q2fvar(q=q(0:im,-hm:0,0:km,:),                            &
                                        density=rho(0:im,-hm:0,0:km),   &
                                       velocity=vel(0:im,-hm:0,0:km,:), &
@@ -5059,8 +5053,6 @@ module parallel
                                  pressure=prs(0:im,jm:jm+hm,0:km),     &
                               temperature=tmp(0:im,jm:jm+hm,0:km),     &
                                   species=spc(0:im,jm:jm+hm,0:km,:)    )
-      else
-        stop ' !! ERROR 3 turbmode @ qswap'
       endif
       !
     else
@@ -5110,15 +5102,13 @@ module parallel
                                          species=spc(0:im,jm:jm+hm,0:km,:),&
                                              tke=tke(0:im,jm:jm+hm,0:km),  &
                                            omega=omg(0:im,jm:jm+hm,0:km)   )
-        elseif(trim(turbmode)=='none' .or. trim(turbmode)=='udf1') then
+        else
           call q2fvar(q=q(0:im,jm:jm+hm,0:km,:),                           &
                                          density=rho(0:im,jm:jm+hm,0:km),  &
                                         velocity=vel(0:im,jm:jm+hm,0:km,:),&
                                         pressure=prs(0:im,jm:jm+hm,0:km),  &
                                      temperature=tmp(0:im,jm:jm+hm,0:km),  &
                                          species=spc(0:im,jm:jm+hm,0:km,:) )
-        else
-          stop ' !! ERROR 4 turbmode @ qswap'
         endif
       endif
       !
@@ -5138,15 +5128,13 @@ module parallel
                                          species=spc(0:im,-hm:0,0:km,:),   &
                                              tke=tke(0:im,-hm:0,0:km),     &
                                            omega=omg(0:im,-hm:0,0:km)      )
-        elseif(trim(turbmode)=='none' .or. trim(turbmode)=='udf1') then
+        else
           call q2fvar(q=q(0:im,-hm:0,0:km,:),                              &
                                          density=rho(0:im,-hm:0,0:km),     &
                                         velocity=vel(0:im,-hm:0,0:km,:),   &
                                         pressure=prs(0:im,-hm:0,0:km),     &
                                      temperature=tmp(0:im,-hm:0,0:km),     &
                                          species=spc(0:im,-hm:0,0:km,:)    )
-        else
-          stop ' !! ERROR 5 turbmode @ qswap'
         endif
       end if
       !
@@ -5187,7 +5175,7 @@ module parallel
                                   species=spc(0:im,0:jm,km:km+hm,:),     &
                                       tke=tke(0:im,0:jm,km:km+hm),       &
                                     omega=omg(0:im,0:jm,km:km+hm)      )
-      elseif(trim(turbmode)=='none' .or. trim(turbmode)=='udf1') then
+      else
         call q2fvar(q=q(0:im,0:jm,-hm:0,:),                              &
                                        density=rho(0:im,0:jm,-hm:0),     &
                                       velocity=vel(0:im,0:jm,-hm:0,:),   &
@@ -5200,8 +5188,6 @@ module parallel
                                  pressure=prs(0:im,0:jm,km:km+hm),       &
                               temperature=tmp(0:im,0:jm,km:km+hm),       &
                                   species=spc(0:im,0:jm,km:km+hm,:)      )
-      else
-        stop ' !! ERROR 6 turbmode @ qswap'
       endif
       !
     else
@@ -5252,15 +5238,13 @@ module parallel
                                     species=spc(0:im,0:jm,km:km+hm,:),   &
                                         tke=tke(0:im,0:jm,km:km+hm),     &
                                       omega=omg(0:im,0:jm,km:km+hm)    )
-        elseif(trim(turbmode)=='none' .or. trim(turbmode)=='udf1') then
+        else
           call q2fvar(q=q(0:im,0:jm,km:km+hm,:),                         &
                                     density=rho(0:im,0:jm,km:km+hm),     &
                                    velocity=vel(0:im,0:jm,km:km+hm,:),   &
                                    pressure=prs(0:im,0:jm,km:km+hm),     &
                                 temperature=tmp(0:im,0:jm,km:km+hm),     &
                                     species=spc(0:im,0:jm,km:km+hm,:)    )
-        else
-          stop ' !! ERROR 7 turbmode @ qswap'
         endif
         !
       end if
@@ -5282,15 +5266,13 @@ module parallel
                                          species=spc(0:im,0:jm,-hm:0,:),  &
                                              tke=tke(0:im,0:jm,-hm:0),    &
                                            omega=omg(0:im,0:jm,-hm:0)   )
-        elseif(trim(turbmode)=='none' .or. trim(turbmode)=='udf1') then
+        else
           call q2fvar(q=q(0:im,0:jm,-hm:0,:),                             &
                                          density=rho(0:im,0:jm,-hm:0),    &
                                         velocity=vel(0:im,0:jm,-hm:0,:),  &
                                         pressure=prs(0:im,0:jm,-hm:0),    &
                                      temperature=tmp(0:im,0:jm,-hm:0),    &
                                          species=spc(0:im,0:jm,-hm:0,:)   )
-        else
-          stop ' !! ERROR 7 turbmode @ qswap'
         endif
         !
         !
