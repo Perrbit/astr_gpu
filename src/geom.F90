@@ -108,6 +108,7 @@ module geom
     use tecio
     use derivative, only : fds,fds_compact_i,fds_compact_j,fds_compact_k
     use bc,       only : geombc,xyzbc
+    use ieee_arithmetic, only: ieee_is_nan
     !
     ! local data
     character(len=4) :: cscheme
@@ -588,9 +589,9 @@ module geom
         can2av=can2av+can(i,j,k,2)
         can3av=can3av+can(i,j,k,3)
         !
-        if(isnan(can(i,j,k,1))) print*,mpirank,'|-1',i,j,k,can(i,j,k,:)
-        if(isnan(can(i,j,k,2))) print*,mpirank,'|-2',i,j,k,can(i,j,k,:)
-        if(isnan(can(i,j,k,3))) print*,mpirank,'|-3',i,j,k,can(i,j,k,:)
+        if(ieee_is_nan(can(i,j,k,1))) print*,mpirank,'|-1',i,j,k,can(i,j,k,:)
+        if(ieee_is_nan(can(i,j,k,2))) print*,mpirank,'|-2',i,j,k,can(i,j,k,:)
+        if(ieee_is_nan(can(i,j,k,3))) print*,mpirank,'|-3',i,j,k,can(i,j,k,:)
         !
       end do
       end do
@@ -606,9 +607,9 @@ module geom
         can2av=can2av+can(i,j,k,2)
         can3av=can3av+can(i,j,k,3)
         !
-        if(isnan(can(i,j,k,1))) print*,mpirank,'|-1',i,j,k,can(i,j,k,:)
-        if(isnan(can(i,j,k,2))) print*,mpirank,'|-2',i,j,k,can(i,j,k,:)
-        if(isnan(can(i,j,k,3))) print*,mpirank,'|-3',i,j,k,can(i,j,k,:)
+        if(ieee_is_nan(can(i,j,k,1))) print*,mpirank,'|-1',i,j,k,can(i,j,k,:)
+        if(ieee_is_nan(can(i,j,k,2))) print*,mpirank,'|-2',i,j,k,can(i,j,k,:)
+        if(ieee_is_nan(can(i,j,k,3))) print*,mpirank,'|-3',i,j,k,can(i,j,k,:)
         !
       end do
       end do
@@ -4144,6 +4145,7 @@ module geom
     !
     use commtype, only :  triangle
     use commfunc,  only : areatriangle,cross_product
+    use ieee_arithmetic, only: ieee_is_nan
     !
     ! arguments
     type(triangle),intent(in) :: tria
@@ -4210,7 +4212,7 @@ module geom
     
     u = (dot11 * dot02 - dot01 * dot12) * inverDeno
 
-    if(isnan(u)) then
+    if(ieee_is_nan(u)) then
       print*,tria%a 
       print*,tria%b
       print*,tria%c 
@@ -4246,6 +4248,7 @@ module geom
   function pointintriangle_nodes(a,b,c,p) result(lin)
     !
     use commfunc,  only : areatriangle,cross_product
+    use ieee_arithmetic, only: ieee_is_nan
     !
     ! arguments
     real(8),intent(in) :: a(3),b(3),c(3),p(3)
@@ -4282,7 +4285,7 @@ module geom
     
     u = (dot11 * dot02 - dot01 * dot12) * inverDeno
 
-    if(isnan(u)) then
+    if(ieee_is_nan(u)) then
       print*,a 
       print*,b
       print*,c

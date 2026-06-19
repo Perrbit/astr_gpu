@@ -399,10 +399,11 @@ module solver
   !| 22-07-2022: Created by J. Fang @ STFC Daresbury Laboratory        |
   !+-------------------------------------------------------------------+
   subroutine src_tbl
-    ! 
+    !
     use commvar,  only : im,jm,km
     use commarray,only : rho,vel,qrhs,jacob,x,q
     use comsolver,only : grad,gradcal
+    use ieee_arithmetic, only: ieee_is_nan
     use statistic,only : ro_xzm,u1_xzm,u2_xzm,eng_xzm,tke_xzm,ee_xzm,  &
                          nominal_thickness
     !
@@ -468,11 +469,11 @@ module solver
       ! s_u3 = 0.d0
       ! s_eng= x(i,j,k,2)*bl_growth_rate* deng(i,j,k,2)
       !
-      if(isnan(s_rho)) s_rho=0.d0
-      if(isnan(s_u1 )) s_u1 =0.d0
-      if(isnan(s_u2 )) s_u2 =0.d0
-      if(isnan(s_u3 )) s_u3 =0.d0
-      if(isnan(s_eng)) s_eng=0.d0
+      if(ieee_is_nan(s_rho)) s_rho=0.d0
+      if(ieee_is_nan(s_u1 )) s_u1 =0.d0
+      if(ieee_is_nan(s_u2 )) s_u2 =0.d0
+      if(ieee_is_nan(s_u3 )) s_u3 =0.d0
+      if(ieee_is_nan(s_eng)) s_eng=0.d0
       !
       qrhs(i,j,k,1)=qrhs(i,j,k,1)+s_rho*jacob(i,j,k)
       qrhs(i,j,k,2)=qrhs(i,j,k,2)+rho(i,j,k)*jacob(i,j,k)*(s_u1+vel(i,j,k,1)*s_rho)

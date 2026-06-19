@@ -3,6 +3,7 @@
 !+---------------------------------------------------------------------+
 module WriteVTK
   !
+  use iso_fortran_env, only: int64
   implicit none
   !
   Interface writeprvbin
@@ -34,7 +35,7 @@ module WriteVTK
     !
     integer :: int32,nbrvar,jvar
     integer :: int_bytesize,real_bytesize,nbt_scal,nbt_vec,nbt_xyz,nbt_ien,nbt_offset,nbt_etype
-    integer(16) :: ioff
+    integer(int64) :: ioff
     ! ip : le point actuel
     !
     real(4) :: float32
@@ -186,7 +187,7 @@ module WriteVTK
     !
     integer :: int32,nbrvar,jvar
     integer :: int_bytesize,real_bytesize,nbt_scal,nbt_vec!,nbt_xyz,nbt_ien,nbt_offset,nbt_etype
-    integer(16) :: ioff
+    integer(kind=8) :: ioff
     ! ip : le point actuel
     !
     real(4) :: float32
@@ -354,7 +355,7 @@ module WriteVTK
     !
     integer :: int32,unitf,nbrvar,n,jvar
     integer :: int_bytesize,real_bytesize,nbt_scal,nbt_vec,nbt_xyz,nbt_ien,nbt_offset,nbt_etype
-    integer(16) :: ioff
+    integer(8) :: ioff
     ! ip : le point actuel
     !
     real(4) :: float32
@@ -531,7 +532,7 @@ module WriteVTK
     !
     integer :: int32,nbrvar,jvar,kmax
     integer :: int_bytesize,real_bytesize,nbt_scal,nbt_vec!,nbt_xyz,nbt_ien,nbt_offset,nbt_etype
-    integer(16) :: ioff
+    integer(8) :: ioff
     ! ip : le point actuel
     !
     real(4) :: float32

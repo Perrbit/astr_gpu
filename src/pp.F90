@@ -1359,6 +1359,7 @@ end subroutine ppentrance
     use tecio,     only : tecsolid
     use stlaio,    only : stla_write
     use commfunc,  only : cross_product,dis2point
+    use ieee_arithmetic, only: ieee_is_nan
     !
     ! local data
     integer :: i,j,k,jf,km,jm,im,nface,nface2,jface,ntrimax,m,n,l
@@ -1559,7 +1560,7 @@ end subroutine ppentrance
       !
       immbody(1)%face(jf)%normdir=norm1/var1
       !
-      if(isnan(immbody(1)%face(jf)%normdir(1))) then
+      if(ieee_is_nan(immbody(1)%face(jf)%normdir(1))) then
         print*,jf
         print*,immbody(1)%face(jf)%a
         print*,immbody(1)%face(jf)%b
@@ -1595,6 +1596,7 @@ end subroutine ppentrance
     use tecio,     only : tecsolid
     use stlaio,    only : stla_write
     use commfunc,  only : cross_product
+    use ieee_arithmetic, only: ieee_is_nan
     !
     ! local data
     integer :: i,j,k,jf,km,jm,im,nface
@@ -1708,7 +1710,7 @@ end subroutine ppentrance
       !
       immbody(1)%face(jf)%normdir=norm1/var1
       !
-      if(isnan(immbody(1)%face(jf)%normdir(1))) then
+      if(ieee_is_nan(immbody(1)%face(jf)%normdir(1))) then
         print*,jf
         print*,immbody(1)%face(jf)%a
         print*,immbody(1)%face(jf)%b
@@ -1744,6 +1746,7 @@ end subroutine ppentrance
     use tecio,     only : tecsolid
     use stlaio,    only : stla_write
     use commfunc,  only : cross_product
+    use ieee_arithmetic, only: ieee_is_nan
     !
     ! local data
     integer :: i,j,k,jf,km,jm,im,nface
@@ -1853,7 +1856,7 @@ end subroutine ppentrance
       !
       immbody(1)%face(jf)%normdir=norm1/var1
       !
-      if(isnan(immbody(1)%face(jf)%normdir(1))) then
+      if(ieee_is_nan(immbody(1)%face(jf)%normdir(1))) then
         print*,jf
         print*,immbody(1)%face(jf)%a
         print*,immbody(1)%face(jf)%b

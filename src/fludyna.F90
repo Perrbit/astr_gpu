@@ -252,6 +252,7 @@ module fludyna
     !
     use commarray,only : q,rho,vel,prs,tmp,spc,tke,omg
     use commvar,  only : im,jm,km,num_species,num_modequ,turbmode,numq
+    use ieee_arithmetic, only: ieee_is_nan
     !
     integer :: i,j,k,n
     !
@@ -278,7 +279,7 @@ module fludyna
       do i=0,im
         !
         do n=1,numq
-          if(isnan(q(i,j,k,n))) then
+          if(ieee_is_nan(q(i,j,k,n))) then
             print*,i,j,k,n
             print*,'q:',q(i,j,k,:),'@ updateq'
           endif
