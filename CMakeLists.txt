@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.0.2)                        
+cmake_minimum_required(VERSION 3.5)                        
 cmake_policy(SET CMP0048 NEW)
 
 project(ASTR LANGUAGES Fortran)
@@ -67,9 +67,9 @@ elseif (Fortran_COMPILER_NAME MATCHES "PGI" OR Fortran_COMPILER_NAME MATCHES "NV
   # -traceback   : runtime backtrace (replaces -fbacktrace)
   # -g           : debug symbols
   # -DHDF5       : enable HDF5 code paths
-  set(CMAKE_Fortran_FLAGS "-Mpreprocess -Mextend -traceback -g -DHDF5")
-  set(CMAKE_Fortran_FLAGS_RELEASE "-O3")
-  set(CMAKE_Fortran_FLAGS_DEBUG   "-O0 -g -DDEBG")
+  set(CMAKE_Fortran_FLAGS "-Mpreprocess -Mextend -traceback -g -DHDF5 -Mnostack_arrays" CACHE STRING "NVHPC base flags" FORCE)
+  set(CMAKE_Fortran_FLAGS_RELEASE "-O2" CACHE STRING "NVHPC release flags" FORCE)
+  set(CMAKE_Fortran_FLAGS_DEBUG   "-O0 -g -DDEBG" CACHE STRING "NVHPC debug flags" FORCE)
 elseif (Fortran_COMPILER_NAME MATCHES "Fujitsu")
   message(STATUS "Setting Fujitsu fortran flags")
   set (CMAKE_Fortran_FLAGS "-Cpp")

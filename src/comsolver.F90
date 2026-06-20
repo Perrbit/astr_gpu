@@ -260,7 +260,11 @@ module comsolver
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     dvel=0.d0
     dtmp=0.d0
@@ -483,13 +487,15 @@ module comsolver
       deallocate(ff,df)
     endif
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
       if(lio .and. lreport .and. ltimrpt) call timereporter(routine='gradcal', &
                                              timecost=subtime,  &
                                               message='calculation of gradients')
+      endif
     endif
     !
     return
@@ -529,7 +535,11 @@ module comsolver
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     ! filtering in i direction
     call dataswap(q,direction=1,timerept=ltimrpt)
@@ -618,13 +628,15 @@ module comsolver
       call filter2e(q(:,:,:,7))
     endif
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
       if(lio .and. lreport .and. ltimrpt) call timereporter(routine='filterq', &
                                              timecost=subtime, &
                                               message='low-pass filter')
+      endif
     endif
     !
     return

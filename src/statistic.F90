@@ -165,7 +165,11 @@ module statistic
     real(8),save :: subtime=0.d0
     integer,save :: nstep_save=0
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     
     if(nstep<=nstep_save) return
 
@@ -331,7 +335,8 @@ module statistic
     !
     if(lio) print*,' ** meanflow calculated, nsamples=',nsamples,'nstep=',nstep
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
@@ -339,6 +344,7 @@ module statistic
                                               timecost=subtime, &
                                               message='data collection for statistics')
       !
+      endif
     endif
     !
     return
@@ -587,7 +593,11 @@ module statistic
     real(8) :: time_beg,qdot,var1,var2
     real(8),save :: subtime=0.d0
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     if(trim(flowtype)=='tgv' .or. trim(flowtype)=='hit') then
       enstophy=enstophycal()
@@ -713,7 +723,8 @@ module statistic
     !
     call maxmincal
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
@@ -721,6 +732,7 @@ module statistic
                                               timecost=subtime, &
                                               message='on-fly statistics')
       !
+      endif
     endif
     !
   end subroutine statcal

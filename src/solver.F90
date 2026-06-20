@@ -203,7 +203,11 @@ module solver
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     if(flowtype(1:2)/='0d') then
       !
@@ -257,13 +261,15 @@ module solver
     call srccomb(timerept=ltimrpt)
 #endif
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
       if(lio .and. lreport .and. ltimrpt) call timereporter(routine='rhscal', &
                                               timecost=subtime, &
                                               message='RHS term')
+      endif
     endif
     !
     ! call tecbin('testout/tecqrhs'//mpirankname//'.plt',            &
@@ -513,7 +519,11 @@ module solver
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     if(odetype(1:2)=='rk' .and. lcomb) then
       do k=0,km
@@ -526,13 +536,15 @@ module solver
       enddo
     endif
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
       if(lio .and. lreport .and. ltimrpt) call timereporter(routine='srccomb', &
                                              timecost=subtime, &
                                               message='SRC term for combustion')
+      endif
     endif
     !
   end subroutine srccomb
@@ -579,7 +591,11 @@ module solver
     !
     logical :: lsh,lso,sson,hdiss,lvar,ldebug
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     sson=allocated(lshock)
     !
@@ -1188,13 +1204,15 @@ module solver
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     endif
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
       if(lio .and. lreport .and. ltimrpt) call timereporter(routine='convrsduwd', &
                                              timecost=subtime, &
                                               message='convection term using explicit upwind scheme')
+      endif
     endif
     !  
     return
@@ -1299,7 +1317,11 @@ module solver
     !
     logical :: lsh,sson,hdiss
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     sson=allocated(lshock)
     !
@@ -1924,13 +1946,15 @@ module solver
     ! ! end of calculation at k direction
     ! !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
       if(lio .and. lreport .and. ltimrpt) call timereporter(routine='convrsdcmp', &
                                              timecost=subtime, &
                                               message='convection term using compact upwind scheme')
+      endif
     endif
     !
     return
@@ -2189,7 +2213,11 @@ module solver
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! calculating along i direction
@@ -2328,13 +2356,15 @@ module solver
       !
     endif
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
       if(lio .and. lreport .and. ltimrpt) call timereporter(routine='convrsdcal6', &
                                              timecost=subtime, &
                                               message='diffusion term with central scheme')
+      endif
     endif
     !
     return
@@ -2392,7 +2422,11 @@ module solver
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     if(firstcall) then
       allocate( sigma(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:6),                &
@@ -2867,13 +2901,15 @@ module solver
     if(allocated(dispec)) deallocate(dispec)
     if(allocated(dfu))    deallocate(dfu)
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
       if(lio .and. lreport .and. ltimrpt) call timereporter(routine='diffrsdcal6', &
                                              timecost=subtime,      &
                                               message='diffusion term')
+      endif
     endif
     !
     return

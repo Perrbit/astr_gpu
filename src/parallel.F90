@@ -1623,7 +1623,11 @@ module parallel
     !
     ! start
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     nvar=1
     !
@@ -1644,7 +1648,8 @@ module parallel
     !
     deallocate(senddispls,recvdispls)
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
@@ -1652,6 +1657,7 @@ module parallel
                                              timecost=subtime, &
                                               message='used to sync ib nodes')
       !
+      endif
     endif
     !
     return
@@ -1678,7 +1684,11 @@ module parallel
     !
     ! start
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     nvar=1
     !
@@ -1699,7 +1709,8 @@ module parallel
     !
     deallocate(senddispls,recvdispls)
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
@@ -1707,6 +1718,7 @@ module parallel
                                              timecost=subtime, &
                                               message='')
       !
+      endif
     endif
     !
     return
@@ -1735,7 +1747,11 @@ module parallel
     !
     ! start
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     nvar=1
     !
@@ -1773,7 +1789,8 @@ module parallel
     !
     deallocate(senddispls,recvdispls)
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
@@ -1781,6 +1798,7 @@ module parallel
                                              timecost=subtime, &
                                               message='used to sync ib nodes')
       !
+      endif
     endif
     !
     return
@@ -2818,11 +2836,13 @@ module parallel
       call mpi_sendrecv(sendbuf1, ncou, mpi_real8, mpileft,  mpitag,     &
                         recvbuf1, ncou, mpi_real8, mpiright, mpitag,     &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       call mpi_sendrecv(sendbuf2, ncou, mpi_real8, mpiright, mpitag,    &
                         recvbuf2, ncou, mpi_real8, mpileft,  mpitag,     &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       !! unpack the received left the packet
@@ -2891,10 +2911,12 @@ module parallel
       call mpi_sendrecv(sendbuf1,ncou,mpi_real8,mpidown,mpitag,        &
                         recvbuf1,ncou,mpi_real8,mpiup,mpitag,          &
                                              mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sendbuf2,ncou,mpi_real8,mpiup,mpitag,          &
                         recvbuf2,ncou,mpi_real8,mpidown,mpitag,        &
                                              mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       ! unpack the received up the packet
@@ -2970,10 +2992,12 @@ module parallel
       call mpi_sendrecv(sendbuf1,ncou,mpi_real8,mpiback,mpitag,        &
                         recvbuf1,ncou,mpi_real8,mpifront,mpitag,       &
                                              mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sendbuf2,ncou,mpi_real8,mpifront,mpitag,       &
                         recvbuf2,ncou,mpi_real8,mpiback,mpitag,        &
                                              mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       ! unpack the received back the packet
@@ -3057,7 +3081,11 @@ module parallel
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     !!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! buf1: send buffer
@@ -3096,10 +3124,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_logical,mpileft, mpitag,            &
                         rbuf1,ncou,mpi_logical,mpiright,mpitag,            &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_logical,mpiright,mpitag,            &
                         rbuf2,ncou,mpi_logical,mpileft, mpitag,            &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpiright .ne. MPI_PROC_NULL) then
@@ -3159,10 +3189,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_logical,mpidown,mpitag,             &
                         rbuf1,ncou,mpi_logical,mpiup,  mpitag,             &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_logical,mpiup,  mpitag,             &
                         rbuf2,ncou,mpi_logical,mpidown,mpitag,             &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpiup .ne. MPI_PROC_NULL) then
@@ -3220,10 +3252,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_logical,mpiback, mpitag,          &
                         rbuf1,ncou,mpi_logical,mpifront,mpitag,          &
                                              mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_logical,mpifront,mpitag,          &
                         rbuf2,ncou,mpi_logical,mpiback, mpitag,          &
                                              mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpifront .ne. MPI_PROC_NULL) then
@@ -3246,7 +3280,8 @@ module parallel
       !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     endif
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
@@ -3254,6 +3289,7 @@ module parallel
                                               timecost=subtime, &
                                               message='communication 3D logical array')
       !
+      endif
     endif
     !
     return
@@ -3283,7 +3319,11 @@ module parallel
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     !!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! buf1: send buffer
@@ -3322,10 +3362,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_integer,mpileft, mpitag,            &
                         rbuf1,ncou,mpi_integer,mpiright,mpitag,            &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_integer,mpiright,mpitag,            &
                         rbuf2,ncou,mpi_integer,mpileft, mpitag,            &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpiright .ne. MPI_PROC_NULL) then
@@ -3385,10 +3427,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_integer,mpidown,mpitag,             &
                         rbuf1,ncou,mpi_integer,mpiup,  mpitag,             &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_integer,mpiup,  mpitag,             &
                         rbuf2,ncou,mpi_integer,mpidown,mpitag,             &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpiup .ne. MPI_PROC_NULL) then
@@ -3446,10 +3490,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_integer,mpiback, mpitag,          &
                         rbuf1,ncou,mpi_integer,mpifront,mpitag,          &
                                              mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_integer,mpifront,mpitag,          &
                         rbuf2,ncou,mpi_integer,mpiback, mpitag,          &
                                              mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpifront .ne. MPI_PROC_NULL) then
@@ -3472,7 +3518,8 @@ module parallel
       !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     endif
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
@@ -3480,6 +3527,7 @@ module parallel
                                               timecost=subtime, &
                                               message='communication 3D integer array')
       !
+      endif
     endif
     !
     return
@@ -3509,7 +3557,11 @@ module parallel
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     !!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! buf1: send buffer
@@ -3548,10 +3600,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpileft, mpitag,            &
                         rbuf1,ncou,mpi_real8,mpiright,mpitag,            &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiright,mpitag,            &
                         rbuf2,ncou,mpi_real8,mpileft, mpitag,            &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpiright .ne. MPI_PROC_NULL) then
@@ -3611,10 +3665,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpidown,mpitag,             &
                         rbuf1,ncou,mpi_real8,mpiup,  mpitag,             &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiup,  mpitag,             &
                         rbuf2,ncou,mpi_real8,mpidown,mpitag,             &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpiup .ne. MPI_PROC_NULL) then
@@ -3672,10 +3728,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpiback, mpitag,          &
                         rbuf1,ncou,mpi_real8,mpifront,mpitag,          &
                                              mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpifront,mpitag,          &
                         rbuf2,ncou,mpi_real8,mpiback, mpitag,          &
                                              mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpifront .ne. MPI_PROC_NULL) then
@@ -3698,13 +3756,15 @@ module parallel
       !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     endif
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
       if(lio .and. lreport .and. ltimrpt) call timereporter(routine='array3d_sendrecv', &
                                               timecost=subtime, &
                                               message='message passing 3D real8 array')
+      endif
     endif
     !
     return
@@ -3735,7 +3795,11 @@ module parallel
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     !!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! buf1: send buffer
@@ -3774,10 +3838,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpileft, mpitag,            &
                         rbuf1,ncou,mpi_real8,mpiright,mpitag,            &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiright,mpitag,            &
                         rbuf2,ncou,mpi_real8,mpileft, mpitag,            &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpiright .ne. MPI_PROC_NULL) then
@@ -3827,10 +3893,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpidown,mpitag,             &
                         rbuf1,ncou,mpi_real8,mpiup,  mpitag,             &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiup,  mpitag,             &
                         rbuf2,ncou,mpi_real8,mpidown,mpitag,             &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpiup .ne. MPI_PROC_NULL) then
@@ -3882,10 +3950,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpiback, mpitag,          &
                         rbuf1,ncou,mpi_real8,mpifront,mpitag,          &
                                              mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpifront,mpitag,          &
                         rbuf2,ncou,mpi_real8,mpiback, mpitag,          &
                                              mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpifront .ne. MPI_PROC_NULL) then
@@ -3908,12 +3978,14 @@ module parallel
       !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     endif
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       subtime=subtime+ptime()-time_beg
       !
       if(lio .and. lreport .and. ltimrpt) call timereporter(routine='array3d_sync', &
                                               timecost=subtime, &
                                               message='synconise interface')
+      endif
     endif
     !
     return
@@ -3945,7 +4017,11 @@ module parallel
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     !!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! buf1: send buffer
@@ -3981,10 +4057,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpileft, mpitag,            &
                         rbuf1,ncou,mpi_real8,mpiright,mpitag,            &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiright,mpitag,            &
                         rbuf2,ncou,mpi_real8,mpileft, mpitag,            &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpiright .ne. MPI_PROC_NULL) then
@@ -4034,10 +4112,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpidown,mpitag,             &
                         rbuf1,ncou,mpi_real8,mpiup,  mpitag,             &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiup,  mpitag,             &
                         rbuf2,ncou,mpi_real8,mpidown,mpitag,             &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpiup .ne. MPI_PROC_NULL) then
@@ -4089,10 +4169,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpiback, mpitag,          &
                         rbuf1,ncou,mpi_real8,mpifront,mpitag,          &
                                              mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpifront,mpitag,          &
                         rbuf2,ncou,mpi_real8,mpiback, mpitag,          &
                                              mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpifront .ne. MPI_PROC_NULL) then
@@ -4144,7 +4226,11 @@ module parallel
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     !!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! buf1: send buffer
@@ -4195,10 +4281,12 @@ module parallel
         call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpileft, mpitag,            &
                           rbuf1,ncou,mpi_real8,mpiright,mpitag,            &
                                                  mpi_comm_world,status,ierr)
+        if(mpitag>30000) mpitag=100
         mpitag=mpitag+1
         call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiright,mpitag,            &
                           rbuf2,ncou,mpi_real8,mpileft, mpitag,            &
                                                  mpi_comm_world,status,ierr)
+        if(mpitag>30000) mpitag=100
         mpitag=mpitag+1
         !
         if(mpiright .ne. MPI_PROC_NULL) then
@@ -4261,10 +4349,12 @@ module parallel
         call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpidown,mpitag,             &
                           rbuf1,ncou,mpi_real8,mpiup,  mpitag,             &
                                                  mpi_comm_world,status,ierr)
+        if(mpitag>30000) mpitag=100
         mpitag=mpitag+1
         call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiup,  mpitag,             &
                           rbuf2,ncou,mpi_real8,mpidown,mpitag,             &
                                                  mpi_comm_world,status,ierr)
+        if(mpitag>30000) mpitag=100
         mpitag=mpitag+1
         !
         if(mpiup .ne. MPI_PROC_NULL) then
@@ -4327,10 +4417,12 @@ module parallel
         call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpiback, mpitag,          &
                           rbuf1,ncou,mpi_real8,mpifront,mpitag,          &
                                                mpi_comm_world,status,ierr)
+        if(mpitag>30000) mpitag=100
         mpitag=mpitag+1
         call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpifront,mpitag,          &
                           rbuf2,ncou,mpi_real8,mpiback, mpitag,          &
                                                mpi_comm_world,status,ierr)
+        if(mpitag>30000) mpitag=100
         mpitag=mpitag+1
         !
         if(mpifront .ne. MPI_PROC_NULL) then
@@ -4356,13 +4448,15 @@ module parallel
       !
     endif
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
       if(lio .and. lreport .and. ltimrpt) call timereporter(routine='array4d_sendrecv', &
                                               timecost=subtime, &
                                               message='message passing 4D real8 array')
+      endif
     endif
     !
     return
@@ -4392,7 +4486,11 @@ module parallel
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     !!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! buf1: send buffer
@@ -4436,10 +4534,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpileft, mpitag,            &
                         rbuf1,ncou,mpi_real8,mpiright,mpitag,            &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiright,mpitag,            &
                         rbuf2,ncou,mpi_real8,mpileft, mpitag,            &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpiright .ne. MPI_PROC_NULL) then
@@ -4499,10 +4599,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpidown,mpitag,             &
                         rbuf1,ncou,mpi_real8,mpiup,  mpitag,             &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiup,  mpitag,             &
                         rbuf2,ncou,mpi_real8,mpidown,mpitag,             &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpiup .ne. MPI_PROC_NULL) then
@@ -4559,10 +4661,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpiback, mpitag,          &
                         rbuf1,ncou,mpi_real8,mpifront,mpitag,          &
                                              mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpifront,mpitag,          &
                         rbuf2,ncou,mpi_real8,mpiback, mpitag,          &
                                              mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpifront .ne. MPI_PROC_NULL) then
@@ -4585,12 +4689,14 @@ module parallel
       !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     endif
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       subtime=subtime+ptime()-time_beg
       !
       if(lio .and. lreport .and. ltimrpt) call timereporter(routine='array5d_sendrecv', &
                                               timecost=subtime, &
                                               message='message passing 5D real8 array')
+      endif
     endif
     !
     return
@@ -4616,7 +4722,11 @@ module parallel
     real(8),save :: subtime=0.d0
     logical,save :: firstcall=.true.
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     !!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! buf1: send buffer
@@ -4677,11 +4787,13 @@ module parallel
                         rbufx1,ncou,mpi_real8,mpiright,mpitag,            &
                                                mpi_comm_world,status,ierr)
       if(lio) print*,' ** 4'
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbufx2,ncou,mpi_real8,mpiright,mpitag,            &
                         rbufx2,ncou,mpi_real8,mpileft, mpitag,            &
                                                mpi_comm_world,status,ierr)
       if(lio) print*,' ** 5'
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpiright .ne. MPI_PROC_NULL) then
@@ -4737,11 +4849,13 @@ module parallel
       call mpi_sendrecv(sbufy1,ncou,mpi_real8,mpidown,mpitag,             &
                         rbufy1,ncou,mpi_real8,mpiup,  mpitag,             &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       if(lio) print*,' ** 9'
       call mpi_sendrecv(sbufy2,ncou,mpi_real8,mpiup,  mpitag,             &
                         rbufy2,ncou,mpi_real8,mpidown,mpitag,             &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       if(lio) print*,' ** 10'
       !
@@ -4797,11 +4911,13 @@ module parallel
       call mpi_sendrecv(sbufz1,ncou,mpi_real8,mpiback, mpitag,          &
                         rbufz1,ncou,mpi_real8,mpifront,mpitag,          &
                                              mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       if(lio) print*,' ** 14'
       call mpi_sendrecv(sbufz2,ncou,mpi_real8,mpifront,mpitag,          &
                         rbufz2,ncou,mpi_real8,mpiback, mpitag,          &
                                              mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       if(lio) print*,' ** 15'
       !
@@ -4825,12 +4941,14 @@ module parallel
       !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     endif
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
       if(lio .and. lreport .and. ltimrpt) call timereporter(routine='yflux_sendrecv', &
                                               timecost=subtime )
+      endif
     endif
     !
     return
@@ -4861,7 +4979,11 @@ module parallel
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     !!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! buf1: send buffer
@@ -4939,10 +5061,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpileft, mpitag,            &
                         rbuf1,ncou,mpi_real8,mpiright,mpitag,            &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiright,mpitag,            &
                         rbuf2,ncou,mpi_real8,mpileft, mpitag,            &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpiright .ne. MPI_PROC_NULL) then
@@ -5080,10 +5204,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpidown,mpitag,             &
                         rbuf1,ncou,mpi_real8,mpiup,  mpitag,             &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiup,  mpitag,             &
                         rbuf2,ncou,mpi_real8,mpidown,mpitag,             &
                                                mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpiup .ne. MPI_PROC_NULL) then
@@ -5215,10 +5341,12 @@ module parallel
       call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpiback, mpitag,          &
                         rbuf1,ncou,mpi_real8,mpifront,mpitag,          &
                                              mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpifront,mpitag,          &
                         rbuf2,ncou,mpi_real8,mpiback, mpitag,          &
                                              mpi_comm_world,status,ierr)
+      if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpifront .ne. MPI_PROC_NULL) then
@@ -5287,12 +5415,14 @@ module parallel
     if(mpitag>10000) mpitag=100
     ! reset mpitag
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
       if(lio .and. lreport .and. ltimrpt) call timereporter(routine='qswap', &
                                               timecost=subtime )
+      endif
     endif
     !
     return

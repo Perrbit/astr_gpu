@@ -40,7 +40,7 @@ BINDIR="${PROJECT_ROOT}/bin"
 # Compiler Configuration
 # ============================================================================
 FC=h5pfc
-FCFLAGS="-Mpreprocess -Mextend -traceback -g -O3 -DHDF5"
+FCFLAGS="-Mpreprocess -Mextend -traceback -g -O3 -DHDF5 -Mnostack_arrays"
 LDFLAGS="${FCFLAGS}"
 LIBS="-lhdf5_hl_fortran -lhdf5_hl -lz -lm"
 TARGET="${BINDIR}/astr"

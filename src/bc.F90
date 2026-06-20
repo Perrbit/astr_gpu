@@ -452,7 +452,11 @@ module bc
     real(8) :: time_beg,time_tmp
     real(8),save :: subtime1=0.d0,subtime2=0.d0,subtime3=0.d0,subtime4=0.d0
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     if(npdci==1) then
       iss=0
@@ -648,18 +652,22 @@ module bc
       !
     enddo
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       subtime1=subtime1+ptime()-time_beg
       time_tmp=ptime()
+      endif
     endif
     !
     call syncqimag_nonlocal(timerept=ltimrpt)
     ! call syncqimag_nonlocal(subtime1=subtime2,subtime2=subtime3, &
     !                         subtime3=subtime4)
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       subtime2=subtime2+ptime()-time_tmp
       time_tmp=ptime()
+      endif
     endif
     !
     ! call syncqimag(qimag(:,1:counter))
@@ -799,7 +807,8 @@ module bc
     enddo
     enddo
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime3=subtime3+ptime()-time_tmp
       subtime4=subtime4+ptime()-time_beg
@@ -815,6 +824,7 @@ module bc
                           message='ghost nodes')
       endif
       !
+      endif
     endif
     !
     ! call mpistop
@@ -863,7 +873,11 @@ module bc
     logical,save :: lfirstcal=.true.
     logical,save :: lactive=.false.
     !
-    if(present(timerept) .and. timerept) time_beg=ptime()
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif
     !
     if(lfirstcal) then
       !
@@ -1070,7 +1084,8 @@ module bc
     !
     ! call mpistop
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
@@ -1078,6 +1093,7 @@ module bc
                                               timecost=subtime, &
                                               message='sync immersed nodesy')
       !
+      endif
     endif
     !
   end subroutine syncqimag_nonlocal

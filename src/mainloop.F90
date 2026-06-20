@@ -584,12 +584,14 @@ module mainloop
     !
 #endif
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
       if(lio .and. loop_counter==feqchkpt .and. ltimrpt) call timereporter(routine='rk3',   &
                                                             timecost=subtime)
+      endif
     endif
     !
     if(rkscheme=='rk4') deallocate(rhsav)

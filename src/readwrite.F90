@@ -1793,7 +1793,11 @@ module readwrite
     real(8),save :: subtime=0.d0
     NAMELIST /restart/ nstep, filenumb,fnumslic,ninflowslice,nsamples
     !
-    if(present(timerept) .and. timerept) time_beg=ptime()
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif
     !
     if(lwsequ) then
       if(lio) print*,' ** filenumb=',filenumb
@@ -1961,7 +1965,8 @@ module readwrite
     !
     nxtwsequ=nstep+feqwsequ
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=ptime()-time_beg
       !
@@ -1970,6 +1975,7 @@ module readwrite
       !                                         timecost=subtime, &
       !                                         message='write flow data')
       !
+      endif
     endif
     !
   end subroutine writeflfed
@@ -2081,7 +2087,11 @@ module readwrite
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
     !
-    if(present(timerept) .and. timerept) time_beg=ptime()
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif
     !
     if(lwsequ .and. nstep==nxtwsequ) then
       !
@@ -2216,7 +2226,8 @@ module readwrite
     savfilenmae=outfilename
     nxtwsequ=nstep+feqwsequ
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
@@ -2224,6 +2235,7 @@ module readwrite
                                               timecost=subtime, &
                                               message='write flow data')
       !
+      endif
     endif
     !
   end subroutine writeflfed_2d
@@ -2468,7 +2480,13 @@ module readwrite
     
     if(nstep<=nstep_save) return
 
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+
+      if(timerept) time_beg=ptime()
+
+
+    endif 
     !
     call writeflfed()
 
@@ -2497,7 +2515,8 @@ module readwrite
 
     nstep_save=nstep
 
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
@@ -2505,6 +2524,7 @@ module readwrite
                                               timecost=subtime, &
                                               message='write checkpoint')
       !
+      endif
     endif
     
     return

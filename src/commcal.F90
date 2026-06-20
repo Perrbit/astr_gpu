@@ -211,7 +211,11 @@ module commcal
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
     !
-    if(present(timerept) .and. timerept) time_beg=ptime() 
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
     !
     if(firstcall) then
       !
@@ -339,13 +343,15 @@ module commcal
       !
     endif
     !
-    if(present(timerept) .and. timerept) then
+    if(present(timerept)) then
+      if(timerept) then
       !
       subtime=subtime+ptime()-time_beg
       !
       if(lio .and. lreport .and. ltimrpt) call timereporter(routine='ducrossensor', &
                                              timecost=subtime, &
                                               message='shock sensor')
+      endif
     endif
     !
     return
