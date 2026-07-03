@@ -543,6 +543,27 @@ contains
     enddo
   end subroutine filter_y_pong_to_q_global_kernel
 
+  attributes(global) subroutine filter_y_pong_to_q_halo_global_kernel(im,jm,km)
+    use commarray_gpu, only: q_d,qwork_d
+    implicit none
+    integer,value :: im,jm,km
+    integer :: i,j,k,m
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
+    k = blockIdx%z - 1
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+
+    do m=1,5
+      q_d(i,j,k,m) = filter10_value(qwork_d(i,j,k,m), &
+        qwork_d(i,j+1,k,m), qwork_d(i,j-1,k,m), &
+        qwork_d(i,j+2,k,m), qwork_d(i,j-2,k,m), &
+        qwork_d(i,j+3,k,m), qwork_d(i,j-3,k,m), &
+        qwork_d(i,j+4,k,m), qwork_d(i,j-4,k,m), &
+        qwork_d(i,j+5,k,m), qwork_d(i,j-5,k,m))
+    enddo
+  end subroutine filter_y_pong_to_q_halo_global_kernel
+
   attributes(global) subroutine filter_z_global_kernel(im,jm,km)
     use commarray_gpu, only: q_d,qwork_d
     implicit none
@@ -563,6 +584,27 @@ contains
         q_d(i,j,idx_periodic(k+5,km),m), q_d(i,j,idx_periodic(k-5,km),m))
     enddo
   end subroutine filter_z_global_kernel
+
+  attributes(global) subroutine filter_z_halo_global_kernel(im,jm,km)
+    use commarray_gpu, only: q_d,qwork_d
+    implicit none
+    integer,value :: im,jm,km
+    integer :: i,j,k,m
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = blockIdx%y - 1
+    k = (blockIdx%z - 1) * blockDim%z + threadIdx%z - 1
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+
+    do m=1,5
+      qwork_d(i,j,k,m) = filter10_value(q_d(i,j,k,m), &
+        q_d(i,j,k+1,m), q_d(i,j,k-1,m), &
+        q_d(i,j,k+2,m), q_d(i,j,k-2,m), &
+        q_d(i,j,k+3,m), q_d(i,j,k-3,m), &
+        q_d(i,j,k+4,m), q_d(i,j,k-4,m), &
+        q_d(i,j,k+5,m), q_d(i,j,k-5,m))
+    enddo
+  end subroutine filter_z_halo_global_kernel
 
   attributes(global) subroutine copy_qwork_global_kernel(im,jm,km)
     use commarray_gpu, only: q_d,qwork_d

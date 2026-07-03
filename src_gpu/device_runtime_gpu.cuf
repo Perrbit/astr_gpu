@@ -20,13 +20,7 @@ contains
       print*,' !! GPU rank ',mpirank,' cannot find a CUDA device.'
       stop
     endif
-    if(local_size>device_count) then
-      print*,' !! Local MPI ranks exceed visible CUDA devices.'
-      print*,' ** local_size=',local_size,' device_count=',device_count
-      stop
-    endif
-
-    device_id=local_rank
+    device_id=mod(local_rank,device_count)
     istat=cudaSetDevice(device_id)
     if(istat/=0) then
       print*,' !! GPU rank ',mpirank,' failed to bind CUDA device ',device_id
@@ -42,6 +36,10 @@ contains
 
     write(*,'(A,I0,A,I0,A,I0)')' ** MPI rank ',mpirank, &
       ' bound to GPU device ',current_device,' on local rank ',local_rank
+    if(local_size>device_count) then
+      write(*,'(A,I0,A,I0,A)')' ** GPU oversubscription correctness mode: local ranks ', &
+        local_size,' share ',device_count,' visible devices'
+    endif
 
     call mpi_comm_free(local_comm,ierr)
   end subroutine bind_gpu_device

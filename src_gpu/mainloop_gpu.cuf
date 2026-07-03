@@ -11,14 +11,16 @@ contains
 
   subroutine prepare_rkfirst_stats_gpu()
     use commvar, only: im,jm,km,hm,const2,const6,lfilter
+    use parallel, only: jsize,ksize
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
     use gpu_check, only: sync_after_kernel
     use halo_exchange_gpu, only: exchange_solution_halo_gpu, &
-         exchange_solution_filter_halo_gpu, &
-         exchange_diffusion_flux_halo_gpu
+         exchange_solution_filter_halo_gpu, exchange_filter_y_work_halo_gpu, &
+         exchange_filter_z_halo_gpu, exchange_diffusion_flux_halo_gpu
     use solver_gpu, only: q_to_primitive_kernel, &
          filter_x_global_kernel,filter_y_pong_to_q_global_kernel, &
-         filter_z_global_kernel,copy_qwork_global_kernel
+         filter_y_pong_to_q_halo_global_kernel,filter_z_global_kernel, &
+         filter_z_halo_global_kernel,copy_qwork_global_kernel
     implicit none
     type(dim3) :: block3,grid3,block1,grid1
     type(dim3) :: block_x,grid_x,block_y,grid_y,block_z,grid_z
@@ -44,10 +46,22 @@ contains
       call exchange_solution_filter_halo_gpu()
       call filter_x_global_kernel<<<grid_x,block_x>>>(im,jm,km)
       call sync_after_kernel('prepare_filter_x_global_kernel')
-      call filter_y_pong_to_q_global_kernel<<<grid_y,block_y>>>(im,jm,km)
-      call sync_after_kernel('prepare_filter_y_pong_to_q_global_kernel')
-      call filter_z_global_kernel<<<grid_z,block_z>>>(im,jm,km)
-      call sync_after_kernel('prepare_filter_z_global_kernel')
+      if(jsize>1) then
+        call exchange_filter_y_work_halo_gpu()
+        call filter_y_pong_to_q_halo_global_kernel<<<grid_y,block_y>>>(im,jm,km)
+        call sync_after_kernel('prepare_filter_y_pong_to_q_halo_global_kernel')
+      else
+        call filter_y_pong_to_q_global_kernel<<<grid_y,block_y>>>(im,jm,km)
+        call sync_after_kernel('prepare_filter_y_pong_to_q_global_kernel')
+      endif
+      if(ksize>1) then
+        call exchange_filter_z_halo_gpu()
+        call filter_z_halo_global_kernel<<<grid_z,block_z>>>(im,jm,km)
+        call sync_after_kernel('prepare_filter_z_halo_global_kernel')
+      else
+        call filter_z_global_kernel<<<grid_z,block_z>>>(im,jm,km)
+        call sync_after_kernel('prepare_filter_z_global_kernel')
+      endif
       call copy_qwork_global_kernel<<<grid1,block1>>>(im,jm,km)
       call sync_after_kernel('prepare_copy_qwork_global_kernel')
     endif
@@ -60,12 +74,13 @@ contains
   subroutine time_integration_rk_gpu(first_stage_prepared,copy_back)
     use commvar, only: im,jm,km,hm,deltat,const2,const5,const6,diffterm,lfilter, &
          reynolds,prandtl,tempconst,tempconst1
+    use parallel, only: jsize,ksize
     use commarray_gpu, only: q_d,qrhs_d,qsave_d,rho_d,vel_d,prs_d,tmp_d, &
          jacob_d,dxi_d,copy_flow_from_gpu
     use gpu_check, only: sync_after_kernel
     use halo_exchange_gpu, only: exchange_solution_halo_gpu, &
-         exchange_solution_filter_halo_gpu, &
-         exchange_diffusion_flux_halo_gpu
+         exchange_solution_filter_halo_gpu, exchange_filter_y_work_halo_gpu, &
+         exchange_filter_z_halo_gpu, exchange_diffusion_flux_halo_gpu
     use solver_gpu, only: q_to_primitive_kernel,zero_rhs_kernel, &
          save_q_kernel,rk3_update_kernel,convective_rhs_x_kernel, &
          convective_rhs_y_kernel,convective_rhs_z_kernel, &
@@ -73,7 +88,8 @@ contains
          convective_rhs_z_global_kernel,rk3_first_update_kernel, &
          rk3_first_update_global_kernel,rk3_update_global_kernel, &
          filter_x_global_kernel,filter_y_pong_to_q_global_kernel, &
-         filter_z_global_kernel,copy_qwork_global_kernel, &
+         filter_y_pong_to_q_halo_global_kernel,filter_z_global_kernel, &
+         filter_z_halo_global_kernel,copy_qwork_global_kernel, &
          diffusion_flux_global_kernel,diffusion_rhs_x_stored_global_kernel, &
          diffusion_rhs_y_stored_global_kernel,diffusion_rhs_z_stored_global_kernel
     implicit none
@@ -120,10 +136,22 @@ contains
           call exchange_solution_filter_halo_gpu()
           call filter_x_global_kernel<<<grid_x,block_x>>>(im,jm,km)
           call sync_after_kernel('filter_x_global_kernel')
-          call filter_y_pong_to_q_global_kernel<<<grid_y,block_y>>>(im,jm,km)
-          call sync_after_kernel('filter_y_pong_to_q_global_kernel')
-          call filter_z_global_kernel<<<grid_z,block_z>>>(im,jm,km)
-          call sync_after_kernel('filter_z_global_kernel')
+          if(jsize>1) then
+            call exchange_filter_y_work_halo_gpu()
+            call filter_y_pong_to_q_halo_global_kernel<<<grid_y,block_y>>>(im,jm,km)
+            call sync_after_kernel('filter_y_pong_to_q_halo_global_kernel')
+          else
+            call filter_y_pong_to_q_global_kernel<<<grid_y,block_y>>>(im,jm,km)
+            call sync_after_kernel('filter_y_pong_to_q_global_kernel')
+          endif
+          if(ksize>1) then
+            call exchange_filter_z_halo_gpu()
+            call filter_z_halo_global_kernel<<<grid_z,block_z>>>(im,jm,km)
+            call sync_after_kernel('filter_z_halo_global_kernel')
+          else
+            call filter_z_global_kernel<<<grid_z,block_z>>>(im,jm,km)
+            call sync_after_kernel('filter_z_global_kernel')
+          endif
           call copy_qwork_global_kernel<<<grid1,block1>>>(im,jm,km)
           call sync_after_kernel('copy_qwork_global_kernel')
         endif
@@ -187,8 +215,6 @@ contains
     if(trim(rkscheme) /= 'rk3') stop 'GPU first-stage supports rkscheme=rk3 only'
     if(trim(conschm) /= '643e') stop 'GPU first-stage supports explicit conschm=643e only'
     if(trim(difschm) /= '643e') stop 'GPU first-stage supports explicit difschm=643e only'
-    if(jsize /= 1 .or. ksize /= 1) &
-      stop 'GPU first-stage multi-rank supports x-slab topology only'
     if(mpisize /= isize*jsize*ksize) &
       stop 'GPU first-stage MPI topology is inconsistent'
     if(.not.(lihomo .and. ljhomo .and. lkhomo)) &
