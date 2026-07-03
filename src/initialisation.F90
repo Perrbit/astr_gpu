@@ -549,7 +549,7 @@ module initialisation
     use commarray,only: x,vel,rho,prs,spc,tmp,q,dvel
     use fludyna,  only: thermal
     use comsolver,only: grad
-    use parallel, only: psum,pmax,pmin
+    use parallel, only: psum,pmax,pmin,dataswap
     use hdf5io
     !
     ! local data
@@ -563,6 +563,8 @@ module initialisation
     call h5read(varname='u3', var=vel(0:im,0:jm,0:km,3),mode='h')
     !
     call h5io_end
+    !
+    call dataswap(vel)
     !
     dvel(0:im,0:jm,0:km,1,:)=grad(vel(:,:,:,1))
     dvel(0:im,0:jm,0:km,2,:)=grad(vel(:,:,:,2))

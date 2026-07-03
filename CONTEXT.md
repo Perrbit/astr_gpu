@@ -168,6 +168,34 @@ _Avoid_: Collapsing statistics and HDF5 output tolerances into one number, treat
 The optional `NP=4` `2dvort` core matrix has passed for `2x2x1`, `2x1x2`, and `1x2x2` with the same no-filter `1e-10` and filtered-statistics `1e-9` contracts. Filtered HDF5 field output needs `FILTER_FIELD_ATOL=6e-9`; the observed maximum was reconstructed `q5=5.1636668274568365e-09` for `2x2x1`, again near decomposition interfaces.
 _Avoid_: Promoting `6e-9` to the single-rank or NP2 default without recording why, treating two-GPU oversubscribed NP4 as performance evidence
 
+**Phase A 2dvort NP8 smoke evidence**:
+The optional `NP=8` `2x2x2` `2dvort` smoke has passed as a statistics-only same-topology CPU/GPU comparison with field output disabled: no-filter uses `1e-10`; filtered uses `1e-9`. This validates combined x/y/z halo routing under two-GPU oversubscription but is not an HDF5 field-output contract and not performance evidence.
+_Avoid_: Treating NP8 oversubscription as production scaling proof, using this smoke to relax field-output tolerances, skipping same-topology CPU/GPU comparison
+
+**Third-case screening result**:
+Most remaining `examples/` cases are not low-risk under the current GPU capability gate: many are compact-scheme defaults, `numq=3`, 1D/2D, wall/inflow/shock/boundary-condition heavy, or chemistry/species cases. The next code step should be capability-gate cleanup, replacing hard-coded `flowtype=tgv/2dvort` checks with explicit supported-feature checks, before accepting another genuinely new flowtype.
+_Avoid_: Jumping directly to channel flow, treating shock-tube/upwind or wall-bounded examples as equivalent to the current periodic explicit non-reacting path
+
+**Capability-gated explicit periodic case**:
+The GPU first-stage runtime gate is now based on supported capabilities rather than a hard-coded `flowtype` whitelist: 3D, `numq=5`, no species, no modal equations, no turbulence model, `rk3`, explicit `643e,643e`, homogeneous x/y/z, consistent MPI topology, and positive Jacobian. This lets TGV, 3D extruded `2dvort`, and HIT share the same GPU main loop while still excluding compact, wall, shock, species, chemistry, and turbulence paths.
+_Avoid_: Treating `flowtype` names as the support contract, accidentally accepting compact or non-periodic cases because their name is known
+
+**Phase A HIT validation case**:
+The current third explicit non-reacting validation target is `flowtype=hit` using `examples/Taylor_Green_Vortex` as a template plus a generated deterministic `datin/velocity.h5`. The generator writes a periodic ABC-style velocity field with zero discrete divergence after `hitini` refreshes halos. Validation compares CPU/GPU `flowstate.dat` statistics for `kenergy`, `enstophy`, and `dissipation`; HDF5 field-output comparison remains outside the current HIT contract.
+_Avoid_: Calling HIT validated while using a divergent generated velocity field, treating CPU/GPU agreement as physical correctness without checking `hitini` divergence, making HIT depend on GPU HDF5 output
+
+**HIT initialization halo contract**:
+`src/initialisation.F90:hitini` reads `vel(0:im,0:jm,0:km,1:3)` from `datin/velocity.h5` and then must refresh CPU halos before calling `grad()` for the divergence diagnostic. `grad()` consumes `-hm:im+hm` style halo arrays, so the diagnostic is not meaningful without `dataswap(vel)`.
+_Avoid_: Trusting the original HIT divergence print before halo refresh, changing GPU kernels to compensate for a CPU initialization diagnostic bug
+
+**Phase B x-zeroextrap boundary slice**:
+The first non-periodic GPU boundary slice is a regular 3D `numq=5` explicit case with x-direction `bctype(1:2)=50,50`, y/z periodic, single MPI rank, `lfilter=f`, and `diffterm=f`. GPU applies the same second-order zero-extrapolation physical boundary update as CPU `bc:zeroextrap`, then restricts RHS assembly to CPU `is:ie/js:je/ks:ke` active ranges. Validation uses `flowfield.h5` field comparison, not native statistics, because the current GPU `gradcal` statistics path remains periodic-first.
+_Avoid_: Treating this as general wall/farfield support, enabling filter/diffusion for non-periodic x before their boundary stencils are ported, using periodic GPU statistics as the oracle
+
+**Single-rank non-homogeneous CPU active range**:
+For `lihomo=f,isize=1` and the analogous y/z cases, CPU `parallelini` must set active ranges to interior nodes (`1:im-1`, `1:jm-1`, `1:km-1`) while physical boundary planes are owned by `boucon`. Leaving these module variables unset makes the CPU baseline effectively skip interior RHS for a single-rank finite-domain test.
+_Avoid_: Validating GPU non-periodic boundary support against an uninitialized CPU active range, letting boundary planes receive convective RHS after `boucon` zeroes their boundary residual
+
 **GPU device field ownership table**:
 The explicit inventory of device-resident fields, their allocation extents, producer/consumer modules, halo semantics, and host-transfer policy. It is the guardrail that keeps the compute loop GPU-authoritative while still allowing CPU-owned initialization and output/checkpoint boundaries.
 _Avoid_: Adding new device arrays without ownership records, hidden whole-field transfers, treating host arrays as live compute state during GPU execution

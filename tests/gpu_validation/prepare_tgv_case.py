@@ -45,6 +45,57 @@ def set_runtime_flags(
     raise ValueError(f"runtime flag marker not found in {input_file}")
 
 
+def set_flowtype(input_file: Path, flowtype: str) -> None:
+    lines = input_file.read_text().splitlines()
+    marker = "flowtype"
+    for idx, line in enumerate(lines):
+        if marker in line:
+            data_idx = next_data_line(lines, idx)
+            lines[data_idx] = flowtype
+            input_file.write_text("\n".join(lines) + "\n")
+            return
+    raise ValueError(f"flowtype marker not found in {input_file}")
+
+
+def set_homogeneous(input_file: Path, homogeneous: str) -> None:
+    parts = [part.strip() for part in homogeneous.split(",")]
+    if len(parts) != 3 or any(part not in ("t", "f") for part in parts):
+        raise ValueError("--homogeneous must have the form t,t,t")
+    lines = input_file.read_text().splitlines()
+    marker = "lihomo,ljhomo,lkhomo"
+    for idx, line in enumerate(lines):
+        if marker in line:
+            data_idx = next_data_line(lines, idx)
+            lines[data_idx] = ",".join(parts)
+            input_file.write_text("\n".join(lines) + "\n")
+            return
+    raise ValueError(f"homogeneous marker not found in {input_file}")
+
+
+def set_bctype(input_file: Path, bctype: str) -> None:
+    parts = [part.strip() for part in bctype.split(",")]
+    if len(parts) != 6:
+        raise ValueError("--bctype must have six comma-separated entries")
+    lines = input_file.read_text().splitlines()
+    marker = "bctype"
+    for idx, line in enumerate(lines):
+        if marker in line:
+            data_idxs: list[int] = []
+            scan = idx
+            while len(data_idxs) < 6:
+                scan += 1
+                if scan >= len(lines):
+                    raise ValueError(f"not enough bctype lines in {input_file}")
+                stripped = lines[scan].strip()
+                if stripped and not stripped.startswith("#"):
+                    data_idxs.append(scan)
+            for data_idx, value in zip(data_idxs, parts, strict=True):
+                lines[data_idx] = value
+            input_file.write_text("\n".join(lines) + "\n")
+            return
+    raise ValueError(f"bctype marker not found in {input_file}")
+
+
 def set_controller_steps(controller_file: Path, maxstep: int, feqchkpt: int) -> None:
     lines = controller_file.read_text().splitlines()
     marker = "maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg"
@@ -118,6 +169,9 @@ def main() -> int:
     parser.add_argument("--src-case", required=True, type=Path)
     parser.add_argument("--dst-case", required=True, type=Path)
     parser.add_argument("--input-name", default="input.tgv")
+    parser.add_argument("--flowtype", help="optional replacement flowtype")
+    parser.add_argument("--homogeneous", help="optional homogeneous flags as t,t,t")
+    parser.add_argument("--bctype", help="optional six boundary entries")
     parser.add_argument("--use-gpu", required=True, choices=("t", "f"))
     parser.add_argument("--maxstep", required=True, type=int)
     parser.add_argument("--feqchkpt", type=int)
@@ -139,6 +193,12 @@ def main() -> int:
     shutil.copytree(args.src_case / "datin", args.dst_case / "datin")
 
     input_file = args.dst_case / "datin" / args.input_name
+    if args.flowtype:
+        set_flowtype(input_file, args.flowtype)
+    if args.homogeneous:
+        set_homogeneous(input_file, args.homogeneous)
+    if args.bctype:
+        set_bctype(input_file, args.bctype)
     set_runtime_flags(input_file, args.use_gpu, args.lfilter, args.diffterm)
     set_scheme(input_file, args.scheme)
     if args.grid:

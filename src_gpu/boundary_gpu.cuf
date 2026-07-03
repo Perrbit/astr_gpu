@@ -1,0 +1,111 @@
+module boundary_gpu
+  use cudafor
+  implicit none
+contains
+  logical function gpu_uses_x_zeroextrap()
+    use bc, only: bctype
+    use commvar, only: lihomo,ljhomo,lkhomo
+    implicit none
+
+    gpu_uses_x_zeroextrap = (.not.lihomo) .and. ljhomo .and. lkhomo .and. &
+                            bctype(1) == 50 .and. bctype(2) == 50
+  end function gpu_uses_x_zeroextrap
+
+  attributes(device) real(8) function extrap2(v1,v2)
+    implicit none
+    real(8),value :: v1,v2
+
+    extrap2 = (4.d0*v1 - v2)/3.d0
+  end function extrap2
+
+  attributes(device) subroutine set_q_from_primitive(i,j,k,rho,uu,vv,ww,prs,const6)
+    use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
+    implicit none
+    integer,value :: i,j,k
+    real(8),value :: rho,uu,vv,ww,prs,const6
+    real(8) :: ke
+
+    rho_d(i,j,k) = rho
+    vel_d(i,j,k,1) = uu
+    vel_d(i,j,k,2) = vv
+    vel_d(i,j,k,3) = ww
+    prs_d(i,j,k) = prs
+    ke = 0.5d0*rho*(uu*uu + vv*vv + ww*ww)
+    q_d(i,j,k,1) = rho
+    q_d(i,j,k,2) = rho*uu
+    q_d(i,j,k,3) = rho*vv
+    q_d(i,j,k,4) = rho*ww
+    q_d(i,j,k,5) = prs*const6 + ke
+  end subroutine set_q_from_primitive
+
+  attributes(global) subroutine zeroextrap_x_kernel(im,jm,km,hm,const2,const6)
+    use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
+    implicit none
+    integer,value :: im,jm,km,hm
+    real(8),value :: const2,const6
+    integer :: id,j,k,h,m,nplane
+    real(8) :: rho,uu,vv,ww,prs,tmp
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (jm + 1) * (km + 1)
+    if(id >= nplane) return
+    j = mod(id,jm+1)
+    k = id/(jm+1)
+
+    uu  = extrap2(vel_d(1,j,k,1),vel_d(2,j,k,1))
+    vv  = extrap2(vel_d(1,j,k,2),vel_d(2,j,k,2))
+    ww  = extrap2(vel_d(1,j,k,3),vel_d(2,j,k,3))
+    prs = extrap2(prs_d(1,j,k),prs_d(2,j,k))
+    tmp = extrap2(tmp_d(1,j,k),tmp_d(2,j,k))
+    rho = prs/tmp*const2
+    tmp_d(0,j,k) = tmp
+    call set_q_from_primitive(0,j,k,rho,uu,vv,ww,prs,const6)
+
+    uu  = extrap2(vel_d(im-1,j,k,1),vel_d(im-2,j,k,1))
+    vv  = extrap2(vel_d(im-1,j,k,2),vel_d(im-2,j,k,2))
+    ww  = extrap2(vel_d(im-1,j,k,3),vel_d(im-2,j,k,3))
+    prs = extrap2(prs_d(im-1,j,k),prs_d(im-2,j,k))
+    tmp = extrap2(tmp_d(im-1,j,k),tmp_d(im-2,j,k))
+    rho = prs/tmp*const2
+    tmp_d(im,j,k) = tmp
+    call set_q_from_primitive(im,j,k,rho,uu,vv,ww,prs,const6)
+
+    do h=1,hm
+      rho_d(-h,j,k) = rho_d(0,j,k)
+      prs_d(-h,j,k) = prs_d(0,j,k)
+      tmp_d(-h,j,k) = tmp_d(0,j,k)
+      do m=1,3
+        vel_d(-h,j,k,m) = vel_d(0,j,k,m)
+      enddo
+      do m=1,5
+        q_d(-h,j,k,m) = q_d(0,j,k,m)
+      enddo
+
+      rho_d(im+h,j,k) = rho_d(im,j,k)
+      prs_d(im+h,j,k) = prs_d(im,j,k)
+      tmp_d(im+h,j,k) = tmp_d(im,j,k)
+      do m=1,3
+        vel_d(im+h,j,k,m) = vel_d(im,j,k,m)
+      enddo
+      do m=1,5
+        q_d(im+h,j,k,m) = q_d(im,j,k,m)
+      enddo
+    enddo
+  end subroutine zeroextrap_x_kernel
+
+  subroutine apply_boundary_conditions_gpu()
+    use commvar, only: im,jm,km,hm,const2,const6
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    type(dim3) :: block,grid
+    integer :: n
+
+    if(.not.gpu_uses_x_zeroextrap()) return
+
+    block = dim3(256,1,1)
+    n = (jm + 1) * (km + 1)
+    grid = dim3((n + block%x - 1)/block%x,1,1)
+    call zeroextrap_x_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6)
+    call sync_after_kernel('zeroextrap_x_kernel')
+  end subroutine apply_boundary_conditions_gpu
+end module boundary_gpu

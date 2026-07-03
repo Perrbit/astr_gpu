@@ -43,6 +43,20 @@ The current GPU port has reached a validated non-reacting TGV baseline:
   - The filtered `2dvort` HDF5 field comparison now passes at `1e-9` after matching the CPU-owned output boundary semantics. It is not yet a TGV-level `1e-10` contract because CPU produces about `8e-10` roundoff in the physically zero `u3/q4` component while GPU keeps it exactly zero.
   - The same 3D extruded `2dvort` case now has an `NP=2` multi-rank matrix pass for `2x1x1`, `1x2x1`, and `1x1x2`. No-filter field output remains strict at `1e-10`; filtered native statistics pass at `1e-9`; filtered HDF5 field output uses a separate `5e-9` tolerance for interface-adjacent reconstructed energy differences.
   - Optional `NP=4` combined-direction `2dvort` validation has also passed for `2x2x1`, `2x1x2`, and `1x2x2` with filtered HDF5 field tolerance `6e-9`; this is correctness smoke under two-GPU oversubscription, not performance evidence.
+  - Optional `NP=8` `2x2x2` `2dvort` statistics-only smoke has passed with field comparison disabled; this validates combined x/y/z halo routing but remains oversubscription smoke, not a production scaling result.
+  - Screening the remaining `examples/` inputs shows no safer genuinely new flowtype than `2dvort` under the current capability gate; most candidates introduce compact schemes, `numq=3`, shocks/upwind, wall/inflow boundary conditions, or chemistry/species.
+- The third explicit periodic case expansion has started with HIT:
+  - The GPU runtime gate has been changed from a `flowtype=tgv/2dvort` whitelist to an explicit capability gate.
+  - `flowtype=hit` now runs through the same GPU-resident explicit periodic main loop when the case is 3D, `numq=5`, no species, no turbulence, `rk3`, explicit `643e,643e`, and homogeneous x/y/z.
+  - A deterministic ABC-style `velocity.h5` generator has been added for validation. The generated initial field reports zero divergence after `hitini` refreshes CPU halos before calling `grad()`.
+  - HIT CPU/GPU `flowstate.dat` validation has passed for `64^3 NP=1 MAXSTEP=20`, `NP=2 TOPOLOGY=2,1,1 MAXSTEP=5`, and `NP=8 TOPOLOGY=2,2,2 MAXSTEP=5` with differences at about `1e-15` or below.
+  - HIT HDF5 field comparison remains disabled by default because HDF5 flowfield output is still a CPU-owned boundary, not a current GPU writing target.
+- Phase B boundary expansion has started with the lowest-risk non-periodic slice:
+  - x-direction `bctype(1:2)=50,50` zero extrapolation, y/z periodic, single MPI rank.
+  - `lfilter=f` and `diffterm=f` so the first boundary slice validates convection/RK/boundary ordering before non-periodic filter and diffusion stencils are opened.
+  - CPU `parallelini` now initializes single-rank non-homogeneous active ranges to interior nodes; otherwise the CPU baseline effectively skips interior RHS for this finite-domain test.
+  - GPU x-zeroextrap RHS kernels use the same `is:ie/js:je/ks:ke` active ranges as CPU.
+  - `MAXSTEP=1` and `MAXSTEP=5` CPU/GPU `flowfield.h5` comparisons pass at roundoff scale; statistics are intentionally disabled for this slice because GPU diagnostic gradients remain periodic-first.
 
 The current baseline is a correctness-first CUDA Fortran implementation. It still intentionally uses explicit synchronization after kernels and host-staged halo buffers.
 
@@ -449,11 +463,13 @@ Tasks:
 - Identify missing GPU support for its boundary and initialization path.
 - Add only the minimum required GPU path.
 - Validate same-topology CPU/GPU statistics and field output where appropriate.
+- For boundary slices, validate field output first and only promote statistics after non-periodic GPU `gradcal` diagnostics are implemented.
 
 Acceptance:
 
 - One non-TGV, non-reacting case runs through the GPU architecture skeleton.
 - The solution does not introduce TGV-specific names into public GPU interfaces.
+- The first non-periodic boundary slice preserves CPU `boucon` ownership of physical boundary planes and CPU `is/ie/js/je/ks/ke` active-range semantics.
 
 ### Phase 3: Species Transport
 

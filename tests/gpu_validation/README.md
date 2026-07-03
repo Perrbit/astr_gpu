@@ -4,7 +4,8 @@ This directory contains validation drivers for the current ASTR CUDA Fortran por
 
 Current validated scope:
 
-- Taylor-Green Vortex only
+- Taylor-Green Vortex, 3D extruded `2dvort`, and generated-velocity HIT within the explicit periodic non-reacting capability gate
+- first x-direction non-periodic zero-extrapolation boundary slice, with y/z periodic and filter/diffusion disabled
 - single-rank and multi-rank MPI decompositions
 - one physical GPU, two physical GPUs, and two-GPU oversubscription correctness smoke tests
 - q(1:5) only
@@ -211,6 +212,59 @@ OUT_DIR=tests/gpu_validation/out/2dvort_mpirank_matrix_np4 \
 ```
 
 The higher filtered field tolerance is required by the `2x2x1` reconstructed `q5` interface-adjacent difference, about `5.2e-9`; native filtered statistics still use `1e-9`.
+
+The optional `NP=8` `2x2x2` statistics-only smoke can be run with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/2dvort_mpirank_matrix_np8_stats_smoke \
+  MATRIX='8:2,2,2' RUN_FIELD=f FEQCHKPT_FIELD=99 \
+  tests/gpu_validation/run_2dvort_mpirank_matrix.sh
+```
+
+This is a halo-routing smoke under two-GPU oversubscription. It does not compare HDF5 fields and should not be used as performance evidence.
+
+## Phase A HIT Validation
+
+Validate the generated-velocity HIT case. The driver starts from the TGV input template, rewrites `flowtype=hit`, generates `datin/velocity.h5`, and compares CPU/GPU `flowstate.dat` statistics:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/hit_phasea_np1_20steps \
+  MAXSTEP=20 FEQCHKPT=99 GRID=64,64,64 COMPARE_FIELD=f \
+  tests/gpu_validation/run_hit_phasea_compare.sh
+```
+
+The generated velocity is an ABC-style periodic field. `hitini` must refresh halos before its divergence diagnostic because `grad()` consumes halo data; with the current code the log reports divergence `avg/min/max = 0`.
+
+Validate HIT x-slab multi-rank HDF5 hyperslab reading and halo exchange:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/hit_phasea_np2_xslab_5steps \
+  MAXSTEP=5 FEQCHKPT=99 GRID=64,64,64 NP=2 TOPOLOGY=2,1,1 COMPARE_FIELD=f \
+  tests/gpu_validation/run_hit_phasea_compare.sh
+```
+
+Validate HIT combined-direction halo-routing smoke under two-GPU oversubscription:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/hit_phasea_np8_2x2x2_5steps \
+  MAXSTEP=5 FEQCHKPT=99 GRID=64,64,64 NP=8 TOPOLOGY=2,2,2 COMPARE_FIELD=f \
+  tests/gpu_validation/run_hit_phasea_compare.sh
+```
+
+Current expected result: all three commands print `status: pass` with `kenergy`, `enstophy`, and `dissipation` differences at about `1e-15` or below. HIT field-output comparison is intentionally disabled by default because HDF5 flowfield output remains a CPU-owned boundary in the current project scope.
+
+## Phase B x-Zeroextrap Boundary Validation
+
+Validate the first finite-domain boundary slice. The driver starts from the TGV template, sets `lihomo=f,ljhomo=t,lkhomo=t`, uses x-direction `bctype=50,50`, disables filter and diffusion, and compares CPU/GPU `flowfield.h5` output:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/xextrap_phaseb_np1_5steps_field \
+  MAXSTEP=5 FEQCHKPT=5 GRID=64,64,64 \
+  LFILTER=f DIFFTERM=f COMPARE_STATS=f COMPARE_FIELD=t FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_xextrap_phaseb_compare.sh
+```
+
+Current expected result: field comparison prints `status: pass` with differences at roundoff scale. Statistics are disabled for this slice because the current GPU diagnostic gradient path is still periodic-first. This validation also depends on the CPU `parallelini` fix that sets single-rank non-homogeneous active ranges to interior nodes, leaving physical boundary planes under `boucon`.
 
 The larger `256^3 NP=1/NP=2` Nsight profile can be generated with:
 

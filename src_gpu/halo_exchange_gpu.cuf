@@ -762,13 +762,18 @@ contains
 
   subroutine exchange_solution_halo_gpu()
     use commvar, only: lihomo,ljhomo,lkhomo
+    use bc, only: bctype
     use parallel, only: isize,jsize,ksize
     use qswap_gpu, only: qswap_single_rank_gpu,qswap_local_x_gpu, &
                          qswap_local_y_gpu,qswap_local_z_gpu, &
                          refresh_primitive_halo_gpu
     implicit none
+    logical :: x_zeroextrap
 
-    if(isize==1 .and. jsize==1 .and. ksize==1) then
+    x_zeroextrap = (.not.lihomo) .and. bctype(1) == 50 .and. bctype(2) == 50
+
+    if(isize==1 .and. jsize==1 .and. ksize==1 .and. &
+       lihomo .and. ljhomo .and. lkhomo) then
       call qswap_single_rank_gpu()
       return
     endif
@@ -777,6 +782,8 @@ contains
       call exchange_x_halo_gpu()
     elseif(lihomo) then
       call qswap_local_x_gpu()
+    elseif(x_zeroextrap) then
+      continue
     else
       stop 'GPU halo exchange requires x MPI or homogeneous x direction'
     endif
