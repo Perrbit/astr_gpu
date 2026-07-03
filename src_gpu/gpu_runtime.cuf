@@ -1,0 +1,95 @@
+module gpu_runtime
+  implicit none
+contains
+  subroutine gpu_bind_device()
+    use device_runtime_gpu, only: bind_gpu_device
+    implicit none
+
+    call bind_gpu_device()
+  end subroutine gpu_bind_device
+
+  subroutine gpu_after_refcal()
+    use commvar_gpu, only: copy_commvar_to_gpu
+    implicit none
+
+    call copy_commvar_to_gpu()
+  end subroutine gpu_after_refcal
+
+  subroutine gpu_after_alloc()
+    use commarray_gpu, only: alloc_gpu_arrays
+    implicit none
+
+    call alloc_gpu_arrays()
+  end subroutine gpu_after_alloc
+
+  subroutine gpu_after_flowinit()
+    use mainloop_gpu, only: init_gpu
+    implicit none
+
+    call init_gpu()
+  end subroutine gpu_after_flowinit
+
+  subroutine gpu_sync_flow_to_device()
+    use commarray_gpu, only: copy_flow_to_gpu
+    implicit none
+
+    call copy_flow_to_gpu()
+  end subroutine gpu_sync_flow_to_device
+
+  subroutine gpu_sync_flow_to_host()
+    use commarray_gpu, only: copy_flow_from_gpu
+    implicit none
+
+    call copy_flow_from_gpu()
+  end subroutine gpu_sync_flow_to_host
+
+  subroutine gpu_exchange_solution_halo()
+    use halo_exchange_gpu, only: exchange_solution_halo_gpu
+    implicit none
+
+    call exchange_solution_halo_gpu()
+  end subroutine gpu_exchange_solution_halo
+
+  subroutine gpu_prepare_rkfirst_stats()
+    use mainloop_gpu, only: prepare_rkfirst_stats_gpu
+    implicit none
+
+    call prepare_rkfirst_stats_gpu()
+  end subroutine gpu_prepare_rkfirst_stats
+
+  subroutine gpu_time_integration_rk(first_stage_prepared,copy_back)
+    use mainloop_gpu, only: time_integration_rk_gpu
+    implicit none
+    logical,intent(in),optional :: first_stage_prepared
+    logical,intent(in),optional :: copy_back
+
+    call time_integration_rk_gpu(first_stage_prepared,copy_back)
+  end subroutine gpu_time_integration_rk
+
+  subroutine gpu_write_kenergy()
+    use statistic_gpu, only: statistic_gpu_write_kenergy => gpu_write_kenergy
+    implicit none
+
+    call statistic_gpu_write_kenergy()
+  end subroutine gpu_write_kenergy
+
+  subroutine gpu_write_gradcal_dvel_compare()
+    use gradcal_gpu, only: write_gradcal_dvel_compare
+    implicit none
+
+    call write_gradcal_dvel_compare()
+  end subroutine gpu_write_gradcal_dvel_compare
+
+  subroutine gpu_write_tgv_statistics()
+    use gradcal_gpu, only: compute_gradcal_gpu
+    use statistic_gpu, only: gpu_write_kenergy,gpu_write_enstophy, &
+                             gpu_write_dissipation,gpu_write_flowstate
+    implicit none
+
+    call compute_gradcal_gpu()
+    call gpu_write_flowstate()
+    call gpu_write_kenergy()
+    call gpu_write_enstophy()
+    call gpu_write_dissipation()
+  end subroutine gpu_write_tgv_statistics
+end module gpu_runtime

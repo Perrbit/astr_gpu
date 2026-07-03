@@ -1,0 +1,204 @@
+module mainloop_gpu
+  use cudafor
+  implicit none
+contains
+  subroutine init_gpu()
+    use commarray_gpu, only: copy_flow_to_gpu
+    implicit none
+
+    call copy_flow_to_gpu()
+  end subroutine init_gpu
+
+  subroutine prepare_rkfirst_stats_gpu()
+    use commvar, only: im,jm,km,hm,const2,const6,lfilter
+    use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
+    use gpu_check, only: sync_after_kernel
+    use halo_exchange_gpu, only: exchange_solution_halo_gpu, &
+         exchange_solution_filter_halo_gpu, &
+         exchange_diffusion_flux_halo_gpu
+    use solver_gpu, only: q_to_primitive_kernel, &
+         filter_x_global_kernel,filter_y_pong_to_q_global_kernel, &
+         filter_z_global_kernel,copy_qwork_global_kernel
+    implicit none
+    type(dim3) :: block3,grid3,block1,grid1
+    type(dim3) :: block_x,grid_x,block_y,grid_y,block_z,grid_z
+    integer :: ntot
+
+    call validate_first_stage_gpu()
+
+    ntot = (im + 1) * (jm + 1) * (km + 1)
+    block1 = dim3(256,1,1)
+    grid1 = dim3((ntot + block1%x - 1)/block1%x,1,1)
+    block3 = dim3(8,8,8)
+    grid3 = dim3((im + block3%x)/block3%x, &
+                 (jm + block3%y)/block3%y, &
+                 (km + block3%z)/block3%z)
+    block_x = dim3(512,1,1)
+    grid_x = dim3((im + block_x%x)/block_x%x,jm+1,km+1)
+    block_y = dim3(32,16,1)
+    grid_y = dim3((im + block_y%x)/block_y%x,(jm + block_y%y)/block_y%y,km+1)
+    block_z = dim3(64,1,8)
+    grid_z = dim3((im + block_z%x)/block_z%x,jm+1,(km + block_z%z)/block_z%z)
+
+    if(lfilter) then
+      call exchange_solution_filter_halo_gpu()
+      call filter_x_global_kernel<<<grid_x,block_x>>>(im,jm,km)
+      call sync_after_kernel('prepare_filter_x_global_kernel')
+      call filter_y_pong_to_q_global_kernel<<<grid_y,block_y>>>(im,jm,km)
+      call sync_after_kernel('prepare_filter_y_pong_to_q_global_kernel')
+      call filter_z_global_kernel<<<grid_z,block_z>>>(im,jm,km)
+      call sync_after_kernel('prepare_filter_z_global_kernel')
+      call copy_qwork_global_kernel<<<grid1,block1>>>(im,jm,km)
+      call sync_after_kernel('prepare_copy_qwork_global_kernel')
+    endif
+
+    call q_to_primitive_kernel<<<grid3,block3>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
+    call sync_after_kernel('prepare_q_to_primitive_kernel')
+    call exchange_solution_halo_gpu()
+  end subroutine prepare_rkfirst_stats_gpu
+
+  subroutine time_integration_rk_gpu(first_stage_prepared,copy_back)
+    use commvar, only: im,jm,km,hm,deltat,const2,const5,const6,diffterm,lfilter, &
+         reynolds,prandtl,tempconst,tempconst1
+    use commarray_gpu, only: q_d,qrhs_d,qsave_d,rho_d,vel_d,prs_d,tmp_d, &
+         jacob_d,dxi_d,copy_flow_from_gpu
+    use gpu_check, only: sync_after_kernel
+    use halo_exchange_gpu, only: exchange_solution_halo_gpu, &
+         exchange_solution_filter_halo_gpu, &
+         exchange_diffusion_flux_halo_gpu
+    use solver_gpu, only: q_to_primitive_kernel,zero_rhs_kernel, &
+         save_q_kernel,rk3_update_kernel,convective_rhs_x_kernel, &
+         convective_rhs_y_kernel,convective_rhs_z_kernel, &
+         convective_rhs_x_global_kernel,convective_rhs_y_global_kernel, &
+         convective_rhs_z_global_kernel,rk3_first_update_kernel, &
+         rk3_first_update_global_kernel,rk3_update_global_kernel, &
+         filter_x_global_kernel,filter_y_pong_to_q_global_kernel, &
+         filter_z_global_kernel,copy_qwork_global_kernel, &
+         diffusion_flux_global_kernel,diffusion_rhs_x_stored_global_kernel, &
+         diffusion_rhs_y_stored_global_kernel,diffusion_rhs_z_stored_global_kernel
+    implicit none
+    logical,intent(in),optional :: first_stage_prepared
+    logical,intent(in),optional :: copy_back
+    type(dim3) :: block3,grid3,block1,grid1
+    type(dim3) :: block_x,grid_x,block_y,grid_y,block_z,grid_z
+    integer :: ntot,rkstep
+    real(8),parameter :: rk_a(3) = (/1.d0,0.75d0,1.d0/3.d0/)
+    real(8),parameter :: rk_b(3) = (/0.d0,0.25d0,2.d0/3.d0/)
+    real(8),parameter :: rk_c(3) = (/1.d0,0.25d0,2.d0/3.d0/)
+    logical,save :: warned = .false.
+    logical :: prepared
+    logical :: need_copy_back
+
+    call validate_first_stage_gpu()
+    prepared = .false.
+    if(present(first_stage_prepared)) prepared = first_stage_prepared
+    need_copy_back = .false.
+    if(present(copy_back)) need_copy_back = copy_back
+
+    if(.not.warned) then
+      warned = .true.
+    endif
+
+    ntot = (im + 1) * (jm + 1) * (km + 1)
+    block1 = dim3(256,1,1)
+    grid1 = dim3((ntot + block1%x - 1)/block1%x,1,1)
+    block3 = dim3(8,8,8)
+    grid3 = dim3((im + block3%x)/block3%x, &
+                 (jm + block3%y)/block3%y, &
+                 (km + block3%z)/block3%z)
+
+    block_x = dim3(512,1,1)
+    grid_x = dim3((im + block_x%x)/block_x%x,jm+1,km+1)
+    block_y = dim3(32,16,1)
+    grid_y = dim3((im + block_y%x)/block_y%x,(jm + block_y%y)/block_y%y,km+1)
+    block_z = dim3(64,1,8)
+    grid_z = dim3((im + block_z%x)/block_z%x,jm+1,(km + block_z%z)/block_z%z)
+
+    do rkstep=1,3
+      if(.not.(prepared .and. rkstep == 1)) then
+        if(lfilter) then
+          call exchange_solution_filter_halo_gpu()
+          call filter_x_global_kernel<<<grid_x,block_x>>>(im,jm,km)
+          call sync_after_kernel('filter_x_global_kernel')
+          call filter_y_pong_to_q_global_kernel<<<grid_y,block_y>>>(im,jm,km)
+          call sync_after_kernel('filter_y_pong_to_q_global_kernel')
+          call filter_z_global_kernel<<<grid_z,block_z>>>(im,jm,km)
+          call sync_after_kernel('filter_z_global_kernel')
+          call copy_qwork_global_kernel<<<grid1,block1>>>(im,jm,km)
+          call sync_after_kernel('copy_qwork_global_kernel')
+        endif
+
+        call q_to_primitive_kernel<<<grid3,block3>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
+        call sync_after_kernel('q_to_primitive_kernel')
+        call exchange_solution_halo_gpu()
+      endif
+
+      call zero_rhs_kernel<<<grid1,block1>>>(qrhs_d,im,jm,km)
+      call sync_after_kernel('zero_rhs_kernel')
+      call convective_rhs_x_global_kernel<<<grid_x,block_x>>>(im,jm,km)
+      call sync_after_kernel('convective_rhs_x_global_kernel')
+      call convective_rhs_y_global_kernel<<<grid_y,block_y>>>(im,jm,km)
+      call sync_after_kernel('convective_rhs_y_global_kernel')
+      call convective_rhs_z_global_kernel<<<grid_z,block_z>>>(im,jm,km)
+      call sync_after_kernel('convective_rhs_z_global_kernel')
+
+      if(diffterm) then
+        call diffusion_flux_global_kernel<<<grid3,block3>>>(im,jm,km,reynolds,prandtl,const5,tempconst,tempconst1)
+        call sync_after_kernel('diffusion_flux_global_kernel')
+        call exchange_diffusion_flux_halo_gpu()
+        call diffusion_rhs_x_stored_global_kernel<<<grid_x,block_x>>>(im,jm,km)
+        call sync_after_kernel('diffusion_rhs_x_stored_global_kernel')
+        call diffusion_rhs_y_stored_global_kernel<<<grid_y,block_y>>>(im,jm,km)
+        call sync_after_kernel('diffusion_rhs_y_stored_global_kernel')
+        call diffusion_rhs_z_stored_global_kernel<<<grid_z,block_z>>>(im,jm,km)
+        call sync_after_kernel('diffusion_rhs_z_stored_global_kernel')
+      endif
+
+      if(rkstep == 1) then
+        call rk3_first_update_global_kernel<<<grid1,block1>>>(deltat,im,jm,km)
+        call sync_after_kernel('rk3_first_update_global_kernel')
+      else
+        call rk3_update_global_kernel<<<grid1,block1>>>(deltat, &
+             rk_a(rkstep),rk_b(rkstep),rk_c(rkstep),im,jm,km)
+        call sync_after_kernel('rk3_update_global_kernel')
+      endif
+    enddo
+
+    call q_to_primitive_kernel<<<grid3,block3>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
+    call sync_after_kernel('q_to_primitive_kernel_final')
+    if(need_copy_back) call copy_flow_from_gpu()
+  end subroutine time_integration_rk_gpu
+
+  subroutine validate_first_stage_gpu()
+    use commvar, only: flowtype, numq, ndims, num_species, num_modequ, &
+         turbmode, rkscheme, conschm, difschm, im, jm, km, &
+         lihomo, ljhomo, lkhomo
+    use commarray, only: jacob
+    use parallel, only: mpisize, isize, jsize, ksize
+    implicit none
+    real(8) :: min_jacob,max_jacob
+
+    if(trim(flowtype) /= 'tgv') stop 'GPU first-stage supports flowtype=tgv only'
+    if(numq /= 5) stop 'GPU first-stage supports numq=5 only'
+    if(ndims /= 3) stop 'GPU first-stage supports 3D TGV only'
+    if(num_species /= 0) stop 'GPU first-stage supports num_species=0 only'
+    if(num_modequ /= 0) stop 'GPU first-stage supports num_modequ=0 only'
+    if(trim(turbmode) /= 'none') stop 'GPU first-stage supports turbmode=none only'
+    if(trim(rkscheme) /= 'rk3') stop 'GPU first-stage supports rkscheme=rk3 only'
+    if(trim(conschm) /= '643e') stop 'GPU first-stage supports explicit conschm=643e only'
+    if(trim(difschm) /= '643e') stop 'GPU first-stage supports explicit difschm=643e only'
+    if(jsize /= 1 .or. ksize /= 1) &
+      stop 'GPU first-stage multi-rank supports x-slab topology only'
+    if(mpisize /= isize*jsize*ksize) &
+      stop 'GPU first-stage MPI topology is inconsistent'
+    if(.not.(lihomo .and. ljhomo .and. lkhomo)) &
+      stop 'GPU first-stage qswap requires homogeneous x/y/z directions'
+
+    min_jacob = minval(jacob(0:im,0:jm,0:km))
+    max_jacob = maxval(jacob(0:im,0:jm,0:km))
+    if(min_jacob <= 0.d0) then
+      print *, 'jacob range=', min_jacob, max_jacob
+      stop 'GPU first-stage requires positive jacob'
+    endif
+  end subroutine validate_first_stage_gpu
+end module mainloop_gpu

@@ -479,7 +479,7 @@ module readwrite
                         ninit,rkscheme,spg_def,lchardecomp,             &
                         recon_schem,lrestart,limmbou,solidfile,        &
                         bfacmpld,shkcrt,turbmode,schmidt,ibmode,       &
-                        ltimrpt,testmode
+                        ltimrpt,testmode,use_gpu
     use sponge_layer, only : spg_i0,spg_im,spg_j0,spg_jm,spg_k0,spg_km
     use parallel,only : bcast
     use cmdefne, only : readkeyboad
@@ -487,11 +487,12 @@ module readwrite
     use utility, only : line_2_strings
     !
 #ifdef COMB
+    use commvar, only : lcomb
     use thermchem,only: chemrep,chemread,thermdyn
 #endif
     !
     ! local data
-    logical :: lfex
+    logical :: lfex,lcomb_input
     character(len=64) :: inputfile
     character(len=255) :: lineread
     character(len=20),allocatable :: strings(:)
@@ -521,10 +522,28 @@ module readwrite
       if(ljhomo) write(*,'(A)',advance='no')' j,'
       if(lkhomo) write(*,'(A)')' k'
       read(fh,'(/)')
+      use_gpu = .false.
+      read(fh,'(A)') lineread
 #ifdef COMB
-      read(fh,*)nondimen,diffterm,lfilter,lreadgrid,lfftk,limmbou,ltimrpt,lcomb
+      read(lineread,*,iostat=ios)nondimen,diffterm,lfilter,lreadgrid,lfftk,limmbou,ltimrpt,lcomb,use_gpu
+      if(ios /= 0) then
+        use_gpu = .false.
+        read(lineread,*,iostat=ios)nondimen,diffterm,lfilter,lreadgrid,lfftk,limmbou,ltimrpt,lcomb
+        if(ios /= 0) then
+          lcomb = .false.
+          read(lineread,*)nondimen,diffterm,lfilter,lreadgrid,lfftk,limmbou,ltimrpt
+        endif
+      endif
 #else
-      read(fh,*)nondimen,diffterm,lfilter,lreadgrid,lfftk,limmbou,ltimrpt
+      lcomb_input = .false.
+      read(lineread,*,iostat=ios)nondimen,diffterm,lfilter,lreadgrid,lfftk,limmbou,ltimrpt,lcomb_input,use_gpu
+      if(ios /= 0) then
+        use_gpu = .false.
+        read(lineread,*,iostat=ios)nondimen,diffterm,lfilter,lreadgrid,lfftk,limmbou,ltimrpt,lcomb_input
+        if(ios /= 0) then
+          read(lineread,*)nondimen,diffterm,lfilter,lreadgrid,lfftk,limmbou,ltimrpt
+        endif
+      endif
 #endif
       read(fh,'(/)')
       read(fh,*)lrestart
@@ -652,6 +671,7 @@ module readwrite
     call bcast(limmbou)
     call bcast(lchardecomp)
     call bcast(ltimrpt)
+    call bcast(use_gpu)
     !
     call bcast(lrestart)
     !

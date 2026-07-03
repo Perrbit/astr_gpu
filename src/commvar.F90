@@ -39,6 +39,7 @@ module commvar
   logical :: lihomo,ljhomo,lkhomo
   logical :: nondimen,diffterm,lfilter,lreadgrid,lfftk,limmbou,        &
              lcracon,ltimrpt
+  logical :: use_gpu = .false.
   character(len=3) :: rkscheme
   !+---------------------+---------------------------------------------+
   !| lihomo,ljhomo,lkhomo| to define homogeneous direction.            |

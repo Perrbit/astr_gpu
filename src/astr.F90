@@ -14,6 +14,7 @@ program astr
                            parallelini,parapp
   use readwrite,     only: statement,readinput,fileini,infodisp
   use commarray,     only: allocommarray
+  use commvar,       only: use_gpu
   use solver,        only: refcal
   use initialisation,only: flowinit
   use sponge_layer,  only: spongelayerini
@@ -25,6 +26,10 @@ program astr
   use ibmethod,      only: ibprocess
   use test,          only: codetest
   use comsolver,     only: solvrinit
+#ifdef _CUDA
+  use gpu_runtime,   only: gpu_bind_device,gpu_after_refcal,gpu_after_alloc, &
+                           gpu_after_flowinit
+#endif
 
   implicit none
 
@@ -69,12 +74,19 @@ program astr
     call parallelini
 
     call refcal
+#ifdef _CUDA
+    if(use_gpu) call gpu_bind_device()
+    if(use_gpu) call gpu_after_refcal()
+#endif
 
     call fileini
 
     call infodisp
 
     call allocommarray
+#ifdef _CUDA
+    if(use_gpu) call gpu_after_alloc()
+#endif
 
     call ibprocess
 
@@ -87,6 +99,9 @@ program astr
     call spongelayerini
 
     call flowinit
+#ifdef _CUDA
+    if(use_gpu) call gpu_after_flowinit()
+#endif
 
     call steploop
 

@@ -6,6 +6,7 @@ project(ASTR LANGUAGES Fortran)
 set(AUTHOR "Jian Fang")
 set(AUTHOR_DETAILS "jian.fang@stfc.ac.uk")
 set(DESCRIPTION "Building ASTR using cmake")
+option(ASTR_WITH_CUDA "Build CUDA Fortran GPU support into the ASTR binary" OFF)
 
 message(STATUS "building ${PROJECT_NAME}")
 
@@ -70,6 +71,11 @@ elseif (Fortran_COMPILER_NAME MATCHES "PGI" OR Fortran_COMPILER_NAME MATCHES "NV
   set(CMAKE_Fortran_FLAGS "-Mpreprocess -Mextend -traceback -g -DHDF5 -Mnostack_arrays" CACHE STRING "NVHPC base flags" FORCE)
   set(CMAKE_Fortran_FLAGS_RELEASE "-O2" CACHE STRING "NVHPC release flags" FORCE)
   set(CMAKE_Fortran_FLAGS_DEBUG   "-O0 -g -DDEBG" CACHE STRING "NVHPC debug flags" FORCE)
+  if(ASTR_WITH_CUDA)
+    message(STATUS "Building CUDA-capable ASTR binary")
+    set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -cuda -gpu=rdc" CACHE STRING "NVHPC CUDA Fortran flags" FORCE)
+    add_definitions("-D_CUDA")
+  endif()
 elseif (Fortran_COMPILER_NAME MATCHES "Fujitsu")
   message(STATUS "Setting Fujitsu fortran flags")
   set (CMAKE_Fortran_FLAGS "-Cpp")
@@ -108,6 +114,7 @@ else (MPI_FOUND)
 endif (MPI_FOUND)
 
 set(HDF5_PREFER_PARALLEL TRUE)
+set(HDF5_NO_FIND_PACKAGE_CONFIG_FILE TRUE)
 find_package(HDF5 REQUIRED COMPONENTS Fortran HL)
 
 message(STATUS "HDF5_Fortran_COMPILER found: ${HDF5_Fortran_COMPILER_EXECUTABLE}")

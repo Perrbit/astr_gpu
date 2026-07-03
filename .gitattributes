@@ -1,0 +1,4 @@
+examples/**/datin/input.* text eol=lf
+examples/**/datin/controller text eol=lf
+*.md text eol=lf
+*.sh text eol=lf

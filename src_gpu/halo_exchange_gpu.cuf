@@ -1,0 +1,594 @@
+module halo_exchange_gpu
+  use cudafor
+  implicit none
+
+  integer,parameter :: tag_x_first = 21001
+  integer,parameter :: tag_x_second = 21002
+  integer,parameter :: tag_y_first = 21003
+  integer,parameter :: tag_y_second = 21004
+  integer,parameter :: tag_z_first = 21005
+  integer,parameter :: tag_z_second = 21006
+
+  real(8),allocatable,device :: x_send_left_d(:,:,:,:),x_send_right_d(:,:,:,:)
+  real(8),allocatable,device :: x_recv_right_d(:,:,:,:),x_recv_left_d(:,:,:,:)
+  real(8),allocatable :: x_send_left_h(:,:,:,:),x_send_right_h(:,:,:,:)
+  real(8),allocatable :: x_recv_right_h(:,:,:,:),x_recv_left_h(:,:,:,:)
+  real(8),allocatable,device :: x_halo_send_left_d(:,:,:,:),x_halo_send_right_d(:,:,:,:)
+  real(8),allocatable,device :: x_halo_recv_right_d(:,:,:,:),x_halo_recv_left_d(:,:,:,:)
+  real(8),allocatable :: x_halo_send_left_h(:,:,:,:),x_halo_send_right_h(:,:,:,:)
+  real(8),allocatable :: x_halo_recv_right_h(:,:,:,:),x_halo_recv_left_h(:,:,:,:)
+  real(8),allocatable,device :: field_send_left_d(:,:,:,:),field_send_right_d(:,:,:,:)
+  real(8),allocatable,device :: field_recv_right_d(:,:,:,:),field_recv_left_d(:,:,:,:)
+  real(8),allocatable :: field_send_left_h(:,:,:,:),field_send_right_h(:,:,:,:)
+  real(8),allocatable :: field_recv_right_h(:,:,:,:),field_recv_left_h(:,:,:,:)
+contains
+  attributes(global) subroutine pack_x_left_kernel(sendbuf,im,jm,km,hm,numq)
+    use commarray_gpu, only: q_d
+    implicit none
+    integer,value :: im,jm,km,hm,numq
+    real(8),device :: sendbuf(0:hm,0:jm,0:km,1:numq)
+    integer :: id,h,j,k,m,n1,n2,n3
+
+    n1 = hm + 1
+    n2 = jm + 1
+    n3 = km + 1
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    if(id >= n1*n2*n3*numq) return
+
+    h = mod(id,n1)
+    j = mod(id/n1,n2)
+    k = mod(id/(n1*n2),n3)
+    m = id/(n1*n2*n3) + 1
+    sendbuf(h,j,k,m) = q_d(h,j,k,m)
+  end subroutine pack_x_left_kernel
+
+  attributes(global) subroutine pack_x_right_kernel(sendbuf,im,jm,km,hm,numq)
+    use commarray_gpu, only: q_d
+    implicit none
+    integer,value :: im,jm,km,hm,numq
+    real(8),device :: sendbuf(0:hm,0:jm,0:km,1:numq)
+    integer :: id,h,j,k,m,n1,n2,n3
+
+    n1 = hm + 1
+    n2 = jm + 1
+    n3 = km + 1
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    if(id >= n1*n2*n3*numq) return
+
+    h = mod(id,n1)
+    j = mod(id/n1,n2)
+    k = mod(id/(n1*n2),n3)
+    m = id/(n1*n2*n3) + 1
+    sendbuf(h,j,k,m) = q_d(im-hm+h,j,k,m)
+  end subroutine pack_x_right_kernel
+
+  attributes(global) subroutine unpack_x_kernel(recv_right,recv_left,im,jm,km,hm,numq)
+    use commarray_gpu, only: q_d
+    implicit none
+    integer,value :: im,jm,km,hm,numq
+    real(8),device :: recv_right(0:hm,0:jm,0:km,1:numq)
+    real(8),device :: recv_left(0:hm,0:jm,0:km,1:numq)
+    integer :: id,h,j,k,m,nplane
+
+    nplane = (jm + 1) * (km + 1) * numq
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    if(id >= nplane) return
+
+    j = mod(id,jm+1)
+    k = mod(id/(jm+1),km+1)
+    m = id/((jm+1)*(km+1)) + 1
+
+    do h=1,hm
+      q_d(im+h,j,k,m) = recv_right(h,j,k,m)
+    enddo
+    q_d(im,j,k,m) = 0.5d0 * (q_d(im,j,k,m) + recv_right(0,j,k,m))
+
+    do h=0,hm-1
+      q_d(-hm+h,j,k,m) = recv_left(h,j,k,m)
+    enddo
+    q_d(0,j,k,m) = 0.5d0 * (q_d(0,j,k,m) + recv_left(hm,j,k,m))
+  end subroutine unpack_x_kernel
+
+  attributes(global) subroutine pack_x_halo_left_kernel(sendbuf,im,jm,km,hm,numq)
+    use commarray_gpu, only: q_d
+    implicit none
+    integer,value :: im,jm,km,hm,numq
+    real(8),device :: sendbuf(0:hm-1,0:jm,0:km,1:numq)
+    integer :: id,h,j,k,m,n1,n2,n3
+
+    n1 = hm
+    n2 = jm + 1
+    n3 = km + 1
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    if(id >= n1*n2*n3*numq) return
+
+    h = mod(id,n1)
+    j = mod(id/n1,n2)
+    k = mod(id/(n1*n2),n3)
+    m = id/(n1*n2*n3) + 1
+    sendbuf(h,j,k,m) = q_d(h+1,j,k,m)
+  end subroutine pack_x_halo_left_kernel
+
+  attributes(global) subroutine pack_x_halo_right_kernel(sendbuf,im,jm,km,hm,numq)
+    use commarray_gpu, only: q_d
+    implicit none
+    integer,value :: im,jm,km,hm,numq
+    real(8),device :: sendbuf(0:hm-1,0:jm,0:km,1:numq)
+    integer :: id,h,j,k,m,n1,n2,n3
+
+    n1 = hm
+    n2 = jm + 1
+    n3 = km + 1
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    if(id >= n1*n2*n3*numq) return
+
+    h = mod(id,n1)
+    j = mod(id/n1,n2)
+    k = mod(id/(n1*n2),n3)
+    m = id/(n1*n2*n3) + 1
+    sendbuf(h,j,k,m) = q_d(im-hm+h,j,k,m)
+  end subroutine pack_x_halo_right_kernel
+
+  attributes(global) subroutine unpack_x_halo_kernel(recv_right,recv_left,im,jm,km,hm,numq)
+    use commarray_gpu, only: q_d
+    implicit none
+    integer,value :: im,jm,km,hm,numq
+    real(8),device :: recv_right(0:hm-1,0:jm,0:km,1:numq)
+    real(8),device :: recv_left(0:hm-1,0:jm,0:km,1:numq)
+    integer :: id,h,j,k,m,nplane
+
+    nplane = (jm + 1) * (km + 1) * numq
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    if(id >= nplane) return
+
+    j = mod(id,jm+1)
+    k = mod(id/(jm+1),km+1)
+    m = id/((jm+1)*(km+1)) + 1
+
+    do h=0,hm-1
+      q_d(im+1+h,j,k,m) = recv_right(h,j,k,m)
+      q_d(-hm+h,j,k,m) = recv_left(h,j,k,m)
+    enddo
+  end subroutine unpack_x_halo_kernel
+
+  attributes(global) subroutine q_halo_local_x_kernel(im,jm,km,hm,numq)
+    use commarray_gpu, only: q_d
+    implicit none
+    integer,value :: im,jm,km,hm,numq
+    integer :: id,j,k,m,h,nplane
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (jm + 1) * (km + 1) * numq
+    if(id >= nplane) return
+    j = mod(id,jm+1)
+    k = mod(id/(jm+1),km+1)
+    m = id/((jm+1)*(km+1)) + 1
+
+    do h=1,hm
+      q_d(-h,j,k,m) = q_d(im-h,j,k,m)
+      q_d(im+h,j,k,m) = q_d(h,j,k,m)
+    enddo
+  end subroutine q_halo_local_x_kernel
+
+  attributes(global) subroutine pack_field_x_left_kernel(field,sendbuf,im,jm,km,hm,nvar)
+    implicit none
+    integer,value :: im,jm,km,hm,nvar
+    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    real(8),device :: sendbuf(0:hm,0:jm,0:km,1:nvar)
+    integer :: id,h,j,k,m,n1,n2,n3
+
+    n1 = hm + 1
+    n2 = jm + 1
+    n3 = km + 1
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    if(id >= n1*n2*n3*nvar) return
+
+    h = mod(id,n1)
+    j = mod(id/n1,n2)
+    k = mod(id/(n1*n2),n3)
+    m = id/(n1*n2*n3) + 1
+    sendbuf(h,j,k,m) = field(h,j,k,m)
+  end subroutine pack_field_x_left_kernel
+
+  attributes(global) subroutine pack_field_x_right_kernel(field,sendbuf,im,jm,km,hm,nvar)
+    implicit none
+    integer,value :: im,jm,km,hm,nvar
+    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    real(8),device :: sendbuf(0:hm,0:jm,0:km,1:nvar)
+    integer :: id,h,j,k,m,n1,n2,n3
+
+    n1 = hm + 1
+    n2 = jm + 1
+    n3 = km + 1
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    if(id >= n1*n2*n3*nvar) return
+
+    h = mod(id,n1)
+    j = mod(id/n1,n2)
+    k = mod(id/(n1*n2),n3)
+    m = id/(n1*n2*n3) + 1
+    sendbuf(h,j,k,m) = field(im-hm+h,j,k,m)
+  end subroutine pack_field_x_right_kernel
+
+  attributes(global) subroutine unpack_field_x_kernel(field,recv_right,recv_left,im,jm,km,hm,nvar)
+    implicit none
+    integer,value :: im,jm,km,hm,nvar
+    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    real(8),device :: recv_right(0:hm,0:jm,0:km,1:nvar)
+    real(8),device :: recv_left(0:hm,0:jm,0:km,1:nvar)
+    integer :: id,h,j,k,m,nplane
+
+    nplane = (jm + 1) * (km + 1) * nvar
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    if(id >= nplane) return
+
+    j = mod(id,jm+1)
+    k = mod(id/(jm+1),km+1)
+    m = id/((jm+1)*(km+1)) + 1
+
+    do h=1,hm
+      field(im+h,j,k,m) = recv_right(h,j,k,m)
+    enddo
+    field(im,j,k,m) = 0.5d0 * (field(im,j,k,m) + recv_right(0,j,k,m))
+
+    do h=0,hm-1
+      field(-hm+h,j,k,m) = recv_left(h,j,k,m)
+    enddo
+    field(0,j,k,m) = 0.5d0 * (field(0,j,k,m) + recv_left(hm,j,k,m))
+  end subroutine unpack_field_x_kernel
+
+  attributes(global) subroutine field_qswap_x_kernel(field,im,jm,km,hm,nvar)
+    implicit none
+    integer,value :: im,jm,km,hm,nvar
+    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    integer :: id,j,k,m,h,nplane
+    real(8) :: avg
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (jm + 1) * (km + 1) * nvar
+    if(id >= nplane) return
+    j = mod(id,jm+1)
+    k = mod(id/(jm+1),km+1)
+    m = id/((jm+1)*(km+1)) + 1
+
+    do h=1,hm
+      field(-h,j,k,m) = field(im-h,j,k,m)
+      field(im+h,j,k,m) = field(h,j,k,m)
+    enddo
+    avg = 0.5d0 * (field(0,j,k,m) + field(im,j,k,m))
+    field(0,j,k,m) = avg
+    field(im,j,k,m) = avg
+  end subroutine field_qswap_x_kernel
+
+  attributes(global) subroutine field_qswap_y_kernel(field,im,jm,km,hm,nvar)
+    implicit none
+    integer,value :: im,jm,km,hm,nvar
+    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    integer :: id,i,k,m,h,nplane
+    real(8) :: avg
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (im + 1) * (km + 1) * nvar
+    if(id >= nplane) return
+    i = mod(id,im+1)
+    k = mod(id/(im+1),km+1)
+    m = id/((im+1)*(km+1)) + 1
+
+    do h=1,hm
+      field(i,-h,k,m) = field(i,jm-h,k,m)
+      field(i,jm+h,k,m) = field(i,h,k,m)
+    enddo
+    avg = 0.5d0 * (field(i,0,k,m) + field(i,jm,k,m))
+    field(i,0,k,m) = avg
+    field(i,jm,k,m) = avg
+  end subroutine field_qswap_y_kernel
+
+  attributes(global) subroutine field_qswap_z_kernel(field,im,jm,km,hm,nvar)
+    implicit none
+    integer,value :: im,jm,km,hm,nvar
+    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    integer :: id,i,j,m,h,nplane
+    real(8) :: avg
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (im + 1) * (jm + 1) * nvar
+    if(id >= nplane) return
+    i = mod(id,im+1)
+    j = mod(id/(im+1),jm+1)
+    m = id/((im+1)*(jm+1)) + 1
+
+    do h=1,hm
+      field(i,j,-h,m) = field(i,j,km-h,m)
+      field(i,j,km+h,m) = field(i,j,h,m)
+    enddo
+    avg = 0.5d0 * (field(i,j,0,m) + field(i,j,km,m))
+    field(i,j,0,m) = avg
+    field(i,j,km,m) = avg
+  end subroutine field_qswap_z_kernel
+
+  subroutine exchange_solution_halo_gpu()
+    use commvar, only: lihomo,ljhomo,lkhomo
+    use parallel, only: isize,jsize,ksize
+    use qswap_gpu, only: qswap_single_rank_gpu,qswap_local_x_gpu, &
+                         qswap_local_y_gpu,qswap_local_z_gpu, &
+                         refresh_primitive_halo_gpu
+    implicit none
+
+    if(isize==1 .and. jsize==1 .and. ksize==1) then
+      call qswap_single_rank_gpu()
+      return
+    endif
+
+    if(isize>1) then
+      call exchange_x_halo_gpu()
+    elseif(lihomo) then
+      call qswap_local_x_gpu()
+    else
+      stop 'GPU halo exchange requires x MPI or homogeneous x direction'
+    endif
+
+    if(jsize>1) then
+      stop 'GPU y-direction MPI halo exchange is not implemented yet'
+    elseif(ljhomo) then
+      call qswap_local_y_gpu()
+    else
+      stop 'GPU halo exchange requires y MPI or homogeneous y direction'
+    endif
+
+    if(ksize>1) then
+      stop 'GPU z-direction MPI halo exchange is not implemented yet'
+    elseif(lkhomo) then
+      call qswap_local_z_gpu()
+    else
+      stop 'GPU halo exchange requires z MPI or homogeneous z direction'
+    endif
+
+    call refresh_primitive_halo_gpu()
+  end subroutine exchange_solution_halo_gpu
+
+  subroutine exchange_solution_filter_halo_gpu()
+    use commvar, only: im,jm,km,hm,numq,lihomo
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: isize,jsize,ksize
+    implicit none
+    type(dim3) :: block,grid
+    integer :: n
+
+    if(jsize/=1 .or. ksize/=1) &
+      stop 'GPU filter halo currently supports x-slab topology only'
+
+    if(isize>1) then
+      call exchange_x_filter_halo_gpu()
+    elseif(lihomo) then
+      block = dim3(256,1,1)
+      n = (jm + 1) * (km + 1) * numq
+      grid = dim3((n + block%x - 1)/block%x,1,1)
+      call q_halo_local_x_kernel<<<grid,block>>>(im,jm,km,hm,numq)
+      call sync_after_kernel('q_halo_local_x_kernel')
+    endif
+  end subroutine exchange_solution_filter_halo_gpu
+
+  subroutine exchange_x_halo_gpu()
+    use mpi
+    use commvar, only: im,jm,km,hm,numq
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: mpileft,mpiright,status
+    implicit none
+
+    type(dim3) :: block,grid
+    integer :: ncou,ierr,npack,nunpack
+
+    call ensure_x_buffers()
+
+    npack = (hm + 1) * (jm + 1) * (km + 1) * numq
+    block = dim3(256,1,1)
+    grid = dim3((npack + block%x - 1)/block%x,1,1)
+
+    call pack_x_left_kernel<<<grid,block>>>(x_send_left_d,im,jm,km,hm,numq)
+    call sync_after_kernel('pack_x_left_kernel')
+    call pack_x_right_kernel<<<grid,block>>>(x_send_right_d,im,jm,km,hm,numq)
+    call sync_after_kernel('pack_x_right_kernel')
+
+    x_send_left_h = x_send_left_d
+    x_send_right_h = x_send_right_d
+
+    ncou = size(x_send_left_h)
+    call mpi_sendrecv(x_send_left_h,ncou,mpi_real8,mpileft, tag_x_first, &
+                      x_recv_right_h,ncou,mpi_real8,mpiright,tag_x_first, &
+                      mpi_comm_world,status,ierr)
+    call mpi_sendrecv(x_send_right_h,ncou,mpi_real8,mpiright,tag_x_second, &
+                      x_recv_left_h, ncou,mpi_real8,mpileft, tag_x_second, &
+                      mpi_comm_world,status,ierr)
+
+    x_recv_right_d = x_recv_right_h
+    x_recv_left_d = x_recv_left_h
+
+    nunpack = (jm + 1) * (km + 1) * numq
+    grid = dim3((nunpack + block%x - 1)/block%x,1,1)
+    call unpack_x_kernel<<<grid,block>>>(x_recv_right_d,x_recv_left_d,im,jm,km,hm,numq)
+    call sync_after_kernel('unpack_x_kernel')
+  end subroutine exchange_x_halo_gpu
+
+  subroutine exchange_x_filter_halo_gpu()
+    use mpi
+    use commvar, only: im,jm,km,hm,numq
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: mpileft,mpiright,status
+    implicit none
+
+    type(dim3) :: block,grid
+    integer :: ncou,ierr,npack,nunpack
+
+    call ensure_x_filter_buffers()
+
+    npack = hm * (jm + 1) * (km + 1) * numq
+    block = dim3(256,1,1)
+    grid = dim3((npack + block%x - 1)/block%x,1,1)
+
+    call pack_x_halo_left_kernel<<<grid,block>>>(x_halo_send_left_d,im,jm,km,hm,numq)
+    call sync_after_kernel('pack_x_halo_left_kernel')
+    call pack_x_halo_right_kernel<<<grid,block>>>(x_halo_send_right_d,im,jm,km,hm,numq)
+    call sync_after_kernel('pack_x_halo_right_kernel')
+
+    x_halo_send_left_h = x_halo_send_left_d
+    x_halo_send_right_h = x_halo_send_right_d
+
+    ncou = size(x_halo_send_left_h)
+    call mpi_sendrecv(x_halo_send_left_h,ncou,mpi_real8,mpileft, tag_x_first, &
+                      x_halo_recv_right_h,ncou,mpi_real8,mpiright,tag_x_first, &
+                      mpi_comm_world,status,ierr)
+    call mpi_sendrecv(x_halo_send_right_h,ncou,mpi_real8,mpiright,tag_x_second, &
+                      x_halo_recv_left_h, ncou,mpi_real8,mpileft, tag_x_second, &
+                      mpi_comm_world,status,ierr)
+
+    x_halo_recv_right_d = x_halo_recv_right_h
+    x_halo_recv_left_d = x_halo_recv_left_h
+
+    nunpack = (jm + 1) * (km + 1) * numq
+    grid = dim3((nunpack + block%x - 1)/block%x,1,1)
+    call unpack_x_halo_kernel<<<grid,block>>>(x_halo_recv_right_d,x_halo_recv_left_d, &
+                                              im,jm,km,hm,numq)
+    call sync_after_kernel('unpack_x_halo_kernel')
+  end subroutine exchange_x_filter_halo_gpu
+
+  subroutine exchange_diffusion_flux_halo_gpu()
+    use commarray_gpu, only: sigma_d,qflux_d
+    implicit none
+
+    call exchange_field_halo_gpu(sigma_d,6)
+    call exchange_field_halo_gpu(qflux_d,3)
+  end subroutine exchange_diffusion_flux_halo_gpu
+
+  subroutine exchange_field_halo_gpu(field,nvar)
+    use commvar, only: im,jm,km,hm
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: isize,jsize,ksize
+    implicit none
+
+    integer,intent(in) :: nvar
+    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    type(dim3) :: block,grid
+    integer :: n
+
+    block = dim3(256,1,1)
+
+    if(isize>1) then
+      call exchange_field_x_halo_gpu(field,nvar)
+    else
+      n = (jm + 1) * (km + 1) * nvar
+      grid = dim3((n + block%x - 1)/block%x,1,1)
+      call field_qswap_x_kernel<<<grid,block>>>(field,im,jm,km,hm,nvar)
+      call sync_after_kernel('field_qswap_x_kernel')
+    endif
+
+    if(jsize>1) stop 'GPU field y-direction MPI halo exchange is not implemented yet'
+    n = (im + 1) * (km + 1) * nvar
+    grid = dim3((n + block%x - 1)/block%x,1,1)
+    call field_qswap_y_kernel<<<grid,block>>>(field,im,jm,km,hm,nvar)
+    call sync_after_kernel('field_qswap_y_kernel')
+
+    if(ksize>1) stop 'GPU field z-direction MPI halo exchange is not implemented yet'
+    n = (im + 1) * (jm + 1) * nvar
+    grid = dim3((n + block%x - 1)/block%x,1,1)
+    call field_qswap_z_kernel<<<grid,block>>>(field,im,jm,km,hm,nvar)
+    call sync_after_kernel('field_qswap_z_kernel')
+  end subroutine exchange_field_halo_gpu
+
+  subroutine exchange_field_x_halo_gpu(field,nvar)
+    use mpi
+    use commvar, only: im,jm,km,hm
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: mpileft,mpiright,status
+    implicit none
+
+    integer,intent(in) :: nvar
+    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    type(dim3) :: block,grid
+    integer :: ncou,ierr,npack,nunpack
+
+    call ensure_field_buffers(nvar)
+
+    npack = (hm + 1) * (jm + 1) * (km + 1) * nvar
+    block = dim3(256,1,1)
+    grid = dim3((npack + block%x - 1)/block%x,1,1)
+
+    call pack_field_x_left_kernel<<<grid,block>>>(field,field_send_left_d,im,jm,km,hm,nvar)
+    call sync_after_kernel('pack_field_x_left_kernel')
+    call pack_field_x_right_kernel<<<grid,block>>>(field,field_send_right_d,im,jm,km,hm,nvar)
+    call sync_after_kernel('pack_field_x_right_kernel')
+
+    field_send_left_h(:,:,:,1:nvar) = field_send_left_d(:,:,:,1:nvar)
+    field_send_right_h(:,:,:,1:nvar) = field_send_right_d(:,:,:,1:nvar)
+
+    ncou = (hm + 1) * (jm + 1) * (km + 1) * nvar
+    call mpi_sendrecv(field_send_left_h(:,:,:,1:nvar),ncou,mpi_real8,mpileft, tag_x_first, &
+                      field_recv_right_h(:,:,:,1:nvar),ncou,mpi_real8,mpiright,tag_x_first, &
+                      mpi_comm_world,status,ierr)
+    call mpi_sendrecv(field_send_right_h(:,:,:,1:nvar),ncou,mpi_real8,mpiright,tag_x_second, &
+                      field_recv_left_h(:,:,:,1:nvar), ncou,mpi_real8,mpileft, tag_x_second, &
+                      mpi_comm_world,status,ierr)
+
+    field_recv_right_d(:,:,:,1:nvar) = field_recv_right_h(:,:,:,1:nvar)
+    field_recv_left_d(:,:,:,1:nvar) = field_recv_left_h(:,:,:,1:nvar)
+
+    nunpack = (jm + 1) * (km + 1) * nvar
+    grid = dim3((nunpack + block%x - 1)/block%x,1,1)
+    call unpack_field_x_kernel<<<grid,block>>>(field,field_recv_right_d,field_recv_left_d, &
+                                               im,jm,km,hm,nvar)
+    call sync_after_kernel('unpack_field_x_kernel')
+  end subroutine exchange_field_x_halo_gpu
+
+  subroutine ensure_x_buffers()
+    use commvar, only: jm,km,hm,numq
+    implicit none
+
+    if(allocated(x_send_left_d)) return
+
+    allocate(x_send_left_d(0:hm,0:jm,0:km,1:numq))
+    allocate(x_send_right_d(0:hm,0:jm,0:km,1:numq))
+    allocate(x_recv_right_d(0:hm,0:jm,0:km,1:numq))
+    allocate(x_recv_left_d(0:hm,0:jm,0:km,1:numq))
+
+    allocate(x_send_left_h(0:hm,0:jm,0:km,1:numq))
+    allocate(x_send_right_h(0:hm,0:jm,0:km,1:numq))
+    allocate(x_recv_right_h(0:hm,0:jm,0:km,1:numq))
+    allocate(x_recv_left_h(0:hm,0:jm,0:km,1:numq))
+  end subroutine ensure_x_buffers
+
+  subroutine ensure_x_filter_buffers()
+    use commvar, only: jm,km,hm,numq
+    implicit none
+
+    if(allocated(x_halo_send_left_d)) return
+
+    allocate(x_halo_send_left_d(0:hm-1,0:jm,0:km,1:numq))
+    allocate(x_halo_send_right_d(0:hm-1,0:jm,0:km,1:numq))
+    allocate(x_halo_recv_right_d(0:hm-1,0:jm,0:km,1:numq))
+    allocate(x_halo_recv_left_d(0:hm-1,0:jm,0:km,1:numq))
+
+    allocate(x_halo_send_left_h(0:hm-1,0:jm,0:km,1:numq))
+    allocate(x_halo_send_right_h(0:hm-1,0:jm,0:km,1:numq))
+    allocate(x_halo_recv_right_h(0:hm-1,0:jm,0:km,1:numq))
+    allocate(x_halo_recv_left_h(0:hm-1,0:jm,0:km,1:numq))
+  end subroutine ensure_x_filter_buffers
+
+  subroutine ensure_field_buffers(nvar)
+    use commvar, only: jm,km,hm
+    implicit none
+    integer,intent(in) :: nvar
+    integer,parameter :: max_field_vars = 6
+
+    if(nvar>max_field_vars) stop 'GPU field halo buffer nvar exceeds max_field_vars'
+    if(allocated(field_send_left_d)) return
+
+    allocate(field_send_left_d(0:hm,0:jm,0:km,1:max_field_vars))
+    allocate(field_send_right_d(0:hm,0:jm,0:km,1:max_field_vars))
+    allocate(field_recv_right_d(0:hm,0:jm,0:km,1:max_field_vars))
+    allocate(field_recv_left_d(0:hm,0:jm,0:km,1:max_field_vars))
+
+    allocate(field_send_left_h(0:hm,0:jm,0:km,1:max_field_vars))
+    allocate(field_send_right_h(0:hm,0:jm,0:km,1:max_field_vars))
+    allocate(field_recv_right_h(0:hm,0:jm,0:km,1:max_field_vars))
+    allocate(field_recv_left_h(0:hm,0:jm,0:km,1:max_field_vars))
+  end subroutine ensure_field_buffers
+end module halo_exchange_gpu

@@ -1,0 +1,349 @@
+module statistic_gpu
+  use cudafor
+  implicit none
+contains
+  attributes(global) subroutine kenergy_partial_kernel(rho,vel,partial,im,jm,km,hm)
+    implicit none
+    integer,value :: im,jm,km,hm
+    real(8),device :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device :: partial(:)
+    real(8),shared :: scratch(256)
+    integer :: tid,id,stride,ncell,i,j,k
+    real(8) :: local,usq
+
+    tid = threadIdx%x
+    id = (blockIdx%x - 1) * blockDim%x + tid - 1
+    stride = gridDim%x * blockDim%x
+    ncell = im * jm * km
+    local = 0.d0
+
+    do while(id < ncell)
+      i = mod(id,im) + 1
+      j = mod(id/im,jm) + 1
+      k = id/(im*jm) + 1
+      usq = vel(i,j,k,1)**2 + vel(i,j,k,2)**2 + vel(i,j,k,3)**2
+      local = local + rho(i,j,k) * usq
+      id = id + stride
+    enddo
+
+    scratch(tid) = local
+    call syncthreads()
+
+    stride = blockDim%x / 2
+    do while(stride > 0)
+      if(tid <= stride) scratch(tid) = scratch(tid) + scratch(tid + stride)
+      call syncthreads()
+      stride = stride / 2
+    enddo
+
+    if(tid == 1) partial(blockIdx%x) = scratch(1)
+  end subroutine kenergy_partial_kernel
+
+  attributes(global) subroutine enstophy_partial_kernel(rho,dvel,partial,im,jm,km,hm)
+    implicit none
+    integer,value :: im,jm,km,hm
+    real(8),device :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
+    real(8),device :: partial(:)
+    real(8),shared :: scratch(256)
+    integer :: tid,id,stride,ncell,i,j,k
+    real(8) :: local,omega1,omega2,omega3,omegam
+
+    tid = threadIdx%x
+    id = (blockIdx%x - 1) * blockDim%x + tid - 1
+    stride = gridDim%x * blockDim%x
+    ncell = im * jm * km
+    local = 0.d0
+
+    do while(id < ncell)
+      i = mod(id,im) + 1
+      j = mod(id/im,jm) + 1
+      k = id/(im*jm) + 1
+      omega1 = dvel(i,j,k,3,2) - dvel(i,j,k,2,3)
+      omega2 = dvel(i,j,k,1,3) - dvel(i,j,k,3,1)
+      omega3 = dvel(i,j,k,2,1) - dvel(i,j,k,1,2)
+      omegam = omega1*omega1 + omega2*omega2 + omega3*omega3
+      local = local + rho(i,j,k) * omegam
+      id = id + stride
+    enddo
+
+    scratch(tid) = local
+    call syncthreads()
+
+    stride = blockDim%x / 2
+    do while(stride > 0)
+      if(tid <= stride) scratch(tid) = scratch(tid) + scratch(tid + stride)
+      call syncthreads()
+      stride = stride / 2
+    enddo
+
+    if(tid == 1) partial(blockIdx%x) = scratch(1)
+  end subroutine enstophy_partial_kernel
+
+  attributes(global) subroutine dissipation_partial_kernel(tmp,dvel,partial,im,jm,km,hm, &
+       tempconst,tempconst1,reynolds,nondimen)
+    implicit none
+    integer,value :: im,jm,km,hm
+    real(8),value :: tempconst,tempconst1,reynolds
+    logical,value :: nondimen
+    real(8),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
+    real(8),device :: partial(:)
+    real(8),shared :: scratch(256)
+    integer :: tid,id,stride,ncell,i,j,k
+    real(8) :: local,tloc,miu,du11,du12,du13,du21,du22,du23,du31,du32,du33
+    real(8) :: s11,s12,s13,s22,s23,s33,div
+
+    tid = threadIdx%x
+    id = (blockIdx%x - 1) * blockDim%x + tid - 1
+    stride = gridDim%x * blockDim%x
+    ncell = im * jm * km
+    local = 0.d0
+
+    do while(id < ncell)
+      i = mod(id,im) + 1
+      j = mod(id/im,jm) + 1
+      k = id/(im*jm) + 1
+
+      tloc = tmp(i,j,k)
+      if(nondimen) then
+        miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
+      else
+        miu = 1.716d-5*(tloc/273.15d0)*sqrt(tloc/273.15d0)*(273.15d0+110.4d0)/(tloc+110.4d0)
+      endif
+
+      du11=dvel(i,j,k,1,1); du12=dvel(i,j,k,1,2); du13=dvel(i,j,k,1,3)
+      du21=dvel(i,j,k,2,1); du22=dvel(i,j,k,2,2); du23=dvel(i,j,k,2,3)
+      du31=dvel(i,j,k,3,1); du32=dvel(i,j,k,3,2); du33=dvel(i,j,k,3,3)
+      s11=du11; s12=0.5d0*(du12+du21); s13=0.5d0*(du13+du31)
+      s22=du22; s23=0.5d0*(du23+du32); s33=du33
+      div=s11+s22+s33
+      local = local + 2.d0*miu*(s11**2+s22**2+s33**2+ &
+              2.d0*(s12**2+s13**2+s23**2) - div**2/3.d0)
+      id = id + stride
+    enddo
+
+    scratch(tid) = local
+    call syncthreads()
+
+    stride = blockDim%x / 2
+    do while(stride > 0)
+      if(tid <= stride) scratch(tid) = scratch(tid) + scratch(tid + stride)
+      call syncthreads()
+      stride = stride / 2
+    enddo
+
+    if(tid == 1) partial(blockIdx%x) = scratch(1)
+  end subroutine dissipation_partial_kernel
+
+  subroutine gpu_kenergy_scalar(kenergy_gpu)
+    use mpi
+    use commvar, only: im,jm,km,hm,ia,ja,ka,roinf,uinf
+    use commarray_gpu, only: rho_d,vel_d
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: mpisize
+    implicit none
+    real(8),intent(out) :: kenergy_gpu
+    integer,parameter :: block_size = 256
+    integer :: ncell,nblocks,ierr
+    real(8) :: local_sum,global_sum
+    real(8),allocatable,device :: partial_d(:)
+    real(8),allocatable :: partial_h(:)
+
+    ncell = im * jm * km
+    nblocks = max(1,(ncell + block_size - 1) / block_size)
+    allocate(partial_d(nblocks))
+    allocate(partial_h(nblocks))
+
+    call kenergy_partial_kernel<<<nblocks,block_size>>>(rho_d,vel_d,partial_d,im,jm,km,hm)
+    call sync_after_kernel('kenergy_partial_kernel')
+    partial_h = partial_d
+
+    local_sum = sum(partial_h)
+    if(mpisize>1) then
+      call mpi_allreduce(local_sum,global_sum,1,mpi_real8,mpi_sum,mpi_comm_world,ierr)
+    else
+      global_sum = local_sum
+    endif
+
+    kenergy_gpu = 0.5d0 * global_sum / real(ia*ja*ka,8)
+    kenergy_gpu = kenergy_gpu / (roinf * uinf * uinf)
+
+    deallocate(partial_d,partial_h)
+  end subroutine gpu_kenergy_scalar
+
+  subroutine gpu_enstophy_scalar(enstophy_gpu)
+    use mpi
+    use constdef, only: pi
+    use commvar, only: im,jm,km,hm,ia,ja,ka,roinf,uinf,xmax
+    use commarray_gpu, only: rho_d,dvel_d
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: mpisize
+    implicit none
+    real(8),intent(out) :: enstophy_gpu
+    integer,parameter :: block_size = 256
+    integer :: ncell,nblocks,ierr
+    real(8) :: l0,local_sum,global_sum
+    real(8),allocatable,device :: partial_d(:)
+    real(8),allocatable :: partial_h(:)
+
+    ncell = im * jm * km
+    nblocks = max(1,(ncell + block_size - 1) / block_size)
+    allocate(partial_d(nblocks))
+    allocate(partial_h(nblocks))
+
+    call enstophy_partial_kernel<<<nblocks,block_size>>>(rho_d,dvel_d,partial_d,im,jm,km,hm)
+    call sync_after_kernel('enstophy_partial_kernel')
+    partial_h = partial_d
+
+    local_sum = sum(partial_h)
+    if(mpisize>1) then
+      call mpi_allreduce(local_sum,global_sum,1,mpi_real8,mpi_sum,mpi_comm_world,ierr)
+    else
+      global_sum = local_sum
+    endif
+
+    enstophy_gpu = 0.5d0 * global_sum / real(ia*ja*ka,8)
+    l0 = xmax / (2.d0*pi)
+    enstophy_gpu = enstophy_gpu / (roinf * (uinf/l0)**2)
+
+    deallocate(partial_d,partial_h)
+  end subroutine gpu_enstophy_scalar
+
+  subroutine gpu_dissipation_scalar(dissipation_gpu)
+    use mpi
+    use commvar, only: im,jm,km,hm,ia,ja,ka,tempconst,tempconst1,reynolds,nondimen
+    use commarray_gpu, only: tmp_d,dvel_d
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: mpisize
+    implicit none
+    real(8),intent(out) :: dissipation_gpu
+    integer,parameter :: block_size = 256
+    integer :: ncell,nblocks,ierr
+    real(8) :: local_sum,global_sum
+    real(8),allocatable,device :: partial_d(:)
+    real(8),allocatable :: partial_h(:)
+
+    ncell = im * jm * km
+    nblocks = max(1,(ncell + block_size - 1) / block_size)
+    allocate(partial_d(nblocks))
+    allocate(partial_h(nblocks))
+
+    call dissipation_partial_kernel<<<nblocks,block_size>>>(tmp_d,dvel_d,partial_d,im,jm,km,hm, &
+         tempconst,tempconst1,reynolds,nondimen)
+    call sync_after_kernel('dissipation_partial_kernel')
+    partial_h = partial_d
+
+    local_sum = sum(partial_h)
+    if(mpisize>1) then
+      call mpi_allreduce(local_sum,global_sum,1,mpi_real8,mpi_sum,mpi_comm_world,ierr)
+    else
+      global_sum = local_sum
+    endif
+
+    dissipation_gpu = global_sum / real(ia*ja*ka,8)
+
+    deallocate(partial_d,partial_h)
+  end subroutine gpu_dissipation_scalar
+
+  subroutine gpu_write_kenergy()
+    use commvar, only: nstep,time,maxstep
+    use parallel, only: lio
+    use stlaio, only: get_unit
+    implicit none
+    real(8) :: kenergy_gpu
+    integer,save :: hand = -1
+    logical,save :: linit = .true.
+
+    if(nstep <= 0 .or. nstep > maxstep) return
+    call gpu_kenergy_scalar(kenergy_gpu)
+    if(.not.lio) return
+
+    if(linit) then
+      hand = get_unit()
+      open(hand,file='gpu_kenergy.dat',status='replace',action='write')
+      write(hand,'(A)') 'nstep time kenergy_gpu'
+      linit = .false.
+    endif
+
+    write(hand,'(I20,1X,ES24.16,1X,ES24.16)') nstep,time,kenergy_gpu
+    flush(hand)
+  end subroutine gpu_write_kenergy
+
+  subroutine gpu_write_flowstate()
+    use commvar, only: nstep,time,maxstep
+    use parallel, only: lio
+    use stlaio, only: get_unit
+    implicit none
+    real(8) :: kenergy_gpu,enstophy_gpu,dissipation_gpu
+    integer,save :: hand = -1
+    logical,save :: linit = .true.
+
+    if(nstep <= 0 .or. nstep > maxstep) return
+
+    call gpu_kenergy_scalar(kenergy_gpu)
+    call gpu_enstophy_scalar(enstophy_gpu)
+    call gpu_dissipation_scalar(dissipation_gpu)
+    if(.not.lio) return
+
+    if(linit) then
+      hand = get_unit()
+      open(hand,file='flowstate.dat',status='replace',action='write')
+      write(hand,'(A)') 'nstep time kenergy enstophy dissipation'
+      linit = .false.
+    endif
+
+    write(hand,'(I20,1X,ES24.16,3(1X,ES24.16))') &
+         nstep,time,kenergy_gpu,enstophy_gpu,dissipation_gpu
+    flush(hand)
+  end subroutine gpu_write_flowstate
+
+  subroutine gpu_write_enstophy()
+    use commvar, only: nstep,time,maxstep
+    use parallel, only: lio
+    use stlaio, only: get_unit
+    implicit none
+    real(8) :: enstophy_gpu
+    integer,save :: hand = -1
+    logical,save :: linit = .true.
+
+    if(nstep <= 0 .or. nstep > maxstep) return
+    call gpu_enstophy_scalar(enstophy_gpu)
+    if(.not.lio) return
+
+    if(linit) then
+      hand = get_unit()
+      open(hand,file='gpu_enstophy.dat',status='replace',action='write')
+      write(hand,'(A)') 'nstep time enstophy_gpu'
+      linit = .false.
+    endif
+
+    write(hand,'(I20,1X,ES24.16,1X,ES24.16)') nstep,time,enstophy_gpu
+    flush(hand)
+  end subroutine gpu_write_enstophy
+
+  subroutine gpu_write_dissipation()
+    use commvar, only: nstep,time,maxstep
+    use parallel, only: lio
+    use stlaio, only: get_unit
+    implicit none
+    real(8) :: dissipation_gpu
+    integer,save :: hand = -1
+    logical,save :: linit = .true.
+
+    if(nstep <= 0 .or. nstep > maxstep) return
+    call gpu_dissipation_scalar(dissipation_gpu)
+    if(.not.lio) return
+
+    if(linit) then
+      hand = get_unit()
+      open(hand,file='gpu_dissipation.dat',status='replace',action='write')
+      write(hand,'(A)') 'nstep time dissipation_gpu'
+      linit = .false.
+    endif
+
+    write(hand,'(I20,1X,ES24.16,1X,ES24.16)') nstep,time,dissipation_gpu
+    flush(hand)
+  end subroutine gpu_write_dissipation
+end module statistic_gpu

@@ -303,7 +303,7 @@ module mainloop
     use commvar,  only : im,jm,km,numq,deltat,lfilter,feqchkpt,hm,     &
                          lavg,feqavg,nstep,limmbou,turbmode,feqslice,  &
                          feqwsequ,lwslic,lreport,flowtype,     &
-                         ndims,num_species,maxstep,rkscheme
+                        ndims,num_species,maxstep,rkscheme,use_gpu
     use commarray,only : x,q,qrhs,rho,vel,prs,tmp,spc,jacob
     use fludyna,  only : updatefvar
     use comsolver,only : filterq,filter2e,gradcal
@@ -315,6 +315,12 @@ module mainloop
     use fdnn
     use commvar,  only : odetype
 #endif 
+#ifdef _CUDA
+    use gpu_runtime, only : gpu_time_integration_rk,gpu_prepare_rkfirst_stats, &
+                            gpu_write_tgv_statistics,gpu_exchange_solution_halo, &
+                            gpu_sync_flow_to_host
+#endif
+    use readwrite, only : writechkpt
     !
     ! argument
     logical,intent(in),optional :: timerept
@@ -331,7 +337,25 @@ module mainloop
     real(8),save :: subtime=0.d0
     integer,save :: n_rk_steps
     !
-    time_beg=ptime() 
+    time_beg=ptime()
+
+#ifdef _CUDA
+    if(use_gpu) then
+      call gpu_prepare_rkfirst_stats()
+      if(flowtype(1:2)/='0d') call gpu_exchange_solution_halo()
+      call gpu_write_tgv_statistics()
+      if(nstep > 0 .and. mod(nstep,feqchkpt)==0) then
+        call gpu_sync_flow_to_host()
+        call writechkpt()
+      endif
+      call gpu_time_integration_rk(.true.,.false.)
+      return
+    endif
+#else
+    if(use_gpu) then
+      stop 'Input requested use_gpu=t, but this binary was not built with ASTR_WITH_CUDA=ON'
+    endif
+#endif
     
 #ifdef COMB
     if(odetype=='dnn') then 

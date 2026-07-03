@@ -1,0 +1,105 @@
+module gradcal_gpu
+  use cudafor
+  implicit none
+contains
+  attributes(device) real(8) function deriv6(fm3,fm2,fm1,fp1,fp2,fp3)
+    implicit none
+    real(8),value :: fm3,fm2,fm1,fp1,fp2,fp3
+
+    deriv6 = 0.75d0*(fp1 - fm1) - 0.15d0*(fp2 - fm2) + (fp3 - fm3)/60.d0
+  end function deriv6
+
+  attributes(global) subroutine gradcal_dvel_kernel(im,jm,km,hm)
+    use commarray_gpu, only: vel_d,tmp_d,dxi_d,dvel_d,dtmp_d
+    implicit none
+    integer,value :: im,jm,km,hm
+    integer :: i,j,k,a,b
+    real(8) :: du_dxi(3,3),dt_dxi(3)
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
+    k = (blockIdx%z - 1) * blockDim%z + threadIdx%z - 1
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+
+    do a=1,3
+      du_dxi(1,a) = deriv6(vel_d(i-3,j,k,a),vel_d(i-2,j,k,a),vel_d(i-1,j,k,a), &
+                           vel_d(i+1,j,k,a),vel_d(i+2,j,k,a),vel_d(i+3,j,k,a))
+      du_dxi(2,a) = deriv6(vel_d(i,j-3,k,a),vel_d(i,j-2,k,a),vel_d(i,j-1,k,a), &
+                           vel_d(i,j+1,k,a),vel_d(i,j+2,k,a),vel_d(i,j+3,k,a))
+      du_dxi(3,a) = deriv6(vel_d(i,j,k-3,a),vel_d(i,j,k-2,a),vel_d(i,j,k-1,a), &
+                           vel_d(i,j,k+1,a),vel_d(i,j,k+2,a),vel_d(i,j,k+3,a))
+    enddo
+    dt_dxi(1) = deriv6(tmp_d(i-3,j,k),tmp_d(i-2,j,k),tmp_d(i-1,j,k), &
+                       tmp_d(i+1,j,k),tmp_d(i+2,j,k),tmp_d(i+3,j,k))
+    dt_dxi(2) = deriv6(tmp_d(i,j-3,k),tmp_d(i,j-2,k),tmp_d(i,j-1,k), &
+                       tmp_d(i,j+1,k),tmp_d(i,j+2,k),tmp_d(i,j+3,k))
+    dt_dxi(3) = deriv6(tmp_d(i,j,k-3),tmp_d(i,j,k-2),tmp_d(i,j,k-1), &
+                       tmp_d(i,j,k+1),tmp_d(i,j,k+2),tmp_d(i,j,k+3))
+
+    do a=1,3
+      do b=1,3
+        dvel_d(i,j,k,a,b) = du_dxi(1,a)*dxi_d(i,j,k,1,b) + &
+                            du_dxi(2,a)*dxi_d(i,j,k,2,b) + &
+                            du_dxi(3,a)*dxi_d(i,j,k,3,b)
+      enddo
+    enddo
+    do b=1,3
+      dtmp_d(i,j,k,b) = dt_dxi(1)*dxi_d(i,j,k,1,b) + &
+                        dt_dxi(2)*dxi_d(i,j,k,2,b) + &
+                        dt_dxi(3)*dxi_d(i,j,k,3,b)
+    enddo
+  end subroutine gradcal_dvel_kernel
+
+  subroutine compute_gradcal_gpu()
+    use commvar, only: im,jm,km,hm
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    type(dim3) :: block3,grid3
+
+    block3 = dim3(8,8,8)
+    grid3 = dim3((im + block3%x)/block3%x, &
+                 (jm + block3%y)/block3%y, &
+                 (km + block3%z)/block3%z)
+    call gradcal_dvel_kernel<<<grid3,block3>>>(im,jm,km,hm)
+    call sync_after_kernel('gradcal_dvel_kernel')
+  end subroutine compute_gradcal_gpu
+
+  subroutine write_gradcal_dvel_compare()
+    use commvar, only: im,jm,km
+    use commarray, only: dvel
+    use commarray_gpu, only: dvel_d
+    use parallel, only: lio
+    implicit none
+    real(8),allocatable :: dvel_h(:,:,:,:,:)
+    real(8) :: max_abs,max_rel,ref,diff
+    integer :: i,j,k,a,b
+
+    if(.not.lio) return
+    call compute_gradcal_gpu()
+    allocate(dvel_h(0:im,0:jm,0:km,1:3,1:3))
+    dvel_h = dvel_d
+
+    max_abs = 0.d0
+    max_rel = 0.d0
+    do b=1,3
+    do a=1,3
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      diff = abs(dvel_h(i,j,k,a,b) - dvel(i,j,k,a,b))
+      ref = max(abs(dvel(i,j,k,a,b)),1.d0)
+      max_abs = max(max_abs,diff)
+      max_rel = max(max_rel,diff/ref)
+    enddo
+    enddo
+    enddo
+    enddo
+    enddo
+
+    open(unit=991,file='gpu_gradcal_dvel_compare.dat',status='replace',action='write')
+    write(991,'(A,1X,ES24.16)') 'max_abs', max_abs
+    write(991,'(A,1X,ES24.16)') 'max_rel', max_rel
+    close(991)
+    deallocate(dvel_h)
+  end subroutine write_gradcal_dvel_compare
+end module gradcal_gpu

@@ -1,0 +1,183 @@
+module qswap_gpu
+  use cudafor
+  implicit none
+contains
+  attributes(global) subroutine qswap_x_kernel(im,jm,km,hm,numq)
+    use commarray_gpu, only: q_d
+    implicit none
+    integer,value :: im,jm,km,hm,numq
+    integer :: id,j,k,m,h,nplane
+    real(8) :: avg
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (jm + 1) * (km + 1)
+    if(id >= nplane) return
+    j = mod(id,jm+1)
+    k = id/(jm+1)
+
+    do m=1,numq
+      do h=1,hm
+        q_d(-h,j,k,m) = q_d(im-h,j,k,m)
+        q_d(im+h,j,k,m) = q_d(h,j,k,m)
+      enddo
+      avg = 0.5d0 * (q_d(0,j,k,m) + q_d(im,j,k,m))
+      q_d(0,j,k,m) = avg
+      q_d(im,j,k,m) = avg
+    enddo
+  end subroutine qswap_x_kernel
+
+  attributes(global) subroutine qswap_y_kernel(im,jm,km,hm,numq)
+    use commarray_gpu, only: q_d
+    implicit none
+    integer,value :: im,jm,km,hm,numq
+    integer :: id,i,k,m,h,nplane
+    real(8) :: avg
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (im + 1) * (km + 1)
+    if(id >= nplane) return
+    i = mod(id,im+1)
+    k = id/(im+1)
+
+    do m=1,numq
+      do h=1,hm
+        q_d(i,-h,k,m) = q_d(i,jm-h,k,m)
+        q_d(i,jm+h,k,m) = q_d(i,h,k,m)
+      enddo
+      avg = 0.5d0 * (q_d(i,0,k,m) + q_d(i,jm,k,m))
+      q_d(i,0,k,m) = avg
+      q_d(i,jm,k,m) = avg
+    enddo
+  end subroutine qswap_y_kernel
+
+  attributes(global) subroutine qswap_z_kernel(im,jm,km,hm,numq)
+    use commarray_gpu, only: q_d
+    implicit none
+    integer,value :: im,jm,km,hm,numq
+    integer :: id,i,j,m,h,nplane
+    real(8) :: avg
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (im + 1) * (jm + 1)
+    if(id >= nplane) return
+    i = mod(id,im+1)
+    j = id/(im+1)
+
+    do m=1,numq
+      do h=1,hm
+        q_d(i,j,-h,m) = q_d(i,j,km-h,m)
+        q_d(i,j,km+h,m) = q_d(i,j,h,m)
+      enddo
+      avg = 0.5d0 * (q_d(i,j,0,m) + q_d(i,j,km,m))
+      q_d(i,j,0,m) = avg
+      q_d(i,j,km,m) = avg
+    enddo
+  end subroutine qswap_z_kernel
+
+  attributes(global) subroutine q_to_primitive_halo_kernel(im,jm,km,hm,const2,const6)
+    use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
+    implicit none
+    integer,value :: im,jm,km,hm
+    real(8),value :: const2,const6
+    integer :: id,i,j,k,ni,nj,nk
+    real(8) :: den,ke
+
+    ni = im + 2*hm + 1
+    nj = jm + 2*hm + 1
+    nk = km + 2*hm + 1
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    if(id >= ni*nj*nk) return
+
+    i = mod(id,ni) - hm
+    j = mod(id/ni,nj) - hm
+    k = id/(ni*nj) - hm
+
+    den = q_d(i,j,k,1)
+    rho_d(i,j,k) = den
+    vel_d(i,j,k,1) = q_d(i,j,k,2) / den
+    vel_d(i,j,k,2) = q_d(i,j,k,3) / den
+    vel_d(i,j,k,3) = q_d(i,j,k,4) / den
+    ke = 0.5d0 * den * (vel_d(i,j,k,1)**2 + vel_d(i,j,k,2)**2 + vel_d(i,j,k,3)**2)
+    prs_d(i,j,k) = (q_d(i,j,k,5) - ke) / const6
+    tmp_d(i,j,k) = prs_d(i,j,k) / den * const2
+  end subroutine q_to_primitive_halo_kernel
+
+  subroutine qswap_single_rank_gpu()
+    use commvar, only: im,jm,km,hm,numq,const2,const6,lihomo,ljhomo,lkhomo
+    use parallel, only: isize,jsize,ksize
+    implicit none
+
+    if(isize /= 1 .or. jsize /= 1 .or. ksize /= 1) &
+      stop 'qswap_single_rank_gpu requires single-rank topology'
+    if(.not.(lihomo .and. ljhomo .and. lkhomo)) &
+      stop 'qswap_single_rank_gpu requires homogeneous x/y/z directions'
+
+    call qswap_local_x_gpu()
+    call qswap_local_y_gpu()
+    call qswap_local_z_gpu()
+    call refresh_primitive_halo_gpu()
+  end subroutine qswap_single_rank_gpu
+
+  subroutine qswap_local_x_gpu()
+    use commvar, only: im,jm,km,hm,numq,lihomo
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    type(dim3) :: block,grid
+    integer :: n
+
+    if(.not.lihomo) stop 'qswap_local_x_gpu requires homogeneous x direction'
+
+    block = dim3(256,1,1)
+
+    n = (jm + 1) * (km + 1)
+    grid = dim3((n + block%x - 1)/block%x,1,1)
+    call qswap_x_kernel<<<grid,block>>>(im,jm,km,hm,numq)
+    call sync_after_kernel('qswap_x_kernel')
+  end subroutine qswap_local_x_gpu
+
+  subroutine qswap_local_y_gpu()
+    use commvar, only: im,jm,km,hm,numq,ljhomo
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    type(dim3) :: block,grid
+    integer :: n
+
+    if(.not.ljhomo) stop 'qswap_local_y_gpu requires homogeneous y direction'
+
+    block = dim3(256,1,1)
+    n = (im + 1) * (km + 1)
+    grid = dim3((n + block%x - 1)/block%x,1,1)
+    call qswap_y_kernel<<<grid,block>>>(im,jm,km,hm,numq)
+    call sync_after_kernel('qswap_y_kernel')
+  end subroutine qswap_local_y_gpu
+
+  subroutine qswap_local_z_gpu()
+    use commvar, only: im,jm,km,hm,numq,lkhomo
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    type(dim3) :: block,grid
+    integer :: n
+
+    if(.not.lkhomo) stop 'qswap_local_z_gpu requires homogeneous z direction'
+
+    block = dim3(256,1,1)
+    n = (im + 1) * (jm + 1)
+    grid = dim3((n + block%x - 1)/block%x,1,1)
+    call qswap_z_kernel<<<grid,block>>>(im,jm,km,hm,numq)
+    call sync_after_kernel('qswap_z_kernel')
+  end subroutine qswap_local_z_gpu
+
+  subroutine refresh_primitive_halo_gpu()
+    use commvar, only: im,jm,km,hm,const2,const6
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    type(dim3) :: block,grid
+    integer :: n
+
+    block = dim3(256,1,1)
+    n = (im + 2*hm + 1) * (jm + 2*hm + 1) * (km + 2*hm + 1)
+    grid = dim3((n + block%x - 1)/block%x,1,1)
+    call q_to_primitive_halo_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6)
+    call sync_after_kernel('q_to_primitive_halo_kernel')
+  end subroutine refresh_primitive_halo_gpu
+end module qswap_gpu

@@ -1,0 +1,48 @@
+module device_runtime_gpu
+  use cudafor
+  implicit none
+contains
+  subroutine bind_gpu_device()
+    use mpi
+    use parallel, only: mpirank
+    implicit none
+
+    integer :: ierr,local_comm,local_rank,local_size
+    integer :: device_count,device_id,current_device,istat
+
+    call mpi_comm_split_type(mpi_comm_world,mpi_comm_type_shared,0, &
+                             mpi_info_null,local_comm,ierr)
+    call mpi_comm_rank(local_comm,local_rank,ierr)
+    call mpi_comm_size(local_comm,local_size,ierr)
+
+    istat=cudaGetDeviceCount(device_count)
+    if(istat/=0 .or. device_count<1) then
+      print*,' !! GPU rank ',mpirank,' cannot find a CUDA device.'
+      stop
+    endif
+    if(local_size>device_count) then
+      print*,' !! Local MPI ranks exceed visible CUDA devices.'
+      print*,' ** local_size=',local_size,' device_count=',device_count
+      stop
+    endif
+
+    device_id=local_rank
+    istat=cudaSetDevice(device_id)
+    if(istat/=0) then
+      print*,' !! GPU rank ',mpirank,' failed to bind CUDA device ',device_id
+      stop
+    endif
+
+    istat=cudaGetDevice(current_device)
+    if(istat/=0 .or. current_device/=device_id) then
+      print*,' !! GPU rank ',mpirank,' device binding verification failed.'
+      print*,' ** requested=',device_id,' current=',current_device
+      stop
+    endif
+
+    write(*,'(A,I0,A,I0,A,I0)')' ** MPI rank ',mpirank, &
+      ' bound to GPU device ',current_device,' on local rank ',local_rank
+
+    call mpi_comm_free(local_comm,ierr)
+  end subroutine bind_gpu_device
+end module device_runtime_gpu

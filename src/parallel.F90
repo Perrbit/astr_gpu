@@ -198,10 +198,12 @@ module parallel
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   subroutine mpisizedis
     !
-    logical :: lallo
+    logical :: lallo,lforced
     integer :: nfactor(1:mpisize)
     integer :: i,j,k,n,n1,n2,n3,nsize,kaa
+    integer :: env_len,env_status,read_status,force_i,force_j,force_k
     integer(8) :: nvar1,nvar2,nvar3
+    character(len=128) :: forced_topology
     !
     integer :: ndims
     !
@@ -224,6 +226,7 @@ module parallel
       write(*,'(A,I0)')'  ** dimension of domain: ',ndims
       !
       lallo=.false.
+      lforced=.false.
       !
       nvar2=2**30
       !
@@ -231,6 +234,31 @@ module parallel
         print*,' !! Number of processors is too large.'
         stop
       end if
+      !
+      forced_topology=''
+      call get_environment_variable('ASTR_FORCE_MPI_TOPOLOGY',forced_topology,&
+                                    length=env_len,status=env_status)
+      if(env_status==0 .and. env_len>0) then
+        read(forced_topology(1:env_len),*,iostat=read_status)          &
+             force_i,force_j,force_k
+        if(read_status/=0 .or. force_i<1 .or. force_j<1 .or. force_k<1) then
+          print*,' !! Invalid ASTR_FORCE_MPI_TOPOLOGY. Expected i,j,k.'
+          print*,' ** value=',trim(forced_topology(1:env_len))
+          stop
+        endif
+        if(force_i*force_j*force_k/=mpisize) then
+          print*,' !! ASTR_FORCE_MPI_TOPOLOGY product /= mpisize.'
+          print*,' ** topology=',force_i,force_j,force_k
+          print*,' ** mpisize=',mpisize
+          stop
+        endif
+        isize=force_i
+        jsize=force_j
+        ksize=force_k
+        lallo=.true.
+        lforced=.true.
+        write(*,'(A,3(I0,1X))')'  ** forced mpi topology= ',isize,jsize,ksize
+      endif
       !
       ! if(ndims==3 .and. mpisize<8) then
       !   print*,' !! minimal 8 ranks required for 3-D simulations'
@@ -247,7 +275,9 @@ module parallel
       !   stop
       ! endif
       !
-      if(mpisize==1) then
+      if(lforced) then
+        continue
+      elseif(mpisize==1) then
         !
         isize=1
         jsize=1

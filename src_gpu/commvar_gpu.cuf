@@ -1,0 +1,7 @@
+module commvar_gpu
+  use cudafor
+  implicit none
+contains
+  subroutine copy_commvar_to_gpu()
+  end subroutine copy_commvar_to_gpu
+end module commvar_gpu

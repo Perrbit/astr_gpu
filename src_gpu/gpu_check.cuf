@@ -1,0 +1,21 @@
+module gpu_check
+  use cudafor
+  implicit none
+contains
+  subroutine sync_after_kernel(label)
+    character(len=*), intent(in) :: label
+    integer :: istat
+
+    istat = cudaGetLastError()
+    if(istat /= cudaSuccess) then
+      print *, 'GPU kernel launch failed: ', trim(label), istat
+      stop 'GPU kernel launch failed'
+    endif
+
+    istat = cudaDeviceSynchronize()
+    if(istat /= cudaSuccess) then
+      print *, 'GPU kernel synchronize failed: ', trim(label), istat
+      stop 'GPU kernel synchronize failed'
+    endif
+  end subroutine sync_after_kernel
+end module gpu_check
