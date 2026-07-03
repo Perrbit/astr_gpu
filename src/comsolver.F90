@@ -117,7 +117,7 @@ module comsolver
     !-------------------------------------------------------------------
     ! Optional: Initialize compact filters
     !-------------------------------------------------------------------
-    if (lfilter) then
+    if (lfilter .and. (conschm(4:4) == 'c' .or. difschm(4:4) == 'c')) then
       call filter_coefficient_cal(alfa=alfa_filter, beter_halo=1.11d0, beter_bouond=0.98d0)
   
       call compact_filter_initiate(filter_i, npdci, im)
@@ -520,10 +520,11 @@ module comsolver
   subroutine filterq(timerept)
     !
     use commvar,  only : im,jm,km,numq,npdci,npdcj,npdck,              &
-                         alfa_filter,ndims,is,ie,js,je,ks,ke,turbmode
+                         alfa_filter,ndims,is,ie,js,je,ks,ke,turbmode, &
+                         conschm,difschm
     use commarray,only : q
     use filter,   only : compact_filter,filter_i,filter_j,filter_k,  &
-                        filter_ii,filter_jj,filter_kk
+                        filter_ii,filter_jj,filter_kk,spafilter10exp
     !
     ! arguments
     logical,intent(in),optional :: timerept
@@ -540,6 +541,19 @@ module comsolver
       if(timerept) time_beg=ptime()
 
     endif 
+    !
+    if(conschm(4:4)=='e' .and. difschm(4:4)=='e') then
+      call filterq_explicit10
+      if(present(timerept)) then
+        if(timerept) then
+          subtime=subtime+ptime()-time_beg
+          if(lio .and. lreport .and. ltimrpt) call timereporter(routine='filterq', &
+                                             timecost=subtime, &
+                                              message='explicit low-pass filter')
+        endif
+      endif
+      return
+    endif
     !
     ! filtering in i direction
     call dataswap(q,direction=1,timerept=ltimrpt)
@@ -646,6 +660,60 @@ module comsolver
   ! End of the subroutine filterq.
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   !!
+  subroutine filterq_explicit10
+    !
+    use commvar,  only : im,jm,km,numq,ndims
+    use commarray,only : q
+    use filter,   only : spafilter10exp
+    !
+    integer :: i,j,k,n
+    real(8),allocatable :: phi(:,:),fph(:,:)
+    !
+    call dataswap(q,direction=1,timerept=ltimrpt)
+    allocate(phi(-hm:im+hm,1:numq),fph(0:im,1:numq))
+    do k=0,km
+    do j=0,jm
+      phi(:,:)=q(:,j,k,:)
+      do n=1,numq
+        fph(:,n)=spafilter10exp(f=phi(:,n),dim=im)
+      enddo
+      q(0:im,j,k,:)=fph(0:im,:)
+    enddo
+    enddo
+    deallocate(phi,fph)
+    !
+    if(ndims>=2) then
+      call dataswap(q,direction=2,timerept=ltimrpt)
+      allocate(phi(-hm:jm+hm,1:numq),fph(0:jm,1:numq))
+      do k=0,km
+      do i=0,im
+        phi(:,:)=q(i,:,k,:)
+        do n=1,numq
+          fph(:,n)=spafilter10exp(f=phi(:,n),dim=jm)
+        enddo
+        q(i,0:jm,k,:)=fph(0:jm,:)
+      enddo
+      enddo
+      deallocate(phi,fph)
+    endif
+    !
+    if(ndims==3) then
+      call dataswap(q,direction=3,timerept=ltimrpt)
+      allocate(phi(-hm:km+hm,1:numq),fph(0:km,1:numq))
+      do j=0,jm
+      do i=0,im
+        phi(:,:)=q(i,j,:,:)
+        do n=1,numq
+          fph(:,n)=spafilter10exp(f=phi(:,n),dim=km)
+        enddo
+        q(i,j,0:km,:)=fph(0:km,:)
+      enddo
+      enddo
+      deallocate(phi,fph)
+    endif
+    !
+  end subroutine filterq_explicit10
+  !
   subroutine filter2e(phi)
     !
     use commvar,  only : is,ie,je,js,je,ks,ke,im,jm,km

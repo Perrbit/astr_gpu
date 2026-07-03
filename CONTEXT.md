@@ -80,6 +80,10 @@ _Avoid_: Exchanging primitive halo fields, duplicating `q` and primitive communi
 The first multi-rank GPU halo exchange matches CPU `parallel:qswap`. Each exchanged direction transports `hm+1` layers of `q_d(1:5)`: `hm` layers fill the exterior halo and the extra interface plane synchronizes/averages duplicate periodic or rank-interface planes. Primitive halo fields are refreshed on GPU after unpacking.
 _Avoid_: Exchanging only `hm` layers for `qswap`, skipping interface-plane averaging, treating halo exchange as plain endpoint copy
 
+**Dataswap-compatible filter halo**:
+The explicit filter path uses `dataswap` semantics rather than `qswap` semantics. It exchanges or locally refreshes exactly `hm` halo layers and does not average duplicate endpoint planes. In single-rank homogeneous y/z directions, GPU refreshes local halos for the ping-pong filter arrays before launching the same halo stencil kernels used after MPI filter exchange.
+_Avoid_: Reusing qswap endpoint averaging for filter halos, mapping endpoint index `n` to `0` inside filter stencils, treating local periodic filter handling as a different numerical operator from MPI filter handling
+
 **Blocking staged halo exchange**:
 The first multi-rank GPU communication implementation uses blocking `MPI_Sendrecv` on host-staged halo buffers, in the same directional order as CPU `parallel:qswap`. Nonblocking MPI, overlap, and device-aware MPI are later performance backends behind the same halo-exchange interface.
 _Avoid_: First implementation based on overlap, mandatory CUDA-aware MPI, changing main-loop semantics for performance
@@ -147,6 +151,34 @@ _Avoid_: Immediate large directory migration, CUDA-specific imports in `src/`, d
 **Second GPU validation case**:
 The first non-TGV case used to test whether the full-GPU architecture skeleton generalizes beyond the Taylor-Green Vortex baseline. It should remain non-reacting, `num_species=0`, no turbulence, no chemistry, no immersed boundary, and primarily `numq=5`, while preferably exposing non-TGV initialization, boundary-condition, or geometry behavior.
 _Avoid_: Chemistry or immersed-boundary cases as the second validation case, TGV flame as the architecture-generalization test, picking a case that opens many physics dimensions at once
+
+**Phase A 2dvort validation case**:
+The current second-case GPU validation target. It starts from `examples/Vortex_Transport/datin/input.2dvort` but rewrites the runtime case to a 3D extruded periodic explicit case: `flowtype=2dvort`, `643e,643e`, `numq=5`, `num_species=0`, no turbulence, no chemistry, no immersed boundary. It validates generic non-TGV initialization and `flowstate.dat` output while avoiding compact schemes and wall/forcing physics.
+_Avoid_: Original 2D `km=0` 2dvort as the GPU acceptance case, channel-flow wall physics as the next low-risk step, compact-filter CPU baselines for Phase A
+
+**Phase A explicit-filter tolerance**:
+The filtered `2dvort` Phase A comparison currently uses separate thresholds from the mature TGV baseline: `flowstate.dat` passes at `1e-9` absolute and final `flowfield.h5` reconstructed `q` passes at `1e-9` absolute after matching the CPU-owned output boundary semantics. The no-filter `2dvort` isolation check passes at `1e-10`. A stricter filtered field check at `1e-10` is still blocked by CPU roundoff in the physically zero `u3/q4` component, about `8e-10`, while the GPU keeps that component exactly zero.
+_Avoid_: Reporting filtered `2dvort` as a TGV-level `1e-10` field match, hiding the no-filter strict comparison, treating the relaxed Phase A threshold as final acceptance for all cases, manufacturing spanwise momentum noise only to match CPU roundoff
+
+**Phase A 2dvort multi-rank tolerance**:
+The first `2dvort` multi-rank validation uses same-topology CPU/GPU comparisons for `NP=2` with `2x1x1`, `1x2x1`, and `1x1x2`. No-filter field output remains strict at `1e-10`; filtered `flowstate.dat` remains `1e-9`; filtered HDF5 field output uses `5e-9` because x/y interface-adjacent reconstructed energy differences reach about `4.7e-9` while native statistics remain at `1e-11` to `1e-10` scale except for physically zero `u3/q4` CPU roundoff.
+_Avoid_: Collapsing statistics and HDF5 output tolerances into one number, treating HDF5 interface-adjacent filtered field tolerance as proof of performance readiness, using single-rank CPU as the primary multi-rank oracle
+
+**Phase A 2dvort NP4 core evidence**:
+The optional `NP=4` `2dvort` core matrix has passed for `2x2x1`, `2x1x2`, and `1x2x2` with the same no-filter `1e-10` and filtered-statistics `1e-9` contracts. Filtered HDF5 field output needs `FILTER_FIELD_ATOL=6e-9`; the observed maximum was reconstructed `q5=5.1636668274568365e-09` for `2x2x1`, again near decomposition interfaces.
+_Avoid_: Promoting `6e-9` to the single-rank or NP2 default without recording why, treating two-GPU oversubscribed NP4 as performance evidence
+
+**GPU device field ownership table**:
+The explicit inventory of device-resident fields, their allocation extents, producer/consumer modules, halo semantics, and host-transfer policy. It is the guardrail that keeps the compute loop GPU-authoritative while still allowing CPU-owned initialization and output/checkpoint boundaries.
+_Avoid_: Adding new device arrays without ownership records, hidden whole-field transfers, treating host arrays as live compute state during GPU execution
+
+**HaloTransport semantic/transport split**:
+The rule that qswap, dataswap, halo width, local periodic fallback, primitive refresh, and tag ownership are solver semantics, while host-staged blocking, nonblocking, pinned, CUDA-aware MPI, HIP-aware MPI, and multi-node scheduling are transport backends. New communication optimizations must preserve the semantic layer.
+_Avoid_: Encoding CUDA-aware MPI into solver logic, hiding `hm` versus `hm+1` behind a byte transport, changing qswap/dataswap behavior while optimizing transfer paths
+
+**Reusable GPU validation drivers**:
+The current repeatable GPU validation entry points are `tests/gpu_validation/run_tgv_mpirank_matrix.sh` for the core multi-rank stats/field matrix and `tests/gpu_validation/run_tgv_256_nsys_profile.sh` for the `256^3 NP=1/NP=2` Nsight profile. Both have post-script pass evidence; high-rank oversubscription smoke remains opt-in with `RUN_SMOKE=t`.
+_Avoid_: Treating old hand-run profile output as the only evidence, rerunning validation by manual case edits, marking oversubscription runs as performance proof
 
 ## Source Architecture Memory
 

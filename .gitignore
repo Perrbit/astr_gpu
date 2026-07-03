@@ -1,10 +1,13 @@
 .vscode/
 build*/
+__pycache__/
 *.egg-info/
 *.plt
 *.dat
 *.h5
 *.log
+*.nsys-rep
+*.sqlite
 *.xdmf
 *.mod
 *.o
@@ -20,4 +23,4 @@ report.txt
 benchmark/
 workspace*
 fort*
-
+tests/gpu_validation/out/

@@ -52,6 +52,40 @@ contains
     tmp = tmp_d
   end subroutine copy_flow_from_gpu
 
+  subroutine copy_output_boundary_from_gpu()
+    use commvar, only: im,jm,km
+    use commarray, only: rho,vel,prs,tmp
+    implicit none
+
+    rho(0,:,:) = rho_d(0,:,:)
+    rho(im,:,:) = rho_d(im,:,:)
+    rho(:,0,:) = rho_d(:,0,:)
+    rho(:,jm,:) = rho_d(:,jm,:)
+    rho(:,:,0) = rho_d(:,:,0)
+    rho(:,:,km) = rho_d(:,:,km)
+
+    prs(0,:,:) = prs_d(0,:,:)
+    prs(im,:,:) = prs_d(im,:,:)
+    prs(:,0,:) = prs_d(:,0,:)
+    prs(:,jm,:) = prs_d(:,jm,:)
+    prs(:,:,0) = prs_d(:,:,0)
+    prs(:,:,km) = prs_d(:,:,km)
+
+    tmp(0,:,:) = tmp_d(0,:,:)
+    tmp(im,:,:) = tmp_d(im,:,:)
+    tmp(:,0,:) = tmp_d(:,0,:)
+    tmp(:,jm,:) = tmp_d(:,jm,:)
+    tmp(:,:,0) = tmp_d(:,:,0)
+    tmp(:,:,km) = tmp_d(:,:,km)
+
+    vel(0,:,:,:) = vel_d(0,:,:,:)
+    vel(im,:,:,:) = vel_d(im,:,:,:)
+    vel(:,0,:,:) = vel_d(:,0,:,:)
+    vel(:,jm,:,:) = vel_d(:,jm,:,:)
+    vel(:,:,0,:) = vel_d(:,:,0,:)
+    vel(:,:,km,:) = vel_d(:,:,km,:)
+  end subroutine copy_output_boundary_from_gpu
+
   subroutine report_gpu_state(label)
     use commvar, only: im,jm,km
     implicit none

@@ -43,6 +43,13 @@ contains
     call copy_flow_from_gpu()
   end subroutine gpu_sync_flow_to_host
 
+  subroutine gpu_sync_output_boundary_to_host()
+    use commarray_gpu, only: copy_output_boundary_from_gpu
+    implicit none
+
+    call copy_output_boundary_from_gpu()
+  end subroutine gpu_sync_output_boundary_to_host
+
   subroutine gpu_exchange_solution_halo()
     use halo_exchange_gpu, only: exchange_solution_halo_gpu
     implicit none
@@ -92,4 +99,16 @@ contains
     call gpu_write_enstophy()
     call gpu_write_dissipation()
   end subroutine gpu_write_tgv_statistics
+
+  subroutine gpu_write_flow_statistics()
+    use commvar, only: flowtype
+    use statistic_gpu, only: gpu_write_generic_flowstate
+    implicit none
+
+    if(trim(flowtype) == 'tgv' .or. trim(flowtype) == 'hit') then
+      call gpu_write_tgv_statistics()
+    else
+      call gpu_write_generic_flowstate()
+    endif
+  end subroutine gpu_write_flow_statistics
 end module gpu_runtime

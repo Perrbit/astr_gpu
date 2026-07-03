@@ -435,7 +435,7 @@ module filter
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     !
     subroutine filter_coefficient_explicit
-      
+
       allocate(coef10e(0:5),coef8e(0:4),coef6e(0:3),coef4e(0:2),coef2e(0:1))
       allocate(coef3be(0:1,0:3),coef4be(0:1,0:4),coef6be(0:2,0:6))
 
@@ -530,6 +530,33 @@ module filter
     end function filter8exp
     !+-------------------------------------------------------------------+
     !| The end of the function filter8exp.                               |
+    !+-------------------------------------------------------------------+
+    !
+    function spafilter10exp(f,dim) result(ff)
+      !
+      use commvar, only: hm
+
+      ! arguments
+      integer,intent(in) :: dim
+      real(8),intent(in) :: f(-hm:dim+hm)
+      real(8) :: ff(0:dim)
+      !
+      ! local data
+      integer :: ii,m
+      !
+      ff=0.d0
+      !
+      do ii=0,dim
+        do m=0,5
+          ff(ii)=ff(ii)+coef10e(m)*(f(ii-m)+f(ii+m))
+        enddo
+      enddo
+      !
+      return
+      !
+    end function spafilter10exp
+    !+-------------------------------------------------------------------+
+    !| The end of the function spafilter10exp.                           |
     !+-------------------------------------------------------------------+
     !
     !+-------------------------------------------------------------------+

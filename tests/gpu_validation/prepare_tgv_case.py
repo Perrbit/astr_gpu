@@ -23,13 +23,15 @@ def set_runtime_flags(
     diffterm: str | None,
 ) -> None:
     lines = input_file.read_text().splitlines()
-    marker = "nondimen,diffterm,lfilter,lreadgrid,lfftz,limmbou,ltimrpt,lcomb"
+    marker = "nondimen,diffterm,lfilter,lreadgrid,lfftz,limmbou,ltimrpt"
     for idx, line in enumerate(lines):
         if marker in line:
             data_idx = next_data_line(lines, idx)
             parts = [part.strip() for part in lines[data_idx].split(",")]
-            if len(parts) not in (8, 9):
+            if len(parts) not in (7, 8, 9):
                 raise ValueError(f"unexpected runtime flag line: {lines[data_idx]}")
+            if len(parts) == 7:
+                parts.append("f")
             while len(parts) < 9:
                 parts.append("f")
             if diffterm is not None:
@@ -60,6 +62,40 @@ def set_controller_steps(controller_file: Path, maxstep: int, feqchkpt: int) -> 
     raise ValueError(f"controller marker not found in {controller_file}")
 
 
+def set_controller_deltat(controller_file: Path, deltat: str) -> None:
+    lines = controller_file.read_text().splitlines()
+    marker = "deltat"
+    for idx, line in enumerate(lines):
+        if marker in line:
+            data_idx = next_data_line(lines, idx)
+            lines[data_idx] = deltat
+            controller_file.write_text("\n".join(lines) + "\n")
+            return
+    raise ValueError(f"deltat marker not found in {controller_file}")
+
+
+def set_grid(input_file: Path, grid: str) -> None:
+    parts = [part.strip() for part in grid.split(",")]
+    if len(parts) != 3:
+        raise ValueError("--grid must have the form im,jm,km")
+    dims = []
+    for part in parts:
+        value = int(part)
+        if value < 1:
+            raise ValueError("--grid dimensions must be positive")
+        dims.append(str(value))
+
+    lines = input_file.read_text().splitlines()
+    marker = "im,jm,km"
+    for idx, line in enumerate(lines):
+        if marker in line:
+            data_idx = next_data_line(lines, idx)
+            lines[data_idx] = ",".join(dims)
+            input_file.write_text("\n".join(lines) + "\n")
+            return
+    raise ValueError(f"grid marker not found in {input_file}")
+
+
 def set_scheme(input_file: Path, scheme: str) -> None:
     lines = input_file.read_text().splitlines()
     marker = "conschm,difschm,rkscheme"
@@ -81,12 +117,15 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--src-case", required=True, type=Path)
     parser.add_argument("--dst-case", required=True, type=Path)
+    parser.add_argument("--input-name", default="input.tgv")
     parser.add_argument("--use-gpu", required=True, choices=("t", "f"))
     parser.add_argument("--maxstep", required=True, type=int)
     parser.add_argument("--feqchkpt", type=int)
     parser.add_argument("--lfilter", choices=("t", "f"))
     parser.add_argument("--diffterm", choices=("t", "f"))
     parser.add_argument("--scheme", default="643e")
+    parser.add_argument("--grid", help="optional grid dimensions as im,jm,km")
+    parser.add_argument("--deltat", help="optional controller deltat value, e.g. 5.d-4")
     args = parser.parse_args()
 
     if args.maxstep < 1:
@@ -99,15 +138,15 @@ def main() -> int:
     args.dst_case.mkdir(parents=True)
     shutil.copytree(args.src_case / "datin", args.dst_case / "datin")
 
-    set_runtime_flags(
-        args.dst_case / "datin" / "input.tgv",
-        args.use_gpu,
-        args.lfilter,
-        args.diffterm,
-    )
-    set_scheme(args.dst_case / "datin" / "input.tgv", args.scheme)
+    input_file = args.dst_case / "datin" / args.input_name
+    set_runtime_flags(input_file, args.use_gpu, args.lfilter, args.diffterm)
+    set_scheme(input_file, args.scheme)
+    if args.grid:
+        set_grid(input_file, args.grid)
     feqchkpt = args.maxstep if args.feqchkpt is None else args.feqchkpt
     set_controller_steps(args.dst_case / "datin" / "controller", args.maxstep, feqchkpt)
+    if args.deltat:
+        set_controller_deltat(args.dst_case / "datin" / "controller", args.deltat)
     return 0
 
 

@@ -317,8 +317,8 @@ module mainloop
 #endif 
 #ifdef _CUDA
     use gpu_runtime, only : gpu_time_integration_rk,gpu_prepare_rkfirst_stats, &
-                            gpu_write_tgv_statistics,gpu_exchange_solution_halo, &
-                            gpu_sync_flow_to_host
+                            gpu_write_flow_statistics,gpu_exchange_solution_halo, &
+                            gpu_sync_flow_to_host,gpu_sync_output_boundary_to_host
 #endif
     use readwrite, only : writechkpt
     !
@@ -336,16 +336,19 @@ module mainloop
     real(8) :: hrr,time_beg_2
     real(8),save :: subtime=0.d0
     integer,save :: n_rk_steps
+    logical :: gpu_output_due
     !
     time_beg=ptime()
 
 #ifdef _CUDA
     if(use_gpu) then
+      gpu_output_due = nstep > 0 .and. mod(nstep,feqchkpt)==0
+      if(gpu_output_due) call gpu_sync_flow_to_host()
       call gpu_prepare_rkfirst_stats()
       if(flowtype(1:2)/='0d') call gpu_exchange_solution_halo()
-      call gpu_write_tgv_statistics()
-      if(nstep > 0 .and. mod(nstep,feqchkpt)==0) then
-        call gpu_sync_flow_to_host()
+      call gpu_write_flow_statistics()
+      if(gpu_output_due) then
+        call gpu_sync_output_boundary_to_host()
         call writechkpt()
       endif
       call gpu_time_integration_rk(.true.,.false.)

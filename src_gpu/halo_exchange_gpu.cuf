@@ -863,6 +863,24 @@ contains
     call sync_after_kernel('unpack_qwork_y_halo_kernel')
   end subroutine exchange_filter_y_work_halo_gpu
 
+  subroutine refresh_filter_y_work_local_halo_gpu()
+    use commarray_gpu, only: qwork_d
+    use commvar, only: im,jm,km,hm,numq,ljhomo
+    use gpu_check, only: sync_after_kernel
+    implicit none
+
+    type(dim3) :: block,grid
+    integer :: n
+
+    if(.not.ljhomo) stop 'GPU filter y local halo requires homogeneous y direction'
+
+    block = dim3(256,1,1)
+    n = (im + 1) * (km + 1) * numq
+    grid = dim3((n + block%x - 1)/block%x,1,1)
+    call field_qswap_y_kernel<<<grid,block>>>(qwork_d,im,jm,km,hm,numq)
+    call sync_after_kernel('filter_qwork_local_y_halo_kernel')
+  end subroutine refresh_filter_y_work_local_halo_gpu
+
   subroutine exchange_filter_z_halo_gpu()
     use mpi
     use commvar, only: im,jm,km,hm,numq
@@ -906,6 +924,24 @@ contains
                                               im,jm,km,hm,numq)
     call sync_after_kernel('unpack_z_halo_kernel')
   end subroutine exchange_filter_z_halo_gpu
+
+  subroutine refresh_filter_z_local_halo_gpu()
+    use commarray_gpu, only: q_d
+    use commvar, only: im,jm,km,hm,numq,lkhomo
+    use gpu_check, only: sync_after_kernel
+    implicit none
+
+    type(dim3) :: block,grid
+    integer :: n
+
+    if(.not.lkhomo) stop 'GPU filter z local halo requires homogeneous z direction'
+
+    block = dim3(256,1,1)
+    n = (im + 1) * (jm + 1) * numq
+    grid = dim3((n + block%x - 1)/block%x,1,1)
+    call field_qswap_z_kernel<<<grid,block>>>(q_d,im,jm,km,hm,numq)
+    call sync_after_kernel('filter_q_local_z_halo_kernel')
+  end subroutine refresh_filter_z_local_halo_gpu
 
   subroutine exchange_x_halo_gpu()
     use mpi

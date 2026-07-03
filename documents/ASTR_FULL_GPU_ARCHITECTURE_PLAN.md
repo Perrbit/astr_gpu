@@ -34,6 +34,15 @@ The current GPU port has reached a validated non-reacting TGV baseline:
   - selected oversubscription smoke tests such as `4x2x2`, `2x4x2`, `2x2x4`, and `4x4x2`
 - A `256^3`, `NP=1` versus `NP=2`, `2x1x1` statistics comparison has passed within floating-point tail differences.
 - Nsight Systems profiles have been generated for `256^3`, `MAXSTEP=10`, `NP=1` and `NP=2`.
+- Phase A of the second-case expansion has started with a 3D extruded `2dvort` case:
+  - `flowtype=2dvort`
+  - explicit `643e,643e`
+  - homogeneous periodic x/y/z
+  - `numq=5`, `num_species=0`, no turbulence, no chemistry, no immersed boundary
+  - `MAXSTEP=1` CPU/GPU statistics and field validation passes for no-filter strict comparison and explicit-filter Phase A thresholds.
+  - The filtered `2dvort` HDF5 field comparison now passes at `1e-9` after matching the CPU-owned output boundary semantics. It is not yet a TGV-level `1e-10` contract because CPU produces about `8e-10` roundoff in the physically zero `u3/q4` component while GPU keeps it exactly zero.
+  - The same 3D extruded `2dvort` case now has an `NP=2` multi-rank matrix pass for `2x1x1`, `1x2x1`, and `1x1x2`. No-filter field output remains strict at `1e-10`; filtered native statistics pass at `1e-9`; filtered HDF5 field output uses a separate `5e-9` tolerance for interface-adjacent reconstructed energy differences.
+  - Optional `NP=4` combined-direction `2dvort` validation has also passed for `2x2x1`, `2x1x2`, and `1x2x2` with filtered HDF5 field tolerance `6e-9`; this is correctness smoke under two-GPU oversubscription, not performance evidence.
 
 The current baseline is a correctness-first CUDA Fortran implementation. It still intentionally uses explicit synchronization after kernels and host-staged halo buffers.
 
@@ -94,7 +103,7 @@ Current CUDA Fortran facade calls already used by `src/` are:
 | `gpu_after_flowinit()` | `src/astr.F90` | upload initialized flow state and prepare GPU execution |
 | `gpu_prepare_rkfirst_stats()` | `src/mainloop.F90` | prepare first-step statistics without CPU field ownership reversal |
 | `gpu_exchange_solution_halo()` | `src/mainloop.F90` | backend-neutral solution halo exchange |
-| `gpu_write_tgv_statistics()` | `src/mainloop.F90` | GPU-resident TGV statistics output |
+| `gpu_write_flow_statistics()` | `src/mainloop.F90` | GPU-resident TGV/HIT statistics or generic `maxq1..maxq5` flowstate output |
 | `gpu_sync_flow_to_host()` | `src/mainloop.F90` | explicit output/checkpoint boundary download |
 | `gpu_time_integration_rk()` | `src/mainloop.F90` | GPU-resident RK time integration |
 
@@ -319,8 +328,8 @@ documents/GPU_VALIDATION_MATRIX.md
 
 Current validation tooling gap:
 
-- the `256^3 NP=1/NP=2` Nsight profile has evidence under `tests/gpu_validation/out/`, but no reusable profile driver script exists yet;
-- `tests/gpu_validation/README.md` must describe the current multi-rank scope rather than the old one-rank first-stage scope;
+- the `256^3 NP=1/NP=2` Nsight profile driver now has a post-script pass under `tests/gpu_validation/out/nsys_tgv_256_np1_np2_driver_current`;
+- the reusable core multi-rank topology matrix now has a post-script pass under `tests/gpu_validation/out/tgv_mpirank_matrix_core_current`;
 - generated runtime outputs and profile artifacts must stay out of git.
 
 ### 5.7 Build And Dependency Contract
@@ -342,6 +351,11 @@ Profiling and runtime-observation dependencies:
 - plotting scripts may require `matplotlib` and `scienceplots`.
 
 Future DCU/HIP work must not require changing CPU orchestration call sites. HIP/DCU dependencies belong behind a future backend implementation and HaloTransport backend, not inside `src/` solver orchestration.
+
+Detailed follow-up documents:
+
+- `documents/ASTR_GPU_DEVICE_FIELD_OWNERSHIP.md`
+- `documents/ASTR_GPU_HALOTRANSPORT_SKETCH.md`
 
 ### 5.8 Generated Artifact Policy
 
@@ -600,12 +614,12 @@ The full-GPU migration uses a layered validation matrix.
 
 Recommended immediate work after this plan:
 
-1. Create a reusable `256^3 NP=1/NP=2` profile driver.
-2. Create a reusable multi-rank validation driver matrix.
-3. Update `tests/gpu_validation/README.md` from old one-rank scope to current multi-rank TGV scope.
+1. Use `tests/gpu_validation/run_tgv_256_nsys_profile.sh` as the repeatable `256^3 NP=1/NP=2` profile driver for future regression checks.
+2. Use `tests/gpu_validation/run_tgv_mpirank_matrix.sh` as the repeatable core multi-rank validation matrix; high-rank oversubscription smoke remains opt-in with `RUN_SMOKE=t`.
+3. Keep `tests/gpu_validation/README.md` aligned with current multi-rank TGV scope.
 4. Audit `src/` for direct CUDA-specific dependencies and record current/target facade mapping.
-5. Write a device field ownership table.
-6. Write a HaloTransport interface sketch.
+5. Keep `documents/ASTR_GPU_DEVICE_FIELD_OWNERSHIP.md` synchronized with new device arrays.
+6. Keep `documents/ASTR_GPU_HALOTRANSPORT_SKETCH.md` synchronized with halo exchange changes.
 7. Screen `examples/` for the second GPU validation case.
 8. Update `documents/GPU_VALIDATION_MATRIX.md` with the latest profile and comparison results.
 9. Make generated profile/runtime artifact exclusions explicit in `.gitignore`.

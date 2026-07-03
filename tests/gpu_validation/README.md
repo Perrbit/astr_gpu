@@ -131,6 +131,8 @@ python3 tests/gpu_validation/compare_gpu_dissipation.py \
 
 The GPU run writes native `flowstate.dat` plus `gpu_kenergy.dat`, `gpu_enstophy.dat`, and `gpu_dissipation.dat` from device-side reductions. The time loop keeps full flow variables resident on the GPU. File output, checkpoint, and HDF5 `flowfield` writing remain CPU-owned and are intentionally out of current GPU-porting scope; full-field D2H at those boundaries is acceptable.
 
+For the explicit 10th-order filter, the GPU path uses ping-pong storage and halo stencil kernels. In single-rank homogeneous y/z directions it refreshes local halos for `qwork_d` and `q_d` before launching the y/z halo filter kernels; in multi-rank directions it uses the corresponding MPI halo exchange before the same halo filter kernels.
+
 ## GPU Single-Rank Qswap
 
 Validate the first-stage GPU periodic halo and periodic-plane averaging path:
@@ -167,7 +169,65 @@ MAXSTEP=10 LFILTER=t DIFFTERM=t \
 
 For a no-checkpoint runtime copy check, profile a short GPU case with `feqchkpt` greater than `maxstep`. The current 3-step profile under `tests/gpu_validation/out/tgv_gpu_resident_nsys_3_nochk` showed D2H copies only from reduction partial sums: 18 copies, each 65,536 bytes, and no full-field D2H in the compute loop.
 
-The larger `256^3 NP=1/NP=2` Nsight profile evidence currently exists as generated output, but there is not yet a reusable profile driver script. Treat this as a validation tooling TODO, not as a completed reusable test.
+## Phase A 2dvort Validation
+
+Validate the first non-TGV explicit case. The driver starts from `examples/Vortex_Transport/datin/input.2dvort`, rewrites it to a 3D extruded periodic case, and forces explicit `643e,643e`:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/2dvort_phasea_smoke \
+  MAXSTEP=1 FEQCHKPT=1 \
+  tests/gpu_validation/run_2dvort_phasea_compare.sh
+```
+
+Current expected result: both `flowstate.dat` and `flowfield.h5` comparisons print `status: pass`. The default filtered Phase A thresholds are `STATS_ATOL=1e-9`, `STATS_RTOL=1e-10`, `FIELD_ATOL=1e-9`, and `FIELD_RTOL=1e-10`. The most recent filtered run had max stats differences `maxq4=7.8810021050800005e-10` and `maxq5=2.7473134878164274e-11`; final field reconstructed errors were `q2=2.6846691536519529e-10`, `q3=2.6549052794524672e-10`, `q4=7.9986820163237011e-10`, and `q5=3.3623592798903701e-10`.
+
+A stricter filtered field threshold of `1e-10` is still too tight for this Phase A case because CPU produces about `8e-10` of roundoff in the physically zero `u3/q4` component while GPU keeps that component exactly zero. The no-filter strict check below still passes to roundoff, so this is tracked as filtered non-TGV roundoff sensitivity rather than a baseline RHS/RK/copy-back failure.
+
+Run the no-filter strict isolation check:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/2dvort_phasea_no_filter_1 \
+  MAXSTEP=1 FEQCHKPT=1 LFILTER=f STATS_ATOL=1e-10 FIELD_ATOL=1e-10 \
+  tests/gpu_validation/run_2dvort_phasea_compare.sh
+```
+
+Current expected result: strict no-filter comparison prints `status: pass` for both reports. This isolates the RHS/RK/non-TGV initialization path from the explicit-filter roundoff sensitivity; the most recent no-filter field errors were at roundoff scale, with reconstructed `q5` `L_inf=7.1054273576010019e-15`.
+
+Run the first `2dvort` multi-rank matrix:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/2dvort_mpirank_matrix_np2 \
+  tests/gpu_validation/run_2dvort_mpirank_matrix.sh
+```
+
+The matrix covers `NP=2` with `2x1x1`, `1x2x1`, and `1x1x2`. No-filter cases use `STATS_ATOL=1e-10` and `FIELD_ATOL=1e-10`. Filtered cases use `STATS_ATOL=1e-9` and `FILTER_FIELD_ATOL=5e-9`; the field tolerance is separated from the native statistics tolerance because interface-adjacent filtered HDF5 reconstructed energy differs by about `4.7e-9` while `flowstate.dat` remains within `1e-9`.
+
+The optional `NP=4` core matrix can be run with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/2dvort_mpirank_matrix_np4 \
+  MATRIX='4:2,2,1 4:2,1,2 4:1,2,2' FILTER_FIELD_ATOL=6e-9 \
+  tests/gpu_validation/run_2dvort_mpirank_matrix.sh
+```
+
+The higher filtered field tolerance is required by the `2x2x1` reconstructed `q5` interface-adjacent difference, about `5.2e-9`; native filtered statistics still use `1e-9`.
+
+The larger `256^3 NP=1/NP=2` Nsight profile can be generated with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/nsys_tgv_256_np1_np2 \
+  tests/gpu_validation/run_tgv_256_nsys_profile.sh
+```
+
+Useful controls:
+
+```bash
+GRID=256,256,256 MAXSTEP=10 FEQCHKPT=9999 LFILTER=t DIFFTERM=t \
+  NP2_TOPOLOGY=2,1,1 \
+  tests/gpu_validation/run_tgv_256_nsys_profile.sh
+```
+
+The driver prepares GPU-only `NP=1` and `NP=2` case copies, profiles both with Nsight Systems, and compares their `flowstate.dat` statistics. Existing profile evidence was generated before this driver was added; rerun the driver before marking the reusable profile test as passed.
 
 ## GPU Multi-Rank X-Slab Validation
 
@@ -324,6 +384,24 @@ nsys stats --force-export true \
 ```
 
 The post-git audit reported `Device-to-Host` count `116`, total `380.607 MB`, max `4.793 MB`, and `Host-to-Device` count `188`, total `867.120 MB`, max `104.333 MB`. For this `2x1x1` case, one local interior scalar field is about `8.39 MB`; therefore the observed maximum D2H is halo-buffer scale, not full-field scale. The largest H2D events are initial resident array setup and are not evidence of per-kernel or per-step full-field D2H. ASTR may still create the initial CPU-owned `outdat/flowfield.h5`; this audit is scoped to checkpoint-disabled GPU compute-loop transfers, not to removing every file output path.
+
+## Multi-Rank Matrix Driver
+
+Run the core multi-rank stats and field matrix:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/tgv_mpirank_matrix \
+  tests/gpu_validation/run_tgv_mpirank_matrix.sh
+```
+
+By default this covers `2x1x1`, `1x2x1`, `1x1x2`, `2x2x1`, `2x1x2`, `1x2x2`, and `2x2x2` for both native statistics and one-step field comparison. Higher-rank oversubscription smoke tests are opt-in:
+
+```bash
+RUN_SMOKE=t OUT_DIR=tests/gpu_validation/out/tgv_mpirank_matrix_smoke \
+  tests/gpu_validation/run_tgv_mpirank_matrix.sh
+```
+
+Override `STATS_MATRIX`, `FIELD_MATRIX`, or `SMOKE_MATRIX` with entries of the form `NP:i,j,k` to run a narrower set.
 
 ## GPU Gradcal Dvel Compare
 
