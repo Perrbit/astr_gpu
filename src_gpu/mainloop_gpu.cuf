@@ -18,7 +18,7 @@ contains
          exchange_solution_filter_halo_gpu, exchange_filter_y_work_halo_gpu, &
          exchange_filter_z_halo_gpu, exchange_diffusion_flux_halo_gpu, &
          refresh_filter_y_work_local_halo_gpu, refresh_filter_z_local_halo_gpu
-    use boundary_gpu, only: apply_boundary_conditions_gpu
+    use boundary_gpu, only: apply_boundary_conditions_gpu,gpu_uses_physical_boundary
     use solver_gpu, only: q_to_primitive_kernel, &
          filter_x_global_kernel,filter_y_pong_to_q_halo_global_kernel, &
          filter_z_halo_global_kernel,copy_qwork_global_kernel
@@ -65,16 +65,22 @@ contains
       call sync_after_kernel('prepare_copy_qwork_global_kernel')
     endif
 
-    call q_to_primitive_kernel<<<grid3,block3>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
-    call sync_after_kernel('prepare_q_to_primitive_kernel')
-    call apply_boundary_conditions_gpu()
-    call exchange_solution_halo_gpu()
+    if(lfilter .and. gpu_uses_physical_boundary()) then
+      call apply_boundary_conditions_gpu()
+      call exchange_solution_halo_gpu(.true.)
+    else
+      call q_to_primitive_kernel<<<grid3,block3>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
+      call sync_after_kernel('prepare_q_to_primitive_kernel')
+      call apply_boundary_conditions_gpu()
+      call exchange_solution_halo_gpu()
+    endif
   end subroutine prepare_rkfirst_stats_gpu
 
   subroutine time_integration_rk_gpu(first_stage_prepared,copy_back)
+    use mpi, only: MPI_PROC_NULL
     use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,deltat,const2,const5,const6, &
-         diffterm,lfilter,reynolds,prandtl,tempconst,tempconst1
-    use parallel, only: jsize,ksize
+         diffterm,lfilter,reynolds,prandtl,tempconst,tempconst1,flowtype,lihomo
+    use parallel, only: jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
     use commarray_gpu, only: q_d,qrhs_d,qsave_d,rho_d,vel_d,prs_d,tmp_d, &
          jacob_d,dxi_d,copy_flow_from_gpu
     use gpu_check, only: sync_after_kernel
@@ -82,7 +88,8 @@ contains
          exchange_solution_filter_halo_gpu, exchange_filter_y_work_halo_gpu, &
          exchange_filter_z_halo_gpu, exchange_diffusion_flux_halo_gpu, &
          refresh_filter_y_work_local_halo_gpu, refresh_filter_z_local_halo_gpu
-    use boundary_gpu, only: apply_boundary_conditions_gpu,gpu_uses_x_zeroextrap
+    use boundary_gpu, only: apply_boundary_conditions_gpu, &
+         gpu_physical_boundary_axis,gpu_uses_physical_boundary
     use solver_gpu, only: q_to_primitive_kernel,zero_rhs_kernel, &
          save_q_kernel,rk3_update_kernel,convective_rhs_x_kernel, &
          convective_rhs_y_kernel,convective_rhs_z_kernel, &
@@ -91,23 +98,41 @@ contains
          convective_rhs_x_xphysical_global_kernel, &
          convective_rhs_y_xphysical_global_kernel, &
          convective_rhs_z_xphysical_global_kernel, &
+         convective_rhs_x_yphysical_global_kernel, &
+         convective_rhs_y_yphysical_global_kernel, &
+         convective_rhs_z_yphysical_global_kernel, &
+         convective_rhs_x_zphysical_global_kernel, &
+         convective_rhs_y_zphysical_global_kernel, &
+         convective_rhs_z_zphysical_global_kernel, &
          rk3_first_update_global_kernel,rk3_update_global_kernel, &
          filter_x_global_kernel,filter_y_pong_to_q_halo_global_kernel, &
          filter_z_halo_global_kernel,copy_qwork_global_kernel, &
-         diffusion_flux_global_kernel,diffusion_rhs_x_stored_global_kernel, &
-         diffusion_rhs_y_stored_global_kernel,diffusion_rhs_z_stored_global_kernel
+         diffusion_flux_global_kernel,diffusion_flux_xphysical_global_kernel, &
+         diffusion_flux_yphysical_global_kernel,diffusion_flux_zphysical_global_kernel, &
+         diffusion_rhs_x_stored_global_kernel, &
+         diffusion_rhs_x_xphysical_stored_global_kernel, &
+         diffusion_rhs_x_yphysical_stored_global_kernel, &
+         diffusion_rhs_y_yphysical_stored_global_kernel, &
+         diffusion_rhs_z_yphysical_stored_global_kernel, &
+         diffusion_rhs_x_zphysical_stored_global_kernel, &
+         diffusion_rhs_y_zphysical_stored_global_kernel, &
+         diffusion_rhs_z_zphysical_stored_global_kernel, &
+         diffusion_rhs_y_stored_global_kernel,diffusion_rhs_z_stored_global_kernel, &
+         apply_channel_source_gpu
     implicit none
     logical,intent(in),optional :: first_stage_prepared
     logical,intent(in),optional :: copy_back
     type(dim3) :: block3,grid3,block1,grid1
     type(dim3) :: block_x,grid_x,block_y,grid_y,block_z,grid_z
-    integer :: ntot,rkstep
+    integer :: ntot,rkstep,apply_left_x,apply_right_x
+    integer :: apply_down_y,apply_up_y,apply_back_z,apply_front_z
     real(8),parameter :: rk_a(3) = (/1.d0,0.75d0,1.d0/3.d0/)
     real(8),parameter :: rk_b(3) = (/0.d0,0.25d0,2.d0/3.d0/)
     real(8),parameter :: rk_c(3) = (/1.d0,0.25d0,2.d0/3.d0/)
     logical,save :: warned = .false.
     logical :: prepared
     logical :: need_copy_back
+    integer :: physical_axis
 
     call validate_first_stage_gpu()
     prepared = .false.
@@ -118,6 +143,13 @@ contains
     if(.not.warned) then
       warned = .true.
     endif
+    physical_axis = gpu_physical_boundary_axis()
+    apply_left_x = merge(1,0,mpileft == MPI_PROC_NULL)
+    apply_right_x = merge(1,0,mpiright == MPI_PROC_NULL)
+    apply_down_y = merge(1,0,mpidown == MPI_PROC_NULL)
+    apply_up_y = merge(1,0,mpiup == MPI_PROC_NULL)
+    apply_back_z = merge(1,0,mpiback == MPI_PROC_NULL)
+    apply_front_z = merge(1,0,mpifront == MPI_PROC_NULL)
 
     ntot = (im + 1) * (jm + 1) * (km + 1)
     block1 = dim3(256,1,1)
@@ -136,6 +168,11 @@ contains
 
     do rkstep=1,3
       if(.not.(prepared .and. rkstep == 1)) then
+        if(lfilter .and. gpu_uses_physical_boundary()) then
+          call q_to_primitive_kernel<<<grid3,block3>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
+          call sync_after_kernel('q_to_primitive_kernel_prefilter')
+        endif
+
         if(lfilter) then
           call exchange_solution_filter_halo_gpu()
           call filter_x_global_kernel<<<grid_x,block_x>>>(im,jm,km)
@@ -158,41 +195,108 @@ contains
           call sync_after_kernel('copy_qwork_global_kernel')
         endif
 
-        call q_to_primitive_kernel<<<grid3,block3>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
-        call sync_after_kernel('q_to_primitive_kernel')
-        call apply_boundary_conditions_gpu()
-        call exchange_solution_halo_gpu()
+        if(lfilter .and. gpu_uses_physical_boundary()) then
+          call apply_boundary_conditions_gpu()
+          call exchange_solution_halo_gpu(.true.)
+        else
+          call q_to_primitive_kernel<<<grid3,block3>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
+          call sync_after_kernel('q_to_primitive_kernel')
+          call apply_boundary_conditions_gpu()
+          call exchange_solution_halo_gpu()
+        endif
       endif
 
       call zero_rhs_kernel<<<grid1,block1>>>(qrhs_d,im,jm,km)
       call sync_after_kernel('zero_rhs_kernel')
-      if(gpu_uses_x_zeroextrap()) then
-        call convective_rhs_x_xphysical_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie,js,je,ks,ke)
+      select case(physical_axis)
+      case(1)
+        call convective_rhs_x_xphysical_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie,js,je,ks,ke, &
+                                                                          apply_left_x,apply_right_x)
         call sync_after_kernel('convective_rhs_x_xphysical_global_kernel')
         call convective_rhs_y_xphysical_global_kernel<<<grid_y,block_y>>>(im,jm,km,is,ie,js,je,ks,ke)
         call sync_after_kernel('convective_rhs_y_xphysical_global_kernel')
         call convective_rhs_z_xphysical_global_kernel<<<grid_z,block_z>>>(im,jm,km,is,ie,js,je,ks,ke)
         call sync_after_kernel('convective_rhs_z_xphysical_global_kernel')
-      else
+      case(2)
+        call convective_rhs_x_yphysical_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie,js,je,ks,ke)
+        call sync_after_kernel('convective_rhs_x_yphysical_global_kernel')
+        call convective_rhs_y_yphysical_global_kernel<<<grid_y,block_y>>>(im,jm,km,is,ie,js,je,ks,ke, &
+                                                                          apply_down_y,apply_up_y)
+        call sync_after_kernel('convective_rhs_y_yphysical_global_kernel')
+        call convective_rhs_z_yphysical_global_kernel<<<grid_z,block_z>>>(im,jm,km,is,ie,js,je,ks,ke)
+        call sync_after_kernel('convective_rhs_z_yphysical_global_kernel')
+      case(3)
+        call convective_rhs_x_zphysical_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie,js,je,ks,ke)
+        call sync_after_kernel('convective_rhs_x_zphysical_global_kernel')
+        call convective_rhs_y_zphysical_global_kernel<<<grid_y,block_y>>>(im,jm,km,is,ie,js,je,ks,ke)
+        call sync_after_kernel('convective_rhs_y_zphysical_global_kernel')
+        call convective_rhs_z_zphysical_global_kernel<<<grid_z,block_z>>>(im,jm,km,is,ie,js,je,ks,ke, &
+                                                                          apply_back_z,apply_front_z)
+        call sync_after_kernel('convective_rhs_z_zphysical_global_kernel')
+      case default
         call convective_rhs_x_global_kernel<<<grid_x,block_x>>>(im,jm,km)
         call sync_after_kernel('convective_rhs_x_global_kernel')
         call convective_rhs_y_global_kernel<<<grid_y,block_y>>>(im,jm,km)
         call sync_after_kernel('convective_rhs_y_global_kernel')
         call convective_rhs_z_global_kernel<<<grid_z,block_z>>>(im,jm,km)
         call sync_after_kernel('convective_rhs_z_global_kernel')
-      endif
+      end select
 
       if(diffterm) then
-        call diffusion_flux_global_kernel<<<grid3,block3>>>(im,jm,km,reynolds,prandtl,const5,tempconst,tempconst1)
-        call sync_after_kernel('diffusion_flux_global_kernel')
+        select case(physical_axis)
+        case(1)
+          call diffusion_flux_xphysical_global_kernel<<<grid3,block3>>>(im,jm,km,reynolds,prandtl,const5, &
+                                                                        tempconst,tempconst1,apply_left_x,apply_right_x)
+          call sync_after_kernel('diffusion_flux_xphysical_global_kernel')
+        case(2)
+          call diffusion_flux_yphysical_global_kernel<<<grid3,block3>>>(im,jm,km,reynolds,prandtl,const5, &
+                                                                        tempconst,tempconst1,apply_down_y,apply_up_y)
+          call sync_after_kernel('diffusion_flux_yphysical_global_kernel')
+        case(3)
+          call diffusion_flux_zphysical_global_kernel<<<grid3,block3>>>(im,jm,km,reynolds,prandtl,const5, &
+                                                                        tempconst,tempconst1,apply_back_z,apply_front_z)
+          call sync_after_kernel('diffusion_flux_zphysical_global_kernel')
+        case default
+          call diffusion_flux_global_kernel<<<grid3,block3>>>(im,jm,km,reynolds,prandtl,const5,tempconst,tempconst1)
+          call sync_after_kernel('diffusion_flux_global_kernel')
+        end select
         call exchange_diffusion_flux_halo_gpu()
-        call diffusion_rhs_x_stored_global_kernel<<<grid_x,block_x>>>(im,jm,km)
-        call sync_after_kernel('diffusion_rhs_x_stored_global_kernel')
-        call diffusion_rhs_y_stored_global_kernel<<<grid_y,block_y>>>(im,jm,km)
-        call sync_after_kernel('diffusion_rhs_y_stored_global_kernel')
-        call diffusion_rhs_z_stored_global_kernel<<<grid_z,block_z>>>(im,jm,km)
-        call sync_after_kernel('diffusion_rhs_z_stored_global_kernel')
+        select case(physical_axis)
+        case(1)
+          call diffusion_rhs_x_xphysical_stored_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie,js,je,ks,ke, &
+                                                                                  apply_left_x,apply_right_x)
+          call sync_after_kernel('diffusion_rhs_x_xphysical_stored_global_kernel')
+          call diffusion_rhs_y_stored_global_kernel<<<grid_y,block_y>>>(im,jm,km)
+          call sync_after_kernel('diffusion_rhs_y_stored_global_kernel')
+          call diffusion_rhs_z_stored_global_kernel<<<grid_z,block_z>>>(im,jm,km)
+          call sync_after_kernel('diffusion_rhs_z_stored_global_kernel')
+        case(2)
+          call diffusion_rhs_x_yphysical_stored_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie)
+          call sync_after_kernel('diffusion_rhs_x_yphysical_stored_global_kernel')
+          call diffusion_rhs_y_yphysical_stored_global_kernel<<<grid_y,block_y>>>(im,jm,km,js,je, &
+                                                                                  apply_down_y,apply_up_y)
+          call sync_after_kernel('diffusion_rhs_y_yphysical_stored_global_kernel')
+          call diffusion_rhs_z_yphysical_stored_global_kernel<<<grid_z,block_z>>>(im,jm,km,ks,ke)
+          call sync_after_kernel('diffusion_rhs_z_yphysical_stored_global_kernel')
+        case(3)
+          call diffusion_rhs_x_zphysical_stored_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie)
+          call sync_after_kernel('diffusion_rhs_x_zphysical_stored_global_kernel')
+          call diffusion_rhs_y_zphysical_stored_global_kernel<<<grid_y,block_y>>>(im,jm,km,js,je)
+          call sync_after_kernel('diffusion_rhs_y_zphysical_stored_global_kernel')
+          call diffusion_rhs_z_zphysical_stored_global_kernel<<<grid_z,block_z>>>(im,jm,km,ks,ke, &
+                                                                                  apply_back_z,apply_front_z)
+          call sync_after_kernel('diffusion_rhs_z_zphysical_stored_global_kernel')
+        case default
+          call diffusion_rhs_x_stored_global_kernel<<<grid_x,block_x>>>(im,jm,km)
+          call sync_after_kernel('diffusion_rhs_x_stored_global_kernel')
+          call diffusion_rhs_y_stored_global_kernel<<<grid_y,block_y>>>(im,jm,km)
+          call sync_after_kernel('diffusion_rhs_y_stored_global_kernel')
+          call diffusion_rhs_z_stored_global_kernel<<<grid_z,block_z>>>(im,jm,km)
+          call sync_after_kernel('diffusion_rhs_z_stored_global_kernel')
+        end select
       endif
+
+      if(trim(flowtype) == 'channel' .and. lihomo) call apply_channel_source_gpu()
 
       if(rkstep == 1) then
         call rk3_first_update_global_kernel<<<grid1,block1>>>(deltat,im,jm,km)
@@ -206,7 +310,6 @@ contains
 
     call q_to_primitive_kernel<<<grid3,block3>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
     call sync_after_kernel('q_to_primitive_kernel_final')
-    call apply_boundary_conditions_gpu()
     if(need_copy_back) call copy_flow_from_gpu()
   end subroutine time_integration_rk_gpu
 
@@ -215,11 +318,14 @@ contains
          turbmode, rkscheme, conschm, difschm, im, jm, km, &
          lihomo, ljhomo, lkhomo, lfilter, diffterm
     use bc, only: bctype
+    use boundary_gpu, only: gpu_physical_boundary_axis, GPU_BC_WALL_ISOTHERMAL_NOSLIP, &
+         GPU_BC_ZEROEXTRAP, GPU_BC_SYMMETRY
     use commarray, only: jacob
     use parallel, only: mpisize, isize, jsize, ksize
     implicit none
     real(8) :: min_jacob,max_jacob
-    logical :: periodic_case,x_zeroextrap_case
+    logical :: periodic_case,physical_boundary_case
+    integer :: bc_axis,bc_left
 
     if(numq /= 5) stop 'GPU first-stage supports numq=5 only'
     if(ndims /= 3) stop 'GPU first-stage supports 3D cases only'
@@ -232,18 +338,22 @@ contains
     if(mpisize /= isize*jsize*ksize) &
       stop 'GPU first-stage MPI topology is inconsistent'
     periodic_case = lihomo .and. ljhomo .and. lkhomo .and. all(bctype(1:6) == 1)
-    x_zeroextrap_case = (.not.lihomo) .and. ljhomo .and. lkhomo .and. &
-                        bctype(1) == 50 .and. bctype(2) == 50 .and. &
-                        all(bctype(3:6) == 1)
-    if(.not.(periodic_case .or. x_zeroextrap_case)) &
-      stop 'GPU first-stage supports periodic x/y/z or x bctype=50 with periodic y/z only'
-    if(x_zeroextrap_case) then
-      if(isize /= 1 .or. jsize /= 1 .or. ksize /= 1) &
-        stop 'GPU x-zeroextrap Phase B supports NP=1 only'
-      if(lfilter) stop 'GPU x-zeroextrap Phase B requires lfilter=f'
-      if(diffterm) stop 'GPU x-zeroextrap Phase B requires diffterm=f'
-    endif
-
+    bc_axis = gpu_physical_boundary_axis()
+    select case(bc_axis)
+    case(1)
+      bc_left = bctype(1)
+    case(2)
+      bc_left = bctype(3)
+    case(3)
+      bc_left = bctype(5)
+    case default
+      bc_left = 0
+    end select
+    physical_boundary_case = bc_axis /= 0 .and. &
+         (bc_left == GPU_BC_ZEROEXTRAP .or. bc_left == GPU_BC_SYMMETRY .or. &
+          bc_left == GPU_BC_WALL_ISOTHERMAL_NOSLIP)
+    if(.not.(periodic_case .or. physical_boundary_case)) &
+      stop 'GPU first-stage supports periodic or one zeroextrap/symmetry/isothermal no-slip wall direction only'
     min_jacob = minval(jacob(0:im,0:jm,0:km))
     max_jacob = maxval(jacob(0:im,0:jm,0:km))
     if(min_jacob <= 0.d0) then

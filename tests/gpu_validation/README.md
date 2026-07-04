@@ -5,7 +5,7 @@ This directory contains validation drivers for the current ASTR CUDA Fortran por
 Current validated scope:
 
 - Taylor-Green Vortex, 3D extruded `2dvort`, and generated-velocity HIT within the explicit periodic non-reacting capability gate
-- first x-direction non-periodic zero-extrapolation boundary slice, with y/z periodic and filter/diffusion disabled
+- first x/y/z-direction non-periodic zero-extrapolation boundary slices, with the other directions periodic and filter/diffusion support on one MPI rank
 - single-rank and multi-rank MPI decompositions
 - one physical GPU, two physical GPUs, and two-GPU oversubscription correctness smoke tests
 - q(1:5) only
@@ -253,18 +253,341 @@ OUT_DIR=tests/gpu_validation/out/hit_phasea_np8_2x2x2_5steps \
 
 Current expected result: all three commands print `status: pass` with `kenergy`, `enstophy`, and `dissipation` differences at about `1e-15` or below. HIT field-output comparison is intentionally disabled by default because HDF5 flowfield output remains a CPU-owned boundary in the current project scope.
 
-## Phase B x-Zeroextrap Boundary Validation
+## Phase B Zeroextrap Boundary Validation
 
-Validate the first finite-domain boundary slice. The driver starts from the TGV template, sets `lihomo=f,ljhomo=t,lkhomo=t`, uses x-direction `bctype=50,50`, disables filter and diffusion, and compares CPU/GPU `flowfield.h5` output:
+Validate the first finite-domain boundary slice. The driver starts from the TGV template, sets `lihomo=f,ljhomo=t,lkhomo=t`, uses x-direction `bctype=50,50`, enables diffusion and the explicit filter, and compares CPU/GPU statistics plus `flowfield.h5` output:
 
 ```bash
-OUT_DIR=tests/gpu_validation/out/xextrap_phaseb_np1_5steps_field \
+OUT_DIR=tests/gpu_validation/out/xextrap_phaseb_np1_5steps_filter_diffusion \
   MAXSTEP=5 FEQCHKPT=5 GRID=64,64,64 \
-  LFILTER=f DIFFTERM=f COMPARE_STATS=f COMPARE_FIELD=t FIELD_ATOL=1e-8 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-9 FIELD_ATOL=1e-8 \
   tests/gpu_validation/run_xextrap_phaseb_compare.sh
 ```
 
-Current expected result: field comparison prints `status: pass` with differences at roundoff scale. Statistics are disabled for this slice because the current GPU diagnostic gradient path is still periodic-first. This validation also depends on the CPU `parallelini` fix that sets single-rank non-homogeneous active ranges to interior nodes, leaving physical boundary planes under `boucon`.
+Current expected result: both `flowstate.dat` and field comparison print `status: pass` with differences at roundoff scale. This validation depends on the CPU `parallelini` fix that sets single-rank non-homogeneous active ranges to interior nodes, the GPU x-zeroextrap boundary kernel, x-zeroextrap RHS active-range guards, x-physical GPU `gradcal`, x-physical diffusion flux/RHS support, and CPU-compatible explicit-filter primitive timing. In the CPU code, `filterq` updates `q` but does not immediately refresh all primitive fields; the GPU x-zeroextrap filtered path therefore synchronizes primitive fields before filtering each RK substep, then preserves interior primitive fields after filtering while refreshing only boundary/halo primitive slices required by CPU `qswap`. `LFILTER=f` and `DIFFTERM=f` remain useful regression variants for isolating convection/RK from filter and diffusion effects.
+
+The same driver can validate the y/z zeroextrap slices by setting `ZERO_AXIS=y` or `ZERO_AXIS=z`. These slices validate boundary application, active ranges, y/z physical `gradcal`, y/z physical convection RHS, y/z physical diffusion flux/RHS, explicit filter ping-pong halo semantics, CPU-compatible filtered primitive timing, and single-rank halo routing.
+
+```bash
+OUT_DIR=tests/gpu_validation/out/yzero_phaseb_filter_5steps \
+  ZERO_AXIS=y MAXSTEP=5 FEQCHKPT=5 GRID=64,64,64 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-9 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_xextrap_phaseb_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/zzero_phaseb_filter_5steps \
+  ZERO_AXIS=z MAXSTEP=5 FEQCHKPT=5 GRID=64,64,64 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-9 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_xextrap_phaseb_compare.sh
+```
+
+Current expected result: both y and z commands print `status: pass` for `flowstate.dat` and field comparison. Single-rank finite-domain slices remain useful isolation tests for the physical y/z boundary kernels and filtered primitive timing.
+
+Validate the current multi-rank Phase B boundary matrix:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/zeroextrap_phaseb_mpirank_matrix \
+  tests/gpu_validation/run_zeroextrap_phaseb_mpirank_matrix.sh
+```
+
+The default matrix validates all currently enabled multi-rank Phase B routes, including physical-direction decomposition for x/y/z zeroextrap. Physical-direction convection/diffusion stencils use physical one-sided templates only on true `MPI_PROC_NULL` faces and use halo-backed sixth-order central stencils on MPI internal interfaces.
+
+```text
+x:2:1,2,1 x:2:1,1,2 x:2:2,1,1
+y:2:2,1,1 y:2:1,1,2 y:2:1,2,1
+z:2:2,1,1 z:2:1,2,1 z:2:1,1,2
+x:4:1,2,2 x:4:2,2,1 x:4:2,1,2
+y:4:2,1,2 y:4:2,2,1 y:4:1,2,2
+z:4:2,2,1 z:4:2,1,2 z:4:1,2,2
+```
+
+Current expected result: every matrix entry prints `status: pass` for `flowstate.dat` and field comparison at `STATS_ATOL=1e-9` and `FIELD_ATOL=1e-8`. Physical-direction decomposition is enabled for x-zero, y-zero, and z-zero in the default NP=2/NP=4 matrix.
+
+Run the longer Phase B stability checks with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/zeroextrap_phaseb_mpirank_matrix_5steps \
+  MAXSTEP=5 FEQCHKPT=5 \
+  tests/gpu_validation/run_zeroextrap_phaseb_mpirank_matrix.sh
+
+OUT_DIR=tests/gpu_validation/out/zeroextrap_phaseb_mpirank_matrix_20steps_stats \
+  MAXSTEP=20 FEQCHKPT=99 RUN_FIELD=f \
+  tests/gpu_validation/run_zeroextrap_phaseb_mpirank_matrix.sh
+```
+
+Current expected result: the 5-step matrix passes statistics and field comparison; the 20-step matrix passes statistics-only. The latest 5-step field run had max reconstructed `q5` error `7.3896444519050419e-13`; the latest 20-step statistics-only run had max differences `kenergy=4.4231285301066237e-13`, `enstophy=3.54605234065275e-13`, and `dissipation=4.427014310692812e-14`.
+
+## Phase C Symmetry Boundary Slices
+
+Validate CPU-compatible Cartesian `bctype=60,60` symmetry with the TGV template:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/symmetry_phasec_np1_x_5steps \
+  BC_KIND=symmetry ZERO_AXIS=x NP=1 TOPOLOGY=1,1,1 \
+  MAXSTEP=5 FEQCHKPT=5 GRID=64,64,64 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-9 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_xextrap_phaseb_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/symmetry_phasec_np1_y_5steps \
+  BC_KIND=symmetry ZERO_AXIS=y NP=1 TOPOLOGY=1,1,1 \
+  MAXSTEP=5 FEQCHKPT=5 GRID=64,64,64 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-9 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_xextrap_phaseb_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/symmetry_phasec_np1_z_5steps \
+  BC_KIND=symmetry ZERO_AXIS=z NP=1 TOPOLOGY=1,1,1 \
+  MAXSTEP=5 FEQCHKPT=5 GRID=64,64,64 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-9 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_xextrap_phaseb_compare.sh
+```
+
+Validate the multi-rank Phase C matrix:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/symmetry_phasec_mpirank_matrix \
+  MAXSTEP=1 FEQCHKPT=1 RUN_FIELD=t \
+  tests/gpu_validation/run_symmetry_phasec_mpirank_matrix.sh
+```
+
+The current expected result is 18/18 matrix entries passing across x/y/z symmetry and NP=2/NP=4 topologies. Direct five-step physical-direction checks also pass:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/symmetry_phasec_np2_yphysical_5steps \
+  BC_KIND=symmetry ZERO_AXIS=y NP=2 TOPOLOGY=1,2,1 \
+  MAXSTEP=5 FEQCHKPT=5 GRID=64,64,64 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-9 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_xextrap_phaseb_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/symmetry_phasec_np2_zphysical_5steps \
+  BC_KIND=symmetry ZERO_AXIS=z NP=2 TOPOLOGY=1,1,2 \
+  MAXSTEP=5 FEQCHKPT=5 GRID=64,64,64 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-9 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_xextrap_phaseb_compare.sh
+```
+
+This validates the CPU-compatible Cartesian symmetry path only. It does not imply general curvilinear symmetry normals, wall boundaries, farfield, NSCBC, immersed boundary, species, turbulence, chemistry, compact schemes, or GPU HDF5/checkpoint writing.
+
+## Phase D Artificial TGV `bctype=41` Wall Slices
+
+Use the TGV input template as an artificial boundary-path probe for isothermal no-slip walls in one Cartesian direction. This is not a physical TGV wall validation. It deliberately breaks periodicity in one Cartesian direction, sets the two faces in that direction to `bctype=41` with fixed wall temperature, keeps the other two directions periodic, and compares CPU/GPU boundary/filter/diffusion behavior.
+
+```bash
+WALL_AXIS=x MAXSTEP=5 FEQCHKPT=99 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t \
+  tests/gpu_validation/run_wall41_phased_compare.sh
+
+WALL_AXIS=y MAXSTEP=5 FEQCHKPT=99 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t \
+  tests/gpu_validation/run_wall41_phased_compare.sh
+
+WALL_AXIS=z MAXSTEP=5 FEQCHKPT=99 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t \
+  tests/gpu_validation/run_wall41_phased_compare.sh
+```
+
+Validate physical-direction MPI decomposition with:
+
+```bash
+WALL_AXIS=x NP=2 TOPOLOGY=2,1,1 MAXSTEP=5 FEQCHKPT=5 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t \
+  tests/gpu_validation/run_wall41_phased_compare.sh
+
+WALL_AXIS=y NP=2 TOPOLOGY=1,2,1 MAXSTEP=5 FEQCHKPT=5 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t \
+  tests/gpu_validation/run_wall41_phased_compare.sh
+
+WALL_AXIS=z NP=2 TOPOLOGY=1,1,2 MAXSTEP=5 FEQCHKPT=5 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t \
+  tests/gpu_validation/run_wall41_phased_compare.sh
+```
+
+Current expected result: all six commands pass `flowstate.dat` at `1e-9` and `flowfield.h5` at `1e-8`. The latest single-rank 5-step field maxima were reconstructed `q5=5.68e-13` for x, `6.25e-13` for y, and `4.55e-13` for z. The latest NP=2 physical-direction 5-step field maxima were reconstructed `q5=5.12e-13` for x, `5.68e-13` for y, and `5.68e-13` for z.
+
+Validate the reusable wall41 MPI matrix with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/wall41_phased_mpirank_matrix_np2_np4_1step \
+  MAXSTEP=1 FEQCHKPT=1 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t RUN_FIELD=t \
+  tests/gpu_validation/run_wall41_phased_mpirank_matrix.sh
+```
+
+The default matrix covers 18 entries across x/y/z wall41 and NP=2/NP=4 topologies, including physical-direction and transverse decompositions. Current expected result: `matrix_summary.txt` has 18 pass lines, and each entry passes `flowstate.dat` at `1e-9` and `flowfield.h5` at `1e-8`.
+
+Run the current NP=8 oversubscription smoke with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/wall41_phased_mpirank_matrix_np8_1step \
+  MATRIX='x:8:2,2,2 y:8:2,2,2 z:8:2,2,2' \
+  MAXSTEP=1 FEQCHKPT=1 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t RUN_FIELD=t \
+  tests/gpu_validation/run_wall41_phased_mpirank_matrix.sh
+
+OUT_DIR=tests/gpu_validation/out/wall41_phased_mpirank_matrix_np8_5step_stats \
+  MATRIX='x:8:2,2,2 y:8:2,2,2 z:8:2,2,2' \
+  MAXSTEP=5 FEQCHKPT=99 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t RUN_FIELD=f \
+  tests/gpu_validation/run_wall41_phased_mpirank_matrix.sh
+```
+
+The summary from the latest NP=8 runs has three pass lines. The one-step field smoke passes for all three wall axes, and the five-step statistics-only smoke passes with max statistic differences below `5e-14`. This is two-GPU oversubscription correctness evidence, not performance scaling evidence.
+
+The x/y/z statistics are not expected to match each other because the artificial wall direction changes which TGV structures are cut by no-slip/isothermal faces. This validates only the current explicit, Cartesian, no-species, no-turbulence, no-wall-blowing wall41 slices; it does not imply general wall-boundary physics, wall models, curvilinear wall normals, compact schemes, species, chemistry, or GPU HDF5/checkpoint writing.
+
+## Phase D Channel `bctype=41` Wall Slice
+
+Validate the first wall-bounded channel slice from `examples/Channel/datin/input.chl`. The current GPU support is intentionally narrow: y-direction `bctype=41,41` isothermal no-slip walls, x/z periodic, `numq=5`, no species, no turbulence model, explicit `643e,643e`, RK3, explicit filter/diffusion only.
+
+```bash
+OUT_DIR=tests/gpu_validation/out/channel_phased_np1_filter_diff_1step \
+  MAXSTEP=1 FEQCHKPT=1 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-8 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_channel_phased_compare.sh
+```
+
+Current expected result: one-step `flowstate.dat` and `flowfield.h5` comparisons print `status: pass`. This validates the GPU `bctype=41` y-wall kernel, y-physical gradient/diffusion/convection path, explicit filter ping-pong path, channel statistics (`massflux`, `fbcx`, `forcex`, `wrms`), and the GPU channel body-force source with variables resident on the device except for scalar reductions and CPU-owned output.
+
+Run the short feedback check with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/channel_phased_np1_filter_diff_2steps_green \
+  MAXSTEP=2 FEQCHKPT=2 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-8 FIELD_ATOL=1e-6 \
+  tests/gpu_validation/run_channel_phased_compare.sh
+```
+
+Current expected result: statistics and field comparison pass at `1e-8`. The channel source path now reads `jacob_d` directly inside the GPU kernel, matching the rest of the GPU RHS kernels and avoiding the previous device-array lower-bound mismatch.
+
+Run the current single-rank feedback gate with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/channel_feedback_filter_np1_20steps_after_source_fix \
+  MAXSTEP=20 FEQCHKPT=20 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-8 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_channel_phased_compare.sh
+```
+
+Current expected result: statistics and field comparison pass at `1e-8`; the most recent run had final differences near roundoff (`massflux=2.20e-13`, `forcex=3.91e-16`, reconstructed `q5=2.84e-13`).
+
+For longer source/wall/diffusion validation without the channel feedback loop, use a fixed body force:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/channel_fixedforce_nofilter_np1_100steps_dt5e4_after_source_fix \
+  MAXSTEP=100 FEQCHKPT=100 GRID=32,32,32 DELTAT=5.d-4 \
+  LFILTER=f DIFFTERM=t CHANNEL_FORCE_MODE=fixed CHANNEL_FORCE_FIXED=1.d-4 \
+  COMPARE_STATS=t COMPARE_FIELD=t STATS_ATOL=1e-8 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_channel_phased_compare.sh
+```
+
+Current expected result: statistics and field comparison pass at `1e-8`; the latest 100-step run had reconstructed `q5=6.04e-14` and `u1=4.00e-15`. Do not use `LFILTER=t` beyond the current 20-step gate as a long-step convergence test on this small channel setup: the CPU baseline itself crashes around 23 filtered steps at `DELTAT=5.d-4`, and around 20 filtered steps for smaller `DELTAT`. That is a CPU baseline/filter-frequency stability limit, not a GPU equivalence failure.
+
+For larger multi-rank long-step statistics-only validation, use the original channel grid size and timestep with fixed force and field output disabled:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/channel_long_np2_128_100steps_stats \
+  MATRIX='2:2,1,1 2:1,2,1 2:1,1,2' \
+  GRID=128,128,128 DELTAT=7.5d-4 MAXSTEP=100 FEQCHKPT=9999 \
+  LFILTER=f DIFFTERM=t RUN_FIELD=f \
+  CHANNEL_FORCE_MODE=fixed CHANNEL_FORCE_FIXED=1.d-4 \
+  STATS_ATOL=1e-8 STATS_RTOL=1e-10 \
+  tests/gpu_validation/run_channel_phased_mpirank_matrix.sh
+
+OUT_DIR=tests/gpu_validation/out/channel_long_np4_128_100steps_stats \
+  MATRIX='4:2,2,1 4:2,1,2 4:1,2,2' \
+  GRID=128,128,128 DELTAT=7.5d-4 MAXSTEP=100 FEQCHKPT=9999 \
+  LFILTER=f DIFFTERM=t RUN_FIELD=f \
+  CHANNEL_FORCE_MODE=fixed CHANNEL_FORCE_FIXED=1.d-4 \
+  STATS_ATOL=1e-8 STATS_RTOL=1e-10 \
+  tests/gpu_validation/run_channel_phased_mpirank_matrix.sh
+
+OUT_DIR=tests/gpu_validation/out/channel_long_np8_128_100steps_stats \
+  MATRIX='8:2,2,2' \
+  GRID=128,128,128 DELTAT=7.5d-4 MAXSTEP=100 FEQCHKPT=9999 \
+  LFILTER=f DIFFTERM=t RUN_FIELD=f \
+  CHANNEL_FORCE_MODE=fixed CHANNEL_FORCE_FIXED=1.d-4 \
+  STATS_ATOL=1e-8 STATS_RTOL=1e-10 \
+  tests/gpu_validation/run_channel_phased_mpirank_matrix.sh
+```
+
+Current expected result: NP=2 `2x1x1`, `1x2x1`, `1x1x2`; NP=4 `2x2x1`, `2x1x2`, `1x2x2`; and NP=8 `2x2x2` all print `status: pass` in `flowstate_compare.txt`. The latest run had maximum observed `massflux=4.998e-13`, `wrms=4.979e-15`, and `forcex=0` differences. This is a long-step CPU/GPU statistics equivalence gate under two-GPU oversubscription, not a production scaling result.
+
+Validate the current `NP=2` channel slab matrix with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/channel_phased_mpirank_matrix_np2_1step \
+  MAXSTEP=1 FEQCHKPT=1 \
+  tests/gpu_validation/run_channel_phased_mpirank_matrix.sh
+```
+
+The default matrix covers `2x1x1`, `1x2x1`, and `1x1x2`. The `1x2x1` entry is the key physical-direction decomposition check: the lower and upper y-wall kernels must apply only on true physical faces, while the internal y interface uses halo-backed central stencils.
+
+Run the short multi-rank feedback matrix with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/channel_phased_mpirank_matrix_np2_2steps \
+  MAXSTEP=2 FEQCHKPT=2 FIELD_ATOL=1e-6 \
+  tests/gpu_validation/run_channel_phased_mpirank_matrix.sh
+```
+
+Current expected result: all three entries pass statistics at `1e-8` and field comparison at `1e-6`.
+
+Validate the `NP=4` combined-direction channel matrix with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/channel_phased_mpirank_matrix_np4_1step \
+  MATRIX='4:2,2,1 4:2,1,2 4:1,2,2' \
+  MAXSTEP=1 FEQCHKPT=1 \
+  tests/gpu_validation/run_channel_phased_mpirank_matrix.sh
+
+OUT_DIR=tests/gpu_validation/out/channel_phased_mpirank_matrix_np4_2steps \
+  MATRIX='4:2,2,1 4:2,1,2 4:1,2,2' \
+  MAXSTEP=2 FEQCHKPT=2 STATS_ATOL=2e-8 FIELD_ATOL=1e-6 \
+  tests/gpu_validation/run_channel_phased_mpirank_matrix.sh
+```
+
+The `MAXSTEP=1` matrix is strict at `STATS_ATOL=1e-8` and `FIELD_ATOL=1e-8`. The two-step matrix uses `STATS_ATOL=2e-8` because the channel feedback loop produces `~1.2e-8` mass-flux/force tail differences under combined decompositions.
+
+Validate the `NP=8` `2x2x2` channel smoke with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/channel_phased_mpirank_matrix_np8_1step \
+  MATRIX='8:2,2,2' \
+  MAXSTEP=1 FEQCHKPT=1 \
+  tests/gpu_validation/run_channel_phased_mpirank_matrix.sh
+
+OUT_DIR=tests/gpu_validation/out/channel_phased_mpirank_matrix_np8_2steps \
+  MATRIX='8:2,2,2' \
+  MAXSTEP=2 FEQCHKPT=2 STATS_ATOL=2e-8 FIELD_ATOL=1e-6 \
+  tests/gpu_validation/run_channel_phased_mpirank_matrix.sh
+```
+
+The `NP=8` run is a correctness smoke under two-GPU oversubscription. It is not performance evidence and should not be used to infer production scaling.
+
+Validate the `NP=27` `3x3x3` fully interior-rank channel smoke with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/channel_phased_mpirank_np27_3x3x3_1step \
+  MATRIX='27:3,3,3' \
+  MAXSTEP=1 FEQCHKPT=1 \
+  tests/gpu_validation/run_channel_phased_mpirank_matrix.sh
+
+OUT_DIR=tests/gpu_validation/out/channel_phased_mpirank_np27_3x3x3_2steps \
+  MATRIX='27:3,3,3' \
+  MAXSTEP=2 FEQCHKPT=2 STATS_ATOL=3e-8 FIELD_ATOL=1e-6 \
+  tests/gpu_validation/run_channel_phased_mpirank_matrix.sh
+```
+
+The `3x3x3` topology creates ranks fully wrapped by MPI neighbors in x/y/z, including y-interior ranks that do not touch either wall. This is a high-oversubscription correctness smoke on the current two-GPU machine, not performance evidence.
 
 The larger `256^3 NP=1/NP=2` Nsight profile can be generated with:
 

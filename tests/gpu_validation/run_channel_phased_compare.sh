@@ -2,12 +2,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CASE_DIR="$ROOT_DIR/examples/Taylor_Green_Vortex"
+CASE_DIR="$ROOT_DIR/examples/Channel"
 CPU_EXE="${CPU_EXE:-$ROOT_DIR/build_cpu_probe/bin/astr}"
 GPU_EXE="${GPU_EXE:-$ROOT_DIR/build_gpu_probe/bin/astr}"
-OUT_DIR="${OUT_DIR:-$ROOT_DIR/tests/gpu_validation/out/xextrap_phaseb_compare}"
+OUT_DIR="${OUT_DIR:-$ROOT_DIR/tests/gpu_validation/out/channel_phased_compare}"
 MAXSTEP="${MAXSTEP:-1}"
-FEQCHKPT="${FEQCHKPT:-99}"
+FEQCHKPT="${FEQCHKPT:-$MAXSTEP}"
 LFILTER="${LFILTER:-f}"
 DIFFTERM="${DIFFTERM:-f}"
 SCHEME="${SCHEME:-643e}"
@@ -17,68 +17,21 @@ NP="${NP:-1}"
 TOPOLOGY="${TOPOLOGY:-1,1,1}"
 STATS_ATOL="${STATS_ATOL:-1e-9}"
 STATS_RTOL="${STATS_RTOL:-1e-10}"
-FIELD_ATOL="${FIELD_ATOL:-1e-9}"
+FIELD_ATOL="${FIELD_ATOL:-1e-8}"
 FIELD_RTOL="${FIELD_RTOL:-1e-10}"
 COMPARE_STATS="${COMPARE_STATS:-t}"
-COMPARE_FIELD="${COMPARE_FIELD:-f}"
-ZERO_AXIS="${ZERO_AXIS:-x}"
-BC_KIND="${BC_KIND:-zeroextrap}"
-
-case "$BC_KIND" in
-  zeroextrap)
-    case "$ZERO_AXIS" in
-      x)
-        HOMOGENEOUS="f,t,t"
-        BCTYPE="50,50,1,1,1,1"
-        ;;
-      y)
-        HOMOGENEOUS="t,f,t"
-        BCTYPE="1,1,50,50,1,1"
-        ;;
-      z)
-        HOMOGENEOUS="t,t,f"
-        BCTYPE="1,1,1,1,50,50"
-        ;;
-      *)
-        printf 'unsupported ZERO_AXIS=%s; expected x, y, or z\n' "$ZERO_AXIS" >&2
-        exit 2
-        ;;
-    esac
-    ;;
-  symmetry)
-    case "$ZERO_AXIS" in
-      x)
-        HOMOGENEOUS="f,t,t"
-        BCTYPE="60,60,1,1,1,1"
-        ;;
-      y)
-        HOMOGENEOUS="t,f,t"
-        BCTYPE="1,1,60,60,1,1"
-        ;;
-      z)
-        HOMOGENEOUS="t,t,f"
-        BCTYPE="1,1,1,1,60,60"
-        ;;
-      *)
-        printf 'unsupported ZERO_AXIS=%s; expected x, y, or z\n' "$ZERO_AXIS" >&2
-        exit 2
-        ;;
-    esac
-    ;;
-  *)
-    printf 'unsupported BC_KIND=%s; expected zeroextrap or symmetry\n' "$BC_KIND" >&2
-    exit 2
-    ;;
-esac
+COMPARE_FIELD="${COMPARE_FIELD:-t}"
+CHANNEL_FORCE_MODE="${CHANNEL_FORCE_MODE:-feedback}"
+CHANNEL_FORCE_FIXED="${CHANNEL_FORCE_FIXED:-}"
 
 mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
 python3 "$ROOT_DIR/tests/gpu_validation/prepare_tgv_case.py" \
   --src-case "$CASE_DIR" \
   --dst-case "$OUT_DIR/cpu" \
-  --input-name input.tgv \
-  --homogeneous "$HOMOGENEOUS" \
-  --bctype "$BCTYPE" \
+  --input-name input.chl \
+  --homogeneous "t,f,t" \
   --use-gpu f \
   --maxstep "$MAXSTEP" \
   --feqchkpt "$FEQCHKPT" \
@@ -91,9 +44,8 @@ python3 "$ROOT_DIR/tests/gpu_validation/prepare_tgv_case.py" \
 python3 "$ROOT_DIR/tests/gpu_validation/prepare_tgv_case.py" \
   --src-case "$CASE_DIR" \
   --dst-case "$OUT_DIR/gpu" \
-  --input-name input.tgv \
-  --homogeneous "$HOMOGENEOUS" \
-  --bctype "$BCTYPE" \
+  --input-name input.chl \
+  --homogeneous "t,f,t" \
   --use-gpu t \
   --maxstep "$MAXSTEP" \
   --feqchkpt "$FEQCHKPT" \
@@ -105,14 +57,18 @@ python3 "$ROOT_DIR/tests/gpu_validation/prepare_tgv_case.py" \
 
 (
   cd "$OUT_DIR/cpu"
+  ASTR_CHANNEL_FORCE_MODE="$CHANNEL_FORCE_MODE" \
+  ASTR_CHANNEL_FORCE_FIXED="$CHANNEL_FORCE_FIXED" \
   ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
-    mpirun -np "$NP" "$CPU_EXE" run datin/input.tgv > cpu.log 2>&1
+    mpirun -np "$NP" "$CPU_EXE" run datin/input.chl > cpu.log 2>&1
 )
 
 (
   cd "$OUT_DIR/gpu"
+  ASTR_CHANNEL_FORCE_MODE="$CHANNEL_FORCE_MODE" \
+  ASTR_CHANNEL_FORCE_FIXED="$CHANNEL_FORCE_FIXED" \
   ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
-    mpirun -np "$NP" "$GPU_EXE" run datin/input.tgv > gpu.log 2>&1
+    mpirun -np "$NP" "$GPU_EXE" run datin/input.chl > gpu.log 2>&1
 )
 
 if [[ "$COMPARE_STATS" == "t" ]]; then

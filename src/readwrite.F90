@@ -512,7 +512,11 @@ module readwrite
       !
       open(fh,file=trim(inputfile),action='read')
       read(fh,'(////)')
+      flowtype=' '
       read(fh,*)flowtype
+      do i=1,len(flowtype)
+        if(flowtype(i:i)==char(0) .or. flowtype(i:i)==char(13)) flowtype(i:i)=' '
+      enddo
       read(fh,'(/)')
       read(fh,*)ia,ja,ka
       read(fh,'(/)')
@@ -676,6 +680,9 @@ module readwrite
     call bcast(lrestart)
     !
     call bcast(flowtype)
+    do i=1,len(flowtype)
+      if(flowtype(i:i)==char(0) .or. flowtype(i:i)==char(13)) flowtype(i:i)=' '
+    enddo
     call bcast(turbmode)
     call bcast(iomode)
     call bcast(ibmode)

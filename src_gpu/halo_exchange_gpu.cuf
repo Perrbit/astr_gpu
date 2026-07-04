@@ -86,10 +86,10 @@ contains
     sendbuf(h,j,k,m) = q_d(im-hm+h,j,k,m)
   end subroutine pack_x_right_kernel
 
-  attributes(global) subroutine unpack_x_kernel(recv_right,recv_left,im,jm,km,hm,numq)
+  attributes(global) subroutine unpack_x_kernel(recv_right,recv_left,im,jm,km,hm,numq,has_right,has_left)
     use commarray_gpu, only: q_d
     implicit none
-    integer,value :: im,jm,km,hm,numq
+    integer,value :: im,jm,km,hm,numq,has_right,has_left
     real(8),device :: recv_right(0:hm,0:jm,0:km,1:numq)
     real(8),device :: recv_left(0:hm,0:jm,0:km,1:numq)
     integer :: id,h,j,k,m,nplane
@@ -102,15 +102,19 @@ contains
     k = mod(id/(jm+1),km+1)
     m = id/((jm+1)*(km+1)) + 1
 
-    do h=1,hm
-      q_d(im+h,j,k,m) = recv_right(h,j,k,m)
-    enddo
-    q_d(im,j,k,m) = 0.5d0 * (q_d(im,j,k,m) + recv_right(0,j,k,m))
+    if(has_right /= 0) then
+      do h=1,hm
+        q_d(im+h,j,k,m) = recv_right(h,j,k,m)
+      enddo
+      q_d(im,j,k,m) = 0.5d0 * (q_d(im,j,k,m) + recv_right(0,j,k,m))
+    endif
 
-    do h=0,hm-1
-      q_d(-hm+h,j,k,m) = recv_left(h,j,k,m)
-    enddo
-    q_d(0,j,k,m) = 0.5d0 * (q_d(0,j,k,m) + recv_left(hm,j,k,m))
+    if(has_left /= 0) then
+      do h=0,hm-1
+        q_d(-hm+h,j,k,m) = recv_left(h,j,k,m)
+      enddo
+      q_d(0,j,k,m) = 0.5d0 * (q_d(0,j,k,m) + recv_left(hm,j,k,m))
+    endif
   end subroutine unpack_x_kernel
 
   attributes(global) subroutine pack_x_halo_left_kernel(sendbuf,im,jm,km,hm,numq)
@@ -153,10 +157,10 @@ contains
     sendbuf(h,j,k,m) = q_d(im-hm+h,j,k,m)
   end subroutine pack_x_halo_right_kernel
 
-  attributes(global) subroutine unpack_x_halo_kernel(recv_right,recv_left,im,jm,km,hm,numq)
+  attributes(global) subroutine unpack_x_halo_kernel(recv_right,recv_left,im,jm,km,hm,numq,has_right,has_left)
     use commarray_gpu, only: q_d
     implicit none
-    integer,value :: im,jm,km,hm,numq
+    integer,value :: im,jm,km,hm,numq,has_right,has_left
     real(8),device :: recv_right(0:hm-1,0:jm,0:km,1:numq)
     real(8),device :: recv_left(0:hm-1,0:jm,0:km,1:numq)
     integer :: id,h,j,k,m,nplane
@@ -170,8 +174,8 @@ contains
     m = id/((jm+1)*(km+1)) + 1
 
     do h=0,hm-1
-      q_d(im+1+h,j,k,m) = recv_right(h,j,k,m)
-      q_d(-hm+h,j,k,m) = recv_left(h,j,k,m)
+      if(has_right /= 0) q_d(im+1+h,j,k,m) = recv_right(h,j,k,m)
+      if(has_left /= 0) q_d(-hm+h,j,k,m) = recv_left(h,j,k,m)
     enddo
   end subroutine unpack_x_halo_kernel
 
@@ -215,10 +219,10 @@ contains
     sendbuf(i,h,k,m) = q_d(i,jm-hm+h,k,m)
   end subroutine pack_y_up_kernel
 
-  attributes(global) subroutine unpack_y_kernel(recv_up,recv_down,im,jm,km,hm,numq)
+  attributes(global) subroutine unpack_y_kernel(recv_up,recv_down,im,jm,km,hm,numq,has_up,has_down)
     use commarray_gpu, only: q_d
     implicit none
-    integer,value :: im,jm,km,hm,numq
+    integer,value :: im,jm,km,hm,numq,has_up,has_down
     real(8),device :: recv_up(0:im,0:hm,0:km,1:numq)
     real(8),device :: recv_down(0:im,0:hm,0:km,1:numq)
     integer :: id,i,h,k,m,nplane
@@ -232,14 +236,14 @@ contains
     m = id/((im+1)*(km+1)) + 1
 
     do h=1,hm
-      q_d(i,jm+h,k,m) = recv_up(i,h,k,m)
+      if(has_up /= 0) q_d(i,jm+h,k,m) = recv_up(i,h,k,m)
     enddo
-    q_d(i,jm,k,m) = 0.5d0 * (q_d(i,jm,k,m) + recv_up(i,0,k,m))
+    if(has_up /= 0) q_d(i,jm,k,m) = 0.5d0 * (q_d(i,jm,k,m) + recv_up(i,0,k,m))
 
     do h=0,hm-1
-      q_d(i,-hm+h,k,m) = recv_down(i,h,k,m)
+      if(has_down /= 0) q_d(i,-hm+h,k,m) = recv_down(i,h,k,m)
     enddo
-    q_d(i,0,k,m) = 0.5d0 * (q_d(i,0,k,m) + recv_down(i,hm,k,m))
+    if(has_down /= 0) q_d(i,0,k,m) = 0.5d0 * (q_d(i,0,k,m) + recv_down(i,hm,k,m))
   end subroutine unpack_y_kernel
 
   attributes(global) subroutine pack_y_halo_down_kernel(sendbuf,im,jm,km,hm,numq)
@@ -282,10 +286,10 @@ contains
     sendbuf(i,h,k,m) = q_d(i,jm-hm+h,k,m)
   end subroutine pack_y_halo_up_kernel
 
-  attributes(global) subroutine unpack_y_halo_kernel(recv_up,recv_down,im,jm,km,hm,numq)
+  attributes(global) subroutine unpack_y_halo_kernel(recv_up,recv_down,im,jm,km,hm,numq,has_up,has_down)
     use commarray_gpu, only: q_d
     implicit none
-    integer,value :: im,jm,km,hm,numq
+    integer,value :: im,jm,km,hm,numq,has_up,has_down
     real(8),device :: recv_up(0:im,0:hm-1,0:km,1:numq)
     real(8),device :: recv_down(0:im,0:hm-1,0:km,1:numq)
     integer :: id,i,h,k,m,nplane
@@ -299,8 +303,8 @@ contains
     m = id/((im+1)*(km+1)) + 1
 
     do h=0,hm-1
-      q_d(i,jm+1+h,k,m) = recv_up(i,h,k,m)
-      q_d(i,-hm+h,k,m) = recv_down(i,h,k,m)
+      if(has_up /= 0) q_d(i,jm+1+h,k,m) = recv_up(i,h,k,m)
+      if(has_down /= 0) q_d(i,-hm+h,k,m) = recv_down(i,h,k,m)
     enddo
   end subroutine unpack_y_halo_kernel
 
@@ -344,10 +348,10 @@ contains
     sendbuf(i,h,k,m) = qwork_d(i,jm-hm+h,k,m)
   end subroutine pack_qwork_y_halo_up_kernel
 
-  attributes(global) subroutine unpack_qwork_y_halo_kernel(recv_up,recv_down,im,jm,km,hm,numq)
+  attributes(global) subroutine unpack_qwork_y_halo_kernel(recv_up,recv_down,im,jm,km,hm,numq,has_up,has_down)
     use commarray_gpu, only: qwork_d
     implicit none
-    integer,value :: im,jm,km,hm,numq
+    integer,value :: im,jm,km,hm,numq,has_up,has_down
     real(8),device :: recv_up(0:im,0:hm-1,0:km,1:numq)
     real(8),device :: recv_down(0:im,0:hm-1,0:km,1:numq)
     integer :: id,i,h,k,m,nplane
@@ -361,8 +365,8 @@ contains
     m = id/((im+1)*(km+1)) + 1
 
     do h=0,hm-1
-      qwork_d(i,jm+1+h,k,m) = recv_up(i,h,k,m)
-      qwork_d(i,-hm+h,k,m) = recv_down(i,h,k,m)
+      if(has_up /= 0) qwork_d(i,jm+1+h,k,m) = recv_up(i,h,k,m)
+      if(has_down /= 0) qwork_d(i,-hm+h,k,m) = recv_down(i,h,k,m)
     enddo
   end subroutine unpack_qwork_y_halo_kernel
 
@@ -406,10 +410,10 @@ contains
     sendbuf(i,j,h,m) = q_d(i,j,km-hm+h,m)
   end subroutine pack_z_front_kernel
 
-  attributes(global) subroutine unpack_z_kernel(recv_front,recv_back,im,jm,km,hm,numq)
+  attributes(global) subroutine unpack_z_kernel(recv_front,recv_back,im,jm,km,hm,numq,has_front,has_back)
     use commarray_gpu, only: q_d
     implicit none
-    integer,value :: im,jm,km,hm,numq
+    integer,value :: im,jm,km,hm,numq,has_front,has_back
     real(8),device :: recv_front(0:im,0:jm,0:hm,1:numq)
     real(8),device :: recv_back(0:im,0:jm,0:hm,1:numq)
     integer :: id,i,j,h,m,nplane
@@ -423,14 +427,14 @@ contains
     m = id/((im+1)*(jm+1)) + 1
 
     do h=1,hm
-      q_d(i,j,km+h,m) = recv_front(i,j,h,m)
+      if(has_front /= 0) q_d(i,j,km+h,m) = recv_front(i,j,h,m)
     enddo
-    q_d(i,j,km,m) = 0.5d0 * (q_d(i,j,km,m) + recv_front(i,j,0,m))
+    if(has_front /= 0) q_d(i,j,km,m) = 0.5d0 * (q_d(i,j,km,m) + recv_front(i,j,0,m))
 
     do h=0,hm-1
-      q_d(i,j,-hm+h,m) = recv_back(i,j,h,m)
+      if(has_back /= 0) q_d(i,j,-hm+h,m) = recv_back(i,j,h,m)
     enddo
-    q_d(i,j,0,m) = 0.5d0 * (q_d(i,j,0,m) + recv_back(i,j,hm,m))
+    if(has_back /= 0) q_d(i,j,0,m) = 0.5d0 * (q_d(i,j,0,m) + recv_back(i,j,hm,m))
   end subroutine unpack_z_kernel
 
   attributes(global) subroutine pack_z_halo_back_kernel(sendbuf,im,jm,km,hm,numq)
@@ -473,10 +477,10 @@ contains
     sendbuf(i,j,h,m) = q_d(i,j,km-hm+h,m)
   end subroutine pack_z_halo_front_kernel
 
-  attributes(global) subroutine unpack_z_halo_kernel(recv_front,recv_back,im,jm,km,hm,numq)
+  attributes(global) subroutine unpack_z_halo_kernel(recv_front,recv_back,im,jm,km,hm,numq,has_front,has_back)
     use commarray_gpu, only: q_d
     implicit none
-    integer,value :: im,jm,km,hm,numq
+    integer,value :: im,jm,km,hm,numq,has_front,has_back
     real(8),device :: recv_front(0:im,0:jm,0:hm-1,1:numq)
     real(8),device :: recv_back(0:im,0:jm,0:hm-1,1:numq)
     integer :: id,i,j,h,m,nplane
@@ -490,8 +494,8 @@ contains
     m = id/((im+1)*(jm+1)) + 1
 
     do h=0,hm-1
-      q_d(i,j,km+1+h,m) = recv_front(i,j,h,m)
-      q_d(i,j,-hm+h,m) = recv_back(i,j,h,m)
+      if(has_front /= 0) q_d(i,j,km+1+h,m) = recv_front(i,j,h,m)
+      if(has_back /= 0) q_d(i,j,-hm+h,m) = recv_back(i,j,h,m)
     enddo
   end subroutine unpack_z_halo_kernel
 
@@ -554,9 +558,9 @@ contains
     sendbuf(h,j,k,m) = field(im-hm+h,j,k,m)
   end subroutine pack_field_x_right_kernel
 
-  attributes(global) subroutine unpack_field_x_kernel(field,recv_right,recv_left,im,jm,km,hm,nvar)
+  attributes(global) subroutine unpack_field_x_kernel(field,recv_right,recv_left,im,jm,km,hm,nvar,has_right,has_left)
     implicit none
-    integer,value :: im,jm,km,hm,nvar
+    integer,value :: im,jm,km,hm,nvar,has_right,has_left
     real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
     real(8),device :: recv_right(0:hm-1,0:jm,0:km,1:nvar)
     real(8),device :: recv_left(0:hm-1,0:jm,0:km,1:nvar)
@@ -570,13 +574,17 @@ contains
     k = mod(id/(jm+1),km+1)
     m = id/((jm+1)*(km+1)) + 1
 
-    do h=0,hm-1
-      field(im+1+h,j,k,m) = recv_right(h,j,k,m)
-    enddo
+    if(has_right /= 0) then
+      do h=0,hm-1
+        field(im+1+h,j,k,m) = recv_right(h,j,k,m)
+      enddo
+    endif
 
-    do h=0,hm-1
-      field(-hm+h,j,k,m) = recv_left(h,j,k,m)
-    enddo
+    if(has_left /= 0) then
+      do h=0,hm-1
+        field(-hm+h,j,k,m) = recv_left(h,j,k,m)
+      enddo
+    endif
   end subroutine unpack_field_x_kernel
 
   attributes(global) subroutine pack_field_y_down_kernel(field,sendbuf,im,jm,km,hm,nvar)
@@ -619,9 +627,9 @@ contains
     sendbuf(i,h,k,m) = field(i,jm-hm+h,k,m)
   end subroutine pack_field_y_up_kernel
 
-  attributes(global) subroutine unpack_field_y_kernel(field,recv_up,recv_down,im,jm,km,hm,nvar)
+  attributes(global) subroutine unpack_field_y_kernel(field,recv_up,recv_down,im,jm,km,hm,nvar,has_up,has_down)
     implicit none
-    integer,value :: im,jm,km,hm,nvar
+    integer,value :: im,jm,km,hm,nvar,has_up,has_down
     real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
     real(8),device :: recv_up(0:im,0:hm-1,0:km,1:nvar)
     real(8),device :: recv_down(0:im,0:hm-1,0:km,1:nvar)
@@ -636,8 +644,8 @@ contains
     m = id/((im+1)*(km+1)) + 1
 
     do h=0,hm-1
-      field(i,jm+1+h,k,m) = recv_up(i,h,k,m)
-      field(i,-hm+h,k,m) = recv_down(i,h,k,m)
+      if(has_up /= 0) field(i,jm+1+h,k,m) = recv_up(i,h,k,m)
+      if(has_down /= 0) field(i,-hm+h,k,m) = recv_down(i,h,k,m)
     enddo
   end subroutine unpack_field_y_kernel
 
@@ -681,9 +689,9 @@ contains
     sendbuf(i,j,h,m) = field(i,j,km-hm+h,m)
   end subroutine pack_field_z_front_kernel
 
-  attributes(global) subroutine unpack_field_z_kernel(field,recv_front,recv_back,im,jm,km,hm,nvar)
+  attributes(global) subroutine unpack_field_z_kernel(field,recv_front,recv_back,im,jm,km,hm,nvar,has_front,has_back)
     implicit none
-    integer,value :: im,jm,km,hm,nvar
+    integer,value :: im,jm,km,hm,nvar,has_front,has_back
     real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
     real(8),device :: recv_front(0:im,0:jm,0:hm-1,1:nvar)
     real(8),device :: recv_back(0:im,0:jm,0:hm-1,1:nvar)
@@ -698,8 +706,8 @@ contains
     m = id/((im+1)*(jm+1)) + 1
 
     do h=0,hm-1
-      field(i,j,km+1+h,m) = recv_front(i,j,h,m)
-      field(i,j,-hm+h,m) = recv_back(i,j,h,m)
+      if(has_front /= 0) field(i,j,km+1+h,m) = recv_front(i,j,h,m)
+      if(has_back /= 0) field(i,j,-hm+h,m) = recv_back(i,j,h,m)
     enddo
   end subroutine unpack_field_z_kernel
 
@@ -760,29 +768,65 @@ contains
     enddo
   end subroutine field_qswap_z_kernel
 
-  subroutine exchange_solution_halo_gpu()
+  attributes(global) subroutine copy_q_to_qwork_y_halo_kernel(im,jm,km,hm,numq)
+    use commarray_gpu, only: q_d,qwork_d
+    implicit none
+    integer,value :: im,jm,km,hm,numq
+    integer :: id,i,k,m,h,side,nplane
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (im + 1) * (km + 1) * numq * 2 * hm
+    if(id >= nplane) return
+
+    i = mod(id,im+1)
+    k = mod(id/(im+1),km+1)
+    m = mod(id/((im+1)*(km+1)),numq) + 1
+    h = mod(id/((im+1)*(km+1)*numq),hm) + 1
+    side = id/((im+1)*(km+1)*numq*hm)
+
+    if(side == 0) then
+      qwork_d(i,-h,k,m) = q_d(i,-h,k,m)
+    else
+      qwork_d(i,jm+h,k,m) = q_d(i,jm+h,k,m)
+    endif
+  end subroutine copy_q_to_qwork_y_halo_kernel
+
+  subroutine exchange_solution_halo_gpu(preserve_interior_primitives)
     use commvar, only: lihomo,ljhomo,lkhomo
-    use bc, only: bctype
     use parallel, only: isize,jsize,ksize
+    use boundary_gpu, only: gpu_physical_boundary_axis
     use qswap_gpu, only: qswap_single_rank_gpu,qswap_local_x_gpu, &
                          qswap_local_y_gpu,qswap_local_z_gpu, &
-                         refresh_primitive_halo_gpu
+                         refresh_primitive_halo_gpu, &
+                         refresh_primitive_x_periodic_boundary_gpu, &
+                         refresh_primitive_y_periodic_boundary_gpu, &
+                         refresh_primitive_z_periodic_boundary_gpu
     implicit none
-    logical :: x_zeroextrap
+    logical,intent(in),optional :: preserve_interior_primitives
+    integer :: zero_axis
+    logical :: preserve_primitives
 
-    x_zeroextrap = (.not.lihomo) .and. bctype(1) == 50 .and. bctype(2) == 50
+    zero_axis = gpu_physical_boundary_axis()
+    preserve_primitives = .false.
+    if(present(preserve_interior_primitives)) preserve_primitives = preserve_interior_primitives
 
     if(isize==1 .and. jsize==1 .and. ksize==1 .and. &
        lihomo .and. ljhomo .and. lkhomo) then
+      if(preserve_primitives) stop 'preserved primitive refresh is not implemented for fully periodic GPU qswap'
       call qswap_single_rank_gpu()
       return
     endif
 
+    if(preserve_primitives .and. zero_axis == 0) &
+      stop 'preserved primitive refresh requires finite physical boundary case'
+
     if(isize>1) then
       call exchange_x_halo_gpu()
+      if(preserve_primitives) call refresh_primitive_x_periodic_boundary_gpu()
     elseif(lihomo) then
       call qswap_local_x_gpu()
-    elseif(x_zeroextrap) then
+      if(preserve_primitives) call refresh_primitive_x_periodic_boundary_gpu()
+    elseif(zero_axis == 1) then
       continue
     else
       stop 'GPU halo exchange requires x MPI or homogeneous x direction'
@@ -790,21 +834,29 @@ contains
 
     if(jsize>1) then
       call exchange_y_halo_gpu()
+      if(preserve_primitives) call refresh_primitive_y_periodic_boundary_gpu()
     elseif(ljhomo) then
       call qswap_local_y_gpu()
+      if(preserve_primitives) call refresh_primitive_y_periodic_boundary_gpu()
+    elseif(zero_axis == 2) then
+      continue
     else
       stop 'GPU halo exchange requires y MPI or homogeneous y direction'
     endif
 
     if(ksize>1) then
       call exchange_z_halo_gpu()
+      if(preserve_primitives) call refresh_primitive_z_periodic_boundary_gpu()
     elseif(lkhomo) then
       call qswap_local_z_gpu()
+      if(preserve_primitives) call refresh_primitive_z_periodic_boundary_gpu()
+    elseif(zero_axis == 3) then
+      continue
     else
       stop 'GPU halo exchange requires z MPI or homogeneous z direction'
     endif
 
-    call refresh_primitive_halo_gpu()
+    if(.not.preserve_primitives) call refresh_primitive_halo_gpu()
   end subroutine exchange_solution_halo_gpu
 
   subroutine exchange_solution_filter_halo_gpu()
@@ -866,7 +918,9 @@ contains
     nunpack = (im + 1) * (km + 1) * numq
     grid = dim3((nunpack + block%x - 1)/block%x,1,1)
     call unpack_qwork_y_halo_kernel<<<grid,block>>>(y_halo_recv_up_d,y_halo_recv_down_d, &
-                                                    im,jm,km,hm,numq)
+                                                    im,jm,km,hm,numq, &
+                                                    merge(1,0,mpiup /= MPI_PROC_NULL), &
+                                                    merge(1,0,mpidown /= MPI_PROC_NULL))
     call sync_after_kernel('unpack_qwork_y_halo_kernel')
   end subroutine exchange_filter_y_work_halo_gpu
 
@@ -874,18 +928,26 @@ contains
     use commarray_gpu, only: qwork_d
     use commvar, only: im,jm,km,hm,numq,ljhomo
     use gpu_check, only: sync_after_kernel
+    use boundary_gpu, only: gpu_physical_boundary_axis
     implicit none
 
     type(dim3) :: block,grid
     integer :: n
 
-    if(.not.ljhomo) stop 'GPU filter y local halo requires homogeneous y direction'
-
     block = dim3(256,1,1)
-    n = (im + 1) * (km + 1) * numq
-    grid = dim3((n + block%x - 1)/block%x,1,1)
-    call field_qswap_y_kernel<<<grid,block>>>(qwork_d,im,jm,km,hm,numq)
-    call sync_after_kernel('filter_qwork_local_y_halo_kernel')
+    if(ljhomo) then
+      n = (im + 1) * (km + 1) * numq
+      grid = dim3((n + block%x - 1)/block%x,1,1)
+      call field_qswap_y_kernel<<<grid,block>>>(qwork_d,im,jm,km,hm,numq)
+      call sync_after_kernel('filter_qwork_local_y_halo_kernel')
+    elseif(gpu_physical_boundary_axis() == 2) then
+      n = (im + 1) * (km + 1) * numq * 2 * hm
+      grid = dim3((n + block%x - 1)/block%x,1,1)
+      call copy_q_to_qwork_y_halo_kernel<<<grid,block>>>(im,jm,km,hm,numq)
+      call sync_after_kernel('copy_q_to_qwork_y_halo_kernel')
+    else
+      stop 'GPU filter y local halo requires homogeneous y or y-zeroextrap direction'
+    endif
   end subroutine refresh_filter_y_work_local_halo_gpu
 
   subroutine exchange_filter_z_halo_gpu()
@@ -928,7 +990,9 @@ contains
     nunpack = (im + 1) * (jm + 1) * numq
     grid = dim3((nunpack + block%x - 1)/block%x,1,1)
     call unpack_z_halo_kernel<<<grid,block>>>(z_halo_recv_front_d,z_halo_recv_back_d, &
-                                              im,jm,km,hm,numq)
+                                              im,jm,km,hm,numq, &
+                                              merge(1,0,mpifront /= MPI_PROC_NULL), &
+                                              merge(1,0,mpiback /= MPI_PROC_NULL))
     call sync_after_kernel('unpack_z_halo_kernel')
   end subroutine exchange_filter_z_halo_gpu
 
@@ -941,7 +1005,7 @@ contains
     type(dim3) :: block,grid
     integer :: n
 
-    if(.not.lkhomo) stop 'GPU filter z local halo requires homogeneous z direction'
+    if(.not.lkhomo) return
 
     block = dim3(256,1,1)
     n = (im + 1) * (jm + 1) * numq
@@ -987,7 +1051,9 @@ contains
 
     nunpack = (jm + 1) * (km + 1) * numq
     grid = dim3((nunpack + block%x - 1)/block%x,1,1)
-    call unpack_x_kernel<<<grid,block>>>(x_recv_right_d,x_recv_left_d,im,jm,km,hm,numq)
+    call unpack_x_kernel<<<grid,block>>>(x_recv_right_d,x_recv_left_d,im,jm,km,hm,numq, &
+                                         merge(1,0,mpiright /= MPI_PROC_NULL), &
+                                         merge(1,0,mpileft /= MPI_PROC_NULL))
     call sync_after_kernel('unpack_x_kernel')
   end subroutine exchange_x_halo_gpu
 
@@ -1028,7 +1094,9 @@ contains
 
     nunpack = (im + 1) * (km + 1) * numq
     grid = dim3((nunpack + block%x - 1)/block%x,1,1)
-    call unpack_y_kernel<<<grid,block>>>(y_recv_up_d,y_recv_down_d,im,jm,km,hm,numq)
+    call unpack_y_kernel<<<grid,block>>>(y_recv_up_d,y_recv_down_d,im,jm,km,hm,numq, &
+                                         merge(1,0,mpiup /= MPI_PROC_NULL), &
+                                         merge(1,0,mpidown /= MPI_PROC_NULL))
     call sync_after_kernel('unpack_y_kernel')
   end subroutine exchange_y_halo_gpu
 
@@ -1069,7 +1137,9 @@ contains
 
     nunpack = (im + 1) * (jm + 1) * numq
     grid = dim3((nunpack + block%x - 1)/block%x,1,1)
-    call unpack_z_kernel<<<grid,block>>>(z_recv_front_d,z_recv_back_d,im,jm,km,hm,numq)
+    call unpack_z_kernel<<<grid,block>>>(z_recv_front_d,z_recv_back_d,im,jm,km,hm,numq, &
+                                         merge(1,0,mpifront /= MPI_PROC_NULL), &
+                                         merge(1,0,mpiback /= MPI_PROC_NULL))
     call sync_after_kernel('unpack_z_kernel')
   end subroutine exchange_z_halo_gpu
 
@@ -1111,7 +1181,9 @@ contains
     nunpack = (jm + 1) * (km + 1) * numq
     grid = dim3((nunpack + block%x - 1)/block%x,1,1)
     call unpack_x_halo_kernel<<<grid,block>>>(x_halo_recv_right_d,x_halo_recv_left_d, &
-                                              im,jm,km,hm,numq)
+                                              im,jm,km,hm,numq, &
+                                              merge(1,0,mpiright /= MPI_PROC_NULL), &
+                                              merge(1,0,mpileft /= MPI_PROC_NULL))
     call sync_after_kernel('unpack_x_halo_kernel')
   end subroutine exchange_x_filter_halo_gpu
 
@@ -1127,18 +1199,21 @@ contains
     use commvar, only: im,jm,km,hm
     use gpu_check, only: sync_after_kernel
     use parallel, only: isize,jsize,ksize
+    use boundary_gpu, only: gpu_physical_boundary_axis
     implicit none
 
     integer,intent(in) :: nvar
     real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
     type(dim3) :: block,grid
     integer :: n
+    integer :: zero_axis
 
     block = dim3(256,1,1)
+    zero_axis = gpu_physical_boundary_axis()
 
     if(isize>1) then
       call exchange_field_x_halo_gpu(field,nvar)
-    else
+    elseif(zero_axis /= 1) then
       n = (jm + 1) * (km + 1) * nvar
       grid = dim3((n + block%x - 1)/block%x,1,1)
       call field_qswap_x_kernel<<<grid,block>>>(field,im,jm,km,hm,nvar)
@@ -1147,7 +1222,7 @@ contains
 
     if(jsize>1) then
       call exchange_field_y_halo_gpu(field,nvar)
-    else
+    elseif(zero_axis /= 2) then
       n = (im + 1) * (km + 1) * nvar
       grid = dim3((n + block%x - 1)/block%x,1,1)
       call field_qswap_y_kernel<<<grid,block>>>(field,im,jm,km,hm,nvar)
@@ -1156,7 +1231,7 @@ contains
 
     if(ksize>1) then
       call exchange_field_z_halo_gpu(field,nvar)
-    else
+    elseif(zero_axis /= 3) then
       n = (im + 1) * (jm + 1) * nvar
       grid = dim3((n + block%x - 1)/block%x,1,1)
       call field_qswap_z_kernel<<<grid,block>>>(field,im,jm,km,hm,nvar)
@@ -1204,7 +1279,9 @@ contains
     nunpack = (jm + 1) * (km + 1) * nvar
     grid = dim3((nunpack + block%x - 1)/block%x,1,1)
     call unpack_field_x_kernel<<<grid,block>>>(field,field_recv_right_d,field_recv_left_d, &
-                                               im,jm,km,hm,nvar)
+                                               im,jm,km,hm,nvar, &
+                                               merge(1,0,mpiright /= MPI_PROC_NULL), &
+                                               merge(1,0,mpileft /= MPI_PROC_NULL))
     call sync_after_kernel('unpack_field_x_kernel')
   end subroutine exchange_field_x_halo_gpu
 
@@ -1248,7 +1325,9 @@ contains
     nunpack = (im + 1) * (km + 1) * nvar
     grid = dim3((nunpack + block%x - 1)/block%x,1,1)
     call unpack_field_y_kernel<<<grid,block>>>(field,field_recv_up_d,field_recv_down_d, &
-                                               im,jm,km,hm,nvar)
+                                               im,jm,km,hm,nvar, &
+                                               merge(1,0,mpiup /= MPI_PROC_NULL), &
+                                               merge(1,0,mpidown /= MPI_PROC_NULL))
     call sync_after_kernel('unpack_field_y_kernel')
   end subroutine exchange_field_y_halo_gpu
 
@@ -1292,7 +1371,9 @@ contains
     nunpack = (im + 1) * (jm + 1) * nvar
     grid = dim3((nunpack + block%x - 1)/block%x,1,1)
     call unpack_field_z_kernel<<<grid,block>>>(field,field_recv_front_d,field_recv_back_d, &
-                                               im,jm,km,hm,nvar)
+                                               im,jm,km,hm,nvar, &
+                                               merge(1,0,mpifront /= MPI_PROC_NULL), &
+                                               merge(1,0,mpiback /= MPI_PROC_NULL))
     call sync_after_kernel('unpack_field_z_kernel')
   end subroutine exchange_field_z_halo_gpu
 

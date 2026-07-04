@@ -73,9 +73,10 @@ def set_homogeneous(input_file: Path, homogeneous: str) -> None:
 
 
 def set_bctype(input_file: Path, bctype: str) -> None:
-    parts = [part.strip() for part in bctype.split(",")]
+    delimiter = ";" if ";" in bctype else ","
+    parts = [part.strip() for part in bctype.split(delimiter)]
     if len(parts) != 6:
-        raise ValueError("--bctype must have six comma-separated entries")
+        raise ValueError("--bctype must have six boundary entries")
     lines = input_file.read_text().splitlines()
     marker = "bctype"
     for idx, line in enumerate(lines):
@@ -171,7 +172,10 @@ def main() -> int:
     parser.add_argument("--input-name", default="input.tgv")
     parser.add_argument("--flowtype", help="optional replacement flowtype")
     parser.add_argument("--homogeneous", help="optional homogeneous flags as t,t,t")
-    parser.add_argument("--bctype", help="optional six boundary entries")
+    parser.add_argument(
+        "--bctype",
+        help="optional six boundary entries; use semicolons when entries contain commas",
+    )
     parser.add_argument("--use-gpu", required=True, choices=("t", "f"))
     parser.add_argument("--maxstep", required=True, type=int)
     parser.add_argument("--feqchkpt", type=int)

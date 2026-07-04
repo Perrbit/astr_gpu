@@ -1,5 +1,6 @@
 module gpu_runtime
   implicit none
+  logical,save :: prepared_halo_ready = .false.
 contains
   subroutine gpu_bind_device()
     use device_runtime_gpu, only: bind_gpu_device
@@ -54,6 +55,7 @@ contains
     use halo_exchange_gpu, only: exchange_solution_halo_gpu
     implicit none
 
+    if(prepared_halo_ready) return
     call exchange_solution_halo_gpu()
   end subroutine gpu_exchange_solution_halo
 
@@ -62,6 +64,7 @@ contains
     implicit none
 
     call prepare_rkfirst_stats_gpu()
+    prepared_halo_ready = .true.
   end subroutine gpu_prepare_rkfirst_stats
 
   subroutine gpu_time_integration_rk(first_stage_prepared,copy_back)
@@ -71,6 +74,7 @@ contains
     logical,intent(in),optional :: copy_back
 
     call time_integration_rk_gpu(first_stage_prepared,copy_back)
+    prepared_halo_ready = .false.
   end subroutine gpu_time_integration_rk
 
   subroutine gpu_write_kenergy()
@@ -102,11 +106,15 @@ contains
 
   subroutine gpu_write_flow_statistics()
     use commvar, only: flowtype
-    use statistic_gpu, only: gpu_write_generic_flowstate
+    use gradcal_gpu, only: compute_gradcal_gpu
+    use statistic_gpu, only: gpu_write_channel_flowstate,gpu_write_generic_flowstate
     implicit none
 
     if(trim(flowtype) == 'tgv' .or. trim(flowtype) == 'hit') then
       call gpu_write_tgv_statistics()
+    elseif(trim(flowtype) == 'channel') then
+      call compute_gradcal_gpu()
+      call gpu_write_channel_flowstate()
     else
       call gpu_write_generic_flowstate()
     endif

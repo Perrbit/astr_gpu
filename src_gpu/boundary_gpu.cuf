@@ -1,15 +1,80 @@
 module boundary_gpu
   use cudafor
   implicit none
+  integer,parameter :: GPU_BC_NONE=0, GPU_BC_WALL_ISOTHERMAL_NOSLIP=41, &
+                       GPU_BC_ZEROEXTRAP=50, GPU_BC_SYMMETRY=60
 contains
-  logical function gpu_uses_x_zeroextrap()
+  integer function gpu_physical_boundary_axis()
     use bc, only: bctype
     use commvar, only: lihomo,ljhomo,lkhomo
     implicit none
 
-    gpu_uses_x_zeroextrap = (.not.lihomo) .and. ljhomo .and. lkhomo .and. &
-                            bctype(1) == 50 .and. bctype(2) == 50
+    gpu_physical_boundary_axis = 0
+    if((.not.lihomo) .and. ljhomo .and. lkhomo .and. &
+       bctype(1) == bctype(2) .and. &
+       (bctype(1) == GPU_BC_ZEROEXTRAP .or. bctype(1) == GPU_BC_SYMMETRY .or. &
+        bctype(1) == GPU_BC_WALL_ISOTHERMAL_NOSLIP) .and. &
+       all(bctype(3:6) == 1)) then
+      gpu_physical_boundary_axis = 1
+    elseif(lihomo .and. (.not.ljhomo) .and. lkhomo .and. &
+       bctype(3) == bctype(4) .and. &
+       (bctype(3) == GPU_BC_ZEROEXTRAP .or. bctype(3) == GPU_BC_SYMMETRY .or. &
+        bctype(3) == GPU_BC_WALL_ISOTHERMAL_NOSLIP) .and. &
+       all(bctype(1:2) == 1) .and. all(bctype(5:6) == 1)) then
+      gpu_physical_boundary_axis = 2
+    elseif(lihomo .and. ljhomo .and. (.not.lkhomo) .and. &
+       bctype(5) == bctype(6) .and. &
+       (bctype(5) == GPU_BC_ZEROEXTRAP .or. bctype(5) == GPU_BC_SYMMETRY .or. &
+        bctype(5) == GPU_BC_WALL_ISOTHERMAL_NOSLIP) .and. &
+       all(bctype(1:4) == 1)) then
+      gpu_physical_boundary_axis = 3
+    endif
+  end function gpu_physical_boundary_axis
+
+  integer function gpu_physical_boundary_kind()
+    use bc, only: bctype
+    implicit none
+    integer :: axis
+
+    axis = gpu_physical_boundary_axis()
+    select case(axis)
+    case(1)
+      gpu_physical_boundary_kind = bctype(1)
+    case(2)
+      gpu_physical_boundary_kind = bctype(3)
+    case(3)
+      gpu_physical_boundary_kind = bctype(5)
+    case default
+      gpu_physical_boundary_kind = GPU_BC_NONE
+    end select
+  end function gpu_physical_boundary_kind
+
+  logical function gpu_uses_physical_boundary()
+    implicit none
+
+    gpu_uses_physical_boundary = gpu_physical_boundary_axis() /= 0
+  end function gpu_uses_physical_boundary
+
+  integer function gpu_zeroextrap_axis()
+    implicit none
+
+    gpu_zeroextrap_axis = 0
+    if(gpu_physical_boundary_kind() == GPU_BC_ZEROEXTRAP) then
+      gpu_zeroextrap_axis = gpu_physical_boundary_axis()
+    endif
+  end function gpu_zeroextrap_axis
+
+  logical function gpu_uses_x_zeroextrap()
+    implicit none
+
+    gpu_uses_x_zeroextrap = gpu_zeroextrap_axis() == 1
   end function gpu_uses_x_zeroextrap
+
+  logical function gpu_uses_zeroextrap()
+    implicit none
+
+    gpu_uses_zeroextrap = gpu_zeroextrap_axis() /= 0
+  end function gpu_uses_zeroextrap
 
   attributes(device) real(8) function extrap2(v1,v2)
     implicit none
@@ -38,12 +103,23 @@ contains
     q_d(i,j,k,5) = prs*const6 + ke
   end subroutine set_q_from_primitive
 
-  attributes(global) subroutine zeroextrap_x_kernel(im,jm,km,hm,const2,const6)
+  attributes(device) subroutine set_qrhs_zero(i,j,k)
+    use commarray_gpu, only: qrhs_d
+    implicit none
+    integer,value :: i,j,k
+    integer :: m
+
+    do m=1,5
+      qrhs_d(i,j,k,m) = 0.d0
+    enddo
+  end subroutine set_qrhs_zero
+
+  attributes(global) subroutine zeroextrap_x_kernel(im,jm,km,hm,const2,const6,apply_left,apply_right)
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
     implicit none
-    integer,value :: im,jm,km,hm
+    integer,value :: im,jm,km,hm,apply_left,apply_right
     real(8),value :: const2,const6
-    integer :: id,j,k,h,m,nplane
+    integer :: id,j,k,nplane
     real(8) :: rho,uu,vv,ww,prs,tmp
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -52,60 +128,405 @@ contains
     j = mod(id,jm+1)
     k = id/(jm+1)
 
-    uu  = extrap2(vel_d(1,j,k,1),vel_d(2,j,k,1))
-    vv  = extrap2(vel_d(1,j,k,2),vel_d(2,j,k,2))
-    ww  = extrap2(vel_d(1,j,k,3),vel_d(2,j,k,3))
-    prs = extrap2(prs_d(1,j,k),prs_d(2,j,k))
-    tmp = extrap2(tmp_d(1,j,k),tmp_d(2,j,k))
-    rho = prs/tmp*const2
-    tmp_d(0,j,k) = tmp
-    call set_q_from_primitive(0,j,k,rho,uu,vv,ww,prs,const6)
+    if(apply_left /= 0) then
+      uu  = extrap2(vel_d(1,j,k,1),vel_d(2,j,k,1))
+      vv  = extrap2(vel_d(1,j,k,2),vel_d(2,j,k,2))
+      ww  = extrap2(vel_d(1,j,k,3),vel_d(2,j,k,3))
+      prs = extrap2(prs_d(1,j,k),prs_d(2,j,k))
+      tmp = extrap2(tmp_d(1,j,k),tmp_d(2,j,k))
+      rho = prs/tmp*const2
+      tmp_d(0,j,k) = tmp
+      call set_q_from_primitive(0,j,k,rho,uu,vv,ww,prs,const6)
+      call set_qrhs_zero(0,j,k)
+    endif
 
-    uu  = extrap2(vel_d(im-1,j,k,1),vel_d(im-2,j,k,1))
-    vv  = extrap2(vel_d(im-1,j,k,2),vel_d(im-2,j,k,2))
-    ww  = extrap2(vel_d(im-1,j,k,3),vel_d(im-2,j,k,3))
-    prs = extrap2(prs_d(im-1,j,k),prs_d(im-2,j,k))
-    tmp = extrap2(tmp_d(im-1,j,k),tmp_d(im-2,j,k))
-    rho = prs/tmp*const2
-    tmp_d(im,j,k) = tmp
-    call set_q_from_primitive(im,j,k,rho,uu,vv,ww,prs,const6)
+    if(apply_right /= 0) then
+      uu  = extrap2(vel_d(im-1,j,k,1),vel_d(im-2,j,k,1))
+      vv  = extrap2(vel_d(im-1,j,k,2),vel_d(im-2,j,k,2))
+      ww  = extrap2(vel_d(im-1,j,k,3),vel_d(im-2,j,k,3))
+      prs = extrap2(prs_d(im-1,j,k),prs_d(im-2,j,k))
+      tmp = extrap2(tmp_d(im-1,j,k),tmp_d(im-2,j,k))
+      rho = prs/tmp*const2
+      tmp_d(im,j,k) = tmp
+      call set_q_from_primitive(im,j,k,rho,uu,vv,ww,prs,const6)
+      call set_qrhs_zero(im,j,k)
+    endif
 
-    do h=1,hm
-      rho_d(-h,j,k) = rho_d(0,j,k)
-      prs_d(-h,j,k) = prs_d(0,j,k)
-      tmp_d(-h,j,k) = tmp_d(0,j,k)
-      do m=1,3
-        vel_d(-h,j,k,m) = vel_d(0,j,k,m)
-      enddo
-      do m=1,5
-        q_d(-h,j,k,m) = q_d(0,j,k,m)
-      enddo
-
-      rho_d(im+h,j,k) = rho_d(im,j,k)
-      prs_d(im+h,j,k) = prs_d(im,j,k)
-      tmp_d(im+h,j,k) = tmp_d(im,j,k)
-      do m=1,3
-        vel_d(im+h,j,k,m) = vel_d(im,j,k,m)
-      enddo
-      do m=1,5
-        q_d(im+h,j,k,m) = q_d(im,j,k,m)
-      enddo
-    enddo
   end subroutine zeroextrap_x_kernel
 
+  attributes(global) subroutine zeroextrap_y_kernel(im,jm,km,hm,const2,const6,apply_down,apply_up)
+    use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_down,apply_up
+    real(8),value :: const2,const6
+    integer :: id,i,k,nplane
+    real(8) :: rho,uu,vv,ww,prs,tmp
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (im + 1) * (km + 1)
+    if(id >= nplane) return
+    i = mod(id,im+1)
+    k = id/(im+1)
+
+    if(apply_down /= 0) then
+      uu  = extrap2(vel_d(i,1,k,1),vel_d(i,2,k,1))
+      vv  = extrap2(vel_d(i,1,k,2),vel_d(i,2,k,2))
+      ww  = extrap2(vel_d(i,1,k,3),vel_d(i,2,k,3))
+      prs = extrap2(prs_d(i,1,k),prs_d(i,2,k))
+      rho = extrap2(rho_d(i,1,k),rho_d(i,2,k))
+      tmp = prs/rho*const2
+      tmp_d(i,0,k) = tmp
+      call set_q_from_primitive(i,0,k,rho,uu,vv,ww,prs,const6)
+      call set_qrhs_zero(i,0,k)
+    endif
+
+    if(apply_up /= 0) then
+      uu  = extrap2(vel_d(i,jm-1,k,1),vel_d(i,jm-2,k,1))
+      vv  = extrap2(vel_d(i,jm-1,k,2),vel_d(i,jm-2,k,2))
+      ww  = extrap2(vel_d(i,jm-1,k,3),vel_d(i,jm-2,k,3))
+      prs = extrap2(prs_d(i,jm-1,k),prs_d(i,jm-2,k))
+      rho = extrap2(rho_d(i,jm-1,k),rho_d(i,jm-2,k))
+      tmp = prs/rho*const2
+      tmp_d(i,jm,k) = tmp
+      call set_q_from_primitive(i,jm,k,rho,uu,vv,ww,prs,const6)
+      call set_qrhs_zero(i,jm,k)
+    endif
+  end subroutine zeroextrap_y_kernel
+
+  attributes(global) subroutine zeroextrap_z_kernel(im,jm,km,hm,const2,const6,apply_back,apply_front)
+    use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_back,apply_front
+    real(8),value :: const2,const6
+    integer :: id,i,j,nplane
+    real(8) :: rho,uu,vv,ww,prs,tmp
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (im + 1) * (jm + 1)
+    if(id >= nplane) return
+    i = mod(id,im+1)
+    j = id/(im+1)
+
+    if(apply_back /= 0) then
+      uu  = extrap2(vel_d(i,j,1,1),vel_d(i,j,2,1))
+      vv  = extrap2(vel_d(i,j,1,2),vel_d(i,j,2,2))
+      ww  = extrap2(vel_d(i,j,1,3),vel_d(i,j,2,3))
+      prs = extrap2(prs_d(i,j,1),prs_d(i,j,2))
+      rho = extrap2(rho_d(i,j,1),rho_d(i,j,2))
+      tmp = prs/rho*const2
+      tmp_d(i,j,0) = tmp
+      call set_q_from_primitive(i,j,0,rho,uu,vv,ww,prs,const6)
+      call set_qrhs_zero(i,j,0)
+    endif
+
+    if(apply_front /= 0) then
+      uu  = extrap2(vel_d(i,j,km-1,1),vel_d(i,j,km-2,1))
+      vv  = extrap2(vel_d(i,j,km-1,2),vel_d(i,j,km-2,2))
+      ww  = extrap2(vel_d(i,j,km-1,3),vel_d(i,j,km-2,3))
+      prs = extrap2(prs_d(i,j,km-1),prs_d(i,j,km-2))
+      rho = extrap2(rho_d(i,j,km-1),rho_d(i,j,km-2))
+      tmp = prs/rho*const2
+      tmp_d(i,j,km) = tmp
+      call set_q_from_primitive(i,j,km,rho,uu,vv,ww,prs,const6)
+      call set_qrhs_zero(i,j,km)
+    endif
+  end subroutine zeroextrap_z_kernel
+
+  attributes(global) subroutine symmetry_x_kernel(im,jm,km,hm,const2,const6,apply_left,apply_right)
+    use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_left,apply_right
+    real(8),value :: const2,const6
+    integer :: id,j,k,nplane
+    real(8) :: rho,uu,vv,ww,prs,tmp
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (jm + 1) * (km + 1)
+    if(id >= nplane) return
+    j = mod(id,jm+1)
+    k = id/(jm+1)
+
+    if(apply_left /= 0) then
+      uu  = 0.d0
+      vv  = extrap2(vel_d(1,j,k,2),vel_d(2,j,k,2))
+      ww  = extrap2(vel_d(1,j,k,3),vel_d(2,j,k,3))
+      prs = extrap2(prs_d(1,j,k),prs_d(2,j,k))
+      tmp = extrap2(tmp_d(1,j,k),tmp_d(2,j,k))
+      rho = prs/tmp*const2
+      tmp_d(0,j,k) = tmp
+      call set_q_from_primitive(0,j,k,rho,uu,vv,ww,prs,const6)
+      call set_qrhs_zero(0,j,k)
+    endif
+
+    if(apply_right /= 0) then
+      uu  = 0.d0
+      vv  = extrap2(vel_d(im-1,j,k,2),vel_d(im-2,j,k,2))
+      ww  = extrap2(vel_d(im-1,j,k,3),vel_d(im-2,j,k,3))
+      prs = extrap2(prs_d(im-1,j,k),prs_d(im-2,j,k))
+      tmp = extrap2(tmp_d(im-1,j,k),tmp_d(im-2,j,k))
+      rho = prs/tmp*const2
+      tmp_d(im,j,k) = tmp
+      call set_q_from_primitive(im,j,k,rho,uu,vv,ww,prs,const6)
+      call set_qrhs_zero(im,j,k)
+    endif
+  end subroutine symmetry_x_kernel
+
+  attributes(global) subroutine symmetry_y_kernel(im,jm,km,hm,const2,const6,apply_down,apply_up)
+    use commarray_gpu, only: vel_d,prs_d,tmp_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_down,apply_up
+    real(8),value :: const2,const6
+    integer :: id,i,k,nplane
+    real(8) :: rho,uu,vv,ww,prs,tmp
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (im + 1) * (km + 1)
+    if(id >= nplane) return
+    i = mod(id,im+1)
+    k = id/(im+1)
+
+    if(apply_down /= 0) then
+      uu  = extrap2(vel_d(i,1,k,1),vel_d(i,2,k,1))
+      vv  = 0.d0
+      ww  = extrap2(vel_d(i,1,k,3),vel_d(i,2,k,3))
+      prs = extrap2(prs_d(i,1,k),prs_d(i,2,k))
+      tmp = extrap2(tmp_d(i,1,k),tmp_d(i,2,k))
+      rho = prs/tmp*const2
+      tmp_d(i,0,k) = tmp
+      call set_q_from_primitive(i,0,k,rho,uu,vv,ww,prs,const6)
+      call set_qrhs_zero(i,0,k)
+    endif
+
+    if(apply_up /= 0) then
+      uu  = extrap2(vel_d(i,jm-1,k,1),vel_d(i,jm-2,k,1))
+      vv  = 0.d0
+      ww  = extrap2(vel_d(i,jm-1,k,3),vel_d(i,jm-2,k,3))
+      prs = extrap2(prs_d(i,jm-1,k),prs_d(i,jm-2,k))
+      tmp = extrap2(tmp_d(i,jm-1,k),tmp_d(i,jm-2,k))
+      rho = prs/tmp*const2
+      tmp_d(i,jm,k) = tmp
+      call set_q_from_primitive(i,jm,k,rho,uu,vv,ww,prs,const6)
+      call set_qrhs_zero(i,jm,k)
+    endif
+  end subroutine symmetry_y_kernel
+
+  attributes(global) subroutine wall_isothermal_noslip_x_kernel(im,jm,km,hm,const2,const6, &
+                                                                twall_left,twall_right, &
+                                                                apply_left,apply_right)
+    use commarray_gpu, only: prs_d,tmp_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_left,apply_right
+    real(8),value :: const2,const6,twall_left,twall_right
+    integer :: id,j,k,nplane
+    real(8) :: rho,prs
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (jm + 1) * (km + 1)
+    if(id >= nplane) return
+    j = mod(id,jm+1)
+    k = id/(jm+1)
+
+    if(apply_left /= 0) then
+      prs = extrap2(prs_d(1,j,k),prs_d(2,j,k))
+      rho = prs/twall_left*const2
+      tmp_d(0,j,k) = twall_left
+      call set_q_from_primitive(0,j,k,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_qrhs_zero(0,j,k)
+    endif
+
+    if(apply_right /= 0) then
+      prs = extrap2(prs_d(im-1,j,k),prs_d(im-2,j,k))
+      rho = prs/twall_right*const2
+      tmp_d(im,j,k) = twall_right
+      call set_q_from_primitive(im,j,k,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_qrhs_zero(im,j,k)
+    endif
+  end subroutine wall_isothermal_noslip_x_kernel
+
+  attributes(global) subroutine wall_isothermal_noslip_y_kernel(im,jm,km,hm,const2,const6, &
+                                                                twall_down,twall_up, &
+                                                                apply_down,apply_up)
+    use commarray_gpu, only: prs_d,tmp_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_down,apply_up
+    real(8),value :: const2,const6,twall_down,twall_up
+    integer :: id,i,k,nplane
+    real(8) :: rho,prs
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (im + 1) * (km + 1)
+    if(id >= nplane) return
+    i = mod(id,im+1)
+    k = id/(im+1)
+
+    if(apply_down /= 0) then
+      prs = extrap2(prs_d(i,1,k),prs_d(i,2,k))
+      rho = prs/twall_down*const2
+      tmp_d(i,0,k) = twall_down
+      call set_q_from_primitive(i,0,k,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_qrhs_zero(i,0,k)
+    endif
+
+    if(apply_up /= 0) then
+      prs = extrap2(prs_d(i,jm-1,k),prs_d(i,jm-2,k))
+      rho = prs/twall_up*const2
+      tmp_d(i,jm,k) = twall_up
+      call set_q_from_primitive(i,jm,k,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_qrhs_zero(i,jm,k)
+    endif
+  end subroutine wall_isothermal_noslip_y_kernel
+
+  attributes(global) subroutine wall_isothermal_noslip_z_kernel(im,jm,km,hm,const2,const6, &
+                                                                twall_back,twall_front, &
+                                                                apply_back,apply_front)
+    use commarray_gpu, only: prs_d,tmp_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_back,apply_front
+    real(8),value :: const2,const6,twall_back,twall_front
+    integer :: id,i,j,nplane
+    real(8) :: rho,prs
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (im + 1) * (jm + 1)
+    if(id >= nplane) return
+    i = mod(id,im+1)
+    j = id/(im+1)
+
+    if(apply_back /= 0) then
+      prs = extrap2(prs_d(i,j,1),prs_d(i,j,2))
+      rho = prs/twall_back*const2
+      tmp_d(i,j,0) = twall_back
+      call set_q_from_primitive(i,j,0,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_qrhs_zero(i,j,0)
+    endif
+
+    if(apply_front /= 0) then
+      prs = extrap2(prs_d(i,j,km-1),prs_d(i,j,km-2))
+      rho = prs/twall_front*const2
+      tmp_d(i,j,km) = twall_front
+      call set_q_from_primitive(i,j,km,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_qrhs_zero(i,j,km)
+    endif
+  end subroutine wall_isothermal_noslip_z_kernel
+
+  attributes(global) subroutine symmetry_z_kernel(im,jm,km,hm,const2,const6,apply_back,apply_front)
+    use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_back,apply_front
+    real(8),value :: const2,const6
+    integer :: id,i,j,nplane
+    real(8) :: rho,uu,vv,ww,prs,tmp
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (im + 1) * (jm + 1)
+    if(id >= nplane) return
+    i = mod(id,im+1)
+    j = id/(im+1)
+
+    if(apply_back /= 0) then
+      uu  = extrap2(vel_d(i,j,1,1),vel_d(i,j,2,1))
+      vv  = extrap2(vel_d(i,j,1,2),vel_d(i,j,2,2))
+      ww  = 0.d0
+      prs = extrap2(prs_d(i,j,1),prs_d(i,j,2))
+      tmp = extrap2(tmp_d(i,j,1),tmp_d(i,j,2))
+      rho = prs/tmp*const2
+      tmp_d(i,j,0) = tmp
+      call set_q_from_primitive(i,j,0,rho,uu,vv,ww,prs,const6)
+      call set_qrhs_zero(i,j,0)
+    endif
+
+    if(apply_front /= 0) then
+      uu  = extrap2(vel_d(i,j,km-1,1),vel_d(i,j,km-2,1))
+      vv  = extrap2(vel_d(i,j,km-1,2),vel_d(i,j,km-2,2))
+      ww  = 0.d0
+      prs = extrap2(prs_d(i,j,km-1),prs_d(i,j,km-2))
+      rho = extrap2(rho_d(i,j,km-1),rho_d(i,j,km-2))
+      tmp = prs/rho*const2
+      tmp_d(i,j,km) = tmp
+      call set_q_from_primitive(i,j,km,rho,uu,vv,ww,prs,const6)
+      call set_qrhs_zero(i,j,km)
+    endif
+  end subroutine symmetry_z_kernel
+
   subroutine apply_boundary_conditions_gpu()
+    use mpi, only: MPI_PROC_NULL
     use commvar, only: im,jm,km,hm,const2,const6
+    use bc, only: twall
     use gpu_check, only: sync_after_kernel
+    use parallel, only: mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
     implicit none
     type(dim3) :: block,grid
-    integer :: n
+    integer :: n,axis,kind
 
-    if(.not.gpu_uses_x_zeroextrap()) return
+    axis = gpu_physical_boundary_axis()
+    kind = gpu_physical_boundary_kind()
 
-    block = dim3(256,1,1)
-    n = (jm + 1) * (km + 1)
-    grid = dim3((n + block%x - 1)/block%x,1,1)
-    call zeroextrap_x_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6)
-    call sync_after_kernel('zeroextrap_x_kernel')
+    select case(axis)
+    case(0)
+      return
+    case(1)
+      block = dim3(256,1,1)
+      n = (jm + 1) * (km + 1)
+      grid = dim3((n + block%x - 1)/block%x,1,1)
+      if(kind == GPU_BC_ZEROEXTRAP) then
+        call zeroextrap_x_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+                                                 merge(1,0,mpileft == MPI_PROC_NULL), &
+                                                 merge(1,0,mpiright == MPI_PROC_NULL))
+        call sync_after_kernel('zeroextrap_x_kernel')
+      elseif(kind == GPU_BC_SYMMETRY) then
+        call symmetry_x_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+                                               merge(1,0,mpileft == MPI_PROC_NULL), &
+                                               merge(1,0,mpiright == MPI_PROC_NULL))
+        call sync_after_kernel('symmetry_x_kernel')
+      elseif(kind == GPU_BC_WALL_ISOTHERMAL_NOSLIP) then
+        call wall_isothermal_noslip_x_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+                                                             twall(1),twall(2), &
+                                                             merge(1,0,mpileft == MPI_PROC_NULL), &
+                                                             merge(1,0,mpiright == MPI_PROC_NULL))
+        call sync_after_kernel('wall_isothermal_noslip_x_kernel')
+      endif
+    case(2)
+      block = dim3(256,1,1)
+      n = (im + 1) * (km + 1)
+      grid = dim3((n + block%x - 1)/block%x,1,1)
+      if(kind == GPU_BC_ZEROEXTRAP) then
+        call zeroextrap_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+                                                 merge(1,0,mpidown == MPI_PROC_NULL), &
+                                                 merge(1,0,mpiup == MPI_PROC_NULL))
+        call sync_after_kernel('zeroextrap_y_kernel')
+      elseif(kind == GPU_BC_SYMMETRY) then
+        call symmetry_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+                                               merge(1,0,mpidown == MPI_PROC_NULL), &
+                                               merge(1,0,mpiup == MPI_PROC_NULL))
+        call sync_after_kernel('symmetry_y_kernel')
+      elseif(kind == GPU_BC_WALL_ISOTHERMAL_NOSLIP) then
+        call wall_isothermal_noslip_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+                                                             twall(3),twall(4), &
+                                                             merge(1,0,mpidown == MPI_PROC_NULL), &
+                                                             merge(1,0,mpiup == MPI_PROC_NULL))
+        call sync_after_kernel('wall_isothermal_noslip_y_kernel')
+      endif
+    case(3)
+      block = dim3(256,1,1)
+      n = (im + 1) * (jm + 1)
+      grid = dim3((n + block%x - 1)/block%x,1,1)
+      if(kind == GPU_BC_ZEROEXTRAP) then
+        call zeroextrap_z_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+                                                 merge(1,0,mpiback == MPI_PROC_NULL), &
+                                                 merge(1,0,mpifront == MPI_PROC_NULL))
+        call sync_after_kernel('zeroextrap_z_kernel')
+      elseif(kind == GPU_BC_SYMMETRY) then
+        call symmetry_z_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+                                               merge(1,0,mpiback == MPI_PROC_NULL), &
+                                               merge(1,0,mpifront == MPI_PROC_NULL))
+        call sync_after_kernel('symmetry_z_kernel')
+      elseif(kind == GPU_BC_WALL_ISOTHERMAL_NOSLIP) then
+        call wall_isothermal_noslip_z_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+                                                             twall(5),twall(6), &
+                                                             merge(1,0,mpiback == MPI_PROC_NULL), &
+                                                             merge(1,0,mpifront == MPI_PROC_NULL))
+        call sync_after_kernel('wall_isothermal_noslip_z_kernel')
+      endif
+    end select
   end subroutine apply_boundary_conditions_gpu
 end module boundary_gpu

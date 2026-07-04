@@ -53,10 +53,34 @@ The current GPU port has reached a validated non-reacting TGV baseline:
   - HIT HDF5 field comparison remains disabled by default because HDF5 flowfield output is still a CPU-owned boundary, not a current GPU writing target.
 - Phase B boundary expansion has started with the lowest-risk non-periodic slice:
   - x-direction `bctype(1:2)=50,50` zero extrapolation, y/z periodic, single MPI rank.
-  - `lfilter=f` and `diffterm=f` so the first boundary slice validates convection/RK/boundary ordering before non-periodic filter and diffusion stencils are opened.
   - CPU `parallelini` now initializes single-rank non-homogeneous active ranges to interior nodes; otherwise the CPU baseline effectively skips interior RHS for this finite-domain test.
   - GPU x-zeroextrap RHS kernels use the same `is:ie/js:je/ks:ke` active ranges as CPU.
-  - `MAXSTEP=1` and `MAXSTEP=5` CPU/GPU `flowfield.h5` comparisons pass at roundoff scale; statistics are intentionally disabled for this slice because GPU diagnostic gradients remain periodic-first.
+  - GPU `gradcal` now has an x-physical derivative path for this slice, so native `flowstate.dat` statistics are a valid oracle.
+  - GPU diffusion now has x-physical flux and RHS paths for `diffterm=t`; diffusion field halo refresh skips invalid x-periodic fallback in this slice.
+  - GPU explicit filtering now supports this slice for `lfilter=t`. The implementation follows CPU `filterq` timing: refresh primitive fields before a filtered RK substep, do not refresh all primitive fields immediately after filtering, and refresh only the CPU `qswap` boundary/halo primitive slices needed before `gradcal` and RHS assembly.
+  - `MAXSTEP=5` CPU/GPU `flowstate.dat` and `flowfield.h5` comparisons pass at roundoff scale with `diffterm=f/t` and `lfilter=f/t`.
+  - The first y/z zeroextrap tracer slices have also passed on one MPI rank with `lfilter=t,diffterm=t`. These validate y/z physical boundary kernels, y/z physical `gradcal`, y/z physical convection RHS, y/z physical diffusion flux/RHS, explicit filter ping-pong halo handling, CPU-compatible filtered primitive timing, and single-rank halo routing.
+  - The first multi-rank zeroextrap slices now allow MPI decomposition in the physical zeroextrap direction and in the remaining periodic directions for x/y/z zeroextrap. The x/y/z physical convection/diffusion stencils now distinguish true physical faces from MPI internal interfaces and use halo-backed sixth-order central stencils on internal interfaces. `NP=2` and `NP=4` CPU/GPU statistics plus field comparisons pass for x/y/z zeroextrap with `lfilter=t,diffterm=t`; the expanded one-step matrix covers physical-direction decomposition for x, y, and z. The reusable matrix has also passed `MAXSTEP=5` with field output comparison and `MAXSTEP=20` as a statistics-only stability check for the earlier matrix variants.
+- Phase C boundary expansion has started with CPU-compatible symmetry:
+  - `bctype=60` symmetry is supported for exactly one physical x/y/z direction with the other two directions periodic.
+  - The GPU implementation matches the CPU Cartesian behavior used by the TGV-template validation: zero the normal velocity component, extrapolate tangential primitive fields, rebuild `q`, and zero physical-boundary `qrhs`.
+  - It reuses the finite-physical-axis infrastructure from zeroextrap, including `MPI_PROC_NULL` gating for true physical faces and halo-backed sixth-order central stencils on MPI internal interfaces.
+  - Validation passed x/y/z single-rank five-step statistics and field comparison, the 18-entry NP=2/NP=4 symmetry matrix, direct y/z physical-direction NP=2 five-step checks, the zeroextrap Phase B regression matrix, and periodic TGV 10-step statistics regression.
+  - This is not yet a general curvilinear symmetry implementation. Boundary-normal arrays such as CPU `bnorm_i0`, `bnorm_im`, and `bnorm_km` are not yet part of the GPU resident boundary contract.
+- Phase D wall-boundary expansion has started with channel `bctype=41`:
+  - The supported slice is `examples/Channel` with y-direction `bctype=41,41` isothermal no-slip walls and periodic x/z directions.
+  - Channel initialization now uses a deterministic random seed so CPU/GPU validation runs start from the same perturbation field.
+  - GPU support includes the y-wall boundary kernel, resident geometry `x_d`, channel statistics (`massflux`, `fbcx`, `forcex`, `wrms`), and the channel body-force source term in the GPU RHS path.
+  - The channel source kernel reads `jacob_d` directly from `commarray_gpu`, matching the global RHS kernels. Passing the halo-bounded `jacob_d` through a `0:im,0:jm,0:km` dummy caused a force-proportional source error and is now avoided.
+  - Single-rank filtered/diffusive feedback validation now passes through `MAXSTEP=20` at strict `1e-8` for both statistics and field output.
+  - A fixed-force no-filter long-step gate now passes through `MAXSTEP=100` with `DIFFTERM=t`, `CHANNEL_FORCE_MODE=fixed`, and `CHANNEL_FORCE_FIXED=1.d-4`, with final field differences at roundoff scale.
+  - `NP=2` channel slab validation now passes for `2x1x1`, `1x2x1`, and `1x1x2`. The `1x2x1` case validates physical y-direction decomposition: y-wall kernels are gated on true `MPI_PROC_NULL` faces, while the internal y interface uses halo-backed central stencils.
+  - The `NP=2` two-step feedback matrix also passes statistics at `1e-8` and field comparison at `1e-6`.
+  - `NP=4` channel combined-direction validation now passes for `2x2x1`, `2x1x2`, and `1x2x2`. One-step validation remains strict at `1e-8` for statistics and field output; two-step short-feedback validation passes with `STATS_ATOL=2e-8` and `FIELD_ATOL=1e-6`.
+  - `NP=8` `2x2x2` channel validation passes as a two-GPU oversubscription correctness smoke with the same one-step and two-step contracts. It is not performance evidence.
+  - `NP=27` `3x3x3` channel validation passes as a fully interior-rank halo smoke: one-step strict validation passes, and two-step short-feedback validation passes with `STATS_ATOL=3e-8` and `FIELD_ATOL=1e-6`. This topology confirms ranks fully wrapped by MPI neighbors in x/y/z, including y-interior ranks with no wall contact. It is severe two-GPU oversubscription, not performance evidence.
+  - Filtered channel runs beyond the current 20-step gate are limited by the CPU baseline on the small validation grid: CPU `crashcheck` stops around 23 filtered steps at `DELTAT=5.d-4`, and around 20 filtered steps for smaller `DELTAT`. This must not be treated as GPU-only stability evidence.
+  - This is not yet a general wall-boundary implementation. Wall blowing/suction files, turbulence wall models, curvilinear wall-normal handling, larger-rank long channel validation, filtered-channel baseline redesign, and other wall `bctype` variants remain future work.
 
 The current baseline is a correctness-first CUDA Fortran implementation. It still intentionally uses explicit synchronization after kernels and host-staged halo buffers.
 
@@ -463,7 +487,7 @@ Tasks:
 - Identify missing GPU support for its boundary and initialization path.
 - Add only the minimum required GPU path.
 - Validate same-topology CPU/GPU statistics and field output where appropriate.
-- For boundary slices, validate field output first and only promote statistics after non-periodic GPU `gradcal` diagnostics are implemented.
+- For boundary slices, validate field output first, then promote statistics after the corresponding non-periodic GPU `gradcal` diagnostics are implemented.
 
 Acceptance:
 
@@ -636,9 +660,10 @@ Recommended immediate work after this plan:
 4. Audit `src/` for direct CUDA-specific dependencies and record current/target facade mapping.
 5. Keep `documents/ASTR_GPU_DEVICE_FIELD_OWNERSHIP.md` synchronized with new device arrays.
 6. Keep `documents/ASTR_GPU_HALOTRANSPORT_SKETCH.md` synchronized with halo exchange changes.
-7. Screen `examples/` for the second GPU validation case.
-8. Update `documents/GPU_VALIDATION_MATRIX.md` with the latest profile and comparison results.
-9. Make generated profile/runtime artifact exclusions explicit in `.gitignore`.
+7. Use `tests/gpu_validation/run_symmetry_phasec_mpirank_matrix.sh` as the repeatable Phase C symmetry boundary matrix.
+8. Screen the next regular-grid boundary condition after symmetry; do not jump directly into wall/NSCBC/immersed-boundary paths without a separate plan.
+9. Update `documents/GPU_VALIDATION_MATRIX.md` with each new boundary validation result.
+10. Make generated profile/runtime artifact exclusions explicit in `.gitignore`.
 
 ## 9. Explicit Non-Goals
 

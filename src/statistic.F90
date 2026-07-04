@@ -1511,18 +1511,55 @@ module statistic
     real(8),intent(in) :: force,massflux,friction,massfluxtarget
     !
     ! local data
-    real(8) :: gn,qn1,ly
-    logical,save :: linit=.true.
+    real(8) :: gn,qn1,ly,feedback_force,fixed_force
+    real(8),save :: frozen_force=0.d0
+    integer :: env_status,i,ich
+    logical :: use_fixed_force
+    logical,save :: frozen_initialised=.false.
+    character(len=32) :: force_mode,force_fixed
     !
     ly=(ymax-ymin)
     !
     if(nstep==0) then
-      chanfoce=friction/ly
+      feedback_force=friction/ly
     else
       gn=(ly*force-friction)
       qn1=massflux+deltat*gn
-      chanfoce=force-(2.d0*(qn1-massfluxtarget)-                       &
+      feedback_force=force-(2.d0*(qn1-massfluxtarget)-                 &
                0.2d0*(massflux-massfluxtarget))/ly*(uinf/ref_len)
+    endif
+    !
+    force_mode='feedback'
+    call get_environment_variable('ASTR_CHANNEL_FORCE_MODE',force_mode, &
+                                  status=env_status)
+    if(env_status/=0 .or. len_trim(force_mode)==0) force_mode='feedback'
+    do i=1,len_trim(force_mode)
+      ich=iachar(force_mode(i:i))
+      if(ich>=iachar('A') .and. ich<=iachar('Z')) then
+        force_mode(i:i)=achar(ich+iachar('a')-iachar('A'))
+      endif
+    enddo
+    !
+    use_fixed_force=.false.
+    force_fixed=''
+    call get_environment_variable('ASTR_CHANNEL_FORCE_FIXED',force_fixed, &
+                                  status=env_status)
+    if(env_status==0 .and. len_trim(force_fixed)>0) then
+      read(force_fixed,*) fixed_force
+      use_fixed_force=.true.
+    endif
+    !
+    if(trim(force_mode)=='fixed' .or. use_fixed_force) then
+      if(.not.use_fixed_force) fixed_force=force
+      chanfoce=fixed_force
+    elseif(trim(force_mode)=='frozen' .or. trim(force_mode)=='freeze') then
+      if(.not.frozen_initialised) then
+        frozen_force=feedback_force
+        frozen_initialised=.true.
+      endif
+      chanfoce=frozen_force
+    else
+      chanfoce=feedback_force
     endif
     !
     ! if(nondimen) then

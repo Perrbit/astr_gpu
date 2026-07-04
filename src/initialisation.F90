@@ -759,7 +759,8 @@ module initialisation
     use bc,       only: rho_prof,vel_prof,tmp_prof,prs_prof
     !
     ! local data
-    integer :: i,j,k,l,ii,jj
+    integer :: i,j,k,l,ii,jj,nseed,iseed
+    integer,allocatable :: seed(:)
     real(8) :: theta,theter,fx,gz,zl,randomv(15),ran
     real(8) :: delta,beta1,miu
     real(8) :: yh(0:jm),nth(0:jm),r12(0:jm)
@@ -773,6 +774,13 @@ module initialisation
     theta=0.1d0
     !
     beta1=0.075d0
+    call random_seed(size=nseed)
+    allocate(seed(nseed))
+    do iseed=1,nseed
+      seed(iseed)=104729+37*iseed+1009*mpirank
+    enddo
+    call random_seed(put=seed)
+    deallocate(seed)
     !
     if(trim(turbmode)=='udf1') then
       !

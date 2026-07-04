@@ -173,6 +173,91 @@ contains
     if(tid == 1) partial(blockIdx%x) = scratch(1)
   end subroutine maxq_partial_kernel
 
+  attributes(global) subroutine channel_partial_kernel(q,vel,x,tmp,dvel,partial,im,jm,km,hm, &
+       tempconst,tempconst1,reynolds,nondimen,apply_down,apply_up)
+    implicit none
+    integer,value :: im,jm,km,hm,apply_down,apply_up
+    real(8),value :: tempconst,tempconst1,reynolds
+    logical,value :: nondimen
+    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
+    real(8),device :: partial(:,:)
+    real(8),shared :: scratch_mass(256),scratch_fbcx(256),scratch_wrms(256)
+    integer :: tid,id,stride,ncell,nwall,i,j,k
+    real(8) :: local_mass,local_fbcx,local_wrms,dy,var1,tloc,miu
+
+    tid = threadIdx%x
+    id = (blockIdx%x - 1) * blockDim%x + tid - 1
+    stride = gridDim%x * blockDim%x
+    ncell = im * jm * km
+    nwall = im * km
+    local_mass = 0.d0
+    local_fbcx = 0.d0
+    local_wrms = 0.d0
+
+    do while(id < max(ncell,nwall))
+      if(id < ncell) then
+        i = mod(id,im) + 1
+        j = mod(id/im,jm) + 1
+        k = id/(im*jm) + 1
+        dy = x(i,j,k,2) - x(i,j-1,k,2)
+        var1 = 0.5d0 * (q(i,j,k,2) + q(i,j-1,k,2))
+        local_mass = local_mass + var1 * dy
+        local_wrms = local_wrms + vel(i,j,k,3) * vel(i,j,k,3)
+      endif
+
+      if(id < nwall) then
+        i = mod(id,im) + 1
+        k = id/im + 1
+        if(apply_down /= 0) then
+          tloc = tmp(i,0,k)
+          if(nondimen) then
+            miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
+          else
+            miu = 1.716d-5*(tloc/273.15d0)*sqrt(tloc/273.15d0)*(273.15d0+110.4d0)/(tloc+110.4d0)
+          endif
+          local_fbcx = local_fbcx + miu*dvel(i,0,k,1,2)
+        endif
+        if(apply_up /= 0) then
+          tloc = tmp(i,jm,k)
+          if(nondimen) then
+            miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
+          else
+            miu = 1.716d-5*(tloc/273.15d0)*sqrt(tloc/273.15d0)*(273.15d0+110.4d0)/(tloc+110.4d0)
+          endif
+          local_fbcx = local_fbcx - miu*dvel(i,jm,k,1,2)
+        endif
+      endif
+
+      id = id + stride
+    enddo
+
+    scratch_mass(tid) = local_mass
+    scratch_fbcx(tid) = local_fbcx
+    scratch_wrms(tid) = local_wrms
+    call syncthreads()
+
+    stride = blockDim%x / 2
+    do while(stride > 0)
+      if(tid <= stride) then
+        scratch_mass(tid) = scratch_mass(tid) + scratch_mass(tid + stride)
+        scratch_fbcx(tid) = scratch_fbcx(tid) + scratch_fbcx(tid + stride)
+        scratch_wrms(tid) = scratch_wrms(tid) + scratch_wrms(tid + stride)
+      endif
+      call syncthreads()
+      stride = stride / 2
+    enddo
+
+    if(tid == 1) then
+      partial(blockIdx%x,1) = scratch_mass(1)
+      partial(blockIdx%x,2) = scratch_fbcx(1)
+      partial(blockIdx%x,3) = scratch_wrms(1)
+    endif
+  end subroutine channel_partial_kernel
+
   subroutine gpu_kenergy_scalar(kenergy_gpu)
     use mpi
     use commvar, only: im,jm,km,hm,ia,ja,ka,roinf,uinf
@@ -319,6 +404,47 @@ contains
     deallocate(partial_d,partial_h)
   end subroutine gpu_maxq_scalars
 
+  subroutine gpu_channel_scalars(massflux_gpu,fbcx_gpu,wrms_gpu)
+    use mpi
+    use commvar, only: im,jm,km,hm,ia,ja,ka,tempconst,tempconst1,reynolds,nondimen
+    use commarray_gpu, only: q_d,vel_d,x_d,tmp_d,dvel_d
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: mpisize,jrk,jrkm
+    implicit none
+    real(8),intent(out) :: massflux_gpu,fbcx_gpu,wrms_gpu
+    integer,parameter :: block_size = 256
+    integer :: nwork,nblocks,ierr
+    real(8) :: local_sum(3),global_sum(3)
+    real(8),allocatable,device :: partial_d(:,:)
+    real(8),allocatable :: partial_h(:,:)
+
+    nwork = max(im*jm*km,im*km)
+    nblocks = max(1,(nwork + block_size - 1) / block_size)
+    allocate(partial_d(nblocks,3))
+    allocate(partial_h(nblocks,3))
+
+    call channel_partial_kernel<<<nblocks,block_size>>>(q_d,vel_d,x_d,tmp_d,dvel_d,partial_d, &
+         im,jm,km,hm,tempconst,tempconst1,reynolds,nondimen, &
+         merge(1,0,jrk == 0),merge(1,0,jrk == jrkm))
+    call sync_after_kernel('channel_partial_kernel')
+    partial_h = partial_d
+
+    local_sum(1) = sum(partial_h(:,1))
+    local_sum(2) = sum(partial_h(:,2))
+    local_sum(3) = sum(partial_h(:,3))
+    if(mpisize>1) then
+      call mpi_allreduce(local_sum,global_sum,3,mpi_real8,mpi_sum,mpi_comm_world,ierr)
+    else
+      global_sum = local_sum
+    endif
+
+    massflux_gpu = global_sum(1) / real(ia*ka,8)
+    fbcx_gpu = global_sum(2) / real(ia*ka,8)
+    wrms_gpu = sqrt(global_sum(3) / real(ia*ja*ka,8))
+
+    deallocate(partial_d,partial_h)
+  end subroutine gpu_channel_scalars
+
   subroutine gpu_write_kenergy()
     use commvar, only: nstep,time,maxstep
     use parallel, only: lio
@@ -392,6 +518,42 @@ contains
       flush(hand)
     endif
   end subroutine gpu_write_generic_flowstate
+
+  subroutine gpu_write_channel_flowstate()
+    use commvar, only: nstep,time,maxstep,force
+    use statistic, only: massflux,fbcx,wrms,massflux_target,chanfoce
+    use parallel, only: lio,bcast
+    use stlaio, only: get_unit
+    implicit none
+    real(8) :: massflux_gpu,fbcx_gpu,wrms_gpu
+    integer,save :: hand = -1
+    logical,save :: linit = .true.
+
+    if(nstep <= 0 .or. nstep > maxstep) return
+
+    call gpu_channel_scalars(massflux_gpu,fbcx_gpu,wrms_gpu)
+    massflux = massflux_gpu
+    fbcx = fbcx_gpu
+    wrms = wrms_gpu
+    if(abs(massflux_target)<1.d-16) then
+      massflux_target = massflux
+      force = 0.d0
+      if(lio) print*,' ** target mass flux= ',massflux_target
+    endif
+    force(1) = chanfoce(force(1),massflux,fbcx,massflux_target)
+    call bcast(force)
+
+    if(.not.lio) return
+    if(linit) then
+      hand = get_unit()
+      open(hand,file='flowstate.dat',status='replace',action='write')
+      write(hand,'(A)') 'nstep time massflux fbcx forcex wrms'
+      linit = .false.
+    endif
+    write(hand,'(I20,1X,ES24.16,4(1X,ES24.16))') &
+         nstep,time,massflux,fbcx,force(1),wrms
+    flush(hand)
+  end subroutine gpu_write_channel_flowstate
 
   subroutine gpu_write_enstophy()
     use commvar, only: nstep,time,maxstep
