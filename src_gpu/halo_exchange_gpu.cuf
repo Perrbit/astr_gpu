@@ -794,7 +794,7 @@ contains
   subroutine exchange_solution_halo_gpu(preserve_interior_primitives)
     use commvar, only: lihomo,ljhomo,lkhomo
     use parallel, only: isize,jsize,ksize
-    use boundary_gpu, only: gpu_physical_boundary_axis
+    use boundary_gpu, only: gpu_axis_is_physical
     use qswap_gpu, only: qswap_single_rank_gpu,qswap_local_x_gpu, &
                          qswap_local_y_gpu,qswap_local_z_gpu, &
                          refresh_primitive_halo_gpu, &
@@ -803,10 +803,8 @@ contains
                          refresh_primitive_z_periodic_boundary_gpu
     implicit none
     logical,intent(in),optional :: preserve_interior_primitives
-    integer :: zero_axis
     logical :: preserve_primitives
 
-    zero_axis = gpu_physical_boundary_axis()
     preserve_primitives = .false.
     if(present(preserve_interior_primitives)) preserve_primitives = preserve_interior_primitives
 
@@ -817,7 +815,8 @@ contains
       return
     endif
 
-    if(preserve_primitives .and. zero_axis == 0) &
+    if(preserve_primitives .and. &
+       (.not.(gpu_axis_is_physical(1) .or. gpu_axis_is_physical(2) .or. gpu_axis_is_physical(3)))) &
       stop 'preserved primitive refresh requires finite physical boundary case'
 
     if(isize>1) then
@@ -826,7 +825,7 @@ contains
     elseif(lihomo) then
       call qswap_local_x_gpu()
       if(preserve_primitives) call refresh_primitive_x_periodic_boundary_gpu()
-    elseif(zero_axis == 1) then
+    elseif(gpu_axis_is_physical(1)) then
       continue
     else
       stop 'GPU halo exchange requires x MPI or homogeneous x direction'
@@ -838,7 +837,7 @@ contains
     elseif(ljhomo) then
       call qswap_local_y_gpu()
       if(preserve_primitives) call refresh_primitive_y_periodic_boundary_gpu()
-    elseif(zero_axis == 2) then
+    elseif(gpu_axis_is_physical(2)) then
       continue
     else
       stop 'GPU halo exchange requires y MPI or homogeneous y direction'
@@ -850,7 +849,7 @@ contains
     elseif(lkhomo) then
       call qswap_local_z_gpu()
       if(preserve_primitives) call refresh_primitive_z_periodic_boundary_gpu()
-    elseif(zero_axis == 3) then
+    elseif(gpu_axis_is_physical(3)) then
       continue
     else
       stop 'GPU halo exchange requires z MPI or homogeneous z direction'
@@ -928,7 +927,7 @@ contains
     use commarray_gpu, only: qwork_d
     use commvar, only: im,jm,km,hm,numq,ljhomo
     use gpu_check, only: sync_after_kernel
-    use boundary_gpu, only: gpu_physical_boundary_axis
+    use boundary_gpu, only: gpu_axis_is_physical
     implicit none
 
     type(dim3) :: block,grid
@@ -940,7 +939,7 @@ contains
       grid = dim3((n + block%x - 1)/block%x,1,1)
       call field_qswap_y_kernel<<<grid,block>>>(qwork_d,im,jm,km,hm,numq)
       call sync_after_kernel('filter_qwork_local_y_halo_kernel')
-    elseif(gpu_physical_boundary_axis() == 2) then
+    elseif(gpu_axis_is_physical(2)) then
       n = (im + 1) * (km + 1) * numq * 2 * hm
       grid = dim3((n + block%x - 1)/block%x,1,1)
       call copy_q_to_qwork_y_halo_kernel<<<grid,block>>>(im,jm,km,hm,numq)
@@ -1199,21 +1198,19 @@ contains
     use commvar, only: im,jm,km,hm
     use gpu_check, only: sync_after_kernel
     use parallel, only: isize,jsize,ksize
-    use boundary_gpu, only: gpu_physical_boundary_axis
+    use boundary_gpu, only: gpu_axis_is_physical
     implicit none
 
     integer,intent(in) :: nvar
     real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
     type(dim3) :: block,grid
     integer :: n
-    integer :: zero_axis
 
     block = dim3(256,1,1)
-    zero_axis = gpu_physical_boundary_axis()
 
     if(isize>1) then
       call exchange_field_x_halo_gpu(field,nvar)
-    elseif(zero_axis /= 1) then
+    elseif(.not.gpu_axis_is_physical(1)) then
       n = (jm + 1) * (km + 1) * nvar
       grid = dim3((n + block%x - 1)/block%x,1,1)
       call field_qswap_x_kernel<<<grid,block>>>(field,im,jm,km,hm,nvar)
@@ -1222,7 +1219,7 @@ contains
 
     if(jsize>1) then
       call exchange_field_y_halo_gpu(field,nvar)
-    elseif(zero_axis /= 2) then
+    elseif(.not.gpu_axis_is_physical(2)) then
       n = (im + 1) * (km + 1) * nvar
       grid = dim3((n + block%x - 1)/block%x,1,1)
       call field_qswap_y_kernel<<<grid,block>>>(field,im,jm,km,hm,nvar)
@@ -1231,7 +1228,7 @@ contains
 
     if(ksize>1) then
       call exchange_field_z_halo_gpu(field,nvar)
-    elseif(zero_axis /= 3) then
+    elseif(.not.gpu_axis_is_physical(3)) then
       n = (im + 1) * (jm + 1) * nvar
       grid = dim3((n + block%x - 1)/block%x,1,1)
       call field_qswap_z_kernel<<<grid,block>>>(field,im,jm,km,hm,nvar)

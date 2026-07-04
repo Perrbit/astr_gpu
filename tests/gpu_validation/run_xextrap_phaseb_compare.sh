@@ -23,6 +23,8 @@ COMPARE_STATS="${COMPARE_STATS:-t}"
 COMPARE_FIELD="${COMPARE_FIELD:-f}"
 ZERO_AXIS="${ZERO_AXIS:-x}"
 BC_KIND="${BC_KIND:-zeroextrap}"
+WALL_TEMP="${WALL_TEMP:-273.15d0}"
+XSLIP="${XSLIP:-3.141592653589793d0}"
 
 case "$BC_KIND" in
   zeroextrap)
@@ -65,8 +67,48 @@ case "$BC_KIND" in
         ;;
     esac
     ;;
+  adiabaticwall)
+    case "$ZERO_AXIS" in
+      x)
+        HOMOGENEOUS="f,t,t"
+        BCTYPE="42,42,1,1,1,1"
+        ;;
+      y)
+        HOMOGENEOUS="t,f,t"
+        BCTYPE="1,1,42,42,1,1"
+        ;;
+      *)
+        printf 'unsupported ZERO_AXIS=%s for adiabaticwall; expected x or y because CPU noslip_adibatic implements ndir=1..4 only\n' "$ZERO_AXIS" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  slipisotwall)
+    case "$ZERO_AXIS" in
+      y)
+        HOMOGENEOUS="t,f,t"
+        BCTYPE="1;1;411, ${XSLIP}, ${WALL_TEMP};411, ${XSLIP}, ${WALL_TEMP};1;1"
+        ;;
+      *)
+        printf 'unsupported ZERO_AXIS=%s for slipisotwall; expected y because CPU slipisotwall implements ndir=3/4 only\n' "$ZERO_AXIS" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  slipadibwall)
+    case "$ZERO_AXIS" in
+      y)
+        HOMOGENEOUS="t,f,t"
+        BCTYPE="1;1;421, ${XSLIP};421, ${XSLIP};1;1"
+        ;;
+      *)
+        printf 'unsupported ZERO_AXIS=%s for slipadibwall; expected y because CPU slipadibwall implements ndir=3/4 only\n' "$ZERO_AXIS" >&2
+        exit 2
+        ;;
+    esac
+    ;;
   *)
-    printf 'unsupported BC_KIND=%s; expected zeroextrap or symmetry\n' "$BC_KIND" >&2
+    printf 'unsupported BC_KIND=%s; expected zeroextrap, symmetry, adiabaticwall, slipisotwall, or slipadibwall\n' "$BC_KIND" >&2
     exit 2
     ;;
 esac

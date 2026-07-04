@@ -4,13 +4,16 @@ This directory contains validation drivers for the current ASTR CUDA Fortran por
 
 Current validated scope:
 
-- Taylor-Green Vortex, 3D extruded `2dvort`, and generated-velocity HIT within the explicit periodic non-reacting capability gate
-- first x/y/z-direction non-periodic zero-extrapolation boundary slices, with the other directions periodic and filter/diffusion support on one MPI rank
-- single-rank and multi-rank MPI decompositions
+- Taylor-Green Vortex, 3D extruded `2dvort`, generated-velocity HIT, forced 3-D LDC slices, and forced 3-D RTI explicit validation variants
+- x/y/z zero-extrapolation and symmetry slices
+- CPU-compatible Cartesian wall-family slices: `bctype=41` x/y/z, `bctype=42` x/y, `bctype=411` y, and `bctype=421` y
+- channel `bctype=41` y-wall source/statistics path and RTI y-fixed source path
+- single-rank and multi-rank MPI decompositions, including correctness smoke tests under two-GPU oversubscription
 - one physical GPU, two physical GPUs, and two-GPU oversubscription correctness smoke tests
 - q(1:5) only
 - explicit sixth-order central difference
 - explicit tenth-order central filter
+- current implemented GPU convection path is explicit central `643e`; Phase S0-A1 explicit upwind `543e` is planned but not yet implemented
 - detect-only crash check
 - LF runtime input files
 - runtime `use_gpu=t/f`; GPU support is compiled with `ASTR_WITH_CUDA=ON`
@@ -521,6 +524,15 @@ OUT_DIR=tests/gpu_validation/out/channel_long_np8_128_100steps_stats \
 
 Current expected result: NP=2 `2x1x1`, `1x2x1`, `1x1x2`; NP=4 `2x2x1`, `2x1x2`, `1x2x2`; and NP=8 `2x2x2` all print `status: pass` in `flowstate_compare.txt`. The latest run had maximum observed `massflux=4.998e-13`, `wrms=4.979e-15`, and `forcex=0` differences. This is a long-step CPU/GPU statistics equivalence gate under two-GPU oversubscription, not a production scaling result.
 
+For reproducible wall-clock benchmark reporting, use:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/channel_128_benchmark \
+  tests/gpu_validation/run_channel_128_benchmark.sh
+```
+
+The benchmark driver runs the `128^3`, `DELTAT=7.5d-4`, `MAXSTEP=100`, fixed-force channel case by default. It records explicit CPU/GPU wall times in `benchmark_times.tsv`, writes speedups relative to the NP=1 CPU baseline in `benchmark_summary.md`, and keeps per-topology `flowstate_compare.txt` reports when `RUN_CPU_FOR_ALL=t`.
+
 Validate the current `NP=2` channel slab matrix with:
 
 ```bash
@@ -589,6 +601,409 @@ OUT_DIR=tests/gpu_validation/out/channel_phased_mpirank_np27_3x3x3_2steps \
 
 The `3x3x3` topology creates ranks fully wrapped by MPI neighbors in x/y/z, including y-interior ranks that do not touch either wall. This is a high-oversubscription correctness smoke on the current two-GPU machine, not performance evidence.
 
+## Phase E Adiabatic Wall `bctype=42` Slices
+
+Validate CPU-compatible Cartesian `bctype=42,42` no-slip adiabatic walls for x/y directions only. The CPU implementation `noslip_adibatic` currently implements `ndir=1..4`; z-direction wall42 is therefore outside the CPU-supported scope and is intentionally rejected by the validation driver.
+
+```bash
+OUT_DIR=tests/gpu_validation/out/adiabaticwall_phasee_x_5steps \
+  BC_KIND=adiabaticwall ZERO_AXIS=x \
+  MAXSTEP=5 FEQCHKPT=5 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-9 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_xextrap_phaseb_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/adiabaticwall_phasee_y_5steps \
+  BC_KIND=adiabaticwall ZERO_AXIS=y \
+  MAXSTEP=5 FEQCHKPT=5 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-9 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_xextrap_phaseb_compare.sh
+```
+
+Validate physical-direction MPI gating with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/adiabaticwall_phasee_x_np2_physical \
+  BC_KIND=adiabaticwall ZERO_AXIS=x NP=2 TOPOLOGY=2,1,1 \
+  MAXSTEP=5 FEQCHKPT=5 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-9 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_xextrap_phaseb_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/adiabaticwall_phasee_y_np2_physical \
+  BC_KIND=adiabaticwall ZERO_AXIS=y NP=2 TOPOLOGY=1,2,1 \
+  MAXSTEP=5 FEQCHKPT=5 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-9 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_xextrap_phaseb_compare.sh
+```
+
+Current expected result: all four commands print `status: pass` for statistics and field comparison; reconstructed `q5` errors stay below `6.3e-13`. `BC_KIND=adiabaticwall ZERO_AXIS=z` exits before running because CPU `noslip_adibatic` has no `ndir=5/6` implementation.
+
+## Phase F Slip-Isothermal Wall `bctype=411` Slice
+
+Validate CPU-compatible Cartesian `bctype=411,411` slip-nonslip isothermal wall behavior for y direction only. The CPU implementation `slipisotwall` implements `ndir=3/4`; x/z directions are therefore outside the CPU-supported scope and are intentionally rejected by the validation driver. The lower wall uses `x <= xslip` for the slip segment and the upper wall follows the CPU no-slip isothermal branch. Wall blowing/suction, species, and turbulence models remain outside the GPU validation scope.
+
+```bash
+OUT_DIR=tests/gpu_validation/out/slipisotwall_phasef_y_np1_5steps \
+  BC_KIND=slipisotwall ZERO_AXIS=y \
+  XSLIP=3.141592653589793d0 WALL_TEMP=273.15d0 \
+  MAXSTEP=5 FEQCHKPT=5 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-9 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_xextrap_phaseb_compare.sh
+```
+
+Validate physical-face MPI gating and transverse decompositions with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/slipisotwall_phasef_y_np2_physical \
+  BC_KIND=slipisotwall ZERO_AXIS=y NP=2 TOPOLOGY=1,2,1 \
+  MAXSTEP=5 FEQCHKPT=5 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-9 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_xextrap_phaseb_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/slipisotwall_phasef_y_np2_xslab \
+  BC_KIND=slipisotwall ZERO_AXIS=y NP=2 TOPOLOGY=2,1,1 \
+  MAXSTEP=3 FEQCHKPT=3 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-9 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_xextrap_phaseb_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/slipisotwall_phasef_y_np2_zslab \
+  BC_KIND=slipisotwall ZERO_AXIS=y NP=2 TOPOLOGY=1,1,2 \
+  MAXSTEP=3 FEQCHKPT=3 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-9 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_xextrap_phaseb_compare.sh
+```
+
+Current expected result: all commands print `status: pass` for statistics and field comparison; reconstructed `q5` field errors stay below `6e-13`. `BC_KIND=slipisotwall ZERO_AXIS=x/z` exits before running because CPU `slipisotwall` has no `ndir=1/2/5/6` implementation.
+
+## Phase G Slip-Adiabatic Wall `bctype=421` Slice
+
+Validate CPU-compatible Cartesian `bctype=421,421` slip-nonslip adiabatic wall behavior for y direction only. The CPU implementation `slipadibwall` implements `ndir=3/4`; x/z directions are therefore outside the CPU-supported scope and are intentionally rejected by the validation driver. Although the input still reads `xslip`, the current CPU `slipadibwall` has the `xslip` split commented out, so the GPU validation follows the active CPU formula rather than the boundary-condition name.
+
+```bash
+OUT_DIR=tests/gpu_validation/out/slipadibwall_phaseg_y_np1_5steps \
+  BC_KIND=slipadibwall ZERO_AXIS=y \
+  XSLIP=3.141592653589793d0 \
+  MAXSTEP=5 FEQCHKPT=5 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-9 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_xextrap_phaseb_compare.sh
+```
+
+Validate physical-face MPI gating and transverse decompositions with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/slipadibwall_phaseg_y_np2_physical \
+  BC_KIND=slipadibwall ZERO_AXIS=y NP=2 TOPOLOGY=1,2,1 \
+  MAXSTEP=5 FEQCHKPT=5 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-9 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_xextrap_phaseb_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/slipadibwall_phaseg_y_np2_xslab \
+  BC_KIND=slipadibwall ZERO_AXIS=y NP=2 TOPOLOGY=2,1,1 \
+  MAXSTEP=3 FEQCHKPT=3 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-9 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_xextrap_phaseb_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/slipadibwall_phaseg_y_np2_zslab \
+  BC_KIND=slipadibwall ZERO_AXIS=y NP=2 TOPOLOGY=1,1,2 \
+  MAXSTEP=3 FEQCHKPT=3 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t COMPARE_STATS=t COMPARE_FIELD=t \
+  STATS_ATOL=1e-9 FIELD_ATOL=1e-8 \
+  tests/gpu_validation/run_xextrap_phaseb_compare.sh
+```
+
+Current expected result: all commands print `status: pass` for statistics and field comparison; reconstructed `q5` field errors stay below `6e-13`. `BC_KIND=slipadibwall ZERO_AXIS=x/z` exits before running because CPU `slipadibwall` has no `ndir=1/2/5/6` implementation.
+
+## Phase H Wall-Family Regression Matrix
+
+Use Phase H as the reusable wall-family regression gate after changing boundary, halo, filter, diffusion, or capability-gate code. It combines the currently supported Cartesian wall slices and also checks unsupported CPU-scope directions are still rejected.
+
+```bash
+OUT_DIR=tests/gpu_validation/out/wall_family_phaseh_matrix \
+  MAXSTEP=1 FEQCHKPT=1 GRID=32,32,32 \
+  LFILTER=t DIFFTERM=t RUN_FIELD=t \
+  tests/gpu_validation/run_wall_family_phaseh_matrix.sh
+```
+
+The default supported matrix covers:
+
+| Boundary | Supported axes in Phase H | MPI coverage |
+|---|---|---|
+| `bctype=41` isothermal no-slip | x/y/z | physical-direction NP=2 slab for each axis |
+| `bctype=42` adiabatic no-slip | x/y | physical-direction NP=2 slab for each supported axis |
+| `bctype=411` slip-isothermal | y | physical y NP=2 plus transverse x/z NP=2 slabs |
+| `bctype=421` slip-adiabatic | y | physical y NP=2 plus transverse x/z NP=2 slabs |
+
+The default reject matrix checks `42-z`, `411-x`, `411-z`, `421-x`, and `421-z`. These cases should exit before running CPU/GPU solvers because the corresponding CPU boundary routines do not implement those directions. A rejected case passing is a validation failure, not progress.
+
+Useful controls:
+
+```bash
+# Parse and list the default matrix without launching ASTR.
+DRY_RUN=t tests/gpu_validation/run_wall_family_phaseh_matrix.sh
+
+# Run a focused subset.
+MATRIX='slipisotwall:y:2:1,2,1 slipadibwall:y:2:1,2,1' \
+  tests/gpu_validation/run_wall_family_phaseh_matrix.sh
+
+# Check only unsupported CPU-scope directions.
+RUN_SUPPORTED=f RUN_REJECTS=t \
+  tests/gpu_validation/run_wall_family_phaseh_matrix.sh
+
+# Disable field comparison for a faster statistics-only smoke.
+RUN_FIELD=f FEQCHKPT=99 tests/gpu_validation/run_wall_family_phaseh_matrix.sh
+```
+
+Current expected result: the full default matrix prints 11 supported pass lines and 5 reject pass lines in `matrix_summary.txt`. Each supported entry should print `status: pass` for both `flowstate_compare.txt` and `flowfield_compare.txt`. The current full run is `tests/gpu_validation/out/wall_family_phaseh_matrix_full`; it passed all supported entries and kept `42-z`, `411-x/z`, and `421-x/z` rejected with exit status 2. Phase H does not expand the physics contract beyond the already validated Cartesian slices; it prevents regressions and accidental scope creep.
+
+## Phase I Lid-Driven-Cavity Gate
+
+Use the LDC Phase I gate to keep the next case expansion explicit. The original `examples/Lid-Driven-Cavity` case is a 2D cavity with x/y non-periodic directions, isothermal walls, and a top-lid `bctype=0` UDF boundary. It is intentionally outside the current GPU contract.
+
+```bash
+OUT_DIR=tests/gpu_validation/out/ldcavity_phasei_gate \
+  tests/gpu_validation/run_ldcavity_phasei_gate.sh
+```
+
+Current expected result: the GPU run exits nonzero and `gate_summary.txt` reports `pass gpu-reject`. The current baseline rejects the original 2D case with `GPU first-stage supports 3D cases only`.
+
+Useful probes:
+
+```bash
+# Confirm the CPU explicit LDC case still completes before using it as a future oracle.
+OUT_DIR=tests/gpu_validation/out/ldcavity_phasei_gate_cpu_probe \
+  RUN_CPU=t \
+  tests/gpu_validation/run_ldcavity_phasei_gate.sh
+
+# Force a 3D explicit probe to expose the next GPU gate after the 2D blocker.
+OUT_DIR=tests/gpu_validation/out/ldcavity_phasei_gate_3d \
+  GRID=32,32,32 \
+  tests/gpu_validation/run_ldcavity_phasei_gate.sh
+```
+
+Current status: CPU `RUN_CPU=t` completes a one-step explicit LDC probe without `ieee_invalid`. The warning was traced to `gridcube(1.d0,1.d0,0.d0)` in Release/O2 builds: the old loop contained a non-taken `lz/real(ka,8)` expression when `ka==0`, which NVHPC could still evaluate speculatively and raise `0/0` invalid for 2-D zero-thickness grids. `src/gridgeneration.F90` now precomputes guarded `dx/dy/dz` values before the loop. The same file also keeps original 2-D LDC grid generation for `ka==0`, but uses a unit z length for forced 3-D LDC probes with `ka>0`. The latest original-case check is `OUT_DIR=tests/gpu_validation/out/ldcavity_phaseib_original_filter_reject RUN_CPU=f tests/gpu_validation/run_ldcavity_phasei_gate.sh`; the GPU run still rejects the original/default filtered case as expected. The GPU LDC boundary routine mirrors the CPU boundary order: x isothermal no-slip walls first, y lower isothermal no-slip next, and y upper moving lid last. Therefore the top-lid/side-wall corner velocity follows the CPU implementation and is overwritten to `(u,v,w)=(1,0,0)`.
+
+Validate the narrow Phase I-A no-filter/no-diffusion LDC slice with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/ldcavity_phaseia_compare \
+  tests/gpu_validation/run_ldcavity_phaseia_compare.sh
+```
+
+Current expected result: `flowstate_compare.txt` and `flowfield_compare.txt` both print `status: pass`. This script forces a 3-D LDC probe with `GRID=32,32,32`, `LFILTER=f`, `DIFFTERM=f`, and explicit `643e`. The latest 5-step check:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/ldcavity_phaseia_script_5steps \
+  MAXSTEP=5 FEQCHKPT=5 \
+  tests/gpu_validation/run_ldcavity_phaseia_compare.sh
+```
+
+passed with max `flowstate.dat` difference `maxq5=2.8620661396416835e-11` and reconstructed field `q5` `L_inf=2.8421709430404007e-14`. This validates x/y physical boundary ownership plus z periodic halo for convection without diffusion.
+
+Validate the Phase I-B no-filter diffusive LDC slice with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/ldcavity_phaseib_diffusion_5steps \
+  DIFFTERM=t MAXSTEP=5 FEQCHKPT=5 \
+  tests/gpu_validation/run_ldcavity_phaseia_compare.sh
+```
+
+Current expected result: `flowstate_compare.txt` and `flowfield_compare.txt` both print `status: pass`. The latest 5-step diffusive single-rank check passed with final `flowstate.dat` difference `maxq5=3.9619862945983186e-11` and reconstructed field `q5` `L_inf=8.5265128291212022e-14`.
+
+Validate the current LDC multi-rank x/y physical halo route with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/ldcavity_phaseib_diffusion_np4_221 \
+  DIFFTERM=t MAXSTEP=5 FEQCHKPT=5 NP=4 TOPOLOGY=2,2,1 \
+  tests/gpu_validation/run_ldcavity_phaseia_compare.sh
+```
+
+Current expected result: the run passes statistics and HDF5 field comparison. This covers x/y internal MPI halos plus true physical x/y faces, while z remains periodic. Filtered LDC and the original 2-D LDC case remain outside the supported GPU contract.
+
+Validate the current Phase I-C filter isolation with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/ldcavity_filter_only_1step_check \
+  LFILTER=t DIFFTERM=f MAXSTEP=1 FEQCHKPT=1 \
+  COMPARE_STATS=f COMPARE_FIELD=t \
+  tests/gpu_validation/run_ldcavity_phaseia_compare.sh
+```
+
+Current expected result: strict field comparison prints `status: pass`. The latest run had reconstructed `q5` `L_inf=1.9895196601282805e-13`, so the LDC multi-axis explicit filter path is correct in isolation.
+
+Validate the combined `LFILTER=t,DIFFTERM=t` Phase I-C gate with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/ldcavity_filter_diff_1step_fixed_clean \
+  LFILTER=t DIFFTERM=t MAXSTEP=1 FEQCHKPT=1 \
+  COMPARE_STATS=f COMPARE_FIELD=t FIELD_ATOL=1e-10 FIELD_RTOL=1e-10 \
+  tests/gpu_validation/run_ldcavity_phaseia_compare.sh
+```
+
+Current expected result: strict field comparison prints `status: pass`; the latest reconstructed `q5` maximum was `2.2737367544323206e-13`. The previous failure at `(i,j,k)=(0,31,1)` was caused by GPU x/y physical diffusion RHS kernels applying all three `is:ie/js:je/ks:ke` restrictions at once. CPU `diffrsdcal6` applies direction-specific RHS ranges, so GPU `xyphysical` diffusion RHS and `x_xphysical` diffusion RHS now follow the same ownership rule.
+
+Use the 5-step strict stats plus field gate for the short regression:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/ldcavity_filter_diff_5step_fixed_clean \
+  LFILTER=t DIFFTERM=t MAXSTEP=5 FEQCHKPT=5 \
+  COMPARE_STATS=t COMPARE_FIELD=t \
+  FIELD_ATOL=1e-10 FIELD_RTOL=1e-10 STATS_ATOL=1e-10 STATS_RTOL=1e-10 \
+  tests/gpu_validation/run_ldcavity_phaseia_compare.sh
+```
+
+Current expected result: statistics and field comparisons both print `status: pass`; the latest final `flowstate.dat maxq5` difference was `8.1854523159563541e-12`, and reconstructed `q5 L_inf` was `5.6843418860808015e-13`. Do not use the current 20-step small-grid LDC run as a correctness gate: CPU/GPU diagnostics both become abnormal or crash-prone by roughly steps 16-20, so that setup is an oracle-quality problem rather than a GPU-only failure.
+
+## Phase J Rayleigh-Taylor Explicit Variant
+
+The canonical Phase J regression driver is:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/rti_phasej_matrix_driver_current \
+  tests/gpu_validation/run_rti_phasej_matrix.sh
+```
+
+Current expected result: `matrix_summary.txt` contains 13 `pass` lines. The default matrix covers single-rank `LFILTER=f/t,DIFFTERM=f/t`, `NP=2` x/y/z slabs, `NP=4` combined slabs, `NP=8 TOPOLOGY=2,2,2`, and 20-step single-rank plus `NP=4 TOPOLOGY=2,2,1`.
+
+Validate the RTI explicit validation variant with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/rti_phasej_filter_diff_5step \
+  MAXSTEP=5 FEQCHKPT=5 LFILTER=t DIFFTERM=t GRID=32,64,32 \
+  COMPARE_STATS=t COMPARE_FIELD=t \
+  FIELD_ATOL=1e-8 FIELD_RTOL=1e-10 STATS_ATOL=1e-10 STATS_RTOL=1e-10 \
+  tests/gpu_validation/run_rti_phasej_compare.sh
+```
+
+This driver starts from `examples/Rayleigh–Taylor-Instability/datin/input.rti`, but intentionally rewrites it to a forced 3-D explicit oracle: `GRID=32,64,32`, `643e`, `rk3`, `numq=5`, no species, no turbulence, x/z periodic, y fixed `bctype=31`, and RTI gravity source. It is not a validation of the original compact 2-D RTI input.
+
+Current expected result: statistics and field comparisons both print `status: pass`; the latest single-rank 5-step `LFILTER=t,DIFFTERM=t` run had final `flowstate.dat maxq5=3.5704772471945034e-13` and reconstructed `q5 L_inf=7.9936057773011271e-15`. The single-rank 1-step and 5-step matrix also passed for all `LFILTER=f/t` and `DIFFTERM=f/t` combinations.
+
+Validate the current two-rank RTI halo slices with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/rti_phasej_filter_diff_np2_121 \
+  MAXSTEP=5 FEQCHKPT=5 LFILTER=t DIFFTERM=t GRID=32,64,32 \
+  NP=2 TOPOLOGY=1,2,1 COMPARE_STATS=t COMPARE_FIELD=t \
+  FIELD_ATOL=1e-8 FIELD_RTOL=1e-10 STATS_ATOL=1e-10 STATS_RTOL=1e-10 \
+  tests/gpu_validation/run_rti_phasej_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/rti_phasej_filter_diff_np2_211 \
+  MAXSTEP=5 FEQCHKPT=5 LFILTER=t DIFFTERM=t GRID=32,64,32 \
+  NP=2 TOPOLOGY=2,1,1 COMPARE_STATS=t COMPARE_FIELD=t \
+  FIELD_ATOL=1e-8 FIELD_RTOL=1e-10 STATS_ATOL=1e-10 STATS_RTOL=1e-10 \
+  tests/gpu_validation/run_rti_phasej_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/rti_phasej_filter_diff_np2_112 \
+  MAXSTEP=5 FEQCHKPT=5 LFILTER=t DIFFTERM=t GRID=32,64,32 \
+  NP=2 TOPOLOGY=1,1,2 COMPARE_STATS=t COMPARE_FIELD=t \
+  FIELD_ATOL=1e-8 FIELD_RTOL=1e-10 STATS_ATOL=1e-10 STATS_RTOL=1e-10 \
+  tests/gpu_validation/run_rti_phasej_compare.sh
+```
+
+Current expected result: all three NP=2 entries print `status: pass` for both reports. The `1,2,1` case covers true y fixed physical faces plus internal y halo, while `2,1,1` and `1,1,2` cover transverse x/z periodic MPI halos. The latest maximum observed reconstructed `q5 L_inf` was `8.8817841970012523e-15`, and the maximum observed final `flowstate.dat maxq5` difference was `4.4408920985006262e-13`.
+
+The current extended RTI multi-rank matrix also passes:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/rti_phasej_current_matrix/np4_221 \
+  MAXSTEP=5 FEQCHKPT=5 LFILTER=t DIFFTERM=t GRID=32,64,32 \
+  NP=4 TOPOLOGY=2,2,1 COMPARE_STATS=t COMPARE_FIELD=t \
+  FIELD_ATOL=1e-8 FIELD_RTOL=1e-10 STATS_ATOL=1e-10 STATS_RTOL=1e-10 \
+  tests/gpu_validation/run_rti_phasej_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/rti_phasej_current_matrix/np4_212 \
+  MAXSTEP=5 FEQCHKPT=5 LFILTER=t DIFFTERM=t GRID=32,64,32 \
+  NP=4 TOPOLOGY=2,1,2 COMPARE_STATS=t COMPARE_FIELD=t \
+  FIELD_ATOL=1e-8 FIELD_RTOL=1e-10 STATS_ATOL=1e-10 STATS_RTOL=1e-10 \
+  tests/gpu_validation/run_rti_phasej_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/rti_phasej_current_matrix/np4_122 \
+  MAXSTEP=5 FEQCHKPT=5 LFILTER=t DIFFTERM=t GRID=32,64,32 \
+  NP=4 TOPOLOGY=1,2,2 COMPARE_STATS=t COMPARE_FIELD=t \
+  FIELD_ATOL=1e-8 FIELD_RTOL=1e-10 STATS_ATOL=1e-10 STATS_RTOL=1e-10 \
+  tests/gpu_validation/run_rti_phasej_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/rti_phasej_current_matrix/np8_222 \
+  MAXSTEP=5 FEQCHKPT=5 LFILTER=t DIFFTERM=t GRID=32,64,32 \
+  NP=8 TOPOLOGY=2,2,2 COMPARE_STATS=t COMPARE_FIELD=t \
+  FIELD_ATOL=1e-8 FIELD_RTOL=1e-10 STATS_ATOL=1e-10 STATS_RTOL=1e-10 \
+  tests/gpu_validation/run_rti_phasej_compare.sh
+```
+
+Current expected result: all four entries print `status: pass` for both reports. The latest 5-step extended matrix had maximum reconstructed `q5 L_inf=1.0658141036401503e-14` and maximum `flowstate.dat maxq5=4.6984638402136625e-13`.
+
+Use the 20-step RTI checks as the current stronger short-run regression:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/rti_phasej_current_matrix/sr20 \
+  MAXSTEP=20 FEQCHKPT=20 LFILTER=t DIFFTERM=t GRID=32,64,32 \
+  NP=1 TOPOLOGY=1,1,1 COMPARE_STATS=t COMPARE_FIELD=t \
+  FIELD_ATOL=1e-8 FIELD_RTOL=1e-10 STATS_ATOL=1e-10 STATS_RTOL=1e-10 \
+  tests/gpu_validation/run_rti_phasej_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/rti_phasej_current_matrix/np4_221_20 \
+  MAXSTEP=20 FEQCHKPT=20 LFILTER=t DIFFTERM=t GRID=32,64,32 \
+  NP=4 TOPOLOGY=2,2,1 COMPARE_STATS=t COMPARE_FIELD=t \
+  FIELD_ATOL=1e-8 FIELD_RTOL=1e-10 STATS_ATOL=1e-10 STATS_RTOL=1e-10 \
+  tests/gpu_validation/run_rti_phasej_compare.sh
+```
+
+Current expected result: both 20-step entries print `status: pass`. The latest single-rank run had reconstructed `q5 L_inf=1.0658141036401503e-14` and `flowstate.dat maxq5=4.9382720135326963e-13`; the latest `NP=4 TOPOLOGY=2,2,1` run had reconstructed `q5 L_inf=1.3322676295501878e-14` and `flowstate.dat maxq5=4.7073456244106637e-13`.
+
+## Phase K Source Capability Regression
+
+The canonical Phase K source regression driver is:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/source_phasek_matrix_current \
+  tests/gpu_validation/run_source_phasek_matrix.sh
+```
+
+Current expected result: `matrix_summary.txt` contains three `pass` lines:
+
+- `tgv_nosource`: verifies the source dispatcher leaves no-source cases alone.
+- `channel_source`: verifies the channel source path and `lihomo`-gated source dispatch.
+- `rti_source`: verifies the RTI source path with `NP=2 TOPOLOGY=1,2,1`, including y fixed boundary plus internal y halo.
+
+After changing the source capability layer, also rerun the full RTI matrix:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/rti_phasej_matrix_after_capability \
+  tests/gpu_validation/run_rti_phasej_matrix.sh
+```
+
+Current expected result: all 13 RTI entries pass. The source capability table currently covers only `GPU_SOURCE_NONE`, `GPU_SOURCE_CHANNEL`, and `GPU_SOURCE_RTI`; it is not chemistry, turbulence, or generic UDF source support.
+
+## Phase S0-A Shock-Format Readiness Plan
+
+The next planned feature gate is S0-A1, a forced 3-D extruded Sod case used to open the explicit upwind shock-format path without adding open boundaries or high-speed wall coupling.
+
+Planned S0-A1 contract:
+
+- `flowtype='sod'` through the `sodini` initialization path
+- controlled validation input, not `examples/sod/datin/input.sod` as-is
+- `GRID=200,8,8`
+- `deltat=5.d-4`, `maxstep=20`
+- periodic x/y/z boundaries, with the run short enough to avoid wave interaction with the x-periodic boundary
+- `conschm='543e'`, `difschm='643e'`
+- `recon_schem=-1`, `lchardecomp=.false.`
+- `diffterm=f`, `lfilter=f`
+- CPU/GPU statistics tolerances `STATS_ATOL=1e-10`, `STATS_RTOL=1e-10`
+- field tolerances `FIELD_ATOL=1e-10`, `FIELD_RTOL=1e-10`
+- at minimum, report max differences for `q(:,:,:,1:5)`
+
+Current status: planned. The GPU capability gate still rejects non-`643e` convection schemes, and the current `sod` grid path calls `grid1d(-5,5)`, which does not provide a positive-volume forced 3-D grid. A future S0-A1 validation driver should be documented here after implementation.
+
 The larger `256^3 NP=1/NP=2` Nsight profile can be generated with:
 
 ```bash
@@ -604,7 +1019,7 @@ GRID=256,256,256 MAXSTEP=10 FEQCHKPT=9999 LFILTER=t DIFFTERM=t \
   tests/gpu_validation/run_tgv_256_nsys_profile.sh
 ```
 
-The driver prepares GPU-only `NP=1` and `NP=2` case copies, profiles both with Nsight Systems, and compares their `flowstate.dat` statistics. Existing profile evidence was generated before this driver was added; rerun the driver before marking the reusable profile test as passed.
+The driver prepares GPU-only `NP=1` and `NP=2` case copies, profiles both with Nsight Systems, and compares their `flowstate.dat` statistics. The reusable driver has a recorded pass in `documents/GPU_VALIDATION_MATRIX.md`; rerun it when profiling, halo exchange, residency, or build configuration changes.
 
 ## GPU Multi-Rank X-Slab Validation
 

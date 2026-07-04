@@ -53,6 +53,7 @@ if(ASTR_WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/qswap_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/halo_exchange_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/boundary_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/case_capability_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/statistic_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/gradcal_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/solver_gpu.cuf

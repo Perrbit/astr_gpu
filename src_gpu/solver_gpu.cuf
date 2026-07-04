@@ -161,7 +161,7 @@ contains
   end subroutine channel_bulk_partial_kernel
 
   attributes(global) subroutine channel_source_kernel(qrhs,im,jm,km,force1,force2,force3, &
-       u1bulk,u2bulk,u3bulk)
+                                                      u1bulk,u2bulk,u3bulk)
     use commarray_gpu, only: jacob_d
     implicit none
     integer,value :: im,jm,km
@@ -184,6 +184,43 @@ contains
     qrhs(i,j,k,4) = qrhs(i,j,k,4) + force3*jloc
     qrhs(i,j,k,5) = qrhs(i,j,k,5) + src_energy*jloc
   end subroutine channel_source_kernel
+
+  attributes(global) subroutine rti_source_kernel(qrhs,rho,vel,jacob,im,jm,km,hm)
+    implicit none
+    integer,value :: im,jm,km,hm
+    real(8),device :: qrhs(0:im,0:jm,0:km,1:5)
+    real(8),device :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device :: jacob(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    integer :: idx,i,j,k,nxy
+    real(8) :: source
+
+    idx = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nxy = (im + 1) * (jm + 1)
+    if(idx >= nxy * (km + 1)) return
+    i = mod(idx,im+1)
+    j = mod(idx/(im+1),jm+1)
+    k = idx/nxy
+
+    source = rho(i,j,k)*jacob(i,j,k)
+    qrhs(i,j,k,3) = qrhs(i,j,k,3) + source
+    qrhs(i,j,k,5) = qrhs(i,j,k,5) + source*vel(i,j,k,2)
+  end subroutine rti_source_kernel
+
+  subroutine apply_rti_source_gpu()
+    use commvar, only: im,jm,km,hm
+    use commarray_gpu, only: qrhs_d,rho_d,vel_d,jacob_d
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    type(dim3) :: block,grid
+    integer :: ntot
+
+    ntot = (im + 1) * (jm + 1) * (km + 1)
+    block = dim3(256,1,1)
+    grid = dim3((ntot + block%x - 1)/block%x,1,1)
+    call rti_source_kernel<<<grid,block>>>(qrhs_d,rho_d,vel_d,jacob_d,im,jm,km,hm)
+    call sync_after_kernel('rti_source_kernel')
+  end subroutine apply_rti_source_gpu
 
   subroutine apply_channel_source_gpu()
     use mpi
@@ -231,6 +268,19 @@ contains
 
     deallocate(partial_d,partial_h)
   end subroutine apply_channel_source_gpu
+
+  subroutine apply_case_sources_gpu()
+    use case_capability_gpu, only: gpu_case_source_kind, &
+         GPU_SOURCE_CHANNEL,GPU_SOURCE_RTI
+    implicit none
+
+    select case(gpu_case_source_kind())
+    case(GPU_SOURCE_CHANNEL)
+      call apply_channel_source_gpu()
+    case(GPU_SOURCE_RTI)
+      call apply_rti_source_gpu()
+    end select
+  end subroutine apply_case_sources_gpu
 
   attributes(device) subroutine flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i,j,k,idir,f)
     implicit none
@@ -456,6 +506,25 @@ contains
     f(5) = jacob_d(ii,j,kk) * (q_d(i,j,k,5) + prs_d(i,j,k)) * uu
   end subroutine flux_at_yphysical_global
 
+  attributes(device) subroutine flux_at_xyphysical_global(i,j,k,idir,im,jm,km,f)
+    use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d
+    implicit none
+    integer,value :: i,j,k,idir,im,jm,km
+    real(8) :: f(5)
+    integer :: kk
+    real(8) :: uu
+
+    kk = idx_periodic(k,km)
+    uu = dxi_d(i,j,k,idir,1)*vel_d(i,j,k,1) + &
+         dxi_d(i,j,k,idir,2)*vel_d(i,j,k,2) + &
+         dxi_d(i,j,k,idir,3)*vel_d(i,j,k,3)
+    f(1) = jacob_d(i,j,kk) * q_d(i,j,k,1) * uu
+    f(2) = jacob_d(i,j,kk) * (q_d(i,j,k,2) * uu + dxi_d(i,j,k,idir,1) * prs_d(i,j,k))
+    f(3) = jacob_d(i,j,kk) * (q_d(i,j,k,3) * uu + dxi_d(i,j,k,idir,2) * prs_d(i,j,k))
+    f(4) = jacob_d(i,j,kk) * (q_d(i,j,k,4) * uu + dxi_d(i,j,k,idir,3) * prs_d(i,j,k))
+    f(5) = jacob_d(i,j,kk) * (q_d(i,j,k,5) + prs_d(i,j,k)) * uu
+  end subroutine flux_at_xyphysical_global
+
   attributes(device) subroutine flux_at_zphysical_global(i,j,k,idir,im,jm,km,f)
     use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d
     implicit none
@@ -598,7 +667,7 @@ contains
     j = blockIdx%y - 1
     k = blockIdx%z - 1
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
-    if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
+    if(i < is .or. i > ie) return
 
     call flux_at_xphysical_global(i,j,k,1,im,jm,km,f0)
     if(i < im   .or. apply_right == 0) call flux_at_xphysical_global(i+1,j,k,1,im,jm,km,fp1)
@@ -625,7 +694,7 @@ contains
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
     k = blockIdx%z - 1
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
-    if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
+    if(j < js .or. j > je) return
 
     call flux_at_xphysical_global(i,j+1,k,2,im,jm,km,fp1)
     call flux_at_xphysical_global(i,j-1,k,2,im,jm,km,fm1)
@@ -650,7 +719,7 @@ contains
     j = blockIdx%y - 1
     k = (blockIdx%z - 1) * blockDim%z + threadIdx%z - 1
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
-    if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
+    if(k < ks .or. k > ke) return
 
     call flux_at_xphysical_global(i,j,k+1,3,im,jm,km,fp1)
     call flux_at_xphysical_global(i,j,k-1,3,im,jm,km,fm1)
@@ -741,6 +810,87 @@ contains
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_z_yphysical_global_kernel
+
+  attributes(global) subroutine convective_rhs_x_xyphysical_global_kernel(im,jm,km,is,ie,js,je,ks,ke, &
+                                                                          apply_left,apply_right)
+    use commarray_gpu, only: qrhs_d
+    implicit none
+    integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_left,apply_right
+    integer :: i,j,k,m
+    real(8) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = blockIdx%y - 1
+    k = blockIdx%z - 1
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
+
+    call flux_at_xyphysical_global(i,j,k,1,im,jm,km,f0)
+    if(i < im   .or. apply_right == 0) call flux_at_xyphysical_global(i+1,j,k,1,im,jm,km,fp1)
+    if(i > 0    .or. apply_left  == 0) call flux_at_xyphysical_global(i-1,j,k,1,im,jm,km,fm1)
+    if(i < im-1 .or. apply_right == 0) call flux_at_xyphysical_global(i+2,j,k,1,im,jm,km,fp2)
+    if(i > 1    .or. apply_left  == 0) call flux_at_xyphysical_global(i-2,j,k,1,im,jm,km,fm2)
+    if(i < im-2 .or. apply_right == 0) call flux_at_xyphysical_global(i+3,j,k,1,im,jm,km,fp3)
+    if(i > 2    .or. apply_left  == 0) call flux_at_xyphysical_global(i-3,j,k,1,im,jm,km,fm3)
+
+    call deriv6_x_physical(i,im,apply_left,apply_right,f0,fp1,fm1,fp2,fm2,fp3,fm3,df)
+    do m=1,5
+      qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df(m)
+    enddo
+  end subroutine convective_rhs_x_xyphysical_global_kernel
+
+  attributes(global) subroutine convective_rhs_y_xyphysical_global_kernel(im,jm,km,is,ie,js,je,ks,ke, &
+                                                                          apply_down,apply_up)
+    use commarray_gpu, only: qrhs_d
+    implicit none
+    integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_down,apply_up
+    integer :: i,j,k,m
+    real(8) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
+    k = blockIdx%z - 1
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
+
+    call flux_at_xyphysical_global(i,j,k,2,im,jm,km,f0)
+    if(j < jm   .or. apply_up   == 0) call flux_at_xyphysical_global(i,j+1,k,2,im,jm,km,fp1)
+    if(j > 0    .or. apply_down == 0) call flux_at_xyphysical_global(i,j-1,k,2,im,jm,km,fm1)
+    if(j < jm-1 .or. apply_up   == 0) call flux_at_xyphysical_global(i,j+2,k,2,im,jm,km,fp2)
+    if(j > 1    .or. apply_down == 0) call flux_at_xyphysical_global(i,j-2,k,2,im,jm,km,fm2)
+    if(j < jm-2 .or. apply_up   == 0) call flux_at_xyphysical_global(i,j+3,k,2,im,jm,km,fp3)
+    if(j > 2    .or. apply_down == 0) call flux_at_xyphysical_global(i,j-3,k,2,im,jm,km,fm3)
+
+    call deriv6_x_physical(j,jm,apply_down,apply_up,f0,fp1,fm1,fp2,fm2,fp3,fm3,df)
+    do m=1,5
+      qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df(m)
+    enddo
+  end subroutine convective_rhs_y_xyphysical_global_kernel
+
+  attributes(global) subroutine convective_rhs_z_xyphysical_global_kernel(im,jm,km,is,ie,js,je,ks,ke)
+    use commarray_gpu, only: qrhs_d
+    implicit none
+    integer,value :: im,jm,km,is,ie,js,je,ks,ke
+    integer :: i,j,k,m
+    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = blockIdx%y - 1
+    k = (blockIdx%z - 1) * blockDim%z + threadIdx%z - 1
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
+
+    call flux_at_xyphysical_global(i,j,k+1,3,im,jm,km,fp1)
+    call flux_at_xyphysical_global(i,j,k-1,3,im,jm,km,fm1)
+    call flux_at_xyphysical_global(i,j,k+2,3,im,jm,km,fp2)
+    call flux_at_xyphysical_global(i,j,k-2,3,im,jm,km,fm2)
+    call flux_at_xyphysical_global(i,j,k+3,3,im,jm,km,fp3)
+    call flux_at_xyphysical_global(i,j,k-3,3,im,jm,km,fm3)
+    do m=1,5
+      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + (fp3(m)-fm3(m))/60.d0
+      qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
+    enddo
+  end subroutine convective_rhs_z_xyphysical_global_kernel
 
   attributes(global) subroutine convective_rhs_x_zphysical_global_kernel(im,jm,km,is,ie,js,je,ks,ke)
     use commarray_gpu, only: qrhs_d
@@ -1182,6 +1332,12 @@ contains
     real(8) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
     v0 = vel_at(i,j,k,a,im,jm,km)
+    vp1 = 0.d0
+    vm1 = 0.d0
+    vp2 = 0.d0
+    vm2 = 0.d0
+    vp3 = 0.d0
+    vm3 = 0.d0
     if(i < im .or. apply_right == 0) then
       vp1 = vel_at(i+1,j,k,a,im,jm,km)
     endif
@@ -1209,6 +1365,12 @@ contains
     real(8) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
     v0 = tmp_at(i,j,k,im,jm,km)
+    vp1 = 0.d0
+    vm1 = 0.d0
+    vp2 = 0.d0
+    vm2 = 0.d0
+    vp3 = 0.d0
+    vm3 = 0.d0
     if(i < im .or. apply_right == 0) then
       vp1 = tmp_at(i+1,j,k,im,jm,km)
     endif
@@ -1236,6 +1398,12 @@ contains
     real(8) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
     v0 = vel_at(i,j,k,a,im,jm,km)
+    vp1 = 0.d0
+    vm1 = 0.d0
+    vp2 = 0.d0
+    vm2 = 0.d0
+    vp3 = 0.d0
+    vm3 = 0.d0
     if(j < jm   .or. apply_up   == 0) vp1 = vel_at(i,j+1,k,a,im,jm,km)
     if(j > 0    .or. apply_down == 0) vm1 = vel_at(i,j-1,k,a,im,jm,km)
     if(j < jm-1 .or. apply_up   == 0) vp2 = vel_at(i,j+2,k,a,im,jm,km)
@@ -1251,6 +1419,12 @@ contains
     real(8) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
     v0 = tmp_at(i,j,k,im,jm,km)
+    vp1 = 0.d0
+    vm1 = 0.d0
+    vp2 = 0.d0
+    vm2 = 0.d0
+    vp3 = 0.d0
+    vm3 = 0.d0
     if(j < jm   .or. apply_up   == 0) vp1 = tmp_at(i,j+1,k,im,jm,km)
     if(j > 0    .or. apply_down == 0) vm1 = tmp_at(i,j-1,k,im,jm,km)
     if(j < jm-1 .or. apply_up   == 0) vp2 = tmp_at(i,j+2,k,im,jm,km)
@@ -1266,6 +1440,12 @@ contains
     real(8) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
     v0 = vel_at(i,j,k,a,im,jm,km)
+    vp1 = 0.d0
+    vm1 = 0.d0
+    vp2 = 0.d0
+    vm2 = 0.d0
+    vp3 = 0.d0
+    vm3 = 0.d0
     if(k < km   .or. apply_front == 0) vp1 = vel_at(i,j,k+1,a,im,jm,km)
     if(k > 0    .or. apply_back  == 0) vm1 = vel_at(i,j,k-1,a,im,jm,km)
     if(k < km-1 .or. apply_front == 0) vp2 = vel_at(i,j,k+2,a,im,jm,km)
@@ -1281,6 +1461,12 @@ contains
     real(8) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
     v0 = tmp_at(i,j,k,im,jm,km)
+    vp1 = 0.d0
+    vm1 = 0.d0
+    vp2 = 0.d0
+    vm2 = 0.d0
+    vp3 = 0.d0
+    vm3 = 0.d0
     if(k < km   .or. apply_front == 0) vp1 = tmp_at(i,j,k+1,im,jm,km)
     if(k > 0    .or. apply_back  == 0) vm1 = tmp_at(i,j,k-1,im,jm,km)
     if(k < km-1 .or. apply_front == 0) vp2 = tmp_at(i,j,k+2,im,jm,km)
@@ -1400,6 +1586,40 @@ contains
                 dt_dxi(3)*dxi_d(i,j,k,3,a)
     enddo
   end subroutine gradient_at_zphysical
+
+  attributes(device) subroutine gradient_at_xyphysical(i,j,k,im,jm,km, &
+                                                       apply_left,apply_right,apply_down,apply_up,dvel,dtmp)
+    use commarray_gpu, only: dxi_d
+    implicit none
+    integer,value :: i,j,k,im,jm,km,apply_left,apply_right,apply_down,apply_up
+    real(8) :: dvel(3,3),dtmp(3)
+    integer :: a,b
+    real(8) :: du_dxi(3,3),dt_dxi(3)
+
+    do a=1,3
+      du_dxi(1,a) = deriv6_x_vel_at(i,j,k,a,im,jm,km,apply_left,apply_right)
+      du_dxi(2,a) = deriv6_y_vel_at(i,j,k,a,im,jm,km,apply_down,apply_up)
+      du_dxi(3,a) = deriv6(vel_at(i,j,k+1,a,im,jm,km),vel_at(i,j,k-1,a,im,jm,km), &
+                           vel_at(i,j,k+2,a,im,jm,km),vel_at(i,j,k-2,a,im,jm,km), &
+                           vel_at(i,j,k+3,a,im,jm,km),vel_at(i,j,k-3,a,im,jm,km))
+    enddo
+    dt_dxi(1) = deriv6_x_tmp_at(i,j,k,im,jm,km,apply_left,apply_right)
+    dt_dxi(2) = deriv6_y_tmp_at(i,j,k,im,jm,km,apply_down,apply_up)
+    dt_dxi(3) = deriv6(tmp_at(i,j,k+1,im,jm,km),tmp_at(i,j,k-1,im,jm,km), &
+                       tmp_at(i,j,k+2,im,jm,km),tmp_at(i,j,k-2,im,jm,km), &
+                       tmp_at(i,j,k+3,im,jm,km),tmp_at(i,j,k-3,im,jm,km))
+
+    do a=1,3
+      do b=1,3
+        dvel(a,b) = du_dxi(1,a)*dxi_d(i,j,k,1,b) + &
+                    du_dxi(2,a)*dxi_d(i,j,k,2,b) + &
+                    du_dxi(3,a)*dxi_d(i,j,k,3,b)
+      enddo
+      dtmp(a) = dt_dxi(1)*dxi_d(i,j,k,1,a) + &
+                dt_dxi(2)*dxi_d(i,j,k,2,a) + &
+                dt_dxi(3)*dxi_d(i,j,k,3,a)
+    enddo
+  end subroutine gradient_at_xyphysical
 
   attributes(device) subroutine diff_flux_at(i,j,k,idir,im,jm,km,reynolds,prandtl,const5, &
                                              tempconst,tempconst1,f)
@@ -1724,6 +1944,56 @@ contains
     qflux_d(i,j,k,3) = hcc*dtmp(3) + tau13*vel_d(i,j,k,1) + tau23*vel_d(i,j,k,2) + tau33*vel_d(i,j,k,3)
   end subroutine diffusion_flux_zphysical_global_kernel
 
+  attributes(global) subroutine diffusion_flux_xyphysical_global_kernel(im,jm,km,reynolds,prandtl,const5, &
+                                                                        tempconst,tempconst1, &
+                                                                        apply_left,apply_right,apply_down,apply_up)
+    use commarray_gpu, only: vel_d,tmp_d,sigma_d,qflux_d
+    implicit none
+    integer,value :: im,jm,km,apply_left,apply_right,apply_down,apply_up
+    real(8),value :: reynolds,prandtl,const5,tempconst,tempconst1
+    integer :: i,j,k
+    real(8) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
+    real(8) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
+    k = (blockIdx%z - 1) * blockDim%z + threadIdx%z - 1
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+
+    call gradient_at_xyphysical(i,j,k,im,jm,km,apply_left,apply_right,apply_down,apply_up,dvel,dtmp)
+
+    tloc = tmp_d(i,j,k)
+    miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
+    miu2 = 2.d0*miu
+    hcc = (miu/prandtl)/const5
+
+    s11=dvel(1,1)
+    s12=0.5d0*(dvel(1,2)+dvel(2,1))
+    s13=0.5d0*(dvel(1,3)+dvel(3,1))
+    s22=dvel(2,2)
+    s23=0.5d0*(dvel(2,3)+dvel(3,2))
+    s33=dvel(3,3)
+    skk = (s11+s22+s33)/3.d0
+
+    tau11 = miu2*(s11-skk)
+    tau12 = miu2*s12
+    tau13 = miu2*s13
+    tau22 = miu2*(s22-skk)
+    tau23 = miu2*s23
+    tau33 = miu2*(s33-skk)
+
+    sigma_d(i,j,k,1) = tau11
+    sigma_d(i,j,k,2) = tau12
+    sigma_d(i,j,k,3) = tau13
+    sigma_d(i,j,k,4) = tau22
+    sigma_d(i,j,k,5) = tau23
+    sigma_d(i,j,k,6) = tau33
+
+    qflux_d(i,j,k,1) = hcc*dtmp(1) + tau11*vel_d(i,j,k,1) + tau12*vel_d(i,j,k,2) + tau13*vel_d(i,j,k,3)
+    qflux_d(i,j,k,2) = hcc*dtmp(2) + tau12*vel_d(i,j,k,1) + tau22*vel_d(i,j,k,2) + tau23*vel_d(i,j,k,3)
+    qflux_d(i,j,k,3) = hcc*dtmp(3) + tau13*vel_d(i,j,k,1) + tau23*vel_d(i,j,k,2) + tau33*vel_d(i,j,k,3)
+  end subroutine diffusion_flux_xyphysical_global_kernel
+
   attributes(device) subroutine stored_diff_flux_at(i,j,k,idir,im,jm,km,f)
     use commarray_gpu, only: sigma_d,qflux_d,dxi_d,jacob_d
     implicit none
@@ -1821,6 +2091,29 @@ contains
             qflux_d(i,j,k,3)*dxi_d(i,j,k,idir,3))*jacob_d(ii,jj,k)
   end subroutine stored_diff_flux_at_zphysical
 
+  attributes(device) subroutine stored_diff_flux_at_xyphysical(i,j,k,idir,im,jm,km,f)
+    use commarray_gpu, only: sigma_d,qflux_d,dxi_d,jacob_d
+    implicit none
+    integer,value :: i,j,k,idir,im,jm,km
+    real(8) :: f(5)
+    integer :: kk
+
+    kk = idx_periodic(k,km)
+    f(1) = 0.d0
+    f(2) = (sigma_d(i,j,k,1)*dxi_d(i,j,k,idir,1) + &
+            sigma_d(i,j,k,2)*dxi_d(i,j,k,idir,2) + &
+            sigma_d(i,j,k,3)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,kk)
+    f(3) = (sigma_d(i,j,k,2)*dxi_d(i,j,k,idir,1) + &
+            sigma_d(i,j,k,4)*dxi_d(i,j,k,idir,2) + &
+            sigma_d(i,j,k,5)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,kk)
+    f(4) = (sigma_d(i,j,k,3)*dxi_d(i,j,k,idir,1) + &
+            sigma_d(i,j,k,5)*dxi_d(i,j,k,idir,2) + &
+            sigma_d(i,j,k,6)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,kk)
+    f(5) = (qflux_d(i,j,k,1)*dxi_d(i,j,k,idir,1) + &
+            qflux_d(i,j,k,2)*dxi_d(i,j,k,idir,2) + &
+            qflux_d(i,j,k,3)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,kk)
+  end subroutine stored_diff_flux_at_xyphysical
+
   attributes(global) subroutine diffusion_rhs_x_stored_global_kernel(im,jm,km)
     use commarray_gpu, only: qrhs_d
     implicit none
@@ -1855,7 +2148,7 @@ contains
     j = blockIdx%y - 1
     k = blockIdx%z - 1
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
-    if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
+    if(i < is .or. i > ie) return
 
     call stored_diff_flux_at_xphysical(i,j,k,1,im,jm,km,f0)
     if(i < im   .or. apply_right == 0) call stored_diff_flux_at_xphysical(i+1,j,k,1,im,jm,km,fp1)
@@ -2062,4 +2355,84 @@ contains
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) + df(m)
     enddo
   end subroutine diffusion_rhs_z_zphysical_stored_global_kernel
+
+  attributes(global) subroutine diffusion_rhs_x_xyphysical_stored_global_kernel(im,jm,km,is,ie,js,je,ks,ke, &
+                                                                                apply_left,apply_right)
+    use commarray_gpu, only: qrhs_d
+    implicit none
+    integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_left,apply_right
+    integer :: i,j,k,m
+    real(8) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = blockIdx%y - 1
+    k = blockIdx%z - 1
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    if(i < is .or. i > ie) return
+
+    call stored_diff_flux_at_xyphysical(i,j,k,1,im,jm,km,f0)
+    if(i < im   .or. apply_right == 0) call stored_diff_flux_at_xyphysical(i+1,j,k,1,im,jm,km,fp1)
+    if(i > 0    .or. apply_left  == 0) call stored_diff_flux_at_xyphysical(i-1,j,k,1,im,jm,km,fm1)
+    if(i < im-1 .or. apply_right == 0) call stored_diff_flux_at_xyphysical(i+2,j,k,1,im,jm,km,fp2)
+    if(i > 1    .or. apply_left  == 0) call stored_diff_flux_at_xyphysical(i-2,j,k,1,im,jm,km,fm2)
+    if(i < im-2 .or. apply_right == 0) call stored_diff_flux_at_xyphysical(i+3,j,k,1,im,jm,km,fp3)
+    if(i > 2    .or. apply_left  == 0) call stored_diff_flux_at_xyphysical(i-3,j,k,1,im,jm,km,fm3)
+
+    call deriv6_x_physical(i,im,apply_left,apply_right,f0,fp1,fm1,fp2,fm2,fp3,fm3,df)
+    do m=2,5
+      qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) + df(m)
+    enddo
+  end subroutine diffusion_rhs_x_xyphysical_stored_global_kernel
+
+  attributes(global) subroutine diffusion_rhs_y_xyphysical_stored_global_kernel(im,jm,km,is,ie,js,je,ks,ke, &
+                                                                                apply_down,apply_up)
+    use commarray_gpu, only: qrhs_d
+    implicit none
+    integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_down,apply_up
+    integer :: i,j,k,m
+    real(8) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
+    k = blockIdx%z - 1
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    if(j < js .or. j > je) return
+
+    call stored_diff_flux_at_xyphysical(i,j,k,2,im,jm,km,f0)
+    if(j < jm   .or. apply_up   == 0) call stored_diff_flux_at_xyphysical(i,j+1,k,2,im,jm,km,fp1)
+    if(j > 0    .or. apply_down == 0) call stored_diff_flux_at_xyphysical(i,j-1,k,2,im,jm,km,fm1)
+    if(j < jm-1 .or. apply_up   == 0) call stored_diff_flux_at_xyphysical(i,j+2,k,2,im,jm,km,fp2)
+    if(j > 1    .or. apply_down == 0) call stored_diff_flux_at_xyphysical(i,j-2,k,2,im,jm,km,fm2)
+    if(j < jm-2 .or. apply_up   == 0) call stored_diff_flux_at_xyphysical(i,j+3,k,2,im,jm,km,fp3)
+    if(j > 2    .or. apply_down == 0) call stored_diff_flux_at_xyphysical(i,j-3,k,2,im,jm,km,fm3)
+
+    call deriv6_x_physical(j,jm,apply_down,apply_up,f0,fp1,fm1,fp2,fm2,fp3,fm3,df)
+    do m=2,5
+      qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) + df(m)
+    enddo
+  end subroutine diffusion_rhs_y_xyphysical_stored_global_kernel
+
+  attributes(global) subroutine diffusion_rhs_z_xyphysical_stored_global_kernel(im,jm,km,is,ie,js,je,ks,ke)
+    use commarray_gpu, only: qrhs_d
+    implicit none
+    integer,value :: im,jm,km,is,ie,js,je,ks,ke
+    integer :: i,j,k,m
+    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = blockIdx%y - 1
+    k = (blockIdx%z - 1) * blockDim%z + threadIdx%z - 1
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    if(k < ks .or. k > ke) return
+
+    call stored_diff_flux_at_xyphysical(i,j,k+1,3,im,jm,km,fp1)
+    call stored_diff_flux_at_xyphysical(i,j,k-1,3,im,jm,km,fm1)
+    call stored_diff_flux_at_xyphysical(i,j,k+2,3,im,jm,km,fp2)
+    call stored_diff_flux_at_xyphysical(i,j,k-2,3,im,jm,km,fm2)
+    call stored_diff_flux_at_xyphysical(i,j,k+3,3,im,jm,km,fp3)
+    call stored_diff_flux_at_xyphysical(i,j,k-3,3,im,jm,km,fm3)
+    do m=2,5
+      qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) + deriv6(fp1(m),fm1(m),fp2(m),fm2(m),fp3(m),fm3(m))
+    enddo
+  end subroutine diffusion_rhs_z_xyphysical_stored_global_kernel
 end module solver_gpu

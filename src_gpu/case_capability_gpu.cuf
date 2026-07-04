@@ -1,0 +1,25 @@
+module case_capability_gpu
+  implicit none
+  integer,parameter :: GPU_SOURCE_NONE=0
+  integer,parameter :: GPU_SOURCE_CHANNEL=1
+  integer,parameter :: GPU_SOURCE_RTI=2
+contains
+  integer function gpu_case_source_kind()
+    use commvar, only: flowtype,lihomo
+    implicit none
+
+    gpu_case_source_kind = GPU_SOURCE_NONE
+    select case(trim(flowtype))
+    case('channel')
+      if(lihomo) gpu_case_source_kind = GPU_SOURCE_CHANNEL
+    case('rti')
+      gpu_case_source_kind = GPU_SOURCE_RTI
+    end select
+  end function gpu_case_source_kind
+
+  logical function gpu_case_has_source()
+    implicit none
+
+    gpu_case_has_source = gpu_case_source_kind() /= GPU_SOURCE_NONE
+  end function gpu_case_has_source
+end module case_capability_gpu

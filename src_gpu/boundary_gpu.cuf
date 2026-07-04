@@ -2,51 +2,163 @@ module boundary_gpu
   use cudafor
   implicit none
   integer,parameter :: GPU_BC_NONE=0, GPU_BC_WALL_ISOTHERMAL_NOSLIP=41, &
-                       GPU_BC_ZEROEXTRAP=50, GPU_BC_SYMMETRY=60
+                       GPU_BC_WALL_ADIABATIC_NOSLIP=42, &
+                       GPU_BC_WALL_SLIP_ISOTHERMAL=411, &
+                       GPU_BC_WALL_SLIP_ADIABATIC=421, &
+                       GPU_BC_ZEROEXTRAP=50, GPU_BC_SYMMETRY=60, &
+                       GPU_BC_FIXED=31
 contains
-  integer function gpu_physical_boundary_axis()
+  integer function gpu_bc_kind_for_axis(axis)
+    use bc, only: bctype
+    implicit none
+    integer,intent(in) :: axis
+
+    select case(axis)
+    case(1)
+      gpu_bc_kind_for_axis = bctype(1)
+    case(2)
+      gpu_bc_kind_for_axis = bctype(3)
+    case(3)
+      gpu_bc_kind_for_axis = bctype(5)
+    case default
+      gpu_bc_kind_for_axis = GPU_BC_NONE
+    end select
+  end function gpu_bc_kind_for_axis
+
+  integer function gpu_bc_lower_kind_for_axis(axis)
+    use bc, only: bctype
+    implicit none
+    integer,intent(in) :: axis
+
+    select case(axis)
+    case(1)
+      gpu_bc_lower_kind_for_axis = bctype(1)
+    case(2)
+      gpu_bc_lower_kind_for_axis = bctype(3)
+    case(3)
+      gpu_bc_lower_kind_for_axis = bctype(5)
+    case default
+      gpu_bc_lower_kind_for_axis = GPU_BC_NONE
+    end select
+  end function gpu_bc_lower_kind_for_axis
+
+  integer function gpu_bc_upper_kind_for_axis(axis)
+    use bc, only: bctype
+    implicit none
+    integer,intent(in) :: axis
+
+    select case(axis)
+    case(1)
+      gpu_bc_upper_kind_for_axis = bctype(2)
+    case(2)
+      gpu_bc_upper_kind_for_axis = bctype(4)
+    case(3)
+      gpu_bc_upper_kind_for_axis = bctype(6)
+    case default
+      gpu_bc_upper_kind_for_axis = GPU_BC_NONE
+    end select
+  end function gpu_bc_upper_kind_for_axis
+
+  logical function gpu_bc_supported_on_axis(kind,axis)
+    implicit none
+    integer,intent(in) :: kind,axis
+
+    gpu_bc_supported_on_axis = .false.
+    select case(kind)
+    case(GPU_BC_ZEROEXTRAP,GPU_BC_SYMMETRY,GPU_BC_WALL_ISOTHERMAL_NOSLIP)
+      gpu_bc_supported_on_axis = axis >= 1 .and. axis <= 3
+    case(GPU_BC_WALL_ADIABATIC_NOSLIP)
+      gpu_bc_supported_on_axis = axis == 1 .or. axis == 2
+    case(GPU_BC_WALL_SLIP_ISOTHERMAL)
+      gpu_bc_supported_on_axis = axis == 2
+    case(GPU_BC_WALL_SLIP_ADIABATIC)
+      gpu_bc_supported_on_axis = axis == 2
+    case(GPU_BC_FIXED)
+      gpu_bc_supported_on_axis = axis == 2
+    end select
+  end function gpu_bc_supported_on_axis
+
+  logical function gpu_periodic_boundary_case()
     use bc, only: bctype
     use commvar, only: lihomo,ljhomo,lkhomo
     implicit none
 
+    gpu_periodic_boundary_case = lihomo .and. ljhomo .and. lkhomo .and. all(bctype(1:6) == 1)
+  end function gpu_periodic_boundary_case
+
+  logical function gpu_axis_is_physical(axis)
+    use commvar, only: lihomo,ljhomo,lkhomo
+    implicit none
+    integer,intent(in) :: axis
+
+    gpu_axis_is_physical = .false.
+    select case(axis)
+    case(1)
+      gpu_axis_is_physical = .not.lihomo
+    case(2)
+      gpu_axis_is_physical = .not.ljhomo
+    case(3)
+      gpu_axis_is_physical = .not.lkhomo
+    end select
+  end function gpu_axis_is_physical
+
+  logical function gpu_ldc_boundary_case_pending()
+    use bc, only: bctype
+    use commvar, only: flowtype,lihomo,ljhomo,lkhomo
+    implicit none
+
+    gpu_ldc_boundary_case_pending = trim(flowtype) == 'ldcavity' .and. &
+         (.not.lihomo) .and. (.not.ljhomo) .and. lkhomo .and. &
+         bctype(1) == GPU_BC_WALL_ISOTHERMAL_NOSLIP .and. &
+         bctype(2) == GPU_BC_WALL_ISOTHERMAL_NOSLIP .and. &
+         bctype(3) == GPU_BC_WALL_ISOTHERMAL_NOSLIP .and. &
+         bctype(4) == GPU_BC_NONE .and. &
+         bctype(5) == 1 .and. bctype(6) == 1
+  end function gpu_ldc_boundary_case_pending
+
+  logical function gpu_physical_boundary_axis_supported(axis)
+    use bc, only: bctype
+    use commvar, only: lihomo,ljhomo,lkhomo
+    implicit none
+    integer,intent(in) :: axis
+    integer :: kind
+
+    gpu_physical_boundary_axis_supported = .false.
+    kind = gpu_bc_kind_for_axis(axis)
+    if(.not.gpu_bc_supported_on_axis(kind,axis)) return
+
+    select case(axis)
+    case(1)
+      gpu_physical_boundary_axis_supported = (.not.lihomo) .and. ljhomo .and. lkhomo .and. &
+           bctype(1) == bctype(2) .and. all(bctype(3:6) == 1)
+    case(2)
+      gpu_physical_boundary_axis_supported = lihomo .and. (.not.ljhomo) .and. lkhomo .and. &
+           bctype(3) == bctype(4) .and. all(bctype(1:2) == 1) .and. all(bctype(5:6) == 1)
+    case(3)
+      gpu_physical_boundary_axis_supported = lihomo .and. ljhomo .and. (.not.lkhomo) .and. &
+           bctype(5) == bctype(6) .and. all(bctype(1:4) == 1)
+    end select
+  end function gpu_physical_boundary_axis_supported
+
+  integer function gpu_physical_boundary_axis()
+    implicit none
+    integer :: axis
+
     gpu_physical_boundary_axis = 0
-    if((.not.lihomo) .and. ljhomo .and. lkhomo .and. &
-       bctype(1) == bctype(2) .and. &
-       (bctype(1) == GPU_BC_ZEROEXTRAP .or. bctype(1) == GPU_BC_SYMMETRY .or. &
-        bctype(1) == GPU_BC_WALL_ISOTHERMAL_NOSLIP) .and. &
-       all(bctype(3:6) == 1)) then
-      gpu_physical_boundary_axis = 1
-    elseif(lihomo .and. (.not.ljhomo) .and. lkhomo .and. &
-       bctype(3) == bctype(4) .and. &
-       (bctype(3) == GPU_BC_ZEROEXTRAP .or. bctype(3) == GPU_BC_SYMMETRY .or. &
-        bctype(3) == GPU_BC_WALL_ISOTHERMAL_NOSLIP) .and. &
-       all(bctype(1:2) == 1) .and. all(bctype(5:6) == 1)) then
-      gpu_physical_boundary_axis = 2
-    elseif(lihomo .and. ljhomo .and. (.not.lkhomo) .and. &
-       bctype(5) == bctype(6) .and. &
-       (bctype(5) == GPU_BC_ZEROEXTRAP .or. bctype(5) == GPU_BC_SYMMETRY .or. &
-        bctype(5) == GPU_BC_WALL_ISOTHERMAL_NOSLIP) .and. &
-       all(bctype(1:4) == 1)) then
-      gpu_physical_boundary_axis = 3
-    endif
+    do axis=1,3
+      if(gpu_physical_boundary_axis_supported(axis)) then
+        gpu_physical_boundary_axis = axis
+        return
+      endif
+    enddo
   end function gpu_physical_boundary_axis
 
   integer function gpu_physical_boundary_kind()
-    use bc, only: bctype
     implicit none
     integer :: axis
 
     axis = gpu_physical_boundary_axis()
-    select case(axis)
-    case(1)
-      gpu_physical_boundary_kind = bctype(1)
-    case(2)
-      gpu_physical_boundary_kind = bctype(3)
-    case(3)
-      gpu_physical_boundary_kind = bctype(5)
-    case default
-      gpu_physical_boundary_kind = GPU_BC_NONE
-    end select
+    gpu_physical_boundary_kind = gpu_bc_kind_for_axis(axis)
   end function gpu_physical_boundary_kind
 
   logical function gpu_uses_physical_boundary()
@@ -54,6 +166,34 @@ contains
 
     gpu_uses_physical_boundary = gpu_physical_boundary_axis() /= 0
   end function gpu_uses_physical_boundary
+
+  logical function gpu_boundary_case_supported()
+    implicit none
+
+    gpu_boundary_case_supported = gpu_periodic_boundary_case() .or. gpu_uses_physical_boundary()
+  end function gpu_boundary_case_supported
+
+  subroutine gpu_physical_boundary_apply_mask(axis,apply_lower,apply_upper)
+    use mpi, only: MPI_PROC_NULL
+    use parallel, only: mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
+    implicit none
+    integer,intent(in) :: axis
+    integer,intent(out) :: apply_lower,apply_upper
+
+    apply_lower = 0
+    apply_upper = 0
+    select case(axis)
+    case(1)
+      apply_lower = merge(1,0,mpileft == MPI_PROC_NULL)
+      apply_upper = merge(1,0,mpiright == MPI_PROC_NULL)
+    case(2)
+      apply_lower = merge(1,0,mpidown == MPI_PROC_NULL)
+      apply_upper = merge(1,0,mpiup == MPI_PROC_NULL)
+    case(3)
+      apply_lower = merge(1,0,mpiback == MPI_PROC_NULL)
+      apply_upper = merge(1,0,mpifront == MPI_PROC_NULL)
+    end select
+  end subroutine gpu_physical_boundary_apply_mask
 
   integer function gpu_zeroextrap_axis()
     implicit none
@@ -376,6 +516,213 @@ contains
     endif
   end subroutine wall_isothermal_noslip_y_kernel
 
+  attributes(global) subroutine ldc_top_lid_y_kernel(im,jm,km,hm,const2,const6,apply_up)
+    use commarray_gpu, only: prs_d,tmp_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_up
+    real(8),value :: const2,const6
+    integer :: id,i,k,nplane
+    real(8) :: rho,prs
+
+    if(apply_up == 0) return
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (im + 1) * (km + 1)
+    if(id >= nplane) return
+    i = mod(id,im+1)
+    k = id/(im+1)
+
+    prs = extrap2(prs_d(i,jm-1,k),prs_d(i,jm-2,k))
+    rho = prs*const2
+    tmp_d(i,jm,k) = 1.d0
+    call set_q_from_primitive(i,jm,k,rho,1.d0,0.d0,0.d0,prs,const6)
+    call set_qrhs_zero(i,jm,k)
+  end subroutine ldc_top_lid_y_kernel
+
+  attributes(global) subroutine wall_adiabatic_noslip_x_kernel(im,jm,km,hm,const2,const6, &
+                                                               apply_left,apply_right)
+    use commarray_gpu, only: prs_d,tmp_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_left,apply_right
+    real(8),value :: const2,const6
+    integer :: id,j,k,nplane
+    real(8) :: rho,prs,tmp
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (jm + 1) * (km + 1)
+    if(id >= nplane) return
+    j = mod(id,jm+1)
+    k = id/(jm+1)
+
+    if(apply_left /= 0) then
+      prs = extrap2(prs_d(1,j,k),prs_d(2,j,k))
+      tmp = extrap2(tmp_d(1,j,k),tmp_d(2,j,k))
+      rho = prs/tmp*const2
+      tmp_d(0,j,k) = tmp
+      call set_q_from_primitive(0,j,k,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_qrhs_zero(0,j,k)
+    endif
+
+    if(apply_right /= 0) then
+      prs = extrap2(prs_d(im-1,j,k),prs_d(im-2,j,k))
+      tmp = extrap2(tmp_d(im-1,j,k),tmp_d(im-2,j,k))
+      rho = prs/tmp*const2
+      tmp_d(im,j,k) = tmp
+      call set_q_from_primitive(im,j,k,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_qrhs_zero(im,j,k)
+    endif
+  end subroutine wall_adiabatic_noslip_x_kernel
+
+  attributes(global) subroutine wall_adiabatic_noslip_y_kernel(im,jm,km,hm,const2,const6, &
+                                                               apply_down,apply_up)
+    use commarray_gpu, only: prs_d,tmp_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_down,apply_up
+    real(8),value :: const2,const6
+    integer :: id,i,k,nplane
+    real(8) :: rho,prs,tmp
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (im + 1) * (km + 1)
+    if(id >= nplane) return
+    i = mod(id,im+1)
+    k = id/(im+1)
+
+    if(apply_down /= 0) then
+      prs = extrap2(prs_d(i,1,k),prs_d(i,2,k))
+      tmp = extrap2(tmp_d(i,1,k),tmp_d(i,2,k))
+      rho = prs/tmp*const2
+      tmp_d(i,0,k) = tmp
+      call set_q_from_primitive(i,0,k,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_qrhs_zero(i,0,k)
+    endif
+
+    if(apply_up /= 0) then
+      prs = extrap2(prs_d(i,jm-1,k),prs_d(i,jm-2,k))
+      tmp = extrap2(tmp_d(i,jm-1,k),tmp_d(i,jm-2,k))
+      rho = prs/tmp*const2
+      tmp_d(i,jm,k) = tmp
+      call set_q_from_primitive(i,jm,k,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_qrhs_zero(i,jm,k)
+    endif
+  end subroutine wall_adiabatic_noslip_y_kernel
+
+  attributes(global) subroutine wall_slip_isothermal_y_kernel(im,jm,km,hm,const2,const6, &
+                                                              xslip,twall_down,twall_up, &
+                                                              apply_down,apply_up)
+    use commarray_gpu, only: vel_d,prs_d,tmp_d,x_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_down,apply_up
+    real(8),value :: const2,const6,xslip,twall_down,twall_up
+    integer :: id,i,k,nplane
+    real(8) :: rho,uu,vv,ww,prs,tmp
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (im + 1) * (km + 1)
+    if(id >= nplane) return
+    i = mod(id,im+1)
+    k = id/(im+1)
+
+    if(apply_down /= 0) then
+      prs = extrap2(prs_d(i,1,k),prs_d(i,2,k))
+      if(x_d(i,0,k,1) <= xslip) then
+        uu = extrap2(vel_d(i,1,k,1),vel_d(i,2,k,1))
+        vv = 0.d0
+        ww = 0.d0
+        tmp = extrap2(tmp_d(i,1,k),tmp_d(i,2,k))
+      else
+        uu = 0.d0
+        vv = 0.d0
+        ww = 0.d0
+        tmp = twall_down
+      endif
+      rho = prs/tmp*const2
+      tmp_d(i,0,k) = tmp
+      call set_q_from_primitive(i,0,k,rho,uu,vv,ww,prs,const6)
+      call set_qrhs_zero(i,0,k)
+    endif
+
+    if(apply_up /= 0) then
+      prs = extrap2(prs_d(i,jm-1,k),prs_d(i,jm-2,k))
+      rho = prs/twall_up*const2
+      tmp_d(i,jm,k) = twall_up
+      call set_q_from_primitive(i,jm,k,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_qrhs_zero(i,jm,k)
+    endif
+  end subroutine wall_slip_isothermal_y_kernel
+
+  attributes(global) subroutine wall_slip_adiabatic_y_kernel(im,jm,km,hm,const2,const6, &
+                                                             apply_down,apply_up)
+    use commarray_gpu, only: vel_d,prs_d,tmp_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_down,apply_up
+    real(8),value :: const2,const6
+    integer :: id,i,k,nplane
+    real(8) :: rho,uu,vv,ww,prs,tmp
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (im + 1) * (km + 1)
+    if(id >= nplane) return
+    i = mod(id,im+1)
+    k = id/(im+1)
+
+    if(apply_down /= 0) then
+      prs = extrap2(prs_d(i,1,k),prs_d(i,2,k))
+      tmp = extrap2(tmp_d(i,1,k),tmp_d(i,2,k))
+      uu = extrap2(vel_d(i,1,k,1),vel_d(i,2,k,1))
+      vv = 0.d0
+      ww = 0.d0
+      rho = prs/tmp*const2
+      tmp_d(i,0,k) = tmp
+      call set_q_from_primitive(i,0,k,rho,uu,vv,ww,prs,const6)
+      call set_qrhs_zero(i,0,k)
+    endif
+
+    if(apply_up /= 0) then
+      prs = extrap2(prs_d(i,jm-1,k),prs_d(i,jm-2,k))
+      tmp = extrap2(tmp_d(i,jm-1,k),tmp_d(i,jm-2,k))
+      uu = extrap2(vel_d(i,jm-1,k,1),vel_d(i,jm-2,k,1))
+      vv = extrap2(vel_d(i,jm-1,k,2),vel_d(i,jm-2,k,2))
+      ww = 0.d0
+      rho = prs/tmp*const2
+      tmp_d(i,jm,k) = tmp
+      call set_q_from_primitive(i,jm,k,rho,uu,vv,ww,prs,const6)
+      call set_qrhs_zero(i,jm,k)
+    endif
+  end subroutine wall_slip_adiabatic_y_kernel
+
+  attributes(global) subroutine fixed_rti_y_kernel(im,jm,km,hm,const2,const6,apply_down,apply_up)
+    use commarray_gpu, only: tmp_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_down,apply_up
+    real(8),value :: const2,const6
+    integer :: id,i,k,nplane
+    real(8) :: rho,prs,tmp
+
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (im + 1) * (km + 1)
+    if(id >= nplane) return
+    i = mod(id,im+1)
+    k = id/(im+1)
+
+    if(apply_down /= 0) then
+      rho = 2.d0
+      prs = 1.d0
+      tmp = prs/rho*const2
+      tmp_d(i,0,k) = tmp
+      call set_q_from_primitive(i,0,k,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_qrhs_zero(i,0,k)
+    endif
+
+    if(apply_up /= 0) then
+      rho = 1.d0
+      prs = 2.5d0
+      tmp = prs/rho*const2
+      tmp_d(i,jm,k) = tmp
+      call set_q_from_primitive(i,jm,k,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_qrhs_zero(i,jm,k)
+    endif
+  end subroutine fixed_rti_y_kernel
+
   attributes(global) subroutine wall_isothermal_noslip_z_kernel(im,jm,km,hm,const2,const6, &
                                                                 twall_back,twall_front, &
                                                                 apply_back,apply_front)
@@ -449,17 +796,16 @@ contains
   end subroutine symmetry_z_kernel
 
   subroutine apply_boundary_conditions_gpu()
-    use mpi, only: MPI_PROC_NULL
     use commvar, only: im,jm,km,hm,const2,const6
-    use bc, only: twall
+    use bc, only: twall,xslip
     use gpu_check, only: sync_after_kernel
-    use parallel, only: mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
     implicit none
     type(dim3) :: block,grid
-    integer :: n,axis,kind
+    integer :: n,axis,kind,apply_lower,apply_upper
 
     axis = gpu_physical_boundary_axis()
     kind = gpu_physical_boundary_kind()
+    call gpu_physical_boundary_apply_mask(axis,apply_lower,apply_upper)
 
     select case(axis)
     case(0)
@@ -470,20 +816,21 @@ contains
       grid = dim3((n + block%x - 1)/block%x,1,1)
       if(kind == GPU_BC_ZEROEXTRAP) then
         call zeroextrap_x_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
-                                                 merge(1,0,mpileft == MPI_PROC_NULL), &
-                                                 merge(1,0,mpiright == MPI_PROC_NULL))
+                                                 apply_lower,apply_upper)
         call sync_after_kernel('zeroextrap_x_kernel')
       elseif(kind == GPU_BC_SYMMETRY) then
         call symmetry_x_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
-                                               merge(1,0,mpileft == MPI_PROC_NULL), &
-                                               merge(1,0,mpiright == MPI_PROC_NULL))
+                                               apply_lower,apply_upper)
         call sync_after_kernel('symmetry_x_kernel')
       elseif(kind == GPU_BC_WALL_ISOTHERMAL_NOSLIP) then
         call wall_isothermal_noslip_x_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
                                                              twall(1),twall(2), &
-                                                             merge(1,0,mpileft == MPI_PROC_NULL), &
-                                                             merge(1,0,mpiright == MPI_PROC_NULL))
+                                                             apply_lower,apply_upper)
         call sync_after_kernel('wall_isothermal_noslip_x_kernel')
+      elseif(kind == GPU_BC_WALL_ADIABATIC_NOSLIP) then
+        call wall_adiabatic_noslip_x_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+                                                            apply_lower,apply_upper)
+        call sync_after_kernel('wall_adiabatic_noslip_x_kernel')
       endif
     case(2)
       block = dim3(256,1,1)
@@ -491,20 +838,34 @@ contains
       grid = dim3((n + block%x - 1)/block%x,1,1)
       if(kind == GPU_BC_ZEROEXTRAP) then
         call zeroextrap_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
-                                                 merge(1,0,mpidown == MPI_PROC_NULL), &
-                                                 merge(1,0,mpiup == MPI_PROC_NULL))
+                                                 apply_lower,apply_upper)
         call sync_after_kernel('zeroextrap_y_kernel')
       elseif(kind == GPU_BC_SYMMETRY) then
         call symmetry_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
-                                               merge(1,0,mpidown == MPI_PROC_NULL), &
-                                               merge(1,0,mpiup == MPI_PROC_NULL))
+                                               apply_lower,apply_upper)
         call sync_after_kernel('symmetry_y_kernel')
       elseif(kind == GPU_BC_WALL_ISOTHERMAL_NOSLIP) then
         call wall_isothermal_noslip_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
                                                              twall(3),twall(4), &
-                                                             merge(1,0,mpidown == MPI_PROC_NULL), &
-                                                             merge(1,0,mpiup == MPI_PROC_NULL))
+                                                             apply_lower,apply_upper)
         call sync_after_kernel('wall_isothermal_noslip_y_kernel')
+      elseif(kind == GPU_BC_WALL_ADIABATIC_NOSLIP) then
+        call wall_adiabatic_noslip_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+                                                            apply_lower,apply_upper)
+        call sync_after_kernel('wall_adiabatic_noslip_y_kernel')
+      elseif(kind == GPU_BC_WALL_SLIP_ISOTHERMAL) then
+        call wall_slip_isothermal_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+                                                           xslip,twall(3),twall(4), &
+                                                           apply_lower,apply_upper)
+        call sync_after_kernel('wall_slip_isothermal_y_kernel')
+      elseif(kind == GPU_BC_WALL_SLIP_ADIABATIC) then
+        call wall_slip_adiabatic_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+                                                          apply_lower,apply_upper)
+        call sync_after_kernel('wall_slip_adiabatic_y_kernel')
+      elseif(kind == GPU_BC_FIXED) then
+        call fixed_rti_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+                                                apply_lower,apply_upper)
+        call sync_after_kernel('fixed_rti_y_kernel')
       endif
     case(3)
       block = dim3(256,1,1)
@@ -512,21 +873,48 @@ contains
       grid = dim3((n + block%x - 1)/block%x,1,1)
       if(kind == GPU_BC_ZEROEXTRAP) then
         call zeroextrap_z_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
-                                                 merge(1,0,mpiback == MPI_PROC_NULL), &
-                                                 merge(1,0,mpifront == MPI_PROC_NULL))
+                                                 apply_lower,apply_upper)
         call sync_after_kernel('zeroextrap_z_kernel')
       elseif(kind == GPU_BC_SYMMETRY) then
         call symmetry_z_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
-                                               merge(1,0,mpiback == MPI_PROC_NULL), &
-                                               merge(1,0,mpifront == MPI_PROC_NULL))
+                                               apply_lower,apply_upper)
         call sync_after_kernel('symmetry_z_kernel')
       elseif(kind == GPU_BC_WALL_ISOTHERMAL_NOSLIP) then
         call wall_isothermal_noslip_z_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
                                                              twall(5),twall(6), &
-                                                             merge(1,0,mpiback == MPI_PROC_NULL), &
-                                                             merge(1,0,mpifront == MPI_PROC_NULL))
+                                                             apply_lower,apply_upper)
         call sync_after_kernel('wall_isothermal_noslip_z_kernel')
       endif
     end select
   end subroutine apply_boundary_conditions_gpu
+
+  subroutine apply_ldc_boundary_conditions_gpu()
+    use commvar, only: im,jm,km,hm,const2,const6
+    use bc, only: twall
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    type(dim3) :: block,grid
+    integer :: n,apply_left,apply_right,apply_down,apply_up
+
+    call gpu_physical_boundary_apply_mask(1,apply_left,apply_right)
+    call gpu_physical_boundary_apply_mask(2,apply_down,apply_up)
+
+    block = dim3(256,1,1)
+    n = (jm + 1) * (km + 1)
+    grid = dim3((n + block%x - 1)/block%x,1,1)
+    call wall_isothermal_noslip_x_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+                                                         twall(1),twall(2), &
+                                                         apply_left,apply_right)
+    call sync_after_kernel('ldc_wall_isothermal_noslip_x_kernel')
+
+    n = (im + 1) * (km + 1)
+    grid = dim3((n + block%x - 1)/block%x,1,1)
+    call wall_isothermal_noslip_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+                                                         twall(3),twall(4), &
+                                                         apply_down,0)
+    call sync_after_kernel('ldc_wall_isothermal_noslip_y_down_kernel')
+
+    call ldc_top_lid_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6,apply_up)
+    call sync_after_kernel('ldc_top_lid_y_kernel')
+  end subroutine apply_ldc_boundary_conditions_gpu
 end module boundary_gpu

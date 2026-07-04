@@ -23,7 +23,7 @@ module gridgeneration
   subroutine gridgen
     !
     use parallel, only : mpirank
-    use commvar,  only : flowtype,lreadgrid,nondimen,gridfile,ref_len
+    use commvar,  only : flowtype,lreadgrid,nondimen,gridfile,ref_len,ka
     use readwrite,only : readgrid,writegrid,xdmfwriter
     use userdefine,only: udf_grid
     !
@@ -57,9 +57,17 @@ module gridgeneration
       elseif(trim(flowtype)=='h2supersonic') then
         call gridsupersonicjet
       elseif(trim(flowtype)=='rti') then
-        call gridcube(0.25d0,1.d0,0.d0)
+        if(ka==0) then
+          call gridcube(0.25d0,1.d0,0.d0)
+        else
+          call gridcube(0.25d0,1.d0,0.25d0)
+        endif
       elseif(trim(flowtype)=='ldcavity') then
-        call gridcube(1.d0,1.d0,0.d0)
+        if(ka==0) then
+          call gridcube(1.d0,1.d0,0.d0)
+        else
+          call gridcube(1.d0,1.d0,1.d0)
+        endif
       else
         !call gridcube(0.03d0,0.03d0,0.03d0)
         call udf_grid
@@ -242,20 +250,33 @@ module gridgeneration
     !
     ! local data
     integer :: i,j,k
+    real(8) :: dx,dy,dz
+    !
+    dx=lx/real(ia,8)
+    if(ja==0) then
+      dy=0.d0
+    else
+      dy=ly/real(ja,8)
+    endif
+    if(ka==0) then
+      dz=0.d0
+    else
+      dz=lz/real(ka,8)
+    endif
     !
     do k=0,km
     do j=0,jm
     do i=0,im
-      x(i,j,k,1)=lx/real(ia,8)*real(i+ig0,8)
+      x(i,j,k,1)=dx*real(i+ig0,8)
       if(ja==0) then
         x(i,j,k,2)=ly
       else
-        x(i,j,k,2)=ly/real(ja,8)*real(j+jg0,8)
+        x(i,j,k,2)=dy*real(j+jg0,8)
       endif
       if(ka==0) then
         x(i,j,k,3)=0.d0
       else
-        x(i,j,k,3)=lz/real(ka,8)*real(k+kg0,8)
+        x(i,j,k,3)=dz*real(k+kg0,8)
       endif
       !
     enddo
