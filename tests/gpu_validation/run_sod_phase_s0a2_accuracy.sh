@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+export OUT_DIR="${OUT_DIR:-$ROOT_DIR/tests/gpu_validation/out/sod_phase_s0a2_accuracy}"
+export GRID="${GRID:-800,5,5}"
+export MAXSTEP="${MAXSTEP:-400}"
+export DELTAT="${DELTAT:-5.d-4}"
+export COMPARE_EXACT=t
+export EXACT_ANALYSIS_HALF_WIDTH="${EXACT_ANALYSIS_HALF_WIDTH:-2.5}"
+export EXACT_EXCLUDE_CELLS="${EXACT_EXCLUDE_CELLS:-3.0}"
+export EXACT_MAX_SMOOTH_L1="${EXACT_MAX_SMOOTH_L1:-1e-3}"
+export EXACT_MAX_SMOOTH_L2="${EXACT_MAX_SMOOTH_L2:-6e-3}"
+export EXACT_MAX_SMOOTH_LINF="${EXACT_MAX_SMOOTH_LINF:-6e-2}"
+export EXACT_MAX_BOUND_VIOLATION="${EXACT_MAX_BOUND_VIOLATION:-2e-2}"
+export EXACT_MAX_CONTACT_THICKNESS_CELLS="${EXACT_MAX_CONTACT_THICKNESS_CELLS:-4.0}"
+export EXACT_MAX_SHOCK_THICKNESS_CELLS="${EXACT_MAX_SHOCK_THICKNESS_CELLS:-3.0}"
+export EXACT_MAX_POSITION_ERROR_CELLS="${EXACT_MAX_POSITION_ERROR_CELLS:-1.0}"
+
+exec "$ROOT_DIR/tests/gpu_validation/run_sod_phase_s0a2_compare.sh"

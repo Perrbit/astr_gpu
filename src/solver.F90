@@ -187,7 +187,7 @@ module solver
     use commarray, only : qrhs,x,q
     use commvar,   only : flowtype,conschm,diffterm,im,jm,             &
                           recon_schem,limmbou,lchardecomp,lihomo
-    use commcal,   only : ShockSolid,ducrossensor
+    use commcal,   only : ShockSolid,ducrossensor,shock_sensor_validation_enabled
     use comsolver, only : gradcal
     use userdefine,only : udf_src
     use tecio
@@ -224,7 +224,8 @@ module solver
         !
         if(conschm(4:4)=='e') then
           !
-          if(recon_schem==5 .or. lchardecomp) call ducrossensor(timerept=ltimrpt)
+          if(recon_schem==5 .or. lchardecomp .or. shock_sensor_validation_enabled()) &
+            call ducrossensor(timerept=ltimrpt)
           !
           call convrsduwd(timerept=ltimrpt)
           !
@@ -833,6 +834,9 @@ module solver
     elseif(npdcj==3) then
       jss=-hm
       jee=jm+hm
+    elseif(npdcj==4) then
+      jss=0
+      jee=jm
     else
       stop ' !! error 2 @ subroutjne convrsduwd'
     endif
@@ -1025,6 +1029,9 @@ module solver
     elseif(npdck==3) then
       kss=-hm
       kee=km+hm
+    elseif(npdck==4) then
+      kss=0
+      kee=km
     else
       stop ' !! error 2 @ subroutkne convrsduwd'
     endif

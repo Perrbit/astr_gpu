@@ -192,7 +192,7 @@ GPU-authoritative fields include, in stages:
 - `qsave`
 - `rho`, `vel`, `prs`, `tmp`
 - geometry arrays required by GPU kernels
-- filter ping-pong arrays
+- filter ping-pong arrays, with an optional single-scalar-field work-array filter path for memory-constrained runs
 - diffusion flux arrays
 - statistics partial sums
 - future species, turbulence, chemistry, and immersed-boundary device data
@@ -206,6 +206,34 @@ Whole-field transfers are allowed only at explicit boundaries:
 - debugging or validation hooks explicitly marked as such
 
 Per-kernel or per-module whole-field D2H/H2D bridges are outside the architecture.
+
+#### 4.2.1 Explicit Filter Temporary Storage Policy
+
+The current full-variable explicit-filter ping-pong implementation remains the default and validated path. It must be preserved as a fallback because it is simple, bandwidth-friendly, and already covered by the TGV, `2dvort`, HIT, boundary-slice, channel, LDC, and RTI validation history.
+
+Add a second optional filter implementation for memory-constrained cases: a single 3-D scalar work array reused across conservative variables. This is not a replacement for the full `q` ping-pong path. It is an additional backend option with the same numerical operator and the same halo semantics.
+
+Target execution model:
+
+```text
+for ivar = 1, numq
+  filter one conservative component through q(:,:,:,ivar) and work(:,:,:)
+  write the filtered result back to q(:,:,:,ivar)
+end for
+```
+
+The optional work-array path must follow these rules:
+
+- Preserve the explicit tenth-order center-filter coefficients and CPU `filterq` update timing.
+- Preserve dataswap-compatible filter halo semantics: exchange or locally refresh exactly `hm` halo layers without qswap endpoint averaging.
+- Keep current full-variable ping-pong kernels available and selectable until the work-array path has comparable validation coverage.
+- Do not implement unsafe direct in-place overwrite of a 10th-order stencil field. A point may be overwritten only after no later stencil read needs its old value; this rule is difficult to maintain across GPU blocks and MPI faces, so it is not the near-term path.
+- Validate with old-GPU/full-ping-pong versus new-GPU/work-array comparisons in addition to CPU/GPU comparisons.
+
+Expected tradeoff:
+
+- Memory: extra filter storage decreases from one full `numq` conservative field set to one scalar 3-D field, about `1/numq` of the current ping-pong temporary storage.
+- Performance: kernel launches and repeated passes may increase, especially for small `numq=5`; this is acceptable only as an optional low-memory path until profiling proves otherwise.
 
 ### 4.3 CPU-Owned Output Boundary
 
@@ -626,19 +654,155 @@ Subphases:
   - S0-A1 validation oracle: compare same-input CPU/GPU statistics with `STATS_ATOL=1e-10`, `STATS_RTOL=1e-10`, and compare output-boundary fields with `FIELD_ATOL=1e-10`, `FIELD_RTOL=1e-10`. At minimum, report max differences for `q(:,:,:,1:5)`. If a specific, explainable floating-point difference appears, tolerances may be revisited to `1e-9` based on evidence rather than preemptively.
   - S0-A1 decomposition boundary: keep `lchardecomp=.false.`. Characteristic decomposition is a later optional gate, not part of the first shock-format implementation.
   - S0-A1 sensor boundary: port shock sensor logic only if the selected explicit reconstruction requires it; do not pull Ducros/MP-LD complexity into the first gate unless that reconstruction is explicitly chosen.
-  - Later S0-A reconstruction gates should upgrade to WENO5/MP before MP-LD or sensor-coupled formats.
-  - Later candidates include Shu-Osher and Riemann2D after dimensionality and boundary support are screened.
+  - S0-A1 status: implemented and passed for `NP=1`. The canonical `GRID=200,8,8`, 20-step CPU/GPU comparison passed statistics and full-field checks at `1e-10`; maximum conservative-field difference was `q5=1.7763568394002505e-15`.
+  - S0-A2 status: implemented and passed for `NP=1`. It retains the S0-A1 periodic, no-diffusion, no-filter, no-characteristic-decomposition contract and sets `recon_schem=1`. CPU `recons_exp` uses WENO7 on these periodic interfaces. The canonical 20-step run passed at `1e-10`, with maximum conservative-field difference `q5=1.3322676295501878e-15`.
+  - S0-A2 accuracy status: implemented and passed for CPU and GPU using `GRID=800,5,5`, `deltat=5.d-4`, `maxstep=400`, and the standard ideal-gas Sod exact solution. The gate separately measures smooth-region normalized errors, primitive-variable bound violations, contact/shock 10%-90% thickness, and wave-position error. The calibrated limits are `L1<=1e-3`, `L2<=6e-3`, `Linf<=6e-2`, bound violation `<=2e-2`, contact thickness `<=4` cells, shock thickness `<=3` cells, and position error `<=1` cell. The first passing run measured maxima `7.1864e-4`, `4.0087e-3`, `4.6338e-2`, `1.3889e-2`, `2.9780`, `2.1989`, and `0.7527`, respectively.
+  - S0-A3 status: implemented and passed for `NP=1` with `recon_schem=3` MP7 under the same controlled periodic contract. The 20-step comparison passed at `1e-10`, with maximum conservative-field difference `q5=1.3323e-15`. The unchanged exact-solution thresholds also passed; maximum smooth `L1/L2/Linf` were `7.2439e-4/4.1951e-3/4.8797e-2`, maximum bound violation was `8.5021e-3`, contact/shock thicknesses were `2.9496/1.6939` cells, and maximum position error was `0.7272` cells.
+  - S0-A4 sensor-only status: implemented and passed for `NP=1` on a forced 3D Shu-Osher case with `GRID=400,8,8`, `deltat=1.d-4`, `maxstep=1`, periodic boundaries, MP7 physical-space reconstruction, no diffusion, no filter, and no characteristic decomposition. The full raw-sensor field differed by at most `1.1102230246251565e-16`; CPU and GPU both marked 1944 shock nodes with zero mask mismatches. The one-step conservative-field difference was at most `q5=4.4408920985006262e-16`, and Compute Sanitizer reported zero errors.
+  - S0-A5 MPI sensor-halo status: implemented and passed for `NP=2`, `TOPOLOGY=2,1,1` on the same `GRID=400,8,8` forced-3D Shu-Osher gate. `ASTR_SHUOSHER_SHOCK_X=0.d0` places the discontinuity beside the global x-slab interface so its `hm`-expanded region spans both ranks. The merged global raw sensor differs by at most `1.1102230246251565e-16`, masks match exactly with 1944 global shock nodes, and the one-step conservative-field maximum is `q5=2.7089441800853820e-14`. The two-rank Compute Sanitizer run reports zero errors when MPI CUDA probing components are disabled.
+  - S0-A6 selective Roe status: implemented and passed for `NP=1` on forced-3D periodic Shu-Osher with `GRID=400,8,8`, `deltat=1.d-4`, `recon_schem=3`, `lchardecomp=t`, no diffusion, and no filter. The raw sensor remains CPU-equivalent (`L_inf=1.1102230246251565e-16`, exact 1944-node mask). Sensor-active interfaces use Roe projection, MP7 in characteristic space, and conservative-space back projection; smooth interfaces retain physical-space MP7. One-step statistics differ by at most `4.9098503041022923e-12` and `q5 L_inf=4.4408920985006262e-16`; the three-step run passes with `q5 L_inf=1.4210854715202004e-14`. Compute Sanitizer reports zero errors. The prescribed `(512,1,1)` x block requires a file-local `-gpu=maxregcount:128` cap because the unconstrained kernel used 255 registers/thread. The selected performance implementation generates each five-component Steger-Warming split once for the seven positive and seven negative MP7 stencil points, then projects those cached thread-local values into characteristic space. It adds no global field, kernel, or synchronization. Relative to the pre-cache baseline, x/y/z characteristic-flux mean times improve `1.93x/2.52x/2.74x`; the x kernel remains at 128 registers/thread and `1976` static stack bytes, but reduces actual local spill requests and raises achieved occupancy from about 14% to 22%.
+  - S0-A7 MPI selective Roe status: implemented and passed for `NP=2`, `TOPOLOGY=2,1,1`. The Shu-Osher jump is placed at the global x-slab interface with `ASTR_SHUOSHER_SHOCK_X=0.d0`; raw `ssf` exchanges through the existing `hm`-layer field transport before local mask expansion and characteristic interface selection. The global raw field remains `L_inf=1.1102230246251565e-16` with an exact 1944-node mask. The three-step field comparison passes with `q5 L_inf=9.1482377229112899e-14`; both Compute Sanitizer ranks report zero errors. S0-A8/A9 subsequently validate equivalent y/z slabs under the rankwise duplicate-mask contract, and S0-A10 validates combined `2x2x2` routing.
+  - S0-A8 MPI selective Roe status: implemented and passed for `NP=2`, `TOPOLOGY=1,2,1` on `GRID=400,16,8`, ensuring local `jm=8>=hm`. CPU `dataswap(ssf)` preserves raw-sensor overlap but assigns the expanded mask locally on the duplicated y interface, so this gate compares each CPU/GPU rank's local raw field and mask rather than merging masks across that face. Three steps pass with local sensor/mask agreement, `q5 L_inf=8.8817841970012523e-16`, and two zero-error Compute Sanitizer reports. The local-size precondition applies to every decomposed axis.
+  - S0-A9 MPI selective Roe status: implemented and passed for `NP=2`, `TOPOLOGY=1,1,2` on `GRID=400,8,16`, ensuring local `km=8>=hm`. It uses the same rankwise raw-sensor and locally owned-mask comparison as S0-A8. Three steps pass with `q5 L_inf=8.8817841970012523e-16`, and both Compute Sanitizer ranks report zero errors.
+  - S0-A10 combined MPI selective Roe status: implemented and passed for `NP=8`, `TOPOLOGY=2,2,2` on `GRID=400,16,16`, ensuring every local active extent is at least `hm` (`200,8,8`). It simultaneously exercises x/y/z raw-sensor halo transport and rankwise local-mask ownership. Three steps pass with zero mask mismatches and `q5 L_inf=8.8817841970012523e-16`; all eight Compute Sanitizer ranks report zero errors. On the current two-GPU workstation this is correctness-only oversubscription evidence, not a scaling result.
+  - S0-A2/A3 storage: one haloed scalar `flux_work_d` is reused across direction and conservative component. Positive reconstruction writes it, negative reconstruction accumulates into it, and a third kernel applies the directional flux difference to `qrhs_d`; every kernel is explicitly synchronized. Generic explicit-reconstruction kernels select WENO7 or MP7 from `recon_schem` without allocating format-specific fields.
+  - S0-A4/A5/A6 storage and scope: `shock_sensor_d` is a haloed one-component `real(8)` device field accepted by the generic `exchange_field_halo_gpu` interface; `shock_mask_d` is an active-domain one-byte mask. S0-A6 adds one reusable five-component `flux_characteristic_work_d` for directional final interface fluxes. `ASTR_SHOCK_SENSOR_DUMP` enables the controlled S0-A6 validation capability and sensor dump. S0-A7 through S0-A10 consume the same storage under x, y, z, and combined decompositions.
+  - The completed S0-A1/A2/A3 flux gates, S0-A4/A5 sensor gates, and S0-A6 through S0-A10 selective-Roe gates do not cover MP5 physical-boundary degradation, MP-LD coupling, diffusion, or filtering. S0-B0 subsequently closes the `bctype=50,50` x physical-face MP7 and selective-Roe prerequisite for NP=1 and `2x1x1`, including face-clamped Ducros raw/mask semantics; it still does not cover inflow/outflow, NSCBC, sponge, diffusion, or filtering.
+  - Shu-Osher is now used by the sensor-only gate. Riemann2D remains a later candidate after dimensionality and boundary support are screened.
 - **Phase S0-B: open-boundary and sponge readiness**
   - Add inlet/outlet/sponge/NSCBC behavior after the shock-format path itself is validated.
+  - The selected entry case is documented in `documents/ASTR_S0B_CASE_SCREENING.md`: a forced-3D `OpenShock` gate first uses classical `bctype=11/21`, then `12/22` NSCBC, then an x-max sponge. Existing hypersonic boundary-layer, mixing-layer, and SWLBI inputs are deferred because they combine unsupported compact, wall, farfield, sponge, curvilinear, or immersed-boundary features.
+  - S0-B0 status: complete only for the finite-domain `bctype=50,50` prerequisite. Forced-3D Sod validates scalar MP7 physical-face reconstruction; forced-3D Shu-Osher validates the same face sequence under selective Roe and the Ducros sensor. Both NP=1 and `NP=2 TOPOLOGY=2,1,1` pass CPU/GPU field and sensor oracles, and the two-rank characteristic path passes memcheck. The CPU `npdci=4` sensor clamp was corrected because it previously read uninitialized physical-face halos. The next implementation target remains face-specific `11/21`, not a production open-boundary claim.
+  - S0-B1 status: complete for the controlled stationary Mach-3 normal-shock gate only. `openshock` uses x-min `11,free`, x-max `21,pout`, and `pout=p2/pinf=10.333333333333333`; its GPU free-stream inflow and classical x-outflow kernels pass ten-step CPU/GPU field comparisons for NP=1 and `NP=2 TOPOLOGY=2,1,1`, with two-rank memcheck clean. This does not enable NSCBC, sponge, diffusion, filtering, or characteristic Roe for open boundaries.
+  - S0-B2 status: complete for the restricted Cartesian `12/22` OpenShock gate. CUDA Fortran implements CPU-form characteristic matrices, explicit transverse terms, separate inlet-domain and outlet-plane Mach reductions, and the CPU sixth-order explicit outlet y-filter using `qwork_d`. CPU `time_integration_rk` now performs a full-rank pre-`boucon` `qswap` only when `bctype=22` is present, so the outlet filter reads current transverse halos without a rank-local MPI call; the existing post-boundary `qswap` remains. Ten steps pass at `1e-10` for NP=1 (`q5 L_inf=8.8817841970012523e-16`) and NP=2 `2x1x1` (`q5 L_inf=9.9920072216264089e-16`); both NP=2 Compute Sanitizer ranks report zero errors. This is not curved/y-z NSCBC, species, global sponge, or characteristic-Roe open-boundary support.
+  - S0-B3 status: complete only for the x-max `spg_im=80` layer in the same explicit Cartesian `12/22` OpenShock gate. Every RK update refreshes the required q halos before the x-max rank applies the CPU-equivalent conservative-variable second-order six-neighbor smoothing with the uploaded geometric coefficient field, staging only its active layer through `qwork_d`, then recomputes primitive variables. There is no whole-field ping-pong allocation or stage-level host transfer. Ten-step NP=1 and NP=2 `2x1x1` field/statistics comparisons both pass with `q5 L_inf=8.8817841970012523e-15`; the NP=2 one-step Compute Sanitizer run is clean on both ranks. x-min/y/z/circular sponge, global filter, diffusion, species, curved geometry, and characteristic Roe remain separate work.
+  - S0-B4 status: complete for the B3 x-max layer under the combined `NP=8 TOPOLOGY=2,2,2` gate on `GRID=400,16,16`. The test exposed and corrected a CPU correctness defect: the six-neighbor sponge stencil had refreshed only the nominal layer axis, leaving y/z MPI halos stale after RK updates. CPU now calls full `dataswap(q)` per layer; GPU uses a q-only three-direction sponge exchange before the local update. The ten-step field/statistics gate passes with `q5 L_inf=8.8817841970012523e-15`; all eight one-step sanitizer ranks report zero errors. This two-GPU oversubscribed execution is not performance evidence.
 - **Phase S1: high-speed wall-bounded flow without full SBLI coupling**
   - Validate laminar or DNS-like hypersonic boundary-layer style cases with `turbmode='none'`.
+  - S1-A0 status: complete for a controlled, non-dimensional, Cartesian, z-extruded `bl` gate. It uses `64x64x8`, `Mach=0.3`, `643e/643e`, `rk3`, diffusion enabled, no global filter, x `11,prof/21`, y `41/51`, and periodic z. GPU uploads the CPU-read `inlet.prof` profile once after `flowinit`; it applies profile inflow, CPU-active `51` upper-boundary extrapolation, and the existing lower isothermal wall in CPU `boucon` order. The dedicated xy physical gradient kernel permits device-resident `massflux/fbcx/wallheatflux/wrms` statistics. CPU/GPU fields and all four statistics pass for 2 and 20 steps at `1e-10`; the valid one-rank Compute Sanitizer run reports zero errors. This is an explicit-central boundary and statistics gate, not high-Mach validation, curved-grid support, a full characteristic farfield, or y-physical MP7 reconstruction.
+  - S1-A1 status: complete for the same controlled gate with explicit MP7 convection (`543e/643e`, `recon_schem=3`). CPU `convrsduwd` and `flux:recons_exp` were corrected for single-rank `npdci=npdcj=4`: both physical ends use the two-point/SUW3/MP5/MP7 sequence and the y/z split ranges are `[0,dim]`. CUDA mirrors that x/y face degradation, constrains all three directional RHS paths to the CPU active ranges, and reads local plus exchanged-halo geometry metrics directly during Steger-Warming reconstruction. The 2- and 20-step CPU/GPU field/statistics gates pass at `1e-10`; the single-rank 20-step result has `q5 L_inf=1.7763568394002505e-14` and maximum statistic difference `9.6256336235001072e-14`. The same gate is complete for `NP=2 TOPOLOGY=2,1,1`, `NP=2 TOPOLOGY=1,2,1`, `NP=2 TOPOLOGY=1,1,2`, `NP=4 TOPOLOGY=2,2,1`, `NP=4 TOPOLOGY=2,1,2`, `NP=4 TOPOLOGY=1,2,2`, and `NP=8 TOPOLOGY=2,2,2`. The y-slab gate validates physical-wall ownership: only the global lower-y rank contributes BL wall shear, heat flux, and wall area to the device reduction. The y/z 20-step gates both have `q5 L_inf=1.7763568394002505e-14`; their maximum statistic differences are `5.4956039718945249e-14` and `5.4733995114020217e-14`. The oversubscribed `2x2x1` gate has `q5 L_inf=1.7763568394002505e-14`, maximum statistic difference `4.9737991503207013e-14`, and four zero-error memcheck reports. The oversubscribed x/z `2x1x2` and y/z `1x2x2` gates each have `q5 L_inf=1.7763568394002505e-14`, maximum statistic difference `5.0071058410594561e-14`, and four zero-error memcheck reports. The oversubscribed three-direction `2x2x2` gate uses `64x64x16`, so every local active extent is at least `hm` (`32x32x8`); it has `q5 L_inf=1.7763568394002505e-14`, maximum statistic difference `4.9737991503207013e-14`, and eight zero-error memcheck reports. Curved geometry, high-Mach stability, and full characteristic farfield support remain separate work.
+  - S1-B0 status: complete for an `examples/Hypersonic_Boundary_Layer`-inspired, controlled 3-D explicit gate. The original HBL inputs are 2-D, compact, and mostly dimensional, so they are not GPU inputs. The new `96x96x8` z-extruded gate instead uses the original M3 x extent `[-1,10]`, wall-normal clustering, `Mach=3`, `Re=100000`, and the M3 wall-temperature ratio `568.89/226.65=2.5093503198764615`, with a deterministic heated boundary-layer profile. It retains the already validated non-dimensional explicit MP7 `543e/643e`, profile inflow, `11/21/41/51`, diffusion, no global filter, no characteristic decomposition, and periodic z contract. The 20-step CPU/GPU comparison passes with `q5 L_inf=5.5511151231257827e-16` and maximum statistic difference `7.8936857050848630e-14`; one-rank Compute Sanitizer reports zero errors. This is a high-Mach parameter and heated-wall porting gate only. It does not validate the original two-dimensional compact/dimensional HBL inputs, a true characteristic farfield, or SBLI physics.
+  - S1-B1 status: complete for the controlled HBL gate in `NP=2` slabs. Twenty-step CPU/GPU field and statistic gates pass for x `TOPOLOGY=2,1,1`, y `1,2,1`, and z `1,1,2`. All three have `q5 L_inf=5.5511151231257827e-16`; maximum statistic differences are `6.3726801613483985e-14`, `5.9729998724833422e-14`, and `7.8936857050848630e-14`, respectively. The z gate uses `KM=16` so each local z extent is eight points and satisfies `local_n>=hm`; the x/y gates retain `KM=8`. The physical-y two-rank Compute Sanitizer run reports zero errors for both ranks. This establishes first MPI correctness for the high-Mach heated-wall parameters, not production multi-GPU scaling or combined-axis HBL decomposition.
+  - S1-B2 status: complete for all controlled HBL `NP=4` two-axis decompositions. Twenty-step CPU/GPU gates pass for `2x2x1`, `2x1x2`, and `1x2x2`; each has final `q5 L_inf=5.5511151231257827e-16`. Their maximum statistic differences are `5.0182080713057076e-14`, `6.3726801613483985e-14`, and `5.9729998724833422e-14`, respectively. Both z-decomposed cases use `KM=16` and thus local `km=8>=hm`. The oversubscribed `1x2x2` Compute Sanitizer run reports zero errors from all four ranks. These are combined-halo correctness results on two shared GPUs, not a scaling claim; full `2x2x2` high-Mach HBL remains a separate gate.
+  - S1-B3 status: complete for controlled HBL `NP=8 TOPOLOGY=2,2,2`. The `96x96x16` gate gives local active domains `48x48x8`, all at least `hm`. Its 20-step CPU/GPU comparison has `q5 L_inf=5.5511151231257827e-16` and maximum statistic difference `5.0182080713057076e-14`; all eight ranks report zero-error Compute Sanitizer summaries. As with the NP=4 cases, this is two-GPU-oversubscribed full three-direction halo correctness evidence only, not a performance or production scaling result.
+  - S1-C1 status: complete for a single-rank `Mach=5` Sutherland-viscosity similarity-inlet gate. `generate_compressible_blasius_profile.py` solves the coupled zero-pressure-gradient, isothermal-wall compressible Blasius ODE with `gamma=1.4`, `Pr=0.72`, `T_ref=226.65 K`, `Re=1.83052e6`, and `Twall/Tinf=1176.64/226.65=5.191440547760865`. The `192x192x8` Cartesian explicit MP7 case uses the existing `11,prof/21/41/51` boundary contract, x extent `[-1,10]`, and a similarity station one reference length downstream of a virtual leading edge. The profile has `delta_99=9.5190551023136317e-3`, `delta_star=7.4566649943486243e-3`, and `theta=4.0299675024914713e-4`. The 20-step CPU/GPU comparison passes with `q5 L_inf=4.4408920985006262e-16` and maximum statistic difference `3.5171865420124959e-13`. `inletprofile` now supports both non-dimensional density contracts: its backward-compatible default reconstructs `rho` from `pinf,T`; a first-line `density=provided` declaration retains file density and stops unless its ideal-gas pressure is `pinf` within `1e-10`. Both modes pass two-step field/statistics comparison with maximum field difference `6.2172489379008766e-15`. This is a similarity-inlet and CPU/GPU consistency gate only: `blini` still copies one inlet profile throughout x, upper `51` remains extrapolative rather than characteristic, the grid is Cartesian, and no mesh/time/streamwise-development convergence or experimental comparison has yet been established.
+  - S1-C2 status: complete for x-varying similarity-field initialization without GPU main-loop changes. The same generator maps one converged similarity solution at every x through `sqrt(2*x_s/Re)`, writes CPU-owned `datin/flowini3d.h5`, and selects existing `ninit=3`; `readflowini3d` initializes the host field once and the established `gpu_after_flowinit` upload keeps it device-resident thereafter. The virtual leading edge is `x=-2`, so the domain `[-1,10]` covers stations `x_s=[1,12]`. The `192x192x8`, 20-step NP=1 CPU/GPU gate passes with `q5 L_inf=7.7715611723760958e-16` and maximum statistic difference `3.3406610810970960e-13`. The same C2 field path passes NP=2 x and y slabs at the same grid, and the z slab at `192x192x16`; all retain `q5 L_inf=7.7715611723760958e-16`, with maximum statistic differences `1.9806378759312793e-13`, `2.9809488211185453e-13`, and `3.3406610810970960e-13`, respectively. This removes the C1 full-x initialization limitation and establishes single-axis HDF-input decomposition, but does not establish mesh/time convergence, characteristic farfield behavior, curved geometry, combined-axis HDF-input decomposition, or experimental agreement of skin friction and heat transfer.
+  - S1-C3 status: complete for the current Cartesian upper `bctype=52` NSCBC farfield gate. Porting exposed a CPU oracle problem in `bc:farfield_nscbc`: for the `jmax` path, the local transverse filter could read stale k-halo values before a current halo refresh, so an initially constant physical upper boundary could be filtered to nonconstant values such as `0.84375..1.078125`. Following the CPU bug decision gate, this artifact was not reproduced in GPU code. CPU `time_integration_rk` now performs the same full-rank pre-`boucon` halo refresh when either `bctype=22` or `bctype=52` is present, so NSCBC transverse filters read current halos. GPU `52` support was then restored against the corrected oracle. `run_s1_hbl_s1c3_m5_nscbc_farfield_compare.sh` passes for the `192x192x8`, `Mach=5`, Sutherland-viscosity C1 setup with `maxstep=20`; the final reconstructed `q5 L_inf` is `1.4432899320127035e-15` and the maximum statistic difference is `3.4716673980028645e-13`. This validates the explicit Cartesian S1 farfield path only; curvilinear farfield, combined-axis C2 HDF-input decomposition, mesh/time convergence, and production SBLI farfield behavior remain separate gates.
 - **Phase S2: shock-boundary-layer interaction**
   - Combine shock-format, open boundaries/sponge, and high-speed wall treatment only after the separated gates pass.
+  - S2-A0 status: started with a deliberately narrow compatibility gate, not a resolved physical SBLI validation. `run_s2_hbl_oblique_shock_compare.sh` keeps the S1 Mach-5 Sutherland-viscosity flat-plate contract, uses `ninit=3`, and overlays an analytic perfect-gas oblique-shock state onto the x-varying compressible Blasius HDF field. The overlay updates `rho,T,u,v` consistently so CPU `readflowini3d` reconstructs pressure from `rho*T`. One- and two-step `64x64x8` CPU/GPU smoke gates pass at `1e-10`; the two-step smoke has reconstructed `q5 L_inf=8.8817841970012523e-16`. The default `192x192x8` two-step gate also passes with `q5 L_inf=1.3322676295501878e-15` and maximum statistic difference `1.0755840662568517e-12`. The same gate passes NP=2 x/y/z slabs, NP=4 xy/xz/yz planes, and `NP=8 TOPOLOGY=2,2,2`; z-decomposed cases use `KM=16` to keep local `km>=hm`, and all MPI runs retain `q5 L_inf=1.3322676295501878e-15`. S2-B0 long-step stability passes `MAXSTEP=20` for NP=1 and `NP=8 TOPOLOGY=2,2,2`; both have `q5 L_inf=3.3306690738754696e-15`, with largest statistic difference `1.2061462939527701e-12`. The optional `MAXSTEP=100` stress subset also passes for NP=1 and NP=8; both have `q5 L_inf=5.7731597280508140e-15`, with largest statistic difference `1.2216894162975223e-12`. `run_s2_hbl_oblique_shock_mpirank_matrix.sh` now captures this matrix, the 20-step long subset, and the optional 100-step stress subset via `RUN_STRESS=t`. This gate exposed and fixed a GPU `bctype=21` outlet compatibility bug: the GPU must extrapolate sound speed directly, matching CPU `extrapolate(sos(T1),sos(T2))`, rather than compute `sqrt(extrapolate(T))/Mach`. Full SBLI physics, characteristic farfield/inflow standardization, mesh/time convergence, and shock-sensor coupling remain open.
+  - S2-B1 status: complete as a second compatibility gate for sustained compressed inflow, still not physical SBLI validation. `inletprofile` now supports an optional fifth profile column when the first line contains `pressure=provided`; for non-dimensional `density=provided pressure=provided`, it preserves both columns and rejects profiles whose pressure is inconsistent with `rho*T/(gamma*Mach^2)`. `generate_compressible_blasius_profile.py` can write this five-column profile and `run_s2_hbl_inlet_sustained_shock_compare.sh` sets `PROFILE_OBLIQUE_SHOCK=t`, `PROFILE_PRESSURE_MODE=provided`, and an inlet-entering shock line. This continuously injects a compressed upper inlet layer while retaining the same S2-A0 flat-plate/outlet/farfield contract. The `64x64x8` two-step smoke passes with `q5 L_inf=8.8817841970012523e-16`. The default `192x192x8` NP=1 two-step gate passes with `q5 L_inf=1.3322676295501878e-15` and maximum statistic difference `7.8381745538536052e-13`; the `NP=2 TOPOLOGY=1,2,1` y-slab gate passes with the same `q5 L_inf` and maximum statistic difference `7.8292927696566039e-13`, covering pressure-column `preadprofile` scatter. This gate establishes pressure-provided profile inflow compatibility only; it does not replace characteristic inflow/farfield, shock generation, convergence, or shock-sensor-coupled format validation.
+
+#### Phase S0-A Sensor And Characteristic-Reconstruction GPU Execution Plan
+
+This subsection defines the implementation contract for the explicit-upwind sensor and selective Roe characteristic-reconstruction gates. The single-rank sensor-only portion is complete as S0-A4, the first MPI raw-sensor halo gate is complete as S0-A5, and the single-rank selective Roe gate is complete as S0-A6.
+
+Current S0-A4/A5 implementation boundary:
+
+- `src_gpu/shock_sensor_gpu.cuf` computes the raw sensor, uses the local periodic `hm` fallback for S0-A4 or generic `exchange_field_halo_gpu(shock_sensor_d,1)` for S0-A5, expands and thresholds the mask, and explicitly synchronizes after every launched kernel.
+- `ASTR_SHOCK_SENSOR_DUMP` enables the controlled validation capability and first-result CPU/GPU dump. Multi-rank runs write one rank-local file with global offsets; the validation tool merges and checks the overlapping interface plane. `lchardecomp=t` also owns the sensor storage because S0-A6 consumes its mask.
+- The deterministic forced-3D Shu-Osher gate is used instead of Sod because the zero initial Sod velocity makes the Ducros compression factor identically zero and is therefore not a useful sensor oracle.
+- S0-A6 uses physical-space MP7 outside the mask and Roe-characteristic MP7 inside it. It writes one five-component directional interface workspace, then applies directional flux divergence. S0-A5 does not claim MPI characteristic reconstruction.
+
+CPU semantics to preserve:
+
+1. `gradcal` completes the velocity-gradient tensor.
+2. The raw cell sensor is computed as the Ducros compression ratio multiplied by the maximum normalized pressure curvature.
+3. The haloed raw sensor `ssf` is exchanged before shock-region expansion.
+4. The expansion takes an axial maximum over offsets `-hm+1:hm` in x, y, and z, then applies `shkcrt` to produce the cell mask `lshock`.
+5. An interface is sensor-active when either adjacent cell is marked.
+6. For explicit upwind convection, Roe characteristic projection is used only when both `lchardecomp` and the interface sensor mask are true; otherwise reconstruction remains in physical space.
+
+The raw-sensor and expanded-mask stages cannot be collapsed into one ordinary GPU kernel without changing the dependency contract. The expansion needs raw values produced by neighboring thread blocks and, at MPI interfaces, values received from another rank. CUDA cooperative-grid synchronization or redundant tile recomputation is not the baseline because it complicates multi-rank behavior and future HIP/DCU portability.
+
+Baseline execution sequence:
+
+```text
+complete GPU gradcal
+raw_sensor_kernel
+explicit device synchronization
+exchange only hm layers of ssf
+expand_and_threshold_sensor_kernel
+explicit device synchronization
+adaptive_interface_flux_kernel for one direction
+explicit device synchronization
+flux_difference_kernel for that direction
+explicit device synchronization
+repeat the reusable flux workspace for the next direction
+```
+
+The two sensor passes are accepted as dependency-driven passes. The following passes are explicitly rejected as the default design:
+
+```text
+physical_interface_flux_kernel over every interface
+characteristic_override_kernel over the sensor-active interfaces
+```
+
+That overwrite design computes physical reconstruction unnecessarily in shock regions and writes selected interface fluxes twice. It may remain a profiling experiment, but it is not the implementation baseline.
+
+The baseline `adaptive_interface_flux_kernel` performs exactly one reconstruction and one final-flux write per interface:
+
+```text
+interface_shock = shock_mask(left_cell) OR shock_mask(right_cell)
+
+if lchardecomp AND interface_shock:
+    Roe average
+    project the five Euler split fluxes to characteristic space
+    reconstruct in characteristic space
+    project the interface flux back to conservative space
+else:
+    reconstruct the split fluxes in physical space
+```
+
+This kernel intentionally accepts warp divergence at mixed smooth/shock warps in the first implementation. The alternative of always using characteristic reconstruction is not valid because it changes the nonlinear numerical operator in smooth regions and adds substantial work.
+
+Device storage contract:
+
+- Use one haloed `real(8)` raw-sensor array, `shock_sensor_d`.
+- Use one active-domain byte mask, `shock_mask_d`, represented as `integer(1)` rather than `real(8)` or default four-byte logical storage.
+- Do not allocate separate x/y/z interface masks. Each directional flux kernel forms the adjacent-cell OR directly.
+- Characteristic reconstruction couples all five Euler equations. If a five-component final-interface workspace is required, allocate only one reusable directional workspace and reuse it for x, y, and z; do not allocate three direction-specific copies.
+- Retain the existing scalar `flux_work_d` path for S0-A1/A2/A3 while the characteristic capability is disabled.
+- Do not introduce whole-field D2H/H2D transfers. Only the existing halo transport boundary may stage the `hm` sensor slabs through the host in the initial multi-rank backend.
+
+Traversal and bandwidth controls:
+
+- Compute and materialize the expanded cell mask once per RK substage. Do not recompute the axial neighborhood maximum independently in x-, y-, and z-flux kernels.
+- Fuse thresholding and optional shock-node counting into `expand_and_threshold_sensor_kernel`; do not store a second expanded floating-point field.
+- Structure sensor expansion so x-neighbor accesses remain coalesced and y/z planes are reused through cache or shared-memory tiling where profiling justifies it.
+- Do not build a compacted shock-interface list in the baseline. Prefix scans, irregular index traffic, and backend-specific primitives are deferred until profiling proves that divergence dominates.
+- A later optimization may fuse raw-sensor evaluation into the final velocity-gradient kernel only after proving that all nine gradient components are complete and visible at that point. This is an optimization, not a correctness dependency.
+- A later multi-rank optimization may compute sensor-independent interior work while nonblocking sensor-halo transport is in flight. It must preserve the project rule that every launched kernel is explicitly synchronized and must not assume asynchronous MPI progress without measurement.
+
+Branch-divergence fallback:
+
+If Nsight Compute shows that the adaptive kernel loses materially more time to divergence or characteristic-path register pressure than it saves in memory traffic, evaluate two disjoint masked kernels:
+
+```text
+physical_interface_flux_kernel:
+    return immediately when interface_shock is true
+
+characteristic_interface_flux_kernel:
+    return immediately when interface_shock is false
+```
+
+The two kernels must write mutually exclusive interfaces, so every interface is still reconstructed and written exactly once. This fallback is different from the rejected full-domain physical-plus-override design. Selection between the adaptive kernel and disjoint kernels is a measured backend decision and may differ between NVIDIA CUDA and future HIP/DCU builds.
+
+Validation gates:
+
+1. Sensor-only single-rank gate: **pass**. The forced-3D Shu-Osher case compares the complete raw field and mask, not only reductions.
+2. Sensor-halo gate: **pass for `NP=2 TOPOLOGY=2,1,1`**. The Shu-Osher jump is placed beside the x-slab interface and merged CPU/GPU sensor fields plus masks are compared over the global domain.
+3. Characteristic gate: **pass for `NP=1`** using controlled periodic Shu-Osher, not initial Sod. Sod has zero initial velocity and an all-zero Ducros gate, whereas Shu-Osher deterministically executes the selected Roe branch. Compare the complete sensor/mask plus statistics and `q(:,:,:,1:5)` fields.
+4. Numerical-accuracy gate: retain the implemented `run_sod_phase_s0a2_accuracy.sh` Sod exact/profile checks for overshoot, undershoot, discontinuity thickness, position error, and smooth-region error. Reuse this oracle for each later reconstruction gate before claiming shock-format suitability.
+5. Performance gate: report kernel time, achieved occupancy, register pressure, branch behavior, and DRAM traffic for the adaptive and disjoint-kernel variants. GPU utilization from `nvitop` is supporting evidence, not sufficient performance evidence by itself.
+6. Multi-rank gate: **pass for `2x1x1`, `1x2x1`, `1x1x2`, and `2x2x2`**. The characteristic Shu-Osher jump crosses the x-slab boundary; y/z use rankwise CPU/GPU sensor and locally owned-mask comparison at duplicated active interfaces.
 
 Tasks:
 
 - Define the supported shock-capturing format family and its GPU data dependencies.
-- Port shock sensor logic, including Ducros-style sensor paths where required by the selected format.
+- Treat the single-rank and first x-slab MPI shock-sensor gates as complete; extend the same `hm`-layer raw-field transport to further decompositions only with an interface-crossing oracle.
+- S0-A6 implements the adaptive selective-characteristic interface kernel. Its `(512,1,1)` x launch needs `maxregcount:128`, producing local-memory spills; profile it before considering disjoint masked kernels or a lower-register redesign.
+- S0 performance baseline: Nsight Systems on the three-step single-rank S0-A6 gate attributes 96.6% of GPU kernel time to the x/y/z characteristic interface-flux kernels, while the associated RHS, sensor, and gradient kernels are each below 1%. Nsight Compute is available: before cached split fluxes the x kernel had 128 registers/thread, about 1.08M spill requests, about 14% achieved occupancy, and about 93.5% branch efficiency. The cached-split implementation improves x/y/z kernel means `1.93x/2.52x/2.74x`, reduces x spill requests to about 0.89M, and raises achieved occupancy to about 22%. Keep the 128-register cap; `maxregcount=96` is slower.
 - Define shock-region filtering or added-dissipation policy separately from the existing explicit central filter.
 - Add inlet/outlet/sponge/high-speed wall boundary support required by the selected validation case.
 - Select a laminar or DNS-like shock/SBLI validation case with `turbmode='none'`.
@@ -646,7 +810,7 @@ Tasks:
 
 Acceptance:
 
-- Phase S0-A: the S0-A1 forced 3D Sod gate passes same-input CPU/GPU statistics and `q(:,:,:,1:5)` field comparison with the documented tolerances.
+- Phase S0-A: the S0-A1/S0-A2/S0-A3 forced 3D Sod gates pass same-input CPU/GPU statistics and `q(:,:,:,1:5)` field comparison with the documented tolerances, the WENO7/MP7 paths pass the same finite-threshold exact-solution gate, and S0-A4/A5 pass the complete single-rank and x-slab MPI Shu-Osher raw-sensor/mask oracles.
 - Later subphases: open-boundary/sponge, high-speed wall, and SBLI gates pass separate oracles before combined validation.
 - The validation distinguishes numerical-format stability from GPU porting correctness.
 - RANS/LES remains explicitly rejected unless Phase 4 is reopened.
@@ -761,13 +925,12 @@ The full-GPU migration uses a layered validation matrix.
 
 Recommended immediate work after this plan:
 
-1. Implement Phase S0-A1 as the next feature gate: forced 3D extruded Sod, `GRID=200,8,8`, `deltat=5.d-4`, `maxstep=20`, all periodic, `conschm='543e'`, `recon_schem=-1`, `lchardecomp=.false.`, `diffterm=f`, and `lfilter=f`.
-2. Add a positive-volume 3D Sod grid path so forced 3D `flowtype='sod'` does not reuse the current zero-thickness `grid1d` z coordinate.
-3. Extend the GPU capability gate to accept only this controlled S0-A1 shock-format path; keep compact upwind, characteristic decomposition, sensors, species, turbulence, chemistry, and open boundaries rejected.
-4. Implement the GPU first-order Steger-Warming explicit upwind RHS path by matching CPU `convrsduwd` and `recons_exp(..., recon_schem=-1)` semantics.
-5. Add a reusable S0-A1 validation driver that performs CPU/GPU statistics comparison and `q(:,:,:,1:5)` field maximum-difference reporting at the documented `1e-10` tolerances.
-6. Keep `tests/gpu_validation/run_source_phasek_matrix.sh`, `tests/gpu_validation/run_rti_phasej_matrix.sh`, and the wall-family/channel/TGV regression drivers as the required regression set after touching capability gates, source dispatch, boundary logic, or common solver kernels.
-7. Keep `documents/GPU_VALIDATION_MATRIX.md`, `tests/gpu_validation/README.md`, `CONTEXT.md`, `documents/ASTR_GPU_DEVICE_FIELD_OWNERSHIP.md`, and `documents/ASTR_GPU_HALOTRANSPORT_SKETCH.md` synchronized with each new device field, case capability, halo semantic, and validation result.
+1. Treat Phase S0-A1 through S0-A10 as complete controlled gates: first-order, WENO7, MP7, exact-solution, sensor, all one-axis MPI sensor/characteristic paths, and a `2x2x2` combined topology pass their documented CPU/GPU oracles.
+2. Keep rankwise sensor/mask validation for duplicated y/z active interfaces and the `local_n>=hm` precondition for every decomposed direction.
+3. Profiled S0-A6 branch behavior, memory traffic, and register spill. The `maxregcount=96` sensitivity build is numerically correct but slower with a larger stack; retain the `128` default and reduce live numerical state rather than tightening the compiler cap.
+4. Keep S0-B open boundaries, S1 high-speed walls, MP-LD coupling, species, turbulence, chemistry, compact schemes, diffusion, and filtering outside the completed S0-A gates.
+5. Keep `tests/gpu_validation/run_source_phasek_matrix.sh`, `tests/gpu_validation/run_rti_phasej_matrix.sh`, and the wall-family/channel/TGV regression drivers as the required regression set after touching capability gates, source dispatch, boundary logic, or common solver kernels.
+6. Keep `documents/GPU_VALIDATION_MATRIX.md`, `tests/gpu_validation/README.md`, `CONTEXT.md`, `documents/ASTR_GPU_DEVICE_FIELD_OWNERSHIP.md`, and `documents/ASTR_GPU_HALOTRANSPORT_SKETCH.md` synchronized with each new device field, case capability, halo semantic, and validation result.
 
 ## 9. Explicit Non-Goals
 

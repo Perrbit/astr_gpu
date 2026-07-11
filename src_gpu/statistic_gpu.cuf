@@ -258,6 +258,100 @@ contains
     endif
   end subroutine channel_partial_kernel
 
+  attributes(global) subroutine s1_bl_partial_kernel(q,vel,x,tmp,dvel,dtmp,partial,im,jm,km,hm, &
+       tempconst,tempconst1,reynolds,prandtl,const5,apply_down)
+    implicit none
+    integer,value :: im,jm,km,hm,apply_down
+    real(8),value :: tempconst,tempconst1,reynolds,prandtl,const5
+    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
+    real(8),device :: dtmp(0:im,0:jm,0:km,1:3)
+    real(8),device :: partial(:,:)
+    real(8),shared :: scratch_mass(256),scratch_fbcx(256),scratch_whf(256),scratch_wrms(256), &
+                     scratch_vol(256),scratch_area(256)
+    integer :: tid,id,stride,ncell,nwall,i,j,k
+    real(8) :: mass,fbcx,whf,wrms,volsum,areasum,dx,dy,dz,vol,area,miu1,miu2,miu3,miu4,hcc1,hcc2,hcc3,hcc4
+
+    tid = threadIdx%x
+    id = (blockIdx%x-1)*blockDim%x + tid - 1
+    stride = gridDim%x*blockDim%x
+    ncell = im*jm*km
+    nwall = im*km
+    mass = 0.d0
+    fbcx = 0.d0
+    whf = 0.d0
+    wrms = 0.d0
+    volsum = 0.d0
+    areasum = 0.d0
+    do while(id < max(ncell,nwall))
+      if(id < ncell) then
+        i = mod(id,im) + 1
+        j = mod(id/im,jm) + 1
+        k = id/(im*jm) + 1
+        dx = x(i,j,k,1)-x(i-1,j,k,1)
+        dy = x(i,j,k,2)-x(i,j-1,k,2)
+        dz = x(i,j,k,3)-x(i,j,k-1,3)
+        vol = abs(dx*dy*dz)
+        mass = mass + 0.125d0*(q(i-1,j-1,k-1,2)+q(i,j-1,k-1,2)+q(i-1,j,k-1,2)+q(i,j,k-1,2)+ &
+                                q(i-1,j-1,k,2)+q(i,j-1,k,2)+q(i-1,j,k,2)+q(i,j,k,2))*vol
+        wrms = wrms + vel(i,j,k,3)*vel(i,j,k,3)
+        volsum = volsum + vol
+      endif
+      if(id < nwall .and. apply_down /= 0) then
+        i = mod(id,im) + 1
+        k = id/im + 1
+        dx = x(i,0,k,1)-x(i-1,0,k,1)
+        dz = x(i,0,k,3)-x(i,0,k-1,3)
+        area = abs(dx*dz)
+        areasum = areasum + area
+        miu1 = tmp(i,0,k)*sqrt(tmp(i,0,k))*tempconst1/(tmp(i,0,k)+tempconst)/reynolds
+        miu2 = tmp(i-1,0,k)*sqrt(tmp(i-1,0,k))*tempconst1/(tmp(i-1,0,k)+tempconst)/reynolds
+        miu3 = tmp(i,0,k-1)*sqrt(tmp(i,0,k-1))*tempconst1/(tmp(i,0,k-1)+tempconst)/reynolds
+        miu4 = tmp(i-1,0,k-1)*sqrt(tmp(i-1,0,k-1))*tempconst1/(tmp(i-1,0,k-1)+tempconst)/reynolds
+        hcc1 = miu1/prandtl/const5
+        hcc2 = miu2/prandtl/const5
+        hcc3 = miu3/prandtl/const5
+        hcc4 = miu4/prandtl/const5
+        fbcx = fbcx + 0.25d0*area*(miu1*dvel(i,0,k,1,2) + miu2*dvel(i-1,0,k,1,2) + &
+                                    miu3*dvel(i,0,k-1,1,2) + miu4*dvel(i-1,0,k-1,1,2))
+        whf = whf + 0.25d0*area*(hcc1*dtmp(i,0,k,2) + hcc2*dtmp(i-1,0,k,2) + &
+                                  hcc3*dtmp(i,0,k-1,2) + hcc4*dtmp(i-1,0,k-1,2))
+      endif
+      id = id + stride
+    enddo
+    scratch_mass(tid) = mass
+    scratch_fbcx(tid) = fbcx
+    scratch_whf(tid) = whf
+    scratch_wrms(tid) = wrms
+    scratch_vol(tid) = volsum
+    scratch_area(tid) = areasum
+    call syncthreads()
+    stride = blockDim%x/2
+    do while(stride > 0)
+      if(tid <= stride) then
+        scratch_mass(tid) = scratch_mass(tid) + scratch_mass(tid+stride)
+        scratch_fbcx(tid) = scratch_fbcx(tid) + scratch_fbcx(tid+stride)
+        scratch_whf(tid) = scratch_whf(tid) + scratch_whf(tid+stride)
+        scratch_wrms(tid) = scratch_wrms(tid) + scratch_wrms(tid+stride)
+        scratch_vol(tid) = scratch_vol(tid) + scratch_vol(tid+stride)
+        scratch_area(tid) = scratch_area(tid) + scratch_area(tid+stride)
+      endif
+      call syncthreads()
+      stride = stride/2
+    enddo
+    if(tid == 1) then
+      partial(blockIdx%x,1) = scratch_mass(1)
+      partial(blockIdx%x,2) = scratch_fbcx(1)
+      partial(blockIdx%x,3) = scratch_whf(1)
+      partial(blockIdx%x,4) = scratch_wrms(1)
+      partial(blockIdx%x,5) = scratch_vol(1)
+      partial(blockIdx%x,6) = scratch_area(1)
+    endif
+  end subroutine s1_bl_partial_kernel
+
   subroutine gpu_kenergy_scalar(kenergy_gpu)
     use mpi
     use commvar, only: im,jm,km,hm,ia,ja,ka,roinf,uinf
@@ -445,6 +539,43 @@ contains
     deallocate(partial_d,partial_h)
   end subroutine gpu_channel_scalars
 
+  subroutine gpu_s1_bl_scalars(massflux_gpu,fbcx_gpu,wallheatflux_gpu,wrms_gpu)
+    use mpi
+    use commvar, only: im,jm,km,hm,ia,ja,ka,tempconst,tempconst1,reynolds,prandtl,const5
+    use commarray_gpu, only: q_d,vel_d,x_d,tmp_d,dvel_d,dtmp_d
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: mpisize
+    use boundary_gpu, only: gpu_physical_boundary_apply_mask
+    implicit none
+    real(8),intent(out) :: massflux_gpu,fbcx_gpu,wallheatflux_gpu,wrms_gpu
+    integer,parameter :: block_size=256
+    integer :: nwork,nblocks,ierr,apply_down,apply_up
+    real(8) :: local_sum(6),global_sum(6)
+    real(8),allocatable,device :: partial_d(:,:)
+    real(8),allocatable :: partial_h(:,:)
+
+    nwork = max(im*jm*km,im*km)
+    nblocks = max(1,(nwork+block_size-1)/block_size)
+    allocate(partial_d(nblocks,6),partial_h(nblocks,6))
+    call gpu_physical_boundary_apply_mask(2,apply_down,apply_up)
+    call s1_bl_partial_kernel<<<nblocks,block_size>>>(q_d,vel_d,x_d,tmp_d,dvel_d,dtmp_d,partial_d, &
+         im,jm,km,hm,tempconst,tempconst1,reynolds,prandtl,const5,apply_down)
+    call sync_after_kernel('s1_bl_partial_kernel')
+    partial_h = partial_d
+    local_sum(:) = sum(partial_h,dim=1)
+    if(mpisize > 1) then
+      call mpi_allreduce(local_sum,global_sum,6,mpi_real8,mpi_sum,mpi_comm_world,ierr)
+    else
+      global_sum = local_sum
+    endif
+    if(global_sum(5) <= 0.d0 .or. global_sum(6) <= 0.d0) stop 'GPU S1 flatplate statistic geometry is invalid'
+    massflux_gpu = global_sum(1)/global_sum(5)
+    fbcx_gpu = global_sum(2)/global_sum(6)
+    wallheatflux_gpu = global_sum(3)/global_sum(6)
+    wrms_gpu = sqrt(global_sum(4)/real(ia*ja*ka,8))
+    deallocate(partial_d,partial_h)
+  end subroutine gpu_s1_bl_scalars
+
   subroutine gpu_write_kenergy()
     use commvar, only: nstep,time,maxstep
     use parallel, only: lio
@@ -518,6 +649,28 @@ contains
       flush(hand)
     endif
   end subroutine gpu_write_generic_flowstate
+
+  subroutine gpu_write_s1_bl_flowstate()
+    use commvar, only: nstep,time,maxstep
+    use parallel, only: lio
+    use stlaio, only: get_unit
+    implicit none
+    real(8) :: massflux_gpu,fbcx_gpu,wallheatflux_gpu,wrms_gpu
+    integer,save :: hand=-1
+    logical,save :: linit=.true.
+
+    if(nstep <= 0 .or. nstep > maxstep) return
+    call gpu_s1_bl_scalars(massflux_gpu,fbcx_gpu,wallheatflux_gpu,wrms_gpu)
+    if(.not.lio) return
+    if(linit) then
+      hand = get_unit()
+      open(hand,file='flowstate.dat',status='replace',action='write')
+      write(hand,'(A)') 'nstep time massflux fbcx wallheatflux wrms'
+      linit = .false.
+    endif
+    write(hand,'(I20,1X,ES24.16,4(1X,ES24.16))') nstep,time,massflux_gpu,fbcx_gpu,wallheatflux_gpu,wrms_gpu
+    flush(hand)
+  end subroutine gpu_write_s1_bl_flowstate
 
   subroutine gpu_write_channel_flowstate()
     use commvar, only: nstep,time,maxstep,force

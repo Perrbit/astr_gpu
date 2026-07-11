@@ -207,6 +207,1479 @@ contains
     qrhs(i,j,k,5) = qrhs(i,j,k,5) + source*vel(i,j,k,2)
   end subroutine rti_source_kernel
 
+  attributes(device) subroutine steger_warming_split_one_scalar(rho,q2,q3,q4,q5,u1,u2,u3, &
+                                                                p,jloc,dx1,dx2,dx3,gamma, &
+                                                                split_sign,f)
+    implicit none
+    real(8),value :: rho,q2,q3,q4,q5,u1,u2,u3,p,jloc,dx1,dx2,dx3,gamma
+    integer,value :: split_sign
+    real(8) :: f(5)
+    real(8) :: uu,var0,gpd1,gpd2,gpd3,css,csa,lmach,gm2,fhi,jro
+    real(8) :: l1,l4,l5,lp1,lp4,lp5,var1,var2,var3,var4,eps
+
+    eps = 0.04d0
+    gm2 = 0.5d0/gamma
+    uu = dx1*u1 + dx2*u2 + dx3*u3
+    var0 = 1.d0/sqrt(dx1**2 + dx2**2 + dx3**2)
+    gpd1 = dx1*var0
+    gpd2 = dx2*var0
+    gpd3 = dx3*var0
+    css = sqrt(gamma*p/rho)
+    csa = css/var0
+    lmach = uu/csa
+
+    if(lmach >= 1.d0) then
+      if(split_sign > 0) then
+        f(1) = jloc*rho*uu
+        f(2) = jloc*(q2*uu + dx1*p)
+        f(3) = jloc*(q3*uu + dx2*p)
+        f(4) = jloc*(q4*uu + dx3*p)
+        f(5) = jloc*(q5 + p)*uu
+      else
+        f = 0.d0
+      endif
+      return
+    elseif(lmach <= -1.d0) then
+      if(split_sign > 0) then
+        f = 0.d0
+      else
+        f(1) = jloc*rho*uu
+        f(2) = jloc*(q2*uu + dx1*p)
+        f(3) = jloc*(q3*uu + dx2*p)
+        f(4) = jloc*(q4*uu + dx3*p)
+        f(5) = jloc*(q5 + p)*uu
+      endif
+      return
+    endif
+
+    fhi = 0.5d0*(gamma - 1.d0)*(u1**2 + u2**2 + u3**2)
+    jro = jloc*rho
+    l1 = uu
+    l4 = uu + csa
+    l5 = uu - csa
+    lp1 = 0.5d0*(l1 + sqrt(l1**2 + eps**2))
+    lp4 = 0.5d0*(l4 + sqrt(l4**2 + eps**2))
+    lp5 = 0.5d0*(l5 + sqrt(l5**2 + eps**2))
+
+    if(split_sign > 0) then
+      var1 = lp1
+      var2 = lp4 - lp5
+      var3 = 2.d0*lp1 - lp4 - lp5
+    else
+      var1 = l1 - lp1
+      var2 = (l4 - lp4) - (l5 - lp5)
+      var3 = 2.d0*(l1 - lp1) - (l4 - lp4) - (l5 - lp5)
+    endif
+
+    var4 = var1 - var3*gm2
+    f(1) = jro*var4
+    f(2) = jro*(var4*u1 + var2*css*gpd1*gm2)
+    f(3) = jro*(var4*u2 + var2*css*gpd2*gm2)
+    f(4) = jro*(var4*u3 + var2*css*gpd3*gm2)
+    f(5) = jloc*(var1*q5 + rho* &
+                (var2*uu*var0*css*gm2 - var3*(fhi + css**2)*gm2/(gamma - 1.d0)))
+  end subroutine steger_warming_split_one_scalar
+
+  attributes(global) subroutine upwind_s0a1_rhs_x_global_kernel(im,jm,km,gamma)
+    use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d,qrhs_d
+    implicit none
+    integer,value :: im,jm,km
+    real(8),value :: gamma
+    integer :: i,j,k,m
+    integer :: ii,jj,kk
+    real(8) :: fp(5),fm(5)
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = blockIdx%y - 1
+    k = blockIdx%z - 1
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+
+    ii = idx_periodic(i,im); jj = idx_periodic(j,jm); kk = idx_periodic(k,km)
+    call steger_warming_split_one_scalar(q_d(i,j,k,1),q_d(i,j,k,2),q_d(i,j,k,3),q_d(i,j,k,4), &
+         q_d(i,j,k,5),vel_d(i,j,k,1),vel_d(i,j,k,2),vel_d(i,j,k,3),prs_d(i,j,k), &
+         jacob_d(ii,jj,kk),dxi_d(i,j,k,1,1),dxi_d(i,j,k,1,2),dxi_d(i,j,k,1,3),gamma,1,fp)
+    ii = idx_periodic(i+1,im); jj = idx_periodic(j,jm); kk = idx_periodic(k,km)
+    call steger_warming_split_one_scalar(q_d(i+1,j,k,1),q_d(i+1,j,k,2),q_d(i+1,j,k,3),q_d(i+1,j,k,4), &
+         q_d(i+1,j,k,5),vel_d(i+1,j,k,1),vel_d(i+1,j,k,2),vel_d(i+1,j,k,3),prs_d(i+1,j,k), &
+         jacob_d(ii,jj,kk),dxi_d(i+1,j,k,1,1),dxi_d(i+1,j,k,1,2),dxi_d(i+1,j,k,1,3),gamma,-1,fm)
+    do m=1,5
+      qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - (fp(m) + fm(m))
+    enddo
+    ii = idx_periodic(i-1,im); jj = idx_periodic(j,jm); kk = idx_periodic(k,km)
+    call steger_warming_split_one_scalar(q_d(i-1,j,k,1),q_d(i-1,j,k,2),q_d(i-1,j,k,3),q_d(i-1,j,k,4), &
+         q_d(i-1,j,k,5),vel_d(i-1,j,k,1),vel_d(i-1,j,k,2),vel_d(i-1,j,k,3),prs_d(i-1,j,k), &
+         jacob_d(ii,jj,kk),dxi_d(i-1,j,k,1,1),dxi_d(i-1,j,k,1,2),dxi_d(i-1,j,k,1,3),gamma,1,fp)
+    ii = idx_periodic(i,im); jj = idx_periodic(j,jm); kk = idx_periodic(k,km)
+    call steger_warming_split_one_scalar(q_d(i,j,k,1),q_d(i,j,k,2),q_d(i,j,k,3),q_d(i,j,k,4), &
+         q_d(i,j,k,5),vel_d(i,j,k,1),vel_d(i,j,k,2),vel_d(i,j,k,3),prs_d(i,j,k), &
+         jacob_d(ii,jj,kk),dxi_d(i,j,k,1,1),dxi_d(i,j,k,1,2),dxi_d(i,j,k,1,3),gamma,-1,fm)
+    do m=1,5
+      qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) + (fp(m) + fm(m))
+    enddo
+  end subroutine upwind_s0a1_rhs_x_global_kernel
+
+  attributes(global) subroutine upwind_s0a1_rhs_y_global_kernel(im,jm,km,gamma)
+    use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d,qrhs_d
+    implicit none
+    integer,value :: im,jm,km
+    real(8),value :: gamma
+    integer :: i,j,k,m
+    integer :: ii,jj,kk
+    real(8) :: fp(5),fm(5)
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
+    k = blockIdx%z - 1
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+
+    ii = idx_periodic(i,im); jj = idx_periodic(j,jm); kk = idx_periodic(k,km)
+    call steger_warming_split_one_scalar(q_d(i,j,k,1),q_d(i,j,k,2),q_d(i,j,k,3),q_d(i,j,k,4), &
+         q_d(i,j,k,5),vel_d(i,j,k,1),vel_d(i,j,k,2),vel_d(i,j,k,3),prs_d(i,j,k), &
+         jacob_d(ii,jj,kk),dxi_d(i,j,k,2,1),dxi_d(i,j,k,2,2),dxi_d(i,j,k,2,3),gamma,1,fp)
+    ii = idx_periodic(i,im); jj = idx_periodic(j+1,jm); kk = idx_periodic(k,km)
+    call steger_warming_split_one_scalar(q_d(i,j+1,k,1),q_d(i,j+1,k,2),q_d(i,j+1,k,3),q_d(i,j+1,k,4), &
+         q_d(i,j+1,k,5),vel_d(i,j+1,k,1),vel_d(i,j+1,k,2),vel_d(i,j+1,k,3),prs_d(i,j+1,k), &
+         jacob_d(ii,jj,kk),dxi_d(i,j+1,k,2,1),dxi_d(i,j+1,k,2,2),dxi_d(i,j+1,k,2,3),gamma,-1,fm)
+    do m=1,5
+      qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - (fp(m) + fm(m))
+    enddo
+    ii = idx_periodic(i,im); jj = idx_periodic(j-1,jm); kk = idx_periodic(k,km)
+    call steger_warming_split_one_scalar(q_d(i,j-1,k,1),q_d(i,j-1,k,2),q_d(i,j-1,k,3),q_d(i,j-1,k,4), &
+         q_d(i,j-1,k,5),vel_d(i,j-1,k,1),vel_d(i,j-1,k,2),vel_d(i,j-1,k,3),prs_d(i,j-1,k), &
+         jacob_d(ii,jj,kk),dxi_d(i,j-1,k,2,1),dxi_d(i,j-1,k,2,2),dxi_d(i,j-1,k,2,3),gamma,1,fp)
+    ii = idx_periodic(i,im); jj = idx_periodic(j,jm); kk = idx_periodic(k,km)
+    call steger_warming_split_one_scalar(q_d(i,j,k,1),q_d(i,j,k,2),q_d(i,j,k,3),q_d(i,j,k,4), &
+         q_d(i,j,k,5),vel_d(i,j,k,1),vel_d(i,j,k,2),vel_d(i,j,k,3),prs_d(i,j,k), &
+         jacob_d(ii,jj,kk),dxi_d(i,j,k,2,1),dxi_d(i,j,k,2,2),dxi_d(i,j,k,2,3),gamma,-1,fm)
+    do m=1,5
+      qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) + (fp(m) + fm(m))
+    enddo
+  end subroutine upwind_s0a1_rhs_y_global_kernel
+
+  attributes(global) subroutine upwind_s0a1_rhs_z_global_kernel(im,jm,km,gamma)
+    use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d,qrhs_d
+    implicit none
+    integer,value :: im,jm,km
+    real(8),value :: gamma
+    integer :: i,j,k,m
+    integer :: ii,jj,kk
+    real(8) :: fp(5),fm(5)
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = blockIdx%y - 1
+    k = (blockIdx%z - 1) * blockDim%z + threadIdx%z - 1
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+
+    ii = idx_periodic(i,im); jj = idx_periodic(j,jm); kk = idx_periodic(k,km)
+    call steger_warming_split_one_scalar(q_d(i,j,k,1),q_d(i,j,k,2),q_d(i,j,k,3),q_d(i,j,k,4), &
+         q_d(i,j,k,5),vel_d(i,j,k,1),vel_d(i,j,k,2),vel_d(i,j,k,3),prs_d(i,j,k), &
+         jacob_d(ii,jj,kk),dxi_d(i,j,k,3,1),dxi_d(i,j,k,3,2),dxi_d(i,j,k,3,3),gamma,1,fp)
+    ii = idx_periodic(i,im); jj = idx_periodic(j,jm); kk = idx_periodic(k+1,km)
+    call steger_warming_split_one_scalar(q_d(i,j,k+1,1),q_d(i,j,k+1,2),q_d(i,j,k+1,3),q_d(i,j,k+1,4), &
+         q_d(i,j,k+1,5),vel_d(i,j,k+1,1),vel_d(i,j,k+1,2),vel_d(i,j,k+1,3),prs_d(i,j,k+1), &
+         jacob_d(ii,jj,kk),dxi_d(i,j,k+1,3,1),dxi_d(i,j,k+1,3,2),dxi_d(i,j,k+1,3,3),gamma,-1,fm)
+    do m=1,5
+      qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - (fp(m) + fm(m))
+    enddo
+    ii = idx_periodic(i,im); jj = idx_periodic(j,jm); kk = idx_periodic(k-1,km)
+    call steger_warming_split_one_scalar(q_d(i,j,k-1,1),q_d(i,j,k-1,2),q_d(i,j,k-1,3),q_d(i,j,k-1,4), &
+         q_d(i,j,k-1,5),vel_d(i,j,k-1,1),vel_d(i,j,k-1,2),vel_d(i,j,k-1,3),prs_d(i,j,k-1), &
+         jacob_d(ii,jj,kk),dxi_d(i,j,k-1,3,1),dxi_d(i,j,k-1,3,2),dxi_d(i,j,k-1,3,3),gamma,1,fp)
+    ii = idx_periodic(i,im); jj = idx_periodic(j,jm); kk = idx_periodic(k,km)
+    call steger_warming_split_one_scalar(q_d(i,j,k,1),q_d(i,j,k,2),q_d(i,j,k,3),q_d(i,j,k,4), &
+         q_d(i,j,k,5),vel_d(i,j,k,1),vel_d(i,j,k,2),vel_d(i,j,k,3),prs_d(i,j,k), &
+         jacob_d(ii,jj,kk),dxi_d(i,j,k,3,1),dxi_d(i,j,k,3,2),dxi_d(i,j,k,3,3),gamma,-1,fm)
+    do m=1,5
+      qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) + (fp(m) + fm(m))
+    enddo
+  end subroutine upwind_s0a1_rhs_z_global_kernel
+
+  attributes(device) real(8) function steger_warming_split_component_at( &
+       i,j,k,idir,ivar,split_sign,im,jm,km,gamma) result(f)
+    use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d
+    implicit none
+    integer,value :: i,j,k,idir,ivar,split_sign,im,jm,km
+    real(8),value :: gamma
+    integer :: ii,jj,kk
+    real(8) :: rho,q2,q3,q4,q5,u1,u2,u3,p,jloc,dx1,dx2,dx3
+    real(8) :: uu,var0,gpd1,gpd2,gpd3,css,csa,lmach,gm2,fhi,jro
+    real(8) :: l1,l4,l5,lp1,lp4,lp5,var1,var2,var3,var4,eps
+
+    ! The explicit stencil may read exchanged geometric halos.  Their metrics
+    ! are part of the local geometry field and must not be periodized.
+    ii = i
+    jj = j
+    kk = k
+    rho = q_d(i,j,k,1)
+    q2 = q_d(i,j,k,2)
+    q3 = q_d(i,j,k,3)
+    q4 = q_d(i,j,k,4)
+    q5 = q_d(i,j,k,5)
+    u1 = vel_d(i,j,k,1)
+    u2 = vel_d(i,j,k,2)
+    u3 = vel_d(i,j,k,3)
+    p = prs_d(i,j,k)
+    jloc = jacob_d(ii,jj,kk)
+    dx1 = dxi_d(i,j,k,idir,1)
+    dx2 = dxi_d(i,j,k,idir,2)
+    dx3 = dxi_d(i,j,k,idir,3)
+
+    eps = 0.04d0
+    gm2 = 0.5d0/gamma
+    uu = dx1*u1 + dx2*u2 + dx3*u3
+    var0 = 1.d0/sqrt(dx1**2 + dx2**2 + dx3**2)
+    gpd1 = dx1*var0
+    gpd2 = dx2*var0
+    gpd3 = dx3*var0
+    css = sqrt(gamma*p/rho)
+    csa = css/var0
+    lmach = uu/csa
+
+    if(lmach >= 1.d0) then
+      if(split_sign < 0) then
+        f = 0.d0
+      else
+        select case(ivar)
+        case(1)
+          f = jloc*rho*uu
+        case(2)
+          f = jloc*(q2*uu + dx1*p)
+        case(3)
+          f = jloc*(q3*uu + dx2*p)
+        case(4)
+          f = jloc*(q4*uu + dx3*p)
+        case default
+          f = jloc*(q5 + p)*uu
+        end select
+      endif
+      return
+    elseif(lmach <= -1.d0) then
+      if(split_sign > 0) then
+        f = 0.d0
+      else
+        select case(ivar)
+        case(1)
+          f = jloc*rho*uu
+        case(2)
+          f = jloc*(q2*uu + dx1*p)
+        case(3)
+          f = jloc*(q3*uu + dx2*p)
+        case(4)
+          f = jloc*(q4*uu + dx3*p)
+        case default
+          f = jloc*(q5 + p)*uu
+        end select
+      endif
+      return
+    endif
+
+    fhi = 0.5d0*(gamma - 1.d0)*(u1**2 + u2**2 + u3**2)
+    jro = jloc*rho
+    l1 = uu
+    l4 = uu + csa
+    l5 = uu - csa
+    lp1 = 0.5d0*(l1 + sqrt(l1**2 + eps**2))
+    lp4 = 0.5d0*(l4 + sqrt(l4**2 + eps**2))
+    lp5 = 0.5d0*(l5 + sqrt(l5**2 + eps**2))
+
+    if(split_sign > 0) then
+      var1 = lp1
+      var2 = lp4 - lp5
+      var3 = 2.d0*lp1 - lp4 - lp5
+    else
+      var1 = l1 - lp1
+      var2 = (l4 - lp4) - (l5 - lp5)
+      var3 = 2.d0*(l1 - lp1) - (l4 - lp4) - (l5 - lp5)
+    endif
+    var4 = var1 - var3*gm2
+
+    select case(ivar)
+    case(1)
+      f = jro*var4
+    case(2)
+      f = jro*(var4*u1 + var2*css*gpd1*gm2)
+    case(3)
+      f = jro*(var4*u2 + var2*css*gpd2*gm2)
+    case(4)
+      f = jro*(var4*u3 + var2*css*gpd3*gm2)
+    case default
+      f = jloc*(var1*q5 + rho* &
+          (var2*uu*var0*css*gm2 - var3*(fhi + css**2)*gm2/(gamma - 1.d0)))
+    end select
+  end function steger_warming_split_component_at
+
+  attributes(device) subroutine steger_warming_split_vector_at( &
+       i,j,k,idir,im,jm,km,gamma,split_sign,f)
+    use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d
+    implicit none
+    integer,value :: i,j,k,idir,im,jm,km,split_sign
+    real(8),value :: gamma
+    real(8) :: f(5)
+    integer :: ii,jj,kk
+
+    ii = idx_periodic(i,im)
+    jj = idx_periodic(j,jm)
+    kk = idx_periodic(k,km)
+    call steger_warming_split_one_scalar( &
+         q_d(i,j,k,1),q_d(i,j,k,2),q_d(i,j,k,3),q_d(i,j,k,4),q_d(i,j,k,5), &
+         vel_d(i,j,k,1),vel_d(i,j,k,2),vel_d(i,j,k,3),prs_d(i,j,k), &
+         jacob_d(ii,jj,kk),dxi_d(i,j,k,idir,1),dxi_d(i,j,k,idir,2), &
+         dxi_d(i,j,k,idir,3),gamma,split_sign,f)
+  end subroutine steger_warming_split_vector_at
+
+  attributes(device) real(8) function weno7_gpu(u) result(uh)
+    implicit none
+    real(8) :: u(7)
+    real(8) :: uh1,uh2,uh3,uh4
+    real(8) :: beta1,beta2,beta3,beta4,alpha1,alpha2,alpha3,alpha4
+    real(8) :: df1,df2,df3,alpha_sum
+    real(8),parameter :: eps=1.d-6
+
+    uh1 = -0.25d0*u(1) + 1.083333333333333d0*u(2) &
+          -1.916666666666667d0*u(3) + 2.083333333333333d0*u(4)
+    uh2 = 8.333333333333333d-2*u(2) - 4.166666666666667d-1*u(3) &
+          +1.083333333333333d0*u(4) + 0.25d0*u(5)
+    uh3 = -8.333333333333333d-2*u(3) + 5.833333333333333d-1*u(4) &
+          +5.833333333333333d-1*u(5) - 8.333333333333333d-2*u(6)
+    uh4 = 0.25d0*u(4) + 1.083333333333333d0*u(5) &
+          -4.166666666666667d-1*u(6) + 8.333333333333333d-2*u(7)
+
+    df1 = 2.777777777777778d-2*(-2.d0*u(1)+9.d0*u(2)-18.d0*u(3)+11.d0*u(4))**2
+    df2 = 1.083333333333333d0*(-u(1)+4.d0*u(2)-5.d0*u(3)+2.d0*u(4))**2
+    df3 = 1.084722222222222d0*(-u(1)+3.d0*u(2)-3.d0*u(3)+u(4))**2
+    beta1 = df1 + df2 + df3
+
+    df1 = 2.777777777777778d-2*(u(2)-6.d0*u(3)+3.d0*u(4)+2.d0*u(5))**2
+    df2 = 1.083333333333333d0*(u(3)-2.d0*u(4)+u(5))**2
+    df3 = 1.084722222222222d0*(-u(2)+3.d0*u(3)-3.d0*u(4)+u(5))**2
+    beta2 = df1 + df2 + df3
+
+    df1 = 2.777777777777778d-2*(-2.d0*u(3)-3.d0*u(4)+6.d0*u(5)-u(6))**2
+    df2 = 1.083333333333333d0*(u(3)-2.d0*u(4)+u(5))**2
+    df3 = 1.084722222222222d0*(-u(3)+3.d0*u(4)-3.d0*u(5)+u(6))**2
+    beta3 = df1 + df2 + df3
+
+    df1 = 2.777777777777778d-2*(-11.d0*u(4)+18.d0*u(5)-9.d0*u(6)+2.d0*u(7))**2
+    df2 = 1.083333333333333d0*(2.d0*u(4)-5.d0*u(5)+4.d0*u(6)-u(7))**2
+    df3 = 1.084722222222222d0*(-u(4)+3.d0*u(5)-3.d0*u(6)+u(7))**2
+    beta4 = df1 + df2 + df3
+
+    alpha1 = 2.857142857142857d-2/(beta1 + eps)**2
+    alpha2 = 3.428571428571429d-1/(beta2 + eps)**2
+    alpha3 = 5.142857142857143d-1/(beta3 + eps)**2
+    alpha4 = 1.142857142857143d-1/(beta4 + eps)**2
+    alpha_sum = alpha1 + alpha2 + alpha3 + alpha4
+    uh = (alpha1*uh1 + alpha2*uh2 + alpha3*uh3 + alpha4*uh4)/alpha_sum
+  end function weno7_gpu
+
+  attributes(device) real(8) function minmod2_gpu(var1,var2) result(value)
+    implicit none
+    real(8),value :: var1,var2
+
+    if(var1 > 0.d0 .and. var2 > 0.d0) then
+      value = min(abs(var1),abs(var2))
+    elseif(var1 < 0.d0 .and. var2 < 0.d0) then
+      value = -min(abs(var1),abs(var2))
+    else
+      value = 0.d0
+    endif
+  end function minmod2_gpu
+
+  attributes(device) real(8) function minmod4_gpu(var1,var2,var3,var4) result(value)
+    implicit none
+    real(8),value :: var1,var2,var3,var4
+
+    if(var1 > 0.d0 .and. var2 > 0.d0 .and. var3 > 0.d0 .and. var4 > 0.d0) then
+      value = min(abs(var1),abs(var2),abs(var3),abs(var4))
+    elseif(var1 < 0.d0 .and. var2 < 0.d0 .and. var3 < 0.d0 .and. var4 < 0.d0) then
+      value = -min(abs(var1),abs(var2),abs(var3),abs(var4))
+    else
+      value = 0.d0
+    endif
+  end function minmod4_gpu
+
+  attributes(device) real(8) function mp7_gpu(u) result(uh)
+    implicit none
+    real(8) :: u(7)
+    real(8) :: ulinear,u_mp,u_ul,u_av,u_md,u_lc,u_min,u_max
+    real(8) :: var1,var2,dm1,d0,d1,dhm1,dh0
+
+    ulinear = (-3.d0*u(1) + 25.d0*u(2) - 101.d0*u(3) + 319.d0*u(4) + &
+               214.d0*u(5) - 38.d0*u(6) + 4.d0*u(7))/420.d0
+    var1 = u(5) - u(4)
+    var2 = 4.d0*(u(4) - u(3))
+    u_mp = u(4) + minmod2_gpu(var1,var2)
+
+    var1 = (ulinear - u(4))*(ulinear - u_mp)
+    if(var1 >= 1.d-10) then
+      dm1 = u(2) - 2.d0*u(3) + u(4)
+      d0 = u(3) - 2.d0*u(4) + u(5)
+      d1 = u(4) - 2.d0*u(5) + u(6)
+      dhm1 = minmod4_gpu(4.d0*dm1-d0,4.d0*d0-dm1,dm1,d0)
+      dh0 = minmod4_gpu(4.d0*d0-d1,4.d0*d1-d0,d0,d1)
+
+      u_ul = u(4) + 4.d0*(u(4) - u(3))
+      u_av = 0.5d0*(u(4) + u(5))
+      u_md = u_av - 0.5d0*dh0
+      u_lc = u(4) + 0.5d0*(u(4) - u(3)) + 1.333333333333333d0*dhm1
+
+      var1 = min(u(4),u(5),u_md)
+      var2 = min(u(4),u_ul,u_lc)
+      u_min = max(var1,var2)
+      var1 = max(u(4),u(5),u_md)
+      var2 = max(u(4),u_ul,u_lc)
+      u_max = min(var1,var2)
+      uh = ulinear + minmod2_gpu(u_min-ulinear,u_max-ulinear)
+    else
+      uh = ulinear
+    endif
+  end function mp7_gpu
+
+  attributes(device) real(8) function suw3_gpu(u) result(uh)
+    implicit none
+    real(8) :: u(3)
+
+    uh = (-u(1) + 5.d0*u(2) + 2.d0*u(3))/6.d0
+  end function suw3_gpu
+
+  attributes(device) real(8) function mp5_gpu(u) result(uh)
+    implicit none
+    real(8) :: u(5)
+    real(8) :: ulinear,u_mp,u_ul,u_av,u_md,u_lc,u_min,u_max
+    real(8) :: var1,var2,dm1,d0,d1,dhm1,dh0
+
+    ulinear = (2.d0*u(1) - 13.d0*u(2) + 47.d0*u(3) + 27.d0*u(4) - 3.d0*u(5))/60.d0
+    var1 = u(4) - u(3)
+    var2 = 4.d0*(u(3) - u(2))
+    u_mp = u(3) + minmod2_gpu(var1,var2)
+
+    var1 = (ulinear - u(3))*(ulinear - u_mp)
+    if(var1 >= 1.d-10) then
+      dm1 = u(1) - 2.d0*u(2) + u(3)
+      d0 = u(2) - 2.d0*u(3) + u(4)
+      d1 = u(3) - 2.d0*u(4) + u(5)
+      dhm1 = minmod4_gpu(4.d0*dm1-d0,4.d0*d0-dm1,dm1,d0)
+      dh0 = minmod4_gpu(4.d0*d0-d1,4.d0*d1-d0,d0,d1)
+
+      u_ul = u(3) + 4.d0*(u(3) - u(2))
+      u_av = 0.5d0*(u(3) + u(4))
+      u_md = u_av - 0.5d0*dh0
+      u_lc = u(3) + 0.5d0*(u(3) - u(2)) + 1.333333333333333d0*dhm1
+
+      var1 = min(u(3),u(4),u_md)
+      var2 = min(u(3),u_ul,u_lc)
+      u_min = max(var1,var2)
+      var1 = max(u(3),u(4),u_md)
+      var2 = max(u(3),u_ul,u_lc)
+      u_max = min(var1,var2)
+      uh = ulinear + minmod2_gpu(u_min-ulinear,u_max-ulinear)
+    else
+      uh = ulinear
+    endif
+  end function mp5_gpu
+
+  attributes(device) logical function shock_interface_active(i,j,k,idir,im,jm,km)
+    use commarray_gpu, only: shock_mask_d
+    implicit none
+    integer,value :: i,j,k,idir,im,jm,km
+
+    select case(idir)
+    case(1)
+      if(i < 0) then
+        shock_interface_active = shock_mask_d(i+1,j,k) /= 0_1
+      elseif(i+1 > im) then
+        shock_interface_active = shock_mask_d(i,j,k) /= 0_1
+      else
+        shock_interface_active = shock_mask_d(i,j,k) /= 0_1 .or. &
+             shock_mask_d(i+1,j,k) /= 0_1
+      endif
+    case(2)
+      if(j < 0) then
+        shock_interface_active = shock_mask_d(i,j+1,k) /= 0_1
+      elseif(j+1 > jm) then
+        shock_interface_active = shock_mask_d(i,j,k) /= 0_1
+      else
+        shock_interface_active = shock_mask_d(i,j,k) /= 0_1 .or. &
+             shock_mask_d(i,j+1,k) /= 0_1
+      endif
+    case default
+      if(k < 0) then
+        shock_interface_active = shock_mask_d(i,j,k+1) /= 0_1
+      elseif(k+1 > km) then
+        shock_interface_active = shock_mask_d(i,j,k) /= 0_1
+      else
+        shock_interface_active = shock_mask_d(i,j,k) /= 0_1 .or. &
+             shock_mask_d(i,j,k+1) /= 0_1
+      endif
+    end select
+  end function shock_interface_active
+
+  attributes(device) subroutine roe_characteristic_matrices( &
+       i,j,k,idir,gamma,lev,rev)
+    use commarray_gpu, only: q_d,rho_d,prs_d,vel_d,dxi_d
+    implicit none
+    integer,value :: i,j,k,idir
+    real(8),value :: gamma
+    real(8) :: lev(5,5),rev(5,5)
+    integer :: ir,jr,kr
+    real(8),parameter :: rero=1.d-12
+    real(8) :: wroe,wroe1,u1roe,u2roe,u3roe,hl,hr,hroe,cssroe,kroe
+    real(8) :: kl,krg,ugp,rcs,var1,var2,var3,var4,rgp,gpd(3),b1,b2
+
+    ir=i
+    jr=j
+    kr=k
+    select case(idir)
+    case(1)
+      ir=i+1
+    case(2)
+      jr=j+1
+    case default
+      kr=k+1
+    end select
+
+    wroe=sqrt(rho_d(i,j,k))/(sqrt(rho_d(i,j,k))+sqrt(rho_d(ir,jr,kr)))
+    wroe1=1.d0-wroe
+    u1roe=wroe*vel_d(i,j,k,1)+wroe1*vel_d(ir,jr,kr,1)
+    u2roe=wroe*vel_d(i,j,k,2)+wroe1*vel_d(ir,jr,kr,2)
+    u3roe=wroe*vel_d(i,j,k,3)+wroe1*vel_d(ir,jr,kr,3)
+    kroe=0.5d0*(u1roe*u1roe+u2roe*u2roe+u3roe*u3roe)
+    kl=0.5d0*(vel_d(i,j,k,1)**2+vel_d(i,j,k,2)**2+vel_d(i,j,k,3)**2)
+    krg=0.5d0*(vel_d(ir,jr,kr,1)**2+vel_d(ir,jr,kr,2)**2+vel_d(ir,jr,kr,3)**2)
+    hl=(q_d(i,j,k,5)+prs_d(i,j,k))/rho_d(i,j,k)
+    hr=(q_d(ir,jr,kr,5)+prs_d(ir,jr,kr))/rho_d(ir,jr,kr)
+    hroe=wroe*hl+wroe1*hr
+    cssroe=sqrt((gamma-1.d0)*(hroe-kroe))
+    rcs=1.d0/cssroe
+
+    var1=0.5d0*(dxi_d(i,j,k,idir,1)+dxi_d(ir,jr,kr,idir,1))
+    var2=0.5d0*(dxi_d(i,j,k,idir,2)+dxi_d(ir,jr,kr,idir,2))
+    var3=0.5d0*(dxi_d(i,j,k,idir,3)+dxi_d(ir,jr,kr,idir,3))
+    var4=1.d0/sqrt(var1*var1+var2*var2+var3*var3)
+    gpd(1)=var1*var4
+    gpd(2)=var2*var4
+    gpd(3)=var3*var4
+    ugp=u1roe*gpd(1)+u2roe*gpd(2)+u3roe*gpd(3)
+    b1=(gamma-1.d0)/(cssroe*cssroe)
+    b2=1.d0+2.d0*b1*kroe-b1*hroe
+
+    lev(1,1)=0.5d0*(b2+ugp*rcs)
+    lev(1,2)=-0.5d0*(b1*u1roe+gpd(1)*rcs)
+    lev(1,3)=-0.5d0*(b1*u2roe+gpd(2)*rcs)
+    lev(1,4)=-0.5d0*(b1*u3roe+gpd(3)*rcs)
+    lev(1,5)=0.5d0*b1
+    rev(1,1)=1.d0
+    rev(2,1)=u1roe-cssroe*gpd(1)
+    rev(3,1)=u2roe-cssroe*gpd(2)
+    rev(4,1)=u3roe-cssroe*gpd(3)
+    rev(5,1)=hroe-ugp*cssroe
+
+    lev(2,1)=1.d0-b2
+    lev(2,2)=b1*u1roe
+    lev(2,3)=b1*u2roe
+    lev(2,4)=b1*u3roe
+    lev(2,5)=-b1
+    rev(1,2)=1.d0
+    rev(2,2)=u1roe
+    rev(3,2)=u2roe
+    rev(4,2)=u3roe
+    rev(5,2)=hroe-1.d0/b1
+
+    if(abs(var1) > rero) then
+      rgp=1.d0/gpd(1)
+      lev(3,1)=(ugp*gpd(2)-u2roe)*rgp
+      lev(3,2)=-gpd(2)
+      lev(3,3)=(1.d0-gpd(2)*gpd(2))*rgp
+      lev(3,4)=-gpd(2)*gpd(3)*rgp
+      lev(3,5)=0.d0
+      lev(4,1)=(ugp*gpd(3)-u3roe)*rgp
+      lev(4,2)=-gpd(3)
+      lev(4,3)=-gpd(2)*gpd(3)*rgp
+      lev(4,4)=(1.d0-gpd(3)*gpd(3))*rgp
+      lev(4,5)=0.d0
+      rev(1,3)=0.d0
+      rev(2,3)=-gpd(2)
+      rev(3,3)=gpd(1)
+      rev(4,3)=0.d0
+      rev(5,3)=u2roe*gpd(1)-u1roe*gpd(2)
+      rev(1,4)=0.d0
+      rev(2,4)=-gpd(3)
+      rev(3,4)=0.d0
+      rev(4,4)=gpd(1)
+      rev(5,4)=u3roe*gpd(1)-u1roe*gpd(3)
+    elseif(abs(var2) > rero) then
+      rgp=1.d0/gpd(2)
+      lev(3,1)=(ugp*gpd(1)-u1roe)*rgp
+      lev(3,2)=(1.d0-gpd(1)*gpd(1))*rgp
+      lev(3,3)=-gpd(1)
+      lev(3,4)=-gpd(1)*gpd(3)*rgp
+      lev(3,5)=0.d0
+      lev(4,1)=(ugp*gpd(3)-u3roe)*rgp
+      lev(4,2)=-gpd(1)*gpd(3)*rgp
+      lev(4,3)=-gpd(3)
+      lev(4,4)=(1.d0-gpd(3)*gpd(3))*rgp
+      lev(4,5)=0.d0
+      rev(1,3)=0.d0
+      rev(2,3)=gpd(2)
+      rev(3,3)=-gpd(1)
+      rev(4,3)=0.d0
+      rev(5,3)=u1roe*gpd(2)-u2roe*gpd(1)
+      rev(1,4)=0.d0
+      rev(2,4)=0.d0
+      rev(3,4)=-gpd(3)
+      rev(4,4)=gpd(2)
+      rev(5,4)=u3roe*gpd(2)-u2roe*gpd(3)
+    else
+      rgp=1.d0/gpd(3)
+      lev(3,1)=(ugp*gpd(1)-u1roe)*rgp
+      lev(3,2)=(1.d0-gpd(1)*gpd(1))*rgp
+      lev(3,3)=-gpd(1)*gpd(2)*rgp
+      lev(3,4)=-gpd(1)
+      lev(3,5)=0.d0
+      lev(4,1)=(ugp*gpd(2)-u2roe)*rgp
+      lev(4,2)=-gpd(1)*gpd(2)*rgp
+      lev(4,3)=(1.d0-gpd(2)*gpd(2))*rgp
+      lev(4,4)=-gpd(2)
+      lev(4,5)=0.d0
+      rev(1,3)=0.d0
+      rev(2,3)=gpd(3)
+      rev(3,3)=0.d0
+      rev(4,3)=-gpd(1)
+      rev(5,3)=u1roe*gpd(3)-u3roe*gpd(1)
+      rev(1,4)=0.d0
+      rev(2,4)=0.d0
+      rev(3,4)=gpd(3)
+      rev(4,4)=-gpd(2)
+      rev(5,4)=u2roe*gpd(3)-u3roe*gpd(2)
+    endif
+
+    lev(5,1)=0.5d0*(b2-ugp*rcs)
+    lev(5,2)=-0.5d0*(b1*u1roe-gpd(1)*rcs)
+    lev(5,3)=-0.5d0*(b1*u2roe-gpd(2)*rcs)
+    lev(5,4)=-0.5d0*(b1*u3roe-gpd(3)*rcs)
+    lev(5,5)=0.5d0*b1
+    rev(1,5)=1.d0
+    rev(2,5)=u1roe+cssroe*gpd(1)
+    rev(3,5)=u2roe+cssroe*gpd(2)
+    rev(4,5)=u3roe+cssroe*gpd(3)
+    rev(5,5)=hroe+ugp*cssroe
+  end subroutine roe_characteristic_matrices
+
+  attributes(device) subroutine roe_characteristic_state(i,j,k,idir,gamma, &
+       uroe,hroe,cssroe,gpd,b1,b2,ugp,basis_axis)
+    use commarray_gpu, only: q_d,rho_d,prs_d,vel_d,dxi_d
+    implicit none
+    integer,value :: i,j,k,idir
+    real(8),value :: gamma
+    real(8) :: uroe(3),hroe,cssroe,gpd(3),b1,b2,ugp
+    integer :: basis_axis,ir,jr,kr
+    real(8) :: wroe,wroe1,kroe,hl,hr,var1,var2,var3,var4
+
+    ir=i
+    jr=j
+    kr=k
+    select case(idir)
+    case(1)
+      ir=i+1
+    case(2)
+      jr=j+1
+    case default
+      kr=k+1
+    end select
+    wroe=sqrt(rho_d(i,j,k))/(sqrt(rho_d(i,j,k))+sqrt(rho_d(ir,jr,kr)))
+    wroe1=1.d0-wroe
+    uroe(1)=wroe*vel_d(i,j,k,1)+wroe1*vel_d(ir,jr,kr,1)
+    uroe(2)=wroe*vel_d(i,j,k,2)+wroe1*vel_d(ir,jr,kr,2)
+    uroe(3)=wroe*vel_d(i,j,k,3)+wroe1*vel_d(ir,jr,kr,3)
+    kroe=0.5d0*(uroe(1)**2+uroe(2)**2+uroe(3)**2)
+    hl=(q_d(i,j,k,5)+prs_d(i,j,k))/rho_d(i,j,k)
+    hr=(q_d(ir,jr,kr,5)+prs_d(ir,jr,kr))/rho_d(ir,jr,kr)
+    hroe=wroe*hl+wroe1*hr
+    cssroe=sqrt((gamma-1.d0)*(hroe-kroe))
+    var1=0.5d0*(dxi_d(i,j,k,idir,1)+dxi_d(ir,jr,kr,idir,1))
+    var2=0.5d0*(dxi_d(i,j,k,idir,2)+dxi_d(ir,jr,kr,idir,2))
+    var3=0.5d0*(dxi_d(i,j,k,idir,3)+dxi_d(ir,jr,kr,idir,3))
+    var4=1.d0/sqrt(var1*var1+var2*var2+var3*var3)
+    gpd(1)=var1*var4
+    gpd(2)=var2*var4
+    gpd(3)=var3*var4
+    ugp=uroe(1)*gpd(1)+uroe(2)*gpd(2)+uroe(3)*gpd(3)
+    b1=(gamma-1.d0)/(cssroe*cssroe)
+    b2=1.d0+2.d0*b1*kroe-b1*hroe
+    if(abs(var1) > 1.d-12) then
+      basis_axis=1
+    elseif(abs(var2) > 1.d-12) then
+      basis_axis=2
+    else
+      basis_axis=3
+    endif
+  end subroutine roe_characteristic_state
+
+  attributes(device) subroutine characteristic_reconstruction_interface_flux( &
+       i,j,k,idir,im,jm,km,reconstruction_scheme,gamma,hm,npdci,physical_x,fh)
+    implicit none
+    integer,value :: i,j,k,idir,im,jm,km,reconstruction_scheme,hm,npdci,physical_x
+    real(8),value :: gamma
+    real(8) :: fh(5)
+    integer :: n,m,c,ii,jj,kk,offset,basis_axis,ibeg,iend
+    real(8) :: uroe(3),hroe,cssroe,gpd(3),b1,b2,ugp,rcs,rgp
+    real(8) :: lvec(5),stencil_plus(7),stencil_minus(7),fchar
+    real(8) :: split_plus(5,7),split_minus(5,7)
+
+    if(.not.shock_interface_active(i,j,k,idir,im,jm,km)) then
+      do m=1,5
+        if(physical_x /= 0) then
+          fh(m)=explicit_reconstruction_interface_flux_x_physical( &
+               i,j,k,m,1,im,jm,km,hm,npdci,reconstruction_scheme,gamma) + &
+               explicit_reconstruction_interface_flux_x_physical( &
+               i,j,k,m,-1,im,jm,km,hm,npdci,reconstruction_scheme,gamma)
+        else
+          fh(m)=explicit_reconstruction_interface_flux( &
+               i,j,k,idir,m,1,im,jm,km,reconstruction_scheme,gamma) + &
+               explicit_reconstruction_interface_flux( &
+               i,j,k,idir,m,-1,im,jm,km,reconstruction_scheme,gamma)
+        endif
+      enddo
+      return
+    endif
+
+    call roe_characteristic_state(i,j,k,idir,gamma,uroe,hroe,cssroe,gpd, &
+         b1,b2,ugp,basis_axis)
+    rcs=1.d0/cssroe
+    fh=0.d0
+    ibeg = -hm
+    iend = im + hm
+    if(physical_x /= 0) then
+      select case(npdci)
+      case(1)
+        ibeg = 0
+      case(2)
+        iend = im
+      case default
+        ibeg = 0
+        iend = im
+      end select
+    endif
+    do n=1,7
+      offset=n-4
+      ii=i
+      jj=j
+      kk=k
+      select case(idir)
+      case(1)
+        ii=i+offset
+      case(2)
+        jj=j+offset
+      case default
+        kk=k+offset
+      end select
+      if(physical_x /= 0) ii=max(ibeg,min(iend,ii))
+      call steger_warming_split_vector_at( &
+           ii,jj,kk,idir,im,jm,km,gamma,1,split_plus(:,n))
+      offset=5-n
+      ii=i
+      jj=j
+      kk=k
+      select case(idir)
+      case(1)
+        ii=i+offset
+      case(2)
+        jj=j+offset
+      case default
+        kk=k+offset
+      end select
+      if(physical_x /= 0) ii=max(ibeg,min(iend,ii))
+      call steger_warming_split_vector_at( &
+           ii,jj,kk,idir,im,jm,km,gamma,-1,split_minus(:,n))
+    enddo
+    do c=1,5
+      select case(c)
+      case(1)
+        lvec(1)=0.5d0*(b2+ugp*rcs)
+        lvec(2)=-0.5d0*(b1*uroe(1)+gpd(1)*rcs)
+        lvec(3)=-0.5d0*(b1*uroe(2)+gpd(2)*rcs)
+        lvec(4)=-0.5d0*(b1*uroe(3)+gpd(3)*rcs)
+        lvec(5)=0.5d0*b1
+      case(2)
+        lvec(1)=1.d0-b2
+        lvec(2)=b1*uroe(1)
+        lvec(3)=b1*uroe(2)
+        lvec(4)=b1*uroe(3)
+        lvec(5)=-b1
+      case(3)
+        rgp=1.d0/gpd(basis_axis)
+        select case(basis_axis)
+        case(1)
+          lvec=(/(ugp*gpd(2)-uroe(2))*rgp,-gpd(2), &
+               (1.d0-gpd(2)**2)*rgp,-gpd(2)*gpd(3)*rgp,0.d0/)
+        case(2)
+          lvec=(/(ugp*gpd(1)-uroe(1))*rgp,(1.d0-gpd(1)**2)*rgp, &
+               -gpd(1),-gpd(1)*gpd(3)*rgp,0.d0/)
+        case default
+          lvec=(/(ugp*gpd(1)-uroe(1))*rgp,(1.d0-gpd(1)**2)*rgp, &
+               -gpd(1)*gpd(2)*rgp,-gpd(1),0.d0/)
+        end select
+      case(4)
+        rgp=1.d0/gpd(basis_axis)
+        select case(basis_axis)
+        case(1)
+          lvec=(/(ugp*gpd(3)-uroe(3))*rgp,-gpd(3), &
+               -gpd(2)*gpd(3)*rgp,(1.d0-gpd(3)**2)*rgp,0.d0/)
+        case(2)
+          lvec=(/(ugp*gpd(3)-uroe(3))*rgp,-gpd(1)*gpd(3)*rgp, &
+               -gpd(3),(1.d0-gpd(3)**2)*rgp,0.d0/)
+        case default
+          lvec=(/(ugp*gpd(2)-uroe(2))*rgp,-gpd(1)*gpd(2)*rgp, &
+               (1.d0-gpd(2)**2)*rgp,-gpd(2),0.d0/)
+        end select
+      case default
+        lvec(1)=0.5d0*(b2-ugp*rcs)
+        lvec(2)=-0.5d0*(b1*uroe(1)-gpd(1)*rcs)
+        lvec(3)=-0.5d0*(b1*uroe(2)-gpd(2)*rcs)
+        lvec(4)=-0.5d0*(b1*uroe(3)-gpd(3)*rcs)
+        lvec(5)=0.5d0*b1
+      end select
+      do n=1,7
+        stencil_plus(n)=0.d0
+        stencil_minus(n)=0.d0
+        do m=1,5
+          stencil_plus(n)=stencil_plus(n)+lvec(m)*split_plus(m,n)
+        enddo
+        do m=1,5
+          stencil_minus(n)=stencil_minus(n)+lvec(m)*split_minus(m,n)
+        enddo
+      enddo
+      select case(reconstruction_scheme)
+      case(3)
+        if(physical_x /= 0) then
+          fchar=reconstruct_x_physical_stencil(stencil_plus,i,im,npdci) + &
+                reconstruct_x_physical_stencil(stencil_minus,i,im,npdci)
+        else
+          fchar=mp7_gpu(stencil_plus)+mp7_gpu(stencil_minus)
+        endif
+      case(1)
+        fchar=weno7_gpu(stencil_plus)+weno7_gpu(stencil_minus)
+      case default
+        fchar=0.d0
+      end select
+      select case(c)
+      case(1)
+        fh(1)=fh(1)+fchar
+        fh(2)=fh(2)+(uroe(1)-cssroe*gpd(1))*fchar
+        fh(3)=fh(3)+(uroe(2)-cssroe*gpd(2))*fchar
+        fh(4)=fh(4)+(uroe(3)-cssroe*gpd(3))*fchar
+        fh(5)=fh(5)+(hroe-ugp*cssroe)*fchar
+      case(2)
+        fh(1)=fh(1)+fchar
+        fh(2)=fh(2)+uroe(1)*fchar
+        fh(3)=fh(3)+uroe(2)*fchar
+        fh(4)=fh(4)+uroe(3)*fchar
+        fh(5)=fh(5)+(hroe-1.d0/b1)*fchar
+      case(3)
+        select case(basis_axis)
+        case(1)
+          fh(2)=fh(2)-gpd(2)*fchar; fh(3)=fh(3)+gpd(1)*fchar
+          fh(5)=fh(5)+(uroe(2)*gpd(1)-uroe(1)*gpd(2))*fchar
+        case(2)
+          fh(2)=fh(2)+gpd(2)*fchar; fh(3)=fh(3)-gpd(1)*fchar
+          fh(5)=fh(5)+(uroe(1)*gpd(2)-uroe(2)*gpd(1))*fchar
+        case default
+          fh(2)=fh(2)+gpd(3)*fchar; fh(4)=fh(4)-gpd(1)*fchar
+          fh(5)=fh(5)+(uroe(1)*gpd(3)-uroe(3)*gpd(1))*fchar
+        end select
+      case(4)
+        select case(basis_axis)
+        case(1)
+          fh(2)=fh(2)-gpd(3)*fchar; fh(4)=fh(4)+gpd(1)*fchar
+          fh(5)=fh(5)+(uroe(3)*gpd(1)-uroe(1)*gpd(3))*fchar
+        case(2)
+          fh(3)=fh(3)-gpd(3)*fchar; fh(4)=fh(4)+gpd(2)*fchar
+          fh(5)=fh(5)+(uroe(3)*gpd(2)-uroe(2)*gpd(3))*fchar
+        case default
+          fh(3)=fh(3)+gpd(3)*fchar; fh(4)=fh(4)-gpd(2)*fchar
+          fh(5)=fh(5)+(uroe(2)*gpd(3)-uroe(3)*gpd(2))*fchar
+        end select
+      case default
+        fh(1)=fh(1)+fchar
+        fh(2)=fh(2)+(uroe(1)+cssroe*gpd(1))*fchar
+        fh(3)=fh(3)+(uroe(2)+cssroe*gpd(2))*fchar
+        fh(4)=fh(4)+(uroe(3)+cssroe*gpd(3))*fchar
+        fh(5)=fh(5)+(hroe+ugp*cssroe)*fchar
+      end select
+    enddo
+  end subroutine characteristic_reconstruction_interface_flux
+
+  attributes(device) real(8) function explicit_reconstruction_interface_flux( &
+       i,j,k,idir,ivar,split_sign,im,jm,km,reconstruction_scheme,gamma) result(fh)
+    implicit none
+    integer,value :: i,j,k,idir,ivar,split_sign,im,jm,km,reconstruction_scheme
+    real(8),value :: gamma
+    integer :: n,ii,jj,kk,offset
+    real(8) :: f(7)
+
+    do n=1,7
+      if(split_sign > 0) then
+        offset = n - 4
+      else
+        offset = 5 - n
+      endif
+      ii = i
+      jj = j
+      kk = k
+      select case(idir)
+      case(1)
+        ii = i + offset
+      case(2)
+        jj = j + offset
+      case default
+        kk = k + offset
+      end select
+      f(n) = steger_warming_split_component_at( &
+           ii,jj,kk,idir,ivar,split_sign,im,jm,km,gamma)
+    enddo
+    select case(reconstruction_scheme)
+    case(1)
+      fh = weno7_gpu(f)
+    case(3)
+      fh = mp7_gpu(f)
+    case default
+      fh = 0.d0
+    end select
+  end function explicit_reconstruction_interface_flux
+
+  attributes(device) real(8) function explicit_reconstruction_interface_flux_x_physical( &
+       i,j,k,ivar,split_sign,im,jm,km,hm,npdci,reconstruction_scheme,gamma) result(fh)
+    implicit none
+    integer,value :: i,j,k,ivar,split_sign,im,jm,km,hm,npdci,reconstruction_scheme
+    real(8),value :: gamma
+    integer :: n,offset,ii,ibeg,iend
+    real(8) :: f(7)
+
+    select case(npdci)
+    case(1)
+      ibeg = 0
+      iend = im + hm
+    case(2)
+      ibeg = -hm
+      iend = im
+    case(3)
+      ibeg = -hm
+      iend = im + hm
+    case default
+      ibeg = 0
+      iend = im
+    end select
+
+    do n=1,7
+      if(split_sign > 0) then
+        offset = n - 4
+      else
+        offset = 5 - n
+      endif
+      ii = max(ibeg,min(iend,i+offset))
+      f(n) = steger_warming_split_component_at( &
+           ii,j,k,1,ivar,split_sign,im,jm,km,gamma)
+    enddo
+
+    select case(reconstruction_scheme)
+    case(3)
+      if((npdci == 1 .or. npdci == 4) .and. i == 0) then
+        fh = 0.5d0*(f(4)+f(5))
+      elseif((npdci == 1 .or. npdci == 4) .and. i == 1) then
+        fh = suw3_gpu(f(3:5))
+      elseif((npdci == 1 .or. npdci == 4) .and. i == 2) then
+        fh = mp5_gpu(f(2:6))
+      elseif((npdci == 2 .or. npdci == 4) .and. i == im-1) then
+        fh = 0.5d0*(f(4)+f(5))
+      elseif((npdci == 2 .or. npdci == 4) .and. i == im-2) then
+        fh = suw3_gpu(f(3:5))
+      elseif((npdci == 2 .or. npdci == 4) .and. i == im-3) then
+        fh = mp5_gpu(f(2:6))
+      else
+        fh = mp7_gpu(f)
+      endif
+    case default
+      fh = 0.d0
+    end select
+  end function explicit_reconstruction_interface_flux_x_physical
+
+  attributes(device) real(8) function reconstruct_x_physical_stencil(f,i,im,npdci) result(fh)
+    implicit none
+    real(8) :: f(7)
+    integer,value :: i,im,npdci
+
+    if((npdci == 1 .or. npdci == 4) .and. i == 0) then
+      fh = 0.5d0*(f(4)+f(5))
+    elseif((npdci == 1 .or. npdci == 4) .and. i == 1) then
+      fh = suw3_gpu(f(3:5))
+    elseif((npdci == 1 .or. npdci == 4) .and. i == 2) then
+      fh = mp5_gpu(f(2:6))
+    elseif((npdci == 2 .or. npdci == 4) .and. i == im-1) then
+      fh = 0.5d0*(f(4)+f(5))
+    elseif((npdci == 2 .or. npdci == 4) .and. i == im-2) then
+      fh = suw3_gpu(f(3:5))
+    elseif((npdci == 2 .or. npdci == 4) .and. i == im-3) then
+      fh = mp5_gpu(f(2:6))
+    else
+      fh = mp7_gpu(f)
+    endif
+  end function reconstruct_x_physical_stencil
+
+  attributes(global) subroutine explicit_upwind_flux_x_global_kernel( &
+       im,jm,km,ivar,split_sign,reconstruction_scheme,gamma)
+    use commarray_gpu, only: flux_work_d
+    implicit none
+    integer,value :: im,jm,km,ivar,split_sign,reconstruction_scheme
+    real(8),value :: gamma
+    integer :: i,j,k
+    real(8) :: fh
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 2
+    j = blockIdx%y - 1
+    k = blockIdx%z - 1
+    if(i < -1 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    fh = explicit_reconstruction_interface_flux( &
+         i,j,k,1,ivar,split_sign,im,jm,km,reconstruction_scheme,gamma)
+    if(split_sign > 0) then
+      flux_work_d(i,j,k) = fh
+    else
+      flux_work_d(i,j,k) = flux_work_d(i,j,k) + fh
+    endif
+  end subroutine explicit_upwind_flux_x_global_kernel
+
+  attributes(global) subroutine explicit_upwind_flux_x_physical_global_kernel( &
+       im,jm,km,hm,is,ie,npdci,ivar,split_sign,reconstruction_scheme,gamma)
+    use commarray_gpu, only: flux_work_d
+    implicit none
+    integer,value :: im,jm,km,hm,is,ie,npdci,ivar,split_sign,reconstruction_scheme
+    real(8),value :: gamma
+    integer :: i,j,k
+    real(8) :: fh
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 2
+    j = blockIdx%y - 1
+    k = blockIdx%z - 1
+    if(i < is-1 .or. i > ie .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    fh = explicit_reconstruction_interface_flux_x_physical( &
+         i,j,k,ivar,split_sign,im,jm,km,hm,npdci,reconstruction_scheme,gamma)
+    if(split_sign > 0) then
+      flux_work_d(i,j,k) = fh
+    else
+      flux_work_d(i,j,k) = flux_work_d(i,j,k) + fh
+    endif
+  end subroutine explicit_upwind_flux_x_physical_global_kernel
+
+  attributes(global) subroutine explicit_upwind_flux_x_xyphysical_global_kernel( &
+       im,jm,km,hm,is,ie,js,je,ks,ke,npdci,ivar,split_sign,reconstruction_scheme,gamma)
+    use commarray_gpu, only: flux_work_d
+    implicit none
+    integer,value :: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,ivar,split_sign,reconstruction_scheme
+    real(8),value :: gamma
+    integer :: i,j,k
+    real(8) :: fh
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 2
+    j = blockIdx%y - 1
+    k = blockIdx%z - 1
+    if(i < is-1 .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
+    fh = explicit_reconstruction_interface_flux_x_physical( &
+         i,j,k,ivar,split_sign,im,jm,km,hm,npdci,reconstruction_scheme,gamma)
+    if(split_sign > 0) then
+      flux_work_d(i,j,k) = fh
+    else
+      flux_work_d(i,j,k) = flux_work_d(i,j,k) + fh
+    endif
+  end subroutine explicit_upwind_flux_x_xyphysical_global_kernel
+
+  attributes(device) real(8) function explicit_reconstruction_interface_flux_y_physical( &
+       i,j,k,ivar,split_sign,im,jm,km,hm,npdcj,reconstruction_scheme,gamma) result(fh)
+    implicit none
+    integer,value :: i,j,k,ivar,split_sign,im,jm,km,hm,npdcj,reconstruction_scheme
+    real(8),value :: gamma
+    integer :: n,offset,jj,jbeg,jend
+    real(8) :: f(7)
+
+    select case(npdcj)
+    case(1)
+      jbeg = 0
+      jend = jm + hm
+    case(2)
+      jbeg = -hm
+      jend = jm
+    case(3)
+      jbeg = -hm
+      jend = jm + hm
+    case default
+      jbeg = 0
+      jend = jm
+    end select
+
+    do n=1,7
+      if(split_sign > 0) then
+        offset = n - 4
+      else
+        offset = 5 - n
+      endif
+      jj = max(jbeg,min(jend,j+offset))
+      f(n) = steger_warming_split_component_at( &
+           i,jj,k,2,ivar,split_sign,im,jm,km,gamma)
+    enddo
+
+    select case(reconstruction_scheme)
+    case(3)
+      if((npdcj == 1 .or. npdcj == 4) .and. j == 0) then
+        fh = 0.5d0*(f(4)+f(5))
+      elseif((npdcj == 1 .or. npdcj == 4) .and. j == 1) then
+        fh = suw3_gpu(f(3:5))
+      elseif((npdcj == 1 .or. npdcj == 4) .and. j == 2) then
+        fh = mp5_gpu(f(2:6))
+      elseif((npdcj == 2 .or. npdcj == 4) .and. j == jm-1) then
+        fh = 0.5d0*(f(4)+f(5))
+      elseif((npdcj == 2 .or. npdcj == 4) .and. j == jm-2) then
+        fh = suw3_gpu(f(3:5))
+      elseif((npdcj == 2 .or. npdcj == 4) .and. j == jm-3) then
+        fh = mp5_gpu(f(2:6))
+      else
+        fh = mp7_gpu(f)
+      endif
+    case default
+      fh = 0.d0
+    end select
+  end function explicit_reconstruction_interface_flux_y_physical
+
+  attributes(global) subroutine explicit_upwind_flux_y_physical_global_kernel( &
+       im,jm,km,hm,is,ie,js,je,ks,ke,npdcj,ivar,split_sign,reconstruction_scheme,gamma)
+    use commarray_gpu, only: flux_work_d
+    implicit none
+    integer,value :: im,jm,km,hm,is,ie,js,je,ks,ke,npdcj,ivar,split_sign,reconstruction_scheme
+    real(8),value :: gamma
+    integer :: i,j,k
+    real(8) :: fh
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 2
+    k = blockIdx%z - 1
+    if(i < is .or. i > ie .or. j < js-1 .or. j > je .or. k < ks .or. k > ke) return
+    fh = explicit_reconstruction_interface_flux_y_physical( &
+         i,j,k,ivar,split_sign,im,jm,km,hm,npdcj,reconstruction_scheme,gamma)
+    if(split_sign > 0) then
+      flux_work_d(i,j,k) = fh
+    else
+      flux_work_d(i,j,k) = flux_work_d(i,j,k) + fh
+    endif
+  end subroutine explicit_upwind_flux_y_physical_global_kernel
+
+  attributes(global) subroutine explicit_upwind_flux_y_global_kernel( &
+       im,jm,km,ivar,split_sign,reconstruction_scheme,gamma)
+    use commarray_gpu, only: flux_work_d
+    implicit none
+    integer,value :: im,jm,km,ivar,split_sign,reconstruction_scheme
+    real(8),value :: gamma
+    integer :: i,j,k
+    real(8) :: fh
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 2
+    k = blockIdx%z - 1
+    if(i < 0 .or. i > im .or. j < -1 .or. j > jm .or. k < 0 .or. k > km) return
+    fh = explicit_reconstruction_interface_flux( &
+         i,j,k,2,ivar,split_sign,im,jm,km,reconstruction_scheme,gamma)
+    if(split_sign > 0) then
+      flux_work_d(i,j,k) = fh
+    else
+      flux_work_d(i,j,k) = flux_work_d(i,j,k) + fh
+    endif
+  end subroutine explicit_upwind_flux_y_global_kernel
+
+  attributes(global) subroutine explicit_upwind_flux_z_global_kernel( &
+       im,jm,km,ivar,split_sign,reconstruction_scheme,gamma)
+    use commarray_gpu, only: flux_work_d
+    implicit none
+    integer,value :: im,jm,km,ivar,split_sign,reconstruction_scheme
+    real(8),value :: gamma
+    integer :: i,j,k
+    real(8) :: fh
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = blockIdx%y - 1
+    k = (blockIdx%z - 1) * blockDim%z + threadIdx%z - 2
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < -1 .or. k > km) return
+    fh = explicit_reconstruction_interface_flux( &
+         i,j,k,3,ivar,split_sign,im,jm,km,reconstruction_scheme,gamma)
+    if(split_sign > 0) then
+      flux_work_d(i,j,k) = fh
+    else
+      flux_work_d(i,j,k) = flux_work_d(i,j,k) + fh
+    endif
+  end subroutine explicit_upwind_flux_z_global_kernel
+
+  attributes(global) subroutine explicit_upwind_rhs_x_global_kernel(im,jm,km,ivar)
+    use commarray_gpu, only: flux_work_d,qrhs_d
+    implicit none
+    integer,value :: im,jm,km,ivar
+    integer :: i,j,k
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = blockIdx%y - 1
+    k = blockIdx%z - 1
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    qrhs_d(i,j,k,ivar) = qrhs_d(i,j,k,ivar) &
+         - (flux_work_d(i,j,k) - flux_work_d(i-1,j,k))
+  end subroutine explicit_upwind_rhs_x_global_kernel
+
+  attributes(global) subroutine explicit_upwind_rhs_x_physical_global_kernel(im,jm,km,is,ie,ivar)
+    use commarray_gpu, only: flux_work_d,qrhs_d
+    implicit none
+    integer,value :: im,jm,km,is,ie,ivar
+    integer :: i,j,k
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = blockIdx%y - 1
+    k = blockIdx%z - 1
+    if(i < is .or. i > ie .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    qrhs_d(i,j,k,ivar) = qrhs_d(i,j,k,ivar) - &
+         (flux_work_d(i,j,k) - flux_work_d(i-1,j,k))
+  end subroutine explicit_upwind_rhs_x_physical_global_kernel
+
+  attributes(global) subroutine explicit_upwind_rhs_x_xyphysical_global_kernel( &
+       im,jm,km,is,ie,js,je,ks,ke,ivar)
+    use commarray_gpu, only: flux_work_d,qrhs_d
+    implicit none
+    integer,value :: im,jm,km,is,ie,js,je,ks,ke,ivar
+    integer :: i,j,k
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = blockIdx%y - 1
+    k = blockIdx%z - 1
+    if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
+    qrhs_d(i,j,k,ivar) = qrhs_d(i,j,k,ivar) - &
+         (flux_work_d(i,j,k) - flux_work_d(i-1,j,k))
+  end subroutine explicit_upwind_rhs_x_xyphysical_global_kernel
+
+  attributes(global) subroutine explicit_upwind_rhs_y_global_kernel(im,jm,km,ivar)
+    use commarray_gpu, only: flux_work_d,qrhs_d
+    implicit none
+    integer,value :: im,jm,km,ivar
+    integer :: i,j,k
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
+    k = blockIdx%z - 1
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    qrhs_d(i,j,k,ivar) = qrhs_d(i,j,k,ivar) &
+         - (flux_work_d(i,j,k) - flux_work_d(i,j-1,k))
+  end subroutine explicit_upwind_rhs_y_global_kernel
+
+  attributes(global) subroutine explicit_upwind_rhs_y_physical_global_kernel( &
+       im,jm,km,is,ie,js,je,ks,ke,ivar)
+    use commarray_gpu, only: flux_work_d,qrhs_d
+    implicit none
+    integer,value :: im,jm,km,is,ie,js,je,ks,ke,ivar
+    integer :: i,j,k
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
+    k = blockIdx%z - 1
+    if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
+    qrhs_d(i,j,k,ivar) = qrhs_d(i,j,k,ivar) &
+         - (flux_work_d(i,j,k) - flux_work_d(i,j-1,k))
+  end subroutine explicit_upwind_rhs_y_physical_global_kernel
+
+  attributes(global) subroutine explicit_upwind_flux_z_xyphysical_global_kernel( &
+       im,jm,km,is,ie,js,je,ks,ke,ivar,split_sign,reconstruction_scheme,gamma)
+    use commarray_gpu, only: flux_work_d
+    implicit none
+    integer,value :: im,jm,km,is,ie,js,je,ks,ke,ivar,split_sign,reconstruction_scheme
+    real(8),value :: gamma
+    integer :: i,j,k
+    real(8) :: fh
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = blockIdx%y - 1
+    k = (blockIdx%z - 1) * blockDim%z + threadIdx%z - 2
+    if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks-1 .or. k > ke) return
+    fh = explicit_reconstruction_interface_flux( &
+         i,j,k,3,ivar,split_sign,im,jm,km,reconstruction_scheme,gamma)
+    if(split_sign > 0) then
+      flux_work_d(i,j,k) = fh
+    else
+      flux_work_d(i,j,k) = flux_work_d(i,j,k) + fh
+    endif
+  end subroutine explicit_upwind_flux_z_xyphysical_global_kernel
+
+  attributes(global) subroutine explicit_upwind_rhs_z_xyphysical_global_kernel( &
+       im,jm,km,is,ie,js,je,ks,ke,ivar)
+    use commarray_gpu, only: flux_work_d,qrhs_d
+    implicit none
+    integer,value :: im,jm,km,is,ie,js,je,ks,ke,ivar
+    integer :: i,j,k
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = blockIdx%y - 1
+    k = (blockIdx%z - 1) * blockDim%z + threadIdx%z - 1
+    if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
+    qrhs_d(i,j,k,ivar) = qrhs_d(i,j,k,ivar) &
+         - (flux_work_d(i,j,k) - flux_work_d(i,j,k-1))
+  end subroutine explicit_upwind_rhs_z_xyphysical_global_kernel
+
+  attributes(global) subroutine explicit_upwind_rhs_z_global_kernel(im,jm,km,ivar)
+    use commarray_gpu, only: flux_work_d,qrhs_d
+    implicit none
+    integer,value :: im,jm,km,ivar
+    integer :: i,j,k
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = blockIdx%y - 1
+    k = (blockIdx%z - 1) * blockDim%z + threadIdx%z - 1
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    qrhs_d(i,j,k,ivar) = qrhs_d(i,j,k,ivar) &
+         - (flux_work_d(i,j,k) - flux_work_d(i,j,k-1))
+  end subroutine explicit_upwind_rhs_z_global_kernel
+
+  attributes(global) subroutine characteristic_upwind_flux_x_global_kernel( &
+       im,jm,km,reconstruction_scheme,gamma)
+    use commarray_gpu, only: flux_characteristic_work_d
+    implicit none
+    integer,value :: im,jm,km,reconstruction_scheme
+    real(8),value :: gamma
+    integer :: i,j,k,m
+    real(8) :: fh(5)
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-2
+    j=blockIdx%y-1
+    k=blockIdx%z-1
+    if(i < -1 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    call characteristic_reconstruction_interface_flux( &
+         i,j,k,1,im,jm,km,reconstruction_scheme,gamma,0,0,0,fh)
+    do m=1,5
+      flux_characteristic_work_d(i,j,k,m)=fh(m)
+    enddo
+  end subroutine characteristic_upwind_flux_x_global_kernel
+
+  attributes(global) subroutine characteristic_upwind_flux_x_physical_global_kernel( &
+       im,jm,km,hm,is,ie,npdci,reconstruction_scheme,gamma)
+    use commarray_gpu, only: flux_characteristic_work_d
+    implicit none
+    integer,value :: im,jm,km,hm,is,ie,npdci,reconstruction_scheme
+    real(8),value :: gamma
+    integer :: i,j,k,m
+    real(8) :: fh(5)
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-2
+    j=blockIdx%y-1
+    k=blockIdx%z-1
+    if(i < is-1 .or. i > ie .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    call characteristic_reconstruction_interface_flux( &
+         i,j,k,1,im,jm,km,reconstruction_scheme,gamma,hm,npdci,1,fh)
+    do m=1,5
+      flux_characteristic_work_d(i,j,k,m)=fh(m)
+    enddo
+  end subroutine characteristic_upwind_flux_x_physical_global_kernel
+
+  attributes(global) subroutine characteristic_upwind_flux_y_global_kernel( &
+       im,jm,km,reconstruction_scheme,gamma)
+    use commarray_gpu, only: flux_characteristic_work_d
+    implicit none
+    integer,value :: im,jm,km,reconstruction_scheme
+    real(8),value :: gamma
+    integer :: i,j,k,m
+    real(8) :: fh(5)
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=(blockIdx%y-1)*blockDim%y+threadIdx%y-2
+    k=blockIdx%z-1
+    if(i < 0 .or. i > im .or. j < -1 .or. j > jm .or. k < 0 .or. k > km) return
+    call characteristic_reconstruction_interface_flux( &
+         i,j,k,2,im,jm,km,reconstruction_scheme,gamma,0,0,0,fh)
+    do m=1,5
+      flux_characteristic_work_d(i,j,k,m)=fh(m)
+    enddo
+  end subroutine characteristic_upwind_flux_y_global_kernel
+
+  attributes(global) subroutine characteristic_upwind_flux_z_global_kernel( &
+       im,jm,km,reconstruction_scheme,gamma)
+    use commarray_gpu, only: flux_characteristic_work_d
+    implicit none
+    integer,value :: im,jm,km,reconstruction_scheme
+    real(8),value :: gamma
+    integer :: i,j,k,m
+    real(8) :: fh(5)
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=blockIdx%y-1
+    k=(blockIdx%z-1)*blockDim%z+threadIdx%z-2
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < -1 .or. k > km) return
+    call characteristic_reconstruction_interface_flux( &
+         i,j,k,3,im,jm,km,reconstruction_scheme,gamma,0,0,0,fh)
+    do m=1,5
+      flux_characteristic_work_d(i,j,k,m)=fh(m)
+    enddo
+  end subroutine characteristic_upwind_flux_z_global_kernel
+
+  attributes(global) subroutine characteristic_upwind_rhs_x_global_kernel(im,jm,km)
+    use commarray_gpu, only: flux_characteristic_work_d,qrhs_d
+    implicit none
+    integer,value :: im,jm,km
+    integer :: i,j,k,m
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=blockIdx%y-1
+    k=blockIdx%z-1
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    do m=1,5
+      qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)- &
+           (flux_characteristic_work_d(i,j,k,m)-flux_characteristic_work_d(i-1,j,k,m))
+    enddo
+  end subroutine characteristic_upwind_rhs_x_global_kernel
+
+  attributes(global) subroutine characteristic_upwind_rhs_x_physical_global_kernel(im,jm,km,is,ie)
+    use commarray_gpu, only: flux_characteristic_work_d,qrhs_d
+    implicit none
+    integer,value :: im,jm,km,is,ie
+    integer :: i,j,k,m
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=blockIdx%y-1
+    k=blockIdx%z-1
+    if(i < is .or. i > ie .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    do m=1,5
+      qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)- &
+           (flux_characteristic_work_d(i,j,k,m)-flux_characteristic_work_d(i-1,j,k,m))
+    enddo
+  end subroutine characteristic_upwind_rhs_x_physical_global_kernel
+
+  attributes(global) subroutine characteristic_upwind_rhs_y_global_kernel(im,jm,km)
+    use commarray_gpu, only: flux_characteristic_work_d,qrhs_d
+    implicit none
+    integer,value :: im,jm,km
+    integer :: i,j,k,m
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=(blockIdx%y-1)*blockDim%y+threadIdx%y-1
+    k=blockIdx%z-1
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    do m=1,5
+      qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)- &
+           (flux_characteristic_work_d(i,j,k,m)-flux_characteristic_work_d(i,j-1,k,m))
+    enddo
+  end subroutine characteristic_upwind_rhs_y_global_kernel
+
+  attributes(global) subroutine characteristic_upwind_rhs_z_global_kernel(im,jm,km)
+    use commarray_gpu, only: flux_characteristic_work_d,qrhs_d
+    implicit none
+    integer,value :: im,jm,km
+    integer :: i,j,k,m
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=blockIdx%y-1
+    k=(blockIdx%z-1)*blockDim%z+threadIdx%z-1
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    do m=1,5
+      qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)- &
+           (flux_characteristic_work_d(i,j,k,m)-flux_characteristic_work_d(i,j,k-1,m))
+    enddo
+  end subroutine characteristic_upwind_rhs_z_global_kernel
+
   subroutine apply_rti_source_gpu()
     use commvar, only: im,jm,km,hm
     use commarray_gpu, only: qrhs_d,rho_d,vel_d,jacob_d

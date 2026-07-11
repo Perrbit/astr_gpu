@@ -3885,7 +3885,7 @@ module bc
                         dxi(i,j+2,k,2,2)*jacob(i,j+2,k) )
         jcbi(3)= deriv( dxi(i,j,k,2,3)  *jacob(i,j,k),                 &
                         dxi(i,j+1,k,2,3)*jacob(i,j+1,k),                 &
-                        dxi(i,j+3,k,2,3)*jacob(i,j+3,k) )
+                        dxi(i,j+2,k,2,3)*jacob(i,j+2,k) )
         !
         Rest(1)=E(1)*Jcbi(1)+F(1)*Jcbi(2)+G(1)*Jcbi(3)
         Rest(2)=E(2)*Jcbi(1)+F(2)*Jcbi(2)+G(2)*Jcbi(3)
@@ -5371,7 +5371,7 @@ module bc
     if(ndir==6 .and. krk==krkm) then
       !
       k=km
-      do k=0,km
+      do j=0,jm
       do i=0,im
         !
         css=sos(tmp(i,j,k),spc(i,j,k,:))

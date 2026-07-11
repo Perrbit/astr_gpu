@@ -276,7 +276,8 @@ module flux
       !
       ! local data
       !
-      if((ntype==1 .and. inode==0)    .or.(ntype==2 .and. inode==dim-1)) then
+      if(((ntype==1 .or. ntype==4) .and. inode==0) .or. &
+         ((ntype==2 .or. ntype==4) .and. inode==dim-1)) then
         !
         select case(reschem)
         case(-1)
@@ -285,7 +286,8 @@ module flux
           fc=0.5d0*(f(4)+f(5))
         end select
         !
-      elseif((ntype==1 .and. inode==1).or.(ntype==2 .and. inode==dim-2)) then
+      elseif(((ntype==1 .or. ntype==4) .and. inode==1) .or. &
+             ((ntype==2 .or. ntype==4) .and. inode==dim-2)) then
         !
         select case(reschem)
         case(-1)
@@ -295,7 +297,8 @@ module flux
         end select
         !
       ! else
-      elseif((ntype==1 .and. inode==2).or.(ntype==2 .and. inode==dim-3)) then
+      elseif(((ntype==1 .or. ntype==4) .and. inode==2) .or. &
+             ((ntype==2 .or. ntype==4) .and. inode==dim-3)) then
         !
         select case(reschem)
         case(-1)

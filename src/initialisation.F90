@@ -93,6 +93,8 @@ module initialisation
           call mixlayerini
         case('shuosher')
           call shuosherini
+        case('openshock')
+          call openshockini
         case('sod')
           call sodini
         case('riem2d')
@@ -287,8 +289,17 @@ module initialisation
     use fludyna,  only: thermal
     !
     ! local data
-    integer :: i,j,k
-    real(8) :: xc
+    integer :: i,j,k,status,path_length,ios
+    real(8) :: xc,shock_x,phase_x
+    character(len=1024) :: shock_x_text
+
+    shock_x=-4.d0
+    call get_environment_variable('ASTR_SHUOSHER_SHOCK_X',shock_x_text, &
+                                  length=path_length,status=status)
+    if(status==0 .and. path_length>0) then
+      read(shock_x_text(1:path_length),*,iostat=ios) shock_x
+      if(ios/=0) stop 'ASTR_SHUOSHER_SHOCK_X must be a real value'
+    endif
     !
     do k=0,km
     do j=0,jm
@@ -296,14 +307,15 @@ module initialisation
       !
       xc=x(i,j,k,1)
       !
-      if(xc<-4.d0) then
+      if(xc<shock_x) then
         rho(i,j,k)  =3.857143d0
         vel(i,j,k,1)=2.629369d0
         prs(i,j,k)  =10.33333d0
         !
         !
       else
-        rho(i,j,k)  =1.d0+0.2d0*sin(5.d0*xc) 
+        phase_x=xc-shock_x-4.d0
+        rho(i,j,k)  =1.d0+0.2d0*sin(5.d0*phase_x)
         vel(i,j,k,1)=0.d0
         prs(i,j,k)  =1.d0
       endif
@@ -329,6 +341,46 @@ module initialisation
     ! call mpistop
     !
   end subroutine shuosherini
+  !+-------------------------------------------------------------------+
+
+  subroutine openshockini
+    use commvar, only: gamma,mach,roinf,uinf,vinf,winf,pinf,im,jm,km
+    use commarray, only: x,vel,rho,prs,tmp
+    use fludyna, only: thermal
+    use parallel, only: lio
+    implicit none
+    integer :: i,j,k
+    real(8) :: shock_x,mach2,rho_ratio,prs_ratio
+
+    shock_x = 0.d0
+    mach2 = mach*mach
+    rho_ratio = (gamma+1.d0)*mach2/((gamma-1.d0)*mach2+2.d0)
+    prs_ratio = 1.d0 + 2.d0*gamma/(gamma+1.d0)*(mach2-1.d0)
+
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      if(x(i,j,k,1) < shock_x) then
+        rho(i,j,k) = roinf
+        vel(i,j,k,1) = uinf
+        vel(i,j,k,2) = vinf
+        vel(i,j,k,3) = winf
+        prs(i,j,k) = pinf
+      else
+        rho(i,j,k) = roinf*rho_ratio
+        vel(i,j,k,1) = uinf/rho_ratio
+        vel(i,j,k,2) = vinf
+        vel(i,j,k,3) = winf
+        prs(i,j,k) = pinf*prs_ratio
+      endif
+      tmp(i,j,k) = thermal(density=rho(i,j,k),pressure=prs(i,j,k))
+    enddo
+    enddo
+    enddo
+
+    if(lio) write(*,'(A,2(1X,ES12.4E3))') '  ** stationary open shock initialised; p2/pinf, rho2/rhoinf=', &
+         prs_ratio,rho_ratio
+  end subroutine openshockini
   !+-------------------------------------------------------------------+
   !| The end of the subroutine shuosherini.                            |
   !+-------------------------------------------------------------------+
@@ -1439,7 +1491,7 @@ module initialisation
   !+-------------------------------------------------------------------+
   subroutine inletprofile
     !
-    use commvar,  only: flowtype,nondimen,spcinf,num_species,jm
+    use commvar,  only: flowtype,nondimen,spcinf,num_species,jm,pinf
     use commarray,only: x
     use parallel, only: preadprofile
     use bc,       only: rho_prof,vel_prof,tmp_prof,prs_prof,spc_prof,turbinf
@@ -1451,7 +1503,9 @@ module initialisation
     !
     ! local data
     integer :: fh,i,j
-    logical :: lfex
+    logical :: lfex,lprofile_density_provided,lprofile_pressure_provided
+    real(8) :: prs_prof_eos(0:jm),prs_prof_error,prs_prof_scale
+    character(len=255) :: profile_header
     !
     allocate( rho_prof(0:jm),tmp_prof(0:jm),prs_prof(0:jm),          &
               vel_prof(0:jm,1:3),spc_prof(0:jm,1:num_species) )
@@ -1461,12 +1515,16 @@ module initialisation
     !
     if(lfex) then
       !
+      lprofile_density_provided=.false.
+      lprofile_pressure_provided=.false.
       if(lio) then
         !
         fh=get_unit()
         !
         open(fh,file='datin/inlet.prof',action='read',form='formatted')
-        read(fh,*)
+        read(fh,'(A)')profile_header
+        lprofile_density_provided=index(profile_header,'density=provided')>0
+        lprofile_pressure_provided=index(profile_header,'pressure=provided')>0
         read(fh,*)
         read(fh,*)nomi_thick,disp_thick,mome_thick,fric_velocity
         close(fh)
@@ -1481,17 +1539,46 @@ module initialisation
       call bcast(disp_thick)
       call bcast(mome_thick)
       call bcast(fric_velocity)
+      call bcast(lprofile_density_provided)
+      call bcast(lprofile_pressure_provided)
       !
-      call preadprofile('datin/inlet.prof',dir='j',                     &
-                                var1=rho_prof,     var2=vel_prof(:,1), &
-                                var3=vel_prof(:,2),var4=tmp_prof,skipline=4)
+      if(lprofile_pressure_provided) then
+        call preadprofile('datin/inlet.prof',dir='j',                   &
+                                  var1=rho_prof,     var2=vel_prof(:,1),&
+                                  var3=vel_prof(:,2),var4=tmp_prof,     &
+                                  var5=prs_prof,skipline=4)
+      else
+        call preadprofile('datin/inlet.prof',dir='j',                   &
+                                  var1=rho_prof,     var2=vel_prof(:,1),&
+                                  var3=vel_prof(:,2),var4=tmp_prof,skipline=4)
+      endif
       !
       vel_prof(:,3)=0.d0
       ! vel_prof(:,1)=vel_prof(:,1) + 1.d0
       !
-      if(nondimen) then 
-        prs_prof=pinf
-        rho_prof=thermal(pressure=prs_prof,temperature=tmp_prof,dim=jm+1)
+      if(nondimen) then
+        if(lprofile_pressure_provided) then
+          if(lprofile_density_provided) then
+            prs_prof_eos=thermal(density=rho_prof,temperature=tmp_prof,dim=jm+1)
+            prs_prof_error=maxval(abs(prs_prof_eos-prs_prof))
+            prs_prof_scale=max(1.d0,maxval(abs(prs_prof)))
+            if(prs_prof_error > 1.d-10*prs_prof_scale) then
+              stop 'nondimensional profile pressure=provided is inconsistent with rho*T'
+            endif
+          else
+            rho_prof=thermal(pressure=prs_prof,temperature=tmp_prof,dim=jm+1)
+          endif
+        else
+          if(lprofile_density_provided) then
+            prs_prof=thermal(density=rho_prof,temperature=tmp_prof,dim=jm+1)
+            if(maxval(abs(prs_prof-pinf)) > 1.d-10*max(1.d0,abs(pinf))) then
+              stop 'nondimensional profile density=provided is inconsistent with p_inf'
+            endif
+          else
+            prs_prof=pinf
+            rho_prof=thermal(pressure=prs_prof,temperature=tmp_prof,dim=jm+1)
+          endif
+        endif
       else
         !
 #ifdef COMB

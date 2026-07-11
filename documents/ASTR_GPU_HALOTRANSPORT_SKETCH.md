@@ -31,6 +31,7 @@ HaloTransport must preserve solver semantics independently of the transport back
 | Filter y work halo | `exchange_filter_y_work_halo_gpu()` | `hm` | `qwork_d` | required by ping-pong y filtering |
 | Filter z halo | `exchange_filter_z_halo_gpu()` | `hm` | `q_d` or filter work path | required by z filtering |
 | Diffusion field halo | `exchange_diffusion_flux_halo_gpu()` | `hm` | `sigma_d`, `qflux_d` | dataswap-compatible generic field halo |
+| Shock-sensor halo | local `shock_sensor_*_periodic_halo_kernel()` or `exchange_field_halo_gpu(shock_sensor_d,1)` | `hm` | `shock_sensor_d` | S0-A4 local periodic fallback; S0-A5 `2x1x1` uses generic L0 field transport |
 | Generic field halo | `exchange_field_halo_gpu(field,nvar)` | `hm` | device field with `nvar` components | future extension point for additional fields |
 
 The semantic layer owns:
@@ -48,6 +49,8 @@ The semantic layer must not own:
 - pinned versus pageable host buffer choice;
 - blocking versus nonblocking scheduling;
 - CUDA versus HIP implementation details.
+
+The MPI shock-sensor semantic extension is implemented for S0-A5: it exchanges only the `hm` raw-sensor layers with dataswap-compatible indexing, then runs mask expansion after exchange completion. `shock_mask_d` itself is not exchanged. S0-A6 consumes this same local mask only for single-rank Roe selection. The current multi-rank characteristic contract remains unimplemented; `2x1x1` validates raw-sensor transport only and needs an interface-crossing Roe oracle before it can enable characteristic reconstruction.
 
 ## 3. Transport Backends
 

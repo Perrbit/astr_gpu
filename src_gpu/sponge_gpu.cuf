@@ -1,0 +1,86 @@
+module sponge_gpu
+  use cudafor
+  implicit none
+  real(8),allocatable,device :: sponge_im_coef_d(:,:,:)
+  integer,save :: sponge_im_beg_gpu=-1,sponge_im_end_gpu=-1
+contains
+  subroutine init_sponge_gpu()
+    use sponge_layer, only: spg_im_beg,spg_im_end,sponge_damp_coef_im
+    implicit none
+
+    sponge_im_beg_gpu = -1
+    sponge_im_end_gpu = -1
+    if(.not.allocated(sponge_damp_coef_im)) return
+    sponge_im_beg_gpu = spg_im_beg
+    sponge_im_end_gpu = spg_im_end
+    if(.not.allocated(sponge_im_coef_d)) then
+      allocate(sponge_im_coef_d(sponge_im_beg_gpu:sponge_im_end_gpu, &
+                                0:ubound(sponge_damp_coef_im,2),0:ubound(sponge_damp_coef_im,3)))
+    endif
+    sponge_im_coef_d = sponge_damp_coef_im
+  end subroutine init_sponge_gpu
+
+  logical function gpu_xmax_sponge_active()
+    implicit none
+
+    gpu_xmax_sponge_active = sponge_im_beg_gpu >= 0
+  end function gpu_xmax_sponge_active
+
+  attributes(global) subroutine sponge_xmax_to_work_kernel(im,jm,km,hm,spg_beg,spg_end)
+    use commarray_gpu, only: q_d,qwork_d
+    implicit none
+    integer,value :: im,jm,km,hm,spg_beg,spg_end
+    integer :: id,i,j,k,m,ni,n
+    real(8) :: sigma
+
+    id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
+    ni = spg_end-spg_beg+1
+    n = ni*(jm+1)*(km+1)*5
+    if(id >= n) return
+    i = spg_beg + mod(id,ni)
+    j = mod(id/ni,jm+1)
+    k = mod(id/(ni*(jm+1)),km+1)
+    m = id/(ni*(jm+1)*(km+1)) + 1
+    sigma = sponge_im_coef_d(i,j,k)
+    qwork_d(i,j,k,m) = (1.d0-sigma)*q_d(i,j,k,m) + sigma/6.d0*( &
+         q_d(i+1,j,k,m)+q_d(i-1,j,k,m)+q_d(i,j+1,k,m)+q_d(i,j-1,k,m)+ &
+         q_d(i,j,k+1,m)+q_d(i,j,k-1,m))
+  end subroutine sponge_xmax_to_work_kernel
+
+  attributes(global) subroutine sponge_xmax_copy_kernel(im,jm,km,spg_beg,spg_end)
+    use commarray_gpu, only: q_d,qwork_d
+    implicit none
+    integer,value :: im,jm,km,spg_beg,spg_end
+    integer :: id,i,j,k,m,ni,n
+
+    id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
+    ni = spg_end-spg_beg+1
+    n = ni*(jm+1)*(km+1)*5
+    if(id >= n) return
+    i = spg_beg + mod(id,ni)
+    j = mod(id/ni,jm+1)
+    k = mod(id/(ni*(jm+1)),km+1)
+    m = id/(ni*(jm+1)*(km+1)) + 1
+    q_d(i,j,k,m) = qwork_d(i,j,k,m)
+  end subroutine sponge_xmax_copy_kernel
+
+  subroutine apply_xmax_sponge_gpu()
+    use commvar, only: im,jm,km,hm
+    use halo_exchange_gpu, only: exchange_solution_sponge_halo_gpu
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    type(dim3) :: block,grid
+    integer :: n,ni
+
+    call exchange_solution_sponge_halo_gpu()
+    if(.not.gpu_xmax_sponge_active()) return
+    ni = sponge_im_end_gpu-sponge_im_beg_gpu+1
+    block = dim3(256,1,1)
+    n = ni*(jm+1)*(km+1)*5
+    grid = dim3((n+block%x-1)/block%x,1,1)
+    call sponge_xmax_to_work_kernel<<<grid,block>>>(im,jm,km,hm,sponge_im_beg_gpu,sponge_im_end_gpu)
+    call sync_after_kernel('sponge_xmax_to_work_kernel')
+    call sponge_xmax_copy_kernel<<<grid,block>>>(im,jm,km,sponge_im_beg_gpu,sponge_im_end_gpu)
+    call sync_after_kernel('sponge_xmax_copy_kernel')
+  end subroutine apply_xmax_sponge_gpu
+end module sponge_gpu

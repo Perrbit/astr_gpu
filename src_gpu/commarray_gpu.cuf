@@ -7,9 +7,13 @@ module commarray_gpu
   real(8),allocatable,device :: dxi_d(:,:,:,:,:)
   real(8),allocatable,device :: dvel_d(:,:,:,:,:),dtmp_d(:,:,:,:)
   real(8),allocatable,device :: sigma_d(:,:,:,:),qflux_d(:,:,:,:)
+  real(8),allocatable,device :: flux_work_d(:,:,:),flux_characteristic_work_d(:,:,:,:)
+  real(8),allocatable,device :: shock_sensor_d(:,:,:,:)
+  integer(1),allocatable,device :: shock_mask_d(:,:,:)
 contains
   subroutine alloc_gpu_arrays()
-    use commvar, only: im,jm,km,hm,numq
+    use commvar, only: im,jm,km,hm,numq,conschm,recon_schem,lchardecomp
+    use commcal, only: shock_sensor_validation_enabled
     implicit none
 
     if(.not.allocated(q_d))      allocate(q_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq))
@@ -27,6 +31,18 @@ contains
     if(.not.allocated(dtmp_d))   allocate(dtmp_d(0:im,0:jm,0:km,1:3))
     if(.not.allocated(sigma_d))  allocate(sigma_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:6))
     if(.not.allocated(qflux_d))  allocate(qflux_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3))
+    if(trim(conschm) == '543e' .and. (recon_schem == 1 .or. recon_schem == 3) .and. &
+       .not.allocated(flux_work_d)) then
+      allocate(flux_work_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+    endif
+    if(lchardecomp .and. .not.allocated(flux_characteristic_work_d)) then
+      allocate(flux_characteristic_work_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5))
+    endif
+    if(shock_sensor_validation_enabled() .or. lchardecomp) then
+      if(.not.allocated(shock_sensor_d)) &
+        allocate(shock_sensor_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:1))
+      if(.not.allocated(shock_mask_d)) allocate(shock_mask_d(0:im,0:jm,0:km))
+    endif
   end subroutine alloc_gpu_arrays
 
   subroutine copy_flow_to_gpu()

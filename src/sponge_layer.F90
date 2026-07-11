@@ -77,7 +77,7 @@ module sponge_layer
     ! sponger layer attached at the im end.
     if(lspg_i0) then
       !
-      call dataswap(q,direction=1)
+      call dataswap(q)
       !
       if(spg_i0_beg>=0) then
         !
@@ -132,7 +132,7 @@ module sponge_layer
     ! sponger layer attached at the im end.
     if(lspg_im) then
       !
-      call dataswap(q,direction=1)
+      call dataswap(q)
       !
       if(spg_im_beg>=0) then
         !
@@ -183,7 +183,7 @@ module sponge_layer
     ! sponger layer attached at the jm end.
     if(lspg_jm) then
       !
-      call dataswap(q,direction=2)
+      call dataswap(q)
       !
       if(spg_jm_beg>=0) then
         !
@@ -234,7 +234,7 @@ module sponge_layer
     ! sponger layer attached at the k=0 end.
     if(lspg_k0) then
       !
-      call dataswap(q,direction=3)
+      call dataswap(q)
       !
       if(spg_k0_beg>=0) then
         !
@@ -276,7 +276,7 @@ module sponge_layer
     ! sponger layer attached at the k=km end.
     if(lspg_km) then
       
-      call dataswap(q,direction=3)
+      call dataswap(q)
       !
       if(spg_km_beg>=0) then
         !

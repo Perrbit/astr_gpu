@@ -649,6 +649,44 @@ module filter
           !
         enddo
         !
+      case(4)
+        !
+        ii=0
+        do m=0,4
+          ff(ii)=ff(ii)+coef4be(0,m)*f(m)
+        enddo
+        !
+        ii=1
+        do m=0,4
+          ff(ii)=ff(ii)+coef4be(1,m)*f(m)
+        enddo
+        !
+        ii=2
+        do m=0,2
+          ff(ii)=ff(ii)+coef4e(m)*(f(ii-m)+f(ii+m))
+        enddo
+        !
+        do ii=3,dim-3
+          do m=0,3
+            ff(ii)=ff(ii)+coef6e(m)*(f(ii-m)+f(ii+m))
+          enddo
+        enddo
+        !
+        ii=dim-2
+        do m=0,2
+          ff(ii)=ff(ii)+coef4e(m)*(f(ii-m)+f(ii+m))
+        enddo
+        !
+        ii=dim-1
+        do m=0,4
+          ff(ii)=ff(ii)+coef4be(1,m)*f(dim-m)
+        enddo
+        !
+        ii=dim
+        do m=0,4
+          ff(ii)=ff(ii)+coef4be(0,m)*f(dim-m)
+        enddo
+        !
       case default
         stop '!! ERROR @ spafilter6exp'
       end select

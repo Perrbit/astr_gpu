@@ -604,6 +604,20 @@ module derivative
         vout(i)  =num2d3*(vin(i+1)-vin(i-1))-                         &
                   num1d12*(vin(i+2)-vin(i-2))
       enddo
+    elseif(ntype==4) then
+      if(ns==422) then
+        vout(0)=-0.5d0*vin(2)+2.d0*vin(1)-1.5d0*vin(0)
+        vout(1)=0.5d0*(vin(2)-vin(0))
+        do i=2,dim-2
+          vout(i)  =num2d3*(vin(i+1)-vin(i-1))-                       &
+                    num1d12*(vin(i+2)-vin(i-2))
+        enddo
+        vout(dim-1)=0.5d0*(vin(dim)-vin(dim-2))
+        vout(dim)  =0.5d0*vin(dim-2)-2.d0*vin(dim-1)+1.5d0*vin(dim)
+      else
+        print*,' !! ns=',ns
+        stop ' error 4 @ diff6c'
+      endif
     else
       print*,' !! ntype=',ntype
       stop ' !! errpr 3 @ diff6c'
@@ -645,6 +659,12 @@ module derivative
       do i=0,dim
         vout(i)  =0.5d0*(vin(i+1)-vin(i-1))
       enddo
+    elseif(ntype==4) then
+      vout(0)=vin(1)-vin(0)
+      do i=1,dim-1
+        vout(i)  =0.5d0*(vin(i+1)-vin(i-1))
+      enddo
+      vout(dim)  =-vin(dim-1)+vin(dim)
     else
       print*,' !! ntype=',ntype
       stop ' !! errpr 3 @ diff6c'

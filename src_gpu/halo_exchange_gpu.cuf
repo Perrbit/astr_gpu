@@ -877,6 +877,45 @@ contains
     endif
   end subroutine exchange_solution_filter_halo_gpu
 
+  subroutine exchange_solution_sponge_halo_gpu()
+    use commvar, only: lihomo,ljhomo,lkhomo
+    use parallel, only: isize,jsize,ksize
+    use boundary_gpu, only: gpu_axis_is_physical
+    use qswap_gpu, only: qswap_single_rank_gpu,qswap_local_x_gpu, &
+                         qswap_local_y_gpu,qswap_local_z_gpu
+    implicit none
+
+    if(isize==1 .and. jsize==1 .and. ksize==1 .and. &
+       lihomo .and. ljhomo .and. lkhomo) then
+      call qswap_single_rank_gpu()
+      return
+    endif
+
+    if(isize>1) then
+      call exchange_x_halo_gpu()
+    elseif(lihomo) then
+      call qswap_local_x_gpu()
+    elseif(.not.gpu_axis_is_physical(1)) then
+      stop 'GPU sponge halo exchange requires x MPI, homogeneous, or physical direction'
+    endif
+
+    if(jsize>1) then
+      call exchange_y_halo_gpu()
+    elseif(ljhomo) then
+      call qswap_local_y_gpu()
+    elseif(.not.gpu_axis_is_physical(2)) then
+      stop 'GPU sponge halo exchange requires y MPI, homogeneous, or physical direction'
+    endif
+
+    if(ksize>1) then
+      call exchange_z_halo_gpu()
+    elseif(lkhomo) then
+      call qswap_local_z_gpu()
+    elseif(.not.gpu_axis_is_physical(3)) then
+      stop 'GPU sponge halo exchange requires z MPI, homogeneous, or physical direction'
+    endif
+  end subroutine exchange_solution_sponge_halo_gpu
+
   subroutine exchange_filter_y_work_halo_gpu()
     use mpi
     use commvar, only: im,jm,km,hm,numq

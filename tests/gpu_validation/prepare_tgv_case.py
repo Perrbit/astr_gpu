@@ -97,6 +97,28 @@ def set_bctype(input_file: Path, bctype: str) -> None:
     raise ValueError(f"bctype marker not found in {input_file}")
 
 
+def set_sponge(input_file: Path, sponge: str) -> None:
+    parts = [part.strip() for part in sponge.split(",")]
+    if len(parts) != 6:
+        raise ValueError("--sponge must have the form imin,imax,jmin,jmax,kmin,kmax")
+    try:
+        values = [int(part) for part in parts]
+    except ValueError as exc:
+        raise ValueError("--sponge values must be integers") from exc
+    if any(value < 0 for value in values):
+        raise ValueError("--sponge values must be non-negative")
+
+    lines = input_file.read_text().splitlines()
+    marker = "spg_imin,spg_imax,spg_jmin,spg_jmax,spg_kmin,spg_kmax"
+    for idx, line in enumerate(lines):
+        if marker in line:
+            data_idx = next_data_line(lines, idx)
+            lines[data_idx] = ",".join(str(value) for value in values)
+            input_file.write_text("\n".join(lines) + "\n")
+            return
+    raise ValueError(f"sponge marker not found in {input_file}")
+
+
 def set_controller_steps(controller_file: Path, maxstep: int, feqchkpt: int) -> None:
     lines = controller_file.read_text().splitlines()
     marker = "maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg"
@@ -148,7 +170,7 @@ def set_grid(input_file: Path, grid: str) -> None:
     raise ValueError(f"grid marker not found in {input_file}")
 
 
-def set_scheme(input_file: Path, scheme: str) -> None:
+def set_scheme(input_file: Path, scheme: str, conschm: str | None = None, difschm: str | None = None) -> None:
     lines = input_file.read_text().splitlines()
     marker = "conschm,difschm,rkscheme"
     for idx, line in enumerate(lines):
@@ -157,12 +179,33 @@ def set_scheme(input_file: Path, scheme: str) -> None:
             parts = [part.strip() for part in lines[data_idx].split(",")]
             if len(parts) < 3:
                 raise ValueError(f"unexpected scheme line: {lines[data_idx]}")
-            parts[0] = scheme
-            parts[1] = scheme
+            parts[0] = scheme if conschm is None else conschm
+            parts[1] = scheme if difschm is None else difschm
             lines[data_idx] = ",".join(parts)
             input_file.write_text("\n".join(lines) + "\n")
             return
     raise ValueError(f"scheme marker not found in {input_file}")
+
+
+def set_reconstruction(input_file: Path, recon_schem: str | None, lchardecomp: str | None) -> None:
+    if recon_schem is None and lchardecomp is None:
+        return
+    lines = input_file.read_text().splitlines()
+    marker = "recon_schem"
+    for idx, line in enumerate(lines):
+        if marker in line:
+            data_idx = next_data_line(lines, idx)
+            parts = [part.strip() for part in lines[data_idx].split(",")]
+            if len(parts) < 2:
+                raise ValueError(f"unexpected reconstruction line: {lines[data_idx]}")
+            if recon_schem is not None:
+                parts[0] = recon_schem
+            if lchardecomp is not None:
+                parts[1] = lchardecomp
+            lines[data_idx] = ",".join(parts)
+            input_file.write_text("\n".join(lines) + "\n")
+            return
+    raise ValueError(f"reconstruction marker not found in {input_file}")
 
 
 def main() -> int:
@@ -176,12 +219,17 @@ def main() -> int:
         "--bctype",
         help="optional six boundary entries; use semicolons when entries contain commas",
     )
+    parser.add_argument("--sponge", help="optional sponge ranges as imin,imax,jmin,jmax,kmin,kmax")
     parser.add_argument("--use-gpu", required=True, choices=("t", "f"))
     parser.add_argument("--maxstep", required=True, type=int)
     parser.add_argument("--feqchkpt", type=int)
     parser.add_argument("--lfilter", choices=("t", "f"))
     parser.add_argument("--diffterm", choices=("t", "f"))
     parser.add_argument("--scheme", default="643e")
+    parser.add_argument("--conschm", help="optional conservative scheme override")
+    parser.add_argument("--difschm", help="optional diffusive scheme override")
+    parser.add_argument("--recon-schem", help="optional reconstruction scheme override")
+    parser.add_argument("--lchardecomp", choices=("t", "f"), help="optional characteristic decomposition override")
     parser.add_argument("--grid", help="optional grid dimensions as im,jm,km")
     parser.add_argument("--deltat", help="optional controller deltat value, e.g. 5.d-4")
     args = parser.parse_args()
@@ -203,8 +251,11 @@ def main() -> int:
         set_homogeneous(input_file, args.homogeneous)
     if args.bctype:
         set_bctype(input_file, args.bctype)
+    if args.sponge:
+        set_sponge(input_file, args.sponge)
     set_runtime_flags(input_file, args.use_gpu, args.lfilter, args.diffterm)
-    set_scheme(input_file, args.scheme)
+    set_scheme(input_file, args.scheme, args.conschm, args.difschm)
+    set_reconstruction(input_file, args.recon_schem, args.lchardecomp)
     if args.grid:
         set_grid(input_file, args.grid)
     feqchkpt = args.maxstep if args.feqchkpt is None else args.feqchkpt

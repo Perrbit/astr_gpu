@@ -284,6 +284,41 @@ contains
     enddo
   end subroutine gradcal_dvel_yphysical_kernel
 
+  attributes(global) subroutine gradcal_dvel_xyphysical_kernel(im,jm,km,hm,apply_left,apply_right,apply_down,apply_up)
+    use commarray_gpu, only: vel_d,tmp_d,dxi_d,dvel_d,dtmp_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_left,apply_right,apply_down,apply_up
+    integer :: i,j,k,a,b
+    real(8) :: du_dxi(3,3),dt_dxi(3)
+
+    i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
+    k = (blockIdx%z - 1) * blockDim%z + threadIdx%z - 1
+    if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    do a=1,3
+      du_dxi(1,a) = deriv6_x_vel(i,j,k,a,im,apply_left,apply_right)
+      du_dxi(2,a) = deriv6_y_vel(i,j,k,a,jm,apply_down,apply_up)
+      du_dxi(3,a) = deriv6(vel_d(i,j,k-3,a),vel_d(i,j,k-2,a),vel_d(i,j,k-1,a), &
+                           vel_d(i,j,k+1,a),vel_d(i,j,k+2,a),vel_d(i,j,k+3,a))
+    enddo
+    dt_dxi(1) = deriv6_x_tmp(i,j,k,im,apply_left,apply_right)
+    dt_dxi(2) = deriv6_y_tmp(i,j,k,jm,apply_down,apply_up)
+    dt_dxi(3) = deriv6(tmp_d(i,j,k-3),tmp_d(i,j,k-2),tmp_d(i,j,k-1), &
+                       tmp_d(i,j,k+1),tmp_d(i,j,k+2),tmp_d(i,j,k+3))
+    do a=1,3
+      do b=1,3
+        dvel_d(i,j,k,a,b) = du_dxi(1,a)*dxi_d(i,j,k,1,b) + &
+                            du_dxi(2,a)*dxi_d(i,j,k,2,b) + &
+                            du_dxi(3,a)*dxi_d(i,j,k,3,b)
+      enddo
+    enddo
+    do b=1,3
+      dtmp_d(i,j,k,b) = dt_dxi(1)*dxi_d(i,j,k,1,b) + &
+                        dt_dxi(2)*dxi_d(i,j,k,2,b) + &
+                        dt_dxi(3)*dxi_d(i,j,k,3,b)
+    enddo
+  end subroutine gradcal_dvel_xyphysical_kernel
+
   attributes(global) subroutine gradcal_dvel_zphysical_kernel(im,jm,km,hm,apply_back,apply_front)
     use commarray_gpu, only: vel_d,tmp_d,dxi_d,dvel_d,dtmp_d
     implicit none
@@ -326,7 +361,7 @@ contains
   subroutine compute_gradcal_gpu()
     use mpi, only: MPI_PROC_NULL
     use commvar, only: im,jm,km,hm
-    use boundary_gpu, only: gpu_physical_boundary_axis
+    use boundary_gpu, only: gpu_physical_boundary_axis,gpu_s1_flatplate_boundary_case_pending
     use gpu_check, only: sync_after_kernel
     use parallel, only: mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
     implicit none
@@ -336,6 +371,13 @@ contains
     grid3 = dim3((im + block3%x)/block3%x, &
                  (jm + block3%y)/block3%y, &
                  (km + block3%z)/block3%z)
+    if(gpu_s1_flatplate_boundary_case_pending()) then
+      call gradcal_dvel_xyphysical_kernel<<<grid3,block3>>>(im,jm,km,hm, &
+           merge(1,0,mpileft == MPI_PROC_NULL),merge(1,0,mpiright == MPI_PROC_NULL), &
+           merge(1,0,mpidown == MPI_PROC_NULL),merge(1,0,mpiup == MPI_PROC_NULL))
+      call sync_after_kernel('gradcal_dvel_xyphysical_kernel')
+      return
+    endif
     select case(gpu_physical_boundary_axis())
     case(1)
       call gradcal_dvel_xphysical_kernel<<<grid3,block3>>>(im,jm,km,hm, &

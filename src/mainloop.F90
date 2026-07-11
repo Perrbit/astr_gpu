@@ -309,7 +309,7 @@ module mainloop
     use comsolver,only : filterq,filter2e,gradcal
     use sponge_layer,only : spongefilter
     use solver,   only : rhscal
-    use bc,       only : boucon,immbody
+    use bc,       only : boucon,immbody,bctype
 #ifdef COMB
     use thermchem,only : imp_euler_ode,heatrate
     use fdnn
@@ -337,6 +337,7 @@ module mainloop
     real(8),save :: subtime=0.d0
     integer,save :: n_rk_steps
     logical :: gpu_output_due
+    logical :: nscbc_boundary_filter_present
     !
     time_beg=ptime()
 
@@ -440,6 +441,11 @@ module mainloop
         if(flowtype(1:2)/='0d') call qswap(timerept=ltimrpt)
       endif
 
+      nscbc_boundary_filter_present = any(bctype == 22) .or. any(bctype == 52)
+      if(flowtype(1:2)/='0d' .and. nscbc_boundary_filter_present) then
+        ! NSCBC boundary filters transverse lines; their halos must be current.
+        call qswap(timerept=ltimrpt)
+      endif
       if(flowtype(1:2)/='0d') call boucon
       
       if(flowtype(1:2)/='0d') call qswap(timerept=ltimrpt)

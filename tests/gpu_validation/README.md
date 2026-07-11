@@ -13,7 +13,7 @@ Current validated scope:
 - q(1:5) only
 - explicit sixth-order central difference
 - explicit tenth-order central filter
-- current implemented GPU convection path is explicit central `643e`; Phase S0-A1 explicit upwind `543e` is planned but not yet implemented
+- current implemented GPU convection paths are explicit central `643e` and controlled single-rank explicit upwind `543e` with `recon_schem=-1` (first order), `1` (WENO7), or `3` (MP7)
 - detect-only crash check
 - LF runtime input files
 - runtime `use_gpu=t/f`; GPU support is compiled with `ASTR_WITH_CUDA=ON`
@@ -984,11 +984,11 @@ OUT_DIR=tests/gpu_validation/out/rti_phasej_matrix_after_capability \
 
 Current expected result: all 13 RTI entries pass. The source capability table currently covers only `GPU_SOURCE_NONE`, `GPU_SOURCE_CHANNEL`, and `GPU_SOURCE_RTI`; it is not chemistry, turbulence, or generic UDF source support.
 
-## Phase S0-A Shock-Format Readiness Plan
+## Phase S0-A Shock-Format Readiness
 
-The next planned feature gate is S0-A1, a forced 3-D extruded Sod case used to open the explicit upwind shock-format path without adding open boundaries or high-speed wall coupling.
+S0-A1 is the first completed shock-format plumbing gate. It uses a forced 3-D extruded Sod case to open the explicit upwind path without adding open boundaries, high-speed wall coupling, characteristic decomposition, sensors, diffusion, or filtering.
 
-Planned S0-A1 contract:
+Validated S0-A1 contract:
 
 - `flowtype='sod'` through the `sodini` initialization path
 - controlled validation input, not `examples/sod/datin/input.sod` as-is
@@ -1002,7 +1002,599 @@ Planned S0-A1 contract:
 - field tolerances `FIELD_ATOL=1e-10`, `FIELD_RTOL=1e-10`
 - at minimum, report max differences for `q(:,:,:,1:5)`
 
-Current status: planned. The GPU capability gate still rejects non-`643e` convection schemes, and the current `sod` grid path calls `grid1d(-5,5)`, which does not provide a positive-volume forced 3-D grid. A future S0-A1 validation driver should be documented here after implementation.
+Run the canonical gate with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/sod_s0a1_gate_200x8x8_20 \
+  tests/gpu_validation/run_sod_phase_s0a1_compare.sh
+```
+
+Current status: pass. The controlled `sod` path generates a positive-volume 3-D grid, the GPU capability gate accepts only `NP=1`, and compact upwind plus characteristic decomposition remain rejected. The recorded 20-step run passed statistics and field checks at `1e-10`. Maximum statistic differences were `maxq2=4.3021142204224816e-15` and `maxq5=1.3322676295501878e-15`; maximum conservative-field differences were `q1=2.2204460492503131e-16`, `q2=8.8446089343311681e-17`, `q3=3.1150835073543049e-18`, `q4=3.1456319031046116e-18`, and `q5=1.7763568394002505e-15`.
+
+This result validates first-order Steger-Warming flux-splitting plumbing only. It is not a high-order shock-accuracy claim.
+
+S0-A2 adds the CPU-semantic WENO reconstruction with `recon_schem=1`, `lchardecomp=.false.`, and the same periodic Sod oracle. In the current CPU implementation this selection uses WENO7 on periodic interior interfaces; WENO5 is only a physical-boundary fallback inside `recons_exp`.
+
+Run the canonical S0-A2 gate with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/sod_s0a2_gate_200x8x8_20 \
+  tests/gpu_validation/run_sod_phase_s0a2_compare.sh
+```
+
+Current S0-A2 status: pass. The recorded 20-step run passed statistics and field checks at `1e-10`. Maximum statistic differences were `maxq1=4.7384318691001681e-13` and `maxq5=4.1477932199995848e-13`; maximum conservative-field differences were `q1=8.8817841970012523e-16`, `q2=6.5503158452884060e-17`, `q3=1.1111687016389874e-17`, `q4=1.1204301546017956e-17`, and `q5=1.3322676295501878e-15`. The GPU path reuses one haloed scalar `flux_work_d` across directions and conservative components. This is a porting-equivalence result; Sod exact-solution error and discontinuity resolution remain a separate accuracy gate.
+
+Run the independent S0-A2 exact-solution gate with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/sod_s0a2_accuracy \
+  tests/gpu_validation/run_sod_phase_s0a2_accuracy.sh
+```
+
+The accuracy driver uses `GRID=800,5,5`, `deltat=5.d-4`, and `maxstep=400`, giving `t=0.2` and `dx=0.0125`. Every 3-D dimension must be at least `hm=5`; the comparison driver rejects smaller dimensions before launching ASTR because the CPU program otherwise only warns and can continue into invalid halo accesses. The exact solver uses the standard ideal-gas Sod states, extracts the x profile from ASTR HDF5 output without assuming h5py axis order, and evaluates only the central Riemann problem so the periodic-boundary discontinuity is excluded.
+
+The gate reports normalized `L1`, `L2`, and `Linf` errors for `ro`, `u1`, `p`, and `q1:q5` away from wave fronts; normalized primitive-variable over/undershoot; contact and shock 10%-90% density thickness; and 50% crossing-position error. The finite limits are `1e-3`, `6e-3`, `6e-2`, `2e-2`, 4 cells, 3 cells, and 1 cell, respectively. A missing 10%, 50%, or 90% density crossing is reported as an unresolved transition and fails even when numeric thresholds are disabled.
+
+Current exact-solution status: pass for both CPU and GPU. The recorded calibration under `tests/gpu_validation/out/sod_s0a2_accuracy_calibration_800x5x5_400` had maximum smooth errors `L1=7.1864e-4`, `L2=4.0087e-3`, and `Linf=4.6338e-2`; maximum normalized bound violation `1.3889e-2`; contact thickness `2.9780` cells; shock thickness `2.1989` cells; and maximum position error `0.7527` cells. CPU/GPU reconstructed-field `Linf` was at most `q5=8.4377e-15`. Recorded step-400 times were `74.907 s` for NP=1 CPU and `8.102 s` for NP=1 GPU; these timings are supporting evidence from the accuracy run, not a controlled performance benchmark.
+
+S0-A3 adds the CPU-semantic MP reconstruction with `recon_schem=3`. The controlled periodic path uses MP7 at every interface; CPU MP5 physical-boundary degradation is outside this gate. WENO7 and MP7 share the generic explicit-reconstruction kernels and the same scalar `flux_work_d`; the reconstruction selector is a kernel argument, and every positive-flux, negative-flux, and directional-RHS kernel remains explicitly synchronized.
+
+Run the S0-A3 equivalence and exact-solution gates with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/sod_s0a3_gate_200x8x8_20 \
+  tests/gpu_validation/run_sod_phase_s0a3_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/sod_s0a3_accuracy_800x5x5_400 \
+  tests/gpu_validation/run_sod_phase_s0a3_accuracy.sh
+```
+
+Current S0-A3 status: pass. The 20-step CPU/GPU comparison passed statistics and fields at `1e-10`; maximum statistic differences were `maxq1=4.6985e-13` and `maxq5=4.6629e-13`, and maximum conservative-field difference was `q5=1.3323e-15`. The 400-step accuracy run passed the unchanged S0-A2 finite thresholds. Maximum smooth errors were `L1=7.2439e-4`, `L2=4.1951e-3`, and `Linf=4.8797e-2`; maximum normalized bound violation was `8.5021e-3`; contact and shock thicknesses were `2.9496` and `1.6939` cells; and maximum position error was `0.7272` cells. MP7 resolved the shock more sharply and reduced overshoot relative to this WENO7 run, while its largest smooth-region errors were slightly higher. Same-run CPU/GPU field `Linf` was at most `q5=1.2879e-14`. Recorded step-400 times were `57.408 s` for NP=1 CPU and `7.277 s` for NP=1 GPU; treat these as supporting run evidence, not a controlled benchmark. A one-step S0-A3 Compute Sanitizer memcheck also completed with `ERROR SUMMARY: 0 errors` under `mpirun -np 1` and the `ob1/self/pt2pt` MPI settings.
+
+S0-A4 isolates the Ducros/pressure-curvature sensor before enabling Roe characteristic reconstruction. The driver forces Shu-Osher onto a positive-volume 3-D periodic grid because the initial Sod velocity is zero and would make the Ducros compression factor an all-zero oracle. It uses `GRID=400,8,8`, `deltat=1.d-4`, `maxstep=1`, `recon_schem=3`, `lchardecomp=f`, `LFILTER=f`, and `DIFFTERM=f`.
+
+Run the S0-A4 single-rank sensor gate with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/shuosher_sensor_s0a4_compare \
+  tests/gpu_validation/run_shuosher_sensor_s0a4_compare.sh
+```
+
+Current S0-A4 status: pass. `compare_shock_sensor.py` checks every raw-sensor value and requires the byte mask to match exactly. The maximum raw-field difference was `1.1102230246251565e-16`; CPU/GPU raw maxima were both `6.9999992499998120e-1`, averages were `4.3855622929106558e-3` and `4.3855622929106566e-3`, and both masks contained 1944 shock nodes with zero mismatches. One-step statistics passed at `1e-10`, and the largest conservative-field difference was `q5=4.4408920985006262e-16`. A three-stage one-step Compute Sanitizer run reported `ERROR SUMMARY: 0 errors`. This is a validation-only capability selected by `ASTR_SHOCK_SENSOR_DUMP`: the mask is not yet consumed by MP7/Roe fluxes.
+
+S0-A5 extends the raw sensor to the existing generic `hm`-layer HaloTransport for `NP=2`, `TOPOLOGY=2,1,1`. The driver sets `ASTR_SHUOSHER_SHOCK_X=0.d0`, shifting the test discontinuity beside the global x-slab interface while preserving the normal Shu-Osher initialization when the variable is absent. Each rank writes its local sensor dump with global offsets; `compare_shock_sensor.py` merges the rank files, verifies overlapping nodes, and compares the global CPU/GPU field and mask.
+
+Run the S0-A5 sensor-halo gate with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/shuosher_sensor_s0a5_mpi_compare \
+  tests/gpu_validation/run_shuosher_sensor_s0a5_mpi_compare.sh
+```
+
+Current S0-A5 status: pass. The merged global shape is `401,9,9`; raw `L_inf=1.1102230246251565e-16`, mask mismatches are zero, and both global masks contain 1944 shock nodes. The one-step multi-rank field comparison passed at `1e-10`, with `q5 L_inf=2.7089441800853820e-14`. The two-rank sanitizer command requires `OMPI_MCA_btl=self,tcp`, `OMPI_MCA_coll='^hcoll,ucc'`, `OMPI_MCA_opal_cuda_support=0`, and `UCX_MEMTYPE_CACHE=n`; with those MPI components disabled, both ranks report `ERROR SUMMARY: 0 errors`. This establishes raw-sensor halo correctness only for `2x1x1`; Roe characteristic reconstruction remains separate.
+
+S0-A6 consumes the CPU-equivalent expanded mask in a single-rank selective Roe characteristic path. The controlled gate uses the same forced-3D periodic Shu-Osher configuration, but sets `lchardecomp=t`. Sensor-active interfaces project the five split Euler fluxes with the local Roe left eigenvectors, reconstruct each characteristic component with MP7, and project the interface flux back with the right eigenvectors. Other interfaces retain physical-space MP7. A reusable five-component `flux_characteristic_work_d` stores one direction at a time before the conservative flux difference.
+
+Run the S0-A6 characteristic gate with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/shuosher_characteristic_s0a6_compare \
+  tests/gpu_validation/run_shuosher_characteristic_s0a6_compare.sh
+```
+
+Current S0-A6 status: pass for `NP=1`. The one-step raw sensor and mask retain `L_inf=1.1102230246251565e-16`, zero mismatches, and 1944 shock nodes. The one-step conservative field maximum is `q5=4.4408920985006262e-16`; the maximum statistic difference is `4.9098503041022923e-12`. A three-step repetition passed with `q5 L_inf=1.4210854715202004e-14`. The prescribed x block remains `(512,1,1)`; a file-local NVHPC `-gpu=maxregcount:128` cap is required because the initial kernel used 255 registers/thread and could not launch at 512 threads. The characteristic kernel now caches each five-component Steger-Warming split for the original seven positive and seven negative MP7 stencil positions before Roe projection. This preserves the operator and adds no global workspace, kernel, or synchronization. On S0-A6, x/y/z characteristic-flux means are `1.051/1.236/1.440 ms` versus `2.026/3.116/3.948 ms` before caching; x-kernel achieved occupancy rises from about 14% to 22%. Compute Sanitizer passed the three-step GPU run with `ERROR SUMMARY: 0 errors`. This capability is limited to periodic Shu-Osher with `ASTR_SHOCK_SENSOR_DUMP`; S0-A7 through S0-A10 separately validate multi-rank characteristic reconstruction.
+
+## Phase S0-B0 X Physical Reconstruction
+
+Run the controlled x-physical explicit-MP7 gate with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/sod_phase_s0b0_xphysical \
+  tests/gpu_validation/run_sod_phase_s0b0_xphysical_compare.sh
+```
+
+The gate uses forced-3D Sod, `bctype=50,50,1,1,1,1`, `conschm=543e`, `recon_schem=3`, and no characteristic decomposition, diffusion, or filtering. It is not an open-boundary case. The x interface/RHS kernels preserve CPU active ranges and `npdci` semantics: physical-rank interfaces use two-point average, SUW3, MP5, then MP7; the opposite MPI face retains the exchanged `hm` halo. The 20-step same-topology CPU/GPU gate passes for NP=1 and `NP=2 TOPOLOGY=2,1,1`; NP=2 full-field `q5 L_inf=5.8841820305133297e-15`, and both memcheck ranks report zero errors.
+
+The corresponding selective-Roe physical-face gate uses forced-3D Shu-Osher:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/shuosher_characteristic_s0b0_xphysical \
+  NP=2 TOPOLOGY=2,1,1 MAXSTEP=3 FEQCHKPT=3 \
+  tests/gpu_validation/run_shuosher_characteristic_s0b0_xphysical_compare.sh
+```
+
+It keeps `bctype=50,50`, MP7, `lchardecomp=t`, and no diffusion/filter. The
+driver checks rank-local raw sensor and mask data for MPI runs, then statistics
+and full fields. NP=1 and `NP=2 TOPOLOGY=2,1,1` pass at three steps; NP=2 has
+raw `L_inf=1.1102230246251565e-16`, zero mask mismatches, and `q5
+L_inf=7.1054273576010019e-15`. This gate also corrects the CPU reference:
+`npdci=4` must clamp both physical sides in `ducrossensor`; leaving it untreated
+reads undefined physical-face halos. The GPU sensor matches that rule and skips
+the periodic x `ssf` fill on a physical x face. It is not inflow/outflow, NSCBC,
+or sponge validation.
+
+## Phase S0-B1 Classical Open Boundary
+
+```bash
+OUT_DIR=tests/gpu_validation/out/openshock_s0b1 \
+  NP=2 TOPOLOGY=2,1,1 MAXSTEP=10 FEQCHKPT=10 \
+  tests/gpu_validation/run_openshock_s0b1_compare.sh
+```
+
+This gate is a stationary Mach-3 normal shock at x=0, with x-min `11,free` and
+x-max `21,10.333333333333333`. The second outlet value is `p2/pinf`; setting
+`pout=1` would impose upstream pressure at a subsonic outlet and invalidate the
+stationary state. Ten-step NP=1 and `NP=2 TOPOLOGY=2,1,1` comparisons pass with
+`q5 L_inf=8.8817841970012523e-16` and `9.9920072216264089e-16`, respectively.
+NSCBC, sponge, diffusion, filtering, and characteristic Roe are excluded.
+
+## Phase S0-B2 NSCBC Open Boundary
+
+`run_openshock_s0b2_nscbc_compare.sh` prepares the restricted `12/22`
+OpenShock input. The GPU implementation includes characteristic boundary RHS
+terms, separate inlet-domain/outlet-plane Mach reductions, and the CPU
+sixth-order explicit outlet y-filter. CPU `time_integration_rk` refreshes
+halos with a full-rank pre-`boucon` `qswap` when `bctype=22` is present; this
+defines the CPU filter input without changing the normal post-boundary swap.
+Ten steps pass for NP=1 (`q5 L_inf=8.8817841970012523e-16`) and NP=2
+`TOPOLOGY=2,1,1` (`q5 L_inf=9.9920072216264089e-16`). The NP=2 memcheck run,
+with the documented `ob1/self,tcp/pt2pt` MPI settings, reports zero errors on
+both ranks. Scope remains Cartesian x faces, periodic y/z, no species, no
+sponge, no global filter, and physical-space MP7 only.
+
+## Phase S0-B3 x-Max Sponge
+
+```bash
+OUT_DIR=tests/gpu_validation/out/openshock_s0b3_sponge_np2 \
+  NP=2 TOPOLOGY=2,1,1 MAXSTEP=10 FEQCHKPT=10 \
+  tests/gpu_validation/run_openshock_s0b3_sponge_compare.sh
+```
+
+This gate retains the S0-B2 `12/22` NSCBC pair and sets only `spg_im=80` on
+`GRID=400,8,8`. It is not a reference-state relaxation: after each RK update
+the CPU-equivalent device path refreshes all applicable q halos, then smooths the
+x-max active layer in conservative variables with the geometric coefficient
+field and the six direct neighbors. The temporary values use `qwork_d`; no
+additional full-field device allocation or stage-level D2H/H2D copy occurs.
+Ten-step NP=1 and NP=2 `2x1x1` comparisons pass with final `q5
+L_inf=8.8817841970012523e-15`; the one-step two-rank Compute Sanitizer run
+reports zero errors on both ranks. Only x-max `layer` mode is enabled.
+
+## Phase S0-B4 Combined Sponge MPI
+
+```bash
+OUT_DIR=tests/gpu_validation/out/openshock_s0b4_sponge_2x2x2 \
+  NP=8 TOPOLOGY=2,2,2 GRID=400,16,16 MAXSTEP=10 FEQCHKPT=10 \
+  tests/gpu_validation/run_openshock_s0b3_sponge_compare.sh
+```
+
+This is the combined x/y/z MPI oracle for the B3 x-max layer. It corrected a
+CPU reference error: the six-neighbor stencil requires current halos in every
+direction, so `spongefilter_layer` now calls full `dataswap(q)` before each
+layer. CUDA Fortran uses the matching q-only three-direction halo exchange.
+The ten-step gate passes with final `q5 L_inf=8.8817841970012523e-15`; an
+eight-rank one-step Compute Sanitizer run reports zero errors for every rank.
+This workstation test oversubscribes two GPUs and is not a scaling measurement.
+
+## Phase S1-A0/A1 Explicit Flat Plate
+
+```bash
+OUT_DIR=tests/gpu_validation/out/s1_flatplate_s1a_20steps \
+  MAXSTEP=20 FEQCHKPT=20 \
+  tests/gpu_validation/run_s1_flatplate_s1a_compare.sh
+```
+
+The driver creates an isolated `64x64x8` Cartesian, z-extruded `bl` case and
+a nonuniform `datin/inlet.prof`. It uses non-dimensional `Mach=0.3`, explicit
+central `643e/643e`, RK3, diffusion, no global filter, x `11,prof/21`, y
+`41/51`, and periodic z. The CPU-active `51` branch is an extrapolative
+upper-boundary update; its characteristic implementation is commented out in
+the CPU source and is not claimed here. GPU uploads the profile once after
+`flowinit`, keeps it on device, computes the matching four BL statistics on
+device, and compares the final full field plus `massflux`, `fbcx`,
+`wallheatflux`, and `wrms`. The 20-step gate passes at `1e-10`; a valid
+one-rank Compute Sanitizer run reports zero errors.
+
+S1-A1 uses the same case with explicit MP7 convection (`543e/643e`). Select
+it through `CONSCHM=543e`:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/s1_flatplate_s1a1_20steps \
+  CONSCHM=543e MAXSTEP=20 FEQCHKPT=20 \
+  tests/gpu_validation/run_s1_flatplate_s1a_compare.sh
+```
+
+The CPU reference now accepts the single-rank double-physical-face encoding
+`npdci=npdcj=4`: `recons_exp` applies the same two-point, SUW3, MP5, then MP7
+sequence at both ends, and `convrsduwd` uses the physical `[0,dim]` stencil
+range for y/z as it already did for x. CUDA uses matching x/y face degradation
+and restricts every x/y/z explicit-upwind RHS update to CPU active ranges
+`is:ie`, `js:je`, and `ks:ke`. The Steger-Warming split reads local and
+exchanged-halo metric entries directly; physical `j=jm` no longer reads the
+periodic `jacob(:,0,:)`. The 20-step A1 gate passes with final
+`q5 L_inf=1.7763568394002505e-14`, maximum statistic difference
+`9.6256336235001072e-14`, and one-rank memcheck reports zero errors. Scope is
+Cartesian, profile inflow, explicit MP7, and the active extrapolative `51`
+upper boundary; it is not a curvilinear, high-Mach, multi-axis-MPI, or
+characteristic-farfield claim.
+
+The same S1-A1 gate also passes in two x slabs. The profile and both y physical
+faces remain local to each rank; only x uses the existing solution halo exchange:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/s1_flatplate_s1a1_np2_20steps \
+  CONSCHM=543e NP=2 TOPOLOGY=2,1,1 MAXSTEP=20 FEQCHKPT=20 \
+  tests/gpu_validation/run_s1_flatplate_s1a_compare.sh
+```
+
+The final parallel field result is `q5 L_inf=1.7763568394002505e-14` and the
+maximum statistic difference is `5.3623772089395061e-14`. Both ranks report
+`ERROR SUMMARY: 0 errors` in the one-step MPI Compute Sanitizer gate.
+
+The same controlled MP7 case passes in two y slabs. This is the physical-y
+decomposition gate: the two ranks exchange solution and geometry halos at the
+internal y interface, while only the global lower-y rank contributes `fbcx`,
+`wallheatflux`, and wall area to the BL statistic reduction.
+
+```bash
+OUT_DIR=tests/gpu_validation/out/s1_flatplate_s1a1_np2_yslab_20steps \
+  CONSCHM=543e NP=2 TOPOLOGY=1,2,1 MAXSTEP=20 FEQCHKPT=20 \
+  tests/gpu_validation/run_s1_flatplate_s1a_compare.sh
+```
+
+The 20-step result has `q5 L_inf=1.7763568394002505e-14` and maximum statistic
+difference `5.4956039718945249e-14`; the two-rank memcheck reports
+`ERROR SUMMARY: 0 errors` for both ranks. `REYNOLDS` is an optional driver
+parameter for diagnostic runs; the validated physical case uses `REYNOLDS=1000`.
+The periodic z direction also passes in two z slabs:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/s1_flatplate_s1a1_np2_zslab_20steps \
+  CONSCHM=543e NP=2 TOPOLOGY=1,1,2 MAXSTEP=20 FEQCHKPT=20 \
+  tests/gpu_validation/run_s1_flatplate_s1a_compare.sh
+```
+
+The 20-step result has `q5 L_inf=1.7763568394002505e-14`, maximum statistic
+difference `5.4733995114020217e-14`, and a zero-error two-rank memcheck.
+
+The first combined topology is also validated under two-GPU oversubscription:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/s1_flatplate_s1a1_np4_2x2x1_20steps \
+  CONSCHM=543e NP=4 TOPOLOGY=2,2,1 MAXSTEP=20 FEQCHKPT=20 \
+  tests/gpu_validation/run_s1_flatplate_s1a_compare.sh
+```
+
+This `2x2x1` gate passes with `q5 L_inf=1.7763568394002505e-14`, maximum
+statistic difference `4.9737991503207013e-14`, and four zero-error memcheck
+reports. The x/z combined topology is also validated under the same two-GPU
+oversubscription:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/s1_flatplate_s1a1_np4_2x1x2_20steps \
+  CONSCHM=543e NP=4 TOPOLOGY=2,1,2 MAXSTEP=20 FEQCHKPT=20 \
+  tests/gpu_validation/run_s1_flatplate_s1a_compare.sh
+```
+
+The `2x1x2` gate passes with `q5 L_inf=1.7763568394002505e-14`, maximum
+statistic difference `5.0071058410594561e-14`, and four zero-error memcheck
+reports. The y/z combined topology is also validated:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/s1_flatplate_s1a1_np4_1x2x2_20steps \
+  CONSCHM=543e NP=4 TOPOLOGY=1,2,2 MAXSTEP=20 FEQCHKPT=20 \
+  tests/gpu_validation/run_s1_flatplate_s1a_compare.sh
+```
+
+The `1x2x2` gate has the same final `q5 L_inf=1.7763568394002505e-14`,
+maximum statistic difference `5.0071058410594561e-14`, and four zero-error
+memcheck reports. The full three-direction topology needs `KM=16`: the default
+`KM=8` would make each z slab four points wide, below `hm=5` for MP7.
+
+```bash
+OUT_DIR=tests/gpu_validation/out/s1_flatplate_s1a1_np8_2x2x2_20steps \
+  IM=64 JM=64 KM=16 CONSCHM=543e NP=8 TOPOLOGY=2,2,2 \
+  MAXSTEP=20 FEQCHKPT=20 \
+  tests/gpu_validation/run_s1_flatplate_s1a_compare.sh
+```
+
+The `2x2x2` gate passes with final `q5 L_inf=1.7763568394002505e-14`, maximum
+statistic difference `4.9737991503207013e-14`, and eight zero-error memcheck
+reports. All four- and eight-rank cases are two-GPU-oversubscribed correctness
+evidence only. Curvilinear geometry, high-Mach conditions, and characteristic
+farfield behavior remain outside this contract.
+
+## Phase S1-B0 HBL-Inspired Mach 3 Gate
+
+`examples/Hypersonic_Boundary_Layer` is not directly GPU-runnable: its inputs
+are two-dimensional, compact, and mostly dimensional. The S1-B0 driver creates
+a separate non-dimensional, z-extruded explicit counterpart with the M3 x
+extent, wall-normal clustering, `Mach=3`, `Re=100000`, and the M3 heated-wall
+ratio `Twall/Tinf=568.89/226.65`:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/s1_hbl_s1b0_20steps \
+  MAXSTEP=20 FEQCHKPT=20 \
+  tests/gpu_validation/run_s1_hbl_s1b0_compare.sh
+```
+
+It uses explicit MP7 `543e/643e`, a deterministic heated profile, `11,prof`,
+`21`, lower `41`, upper `51`, diffusion, no global filter, no characteristic
+decomposition, and periodic z. The 20-step CPU/GPU gate passes with
+`q5 L_inf=5.5511151231257827e-16`, maximum statistic difference
+`7.8936857050848630e-14`, and a one-rank Compute Sanitizer report of zero
+errors. This validates high-Mach parameters and the heated-wall explicit path,
+not the original two-dimensional compact HBL case, characteristic farfield, or
+SBLI behavior.
+
+S1-B1 extends the same controlled HBL gate to individual MPI slabs:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/s1_hbl_s1b1_np2_x20 \
+  NP=2 TOPOLOGY=2,1,1 MAXSTEP=20 FEQCHKPT=20 \
+  tests/gpu_validation/run_s1_hbl_s1b0_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/s1_hbl_s1b1_np2_y20 \
+  NP=2 TOPOLOGY=1,2,1 MAXSTEP=20 FEQCHKPT=20 \
+  tests/gpu_validation/run_s1_hbl_s1b0_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/s1_hbl_s1b1_np2_z20 \
+  KM=16 NP=2 TOPOLOGY=1,1,2 MAXSTEP=20 FEQCHKPT=20 \
+  tests/gpu_validation/run_s1_hbl_s1b0_compare.sh
+```
+
+All three runs pass with final `q5 L_inf=5.5511151231257827e-16`; their
+maximum statistic differences are `6.3726801613483985e-14`,
+`5.9729998724833422e-14`, and `7.8936857050848630e-14` for x/y/z,
+respectively. The z slab requires `KM=16` because `KM=8` would leave only four
+active z points per rank, below `hm=5`. A two-rank physical-y Compute Sanitizer
+run reports zero errors on both ranks. Combined-axis and production-scaling
+claims remain out of scope.
+
+S1-B2 covers the three NP=4 two-axis combinations:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/s1_hbl_s1b2_np4_2x2x1_20 \
+  NP=4 TOPOLOGY=2,2,1 MAXSTEP=20 FEQCHKPT=20 \
+  tests/gpu_validation/run_s1_hbl_s1b0_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/s1_hbl_s1b2_np4_2x1x2_20 \
+  KM=16 NP=4 TOPOLOGY=2,1,2 MAXSTEP=20 FEQCHKPT=20 \
+  tests/gpu_validation/run_s1_hbl_s1b0_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/s1_hbl_s1b2_np4_1x2x2_20 \
+  KM=16 NP=4 TOPOLOGY=1,2,2 MAXSTEP=20 FEQCHKPT=20 \
+  tests/gpu_validation/run_s1_hbl_s1b0_compare.sh
+```
+
+All three runs pass with final `q5 L_inf=5.5511151231257827e-16`; maximum
+statistic differences are `5.0182080713057076e-14`,
+`6.3726801613483985e-14`, and `5.9729998724833422e-14`, respectively. The
+`1x2x2` four-rank Compute Sanitizer run reports zero errors for every rank.
+These are two-GPU-oversubscribed correctness tests. The full `2x2x2` HBL gate
+remains separate.
+
+S1-B3 closes the controlled HBL topology matrix with full x/y/z decomposition:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/s1_hbl_s1b3_np8_2x2x2_20 \
+  KM=16 NP=8 TOPOLOGY=2,2,2 MAXSTEP=20 FEQCHKPT=20 \
+  tests/gpu_validation/run_s1_hbl_s1b0_compare.sh
+```
+
+The `96x96x16` grid gives each rank `48x48x8` active points. The 20-step run
+passes with `q5 L_inf=5.5511151231257827e-16`, maximum statistic difference
+`5.0182080713057076e-14`, and zero-error Compute Sanitizer summaries from all
+eight ranks. This is two-GPU-oversubscribed full-halo correctness evidence, not
+a multi-GPU scaling result.
+
+## Phase S1-C1 Mach 5 Sutherland Similarity Inlet
+
+S1-C1 is the first HBL gate whose inlet comes from a coupled, isothermal-wall
+compressible Blasius solution rather than an analytic exponential seed. The
+generator uses `gamma=1.4`, `Pr=0.72`, Sutherland viscosity with
+`Tref=226.65 K`, `Mach=5`, `Re=1.83052e6`, and
+`Twall/Tinf=1176.64/226.65=5.191440547760865`. Its virtual leading-edge
+station is `STATION_X=1.0`; the generated profile is imposed at the domain
+inlet, whose x coordinate is `-1`.
+
+```bash
+OUT_DIR=tests/gpu_validation/out/s1_hbl_s1c1_m5_similarity_20 \
+  MAXSTEP=20 FEQCHKPT=20 \
+  tests/gpu_validation/run_s1_hbl_s1c1_m5_sutherland_compare.sh
+```
+
+The `192x192x8` explicit MP7 case has a computed
+`delta_99=9.5190551023136317e-3`. The 20-step CPU/GPU result passes with
+`q5 L_inf=4.4408920985006262e-16` and maximum statistic difference
+`3.5171865420124959e-13`.
+
+The profile first line selects its density contract. `density=reconstruct` is
+the backward-compatible default: ASTR sets `p=pinf` and reconstructs density
+from temperature. `density=provided` preserves file density and computes
+pressure from the ideal-gas equation of state; it rejects the input if that
+pressure differs from `pinf` by more than `1e-10`. The similarity generator
+writes the mathematically equivalent `rho=1/T` in both modes.
+
+```bash
+OUT_DIR=tests/gpu_validation/out/s1_hbl_s1c1_density_reconstruct \
+  PROFILE_DENSITY_MODE=reconstruct MAXSTEP=2 \
+  tests/gpu_validation/run_s1_hbl_s1c1_m5_sutherland_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/s1_hbl_s1c1_density_provided \
+  PROFILE_DENSITY_MODE=provided MAXSTEP=2 \
+  tests/gpu_validation/run_s1_hbl_s1c1_m5_sutherland_compare.sh
+```
+
+Both modes pass their CPU/GPU comparisons. Comparing their CPU fields gives
+maximum `T L_inf=6.2172489379008766e-15`; the difference is floating-point
+round-off from evaluating `1/T` directly or through `pinf` and the equation of
+state. This gate does not prove a complete physical flat-plate solution:
+`blini` still copies the inlet profile over x at initialization, `51` is not a
+characteristic farfield, and mesh/time/streamwise-development convergence and
+external `Cf`/heat-transfer validation remain pending.
+
+## Phase S1-C2 Mach 5 Similarity Field
+
+C2 removes C1's x-uniform initialization by writing the existing CPU-readable
+`datin/flowini3d.h5` and selecting `ninit=3`. The generator solves the C1
+similarity ODE once, then maps it at every x with the local
+`sqrt(2*x_s/Re)` scale. `VIRTUAL_LEADING_EDGE=-2` makes the `[-1,10]` domain
+cover similarity stations `x_s=[1,12]`; HDF initialization remains CPU-owned,
+followed by the normal one-time device upload.
+
+```bash
+OUT_DIR=tests/gpu_validation/out/s1_hbl_s1c2_m5_similarity_field_20 \
+  MAXSTEP=20 FEQCHKPT=20 \
+  tests/gpu_validation/run_s1_hbl_s1c2_m5_similarity_field_compare.sh
+```
+
+The `192x192x8` 20-step CPU/GPU run passes with
+`q5 L_inf=7.7715611723760958e-16` and maximum statistic difference
+`3.3406610810970960e-13`. This validates the HDF initial-field reader and GPU
+resident-field handoff, not combined-axis multi-rank HDF I/O, mesh/time
+convergence, characteristic farfield treatment, or external skin-friction/
+heat-transfer comparison.
+
+The same C2 HDF field is validated in NP=2 x/y/z slabs:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/s1_hbl_s1c2_m5_field_np2_x20 \
+  NP=2 TOPOLOGY=2,1,1 MAXSTEP=20 \
+  tests/gpu_validation/run_s1_hbl_s1c2_m5_similarity_field_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/s1_hbl_s1c2_m5_field_np2_y20 \
+  NP=2 TOPOLOGY=1,2,1 MAXSTEP=20 \
+  tests/gpu_validation/run_s1_hbl_s1c2_m5_similarity_field_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/s1_hbl_s1c2_m5_field_np2_z20 \
+  KM=16 NP=2 TOPOLOGY=1,1,2 MAXSTEP=20 \
+  tests/gpu_validation/run_s1_hbl_s1c2_m5_similarity_field_compare.sh
+```
+
+The x/y runs have maximum statistic differences `1.9806378759312793e-13` and
+`2.9809488211185453e-13`; z has `3.3406610810970960e-13` and field
+`q5 L_inf=9.9920072216264089e-16`. `KM=16` is required for z because each
+rank otherwise has only four active z points, below `hm=5`.
+
+## Phase S1-C3 Mach 5 NSCBC Farfield
+
+S1-C3 is the candidate upper `bctype=52` NSCBC farfield gate for the same
+Mach-5 flat-plate family. CPU probing initially showed that
+`bc:farfield_nscbc` could apply its transverse filter on the `jmax` boundary
+using stale k-halo values before a current halo refresh. In that state an
+initially constant upper physical boundary was filtered into a nonconstant
+range such as `0.84375..1.078125`, which is a halo artifact rather than a valid
+characteristic-farfield result.
+
+Under the CPU bug decision gate, GPU support did not reproduce that artifact.
+The CPU oracle now refreshes halos before `boucon` whenever either
+`bctype=22` or `bctype=52` is present, and the GPU `52` path is validated
+against that corrected oracle:
+
+```bash
+tests/gpu_validation/run_s1_hbl_s1c3_m5_nscbc_farfield_compare.sh
+
+OUT_DIR=/tmp/astr_s1c3_52_20 MAXSTEP=20 FEQCHKPT=20 \
+  tests/gpu_validation/run_s1_hbl_s1c3_m5_nscbc_farfield_compare.sh
+```
+
+Current expected result: both statistics and full-field comparisons print
+`status: pass`. The latest default `192x192x8` two-step gate had reconstructed
+`q5 L_inf=4.4408920985006262e-16`. The latest 20-step gate had reconstructed
+`q5 L_inf=1.4432899320127035e-15` and maximum statistic difference
+`3.4716673980028645e-13`.
+
+## Phase S2-A0 Oblique-Shock HBL Compatibility
+
+S2-A0 is the first deliberately narrow shock/boundary-layer compatibility gate.
+It does not claim a resolved physical SBLI. It keeps the S1 Mach-5
+Sutherland-viscosity flat-plate contract, initializes from `ninit=3`, and adds
+an analytic oblique-shock overlay to the x-varying compressible Blasius HDF
+field. The overlay updates `rho`, `T`, `u`, and `v` together using perfect-gas
+oblique-shock ratios so CPU `readflowini3d` reconstructs a consistent pressure
+from `rho*T`.
+
+```bash
+tests/gpu_validation/run_s2_hbl_oblique_shock_compare.sh
+
+IM=64 JM=64 KM=8 MAXSTEP=2 FEQCHKPT=2 \
+OUT_DIR=tests/gpu_validation/out/s2_hbl_oblique_shock_smoke \
+  tests/gpu_validation/run_s2_hbl_oblique_shock_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/s2_hbl_oblique_shock_mpirank_matrix \
+  tests/gpu_validation/run_s2_hbl_oblique_shock_mpirank_matrix.sh
+
+OUT_DIR=tests/gpu_validation/out/s2_hbl_inlet_sustained_shock \
+  tests/gpu_validation/run_s2_hbl_inlet_sustained_shock_compare.sh
+```
+
+Current expected result: statistics and full-field comparisons print
+`status: pass`. The current `64x64x8` smoke gate passes at one and two steps
+with reconstructed `q5 L_inf=8.8817841970012523e-16` for the two-step run. The
+default `192x192x8` two-step gate also passes with reconstructed
+`q5 L_inf=1.3322676295501878e-15` and maximum statistic difference
+`1.0755840662568517e-12`. The same two-step default gate now passes NP=2 x/y/z
+slabs, NP=4 xy/xz/yz planes, and `NP=8 TOPOLOGY=2,2,2`; z-decomposed cases use
+`KM=16` so local `km>=hm`. All MPI runs retain `q5 L_inf=1.3322676295501878e-15`.
+The S2-B0 long subset currently passes `MAXSTEP=20` for NP=1 and
+`NP=8 TOPOLOGY=2,2,2`; both have reconstructed `q5 L_inf=3.3306690738754696e-15`,
+with largest statistic difference `1.2061462939527701e-12`.
+The optional stress subset also passes `MAXSTEP=100` for NP=1 and NP=8; both
+have reconstructed `q5 L_inf=5.7731597280508140e-15`, with largest statistic
+difference `1.2216894162975223e-12`. Run it through the matrix driver with
+`RUN_STRESS=t`.
+
+S2-B1 adds a sustained compressed-inlet variant through
+`run_s2_hbl_inlet_sustained_shock_compare.sh`. This wrapper enables
+`PROFILE_OBLIQUE_SHOCK=t`, writes `density=provided pressure=provided` in
+`inlet.prof`, and places the analytic shock line at the inlet so the upper
+profile continuously injects the compressed post-shock state. `inletprofile`
+reads the optional fifth pressure column only when the first profile line
+contains `pressure=provided`; for non-dimensional pressure-provided density
+profiles, it rejects inputs whose pressure is inconsistent with `rho*T`. The
+current `64x64x8` two-step smoke has `q5 L_inf=8.8817841970012523e-16`. The
+default `192x192x8` NP=1 two-step gate has `q5 L_inf=1.3322676295501878e-15`
+and maximum statistic difference `7.8381745538536052e-13`. The `NP=2
+TOPOLOGY=1,2,1` y-slab gate has the same `q5 L_inf` and maximum statistic
+difference `7.8292927696566039e-13`, covering fifth-column profile scatter.
+This remains a boundary-forced compatibility gate, not a full physical SBLI
+validation.
+
+This gate exposed a GPU `bctype=21` outlet compatibility bug that was hidden by
+smooth S1 fields: CPU extrapolates sound speed as
+`extrapolate(sos(T1),sos(T2))`, while the GPU previously used
+`sqrt(extrapolate(T))/Mach`. The GPU outlet now extrapolates sound speed
+directly.
+
+S0-A7 extends the same selected Roe path to `NP=2 TOPOLOGY=2,1,1`. The driver places the jump at the global x-slab interface using `ASTR_SHUOSHER_SHOCK_X=0.d0`; raw `ssf` is exchanged through the generic `hm` transport before each rank expands its local mask and evaluates characteristic interfaces.
+
+```bash
+OUT_DIR=tests/gpu_validation/out/shuosher_characteristic_s0a7_mpi_compare \
+  tests/gpu_validation/run_shuosher_characteristic_s0a7_mpi_compare.sh
+```
+
+Current S0-A7 status: pass for x slabs. The three-step comparison has global raw sensor `L_inf=1.1102230246251565e-16`, zero mask mismatches, `q5 L_inf=9.1482377229112899e-14`, and maximum statistic difference `4.9098503041022923e-12`. The two-rank memcheck configuration used for S0-A5 reports zero errors on both S0-A7 ranks. This does not validate y/z characteristic interfaces or general multi-rank Roe support.
+
+S0-A8 validates y slabs with `NP=2 TOPOLOGY=1,2,1` and `GRID=400,16,8`, so every local y domain satisfies `jm>=hm`. CPU raw `ssf` overlaps consistently at the duplicated y activity face, but its expanded `lshock` is locally owned; use rankwise CPU/GPU comparison instead of a globally merged mask.
+
+```bash
+OUT_DIR=tests/gpu_validation/out/shuosher_characteristic_s0a8_y_mpi_compare \
+  tests/gpu_validation/run_shuosher_characteristic_s0a8_y_mpi_compare.sh
+```
+
+Current S0-A8 status: pass. The three-step gate has rankwise raw `L_inf=1.1102230246251565e-16`, zero local mask mismatches, `q5 L_inf=8.8817841970012523e-16`, and maximum statistic difference `4.4906300900038332e-12`. Both Compute Sanitizer ranks report zero errors. Do not use `GRID=400,8,8` for this topology because local `jm=4<hm=5` causes halo pack ranges to include an undefined local halo value.
+
+S0-A9 completes the corresponding z-slab gate with `NP=2 TOPOLOGY=1,1,2` and `GRID=400,8,16`, keeping local `km>=hm`. It uses the same rankwise raw/mask validation contract as S0-A8.
+
+```bash
+OUT_DIR=tests/gpu_validation/out/shuosher_characteristic_s0a9_z_mpi_compare \
+  tests/gpu_validation/run_shuosher_characteristic_s0a9_z_mpi_compare.sh
+```
+
+Current S0-A9 status: pass. The three-step gate has zero local mask mismatches, `q5 L_inf=8.8817841970012523e-16`, and both Compute Sanitizer ranks report zero errors. The single-axis `NP=2` gates do not validate combined `2x2x2` topology.
+
+The one-step S0-A2 path also passed Compute Sanitizer memcheck with `ERROR SUMMARY: 0 errors` using `OMPI_MCA_pml=ob1`, `OMPI_MCA_btl=self`, and `OMPI_MCA_osc=pt2pt` to prevent OpenMPI UCX initialization from generating CUDA-context false positives. Post-S0-A2 regressions passed for S0-A1, filtered/diffusive TGV, all three Phase K source entries, and all 13 Phase J RTI entries.
 
 The larger `256^3 NP=1/NP=2` Nsight profile can be generated with:
 

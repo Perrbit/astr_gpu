@@ -25,9 +25,13 @@ contains
 
   subroutine gpu_after_flowinit()
     use mainloop_gpu, only: init_gpu
+    use sponge_gpu, only: init_sponge_gpu
+    use boundary_gpu, only: init_s1_flatplate_profile_gpu
     implicit none
 
     call init_gpu()
+    call init_s1_flatplate_profile_gpu()
+    call init_sponge_gpu()
   end subroutine gpu_after_flowinit
 
   subroutine gpu_sync_flow_to_device()
@@ -107,7 +111,8 @@ contains
   subroutine gpu_write_flow_statistics()
     use commvar, only: flowtype
     use gradcal_gpu, only: compute_gradcal_gpu
-    use statistic_gpu, only: gpu_write_channel_flowstate,gpu_write_generic_flowstate
+    use statistic_gpu, only: gpu_write_channel_flowstate,gpu_write_s1_bl_flowstate, &
+                             gpu_write_generic_flowstate
     implicit none
 
     if(trim(flowtype) == 'tgv' .or. trim(flowtype) == 'hit') then
@@ -115,6 +120,9 @@ contains
     elseif(trim(flowtype) == 'channel') then
       call compute_gradcal_gpu()
       call gpu_write_channel_flowstate()
+    elseif(trim(flowtype) == 'bl') then
+      call compute_gradcal_gpu()
+      call gpu_write_s1_bl_flowstate()
     else
       call gpu_write_generic_flowstate()
     endif

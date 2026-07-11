@@ -6,7 +6,12 @@ module boundary_gpu
                        GPU_BC_WALL_SLIP_ISOTHERMAL=411, &
                        GPU_BC_WALL_SLIP_ADIABATIC=421, &
                        GPU_BC_ZEROEXTRAP=50, GPU_BC_SYMMETRY=60, &
-                       GPU_BC_FIXED=31
+                       GPU_BC_FIXED=31, GPU_BC_INFLOW=11, GPU_BC_OUTFLOW=21, &
+                       GPU_BC_NSCBC_INFLOW=12, GPU_BC_NSCBC_OUTFLOW=22, &
+                       GPU_BC_FARFIELD=51, GPU_BC_NSCBC_FARFIELD=52
+  real(8),allocatable,device :: s1_bl_rho_prof_d(:),s1_bl_tmp_prof_d(:), &
+                                      s1_bl_prs_prof_d(:),s1_bl_vel_prof_d(:,:)
+  logical,save :: s1_bl_profile_ready = .false.
 contains
   integer function gpu_bc_kind_for_axis(axis)
     use bc, only: bctype
@@ -116,6 +121,28 @@ contains
          bctype(5) == 1 .and. bctype(6) == 1
   end function gpu_ldc_boundary_case_pending
 
+  logical function gpu_s1_flatplate_boundary_case_pending()
+    use bc, only: bctype,turbinf
+    use commvar, only: flowtype,lihomo,ljhomo,lkhomo
+    implicit none
+
+    gpu_s1_flatplate_boundary_case_pending = trim(flowtype) == 'bl' .and. &
+         (.not.lihomo) .and. (.not.ljhomo) .and. lkhomo .and. &
+         bctype(1) == GPU_BC_INFLOW .and. bctype(2) == GPU_BC_OUTFLOW .and. &
+         bctype(3) == GPU_BC_WALL_ISOTHERMAL_NOSLIP .and. &
+         (bctype(4) == GPU_BC_FARFIELD .or. bctype(4) == GPU_BC_NSCBC_FARFIELD) .and. &
+         all(bctype(5:6) == 1) .and. &
+         trim(turbinf) == 'prof'
+  end function gpu_s1_flatplate_boundary_case_pending
+
+  logical function gpu_s1_flatplate_nscbc_farfield_case()
+    use bc, only: bctype
+    implicit none
+
+    gpu_s1_flatplate_nscbc_farfield_case = gpu_s1_flatplate_boundary_case_pending() .and. &
+         bctype(4) == GPU_BC_NSCBC_FARFIELD
+  end function gpu_s1_flatplate_nscbc_farfield_case
+
   logical function gpu_physical_boundary_axis_supported(axis)
     use bc, only: bctype
     use commvar, only: lihomo,ljhomo,lkhomo
@@ -125,18 +152,22 @@ contains
 
     gpu_physical_boundary_axis_supported = .false.
     kind = gpu_bc_kind_for_axis(axis)
-    if(.not.gpu_bc_supported_on_axis(kind,axis)) return
 
     select case(axis)
     case(1)
       gpu_physical_boundary_axis_supported = (.not.lihomo) .and. ljhomo .and. lkhomo .and. &
-           bctype(1) == bctype(2) .and. all(bctype(3:6) == 1)
+           ((bctype(1) == bctype(2) .and. gpu_bc_supported_on_axis(kind,axis)) .or. &
+            (bctype(1) == GPU_BC_INFLOW .and. bctype(2) == GPU_BC_OUTFLOW) .or. &
+            (bctype(1) == GPU_BC_NSCBC_INFLOW .and. bctype(2) == GPU_BC_NSCBC_OUTFLOW)) .and. &
+           all(bctype(3:6) == 1)
     case(2)
       gpu_physical_boundary_axis_supported = lihomo .and. (.not.ljhomo) .and. lkhomo .and. &
-           bctype(3) == bctype(4) .and. all(bctype(1:2) == 1) .and. all(bctype(5:6) == 1)
+           bctype(3) == bctype(4) .and. gpu_bc_supported_on_axis(kind,axis) .and. &
+           all(bctype(1:2) == 1) .and. all(bctype(5:6) == 1)
     case(3)
       gpu_physical_boundary_axis_supported = lihomo .and. ljhomo .and. (.not.lkhomo) .and. &
-           bctype(5) == bctype(6) .and. all(bctype(1:4) == 1)
+           bctype(5) == bctype(6) .and. gpu_bc_supported_on_axis(kind,axis) .and. &
+           all(bctype(1:4) == 1)
     end select
   end function gpu_physical_boundary_axis_supported
 
@@ -164,7 +195,8 @@ contains
   logical function gpu_uses_physical_boundary()
     implicit none
 
-    gpu_uses_physical_boundary = gpu_physical_boundary_axis() /= 0
+    gpu_uses_physical_boundary = gpu_physical_boundary_axis() /= 0 .or. &
+         gpu_s1_flatplate_boundary_case_pending()
   end function gpu_uses_physical_boundary
 
   logical function gpu_boundary_case_supported()
@@ -216,6 +248,14 @@ contains
     gpu_uses_zeroextrap = gpu_zeroextrap_axis() /= 0
   end function gpu_uses_zeroextrap
 
+  logical function gpu_uses_x_nscbc()
+    use bc, only: bctype
+    implicit none
+
+    gpu_uses_x_nscbc = gpu_physical_boundary_axis() == 1 .and. &
+         bctype(1) == GPU_BC_NSCBC_INFLOW .and. bctype(2) == GPU_BC_NSCBC_OUTFLOW
+  end function gpu_uses_x_nscbc
+
   attributes(device) real(8) function extrap2(v1,v2)
     implicit none
     real(8),value :: v1,v2
@@ -253,6 +293,70 @@ contains
       qrhs_d(i,j,k,m) = 0.d0
     enddo
   end subroutine set_qrhs_zero
+
+  subroutine init_s1_flatplate_profile_gpu()
+    use bc, only: rho_prof,vel_prof,tmp_prof,prs_prof
+    implicit none
+
+    s1_bl_profile_ready = .false.
+    if(.not.gpu_s1_flatplate_boundary_case_pending()) return
+    if(.not.allocated(rho_prof) .or. .not.allocated(vel_prof) .or. &
+       .not.allocated(tmp_prof) .or. .not.allocated(prs_prof)) &
+      stop 'GPU S1 flatplate profile is not initialized'
+    if(.not.allocated(s1_bl_rho_prof_d)) allocate(s1_bl_rho_prof_d(lbound(rho_prof,1):ubound(rho_prof,1)))
+    if(.not.allocated(s1_bl_tmp_prof_d)) allocate(s1_bl_tmp_prof_d(lbound(tmp_prof,1):ubound(tmp_prof,1)))
+    if(.not.allocated(s1_bl_prs_prof_d)) allocate(s1_bl_prs_prof_d(lbound(prs_prof,1):ubound(prs_prof,1)))
+    if(.not.allocated(s1_bl_vel_prof_d)) allocate(s1_bl_vel_prof_d(lbound(vel_prof,1):ubound(vel_prof,1),1:3))
+    s1_bl_rho_prof_d = rho_prof
+    s1_bl_tmp_prof_d = tmp_prof
+    s1_bl_prs_prof_d = prs_prof
+    s1_bl_vel_prof_d = vel_prof(:,1:3)
+    s1_bl_profile_ready = .true.
+  end subroutine init_s1_flatplate_profile_gpu
+
+  attributes(global) subroutine s1_bl_profile_inflow_x_kernel(im,jm,km,const6,apply_left)
+    use commarray_gpu, only: qrhs_d
+    implicit none
+    integer,value :: im,jm,km,apply_left
+    real(8),value :: const6
+    integer :: id,j,k,nplane
+
+    if(apply_left == 0) return
+    id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
+    nplane = (jm+1)*(km+1)
+    if(id >= nplane) return
+    j = mod(id,jm+1)
+    k = id/(jm+1)
+    call set_q_from_primitive(0,j,k,s1_bl_rho_prof_d(j),s1_bl_vel_prof_d(j,1), &
+                              s1_bl_vel_prof_d(j,2),s1_bl_vel_prof_d(j,3), &
+                              s1_bl_prs_prof_d(j),const6)
+    qrhs_d(0,j,k,:) = 0.d0
+  end subroutine s1_bl_profile_inflow_x_kernel
+
+  attributes(global) subroutine s1_bl_farfield_y_upper_kernel(im,jm,km,const2,const6,apply_up)
+    use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d
+    implicit none
+    integer,value :: im,jm,km,apply_up
+    real(8),value :: const2,const6
+    integer :: id,i,k,nplane
+    real(8) :: rho,uu,vv,ww,prs,tmp
+
+    if(apply_up == 0) return
+    id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
+    nplane = (im+1)*(km+1)
+    if(id >= nplane) return
+    i = mod(id,im+1)
+    k = id/(im+1)
+    uu = extrap2(vel_d(i,jm-1,k,1),vel_d(i,jm-2,k,1))
+    vv = extrap2(vel_d(i,jm-1,k,2),vel_d(i,jm-2,k,2))
+    ww = extrap2(vel_d(i,jm-1,k,3),vel_d(i,jm-2,k,3))
+    prs = extrap2(prs_d(i,jm-1,k),prs_d(i,jm-2,k))
+    rho = extrap2(rho_d(i,jm-1,k),rho_d(i,jm-2,k))
+    tmp = prs/rho*const2
+    tmp_d(i,jm,k) = tmp
+    call set_q_from_primitive(i,jm,k,rho,uu,vv,ww,prs,const6)
+    call set_qrhs_zero(i,jm,k)
+  end subroutine s1_bl_farfield_y_upper_kernel
 
   attributes(global) subroutine zeroextrap_x_kernel(im,jm,km,hm,const2,const6,apply_left,apply_right)
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
@@ -293,6 +397,93 @@ contains
     endif
 
   end subroutine zeroextrap_x_kernel
+
+  attributes(global) subroutine inflow_x_kernel(im,jm,km,hm,const2,const6, &
+                                                 uinf,vinf,winf,pinf,apply_left)
+    use commarray_gpu, only: q_d,qrhs_d,rho_d,vel_d,prs_d,tmp_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_left
+    real(8),value :: const2,const6,uinf,vinf,winf,pinf
+    integer :: id,j,k,nplane,m
+    real(8) :: rho,tmp,ke
+
+    if(apply_left == 0) return
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (jm + 1) * (km + 1)
+    if(id >= nplane) return
+    j = mod(id,jm+1)
+    k = id/(jm+1)
+
+    rho = rho_d(0,j,k)
+    vel_d(0,j,k,1) = uinf
+    vel_d(0,j,k,2) = vinf
+    vel_d(0,j,k,3) = winf
+    prs_d(0,j,k) = pinf
+    tmp = pinf/rho*const2
+    tmp_d(0,j,k) = tmp
+    ke = 0.5d0*rho*(uinf*uinf + vinf*vinf + winf*winf)
+    q_d(0,j,k,1) = rho
+    q_d(0,j,k,2) = rho*uinf
+    q_d(0,j,k,3) = rho*vinf
+    q_d(0,j,k,4) = rho*winf
+    q_d(0,j,k,5) = pinf*const6 + ke
+    do m=1,5
+      qrhs_d(0,j,k,m) = 0.d0
+    enddo
+  end subroutine inflow_x_kernel
+
+  attributes(global) subroutine outflow_x_kernel(im,jm,km,hm,const2,const6, &
+                                                  gamma,mach,pinf,pout,apply_right)
+    use commarray_gpu, only: q_d,qrhs_d,rho_d,vel_d,prs_d,tmp_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_right
+    real(8),value :: const2,const6,gamma,mach,pinf,pout
+    integer :: id,j,k,nplane,m
+    real(8) :: css,ub,ue,ve,we,pe,te,roe,csse,rho,prs,tmp,ke
+
+    if(apply_right == 0) return
+    id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
+    nplane = (jm + 1) * (km + 1)
+    if(id >= nplane) return
+    j = mod(id,jm+1)
+    k = id/(jm+1)
+
+    css = sqrt(tmp_d(im,j,k))/mach
+    ub = vel_d(im,j,k,1)
+    ue = extrap2(vel_d(im-1,j,k,1),vel_d(im-2,j,k,1))
+    ve = extrap2(vel_d(im-1,j,k,2),vel_d(im-2,j,k,2))
+    we = extrap2(vel_d(im-1,j,k,3),vel_d(im-2,j,k,3))
+    pe = extrap2(prs_d(im-1,j,k),prs_d(im-2,j,k))
+    te = extrap2(tmp_d(im-1,j,k),tmp_d(im-2,j,k))
+    roe = extrap2(rho_d(im-1,j,k),rho_d(im-2,j,k))
+    csse = extrap2(sqrt(tmp_d(im-1,j,k))/mach,sqrt(tmp_d(im-2,j,k))/mach)
+
+    if(ub >= css) then
+      prs = pe
+      tmp = te
+      rho = prs/tmp*const2
+    else
+      prs = pinf*pout
+      rho = roe + (prs-pe)/(csse*csse)
+      tmp = tmp_d(im,j,k)
+      rho = prs/tmp*const2
+    endif
+    vel_d(im,j,k,1) = merge(ue,ue + (pe-prs)/(roe*csse),ub >= css)
+    vel_d(im,j,k,2) = ve
+    vel_d(im,j,k,3) = we
+    prs_d(im,j,k) = prs
+    rho_d(im,j,k) = rho
+    tmp_d(im,j,k) = tmp
+    ke = 0.5d0*rho*(vel_d(im,j,k,1)**2 + ve*ve + we*we)
+    q_d(im,j,k,1) = rho
+    q_d(im,j,k,2) = rho*vel_d(im,j,k,1)
+    q_d(im,j,k,3) = rho*ve
+    q_d(im,j,k,4) = rho*we
+    q_d(im,j,k,5) = prs*const6 + ke
+    do m=1,5
+      qrhs_d(im,j,k,m) = 0.d0
+    enddo
+  end subroutine outflow_x_kernel
 
   attributes(global) subroutine zeroextrap_y_kernel(im,jm,km,hm,const2,const6,apply_down,apply_up)
     use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d
@@ -795,16 +986,748 @@ contains
     endif
   end subroutine symmetry_z_kernel
 
-  subroutine apply_boundary_conditions_gpu()
-    use commvar, only: im,jm,km,hm,const2,const6
-    use bc, only: twall,xslip
+  attributes(device) subroutine nscbc_pmatrix(rho,uu,vv,ww,tmp,ddi,gamma,mach,inv,pmat)
+    implicit none
+    real(8),value :: rho,uu,vv,ww,tmp,gamma,mach
+    real(8),intent(in) :: ddi(3)
+    logical,value :: inv
+    real(8) :: pmat(5,5)
+    real(8) :: var1,nx,ny,nz,a1,a2,a3,a4,a5,a6,css,vn,phi
+
+    css = sqrt(tmp)/mach
+    var1 = 1.d0/sqrt(ddi(1)*ddi(1)+ddi(2)*ddi(2)+ddi(3)*ddi(3))
+    nx = ddi(1)*var1
+    ny = ddi(2)*var1
+    nz = ddi(3)*var1
+    phi = 0.5d0*(gamma-1.d0)*(uu*uu+vv*vv+ww*ww)
+    vn = nx*uu+ny*vv+nz*ww
+    a1 = gamma-1.d0
+    a2 = 1.d0/(sqrt(2.d0)*rho*css)
+    a3 = rho/(css*sqrt(2.d0))
+    a4 = (phi+css*css)/(gamma-1.d0)
+    a5 = 1.d0-phi/(css*css)
+    a6 = phi/(gamma-1.d0)
+
+    if(inv) then
+      pmat(1,1)= nx*a5-(nz*vv-ny*ww)/rho
+      pmat(1,2)= nx*a1*uu/(css*css)
+      pmat(1,3)= nx*a1*vv/(css*css)+nz/rho
+      pmat(1,4)= nx*a1*ww/(css*css)-ny/rho
+      pmat(1,5)=-nx*a1/(css*css)
+      pmat(2,1)= ny*a5-(nx*ww-nz*uu)/rho
+      pmat(2,2)= ny*a1*uu/(css*css)-nz/rho
+      pmat(2,3)= ny*a1*vv/(css*css)
+      pmat(2,4)= ny*a1*ww/(css*css)+nx/rho
+      pmat(2,5)=-ny*a1/(css*css)
+      pmat(3,1)= nz*a5-(ny*uu-nx*vv)/rho
+      pmat(3,2)= nz*a1*uu/(css*css)+ny/rho
+      pmat(3,3)= nz*a1*vv/(css*css)-nx/rho
+      pmat(3,4)= nz*a1*ww/(css*css)
+      pmat(3,5)=-nz*a1/(css*css)
+      pmat(4,1)= a2*(phi-css*vn)
+      pmat(4,2)=-a2*(a1*uu-nx*css)
+      pmat(4,3)=-a2*(a1*vv-ny*css)
+      pmat(4,4)=-a2*(a1*ww-nz*css)
+      pmat(4,5)= a1*a2
+      pmat(5,1)= a2*(phi+css*vn)
+      pmat(5,2)=-a2*(a1*uu+nx*css)
+      pmat(5,3)=-a2*(a1*vv+ny*css)
+      pmat(5,4)=-a2*(a1*ww+nz*css)
+      pmat(5,5)= a1*a2
+    else
+      pmat(1,1)=nx;             pmat(1,2)=ny;             pmat(1,3)=nz
+      pmat(1,4)=a3;             pmat(1,5)=a3
+      pmat(2,1)=nx*uu;          pmat(2,2)=ny*uu-nz*rho;  pmat(2,3)=nz*uu+ny*rho
+      pmat(2,4)=a3*(uu+nx*css); pmat(2,5)=a3*(uu-nx*css)
+      pmat(3,1)=nx*vv+nz*rho;  pmat(3,2)=ny*vv;          pmat(3,3)=nz*vv-nx*rho
+      pmat(3,4)=a3*(vv+ny*css); pmat(3,5)=a3*(vv-ny*css)
+      pmat(4,1)=nx*ww-ny*rho;  pmat(4,2)=ny*ww+nx*rho;  pmat(4,3)=nz*ww
+      pmat(4,4)=a3*(ww+nz*css); pmat(4,5)=a3*(ww-nz*css)
+      pmat(5,1)=nx*a6+rho*(nz*vv-ny*ww)
+      pmat(5,2)=ny*a6+rho*(nx*ww-nz*uu)
+      pmat(5,3)=nz*a6+rho*(ny*uu-nx*vv)
+      pmat(5,4)=a3*(a4+css*vn); pmat(5,5)=a3*(a4-css*vn)
+    endif
+  end subroutine nscbc_pmatrix
+
+  attributes(device) subroutine nscbc_flux(i,j,k,idir,flux)
+    use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d
+    implicit none
+    integer,value :: i,j,k,idir
+    real(8) :: flux(5)
+    real(8) :: un
+
+    un = dxi_d(i,j,k,idir,1)*vel_d(i,j,k,1) + &
+         dxi_d(i,j,k,idir,2)*vel_d(i,j,k,2) + &
+         dxi_d(i,j,k,idir,3)*vel_d(i,j,k,3)
+    flux(1) = jacob_d(i,j,k)*q_d(i,j,k,1)*un
+    flux(2) = jacob_d(i,j,k)*(q_d(i,j,k,2)*un+dxi_d(i,j,k,idir,1)*prs_d(i,j,k))
+    flux(3) = jacob_d(i,j,k)*(q_d(i,j,k,3)*un+dxi_d(i,j,k,idir,2)*prs_d(i,j,k))
+    flux(4) = jacob_d(i,j,k)*(q_d(i,j,k,4)*un+dxi_d(i,j,k,idir,3)*prs_d(i,j,k))
+    flux(5) = jacob_d(i,j,k)*(q_d(i,j,k,5)+prs_d(i,j,k))*un
+  end subroutine nscbc_flux
+
+  attributes(device) subroutine nscbc_cartesian_flux(i,j,k,idir,flux)
+    use commarray_gpu, only: q_d,vel_d,prs_d
+    implicit none
+    integer,value :: i,j,k,idir
+    real(8) :: flux(5)
+    real(8) :: un
+
+    un = vel_d(i,j,k,idir)
+    flux(1) = q_d(i,j,k,idir+1)
+    flux(2) = q_d(i,j,k,2)*un
+    flux(3) = q_d(i,j,k,3)*un
+    flux(4) = q_d(i,j,k,4)*un
+    flux(idir+1) = flux(idir+1) + prs_d(i,j,k)
+    flux(5) = (q_d(i,j,k,5)+prs_d(i,j,k))*un
+  end subroutine nscbc_cartesian_flux
+
+  attributes(device) subroutine nscbc_tangential_x_rhs(i,j,k,dq)
+    implicit none
+    integer,value :: i,j,k
+    real(8) :: dq(5),fm(5),fp(5),gm(5),gp(5)
+
+    call nscbc_flux(i,j-1,k,2,fm)
+    call nscbc_flux(i,j+1,k,2,fp)
+    call nscbc_flux(i,j,k-1,3,gm)
+    call nscbc_flux(i,j,k+1,3,gp)
+    dq(:) = dq(:) + 0.5d0*(fp(:)-fm(:)) + 0.5d0*(gp(:)-gm(:))
+  end subroutine nscbc_tangential_x_rhs
+
+  attributes(global) subroutine nscbc_mach2_partial_kernel(partial,im,jm,km,hm,mach)
+    use commarray_gpu, only: vel_d,tmp_d,dxi_d
+    implicit none
+    integer,value :: im,jm,km,hm
+    real(8),value :: mach
+    real(8),device :: partial(:)
+    real(8),shared :: scratch(256)
+    integer :: tid,id,stride,ncell,i,j,k
+    real(8) :: local,css,norm2,un
+
+    tid = threadIdx%x
+    id = (blockIdx%x-1)*blockDim%x + tid - 1
+    stride = gridDim%x*blockDim%x
+    ncell = (im+1)*(jm+1)*(km+1)
+    local = -huge(1.d0)
+    do while(id < ncell)
+      i = mod(id,im+1)
+      j = mod(id/(im+1),jm+1)
+      k = id/((im+1)*(jm+1))
+      css = sqrt(tmp_d(i,j,k))/mach
+      norm2 = dxi_d(i,j,k,1,1)**2 + dxi_d(i,j,k,1,2)**2 + dxi_d(i,j,k,1,3)**2
+      un = dxi_d(i,j,k,1,1)*vel_d(i,j,k,1) + dxi_d(i,j,k,1,2)*vel_d(i,j,k,2) + &
+           dxi_d(i,j,k,1,3)*vel_d(i,j,k,3)
+      local = max(local,un*un/(norm2*css*css))
+      id = id + stride
+    enddo
+    scratch(tid) = local
+    call syncthreads()
+    stride = blockDim%x/2
+    do while(stride > 0)
+      if(tid <= stride) scratch(tid) = max(scratch(tid),scratch(tid+stride))
+      call syncthreads()
+      stride = stride/2
+    enddo
+    if(tid == 1) partial(blockIdx%x) = scratch(1)
+  end subroutine nscbc_mach2_partial_kernel
+
+  subroutine gpu_nscbc_global_mach2(gmachmax2)
+    use mpi
+    use commvar, only: im,jm,km,hm,mach
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: mpisize
+    implicit none
+    real(8),intent(out) :: gmachmax2
+    integer,parameter :: block_size=256
+    integer :: ncell,nblocks,ierr
+    real(8) :: local_max
+    real(8),allocatable,device :: partial_d(:)
+    real(8),allocatable :: partial_h(:)
+
+    ncell = (im+1)*(jm+1)*(km+1)
+    nblocks = max(1,(ncell+block_size-1)/block_size)
+    allocate(partial_d(nblocks),partial_h(nblocks))
+    call nscbc_mach2_partial_kernel<<<nblocks,block_size>>>(partial_d,im,jm,km,hm,mach)
+    call sync_after_kernel('nscbc_mach2_partial_kernel')
+    partial_h = partial_d
+    local_max = maxval(partial_h)
+    if(mpisize > 1) then
+      call mpi_allreduce(local_max,gmachmax2,1,mpi_real8,mpi_max,mpi_comm_world,ierr)
+    else
+      gmachmax2 = local_max
+    endif
+    deallocate(partial_d,partial_h)
+  end subroutine gpu_nscbc_global_mach2
+
+  attributes(global) subroutine nscbc_outflow_mach2_partial_kernel(partial,im,jm,km,hm,mach)
+    use commarray_gpu, only: vel_d,tmp_d,dxi_d
+    implicit none
+    integer,value :: im,jm,km,hm
+    real(8),value :: mach
+    real(8),device :: partial(:)
+    real(8),shared :: scratch(256)
+    integer :: tid,id,stride,ncell,j,k
+    real(8) :: local,css,norm2,un
+
+    tid = threadIdx%x
+    id = (blockIdx%x-1)*blockDim%x + tid - 1
+    stride = gridDim%x*blockDim%x
+    ncell = (jm+1)*(km+1)
+    local = -huge(1.d0)
+    do while(id < ncell)
+      j = mod(id,jm+1)
+      k = id/(jm+1)
+      css = sqrt(tmp_d(im,j,k))/mach
+      norm2 = dxi_d(im,j,k,1,1)**2 + dxi_d(im,j,k,1,2)**2 + dxi_d(im,j,k,1,3)**2
+      un = dxi_d(im,j,k,1,1)*vel_d(im,j,k,1) + dxi_d(im,j,k,1,2)*vel_d(im,j,k,2) + &
+           dxi_d(im,j,k,1,3)*vel_d(im,j,k,3)
+      local = max(local,un*un/(norm2*css*css))
+      id = id + stride
+    enddo
+    scratch(tid) = local
+    call syncthreads()
+    stride = blockDim%x/2
+    do while(stride > 0)
+      if(tid <= stride) scratch(tid) = max(scratch(tid),scratch(tid+stride))
+      call syncthreads()
+      stride = stride/2
+    enddo
+    if(tid == 1) partial(blockIdx%x) = scratch(1)
+  end subroutine nscbc_outflow_mach2_partial_kernel
+
+  subroutine gpu_nscbc_outflow_mach2(gmachmax2)
+    use mpi
+    use commvar, only: im,jm,km,hm,mach
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: mpisize
+    implicit none
+    real(8),intent(out) :: gmachmax2
+    integer,parameter :: block_size=256
+    integer :: ncell,nblocks,ierr
+    real(8) :: local_max
+    real(8),allocatable,device :: partial_d(:)
+    real(8),allocatable :: partial_h(:)
+
+    ncell = (jm+1)*(km+1)
+    nblocks = max(1,(ncell+block_size-1)/block_size)
+    allocate(partial_d(nblocks),partial_h(nblocks))
+    call nscbc_outflow_mach2_partial_kernel<<<nblocks,block_size>>>(partial_d,im,jm,km,hm,mach)
+    call sync_after_kernel('nscbc_outflow_mach2_partial_kernel')
+    partial_h = partial_d
+    local_max = maxval(partial_h)
+    if(mpisize > 1) then
+      call mpi_allreduce(local_max,gmachmax2,1,mpi_real8,mpi_max,mpi_comm_world,ierr)
+    else
+      gmachmax2 = local_max
+    endif
+    deallocate(partial_d,partial_h)
+  end subroutine gpu_nscbc_outflow_mach2
+
+  attributes(global) subroutine nscbc_outflow_filter_y_kernel(im,jm,km,hm,apply_right)
+    use commarray_gpu, only: q_d,qwork_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_right
+    integer :: id,j,k,m,n
+    real(8) :: ff
+
+    if(apply_right == 0) return
+    id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
+    n = (jm+1)*(km+1)*5
+    if(id >= n) return
+    j = mod(id,jm+1)
+    k = mod(id/(jm+1),km+1)
+    m = id/((jm+1)*(km+1)) + 1
+    ff = 11.d0/16.d0*q_d(im,j,k,m) + 15.d0/64.d0*(q_d(im,j-1,k,m)+q_d(im,j+1,k,m)) - &
+         3.d0/32.d0*(q_d(im,j-2,k,m)+q_d(im,j+2,k,m)) + &
+         1.d0/64.d0*(q_d(im,j-3,k,m)+q_d(im,j+3,k,m))
+    qwork_d(im,j,k,m) = ff
+  end subroutine nscbc_outflow_filter_y_kernel
+
+  attributes(global) subroutine nscbc_copy_outflow_filter_y_kernel(im,jm,km,apply_right)
+    use commarray_gpu, only: q_d,qwork_d
+    implicit none
+    integer,value :: im,jm,km,apply_right
+    integer :: id,j,k,m,n
+
+    if(apply_right == 0) return
+    id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
+    n = (jm+1)*(km+1)*5
+    if(id >= n) return
+    j = mod(id,jm+1)
+    k = mod(id/(jm+1),km+1)
+    m = id/((jm+1)*(km+1)) + 1
+    q_d(im,j,k,m) = qwork_d(im,j,k,m)
+  end subroutine nscbc_copy_outflow_filter_y_kernel
+
+  subroutine apply_nscbc_outflow_filter_gpu()
+    use commvar, only: im,jm,km,hm
     use gpu_check, only: sync_after_kernel
     implicit none
     type(dim3) :: block,grid
-    integer :: n,axis,kind,apply_lower,apply_upper
+    integer :: apply_left,apply_right,n
+
+    call gpu_physical_boundary_apply_mask(1,apply_left,apply_right)
+    block = dim3(256,1,1)
+    n = (jm+1)*(km+1)*5
+    grid = dim3((n+block%x-1)/block%x,1,1)
+    call nscbc_outflow_filter_y_kernel<<<grid,block>>>(im,jm,km,hm,apply_right)
+    call sync_after_kernel('nscbc_outflow_filter_y_kernel')
+    call nscbc_copy_outflow_filter_y_kernel<<<grid,block>>>(im,jm,km,apply_right)
+    call sync_after_kernel('nscbc_copy_outflow_filter_y_kernel')
+  end subroutine apply_nscbc_outflow_filter_gpu
+
+  attributes(global) subroutine nscbc_inflow_x_rhs_kernel(im,jm,km,hm,gamma,mach,xmin,xmax, &
+                                                           uinf,vinf,winf,pinf,gmachmax2,apply_left)
+    use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d,qrhs_d,jacob_d,dxi_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_left
+    real(8),value :: gamma,mach,xmin,xmax,uinf,vinf,winf,pinf,gmachmax2
+    integer :: id,j,k,ii,m,n
+    real(8) :: pnor(5,5),pinv(5,5),ecs(0:2,5),decs(5),rest(5),lodi(5),lodi1(5), &
+               ddi(3),flux(5),metric0,metric1,metric2,css,kin,var1
+
+    if(apply_left == 0) return
+    id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
+    n = (jm+1)*(km+1)
+    if(id >= n) return
+    j = mod(id,jm+1)
+    k = id/(jm+1)
+    ddi(:) = dxi_d(0,j,k,1,:)
+    call nscbc_pmatrix(rho_d(0,j,k),vel_d(0,j,k,1),vel_d(0,j,k,2),vel_d(0,j,k,3), &
+                       tmp_d(0,j,k),ddi,gamma,mach,.false.,pnor)
+    call nscbc_pmatrix(rho_d(0,j,k),vel_d(0,j,k,1),vel_d(0,j,k,2),vel_d(0,j,k,3), &
+                       tmp_d(0,j,k),ddi,gamma,mach,.true.,pinv)
+    do ii=0,2
+      call nscbc_flux(ii,j,k,1,flux)
+      ecs(ii,:) = flux(:)
+    enddo
+    decs(:) = ecs(1,:)-ecs(0,:)
+    metric0 = dxi_d(0,j,k,1,1)*jacob_d(0,j,k)
+    metric1 = dxi_d(1,j,k,1,1)*jacob_d(1,j,k)
+    metric2 = dxi_d(2,j,k,1,1)*jacob_d(2,j,k)
+    rest(:) = 0.d0
+    call nscbc_cartesian_flux(0,j,k,1,flux); rest(:) = rest(:) + flux(:)*(metric1-metric0)
+    call nscbc_cartesian_flux(0,j,k,2,flux); rest(:) = rest(:) + flux(:)*(dxi_d(1,j,k,1,2)*jacob_d(1,j,k) - &
+                                                                   dxi_d(0,j,k,1,2)*jacob_d(0,j,k))
+    call nscbc_cartesian_flux(0,j,k,3,flux); rest(:) = rest(:) + flux(:)*(dxi_d(1,j,k,1,3)*jacob_d(1,j,k) - &
+                                                                   dxi_d(0,j,k,1,3)*jacob_d(0,j,k))
+    lodi1(:) = decs(:)-rest(:)
+    do m=1,5
+      lodi(m) = sum(pinv(m,:)*lodi1(:))/jacob_d(0,j,k)
+    enddo
+    css = sqrt(tmp_d(0,j,k))/mach
+    kin = 0.25d0*(1.d0-gmachmax2)*css/(xmax-xmin)
+    var1 = 1.d0/sqrt(sum(ddi(:)*ddi(:)))
+    lodi(1) = 0.d0
+    lodi(2) = kin*0.5d0*(ddi(1)*var1*(vel_d(0,j,k,3)-winf)-ddi(3)*var1*(vel_d(0,j,k,1)-uinf))
+    lodi(3) = kin*0.5d0*(-ddi(1)*var1*(vel_d(0,j,k,2)-vinf)+ddi(2)*var1*(vel_d(0,j,k,1)-uinf))
+    lodi(4) = kin*(ddi(1)*var1*(vel_d(0,j,k,1)-uinf)+ddi(2)*var1*(vel_d(0,j,k,2)-vinf)+ &
+                   ddi(3)*var1*(vel_d(0,j,k,3)-winf)+(prs_d(0,j,k)-pinf)/rho_d(0,j,k)/css)
+    do m=1,5
+      lodi1(m) = sum(pnor(m,:)*lodi(:))*jacob_d(0,j,k)
+    enddo
+    decs(:) = lodi1(:)+rest(:)
+    call nscbc_tangential_x_rhs(0,j,k,decs)
+    qrhs_d(0,j,k,:) = qrhs_d(0,j,k,:) + decs(:)
+  end subroutine nscbc_inflow_x_rhs_kernel
+
+  attributes(global) subroutine nscbc_outflow_x_rhs_kernel(im,jm,km,hm,gamma,mach,xmin,xmax,pinf,pout, &
+                                                            gmachmax2,apply_right)
+    use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d,qrhs_d,jacob_d,dxi_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_right
+    real(8),value :: gamma,mach,xmin,xmax,pinf,pout,gmachmax2
+    integer :: id,j,k,ii,m,n
+    real(8) :: pnor(5,5),pinv(5,5),ecs(0:2,5),decs(5),rest(5),lodi(5),lodi1(5), &
+               ddi(3),flux(5),css,kinout
+
+    if(apply_right == 0) return
+    id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
+    n = (jm+1)*(km+1)
+    if(id >= n) return
+    j = mod(id,jm+1)
+    k = id/(jm+1)
+    ddi(:) = dxi_d(im,j,k,1,:)
+    call nscbc_pmatrix(rho_d(im,j,k),vel_d(im,j,k,1),vel_d(im,j,k,2),vel_d(im,j,k,3), &
+                       tmp_d(im,j,k),ddi,gamma,mach,.false.,pnor)
+    call nscbc_pmatrix(rho_d(im,j,k),vel_d(im,j,k,1),vel_d(im,j,k,2),vel_d(im,j,k,3), &
+                       tmp_d(im,j,k),ddi,gamma,mach,.true.,pinv)
+    do ii=0,2
+      call nscbc_flux(im-ii,j,k,1,flux)
+      ecs(ii,:) = flux(:)
+    enddo
+    decs(:) = 1.5d0*ecs(0,:) - 2.d0*ecs(1,:) + 0.5d0*ecs(2,:)
+    rest(:) = 0.d0
+    call nscbc_cartesian_flux(im,j,k,1,flux); rest(:) = rest(:) + flux(:)*(1.5d0*dxi_d(im,j,k,1,1)*jacob_d(im,j,k) - &
+         2.d0*dxi_d(im-1,j,k,1,1)*jacob_d(im-1,j,k) + 0.5d0*dxi_d(im-2,j,k,1,1)*jacob_d(im-2,j,k))
+    call nscbc_cartesian_flux(im,j,k,2,flux); rest(:) = rest(:) + flux(:)*(1.5d0*dxi_d(im,j,k,1,2)*jacob_d(im,j,k) - &
+         2.d0*dxi_d(im-1,j,k,1,2)*jacob_d(im-1,j,k) + 0.5d0*dxi_d(im-2,j,k,1,2)*jacob_d(im-2,j,k))
+    call nscbc_cartesian_flux(im,j,k,3,flux); rest(:) = rest(:) + flux(:)*(1.5d0*dxi_d(im,j,k,1,3)*jacob_d(im,j,k) - &
+         2.d0*dxi_d(im-1,j,k,1,3)*jacob_d(im-1,j,k) + 0.5d0*dxi_d(im-2,j,k,1,3)*jacob_d(im-2,j,k))
+    lodi1(:) = decs(:)-rest(:)
+    do m=1,5
+      lodi(m) = sum(pinv(m,:)*lodi1(:))/jacob_d(im,j,k)
+    enddo
+    css = sqrt(tmp_d(im,j,k))/mach
+    kinout = 3.75d0*(1.d0-gmachmax2)*css/(xmax-xmin)
+    lodi(5) = kinout*(prs_d(im,j,k)-pinf*pout)
+    do m=1,5
+      lodi1(m) = sum(pnor(m,:)*lodi(:))*jacob_d(im,j,k)
+    enddo
+    decs(:) = lodi1(:)+rest(:)
+    call nscbc_tangential_x_rhs(im,j,k,decs)
+    qrhs_d(im,j,k,:) = qrhs_d(im,j,k,:) + decs(:)
+  end subroutine nscbc_outflow_x_rhs_kernel
+
+  subroutine apply_nscbc_x_rhs_gpu(gmachmax2_in,gmachmax2_out)
+    use commvar, only: im,jm,km,hm,gamma,mach,xmin,xmax,uinf,vinf,winf,pinf
+    use bc, only: pout
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    real(8),intent(in) :: gmachmax2_in,gmachmax2_out
+    type(dim3) :: block,grid
+    integer :: apply_left,apply_right,n
+
+    call gpu_physical_boundary_apply_mask(1,apply_left,apply_right)
+    block = dim3(256,1,1)
+    n = (jm+1)*(km+1)
+    grid = dim3((n+block%x-1)/block%x,1,1)
+    call nscbc_inflow_x_rhs_kernel<<<grid,block>>>(im,jm,km,hm,gamma,mach,xmin,xmax, &
+         uinf,vinf,winf,pinf,gmachmax2_in,apply_left)
+    call sync_after_kernel('nscbc_inflow_x_rhs_kernel')
+    call nscbc_outflow_x_rhs_kernel<<<grid,block>>>(im,jm,km,hm,gamma,mach,xmin,xmax, &
+         pinf,pout,gmachmax2_out,apply_right)
+    call sync_after_kernel('nscbc_outflow_x_rhs_kernel')
+  end subroutine apply_nscbc_x_rhs_gpu
+
+  attributes(device) real(8) function nscbc_filter6_value_axis(value_m5,value_m4,value_m3, &
+                                                               value_m2,value_m1,value_0, &
+                                                               value_p1,value_p2,value_p3, &
+                                                               value_p4,value_p5,idx,dim,ntype)
+    implicit none
+    integer,value :: idx,dim,ntype
+    real(8),value :: value_m5,value_m4,value_m3,value_m2,value_m1,value_0
+    real(8),value :: value_p1,value_p2,value_p3,value_p4,value_p5
+
+    select case(ntype)
+    case(3)
+      nscbc_filter6_value_axis = 11.d0/16.d0*value_0 + &
+           15.d0/64.d0*(value_m1+value_p1) - &
+            3.d0/32.d0*(value_m2+value_p2) + &
+            1.d0/64.d0*(value_m3+value_p3)
+    case(4)
+      if(idx == 0) then
+        nscbc_filter6_value_axis = 15.d0/16.d0*value_0 + 0.25d0*value_p1 - &
+             3.d0/8.d0*value_p2 + 0.25d0*value_p3 - 1.d0/16.d0*value_p4
+      elseif(idx == 1) then
+        nscbc_filter6_value_axis = 1.d0/16.d0*value_m1 + 0.75d0*value_0 + &
+             3.d0/8.d0*value_p1 - 0.25d0*value_p2 + 1.d0/16.d0*value_p3
+      elseif(idx == 2) then
+        nscbc_filter6_value_axis = 5.d0/8.d0*value_0 + 0.25d0*(value_m1+value_p1) - &
+             1.d0/16.d0*(value_m2+value_p2)
+      elseif(idx == dim-2) then
+        nscbc_filter6_value_axis = 5.d0/8.d0*value_0 + 0.25d0*(value_m1+value_p1) - &
+             1.d0/16.d0*(value_m2+value_p2)
+      elseif(idx == dim-1) then
+        nscbc_filter6_value_axis = 1.d0/16.d0*value_p1 + 0.75d0*value_0 + &
+             3.d0/8.d0*value_m1 - 0.25d0*value_m2 + 1.d0/16.d0*value_m3
+      elseif(idx == dim) then
+        nscbc_filter6_value_axis = 15.d0/16.d0*value_0 + 0.25d0*value_m1 - &
+             3.d0/8.d0*value_m2 + 0.25d0*value_m3 - 1.d0/16.d0*value_m4
+      else
+        nscbc_filter6_value_axis = 11.d0/16.d0*value_0 + &
+             15.d0/64.d0*(value_m1+value_p1) - &
+              3.d0/32.d0*(value_m2+value_p2) + &
+              1.d0/64.d0*(value_m3+value_p3)
+      endif
+    case default
+      nscbc_filter6_value_axis = value_0
+    end select
+  end function nscbc_filter6_value_axis
+
+  attributes(device) integer function nscbc_periodic_index(idx,dim)
+    implicit none
+    integer,value :: idx,dim
+
+    nscbc_periodic_index = mod(idx,dim)
+    if(nscbc_periodic_index < 0) nscbc_periodic_index = nscbc_periodic_index + dim
+  end function nscbc_periodic_index
+
+  attributes(global) subroutine nscbc_farfield_y_upper_filter_x_kernel(im,jm,km,apply_up)
+    use commarray_gpu, only: q_d,qwork_d
+    implicit none
+    integer,value :: im,jm,km,apply_up
+    integer :: id,i,k,m,n,km5,km4,km3,km2,km1,kp1,kp2,kp3,kp4,kp5
+
+    if(apply_up == 0) return
+    id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
+    n = (im+1)*(km+1)*5
+    if(id >= n) return
+    i = mod(id,im+1)
+    k = mod(id/(im+1),km+1)
+    m = id/((im+1)*(km+1)) + 1
+    qwork_d(i,jm,k,m) = nscbc_filter6_value_axis( &
+         q_d(i-5,jm,k,m),q_d(i-4,jm,k,m),q_d(i-3,jm,k,m),q_d(i-2,jm,k,m), &
+         q_d(i-1,jm,k,m),q_d(i,jm,k,m),q_d(i+1,jm,k,m),q_d(i+2,jm,k,m), &
+         q_d(i+3,jm,k,m),q_d(i+4,jm,k,m),q_d(i+5,jm,k,m),i,im,4)
+  end subroutine nscbc_farfield_y_upper_filter_x_kernel
+
+  attributes(global) subroutine nscbc_farfield_y_upper_filter_z_kernel(im,jm,km,apply_up)
+    use commarray_gpu, only: q_d,qwork_d
+    implicit none
+    integer,value :: im,jm,km,apply_up
+    integer :: id,i,k,m,n,km5,km4,km3,km2,km1,kp1,kp2,kp3,kp4,kp5
+
+    if(apply_up == 0) return
+    id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
+    n = (im+1)*(km+1)*5
+    if(id >= n) return
+    i = mod(id,im+1)
+    k = mod(id/(im+1),km+1)
+    m = id/((im+1)*(km+1)) + 1
+    km5 = nscbc_periodic_index(k-5,km)
+    km4 = nscbc_periodic_index(k-4,km)
+    km3 = nscbc_periodic_index(k-3,km)
+    km2 = nscbc_periodic_index(k-2,km)
+    km1 = nscbc_periodic_index(k-1,km)
+    kp1 = nscbc_periodic_index(k+1,km)
+    kp2 = nscbc_periodic_index(k+2,km)
+    kp3 = nscbc_periodic_index(k+3,km)
+    kp4 = nscbc_periodic_index(k+4,km)
+    kp5 = nscbc_periodic_index(k+5,km)
+    q_d(i,jm,k,m) = nscbc_filter6_value_axis( &
+         qwork_d(i,jm,km5,m),qwork_d(i,jm,km4,m),qwork_d(i,jm,km3,m), &
+         qwork_d(i,jm,km2,m),qwork_d(i,jm,km1,m),qwork_d(i,jm,k,m), &
+         qwork_d(i,jm,kp1,m),qwork_d(i,jm,kp2,m),qwork_d(i,jm,kp3,m), &
+         qwork_d(i,jm,kp4,m),qwork_d(i,jm,kp5,m),k,km,3)
+  end subroutine nscbc_farfield_y_upper_filter_z_kernel
+
+  subroutine apply_nscbc_farfield_y_upper_filter_gpu()
+    use commvar, only: im,jm,km,lfilter
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    type(dim3) :: block,grid
+    integer :: apply_down,apply_up,n
+
+    if(lfilter) return
+    call gpu_physical_boundary_apply_mask(2,apply_down,apply_up)
+    block = dim3(256,1,1)
+    n = (im+1)*(km+1)*5
+    grid = dim3((n+block%x-1)/block%x,1,1)
+    call nscbc_farfield_y_upper_filter_x_kernel<<<grid,block>>>(im,jm,km,apply_up)
+    call sync_after_kernel('nscbc_farfield_y_upper_filter_x_kernel')
+    call nscbc_farfield_y_upper_filter_z_kernel<<<grid,block>>>(im,jm,km,apply_up)
+    call sync_after_kernel('nscbc_farfield_y_upper_filter_z_kernel')
+  end subroutine apply_nscbc_farfield_y_upper_filter_gpu
+
+  attributes(global) subroutine nscbc_farfield_y_upper_mach2_partial_kernel(partial,im,jm,km,hm,mach)
+    use commarray_gpu, only: vel_d,tmp_d,dxi_d
+    implicit none
+    integer,value :: im,jm,km,hm
+    real(8),value :: mach
+    real(8),device :: partial(:)
+    real(8),shared :: scratch(256)
+    integer :: tid,id,stride,ncell,i,k
+    real(8) :: local,css,norm2,un
+
+    tid = threadIdx%x
+    id = (blockIdx%x-1)*blockDim%x + tid - 1
+    stride = gridDim%x*blockDim%x
+    ncell = (im+1)*(km+1)
+    local = -huge(1.d0)
+    do while(id < ncell)
+      i = mod(id,im+1)
+      k = id/(im+1)
+      css = sqrt(tmp_d(i,jm,k))/mach
+      norm2 = dxi_d(i,jm,k,2,1)**2 + dxi_d(i,jm,k,2,2)**2 + dxi_d(i,jm,k,2,3)**2
+      un = dxi_d(i,jm,k,2,1)*vel_d(i,jm,k,1) + dxi_d(i,jm,k,2,2)*vel_d(i,jm,k,2) + &
+           dxi_d(i,jm,k,2,3)*vel_d(i,jm,k,3)
+      local = max(local,un*un/(norm2*css*css))
+      id = id + stride
+    enddo
+    scratch(tid) = local
+    call syncthreads()
+    stride = blockDim%x/2
+    do while(stride > 0)
+      if(tid <= stride) scratch(tid) = max(scratch(tid),scratch(tid+stride))
+      call syncthreads()
+      stride = stride/2
+    enddo
+    if(tid == 1) partial(blockIdx%x) = scratch(1)
+  end subroutine nscbc_farfield_y_upper_mach2_partial_kernel
+
+  subroutine gpu_nscbc_farfield_y_upper_mach2(gmachmax2)
+    use mpi
+    use commvar, only: im,jm,km,hm,mach
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: mpisize
+    implicit none
+    real(8),intent(out) :: gmachmax2
+    integer,parameter :: block_size=256
+    integer :: ncell,nblocks,ierr
+    real(8) :: local_max
+    real(8),allocatable,device :: partial_d(:)
+    real(8),allocatable :: partial_h(:)
+
+    ncell = (im+1)*(km+1)
+    nblocks = max(1,(ncell+block_size-1)/block_size)
+    allocate(partial_d(nblocks),partial_h(nblocks))
+    call nscbc_farfield_y_upper_mach2_partial_kernel<<<nblocks,block_size>>>(partial_d,im,jm,km,hm,mach)
+    call sync_after_kernel('nscbc_farfield_y_upper_mach2_partial_kernel')
+    partial_h = partial_d
+    local_max = maxval(partial_h)
+    if(mpisize > 1) then
+      call mpi_allreduce(local_max,gmachmax2,1,mpi_real8,mpi_max,mpi_comm_world,ierr)
+    else
+      gmachmax2 = local_max
+    endif
+    deallocate(partial_d,partial_h)
+  end subroutine gpu_nscbc_farfield_y_upper_mach2
+
+  attributes(global) subroutine nscbc_farfield_y_upper_rhs_kernel(im,jm,km,hm,gamma,mach,ymin,ymax,pinf, &
+                                                                  gmachmax2,apply_up)
+    use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d,qrhs_d,jacob_d,dxi_d
+    implicit none
+    integer,value :: im,jm,km,hm,apply_up
+    real(8),value :: gamma,mach,ymin,ymax,pinf,gmachmax2
+    integer :: id,i,k,ii,m,n
+    real(8) :: pnor(5,5),pinv(5,5),ecs(0:2,5),decs(5),rest(5),lodi(5),lodi1(5), &
+               ddi(3),flux(5),css,kinout,metric
+    real(8) :: flux_m(5),flux_p(5)
+
+    if(apply_up == 0) return
+    id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
+    n = (im+1)*(km+1)
+    if(id >= n) return
+    i = mod(id,im+1)
+    k = id/(im+1)
+    ddi(:) = dxi_d(i,jm,k,2,:)
+    call nscbc_pmatrix(rho_d(i,jm,k),vel_d(i,jm,k,1),vel_d(i,jm,k,2),vel_d(i,jm,k,3), &
+                       tmp_d(i,jm,k),ddi,gamma,mach,.false.,pnor)
+    call nscbc_pmatrix(rho_d(i,jm,k),vel_d(i,jm,k,1),vel_d(i,jm,k,2),vel_d(i,jm,k,3), &
+                       tmp_d(i,jm,k),ddi,gamma,mach,.true.,pinv)
+
+    do ii=0,2
+      call nscbc_flux(i,jm-ii,k,2,flux)
+      ecs(ii,:) = flux(:)
+    enddo
+    decs(:) = 1.5d0*ecs(0,:) - 2.d0*ecs(1,:) + 0.5d0*ecs(2,:)
+
+    rest(:) = 0.d0
+    call nscbc_cartesian_flux(i,jm,k,1,flux)
+    metric = 1.5d0*dxi_d(i,jm,k,2,1)*jacob_d(i,jm,k) - &
+             2.d0*dxi_d(i,jm-1,k,2,1)*jacob_d(i,jm-1,k) + &
+             0.5d0*dxi_d(i,jm-2,k,2,1)*jacob_d(i,jm-2,k)
+    rest(:) = rest(:) + flux(:)*metric
+    call nscbc_cartesian_flux(i,jm,k,2,flux)
+    metric = 1.5d0*dxi_d(i,jm,k,2,2)*jacob_d(i,jm,k) - &
+             2.d0*dxi_d(i,jm-1,k,2,2)*jacob_d(i,jm-1,k) + &
+             0.5d0*dxi_d(i,jm-2,k,2,2)*jacob_d(i,jm-2,k)
+    rest(:) = rest(:) + flux(:)*metric
+    call nscbc_cartesian_flux(i,jm,k,3,flux)
+    metric = 1.5d0*dxi_d(i,jm,k,2,3)*jacob_d(i,jm,k) - &
+             2.d0*dxi_d(i,jm-1,k,2,3)*jacob_d(i,jm-1,k) + &
+             0.5d0*dxi_d(i,jm-2,k,2,3)*jacob_d(i,jm-2,k)
+    rest(:) = rest(:) + flux(:)*metric
+
+    lodi1(:) = decs(:)-rest(:)
+    do m=1,5
+      lodi(m) = sum(pinv(m,:)*lodi1(:))/jacob_d(i,jm,k)
+    enddo
+    css = sqrt(tmp_d(i,jm,k))/mach
+    kinout = 0.25d0*(1.d0-gmachmax2)*css/(ymax-ymin)
+    lodi(5) = kinout*(prs_d(i,jm,k)-pinf)
+    do m=1,5
+      lodi1(m) = sum(pnor(m,:)*lodi(:))*jacob_d(i,jm,k)
+    enddo
+    decs(:) = lodi1(:)+rest(:)
+
+    if(i == 0) then
+      call nscbc_flux(i,jm,k,1,flux)
+      call nscbc_flux(i+1,jm,k,1,flux_p)
+      do m=1,5
+        decs(m) = decs(m) + flux_p(m) - flux(m)
+      enddo
+    elseif(i == im) then
+      call nscbc_flux(i,jm,k,1,flux)
+      call nscbc_flux(i-1,jm,k,1,flux_m)
+      do m=1,5
+        decs(m) = decs(m) + flux(m) - flux_m(m)
+      enddo
+    else
+      call nscbc_flux(i-1,jm,k,1,flux_m)
+      call nscbc_flux(i+1,jm,k,1,flux_p)
+      do m=1,5
+        decs(m) = decs(m) + 0.5d0*(flux_p(m)-flux_m(m))
+      enddo
+    endif
+
+    call nscbc_flux(i,jm,k-1,3,flux_m)
+    call nscbc_flux(i,jm,k+1,3,flux_p)
+    decs(:) = decs(:) + 0.5d0*(flux_p(:)-flux_m(:))
+    qrhs_d(i,jm,k,:) = qrhs_d(i,jm,k,:) + decs(:)
+  end subroutine nscbc_farfield_y_upper_rhs_kernel
+
+  subroutine apply_nscbc_farfield_y_upper_rhs_gpu(gmachmax2)
+    use commvar, only: im,jm,km,hm,gamma,mach,ymin,ymax,pinf
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    real(8),intent(in) :: gmachmax2
+    type(dim3) :: block,grid
+    integer :: apply_down,apply_up,n
+
+    call gpu_physical_boundary_apply_mask(2,apply_down,apply_up)
+    block = dim3(256,1,1)
+    n = (im+1)*(km+1)
+    grid = dim3((n+block%x-1)/block%x,1,1)
+    call nscbc_farfield_y_upper_rhs_kernel<<<grid,block>>>(im,jm,km,hm,gamma,mach,ymin,ymax, &
+         pinf,gmachmax2,apply_up)
+    call sync_after_kernel('nscbc_farfield_y_upper_rhs_kernel')
+  end subroutine apply_nscbc_farfield_y_upper_rhs_gpu
+
+  subroutine apply_s1_flatplate_boundary_conditions_gpu()
+    use commvar, only: im,jm,km,hm,const2,const6,gamma,mach,pinf
+    use bc, only: bctype,twall,pout
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    type(dim3) :: block,grid_x,grid_y
+    integer :: apply_left,apply_right,apply_down,apply_up,nx,ny
+
+    if(.not.s1_bl_profile_ready) stop 'GPU S1 flatplate profile has not been uploaded'
+    call gpu_physical_boundary_apply_mask(1,apply_left,apply_right)
+    call gpu_physical_boundary_apply_mask(2,apply_down,apply_up)
+    block = dim3(256,1,1)
+    nx = (jm+1)*(km+1)
+    ny = (im+1)*(km+1)
+    grid_x = dim3((nx+block%x-1)/block%x,1,1)
+    grid_y = dim3((ny+block%x-1)/block%x,1,1)
+    call s1_bl_profile_inflow_x_kernel<<<grid_x,block>>>(im,jm,km,const6,apply_left)
+    call sync_after_kernel('s1_bl_profile_inflow_x_kernel')
+    call outflow_x_kernel<<<grid_x,block>>>(im,jm,km,hm,const2,const6, &
+                                             gamma,mach,pinf,pout,apply_right)
+    call sync_after_kernel('s1_bl_outflow_x_kernel')
+    call wall_isothermal_noslip_y_kernel<<<grid_y,block>>>(im,jm,km,hm,const2,const6, &
+                                                           twall(3),twall(3),apply_down,0)
+    call sync_after_kernel('s1_bl_wall_isothermal_noslip_y_kernel')
+    if(bctype(4) /= GPU_BC_NSCBC_FARFIELD) then
+      call s1_bl_farfield_y_upper_kernel<<<grid_y,block>>>(im,jm,km,const2,const6,apply_up)
+      call sync_after_kernel('s1_bl_farfield_y_upper_kernel')
+    endif
+  end subroutine apply_s1_flatplate_boundary_conditions_gpu
+
+  subroutine apply_boundary_conditions_gpu()
+    use commvar, only: im,jm,km,hm,const2,const6,uinf,vinf,winf,pinf,gamma,mach
+    use bc, only: twall,xslip,pout
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    type(dim3) :: block,grid
+    integer :: n,axis,kind,lower_kind,upper_kind,apply_lower,apply_upper
 
     axis = gpu_physical_boundary_axis()
     kind = gpu_physical_boundary_kind()
+    lower_kind = gpu_bc_lower_kind_for_axis(axis)
+    upper_kind = gpu_bc_upper_kind_for_axis(axis)
     call gpu_physical_boundary_apply_mask(axis,apply_lower,apply_upper)
 
     select case(axis)
@@ -814,7 +1737,14 @@ contains
       block = dim3(256,1,1)
       n = (jm + 1) * (km + 1)
       grid = dim3((n + block%x - 1)/block%x,1,1)
-      if(kind == GPU_BC_ZEROEXTRAP) then
+      if(lower_kind == GPU_BC_INFLOW .and. upper_kind == GPU_BC_OUTFLOW) then
+        call inflow_x_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+                                              uinf,vinf,winf,pinf,apply_lower)
+        call sync_after_kernel('inflow_x_kernel')
+        call outflow_x_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+                                               gamma,mach,pinf,pout,apply_upper)
+        call sync_after_kernel('outflow_x_kernel')
+      elseif(kind == GPU_BC_ZEROEXTRAP) then
         call zeroextrap_x_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
                                                  apply_lower,apply_upper)
         call sync_after_kernel('zeroextrap_x_kernel')

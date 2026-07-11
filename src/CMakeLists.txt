@@ -53,15 +53,26 @@ if(ASTR_WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/qswap_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/halo_exchange_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/boundary_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/sponge_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/case_capability_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/statistic_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/gradcal_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/shock_sensor_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/solver_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/mainloop_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/gpu_runtime.cuf)
 endif()
 
 add_executable(astr ${ASTR_SOURCES} ${ASTR_GPU_SOURCES})
+
+if (ASTR_WITH_CUDA AND (Fortran_COMPILER_NAME MATCHES "PGI" OR Fortran_COMPILER_NAME MATCHES "NVHPC"))
+  set(ASTR_S0A_MAXREGCOUNT "128" CACHE STRING
+      "NVHPC register cap for the controlled S0-A characteristic kernels")
+  # The selective Roe kernel must retain the prescribed 512-thread x block.
+  # Cap its register allocation so the launch is legal on Ada and later GPUs.
+  set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/solver_gpu.cuf
+    PROPERTIES COMPILE_OPTIONS "-gpu=maxregcount:${ASTR_S0A_MAXREGCOUNT}")
+endif()
                     
 target_link_libraries(astr)
 if (MPI_FOUND)

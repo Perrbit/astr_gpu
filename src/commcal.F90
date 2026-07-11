@@ -193,6 +193,46 @@ module commcal
   !| -------------                                                     |
   !| 08-10-2021: Created by J. Fang @ STFC Daresbury Laboratory        |
   !+-------------------------------------------------------------------+
+  logical function shock_sensor_validation_enabled()
+    implicit none
+    character(len=1024) :: dump_path
+    integer :: status,path_length
+
+    call get_environment_variable('ASTR_SHOCK_SENSOR_DUMP',dump_path, &
+                                  length=path_length,status=status)
+    shock_sensor_validation_enabled = status == 0 .and. path_length > 0
+  end function shock_sensor_validation_enabled
+
+  subroutine dump_shock_sensor_validation()
+    use commvar,  only : im,jm,km
+    use commarray,only : ssf,lshock
+    use parallel, only : mpirank,mpisize,ig0,jg0,kg0
+    implicit none
+    character(len=1024) :: dump_path,output_path
+    character(len=32) :: rank_suffix
+    integer :: status,path_length,fh,i,j,k
+
+    call get_environment_variable('ASTR_SHOCK_SENSOR_DUMP',dump_path, &
+                                  length=path_length,status=status)
+    if(status /= 0 .or. path_length <= 0) return
+
+    output_path=trim(dump_path(1:path_length))
+    if(mpisize>1) then
+      write(rank_suffix,'(".rank",I0)') mpirank
+      output_path=trim(output_path)//trim(rank_suffix)
+    endif
+    open(newunit=fh,file=trim(output_path),status='replace',action='write')
+    write(fh,'(A,6(1X,I0))') '# shock_sensor',im,jm,km,ig0,jg0,kg0
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      write(fh,'(3(I0,1X),ES24.16E3,1X,I1)') i,j,k,ssf(i,j,k),merge(1,0,lshock(i,j,k))
+    enddo
+    enddo
+    enddo
+    close(fh)
+  end subroutine dump_shock_sensor_validation
+
   subroutine ducrossensor(timerept)
     !
     use commvar,  only : im,jm,km,is,ie,js,je,ks,ke,ia,ja,ka,hm,      &
@@ -203,7 +243,7 @@ module commcal
     logical,intent(in),optional :: timerept
     !
     ! local data
-    logical,save :: firstcall=.true.
+    logical,save :: firstcall=.true.,validation_dumped=.false.
     real(8) :: div2,vort,vortx,vorty,vortz,dpdi,dpdj,dpdk
     real(8) :: ssfmin,ssfmax,ssfavg,norm,ssfmax_local
     integer :: i,j,k,i1,j1,k1,ii,jj,kk,ip1,jp1,kp1,im1,jm1,km1,nshknod,nijka
@@ -245,10 +285,10 @@ module commcal
       jp1=j+1; jm1=j-1
       kp1=k+1; km1=k-1
       !
-      if(npdci==1 .and. im1<0)  im1=0
+      if((npdci==1 .or. npdci==4) .and. im1<0)  im1=0
       if(npdcj==1 .and. jm1<0)  jm1=0
       if(npdck==1 .and. km1<0)  km1=0
-      if(npdci==2 .and. ip1>im) ip1=im
+      if((npdci==2 .or. npdci==4) .and. ip1>im) ip1=im
       if(npdcj==2 .and. jp1>jm) jp1=jm
       if(npdck==2 .and. kp1>km) kp1=km
       !
@@ -284,8 +324,8 @@ module commcal
         !
         ii=i+i1
         !
-        if(npdci==1 .and. ii<0)  ii=0
-        if(npdci==2 .and. ii>im) ii=im
+        if((npdci==1 .or. npdci==4) .and. ii<0)  ii=0
+        if((npdci==2 .or. npdci==4) .and. ii>im) ii=im
         !
         ssfmax_local=max(ssfmax_local,ssf(ii,j,k))
         !
@@ -321,6 +361,11 @@ module commcal
     enddo
     enddo
     enddo
+
+    if(shock_sensor_validation_enabled() .and. (.not.validation_dumped)) then
+      call dump_shock_sensor_validation()
+      validation_dumped=.true.
+    endif
     !
     if(lreport) then
       !

@@ -40,10 +40,18 @@ module gridgeneration
         call gridcube(20.d0,10.d0,1.d0)
       elseif(trim(flowtype)=='accutest') then
         call gridcube(10.d0,1.d0,1.d0)
-      elseif(trim(flowtype)=='shuosher') then
-        call grid1d(-5.d0,5.d0)
+      elseif(trim(flowtype)=='shuosher' .or. trim(flowtype)=='openshock') then
+        if(ka==0) then
+          call grid1d(-5.d0,5.d0)
+        else
+          call gridsod3d(-5.d0,5.d0,1.d0,1.d0)
+        endif
       elseif(trim(flowtype)=='sod') then
-        call grid1d(-5.d0,5.d0)
+        if(ka==0) then
+          call grid1d(-5.d0,5.d0)
+        else
+          call gridsod3d(-5.d0,5.d0,1.d0,1.d0)
+        endif
       elseif(trim(flowtype)=='riem2d') then
         call gridcube(1.d0,1.d0,0.d0)
       elseif(trim(flowtype)=='windtunn') then
@@ -179,6 +187,38 @@ module gridgeneration
     if(lio) print*,' ** 1-D grid generated'
     !
   end subroutine grid1d
+  !
+  subroutine gridsod3d(xmin,xmax,ly,lz)
+    !
+    use commvar,  only : im,jm,km,ia,ja,ka
+    use parallel, only : ig0,jg0,kg0,lio
+    use commarray,only : x
+    !
+    ! arguments
+    real(8),intent(in) :: xmin,xmax,ly,lz
+    !
+    ! local data
+    integer :: i,j,k
+    real(8) :: dx,dy,dz
+    !
+    dx=(xmax-xmin)/real(ia,8)
+    dy=ly/real(ja,8)
+    dz=lz/real(ka,8)
+    !
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      x(i,j,k,1)=dx*real(i+ig0,8)+xmin
+      x(i,j,k,2)=dy*real(j+jg0,8)
+      x(i,j,k,3)=dz*real(k+kg0,8)
+      !
+    enddo
+    enddo
+    enddo
+    !
+    if(lio) print*,' ** forced 3-D shock-tube grid generated'
+    !
+  end subroutine gridsod3d
   !
   subroutine gridhitflame(mode)
     !
