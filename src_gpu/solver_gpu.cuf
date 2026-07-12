@@ -517,9 +517,11 @@ contains
     real(8) :: f(5)
     integer :: ii,jj,kk
 
-    ii = idx_periodic(i,im)
-    jj = idx_periodic(j,jm)
-    kk = idx_periodic(k,km)
+    ! Characteristic stencils may cross an MPI or physical face.  Geometry
+    ! halos were uploaded/exchanged with the state and must retain their index.
+    ii = i
+    jj = j
+    kk = k
     call steger_warming_split_one_scalar( &
          q_d(i,j,k,1),q_d(i,j,k,2),q_d(i,j,k,3),q_d(i,j,k,4),q_d(i,j,k,5), &
          vel_d(i,j,k,1),vel_d(i,j,k,2),vel_d(i,j,k,3),prs_d(i,j,k), &
@@ -916,23 +918,28 @@ contains
   end subroutine roe_characteristic_state
 
   attributes(device) subroutine characteristic_reconstruction_interface_flux( &
-       i,j,k,idir,im,jm,km,reconstruction_scheme,gamma,hm,npdci,physical_x,fh)
+       i,j,k,idir,im,jm,km,reconstruction_scheme,gamma,hm,npdc,physical_dir,fh)
     implicit none
-    integer,value :: i,j,k,idir,im,jm,km,reconstruction_scheme,hm,npdci,physical_x
+    integer,value :: i,j,k,idir,im,jm,km,reconstruction_scheme,hm,npdc,physical_dir
     real(8),value :: gamma
     real(8) :: fh(5)
-    integer :: n,m,c,ii,jj,kk,offset,basis_axis,ibeg,iend
+    integer :: n,m,c,ii,jj,kk,offset,basis_axis,ibeg,iend,jbeg,jend
     real(8) :: uroe(3),hroe,cssroe,gpd(3),b1,b2,ugp,rcs,rgp
     real(8) :: lvec(5),stencil_plus(7),stencil_minus(7),fchar
     real(8) :: split_plus(5,7),split_minus(5,7)
 
     if(.not.shock_interface_active(i,j,k,idir,im,jm,km)) then
       do m=1,5
-        if(physical_x /= 0) then
+        if(physical_dir == 1) then
           fh(m)=explicit_reconstruction_interface_flux_x_physical( &
-               i,j,k,m,1,im,jm,km,hm,npdci,reconstruction_scheme,gamma) + &
+               i,j,k,m,1,im,jm,km,hm,npdc,reconstruction_scheme,gamma) + &
                explicit_reconstruction_interface_flux_x_physical( &
-               i,j,k,m,-1,im,jm,km,hm,npdci,reconstruction_scheme,gamma)
+               i,j,k,m,-1,im,jm,km,hm,npdc,reconstruction_scheme,gamma)
+        elseif(physical_dir == 2) then
+          fh(m)=explicit_reconstruction_interface_flux_y_physical( &
+               i,j,k,m,1,im,jm,km,hm,npdc,reconstruction_scheme,gamma) + &
+               explicit_reconstruction_interface_flux_y_physical( &
+               i,j,k,m,-1,im,jm,km,hm,npdc,reconstruction_scheme,gamma)
         else
           fh(m)=explicit_reconstruction_interface_flux( &
                i,j,k,idir,m,1,im,jm,km,reconstruction_scheme,gamma) + &
@@ -949,8 +956,10 @@ contains
     fh=0.d0
     ibeg = -hm
     iend = im + hm
-    if(physical_x /= 0) then
-      select case(npdci)
+    jbeg = -hm
+    jend = jm + hm
+    if(physical_dir == 1) then
+      select case(npdc)
       case(1)
         ibeg = 0
       case(2)
@@ -958,6 +967,16 @@ contains
       case default
         ibeg = 0
         iend = im
+      end select
+    elseif(physical_dir == 2) then
+      select case(npdc)
+      case(1)
+        jbeg = 0
+      case(2)
+        jend = jm
+      case default
+        jbeg = 0
+        jend = jm
       end select
     endif
     do n=1,7
@@ -973,7 +992,8 @@ contains
       case default
         kk=k+offset
       end select
-      if(physical_x /= 0) ii=max(ibeg,min(iend,ii))
+      if(physical_dir == 1) ii=max(ibeg,min(iend,ii))
+      if(physical_dir == 2) jj=max(jbeg,min(jend,jj))
       call steger_warming_split_vector_at( &
            ii,jj,kk,idir,im,jm,km,gamma,1,split_plus(:,n))
       offset=5-n
@@ -988,7 +1008,8 @@ contains
       case default
         kk=k+offset
       end select
-      if(physical_x /= 0) ii=max(ibeg,min(iend,ii))
+      if(physical_dir == 1) ii=max(ibeg,min(iend,ii))
+      if(physical_dir == 2) jj=max(jbeg,min(jend,jj))
       call steger_warming_split_vector_at( &
            ii,jj,kk,idir,im,jm,km,gamma,-1,split_minus(:,n))
     enddo
@@ -1051,9 +1072,12 @@ contains
       enddo
       select case(reconstruction_scheme)
       case(3)
-        if(physical_x /= 0) then
-          fchar=reconstruct_x_physical_stencil(stencil_plus,i,im,npdci) + &
-                reconstruct_x_physical_stencil(stencil_minus,i,im,npdci)
+        if(physical_dir == 1) then
+          fchar=reconstruct_x_physical_stencil(stencil_plus,i,im,npdc) + &
+                reconstruct_x_physical_stencil(stencil_minus,i,im,npdc)
+        elseif(physical_dir == 2) then
+          fchar=reconstruct_y_physical_stencil(stencil_plus,j,jm,npdc) + &
+                reconstruct_y_physical_stencil(stencil_minus,j,jm,npdc)
         else
           fchar=mp7_gpu(stencil_plus)+mp7_gpu(stencil_minus)
         endif
@@ -1224,6 +1248,28 @@ contains
       fh = mp7_gpu(f)
     endif
   end function reconstruct_x_physical_stencil
+
+  attributes(device) real(8) function reconstruct_y_physical_stencil(f,j,jm,npdcj) result(fh)
+    implicit none
+    real(8) :: f(7)
+    integer,value :: j,jm,npdcj
+
+    if((npdcj == 1 .or. npdcj == 4) .and. j == 0) then
+      fh = 0.5d0*(f(4)+f(5))
+    elseif((npdcj == 1 .or. npdcj == 4) .and. j == 1) then
+      fh = suw3_gpu(f(3:5))
+    elseif((npdcj == 1 .or. npdcj == 4) .and. j == 2) then
+      fh = mp5_gpu(f(2:6))
+    elseif((npdcj == 2 .or. npdcj == 4) .and. j == jm-1) then
+      fh = 0.5d0*(f(4)+f(5))
+    elseif((npdcj == 2 .or. npdcj == 4) .and. j == jm-2) then
+      fh = suw3_gpu(f(3:5))
+    elseif((npdcj == 2 .or. npdcj == 4) .and. j == jm-3) then
+      fh = mp5_gpu(f(2:6))
+    else
+      fh = mp7_gpu(f)
+    endif
+  end function reconstruct_y_physical_stencil
 
   attributes(global) subroutine explicit_upwind_flux_x_global_kernel( &
        im,jm,km,ivar,split_sign,reconstruction_scheme,gamma)
@@ -1576,6 +1622,26 @@ contains
     enddo
   end subroutine characteristic_upwind_flux_x_physical_global_kernel
 
+  attributes(global) subroutine characteristic_upwind_flux_x_xyphysical_global_kernel( &
+       im,jm,km,hm,is,ie,js,je,ks,ke,npdci,reconstruction_scheme,gamma)
+    use commarray_gpu, only: flux_characteristic_work_d
+    implicit none
+    integer,value :: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,reconstruction_scheme
+    real(8),value :: gamma
+    integer :: i,j,k,m
+    real(8) :: fh(5)
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-2
+    j=blockIdx%y-1
+    k=blockIdx%z-1
+    if(i < is-1 .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
+    call characteristic_reconstruction_interface_flux( &
+         i,j,k,1,im,jm,km,reconstruction_scheme,gamma,hm,npdci,1,fh)
+    do m=1,5
+      flux_characteristic_work_d(i,j,k,m)=fh(m)
+    enddo
+  end subroutine characteristic_upwind_flux_x_xyphysical_global_kernel
+
   attributes(global) subroutine characteristic_upwind_flux_y_global_kernel( &
        im,jm,km,reconstruction_scheme,gamma)
     use commarray_gpu, only: flux_characteristic_work_d
@@ -1596,6 +1662,26 @@ contains
     enddo
   end subroutine characteristic_upwind_flux_y_global_kernel
 
+  attributes(global) subroutine characteristic_upwind_flux_y_xyphysical_global_kernel( &
+       im,jm,km,hm,is,ie,js,je,ks,ke,npdcj,reconstruction_scheme,gamma)
+    use commarray_gpu, only: flux_characteristic_work_d
+    implicit none
+    integer,value :: im,jm,km,hm,is,ie,js,je,ks,ke,npdcj,reconstruction_scheme
+    real(8),value :: gamma
+    integer :: i,j,k,m
+    real(8) :: fh(5)
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=(blockIdx%y-1)*blockDim%y+threadIdx%y-2
+    k=blockIdx%z-1
+    if(i < is .or. i > ie .or. j < js-1 .or. j > je .or. k < ks .or. k > ke) return
+    call characteristic_reconstruction_interface_flux( &
+         i,j,k,2,im,jm,km,reconstruction_scheme,gamma,hm,npdcj,2,fh)
+    do m=1,5
+      flux_characteristic_work_d(i,j,k,m)=fh(m)
+    enddo
+  end subroutine characteristic_upwind_flux_y_xyphysical_global_kernel
+
   attributes(global) subroutine characteristic_upwind_flux_z_global_kernel( &
        im,jm,km,reconstruction_scheme,gamma)
     use commarray_gpu, only: flux_characteristic_work_d
@@ -1615,6 +1701,26 @@ contains
       flux_characteristic_work_d(i,j,k,m)=fh(m)
     enddo
   end subroutine characteristic_upwind_flux_z_global_kernel
+
+  attributes(global) subroutine characteristic_upwind_flux_z_xyphysical_global_kernel( &
+       im,jm,km,is,ie,js,je,ks,ke,reconstruction_scheme,gamma)
+    use commarray_gpu, only: flux_characteristic_work_d
+    implicit none
+    integer,value :: im,jm,km,is,ie,js,je,ks,ke,reconstruction_scheme
+    real(8),value :: gamma
+    integer :: i,j,k,m
+    real(8) :: fh(5)
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=blockIdx%y-1
+    k=(blockIdx%z-1)*blockDim%z+threadIdx%z-2
+    if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks-1 .or. k > ke) return
+    call characteristic_reconstruction_interface_flux( &
+         i,j,k,3,im,jm,km,reconstruction_scheme,gamma,0,0,0,fh)
+    do m=1,5
+      flux_characteristic_work_d(i,j,k,m)=fh(m)
+    enddo
+  end subroutine characteristic_upwind_flux_z_xyphysical_global_kernel
 
   attributes(global) subroutine characteristic_upwind_rhs_x_global_kernel(im,jm,km)
     use commarray_gpu, only: flux_characteristic_work_d,qrhs_d
@@ -1648,6 +1754,23 @@ contains
     enddo
   end subroutine characteristic_upwind_rhs_x_physical_global_kernel
 
+  attributes(global) subroutine characteristic_upwind_rhs_x_xyphysical_global_kernel( &
+       im,jm,km,is,ie,js,je,ks,ke)
+    use commarray_gpu, only: flux_characteristic_work_d,qrhs_d
+    implicit none
+    integer,value :: im,jm,km,is,ie,js,je,ks,ke
+    integer :: i,j,k,m
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=blockIdx%y-1
+    k=blockIdx%z-1
+    if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
+    do m=1,5
+      qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)- &
+           (flux_characteristic_work_d(i,j,k,m)-flux_characteristic_work_d(i-1,j,k,m))
+    enddo
+  end subroutine characteristic_upwind_rhs_x_xyphysical_global_kernel
+
   attributes(global) subroutine characteristic_upwind_rhs_y_global_kernel(im,jm,km)
     use commarray_gpu, only: flux_characteristic_work_d,qrhs_d
     implicit none
@@ -1664,6 +1787,23 @@ contains
     enddo
   end subroutine characteristic_upwind_rhs_y_global_kernel
 
+  attributes(global) subroutine characteristic_upwind_rhs_y_xyphysical_global_kernel( &
+       im,jm,km,is,ie,js,je,ks,ke)
+    use commarray_gpu, only: flux_characteristic_work_d,qrhs_d
+    implicit none
+    integer,value :: im,jm,km,is,ie,js,je,ks,ke
+    integer :: i,j,k,m
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=(blockIdx%y-1)*blockDim%y+threadIdx%y-1
+    k=blockIdx%z-1
+    if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
+    do m=1,5
+      qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)- &
+           (flux_characteristic_work_d(i,j,k,m)-flux_characteristic_work_d(i,j-1,k,m))
+    enddo
+  end subroutine characteristic_upwind_rhs_y_xyphysical_global_kernel
+
   attributes(global) subroutine characteristic_upwind_rhs_z_global_kernel(im,jm,km)
     use commarray_gpu, only: flux_characteristic_work_d,qrhs_d
     implicit none
@@ -1679,6 +1819,23 @@ contains
            (flux_characteristic_work_d(i,j,k,m)-flux_characteristic_work_d(i,j,k-1,m))
     enddo
   end subroutine characteristic_upwind_rhs_z_global_kernel
+
+  attributes(global) subroutine characteristic_upwind_rhs_z_xyphysical_global_kernel( &
+       im,jm,km,is,ie,js,je,ks,ke)
+    use commarray_gpu, only: flux_characteristic_work_d,qrhs_d
+    implicit none
+    integer,value :: im,jm,km,is,ie,js,je,ks,ke
+    integer :: i,j,k,m
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=blockIdx%y-1
+    k=(blockIdx%z-1)*blockDim%z+threadIdx%z-1
+    if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
+    do m=1,5
+      qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)- &
+           (flux_characteristic_work_d(i,j,k,m)-flux_characteristic_work_d(i,j,k-1,m))
+    enddo
+  end subroutine characteristic_upwind_rhs_z_xyphysical_global_kernel
 
   subroutine apply_rti_source_gpu()
     use commvar, only: im,jm,km,hm

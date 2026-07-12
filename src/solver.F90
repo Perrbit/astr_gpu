@@ -1001,7 +1001,6 @@ module solver
         endif
         !
       enddo
-      
       do j=js,je
         do m=1,numq
           qrhs(i,j,k,m)=qrhs(i,j,k,m)+Fh(j,m)-Fh(j-1,m)

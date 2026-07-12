@@ -310,6 +310,7 @@ module mainloop
     use sponge_layer,only : spongefilter
     use solver,   only : rhscal
     use bc,       only : boucon,immbody,bctype
+    use parallel, only : qswap
 #ifdef COMB
     use thermchem,only : imp_euler_ode,heatrate
     use fdnn
@@ -318,7 +319,7 @@ module mainloop
 #ifdef _CUDA
     use gpu_runtime, only : gpu_time_integration_rk,gpu_prepare_rkfirst_stats, &
                             gpu_write_flow_statistics,gpu_exchange_solution_halo, &
-                            gpu_sync_flow_to_host,gpu_sync_output_boundary_to_host
+                            gpu_sync_flow_to_host,gpu_restore_c4_stats_snapshot
 #endif
     use readwrite, only : writechkpt
     !
@@ -344,12 +345,21 @@ module mainloop
 #ifdef _CUDA
     if(use_gpu) then
       gpu_output_due = nstep > 0 .and. mod(nstep,feqchkpt)==0
-      if(gpu_output_due) call gpu_sync_flow_to_host()
+      if(gpu_output_due) then
+        call gpu_sync_flow_to_host()
+        if(flowtype(1:2)/='0d') then
+          ! Match the CPU checkpoint phase without mutating resident device state.
+          nscbc_boundary_filter_present = any(bctype == 22) .or. any(bctype == 52)
+          if(nscbc_boundary_filter_present) call qswap(timerept=ltimrpt)
+          call boucon
+          call qswap(timerept=ltimrpt)
+        endif
+      endif
       call gpu_prepare_rkfirst_stats()
       if(flowtype(1:2)/='0d') call gpu_exchange_solution_halo()
       call gpu_write_flow_statistics()
+      call gpu_restore_c4_stats_snapshot()
       if(gpu_output_due) then
-        call gpu_sync_output_boundary_to_host()
         call writechkpt()
       endif
       call gpu_time_integration_rk(.true.,.false.)

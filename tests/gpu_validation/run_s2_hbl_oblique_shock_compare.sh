@@ -5,6 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CPU_EXE="${CPU_EXE:-$ROOT_DIR/build_cpu_probe/bin/astr}"
 GPU_EXE="${GPU_EXE:-$ROOT_DIR/build_gpu_probe/bin/astr}"
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/tests/gpu_validation/out/s2_hbl_oblique_shock}"
+if [[ "$OUT_DIR" != /* ]]; then
+  OUT_DIR="$ROOT_DIR/$OUT_DIR"
+fi
 IM="${IM:-192}"
 JM="${JM:-192}"
 KM="${KM:-8}"
@@ -24,6 +27,7 @@ else
   PROFILE_PRESSURE_MODE="${PROFILE_PRESSURE_MODE:-reconstruct}"
 fi
 UPPER_BCTYPE="${UPPER_BCTYPE:-51}"
+XMIN_BCTYPE="${XMIN_BCTYPE:-11}"
 SHOCK_ANGLE_DEG="${SHOCK_ANGLE_DEG:-35.0}"
 SHOCK_X0="${SHOCK_X0:-2.0}"
 SHOCK_Y0="${SHOCK_Y0:-0.18}"
@@ -35,6 +39,13 @@ STATS_ATOL="${STATS_ATOL:-1e-10}"
 STATS_RTOL="${STATS_RTOL:-1e-10}"
 FIELD_ATOL="${FIELD_ATOL:-1e-10}"
 FIELD_RTOL="${FIELD_RTOL:-1e-10}"
+DIFFTERM="${DIFFTERM:-t}"
+LCHARDECOMP="${LCHARDECOMP:-f}"
+SHOCK_THRESHOLD="${SHOCK_THRESHOLD:-0.001}"
+COMPARE_SENSOR="${COMPARE_SENSOR:-f}"
+SENSOR_ATOL="${SENSOR_ATOL:-1e-12}"
+SENSOR_RTOL="${SENSOR_RTOL:-1e-12}"
+SPONGE_IM="${SPONGE_IM:-0}"
 
 prepare_case() {
   local target="$1"
@@ -43,11 +54,14 @@ prepare_case() {
     --dst-case "$OUT_DIR/$target" \
     --use-gpu "$use_gpu" \
     --im "$IM" --jm "$JM" --km "$KM" \
+    --diffterm "$DIFFTERM" --lchardecomp "$LCHARDECOMP" \
+    --shock-threshold "$SHOCK_THRESHOLD" \
     --conschm 543e --reynolds "$REYNOLDS" --mach "$MACH" \
     --reference-temperature "$REFERENCE_TEMPERATURE" \
-    --wall-temperature "$WALL_TEMPERATURE" --upper-bctype "$UPPER_BCTYPE" --ninit 3 \
+    --wall-temperature "$WALL_TEMPERATURE" --upper-bctype "$UPPER_BCTYPE" \
+    --x-min-bctype "$XMIN_BCTYPE" --ninit 3 \
     --x-min -1.0 --x-max 10.0 --y-stretch 5.0 --z-length 0.25 \
-    --maxstep "$MAXSTEP" --feqchkpt "$FEQCHKPT"
+    --maxstep "$MAXSTEP" --feqchkpt "$FEQCHKPT" --sponge-im "$SPONGE_IM"
 }
 
 write_similarity_shock_field() {
@@ -82,14 +96,43 @@ write_similarity_shock_field gpu
 
 (
   cd "$OUT_DIR/cpu"
-  ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
-    mpirun -np "$NP" "$CPU_EXE" run datin/input.flatplate > cpu.log 2>&1
+  if [[ "$COMPARE_SENSOR" == "t" ]]; then
+    ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
+    ASTR_SHOCK_SENSOR_DUMP="$OUT_DIR/cpu_shock_sensor.dat" \
+      mpirun -np "$NP" "$CPU_EXE" run datin/input.flatplate > cpu.log 2>&1
+  else
+    ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
+      mpirun -np "$NP" "$CPU_EXE" run datin/input.flatplate > cpu.log 2>&1
+  fi
 )
 (
   cd "$OUT_DIR/gpu"
-  ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
-    mpirun -np "$NP" "$GPU_EXE" run datin/input.flatplate > gpu.log 2>&1
+  if [[ "$COMPARE_SENSOR" == "t" ]]; then
+    ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
+    ASTR_SHOCK_SENSOR_DUMP="$OUT_DIR/gpu_shock_sensor.dat" \
+      mpirun -np "$NP" "$GPU_EXE" run datin/input.flatplate > gpu.log 2>&1
+  else
+    ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
+      mpirun -np "$NP" "$GPU_EXE" run datin/input.flatplate > gpu.log 2>&1
+  fi
 )
+
+for target in cpu gpu; do
+  grep -q 'The job is done!' "$OUT_DIR/$target/$target.log"
+  [[ -s "$OUT_DIR/$target/flowstate.dat" ]]
+  [[ -f "$OUT_DIR/$target/outdat/flowfield.h5" ]]
+done
+
+if [[ "$COMPARE_SENSOR" == "t" ]]; then
+  sensor_rankwise=()
+  if [[ "$NP" != "1" ]]; then
+    sensor_rankwise+=(--rankwise)
+  fi
+  python3 "$ROOT_DIR/tests/gpu_validation/compare_shock_sensor.py" \
+    --cpu "$OUT_DIR/cpu_shock_sensor.dat" --gpu "$OUT_DIR/gpu_shock_sensor.dat" \
+    --report "$OUT_DIR/shock_sensor_compare.txt" --atol "$SENSOR_ATOL" --rtol "$SENSOR_RTOL" \
+    "${sensor_rankwise[@]}"
+fi
 
 python3 "$ROOT_DIR/tests/gpu_validation/compare_flowstate.py" \
   --cpu "$OUT_DIR/cpu" --gpu "$OUT_DIR/gpu" \

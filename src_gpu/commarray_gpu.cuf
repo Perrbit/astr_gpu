@@ -2,6 +2,7 @@ module commarray_gpu
   use cudafor
   implicit none
   real(8),allocatable,device :: q_d(:,:,:,:),qrhs_d(:,:,:,:),qsave_d(:,:,:,:),qwork_d(:,:,:,:)
+  real(8),allocatable,device :: qstats_snapshot_d(:,:,:,:)
   real(8),allocatable,device :: rho_d(:,:,:),prs_d(:,:,:),tmp_d(:,:,:)
   real(8),allocatable,device :: vel_d(:,:,:,:),jacob_d(:,:,:),x_d(:,:,:,:)
   real(8),allocatable,device :: dxi_d(:,:,:,:,:)
@@ -69,6 +70,23 @@ contains
     prs = prs_d
     tmp = tmp_d
   end subroutine copy_flow_from_gpu
+
+  subroutine save_q_stats_snapshot_gpu()
+    use commvar, only: im,jm,km,hm,numq
+    implicit none
+
+    if(.not.allocated(qstats_snapshot_d)) then
+      allocate(qstats_snapshot_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq))
+    endif
+    qstats_snapshot_d = q_d
+  end subroutine save_q_stats_snapshot_gpu
+
+  subroutine restore_q_stats_snapshot_gpu()
+    implicit none
+
+    if(.not.allocated(qstats_snapshot_d)) stop 'missing GPU statistics q snapshot'
+    q_d = qstats_snapshot_d
+  end subroutine restore_q_stats_snapshot_gpu
 
   subroutine copy_output_boundary_from_gpu()
     use commvar, only: im,jm,km

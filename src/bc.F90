@@ -3692,6 +3692,7 @@ module bc
     use commfunc,  only : deriv
     use derivative,only : ddfc
     use filter,    only : spafilter6exp
+    use parallel,  only : qswap
     !
     ! arguments
     integer,intent(in) :: ndir
@@ -4026,28 +4027,33 @@ module bc
         enddo
         deallocate(qfilt)
         
-        if(ndims==3) then 
-          
-          allocate(qfilt(0:km,1:numq))
-          do i=0,im
-            !
-            do jq=1,numq
-              qfilt(:,jq)=spafilter6exp(q(i,j,:,jq),npdck,km)
-              q(i,j,0:km,jq)=qfilt(:,jq)
-            enddo
-            call q2fvar(      q=  q(i,j,0:km,:),                 &
-                        density=rho(i,j,0:km),                   &
-                       velocity=vel(i,j,0:km,:),                 &
-                       pressure=prs(i,j,0:km),                   &
-                    temperature=tmp(i,j,0:km),                   &
-                        species=spc(i,j,0:km,:)                  )
-            !
-          enddo
-          deallocate(qfilt)
-          
-        endif
       endif
       !
+    endif
+
+    ! All ranks must refresh the updated upper-face x-filter values before
+    ! upper-y ranks use z-direction halos in the second transverse filter.
+    if(ndir==4 .and. .not.lfilter) call qswap()
+
+    if(ndir==4 .and. jrk==jrkm) then
+      j=jm
+      if(.not.lfilter .and. ndims==3) then
+        allocate(qfilt(0:km,1:numq))
+        do i=0,im
+          do jq=1,numq
+            qfilt(:,jq)=spafilter6exp(q(i,j,:,jq),npdck,km)
+            q(i,j,0:km,jq)=qfilt(:,jq)
+          enddo
+          call q2fvar(      q=  q(i,j,0:km,:),                 &
+                      density=rho(i,j,0:km),                   &
+                     velocity=vel(i,j,0:km,:),                 &
+                     pressure=prs(i,j,0:km),                   &
+                  temperature=tmp(i,j,0:km),                   &
+                      species=spc(i,j,0:km,:)                  )
+        enddo
+        deallocate(qfilt)
+      endif
+
       allocate(Ecs(0:2,1:numq),dEcs(1:numq))
       ! do k=ks,ke
       ! do i=is,ie

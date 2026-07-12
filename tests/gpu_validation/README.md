@@ -1527,6 +1527,12 @@ OUT_DIR=tests/gpu_validation/out/s2_hbl_oblique_shock_mpirank_matrix \
 
 OUT_DIR=tests/gpu_validation/out/s2_hbl_inlet_sustained_shock \
   tests/gpu_validation/run_s2_hbl_inlet_sustained_shock_compare.sh
+
+OUT_DIR=tests/gpu_validation/out/s2_hbl_inlet_sustained_shock_mpirank_matrix \
+RUN_NP1=f RUN_NP2=t RUN_NP4=t RUN_NP8=t RUN_LONG=f RUN_STRESS=f \
+PROFILE_OBLIQUE_SHOCK=t PROFILE_PRESSURE_MODE=provided \
+SHOCK_X0=-1.0 SHOCK_Y0=0.18 PROFILE_SHOCK_Y_MIN=0.18 \
+  tests/gpu_validation/run_s2_hbl_oblique_shock_mpirank_matrix.sh
 ```
 
 Current expected result: statistics and full-field comparisons print
@@ -1555,17 +1561,134 @@ contains `pressure=provided`; for non-dimensional pressure-provided density
 profiles, it rejects inputs whose pressure is inconsistent with `rho*T`. The
 current `64x64x8` two-step smoke has `q5 L_inf=8.8817841970012523e-16`. The
 default `192x192x8` NP=1 two-step gate has `q5 L_inf=1.3322676295501878e-15`
-and maximum statistic difference `7.8381745538536052e-13`. The `NP=2
-TOPOLOGY=1,2,1` y-slab gate has the same `q5 L_inf` and maximum statistic
-difference `7.8292927696566039e-13`, covering fifth-column profile scatter.
-This remains a boundary-forced compatibility gate, not a full physical SBLI
-validation.
+and maximum statistic difference `7.8381745538536052e-13`. The same two-step
+`192x192x8` core MPI matrix passes NP=2 x/y/z slabs, NP=4 xy/xz/yz planes, and
+`NP=8 TOPOLOGY=2,2,2`; z-decomposed cases use `KM=16`. All MPI gates retain
+`q5 L_inf=1.3322676295501878e-15`. The maximum statistic differences are
+`7.8204109854596027e-13`, `7.8292927696566039e-13`, and
+`1.2243539515566226e-12` for NP=2 x/y/z; `7.8292927696566039e-13`,
+`3.5793590313915047e-13`, and `3.5882408155885059e-13` for NP=4 xy/xz/yz; and
+`3.5882408155885059e-13` for NP=8. This remains a boundary-forced compatibility
+gate, not a full physical SBLI validation.
 
 This gate exposed a GPU `bctype=21` outlet compatibility bug that was hidden by
 smooth S1 fields: CPU extrapolates sound speed as
 `extrapolate(sos(T1),sos(T2))`, while the GPU previously used
 `sqrt(extrapolate(T))/Mach`. The GPU outlet now extrapolates sound speed
 directly.
+
+S2-C3 starts the simple-boundary shock-sensor-coupled selective-Roe HBL path.
+It deliberately avoids new NSCBC/farfield decisions: the generated case uses
+`11,prof/21/41/51`, `543e/643e`, `lchardecomp=t`, `lfilter=f`, and
+`diffterm=f`, with a pressure-provided sustained compressed inlet profile.
+
+```bash
+IM=64 JM=64 KM=8 MAXSTEP=1 FEQCHKPT=1 \
+OUT_DIR=tests/gpu_validation/out/s2_hbl_selective_roe_s2c3_smoke_64_default \
+  tests/gpu_validation/run_s2_hbl_selective_roe_s2c3_compare.sh
+
+IM=64 JM=64 KM=8 MAXSTEP=3 FEQCHKPT=3 \
+OUT_DIR=tests/gpu_validation/out/s2_hbl_selective_roe_s2c3_3step_64_field \
+  tests/gpu_validation/run_s2_hbl_selective_roe_s2c3_compare.sh
+
+MAXSTEP=1 FEQCHKPT=1 \
+OUT_DIR=tests/gpu_validation/out/s2_hbl_selective_roe_s2c3_np1_192_1step \
+  tests/gpu_validation/run_s2_hbl_selective_roe_s2c3_compare.sh
+
+IM=64 JM=64 KM=8 NP=2 TOPOLOGY=2,1,1 MAXSTEP=1 FEQCHKPT=1 \
+OUT_DIR=tests/gpu_validation/out/s2_hbl_selective_roe_s2c3_np2_x_64_1step \
+  tests/gpu_validation/run_s2_hbl_selective_roe_s2c3_compare.sh
+
+IM=64 JM=64 KM=16 NP=2 TOPOLOGY=1,1,2 MAXSTEP=1 FEQCHKPT=1 \
+OUT_DIR=tests/gpu_validation/out/s2_hbl_selective_roe_s2c3_np2_z_64_1step \
+  tests/gpu_validation/run_s2_hbl_selective_roe_s2c3_compare.sh
+```
+
+Current expected result: these commands print `status: pass` for statistics and
+field comparison at `1e-10`. The `64x64x8` NP=1 one-step gate has final
+`q5 L_inf=6.6613381477509392e-16`; the three-step gate has
+`q5 L_inf=8.8817841970012523e-16`. The default `192x192x8` one-step gate has
+`q5 L_inf=8.8817841970012523e-16`. The NP=2 x-slab one-step gate has
+`q5 L_inf=6.6613381477509392e-16`; the NP=2 z-slab one-step gate uses `KM=16`
+and has `q5 L_inf=8.8817841970012523e-16`.
+
+S2-C3 now passes every NP=2 slab orientation. The repaired
+`NP=2 TOPOLOGY=1,2,1` gate passes at `1e-10` for one and three steps, with
+final `q5 L_inf=6.6613381477509392e-16` and `8.8817841970012523e-16`.
+The fault was in the vector Steger-Warming characteristic split: it used
+periodized Jacobian indices despite reading an exchanged physical/MPI state
+halo. Direct halo geometry indexing matches the scalar split and CPU oracle.
+All NP=4 two-axis gates (`2x2x1`, `2x1x2`, and `1x2x2`) now pass for one and
+three steps, as does `NP=8 TOPOLOGY=2,2,2`; their final three-step `q5 L_inf`
+is `8.8817841970012523e-16`. The z-decomposed gates use `KM=16`, preserving
+local `km=8>=hm`. This is a simple-boundary CPU/GPU equivalence matrix only,
+not diffusion/filter/NSCBC/farfield/sponge or physical-SBLI validation.
+
+The same simple-boundary path has 20- and 100-step strict field/statistics
+passes for NP=1 (`64x64x8`) and NP=8 `2x2x2` (`64x64x16`). The final 100-step
+`q5 L_inf` values are `3.3306690738754696e-15` and
+`4.8849813083506888e-15`, respectively. Run the full three-direction long
+gate with:
+
+```bash
+NP=8 TOPOLOGY=2,2,2 IM=64 JM=64 KM=16 MAXSTEP=100 FEQCHKPT=100 \
+  OUT_DIR=tests/gpu_validation/out/s2_hbl_selective_roe_s2c3_np8_100step \
+  tests/gpu_validation/run_s2_hbl_selective_roe_s2c3_compare.sh
+```
+
+The separate C3-S wrapper enables only the existing x-max `layer` sponge. It
+keeps C3's simple boundaries and uses `SPONGE_IM=16` by default; NP=1 and
+`NP=8 TOPOLOGY=2,2,2` pass 1, 20, and 100-step strict comparisons. The
+100-step `q5 L_inf` values are `7.5495165674510645e-15` and
+`8.6597395920762210e-15`. Run the NP=8 gate with:
+
+```bash
+NP=8 TOPOLOGY=2,2,2 IM=64 JM=64 KM=16 SPONGE_IM=16 MAXSTEP=100 FEQCHKPT=100 \
+  OUT_DIR=tests/gpu_validation/out/s2_hbl_selective_roe_s2c3_sponge_np8_100step \
+  tests/gpu_validation/run_s2_hbl_selective_roe_s2c3_sponge_compare.sh
+```
+Full physical-y sensor dumps also include CPU halo-history-dependent boundary
+planes, so the default S2-C3 wrapper keeps `COMPARE_SENSOR=f`; enable it only
+when explicitly debugging sensor internals.
+
+S2-C4 is the restricted characteristic-inflow/NSCBC-farfield extension of C3.
+It uses `12/21/41/52`, `543e/643e`, MP7 Roe reconstruction,
+`lchardecomp=t`, `lfilter=f`, `diffterm=f`, and no sponge. Run the complete
+three-direction correctness gate with:
+
+```bash
+NP=8 TOPOLOGY=2,2,2 MAXSTEP=20 FEQCHKPT=20 \
+  OUT_DIR=tests/gpu_validation/out/s2_hbl_selective_roe_s2c4_np8_20step \
+  tests/gpu_validation/run_s2_hbl_selective_roe_s2c4_compare.sh
+```
+
+The current `192x192x8` gate passes CPU/GPU statistics and full HDF5 fields at
+`1e-10`; the NP=8 20-step field maxima are `q1=2.7045032879868813e-13` and
+`q5=1.9406698470447736e-13`. The output bridge deliberately performs host
+`qswap -> boucon -> qswap` after syncing device state, because CPU NSCBC
+transverse filters require current host halos. A long-step y-slab audit also
+fixed the GPU upper-y normal-Mach reduction: only ranks owning the true upper
+physical face may contribute, matching CPU `farfield_nscbc`. The repaired
+NP=8 `2x2x2` 100-step gate has `q5 L_inf=9.3258734068513149e-15` and maximum
+statistic difference `5.9863225487788441e-12`.
+
+S2-C5 is the restricted C4 plus x-max layer-sponge extension. It sets only
+`SPONGE_IM=16`, retains the C4 `12/21/41/52` boundary contract, and supports
+only NP=1 and NP=8 `2x2x2`. The sponge retains the existing device-resident
+two-kernel `qwork_d` ping-pong with explicit synchronization and operates on
+the CPU active ranges. Both 100-step field/statistics comparisons pass at
+`1e-10`: final `q5 L_inf` is `8.8817841970012523e-15` for NP=1 and
+`9.3258734068513149e-15` for NP=8. Run the NP=8 gate with:
+
+```bash
+NP=8 TOPOLOGY=2,2,2 SPONGE_IM=16 MAXSTEP=100 FEQCHKPT=100 \
+  OUT_DIR=tests/gpu_validation/out/s2_hbl_selective_roe_s2c5_np8_100step \
+  tests/gpu_validation/run_s2_hbl_selective_roe_s2c5_sponge_compare.sh
+```
+
+This is a restricted two-GPU-oversubscribed correctness gate, not general
+NSCBC, full SBLI, y/z/circular sponge, NP=2/4 sponge, diffusion/filter, or
+performance validation.
 
 S0-A7 extends the same selected Roe path to `NP=2 TOPOLOGY=2,1,1`. The driver places the jump at the global x-slab interface using `ASTR_SHUOSHER_SHOCK_X=0.d0`; raw `ssf` is exchanged through the generic `hm` transport before each rank expands its local mask and evaluates characteristic interfaces.
 

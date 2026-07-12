@@ -63,7 +63,7 @@ module sponge_layer
     endif
 
   end subroutine spongefilter
-  !
+
   subroutine spongefilter_layer
     !
     use commvar,  only : is,ie,js,je,ks,ke,numq

@@ -67,13 +67,18 @@ def write_input(
     jm: int,
     km: int,
     use_gpu: str,
+    diffterm: str,
     conschm: str,
+    lchardecomp: str,
+    shock_threshold: float,
     reynolds: float,
     mach: float,
     reference_temperature: float,
     wall_temperature: float,
     upper_bctype: int,
+    x_min_bctype: int,
     ninit: int,
+    sponge_im: int,
 ) -> None:
     path.write_text(
         f"""########################################################################
@@ -90,7 +95,7 @@ bl
 f,f,t
 
 # nondimen,diffterm,lfilter,lreadgrid,lfftz,limmbou,ltimrpt,lcomb_input,use_gpu
-t,t,f,t,f,f,f,f,{use_gpu}
+t,{diffterm},f,t,f,f,f,f,{use_gpu}
 
 # lrestar
 f
@@ -105,7 +110,7 @@ f
 {conschm},643e,rk3
 
 # recon_schem,lchardecomp,bfacmpld,shkcrt
-3,f,0.1d0,0.001d0
+3,{lchardecomp},0.1d0,{shock_threshold:.16e}
 
 # num_species
 0
@@ -114,7 +119,7 @@ f
 none,h
 
 # bctype
-11,prof
+{x_min_bctype},prof
 21
 41,{wall_temperature:.16e}
 {upper_bctype}
@@ -125,7 +130,7 @@ none,h
 {ninit}
 
 # spg_imin,spg_imax,spg_jmin,spg_jmax,spg_kmin,spg_kmax
-0,0,0,0,0,0
+0,{sponge_im},0,0,0,0
 
 # gridfile
 ./datin/grid.flatplate.h5
@@ -157,16 +162,21 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dst-case", required=True, type=Path)
     parser.add_argument("--use-gpu", required=True, choices=("t", "f"))
+    parser.add_argument("--diffterm", choices=("t", "f"), default="t")
     parser.add_argument("--im", type=positive_int, default=64)
     parser.add_argument("--jm", type=positive_int, default=64)
     parser.add_argument("--km", type=positive_int, default=8)
     parser.add_argument("--conschm", choices=("643e", "543e"), default="643e")
+    parser.add_argument("--lchardecomp", choices=("t", "f"), default="f")
+    parser.add_argument("--shock-threshold", type=float, default=1.0e-3)
     parser.add_argument("--reynolds", type=float, default=1000.0)
     parser.add_argument("--mach", type=float, default=0.3)
     parser.add_argument("--reference-temperature", type=float, default=1.0)
     parser.add_argument("--wall-temperature", type=float, default=1.0)
+    parser.add_argument("--x-min-bctype", choices=(11, 12), type=int, default=11)
     parser.add_argument("--upper-bctype", choices=(51, 52), type=int, default=51)
     parser.add_argument("--ninit", choices=(0, 3), type=int, default=0)
+    parser.add_argument("--sponge-im", type=int, default=0)
     parser.add_argument("--profile-delta", type=float, default=0.08)
     parser.add_argument("--isobaric-profile", action="store_true")
     parser.add_argument("--x-min", type=float, default=0.0)
@@ -194,6 +204,8 @@ def main() -> int:
         raise ValueError("--y-stretch must be positive")
     if args.z_length <= 0.0:
         raise ValueError("--z-length must be positive")
+    if args.sponge_im < 0 or args.sponge_im > args.im:
+        raise ValueError("--sponge-im must lie in [0, im]")
     feqchkpt = args.maxstep if args.feqchkpt is None else args.feqchkpt
     if feqchkpt < 1:
         raise ValueError("--feqchkpt must be positive")
@@ -225,13 +237,18 @@ def main() -> int:
         args.jm,
         args.km,
         args.use_gpu,
+        args.diffterm,
         args.conschm,
+        args.lchardecomp,
+        args.shock_threshold,
         args.reynolds,
         args.mach,
         args.reference_temperature,
         args.wall_temperature,
         args.upper_bctype,
+        args.x_min_bctype,
         args.ninit,
+        args.sponge_im,
     )
     write_controller(datin / "controller", args.maxstep, feqchkpt)
     return 0
