@@ -28,11 +28,12 @@ contains
     type(dim3) :: block3,grid3,block1,grid1
     type(dim3) :: block_x,grid_x,block_y,grid_y,block_z,grid_z
     integer :: ntot
-    logical :: ldc_case,flatplate_case
+    logical :: ldc_case,flatplate_case,periodic_filter_case
 
     call validate_first_stage_gpu()
     ldc_case = gpu_ldc_boundary_case_pending()
     flatplate_case = gpu_s1_flatplate_boundary_case_pending()
+    periodic_filter_case = lfilter .and. .not.(gpu_uses_physical_boundary() .or. ldc_case .or. flatplate_case)
 
     ntot = (im + 1) * (jm + 1) * (km + 1)
     block1 = dim3(256,1,1)
@@ -49,7 +50,7 @@ contains
     grid_z = dim3((im + block_z%x)/block_z%x,jm+1,(km + block_z%z)/block_z%z)
 
     if(lfilter) then
-      if(gpu_uses_physical_boundary() .or. ldc_case .or. flatplate_case) then
+      if(gpu_uses_physical_boundary() .or. ldc_case .or. flatplate_case .or. periodic_filter_case) then
         call q_to_primitive_kernel<<<grid3,block3>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
         call sync_after_kernel('prepare_q_to_primitive_kernel_prefilter')
       endif
@@ -82,6 +83,9 @@ contains
       else
         call apply_boundary_conditions_gpu()
       endif
+      call exchange_solution_halo_gpu(.true.)
+    elseif(lfilter .and. periodic_filter_case) then
+      call apply_boundary_conditions_gpu()
       call exchange_solution_halo_gpu(.true.)
     else
       call q_to_primitive_kernel<<<grid3,block3>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
@@ -230,6 +234,7 @@ contains
     logical :: s2_hbl_selective_roe_sponge_case
     logical :: s2_hbl_selective_roe_c4_case
     logical :: s2_hbl_selective_roe_c4_sponge_case
+    logical :: periodic_filter_case
     integer :: physical_axis
     integer :: ivar
 
@@ -244,6 +249,7 @@ contains
     flatplate_case = gpu_s1_flatplate_s1a_supported() .or. flatplate_mp7_case .or. &
          s2_hbl_selective_roe_case .or. s2_hbl_selective_roe_sponge_case .or. &
          s2_hbl_selective_roe_c4_case
+    periodic_filter_case = lfilter .and. .not.(gpu_uses_physical_boundary() .or. ldc_case .or. flatplate_case)
     flatplate_nscbc_farfield_case = flatplate_case .and. bctype(4) == GPU_BC_NSCBC_FARFIELD
     sod_s0a1_case = gpu_sod_s0a1_supported()
     sod_s0b0_xphysical_case = gpu_sod_s0b0_xphysical_supported()
@@ -312,7 +318,7 @@ contains
           call q_to_primitive_kernel<<<grid3,block3>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
           call sync_after_kernel('c4_q_to_primitive_kernel')
           call exchange_solution_halo_gpu()
-        elseif(lfilter .and. (gpu_uses_physical_boundary() .or. ldc_case .or. flatplate_case)) then
+        elseif(lfilter .and. (gpu_uses_physical_boundary() .or. ldc_case .or. flatplate_case .or. periodic_filter_case)) then
           call q_to_primitive_kernel<<<grid3,block3>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
           call sync_after_kernel('q_to_primitive_kernel_prefilter')
         endif
@@ -349,6 +355,9 @@ contains
           else
             call apply_boundary_conditions_gpu()
           endif
+          call exchange_solution_halo_gpu(.true.)
+        elseif(lfilter .and. periodic_filter_case) then
+          call apply_boundary_conditions_gpu()
           call exchange_solution_halo_gpu(.true.)
         else
           call q_to_primitive_kernel<<<grid3,block3>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)

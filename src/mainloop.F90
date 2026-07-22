@@ -37,8 +37,9 @@ module mainloop
   subroutine steploop
     !
     use commvar,  only: maxstep,time,deltat,feqchkpt,feqwsequ,feqlist, &
-                        nsrpt,flowtype,limmbou
-    use readwrite,only: readcont,timerept,nxtchkpt,nxtwsequ
+                        nsrpt,flowtype,limmbou,use_gpu
+    use readwrite,only: readcont,timerept,nxtchkpt,nxtwsequ,           &
+                        write_validation_rk_snapshot
     use commcal,  only: cflcal
     use ibmethod, only: ibforce
     use userdefine,only: udf_eom_set
@@ -105,6 +106,9 @@ module mainloop
       call crashcheck
 
       call time_integration_rk
+
+      if(.not.use_gpu .and. nstep+1<=maxstep .and.                     &
+         mod(nstep+1,feqchkpt)==0) call write_validation_rk_snapshot()
 
       if(mod(nstep,feqchkpt)==0) then
         !

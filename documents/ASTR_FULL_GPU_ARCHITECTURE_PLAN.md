@@ -51,6 +51,11 @@ The current GPU port has reached a validated non-reacting TGV baseline:
   - A deterministic ABC-style `velocity.h5` generator has been added for validation. The generated initial field reports zero divergence after `hitini` refreshes CPU halos before calling `grad()`.
   - HIT CPU/GPU `flowstate.dat` validation has passed for `64^3 NP=1 MAXSTEP=20`, `NP=2 TOPOLOGY=2,1,1 MAXSTEP=5`, and `NP=8 TOPOLOGY=2,2,2 MAXSTEP=5` with differences at about `1e-15` or below.
   - HIT HDF5 field comparison remains disabled by default because HDF5 flowfield output is still a CPU-owned boundary, not a current GPU writing target.
+- Static periodic curvilinear-grid validation has reached the C3 free-stream gate:
+  - A smooth three-dimensional mapping with all cross derivatives nonzero uploads CPU-generated `jacob/dxi` once and keeps them resident on the GPU.
+  - Curvilinear TGV passes single-rank convection, diffusion, explicit 10th-order filtering, complete-RK same-phase field comparison, and NP=2 x/y/z slabs.
+  - The independent uniform-flow gate passes NP=1, all NP=2 slabs, all NP=4 two-axis decompositions, and NP=8 `2x2x2`; CPU/GPU differences and free-stream drift remain at roundoff scale.
+  - This establishes the tested static periodic metric and halo path only. Independent analytic `jacob/dxi` error and metric-identity convergence, curved physical-face normals and boundary conditions, moving grids, and multi-block grids remain future work.
 - Phase B boundary expansion has started with the lowest-risk non-periodic slice:
   - x-direction `bctype(1:2)=50,50` zero extrapolation, y/z periodic, single MPI rank.
   - CPU `parallelini` now initializes single-rank non-homogeneous active ranges to interior nodes; otherwise the CPU baseline effectively skips interior RHS for this finite-domain test.

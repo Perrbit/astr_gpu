@@ -173,6 +173,39 @@ be validated separately from the NSCBC wave update. If a future physical SBLI
 branch disables this filter, document it as a CPU-oracle divergence before
 implementation.
 
+#### 4.4.1 Implemented Constant-Target `incoming_only` Slice
+
+The first physical farfield slice is now implemented without changing the
+legacy `bctype=52` contract. It is restricted to Cartesian upper-y
+`bctype=52`, non-reacting `q(1:5)`, and a spatially constant target:
+
+- `ASTR_NSCBC_FARFIELD_MODE=compatibility` is the default and preserves the
+  historical CPU-compatible unconditional `LODi(5)` relaxation.
+- `ASTR_NSCBC_FARFIELD_MODE=incoming_only` preserves outgoing waves from the
+  interior and replaces only characteristics whose local upper-y eigenvalue is
+  negative.
+- Rank 0 reads and validates the target, then broadcasts the mode and all five
+  values to every MPI rank. The target defaults to `roinf/uinf/vinf/winf/tinf`
+  and can be overridden with `ASTR_NSCBC_FARFIELD_RHO`, `_U`, `_V`, `_W`, and
+  `_T`. `rho` and `T` must be positive.
+- Pressure is not an independent input in this slice: it is reconstructed as
+  $p_t=\rho_t T_t/\mathrm{const2}$ and total energy follows the same ideal-gas
+  conservative-variable relation used by `fvar2q`.
+- At local subsonic outflow only the incoming acoustic wave is relaxed. At
+  local subsonic inflow the entropy, two vorticity, and incoming acoustic waves
+  are relaxed; the outgoing acoustic wave remains an interior quantity. Thus a
+  subsonic inflow cannot impose five primitive variables pointwise, while a
+  supersonic inflow can relax all five incoming characteristics.
+- The existing CPU/GPU transverse x-then-z explicit filter interface and halo
+  ordering remain active. This retains the established C4/C5 compatibility
+  contract; no claim is made that the filter is universally appropriate for all
+  physical farfield cases.
+
+The CPU helper is `nscbc_farfield_y_upper_incoming_lodi`; CUDA applies the same
+target-state projection in `nscbc_farfield_y_upper_rhs_kernel`. The first
+validation driver is
+`tests/gpu_validation/run_s2_hbl_nscbc52_incoming_only_compare.sh`.
+
 ### 4.5 Outlet And Sponge
 
 The recommended S2 outlet progression is:
@@ -430,6 +463,10 @@ Current implementation status:
 - The final 100-step NP=8 `2x2x2` comparison passes at `1e-10`, with
   `q5 L_inf=9.3258734068513149e-15` and maximum statistic difference
   `5.9863225487788441e-12`.
+- The separate `incoming_only` constant-target slice passes strict CPU/GPU
+  fields and statistics for NP=1 and NP=2 `1x2x1` with a non-default
+  `rho/u/v/w/T` target. It is not yet a profile/plane target, non-Cartesian,
+  multi-species, or arbitrary-face implementation.
 
 ### S2-C5: Sponge-Stabilized Long Run
 
@@ -500,6 +537,7 @@ found, report it first and choose either:
 | S2-C3-S | S2-C3 plus x-max layer sponge | sensor + selective Roe + sponge | NP=1, NP=8 `2x2x2` | 1/20/100-step field/statistics |
 | S2-C4 | x `12`, y `52`, x `21/22` | sensor + selective Roe | NP=1, NP=8 | later case-specific characteristic boundary gate |
 | S2-C5 | C4 + x-max sponge | sensor + selective Roe | NP=1, NP=8 | 100-step finite stability and sponge halo check |
+| S2-C6 | upper-y `52` constant target, `incoming_only` | C4 MP7 Roe contract | NP=1, NP=2 `1x2x1` | strict CPU/GPU field/statistics; legacy-mode regression |
 
 ## 9. Open Decisions
 

@@ -1665,15 +1665,17 @@ contains
   end subroutine gpu_nscbc_farfield_y_upper_mach2
 
   attributes(global) subroutine nscbc_farfield_y_upper_rhs_kernel(im,jm,km,hm,npdci,npdck,gamma,mach,ymin,ymax,pinf, &
-                                                                  gmachmax2,apply_up)
-    use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d,qrhs_d,jacob_d,dxi_d
+                                                                  rho_target,u_target,v_target,w_target,e_target,      &
+                                                                  incoming_only,gmachmax2,apply_up)
+    use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,qrhs_d,jacob_d,dxi_d
     implicit none
-    integer,value :: im,jm,km,hm,npdci,npdck,apply_up
-    real(8),value :: gamma,mach,ymin,ymax,pinf,gmachmax2
+    integer,value :: im,jm,km,hm,npdci,npdck,incoming_only,apply_up
+    real(8),value :: gamma,mach,ymin,ymax,pinf,rho_target,u_target,v_target,w_target,e_target,gmachmax2
     integer :: id,i,k,ii,m,n
     real(8) :: pnor(5,5),pinv(5,5),ecs(0:2,5),decs(5),rest(5),lodi(5),lodi1(5), &
                ddi(3),flux(5),css,kinout,metric
-    real(8) :: flux_m(5),flux_p(5)
+    real(8) :: flux_m(5),flux_p(5),qtarget(5),dq(5),char_delta(5),    &
+               normal_speed,norm,lambda(5),sigma_in,sigma_out
 
     if(apply_up == 0) return
     id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
@@ -1715,8 +1717,42 @@ contains
       lodi(m) = sum(pinv(m,:)*lodi1(:))/jacob_d(i,jm,k)
     enddo
     css = sqrt(tmp_d(i,jm,k))/mach
-    kinout = 0.25d0*(1.d0-gmachmax2)*css/(ymax-ymin)
-    lodi(5) = kinout*(prs_d(i,jm,k)-pinf)
+    if(incoming_only /= 0) then
+      norm=sqrt(ddi(1)*ddi(1)+ddi(2)*ddi(2)+ddi(3)*ddi(3))
+      normal_speed=(ddi(1)*vel_d(i,jm,k,1)+ddi(2)*vel_d(i,jm,k,2)+    &
+                    ddi(3)*vel_d(i,jm,k,3))/norm
+      lambda(1)=normal_speed
+      lambda(2)=normal_speed
+      lambda(3)=normal_speed
+      lambda(4)=normal_speed+css
+      lambda(5)=normal_speed-css
+      qtarget(1)=rho_target
+      qtarget(2)=rho_target*u_target
+      qtarget(3)=rho_target*v_target
+      qtarget(4)=rho_target*w_target
+      qtarget(5)=e_target
+      dq(:)=q_d(i,jm,k,1:5)-qtarget(:)
+      do m=1,5
+        char_delta(m)=0.d0
+        do ii=1,5
+          char_delta(m)=char_delta(m)+pinv(m,ii)*dq(ii)
+        enddo
+      enddo
+      sigma_in=0.25d0*css/(ymax-ymin)
+      sigma_out=max(0.d0,0.25d0*(1.d0-gmachmax2)*css/(ymax-ymin))
+      do m=1,5
+        if(lambda(m)<0.d0) then
+          if(normal_speed>=0.d0) then
+            lodi(m)=sigma_out*char_delta(m)
+          else
+            lodi(m)=sigma_in*char_delta(m)
+          endif
+        endif
+      enddo
+    else
+      kinout = 0.25d0*(1.d0-gmachmax2)*css/(ymax-ymin)
+      lodi(5) = kinout*(prs_d(i,jm,k)-pinf)
+    endif
     do m=1,5
       lodi1(m) = sum(pnor(m,:)*lodi(:))*jacob_d(i,jm,k)
     enddo
@@ -1742,19 +1778,27 @@ contains
   end subroutine nscbc_farfield_y_upper_rhs_kernel
 
   subroutine apply_nscbc_farfield_y_upper_rhs_gpu(gmachmax2)
-    use commvar, only: im,jm,km,hm,npdci,npdck,gamma,mach,ymin,ymax,pinf
+    use commvar, only: im,jm,km,hm,npdci,npdck,gamma,mach,ymin,ymax,pinf,const2,const6
+    use bc, only: nscbc_farfield_incoming_only_enabled,               &
+                  nscbc_farfield_target_state
     use gpu_check, only: sync_after_kernel
     implicit none
     real(8),intent(in) :: gmachmax2
     type(dim3) :: block,grid
-    integer :: apply_down,apply_up,n
+    integer :: apply_down,apply_up,n,incoming_only
+    real(8) :: rho_target,u_target,v_target,w_target,t_target,e_target
 
     call gpu_physical_boundary_apply_mask(2,apply_down,apply_up)
+    incoming_only=merge(1,0,nscbc_farfield_incoming_only_enabled())
+    call nscbc_farfield_target_state(rho_target,u_target,v_target,     &
+                                     w_target,t_target)
+    e_target=(rho_target*t_target/const2)*const6+0.5d0*rho_target*     &
+             (u_target*u_target+v_target*v_target+w_target*w_target)
     block = dim3(256,1,1)
     n = (im+1)*(km+1)
     grid = dim3((n+block%x-1)/block%x,1,1)
     call nscbc_farfield_y_upper_rhs_kernel<<<grid,block>>>(im,jm,km,hm,npdci,npdck,gamma,mach,ymin,ymax, &
-         pinf,gmachmax2,apply_up)
+         pinf,rho_target,u_target,v_target,w_target,e_target,incoming_only,gmachmax2,apply_up)
     call sync_after_kernel('nscbc_farfield_y_upper_rhs_kernel')
   end subroutine apply_nscbc_farfield_y_upper_rhs_gpu
 

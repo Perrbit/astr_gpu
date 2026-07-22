@@ -2078,6 +2078,50 @@ module readwrite
 
   end subroutine write_io_tree
 
+  subroutine write_validation_rk_snapshot
+    use commvar, only: hm,im,jm,km,numq,num_species
+    use commarray, only: q,rho,vel,prs,tmp
+    use bc, only: boucon,bctype
+    use parallel, only: qswap
+    implicit none
+
+    character(len=1024) :: snapshot_path
+    integer :: env_status,path_length
+    real(8),allocatable :: q_save(:,:,:,:),rho_save(:,:,:),prs_save(:,:,:),tmp_save(:,:,:)
+    real(8),allocatable :: vel_save(:,:,:,:)
+
+    snapshot_path=''
+    call get_environment_variable('ASTR_VALIDATION_RK_SNAPSHOT',snapshot_path, &
+                                  length=path_length,status=env_status)
+    if(env_status/=0 .or. path_length<=0) return
+    if(numq/=5 .or. num_species/=0) then
+      stop 'ASTR_VALIDATION_RK_SNAPSHOT supports non-reacting q(1:5) only'
+    endif
+
+    allocate(q_save(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq))
+    allocate(rho_save(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+    allocate(vel_save(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3))
+    allocate(prs_save(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+    allocate(tmp_save(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+    q_save=q
+    rho_save=rho
+    vel_save=vel
+    prs_save=prs
+    tmp_save=tmp
+
+    if(any(bctype==22) .or. any(bctype==52)) call qswap()
+    call boucon()
+    call qswap()
+    call write_io_tree(trim(snapshot_path(1:path_length)))
+
+    q=q_save
+    rho=rho_save
+    vel=vel_save
+    prs=prs_save
+    tmp=tmp_save
+    deallocate(q_save,rho_save,vel_save,prs_save,tmp_save)
+  end subroutine write_validation_rk_snapshot
+
   function add_kface(data_face,data_vol) result(data)
 
     use commvar, only: ka

@@ -1926,3 +1926,118 @@ python3 tests/gpu_validation/compare_gpu_gradcal.py \
 ```
 
 The GPU run used to write `gpu_gradcal_dvel_compare.dat` after CPU `gradcal()` and GPU `gradcal_dvel_kernel` both ran on the same refreshed state. That bridge validation passed and remains useful as a regression fixture. The current GPU-resident path no longer runs CPU `gradcal()` every step; `dvel_d` is computed on device for GPU statistics.
+
+## S2-C6 Constant NSCBC Farfield Target
+
+The physical opt-in slice for Cartesian upper-y `bctype=52` uses an
+incoming-wave-only target state while retaining the existing transverse filter
+interface. It is restricted to the nonreacting five-equation path. The target
+pressure is derived from `rho` and `T`; do not provide an independent target
+pressure.
+
+Run the default nontrivial target gate:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/s2_c6_np1 \
+tests/gpu_validation/run_s2_hbl_nscbc52_incoming_only_compare.sh
+
+NP=2 TOPOLOGY=1,2,1 MAXSTEP=2 FEQCHKPT=2 \
+OUT_DIR=tests/gpu_validation/out/s2_c6_np2_y \
+tests/gpu_validation/run_s2_hbl_nscbc52_incoming_only_compare.sh
+```
+
+The driver exports `ASTR_NSCBC_FARFIELD_MODE=incoming_only` plus global
+`ASTR_NSCBC_FARFIELD_RHO/U/V/W/T` values. Set the mode to `compatibility`, or
+leave it unset, to preserve the historical C4/C5 behavior.
+## Curvilinear periodic TGV gate
+
+`generate_curvilinear_tgv_grid.py` constructs the static, smooth periodic mapping
+
+```
+x = xi + a sin(xi) sin(eta)
+y = eta + a sin(eta) sin(zeta)
+z = zeta + a sin(zeta) sin(xi)
+```
+
+with `a=0.15` by default. Its analytic Jacobian is positive on the `32^3`
+smoke grid (`0.79103125 <= J <= 1.24271875`), and all three cross derivatives
+are nonzero. `run_curvilinear_tgv_compare.sh` reads this HDF5 grid through the
+normal `lreadgrid=t` path and uses `643e` for both convection and diffusion.
+
+Run the strict no-filter field gate with:
+
+```bash
+MAXSTEP=1 FEQCHKPT=1 LFILTER=f DIFFTERM=f \
+  OUT_DIR=tests/gpu_validation/out/curvilinear_tgv_convective_smoke \
+  tests/gpu_validation/run_curvilinear_tgv_compare.sh
+```
+
+This passed with reconstructed `q5 L_inf=8.5265128291212022e-14`.
+
+For the resident numerical gate with diffusion and the explicit 10th-order
+filter, run the complete-RK same-phase field comparison:
+
+```bash
+MAXSTEP=10 FEQCHKPT=10 LFILTER=t DIFFTERM=t \
+  OUT_DIR=tests/gpu_validation/out/curvilinear_tgv_same_phase_diff_filter_10 \
+  tests/gpu_validation/run_curvilinear_tgv_compare.sh
+```
+
+The driver sets `ASTR_VALIDATION_RK_SNAPSHOT` only for the CPU run. At the
+final complete RK state before the matching checkpoint, CPU writes a separate
+HDF5 snapshot after the same temporary `boucon/qswap` output preparation that
+GPU applies to its host copy, then restores its arrays. The production
+checkpoint phase remains unchanged. The default field comparison uses this
+same-phase CPU snapshot instead of CPU's next-first-RK checkpoint. The
+10-step `LFILTER=t DIFFTERM=t` gate passes with maximum statistic difference
+`4.7573056605187958e-14` and reconstructed `q5 L_inf=2.8421709430404007e-13`.
+
+Set `NP` and `TOPOLOGY=i,j,k` to exercise the same gate with a forced MPI
+topology. The two-rank curve-grid slab matrix below passes at the same field
+tolerance; each local direction retains more than the five-node halo width.
+
+```bash
+NP=2 TOPOLOGY=2,1,1 MAXSTEP=5 FEQCHKPT=5 LFILTER=t DIFFTERM=t \
+  OUT_DIR=tests/gpu_validation/out/curvilinear_tgv_np2_x_filter_5 \
+  tests/gpu_validation/run_curvilinear_tgv_compare.sh
+
+NP=2 TOPOLOGY=1,2,1 MAXSTEP=5 FEQCHKPT=5 LFILTER=t DIFFTERM=t \
+  OUT_DIR=tests/gpu_validation/out/curvilinear_tgv_np2_y_filter_5 \
+  tests/gpu_validation/run_curvilinear_tgv_compare.sh
+
+NP=2 TOPOLOGY=1,1,2 MAXSTEP=5 FEQCHKPT=5 LFILTER=t DIFFTERM=t \
+  OUT_DIR=tests/gpu_validation/out/curvilinear_tgv_np2_z_filter_5 \
+  tests/gpu_validation/run_curvilinear_tgv_compare.sh
+```
+
+The largest statistic difference in this matrix is `4.9599213625128868e-14`;
+the largest reconstructed field error is `q5 L_inf=3.1263880373444408e-13`.
+The gate specifically guards that `jacob_d` and `dxi_d` use direct local/halo
+indices at MPI interfaces, rather than treating a local subdomain endpoint as
+a periodic duplicate plane.
+
+## Curvilinear free-stream preservation gate
+
+`run_curvilinear_freestream_compare.sh` uses the same periodic mapping with a
+uniform HDF5 initial field, nonzero velocity in all three physical directions,
+and explicit `643e` convection. Diffusion, filtering, sources, and physical
+boundaries are disabled so any field drift exposes a geometric-metric or
+metric-halo inconsistency. The CPU reference uses the opt-in complete-RK
+snapshot, and the checker separately requires both CPU and GPU fields to
+remain at the prescribed analytic uniform state.
+
+Run the complete topology matrix with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/curvilinear_freestream_matrix \
+  tests/gpu_validation/run_curvilinear_freestream_matrix.sh
+```
+
+The default `32^3`, `a=0.15` matrix covers NP=1, all three NP=2 slabs, all
+three NP=4 two-axis decompositions, and NP=8 `2x2x2`. The NP=1 ten-step gate
+and all five-step MPI gates pass. Across the matrix, CPU/GPU primitive-field
+differences remain at about `4.7e-16` or below; uniform velocity drift is at
+about `4.7e-15` or below, and pressure drift is `4.3e-14`. NP=4/8 runs share
+two GPUs and are correctness evidence only. This gate does not validate an
+independent analytic `dxi/jacob` oracle, curved physical boundaries, moving
+grids, or production scaling.

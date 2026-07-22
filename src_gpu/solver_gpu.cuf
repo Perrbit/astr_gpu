@@ -2080,20 +2080,16 @@ contains
     implicit none
     integer,value :: i,j,k,idir,im,jm,km
     real(8) :: f(5)
-    integer :: ji,jj,jk
     real(8) :: uu
 
-    ji = idx_periodic(i,im)
-    jj = idx_periodic(j,jm)
-    jk = idx_periodic(k,km)
     uu = dxi_d(i,j,k,idir,1)*vel_d(i,j,k,1) + &
          dxi_d(i,j,k,idir,2)*vel_d(i,j,k,2) + &
          dxi_d(i,j,k,idir,3)*vel_d(i,j,k,3)
-    f(1) = jacob_d(ji,jj,jk) * q_d(i,j,k,1) * uu
-    f(2) = jacob_d(ji,jj,jk) * (q_d(i,j,k,2) * uu + dxi_d(i,j,k,idir,1) * prs_d(i,j,k))
-    f(3) = jacob_d(ji,jj,jk) * (q_d(i,j,k,3) * uu + dxi_d(i,j,k,idir,2) * prs_d(i,j,k))
-    f(4) = jacob_d(ji,jj,jk) * (q_d(i,j,k,4) * uu + dxi_d(i,j,k,idir,3) * prs_d(i,j,k))
-    f(5) = jacob_d(ji,jj,jk) * (q_d(i,j,k,5) + prs_d(i,j,k)) * uu
+    f(1) = jacob_d(i,j,k) * q_d(i,j,k,1) * uu
+    f(2) = jacob_d(i,j,k) * (q_d(i,j,k,2) * uu + dxi_d(i,j,k,idir,1) * prs_d(i,j,k))
+    f(3) = jacob_d(i,j,k) * (q_d(i,j,k,3) * uu + dxi_d(i,j,k,idir,2) * prs_d(i,j,k))
+    f(4) = jacob_d(i,j,k) * (q_d(i,j,k,4) * uu + dxi_d(i,j,k,idir,3) * prs_d(i,j,k))
+    f(5) = jacob_d(i,j,k) * (q_d(i,j,k,5) + prs_d(i,j,k)) * uu
   end subroutine flux_at_global
 
   attributes(device) subroutine flux_at_xphysical_global(i,j,k,idir,im,jm,km,f)
@@ -2893,12 +2889,8 @@ contains
     implicit none
     integer,value :: i,j,k,im,jm,km
     real(8) :: dvel(3,3),dtmp(3)
-    integer :: a,b,ii,jj,kk
+    integer :: a,b
     real(8) :: du_dxi(3,3),dt_dxi(3)
-
-    ii = idx_periodic(i,im)
-    jj = idx_periodic(j,jm)
-    kk = idx_periodic(k,km)
 
     do a=1,3
       du_dxi(1,a) = deriv6(vel_at(i+1,j,k,a,im,jm,km),vel_at(i-1,j,k,a,im,jm,km), &
@@ -2923,13 +2915,13 @@ contains
 
     do a=1,3
       do b=1,3
-        dvel(a,b) = du_dxi(1,a)*dxi_d(ii,jj,kk,1,b) + &
-                    du_dxi(2,a)*dxi_d(ii,jj,kk,2,b) + &
-                    du_dxi(3,a)*dxi_d(ii,jj,kk,3,b)
+        dvel(a,b) = du_dxi(1,a)*dxi_d(i,j,k,1,b) + &
+                    du_dxi(2,a)*dxi_d(i,j,k,2,b) + &
+                    du_dxi(3,a)*dxi_d(i,j,k,3,b)
       enddo
-      dtmp(a) = dt_dxi(1)*dxi_d(ii,jj,kk,1,a) + &
-                dt_dxi(2)*dxi_d(ii,jj,kk,2,a) + &
-                dt_dxi(3)*dxi_d(ii,jj,kk,3,a)
+      dtmp(a) = dt_dxi(1)*dxi_d(i,j,k,1,a) + &
+                dt_dxi(2)*dxi_d(i,j,k,2,a) + &
+                dt_dxi(3)*dxi_d(i,j,k,3,a)
     enddo
   end subroutine gradient_at
 
@@ -3258,16 +3250,12 @@ contains
     integer,value :: i,j,k,idir,im,jm,km
     real(8),value :: reynolds,prandtl,const5,tempconst,tempconst1
     real(8) :: f(5)
-    integer :: ii,jj,kk
     real(8) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
     real(8) :: tau11,tau12,tau13,tau22,tau23,tau33,qflux(3),miu,miu2,hcc,tloc
 
-    ii = idx_periodic(i,im)
-    jj = idx_periodic(j,jm)
-    kk = idx_periodic(k,km)
     call gradient_at(i,j,k,im,jm,km,dvel,dtmp)
 
-    tloc = tmp_d(ii,jj,kk)
+    tloc = tmp_d(i,j,k)
     miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
     miu2 = 2.d0*miu
     hcc = (miu/prandtl)/const5
@@ -3287,22 +3275,22 @@ contains
     tau23 = miu2*s23
     tau33 = miu2*(s33-skk)
 
-    qflux(1) = hcc*dtmp(1) + tau11*vel_d(ii,jj,kk,1) + tau12*vel_d(ii,jj,kk,2) + &
-               tau13*vel_d(ii,jj,kk,3)
-    qflux(2) = hcc*dtmp(2) + tau12*vel_d(ii,jj,kk,1) + tau22*vel_d(ii,jj,kk,2) + &
-               tau23*vel_d(ii,jj,kk,3)
-    qflux(3) = hcc*dtmp(3) + tau13*vel_d(ii,jj,kk,1) + tau23*vel_d(ii,jj,kk,2) + &
-               tau33*vel_d(ii,jj,kk,3)
+    qflux(1) = hcc*dtmp(1) + tau11*vel_d(i,j,k,1) + tau12*vel_d(i,j,k,2) + &
+               tau13*vel_d(i,j,k,3)
+    qflux(2) = hcc*dtmp(2) + tau12*vel_d(i,j,k,1) + tau22*vel_d(i,j,k,2) + &
+               tau23*vel_d(i,j,k,3)
+    qflux(3) = hcc*dtmp(3) + tau13*vel_d(i,j,k,1) + tau23*vel_d(i,j,k,2) + &
+               tau33*vel_d(i,j,k,3)
 
     f(1) = 0.d0
-    f(2) = (tau11*dxi_d(ii,jj,kk,idir,1) + tau12*dxi_d(ii,jj,kk,idir,2) + &
-            tau13*dxi_d(ii,jj,kk,idir,3))*jacob_d(ii,jj,kk)
-    f(3) = (tau12*dxi_d(ii,jj,kk,idir,1) + tau22*dxi_d(ii,jj,kk,idir,2) + &
-            tau23*dxi_d(ii,jj,kk,idir,3))*jacob_d(ii,jj,kk)
-    f(4) = (tau13*dxi_d(ii,jj,kk,idir,1) + tau23*dxi_d(ii,jj,kk,idir,2) + &
-            tau33*dxi_d(ii,jj,kk,idir,3))*jacob_d(ii,jj,kk)
-    f(5) = (qflux(1)*dxi_d(ii,jj,kk,idir,1) + qflux(2)*dxi_d(ii,jj,kk,idir,2) + &
-            qflux(3)*dxi_d(ii,jj,kk,idir,3))*jacob_d(ii,jj,kk)
+    f(2) = (tau11*dxi_d(i,j,k,idir,1) + tau12*dxi_d(i,j,k,idir,2) + &
+            tau13*dxi_d(i,j,k,idir,3))*jacob_d(i,j,k)
+    f(3) = (tau12*dxi_d(i,j,k,idir,1) + tau22*dxi_d(i,j,k,idir,2) + &
+            tau23*dxi_d(i,j,k,idir,3))*jacob_d(i,j,k)
+    f(4) = (tau13*dxi_d(i,j,k,idir,1) + tau23*dxi_d(i,j,k,idir,2) + &
+            tau33*dxi_d(i,j,k,idir,3))*jacob_d(i,j,k)
+    f(5) = (qflux(1)*dxi_d(i,j,k,idir,1) + qflux(2)*dxi_d(i,j,k,idir,2) + &
+            qflux(3)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,k)
   end subroutine diff_flux_at
 
   attributes(global) subroutine diffusion_rhs_x_global_kernel(im,jm,km,reynolds,prandtl,const5,tempconst,tempconst1)
@@ -3629,24 +3617,19 @@ contains
     implicit none
     integer,value :: i,j,k,idir,im,jm,km
     real(8) :: f(5)
-    integer :: ji,jj,jk
-
-    ji = idx_periodic(i,im)
-    jj = idx_periodic(j,jm)
-    jk = idx_periodic(k,km)
     f(1) = 0.d0
     f(2) = (sigma_d(i,j,k,1)*dxi_d(i,j,k,idir,1) + &
             sigma_d(i,j,k,2)*dxi_d(i,j,k,idir,2) + &
-            sigma_d(i,j,k,3)*dxi_d(i,j,k,idir,3))*jacob_d(ji,jj,jk)
+            sigma_d(i,j,k,3)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,k)
     f(3) = (sigma_d(i,j,k,2)*dxi_d(i,j,k,idir,1) + &
             sigma_d(i,j,k,4)*dxi_d(i,j,k,idir,2) + &
-            sigma_d(i,j,k,5)*dxi_d(i,j,k,idir,3))*jacob_d(ji,jj,jk)
+            sigma_d(i,j,k,5)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,k)
     f(4) = (sigma_d(i,j,k,3)*dxi_d(i,j,k,idir,1) + &
             sigma_d(i,j,k,5)*dxi_d(i,j,k,idir,2) + &
-            sigma_d(i,j,k,6)*dxi_d(i,j,k,idir,3))*jacob_d(ji,jj,jk)
+            sigma_d(i,j,k,6)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,k)
     f(5) = (qflux_d(i,j,k,1)*dxi_d(i,j,k,idir,1) + &
             qflux_d(i,j,k,2)*dxi_d(i,j,k,idir,2) + &
-            qflux_d(i,j,k,3)*dxi_d(i,j,k,idir,3))*jacob_d(ji,jj,jk)
+            qflux_d(i,j,k,3)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,k)
   end subroutine stored_diff_flux_at
 
   attributes(device) subroutine stored_diff_flux_at_xphysical(i,j,k,idir,im,jm,km,f)

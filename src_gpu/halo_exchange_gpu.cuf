@@ -810,14 +810,18 @@ contains
 
     if(isize==1 .and. jsize==1 .and. ksize==1 .and. &
        lihomo .and. ljhomo .and. lkhomo) then
-      if(preserve_primitives) stop 'preserved primitive refresh is not implemented for fully periodic GPU qswap'
-      call qswap_single_rank_gpu()
+      if(preserve_primitives) then
+        call qswap_local_x_gpu()
+        call qswap_local_y_gpu()
+        call qswap_local_z_gpu()
+        call refresh_primitive_x_periodic_boundary_gpu()
+        call refresh_primitive_y_periodic_boundary_gpu()
+        call refresh_primitive_z_periodic_boundary_gpu()
+      else
+        call qswap_single_rank_gpu()
+      endif
       return
     endif
-
-    if(preserve_primitives .and. &
-       (.not.(gpu_axis_is_physical(1) .or. gpu_axis_is_physical(2) .or. gpu_axis_is_physical(3)))) &
-      stop 'preserved primitive refresh requires finite physical boundary case'
 
     if(isize>1) then
       call exchange_x_halo_gpu()

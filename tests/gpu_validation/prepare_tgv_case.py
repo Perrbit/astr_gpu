@@ -21,6 +21,7 @@ def set_runtime_flags(
     use_gpu: str,
     lfilter: str | None,
     diffterm: str | None,
+    lreadgrid: str | None,
 ) -> None:
     lines = input_file.read_text().splitlines()
     marker = "nondimen,diffterm,lfilter,lreadgrid,lfftz,limmbou,ltimrpt"
@@ -38,11 +39,39 @@ def set_runtime_flags(
                 parts[1] = diffterm
             if lfilter is not None:
                 parts[2] = lfilter
+            if lreadgrid is not None:
+                parts[3] = lreadgrid
             parts[8] = use_gpu
             lines[data_idx] = ",".join(parts)
             input_file.write_text("\n".join(lines) + "\n")
             return
     raise ValueError(f"runtime flag marker not found in {input_file}")
+
+
+def set_gridfile(input_file: Path, gridfile: str) -> None:
+    lines = input_file.read_text().splitlines()
+    marker = "gridfile"
+    for idx, line in enumerate(lines):
+        if marker in line:
+            data_idx = next_data_line(lines, idx)
+            lines[data_idx] = gridfile
+            input_file.write_text("\n".join(lines) + "\n")
+            return
+    raise ValueError(f"gridfile marker not found in {input_file}")
+
+
+def set_ninit(input_file: Path, ninit: int) -> None:
+    if ninit not in (0, 1, 2, 3):
+        raise ValueError("--ninit must be one of 0, 1, 2, or 3")
+    lines = input_file.read_text().splitlines()
+    marker = "ninit"
+    for idx, line in enumerate(lines):
+        if marker in line:
+            data_idx = next_data_line(lines, idx)
+            lines[data_idx] = str(ninit)
+            input_file.write_text("\n".join(lines) + "\n")
+            return
+    raise ValueError(f"ninit marker not found in {input_file}")
 
 
 def set_flowtype(input_file: Path, flowtype: str) -> None:
@@ -225,6 +254,9 @@ def main() -> int:
     parser.add_argument("--feqchkpt", type=int)
     parser.add_argument("--lfilter", choices=("t", "f"))
     parser.add_argument("--diffterm", choices=("t", "f"))
+    parser.add_argument("--lreadgrid", choices=("t", "f"))
+    parser.add_argument("--gridfile", help="optional replacement structured-grid HDF5 path")
+    parser.add_argument("--ninit", choices=(0, 1, 2, 3), type=int)
     parser.add_argument("--scheme", default="643e")
     parser.add_argument("--conschm", help="optional conservative scheme override")
     parser.add_argument("--difschm", help="optional diffusive scheme override")
@@ -234,8 +266,8 @@ def main() -> int:
     parser.add_argument("--deltat", help="optional controller deltat value, e.g. 5.d-4")
     args = parser.parse_args()
 
-    if args.maxstep < 1:
-        raise ValueError("--maxstep must be positive")
+    if args.maxstep < 0:
+        raise ValueError("--maxstep must be non-negative")
     if args.feqchkpt is not None and args.feqchkpt < 1:
         raise ValueError("--feqchkpt must be positive")
 
@@ -253,11 +285,15 @@ def main() -> int:
         set_bctype(input_file, args.bctype)
     if args.sponge:
         set_sponge(input_file, args.sponge)
-    set_runtime_flags(input_file, args.use_gpu, args.lfilter, args.diffterm)
+    set_runtime_flags(input_file, args.use_gpu, args.lfilter, args.diffterm, args.lreadgrid)
     set_scheme(input_file, args.scheme, args.conschm, args.difschm)
     set_reconstruction(input_file, args.recon_schem, args.lchardecomp)
     if args.grid:
         set_grid(input_file, args.grid)
+    if args.gridfile:
+        set_gridfile(input_file, args.gridfile)
+    if args.ninit is not None:
+        set_ninit(input_file, args.ninit)
     feqchkpt = args.maxstep if args.feqchkpt is None else args.feqchkpt
     set_controller_steps(args.dst_case / "datin" / "controller", args.maxstep, feqchkpt)
     if args.deltat:

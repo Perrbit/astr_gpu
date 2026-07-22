@@ -9,11 +9,12 @@ module bc
   !
   use constdef
   use parallel,only: lio,mpistop,mpirank,mpirankname,irk,jrk,krk,      &
-                     irkm,jrkm,krkm,pmax,ptime
+                     irkm,jrkm,krkm,pmax,ptime,bcast
   use commvar, only: hm,im,jm,km,uinf,vinf,winf,pinf,roinf,tinf,ndims, &
                      num_species,flowtype,gamma,numq,npdci,npdcj,      &
                      npdck,is,ie,js,je,ks,ke,xmin,xmax,ymin,ymax,      &
-                     zmin,zmax,time,num_modequ,ltimrpt,spcinf
+                     zmin,zmax,time,num_modequ,ltimrpt,spcinf,const2,  &
+                     const6
   use commarray, only : x,dxi,jacob,prs,vel,tmp,rho,spc,q,qrhs,        &
                         bnorm_i0,bnorm_im,bnorm_j0,bnorm_jm,           &
                         bnorm_k0,bnorm_km
@@ -28,6 +29,11 @@ module bc
   integer :: bctype(6)
   real(8) :: twall(6),xrhjump,angshk,xslip
   character(len=4) :: turbinf='none'
+  logical,save :: nscbc_farfield_configured=.false.
+  logical,save :: nscbc_farfield_incoming_only=.false.
+  real(8),save :: nscbc_farfield_rho_target,nscbc_farfield_u_target,   &
+                  nscbc_farfield_v_target,nscbc_farfield_w_target,     &
+                  nscbc_farfield_t_target
   !+---------------------+---------------------------------------------+
   !|              bctype | define type of boundary condition.          |
   !|               twall | wall temperature.                           |
@@ -45,6 +51,152 @@ module bc
   real(8),allocatable,target :: flowvarins(:,:,:,:),timeins(:)
   !
   contains
+  !
+  subroutine configure_nscbc_farfield
+    implicit none
+    character(len=32) :: mode
+    integer :: i,ich,env_status,env_length
+
+    if(nscbc_farfield_configured) return
+
+    if(mpirank==0) then
+      mode='compatibility'
+      call get_environment_variable('ASTR_NSCBC_FARFIELD_MODE',mode,    &
+                                    length=env_length,status=env_status)
+      if(env_status/=0 .or. env_length<=0) mode='compatibility'
+      do i=1,len_trim(mode)
+        ich=iachar(mode(i:i))
+        if(ich>=iachar('A') .and. ich<=iachar('Z'))                     &
+             mode(i:i)=achar(ich+iachar('a')-iachar('A'))
+      enddo
+
+      select case(trim(mode))
+      case('compatibility')
+        nscbc_farfield_incoming_only=.false.
+      case('incoming_only')
+        nscbc_farfield_incoming_only=.true.
+      case default
+        stop 'ASTR_NSCBC_FARFIELD_MODE must be compatibility or incoming_only'
+      end select
+
+      nscbc_farfield_rho_target=roinf
+      nscbc_farfield_u_target=uinf
+      nscbc_farfield_v_target=vinf
+      nscbc_farfield_w_target=winf
+      nscbc_farfield_t_target=tinf
+      if(nscbc_farfield_incoming_only) then
+        call read_nscbc_farfield_real('ASTR_NSCBC_FARFIELD_RHO',        &
+                                      nscbc_farfield_rho_target)
+        call read_nscbc_farfield_real('ASTR_NSCBC_FARFIELD_U',          &
+                                      nscbc_farfield_u_target)
+        call read_nscbc_farfield_real('ASTR_NSCBC_FARFIELD_V',          &
+                                      nscbc_farfield_v_target)
+        call read_nscbc_farfield_real('ASTR_NSCBC_FARFIELD_W',          &
+                                      nscbc_farfield_w_target)
+        call read_nscbc_farfield_real('ASTR_NSCBC_FARFIELD_T',          &
+                                      nscbc_farfield_t_target)
+        if(nscbc_farfield_rho_target<=0.d0 .or.                          &
+           nscbc_farfield_t_target<=0.d0) then
+          stop 'NSCBC farfield target rho and T must be positive'
+        endif
+      endif
+    endif
+
+    call bcast(nscbc_farfield_incoming_only)
+    call bcast(nscbc_farfield_rho_target)
+    call bcast(nscbc_farfield_u_target)
+    call bcast(nscbc_farfield_v_target)
+    call bcast(nscbc_farfield_w_target)
+    call bcast(nscbc_farfield_t_target)
+    if(lio .and. nscbc_farfield_incoming_only) then
+      write(*,'(A,5(1X,ES14.6E3))')                                     &
+        '  ** NSCBC farfield incoming_only target rho/u/v/w/T:',        &
+        nscbc_farfield_rho_target,nscbc_farfield_u_target,              &
+        nscbc_farfield_v_target,nscbc_farfield_w_target,                &
+        nscbc_farfield_t_target
+    endif
+
+    nscbc_farfield_configured=.true.
+  end subroutine configure_nscbc_farfield
+
+  subroutine read_nscbc_farfield_real(name,value)
+    implicit none
+    character(len=*),intent(in) :: name
+    real(8),intent(inout) :: value
+    character(len=64) :: text
+    integer :: env_status,env_length,ios
+
+    text=''
+    call get_environment_variable(name,text,length=env_length,status=env_status)
+    if(env_status/=0 .or. env_length<=0) return
+    read(text(1:env_length),*,iostat=ios) value
+    if(ios/=0) stop 'invalid ASTR_NSCBC_FARFIELD target value'
+  end subroutine read_nscbc_farfield_real
+
+  logical function nscbc_farfield_incoming_only_enabled()
+    implicit none
+
+    call configure_nscbc_farfield
+    nscbc_farfield_incoming_only_enabled=nscbc_farfield_incoming_only
+  end function nscbc_farfield_incoming_only_enabled
+
+  subroutine nscbc_farfield_target_state(rho_target,u_target,v_target, &
+                                          w_target,t_target)
+    implicit none
+    real(8),intent(out) :: rho_target,u_target,v_target,w_target,t_target
+
+    call configure_nscbc_farfield
+    rho_target=nscbc_farfield_rho_target
+    u_target=nscbc_farfield_u_target
+    v_target=nscbc_farfield_v_target
+    w_target=nscbc_farfield_w_target
+    t_target=nscbc_farfield_t_target
+  end subroutine nscbc_farfield_target_state
+
+  subroutine nscbc_farfield_y_upper_incoming_lodi(lodi,pinv,i,j,k,css, &
+                                                    gmachmax2)
+    implicit none
+    real(8),intent(inout) :: lodi(5)
+    real(8),intent(in) :: pinv(5,5),css,gmachmax2
+    integer,intent(in) :: i,j,k
+    real(8) :: qtarget(5),dq(5),char_delta(5),normal(3),normal_speed,  &
+               lambda(5),sigma_in,sigma_out,p_target,norm
+    integer :: m
+
+    if(numq/=5 .or. num_species/=0 .or. num_modequ/=0) then
+      stop 'incoming_only NSCBC farfield requires the nonreacting 5-equation system'
+    endif
+
+    norm=sqrt(sum(dxi(i,j,k,2,:)*dxi(i,j,k,2,:)))
+    if(norm<=0.d0) stop 'invalid upper-y NSCBC metric norm'
+    normal(:)=dxi(i,j,k,2,:)/norm
+    normal_speed=sum(normal(:)*vel(i,j,k,:))
+    lambda=(/normal_speed,normal_speed,normal_speed,                   &
+             normal_speed+css,normal_speed-css/)
+
+    p_target=nscbc_farfield_rho_target*nscbc_farfield_t_target/const2
+    qtarget(1)=nscbc_farfield_rho_target
+    qtarget(2)=nscbc_farfield_rho_target*nscbc_farfield_u_target
+    qtarget(3)=nscbc_farfield_rho_target*nscbc_farfield_v_target
+    qtarget(4)=nscbc_farfield_rho_target*nscbc_farfield_w_target
+    qtarget(5)=p_target*const6+0.5d0*nscbc_farfield_rho_target*        &
+               (nscbc_farfield_u_target**2+nscbc_farfield_v_target**2+ &
+                nscbc_farfield_w_target**2)
+    dq(:)=q(i,j,k,1:5)-qtarget(:)
+    char_delta=matmul(pinv,dq)
+
+    sigma_in=0.25d0*css/(ymax-ymin)
+    sigma_out=max(0.d0,0.25d0*(1.d0-gmachmax2)*css/(ymax-ymin))
+    do m=1,5
+      if(lambda(m)<0.d0) then
+        if(normal_speed>=0.d0) then
+          lodi(m)=sigma_out*char_delta(m)
+        else
+          lodi(m)=sigma_in*char_delta(m)
+        endif
+      endif
+    enddo
+  end subroutine nscbc_farfield_y_upper_incoming_lodi
   !
   ! Table of values for parameter (ibc(ilat))
   ! ilat = 1,6
@@ -3706,6 +3858,11 @@ module bc
     !
     logical,save :: lfirstcal=.true.
     !
+    call configure_nscbc_farfield
+    if(nscbc_farfield_incoming_only .and. ndir/=4) then
+      stop 'incoming_only NSCBC farfield currently supports upper-y bctype=52 only'
+    endif
+    !
     if(lfirstcal) then
       !
       uinf_j0=uinf
@@ -4155,10 +4312,15 @@ module bc
         !    dxi(i,j,k,2,2)*vel(i,j,k,2) +                       &
         !    dxi(i,j,k,2,3)*vel(i,j,k,3)
         ! if(uu>=0.d0) then
-        kinout=0.25d0*(1.d0-gmachmax2)*css/(ymax-ymin)
-          ! LODi(5)=kinout*(prs(i,j,k)-pinf)/rho(i,j,k)/css
-          ! LODi(5)=kinout*(prs(i,j,k)-prs_prof(jm))/rho(i,j,k)/css
-        LODi(5)=kinout*(prs(i,j,k)-pinf)
+        if(nscbc_farfield_incoming_only) then
+          call nscbc_farfield_y_upper_incoming_lodi(LODi,pinv,i,j,k,css,&
+                                                     gmachmax2)
+        else
+          kinout=0.25d0*(1.d0-gmachmax2)*css/(ymax-ymin)
+            ! LODi(5)=kinout*(prs(i,j,k)-pinf)/rho(i,j,k)/css
+            ! LODi(5)=kinout*(prs(i,j,k)-prs_prof(jm))/rho(i,j,k)/css
+          LODi(5)=kinout*(prs(i,j,k)-pinf)
+        endif
         ! else
         !   var1=1.d0/sqrt( dxi(i,j,k,2,1)**2+dxi(i,j,k,2,2)**2+         &
         !                   dxi(i,j,k,2,3)**2 )
