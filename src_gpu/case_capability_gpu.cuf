@@ -196,6 +196,30 @@ contains
           (mpisize == 8 .and. isize == 2 .and. jsize == 2 .and. ksize == 2))
   end function gpu_s1_flatplate_s1a1_supported
 
+  logical function gpu_s1_flatplate_explicit_filter_supported()
+    use commvar, only: flowtype,conschm,difschm,recon_schem,lchardecomp, &
+         lfilter,lihomo,ljhomo,lkhomo,nondimen,turbmode,ndims
+    use bc, only: bctype,turbinf
+    use sponge_layer, only: spg_i0,spg_im,spg_j0,spg_jm,spg_k0,spg_km
+    use parallel, only: mpisize,isize,jsize,ksize
+    implicit none
+
+    gpu_s1_flatplate_explicit_filter_supported = trim(flowtype) == 'bl' .and. ndims == 3 .and. &
+         trim(conschm) == '543e' .and. trim(difschm) == '643e' .and. &
+         recon_schem == 3 .and. (.not.lchardecomp) .and. lfilter .and. nondimen .and. &
+         (.not.lihomo) .and. (.not.ljhomo) .and. lkhomo .and. &
+         spg_i0 == 0 .and. spg_im == 0 .and. spg_j0 == 0 .and. &
+         spg_jm == 0 .and. spg_k0 == 0 .and. spg_km == 0 .and. &
+         trim(turbmode) == 'none' .and. trim(turbinf) == 'prof' .and. &
+         bctype(1) == 11 .and. bctype(2) == 21 .and. bctype(3) == 41 .and. &
+         bctype(4) == 51 .and. all(bctype(5:6) == 1) .and. &
+         (mpisize == 1 .or. (mpisize == 2 .and. &
+          ((isize == 2 .and. jsize == 1 .and. ksize == 1) .or. &
+           (isize == 1 .and. jsize == 2 .and. ksize == 1) .or. &
+           (isize == 1 .and. jsize == 1 .and. ksize == 2))) .or. &
+          (mpisize == 4 .and. isize == 2 .and. jsize == 2 .and. ksize == 1))
+  end function gpu_s1_flatplate_explicit_filter_supported
+
   logical function gpu_shock_sensor_s0a4_supported()
     use commvar, only: flowtype,conschm,difschm,recon_schem,lchardecomp, &
          lfilter,diffterm,lihomo,ljhomo,lkhomo,nondimen

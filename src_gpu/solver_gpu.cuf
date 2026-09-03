@@ -396,12 +396,13 @@ contains
 
   attributes(device) real(8) function steger_warming_split_component_at( &
        i,j,k,idir,ivar,split_sign,im,jm,km,gamma) result(f)
-    use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d
+    use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,jacob_d,dxi_d
+    use commvar_gpu, only: mach_d
     implicit none
     integer,value :: i,j,k,idir,ivar,split_sign,im,jm,km
     real(8),value :: gamma
     integer :: ii,jj,kk
-    real(8) :: rho,q2,q3,q4,q5,u1,u2,u3,p,jloc,dx1,dx2,dx3
+    real(8) :: rho,q1,q2,q3,q4,q5,u1,u2,u3,p,jloc,dx1,dx2,dx3
     real(8) :: uu,var0,gpd1,gpd2,gpd3,css,csa,lmach,gm2,fhi,jro
     real(8) :: l1,l4,l5,lp1,lp4,lp5,var1,var2,var3,var4,eps
 
@@ -410,7 +411,10 @@ contains
     ii = i
     jj = j
     kk = k
-    rho = q_d(i,j,k,1)
+    ! CPU flux_steger_warming keeps primitive variables at the pre-filter RK
+    ! state while its conservative arguments contain the filtered q state.
+    rho = rho_d(i,j,k)
+    q1 = q_d(i,j,k,1)
     q2 = q_d(i,j,k,2)
     q3 = q_d(i,j,k,3)
     q4 = q_d(i,j,k,4)
@@ -431,7 +435,7 @@ contains
     gpd1 = dx1*var0
     gpd2 = dx2*var0
     gpd3 = dx3*var0
-    css = sqrt(gamma*p/rho)
+    css = sqrt(tmp_d(i,j,k))/mach_d
     csa = css/var0
     lmach = uu/csa
 
@@ -441,7 +445,7 @@ contains
       else
         select case(ivar)
         case(1)
-          f = jloc*rho*uu
+          f = jloc*q1*uu
         case(2)
           f = jloc*(q2*uu + dx1*p)
         case(3)
@@ -459,7 +463,7 @@ contains
       else
         select case(ivar)
         case(1)
-          f = jloc*rho*uu
+          f = jloc*q1*uu
         case(2)
           f = jloc*(q2*uu + dx1*p)
         case(3)
@@ -2293,7 +2297,7 @@ contains
     j = blockIdx%y - 1
     k = blockIdx%z - 1
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
-    if(i < is .or. i > ie) return
+    if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
 
     call flux_at_xphysical_global(i,j,k,1,im,jm,km,f0)
     if(i < im   .or. apply_right == 0) call flux_at_xphysical_global(i+1,j,k,1,im,jm,km,fp1)
@@ -2320,7 +2324,7 @@ contains
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
     k = blockIdx%z - 1
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
-    if(j < js .or. j > je) return
+    if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
 
     call flux_at_xphysical_global(i,j+1,k,2,im,jm,km,fp1)
     call flux_at_xphysical_global(i,j-1,k,2,im,jm,km,fm1)
@@ -2345,7 +2349,7 @@ contains
     j = blockIdx%y - 1
     k = (blockIdx%z - 1) * blockDim%z + threadIdx%z - 1
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
-    if(k < ks .or. k > ke) return
+    if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
 
     call flux_at_xphysical_global(i,j,k+1,3,im,jm,km,fp1)
     call flux_at_xphysical_global(i,j,k-1,3,im,jm,km,fm1)
@@ -2717,10 +2721,49 @@ contains
                      (1.d0/1024.d0)*(vp5+vm5)
   end function filter10_value
 
-  attributes(global) subroutine filter_x_global_kernel(im,jm,km)
+  attributes(device) real(8) function filter6_value(v0,vp1,vm1,vp2,vm2,vp3,vm3)
+    implicit none
+    real(8),value :: v0,vp1,vm1,vp2,vm2,vp3,vm3
+
+    filter6_value = (11.d0/16.d0)*v0 + &
+                    (15.d0/64.d0)*(vp1+vm1) + &
+                    (-3.d0/32.d0)*(vp2+vm2) + &
+                    (1.d0/64.d0)*(vp3+vm3)
+  end function filter6_value
+
+  attributes(device) real(8) function filter8_value(v0,vp1,vm1,vp2,vm2,vp3,vm3,vp4,vm4)
+    implicit none
+    real(8),value :: v0,vp1,vm1,vp2,vm2,vp3,vm3,vp4,vm4
+
+    filter8_value = (93.d0/128.d0)*v0 + &
+                    (7.d0/32.d0)*(vp1+vm1) + &
+                    (-7.d0/64.d0)*(vp2+vm2) + &
+                    (1.d0/32.d0)*(vp3+vm3) + &
+                    (-1.d0/256.d0)*(vp4+vm4)
+  end function filter8_value
+
+  attributes(device) real(8) function filter6_boundary_point1(v0,v1,v2,v3,v4,v5,v6)
+    implicit none
+    real(8),value :: v0,v1,v2,v3,v4,v5,v6
+
+    filter6_boundary_point1 = (1.d0/64.d0)*v0 + (29.d0/32.d0)*v1 + &
+      (15.d0/64.d0)*v2 - (5.d0/16.d0)*v3 + (15.d0/64.d0)*v4 - &
+      (3.d0/32.d0)*v5 + (1.d0/64.d0)*v6
+  end function filter6_boundary_point1
+
+  attributes(device) real(8) function filter6_boundary_point2(v0,v1,v2,v3,v4,v5,v6)
+    implicit none
+    real(8),value :: v0,v1,v2,v3,v4,v5,v6
+
+    filter6_boundary_point2 = (-1.d0/64.d0)*v0 + (3.d0/32.d0)*v1 + &
+      (49.d0/64.d0)*v2 + (5.d0/16.d0)*v3 - (15.d0/64.d0)*v4 + &
+      (3.d0/32.d0)*v5 - (1.d0/64.d0)*v6
+  end function filter6_boundary_point2
+
+  attributes(global) subroutine filter_x_global_kernel(im,jm,km,npdci)
     use commarray_gpu, only: q_d,qwork_d
     implicit none
-    integer,value :: im,jm,km
+    integer,value :: im,jm,km,npdci
     integer :: i,j,k,m
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -2729,12 +2772,44 @@ contains
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
 
     do m=1,5
-      qwork_d(i,j,k,m) = filter10_value(q_d(i,j,k,m), &
-        q_d(i+1,j,k,m), q_d(i-1,j,k,m), &
-        q_d(i+2,j,k,m), q_d(i-2,j,k,m), &
-        q_d(i+3,j,k,m), q_d(i-3,j,k,m), &
-        q_d(i+4,j,k,m), q_d(i-4,j,k,m), &
-        q_d(i+5,j,k,m), q_d(i-5,j,k,m))
+      if((npdci == 1 .or. npdci == 4) .and. i == 0) then
+        qwork_d(i,j,k,m) = q_d(i,j,k,m)
+      elseif((npdci == 1 .or. npdci == 4) .and. i == 1) then
+        qwork_d(i,j,k,m) = filter6_boundary_point1(q_d(0,j,k,m),q_d(1,j,k,m), &
+          q_d(2,j,k,m),q_d(3,j,k,m),q_d(4,j,k,m),q_d(5,j,k,m),q_d(6,j,k,m))
+      elseif((npdci == 1 .or. npdci == 4) .and. i == 2) then
+        qwork_d(i,j,k,m) = filter6_boundary_point2(q_d(0,j,k,m),q_d(1,j,k,m), &
+          q_d(2,j,k,m),q_d(3,j,k,m),q_d(4,j,k,m),q_d(5,j,k,m),q_d(6,j,k,m))
+      elseif((npdci == 1 .or. npdci == 4) .and. i == 3) then
+        qwork_d(i,j,k,m) = filter6_value(q_d(i,j,k,m),q_d(i+1,j,k,m),q_d(i-1,j,k,m), &
+          q_d(i+2,j,k,m),q_d(i-2,j,k,m),q_d(i+3,j,k,m),q_d(i-3,j,k,m))
+      elseif((npdci == 1 .or. npdci == 4) .and. i == 4) then
+        qwork_d(i,j,k,m) = filter8_value(q_d(i,j,k,m),q_d(i+1,j,k,m),q_d(i-1,j,k,m), &
+          q_d(i+2,j,k,m),q_d(i-2,j,k,m),q_d(i+3,j,k,m),q_d(i-3,j,k,m), &
+          q_d(i+4,j,k,m),q_d(i-4,j,k,m))
+      elseif((npdci == 2 .or. npdci == 4) .and. i == im) then
+        qwork_d(i,j,k,m) = q_d(i,j,k,m)
+      elseif((npdci == 2 .or. npdci == 4) .and. i == im-1) then
+        qwork_d(i,j,k,m) = filter6_boundary_point1(q_d(im,j,k,m),q_d(im-1,j,k,m), &
+          q_d(im-2,j,k,m),q_d(im-3,j,k,m),q_d(im-4,j,k,m),q_d(im-5,j,k,m),q_d(im-6,j,k,m))
+      elseif((npdci == 2 .or. npdci == 4) .and. i == im-2) then
+        qwork_d(i,j,k,m) = filter6_boundary_point2(q_d(im,j,k,m),q_d(im-1,j,k,m), &
+          q_d(im-2,j,k,m),q_d(im-3,j,k,m),q_d(im-4,j,k,m),q_d(im-5,j,k,m),q_d(im-6,j,k,m))
+      elseif((npdci == 2 .or. npdci == 4) .and. i == im-3) then
+        qwork_d(i,j,k,m) = filter6_value(q_d(i,j,k,m),q_d(i+1,j,k,m),q_d(i-1,j,k,m), &
+          q_d(i+2,j,k,m),q_d(i-2,j,k,m),q_d(i+3,j,k,m),q_d(i-3,j,k,m))
+      elseif((npdci == 2 .or. npdci == 4) .and. i == im-4) then
+        qwork_d(i,j,k,m) = filter8_value(q_d(i,j,k,m),q_d(i+1,j,k,m),q_d(i-1,j,k,m), &
+          q_d(i+2,j,k,m),q_d(i-2,j,k,m),q_d(i+3,j,k,m),q_d(i-3,j,k,m), &
+          q_d(i+4,j,k,m),q_d(i-4,j,k,m))
+      else
+        qwork_d(i,j,k,m) = filter10_value(q_d(i,j,k,m), &
+          q_d(i+1,j,k,m), q_d(i-1,j,k,m), &
+          q_d(i+2,j,k,m), q_d(i-2,j,k,m), &
+          q_d(i+3,j,k,m), q_d(i-3,j,k,m), &
+          q_d(i+4,j,k,m), q_d(i-4,j,k,m), &
+          q_d(i+5,j,k,m), q_d(i-5,j,k,m))
+      endif
     enddo
   end subroutine filter_x_global_kernel
 
@@ -2780,10 +2855,10 @@ contains
     enddo
   end subroutine filter_y_pong_to_q_global_kernel
 
-  attributes(global) subroutine filter_y_pong_to_q_halo_global_kernel(im,jm,km)
+  attributes(global) subroutine filter_y_pong_to_q_halo_global_kernel(im,jm,km,npdcj)
     use commarray_gpu, only: q_d,qwork_d
     implicit none
-    integer,value :: im,jm,km
+    integer,value :: im,jm,km,npdcj
     integer :: i,j,k,m
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -2792,12 +2867,46 @@ contains
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
 
     do m=1,5
-      q_d(i,j,k,m) = filter10_value(qwork_d(i,j,k,m), &
-        qwork_d(i,j+1,k,m), qwork_d(i,j-1,k,m), &
-        qwork_d(i,j+2,k,m), qwork_d(i,j-2,k,m), &
-        qwork_d(i,j+3,k,m), qwork_d(i,j-3,k,m), &
-        qwork_d(i,j+4,k,m), qwork_d(i,j-4,k,m), &
-        qwork_d(i,j+5,k,m), qwork_d(i,j-5,k,m))
+      if((npdcj == 1 .or. npdcj == 4) .and. j == 0) then
+        q_d(i,j,k,m) = qwork_d(i,j,k,m)
+      elseif((npdcj == 1 .or. npdcj == 4) .and. j == 1) then
+        q_d(i,j,k,m) = filter6_boundary_point1(qwork_d(i,0,k,m),qwork_d(i,1,k,m), &
+          qwork_d(i,2,k,m),qwork_d(i,3,k,m),qwork_d(i,4,k,m),qwork_d(i,5,k,m),qwork_d(i,6,k,m))
+      elseif((npdcj == 1 .or. npdcj == 4) .and. j == 2) then
+        q_d(i,j,k,m) = filter6_boundary_point2(qwork_d(i,0,k,m),qwork_d(i,1,k,m), &
+          qwork_d(i,2,k,m),qwork_d(i,3,k,m),qwork_d(i,4,k,m),qwork_d(i,5,k,m),qwork_d(i,6,k,m))
+      elseif((npdcj == 1 .or. npdcj == 4) .and. j == 3) then
+        q_d(i,j,k,m) = filter6_value(qwork_d(i,j,k,m),qwork_d(i,j+1,k,m),qwork_d(i,j-1,k,m), &
+          qwork_d(i,j+2,k,m),qwork_d(i,j-2,k,m),qwork_d(i,j+3,k,m),qwork_d(i,j-3,k,m))
+      elseif((npdcj == 1 .or. npdcj == 4) .and. j == 4) then
+        q_d(i,j,k,m) = filter8_value(qwork_d(i,j,k,m),qwork_d(i,j+1,k,m),qwork_d(i,j-1,k,m), &
+          qwork_d(i,j+2,k,m),qwork_d(i,j-2,k,m),qwork_d(i,j+3,k,m),qwork_d(i,j-3,k,m), &
+          qwork_d(i,j+4,k,m),qwork_d(i,j-4,k,m))
+      elseif((npdcj == 2 .or. npdcj == 4) .and. j == jm) then
+        q_d(i,j,k,m) = qwork_d(i,j,k,m)
+      elseif((npdcj == 2 .or. npdcj == 4) .and. j == jm-1) then
+        q_d(i,j,k,m) = filter6_boundary_point1(qwork_d(i,jm,k,m),qwork_d(i,jm-1,k,m), &
+          qwork_d(i,jm-2,k,m),qwork_d(i,jm-3,k,m),qwork_d(i,jm-4,k,m), &
+          qwork_d(i,jm-5,k,m),qwork_d(i,jm-6,k,m))
+      elseif((npdcj == 2 .or. npdcj == 4) .and. j == jm-2) then
+        q_d(i,j,k,m) = filter6_boundary_point2(qwork_d(i,jm,k,m),qwork_d(i,jm-1,k,m), &
+          qwork_d(i,jm-2,k,m),qwork_d(i,jm-3,k,m),qwork_d(i,jm-4,k,m), &
+          qwork_d(i,jm-5,k,m),qwork_d(i,jm-6,k,m))
+      elseif((npdcj == 2 .or. npdcj == 4) .and. j == jm-3) then
+        q_d(i,j,k,m) = filter6_value(qwork_d(i,j,k,m),qwork_d(i,j+1,k,m),qwork_d(i,j-1,k,m), &
+          qwork_d(i,j+2,k,m),qwork_d(i,j-2,k,m),qwork_d(i,j+3,k,m),qwork_d(i,j-3,k,m))
+      elseif((npdcj == 2 .or. npdcj == 4) .and. j == jm-4) then
+        q_d(i,j,k,m) = filter8_value(qwork_d(i,j,k,m),qwork_d(i,j+1,k,m),qwork_d(i,j-1,k,m), &
+          qwork_d(i,j+2,k,m),qwork_d(i,j-2,k,m),qwork_d(i,j+3,k,m),qwork_d(i,j-3,k,m), &
+          qwork_d(i,j+4,k,m),qwork_d(i,j-4,k,m))
+      else
+        q_d(i,j,k,m) = filter10_value(qwork_d(i,j,k,m), &
+          qwork_d(i,j+1,k,m), qwork_d(i,j-1,k,m), &
+          qwork_d(i,j+2,k,m), qwork_d(i,j-2,k,m), &
+          qwork_d(i,j+3,k,m), qwork_d(i,j-3,k,m), &
+          qwork_d(i,j+4,k,m), qwork_d(i,j-4,k,m), &
+          qwork_d(i,j+5,k,m), qwork_d(i,j-5,k,m))
+      endif
     enddo
   end subroutine filter_y_pong_to_q_halo_global_kernel
 
@@ -2822,10 +2931,10 @@ contains
     enddo
   end subroutine filter_z_global_kernel
 
-  attributes(global) subroutine filter_z_halo_global_kernel(im,jm,km)
+  attributes(global) subroutine filter_z_halo_global_kernel(im,jm,km,npdck)
     use commarray_gpu, only: q_d,qwork_d
     implicit none
-    integer,value :: im,jm,km
+    integer,value :: im,jm,km,npdck
     integer :: i,j,k,m
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -2834,12 +2943,44 @@ contains
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
 
     do m=1,5
-      qwork_d(i,j,k,m) = filter10_value(q_d(i,j,k,m), &
-        q_d(i,j,k+1,m), q_d(i,j,k-1,m), &
-        q_d(i,j,k+2,m), q_d(i,j,k-2,m), &
-        q_d(i,j,k+3,m), q_d(i,j,k-3,m), &
-        q_d(i,j,k+4,m), q_d(i,j,k-4,m), &
-        q_d(i,j,k+5,m), q_d(i,j,k-5,m))
+      if((npdck == 1 .or. npdck == 4) .and. k == 0) then
+        qwork_d(i,j,k,m) = q_d(i,j,k,m)
+      elseif((npdck == 1 .or. npdck == 4) .and. k == 1) then
+        qwork_d(i,j,k,m) = filter6_boundary_point1(q_d(i,j,0,m),q_d(i,j,1,m), &
+          q_d(i,j,2,m),q_d(i,j,3,m),q_d(i,j,4,m),q_d(i,j,5,m),q_d(i,j,6,m))
+      elseif((npdck == 1 .or. npdck == 4) .and. k == 2) then
+        qwork_d(i,j,k,m) = filter6_boundary_point2(q_d(i,j,0,m),q_d(i,j,1,m), &
+          q_d(i,j,2,m),q_d(i,j,3,m),q_d(i,j,4,m),q_d(i,j,5,m),q_d(i,j,6,m))
+      elseif((npdck == 1 .or. npdck == 4) .and. k == 3) then
+        qwork_d(i,j,k,m) = filter6_value(q_d(i,j,k,m),q_d(i,j,k+1,m),q_d(i,j,k-1,m), &
+          q_d(i,j,k+2,m),q_d(i,j,k-2,m),q_d(i,j,k+3,m),q_d(i,j,k-3,m))
+      elseif((npdck == 1 .or. npdck == 4) .and. k == 4) then
+        qwork_d(i,j,k,m) = filter8_value(q_d(i,j,k,m),q_d(i,j,k+1,m),q_d(i,j,k-1,m), &
+          q_d(i,j,k+2,m),q_d(i,j,k-2,m),q_d(i,j,k+3,m),q_d(i,j,k-3,m), &
+          q_d(i,j,k+4,m),q_d(i,j,k-4,m))
+      elseif((npdck == 2 .or. npdck == 4) .and. k == km) then
+        qwork_d(i,j,k,m) = q_d(i,j,k,m)
+      elseif((npdck == 2 .or. npdck == 4) .and. k == km-1) then
+        qwork_d(i,j,k,m) = filter6_boundary_point1(q_d(i,j,km,m),q_d(i,j,km-1,m), &
+          q_d(i,j,km-2,m),q_d(i,j,km-3,m),q_d(i,j,km-4,m),q_d(i,j,km-5,m),q_d(i,j,km-6,m))
+      elseif((npdck == 2 .or. npdck == 4) .and. k == km-2) then
+        qwork_d(i,j,k,m) = filter6_boundary_point2(q_d(i,j,km,m),q_d(i,j,km-1,m), &
+          q_d(i,j,km-2,m),q_d(i,j,km-3,m),q_d(i,j,km-4,m),q_d(i,j,km-5,m),q_d(i,j,km-6,m))
+      elseif((npdck == 2 .or. npdck == 4) .and. k == km-3) then
+        qwork_d(i,j,k,m) = filter6_value(q_d(i,j,k,m),q_d(i,j,k+1,m),q_d(i,j,k-1,m), &
+          q_d(i,j,k+2,m),q_d(i,j,k-2,m),q_d(i,j,k+3,m),q_d(i,j,k-3,m))
+      elseif((npdck == 2 .or. npdck == 4) .and. k == km-4) then
+        qwork_d(i,j,k,m) = filter8_value(q_d(i,j,k,m),q_d(i,j,k+1,m),q_d(i,j,k-1,m), &
+          q_d(i,j,k+2,m),q_d(i,j,k-2,m),q_d(i,j,k+3,m),q_d(i,j,k-3,m), &
+          q_d(i,j,k+4,m),q_d(i,j,k-4,m))
+      else
+        qwork_d(i,j,k,m) = filter10_value(q_d(i,j,k,m), &
+          q_d(i,j,k+1,m), q_d(i,j,k-1,m), &
+          q_d(i,j,k+2,m), q_d(i,j,k-2,m), &
+          q_d(i,j,k+3,m), q_d(i,j,k-3,m), &
+          q_d(i,j,k+4,m), q_d(i,j,k-4,m), &
+          q_d(i,j,k+5,m), q_d(i,j,k-5,m))
+      endif
     enddo
   end subroutine filter_z_halo_global_kernel
 

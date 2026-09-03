@@ -24,6 +24,11 @@ STATS_ATOL="${STATS_ATOL:-1e-10}"
 STATS_RTOL="${STATS_RTOL:-1e-10}"
 FIELD_ATOL="${FIELD_ATOL:-1e-10}"
 FIELD_RTOL="${FIELD_RTOL:-1e-10}"
+GRID_WARP_X="${GRID_WARP_X:-0.0}"
+GRID_WARP_Y="${GRID_WARP_Y:-0.0}"
+LFILTER="${LFILTER:-f}"
+DIFFTERM="${DIFFTERM:-t}"
+CPU_SNAPSHOT="outdat/rk_complete_snapshot.h5"
 
 prepare_case() {
   local target="$1"
@@ -32,10 +37,12 @@ prepare_case() {
     --dst-case "$OUT_DIR/$target" \
     --use-gpu "$use_gpu" \
     --im "$IM" --jm "$JM" --km "$KM" \
-    --conschm 543e --reynolds "$REYNOLDS" --mach "$MACH" \
+    --conschm 543e --diffterm "$DIFFTERM" --lfilter "$LFILTER" \
+    --reynolds "$REYNOLDS" --mach "$MACH" \
     --reference-temperature "$REFERENCE_TEMPERATURE" \
     --wall-temperature "$WALL_TEMPERATURE" --upper-bctype "$UPPER_BCTYPE" --ninit "$NINIT" \
     --x-min -1.0 --x-max 10.0 --y-stretch 5.0 --z-length 0.25 \
+    --warp-x "$GRID_WARP_X" --warp-y "$GRID_WARP_Y" \
     --maxstep "$MAXSTEP" --feqchkpt "$FEQCHKPT"
 }
 
@@ -77,6 +84,8 @@ write_similarity_profile gpu
 (
   cd "$OUT_DIR/cpu"
   ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
+    ASTR_GEOMETRY_DUMP="${CPU_GEOMETRY_DUMP:-}" \
+    ASTR_VALIDATION_RK_SNAPSHOT="$CPU_SNAPSHOT" \
     mpirun -np "$NP" "$CPU_EXE" run datin/input.flatplate > cpu.log 2>&1
 )
 (
@@ -89,5 +98,5 @@ python3 "$ROOT_DIR/tests/gpu_validation/compare_flowstate.py" \
   --cpu "$OUT_DIR/cpu" --gpu "$OUT_DIR/gpu" \
   --report "$OUT_DIR/flowstate_compare.txt" --atol "$STATS_ATOL" --rtol "$STATS_RTOL"
 python3 "$ROOT_DIR/tests/gpu_validation/compare_flowfield_h5.py" \
-  --cpu "$OUT_DIR/cpu" --gpu "$OUT_DIR/gpu" \
+  --cpu "$OUT_DIR/cpu/$CPU_SNAPSHOT" --gpu "$OUT_DIR/gpu" \
   --report "$OUT_DIR/flowfield_compare.txt" --atol "$FIELD_ATOL" --rtol "$FIELD_RTOL"

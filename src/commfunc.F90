@@ -52,6 +52,15 @@ module commfunc
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   ! End of the function arquad.
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  pure real(8) function arquad3d(x1,x2,x3,x4)
+    real(8),intent(in) :: x1(3),x2(3),x3(3),x4(3)
+    real(8) :: normal1(3),normal2(3)
+
+    normal1=cross_product(x2-x1,x3-x1)
+    normal2=cross_product(x3-x1,x4-x1)
+    arquad3d=0.5d0*(sqrt(dot_product(normal1,normal1))+              &
+                    sqrt(dot_product(normal2,normal2)))
+  end function arquad3d
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   ! This function is used to calculate the area of a triangle.
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!

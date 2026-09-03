@@ -1,7 +1,13 @@
 module commvar_gpu
   use cudafor
   implicit none
+
+  real(8),constant :: mach_d
 contains
   subroutine copy_commvar_to_gpu()
+    use commvar, only: mach
+    implicit none
+
+    mach_d = mach
   end subroutine copy_commvar_to_gpu
 end module commvar_gpu

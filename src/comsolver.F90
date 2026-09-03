@@ -662,7 +662,7 @@ module comsolver
   !!
   subroutine filterq_explicit10
     !
-    use commvar,  only : im,jm,km,numq,ndims
+    use commvar,  only : im,jm,km,numq,ndims,npdci,npdcj,npdck
     use commarray,only : q
     use filter,   only : spafilter10exp
     !
@@ -675,7 +675,7 @@ module comsolver
     do j=0,jm
       phi(:,:)=q(:,j,k,:)
       do n=1,numq
-        fph(:,n)=spafilter10exp(f=phi(:,n),dim=im)
+        fph(:,n)=spafilter10exp(f=phi(:,n),ntype=npdci,dim=im)
       enddo
       q(0:im,j,k,:)=fph(0:im,:)
     enddo
@@ -689,7 +689,7 @@ module comsolver
       do i=0,im
         phi(:,:)=q(i,:,k,:)
         do n=1,numq
-          fph(:,n)=spafilter10exp(f=phi(:,n),dim=jm)
+          fph(:,n)=spafilter10exp(f=phi(:,n),ntype=npdcj,dim=jm)
         enddo
         q(i,0:jm,k,:)=fph(0:jm,:)
       enddo
@@ -704,7 +704,7 @@ module comsolver
       do i=0,im
         phi(:,:)=q(i,j,:,:)
         do n=1,numq
-          fph(:,n)=spafilter10exp(f=phi(:,n),dim=km)
+          fph(:,n)=spafilter10exp(f=phi(:,n),ntype=npdck,dim=km)
         enddo
         q(i,j,0:km,:)=fph(0:km,:)
       enddo

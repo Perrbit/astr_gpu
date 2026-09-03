@@ -286,11 +286,11 @@ module commcal
       kp1=k+1; km1=k-1
       !
       if((npdci==1 .or. npdci==4) .and. im1<0)  im1=0
-      if(npdcj==1 .and. jm1<0)  jm1=0
-      if(npdck==1 .and. km1<0)  km1=0
+      if((npdcj==1 .or. npdcj==4) .and. jm1<0)  jm1=0
+      if((npdck==1 .or. npdck==4) .and. km1<0)  km1=0
       if((npdci==2 .or. npdci==4) .and. ip1>im) ip1=im
-      if(npdcj==2 .and. jp1>jm) jp1=jm
-      if(npdck==2 .and. kp1>km) kp1=km
+      if((npdcj==2 .or. npdcj==4) .and. jp1>jm) jp1=jm
+      if((npdck==2 .or. npdck==4) .and. kp1>km) kp1=km
       !
       dpdi= abs(prs(ip1,j,k)-2.d0*prs(i,j,k)+prs(im1,j,k)) /  &
                (prs(ip1,j,k)+2.d0*prs(i,j,k)+prs(im1,j,k))
@@ -334,8 +334,8 @@ module commcal
         !
         jj=j+j1
         !
-        if(npdcj==1 .and. jj<0)  jj=0
-        if(npdcj==2 .and. jj>jm) jj=jm
+        if((npdcj==1 .or. npdcj==4) .and. jj<0)  jj=0
+        if((npdcj==2 .or. npdcj==4) .and. jj>jm) jj=jm
         !
         ssfmax_local=max(ssfmax_local,ssf(i,jj,k))
         !
@@ -344,8 +344,8 @@ module commcal
         !
         kk=k+k1
         !
-        if(npdck==1 .and. kk<0)  kk=0
-        if(npdck==2 .and. kk>km) kk=km
+        if((npdck==1 .or. npdck==4) .and. kk<0)  kk=0
+        if((npdck==2 .or. npdck==4) .and. kk>km) kk=km
         !
         ssfmax_local=max(ssfmax_local,ssf(i,j,kk))
         !

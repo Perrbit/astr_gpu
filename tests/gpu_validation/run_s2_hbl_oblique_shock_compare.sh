@@ -46,6 +46,19 @@ COMPARE_SENSOR="${COMPARE_SENSOR:-f}"
 SENSOR_ATOL="${SENSOR_ATOL:-1e-12}"
 SENSOR_RTOL="${SENSOR_RTOL:-1e-12}"
 SPONGE_IM="${SPONGE_IM:-0}"
+GRID_WARP_X="${GRID_WARP_X:-0.0}"
+GRID_WARP_Y="${GRID_WARP_Y:-0.0}"
+SAME_PHASE_FIELD="${SAME_PHASE_FIELD:-f}"
+CPU_SNAPSHOT="outdat/rk_complete_snapshot.h5"
+CPU_GEOMETRY_DUMP="${CPU_GEOMETRY_DUMP:-}"
+
+case "$SAME_PHASE_FIELD" in
+  t|f) ;;
+  *)
+    printf 'SAME_PHASE_FIELD must be t or f\n' >&2
+    exit 2
+    ;;
+esac
 
 prepare_case() {
   local target="$1"
@@ -61,6 +74,7 @@ prepare_case() {
     --wall-temperature "$WALL_TEMPERATURE" --upper-bctype "$UPPER_BCTYPE" \
     --x-min-bctype "$XMIN_BCTYPE" --ninit 3 \
     --x-min -1.0 --x-max 10.0 --y-stretch 5.0 --z-length 0.25 \
+    --warp-x "$GRID_WARP_X" --warp-y "$GRID_WARP_Y" \
     --maxstep "$MAXSTEP" --feqchkpt "$FEQCHKPT" --sponge-im "$SPONGE_IM"
 }
 
@@ -96,12 +110,20 @@ write_similarity_shock_field gpu
 
 (
   cd "$OUT_DIR/cpu"
+  cpu_snapshot=""
+  if [[ "$SAME_PHASE_FIELD" == "t" ]]; then
+    cpu_snapshot="$CPU_SNAPSHOT"
+  fi
   if [[ "$COMPARE_SENSOR" == "t" ]]; then
     ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
     ASTR_SHOCK_SENSOR_DUMP="$OUT_DIR/cpu_shock_sensor.dat" \
+    ASTR_GEOMETRY_DUMP="$CPU_GEOMETRY_DUMP" \
+    ASTR_VALIDATION_RK_SNAPSHOT="$cpu_snapshot" \
       mpirun -np "$NP" "$CPU_EXE" run datin/input.flatplate > cpu.log 2>&1
   else
     ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
+    ASTR_GEOMETRY_DUMP="$CPU_GEOMETRY_DUMP" \
+    ASTR_VALIDATION_RK_SNAPSHOT="$cpu_snapshot" \
       mpirun -np "$NP" "$CPU_EXE" run datin/input.flatplate > cpu.log 2>&1
   fi
 )
@@ -137,6 +159,11 @@ fi
 python3 "$ROOT_DIR/tests/gpu_validation/compare_flowstate.py" \
   --cpu "$OUT_DIR/cpu" --gpu "$OUT_DIR/gpu" \
   --report "$OUT_DIR/flowstate_compare.txt" --atol "$STATS_ATOL" --rtol "$STATS_RTOL"
+cpu_field="$OUT_DIR/cpu"
+if [[ "$SAME_PHASE_FIELD" == "t" ]]; then
+  cpu_field="$OUT_DIR/cpu/$CPU_SNAPSHOT"
+  [[ -f "$cpu_field" ]]
+fi
 python3 "$ROOT_DIR/tests/gpu_validation/compare_flowfield_h5.py" \
-  --cpu "$OUT_DIR/cpu" --gpu "$OUT_DIR/gpu" \
+  --cpu "$cpu_field" --gpu "$OUT_DIR/gpu" \
   --report "$OUT_DIR/flowfield_compare.txt" --atol "$FIELD_ATOL" --rtol "$FIELD_RTOL"

@@ -27,12 +27,18 @@ def write_grid(
     x_max: float,
     y_stretch: float,
     z_length: float,
+    warp_x: float,
+    warp_y: float,
 ) -> np.ndarray:
     xline = np.linspace(x_min, x_max, im + 1)
     eta = np.linspace(0.0, 1.0, jm + 1)
     yline = np.expm1(y_stretch * eta) / np.expm1(y_stretch)
     zline = np.linspace(0.0, z_length, km + 1)
     x, y, z = np.meshgrid(xline, yline, zline, indexing="ij")
+    streamwise = np.linspace(0.0, 1.0, im + 1)[:, None, None]
+    wall_shape = y * (1.0 - y)
+    x = x + warp_x * np.sin(np.pi * streamwise) * wall_shape
+    y = y + warp_y * np.sin(2.0 * np.pi * streamwise) * wall_shape
     with h5py.File(path, "w") as handle:
         handle.create_dataset("x", data=np.asfortranarray(x).transpose(2, 1, 0))
         handle.create_dataset("y", data=np.asfortranarray(y).transpose(2, 1, 0))
@@ -68,6 +74,7 @@ def write_input(
     km: int,
     use_gpu: str,
     diffterm: str,
+    lfilter: str,
     conschm: str,
     lchardecomp: str,
     shock_threshold: float,
@@ -95,7 +102,7 @@ bl
 f,f,t
 
 # nondimen,diffterm,lfilter,lreadgrid,lfftz,limmbou,ltimrpt,lcomb_input,use_gpu
-t,{diffterm},f,t,f,f,f,f,{use_gpu}
+t,{diffterm},{lfilter},t,f,f,f,f,{use_gpu}
 
 # lrestar
 f
@@ -163,6 +170,7 @@ def main() -> int:
     parser.add_argument("--dst-case", required=True, type=Path)
     parser.add_argument("--use-gpu", required=True, choices=("t", "f"))
     parser.add_argument("--diffterm", choices=("t", "f"), default="t")
+    parser.add_argument("--lfilter", choices=("t", "f"), default="f")
     parser.add_argument("--im", type=positive_int, default=64)
     parser.add_argument("--jm", type=positive_int, default=64)
     parser.add_argument("--km", type=positive_int, default=8)
@@ -183,6 +191,8 @@ def main() -> int:
     parser.add_argument("--x-max", type=float, default=10.0)
     parser.add_argument("--y-stretch", type=float, default=3.0)
     parser.add_argument("--z-length", type=float, default=0.25)
+    parser.add_argument("--warp-x", type=float, default=0.0)
+    parser.add_argument("--warp-y", type=float, default=0.0)
     parser.add_argument("--maxstep", type=int, default=2)
     parser.add_argument("--feqchkpt", type=int)
     args = parser.parse_args()
@@ -204,6 +214,8 @@ def main() -> int:
         raise ValueError("--y-stretch must be positive")
     if args.z_length <= 0.0:
         raise ValueError("--z-length must be positive")
+    if abs(args.warp_y) >= 1.0:
+        raise ValueError("--warp-y magnitude must be below one to preserve wall-normal ordering")
     if args.sponge_im < 0 or args.sponge_im > args.im:
         raise ValueError("--sponge-im must lie in [0, im]")
     feqchkpt = args.maxstep if args.feqchkpt is None else args.feqchkpt
@@ -223,6 +235,8 @@ def main() -> int:
         args.x_max,
         args.y_stretch,
         args.z_length,
+        args.warp_x,
+        args.warp_y,
     )
     write_profile(
         datin / "inlet.prof",
@@ -238,6 +252,7 @@ def main() -> int:
         args.km,
         args.use_gpu,
         args.diffterm,
+        args.lfilter,
         args.conschm,
         args.lchardecomp,
         args.shock_threshold,

@@ -49,6 +49,34 @@ module geom
   !| The end of the subroutine rhscal.                                 |
   !+-------------------------------------------------------------------+
   !
+  subroutine write_validation_geometry
+    use commvar, only : im,jm,km
+    use commarray, only : jacob,dxi
+    use hdf5io
+    implicit none
+
+    character(len=1024) :: dump_path
+    character(len=5) :: metric_name
+    integer :: env_status,path_length,i,j
+
+    dump_path=''
+    call get_environment_variable('ASTR_GEOMETRY_DUMP',dump_path,     &
+                                  length=path_length,status=env_status)
+    if(env_status/=0 .or. path_length<=0) return
+    if(path_length>len(dump_path)) stop 'ASTR_GEOMETRY_DUMP path is too long'
+
+    call h5io_init(trim(dump_path(1:path_length)),mode='write')
+    call h5write(varname='jacob',var=jacob(0:im,0:jm,0:km),mode='h5')
+    do i=1,3
+    do j=1,3
+      write(metric_name,'("dxi",I1,I1)')i,j
+      call h5write(varname=metric_name,                          &
+                   var=dxi(0:im,0:jm,0:km,i,j),mode='h5')
+    enddo
+    enddo
+    call h5io_end
+  end subroutine write_validation_geometry
+  !
   !+-------------------------------------------------------------------+
   !| This subroutine is used to build a immersed body in the grid.     |
   !+-------------------------------------------------------------------+
@@ -881,6 +909,8 @@ module geom
     ! enddo
     ! enddo
     ! deallocate(xyzwall)
+
+    call write_validation_geometry
 
     if(lio) then
       !

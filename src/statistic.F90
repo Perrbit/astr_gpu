@@ -1118,7 +1118,7 @@ module statistic
     use commarray,only : tmp,dvel,x
     use parallel, only : jrk,jrkm
     use fludyna,  only : miucal
-    use commfunc, only : arquad
+    use commfunc, only : arquad3d
     !
     ! local data
     integer :: i,j,k
@@ -1157,7 +1157,8 @@ module statistic
       elseif(ndims==3) then
         do k=1,km
         do i=1,im
-          area=arquad(x(i-1,j-1,k,:),x(i,j-1,k,:),x(i,j,k,:),x(i-1,j,k,:))
+          area=arquad3d(x(i-1,j,k-1,:),x(i,j,k-1,:),                 &
+                        x(i,j,k,:),x(i-1,j,k,:))
           fbcxbl=fbcxbl+0.25d0*area*(tau(i,k)+tau(i-1,k)+tau(i,k-1)+tau(i-1,k-1))
           norm=norm+area
         enddo
@@ -1191,7 +1192,6 @@ module statistic
     use commarray,only : tmp,dvel,x
     use parallel, only : jrk,jrkm
     use fludyna,  only : miucal
-    use commfunc, only : arquad
     use interp,   only : interlinear
     !
     character(len=*),intent(in) :: which_thickness
@@ -1244,7 +1244,7 @@ module statistic
     use commarray,only : tmp,dtmp,x
     use parallel, only : jrk,jrkm
     use fludyna,  only : miucal
-    use commfunc, only : arquad
+    use commfunc, only : arquad3d
     !
     ! local data
     integer :: i,j,k
@@ -1284,7 +1284,8 @@ module statistic
       elseif(ndims==3) then
         do k=1,km
         do i=1,im
-          area=arquad(x(i-1,j-1,k,:),x(i,j-1,k,:),x(i,j,k,:),x(i-1,j,k,:))
+          area=arquad3d(x(i-1,j,k-1,:),x(i,j,k-1,:),                 &
+                        x(i,j,k,:),x(i-1,j,k,:))
           whfbl=whfbl+0.25d0*area*(qw(i,k)+qw(i-1,k)+qw(i,k-1)+qw(i-1,k-1))
           norm=norm+area
         enddo

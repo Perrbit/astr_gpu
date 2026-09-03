@@ -234,22 +234,24 @@ def write_similarity_initial_field(
     eta, streamfunction, velocity, _, temperature = solve_profile(
         mach, reference_temperature, wall_temperature, eta_max, points
     )
-    rho = np.empty_like(xfield)
-    u1 = np.empty_like(xfield)
-    u2 = np.empty_like(xfield)
+    station = xfield - virtual_leading_edge
+    if np.min(station) <= 0.0:
+        raise RuntimeError("all x coordinates must lie downstream of the virtual leading edge")
+
+    similarity_height = cumulative_trapezoid(temperature, eta, initial=0.0)
+    similarity_coordinate = yfield / np.sqrt(2.0 * station / reynolds)
+    flat_coordinate = similarity_coordinate.ravel()
+    u1 = np.interp(flat_coordinate, similarity_height, velocity, right=1.0).reshape(xfield.shape)
+    tmp = np.interp(flat_coordinate, similarity_height, temperature, right=1.0).reshape(xfield.shape)
+    normal_numerator = -temperature * (streamfunction - velocity * eta)
+    u2 = np.interp(
+        flat_coordinate,
+        similarity_height,
+        normal_numerator,
+        right=normal_numerator[-1],
+    ).reshape(xfield.shape) / np.sqrt(2.0 * reynolds * station)
+    rho = 1.0 / tmp
     u3 = np.zeros_like(xfield)
-    tmp = np.empty_like(xfield)
-    for index, x_value in enumerate(xline):
-        station_x = x_value - virtual_leading_edge
-        if station_x <= 0.0:
-            raise RuntimeError("all x coordinates must lie downstream of the virtual leading edge")
-        density_line, velocity_line, normal_velocity_line, temperature_line, _ = map_similarity_profile(
-            yline, eta, streamfunction, velocity, temperature, reynolds, station_x
-        )
-        rho[:, :, index] = density_line[None, :]
-        u1[:, :, index] = velocity_line[None, :]
-        u2[:, :, index] = normal_velocity_line[None, :]
-        tmp[:, :, index] = temperature_line[None, :]
 
     if oblique_shock:
         if shock_y_min < 0.0:

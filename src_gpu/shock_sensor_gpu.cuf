@@ -4,11 +4,13 @@ module shock_sensor_gpu
 contains
   attributes(global) subroutine raw_shock_sensor_kernel(im,jm,km, &
                                                         apply_left_x,apply_right_x, &
-                                                        apply_down_y,apply_up_y)
+                                                        apply_down_y,apply_up_y, &
+                                                        apply_back_z,apply_front_z)
     use commarray_gpu, only: dvel_d,prs_d,shock_sensor_d
     implicit none
-    integer,value :: im,jm,km,apply_left_x,apply_right_x,apply_down_y,apply_up_y
-    integer :: i,j,k,ip1,im1,jp1,jm1
+    integer,value :: im,jm,km,apply_left_x,apply_right_x,apply_down_y,apply_up_y, &
+                     apply_back_z,apply_front_z
+    integer :: i,j,k,ip1,im1,jp1,jm1,kp1,km1
     real(8) :: div2,vort,vortx,vorty,vortz,dpdi,dpdj,dpdk
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -26,16 +28,20 @@ contains
     im1 = i - 1
     jp1 = j + 1
     jm1 = j - 1
+    kp1 = k + 1
+    km1 = k - 1
     if(apply_left_x /= 0 .and. im1 < 0) im1 = 0
     if(apply_right_x /= 0 .and. ip1 > im) ip1 = im
     if(apply_down_y /= 0 .and. jm1 < 0) jm1 = 0
     if(apply_up_y /= 0 .and. jp1 > jm) jp1 = jm
+    if(apply_back_z /= 0 .and. km1 < 0) km1 = 0
+    if(apply_front_z /= 0 .and. kp1 > km) kp1 = km
     dpdi = abs(prs_d(ip1,j,k) - 2.d0*prs_d(i,j,k) + prs_d(im1,j,k)) / &
            (prs_d(ip1,j,k) + 2.d0*prs_d(i,j,k) + prs_d(im1,j,k))
     dpdj = abs(prs_d(i,jp1,k) - 2.d0*prs_d(i,j,k) + prs_d(i,jm1,k)) / &
            (prs_d(i,jp1,k) + 2.d0*prs_d(i,j,k) + prs_d(i,jm1,k))
-    dpdk = abs(prs_d(i,j,k+1) - 2.d0*prs_d(i,j,k) + prs_d(i,j,k-1)) / &
-           (prs_d(i,j,k+1) + 2.d0*prs_d(i,j,k) + prs_d(i,j,k-1))
+    dpdk = abs(prs_d(i,j,kp1) - 2.d0*prs_d(i,j,k) + prs_d(i,j,km1)) / &
+           (prs_d(i,j,kp1) + 2.d0*prs_d(i,j,k) + prs_d(i,j,km1))
     shock_sensor_d(i,j,k,1) = div2/(div2 + vort + 1.d-30) * max(dpdi,dpdj,dpdk)
   end subroutine raw_shock_sensor_kernel
 
@@ -83,12 +89,14 @@ contains
 
   attributes(global) subroutine expand_shock_sensor_kernel(im,jm,km,hm,threshold, &
                                                             apply_left_x,apply_right_x, &
-                                                            apply_down_y,apply_up_y)
+                                                            apply_down_y,apply_up_y, &
+                                                            apply_back_z,apply_front_z)
     use commarray_gpu, only: shock_sensor_d,shock_mask_d
     implicit none
-    integer,value :: im,jm,km,hm,apply_left_x,apply_right_x,apply_down_y,apply_up_y
+    integer,value :: im,jm,km,hm,apply_left_x,apply_right_x,apply_down_y,apply_up_y, &
+                     apply_back_z,apply_front_z
     real(8),value :: threshold
-    integer :: i,j,k,offset,ii,jj
+    integer :: i,j,k,offset,ii,jj,kk
     real(8) :: local_maximum
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -104,9 +112,12 @@ contains
       jj = j + offset
       if(apply_down_y /= 0 .and. jj < 0) jj = 0
       if(apply_up_y /= 0 .and. jj > jm) jj = jm
+      kk = k + offset
+      if(apply_back_z /= 0 .and. kk < 0) kk = 0
+      if(apply_front_z /= 0 .and. kk > km) kk = km
       local_maximum = max(local_maximum,shock_sensor_d(ii,j,k,1))
       local_maximum = max(local_maximum,shock_sensor_d(i,jj,k,1))
-      local_maximum = max(local_maximum,shock_sensor_d(i,j,k+offset,1))
+      local_maximum = max(local_maximum,shock_sensor_d(i,j,kk,1))
     enddo
     if(local_maximum > threshold) then
       shock_mask_d(i,j,k) = 1_1
@@ -158,7 +169,7 @@ contains
   end subroutine dump_shock_sensor_gpu_validation
 
   subroutine compute_shock_sensor_gpu()
-    use commvar, only: im,jm,km,hm,shkcrt,lchardecomp,npdci,npdcj
+    use commvar, only: im,jm,km,hm,shkcrt,lchardecomp,npdci,npdcj,npdck
     use commcal, only: shock_sensor_validation_enabled
     use gradcal_gpu, only: compute_gradcal_gpu
     use gpu_check, only: sync_after_kernel
@@ -168,14 +179,16 @@ contains
     use parallel, only: isize,jsize,ksize
     implicit none
     type(dim3) :: block3,grid3,block_x,grid_x,block_y,grid_y,block_z,grid_z
-    integer :: apply_left_x,apply_right_x,apply_down_y,apply_up_y
+    integer :: apply_left_x,apply_right_x,apply_down_y,apply_up_y,apply_back_z,apply_front_z
 
     if((.not.shock_sensor_validation_enabled()) .and. (.not.lchardecomp)) return
     call compute_gradcal_gpu()
     apply_left_x = merge(1,0,npdci == 1 .or. npdci == 4)
     apply_right_x = merge(1,0,npdci == 2 .or. npdci == 4)
-    apply_down_y = merge(1,0,npdcj == 1)
-    apply_up_y = merge(1,0,npdcj == 2)
+    apply_down_y = merge(1,0,npdcj == 1 .or. npdcj == 4)
+    apply_up_y = merge(1,0,npdcj == 2 .or. npdcj == 4)
+    apply_back_z = merge(1,0,npdck == 1 .or. npdck == 4)
+    apply_front_z = merge(1,0,npdck == 2 .or. npdck == 4)
 
     block3 = dim3(8,8,8)
     grid3 = dim3((im + block3%x)/block3%x, &
@@ -183,7 +196,8 @@ contains
                  (km + block3%z)/block3%z)
     call raw_shock_sensor_kernel<<<grid3,block3>>>(im,jm,km, &
                                                     apply_left_x,apply_right_x, &
-                                                    apply_down_y,apply_up_y)
+                                                    apply_down_y,apply_up_y, &
+                                                    apply_back_z,apply_front_z)
     call sync_after_kernel('raw_shock_sensor_kernel')
 
     if(isize==1 .and. jsize==1 .and. ksize==1) then
@@ -215,7 +229,8 @@ contains
 
     call expand_shock_sensor_kernel<<<grid3,block3>>>(im,jm,km,hm,shkcrt, &
                                                         apply_left_x,apply_right_x, &
-                                                        apply_down_y,apply_up_y)
+                                                        apply_down_y,apply_up_y, &
+                                                        apply_back_z,apply_front_z)
     call sync_after_kernel('expand_shock_sensor_kernel')
     call dump_shock_sensor_gpu_validation()
   end subroutine compute_shock_sensor_gpu

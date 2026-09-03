@@ -8,9 +8,12 @@ GPU_EXE="${GPU_EXE:-$ROOT_DIR/build_gpu_probe/bin/astr}"
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/tests/gpu_validation/out/curvilinear_tgv_compare}"
 GRID="${GRID:-32,32,32}"
 AMPLITUDE="${AMPLITUDE:-0.15}"
+MAPPING="${MAPPING:-periodic}"
 MAXSTEP="${MAXSTEP:-10}"
 NP="${NP:-1}"
 TOPOLOGY="${TOPOLOGY:-}"
+HOMOGENEOUS="${HOMOGENEOUS:-}"
+BCTYPE="${BCTYPE:-}"
 if [[ -n "${FEQCHKPT+x}" ]]; then
   FEQCHKPT="$FEQCHKPT"
 elif [[ "$MAXSTEP" == "0" ]]; then
@@ -52,13 +55,20 @@ for mode in cpu gpu; do
   if [[ -n "$DELTAT" ]]; then
     prepare_args+=(--deltat "$DELTAT")
   fi
+  if [[ -n "$HOMOGENEOUS" ]]; then
+    prepare_args+=(--homogeneous "$HOMOGENEOUS")
+  fi
+  if [[ -n "$BCTYPE" ]]; then
+    prepare_args+=(--bctype "$BCTYPE")
+  fi
   python3 "$ROOT_DIR/tests/gpu_validation/prepare_tgv_case.py" \
     "${prepare_args[@]}"
   python3 "$ROOT_DIR/tests/gpu_validation/generate_curvilinear_tgv_grid.py" \
     --output "$OUT_DIR/$mode/datin/grid.curvilinear.h5" \
     --report "$OUT_DIR/$mode/grid_quality.txt" \
     --grid "$GRID" \
-    --amplitude "$AMPLITUDE"
+    --amplitude "$AMPLITUDE" \
+    --mapping "$MAPPING"
 done
 
 (

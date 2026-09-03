@@ -763,7 +763,7 @@ RUN_SUPPORTED=f RUN_REJECTS=t \
 RUN_FIELD=f FEQCHKPT=99 tests/gpu_validation/run_wall_family_phaseh_matrix.sh
 ```
 
-Current expected result: the full default matrix prints 11 supported pass lines and 5 reject pass lines in `matrix_summary.txt`. Each supported entry should print `status: pass` for both `flowstate_compare.txt` and `flowfield_compare.txt`. The current full run is `tests/gpu_validation/out/wall_family_phaseh_matrix_full`; it passed all supported entries and kept `42-z`, `411-x/z`, and `421-x/z` rejected with exit status 2. Phase H does not expand the physics contract beyond the already validated Cartesian slices; it prevents regressions and accidental scope creep.
+Current expected result: the full default matrix prints 11 supported pass lines and 5 reject pass lines in `matrix_summary.txt`. Each supported entry should print `status: pass` for both `flowstate_compare.txt` and `flowfield_compare.txt`. Field comparison uses the CPU complete-RK validation snapshot so both backends are sampled at the same phase. The current full run passed every supported entry at `1e-10` field tolerance and kept `42-z`, `411-x/z`, and `421-x/z` rejected with exit status 2. Phase H does not expand the physics contract beyond the already validated Cartesian slices; it prevents regressions and accidental scope creep.
 
 ## Phase I Lid-Driven-Cavity Gate
 
@@ -827,7 +827,7 @@ OUT_DIR=tests/gpu_validation/out/ldcavity_phaseib_diffusion_np4_221 \
   tests/gpu_validation/run_ldcavity_phaseia_compare.sh
 ```
 
-Current expected result: the run passes statistics and HDF5 field comparison. This covers x/y internal MPI halos plus true physical x/y faces, while z remains periodic. Filtered LDC and the original 2-D LDC case remain outside the supported GPU contract.
+Current expected result: the run passes statistics and HDF5 field comparison. This covers x/y internal MPI halos plus true physical x/y faces, while z remains periodic. Phase I-C below supports filtering for the forced 3-D slice; the original 2-D LDC case remains outside the GPU contract.
 
 Validate the current Phase I-C filter isolation with:
 
@@ -861,7 +861,7 @@ OUT_DIR=tests/gpu_validation/out/ldcavity_filter_diff_5step_fixed_clean \
   tests/gpu_validation/run_ldcavity_phaseia_compare.sh
 ```
 
-Current expected result: statistics and field comparisons both print `status: pass`; the latest final `flowstate.dat maxq5` difference was `8.1854523159563541e-12`, and reconstructed `q5 L_inf` was `5.6843418860808015e-13`. Do not use the current 20-step small-grid LDC run as a correctness gate: CPU/GPU diagnostics both become abnormal or crash-prone by roughly steps 16-20, so that setup is an oracle-quality problem rather than a GPU-only failure.
+Current expected result: statistics and same-phase field comparisons both print `status: pass`; after the physical-filter closure correction, the latest five-step reconstructed `q5 L_inf` is `3.6948222259525210e-13`. Do not use the current 20-step small-grid LDC run as a correctness gate: CPU/GPU diagnostics both become abnormal or crash-prone by roughly steps 16-20, so that setup is an oracle-quality problem rather than a GPU-only failure.
 
 ## Phase J Rayleigh-Taylor Explicit Variant
 
@@ -2041,3 +2041,341 @@ about `4.7e-15` or below, and pressure drift is `4.3e-14`. NP=4/8 runs share
 two GPUs and are correctness evidence only. This gate does not validate an
 independent analytic `dxi/jacob` oracle, curved physical boundaries, moving
 grids, or production scaling.
+
+## Curvilinear analytic metric gate
+
+`run_curvilinear_metric_convergence.sh` enables the validation-only
+`ASTR_GEOMETRY_DUMP` hook and compares ASTR's `jacob` and all nine `dxi`
+components with the analytic derivatives of the periodic mapping. The oracle
+uses ASTR's integer computational coordinates: physical mapping columns are
+scaled by `2*pi/im`, `2*pi/jm`, and `2*pi/km` before inversion. Comparing
+against unscaled continuous coordinates is incorrect.
+
+Run the three-level default gate with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/curvilinear_metric_convergence \
+  tests/gpu_validation/run_curvilinear_metric_convergence.sh
+```
+
+The `16^3`, `24^3`, and `32^3` maximum `jacob` errors are
+`4.0224641635611125e-7`, `1.0639206314555505e-8`, and
+`8.0351376247067563e-10`. Maximum error across all nine `dxi` components
+decreases from `6.6675760468815071e-5` through `9.6589979468042486e-6` to
+`2.3469382739449429e-6`. Every numerical Jacobian is positive, all checked
+arrays are finite, and the largest sixth-order discrete metric-identity
+residual is `5.3733059668381600e-16`.
+
+## Curvilinear x-symmetry gate
+
+`run_curvilinear_symmetry_compare.sh` generates
+`x=xi+a*sin(eta)*sin(zeta), y=eta, z=zeta`. Both physical x faces are wavy,
+so their unit normals contain transverse components. The GPU uploads
+`bnorm_i0` and `bnorm_im` once, keeps them resident, and removes the normal
+component from the extrapolated three-component velocity exactly as CPU
+`symmetry(ndir=1/2)` does.
+
+Run the supported topology gates with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/curvilinear_symmetry_np1 \
+  tests/gpu_validation/run_curvilinear_symmetry_compare.sh
+
+NP=2 TOPOLOGY=2,1,1 \
+OUT_DIR=tests/gpu_validation/out/curvilinear_symmetry_np2 \
+  tests/gpu_validation/run_curvilinear_symmetry_compare.sh
+```
+
+Both one-step full-field comparisons pass at `1e-10`. The maximum primitive
+error is `p L_inf=1.4210854715202004e-14`; the maximum conservative error is
+`q5 L_inf=5.6843418860808015e-14`. A targeted NP=1 Compute Sanitizer memcheck
+reports `ERROR SUMMARY: 0 errors` with:
+
+```bash
+cd tests/gpu_validation/out/curvilinear_symmetry_np1/gpu
+OMPI_MCA_pml=ob1 OMPI_MCA_btl=self OMPI_MCA_osc=pt2pt \
+  mpirun -np 1 compute-sanitizer --tool memcheck --error-exitcode 99 \
+  ../../../../../build_gpu_probe/bin/astr run datin/input.tgv
+```
+
+This gate does not claim curvilinear y/z symmetry. CPU `symmetry(ndir=3/4)`
+computes a geometric projection and then discards it in favor of Cartesian
+`v=0`; k-min similarly forces `w=0`. Those semantics require an explicit CPU
+correctness decision before GPU expansion.
+
+## CURVE-C6 x-wavy isothermal wall gate
+
+CURVE-C6 uses the static mapping
+
+```text
+x = xi + a sin(eta) sin(zeta), y = eta, z = zeta
+```
+
+with `a=0.15`, analytic `J=1`, `bctype=41/41` on the two x faces, and
+periodic y/z. The scope is the nonreacting five-equation explicit path with
+`643e` convection/diffusion and the explicit 10th-order filter. It does not
+include species, turbulence, chemistry, immersed boundaries, moving grids,
+or compact schemes.
+
+CPU `noslip(ndir=1/2)` sets `(u,v,w)=(0,0,0)`, sets `T=Tw`, extrapolates
+pressure as `(4 p_1-p_2)/3` along the computational i line, evaluates density
+from the ideal-gas EOS, and rebuilds `q`. The zero velocity vector does not
+require a geometric wall normal. The pressure extrapolation is not an
+explicit geometric-normal Neumann condition, so this gate checks CPU/GPU
+compatibility rather than defining a general curved-wall pressure model.
+
+The CPU audit found that `filterq_explicit10` previously called a centered
+10th-order stencil at every physical node. Physical halos are not defined by
+`bctype=41`, so the result depended on stale or undefined values. CPU and GPU
+now use the same closure on each physical side:
+
+```text
+face       : unchanged
+point 1-2  : one-sided sixth order
+point 3    : centered sixth order
+point 4    : centered eighth order
+point >= 5 : centered 10th order
+```
+
+The mirrored rule applies at the upper face. Periodic and MPI interfaces keep
+the centered 10th-order formula
+
+```text
+F_i = 193/256 f_i
+    + 105/512 (f_(i-1) + f_(i+1))
+    - 15/128  (f_(i-2) + f_(i+2))
+    + 45/1024 (f_(i-3) + f_(i+3))
+    - 5/512   (f_(i-4) + f_(i+4))
+    + 1/1024  (f_(i-5) + f_(i+5)).
+```
+
+The first-stage RHS diagnostic also found that the GPU x-physical y/z
+convection kernels could update x-wall nodes on a curved grid. CPU
+`convrsdcal6` applies every directional contribution only inside
+`is:ie,js:je,ks:ke`; the GPU kernels now use the same active box.
+
+Run the complete acceptance matrix with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/curvilinear_wall41_matrix \
+  tests/gpu_validation/run_curvilinear_wall41_matrix.sh
+```
+
+The matrix covers NP=1 one-step no-filter/no-diffusion, NP=1 and NP=2
+`2x1x1` five-step filter+diffusion, and NP=4 `2x2x1` one-step
+filter+diffusion. `check_wall41_invariants.py` checks both CPU and GPU x faces
+for zero velocity, prescribed temperature, ideal-gas EOS consistency, zero
+wall momentum, and the no-slip total-energy reduction. The current matrix
+passes with maximum reconstructed `q5 L_inf=5.1159076974727213e-13`, maximum
+statistic difference below `5e-14`, wall-temperature error
+`5.6843418860808015e-14`, and EOS error `4.4408920985006262e-16`.
+
+Run NP=1 Compute Sanitizer from a prepared C6 GPU case with:
+
+```bash
+cd tests/gpu_validation/out/curvilinear_wall41_matrix/np1_filter_diff/gpu
+OMPI_MCA_pml=ob1 OMPI_MCA_btl=self OMPI_MCA_osc=pt2pt \
+  mpirun -np 1 compute-sanitizer --tool memcheck --error-exitcode 99 \
+  ../../../../../build_gpu_probe/bin/astr run datin/input.tgv
+```
+
+The targeted run reports `ERROR SUMMARY: 0 errors`. A separate three-step
+profile with `feqchkpt=99` confirms that the no-checkpoint RK window has no
+full-field H2D/D2H. After the first RHS kernel begins, maximum H2D and D2H
+operations are `128 B` and `1024 B`. Temporary first-stage phase/RHS dump
+hooks used to isolate the curved-wall residual were removed after diagnosis.
+
+Phase H and Phase I-C field drivers use the CPU complete-RK validation
+snapshot for same-phase comparisons. Comparing the CPU output-preparation
+checkpoint directly with the GPU complete-RK HDF5 field is not a valid
+numerical error test.
+
+CURVE-C6 proves CPU/GPU numerical equivalence and wall-state algebraic
+invariants for the tested static x-wavy single block. It does not validate
+curved-wall shear stress, heat flux, wall units, or other physical wall
+diagnostics.
+
+## CURVE-C7 three-dimensional curvilinear Mach 5 BL gate
+
+CURVE-C7 starts from the validated S1-C1/C2 Mach 5 single-species boundary
+layer and uses a static, boundary-preserving nonorthogonal mapping:
+
+```text
+x = X + ax sin(pi s) y (1-y)
+y = Y + ay sin(2 pi s) y (1-y)
+z = Z
+```
+
+Here `s` is the normalized streamwise coordinate. The perturbation vanishes
+on all physical x/y faces, so the existing profile inlet, extrapolation,
+isothermal lower wall, and farfield upper target remain compatible. The
+initial similarity field is evaluated at every physical `(x,y)` point instead
+of copying one wall-normal profile across a warped station.
+
+The CPU audit found that the three-dimensional `fbcxbl` and `whfbl`
+statistics used an i-j quadrilateral even though the lower wall is an i-k
+face. GPU statistics also approximated volume as Cartesian
+`abs(dx*dy*dz)`. With explicit user approval, CPU now evaluates the true 3-D
+wall quadrilateral and GPU uses the same quadrilateral plus CPU-compatible
+six-term hexahedral volume.
+
+Run the acceptance matrix with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/curvilinear_hbl_c7_matrix \
+  tests/gpu_validation/run_curvilinear_hbl_c7_matrix.sh
+```
+
+The matrix covers NP=1 20 steps, NP=2 `2x1x1`, `1x2x1`, and `1x1x2` for
+five steps, and NP=4 `2x2x1` for one step. All use `numq=5`, Sutherland
+viscosity, explicit MP7 convection, sixth-order explicit diffusion,
+`bctype=11/21,41/51`, periodic z, `lfilter=f`, and `lchardecomp=f`.
+
+The current matrix passes same-phase fields, native statistics, and lower-wall
+invariants. Maximum primitive error is `T=4.1744385725905886e-14`, maximum
+conservative error is `q5=4.4408920985006262e-16`, and the NP=1 maximum
+statistic errors are `massflux=4.6074255521943996e-14`,
+`fbcx=4.5129915429709122e-18`, and
+`wallheatflux=2.3420460991581404e-19`. Lower-wall temperature and EOS errors
+are `8.8817841970012523e-16` and `2.2204460492503131e-16`; velocity,
+momentum, and energy-reconstruction residuals are zero.
+
+The independent grid check reports analytic
+`J=[2.2772279043379687e-6,5.0695588091900692e-4]`, maximum cross derivative
+`3.1461989215822009e-2`, and zero physical-face coordinate error. Because
+ASTR uses one-sided physical-boundary metric closure, the metric oracle
+reports both the full domain and a three-layer interior gate. Interior
+`jacob L_inf=1.1397685692384613e-11` and inverse-metric
+`L_inf=6.9346652153967625e-6`; the larger full-domain values remain visible in
+`metric_check.txt`.
+
+Targeted NP=1 Compute Sanitizer reports `ERROR SUMMARY: 0 errors`. A
+three-step `feqchkpt=99` Nsight Systems profile has no transfer at or above
+64 KiB in the RK window. The remaining H2D transfers are three 176-byte
+operations and the D2H transfers are three 6144-byte statistic reductions,
+not full fields. CURVE-C0-C6 and zero-warp S1-C1/C2 regressions pass on the
+same sources.
+
+This gate proves CPU/GPU numerical equivalence for the controlled static
+curvilinear slice. It does not validate boundary-layer grid convergence,
+wall-heat-flux physical accuracy, filtering on this case, characteristic
+farfield behavior, shock-boundary-layer interaction, moving or multi-block
+grids, or production scaling.
+
+## CURVE-C8 filtered curvilinear Mach 5 BL gate
+
+CURVE-C8 enables the explicit 10th-order filter on the C7 grid and boundary
+contract. It keeps `543e` MP7 convection, `643e` diffusion, Sutherland
+viscosity, `bctype=11/21,41/51`, periodic z, `lchardecomp=f`, full-`q`
+ping-pong storage, and the C6 physical `0-6-6-6-8-10` closure. Sponge,
+species, turbulence, chemistry, compact schemes, and characteristic paths
+remain outside the capability gate.
+
+Run the acceptance matrix with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/curvilinear_hbl_c8_filter_matrix \
+  tests/gpu_validation/run_curvilinear_hbl_c8_filter_matrix.sh
+```
+
+The matrix contains six cases: NP=1 one-step filter isolation with diffusion
+disabled; NP=1 20 steps with diffusion; NP=2 `2x1x1`, `1x2x1`, and `1x1x2`
+for five steps; and NP=4 `2x2x1` for one step. The z slab uses `KM=16` so
+each local active extent remains at least `hm=5`.
+
+The isolation gate passes with maximum primitive error
+`T=1.7541523789077473e-14`. The 20-step gate passes with
+`T=8.9714902173909650e-12`, `u1=6.5788485770212901e-12`, and maximum
+statistic error `wallheatflux=3.8150392986446471e-12`. All field and
+statistic comparisons remain below `1e-10`; lower-wall velocity, momentum,
+and energy residuals are zero, and the largest reported wall temperature
+error is `1.7763568394002505e-15`.
+
+The filter-isolation failure used during development was not a filter
+coefficient or boundary-closure defect. CPU `filterq` updates conservative
+`q` but leaves the pre-filter primitive variables in place through flux
+assembly. CPU Steger-Warming supersonic branches use filtered `q`, including
+`q1`, while subsonic split coefficients use the stage `rho`, `vel`, and
+`tmp`. GPU now follows the same distinction. `commvar_gpu::mach_d` is copied
+once after reference-variable setup so device sound speed is evaluated as
+`sqrt(tmp_d)/mach_d` without an RK host bridge.
+
+Run NP=1 Compute Sanitizer from a prepared filter-isolation GPU case:
+
+```bash
+cd tests/gpu_validation/out/curvilinear_hbl_c8_filter_matrix/np1_filter_isolation/gpu
+OMPI_MCA_pml=ob1 OMPI_MCA_btl=self OMPI_MCA_osc=pt2pt \
+  mpirun -np 1 compute-sanitizer --tool memcheck --error-exitcode 99 \
+  ../../../../../build_gpu_probe/bin/astr run datin/input.flatplate
+```
+
+The targeted run reports `ERROR SUMMARY: 0 errors`. For the residency audit,
+prepare the same GPU case with `maxstep=3` and `feqchkpt=99`, then profile
+`cuda,mpi` with Nsight Systems. In the interval beginning at the first
+`explicit_upwind_rhs_x_xyphysical_global_kernel`, the current trace contains
+three H2D copies of 176 bytes and three D2H statistic copies of 6144 bytes.
+There is no full-field transfer in the RK interval.
+
+CURVE-C0-C7, the C6 filter matrix, the five-step Phase I-C LDC filter plus
+diffusion gate, and zero-warp S1-C1/C2 regressions pass on the same CPU/GPU
+binaries. CURVE-C8 establishes numerical equivalence and compute-loop
+residency for this controlled filtered slice only. It does not establish
+mesh/time convergence, wall heat-flux accuracy, NSCBC, shock sensing,
+selective Roe, SBLI, moving or multi-block grids, GPU HDF5, or production
+scaling.
+
+## CURVE-C9 curvilinear selective-Roe gate
+
+CURVE-C9 combines the static C7 nonorthogonal Mach 5 grid with the S2-C3
+Ducros sensor and selective Roe-characteristic MP7 path. The inlet profile
+sustains an oblique pressure, density, and velocity discontinuity. The test
+uses `543e/643e`, `recon=3`, `lchardecomp=t`, `lfilter=f`, `diffterm=f`, no
+sponge, `bctype=11/21,41/51`, periodic z, and no species or turbulence.
+
+The CPU-oracle audit found a deterministic boundary-index defect before the
+acceptance run. CPU `ducrossensor` treated `npdcj=4` and `npdck=4` as neither
+physical side, while x correctly treated `npdci=4` as both sides. Raw
+pressure-curvature and expanded-mask stencils could therefore read invalid
+y/z physical halos. After explicit user approval, CPU and GPU now clamp both
+physical sides consistently. The Ducros formula, threshold, and fixed-`hm`
+sensor exchange are unchanged.
+
+Run the acceptance matrix with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/curvilinear_hbl_c9_selective_roe_matrix \
+  tests/gpu_validation/run_curvilinear_hbl_c9_selective_roe_matrix.sh
+```
+
+The matrix covers NP=1 one-step raw-sensor isolation, NP=1 20 steps, NP=2
+`2x1x1`, `1x2x1`, and `1x1x2` for three steps, and NP=4 `2x2x1` for three
+steps. The z slab uses `KM=16` to preserve the local halo extent. Raw-sensor
+`L_inf` is `9.9973866084364236e-16`; the CPU and GPU masks have zero
+mismatches and both contain 7659 shock nodes. The maximum field error is
+`T=1.4921397450962104e-13`, and the maximum statistic error is
+`massflux=4.9649173661237000e-13`. Lower-wall invariants remain below
+`9e-16`. The numerical Jacobian is finite and positive in
+`[2.2722591030002285e-6,5.0507585440825813e-4]`.
+
+NP=1 Compute Sanitizer reports `ERROR SUMMARY: 0 errors`. The no-checkpoint
+three-step Nsight trace is exported to SQLite and checked with:
+
+```bash
+python3 tests/gpu_validation/analyze_nsys_rk_residency.py \
+  --sqlite tests/gpu_validation/out/curvilinear_hbl_c9_goal/residency/c9_np1_nochk.sqlite \
+  --start-kernel characteristic_upwind_rhs_x_xyphysical_global_kernel \
+  --large-transfer-bytes 65536 \
+  --report tests/gpu_validation/out/curvilinear_hbl_c9_goal/residency/residency_report.txt
+```
+
+After the first characteristic x-RHS kernel, the trace contains three
+176-byte H2D operations and three 6144-byte D2H statistic reductions. No
+transfer is at or above 64 KiB. The sensor and selective-Roe kernels retain
+the project rule of an explicit synchronization after every kernel.
+
+CURVE-C0-C8, the ten-case Cartesian S2-C3 matrix, S0-A4-A10, and zero-warp
+S1-C1/C2 regressions pass on the same sources. CURVE-C9 is a controlled
+numerical-equivalence and residency gate. It does not establish physical
+SBLI fidelity, mesh/time convergence, shock-position accuracy, NSCBC or
+sponge behavior, filter/diffusion coupling, species, turbulence, chemistry,
+IBM, moving or multi-block grids, GPU HDF5, or production scaling.

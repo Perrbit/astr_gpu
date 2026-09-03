@@ -21,6 +21,7 @@ FIELD_ATOL="${FIELD_ATOL:-1e-9}"
 FIELD_RTOL="${FIELD_RTOL:-1e-10}"
 COMPARE_STATS="${COMPARE_STATS:-t}"
 COMPARE_FIELD="${COMPARE_FIELD:-f}"
+CPU_SNAPSHOT="outdat/rk_complete_snapshot.h5"
 ZERO_AXIS="${ZERO_AXIS:-x}"
 BC_KIND="${BC_KIND:-zeroextrap}"
 WALL_TEMP="${WALL_TEMP:-273.15d0}"
@@ -148,6 +149,7 @@ python3 "$ROOT_DIR/tests/gpu_validation/prepare_tgv_case.py" \
 (
   cd "$OUT_DIR/cpu"
   ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
+    ASTR_VALIDATION_RK_SNAPSHOT="$CPU_SNAPSHOT" \
     mpirun -np "$NP" "$CPU_EXE" run datin/input.tgv > cpu.log 2>&1
 )
 
@@ -168,7 +170,7 @@ fi
 
 if [[ "$COMPARE_FIELD" == "t" ]]; then
   python3 "$ROOT_DIR/tests/gpu_validation/compare_flowfield_h5.py" \
-    --cpu "$OUT_DIR/cpu" \
+    --cpu "$OUT_DIR/cpu/$CPU_SNAPSHOT" \
     --gpu "$OUT_DIR/gpu" \
     --report "$OUT_DIR/flowfield_compare.txt" \
     --atol "$FIELD_ATOL" \

@@ -25,6 +25,61 @@ def load_module(name: str, path: Path):
 
 
 class CurvilinearFreestreamToolsTest(unittest.TestCase):
+    def test_x_wavy_mapping_has_positive_jacobian_and_noncartesian_x_faces(self) -> None:
+        generator = load_module(
+            "generate_curvilinear_tgv_grid",
+            ROOT / "tests/gpu_validation/generate_curvilinear_tgv_grid.py",
+        )
+        x, y, z, jacobian = generator.mapped_grid(16, 18, 20, 0.15, "x-wavy")
+        self.assertGreater(float(np.min(jacobian)), 0.0)
+        self.assertGreater(float(np.ptp(x[0, :, :])), 0.25)
+        self.assertTrue(np.allclose(y[0, :, :], y[-1, :, :]))
+        self.assertTrue(np.allclose(z[0, :, :], z[-1, :, :]))
+
+    def test_analytic_curvilinear_metrics_are_inverse_mapping(self) -> None:
+        checker = load_module(
+            "check_curvilinear_metrics",
+            ROOT / "tests/gpu_validation/check_curvilinear_metrics.py",
+        )
+        jacobian, inverse = checker.analytic_metrics((16, 18, 20), 0.15)
+        mapping = checker.index_mapping_derivatives((16, 18, 20), 0.15)
+        product = np.einsum("...ij,...jk->...ik", inverse, mapping)
+        identity = np.eye(3)[None, None, None, :, :]
+        self.assertGreater(float(np.min(jacobian)), 0.0)
+        self.assertLess(float(np.max(np.abs(product - identity))), 1.0e-12)
+
+    def test_analytic_metrics_satisfy_discrete_identity(self) -> None:
+        checker = load_module(
+            "check_curvilinear_metrics_identity",
+            ROOT / "tests/gpu_validation/check_curvilinear_metrics.py",
+        )
+        residuals = []
+        for size in (16, 24, 32):
+            jacobian, inverse = checker.analytic_metrics((size, size, size), 0.15)
+            residual = checker.metric_identity_residual(jacobian, inverse)
+            residuals.append(float(np.max(np.abs(residual))))
+        self.assertTrue(all(np.isfinite(residuals)))
+        self.assertGreater(residuals[0], residuals[1])
+        self.assertGreater(residuals[1], residuals[2])
+
+    def test_metric_convergence_requires_each_error_to_decrease(self) -> None:
+        convergence = load_module(
+            "check_curvilinear_metric_convergence",
+            ROOT / "tests/gpu_validation/check_curvilinear_metric_convergence.py",
+        )
+        self.assertTrue(convergence.errors_decrease([1.0e-3, 2.0e-4, 4.0e-5]))
+        self.assertFalse(convergence.errors_decrease([1.0e-3, 1.1e-3, 4.0e-5]))
+
+    def test_metric_convergence_reads_component_linf(self) -> None:
+        convergence = load_module(
+            "check_curvilinear_metric_convergence_norm",
+            ROOT / "tests/gpu_validation/check_curvilinear_metric_convergence.py",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = Path(tmpdir) / "metric.txt"
+            report.write_text("dxi23 linf=1.2500000000000000e-06 l2=2.0e-07\n")
+            self.assertEqual(convergence.report_norm_linf(report, "dxi23"), 1.25e-6)
+
     def test_set_ninit_updates_input_value(self) -> None:
         prepare = load_module(
             "prepare_tgv_case",

@@ -10,7 +10,7 @@ contains
   end subroutine init_gpu
 
   subroutine prepare_rkfirst_stats_gpu()
-    use commvar, only: im,jm,km,hm,const2,const6,lfilter
+    use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,const2,const6,lfilter
     use parallel, only: jsize,ksize
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
     use gpu_check, only: sync_after_kernel
@@ -55,21 +55,21 @@ contains
         call sync_after_kernel('prepare_q_to_primitive_kernel_prefilter')
       endif
       call exchange_solution_filter_halo_gpu()
-      call filter_x_global_kernel<<<grid_x,block_x>>>(im,jm,km)
+      call filter_x_global_kernel<<<grid_x,block_x>>>(im,jm,km,npdci)
       call sync_after_kernel('prepare_filter_x_global_kernel')
       if(jsize>1) then
         call exchange_filter_y_work_halo_gpu()
       else
         call refresh_filter_y_work_local_halo_gpu()
       endif
-      call filter_y_pong_to_q_halo_global_kernel<<<grid_y,block_y>>>(im,jm,km)
+      call filter_y_pong_to_q_halo_global_kernel<<<grid_y,block_y>>>(im,jm,km,npdcj)
       call sync_after_kernel('prepare_filter_y_pong_to_q_halo_global_kernel')
       if(ksize>1) then
         call exchange_filter_z_halo_gpu()
       else
         call refresh_filter_z_local_halo_gpu()
       endif
-      call filter_z_halo_global_kernel<<<grid_z,block_z>>>(im,jm,km)
+      call filter_z_halo_global_kernel<<<grid_z,block_z>>>(im,jm,km,npdck)
       call sync_after_kernel('prepare_filter_z_halo_global_kernel')
       call copy_qwork_global_kernel<<<grid1,block1>>>(im,jm,km)
       call sync_after_kernel('prepare_copy_qwork_global_kernel')
@@ -102,7 +102,7 @@ contains
   end subroutine prepare_rkfirst_stats_gpu
 
   subroutine time_integration_rk_gpu(first_stage_prepared,copy_back)
-    use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,npdcj,nstep,deltat,const2,const5,const6, &
+    use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,npdcj,npdck,nstep,deltat,const2,const5,const6, &
          diffterm,lfilter,reynolds,prandtl,tempconst,tempconst1,gamma,recon_schem
     use parallel, only: jsize,ksize
     use commarray_gpu, only: q_d,qrhs_d,qsave_d,rho_d,vel_d,prs_d,tmp_d, &
@@ -189,6 +189,7 @@ contains
          gpu_open_shock_s0b3_sponge_supported, &
          gpu_open_shock_s0b4_sponge_mpi_supported, &
          gpu_s1_flatplate_s1a_supported,gpu_s1_flatplate_s1a1_supported, &
+         gpu_s1_flatplate_explicit_filter_supported, &
          gpu_sod_s0a3_supported,gpu_shock_sensor_s0a4_supported, &
          gpu_shock_sensor_s0a5_supported,gpu_shock_characteristic_s0a6_supported, &
          gpu_shock_characteristic_s0b0_xphysical_supported, &
@@ -240,7 +241,8 @@ contains
 
     call validate_first_stage_gpu()
     ldc_case = gpu_ldc_boundary_case_pending()
-    flatplate_mp7_case = gpu_s1_flatplate_s1a1_supported()
+    flatplate_mp7_case = gpu_s1_flatplate_s1a1_supported() .or. &
+         gpu_s1_flatplate_explicit_filter_supported()
     s2_hbl_selective_roe_case = gpu_s2_hbl_selective_roe_s2c3_supported()
     s2_hbl_selective_roe_sponge_case = gpu_s2_hbl_selective_roe_s2c3_sponge_supported()
     s2_hbl_selective_roe_c4_case = gpu_s2_hbl_selective_roe_s2c4_supported()
@@ -325,21 +327,21 @@ contains
 
         if(lfilter) then
           call exchange_solution_filter_halo_gpu()
-          call filter_x_global_kernel<<<grid_x,block_x>>>(im,jm,km)
+          call filter_x_global_kernel<<<grid_x,block_x>>>(im,jm,km,npdci)
           call sync_after_kernel('filter_x_global_kernel')
           if(jsize>1) then
             call exchange_filter_y_work_halo_gpu()
           else
             call refresh_filter_y_work_local_halo_gpu()
           endif
-          call filter_y_pong_to_q_halo_global_kernel<<<grid_y,block_y>>>(im,jm,km)
+          call filter_y_pong_to_q_halo_global_kernel<<<grid_y,block_y>>>(im,jm,km,npdcj)
           call sync_after_kernel('filter_y_pong_to_q_halo_global_kernel')
           if(ksize>1) then
             call exchange_filter_z_halo_gpu()
           else
             call refresh_filter_z_local_halo_gpu()
           endif
-          call filter_z_halo_global_kernel<<<grid_z,block_z>>>(im,jm,km)
+          call filter_z_halo_global_kernel<<<grid_z,block_z>>>(im,jm,km,npdck)
           call sync_after_kernel('filter_z_halo_global_kernel')
           call copy_qwork_global_kernel<<<grid1,block1>>>(im,jm,km)
           call sync_after_kernel('copy_qwork_global_kernel')
@@ -685,6 +687,7 @@ contains
          gpu_open_shock_s0b3_sponge_supported, &
          gpu_open_shock_s0b4_sponge_mpi_supported, &
          gpu_s1_flatplate_s1a_supported,gpu_s1_flatplate_s1a1_supported, &
+         gpu_s1_flatplate_explicit_filter_supported, &
          gpu_shock_sensor_s0a4_supported, &
          gpu_shock_sensor_s0a5_supported,gpu_shock_characteristic_s0a6_supported, &
          gpu_shock_characteristic_s0b0_xphysical_supported, &
@@ -715,6 +718,7 @@ contains
          gpu_open_shock_s0b4_sponge_mpi_supported() .or. &
          gpu_s1_flatplate_s1a_supported() .or. &
          gpu_s1_flatplate_s1a1_supported() .or. &
+         gpu_s1_flatplate_explicit_filter_supported() .or. &
          gpu_shock_sensor_s0a4_supported() .or. gpu_shock_sensor_s0a5_supported() .or. &
          gpu_shock_characteristic_s0a6_supported() .or. &
          gpu_shock_characteristic_s0b0_xphysical_supported() .or. &
@@ -741,6 +745,7 @@ contains
     flatplate_pending = gpu_s1_flatplate_boundary_case_pending()
     if(flatplate_pending .and. (.not.gpu_s1_flatplate_s1a_supported()) .and. &
        (.not.gpu_s1_flatplate_s1a1_supported()) .and. &
+       (.not.gpu_s1_flatplate_explicit_filter_supported()) .and. &
        (.not.gpu_s2_hbl_selective_roe_s2c3_supported()) .and. &
        (.not.gpu_s2_hbl_selective_roe_s2c3_sponge_supported()) .and. &
        (.not.gpu_s2_hbl_selective_roe_s2c4_supported()) .and. &

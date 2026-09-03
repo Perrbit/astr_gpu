@@ -6,6 +6,7 @@ module commarray_gpu
   real(8),allocatable,device :: rho_d(:,:,:),prs_d(:,:,:),tmp_d(:,:,:)
   real(8),allocatable,device :: vel_d(:,:,:,:),jacob_d(:,:,:),x_d(:,:,:,:)
   real(8),allocatable,device :: dxi_d(:,:,:,:,:)
+  real(8),allocatable,device :: bnorm_i0_d(:,:,:),bnorm_im_d(:,:,:)
   real(8),allocatable,device :: dvel_d(:,:,:,:,:),dtmp_d(:,:,:,:)
   real(8),allocatable,device :: sigma_d(:,:,:,:),qflux_d(:,:,:,:)
   real(8),allocatable,device :: flux_work_d(:,:,:),flux_characteristic_work_d(:,:,:,:)
@@ -28,6 +29,8 @@ contains
     if(.not.allocated(jacob_d))  allocate(jacob_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
     if(.not.allocated(x_d))      allocate(x_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3))
     if(.not.allocated(dxi_d))    allocate(dxi_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3,1:3))
+    if(.not.allocated(bnorm_i0_d)) allocate(bnorm_i0_d(0:jm,0:km,1:3))
+    if(.not.allocated(bnorm_im_d)) allocate(bnorm_im_d(0:jm,0:km,1:3))
     if(.not.allocated(dvel_d))   allocate(dvel_d(0:im,0:jm,0:km,1:3,1:3))
     if(.not.allocated(dtmp_d))   allocate(dtmp_d(0:im,0:jm,0:km,1:3))
     if(.not.allocated(sigma_d))  allocate(sigma_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:6))
@@ -47,7 +50,7 @@ contains
   end subroutine alloc_gpu_arrays
 
   subroutine copy_flow_to_gpu()
-    use commarray, only: q,rho,vel,prs,tmp,jacob,x,dxi
+    use commarray, only: q,rho,vel,prs,tmp,jacob,x,dxi,bnorm_i0,bnorm_im
     implicit none
 
     q_d = q
@@ -58,6 +61,10 @@ contains
     jacob_d = jacob
     x_d = x
     dxi_d = dxi
+    bnorm_i0_d = 0.d0
+    bnorm_im_d = 0.d0
+    if(allocated(bnorm_i0)) bnorm_i0_d = bnorm_i0
+    if(allocated(bnorm_im)) bnorm_im_d = bnorm_im
   end subroutine copy_flow_to_gpu
 
   subroutine copy_flow_from_gpu()

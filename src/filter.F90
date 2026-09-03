@@ -439,6 +439,10 @@ module filter
       allocate(coef10e(0:5),coef8e(0:4),coef6e(0:3),coef4e(0:2),coef2e(0:1))
       allocate(coef3be(0:1,0:3),coef4be(0:1,0:4),coef6be(0:2,0:6))
 
+      coef3be=0.d0
+      coef4be=0.d0
+      coef6be=0.d0
+
       ! explicit filter
       coef4be(0,0)=(15.d0 )/16.d0
       coef4be(0,1)=( 1.d0 )/4.d0
@@ -491,7 +495,17 @@ module filter
       coef10e(3)=( 45.d0 )/1024.d0
       coef10e(4)=( -5.d0 )/512.d0
       coef10e(5)=(  1.d0 )/1024.d0
+
+      ! Sixth-order one-sided closure at the first interior point.
+      coef6be(1,0)=(  1.d0 )/64.d0
+      coef6be(1,1)=( 29.d0 )/32.d0
+      coef6be(1,2)=( 15.d0 )/64.d0
+      coef6be(1,3)=( -5.d0 )/16.d0
+      coef6be(1,4)=( 15.d0 )/64.d0
+      coef6be(1,5)=( -3.d0 )/32.d0
+      coef6be(1,6)=(  1.d0 )/64.d0
   
+      ! Sixth-order one-sided closure at the second interior point.
       coef6be(2,0)=( -1.d0 )  /64.d0
       coef6be(2,1)=(  3.d0 )  /32.d0
       coef6be(2,2)=( 49.d0 )  /64.d0
@@ -532,21 +546,67 @@ module filter
     !| The end of the function filter8exp.                               |
     !+-------------------------------------------------------------------+
     !
-    function spafilter10exp(f,dim) result(ff)
+    function spafilter10exp(f,ntype,dim) result(ff)
       !
       use commvar, only: hm
 
       ! arguments
-      integer,intent(in) :: dim
+      integer,intent(in) :: ntype,dim
       real(8),intent(in) :: f(-hm:dim+hm)
       real(8) :: ff(0:dim)
       !
       ! local data
-      integer :: ii,m
+      integer :: ii,m,i_s,i_e
       !
       ff=0.d0
+      i_s=0
+      i_e=dim
       !
-      do ii=0,dim
+      ! A physical face has no valid halo. Preserve the boundary node and
+      ! use the documented 0-6-6-6-8-10 explicit closure toward the interior.
+      if(ntype==1 .or. ntype==4) then
+        ff(0)=f(0)
+
+        do m=0,6
+          ff(1)=ff(1)+coef6be(1,m)*f(m)
+          ff(2)=ff(2)+coef6be(2,m)*f(m)
+        enddo
+
+        ii=3
+        do m=0,3
+          ff(ii)=ff(ii)+coef6e(m)*(f(ii-m)+f(ii+m))
+        enddo
+
+        ii=4
+        do m=0,4
+          ff(ii)=ff(ii)+coef8e(m)*(f(ii-m)+f(ii+m))
+        enddo
+
+        i_s=5
+      endif
+
+      if(ntype==2 .or. ntype==4) then
+        ff(dim)=f(dim)
+
+        do m=0,6
+          ff(dim-1)=ff(dim-1)+coef6be(1,m)*f(dim-m)
+          ff(dim-2)=ff(dim-2)+coef6be(2,m)*f(dim-m)
+        enddo
+
+        ii=dim-3
+        do m=0,3
+          ff(ii)=ff(ii)+coef6e(m)*(f(ii-m)+f(ii+m))
+        enddo
+
+        ii=dim-4
+        do m=0,4
+          ff(ii)=ff(ii)+coef8e(m)*(f(ii-m)+f(ii+m))
+        enddo
+
+        i_e=dim-5
+      endif
+
+      do ii=i_s,i_e
         do m=0,5
           ff(ii)=ff(ii)+coef10e(m)*(f(ii-m)+f(ii+m))
         enddo
