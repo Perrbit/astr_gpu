@@ -67,12 +67,16 @@ contains
   subroutine gpu_prepare_rkfirst_stats()
     use mainloop_gpu, only: prepare_rkfirst_stats_gpu
     use case_capability_gpu, only: gpu_s2_hbl_selective_roe_s2c4_supported, &
-         gpu_s2_hbl_selective_roe_s2c4_sponge_supported
+         gpu_s2_hbl_selective_roe_s2c4_sponge_supported, &
+         gpu_s2_hbl_selective_roe_s2c4_diffusion_supported, &
+         gpu_s2_hbl_selective_roe_s2c5_diffusion_supported
     use commarray_gpu, only: save_q_stats_snapshot_gpu
     implicit none
 
     c4_stats_snapshot_ready = gpu_s2_hbl_selective_roe_s2c4_supported() .or. &
-         gpu_s2_hbl_selective_roe_s2c4_sponge_supported()
+         gpu_s2_hbl_selective_roe_s2c4_sponge_supported() .or. &
+         gpu_s2_hbl_selective_roe_s2c4_diffusion_supported() .or. &
+         gpu_s2_hbl_selective_roe_s2c5_diffusion_supported()
     if(c4_stats_snapshot_ready) call save_q_stats_snapshot_gpu()
     call prepare_rkfirst_stats_gpu()
     prepared_halo_ready = .true.

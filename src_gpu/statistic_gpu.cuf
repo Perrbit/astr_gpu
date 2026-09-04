@@ -417,6 +417,34 @@ contains
     endif
   end subroutine s1_bl_partial_kernel
 
+  attributes(global) subroutine s1_bl_reduce_partial_kernel(partial,reduced,nblocks)
+    implicit none
+    integer,value :: nblocks
+    real(8),device :: partial(nblocks,6),reduced(6)
+    real(8),shared :: scratch(256)
+    real(8) :: subtotal
+    integer :: tid,ivar,iblock,stride
+
+    tid = threadIdx%x
+    ivar = blockIdx%x
+    subtotal = 0.d0
+    iblock = tid
+    do while(iblock <= nblocks)
+      subtotal = subtotal + partial(iblock,ivar)
+      iblock = iblock + blockDim%x
+    enddo
+    scratch(tid) = subtotal
+    call syncthreads()
+
+    stride = blockDim%x/2
+    do while(stride > 0)
+      if(tid <= stride) scratch(tid) = scratch(tid) + scratch(tid+stride)
+      call syncthreads()
+      stride = stride/2
+    enddo
+    if(tid == 1) reduced(ivar) = scratch(1)
+  end subroutine s1_bl_reduce_partial_kernel
+
   subroutine gpu_kenergy_scalar(kenergy_gpu)
     use mpi
     use commvar, only: im,jm,km,hm,ia,ja,ka,roinf,uinf
@@ -616,18 +644,20 @@ contains
     integer,parameter :: block_size=256
     integer :: nwork,nblocks,ierr,apply_down,apply_up
     real(8) :: local_sum(6),global_sum(6)
-    real(8),allocatable,device :: partial_d(:,:)
-    real(8),allocatable :: partial_h(:,:)
+    real(8),allocatable,device :: partial_d(:,:),reduced_d(:)
+    real(8),allocatable :: reduced_h(:)
 
     nwork = max(im*jm*km,im*km)
     nblocks = max(1,(nwork+block_size-1)/block_size)
-    allocate(partial_d(nblocks,6),partial_h(nblocks,6))
+    allocate(partial_d(nblocks,6),reduced_d(6),reduced_h(6))
     call gpu_physical_boundary_apply_mask(2,apply_down,apply_up)
     call s1_bl_partial_kernel<<<nblocks,block_size>>>(q_d,vel_d,x_d,tmp_d,dvel_d,dtmp_d,partial_d, &
          im,jm,km,hm,tempconst,tempconst1,reynolds,prandtl,const5,apply_down)
     call sync_after_kernel('s1_bl_partial_kernel')
-    partial_h = partial_d
-    local_sum(:) = sum(partial_h,dim=1)
+    call s1_bl_reduce_partial_kernel<<<6,block_size>>>(partial_d,reduced_d,nblocks)
+    call sync_after_kernel('s1_bl_reduce_partial_kernel')
+    reduced_h = reduced_d
+    local_sum = reduced_h
     if(mpisize > 1) then
       call mpi_allreduce(local_sum,global_sum,6,mpi_real8,mpi_sum,mpi_comm_world,ierr)
     else
@@ -638,7 +668,7 @@ contains
     fbcx_gpu = global_sum(2)/global_sum(6)
     wallheatflux_gpu = global_sum(3)/global_sum(6)
     wrms_gpu = sqrt(global_sum(4)/real(ia*ja*ka,8))
-    deallocate(partial_d,partial_h)
+    deallocate(partial_d,reduced_d,reduced_h)
   end subroutine gpu_s1_bl_scalars
 
   subroutine gpu_write_kenergy()

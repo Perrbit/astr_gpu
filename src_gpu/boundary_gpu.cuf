@@ -613,12 +613,12 @@ contains
   end subroutine symmetry_x_kernel
 
   attributes(global) subroutine symmetry_y_kernel(im,jm,km,hm,const2,const6,apply_down,apply_up)
-    use commarray_gpu, only: vel_d,prs_d,tmp_d
+    use commarray_gpu, only: vel_d,prs_d,tmp_d,bnorm_j0_d,bnorm_jm_d
     implicit none
     integer,value :: im,jm,km,hm,apply_down,apply_up
     real(8),value :: const2,const6
     integer :: id,i,k,nplane
-    real(8) :: rho,uu,vv,ww,prs,tmp
+    real(8) :: rho,uu,vv,ww,prs,tmp,vnormal
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (im + 1) * (km + 1)
@@ -628,8 +628,12 @@ contains
 
     if(apply_down /= 0) then
       uu  = extrap2(vel_d(i,1,k,1),vel_d(i,2,k,1))
-      vv  = 0.d0
+      vv  = extrap2(vel_d(i,1,k,2),vel_d(i,2,k,2))
       ww  = extrap2(vel_d(i,1,k,3),vel_d(i,2,k,3))
+      vnormal = uu*bnorm_j0_d(i,k,1) + vv*bnorm_j0_d(i,k,2) + ww*bnorm_j0_d(i,k,3)
+      uu = uu - vnormal*bnorm_j0_d(i,k,1)
+      vv = vv - vnormal*bnorm_j0_d(i,k,2)
+      ww = ww - vnormal*bnorm_j0_d(i,k,3)
       prs = extrap2(prs_d(i,1,k),prs_d(i,2,k))
       tmp = extrap2(tmp_d(i,1,k),tmp_d(i,2,k))
       rho = prs/tmp*const2
@@ -640,8 +644,12 @@ contains
 
     if(apply_up /= 0) then
       uu  = extrap2(vel_d(i,jm-1,k,1),vel_d(i,jm-2,k,1))
-      vv  = 0.d0
+      vv  = extrap2(vel_d(i,jm-1,k,2),vel_d(i,jm-2,k,2))
       ww  = extrap2(vel_d(i,jm-1,k,3),vel_d(i,jm-2,k,3))
+      vnormal = uu*bnorm_jm_d(i,k,1) + vv*bnorm_jm_d(i,k,2) + ww*bnorm_jm_d(i,k,3)
+      uu = uu - vnormal*bnorm_jm_d(i,k,1)
+      vv = vv - vnormal*bnorm_jm_d(i,k,2)
+      ww = ww - vnormal*bnorm_jm_d(i,k,3)
       prs = extrap2(prs_d(i,jm-1,k),prs_d(i,jm-2,k))
       tmp = extrap2(tmp_d(i,jm-1,k),tmp_d(i,jm-2,k))
       rho = prs/tmp*const2
@@ -958,12 +966,12 @@ contains
   end subroutine wall_isothermal_noslip_z_kernel
 
   attributes(global) subroutine symmetry_z_kernel(im,jm,km,hm,const2,const6,apply_back,apply_front)
-    use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d
+    use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d,bnorm_k0_d,bnorm_km_d
     implicit none
     integer,value :: im,jm,km,hm,apply_back,apply_front
     real(8),value :: const2,const6
     integer :: id,i,j,nplane
-    real(8) :: rho,uu,vv,ww,prs,tmp
+    real(8) :: rho,uu,vv,ww,prs,tmp,vnormal
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (im + 1) * (jm + 1)
@@ -974,7 +982,11 @@ contains
     if(apply_back /= 0) then
       uu  = extrap2(vel_d(i,j,1,1),vel_d(i,j,2,1))
       vv  = extrap2(vel_d(i,j,1,2),vel_d(i,j,2,2))
-      ww  = 0.d0
+      ww  = extrap2(vel_d(i,j,1,3),vel_d(i,j,2,3))
+      vnormal = uu*bnorm_k0_d(i,j,1) + vv*bnorm_k0_d(i,j,2) + ww*bnorm_k0_d(i,j,3)
+      uu = uu - vnormal*bnorm_k0_d(i,j,1)
+      vv = vv - vnormal*bnorm_k0_d(i,j,2)
+      ww = ww - vnormal*bnorm_k0_d(i,j,3)
       prs = extrap2(prs_d(i,j,1),prs_d(i,j,2))
       tmp = extrap2(tmp_d(i,j,1),tmp_d(i,j,2))
       rho = prs/tmp*const2
@@ -986,7 +998,11 @@ contains
     if(apply_front /= 0) then
       uu  = extrap2(vel_d(i,j,km-1,1),vel_d(i,j,km-2,1))
       vv  = extrap2(vel_d(i,j,km-1,2),vel_d(i,j,km-2,2))
-      ww  = 0.d0
+      ww  = extrap2(vel_d(i,j,km-1,3),vel_d(i,j,km-2,3))
+      vnormal = uu*bnorm_km_d(i,j,1) + vv*bnorm_km_d(i,j,2) + ww*bnorm_km_d(i,j,3)
+      uu = uu - vnormal*bnorm_km_d(i,j,1)
+      vv = vv - vnormal*bnorm_km_d(i,j,2)
+      ww = ww - vnormal*bnorm_km_d(i,j,3)
       prs = extrap2(prs_d(i,j,km-1),prs_d(i,j,km-2))
       rho = extrap2(rho_d(i,j,km-1),rho_d(i,j,km-2))
       tmp = prs/rho*const2

@@ -3014,9 +3014,9 @@ module bc
         vne=dot_product(vec1,bnorm_j0(i,k,:))
         vec1=vec1-vne*bnorm_j0(i,k,:)
         !
-        vel(i,j,k,1)=ue
-        vel(i,j,k,2)=0.d0
-        vel(i,j,k,3)=we
+        vel(i,j,k,1)=vec1(1)
+        vel(i,j,k,2)=vec1(2)
+        vel(i,j,k,3)=vec1(3)
         spc(i,j,k,:)=spce(:)
         !
         prs(i,j,k)=pe
@@ -3074,9 +3074,9 @@ module bc
         vne=dot_product(vec1,bnorm_jm(i,k,:))
         vec1=vec1-vne*bnorm_jm(i,k,:)
         !
-        vel(i,j,k,1)=ue
-        vel(i,j,k,2)=0.d0
-        vel(i,j,k,3)=we
+        vel(i,j,k,1)=vec1(1)
+        vel(i,j,k,2)=vec1(2)
+        vel(i,j,k,3)=vec1(3)
         !
         spc(i,j,k,:)=spce(:)
         !
@@ -3119,9 +3119,15 @@ module bc
                                   spc(i,j,k+2,jspec),dv=0.d0)
         enddo
         !
-        vel(i,j,k,1)=ue
-        vel(i,j,k,2)=ve
-        vel(i,j,k,3)=0.d0
+        vec1(1)=ue
+        vec1(2)=ve
+        vec1(3)=we
+        vne=dot_product(vec1,bnorm_k0(i,j,:))
+        vec1=vec1-vne*bnorm_k0(i,j,:)
+        !
+        vel(i,j,k,1)=vec1(1)
+        vel(i,j,k,2)=vec1(2)
+        vel(i,j,k,3)=vec1(3)
         !
         spc(i,j,k,:)=spce(:)
         !

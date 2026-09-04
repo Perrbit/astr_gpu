@@ -49,6 +49,24 @@ def mapped_grid(
         derivatives[..., 0, 2] = amplitude * np.sin(eta3) * np.cos(zeta3)
         derivatives[..., 1, 1] = 1.0
         derivatives[..., 2, 2] = 1.0
+    elif mapping == "y-wavy":
+        x = xi3
+        y = eta3 + amplitude * np.sin(xi3) * np.sin(zeta3)
+        z = zeta3
+        derivatives[..., 0, 0] = 1.0
+        derivatives[..., 1, 0] = amplitude * np.cos(xi3) * np.sin(zeta3)
+        derivatives[..., 1, 1] = 1.0
+        derivatives[..., 1, 2] = amplitude * np.sin(xi3) * np.cos(zeta3)
+        derivatives[..., 2, 2] = 1.0
+    elif mapping == "z-wavy":
+        x = xi3
+        y = eta3
+        z = zeta3 + amplitude * np.sin(xi3) * np.sin(eta3)
+        derivatives[..., 0, 0] = 1.0
+        derivatives[..., 1, 1] = 1.0
+        derivatives[..., 2, 0] = amplitude * np.cos(xi3) * np.sin(eta3)
+        derivatives[..., 2, 1] = amplitude * np.sin(xi3) * np.cos(eta3)
+        derivatives[..., 2, 2] = 1.0
     else:
         raise ValueError(f"unsupported mapping: {mapping}")
     return x, y, z, np.linalg.det(derivatives)
@@ -60,7 +78,11 @@ def main() -> int:
     parser.add_argument("--report", required=True, type=Path)
     parser.add_argument("--grid", type=parse_grid, default=(32, 32, 32))
     parser.add_argument("--amplitude", type=float, default=0.15)
-    parser.add_argument("--mapping", choices=("periodic", "x-wavy"), default="periodic")
+    parser.add_argument(
+        "--mapping",
+        choices=("periodic", "x-wavy", "y-wavy", "z-wavy"),
+        default="periodic",
+    )
     args = parser.parse_args()
 
     im, jm, km = args.grid
@@ -84,8 +106,12 @@ def main() -> int:
             "x=xi+a*sin(xi)*sin(eta), y=eta+a*sin(eta)*sin(zeta), "
             "z=zeta+a*sin(zeta)*sin(xi)"
         )
-    else:
+    elif args.mapping == "x-wavy":
         mapping_description = "x=xi+a*sin(eta)*sin(zeta), y=eta, z=zeta"
+    elif args.mapping == "y-wavy":
+        mapping_description = "x=xi, y=eta+a*sin(xi)*sin(zeta), z=zeta"
+    else:
+        mapping_description = "x=xi, y=eta, z=zeta+a*sin(xi)*sin(eta)"
     cross_derivative = args.amplitude
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(

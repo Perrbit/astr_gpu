@@ -77,6 +77,7 @@ done
     export ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY"
   fi
   ASTR_VALIDATION_RK_SNAPSHOT="$CPU_SNAPSHOT" \
+  ASTR_GEOMETRY_DUMP="${CPU_GEOMETRY_DUMP:-}" \
     mpirun -np "$NP" "$CPU_EXE" run datin/input.tgv > cpu.log 2>&1
 )
 

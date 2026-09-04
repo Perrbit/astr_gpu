@@ -804,7 +804,7 @@ module geom
       !
       allocate(bnorm_jm(0:im,0:km,1:3))
       !
-      j=0
+      j=jm
       do i=0,im
       do k=0,km
         var1=sqrt(dxi(i,j,k,2,1)**2+dxi(i,j,k,2,2)**2+dxi(i,j,k,2,3)**2)

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,6 +36,26 @@ class CurvilinearFreestreamToolsTest(unittest.TestCase):
         self.assertGreater(float(np.ptp(x[0, :, :])), 0.25)
         self.assertTrue(np.allclose(y[0, :, :], y[-1, :, :]))
         self.assertTrue(np.allclose(z[0, :, :], z[-1, :, :]))
+
+    def test_each_wavy_mapping_has_positive_jacobian_and_curved_target_faces(self) -> None:
+        generator = load_module(
+            "generate_curvilinear_tgv_grid_all_faces",
+            ROOT / "tests/gpu_validation/generate_curvilinear_tgv_grid.py",
+        )
+        for mapping, field_index, face_axis in (
+            ("x-wavy", 0, 0),
+            ("y-wavy", 1, 1),
+            ("z-wavy", 2, 2),
+        ):
+            fields = generator.mapped_grid(16, 18, 20, 0.15, mapping)
+            coordinates = fields[:3]
+            jacobian = fields[3]
+            target = coordinates[field_index]
+            lower_face = np.take(target, 0, axis=face_axis)
+            upper_face = np.take(target, -1, axis=face_axis)
+            self.assertGreater(float(np.min(jacobian)), 0.0)
+            self.assertGreater(float(np.ptp(lower_face)), 0.25)
+            self.assertGreater(float(np.ptp(upper_face)), 0.25)
 
     def test_analytic_curvilinear_metrics_are_inverse_mapping(self) -> None:
         checker = load_module(
@@ -134,6 +155,67 @@ class CurvilinearFreestreamToolsTest(unittest.TestCase):
         fields["u1"][2, 1, 1] += 1.0e-6
         _, passed = checker.check_fields(fields, expected, atol=1.0e-12, rtol=1.0e-12)
         self.assertFalse(passed)
+
+    def test_curvilinear_wall_derivative_uses_physical_mapping(self) -> None:
+        analyzer = load_module(
+            "analyze_curvilinear_hbl_physics",
+            ROOT / "tests/gpu_validation/analyze_curvilinear_hbl_physics.py",
+        )
+        ni, nj, nk = 11, 9, 3
+        computational_i = np.arange(ni, dtype=np.float64)[None, None, :]
+        computational_j = np.arange(nj, dtype=np.float64)[None, :, None]
+        computational_k = np.arange(nk, dtype=np.float64)[:, None, None]
+        x = computational_i + 0.3 * computational_j + 0.0 * computational_k
+        y = 0.2 * computational_i + 0.8 * computational_j + 0.0 * computational_k
+        z = computational_k + 0.0 * computational_i + 0.0 * computational_j
+        u = 2.0 * x + 3.0 * y
+        v = -x + 4.0 * y
+        temperature = 5.0 * x - 2.0 * y
+        derivatives = analyzer.wall_derivatives(
+            {"x": x, "y": y, "z": z},
+            {"u1": u, "u2": v, "u3": np.zeros_like(u), "t": temperature, "ro": np.ones_like(u)},
+        )
+        self.assertTrue(np.allclose(derivatives["du_dy"], 3.0, atol=1.0e-12))
+        self.assertTrue(np.allclose(derivatives["dtemperature_dy"], -2.0, atol=1.0e-12))
+
+    def test_hbl_controller_accepts_configurable_time_step(self) -> None:
+        prepare = load_module(
+            "prepare_s1_flatplate_case",
+            ROOT / "tests/gpu_validation/prepare_s1_flatplate_case.py",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            controller = Path(tmpdir) / "controller"
+            prepare.write_controller(
+                controller, maxstep=40, feqchkpt=40, deltat=5.0e-6, feqlist=9999
+            )
+            text = controller.read_text(encoding="ascii")
+            self.assertIn("40,40,9999,9999,9999,9999", text)
+            self.assertIn("5.0000000000000004e-06", text)
+
+    def test_hbl_prepare_cli_accepts_configurable_time_step(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Path(tmpdir) / "case"
+            subprocess.run(
+                [
+                    "python3",
+                    str(ROOT / "tests/gpu_validation/prepare_s1_flatplate_case.py"),
+                    "--dst-case",
+                    str(case),
+                    "--use-gpu",
+                    "f",
+                    "--im",
+                    "8",
+                    "--jm",
+                    "8",
+                    "--km",
+                    "8",
+                    "--deltat",
+                    "5e-6",
+                ],
+                check=True,
+            )
+            controller = (case / "datin/controller").read_text(encoding="ascii")
+            self.assertIn("5.0000000000000004e-06", controller)
 
 
 if __name__ == "__main__":

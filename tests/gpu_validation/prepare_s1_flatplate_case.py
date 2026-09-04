@@ -18,6 +18,13 @@ def positive_int(value: str) -> int:
     return parsed
 
 
+def positive_float(value: str) -> float:
+    parsed = float(value)
+    if parsed <= 0.0:
+        raise argparse.ArgumentTypeError("value must be positive")
+    return parsed
+
+
 def write_grid(
     path: Path,
     im: int,
@@ -146,7 +153,9 @@ none,h
     )
 
 
-def write_controller(path: Path, maxstep: int, feqchkpt: int) -> None:
+def write_controller(
+    path: Path, maxstep: int, feqchkpt: int, deltat: float, feqlist: int = 1
+) -> None:
     path.write_text(
         f"""############################################################
 # Controlled S1-A0 controller
@@ -156,10 +165,10 @@ def write_controller(path: Path, maxstep: int, feqchkpt: int) -> None:
 f,f,f,f
 
 # maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg
-{maxstep},{feqchkpt},9999,9999,1,9999
+{maxstep},{feqchkpt},9999,9999,{feqlist},9999
 
 # deltat
-1.d-5
+{deltat:.16e}
 """,
         encoding="ascii",
     )
@@ -195,6 +204,8 @@ def main() -> int:
     parser.add_argument("--warp-y", type=float, default=0.0)
     parser.add_argument("--maxstep", type=int, default=2)
     parser.add_argument("--feqchkpt", type=int)
+    parser.add_argument("--feqlist", type=int, default=1)
+    parser.add_argument("--deltat", type=positive_float, default=1.0e-5)
     args = parser.parse_args()
     if args.maxstep < 1:
         raise ValueError("--maxstep must be positive")
@@ -221,6 +232,8 @@ def main() -> int:
     feqchkpt = args.maxstep if args.feqchkpt is None else args.feqchkpt
     if feqchkpt < 1:
         raise ValueError("--feqchkpt must be positive")
+    if args.feqlist < 1:
+        raise ValueError("--feqlist must be positive")
 
     if args.dst_case.exists():
         shutil.rmtree(args.dst_case)
@@ -265,7 +278,9 @@ def main() -> int:
         args.ninit,
         args.sponge_im,
     )
-    write_controller(datin / "controller", args.maxstep, feqchkpt)
+    write_controller(
+        datin / "controller", args.maxstep, feqchkpt, args.deltat, args.feqlist
+    )
     return 0
 
 

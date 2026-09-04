@@ -10,12 +10,14 @@ JM="${JM:-192}"
 KM="${KM:-8}"
 MAXSTEP="${MAXSTEP:-2}"
 FEQCHKPT="${FEQCHKPT:-$MAXSTEP}"
+DELTAT="${DELTAT:-1.d-5}"
 REYNOLDS="${REYNOLDS:-1.83052e6}"
 MACH="${MACH:-5.0}"
 REFERENCE_TEMPERATURE="${REFERENCE_TEMPERATURE:-226.65}"
 WALL_TEMPERATURE="${WALL_TEMPERATURE:-5.191440547760865}"
 STATION_X="${STATION_X:-1.0}"
 PROFILE_DENSITY_MODE="${PROFILE_DENSITY_MODE:-provided}"
+PROFILE_POINTS="${PROFILE_POINTS:-801}"
 INITIALIZATION_MODE="${INITIALIZATION_MODE:-profile}"
 UPPER_BCTYPE="${UPPER_BCTYPE:-51}"
 NP="${NP:-1}"
@@ -43,7 +45,7 @@ prepare_case() {
     --wall-temperature "$WALL_TEMPERATURE" --upper-bctype "$UPPER_BCTYPE" --ninit "$NINIT" \
     --x-min -1.0 --x-max 10.0 --y-stretch 5.0 --z-length 0.25 \
     --warp-x "$GRID_WARP_X" --warp-y "$GRID_WARP_Y" \
-    --maxstep "$MAXSTEP" --feqchkpt "$FEQCHKPT"
+    --maxstep "$MAXSTEP" --feqchkpt "$FEQCHKPT" --deltat "$DELTAT"
 }
 
 write_similarity_profile() {
@@ -58,7 +60,7 @@ write_similarity_profile() {
     --mach "$MACH" --reynolds "$REYNOLDS" \
     --reference-temperature "$REFERENCE_TEMPERATURE" \
     --wall-temperature "$WALL_TEMPERATURE" --station-x "$STATION_X" \
-    --density-mode "$PROFILE_DENSITY_MODE" "${field_args[@]}"
+    --density-mode "$PROFILE_DENSITY_MODE" --points "$PROFILE_POINTS" "${field_args[@]}"
 }
 
 case "$INITIALIZATION_MODE" in
