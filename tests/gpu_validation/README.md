@@ -643,7 +643,7 @@ Current expected result: all four commands print `status: pass` for statistics a
 
 ## Phase F Slip-Isothermal Wall `bctype=411` Slice
 
-Validate CPU-compatible Cartesian `bctype=411,411` slip-nonslip isothermal wall behavior for y direction only. The CPU implementation `slipisotwall` implements `ndir=3/4`; x/z directions are therefore outside the CPU-supported scope and are intentionally rejected by the validation driver. The lower wall uses `x <= xslip` for the slip segment and the upper wall follows the CPU no-slip isothermal branch. Wall blowing/suction, species, and turbulence models remain outside the GPU validation scope.
+Validate `bctype=411,411` slip-nonslip isothermal wall behavior for y direction only. The CPU implementation `slipisotwall` implements `ndir=3/4`; x/z directions are therefore outside the CPU-supported scope and are intentionally rejected by the validation driver. The lower wall uses `x <= xslip` for the slip segment and the upper wall follows the CPU no-slip isothermal branch. After C19, the slip segment extrapolates the full velocity and projects it onto the physical tangent plane; optional lower-wall blowing is prescribed on the no-slip section along the physical normal. Species and turbulence models remain outside the GPU validation scope.
 
 ```bash
 OUT_DIR=tests/gpu_validation/out/slipisotwall_phasef_y_np1_5steps \
@@ -684,7 +684,7 @@ Current expected result: all commands print `status: pass` for statistics and fi
 
 ## Phase G Slip-Adiabatic Wall `bctype=421` Slice
 
-Validate CPU-compatible Cartesian `bctype=421,421` slip-nonslip adiabatic wall behavior for y direction only. The CPU implementation `slipadibwall` implements `ndir=3/4`; x/z directions are therefore outside the CPU-supported scope and are intentionally rejected by the validation driver. Although the input still reads `xslip`, the current CPU `slipadibwall` has the `xslip` split commented out, so the GPU validation follows the active CPU formula rather than the boundary-condition name.
+Validate `bctype=421,421` slip-adiabatic wall behavior for y direction only. The CPU implementation `slipadibwall` implements `ndir=3/4`; x/z directions are therefore outside the CPU-supported scope and are intentionally rejected by the validation driver. After C19, both y slip faces extrapolate the full velocity and project it onto the physical tangent plane. Optional y-min wall blowing is then added along the physical normal; y-max remains tangent-only. The historical commented `xslip` branch is not reactivated.
 
 ```bash
 OUT_DIR=tests/gpu_validation/out/slipadibwall_phaseg_y_np1_5steps \
@@ -2215,6 +2215,121 @@ communication-overlap, scaling beyond two GPUs, or production SBLI result.
 GPU HDF5 remains outside scope; output transfers are excluded from the RK
 residency interval but included in end-to-end benchmark time.
 
+## CURVE-C16 six-face isothermal no-slip gate
+
+CURVE-C16 extends the zero-blowing C6 `bctype=41` comparison harness to x-, y-, and z-wavy
+physical wall pairs. `WALL_AXIS=x/y/z` selects the matching analytic `J=1`
+mapping, homogeneous directions, boundary tuple, and HDF5 face axis. The two
+faces normal to the selected computational direction are isothermal no-slip;
+the other four faces are periodic.
+
+Run the complete matrix with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/curvilinear_wall41_six_face_matrix \
+  tests/gpu_validation/run_curvilinear_wall41_six_face_matrix.sh
+```
+
+For each axis, the matrix runs NP=1 convection isolation, NP=1 five-step
+filter plus diffusion, a five-step NP=2 slab decomposed in the physical
+direction, an NP=4 plane, and NP=8 `2x2x2`. The 15 entries pass. The maximum
+full-field difference is `q5=6.2527760746888816e-13`, the maximum statistic
+difference is `kenergy=4.9640846988552312e-14`, and the maximum wall-invariant
+error is `1.1368683772161603e-13`. Wall velocity and momentum residuals are
+zero. Targeted y/z NP=1 Compute Sanitizer runs report `ERROR SUMMARY: 0
+errors` when OpenMPI uses the established `ob1/self/pt2pt` isolation.
+
+This gate establishes CPU/GPU numerical equivalence and halo composition for
+the tested static single-block six-face isothermal no-slip family. The zero
+wall-velocity vector is independent of face orientation. Pressure is still
+extrapolated along the CPU computational line, so C16 does not establish a
+geometric-normal pressure Neumann condition, six-face adiabatic or slip wall
+support, general characteristic boundaries, or multi-GPU scaling beyond the
+two physical devices. C16 itself is zero-blowing evidence; the later C19 gate
+validates the shared CPU/GPU physical-normal `wallbs.dat` route on y-min.
+
+## CURVE-C17 six-face zero-extrapolation gate
+
+Run the x/y/z NP=1/2/4/8 matrix with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/curvilinear_zeroextrap_six_face_matrix \
+  tests/gpu_validation/run_curvilinear_zeroextrap_six_face_matrix.sh
+```
+
+The invariant checker follows `src/bc.F90:zeroextrap` rather than imposing a
+direction-independent rule. X faces directly extrapolate velocity, pressure,
+and temperature, then reconstruct density from the EOS. Y/z faces directly
+extrapolate velocity, pressure, and density, then reconstruct temperature.
+The CPU oracle is `outdat/rk_complete_snapshot.h5`, matching the GPU
+checkpoint preparation phase.
+
+All 15 entries pass. Maximum field, statistic, and boundary residuals are
+`3.9790393202565610e-13`, `4.9960036108132044e-14`, and
+`7.6170181273482740e-12`. Targeted y/z NP=1 filter-plus-diffusion memchecks
+report zero errors with OpenMPI `ob1/self/pt2pt`.
+
+## CURVE-C18 x/y adiabatic no-slip gate
+
+Run the supported matrix and z-direction reject with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/curvilinear_wall42_matrix \
+  tests/gpu_validation/run_curvilinear_wall42_matrix.sh
+```
+
+For the no-`wallbs.dat` subset, CPU `noslip_adibatic` defines only x/y faces. The boundary velocity is zero,
+pressure and temperature are extrapolated along the computational line, and
+density is reconstructed through the nondimensional ideal-gas EOS. The ten
+x/y NP=1/2/4/8 entries pass, while z exits with status 2 before solver launch.
+Maximum field, statistic, and wall residuals are
+`3.6948222259525210e-13`, `4.9071857688431919e-14`, and
+`5.1585402616183273e-12`. Targeted x/y memchecks report zero errors.
+CPU's optional y-min blowing route is not part of this passing gate.
+
+## CURVE-C19 y-face slip-wall and wall-blowing gate
+
+CURVE-C19 validates the approved geometric contract for y-wavy
+`bctype=41/42/411/421`. Slip sections extrapolate all three velocity
+components and apply `u_t=u*-(u* dot n)n` using the CPU-generated discrete
+unit normal. The `411` no-slip section remains zero velocity. The `421` lower
+section combines the projected tangent velocity with prescribed normal wall
+velocity, while its upper section is tangent-only. CPU has no x/z `411/421`
+branches, so those directions remain outside this gate.
+
+`wallbs.dat` retains the CPU scaling
+`vwall=A uinf fx gz (1+r)`, but the resulting signed scalar now acts along the
+physical normal. Positive amplitude follows the stored inward normal. The 10%
+perturbation uses global i/k indices
+and a fixed integer hash, which makes the forcing topology-independent. Exact
+forcing checks use unique periodic nodes; duplicate periodic endpoint planes
+are still checked for geometric alignment but are excluded from the value
+oracle because they represent the same physical degree of freedom.
+
+Run one case or the full matrix with:
+
+```bash
+BC_KIND=421 WALL_BLOWING=t NP=8 TOPOLOGY=2,2,2 \
+  OUT_DIR=/tmp/astr_c19_421_np8 \
+  tests/gpu_validation/run_curvilinear_wall_c19_compare.sh
+
+OUT_DIR=/tmp/astr_c19_matrix \
+  tests/gpu_validation/run_curvilinear_wall_c19_matrix.sh
+```
+
+The default matrix passes 15 entries spanning positive blowing, negative
+suction, NP=1, NP=2 `1x2x1`, NP=4 `2x2x1`, and NP=8 `2x2x2`. Maximum
+CPU/GPU field and statistic differences
+are `8.5265128291212022e-14` and `4.6865289426989420e-14`; the maximum
+same-backend topology difference is `5.6843418860808015e-14`, and the maximum
+NP=1 physical-normal residual is `6.0281640790194047e-17`. Separate five-step
+filter-plus-diffusion checks pass for zero-blowing `411` and blowing `421`,
+with maximum `q5` errors `3.4106051316484809e-13` and
+`4.2632564145606011e-13`. The blowing `421` memcheck reports zero errors.
+A three-step no-checkpoint Nsight Systems trace contains 336 kernels after the
+first filter kernel and no H2D/D2H transfer at or above 64 KiB; maximum H2D
+and D2H sizes are 128 and 1024 bytes.
+
 ## CURVE-C6 x-wavy isothermal wall gate
 
 CURVE-C6 uses the static mapping
@@ -2609,3 +2724,90 @@ composition, and compute-loop residency for this restricted curved
 NSCBC/sponge slice. It does not establish physical SBLI fidelity, mesh/time
 convergence, arbitrary curved-face characteristic conditions, y/z sponge,
 moving or multi-block grids, GPU HDF5, or production scaling.
+
+## CURVE-C20 open-boundary inventory
+
+Validate the corrected complete-state `bctype=11` inlet with an initial field
+that deliberately differs from `inlet.prof`:
+
+```bash
+OUT_DIR=/tmp/astr_profile_inflow11_state \
+  tests/gpu_validation/run_profile_inflow11_state_compare.sh
+```
+
+Run the matching single-rank memory check from the generated GPU case with
+OpenMPI's UCX/CUDA-aware probes isolated:
+
+```bash
+cd /tmp/astr_profile_inflow11_state/gpu
+OMPI_MCA_pml=ob1 OMPI_MCA_btl=self OMPI_MCA_osc=pt2pt \
+  mpirun -np 1 compute-sanitizer --tool memcheck --error-exitcode 99 \
+  /home/dell/workspace/astr_gpu/build_gpu_probe/bin/astr \
+  run datin/input.flatplate
+```
+
+The gate checks the CPU complete-RK snapshot and GPU output independently
+against the x-min profile, excluding y-endpoints that are owned by the later
+wall/farfield boundary passes. The current maximum target error is
+`4.4408920985006262e-15`, the EOS residual is
+`2.2204460492503131e-16`, and CPU/GPU reconstructed `q5 L_inf` is
+`7.1054273576010019e-15`. The matching Compute Sanitizer run reports
+`ERROR SUMMARY: 0 errors`. Without the documented MPI component isolation,
+OpenMPI/UCX CUDA pointer probes produce initialization-layer false positives.
+
+Run the required unsupported-geometry checks with:
+
+```bash
+OUT_DIR=/tmp/astr_c20_open_rejects \
+  tests/gpu_validation/run_curvilinear_open_boundary_rejects.sh
+```
+
+The three entries require dedicated pre-launch rejection of a curved x-max
+`21` face, any `22` condition on a nonorthogonal grid, and a curved upper-y
+`51` face. Axis-aligned stretched faces remain admissible. Cartesian
+OpenShock `12/22`, C7 `11/21,41/51`, and C12 `12/21,41/52` remain positive
+regressions. C20 keeps `12/52` case-specific and does not infer missing CPU
+directions or standardize the deferred NSCBC relaxation policy.
+
+## CURVE-C21 aggregate closure
+
+Run the complete static single-block curvilinear release gate with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/curvilinear_c21_aggregate \
+  tests/gpu_validation/run_curvilinear_c21_aggregate.sh
+```
+
+The driver rebuilds the existing top-level CMake CPU/GPU build trees, runs
+all C0-C20 supported matrices, checks the C11 closed-negative policy without
+rerunning its known non-finite CPU shock/filter probe, runs the required
+curved-open-boundary rejects, repeats representative x/y/z memchecks, and
+executes the C15 `256^3` residency and three-repeat timing gates. Set
+`START_STAGE` and `STOP_AFTER` only for diagnosis; a release closure requires
+the uninterrupted full run. `RUN_PERFORMANCE=f` intentionally fails C15 and
+cannot produce a passing aggregate closure.
+
+The driver writes `c21_stage_summary.tsv`, per-stage logs, and a generated
+`c21_aggregate_report.md`. The report is produced by:
+
+```bash
+python3 tests/gpu_validation/summarize_curvilinear_c21.py \
+  --input tests/gpu_validation/out/curvilinear_c21_aggregate \
+  --output tests/gpu_validation/out/curvilinear_c21_aggregate/c21_aggregate_report.md
+```
+
+The 2026-09-05 run passed all 23 stages. Across 136 field reports, 128
+statistic reports, and 226 boundary-invariant reports, the aggregate maxima
+are `q5=6.2527760746888816e-13`,
+`massflux=2.5093260802577788e-11`, and required boundary residual
+`7.6170181273482740e-12`. All 70 explicit finite-field checks pass, the
+minimum checked numerical Jacobian is `2.5296638468231652e-7`, and x/y/z
+Compute Sanitizer runs each report zero errors.
+
+The `256^3` no-checkpoint interval contains 221 kernels and no transfer at or
+above 64 KiB. H2D is `2 x 176 B` and D2H is `2 x 48 B`. Three-repeat GPU
+NP=1/NP=2 x-slab medians are `58.490/38.989 s`, giving `1.5002x` speedup and
+`75.01%` two-GPU efficiency on the current machine. C21 closes only the
+tested static single-block, nonreacting, explicit-scheme scope. It does not
+establish arbitrary curved open boundaries, moving/multi-block support, GPU
+HDF5, physical SBLI fidelity, or scaling beyond two GPUs.

@@ -27,10 +27,11 @@ contains
   subroutine gpu_after_flowinit()
     use mainloop_gpu, only: init_gpu
     use sponge_gpu, only: init_sponge_gpu
-    use boundary_gpu, only: init_s1_flatplate_profile_gpu
+    use boundary_gpu, only: init_s1_flatplate_profile_gpu,init_wall_blowing_gpu
     implicit none
 
     call init_gpu()
+    call init_wall_blowing_gpu()
     call init_s1_flatplate_profile_gpu()
     call init_sponge_gpu()
   end subroutine gpu_after_flowinit

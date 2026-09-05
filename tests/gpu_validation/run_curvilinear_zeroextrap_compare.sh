@@ -14,31 +14,30 @@ else
   exit 2
 fi
 
-OUT_DIR="${OUT_DIR:-$ROOT_DIR/tests/gpu_validation/out/curvilinear_wall41_np${NP}}"
-WALL_TEMPERATURE="${WALL_TEMPERATURE:-273.15}"
-WALL_AXIS="${WALL_AXIS:-x}"
+OUT_DIR="${OUT_DIR:-$ROOT_DIR/tests/gpu_validation/out/curvilinear_zeroextrap_np${NP}}"
+ZERO_AXIS="${ZERO_AXIS:-x}"
 
-case "$WALL_AXIS" in
+case "$ZERO_AXIS" in
   x)
     MAPPING="x-wavy"
     HOMOGENEOUS="f,t,t"
-    BCTYPE="41,${WALL_TEMPERATURE}d0;41,${WALL_TEMPERATURE}d0;1;1;1;1"
+    BCTYPE="50;50;1;1;1;1"
     HDF_AXIS=2
     ;;
   y)
     MAPPING="y-wavy"
     HOMOGENEOUS="t,f,t"
-    BCTYPE="1;1;41,${WALL_TEMPERATURE}d0;41,${WALL_TEMPERATURE}d0;1;1"
+    BCTYPE="1;1;50;50;1;1"
     HDF_AXIS=1
     ;;
   z)
     MAPPING="z-wavy"
     HOMOGENEOUS="t,t,f"
-    BCTYPE="1;1;1;1;41,${WALL_TEMPERATURE}d0;41,${WALL_TEMPERATURE}d0"
+    BCTYPE="1;1;1;1;50;50"
     HDF_AXIS=0
     ;;
   *)
-    printf 'WALL_AXIS must be x, y, or z; got %s\n' "$WALL_AXIS" >&2
+    printf 'ZERO_AXIS must be x, y, or z; got %s\n' "$ZERO_AXIS" >&2
     exit 2
     ;;
 esac
@@ -59,11 +58,16 @@ FIELD_RTOL="${FIELD_RTOL:-1e-10}" \
   "$ROOT_DIR/tests/gpu_validation/run_curvilinear_tgv_compare.sh"
 
 for mode in cpu gpu; do
-  python3 "$ROOT_DIR/tests/gpu_validation/check_wall41_invariants.py" \
-    --input "$OUT_DIR/$mode" \
-    --report "$OUT_DIR/${mode}_wall41_invariants.txt" \
+  if [[ "$mode" == "cpu" ]]; then
+    invariant_input="$OUT_DIR/cpu/outdat/rk_complete_snapshot.h5"
+  else
+    invariant_input="$OUT_DIR/gpu"
+  fi
+  python3 "$ROOT_DIR/tests/gpu_validation/check_zeroextrap_invariants.py" \
+    --input "$invariant_input" \
+    --report "$OUT_DIR/${mode}_zeroextrap_invariants.txt" \
     --axis "$HDF_AXIS" \
-    --wall-temperature "$WALL_TEMPERATURE" \
-    --mach 0.1 \
-    --atol "${WALL_ATOL:-1e-12}"
+    --gamma "${GAMMA:-1.4}" \
+    --mach "${MACH:-0.1}" \
+    --atol "${BOUNDARY_ATOL:-1e-10}"
 done

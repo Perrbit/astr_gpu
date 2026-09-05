@@ -199,6 +199,31 @@ def set_grid(input_file: Path, grid: str) -> None:
     raise ValueError(f"grid marker not found in {input_file}")
 
 
+def write_wall_blowing(
+    path: Path,
+    amplitude: str,
+    beta: str,
+    xa: str,
+    xb: str,
+    xc: str,
+    nmod_t: int,
+    nmod_z: int,
+) -> None:
+    path.write_text(
+        "\n".join(
+            (
+                "# wall blowing/suction",
+                "# amplitude,beta,xa,xb,xc",
+                f"{amplitude},{beta},{xa},{xb},{xc}",
+                "# nmod_t,nmod_z",
+                f"{nmod_t},{nmod_z}",
+            )
+        )
+        + "\n",
+        encoding="ascii",
+    )
+
+
 def set_scheme(input_file: Path, scheme: str, conschm: str | None = None, difschm: str | None = None) -> None:
     lines = input_file.read_text().splitlines()
     marker = "conschm,difschm,rkscheme"
@@ -264,6 +289,13 @@ def main() -> int:
     parser.add_argument("--lchardecomp", choices=("t", "f"), help="optional characteristic decomposition override")
     parser.add_argument("--grid", help="optional grid dimensions as im,jm,km")
     parser.add_argument("--deltat", help="optional controller deltat value, e.g. 5.d-4")
+    parser.add_argument("--wall-amplitude", help="write wallbs.dat with this amplitude")
+    parser.add_argument("--wall-beta", default="1.0")
+    parser.add_argument("--wall-xa", default="0.5")
+    parser.add_argument("--wall-xb", default="3.0")
+    parser.add_argument("--wall-xc", default="5.8")
+    parser.add_argument("--wall-nmod-t", type=int, default=0)
+    parser.add_argument("--wall-nmod-z", type=int, default=2)
     args = parser.parse_args()
 
     if args.maxstep < 0:
@@ -298,6 +330,17 @@ def main() -> int:
     set_controller_steps(args.dst_case / "datin" / "controller", args.maxstep, feqchkpt)
     if args.deltat:
         set_controller_deltat(args.dst_case / "datin" / "controller", args.deltat)
+    if args.wall_amplitude is not None:
+        write_wall_blowing(
+            args.dst_case / "datin" / "wallbs.dat",
+            args.wall_amplitude,
+            args.wall_beta,
+            args.wall_xa,
+            args.wall_xb,
+            args.wall_xc,
+            args.wall_nmod_t,
+            args.wall_nmod_z,
+        )
     return 0
 
 

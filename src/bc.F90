@@ -9,7 +9,7 @@ module bc
   !
   use constdef
   use parallel,only: lio,mpistop,mpirank,mpirankname,irk,jrk,krk,      &
-                     irkm,jrkm,krkm,pmax,ptime,bcast
+                     irkm,jrkm,krkm,ig0,kg0,pmax,ptime,bcast
   use commvar, only: hm,im,jm,km,uinf,vinf,winf,pinf,roinf,tinf,ndims, &
                      num_species,flowtype,gamma,numq,npdci,npdcj,      &
                      npdck,is,ie,js,je,ks,ke,xmin,xmax,ymin,ymax,      &
@@ -34,6 +34,11 @@ module bc
   real(8),save :: nscbc_farfield_rho_target,nscbc_farfield_u_target,   &
                   nscbc_farfield_v_target,nscbc_farfield_w_target,     &
                   nscbc_farfield_t_target
+  logical,save :: wall_blowing_configured=.false.
+  real(8),save :: wall_blowing_amplitude=0.d0,wall_blowing_beta=1.d0,  &
+                  wall_blowing_xa=0.d0,wall_blowing_xb=0.d0,           &
+                  wall_blowing_xc=0.d0
+  integer,save :: wall_blowing_nmod_t=0,wall_blowing_nmod_z=0
   !+---------------------+---------------------------------------------+
   !|              bctype | define type of boundary condition.          |
   !|               twall | wall temperature.                           |
@@ -51,6 +56,56 @@ module bc
   real(8),allocatable,target :: flowvarins(:,:,:,:),timeins(:)
   !
   contains
+  !
+  subroutine configure_wall_blowing
+    implicit none
+    integer :: fh
+    logical :: lexist
+    character(len=64) :: filewbs
+
+    if(wall_blowing_configured) return
+
+    if(mpirank==0) then
+      filewbs='datin/wallbs.dat'
+      inquire(file=trim(filewbs),exist=lexist)
+      if(lexist) then
+        fh=get_unit()
+        open(fh,file=trim(filewbs),action='read')
+        read(fh,*)
+        read(fh,*)
+        read(fh,*)wall_blowing_amplitude,wall_blowing_beta,             &
+                   wall_blowing_xa,wall_blowing_xb,wall_blowing_xc
+        read(fh,*)
+        read(fh,*)wall_blowing_nmod_t,wall_blowing_nmod_z
+        close(fh)
+
+        print*,' >> ',trim(filewbs)
+        print*,' ------------- wall blowing & suction parameters -------------'
+        write(*,"(38x,A,1X,F12.5)")'  amplitude:',wall_blowing_amplitude
+        write(*,"(38x,A,1X,F12.5)")'  frequency:',wall_blowing_beta
+        write(*,"(23x,3(A,1X,F12.5))")'   x extent:',wall_blowing_xa, &
+             ' ~',wall_blowing_xb,' ~',wall_blowing_xc
+        write(*,"(42x,(A,1X,I0))")'    temporal modes:',wall_blowing_nmod_t
+        write(*,"(42x,(A,1X,I0))")'    spanwise modes:',wall_blowing_nmod_z
+        print*,'  positive amplitude acts along the inward physical normal'
+        print*,' --------------------------------------------------------------'
+      endif
+    endif
+
+    call bcast(wall_blowing_amplitude)
+    call bcast(wall_blowing_beta)
+    call bcast(wall_blowing_xa)
+    call bcast(wall_blowing_xb)
+    call bcast(wall_blowing_xc)
+    call bcast(wall_blowing_nmod_t)
+    call bcast(wall_blowing_nmod_z)
+    if(abs(wall_blowing_amplitude)>1.d-10 .and.                        &
+       (wall_blowing_xa>=wall_blowing_xb .or.                          &
+        wall_blowing_xb>=wall_blowing_xc)) then
+      stop 'wallbs.dat requires xa < xb < xc for nonzero amplitude'
+    endif
+    wall_blowing_configured=.true.
+  end subroutine configure_wall_blowing
   !
   subroutine configure_nscbc_farfield
     implicit none
@@ -487,6 +542,9 @@ module bc
     ! local data
     integer :: n
     real(8) :: time_beg
+    !
+    if(bctype(3)==41 .or. bctype(3)==42 .or. bctype(3)==411 .or.       &
+       bctype(3)==421) call configure_wall_blowing
     !
     do n=1,6
       !
@@ -1548,7 +1606,7 @@ module bc
     ! local data
     integer :: i,j,k,l,jspc
     real(8) :: css,csse,ub,pe,roe,ue,pwave_out,pwave_in,malo,rho_ref,cs_ref,blend,rp,rm,te
-    real(8) :: ce,ri_plus,ri_mins,cb,sb,gmr
+    real(8) :: ce,ri_plus,ri_mins,cb,sb,gmr,tmp_target,tmp_scale
     real(8) :: spce(1:num_species)
     !
     logical,save :: lfirstcal=.true.
@@ -1637,10 +1695,17 @@ module bc
 
         ! if(vel_in(j,k,1)>css) then
         !   ! supersonic inflow
+          rho(i,j,k)  =rho_in(j,k)
           vel(i,j,k,:)=vel_in(j,k,:)
           spc(i,j,k,:)=spc_in(j,k,:)
-          tmp(i,j,k)  =tmp_in(j,k)
           prs(i,j,k)  =prs_in(j,k)
+          tmp_target=thermal(pressure=prs_in(j,k),density=rho_in(j,k),   &
+                             species=spc_in(j,k,:))
+          tmp_scale=max(1.d0,abs(tmp_in(j,k)),abs(tmp_target))
+          if(abs(tmp_in(j,k)-tmp_target)>1.d-10*tmp_scale) then
+            stop 'bctype=11 inlet temperature is inconsistent with rho, pressure, and species'
+          endif
+          tmp(i,j,k)=tmp_target
         ! else
           ! subsonic inflow
           ! vel(i,j,k,2:3)=vel_in(j,k,2:3)
@@ -1686,8 +1751,6 @@ module bc
         ! vel(i,j,k,1)=vel_in(j,k,1)+(pinf-prs(i,j,k))/rho_ref/css
 
         ! rho(i,j,k)  =thermal(pressure=prs(i,j,k),temperature=tmp(i,j,k),species=spc(i,j,k,:))
-        tmp(i,j,k)  =thermal(pressure=prs(i,j,k),density=rho(i,j,k),species=spc(i,j,k,:))
-
         call fvar2q(       q=  q(i,j,k,:),     density=rho(i,j,k),        &
                     velocity=vel(i,j,k,:), temperature=tmp(i,j,k),        &
                      species=spc(i,j,k,:)                                 )
@@ -6528,11 +6591,10 @@ module bc
   !+-------------------------------------------------------------------+
   subroutine noslip(ndir,tw)
     !
-    use commvar,   only : Reynolds,turbmode,lreport,nondimen,spcinf
+    use commvar,   only : Reynolds,turbmode,nondimen,spcinf
     use commarray, only : tke,omg
-    use fludyna,   only : thermal,fvar2q,q2fvar,miucal
+    use fludyna,   only : thermal,fvar2q,miucal
     use commfunc,  only : dis2point2
-    use parallel,  only : mpi_jmin,bcast
     use tecio
     !
     ! arguments
@@ -6540,15 +6602,10 @@ module bc
     real(8),intent(in) :: tw
     !
     ! local data
-    integer :: i,j,k,l,jspec,fh
+    integer :: i,j,k,jspec
     real(8) :: pe,te,ue,delta_d1,miu,beta1
     real(8) :: vwall(0:im,0:km)
-    character(len=64) :: filewbs
-    logical :: lexist
-    !
-    real(8),save :: beter,wallamplit,xa,xb,xc,xtran
-    integer,save :: nmod_t,nmod_z
-    logical,save :: lfirstcal=.true.
+    real(8) :: xtran
     !
     beta1=0.075d0
     !
@@ -6648,58 +6705,11 @@ module bc
       !
       if(jrk==0) then
         !
-        if(lreport) lfirstcal=.true.
-        !
-        if(lfirstcal) then
-          !
-          if(mpirank==0) then
-            !
-            filewbs='datin/wallbs.dat'
-            !
-            inquire(file=trim(filewbs), exist=lexist)
-            !
-            if(lexist) then
-              fh=get_unit()
-              open(fh,file=trim(filewbs),action='read')
-              read(fh,*)
-              read(fh,*)
-              read(fh,*)wallamplit,beter,xa,xb,xc
-              read(fh,*)
-              read(fh,*)nmod_t,nmod_z
-              close(fh)
-              print*,' >> ',trim(filewbs)
-              !
-              print*,' ------------- wall blowing & suction parameters -------------'
-              write(*,"(38x,A,1X,F12.5)")   '  amplitude:',wallamplit
-              write(*,"(38x,A,1X,F12.5)")   '  frequency:',beter
-              write(*,"(23x,3(A,1X,F12.5))")'   x extent:',xa,' ~',xb,' ~',xc
-              write(*,"(42x,(A,1X,I0))")'    temporal modes:',nmod_t
-              write(*,"(42x,(A,1X,I0))")'    spanwise modes:',nmod_z
-              print*,' --------------------------------------------------------------'
-            else
-              wallamplit=0.d0
-              beter=1.d0
-              xa=0.d0
-              xb=0.d0
-              xc=0.d0
-              nmod_t=0
-              nmod_z=0
-            endif
-            !
-          endif
-          !
-          call bcast(wallamplit,comm=mpi_jmin)
-          call bcast(beter,comm=mpi_jmin)
-          call bcast(xa,comm=mpi_jmin)
-          call bcast(xb,comm=mpi_jmin)
-          call bcast(xc,comm=mpi_jmin)
-          call bcast(nmod_t,comm=mpi_jmin)
-          call bcast(nmod_z,comm=mpi_jmin)
-          !
-        endif
-        !
-        if(ndims==3 .and. wallamplit>1.d-10) then
-          vwall=wallbs_rand(beter,wallamplit,xa,xb,xc,nmod_t,nmod_z)
+        call configure_wall_blowing
+        if(ndims==3 .and. abs(wall_blowing_amplitude)>1.d-10) then
+          vwall=wallbs_rand(wall_blowing_beta,wall_blowing_amplitude,  &
+               wall_blowing_xa,wall_blowing_xb,wall_blowing_xc,       &
+               wall_blowing_nmod_t,wall_blowing_nmod_z)
         else
           vwall=0.d0
         endif
@@ -6724,12 +6734,12 @@ module bc
           !   tmp(i,j,k)  =0.5d0*(cos(x(i,j,k,1)/xtran*pi)+1.d0)*(te-tw)+tw
 
           ! else
-            vel(i,j,k,1)=0.d0
-            tmp(i,j,k)  =tw
+          vel(i,j,k,1)=vwall(i,k)*bnorm_j0(i,k,1)
+          tmp(i,j,k)  =tw
           ! endif
 
-          vel(i,j,k,2)=vwall(i,k)
-          vel(i,j,k,3)=0.d0
+          vel(i,j,k,2)=vwall(i,k)*bnorm_j0(i,k,2)
+          vel(i,j,k,3)=vwall(i,k)*bnorm_j0(i,k,3)
           prs(i,j,k)  =pe
 
           do jspec=1,num_species
@@ -6948,86 +6958,26 @@ module bc
   !|-------------------------------------------------------------------+
   subroutine noslip_adibatic(ndir)
     !
-    use commvar,   only : Reynolds,turbmode,lreport,nondimen,spcinf
+    use commvar,   only : Reynolds,turbmode,nondimen,spcinf
     use commarray, only : tke,omg
-    use fludyna,   only : thermal,fvar2q,q2fvar,miucal
+    use fludyna,   only : thermal,fvar2q,miucal
     use commfunc,  only : dis2point2
-    use parallel,  only : mpi_jmin,bcast
     !
     ! arguments
     integer,intent(in) :: ndir
     !
     ! local data
-    integer :: i,j,k,l,jspec,fh
+    integer :: i,j,k,jspec
     real(8) :: pe,te,delta_d1,miu,beta1
     real(8) :: vwall(0:im,0:km)
-    character(len=64) :: filewbs
-    logical :: lexist
-    !
-    real(8),save :: beter,wallamplit,xa,xb,xc
-    integer,save :: nmod_t,nmod_z
-    logical,save :: lfirstcal=.true.
     !
     beta1=0.075d0
 
-    if(lreport) lfirstcal=.true.
-
-    !---------------------------------------------------------------
-    ! Read wall blowing/suction configuration
-    !---------------------------------------------------------------
-    if(lfirstcal) then
-      !
-      if(mpirank==0) then
-        !
-        filewbs='datin/wallbs.dat'
-        !
-        inquire(file=trim(filewbs), exist=lexist)
-        !
-        if(lexist) then
-          fh=get_unit()
-          open(fh,file=trim(filewbs),action='read')
-          read(fh,*)
-          read(fh,*)
-          read(fh,*)wallamplit,beter,xa,xb,xc
-          read(fh,*)
-          read(fh,*)nmod_t,nmod_z
-          close(fh)
-          print*,' >> ',trim(filewbs)
-          !
-          print*,' ------------- wall blowing & suction parameters -------------'
-          write(*,"(38x,A,1X,F12.5)")   '  amplitude:',wallamplit
-          write(*,"(38x,A,1X,F12.5)")   '  frequency:',beter
-          write(*,"(23x,3(A,1X,F12.5))")'   x extent:',xa,' ~',xb,' ~',xc
-          write(*,"(42x,(A,1X,I0))")'    temporal modes:',nmod_t
-          write(*,"(42x,(A,1X,I0))")'    spanwise modes:',nmod_z
-          print*,' --------------------------------------------------------------'
-        else
-          wallamplit=0.d0
-          beter=1.d0
-          xa=0.d0
-          xb=0.d0
-          xc=0.d0
-          nmod_t=0
-          nmod_z=0
-        endif
-        !
-      endif
-      !
-      call bcast(wallamplit)
-      call bcast(beter)
-      call bcast(xa)
-      call bcast(xb)
-      call bcast(xc)
-      call bcast(nmod_t)
-      call bcast(nmod_z)
-      !
-      !
-      lfirstcal=.false.
-      !
-    endif
-    !
-    if(ndims==3 .and. wallamplit>1.d-10) then
-      vwall=wallbs_rand(beter,wallamplit,xa,xb,xc,nmod_t,nmod_z)
+    call configure_wall_blowing
+    if(ndims==3 .and. abs(wall_blowing_amplitude)>1.d-10) then
+      vwall=wallbs_rand(wall_blowing_beta,wall_blowing_amplitude,      &
+           wall_blowing_xa,wall_blowing_xb,wall_blowing_xc,           &
+           wall_blowing_nmod_t,wall_blowing_nmod_z)
     else
       vwall=0.d0
     endif
@@ -7143,9 +7093,9 @@ module bc
           pe=num1d3*(4.d0*prs(i,1,k)-prs(i,2,k))
           te=num1d3*(4.d0*tmp(i,1,k)-tmp(i,2,k))
           !
-          vel(i,j,k,1)=0.d0
-          vel(i,j,k,2)=vwall(i,k)
-          vel(i,j,k,3)=0.d0
+          vel(i,j,k,1)=vwall(i,k)*bnorm_j0(i,k,1)
+          vel(i,j,k,2)=vwall(i,k)*bnorm_j0(i,k,2)
+          vel(i,j,k,3)=vwall(i,k)*bnorm_j0(i,k,3)
           prs(i,j,k)  =pe
           tmp(i,j,k)  =te
           !
@@ -7258,26 +7208,19 @@ module bc
   !
   subroutine slipisotwall(ndir,tw)
     !
-    use commvar,   only : Reynolds,turbmode,lreport
+    use commvar,   only : Reynolds,turbmode
     use commarray, only : tke,omg
-    use fludyna,   only : thermal,fvar2q,q2fvar,miucal
+    use fludyna,   only : thermal,fvar2q,miucal
     use commfunc,  only : dis2point2
-    use parallel,  only : mpi_jmin,bcast
     !
     ! arguments
     integer,intent(in) :: ndir
     real(8),intent(in) :: tw
     !
     ! local data
-    integer :: i,j,k,l,jspec,fh
-    real(8) :: pe,ue,te,delta_d1,miu,beta1
+    integer :: i,j,k,jspec
+    real(8) :: pe,ue,ve,we,vnormal,te,delta_d1,miu,beta1
     real(8) :: vwall(0:im,0:km)
-    character(len=64) :: filewbs
-    logical :: lexist
-    !
-    real(8),save :: beter,wallamplit,xa,xb,xc
-    integer,save :: nmod_t,nmod_z
-    logical,save :: lfirstcal=.true.
     !
     beta1=0.075d0
     !
@@ -7285,60 +7228,11 @@ module bc
       !
       if(jrk==0) then
         !
-        if(lreport) lfirstcal=.true.
-        !
-        if(lfirstcal) then
-          !
-          if(mpirank==0) then
-            !
-            filewbs='datin/wallbs.dat'
-            !
-            inquire(file=trim(filewbs), exist=lexist)
-            !
-            if(lexist) then
-              fh=get_unit()
-              open(fh,file=trim(filewbs),action='read')
-              read(fh,*)
-              read(fh,*)
-              read(fh,*)wallamplit,beter,xa,xb,xc
-              read(fh,*)
-              read(fh,*)nmod_t,nmod_z
-              close(fh)
-              print*,' >> ',trim(filewbs)
-              !
-              print*,' ------------- wall blowing & suction parameters -------------'
-              write(*,"(38x,A,1X,F12.5)")   '  amplitude:',wallamplit
-              write(*,"(38x,A,1X,F12.5)")   '  frequency:',beter
-              write(*,"(23x,3(A,1X,F12.5))")'   x extent:',xa,' ~',xb,' ~',xc
-              write(*,"(42x,(A,1X,I0))")'    temporal modes:',nmod_t
-              write(*,"(42x,(A,1X,I0))")'    spanwise modes:',nmod_z
-              print*,' --------------------------------------------------------------'
-            else
-              wallamplit=0.d0
-              beter=1.d0
-              xa=0.d0
-              xb=0.d0
-              xc=0.d0
-              nmod_t=0
-              nmod_z=0
-            endif
-          endif
-          !
-          call bcast(wallamplit,comm=mpi_jmin)
-          call bcast(beter,comm=mpi_jmin)
-          call bcast(xa,comm=mpi_jmin)
-          call bcast(xb,comm=mpi_jmin)
-          call bcast(xc,comm=mpi_jmin)
-          call bcast(nmod_t,comm=mpi_jmin)
-          call bcast(nmod_z,comm=mpi_jmin)
-          !
-          !
-          lfirstcal=.false.
-          !
-        endif
-        !
-        if(ndims==3 .and. wallamplit>1.d-10) then
-          vwall=wallbs_rand(beter,wallamplit,xa,xb,xc,nmod_t,nmod_z)
+        call configure_wall_blowing
+        if(ndims==3 .and. abs(wall_blowing_amplitude)>1.d-10) then
+          vwall=wallbs_rand(wall_blowing_beta,wall_blowing_amplitude,  &
+               wall_blowing_xa,wall_blowing_xb,wall_blowing_xc,       &
+               wall_blowing_nmod_t,wall_blowing_nmod_z)
         else
           vwall=0.d0
         endif
@@ -7352,22 +7246,27 @@ module bc
           !
           if(x(i,j,k,1)<=xslip) then
             ue=num1d3*(4.d0*vel(i,1,k,1)-vel(i,2,k,1))
+            ve=num1d3*(4.d0*vel(i,1,k,2)-vel(i,2,k,2))
+            we=num1d3*(4.d0*vel(i,1,k,3)-vel(i,2,k,3))
             te=num1d3*(4.d0*tmp(i,1,k)-tmp(i,2,k))
+            vnormal=ue*bnorm_j0(i,k,1)+ve*bnorm_j0(i,k,2)+            &
+                    we*bnorm_j0(i,k,3)
             !
-            vel(i,j,k,1)=ue
-            vel(i,j,k,2)=0.d0
+            vel(i,j,k,1)=ue-vnormal*bnorm_j0(i,k,1)
+            vel(i,j,k,2)=ve-vnormal*bnorm_j0(i,k,2)
+            vel(i,j,k,3)=we-vnormal*bnorm_j0(i,k,3)
             tmp(i,j,k)  =te
             !
           else
             !
-            vel(i,j,k,1)=0.d0
-            vel(i,j,k,2)=vwall(i,k)
+            vel(i,j,k,1)=vwall(i,k)*bnorm_j0(i,k,1)
+            vel(i,j,k,2)=vwall(i,k)*bnorm_j0(i,k,2)
+            vel(i,j,k,3)=vwall(i,k)*bnorm_j0(i,k,3)
             tmp(i,j,k)  =tw
             !
           endif
           !
           !
-          vel(i,j,k,3)=0.d0
           prs(i,j,k)  =pe
           !
           do jspec=1,num_species
@@ -7451,25 +7350,18 @@ module bc
   !
   subroutine slipadibwall(ndir)
     !
-    use commvar,   only : Reynolds,turbmode,lreport
+    use commvar,   only : Reynolds,turbmode
     use commarray, only : tke,omg
-    use fludyna,   only : thermal,fvar2q,q2fvar,miucal
+    use fludyna,   only : thermal,fvar2q,miucal
     use commfunc,  only : dis2point2
-    use parallel,  only : mpi_jmin,bcast
     !
     ! arguments
     integer,intent(in) :: ndir
     !
     ! local data
-    integer :: i,j,k,l,jspec,fh
-    real(8) :: pe,ue,ve,te,delta_d1,miu,beta1
+    integer :: i,j,k,jspec
+    real(8) :: pe,ue,ve,we,vnormal,te,delta_d1,miu,beta1
     real(8) :: vwall(0:im,0:km)
-    character(len=64) :: filewbs
-    logical :: lexist
-    !
-    real(8),save :: beter,wallamplit,xa,xb,xc
-    integer,save :: nmod_t,nmod_z
-    logical,save :: lfirstcal=.true.
     !
     beta1=0.075d0
     !
@@ -7477,60 +7369,11 @@ module bc
       !
       if(jrk==0) then
         !
-        if(lreport) lfirstcal=.true.
-        !
-        if(lfirstcal) then
-          !
-          if(mpirank==0) then
-            !
-            filewbs='datin/wallbs.dat'
-            !
-            inquire(file=trim(filewbs), exist=lexist)
-            !
-            if(lexist) then
-              fh=get_unit()
-              open(fh,file=trim(filewbs),action='read')
-              read(fh,*)
-              read(fh,*)
-              read(fh,*)wallamplit,beter,xa,xb,xc
-              read(fh,*)
-              read(fh,*)nmod_t,nmod_z
-              close(fh)
-              print*,' >> ',trim(filewbs)
-              !
-              print*,' ------------- wall blowing & suction parameters -------------'
-              write(*,"(38x,A,1X,F12.5)")   '  amplitude:',wallamplit
-              write(*,"(38x,A,1X,F12.5)")   '  frequency:',beter
-              write(*,"(23x,3(A,1X,F12.5))")'   x extent:',xa,' ~',xb,' ~',xc
-              write(*,"(42x,(A,1X,I0))")'    temporal modes:',nmod_t
-              write(*,"(42x,(A,1X,I0))")'    spanwise modes:',nmod_z
-              print*,' --------------------------------------------------------------'
-            else
-              wallamplit=0.d0
-              beter=1.d0
-              xa=0.d0
-              xb=0.d0
-              xc=0.d0
-              nmod_t=0
-              nmod_z=0
-            endif
-          endif
-          !
-          call bcast(wallamplit,comm=mpi_jmin)
-          call bcast(beter,comm=mpi_jmin)
-          call bcast(xa,comm=mpi_jmin)
-          call bcast(xb,comm=mpi_jmin)
-          call bcast(xc,comm=mpi_jmin)
-          call bcast(nmod_t,comm=mpi_jmin)
-          call bcast(nmod_z,comm=mpi_jmin)
-          !
-          !
-          lfirstcal=.false.
-          !
-        endif
-        !
-        if(ndims==3 .and. wallamplit>1.d-10) then
-          vwall=wallbs_rand(beter,wallamplit,xa,xb,xc,nmod_t,nmod_z)
+        call configure_wall_blowing
+        if(ndims==3 .and. abs(wall_blowing_amplitude)>1.d-10) then
+          vwall=wallbs_rand(wall_blowing_beta,wall_blowing_amplitude,  &
+               wall_blowing_xa,wall_blowing_xb,wall_blowing_xc,       &
+               wall_blowing_nmod_t,wall_blowing_nmod_z)
         else
           vwall=0.d0
         endif
@@ -7557,10 +7400,16 @@ module bc
           ! endif
           !
           ue=num1d3*(4.d0*vel(i,1,k,1)-vel(i,2,k,1))
-          vel(i,j,k,1)=ue
-          vel(i,j,k,2)=0.d0
-          !
-          vel(i,j,k,3)=0.d0
+          ve=num1d3*(4.d0*vel(i,1,k,2)-vel(i,2,k,2))
+          we=num1d3*(4.d0*vel(i,1,k,3)-vel(i,2,k,3))
+          vnormal=ue*bnorm_j0(i,k,1)+ve*bnorm_j0(i,k,2)+              &
+                  we*bnorm_j0(i,k,3)
+          vel(i,j,k,1)=ue-vnormal*bnorm_j0(i,k,1)+                    &
+                       vwall(i,k)*bnorm_j0(i,k,1)
+          vel(i,j,k,2)=ve-vnormal*bnorm_j0(i,k,2)+                    &
+                       vwall(i,k)*bnorm_j0(i,k,2)
+          vel(i,j,k,3)=we-vnormal*bnorm_j0(i,k,3)+                    &
+                       vwall(i,k)*bnorm_j0(i,k,3)
           tmp(i,j,k)  =te
           prs(i,j,k)  =pe
           !
@@ -7606,12 +7455,13 @@ module bc
           !
           ue=num1d3*(4.d0*vel(i,j-1,k,1)-vel(i,j-2,k,1))
           ve=num1d3*(4.d0*vel(i,j-1,k,2)-vel(i,j-2,k,2))
+          we=num1d3*(4.d0*vel(i,j-1,k,3)-vel(i,j-2,k,3))
+          vnormal=ue*bnorm_jm(i,k,1)+ve*bnorm_jm(i,k,2)+              &
+                  we*bnorm_jm(i,k,3)
           !
-          ! vel(i,j,k,1)=0.d0
-          vel(i,j,k,1)=ue
-          vel(i,j,k,2)=ve
-          !
-          vel(i,j,k,3)=0.d0
+          vel(i,j,k,1)=ue-vnormal*bnorm_jm(i,k,1)
+          vel(i,j,k,2)=ve-vnormal*bnorm_jm(i,k,2)
+          vel(i,j,k,3)=we-vnormal*bnorm_jm(i,k,3)
           prs(i,j,k)  =pe
           tmp(i,j,k)  =te
           !
@@ -7788,62 +7638,12 @@ module bc
     real(8) :: vwall(0:im,0:km)
     !
     ! local data
-    integer :: i,k,l,m,seed_size
-    real(8) :: theter,fx,gz,ht,zl,tm
-    integer,allocatable :: seed(:)
+    integer :: i,k
+    integer(8) :: gi,gk,hash_value
+    real(8) :: theter,fx,gz,lz,rfluc
+    real(8),parameter :: hash_modulus=2147483629.d0
     !
-    real(8),save :: sqrt27,z0,t0,lz,rfluc,rampl
-    real(8),save :: randomv(15)
-    logical,save :: lfirstcal=.true.
-    !
-    if(lfirstcal) then
-      !
-      ! beter=0.02d0
-      ! !
-      ! xa=5.d0
-      ! xb=40.d0
-      ! !
-      ! nmod_z=3
-      ! nmod_t=2
-      !
-      lz=zmax-zmin
-      !
-      sqrt27=1.d0/sqrt(27.d0)
-      z0=0.2d0/(1.d0-0.8d0**nmod_z)
-      !
-      if(nmod_t==0) then
-        t0=0
-      else
-        t0=0.2d0/(1.d0-0.8d0**nmod_t)
-      endif
-      !
-      ! call random_seed() ! initialize with system generated seed
-      call random_seed(size=seed_size) ! find out size of seed
-      allocate(seed(seed_size))
-      ! call random_seed(get=seed) ! get system generated seed
-      ! write(*,*) seed            ! writes system generated seed
-      seed=0
-      call random_seed(put=seed) ! set current seed
-      ! call random_seed(get=seed) ! get current seed
-      ! write(*,*) seed            ! writes 0
-      deallocate(seed)           ! safe
-      !
-      do m=1,15
-        call random_number(randomv(m))
-        ! write(*,*)mpirank,'|',m,randomv(m)
-      end do
-      !
-      rampl=0.1d0
-      !
-      call random_seed(size=seed_size) ! find out size of seed
-      allocate(seed(seed_size))
-      seed=mpirank
-      call random_seed(put=seed) 
-      deallocate(seed)
-      !
-      lfirstcal=.false.
-      !
-    endif
+    lz=zmax-zmin
     !
     do k=0,km
     do i=0,im
@@ -7851,30 +7651,32 @@ module bc
       if(x(i,0,k,1)<=xb .and. x(i,0,k,1)>=xa) then
         !
         theter=2.d0*pi*(x(i,0,k,1)-xa)/(xb-xa)
-        fx=4.d0*dsin(theter)*(1.d0-dcos(theter))*sqrt27
+        fx=4.d0*dsin(theter)*(1.d0-dcos(theter))/sqrt(27.d0)
         !
         gz=dsin(2.d0*nmod_z*pi*(x(i,0,k,3)/lz))
         !
-        ht=1.d0
+        gi=int(ig0+i,8)
+        gk=int(kg0+k,8)
+        hash_value=104729_8*(gi+1_8)+130363_8*(gk+1_8)+433494437_8
+        hash_value=hash_value-(hash_value/2147483629_8)*2147483629_8
+        rfluc=0.1d0*(2.d0*dble(hash_value)/hash_modulus-1.d0)
         !
-        call random_number(rfluc)
-        rfluc=(rfluc*2.d0-1.d0)*rampl
-        !
-        vwall(i,k)=wallamplit*uinf*fx*gz*ht*(1.d0+rfluc)
+        vwall(i,k)=wallamplit*uinf*fx*gz*(1.d0+rfluc)
         !
       elseif(x(i,0,k,1)<=xc .and. x(i,0,k,1)>=xb) then
         !
         theter=2.d0*pi*(x(i,0,k,1)-xb)/(xc-xb)
-        fx=4.d0*dsin(theter)*(1.d0-dcos(theter))*sqrt27
+        fx=4.d0*dsin(theter)*(1.d0-dcos(theter))/sqrt(27.d0)
         !
         gz=dsin(2.d0*nmod_z*pi*(x(i,0,k,3)/lz)+0.5d0*pi)
         !
-        ht=1.d0
+        gi=int(ig0+i,8)
+        gk=int(kg0+k,8)
+        hash_value=104729_8*(gi+1_8)+130363_8*(gk+1_8)+433494437_8
+        hash_value=hash_value-(hash_value/2147483629_8)*2147483629_8
+        rfluc=0.1d0*(2.d0*dble(hash_value)/hash_modulus-1.d0)
         !
-        call random_number(rfluc)
-        rfluc=(rfluc*2.d0-1.d0)*rampl
-        !
-        vwall(i,k)=wallamplit*uinf*fx*gz*ht*(1.d0+rfluc)
+        vwall(i,k)=wallamplit*uinf*fx*gz*(1.d0+rfluc)
         !
       else
         vwall(i,k)=0.d0

@@ -14,6 +14,7 @@ NP="${NP:-1}"
 TOPOLOGY="${TOPOLOGY:-}"
 HOMOGENEOUS="${HOMOGENEOUS:-}"
 BCTYPE="${BCTYPE:-}"
+WALL_BLOWING="${WALL_BLOWING:-f}"
 if [[ -n "${FEQCHKPT+x}" ]]; then
   FEQCHKPT="$FEQCHKPT"
 elif [[ "$MAXSTEP" == "0" ]]; then
@@ -60,6 +61,20 @@ for mode in cpu gpu; do
   fi
   if [[ -n "$BCTYPE" ]]; then
     prepare_args+=(--bctype "$BCTYPE")
+  fi
+  if [[ "$WALL_BLOWING" == "t" ]]; then
+    prepare_args+=(
+      --wall-amplitude "${WALL_AMPLITUDE:-0.01}"
+      --wall-beta "${WALL_BETA:-1.0}"
+      --wall-xa "${WALL_XA:-0.5}"
+      --wall-xb "${WALL_XB:-3.0}"
+      --wall-xc "${WALL_XC:-5.8}"
+      --wall-nmod-t "${WALL_NMOD_T:-0}"
+      --wall-nmod-z "${WALL_NMOD_Z:-2}"
+    )
+  elif [[ "$WALL_BLOWING" != "f" ]]; then
+    echo "WALL_BLOWING must be t or f" >&2
+    exit 2
   fi
   python3 "$ROOT_DIR/tests/gpu_validation/prepare_tgv_case.py" \
     "${prepare_args[@]}"
