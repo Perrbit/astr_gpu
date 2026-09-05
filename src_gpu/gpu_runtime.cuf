@@ -2,7 +2,47 @@ module gpu_runtime
   implicit none
   logical,save :: prepared_halo_ready = .false.
   logical,save :: c4_stats_snapshot_ready = .false.
+  logical,save :: rk_timing_configured = .false.
+  logical,save :: rk_timing_enabled = .false.
+  real(8),save :: rk_prepare_start = 0.d0
+  real(8),save :: rk_prepare_seconds = 0.d0
 contains
+  subroutine configure_rk_timing()
+    implicit none
+    character(len=16) :: value
+    integer :: length,status
+
+    if(rk_timing_configured) return
+    value=''
+    call get_environment_variable('ASTR_GPU_RK_TIMING',value,        &
+                                  length=length,status=status)
+    if(status == 0 .and. length > 0) then
+      select case(trim(adjustl(value)))
+      case('1','t','T','true','TRUE','on','ON')
+        rk_timing_enabled=.true.
+      case default
+        rk_timing_enabled=.false.
+      end select
+    endif
+    rk_timing_configured=.true.
+  end subroutine configure_rk_timing
+
+  subroutine begin_rk_prepare_timing()
+    use parallel, only: ptime
+    implicit none
+
+    call configure_rk_timing()
+    rk_prepare_seconds=0.d0
+    if(rk_timing_enabled) rk_prepare_start=ptime()
+  end subroutine begin_rk_prepare_timing
+
+  subroutine end_rk_prepare_timing()
+    use parallel, only: ptime
+    implicit none
+
+    if(rk_timing_enabled) rk_prepare_seconds=ptime()-rk_prepare_start
+  end subroutine end_rk_prepare_timing
+
   subroutine gpu_bind_device()
     use device_runtime_gpu, only: bind_gpu_device
     implicit none
@@ -74,6 +114,7 @@ contains
     use commarray_gpu, only: save_q_stats_snapshot_gpu
     implicit none
 
+    call begin_rk_prepare_timing()
     c4_stats_snapshot_ready = gpu_s2_hbl_selective_roe_s2c4_supported() .or. &
          gpu_s2_hbl_selective_roe_s2c4_sponge_supported() .or. &
          gpu_s2_hbl_selective_roe_s2c4_diffusion_supported() .or. &
@@ -81,6 +122,7 @@ contains
     if(c4_stats_snapshot_ready) call save_q_stats_snapshot_gpu()
     call prepare_rkfirst_stats_gpu()
     prepared_halo_ready = .true.
+    call end_rk_prepare_timing()
   end subroutine gpu_prepare_rkfirst_stats
 
   subroutine gpu_restore_c4_stats_snapshot()
@@ -95,11 +137,22 @@ contains
 
   subroutine gpu_time_integration_rk(first_stage_prepared,copy_back)
     use mainloop_gpu, only: time_integration_rk_gpu
+    use commvar, only: nstep
+    use parallel, only: lio,ptime
     implicit none
     logical,intent(in),optional :: first_stage_prepared
     logical,intent(in),optional :: copy_back
+    real(8) :: integration_start,integration_seconds,total_seconds
 
+    if(rk_timing_enabled) integration_start=ptime()
     call time_integration_rk_gpu(first_stage_prepared,copy_back)
+    if(rk_timing_enabled) then
+      integration_seconds=ptime()-integration_start
+      total_seconds=rk_prepare_seconds+integration_seconds
+      if(lio) write(*,'(A,1X,I0,3(1X,ES24.16E3))')                  &
+        'ASTR_GPU_RK_TIMING',nstep,rk_prepare_seconds,              &
+        integration_seconds,total_seconds
+    endif
     prepared_halo_ready = .false.
   end subroutine gpu_time_integration_rk
 

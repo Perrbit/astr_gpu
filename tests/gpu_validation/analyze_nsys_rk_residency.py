@@ -40,6 +40,7 @@ def analyze(
     input_path: Path,
     start_kernel: str,
     large_transfer_bytes: int,
+    allowed_d2h_kernel_queries: tuple[str, ...] = (),
 ) -> tuple[bool, list[str]]:
     if large_transfer_bytes <= 0:
         raise ValueError("large-transfer-bytes must be positive")
@@ -63,17 +64,40 @@ def analyze(
                 "SELECT COUNT(*) FROM CUPTI_ACTIVITY_KIND_KERNEL WHERE start >= ?", (start,)
             ).fetchone()[0]
         )
-        large_count = int(
-            connection.execute(
-                """
-                SELECT COUNT(*) FROM CUPTI_ACTIVITY_KIND_MEMCPY
-                WHERE start >= ? AND copyKind IN (1, 2, 11, 12) AND bytes >= ?
-                """,
-                (start, large_transfer_bytes),
-            ).fetchone()[0]
-        )
+        large_transfers = connection.execute(
+            """
+            SELECT memcpy.start, memcpy.bytes, memcpy.copyKind,
+                   (
+                     SELECT strings.value
+                     FROM CUPTI_ACTIVITY_KIND_KERNEL AS kernel
+                     JOIN StringIds AS strings ON strings.id = kernel.demangledName
+                     WHERE kernel.end <= memcpy.start
+                     ORDER BY kernel.end DESC
+                     LIMIT 1
+                   ) AS previous_kernel
+            FROM CUPTI_ACTIVITY_KIND_MEMCPY AS memcpy
+            WHERE memcpy.start >= ?
+              AND memcpy.copyKind IN (1, 2, 11, 12)
+              AND memcpy.bytes >= ?
+            ORDER BY memcpy.start
+            """,
+            (start, large_transfer_bytes),
+        ).fetchall()
 
-    passed = kernel_count > 0 and large_count == 0
+    allowed_large_d2h = []
+    forbidden_large = []
+    for transfer_start, transfer_bytes, copy_kind, previous_kernel in large_transfers:
+        previous_name = "" if previous_kernel is None else str(previous_kernel)
+        allowed = copy_kind in D2H_KINDS and any(
+            query in previous_name for query in allowed_d2h_kernel_queries
+        )
+        record = (int(transfer_start), int(transfer_bytes), int(copy_kind), previous_name)
+        if allowed:
+            allowed_large_d2h.append(record)
+        else:
+            forbidden_large.append(record)
+
+    passed = kernel_count > 0 and not forbidden_large
     lines = [
         f"status: {'pass' if passed else 'fail'}",
         f"start_kernel_query: {start_kernel}",
@@ -82,7 +106,11 @@ def analyze(
         f"start_timestamp_ns: {start}",
         f"kernels_after_start: {kernel_count}",
         f"large_transfer_threshold_bytes: {large_transfer_bytes}",
-        f"large_h2d_d2h_count: {large_count}",
+        f"large_h2d_d2h_count: {len(large_transfers)}",
+        f"allowed_large_d2h_count: {len(allowed_large_d2h)}",
+        f"forbidden_large_h2d_d2h_count: {len(forbidden_large)}",
+        "allowed_d2h_after_kernel_queries: "
+        + (",".join(allowed_d2h_kernel_queries) if allowed_d2h_kernel_queries else "none"),
         f"h2d_count: {h2d.count}",
         f"h2d_total_bytes: {h2d.total_bytes}",
         f"h2d_max_bytes: {h2d.max_bytes}",
@@ -99,9 +127,20 @@ def main() -> int:
     parser.add_argument("--report", required=True, type=Path)
     parser.add_argument("--start-kernel", required=True)
     parser.add_argument("--large-transfer-bytes", type=int, default=65536)
+    parser.add_argument(
+        "--allow-d2h-after-kernel",
+        action="append",
+        default=[],
+        help="Allow a large D2H transfer only when the immediately preceding kernel name contains this value",
+    )
     args = parser.parse_args()
 
-    passed, lines = analyze(args.input, args.start_kernel, args.large_transfer_bytes)
+    passed, lines = analyze(
+        args.input,
+        args.start_kernel,
+        args.large_transfer_bytes,
+        tuple(args.allow_d2h_after_kernel),
+    )
     report = "\n".join(lines) + "\n"
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(report, encoding="ascii")

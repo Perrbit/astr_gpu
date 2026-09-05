@@ -80,7 +80,7 @@ contains
     integer,value :: im,jm,km,hm
     real(8),value :: const2,const6
     integer :: id,i,j,k,ni,nj,nk
-    real(8) :: den,ke
+    real(8) :: den,u1,u2,u3,pres,ke
 
     ni = im + 2*hm + 1
     nj = jm + 2*hm + 1
@@ -93,13 +93,17 @@ contains
     k = id/(ni*nj) - hm
 
     den = q_d(i,j,k,1)
+    u1 = q_d(i,j,k,2) / den
+    u2 = q_d(i,j,k,3) / den
+    u3 = q_d(i,j,k,4) / den
+    ke = 0.5d0 * den * (u1*u1 + u2*u2 + u3*u3)
+    pres = (q_d(i,j,k,5) - ke) / const6
     rho_d(i,j,k) = den
-    vel_d(i,j,k,1) = q_d(i,j,k,2) / den
-    vel_d(i,j,k,2) = q_d(i,j,k,3) / den
-    vel_d(i,j,k,3) = q_d(i,j,k,4) / den
-    ke = 0.5d0 * den * (vel_d(i,j,k,1)**2 + vel_d(i,j,k,2)**2 + vel_d(i,j,k,3)**2)
-    prs_d(i,j,k) = (q_d(i,j,k,5) - ke) / const6
-    tmp_d(i,j,k) = prs_d(i,j,k) / den * const2
+    vel_d(i,j,k,1) = u1
+    vel_d(i,j,k,2) = u2
+    vel_d(i,j,k,3) = u3
+    prs_d(i,j,k) = pres
+    tmp_d(i,j,k) = pres / den * const2
   end subroutine q_to_primitive_halo_kernel
 
   attributes(device) subroutine q_to_primitive_point(i,j,k,const2,const6)
@@ -107,16 +111,20 @@ contains
     implicit none
     integer,value :: i,j,k
     real(8),value :: const2,const6
-    real(8) :: den,ke
+    real(8) :: den,u1,u2,u3,pres,ke
 
     den = q_d(i,j,k,1)
+    u1 = q_d(i,j,k,2) / den
+    u2 = q_d(i,j,k,3) / den
+    u3 = q_d(i,j,k,4) / den
+    ke = 0.5d0 * den * (u1*u1 + u2*u2 + u3*u3)
+    pres = (q_d(i,j,k,5) - ke) / const6
     rho_d(i,j,k) = den
-    vel_d(i,j,k,1) = q_d(i,j,k,2) / den
-    vel_d(i,j,k,2) = q_d(i,j,k,3) / den
-    vel_d(i,j,k,3) = q_d(i,j,k,4) / den
-    ke = 0.5d0 * den * (vel_d(i,j,k,1)**2 + vel_d(i,j,k,2)**2 + vel_d(i,j,k,3)**2)
-    prs_d(i,j,k) = (q_d(i,j,k,5) - ke) / const6
-    tmp_d(i,j,k) = prs_d(i,j,k) / den * const2
+    vel_d(i,j,k,1) = u1
+    vel_d(i,j,k,2) = u2
+    vel_d(i,j,k,3) = u3
+    prs_d(i,j,k) = pres
+    tmp_d(i,j,k) = pres / den * const2
   end subroutine q_to_primitive_point
 
   attributes(global) subroutine q_to_primitive_y_periodic_boundary_kernel(im,jm,km,hm,const2,const6)
@@ -142,21 +150,31 @@ contains
     endif
   end subroutine q_to_primitive_y_periodic_boundary_kernel
 
-  attributes(global) subroutine q_to_primitive_x_periodic_boundary_kernel(im,jm,km,hm,const2,const6)
+  attributes(global) subroutine q_to_primitive_x_periodic_boundary_kernel(im,jm,km,hm,const2,const6,fast_mapping)
     implicit none
     integer,value :: im,jm,km,hm
     real(8),value :: const2,const6
-    integer :: id,j,k,h,side,n1,n2
+    logical,value :: fast_mapping
+    integer :: id,j,k,h,side,n1,n2,nhalo,halo_id
 
     n1 = jm + 1
     n2 = km + 1
+    nhalo = 2*(hm+1)
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
-    if(id >= n1*n2*2*(hm+1)) return
+    if(id >= n1*n2*nhalo) return
 
-    j = mod(id,n1)
-    k = mod(id/n1,n2)
-    h = mod(id/(n1*n2),hm+1)
-    side = id/(n1*n2*(hm+1))
+    if(fast_mapping) then
+      halo_id = mod(id,nhalo)
+      h = mod(halo_id,hm+1)
+      side = halo_id/(hm+1)
+      j = mod(id/nhalo,n1)
+      k = id/(nhalo*n1)
+    else
+      j = mod(id,n1)
+      k = mod(id/n1,n2)
+      h = mod(id/(n1*n2),hm+1)
+      side = id/(n1*n2*(hm+1))
+    endif
 
     if(side == 0) then
       call q_to_primitive_point(-hm+h,j,k,const2,const6)
@@ -268,7 +286,7 @@ contains
   end subroutine refresh_primitive_halo_gpu
 
   subroutine refresh_primitive_x_periodic_boundary_gpu()
-    use commvar, only: im,jm,km,hm,const2,const6
+    use commvar, only: im,jm,km,hm,const2,const6,lihomo,ljhomo,lkhomo
     use gpu_check, only: sync_after_kernel
     implicit none
     type(dim3) :: block,grid
@@ -277,7 +295,8 @@ contains
     block = dim3(256,1,1)
     n = (jm + 1) * (km + 1) * 2 * (hm + 1)
     grid = dim3((n + block%x - 1)/block%x,1,1)
-    call q_to_primitive_x_periodic_boundary_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6)
+    call q_to_primitive_x_periodic_boundary_kernel<<<grid,block>>>( &
+         im,jm,km,hm,const2,const6,lihomo .and. ljhomo .and. lkhomo)
     call sync_after_kernel('q_to_primitive_x_periodic_boundary_kernel')
   end subroutine refresh_primitive_x_periodic_boundary_gpu
 

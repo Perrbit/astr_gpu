@@ -2811,3 +2811,44 @@ NP=1/NP=2 x-slab medians are `58.490/38.989 s`, giving `1.5002x` speedup and
 tested static single-block, nonreacting, explicit-scheme scope. It does not
 establish arbitrary curved open boundaries, moving/multi-block support, GPU
 HDF5, physical SBLI fidelity, or scaling beyond two GPUs.
+
+## TGV 256 single-GPU performance gate
+
+Build the GPU binary from the repository top-level `CMakeLists.txt`, then run
+one process warm-up followed by five measured processes:
+
+```bash
+OUT_DIR=/tmp/astr_tgv_perf \
+  tests/gpu_validation/run_tgv_256_performance_benchmark.sh
+```
+
+The driver fixes the default case at FP64 `256^3`, explicit `643e/643e`,
+tenth-order filtering, diffusion, and NP=1. It disables checkpoint output in
+the measured loop, discards the first complete RK timing in each process, and
+records per-process timing, device memory, and utilization. Override `GPU_ID`
+to select a device.
+
+Collect the matching Nsight Systems trace and residency report with:
+
+```bash
+PROFILE_TOOL=nsys OUT_DIR=/tmp/astr_tgv_nsys \
+  tests/gpu_validation/run_tgv_256_performance_profile.sh
+```
+
+The residency audit permits a transfer at or above 64 KiB only when a D2H
+copy immediately follows one of the three named TGV statistic partial-reduction
+kernels. H2D transfers are never exempted. Raw, allowed, and forbidden counts
+are reported separately.
+
+Collect one full Nsight Compute instance of the current diffusion-flux hotspot
+with:
+
+```bash
+PROFILE_TOOL=ncu MAXSTEP=0 OUT_DIR=/tmp/astr_tgv_ncu \
+  tests/gpu_validation/run_tgv_256_performance_profile.sh
+```
+
+The same commands are the A800 rerun entry points. Configure a fresh CMake
+build on that system instead of copying a workstation build tree or cache.
+The accepted workstation evidence and exact correctness commands are recorded
+in `documents/ASTR_TGV_PERFORMANCE_OPTIMIZATION_REPORT.md`.
