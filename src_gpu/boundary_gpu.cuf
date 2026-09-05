@@ -1786,11 +1786,13 @@ contains
 
   attributes(global) subroutine nscbc_farfield_y_upper_rhs_kernel(im,jm,km,hm,npdci,npdck,gamma,mach,ymin,ymax,pinf, &
                                                                   rho_target,u_target,v_target,w_target,e_target,      &
-                                                                  incoming_only,gmachmax2,apply_up)
-    use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,qrhs_d,jacob_d,dxi_d
+                                                                  rho_post,u_post,v_post,w_post,e_post,shock_x,         &
+                                                                  shock_target,incoming_only,gmachmax2,apply_up)
+    use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,qrhs_d,jacob_d,dxi_d,x_d
     implicit none
-    integer,value :: im,jm,km,hm,npdci,npdck,incoming_only,apply_up
-    real(8),value :: gamma,mach,ymin,ymax,pinf,rho_target,u_target,v_target,w_target,e_target,gmachmax2
+    integer,value :: im,jm,km,hm,npdci,npdck,shock_target,incoming_only,apply_up
+    real(8),value :: gamma,mach,ymin,ymax,pinf,rho_target,u_target,v_target,w_target,e_target
+    real(8),value :: rho_post,u_post,v_post,w_post,e_post,shock_x,gmachmax2
     integer :: id,i,k,ii,m,n
     real(8) :: pnor(5,5),pinv(5,5),ecs(0:2,5),decs(5),rest(5),lodi(5),lodi1(5), &
                ddi(3),flux(5),css,kinout,metric
@@ -1851,6 +1853,13 @@ contains
       qtarget(3)=rho_target*v_target
       qtarget(4)=rho_target*w_target
       qtarget(5)=e_target
+      if(shock_target /= 0 .and. x_d(i,jm,k,1)>shock_x) then
+        qtarget(1)=rho_post
+        qtarget(2)=rho_post*u_post
+        qtarget(3)=rho_post*v_post
+        qtarget(4)=rho_post*w_post
+        qtarget(5)=e_post
+      endif
       dq(:)=q_d(i,jm,k,1:5)-qtarget(:)
       do m=1,5
         char_delta(m)=0.d0
@@ -1900,25 +1909,35 @@ contains
   subroutine apply_nscbc_farfield_y_upper_rhs_gpu(gmachmax2)
     use commvar, only: im,jm,km,hm,npdci,npdck,gamma,mach,ymin,ymax,pinf,const2,const6
     use bc, only: nscbc_farfield_incoming_only_enabled,               &
-                  nscbc_farfield_target_state
+                  nscbc_farfield_target_state,                        &
+                  nscbc_farfield_target_states
     use gpu_check, only: sync_after_kernel
     implicit none
     real(8),intent(in) :: gmachmax2
     type(dim3) :: block,grid
-    integer :: apply_down,apply_up,n,incoming_only
+    integer :: apply_down,apply_up,n,incoming_only,shock_target
     real(8) :: rho_target,u_target,v_target,w_target,t_target,e_target
+    real(8) :: rho_post,u_post,v_post,w_post,t_post,e_post,shock_x
+    logical :: use_shock
 
     call gpu_physical_boundary_apply_mask(2,apply_down,apply_up)
     incoming_only=merge(1,0,nscbc_farfield_incoming_only_enabled())
     call nscbc_farfield_target_state(rho_target,u_target,v_target,     &
                                      w_target,t_target)
+    call nscbc_farfield_target_states(huge(1.d0),rho_post,u_post,      &
+         v_post,w_post,t_post,shock_x,use_shock)
+    shock_target=merge(1,0,use_shock)
     e_target=(rho_target*t_target/const2)*const6+0.5d0*rho_target*     &
              (u_target*u_target+v_target*v_target+w_target*w_target)
+    e_post=(rho_post*t_post/const2)*const6+0.5d0*rho_post*             &
+             (u_post*u_post+v_post*v_post+w_post*w_post)
     block = dim3(256,1,1)
     n = (im+1)*(km+1)
     grid = dim3((n+block%x-1)/block%x,1,1)
     call nscbc_farfield_y_upper_rhs_kernel<<<grid,block>>>(im,jm,km,hm,npdci,npdck,gamma,mach,ymin,ymax, &
-         pinf,rho_target,u_target,v_target,w_target,e_target,incoming_only,gmachmax2,apply_up)
+         pinf,rho_target,u_target,v_target,w_target,e_target,          &
+         rho_post,u_post,v_post,w_post,e_post,shock_x,shock_target,    &
+         incoming_only,gmachmax2,apply_up)
     call sync_after_kernel('nscbc_farfield_y_upper_rhs_kernel')
   end subroutine apply_nscbc_farfield_y_upper_rhs_gpu
 

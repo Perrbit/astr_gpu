@@ -31,9 +31,12 @@ module bc
   character(len=4) :: turbinf='none'
   logical,save :: nscbc_farfield_configured=.false.
   logical,save :: nscbc_farfield_incoming_only=.false.
+  logical,save :: nscbc_farfield_sbli_shock=.false.
   real(8),save :: nscbc_farfield_rho_target,nscbc_farfield_u_target,   &
                   nscbc_farfield_v_target,nscbc_farfield_w_target,     &
                   nscbc_farfield_t_target
+  real(8),save :: nscbc_farfield_shock_x=0.d0,                         &
+                  nscbc_farfield_shock_angle=0.d0
   logical,save :: wall_blowing_configured=.false.
   real(8),save :: wall_blowing_amplitude=0.d0,wall_blowing_beta=1.d0,  &
                   wall_blowing_xa=0.d0,wall_blowing_xb=0.d0,           &
@@ -128,10 +131,15 @@ module bc
       select case(trim(mode))
       case('compatibility')
         nscbc_farfield_incoming_only=.false.
+        nscbc_farfield_sbli_shock=.false.
       case('incoming_only')
         nscbc_farfield_incoming_only=.true.
+        nscbc_farfield_sbli_shock=.false.
+      case('sbli_shock')
+        nscbc_farfield_incoming_only=.true.
+        nscbc_farfield_sbli_shock=.true.
       case default
-        stop 'ASTR_NSCBC_FARFIELD_MODE must be compatibility or incoming_only'
+        stop 'ASTR_NSCBC_FARFIELD_MODE must be compatibility, incoming_only, or sbli_shock'
       end select
 
       nscbc_farfield_rho_target=roinf
@@ -154,6 +162,17 @@ module bc
            nscbc_farfield_t_target<=0.d0) then
           stop 'NSCBC farfield target rho and T must be positive'
         endif
+        if(nscbc_farfield_sbli_shock) then
+          call read_nscbc_farfield_real('ASTR_NSCBC_FARFIELD_SHOCK_X',  &
+                                        nscbc_farfield_shock_x)
+          call read_nscbc_farfield_real(                               &
+               'ASTR_NSCBC_FARFIELD_SHOCK_ANGLE_DEG',                  &
+               nscbc_farfield_shock_angle)
+          if(nscbc_farfield_shock_angle<=0.d0 .or.                     &
+             nscbc_farfield_shock_angle>=90.d0) then
+            stop 'SBLI NSCBC shock angle must lie between 0 and 90 degrees'
+          endif
+        endif
       endif
     endif
 
@@ -163,12 +182,20 @@ module bc
     call bcast(nscbc_farfield_v_target)
     call bcast(nscbc_farfield_w_target)
     call bcast(nscbc_farfield_t_target)
+    call bcast(nscbc_farfield_sbli_shock)
+    call bcast(nscbc_farfield_shock_x)
+    call bcast(nscbc_farfield_shock_angle)
     if(lio .and. nscbc_farfield_incoming_only) then
       write(*,'(A,5(1X,ES14.6E3))')                                     &
         '  ** NSCBC farfield incoming_only target rho/u/v/w/T:',        &
         nscbc_farfield_rho_target,nscbc_farfield_u_target,              &
         nscbc_farfield_v_target,nscbc_farfield_w_target,                &
         nscbc_farfield_t_target
+      if(nscbc_farfield_sbli_shock) then
+        write(*,'(A,2(1X,ES14.6E3))')                                  &
+          '  ** SBLI target shock x/angle(deg):',                       &
+          nscbc_farfield_shock_x,nscbc_farfield_shock_angle
+      endif
     endif
 
     nscbc_farfield_configured=.true.
@@ -208,6 +235,44 @@ module bc
     t_target=nscbc_farfield_t_target
   end subroutine nscbc_farfield_target_state
 
+  logical function nscbc_farfield_sbli_shock_enabled()
+    implicit none
+
+    call configure_nscbc_farfield
+    nscbc_farfield_sbli_shock_enabled=nscbc_farfield_sbli_shock
+  end function nscbc_farfield_sbli_shock_enabled
+
+  subroutine nscbc_farfield_target_states(xcoord,rho_target,u_target,   &
+                                           v_target,w_target,t_target, &
+                                           shock_x,use_shock)
+    use fludyna, only: postshock
+    implicit none
+    real(8),intent(in) :: xcoord
+    real(8),intent(out) :: rho_target,u_target,v_target,w_target,t_target
+    real(8),intent(out) :: shock_x
+    logical,intent(out) :: use_shock
+    real(8) :: p_target,p_post
+
+    call configure_nscbc_farfield
+    rho_target=nscbc_farfield_rho_target
+    u_target=nscbc_farfield_u_target
+    v_target=nscbc_farfield_v_target
+    w_target=nscbc_farfield_w_target
+    t_target=nscbc_farfield_t_target
+    shock_x=nscbc_farfield_shock_x
+    use_shock=nscbc_farfield_sbli_shock
+    if(use_shock .and. xcoord>shock_x) then
+      p_target=nscbc_farfield_rho_target*nscbc_farfield_t_target/const2
+      ! An upper-y incident shock turns the target flow toward negative y.
+      call postshock(nscbc_farfield_rho_target,                         &
+                     nscbc_farfield_u_target,                           &
+                     nscbc_farfield_v_target,p_target,                  &
+                     nscbc_farfield_t_target,rho_target,u_target,       &
+                     v_target,p_post,t_target,                          &
+                     -abs(nscbc_farfield_shock_angle))
+    endif
+  end subroutine nscbc_farfield_target_states
+
   subroutine nscbc_farfield_y_upper_incoming_lodi(lodi,pinv,i,j,k,css, &
                                                     gmachmax2)
     implicit none
@@ -215,7 +280,9 @@ module bc
     real(8),intent(in) :: pinv(5,5),css,gmachmax2
     integer,intent(in) :: i,j,k
     real(8) :: qtarget(5),dq(5),char_delta(5),normal(3),normal_speed,  &
-               lambda(5),sigma_in,sigma_out,p_target,norm
+               lambda(5),sigma_in,sigma_out,p_target,norm,shock_x,   &
+               rho_target,u_target,v_target,w_target,t_target
+    logical :: use_shock
     integer :: m
 
     if(numq/=5 .or. num_species/=0 .or. num_modequ/=0) then
@@ -229,14 +296,15 @@ module bc
     lambda=(/normal_speed,normal_speed,normal_speed,                   &
              normal_speed+css,normal_speed-css/)
 
-    p_target=nscbc_farfield_rho_target*nscbc_farfield_t_target/const2
-    qtarget(1)=nscbc_farfield_rho_target
-    qtarget(2)=nscbc_farfield_rho_target*nscbc_farfield_u_target
-    qtarget(3)=nscbc_farfield_rho_target*nscbc_farfield_v_target
-    qtarget(4)=nscbc_farfield_rho_target*nscbc_farfield_w_target
-    qtarget(5)=p_target*const6+0.5d0*nscbc_farfield_rho_target*        &
-               (nscbc_farfield_u_target**2+nscbc_farfield_v_target**2+ &
-                nscbc_farfield_w_target**2)
+    call nscbc_farfield_target_states(x(i,j,k,1),rho_target,u_target,  &
+         v_target,w_target,t_target,shock_x,use_shock)
+    p_target=rho_target*t_target/const2
+    qtarget(1)=rho_target
+    qtarget(2)=rho_target*u_target
+    qtarget(3)=rho_target*v_target
+    qtarget(4)=rho_target*w_target
+    qtarget(5)=p_target*const6+0.5d0*rho_target*                       &
+               (u_target**2+v_target**2+w_target**2)
     dq(:)=q(i,j,k,1:5)-qtarget(:)
     char_delta=matmul(pinv,dq)
 
@@ -3400,10 +3468,11 @@ module bc
               tmp_far(i)=tmp_prof(jm)
               prs_far(i)=prs_prof(jm)
             else
+              ! angshk is a positive magnitude; upper-y incidence is negative.
               call postshock(rho_prof(jm),vel_prof(jm,1),vel_prof(jm,2), &
                              prs_prof(jm),tmp_prof(jm),                  &
                              rho_far(i),vel_far(i,1),vel_far(i,2),       &
-                             prs_far(i),tmp_far(i),angshk)
+                             prs_far(i),tmp_far(i),-abs(angshk))
             endif
             !
           elseif(trim(flowtype)=='bl') then

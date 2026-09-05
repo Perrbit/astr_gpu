@@ -199,7 +199,8 @@ contains
          gpu_s2_hbl_selective_roe_s2c3_sponge_supported, &
          gpu_s2_hbl_selective_roe_s2c4_supported,gpu_s2_hbl_selective_roe_s2c4_sponge_supported, &
          gpu_s2_hbl_selective_roe_s2c4_diffusion_supported, &
-         gpu_s2_hbl_selective_roe_s2c5_diffusion_supported
+         gpu_s2_hbl_selective_roe_s2c5_diffusion_supported, &
+         gpu_s2_sbli_nscbc_supported,gpu_s2_sbli_nscbc_sponge_supported
     use shock_sensor_gpu, only: compute_shock_sensor_gpu
     use bc, only: bctype
     implicit none
@@ -238,6 +239,8 @@ contains
     logical :: s2_hbl_selective_roe_sponge_case
     logical :: s2_hbl_selective_roe_c4_case
     logical :: s2_hbl_selective_roe_c4_sponge_case
+    logical :: s2_sbli_nscbc_case
+    logical :: s2_sbli_nscbc_sponge_case
     logical :: periodic_filter_case
     integer :: physical_axis
     integer :: ivar
@@ -254,9 +257,12 @@ contains
     s2_hbl_selective_roe_c4_sponge_case = gpu_s2_hbl_selective_roe_s2c4_sponge_supported() .or. &
          gpu_s2_hbl_selective_roe_s2c5_diffusion_supported()
     s2_hbl_selective_roe_c4_case = s2_hbl_selective_roe_c4_case .or. s2_hbl_selective_roe_c4_sponge_case
+    s2_sbli_nscbc_case = gpu_s2_sbli_nscbc_supported()
+    s2_sbli_nscbc_sponge_case = gpu_s2_sbli_nscbc_sponge_supported()
+    s2_sbli_nscbc_case = s2_sbli_nscbc_case .or. s2_sbli_nscbc_sponge_case
     flatplate_case = gpu_s1_flatplate_s1a_supported() .or. flatplate_mp7_case .or. &
          s2_hbl_selective_roe_case .or. s2_hbl_selective_roe_sponge_case .or. &
-         s2_hbl_selective_roe_c4_case
+         s2_hbl_selective_roe_c4_case .or. s2_sbli_nscbc_case
     periodic_filter_case = lfilter .and. .not.(gpu_uses_physical_boundary() .or. ldc_case .or. flatplate_case)
     flatplate_nscbc_farfield_case = flatplate_case .and. bctype(4) == GPU_BC_NSCBC_FARFIELD
     sod_s0a1_case = gpu_sod_s0a1_supported()
@@ -275,7 +281,8 @@ contains
          gpu_shock_characteristic_s0a10_supported()
     characteristic_xphysical_case = gpu_shock_characteristic_s0b0_xphysical_supported()
     characteristic_xyphysical_case = s2_hbl_selective_roe_case .or. &
-         s2_hbl_selective_roe_sponge_case .or. s2_hbl_selective_roe_c4_case
+         s2_hbl_selective_roe_sponge_case .or. s2_hbl_selective_roe_c4_case .or. &
+         s2_sbli_nscbc_case
     characteristic_case = characteristic_case .or. characteristic_xphysical_case .or. &
          characteristic_xyphysical_case
     shock_sensor_case = gpu_shock_sensor_s0a4_supported() .or. &
@@ -668,7 +675,7 @@ contains
         call sync_after_kernel('rk3_update_global_kernel')
       endif
       if(open_shock_sponge_case .or. s2_hbl_selective_roe_sponge_case .or. &
-         s2_hbl_selective_roe_c4_sponge_case) then
+         s2_hbl_selective_roe_c4_sponge_case .or. s2_sbli_nscbc_sponge_case) then
         call apply_xmax_sponge_gpu()
         call q_to_primitive_kernel<<<grid3,block3>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
         call sync_after_kernel('sponge_q_to_primitive_kernel')
@@ -703,8 +710,9 @@ contains
          gpu_s2_hbl_selective_roe_s2c3_sponge_supported, &
          gpu_s2_hbl_selective_roe_s2c4_supported,gpu_s2_hbl_selective_roe_s2c4_sponge_supported, &
          gpu_s2_hbl_selective_roe_s2c4_diffusion_supported, &
-         gpu_s2_hbl_selective_roe_s2c5_diffusion_supported
-    use bc, only: bctype
+         gpu_s2_hbl_selective_roe_s2c5_diffusion_supported, &
+         gpu_s2_sbli_nscbc_supported,gpu_s2_sbli_nscbc_sponge_supported
+    use bc, only: bctype,nscbc_farfield_sbli_shock_enabled
     use commarray, only: jacob,dxi,bnorm_im,bnorm_j0,bnorm_jm,         &
                          bnorm_k0,bnorm_km
     use parallel, only: mpisize,isize,jsize,ksize,pmax
@@ -743,7 +751,9 @@ contains
          gpu_s2_hbl_selective_roe_s2c4_supported() .or. &
          gpu_s2_hbl_selective_roe_s2c4_sponge_supported() .or. &
          gpu_s2_hbl_selective_roe_s2c4_diffusion_supported() .or. &
-         gpu_s2_hbl_selective_roe_s2c5_diffusion_supported()
+         gpu_s2_hbl_selective_roe_s2c5_diffusion_supported() .or. &
+         gpu_s2_sbli_nscbc_supported() .or. &
+         gpu_s2_sbli_nscbc_sponge_supported()
     if(trim(flowtype) == 'bl' .and. trim(conschm) == '543e' .and. lchardecomp .and. &
        (.not.gpu_s2_hbl_selective_roe_s2c3_supported()) .and. &
        (.not.gpu_s2_hbl_selective_roe_diffusion_supported()) .and. &
@@ -751,8 +761,15 @@ contains
        (.not.gpu_s2_hbl_selective_roe_s2c4_supported()) .and. &
        (.not.gpu_s2_hbl_selective_roe_s2c4_sponge_supported()) .and. &
        (.not.gpu_s2_hbl_selective_roe_s2c4_diffusion_supported()) .and. &
-       (.not.gpu_s2_hbl_selective_roe_s2c5_diffusion_supported())) &
+       (.not.gpu_s2_hbl_selective_roe_s2c5_diffusion_supported()) .and. &
+       (.not.gpu_s2_sbli_nscbc_supported()) .and. &
+       (.not.gpu_s2_sbli_nscbc_sponge_supported())) &
       stop 'GPU S2 supports only validated C3/C3-S or C4/C5 capability gates'
+    if((gpu_s2_sbli_nscbc_supported() .or.                         &
+        gpu_s2_sbli_nscbc_sponge_supported()) .and.                &
+       (.not.nscbc_farfield_sbli_shock_enabled())) then
+      stop 'GPU physical SBLI requires ASTR_NSCBC_FARFIELD_MODE=sbli_shock'
+    endif
     if((.not.controlled_upwind_case) .and. trim(conschm) /= '643e') &
       stop 'GPU first-stage supports conschm=543e only in controlled Phase S0-A gates'
     if(trim(difschm) /= '643e') stop 'GPU first-stage supports explicit difschm=643e only'
@@ -824,7 +841,9 @@ contains
        (.not.gpu_s2_hbl_selective_roe_s2c4_supported()) .and. &
        (.not.gpu_s2_hbl_selective_roe_s2c4_sponge_supported()) .and. &
        (.not.gpu_s2_hbl_selective_roe_s2c4_diffusion_supported()) .and. &
-       (.not.gpu_s2_hbl_selective_roe_s2c5_diffusion_supported())) &
+       (.not.gpu_s2_hbl_selective_roe_s2c5_diffusion_supported()) .and. &
+       (.not.gpu_s2_sbli_nscbc_supported()) .and. &
+       (.not.gpu_s2_sbli_nscbc_sponge_supported())) &
       stop 'GPU S1 flatplate requires an explicit 3D S1-A capability contract'
     if((.not.ldc_case) .and. (.not.flatplate_pending) .and. (.not.gpu_boundary_case_supported())) &
       stop 'GPU first-stage supports periodic or one zeroextrap/symmetry/isothermal/adiabatic/slip-isothermal/slip-adiabatic wall direction only'

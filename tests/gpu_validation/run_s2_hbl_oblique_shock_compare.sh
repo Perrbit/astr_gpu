@@ -13,6 +13,7 @@ JM="${JM:-192}"
 KM="${KM:-8}"
 MAXSTEP="${MAXSTEP:-2}"
 FEQCHKPT="${FEQCHKPT:-$MAXSTEP}"
+DELTAT="${DELTAT:-1.0e-5}"
 REYNOLDS="${REYNOLDS:-1.83052e6}"
 MACH="${MACH:-5.0}"
 REFERENCE_TEMPERATURE="${REFERENCE_TEMPERATURE:-226.65}"
@@ -21,6 +22,7 @@ STATION_X="${STATION_X:-1.0}"
 VIRTUAL_LEADING_EDGE="${VIRTUAL_LEADING_EDGE:--2.0}"
 PROFILE_DENSITY_MODE="${PROFILE_DENSITY_MODE:-provided}"
 PROFILE_OBLIQUE_SHOCK="${PROFILE_OBLIQUE_SHOCK:-f}"
+FIELD_OBLIQUE_SHOCK="${FIELD_OBLIQUE_SHOCK:-t}"
 if [[ "$PROFILE_OBLIQUE_SHOCK" == "t" ]]; then
   PROFILE_PRESSURE_MODE="${PROFILE_PRESSURE_MODE:-provided}"
 else
@@ -75,14 +77,19 @@ prepare_case() {
     --x-min-bctype "$XMIN_BCTYPE" --ninit 3 \
     --x-min -1.0 --x-max 10.0 --y-stretch 5.0 --z-length 0.25 \
     --warp-x "$GRID_WARP_X" --warp-y "$GRID_WARP_Y" \
-    --maxstep "$MAXSTEP" --feqchkpt "$FEQCHKPT" --sponge-im "$SPONGE_IM"
+    --maxstep "$MAXSTEP" --feqchkpt "$FEQCHKPT" --sponge-im "$SPONGE_IM" \
+    --deltat "$DELTAT"
 }
 
 write_similarity_shock_field() {
   local target="$1"
   local profile_shock_args=()
+  local field_shock_args=()
   if [[ "$PROFILE_OBLIQUE_SHOCK" == "t" ]]; then
     profile_shock_args+=(--profile-oblique-shock --profile-shock-y-min "$PROFILE_SHOCK_Y_MIN")
+  fi
+  if [[ "$FIELD_OBLIQUE_SHOCK" == "t" ]]; then
+    field_shock_args+=(--field-oblique-shock)
   fi
   python3 "$ROOT_DIR/tests/gpu_validation/generate_compressible_blasius_profile.py" \
     --grid "$OUT_DIR/$target/datin/grid.flatplate.h5" \
@@ -94,12 +101,12 @@ write_similarity_shock_field() {
     --pressure-mode "$PROFILE_PRESSURE_MODE" \
     --field-output "$OUT_DIR/$target/datin/flowini3d.h5" \
     --virtual-leading-edge "$VIRTUAL_LEADING_EDGE" \
-    --field-oblique-shock \
     --shock-angle-deg "$SHOCK_ANGLE_DEG" \
     --shock-x0 "$SHOCK_X0" \
     --shock-y0 "$SHOCK_Y0" \
     --shock-y-min "$SHOCK_Y_MIN" \
-    "${profile_shock_args[@]}"
+    "${profile_shock_args[@]}" \
+    "${field_shock_args[@]}"
 }
 
 mkdir -p "$OUT_DIR"
