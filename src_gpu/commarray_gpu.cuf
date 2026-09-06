@@ -2,7 +2,6 @@ module commarray_gpu
   use cudafor
   implicit none
   real(8),allocatable,device :: q_d(:,:,:,:),qrhs_d(:,:,:,:),qsave_d(:,:,:,:),qwork_d(:,:,:,:)
-  real(8),allocatable,device :: qstats_snapshot_d(:,:,:,:)
   real(8),allocatable,device :: rho_d(:,:,:),prs_d(:,:,:),tmp_d(:,:,:)
   real(8),allocatable,device :: vel_d(:,:,:,:),jacob_d(:,:,:),x_d(:,:,:,:)
   real(8),allocatable,device :: dxi_d(:,:,:,:,:)
@@ -95,21 +94,66 @@ contains
     tmp = tmp_d
   end subroutine copy_flow_from_gpu
 
+  attributes(global) subroutine save_q_stats_snapshot_kernel(q,qsave,im,jm,km,hm,numq)
+    implicit none
+    integer,value :: im,jm,km,hm,numq
+    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq)
+    real(8),device :: qsave(0:im,0:jm,0:km,1:numq)
+    integer :: id,n,i,j,k,m
+
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    n=(im+1)*(jm+1)*(km+1)*numq
+    if(id>=n) return
+    i=mod(id,im+1)
+    j=mod(id/(im+1),jm+1)
+    k=mod(id/((im+1)*(jm+1)),km+1)
+    m=id/((im+1)*(jm+1)*(km+1))+1
+    qsave(i,j,k,m)=q(i,j,k,m)
+  end subroutine save_q_stats_snapshot_kernel
+
+  attributes(global) subroutine restore_q_stats_snapshot_kernel(q,qsave,im,jm,km,hm,numq)
+    implicit none
+    integer,value :: im,jm,km,hm,numq
+    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq)
+    real(8),device :: qsave(0:im,0:jm,0:km,1:numq)
+    integer :: id,n,i,j,k,m
+
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    n=(im+1)*(jm+1)*(km+1)*numq
+    if(id>=n) return
+    i=mod(id,im+1)
+    j=mod(id/(im+1),jm+1)
+    k=mod(id/((im+1)*(jm+1)),km+1)
+    m=id/((im+1)*(jm+1)*(km+1))+1
+    q(i,j,k,m)=qsave(i,j,k,m)
+  end subroutine restore_q_stats_snapshot_kernel
+
   subroutine save_q_stats_snapshot_gpu()
     use commvar, only: im,jm,km,hm,numq
+    use gpu_check, only: sync_after_kernel
     implicit none
+    type(dim3) :: block,grid
+    integer :: n
 
-    if(.not.allocated(qstats_snapshot_d)) then
-      allocate(qstats_snapshot_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq))
-    endif
-    qstats_snapshot_d = q_d
+    block=dim3(256,1,1)
+    n=(im+1)*(jm+1)*(km+1)*numq
+    grid=dim3((n+block%x-1)/block%x,1,1)
+    call save_q_stats_snapshot_kernel<<<grid,block>>>(q_d,qsave_d,im,jm,km,hm,numq)
+    call sync_after_kernel('save_q_stats_snapshot_kernel')
   end subroutine save_q_stats_snapshot_gpu
 
   subroutine restore_q_stats_snapshot_gpu()
+    use commvar, only: im,jm,km,hm,numq
+    use gpu_check, only: sync_after_kernel
     implicit none
+    type(dim3) :: block,grid
+    integer :: n
 
-    if(.not.allocated(qstats_snapshot_d)) stop 'missing GPU statistics q snapshot'
-    q_d = qstats_snapshot_d
+    block=dim3(256,1,1)
+    n=(im+1)*(jm+1)*(km+1)*numq
+    grid=dim3((n+block%x-1)/block%x,1,1)
+    call restore_q_stats_snapshot_kernel<<<grid,block>>>(q_d,qsave_d,im,jm,km,hm,numq)
+    call sync_after_kernel('restore_q_stats_snapshot_kernel')
   end subroutine restore_q_stats_snapshot_gpu
 
   subroutine copy_output_boundary_from_gpu()

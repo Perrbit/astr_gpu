@@ -148,7 +148,12 @@ def set_sponge(input_file: Path, sponge: str) -> None:
     raise ValueError(f"sponge marker not found in {input_file}")
 
 
-def set_controller_steps(controller_file: Path, maxstep: int, feqchkpt: int) -> None:
+def set_controller_steps(
+    controller_file: Path,
+    maxstep: int,
+    feqchkpt: int,
+    feqlist: int | None = None,
+) -> None:
     lines = controller_file.read_text().splitlines()
     marker = "maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg"
     for idx, line in enumerate(lines):
@@ -159,6 +164,8 @@ def set_controller_steps(controller_file: Path, maxstep: int, feqchkpt: int) -> 
                 raise ValueError(f"unexpected controller line: {lines[data_idx]}")
             parts[0] = str(maxstep)
             parts[1] = str(feqchkpt)
+            if feqlist is not None:
+                parts[4] = str(feqlist)
             lines[data_idx] = ",".join(parts)
             controller_file.write_text("\n".join(lines) + "\n")
             return
@@ -277,6 +284,7 @@ def main() -> int:
     parser.add_argument("--use-gpu", required=True, choices=("t", "f"))
     parser.add_argument("--maxstep", required=True, type=int)
     parser.add_argument("--feqchkpt", type=int)
+    parser.add_argument("--feqlist", type=int)
     parser.add_argument("--lfilter", choices=("t", "f"))
     parser.add_argument("--diffterm", choices=("t", "f"))
     parser.add_argument("--lreadgrid", choices=("t", "f"))
@@ -302,6 +310,8 @@ def main() -> int:
         raise ValueError("--maxstep must be non-negative")
     if args.feqchkpt is not None and args.feqchkpt < 1:
         raise ValueError("--feqchkpt must be positive")
+    if args.feqlist is not None and args.feqlist < 1:
+        raise ValueError("--feqlist must be positive")
 
     if args.dst_case.exists():
         shutil.rmtree(args.dst_case)
@@ -327,7 +337,12 @@ def main() -> int:
     if args.ninit is not None:
         set_ninit(input_file, args.ninit)
     feqchkpt = args.maxstep if args.feqchkpt is None else args.feqchkpt
-    set_controller_steps(args.dst_case / "datin" / "controller", args.maxstep, feqchkpt)
+    set_controller_steps(
+        args.dst_case / "datin" / "controller",
+        args.maxstep,
+        feqchkpt,
+        args.feqlist,
+    )
     if args.deltat:
         set_controller_deltat(args.dst_case / "datin" / "controller", args.deltat)
     if args.wall_amplitude is not None:

@@ -7,16 +7,33 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 from tests.gpu_validation.compare_shock_sensor import (
     compare_sensor_dumps,
     read_sensor_dump,
     read_sensor_dump_set,
     read_sensor_dump_rank_set,
     compare_sensor_dump_rank_sets,
+    summarize_shock_activity,
 )
 
 
 class CompareShockSensorTests(unittest.TestCase):
+    def test_summarizes_active_nodes_and_launched_interfaces(self) -> None:
+        mask = np.zeros((3, 2, 2), dtype=np.int8)
+        mask[1, 0, 0] = 1
+        mask[2, 1, 1] = 1
+
+        result = summarize_shock_activity(mask)
+
+        self.assertEqual(result.active_nodes, 2)
+        self.assertEqual(result.total_nodes, 12)
+        self.assertEqual(result.active_interfaces, (4, 4, 4))
+        self.assertEqual(result.total_interfaces, (16, 18, 18))
+        self.assertAlmostEqual(result.node_fraction, 2.0 / 12.0)
+        self.assertEqual(result.interface_fractions, (4.0 / 16.0, 4.0 / 18.0, 4.0 / 18.0))
+
     def test_reads_complete_dump_and_compares_raw_values_and_mask(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cpu_path = Path(tmp) / "cpu.dat"

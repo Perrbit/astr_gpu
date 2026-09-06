@@ -2962,3 +2962,55 @@ The complete acceptance contract and prohibited optimization list are in
 `documents/ASTR_GPU_OPTIMIZATION_CANDIDATE_PROTOCOL.md`. Passing this TGV gate
 does not replace the regression matrix for a physical boundary, shock,
 curvilinear, or other subsystem touched by the candidate.
+
+## Phase P2 shock-path closure
+
+The P2 runners use separate timing and shock-activity runs for periodic
+Shu-Osher and SBLI:
+
+```bash
+CASE=shuosher OUT_DIR=/tmp/p2_shuosher \
+  tests/gpu_validation/run_p2_shock_performance_benchmark.sh
+CASE=sbli OUT_DIR=/tmp/p2_sbli \
+  tests/gpu_validation/run_p2_shock_performance_benchmark.sh
+```
+
+The retained P2-1B path computes all five physical Steger-Warming split-flux
+components once per stencil point in the nonshock branch. It keeps the single
+sensor-coupled interface kernel, FP64, fixed direction blocks, and explicit
+synchronization. The corrected `bctype=52` statistics path prepares the same
+x-filter, halo, z-filter state observed by CPU `rkfirst`, while reusing
+`qsave_d` to restore the complete pre-statistics RK state before integration.
+The final ten-step SBLI online `massflux` maximum difference is
+`5.0293103015519591e-13` at the unchanged `1e-10` gate.
+
+Profile one or two physical GPUs with the same driver:
+
+```bash
+CASE=shuosher PROFILE_TOOL=nsys NSYS_TRACE=cuda,mpi \
+NP=2 TOPOLOGY=1,2,1 GPU_IDS=0,1 \
+OUT_DIR=/tmp/p2_shuosher_np2_y \
+  tests/gpu_validation/run_p2_shock_performance_profile.sh
+
+python3 tests/gpu_validation/summarize_p2_sensor_halo_nsys.py \
+  --input /tmp/p2_shuosher_np2_y/p2_shock_nsys.sqlite \
+  --runtime-log /tmp/p2_shuosher_np2_y/nsys.log \
+  --sensor-message-bytes 339240 \
+  --report /tmp/p2_shuosher_np2_y/sensor_halo_timeline.md
+```
+
+`sensor-message-bytes` must be computed from the decomposed plane as
+`hm * (local transverse points) * 8` for the one-component sensor. The
+summarizer pairs raw and expanded sensor kernels on each GPU and counts only
+same-process MPI events inside those windows. The validated NP=2 y-slab upper
+bounds are `3.488%` for Shu-Osher `256x64x32` and `1.421%` for SBLI
+`256x192x32`. The sensor pack/unpack kernels themselves are below `3%`; host
+staging and blocking MPI remain a P3 concern.
+
+P2-1C sequential split-array reuse was rejected. Under the same 10-RK-sample
+five-run contract, it improved complete RK by only `1.975%` on Shu-Osher and
+`1.208%` on SBLI, while SBLI y-kernel local
+spilling increased from `15,059,748` to `18,007,902`. P2 is closed with P2-1B
+as the only retained shock-path kernel optimization. Full commands, evidence
+directories, and final five-repeat numbers are recorded in
+`documents/ASTR_PHASE_P2_BASELINE_REPORT.md`.

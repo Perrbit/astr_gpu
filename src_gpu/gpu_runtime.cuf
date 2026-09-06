@@ -1,7 +1,7 @@
 module gpu_runtime
   implicit none
   logical,save :: prepared_halo_ready = .false.
-  logical,save :: c4_stats_snapshot_ready = .false.
+  logical,save :: stats_snapshot_ready = .false.
   logical,save :: rk_timing_configured = .false.
   logical,save :: rk_timing_enabled = .false.
   real(8),save :: rk_prepare_start = 0.d0
@@ -125,33 +125,27 @@ contains
 
   subroutine gpu_prepare_rkfirst_stats()
     use mainloop_gpu, only: prepare_rkfirst_stats_gpu
-    use case_capability_gpu, only: gpu_s2_hbl_selective_roe_s2c4_supported, &
-         gpu_s2_hbl_selective_roe_s2c4_sponge_supported, &
-         gpu_s2_hbl_selective_roe_s2c4_diffusion_supported, &
-         gpu_s2_hbl_selective_roe_s2c5_diffusion_supported
+    use boundary_gpu, only: gpu_s1_flatplate_nscbc_farfield_case
     use commarray_gpu, only: save_q_stats_snapshot_gpu
     implicit none
 
     call begin_rk_prepare_timing()
-    c4_stats_snapshot_ready = gpu_s2_hbl_selective_roe_s2c4_supported() .or. &
-         gpu_s2_hbl_selective_roe_s2c4_sponge_supported() .or. &
-         gpu_s2_hbl_selective_roe_s2c4_diffusion_supported() .or. &
-         gpu_s2_hbl_selective_roe_s2c5_diffusion_supported()
-    if(c4_stats_snapshot_ready) call save_q_stats_snapshot_gpu()
+    stats_snapshot_ready = gpu_s1_flatplate_nscbc_farfield_case()
+    if(stats_snapshot_ready) call save_q_stats_snapshot_gpu()
     call prepare_rkfirst_stats_gpu()
     prepared_halo_ready = .true.
     call end_rk_prepare_timing()
   end subroutine gpu_prepare_rkfirst_stats
 
-  subroutine gpu_restore_c4_stats_snapshot()
+  subroutine gpu_restore_stats_snapshot()
     use commarray_gpu, only: restore_q_stats_snapshot_gpu
     implicit none
 
-    if(.not.c4_stats_snapshot_ready) return
+    if(.not.stats_snapshot_ready) return
     call restore_q_stats_snapshot_gpu()
-    c4_stats_snapshot_ready = .false.
+    stats_snapshot_ready = .false.
     prepared_halo_ready = .false.
-  end subroutine gpu_restore_c4_stats_snapshot
+  end subroutine gpu_restore_stats_snapshot
 
   subroutine gpu_time_integration_rk(first_stage_prepared,copy_back)
     use mainloop_gpu, only: time_integration_rk_gpu

@@ -254,12 +254,10 @@ contains
   logical function gpu_shock_characteristic_s0a6_supported()
     use commvar, only: flowtype,conschm,difschm,recon_schem,lchardecomp, &
          lfilter,diffterm,lihomo,ljhomo,lkhomo,nondimen
-    use commcal, only: shock_sensor_validation_enabled
     use parallel, only: mpisize
     implicit none
 
-    gpu_shock_characteristic_s0a6_supported = shock_sensor_validation_enabled() .and. &
-         trim(flowtype) == 'shuosher' .and. &
+    gpu_shock_characteristic_s0a6_supported = trim(flowtype) == 'shuosher' .and. &
          trim(conschm) == '543e' .and. trim(difschm) == '643e' .and. &
          recon_schem == 3 .and. lchardecomp .and. &
          (.not.lfilter) .and. (.not.diffterm) .and. &
@@ -269,13 +267,11 @@ contains
   logical function gpu_shock_characteristic_s0b0_xphysical_supported()
     use commvar, only: flowtype,conschm,difschm,recon_schem,lchardecomp, &
          lfilter,diffterm,lihomo,ljhomo,lkhomo,nondimen
-    use commcal, only: shock_sensor_validation_enabled
     use bc, only: bctype
     use parallel, only: mpisize,isize,jsize,ksize
     implicit none
 
-    gpu_shock_characteristic_s0b0_xphysical_supported = shock_sensor_validation_enabled() .and. &
-         trim(flowtype) == 'shuosher' .and. &
+    gpu_shock_characteristic_s0b0_xphysical_supported = trim(flowtype) == 'shuosher' .and. &
          trim(conschm) == '543e' .and. trim(difschm) == '643e' .and. &
          recon_schem == 3 .and. lchardecomp .and. &
          (.not.lfilter) .and. (.not.diffterm) .and. &
@@ -287,12 +283,10 @@ contains
   logical function gpu_shock_characteristic_s0a7_supported()
     use commvar, only: flowtype,conschm,difschm,recon_schem,lchardecomp, &
          lfilter,diffterm,lihomo,ljhomo,lkhomo,nondimen
-    use commcal, only: shock_sensor_validation_enabled
     use parallel, only: mpisize,isize,jsize,ksize
     implicit none
 
-    gpu_shock_characteristic_s0a7_supported = shock_sensor_validation_enabled() .and. &
-         trim(flowtype) == 'shuosher' .and. &
+    gpu_shock_characteristic_s0a7_supported = trim(flowtype) == 'shuosher' .and. &
          trim(conschm) == '543e' .and. trim(difschm) == '643e' .and. &
          recon_schem == 3 .and. lchardecomp .and. &
          (.not.lfilter) .and. (.not.diffterm) .and. &
@@ -303,12 +297,10 @@ contains
   logical function gpu_shock_characteristic_s0a8_supported()
     use commvar, only: flowtype,conschm,difschm,recon_schem,lchardecomp, &
          lfilter,diffterm,lihomo,ljhomo,lkhomo,nondimen
-    use commcal, only: shock_sensor_validation_enabled
     use parallel, only: mpisize,isize,jsize,ksize
     implicit none
 
-    gpu_shock_characteristic_s0a8_supported = shock_sensor_validation_enabled() .and. &
-         trim(flowtype) == 'shuosher' .and. &
+    gpu_shock_characteristic_s0a8_supported = trim(flowtype) == 'shuosher' .and. &
          trim(conschm) == '543e' .and. trim(difschm) == '643e' .and. &
          recon_schem == 3 .and. lchardecomp .and. &
          (.not.lfilter) .and. (.not.diffterm) .and. &
@@ -319,12 +311,10 @@ contains
   logical function gpu_shock_characteristic_s0a9_supported()
     use commvar, only: flowtype,conschm,difschm,recon_schem,lchardecomp, &
          lfilter,diffterm,lihomo,ljhomo,lkhomo,nondimen
-    use commcal, only: shock_sensor_validation_enabled
     use parallel, only: mpisize,isize,jsize,ksize
     implicit none
 
-    gpu_shock_characteristic_s0a9_supported = shock_sensor_validation_enabled() .and. &
-         trim(flowtype) == 'shuosher' .and. &
+    gpu_shock_characteristic_s0a9_supported = trim(flowtype) == 'shuosher' .and. &
          trim(conschm) == '543e' .and. trim(difschm) == '643e' .and. &
          recon_schem == 3 .and. lchardecomp .and. &
          (.not.lfilter) .and. (.not.diffterm) .and. &
@@ -335,12 +325,10 @@ contains
   logical function gpu_shock_characteristic_s0a10_supported()
     use commvar, only: flowtype,conschm,difschm,recon_schem,lchardecomp, &
          lfilter,diffterm,lihomo,ljhomo,lkhomo,nondimen
-    use commcal, only: shock_sensor_validation_enabled
     use parallel, only: mpisize,isize,jsize,ksize
     implicit none
 
-    gpu_shock_characteristic_s0a10_supported = shock_sensor_validation_enabled() .and. &
-         trim(flowtype) == 'shuosher' .and. &
+    gpu_shock_characteristic_s0a10_supported = trim(flowtype) == 'shuosher' .and. &
          trim(conschm) == '543e' .and. trim(difschm) == '643e' .and. &
          recon_schem == 3 .and. lchardecomp .and. &
          (.not.lfilter) .and. (.not.diffterm) .and. &

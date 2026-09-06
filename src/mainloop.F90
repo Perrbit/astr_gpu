@@ -323,7 +323,7 @@ module mainloop
 #ifdef _CUDA
     use gpu_runtime, only : gpu_time_integration_rk,gpu_prepare_rkfirst_stats, &
                             gpu_write_flow_statistics,gpu_exchange_solution_halo, &
-                            gpu_sync_flow_to_host,gpu_restore_c4_stats_snapshot
+                            gpu_sync_flow_to_host,gpu_restore_stats_snapshot
 #endif
     use readwrite, only : writechkpt
     !
@@ -362,7 +362,7 @@ module mainloop
       call gpu_prepare_rkfirst_stats()
       if(flowtype(1:2)/='0d') call gpu_exchange_solution_halo()
       call gpu_write_flow_statistics()
-      call gpu_restore_c4_stats_snapshot()
+      call gpu_restore_stats_snapshot()
       if(gpu_output_due) then
         call writechkpt()
       endif

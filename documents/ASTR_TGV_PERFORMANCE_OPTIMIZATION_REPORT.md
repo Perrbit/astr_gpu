@@ -332,7 +332,82 @@ The workstation result is not an A800 performance claim. The A800 run must
 record its own five-repeat median, spread, memory, Nsight Systems hotspots,
 and Nsight Compute metrics before it is used in a paper or presentation.
 
-## 10. Selective Synchronization Experiment
+## 10. Phase P1-C1 Screening Closure
+
+Phase P1-C1 screened three independent low-risk mechanisms against commit
+`0d684a8` and the frozen `0.580044424 s/RK` RTX 4000 Ada baseline. No
+candidate met the required 3% complete-RK reduction, so all three source
+changes were removed and the baseline compute path was rebuilt.
+
+| Candidate | NCU result | Complete-RK median | Relative result | Decision |
+|---|---|---:|---:|---|
+| local scalar reuse in `flux_at_global` | `conv_x` remained at 128 registers, 252.50 M instructions, and 34.94 MiB excessive L2 | 0.589632722 s | 1.653% slower | reject |
+| host-hoisted diffusion coefficients | `diffusion_flux` decreased from 27.430 to 25.268 ms and from 430.70 to 411.05 M instructions | 0.581123491 s | 0.186% slower | reject; kernel-only gain |
+| stored directional convection flux in existing `qwork_d` | six replacement kernels totalled about 53.02 ms/stage and reached 87.27-93.79% DRAM throughput | 0.638189768 s | 10.024% slower | reject; full-field bandwidth cost |
+
+The three run-to-run spreads were 1.832%, 1.345%, and 1.653%. Peak sampled
+memory did not increase. One-step CPU/GPU field comparisons for each
+executable candidate passed the `1e-10` gate before performance screening.
+The coefficient-hoisting candidate demonstrates a real 7.88% improvement in
+one kernel, but its contribution is too small to improve the complete RK
+advance measurably. It is therefore not a retained application optimization.
+
+The current-source NCU baseline and candidate evidence are stored under
+`tests/gpu_validation/out/p1_c1_*`. Phase P1-C2, diffusion-RHS register
+lifetime, is the next independent optimization stage.
+
+## 11. Phase P1-C2 and P1-C3 Screening Closure
+
+P1-C2 tested four independent ways to reduce diffusion-RHS register pressure.
+Reusing the six local flux arrays did not move the 128-register allocation and
+reduced the three-kernel total by only 0.974%. Limiting the full solver file to
+96 registers left occupancy near 32% and introduced about 9.55 million spill
+instructions. A 64-register limit raised occupancy to 61-63%, but introduced
+about 146.46 million spill instructions and increased the three-kernel total
+from 49.610 to 67.196 ms. Splitting each periodic direction into momentum and
+energy kernels left the momentum kernels at 128 registers and produced a
+`0.601406599 s/RK` five-run median, 3.68% slower than the frozen baseline.
+All four P1-C2 compute candidates were removed.
+
+These rejections are hardware-specific decisions for the RTX 4000 Ada and the
+current NVHPC/CUDA toolchain. They prevent the variants from becoming the
+workstation default, but they do not establish that the same mechanisms are
+unprofitable on A800. The candidate mechanisms and raw evidence are retained
+for reconstruction after an A800-local baseline is available. Every A800
+retest must repeat the five-run complete-RK gate and the relevant NCU register,
+spill, throughput, and cache measurements; a workstation kernel-only gain is
+not an A800 performance claim.
+
+P1-C3 first specialized the periodic y/z halo-filter path. Removing physical
+boundary branches reduced register use from 80 to 58/60 and reduced the y/z
+kernels from 9.606/9.713 to 8.506/8.509 ms. This kernel-level improvement did
+not survive the complete-RK gate: the five-run median was `0.582806489 s/RK`,
+0.48% slower than the frozen baseline, with 2.928% spread. A per-component
+shared-memory tile reduced excessive L2 traffic from about 25.5 MiB to 5-6 MiB
+but was slower because it required ten block barriers. A five-component tile
+used one barrier and reached 8.931/9.433 ms; its combined 4.94% kernel reduction
+corresponds to only about 0.5% of a complete RK advance. Both shared-memory
+candidates and the periodic specialization were removed.
+
+The retained cleanup centralizes the six effective tenth-order filter
+coefficients in `src/constdef.F90`. Nsight Compute source/SASS output shows
+immediate `DMUL/DFMA` coefficients, so the fixed fractions do not generate
+runtime FP64 division. The final path passes the one-step `1e-10` CPU/GPU field
+gate with a maximum conserved-variable difference of `2.8422e-13`, and its
+Compute Sanitizer memcheck reports zero errors.
+
+Evidence is stored under:
+
+- `tests/gpu_validation/out/p1_c2_candidate1_pairreuse_*`
+- `tests/gpu_validation/out/p1_c2_candidate2_reg96_*`
+- `tests/gpu_validation/out/p1_c2_candidate3_reg64_*`
+- `tests/gpu_validation/out/p1_c2_candidate4_split_*`
+- `tests/gpu_validation/out/p1_c3_candidate1_periodic_halo_filter_*`
+- `tests/gpu_validation/out/p1_c3_candidate2_shared_tile_*`
+- `tests/gpu_validation/out/p1_c3_candidate3_all_component_tile_*`
+- `tests/gpu_validation/out/p1_final_constdef_filter_*`
+
+## 12. Selective Synchronization Experiment
 
 `ASTR_GPU_SYNC_MODE=selective` is an opt-in mode limited to three-dimensional
 fully periodic TGV. The default remains `explicit`. Both modes call
@@ -381,14 +456,15 @@ Evidence directories are:
 - `tests/gpu_validation/out/tgv_sync_selective_final_np2_stats_10/`
 - `tests/gpu_validation/out/tgv_sync_selective_final_memcheck/`
 
-## 11. Next Optimization Boundary
+## 13. Next Optimization Boundary
 
 The shared sixth-order reciprocal hotspot is closed in diffusion, convection,
-and `gradcal`. The next candidates should target repeated velocity/metric
-loads in convection and diffusion flux, the 128-register diffusion RHS path,
-and y/z filter access. Any such candidate needs a new NCU source comparison
-because the current matrix shows mixed compute, TEX-throttle, and scoreboard
-limits rather than one universal bottleneck. Further removal of required
-visibility-boundary synchronization is not justified by the current
-measurements. Changing precision, the numerical format, or MPI halo transport
-remains a separate design decision.
+and `gradcal`. P1-C1, P1-C2, and P1-C3 are closed without a retained performance
+candidate beyond the already frozen baseline. Their measurements show that
+local register, branch, or cache improvements below the complete-RK weight do
+not justify additional production complexity. The next independent stage is
+P2, which needs a shock/SBLI-specific baseline because TGV does not exercise
+the sensor and characteristic reconstruction path.
+Further removal of required visibility-boundary synchronization is not
+justified by the current measurements. Changing precision, the numerical
+format, or MPI halo transport remains a separate design decision.

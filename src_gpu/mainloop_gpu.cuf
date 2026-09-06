@@ -20,7 +20,10 @@ contains
          refresh_filter_y_work_local_halo_gpu, refresh_filter_z_local_halo_gpu
     use boundary_gpu, only: apply_boundary_conditions_gpu,apply_ldc_boundary_conditions_gpu, &
          apply_s1_flatplate_boundary_conditions_gpu,gpu_uses_physical_boundary, &
-         gpu_ldc_boundary_case_pending,gpu_s1_flatplate_boundary_case_pending
+         gpu_ldc_boundary_case_pending,gpu_s1_flatplate_boundary_case_pending, &
+         gpu_s1_flatplate_nscbc_farfield_case, &
+         apply_nscbc_farfield_y_upper_filter_x_gpu, &
+         apply_nscbc_farfield_y_upper_filter_z_gpu
     use solver_gpu, only: q_to_primitive_kernel, &
          filter_x_global_kernel,filter_y_pong_to_q_halo_global_kernel, &
          filter_z_halo_global_kernel,copy_qwork_global_kernel
@@ -30,10 +33,12 @@ contains
     type(dim3) :: block_z,grid_z,grid_z_flat
     integer :: ntot
     logical :: ldc_case,flatplate_case,periodic_filter_case
+    logical :: flatplate_nscbc_farfield_case
 
     call validate_first_stage_gpu()
     ldc_case = gpu_ldc_boundary_case_pending()
     flatplate_case = gpu_s1_flatplate_boundary_case_pending()
+    flatplate_nscbc_farfield_case = gpu_s1_flatplate_nscbc_farfield_case()
     periodic_filter_case = lfilter .and. .not.(gpu_uses_physical_boundary() .or. ldc_case .or. flatplate_case)
 
     ntot = (im + 1) * (jm + 1) * (km + 1)
@@ -117,6 +122,16 @@ contains
       else
         call apply_boundary_conditions_gpu()
       endif
+      call exchange_solution_halo_gpu()
+    endif
+
+    if(flatplate_nscbc_farfield_case) then
+      call apply_nscbc_farfield_y_upper_filter_x_gpu()
+      call exchange_solution_halo_gpu()
+      call apply_nscbc_farfield_y_upper_filter_z_gpu()
+      call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
+           q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
+      call sync_after_kernel('prepare_nscbc_farfield_q_to_primitive_kernel_postfilter')
       call exchange_solution_halo_gpu()
     endif
   end subroutine prepare_rkfirst_stats_gpu
@@ -316,7 +331,7 @@ contains
          flatplate_mp7_case
     prepared = .false.
     if(present(first_stage_prepared)) prepared = first_stage_prepared
-    if(s2_hbl_selective_roe_c4_case) prepared = .false.
+    if(flatplate_nscbc_farfield_case) prepared = .false.
     need_copy_back = .false.
     if(present(copy_back)) need_copy_back = copy_back
 

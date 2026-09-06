@@ -13,6 +13,19 @@ import prepare_tgv_case
 
 
 class PrepareTgvCaseTests(unittest.TestCase):
+    def test_controller_steps_can_disable_list_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = Path(tmp) / "controller"
+            controller.write_text(
+                "# maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg\n"
+                "10,20,30,40,1,60\n",
+                encoding="ascii",
+            )
+
+            prepare_tgv_case.set_controller_steps(controller, 20, 9999, 9999)
+
+            self.assertEqual(controller.read_text(encoding="ascii").splitlines()[1], "20,9999,30,40,9999,60")
+
     def test_bctype_accepts_semicolon_separated_full_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             input_file = Path(tmp) / "input.tgv"

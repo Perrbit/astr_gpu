@@ -1,6 +1,7 @@
 module solver_gpu
   use cudafor
-  use constdef, only: num1d60
+  use constdef, only: num1d60,num193d256,num105d512,num15d128, &
+                      num45d1024,num5d512,num1d1024
   implicit none
 contains
   attributes(device) integer function wrap_periodic(idx,n)
@@ -517,6 +518,96 @@ contains
     end select
   end function steger_warming_split_component_at
 
+  attributes(device) subroutine steger_warming_split_physical_vector_at( &
+       i,j,k,idir,split_sign,im,jm,km,gamma,f)
+    use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,jacob_d,dxi_d
+    use commvar_gpu, only: mach_d
+    implicit none
+    integer,value :: i,j,k,idir,split_sign,im,jm,km
+    real(8),value :: gamma
+    real(8) :: f(5)
+    real(8) :: rho,q1,q2,q3,q4,q5,u1,u2,u3,p,jloc,dx1,dx2,dx3
+    real(8) :: uu,var0,gpd1,gpd2,gpd3,css,csa,lmach,gm2,fhi,jro
+    real(8) :: l1,l4,l5,lp1,lp4,lp5,var1,var2,var3,var4,eps
+
+    rho = rho_d(i,j,k)
+    q1 = q_d(i,j,k,1)
+    q2 = q_d(i,j,k,2)
+    q3 = q_d(i,j,k,3)
+    q4 = q_d(i,j,k,4)
+    q5 = q_d(i,j,k,5)
+    u1 = vel_d(i,j,k,1)
+    u2 = vel_d(i,j,k,2)
+    u3 = vel_d(i,j,k,3)
+    p = prs_d(i,j,k)
+    jloc = jacob_d(i,j,k)
+    dx1 = dxi_d(i,j,k,idir,1)
+    dx2 = dxi_d(i,j,k,idir,2)
+    dx3 = dxi_d(i,j,k,idir,3)
+
+    eps = 0.04d0
+    gm2 = 0.5d0/gamma
+    uu = dx1*u1 + dx2*u2 + dx3*u3
+    var0 = 1.d0/sqrt(dx1**2 + dx2**2 + dx3**2)
+    gpd1 = dx1*var0
+    gpd2 = dx2*var0
+    gpd3 = dx3*var0
+    css = sqrt(tmp_d(i,j,k))/mach_d
+    csa = css/var0
+    lmach = uu/csa
+
+    if(lmach >= 1.d0) then
+      if(split_sign < 0) then
+        f = 0.d0
+      else
+        f(1) = jloc*q1*uu
+        f(2) = jloc*(q2*uu + dx1*p)
+        f(3) = jloc*(q3*uu + dx2*p)
+        f(4) = jloc*(q4*uu + dx3*p)
+        f(5) = jloc*(q5 + p)*uu
+      endif
+      return
+    elseif(lmach <= -1.d0) then
+      if(split_sign > 0) then
+        f = 0.d0
+      else
+        f(1) = jloc*q1*uu
+        f(2) = jloc*(q2*uu + dx1*p)
+        f(3) = jloc*(q3*uu + dx2*p)
+        f(4) = jloc*(q4*uu + dx3*p)
+        f(5) = jloc*(q5 + p)*uu
+      endif
+      return
+    endif
+
+    fhi = 0.5d0*(gamma - 1.d0)*(u1**2 + u2**2 + u3**2)
+    jro = jloc*rho
+    l1 = uu
+    l4 = uu + csa
+    l5 = uu - csa
+    lp1 = 0.5d0*(l1 + sqrt(l1**2 + eps**2))
+    lp4 = 0.5d0*(l4 + sqrt(l4**2 + eps**2))
+    lp5 = 0.5d0*(l5 + sqrt(l5**2 + eps**2))
+
+    if(split_sign > 0) then
+      var1 = lp1
+      var2 = lp4 - lp5
+      var3 = 2.d0*lp1 - lp4 - lp5
+    else
+      var1 = l1 - lp1
+      var2 = (l4 - lp4) - (l5 - lp5)
+      var3 = 2.d0*(l1 - lp1) - (l4 - lp4) - (l5 - lp5)
+    endif
+    var4 = var1 - var3*gm2
+
+    f(1) = jro*var4
+    f(2) = jro*(var4*u1 + var2*css*gpd1*gm2)
+    f(3) = jro*(var4*u2 + var2*css*gpd2*gm2)
+    f(4) = jro*(var4*u3 + var2*css*gpd3*gm2)
+    f(5) = jloc*(var1*q5 + rho* &
+         (var2*uu*var0*css*gm2 - var3*(fhi + css**2)*gm2/(gamma - 1.d0)))
+  end subroutine steger_warming_split_physical_vector_at
+
   attributes(device) subroutine steger_warming_split_vector_at( &
        i,j,k,idir,im,jm,km,gamma,split_sign,f)
     use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d
@@ -938,22 +1029,99 @@ contains
     real(8) :: split_plus(5,7),split_minus(5,7)
 
     if(.not.shock_interface_active(i,j,k,idir,im,jm,km)) then
+      ibeg = -hm
+      iend = im + hm
+      jbeg = -hm
+      jend = jm + hm
+      if(physical_dir == 1) then
+        select case(npdc)
+        case(1)
+          ibeg = 0
+        case(2)
+          iend = im
+        case(3)
+          ibeg = -hm
+          iend = im + hm
+        case default
+          ibeg = 0
+          iend = im
+        end select
+      elseif(physical_dir == 2) then
+        select case(npdc)
+        case(1)
+          jbeg = 0
+        case(2)
+          jend = jm
+        case(3)
+          jbeg = -hm
+          jend = jm + hm
+        case default
+          jbeg = 0
+          jend = jm
+        end select
+      endif
+      do n=1,7
+        offset=n-4
+        ii=i
+        jj=j
+        kk=k
+        select case(idir)
+        case(1)
+          ii=i+offset
+        case(2)
+          jj=j+offset
+        case default
+          kk=k+offset
+        end select
+        if(physical_dir == 1) ii=max(ibeg,min(iend,ii))
+        if(physical_dir == 2) jj=max(jbeg,min(jend,jj))
+        call steger_warming_split_physical_vector_at( &
+             ii,jj,kk,idir,1,im,jm,km,gamma,split_plus(:,n))
+        offset=5-n
+        ii=i
+        jj=j
+        kk=k
+        select case(idir)
+        case(1)
+          ii=i+offset
+        case(2)
+          jj=j+offset
+        case default
+          kk=k+offset
+        end select
+        if(physical_dir == 1) ii=max(ibeg,min(iend,ii))
+        if(physical_dir == 2) jj=max(jbeg,min(jend,jj))
+        call steger_warming_split_physical_vector_at( &
+             ii,jj,kk,idir,-1,im,jm,km,gamma,split_minus(:,n))
+      enddo
       do m=1,5
+        do n=1,7
+          stencil_plus(n)=split_plus(m,n)
+          stencil_minus(n)=split_minus(m,n)
+        enddo
         if(physical_dir == 1) then
-          fh(m)=explicit_reconstruction_interface_flux_x_physical( &
-               i,j,k,m,1,im,jm,km,hm,npdc,reconstruction_scheme,gamma) + &
-               explicit_reconstruction_interface_flux_x_physical( &
-               i,j,k,m,-1,im,jm,km,hm,npdc,reconstruction_scheme,gamma)
+          if(reconstruction_scheme == 3) then
+            fh(m)=reconstruct_x_physical_stencil(stencil_plus,i,im,npdc) + &
+                  reconstruct_x_physical_stencil(stencil_minus,i,im,npdc)
+          else
+            fh(m)=0.d0
+          endif
         elseif(physical_dir == 2) then
-          fh(m)=explicit_reconstruction_interface_flux_y_physical( &
-               i,j,k,m,1,im,jm,km,hm,npdc,reconstruction_scheme,gamma) + &
-               explicit_reconstruction_interface_flux_y_physical( &
-               i,j,k,m,-1,im,jm,km,hm,npdc,reconstruction_scheme,gamma)
+          if(reconstruction_scheme == 3) then
+            fh(m)=reconstruct_y_physical_stencil(stencil_plus,j,jm,npdc) + &
+                  reconstruct_y_physical_stencil(stencil_minus,j,jm,npdc)
+          else
+            fh(m)=0.d0
+          endif
         else
-          fh(m)=explicit_reconstruction_interface_flux( &
-               i,j,k,idir,m,1,im,jm,km,reconstruction_scheme,gamma) + &
-               explicit_reconstruction_interface_flux( &
-               i,j,k,idir,m,-1,im,jm,km,reconstruction_scheme,gamma)
+          select case(reconstruction_scheme)
+          case(1)
+            fh(m)=weno7_gpu(stencil_plus)+weno7_gpu(stencil_minus)
+          case(3)
+            fh(m)=mp7_gpu(stencil_plus)+mp7_gpu(stencil_minus)
+          case default
+            fh(m)=0.d0
+          end select
         endif
       enddo
       return
@@ -973,6 +1141,9 @@ contains
         ibeg = 0
       case(2)
         iend = im
+      case(3)
+        ibeg = -hm
+        iend = im + hm
       case default
         ibeg = 0
         iend = im
@@ -983,6 +1154,9 @@ contains
         jbeg = 0
       case(2)
         jend = jm
+      case(3)
+        jbeg = -hm
+        jend = jm + hm
       case default
         jbeg = 0
         jend = jm
@@ -2726,12 +2900,12 @@ contains
     implicit none
     real(8),value :: v0,vp1,vm1,vp2,vm2,vp3,vm3,vp4,vm4,vp5,vm5
 
-    filter10_value = (386.d0/512.d0)*v0 + &
-                     (105.d0/512.d0)*(vp1+vm1) + &
-                     (-15.d0/128.d0)*(vp2+vm2) + &
-                     (45.d0/1024.d0)*(vp3+vm3) + &
-                     (-5.d0/512.d0)*(vp4+vm4) + &
-                     (1.d0/1024.d0)*(vp5+vm5)
+    filter10_value = num193d256*v0 + &
+                     num105d512*(vp1+vm1) - &
+                     num15d128*(vp2+vm2) + &
+                     num45d1024*(vp3+vm3) - &
+                     num5d512*(vp4+vm4) + &
+                     num1d1024*(vp5+vm5)
   end function filter10_value
 
   attributes(device) real(8) function filter6_value(v0,vp1,vm1,vp2,vm2,vp3,vm3)

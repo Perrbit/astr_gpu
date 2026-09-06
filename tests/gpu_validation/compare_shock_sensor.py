@@ -30,6 +30,56 @@ class SensorComparison:
     mask_mismatches: int
 
 
+@dataclass(frozen=True)
+class ShockActivity:
+    active_nodes: int
+    total_nodes: int
+    node_fraction: float
+    active_interfaces: tuple[int, int, int]
+    total_interfaces: tuple[int, int, int]
+    interface_fractions: tuple[float, float, float]
+
+
+def summarize_shock_activity(mask: np.ndarray) -> ShockActivity:
+    if mask.ndim != 3:
+        raise ValueError(f"shock mask must be three-dimensional, found shape {mask.shape}")
+    if any(size < 1 for size in mask.shape):
+        raise ValueError("shock mask dimensions must be positive")
+
+    active = mask != 0
+    active_nodes = int(np.count_nonzero(active))
+    total_nodes = int(active.size)
+    active_interfaces: list[int] = []
+    total_interfaces: list[int] = []
+    interface_fractions: list[float] = []
+    for axis in range(3):
+        lower = [slice(None)] * 3
+        upper = [slice(None)] * 3
+        lower[axis] = slice(None, -1)
+        upper[axis] = slice(1, None)
+        interface_mask = active[tuple(lower)] | active[tuple(upper)]
+        lower_boundary = np.take(active, 0, axis=axis)
+        upper_boundary = np.take(active, -1, axis=axis)
+        active_count = int(
+            np.count_nonzero(interface_mask)
+            + np.count_nonzero(lower_boundary)
+            + np.count_nonzero(upper_boundary)
+        )
+        total_count = int(interface_mask.size + lower_boundary.size + upper_boundary.size)
+        active_interfaces.append(active_count)
+        total_interfaces.append(total_count)
+        interface_fractions.append(active_count / total_count if total_count else 0.0)
+
+    return ShockActivity(
+        active_nodes=active_nodes,
+        total_nodes=total_nodes,
+        node_fraction=active_nodes / total_nodes,
+        active_interfaces=tuple(active_interfaces),
+        total_interfaces=tuple(total_interfaces),
+        interface_fractions=tuple(interface_fractions),
+    )
+
+
 def read_sensor_dump(path: Path) -> SensorDump:
     path = Path(path)
     if not path.exists():
