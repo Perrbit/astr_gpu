@@ -84,8 +84,10 @@ contains
 
   subroutine copy_flow_from_gpu()
     use commarray, only: q,rho,vel,prs,tmp
+    use gpu_check, only: sync_gpu_boundary
     implicit none
 
+    call sync_gpu_boundary('copy_flow_from_gpu')
     q = q_d
     rho = rho_d
     vel = vel_d
@@ -113,8 +115,10 @@ contains
   subroutine copy_output_boundary_from_gpu()
     use commvar, only: im,jm,km
     use commarray, only: rho,vel,prs,tmp
+    use gpu_check, only: sync_gpu_boundary
     implicit none
 
+    call sync_gpu_boundary('copy_output_boundary_from_gpu')
     rho(0,:,:) = rho_d(0,:,:)
     rho(im,:,:) = rho_d(im,:,:)
     rho(:,0,:) = rho_d(:,0,:)
@@ -146,11 +150,13 @@ contains
 
   subroutine report_gpu_state(label)
     use commvar, only: im,jm,km
+    use gpu_check, only: sync_gpu_boundary
     implicit none
     character(len=*),intent(in) :: label
     real(8),allocatable :: qh(:,:,:,:),rhsh(:,:,:,:),qsaveh(:,:,:,:),jh(:,:,:)
     integer :: nan_q,nan_rhs,nan_j
 
+    call sync_gpu_boundary('report_gpu_state')
     allocate(qh(0:im,0:jm,0:km,1:5))
     allocate(rhsh(0:im,0:jm,0:km,1:5))
     allocate(qsaveh(0:im,0:jm,0:km,1:5))

@@ -21,8 +21,13 @@ def write_profile(
         connection.execute(
             "CREATE TABLE CUPTI_ACTIVITY_KIND_MEMCPY(start INTEGER, bytes INTEGER, copyKind INTEGER)"
         )
+        connection.execute(
+            "CREATE TABLE CUPTI_ACTIVITY_KIND_RUNTIME(start INTEGER, end INTEGER, nameId INTEGER)"
+        )
         connection.execute("INSERT INTO StringIds VALUES(1, ?)", (kernel_name,))
+        connection.execute("INSERT INTO StringIds VALUES(2, 'cudaDeviceSynchronize')")
         connection.execute("INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES(100, 105, 1)")
+        connection.execute("INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME VALUES(106, 116, 2)")
         connection.execute("INSERT INTO CUPTI_ACTIVITY_KIND_MEMCPY VALUES(90, 1048576, 1)")
         connection.execute(
             "INSERT INTO CUPTI_ACTIVITY_KIND_MEMCPY VALUES(110, ?, ?)",
@@ -38,6 +43,8 @@ def test_analyze_ignores_large_startup_transfer(tmp_path: Path) -> None:
     assert "large_h2d_d2h_count: 0" in lines
     assert "forbidden_large_h2d_d2h_count: 0" in lines
     assert "d2h_max_bytes: 6144" in lines
+    assert "cuda_device_synchronize_count: 1" in lines
+    assert "cuda_device_synchronize_total_ns: 10" in lines
 
 
 def test_analyze_rejects_large_rk_transfer(tmp_path: Path) -> None:

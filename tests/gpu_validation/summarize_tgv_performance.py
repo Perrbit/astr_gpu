@@ -65,7 +65,13 @@ def relative_spread(values: list[float]) -> float:
     return (max(values) - min(values)) / median
 
 
-def summarize(rows: list[Timing], grid: str, maxstep: int, discard_steps: int) -> list[str]:
+def summarize(
+    rows: list[Timing],
+    grid: str,
+    maxstep: int,
+    discard_steps: int,
+    sync_mode: str = "explicit",
+) -> list[str]:
     dimensions = [int(value) for value in grid.split(",")]
     if len(dimensions) != 3 or min(dimensions) < 1:
         raise ValueError("grid must contain three positive dimensions")
@@ -94,6 +100,7 @@ def summarize(rows: list[Timing], grid: str, maxstep: int, discard_steps: int) -
         "# TGV 256 GPU Performance Benchmark",
         "",
         f"- label: `{label}`",
+        f"- GPU synchronization mode: `{sync_mode}`",
         f"- grid: `{grid}` ({cells} cells)",
         f"- configured maxstep: `{maxstep}` ({maxstep + 1} RK advances)",
         f"- discarded in-process warm-up advances per run: `{discard_steps}`",
@@ -126,9 +133,10 @@ def main() -> int:
     parser.add_argument("--grid", required=True)
     parser.add_argument("--maxstep", required=True, type=int)
     parser.add_argument("--discard-steps", required=True, type=int)
+    parser.add_argument("--sync-mode", choices=("explicit", "selective"), default="explicit")
     args = parser.parse_args()
     lines = summarize(
-        read_timings(args.timings), args.grid, args.maxstep, args.discard_steps
+        read_timings(args.timings), args.grid, args.maxstep, args.discard_steps, args.sync_mode
     )
     args.summary.parent.mkdir(parents=True, exist_ok=True)
     args.summary.write_text("\n".join(lines) + "\n", encoding="ascii")

@@ -2848,7 +2848,117 @@ PROFILE_TOOL=ncu MAXSTEP=0 OUT_DIR=/tmp/astr_tgv_ncu \
   tests/gpu_validation/run_tgv_256_performance_profile.sh
 ```
 
+The NCU path embeds available Fortran source into the report and also emits
+`ncu_details.txt` plus the source-correlated `ncu_source.csv`. Inspect an
+existing report directly from the CLI with:
+
+```bash
+ncu --import /tmp/astr_tgv_ncu/diffusion_flux_full.ncu-rep \
+  --page details --print-details all
+ncu --import /tmp/astr_tgv_ncu/diffusion_flux_full.ncu-rep \
+  --page source --print-source cuda,sass --csv --print-units base
+```
+
+Use `ncu --list-sets` and `ncu --list-sections` to enumerate the locally
+installed metric groups. `NCU_SET`, `NCU_KERNEL`, and `NCU_LAUNCH_SKIP`
+select the collection scope. NCU replay duration is diagnostic and must not
+replace the five-repeat complete-RK benchmark.
+
 The same commands are the A800 rerun entry points. Configure a fresh CMake
 build on that system instead of copying a workstation build tree or cache.
 The accepted workstation evidence and exact correctness commands are recorded
 in `documents/ASTR_TGV_PERFORMANCE_OPTIMIZATION_REPORT.md`.
+
+Set `SYNC_MODE=selective` to evaluate the opt-in TGV-only synchronization
+path with either entry point. The program rejects this mode for non-TGV or
+non-periodic cases. The default is `SYNC_MODE=explicit`. On the RTX 4000 Ada
+workstation, selective mode reduces profiled RK `cudaDeviceSynchronize` calls
+from 275 to 15 but changes the five-run median from `0.682327627` to
+`0.683028141 s/RK`, so it is not the performance default. NP=1 and NP=2
+x-slab ten-step fields match explicit mode exactly, all CPU/GPU field and
+statistic reports pass at `1e-10`, and the representative selective memcheck
+reports zero errors. The residency report now records synchronization count
+and cumulative API duration in addition to transfer evidence.
+
+The retained arithmetic optimization now imports the existing CPU
+`constdef::num1d60` parameter in both `solver_gpu` and `gradcal_gpu`. All GPU
+sixth-order central derivatives multiply their outer difference by this
+compile-time constant. WENO reconstruction and unrelated divisions are not
+changed. The final `256^3` five-run median is `0.580044424 s/RK` with `2.027%`
+spread, compared with the first-round frozen baseline of `0.622173751 s/RK`
+and the original `0.762855769 s/RK` baseline. The reductions are `6.771%` and
+`23.964%`, respectively. Peak sampled memory is `9738 MiB`.
+
+Collect the 12-kernel NCU matrix with:
+
+```bash
+OUT_DIR=/tmp/astr_tgv_ncu_matrix \
+  tests/gpu_validation/run_tgv_256_ncu_hotspot_matrix.sh
+```
+
+The matrix covers convection x/y/z, diffusion flux, diffusion RHS x/y/z,
+filter x/y/z, primitive conversion, and `gradcal`. It records SM/DRAM
+throughput, registers, occupancy, instructions, excessive L2 sectors,
+available branch-uniformity data, normalized not-issued warp stalls, and the
+three highest sampled source lines. `--target-processes-filter regex:^astr$`
+prevents NCU from treating the MPI launcher as the profile target.
+
+The retained candidate removes all `MUFU.RCP64H` sites from the profiled
+sixth-order lines. NCU reports convection x decreasing from `28.184` to
+`17.581 ms` and from 383.47 to 252.50 million instructions. `gradcal`
+decreases from `35.463` to `17.972 ms` and from 671.53 to 403.93 million
+instructions, while register use decreases from 88 to 72. The corresponding
+normal-execution Nsight Systems trace reduces convection x/y/z by `28.771%`,
+`gradcal` by `29.729%`, and total GPU-kernel time by `10.046%`.
+
+NP=1 and NP=2 `2x1x1` ten-step field/statistic gates pass at `1e-10`; maximum
+field errors are `q5=2.8421709430404007e-13` and
+`q5=3.1263880373444408e-13`. A five-step `64^3` channel filter-plus-diffusion
+statistics gate also passes. Its complete HDF comparison retains the known
+x/z periodic output-phase defect. For the narrower physical-boundary
+regression, use `compare_flowfield_h5.py --trim-boundary-axis 0
+--trim-boundary-axis 2`; this retains all y-wall planes and gives
+`q5 L_inf=4.618527782440651e-14` in the periodic interior. It is not a
+full-checkpoint pass.
+
+Run the representative memcheck with:
+
+```bash
+OUT_DIR=/tmp/astr_tgv_memcheck \
+  tests/gpu_validation/run_tgv_gpu_memcheck.sh
+```
+
+The default case is FP64 `32^3`, one step, explicit synchronization,
+filtering and diffusion enabled. The retained candidate reports
+`ERROR SUMMARY: 0 errors`. Its `256^3` Nsight Systems residency audit finds
+zero forbidden H2D/D2H transfers at or above 64 KiB; the 12 permitted 512 KiB
+D2H operations are the existing TGV diagnostic reductions.
+
+## GPU optimization candidate gate
+
+Use the unified gate only after writing a bounded optimization hypothesis and
+declaring the exact source paths allowed to change:
+
+```bash
+CANDIDATE_ID=conv-load-reuse-01 \
+BASELINE_REF=<git-ref> \
+BASELINE_TIMINGS=/absolute/path/to/baseline_timings.tsv \
+TARGET_KERNELS='convection x/y/z' \
+ALLOWED_PATHS='src_gpu/solver_gpu.cuf' \
+HYPOTHESIS='Reuse primitive and metric loads without changing arithmetic order' \
+GATE_SET=full \
+OUT_DIR=/tmp/astr_candidate_conv_load_reuse_01 \
+  tests/gpu_validation/run_gpu_optimization_candidate_gate.sh
+```
+
+`correctness` runs the top-level CPU/GPU builds and ten-step NP=1/NP=2 TGV
+field/statistic gates. `performance` adds the five-repeat `256^3` benchmark,
+comparison with the frozen baseline TSV, and the Nsight Systems residency
+audit. `full` additionally runs the 12-kernel NCU matrix and Compute Sanitizer.
+All modes enforce explicit synchronization and `atol=rtol=1e-10`. Use
+`DRY_RUN=t` to inspect the command sequence without executing it.
+
+The complete acceptance contract and prohibited optimization list are in
+`documents/ASTR_GPU_OPTIMIZATION_CANDIDATE_PROTOCOL.md`. Passing this TGV gate
+does not replace the regression matrix for a physical boundary, shock,
+curvilinear, or other subsystem touched by the candidate.

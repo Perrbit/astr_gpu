@@ -10,9 +10,11 @@ MAXSTEP="${MAXSTEP:-10}"
 REPEATS="${REPEATS:-5}"
 DISCARD_STEPS="${DISCARD_STEPS:-1}"
 GPU_ID="${GPU_ID:-0}"
+SYNC_MODE="${SYNC_MODE:-explicit}"
 FEQCHKPT="${FEQCHKPT:-9999}"
 TIMINGS="$OUT_DIR/${LABEL}_timings.tsv"
 SUMMARY="$OUT_DIR/${LABEL}_summary.md"
+CASE_DIR="$OUT_DIR/${LABEL}_case"
 
 if [[ "$GPU_EXE" != /* ]]; then
   GPU_EXE="$ROOT_DIR/$GPU_EXE"
@@ -21,6 +23,7 @@ if [[ "$OUT_DIR" != /* ]]; then
   OUT_DIR="$ROOT_DIR/$OUT_DIR"
   TIMINGS="$OUT_DIR/${LABEL}_timings.tsv"
   SUMMARY="$OUT_DIR/${LABEL}_summary.md"
+  CASE_DIR="$OUT_DIR/${LABEL}_case"
 fi
 
 if [[ ! -x "$GPU_EXE" ]]; then
@@ -39,6 +42,10 @@ if [[ "$FEQCHKPT" -le "$MAXSTEP" ]]; then
   echo "FEQCHKPT must exceed MAXSTEP so measured runs do not write fields" >&2
   exit 2
 fi
+if [[ "$SYNC_MODE" != "explicit" && "$SYNC_MODE" != "selective" ]]; then
+  echo "SYNC_MODE must be explicit or selective" >&2
+  exit 2
+fi
 
 prepare_case() {
   local case_dir="$1"
@@ -51,13 +58,13 @@ prepare_case() {
 
 run_once() {
   local repeat="$1" record="$2"
-  local case_dir log monitor stop monitor_pid start end wall
+  local run_dir log monitor stop monitor_pid start end wall
   local max_memory max_util timing_count retained_count timing_values run_status
-  case_dir="$OUT_DIR/${LABEL}_run_${repeat}"
-  log="$case_dir/run.log"
-  monitor="$case_dir/gpu_monitor.csv"
-  stop="$case_dir/.monitor_stop"
-  prepare_case "$case_dir"
+  run_dir="$OUT_DIR/${LABEL}_run_${repeat}"
+  log="$run_dir/run.log"
+  monitor="$run_dir/gpu_monitor.csv"
+  stop="$run_dir/.monitor_stop"
+  mkdir -p "$run_dir"
   rm -f "$stop"
   (
     while [[ ! -e "$stop" ]]; do
@@ -71,9 +78,10 @@ run_once() {
   start="$(date +%s.%N)"
   set +e
   (
-    cd "$case_dir"
+    cd "$CASE_DIR"
     CUDA_VISIBLE_DEVICES="$GPU_ID" ASTR_FORCE_MPI_TOPOLOGY=1,1,1 \
-      ASTR_GPU_RK_TIMING=1 mpirun -np 1 "$GPU_EXE" \
+      ASTR_GPU_RK_TIMING=1 ASTR_GPU_SYNC_MODE="$SYNC_MODE" \
+      mpirun -np 1 "$GPU_EXE" \
       run datin/input.tgv > "$log" 2>&1
   )
   run_status=$?
@@ -100,7 +108,7 @@ run_once() {
     return
   fi
 
-  timing_values="$case_dir/rk_seconds.txt"
+  timing_values="$run_dir/rk_seconds.txt"
   awk -v discard="$DISCARD_STEPS" \
     '$1 == "ASTR_GPU_RK_TIMING" {seen++; if (seen > discard) print $5}' \
     "$log" > "$timing_values"
@@ -126,6 +134,7 @@ PY
 }
 
 mkdir -p "$OUT_DIR"
+prepare_case "$CASE_DIR"
 printf 'label\trepeat\trk_samples\tmedian_rk_seconds\tmin_rk_seconds\tmax_rk_seconds\twall_seconds\tmax_memory_mib\tmax_utilization_percent\n' > "$TIMINGS"
 
 run_once warmup f
@@ -135,4 +144,5 @@ done
 
 python3 "$ROOT_DIR/tests/gpu_validation/summarize_tgv_performance.py" \
   --timings "$TIMINGS" --summary "$SUMMARY" --grid "$GRID" \
-  --maxstep "$MAXSTEP" --discard-steps "$DISCARD_STEPS"
+  --maxstep "$MAXSTEP" --discard-steps "$DISCARD_STEPS" \
+  --sync-mode "$SYNC_MODE"

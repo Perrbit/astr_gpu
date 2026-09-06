@@ -1,12 +1,13 @@
 module gradcal_gpu
   use cudafor
+  use constdef, only: num1d60
   implicit none
 contains
   attributes(device) real(8) function deriv6(fm3,fm2,fm1,fp1,fp2,fp3)
     implicit none
     real(8),value :: fm3,fm2,fm1,fp1,fp2,fp3
 
-    deriv6 = 0.75d0*(fp1 - fm1) - 0.15d0*(fp2 - fm2) + (fp3 - fm3)/60.d0
+    deriv6 = 0.75d0*(fp1 - fm1) - 0.15d0*(fp2 - fm2) + num1d60*(fp3 - fm3)
   end function deriv6
 
   attributes(device) real(8) function deriv6_x_vel(i,j,k,a,im,apply_left,apply_right)
@@ -405,6 +406,7 @@ contains
     use commarray, only: dvel
     use commarray_gpu, only: dvel_d
     use parallel, only: lio
+    use gpu_check, only: sync_gpu_boundary
     implicit none
     real(8),allocatable :: dvel_h(:,:,:,:,:)
     real(8) :: max_abs,max_rel,ref,diff
@@ -412,6 +414,7 @@ contains
 
     if(.not.lio) return
     call compute_gradcal_gpu()
+    call sync_gpu_boundary('write_gradcal_dvel_compare')
     allocate(dvel_h(0:im,0:jm,0:km,1:3,1:3))
     dvel_h = dvel_d
 

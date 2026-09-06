@@ -941,7 +941,7 @@ contains
     call pack_qwork_y_halo_down_kernel<<<grid,block>>>(y_halo_send_down_d,im,jm,km,hm,numq)
     call sync_after_kernel('pack_qwork_y_halo_down_kernel')
     call pack_qwork_y_halo_up_kernel<<<grid,block>>>(y_halo_send_up_d,im,jm,km,hm,numq)
-    call sync_after_kernel('pack_qwork_y_halo_up_kernel')
+    call sync_after_kernel('pack_qwork_y_halo_up_kernel',.true.)
 
     y_halo_send_down_h = y_halo_send_down_d
     y_halo_send_up_h = y_halo_send_up_d
@@ -1013,7 +1013,7 @@ contains
     call pack_z_halo_back_kernel<<<grid,block>>>(z_halo_send_back_d,im,jm,km,hm,numq)
     call sync_after_kernel('pack_z_halo_back_kernel')
     call pack_z_halo_front_kernel<<<grid,block>>>(z_halo_send_front_d,im,jm,km,hm,numq)
-    call sync_after_kernel('pack_z_halo_front_kernel')
+    call sync_after_kernel('pack_z_halo_front_kernel',.true.)
 
     z_halo_send_back_h = z_halo_send_back_d
     z_halo_send_front_h = z_halo_send_front_d
@@ -1075,7 +1075,7 @@ contains
     call pack_x_left_kernel<<<grid,block>>>(x_send_left_d,im,jm,km,hm,numq)
     call sync_after_kernel('pack_x_left_kernel')
     call pack_x_right_kernel<<<grid,block>>>(x_send_right_d,im,jm,km,hm,numq)
-    call sync_after_kernel('pack_x_right_kernel')
+    call sync_after_kernel('pack_x_right_kernel',.true.)
 
     x_send_left_h = x_send_left_d
     x_send_right_h = x_send_right_d
@@ -1118,7 +1118,7 @@ contains
     call pack_y_down_kernel<<<grid,block>>>(y_send_down_d,im,jm,km,hm,numq)
     call sync_after_kernel('pack_y_down_kernel')
     call pack_y_up_kernel<<<grid,block>>>(y_send_up_d,im,jm,km,hm,numq)
-    call sync_after_kernel('pack_y_up_kernel')
+    call sync_after_kernel('pack_y_up_kernel',.true.)
 
     y_send_down_h = y_send_down_d
     y_send_up_h = y_send_up_d
@@ -1161,7 +1161,7 @@ contains
     call pack_z_back_kernel<<<grid,block>>>(z_send_back_d,im,jm,km,hm,numq)
     call sync_after_kernel('pack_z_back_kernel')
     call pack_z_front_kernel<<<grid,block>>>(z_send_front_d,im,jm,km,hm,numq)
-    call sync_after_kernel('pack_z_front_kernel')
+    call sync_after_kernel('pack_z_front_kernel',.true.)
 
     z_send_back_h = z_send_back_d
     z_send_front_h = z_send_front_d
@@ -1204,7 +1204,7 @@ contains
     call pack_x_halo_left_kernel<<<grid,block>>>(x_halo_send_left_d,im,jm,km,hm,numq)
     call sync_after_kernel('pack_x_halo_left_kernel')
     call pack_x_halo_right_kernel<<<grid,block>>>(x_halo_send_right_d,im,jm,km,hm,numq)
-    call sync_after_kernel('pack_x_halo_right_kernel')
+    call sync_after_kernel('pack_x_halo_right_kernel',.true.)
 
     x_halo_send_left_h = x_halo_send_left_d
     x_halo_send_right_h = x_halo_send_right_d
@@ -1300,7 +1300,7 @@ contains
     call pack_field_x_left_kernel<<<grid,block>>>(field,field_send_left_d,im,jm,km,hm,nvar)
     call sync_after_kernel('pack_field_x_left_kernel')
     call pack_field_x_right_kernel<<<grid,block>>>(field,field_send_right_d,im,jm,km,hm,nvar)
-    call sync_after_kernel('pack_field_x_right_kernel')
+    call sync_after_kernel('pack_field_x_right_kernel',.true.)
 
     field_send_left_h(:,:,:,1:nvar) = field_send_left_d(:,:,:,1:nvar)
     field_send_right_h(:,:,:,1:nvar) = field_send_right_d(:,:,:,1:nvar)
@@ -1346,7 +1346,7 @@ contains
     call pack_field_y_down_kernel<<<grid,block>>>(field,field_send_down_d,im,jm,km,hm,nvar)
     call sync_after_kernel('pack_field_y_down_kernel')
     call pack_field_y_up_kernel<<<grid,block>>>(field,field_send_up_d,im,jm,km,hm,nvar)
-    call sync_after_kernel('pack_field_y_up_kernel')
+    call sync_after_kernel('pack_field_y_up_kernel',.true.)
 
     field_send_down_h(:,:,:,1:nvar) = field_send_down_d(:,:,:,1:nvar)
     field_send_up_h(:,:,:,1:nvar) = field_send_up_d(:,:,:,1:nvar)
@@ -1392,7 +1392,7 @@ contains
     call pack_field_z_back_kernel<<<grid,block>>>(field,field_send_back_d,im,jm,km,hm,nvar)
     call sync_after_kernel('pack_field_z_back_kernel')
     call pack_field_z_front_kernel<<<grid,block>>>(field,field_send_front_d,im,jm,km,hm,nvar)
-    call sync_after_kernel('pack_field_z_front_kernel')
+    call sync_after_kernel('pack_field_z_front_kernel',.true.)
 
     field_send_back_h(:,:,:,1:nvar) = field_send_back_d(:,:,:,1:nvar)
     field_send_front_h(:,:,:,1:nvar) = field_send_front_d(:,:,:,1:nvar)

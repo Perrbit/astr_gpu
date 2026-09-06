@@ -25,6 +25,7 @@ class SummarizeTgvPerformanceTests(unittest.TestCase):
             timing_path.write_text(HEADER + "".join(rows), encoding="ascii")
             lines = summarize(read_timings(timing_path), "256,256,256", 10, 1)
         rendered = "\n".join(lines)
+        self.assertIn("GPU synchronization mode: `explicit`", rendered)
         self.assertIn("Median complete-RK time across runs: `1.000000000 s`", rendered)
         self.assertIn("Run-to-run relative spread: `3.000%`", rendered)
 

@@ -20,6 +20,34 @@ class TransferSummary:
     max_bytes: int
 
 
+@dataclass(frozen=True)
+class RuntimeSummary:
+    count: int
+    total_ns: int
+
+
+def summarize_runtime_call(
+    connection: sqlite3.Connection, start: int, name: str
+) -> RuntimeSummary:
+    has_runtime = connection.execute(
+        "SELECT COUNT(*) FROM sqlite_master "
+        "WHERE type='table' AND name='CUPTI_ACTIVITY_KIND_RUNTIME'"
+    ).fetchone()[0]
+    if not has_runtime:
+        return RuntimeSummary(0, 0)
+    row = connection.execute(
+        """
+        SELECT COUNT(*), COALESCE(SUM(runtime.end-runtime.start), 0)
+        FROM CUPTI_ACTIVITY_KIND_RUNTIME AS runtime
+        JOIN StringIds AS strings ON strings.id=runtime.nameId
+        WHERE runtime.start >= ? AND strings.value LIKE ?
+        """,
+        (start, f"{name}%"),
+    ).fetchone()
+    assert row is not None
+    return RuntimeSummary(*(int(value) for value in row))
+
+
 def summarize_transfers(
     connection: sqlite3.Connection, start: int, kinds: tuple[int, ...]
 ) -> TransferSummary:
@@ -59,6 +87,9 @@ def analyze(
         start, kernel_matches, matched_name = int(matches[0]), int(matches[1]), str(matches[2])
         h2d = summarize_transfers(connection, start, H2D_KINDS)
         d2h = summarize_transfers(connection, start, D2H_KINDS)
+        device_sync = summarize_runtime_call(
+            connection, start, "cudaDeviceSynchronize"
+        )
         kernel_count = int(
             connection.execute(
                 "SELECT COUNT(*) FROM CUPTI_ACTIVITY_KIND_KERNEL WHERE start >= ?", (start,)
@@ -117,6 +148,8 @@ def analyze(
         f"d2h_count: {d2h.count}",
         f"d2h_total_bytes: {d2h.total_bytes}",
         f"d2h_max_bytes: {d2h.max_bytes}",
+        f"cuda_device_synchronize_count: {device_sync.count}",
+        f"cuda_device_synchronize_total_ns: {device_sync.total_ns}",
     ]
     return passed, lines
 

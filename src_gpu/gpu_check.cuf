@@ -1,16 +1,58 @@
 module gpu_check
   use cudafor
   implicit none
+  logical,save :: sync_mode_configured = .false.
+  logical,save :: selective_sync_enabled = .false.
+  character(len=128),save :: last_kernel_label = 'none'
 contains
-  subroutine sync_after_kernel(label)
-    character(len=*), intent(in) :: label
-    integer :: istat
+  subroutine configure_gpu_sync_mode(allow_selective)
+    logical,intent(in) :: allow_selective
+    character(len=32) :: value
+    integer :: length,status
 
+    if(sync_mode_configured) return
+
+    value='explicit'
+    call get_environment_variable('ASTR_GPU_SYNC_MODE',value,        &
+                                  length=length,status=status)
+    if(status /= 0 .or. length == 0) value='explicit'
+
+    select case(trim(adjustl(value)))
+    case('explicit')
+      selective_sync_enabled=.false.
+    case('selective')
+      if(.not.allow_selective) then
+        stop 'ASTR_GPU_SYNC_MODE=selective currently requires 3-D periodic TGV'
+      endif
+      selective_sync_enabled=.true.
+    case default
+      stop 'ASTR_GPU_SYNC_MODE must be explicit or selective'
+    end select
+    sync_mode_configured=.true.
+  end subroutine configure_gpu_sync_mode
+
+  logical function gpu_selective_sync_enabled()
+    implicit none
+
+    gpu_selective_sync_enabled=selective_sync_enabled
+  end function gpu_selective_sync_enabled
+
+  subroutine sync_after_kernel(label,force_sync)
+    character(len=*), intent(in) :: label
+    logical,intent(in),optional :: force_sync
+    integer :: istat
+    logical :: must_sync
+
+    last_kernel_label=label
     istat = cudaGetLastError()
     if(istat /= cudaSuccess) then
       print *, 'GPU kernel launch failed: ', trim(label), istat
       stop 'GPU kernel launch failed'
     endif
+
+    must_sync=.not.selective_sync_enabled
+    if(present(force_sync)) must_sync=must_sync .or. force_sync
+    if(.not.must_sync) return
 
     istat = cudaDeviceSynchronize()
     if(istat /= cudaSuccess) then
@@ -18,4 +60,16 @@ contains
       stop 'GPU kernel synchronize failed'
     endif
   end subroutine sync_after_kernel
+
+  subroutine sync_gpu_boundary(label)
+    character(len=*),intent(in) :: label
+    integer :: istat
+
+    istat = cudaDeviceSynchronize()
+    if(istat /= cudaSuccess) then
+      print *, 'GPU boundary synchronize failed: ', trim(label), istat
+      print *, 'Last launched GPU kernel: ', trim(last_kernel_label)
+      stop 'GPU boundary synchronize failed'
+    endif
+  end subroutine sync_gpu_boundary
 end module gpu_check

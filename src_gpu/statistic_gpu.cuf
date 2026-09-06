@@ -465,7 +465,7 @@ contains
     allocate(partial_h(nblocks))
 
     call kenergy_partial_kernel<<<nblocks,block_size>>>(rho_d,vel_d,partial_d,im,jm,km,hm)
-    call sync_after_kernel('kenergy_partial_kernel')
+    call sync_after_kernel('kenergy_partial_kernel',.true.)
     partial_h = partial_d
 
     local_sum = sum(partial_h)
@@ -502,7 +502,7 @@ contains
     allocate(partial_h(nblocks))
 
     call enstophy_partial_kernel<<<nblocks,block_size>>>(rho_d,dvel_d,partial_d,im,jm,km,hm)
-    call sync_after_kernel('enstophy_partial_kernel')
+    call sync_after_kernel('enstophy_partial_kernel',.true.)
     partial_h = partial_d
 
     local_sum = sum(partial_h)
@@ -540,7 +540,7 @@ contains
 
     call dissipation_partial_kernel<<<nblocks,block_size>>>(tmp_d,dvel_d,partial_d,im,jm,km,hm, &
          tempconst,tempconst1,reynolds,nondimen)
-    call sync_after_kernel('dissipation_partial_kernel')
+    call sync_after_kernel('dissipation_partial_kernel',.true.)
     partial_h = partial_d
 
     local_sum = sum(partial_h)
@@ -577,7 +577,7 @@ contains
 
     do ivar=1,5
       call maxq_partial_kernel<<<nblocks,block_size>>>(q_d,partial_d,im,jm,km,hm,numq,ivar)
-      call sync_after_kernel('maxq_partial_kernel')
+      call sync_after_kernel('maxq_partial_kernel',.true.)
       partial_h = partial_d
       local_max = maxval(partial_h)
       if(mpisize>1) then
@@ -613,7 +613,7 @@ contains
     call channel_partial_kernel<<<nblocks,block_size>>>(q_d,vel_d,x_d,tmp_d,dvel_d,partial_d, &
          im,jm,km,hm,tempconst,tempconst1,reynolds,nondimen, &
          merge(1,0,jrk == 0),merge(1,0,jrk == jrkm))
-    call sync_after_kernel('channel_partial_kernel')
+    call sync_after_kernel('channel_partial_kernel',.true.)
     partial_h = partial_d
 
     local_sum(1) = sum(partial_h(:,1))
@@ -655,7 +655,7 @@ contains
          im,jm,km,hm,tempconst,tempconst1,reynolds,prandtl,const5,apply_down)
     call sync_after_kernel('s1_bl_partial_kernel')
     call s1_bl_reduce_partial_kernel<<<6,block_size>>>(partial_d,reduced_d,nblocks)
-    call sync_after_kernel('s1_bl_reduce_partial_kernel')
+    call sync_after_kernel('s1_bl_reduce_partial_kernel',.true.)
     reduced_h = reduced_d
     local_sum = reduced_h
     if(mpisize > 1) then

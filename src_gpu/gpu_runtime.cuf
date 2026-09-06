@@ -38,9 +38,13 @@ contains
 
   subroutine end_rk_prepare_timing()
     use parallel, only: ptime
+    use gpu_check, only: sync_gpu_boundary
     implicit none
 
-    if(rk_timing_enabled) rk_prepare_seconds=ptime()-rk_prepare_start
+    if(rk_timing_enabled) then
+      call sync_gpu_boundary('complete_rk_prepare_timing')
+      rk_prepare_seconds=ptime()-rk_prepare_start
+    endif
   end subroutine end_rk_prepare_timing
 
   subroutine gpu_bind_device()
@@ -68,8 +72,22 @@ contains
     use mainloop_gpu, only: init_gpu
     use sponge_gpu, only: init_sponge_gpu
     use boundary_gpu, only: init_s1_flatplate_profile_gpu,init_wall_blowing_gpu
+    use commvar, only: flowtype,ndims,lihomo,ljhomo,lkhomo
+    use gpu_check, only: configure_gpu_sync_mode,gpu_selective_sync_enabled
+    use parallel, only: lio
     implicit none
+    logical :: allow_selective
 
+    allow_selective = trim(flowtype) == 'tgv' .and. ndims == 3 .and. &
+                      lihomo .and. ljhomo .and. lkhomo
+    call configure_gpu_sync_mode(allow_selective)
+    if(lio) then
+      if(gpu_selective_sync_enabled()) then
+        write(*,'(A)') ' ** GPU synchronization mode: selective'
+      else
+        write(*,'(A)') ' ** GPU synchronization mode: explicit'
+      endif
+    endif
     call init_gpu()
     call init_wall_blowing_gpu()
     call init_s1_flatplate_profile_gpu()
@@ -138,6 +156,7 @@ contains
   subroutine gpu_time_integration_rk(first_stage_prepared,copy_back)
     use mainloop_gpu, only: time_integration_rk_gpu
     use commvar, only: nstep
+    use gpu_check, only: sync_gpu_boundary
     use parallel, only: lio,ptime
     implicit none
     logical,intent(in),optional :: first_stage_prepared
@@ -146,6 +165,7 @@ contains
 
     if(rk_timing_enabled) integration_start=ptime()
     call time_integration_rk_gpu(first_stage_prepared,copy_back)
+    call sync_gpu_boundary('complete_rk')
     if(rk_timing_enabled) then
       integration_seconds=ptime()-integration_start
       total_seconds=rk_prepare_seconds+integration_seconds

@@ -47,6 +47,22 @@ def reconstruct_q(fields: dict[str, np.ndarray], const6: float) -> dict[str, np.
     }
 
 
+def trim_boundary_axes(
+    fields: dict[str, np.ndarray], axes: list[int]
+) -> dict[str, np.ndarray]:
+    if not axes:
+        return fields
+    sample = next(iter(fields.values()))
+    invalid = [axis for axis in axes if axis < 0 or axis >= sample.ndim]
+    if invalid:
+        raise ValueError(f"invalid axes for {sample.ndim}-D flow fields: {invalid}")
+    slices = [slice(None)] * sample.ndim
+    for axis in set(axes):
+        slices[axis] = slice(1, -1)
+    selection = tuple(slices)
+    return {name: values[selection] for name, values in fields.items()}
+
+
 def norm_line(name: str, cpu: np.ndarray, gpu: np.ndarray) -> tuple[str, bool]:
     if cpu.shape != gpu.shape:
         return f"{name} shape_mismatch cpu={cpu.shape} gpu={gpu.shape}", False
@@ -81,10 +97,17 @@ def main() -> int:
     parser.add_argument("--const6", type=float, default=DEFAULT_CONST6)
     parser.add_argument("--atol", type=float, default=1.0e-10)
     parser.add_argument("--rtol", type=float, default=1.0e-10)
+    parser.add_argument(
+        "--trim-boundary-axis",
+        action="append",
+        type=int,
+        default=[],
+        help="exclude both boundary planes on an array axis; repeat as needed",
+    )
     args = parser.parse_args()
 
-    cpu_prim = read_flowfield(args.cpu)
-    gpu_prim = read_flowfield(args.gpu)
+    cpu_prim = trim_boundary_axes(read_flowfield(args.cpu), args.trim_boundary_axis)
+    gpu_prim = trim_boundary_axes(read_flowfield(args.gpu), args.trim_boundary_axis)
     cpu_q = reconstruct_q(cpu_prim, args.const6)
     gpu_q = reconstruct_q(gpu_prim, args.const6)
 

@@ -1276,7 +1276,7 @@ contains
     nblocks = max(1,(ncell+block_size-1)/block_size)
     allocate(partial_d(nblocks),partial_h(nblocks))
     call nscbc_mach2_partial_kernel<<<nblocks,block_size>>>(partial_d,im,jm,km,hm,mach)
-    call sync_after_kernel('nscbc_mach2_partial_kernel')
+    call sync_after_kernel('nscbc_mach2_partial_kernel',.true.)
     partial_h = partial_d
     local_max = maxval(partial_h)
     if(mpisize > 1) then
@@ -1340,7 +1340,7 @@ contains
     nblocks = max(1,(ncell+block_size-1)/block_size)
     allocate(partial_d(nblocks),partial_h(nblocks))
     call nscbc_outflow_mach2_partial_kernel<<<nblocks,block_size>>>(partial_d,im,jm,km,hm,mach)
-    call sync_after_kernel('nscbc_outflow_mach2_partial_kernel')
+    call sync_after_kernel('nscbc_outflow_mach2_partial_kernel',.true.)
     partial_h = partial_d
     local_max = maxval(partial_h)
     if(mpisize > 1) then
@@ -1769,7 +1769,7 @@ contains
     call gpu_physical_boundary_apply_mask(2,apply_down,apply_up)
     if(apply_up /= 0) then
       call nscbc_farfield_y_upper_mach2_partial_kernel<<<nblocks,block_size>>>(partial_d,im,jm,km,hm,mach)
-      call sync_after_kernel('nscbc_farfield_y_upper_mach2_partial_kernel')
+      call sync_after_kernel('nscbc_farfield_y_upper_mach2_partial_kernel',.true.)
       partial_h = partial_d
       local_max = maxval(partial_h)
     else

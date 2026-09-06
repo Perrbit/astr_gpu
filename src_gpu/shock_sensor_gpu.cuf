@@ -129,6 +129,7 @@ contains
   subroutine dump_shock_sensor_gpu_validation()
     use commvar, only: im,jm,km
     use commarray_gpu, only: shock_sensor_d,shock_mask_d
+    use gpu_check, only: sync_gpu_boundary
     use parallel, only: lio,mpirank,mpisize,ig0,jg0,kg0
     implicit none
     logical,save :: dumped=.false.
@@ -143,6 +144,7 @@ contains
                                   length=path_length,status=status)
     if(status /= 0 .or. path_length <= 0) return
 
+    call sync_gpu_boundary('write_shock_sensor_dump')
     allocate(sensor_host(0:im,0:jm,0:km),mask_host(0:im,0:jm,0:km))
     sensor_host = shock_sensor_d(0:im,0:jm,0:km,1)
     mask_host = shock_mask_d

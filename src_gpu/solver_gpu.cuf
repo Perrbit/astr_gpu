@@ -1,5 +1,6 @@
 module solver_gpu
   use cudafor
+  use constdef, only: num1d60
   implicit none
 contains
   attributes(device) integer function wrap_periodic(idx,n)
@@ -1879,7 +1880,7 @@ contains
     allocate(partial_h(nblocks,4))
 
     call channel_bulk_partial_kernel<<<nblocks,block_size>>>(q_d,x_d,partial_d,im,jm,km,hm)
-    call sync_after_kernel('channel_bulk_partial_kernel')
+    call sync_after_kernel('channel_bulk_partial_kernel',.true.)
     partial_h = partial_d
     local_sum(1) = sum(partial_h(:,1))
     local_sum(2) = sum(partial_h(:,2))
@@ -1969,7 +1970,7 @@ contains
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i+3,j,k,1,fp3)
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i-3,j,k,1,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + (fp3(m)-fm3(m))/60.d0
+      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs(i,j,k,m) = qrhs(i,j,k,m) - df
     enddo
 
@@ -1980,7 +1981,7 @@ contains
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i,j+3,k,2,fp3)
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i,j-3,k,2,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + (fp3(m)-fm3(m))/60.d0
+      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs(i,j,k,m) = qrhs(i,j,k,m) - df
     enddo
 
@@ -1991,7 +1992,7 @@ contains
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i,j,k+3,3,fp3)
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i,j,k-3,3,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + (fp3(m)-fm3(m))/60.d0
+      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs(i,j,k,m) = qrhs(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_kernel
@@ -2020,7 +2021,7 @@ contains
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i+3,j,k,1,fp3)
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i-3,j,k,1,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + (fp3(m)-fm3(m))/60.d0
+      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs(i,j,k,m) = qrhs(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_x_kernel
@@ -2049,7 +2050,7 @@ contains
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i,j+3,k,2,fp3)
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i,j-3,k,2,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + (fp3(m)-fm3(m))/60.d0
+      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs(i,j,k,m) = qrhs(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_y_kernel
@@ -2078,7 +2079,7 @@ contains
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i,j,k+3,3,fp3)
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i,j,k-3,3,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + (fp3(m)-fm3(m))/60.d0
+      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs(i,j,k,m) = qrhs(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_z_kernel
@@ -2200,7 +2201,7 @@ contains
     call flux_at_global(i+3,j,k,1,im,jm,km,fp3)
     call flux_at_global(i-3,j,k,1,im,jm,km,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + (fp3(m)-fm3(m))/60.d0
+      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_x_global_kernel
@@ -2227,7 +2228,7 @@ contains
     call flux_at_global(i,j+3,k,2,im,jm,km,fp3)
     call flux_at_global(i,j-3,k,2,im,jm,km,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + (fp3(m)-fm3(m))/60.d0
+      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_y_global_kernel
@@ -2254,7 +2255,7 @@ contains
     call flux_at_global(i,j,k+3,3,im,jm,km,fp3)
     call flux_at_global(i,j,k-3,3,im,jm,km,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + (fp3(m)-fm3(m))/60.d0
+      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_z_global_kernel
@@ -2292,7 +2293,7 @@ contains
       enddo
     else
       do m=1,5
-        df(m) = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + (fp3(m)-fm3(m))/60.d0
+        df(m) = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       enddo
     endif
   end subroutine deriv6_x_physical
@@ -2345,7 +2346,7 @@ contains
     call flux_at_xphysical_global(i,j+3,k,2,im,jm,km,fp3)
     call flux_at_xphysical_global(i,j-3,k,2,im,jm,km,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + (fp3(m)-fm3(m))/60.d0
+      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_y_xphysical_global_kernel
@@ -2370,7 +2371,7 @@ contains
     call flux_at_xphysical_global(i,j,k+3,3,im,jm,km,fp3)
     call flux_at_xphysical_global(i,j,k-3,3,im,jm,km,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + (fp3(m)-fm3(m))/60.d0
+      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_z_xphysical_global_kernel
@@ -2395,7 +2396,7 @@ contains
     call flux_at_yphysical_global(i+3,j,k,1,im,jm,km,fp3)
     call flux_at_yphysical_global(i-3,j,k,1,im,jm,km,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + (fp3(m)-fm3(m))/60.d0
+      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_x_yphysical_global_kernel
@@ -2448,7 +2449,7 @@ contains
     call flux_at_yphysical_global(i,j,k+3,3,im,jm,km,fp3)
     call flux_at_yphysical_global(i,j,k-3,3,im,jm,km,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + (fp3(m)-fm3(m))/60.d0
+      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_z_yphysical_global_kernel
@@ -2529,7 +2530,7 @@ contains
     call flux_at_xyphysical_global(i,j,k+3,3,im,jm,km,fp3)
     call flux_at_xyphysical_global(i,j,k-3,3,im,jm,km,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + (fp3(m)-fm3(m))/60.d0
+      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_z_xyphysical_global_kernel
@@ -2554,7 +2555,7 @@ contains
     call flux_at_zphysical_global(i+3,j,k,1,im,jm,km,fp3)
     call flux_at_zphysical_global(i-3,j,k,1,im,jm,km,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + (fp3(m)-fm3(m))/60.d0
+      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_x_zphysical_global_kernel
@@ -2579,7 +2580,7 @@ contains
     call flux_at_zphysical_global(i,j+3,k,2,im,jm,km,fp3)
     call flux_at_zphysical_global(i,j-3,k,2,im,jm,km,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + (fp3(m)-fm3(m))/60.d0
+      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_y_zphysical_global_kernel
@@ -3050,7 +3051,7 @@ contains
     implicit none
     real(8),value :: vp1,vm1,vp2,vm2,vp3,vm3
 
-    deriv6 = 0.75d0*(vp1-vm1) - 0.15d0*(vp2-vm2) + (vp3-vm3)/60.d0
+    deriv6 = 0.75d0*(vp1-vm1) - 0.15d0*(vp2-vm2) + num1d60*(vp3-vm3)
   end function deriv6
 
   attributes(device) real(8) function vel_at(i,j,k,icomp,im,jm,km)
