@@ -4,6 +4,22 @@ This context defines the project language for migrating ASTR from CPU Fortran/MP
 
 ## Language
 
+**Core solver maintenance scope**:
+The maintained production solver boundary, including CPU orchestration, accelerator execution, build entry points, and the validation evidence needed to change them safely. Peripheral experiments and auxiliary applications are outside this detailed documentation boundary.
+_Avoid_: Whole-repository deep documentation, every example as a core module
+
+**Curated architecture document**:
+A human-audited explanation of responsibilities, ownership, and supported relationships in the core solver. It distinguishes confirmed current behavior from target architecture and is not generated directly from lexical call matches.
+_Avoid_: Automatic architecture truth, undifferentiated current-and-future diagram
+
+**Generated source inventory**:
+A deterministic lexical index of source files, modules, declared procedures, imports, calls, includes, and build membership. It detects documentation drift but does not infer dynamic dispatch or replace architecture review.
+_Avoid_: Complete semantic call graph, generated design decision
+
+**Architecture view**:
+A diagram and its evidence-bounded explanation at one declared time horizon. A current view contains implemented behavior; a target view contains planned, restricted, and deferred boundaries without presenting them as complete.
+_Avoid_: Mixed implementation-roadmap diagram, unlabeled future capability
+
 **First-stage acceptance boundary**:
 The initial GPU validation target is Taylor-Green Vortex on one MPI rank and one GPU, with no species transport and no turbulence model. It is the boundary for proving CPU/GPU numerical equivalence before broader ASTR coverage.
 _Avoid_: Full ASTR GPU port, complete GPU migration
