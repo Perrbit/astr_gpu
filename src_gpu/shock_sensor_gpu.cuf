@@ -170,18 +170,22 @@ contains
     dumped=.true.
   end subroutine dump_shock_sensor_gpu_validation
 
-  subroutine compute_shock_sensor_gpu()
-    use commvar, only: im,jm,km,hm,shkcrt,lchardecomp,npdci,npdcj,npdck
+  subroutine compute_shock_sensor_gpu(stage_index)
+    use commvar, only: im,jm,km,hm,shkcrt,lchardecomp,npdci,npdcj,npdck,nstep
     use commcal, only: shock_sensor_validation_enabled
     use gradcal_gpu, only: compute_gradcal_gpu
     use gpu_check, only: sync_after_kernel
     use halo_exchange_gpu, only: exchange_field_halo_gpu
-    use commarray_gpu, only: shock_sensor_d
+    use commarray_gpu, only: shock_sensor_d,shock_mask_d
     use boundary_gpu, only: gpu_axis_is_physical
     use parallel, only: isize,jsize,ksize
+    use validation_io, only: rhs_validation_requested,write_sensor_validation_snapshot
     implicit none
+    integer,intent(in),optional :: stage_index
     type(dim3) :: block3,grid3,block_x,grid_x,block_y,grid_y,block_z,grid_z
     integer :: apply_left_x,apply_right_x,apply_down_y,apply_up_y,apply_back_z,apply_front_z
+    real(8),allocatable :: sensor_host(:,:,:)
+    integer(1),allocatable :: mask_host(:,:,:)
 
     if((.not.shock_sensor_validation_enabled()) .and. (.not.lchardecomp)) return
     call compute_gradcal_gpu()
@@ -234,6 +238,13 @@ contains
                                                         apply_down_y,apply_up_y, &
                                                         apply_back_z,apply_front_z)
     call sync_after_kernel('expand_shock_sensor_kernel')
+    if(rhs_validation_requested()) then
+      allocate(sensor_host(0:im,0:jm,0:km),mask_host(0:im,0:jm,0:km))
+      sensor_host=shock_sensor_d(0:im,0:jm,0:km,1)
+      mask_host=shock_mask_d
+      call write_sensor_validation_snapshot('sensor',sensor_host,mask_host,nstep,stage_index)
+      deallocate(sensor_host,mask_host)
+    endif
     call dump_shock_sensor_gpu_validation()
   end subroutine compute_shock_sensor_gpu
 end module shock_sensor_gpu

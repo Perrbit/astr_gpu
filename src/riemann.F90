@@ -20,7 +20,7 @@ module riemann
   !| -------------                                                     |
   !| 10-02-2022: Created by J. Fang @ Warrington.                      |
   !+-------------------------------------------------------------------+
-  subroutine flux_steger_warming(fplus,fmius,rho,vel,prs,tmp,spc,q,dxi,jacob)
+  subroutine flux_steger_warming(fplus,fmius,rho,vel,prs,tmp,spc,q,dxi,jacob,metric_consistent_eps)
     !
     use commvar,  only: numq,gamma,nondimen
     use fludyna,  only: sos
@@ -31,6 +31,7 @@ module riemann
     real(8),intent(out) :: fplus(:,:),fmius(:,:)
     real(8),intent(in) ::  rho(:),vel(:,:),prs(:),tmp(:),spc(:,:),   &
                            q(:,:),dxi(:,:),jacob(:)
+    logical,intent(in),optional :: metric_consistent_eps
     !
     ! local data
     real(8) :: uu,eps,gm2,css,csa,lmach,fhi,jro
@@ -46,6 +47,9 @@ module riemann
       !
       uu=dxi(i,1)*vel(i,1)+dxi(i,2)*vel(i,2)+dxi(i,3)*vel(i,3)
       var0=1.d0/sqrt(dxi(i,1)**2+dxi(i,2)**2+dxi(i,3)**2)
+      if(present(metric_consistent_eps)) then
+        if(metric_consistent_eps) eps=0.04d0/var0
+      endif
       !
       gpd(1)=dxi(i,1)*var0
       gpd(2)=dxi(i,2)*var0

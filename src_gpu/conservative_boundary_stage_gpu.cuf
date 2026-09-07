@@ -1,0 +1,65 @@
+module conservative_boundary_stage_gpu
+  use cudafor
+  implicit none
+  private
+  real(8),allocatable,device,save :: xline_d(:)
+  real(8),device,save :: left_d(5),right_d(5)
+  integer,device,save :: error_d
+  public :: initialize_conservative_stage_gpu,apply_conservative_stage_gpu
+contains
+  subroutine initialize_conservative_stage_gpu()
+    use commvar, only: im,hm,npdci
+    use commarray, only: x
+    use conservative_boundary_runtime, only: conservative_boundary
+    use parallel, only: por
+    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+    real(8) :: xline(-hm:im+hm)
+    integer :: h
+    if(por(.not.conservative_boundary%enabled)) error stop 'GPU conservative configuration disabled'
+    if(por(allocated(xline_d))) error stop 'GPU conservative stage already initialized'
+    xline=x(:,0,0,1)
+    do h=1,hm
+      if(npdci==1.or.npdci==4) xline(-h)=xline(0)-h*(xline(1)-xline(0))
+      if(npdci==2.or.npdci==4) xline(im+h)=xline(im)+h*(xline(im)-xline(im-1))
+    enddo
+    if(por(.not.all(ieee_is_finite(xline)))) error stop 'Invalid GPU boundary coordinates'
+    allocate(xline_d(-hm:im+hm))
+    xline_d=xline
+    left_d=conservative_boundary%q_left
+    right_d=conservative_boundary%q_right
+  end subroutine initialize_conservative_stage_gpu
+
+  subroutine apply_conservative_stage_gpu(tw)
+    use commvar, only: im,jm,km,hm,gamma,mach,npdci,npdcj
+    use commarray_gpu, only: q_d
+    use conservative_boundary_runtime, only: conservative_boundary
+    use conservative_boundary_faces_gpu, only: apply_conservative_face_kernel
+    use halo_exchange_gpu, only: exchange_solution_halo_gpu
+    use parallel, only: por
+    use gpu_check, only: sync_after_kernel
+    real(8),intent(in) :: tw
+    logical :: owned(4)
+    integer :: side,width,error
+    if(por(.not.allocated(xline_d))) error stop 'GPU conservative stage not initialized'
+    owned=[npdci==1.or.npdci==4,npdci==2.or.npdci==4, &
+           npdcj==1.or.npdcj==4,npdcj==2.or.npdcj==4]
+    call exchange_solution_halo_gpu()
+    do side=1,4
+      error=0
+      if(owned(side)) then
+        width=jm+1
+        if(side>=3) width=im+2*hm+1
+        error_d=0
+        call apply_conservative_face_kernel<<<(width*(km+1)+255)/256,256>>>( &
+          side,im,jm,km,hm,q_d,xline_d,tw,gamma,mach, &
+          conservative_boundary%split_x,left_d,right_d,error_d)
+        call sync_after_kernel('conservative_boundary_face')
+        error=error_d
+      endif
+      if(por(error/=0)) error stop 'Invalid GPU conservative boundary column'
+      if(side==2) call exchange_solution_halo_gpu()
+    enddo
+    ! The exchange refreshes device primitives, including physical-face ghosts.
+    call exchange_solution_halo_gpu()
+  end subroutine apply_conservative_stage_gpu
+end module conservative_boundary_stage_gpu

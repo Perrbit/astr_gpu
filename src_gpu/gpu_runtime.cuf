@@ -87,6 +87,9 @@ contains
     use commvar, only: flowtype,ndims,lihomo,ljhomo,lkhomo
     use gpu_check, only: configure_gpu_sync_mode,gpu_selective_sync_enabled
     use parallel, only: lio
+    use conservative_boundary_runtime, only: conservative_boundary
+    use conservative_boundary_stage_gpu, only: initialize_conservative_stage_gpu
+    use commvar_gpu, only: set_metric_consistent_eps_gpu
     implicit none
     logical :: allow_selective
 
@@ -102,6 +105,10 @@ contains
     endif
     call init_halo_transport_gpu()
     call init_gpu()
+    if(conservative_boundary%enabled) then
+      call initialize_conservative_stage_gpu()
+      call set_metric_consistent_eps_gpu(.true.)
+    endif
     call init_wall_blowing_gpu()
     call init_s1_flatplate_profile_gpu()
     call init_sponge_gpu()

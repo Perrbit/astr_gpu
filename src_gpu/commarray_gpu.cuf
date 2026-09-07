@@ -94,6 +94,15 @@ contains
     tmp = tmp_d
   end subroutine copy_flow_from_gpu
 
+  subroutine copy_rhs_from_gpu()
+    use commarray, only: qrhs
+    use gpu_check, only: sync_gpu_boundary
+    implicit none
+
+    call sync_gpu_boundary('copy_rhs_from_gpu')
+    qrhs=qrhs_d
+  end subroutine copy_rhs_from_gpu
+
   attributes(global) subroutine save_q_stats_snapshot_kernel(q,qsave,im,jm,km,hm,numq)
     implicit none
     integer,value :: im,jm,km,hm,numq

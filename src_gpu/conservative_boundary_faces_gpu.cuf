@@ -1,0 +1,28 @@
+module conservative_boundary_faces_gpu
+  use cudafor
+  use perfect_gas_boundary_gpu
+#define FACE_PROC attributes(device)
+#define FACE_CUDA
+#include "../src/conservative_boundary_faces_body.inc"
+  attributes(global) subroutine apply_conservative_face_kernel(side,im,jm,km,hm,q,xline, &
+                                                              tw,gamma,mach,split,left,right,error)
+    integer,value :: side,im,jm,km,hm
+    real(8),value :: tw,gamma,mach,split
+    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5),xline(-hm:im+hm),left(5),right(5)
+    integer,device :: error
+    integer :: tid,width,lo,s,k,status,old
+    tid=(blockidx%x-1)*blockdim%x+threadidx%x-1
+    lo=0
+    width=jm+1
+    if(side>=3) then
+      lo=-hm
+      width=im+2*hm+1
+    endif
+    if(tid>=width*(km+1)) return
+    s=lo+mod(tid,width)
+    k=tid/width
+    call apply_conservative_face_column(side,s,k,im,jm,km,hm,q,xline, &
+                                        tw,gamma,mach,split,left,right,status)
+    if(status/=0) old=atomiccas(error,0,100*side+status)
+  end subroutine apply_conservative_face_kernel
+end module conservative_boundary_faces_gpu

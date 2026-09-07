@@ -3,11 +3,18 @@ module commvar_gpu
   implicit none
 
   real(8),constant :: mach_d
+  logical,constant :: metric_consistent_eps_d
 contains
   subroutine copy_commvar_to_gpu()
     use commvar, only: mach
     implicit none
 
     mach_d = mach
+    metric_consistent_eps_d = .false.
   end subroutine copy_commvar_to_gpu
+
+  subroutine set_metric_consistent_eps_gpu(enabled)
+    logical,intent(in) :: enabled
+    metric_consistent_eps_d=enabled
+  end subroutine set_metric_consistent_eps_gpu
 end module commvar_gpu

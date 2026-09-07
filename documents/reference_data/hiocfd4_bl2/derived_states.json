@@ -1,0 +1,39 @@
+{
+  "status": "Derived preparation data only; not runnable or physically validated ASTR case",
+  "source_commit": "547a398",
+  "generator_function": "tests/gpu_validation/generate_compressible_blasius_profile.py::oblique_shock_ratios",
+  "mach": 2.15,
+  "gamma": 1.4,
+  "shock_angle_deg": 30.8,
+  "reference_temperature_K": 288.15,
+  "reference_reynolds": 100000,
+  "inlet_jump_y": 0.7153435684719569,
+  "pressure_scale": "rho0*V0^2",
+  "upstream": {
+    "rho": 1.0,
+    "u": 1.0,
+    "v": 0.0,
+    "w": 0.0,
+    "T": 1.0,
+    "p": 0.15452368075407558
+  },
+  "downstream": {
+    "rho": 1.170609136056491,
+    "u": 0.9617877146590362,
+    "v": -0.06410170501302853,
+    "w": 0.0,
+    "T": 1.0655057834127954,
+    "p": 0.19273596609503937
+  },
+  "rankine_hugoniot_absolute_residuals": {
+    "mass_normal": 0.0,
+    "normal_momentum": 0.0,
+    "tangential_velocity": 2.7755575615628914e-17,
+    "total_enthalpy": 1.0408340855860843e-16,
+    "equation_of_state": 0.0
+  },
+  "pdf_sha256": {
+    "BL2_description.pdf": "95ee7f79f73b08595c062757ee7a268275bf18fe3afd6e1ac495fcd529e8b065",
+    "BL2_workshop_summary.pdf": "282a0def5624f20231d452d53d3e039e5d9fdf541d65f67688665a5008214fd0"
+  }
+}

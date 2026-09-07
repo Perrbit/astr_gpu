@@ -748,7 +748,7 @@ contains
   subroutine gpu_write_s1_bl_flowstate()
     use commvar, only: nstep,time,maxstep
     use parallel, only: lio
-    use stlaio, only: get_unit
+    use utility, only: listinit
     implicit none
     real(8) :: massflux_gpu,fbcx_gpu,wallheatflux_gpu,wrms_gpu
     integer,save :: hand=-1
@@ -758,9 +758,8 @@ contains
     call gpu_s1_bl_scalars(massflux_gpu,fbcx_gpu,wallheatflux_gpu,wrms_gpu)
     if(.not.lio) return
     if(linit) then
-      hand = get_unit()
-      open(hand,file='flowstate.dat',status='replace',action='write')
-      write(hand,'(A)') 'nstep time massflux fbcx wallheatflux wrms'
+      call listinit(filename='flowstate.dat',handle=hand, &
+                    firstline='nstep time massflux fbcx wallheatflux wrms')
       linit = .false.
     endif
     write(hand,'(I20,1X,ES24.16,4(1X,ES24.16))') nstep,time,massflux_gpu,fbcx_gpu,wallheatflux_gpu,wrms_gpu

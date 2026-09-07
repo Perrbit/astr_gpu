@@ -33,15 +33,23 @@ set(ASTR_SOURCES
   riemann.F90
   singleton.F90
   solver.F90
+  perfect_gas_boundary.F90
+  conservative_boundary_config.F90
+  conservative_boundary_runtime.F90
+  rectilinear_metric_halo.F90
+  conservative_boundary_faces.F90
+  perfect_gas_transport.F90
   sponge_layer.F90
   statistic.F90
   stlaio.F90
   strings.F90
   tecio.F90
   test.F90
+  ../tests/gpu_validation/boundary_rhs_manufactured.F90
   thermchem.F90
   ../user_define_module/userdefine.F90
   utility.F90
+  validation_io.F90
   vtkio.F90)
 
 if(ASTR_WITH_CUDA)
@@ -54,6 +62,9 @@ if(ASTR_WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/halo_transport_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/halo_exchange_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/boundary_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/perfect_gas_boundary_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/conservative_boundary_faces_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/conservative_boundary_stage_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/sponge_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/case_capability_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/statistic_gpu.cuf
@@ -66,7 +77,44 @@ endif()
 
 add_executable(astr ${ASTR_SOURCES} ${ASTR_GPU_SOURCES})
 
+add_executable(boundary_contract_cpu_probe EXCLUDE_FROM_ALL
+  perfect_gas_boundary.F90 ../tests/gpu_validation/boundary_contract_probe.F90)
+set_target_properties(boundary_contract_cpu_probe PROPERTIES
+  Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/boundary_contract_cpu_modules")
+target_include_directories(boundary_contract_cpu_probe PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/boundary_contract_cpu_modules")
+
+add_executable(conservative_boundary_config_probe EXCLUDE_FROM_ALL
+  perfect_gas_boundary.F90 conservative_boundary_config.F90
+  ../tests/gpu_validation/conservative_boundary_config_probe.F90)
+set_target_properties(conservative_boundary_config_probe PROPERTIES
+  Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/boundary_config_modules")
+target_include_directories(conservative_boundary_config_probe PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/boundary_config_modules")
+add_executable(boundary_faces_cpu_probe EXCLUDE_FROM_ALL
+  perfect_gas_boundary.F90 conservative_boundary_faces.F90
+  ../tests/gpu_validation/boundary_faces_probe.F90)
+set_target_properties(boundary_faces_cpu_probe PROPERTIES
+  Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/boundary_faces_cpu_modules")
+target_include_directories(boundary_faces_cpu_probe PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/boundary_faces_cpu_modules")
+
 if(ASTR_WITH_CUDA)
+  add_executable(boundary_faces_gpu_probe EXCLUDE_FROM_ALL
+    ../src_gpu/perfect_gas_boundary_gpu.cuf ../src_gpu/conservative_boundary_faces_gpu.cuf
+    ../tests/gpu_validation/boundary_faces_probe.F90)
+  target_compile_definitions(boundary_faces_gpu_probe PRIVATE TEST_CUDA)
+  set_target_properties(boundary_faces_gpu_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/boundary_faces_gpu_modules")
+  target_include_directories(boundary_faces_gpu_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/boundary_faces_gpu_modules")
+  add_executable(boundary_contract_gpu_probe EXCLUDE_FROM_ALL
+    ../src_gpu/perfect_gas_boundary_gpu.cuf ../tests/gpu_validation/boundary_contract_probe.F90)
+  target_compile_definitions(boundary_contract_gpu_probe PRIVATE TEST_CUDA)
+  set_target_properties(boundary_contract_gpu_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/boundary_contract_gpu_modules")
+  target_include_directories(boundary_contract_gpu_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/boundary_contract_gpu_modules")
   add_executable(halo_transport_test EXCLUDE_FROM_ALL
     ../src_gpu/halo_transport_gpu.cuf
     ../tests/gpu_validation/halo_transport_test.F90)
@@ -178,3 +226,10 @@ install(TARGETS astr
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
+
+add_executable(rectilinear_metric_halo_probe EXCLUDE_FROM_ALL
+  rectilinear_metric_halo.F90 ../tests/gpu_validation/rectilinear_metric_halo_probe.F90)
+set_target_properties(rectilinear_metric_halo_probe PROPERTIES
+  Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/metric_halo_probe_modules")
+target_include_directories(rectilinear_metric_halo_probe PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/metric_halo_probe_modules")

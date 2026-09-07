@@ -21,6 +21,9 @@ module test
     use commvar,   only : testmode
     use parallel,  only : mpistop, bcast
     use cmdefne,   only : readkeyboad
+    use boundary_rhs_manufactured, only: check_boundary_rhs,check_boundary_stage, &
+      check_initial_profile_mpi,check_conservative_admission
+    use conservative_boundary_runtime, only: load_conservative_boundary_environment,conservative_boundary
 
     !-------------------------------------------------------------------
     ! Read test mode and broadcast it
@@ -33,6 +36,19 @@ module test
     ! Execute selected test
     !-------------------------------------------------------------------
     select case (trim(testmode))
+    case ('bcad')
+      call check_conservative_admission()
+    case ('bciv')
+      call check_initial_profile_mpi()
+    case ('bcst')
+      call check_boundary_stage()
+    case ('bcfg')
+      call load_conservative_boundary_environment()
+      write(*,'(A,1X,I0,1X,L1,11(1X,ES25.16))') 'BOUNDARY_CONFIG_RANK',mpirank, &
+        conservative_boundary%enabled,conservative_boundary%split_x, &
+        conservative_boundary%q_left,conservative_boundary%q_right
+    case ('bcrh')
+      call check_boundary_rhs
     
     case ('grad')
       call gradtest
@@ -64,6 +80,8 @@ module test
         write(*,*) ' | accu    - Test numerical accuracy                          |'
         write(*,*) ' | enst    - Test enstrophy evaluation                        |'
         write(*,*) ' | bc      - Test boundary condition treatment                |'
+        write(*,*) ' | bcrh    - Test full-halo physical boundary RHS             |'
+        write(*,*) ' | bcfg    - Test boundary configuration MPI broadcast       |'
         write(*,*) ' +------------------------------------------------------------+'
       endif
     

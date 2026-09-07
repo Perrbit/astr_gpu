@@ -36,10 +36,14 @@ module solver
     use thermchem, only: spcindex
     use fludyna,   only: thermal,sos,miucal
     use userdefine,only: udf_setflowenv
-    use parallel,  only: mpisize
+    use parallel,  only: mpisize,bcast
+    use perfect_gas_transport, only: read_transport_environment
     !
     ! local data
     character(len=8) :: mpimaxname
+    real(8) :: sutherland_k
+    integer :: transport_status
+    logical :: transport_changed
     !
     if(trim(turbmode)=='k-omega') then
       num_modequ=2
@@ -78,6 +82,24 @@ module solver
     endif
     !
     prandtl=0.72d0
+    if(mpirank==0) call read_transport_environment(prandtl,sutherland_k, &
+                                                  transport_changed,transport_status)
+    call bcast(transport_status)
+    call bcast(transport_changed)
+    call bcast(prandtl)
+    call bcast(sutherland_k)
+    if(transport_status/=0) then
+      if(lio) print*,'Invalid ASTR perfect-gas transport environment parameter'
+      error stop 1
+    endif
+#ifdef COMB
+    if(transport_changed) error stop 'Perfect-gas transport override is not supported with COMB'
+#else
+    if(transport_changed.and.(.not.nondimen)) &
+      error stop 'Perfect-gas transport override requires nondimensional mode'
+#endif
+    if(transport_changed.and.lio) &
+      print*,'Perfect-gas transport: Pr, Sutherland K = ',prandtl,sutherland_k
     !
 #ifdef COMB
     rgas=287.1d0
@@ -119,7 +141,7 @@ module solver
       !
       pinf=roinf*tinf/const2
       !
-      tempconst=110.3d0/ref_tem
+      tempconst=sutherland_k/ref_tem
       tempconst1=1.d0+tempconst
       !
       ref_vel=1.d0
@@ -182,7 +204,7 @@ module solver
   !| -------------                                                     |
   !| 09-02-2021  | Created by J. Fang @ Warrington                     |
   !+-------------------------------------------------------------------+
-  subroutine rhscal(timerept)
+  subroutine rhscal(timerept,physical_halo_rhs,metric_consistent_eps)
     !
     use commarray, only : qrhs,x,q
     use commvar,   only : flowtype,conschm,diffterm,im,jm,             &
@@ -191,9 +213,11 @@ module solver
     use comsolver, only : gradcal
     use userdefine,only : udf_src
     use tecio
+    use validation_io, only: write_rhs_validation_snapshot
     !
     ! arguments
     logical,intent(in),optional :: timerept
+    logical,intent(in),optional :: physical_halo_rhs,metric_consistent_eps
     logical,save :: firstcall=.true.
     !
     ! local data
@@ -227,7 +251,8 @@ module solver
           if(recon_schem==5 .or. lchardecomp .or. shock_sensor_validation_enabled()) &
             call ducrossensor(timerept=ltimrpt)
           !
-          call convrsduwd(timerept=ltimrpt)
+          call convrsduwd(timerept=ltimrpt,physical_halo_rhs=physical_halo_rhs, &
+                         metric_consistent_eps=metric_consistent_eps)
           !
         elseif(conschm(4:4)=='c') then
           !
@@ -245,8 +270,10 @@ module solver
     !
     !
     qrhs=-qrhs
+    call write_rhs_validation_snapshot('conv')
     !
-    if(diffterm) call diffrsdcal6(timerept=ltimrpt)
+    if(diffterm) call diffrsdcal6(timerept=ltimrpt,physical_boundary_rhs=physical_halo_rhs)
+    call write_rhs_validation_snapshot('full')
     !
     if(trim(flowtype)=='channel') then 
       if(lihomo) call src_chan
@@ -559,10 +586,12 @@ module solver
   !| 22-03-2021: Created by J. Fang @ Warrington.                      |
   !| add the round scheme: by Xi Deng.                                 |
   !+-------------------------------------------------------------------+
-  subroutine convrsduwd(timerept)
+  subroutine convrsduwd(timerept,physical_halo_rhs,metric_consistent_eps)
     !
     use commvar,  only: im,jm,km,hm,numq,num_species,num_modequ,       &
-                        npdci,npdcj,npdck,is,ie,js,je,ks,ke,gamma,     &
+                        npdci_base=>npdci,npdcj_base=>npdcj,npdck_base=>npdck, &
+                        is_base=>is,ie_base=>ie,js_base=>js,je_base=>je, &
+                        ks_base=>ks,ke_base=>ke,gamma,                  &
                         recon_schem,lchardecomp,conschm,bfacmpld,      &
                         nondimen
     use commarray,only: q,vel,rho,prs,tmp,spc,dxi,jacob,qrhs,lsolid,   &
@@ -570,15 +599,19 @@ module solver
     use flux, only: recons_exp
     use riemann,  only: flux_steger_warming
     use fludyna,  only: sos
+    use validation_io, only: write_rhs_validation_snapshot
 #ifdef COMB
     use thermchem,only: gammarmix
 #endif
     !
     ! arguments
     logical,intent(in),optional :: timerept
+    logical,intent(in),optional :: physical_halo_rhs
+    logical,intent(in),optional :: metric_consistent_eps
     !
     ! local data
     integer :: i,j,k,iss,iee,jss,jee,kss,kee,nwd
+    integer :: is,ie,js,je,ks,ke,npdci,npdcj,npdck
     integer :: m,n,jvar
     real(8) :: eps,gm2,var1,var2
     !
@@ -591,6 +624,19 @@ module solver
     real(8),save :: subtime=0.d0
     !
     logical :: lsh,lso,sson,hdiss,lvar,ldebug
+    !
+    is=is_base; ie=ie_base; js=js_base; je=je_base; ks=ks_base; ke=ke_base
+    npdci=npdci_base; npdcj=npdcj_base; npdck=npdck_base
+    if(present(physical_halo_rhs)) then
+      if(physical_halo_rhs) then
+        if(.not.nondimen.or.ndims/=3.or.recon_schem/=3.or.hm<4) &
+          error stop 'Full-halo boundary RHS requires 3D nondimensional MP7'
+        ! Only reconstruction sees a complete stencil. Geometry/MPI ownership
+        ! and the default physical closures in commvar remain unchanged.
+        is=0; ie=im; js=0; je=jm; ks=0; ke=km
+        npdci=3; npdcj=3; npdck=3
+      endif
+    endif
     !
     if(present(timerept)) then
 
@@ -639,7 +685,7 @@ module solver
                                   spc=  spc(iss:iee,j,k,:),     &
                                     q=    q(iss:iee,j,k,:),     &
                                   dxi=  dxi(iss:iee,j,k,1,:),   &
-                                jacob=jacob(iss:iee,j,k))
+                                jacob=jacob(iss:iee,j,k),metric_consistent_eps=metric_consistent_eps)
       !
       ! End of flux split by using Steger-Warming method
       !
@@ -817,6 +863,7 @@ module solver
     enddo
     enddo
     deallocate( Fswp,Fswm,Fh )
+    call write_rhs_validation_snapshot('conv_after_x')
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! end of calculation at i direction
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -857,7 +904,7 @@ module solver
                                   spc=  spc(i,jss:jee,k,:),     &
                                     q=    q(i,jss:jee,k,:),     &
                                   dxi=  dxi(i,jss:jee,k,2,:),   &
-                                jacob=jacob(i,jss:jee,k))
+                                jacob=jacob(i,jss:jee,k),metric_consistent_eps=metric_consistent_eps)
       !
       ! Calculating Matrix of Left and Right eigenvectors using Roe 
       ! Average and flux split as well as i+1/2 construction.
@@ -1010,6 +1057,7 @@ module solver
     enddo
     enddo
     deallocate( Fswp,Fswm,Fh )
+    call write_rhs_validation_snapshot('conv_after_y')
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! end of calculation at j direction
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -1051,7 +1099,7 @@ module solver
                                   spc=  spc(i,j,kss:kee,:),     &
                                     q=    q(i,j,kss:kee,:),     &
                                   dxi=  dxi(i,j,kss:kee,3,:),   &
-                                jacob=jacob(i,j,kss:kee))
+                                jacob=jacob(i,j,kss:kee),metric_consistent_eps=metric_consistent_eps)
       ! End of flux split by using Steger-Warming method
       !
       !
@@ -1205,6 +1253,7 @@ module solver
     enddo
     enddo
     deallocate( Fswp,Fswm,Fh )
+    call write_rhs_validation_snapshot('conv_after_z')
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! end of calculation at k direction
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -2388,11 +2437,13 @@ module solver
   ! Writen by Fang Jian, 2009-06-09.
   ! Add scalar transport equation by Fang Jian, 2022-01-12.
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  subroutine diffrsdcal6(timerept)
+  subroutine diffrsdcal6(timerept,physical_boundary_rhs)
     !
     use commvar,   only : im,jm,km,numq,npdci,npdcj,npdck,difschm,     &
                           conschm,ndims,num_species,num_modequ,        &
-                          reynolds,prandtl,const5,is,ie,js,je,ks,ke,   &
+                          reynolds,prandtl,const5,                    &
+                          is_base=>is,ie_base=>ie,js_base=>js,je_base=>je, &
+                          ks_base=>ks,ke_base=>ke,                    &
                           turbmode,nondimen,schmidt,nstep,deltat,      &
                           cp,flowtype
     use commarray, only : vel,tmp,spc,dvel,dtmp,dspc,dxi,x,jacob,qrhs, &
@@ -2409,9 +2460,11 @@ module solver
     !
     ! arguments
     logical,intent(in),optional :: timerept
+    logical,intent(in),optional :: physical_boundary_rhs
     !
     ! local data
     integer :: i,j,k,n,ncolm,jspc,idir
+    integer :: is,ie,js,je,ks,ke
     real(8),allocatable :: df(:,:),ff(:,:)
     real(8),allocatable,dimension(:,:,:,:),  save :: sigma,qflux,dkflux,doflux
     real(8),allocatable,dimension(:,:,:,:,:),save :: yflux
@@ -2427,6 +2480,17 @@ module solver
     !
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
+    !
+    is=is_base; ie=ie_base; js=js_base; je=je_base; ks=ks_base; ke=ke_base
+    if(present(physical_boundary_rhs)) then
+      if(physical_boundary_rhs) then
+        if(.not.nondimen.or.ndims/=3.or.difschm/='643e'.or. &
+           num_species/=0.or.num_modequ/=0.or.trim(turbmode)/='none') &
+          error stop 'Full-face diffusion RHS requires 3D perfect-gas explicit 643e'
+        ! Extend accumulation only; retain the physical derivative closures.
+        is=0; ie=im; js=0; je=jm; ks=0; ke=km
+      endif
+    endif
     !
     if(present(timerept)) then
 

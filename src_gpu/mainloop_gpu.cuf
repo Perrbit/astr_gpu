@@ -27,18 +27,21 @@ contains
     use solver_gpu, only: q_to_primitive_kernel, &
          filter_x_global_kernel,filter_y_pong_to_q_halo_global_kernel, &
          filter_z_halo_global_kernel,copy_qwork_global_kernel
+    use conservative_boundary_runtime, only: conservative_boundary
     implicit none
     type(dim3) :: block_primitive,grid_primitive,block1,grid1
     type(dim3) :: block_x,grid_x,grid_x_flat,block_y,grid_y,grid_y_flat
     type(dim3) :: block_z,grid_z,grid_z_flat
     integer :: ntot
     logical :: ldc_case,flatplate_case,periodic_filter_case
-    logical :: flatplate_nscbc_farfield_case
+    logical :: flatplate_nscbc_farfield_case,conservative_case
 
     call validate_first_stage_gpu()
+    conservative_case=conservative_boundary%enabled
     ldc_case = gpu_ldc_boundary_case_pending()
     flatplate_case = gpu_s1_flatplate_boundary_case_pending()
-    flatplate_nscbc_farfield_case = gpu_s1_flatplate_nscbc_farfield_case()
+    flatplate_nscbc_farfield_case = (.not.conservative_case) .and. &
+                                    gpu_s1_flatplate_nscbc_farfield_case()
     periodic_filter_case = lfilter .and. .not.(gpu_uses_physical_boundary() .or. ldc_case .or. flatplate_case)
 
     ntot = (im + 1) * (jm + 1) * (km + 1)
@@ -99,7 +102,9 @@ contains
       call sync_after_kernel('prepare_copy_qwork_global_kernel')
     endif
 
-    if(lfilter .and. (gpu_uses_physical_boundary() .or. ldc_case .or. flatplate_case)) then
+    if(conservative_case) then
+      continue
+    elseif(lfilter .and. (gpu_uses_physical_boundary() .or. ldc_case .or. flatplate_case)) then
       if(ldc_case) then
         call apply_ldc_boundary_conditions_gpu()
       elseif(flatplate_case) then
@@ -143,7 +148,7 @@ contains
     use halo_transport_gpu, only: halo_overlap_enabled,progress_host_pair_during_kernel
     use boundary_gpu, only: gpu_periodic_boundary_case
     use commarray_gpu, only: q_d,qrhs_d,qsave_d,rho_d,vel_d,prs_d,tmp_d, &
-         jacob_d,dxi_d,copy_flow_from_gpu
+         jacob_d,dxi_d,copy_flow_from_gpu,copy_rhs_from_gpu
     use gpu_check, only: sync_after_kernel
     use halo_exchange_gpu, only: exchange_solution_halo_gpu, &
          exchange_solution_filter_halo_gpu, exchange_filter_y_work_halo_gpu, &
@@ -239,7 +244,11 @@ contains
          gpu_s2_hbl_selective_roe_s2c5_diffusion_supported, &
          gpu_s2_sbli_nscbc_supported,gpu_s2_sbli_nscbc_sponge_supported
     use shock_sensor_gpu, only: compute_shock_sensor_gpu
-    use bc, only: bctype
+    use bc, only: bctype,twall
+    use conservative_boundary_runtime, only: conservative_boundary
+    use conservative_boundary_stage_gpu, only: apply_conservative_stage_gpu
+    use validation_io, only: rhs_validation_requested,write_rhs_validation_snapshot, &
+                             write_q_validation_snapshot,write_primitive_validation_snapshot
     implicit none
     logical,intent(in),optional :: first_stage_prepared
     logical,intent(in),optional :: copy_back
@@ -280,13 +289,23 @@ contains
     logical :: s2_sbli_nscbc_case
     logical :: s2_sbli_nscbc_sponge_case
     logical :: periodic_filter_case
+    logical :: conservative_case
     logical :: overlap_diffusion
     logical,save :: overlap_reported=.false.
     integer :: diffusion_region
     integer :: physical_axis
     integer :: ivar
+    integer :: rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke
+    integer :: rhs_npdci,rhs_npdcj
 
     call validate_first_stage_gpu()
+    conservative_case=conservative_boundary%enabled
+    rhs_is=is; rhs_ie=ie; rhs_js=js; rhs_je=je; rhs_ks=ks; rhs_ke=ke
+    rhs_npdci=npdci; rhs_npdcj=npdcj
+    if(conservative_case) then
+      rhs_is=0; rhs_ie=im; rhs_js=0; rhs_je=jm; rhs_ks=0; rhs_ke=km
+      rhs_npdci=3; rhs_npdcj=3
+    endif
     overlap_diffusion=halo_overlap_enabled .and. diffterm .and. gpu_periodic_boundary_case() .and. &
                       isize*jsize*ksize>1 .and. min(im,jm,km)>=6
     if(halo_overlap_enabled .and. .not.overlap_reported) then
@@ -307,11 +326,12 @@ contains
     s2_sbli_nscbc_case = gpu_s2_sbli_nscbc_supported()
     s2_sbli_nscbc_sponge_case = gpu_s2_sbli_nscbc_sponge_supported()
     s2_sbli_nscbc_case = s2_sbli_nscbc_case .or. s2_sbli_nscbc_sponge_case
-    flatplate_case = gpu_s1_flatplate_s1a_supported() .or. flatplate_mp7_case .or. &
+    flatplate_case = conservative_case .or. gpu_s1_flatplate_s1a_supported() .or. flatplate_mp7_case .or. &
          s2_hbl_selective_roe_case .or. s2_hbl_selective_roe_sponge_case .or. &
          s2_hbl_selective_roe_c4_case .or. s2_sbli_nscbc_case
     periodic_filter_case = lfilter .and. .not.(gpu_uses_physical_boundary() .or. ldc_case .or. flatplate_case)
-    flatplate_nscbc_farfield_case = flatplate_case .and. bctype(4) == GPU_BC_NSCBC_FARFIELD
+    flatplate_nscbc_farfield_case = (.not.conservative_case) .and. flatplate_case .and. &
+                                    bctype(4) == GPU_BC_NSCBC_FARFIELD
     sod_s0a1_case = gpu_sod_s0a1_supported()
     sod_s0b0_xphysical_case = gpu_sod_s0b0_xphysical_supported()
     open_shock_s0b1_case = gpu_open_shock_s0b1_supported()
@@ -327,7 +347,7 @@ contains
          gpu_shock_characteristic_s0a9_supported() .or. &
          gpu_shock_characteristic_s0a10_supported()
     characteristic_xphysical_case = gpu_shock_characteristic_s0b0_xphysical_supported()
-    characteristic_xyphysical_case = s2_hbl_selective_roe_case .or. &
+    characteristic_xyphysical_case = conservative_case .or. s2_hbl_selective_roe_case .or. &
          s2_hbl_selective_roe_sponge_case .or. s2_hbl_selective_roe_c4_case .or. &
          s2_sbli_nscbc_case
     characteristic_case = characteristic_case .or. characteristic_xphysical_case .or. &
@@ -385,7 +405,9 @@ contains
 
     do rkstep=1,3
       if(.not.(prepared .and. rkstep == 1)) then
-        if(s2_hbl_selective_roe_c4_case) then
+        if(conservative_case) then
+          continue
+        elseif(s2_hbl_selective_roe_c4_case) then
           call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
                q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
           call sync_after_kernel('c4_q_to_primitive_kernel')
@@ -401,7 +423,7 @@ contains
           if(periodic_filter_case) then
             call filter_x_global_kernel<<<grid_x_flat,block_x>>>(im,jm,km,npdci,.true.)
           else
-            call filter_x_global_kernel<<<grid_x,block_x>>>(im,jm,km,npdci,.false.)
+          call filter_x_global_kernel<<<grid_x,block_x>>>(im,jm,km,npdci,.false.)
           endif
           call sync_after_kernel('filter_x_global_kernel')
           if(jsize>1) then
@@ -430,7 +452,9 @@ contains
           call sync_after_kernel('copy_qwork_global_kernel')
         endif
 
-        if(s2_hbl_selective_roe_c4_case) then
+        if(conservative_case) then
+          continue
+        elseif(s2_hbl_selective_roe_c4_case) then
           ! C4 mirrors CPU boucon: inlet NSCBC precedes the lower wall.
         elseif(lfilter .and. (gpu_uses_physical_boundary() .or. ldc_case .or. flatplate_case)) then
           if(ldc_case) then
@@ -457,6 +481,12 @@ contains
           endif
           call exchange_solution_halo_gpu()
         endif
+      endif
+
+      if(conservative_case .and. rhs_validation_requested()) then
+        call copy_flow_from_gpu()
+        call write_q_validation_snapshot('pre_rhs',nstep,rkstep)
+        call write_primitive_validation_snapshot('pre_rhs_primitives',nstep,rkstep)
       endif
 
       call zero_rhs_kernel<<<grid1,block1>>>(qrhs_d,im,jm,km)
@@ -490,7 +520,7 @@ contains
         call exchange_solution_halo_gpu()
         call apply_nscbc_x_rhs_gpu(gmachmax2_in,gmachmax2_out)
       endif
-      if(shock_sensor_case) call compute_shock_sensor_gpu()
+      if(shock_sensor_case) call compute_shock_sensor_gpu(rkstep)
       if(sod_s0a1_case) then
         call upwind_s0a1_rhs_x_global_kernel<<<grid_x,block_x>>>(im,jm,km,gamma)
         call sync_after_kernel('upwind_s0a1_rhs_x_global_kernel')
@@ -501,11 +531,15 @@ contains
       elseif(characteristic_case) then
         if(characteristic_xyphysical_case) then
           call characteristic_upwind_flux_x_xyphysical_global_kernel<<<grid_x_interface,block_x>>>( &
-               im,jm,km,hm,is,ie,js,je,ks,ke,npdci,recon_schem,gamma)
+               im,jm,km,hm,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke,rhs_npdci,recon_schem,gamma)
           call sync_after_kernel('characteristic_upwind_flux_x_xyphysical_global_kernel')
           call characteristic_upwind_rhs_x_xyphysical_global_kernel<<<grid_x,block_x>>>( &
-               im,jm,km,is,ie,js,je,ks,ke)
+               im,jm,km,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke)
           call sync_after_kernel('characteristic_upwind_rhs_x_xyphysical_global_kernel')
+          if(rhs_validation_requested()) then
+            call copy_rhs_from_gpu()
+            call write_rhs_validation_snapshot('conv_after_x',nstep,rkstep)
+          endif
         elseif(characteristic_xphysical_case) then
           call characteristic_upwind_flux_x_physical_global_kernel<<<grid_x_interface,block_x>>>( &
                im,jm,km,hm,is,ie,npdci,recon_schem,gamma)
@@ -520,17 +554,25 @@ contains
         endif
         if(characteristic_xyphysical_case) then
           call characteristic_upwind_flux_y_xyphysical_global_kernel<<<grid_y_interface,block_y>>>( &
-               im,jm,km,hm,is,ie,js,je,ks,ke,npdcj,recon_schem,gamma)
+               im,jm,km,hm,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke,rhs_npdcj,recon_schem,gamma)
           call sync_after_kernel('characteristic_upwind_flux_y_xyphysical_global_kernel')
           call characteristic_upwind_rhs_y_xyphysical_global_kernel<<<grid_y,block_y>>>( &
-               im,jm,km,is,ie,js,je,ks,ke)
+               im,jm,km,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke)
           call sync_after_kernel('characteristic_upwind_rhs_y_xyphysical_global_kernel')
+          if(rhs_validation_requested()) then
+            call copy_rhs_from_gpu()
+            call write_rhs_validation_snapshot('conv_after_y',nstep,rkstep)
+          endif
           call characteristic_upwind_flux_z_xyphysical_global_kernel<<<grid_z_interface,block_z>>>( &
-               im,jm,km,is,ie,js,je,ks,ke,recon_schem,gamma)
+               im,jm,km,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke,recon_schem,gamma)
           call sync_after_kernel('characteristic_upwind_flux_z_xyphysical_global_kernel')
           call characteristic_upwind_rhs_z_xyphysical_global_kernel<<<grid_z,block_z>>>( &
-               im,jm,km,is,ie,js,je,ks,ke)
+               im,jm,km,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke)
           call sync_after_kernel('characteristic_upwind_rhs_z_xyphysical_global_kernel')
+          if(rhs_validation_requested()) then
+            call copy_rhs_from_gpu()
+            call write_rhs_validation_snapshot('conv_after_z',nstep,rkstep)
+          endif
         else
           call characteristic_upwind_flux_y_global_kernel<<<grid_y_interface,block_y>>>(im,jm,km,recon_schem,gamma)
           call sync_after_kernel('characteristic_upwind_flux_y_global_kernel')
@@ -665,6 +707,11 @@ contains
         end select
       endif
 
+      if(rhs_validation_requested()) then
+        call copy_rhs_from_gpu()
+        call write_rhs_validation_snapshot('conv',nstep,rkstep)
+      endif
+
       if(diffterm) then
         if(ldc_case .or. flatplate_case) then
           call diffusion_flux_xyphysical_global_kernel<<<grid3,block3>>>(im,jm,km,reynolds,prandtl,const5, &
@@ -699,13 +746,19 @@ contains
           call exchange_diffusion_flux_halo_gpu()
         endif
         if(ldc_case .or. flatplate_case) then
-          call diffusion_rhs_x_xyphysical_stored_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie,js,je,ks,ke, &
+          call diffusion_rhs_x_xyphysical_stored_global_kernel<<<grid_x,block_x>>>( &
+                                                                                   im,jm,km,rhs_is,rhs_ie, &
+                                                                                   rhs_js,rhs_je,rhs_ks,rhs_ke, &
                                                                                    apply_left_x,apply_right_x)
           call sync_after_kernel('diffusion_rhs_x_xyphysical_stored_global_kernel')
-          call diffusion_rhs_y_xyphysical_stored_global_kernel<<<grid_y,block_y>>>(im,jm,km,is,ie,js,je,ks,ke, &
+          call diffusion_rhs_y_xyphysical_stored_global_kernel<<<grid_y,block_y>>>( &
+                                                                                   im,jm,km,rhs_is,rhs_ie, &
+                                                                                   rhs_js,rhs_je,rhs_ks,rhs_ke, &
                                                                                    apply_down_y,apply_up_y)
           call sync_after_kernel('diffusion_rhs_y_xyphysical_stored_global_kernel')
-          call diffusion_rhs_z_xyphysical_stored_global_kernel<<<grid_z,block_z>>>(im,jm,km,is,ie,js,je,ks,ke)
+          call diffusion_rhs_z_xyphysical_stored_global_kernel<<<grid_z,block_z>>>( &
+                                                                                   im,jm,km,rhs_is,rhs_ie, &
+                                                                                   rhs_js,rhs_je,rhs_ks,rhs_ke)
           call sync_after_kernel('diffusion_rhs_z_xyphysical_stored_global_kernel')
         else
           select case(physical_axis)
@@ -745,6 +798,10 @@ contains
       endif
 
       call apply_case_sources_gpu()
+      if(rhs_validation_requested()) then
+        call copy_rhs_from_gpu()
+        call write_rhs_validation_snapshot('full',nstep,rkstep)
+      endif
       if(rkstep == 1) then
         call rk3_first_update_global_kernel<<<grid1,block1>>>(deltat,im,jm,km)
         call sync_after_kernel('rk3_first_update_global_kernel')
@@ -759,6 +816,19 @@ contains
         call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
              q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
         call sync_after_kernel('sponge_q_to_primitive_kernel')
+      endif
+      if(conservative_case) then
+        if(rhs_validation_requested()) then
+          call copy_flow_from_gpu()
+          call write_q_validation_snapshot('pre_boundary',nstep,rkstep)
+          call write_primitive_validation_snapshot('pre_boundary_primitives',nstep,rkstep)
+        endif
+        call apply_conservative_stage_gpu(twall(3))
+        if(rhs_validation_requested()) then
+          call copy_flow_from_gpu()
+          call write_q_validation_snapshot('post_boundary',nstep,rkstep)
+          call write_primitive_validation_snapshot('post_boundary_primitives',nstep,rkstep)
+        endif
       endif
     enddo
 
@@ -810,6 +880,7 @@ contains
     use commarray, only: jacob,dxi,bnorm_im,bnorm_j0,bnorm_jm,         &
                          bnorm_k0,bnorm_km
     use parallel, only: mpisize,isize,jsize,ksize,pmax
+    use conservative_boundary_runtime, only: conservative_boundary
     implicit none
     real(8) :: min_jacob,max_jacob,geometry_error,local_error
     logical :: ldc_case
@@ -822,7 +893,7 @@ contains
     if(num_modequ /= 0) stop 'GPU first-stage supports num_modequ=0 only'
     if(trim(turbmode) /= 'none') stop 'GPU first-stage supports turbmode=none only'
     if(trim(rkscheme) /= 'rk3') stop 'GPU first-stage supports rkscheme=rk3 only'
-    controlled_upwind_case = gpu_sod_s0a1_supported() .or. &
+    controlled_upwind_case = conservative_boundary%enabled .or. gpu_sod_s0a1_supported() .or. &
          gpu_sod_s0a2_supported() .or. gpu_sod_s0a3_supported() .or. &
          gpu_sod_s0b0_xphysical_supported() .or. &
          gpu_open_shock_s0b1_supported() .or. &
@@ -857,10 +928,12 @@ contains
        (.not.gpu_s2_hbl_selective_roe_s2c4_diffusion_supported()) .and. &
        (.not.gpu_s2_hbl_selective_roe_s2c5_diffusion_supported()) .and. &
        (.not.gpu_s2_sbli_nscbc_supported()) .and. &
-       (.not.gpu_s2_sbli_nscbc_sponge_supported())) &
+       (.not.gpu_s2_sbli_nscbc_sponge_supported()) .and. &
+       (.not.conservative_boundary%enabled)) &
       stop 'GPU S2 supports only validated C3/C3-S or C4/C5 capability gates'
     if((gpu_s2_sbli_nscbc_supported() .or.                         &
         gpu_s2_sbli_nscbc_sponge_supported()) .and.                &
+       (.not.conservative_boundary%enabled) .and.                  &
        (.not.nscbc_farfield_sbli_shock_enabled())) then
       stop 'GPU physical SBLI requires ASTR_NSCBC_FARFIELD_MODE=sbli_shock'
     endif
@@ -926,7 +999,8 @@ contains
 
     ldc_case = gpu_ldc_boundary_case_pending()
     flatplate_pending = gpu_s1_flatplate_boundary_case_pending()
-    if(flatplate_pending .and. (.not.gpu_s1_flatplate_s1a_supported()) .and. &
+    if(flatplate_pending .and. (.not.conservative_boundary%enabled) .and. &
+       (.not.gpu_s1_flatplate_s1a_supported()) .and. &
        (.not.gpu_s1_flatplate_s1a1_supported()) .and. &
        (.not.gpu_s1_flatplate_explicit_filter_supported()) .and. &
        (.not.gpu_s2_hbl_selective_roe_s2c3_supported()) .and. &

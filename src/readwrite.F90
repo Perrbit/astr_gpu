@@ -1466,7 +1466,7 @@ module readwrite
     character(len=1),intent(in),optional :: mode
     !
     ! local data
-    integer :: nstep_1,jsp
+    integer :: nstep_h5,nstep_aux,jsp
     character(len=1) :: modeio
     character(len=2) :: qname
     character(len=3) :: spname
@@ -1498,10 +1498,11 @@ module readwrite
     open(16, file=folder//'/auxiliary.txt')
     read(16, nml=restart)
     close(16)
+    nstep_aux=nstep
     if(lio) print*, ' >> '//folder//'/auxiliary.txt'
 
     write(stepname,'(i4.4)')filenumb
-    infilename='outdat/flowfield'//stepname//'.'//modeio//'5'
+    infilename=trim(folder)//'/flowfield'//stepname//'.'//modeio//'5'
     !
     ! if the file is not found, just go to the default flow field file
     inquire(file=infilename, exist=lexist)
@@ -1510,9 +1511,9 @@ module readwrite
     endif
     !
     call h5io_init(filename=trim(infilename),mode='read')
-    call h5read(varname='nstep',var=nstep_1)
-    nstep=nstep_1
-    if(nstep_1==nstep) then
+    call h5read(varname='nstep',var=nstep_h5)
+    if(nstep_h5==nstep_aux) then
+      nstep=nstep_h5
       call h5read(varname='time',var=time)
       !
       call h5read(varname='ro',  var=rho(0:im,0:jm,0:km)  ,mode=modeio)
@@ -1543,10 +1544,10 @@ module readwrite
       call h5io_end
       !
     else
-      if(lio)  print*,' !! flowfield.'//modeio//'5 NOT consistent with auxiliary.'//modeio//'5'
-      if(lio)  print*,' nstep =',nstep,' in auxiliary.h5 '
-      if(lio)  print*,' nstep =',nstep_1,' in flowfield.'//modeio//'5 '
-      call mpistop
+      call h5io_end
+      if(lio) print*,' nstep =',nstep_aux,' in auxiliary.txt'
+      if(lio) print*,' nstep =',nstep_h5,' in flowfield.'//modeio//'5'
+      error stop 'Checkpoint step mismatch between auxiliary and flowfield'
     endif
     !
     ! infilename='checkpoint/flowfield'//mpirankname
@@ -2083,6 +2084,7 @@ module readwrite
     use commarray, only: q,rho,vel,prs,tmp
     use bc, only: boucon,bctype
     use parallel, only: qswap
+    use conservative_boundary_runtime, only: conservative_boundary
     implicit none
 
     character(len=1024) :: snapshot_path
@@ -2109,9 +2111,11 @@ module readwrite
     prs_save=prs
     tmp_save=tmp
 
-    if(any(bctype==22) .or. any(bctype==52)) call qswap()
-    call boucon()
-    call qswap()
+    if(.not.conservative_boundary%enabled) then
+      if(any(bctype==22) .or. any(bctype==52)) call qswap()
+      call boucon()
+      call qswap()
+    endif
     call write_io_tree(trim(snapshot_path(1:path_length)))
 
     q=q_save

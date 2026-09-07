@@ -216,6 +216,7 @@ contains
   attributes(device) subroutine steger_warming_split_one_scalar(rho,q2,q3,q4,q5,u1,u2,u3, &
                                                                 p,jloc,dx1,dx2,dx3,gamma, &
                                                                 split_sign,f)
+    use commvar_gpu, only: metric_consistent_eps_d
     implicit none
     real(8),value :: rho,q2,q3,q4,q5,u1,u2,u3,p,jloc,dx1,dx2,dx3,gamma
     integer,value :: split_sign
@@ -227,6 +228,7 @@ contains
     gm2 = 0.5d0/gamma
     uu = dx1*u1 + dx2*u2 + dx3*u3
     var0 = 1.d0/sqrt(dx1**2 + dx2**2 + dx3**2)
+    if(metric_consistent_eps_d) eps = 0.04d0/var0
     gpd1 = dx1*var0
     gpd2 = dx2*var0
     gpd3 = dx3*var0
@@ -403,7 +405,7 @@ contains
   attributes(device) real(8) function steger_warming_split_component_at( &
        i,j,k,idir,ivar,split_sign,im,jm,km,gamma) result(f)
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,jacob_d,dxi_d
-    use commvar_gpu, only: mach_d
+    use commvar_gpu, only: mach_d,metric_consistent_eps_d
     implicit none
     integer,value :: i,j,k,idir,ivar,split_sign,im,jm,km
     real(8),value :: gamma
@@ -438,6 +440,7 @@ contains
     gm2 = 0.5d0/gamma
     uu = dx1*u1 + dx2*u2 + dx3*u3
     var0 = 1.d0/sqrt(dx1**2 + dx2**2 + dx3**2)
+    if(metric_consistent_eps_d) eps = 0.04d0/var0
     gpd1 = dx1*var0
     gpd2 = dx2*var0
     gpd3 = dx3*var0
@@ -521,7 +524,7 @@ contains
   attributes(device) subroutine steger_warming_split_physical_vector_at( &
        i,j,k,idir,split_sign,im,jm,km,gamma,f)
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,jacob_d,dxi_d
-    use commvar_gpu, only: mach_d
+    use commvar_gpu, only: mach_d,metric_consistent_eps_d
     implicit none
     integer,value :: i,j,k,idir,split_sign,im,jm,km
     real(8),value :: gamma
@@ -549,6 +552,7 @@ contains
     gm2 = 0.5d0/gamma
     uu = dx1*u1 + dx2*u2 + dx3*u3
     var0 = 1.d0/sqrt(dx1**2 + dx2**2 + dx3**2)
+    if(metric_consistent_eps_d) eps = 0.04d0/var0
     gpd1 = dx1*var0
     gpd2 = dx2*var0
     gpd3 = dx3*var0

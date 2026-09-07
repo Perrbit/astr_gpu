@@ -54,9 +54,16 @@ def solve_profile(
     wall_temperature: float,
     eta_max: float,
     points: int,
+    *,
+    prandtl: float = PRANDTL,
+    sutherland_temperature: float = 110.3,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    if not np.isfinite(prandtl) or prandtl <= 0.0:
+        raise ValueError("Prandtl number must be finite and positive")
+    if not np.isfinite(sutherland_temperature) or sutherland_temperature < 0.0:
+        raise ValueError("Sutherland temperature must be finite and nonnegative")
     eta = np.linspace(0.0, eta_max, points)
-    sutherland_temperature = 110.3 / reference_temperature
+    sutherland_temperature = sutherland_temperature / reference_temperature
 
     def rhs(_: np.ndarray, state: np.ndarray) -> np.ndarray:
         f, velocity, velocity_eta, temperature, temperature_eta = state
@@ -75,8 +82,8 @@ def solve_profile(
                 temperature_eta,
                 -temperature_eta**2
                 * (0.5 / temperature_safe - 1.0 / (temperature_safe + sutherland_temperature))
-                - PRANDTL * f * temperature_eta * second
-                - (GAMMA - 1.0) * PRANDTL * mach**2 * velocity_eta**2,
+                - prandtl * f * temperature_eta * second
+                - (GAMMA - 1.0) * prandtl * mach**2 * velocity_eta**2,
             )
         )
 
@@ -121,8 +128,12 @@ def map_similarity_profile(
     station_x: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     scale = np.sqrt(2.0 * station_x / reynolds)
-    y_similarity = cumulative_trapezoid(temperature, eta, initial=0.0) * scale
-    normal_velocity = -temperature * (streamfunction - velocity * eta) / np.sqrt(2.0 * reynolds * station_x)
+    similarity_height = cumulative_trapezoid(temperature, eta, initial=0.0)
+    y_similarity = similarity_height * scale
+    # Continuity at fixed physical y requires integral(T d eta), not T*eta.
+    normal_velocity = (velocity * similarity_height - temperature * streamfunction) / np.sqrt(
+        2.0 * reynolds * station_x
+    )
     if yline[-1] < y_similarity[-1]:
         raise RuntimeError("grid top is inside the similarity-solution integration interval")
     velocity_line = np.interp(yline, y_similarity, velocity, right=1.0)
@@ -243,7 +254,7 @@ def write_similarity_initial_field(
     flat_coordinate = similarity_coordinate.ravel()
     u1 = np.interp(flat_coordinate, similarity_height, velocity, right=1.0).reshape(xfield.shape)
     tmp = np.interp(flat_coordinate, similarity_height, temperature, right=1.0).reshape(xfield.shape)
-    normal_numerator = -temperature * (streamfunction - velocity * eta)
+    normal_numerator = velocity * similarity_height - temperature * streamfunction
     u2 = np.interp(
         flat_coordinate,
         similarity_height,

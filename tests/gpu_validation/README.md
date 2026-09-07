@@ -1,5 +1,42 @@
 # GPU Validation
 
+## Conservative Boundary MPI Configuration
+
+`run_boundary_config_mpi_gate.py --out <new-directory>` validates the root-owned
+`ASTR_CONSERVATIVE_BOUNDARY_FILE` loader with the top-level CPU/CUDA executables
+and NP=1/2/4. Forty checks cover disabled, valid, malformed, missing and root-only
+configuration. Non-root ranks in root-only checks receive an invalid local path
+but must receive the valid rank-0 state. Logs and binary hashes are retained.
+The `astr test bcfg` entry invokes this loader; `astr run` does not yet enable it.
+
+`python3 tests/gpu_validation/run_boundary_stage_gate.py --out <new-directory>`
+executes `astr test bcst` with a generated configuration in the CPU and CUDA
+builds, then repeats the CUDA run under memcheck. CPU initialization seeds the
+state; the CUDA build applies the actual GPU stage to the same perturbed state
+as the CPU. The probe compares the full conservative array and selected
+primitive face strips at NP=1, including evolving wall density, inlet ghost
+energy updates, and top-face corner priority. It does not advance an RHS/RK
+step or validate multi-rank staging. The NP1 sanitizer environment disables
+MPI GPU-pointer probing (`OMPI_MCA_opal_cuda_support=false`); application CUDA
+checks remain enabled. Logs, binary/config hashes, environment overrides, and
+a fail-closed summary are retained in the output directory. Parser tests:
+`python3 -m unittest discover -s tests/gpu_validation -p test_boundary_stage_gate.py`.
+This is configuration distribution, not flow-field MPI or GPU execution validation.
+
+## Overview
+
+The stretched-metric free-stream gate in `astr test bcrh` now passes with the
+user-approved optional metric-consistent flux-splitting epsilon. The probe also
+retains the failing fixed-epsilon state as a control and verifies that omitted
+and explicitly false options agree. Production defaults remain unchanged;
+the new option is not yet enabled in the production reference-mode integration.
+See `ASTR_OPENSBLI_VALIDATION_GOAL.md` for evidence and remaining physics gates.
+
+The same RHS gate now compares CPU/GPU with metric-consistent epsilon enabled
+on a smooth nonuniform state and x/y density-pressure jumps. These are static
+operator comparisons, not evolved shock accuracy or MPI/RK validation. Both
+physical-space and all-interface Roe paths must pass independently.
+
 This directory contains validation drivers for the current ASTR CUDA Fortran port.
 
 Current validated scope:
@@ -31,6 +68,81 @@ Validation order:
 Do not report GPU speedup until correctness, multi-rank topology coverage, and residency profiling all pass. Two-GPU oversubscription runs are correctness smoke tests only, not performance evidence.
 
 ## Build Contract
+
+### Compressible Similarity Input Gate
+
+The inlet and similarity-field generators now use the temperature integral in
+the wall-normal velocity mapping (approved correction, 2026-09-07). Run:
+
+```bash
+python3 -m unittest discover -s tests/gpu_validation -p test_compressible_blasius_profile.py
+python3 tests/gpu_validation/check_blasius_mass_continuity.py
+```
+
+These checks cover input generation and steady mass continuity, not CFD
+convergence. Previously generated similarity inputs contain the old velocity
+mapping and must be regenerated for new physical validation. Historical CPU/GPU
+comparisons remain comparisons of their original inputs. See
+`documents/ASTR_OPENSBLI_KATZER_STARTUP_AUDIT.md` for scope and remaining gates.
+
+### Optional Perfect-Gas Transport Gate
+
+`ASTR_PERFECT_GAS_PRANDTL` and `ASTR_SUTHERLAND_TEMPERATURE_K` optionally
+override Pr=0.72 and S=110.3 K in non-COMB nondimensional runs. Rank zero
+reads and broadcasts the values; invalid values fail instead of falling back.
+GPU kernels consume the same runtime parameters as the CPU path.
+
+```bash
+python3 -m unittest discover -s tests/gpu_validation -p test_transport_config.py
+python3 tests/gpu_validation/run_transport_config_compare.py --out tests/gpu_validation/out/transport_config_gate
+```
+
+Build both probe executables first. The output directory must not exist.
+The integration gate runs two-step TGV field/statistics comparisons for
+default/reference transport at NP=1/2 and four negative MPI startup checks.
+It fixes the local MPI-IO component to `sharedfp=individual`, records executable
+hashes and logs, and rejects any failed check. It is not SBLI physical validation.
+
+### Conservative Boundary Algebra Gate
+
+The optional boundary operators are not yet connected to solver dispatch.
+Build their probes through the top-level CMake project:
+
+```bash
+cmake --build build_gpu_probe --target boundary_contract_cpu_probe boundary_contract_gpu_probe -j4
+ASTR_BOUNDARY_PROBE_EXE=build_gpu_probe/bin/boundary_contract_cpu_probe python3 -m unittest discover -s tests/gpu_validation -p test_perfect_gas_boundary.py
+ASTR_BOUNDARY_PROBE_EXE=build_gpu_probe/bin/boundary_contract_gpu_probe python3 -m unittest discover -s tests/gpu_validation -p test_perfect_gas_boundary.py
+```
+
+Five tests cover eleven inputs and compare against independently evaluated
+conservative/EOS relations. The standalone default additionally compiles a
+gfortran bounds/FPE-checking probe; `ASTR_TEST_BOUNDARY_CUDA=1` selects NVHPC CUDA.
+For sanitization, run `compute-sanitizer --tool memcheck --error-exitcode 1
+build_gpu_probe/bin/boundary_contract_gpu_probe 5` (mode 1 for the inlet and
+mode 7 for rejection of an invalid outer ghost temperature).
+These probes do not qualify corner ordering, MPI halos, or RK integration.
+
+### Conservative Boundary Face Gate
+
+`conservative_boundary_config` reads a schema-1 namelist with `split_x`,
+`q_left(5)`, and `q_right(5)`. The input generator now writes this file, but
+the corresponding mainloop mode is not yet enabled. Do not launch it by
+substituting legacy SBLI boundary codes.
+
+```bash
+cmake --build build_gpu_probe --target conservative_boundary_config_probe boundary_faces_cpu_probe boundary_faces_gpu_probe -j4
+ASTR_BOUNDARY_CONFIG_PROBE_EXE=build_gpu_probe/bin/conservative_boundary_config_probe python3 -m unittest discover -s tests/gpu_validation -p test_conservative_boundary_config.py
+ASTR_BOUNDARY_FACES_PROBE_EXE=build_gpu_probe/bin/boundary_faces_cpu_probe python3 -m unittest discover -s tests/gpu_validation -p test_boundary_faces.py
+ASTR_BOUNDARY_FACES_PROBE_EXE=build_gpu_probe/bin/boundary_faces_gpu_probe python3 -m unittest discover -s tests/gpu_validation -p test_boundary_faces.py
+```
+
+Without probe environment variables these tests build isolated gfortran probes.
+The face probe argument is a bit mask: inlet=1, outlet=2, wall=4, top=8.
+Mask 15 applies all faces in that order. These are local-face/EOS/halo/corner
+tests, not MPI or RK validation. The GPU caller synchronizes and checks status
+after every face kernel.
+
+### CMake Configuration
 
 Build from the repository root `CMakeLists.txt`.
 
@@ -3280,3 +3392,48 @@ zero difference in all eleven compared fields. The comparator's `--cpu` input
 is a GPU reference in these additional tests. Rebuilt completion probes pass
 with and without preload. See the final P3 report for binary hashes and scope;
 do not relabel frozen-binary timings as new rebuilt-binary measurements.
+# Physical-face Euler RHS gate
+
+`run_boundary_rhs_gate.py --out <new-directory>` runs the top-level CMake CPU/GPU
+executables with `astr test bcrh`, then a GPU Compute Sanitizer memcheck.
+The manufactured affine-density state has an independently evaluated exact Euler
+flux divergence. All physical points, including faces/corners, are checked for
+both physical-space and Roe MP7 paths. The driver requires unique PASS markers,
+finite errors below `1e-10`, successful exit codes and a clean sanitizer summary.
+Binary hashes, commands, timings and logs are retained. Unit checks:
+
+```bash
+python3 -m unittest discover -s tests/gpu_validation -p test_boundary_rhs_gate.py
+```
+
+Only the NP1 sanitizer subprocess selects `pml=ob1`, `osc=pt2pt`,
+`btl=self,vader,tcp` to avoid UCX's CUDA context probes during MPI initialization.
+CUDA API errors are not suppressed. This probe validates no MPI transport,
+nonuniform geometry halo, viscous RHS, RK staging or SBLI physical result.
+The optional CPU `physical_halo_rhs` path is not yet enabled in production.
+
+The same probe also checks CPU `diffrsdcal6(physical_boundary_rhs=.true.)` using
+quadratic velocities and constant temperature. The cubic viscous-work flux has
+known second-order boundary truncation errors, which are evaluated analytically;
+both the continuous-PDE error and the discrete residual are reported. That
+three-physical-direction check uses the CPU viscous routine. A separate CUDA
+check invokes the actual xy-physical diffusion flux/RHS kernels for a z-uniform
+periodic extrusion, with staged periodic flux halos. Both compare to analytic
+discrete results; neither validates production MPI transport or RK integration.
+
+## OpenSBLI restart gate
+
+`run_opensbli_restart_equivalence.sh` checks restart behavior with CPU NP=1 and
+GPU NP=2. For each backend it compares a continuous four-step result with a
+two-step checkpoint followed by two restarted steps, requires field agreement
+within `1e-10`, verifies monotonic unique `flowstate.dat` steps, and confirms
+that inconsistent auxiliary/HDF checkpoint steps fail closed.
+
+```bash
+OUT_DIR=/tmp/astr_opensbli_restart_gate \
+  tests/gpu_validation/run_opensbli_restart_equivalence.sh
+```
+
+The restart path rebuilds the prescribed pressure-inlet ghost state from
+`datin/inlet.prof`; it does not infer that persistent state from the evolved
+inlet plane. Evidence directories must be new and are never overwritten.

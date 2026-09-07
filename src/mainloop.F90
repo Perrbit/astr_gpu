@@ -313,8 +313,12 @@ module mainloop
     use comsolver,only : filterq,filter2e,gradcal
     use sponge_layer,only : spongefilter
     use solver,   only : rhscal
-    use bc,       only : boucon,immbody,bctype
+    use bc,       only : boucon,immbody,bctype,twall
     use parallel, only : qswap
+    use conservative_boundary_runtime, only: conservative_boundary, &
+                           apply_conservative_boundary_stage
+    use validation_io, only: write_q_validation_snapshot, &
+                             write_primitive_validation_snapshot
 #ifdef COMB
     use thermchem,only : imp_euler_ode,heatrate
     use fdnn
@@ -343,15 +347,17 @@ module mainloop
     integer,save :: n_rk_steps
     logical :: gpu_output_due
     logical :: nscbc_boundary_filter_present
+    logical :: conservative_case
     !
     time_beg=ptime()
+    conservative_case=conservative_boundary%enabled
 
 #ifdef _CUDA
     if(use_gpu) then
       gpu_output_due = nstep > 0 .and. mod(nstep,feqchkpt)==0
       if(gpu_output_due) then
         call gpu_sync_flow_to_host()
-        if(flowtype(1:2)/='0d') then
+        if(flowtype(1:2)/='0d' .and. .not.conservative_case) then
           ! Match the CPU checkpoint phase without mutating resident device state.
           nscbc_boundary_filter_present = any(bctype == 22) .or. any(bctype == 52)
           if(nscbc_boundary_filter_present) call qswap(timerept=ltimrpt)
@@ -455,14 +461,16 @@ module mainloop
         if(flowtype(1:2)/='0d') call qswap(timerept=ltimrpt)
       endif
 
-      nscbc_boundary_filter_present = any(bctype == 22) .or. any(bctype == 52)
-      if(flowtype(1:2)/='0d' .and. nscbc_boundary_filter_present) then
-        ! NSCBC boundary filters transverse lines; their halos must be current.
-        call qswap(timerept=ltimrpt)
+      if(.not.conservative_case) then
+        nscbc_boundary_filter_present = any(bctype == 22) .or. any(bctype == 52)
+        if(flowtype(1:2)/='0d' .and. nscbc_boundary_filter_present) then
+          ! NSCBC boundary filters transverse lines; their halos must be current.
+          call qswap(timerept=ltimrpt)
+        endif
+        if(flowtype(1:2)/='0d') call boucon
+
+        if(flowtype(1:2)/='0d') call qswap(timerept=ltimrpt)
       endif
-      if(flowtype(1:2)/='0d') call boucon
-      
-      if(flowtype(1:2)/='0d') call qswap(timerept=ltimrpt)
 
       call gradcal()
 
@@ -483,7 +491,17 @@ module mainloop
 
       endif
 
-      call rhscal( timerept=ltimrpt)
+      if(conservative_case) then
+        call write_q_validation_snapshot('pre_rhs')
+        call write_primitive_validation_snapshot('pre_rhs_primitives')
+      endif
+
+      if(conservative_case) then
+        call rhscal(timerept=ltimrpt,physical_halo_rhs=.true., &
+                    metric_consistent_eps=.true.)
+      else
+        call rhscal(timerept=ltimrpt)
+      endif
 
       if(rkscheme=='rk3') then
         do m=1,numq
@@ -527,6 +545,14 @@ module mainloop
       time_beg_2=ptime()
       !
       call updatefvar
+
+      if(conservative_case) then
+        call write_q_validation_snapshot('pre_boundary')
+        call write_primitive_validation_snapshot('pre_boundary_primitives')
+        call apply_conservative_boundary_stage(twall(3))
+        call write_q_validation_snapshot('post_boundary')
+        call write_primitive_validation_snapshot('post_boundary_primitives')
+      endif
       !
       ctime(15)=ctime(15)+ptime()-time_beg_2
       !
