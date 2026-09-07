@@ -950,6 +950,12 @@ Goal:
 
 Replace or augment L0 host-staged blocking MPI with faster HaloTransport backends.
 
+Current status on 2026-09-07: the local two-GPU P3 campaign is complete. Pageable
+blocking remains the default; pinned blocking and periodic stored-diffusion overlap
+are optional. Standalone nonblocking was rejected below the end-to-end gain threshold,
+and CUDA-aware MPI is deferred after current-stack admission failures. Extending overlap
+to physical-boundary, shock-sensor, or SBLI paths is future work, not completed P3 scope.
+
 Tasks:
 
 - Add pinned host buffers.
@@ -1038,11 +1044,13 @@ The full-GPU migration uses a layered validation matrix.
 Recommended immediate work after this plan:
 
 1. Treat CURVE-C21 as the frozen static single-block curvilinear baseline and keep `run_curvilinear_c21_aggregate.sh` as the release-level regression gate.
-2. Build a physically defined laminar SBLI case with three grids and two time steps. Report shock location, wall pressure, skin friction, heat flux, and separation length separately from CPU/GPU numerical equivalence.
-3. Keep the current host-staged fixed-`hm` HaloTransport as the correctness baseline while evaluating pinned buffers, nonblocking MPI, overlap, and then CUDA-aware MPI.
-4. Measure NP=4/8 scaling only on hardware with one MPI rank per GPU. Shared two-GPU oversubscription remains correctness evidence only.
-5. Extend curved characteristic/open boundaries only for a concrete case and a physical-normal contract; do not generalize the case-specific `12/22/51/52` branches by analogy.
-6. Keep species, chemistry, RANS/LES, compact schemes, GPU HDF5, moving/multi-block grids, and immersed boundaries deferred unless project requirements reopen them.
+2. Complete the OpenSBLI Katzer laminar-SBLI goal: `t=13000/26000` time convergence, three grids, two time steps, and external wall-pressure, skin-friction, heat-flux, shock-location, and separation-length comparisons.
+3. Resolve the long-horizon restart trajectory question with same-phase full fields, spanwise-uniformity diagnostics, and shock-sensor/mask comparisons. Do not confuse a continuous restart seam with guaranteed bitwise identity over long nonlinear evolution.
+4. Establish an A800 NP=1/2/4 baseline with one MPI rank per physical GPU. Use TGV and a sufficiently three-dimensional curvilinear HBL/SBLI workload; do not use the 609x255x9 OpenSBLI thin layer alone as four-GPU scaling evidence.
+5. Use the A800 profile to decide whether to extend overlap to nonperiodic/SBLI paths or evaluate the existing selective-synchronization option. Keep explicit synchronization as the correctness baseline.
+6. Prototype one backend-neutral CUDA/HIP boundary through the existing facade, preferably with `ISO_C_BINDING` around representative derivative, filter, and halo pack/unpack kernels, before considering a broad AMD/DCU port.
+7. Extend curved characteristic/open boundaries only for a concrete case and a physical-normal contract; do not generalize the case-specific `12/22/51/52` branches by analogy.
+8. Keep species, chemistry, RANS/LES, compact schemes, GPU HDF5, moving/multi-block grids, and immersed boundaries deferred unless project requirements reopen them.
 
 ## 9. Explicit Non-Goals
 
@@ -1053,7 +1061,7 @@ The next architecture phase will not:
 - require CUDA-aware MPI as the only transport;
 - port HDF5/checkpoint writing to GPU;
 - reopen compact finite differences or compact filters;
-- start shock work with full SBLI, open-boundary, or sensor-coupled formats;
+- add more artificial shock slices before the current OpenSBLI physical goal is closed;
 - start with chemistry;
 - start with immersed boundary;
 - treat two-GPU oversubscription runs as performance proof;
@@ -1073,13 +1081,16 @@ Mitigation:
 
 ### Risk: Communication Overhead
 
-The L0 host-staged halo path is portable but expensive. Nsight already shows halo-buffer D2H/H2D clearly in multi-rank profiles.
+The L0 host-staged halo path is portable but expensive. Local P3 retained pinned
+buffers and a restricted periodic overlap path, but this does not establish A800,
+multi-node, physical-boundary, or shock-sensor overlap performance.
 
 Mitigation:
 
 - keep L0 as correctness baseline;
-- add pinned and nonblocking staged backends;
-- evaluate device-aware MPI later.
+- measure the retained pinned and periodic-overlap backends on A800;
+- extend overlap only from a measured physical-boundary or SBLI bottleneck;
+- reevaluate device-aware MPI only on a stack that passes data and sanitizer admission.
 
 ### Risk: Output Boundary Confusion
 
@@ -1093,13 +1104,15 @@ Mitigation:
 
 ### Risk: Shock-Format Scope Creep
 
-Shock-capable cases can easily pull in open boundaries, sponge/NSCBC, shock sensors, characteristic decomposition, WENO/MP/MP-LD, high-speed walls, and SBLI coupling before the explicit upwind RHS path is validated.
+The explicit upwind, sensor, selective Roe, open-boundary, high-speed-wall, and
+controlled-SBLI building blocks are implemented. The remaining risk is treating those
+CPU/GPU equivalence gates as external physical validation of a production SBLI case.
 
 Mitigation:
 
-- keep S0-A1 limited to forced 3D Sod with periodic boundaries, first-order Steger-Warming, no filter, and no diffusion;
-- promote WENO/MP, sensors, open boundaries, and wall coupling only through separate gates;
-- require CPU/GPU statistics and field oracles for each shock subphase.
+- retain the completed small gates as regression tests rather than expanding them;
+- close OpenSBLI time, grid, and external-data comparisons independently;
+- keep numerical equivalence, physical convergence, and performance as separate claims.
 
 ### Risk: Premature Physics Expansion
 
@@ -1122,4 +1135,7 @@ The current full-GPU architecture phase is successful when:
 - validation scripts are reusable;
 - non-TGV explicit cases, regular-grid boundary slices, source dispatch, and wall-family regressions remain covered by reusable validation drivers;
 - Nsight profiles can be generated reproducibly for `NP=1` and `NP=2`;
-- Phase S0-A1 has a clear implementation and validation contract before any higher-order shock, open-boundary, high-speed wall, or SBLI work starts.
+- the completed P2/P3 implementations retain frozen performance evidence and portable fallbacks;
+- OpenSBLI restart and long-run evidence is reproducible without modifying the source checkpoint;
+- the current delivery is named as the single-species, non-reacting, explicit-format GPU solver scope rather than claimed as every ASTR physics module;
+- future AMD/HIP/DCU work enters through a tested backend boundary rather than CUDA-specific changes in `src/`.

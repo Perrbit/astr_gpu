@@ -1,5 +1,7 @@
 # ASTR GPU 性能优化推进计划
 
+状态更新：2026-09-07。P1、P2 和 P3 本机阶段均已收口；P0 A800 基线仍待执行。
+
 ## 1. 目标
 
 本计划面向当前 ASTR CUDA Fortran 实现，在不改变既定数值方法和物理语义的前提下，提高单 GPU 计算效率，并为后续多 GPU 通信优化和激波边界层算例性能优化建立统一流程。
@@ -19,6 +21,10 @@
 0d684a84bb689654bfc5a53a6928140c3a8e6fdb
 perf(gpu): close TGV profiling and candidate validation
 ```
+
+该提交是本轮性能优化的冻结起点，不是当前仓库 HEAD。P2 正式实现收口于
+`566b5bc`，P3 HaloTransport 收口于 `547a398`。后续 OpenSBLI 功能提交不得
+被重新标注为上述历史性能数据的执行版本。
 
 ## 2. 当前性能基线
 
@@ -453,30 +459,20 @@ shock-sensor 路径保留固定 `hm`。优化按以下顺序进行：
 
 通信重叠会改变同步和阶段组织，不得与 P1 kernel 优化同时实施。它需要单独设计、审批和性能基线。
 
-### 10.1 硬件要求
+### 10.1 硬件和完成状态
 
-P3 正在执行，详细证据见 `ASTR_PHASE_P3_IMPLEMENTATION_PLAN.md` 和
-`ASTR_PHASE_P3_BASELINE_REPORT.md`。L0 已完成九组双卡五次重复基线。
-可选 pinned blocking 已接入，默认仍为 pageable。九组五次重复筛选的完整 RK
-时间下降约 1.2% 至 24.5%，其中 TGV y 首组离散度超限，已保留并完整复测。
-TGV、Shu-Osher、SBLI 的 NP=2 x/y/z 十步场和统计量对比通过。
-NP=1/8 的三算例十步对比亦已通过。最终源码的三后端 45 组逐场/统计量、
-九组物理壁面滤波检查和 host-only MPI sanitizer 矩阵现已通过，性能复核尚未完成。
-因此 pinned 仍为待验收候选。独立 paired nonblocking 已完成九组筛选和关键
-同二进制对照，最大可复现增量改善 2.425%，未达 3% 门槛，已撤下源码并保存
-快照、timing 和 NSYS 证据。独立 MPI progress 探针已通过消息与导数检查，
-主动 Testall 的时间线出现同进程 MPI 调用与 kernel 交叠，且保留逐 kernel
-显式同步。随后已接入实验选项 `pinned-overlap`，TGV 双 rank x-slab 的
-10 步逐场与统计量比较通过，小网格 z-slab 求解器 memcheck 零错误。
-真实求解器时间线也记录到 Testall/kernel 交叠，尚不构成整步加速结论。
-TGV NP=1/2 三种 slab/8 的 10 步回归已通过。同二进制五次 x/y/z-slab
-整步 A/B 分别改善 2.24%/3.42%/3.26%，spread 均低于 2%。y/z 已达到
-收益门槛。九组计时筛选已完成；Shu-Osher x 首组的 1.33% 表观退化没有在
-有效反向复测中重现，一组高噪声复测及全部原始数据均保留。候选继续保留
-用于最终验证，尚未最终接纳。y-slab 时间线已区分带请求记录的 MPI 调用
-和空请求轮询。CUDA-aware 独立探针已完成，当前软件栈未通过大消息和
-sanitizer 准入，暂不集成求解器。物理边界闭合和传感器不直接复用扩散的
-半径三内部区划分。最终仍需完成同一冻结源码的完整性能复核。
+P3 已完成本机最终验收，详细证据见 `ASTR_PHASE_P3_IMPLEMENTATION_PLAN.md`
+和 `ASTR_PHASE_P3_BASELINE_REPORT.md`。最终结论为：
+
+- pageable blocking 保留为默认、可移植的正确性基线；
+- pinned blocking 作为可选后端保留，九个正式组合的完整 RK 时间减少
+  `2.829%--23.728%`；
+- pinned-overlap 仅对完全周期 stored-diffusion 内部区域启用，TGV x/y/z
+  相对配对 pinned 的增量为 `2.616%/3.085%/2.944%`；
+- 独立 paired nonblocking 最大可复现增量为 `2.425%`，未达到 `3%` 门槛，
+  已从正式源码撤下；
+- CUDA-aware MPI 在当前 HPC-X 软件栈的大消息或 sanitizer 门槛失败，暂不接入；
+- 物理边界闭合、shock sensor 和 SBLI 不直接复用周期扩散的内部区 overlap。
 
 - 性能测试必须一个 MPI rank 对应一张物理 GPU；
 - 两张 GPU 上的 NP=4/8 oversubscription 只能作为正确性测试；
@@ -543,12 +539,17 @@ P0  A800 基线与 CPU NP=1 同口径基线（暂缓，不阻塞本机探索）
  -> P1-C2 diffusion-RHS 寄存器生命周期（已关闭，无保留性能候选）
  -> P1-C3 y/z 滤波访存（已关闭，仅保留 constdef 常量集中化）
  -> P2 激波和 SBLI 专项优化（已关闭，仅保留 P2-1B）
- -> P3 多 GPU HaloTransport 优化
+ -> P3 多 GPU HaloTransport 优化（已完成本机收口）
 ```
 
-在 P0 完成前，不对 A800 做性能结论。在 P1 单卡热点收口前，不开始通信后端重构。取消显式同步、kernel fusion、CUDA Graphs 和混合精度均不属于上述主线，需要单独立项审批。
+下一性能阶段为 P0 A800 NP=1/2/4 基线和强扩展测试。609x255x9 OpenSBLI
+薄层用于物理验证，不单独承担四卡三维扩展结论。在 P0 完成前，不对 A800
+做性能结论。取消显式同步、kernel fusion、CUDA Graphs 和混合精度均不属于
+既有验收结论，需要单独立项审批。
 
 ## 14. 交付物
+
+本节先保留 P3 执行期间的过程记录，最终状态以末尾“P3 最终本机验收”为准。
 
 P3 CUDA-aware 准入更新：当前 HPC-X 2.25.1 软件栈的小消息设备缓冲区测试通过，
 但默认 UCX 大消息出现接收数据未更新。关闭 IPC 后逐元素比较通过，
