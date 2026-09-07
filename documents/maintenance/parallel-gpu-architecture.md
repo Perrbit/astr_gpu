@@ -57,41 +57,7 @@ GPU exchange 的 x/y/z tag 固定为私有区间 `21001..21006`，由 `halo_exch
 
 ## 每方向控制流
 
-```mermaid
-flowchart LR
-    accTitle: Per-axis halo ownership decision
-    accDescr: For each Cartesian axis, the GPU exchange chooses MPI transport, a local periodic copy, or physical-boundary ownership. An axis with none of these valid states stops execution.
-
-    axis["选择 x、y 或 z"]
-    mpi_size{"该方向 rank 数大于 1？"}
-    mpi_exchange["pack + host-staged MPI + unpack"]
-    homogeneous{"该方向 homogeneous？"}
-    local_swap["local periodic qswap"]
-    physical{"该方向由 physical BC 拥有？"}
-    preserve["保留 boundary state，不覆盖"]
-    invalid["停止：halo ownership 未定义"]
-    primitive{"solution q 是否改变？"}
-    refresh["刷新对应 primitive halo"]
-    next(["下一方向"])
-
-    axis --> mpi_size
-    mpi_size -->|是| mpi_exchange --> primitive
-    mpi_size -->|否| homogeneous
-    homogeneous -->|是| local_swap --> primitive
-    homogeneous -->|否| physical
-    physical -->|是| preserve --> primitive
-    physical -->|否| invalid
-    primitive -->|是| refresh --> next
-    primitive -->|否| next
-
-    classDef decision fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f
-    classDef valid fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d
-    classDef stop fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d
-
-    class mpi_size,homogeneous,physical,primitive decision
-    class axis,mpi_exchange,local_swap,preserve,refresh,next valid
-    class invalid stop
-```
+每个 Cartesian 方向依次判断 MPI、homogeneous 和 physical ownership。MPI 方向执行 pack、host-staged exchange 与 unpack；单 rank homogeneous 方向执行 local periodic qswap；physical 方向保留物理边界写入的状态。三种条件均不成立时立即停止。solution `q` 被更新后还要刷新对应 primitive halo，raw field exchange 则不执行这一转换。
 
 上述入口见 `src_gpu/halo_exchange_gpu.cuf::exchange_solution_halo_gpu`。local periodic copy 与 primitive refresh 由 `src_gpu/qswap_gpu.cuf::qswap_single_rank_gpu` 等 helper 承担。generic field 路径使用 `src_gpu/halo_exchange_gpu.cuf::exchange_field_halo_gpu`，其 payload 与 solution qswap 不同。
 
@@ -132,4 +98,3 @@ GPU 版本保持的是数值通信语义，而不是 CPU buffer 分配和 tag �
 5. 修改 tag、packet shape、active range、primitive refresh 或 transport fallback 后，重新执行对应 halo contract probe 和 same-topology matrix。
 
 现有验证入口集中在 `tests/gpu_validation/run_tgv_mpirank_matrix.sh`、`tests/gpu_validation/run_2dvort_mpirank_matrix.sh`、CURVE matrices、shock/SBLI MPI matrices 和 HaloTransport probes。完成状态与适用范围见 [GPU validation matrix](../GPU_VALIDATION_MATRIX.md)及 [multi-rank porting plan](../ASTR_GPU_MULTI_RANK_PORTING_PLAN.md)。
-
