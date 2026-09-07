@@ -436,7 +436,14 @@ P2 已关闭。正式源码只保留 P2-1B。P2-1A/P2-1C 均拒绝，sensor/mask
 
 ## 10. Phase P3：多 GPU HaloTransport 优化
 
-当前 host-staged、固定 `hm` halo 交换继续作为可移植正确性基线。优化按以下顺序进行：
+2026-09-07 本机验收完成。默认仍为 pageable blocking；保留可选 `pinned`
+及仅适用于全周期 stored diffusion 内部区域的 `pinned-overlap`。
+独立 nonblocking 因收益不足拒绝，CUDA-aware 因当前软件栈准入失败暂缓。
+以下早期筛选记录保留，最终验收结论见本文件末尾和 P3 基线报告。
+
+当前 host-staged blocking 交换继续作为可移植正确性基线。solution/sponge 的
+qswap-compatible 路径保留 `hm+1` 和接口面平均，filter/qwork、diffusion 和
+shock-sensor 路径保留固定 `hm`。优化按以下顺序进行：
 
 1. pageable host buffer 改为 pinned host buffer；
 2. blocking host-staged MPI 改为 nonblocking host-staged MPI；
@@ -447,6 +454,29 @@ P2 已关闭。正式源码只保留 P2-1B。P2-1A/P2-1C 均拒绝，sensor/mask
 通信重叠会改变同步和阶段组织，不得与 P1 kernel 优化同时实施。它需要单独设计、审批和性能基线。
 
 ### 10.1 硬件要求
+
+P3 正在执行，详细证据见 `ASTR_PHASE_P3_IMPLEMENTATION_PLAN.md` 和
+`ASTR_PHASE_P3_BASELINE_REPORT.md`。L0 已完成九组双卡五次重复基线。
+可选 pinned blocking 已接入，默认仍为 pageable。九组五次重复筛选的完整 RK
+时间下降约 1.2% 至 24.5%，其中 TGV y 首组离散度超限，已保留并完整复测。
+TGV、Shu-Osher、SBLI 的 NP=2 x/y/z 十步场和统计量对比通过。
+NP=1/8 的三算例十步对比亦已通过。最终源码的三后端 45 组逐场/统计量、
+九组物理壁面滤波检查和 host-only MPI sanitizer 矩阵现已通过，性能复核尚未完成。
+因此 pinned 仍为待验收候选。独立 paired nonblocking 已完成九组筛选和关键
+同二进制对照，最大可复现增量改善 2.425%，未达 3% 门槛，已撤下源码并保存
+快照、timing 和 NSYS 证据。独立 MPI progress 探针已通过消息与导数检查，
+主动 Testall 的时间线出现同进程 MPI 调用与 kernel 交叠，且保留逐 kernel
+显式同步。随后已接入实验选项 `pinned-overlap`，TGV 双 rank x-slab 的
+10 步逐场与统计量比较通过，小网格 z-slab 求解器 memcheck 零错误。
+真实求解器时间线也记录到 Testall/kernel 交叠，尚不构成整步加速结论。
+TGV NP=1/2 三种 slab/8 的 10 步回归已通过。同二进制五次 x/y/z-slab
+整步 A/B 分别改善 2.24%/3.42%/3.26%，spread 均低于 2%。y/z 已达到
+收益门槛。九组计时筛选已完成；Shu-Osher x 首组的 1.33% 表观退化没有在
+有效反向复测中重现，一组高噪声复测及全部原始数据均保留。候选继续保留
+用于最终验证，尚未最终接纳。y-slab 时间线已区分带请求记录的 MPI 调用
+和空请求轮询。CUDA-aware 独立探针已完成，当前软件栈未通过大消息和
+sanitizer 准入，暂不集成求解器。物理边界闭合和传感器不直接复用扩散的
+半径三内部区划分。最终仍需完成同一冻结源码的完整性能复核。
 
 - 性能测试必须一个 MPI rank 对应一张物理 GPU；
 - 两张 GPU 上的 NP=4/8 oversubscription 只能作为正确性测试；
@@ -519,6 +549,56 @@ P0  A800 基线与 CPU NP=1 同口径基线（暂缓，不阻塞本机探索）
 在 P0 完成前，不对 A800 做性能结论。在 P1 单卡热点收口前，不开始通信后端重构。取消显式同步、kernel fusion、CUDA Graphs 和混合精度均不属于上述主线，需要单独立项审批。
 
 ## 14. 交付物
+
+P3 CUDA-aware 准入更新：当前 HPC-X 2.25.1 软件栈的小消息设备缓冲区测试通过，
+但默认 UCX 大消息出现接收数据未更新。关闭 IPC 后逐元素比较通过，
+Compute Sanitizer 仍未达到零错误门槛，提前绑定设备也未解决。
+本轮停止该候选接入，不给出其性能结论，也不据此断言硬件不支持。
+独立探针、配置、失败日志和冻结哈希见 `ASTR_PHASE_P3_BASELINE_REPORT.md`。
+默认 pageable 回退不变，pinned 与 pinned-overlap 的最终完整回归仍待收口。
+当前收口检查点已通过三种后端、三个算例、五种拓扑的 45 组十步逐场及统计量比较，
+以及九组小网格 memcheck，18 份 rank 日志均为零错误。
+SBLI 使用完整 RK 同相位比较。该内存检查只限定于 host-only MPI 配置。
+随后已补齐 18 处物理端点 `MPI_PROC_NULL` 接收上传保护，重新通过 45 组主回归、
+九组开启滤波和扩散的物理壁面专项，以及 18 组 memcheck 的 36 份零错误 rank 日志。
+生产 pack/unpack 冲突接口值专项随后也已通过：三种后端分别运行 NP=2/3，
+直接检查生产模块的三轴平均、所有权和分量边界，另有九份 memcheck rank 日志零错误。
+最终源码的 TGV 256^3 x-slab 新测量中，pinned 完整 RK 时间比 pageable 下降 13.839%。
+overlap 组 spread 为 8.020%，整组不确定，不能剔除单次结果后声称通过。
+仍需完整配对重测和其余方向、算例的最终性能复核，尚不宣布 P3 完成。
+Shu-Osher/SBLI 三方向的最终源码性能组现已完成，Shu z 的高波动组也完成了
+完整反向重测。有效组中 pinned 的 RK 时间降幅分别为 2.829%--7.611% 和
+7.823%--23.728%，最大单卡显存增幅 3.436%。这两类算例的 overlap 分支未启用。
+剩余 TGV y/z 和 TGV x 配对重测的性能收口。
+
+请求完成状态证据已补齐：仅用于 profiling 的 PMPI/NVTX 包装库记录真实
+MPI_Testall 返回值，不增加轮询，也不改变求解器。受控双 rank 探针确认
+未完成/已完成标记有效，空请求不被计入。最终源码 TGV 256^3 y-slab
+捕获到 4237 个未全部完成标记和 24 个全部完成标记位于同进程扩散 kernel
+期间。这证明该次插桩执行存在请求与计算重叠，不代表网络带宽或正式整步收益。
+所有正式性能测试禁用该包装库。证据、重现方法和分析器测试见 P3 报告及验证 README。
+
+### P3 最终本机验收
+
+- 九个正式组合采用最终冻结源码、NP=2 双物理 GPU、五次完整进程重复。
+  pinned 相对 pageable 的完整 RK 时间减少 2.829%--23.728%。
+- overlap 相对配对 pinned 的 TGV x/y/z 增量为 2.616%/3.085%/2.944%。
+  y 达到 3% 单点门槛，其他有效组没有超过 1% 的稳定退化。
+- TGV x 两组噪声结果全部保留，最后一次完整配对重测通过稳定性门槛。
+  共审计 34 组、204 个含预热的进程日志，未剔除单次结果。
+- 最大单卡显存增长 3.436%。主机锁页内存另记，不与显存混淆。
+- 最终源码 45 组 CPU/GPU 对比、九组物理壁面检查、生产 halo 精确合同及
+  host-only MPI 的零错误 sanitizer 矩阵通过。68 个 Python 测试、96 个
+  shell 语法检查和顶层 CPU/GPU 构建通过。
+- 新增冻结 L0、小网格 overlap、NSYS 插桩及重链接版本的直接逐场对照，
+  六个原始场和五个重构守恒场最大差值均为零。
+
+逐 kernel 显式同步、FP64、RK3、数值格式及边界/halo 语义保持不变。
+此结论仅覆盖本机 host-staged 路径，不代表 A800、多节点或 CUDA-aware
+准入，不将短步 SBLI 回归作为真实物理验证。正式性能始终归属于冻结二进制
+`aee22855...`；重新链接后的文件哈希及对照结果单独记录。详细表格、失败组、
+输入哈希和证据路径见 `ASTR_PHASE_P3_BASELINE_REPORT.md` 的最终验收章节。
+现有 SQLite 的请求句柄不能单独证明通信在核执行期间尚未完成。
 
 每个通过的阶段必须提交：
 

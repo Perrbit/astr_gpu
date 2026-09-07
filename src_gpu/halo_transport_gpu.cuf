@@ -1,0 +1,184 @@
+module halo_transport_gpu
+  use mpi
+  use cudafor
+  use iso_c_binding, only: c_ptr,c_loc,c_size_t
+  implicit none
+  private
+  public :: exchange_host_pair,progress_host_pair_during_kernel
+  public :: independent_host_pair_work,halo_overlap_enabled
+  public :: begin_transport_setup,register_host_buffer,end_transport_setup,release_host_buffers
+  type(c_ptr),save :: registered(36)
+  integer,save :: registered_count=0
+  integer(c_size_t),save :: pinned_bytes=0
+  logical,save :: registration_failed=.false.
+  logical,save :: pair_active=.false.
+  logical,save,protected :: halo_overlap_enabled=.false.
+  abstract interface
+    subroutine independent_host_pair_work(requests)
+      integer,intent(inout) :: requests(4)
+    end subroutine independent_host_pair_work
+  end interface
+contains
+  subroutine begin_transport_setup(pinned)
+    logical,intent(out) :: pinned
+    character(64) :: value
+    integer :: status,choice,lowest,highest,ierr
+
+    call get_environment_variable('ASTR_GPU_HALO_TRANSPORT',value,status=status)
+    choice=-1
+    if(status==1 .or. (status==0 .and. len_trim(value)==0)) choice=0
+    if(status==0) then
+      if(trim(value)=='pageable') choice=0
+      if(trim(value)=='pinned') choice=1
+      if(trim(value)=='pinned-overlap') choice=2
+    endif
+    call mpi_allreduce(choice,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call check_mpi(ierr)
+    call mpi_allreduce(choice,highest,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call check_mpi(ierr)
+    if(lowest<0 .or. lowest/=highest) then
+      print *, 'Invalid or inconsistent ASTR_GPU_HALO_TRANSPORT: expected pageable, pinned or pinned-overlap'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+    endif
+    pinned=choice>0
+    halo_overlap_enabled=choice==2
+    registration_failed=.false.
+  end subroutine begin_transport_setup
+
+  subroutine register_host_buffer(buffer)
+    real(8),target,contiguous,intent(inout) :: buffer(:,:,:,:)
+    integer :: code,ignored
+    integer(c_size_t) :: bytes
+
+    if(registration_failed) return
+    if(registered_count==size(registered)) then
+      registration_failed=.true.
+      return
+    endif
+    bytes=size(buffer,kind=c_size_t)*8_c_size_t
+    code=cudaHostRegister(c_loc(buffer),bytes,0)
+    if(code/=cudaSuccess) then
+      print *, 'GPU halo host registration failed: ',code,trim(cudaGetErrorString(code))
+      registration_failed=.true.
+      ignored=cudaGetLastError()
+      return
+    endif
+    registered_count=registered_count+1
+    registered(registered_count)=c_loc(buffer)
+    pinned_bytes=pinned_bytes+bytes
+  end subroutine register_host_buffer
+
+  subroutine end_transport_setup(pinned)
+    logical,intent(inout) :: pinned
+    integer :: failed,any_failed,ierr,rank
+
+    failed=merge(1,0,registration_failed)
+    call mpi_allreduce(failed,any_failed,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call check_mpi(ierr)
+    if(any_failed/=0) then
+      call release_host_buffers()
+      pinned=.false.
+      halo_overlap_enabled=.false.
+    endif
+    call mpi_comm_rank(MPI_COMM_WORLD,rank,ierr)
+    call check_mpi(ierr)
+    if(any_failed/=0 .and. rank==0) print *, 'GPU halo transport: registration failed; using pageable on all ranks'
+    write(*,'(A,I0,A,L1,A,I0)') 'ASTR_GPU_HALO_TRANSPORT rank=',rank, &
+      ' pinned=',pinned,' registered_bytes=',pinned_bytes
+    write(*,'(A,I0,A,L1)') 'ASTR_GPU_HALO_OVERLAP rank=',rank,' requested=',halo_overlap_enabled
+  end subroutine end_transport_setup
+
+  subroutine release_host_buffers()
+    integer :: i,code,ierr
+    do i=registered_count,1,-1
+      code=cudaHostUnregister(registered(i))
+      if(code/=cudaSuccess) then
+        print *, 'GPU halo host unregister failed: ',code,trim(cudaGetErrorString(code))
+        call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      endif
+    enddo
+    registered_count=0
+    pinned_bytes=0
+  end subroutine release_host_buffers
+
+  subroutine check_mpi(code)
+    integer,intent(in) :: code
+    integer :: ierr
+    if(code/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,code,ierr)
+  end subroutine check_mpi
+
+  subroutine exchange_host_pair(send_low,send_high,recv_high,recv_low, &
+                                count,low,high,tag_first,tag_second,work)
+    implicit none
+    real(8),intent(in),contiguous,asynchronous :: send_low(:,:,:,:),send_high(:,:,:,:)
+    real(8),intent(inout),contiguous,asynchronous :: recv_high(:,:,:,:),recv_low(:,:,:,:)
+    integer,intent(in) :: count,low,high,tag_first,tag_second
+    integer :: ierr,abort_error,request_status(MPI_STATUS_SIZE)
+    integer :: requests(4),statuses(MPI_STATUS_SIZE,4)
+    procedure(independent_host_pair_work),optional :: work
+
+    if(pair_active) then
+      print *, 'GPU halo transport: nested paired exchange is not supported'
+      call mpi_abort(MPI_COMM_WORLD,1,abort_error)
+      return
+    endif
+    if(count<1 .or. size(send_low)/=count .or. size(send_high)/=count .or. &
+       size(recv_high)/=count .or. size(recv_low)/=count) then
+      print *, 'GPU halo transport buffer/count mismatch'
+      call mpi_abort(MPI_COMM_WORLD,1,abort_error)
+      return
+    endif
+    if(present(work)) then
+      pair_active=.true.
+      call mpi_irecv(recv_high,count,MPI_REAL8,high,tag_first,MPI_COMM_WORLD,requests(1),ierr)
+      call check_mpi(ierr)
+      call mpi_irecv(recv_low,count,MPI_REAL8,low,tag_second,MPI_COMM_WORLD,requests(2),ierr)
+      call check_mpi(ierr)
+      call mpi_isend(send_low,count,MPI_REAL8,low,tag_first,MPI_COMM_WORLD,requests(3),ierr)
+      call check_mpi(ierr)
+      call mpi_isend(send_high,count,MPI_REAL8,high,tag_second,MPI_COMM_WORLD,requests(4),ierr)
+      call check_mpi(ierr)
+      call work(requests)
+      call mpi_waitall(4,requests,statuses,ierr)
+      call check_mpi(ierr)
+      pair_active=.false.
+      return
+    endif
+    call mpi_sendrecv(send_low,count,MPI_REAL8,low,tag_first, &
+                      recv_high,count,MPI_REAL8,high,tag_first, &
+                      MPI_COMM_WORLD,request_status,ierr)
+    if(ierr/=MPI_SUCCESS) then
+      call mpi_abort(MPI_COMM_WORLD,ierr,abort_error)
+      return
+    endif
+    call mpi_sendrecv(send_high,count,MPI_REAL8,high,tag_second, &
+                      recv_low,count,MPI_REAL8,low,tag_second, &
+                      MPI_COMM_WORLD,request_status,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,abort_error)
+  end subroutine exchange_host_pair
+
+  subroutine progress_host_pair_during_kernel(requests)
+    integer,intent(inout) :: requests(4)
+    integer :: code,ierr,statuses(MPI_STATUS_SIZE,4)
+    logical :: done
+
+    ! The caller must still explicitly synchronize and check each kernel.
+    if(.not.pair_active) then
+      print *, 'GPU halo progress requires an active paired exchange'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      return
+    endif
+    do
+      code=cudaStreamQuery(0_cuda_stream_kind)
+      if(code==cudaSuccess) exit
+      if(code/=cudaErrorNotReady) then
+        print *, 'GPU halo progress stream query failed: ',trim(cudaGetErrorString(code))
+        call mpi_abort(MPI_COMM_WORLD,1,ierr)
+        return
+      endif
+      call mpi_testall(4,requests,done,statuses,ierr)
+      call check_mpi(ierr)
+      if(done) exit
+    enddo
+  end subroutine progress_host_pair_during_kernel
+end module halo_transport_gpu

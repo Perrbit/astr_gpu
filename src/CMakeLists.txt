@@ -51,6 +51,7 @@ if(ASTR_WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/commarray_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/commvar_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/qswap_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/halo_transport_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/halo_exchange_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/boundary_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/sponge_gpu.cuf
@@ -64,6 +65,58 @@ if(ASTR_WITH_CUDA)
 endif()
 
 add_executable(astr ${ASTR_SOURCES} ${ASTR_GPU_SOURCES})
+
+if(ASTR_WITH_CUDA)
+  add_executable(halo_transport_test EXCLUDE_FROM_ALL
+    ../src_gpu/halo_transport_gpu.cuf
+    ../tests/gpu_validation/halo_transport_test.F90)
+  set_target_properties(halo_transport_test PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/halo_test_modules")
+  target_include_directories(halo_transport_test PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/halo_test_modules")
+  target_link_libraries(halo_transport_test PRIVATE MPI::MPI_Fortran)
+  add_executable(halo_pinned_probe EXCLUDE_FROM_ALL
+    ../tests/gpu_validation/halo_pinned_probe.cuf)
+  add_executable(halo_transport_setup_test EXCLUDE_FROM_ALL
+    ../src_gpu/halo_transport_gpu.cuf
+    ../tests/gpu_validation/halo_transport_setup_test.cuf)
+  set_target_properties(halo_transport_setup_test PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/halo_setup_test_modules")
+  target_include_directories(halo_transport_setup_test PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/halo_setup_test_modules")
+  target_link_libraries(halo_transport_setup_test PRIVATE MPI::MPI_Fortran)
+  add_executable(halo_overlap_probe EXCLUDE_FROM_ALL
+    constdef.F90 ../tests/gpu_validation/halo_overlap_probe.cuf)
+  set_target_properties(halo_overlap_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/overlap_probe_modules")
+  target_include_directories(halo_overlap_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/overlap_probe_modules")
+  target_link_libraries(halo_overlap_probe PRIVATE MPI::MPI_Fortran)
+  include(CheckFortranSourceCompiles)
+  include(CMakePushCheckState)
+  cmake_push_check_state(RESET)
+  set(CMAKE_REQUIRED_LIBRARIES MPI::MPI_Fortran)
+  check_fortran_source_compiles("
+      program cuda_query_link_test
+      use iso_c_binding, only: c_int
+      interface
+        function query() bind(C,name='MPIX_Query_cuda_support')
+          import c_int
+          integer(c_int) :: query
+        end function query
+      end interface
+      print *, query()
+      end program cuda_query_link_test
+  " ASTR_HAS_MPI_CUDA_QUERY)
+  cmake_pop_check_state()
+  if(ASTR_HAS_MPI_CUDA_QUERY)
+    add_executable(halo_cuda_aware_probe EXCLUDE_FROM_ALL
+      ../tests/gpu_validation/halo_cuda_aware_probe.cuf)
+    target_link_libraries(halo_cuda_aware_probe PRIVATE MPI::MPI_Fortran)
+  else()
+    message(STATUS "CUDA-aware query probe unavailable; host transport remains supported")
+  endif()
+endif()
 
 if (ASTR_WITH_CUDA AND (Fortran_COMPILER_NAME MATCHES "PGI" OR Fortran_COMPILER_NAME MATCHES "NVHPC"))
   set(ASTR_S0A_MAXREGCOUNT "128" CACHE STRING
@@ -82,6 +135,43 @@ if (CHEMISTRY)
   message(STATUS "CANTERA library: ${CTRDIR}/lib")
   target_link_libraries(astr PRIVATE -L${CTRDIR}/lib -lcantera_fortran -lcantera -lstdc++ -pthread)
 endif (CHEMISTRY)
+
+if(ASTR_WITH_CUDA)
+  # Recompile the production modules in isolation, without the ASTR main program.
+  set(ASTR_HALO_CONTRACT_SOURCES ${ASTR_SOURCES})
+  list(REMOVE_ITEM ASTR_HALO_CONTRACT_SOURCES astr.F90 CMakeLists.txt)
+  add_executable(halo_exchange_contract_test EXCLUDE_FROM_ALL
+    ${ASTR_HALO_CONTRACT_SOURCES} ${ASTR_GPU_SOURCES}
+    ../tests/gpu_validation/halo_exchange_contract_test.cuf)
+  set_target_properties(halo_exchange_contract_test PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/halo_contract_modules")
+  target_include_directories(halo_exchange_contract_test PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/halo_contract_modules")
+  get_target_property(ASTR_HALO_CONTRACT_LIBRARIES astr LINK_LIBRARIES)
+  target_link_libraries(halo_exchange_contract_test PRIVATE ${ASTR_HALO_CONTRACT_LIBRARIES})
+endif()
+
+option(ASTR_BUILD_MPI_COMPLETION_TRACE "Build optional MPI completion profiling interposer" OFF)
+if(ASTR_WITH_CUDA AND ASTR_BUILD_MPI_COMPLETION_TRACE)
+  enable_language(C)
+  get_filename_component(ASTR_COMPILER_BIN "${CMAKE_Fortran_COMPILER}" DIRECTORY)
+  find_program(ASTR_NVFORTRAN nvfortran)
+  get_filename_component(ASTR_NVFORTRAN_BIN "${ASTR_NVFORTRAN}" DIRECTORY)
+  find_path(ASTR_NVTX3_INCLUDE nvtx3/nvToolsExt.h
+    HINTS "${ASTR_COMPILER_BIN}/../include-stdpar"
+          "${ASTR_NVFORTRAN_BIN}/../include-stdpar")
+  if(NOT ASTR_NVTX3_INCLUDE)
+    message(FATAL_ERROR "MPI completion tracing requires NVTX3 headers")
+  endif()
+  add_library(mpi_completion_trace SHARED EXCLUDE_FROM_ALL
+    ../tests/gpu_validation/mpi_completion_trace.F90
+    ../tests/gpu_validation/mpi_completion_trace.c)
+  target_include_directories(mpi_completion_trace PRIVATE "${ASTR_NVTX3_INCLUDE}")
+  target_link_libraries(mpi_completion_trace PRIVATE MPI::MPI_Fortran ${CMAKE_DL_LIBS})
+  add_executable(mpi_completion_probe EXCLUDE_FROM_ALL
+    ../tests/gpu_validation/mpi_completion_probe.F90)
+  target_link_libraries(mpi_completion_probe PRIVATE MPI::MPI_Fortran)
+endif()
 
 install(TARGETS astr
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}

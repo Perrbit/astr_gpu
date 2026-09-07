@@ -14,6 +14,9 @@ MAXSTEP="${MAXSTEP:-20}"
 REPEATS="${REPEATS:-5}"
 DISCARD_STEPS="${DISCARD_STEPS:-1}"
 GPU_ID="${GPU_ID:-0}"
+GPU_IDS="${GPU_IDS:-$GPU_ID}"
+NP="${NP:-1}"
+TOPOLOGY="${TOPOLOGY:-1,1,1}"
 FEQCHKPT="${FEQCHKPT:-9999}"
 FEQLIST="${FEQLIST:-9999}"
 SYNC_MODE="${SYNC_MODE:-explicit}"
@@ -29,11 +32,25 @@ if [[ "$OUT_DIR" != /* ]]; then OUT_DIR="$P2_ROOT_DIR/$OUT_DIR"; fi
 [[ "$FEQCHKPT" -gt "$MAXSTEP" ]] || { printf 'FEQCHKPT must exceed MAXSTEP\n' >&2; exit 2; }
 [[ "$FEQLIST" -gt "$MAXSTEP" ]] || { printf 'FEQLIST must exceed MAXSTEP\n' >&2; exit 2; }
 [[ "$SYNC_MODE" == "explicit" ]] || { printf 'P2 requires explicit synchronization\n' >&2; exit 2; }
+python3 - "$NP" "$TOPOLOGY" "$GPU_IDS" <<'PY'
+import math
+import sys
+np = int(sys.argv[1])
+topology = tuple(map(int, sys.argv[2].split(',')))
+devices = sys.argv[3].split(',')
+if len(topology) != 3 or min(topology) < 1 or math.prod(topology) != np:
+    raise SystemExit('topology must contain three positive factors with product NP')
+if np < 1 or len(devices) != np or len(set(devices)) != np:
+    raise SystemExit('performance requires one distinct visible GPU per rank')
+PY
 
 TIMINGS="$OUT_DIR/${LABEL}_timings.tsv"
 SUMMARY="$OUT_DIR/${LABEL}_summary.md"
 CASE_DIR="$OUT_DIR/${LABEL}_case"
 mkdir -p "$OUT_DIR" "$OUT_DIR/tmp"
+[[ ! -e "$TIMINGS" ]] || { printf 'refusing to overwrite %s\n' "$TIMINGS" >&2; exit 2; }
+printf 'np=%s\ntopology=%s\ngpu_ids=%s\n' "$NP" "$TOPOLOGY" "$GPU_IDS" > "$OUT_DIR/transport_metadata.txt"
+sha256sum "$GPU_EXE" > "$OUT_DIR/executable.sha256"
 p2_prepare_case "$CASE" "$CASE_DIR" "$GRID" "$MAXSTEP" "$FEQCHKPT" "$FEQLIST"
 
 run_once() {
@@ -48,7 +65,7 @@ run_once() {
   rm -f "$stop"
   (
     while [[ ! -e "$stop" ]]; do
-      nvidia-smi --id="$GPU_ID" --query-gpu=memory.used,utilization.gpu \
+      nvidia-smi --id="$GPU_IDS" --query-gpu=memory.used,utilization.gpu,index,timestamp \
         --format=csv,noheader,nounits
       sleep 0.1
     done
@@ -59,10 +76,10 @@ run_once() {
   (
     cd "$CASE_DIR"
     env "${P2_RUNTIME_ENV[@]}" TMPDIR="$OUT_DIR/tmp" \
-      OMPI_MCA_sharedfp="${OMPI_MCA_sharedfp:-individual}" CUDA_VISIBLE_DEVICES="$GPU_ID" \
-      ASTR_FORCE_MPI_TOPOLOGY=1,1,1 ASTR_GPU_RK_TIMING=1 \
+      OMPI_MCA_sharedfp="${OMPI_MCA_sharedfp:-individual}" CUDA_VISIBLE_DEVICES="$GPU_IDS" \
+      ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" ASTR_GPU_RK_TIMING=1 ASTR_GPU_RANK_RK_TIMING=1 \
       ASTR_GPU_SYNC_MODE="$SYNC_MODE" \
-      mpirun -np 1 "$GPU_EXE" run "$P2_INPUT" > "$log" 2>&1
+      mpirun -np "$NP" "$GPU_EXE" run "$P2_INPUT" > "$log" 2>&1
   )
   status=$?
   set -e
@@ -80,12 +97,12 @@ run_once() {
     printf 'expected %d RK timings, found %d in %s\n' "$((MAXSTEP + 1))" "$timing_count" "$log" >&2
     return 1
   }
-  [[ "$record" == t ]] || return 0
-
   timing_values="$run_dir/rk_seconds.txt"
-  awk -v discard="$DISCARD_STEPS" \
-    '$1 == "ASTR_GPU_RK_TIMING" {seen++; if (seen > discard) print $5}' \
-    "$log" > "$timing_values"
+  python3 "$P2_ROOT_DIR/tests/gpu_validation/summarize_rank_rk_timing.py" \
+    --log "$log" --ranks "$NP" --steps "$((MAXSTEP + 1))" \
+    --discard "$DISCARD_STEPS" > "$run_dir/rank_rk.tsv"
+  awk 'NR>1 {print $2}' "$run_dir/rank_rk.tsv" > "$timing_values"
+  [[ "$record" == t ]] || return 0
   retained_count="$(wc -l < "$timing_values")"
   wall="$(python3 -c 'import sys; print(float(sys.argv[2])-float(sys.argv[1]))' "$start" "$end")"
   max_memory="$(awk -F, '{gsub(/ /,"",$1); if ($1+0>m) m=$1+0} END {print m+0}' "$monitor")"

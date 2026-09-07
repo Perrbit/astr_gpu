@@ -3014,3 +3014,269 @@ spilling increased from `15,059,748` to `18,007,902`. P2 is closed with P2-1B
 as the only retained shock-path kernel optimization. Full commands, evidence
 directories, and final five-repeat numbers are recorded in
 `documents/ASTR_PHASE_P2_BASELINE_REPORT.md`.
+
+### Phase P3 Transport Baselines
+
+P3 is in progress. See `documents/ASTR_PHASE_P3_IMPLEMENTATION_PLAN.md` and
+`documents/ASTR_PHASE_P3_BASELINE_REPORT.md`. The shared performance driver
+`run_p2_shock_performance_benchmark.sh` now accepts `CASE=tgv|shuosher|sbli`,
+`NP`, `TOPOLOGY`, and `GPU_IDS`. Performance runs require one distinct GPU per
+rank. It records per-rank RK durations and summarizes their stepwise maximum;
+the maximum is not a sum across ranks. Output directories cannot overwrite
+existing timing TSV files. The new timing output requires a current executable.
+
+Build and execute exact-value host transport tests through top-level CMake:
+
+```bash
+cmake -S . -B build_gpu_probe -DASTR_WITH_CUDA=ON
+cmake --build build_gpu_probe --target halo_transport_test -j4
+mpirun -np 1 build_gpu_probe/bin/halo_transport_test
+mpirun -np 2 build_gpu_probe/bin/halo_transport_test
+mpirun -np 3 build_gpu_probe/bin/halo_transport_test
+```
+
+These tests exercise paired messages, component counts 1/3/6, widths 5/6,
+periodic duplicate peers and MPI_PROC_NULL. They complement, rather than replace,
+the CPU/GPU CFD halo comparisons. CUDA-aware remains pending.
+The solver has an experimental pinned blocking selection. Paired nonblocking
+was screened and removed; its evidence is retained, not its runtime selection.
+
+Pinned-memory prerequisite probes (still not a solver transport selection):
+
+```bash
+cmake --build build_gpu_probe --target halo_transport_test halo_pinned_probe -j4
+build_gpu_probe/bin/halo_pinned_probe
+mpirun -np 2 build_gpu_probe/bin/halo_transport_test pinned
+compute-sanitizer --tool memcheck --error-exitcode 99 build_gpu_probe/bin/halo_pinned_probe
+env UCX_MEMTYPE_CACHE=n mpirun --mca pml ob1 --mca osc pt2pt \
+  --mca btl self,tcp --mca coll '^hcoll,ucc' --mca opal_cuda_support 0 \
+  -np 2 compute-sanitizer --tool memcheck --error-exitcode 99 \
+  build_gpu_probe/bin/halo_transport_test pinned
+```
+
+Use the MPI installation linked by the build. The host-only MPI settings above
+are diagnostic: default HPC-X/UCX triggers CUDA context API errors in MPI_Init
+even for the pageable exact test. The pinned host-only NP=2 probe and standalone
+copy probe pass memcheck with zero errors. Retain this distinction when reporting
+results; do not reuse host-only settings to claim CUDA-aware coverage or compare
+performance against a different MPI configuration.
+
+The solver defaults to `ASTR_GPU_HALO_TRANSPORT=pageable`; `pinned` explicitly
+requests registration before the first solver halo exchange. Each rank reports
+its selected state and registered host bytes. A registration-admission failure
+on any rank causes collective cleanup and pageable fallback before communication.
+Different rank settings or unknown backend names are errors, not silent fallback.
+This candidate has not yet passed the complete P3 acceptance matrix.
+
+The archived `pinned-nonblocking` experiment posts two receives and two sends,
+then Waitall. Its largest reproduced incremental gain over pinned blocking was
+2.425%, below the independent 3% gate, so current executables reject this option.
+`out/p3_nonblocking_frozen/astr` and its source snapshot retain the experiment;
+all nine timing groups, controls and traces are documented in the P3 report.
+No compute/communication overlap was demonstrated by this experiment.
+
+Production registration lifecycle and collective rollback can be tested with:
+
+```bash
+cmake --build build_gpu_probe --target halo_transport_setup_test -j4
+env ASTR_GPU_HALO_TRANSPORT=pinned mpirun -np 2 \
+  build_gpu_probe/bin/halo_transport_setup_test normal
+env ASTR_GPU_HALO_TRANSPORT=pinned mpirun -np 2 \
+  build_gpu_probe/bin/halo_transport_setup_test overflow
+```
+
+The overflow test exceeds the fixed registry capacity on rank zero only. Both
+ranks must fall back, and all previously registered allocations must accept a
+new registration after cleanup. Run this test under the same diagnostic
+host-only MPI memcheck settings above when checking for zero CUDA API errors.
+
+MPI progress/independent-work prerequisite (not an ASTR performance benchmark):
+
+```bash
+cmake --build build_gpu_probe --target halo_overlap_probe -j4
+env CUDA_VISIBLE_DEVICES=0,1 mpirun --mca coll_hcoll_enable 0 -np 2 \
+  build_gpu_probe/bin/halo_overlap_probe poll 1981470 8388608 30 8
+python3 tests/gpu_validation/summarize_mpi_kernel_overlap.py \
+  tests/gpu_validation/out/p3_overlap_probe_nsys/poll.sqlite
+```
+
+Arguments are mode (`blocking`, `wait`, `poll`), message elements, work elements,
+kernel passes and retained iterations. The probe runs one extra warmup iteration,
+requires one visible GPU per rank and retains explicit synchronization after
+every kernel. Use all three modes with identical parameters. Exact payload and
+linear derivative checks are mandatory. The SQLite analyzer reports same-process
+MPI API/kernel intersections, deduplicating request rows and unioning kernel
+intervals. It does not measure concurrent communication bytes or establish an
+ASTR RK speedup. Full commands, results and evidence limits are in the P3 report.
+Use `start_wait_calls_overlapping_kernel` to distinguish request-record events
+from MPI_OTHER_EVENTS calls such as tests after requests have become null.
+
+Experimental solver overlap is selected with
+`ASTR_GPU_HALO_TRANSPORT=pinned-overlap`. It passed the initial nine-case timing
+screen with an explicit Shu-Osher x noise/repeat audit, but final admission still
+requires the remaining validation matrix. No default backend has changed.
+Only fully periodic, distributed stored diffusion with a nonempty radius-three
+core activates the split; all other cases retain blocking communication.
+Check both the per-rank request log and `periodic_diffusion_active` records.
+Use `OMPI_MCA_sharedfp=individual` consistently for solver runs, as in the P3
+benchmark driver, to avoid the observed OMPIO shared-file-pointer initialization
+stall. The transport callback itself can be checked independently:
+
+```bash
+env ASTR_GPU_HALO_TRANSPORT=pinned mpirun -np 3 \
+  build_gpu_probe/bin/halo_transport_test pinned work
+env OMPI_MCA_sharedfp=individual ASTR_GPU_HALO_TRANSPORT=pinned-overlap \
+  NP=2 TOPOLOGY=2,1,1 MAXSTEP=10 FEQCHKPT=10 \
+  OUT_DIR="$PWD/tests/gpu_validation/out/p3_overlap_tgv_x_new" \
+  bash tests/gpu_validation/run_tgv_mpirank2_field_compare.sh
+```
+# P3 CUDA-Aware Diagnostic Admission
+
+`halo_cuda_aware_probe` is an excluded diagnostic target, not an ASTR backend.
+Configure with the repository's top-level GPU CMake build, then build with
+`cmake --build build_gpu_probe --target halo_cuda_aware_probe`.
+Run `mpiexec -np 2 build_gpu_probe/bin/halo_cuda_aware_probe 256 256`
+for representative large device-buffer messages. Optional third argument
+`early-bind` binds the device before MPI_Init for diagnosis only. Default
+arguments are 3 and 2. Exact payload checks include widths 5/6, components
+1/3/6, periodic peers and MPI_PROC_NULL. Failures abort rather than continue.
+
+Current local HPC-X qualification failed: small NP=1/2/3 tests pass, default
+UCX large payloads fail, and non-IPC alternatives pass payload checks but fail
+zero-error Compute Sanitizer admission. The installed MPIX query returns 1
+even with CUDA runtime support disabled and cannot qualify the backend alone.
+Do not enable device-buffer communication based only on this query or on
+small-message success. No CUDA-aware solver option is installed. See
+`documents/ASTR_PHASE_P3_BASELINE_REPORT.md` for exact configurations and logs.
+
+## P3 Retained-Backend Matrix Checkpoint
+
+`out/p3_final_phase_matrix_summary.json` records 45 passing ten-step CPU/GPU
+comparisons: pageable/pinned/pinned-overlap, TGV/Shu-Osher/SBLI, NP=1/2 x/y/z/8.
+Fields and statistics use existing 1e-10 tolerances; sensor checks retain
+1e-12. SBLI must set `IM=64 JM=64 KM=16 SAME_PHASE_FIELD=t COMPARE_SENSOR=t`
+for this matrix. Setting GRID does not override that driver's dimensions.
+Use MAXSTEP=10 FEQCHKPT=10 and OMPI_MCA_sharedfp=individual for all three cases.
+TGV uses 128^3 with filter and diffusion; Shu-Osher uses GRID=400,16,16 and the
+existing s0a6/s0a7/s0a8/s0a9/s0a10 topology drivers. CPU TGV references can be
+reused only with identical inputs, topology and executable; the accepted run
+records this provenance in reference.json. NP=8 is correctness only.
+
+`out/p3_final_memcheck_summary.json` records nine small NP=2 solver checks and
+18 zero-error rank logs. Exact commands are stored in each
+`out/p3_final_memcheck_<backend>_<case>/command.json`. These checks use host-only
+MPI, not CUDA-aware MPI. The source and CPU/GPU executables are frozen in
+`out/p3_final_frozen/`. This checkpoint precedes the outstanding MPI_PROC_NULL
+receive-upload guards and is not final P3 admission.
+
+The later endpoint-cleanup executable is frozen in `out/p3_endpoint_frozen/`.
+Its 18 receive-upload guards pass the supplemental source test
+`test_halo_endpoint_upload_contract.py`. All 45 CPU/GPU comparisons pass again
+in `out/p3_endpoint_v2_*`, with nine additional x/y/z physical wall41
+filter/diffusion checks in `out/p3_endpoint_wall41_*`. These wall checks use
+32^3, MAXSTEP=2, NP=2 in the wall-normal direction, and explicitly set both
+field/statistics tolerances to 1e-10. The updated memcheck summary is
+`out/p3_endpoint_memcheck_summary.json`: 18 runs and 36 zero-error rank logs
+under host-only MPI. Shu-Osher x reference reuse must preserve
+ASTR_SHUOSHER_SHOCK_X=0.d0, not merely the input-file contents.
+
+Production GPU pack/unpack tests with deliberately different shared-interface
+values and final-source performance reconciliation remain open; host transport
+payload tests alone do not close the averaging contract.
+
+### Production Halo Contract Executable
+
+Build the excluded `halo_exchange_contract_test` target through the top-level
+GPU CMake build. It recompiles production modules in a separate module directory
+without the ASTR main program; no pack/unpack kernel is copied into the test.
+Run with NP=2 and NP=3, setting ASTR_GPU_HALO_TRANSPORT to each retained mode.
+The fixture seeds different exact integer values on every rank, including
+conflicting shared planes and all untouched halo regions. It checks all three
+directions with periodic duplicate peers and physical chains, hm+1 averaging,
+hm filter exchange and q/qwork ownership, and 1/3/6-component field exchange.
+NP=3 places a rank between two physical endpoints. A full-array exact comparison
+also detects writes to unused components, transverse edge/corner halos and
+MPI_PROC_NULL faces. This is a communication-contract test, not CFD performance.
+
+The six NP=2/3 backend runs pass exactly in `out/p3_production_halo_*.log`.
+NP=3 host-only memcheck passes for all three modes, with nine zero-error rank
+logs in `out/p3_production_halo_memcheck_*`. The executable and sources are
+frozen in `out/p3_production_halo_frozen/`. This closes the averaging test gap
+noted in the earlier checkpoint; final performance reconciliation stays open.
+The new final-source TGV x timing groups are in `out/p3_final_performance_*_tgv_x`.
+The overlap group has spread 8.020% and must be retained as inconclusive in full.
+
+Final-source Shu-Osher/SBLI timing summaries are
+`out/p3_final_performance_shu_sbli_summary.json` and
+`out/p3_final_performance_shu_z_repeat1_summary.json`. The original Shu z pinned
+group has spread 26.623%; retain it unchanged and use the separately identified
+complete reverse-order repeat when assessing stable groups. All three backends
+were rerun, not just one selected process. Maximum per-device memory growth is
+3.436%. These cases report overlap inactive and do not prove overlap performance.
+
+The existing NSYS SQLite request records lack the Testall completion flag.
+Request-associated API/kernel intersections are not, by themselves, proof of
+unfinished communication during useful work. Completion-state/progress evidence
+must accompany them before the overlap candidate receives final admission.
+
+### Profiling Actual MPI Completion Flags
+
+An optional PMPI interposer now closes that request-state evidence gap:
+
+```bash
+cmake -S . -B build_gpu_probe -DASTR_BUILD_MPI_COMPLETION_TRACE=ON
+cmake --build build_gpu_probe --target mpi_completion_trace mpi_completion_probe -j4
+nsys profile --trace=nvtx --sample=none --cpuctxsw=none -o completion_probe \
+  mpiexec -np 2 env LD_PRELOAD="$PWD/build_gpu_probe/lib/libmpi_completion_trace.so" \
+  "$PWD/build_gpu_probe/bin/mpi_completion_probe"
+```
+
+Build through the configured top-level NVHPC GPU project. The interposer uses
+the same MPI Fortran ABI as ASTR, and NVTX3 headers from that NVHPC installation.
+Apply LD_PRELOAD to rank processes, not the launcher. Never preload it for
+formal performance benchmarks. No additional Testall calls are introduced.
+Marks distinguish actual incomplete/completed flags for active four-request
+calls; all-null request polls are excluded. The controlled probe passes both
+without and with the interposer, and its final all-null poll emits no mark.
+
+For a prepared solver case, use `nsys profile --trace=cuda,nvtx` around
+`mpiexec -np 2 env LD_PRELOAD=<absolute-library-path> <absolute-astr-path> run <input>`.
+Keep the case's usual CUDA_VISIBLE_DEVICES, ASTR_FORCE_MPI_TOPOLOGY,
+ASTR_GPU_SYNC_MODE=explicit, ASTR_GPU_HALO_TRANSPORT=pinned-overlap and
+OMPI_MCA_sharedfp=individual settings. Export the report as SQLite, then run:
+
+```bash
+python3 tests/gpu_validation/summarize_mpi_kernel_overlap.py \
+  tests/gpu_validation/out/p3_completion_tgv_y_nsys/trace.sqlite --completion
+```
+
+The final-source TGV 256^3 NP=2 y-slab trace records 4237 pending and 24 completed
+marks during same-process diffusion kernels. This is request-state overlap
+evidence, not bandwidth or performance evidence. See the P3 baseline report for
+the controlled probe, exact solver hash and interpretation limits.
+
+### P3 Local Acceptance
+
+Local acceptance is complete: default pageable and optional pinned blocking
+are retained; optional pinned-overlap is admitted only for the implemented
+fully periodic stored-diffusion core. Standalone paired nonblocking is rejected;
+CUDA-aware remains deferred on the tested stack. No numerical scheme, halo
+width, interface average or explicit kernel synchronization changes.
+
+The final performance audit is `out/p3_final_performance_complete_audit.json`:
+34 full groups and 204 process logs including warmups, with all inconclusive
+groups preserved. Final TGV y/z pass. TGV x overlap's original and repeat1
+groups are inconclusive; its complete repeat2 pinned/overlap pair passes.
+Valid overlap increments over paired pinned are x/y/z: 2.616/3.085/2.944%.
+Pinned gains across nine formal cases are 2.829%--23.728%; maximum per-device
+memory growth is 3.436%. Input/controller hashes match within each case/topology.
+
+Builds, 68 Python tests and 96 bash syntax checks pass. The existing final-source
+CFD and zero-error host-only MPI sanitizer matrices remain applicable because
+solver sources are unchanged. `out/p3_completion_field_control/` adds TGV 64^3,
+NP=2 y, MAXSTEP=2 comparisons against frozen pre-P3 GPU L0. Endpoint pageable,
+endpoint overlap, real NSYS/preloaded overlap and the rebuilt solver all have
+zero difference in all eleven compared fields. The comparator's `--cpu` input
+is a GPU reference in these additional tests. Rebuilt completion probes pass
+with and without preload. See the final P3 report for binary hashes and scope;
+do not relabel frozen-binary timings as new rebuilt-binary measurements.

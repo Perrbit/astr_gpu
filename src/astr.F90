@@ -28,7 +28,7 @@ program astr
   use comsolver,     only: solvrinit
 #ifdef _CUDA
   use gpu_runtime,   only: gpu_bind_device,gpu_after_refcal,gpu_after_alloc, &
-                           gpu_after_flowinit
+                           gpu_after_flowinit,gpu_before_finalize
 #endif
 
   implicit none
@@ -104,6 +104,9 @@ program astr
 #endif
 
     call steploop
+#ifdef _CUDA
+    if(use_gpu) call gpu_before_finalize()
+#endif
 
     call mpistop
 

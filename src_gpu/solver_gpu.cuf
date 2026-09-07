@@ -4087,11 +4087,12 @@ contains
             qflux_d(i,j,k,3)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,kk)
   end subroutine stored_diff_flux_at_xyphysical
 
-  attributes(global) subroutine diffusion_rhs_x_stored_global_kernel(im,jm,km)
+  attributes(global) subroutine diffusion_rhs_x_stored_global_kernel(im,jm,km,region)
     use commarray_gpu, only: qrhs_d
     implicit none
-    integer,value :: im,jm,km
+    integer,value :: im,jm,km,region
     integer :: id,ntot,i,j,k,m
+    logical :: core
     real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -4100,6 +4101,10 @@ contains
     i = mod(id,im+1)
     j = mod(id/(im+1),jm+1)
     k = id/((im+1)*(jm+1))
+    if(region/=0) then
+      core=i>=3 .and. i<=im-3 .and. j>=3 .and. j<=jm-3 .and. k>=3 .and. k<=km-3
+      if((region==1) .neqv. core) return
+    endif
     call stored_diff_flux_at(i+1,j,k,1,im,jm,km,fp1)
     call stored_diff_flux_at(i-1,j,k,1,im,jm,km,fm1)
     call stored_diff_flux_at(i+2,j,k,1,im,jm,km,fp2)
@@ -4139,11 +4144,12 @@ contains
     enddo
   end subroutine diffusion_rhs_x_xphysical_stored_global_kernel
 
-  attributes(global) subroutine diffusion_rhs_y_stored_global_kernel(im,jm,km)
+  attributes(global) subroutine diffusion_rhs_y_stored_global_kernel(im,jm,km,region)
     use commarray_gpu, only: qrhs_d
     implicit none
-    integer,value :: im,jm,km
+    integer,value :: im,jm,km,region
     integer :: id,ntot,i,j,k,m
+    logical :: core
     real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
 
     id = (blockIdx%x - 1) * blockDim%x * blockDim%y +       &
@@ -4153,6 +4159,10 @@ contains
     i = mod(id,im+1)
     j = id/(im+1)
     k = blockIdx%z - 1
+    if(region/=0) then
+      core=i>=3 .and. i<=im-3 .and. j>=3 .and. j<=jm-3 .and. k>=3 .and. k<=km-3
+      if((region==1) .neqv. core) return
+    endif
     call stored_diff_flux_at(i,j+1,k,2,im,jm,km,fp1)
     call stored_diff_flux_at(i,j-1,k,2,im,jm,km,fm1)
     call stored_diff_flux_at(i,j+2,k,2,im,jm,km,fp2)
@@ -4164,11 +4174,12 @@ contains
     enddo
   end subroutine diffusion_rhs_y_stored_global_kernel
 
-  attributes(global) subroutine diffusion_rhs_z_stored_global_kernel(im,jm,km)
+  attributes(global) subroutine diffusion_rhs_z_stored_global_kernel(im,jm,km,region)
     use commarray_gpu, only: qrhs_d
     implicit none
-    integer,value :: im,jm,km
+    integer,value :: im,jm,km,region
     integer :: id,ntot,i,j,k,m
+    logical :: core
     real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
 
     id = (blockIdx%x - 1) * blockDim%x * blockDim%z +       &
@@ -4178,6 +4189,10 @@ contains
     i = mod(id,im+1)
     j = blockIdx%y - 1
     k = id/(im+1)
+    if(region/=0) then
+      core=i>=3 .and. i<=im-3 .and. j>=3 .and. j<=jm-3 .and. k>=3 .and. k<=km-3
+      if((region==1) .neqv. core) return
+    endif
     call stored_diff_flux_at(i,j,k+1,3,im,jm,km,fp1)
     call stored_diff_flux_at(i,j,k-1,3,im,jm,km,fm1)
     call stored_diff_flux_at(i,j,k+2,3,im,jm,km,fp2)

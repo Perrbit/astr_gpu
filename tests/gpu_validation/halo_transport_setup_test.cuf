@@ -1,0 +1,50 @@
+program halo_transport_setup_test
+  use mpi
+  use cudafor
+  use iso_c_binding, only: c_loc,c_size_t
+  use halo_transport_gpu, only: begin_transport_setup,register_host_buffer, &
+                              end_transport_setup,release_host_buffers
+  implicit none
+  type host_buffer
+    real(8),pointer,contiguous :: values(:,:,:,:)
+  end type host_buffer
+  type(host_buffer) :: buffers(37)
+  integer :: rank,ierr,devices,i,n
+  logical :: pinned,overflow
+  character(32) :: mode
+
+  call mpi_init(ierr)
+  call mpi_comm_rank(MPI_COMM_WORLD,rank,ierr)
+  call require(cudaGetDeviceCount(devices)==cudaSuccess)
+  call require(devices>0)
+  call require(cudaSetDevice(mod(rank,devices))==cudaSuccess)
+  call get_command_argument(1,mode)
+  overflow=trim(mode)=='overflow'
+  call require(overflow .or. trim(mode)=='normal')
+  call begin_transport_setup(pinned)
+  call require(pinned)
+  n=4
+  if(overflow .and. rank==0) n=37
+  do i=1,n
+    allocate(buffers(i)%values(37,1,1,1))
+    call register_host_buffer(buffers(i)%values)
+  enddo
+  call end_transport_setup(pinned)
+  call require(pinned .neqv. overflow)
+  call release_host_buffers()
+  ! Re-registration must succeed after both normal release and collective rollback.
+  do i=1,n
+    call require(cudaHostRegister(c_loc(buffers(i)%values),296_c_size_t,0)==cudaSuccess)
+    call require(cudaHostUnregister(c_loc(buffers(i)%values))==cudaSuccess)
+    deallocate(buffers(i)%values)
+  enddo
+  if(rank==0) print *, 'halo transport setup/release test passed: ',trim(mode)
+  call mpi_finalize(ierr)
+contains
+  subroutine require(condition)
+    logical,intent(in) :: condition
+    if(condition) return
+    print *, 'halo transport setup test failed: rank=',rank
+    call mpi_abort(MPI_COMM_WORLD,1,ierr)
+  end subroutine require
+end program halo_transport_setup_test

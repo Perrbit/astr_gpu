@@ -4,6 +4,7 @@ module gpu_runtime
   logical,save :: stats_snapshot_ready = .false.
   logical,save :: rk_timing_configured = .false.
   logical,save :: rk_timing_enabled = .false.
+  logical,save :: rank_rk_timing_enabled = .false.
   real(8),save :: rk_prepare_start = 0.d0
   real(8),save :: rk_prepare_seconds = 0.d0
 contains
@@ -22,6 +23,16 @@ contains
         rk_timing_enabled=.true.
       case default
         rk_timing_enabled=.false.
+      end select
+    endif
+    value=''
+    call get_environment_variable('ASTR_GPU_RANK_RK_TIMING',value, &
+                                  length=length,status=status)
+    if(status == 0 .and. length > 0) then
+      select case(trim(adjustl(value)))
+      case('1','t','T','true','TRUE','on','ON')
+        rank_rk_timing_enabled=.true.
+        rk_timing_enabled=.true.
       end select
     endif
     rk_timing_configured=.true.
@@ -69,6 +80,7 @@ contains
   end subroutine gpu_after_alloc
 
   subroutine gpu_after_flowinit()
+    use halo_exchange_gpu, only: init_halo_transport_gpu
     use mainloop_gpu, only: init_gpu
     use sponge_gpu, only: init_sponge_gpu
     use boundary_gpu, only: init_s1_flatplate_profile_gpu,init_wall_blowing_gpu
@@ -88,11 +100,18 @@ contains
         write(*,'(A)') ' ** GPU synchronization mode: explicit'
       endif
     endif
+    call init_halo_transport_gpu()
     call init_gpu()
     call init_wall_blowing_gpu()
     call init_s1_flatplate_profile_gpu()
     call init_sponge_gpu()
   end subroutine gpu_after_flowinit
+
+  subroutine gpu_before_finalize()
+    use halo_transport_gpu, only: release_host_buffers
+    implicit none
+    call release_host_buffers()
+  end subroutine gpu_before_finalize
 
   subroutine gpu_sync_flow_to_device()
     use commarray_gpu, only: copy_flow_to_gpu
@@ -151,7 +170,7 @@ contains
     use mainloop_gpu, only: time_integration_rk_gpu
     use commvar, only: nstep
     use gpu_check, only: sync_gpu_boundary
-    use parallel, only: lio,ptime
+    use parallel, only: lio,ptime,mpirank
     implicit none
     logical,intent(in),optional :: first_stage_prepared
     logical,intent(in),optional :: copy_back
@@ -165,6 +184,9 @@ contains
       total_seconds=rk_prepare_seconds+integration_seconds
       if(lio) write(*,'(A,1X,I0,3(1X,ES24.16E3))')                  &
         'ASTR_GPU_RK_TIMING',nstep,rk_prepare_seconds,              &
+        integration_seconds,total_seconds
+      if(rank_rk_timing_enabled) write(*,'(A,2(1X,I0),3(1X,ES24.16E3))') &
+        'ASTR_GPU_RANK_RK_TIMING',mpirank,nstep,rk_prepare_seconds, &
         integration_seconds,total_seconds
     endif
     prepared_halo_ready = .false.

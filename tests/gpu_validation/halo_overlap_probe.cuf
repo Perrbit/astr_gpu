@@ -1,0 +1,169 @@
+module halo_overlap_probe_kernel
+  use cudafor
+  use constdef, only: num1d60
+  implicit none
+contains
+  attributes(global) subroutine interior_derivative(input,output,n)
+    integer,value :: n
+    real(8),device :: input(0:n-1),output(0:n-1)
+    integer :: i
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(i<3 .or. i>n-4) return
+    output(i)=(45.d0*(input(i+1)-input(i-1))-9.d0*(input(i+2)-input(i-2)) &
+                +input(i+3)-input(i-3))*num1d60
+  end subroutine interior_derivative
+end module halo_overlap_probe_kernel
+
+program halo_overlap_probe
+  use mpi
+  use cudafor
+  use iso_c_binding, only: c_loc,c_size_t
+  use halo_overlap_probe_kernel
+  implicit none
+  real(8),allocatable,target,asynchronous :: sl(:),sh(:),rl(:),rh(:)
+  real(8),allocatable :: host(:)
+  real(8),allocatable,device :: input(:),output(:)
+  integer :: rank,nranks,devices,ierr,code,i,iteration,pass,n,count,passes,repeats
+  integer :: low,high,requests(4),statuses(MPI_STATUS_SIZE,4),status(MPI_STATUS_SIZE)
+  integer :: polls,total_polls,completed_ranks
+  real(8) :: start,elapsed,maximum,wait_start,wait_seconds,max_wait
+  logical :: done
+  character(32) :: mode
+  integer(c_size_t) :: bytes
+  type(dim3) :: block,grid
+
+  call mpi_init(ierr)
+  call mpi_comm_rank(MPI_COMM_WORLD,rank,ierr)
+  call mpi_comm_size(MPI_COMM_WORLD,nranks,ierr)
+  call get_command_argument(1,mode)
+  call require(trim(mode)=='blocking' .or. trim(mode)=='wait' .or. trim(mode)=='poll','mode')
+  call read_integer(2,1981470,count)
+  call read_integer(3,8388608,n)
+  call read_integer(4,3,passes)
+  call read_integer(5,8,repeats)
+  call require(count>0 .and. n>=8 .and. passes>0 .and. repeats>0,'positive dimensions')
+  call cuda_check(cudaGetDeviceCount(devices),'device count')
+  call require(devices>=nranks,'one physical GPU per rank required')
+  call cuda_check(cudaSetDevice(rank),'select device')
+  allocate(sl(count),sh(count),rl(count),rh(count),host(0:n-1),input(0:n-1),output(0:n-1))
+  bytes=int(count,c_size_t)*8_c_size_t
+  call cuda_check(cudaHostRegister(c_loc(sl),bytes,0),'register sl')
+  call cuda_check(cudaHostRegister(c_loc(sh),bytes,0),'register sh')
+  call cuda_check(cudaHostRegister(c_loc(rl),bytes,0),'register rl')
+  call cuda_check(cudaHostRegister(c_loc(rh),bytes,0),'register rh')
+  host=[(real(i,8),i=0,n-1)]
+  input=host
+  output=0.d0
+  block=dim3(512,1,1)
+  grid=dim3((n+511)/512,1,1)
+  low=mod(rank+nranks-1,nranks)
+  high=mod(rank+1,nranks)
+  if(rank==0) print *, 'mode iteration max_seconds max_wait_seconds polls completed_before_wait'
+  do iteration=0,repeats
+    sl=real(10000*iteration+10*rank+1,8)
+    sh=real(10000*iteration+10*rank+2,8)
+    rl=-1.d0
+    rh=-1.d0
+    done=.false.
+    polls=0
+    call mpi_barrier(MPI_COMM_WORLD,ierr)
+    call mpi_check(ierr)
+    start=mpi_wtime()
+    if(trim(mode)=='blocking') then
+      call mpi_sendrecv(sl,count,MPI_REAL8,low,21001,rh,count,MPI_REAL8,high,21001, &
+                       MPI_COMM_WORLD,status,ierr)
+      call mpi_check(ierr)
+      call mpi_sendrecv(sh,count,MPI_REAL8,high,21002,rl,count,MPI_REAL8,low,21002, &
+                       MPI_COMM_WORLD,status,ierr)
+      call mpi_check(ierr)
+    else
+      call mpi_irecv(rh,count,MPI_REAL8,high,21001,MPI_COMM_WORLD,requests(1),ierr)
+      call mpi_check(ierr)
+      call mpi_irecv(rl,count,MPI_REAL8,low,21002,MPI_COMM_WORLD,requests(2),ierr)
+      call mpi_check(ierr)
+      call mpi_isend(sl,count,MPI_REAL8,low,21001,MPI_COMM_WORLD,requests(3),ierr)
+      call mpi_check(ierr)
+      call mpi_isend(sh,count,MPI_REAL8,high,21002,MPI_COMM_WORLD,requests(4),ierr)
+      call mpi_check(ierr)
+    endif
+    do pass=1,passes
+      call interior_derivative<<<grid,block>>>(input,output,n)
+      call cuda_check(cudaGetLastError(),'stencil launch')
+      if(trim(mode)=='poll' .and. .not.done) then
+        do
+          code=cudaStreamQuery(0_cuda_stream_kind)
+          if(code==cudaSuccess) exit
+          call require(code==cudaErrorNotReady,'stream query')
+          call mpi_testall(4,requests,done,statuses,ierr)
+          call mpi_check(ierr)
+          polls=polls+1
+          if(done) exit
+        enddo
+      endif
+      ! Preserve the explicit post-kernel synchronization contract in every mode.
+      call cuda_check(cudaDeviceSynchronize(),'stencil completion')
+    enddo
+    wait_start=mpi_wtime()
+    if(trim(mode)/='blocking') then
+      call mpi_waitall(4,requests,statuses,ierr)
+      call mpi_check(ierr)
+    endif
+    wait_seconds=mpi_wtime()-wait_start
+    elapsed=mpi_wtime()-start
+    call require(all(rh==real(10000*iteration+10*high+1,8)),'high payload')
+    call require(all(rl==real(10000*iteration+10*low+2,8)),'low payload')
+    call mpi_allreduce(elapsed,maximum,1,MPI_REAL8,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call mpi_check(ierr)
+    call mpi_allreduce(wait_seconds,max_wait,1,MPI_REAL8,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call mpi_check(ierr)
+    call mpi_allreduce(polls,total_polls,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call mpi_check(ierr)
+    i=merge(1,0,done)
+    call mpi_allreduce(i,completed_ranks,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call mpi_check(ierr)
+    if(rank==0) write(*,'(A,1X,I0,2(1X,ES24.16E3),2(1X,I0))') &
+      trim(mode),iteration,maximum,max_wait,total_polls,completed_ranks
+  enddo
+  host=output
+  call require(all(host(3:n-4)==1.d0),'stencil result')
+  call require(all(host(0:2)==0.d0) .and. all(host(n-3:n-1)==0.d0),'untouched boundary')
+  call cuda_check(cudaHostUnregister(c_loc(sl)),'unregister sl')
+  call cuda_check(cudaHostUnregister(c_loc(sh)),'unregister sh')
+  call cuda_check(cudaHostUnregister(c_loc(rl)),'unregister rl')
+  call cuda_check(cudaHostUnregister(c_loc(rh)),'unregister rh')
+  deallocate(sl,sh,rl,rh,host,input,output)
+  if(rank==0) print *, 'overlap probe payload and stencil checks passed'
+  call mpi_finalize(ierr)
+contains
+  subroutine read_integer(index,default,value)
+    integer,intent(in) :: index,default
+    integer,intent(out) :: value
+    integer :: length,ios
+    character(32) :: arg
+    value=default
+    call get_command_argument(index,arg,length=length,status=ios)
+    if(length==0) return
+    call require(ios==0,'argument length')
+    read(arg,*,iostat=ios) value
+    call require(ios==0,'integer argument')
+  end subroutine read_integer
+  subroutine require(condition,message)
+    logical,intent(in) :: condition
+    character(*),intent(in) :: message
+    if(condition) return
+    print *, 'overlap probe failed: ',trim(message),' rank=',rank
+    call mpi_abort(MPI_COMM_WORLD,1,ierr)
+  end subroutine require
+  subroutine cuda_check(result,message)
+    integer,intent(in) :: result
+    character(*),intent(in) :: message
+    if(result==cudaSuccess) return
+    print *, trim(message),': ',trim(cudaGetErrorString(result))
+    call require(.false.,message)
+  end subroutine cuda_check
+  subroutine mpi_check(result)
+    integer,intent(in) :: result
+    integer :: ignored
+    if(result/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,result,ignored)
+  end subroutine mpi_check
+end program halo_overlap_probe

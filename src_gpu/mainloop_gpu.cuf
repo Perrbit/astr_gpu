@@ -139,7 +139,9 @@ contains
   subroutine time_integration_rk_gpu(first_stage_prepared,copy_back)
     use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,npdcj,npdck,nstep,deltat,const2,const5,const6, &
          diffterm,lfilter,reynolds,prandtl,tempconst,tempconst1,gamma,recon_schem
-    use parallel, only: jsize,ksize
+    use parallel, only: isize,jsize,ksize
+    use halo_transport_gpu, only: halo_overlap_enabled,progress_host_pair_during_kernel
+    use boundary_gpu, only: gpu_periodic_boundary_case
     use commarray_gpu, only: q_d,qrhs_d,qsave_d,rho_d,vel_d,prs_d,tmp_d, &
          jacob_d,dxi_d,copy_flow_from_gpu
     use gpu_check, only: sync_after_kernel
@@ -278,10 +280,19 @@ contains
     logical :: s2_sbli_nscbc_case
     logical :: s2_sbli_nscbc_sponge_case
     logical :: periodic_filter_case
+    logical :: overlap_diffusion
+    logical,save :: overlap_reported=.false.
+    integer :: diffusion_region
     integer :: physical_axis
     integer :: ivar
 
     call validate_first_stage_gpu()
+    overlap_diffusion=halo_overlap_enabled .and. diffterm .and. gpu_periodic_boundary_case() .and. &
+                      isize*jsize*ksize>1 .and. min(im,jm,km)>=6
+    if(halo_overlap_enabled .and. .not.overlap_reported) then
+      write(*,'(A,L1)') 'ASTR_GPU_HALO_OVERLAP periodic_diffusion_active=',overlap_diffusion
+      overlap_reported=.true.
+    endif
     ldc_case = gpu_ldc_boundary_case_pending()
     flatplate_mp7_case = gpu_s1_flatplate_s1a1_supported() .or. &
          gpu_s1_flatplate_explicit_filter_supported()
@@ -680,7 +691,13 @@ contains
             call sync_after_kernel('diffusion_flux_global_kernel')
           end select
         endif
-        call exchange_diffusion_flux_halo_gpu()
+        diffusion_region=0
+        if(overlap_diffusion) then
+          call exchange_diffusion_flux_halo_gpu(diffusion_interior_work)
+          diffusion_region=2
+        else
+          call exchange_diffusion_flux_halo_gpu()
+        endif
         if(ldc_case .or. flatplate_case) then
           call diffusion_rhs_x_xyphysical_stored_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie,js,je,ks,ke, &
                                                                                    apply_left_x,apply_right_x)
@@ -696,9 +713,9 @@ contains
             call diffusion_rhs_x_xphysical_stored_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie,js,je,ks,ke, &
                                                                                     apply_left_x,apply_right_x)
             call sync_after_kernel('diffusion_rhs_x_xphysical_stored_global_kernel')
-            call diffusion_rhs_y_stored_global_kernel<<<grid_y_flat,block_y>>>(im,jm,km)
+            call diffusion_rhs_y_stored_global_kernel<<<grid_y_flat,block_y>>>(im,jm,km,0)
             call sync_after_kernel('diffusion_rhs_y_stored_global_kernel')
-            call diffusion_rhs_z_stored_global_kernel<<<grid_z_flat,block_z>>>(im,jm,km)
+            call diffusion_rhs_z_stored_global_kernel<<<grid_z_flat,block_z>>>(im,jm,km,0)
             call sync_after_kernel('diffusion_rhs_z_stored_global_kernel')
           case(2)
             call diffusion_rhs_x_yphysical_stored_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie)
@@ -717,11 +734,11 @@ contains
                                                                                     apply_back_z,apply_front_z)
             call sync_after_kernel('diffusion_rhs_z_zphysical_stored_global_kernel')
           case default
-            call diffusion_rhs_x_stored_global_kernel<<<grid_x_flat,block_x>>>(im,jm,km)
+            call diffusion_rhs_x_stored_global_kernel<<<grid_x_flat,block_x>>>(im,jm,km,diffusion_region)
             call sync_after_kernel('diffusion_rhs_x_stored_global_kernel')
-            call diffusion_rhs_y_stored_global_kernel<<<grid_y_flat,block_y>>>(im,jm,km)
+            call diffusion_rhs_y_stored_global_kernel<<<grid_y_flat,block_y>>>(im,jm,km,diffusion_region)
             call sync_after_kernel('diffusion_rhs_y_stored_global_kernel')
-            call diffusion_rhs_z_stored_global_kernel<<<grid_z_flat,block_z>>>(im,jm,km)
+            call diffusion_rhs_z_stored_global_kernel<<<grid_z_flat,block_z>>>(im,jm,km,diffusion_region)
             call sync_after_kernel('diffusion_rhs_z_stored_global_kernel')
           end select
         endif
@@ -749,6 +766,19 @@ contains
          q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
     call sync_after_kernel('q_to_primitive_kernel_final')
     if(need_copy_back) call copy_flow_from_gpu()
+  contains
+    subroutine diffusion_interior_work(requests)
+      integer,intent(inout) :: requests(4)
+      call diffusion_rhs_x_stored_global_kernel<<<grid_x_flat,block_x>>>(im,jm,km,1)
+      call progress_host_pair_during_kernel(requests)
+      call sync_after_kernel('diffusion_rhs_x_stored_interior')
+      call diffusion_rhs_y_stored_global_kernel<<<grid_y_flat,block_y>>>(im,jm,km,1)
+      call progress_host_pair_during_kernel(requests)
+      call sync_after_kernel('diffusion_rhs_y_stored_interior')
+      call diffusion_rhs_z_stored_global_kernel<<<grid_z_flat,block_z>>>(im,jm,km,1)
+      call progress_host_pair_during_kernel(requests)
+      call sync_after_kernel('diffusion_rhs_z_stored_interior')
+    end subroutine diffusion_interior_work
   end subroutine time_integration_rk_gpu
 
   subroutine validate_first_stage_gpu()

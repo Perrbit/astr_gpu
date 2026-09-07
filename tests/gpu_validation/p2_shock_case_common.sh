@@ -2,9 +2,9 @@
 
 p2_validate_case() {
   case "$1" in
-    shuosher|sbli) ;;
+    tgv|shuosher|sbli) ;;
     *)
-      printf 'CASE must be shuosher or sbli\n' >&2
+      printf 'CASE must be tgv, shuosher or sbli\n' >&2
       return 2
       ;;
   esac
@@ -12,6 +12,7 @@ p2_validate_case() {
 
 p2_default_grid() {
   case "$1" in
+    tgv) printf '256,256,256\n' ;;
     shuosher) printf '256,64,32\n' ;;
     sbli) printf '256,192,32\n' ;;
     *) p2_validate_case "$1" ;;
@@ -35,6 +36,15 @@ p2_prepare_case() {
   fi
 
   P2_RUNTIME_ENV=()
+  if [[ "$case_name" == tgv ]]; then
+    python3 "$P2_ROOT_DIR/tests/gpu_validation/prepare_tgv_case.py" \
+      --src-case "$P2_ROOT_DIR/examples/Taylor_Green_Vortex" \
+      --dst-case "$case_dir" --use-gpu t --grid "$grid" \
+      --maxstep "$maxstep" --feqchkpt "$feqchkpt" --feqlist "$feqlist" \
+      --lfilter t --diffterm t --scheme 643e
+    P2_INPUT=datin/input.tgv
+    return
+  fi
   if [[ "$case_name" == "shuosher" ]]; then
     python3 "$P2_ROOT_DIR/tests/gpu_validation/prepare_tgv_case.py" \
       --src-case "$P2_ROOT_DIR/examples/Shuosher" \

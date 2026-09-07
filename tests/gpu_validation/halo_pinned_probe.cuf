@@ -1,0 +1,43 @@
+program halo_pinned_probe
+  use cudafor
+  use iso_c_binding, only: c_loc,c_size_t
+  implicit none
+  real(8),allocatable,target :: a(:),b(:),c(:),d(:)
+  real(8),allocatable,device :: work(:)
+  integer :: sizes(4)=[1,37,4096,262144],i,n,j,flags
+  integer(c_size_t) :: bytes
+
+  call check(cudaSetDevice(0),'select device')
+  do i=1,size(sizes)
+    n=sizes(i)
+    bytes=int(n,c_size_t)*8_c_size_t
+    allocate(a(n),b(n),c(n),d(n),work(n))
+    call check(cudaHostRegister(c_loc(a),bytes,0),'register a')
+    call check(cudaHostRegister(c_loc(b),bytes,0),'register b')
+    call check(cudaHostRegister(c_loc(c),bytes,0),'register c')
+    call check(cudaHostRegister(c_loc(d),bytes,0),'register d')
+    call check(cudaHostGetFlags(flags,c_loc(a)),'query registration')
+    a=[(real(j,8),j=1,n)]
+    work=a
+    b=work
+    c=-a
+    work=c
+    d=work
+    call check(cudaDeviceSynchronize(),'finish copies')
+    if(any(a/=b) .or. any(c/=d)) error stop 'pinned copy mismatch'
+    call check(cudaHostUnregister(c_loc(a)),'unregister a')
+    call check(cudaHostUnregister(c_loc(b)),'unregister b')
+    call check(cudaHostUnregister(c_loc(c)),'unregister c')
+    call check(cudaHostUnregister(c_loc(d)),'unregister d')
+    deallocate(a,b,c,d,work)
+    print *, 'pinned registration/copy/release passed; elements=',n
+  enddo
+contains
+  subroutine check(code,operation)
+    integer,intent(in) :: code
+    character(*),intent(in) :: operation
+    if(code==cudaSuccess) return
+    print *, trim(operation),': ',code,trim(cudaGetErrorString(code))
+    error stop 'pinned probe failed'
+  end subroutine check
+end program halo_pinned_probe

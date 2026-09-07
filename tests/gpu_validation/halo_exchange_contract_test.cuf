@@ -1,0 +1,195 @@
+program halo_exchange_contract_test
+  use mpi
+  use cudafor
+  use commvar, only: im,jm,km,hm,numq
+  use commarray_gpu, only: q_d,qwork_d
+  use parallel, only: isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
+  use halo_transport_gpu, only: release_host_buffers
+  use halo_exchange_gpu, only: init_halo_transport_gpu,exchange_x_halo_gpu, &
+    exchange_y_halo_gpu,exchange_z_halo_gpu,exchange_x_filter_halo_gpu, &
+    exchange_filter_y_work_halo_gpu,exchange_filter_z_halo_gpu, &
+    exchange_field_x_halo_gpu,exchange_field_y_halo_gpu,exchange_field_z_halo_gpu
+  implicit none
+  real(8),allocatable :: initial(:,:,:,:),expected(:,:,:,:),actual(:,:,:,:)
+  real(8),allocatable,device :: field(:,:,:,:)
+  integer :: rank,nranks,ierr,devices,axis,mode,low,high,v,nvar
+  integer,parameter :: components(3)=[1,3,6]
+
+  axis=0
+  mode=0
+  call mpi_init(ierr)
+  call mpi_comm_rank(MPI_COMM_WORLD,rank,ierr)
+  call mpi_comm_size(MPI_COMM_WORLD,nranks,ierr)
+  call require(nranks>=2,'requires at least two ranks')
+  call require(cudaGetDeviceCount(devices)==cudaSuccess,'device count')
+  call require(devices>0,'no devices')
+  call require(cudaSetDevice(mod(rank,devices))==cudaSuccess,'device binding')
+  im=12
+  jm=12
+  km=12
+  numq=5
+  allocate(initial(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6))
+  allocate(expected,mold=initial)
+  allocate(actual,mold=initial)
+  allocate(field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6))
+  allocate(q_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,numq))
+  allocate(qwork_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,numq))
+  call seed()
+
+  do axis=1,3
+    isize=1
+    jsize=1
+    ksize=1
+    if(axis==1) isize=nranks
+    if(axis==2) jsize=nranks
+    if(axis==3) ksize=nranks
+    call init_halo_transport_gpu()
+    do mode=1,2
+      low=mod(rank+nranks-1,nranks)
+      high=mod(rank+1,nranks)
+      if(mode==2) then
+        if(rank==0) low=MPI_PROC_NULL
+        if(rank==nranks-1) high=MPI_PROC_NULL
+      endif
+      mpileft=low
+      mpidown=low
+      mpiback=low
+      mpiright=high
+      mpiup=high
+      mpifront=high
+
+      q_d=initial(:,:,:,1:5)
+      call reference(5,.true.)
+      select case(axis)
+      case(1)
+        call exchange_x_halo_gpu()
+      case(2)
+        call exchange_y_halo_gpu()
+      case(3)
+        call exchange_z_halo_gpu()
+      end select
+      actual(:,:,:,1:5)=q_d
+      call check_values(5,'qswap hm+1 and shared-plane averaging')
+
+      q_d=initial(:,:,:,1:5)
+      qwork_d=initial(:,:,:,1:5)
+      call reference(5,.false.)
+      select case(axis)
+      case(1)
+        call exchange_x_filter_halo_gpu()
+      case(2)
+        call exchange_filter_y_work_halo_gpu()
+      case(3)
+        call exchange_filter_z_halo_gpu()
+      end select
+      if(axis==2) then
+        actual(:,:,:,1:5)=qwork_d
+      else
+        actual(:,:,:,1:5)=q_d
+      endif
+      call check_values(5,'filter hm and unchanged shared planes')
+      expected=initial
+      if(axis==2) then
+        actual(:,:,:,1:5)=q_d
+      else
+        actual(:,:,:,1:5)=qwork_d
+      endif
+      call check_values(5,'filter source ownership')
+
+      do v=1,3
+        nvar=components(v)
+        field=initial
+        call reference(nvar,.false.)
+        select case(axis)
+        case(1)
+          call exchange_field_x_halo_gpu(field(:,:,:,1:nvar),nvar)
+        case(2)
+          call exchange_field_y_halo_gpu(field(:,:,:,1:nvar),nvar)
+        case(3)
+          call exchange_field_z_halo_gpu(field(:,:,:,1:nvar),nvar)
+        end select
+        actual=field
+        call check_values(6,'field hm, component bounds and untouched halos')
+      enddo
+    enddo
+    call release_host_buffers()
+  enddo
+  if(rank==0) print *, 'production halo contract passed: axes=3, modes=2, exchanges=30, ranks=',nranks
+  call mpi_finalize(ierr)
+contains
+  real(8) function value(owner,c,m)
+    integer,intent(in) :: owner,c(3),m
+    value=real(owner+1,8)*100000001.d0+real(m,8)*1000000.d0+ &
+          real(c(1),8)*1024.d0+real(c(2),8)*32.d0+real(c(3),8)
+  end function value
+
+  subroutine seed()
+    integer :: i,j,k,m
+    do m=1,6
+      do k=-hm,km+hm
+        do j=-hm,jm+hm
+          do i=-hm,im+hm
+            initial(i,j,k,m)=value(rank,[i,j,k],m)
+          enddo
+        enddo
+      enddo
+    enddo
+  end subroutine seed
+
+  subroutine reference(n,average)
+    integer,intent(in) :: n
+    logical,intent(in) :: average
+    integer :: i,j,k,m,h,c(3),dst(3),src(3),extent(3)
+    extent=[im,jm,km]
+    expected=initial
+    ! Only owned transverse faces are exchanged; edge/corner halos stay seeded.
+    do m=1,n
+      do k=0,km
+        do j=0,jm
+          do i=0,im
+            c=[i,j,k]
+            if(c(axis)/=0) cycle
+            if(low/=MPI_PROC_NULL) then
+              do h=0,hm-1
+                dst=c
+                src=c
+                dst(axis)=-hm+h
+                src(axis)=extent(axis)-hm+h
+                expected(dst(1),dst(2),dst(3),m)=value(low,src,m)
+              enddo
+              src=c
+              src(axis)=extent(axis)
+              if(average) expected(c(1),c(2),c(3),m)=0.5d0*(value(rank,c,m)+value(low,src,m))
+            endif
+            if(high/=MPI_PROC_NULL) then
+              do h=1,hm
+                dst=c
+                src=c
+                dst(axis)=extent(axis)+h
+                src(axis)=h
+                expected(dst(1),dst(2),dst(3),m)=value(high,src,m)
+              enddo
+              dst=c
+              dst(axis)=extent(axis)
+              if(average) expected(dst(1),dst(2),dst(3),m)=0.5d0*(value(rank,dst,m)+value(high,c,m))
+            endif
+          enddo
+        enddo
+      enddo
+    enddo
+  end subroutine reference
+
+  subroutine check_values(n,label)
+    integer,intent(in) :: n
+    character(*),intent(in) :: label
+    call require(all(actual(:,:,:,1:n)==expected(:,:,:,1:n)),label)
+  end subroutine check_values
+
+  subroutine require(ok,label)
+    logical,intent(in) :: ok
+    character(*),intent(in) :: label
+    if(ok) return
+    print *, 'production halo contract failed: rank,axis,mode=',rank,axis,mode,trim(label)
+    call mpi_abort(MPI_COMM_WORLD,1,ierr)
+  end subroutine require
+end program halo_exchange_contract_test

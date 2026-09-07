@@ -1,0 +1,147 @@
+program halo_cuda_aware_probe
+  use mpi
+  use cudafor
+  use iso_c_binding, only: c_int
+  implicit none
+  interface
+    function query_cuda_support() bind(C,name='MPIX_Query_cuda_support') result(supported)
+      import c_int
+      integer(c_int) :: supported
+    end function query_cuda_support
+  end interface
+  real(8),allocatable,device :: sl(:,:,:,:),sh(:,:,:,:),rl(:,:,:,:),rh(:,:,:,:)
+  real(8),allocatable :: host(:,:,:,:),expected(:,:,:,:)
+  integer :: rank,nranks,ierr,devices,capability,all_capable,width,nvar,n,mode,v,j
+  integer :: low,high,ny,nz,status(MPI_STATUS_SIZE),ios,code,local_rank
+  integer,parameter :: variables(3)=[1,3,6]
+  character(32) :: arg
+
+  call get_command_argument(3,arg)
+  if(trim(arg)=='early-bind') then
+    call get_environment_variable('OMPI_COMM_WORLD_LOCAL_RANK',arg,status=ios)
+    if(ios/=0) stop 2
+    read(arg,*,iostat=ios) local_rank
+    if(ios/=0) stop 2
+    code=cudaGetDeviceCount(devices)
+    if(code/=cudaSuccess .or. devices<1) stop 2
+    code=cudaSetDevice(mod(local_rank,devices))
+    if(code/=cudaSuccess) stop 2
+  elseif(len_trim(arg)>0) then
+    stop 2
+  endif
+  call mpi_init(ierr)
+  call mpi_check(ierr)
+  call mpi_comm_rank(MPI_COMM_WORLD,rank,ierr)
+  call mpi_check(ierr)
+  call mpi_comm_size(MPI_COMM_WORLD,nranks,ierr)
+  call mpi_check(ierr)
+  capability=int(query_cuda_support())
+  call mpi_allreduce(capability,all_capable,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+  call mpi_check(ierr)
+  write(*,'(A,I0,A,I0)') 'CUDA-aware capability rank=',rank,' supported=',capability
+  if(all_capable/=1) then
+    if(rank==0) print *, 'CUDA-aware probe unsupported: no device buffer submitted to MPI'
+    call mpi_finalize(ierr)
+    stop 77
+  endif
+  call cuda_check(cudaGetDeviceCount(devices))
+  call require(devices>0,'device count')
+  call cuda_check(cudaSetDevice(mod(rank,devices)))
+  ny=3
+  nz=2
+  call get_command_argument(1,arg)
+  if(len_trim(arg)>0) then
+    read(arg,*,iostat=ios) ny
+    call require(ios==0,'ny argument')
+    call get_command_argument(2,arg)
+    read(arg,*,iostat=ios) nz
+    call require(ios==0,'nz argument')
+  endif
+  call require(ny>0 .and. nz>0,'positive extents')
+  do mode=1,2
+    low=mod(rank+nranks-1,nranks)
+    high=mod(rank+1,nranks)
+    if(mode==2) then
+      if(rank==0) low=MPI_PROC_NULL
+      if(rank==nranks-1) high=MPI_PROC_NULL
+    endif
+    do width=5,6
+      do v=1,3
+        nvar=variables(v)
+        allocate(sl(width,ny,nz,nvar),sh(width,ny,nz,nvar), &
+                 rl(width,ny,nz,nvar),rh(width,ny,nz,nvar), &
+                 host(width,ny,nz,nvar),expected(width,ny,nz,nvar))
+        n=size(host)
+        host=reshape([(1.d8*rank+1.d7+real(j,8),j=1,n)],shape(host))
+        sl=host
+        host=reshape([(1.d8*rank+2.d7+real(j,8),j=1,n)],shape(host))
+        sh=host
+        rl=-999.d0
+        rh=-999.d0
+        call cuda_check(cudaDeviceSynchronize())
+        call mpi_sendrecv(sl,n,MPI_REAL8,low,21001,rh,n,MPI_REAL8,high,21001, &
+                          MPI_COMM_WORLD,status,ierr)
+        call mpi_check(ierr)
+        call mpi_sendrecv(sh,n,MPI_REAL8,high,21002,rl,n,MPI_REAL8,low,21002, &
+                          MPI_COMM_WORLD,status,ierr)
+        call mpi_check(ierr)
+        call cuda_check(cudaDeviceSynchronize())
+        host=rh
+        expected=-999.d0
+        if(high/=MPI_PROC_NULL) expected=reshape([(1.d8*high+1.d7+real(j,8),j=1,n)],shape(host))
+        call check_payload('high payload')
+        host=rl
+        expected=-999.d0
+        if(low/=MPI_PROC_NULL) expected=reshape([(1.d8*low+2.d7+real(j,8),j=1,n)],shape(host))
+        call check_payload('low payload')
+        deallocate(sl,sh,rl,rh,host,expected)
+      enddo
+    enddo
+  enddo
+  if(rank==0) print *, 'CUDA-aware device-buffer exact tests passed; ranks,ny,nz=',nranks,ny,nz
+  call mpi_finalize(ierr)
+contains
+  subroutine check_payload(message)
+    character(*),intent(in) :: message
+    integer :: index(4),ii,jj,kk,ll
+    if(all(host==expected)) return
+    index=[1,1,1,1]
+    scan: do ll=1,nvar
+      do kk=1,nz
+        do jj=1,ny
+          do ii=1,width
+            if(.not.(host(ii,jj,kk,ll)==expected(ii,jj,kk,ll))) then
+              index=[ii,jj,kk,ll]
+              exit scan
+            endif
+          enddo
+        enddo
+      enddo
+    enddo scan
+    print *, 'payload context rank,mode,width,nvar,ny,nz=',rank,mode,width,nvar,ny,nz
+    print *, 'first mismatch index=',index
+    print *, 'actual,expected=',host(index(1),index(2),index(3),index(4)), &
+                               expected(index(1),index(2),index(3),index(4))
+    print *, 'first actual,expected=',host(1,1,1,1),expected(1,1,1,1)
+    call require(.false.,message)
+  end subroutine check_payload
+
+  subroutine require(condition,message)
+    logical,intent(in) :: condition
+    character(*),intent(in) :: message
+    if(condition) return
+    print *, 'CUDA-aware probe failed: ',trim(message),' rank=',rank
+    call mpi_abort(MPI_COMM_WORLD,1,ierr)
+  end subroutine require
+  subroutine cuda_check(code)
+    integer,intent(in) :: code
+    if(code==cudaSuccess) return
+    print *, trim(cudaGetErrorString(code))
+    call require(.false.,'CUDA error')
+  end subroutine cuda_check
+  subroutine mpi_check(code)
+    integer,intent(in) :: code
+    integer :: ignored
+    if(code/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,code,ignored)
+  end subroutine mpi_check
+end program halo_cuda_aware_probe
