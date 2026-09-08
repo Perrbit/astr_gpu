@@ -143,6 +143,7 @@ module readwrite
     bcdir(1)='imin'; bcdir(2)='imax'
     bcdir(3)='jmin'; bcdir(4)='jmax'
     bcdir(5)='kmin'; bcdir(6)='kmax'
+    typedefine=' '
     !
     if(mpirank==mpirankmax) then
       

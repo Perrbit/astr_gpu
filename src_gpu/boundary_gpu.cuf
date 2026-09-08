@@ -10,19 +10,22 @@ module boundary_gpu
                        GPU_BC_NSCBC_INFLOW=12, GPU_BC_NSCBC_OUTFLOW=22, &
                        GPU_BC_FARFIELD=51, GPU_BC_NSCBC_FARFIELD=52
   real(8),allocatable,device :: s1_bl_rho_prof_d(:),s1_bl_prs_prof_d(:), &
-                                      s1_bl_vel_prof_d(:,:)
+                                      s1_bl_tmp_prof_d(:),s1_bl_vel_prof_d(:,:)
   logical,save :: s1_bl_profile_ready = .false.
-  real(8),device :: wall_blowing_amplitude_d,wall_blowing_xa_d,          &
+  real(8),device :: wall_blowing_amplitude_d,wall_blowing_beta_d,        &
+                    wall_blowing_xa_d,                                  &
                     wall_blowing_xb_d,wall_blowing_xc_d,wall_uinf_d,    &
                     wall_zmin_d,wall_zmax_d
-  integer,device :: wall_blowing_nmod_z_d,wall_ig0_d,wall_kg0_d,        &
-                    wall_blowing_enabled_d
+  real(8),device :: wall_blowing_phase_d(15)
+  integer,device :: wall_blowing_nmod_t_d,wall_blowing_nmod_z_d,        &
+                    wall_ig0_d,wall_kg0_d,wall_blowing_enabled_d
   real(8),parameter :: GPU_PI=3.1415926535897932384626433832795d0
 contains
   subroutine init_wall_blowing_gpu()
     use bc, only: configure_wall_blowing,wall_blowing_amplitude,        &
+                  wall_blowing_beta,wall_blowing_phase,                 &
                   wall_blowing_xa,wall_blowing_xb,wall_blowing_xc,     &
-                  wall_blowing_nmod_z
+                  wall_blowing_nmod_t,wall_blowing_nmod_z
     use commvar, only: ndims,uinf,zmin,zmax
     use parallel, only: ig0,kg0
     implicit none
@@ -32,10 +35,13 @@ contains
     enabled=0
     if(ndims==3 .and. abs(wall_blowing_amplitude)>1.d-10) enabled=1
     wall_blowing_amplitude_d=wall_blowing_amplitude
+    wall_blowing_beta_d=wall_blowing_beta
     wall_blowing_xa_d=wall_blowing_xa
     wall_blowing_xb_d=wall_blowing_xb
     wall_blowing_xc_d=wall_blowing_xc
+    wall_blowing_nmod_t_d=wall_blowing_nmod_t
     wall_blowing_nmod_z_d=wall_blowing_nmod_z
+    wall_blowing_phase_d=wall_blowing_phase
     wall_uinf_d=uinf
     wall_zmin_d=zmin
     wall_zmax_d=zmax
@@ -44,16 +50,42 @@ contains
     wall_blowing_enabled_d=enabled
   end subroutine init_wall_blowing_gpu
 
-  attributes(device) real(8) function wall_blowing_velocity_gpu(i,k,xcoord,zcoord)
+  attributes(device) real(8) function wall_blowing_velocity_gpu(i,k,xcoord,zcoord,forcing_time)
     implicit none
     integer,value :: i,k
-    real(8),value :: xcoord,zcoord
+    real(8),value :: xcoord,zcoord,forcing_time
+    integer :: l,m
     integer(8) :: gi,gk,hash_value
-    real(8) :: theta,fx,gz,rfluc
+    real(8) :: theta,fx,gz,ht,rfluc,zweight,tweight
     real(8),parameter :: hash_modulus=2147483629.d0
 
     wall_blowing_velocity_gpu=0.d0
     if(wall_blowing_enabled_d==0) return
+    if(wall_blowing_nmod_t_d>0) then
+      if(xcoord<wall_blowing_xa_d .or. xcoord>wall_blowing_xb_d) return
+      theta=2.d0*GPU_PI*(xcoord-wall_blowing_xa_d)/                    &
+            (wall_blowing_xb_d-wall_blowing_xa_d)
+      fx=4.d0*sin(theta)*(1.d0-cos(theta))/sqrt(27.d0)
+      gz=0.d0
+      zweight=0.2d0/(1.d0-0.8d0**wall_blowing_nmod_z_d)
+      do l=1,wall_blowing_nmod_z_d
+        gz=gz+zweight*sin(2.d0*GPU_PI*l*                              &
+             ((zcoord-wall_zmin_d)/(wall_zmax_d-wall_zmin_d)+        &
+              wall_blowing_phase_d(l)))
+        zweight=zweight*0.8d0
+      enddo
+      ht=0.d0
+      tweight=0.2d0/(1.d0-0.8d0**wall_blowing_nmod_t_d)
+      do m=1,wall_blowing_nmod_t_d
+        ht=ht+tweight*sin(2.d0*GPU_PI*m*                              &
+             (wall_blowing_beta_d*forcing_time+                      &
+              wall_blowing_phase_d(m+10)))
+        tweight=tweight*0.8d0
+      enddo
+      wall_blowing_velocity_gpu=wall_blowing_amplitude_d*wall_uinf_d* &
+                                 fx*gz*ht
+      return
+    endif
     if(xcoord>=wall_blowing_xa_d .and. xcoord<=wall_blowing_xb_d) then
       theta=2.d0*GPU_PI*(xcoord-wall_blowing_xa_d)/                    &
             (wall_blowing_xb_d-wall_blowing_xa_d)
@@ -362,14 +394,22 @@ contains
   end subroutine set_qrhs_zero
 
   subroutine init_s1_flatplate_profile_gpu()
-    use bc, only: bctype,rho_prof,vel_prof,tmp_prof,prs_prof
+    use bc, only: bctype,rho_prof,vel_prof,tmp_prof,prs_prof,            &
+                  configure_profile_inflow,                             &
+                  profile_inflow_mach_pressure_enabled
+    use commarray, only: bnorm_i0
     use commvar, only: const2
+    use parallel, only: irk
     implicit none
-    real(8) :: profile_error,profile_scale
+    integer :: j,k
+    real(8) :: profile_error,profile_scale,vnormal
+    logical :: mach_pressure
 
     s1_bl_profile_ready = .false.
     if(bctype(1) /= GPU_BC_INFLOW) return
     if(.not.gpu_s1_flatplate_boundary_case_pending()) return
+    call configure_profile_inflow
+    mach_pressure=profile_inflow_mach_pressure_enabled()
     if(.not.allocated(rho_prof) .or. .not.allocated(vel_prof) .or. &
        .not.allocated(tmp_prof) .or. .not.allocated(prs_prof)) &
       stop 'GPU S1 flatplate profile is not initialized'
@@ -379,21 +419,38 @@ contains
                       maxval(abs(prs_prof/rho_prof*const2)))
     if(profile_error>1.d-10*profile_scale) &
       stop 'GPU bctype=11 inlet temperature is inconsistent with rho and pressure'
+    if(mach_pressure .and. irk==0) then
+      if(any(tmp_prof<=0.d0)) &
+        stop 'GPU bctype=11 mach_pressure requires positive profile temperature'
+      if(.not.allocated(bnorm_i0)) &
+        stop 'GPU bctype=11 mach_pressure requires the x-min boundary normal'
+      do k=lbound(bnorm_i0,2),ubound(bnorm_i0,2)
+      do j=lbound(bnorm_i0,1),ubound(bnorm_i0,1)
+        vnormal=dot_product(vel_prof(j,1:3),bnorm_i0(j,k,1:3))
+        if(vnormal<0.d0) &
+          stop 'GPU bctype=11 mach_pressure requires non-negative inward normal velocity'
+      enddo
+      enddo
+    endif
     if(.not.allocated(s1_bl_rho_prof_d)) allocate(s1_bl_rho_prof_d(lbound(rho_prof,1):ubound(rho_prof,1)))
     if(.not.allocated(s1_bl_prs_prof_d)) allocate(s1_bl_prs_prof_d(lbound(prs_prof,1):ubound(prs_prof,1)))
+    if(.not.allocated(s1_bl_tmp_prof_d)) allocate(s1_bl_tmp_prof_d(lbound(tmp_prof,1):ubound(tmp_prof,1)))
     if(.not.allocated(s1_bl_vel_prof_d)) allocate(s1_bl_vel_prof_d(lbound(vel_prof,1):ubound(vel_prof,1),1:3))
     s1_bl_rho_prof_d = rho_prof
     s1_bl_prs_prof_d = prs_prof
+    s1_bl_tmp_prof_d = tmp_prof
     s1_bl_vel_prof_d = vel_prof(:,1:3)
     s1_bl_profile_ready = .true.
   end subroutine init_s1_flatplate_profile_gpu
 
-  attributes(global) subroutine s1_bl_profile_inflow_x_kernel(im,jm,km,const2,const6,apply_left)
-    use commarray_gpu, only: qrhs_d,tmp_d
+  attributes(global) subroutine s1_bl_profile_inflow_x_kernel(im,jm,km,const2,const6,mach, &
+                                                               mach_pressure,apply_left)
+    use commarray_gpu, only: qrhs_d,tmp_d,prs_d,bnorm_i0_d
     implicit none
-    integer,value :: im,jm,km,apply_left
-    real(8),value :: const2,const6
+    integer,value :: im,jm,km,mach_pressure,apply_left
+    real(8),value :: const2,const6,mach
     integer :: id,j,k,nplane
+    real(8) :: css,vnormal,rho,prs
 
     if(apply_left == 0) return
     id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
@@ -401,10 +458,26 @@ contains
     if(id >= nplane) return
     j = mod(id,jm+1)
     k = id/(jm+1)
-    tmp_d(0,j,k)=s1_bl_prs_prof_d(j)/s1_bl_rho_prof_d(j)*const2
-    call set_q_from_primitive(0,j,k,s1_bl_rho_prof_d(j),s1_bl_vel_prof_d(j,1), &
+    if(mach_pressure==0) then
+      prs=s1_bl_prs_prof_d(j)
+      rho=s1_bl_rho_prof_d(j)
+    else
+      css=sqrt(s1_bl_tmp_prof_d(j))/mach
+      vnormal=s1_bl_vel_prof_d(j,1)*bnorm_i0_d(j,k,1)+            &
+              s1_bl_vel_prof_d(j,2)*bnorm_i0_d(j,k,2)+            &
+              s1_bl_vel_prof_d(j,3)*bnorm_i0_d(j,k,3)
+      if(vnormal/css>=1.d0) then
+        prs=s1_bl_prs_prof_d(j)
+        rho=s1_bl_rho_prof_d(j)
+      else
+        prs=extrap2(prs_d(1,j,k),prs_d(2,j,k))
+        rho=prs/s1_bl_tmp_prof_d(j)*const2
+      endif
+    endif
+    tmp_d(0,j,k)=s1_bl_tmp_prof_d(j)
+    call set_q_from_primitive(0,j,k,rho,s1_bl_vel_prof_d(j,1), &
                               s1_bl_vel_prof_d(j,2),s1_bl_vel_prof_d(j,3), &
-                              s1_bl_prs_prof_d(j),const6)
+                              prs,const6)
     qrhs_d(0,j,k,:) = 0.d0
   end subroutine s1_bl_profile_inflow_x_kernel
 
@@ -767,11 +840,12 @@ contains
 
   attributes(global) subroutine wall_isothermal_noslip_y_kernel(im,jm,km,hm,const2,const6, &
                                                                 twall_down,twall_up, &
-                                                                apply_down,apply_up,preserve_inflow_rhs)
+                                                                apply_down,apply_up,preserve_inflow_rhs, &
+                                                                forcing_time)
     use commarray_gpu, only: prs_d,tmp_d,x_d,bnorm_j0_d
     implicit none
     integer,value :: im,jm,km,hm,apply_down,apply_up,preserve_inflow_rhs
-    real(8),value :: const2,const6,twall_down,twall_up
+    real(8),value :: const2,const6,twall_down,twall_up,forcing_time
     integer :: id,i,k,nplane
     real(8) :: rho,prs,vwall
 
@@ -784,7 +858,7 @@ contains
     if(apply_down /= 0) then
       prs = extrap2(prs_d(i,1,k),prs_d(i,2,k))
       rho = prs/twall_down*const2
-      vwall=wall_blowing_velocity_gpu(i,k,x_d(i,0,k,1),x_d(i,0,k,3))
+      vwall=wall_blowing_velocity_gpu(i,k,x_d(i,0,k,1),x_d(i,0,k,3),forcing_time)
       tmp_d(i,0,k) = twall_down
       call set_q_from_primitive(i,0,k,rho,                             &
            vwall*bnorm_j0_d(i,k,1),vwall*bnorm_j0_d(i,k,2),           &
@@ -858,11 +932,11 @@ contains
   end subroutine wall_adiabatic_noslip_x_kernel
 
   attributes(global) subroutine wall_adiabatic_noslip_y_kernel(im,jm,km,hm,const2,const6, &
-                                                               apply_down,apply_up)
+                                                               apply_down,apply_up,forcing_time)
     use commarray_gpu, only: prs_d,tmp_d,x_d,bnorm_j0_d
     implicit none
     integer,value :: im,jm,km,hm,apply_down,apply_up
-    real(8),value :: const2,const6
+    real(8),value :: const2,const6,forcing_time
     integer :: id,i,k,nplane
     real(8) :: rho,prs,tmp,vwall
 
@@ -876,7 +950,7 @@ contains
       prs = extrap2(prs_d(i,1,k),prs_d(i,2,k))
       tmp = extrap2(tmp_d(i,1,k),tmp_d(i,2,k))
       rho = prs/tmp*const2
-      vwall=wall_blowing_velocity_gpu(i,k,x_d(i,0,k,1),x_d(i,0,k,3))
+      vwall=wall_blowing_velocity_gpu(i,k,x_d(i,0,k,1),x_d(i,0,k,3),forcing_time)
       tmp_d(i,0,k) = tmp
       call set_q_from_primitive(i,0,k,rho,                             &
            vwall*bnorm_j0_d(i,k,1),vwall*bnorm_j0_d(i,k,2),           &
@@ -896,11 +970,11 @@ contains
 
   attributes(global) subroutine wall_slip_isothermal_y_kernel(im,jm,km,hm,const2,const6, &
                                                               xslip,twall_down,twall_up, &
-                                                              apply_down,apply_up)
+                                                              apply_down,apply_up,forcing_time)
     use commarray_gpu, only: vel_d,prs_d,tmp_d,x_d,bnorm_j0_d
     implicit none
     integer,value :: im,jm,km,hm,apply_down,apply_up
-    real(8),value :: const2,const6,xslip,twall_down,twall_up
+    real(8),value :: const2,const6,xslip,twall_down,twall_up,forcing_time
     integer :: id,i,k,nplane
     real(8) :: rho,uu,vv,ww,prs,tmp,vnormal,vwall
 
@@ -923,7 +997,7 @@ contains
         ww=ww-vnormal*bnorm_j0_d(i,k,3)
         tmp = extrap2(tmp_d(i,1,k),tmp_d(i,2,k))
       else
-        vwall=wall_blowing_velocity_gpu(i,k,x_d(i,0,k,1),x_d(i,0,k,3))
+        vwall=wall_blowing_velocity_gpu(i,k,x_d(i,0,k,1),x_d(i,0,k,3),forcing_time)
         uu = vwall*bnorm_j0_d(i,k,1)
         vv = vwall*bnorm_j0_d(i,k,2)
         ww = vwall*bnorm_j0_d(i,k,3)
@@ -945,11 +1019,11 @@ contains
   end subroutine wall_slip_isothermal_y_kernel
 
   attributes(global) subroutine wall_slip_adiabatic_y_kernel(im,jm,km,hm,const2,const6, &
-                                                             apply_down,apply_up)
+                                                             apply_down,apply_up,forcing_time)
     use commarray_gpu, only: vel_d,prs_d,tmp_d,x_d,bnorm_j0_d,bnorm_jm_d
     implicit none
     integer,value :: im,jm,km,hm,apply_down,apply_up
-    real(8),value :: const2,const6
+    real(8),value :: const2,const6,forcing_time
     integer :: id,i,k,nplane
     real(8) :: rho,uu,vv,ww,prs,tmp,vnormal,vwall
 
@@ -967,7 +1041,7 @@ contains
       ww = extrap2(vel_d(i,1,k,3),vel_d(i,2,k,3))
       vnormal=uu*bnorm_j0_d(i,k,1)+vv*bnorm_j0_d(i,k,2)+              &
               ww*bnorm_j0_d(i,k,3)
-      vwall=wall_blowing_velocity_gpu(i,k,x_d(i,0,k,1),x_d(i,0,k,3))
+      vwall=wall_blowing_velocity_gpu(i,k,x_d(i,0,k,1),x_d(i,0,k,3),forcing_time)
       uu=uu-vnormal*bnorm_j0_d(i,k,1)+vwall*bnorm_j0_d(i,k,1)
       vv=vv-vnormal*bnorm_j0_d(i,k,2)+vwall*bnorm_j0_d(i,k,2)
       ww=ww-vnormal*bnorm_j0_d(i,k,3)+vwall*bnorm_j0_d(i,k,3)
@@ -1942,19 +2016,23 @@ contains
   end subroutine apply_nscbc_farfield_y_upper_rhs_gpu
 
   subroutine apply_s1_flatplate_boundary_conditions_gpu(preserve_inflow_rhs)
-    use commvar, only: im,jm,km,hm,const2,const6,gamma,mach,pinf
-    use bc, only: bctype,twall,pout
+    use commvar, only: im,jm,km,hm,const2,const6,gamma,mach,pinf,time
+    use bc, only: bctype,twall,pout,profile_inflow_mach_pressure_enabled
     use gpu_check, only: sync_after_kernel
     implicit none
     logical,intent(in),optional :: preserve_inflow_rhs
     type(dim3) :: block,grid_x,grid_y
-    integer :: apply_left,apply_right,apply_down,apply_up,nx,ny,preserve_rhs
+    integer :: apply_left,apply_right,apply_down,apply_up,nx,ny,preserve_rhs, &
+               mach_pressure
 
     if(bctype(1) == GPU_BC_INFLOW .and. (.not.s1_bl_profile_ready)) &
       stop 'GPU S1 flatplate profile has not been uploaded'
     call gpu_physical_boundary_apply_mask(1,apply_left,apply_right)
     call gpu_physical_boundary_apply_mask(2,apply_down,apply_up)
     preserve_rhs=0
+    mach_pressure=0
+    if(bctype(1) == GPU_BC_INFLOW) &
+      mach_pressure=merge(1,0,profile_inflow_mach_pressure_enabled())
     if(present(preserve_inflow_rhs)) then
       if(preserve_inflow_rhs .and. apply_left /= 0) preserve_rhs=1
     endif
@@ -1964,14 +2042,15 @@ contains
     grid_x = dim3((nx+block%x-1)/block%x,1,1)
     grid_y = dim3((ny+block%x-1)/block%x,1,1)
     if(bctype(1) == GPU_BC_INFLOW) then
-      call s1_bl_profile_inflow_x_kernel<<<grid_x,block>>>(im,jm,km,const2,const6,apply_left)
+      call s1_bl_profile_inflow_x_kernel<<<grid_x,block>>>(im,jm,km,const2,const6,mach, &
+                                                            mach_pressure,apply_left)
       call sync_after_kernel('s1_bl_profile_inflow_x_kernel')
     endif
     call outflow_x_kernel<<<grid_x,block>>>(im,jm,km,hm,const2,const6, &
                                              gamma,mach,pinf,pout,apply_right)
     call sync_after_kernel('s1_bl_outflow_x_kernel')
     call wall_isothermal_noslip_y_kernel<<<grid_y,block>>>(im,jm,km,hm,const2,const6, &
-                                                           twall(3),twall(3),apply_down,0,preserve_rhs)
+                                                           twall(3),twall(3),apply_down,0,preserve_rhs,time)
     call sync_after_kernel('s1_bl_wall_isothermal_noslip_y_kernel')
     if(bctype(4) /= GPU_BC_NSCBC_FARFIELD) then
       call s1_bl_farfield_y_upper_kernel<<<grid_y,block>>>(im,jm,km,const2,const6,apply_up)
@@ -1980,7 +2059,7 @@ contains
   end subroutine apply_s1_flatplate_boundary_conditions_gpu
 
   subroutine apply_boundary_conditions_gpu()
-    use commvar, only: im,jm,km,hm,const2,const6,uinf,vinf,winf,pinf,gamma,mach
+    use commvar, only: im,jm,km,hm,const2,const6,uinf,vinf,winf,pinf,gamma,mach,time
     use bc, only: twall,xslip,pout
     use gpu_check, only: sync_after_kernel
     implicit none
@@ -2040,20 +2119,20 @@ contains
       elseif(kind == GPU_BC_WALL_ISOTHERMAL_NOSLIP) then
         call wall_isothermal_noslip_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
                                                              twall(3),twall(4), &
-                                                             apply_lower,apply_upper,0)
+                                                             apply_lower,apply_upper,0,time)
         call sync_after_kernel('wall_isothermal_noslip_y_kernel')
       elseif(kind == GPU_BC_WALL_ADIABATIC_NOSLIP) then
         call wall_adiabatic_noslip_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
-                                                            apply_lower,apply_upper)
+                                                            apply_lower,apply_upper,time)
         call sync_after_kernel('wall_adiabatic_noslip_y_kernel')
       elseif(kind == GPU_BC_WALL_SLIP_ISOTHERMAL) then
         call wall_slip_isothermal_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
                                                            xslip,twall(3),twall(4), &
-                                                           apply_lower,apply_upper)
+                                                           apply_lower,apply_upper,time)
         call sync_after_kernel('wall_slip_isothermal_y_kernel')
       elseif(kind == GPU_BC_WALL_SLIP_ADIABATIC) then
         call wall_slip_adiabatic_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
-                                                          apply_lower,apply_upper)
+                                                          apply_lower,apply_upper,time)
         call sync_after_kernel('wall_slip_adiabatic_y_kernel')
       elseif(kind == GPU_BC_FIXED) then
         call fixed_rti_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
@@ -2082,7 +2161,7 @@ contains
   end subroutine apply_boundary_conditions_gpu
 
   subroutine apply_ldc_boundary_conditions_gpu()
-    use commvar, only: im,jm,km,hm,const2,const6
+    use commvar, only: im,jm,km,hm,const2,const6,time
     use bc, only: twall
     use gpu_check, only: sync_after_kernel
     implicit none
@@ -2104,7 +2183,7 @@ contains
     grid = dim3((n + block%x - 1)/block%x,1,1)
     call wall_isothermal_noslip_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
                                                          twall(3),twall(4), &
-                                                         apply_down,0,0)
+                                                         apply_down,0,0,time)
     call sync_after_kernel('ldc_wall_isothermal_noslip_y_down_kernel')
 
     call ldc_top_lid_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6,apply_up)

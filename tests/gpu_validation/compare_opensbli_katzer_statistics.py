@@ -22,6 +22,7 @@ REYNOLDS = 950.0
 REFERENCE_TEMPERATURE_K = 288.0
 SUTHERLAND_TEMPERATURE_K = 110.4
 REFERENCE_TIME = 13000.0
+DEFAULT_TIME_ATOL = 1.0e-6
 
 
 def derivative_weights(nodes: np.ndarray, evaluation_point: float) -> np.ndarray:
@@ -158,6 +159,10 @@ def error_metrics(candidate: np.ndarray, reference: np.ndarray) -> dict[str, flo
     }
 
 
+def time_reached(actual: float, expected: float, atol: float = DEFAULT_TIME_ATOL) -> bool:
+    return abs(actual - expected) <= atol
+
+
 def separation_metrics(x: np.ndarray, cf: np.ndarray) -> dict[str, float | None | list[float]]:
     separation, reattachment = directed_zero_crossings(x, cf)
     result: dict[str, float | None | list[float]] = {
@@ -188,6 +193,7 @@ def write_comparison_csv(path: Path, x: np.ndarray, astr: dict, reference: dict)
 
 def write_plots(output_dir: Path, x: np.ndarray, astr: dict, reference: dict) -> None:
     plt.style.use(["science", "ieee", "std-colors"])
+    plt.rcParams["text.usetex"] = False
     plt.rcParams["axes.grid"] = False
     plt.rcParams["grid.alpha"] = 0.0
     plt.rcParams.update({
@@ -215,6 +221,21 @@ def write_plots(output_dir: Path, x: np.ndarray, astr: dict, reference: dict) ->
         plt.close(fig)
 
 
+def write_outputs(
+    output_dir: Path,
+    x: np.ndarray,
+    astr: dict,
+    reference: dict,
+    report: dict,
+) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    write_comparison_csv(output_dir / "wall_comparison.csv", x, astr, reference)
+    (output_dir / "summary.json").write_text(
+        json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="ascii"
+    )
+    write_plots(output_dir, x, astr, reference)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--astr-flow", required=True, type=Path)
@@ -222,7 +243,7 @@ def main() -> int:
     parser.add_argument("--reference-zip", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--expected-time", type=float, default=REFERENCE_TIME)
-    parser.add_argument("--time-atol", type=float, default=1.0e-8)
+    parser.add_argument("--time-atol", type=float, default=DEFAULT_TIME_ATOL)
     args = parser.parse_args()
 
     astr = read_astr(args.astr_flow, args.astr_grid)
@@ -235,7 +256,7 @@ def main() -> int:
 
     astr_separation = separation_metrics(astr["x"], astr["cf"])
     reference_separation = separation_metrics(reference["x"], reference["cf"])
-    reached_expected_time = abs(float(astr["time"]) - args.expected_time) <= args.time_atol
+    reached_expected_time = time_reached(float(astr["time"]), args.expected_time, args.time_atol)
     report = {
         "status": "time_reached" if reached_expected_time else "incomplete_time",
         "reference_doi": "10.5258/SOTON/D0458",
@@ -274,12 +295,7 @@ def main() -> int:
     else:
         report["separation_length_error"] = None
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    write_comparison_csv(args.output_dir / "wall_comparison.csv", astr["x"], astr, reference)
-    write_plots(args.output_dir, astr["x"], astr, reference)
-    (args.output_dir / "summary.json").write_text(
-        json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="ascii"
-    )
+    write_outputs(args.output_dir, astr["x"], astr, reference, report)
     print(json.dumps(report, indent=2, allow_nan=False))
     return 0 if reached_expected_time else 2
 

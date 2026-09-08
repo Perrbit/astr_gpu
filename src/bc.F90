@@ -38,9 +38,12 @@ module bc
   real(8),save :: nscbc_farfield_shock_x=0.d0,                         &
                   nscbc_farfield_shock_angle=0.d0
   logical,save :: wall_blowing_configured=.false.
+  logical,save :: profile_inflow_configured=.false.
+  logical,save :: profile_inflow_mach_pressure=.false.
   real(8),save :: wall_blowing_amplitude=0.d0,wall_blowing_beta=1.d0,  &
                   wall_blowing_xa=0.d0,wall_blowing_xb=0.d0,           &
                   wall_blowing_xc=0.d0
+  real(8),save :: wall_blowing_phase(15)=0.d0
   integer,save :: wall_blowing_nmod_t=0,wall_blowing_nmod_z=0
   !+---------------------+---------------------------------------------+
   !|              bctype | define type of boundary condition.          |
@@ -60,11 +63,57 @@ module bc
   !
   contains
   !
+  subroutine configure_profile_inflow
+    implicit none
+    character(len=32) :: mode
+    integer :: i,ich,env_status,env_length
+
+    if(profile_inflow_configured) return
+
+    if(mpirank==0) then
+      mode='complete_state'
+      call get_environment_variable('ASTR_PROFILE_INFLOW_MODE',mode,   &
+                                    length=env_length,status=env_status)
+      if(env_status/=0 .or. env_length<=0) mode='complete_state'
+      do i=1,len_trim(mode)
+        ich=iachar(mode(i:i))
+        if(ich>=iachar('A') .and. ich<=iachar('Z'))                    &
+             mode(i:i)=achar(ich+iachar('a')-iachar('A'))
+      enddo
+
+      select case(trim(mode))
+      case('complete_state')
+        profile_inflow_mach_pressure=.false.
+      case('mach_pressure')
+        profile_inflow_mach_pressure=.true.
+      case default
+        stop 'ASTR_PROFILE_INFLOW_MODE must be complete_state or mach_pressure'
+      end select
+    endif
+
+    call bcast(profile_inflow_mach_pressure)
+    if(lio) then
+      if(profile_inflow_mach_pressure) then
+        write(*,'(A)') ' ** profile inflow mode: mach_pressure'
+      else
+        write(*,'(A)') ' ** profile inflow mode: complete_state'
+      endif
+    endif
+    profile_inflow_configured=.true.
+  end subroutine configure_profile_inflow
+  !
+  logical function profile_inflow_mach_pressure_enabled()
+    implicit none
+
+    call configure_profile_inflow
+    profile_inflow_mach_pressure_enabled=profile_inflow_mach_pressure
+  end function profile_inflow_mach_pressure_enabled
+  !
   subroutine configure_wall_blowing
     implicit none
     integer :: fh
     logical :: lexist
-    character(len=64) :: filewbs
+    character(len=64) :: filewbs,filephase
 
     if(wall_blowing_configured) return
 
@@ -81,6 +130,20 @@ module bc
         read(fh,*)
         read(fh,*)wall_blowing_nmod_t,wall_blowing_nmod_z
         close(fh)
+
+        if(wall_blowing_nmod_t>0) then
+          filephase='datin/wallbs_phase.dat'
+          inquire(file=trim(filephase),exist=lexist)
+          if(.not.lexist) stop 'modal wall blowing requires datin/wallbs_phase.dat'
+          fh=get_unit()
+          open(fh,file=trim(filephase),action='read')
+          read(fh,*)wall_blowing_phase
+          close(fh)
+          if(any(wall_blowing_phase<0.d0) .or.                         &
+             any(wall_blowing_phase>1.d0)) then
+            stop 'wallbs_phase.dat values must lie in [0,1]'
+          endif
+        endif
 
         print*,' >> ',trim(filewbs)
         print*,' ------------- wall blowing & suction parameters -------------'
@@ -102,10 +165,20 @@ module bc
     call bcast(wall_blowing_xc)
     call bcast(wall_blowing_nmod_t)
     call bcast(wall_blowing_nmod_z)
-    if(abs(wall_blowing_amplitude)>1.d-10 .and.                        &
-       (wall_blowing_xa>=wall_blowing_xb .or.                          &
-        wall_blowing_xb>=wall_blowing_xc)) then
-      stop 'wallbs.dat requires xa < xb < xc for nonzero amplitude'
+    call bcast(wall_blowing_phase)
+    if(abs(wall_blowing_amplitude)>1.d-10) then
+      if(wall_blowing_nmod_t>0) then
+        if(wall_blowing_nmod_t>5 .or. wall_blowing_nmod_z<1 .or.      &
+           wall_blowing_nmod_z>10) then
+          stop 'modal wall blowing supports 1:5 temporal and 1:10 spanwise modes'
+        endif
+        if(wall_blowing_xa>=wall_blowing_xb) then
+          stop 'modal wall blowing requires xa < xb'
+        endif
+      elseif(wall_blowing_xa>=wall_blowing_xb .or.                    &
+             wall_blowing_xb>=wall_blowing_xc) then
+        stop 'wallbs.dat requires xa < xb < xc for nmod_t=0'
+      endif
     endif
     wall_blowing_configured=.true.
   end subroutine configure_wall_blowing
@@ -1674,11 +1747,12 @@ module bc
     ! local data
     integer :: i,j,k,l,jspc
     real(8) :: css,csse,ub,pe,roe,ue,pwave_out,pwave_in,malo,rho_ref,cs_ref,blend,rp,rm,te
-    real(8) :: ce,ri_plus,ri_mins,cb,sb,gmr,tmp_target,tmp_scale
+    real(8) :: ce,ri_plus,ri_mins,cb,sb,gmr,tmp_target,tmp_scale,vnormal
     real(8) :: spce(1:num_species)
     !
     logical,save :: lfirstcal=.true.
     !
+    call configure_profile_inflow
     if(ndir==1 .and. irk==0) then
       !   
       if(lfirstcal) then
@@ -1761,21 +1835,46 @@ module bc
         ! rho_ref = rho(i+1,j,k)
         ! css=sos(tmp_prof(j),spc_prof(j,:))
 
-        ! if(vel_in(j,k,1)>css) then
-        !   ! supersonic inflow
-          rho(i,j,k)  =rho_in(j,k)
-          vel(i,j,k,:)=vel_in(j,k,:)
-          spc(i,j,k,:)=spc_in(j,k,:)
-          prs(i,j,k)  =prs_in(j,k)
-          tmp_target=thermal(pressure=prs_in(j,k),density=rho_in(j,k),   &
+          tmp_target=thermal(pressure=prs_in(j,k),density=rho_in(j,k), &
                              species=spc_in(j,k,:))
           tmp_scale=max(1.d0,abs(tmp_in(j,k)),abs(tmp_target))
           if(abs(tmp_in(j,k)-tmp_target)>1.d-10*tmp_scale) then
             stop 'bctype=11 inlet temperature is inconsistent with rho, pressure, and species'
           endif
-          tmp(i,j,k)=tmp_target
-        ! else
-          ! subsonic inflow
+
+          malo=huge(1.d0)
+          if(profile_inflow_mach_pressure) then
+            if(tmp_in(j,k)<=0.d0) then
+              stop 'bctype=11 mach_pressure requires positive profile temperature'
+            endif
+            css=sos(tmp_in(j,k),spc_in(j,k,:))
+            vnormal=dot_product(vel_in(j,k,:),bnorm_i0(j,k,:))
+            malo=vnormal/css
+            if(malo<0.d0) then
+              stop 'bctype=11 mach_pressure requires non-negative inward normal velocity'
+            endif
+          endif
+
+          if((.not.profile_inflow_mach_pressure) .or. malo>=1.d0) then
+            ! Complete-state mode and locally supersonic inflow.
+            rho(i,j,k)  =rho_in(j,k)
+            vel(i,j,k,:)=vel_in(j,k,:)
+            spc(i,j,k,:)=spc_in(j,k,:)
+            prs(i,j,k)  =prs_in(j,k)
+            tmp(i,j,k)  =tmp_target
+          else
+            ! Locally subsonic inflow: prescribe velocity and temperature,
+            ! while pressure is determined by the interior solution.
+            vel(i,j,k,:)=vel_in(j,k,:)
+            spc(i,j,k,:)=spc_in(j,k,:)
+            tmp(i,j,k)=tmp_in(j,k)
+            prs(i,j,k)=extrapolate(prs(i+1,j,k),prs(i+2,j,k),dv=0.d0)
+            if(prs(i,j,k)<=0.d0) then
+              stop 'bctype=11 mach_pressure extrapolated non-positive pressure'
+            endif
+            rho(i,j,k)=thermal(pressure=prs(i,j,k),temperature=tmp(i,j,k), &
+                               species=spc(i,j,k,:))
+          endif
           ! vel(i,j,k,2:3)=vel_in(j,k,2:3)
           ! spc(i,j,k,:)  =spc_in(j,k,:)
           ! tmp(i,j,k)    =tmp_in(j,k)
@@ -6776,9 +6875,7 @@ module bc
         !
         call configure_wall_blowing
         if(ndims==3 .and. abs(wall_blowing_amplitude)>1.d-10) then
-          vwall=wallbs_rand(wall_blowing_beta,wall_blowing_amplitude,  &
-               wall_blowing_xa,wall_blowing_xb,wall_blowing_xc,       &
-               wall_blowing_nmod_t,wall_blowing_nmod_z)
+          vwall=wall_blowing_velocity()
         else
           vwall=0.d0
         endif
@@ -7044,9 +7141,7 @@ module bc
 
     call configure_wall_blowing
     if(ndims==3 .and. abs(wall_blowing_amplitude)>1.d-10) then
-      vwall=wallbs_rand(wall_blowing_beta,wall_blowing_amplitude,      &
-           wall_blowing_xa,wall_blowing_xb,wall_blowing_xc,           &
-           wall_blowing_nmod_t,wall_blowing_nmod_z)
+      vwall=wall_blowing_velocity()
     else
       vwall=0.d0
     endif
@@ -7299,9 +7394,7 @@ module bc
         !
         call configure_wall_blowing
         if(ndims==3 .and. abs(wall_blowing_amplitude)>1.d-10) then
-          vwall=wallbs_rand(wall_blowing_beta,wall_blowing_amplitude,  &
-               wall_blowing_xa,wall_blowing_xb,wall_blowing_xc,       &
-               wall_blowing_nmod_t,wall_blowing_nmod_z)
+          vwall=wall_blowing_velocity()
         else
           vwall=0.d0
         endif
@@ -7440,9 +7533,7 @@ module bc
         !
         call configure_wall_blowing
         if(ndims==3 .and. abs(wall_blowing_amplitude)>1.d-10) then
-          vwall=wallbs_rand(wall_blowing_beta,wall_blowing_amplitude,  &
-               wall_blowing_xa,wall_blowing_xb,wall_blowing_xc,       &
-               wall_blowing_nmod_t,wall_blowing_nmod_z)
+          vwall=wall_blowing_velocity()
         else
           vwall=0.d0
         endif
@@ -7579,6 +7670,22 @@ module bc
   !| -------------                                                     |
   !| 27-09-2021: Created by J. Fang @ Warrington                       |
   !+-------------------------------------------------------------------+
+  function wall_blowing_velocity() result(vwall)
+    implicit none
+    real(8) :: vwall(0:im,0:km)
+
+    if(wall_blowing_nmod_t>0) then
+      vwall=wallbs(wall_blowing_beta,wall_blowing_amplitude,          &
+                   wall_blowing_xa,wall_blowing_xb,                   &
+                   wall_blowing_nmod_t,wall_blowing_nmod_z)
+    else
+      vwall=wallbs_rand(wall_blowing_beta,wall_blowing_amplitude,     &
+                        wall_blowing_xa,wall_blowing_xb,              &
+                        wall_blowing_xc,wall_blowing_nmod_t,          &
+                        wall_blowing_nmod_z)
+    endif
+  end function wall_blowing_velocity
+
   function wallbs(beter,wallamplit,xa,xb,nmod_t,nmod_z) result(vwall)
     !
     ! arguments
@@ -7587,62 +7694,15 @@ module bc
     real(8) :: vwall(0:im,0:km)
     !
     ! local data
-    integer :: i,k,l,m,seed_size
+    integer :: i,k,l,m
     real(8) :: theter,fx,gz,ht,zl,tm
-    integer,allocatable :: seed(:)
     !
-    real(8),save :: sqrt27,z0,t0,lz,rfluc,rampl
-    real(8),save :: randomv(15)
-    logical,save :: lfirstcal=.true.
+    real(8) :: sqrt27,z0,t0,lz
     !
-    if(lfirstcal) then
-      !
-      ! beter=0.02d0
-      ! !
-      ! xa=5.d0
-      ! xb=40.d0
-      ! !
-      ! nmod_z=3
-      ! nmod_t=2
-      !
-      lz=zmax-zmin
-      !
-      sqrt27=1.d0/sqrt(27.d0)
-      z0=0.2d0/(1.d0-0.8d0**nmod_z)
-      !
-      if(nmod_t==0) then
-        t0=0
-      else
-        t0=0.2d0/(1.d0-0.8d0**nmod_t)
-      endif
-      !
-      ! call random_seed() ! initialize with system generated seed
-      call random_seed(size=seed_size) ! find out size of seed
-      allocate(seed(seed_size))
-      ! call random_seed(get=seed) ! get system generated seed
-      ! write(*,*) seed            ! writes system generated seed
-      seed=0
-      call random_seed(put=seed) ! set current seed
-      ! call random_seed(get=seed) ! get current seed
-      ! write(*,*) seed            ! writes 0
-      deallocate(seed)           ! safe
-      !
-      do m=1,15
-        call random_number(randomv(m))
-        ! write(*,*)mpirank,'|',m,randomv(m)
-      end do
-      !
-      rampl=0.05d0
-      !
-      call random_seed(size=seed_size) ! find out size of seed
-      allocate(seed(seed_size))
-      seed=mpirank
-      call random_seed(put=seed) 
-      deallocate(seed)
-      !
-      lfirstcal=.false.
-      !
-    endif
+    lz=zmax-zmin
+    sqrt27=1.d0/sqrt(27.d0)
+    z0=0.2d0/(1.d0-0.8d0**nmod_z)
+    t0=0.2d0/(1.d0-0.8d0**nmod_t)
     !
     do k=0,km
     do i=0,im
@@ -7664,7 +7724,8 @@ module bc
               zl=zl*0.8d0
             end if
             !
-            gz=gz+zl*dsin(2.d0*pi*l*(x(i,0,k,3)/lz+randomv(l)))
+            gz=gz+zl*dsin(2.d0*pi*l*                             &
+                 ((x(i,0,k,3)-zmin)/lz+wall_blowing_phase(l)))
             !
           end do
         endif
@@ -7681,7 +7742,8 @@ module bc
               tm=tm*0.8d0
             end if
             !
-            ht=ht+tm*dsin(2.d0*pi*m*(beter*time+randomv(m+10)))
+            ht=ht+tm*dsin(2.d0*pi*m*                              &
+                 (beter*time+wall_blowing_phase(m+10)))
             !
           end do
         endif

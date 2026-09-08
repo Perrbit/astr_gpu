@@ -2867,6 +2867,22 @@ wall/farfield boundary passes. The current maximum target error is
 `ERROR SUMMARY: 0 errors`. Without the documented MPI component isolation,
 OpenMPI/UCX CUDA pointer probes produce initialization-layer false positives.
 
+For a mixed subsonic/supersonic profile inlet, enable pressure extrapolation
+only on locally subsonic points with:
+
+```bash
+OUT_DIR=/tmp/astr_profile_inflow11_mach_pressure \
+  tests/gpu_validation/run_profile_inflow11_mach_pressure_compare.sh
+```
+
+The runner sets `ASTR_PROFILE_INFLOW_MODE=mach_pressure`. The inward normal
+velocity is evaluated by projecting the prescribed profile velocity onto the
+geometric x-min boundary normal. Locally supersonic points retain the complete
+profile state. Locally subsonic points prescribe velocity, temperature, and
+species, extrapolate pressure from the first two interior planes, and recover
+density from the equation of state. The default `complete_state` mode is kept
+for existing `bctype=11 + prof` cases.
+
 Run the required unsupported-geometry checks with:
 
 ```bash

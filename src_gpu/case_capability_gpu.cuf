@@ -546,7 +546,8 @@ contains
            (isize == 1 .and. jsize == 2 .and. ksize == 1) .or. &
            (isize == 1 .and. jsize == 1 .and. ksize == 2))) .or. &
           (mpisize == 4 .and. &
-          ((isize == 2 .and. jsize == 2 .and. ksize == 1) .or. &
+          ((isize == 4 .and. jsize == 1 .and. ksize == 1) .or. &
+           (isize == 2 .and. jsize == 2 .and. ksize == 1) .or. &
            (isize == 2 .and. jsize == 1 .and. ksize == 2) .or. &
            (isize == 1 .and. jsize == 2 .and. ksize == 2))) .or. &
           (mpisize == 8 .and. isize == 2 .and. jsize == 2 .and. ksize == 2))
@@ -575,7 +576,8 @@ contains
            (isize == 1 .and. jsize == 2 .and. ksize == 1) .or. &
            (isize == 1 .and. jsize == 1 .and. ksize == 2))) .or. &
           (mpisize == 4 .and. &
-          ((isize == 2 .and. jsize == 2 .and. ksize == 1) .or. &
+          ((isize == 4 .and. jsize == 1 .and. ksize == 1) .or. &
+           (isize == 2 .and. jsize == 2 .and. ksize == 1) .or. &
            (isize == 2 .and. jsize == 1 .and. ksize == 2) .or. &
            (isize == 1 .and. jsize == 2 .and. ksize == 2))) .or. &
           (mpisize == 8 .and. isize == 2 .and. jsize == 2 .and. ksize == 2))
