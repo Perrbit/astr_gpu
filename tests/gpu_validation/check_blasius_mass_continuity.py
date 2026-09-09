@@ -10,14 +10,18 @@ import json
 import numpy as np
 from scipy.integrate import cumulative_trapezoid
 
-from generate_compressible_blasius_profile import map_similarity_profile, solve_profile
+from generate_compressible_blasius_profile import (
+    map_similarity_profile,
+    solve_profile,
+    trapezoidal_integral,
+)
 
 
 def check_resolution(points):
     reynolds = 950.0
     eta, f, u, _, temperature = solve_profile(2.0, 288.0, 1.676194, 20.0, points)
     integral_temperature = cumulative_trapezoid(temperature, eta, initial=0.0)
-    displacement_scale = np.trapezoid(temperature - u, eta)
+    displacement_scale = trapezoidal_integral(temperature - u, eta)
     station = reynolds / (2.0 * displacement_scale**2)
     y = integral_temperature * np.sqrt(2.0 * station / reynolds)
     # One extra freestream point satisfies the production map's top-height check.

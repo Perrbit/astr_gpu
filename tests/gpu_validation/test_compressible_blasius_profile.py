@@ -1,6 +1,8 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 import h5py
 import numpy as np
@@ -11,6 +13,18 @@ from check_blasius_mass_continuity import check_resolution
 
 
 class BlasiusProfileTests(unittest.TestCase):
+    def test_trapezoidal_integral_supports_numpy_one_x(self):
+        compatibility_numpy = SimpleNamespace(
+            trapz=lambda values, coordinates: np.sum(
+                0.5 * (values[:-1] + values[1:]) * np.diff(coordinates)
+            )
+        )
+        with mock.patch.object(profile, "np", compatibility_numpy):
+            integral = profile.trapezoidal_integral(
+                np.array([0.0, 1.0, 2.0]), np.array([0.0, 1.0, 2.0])
+            )
+        self.assertAlmostEqual(integral, 2.0)
+
     def test_optional_transport_parameters_preserve_default(self):
         baseline = profile.solve_profile(2.0, 288.0, 1.676194, 20.0, 801)
         explicit = profile.solve_profile(2.0, 288.0, 1.676194, 20.0, 801,

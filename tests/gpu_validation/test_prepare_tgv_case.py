@@ -13,6 +13,18 @@ import prepare_tgv_case
 
 
 class PrepareTgvCaseTests(unittest.TestCase):
+    def test_set_restart_updates_start_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            input_file = Path(tmp) / "input.tgv"
+            input_file.write_text("# lrestar : start mode\nf\n", encoding="ascii")
+
+            prepare_tgv_case.set_restart(input_file, "t")
+
+            self.assertEqual(
+                input_file.read_text(encoding="ascii"),
+                "# lrestar : start mode\nt\n",
+            )
+
     def test_controller_steps_can_disable_list_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             controller = Path(tmp) / "controller"

@@ -3453,3 +3453,57 @@ OUT_DIR=/tmp/astr_opensbli_restart_gate \
 The restart path rebuilds the prescribed pressure-inlet ghost state from
 `datin/inlet.prof`; it does not infer that persistent state from the evolved
 inlet plane. Evidence directories must be new and are never overwritten.
+
+## Four-A800 TGV campaign
+
+`run_zhongke_a800_tgv_campaign.sbatch` is the TGV-only submission driver. It
+runs the `256^3` CPU/GPU wall-time baseline, the `512^3` NP=1/2/4 strong-scaling
+matrix, the NP=4 pageable control, one NP=4 NSYS trace, and a segmented NP=4
+production trajectory to approximately `t=20`.
+
+The initial production time step is not hard-coded. A `512^3` preflight reads
+ASTR's own CFL=1 time step and selects a target initial CFL of `0.50`. The
+production driver writes a checkpoint every 2,000 steps, retries a failed
+segment once, and refuses to advance past an invalid checkpoint. The final
+statistics are compared with
+`documents/reference_data/tgv/spectral_Re1600_512.gdiag`; plots are emitted as
+EPS and JPEG without a title.
+
+Login-node dry-run, which does not execute ASTR or allocate a GPU:
+
+```bash
+ASTR_CAMPAIGN_DRY_RUN=1 \
+  tests/gpu_validation/run_zhongke_a800_tgv_campaign.sbatch
+```
+
+The platform audit in `documents/ASTR_A800_TGV_CAMPAIGN_PLAN.md` was approved,
+and the formal campaign was submitted as Slurm job `451398` on 2026-09-08.
+It remained `PENDING (Priority)` when checked on 2026-09-09, so the repository
+does not yet contain A800 runtime evidence from this campaign.
+
+## GPU time-series profile inflow gate
+
+`run_dynamic_inflow_compare.sh` exercises the resident GPU
+time-series inlet path for `bctype=11,turbinf=intp`. It generates deterministic
+four-dimensional HDF5 slice data, advances across one slice replacement, and
+compares the complete CPU/GPU RK state without trimming physical boundaries.
+
+```bash
+OUT_DIR=/tmp/astr_dynamic_inflow_np1 \
+  tests/gpu_validation/run_dynamic_inflow_compare.sh
+```
+
+Dynamic-inflow checkpoints deliberately do not replay host `boucon` after the
+device-to-host copy. The CPU validation oracle uses the same unprepared RK
+phase. This prevents the CPU and GPU time-series caches from independently
+advancing the shared `ninflowslice` counter during a GPU checkpoint. Other
+boundary cases retain the existing temporary checkpoint preparation.
+
+The `32x32x8`, three-step NP=1 central gate passes at `atol=rtol=1e-10`; the
+largest primitive and reconstructed conservative differences are `5.33e-15`
+and `1.42e-14`. The explicit MP7 gate also passes for NP=2 `2x1x1`, `1x2x1`,
+and `1x1x2`, plus NP=4 `4x1x1` and `2x2x1`. The z-slab uses `KM=16`, keeping
+the local z extent at least `hm=5`; NP=4 locally oversubscribes the two GPUs
+and therefore supplies correctness rather than scaling evidence. Restart
+continuity, per-RK-stage full-field comparison, physical turbulence statistics
+and production performance remain separate acceptance gates.

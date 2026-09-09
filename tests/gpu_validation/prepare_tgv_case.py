@@ -74,6 +74,20 @@ def set_ninit(input_file: Path, ninit: int) -> None:
     raise ValueError(f"ninit marker not found in {input_file}")
 
 
+def set_restart(input_file: Path, restart: str) -> None:
+    if restart not in ("t", "f"):
+        raise ValueError("restart must be t or f")
+    lines = input_file.read_text().splitlines()
+    marker = "lrestar"
+    for idx, line in enumerate(lines):
+        if marker in line:
+            data_idx = next_data_line(lines, idx)
+            lines[data_idx] = restart
+            input_file.write_text("\n".join(lines) + "\n")
+            return
+    raise ValueError(f"lrestar marker not found in {input_file}")
+
+
 def set_flowtype(input_file: Path, flowtype: str) -> None:
     lines = input_file.read_text().splitlines()
     marker = "flowtype"
@@ -290,6 +304,7 @@ def main() -> int:
     parser.add_argument("--lreadgrid", choices=("t", "f"))
     parser.add_argument("--gridfile", help="optional replacement structured-grid HDF5 path")
     parser.add_argument("--ninit", choices=(0, 1, 2, 3), type=int)
+    parser.add_argument("--restart", choices=("t", "f"))
     parser.add_argument("--scheme", default="643e")
     parser.add_argument("--conschm", help="optional conservative scheme override")
     parser.add_argument("--difschm", help="optional diffusive scheme override")
@@ -336,6 +351,8 @@ def main() -> int:
         set_gridfile(input_file, args.gridfile)
     if args.ninit is not None:
         set_ninit(input_file, args.ninit)
+    if args.restart is not None:
+        set_restart(input_file, args.restart)
     feqchkpt = args.maxstep if args.feqchkpt is None else args.feqchkpt
     set_controller_steps(
         args.dst_case / "datin" / "controller",

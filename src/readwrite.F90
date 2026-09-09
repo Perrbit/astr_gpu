@@ -2083,13 +2083,14 @@ module readwrite
   subroutine write_validation_rk_snapshot
     use commvar, only: hm,im,jm,km,numq,num_species
     use commarray, only: q,rho,vel,prs,tmp
-    use bc, only: boucon,bctype
+    use bc, only: boucon,bctype,turbinf
     use parallel, only: qswap
     use conservative_boundary_runtime, only: conservative_boundary
     implicit none
 
     character(len=1024) :: snapshot_path
     integer :: env_status,path_length
+    logical :: dynamic_inflow_snapshot
     real(8),allocatable :: q_save(:,:,:,:),rho_save(:,:,:),prs_save(:,:,:),tmp_save(:,:,:)
     real(8),allocatable :: vel_save(:,:,:,:)
 
@@ -2112,7 +2113,8 @@ module readwrite
     prs_save=prs
     tmp_save=tmp
 
-    if(.not.conservative_boundary%enabled) then
+    dynamic_inflow_snapshot=bctype(1)==11 .and. trim(turbinf)=='intp'
+    if(.not.conservative_boundary%enabled .and. .not.dynamic_inflow_snapshot) then
       if(any(bctype==22) .or. any(bctype==52)) call qswap()
       call boucon()
       call qswap()

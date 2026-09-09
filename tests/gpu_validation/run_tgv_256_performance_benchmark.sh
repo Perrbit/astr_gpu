@@ -16,6 +16,7 @@ TOPOLOGY="${TOPOLOGY:-1,1,1}"
 SYNC_MODE="${SYNC_MODE:-explicit}"
 HALO_TRANSPORT="${HALO_TRANSPORT:-pageable}"
 FEQCHKPT="${FEQCHKPT:-9999}"
+DELTAT="${DELTAT:-}"
 TIMINGS="$OUT_DIR/${LABEL}_timings.tsv"
 SUMMARY="$OUT_DIR/${LABEL}_summary.md"
 CASE_DIR="$OUT_DIR/${LABEL}_case"
@@ -70,11 +71,17 @@ PY
 
 prepare_case() {
   local case_dir="$1"
-  python3 "$ROOT_DIR/tests/gpu_validation/prepare_tgv_case.py" \
-    --src-case "$ROOT_DIR/examples/Taylor_Green_Vortex" \
-    --dst-case "$case_dir" --use-gpu t --grid "$GRID" \
-    --maxstep "$MAXSTEP" --feqchkpt "$FEQCHKPT" \
+  local args=(
+    "$ROOT_DIR/tests/gpu_validation/prepare_tgv_case.py"
+    --src-case "$ROOT_DIR/examples/Taylor_Green_Vortex"
+    --dst-case "$case_dir" --use-gpu t --grid "$GRID"
+    --maxstep "$MAXSTEP" --feqchkpt "$FEQCHKPT"
     --lfilter t --diffterm t --scheme 643e
+  )
+  if [[ -n "$DELTAT" ]]; then
+    args+=(--deltat "$DELTAT")
+  fi
+  python3 "${args[@]}"
 }
 
 run_once() {

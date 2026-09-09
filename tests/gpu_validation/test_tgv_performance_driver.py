@@ -35,6 +35,10 @@ class TgvPerformanceDriverTests(unittest.TestCase):
         self.assertIn('ASTR_GPU_HALO_TRANSPORT="$HALO_TRANSPORT"', SCRIPT)
         self.assertIn("halo_transport=%s", SCRIPT)
 
+    def test_driver_accepts_cfl_selected_time_step(self) -> None:
+        self.assertIn('DELTAT="${DELTAT:-}"', SCRIPT)
+        self.assertIn('args+=(--deltat "$DELTAT")', SCRIPT)
+
 
 if __name__ == "__main__":
     unittest.main()

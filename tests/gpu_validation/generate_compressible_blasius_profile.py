@@ -19,6 +19,13 @@ GAMMA = 1.4
 PRANDTL = 0.72
 
 
+def trapezoidal_integral(values: np.ndarray, coordinates: np.ndarray) -> float:
+    integrator = getattr(np, "trapezoid", None)
+    if integrator is None:
+        integrator = np.trapz
+    return float(integrator(values, coordinates))
+
+
 def positive_float(value: str) -> float:
     parsed = float(value)
     if parsed <= 0.0:
@@ -189,8 +196,10 @@ def write_profile(
 
     delta99 = interpolate_at(0.99, y_similarity, velocity)
     density_similarity = 1.0 / temperature
-    displacement = np.trapezoid(1.0 - density_similarity * velocity, y_similarity)
-    momentum = np.trapezoid(density_similarity * velocity * (1.0 - velocity), y_similarity)
+    displacement = trapezoidal_integral(1.0 - density_similarity * velocity, y_similarity)
+    momentum = trapezoidal_integral(
+        density_similarity * velocity * (1.0 - velocity), y_similarity
+    )
     wall_mu = float(sutherland_ratio(np.array([temperature[0]]), reference_temperature)[0])
     wall_du_dy = velocity_eta[0] / (temperature[0] * np.sqrt(2.0 * station_x / reynolds))
     friction_velocity = np.sqrt(wall_mu * wall_du_dy / (reynolds * density_similarity[0]))

@@ -97,7 +97,7 @@ def summarize(
     throughput = cells / median
     label = rows[0].label
     return [
-        "# TGV 256 GPU Performance Benchmark",
+        f"# TGV {grid.replace(',', 'x')} GPU Performance Benchmark",
         "",
         f"- label: `{label}`",
         f"- GPU synchronization mode: `{sync_mode}`",

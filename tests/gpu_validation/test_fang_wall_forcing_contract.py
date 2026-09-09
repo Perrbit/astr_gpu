@@ -14,6 +14,14 @@ GPU_BC = (ROOT / "src_gpu/boundary_gpu.cuf").read_text(encoding="utf-8")
 
 
 class FangWallForcingContractTests(unittest.TestCase):
+    def test_random_forcing_canonicalizes_the_periodic_k_endpoint(self) -> None:
+        self.assertIn("if(ka>0) gk=modulo(gk,int(ka,8))", CPU_BC)
+        self.assertIn("wall_ka_d=ka", GPU_BC)
+        self.assertIn(
+            "if(wall_ka_d>0) gk=gk-(gk/int(wall_ka_d,8))*int(wall_ka_d,8)",
+            GPU_BC,
+        )
+
     def test_cpu_dispatches_positive_temporal_mode_to_modal_forcing(self) -> None:
         self.assertRegex(
             CPU_BC,

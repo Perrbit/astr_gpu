@@ -14,6 +14,7 @@ import numpy as np
 
 
 ROOT = Path(__file__).resolve().parents[2]
+GPU_MAINLOOP = (ROOT / "src_gpu/mainloop_gpu.cuf").read_text(encoding="utf-8")
 
 
 def load_module(name: str, path: Path):
@@ -26,6 +27,16 @@ def load_module(name: str, path: Path):
 
 
 class CurvilinearFreestreamToolsTest(unittest.TestCase):
+    def test_axis_alignment_guard_uses_roundoff_scaled_tolerance(self) -> None:
+        self.assertIn(
+            "axis_aligned_tolerance=sqrt(epsilon(1.d0))",
+            GPU_MAINLOOP,
+        )
+        self.assertIn(
+            "GPU bctype=21 x-max tangential-normal error:",
+            GPU_MAINLOOP,
+        )
+
     def test_x_wavy_mapping_has_positive_jacobian_and_noncartesian_x_faces(self) -> None:
         generator = load_module(
             "generate_curvilinear_tgv_grid",

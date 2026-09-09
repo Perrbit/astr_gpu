@@ -84,6 +84,7 @@ contains
     use mainloop_gpu, only: init_gpu
     use sponge_gpu, only: init_sponge_gpu
     use boundary_gpu, only: init_s1_flatplate_profile_gpu,init_wall_blowing_gpu
+    use inflow_timeseries_gpu, only: init_dynamic_inflow_gpu
     use commvar, only: flowtype,ndims,lihomo,ljhomo,lkhomo
     use gpu_check, only: configure_gpu_sync_mode,gpu_selective_sync_enabled
     use parallel, only: lio
@@ -111,12 +112,15 @@ contains
     endif
     call init_wall_blowing_gpu()
     call init_s1_flatplate_profile_gpu()
+    call init_dynamic_inflow_gpu()
     call init_sponge_gpu()
   end subroutine gpu_after_flowinit
 
   subroutine gpu_before_finalize()
     use halo_transport_gpu, only: release_host_buffers
+    use inflow_timeseries_gpu, only: release_dynamic_inflow_gpu
     implicit none
+    call release_dynamic_inflow_gpu()
     call release_host_buffers()
   end subroutine gpu_before_finalize
 
@@ -153,9 +157,12 @@ contains
     use mainloop_gpu, only: prepare_rkfirst_stats_gpu
     use boundary_gpu, only: gpu_s1_flatplate_nscbc_farfield_case
     use commarray_gpu, only: save_q_stats_snapshot_gpu
+    use commvar, only: time
+    use inflow_timeseries_gpu, only: prepare_dynamic_inflow_gpu
     implicit none
 
     call begin_rk_prepare_timing()
+    call prepare_dynamic_inflow_gpu(time)
     stats_snapshot_ready = gpu_s1_flatplate_nscbc_farfield_case()
     if(stats_snapshot_ready) call save_q_stats_snapshot_gpu()
     call prepare_rkfirst_stats_gpu()

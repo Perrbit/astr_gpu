@@ -879,10 +879,11 @@ contains
     use bc, only: bctype,nscbc_farfield_sbli_shock_enabled
     use commarray, only: jacob,dxi,bnorm_im,bnorm_j0,bnorm_jm,         &
                          bnorm_k0,bnorm_km
-    use parallel, only: mpisize,isize,jsize,ksize,pmax
+    use parallel, only: mpisize,isize,jsize,ksize,pmax,lio
     use conservative_boundary_runtime, only: conservative_boundary
     implicit none
     real(8) :: min_jacob,max_jacob,geometry_error,local_error
+    real(8),parameter :: axis_aligned_tolerance=sqrt(epsilon(1.d0))
     logical :: ldc_case
     logical :: flatplate_pending
     logical :: controlled_upwind_case
@@ -957,14 +958,18 @@ contains
       local_error=0.d0
       if(allocated(bnorm_im)) local_error=max(maxval(abs(bnorm_im(:,:,2))), &
                                                maxval(abs(bnorm_im(:,:,3))))
-      if(pmax(local_error)>1.d-10) &
+      local_error=pmax(local_error)
+      if(local_error>axis_aligned_tolerance) then
+        if(lio) write(*,'(A,ES24.16)') &
+          'GPU bctype=21 x-max tangential-normal error: ',local_error
         stop 'GPU bctype=21 x-max requires an axis-aligned physical face'
+      endif
     endif
     if(bctype(4)==21) then
       local_error=0.d0
       if(allocated(bnorm_jm)) local_error=max(maxval(abs(bnorm_jm(:,:,1))), &
                                                maxval(abs(bnorm_jm(:,:,3))))
-      if(pmax(local_error)>1.d-10) &
+      if(pmax(local_error)>axis_aligned_tolerance) &
         stop 'GPU bctype=21 y-max requires an axis-aligned physical face'
     endif
 
@@ -972,28 +977,28 @@ contains
       local_error=0.d0
       if(allocated(bnorm_j0)) local_error=max(maxval(abs(bnorm_j0(:,:,1))), &
                                                maxval(abs(bnorm_j0(:,:,3))))
-      if(pmax(local_error)>1.d-10) &
+      if(pmax(local_error)>axis_aligned_tolerance) &
         stop 'GPU bctype=51 y-min requires an axis-aligned physical face'
     endif
     if(bctype(4)==51) then
       local_error=0.d0
       if(allocated(bnorm_jm)) local_error=max(maxval(abs(bnorm_jm(:,:,1))), &
                                                maxval(abs(bnorm_jm(:,:,3))))
-      if(pmax(local_error)>1.d-10) &
+      if(pmax(local_error)>axis_aligned_tolerance) &
         stop 'GPU bctype=51 y-max requires an axis-aligned physical face'
     endif
     if(bctype(5)==51) then
       local_error=0.d0
       if(allocated(bnorm_k0)) local_error=max(maxval(abs(bnorm_k0(:,:,1))), &
                                                maxval(abs(bnorm_k0(:,:,2))))
-      if(pmax(local_error)>1.d-10) &
+      if(pmax(local_error)>axis_aligned_tolerance) &
         stop 'GPU bctype=51 z-min requires an axis-aligned physical face'
     endif
     if(bctype(6)==51) then
       local_error=0.d0
       if(allocated(bnorm_km)) local_error=max(maxval(abs(bnorm_km(:,:,1))), &
                                                maxval(abs(bnorm_km(:,:,2))))
-      if(pmax(local_error)>1.d-10) &
+      if(pmax(local_error)>axis_aligned_tolerance) &
         stop 'GPU bctype=51 z-max requires an axis-aligned physical face'
     endif
 

@@ -93,6 +93,7 @@ def write_input(
     x_min_bctype: int,
     ninit: int,
     sponge_im: int,
+    turbinf: str,
 ) -> None:
     path.write_text(
         f"""########################################################################
@@ -133,7 +134,7 @@ f
 none,h
 
 # bctype
-{x_min_bctype},prof
+{x_min_bctype},{turbinf}
 21
 41,{wall_temperature:.16e}
 {upper_bctype}
@@ -194,6 +195,7 @@ def main() -> int:
     parser.add_argument("--upper-bctype", choices=(51, 52), type=int, default=51)
     parser.add_argument("--ninit", choices=(0, 3), type=int, default=0)
     parser.add_argument("--sponge-im", type=int, default=0)
+    parser.add_argument("--turbinf", choices=("prof", "intp"), default="prof")
     parser.add_argument("--profile-delta", type=float, default=0.08)
     parser.add_argument("--isobaric-profile", action="store_true")
     parser.add_argument("--x-min", type=float, default=0.0)
@@ -277,6 +279,7 @@ def main() -> int:
         args.x_min_bctype,
         args.ninit,
         args.sponge_im,
+        args.turbinf,
     )
     write_controller(
         datin / "controller", args.maxstep, feqchkpt, args.deltat, args.feqlist

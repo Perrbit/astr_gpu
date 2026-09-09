@@ -313,7 +313,7 @@ module mainloop
     use comsolver,only : filterq,filter2e,gradcal
     use sponge_layer,only : spongefilter
     use solver,   only : rhscal
-    use bc,       only : boucon,immbody,bctype,twall
+    use bc,       only : boucon,immbody,bctype,twall,turbinf
     use parallel, only : qswap
     use conservative_boundary_runtime, only: conservative_boundary, &
                            apply_conservative_boundary_stage
@@ -348,16 +348,19 @@ module mainloop
     logical :: gpu_output_due
     logical :: nscbc_boundary_filter_present
     logical :: conservative_case
+    logical :: dynamic_inflow_output
     !
     time_beg=ptime()
     conservative_case=conservative_boundary%enabled
+    dynamic_inflow_output=bctype(1)==11 .and. trim(turbinf)=='intp'
 
 #ifdef _CUDA
     if(use_gpu) then
       gpu_output_due = nstep > 0 .and. mod(nstep,feqchkpt)==0
       if(gpu_output_due) then
         call gpu_sync_flow_to_host()
-        if(flowtype(1:2)/='0d' .and. .not.conservative_case) then
+        if(flowtype(1:2)/='0d' .and. .not.conservative_case .and. &
+           .not.dynamic_inflow_output) then
           ! Match the CPU checkpoint phase without mutating resident device state.
           nscbc_boundary_filter_present = any(bctype == 22) .or. any(bctype == 52)
           if(nscbc_boundary_filter_present) call qswap(timerept=ltimrpt)

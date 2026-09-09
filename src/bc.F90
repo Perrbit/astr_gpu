@@ -10,7 +10,7 @@ module bc
   use constdef
   use parallel,only: lio,mpistop,mpirank,mpirankname,irk,jrk,krk,      &
                      irkm,jrkm,krkm,ig0,kg0,pmax,ptime,bcast
-  use commvar, only: hm,im,jm,km,uinf,vinf,winf,pinf,roinf,tinf,ndims, &
+  use commvar, only: hm,im,jm,km,ka,uinf,vinf,winf,pinf,roinf,tinf,ndims, &
                      num_species,flowtype,gamma,numq,npdci,npdcj,      &
                      npdck,is,ie,js,je,ks,ke,xmin,xmax,ymin,ymax,      &
                      zmin,zmax,time,num_modequ,ltimrpt,spcinf,const2,  &
@@ -7788,6 +7788,7 @@ module bc
         !
         gi=int(ig0+i,8)
         gk=int(kg0+k,8)
+        if(ka>0) gk=modulo(gk,int(ka,8))
         hash_value=104729_8*(gi+1_8)+130363_8*(gk+1_8)+433494437_8
         hash_value=hash_value-(hash_value/2147483629_8)*2147483629_8
         rfluc=0.1d0*(2.d0*dble(hash_value)/hash_modulus-1.d0)
@@ -7803,6 +7804,7 @@ module bc
         !
         gi=int(ig0+i,8)
         gk=int(kg0+k,8)
+        if(ka>0) gk=modulo(gk,int(ka,8))
         hash_value=104729_8*(gi+1_8)+130363_8*(gk+1_8)+433494437_8
         hash_value=hash_value-(hash_value/2147483629_8)*2147483629_8
         rfluc=0.1d0*(2.d0*dble(hash_value)/hash_modulus-1.d0)

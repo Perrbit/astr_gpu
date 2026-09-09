@@ -56,6 +56,8 @@ if(ASTR_WITH_CUDA)
   set(ASTR_GPU_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/gpu_check.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/device_runtime_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/inflow_interpolation_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/inflow_timeseries_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/commarray_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/commvar_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/qswap_gpu.cuf
@@ -125,6 +127,9 @@ if(ASTR_WITH_CUDA)
   target_link_libraries(halo_transport_test PRIVATE MPI::MPI_Fortran)
   add_executable(halo_pinned_probe EXCLUDE_FROM_ALL
     ../tests/gpu_validation/halo_pinned_probe.cuf)
+  add_executable(dynamic_inflow_interpolation_probe EXCLUDE_FROM_ALL
+    ../src_gpu/inflow_interpolation_gpu.cuf
+    ../tests/gpu_validation/dynamic_inflow_interpolation_probe.cuf)
   add_executable(halo_transport_setup_test EXCLUDE_FROM_ALL
     ../src_gpu/halo_transport_gpu.cuf
     ../tests/gpu_validation/halo_transport_setup_test.cuf)

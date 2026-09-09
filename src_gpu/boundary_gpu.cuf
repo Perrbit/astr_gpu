@@ -12,13 +12,14 @@ module boundary_gpu
   real(8),allocatable,device :: s1_bl_rho_prof_d(:),s1_bl_prs_prof_d(:), &
                                       s1_bl_tmp_prof_d(:),s1_bl_vel_prof_d(:,:)
   logical,save :: s1_bl_profile_ready = .false.
+  integer,device :: dynamic_inflow_error_d
   real(8),device :: wall_blowing_amplitude_d,wall_blowing_beta_d,        &
                     wall_blowing_xa_d,                                  &
                     wall_blowing_xb_d,wall_blowing_xc_d,wall_uinf_d,    &
                     wall_zmin_d,wall_zmax_d
   real(8),device :: wall_blowing_phase_d(15)
   integer,device :: wall_blowing_nmod_t_d,wall_blowing_nmod_z_d,        &
-                    wall_ig0_d,wall_kg0_d,wall_blowing_enabled_d
+                    wall_ig0_d,wall_kg0_d,wall_ka_d,wall_blowing_enabled_d
   real(8),parameter :: GPU_PI=3.1415926535897932384626433832795d0
 contains
   subroutine init_wall_blowing_gpu()
@@ -26,7 +27,7 @@ contains
                   wall_blowing_beta,wall_blowing_phase,                 &
                   wall_blowing_xa,wall_blowing_xb,wall_blowing_xc,     &
                   wall_blowing_nmod_t,wall_blowing_nmod_z
-    use commvar, only: ndims,uinf,zmin,zmax
+    use commvar, only: ndims,uinf,zmin,zmax,ka
     use parallel, only: ig0,kg0
     implicit none
     integer :: enabled
@@ -47,6 +48,7 @@ contains
     wall_zmax_d=zmax
     wall_ig0_d=ig0
     wall_kg0_d=kg0
+    wall_ka_d=ka
     wall_blowing_enabled_d=enabled
   end subroutine init_wall_blowing_gpu
 
@@ -104,6 +106,7 @@ contains
 
     gi=int(wall_ig0_d+i,8)
     gk=int(wall_kg0_d+k,8)
+    if(wall_ka_d>0) gk=gk-(gk/int(wall_ka_d,8))*int(wall_ka_d,8)
     hash_value=104729_8*(gi+1_8)+130363_8*(gk+1_8)+433494437_8
     hash_value=hash_value-(hash_value/2147483629_8)*2147483629_8
     rfluc=0.1d0*(2.d0*dble(hash_value)/hash_modulus-1.d0)
@@ -226,7 +229,8 @@ contains
 
     gpu_s1_flatplate_boundary_case_pending = trim(flowtype) == 'bl' .and. &
          (.not.lihomo) .and. (.not.ljhomo) .and. lkhomo .and. &
-         ((bctype(1) == GPU_BC_INFLOW .and. trim(turbinf) == 'prof') .or. &
+         ((bctype(1) == GPU_BC_INFLOW .and. &
+           (trim(turbinf) == 'prof' .or. trim(turbinf) == 'intp')) .or. &
           bctype(1) == GPU_BC_NSCBC_INFLOW) .and. &
          bctype(2) == GPU_BC_OUTFLOW .and. &
          bctype(3) == GPU_BC_WALL_ISOTHERMAL_NOSLIP .and. &
@@ -480,6 +484,72 @@ contains
                               prs,const6)
     qrhs_d(0,j,k,:) = 0.d0
   end subroutine s1_bl_profile_inflow_x_kernel
+
+  attributes(global) subroutine s1_bl_dynamic_inflow_x_kernel(im,jm,km,const2,const6,mach, &
+       forcing_time,time0,delta,slot0,slot1,slot2,slot3,mach_pressure,apply_left,error_flag)
+    use commarray_gpu, only: qrhs_d,tmp_d,prs_d,bnorm_i0_d
+    use inflow_interpolation_gpu, only: cubic_uniform_gpu
+    use inflow_timeseries_gpu, only: inflow_slices_d
+    implicit none
+    integer,value :: im,jm,km,slot0,slot1,slot2,slot3,mach_pressure,apply_left
+    integer,device :: error_flag
+    real(8),value :: const2,const6,mach,forcing_time,time0,delta
+    integer :: id,j,k,nplane,old_error
+    real(8) :: css,vnormal,rho,uu,vv,ww,tmp,prs,fluct
+
+    if(apply_left==0) return
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    nplane=(jm+1)*(km+1)
+    if(id>=nplane) return
+    j=mod(id,jm+1)
+    k=id/(jm+1)
+    rho=s1_bl_rho_prof_d(j)+cubic_uniform_gpu( &
+         inflow_slices_d(j,k,1,slot0),inflow_slices_d(j,k,1,slot1), &
+         inflow_slices_d(j,k,1,slot2),inflow_slices_d(j,k,1,slot3), &
+         time0,delta,forcing_time)
+    fluct=cubic_uniform_gpu( &
+         inflow_slices_d(j,k,2,slot0),inflow_slices_d(j,k,2,slot1), &
+         inflow_slices_d(j,k,2,slot2),inflow_slices_d(j,k,2,slot3), &
+         time0,delta,forcing_time)
+    uu=s1_bl_vel_prof_d(j,1)+fluct
+    if(uu<0.d0) uu=s1_bl_vel_prof_d(j,1)
+    vv=s1_bl_vel_prof_d(j,2)+cubic_uniform_gpu( &
+         inflow_slices_d(j,k,3,slot0),inflow_slices_d(j,k,3,slot1), &
+         inflow_slices_d(j,k,3,slot2),inflow_slices_d(j,k,3,slot3), &
+         time0,delta,forcing_time)
+    ww=s1_bl_vel_prof_d(j,3)+cubic_uniform_gpu( &
+         inflow_slices_d(j,k,4,slot0),inflow_slices_d(j,k,4,slot1), &
+         inflow_slices_d(j,k,4,slot2),inflow_slices_d(j,k,4,slot3), &
+         time0,delta,forcing_time)
+    tmp=s1_bl_tmp_prof_d(j)+cubic_uniform_gpu( &
+         inflow_slices_d(j,k,5,slot0),inflow_slices_d(j,k,5,slot1), &
+         inflow_slices_d(j,k,5,slot2),inflow_slices_d(j,k,5,slot3), &
+         time0,delta,forcing_time)
+    if(rho<=0.d0 .or. tmp<=0.d0) then
+      old_error=atomicMax(error_flag,1)
+      return
+    endif
+    prs=rho*tmp/const2
+    if(mach_pressure/=0) then
+      css=sqrt(tmp)/mach
+      vnormal=uu*bnorm_i0_d(j,k,1)+vv*bnorm_i0_d(j,k,2)+ww*bnorm_i0_d(j,k,3)
+      if(vnormal<0.d0) then
+        old_error=atomicMax(error_flag,2)
+        return
+      endif
+      if(vnormal/css<1.d0) then
+        prs=extrap2(prs_d(1,j,k),prs_d(2,j,k))
+        if(prs<=0.d0) then
+          old_error=atomicMax(error_flag,3)
+          return
+        endif
+        rho=prs/tmp*const2
+      endif
+    endif
+    tmp_d(0,j,k)=tmp
+    call set_q_from_primitive(0,j,k,rho,uu,vv,ww,prs,const6)
+    qrhs_d(0,j,k,:)=0.d0
+  end subroutine s1_bl_dynamic_inflow_x_kernel
 
   attributes(global) subroutine s1_bl_farfield_y_upper_kernel(im,jm,km,const2,const6,apply_up)
     use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d
@@ -2017,13 +2087,15 @@ contains
 
   subroutine apply_s1_flatplate_boundary_conditions_gpu(preserve_inflow_rhs)
     use commvar, only: im,jm,km,hm,const2,const6,gamma,mach,pinf,time
-    use bc, only: bctype,twall,pout,profile_inflow_mach_pressure_enabled
+    use bc, only: bctype,twall,pout,turbinf,profile_inflow_mach_pressure_enabled
+    use inflow_timeseries_gpu, only: dynamic_inflow_ready,dynamic_inflow_window
     use gpu_check, only: sync_after_kernel
     implicit none
     logical,intent(in),optional :: preserve_inflow_rhs
     type(dim3) :: block,grid_x,grid_y
     integer :: apply_left,apply_right,apply_down,apply_up,nx,ny,preserve_rhs, &
-               mach_pressure
+               mach_pressure,slot0,slot1,slot2,slot3,dynamic_error
+    real(8) :: time0,delta
 
     if(bctype(1) == GPU_BC_INFLOW .and. (.not.s1_bl_profile_ready)) &
       stop 'GPU S1 flatplate profile has not been uploaded'
@@ -2042,9 +2114,32 @@ contains
     grid_x = dim3((nx+block%x-1)/block%x,1,1)
     grid_y = dim3((ny+block%x-1)/block%x,1,1)
     if(bctype(1) == GPU_BC_INFLOW) then
-      call s1_bl_profile_inflow_x_kernel<<<grid_x,block>>>(im,jm,km,const2,const6,mach, &
-                                                            mach_pressure,apply_left)
-      call sync_after_kernel('s1_bl_profile_inflow_x_kernel')
+      select case(trim(turbinf))
+      case('prof')
+        call s1_bl_profile_inflow_x_kernel<<<grid_x,block>>>(im,jm,km,const2,const6,mach, &
+                                                              mach_pressure,apply_left)
+        call sync_after_kernel('s1_bl_profile_inflow_x_kernel')
+      case('intp')
+        if(apply_left/=0) then
+          if(.not.dynamic_inflow_ready()) stop 'GPU dynamic inflow cache is not ready'
+          call dynamic_inflow_window(time0,delta,slot0,slot1,slot2,slot3)
+          dynamic_inflow_error_d=0
+          call s1_bl_dynamic_inflow_x_kernel<<<grid_x,block>>>(im,jm,km,const2,const6,mach, &
+               time,time0,delta,slot0,slot1,slot2,slot3,mach_pressure,apply_left,dynamic_inflow_error_d)
+          call sync_after_kernel('s1_bl_dynamic_inflow_x_kernel')
+          dynamic_error=dynamic_inflow_error_d
+          select case(dynamic_error)
+          case(1)
+            stop 'GPU dynamic inflow produced non-positive density or temperature'
+          case(2)
+            stop 'GPU dynamic inflow produced negative inward normal velocity'
+          case(3)
+            stop 'GPU dynamic inflow extrapolated non-positive pressure'
+          end select
+        endif
+      case default
+        stop 'GPU bctype=11 supports turbinf=prof or intp only'
+      end select
     endif
     call outflow_x_kernel<<<grid_x,block>>>(im,jm,km,hm,const2,const6, &
                                              gamma,mach,pinf,pout,apply_right)

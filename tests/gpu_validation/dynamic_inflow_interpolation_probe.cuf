@@ -1,0 +1,56 @@
+module dynamic_inflow_probe_kernel
+  use cudafor
+  implicit none
+contains
+  attributes(global) subroutine evaluate(values,out,x,delta)
+    use inflow_interpolation_gpu, only: cubic_uniform_gpu
+    implicit none
+    real(8),device,intent(in) :: values(4)
+    real(8),device,intent(out) :: out(5)
+    real(8),device,intent(in) :: x(5)
+    real(8),value :: delta
+    integer :: id
+
+    id=threadIdx%x
+    if(id<=5) out(id)=cubic_uniform_gpu(values(1),values(2),values(3),values(4),0.d0,delta,x(id))
+  end subroutine evaluate
+end module dynamic_inflow_probe_kernel
+
+program dynamic_inflow_interpolation_probe
+  use cudafor
+  use dynamic_inflow_probe_kernel, only: evaluate
+  implicit none
+
+  real(8),device :: values_d(4),result_d(5),points_d(5)
+  real(8) :: values(4),result(5),expected(5),points(5)
+  integer :: istat,i
+
+  values=(/1.d0,8.d0,27.d0,64.d0/)
+  points=(/0.d0,1.d0,2.d0,3.d0,1.25d0/)
+  do i=1,5
+    expected(i)=(1.d0+points(i))**3
+  enddo
+  values_d=values
+  points_d=points
+  call evaluate<<<1,32>>>(values_d,result_d,points_d,1.d0)
+  istat=cudaDeviceSynchronize()
+  if(istat/=cudaSuccess) error stop 'dynamic inflow interpolation kernel failed'
+  result=result_d
+  if(maxval(abs(result-expected))>5.d-13) then
+    write(*,'(A,5(1X,ES24.16E3))') 'actual',result
+    write(*,'(A,5(1X,ES24.16E3))') 'expected',expected
+    error stop 'dynamic inflow cubic interpolation mismatch'
+  endif
+  points=points*1.d-5
+  points_d=points
+  call evaluate<<<1,32>>>(values_d,result_d,points_d,1.d-5)
+  istat=cudaDeviceSynchronize()
+  if(istat/=cudaSuccess) error stop 'small-delta interpolation kernel failed'
+  result=result_d
+  if(maxval(abs(result-expected))>5.d-13) then
+    write(*,'(A,5(1X,ES24.16E3))') 'small-delta actual',result
+    write(*,'(A,5(1X,ES24.16E3))') 'small-delta expected',expected
+    error stop 'small-delta cubic interpolation mismatch'
+  endif
+  write(*,'(A,1X,ES24.16E3)') 'DYNAMIC_INFLOW_CUBIC_MAXERR',maxval(abs(result-expected))
+end program dynamic_inflow_interpolation_probe
