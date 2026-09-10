@@ -60,6 +60,20 @@ class ZhongkeA800TgvCampaignJobTests(unittest.TestCase):
         self.assertIn("MAX_RETRIES", text)
         self.assertIn("compare_tgv_dlr_reference.py", text)
 
+    def test_compute_node_dependency_and_host_staged_mpi_gate(self) -> None:
+        text = JOB.read_text(encoding="ascii")
+        self.assertIn('ldd "$GPU_EXE"', text)
+        self.assertIn('grep -q "not found"', text)
+        self.assertIn("export OMPI_MCA_pml=ob1", text)
+        self.assertIn("export OMPI_MCA_btl=self,vader,tcp", text)
+        self.assertIn("export OMPI_MCA_osc=pt2pt", text)
+
+    def test_filter_workspace_reaches_timing_profile_and_production(self) -> None:
+        text = JOB.read_text(encoding="ascii")
+        self.assertIn('FILTER_WORKSPACE="${FILTER_WORKSPACE:-full}"', text)
+        self.assertIn('ASTR_GPU_FILTER_WORKSPACE="$FILTER_WORKSPACE"', text)
+        self.assertIn('FILTER_WORKSPACE="$FILTER_WORKSPACE"', text)
+
 
 if __name__ == "__main__":
     unittest.main()

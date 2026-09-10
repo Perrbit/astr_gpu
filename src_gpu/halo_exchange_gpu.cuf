@@ -434,6 +434,161 @@ contains
     enddo
   end subroutine unpack_qwork_y_halo_kernel
 
+  attributes(global) subroutine pack_filter_scalar_y_down_kernel(sendbuf,im,jm,km,hm)
+    use commarray_gpu, only: filter_work_d
+    implicit none
+    integer,value :: im,jm,km,hm
+    real(8),device :: sendbuf(0:im,0:hm-1,0:km,1:1)
+    integer :: id,i,h,k,n
+
+    n=(im+1)*hm*(km+1)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=n) return
+    i=mod(id,im+1)
+    h=mod(id/(im+1),hm)
+    k=id/((im+1)*hm)
+    sendbuf(i,h,k,1)=filter_work_d(i,h+1,k)
+  end subroutine pack_filter_scalar_y_down_kernel
+
+  attributes(global) subroutine pack_filter_scalar_y_up_kernel(sendbuf,im,jm,km,hm)
+    use commarray_gpu, only: filter_work_d
+    implicit none
+    integer,value :: im,jm,km,hm
+    real(8),device :: sendbuf(0:im,0:hm-1,0:km,1:1)
+    integer :: id,i,h,k,n
+
+    n=(im+1)*hm*(km+1)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=n) return
+    i=mod(id,im+1)
+    h=mod(id/(im+1),hm)
+    k=id/((im+1)*hm)
+    sendbuf(i,h,k,1)=filter_work_d(i,jm-hm+h,k)
+  end subroutine pack_filter_scalar_y_up_kernel
+
+  attributes(global) subroutine unpack_filter_scalar_y_kernel(recv_up,recv_down,im,jm,km,hm,has_up,has_down)
+    use commarray_gpu, only: filter_work_d
+    implicit none
+    integer,value :: im,jm,km,hm,has_up,has_down
+    real(8),device :: recv_up(0:im,0:hm-1,0:km,1:1)
+    real(8),device :: recv_down(0:im,0:hm-1,0:km,1:1)
+    integer :: id,i,h,k,n
+
+    n=(im+1)*hm*(km+1)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=n) return
+    i=mod(id,im+1)
+    h=mod(id/(im+1),hm)
+    k=id/((im+1)*hm)
+    if(has_up/=0) filter_work_d(i,jm+1+h,k)=recv_up(i,h,k,1)
+    if(has_down/=0) filter_work_d(i,-hm+h,k)=recv_down(i,h,k,1)
+  end subroutine unpack_filter_scalar_y_kernel
+
+  attributes(global) subroutine filter_scalar_qswap_y_kernel(im,jm,km,hm)
+    use commarray_gpu, only: filter_work_d
+    implicit none
+    integer,value :: im,jm,km,hm
+    integer :: id,i,k,h,n
+
+    n=(im+1)*(km+1)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=n) return
+    i=mod(id,im+1)
+    k=id/(im+1)
+    do h=1,hm
+      filter_work_d(i,-h,k)=filter_work_d(i,jm-h,k)
+      filter_work_d(i,jm+h,k)=filter_work_d(i,h,k)
+    enddo
+  end subroutine filter_scalar_qswap_y_kernel
+
+  attributes(global) subroutine copy_q_to_filter_scalar_y_halo_kernel(im,jm,km,hm,component)
+    use commarray_gpu, only: q_d,filter_work_d
+    implicit none
+    integer,value :: im,jm,km,hm,component
+    integer :: id,i,k,h,side,n
+
+    n=(im+1)*(km+1)*2*hm
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=n) return
+    i=mod(id,im+1)
+    k=mod(id/(im+1),km+1)
+    h=mod(id/((im+1)*(km+1)),hm)+1
+    side=id/((im+1)*(km+1)*hm)
+    if(side==0) then
+      filter_work_d(i,-h,k)=q_d(i,-h,k,component)
+    else
+      filter_work_d(i,jm+h,k)=q_d(i,jm+h,k,component)
+    endif
+  end subroutine copy_q_to_filter_scalar_y_halo_kernel
+
+  attributes(global) subroutine pack_q_component_z_back_kernel(sendbuf,im,jm,km,hm,component)
+    use commarray_gpu, only: q_d
+    implicit none
+    integer,value :: im,jm,km,hm,component
+    real(8),device :: sendbuf(0:im,0:jm,0:hm-1,1:1)
+    integer :: id,i,j,h,n
+
+    n=(im+1)*(jm+1)*hm
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=n) return
+    i=mod(id,im+1)
+    j=mod(id/(im+1),jm+1)
+    h=id/((im+1)*(jm+1))
+    sendbuf(i,j,h,1)=q_d(i,j,h+1,component)
+  end subroutine pack_q_component_z_back_kernel
+
+  attributes(global) subroutine pack_q_component_z_front_kernel(sendbuf,im,jm,km,hm,component)
+    use commarray_gpu, only: q_d
+    implicit none
+    integer,value :: im,jm,km,hm,component
+    real(8),device :: sendbuf(0:im,0:jm,0:hm-1,1:1)
+    integer :: id,i,j,h,n
+
+    n=(im+1)*(jm+1)*hm
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=n) return
+    i=mod(id,im+1)
+    j=mod(id/(im+1),jm+1)
+    h=id/((im+1)*(jm+1))
+    sendbuf(i,j,h,1)=q_d(i,j,km-hm+h,component)
+  end subroutine pack_q_component_z_front_kernel
+
+  attributes(global) subroutine unpack_q_component_z_kernel(recv_front,recv_back,im,jm,km,hm, &
+                                                              component,has_front,has_back)
+    use commarray_gpu, only: q_d
+    implicit none
+    integer,value :: im,jm,km,hm,component,has_front,has_back
+    real(8),device :: recv_front(0:im,0:jm,0:hm-1,1:1)
+    real(8),device :: recv_back(0:im,0:jm,0:hm-1,1:1)
+    integer :: id,i,j,h,n
+
+    n=(im+1)*(jm+1)*hm
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=n) return
+    i=mod(id,im+1)
+    j=mod(id/(im+1),jm+1)
+    h=id/((im+1)*(jm+1))
+    if(has_front/=0) q_d(i,j,km+1+h,component)=recv_front(i,j,h,1)
+    if(has_back/=0) q_d(i,j,-hm+h,component)=recv_back(i,j,h,1)
+  end subroutine unpack_q_component_z_kernel
+
+  attributes(global) subroutine q_component_qswap_z_kernel(im,jm,km,hm,component)
+    use commarray_gpu, only: q_d
+    implicit none
+    integer,value :: im,jm,km,hm,component
+    integer :: id,i,j,h,n
+
+    n=(im+1)*(jm+1)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=n) return
+    i=mod(id,im+1)
+    j=id/(im+1)
+    do h=1,hm
+      q_d(i,j,-h,component)=q_d(i,j,km-h,component)
+      q_d(i,j,km+h,component)=q_d(i,j,h,component)
+    enddo
+  end subroutine q_component_qswap_z_kernel
+
   attributes(global) subroutine pack_z_back_kernel(sendbuf,im,jm,km,hm,numq)
     use commarray_gpu, only: q_d
     implicit none
@@ -1113,6 +1268,114 @@ contains
     call field_qswap_z_kernel<<<grid,block>>>(q_d,im,jm,km,hm,numq)
     call sync_after_kernel('filter_q_local_z_halo_kernel')
   end subroutine refresh_filter_z_local_halo_gpu
+
+  subroutine exchange_filter_scalar_y_halo_gpu()
+    use mpi
+    use commvar, only: im,jm,km,hm
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: jsize,mpidown,mpiup
+    implicit none
+    type(dim3) :: block,grid
+    integer :: ncou,npack
+
+    if(jsize<=1) return
+    call ensure_field_y_buffers(1)
+    npack=hm*(im+1)*(km+1)
+    block=dim3(256,1,1)
+    grid=dim3((npack+block%x-1)/block%x,1,1)
+    call pack_filter_scalar_y_down_kernel<<<grid,block>>>(field_send_down_d(:,:,:,1:1),im,jm,km,hm)
+    call sync_after_kernel('pack_filter_scalar_y_down_kernel')
+    call pack_filter_scalar_y_up_kernel<<<grid,block>>>(field_send_up_d(:,:,:,1:1),im,jm,km,hm)
+    call sync_after_kernel('pack_filter_scalar_y_up_kernel',.true.)
+    field_send_down_h(:,:,:,1:1)=field_send_down_d(:,:,:,1:1)
+    field_send_up_h(:,:,:,1:1)=field_send_up_d(:,:,:,1:1)
+    ncou=npack
+    call exchange_host_pair(field_send_down_h(:,:,:,1:1),field_send_up_h(:,:,:,1:1), &
+                            field_recv_up_h(:,:,:,1:1),field_recv_down_h(:,:,:,1:1), &
+                            ncou,mpidown,mpiup,tag_y_first,tag_y_second)
+    if(mpiup/=MPI_PROC_NULL) field_recv_up_d(:,:,:,1:1)=field_recv_up_h(:,:,:,1:1)
+    if(mpidown/=MPI_PROC_NULL) field_recv_down_d(:,:,:,1:1)=field_recv_down_h(:,:,:,1:1)
+    call unpack_filter_scalar_y_kernel<<<grid,block>>>(field_recv_up_d(:,:,:,1:1), &
+         field_recv_down_d(:,:,:,1:1),im,jm,km,hm,merge(1,0,mpiup/=MPI_PROC_NULL), &
+         merge(1,0,mpidown/=MPI_PROC_NULL))
+    call sync_after_kernel('unpack_filter_scalar_y_kernel')
+  end subroutine exchange_filter_scalar_y_halo_gpu
+
+  subroutine refresh_filter_scalar_y_local_halo_gpu(component)
+    use commvar, only: im,jm,km,hm,ljhomo
+    use gpu_check, only: sync_after_kernel
+    use boundary_gpu, only: gpu_axis_is_physical
+    implicit none
+    integer,intent(in) :: component
+    type(dim3) :: block,grid
+    integer :: n
+
+    block=dim3(256,1,1)
+    if(ljhomo) then
+      n=(im+1)*(km+1)
+      grid=dim3((n+block%x-1)/block%x,1,1)
+      call filter_scalar_qswap_y_kernel<<<grid,block>>>(im,jm,km,hm)
+      call sync_after_kernel('filter_scalar_qswap_y_kernel')
+    elseif(gpu_axis_is_physical(2)) then
+      n=(im+1)*(km+1)*2*hm
+      grid=dim3((n+block%x-1)/block%x,1,1)
+      call copy_q_to_filter_scalar_y_halo_kernel<<<grid,block>>>(im,jm,km,hm,component)
+      call sync_after_kernel('copy_q_to_filter_scalar_y_halo_kernel')
+    else
+      stop 'GPU scalar filter y halo requires homogeneous or physical y direction'
+    endif
+  end subroutine refresh_filter_scalar_y_local_halo_gpu
+
+  subroutine exchange_filter_scalar_z_halo_gpu(component)
+    use mpi
+    use commvar, only: im,jm,km,hm
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: ksize,mpiback,mpifront
+    implicit none
+    integer,intent(in) :: component
+    type(dim3) :: block,grid
+    integer :: ncou,npack
+
+    if(ksize<=1) return
+    call ensure_field_z_buffers(1)
+    npack=hm*(im+1)*(jm+1)
+    block=dim3(256,1,1)
+    grid=dim3((npack+block%x-1)/block%x,1,1)
+    call pack_q_component_z_back_kernel<<<grid,block>>>(field_send_back_d(:,:,:,1:1), &
+                                                        im,jm,km,hm,component)
+    call sync_after_kernel('pack_q_component_z_back_kernel')
+    call pack_q_component_z_front_kernel<<<grid,block>>>(field_send_front_d(:,:,:,1:1), &
+                                                          im,jm,km,hm,component)
+    call sync_after_kernel('pack_q_component_z_front_kernel',.true.)
+    field_send_back_h(:,:,:,1:1)=field_send_back_d(:,:,:,1:1)
+    field_send_front_h(:,:,:,1:1)=field_send_front_d(:,:,:,1:1)
+    ncou=npack
+    call exchange_host_pair(field_send_back_h(:,:,:,1:1),field_send_front_h(:,:,:,1:1), &
+                            field_recv_front_h(:,:,:,1:1),field_recv_back_h(:,:,:,1:1), &
+                            ncou,mpiback,mpifront,tag_z_first,tag_z_second)
+    if(mpifront/=MPI_PROC_NULL) field_recv_front_d(:,:,:,1:1)=field_recv_front_h(:,:,:,1:1)
+    if(mpiback/=MPI_PROC_NULL) field_recv_back_d(:,:,:,1:1)=field_recv_back_h(:,:,:,1:1)
+    call unpack_q_component_z_kernel<<<grid,block>>>(field_recv_front_d(:,:,:,1:1), &
+         field_recv_back_d(:,:,:,1:1),im,jm,km,hm,component, &
+         merge(1,0,mpifront/=MPI_PROC_NULL),merge(1,0,mpiback/=MPI_PROC_NULL))
+    call sync_after_kernel('unpack_q_component_z_kernel')
+  end subroutine exchange_filter_scalar_z_halo_gpu
+
+  subroutine refresh_filter_scalar_z_local_halo_gpu(component)
+    use commvar, only: im,jm,km,hm,lkhomo
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    integer,intent(in) :: component
+    type(dim3) :: block,grid
+    integer :: n
+
+    if(.not.lkhomo) return
+    block=dim3(256,1,1)
+    n=(im+1)*(jm+1)
+    grid=dim3((n+block%x-1)/block%x,1,1)
+    call q_component_qswap_z_kernel<<<grid,block>>>(im,jm,km,hm,component)
+    call sync_after_kernel('q_component_qswap_z_kernel')
+  end subroutine refresh_filter_scalar_z_local_halo_gpu
 
   subroutine exchange_x_halo_gpu()
     use mpi

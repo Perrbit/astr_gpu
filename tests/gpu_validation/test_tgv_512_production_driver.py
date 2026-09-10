@@ -11,9 +11,15 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 DRIVER = ROOT / "tests/gpu_validation/run_tgv_512_production.sh"
+DRIVER_TEXT = DRIVER.read_text(encoding="ascii")
 
 
 class Tgv512ProductionDriverTests(unittest.TestCase):
+    def test_driver_records_and_forwards_filter_workspace(self) -> None:
+        self.assertIn('FILTER_WORKSPACE="${FILTER_WORKSPACE:-full}"', DRIVER_TEXT)
+        self.assertIn("filter_workspace=$FILTER_WORKSPACE", DRIVER_TEXT)
+        self.assertIn('ASTR_GPU_FILTER_WORKSPACE="$FILTER_WORKSPACE"', DRIVER_TEXT)
+
     def test_two_segments_restart_and_compare(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)

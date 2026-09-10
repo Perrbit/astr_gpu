@@ -249,6 +249,39 @@ The GPU run writes native `flowstate.dat` plus `gpu_kenergy.dat`, `gpu_enstophy.
 
 For the explicit 10th-order filter, the GPU path uses ping-pong storage and halo stencil kernels. In single-rank homogeneous y/z directions it refreshes local halos for `qwork_d` and `q_d` before launching the y/z halo filter kernels; in multi-rank directions it uses the corresponding MPI halo exchange before the same halo filter kernels.
 
+The full-state filter workspace remains the default. Set
+`ASTR_GPU_FILTER_WORKSPACE=scalar` to use one haloed scalar workspace and process
+the five conservative variables sequentially. The scalar path exchanges the
+full x-filter halo once, then exchanges only the active scalar y/z halo for each
+component. Every kernel retains the explicit synchronization contract. All MPI
+ranks must select the same mode; invalid or inconsistent values abort before
+time stepping.
+
+The comparison drivers accept `FILTER_WORKSPACE=full|scalar`, for example:
+
+```bash
+FILTER_WORKSPACE=scalar MAXSTEP=10 FEQCHKPT=10 \
+  tests/gpu_validation/run_tgv_field_compare.sh
+
+FILTER_WORKSPACE=scalar \
+  tests/gpu_validation/run_tgv_gpu_memcheck.sh
+```
+
+This mode remains optional rather than the production default. The local
+admission matrix now covers TGV NP=1 and x/y/z NP=2 slabs, LDC, Channel, and
+curvilinear `bctype=42`. The fresh `128^3` five-run complete-RK medians are
+`0.081408774/0.078219996 s` for full/scalar, while sampled process memory is
+`1686/1604 MiB`. A800 admission remains separate and is recorded in
+`documents/ASTR_GPU_SCALAR_FILTER_IMPLEMENTATION_PLAN.md`.
+
+Channel field comparisons use the CPU complete-RK snapshot. Comparing the
+ordinary CPU HDF output with the GPU complete-RK state mixes output phases and
+is not a valid filter-equivalence gate.
+
+An invalid `ASTR_GPU_FILTER_WORKSPACE` value is rejected collectively before
+time stepping. The scalar `32^3` TGV memcheck reports zero Compute Sanitizer
+errors.
+
 ## GPU Single-Rank Qswap
 
 Validate the first-stage GPU periodic halo and periodic-plane averaging path:
@@ -3477,9 +3510,15 @@ ASTR_CAMPAIGN_DRY_RUN=1 \
 ```
 
 The platform audit in `documents/ASTR_A800_TGV_CAMPAIGN_PLAN.md` was approved,
-and the formal campaign was submitted as Slurm job `451398` on 2026-09-08.
-It remained `PENDING (Priority)` when checked on 2026-09-09, so the repository
-does not yet contain A800 runtime evidence from this campaign.
+and the formal campaign was submitted as Slurm job `451398` on 2026-09-08. It
+started on 2026-09-10 but failed in the first compute-node preflight because
+`libsz.so.2` was unavailable on `gpu01`; no TGV timing or production result was
+created. The job now records compute-node `ldd` output and rejects unresolved
+libraries before launching ASTR. It also fixes the single-node host-staged MPI
+backend to `ob1` with `self,vader,tcp`, avoiding the UCX locked-memory path that
+blocked the Fang precursor preflight. These checks detect environment failures;
+the user-space HDF5/SZIP dependency must still be made self-contained before
+resubmission.
 
 ## GPU time-series profile inflow gate
 

@@ -21,6 +21,7 @@ FIELD_ATOL="${FIELD_ATOL:-1e-8}"
 FIELD_RTOL="${FIELD_RTOL:-1e-10}"
 COMPARE_STATS="${COMPARE_STATS:-t}"
 COMPARE_FIELD="${COMPARE_FIELD:-t}"
+FILTER_WORKSPACE="${FILTER_WORKSPACE:-full}"
 CPU_SNAPSHOT="outdat/rk_complete_snapshot.h5"
 
 prepare_case() {
@@ -59,6 +60,7 @@ prepare_case gpu t
 (
   cd "$OUT_DIR/gpu"
   ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
+  ASTR_GPU_FILTER_WORKSPACE="$FILTER_WORKSPACE" \
     mpirun -np "$NP" "$GPU_EXE" run datin/input.ldcav2d > gpu.log 2>&1
 )
 

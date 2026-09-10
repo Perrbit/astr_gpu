@@ -9,29 +9,130 @@ contains
     call copy_flow_to_gpu()
   end subroutine init_gpu
 
+  subroutine apply_explicit_filter_gpu(periodic_filter_case,label_prefix)
+    use commvar, only: im,jm,km,hm,numq,npdci,npdcj,npdck
+    use parallel, only: jsize,ksize
+    use commarray_gpu, only: gpu_scalar_filter_workspace_enabled
+    use gpu_check, only: sync_after_kernel
+    use halo_exchange_gpu, only: exchange_solution_filter_halo_gpu, &
+         exchange_filter_y_work_halo_gpu,exchange_filter_z_halo_gpu, &
+         refresh_filter_y_work_local_halo_gpu,refresh_filter_z_local_halo_gpu, &
+         exchange_filter_scalar_y_halo_gpu,refresh_filter_scalar_y_local_halo_gpu, &
+         exchange_filter_scalar_z_halo_gpu,refresh_filter_scalar_z_local_halo_gpu
+    use solver_gpu, only: filter_x_global_kernel,filter_y_pong_to_q_halo_global_kernel, &
+         filter_z_halo_global_kernel,copy_qwork_global_kernel, &
+         filter_x_scalar_global_kernel,filter_y_scalar_to_q_halo_global_kernel, &
+         filter_z_scalar_global_kernel,copy_filter_scalar_to_q_global_kernel
+    implicit none
+    logical,intent(in) :: periodic_filter_case
+    character(len=*),intent(in) :: label_prefix
+    type(dim3) :: block1,grid1,block_x,grid_x,grid_x_flat
+    type(dim3) :: block_y,grid_y,grid_y_flat,block_z,grid_z,grid_z_flat
+    integer :: ntot,component
+
+    ntot=(im+1)*(jm+1)*(km+1)
+    block1=dim3(256,1,1)
+    grid1=dim3((ntot+block1%x-1)/block1%x,1,1)
+    block_x=dim3(512,1,1)
+    grid_x=dim3((im+block_x%x)/block_x%x,jm+1,km+1)
+    grid_x_flat=dim3((ntot+block_x%x-1)/block_x%x,1,1)
+    block_y=dim3(32,16,1)
+    grid_y=dim3((im+block_y%x)/block_y%x,(jm+block_y%y)/block_y%y,km+1)
+    grid_y_flat=dim3(((im+1)*(jm+1)+block_y%x*block_y%y-1)/(block_y%x*block_y%y),1,km+1)
+    block_z=dim3(64,1,8)
+    grid_z=dim3((im+block_z%x)/block_z%x,jm+1,(km+block_z%z)/block_z%z)
+    grid_z_flat=dim3(((im+1)*(km+1)+block_z%x*block_z%z-1)/(block_z%x*block_z%z),jm+1,1)
+
+    call exchange_solution_filter_halo_gpu()
+    if(gpu_scalar_filter_workspace_enabled()) then
+      do component=1,numq
+        if(periodic_filter_case) then
+          call filter_x_scalar_global_kernel<<<grid_x_flat,block_x>>>( &
+               im,jm,km,npdci,component,.true.)
+        else
+          call filter_x_scalar_global_kernel<<<grid_x,block_x>>>( &
+               im,jm,km,npdci,component,.false.)
+        endif
+        call sync_after_kernel(trim(label_prefix)//'filter_x_scalar_global_kernel')
+        if(jsize>1) then
+          call exchange_filter_scalar_y_halo_gpu()
+        else
+          call refresh_filter_scalar_y_local_halo_gpu(component)
+        endif
+        if(periodic_filter_case) then
+          call filter_y_scalar_to_q_halo_global_kernel<<<grid_y_flat,block_y>>>( &
+               im,jm,km,npdcj,component,.true.)
+        else
+          call filter_y_scalar_to_q_halo_global_kernel<<<grid_y,block_y>>>( &
+               im,jm,km,npdcj,component,.false.)
+        endif
+        call sync_after_kernel(trim(label_prefix)//'filter_y_scalar_to_q_halo_global_kernel')
+        if(ksize>1) then
+          call exchange_filter_scalar_z_halo_gpu(component)
+        else
+          call refresh_filter_scalar_z_local_halo_gpu(component)
+        endif
+        if(periodic_filter_case) then
+          call filter_z_scalar_global_kernel<<<grid_z_flat,block_z>>>( &
+               im,jm,km,npdck,component,.true.)
+        else
+          call filter_z_scalar_global_kernel<<<grid_z,block_z>>>( &
+               im,jm,km,npdck,component,.false.)
+        endif
+        call sync_after_kernel(trim(label_prefix)//'filter_z_scalar_global_kernel')
+        call copy_filter_scalar_to_q_global_kernel<<<grid1,block1>>>(im,jm,km,component)
+        call sync_after_kernel(trim(label_prefix)//'copy_filter_scalar_to_q_global_kernel')
+      enddo
+      return
+    endif
+
+    if(periodic_filter_case) then
+      call filter_x_global_kernel<<<grid_x_flat,block_x>>>(im,jm,km,npdci,.true.)
+    else
+      call filter_x_global_kernel<<<grid_x,block_x>>>(im,jm,km,npdci,.false.)
+    endif
+    call sync_after_kernel(trim(label_prefix)//'filter_x_global_kernel')
+    if(jsize>1) then
+      call exchange_filter_y_work_halo_gpu()
+    else
+      call refresh_filter_y_work_local_halo_gpu()
+    endif
+    if(periodic_filter_case) then
+      call filter_y_pong_to_q_halo_global_kernel<<<grid_y_flat,block_y>>>(im,jm,km,npdcj,.true.)
+    else
+      call filter_y_pong_to_q_halo_global_kernel<<<grid_y,block_y>>>(im,jm,km,npdcj,.false.)
+    endif
+    call sync_after_kernel(trim(label_prefix)//'filter_y_pong_to_q_halo_global_kernel')
+    if(ksize>1) then
+      call exchange_filter_z_halo_gpu()
+    else
+      call refresh_filter_z_local_halo_gpu()
+    endif
+    if(periodic_filter_case) then
+      call filter_z_halo_global_kernel<<<grid_z_flat,block_z>>>(im,jm,km,npdck,.true.)
+    else
+      call filter_z_halo_global_kernel<<<grid_z,block_z>>>(im,jm,km,npdck,.false.)
+    endif
+    call sync_after_kernel(trim(label_prefix)//'filter_z_halo_global_kernel')
+    call copy_qwork_global_kernel<<<grid1,block1>>>(im,jm,km)
+    call sync_after_kernel(trim(label_prefix)//'copy_qwork_global_kernel')
+  end subroutine apply_explicit_filter_gpu
+
   subroutine prepare_rkfirst_stats_gpu()
     use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,const2,const6,lfilter
-    use parallel, only: jsize,ksize
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
     use gpu_check, only: sync_after_kernel
-    use halo_exchange_gpu, only: exchange_solution_halo_gpu, &
-         exchange_solution_filter_halo_gpu, exchange_filter_y_work_halo_gpu, &
-         exchange_filter_z_halo_gpu, exchange_diffusion_flux_halo_gpu, &
-         refresh_filter_y_work_local_halo_gpu, refresh_filter_z_local_halo_gpu
+    use halo_exchange_gpu, only: exchange_solution_halo_gpu
     use boundary_gpu, only: apply_boundary_conditions_gpu,apply_ldc_boundary_conditions_gpu, &
          apply_s1_flatplate_boundary_conditions_gpu,gpu_uses_physical_boundary, &
          gpu_ldc_boundary_case_pending,gpu_s1_flatplate_boundary_case_pending, &
          gpu_s1_flatplate_nscbc_farfield_case, &
          apply_nscbc_farfield_y_upper_filter_x_gpu, &
          apply_nscbc_farfield_y_upper_filter_z_gpu
-    use solver_gpu, only: q_to_primitive_kernel, &
-         filter_x_global_kernel,filter_y_pong_to_q_halo_global_kernel, &
-         filter_z_halo_global_kernel,copy_qwork_global_kernel
+    use solver_gpu, only: q_to_primitive_kernel
     use conservative_boundary_runtime, only: conservative_boundary
     implicit none
-    type(dim3) :: block_primitive,grid_primitive,block1,grid1
-    type(dim3) :: block_x,grid_x,grid_x_flat,block_y,grid_y,grid_y_flat
-    type(dim3) :: block_z,grid_z,grid_z_flat
+    type(dim3) :: block_primitive,grid_primitive
     integer :: ntot
     logical :: ldc_case,flatplate_case,periodic_filter_case
     logical :: flatplate_nscbc_farfield_case,conservative_case
@@ -44,62 +145,17 @@ contains
                                     gpu_s1_flatplate_nscbc_farfield_case()
     periodic_filter_case = lfilter .and. .not.(gpu_uses_physical_boundary() .or. ldc_case .or. flatplate_case)
 
-    ntot = (im + 1) * (jm + 1) * (km + 1)
-    block1 = dim3(256,1,1)
-    grid1 = dim3((ntot + block1%x - 1)/block1%x,1,1)
     block_primitive = dim3(32,4,4)
     grid_primitive = dim3((im + block_primitive%x)/block_primitive%x, &
                           (jm + block_primitive%y)/block_primitive%y, &
                           (km + block_primitive%z)/block_primitive%z)
-    block_x = dim3(512,1,1)
-    grid_x = dim3((im + block_x%x)/block_x%x,jm+1,km+1)
-    grid_x_flat = dim3((ntot + block_x%x - 1)/block_x%x,1,1)
-    block_y = dim3(32,16,1)
-    grid_y = dim3((im + block_y%x)/block_y%x,(jm + block_y%y)/block_y%y,km+1)
-    grid_y_flat = dim3(((im+1)*(jm+1) + block_y%x*block_y%y - 1)/ &
-                       (block_y%x*block_y%y),1,km+1)
-    block_z = dim3(64,1,8)
-    grid_z = dim3((im + block_z%x)/block_z%x,jm+1,(km + block_z%z)/block_z%z)
-    grid_z_flat = dim3(((im+1)*(km+1) + block_z%x*block_z%z - 1)/ &
-                       (block_z%x*block_z%z),jm+1,1)
-
     if(lfilter) then
       if(gpu_uses_physical_boundary() .or. ldc_case .or. flatplate_case) then
         call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
              q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
         call sync_after_kernel('prepare_q_to_primitive_kernel_prefilter')
       endif
-      call exchange_solution_filter_halo_gpu()
-      if(periodic_filter_case) then
-        call filter_x_global_kernel<<<grid_x_flat,block_x>>>(im,jm,km,npdci,.true.)
-      else
-        call filter_x_global_kernel<<<grid_x,block_x>>>(im,jm,km,npdci,.false.)
-      endif
-      call sync_after_kernel('prepare_filter_x_global_kernel')
-      if(jsize>1) then
-        call exchange_filter_y_work_halo_gpu()
-      else
-        call refresh_filter_y_work_local_halo_gpu()
-      endif
-      if(periodic_filter_case) then
-        call filter_y_pong_to_q_halo_global_kernel<<<grid_y_flat,block_y>>>(im,jm,km,npdcj,.true.)
-      else
-        call filter_y_pong_to_q_halo_global_kernel<<<grid_y,block_y>>>(im,jm,km,npdcj,.false.)
-      endif
-      call sync_after_kernel('prepare_filter_y_pong_to_q_halo_global_kernel')
-      if(ksize>1) then
-        call exchange_filter_z_halo_gpu()
-      else
-        call refresh_filter_z_local_halo_gpu()
-      endif
-      if(periodic_filter_case) then
-        call filter_z_halo_global_kernel<<<grid_z_flat,block_z>>>(im,jm,km,npdck,.true.)
-      else
-        call filter_z_halo_global_kernel<<<grid_z,block_z>>>(im,jm,km,npdck,.false.)
-      endif
-      call sync_after_kernel('prepare_filter_z_halo_global_kernel')
-      call copy_qwork_global_kernel<<<grid1,block1>>>(im,jm,km)
-      call sync_after_kernel('prepare_copy_qwork_global_kernel')
+      call apply_explicit_filter_gpu(periodic_filter_case,'prepare_')
     endif
 
     if(conservative_case) then
@@ -151,9 +207,7 @@ contains
          jacob_d,dxi_d,copy_flow_from_gpu,copy_rhs_from_gpu
     use gpu_check, only: sync_after_kernel
     use halo_exchange_gpu, only: exchange_solution_halo_gpu, &
-         exchange_solution_filter_halo_gpu, exchange_filter_y_work_halo_gpu, &
-         exchange_filter_z_halo_gpu, exchange_diffusion_flux_halo_gpu, &
-         refresh_filter_y_work_local_halo_gpu, refresh_filter_z_local_halo_gpu
+         exchange_diffusion_flux_halo_gpu
     use boundary_gpu, only: apply_boundary_conditions_gpu, &
          gpu_physical_boundary_axis,gpu_uses_physical_boundary, &
          gpu_ldc_boundary_case_pending,apply_ldc_boundary_conditions_gpu, &
@@ -183,8 +237,6 @@ contains
          convective_rhs_y_xyphysical_global_kernel, &
          convective_rhs_z_xyphysical_global_kernel, &
          rk3_first_update_global_kernel,rk3_update_global_kernel, &
-         filter_x_global_kernel,filter_y_pong_to_q_halo_global_kernel, &
-         filter_z_halo_global_kernel,copy_qwork_global_kernel, &
          diffusion_flux_global_kernel,diffusion_flux_xphysical_global_kernel, &
          diffusion_flux_yphysical_global_kernel,diffusion_flux_zphysical_global_kernel, &
          diffusion_flux_xyphysical_global_kernel, &
@@ -419,37 +471,7 @@ contains
         endif
 
         if(lfilter) then
-          call exchange_solution_filter_halo_gpu()
-          if(periodic_filter_case) then
-            call filter_x_global_kernel<<<grid_x_flat,block_x>>>(im,jm,km,npdci,.true.)
-          else
-          call filter_x_global_kernel<<<grid_x,block_x>>>(im,jm,km,npdci,.false.)
-          endif
-          call sync_after_kernel('filter_x_global_kernel')
-          if(jsize>1) then
-            call exchange_filter_y_work_halo_gpu()
-          else
-            call refresh_filter_y_work_local_halo_gpu()
-          endif
-          if(periodic_filter_case) then
-            call filter_y_pong_to_q_halo_global_kernel<<<grid_y_flat,block_y>>>(im,jm,km,npdcj,.true.)
-          else
-            call filter_y_pong_to_q_halo_global_kernel<<<grid_y,block_y>>>(im,jm,km,npdcj,.false.)
-          endif
-          call sync_after_kernel('filter_y_pong_to_q_halo_global_kernel')
-          if(ksize>1) then
-            call exchange_filter_z_halo_gpu()
-          else
-            call refresh_filter_z_local_halo_gpu()
-          endif
-          if(periodic_filter_case) then
-            call filter_z_halo_global_kernel<<<grid_z_flat,block_z>>>(im,jm,km,npdck,.true.)
-          else
-            call filter_z_halo_global_kernel<<<grid_z,block_z>>>(im,jm,km,npdck,.false.)
-          endif
-          call sync_after_kernel('filter_z_halo_global_kernel')
-          call copy_qwork_global_kernel<<<grid1,block1>>>(im,jm,km)
-          call sync_after_kernel('copy_qwork_global_kernel')
+          call apply_explicit_filter_gpu(periodic_filter_case,'')
         endif
 
         if(conservative_case) then

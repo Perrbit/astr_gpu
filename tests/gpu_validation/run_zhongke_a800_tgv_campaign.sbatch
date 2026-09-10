@@ -22,6 +22,7 @@ RUN_ROOT="${RUN_ROOT:-$WORK_ROOT/results/a800_tgv_campaign_${SLURM_JOB_ID:-dryru
 DLR_REFERENCE="$SRC_DIR/documents/reference_data/tgv/spectral_Re1600_512.gdiag"
 STATUS_FILE="$RUN_ROOT/case_status.tsv"
 DRY_RUN="${ASTR_CAMPAIGN_DRY_RUN:-0}"
+FILTER_WORKSPACE="${FILTER_WORKSPACE:-full}"
 
 case_labels=(
   t0_cfl_memory_preflight
@@ -69,7 +70,20 @@ done
 mkdir -p "$RUN_ROOT"
 mkdir -p "$RUN_ROOT/tmp"
 export TMPDIR="$RUN_ROOT/tmp"
+export OMPI_MCA_pml=ob1
+export OMPI_MCA_btl=self,vader,tcp
+export OMPI_MCA_osc=pt2pt
+export OMPI_MCA_coll='^hcoll,ucc'
+export OMPI_MCA_opal_cuda_support=0
+export UCX_MEMTYPE_CACHE=n
 printf 'case\tstatus\texit_code\tstarted\tfinished\tdetail\n' > "$STATUS_FILE"
+
+ldd "$CPU_EXE" > "$RUN_ROOT/cpu_dependencies.txt" 2>&1
+ldd "$GPU_EXE" > "$RUN_ROOT/gpu_dependencies.txt" 2>&1
+if grep -q "not found" "$RUN_ROOT/cpu_dependencies.txt" "$RUN_ROOT/gpu_dependencies.txt"; then
+  printf 'unresolved compute-node dynamic library dependency\n' >&2
+  exit 2
+fi
 
 visible="${CUDA_VISIBLE_DEVICES:?SLURM did not expose CUDA_VISIBLE_DEVICES}"
 IFS=',' read -r -a gpu <<< "$visible"
@@ -93,6 +107,7 @@ gpu4="${gpu[0]},${gpu[1]},${gpu[2]},${gpu[3]}"
   printf 'slurm_job_id: %s\n' "$SLURM_JOB_ID"
   printf 'slurm_job_nodelist: %s\n' "$SLURM_JOB_NODELIST"
   printf 'cuda_visible_devices: %s\n' "$visible"
+  printf 'filter_workspace: %s\n' "$FILTER_WORKSPACE"
   printf '\nloaded_modules:\n'
   module -t list 2>&1
   printf '\nnvidia_smi:\n'
@@ -168,6 +183,7 @@ run_cfl_preflight() {
     cd "$case_dir" || exit 2
     CUDA_VISIBLE_DEVICES="$gpu1" ASTR_FORCE_MPI_TOPOLOGY=1,1,1 \
     ASTR_GPU_SYNC_MODE=explicit ASTR_GPU_HALO_TRANSPORT=pinned-overlap \
+    ASTR_GPU_FILTER_WORKSPACE="$FILTER_WORKSPACE" \
       mpirun -np 1 "$GPU_EXE" run datin/input.tgv > "$log" 2>&1
   )
   status=$?
@@ -197,6 +213,7 @@ run_end_to_end_repeats() {
       cd "$case_dir" || exit 2
       CUDA_VISIBLE_DEVICES="$gpu_ids" ASTR_FORCE_MPI_TOPOLOGY=1,1,1 \
       ASTR_GPU_SYNC_MODE=explicit ASTR_GPU_HALO_TRANSPORT=pinned-overlap \
+      ASTR_GPU_FILTER_WORKSPACE="$FILTER_WORKSPACE" \
         mpirun -np 1 "$exe" run datin/input.tgv > run.log 2>&1
     )
     status=$?
@@ -215,6 +232,7 @@ run_gpu_timing() {
   GPU_EXE="$GPU_EXE" OUT_DIR="$RUN_ROOT/$label" LABEL="$label" \
     GRID=512,512,512 MAXSTEP=21 DISCARD_STEPS=2 REPEATS=5 DELTAT="$dt" \
     NP="$np" TOPOLOGY="$topology" GPU_IDS="$gpu_ids" \
+    FILTER_WORKSPACE="$FILTER_WORKSPACE" \
     HALO_TRANSPORT="$transport" SYNC_MODE=explicit FEQCHKPT=9999 \
     "$SRC_DIR/tests/gpu_validation/run_tgv_256_performance_benchmark.sh"
 }
@@ -231,6 +249,7 @@ run_nsys() {
     cd "$case_dir" || exit 2
     CUDA_VISIBLE_DEVICES="$gpu4" ASTR_FORCE_MPI_TOPOLOGY=1,1,4 \
     ASTR_GPU_SYNC_MODE=explicit ASTR_GPU_HALO_TRANSPORT=pinned-overlap \
+    ASTR_GPU_FILTER_WORKSPACE="$FILTER_WORKSPACE" \
       nsys profile --trace=cuda,mpi --stats=true --force-overwrite=true \
       -o "$out/tgv_512_np4" mpirun -np 4 "$GPU_EXE" run datin/input.tgv \
       > "$out/nsys.log" 2>&1
@@ -263,6 +282,7 @@ if [[ "$cfl_ready" == t ]]; then
     DLR_REFERENCE="$DLR_REFERENCE" GPU_IDS="$gpu4" NP=4 TOPOLOGY=1,1,4 \
     TARGET_TIME=20.0 TARGET_CFL=0.50 SEGMENT_STEPS=2000 MAX_RETRIES=1 \
     SYNC_MODE=explicit HALO_TRANSPORT=pinned-overlap \
+    FILTER_WORKSPACE="$FILTER_WORKSPACE" \
     "$SRC_DIR/tests/gpu_validation/run_tgv_512_production.sh"
 else
   for label in "${case_labels[@]:1}"; do

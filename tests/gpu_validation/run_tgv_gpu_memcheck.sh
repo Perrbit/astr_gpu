@@ -9,6 +9,7 @@ MAXSTEP="${MAXSTEP:-1}"
 FEQCHKPT="${FEQCHKPT:-9999}"
 GPU_ID="${GPU_ID:-0}"
 SYNC_MODE="${SYNC_MODE:-explicit}"
+FILTER_WORKSPACE="${FILTER_WORKSPACE:-full}"
 CASE_DIR="$OUT_DIR/case"
 
 if [[ "$GPU_EXE" != /* ]]; then
@@ -30,6 +31,10 @@ if [[ "$FEQCHKPT" -le "$MAXSTEP" ]]; then
   echo "FEQCHKPT must exceed MAXSTEP so memcheck does not write checkpoints" >&2
   exit 2
 fi
+if [[ "$FILTER_WORKSPACE" != "full" && "$FILTER_WORKSPACE" != "scalar" ]]; then
+  echo "FILTER_WORKSPACE must be full or scalar" >&2
+  exit 2
+fi
 
 mkdir -p "$OUT_DIR"
 python3 "$ROOT_DIR/tests/gpu_validation/prepare_tgv_case.py" \
@@ -42,6 +47,7 @@ python3 "$ROOT_DIR/tests/gpu_validation/prepare_tgv_case.py" \
   cd "$CASE_DIR"
   CUDA_VISIBLE_DEVICES="$GPU_ID" ASTR_FORCE_MPI_TOPOLOGY=1,1,1 \
     ASTR_GPU_SYNC_MODE="$SYNC_MODE" \
+    ASTR_GPU_FILTER_WORKSPACE="$FILTER_WORKSPACE" \
     OMPI_MCA_pml=ob1 OMPI_MCA_btl=self OMPI_MCA_osc=pt2pt \
     mpirun -np 1 compute-sanitizer --tool memcheck --error-exitcode 99 \
       "$GPU_EXE" run datin/input.tgv > "$OUT_DIR/memcheck.log" 2>&1

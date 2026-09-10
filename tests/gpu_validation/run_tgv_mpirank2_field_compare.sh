@@ -15,6 +15,7 @@ ATOL="${ATOL:-1e-10}"
 RTOL="${RTOL:-1e-10}"
 MPI_NP="${MPI_NP:-${NP:-2}}"
 TOPOLOGY="${TOPOLOGY:-2,1,1}"
+FILTER_WORKSPACE="${FILTER_WORKSPACE:-full}"
 
 mkdir -p "$OUT_DIR"
 
@@ -45,7 +46,8 @@ python3 "$ROOT_DIR/tests/gpu_validation/prepare_tgv_case.py" \
 
 (
   cd "$OUT_DIR/gpu"
-  ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" mpirun -np "$MPI_NP" "$GPU_EXE" run datin/input.tgv > gpu.log 2>&1
+  ASTR_GPU_FILTER_WORKSPACE="$FILTER_WORKSPACE" ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
+    mpirun -np "$MPI_NP" "$GPU_EXE" run datin/input.tgv > gpu.log 2>&1
 )
 
 python3 "$ROOT_DIR/tests/gpu_validation/compare_flowfield_h5.py" \

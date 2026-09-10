@@ -1,7 +1,12 @@
 module commarray_gpu
   use cudafor
   implicit none
+  integer,parameter :: GPU_FILTER_WORKSPACE_FULL=0
+  integer,parameter :: GPU_FILTER_WORKSPACE_SCALAR=1
+  integer,save :: gpu_filter_workspace_mode=GPU_FILTER_WORKSPACE_FULL
+  logical,save :: gpu_filter_workspace_configured=.false.
   real(8),allocatable,device :: q_d(:,:,:,:),qrhs_d(:,:,:,:),qsave_d(:,:,:,:),qwork_d(:,:,:,:)
+  real(8),allocatable,device :: filter_work_d(:,:,:)
   real(8),allocatable,device :: rho_d(:,:,:),prs_d(:,:,:),tmp_d(:,:,:)
   real(8),allocatable,device :: vel_d(:,:,:,:),jacob_d(:,:,:),x_d(:,:,:,:)
   real(8),allocatable,device :: dxi_d(:,:,:,:,:)
@@ -14,13 +19,68 @@ module commarray_gpu
   real(8),allocatable,device :: shock_sensor_d(:,:,:,:)
   integer(1),allocatable,device :: shock_mask_d(:,:,:)
 contains
-  subroutine alloc_gpu_arrays()
-    use commvar, only: im,jm,km,hm,numq,conschm,recon_schem,lchardecomp
-    use commcal, only: shock_sensor_validation_enabled
+  subroutine configure_gpu_filter_workspace()
+    use mpi
+    use parallel, only: lio
     implicit none
+    character(len=16) :: value
+    integer :: choice,lowest,highest,status,ierr
 
+    if(gpu_filter_workspace_configured) return
+    value=''
+    call get_environment_variable('ASTR_GPU_FILTER_WORKSPACE',value,status=status)
+    choice=-1
+    if(status==1 .or. (status==0 .and. len_trim(value)==0)) choice=GPU_FILTER_WORKSPACE_FULL
+    if(status==0) then
+      select case(trim(adjustl(value)))
+      case('full')
+        choice=GPU_FILTER_WORKSPACE_FULL
+      case('scalar')
+        choice=GPU_FILTER_WORKSPACE_SCALAR
+      end select
+    endif
+    call mpi_allreduce(choice,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,status)
+    call mpi_allreduce(choice,highest,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,status)
+    if(lowest<0 .or. lowest/=highest) then
+      if(lio) write(*,'(A)') 'Invalid or inconsistent ASTR_GPU_FILTER_WORKSPACE: expected full or scalar'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+    endif
+    gpu_filter_workspace_mode=choice
+    gpu_filter_workspace_configured=.true.
+  end subroutine configure_gpu_filter_workspace
+
+  logical function gpu_scalar_filter_workspace_enabled()
+    implicit none
+    gpu_scalar_filter_workspace_enabled = &
+      gpu_filter_workspace_mode==GPU_FILTER_WORKSPACE_SCALAR
+  end function gpu_scalar_filter_workspace_enabled
+
+  subroutine alloc_gpu_arrays()
+    use commvar, only: im,jm,km,hm,numq,conschm,recon_schem,lchardecomp,lfilter
+    use commcal, only: shock_sensor_validation_enabled
+    use parallel, only: lio
+    implicit none
+    integer(8) :: workspace_bytes
+
+    call configure_gpu_filter_workspace()
     if(.not.allocated(q_d))      allocate(q_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq))
-    if(.not.allocated(qwork_d))  allocate(qwork_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq))
+    if(gpu_scalar_filter_workspace_enabled() .and. lfilter) then
+      if(.not.allocated(filter_work_d)) &
+        allocate(filter_work_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+      workspace_bytes=int(im+2*hm+1,8)*int(jm+2*hm+1,8)*int(km+2*hm+1,8)*8_8
+      if(lio) write(*,'(A)') ' ** GPU filter workspace storage: scalar'
+    else
+      if(.not.allocated(qwork_d)) allocate(qwork_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq))
+      workspace_bytes=int(im+2*hm+1,8)*int(jm+2*hm+1,8)*int(km+2*hm+1,8)*int(numq,8)*8_8
+      if(lio .and. gpu_scalar_filter_workspace_enabled()) then
+        write(*,'(A)') ' ** GPU filter workspace storage: full compatibility (lfilter=f)'
+      elseif(lio) then
+        write(*,'(A)') ' ** GPU filter workspace storage: full'
+      endif
+    endif
+    if(lio) write(*,'(A,I0)') ' ** GPU filter workspace bytes: ',workspace_bytes
     if(.not.allocated(qrhs_d))   allocate(qrhs_d(0:im,0:jm,0:km,1:numq))
     if(.not.allocated(qsave_d))  allocate(qsave_d(0:im,0:jm,0:km,1:numq))
     if(.not.allocated(rho_d))    allocate(rho_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))

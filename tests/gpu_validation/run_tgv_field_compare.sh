@@ -13,6 +13,7 @@ DIFFTERM="${DIFFTERM:-t}"
 SCHEME="${SCHEME:-643e}"
 ATOL="${ATOL:-1e-10}"
 RTOL="${RTOL:-1e-10}"
+FILTER_WORKSPACE="${FILTER_WORKSPACE:-full}"
 
 mkdir -p "$OUT_DIR"
 
@@ -43,7 +44,8 @@ python3 "$ROOT_DIR/tests/gpu_validation/prepare_tgv_case.py" \
 
 (
   cd "$OUT_DIR/gpu"
-  mpirun -np 1 "$GPU_EXE" run datin/input.tgv > gpu.log 2>&1
+  ASTR_GPU_FILTER_WORKSPACE="$FILTER_WORKSPACE" \
+    mpirun -np 1 "$GPU_EXE" run datin/input.tgv > gpu.log 2>&1
 )
 
 python3 "$ROOT_DIR/tests/gpu_validation/compare_flowfield_h5.py" \

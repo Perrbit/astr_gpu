@@ -16,6 +16,7 @@ SEGMENT_STEPS="${SEGMENT_STEPS:-2000}"
 MAX_RETRIES="${MAX_RETRIES:-1}"
 SYNC_MODE="${SYNC_MODE:-explicit}"
 HALO_TRANSPORT="${HALO_TRANSPORT:-pinned-overlap}"
+FILTER_WORKSPACE="${FILTER_WORKSPACE:-full}"
 CASE_DIR="$OUT_DIR/case"
 SEGMENT_STATUS="$OUT_DIR/segment_status.tsv"
 
@@ -68,6 +69,7 @@ topology=$TOPOLOGY
 gpu_ids=$GPU_IDS
 sync_mode=$SYNC_MODE
 halo_transport=$HALO_TRANSPORT
+filter_workspace=$FILTER_WORKSPACE
 cfl_dt_one=$cfl_dt_one
 target_cfl=$TARGET_CFL
 actual_initial_cfl=$actual_target_cfl
@@ -162,6 +164,7 @@ while (( current_step < total_steps )); do
       OMPI_MCA_sharedfp="${OMPI_MCA_sharedfp:-individual}" \
       CUDA_VISIBLE_DEVICES="$GPU_IDS" ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
       ASTR_GPU_SYNC_MODE="$SYNC_MODE" ASTR_GPU_HALO_TRANSPORT="$HALO_TRANSPORT" \
+      ASTR_GPU_FILTER_WORKSPACE="$FILTER_WORKSPACE" \
         mpirun -np "$NP" "$GPU_EXE" run datin/input.tgv > "$log" 2>&1
     )
     run_status=$?

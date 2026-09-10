@@ -31,6 +31,7 @@ COMPARE_FIELD="${COMPARE_FIELD:-t}"
 FIELD_ATOL="${FIELD_ATOL:-1e-10}"
 FIELD_RTOL="${FIELD_RTOL:-1e-10}"
 CPU_SNAPSHOT="outdat/rk_complete_snapshot.h5"
+FILTER_WORKSPACE="${FILTER_WORKSPACE:-full}"
 
 mkdir -p "$OUT_DIR"
 
@@ -101,7 +102,8 @@ done
   if [[ -n "$TOPOLOGY" ]]; then
     export ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY"
   fi
-  mpirun -np "$NP" "$GPU_EXE" run datin/input.tgv > gpu.log 2>&1
+  ASTR_GPU_FILTER_WORKSPACE="$FILTER_WORKSPACE" \
+    mpirun -np "$NP" "$GPU_EXE" run datin/input.tgv > gpu.log 2>&1
 )
 
 python3 "$ROOT_DIR/tests/gpu_validation/compare_flowstate.py" \

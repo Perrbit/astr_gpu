@@ -23,6 +23,8 @@ COMPARE_STATS="${COMPARE_STATS:-t}"
 COMPARE_FIELD="${COMPARE_FIELD:-t}"
 CHANNEL_FORCE_MODE="${CHANNEL_FORCE_MODE:-feedback}"
 CHANNEL_FORCE_FIXED="${CHANNEL_FORCE_FIXED:-}"
+FILTER_WORKSPACE="${FILTER_WORKSPACE:-full}"
+CPU_SNAPSHOT="outdat/rk_complete_snapshot.h5"
 
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
@@ -60,6 +62,7 @@ python3 "$ROOT_DIR/tests/gpu_validation/prepare_tgv_case.py" \
   ASTR_CHANNEL_FORCE_MODE="$CHANNEL_FORCE_MODE" \
   ASTR_CHANNEL_FORCE_FIXED="$CHANNEL_FORCE_FIXED" \
   ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
+  ASTR_VALIDATION_RK_SNAPSHOT="$CPU_SNAPSHOT" \
     mpirun -np "$NP" "$CPU_EXE" run datin/input.chl > cpu.log 2>&1
 )
 
@@ -68,6 +71,7 @@ python3 "$ROOT_DIR/tests/gpu_validation/prepare_tgv_case.py" \
   ASTR_CHANNEL_FORCE_MODE="$CHANNEL_FORCE_MODE" \
   ASTR_CHANNEL_FORCE_FIXED="$CHANNEL_FORCE_FIXED" \
   ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
+  ASTR_GPU_FILTER_WORKSPACE="$FILTER_WORKSPACE" \
     mpirun -np "$NP" "$GPU_EXE" run datin/input.chl > gpu.log 2>&1
 )
 
@@ -82,7 +86,7 @@ fi
 
 if [[ "$COMPARE_FIELD" == "t" ]]; then
   python3 "$ROOT_DIR/tests/gpu_validation/compare_flowfield_h5.py" \
-    --cpu "$OUT_DIR/cpu" \
+    --cpu "$OUT_DIR/cpu/$CPU_SNAPSHOT" \
     --gpu "$OUT_DIR/gpu" \
     --report "$OUT_DIR/flowfield_compare.txt" \
     --atol "$FIELD_ATOL" \

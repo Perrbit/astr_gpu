@@ -15,6 +15,7 @@ NP="${NP:-1}"
 TOPOLOGY="${TOPOLOGY:-1,1,1}"
 SYNC_MODE="${SYNC_MODE:-explicit}"
 HALO_TRANSPORT="${HALO_TRANSPORT:-pageable}"
+FILTER_WORKSPACE="${FILTER_WORKSPACE:-full}"
 FEQCHKPT="${FEQCHKPT:-9999}"
 DELTAT="${DELTAT:-}"
 TIMINGS="$OUT_DIR/${LABEL}_timings.tsv"
@@ -54,6 +55,10 @@ fi
 if [[ "$HALO_TRANSPORT" != "pageable" && "$HALO_TRANSPORT" != "pinned" && \
       "$HALO_TRANSPORT" != "pinned-overlap" ]]; then
   echo "HALO_TRANSPORT must be pageable, pinned or pinned-overlap" >&2
+  exit 2
+fi
+if [[ "$FILTER_WORKSPACE" != "full" && "$FILTER_WORKSPACE" != "scalar" ]]; then
+  echo "FILTER_WORKSPACE must be full or scalar" >&2
   exit 2
 fi
 python3 - "$NP" "$TOPOLOGY" "$GPU_IDS" <<'PY'
@@ -111,6 +116,7 @@ run_once() {
       CUDA_VISIBLE_DEVICES="$GPU_IDS" ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
       ASTR_GPU_RK_TIMING=1 ASTR_GPU_RANK_RK_TIMING=1 \
       ASTR_GPU_SYNC_MODE="$SYNC_MODE" ASTR_GPU_HALO_TRANSPORT="$HALO_TRANSPORT" \
+      ASTR_GPU_FILTER_WORKSPACE="$FILTER_WORKSPACE" \
       mpirun -np "$NP" "$GPU_EXE" \
       run datin/input.tgv > "$log" 2>&1
   )
@@ -166,8 +172,8 @@ PY
 
 mkdir -p "$OUT_DIR"
 prepare_case "$CASE_DIR"
-printf 'np=%s\ntopology=%s\ngpu_ids=%s\nhalo_transport=%s\n' \
-  "$NP" "$TOPOLOGY" "$GPU_IDS" "$HALO_TRANSPORT" \
+printf 'np=%s\ntopology=%s\ngpu_ids=%s\nhalo_transport=%s\nfilter_workspace=%s\n' \
+  "$NP" "$TOPOLOGY" "$GPU_IDS" "$HALO_TRANSPORT" "$FILTER_WORKSPACE" \
   > "$OUT_DIR/${LABEL}_transport_metadata.txt"
 printf 'label\trepeat\trk_samples\tmedian_rk_seconds\tmin_rk_seconds\tmax_rk_seconds\twall_seconds\tmax_memory_mib\tmax_utilization_percent\n' > "$TIMINGS"
 

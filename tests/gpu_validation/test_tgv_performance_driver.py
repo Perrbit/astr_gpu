@@ -39,6 +39,11 @@ class TgvPerformanceDriverTests(unittest.TestCase):
         self.assertIn('DELTAT="${DELTAT:-}"', SCRIPT)
         self.assertIn('args+=(--deltat "$DELTAT")', SCRIPT)
 
+    def test_driver_records_and_forwards_filter_workspace(self) -> None:
+        self.assertIn('FILTER_WORKSPACE="${FILTER_WORKSPACE:-full}"', SCRIPT)
+        self.assertIn('ASTR_GPU_FILTER_WORKSPACE="$FILTER_WORKSPACE"', SCRIPT)
+        self.assertIn("filter_workspace=%s", SCRIPT)
+
 
 if __name__ == "__main__":
     unittest.main()
