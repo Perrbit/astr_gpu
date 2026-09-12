@@ -94,22 +94,24 @@ contains
   logical function gpu_mixed_characteristic_flux_workspace_enabled()
     use commvar, only: conschm,recon_schem,lchardecomp,lihomo,ljhomo,lkhomo, &
          diffterm,lfilter,numq,num_species,num_modequ,rkscheme
-    use case_capability_gpu, only: gpu_shock_characteristic_s0b0_xphysical_supported
+    use case_capability_gpu, only: gpu_shock_characteristic_s0b0_xphysical_supported, &
+         gpu_s2_hbl_selective_roe_diffusion_supported
     use precision_mode_gpu, only: gpu_mixed_workspace_requested
     use mixed_candidate_gpu, only: gpu_mixed_candidate_requested, &
          GPU_MIXED_CHARACTERISTIC_FLUX
     implicit none
-    logical :: periodic_case,xphysical_case
+    logical :: periodic_case,xphysical_case,hbl_viscous_case
 
-    periodic_case=lihomo .and. ljhomo .and. lkhomo
+    periodic_case=lihomo .and. ljhomo .and. lkhomo .and. (.not.diffterm)
     xphysical_case=gpu_shock_characteristic_s0b0_xphysical_supported()
+    hbl_viscous_case=gpu_s2_hbl_selective_roe_diffusion_supported()
 
     gpu_mixed_characteristic_flux_workspace_enabled = &
       gpu_mixed_workspace_requested() .and. &
       gpu_mixed_candidate_requested(GPU_MIXED_CHARACTERISTIC_FLUX) .and. &
       trim(conschm)=='543e' .and. recon_schem==3 .and. lchardecomp .and. &
-      (periodic_case .or. xphysical_case) .and. &
-      (.not.diffterm) .and. (.not.lfilter) .and. &
+      (periodic_case .or. xphysical_case .or. hbl_viscous_case) .and. &
+      (.not.lfilter) .and. &
       numq==5 .and. num_species==0 .and. num_modequ==0 .and. &
       trim(rkscheme)=='rk3'
   end function gpu_mixed_characteristic_flux_workspace_enabled

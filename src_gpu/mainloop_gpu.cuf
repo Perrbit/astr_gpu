@@ -624,12 +624,21 @@ contains
         call sync_after_kernel('upwind_s0a1_rhs_z_global_kernel')
       elseif(characteristic_case) then
         if(characteristic_xyphysical_case) then
-          call characteristic_upwind_flux_x_xyphysical_global_kernel<<<grid_x_interface,block_x>>>( &
-               im,jm,km,hm,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke,rhs_npdci,recon_schem,gamma)
-          call sync_after_kernel('characteristic_upwind_flux_x_xyphysical_global_kernel')
-          call characteristic_upwind_rhs_x_xyphysical_global_kernel<<<grid_x,block_x>>>( &
-               im,jm,km,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke)
-          call sync_after_kernel('characteristic_upwind_rhs_x_xyphysical_global_kernel')
+          if(mixed_characteristic_flux_workspace) then
+            call characteristic_upwind_flux_x_xyphysical_global_sp_kernel<<<grid_x_interface,block_x>>>( &
+                 im,jm,km,hm,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke,rhs_npdci,recon_schem,gamma)
+            call sync_after_kernel('characteristic_upwind_flux_x_xyphysical_global_sp_kernel')
+            call characteristic_upwind_rhs_x_xyphysical_global_sp_kernel<<<grid_x,block_x>>>( &
+                 im,jm,km,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke)
+            call sync_after_kernel('characteristic_upwind_rhs_x_xyphysical_global_sp_kernel')
+          else
+            call characteristic_upwind_flux_x_xyphysical_global_kernel<<<grid_x_interface,block_x>>>( &
+                 im,jm,km,hm,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke,rhs_npdci,recon_schem,gamma)
+            call sync_after_kernel('characteristic_upwind_flux_x_xyphysical_global_kernel')
+            call characteristic_upwind_rhs_x_xyphysical_global_kernel<<<grid_x,block_x>>>( &
+                 im,jm,km,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke)
+            call sync_after_kernel('characteristic_upwind_rhs_x_xyphysical_global_kernel')
+          endif
           if(rhs_validation_requested()) then
             call copy_rhs_from_gpu()
             call write_rhs_validation_snapshot('conv_after_x',nstep,rkstep)
@@ -665,22 +674,40 @@ contains
           endif
         endif
         if(characteristic_xyphysical_case) then
-          call characteristic_upwind_flux_y_xyphysical_global_kernel<<<grid_y_interface,block_y>>>( &
-               im,jm,km,hm,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke,rhs_npdcj,recon_schem,gamma)
-          call sync_after_kernel('characteristic_upwind_flux_y_xyphysical_global_kernel')
-          call characteristic_upwind_rhs_y_xyphysical_global_kernel<<<grid_y,block_y>>>( &
-               im,jm,km,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke)
-          call sync_after_kernel('characteristic_upwind_rhs_y_xyphysical_global_kernel')
+          if(mixed_characteristic_flux_workspace) then
+            call characteristic_upwind_flux_y_xyphysical_global_sp_kernel<<<grid_y_interface,block_y>>>( &
+                 im,jm,km,hm,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke,rhs_npdcj,recon_schem,gamma)
+            call sync_after_kernel('characteristic_upwind_flux_y_xyphysical_global_sp_kernel')
+            call characteristic_upwind_rhs_y_xyphysical_global_sp_kernel<<<grid_y,block_y>>>( &
+                 im,jm,km,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke)
+            call sync_after_kernel('characteristic_upwind_rhs_y_xyphysical_global_sp_kernel')
+          else
+            call characteristic_upwind_flux_y_xyphysical_global_kernel<<<grid_y_interface,block_y>>>( &
+                 im,jm,km,hm,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke,rhs_npdcj,recon_schem,gamma)
+            call sync_after_kernel('characteristic_upwind_flux_y_xyphysical_global_kernel')
+            call characteristic_upwind_rhs_y_xyphysical_global_kernel<<<grid_y,block_y>>>( &
+                 im,jm,km,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke)
+            call sync_after_kernel('characteristic_upwind_rhs_y_xyphysical_global_kernel')
+          endif
           if(rhs_validation_requested()) then
             call copy_rhs_from_gpu()
             call write_rhs_validation_snapshot('conv_after_y',nstep,rkstep)
           endif
-          call characteristic_upwind_flux_z_xyphysical_global_kernel<<<grid_z_interface,block_z>>>( &
-               im,jm,km,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke,recon_schem,gamma)
-          call sync_after_kernel('characteristic_upwind_flux_z_xyphysical_global_kernel')
-          call characteristic_upwind_rhs_z_xyphysical_global_kernel<<<grid_z,block_z>>>( &
-               im,jm,km,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke)
-          call sync_after_kernel('characteristic_upwind_rhs_z_xyphysical_global_kernel')
+          if(mixed_characteristic_flux_workspace) then
+            call characteristic_upwind_flux_z_xyphysical_global_sp_kernel<<<grid_z_interface,block_z>>>( &
+                 im,jm,km,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke,recon_schem,gamma)
+            call sync_after_kernel('characteristic_upwind_flux_z_xyphysical_global_sp_kernel')
+            call characteristic_upwind_rhs_z_xyphysical_global_sp_kernel<<<grid_z,block_z>>>( &
+                 im,jm,km,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke)
+            call sync_after_kernel('characteristic_upwind_rhs_z_xyphysical_global_sp_kernel')
+          else
+            call characteristic_upwind_flux_z_xyphysical_global_kernel<<<grid_z_interface,block_z>>>( &
+                 im,jm,km,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke,recon_schem,gamma)
+            call sync_after_kernel('characteristic_upwind_flux_z_xyphysical_global_kernel')
+            call characteristic_upwind_rhs_z_xyphysical_global_kernel<<<grid_z,block_z>>>( &
+                 im,jm,km,rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke)
+            call sync_after_kernel('characteristic_upwind_rhs_z_xyphysical_global_kernel')
+          endif
           if(rhs_validation_requested()) then
             call copy_rhs_from_gpu()
             call write_rhs_validation_snapshot('conv_after_z',nstep,rkstep)
