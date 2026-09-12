@@ -1098,3 +1098,18 @@ are bitwise identical and mask mismatches are zero. The NP=2 memcheck reports
 two `ERROR SUMMARY: 0 errors` records. The extension is classified as
 `x-physical-local-pass-not-promoted`; it does not admit `11/21`, NSCBC, walls,
 diffusion, filtering, CURVE, long-time shock motion, or physical SBLI.
+
+## 2026-09-12 MP3-HBL1 completion addendum
+
+The follow-on plan
+`docs/superpowers/plans/2026-09-12-gpu-mixed-precision-mp3-hbl-gate.md`
+admits only the exact Cartesian viscous S2-C3 HBL capability. NP=1 and NP=2
+x/y/z slabs pass the frozen `CANDIDATE_FIELD_ATOL=5.0e-07` gate, with
+statistics and sensor absolute tolerances of `1.0e-12` and zero relative
+tolerances. Maximum field and statistics differences are
+`2.0437756598212786e-08` and `1.6875389974302379e-14`; raw-sensor difference and
+every mask mismatch count are zero. Candidate x/y-slab memchecks each report
+two clean rank summaries, and the selected workspace is exactly 50% smaller.
+The classification is `hbl-cartesian-local-pass-not-promoted`. Long-time HBL
+physics, physical SBLI, NSCBC/52, sponge, filtering, CURVE, chemistry, A800
+timing, and production speedup remain outside this gate.

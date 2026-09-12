@@ -425,6 +425,26 @@ class MixedPrecisionMp3Contract(unittest.TestCase):
         ):
             self.assertIn(driver, VALIDATION_README)
 
+    def test_mp3_hbl_evidence_is_synchronized_across_documents(self):
+        for text in (
+            VALIDATION_README,
+            VALIDATION_MATRIX,
+            CURRENT_STATUS,
+            ARCHITECTURE_PLAN,
+        ):
+            self.assertIn("MP3-HBL1", text)
+            self.assertIn("hbl-cartesian-local-pass-not-promoted", text)
+            self.assertIn("2.0437756598212786e-08", text)
+            self.assertIn("1.6875389974302379e-14", text)
+            self.assertIn("CANDIDATE_FIELD_ATOL=5.0e-07", text)
+            self.assertIn("mask mismatch", text)
+        for driver in (
+            "run_mp3_characteristic_flux_hbl_compare.sh",
+            "run_mp3_characteristic_flux_hbl_matrix.sh",
+            "run_mp3_characteristic_flux_hbl_memcheck.sh",
+        ):
+            self.assertIn(driver, VALIDATION_README)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3830,12 +3830,13 @@ is `local-pass-not-promoted`; A800 and long/restart validation remain pending.
 ## MP3 characteristic-flux workspace
 
 MP3 adds the mutually exclusive `characteristic_flux` candidate for the
-all-periodic Shu-Osher selective-Roe path and the bounded S0-B0 x-physical
-zero-extrapolation path. Roe averages, characteristic
-matrices, MP7 reconstruction, the Ducros sensor and mask, RHS accumulation,
-and RK state remain FP64. Only the final five-component interface-flux
+all-periodic Shu-Osher selective-Roe path, the bounded S0-B0 x-physical
+zero-extrapolation path, and the exact Cartesian viscous S2-C3 HBL capability
+reported by `gpu_s2_hbl_selective_roe_diffusion_supported()`. Roe averages,
+characteristic matrices, MP7 reconstruction, the Ducros sensor and mask, RHS
+accumulation, and RK state remain FP64. Only the final five-component interface-flux
 workspace is stored in FP32 and promoted to FP64 when differenced into the RHS.
-Physical boundaries other than S0-B0 `bctype(1:2)=50`, diffusion, filtering,
+Physical boundaries and diffusion outside these exact capabilities, filtering,
 CURVE, species, chemistry, and non-RK3 paths are rejected by the runtime
 eligibility gate.
 
@@ -3887,3 +3888,27 @@ mask mismatches are zero. The NP=2 Compute Sanitizer log contains two
 `x-physical-local-pass-not-promoted`; `11/21`, NSCBC, walls, diffusion,
 filtering, CURVE, long-time shock motion, and physical SBLI remain outside this
 gate.
+
+Run the MP3-HBL1 three-way calibration, frozen NP=1/three-slab matrix, and
+candidate-only x/y-slab sanitizer gates with new output directories:
+
+```bash
+tests/gpu_validation/run_mp3_characteristic_flux_hbl_compare.sh
+TOLERANCE_FILE=<absolute-path-to-mp3-hbl-tolerances.env> \
+  tests/gpu_validation/run_mp3_characteristic_flux_hbl_matrix.sh
+tests/gpu_validation/run_mp3_characteristic_flux_hbl_memcheck.sh
+```
+
+The 2026-09-12 MP3-HBL1 gate uses a `192x192x8`, two-step Cartesian Mach-5
+S2-C3 slice with `543e/643e`, MP7 characteristic reconstruction, diffusion
+enabled, filtering disabled, and `bctype=11/21/41/51/1/1`. Calibration froze
+`CANDIDATE_FIELD_ATOL=5.0e-07`, statistics and sensor absolute tolerances at
+`1.0e-12`, and all relative tolerances at zero. NP=1 and NP=2 x/y/z slabs pass.
+The maximum GPU-FP64/candidate field and statistic differences are
+`2.0437756598212786e-08` and `1.6875389974302379e-14`; raw-sensor differences
+are zero and every shock-mask mismatch count is zero. Candidate x/y-slab
+Compute Sanitizer runs each report two `ERROR SUMMARY: 0 errors` records. The
+five-component workspace is exactly 50% of its FP64 allocation in every tested
+topology. This is classified as `hbl-cartesian-local-pass-not-promoted`.
+Long-time HBL physics, physical SBLI, NSCBC and `bctype=52`, sponge, filtering,
+CURVE, chemistry, A800 timing, and production speedup remain outside the gate.

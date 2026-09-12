@@ -432,7 +432,7 @@ RTX 4000 Ada 的五轮配对完整步中位时间为关闭统计 `0.075387564 s`
 
 当前生产默认仍为全 FP64。MP1 至 MP3 已实现四个相互排斥的实验候选：周期、物理
 空间 `543e` WENO7/MP7 的标量 `flux_work`，显式 `643e` 的诊断导数
-`dvel/dtmp`，以及显式黏性通量 `sigma/qflux`。运行时通过
+`dvel/dtmp`，显式黏性通量 `sigma/qflux`，以及特征界面通量工作区。运行时通过
 `ASTR_GPU_MIXED_CANDIDATE=flux|derivative|viscous_flux|characteristic_flux`
 选择一组 FP32 工作区；
 未设置时保持兼容默认 `flux`。所有 MPI rank 必须选择同一候选。
@@ -509,6 +509,14 @@ MP2 两个候选均分类为 `local-pass-not-promoted`：保留作显存受限�
   `2x1x1` 的最大场误差均为 `1.5973888878306752e-7`，最大统计量误差均为
   `1.0126266403176487e-7`；GPU FP64 与候选 sensor 逐点相同，mask mismatch 为零。
   双 rank memcheck 给出两份 `ERROR SUMMARY: 0 errors`。
+- MP3-HBL1 将相同的 FP32 五分量界面通量存储严格扩展到 Cartesian S2-C3 黏性
+  HBL 能力：`192x192x8`、两步、`543e/643e`、MP7 特征重构、`diffterm=t`、
+  `lfilter=f` 和 `bctype=11/21/41/51/1/1`。冻结门槛为
+  `CANDIDATE_FIELD_ATOL=5.0e-07`，统计量和 sensor 绝对门槛为 `1.0e-12`，相对门槛
+  均为零。NP=1 与 NP=2 x/y/z slab 的最大场误差为
+  `2.0437756598212786e-08`，最大统计量误差为 `1.6875389974302379e-14`；sensor 差为
+  零，所有 mask mismatch 计数为零。x/y slab sanitizer 每个均给出两份零错误摘要，
+  各拓扑的该工作区存储均精确减少 50%。
 
 MP3-A 的 Compute Sanitizer 报告 `ERROR SUMMARY: 0 errors`。`400x16x16` 五轮
 交错计时得到 FP64/候选完整 RK 中位时间 `0.023973636/0.025151473 s`，候选慢
@@ -516,10 +524,12 @@ MP3-A 的 Compute Sanitizer 报告 `ERROR SUMMARY: 0 errors`。`400x16x16` 五�
 采样峰值显存由 `656` 降至 `650 MiB`，峰值利用率为 `95%/88%`。
 
 据此，MP3-A 的周期路径分类为 `local-pass-not-promoted`，S0-B0 扩展分类为
-`x-physical-local-pass-not-promoted`：本地短时数值、三方向 MPI halo、
+`x-physical-local-pass-not-promoted`，精确 Cartesian 黏性 HBL 扩展分类为
+`hbl-cartesian-local-pass-not-promoted`：本地短时数值、三方向 MPI halo、
 非法访存和交错计时流程已经闭合，且具有可核算的工作区显存收益，但没有本地整步
-加速证据。`11/21`、NSCBC、壁面、OpenSBLI 生产路径、扩散、滤波、CURVE 和长期
-统计仍未通过该候选验收，因此不改变 FP64 生产默认。
+加速证据。精确 HBL 配置之外的物理边界和扩散路径、NSCBC/52、sponge、滤波、
+CURVE、OpenSBLI 生产路径、长期 HBL/SBLI 物理统计和化学仍未通过该候选验收，
+因此不改变 FP64 生产默认。
 
 周期物理空间上风通量还新增了一个与精度正交的 P2 性能候选。运行时
 `ASTR_GPU_FLUX_PAIR_MODE=fused` 将正负 Steger-Warming 重构合并为单个方向核，

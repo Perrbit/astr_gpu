@@ -1143,6 +1143,19 @@ FP64 default, explicit synchronization, and FP64 MPI payloads remain unchanged.
 The bounded extension is `x-physical-local-pass-not-promoted`; `11/21`, NSCBC,
 walls, viscous SBLI, CURVE, and A800 measurement remain promotion requirements.
 
+MP3-HBL1 further admits only the exact Cartesian viscous S2-C3 HBL capability:
+`192x192x8`, two steps, `543e/643e`, MP7 characteristic reconstruction,
+`diffterm=t`, `lfilter=f`, and `bctype=11/21/41/51/1/1`. The frozen gate is
+`CANDIDATE_FIELD_ATOL=5.0e-07`, with statistics and sensor absolute tolerances
+of `1.0e-12` and all relative tolerances zero. NP=1 and NP=2 x/y/z slabs pass;
+the maximum field/statistic differences are `2.0437756598212786e-08` and
+`1.6875389974302379e-14`, raw-sensor difference is zero, and every mask mismatch
+count is zero. Candidate x/y-slab sanitizer runs each produce two clean rank
+summaries, and the selected workspace is exactly 50% smaller in every topology.
+The classification is `hbl-cartesian-local-pass-not-promoted`. This does not
+close long-time HBL physics, SBLI, NSCBC/52, sponge, filter, CURVE, chemistry,
+A800 performance, or production promotion.
+
 ### L5 Physics Expansion
 
 - validated non-TGV non-reacting explicit cases.

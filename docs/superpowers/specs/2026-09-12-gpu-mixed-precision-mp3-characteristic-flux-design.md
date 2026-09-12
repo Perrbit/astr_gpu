@@ -263,6 +263,19 @@ sensors, and zero mask mismatches. The NP=2 sanitizer run reports two
 `ERROR SUMMARY: 0 errors` records. This bounded extension is classified as
 `x-physical-local-pass-not-promoted`.
 
+The follow-on MP3-HBL1 gate admits only
+`gpu_s2_hbl_selective_roe_diffusion_supported()`: a Cartesian Mach-5 viscous
+HBL slice with `543e/643e`, MP7 characteristic reconstruction,
+`bctype=11/21/41/51/1/1`, no filter, no sponge, five equations, and RK3. Its
+frozen field setting is `CANDIDATE_FIELD_ATOL=5.0e-07`; statistics and sensor
+absolute tolerances are `1.0e-12`, with all relative tolerances zero. NP=1 and
+NP=2 x/y/z slabs pass with maximum field/statistics differences of
+`2.0437756598212786e-08` and `1.6875389974302379e-14`. Raw-sensor difference and
+every mask mismatch count are zero. Two-rank x/y sanitizer runs are clean and
+the selected storage is reduced exactly by 50%. The bounded classification is
+`hbl-cartesian-local-pass-not-promoted`, not physical HBL/SBLI or performance
+promotion.
+
 The phase stops for user review when mask equality fails, sensor equality
 fails, non-finite values appear, error growth is unexplained, the FP64 baseline
 is defective, or a physical discrepancy is encountered. Thresholds are not
@@ -277,7 +290,7 @@ physical gate and the deferred A800 campaign.
 
 MP3-A does not convert the Ducros sensor, shock mask, Roe matrices,
 characteristic algebra, physical-boundary characteristic workspaces outside the
-S0-B0 x-physical slice, MPI
+S0-B0 x-physical slice and exact MP3-HBL1 capability, MPI
 payloads, filter storage, authoritative state, output format, or physical
 models. It does not combine candidates or enable FP16, BF16, TF32, Tensor
 Cores, fast math, compact schemes, RANS/LES, chemistry, or multispecies flow.
