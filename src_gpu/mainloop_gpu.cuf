@@ -308,6 +308,8 @@ contains
          characteristic_upwind_rhs_z_global_sp_kernel, &
          characteristic_upwind_flux_x_physical_global_kernel, &
          characteristic_upwind_rhs_x_physical_global_kernel, &
+         characteristic_upwind_flux_x_physical_global_sp_kernel, &
+         characteristic_upwind_rhs_x_physical_global_sp_kernel, &
          characteristic_upwind_flux_x_xyphysical_global_kernel, &
          characteristic_upwind_flux_y_xyphysical_global_kernel, &
          characteristic_upwind_flux_z_xyphysical_global_kernel, &
@@ -633,11 +635,20 @@ contains
             call write_rhs_validation_snapshot('conv_after_x',nstep,rkstep)
           endif
         elseif(characteristic_xphysical_case) then
-          call characteristic_upwind_flux_x_physical_global_kernel<<<grid_x_interface,block_x>>>( &
-               im,jm,km,hm,is,ie,npdci,recon_schem,gamma)
-          call sync_after_kernel('characteristic_upwind_flux_x_physical_global_kernel')
-          call characteristic_upwind_rhs_x_physical_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie)
-          call sync_after_kernel('characteristic_upwind_rhs_x_physical_global_kernel')
+          if(mixed_characteristic_flux_workspace) then
+            call characteristic_upwind_flux_x_physical_global_sp_kernel<<<grid_x_interface,block_x>>>( &
+                 im,jm,km,hm,is,ie,npdci,recon_schem,gamma)
+            call sync_after_kernel('characteristic_upwind_flux_x_physical_global_sp_kernel')
+            call characteristic_upwind_rhs_x_physical_global_sp_kernel<<<grid_x,block_x>>>( &
+                 im,jm,km,is,ie)
+            call sync_after_kernel('characteristic_upwind_rhs_x_physical_global_sp_kernel')
+          else
+            call characteristic_upwind_flux_x_physical_global_kernel<<<grid_x_interface,block_x>>>( &
+                 im,jm,km,hm,is,ie,npdci,recon_schem,gamma)
+            call sync_after_kernel('characteristic_upwind_flux_x_physical_global_kernel')
+            call characteristic_upwind_rhs_x_physical_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie)
+            call sync_after_kernel('characteristic_upwind_rhs_x_physical_global_kernel')
+          endif
         else
           if(mixed_characteristic_flux_workspace) then
             call characteristic_upwind_flux_x_global_sp_kernel<<<grid_x_interface,block_x>>>( &

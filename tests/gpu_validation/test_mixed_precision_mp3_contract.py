@@ -26,6 +26,24 @@ MEMCHECK_DRIVER = read(
 BENCHMARK_DRIVER = read(
     ROOT / "tests" / "gpu_validation" / "run_mp3_characteristic_flux_benchmark.sh"
 )
+XPHYSICAL_COMPARE_DRIVER = read(
+    ROOT
+    / "tests"
+    / "gpu_validation"
+    / "run_mp3_characteristic_flux_xphysical_compare.sh"
+)
+XPHYSICAL_MATRIX_DRIVER = read(
+    ROOT
+    / "tests"
+    / "gpu_validation"
+    / "run_mp3_characteristic_flux_xphysical_matrix.sh"
+)
+XPHYSICAL_MEMCHECK_DRIVER = read(
+    ROOT
+    / "tests"
+    / "gpu_validation"
+    / "run_mp3_characteristic_flux_xphysical_memcheck.sh"
+)
 BENCHMARK_SUMMARY = read(
     ROOT / "tests" / "gpu_validation" / "summarize_mp2_benchmark.py"
 )
@@ -65,6 +83,16 @@ class MixedPrecisionMp3Contract(unittest.TestCase):
             self.assertIn(term, compact)
         self.assertIn("requestedmixedcandidateisineligible", compact)
         self.assertIn("mpi_abort", compact)
+
+    def test_characteristic_flux_admits_only_the_existing_xphysical_case_gate(self):
+        compact = COMMARRAY.replace(" ", "").lower()
+        self.assertIn(
+            "usecase_capability_gpu,only:gpu_shock_characteristic_s0b0_xphysical_supported",
+            compact,
+        )
+        self.assertIn(
+            "gpu_shock_characteristic_s0b0_xphysical_supported()", compact
+        )
 
     def test_probe_reports_characteristic_flux_query(self):
         compact = PROBE.replace(" ", "").lower()
@@ -134,7 +162,28 @@ class MixedPrecisionMp3Contract(unittest.TestCase):
             compact.count("real(flux_characteristic_work_sp_d("), 6
         )
 
-    def test_mainloop_dispatches_only_periodic_characteristic_sp_kernels(self):
+    def test_xphysical_characteristic_fp32_kernels_preserve_fp64_algebra(self):
+        lower = SOLVER.lower()
+        self.assertIn(
+            "subroutine characteristic_upwind_flux_x_physical_global_sp_kernel",
+            lower,
+        )
+        self.assertIn(
+            "subroutine characteristic_upwind_rhs_x_physical_global_sp_kernel",
+            lower,
+        )
+        compact = SOLVER.replace(" ", "").lower()
+        self.assertIn(
+            "gamma,hm,npdci,1,fh)", compact
+        )
+        self.assertIn(
+            "flux_characteristic_work_sp_d(i,j,k,m)=real(fh(m),4)", compact
+        )
+        self.assertIn(
+            "real(flux_characteristic_work_sp_d(i-1,j,k,m),8)", compact
+        )
+
+    def test_mainloop_dispatches_periodic_and_xphysical_characteristic_sp_kernels(self):
         compact = MAINLOOP.replace(" ", "").lower()
         self.assertIn("mixed_characteristic_flux_workspace", compact)
         for axis in "xyz":
@@ -142,9 +191,10 @@ class MixedPrecisionMp3Contract(unittest.TestCase):
                 name = f"characteristic_upwind_{kind}_{axis}_global_sp_kernel"
                 self.assertIn(f"call{name}<<<", compact)
                 self.assertIn(f"sync_after_kernel('{name}')", compact)
-        self.assertNotIn(
-            "characteristic_upwind_flux_x_physical_global_sp_kernel", compact
-        )
+        for kind in ("flux", "rhs"):
+            name = f"characteristic_upwind_{kind}_x_physical_global_sp_kernel"
+            self.assertIn(f"call{name}<<<", compact)
+            self.assertIn(f"sync_after_kernel('{name}')", compact)
         self.assertNotIn(
             "characteristic_upwind_flux_x_xyphysical_global_sp_kernel", compact
         )
@@ -192,6 +242,36 @@ class MixedPrecisionMp3Contract(unittest.TestCase):
         self.assertIn("OMPI_MCA_btl=self", MEMCHECK_DRIVER)
         self.assertIn("OMPI_MCA_osc=pt2pt", MEMCHECK_DRIVER)
 
+    def test_xphysical_compare_driver_is_three_way_and_untrimmed(self):
+        text = XPHYSICAL_COMPARE_DRIVER
+        for target in ("cpu", "gpu_fp64", "gpu_characteristic_flux"):
+            self.assertIn(target, text)
+        self.assertIn("--homogeneous f,t,t", text)
+        self.assertIn("--bctype 50,50,1,1,1,1", text)
+        self.assertIn("--lchardecomp t", text)
+        self.assertIn("ASTR_GPU_ACTIVE_MIXED_WORKSPACE=characteristic_flux", text)
+        self.assertIn("--atol 0 --rtol 0", text)
+        self.assertNotIn("--trim-boundaries", text)
+
+    def test_xphysical_matrix_locks_np1_and_x_slab(self):
+        text = XPHYSICAL_MATRIX_DRIVER
+        self.assertIn("TOLERANCE_FILE", text)
+        self.assertIn("NP=1 TOPOLOGY=1,1,1", text)
+        self.assertIn("NP=2 TOPOLOGY=2,1,1", text)
+        self.assertNotIn("CALIBRATE=t", text)
+
+    def test_xphysical_memcheck_requires_two_clean_ranks(self):
+        text = XPHYSICAL_MEMCHECK_DRIVER
+        self.assertIn("mpirun -np 2", text)
+        self.assertIn("ASTR_FORCE_MPI_TOPOLOGY=2,1,1", text)
+        self.assertIn("compute-sanitizer --tool memcheck", text)
+        self.assertIn("--error-exitcode 99", text)
+        self.assertIn("ERROR SUMMARY: 0 errors", text)
+        self.assertIn("ASTR_GPU_ACTIVE_MIXED_WORKSPACE=characteristic_flux", text)
+        self.assertIn("OMPI_MCA_opal_cuda_support=0", text)
+        self.assertIn("UCX_MEMTYPE_CACHE=n", text)
+        self.assertIn("OMPI_MCA_btl=self,tcp", text)
+
     def test_benchmark_is_interleaved_and_has_exact_five_component_bytes(self):
         self.assertIn('REPEATS="${REPEATS:-5}"', BENCHMARK_DRIVER)
         self.assertIn("repeat % 2", BENCHMARK_DRIVER)
@@ -221,6 +301,24 @@ class MixedPrecisionMp3Contract(unittest.TestCase):
             "run_mp3_characteristic_flux_mpi_matrix.sh",
             "run_mp3_characteristic_flux_memcheck.sh",
             "run_mp3_characteristic_flux_benchmark.sh",
+        ):
+            self.assertIn(driver, VALIDATION_README)
+
+    def test_mp3_xphysical_evidence_is_synchronized_across_documents(self):
+        for text in (
+            VALIDATION_README,
+            VALIDATION_MATRIX,
+            CURRENT_STATUS,
+            ARCHITECTURE_PLAN,
+        ):
+            self.assertIn("MP3-XP2", text)
+            self.assertIn("x-physical-local-pass-not-promoted", text)
+            self.assertIn("1.5973888878306752e-7", text)
+            self.assertIn("1.0126266403176487e-7", text)
+        for driver in (
+            "run_mp3_characteristic_flux_xphysical_compare.sh",
+            "run_mp3_characteristic_flux_xphysical_matrix.sh",
+            "run_mp3_characteristic_flux_xphysical_memcheck.sh",
         ):
             self.assertIn(driver, VALIDATION_README)
 

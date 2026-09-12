@@ -3827,15 +3827,17 @@ bytes. Five interleaved measurements show no local whole-step speedup:
 derivative is `2.120%` slower and viscous flux is `7.789%` slower. Their status
 is `local-pass-not-promoted`; A800 and long/restart validation remain pending.
 
-## MP3 periodic characteristic-flux workspace
+## MP3 characteristic-flux workspace
 
 MP3 adds the mutually exclusive `characteristic_flux` candidate for the
-all-periodic Shu-Osher selective-Roe path. Roe averages, characteristic
+all-periodic Shu-Osher selective-Roe path and the bounded S0-B0 x-physical
+zero-extrapolation path. Roe averages, characteristic
 matrices, MP7 reconstruction, the Ducros sensor and mask, RHS accumulation,
 and RK state remain FP64. Only the final five-component interface-flux
 workspace is stored in FP32 and promoted to FP64 when differenced into the RHS.
-Physical boundaries, diffusion, filtering, CURVE, species, chemistry, and
-non-RK3 paths are rejected by the runtime eligibility gate.
+Physical boundaries other than S0-B0 `bctype(1:2)=50`, diffusion, filtering,
+CURVE, species, chemistry, and non-RK3 paths are rejected by the runtime
+eligibility gate.
 
 Run the frozen S0-A6 comparison and S0-A7 through S0-A10 MPI matrix with new
 output directories:
@@ -3854,6 +3856,16 @@ GRID=400,16,16 MAXSTEP=5 REPEATS=5 \
   tests/gpu_validation/run_mp3_characteristic_flux_benchmark.sh
 ```
 
+Run the x-physical three-way comparison, frozen NP=1/2 matrix, and two-rank
+memcheck with new output directories:
+
+```bash
+tests/gpu_validation/run_mp3_characteristic_flux_xphysical_compare.sh
+TOLERANCE_FILE=<absolute-path-to-mp3-xphysical-tolerances.env> \
+  tests/gpu_validation/run_mp3_characteristic_flux_xphysical_matrix.sh
+tests/gpu_validation/run_mp3_characteristic_flux_xphysical_memcheck.sh
+```
+
 The 2026-09-12 local S0-A6 to S0-A10 matrix passes with frozen field and
 statistics absolute tolerances of `2e-6`, exact GPU-FP64/candidate sensor values,
 and zero mask mismatches. Compute Sanitizer reports `ERROR SUMMARY: 0 errors`.
@@ -3864,3 +3876,14 @@ sampled peak device memory falls from `656` to `650 MiB`. Peak sampled GPU
 utilization is `95%/88%`. The candidate is `local-pass-not-promoted`: it
 provides a bounded workspace-memory option but no local whole-step speedup,
 and it does not change the FP64 production default.
+
+The 2026-09-12 MP3-XP1 and MP3-XP2 gates use the complete `400x8x8`, three-step
+S0-B0 field, including both x physical planes. NP=1 and NP=2 `2x1x1` pass the
+frozen `2e-6` field/statistics gates. Both decompositions give maximum field
+and statistics differences of `1.5973888878306752e-7` and
+`1.0126266403176487e-7`; GPU FP64 and MP3 raw sensors are bitwise identical and
+mask mismatches are zero. The NP=2 Compute Sanitizer log contains two
+`ERROR SUMMARY: 0 errors` records. The classification is
+`x-physical-local-pass-not-promoted`; `11/21`, NSCBC, walls, diffusion,
+filtering, CURVE, long-time shock motion, and physical SBLI remain outside this
+gate.

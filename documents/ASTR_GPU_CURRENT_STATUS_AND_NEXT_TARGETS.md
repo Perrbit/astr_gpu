@@ -493,8 +493,8 @@ MP2 两个候选均分类为 `local-pass-not-promoted`：保留作显存受限�
 
 2026-09-12 本机 MP3-A 数值门槛进展如下：
 
-- `characteristic_flux` 仅在全周期、无黏、无滤波、五方程单组分 RK3 的
-  `543e` MP7 特征重构路径准入。Roe 平均、特征矩阵、重构代数、Ducros 原始
+- `characteristic_flux` 在全周期路径以及严格限定的 S0-B0 x 物理零外推路径准入；
+  两者均为无黏、无滤波、五方程单组分 RK3 的 `543e` MP7 特征重构。Roe 平均、特征矩阵、重构代数、Ducros 原始
   传感器、整数 mask、`qrhs_d` 和 RK 状态保持 FP64；仅五分量界面通量最终存储为
   FP32，RHS 读取时提升回 FP64。
 - S0-A6 的 NP=1 pilot 按十倍观测误差和 `1-2-5` 上取整冻结场与统计量绝对门槛
@@ -505,16 +505,21 @@ MP2 两个候选均分类为 `local-pass-not-promoted`：保留作显存受限�
   为 `1.8279774849361274e-7`，最大统计量误差为 `1.0126264982091016e-7`。
 - A10 的八个 MPI rank 在本地共享两张 GPU，只证明三方向 halo 与分解路径的短时
   正确性，不构成一 rank 一 GPU 的扩展性能证据。
+- MP3-XP1 和 MP3-XP2 的 `400x8x8` 三步 S0-B0 门槛保留完整 x 物理面。NP=1 与 NP=2
+  `2x1x1` 的最大场误差均为 `1.5973888878306752e-7`，最大统计量误差均为
+  `1.0126266403176487e-7`；GPU FP64 与候选 sensor 逐点相同，mask mismatch 为零。
+  双 rank memcheck 给出两份 `ERROR SUMMARY: 0 errors`。
 
 MP3-A 的 Compute Sanitizer 报告 `ERROR SUMMARY: 0 errors`。`400x16x16` 五轮
 交错计时得到 FP64/候选完整 RK 中位时间 `0.023973636/0.025151473 s`，候选慢
 `4.913%`。对应工作区由 `11,984,760` 降至 `5,992,380` bytes，精确节省 50%；
 采样峰值显存由 `656` 降至 `650 MiB`，峰值利用率为 `95%/88%`。
 
-据此，MP3-A 分类为 `local-pass-not-promoted`：本地短时数值、三方向 MPI halo、
+据此，MP3-A 的周期路径分类为 `local-pass-not-promoted`，S0-B0 扩展分类为
+`x-physical-local-pass-not-promoted`：本地短时数值、三方向 MPI halo、
 非法访存和交错计时流程已经闭合，且具有可核算的工作区显存收益，但没有本地整步
-加速证据。OpenSBLI 生产路径、物理边界、扩散、滤波、CURVE 和长期统计仍未通过
-该候选验收，因此不改变 FP64 生产默认。
+加速证据。`11/21`、NSCBC、壁面、OpenSBLI 生产路径、扩散、滤波、CURVE 和长期
+统计仍未通过该候选验收，因此不改变 FP64 生产默认。
 
 周期物理空间上风通量还新增了一个与精度正交的 P2 性能候选。运行时
 `ASTR_GPU_FLUX_PAIR_MODE=fused` 将正负 Steger-Warming 重构合并为单个方向核，

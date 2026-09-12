@@ -12,10 +12,11 @@ interface-flux workspace from FP64 to FP32. The Ducros sensor, expanded shock
 mask, Roe and characteristic reconstruction algebra, conservative right-hand
 side, Runge-Kutta state, and MPI transport remain unchanged.
 
-This phase is deliberately limited to the already validated all-periodic
-S0-A6 through S0-A10 characteristic cases. Physical-boundary characteristic
-kernels, CURVE cases, diffusion, filtering, and OpenSBLI production promotion
-are outside the admitted path.
+The initial phase was limited to the all-periodic S0-A6 through S0-A10
+characteristic cases. The completed MP3-XP extension additionally admits the
+existing S0-B0 x-physical zero-extrapolation case. Other physical-boundary
+characteristic kernels, CURVE cases, diffusion, filtering, and OpenSBLI
+production promotion remain outside the admitted path.
 
 The FP64 path remains the production default. The completed local campaign
 classifies this candidate as `local-pass-not-promoted`; it does not establish
@@ -113,7 +114,7 @@ unpack, MPI datatype, message count, or private-tag change.
 
 ## Kernel scope
 
-MP3-A adds candidate-specific versions of exactly six periodic kernels:
+MP3-A adds candidate-specific versions of six periodic kernels:
 
 - `characteristic_upwind_flux_x_global_sp_kernel`;
 - `characteristic_upwind_flux_y_global_sp_kernel`;
@@ -121,6 +122,11 @@ MP3-A adds candidate-specific versions of exactly six periodic kernels:
 - `characteristic_upwind_rhs_x_global_sp_kernel`;
 - `characteristic_upwind_rhs_y_global_sp_kernel`;
 - `characteristic_upwind_rhs_z_global_sp_kernel`.
+
+MP3-XP adds two bounded x-physical counterparts:
+
+- `characteristic_upwind_flux_x_physical_global_sp_kernel`;
+- `characteristic_upwind_rhs_x_physical_global_sp_kernel`.
 
 Each writer calls the existing FP64
 `characteristic_reconstruction_interface_flux`, retains `real(8) :: fh(5)`,
@@ -146,7 +152,8 @@ the file-local register cap, or the cached characteristic implementation.
 - `ASTR_GPU_PRECISION_MODE=mixed_workspace`;
 - `lchardecomp=t`;
 - `conschm='543e'` and `recon_schem=3`;
-- `lihomo=t`, `ljhomo=t`, and `lkhomo=t`;
+- either `lihomo=t`, `ljhomo=t`, and `lkhomo=t`, or the existing
+  `gpu_shock_characteristic_s0b0_xphysical_supported()` gate;
 - `diffterm=f` and `lfilter=f`;
 - `numq=5`, `num_species=0`, and `num_modequ=0`;
 - `rkscheme='rk3'`;
@@ -156,10 +163,10 @@ the file-local register cap, or the cached characteristic implementation.
 requirement. Validation drivers enable it so raw sensor values and mask
 topology can be compared directly.
 
-Physical x boundaries, physical x/y boundaries, NSCBC, GCBC, CURVE metrics,
-diffusion, filtering, chemistry, multispecies state, and non-RK3 paths are hard
-rejections for this candidate. Eligibility can expand only after a separate
-design and its own FP64-reference validation.
+Physical x boundaries other than the exact S0-B0 gate, physical x/y boundaries,
+NSCBC, GCBC, CURVE metrics, diffusion, filtering, chemistry, multispecies state,
+and non-RK3 paths are hard rejections for this candidate. Eligibility can
+expand only after a separate design and its own FP64-reference validation.
 
 ## Failure behavior
 
@@ -205,6 +212,8 @@ are not attributed to FP32 storage.
 | S0-A8 | NP=2, `1x2x1` | y-slab field, sensor and exact-mask comparison |
 | S0-A9 | NP=2, `1x1x2` | z-slab field, sensor and exact-mask comparison |
 | S0-A10 | NP=8, `2x2x2` | Three-axis halo correctness; no scaling claim on two local GPUs |
+| MP3-XP1 | NP=1, S0-B0 x physical | Complete field including both physical planes, statistics, raw sensor and exact mask |
+| MP3-XP2 | NP=2, `2x1x1`, S0-B0 x physical | Both physical owners, internal x halo, and rankwise sensor/mask comparison |
 
 The NP=1 S0-A6 pilot determines the candidate field and statistics tolerances
 from observed FP32 workspace rounding. The frozen value is ten times the
@@ -221,7 +230,7 @@ separate baseline gate.
 ### Safety, memory and timing gates
 
 - Compute Sanitizer must report zero invalid-access errors on a reduced NP=1
-  characteristic case.
+  periodic characteristic case and on both ranks of the NP=2 x-physical case.
 - Allocation logs must show the predicted 50 percent reduction for the
   characteristic workspace and no FP64 mirror.
 - Five interleaved complete-RK FP64/candidate runs report median, spread,
@@ -247,6 +256,13 @@ The resulting classification is `local-pass-not-promoted`. The timing
 regression does not invalidate numerical admission, but it prevents any local
 performance claim.
 
+MP3-XP1 and MP3-XP2 pass the frozen `2e-6` field/statistics gates. Both have a
+maximum field difference of `1.5973888878306752e-7`, a maximum statistics
+difference of `1.0126266403176487e-7`, bitwise-identical GPU FP64/candidate
+sensors, and zero mask mismatches. The NP=2 sanitizer run reports two
+`ERROR SUMMARY: 0 errors` records. This bounded extension is classified as
+`x-physical-local-pass-not-promoted`.
+
 The phase stops for user review when mask equality fails, sensor equality
 fails, non-finite values appear, error growth is unexplained, the FP64 baseline
 is defective, or a physical discrepancy is encountered. Thresholds are not
@@ -260,7 +276,8 @@ physical gate and the deferred A800 campaign.
 ## Exclusions and later work
 
 MP3-A does not convert the Ducros sensor, shock mask, Roe matrices,
-characteristic algebra, physical-boundary characteristic workspaces, MPI
+characteristic algebra, physical-boundary characteristic workspaces outside the
+S0-B0 x-physical slice, MPI
 payloads, filter storage, authoritative state, output format, or physical
 models. It does not combine candidates or enable FP16, BF16, TF32, Tensor
 Cores, fast math, compact schemes, RANS/LES, chemistry, or multispecies flow.

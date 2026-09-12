@@ -2414,6 +2414,26 @@ contains
     enddo
   end subroutine characteristic_upwind_flux_x_global_sp_kernel
 
+  attributes(global) subroutine characteristic_upwind_flux_x_physical_global_sp_kernel( &
+       im,jm,km,hm,is,ie,npdci,reconstruction_scheme,gamma)
+    use commarray_gpu, only: flux_characteristic_work_sp_d
+    implicit none
+    integer,value :: im,jm,km,hm,is,ie,npdci,reconstruction_scheme
+    real(8),value :: gamma
+    integer :: i,j,k,m
+    real(8) :: fh(5)
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-2
+    j=blockIdx%y-1
+    k=blockIdx%z-1
+    if(i < is-1 .or. i > ie .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    call characteristic_reconstruction_interface_flux( &
+         i,j,k,1,im,jm,km,reconstruction_scheme,gamma,hm,npdci,1,fh)
+    do m=1,5
+      flux_characteristic_work_sp_d(i,j,k,m)=real(fh(m),4)
+    enddo
+  end subroutine characteristic_upwind_flux_x_physical_global_sp_kernel
+
   attributes(global) subroutine characteristic_upwind_flux_y_global_sp_kernel( &
        im,jm,km,reconstruction_scheme,gamma)
     use commarray_gpu, only: flux_characteristic_work_sp_d
@@ -2470,6 +2490,24 @@ contains
             real(flux_characteristic_work_sp_d(i-1,j,k,m),8))
     enddo
   end subroutine characteristic_upwind_rhs_x_global_sp_kernel
+
+  attributes(global) subroutine characteristic_upwind_rhs_x_physical_global_sp_kernel( &
+       im,jm,km,is,ie)
+    use commarray_gpu, only: flux_characteristic_work_sp_d,qrhs_d
+    implicit none
+    integer,value :: im,jm,km,is,ie
+    integer :: i,j,k,m
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=blockIdx%y-1
+    k=blockIdx%z-1
+    if(i < is .or. i > ie .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
+    do m=1,5
+      qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)- &
+           (real(flux_characteristic_work_sp_d(i,j,k,m),8)- &
+            real(flux_characteristic_work_sp_d(i-1,j,k,m),8))
+    enddo
+  end subroutine characteristic_upwind_rhs_x_physical_global_sp_kernel
 
   attributes(global) subroutine characteristic_upwind_rhs_y_global_sp_kernel(im,jm,km)
     use commarray_gpu, only: flux_characteristic_work_sp_d,qrhs_d

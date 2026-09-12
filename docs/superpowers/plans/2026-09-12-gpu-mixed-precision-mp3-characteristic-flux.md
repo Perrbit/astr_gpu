@@ -16,8 +16,8 @@
 - Permit exactly one mixed candidate; do not implement candidate combinations.
 - Convert only `flux_characteristic_work_d` storage to FP32 for this candidate.
 - Keep the raw Ducros sensor, integer mask, Roe averages, eigenvectors, MP7 reconstruction, `qrhs_d`, RK state, reductions, output, and MPI payloads unchanged.
-- Admit only `conschm='543e'`, `recon_schem=3`, `lchardecomp=t`, all-periodic, inviscid, unfiltered, five-equation, single-component RK3 cases.
-- Reject physical characteristic boundaries, NSCBC, GCBC, CURVE, diffusion, filtering, chemistry, multispecies, and non-RK3 cases.
+- The original implementation admitted only `conschm='543e'`, `recon_schem=3`, `lchardecomp=t`, all-periodic, inviscid, unfiltered, five-equation, single-component RK3 cases.
+- The later MP3-XP extension additionally admits only the existing S0-B0 x-physical `bctype=50,50` case; reject other physical characteristic boundaries, NSCBC, GCBC, CURVE, diffusion, filtering, chemistry, multispecies, and non-RK3 cases.
 - Preserve x/y/z block shapes `(512,1,1)`, `(32,16,1)`, and `(64,1,8)`.
 - Retain explicit synchronization after every selected kernel.
 - Do not change `src/` CPU numerical behavior. Report a CPU defect for manual decision.
@@ -1082,3 +1082,19 @@ user authorizes Git operations, stage an explicit whitelist rather than
 git add src_gpu/mixed_candidate_gpu.cuf src_gpu/commarray_gpu.cuf src_gpu/solver_gpu.cuf src_gpu/mainloop_gpu.cuf tests/gpu_validation/mixed_candidate_setup_test.cuf tests/gpu_validation/test_mixed_precision_mp3_contract.py tests/gpu_validation/run_mp3_characteristic_flux_compare.sh tests/gpu_validation/freeze_mp3_tolerances.py tests/gpu_validation/test_freeze_mp3_tolerances.py tests/gpu_validation/run_mp3_characteristic_flux_mpi_matrix.sh tests/gpu_validation/run_mp3_characteristic_flux_memcheck.sh tests/gpu_validation/run_mp3_characteristic_flux_benchmark.sh tests/gpu_validation/summarize_mp2_benchmark.py tests/gpu_validation/test_summarize_mp2_benchmark.py tests/gpu_validation/README.md documents/GPU_VALIDATION_MATRIX.md documents/ASTR_GPU_CURRENT_STATUS_AND_NEXT_TARGETS.md documents/ASTR_FULL_GPU_ARCHITECTURE_PLAN.md docs/superpowers/specs/2026-09-12-gpu-mixed-precision-mp3-characteristic-flux-design.md docs/superpowers/plans/2026-09-12-gpu-mixed-precision-mp3-characteristic-flux.md
 git commit -m "feat(gpu): validate mixed characteristic flux workspace"
 ```
+
+## 2026-09-12 MP3-XP completion addendum
+
+The follow-on plan
+`docs/superpowers/plans/2026-09-12-gpu-mixed-precision-mp3-xphysical-gate.md`
+extends the completed periodic candidate only to the existing S0-B0
+x-physical zero-extrapolation case. It adds FP32-workspace x-physical writer
+and reader kernels while retaining FP64 reconstruction and RHS accumulation.
+
+MP3-XP1 and MP3-XP2 pass at NP=1 and NP=2 `2x1x1` with frozen field and
+statistics tolerances of `2e-6`. Both runs have maximum field and statistics
+differences of `1.5973888878306752e-7` and `1.0126266403176487e-7`; raw sensors
+are bitwise identical and mask mismatches are zero. The NP=2 memcheck reports
+two `ERROR SUMMARY: 0 errors` records. The extension is classified as
+`x-physical-local-pass-not-promoted`; it does not admit `11/21`, NSCBC, walls,
+diffusion, filtering, CURVE, long-time shock motion, or physical SBLI.

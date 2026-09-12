@@ -1132,12 +1132,16 @@ The full-GPU migration uses a layered validation matrix.
   runnable problem size.
 
 The MP3 `characteristic_flux` candidate has completed local S0-A6 through
-S0-A10, single-rank Compute Sanitizer, and five interleaved timing runs. It is
+S0-A10, the MP3-XP1 and MP3-XP2 S0-B0 x-physical gates, Compute Sanitizer, and five
+interleaved timing runs. The x-physical gate retains both physical planes and
+passes at NP=1 and NP=2 `2x1x1`; its maximum field/statistics differences are
+`1.5973888878306752e-7` and `1.0126266403176487e-7`, with exact sensor/mask
+agreement and two clean sanitizer summaries. It is
 classified as `local-pass-not-promoted`: the five-component workspace is 50%
 smaller, while the tested `400x16x16` complete-RK path is 4.913% slower. The
-FP64 default, explicit synchronization, FP64 MPI payloads, and periodic-only
-eligibility remain unchanged. Promotion still requires representative
-OpenSBLI/physical-boundary coverage and A800 measurement.
+FP64 default, explicit synchronization, and FP64 MPI payloads remain unchanged.
+The bounded extension is `x-physical-local-pass-not-promoted`; `11/21`, NSCBC,
+walls, viscous SBLI, CURVE, and A800 measurement remain promotion requirements.
 
 ### L5 Physics Expansion
 
