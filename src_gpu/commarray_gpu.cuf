@@ -15,7 +15,11 @@ module commarray_gpu
                                 bnorm_k0_d(:,:,:),bnorm_km_d(:,:,:)
   real(8),allocatable,device :: dvel_d(:,:,:,:,:),dtmp_d(:,:,:,:)
   real(8),allocatable,device :: sigma_d(:,:,:,:),qflux_d(:,:,:,:)
+  real(4),allocatable,device :: dvel_sp_d(:,:,:,:,:),dtmp_sp_d(:,:,:,:)
+  real(4),allocatable,device :: sigma_sp_d(:,:,:,:),qflux_sp_d(:,:,:,:)
   real(8),allocatable,device :: flux_work_d(:,:,:),flux_characteristic_work_d(:,:,:,:)
+  real(4),allocatable,device :: flux_work_sp_d(:,:,:)
+  real(4),allocatable,device :: flux_characteristic_work_sp_d(:,:,:,:)
   real(8),allocatable,device :: shock_sensor_d(:,:,:,:)
   integer(1),allocatable,device :: shock_mask_d(:,:,:)
 contains
@@ -57,14 +61,121 @@ contains
       gpu_filter_workspace_mode==GPU_FILTER_WORKSPACE_SCALAR
   end function gpu_scalar_filter_workspace_enabled
 
+  logical function gpu_mixed_flux_workspace_enabled()
+    use commvar, only: conschm,recon_schem,lchardecomp,lihomo,ljhomo,lkhomo
+    use precision_mode_gpu, only: gpu_mixed_workspace_requested
+    use mixed_candidate_gpu, only: gpu_mixed_candidate_requested,GPU_MIXED_FLUX
+    implicit none
+
+    gpu_mixed_flux_workspace_enabled = gpu_mixed_workspace_requested() .and. &
+      gpu_mixed_candidate_requested(GPU_MIXED_FLUX) .and. &
+      trim(conschm)=='543e' .and. (recon_schem==1 .or. recon_schem==3) .and. &
+      (.not.lchardecomp) .and. lihomo .and. ljhomo .and. lkhomo
+  end function gpu_mixed_flux_workspace_enabled
+
+  logical function gpu_mixed_derivative_workspace_enabled()
+    use precision_mode_gpu, only: gpu_mixed_workspace_requested
+    use mixed_candidate_gpu, only: gpu_mixed_candidate_requested,GPU_MIXED_DERIVATIVE
+    implicit none
+
+    gpu_mixed_derivative_workspace_enabled = gpu_mixed_workspace_requested() .and. &
+      gpu_mixed_candidate_requested(GPU_MIXED_DERIVATIVE)
+  end function gpu_mixed_derivative_workspace_enabled
+
+  logical function gpu_mixed_viscous_flux_workspace_enabled()
+    use precision_mode_gpu, only: gpu_mixed_workspace_requested
+    use mixed_candidate_gpu, only: gpu_mixed_candidate_requested,GPU_MIXED_VISCOUS_FLUX
+    implicit none
+
+    gpu_mixed_viscous_flux_workspace_enabled = gpu_mixed_workspace_requested() .and. &
+      gpu_mixed_candidate_requested(GPU_MIXED_VISCOUS_FLUX)
+  end function gpu_mixed_viscous_flux_workspace_enabled
+
+  logical function gpu_mixed_characteristic_flux_workspace_enabled()
+    use commvar, only: conschm,recon_schem,lchardecomp,lihomo,ljhomo,lkhomo, &
+         diffterm,lfilter,numq,num_species,num_modequ,rkscheme
+    use precision_mode_gpu, only: gpu_mixed_workspace_requested
+    use mixed_candidate_gpu, only: gpu_mixed_candidate_requested, &
+         GPU_MIXED_CHARACTERISTIC_FLUX
+    implicit none
+
+    gpu_mixed_characteristic_flux_workspace_enabled = &
+      gpu_mixed_workspace_requested() .and. &
+      gpu_mixed_candidate_requested(GPU_MIXED_CHARACTERISTIC_FLUX) .and. &
+      trim(conschm)=='543e' .and. recon_schem==3 .and. lchardecomp .and. &
+      lihomo .and. ljhomo .and. lkhomo .and. &
+      (.not.diffterm) .and. (.not.lfilter) .and. &
+      numq==5 .and. num_species==0 .and. num_modequ==0 .and. &
+      trim(rkscheme)=='rk3'
+  end function gpu_mixed_characteristic_flux_workspace_enabled
+
+  subroutine validate_gpu_mixed_candidate_eligibility()
+    use mpi
+    use commvar, only: diffterm,difschm,numq,num_species,num_modequ,rkscheme,lchardecomp
+    use commcal, only: shock_sensor_validation_enabled
+    use parallel, only: lio
+    use precision_mode_gpu, only: gpu_mixed_workspace_requested
+    implicit none
+    logical :: invalid
+    character(len=160) :: reason
+    integer :: ierr
+
+    if(.not.gpu_mixed_workspace_requested()) return
+    invalid=.false.
+    reason=''
+    if(gpu_mixed_flux_workspace_enabled()) then
+      return
+    elseif(gpu_mixed_characteristic_flux_workspace_enabled()) then
+      return
+    elseif(gpu_mixed_derivative_workspace_enabled() .or. &
+           gpu_mixed_viscous_flux_workspace_enabled()) then
+      if((.not.diffterm) .or. trim(difschm)/='643e') then
+        invalid=.true.
+        reason='derivative and viscous_flux require diffterm=t and difschm=643e'
+      elseif(numq/=5 .or. num_species/=0 .or. num_modequ/=0) then
+        invalid=.true.
+        reason='derivative and viscous_flux require numq=5, num_species=0, and num_modequ=0'
+      elseif(trim(rkscheme)/='rk3') then
+        invalid=.true.
+        reason='derivative and viscous_flux require rkscheme=rk3'
+      elseif(gpu_mixed_derivative_workspace_enabled() .and. &
+             (shock_sensor_validation_enabled() .or. lchardecomp)) then
+        invalid=.true.
+        reason='derivative is unavailable when shock-sensor or characteristic paths consume dvel'
+      endif
+    else
+      invalid=.true.
+      reason='requested mixed candidate is ineligible for this case'
+    endif
+    if(invalid) then
+      if(lio) write(*,'(A,A)') 'Invalid ASTR_GPU_MIXED_CANDIDATE case: ',trim(reason)
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+    endif
+  end subroutine validate_gpu_mixed_candidate_eligibility
+
   subroutine alloc_gpu_arrays()
     use commvar, only: im,jm,km,hm,numq,conschm,recon_schem,lchardecomp,lfilter
     use commcal, only: shock_sensor_validation_enabled
     use parallel, only: lio
+    use precision_mode_gpu, only: configure_gpu_precision_mode,gpu_precision_mode_name
+    use mixed_candidate_gpu, only: configure_gpu_mixed_candidate
     implicit none
-    integer(8) :: workspace_bytes
+    integer(8) :: workspace_bytes,flux_workspace_bytes,mixed_workspace_bytes, &
+                  fp64_workspace_bytes,interior_points,halo_points
+    logical :: derivative_active,viscous_active,characteristic_active
+    character(len=32) :: active_workspace
 
+    call configure_gpu_precision_mode()
+    call configure_gpu_mixed_candidate()
     call configure_gpu_filter_workspace()
+    call validate_gpu_mixed_candidate_eligibility()
+    derivative_active=gpu_mixed_derivative_workspace_enabled()
+    viscous_active=gpu_mixed_viscous_flux_workspace_enabled()
+    characteristic_active=gpu_mixed_characteristic_flux_workspace_enabled()
+    mixed_workspace_bytes=0_8
+    fp64_workspace_bytes=0_8
+    active_workspace='none'
+    if(lio) write(*,'(A,A)') 'ASTR_GPU_PRECISION_MODE=',trim(gpu_precision_mode_name())
     if(.not.allocated(q_d))      allocate(q_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq))
     if(gpu_scalar_filter_workspace_enabled() .and. lfilter) then
       if(.not.allocated(filter_work_d)) &
@@ -96,17 +207,65 @@ contains
     if(.not.allocated(bnorm_jm_d)) allocate(bnorm_jm_d(0:im,0:km,1:3))
     if(.not.allocated(bnorm_k0_d)) allocate(bnorm_k0_d(0:im,0:jm,1:3))
     if(.not.allocated(bnorm_km_d)) allocate(bnorm_km_d(0:im,0:jm,1:3))
-    if(.not.allocated(dvel_d))   allocate(dvel_d(0:im,0:jm,0:km,1:3,1:3))
-    if(.not.allocated(dtmp_d))   allocate(dtmp_d(0:im,0:jm,0:km,1:3))
-    if(.not.allocated(sigma_d))  allocate(sigma_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:6))
-    if(.not.allocated(qflux_d))  allocate(qflux_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3))
-    if(trim(conschm) == '543e' .and. (recon_schem == 1 .or. recon_schem == 3) .and. &
-       .not.allocated(flux_work_d)) then
-      allocate(flux_work_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+    interior_points=int(im+1,8)*int(jm+1,8)*int(km+1,8)
+    halo_points=int(im+2*hm+1,8)*int(jm+2*hm+1,8)*int(km+2*hm+1,8)
+    if(derivative_active) then
+      if(.not.allocated(dvel_sp_d)) allocate(dvel_sp_d(0:im,0:jm,0:km,1:3,1:3))
+      if(.not.allocated(dtmp_sp_d)) allocate(dtmp_sp_d(0:im,0:jm,0:km,1:3))
+      mixed_workspace_bytes=interior_points*12_8*4_8
+      fp64_workspace_bytes=interior_points*12_8*8_8
+      active_workspace='derivative'
+    else
+      if(.not.allocated(dvel_d)) allocate(dvel_d(0:im,0:jm,0:km,1:3,1:3))
+      if(.not.allocated(dtmp_d)) allocate(dtmp_d(0:im,0:jm,0:km,1:3))
     endif
-    if(lchardecomp .and. .not.allocated(flux_characteristic_work_d)) then
-      allocate(flux_characteristic_work_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5))
+    if(viscous_active) then
+      if(.not.allocated(sigma_sp_d)) &
+        allocate(sigma_sp_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:6))
+      if(.not.allocated(qflux_sp_d)) &
+        allocate(qflux_sp_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3))
+      mixed_workspace_bytes=halo_points*9_8*4_8
+      fp64_workspace_bytes=halo_points*9_8*8_8
+      active_workspace='viscous_flux'
+    else
+      if(.not.allocated(sigma_d)) &
+        allocate(sigma_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:6))
+      if(.not.allocated(qflux_d)) &
+        allocate(qflux_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3))
     endif
+    flux_workspace_bytes=0_8
+    if(trim(conschm) == '543e' .and. (recon_schem == 1 .or. recon_schem == 3)) then
+      if(gpu_mixed_flux_workspace_enabled()) then
+        if(.not.allocated(flux_work_sp_d)) &
+          allocate(flux_work_sp_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+        flux_workspace_bytes=int(im+2*hm+1,8)*int(jm+2*hm+1,8)* &
+          int(km+2*hm+1,8)*4_8
+        mixed_workspace_bytes=flux_workspace_bytes
+        fp64_workspace_bytes=halo_points*8_8
+        active_workspace='flux_work'
+      else
+        if(.not.allocated(flux_work_d)) &
+          allocate(flux_work_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+        flux_workspace_bytes=int(im+2*hm+1,8)*int(jm+2*hm+1,8)* &
+          int(km+2*hm+1,8)*8_8
+      endif
+      if(lio) write(*,'(A,I0)') 'ASTR_GPU_FLUX_WORKSPACE_BYTES=',flux_workspace_bytes
+    endif
+    if(lchardecomp) then
+      if(characteristic_active) then
+        if(.not.allocated(flux_characteristic_work_sp_d)) &
+          allocate(flux_characteristic_work_sp_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5))
+        mixed_workspace_bytes=halo_points*5_8*4_8
+        fp64_workspace_bytes=halo_points*5_8*8_8
+        active_workspace='characteristic_flux'
+      else
+        if(.not.allocated(flux_characteristic_work_d)) &
+          allocate(flux_characteristic_work_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5))
+      endif
+    endif
+    if(lio) write(*,'(A,A)') 'ASTR_GPU_ACTIVE_MIXED_WORKSPACE=',trim(active_workspace)
+    if(lio) write(*,'(A,I0)') 'ASTR_GPU_MIXED_WORKSPACE_BYTES=',mixed_workspace_bytes
+    if(lio) write(*,'(A,I0)') 'ASTR_GPU_FP64_WORKSPACE_BYTES=',fp64_workspace_bytes
     if(shock_sensor_validation_enabled() .or. lchardecomp) then
       if(.not.allocated(shock_sensor_d)) &
         allocate(shock_sensor_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:1))
@@ -119,10 +278,16 @@ contains
 
     if(allocated(shock_mask_d)) deallocate(shock_mask_d)
     if(allocated(shock_sensor_d)) deallocate(shock_sensor_d)
+    if(allocated(flux_characteristic_work_sp_d)) deallocate(flux_characteristic_work_sp_d)
     if(allocated(flux_characteristic_work_d)) deallocate(flux_characteristic_work_d)
+    if(allocated(flux_work_sp_d)) deallocate(flux_work_sp_d)
     if(allocated(flux_work_d)) deallocate(flux_work_d)
+    if(allocated(qflux_sp_d)) deallocate(qflux_sp_d)
+    if(allocated(sigma_sp_d)) deallocate(sigma_sp_d)
     if(allocated(qflux_d)) deallocate(qflux_d)
     if(allocated(sigma_d)) deallocate(sigma_d)
+    if(allocated(dtmp_sp_d)) deallocate(dtmp_sp_d)
+    if(allocated(dvel_sp_d)) deallocate(dvel_sp_d)
     if(allocated(dtmp_d)) deallocate(dtmp_d)
     if(allocated(dvel_d)) deallocate(dvel_d)
     if(allocated(bnorm_km_d)) deallocate(bnorm_km_d)

@@ -30,6 +30,7 @@ GRID_WARP_X="${GRID_WARP_X:-0.0}"
 GRID_WARP_Y="${GRID_WARP_Y:-0.0}"
 LFILTER="${LFILTER:-f}"
 DIFFTERM="${DIFFTERM:-t}"
+CONSCHOICE="${CONSCHM:-543e}"
 CPU_SNAPSHOT="outdat/rk_complete_snapshot.h5"
 
 prepare_case() {
@@ -39,7 +40,7 @@ prepare_case() {
     --dst-case "$OUT_DIR/$target" \
     --use-gpu "$use_gpu" \
     --im "$IM" --jm "$JM" --km "$KM" \
-    --conschm 543e --diffterm "$DIFFTERM" --lfilter "$LFILTER" \
+    --conschm "$CONSCHOICE" --diffterm "$DIFFTERM" --lfilter "$LFILTER" \
     --reynolds "$REYNOLDS" --mach "$MACH" \
     --reference-temperature "$REFERENCE_TEMPERATURE" \
     --wall-temperature "$WALL_TEMPERATURE" --upper-bctype "$UPPER_BCTYPE" --ninit "$NINIT" \
@@ -82,6 +83,7 @@ prepare_case cpu f
 prepare_case gpu t
 write_similarity_profile cpu
 write_similarity_profile gpu
+mkdir -p "$OUT_DIR/cpu/outdat" "$OUT_DIR/gpu/outdat"
 
 (
   cd "$OUT_DIR/cpu"

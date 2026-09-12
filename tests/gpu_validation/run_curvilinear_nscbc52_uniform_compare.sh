@@ -14,6 +14,8 @@ DELTAT="${DELTAT:-1e-4}"
 ATOL="${ATOL:-1e-10}"
 RTOL="${RTOL:-1e-10}"
 MACH="${MACH:-0.3}"
+DIFFTERM="${DIFFTERM:-f}"
+SCHEME="${SCHEME:-643e}"
 CPU_SNAPSHOT="outdat/rk_complete_snapshot.h5"
 IFS=, read -r IM JM KM <<< "$GRID"
 
@@ -22,8 +24,8 @@ prepare_case() {
   local use_gpu="$2"
   python3 "$ROOT_DIR/tests/gpu_validation/prepare_s1_flatplate_case.py" \
     --dst-case "$OUT_DIR/$mode" --use-gpu "$use_gpu" \
-    --im "$IM" --jm "$JM" --km "$KM" --conschm 643e \
-    --diffterm f --lfilter f --upper-bctype 52 --ninit 3 \
+    --im "$IM" --jm "$JM" --km "$KM" --conschm "$SCHEME" \
+    --diffterm "$DIFFTERM" --lfilter f --upper-bctype 52 --ninit 3 \
     --uniform-profile --wall-temperature 1.0 --mach "$MACH" \
     --maxstep "$MAXSTEP" --feqchkpt "$MAXSTEP" --deltat "$DELTAT"
   python3 "$ROOT_DIR/tests/gpu_validation/generate_curvilinear_tgv_grid.py" \

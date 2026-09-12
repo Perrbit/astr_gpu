@@ -3017,6 +3017,63 @@ This gate does not validate viscous characteristic source terms, curved
 target-relaxation modes, other open faces, moving or multiblock grids,
 chemistry, or production SBLI farfield fidelity.
 
+## CURVE-C23 curved upper-y viscous-source-coupled GCBC
+
+CURVE-C23 extends only the established CURVE-C22 upper-eta `bctype=52`
+non-reflecting mode to the approved viscous slice. The solver captures the
+five-component upper-face RHS immediately before sixth-order explicit
+diffusion, forms the discrete viscous contribution from the post-diffusion
+RHS difference, projects that contribution with the same local eta
+characteristic basis, and removes only its incoming characteristic content.
+The CPU uses a face-only snapshot and the GPU uses a device-resident face
+buffer. Each new GPU capture and correction kernel is followed by an explicit
+synchronization.
+
+Run the algebra, uniform, viscous acoustic, topology, safety, and residency
+gates with new output directories:
+
+```bash
+tests/gpu_validation/run_curvilinear_nscbc52_policy_probe.sh
+OUT_DIR=/tmp/curve_c23_uniform \
+  tests/gpu_validation/run_curvilinear_nscbc52_viscous_uniform_compare.sh
+OUT_DIR=/tmp/curve_c23_acoustic \
+  tests/gpu_validation/run_curvilinear_nscbc52_viscous_acoustic_compare.sh
+OUT_DIR=/tmp/curve_c23_matrix \
+  tests/gpu_validation/run_curvilinear_nscbc52_viscous_matrix.sh
+OUT_DIR=/tmp/curve_c23_memcheck \
+  tests/gpu_validation/run_curvilinear_nscbc52_viscous_memcheck.sh
+OUT_DIR=/tmp/curve_c23_profile \
+  tests/gpu_validation/run_curvilinear_nscbc52_viscous_profile.sh
+```
+
+The uniform ten-step NP=1 gate preserves the prescribed state to about
+`1e-15` and gives a maximum CPU/GPU field difference of
+`7.99e-15`. The Mach 5 curved HBL NP=1 20-step gate gives maximum field and
+statistic differences `T=5.06262e-14` and
+`massflux=5.83977e-14`; the lower-wall residual remains below
+`1.78e-15`, and the numerical Jacobian stays positive in
+`[2.2722591030002285e-6,5.0507585440825813e-4]`. All eight NP=1/2/4/8
+topologies pass. NP=1 and NP=2 y-slab Compute Sanitizer runs report zero
+errors.
+
+The viscous acoustic refinement sequence `64x48x64`, `80x60x80`, and
+`96x72x96` gives CPU reflection coefficients `0.01499173359`,
+`0.005955882611`, and `0.003584736637`. The trend is strictly decreasing;
+the maximum CPU/GPU reflection and final-field differences are
+`3.24e-13` and `2.13e-13`.
+
+A two-step NP=1 trace contains six inviscid non-reflecting, six pre-diffusion
+capture, and six viscous correction launches. After the first non-reflecting
+kernel, no H2D or D2H transfer is at or above 64 KiB; the maximum H2D/D2H
+sizes are 320/48 B. The NP=2 y-slab owner trace observes one physical
+upper-y owner among two ranks.
+
+This gate proves CPU/GPU numerical equivalence, owner routing, memory safety,
+and compute-loop residency for the tested static single-block, nonreacting,
+five-equation upper-eta slice. It does not establish a general complete
+viscous open boundary, other open faces, moving or multiblock grids,
+chemistry, or production SBLI physical fidelity.
+
 ## TGV 256 single-GPU performance gate
 
 Build the GPU binary from the repository top-level `CMakeLists.txt`, then run
@@ -3655,3 +3712,155 @@ gave median complete-step times of `75.388 ms` with statistics disabled and
 `75.808 ms` with statistics enabled, an overhead of `0.557%`. This is local
 software/performance evidence; D3 turbulence convergence and A800 production
 performance remain separate requirements.
+
+## Mixed-precision periodic upwind workspace
+
+The experimental MP1 path keeps the authoritative state and RHS in FP64 while
+storing the periodic physical-space `543e` scalar flux workspace in FP32.
+It is restricted to WENO7 or MP7 with homogeneous x/y/z boundaries,
+`lchardecomp=f`, `lfilter=f`, and `diffterm=f`.
+
+Run the three-way CPU FP64, GPU FP64, and GPU mixed comparison with a new output
+directory:
+
+```bash
+OUT_DIR=/tmp/astr_mp1_weno7 MAXSTEP=20 FEQCHKPT=20 RECON_SCHEM=1 \
+  tests/gpu_validation/run_tgv_upwind_mixed_precision_compare.sh
+```
+
+The evidence-based provisional limits are `2e-6` absolute for every field and
+`5e-11` absolute for TGV statistics, both with zero relative tolerance. MP7 is
+selected with `RECON_SCHEM=3`; `NP` and `TOPOLOGY` expose MPI correctness gates.
+
+Memory safety and paired complete-RK timing are separate:
+
+```bash
+OUT_DIR=/tmp/astr_mp1_memcheck \
+  tests/gpu_validation/run_tgv_upwind_mixed_precision_memcheck.sh
+OUT_DIR=/tmp/astr_mp1_benchmark GRID=128,128,128 \
+  tests/gpu_validation/run_tgv_upwind_mixed_precision_benchmark.sh
+```
+
+The benchmark requires at least five repeats, alternates FP64/mixed ordering,
+and imposes no speedup threshold. On RTX 4000 Ada, `128^3` WENO7 halves the
+workspace from `21,484,952` to `10,742,476` bytes and reduces sampled peak
+memory by `10 MiB`, but mixed complete-RK time is `0.363%` slower. The mode is
+therefore viable for memory study but is not a production default.
+
+## Periodic upwind flux-pair fusion
+
+The optional `ASTR_GPU_FLUX_PAIR_MODE=fused` route combines the positive and
+negative physical-space `543e` WENO7/MP7 flux kernels. The default remains
+`split`; physical-boundary, characteristic-space, shock, filter, and diffusion
+routes are unchanged.
+
+Run same-precision field and statistics comparisons for FP64 and the FP32
+workspace mode:
+
+```bash
+OUT_DIR=/tmp/astr_flux_pair_compare \
+  tests/gpu_validation/run_tgv_upwind_flux_pair_compare.sh
+```
+
+Run the interleaved complete-RK benchmark with at least five repeats:
+
+```bash
+OUT_DIR=/tmp/astr_flux_pair_benchmark GRID=128,128,128 REPEATS=5 \
+  tests/gpu_validation/run_tgv_upwind_flux_pair_benchmark.sh
+```
+
+On RTX 4000 Ada, the FP64 `128^3` WENO7 medians are `1.219539164 s/RK` for
+split and `0.845358029 s/RK` for fused, a `30.682%` reduction (`1.44263x`).
+This is local opt-in evidence; A800 NP=1/2/4 and long/restart gates remain.
+
+The local `256^3` FP64 result uses five interleaved repeats and two retained RK
+samples per repeat. Median split/fused times are `8.678503483/6.052904717 s`,
+with `1.223%/1.136%` spread. This is a `30.254%` reduction or `1.43378x`
+speedup. The FP64 split/fused field gate remains `1e-12`. Mixed workspace uses
+its own `MIXED_FIELD_ATOL=1e-8` gate because sparse FP32 quantization can make
+the two algebraically equivalent kernel organizations differ by one rounding
+interval; both must still pass the separate MP1 FP64-reference gate.
+
+## MP2 derivative and viscous-flux workspaces
+
+MP2 keeps `ASTR_GPU_PRECISION_MODE=fp64` as the production default. Experimental
+runs set `ASTR_GPU_PRECISION_MODE=mixed_workspace` and exactly one of:
+
+```text
+ASTR_GPU_MIXED_CANDIDATE=derivative
+ASTR_GPU_MIXED_CANDIDATE=viscous_flux
+```
+
+The derivative candidate changes diagnostic `dvel/dtmp` storage only; solver
+diffusion still reconstructs gradients from FP64 primitives. The viscous-flux
+candidate stores final `sigma/qflux` in FP32 while retaining FP64 constitutive
+arithmetic and RHS accumulation. Its pack/unpack kernels convert through the
+existing FP64 halo buffers, so MPI payload type, tags, counts, and ordering do
+not change. Every kernel launch retains an explicit synchronization.
+
+Run the candidate-specific local gates with:
+
+```bash
+tests/gpu_validation/run_mp2_derivative_tgv_compare.sh
+tests/gpu_validation/run_mp2_derivative_hbl_compare.sh
+tests/gpu_validation/run_mp2_derivative_curve_compare.sh
+tests/gpu_validation/run_mp2_derivative_mpi_matrix.sh
+tests/gpu_validation/run_mp2_derivative_memcheck.sh
+tests/gpu_validation/run_mp2_derivative_benchmark.sh
+
+tests/gpu_validation/run_mp2_viscous_flux_tgv_compare.sh
+tests/gpu_validation/run_mp2_viscous_flux_hbl_compare.sh
+tests/gpu_validation/run_mp2_viscous_flux_curve_compare.sh
+tests/gpu_validation/run_mp2_viscous_flux_mpi_matrix.sh
+tests/gpu_validation/run_mp2_viscous_flux_memcheck.sh
+tests/gpu_validation/run_mp2_viscous_flux_benchmark.sh
+```
+
+The TGV viscous-flux gate fixes absolute tolerances at `1e-9` for fields and
+`1e-10` for statistics. HBL and CURVE gates use `1e-8` because they include
+physical-boundary and derived wall/profile quantities. The 2026-09-12 local
+evidence is under `tests/gpu_validation/out/mp2_*_20260912*`.
+
+Both candidates pass NP=1/2/4, Cartesian HBL, CURVE-C23, and invalid-access
+memcheck gates. At `64^3`, each selected workspace uses exactly half its FP64
+bytes. Five interleaved measurements show no local whole-step speedup:
+derivative is `2.120%` slower and viscous flux is `7.789%` slower. Their status
+is `local-pass-not-promoted`; A800 and long/restart validation remain pending.
+
+## MP3 periodic characteristic-flux workspace
+
+MP3 adds the mutually exclusive `characteristic_flux` candidate for the
+all-periodic Shu-Osher selective-Roe path. Roe averages, characteristic
+matrices, MP7 reconstruction, the Ducros sensor and mask, RHS accumulation,
+and RK state remain FP64. Only the final five-component interface-flux
+workspace is stored in FP32 and promoted to FP64 when differenced into the RHS.
+Physical boundaries, diffusion, filtering, CURVE, species, chemistry, and
+non-RK3 paths are rejected by the runtime eligibility gate.
+
+Run the frozen S0-A6 comparison and S0-A7 through S0-A10 MPI matrix with new
+output directories:
+
+```bash
+tests/gpu_validation/run_mp3_characteristic_flux_compare.sh
+TOLERANCE_FILE=<absolute-path-to-mp3_tolerances.env> \
+  tests/gpu_validation/run_mp3_characteristic_flux_mpi_matrix.sh
+```
+
+Run memory safety and the five-repeat interleaved benchmark separately:
+
+```bash
+tests/gpu_validation/run_mp3_characteristic_flux_memcheck.sh
+GRID=400,16,16 MAXSTEP=5 REPEATS=5 \
+  tests/gpu_validation/run_mp3_characteristic_flux_benchmark.sh
+```
+
+The 2026-09-12 local S0-A6 to S0-A10 matrix passes with frozen field and
+statistics absolute tolerances of `2e-6`, exact GPU-FP64/candidate sensor values,
+and zero mask mismatches. Compute Sanitizer reports `ERROR SUMMARY: 0 errors`.
+At `400x16x16`, five interleaved runs give FP64/candidate median complete-RK
+times of `0.023973636/0.025151473 s`, so the candidate is `4.913%` slower.
+The selected workspace falls exactly from `11,984,760` to `5,992,380` bytes;
+sampled peak device memory falls from `656` to `650 MiB`. Peak sampled GPU
+utilization is `95%/88%`. The candidate is `local-pass-not-promoted`: it
+provides a bounded workspace-memory option but no local whole-step speedup,
+and it does not change the FP64 production default.

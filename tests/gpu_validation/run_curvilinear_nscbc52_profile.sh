@@ -7,6 +7,8 @@ OUT_DIR="${OUT_DIR:-$ROOT_DIR/tests/gpu_validation/out/curvilinear_nscbc52_profi
 GPU_ID="${GPU_ID:-0}"
 GRID="${GRID:-32,24,32}"
 RK_STEPS="${RK_STEPS:-2}"
+DIFFTERM="${DIFFTERM:-f}"
+ANALYZE_VISCOUS="${ANALYZE_VISCOUS:-f}"
 
 if [[ "$OUT_DIR" != /* ]]; then
   OUT_DIR="$ROOT_DIR/$OUT_DIR"
@@ -36,7 +38,7 @@ mkdir -p "$OUT_DIR"
 python3 "$ROOT_DIR/tests/gpu_validation/prepare_s1_flatplate_case.py" \
   --dst-case "$case_dir" --use-gpu t \
   --im "$im" --jm "$jm" --km "$km" --conschm 643e \
-  --diffterm f --lfilter f --upper-bctype 52 --ninit 3 \
+  --diffterm "$DIFFTERM" --lfilter f --upper-bctype 52 --ninit 3 \
   --uniform-profile --wall-temperature 1.0 --mach 0.3 \
   --maxstep "$((RK_STEPS-1))" --feqchkpt "$((RK_STEPS+1))" \
   --deltat 1e-4
@@ -64,8 +66,16 @@ grep -q 'The job is done!' "$OUT_DIR/profile.log"
 nsys export --type=sqlite --force-overwrite=true \
   --output="$OUT_DIR/nonreflecting.sqlite" "$report_base.nsys-rep" \
   > "$OUT_DIR/export.log" 2>&1
+viscous_args=()
+if [[ "$ANALYZE_VISCOUS" == "t" ]]; then
+  viscous_args=(--viscous)
+fi
 python3 "$ROOT_DIR/tests/gpu_validation/analyze_curvilinear_nscbc52_nsys.py" \
   --input "$OUT_DIR/nonreflecting.sqlite" --rk-steps "$RK_STEPS" \
-  --report "$OUT_DIR/profile_audit.txt"
+  --report "$OUT_DIR/profile_audit.txt" "${viscous_args[@]}"
+python3 "$ROOT_DIR/tests/gpu_validation/analyze_nsys_rk_residency.py" \
+  --input "$OUT_DIR/nonreflecting.sqlite" \
+  --start-kernel nscbc_farfield_y_upper_nonreflecting_rhs_kernel \
+  --large-transfer-bytes 65536 --report "$OUT_DIR/residency_audit.txt"
 
 printf 'CURVILINEAR_NSCBC52_PROFILE_PASS\n'

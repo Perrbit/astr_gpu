@@ -58,6 +58,9 @@ if(ASTR_WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/device_runtime_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/inflow_interpolation_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/inflow_timeseries_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/precision_mode_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/mixed_candidate_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/upwind_flux_mode_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/commarray_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/production_statistics_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/commvar_gpu.cuf
@@ -147,6 +150,31 @@ if(ASTR_WITH_CUDA)
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/nscbc_policy_probe_modules")
   target_include_directories(nscbc_characteristic_policy_probe PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/nscbc_policy_probe_modules")
+  add_executable(precision_mode_setup_test EXCLUDE_FROM_ALL
+    ../src_gpu/precision_mode_gpu.cuf
+    ../tests/gpu_validation/precision_mode_setup_test.cuf)
+  set_target_properties(precision_mode_setup_test PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/precision_mode_probe_modules")
+  target_include_directories(precision_mode_setup_test PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/precision_mode_probe_modules")
+  target_link_libraries(precision_mode_setup_test PRIVATE MPI::MPI_Fortran)
+  add_executable(mixed_candidate_setup_test EXCLUDE_FROM_ALL
+    ../src_gpu/precision_mode_gpu.cuf
+    ../src_gpu/mixed_candidate_gpu.cuf
+    ../tests/gpu_validation/mixed_candidate_setup_test.cuf)
+  set_target_properties(mixed_candidate_setup_test PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/mixed_candidate_probe_modules")
+  target_include_directories(mixed_candidate_setup_test PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/mixed_candidate_probe_modules")
+  target_link_libraries(mixed_candidate_setup_test PRIVATE MPI::MPI_Fortran)
+  add_executable(upwind_flux_mode_setup_test EXCLUDE_FROM_ALL
+    ../src_gpu/upwind_flux_mode_gpu.cuf
+    ../tests/gpu_validation/upwind_flux_mode_setup_test.cuf)
+  set_target_properties(upwind_flux_mode_setup_test PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/upwind_flux_mode_probe_modules")
+  target_include_directories(upwind_flux_mode_setup_test PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/upwind_flux_mode_probe_modules")
+  target_link_libraries(upwind_flux_mode_setup_test PRIVATE MPI::MPI_Fortran)
   add_executable(halo_transport_setup_test EXCLUDE_FROM_ALL
     ../src_gpu/halo_transport_gpu.cuf
     ../tests/gpu_validation/halo_transport_setup_test.cuf)

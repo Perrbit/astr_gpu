@@ -36,6 +36,7 @@ module bc
   logical,save :: nscbc_farfield_configured=.false.
   logical,save :: nscbc_farfield_incoming_only=.false.
   logical,save :: nscbc_farfield_sbli_shock=.false.
+  logical,save :: nscbc52_prediff_rhs_ready=.false.
   real(8),save :: nscbc_farfield_rho_target,nscbc_farfield_u_target,   &
                   nscbc_farfield_v_target,nscbc_farfield_w_target,     &
                   nscbc_farfield_t_target
@@ -56,6 +57,7 @@ module bc
   !+---------------------+---------------------------------------------+
   real(8),allocatable :: rho_in(:,:),vel_in(:,:,:),tmp_in(:,:),        &
                          prs_in(:,:),spc_in(:,:,:)
+  real(8),allocatable :: nscbc52_prediff_rhs(:,:,:)
   real(8),allocatable :: rho_prof(:),vel_prof(:,:),tmp_prof(:),        &
                          prs_prof(:),spc_prof(:,:)
   real(8),allocatable :: rho_far(:),vel_far(:,:),tmp_far(:),           & 
@@ -315,6 +317,89 @@ module bc
       nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_NONREFLECTING
   end function nscbc_farfield_nonreflecting_enabled
 
+  logical function nscbc_farfield_viscous_source_enabled()
+    use commvar, only: conschm,difschm,lfilter,diffterm,lihomo,ljhomo, &
+                       lkhomo,nondimen,turbmode
+    use sponge_layer, only: spg_i0,spg_im,spg_j0,spg_jm,spg_k0,spg_km
+    implicit none
+    logical :: flatplate_configuration,acoustic_box_configuration
+
+    call configure_nscbc_farfield
+    flatplate_configuration=trim(flowtype)=='bl' .and.                &
+         (.not.lihomo) .and. (.not.ljhomo) .and. lkhomo .and.         &
+         bctype(1)==11 .and. bctype(2)==21 .and.                      &
+         trim(turbinf)=='prof'
+    acoustic_box_configuration=trim(flowtype)=='tgv' .and.            &
+         lihomo .and. (.not.ljhomo) .and. lkhomo .and.                &
+         bctype(1)==1 .and. bctype(2)==1
+    nscbc_farfield_viscous_source_enabled=                            &
+         nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_NONREFLECTING   &
+         .and. (flatplate_configuration .or. acoustic_box_configuration) &
+         .and. ndims==3 .and. nondimen .and.                         &
+         trim(conschm)=='643e' .and. trim(difschm)=='643e'            &
+         .and. numq==5 .and. num_species==0 .and. num_modequ==0       &
+         .and. diffterm .and. (.not.lfilter)                          &
+         .and. trim(turbmode)=='none'                                 &
+         .and. bctype(3)==41 .and. bctype(4)==52                      &
+         .and. all(bctype(5:6)==1)                                    &
+         .and. spg_i0==0 .and. spg_im==0 .and. spg_j0==0             &
+         .and. spg_jm==0 .and. spg_k0==0 .and. spg_km==0
+  end function nscbc_farfield_viscous_source_enabled
+
+  subroutine capture_nscbc_farfield_y_upper_prediff_rhs()
+    implicit none
+
+    nscbc52_prediff_rhs_ready=.false.
+    if(.not.nscbc_farfield_viscous_source_enabled()) return
+    if(npdcj/=2 .and. npdcj/=4) return
+    if(allocated(nscbc52_prediff_rhs)) then
+      if(lbound(nscbc52_prediff_rhs,1)/=0 .or.                        &
+         ubound(nscbc52_prediff_rhs,1)/=im .or.                       &
+         lbound(nscbc52_prediff_rhs,2)/=0 .or.                        &
+         ubound(nscbc52_prediff_rhs,2)/=km)                           &
+        deallocate(nscbc52_prediff_rhs)
+    endif
+    if(.not.allocated(nscbc52_prediff_rhs))                           &
+      allocate(nscbc52_prediff_rhs(0:im,0:km,1:5))
+    nscbc52_prediff_rhs=qrhs(0:im,jm,0:km,1:5)
+    nscbc52_prediff_rhs_ready=.true.
+  end subroutine capture_nscbc_farfield_y_upper_prediff_rhs
+
+  subroutine apply_nscbc_farfield_y_upper_viscous_source()
+    use fludyna, only: sos
+    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+    implicit none
+    integer :: i,k
+    real(8) :: viscous_rhs(5),rhs_face(5),pnor(5,5),pinv(5,5),        &
+               lambda(5),css
+    logical :: incoming(5)
+
+    if(.not.nscbc_farfield_viscous_source_enabled()) return
+    if(npdcj/=2 .and. npdcj/=4) return
+    if(.not.nscbc52_prediff_rhs_ready)                                &
+      error stop 'upper-y NSCBC viscous source applied without capture'
+    do k=0,km
+    do i=0,im
+      viscous_rhs=qrhs(i,jm,k,1:5)-nscbc52_prediff_rhs(i,k,1:5)
+      if(.not.all(ieee_is_finite(viscous_rhs)))                       &
+        error stop 'nonfinite upper-y NSCBC viscous source'
+      pnor=pmatrix(rho(i,jm,k),vel(i,jm,k,1),vel(i,jm,k,2),           &
+                   vel(i,jm,k,3),tmp(i,jm,k),spc(i,jm,k,:),          &
+                   dxi(i,jm,k,2,:),inv=.false.)
+      pinv=pmatrix(rho(i,jm,k),vel(i,jm,k,1),vel(i,jm,k,2),           &
+                   vel(i,jm,k,3),tmp(i,jm,k),spc(i,jm,k,:),          &
+                   dxi(i,jm,k,2,:),inv=.true.)
+      css=sos(tmp(i,jm,k),spc(i,jm,k,:))
+      rhs_face=qrhs(i,jm,k,1:5)
+      call nscbc_remove_incoming_source(rhs_face,viscous_rhs,pnor,pinv,&
+           jacob(i,jm,k),dxi(i,jm,k,2,:),vel(i,jm,k,:),css,lambda,    &
+           incoming)
+      qrhs(i,jm,k,1:5)=rhs_face
+    enddo
+    enddo
+    nscbc52_prediff_rhs_ready=.false.
+  end subroutine apply_nscbc_farfield_y_upper_viscous_source
+
   logical function nscbc_farfield_incoming_only_enabled()
     implicit none
 
@@ -423,6 +508,34 @@ module bc
       if(incoming(m)) lodi(m)=-source_characteristic(m)
     enddo
   end subroutine nscbc_farfield_balance_incoming_lodi
+
+  subroutine nscbc_remove_incoming_source(rhs,source,pnor,pinv,        &
+                                           jacobian,metric,velocity,   &
+                                           css,lambda,incoming)
+    implicit none
+    real(8),intent(inout) :: rhs(5)
+    real(8),intent(in) :: source(5),pnor(5,5),pinv(5,5),jacobian,      &
+                          metric(3),velocity(3),css
+    real(8),intent(out) :: lambda(5)
+    logical,intent(out) :: incoming(5)
+    real(8) :: norm,normal_speed,wave_tolerance,source_characteristic(5)
+    integer :: m
+
+    norm=sqrt(sum(metric*metric))
+    if(norm<=0.d0) error stop 'invalid upper-y NSCBC metric norm'
+    if(css<=0.d0) error stop 'invalid upper-y NSCBC sound speed'
+    if(jacobian<=0.d0) error stop 'invalid upper-y NSCBC Jacobian'
+    normal_speed=sum(metric*velocity)/norm
+    lambda=[normal_speed,normal_speed,normal_speed,                    &
+            normal_speed+css,normal_speed-css]
+    wave_tolerance=64.d0*epsilon(1.d0)*max(css,abs(normal_speed))
+    incoming=lambda<-wave_tolerance
+    source_characteristic=matmul(pinv,source)/jacobian
+    do m=1,5
+      if(.not.incoming(m)) source_characteristic(m)=0.d0
+    enddo
+    rhs=rhs-jacobian*matmul(pnor,source_characteristic)
+  end subroutine nscbc_remove_incoming_source
 
   subroutine nscbc_farfield_transformed_flux_5(i,j,k,axis,flux)
     implicit none

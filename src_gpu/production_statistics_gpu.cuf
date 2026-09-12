@@ -154,6 +154,69 @@ contains
     values(3)=conductivity*dot_product(grad_t,normal)
   end subroutine compact_wall_point_values
 
+  attributes(device) subroutine compact_wall_point_values_sp(x,bnorm,prs,tmp,dvel,dtmp, &
+      i,k,im,jm,km,hm,ia,ig0,nondimen,reynolds,prandtl,const5,cp,tempconst,tempconst1,values)
+    implicit none
+    integer,value :: i,k,im,jm,km,hm,ia,ig0
+    logical,value :: nondimen
+    real(8),value :: reynolds,prandtl,const5,cp,tempconst,tempconst1
+    real(8),device,intent(in) :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device,intent(in) :: bnorm(0:im,0:km,1:3)
+    real(8),device,intent(in) :: prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device,intent(in) :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(4),device,intent(in) :: dvel(0:im,0:jm,0:km,1:3,1:3)
+    real(4),device,intent(in) :: dtmp(0:im,0:jm,0:km,1:3)
+    real(8),intent(out) :: values(3)
+    real(8) :: normal(3),di(3),tangent(3),traction(3),grad_t(3),dvel8(3,3)
+    real(8) :: stress(3,3),mu,conductivity,divergence,tangent_norm,t,tnondim
+    integer :: a,b
+
+    do a=1,3
+      grad_t(a)=real(dtmp(i,0,k,a),8)
+      do b=1,3
+        dvel8(a,b)=real(dvel(i,0,k,a,b),8)
+      enddo
+    enddo
+    normal=bnorm(i,k,:)
+    if(ig0+i==0) then
+      di=x(i+1,0,k,:)-x(i,0,k,:)
+    elseif(ig0+i==ia) then
+      di=x(i,0,k,:)-x(i-1,0,k,:)
+    else
+      di=x(i+1,0,k,:)-x(i-1,0,k,:)
+    endif
+    tangent=di-dot_product(di,normal)*normal
+    tangent_norm=sqrt(dot_product(tangent,tangent))
+    if(tangent_norm>1.d-300) then
+      tangent=tangent/tangent_norm
+    else
+      tangent=0.d0
+    endif
+    t=tmp(i,0,k)
+    if(nondimen) then
+      mu=t*sqrt(t)*tempconst1/(t+tempconst)/reynolds
+      conductivity=(mu/prandtl)/const5
+    else
+      tnondim=t/273.15d0
+      mu=1.716d-5*tnondim*sqrt(tnondim)*(273.15d0+110.4d0)/(t+110.4d0)
+      conductivity=cp*mu/prandtl
+    endif
+    divergence=dvel8(1,1)+dvel8(2,2)+dvel8(3,3)
+    stress=0.d0
+    stress(1,1)=mu*(2.d0*dvel8(1,1)-2.d0*divergence/3.d0)
+    stress(2,2)=mu*(2.d0*dvel8(2,2)-2.d0*divergence/3.d0)
+    stress(3,3)=mu*(2.d0*dvel8(3,3)-2.d0*divergence/3.d0)
+    stress(1,2)=mu*(dvel8(1,2)+dvel8(2,1)); stress(2,1)=stress(1,2)
+    stress(1,3)=mu*(dvel8(1,3)+dvel8(3,1)); stress(3,1)=stress(1,3)
+    stress(2,3)=mu*(dvel8(2,3)+dvel8(3,2)); stress(3,2)=stress(2,3)
+    traction(1)=stress(1,1)*normal(1)+stress(1,2)*normal(2)+stress(1,3)*normal(3)
+    traction(2)=stress(2,1)*normal(1)+stress(2,2)*normal(2)+stress(2,3)*normal(3)
+    traction(3)=stress(3,1)*normal(1)+stress(3,2)*normal(2)+stress(3,3)*normal(3)
+    values(1)=prs(i,0,k)
+    values(2)=dot_product(tangent,traction)
+    values(3)=conductivity*dot_product(grad_t,normal)
+  end subroutine compact_wall_point_values_sp
+
   attributes(global) subroutine compact_wall_moment_kernel(x,bnorm,prs,tmp,dvel,dtmp, &
       wall_sum,im,jm,km,hm,ia,ig0,nondimen,reynolds,prandtl,const5,cp,tempconst,tempconst1)
     implicit none
@@ -187,6 +250,40 @@ contains
     enddo
     wall_sum(i,:)=wall_sum(i,:)+total
   end subroutine compact_wall_moment_kernel
+
+  attributes(global) subroutine compact_wall_moment_sp_kernel(x,bnorm,prs,tmp,dvel,dtmp, &
+      wall_sum,im,jm,km,hm,ia,ig0,nondimen,reynolds,prandtl,const5,cp,tempconst,tempconst1)
+    implicit none
+    integer,value :: im,jm,km,hm,ia,ig0
+    logical,value :: nondimen
+    real(8),value :: reynolds,prandtl,const5,cp,tempconst,tempconst1
+    real(8),device,intent(in) :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device,intent(in) :: bnorm(0:im,0:km,1:3)
+    real(8),device,intent(in) :: prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device,intent(in) :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(4),device,intent(in) :: dvel(0:im,0:jm,0:km,1:3,1:3)
+    real(4),device,intent(in) :: dtmp(0:im,0:jm,0:km,1:3)
+    real(8),device,intent(inout) :: wall_sum(0:im,1:3)
+    integer :: i,k
+    real(8) :: dx,dy,dz,ds,left(3),right(3),total(3)
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(i>im) return
+    call compact_wall_point_values_sp(x,bnorm,prs,tmp,dvel,dtmp,i,0,im,jm,km,hm,ia,ig0, &
+      nondimen,reynolds,prandtl,const5,cp,tempconst,tempconst1,left)
+    total=0.d0
+    do k=1,km
+      dx=x(i,0,k,1)-x(i,0,k-1,1)
+      dy=x(i,0,k,2)-x(i,0,k-1,2)
+      dz=x(i,0,k,3)-x(i,0,k-1,3)
+      ds=sqrt(dx*dx+dy*dy+dz*dz)
+      call compact_wall_point_values_sp(x,bnorm,prs,tmp,dvel,dtmp,i,k,im,jm,km,hm,ia,ig0, &
+        nondimen,reynolds,prandtl,const5,cp,tempconst,tempconst1,right)
+      total=total+0.5d0*(left+right)*ds
+      left=right
+    enddo
+    wall_sum(i,:)=wall_sum(i,:)+total
+  end subroutine compact_wall_moment_sp_kernel
 
 #ifndef TEST_COMPACT_STATS
   logical function compact_statistics_requested()
@@ -273,7 +370,9 @@ contains
   end subroutine initialize_compact_statistics_gpu
 
   subroutine accumulate_compact_statistics_gpu()
-    use commarray_gpu, only: x_d,rho_d,vel_d,prs_d,tmp_d,dvel_d,dtmp_d,bnorm_j0_d
+    use commarray_gpu, only: x_d,rho_d,vel_d,prs_d,tmp_d,dvel_d,dtmp_d, &
+                             dvel_sp_d,dtmp_sp_d,bnorm_j0_d, &
+                             gpu_mixed_derivative_workspace_enabled
     use commvar, only: im,jm,km,hm,ia,lavg,feqavg,nstep,time,nondimen,reynolds, &
                        prandtl,const5,cp,tempconst,tempconst1
     use gpu_check, only: sync_after_kernel
@@ -294,10 +393,17 @@ contains
     if(jrk==0) then
       block=dim3(256,1,1)
       grid=dim3((im+1+block%x-1)/block%x,1,1)
-      call compact_wall_moment_kernel<<<grid,block>>>(x_d,bnorm_j0_d,prs_d,tmp_d,dvel_d, &
-        dtmp_d,wall_sum_d,im,jm,km,hm,ia,ig0,nondimen,reynolds,prandtl,const5,cp, &
-        tempconst,tempconst1)
-      call sync_after_kernel('compact_wall_moment_kernel')
+      if(gpu_mixed_derivative_workspace_enabled()) then
+        call compact_wall_moment_sp_kernel<<<grid,block>>>(x_d,bnorm_j0_d,prs_d,tmp_d,dvel_sp_d, &
+          dtmp_sp_d,wall_sum_d,im,jm,km,hm,ia,ig0,nondimen,reynolds,prandtl,const5,cp, &
+          tempconst,tempconst1)
+        call sync_after_kernel('compact_wall_moment_sp_kernel')
+      else
+        call compact_wall_moment_kernel<<<grid,block>>>(x_d,bnorm_j0_d,prs_d,tmp_d,dvel_d, &
+          dtmp_d,wall_sum_d,im,jm,km,hm,ia,ig0,nondimen,reynolds,prandtl,const5,cp, &
+          tempconst,tempconst1)
+        call sync_after_kernel('compact_wall_moment_kernel')
+      endif
     endif
     if(sample_count==0_int64) then
       sampling_start_step=int(nstep,int64)

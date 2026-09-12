@@ -28,8 +28,11 @@ REFLECTION_MAX="${REFLECTION_MAX:-0.05}"
 CONTROL_RATIO_MAX="${CONTROL_RATIO_MAX:-0.25}"
 REFLECTION_ATOL="${REFLECTION_ATOL:-1e-3}"
 FIELD_ATOL="${FIELD_ATOL:-1e-10}"
+DIFFTERM="${DIFFTERM:-f}"
+SCHEME="${SCHEME:-643e}"
 NP="${NP:-1}"
 TOPOLOGY="${TOPOLOGY:-1,1,1}"
+RUN_CONTROL="${RUN_CONTROL:-t}"
 
 if [[ ! -x "$CPU_EXE" || ! -x "$GPU_EXE" ]]; then
   echo "CPU_EXE and GPU_EXE must point to built ASTR executables" >&2
@@ -63,8 +66,8 @@ prepare_case() {
   python3 "$ROOT_DIR/tests/gpu_validation/prepare_tgv_case.py" \
     --src-case "$ROOT_DIR/examples/Taylor_Green_Vortex" \
     --dst-case "$case_dir" --input-name "$INPUT_NAME" \
-    --use-gpu "$use_gpu" --mach "$MACH" --grid "$grid" --scheme 643e \
-    --diffterm f --lfilter f --lreadgrid t --ninit 3 --restart f \
+    --use-gpu "$use_gpu" --mach "$MACH" --grid "$grid" --scheme "$SCHEME" \
+    --diffterm "$DIFFTERM" --lfilter f --lreadgrid t --ninit 3 --restart f \
     --homogeneous t,f,t --bctype "1;1;41,1.0;52;1;1" \
     --gridfile ./datin/grid.acoustic.h5 \
     --maxstep "$MAXSTEP" --feqchkpt "$FEQCHKPT" --feqlist 9999 \
@@ -132,7 +135,9 @@ for grid in "${levels[@]}"; do
   cpu_control="$level_dir/cpu_compatibility"
   prepare_case "$cpu_nr" f "$grid" "$im" "$jm" "$km"
   prepare_case "$gpu_nr" t "$grid" "$im" "$jm" "$km"
-  prepare_case "$cpu_control" f "$grid" "$im" "$jm" "$km"
+  if [[ "$RUN_CONTROL" == "t" ]]; then
+    prepare_case "$cpu_control" f "$grid" "$im" "$jm" "$km"
+  fi
   python3 "$ROOT_DIR/tests/gpu_validation/check_curvilinear_nscbc_geometry.py" \
     --grid "$cpu_nr/datin/grid.acoustic.h5" \
     --report "$level_dir/geometry.txt" --amplitude "$AMPLITUDE" \
@@ -140,12 +145,16 @@ for grid in "${levels[@]}"; do
 
   run_case "$cpu_nr" "$CPU_EXE" nonreflecting
   run_case "$gpu_nr" "$GPU_EXE" nonreflecting
-  run_case "$cpu_control" "$CPU_EXE" compatibility
+  if [[ "$RUN_CONTROL" == "t" ]]; then
+    run_case "$cpu_control" "$CPU_EXE" compatibility
+  fi
 
   probe_index=$((probe_numerator * jm / probe_denominator))
   analyze_case "$cpu_nr" "$probe_index"
   analyze_case "$gpu_nr" "$probe_index"
-  analyze_case "$cpu_control" "$probe_index"
+  if [[ "$RUN_CONTROL" == "t" ]]; then
+    analyze_case "$cpu_control" "$probe_index"
+  fi
 
   mapfile -t cpu_snapshots < <(find "$cpu_nr/outdat" -maxdepth 1 -type f \
     -name 'flowfield[0-9][0-9][0-9][0-9].h5' | sort)
@@ -157,10 +166,11 @@ for grid in "${levels[@]}"; do
     --atol "$FIELD_ATOL" --rtol "$FIELD_ATOL"
 
   level_summary="$level_dir/reflection_summary.json"
-  python3 - "$grid" "$cpu_nr/reflection/reflection_metrics.json" \
-    "$gpu_nr/reflection/reflection_metrics.json" \
-    "$cpu_control/reflection/reflection_metrics.json" "$level_summary" \
-    "$REFLECTION_MAX" "$CONTROL_RATIO_MAX" "$REFLECTION_ATOL" <<'PY'
+  if [[ "$RUN_CONTROL" == "t" ]]; then
+    python3 - "$grid" "$cpu_nr/reflection/reflection_metrics.json" \
+      "$gpu_nr/reflection/reflection_metrics.json" \
+      "$cpu_control/reflection/reflection_metrics.json" "$level_summary" \
+      "$REFLECTION_MAX" "$CONTROL_RATIO_MAX" "$REFLECTION_ATOL" <<'PY'
 import json
 from pathlib import Path
 import sys
@@ -192,6 +202,34 @@ summary = {
 Path(output_path).write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 print(json.dumps(summary, sort_keys=True))
 PY
+  else
+    python3 - "$grid" "$cpu_nr/reflection/reflection_metrics.json" \
+      "$gpu_nr/reflection/reflection_metrics.json" "$level_summary" \
+      "$REFLECTION_ATOL" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+grid, cpu_path, gpu_path, output_path, atol = sys.argv[1:]
+cpu = json.loads(Path(cpu_path).read_text())
+gpu = json.loads(Path(gpu_path).read_text())
+r_cpu = float(cpu["reflection"])
+r_gpu = float(gpu["reflection"])
+difference = abs(r_cpu-r_gpu)
+if difference > float(atol):
+    raise SystemExit(
+        f"CPU/GPU reflection gate failed for {grid}: {difference} > {atol}"
+    )
+summary = {
+    "grid": grid,
+    "cpu_nonreflecting": r_cpu,
+    "gpu_nonreflecting": r_gpu,
+    "cpu_gpu_abs_difference": difference,
+}
+Path(output_path).write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+print(json.dumps(summary, sort_keys=True))
+PY
+  fi
   summary_files+=("$level_summary")
 done
 

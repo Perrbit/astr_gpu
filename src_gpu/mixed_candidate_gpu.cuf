@@ -1,0 +1,98 @@
+module mixed_candidate_gpu
+  implicit none
+  integer,parameter :: GPU_MIXED_FLUX=0
+  integer,parameter :: GPU_MIXED_DERIVATIVE=1
+  integer,parameter :: GPU_MIXED_VISCOUS_FLUX=2
+  integer,parameter :: GPU_MIXED_CHARACTERISTIC_FLUX=3
+  integer,save :: gpu_mixed_candidate=GPU_MIXED_FLUX
+  logical,save :: gpu_mixed_candidate_configured=.false.
+  logical,save :: candidate_was_explicit=.false.
+contains
+  subroutine configure_gpu_mixed_candidate()
+    use mpi
+    use precision_mode_gpu, only: gpu_mixed_workspace_requested
+    implicit none
+    character(len=32) :: value
+    integer :: choice,lowest,highest,status,ierr,rank,abort_ierr
+
+    if(gpu_mixed_candidate_configured) return
+    value=''
+    call get_environment_variable('ASTR_GPU_MIXED_CANDIDATE',value,status=status)
+    choice=-1
+    candidate_was_explicit=status==0 .and. len_trim(value)>0
+    if(status==1 .or. (status==0 .and. len_trim(value)==0)) then
+      choice=GPU_MIXED_FLUX
+    elseif(status==0) then
+      select case(trim(adjustl(value)))
+      case('flux')
+        choice=GPU_MIXED_FLUX
+      case('derivative')
+        choice=GPU_MIXED_DERIVATIVE
+      case('viscous_flux')
+        choice=GPU_MIXED_VISCOUS_FLUX
+      case('characteristic_flux')
+        choice=GPU_MIXED_CHARACTERISTIC_FLUX
+      case default
+        choice=-1
+      end select
+    endif
+
+    call mpi_allreduce(choice,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,abort_ierr)
+    call mpi_allreduce(choice,highest,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,abort_ierr)
+    if(lowest<0 .or. lowest/=highest) then
+      call mpi_comm_rank(MPI_COMM_WORLD,rank,ierr)
+      if(rank==0) write(*,'(A)') &
+        'Invalid or inconsistent ASTR_GPU_MIXED_CANDIDATE: expected flux, derivative, viscous_flux, or characteristic_flux'
+      call mpi_abort(MPI_COMM_WORLD,1,abort_ierr)
+    endif
+
+    if((.not.gpu_mixed_workspace_requested()) .and. candidate_was_explicit .and. &
+       choice/=GPU_MIXED_FLUX) then
+      call mpi_comm_rank(MPI_COMM_WORLD,rank,ierr)
+      if(rank==0) write(*,'(A)') &
+        'ASTR_GPU_MIXED_CANDIDATE non-default selection ' // &
+        'requires ASTR_GPU_PRECISION_MODE=mixed_workspace'
+      call mpi_abort(MPI_COMM_WORLD,1,abort_ierr)
+    endif
+
+    gpu_mixed_candidate=choice
+    gpu_mixed_candidate_configured=.true.
+    call mpi_comm_rank(MPI_COMM_WORLD,rank,ierr)
+    if(rank==0) write(*,'(A,A)') 'ASTR_GPU_MIXED_CANDIDATE=',trim(gpu_mixed_candidate_name())
+  end subroutine configure_gpu_mixed_candidate
+
+  integer function gpu_mixed_candidate_id()
+    implicit none
+
+    call configure_gpu_mixed_candidate()
+    gpu_mixed_candidate_id=gpu_mixed_candidate
+  end function gpu_mixed_candidate_id
+
+  logical function gpu_mixed_candidate_requested(candidate_id)
+    implicit none
+    integer,intent(in) :: candidate_id
+
+    call configure_gpu_mixed_candidate()
+    gpu_mixed_candidate_requested=gpu_mixed_candidate==candidate_id
+  end function gpu_mixed_candidate_requested
+
+  character(len=32) function gpu_mixed_candidate_name()
+    implicit none
+
+    if(.not.gpu_mixed_candidate_configured) call configure_gpu_mixed_candidate()
+    select case(gpu_mixed_candidate)
+    case(GPU_MIXED_FLUX)
+      gpu_mixed_candidate_name='flux'
+    case(GPU_MIXED_DERIVATIVE)
+      gpu_mixed_candidate_name='derivative'
+    case(GPU_MIXED_VISCOUS_FLUX)
+      gpu_mixed_candidate_name='viscous_flux'
+    case(GPU_MIXED_CHARACTERISTIC_FLUX)
+      gpu_mixed_candidate_name='characteristic_flux'
+    case default
+      gpu_mixed_candidate_name='invalid'
+    end select
+  end function gpu_mixed_candidate_name
+end module mixed_candidate_gpu

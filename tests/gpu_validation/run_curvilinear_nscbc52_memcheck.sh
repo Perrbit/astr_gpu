@@ -6,6 +6,7 @@ GPU_EXE="${GPU_EXE:-$ROOT_DIR/build_gpu_probe/bin/astr}"
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/tests/gpu_validation/out/curvilinear_nscbc52_memcheck}"
 GRID="${GRID:-32,24,32}"
 GPU_IDS="${GPU_IDS:-0,1}"
+DIFFTERM="${DIFFTERM:-f}"
 MATRIX=(
   '1:1,1,1'
   '2:1,2,1'
@@ -42,7 +43,7 @@ for entry in "${MATRIX[@]}"; do
   python3 "$ROOT_DIR/tests/gpu_validation/prepare_s1_flatplate_case.py" \
     --dst-case "$case_dir" --use-gpu t \
     --im "$im" --jm "$jm" --km "$km" --conschm 643e \
-    --diffterm f --lfilter f --upper-bctype 52 --ninit 3 \
+    --diffterm "$DIFFTERM" --lfilter f --upper-bctype 52 --ninit 3 \
     --uniform-profile --wall-temperature 1.0 --mach 0.3 \
     --maxstep 1 --feqchkpt 2 --deltat 1e-4
   python3 "$ROOT_DIR/tests/gpu_validation/generate_curvilinear_tgv_grid.py" \

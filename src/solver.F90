@@ -214,6 +214,9 @@ module solver
     use userdefine,only : udf_src
     use tecio
     use validation_io, only: write_rhs_validation_snapshot
+    use bc, only: nscbc_farfield_viscous_source_enabled,              &
+                  capture_nscbc_farfield_y_upper_prediff_rhs,         &
+                  apply_nscbc_farfield_y_upper_viscous_source
     !
     ! arguments
     logical,intent(in),optional :: timerept
@@ -272,7 +275,11 @@ module solver
     qrhs=-qrhs
     call write_rhs_validation_snapshot('conv')
     !
+    if(nscbc_farfield_viscous_source_enabled())                       &
+      call capture_nscbc_farfield_y_upper_prediff_rhs()
     if(diffterm) call diffrsdcal6(timerept=ltimrpt,physical_boundary_rhs=physical_halo_rhs)
+    if(nscbc_farfield_viscous_source_enabled())                       &
+      call apply_nscbc_farfield_y_upper_viscous_source()
     call write_rhs_validation_snapshot('full')
     !
     if(trim(flowtype)=='channel') then 

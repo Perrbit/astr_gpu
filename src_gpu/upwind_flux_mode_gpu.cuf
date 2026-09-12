@@ -1,0 +1,63 @@
+module upwind_flux_mode_gpu
+  implicit none
+  integer,parameter :: UPWIND_FLUX_SPLIT=0
+  integer,parameter :: UPWIND_FLUX_FUSED=1
+  integer,save :: upwind_flux_mode=UPWIND_FLUX_SPLIT
+  logical,save :: upwind_flux_mode_configured=.false.
+contains
+  subroutine configure_gpu_upwind_flux_mode()
+    use mpi
+    implicit none
+    character(len=32) :: value
+    integer :: choice,lowest,highest,status,ierr,rank
+
+    if(upwind_flux_mode_configured) return
+    value=''
+    call get_environment_variable('ASTR_GPU_FLUX_PAIR_MODE',value,status=status)
+    choice=-1
+    if(status==1 .or. (status==0 .and. len_trim(value)==0)) choice=UPWIND_FLUX_SPLIT
+    if(status==0) then
+      select case(trim(adjustl(value)))
+      case('split')
+        choice=UPWIND_FLUX_SPLIT
+      case('fused')
+        choice=UPWIND_FLUX_FUSED
+      end select
+    endif
+
+    call mpi_allreduce(choice,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,status)
+    call mpi_allreduce(choice,highest,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,status)
+    call mpi_comm_rank(MPI_COMM_WORLD,rank,ierr)
+    if(lowest<0 .or. lowest/=highest) then
+      if(rank==0) write(*,'(A)') &
+        'Invalid or inconsistent ASTR_GPU_FLUX_PAIR_MODE: expected split or fused'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+    endif
+
+    upwind_flux_mode=choice
+    upwind_flux_mode_configured=.true.
+    if(rank==0) write(*,'(A,A)') 'ASTR_GPU_FLUX_PAIR_MODE=',trim(gpu_upwind_flux_mode_name())
+  end subroutine configure_gpu_upwind_flux_mode
+
+  logical function gpu_fused_flux_pair_requested()
+    implicit none
+
+    call configure_gpu_upwind_flux_mode()
+    gpu_fused_flux_pair_requested = upwind_flux_mode==UPWIND_FLUX_FUSED
+  end function gpu_fused_flux_pair_requested
+
+  character(len=16) function gpu_upwind_flux_mode_name()
+    implicit none
+
+    select case(upwind_flux_mode)
+    case(UPWIND_FLUX_SPLIT)
+      gpu_upwind_flux_mode_name='split'
+    case(UPWIND_FLUX_FUSED)
+      gpu_upwind_flux_mode_name='fused'
+    case default
+      gpu_upwind_flux_mode_name='invalid'
+    end select
+  end function gpu_upwind_flux_mode_name
+end module upwind_flux_mode_gpu

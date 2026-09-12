@@ -1,6 +1,7 @@
 module nscbc_characteristic_policy_probe_kernels
   use cudafor
-  use nscbc_characteristic_policy_gpu, only: nscbc_balance_incoming_lodi_gpu
+  use nscbc_characteristic_policy_gpu, only: nscbc_balance_incoming_lodi_gpu, &
+       nscbc_remove_incoming_source_gpu
   implicit none
 contains
   attributes(global) subroutine evaluate_policy_kernel(lodi,source,pinv,metric, &
@@ -17,16 +18,34 @@ contains
                                          velocity(:,icase),css,lambda(:,icase), &
                                          incoming(:,icase))
   end subroutine evaluate_policy_kernel
+
+  attributes(global) subroutine evaluate_viscous_source_kernel(rhs,source, &
+       pnor,pinv,metric,velocity,css,lambda,incoming)
+    implicit none
+    real(8),device :: rhs(5,6),source(5),pnor(5,5),pinv(5,5),metric(3), &
+                      velocity(3,6),lambda(5,6)
+    real(8),value :: css
+    logical,device :: incoming(5,6)
+    integer :: icase
+
+    icase=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    if(icase>6) return
+    call nscbc_remove_incoming_source_gpu(rhs(:,icase),source,pnor,pinv, &
+         2.d0,metric,velocity(:,icase),css,lambda(:,icase),incoming(:,icase))
+  end subroutine evaluate_viscous_source_kernel
 end module nscbc_characteristic_policy_probe_kernels
 
 program nscbc_characteristic_policy_probe
   use cudafor
-  use nscbc_characteristic_policy_probe_kernels, only: evaluate_policy_kernel
+  use nscbc_characteristic_policy_probe_kernels, only: evaluate_policy_kernel, &
+       evaluate_viscous_source_kernel
   implicit none
   real(8),device :: lodi_d(5,6),source_d(5),pinv_d(5,5),metric_d(3),velocity_d(3,6),lambda_d(5,6)
   logical,device :: incoming_d(5,6)
+  real(8),device :: rhs_d(5,6),pnor_d(5,5)
   real(8) :: lodi(5,6),source(5),pinv(5,5),metric(3),normal(3),velocity(3,6),lambda(5,6)
   real(8) :: source_characteristic(5),total_characteristic(5)
+  real(8) :: rhs(5,6),rhs0(5),expected(5),pnor(5,5)
   logical :: incoming(5,6)
   character(len=20) :: labels(6)
   integer :: icase,m,istat
@@ -75,4 +94,42 @@ program nscbc_characteristic_policy_probe
       (merge(1,0,incoming(m,icase)),m=1,5),lodi(:,icase)
   enddo
   write(*,'(A)') 'NSCBC_GPU_POLICY_PASS'
+
+  pnor=0.d0
+  pinv=0.d0
+  do m=1,5
+    pnor(m,m)=1.d0
+    pinv(m,m)=1.d0
+  enddo
+  pnor(1,2)=0.2d0
+  pinv(1,2)=-0.2d0
+  pnor(4,5)=0.3d0
+  pinv(4,5)=-0.3d0
+  rhs0=[3.d0,-2.d0,1.d0,0.5d0,-0.25d0]
+  do icase=1,6
+    rhs(:,icase)=rhs0
+  enddo
+  pnor_d=pnor
+  pinv_d=pinv
+  rhs_d=rhs
+  call evaluate_viscous_source_kernel<<<1,6>>>(rhs_d,source_d,pnor_d, &
+       pinv_d,metric_d,velocity_d,1.d0,lambda_d,incoming_d)
+  istat=cudaDeviceSynchronize()
+  if(istat/=cudaSuccess) error stop 'NSCBC GPU viscous source kernel failed'
+  rhs=rhs_d
+  lambda=lambda_d
+  incoming=incoming_d
+  do icase=1,6
+    source_characteristic=matmul(pinv,source)/2.d0
+    do m=1,5
+      if(.not.incoming(m,icase)) source_characteristic(m)=0.d0
+    enddo
+    expected=rhs0-2.d0*matmul(pnor,source_characteristic)
+    if(maxval(abs(rhs(:,icase)-expected))>1.d-15) &
+      error stop 'NSCBC GPU viscous source sign or projection mismatch'
+    write(*,'(A,1X,A,5(1X,ES24.16E3),5(1X,I1),5(1X,ES24.16E3))') &
+      'NSCBC_GPU_VISCOUS',trim(labels(icase)),lambda(:,icase),          &
+      (merge(1,0,incoming(m,icase)),m=1,5),rhs(:,icase)
+  enddo
+  write(*,'(A)') 'NSCBC_GPU_VISCOUS_PASS'
 end program nscbc_characteristic_policy_probe

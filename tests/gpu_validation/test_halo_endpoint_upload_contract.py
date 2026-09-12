@@ -25,8 +25,8 @@ class HaloEndpointUploadContract(unittest.TestCase):
                 uploads.append((line, match))
         self.assertEqual(
             len(uploads),
-            22,
-            "Audit the nine full-field and two scalar-filter receive-buffer pairs",
+            28,
+            "Audit nine full-field, two scalar-filter, and three FP32 field receive-buffer pairs",
         )
         for line, match in uploads:
             with self.subTest(buffer=match[1]):

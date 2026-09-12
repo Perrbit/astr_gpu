@@ -75,10 +75,12 @@ prepare_curve_52() {
   local lfilter="$3"
   local upper_bctype="$4"
   local z_bctype="$5"
+  local sponge_im="${6:-0}"
   python3 "$ROOT_DIR/tests/gpu_validation/prepare_s1_flatplate_case.py" \
     --dst-case "$OUT_DIR/$name" --use-gpu t --im "$IM" --jm "$JM" --km "$KM" \
     --conschm 643e --diffterm "$diffterm" --lfilter "$lfilter" \
     --upper-bctype "$upper_bctype" --z-bctype "$z_bctype" \
+    --sponge-im "$sponge_im" \
     --ninit 0 --maxstep 1 --feqchkpt 1
   python3 "$ROOT_DIR/tests/gpu_validation/generate_curvilinear_tgv_grid.py" \
     --output "$OUT_DIR/$name/datin/grid.flatplate.h5" \
@@ -86,12 +88,13 @@ prepare_curve_52() {
     --mapping y-wavy --amplitude 0.15
 }
 
-scope_error='GPU nonreflecting curved NSCBC requires approved inviscid upper-y 52 capability'
-prepare_curve_52 curve_52_diffusion t f 52 1
-expect_reject curve_52_diffusion input.flatplate "$scope_error" nonreflecting
+scope_error='GPU nonreflecting curved NSCBC requires an approved upper-y 52 capability'
 
 prepare_curve_52 curve_52_filter f t 52 1
 expect_reject curve_52_filter input.flatplate "$scope_error" nonreflecting
+
+prepare_curve_52 curve_52_viscous_sponge t f 52 1 8
+expect_reject curve_52_viscous_sponge input.flatplate "$scope_error" nonreflecting
 
 prepare_curve_52 curve_52_wrong_upper f f 51 1
 expect_reject curve_52_wrong_upper input.flatplate "$scope_error" nonreflecting

@@ -1,0 +1,14 @@
+program upwind_flux_mode_setup_test
+  use mpi
+  use upwind_flux_mode_gpu, only: configure_gpu_upwind_flux_mode, &
+       gpu_fused_flux_pair_requested,gpu_upwind_flux_mode_name
+  implicit none
+  integer :: ierr,rank
+
+  call mpi_init(ierr)
+  call mpi_comm_rank(MPI_COMM_WORLD,rank,ierr)
+  call configure_gpu_upwind_flux_mode()
+  if(rank==0) write(*,'(A,A,A,L1)') 'flux_pair_mode=', &
+       trim(gpu_upwind_flux_mode_name()),' fused=',gpu_fused_flux_pair_requested()
+  call mpi_finalize(ierr)
+end program upwind_flux_mode_setup_test

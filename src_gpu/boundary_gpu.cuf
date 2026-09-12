@@ -11,7 +11,9 @@ module boundary_gpu
                        GPU_BC_FARFIELD=51, GPU_BC_NSCBC_FARFIELD=52
   real(8),allocatable,device :: s1_bl_rho_prof_d(:),s1_bl_prs_prof_d(:), &
                                       s1_bl_tmp_prof_d(:),s1_bl_vel_prof_d(:,:)
+  real(8),allocatable,device :: nscbc52_prediff_rhs_d(:,:,:)
   logical,save :: s1_bl_profile_ready = .false.
+  logical,save :: nscbc52_prediff_rhs_ready = .false.
   integer,device :: dynamic_inflow_error_d
   real(8),device :: wall_blowing_amplitude_d,wall_blowing_beta_d,        &
                     wall_blowing_xa_d,                                  &
@@ -32,7 +34,9 @@ contains
     if(allocated(s1_bl_tmp_prof_d)) deallocate(s1_bl_tmp_prof_d)
     if(allocated(s1_bl_prs_prof_d)) deallocate(s1_bl_prs_prof_d)
     if(allocated(s1_bl_rho_prof_d)) deallocate(s1_bl_rho_prof_d)
+    if(allocated(nscbc52_prediff_rhs_d)) deallocate(nscbc52_prediff_rhs_d)
     s1_bl_profile_ready=.false.
+    nscbc52_prediff_rhs_ready=.false.
   end subroutine release_boundary_gpu
 
   subroutine init_wall_blowing_gpu()
@@ -2165,6 +2169,56 @@ contains
     qrhs_d(i,jm,k,:) = qrhs_d(i,jm,k,:) - decs(:)
   end subroutine nscbc_farfield_y_upper_nonreflecting_rhs_kernel
 
+  attributes(global) subroutine nscbc_farfield_y_upper_prediff_capture_kernel( &
+      prediff_rhs,im,jm,km,apply_up)
+    use commarray_gpu, only: qrhs_d
+    implicit none
+    integer,value :: im,jm,km,apply_up
+    real(8),device :: prediff_rhs(0:im,0:km,1:5)
+    integer :: id,i,k,n
+
+    if(apply_up == 0) return
+    id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
+    n = (im+1)*(km+1)
+    if(id >= n) return
+    i = mod(id,im+1)
+    k = id/(im+1)
+    prediff_rhs(i,k,:) = qrhs_d(i,jm,k,1:5)
+  end subroutine nscbc_farfield_y_upper_prediff_capture_kernel
+
+  attributes(global) subroutine nscbc_farfield_y_upper_viscous_source_kernel( &
+      prediff_rhs,im,jm,km,gamma,mach,apply_up)
+    use commarray_gpu, only: qrhs_d,rho_d,vel_d,tmp_d,jacob_d,dxi_d
+    use nscbc_characteristic_policy_gpu, only: nscbc_remove_incoming_source_gpu
+    implicit none
+    integer,value :: im,jm,km,apply_up
+    real(8),value :: gamma,mach
+    real(8),device :: prediff_rhs(0:im,0:km,1:5)
+    integer :: id,i,k,n
+    real(8) :: rhs(5),source(5),pnor(5,5),pinv(5,5),ddi(3),velocity(3)
+    real(8) :: css,lambda(5)
+    logical :: incoming(5)
+
+    if(apply_up == 0) return
+    id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
+    n = (im+1)*(km+1)
+    if(id >= n) return
+    i = mod(id,im+1)
+    k = id/(im+1)
+    rhs(:) = qrhs_d(i,jm,k,1:5)
+    source(:) = rhs(:)-prediff_rhs(i,k,:)
+    ddi(:) = dxi_d(i,jm,k,2,:)
+    velocity(:) = vel_d(i,jm,k,1:3)
+    call nscbc_pmatrix(rho_d(i,jm,k),velocity(1),velocity(2),velocity(3), &
+                       tmp_d(i,jm,k),ddi,gamma,mach,.false.,pnor)
+    call nscbc_pmatrix(rho_d(i,jm,k),velocity(1),velocity(2),velocity(3), &
+                       tmp_d(i,jm,k),ddi,gamma,mach,.true.,pinv)
+    css = sqrt(tmp_d(i,jm,k))/mach
+    call nscbc_remove_incoming_source_gpu(rhs,source,pnor,pinv,         &
+         jacob_d(i,jm,k),ddi,velocity,css,lambda,incoming)
+    qrhs_d(i,jm,k,1:5) = rhs(:)
+  end subroutine nscbc_farfield_y_upper_viscous_source_kernel
+
   subroutine apply_nscbc_farfield_y_upper_rhs_gpu(gmachmax2)
     use commvar, only: im,jm,km,hm,npdci,npdck,gamma,mach,ymin,ymax,pinf,const2,const6
     use bc, only: nscbc_farfield_policy_id,                           &
@@ -2238,6 +2292,52 @@ contains
          im,jm,km,hm,npdci,npdck,gamma,mach,apply_up)
     call sync_after_kernel('nscbc_farfield_y_upper_nonreflecting_rhs_kernel')
   end subroutine apply_nscbc_farfield_y_upper_nonreflecting_rhs_gpu
+
+  subroutine capture_nscbc_farfield_y_upper_prediff_rhs_gpu()
+    use commvar, only: im,jm,km
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    type(dim3) :: block,grid
+    integer :: apply_down,apply_up,n
+
+    nscbc52_prediff_rhs_ready=.false.
+    call gpu_physical_boundary_apply_mask(2,apply_down,apply_up)
+    if(apply_up==0) return
+    if(allocated(nscbc52_prediff_rhs_d)) then
+      if(ubound(nscbc52_prediff_rhs_d,1)/=im .or.                &
+         ubound(nscbc52_prediff_rhs_d,2)/=km)                    &
+        deallocate(nscbc52_prediff_rhs_d)
+    endif
+    if(.not.allocated(nscbc52_prediff_rhs_d))                    &
+      allocate(nscbc52_prediff_rhs_d(0:im,0:km,1:5))
+    block = dim3(256,1,1)
+    n = (im+1)*(km+1)
+    grid = dim3((n+block%x-1)/block%x,1,1)
+    call nscbc_farfield_y_upper_prediff_capture_kernel<<<grid,block>>>( &
+         nscbc52_prediff_rhs_d,im,jm,km,apply_up)
+    call sync_after_kernel('nscbc_farfield_y_upper_prediff_capture_kernel')
+    nscbc52_prediff_rhs_ready=.true.
+  end subroutine capture_nscbc_farfield_y_upper_prediff_rhs_gpu
+
+  subroutine apply_nscbc_farfield_y_upper_viscous_source_gpu()
+    use commvar, only: im,jm,km,gamma,mach
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    type(dim3) :: block,grid
+    integer :: apply_down,apply_up,n
+
+    call gpu_physical_boundary_apply_mask(2,apply_down,apply_up)
+    if(apply_up==0) return
+    if(.not.nscbc52_prediff_rhs_ready) &
+      stop 'GPU NSCBC52 viscous correction requires a pre-diffusion RHS snapshot'
+    block = dim3(256,1,1)
+    n = (im+1)*(km+1)
+    grid = dim3((n+block%x-1)/block%x,1,1)
+    call nscbc_farfield_y_upper_viscous_source_kernel<<<grid,block>>>( &
+         nscbc52_prediff_rhs_d,im,jm,km,gamma,mach,apply_up)
+    call sync_after_kernel('nscbc_farfield_y_upper_viscous_source_kernel')
+    nscbc52_prediff_rhs_ready=.false.
+  end subroutine apply_nscbc_farfield_y_upper_viscous_source_gpu
 
   subroutine apply_s1_flatplate_boundary_conditions_gpu(preserve_inflow_rhs)
     use commvar, only: im,jm,km,hm,const2,const6,gamma,mach,pinf,time

@@ -1,0 +1,21 @@
+program mixed_candidate_setup_test
+  use mpi
+  use precision_mode_gpu, only: configure_gpu_precision_mode
+  use mixed_candidate_gpu, only: configure_gpu_mixed_candidate, &
+       gpu_mixed_candidate_id,gpu_mixed_candidate_name, &
+       gpu_mixed_candidate_requested,GPU_MIXED_FLUX, &
+       GPU_MIXED_CHARACTERISTIC_FLUX
+  implicit none
+  integer :: ierr,rank
+
+  call mpi_init(ierr)
+  call mpi_comm_rank(MPI_COMM_WORLD,rank,ierr)
+  call configure_gpu_precision_mode()
+  call configure_gpu_mixed_candidate()
+  if(rank==0) write(*,'(A,A,A,I0,A,L1)') 'mixed_candidate=', &
+       trim(gpu_mixed_candidate_name()),' id=',gpu_mixed_candidate_id(), &
+       ' flux=',gpu_mixed_candidate_requested(GPU_MIXED_FLUX)
+  if(rank==0) write(*,'(A,L1)') ' characteristic_flux=', &
+       gpu_mixed_candidate_requested(GPU_MIXED_CHARACTERISTIC_FLUX)
+  call mpi_finalize(ierr)
+end program mixed_candidate_setup_test

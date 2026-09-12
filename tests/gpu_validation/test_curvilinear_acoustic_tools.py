@@ -380,3 +380,27 @@ def test_acoustic_gate_uses_plane_packet_and_flat_probe_region() -> None:
     assert '--mapping "$GRID_MAPPING"' in runner
     assert '--profile "$ACOUSTIC_PROFILE"' in runner
     assert "probe_index=$((probe_numerator * jm / probe_denominator))" in runner
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "run_curvilinear_nscbc52_viscous_uniform_compare.sh",
+        "run_curvilinear_nscbc52_viscous_acoustic_compare.sh",
+    ),
+)
+def test_viscous_nscbc52_runners_enable_restricted_diffusion(name: str) -> None:
+    runner = (VALIDATION / name).read_text(encoding="ascii")
+    assert "DIFFTERM=t" in runner
+    assert "ASTR_NSCBC_FARFIELD_MODE=nonreflecting" in runner
+    assert "643e" in runner
+    assert "OUT_DIR=" in runner
+
+
+def test_viscous_acoustic_runner_uses_matched_cpu_gpu_comparison() -> None:
+    runner = (
+        VALIDATION / "run_curvilinear_nscbc52_viscous_acoustic_compare.sh"
+    ).read_text(encoding="ascii")
+    assert "run_curvilinear_nscbc52_acoustic_compare.sh" in runner
+    assert "VISCOUS_REFLECTION_MAX" not in runner
+    assert "FIELD_ATOL" in runner

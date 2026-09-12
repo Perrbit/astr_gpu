@@ -204,10 +204,14 @@ contains
     use halo_transport_gpu, only: halo_overlap_enabled,progress_host_pair_during_kernel
     use boundary_gpu, only: gpu_periodic_boundary_case
     use commarray_gpu, only: q_d,qrhs_d,qsave_d,rho_d,vel_d,prs_d,tmp_d, &
-         jacob_d,dxi_d,copy_flow_from_gpu,copy_rhs_from_gpu
+                             jacob_d,dxi_d,copy_flow_from_gpu,copy_rhs_from_gpu, &
+                             gpu_mixed_flux_workspace_enabled, &
+                             gpu_mixed_viscous_flux_workspace_enabled, &
+                             gpu_mixed_characteristic_flux_workspace_enabled
+    use upwind_flux_mode_gpu, only: gpu_fused_flux_pair_requested
     use gpu_check, only: sync_after_kernel
     use halo_exchange_gpu, only: exchange_solution_halo_gpu, &
-         exchange_diffusion_flux_halo_gpu
+         exchange_diffusion_flux_halo_gpu,exchange_diffusion_flux_sp_halo_gpu
     use boundary_gpu, only: apply_boundary_conditions_gpu, &
          gpu_physical_boundary_axis,gpu_uses_physical_boundary, &
          gpu_ldc_boundary_case_pending,apply_ldc_boundary_conditions_gpu, &
@@ -218,7 +222,9 @@ contains
          GPU_BC_NSCBC_FARFIELD,apply_nscbc_farfield_y_upper_filter_x_gpu, &
          apply_nscbc_farfield_y_upper_filter_z_gpu, &
          gpu_nscbc_farfield_y_upper_mach2,apply_nscbc_farfield_y_upper_rhs_gpu, &
-         apply_nscbc_farfield_y_upper_nonreflecting_rhs_gpu
+         apply_nscbc_farfield_y_upper_nonreflecting_rhs_gpu, &
+         capture_nscbc_farfield_y_upper_prediff_rhs_gpu, &
+         apply_nscbc_farfield_y_upper_viscous_source_gpu
     use sponge_gpu, only: apply_xmax_sponge_gpu
     use solver_gpu, only: q_to_primitive_kernel,zero_rhs_kernel, &
          save_q_kernel,rk3_update_kernel,convective_rhs_x_kernel, &
@@ -239,9 +245,12 @@ contains
          convective_rhs_z_xyphysical_global_kernel, &
          rk3_first_update_global_kernel,rk3_update_global_kernel, &
          diffusion_flux_global_kernel,diffusion_flux_xphysical_global_kernel, &
-         diffusion_flux_yphysical_global_kernel,diffusion_flux_zphysical_global_kernel, &
-         diffusion_flux_xyphysical_global_kernel, &
-         diffusion_rhs_x_stored_global_kernel, &
+                              diffusion_flux_yphysical_global_kernel,diffusion_flux_zphysical_global_kernel, &
+                              diffusion_flux_xyphysical_global_kernel, &
+                              diffusion_flux_sp_global_kernel,diffusion_flux_xphysical_sp_global_kernel, &
+                              diffusion_flux_yphysical_sp_global_kernel,diffusion_flux_zphysical_sp_global_kernel, &
+                              diffusion_flux_xyphysical_sp_global_kernel, &
+                              diffusion_rhs_x_stored_global_kernel, &
          diffusion_rhs_x_xphysical_stored_global_kernel, &
          diffusion_rhs_x_yphysical_stored_global_kernel, &
          diffusion_rhs_y_yphysical_stored_global_kernel, &
@@ -251,14 +260,35 @@ contains
          diffusion_rhs_z_zphysical_stored_global_kernel, &
          diffusion_rhs_x_xyphysical_stored_global_kernel, &
          diffusion_rhs_y_xyphysical_stored_global_kernel, &
-         diffusion_rhs_z_xyphysical_stored_global_kernel, &
-         diffusion_rhs_y_stored_global_kernel,diffusion_rhs_z_stored_global_kernel, &
-         apply_case_sources_gpu, &
+                              diffusion_rhs_z_xyphysical_stored_global_kernel, &
+                              diffusion_rhs_y_stored_global_kernel,diffusion_rhs_z_stored_global_kernel, &
+                              diffusion_rhs_x_stored_sp_global_kernel, &
+                              diffusion_rhs_x_xphysical_stored_sp_global_kernel, &
+                              diffusion_rhs_x_yphysical_stored_sp_global_kernel, &
+                              diffusion_rhs_y_yphysical_stored_sp_global_kernel, &
+                              diffusion_rhs_z_yphysical_stored_sp_global_kernel, &
+                              diffusion_rhs_x_zphysical_stored_sp_global_kernel, &
+                              diffusion_rhs_y_zphysical_stored_sp_global_kernel, &
+                              diffusion_rhs_z_zphysical_stored_sp_global_kernel, &
+                              diffusion_rhs_x_xyphysical_stored_sp_global_kernel, &
+                              diffusion_rhs_y_xyphysical_stored_sp_global_kernel, &
+                              diffusion_rhs_z_xyphysical_stored_sp_global_kernel, &
+                              diffusion_rhs_y_stored_sp_global_kernel,diffusion_rhs_z_stored_sp_global_kernel, &
+                              apply_case_sources_gpu, &
          upwind_s0a1_rhs_x_global_kernel,upwind_s0a1_rhs_y_global_kernel, &
          upwind_s0a1_rhs_z_global_kernel, &
          explicit_upwind_flux_x_global_kernel,explicit_upwind_flux_y_global_kernel, &
          explicit_upwind_flux_z_global_kernel,explicit_upwind_rhs_x_global_kernel, &
          explicit_upwind_rhs_y_global_kernel,explicit_upwind_rhs_z_global_kernel, &
+         explicit_upwind_flux_x_global_sp_kernel,explicit_upwind_flux_y_global_sp_kernel, &
+         explicit_upwind_flux_z_global_sp_kernel,explicit_upwind_rhs_x_global_sp_kernel, &
+         explicit_upwind_rhs_y_global_sp_kernel,explicit_upwind_rhs_z_global_sp_kernel, &
+         explicit_upwind_flux_x_global_fused_kernel, &
+         explicit_upwind_flux_y_global_fused_kernel, &
+         explicit_upwind_flux_z_global_fused_kernel, &
+         explicit_upwind_flux_x_global_fused_sp_kernel, &
+         explicit_upwind_flux_y_global_fused_sp_kernel, &
+         explicit_upwind_flux_z_global_fused_sp_kernel, &
          explicit_upwind_flux_x_physical_global_kernel, &
          explicit_upwind_rhs_x_physical_global_kernel, &
          explicit_upwind_flux_y_physical_global_kernel, &
@@ -270,6 +300,12 @@ contains
          characteristic_upwind_flux_x_global_kernel,characteristic_upwind_flux_y_global_kernel, &
          characteristic_upwind_flux_z_global_kernel,characteristic_upwind_rhs_x_global_kernel, &
          characteristic_upwind_rhs_y_global_kernel,characteristic_upwind_rhs_z_global_kernel, &
+         characteristic_upwind_flux_x_global_sp_kernel, &
+         characteristic_upwind_flux_y_global_sp_kernel, &
+         characteristic_upwind_flux_z_global_sp_kernel, &
+         characteristic_upwind_rhs_x_global_sp_kernel, &
+         characteristic_upwind_rhs_y_global_sp_kernel, &
+         characteristic_upwind_rhs_z_global_sp_kernel, &
          characteristic_upwind_flux_x_physical_global_kernel, &
          characteristic_upwind_rhs_x_physical_global_kernel, &
          characteristic_upwind_flux_x_xyphysical_global_kernel, &
@@ -278,7 +314,8 @@ contains
          characteristic_upwind_rhs_x_xyphysical_global_kernel, &
          characteristic_upwind_rhs_y_xyphysical_global_kernel, &
          characteristic_upwind_rhs_z_xyphysical_global_kernel
-    use case_capability_gpu, only: gpu_sod_s0a1_supported,gpu_sod_s0a2_supported, &
+    use case_capability_gpu, only: gpu_tgv_explicit_upwind_supported, &
+         gpu_sod_s0a1_supported,gpu_sod_s0a2_supported, &
          gpu_sod_s0b0_xphysical_supported,gpu_open_shock_s0b1_supported, &
          gpu_open_shock_s0b2_nscbc_supported, &
          gpu_open_shock_s0b3_sponge_supported, &
@@ -286,6 +323,7 @@ contains
          gpu_s1_flatplate_s1a_supported,gpu_s1_flatplate_s1a1_supported, &
          gpu_s1_flatplate_explicit_filter_supported, &
          gpu_curvilinear_nscbc52_nonreflecting_supported, &
+         gpu_curvilinear_nscbc52_viscous_nonreflecting_supported, &
          gpu_sod_s0a3_supported,gpu_shock_sensor_s0a4_supported, &
          gpu_shock_sensor_s0a5_supported,gpu_shock_characteristic_s0a6_supported, &
          gpu_shock_characteristic_s0b0_xphysical_supported, &
@@ -331,6 +369,7 @@ contains
     logical :: open_shock_nscbc_case
     logical :: flatplate_nscbc_farfield_case
     logical :: flatplate_nscbc_nonreflecting_case
+    logical :: curvilinear_nscbc52_viscous_case
     logical :: curvilinear_nscbc52_case
     logical :: open_shock_sponge_case
     logical :: explicit_reconstructed_case
@@ -347,6 +386,10 @@ contains
     logical :: periodic_filter_case
     logical :: conservative_case
     logical :: overlap_diffusion
+    logical :: mixed_flux_workspace
+    logical :: mixed_viscous_flux_workspace
+    logical :: mixed_characteristic_flux_workspace
+    logical :: fused_flux_pair
     logical,save :: overlap_reported=.false.
     integer :: diffusion_region
     integer :: physical_axis
@@ -355,6 +398,11 @@ contains
     integer :: rhs_npdci,rhs_npdcj
 
     call validate_first_stage_gpu()
+    mixed_flux_workspace=gpu_mixed_flux_workspace_enabled()
+    mixed_viscous_flux_workspace=gpu_mixed_viscous_flux_workspace_enabled()
+    mixed_characteristic_flux_workspace=gpu_mixed_characteristic_flux_workspace_enabled()
+    fused_flux_pair=gpu_fused_flux_pair_requested() .and. &
+         gpu_tgv_explicit_upwind_supported()
     conservative_case=conservative_boundary%enabled
     rhs_is=is; rhs_ie=ie; rhs_js=js; rhs_je=je; rhs_ks=ks; rhs_ke=ke
     rhs_npdci=npdci; rhs_npdcj=npdcj
@@ -382,7 +430,10 @@ contains
     s2_sbli_nscbc_case = gpu_s2_sbli_nscbc_supported()
     s2_sbli_nscbc_sponge_case = gpu_s2_sbli_nscbc_sponge_supported()
     s2_sbli_nscbc_case = s2_sbli_nscbc_case .or. s2_sbli_nscbc_sponge_case
-    curvilinear_nscbc52_case = gpu_curvilinear_nscbc52_nonreflecting_supported()
+    curvilinear_nscbc52_viscous_case = &
+         gpu_curvilinear_nscbc52_viscous_nonreflecting_supported()
+    curvilinear_nscbc52_case = gpu_curvilinear_nscbc52_nonreflecting_supported() .or. &
+         curvilinear_nscbc52_viscous_case
     flatplate_case = conservative_case .or. gpu_s1_flatplate_s1a_supported() .or. flatplate_mp7_case .or. &
          curvilinear_nscbc52_case .or. &
          s2_hbl_selective_roe_case .or. s2_hbl_selective_roe_sponge_case .or. &
@@ -416,6 +467,8 @@ contains
          gpu_shock_sensor_s0a5_supported() .or. characteristic_case
     explicit_reconstructed_case = gpu_sod_s0a2_supported() .or. &
          gpu_sod_s0a3_supported() .or. (shock_sensor_case .and. .not.characteristic_case)
+    explicit_reconstructed_case = explicit_reconstructed_case .or. &
+         gpu_tgv_explicit_upwind_supported()
     explicit_reconstructed_case = explicit_reconstructed_case .or. sod_s0b0_xphysical_case .or. &
          open_shock_s0b1_case .or. open_shock_s0b2_nscbc_case
     explicit_reconstructed_case = explicit_reconstructed_case .or. open_shock_sponge_case .or. &
@@ -586,10 +639,19 @@ contains
           call characteristic_upwind_rhs_x_physical_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie)
           call sync_after_kernel('characteristic_upwind_rhs_x_physical_global_kernel')
         else
-          call characteristic_upwind_flux_x_global_kernel<<<grid_x_interface,block_x>>>(im,jm,km,recon_schem,gamma)
-          call sync_after_kernel('characteristic_upwind_flux_x_global_kernel')
-          call characteristic_upwind_rhs_x_global_kernel<<<grid_x,block_x>>>(im,jm,km)
-          call sync_after_kernel('characteristic_upwind_rhs_x_global_kernel')
+          if(mixed_characteristic_flux_workspace) then
+            call characteristic_upwind_flux_x_global_sp_kernel<<<grid_x_interface,block_x>>>( &
+                 im,jm,km,recon_schem,gamma)
+            call sync_after_kernel('characteristic_upwind_flux_x_global_sp_kernel')
+            call characteristic_upwind_rhs_x_global_sp_kernel<<<grid_x,block_x>>>(im,jm,km)
+            call sync_after_kernel('characteristic_upwind_rhs_x_global_sp_kernel')
+          else
+            call characteristic_upwind_flux_x_global_kernel<<<grid_x_interface,block_x>>>( &
+                 im,jm,km,recon_schem,gamma)
+            call sync_after_kernel('characteristic_upwind_flux_x_global_kernel')
+            call characteristic_upwind_rhs_x_global_kernel<<<grid_x,block_x>>>(im,jm,km)
+            call sync_after_kernel('characteristic_upwind_rhs_x_global_kernel')
+          endif
         endif
         if(characteristic_xyphysical_case) then
           call characteristic_upwind_flux_y_xyphysical_global_kernel<<<grid_y_interface,block_y>>>( &
@@ -613,14 +675,32 @@ contains
             call write_rhs_validation_snapshot('conv_after_z',nstep,rkstep)
           endif
         else
-          call characteristic_upwind_flux_y_global_kernel<<<grid_y_interface,block_y>>>(im,jm,km,recon_schem,gamma)
-          call sync_after_kernel('characteristic_upwind_flux_y_global_kernel')
-          call characteristic_upwind_rhs_y_global_kernel<<<grid_y,block_y>>>(im,jm,km)
-          call sync_after_kernel('characteristic_upwind_rhs_y_global_kernel')
-          call characteristic_upwind_flux_z_global_kernel<<<grid_z_interface,block_z>>>(im,jm,km,recon_schem,gamma)
-          call sync_after_kernel('characteristic_upwind_flux_z_global_kernel')
-          call characteristic_upwind_rhs_z_global_kernel<<<grid_z,block_z>>>(im,jm,km)
-          call sync_after_kernel('characteristic_upwind_rhs_z_global_kernel')
+          if(mixed_characteristic_flux_workspace) then
+            call characteristic_upwind_flux_y_global_sp_kernel<<<grid_y_interface,block_y>>>( &
+                 im,jm,km,recon_schem,gamma)
+            call sync_after_kernel('characteristic_upwind_flux_y_global_sp_kernel')
+            call characteristic_upwind_rhs_y_global_sp_kernel<<<grid_y,block_y>>>(im,jm,km)
+            call sync_after_kernel('characteristic_upwind_rhs_y_global_sp_kernel')
+          else
+            call characteristic_upwind_flux_y_global_kernel<<<grid_y_interface,block_y>>>( &
+                 im,jm,km,recon_schem,gamma)
+            call sync_after_kernel('characteristic_upwind_flux_y_global_kernel')
+            call characteristic_upwind_rhs_y_global_kernel<<<grid_y,block_y>>>(im,jm,km)
+            call sync_after_kernel('characteristic_upwind_rhs_y_global_kernel')
+          endif
+          if(mixed_characteristic_flux_workspace) then
+            call characteristic_upwind_flux_z_global_sp_kernel<<<grid_z_interface,block_z>>>( &
+                 im,jm,km,recon_schem,gamma)
+            call sync_after_kernel('characteristic_upwind_flux_z_global_sp_kernel')
+            call characteristic_upwind_rhs_z_global_sp_kernel<<<grid_z,block_z>>>(im,jm,km)
+            call sync_after_kernel('characteristic_upwind_rhs_z_global_sp_kernel')
+          else
+            call characteristic_upwind_flux_z_global_kernel<<<grid_z_interface,block_z>>>( &
+                 im,jm,km,recon_schem,gamma)
+            call sync_after_kernel('characteristic_upwind_flux_z_global_kernel')
+            call characteristic_upwind_rhs_z_global_kernel<<<grid_z,block_z>>>(im,jm,km)
+            call sync_after_kernel('characteristic_upwind_rhs_z_global_kernel')
+          endif
         endif
       elseif(explicit_reconstructed_case) then
         do ivar=1,5
@@ -647,14 +727,42 @@ contains
               call sync_after_kernel('explicit_upwind_rhs_x_physical_global_kernel')
             endif
           else
-            call explicit_upwind_flux_x_global_kernel<<<grid_x_interface,block_x>>>( &
-                 im,jm,km,ivar,1,recon_schem,gamma)
-            call sync_after_kernel('explicit_upwind_flux_x_plus_global_kernel')
-            call explicit_upwind_flux_x_global_kernel<<<grid_x_interface,block_x>>>( &
-                 im,jm,km,ivar,-1,recon_schem,gamma)
-            call sync_after_kernel('explicit_upwind_flux_x_minus_global_kernel')
-            call explicit_upwind_rhs_x_global_kernel<<<grid_x,block_x>>>(im,jm,km,ivar)
-            call sync_after_kernel('explicit_upwind_rhs_x_global_kernel')
+            if(fused_flux_pair) then
+              if(mixed_flux_workspace) then
+                call explicit_upwind_flux_x_global_fused_sp_kernel<<<grid_x_interface,block_x>>>( &
+                     im,jm,km,ivar,recon_schem,gamma)
+                call sync_after_kernel('explicit_upwind_flux_x_global_fused_sp_kernel')
+              else
+                call explicit_upwind_flux_x_global_fused_kernel<<<grid_x_interface,block_x>>>( &
+                     im,jm,km,ivar,recon_schem,gamma)
+                call sync_after_kernel('explicit_upwind_flux_x_global_fused_kernel')
+              endif
+              if(mixed_flux_workspace) then
+                call explicit_upwind_rhs_x_global_sp_kernel<<<grid_x,block_x>>>(im,jm,km,ivar)
+                call sync_after_kernel('explicit_upwind_rhs_x_global_sp_kernel')
+              else
+                call explicit_upwind_rhs_x_global_kernel<<<grid_x,block_x>>>(im,jm,km,ivar)
+                call sync_after_kernel('explicit_upwind_rhs_x_global_kernel')
+              endif
+            elseif(mixed_flux_workspace) then
+              call explicit_upwind_flux_x_global_sp_kernel<<<grid_x_interface,block_x>>>( &
+                   im,jm,km,ivar,1,recon_schem,gamma)
+              call sync_after_kernel('explicit_upwind_flux_x_global_sp_kernel_plus')
+              call explicit_upwind_flux_x_global_sp_kernel<<<grid_x_interface,block_x>>>( &
+                   im,jm,km,ivar,-1,recon_schem,gamma)
+              call sync_after_kernel('explicit_upwind_flux_x_global_sp_kernel_minus')
+              call explicit_upwind_rhs_x_global_sp_kernel<<<grid_x,block_x>>>(im,jm,km,ivar)
+              call sync_after_kernel('explicit_upwind_rhs_x_global_sp_kernel')
+            else
+              call explicit_upwind_flux_x_global_kernel<<<grid_x_interface,block_x>>>( &
+                   im,jm,km,ivar,1,recon_schem,gamma)
+              call sync_after_kernel('explicit_upwind_flux_x_plus_global_kernel')
+              call explicit_upwind_flux_x_global_kernel<<<grid_x_interface,block_x>>>( &
+                   im,jm,km,ivar,-1,recon_schem,gamma)
+              call sync_after_kernel('explicit_upwind_flux_x_minus_global_kernel')
+              call explicit_upwind_rhs_x_global_kernel<<<grid_x,block_x>>>(im,jm,km,ivar)
+              call sync_after_kernel('explicit_upwind_rhs_x_global_kernel')
+            endif
           endif
         enddo
         do ivar=1,5
@@ -669,14 +777,42 @@ contains
                  im,jm,km,is,ie,js,je,ks,ke,ivar)
             call sync_after_kernel('explicit_upwind_rhs_y_physical_global_kernel')
           else
-            call explicit_upwind_flux_y_global_kernel<<<grid_y_interface,block_y>>>( &
-                 im,jm,km,ivar,1,recon_schem,gamma)
-            call sync_after_kernel('explicit_upwind_flux_y_plus_global_kernel')
-            call explicit_upwind_flux_y_global_kernel<<<grid_y_interface,block_y>>>( &
-                 im,jm,km,ivar,-1,recon_schem,gamma)
-            call sync_after_kernel('explicit_upwind_flux_y_minus_global_kernel')
-            call explicit_upwind_rhs_y_global_kernel<<<grid_y,block_y>>>(im,jm,km,ivar)
-            call sync_after_kernel('explicit_upwind_rhs_y_global_kernel')
+            if(fused_flux_pair) then
+              if(mixed_flux_workspace) then
+                call explicit_upwind_flux_y_global_fused_sp_kernel<<<grid_y_interface,block_y>>>( &
+                     im,jm,km,ivar,recon_schem,gamma)
+                call sync_after_kernel('explicit_upwind_flux_y_global_fused_sp_kernel')
+              else
+                call explicit_upwind_flux_y_global_fused_kernel<<<grid_y_interface,block_y>>>( &
+                     im,jm,km,ivar,recon_schem,gamma)
+                call sync_after_kernel('explicit_upwind_flux_y_global_fused_kernel')
+              endif
+              if(mixed_flux_workspace) then
+                call explicit_upwind_rhs_y_global_sp_kernel<<<grid_y,block_y>>>(im,jm,km,ivar)
+                call sync_after_kernel('explicit_upwind_rhs_y_global_sp_kernel')
+              else
+                call explicit_upwind_rhs_y_global_kernel<<<grid_y,block_y>>>(im,jm,km,ivar)
+                call sync_after_kernel('explicit_upwind_rhs_y_global_kernel')
+              endif
+            elseif(mixed_flux_workspace) then
+              call explicit_upwind_flux_y_global_sp_kernel<<<grid_y_interface,block_y>>>( &
+                   im,jm,km,ivar,1,recon_schem,gamma)
+              call sync_after_kernel('explicit_upwind_flux_y_global_sp_kernel_plus')
+              call explicit_upwind_flux_y_global_sp_kernel<<<grid_y_interface,block_y>>>( &
+                   im,jm,km,ivar,-1,recon_schem,gamma)
+              call sync_after_kernel('explicit_upwind_flux_y_global_sp_kernel_minus')
+              call explicit_upwind_rhs_y_global_sp_kernel<<<grid_y,block_y>>>(im,jm,km,ivar)
+              call sync_after_kernel('explicit_upwind_rhs_y_global_sp_kernel')
+            else
+              call explicit_upwind_flux_y_global_kernel<<<grid_y_interface,block_y>>>( &
+                   im,jm,km,ivar,1,recon_schem,gamma)
+              call sync_after_kernel('explicit_upwind_flux_y_plus_global_kernel')
+              call explicit_upwind_flux_y_global_kernel<<<grid_y_interface,block_y>>>( &
+                   im,jm,km,ivar,-1,recon_schem,gamma)
+              call sync_after_kernel('explicit_upwind_flux_y_minus_global_kernel')
+              call explicit_upwind_rhs_y_global_kernel<<<grid_y,block_y>>>(im,jm,km,ivar)
+              call sync_after_kernel('explicit_upwind_rhs_y_global_kernel')
+            endif
           endif
         enddo
         do ivar=1,5
@@ -691,14 +827,42 @@ contains
                  im,jm,km,is,ie,js,je,ks,ke,ivar)
             call sync_after_kernel('explicit_upwind_rhs_z_xyphysical_global_kernel')
           else
-            call explicit_upwind_flux_z_global_kernel<<<grid_z_interface,block_z>>>( &
-                 im,jm,km,ivar,1,recon_schem,gamma)
-            call sync_after_kernel('explicit_upwind_flux_z_plus_global_kernel')
-            call explicit_upwind_flux_z_global_kernel<<<grid_z_interface,block_z>>>( &
-                 im,jm,km,ivar,-1,recon_schem,gamma)
-            call sync_after_kernel('explicit_upwind_flux_z_minus_global_kernel')
-            call explicit_upwind_rhs_z_global_kernel<<<grid_z,block_z>>>(im,jm,km,ivar)
-            call sync_after_kernel('explicit_upwind_rhs_z_global_kernel')
+            if(fused_flux_pair) then
+              if(mixed_flux_workspace) then
+                call explicit_upwind_flux_z_global_fused_sp_kernel<<<grid_z_interface,block_z>>>( &
+                     im,jm,km,ivar,recon_schem,gamma)
+                call sync_after_kernel('explicit_upwind_flux_z_global_fused_sp_kernel')
+              else
+                call explicit_upwind_flux_z_global_fused_kernel<<<grid_z_interface,block_z>>>( &
+                     im,jm,km,ivar,recon_schem,gamma)
+                call sync_after_kernel('explicit_upwind_flux_z_global_fused_kernel')
+              endif
+              if(mixed_flux_workspace) then
+                call explicit_upwind_rhs_z_global_sp_kernel<<<grid_z,block_z>>>(im,jm,km,ivar)
+                call sync_after_kernel('explicit_upwind_rhs_z_global_sp_kernel')
+              else
+                call explicit_upwind_rhs_z_global_kernel<<<grid_z,block_z>>>(im,jm,km,ivar)
+                call sync_after_kernel('explicit_upwind_rhs_z_global_kernel')
+              endif
+            elseif(mixed_flux_workspace) then
+              call explicit_upwind_flux_z_global_sp_kernel<<<grid_z_interface,block_z>>>( &
+                   im,jm,km,ivar,1,recon_schem,gamma)
+              call sync_after_kernel('explicit_upwind_flux_z_global_sp_kernel_plus')
+              call explicit_upwind_flux_z_global_sp_kernel<<<grid_z_interface,block_z>>>( &
+                   im,jm,km,ivar,-1,recon_schem,gamma)
+              call sync_after_kernel('explicit_upwind_flux_z_global_sp_kernel_minus')
+              call explicit_upwind_rhs_z_global_sp_kernel<<<grid_z,block_z>>>(im,jm,km,ivar)
+              call sync_after_kernel('explicit_upwind_rhs_z_global_sp_kernel')
+            else
+              call explicit_upwind_flux_z_global_kernel<<<grid_z_interface,block_z>>>( &
+                   im,jm,km,ivar,1,recon_schem,gamma)
+              call sync_after_kernel('explicit_upwind_flux_z_plus_global_kernel')
+              call explicit_upwind_flux_z_global_kernel<<<grid_z_interface,block_z>>>( &
+                   im,jm,km,ivar,-1,recon_schem,gamma)
+              call sync_after_kernel('explicit_upwind_flux_z_minus_global_kernel')
+              call explicit_upwind_rhs_z_global_kernel<<<grid_z,block_z>>>(im,jm,km,ivar)
+              call sync_after_kernel('explicit_upwind_rhs_z_global_kernel')
+            endif
           endif
         enddo
       elseif(ldc_case .or. flatplate_case) then
@@ -751,90 +915,221 @@ contains
         call write_rhs_validation_snapshot('conv',nstep,rkstep)
       endif
 
+      if(curvilinear_nscbc52_viscous_case) &
+        call capture_nscbc_farfield_y_upper_prediff_rhs_gpu()
+
       if(diffterm) then
         if(ldc_case .or. flatplate_case) then
+          if(mixed_viscous_flux_workspace) then
+          call diffusion_flux_xyphysical_sp_global_kernel<<<grid3,block3>>>(im,jm,km,reynolds,prandtl,const5, &
+                                                                         tempconst,tempconst1, &
+                                                                         apply_left_x,apply_right_x, &
+                                                                         apply_down_y,apply_up_y)
+          call sync_after_kernel('diffusion_flux_xyphysical_sp_global_kernel')
+          else
           call diffusion_flux_xyphysical_global_kernel<<<grid3,block3>>>(im,jm,km,reynolds,prandtl,const5, &
                                                                          tempconst,tempconst1, &
                                                                          apply_left_x,apply_right_x, &
                                                                          apply_down_y,apply_up_y)
           call sync_after_kernel('diffusion_flux_xyphysical_global_kernel')
+          endif
         else
           select case(physical_axis)
           case(1)
+            if(mixed_viscous_flux_workspace) then
+            call diffusion_flux_xphysical_sp_global_kernel<<<grid3,block3>>>(im,jm,km,reynolds,prandtl,const5, &
+                                                                          tempconst,tempconst1,apply_left_x,apply_right_x)
+            call sync_after_kernel('diffusion_flux_xphysical_sp_global_kernel')
+            else
             call diffusion_flux_xphysical_global_kernel<<<grid3,block3>>>(im,jm,km,reynolds,prandtl,const5, &
                                                                           tempconst,tempconst1,apply_left_x,apply_right_x)
             call sync_after_kernel('diffusion_flux_xphysical_global_kernel')
+            endif
           case(2)
+            if(mixed_viscous_flux_workspace) then
+            call diffusion_flux_yphysical_sp_global_kernel<<<grid3,block3>>>(im,jm,km,reynolds,prandtl,const5, &
+                                                                          tempconst,tempconst1,apply_down_y,apply_up_y)
+            call sync_after_kernel('diffusion_flux_yphysical_sp_global_kernel')
+            else
             call diffusion_flux_yphysical_global_kernel<<<grid3,block3>>>(im,jm,km,reynolds,prandtl,const5, &
                                                                           tempconst,tempconst1,apply_down_y,apply_up_y)
             call sync_after_kernel('diffusion_flux_yphysical_global_kernel')
+            endif
           case(3)
+            if(mixed_viscous_flux_workspace) then
+            call diffusion_flux_zphysical_sp_global_kernel<<<grid3,block3>>>(im,jm,km,reynolds,prandtl,const5, &
+                                                                          tempconst,tempconst1,apply_back_z,apply_front_z)
+            call sync_after_kernel('diffusion_flux_zphysical_sp_global_kernel')
+            else
             call diffusion_flux_zphysical_global_kernel<<<grid3,block3>>>(im,jm,km,reynolds,prandtl,const5, &
                                                                           tempconst,tempconst1,apply_back_z,apply_front_z)
             call sync_after_kernel('diffusion_flux_zphysical_global_kernel')
+            endif
           case default
+            if(mixed_viscous_flux_workspace) then
+            call diffusion_flux_sp_global_kernel<<<grid3,block3>>>(im,jm,km,reynolds,prandtl,const5,tempconst,tempconst1)
+            call sync_after_kernel('diffusion_flux_sp_global_kernel')
+            else
             call diffusion_flux_global_kernel<<<grid3,block3>>>(im,jm,km,reynolds,prandtl,const5,tempconst,tempconst1)
             call sync_after_kernel('diffusion_flux_global_kernel')
+            endif
           end select
         endif
         diffusion_region=0
         if(overlap_diffusion) then
-          call exchange_diffusion_flux_halo_gpu(diffusion_interior_work)
+          if(mixed_viscous_flux_workspace) then
+            call exchange_diffusion_flux_sp_halo_gpu(diffusion_interior_work)
+          else
+            call exchange_diffusion_flux_halo_gpu(diffusion_interior_work)
+          endif
           diffusion_region=2
         else
-          call exchange_diffusion_flux_halo_gpu()
+          if(mixed_viscous_flux_workspace) then
+            call exchange_diffusion_flux_sp_halo_gpu()
+          else
+            call exchange_diffusion_flux_halo_gpu()
+          endif
         endif
         if(ldc_case .or. flatplate_case) then
+          if(mixed_viscous_flux_workspace) then
+          call diffusion_rhs_x_xyphysical_stored_sp_global_kernel<<<grid_x,block_x>>>( &
+                                                                                   im,jm,km,rhs_is,rhs_ie, &
+                                                                                   rhs_js,rhs_je,rhs_ks,rhs_ke, &
+                                                                                   apply_left_x,apply_right_x)
+          call sync_after_kernel('diffusion_rhs_x_xyphysical_stored_sp_global_kernel')
+          else
           call diffusion_rhs_x_xyphysical_stored_global_kernel<<<grid_x,block_x>>>( &
                                                                                    im,jm,km,rhs_is,rhs_ie, &
                                                                                    rhs_js,rhs_je,rhs_ks,rhs_ke, &
                                                                                    apply_left_x,apply_right_x)
           call sync_after_kernel('diffusion_rhs_x_xyphysical_stored_global_kernel')
+          endif
+          if(mixed_viscous_flux_workspace) then
+          call diffusion_rhs_y_xyphysical_stored_sp_global_kernel<<<grid_y,block_y>>>( &
+                                                                                   im,jm,km,rhs_is,rhs_ie, &
+                                                                                   rhs_js,rhs_je,rhs_ks,rhs_ke, &
+                                                                                   apply_down_y,apply_up_y)
+          call sync_after_kernel('diffusion_rhs_y_xyphysical_stored_sp_global_kernel')
+          else
           call diffusion_rhs_y_xyphysical_stored_global_kernel<<<grid_y,block_y>>>( &
                                                                                    im,jm,km,rhs_is,rhs_ie, &
                                                                                    rhs_js,rhs_je,rhs_ks,rhs_ke, &
                                                                                    apply_down_y,apply_up_y)
           call sync_after_kernel('diffusion_rhs_y_xyphysical_stored_global_kernel')
+          endif
+          if(mixed_viscous_flux_workspace) then
+          call diffusion_rhs_z_xyphysical_stored_sp_global_kernel<<<grid_z,block_z>>>( &
+                                                                                   im,jm,km,rhs_is,rhs_ie, &
+                                                                                   rhs_js,rhs_je,rhs_ks,rhs_ke)
+          call sync_after_kernel('diffusion_rhs_z_xyphysical_stored_sp_global_kernel')
+          else
           call diffusion_rhs_z_xyphysical_stored_global_kernel<<<grid_z,block_z>>>( &
                                                                                    im,jm,km,rhs_is,rhs_ie, &
                                                                                    rhs_js,rhs_je,rhs_ks,rhs_ke)
           call sync_after_kernel('diffusion_rhs_z_xyphysical_stored_global_kernel')
+          endif
         else
           select case(physical_axis)
           case(1)
+            if(mixed_viscous_flux_workspace) then
+            call diffusion_rhs_x_xphysical_stored_sp_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie,js,je,ks,ke, &
+                                                                                    apply_left_x,apply_right_x)
+            call sync_after_kernel('diffusion_rhs_x_xphysical_stored_sp_global_kernel')
+            else
             call diffusion_rhs_x_xphysical_stored_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie,js,je,ks,ke, &
                                                                                     apply_left_x,apply_right_x)
             call sync_after_kernel('diffusion_rhs_x_xphysical_stored_global_kernel')
+            endif
+            if(mixed_viscous_flux_workspace) then
+            call diffusion_rhs_y_stored_sp_global_kernel<<<grid_y_flat,block_y>>>(im,jm,km,0)
+            call sync_after_kernel('diffusion_rhs_y_stored_sp_global_kernel')
+            else
             call diffusion_rhs_y_stored_global_kernel<<<grid_y_flat,block_y>>>(im,jm,km,0)
             call sync_after_kernel('diffusion_rhs_y_stored_global_kernel')
+            endif
+            if(mixed_viscous_flux_workspace) then
+            call diffusion_rhs_z_stored_sp_global_kernel<<<grid_z_flat,block_z>>>(im,jm,km,0)
+            call sync_after_kernel('diffusion_rhs_z_stored_sp_global_kernel')
+            else
             call diffusion_rhs_z_stored_global_kernel<<<grid_z_flat,block_z>>>(im,jm,km,0)
             call sync_after_kernel('diffusion_rhs_z_stored_global_kernel')
+            endif
           case(2)
+            if(mixed_viscous_flux_workspace) then
+            call diffusion_rhs_x_yphysical_stored_sp_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie)
+            call sync_after_kernel('diffusion_rhs_x_yphysical_stored_sp_global_kernel')
+            else
             call diffusion_rhs_x_yphysical_stored_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie)
             call sync_after_kernel('diffusion_rhs_x_yphysical_stored_global_kernel')
+            endif
+            if(mixed_viscous_flux_workspace) then
+            call diffusion_rhs_y_yphysical_stored_sp_global_kernel<<<grid_y,block_y>>>(im,jm,km,js,je, &
+                                                                                    apply_down_y,apply_up_y)
+            call sync_after_kernel('diffusion_rhs_y_yphysical_stored_sp_global_kernel')
+            else
             call diffusion_rhs_y_yphysical_stored_global_kernel<<<grid_y,block_y>>>(im,jm,km,js,je, &
                                                                                     apply_down_y,apply_up_y)
             call sync_after_kernel('diffusion_rhs_y_yphysical_stored_global_kernel')
+            endif
+            if(mixed_viscous_flux_workspace) then
+            call diffusion_rhs_z_yphysical_stored_sp_global_kernel<<<grid_z,block_z>>>(im,jm,km,ks,ke)
+            call sync_after_kernel('diffusion_rhs_z_yphysical_stored_sp_global_kernel')
+            else
             call diffusion_rhs_z_yphysical_stored_global_kernel<<<grid_z,block_z>>>(im,jm,km,ks,ke)
             call sync_after_kernel('diffusion_rhs_z_yphysical_stored_global_kernel')
+            endif
           case(3)
+            if(mixed_viscous_flux_workspace) then
+            call diffusion_rhs_x_zphysical_stored_sp_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie)
+            call sync_after_kernel('diffusion_rhs_x_zphysical_stored_sp_global_kernel')
+            else
             call diffusion_rhs_x_zphysical_stored_global_kernel<<<grid_x,block_x>>>(im,jm,km,is,ie)
             call sync_after_kernel('diffusion_rhs_x_zphysical_stored_global_kernel')
+            endif
+            if(mixed_viscous_flux_workspace) then
+            call diffusion_rhs_y_zphysical_stored_sp_global_kernel<<<grid_y,block_y>>>(im,jm,km,js,je)
+            call sync_after_kernel('diffusion_rhs_y_zphysical_stored_sp_global_kernel')
+            else
             call diffusion_rhs_y_zphysical_stored_global_kernel<<<grid_y,block_y>>>(im,jm,km,js,je)
             call sync_after_kernel('diffusion_rhs_y_zphysical_stored_global_kernel')
+            endif
+            if(mixed_viscous_flux_workspace) then
+            call diffusion_rhs_z_zphysical_stored_sp_global_kernel<<<grid_z,block_z>>>(im,jm,km,ks,ke, &
+                                                                                    apply_back_z,apply_front_z)
+            call sync_after_kernel('diffusion_rhs_z_zphysical_stored_sp_global_kernel')
+            else
             call diffusion_rhs_z_zphysical_stored_global_kernel<<<grid_z,block_z>>>(im,jm,km,ks,ke, &
                                                                                     apply_back_z,apply_front_z)
             call sync_after_kernel('diffusion_rhs_z_zphysical_stored_global_kernel')
+            endif
           case default
+            if(mixed_viscous_flux_workspace) then
+            call diffusion_rhs_x_stored_sp_global_kernel<<<grid_x_flat,block_x>>>(im,jm,km,diffusion_region)
+            call sync_after_kernel('diffusion_rhs_x_stored_sp_global_kernel')
+            else
             call diffusion_rhs_x_stored_global_kernel<<<grid_x_flat,block_x>>>(im,jm,km,diffusion_region)
             call sync_after_kernel('diffusion_rhs_x_stored_global_kernel')
+            endif
+            if(mixed_viscous_flux_workspace) then
+            call diffusion_rhs_y_stored_sp_global_kernel<<<grid_y_flat,block_y>>>(im,jm,km,diffusion_region)
+            call sync_after_kernel('diffusion_rhs_y_stored_sp_global_kernel')
+            else
             call diffusion_rhs_y_stored_global_kernel<<<grid_y_flat,block_y>>>(im,jm,km,diffusion_region)
             call sync_after_kernel('diffusion_rhs_y_stored_global_kernel')
+            endif
+            if(mixed_viscous_flux_workspace) then
+            call diffusion_rhs_z_stored_sp_global_kernel<<<grid_z_flat,block_z>>>(im,jm,km,diffusion_region)
+            call sync_after_kernel('diffusion_rhs_z_stored_sp_global_kernel')
+            else
             call diffusion_rhs_z_stored_global_kernel<<<grid_z_flat,block_z>>>(im,jm,km,diffusion_region)
             call sync_after_kernel('diffusion_rhs_z_stored_global_kernel')
+            endif
           end select
         endif
       endif
+
+      if(curvilinear_nscbc52_viscous_case) &
+        call apply_nscbc_farfield_y_upper_viscous_source_gpu()
 
       call apply_case_sources_gpu()
       if(rhs_validation_requested()) then
@@ -882,15 +1177,33 @@ contains
   contains
     subroutine diffusion_interior_work(requests)
       integer,intent(inout) :: requests(4)
-      call diffusion_rhs_x_stored_global_kernel<<<grid_x_flat,block_x>>>(im,jm,km,1)
-      call progress_host_pair_during_kernel(requests)
-      call sync_after_kernel('diffusion_rhs_x_stored_interior')
-      call diffusion_rhs_y_stored_global_kernel<<<grid_y_flat,block_y>>>(im,jm,km,1)
-      call progress_host_pair_during_kernel(requests)
-      call sync_after_kernel('diffusion_rhs_y_stored_interior')
-      call diffusion_rhs_z_stored_global_kernel<<<grid_z_flat,block_z>>>(im,jm,km,1)
-      call progress_host_pair_during_kernel(requests)
-      call sync_after_kernel('diffusion_rhs_z_stored_interior')
+      if(mixed_viscous_flux_workspace) then
+        call diffusion_rhs_x_stored_sp_global_kernel<<<grid_x_flat,block_x>>>(im,jm,km,1)
+        call progress_host_pair_during_kernel(requests)
+        call sync_after_kernel('diffusion_rhs_x_stored_sp_global_kernel')
+      else
+        call diffusion_rhs_x_stored_global_kernel<<<grid_x_flat,block_x>>>(im,jm,km,1)
+        call progress_host_pair_during_kernel(requests)
+        call sync_after_kernel('diffusion_rhs_x_stored_interior')
+      endif
+      if(mixed_viscous_flux_workspace) then
+        call diffusion_rhs_y_stored_sp_global_kernel<<<grid_y_flat,block_y>>>(im,jm,km,1)
+        call progress_host_pair_during_kernel(requests)
+        call sync_after_kernel('diffusion_rhs_y_stored_sp_global_kernel')
+      else
+        call diffusion_rhs_y_stored_global_kernel<<<grid_y_flat,block_y>>>(im,jm,km,1)
+        call progress_host_pair_during_kernel(requests)
+        call sync_after_kernel('diffusion_rhs_y_stored_interior')
+      endif
+      if(mixed_viscous_flux_workspace) then
+        call diffusion_rhs_z_stored_sp_global_kernel<<<grid_z_flat,block_z>>>(im,jm,km,1)
+        call progress_host_pair_during_kernel(requests)
+        call sync_after_kernel('diffusion_rhs_z_stored_sp_global_kernel')
+      else
+        call diffusion_rhs_z_stored_global_kernel<<<grid_z_flat,block_z>>>(im,jm,km,1)
+        call progress_host_pair_during_kernel(requests)
+        call sync_after_kernel('diffusion_rhs_z_stored_interior')
+      endif
     end subroutine diffusion_interior_work
   end subroutine time_integration_rk_gpu
 
@@ -900,7 +1213,8 @@ contains
          lfilter, diffterm, lchardecomp
     use boundary_gpu, only: gpu_boundary_case_supported,gpu_ldc_boundary_case_pending, &
          gpu_s1_flatplate_boundary_case_pending
-    use case_capability_gpu, only: gpu_sod_s0a1_supported,gpu_sod_s0a2_supported, &
+    use case_capability_gpu, only: gpu_tgv_explicit_upwind_supported, &
+         gpu_sod_s0a1_supported,gpu_sod_s0a2_supported, &
          gpu_sod_s0a3_supported,gpu_sod_s0b0_xphysical_supported, &
          gpu_open_shock_s0b1_supported, &
          gpu_open_shock_s0b2_nscbc_supported, &
@@ -909,6 +1223,7 @@ contains
          gpu_s1_flatplate_s1a_supported,gpu_s1_flatplate_s1a1_supported, &
          gpu_s1_flatplate_explicit_filter_supported, &
          gpu_curvilinear_nscbc52_nonreflecting_supported, &
+         gpu_curvilinear_nscbc52_viscous_nonreflecting_supported, &
          gpu_shock_sensor_s0a4_supported, &
          gpu_shock_sensor_s0a5_supported,gpu_shock_characteristic_s0a6_supported, &
          gpu_shock_characteristic_s0b0_xphysical_supported, &
@@ -939,7 +1254,8 @@ contains
     if(num_modequ /= 0) stop 'GPU first-stage supports num_modequ=0 only'
     if(trim(turbmode) /= 'none') stop 'GPU first-stage supports turbmode=none only'
     if(trim(rkscheme) /= 'rk3') stop 'GPU first-stage supports rkscheme=rk3 only'
-    controlled_upwind_case = conservative_boundary%enabled .or. gpu_sod_s0a1_supported() .or. &
+    controlled_upwind_case = conservative_boundary%enabled .or. &
+         gpu_tgv_explicit_upwind_supported() .or. gpu_sod_s0a1_supported() .or. &
          gpu_sod_s0a2_supported() .or. gpu_sod_s0a3_supported() .or. &
          gpu_sod_s0b0_xphysical_supported() .or. &
          gpu_open_shock_s0b1_supported() .or. &
@@ -950,6 +1266,7 @@ contains
          gpu_s1_flatplate_s1a1_supported() .or. &
          gpu_s1_flatplate_explicit_filter_supported() .or. &
          gpu_curvilinear_nscbc52_nonreflecting_supported() .or. &
+         gpu_curvilinear_nscbc52_viscous_nonreflecting_supported() .or. &
          gpu_shock_sensor_s0a4_supported() .or. gpu_shock_sensor_s0a5_supported() .or. &
          gpu_shock_characteristic_s0a6_supported() .or. &
          gpu_shock_characteristic_s0b0_xphysical_supported() .or. &
@@ -990,8 +1307,9 @@ contains
     if(mpisize /= isize*jsize*ksize) &
       stop 'GPU first-stage MPI topology is inconsistent'
     if(nscbc_farfield_nonreflecting_enabled() .and.                     &
-       .not.gpu_curvilinear_nscbc52_nonreflecting_supported())         &
-      stop 'GPU nonreflecting curved NSCBC requires approved inviscid upper-y 52 capability'
+       (.not.gpu_curvilinear_nscbc52_nonreflecting_supported()) .and.  &
+       (.not.gpu_curvilinear_nscbc52_viscous_nonreflecting_supported())) &
+      stop 'GPU nonreflecting curved NSCBC requires an approved upper-y 52 capability'
 
     geometry_error=max(maxval(abs(dxi(0:im,0:jm,0:km,1,2))),        &
          maxval(abs(dxi(0:im,0:jm,0:km,1,3))),                      &
@@ -1058,6 +1376,7 @@ contains
        (.not.gpu_s1_flatplate_s1a1_supported()) .and. &
        (.not.gpu_s1_flatplate_explicit_filter_supported()) .and. &
        (.not.gpu_curvilinear_nscbc52_nonreflecting_supported()) .and. &
+       (.not.gpu_curvilinear_nscbc52_viscous_nonreflecting_supported()) .and. &
        (.not.gpu_s2_hbl_selective_roe_s2c3_supported()) .and. &
        (.not.gpu_s2_hbl_selective_roe_diffusion_supported()) .and. &
        (.not.gpu_s2_hbl_selective_roe_s2c3_sponge_supported()) .and. &
@@ -1070,6 +1389,7 @@ contains
       stop 'GPU S1 flatplate requires an explicit 3D S1-A capability contract'
     if((.not.ldc_case) .and. (.not.flatplate_pending) .and.             &
        (.not.gpu_curvilinear_nscbc52_nonreflecting_supported()) .and.  &
+       (.not.gpu_curvilinear_nscbc52_viscous_nonreflecting_supported()) .and. &
        (.not.gpu_boundary_case_supported()))                           &
       stop 'GPU first-stage supports periodic or one zeroextrap/symmetry/isothermal/adiabatic/slip-isothermal/slip-adiabatic wall direction only'
     min_jacob = minval(jacob(0:im,0:jm,0:km))

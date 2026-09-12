@@ -116,6 +116,8 @@ The current GPU port has reached a validated non-reacting TGV baseline:
   - C19 retains the CPU nondimensional wall-scalar formula `vwall=A uinf fx gz (1+r)` and applies its signed result along the inward physical normal for y-min `41/42/411/421`. Its 10% perturbation uses global i/k indices and a fixed integer hash, replacing the former rank-seeded random stream. The 15-entry y-wavy NP=1/2/4/8 matrix includes negative-amplitude suction and passes with maximum CPU/GPU field, statistic, topology, and normal residuals `8.5265128291212022e-14`, `4.6865289426989420e-14`, `5.6843418860808015e-14`, and `6.0281640790194047e-17`. Five-step filter-plus-diffusion `411/421` regressions and a blowing-`421` memcheck pass. A three-step no-checkpoint trace has no transfer at or above 64 KiB after the first filter kernel; maximum H2D/D2H sizes are 128/1024 B.
   - C20 fixes the complete-state semantics of prescribed x-min `bctype=11`: CPU and GPU now impose density, all velocity components, pressure, EOS-consistent temperature, and conservative variables without retaining stale initialization data. The stale-state gate passes with `q5 L_inf=7.1054273576010019e-15`, and its targeted Compute Sanitizer run reports zero errors. The source inventory keeps `12/52` case-specific, limits `21/51` to axis-aligned physical faces, and rejects `22` on nonorthogonal grids. Dedicated curved `21/22/51` rejects plus Cartesian OpenShock, C7, and C12 positive regressions pass.
   - C21 rebuilds the common CPU/GPU binaries and passes 23 aggregate stages covering C0-C20, the required rejects, and x/y/z memchecks. Across 136 field, 128 statistic, and 226 boundary-invariant reports, maximum errors are `6.2527760746888816e-13`, `2.5093260802577788e-11`, and `7.6170181273482740e-12`; all 70 finite-field checks pass and the minimum numerical Jacobian is `2.5296638468231652e-7`. The `256^3` no-checkpoint trace contains no transfer at or above 64 KiB, and the current three-repeat NP=1/NP=2 medians are `58.490/38.989 s` (`1.5002x`, `75.01%`). This closes the tested static single-block nonreacting explicit scope.
+  - C22 adds a restricted inviscid non-reflecting GCBC for static curved upper-eta `bctype=52`. It uses the local eta normal and balances incoming characteristic waves against metric and transverse inviscid sources. Uniform, three-grid plane-acoustic, NP=1/2/4/8 topology, memcheck, and kernel-ownership gates pass; the three CPU non-reflecting coefficients decrease from `0.01620258` to `0.00393555`, and matched CPU/GPU fields remain within `2.21e-13`.
+  - C23 retains the C22 inviscid operator and adds the first sixth-order explicit viscous-source coupling. A face-only pre-diffusion RHS snapshot forms the actual discrete viscous residual after diffusion, and only its incoming characteristic projection is removed. The GPU snapshot is device resident and both new kernels retain explicit synchronization. The NP=1 ten-step uniform gate has maximum field error `7.99e-15`; the `64x48x64`, `80x60x80`, and `96x72x96` viscous acoustic CPU coefficients decrease as `0.01499173359`, `0.005955882611`, and `0.003584736637`, with maximum CPU/GPU reflection/final-field differences `3.24e-13`/`2.13e-13`. The curved Mach 5 HBL 20-step gate has maximum field/statistic errors `T=5.06262e-14` and `massflux=5.83977e-14`. Eight NP=1/2/4/8 topologies and NP=1/2 y-slab memchecks pass. A two-step trace has six captures and six corrections, no transfer at or above 64 KiB after the first non-reflecting kernel, and maximum H2D/D2H sizes 320/48 B. C23 is not a general complete viscous open-boundary or production SBLI claim.
 - The periodic TGV performance closure is complete on the RTX 4000 Ada workstation. For FP64 `256^3`, NP=1, `643e/643e`, tenth-order explicit filtering, and diffusion, five-run median complete-RK time decreases from `0.762855769 s` to `0.580044424 s` (`23.964%` time reduction, `1.31517x` speedup). The final run spread is `2.027%` and peak sampled memory is 9738 MiB. A 12-kernel source-correlated Nsight Compute matrix identified repeated device reciprocal sequences from the sixth-order outer coefficient in diffusion, convection, and `gradcal`; the GPU path now reuses CPU `constdef::num1d60`. Normal-execution Nsight Systems reports a `10.046%` total-kernel reduction relative to the frozen first-round baseline. NP=1 and NP=2 x-slab 10-step field/statistic comparisons pass at `1e-10`, representative memcheck reports zero errors, and the RK trace contains no forbidden transfer at or above 64 KiB. A follow-up selective-synchronization experiment reduces profiled RK synchronization calls from 275 to 15 without changing kernel or transfer counts, but it did not improve the pre-reciprocal five-run baseline. Therefore explicit remains the default; the TGV-only selective mode is retained as an opt-in A800 evaluation path with required MPI, host-visibility, timing, and error-closure barriers. A separate A800 rerun is required before making an A800 performance claim; see `documents/ASTR_TGV_PERFORMANCE_OPTIMIZATION_REPORT.md`.
 - Phase B boundary expansion has started with the lowest-risk non-periodic slice:
   - x-direction `bctype(1:2)=50,50` zero extrapolation, y/z periodic, single MPI rank.
@@ -970,6 +972,101 @@ Acceptance:
 - Nsight profiles show reduced communication overhead or better overlap.
 - The L0 host-staged backend remains available as a portable correctness reference.
 
+### Phase MP: Mixed-Precision Workspace Optimization
+
+Goal:
+
+Use lower precision only for isolated GPU temporary workspaces while preserving
+the FP64 authoritative state, geometry, boundaries, halo transport, Runge-Kutta
+update, and diagnostics. The FP64 default remains intact; the first periodic
+physical-space `flux_work` FP32 candidate is implemented as an experimental
+mode and is not production-promoted.
+
+The detailed contract is defined in
+`docs/superpowers/specs/2026-09-12-gpu-mixed-precision-workspace-design.md`.
+
+Tasks:
+
+- Freeze A800 FP64 TGV, HBL, and selected SBLI baselines before conversion.
+- Add explicit precision kinds and a runtime `fp64`/`mixed_workspace` mode;
+  keep `fp64` as the default.
+- Inventory device-array bytes, lifetime, owners, and kernel readers/writers.
+- Evaluate FP32 workspaces one at a time in the order `flux_work_d`,
+  characteristic work, derivative work, viscous flux work, shock sensor, and
+  filter work.
+- Keep MPI halo payloads, restart state, Roe/NSCBC/GCBC algebra, reductions,
+  and all authoritative fields in FP64.
+- Validate smooth, curvilinear, wall-bounded, acoustic, shock, MPI, and restart
+  paths before combining candidates.
+- Repeat retained candidates on A800 for NP=1/2/4 and classify each as promoted,
+  experimental, or rejected.
+
+Candidate retention is intentionally permissive. No fixed minimum speedup or
+memory percentage applies during discovery. A numerically valid candidate may
+be retained for a repeatable positive timing signal, verified memory reduction,
+larger runnable problem, or backend-portability value. Production promotion
+still requires non-regressive whole-step behavior and a measured practical
+benefit on A800.
+
+Acceptance:
+
+- The FP64 default remains numerically and operationally unchanged.
+- Every candidate has isolated numerical, physical, memory, and timing evidence.
+- No candidate adds hidden whole-field host transfers or changes FP64 halo and
+  checkpoint formats.
+- Mixed-precision thresholds are evidence-based and are not copied blindly
+  from FP64 equivalence thresholds.
+- Tensor Core, FP16, BF16, and TF32 work remain outside this phase.
+
+Current MP1 evidence on RTX 4000 Ada:
+
+- `ASTR_GPU_PRECISION_MODE=mixed_workspace` is MPI-consistent and opt-in;
+- periodic WENO7/MP7 TGV retains FP64 state and RHS accumulation while halving
+  scalar flux-workspace bytes;
+- `32^3`, 20-step maximum `q5` differences are `8.87e-7` and `1.20e-6`, with
+  TGV-statistics differences below `3e-11`;
+- NP=2 `2x1x1`, NP=4 `2x2x1`, and invalid-access memcheck gates pass;
+- at `128^3`, per-rank workspace bytes change from `21,484,952` to `10,742,476`
+  and sampled peak memory changes from `1578` to `1568 MiB`;
+- five paired complete-RK runs are `0.363%` slower in mixed mode, so the
+  candidate is retained for memory/A800 study but not promoted.
+
+Current MP2 evidence on RTX 4000 Ada:
+
+- `ASTR_GPU_MIXED_CANDIDATE` collectively selects exactly one of `flux`,
+  `derivative`, or `viscous_flux`; unset input remains backward-compatible with
+  `flux`, and invalid or rank-inconsistent choices abort collectively;
+- the derivative candidate stores only diagnostic `dvel/dtmp` in FP32. Solver
+  diffusion still recomputes its gradients from FP64 primitives, and diagnostic
+  consumers promote values before FP64 reductions;
+- the viscous-flux candidate computes constitutive algebra in FP64, stores only
+  final `sigma/qflux` in FP32, and promotes values before FP64 metric projection
+  and RHS accumulation;
+- FP32 diffusion fields reuse FP64 halo transport buffers. Pack and unpack
+  kernels perform the precision conversion while tags, counts, neighbor order,
+  optional overlap callback ordering, and host-staged MPI remain unchanged;
+- both candidates pass NP=1/2/4 TGV, Cartesian HBL, CURVE-C23 uniform/acoustic/
+  viscous-HBL, and invalid-access memcheck gates. The viscous-flux maximum
+  short-run field difference is `4.26e-12` across these tests;
+- each candidate halves its selected workspace bytes. Five interleaved `64^3`
+  runs show derivative FP64/candidate medians of `8.706775/8.891394 ms` and
+  viscous-flux medians of `8.736809/9.417326 ms`. The candidates are respectively
+  `2.120%` and `7.789%` slower locally.
+
+Both MP2 candidates are classified `local-pass-not-promoted`: they retain
+verified memory-capacity value but have no local whole-step speedup evidence.
+FP64 remains the production default, candidate combinations remain prohibited,
+and A800 NP=1/2/4 plus longer/restart tests are still required for promotion.
+
+The first orthogonal P2 kernel-structure candidate is also implemented for the
+same periodic physical-space route. `ASTR_GPU_FLUX_PAIR_MODE=fused` evaluates
+the eight unique stencil states once for each positive/negative flux pair while
+`split` remains the default. It preserves explicit synchronization and the
+original kernels as an immediate rollback. Local RTX 4000 Ada `128^3` WENO7
+testing reduces median FP64 complete-RK time from `1.219539164 s` to
+`0.845358029 s` (`30.682%`, `1.44263x`). WENO7/MP7, NP=2/4, and memcheck gates
+pass. A800 NP=1/2/4 plus long/restart validation is required before promotion.
+
 ## 7. Validation Strategy
 
 The full-GPU migration uses a layered validation matrix.
@@ -984,6 +1081,7 @@ The full-GPU migration uses a layered validation matrix.
 - root `CMakeLists.txt` build path.
 - clean CPU and CUDA-capable configure/build commands.
 - negative runtime contract: `use_gpu=t` in a non-CUDA binary must stop clearly.
+- mixed-precision runtime mode agreement across all MPI ranks.
 - line-ending regression: `examples/**/input.*` and `controller` must remain LF.
 
 ### L1 Module Equivalence
@@ -1028,6 +1126,18 @@ The full-GPU migration uses a layered validation matrix.
 - `nvitop` or `nvidia-smi` device-process observation for representative runs.
 - `256^3 NP=1/NP=2` profile driver with reusable command-line controls.
 - output-boundary transfer accounting separated from compute-loop residency accounting.
+- FP64 versus mixed-workspace whole-step and per-kernel timing with benchmark
+  variation from independent repetitions.
+- measured GPU memory compared with device-array byte accounting and maximum
+  runnable problem size.
+
+The MP3 `characteristic_flux` candidate has completed local S0-A6 through
+S0-A10, single-rank Compute Sanitizer, and five interleaved timing runs. It is
+classified as `local-pass-not-promoted`: the five-component workspace is 50%
+smaller, while the tested `400x16x16` complete-RK path is 4.913% slower. The
+FP64 default, explicit synchronization, FP64 MPI payloads, and periodic-only
+eligibility remain unchanged. Promotion still requires representative
+OpenSBLI/physical-boundary coverage and A800 measurement.
 
 ### L5 Physics Expansion
 
@@ -1044,13 +1154,15 @@ The full-GPU migration uses a layered validation matrix.
 Recommended immediate work after this plan:
 
 1. Treat CURVE-C21 as the frozen static single-block curvilinear baseline and keep `run_curvilinear_c21_aggregate.sh` as the release-level regression gate.
-2. Complete the OpenSBLI Katzer laminar-SBLI goal: `t=13000/26000` time convergence, three grids, two time steps, and external wall-pressure, skin-friction, heat-flux, shock-location, and separation-length comparisons.
-3. Resolve the long-horizon restart trajectory question with same-phase full fields, spanwise-uniformity diagnostics, and shock-sensor/mask comparisons. Do not confuse a continuous restart seam with guaranteed bitwise identity over long nonlinear evolution.
-4. Establish an A800 NP=1/2/4 baseline with one MPI rank per physical GPU. Use TGV and a sufficiently three-dimensional curvilinear HBL/SBLI workload; do not use the 609x255x9 OpenSBLI thin layer alone as four-GPU scaling evidence.
-5. Use the A800 profile to decide whether to extend overlap to nonperiodic/SBLI paths or evaluate the existing selective-synchronization option. Keep explicit synchronization as the correctness baseline.
-6. Prototype one backend-neutral CUDA/HIP boundary through the existing facade, preferably with `ISO_C_BINDING` around representative derivative, filter, and halo pack/unpack kernels, before considering a broad AMD/DCU port.
-7. Freeze the completed inviscid curved upper-y source-balanced `bctype=52` gate as CURVE-C22. Extend it to viscous characteristic source terms or other open faces only for a concrete case and a physical-normal contract; do not generalize `12/22/51/52` branches by analogy.
-8. Keep species, chemistry, RANS/LES, compact schemes, GPU HDF5, moving/multi-block grids, and immersed boundaries deferred unless project requirements reopen them.
+2. Establish the A800 FP64 NP=1/2/4 baseline with TGV and a sufficiently three-dimensional curvilinear HBL/SBLI workload. Use it to freeze timing variation, memory, and kernel evidence for mixed-precision MP0.
+3. Screen only the smooth-flow MP1 workspace candidates before OpenSBLI. Preserve the FP64 default and do not combine candidates at this stage.
+4. Complete the OpenSBLI Katzer laminar-SBLI goal: `t=13000/26000` time convergence, three grids, two time steps, and external wall-pressure, skin-friction, heat-flux, shock-location, and separation-length comparisons.
+5. Resolve the long-horizon restart trajectory question with same-phase full fields, spanwise-uniformity diagnostics, and shock-sensor/mask comparisons. Do not confuse a continuous restart seam with guaranteed bitwise identity over long nonlinear evolution.
+6. Repeat the locally closed MP2 candidates on A800 NP=1/2/4, then continue MP3-MP5 only after each affected FP64 physical oracle is closed. Evaluate shock-sensitive and filter workspaces independently.
+7. Use the A800 profile to decide whether to extend overlap to nonperiodic/SBLI paths or evaluate the existing selective-synchronization option. Keep explicit synchronization as the correctness baseline.
+8. Prototype one backend-neutral CUDA/HIP boundary through the existing facade, preferably with `ISO_C_BINDING` around representative derivative, filter, and halo pack/unpack kernels, before considering a broad AMD/DCU port.
+9. Freeze CURVE-C22 as the inviscid curved upper-y source-balanced `bctype=52` gate and CURVE-C23 as its first sixth-order explicit viscous-source-coupled slice. Extend to other open faces or more general viscous boundary terms only for a concrete case and a physical-normal contract; do not generalize `12/22/51/52` branches by analogy.
+10. Keep species, chemistry, RANS/LES, compact schemes, GPU HDF5, moving/multi-block grids, and immersed boundaries deferred unless project requirements reopen them.
 
 ## 9. Explicit Non-Goals
 
@@ -1065,6 +1177,10 @@ The next architecture phase will not:
 - start with chemistry;
 - start with immersed boundary;
 - treat two-GPU oversubscription runs as performance proof;
+- convert authoritative state, geometry, MPI halos, or checkpoints to FP32 as
+  the first mixed-precision step;
+- treat mixed precision as an automatic Tensor Core path or promise FP16,
+  BF16, or TF32 production support;
 - accept per-kernel whole-field D2H/H2D bridges as normal GPU execution.
 
 ## 10. Risk Register
@@ -1124,6 +1240,21 @@ Mitigation:
 - add physics in ordered phases;
 - require explicit validation oracles per phase.
 
+### Risk: Precision Scope Creep
+
+A blanket FP32 conversion could change geometry, characteristic boundaries,
+shock masks, MPI interfaces, time integration, and restart semantics at once.
+It could also be described incorrectly as Tensor Core acceleration even though
+the current stencil kernels are not dense matrix operations.
+
+Mitigation:
+
+- keep the authoritative state and all interfaces FP64;
+- convert one temporary workspace at a time behind an explicit runtime mode;
+- retain candidates under a permissive discovery policy but promote them only
+  after A800 whole-step and physical validation;
+- keep FP16, BF16, TF32, and Tensor Core reformulation outside Phase MP.
+
 ## 11. Success Definition
 
 The current full-GPU architecture phase is successful when:
@@ -1136,6 +1267,9 @@ The current full-GPU architecture phase is successful when:
 - non-TGV explicit cases, regular-grid boundary slices, source dispatch, and wall-family regressions remain covered by reusable validation drivers;
 - Nsight profiles can be generated reproducibly for `NP=1` and `NP=2`;
 - the completed P2/P3 implementations retain frozen performance evidence and portable fallbacks;
+- mixed-precision work enters through explicit workspace ownership, preserves
+  the FP64 default, and reports memory, capacity, kernel, whole-step, and
+  physical effects separately;
 - OpenSBLI restart and long-run evidence is reproducible without modifying the source checkpoint;
 - the current delivery is named as the single-species, non-reacting, explicit-format GPU solver scope rather than claimed as every ASTR physics module;
 - future AMD/HIP/DCU work enters through a tested backend boundary rather than CUDA-specific changes in `src/`.

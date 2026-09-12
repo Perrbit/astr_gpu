@@ -1,0 +1,14 @@
+program precision_mode_setup_test
+  use mpi
+  use precision_mode_gpu, only: configure_gpu_precision_mode, &
+       gpu_mixed_workspace_requested,gpu_precision_mode_name
+  implicit none
+  integer :: ierr,rank
+
+  call mpi_init(ierr)
+  call mpi_comm_rank(MPI_COMM_WORLD,rank,ierr)
+  call configure_gpu_precision_mode()
+  if(rank==0) write(*,'(A,A,A,L1)') 'precision_mode=', &
+       trim(gpu_precision_mode_name()),' mixed=',gpu_mixed_workspace_requested()
+  call mpi_finalize(ierr)
+end program precision_mode_setup_test

@@ -226,7 +226,8 @@ contains
   end subroutine check_boundary_stage
 
   subroutine check_nscbc_characteristic_policy()
-    use bc, only: nscbc_farfield_balance_incoming_lodi
+    use bc, only: nscbc_farfield_balance_incoming_lodi,              &
+                  nscbc_remove_incoming_source
     implicit none
     real(8) :: metric(3),normal(3),lodi0(5),source(5),pinv(5,5)
     integer :: m
@@ -246,6 +247,7 @@ contains
     call run_case('roundoff_outflow',metric,1.d-16*normal,1.d0,lodi0,source,pinv,[0,0,0,0,1])
     call run_case('roundoff_inflow',metric,-1.d-16*normal,1.d0,lodi0,source,pinv,[0,0,0,0,1])
     print*,'NSCBC_CPU_POLICY_PASS'
+    call check_viscous_source_projection(metric,normal,source)
 
   contains
 
@@ -277,6 +279,70 @@ contains
       write(*,'(A,1X,A,1X,5(ES25.16,1X),5(I1,1X),5(ES25.16,1X))') &
         'NSCBC_CPU_POLICY',trim(name),lambda,mask,lodi
     end subroutine run_case
+
+    subroutine check_viscous_source_projection(metric,normal,source)
+      real(8),intent(in) :: metric(3),normal(3),source(5)
+      real(8) :: pnor(5,5),pinv(5,5),rhs0(5),velocity(3)
+      integer :: icase,m
+      character(len=20) :: labels(6)
+
+      pnor=0.d0
+      pinv=0.d0
+      do m=1,5
+        pnor(m,m)=1.d0
+        pinv(m,m)=1.d0
+      enddo
+      pnor(1,2)=0.2d0
+      pinv(1,2)=-0.2d0
+      pnor(4,5)=0.3d0
+      pinv(4,5)=-0.3d0
+      rhs0=[3.d0,-2.d0,1.d0,0.5d0,-0.25d0]
+      labels=[character(len=20) :: 'subsonic_outflow','subsonic_inflow', &
+                                   'supersonic_outflow','supersonic_inflow', &
+                                   'roundoff_outflow','roundoff_inflow']
+      do icase=1,6
+        select case(icase)
+        case(1)
+          velocity=0.2d0*normal
+        case(2)
+          velocity=-0.2d0*normal
+        case(3)
+          velocity=2.d0*normal
+        case(4)
+          velocity=-2.d0*normal
+        case(5)
+          velocity=1.d-16*normal
+        case default
+          velocity=-1.d-16*normal
+        end select
+        call run_viscous_case(trim(labels(icase)),metric,velocity,source, &
+                              pnor,pinv,rhs0)
+      enddo
+      print*,'NSCBC_CPU_VISCOUS_PASS'
+    end subroutine check_viscous_source_projection
+
+    subroutine run_viscous_case(name,metric,velocity,source,pnor,pinv,rhs_initial)
+      character(len=*),intent(in) :: name
+      real(8),intent(in) :: metric(3),velocity(3),source(5),pnor(5,5), &
+                            pinv(5,5),rhs_initial(5)
+      real(8) :: rhs(5),expected(5),lambda(5),source_characteristic(5)
+      logical :: incoming(5)
+      integer :: mask(5),m
+
+      rhs=rhs_initial
+      call nscbc_remove_incoming_source(rhs,source,pnor,pinv,2.d0,metric, &
+                                        velocity,1.d0,lambda,incoming)
+      source_characteristic=matmul(pinv,source)/2.d0
+      do m=1,5
+        if(.not.incoming(m)) source_characteristic(m)=0.d0
+      enddo
+      expected=rhs_initial-2.d0*matmul(pnor,source_characteristic)
+      if(maxval(abs(rhs-expected))>1.d-15) &
+        error stop 'NSCBC CPU viscous source sign or projection mismatch'
+      mask=merge(1,0,incoming)
+      write(*,'(A,1X,A,1X,5(ES25.16,1X),5(I1,1X),5(ES25.16,1X))') &
+        'NSCBC_CPU_VISCOUS',trim(name),lambda,mask,rhs
+    end subroutine run_viscous_case
   end subroutine check_nscbc_characteristic_policy
 
   subroutine check_boundary_rhs

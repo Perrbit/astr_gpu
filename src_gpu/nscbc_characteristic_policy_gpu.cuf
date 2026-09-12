@@ -58,4 +58,44 @@ contains
       endif
     enddo
   end subroutine nscbc_balance_incoming_lodi_gpu
+
+  attributes(device) subroutine nscbc_remove_incoming_source_gpu(      &
+      rhs,source,pnor,pinv,jacobian,metric,velocity,css,lambda,incoming)
+    implicit none
+    real(8),intent(inout) :: rhs(5)
+    real(8),intent(in) :: source(5),pnor(5,5),pinv(5,5),jacobian,       &
+                          metric(3),velocity(3),css
+    real(8),intent(out) :: lambda(5)
+    logical,intent(out) :: incoming(5)
+    real(8) :: norm,normal_speed,wave_tolerance,source_characteristic(5)
+    real(8) :: correction
+    integer :: m,n
+
+    norm=sqrt(metric(1)*metric(1)+metric(2)*metric(2)+metric(3)*metric(3))
+    normal_speed=(metric(1)*velocity(1)+metric(2)*velocity(2)+         &
+                  metric(3)*velocity(3))/norm
+    lambda(1)=normal_speed
+    lambda(2)=normal_speed
+    lambda(3)=normal_speed
+    lambda(4)=normal_speed+css
+    lambda(5)=normal_speed-css
+    wave_tolerance=64.d0*epsilon(1.d0)*max(css,abs(normal_speed))
+    incoming=lambda<-wave_tolerance
+    do m=1,5
+      source_characteristic(m)=0.d0
+      if(incoming(m)) then
+        do n=1,5
+          source_characteristic(m)=source_characteristic(m)+          &
+                                   pinv(m,n)*source(n)/jacobian
+        enddo
+      endif
+    enddo
+    do m=1,5
+      correction=0.d0
+      do n=1,5
+        correction=correction+pnor(m,n)*source_characteristic(n)
+      enddo
+      rhs(m)=rhs(m)-jacobian*correction
+    enddo
+  end subroutine nscbc_remove_incoming_source_gpu
 end module nscbc_characteristic_policy_gpu
