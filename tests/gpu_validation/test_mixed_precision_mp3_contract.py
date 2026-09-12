@@ -44,6 +44,27 @@ XPHYSICAL_MEMCHECK_DRIVER = read(
     / "gpu_validation"
     / "run_mp3_characteristic_flux_xphysical_memcheck.sh"
 )
+HBL_COMPARE_DRIVER = read(
+    ROOT
+    / "tests"
+    / "gpu_validation"
+    / "run_mp3_characteristic_flux_hbl_compare.sh"
+)
+HBL_MATRIX_DRIVER = read(
+    ROOT
+    / "tests"
+    / "gpu_validation"
+    / "run_mp3_characteristic_flux_hbl_matrix.sh"
+)
+HBL_MEMCHECK_DRIVER = read(
+    ROOT
+    / "tests"
+    / "gpu_validation"
+    / "run_mp3_characteristic_flux_hbl_memcheck.sh"
+)
+FREEZE_TOLERANCES = read(
+    ROOT / "tests" / "gpu_validation" / "freeze_mp3_tolerances.py"
+)
 BENCHMARK_SUMMARY = read(
     ROOT / "tests" / "gpu_validation" / "summarize_mp2_benchmark.py"
 )
@@ -84,7 +105,7 @@ class MixedPrecisionMp3Contract(unittest.TestCase):
         self.assertIn("requestedmixedcandidateisineligible", compact)
         self.assertIn("mpi_abort", compact)
 
-    def test_characteristic_flux_admits_only_the_existing_xphysical_case_gate(self):
+    def test_characteristic_flux_retains_the_existing_xphysical_case_gate(self):
         compact = COMMARRAY.replace(" ", "").lower()
         self.assertIn(
             "usecase_capability_gpu,only:gpu_shock_characteristic_s0b0_xphysical_supported",
@@ -92,6 +113,17 @@ class MixedPrecisionMp3Contract(unittest.TestCase):
         )
         self.assertIn(
             "gpu_shock_characteristic_s0b0_xphysical_supported()", compact
+        )
+
+    def test_characteristic_flux_admits_exact_viscous_s2c3_hbl_gate(self):
+        compact = COMMARRAY.replace(" ", "").lower()
+        self.assertIn("gpu_s2_hbl_selective_roe_diffusion_supported", compact)
+        self.assertIn(
+            "hbl_viscous_case=gpu_s2_hbl_selective_roe_diffusion_supported()",
+            compact,
+        )
+        self.assertIn(
+            "periodic_case.or.xphysical_case.or.hbl_viscous_case", compact
         )
 
     def test_probe_reports_characteristic_flux_query(self):
@@ -195,9 +227,43 @@ class MixedPrecisionMp3Contract(unittest.TestCase):
             name = f"characteristic_upwind_{kind}_x_physical_global_sp_kernel"
             self.assertIn(f"call{name}<<<", compact)
             self.assertIn(f"sync_after_kernel('{name}')", compact)
-        self.assertNotIn(
-            "characteristic_upwind_flux_x_xyphysical_global_sp_kernel", compact
+
+    def test_xyphysical_characteristic_fp32_kernels_preserve_fp64_algebra(self):
+        lower = SOLVER.lower()
+        for axis in "xyz":
+            for kind in ("flux", "rhs"):
+                self.assertIn(
+                    f"subroutine characteristic_upwind_{kind}_{axis}"
+                    "_xyphysical_global_sp_kernel",
+                    lower,
+                )
+        compact = SOLVER.replace(" ", "").lower()
+        self.assertGreaterEqual(
+            compact.count(
+                "flux_characteristic_work_sp_d(i,j,k,m)=real(fh(m),4)"
+            ),
+            7,
         )
+        self.assertIn(
+            "real(flux_characteristic_work_sp_d(i-1,j,k,m),8)", compact
+        )
+        self.assertIn(
+            "real(flux_characteristic_work_sp_d(i,j-1,k,m),8)", compact
+        )
+        self.assertIn(
+            "real(flux_characteristic_work_sp_d(i,j,k-1,m),8)", compact
+        )
+
+    def test_mainloop_dispatches_and_synchronizes_xyphysical_sp_kernels(self):
+        compact = MAINLOOP.replace(" ", "").lower()
+        for axis in "xyz":
+            for kind in ("flux", "rhs"):
+                name = (
+                    f"characteristic_upwind_{kind}_{axis}"
+                    "_xyphysical_global_sp_kernel"
+                )
+                self.assertIn(f"call{name}<<<", compact)
+                self.assertIn(f"sync_after_kernel('{name}')", compact)
 
     def test_compare_driver_has_three_references_and_exact_candidate_sensor_gate(
         self,
@@ -271,6 +337,43 @@ class MixedPrecisionMp3Contract(unittest.TestCase):
         self.assertIn("OMPI_MCA_opal_cuda_support=0", text)
         self.assertIn("UCX_MEMTYPE_CACHE=n", text)
         self.assertIn("OMPI_MCA_btl=self,tcp", text)
+
+    def test_hbl_compare_driver_is_three_way_same_phase_and_sensor_bounded(self):
+        text = HBL_COMPARE_DRIVER
+        for target in ("cpu", "gpu_fp64", "gpu_characteristic_flux"):
+            self.assertIn(target, text)
+        self.assertIn("ASTR_VALIDATION_RK_SNAPSHOT", text)
+        self.assertIn("CANDIDATE_SENSOR_ATOL", text)
+        self.assertIn("gpu_fp64_vs_candidate_shock_sensor.txt", text)
+        self.assertIn(
+            "ASTR_GPU_ACTIVE_MIXED_WORKSPACE=characteristic_flux", text
+        )
+
+    def test_hbl_matrix_locks_np1_and_three_np2_slabs(self):
+        text = HBL_MATRIX_DRIVER
+        for line in (
+            "NP=1 TOPOLOGY=1,1,1",
+            "NP=2 TOPOLOGY=2,1,1",
+            "NP=2 TOPOLOGY=1,2,1",
+            "NP=2 TOPOLOGY=1,1,2",
+        ):
+            self.assertIn(line, text)
+        self.assertIn("TOLERANCE_FILE", text)
+        self.assertNotIn("CALIBRATE=t", text)
+
+    def test_hbl_memcheck_locks_x_and_y_slabs(self):
+        text = HBL_MEMCHECK_DRIVER
+        self.assertIn("2,1,1", text)
+        self.assertIn("1,2,1", text)
+        self.assertIn("compute-sanitizer --tool memcheck", text)
+        self.assertIn("--error-exitcode 99", text)
+        self.assertIn("ERROR SUMMARY: 0 errors", text)
+        self.assertIn("OMPI_MCA_opal_cuda_support=0", text)
+
+    def test_tolerance_freezer_accepts_optional_sensor_report(self):
+        self.assertIn("--sensor-report", FREEZE_TOLERANCES)
+        self.assertIn("CANDIDATE_SENSOR_ATOL", FREEZE_TOLERANCES)
+        self.assertIn("MP3_PILOT_SENSOR_MAX", FREEZE_TOLERANCES)
 
     def test_benchmark_is_interleaved_and_has_exact_five_component_bytes(self):
         self.assertIn('REPEATS="${REPEATS:-5}"', BENCHMARK_DRIVER)
