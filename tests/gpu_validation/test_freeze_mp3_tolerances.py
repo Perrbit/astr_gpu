@@ -51,6 +51,23 @@ class FreezeMp3TolerancesTest(unittest.TestCase):
             )
             self.assertEqual(module.read_stats_max(path), 3.2e-8)
 
+    def test_sensor_parser_reads_max_abs(self):
+        module = self.require_module()
+        self.assertTrue(hasattr(module, "read_sensor_max"))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "sensor.txt"
+            path.write_text(
+                "status: pass\nmax_abs: 3.5e-8\nmask_mismatches: 0\n",
+                encoding="ascii",
+            )
+            self.assertEqual(module.read_sensor_max(path), 3.5e-8)
+
+    def test_sensor_tolerance_uses_engineering_rounding(self):
+        module = self.require_module()
+        self.assertEqual(
+            module.frozen_tolerance(3.5e-8, 1.0e-12, 1.0e-5), 5.0e-7
+        )
+
     def test_tolerance_uses_tenfold_margin_and_125_ceiling(self):
         module = self.require_module()
         self.assertTrue(

@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 FIELD_PATTERN = re.compile(r"\blinf=([+\-0-9.eE]+)")
+SENSOR_PATTERN = re.compile(r"^max_abs:\s*([+\-0-9.eE]+)\s*$", re.MULTILINE)
 
 
 def read_field_max(path: Path) -> float:
@@ -46,6 +47,16 @@ def read_stats_max(path: Path) -> float:
     return max(values)
 
 
+def read_sensor_max(path: Path) -> float:
+    match = SENSOR_PATTERN.search(path.read_text(encoding="utf-8"))
+    if match is None:
+        raise ValueError(f"{path}: missing sensor max_abs")
+    value = float(match.group(1))
+    if not math.isfinite(value) or value < 0.0:
+        raise ValueError(f"{path}: invalid sensor max_abs")
+    return value
+
+
 def frozen_tolerance(observed: float, floor: float, ceiling: float) -> float:
     if not math.isfinite(observed) or observed < 0.0:
         raise ValueError("observed error must be finite and nonnegative")
@@ -69,6 +80,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--field-report", required=True, type=Path)
     parser.add_argument("--stats-report", required=True, type=Path)
+    parser.add_argument("--sensor-report", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
 
@@ -84,6 +96,16 @@ def main() -> int:
         f"MP3_PILOT_FIELD_MAX={field_observed:.16e}",
         f"MP3_PILOT_STATS_MAX={stats_observed:.16e}",
     ]
+    if args.sensor_report is not None:
+        sensor_observed = read_sensor_max(args.sensor_report)
+        sensor_tolerance = frozen_tolerance(sensor_observed, 1.0e-12, 1.0e-5)
+        lines.extend(
+            [
+                f"CANDIDATE_SENSOR_ATOL={sensor_tolerance:.1e}",
+                "CANDIDATE_SENSOR_RTOL=0",
+                f"MP3_PILOT_SENSOR_MAX={sensor_observed:.16e}",
+            ]
+        )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text("\n".join(lines) + "\n", encoding="ascii")
     print("\n".join(lines))
