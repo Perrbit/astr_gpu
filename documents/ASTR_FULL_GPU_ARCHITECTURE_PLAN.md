@@ -1049,7 +1049,7 @@ Recommended immediate work after this plan:
 4. Establish an A800 NP=1/2/4 baseline with one MPI rank per physical GPU. Use TGV and a sufficiently three-dimensional curvilinear HBL/SBLI workload; do not use the 609x255x9 OpenSBLI thin layer alone as four-GPU scaling evidence.
 5. Use the A800 profile to decide whether to extend overlap to nonperiodic/SBLI paths or evaluate the existing selective-synchronization option. Keep explicit synchronization as the correctness baseline.
 6. Prototype one backend-neutral CUDA/HIP boundary through the existing facade, preferably with `ISO_C_BINDING` around representative derivative, filter, and halo pack/unpack kernels, before considering a broad AMD/DCU port.
-7. Extend curved characteristic/open boundaries only for a concrete case and a physical-normal contract; do not generalize the case-specific `12/22/51/52` branches by analogy.
+7. Freeze the completed inviscid curved upper-y source-balanced `bctype=52` gate as CURVE-C22. Extend it to viscous characteristic source terms or other open faces only for a concrete case and a physical-normal contract; do not generalize `12/22/51/52` branches by analogy.
 8. Keep species, chemistry, RANS/LES, compact schemes, GPU HDF5, moving/multi-block grids, and immersed boundaries deferred unless project requirements reopen them.
 
 ## 9. Explicit Non-Goals

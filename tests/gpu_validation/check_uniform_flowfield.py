@@ -61,6 +61,7 @@ def main() -> int:
     parser.add_argument("--mach", type=float, default=0.1)
     parser.add_argument("--atol", type=float, default=1.0e-10)
     parser.add_argument("--rtol", type=float, default=1.0e-10)
+    parser.add_argument("--upper-planes", type=int, default=0)
     args = parser.parse_args()
 
     if args.density <= 0.0 or args.temperature <= 0.0:
@@ -77,7 +78,19 @@ def main() -> int:
         "p": pressure,
         "t": args.temperature,
     }
-    lines, passed = check_fields(read_fields(args.input), expected, args.atol, args.rtol)
+    fields = read_fields(args.input)
+    lines, passed = check_fields(fields, expected, args.atol, args.rtol)
+    if args.upper_planes < 0:
+        raise ValueError("--upper-planes must be non-negative")
+    if args.upper_planes:
+        sample = next(iter(fields.values()))
+        if args.upper_planes > sample.shape[1]:
+            raise ValueError("--upper-planes exceeds the y extent")
+        upper = {name: field[:, -args.upper_planes :, :] for name, field in fields.items()}
+        upper_lines, upper_passed = check_fields(upper, expected, args.atol, args.rtol)
+        lines.append(f"upper_planes: {args.upper_planes}")
+        lines.extend(f"upper_{line}" for line in upper_lines)
+        passed = passed and upper_passed
     report_lines = [f"status: {'pass' if passed else 'fail'}", *lines]
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text("\n".join(report_lines) + "\n")

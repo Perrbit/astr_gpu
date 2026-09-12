@@ -1,0 +1,213 @@
+program compact_statistics_probe
+  use cudafor
+  use production_statistics_gpu, only: compact_plane_measure_kernel,compact_plane_moment_kernel, &
+                                       compact_wall_moment_kernel
+  implicit none
+
+  integer,parameter :: im=1,jm=1,km=4,hm=1
+  real(8),allocatable,device :: x_d(:,:,:,:),measure_d(:,:),plane_sum_d(:,:,:)
+  real(8),allocatable,device :: rho_d(:,:,:),vel_d(:,:,:,:),prs_d(:,:,:),tmp_d(:,:,:)
+  real(8),allocatable,device :: dvel_d(:,:,:,:,:),dtmp_d(:,:,:,:),bnorm_d(:,:,:),wall_sum_d(:,:)
+  real(8),allocatable :: x(:,:,:,:),measure(:,:),expected(:,:),plane_sum(:,:,:),expected_sum(:,:,:)
+  real(8),allocatable :: rho(:,:,:),vel(:,:,:,:),prs(:,:,:),tmp(:,:,:)
+  real(8),allocatable :: dvel(:,:,:,:,:),dtmp(:,:,:,:),bnorm(:,:,:),wall_sum(:,:),expected_wall(:,:)
+  real(8) :: z(0:km),dx,dy,dz,ds,left(12),right(12)
+  type(dim3) :: block,grid
+  integer :: i,j,k,istat
+
+  allocate(x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3))
+  allocate(measure(0:im,0:jm),expected(0:im,0:jm))
+  allocate(x_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3))
+  allocate(measure_d(0:im,0:jm))
+  allocate(plane_sum_d(0:im,0:jm,1:12),plane_sum(0:im,0:jm,1:12))
+  allocate(expected_sum(0:im,0:jm,1:12))
+  allocate(rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+  allocate(vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3))
+  allocate(prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+  allocate(tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+  allocate(rho_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+  allocate(vel_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3))
+  allocate(prs_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+  allocate(tmp_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+  allocate(dvel(0:im,0:jm,0:km,1:3,1:3),dtmp(0:im,0:jm,0:km,1:3))
+  allocate(bnorm(0:im,0:km,1:3),wall_sum(0:im,1:3),expected_wall(0:im,1:3))
+  allocate(dvel_d(0:im,0:jm,0:km,1:3,1:3),dtmp_d(0:im,0:jm,0:km,1:3))
+  allocate(bnorm_d(0:im,0:km,1:3),wall_sum_d(0:im,1:3))
+  block=dim3(32,16,1)
+  grid=dim3(1,1,1)
+
+  z=(/0.d0,0.1d0,0.4d0,1.d0,2.d0/)
+  x=0.d0
+  do k=0,km
+  do j=0,jm
+  do i=0,im
+    x(i,j,k,1)=dble(i)
+    x(i,j,k,2)=dble(j)
+    x(i,j,k,3)=z(k)
+  enddo
+  enddo
+  enddo
+  expected=2.d0
+  call run_case('nonuniform-z',x,expected)
+
+  do k=0,km
+  do j=0,jm
+  do i=0,im
+    x(i,j,k,1)=dble(i)+0.1d0*z(k)*z(k)
+    x(i,j,k,2)=dble(j)+0.05d0*z(k)
+    x(i,j,k,3)=z(k)
+  enddo
+  enddo
+  enddo
+  expected=0.d0
+  do k=1,km
+    dx=0.1d0*(z(k)*z(k)-z(k-1)*z(k-1))
+    dy=0.05d0*(z(k)-z(k-1))
+    dz=z(k)-z(k-1)
+    expected=expected+sqrt(dx*dx+dy*dy+dz*dz)
+  enddo
+  call run_case('warped-extrusion',x,expected)
+
+  rho=0.d0; vel=0.d0; prs=0.d0; tmp=0.d0
+  do k=0,km
+  do j=0,jm
+  do i=0,im
+    rho(i,j,k)=1.d0+0.2d0*z(k)+0.01d0*dble(i+j)
+    vel(i,j,k,1)=2.d0+z(k)
+    vel(i,j,k,2)=-0.3d0+0.5d0*z(k)
+    vel(i,j,k,3)=0.4d0-0.1d0*z(k)
+    prs(i,j,k)=0.8d0+0.05d0*z(k)
+    tmp(i,j,k)=1.2d0+0.3d0*z(k)
+  enddo
+  enddo
+  enddo
+  expected_sum=0.d0
+  do k=1,km
+  do j=0,jm
+  do i=0,im
+    dx=x(i,j,k,1)-x(i,j,k-1,1)
+    dy=x(i,j,k,2)-x(i,j,k-1,2)
+    dz=x(i,j,k,3)-x(i,j,k-1,3)
+    ds=sqrt(dx*dx+dy*dy+dz*dz)
+    call raw_values(i,j,k-1,left)
+    call raw_values(i,j,k,right)
+    expected_sum(i,j,:)=expected_sum(i,j,:)+0.5d0*(left+right)*ds
+  enddo
+  enddo
+  enddo
+  x_d=x; rho_d=rho; vel_d=vel; prs_d=prs; tmp_d=tmp; plane_sum_d=0.d0
+  call compact_plane_moment_kernel<<<grid,block>>>(x_d,rho_d,vel_d,prs_d,tmp_d, &
+                                                    plane_sum_d,im,jm,km,hm)
+  istat=cudaDeviceSynchronize()
+  if(istat/=cudaSuccess) error stop 'compact statistics moment kernel failed'
+  plane_sum=plane_sum_d
+  if(maxval(abs(plane_sum-expected_sum))>1.d-12) error stop 'compact statistics moment mismatch'
+  call compact_plane_moment_kernel<<<grid,block>>>(x_d,rho_d,vel_d,prs_d,tmp_d, &
+                                                    plane_sum_d,im,jm,km,hm)
+  istat=cudaDeviceSynchronize()
+  if(istat/=cudaSuccess) error stop 'compact statistics second moment kernel failed'
+  plane_sum=plane_sum_d
+  if(maxval(abs(plane_sum-2.d0*expected_sum))>2.d-12) &
+    error stop 'compact statistics repeated sample mismatch'
+
+  do k=0,km
+  do j=0,jm
+  do i=0,im
+    x(i,j,k,1)=dble(i)
+    x(i,j,k,2)=dble(j)+0.2d0*dble(i)
+    x(i,j,k,3)=z(k)+0.1d0*dble(i)
+    prs(i,j,k)=0.8d0+0.05d0*z(k)+0.01d0*dble(i)
+    tmp(i,j,k)=1.2d0
+    dvel(i,j,k,1,1)=0.10d0; dvel(i,j,k,1,2)=0.30d0; dvel(i,j,k,1,3)=-0.20d0
+    dvel(i,j,k,2,1)=0.05d0; dvel(i,j,k,2,2)=-0.04d0; dvel(i,j,k,2,3)=0.07d0
+    dvel(i,j,k,3,1)=0.11d0; dvel(i,j,k,3,2)=-0.09d0; dvel(i,j,k,3,3)=0.02d0
+    dtmp(i,j,k,:)=(/0.4d0,-0.3d0,0.2d0/)
+  enddo
+  enddo
+  enddo
+  bnorm=0.d0
+  bnorm(:,:,1)=-0.2d0/sqrt(1.04d0)
+  bnorm(:,:,2)=1.d0/sqrt(1.04d0)
+  expected_wall=0.d0
+  do k=1,km
+  do i=0,im
+    ds=abs(z(k)-z(k-1))
+    call wall_values(i,k-1,left(1:3))
+    call wall_values(i,k,right(1:3))
+    expected_wall(i,:)=expected_wall(i,:)+0.5d0*(left(1:3)+right(1:3))*ds
+  enddo
+  enddo
+  x_d=x; prs_d=prs; tmp_d=tmp; dvel_d=dvel; dtmp_d=dtmp; bnorm_d=bnorm; wall_sum_d=0.d0
+  call compact_wall_moment_kernel<<<1,256>>>(x_d,bnorm_d,prs_d,tmp_d,dvel_d,dtmp_d, &
+    wall_sum_d,im,jm,km,hm,im,0,.true.,1000.d0,0.72d0,2.5d0,1.d0,0.4d0,1.4d0)
+  istat=cudaDeviceSynchronize()
+  if(istat/=cudaSuccess) error stop 'compact statistics wall kernel failed'
+  wall_sum=wall_sum_d
+  if(maxval(abs(wall_sum-expected_wall))>1.d-12) then
+    write(*,'(A,1X,ES24.16E3)') 'COMPACT_STATISTICS_WALL_FAIL',maxval(abs(wall_sum-expected_wall))
+    error stop 'compact statistics wall mismatch'
+  endif
+
+  write(*,'(A)') 'COMPACT_STATISTICS_MEASURE_MOMENT_WALL_PASS'
+
+contains
+  subroutine run_case(label,x_host,expected_host)
+    character(len=*),intent(in) :: label
+    real(8),intent(in) :: x_host(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),intent(in) :: expected_host(0:im,0:jm)
+
+    x_d=x_host
+    measure_d=-1.d0
+    call compact_plane_measure_kernel<<<grid,block>>>(x_d,measure_d,im,jm,km,hm)
+    istat=cudaDeviceSynchronize()
+    if(istat/=cudaSuccess) error stop 'compact statistics measure kernel failed'
+    measure=measure_d
+    if(maxval(abs(measure-expected_host))>1.d-12) then
+      write(*,'(A,1X,A,2(1X,ES24.16E3))') 'COMPACT_STATISTICS_MEASURE_FAIL', &
+        trim(label),maxval(abs(measure-expected_host)),maxval(expected_host)
+      error stop 'compact statistics measure mismatch'
+    endif
+  end subroutine run_case
+
+  subroutine raw_values(i,j,k,values)
+    integer,intent(in) :: i,j,k
+    real(8),intent(out) :: values(12)
+    real(8) :: density,u,v,w,temperature,pressure
+
+    density=rho(i,j,k); u=vel(i,j,k,1); v=vel(i,j,k,2); w=vel(i,j,k,3)
+    temperature=tmp(i,j,k); pressure=prs(i,j,k)
+    values=(/density,density*u,density*v,density*w,density*temperature,pressure, &
+             density*u*u,density*v*v,density*w*w,density*u*v,density*u*w,density*v*w/)
+  end subroutine raw_values
+
+  subroutine wall_values(i,k,values)
+    integer,intent(in) :: i,k
+    real(8),intent(out) :: values(3)
+    real(8) :: normal(3),di(3),tangent(3),traction(3),grad_t(3)
+    real(8) :: stress(3,3),mu,divergence,tangent_norm
+
+    normal=bnorm(i,k,:)
+    if(i==0) then
+      di=x(1,0,k,:)-x(0,0,k,:)
+    else
+      di=x(im,0,k,:)-x(im-1,0,k,:)
+    endif
+    tangent=di-dot_product(di,normal)*normal
+    tangent_norm=sqrt(dot_product(tangent,tangent))
+    tangent=tangent/tangent_norm
+    mu=tmp(i,0,k)*sqrt(tmp(i,0,k))*1.4d0/(tmp(i,0,k)+0.4d0)/1000.d0
+    divergence=dvel(i,0,k,1,1)+dvel(i,0,k,2,2)+dvel(i,0,k,3,3)
+    stress=0.d0
+    stress(1,1)=mu*(2.d0*dvel(i,0,k,1,1)-2.d0*divergence/3.d0)
+    stress(2,2)=mu*(2.d0*dvel(i,0,k,2,2)-2.d0*divergence/3.d0)
+    stress(3,3)=mu*(2.d0*dvel(i,0,k,3,3)-2.d0*divergence/3.d0)
+    stress(1,2)=mu*(dvel(i,0,k,1,2)+dvel(i,0,k,2,1)); stress(2,1)=stress(1,2)
+    stress(1,3)=mu*(dvel(i,0,k,1,3)+dvel(i,0,k,3,1)); stress(3,1)=stress(1,3)
+    stress(2,3)=mu*(dvel(i,0,k,2,3)+dvel(i,0,k,3,2)); stress(3,2)=stress(2,3)
+    traction=matmul(stress,normal)
+    grad_t=dtmp(i,0,k,:)
+    values(1)=prs(i,0,k)
+    values(2)=dot_product(tangent,traction)
+    values(3)=(mu/0.72d0)/2.5d0*dot_product(grad_t,normal)
+  end subroutine wall_values
+end program compact_statistics_probe

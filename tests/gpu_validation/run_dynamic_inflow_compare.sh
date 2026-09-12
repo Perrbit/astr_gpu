@@ -14,6 +14,8 @@ MAXSTEP="${MAXSTEP:-3}"
 DELTAT="${DELTAT:-1.0e-5}"
 SLICE_COUNT="${SLICE_COUNT:-8}"
 SLICE_DT="${SLICE_DT:-1.0e-5}"
+TEMPORAL_MODE="${TEMPORAL_MODE:-cubic}"
+EXPECTED_LAST_SLICE="${EXPECTED_LAST_SLICE:-}"
 CONS_SCHM="${CONS_SCHM:-}"
 CPU_SNAPSHOT="outdat/rk_complete_snapshot.h5"
 
@@ -57,7 +59,8 @@ prepare_case() {
     --density 0.7 --u1 0.2 --u2 -0.1 --u3 0.05 --temperature 0.8
   python3 "$ROOT_DIR/tests/gpu_validation/generate_dynamic_inflow_slices.py" \
     --output "$OUT_DIR/$target/inflow" --jm "$JM" --km "$KM" \
-    --count "$SLICE_COUNT" --delta-time "$SLICE_DT"
+    --count "$SLICE_COUNT" --delta-time "$SLICE_DT" \
+    --temporal-mode "$TEMPORAL_MODE"
 }
 
 prepare_case cpu f
@@ -91,6 +94,11 @@ if awk -v steps="$MAXSTEP" -v dt="$DELTAT" -v slice_dt="$SLICE_DT" \
   'BEGIN { exit ! (steps * dt > 2.0 * slice_dt) }'; then
   grep -q 'islice00004.h5' "$OUT_DIR/cpu/cpu.log"
   grep -q 'islice00004.h5' "$OUT_DIR/gpu/gpu.log"
+fi
+if [[ -n "$EXPECTED_LAST_SLICE" ]]; then
+  printf -v expected_name 'islice%05d.h5' "$((10#$EXPECTED_LAST_SLICE))"
+  grep -q "$expected_name" "$OUT_DIR/cpu/cpu.log"
+  grep -q "$expected_name" "$OUT_DIR/gpu/gpu.log"
 fi
 printf 'dynamic inflow NP=%s topology=%s comparison passed: %s\n' \
   "$NP" "$TOPOLOGY" "$OUT_DIR"

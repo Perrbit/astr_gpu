@@ -30,6 +30,24 @@ class DynamicInflowGpuContractTests(unittest.TestCase):
         )
         self.assertIn("ninflowslice=ninflowslice+1", source)
 
+    def test_cpu_oracle_advances_all_crossed_slices_and_validates_interval(self) -> None:
+        source = self.source("src/bc.F90")
+        body = re.search(
+            r"subroutine inflowintp\b(.*?)end subroutine inflowintp",
+            source,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(body)
+        text = body.group(1)
+        self.assertRegex(text, r"do\s+while\s*\(time>timeins\(nvp\(2\)\)\)")
+        self.assertIn("CPU dynamic inflow slice interval changed", text)
+
+    def test_driver_can_expose_stale_windows_with_nonpolynomial_slices(self) -> None:
+        source = self.source("tests/gpu_validation/run_dynamic_inflow_compare.sh")
+        self.assertIn('TEMPORAL_MODE="${TEMPORAL_MODE:-cubic}"', source)
+        self.assertIn('--temporal-mode "$TEMPORAL_MODE"', source)
+        self.assertIn("EXPECTED_LAST_SLICE", source)
+
     def test_gpu_runtime_updates_window_once_before_rk_preparation(self) -> None:
         source = self.source("src_gpu/gpu_runtime.cuf")
         body = re.search(
@@ -75,6 +93,36 @@ class DynamicInflowGpuContractTests(unittest.TestCase):
                 r"jsize\s*==\s*1.*?ksize\s*==\s*1",
                 re.DOTALL,
             ),
+        )
+
+    def test_dynamic_mode_is_enabled_for_the_explicit_filter_path(self) -> None:
+        source = self.source("src_gpu/case_capability_gpu.cuf")
+        body = re.search(
+            r"logical function gpu_s1_flatplate_explicit_filter_supported\(\)(.*?)"
+            r"end function gpu_s1_flatplate_explicit_filter_supported",
+            source,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(body)
+        text = body.group(1)
+        self.assertRegex(
+            text,
+            r"trim\(turbinf\)\s*==\s*'prof'.*?trim\(turbinf\)\s*==\s*'intp'",
+        )
+
+    def test_cpu_and_gpu_emit_validation_only_rk_stage_q_snapshots(self) -> None:
+        cpu = self.source("src/mainloop.F90")
+        gpu = self.source("src_gpu/mainloop_gpu.cuf")
+        self.assertIn("rhs_validation_requested", cpu)
+        self.assertIn("write_q_validation_snapshot('pre_rhs'", cpu)
+        self.assertIn("write_q_validation_snapshot('post_update'", cpu)
+        self.assertIn("write_q_validation_snapshot('pre_rhs'", gpu)
+        self.assertIn("write_q_validation_snapshot('post_update'", gpu)
+        self.assertRegex(
+            gpu,
+            r"if\s*\(rhs_validation_requested\(\)\)\s*then\s*"
+            r"call copy_flow_from_gpu\(\)\s*"
+            r"call write_q_validation_snapshot\('post_update'",
         )
 
     def test_dynamic_checkpoint_writes_complete_rk_state_without_host_boundary_replay(self) -> None:

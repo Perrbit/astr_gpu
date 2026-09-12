@@ -1,0 +1,78 @@
+module nscbc_characteristic_policy_probe_kernels
+  use cudafor
+  use nscbc_characteristic_policy_gpu, only: nscbc_balance_incoming_lodi_gpu
+  implicit none
+contains
+  attributes(global) subroutine evaluate_policy_kernel(lodi,source,pinv,metric, &
+                                                        velocity,css,lambda,incoming)
+    implicit none
+    real(8),device :: lodi(5,6),source(5),pinv(5,5),metric(3),velocity(3,6),lambda(5,6)
+    real(8),value :: css
+    logical,device :: incoming(5,6)
+    integer :: icase
+
+    icase=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    if(icase>6) return
+    call nscbc_balance_incoming_lodi_gpu(lodi(:,icase),source,pinv,2.d0,metric, &
+                                         velocity(:,icase),css,lambda(:,icase), &
+                                         incoming(:,icase))
+  end subroutine evaluate_policy_kernel
+end module nscbc_characteristic_policy_probe_kernels
+
+program nscbc_characteristic_policy_probe
+  use cudafor
+  use nscbc_characteristic_policy_probe_kernels, only: evaluate_policy_kernel
+  implicit none
+  real(8),device :: lodi_d(5,6),source_d(5),pinv_d(5,5),metric_d(3),velocity_d(3,6),lambda_d(5,6)
+  logical,device :: incoming_d(5,6)
+  real(8) :: lodi(5,6),source(5),pinv(5,5),metric(3),normal(3),velocity(3,6),lambda(5,6)
+  real(8) :: source_characteristic(5),total_characteristic(5)
+  logical :: incoming(5,6)
+  character(len=20) :: labels(6)
+  integer :: icase,m,istat
+
+  metric=[0.3d0,0.9d0,-0.2d0]
+  source=[0.25d0,-0.5d0,0.75d0,-1.d0,1.25d0]
+  pinv=0.d0
+  do m=1,5
+    pinv(m,m)=1.d0
+  enddo
+  normal=metric/sqrt(sum(metric*metric))
+  velocity(:,1)= 0.2d0*normal
+  velocity(:,2)=-0.2d0*normal
+  velocity(:,3)= 2.0d0*normal
+  velocity(:,4)=-2.0d0*normal
+  velocity(:,5)= 1.d-16*normal
+  velocity(:,6)=-1.d-16*normal
+  labels=[character(len=20) :: 'subsonic_outflow','subsonic_inflow',       &
+                               'supersonic_outflow','supersonic_inflow',   &
+                               'roundoff_outflow','roundoff_inflow']
+  do icase=1,6
+    lodi(:,icase)=[1.d0,2.d0,3.d0,4.d0,5.d0]
+  enddo
+  metric_d=metric
+  source_d=source
+  pinv_d=pinv
+  velocity_d=velocity
+  lodi_d=lodi
+  call evaluate_policy_kernel<<<1,6>>>(lodi_d,source_d,pinv_d,metric_d,    &
+                                        velocity_d,1.d0,lambda_d,incoming_d)
+  istat=cudaDeviceSynchronize()
+  if(istat/=cudaSuccess) error stop 'NSCBC GPU policy kernel failed'
+  lodi=lodi_d
+  lambda=lambda_d
+  incoming=incoming_d
+  source_characteristic=matmul(pinv,source)/2.d0
+
+  do icase=1,6
+    total_characteristic=lodi(:,icase)+source_characteristic
+    do m=1,5
+      if(incoming(m,icase).and.abs(total_characteristic(m))>1.d-15) &
+        error stop 'NSCBC GPU total incoming characteristic was not zeroed'
+    enddo
+    write(*,'(A,1X,A,5(1X,ES24.16E3),5(1X,I1),5(1X,ES24.16E3))')         &
+      'NSCBC_GPU_POLICY',trim(labels(icase)),lambda(:,icase),              &
+      (merge(1,0,incoming(m,icase)),m=1,5),lodi(:,icase)
+  enddo
+  write(*,'(A)') 'NSCBC_GPU_POLICY_PASS'
+end program nscbc_characteristic_policy_probe

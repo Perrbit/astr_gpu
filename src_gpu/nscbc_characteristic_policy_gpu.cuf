@@ -1,0 +1,61 @@
+module nscbc_characteristic_policy_gpu
+  implicit none
+  integer,parameter :: NSCBC_GPU_POLICY_COMPATIBILITY=0
+  integer,parameter :: NSCBC_GPU_POLICY_TARGET_RELAXATION=1
+  integer,parameter :: NSCBC_GPU_POLICY_NONREFLECTING=2
+contains
+  attributes(device) subroutine nscbc_zero_incoming_lodi_gpu(lodi,metric, &
+                                                               velocity,css, &
+                                                               lambda,incoming)
+    implicit none
+    real(8),intent(inout) :: lodi(5)
+    real(8),intent(in) :: metric(3),velocity(3),css
+    real(8),intent(out) :: lambda(5)
+    logical,intent(out) :: incoming(5)
+    real(8) :: norm,normal_speed,wave_tolerance
+    integer :: m
+
+    norm=sqrt(metric(1)*metric(1)+metric(2)*metric(2)+metric(3)*metric(3))
+    normal_speed=(metric(1)*velocity(1)+metric(2)*velocity(2)+             &
+                  metric(3)*velocity(3))/norm
+    lambda(1)=normal_speed
+    lambda(2)=normal_speed
+    lambda(3)=normal_speed
+    lambda(4)=normal_speed+css
+    lambda(5)=normal_speed-css
+    wave_tolerance=64.d0*epsilon(1.d0)*max(css,abs(normal_speed))
+    incoming=lambda<-wave_tolerance
+    do m=1,5
+      if(incoming(m)) lodi(m)=0.d0
+    enddo
+  end subroutine nscbc_zero_incoming_lodi_gpu
+
+  attributes(device) subroutine nscbc_balance_incoming_lodi_gpu(        &
+      lodi,source,pinv,jacobian,metric,velocity,css,lambda,incoming)
+    implicit none
+    real(8),intent(inout) :: lodi(5)
+    real(8),intent(in) :: source(5),pinv(5,5),jacobian,metric(3),        &
+                          velocity(3),css
+    real(8),intent(out) :: lambda(5)
+    logical,intent(out) :: incoming(5)
+    real(8) :: norm,normal_speed,wave_tolerance,source_characteristic
+    integer :: m
+
+    norm=sqrt(metric(1)*metric(1)+metric(2)*metric(2)+metric(3)*metric(3))
+    normal_speed=(metric(1)*velocity(1)+metric(2)*velocity(2)+           &
+                  metric(3)*velocity(3))/norm
+    lambda(1)=normal_speed
+    lambda(2)=normal_speed
+    lambda(3)=normal_speed
+    lambda(4)=normal_speed+css
+    lambda(5)=normal_speed-css
+    wave_tolerance=64.d0*epsilon(1.d0)*max(css,abs(normal_speed))
+    incoming=lambda<-wave_tolerance
+    do m=1,5
+      if(incoming(m)) then
+        source_characteristic=sum(pinv(m,:)*source(:))/jacobian
+        lodi(m)=-source_characteristic
+      endif
+    enddo
+  end subroutine nscbc_balance_incoming_lodi_gpu
+end module nscbc_characteristic_policy_gpu

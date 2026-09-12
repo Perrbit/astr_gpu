@@ -59,10 +59,12 @@ if(ASTR_WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/inflow_interpolation_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/inflow_timeseries_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/commarray_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/production_statistics_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/commvar_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/qswap_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/halo_transport_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/halo_exchange_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/nscbc_characteristic_policy_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/boundary_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/perfect_gas_boundary_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/conservative_boundary_faces_gpu.cuf
@@ -130,6 +132,21 @@ if(ASTR_WITH_CUDA)
   add_executable(dynamic_inflow_interpolation_probe EXCLUDE_FROM_ALL
     ../src_gpu/inflow_interpolation_gpu.cuf
     ../tests/gpu_validation/dynamic_inflow_interpolation_probe.cuf)
+  add_executable(compact_statistics_probe EXCLUDE_FROM_ALL
+    ../src_gpu/production_statistics_gpu.cuf
+    ../tests/gpu_validation/compact_statistics_probe.cuf)
+  target_compile_definitions(compact_statistics_probe PRIVATE TEST_COMPACT_STATS)
+  set_target_properties(compact_statistics_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/compact_statistics_probe_modules")
+  target_include_directories(compact_statistics_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/compact_statistics_probe_modules")
+  add_executable(nscbc_characteristic_policy_probe EXCLUDE_FROM_ALL
+    ../src_gpu/nscbc_characteristic_policy_gpu.cuf
+    ../tests/gpu_validation/nscbc_characteristic_policy_probe.cuf)
+  set_target_properties(nscbc_characteristic_policy_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/nscbc_policy_probe_modules")
+  target_include_directories(nscbc_characteristic_policy_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/nscbc_policy_probe_modules")
   add_executable(halo_transport_setup_test EXCLUDE_FROM_ALL
     ../src_gpu/halo_transport_gpu.cuf
     ../tests/gpu_validation/halo_transport_setup_test.cuf)

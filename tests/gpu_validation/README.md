@@ -2973,6 +2973,50 @@ tested static single-block, nonreacting, explicit-scheme scope. It does not
 establish arbitrary curved open boundaries, moving/multi-block support, GPU
 HDF5, physical SBLI fidelity, or scaling beyond two GPUs.
 
+## CURVE-C22 curved upper-y non-reflecting GCBC
+
+`ASTR_NSCBC_FARFIELD_MODE=nonreflecting` enables a restricted inviscid
+five-equation `bctype=52` condition on a static curved upper eta face. The CPU
+and GPU paths use the local eta normal and balance only incoming
+characteristics against the metric-plus-transverse source. The mode does not
+use a target farfield state, empirical relaxation length, upper-face Mach
+reduction, or the legacy x/z boundary-plane filters. The established
+bctype=52 full-RK snapshot remains active because it preserves statistics and
+integration phase semantics independently of filtering.
+
+Run the algebra, uniform, acoustic, topology, safety, and runtime-work gates
+with new output directories:
+
+```bash
+tests/gpu_validation/run_curvilinear_nscbc52_policy_probe.sh
+OUT_DIR=/tmp/curve_c22_uniform \
+  tests/gpu_validation/run_curvilinear_nscbc52_uniform_compare.sh
+OUT_DIR=/tmp/curve_c22_acoustic \
+  tests/gpu_validation/run_curvilinear_nscbc52_acoustic_compare.sh
+CASE=uniform OUT_DIR=/tmp/curve_c22_uniform_matrix \
+  tests/gpu_validation/run_curvilinear_nscbc52_matrix.sh
+CASE=acoustic OUT_DIR=/tmp/curve_c22_acoustic_matrix \
+  tests/gpu_validation/run_curvilinear_nscbc52_matrix.sh
+OUT_DIR=/tmp/curve_c22_memcheck \
+  tests/gpu_validation/run_curvilinear_nscbc52_memcheck.sh
+OUT_DIR=/tmp/curve_c22_profile \
+  tests/gpu_validation/run_curvilinear_nscbc52_profile.sh
+```
+
+The three-grid acoustic sequence `64x48x64`, `80x60x80`, and `96x72x96`
+gives CPU non-reflecting coefficients `0.01620258`, `0.00662146`, and
+`0.00393555`; matched compatibility values are `0.17063313`, `0.11807481`,
+and `0.10561771`. The maximum CPU/GPU reflection and final-field differences
+are `1.88e-12` and `2.21e-13`. All eight NP=1/2/4/8 topologies pass owner and
+field checks; these oversubscribed runs are correctness evidence, not scaling
+measurements. NP=1 and NP=2 y-slab memchecks report zero errors. A two-step
+Nsight Systems audit observes six non-reflecting RHS launches and zero legacy
+Mach/x-filter/z-filter launches.
+
+This gate does not validate viscous characteristic source terms, curved
+target-relaxation modes, other open faces, moving or multiblock grids,
+chemistry, or production SBLI farfield fidelity.
+
 ## TGV 256 single-GPU performance gate
 
 Build the GPU binary from the repository top-level `CMakeLists.txt`, then run
@@ -3543,6 +3587,71 @@ largest primitive and reconstructed conservative differences are `5.33e-15`
 and `1.42e-14`. The explicit MP7 gate also passes for NP=2 `2x1x1`, `1x2x1`,
 and `1x1x2`, plus NP=4 `4x1x1` and `2x2x1`. The z-slab uses `KM=16`, keeping
 the local z extent at least `hm=5`; NP=4 locally oversubscribes the two GPUs
-and therefore supplies correctness rather than scaling evidence. Restart
-continuity, per-RK-stage full-field comparison, physical turbulence statistics
-and production performance remain separate acceptance gates.
+and therefore supplies correctness rather than scaling evidence.
+
+The D2 matrix adds a non-polynomial temporal sequence and covers a slice node,
+one crossed slice, multiple crossed slices in one solver step, and a filtered
+curvilinear NP=4 `2x2x1` case. Unfiltered continuous/restart comparisons are
+strict. For filtering, the upstream primitive-field checkpoint is used as one
+shared restart source for CPU and GPU; this checks the same reconstructed phase
+without claiming that the upstream checkpoint serializes the complete q/halo
+state.
+
+`run_dynamic_inflow_d2_stage_compare.sh` writes validation-only q snapshots at
+`pre_rhs` and `post_update` for all three RK stages. The NP=1 case compares six
+files, while filtered CURVE NP=4 compares 24 rank files. Both pass with a
+maximum absolute difference of `1.4210854715202004e-14`. These snapshots add
+full-field device-to-host copies only when `ASTR_VALIDATION_RHS_PREFIX` is set;
+the production path is unchanged. Physical turbulence statistics and
+production performance remain D3/D4 acceptance gates.
+
+## Compact GPU production statistics
+
+The compact path accumulates z-line raw moments on the GPU at completed steps
+that satisfy `nstep > 0`, `lavg`, and `mod(nstep,feqavg) == 0`. For a physical
+line measure `ds`, the density-weighted mean and Favre stress are reconstructed
+offline as
+
+```text
+rho_mean       = integral(sum_n rho ds) / (Nsample * integral(ds))
+u_tilde        = integral(sum_n rho*u ds) / integral(sum_n rho ds)
+u_i''u_j''     = integral(sum_n rho*u_i*u_j ds) / integral(sum_n rho ds)
+                 - u_i_tilde*u_j_tilde
+```
+
+Wall pressure, geometry-projected streamwise traction, and normal conductive
+heat flux use the same physical z-segment integration. The independent CPU
+oracle is implemented by `compact_statistics_host_reference.py`; the production
+CUDA kernels and checkpoint sidecar are in `production_statistics_gpu.cuf`.
+
+Run the numerical matrix with new output directories:
+
+```bash
+tests/gpu_validation/run_compact_statistics_matrix.sh --case all
+```
+
+The accepted matrix covers static and dynamic NP=1, z-slab NP=2, filtered CURVE
+dynamic NP=4 `2x2x1`, three-direction NP=8 `2x2x2`, and same-topology restart.
+Every raw moment, derived mean/stress, wall field, measure, and metadata check
+passed at `atol=rtol=1e-10`; the largest observed absolute difference was
+`1.02e-14`. NP=8 is a communication and assembly correctness test, not a scaling
+measurement.
+
+Safety, residency, and complete-step overhead are separate gates:
+
+```bash
+tests/gpu_validation/run_compact_statistics_profile.sh \
+  --mode memcheck --result-dir /tmp/compact_memcheck
+tests/gpu_validation/run_compact_statistics_profile.sh \
+  --mode residency --result-dir /tmp/compact_residency
+tests/gpu_validation/run_compact_statistics_profile.sh \
+  --mode performance --result-dir /tmp/compact_performance
+```
+
+The 2026-09-10 local acceptance on RTX 4000 Ada reported zero leaked bytes,
+zero memory errors, and zero race hazards. Nsight Systems found no H2D/D2H
+transfer larger than 64 KiB after the first statistics kernel. Five paired runs
+gave median complete-step times of `75.388 ms` with statistics disabled and
+`75.808 ms` with statistics enabled, an overhead of `0.557%`. This is local
+software/performance evidence; D3 turbulence convergence and A800 production
+performance remain separate requirements.

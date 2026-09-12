@@ -27,11 +27,13 @@ expect_reject() {
   local name="$1"
   local input_name="$2"
   local pattern="$3"
+  local farfield_mode="${4:-compatibility}"
   local status
   set +e
   (
     cd "$OUT_DIR/$name"
     ASTR_FORCE_MPI_TOPOLOGY=1,1,1 \
+      ASTR_NSCBC_FARFIELD_MODE="$farfield_mode" \
       mpirun -np 1 "$GPU_EXE" run "datin/$input_name" > gpu.log 2>&1
   )
   status=$?
@@ -66,3 +68,37 @@ python3 "$ROOT_DIR/tests/gpu_validation/generate_curvilinear_tgv_grid.py" \
   --mapping y-wavy --amplitude 0.15
 expect_reject curve_51 input.flatplate \
   'GPU bctype=51 y-max requires an axis-aligned physical face'
+
+prepare_curve_52() {
+  local name="$1"
+  local diffterm="$2"
+  local lfilter="$3"
+  local upper_bctype="$4"
+  local z_bctype="$5"
+  python3 "$ROOT_DIR/tests/gpu_validation/prepare_s1_flatplate_case.py" \
+    --dst-case "$OUT_DIR/$name" --use-gpu t --im "$IM" --jm "$JM" --km "$KM" \
+    --conschm 643e --diffterm "$diffterm" --lfilter "$lfilter" \
+    --upper-bctype "$upper_bctype" --z-bctype "$z_bctype" \
+    --ninit 0 --maxstep 1 --feqchkpt 1
+  python3 "$ROOT_DIR/tests/gpu_validation/generate_curvilinear_tgv_grid.py" \
+    --output "$OUT_DIR/$name/datin/grid.flatplate.h5" \
+    --report "$OUT_DIR/$name/grid_report.txt" --grid "$GRID" \
+    --mapping y-wavy --amplitude 0.15
+}
+
+scope_error='GPU nonreflecting curved NSCBC requires approved inviscid upper-y 52 capability'
+prepare_curve_52 curve_52_diffusion t f 52 1
+expect_reject curve_52_diffusion input.flatplate "$scope_error" nonreflecting
+
+prepare_curve_52 curve_52_filter f t 52 1
+expect_reject curve_52_filter input.flatplate "$scope_error" nonreflecting
+
+prepare_curve_52 curve_52_wrong_upper f f 51 1
+expect_reject curve_52_wrong_upper input.flatplate "$scope_error" nonreflecting
+
+prepare_curve_52 curve_52_nonperiodic_z f f 52 50
+expect_reject curve_52_nonperiodic_z input.flatplate "$scope_error" nonreflecting
+
+prepare_curve_52 curve_52_incoming_only f f 52 1
+expect_reject curve_52_incoming_only input.flatplate \
+  'GPU S1 flatplate requires an explicit 3D S1-A capability contract' incoming_only

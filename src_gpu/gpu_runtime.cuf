@@ -5,9 +5,50 @@ module gpu_runtime
   logical,save :: rk_timing_configured = .false.
   logical,save :: rk_timing_enabled = .false.
   logical,save :: rank_rk_timing_enabled = .false.
+  logical,save :: complete_step_timing_configured = .false.
+  logical,save :: complete_step_timing_enabled = .false.
   real(8),save :: rk_prepare_start = 0.d0
   real(8),save :: rk_prepare_seconds = 0.d0
+  real(8),save :: complete_step_start = 0.d0
 contains
+  subroutine configure_complete_step_timing()
+    implicit none
+    character(len=16) :: value
+    integer :: length,status
+
+    if(complete_step_timing_configured) return
+    value=''
+    call get_environment_variable('ASTR_GPU_COMPLETE_STEP_TIMING',value, &
+                                  length=length,status=status)
+    if(status==0 .and. length>0) then
+      select case(trim(adjustl(value)))
+      case('1','t','T','true','TRUE','on','ON')
+        complete_step_timing_enabled=.true.
+      end select
+    endif
+    complete_step_timing_configured=.true.
+  end subroutine configure_complete_step_timing
+
+  subroutine gpu_begin_complete_step_timing()
+    use parallel, only: ptime
+    implicit none
+
+    call configure_complete_step_timing()
+    if(complete_step_timing_enabled) complete_step_start=ptime()
+  end subroutine gpu_begin_complete_step_timing
+
+  subroutine gpu_end_complete_step_timing()
+    use commvar, only: nstep
+    use parallel, only: lio,ptime
+    implicit none
+    real(8) :: elapsed
+
+    if(.not.complete_step_timing_enabled) return
+    elapsed=ptime()-complete_step_start
+    if(lio) write(*,'(A,1X,I0,1X,ES24.16E3)') &
+      'ASTR_GPU_COMPLETE_STEP_TIMING',nstep,elapsed
+  end subroutine gpu_end_complete_step_timing
+
   subroutine configure_rk_timing()
     implicit none
     character(len=16) :: value
@@ -91,6 +132,7 @@ contains
     use conservative_boundary_runtime, only: conservative_boundary
     use conservative_boundary_stage_gpu, only: initialize_conservative_stage_gpu
     use commvar_gpu, only: set_metric_consistent_eps_gpu
+    use production_statistics_gpu, only: initialize_compact_statistics_gpu
     implicit none
     logical :: allow_selective
 
@@ -114,15 +156,56 @@ contains
     call init_s1_flatplate_profile_gpu()
     call init_dynamic_inflow_gpu()
     call init_sponge_gpu()
+    call initialize_compact_statistics_gpu()
   end subroutine gpu_after_flowinit
 
   subroutine gpu_before_finalize()
     use halo_transport_gpu, only: release_host_buffers
     use inflow_timeseries_gpu, only: release_dynamic_inflow_gpu
+    use production_statistics_gpu, only: release_compact_statistics_gpu
+    use boundary_gpu, only: release_boundary_gpu
+    use sponge_gpu, only: release_sponge_gpu
+    use conservative_boundary_stage_gpu, only: release_conservative_stage_gpu
+    use halo_exchange_gpu, only: release_halo_exchange_buffers_gpu
+    use commarray_gpu, only: release_gpu_arrays
     implicit none
+    call release_compact_statistics_gpu()
     call release_dynamic_inflow_gpu()
+    call release_boundary_gpu()
+    call release_sponge_gpu()
+    call release_conservative_stage_gpu()
     call release_host_buffers()
+    call release_halo_exchange_buffers_gpu()
+    call release_gpu_arrays()
   end subroutine gpu_before_finalize
+
+  logical function gpu_compact_statistics_requested()
+    use production_statistics_gpu, only: compact_statistics_requested
+    implicit none
+
+    gpu_compact_statistics_requested=compact_statistics_requested()
+  end function gpu_compact_statistics_requested
+
+  subroutine gpu_accumulate_compact_statistics()
+    use production_statistics_gpu, only: accumulate_compact_statistics_gpu
+    implicit none
+
+    call accumulate_compact_statistics_gpu()
+  end subroutine gpu_accumulate_compact_statistics
+
+  subroutine gpu_prepare_compact_statistics_checkpoint()
+    use production_statistics_gpu, only: prepare_compact_statistics_checkpoint
+    implicit none
+
+    call prepare_compact_statistics_checkpoint()
+  end subroutine gpu_prepare_compact_statistics_checkpoint
+
+  subroutine gpu_commit_compact_statistics_checkpoint()
+    use production_statistics_gpu, only: commit_compact_statistics_checkpoint
+    implicit none
+
+    call commit_compact_statistics_checkpoint()
+  end subroutine gpu_commit_compact_statistics_checkpoint
 
   subroutine gpu_sync_flow_to_device()
     use commarray_gpu, only: copy_flow_to_gpu

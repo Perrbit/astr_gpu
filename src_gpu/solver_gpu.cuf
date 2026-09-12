@@ -2324,18 +2324,16 @@ contains
     implicit none
     integer,value :: i,j,k,idir,im,jm,km
     real(8) :: f(5)
-    integer :: kk
     real(8) :: uu
 
-    kk = idx_periodic(k,km)
     uu = dxi_d(i,j,k,idir,1)*vel_d(i,j,k,1) + &
          dxi_d(i,j,k,idir,2)*vel_d(i,j,k,2) + &
          dxi_d(i,j,k,idir,3)*vel_d(i,j,k,3)
-    f(1) = jacob_d(i,j,kk) * q_d(i,j,k,1) * uu
-    f(2) = jacob_d(i,j,kk) * (q_d(i,j,k,2) * uu + dxi_d(i,j,k,idir,1) * prs_d(i,j,k))
-    f(3) = jacob_d(i,j,kk) * (q_d(i,j,k,3) * uu + dxi_d(i,j,k,idir,2) * prs_d(i,j,k))
-    f(4) = jacob_d(i,j,kk) * (q_d(i,j,k,4) * uu + dxi_d(i,j,k,idir,3) * prs_d(i,j,k))
-    f(5) = jacob_d(i,j,kk) * (q_d(i,j,k,5) + prs_d(i,j,k)) * uu
+    f(1) = jacob_d(i,j,k) * q_d(i,j,k,1) * uu
+    f(2) = jacob_d(i,j,k) * (q_d(i,j,k,2) * uu + dxi_d(i,j,k,idir,1) * prs_d(i,j,k))
+    f(3) = jacob_d(i,j,k) * (q_d(i,j,k,3) * uu + dxi_d(i,j,k,idir,2) * prs_d(i,j,k))
+    f(4) = jacob_d(i,j,k) * (q_d(i,j,k,4) * uu + dxi_d(i,j,k,idir,3) * prs_d(i,j,k))
+    f(5) = jacob_d(i,j,k) * (q_d(i,j,k,5) + prs_d(i,j,k)) * uu
   end subroutine flux_at_xyphysical_global
 
   attributes(device) subroutine flux_at_zphysical_global(i,j,k,idir,im,jm,km,f)

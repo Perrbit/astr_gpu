@@ -22,7 +22,8 @@ module test
     use parallel,  only : mpistop, bcast
     use cmdefne,   only : readkeyboad
     use boundary_rhs_manufactured, only: check_boundary_rhs,check_boundary_stage, &
-      check_initial_profile_mpi,check_conservative_admission
+      check_initial_profile_mpi,check_conservative_admission,                     &
+      check_nscbc_characteristic_policy
     use conservative_boundary_runtime, only: load_conservative_boundary_environment,conservative_boundary
 
     !-------------------------------------------------------------------
@@ -49,6 +50,8 @@ module test
         conservative_boundary%q_left,conservative_boundary%q_right
     case ('bcrh')
       call check_boundary_rhs
+    case ('bcgc')
+      call check_nscbc_characteristic_policy()
     
     case ('grad')
       call gradtest

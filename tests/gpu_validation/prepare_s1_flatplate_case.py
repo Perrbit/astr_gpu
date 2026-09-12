@@ -59,9 +59,14 @@ def write_profile(
     delta: float,
     wall_temperature: float,
     isobaric: bool,
+    uniform: bool,
 ) -> None:
-    velocity = 1.0 - np.exp(-((yline / delta) ** 2))
-    temperature = 1.0 + (wall_temperature - 1.0) * np.exp(-((yline / delta) ** 2))
+    if uniform:
+        velocity = np.zeros_like(yline)
+        temperature = np.ones_like(yline)
+    else:
+        velocity = 1.0 - np.exp(-((yline / delta) ** 2))
+        temperature = 1.0 + (wall_temperature - 1.0) * np.exp(-((yline / delta) ** 2))
     density = 1.0 / temperature if isobaric else np.ones_like(temperature)
     with path.open("w", encoding="ascii") as handle:
         handle.write("S1-A0 flat-plate profile\n")
@@ -94,6 +99,7 @@ def write_input(
     ninit: int,
     sponge_im: int,
     turbinf: str,
+    z_bctype: int,
 ) -> None:
     path.write_text(
         f"""########################################################################
@@ -138,8 +144,8 @@ none,h
 21
 41,{wall_temperature:.16e}
 {upper_bctype}
-1
-1
+{z_bctype}
+{z_bctype}
 
 # ninit
 {ninit}
@@ -155,7 +161,12 @@ none,h
 
 
 def write_controller(
-    path: Path, maxstep: int, feqchkpt: int, deltat: float, feqlist: int = 1
+    path: Path,
+    maxstep: int,
+    feqchkpt: int,
+    deltat: float,
+    feqlist: int = 1,
+    lwsequ: str = "f",
 ) -> None:
     path.write_text(
         f"""############################################################
@@ -163,7 +174,7 @@ def write_controller(
 ############################################################
 
 # lwsequ,lwslic,lavg,lcracon
-f,f,f,f
+{lwsequ},f,f,f
 
 # maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg
 {maxstep},{feqchkpt},9999,9999,{feqlist},9999
@@ -196,8 +207,10 @@ def main() -> int:
     parser.add_argument("--ninit", choices=(0, 3), type=int, default=0)
     parser.add_argument("--sponge-im", type=int, default=0)
     parser.add_argument("--turbinf", choices=("prof", "intp"), default="prof")
+    parser.add_argument("--z-bctype", choices=(1, 50), type=int, default=1)
     parser.add_argument("--profile-delta", type=float, default=0.08)
     parser.add_argument("--isobaric-profile", action="store_true")
+    parser.add_argument("--uniform-profile", action="store_true")
     parser.add_argument("--x-min", type=float, default=0.0)
     parser.add_argument("--x-max", type=float, default=10.0)
     parser.add_argument("--y-stretch", type=float, default=3.0)
@@ -207,6 +220,7 @@ def main() -> int:
     parser.add_argument("--maxstep", type=int, default=2)
     parser.add_argument("--feqchkpt", type=int)
     parser.add_argument("--feqlist", type=int, default=1)
+    parser.add_argument("--lwsequ", choices=("t", "f"), default="f")
     parser.add_argument("--deltat", type=positive_float, default=1.0e-5)
     args = parser.parse_args()
     if args.maxstep < 1:
@@ -259,6 +273,7 @@ def main() -> int:
         args.profile_delta,
         args.wall_temperature,
         args.isobaric_profile,
+        args.uniform_profile,
     )
     write_input(
         datin / "input.flatplate",
@@ -280,9 +295,15 @@ def main() -> int:
         args.ninit,
         args.sponge_im,
         args.turbinf,
+        args.z_bctype,
     )
     write_controller(
-        datin / "controller", args.maxstep, feqchkpt, args.deltat, args.feqlist
+        datin / "controller",
+        args.maxstep,
+        feqchkpt,
+        args.deltat,
+        args.feqlist,
+        args.lwsequ,
     )
     return 0
 

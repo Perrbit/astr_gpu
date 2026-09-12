@@ -30,7 +30,7 @@ module initialisation
   subroutine flowinit
     !
     use commvar,  only: flowtype,nstep,time,filenumb,fnumslic,ninit,   &
-                        lrestart,lavg,turbmode,ymax
+                        lrestart,lavg,turbmode,ymax,use_gpu
     use commarray,only: vel,rho,prs,spc,q,tke,omg
     use readwrite,only: readcont,readflowini3d,readflowini2d,readflowini1d,          &
                         readcheckpoint,readmeanflow,readmonc,writeflfed,write_io_tree
@@ -38,6 +38,9 @@ module initialisation
     use statistic,only: nsamples
     use bc,       only: ninflowslice,turbinf
     use userdefine,only: udf_flowinit
+#ifdef _CUDA
+    use gpu_runtime,only: gpu_compact_statistics_requested
+#endif
     !
     call inletprofile
     !
@@ -147,9 +150,15 @@ module initialisation
     !
     if(lavg) then
       !
+#ifdef _CUDA
+      if(.not.(use_gpu .and. gpu_compact_statistics_requested())) then
+        if(nsamples>0) call readmeanflow(mode='h')
+      endif
+#else
       if(nsamples>0) then
         call readmeanflow(mode='h')
       endif
+#endif
       !
     endif
     !

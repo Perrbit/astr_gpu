@@ -126,7 +126,7 @@ contains
     use boundary_gpu, only: apply_boundary_conditions_gpu,apply_ldc_boundary_conditions_gpu, &
          apply_s1_flatplate_boundary_conditions_gpu,gpu_uses_physical_boundary, &
          gpu_ldc_boundary_case_pending,gpu_s1_flatplate_boundary_case_pending, &
-         gpu_s1_flatplate_nscbc_farfield_case, &
+         gpu_s1_flatplate_nscbc_farfield_filter_case, &
          apply_nscbc_farfield_y_upper_filter_x_gpu, &
          apply_nscbc_farfield_y_upper_filter_z_gpu
     use solver_gpu, only: q_to_primitive_kernel
@@ -142,7 +142,7 @@ contains
     ldc_case = gpu_ldc_boundary_case_pending()
     flatplate_case = gpu_s1_flatplate_boundary_case_pending()
     flatplate_nscbc_farfield_case = (.not.conservative_case) .and. &
-                                    gpu_s1_flatplate_nscbc_farfield_case()
+                                    gpu_s1_flatplate_nscbc_farfield_filter_case()
     periodic_filter_case = lfilter .and. .not.(gpu_uses_physical_boundary() .or. ldc_case .or. flatplate_case)
 
     block_primitive = dim3(32,4,4)
@@ -217,7 +217,8 @@ contains
          apply_nscbc_outflow_filter_gpu,apply_nscbc_x_rhs_gpu,apply_nscbc_inflow_x_rhs_gpu, &
          GPU_BC_NSCBC_FARFIELD,apply_nscbc_farfield_y_upper_filter_x_gpu, &
          apply_nscbc_farfield_y_upper_filter_z_gpu, &
-         gpu_nscbc_farfield_y_upper_mach2,apply_nscbc_farfield_y_upper_rhs_gpu
+         gpu_nscbc_farfield_y_upper_mach2,apply_nscbc_farfield_y_upper_rhs_gpu, &
+         apply_nscbc_farfield_y_upper_nonreflecting_rhs_gpu
     use sponge_gpu, only: apply_xmax_sponge_gpu
     use solver_gpu, only: q_to_primitive_kernel,zero_rhs_kernel, &
          save_q_kernel,rk3_update_kernel,convective_rhs_x_kernel, &
@@ -284,6 +285,7 @@ contains
          gpu_open_shock_s0b4_sponge_mpi_supported, &
          gpu_s1_flatplate_s1a_supported,gpu_s1_flatplate_s1a1_supported, &
          gpu_s1_flatplate_explicit_filter_supported, &
+         gpu_curvilinear_nscbc52_nonreflecting_supported, &
          gpu_sod_s0a3_supported,gpu_shock_sensor_s0a4_supported, &
          gpu_shock_sensor_s0a5_supported,gpu_shock_characteristic_s0a6_supported, &
          gpu_shock_characteristic_s0b0_xphysical_supported, &
@@ -296,7 +298,7 @@ contains
          gpu_s2_hbl_selective_roe_s2c5_diffusion_supported, &
          gpu_s2_sbli_nscbc_supported,gpu_s2_sbli_nscbc_sponge_supported
     use shock_sensor_gpu, only: compute_shock_sensor_gpu
-    use bc, only: bctype,twall
+    use bc, only: bctype,twall,nscbc_farfield_nonreflecting_enabled
     use conservative_boundary_runtime, only: conservative_boundary
     use conservative_boundary_stage_gpu, only: apply_conservative_stage_gpu
     use validation_io, only: rhs_validation_requested,write_rhs_validation_snapshot, &
@@ -328,6 +330,8 @@ contains
     logical :: open_shock_s0b4_sponge_mpi_case
     logical :: open_shock_nscbc_case
     logical :: flatplate_nscbc_farfield_case
+    logical :: flatplate_nscbc_nonreflecting_case
+    logical :: curvilinear_nscbc52_case
     logical :: open_shock_sponge_case
     logical :: explicit_reconstructed_case
     logical :: shock_sensor_case
@@ -378,12 +382,16 @@ contains
     s2_sbli_nscbc_case = gpu_s2_sbli_nscbc_supported()
     s2_sbli_nscbc_sponge_case = gpu_s2_sbli_nscbc_sponge_supported()
     s2_sbli_nscbc_case = s2_sbli_nscbc_case .or. s2_sbli_nscbc_sponge_case
+    curvilinear_nscbc52_case = gpu_curvilinear_nscbc52_nonreflecting_supported()
     flatplate_case = conservative_case .or. gpu_s1_flatplate_s1a_supported() .or. flatplate_mp7_case .or. &
+         curvilinear_nscbc52_case .or. &
          s2_hbl_selective_roe_case .or. s2_hbl_selective_roe_sponge_case .or. &
          s2_hbl_selective_roe_c4_case .or. s2_sbli_nscbc_case
     periodic_filter_case = lfilter .and. .not.(gpu_uses_physical_boundary() .or. ldc_case .or. flatplate_case)
     flatplate_nscbc_farfield_case = (.not.conservative_case) .and. flatplate_case .and. &
                                     bctype(4) == GPU_BC_NSCBC_FARFIELD
+    flatplate_nscbc_nonreflecting_case = flatplate_nscbc_farfield_case .and. &
+                                         nscbc_farfield_nonreflecting_enabled()
     sod_s0a1_case = gpu_sod_s0a1_supported()
     sod_s0b0_xphysical_case = gpu_sod_s0b0_xphysical_supported()
     open_shock_s0b1_case = gpu_open_shock_s0b1_supported()
@@ -505,10 +513,12 @@ contains
         endif
       endif
 
-      if(conservative_case .and. rhs_validation_requested()) then
+      if(rhs_validation_requested()) then
         call copy_flow_from_gpu()
         call write_q_validation_snapshot('pre_rhs',nstep,rkstep)
-        call write_primitive_validation_snapshot('pre_rhs_primitives',nstep,rkstep)
+        if(conservative_case) then
+          call write_primitive_validation_snapshot('pre_rhs_primitives',nstep,rkstep)
+        endif
       endif
 
       call zero_rhs_kernel<<<grid1,block1>>>(qrhs_d,im,jm,km)
@@ -519,7 +529,10 @@ contains
         call apply_s1_flatplate_boundary_conditions_gpu(.true.)
         call exchange_solution_halo_gpu()
       endif
-      if(flatplate_nscbc_farfield_case) then
+      if(flatplate_nscbc_nonreflecting_case) then
+        call apply_nscbc_farfield_y_upper_nonreflecting_rhs_gpu()
+        call exchange_solution_halo_gpu()
+      elseif(flatplate_nscbc_farfield_case) then
         call gpu_nscbc_farfield_y_upper_mach2(gmachmax2_out)
         call apply_nscbc_farfield_y_upper_filter_x_gpu()
         call exchange_solution_halo_gpu()
@@ -531,6 +544,10 @@ contains
         ! Match CPU farfield_nscbc: the second transverse filter contributes
         ! to the boundary RHS before qswap refreshes its halo values.
         call exchange_solution_halo_gpu()
+      endif
+      if(rhs_validation_requested() .and. flatplate_nscbc_farfield_case) then
+        call copy_rhs_from_gpu()
+        call write_rhs_validation_snapshot('boundary',nstep,rkstep)
       endif
       if(open_shock_nscbc_case) then
         call gpu_nscbc_global_mach2(gmachmax2_in)
@@ -839,6 +856,10 @@ contains
              q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
         call sync_after_kernel('sponge_q_to_primitive_kernel')
       endif
+      if(rhs_validation_requested()) then
+        call copy_flow_from_gpu()
+        call write_q_validation_snapshot('post_update',nstep,rkstep)
+      endif
       if(conservative_case) then
         if(rhs_validation_requested()) then
           call copy_flow_from_gpu()
@@ -887,6 +908,7 @@ contains
          gpu_open_shock_s0b4_sponge_mpi_supported, &
          gpu_s1_flatplate_s1a_supported,gpu_s1_flatplate_s1a1_supported, &
          gpu_s1_flatplate_explicit_filter_supported, &
+         gpu_curvilinear_nscbc52_nonreflecting_supported, &
          gpu_shock_sensor_s0a4_supported, &
          gpu_shock_sensor_s0a5_supported,gpu_shock_characteristic_s0a6_supported, &
          gpu_shock_characteristic_s0b0_xphysical_supported, &
@@ -898,7 +920,8 @@ contains
          gpu_s2_hbl_selective_roe_s2c4_diffusion_supported, &
          gpu_s2_hbl_selective_roe_s2c5_diffusion_supported, &
          gpu_s2_sbli_nscbc_supported,gpu_s2_sbli_nscbc_sponge_supported
-    use bc, only: bctype,nscbc_farfield_sbli_shock_enabled
+    use bc, only: bctype,nscbc_farfield_sbli_shock_enabled,             &
+                  nscbc_farfield_nonreflecting_enabled
     use commarray, only: jacob,dxi,bnorm_im,bnorm_j0,bnorm_jm,         &
                          bnorm_k0,bnorm_km
     use parallel, only: mpisize,isize,jsize,ksize,pmax,lio
@@ -926,6 +949,7 @@ contains
          gpu_s1_flatplate_s1a_supported() .or. &
          gpu_s1_flatplate_s1a1_supported() .or. &
          gpu_s1_flatplate_explicit_filter_supported() .or. &
+         gpu_curvilinear_nscbc52_nonreflecting_supported() .or. &
          gpu_shock_sensor_s0a4_supported() .or. gpu_shock_sensor_s0a5_supported() .or. &
          gpu_shock_characteristic_s0a6_supported() .or. &
          gpu_shock_characteristic_s0b0_xphysical_supported() .or. &
@@ -965,6 +989,9 @@ contains
     if(trim(difschm) /= '643e') stop 'GPU first-stage supports explicit difschm=643e only'
     if(mpisize /= isize*jsize*ksize) &
       stop 'GPU first-stage MPI topology is inconsistent'
+    if(nscbc_farfield_nonreflecting_enabled() .and.                     &
+       .not.gpu_curvilinear_nscbc52_nonreflecting_supported())         &
+      stop 'GPU nonreflecting curved NSCBC requires approved inviscid upper-y 52 capability'
 
     geometry_error=max(maxval(abs(dxi(0:im,0:jm,0:km,1,2))),        &
          maxval(abs(dxi(0:im,0:jm,0:km,1,3))),                      &
@@ -1030,6 +1057,7 @@ contains
        (.not.gpu_s1_flatplate_s1a_supported()) .and. &
        (.not.gpu_s1_flatplate_s1a1_supported()) .and. &
        (.not.gpu_s1_flatplate_explicit_filter_supported()) .and. &
+       (.not.gpu_curvilinear_nscbc52_nonreflecting_supported()) .and. &
        (.not.gpu_s2_hbl_selective_roe_s2c3_supported()) .and. &
        (.not.gpu_s2_hbl_selective_roe_diffusion_supported()) .and. &
        (.not.gpu_s2_hbl_selective_roe_s2c3_sponge_supported()) .and. &
@@ -1040,7 +1068,9 @@ contains
        (.not.gpu_s2_sbli_nscbc_supported()) .and. &
        (.not.gpu_s2_sbli_nscbc_sponge_supported())) &
       stop 'GPU S1 flatplate requires an explicit 3D S1-A capability contract'
-    if((.not.ldc_case) .and. (.not.flatplate_pending) .and. (.not.gpu_boundary_case_supported())) &
+    if((.not.ldc_case) .and. (.not.flatplate_pending) .and.             &
+       (.not.gpu_curvilinear_nscbc52_nonreflecting_supported()) .and.  &
+       (.not.gpu_boundary_case_supported()))                           &
       stop 'GPU first-stage supports periodic or one zeroextrap/symmetry/isothermal/adiabatic/slip-isothermal/slip-adiabatic wall direction only'
     min_jacob = minval(jacob(0:im,0:jm,0:km))
     max_jacob = maxval(jacob(0:im,0:jm,0:km))

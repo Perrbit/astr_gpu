@@ -1,0 +1,568 @@
+module production_statistics_gpu
+  use cudafor
+  use iso_fortran_env, only: int8,int32,int64,real64
+  use iso_c_binding, only: c_char,c_int,c_null_char
+  implicit none
+
+  interface
+    integer(c_int) function c_rename(old_path,new_path) bind(C,name='rename')
+      import c_char,c_int
+      character(kind=c_char),intent(in) :: old_path(*)
+      character(kind=c_char),intent(in) :: new_path(*)
+    end function c_rename
+  end interface
+
+  logical,save :: compact_statistics_active=.false.
+  logical,save :: compact_statistics_initialized=.false.
+  real(8),allocatable,device :: plane_measure_d(:,:),plane_sum_d(:,:,:)
+  real(8),allocatable,device :: wall_measure_d(:),wall_sum_d(:,:)
+  integer(int64),save :: sample_count=0_int64
+  integer(int64),save :: sampling_start_step=0_int64
+  integer(int64),save :: last_sample_step=-huge(0_int64)
+  real(8),save :: sampling_start_time=0.d0
+  logical,save :: checkpoint_prepared=.false.
+
+contains
+  attributes(global) subroutine compact_plane_measure_kernel(x,measure,im,jm,km,hm)
+    implicit none
+    integer,value :: im,jm,km,hm
+    real(8),device,intent(in) :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device,intent(out) :: measure(0:im,0:jm)
+    integer :: i,j,k
+    real(8) :: dx,dy,dz,total
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=(blockIdx%y-1)*blockDim%y+threadIdx%y-1
+    if(i>im .or. j>jm) return
+    total=0.d0
+    do k=1,km
+      dx=x(i,j,k,1)-x(i,j,k-1,1)
+      dy=x(i,j,k,2)-x(i,j,k-1,2)
+      dz=x(i,j,k,3)-x(i,j,k-1,3)
+      total=total+sqrt(dx*dx+dy*dy+dz*dz)
+    enddo
+    measure(i,j)=total
+  end subroutine compact_plane_measure_kernel
+
+  attributes(global) subroutine compact_wall_measure_kernel(plane_measure,wall_measure,im,jm)
+    implicit none
+    integer,value :: im,jm
+    real(8),device,intent(in) :: plane_measure(0:im,0:jm)
+    real(8),device,intent(out) :: wall_measure(0:im)
+    integer :: i
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(i>im) return
+    wall_measure(i)=plane_measure(i,0)
+  end subroutine compact_wall_measure_kernel
+
+  attributes(global) subroutine compact_plane_moment_kernel(x,rho_field,vel,prs,tmp, &
+                                                              plane_sum,im,jm,km,hm)
+    implicit none
+    integer,value :: im,jm,km,hm
+    real(8),device,intent(in) :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device,intent(in) :: rho_field(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device,intent(in) :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device,intent(in) :: prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device,intent(in) :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device,intent(inout) :: plane_sum(0:im,0:jm,1:12)
+    integer :: i,j,k,m
+    real(8) :: dx,dy,dz,ds,rho,u,v,w,t,p
+    real(8) :: left(12),right(12),total(12)
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=(blockIdx%y-1)*blockDim%y+threadIdx%y-1
+    if(i>im .or. j>jm) return
+
+    rho=rho_field(i,j,0); u=vel(i,j,0,1); v=vel(i,j,0,2); w=vel(i,j,0,3)
+    t=tmp(i,j,0); p=prs(i,j,0)
+    left=(/rho,rho*u,rho*v,rho*w,rho*t,p,rho*u*u,rho*v*v,rho*w*w, &
+           rho*u*v,rho*u*w,rho*v*w/)
+    total=0.d0
+    do k=1,km
+      dx=x(i,j,k,1)-x(i,j,k-1,1)
+      dy=x(i,j,k,2)-x(i,j,k-1,2)
+      dz=x(i,j,k,3)-x(i,j,k-1,3)
+      ds=sqrt(dx*dx+dy*dy+dz*dz)
+      rho=rho_field(i,j,k); u=vel(i,j,k,1); v=vel(i,j,k,2); w=vel(i,j,k,3)
+      t=tmp(i,j,k); p=prs(i,j,k)
+      right=(/rho,rho*u,rho*v,rho*w,rho*t,p,rho*u*u,rho*v*v,rho*w*w, &
+              rho*u*v,rho*u*w,rho*v*w/)
+      total=total+0.5d0*(left+right)*ds
+      left=right
+    enddo
+    do m=1,12
+      plane_sum(i,j,m)=plane_sum(i,j,m)+total(m)
+    enddo
+  end subroutine compact_plane_moment_kernel
+
+  attributes(device) subroutine compact_wall_point_values(x,bnorm,prs,tmp,dvel,dtmp, &
+      i,k,im,jm,km,hm,ia,ig0,nondimen,reynolds,prandtl,const5,cp,tempconst,tempconst1,values)
+    implicit none
+    integer,value :: i,k,im,jm,km,hm,ia,ig0
+    logical,value :: nondimen
+    real(8),value :: reynolds,prandtl,const5,cp,tempconst,tempconst1
+    real(8),device,intent(in) :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device,intent(in) :: bnorm(0:im,0:km,1:3)
+    real(8),device,intent(in) :: prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device,intent(in) :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device,intent(in) :: dvel(0:im,0:jm,0:km,1:3,1:3)
+    real(8),device,intent(in) :: dtmp(0:im,0:jm,0:km,1:3)
+    real(8),intent(out) :: values(3)
+    real(8) :: normal(3),di(3),tangent(3),traction(3),grad_t(3)
+    real(8) :: stress(3,3),mu,conductivity,divergence,tangent_norm,t,tnondim
+
+    normal=bnorm(i,k,:)
+    if(ig0+i==0) then
+      di=x(i+1,0,k,:)-x(i,0,k,:)
+    elseif(ig0+i==ia) then
+      di=x(i,0,k,:)-x(i-1,0,k,:)
+    else
+      di=x(i+1,0,k,:)-x(i-1,0,k,:)
+    endif
+    tangent=di-dot_product(di,normal)*normal
+    tangent_norm=sqrt(dot_product(tangent,tangent))
+    if(tangent_norm>1.d-300) then
+      tangent=tangent/tangent_norm
+    else
+      tangent=0.d0
+    endif
+
+    t=tmp(i,0,k)
+    if(nondimen) then
+      mu=t*sqrt(t)*tempconst1/(t+tempconst)/reynolds
+      conductivity=(mu/prandtl)/const5
+    else
+      tnondim=t/273.15d0
+      mu=1.716d-5*tnondim*sqrt(tnondim)*(273.15d0+110.4d0)/(t+110.4d0)
+      conductivity=cp*mu/prandtl
+    endif
+    divergence=dvel(i,0,k,1,1)+dvel(i,0,k,2,2)+dvel(i,0,k,3,3)
+    stress=0.d0
+    stress(1,1)=mu*(2.d0*dvel(i,0,k,1,1)-2.d0*divergence/3.d0)
+    stress(2,2)=mu*(2.d0*dvel(i,0,k,2,2)-2.d0*divergence/3.d0)
+    stress(3,3)=mu*(2.d0*dvel(i,0,k,3,3)-2.d0*divergence/3.d0)
+    stress(1,2)=mu*(dvel(i,0,k,1,2)+dvel(i,0,k,2,1)); stress(2,1)=stress(1,2)
+    stress(1,3)=mu*(dvel(i,0,k,1,3)+dvel(i,0,k,3,1)); stress(3,1)=stress(1,3)
+    stress(2,3)=mu*(dvel(i,0,k,2,3)+dvel(i,0,k,3,2)); stress(3,2)=stress(2,3)
+    traction(1)=stress(1,1)*normal(1)+stress(1,2)*normal(2)+stress(1,3)*normal(3)
+    traction(2)=stress(2,1)*normal(1)+stress(2,2)*normal(2)+stress(2,3)*normal(3)
+    traction(3)=stress(3,1)*normal(1)+stress(3,2)*normal(2)+stress(3,3)*normal(3)
+    grad_t=dtmp(i,0,k,:)
+    values(1)=prs(i,0,k)
+    values(2)=dot_product(tangent,traction)
+    values(3)=conductivity*dot_product(grad_t,normal)
+  end subroutine compact_wall_point_values
+
+  attributes(global) subroutine compact_wall_moment_kernel(x,bnorm,prs,tmp,dvel,dtmp, &
+      wall_sum,im,jm,km,hm,ia,ig0,nondimen,reynolds,prandtl,const5,cp,tempconst,tempconst1)
+    implicit none
+    integer,value :: im,jm,km,hm,ia,ig0
+    logical,value :: nondimen
+    real(8),value :: reynolds,prandtl,const5,cp,tempconst,tempconst1
+    real(8),device,intent(in) :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device,intent(in) :: bnorm(0:im,0:km,1:3)
+    real(8),device,intent(in) :: prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device,intent(in) :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device,intent(in) :: dvel(0:im,0:jm,0:km,1:3,1:3)
+    real(8),device,intent(in) :: dtmp(0:im,0:jm,0:km,1:3)
+    real(8),device,intent(inout) :: wall_sum(0:im,1:3)
+    integer :: i,k
+    real(8) :: dx,dy,dz,ds,left(3),right(3),total(3)
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(i>im) return
+    call compact_wall_point_values(x,bnorm,prs,tmp,dvel,dtmp,i,0,im,jm,km,hm,ia,ig0, &
+      nondimen,reynolds,prandtl,const5,cp,tempconst,tempconst1,left)
+    total=0.d0
+    do k=1,km
+      dx=x(i,0,k,1)-x(i,0,k-1,1)
+      dy=x(i,0,k,2)-x(i,0,k-1,2)
+      dz=x(i,0,k,3)-x(i,0,k-1,3)
+      ds=sqrt(dx*dx+dy*dy+dz*dz)
+      call compact_wall_point_values(x,bnorm,prs,tmp,dvel,dtmp,i,k,im,jm,km,hm,ia,ig0, &
+        nondimen,reynolds,prandtl,const5,cp,tempconst,tempconst1,right)
+      total=total+0.5d0*(left+right)*ds
+      left=right
+    enddo
+    wall_sum(i,:)=wall_sum(i,:)+total
+  end subroutine compact_wall_moment_kernel
+
+#ifndef TEST_COMPACT_STATS
+  logical function compact_statistics_requested()
+    use commvar, only: use_gpu,lavg,flowtype
+    implicit none
+
+    compact_statistics_requested=use_gpu .and. lavg .and. &
+      (trim(flowtype)=='bl' .or. trim(flowtype)=='swbli')
+  end function compact_statistics_requested
+
+  logical function compact_statistics_supported()
+    use commvar, only: flowtype,ndims,numq,num_species,turbmode,lkhomo,ljhomo
+    use bc, only: bctype
+    implicit none
+    logical :: admitted_flow,admitted_wall
+
+    admitted_flow=trim(flowtype)=='bl' .or. trim(flowtype)=='swbli'
+    admitted_wall=bctype(3)==41 .or. bctype(3)==42 .or. &
+                    bctype(3)==411 .or. bctype(3)==421
+    compact_statistics_supported=admitted_flow .and. ndims==3 .and. numq==5 .and. &
+      num_species==0 .and. trim(turbmode)=='none' .and. (.not.ljhomo) .and. lkhomo .and. &
+      admitted_wall .and. all(bctype(5:6)==1)
+  end function compact_statistics_supported
+
+  subroutine initialize_compact_statistics_gpu()
+    use mpi
+    use commarray_gpu, only: x_d
+    use commvar, only: im,jm,km,hm
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: jrk,lio
+    implicit none
+    type(dim3) :: block,grid
+    real(8),allocatable :: plane_measure_h(:,:),wall_measure_h(:)
+    integer :: local_bad,global_bad,ierr
+
+    if(compact_statistics_initialized) return
+    compact_statistics_initialized=.true.
+    if(.not.compact_statistics_requested()) return
+    if(.not.compact_statistics_supported()) then
+      if(lio) write(*,'(A)') 'GPU compact statistics does not support this case configuration'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+    endif
+
+    allocate(plane_measure_d(0:im,0:jm))
+    allocate(plane_sum_d(0:im,0:jm,1:12))
+    plane_sum_d=0.d0
+    sample_count=0_int64
+    sampling_start_step=0_int64
+    sampling_start_time=0.d0
+    last_sample_step=-huge(0_int64)
+    block=dim3(32,16,1)
+    grid=dim3((im+1+block%x-1)/block%x,(jm+1+block%y-1)/block%y,1)
+    call compact_plane_measure_kernel<<<grid,block>>>(x_d,plane_measure_d,im,jm,km,hm)
+    call sync_after_kernel('compact_plane_measure_kernel')
+
+    if(jrk==0) then
+      allocate(wall_measure_d(0:im))
+      allocate(wall_sum_d(0:im,1:3))
+      wall_sum_d=0.d0
+      block=dim3(256,1,1)
+      grid=dim3((im+1+block%x-1)/block%x,1,1)
+      call compact_wall_measure_kernel<<<grid,block>>>(plane_measure_d,wall_measure_d,im,jm)
+      call sync_after_kernel('compact_wall_measure_kernel')
+    endif
+
+    allocate(plane_measure_h(0:im,0:jm))
+    plane_measure_h=plane_measure_d
+    local_bad=merge(1,0,any(plane_measure_h<=0.d0))
+    if(jrk==0) then
+      allocate(wall_measure_h(0:im))
+      wall_measure_h=wall_measure_d
+      if(any(wall_measure_h<=0.d0)) local_bad=1
+      deallocate(wall_measure_h)
+    endif
+    deallocate(plane_measure_h)
+    call mpi_allreduce(local_bad,global_bad,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS .or. global_bad/=0) then
+      if(lio) write(*,'(A)') 'GPU compact statistics requires positive physical z measures'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+    endif
+    compact_statistics_active=.true.
+    call restore_compact_statistics_checkpoint()
+    if(lio) write(*,'(A)') ' ** GPU compact production statistics: enabled'
+  end subroutine initialize_compact_statistics_gpu
+
+  subroutine accumulate_compact_statistics_gpu()
+    use commarray_gpu, only: x_d,rho_d,vel_d,prs_d,tmp_d,dvel_d,dtmp_d,bnorm_j0_d
+    use commvar, only: im,jm,km,hm,ia,lavg,feqavg,nstep,time,nondimen,reynolds, &
+                       prandtl,const5,cp,tempconst,tempconst1
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: jrk,ig0
+    use statistic, only: nsamples
+    implicit none
+    type(dim3) :: block,grid
+
+    if(.not.compact_statistics_active) return
+    if(nstep<=0 .or. (.not.lavg)) return
+    if(mod(nstep,feqavg)/=0) return
+    if(int(nstep,int64)==last_sample_step) return
+    block=dim3(32,16,1)
+    grid=dim3((im+1+block%x-1)/block%x,(jm+1+block%y-1)/block%y,1)
+    call compact_plane_moment_kernel<<<grid,block>>>(x_d,rho_d,vel_d,prs_d,tmp_d, &
+                                                     plane_sum_d,im,jm,km,hm)
+    call sync_after_kernel('compact_plane_moment_kernel')
+    if(jrk==0) then
+      block=dim3(256,1,1)
+      grid=dim3((im+1+block%x-1)/block%x,1,1)
+      call compact_wall_moment_kernel<<<grid,block>>>(x_d,bnorm_j0_d,prs_d,tmp_d,dvel_d, &
+        dtmp_d,wall_sum_d,im,jm,km,hm,ia,ig0,nondimen,reynolds,prandtl,const5,cp, &
+        tempconst,tempconst1)
+      call sync_after_kernel('compact_wall_moment_kernel')
+    endif
+    if(sample_count==0_int64) then
+      sampling_start_step=int(nstep,int64)
+      sampling_start_time=time
+    endif
+    sample_count=sample_count+1_int64
+    nsamples=int(sample_count)
+    last_sample_step=int(nstep,int64)
+  end subroutine accumulate_compact_statistics_gpu
+
+  integer(int64) function compact_statistics_sample_count()
+    implicit none
+
+    compact_statistics_sample_count=sample_count
+  end function compact_statistics_sample_count
+
+  subroutine compact_statistics_paths(final_path,temp_path,backup_path)
+    use parallel, only: mpirank
+    implicit none
+    character(len=*),intent(out) :: final_path,temp_path,backup_path
+    character(len=8) :: rank_name
+
+    write(rank_name,'(I8.8)') mpirank
+    final_path='outdat/compact_stats.rank'//rank_name//'.bin'
+    temp_path=trim(final_path)//'.tmp'
+    backup_path='bakup/compact_stats.rank'//rank_name//'.bin'
+  end subroutine compact_statistics_paths
+
+  subroutine abort_sidecar_error(local_error,message)
+    use mpi
+    use parallel, only: lio
+    implicit none
+    integer,intent(in) :: local_error
+    character(len=*),intent(in) :: message
+    integer :: global_error,ierr
+
+    call mpi_allreduce(local_error,global_error,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS .or. global_error/=0) then
+      if(lio) write(*,'(A)') trim(message)
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+    endif
+  end subroutine abort_sidecar_error
+
+  subroutine prepare_compact_statistics_checkpoint()
+    use commvar, only: ia,ja,ka,im,jm,km,nstep,time
+    use parallel, only: mpirank,irk,jrk,krk,ig0,jg0,kg0,isize,jsize,ksize
+    implicit none
+    integer(int32) :: fixed_header(20)
+    integer(int64) :: checkpoint_step,sample_metadata(2)
+    real(real64) :: checkpoint_time,start_time
+    real(8),allocatable :: plane_measure_h(:,:),plane_sum_h(:,:,:)
+    real(8),allocatable :: wall_measure_h(:),wall_sum_h(:,:)
+    character(len=256) :: final_path,temp_path,backup_path
+    integer :: unit,ios,local_error
+
+    if(.not.compact_statistics_active) return
+    allocate(plane_measure_h(0:im,0:jm),plane_sum_h(0:im,0:jm,1:12))
+    plane_measure_h=plane_measure_d
+    plane_sum_h=plane_sum_d
+    if(jrk==0) then
+      allocate(wall_measure_h(0:im),wall_sum_h(0:im,1:3))
+      wall_measure_h=wall_measure_d
+      wall_sum_h=wall_sum_d
+    endif
+    fixed_header=(/int(1,int32),int(z'01020304',int32),int(8,int32),int(merge(1,0,jrk==0),int32), &
+      int(ia+1,int32),int(ja+1,int32),int(ka+1,int32),int(isize,int32),int(jsize,int32), &
+      int(ksize,int32),int(mpirank,int32),int(irk,int32),int(jrk,int32),int(krk,int32), &
+      int(ig0,int32),int(jg0,int32),int(kg0,int32),int(im+1,int32),int(jm+1,int32),int(km+1,int32)/)
+    checkpoint_step=int(nstep,int64)
+    checkpoint_time=real(time,real64)
+    sample_metadata=(/sample_count,sampling_start_step/)
+    start_time=real(sampling_start_time,real64)
+    call compact_statistics_paths(final_path,temp_path,backup_path)
+    local_error=0
+    open(newunit=unit,file=trim(temp_path),access='stream',form='unformatted',status='replace', &
+         action='write',convert='little_endian',iostat=ios)
+    if(ios/=0) then
+      local_error=1
+    else
+      write(unit,iostat=ios) 'ASTRCST1'
+      if(ios==0) write(unit,iostat=ios) fixed_header
+      if(ios==0) write(unit,iostat=ios) checkpoint_step
+      if(ios==0) write(unit,iostat=ios) checkpoint_time
+      if(ios==0) write(unit,iostat=ios) sample_metadata
+      if(ios==0) write(unit,iostat=ios) start_time
+      if(ios==0) write(unit,iostat=ios) plane_measure_h
+      if(ios==0) write(unit,iostat=ios) plane_sum_h
+      if(ios==0 .and. jrk==0) write(unit,iostat=ios) wall_measure_h
+      if(ios==0 .and. jrk==0) write(unit,iostat=ios) wall_sum_h
+      if(ios/=0) local_error=1
+      flush(unit,iostat=ios)
+      if(ios/=0) local_error=1
+      close(unit,iostat=ios)
+      if(ios/=0) local_error=1
+    endif
+    deallocate(plane_measure_h,plane_sum_h)
+    if(allocated(wall_measure_h)) deallocate(wall_measure_h,wall_sum_h)
+    call abort_sidecar_error(local_error,'GPU compact statistics temporary checkpoint write failed')
+    checkpoint_prepared=.true.
+  end subroutine prepare_compact_statistics_checkpoint
+
+  subroutine make_c_path(path,c_path)
+    implicit none
+    character(len=*),intent(in) :: path
+    character(kind=c_char),allocatable,intent(out) :: c_path(:)
+    integer :: i,n
+
+    n=len_trim(path)
+    allocate(c_path(n+1))
+    do i=1,n
+      c_path(i)=path(i:i)
+    enddo
+    c_path(n+1)=c_null_char
+  end subroutine make_c_path
+
+  subroutine commit_compact_statistics_checkpoint()
+    use mpi
+    implicit none
+    character(len=256) :: final_path,temp_path,backup_path
+    character(kind=c_char),allocatable :: final_c(:),temp_c(:),backup_c(:)
+    logical :: exists
+    integer :: local_error,ierr
+
+    if(.not.compact_statistics_active) return
+    local_error=merge(0,1,checkpoint_prepared)
+    call abort_sidecar_error(local_error,'GPU compact statistics commit was not prepared')
+    call mpi_barrier(MPI_COMM_WORLD,ierr)
+    call compact_statistics_paths(final_path,temp_path,backup_path)
+    call make_c_path(final_path,final_c)
+    call make_c_path(temp_path,temp_c)
+    call make_c_path(backup_path,backup_c)
+    inquire(file=trim(final_path),exist=exists)
+    local_error=0
+    if(exists) then
+      if(c_rename(final_c,backup_c)/=0_c_int) local_error=1
+    endif
+    call abort_sidecar_error(local_error,'GPU compact statistics backup rotation failed')
+    local_error=merge(0,1,c_rename(temp_c,final_c)==0_c_int)
+    call abort_sidecar_error(local_error,'GPU compact statistics atomic publish failed')
+    call mpi_barrier(MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,local_error)
+    checkpoint_prepared=.false.
+    deallocate(final_c,temp_c,backup_c)
+  end subroutine commit_compact_statistics_checkpoint
+
+  subroutine restore_compact_statistics_checkpoint()
+    use mpi
+    use commvar, only: ia,ja,ka,im,jm,km,nstep,time
+    use gpu_check, only: sync_gpu_boundary
+    use parallel, only: mpirank,irk,jrk,krk,ig0,jg0,kg0,isize,jsize,ksize,lio
+    use statistic, only: nsamples
+    implicit none
+    integer(int32) :: fixed_header(20),global_dims(3),topology(3),rank_coords(3), &
+                      offsets(3),local_dims(3)
+    integer(int64) :: checkpoint_step,sample_metadata(2)
+    real(real64) :: checkpoint_time,start_time
+    real(8),allocatable :: plane_measure_h(:,:),plane_sum_h(:,:,:),current_measure(:,:)
+    real(8),allocatable :: wall_measure_h(:),wall_sum_h(:,:),current_wall_measure(:)
+    character(len=256) :: final_path,temp_path,backup_path
+    character(len=8) :: magic
+    integer(int8) :: trailing
+    logical :: final_exists,temp_exists
+    integer :: unit,ios,local_error,ierr
+    real(8) :: tolerance
+
+    call compact_statistics_paths(final_path,temp_path,backup_path)
+    inquire(file=trim(final_path),exist=final_exists)
+    inquire(file=trim(temp_path),exist=temp_exists)
+    local_error=merge(1,0,temp_exists)
+    if(nsamples==0 .and. final_exists) local_error=1
+    if(nsamples>0 .and. (.not.final_exists)) local_error=1
+    call abort_sidecar_error(local_error,'GPU compact statistics restart generation is missing or stale')
+    if(nsamples==0) return
+
+    allocate(plane_measure_h(0:im,0:jm),plane_sum_h(0:im,0:jm,1:12))
+    if(jrk==0) allocate(wall_measure_h(0:im),wall_sum_h(0:im,1:3))
+    fixed_header=0_int32
+    checkpoint_step=-1_int64
+    checkpoint_time=0.d0
+    sample_metadata=0_int64
+    start_time=0.d0
+    magic=''
+    plane_measure_h=0.d0
+    plane_sum_h=0.d0
+    if(jrk==0) then
+      wall_measure_h=0.d0
+      wall_sum_h=0.d0
+    endif
+    local_error=0
+    open(newunit=unit,file=trim(final_path),access='stream',form='unformatted',status='old', &
+         action='read',convert='little_endian',iostat=ios)
+    if(ios/=0) then
+      local_error=1
+    else
+      read(unit,iostat=ios) magic
+      if(ios==0) read(unit,iostat=ios) fixed_header
+      if(ios==0) read(unit,iostat=ios) checkpoint_step
+      if(ios==0) read(unit,iostat=ios) checkpoint_time
+      if(ios==0) read(unit,iostat=ios) sample_metadata
+      if(ios==0) read(unit,iostat=ios) start_time
+      if(ios==0) read(unit,iostat=ios) plane_measure_h
+      if(ios==0) read(unit,iostat=ios) plane_sum_h
+      if(ios==0 .and. jrk==0) read(unit,iostat=ios) wall_measure_h
+      if(ios==0 .and. jrk==0) read(unit,iostat=ios) wall_sum_h
+      if(ios/=0) then
+        local_error=1
+      else
+        read(unit,iostat=ios) trailing
+        if(ios==0) local_error=1
+      endif
+      close(unit)
+    endif
+    global_dims=fixed_header(5:7)
+    topology=fixed_header(8:10)
+    rank_coords=fixed_header(12:14)
+    offsets=fixed_header(15:17)
+    local_dims=fixed_header(18:20)
+    tolerance=1.d-12*max(1.d0,abs(time))
+    if(magic/='ASTRCST1' .or. fixed_header(1)/=1 .or. &
+       fixed_header(2)/=int(z'01020304',int32) .or. fixed_header(3)/=8) local_error=1
+    if(any(global_dims/=(/ia+1,ja+1,ka+1/))) local_error=1
+    if(any(topology/=(/isize,jsize,ksize/))) local_error=1
+    if(fixed_header(11)/=mpirank .or. any(rank_coords/=(/irk,jrk,krk/))) local_error=1
+    if(any(offsets/=(/ig0,jg0,kg0/)) .or. any(local_dims/=(/im+1,jm+1,km+1/))) local_error=1
+    if(checkpoint_step/=int(nstep,int64) .or. abs(checkpoint_time-time)>tolerance) local_error=1
+    if(sample_metadata(1)/=int(nsamples,int64) .or. fixed_header(4)/=merge(1,0,jrk==0)) local_error=1
+    allocate(current_measure(0:im,0:jm)); current_measure=plane_measure_d
+    if(.not.all(abs(plane_measure_h-current_measure)<=1.d-10+1.d-10*abs(current_measure))) local_error=1
+    deallocate(current_measure)
+    if(jrk==0) then
+      allocate(current_wall_measure(0:im)); current_wall_measure=wall_measure_d
+      if(.not.all(abs(wall_measure_h-current_wall_measure)<=1.d-10+1.d-10*abs(current_wall_measure))) &
+        local_error=1
+      deallocate(current_wall_measure)
+    endif
+    if(.not.all(plane_sum_h==plane_sum_h)) local_error=1
+    if(jrk==0 .and. .not.all(wall_sum_h==wall_sum_h)) local_error=1
+    if(local_error/=0 .and. lio) write(*,'(A)') 'GPU compact statistics sidecar metadata mismatch'
+    call mpi_allreduce(MPI_IN_PLACE,local_error,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS .or. local_error/=0) call mpi_abort(MPI_COMM_WORLD,1,ierr)
+
+    plane_sum_d=plane_sum_h
+    if(jrk==0) wall_sum_d=wall_sum_h
+    sample_count=sample_metadata(1)
+    sampling_start_step=sample_metadata(2)
+    sampling_start_time=start_time
+    last_sample_step=int(nstep,int64)
+    nsamples=int(sample_count)
+    call sync_gpu_boundary('restore compact statistics checkpoint')
+    deallocate(plane_measure_h,plane_sum_h)
+    if(allocated(wall_measure_h)) deallocate(wall_measure_h,wall_sum_h)
+  end subroutine restore_compact_statistics_checkpoint
+
+  subroutine release_compact_statistics_gpu()
+    implicit none
+
+    if(allocated(plane_measure_d)) deallocate(plane_measure_d)
+    if(allocated(plane_sum_d)) deallocate(plane_sum_d)
+    if(allocated(wall_measure_d)) deallocate(wall_measure_d)
+    if(allocated(wall_sum_d)) deallocate(wall_sum_d)
+    compact_statistics_active=.false.
+    compact_statistics_initialized=.false.
+    sample_count=0_int64
+    last_sample_step=-huge(0_int64)
+    checkpoint_prepared=.false.
+  end subroutine release_compact_statistics_gpu
+#endif
+end module production_statistics_gpu

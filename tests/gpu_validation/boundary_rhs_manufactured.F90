@@ -225,6 +225,60 @@ contains
 #endif
   end subroutine check_boundary_stage
 
+  subroutine check_nscbc_characteristic_policy()
+    use bc, only: nscbc_farfield_balance_incoming_lodi
+    implicit none
+    real(8) :: metric(3),normal(3),lodi0(5),source(5),pinv(5,5)
+    integer :: m
+
+    metric=[0.3d0,0.9d0,-0.2d0]
+    normal=metric/sqrt(sum(metric*metric))
+    lodi0=[1.d0,2.d0,3.d0,4.d0,5.d0]
+    source=[0.25d0,-0.5d0,0.75d0,-1.d0,1.25d0]
+    pinv=0.d0
+    do m=1,5
+      pinv(m,m)=1.d0
+    enddo
+    call run_case('subsonic_outflow',metric, 0.2d0*normal,1.d0,lodi0,source,pinv,[0,0,0,0,1])
+    call run_case('subsonic_inflow', metric,-0.2d0*normal,1.d0,lodi0,source,pinv,[1,1,1,0,1])
+    call run_case('supersonic_outflow',metric,2.d0*normal,1.d0,lodi0,source,pinv,[0,0,0,0,0])
+    call run_case('supersonic_inflow', metric,-2.d0*normal,1.d0,lodi0,source,pinv,[1,1,1,1,1])
+    call run_case('roundoff_outflow',metric,1.d-16*normal,1.d0,lodi0,source,pinv,[0,0,0,0,1])
+    call run_case('roundoff_inflow',metric,-1.d-16*normal,1.d0,lodi0,source,pinv,[0,0,0,0,1])
+    print*,'NSCBC_CPU_POLICY_PASS'
+
+  contains
+
+    subroutine run_case(name,case_metric,case_velocity,css,lodi_initial,source,pinv,expected_mask)
+      character(len=*),intent(in) :: name
+      real(8),intent(in) :: case_metric(3),case_velocity(3),css,lodi_initial(5)
+      real(8),intent(in) :: source(5),pinv(5,5)
+      integer,intent(in) :: expected_mask(5)
+      real(8) :: lodi(5),lambda(5),source_characteristic(5),total_characteristic(5)
+      logical :: incoming(5)
+      integer :: mask(5),m
+
+      lodi=lodi_initial
+      call nscbc_farfield_balance_incoming_lodi(lodi,source,pinv,2.d0,       &
+                                                case_metric,case_velocity,   &
+                                                css,lambda,incoming)
+      mask=merge(1,0,incoming)
+      if(any(mask/=expected_mask)) error stop 'NSCBC CPU incoming mask mismatch'
+      source_characteristic=matmul(pinv,source)/2.d0
+      total_characteristic=lodi+source_characteristic
+      do m=1,5
+        if(incoming(m)) then
+          if(abs(total_characteristic(m))>1.d-15) &
+            error stop 'NSCBC CPU total incoming characteristic was not zeroed'
+        elseif(lodi(m)/=lodi_initial(m)) then
+          error stop 'NSCBC CPU outgoing wave was modified'
+        endif
+      enddo
+      write(*,'(A,1X,A,1X,5(ES25.16,1X),5(I1,1X),5(ES25.16,1X))') &
+        'NSCBC_CPU_POLICY',trim(name),lambda,mask,lodi
+    end subroutine run_case
+  end subroutine check_nscbc_characteristic_policy
+
   subroutine check_boundary_rhs
     use commvar
     use commarray, only: q,qrhs,rho,vel,prs,tmp,spc,dxi,jacob,crinod

@@ -4,6 +4,14 @@ module sponge_gpu
   real(8),allocatable,device :: sponge_im_coef_d(:,:,:)
   integer,save :: sponge_im_beg_gpu=-1,sponge_im_end_gpu=-1
 contains
+  subroutine release_sponge_gpu()
+    implicit none
+
+    if(allocated(sponge_im_coef_d)) deallocate(sponge_im_coef_d)
+    sponge_im_beg_gpu=-1
+    sponge_im_end_gpu=-1
+  end subroutine release_sponge_gpu
+
   subroutine init_sponge_gpu()
     use sponge_layer, only: spg_im_beg,spg_im_end,sponge_damp_coef_im
     implicit none

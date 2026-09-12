@@ -100,6 +100,24 @@ def set_flowtype(input_file: Path, flowtype: str) -> None:
     raise ValueError(f"flowtype marker not found in {input_file}")
 
 
+def set_reference_mach(input_file: Path, mach: float) -> None:
+    if mach <= 0.0:
+        raise ValueError("mach must be positive")
+    lines = input_file.read_text().splitlines()
+    marker = "ref_t,reynolds,mach"
+    for idx, line in enumerate(lines):
+        if marker in line:
+            data_idx = next_data_line(lines, idx)
+            parts = [part.strip() for part in lines[data_idx].split(",")]
+            if len(parts) != 3:
+                raise ValueError(f"unexpected reference value line: {lines[data_idx]}")
+            parts[2] = f"{mach:.16e}"
+            lines[data_idx] = ",".join(parts)
+            input_file.write_text("\n".join(lines) + "\n")
+            return
+    raise ValueError(f"reference value marker not found in {input_file}")
+
+
 def set_homogeneous(input_file: Path, homogeneous: str) -> None:
     parts = [part.strip() for part in homogeneous.split(",")]
     if len(parts) != 3 or any(part not in ("t", "f") for part in parts):
@@ -184,6 +202,40 @@ def set_controller_steps(
             controller_file.write_text("\n".join(lines) + "\n")
             return
     raise ValueError(f"controller marker not found in {controller_file}")
+
+
+def set_controller_sequence(
+    controller_file: Path,
+    lwsequ: str,
+    feqwsequ: int,
+) -> None:
+    if lwsequ not in ("t", "f"):
+        raise ValueError("lwsequ must be t or f")
+    if feqwsequ < 1:
+        raise ValueError("feqwsequ must be positive")
+    lines = controller_file.read_text().splitlines()
+    flag_marker = "lwsequ,lwslic,lavg,lcracon"
+    step_marker = "maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg"
+    try:
+        flag_marker_idx = next(
+            idx for idx, line in enumerate(lines) if flag_marker in line
+        )
+        step_marker_idx = next(
+            idx for idx, line in enumerate(lines) if step_marker in line
+        )
+    except StopIteration as exc:
+        raise ValueError(f"controller sequence marker not found in {controller_file}") from exc
+    flag_idx = next_data_line(lines, flag_marker_idx)
+    step_idx = next_data_line(lines, step_marker_idx)
+    flags = [part.strip() for part in lines[flag_idx].split(",")]
+    steps = [part.strip() for part in lines[step_idx].split(",")]
+    if len(flags) != 4 or len(steps) != 6:
+        raise ValueError(f"unexpected controller sequence fields in {controller_file}")
+    flags[0] = lwsequ
+    steps[2] = str(feqwsequ)
+    lines[flag_idx] = ",".join(flags)
+    lines[step_idx] = ",".join(steps)
+    controller_file.write_text("\n".join(lines) + "\n")
 
 
 def set_controller_deltat(controller_file: Path, deltat: str) -> None:
@@ -289,6 +341,7 @@ def main() -> int:
     parser.add_argument("--dst-case", required=True, type=Path)
     parser.add_argument("--input-name", default="input.tgv")
     parser.add_argument("--flowtype", help="optional replacement flowtype")
+    parser.add_argument("--mach", type=float, help="optional reference Mach number")
     parser.add_argument("--homogeneous", help="optional homogeneous flags as t,t,t")
     parser.add_argument(
         "--bctype",
@@ -299,6 +352,8 @@ def main() -> int:
     parser.add_argument("--maxstep", required=True, type=int)
     parser.add_argument("--feqchkpt", type=int)
     parser.add_argument("--feqlist", type=int)
+    parser.add_argument("--lwsequ", choices=("t", "f"))
+    parser.add_argument("--feqwsequ", type=int)
     parser.add_argument("--lfilter", choices=("t", "f"))
     parser.add_argument("--diffterm", choices=("t", "f"))
     parser.add_argument("--lreadgrid", choices=("t", "f"))
@@ -327,6 +382,8 @@ def main() -> int:
         raise ValueError("--feqchkpt must be positive")
     if args.feqlist is not None and args.feqlist < 1:
         raise ValueError("--feqlist must be positive")
+    if (args.lwsequ is None) != (args.feqwsequ is None):
+        raise ValueError("--lwsequ and --feqwsequ must be provided together")
 
     if args.dst_case.exists():
         shutil.rmtree(args.dst_case)
@@ -336,6 +393,8 @@ def main() -> int:
     input_file = args.dst_case / "datin" / args.input_name
     if args.flowtype:
         set_flowtype(input_file, args.flowtype)
+    if args.mach is not None:
+        set_reference_mach(input_file, args.mach)
     if args.homogeneous:
         set_homogeneous(input_file, args.homogeneous)
     if args.bctype:
@@ -360,6 +419,12 @@ def main() -> int:
         feqchkpt,
         args.feqlist,
     )
+    if args.lwsequ is not None and args.feqwsequ is not None:
+        set_controller_sequence(
+            args.dst_case / "datin" / "controller",
+            args.lwsequ,
+            args.feqwsequ,
+        )
     if args.deltat:
         set_controller_deltat(args.dst_case / "datin" / "controller", args.deltat)
     if args.wall_amplitude is not None:

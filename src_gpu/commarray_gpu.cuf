@@ -114,6 +114,37 @@ contains
     endif
   end subroutine alloc_gpu_arrays
 
+  subroutine release_gpu_arrays()
+    implicit none
+
+    if(allocated(shock_mask_d)) deallocate(shock_mask_d)
+    if(allocated(shock_sensor_d)) deallocate(shock_sensor_d)
+    if(allocated(flux_characteristic_work_d)) deallocate(flux_characteristic_work_d)
+    if(allocated(flux_work_d)) deallocate(flux_work_d)
+    if(allocated(qflux_d)) deallocate(qflux_d)
+    if(allocated(sigma_d)) deallocate(sigma_d)
+    if(allocated(dtmp_d)) deallocate(dtmp_d)
+    if(allocated(dvel_d)) deallocate(dvel_d)
+    if(allocated(bnorm_km_d)) deallocate(bnorm_km_d)
+    if(allocated(bnorm_k0_d)) deallocate(bnorm_k0_d)
+    if(allocated(bnorm_jm_d)) deallocate(bnorm_jm_d)
+    if(allocated(bnorm_j0_d)) deallocate(bnorm_j0_d)
+    if(allocated(bnorm_im_d)) deallocate(bnorm_im_d)
+    if(allocated(bnorm_i0_d)) deallocate(bnorm_i0_d)
+    if(allocated(dxi_d)) deallocate(dxi_d)
+    if(allocated(x_d)) deallocate(x_d)
+    if(allocated(jacob_d)) deallocate(jacob_d)
+    if(allocated(vel_d)) deallocate(vel_d)
+    if(allocated(tmp_d)) deallocate(tmp_d)
+    if(allocated(prs_d)) deallocate(prs_d)
+    if(allocated(rho_d)) deallocate(rho_d)
+    if(allocated(qsave_d)) deallocate(qsave_d)
+    if(allocated(qrhs_d)) deallocate(qrhs_d)
+    if(allocated(filter_work_d)) deallocate(filter_work_d)
+    if(allocated(qwork_d)) deallocate(qwork_d)
+    if(allocated(q_d)) deallocate(q_d)
+  end subroutine release_gpu_arrays
+
   subroutine copy_flow_to_gpu()
     use commarray, only: q,rho,vel,prs,tmp,jacob,x,dxi,bnorm_i0,bnorm_im, &
                          bnorm_j0,bnorm_jm,bnorm_k0,bnorm_km

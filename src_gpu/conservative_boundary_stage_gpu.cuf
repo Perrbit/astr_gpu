@@ -5,8 +5,15 @@ module conservative_boundary_stage_gpu
   real(8),allocatable,device,save :: xline_d(:)
   real(8),device,save :: left_d(5),right_d(5)
   integer,device,save :: error_d
-  public :: initialize_conservative_stage_gpu,apply_conservative_stage_gpu
+  public :: initialize_conservative_stage_gpu,apply_conservative_stage_gpu, &
+            release_conservative_stage_gpu
 contains
+  subroutine release_conservative_stage_gpu()
+    implicit none
+
+    if(allocated(xline_d)) deallocate(xline_d)
+  end subroutine release_conservative_stage_gpu
+
   subroutine initialize_conservative_stage_gpu()
     use commvar, only: im,hm,npdci
     use commarray, only: x

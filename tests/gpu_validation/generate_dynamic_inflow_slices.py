@@ -26,6 +26,14 @@ def positive_int(value: str) -> int:
     return parsed
 
 
+def temporal_amplitude(index: int, time: float, delta_time: float, mode: str) -> float:
+    if mode == "cubic":
+        return (1.0 + time / delta_time) ** 3
+    if mode == "nonpolynomial":
+        return 1.0 + 0.35 * np.sin(0.73 * index) + 0.10 * np.cos(0.31 * index**2)
+    raise ValueError(f"unsupported temporal mode: {mode}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True, type=Path)
@@ -33,6 +41,9 @@ def main() -> int:
     parser.add_argument("--km", required=True, type=positive_int)
     parser.add_argument("--count", type=positive_int, default=8)
     parser.add_argument("--delta-time", required=True, type=float)
+    parser.add_argument(
+        "--temporal-mode", choices=("cubic", "nonpolynomial"), default="cubic"
+    )
     args = parser.parse_args()
     if args.count < 4:
         raise ValueError("--count must be at least four")
@@ -47,7 +58,7 @@ def main() -> int:
     spatial_mode = np.sin(np.pi * eta) * np.cos(2.0 * np.pi * zeta)
     for index in range(args.count):
         time = index * args.delta_time
-        temporal_mode = (1.0 + time / args.delta_time) ** 3
+        temporal_mode = temporal_amplitude(index, time, args.delta_time, args.temporal_mode)
         path = args.output / f"islice{index:05d}.h5"
         with h5py.File(path, "w") as handle:
             handle.create_dataset("time", data=np.float64(time))

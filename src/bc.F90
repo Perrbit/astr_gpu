@@ -29,6 +29,10 @@ module bc
   integer :: bctype(6)
   real(8) :: twall(6),xrhjump,angshk,xslip
   character(len=4) :: turbinf='none'
+  integer,parameter :: NSCBC_FARFIELD_POLICY_COMPATIBILITY=0
+  integer,parameter :: NSCBC_FARFIELD_POLICY_TARGET_RELAXATION=1
+  integer,parameter :: NSCBC_FARFIELD_POLICY_NONREFLECTING=2
+  integer,save :: nscbc_farfield_policy=NSCBC_FARFIELD_POLICY_COMPATIBILITY
   logical,save :: nscbc_farfield_configured=.false.
   logical,save :: nscbc_farfield_incoming_only=.false.
   logical,save :: nscbc_farfield_sbli_shock=.false.
@@ -203,16 +207,23 @@ module bc
 
       select case(trim(mode))
       case('compatibility')
+        nscbc_farfield_policy=NSCBC_FARFIELD_POLICY_COMPATIBILITY
         nscbc_farfield_incoming_only=.false.
         nscbc_farfield_sbli_shock=.false.
       case('incoming_only')
+        nscbc_farfield_policy=NSCBC_FARFIELD_POLICY_TARGET_RELAXATION
         nscbc_farfield_incoming_only=.true.
         nscbc_farfield_sbli_shock=.false.
       case('sbli_shock')
+        nscbc_farfield_policy=NSCBC_FARFIELD_POLICY_TARGET_RELAXATION
         nscbc_farfield_incoming_only=.true.
         nscbc_farfield_sbli_shock=.true.
+      case('nonreflecting')
+        nscbc_farfield_policy=NSCBC_FARFIELD_POLICY_NONREFLECTING
+        nscbc_farfield_incoming_only=.false.
+        nscbc_farfield_sbli_shock=.false.
       case default
-        stop 'ASTR_NSCBC_FARFIELD_MODE must be compatibility, incoming_only, or sbli_shock'
+        stop 'ASTR_NSCBC_FARFIELD_MODE must be compatibility, incoming_only, sbli_shock, or nonreflecting'
       end select
 
       nscbc_farfield_rho_target=roinf
@@ -220,7 +231,7 @@ module bc
       nscbc_farfield_v_target=vinf
       nscbc_farfield_w_target=winf
       nscbc_farfield_t_target=tinf
-      if(nscbc_farfield_incoming_only) then
+      if(nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_TARGET_RELAXATION) then
         call read_nscbc_farfield_real('ASTR_NSCBC_FARFIELD_RHO',        &
                                       nscbc_farfield_rho_target)
         call read_nscbc_farfield_real('ASTR_NSCBC_FARFIELD_U',          &
@@ -249,6 +260,7 @@ module bc
       endif
     endif
 
+    call bcast(nscbc_farfield_policy)
     call bcast(nscbc_farfield_incoming_only)
     call bcast(nscbc_farfield_rho_target)
     call bcast(nscbc_farfield_u_target)
@@ -287,6 +299,21 @@ module bc
     read(text(1:env_length),*,iostat=ios) value
     if(ios/=0) stop 'invalid ASTR_NSCBC_FARFIELD target value'
   end subroutine read_nscbc_farfield_real
+
+  integer function nscbc_farfield_policy_id()
+    implicit none
+
+    call configure_nscbc_farfield
+    nscbc_farfield_policy_id=nscbc_farfield_policy
+  end function nscbc_farfield_policy_id
+
+  logical function nscbc_farfield_nonreflecting_enabled()
+    implicit none
+
+    call configure_nscbc_farfield
+    nscbc_farfield_nonreflecting_enabled=                             &
+      nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_NONREFLECTING
+  end function nscbc_farfield_nonreflecting_enabled
 
   logical function nscbc_farfield_incoming_only_enabled()
     implicit none
@@ -345,6 +372,107 @@ module bc
                      -abs(nscbc_farfield_shock_angle))
     endif
   end subroutine nscbc_farfield_target_states
+
+  subroutine nscbc_farfield_zero_incoming_lodi(lodi,metric,velocity,css,&
+                                                lambda,incoming)
+    implicit none
+    real(8),intent(inout) :: lodi(5)
+    real(8),intent(in) :: metric(3),velocity(3),css
+    real(8),intent(out) :: lambda(5)
+    logical,intent(out) :: incoming(5)
+    real(8) :: norm,normal_speed,wave_tolerance
+    integer :: m
+
+    norm=sqrt(sum(metric*metric))
+    if(norm<=0.d0) error stop 'invalid upper-y NSCBC metric norm'
+    if(css<=0.d0) error stop 'invalid upper-y NSCBC sound speed'
+    normal_speed=sum(metric*velocity)/norm
+    lambda=[normal_speed,normal_speed,normal_speed,                  &
+            normal_speed+css,normal_speed-css]
+    wave_tolerance=64.d0*epsilon(1.d0)*max(css,abs(normal_speed))
+    incoming=lambda<-wave_tolerance
+    do m=1,5
+      if(incoming(m)) lodi(m)=0.d0
+    enddo
+  end subroutine nscbc_farfield_zero_incoming_lodi
+
+  subroutine nscbc_farfield_balance_incoming_lodi(lodi,source,pinv,     &
+                                                   jacobian,metric,     &
+                                                   velocity,css,lambda, &
+                                                   incoming)
+    implicit none
+    real(8),intent(inout) :: lodi(5)
+    real(8),intent(in) :: source(5),pinv(5,5),jacobian,metric(3),       &
+                          velocity(3),css
+    real(8),intent(out) :: lambda(5)
+    logical,intent(out) :: incoming(5)
+    real(8) :: norm,normal_speed,wave_tolerance,source_characteristic(5)
+    integer :: m
+
+    norm=sqrt(sum(metric*metric))
+    if(norm<=0.d0) error stop 'invalid upper-y NSCBC metric norm'
+    if(css<=0.d0) error stop 'invalid upper-y NSCBC sound speed'
+    if(jacobian<=0.d0) error stop 'invalid upper-y NSCBC Jacobian'
+    normal_speed=sum(metric*velocity)/norm
+    lambda=[normal_speed,normal_speed,normal_speed,                    &
+            normal_speed+css,normal_speed-css]
+    wave_tolerance=64.d0*epsilon(1.d0)*max(css,abs(normal_speed))
+    incoming=lambda<-wave_tolerance
+    source_characteristic=matmul(pinv,source)/jacobian
+    do m=1,5
+      if(incoming(m)) lodi(m)=-source_characteristic(m)
+    enddo
+  end subroutine nscbc_farfield_balance_incoming_lodi
+
+  subroutine nscbc_farfield_transformed_flux_5(i,j,k,axis,flux)
+    implicit none
+    integer,intent(in) :: i,j,k,axis
+    real(8),intent(out) :: flux(5)
+    real(8) :: contravariant_velocity
+
+    contravariant_velocity=sum(dxi(i,j,k,axis,:)*vel(i,j,k,:))
+    flux(1)=jacob(i,j,k)*q(i,j,k,1)*contravariant_velocity
+    flux(2)=jacob(i,j,k)*(q(i,j,k,2)*contravariant_velocity+ &
+                          dxi(i,j,k,axis,1)*prs(i,j,k))
+    flux(3)=jacob(i,j,k)*(q(i,j,k,3)*contravariant_velocity+ &
+                          dxi(i,j,k,axis,2)*prs(i,j,k))
+    flux(4)=jacob(i,j,k)*(q(i,j,k,4)*contravariant_velocity+ &
+                          dxi(i,j,k,axis,3)*prs(i,j,k))
+    flux(5)=jacob(i,j,k)*(q(i,j,k,5)+prs(i,j,k))*            &
+                          contravariant_velocity
+  end subroutine nscbc_farfield_transformed_flux_5
+
+  subroutine nscbc_farfield_y_upper_source(i,j,k,rest,source)
+    implicit none
+    integer,intent(in) :: i,j,k
+    real(8),intent(in) :: rest(5)
+    real(8),intent(out) :: source(5)
+    real(8) :: flux_m(5),flux_p(5)
+
+    source=rest
+    if(k<ks .or. k>ke) return
+
+    if(i==0 .and. (npdci==1 .or. npdci==4)) then
+      call nscbc_farfield_transformed_flux_5(i,j,k,1,flux_m)
+      call nscbc_farfield_transformed_flux_5(i+1,j,k,1,flux_p)
+      source=source+flux_p-flux_m
+    elseif(i==im .and. (npdci==2 .or. npdci==4)) then
+      call nscbc_farfield_transformed_flux_5(i-1,j,k,1,flux_m)
+      call nscbc_farfield_transformed_flux_5(i,j,k,1,flux_p)
+      source=source+flux_p-flux_m
+    elseif(i>=is .and. i<=ie) then
+      call nscbc_farfield_transformed_flux_5(i-1,j,k,1,flux_m)
+      call nscbc_farfield_transformed_flux_5(i+1,j,k,1,flux_p)
+      source=source+0.5d0*(flux_p-flux_m)
+    else
+      return
+    endif
+    if(ndims==3) then
+      call nscbc_farfield_transformed_flux_5(i,j,k-1,3,flux_m)
+      call nscbc_farfield_transformed_flux_5(i,j,k+1,3,flux_p)
+      source=source+0.5d0*(flux_p-flux_m)
+    endif
+  end subroutine nscbc_farfield_y_upper_source
 
   subroutine nscbc_farfield_y_upper_incoming_lodi(lodi,pinv,i,j,k,css, &
                                                     gmachmax2)
@@ -2190,7 +2318,7 @@ module bc
     character(len=5) :: isname
     integer :: nvp(0:3)
     real(8) :: vartime(0:3),time_final
-    real(8) :: time0,deltime,var0
+    real(8) :: time0,deltime,var0,new_deltime,time_scale
     character(len=10) :: varname
     !
     ! call h5io_init(filename='inflow/islice00100.h5',mode='read',comm=mpi_imin)
@@ -2391,7 +2519,7 @@ module bc
         deltime=timeins(nvp(1))-timeins(nvp(0))
         !
         ! to load next inflow slice
-        if(time>timeins(nvp(2))) then
+        do while(time>timeins(nvp(2)))
           !
           ninflowslice=ninflowslice+1
           !
@@ -2421,12 +2549,22 @@ module bc
           !   ! print*,'dimensional time ',timeins(n)
           ! endif
           ! 
-          vp1=>flowvarins(:,:,:,nvp(1))
-          vp2=>flowvarins(:,:,:,nvp(2))
-          vp3=>flowvarins(:,:,:,nvp(3))
-          vp4=>flowvarins(:,:,:,nvp(0))
+          new_deltime=timeins(nvp(0))-timeins(nvp(3))
+          time_scale=max(1.d0,maxval(abs(timeins)))
+          if(new_deltime<=0.d0 .or. &
+             abs(new_deltime-deltime)>1.d-12*time_scale) &
+            stop 'CPU dynamic inflow slice interval changed'
+          n0=nvp(0)
+          nvp(0)=nvp(1)
+          nvp(1)=nvp(2)
+          nvp(2)=nvp(3)
+          nvp(3)=n0
+          vp1=>flowvarins(:,:,:,nvp(0))
+          vp2=>flowvarins(:,:,:,nvp(1))
+          vp3=>flowvarins(:,:,:,nvp(2))
+          vp4=>flowvarins(:,:,:,nvp(3))
           !
-          time0=timeins(nvp(1))
+          time0=timeins(nvp(0))
           !
           ! if(lio) then
           !   write(*,'(5(F12.6,A))')timeins(nvp(1)),' <',               &
@@ -2434,7 +2572,7 @@ module bc
           !                          timeins(nvp(3)),' <',timeins(nvp(0)),''
           ! endif
           !
-        endif
+        enddo
         !
         do k=0,km
         do j=0,jm
@@ -4091,13 +4229,15 @@ module bc
     real(8) :: pinv(5,5),pnor(5,5),Pmult(5,5),E(5),F(5),G(5),Rest(5),  &
                jcbi(3),LODi1(5),LODi(5)
     real(8),allocatable :: Ecs(:,:),dEcs(:),fcs(:,:),dfcs(:,:),qfilt(:,:)
-    real(8) :: uu,css,gmachmax2,kinout,kin,var1,var2
+    real(8) :: uu,css,gmachmax2,kinout,kin,var1,var2,lambda(5),source(5)
+    logical :: incoming(5)
     !
     logical,save :: lfirstcal=.true.
     !
     call configure_nscbc_farfield
-    if(nscbc_farfield_incoming_only .and. ndir/=4) then
-      stop 'incoming_only NSCBC farfield currently supports upper-y bctype=52 only'
+    if(nscbc_farfield_policy/=NSCBC_FARFIELD_POLICY_COMPATIBILITY .and. &
+       ndir/=4) then
+      stop 'target and nonreflecting NSCBC farfield modes support upper-y bctype=52 only'
     endif
     !
     if(lfirstcal) then
@@ -4110,6 +4250,7 @@ module bc
     endif
     !
     gmachmax2=0.d0
+    if(nscbc_farfield_policy/=NSCBC_FARFIELD_POLICY_NONREFLECTING) then
     if(ndir==3 .and. jrk==0) then
       j=0
       do k=0,km
@@ -4163,6 +4304,7 @@ module bc
       enddo
     endif
     gmachmax2=pmax(gmachmax2)
+    endif
     !
     if(ndir==3 .and. jrk==0) then
       !
@@ -4403,7 +4545,8 @@ module bc
       !
       j=jm
       
-      if(.not. lfilter) then
+      if(.not.lfilter .and. nscbc_farfield_policy/=                    &
+         NSCBC_FARFIELD_POLICY_NONREFLECTING) then
         allocate(qfilt(0:im,1:numq))
         do k=0,km
           !
@@ -4427,11 +4570,13 @@ module bc
 
     ! All ranks must refresh the updated upper-face x-filter values before
     ! upper-y ranks use z-direction halos in the second transverse filter.
-    if(ndir==4 .and. .not.lfilter) call qswap()
+    if(ndir==4 .and. .not.lfilter .and. nscbc_farfield_policy/=        &
+       NSCBC_FARFIELD_POLICY_NONREFLECTING) call qswap()
 
     if(ndir==4 .and. jrk==jrkm) then
       j=jm
-      if(.not.lfilter .and. ndims==3) then
+      if(.not.lfilter .and. ndims==3 .and. nscbc_farfield_policy/=     &
+         NSCBC_FARFIELD_POLICY_NONREFLECTING) then
         allocate(qfilt(0:km,1:numq))
         do i=0,im
           do jq=1,numq
@@ -4549,15 +4694,21 @@ module bc
         !    dxi(i,j,k,2,2)*vel(i,j,k,2) +                       &
         !    dxi(i,j,k,2,3)*vel(i,j,k,3)
         ! if(uu>=0.d0) then
-        if(nscbc_farfield_incoming_only) then
+        select case(nscbc_farfield_policy)
+        case(NSCBC_FARFIELD_POLICY_NONREFLECTING)
+          call nscbc_farfield_y_upper_source(i,j,k,Rest,source)
+          call nscbc_farfield_balance_incoming_lodi(LODi,source,pinv,   &
+               jacob(i,j,k),dxi(i,j,k,2,:),vel(i,j,k,:),css,lambda,     &
+               incoming)
+        case(NSCBC_FARFIELD_POLICY_TARGET_RELAXATION)
           call nscbc_farfield_y_upper_incoming_lodi(LODi,pinv,i,j,k,css,&
                                                      gmachmax2)
-        else
+        case default
           kinout=0.25d0*(1.d0-gmachmax2)*css/(ymax-ymin)
             ! LODi(5)=kinout*(prs(i,j,k)-pinf)/rho(i,j,k)/css
             ! LODi(5)=kinout*(prs(i,j,k)-prs_prof(jm))/rho(i,j,k)/css
           LODi(5)=kinout*(prs(i,j,k)-pinf)
-        endif
+        end select
         ! else
         !   var1=1.d0/sqrt( dxi(i,j,k,2,1)**2+dxi(i,j,k,2,2)**2+         &
         !                   dxi(i,j,k,2,3)**2 )
@@ -4586,11 +4737,16 @@ module bc
         !
         LODi1=MatMul(pnor,LODi)*jacob(i,j,k)
         !
-        dEcs(1)=LODi1(1)+Rest(1)
-        dEcs(2)=LODi1(2)+Rest(2)
-        dEcs(3)=LODi1(3)+Rest(3)
-        dEcs(4)=LODi1(4)+Rest(4)
-        dEcs(5)=LODi1(5)+Rest(5)
+        select case(nscbc_farfield_policy)
+        case(NSCBC_FARFIELD_POLICY_NONREFLECTING)
+          dEcs(:)=LODi1(:)+source(:)
+        case default
+          dEcs(1)=LODi1(1)+Rest(1)
+          dEcs(2)=LODi1(2)+Rest(2)
+          dEcs(3)=LODi1(3)+Rest(3)
+          dEcs(4)=LODi1(4)+Rest(4)
+          dEcs(5)=LODi1(5)+Rest(5)
+        end select
         !
         qrhs(i,j,k,:)=qrhs(i,j,k,:)+dEcs(:)
         ! !
@@ -4605,6 +4761,7 @@ module bc
       !
       deallocate(Ecs,dEcs)
       !
+      if(nscbc_farfield_policy/=NSCBC_FARFIELD_POLICY_NONREFLECTING) then
       allocate(fcs(-hm:im+hm,1:numq),dfcs(0:im,1:numq))
       do k=ks,ke
         !
@@ -4663,6 +4820,7 @@ module bc
         !
         deallocate(fcs,dfcs)
         !
+      endif
       endif
       !
     endif

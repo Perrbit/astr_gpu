@@ -199,6 +199,49 @@ contains
           (mpisize == 8 .and. isize == 2 .and. jsize == 2 .and. ksize == 2))
   end function gpu_s1_flatplate_s1a1_supported
 
+  logical function gpu_curvilinear_nscbc52_nonreflecting_supported()
+    use commvar, only: flowtype,conschm,difschm,lfilter,diffterm,       &
+         lihomo,ljhomo,lkhomo,nondimen,turbmode,ndims,numq,            &
+         num_species,num_modequ
+    use bc, only: bctype,turbinf,nscbc_farfield_nonreflecting_enabled
+    use sponge_layer, only: spg_i0,spg_im,spg_j0,spg_jm,spg_k0,spg_km
+    use parallel, only: mpisize,isize,jsize,ksize
+    implicit none
+    logical :: topology_supported,flatplate_configuration
+    logical :: acoustic_box_configuration
+
+    topology_supported = mpisize==1 .or. (mpisize==2 .and.             &
+         ((isize==2 .and. jsize==1 .and. ksize==1) .or.                &
+          (isize==1 .and. jsize==2 .and. ksize==1) .or.                &
+          (isize==1 .and. jsize==1 .and. ksize==2))) .or.              &
+         (mpisize==4 .and.                                             &
+         ((isize==2 .and. jsize==2 .and. ksize==1) .or.                &
+          (isize==2 .and. jsize==1 .and. ksize==2) .or.                &
+          (isize==1 .and. jsize==2 .and. ksize==2))) .or.              &
+         (mpisize==8 .and. isize==2 .and. jsize==2 .and. ksize==2)
+
+    flatplate_configuration = trim(flowtype)=='bl' .and.              &
+         (.not.lihomo) .and. (.not.ljhomo) .and. lkhomo .and.         &
+         bctype(1)==11 .and. bctype(2)==21 .and.                      &
+         trim(turbinf)=='prof'
+    acoustic_box_configuration = trim(flowtype)=='tgv' .and.          &
+         lihomo .and. (.not.ljhomo) .and. lkhomo .and.                &
+         bctype(1)==1 .and. bctype(2)==1
+
+    gpu_curvilinear_nscbc52_nonreflecting_supported =                  &
+         (flatplate_configuration .or. acoustic_box_configuration)    &
+         .and. ndims==3 .and. nondimen .and.                          &
+         trim(conschm)=='643e' .and. trim(difschm)=='643e' .and.      &
+         numq==5 .and. num_species==0 .and. num_modequ==0 .and.       &
+         (.not.diffterm) .and. (.not.lfilter) .and.                   &
+         trim(turbmode)=='none' .and.                                 &
+         bctype(3)==41 .and. bctype(4)==52 .and.                      &
+         all(bctype(5:6)==1) .and.                                    &
+         spg_i0==0 .and. spg_im==0 .and. spg_j0==0 .and.             &
+         spg_jm==0 .and. spg_k0==0 .and. spg_km==0 .and.             &
+         nscbc_farfield_nonreflecting_enabled() .and. topology_supported
+  end function gpu_curvilinear_nscbc52_nonreflecting_supported
+
   logical function gpu_s1_flatplate_explicit_filter_supported()
     use commvar, only: flowtype,conschm,difschm,recon_schem,lchardecomp, &
          lfilter,lihomo,ljhomo,lkhomo,nondimen,turbmode,ndims
@@ -213,7 +256,8 @@ contains
          (.not.lihomo) .and. (.not.ljhomo) .and. lkhomo .and. &
          spg_i0 == 0 .and. spg_im == 0 .and. spg_j0 == 0 .and. &
          spg_jm == 0 .and. spg_k0 == 0 .and. spg_km == 0 .and. &
-         trim(turbmode) == 'none' .and. trim(turbinf) == 'prof' .and. &
+         trim(turbmode) == 'none' .and. &
+         (trim(turbinf) == 'prof' .or. trim(turbinf) == 'intp') .and. &
          bctype(1) == 11 .and. bctype(2) == 21 .and. bctype(3) == 41 .and. &
          bctype(4) == 51 .and. all(bctype(5:6) == 1) .and. &
          (mpisize == 1 .or. (mpisize == 2 .and. &

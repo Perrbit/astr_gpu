@@ -317,7 +317,8 @@ module mainloop
     use parallel, only : qswap
     use conservative_boundary_runtime, only: conservative_boundary, &
                            apply_conservative_boundary_stage
-    use validation_io, only: write_q_validation_snapshot, &
+    use validation_io, only: rhs_validation_requested,write_rhs_validation_snapshot, &
+                             write_q_validation_snapshot, &
                              write_primitive_validation_snapshot
 #ifdef COMB
     use thermchem,only : imp_euler_ode,heatrate
@@ -327,7 +328,12 @@ module mainloop
 #ifdef _CUDA
     use gpu_runtime, only : gpu_time_integration_rk,gpu_prepare_rkfirst_stats, &
                             gpu_write_flow_statistics,gpu_exchange_solution_halo, &
-                            gpu_sync_flow_to_host,gpu_restore_stats_snapshot
+                            gpu_sync_flow_to_host,gpu_restore_stats_snapshot, &
+                            gpu_accumulate_compact_statistics, &
+                            gpu_prepare_compact_statistics_checkpoint, &
+                            gpu_commit_compact_statistics_checkpoint, &
+                            gpu_begin_complete_step_timing, &
+                            gpu_end_complete_step_timing
 #endif
     use readwrite, only : writechkpt
     !
@@ -346,7 +352,7 @@ module mainloop
     real(8),save :: subtime=0.d0
     integer,save :: n_rk_steps
     logical :: gpu_output_due
-    logical :: nscbc_boundary_filter_present
+    logical :: nscbc_boundary_halo_required
     logical :: conservative_case
     logical :: dynamic_inflow_output
     !
@@ -356,14 +362,15 @@ module mainloop
 
 #ifdef _CUDA
     if(use_gpu) then
+      call gpu_begin_complete_step_timing()
       gpu_output_due = nstep > 0 .and. mod(nstep,feqchkpt)==0
       if(gpu_output_due) then
         call gpu_sync_flow_to_host()
         if(flowtype(1:2)/='0d' .and. .not.conservative_case .and. &
            .not.dynamic_inflow_output) then
           ! Match the CPU checkpoint phase without mutating resident device state.
-          nscbc_boundary_filter_present = any(bctype == 22) .or. any(bctype == 52)
-          if(nscbc_boundary_filter_present) call qswap(timerept=ltimrpt)
+          nscbc_boundary_halo_required = any(bctype == 22) .or. any(bctype == 52)
+          if(nscbc_boundary_halo_required) call qswap(timerept=ltimrpt)
           call boucon
           call qswap(timerept=ltimrpt)
         endif
@@ -371,11 +378,15 @@ module mainloop
       call gpu_prepare_rkfirst_stats()
       if(flowtype(1:2)/='0d') call gpu_exchange_solution_halo()
       call gpu_write_flow_statistics()
+      call gpu_accumulate_compact_statistics()
       call gpu_restore_stats_snapshot()
       if(gpu_output_due) then
+        call gpu_prepare_compact_statistics_checkpoint()
         call writechkpt()
+        call gpu_commit_compact_statistics_checkpoint()
       endif
       call gpu_time_integration_rk(.true.,.false.)
+      call gpu_end_complete_step_timing()
       return
     endif
 #else
@@ -465,14 +476,15 @@ module mainloop
       endif
 
       if(.not.conservative_case) then
-        nscbc_boundary_filter_present = any(bctype == 22) .or. any(bctype == 52)
-        if(flowtype(1:2)/='0d' .and. nscbc_boundary_filter_present) then
-          ! NSCBC boundary filters transverse lines; their halos must be current.
+        nscbc_boundary_halo_required = any(bctype == 22) .or. any(bctype == 52)
+        if(flowtype(1:2)/='0d' .and. nscbc_boundary_halo_required) then
+          ! NSCBC transverse derivatives and optional filters need current halos.
           call qswap(timerept=ltimrpt)
         endif
         if(flowtype(1:2)/='0d') call boucon
 
         if(flowtype(1:2)/='0d') call qswap(timerept=ltimrpt)
+        if(rhs_validation_requested()) call write_rhs_validation_snapshot('boundary')
       endif
 
       call gradcal()
@@ -494,9 +506,9 @@ module mainloop
 
       endif
 
-      if(conservative_case) then
+      if(rhs_validation_requested()) then
         call write_q_validation_snapshot('pre_rhs')
-        call write_primitive_validation_snapshot('pre_rhs_primitives')
+        if(conservative_case) call write_primitive_validation_snapshot('pre_rhs_primitives')
       endif
 
       if(conservative_case) then
@@ -548,6 +560,8 @@ module mainloop
       time_beg_2=ptime()
       !
       call updatefvar
+
+      if(rhs_validation_requested()) call write_q_validation_snapshot('post_update')
 
       if(conservative_case) then
         call write_q_validation_snapshot('pre_boundary')
@@ -697,6 +711,7 @@ module mainloop
     use readwrite,only : writechkpt,writemon,writeslice,writeflfed,    &
                          nxtchkpt,nxtwsequ
     use userdefine,only: udf_stalist,udf_write
+    use validation_io, only: write_compact_statistics_validation_snapshot
     use parallel,  only: mpistop
     !
     ! local data
@@ -726,6 +741,7 @@ module mainloop
         ! if(nstep==nxtavg) then
         if(mod(nstep,feqavg)==0) then
           call meanflowcal(timerept=ltimrpt)
+          call write_compact_statistics_validation_snapshot()
           !
           nxtavg=nstep+feqavg
         endif
