@@ -21,6 +21,39 @@ DELTAT="${DELTAT:-}"
 TIMINGS="$OUT_DIR/${LABEL}_timings.tsv"
 SUMMARY="$OUT_DIR/${LABEL}_summary.md"
 CASE_DIR="$OUT_DIR/${LABEL}_case"
+MONITOR_PID=""
+MONITOR_STOP=""
+
+stop_monitor() {
+  local pid="${MONITOR_PID:-}" stop="${MONITOR_STOP:-}"
+  if [[ -n "$stop" ]]; then
+    : > "$stop" 2>/dev/null || true
+  fi
+  if [[ -n "$pid" ]]; then
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  fi
+  MONITOR_PID=""
+  MONITOR_STOP=""
+}
+
+handle_exit() {
+  local status=$?
+  trap - EXIT INT TERM
+  stop_monitor
+  exit "$status"
+}
+
+handle_signal() {
+  local status="$1"
+  trap - EXIT INT TERM
+  stop_monitor
+  exit "$status"
+}
+
+trap 'handle_exit' EXIT
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
 
 if [[ "$GPU_EXE" != /* ]]; then
   GPU_EXE="$ROOT_DIR/$GPU_EXE"
@@ -102,24 +135,24 @@ assert_no_field_hdf5() {
 
 run_once() {
   local repeat="$1" record="$2"
-  local run_dir log monitor stop monitor_pid start end wall
+  local run_dir log monitor start end wall
   local max_memory max_util timing_count retained_count timing_values run_status
   assert_no_field_hdf5
   run_dir="$OUT_DIR/${LABEL}_run_${repeat}"
   log="$run_dir/run.log"
   monitor="$run_dir/gpu_monitor.csv"
-  stop="$run_dir/.monitor_stop"
+  MONITOR_STOP="$run_dir/.monitor_stop"
   mkdir -p "$run_dir"
-  rm -f "$stop"
+  rm -f "$MONITOR_STOP"
   (
-    while [[ ! -e "$stop" ]]; do
+    while [[ ! -e "$MONITOR_STOP" ]]; do
       nvidia-smi --id="$GPU_IDS" \
         --query-gpu=memory.used,utilization.gpu \
         --format=csv,noheader,nounits
       sleep 0.1
     done
   ) > "$monitor" &
-  monitor_pid=$!
+  MONITOR_PID=$!
   start="$(date +%s.%N)"
   set +e
   (
@@ -136,8 +169,7 @@ run_once() {
   run_status=$?
   set -e
   end="$(date +%s.%N)"
-  touch "$stop"
-  wait "$monitor_pid"
+  stop_monitor
   assert_no_field_hdf5
   if [[ "$run_status" -ne 0 ]]; then
     echo "ASTR failed with status $run_status; see $log" >&2
