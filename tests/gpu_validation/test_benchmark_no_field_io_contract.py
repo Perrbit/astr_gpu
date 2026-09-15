@@ -27,11 +27,19 @@ def test_policy_is_configured_after_mpi_and_before_initialization() -> None:
         "callconfigure_benchmark_runtime"
         "(use_gpu,flowtype,ndims,lihomo,ljhomo,lkhomo)"
     )
-    calls = ["callparallelini", configure, "callfileini", "callgridgen", "callflowinit"]
+    calls = [
+        "callparallelini",
+        "callrefcal",
+        configure,
+        "callfileini",
+        "callgridgen",
+        "callflowinit",
+    ]
 
     assert all(source.count(call) == 1 for call in calls)
     positions = {call: source.index(call) for call in calls}
-    assert positions["callparallelini"] < positions[configure]
+    assert positions["callparallelini"] < positions["callrefcal"]
+    assert positions["callrefcal"] < positions[configure]
     assert positions[configure] < positions["callfileini"]
     assert positions[configure] < positions["callgridgen"]
     assert positions[configure] < positions["callflowinit"]

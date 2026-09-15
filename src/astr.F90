@@ -80,9 +80,9 @@ program astr
 
     call parallelini
 
-    call configure_benchmark_runtime(use_gpu,flowtype,ndims,lihomo,ljhomo,lkhomo)
-
     call refcal
+
+    call configure_benchmark_runtime(use_gpu,flowtype,ndims,lihomo,ljhomo,lkhomo)
 
     call load_conservative_boundary_environment()
     call validate_conservative_sbli_mode(twall(3))
