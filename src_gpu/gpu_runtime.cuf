@@ -126,8 +126,9 @@ contains
     use sponge_gpu, only: init_sponge_gpu
     use boundary_gpu, only: init_s1_flatplate_profile_gpu,init_wall_blowing_gpu
     use inflow_timeseries_gpu, only: init_dynamic_inflow_gpu
-    use commvar, only: flowtype,ndims,lihomo,ljhomo,lkhomo
+    use commvar, only: flowtype,ndims,lihomo,ljhomo,lkhomo,lfilter,diffterm
     use gpu_check, only: configure_gpu_sync_mode,gpu_selective_sync_enabled
+    use gpu_phase_timing, only: configure_gpu_phase_timing
     use parallel, only: lio
     use conservative_boundary_runtime, only: conservative_boundary
     use conservative_boundary_stage_gpu, only: initialize_conservative_stage_gpu
@@ -138,11 +139,13 @@ contains
     use chemistry_hbl_boundary_gpu, only: initialize_air5_hbl_boundary_gpu
 #endif
     implicit none
-    logical :: allow_selective
+    logical :: allow_selective,allow_phase_timing
 
     allow_selective = trim(flowtype) == 'tgv' .and. ndims == 3 .and. &
                       lihomo .and. ljhomo .and. lkhomo
     call configure_gpu_sync_mode(allow_selective)
+    allow_phase_timing=allow_selective .and. lfilter .and. diffterm
+    call configure_gpu_phase_timing(allow_phase_timing,.not.gpu_selective_sync_enabled())
     if(lio) then
       if(gpu_selective_sync_enabled()) then
         write(*,'(A)') ' ** GPU synchronization mode: selective'
@@ -254,10 +257,12 @@ contains
     use mainloop_gpu, only: prepare_rkfirst_stats_gpu
     use boundary_gpu, only: gpu_s1_flatplate_nscbc_farfield_case
     use commarray_gpu, only: save_q_stats_snapshot_gpu
-    use commvar, only: time
+    use commvar, only: time,nstep
+    use gpu_phase_timing, only: begin_gpu_phase,end_gpu_phase
     use inflow_timeseries_gpu, only: prepare_dynamic_inflow_gpu
     implicit none
 
+    call begin_gpu_phase('prepare')
     call begin_rk_prepare_timing()
     call prepare_dynamic_inflow_gpu(time)
     stats_snapshot_ready = gpu_s1_flatplate_nscbc_farfield_case()
@@ -265,6 +270,7 @@ contains
     call prepare_rkfirst_stats_gpu()
     prepared_halo_ready = .true.
     call end_rk_prepare_timing()
+    call end_gpu_phase('prepare',nstep,0)
   end subroutine gpu_prepare_rkfirst_stats
 
   subroutine gpu_restore_stats_snapshot()

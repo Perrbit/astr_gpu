@@ -119,12 +119,13 @@ contains
   end subroutine apply_explicit_filter_gpu
 
   subroutine prepare_rkfirst_stats_gpu()
-    use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,const2,const6,lfilter,lcomb
+    use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,const2,const6,lfilter,lcomb,nstep
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_flow_solver_gpu, only: air5_prepare_spatial_state_gpu
 #endif
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
     use gpu_check, only: sync_after_kernel
+    use gpu_phase_timing, only: begin_gpu_phase,end_gpu_phase
     use halo_exchange_gpu, only: exchange_solution_halo_gpu
     use boundary_gpu, only: apply_boundary_conditions_gpu,apply_ldc_boundary_conditions_gpu, &
          apply_s1_flatplate_boundary_conditions_gpu,gpu_uses_physical_boundary, &
@@ -164,7 +165,9 @@ contains
              q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
         call sync_after_kernel('prepare_q_to_primitive_kernel_prefilter')
       endif
+      call begin_gpu_phase('filter')
       call apply_explicit_filter_gpu(periodic_filter_case,'prepare_')
+      call end_gpu_phase('filter',nstep,1)
     endif
 
     if(conservative_case) then
@@ -180,7 +183,9 @@ contains
       call exchange_solution_halo_gpu(.true.)
     elseif(lfilter .and. periodic_filter_case) then
       call apply_boundary_conditions_gpu()
+      call begin_gpu_phase('solution_halo')
       call exchange_solution_halo_gpu(.true.)
+      call end_gpu_phase('solution_halo',nstep,1)
     else
       call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
            q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
@@ -225,6 +230,7 @@ contains
                              gpu_mixed_characteristic_flux_workspace_enabled
     use upwind_flux_mode_gpu, only: gpu_fused_flux_pair_requested
     use gpu_check, only: sync_after_kernel
+    use gpu_phase_timing, only: begin_gpu_phase,end_gpu_phase
     use halo_exchange_gpu, only: exchange_solution_halo_gpu, &
          exchange_diffusion_flux_halo_gpu,exchange_diffusion_flux_sp_halo_gpu
     use boundary_gpu, only: apply_boundary_conditions_gpu, &
@@ -580,7 +586,9 @@ contains
         endif
 
         if(lfilter) then
+          call begin_gpu_phase('filter')
           call apply_explicit_filter_gpu(periodic_filter_case,'')
+          call end_gpu_phase('filter',nstep,rkstep)
         endif
 
         if(conservative_case) then
@@ -598,7 +606,9 @@ contains
           call exchange_solution_halo_gpu(.true.)
         elseif(lfilter .and. periodic_filter_case) then
           call apply_boundary_conditions_gpu()
+          call begin_gpu_phase('solution_halo')
           call exchange_solution_halo_gpu(.true.)
+          call end_gpu_phase('solution_halo',nstep,rkstep)
         else
           call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
                q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
@@ -661,6 +671,7 @@ contains
         call apply_nscbc_x_rhs_gpu(gmachmax2_in,gmachmax2_out)
       endif
       if(shock_sensor_case) call compute_shock_sensor_gpu(rkstep)
+      call begin_gpu_phase('convection')
       if(sod_s0a1_case) then
         call upwind_s0a1_rhs_x_global_kernel<<<grid_x,block_x>>>(im,jm,km,gamma)
         call sync_after_kernel('upwind_s0a1_rhs_x_global_kernel')
@@ -993,6 +1004,7 @@ contains
         call sync_after_kernel('convective_rhs_z_global_kernel')
         end select
       endif
+      call end_gpu_phase('convection',nstep,rkstep)
 
       if(rhs_validation_requested()) then
         call copy_rhs_from_gpu()
@@ -1003,6 +1015,7 @@ contains
         call capture_nscbc_farfield_y_upper_prediff_rhs_gpu()
 
       if(diffterm) then
+        call begin_gpu_phase('diffusion_flux')
         if(ldc_case .or. flatplate_case) then
           if(mixed_viscous_flux_workspace) then
           call diffusion_flux_xyphysical_sp_global_kernel<<<grid3,block3>>>(im,jm,km,reynolds,prandtl,const5, &
@@ -1059,6 +1072,8 @@ contains
             endif
           end select
         endif
+        call end_gpu_phase('diffusion_flux',nstep,rkstep)
+        call begin_gpu_phase('diffusion_halo')
         diffusion_region=0
         if(overlap_diffusion) then
           if(mixed_viscous_flux_workspace) then
@@ -1074,6 +1089,8 @@ contains
             call exchange_diffusion_flux_halo_gpu()
           endif
         endif
+        call end_gpu_phase('diffusion_halo',nstep,rkstep)
+        call begin_gpu_phase('diffusion_rhs')
         if(ldc_case .or. flatplate_case) then
           if(mixed_viscous_flux_workspace) then
           call diffusion_rhs_x_xyphysical_stored_sp_global_kernel<<<grid_x,block_x>>>( &
@@ -1210,6 +1227,7 @@ contains
             endif
           end select
         endif
+        call end_gpu_phase('diffusion_rhs',nstep,rkstep)
       endif
 
       if(curvilinear_nscbc52_viscous_case) &
@@ -1220,6 +1238,7 @@ contains
         call copy_rhs_from_gpu()
         call write_rhs_validation_snapshot('full',nstep,rkstep)
       endif
+      call begin_gpu_phase('rk_update')
       if(rkstep == 1) then
         call rk3_first_update_global_kernel<<<grid1,block1>>>(deltat,im,jm,km)
         call sync_after_kernel('rk3_first_update_global_kernel')
@@ -1228,6 +1247,7 @@ contains
              rk_a(rkstep),rk_b(rkstep),rk_c(rkstep),im,jm,km)
         call sync_after_kernel('rk3_update_global_kernel')
       endif
+      call end_gpu_phase('rk_update',nstep,rkstep)
       if(open_shock_sponge_case .or. s2_hbl_selective_roe_sponge_case .or. &
          s2_hbl_selective_roe_c4_sponge_case .or. s2_sbli_nscbc_sponge_case) then
         call apply_xmax_sponge_gpu()

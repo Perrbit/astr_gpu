@@ -14,12 +14,14 @@ GPU_IDS="${GPU_IDS:-$GPU_ID}"
 NP="${NP:-1}"
 TOPOLOGY="${TOPOLOGY:-1,1,1}"
 SYNC_MODE="${SYNC_MODE:-explicit}"
+PHASE_TIMING="${PHASE_TIMING:-0}"
 HALO_TRANSPORT="${HALO_TRANSPORT:-pageable}"
 FILTER_WORKSPACE="${FILTER_WORKSPACE:-full}"
 FEQCHKPT="${FEQCHKPT:-9999}"
 DELTAT="${DELTAT:-}"
 TIMINGS="$OUT_DIR/${LABEL}_timings.tsv"
 SUMMARY="$OUT_DIR/${LABEL}_summary.md"
+PHASE_SUMMARY="$OUT_DIR/${LABEL}_phase_summary.tsv"
 CASE_DIR="$OUT_DIR/${LABEL}_case"
 MONITOR_PID=""
 MONITOR_FILE=""
@@ -212,6 +214,7 @@ if [[ "$OUT_DIR" != /* ]]; then
   OUT_DIR="$ROOT_DIR/$OUT_DIR"
   TIMINGS="$OUT_DIR/${LABEL}_timings.tsv"
   SUMMARY="$OUT_DIR/${LABEL}_summary.md"
+  PHASE_SUMMARY="$OUT_DIR/${LABEL}_phase_summary.tsv"
   CASE_DIR="$OUT_DIR/${LABEL}_case"
 fi
 
@@ -241,6 +244,14 @@ if [[ "$FEQCHKPT" -le "$MAXSTEP" ]]; then
 fi
 if [[ "$SYNC_MODE" != "explicit" && "$SYNC_MODE" != "selective" ]]; then
   echo "SYNC_MODE must be explicit or selective" >&2
+  exit 2
+fi
+if [[ "$PHASE_TIMING" != "0" && "$PHASE_TIMING" != "1" ]]; then
+  echo "PHASE_TIMING must be 0 or 1" >&2
+  exit 2
+fi
+if [[ "$PHASE_TIMING" == "1" && "$SYNC_MODE" != "explicit" ]]; then
+  echo "PHASE_TIMING=1 requires SYNC_MODE=explicit" >&2
   exit 2
 fi
 if [[ "$HALO_TRANSPORT" != "pageable" && "$HALO_TRANSPORT" != "pinned" && \
@@ -309,6 +320,7 @@ run_once() {
     exec setsid env OMPI_MCA_sharedfp="${OMPI_MCA_sharedfp:-individual}" \
       CUDA_VISIBLE_DEVICES="$GPU_IDS" ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
       ASTR_GPU_RK_TIMING=1 ASTR_GPU_RANK_RK_TIMING=1 \
+      ASTR_GPU_PHASE_TIMING="$PHASE_TIMING" \
       ASTR_GPU_BENCHMARK_NO_FIELD_IO=1 \
       ASTR_GPU_SYNC_MODE="$SYNC_MODE" ASTR_GPU_HALO_TRANSPORT="$HALO_TRANSPORT" \
       ASTR_GPU_FILTER_WORKSPACE="$FILTER_WORKSPACE" \
@@ -393,9 +405,10 @@ PY
 mkdir -p "$OUT_DIR"
 prepare_case "$CASE_DIR"
 rm -f "$CASE_DIR/datin/grid.h5"
+rm -f "$PHASE_SUMMARY"
 assert_no_field_hdf5
-printf 'np=%s\ntopology=%s\ngpu_ids=%s\nhalo_transport=%s\nfilter_workspace=%s\nbenchmark_no_field_io=1\n' \
-  "$NP" "$TOPOLOGY" "$GPU_IDS" "$HALO_TRANSPORT" "$FILTER_WORKSPACE" \
+printf 'np=%s\ntopology=%s\ngpu_ids=%s\nhalo_transport=%s\nfilter_workspace=%s\nbenchmark_no_field_io=1\nphase_timing=%s\n' \
+  "$NP" "$TOPOLOGY" "$GPU_IDS" "$HALO_TRANSPORT" "$FILTER_WORKSPACE" "$PHASE_TIMING" \
   > "$OUT_DIR/${LABEL}_transport_metadata.txt"
 printf 'label\trepeat\trk_samples\tmedian_rk_seconds\tmin_rk_seconds\tmax_rk_seconds\twall_seconds\tmax_memory_mib\tmax_utilization_percent\n' > "$TIMINGS"
 
@@ -403,6 +416,16 @@ run_once warmup f
 for repeat in $(seq 1 "$REPEATS"); do
   run_once "$repeat" t
 done
+
+if [[ "$PHASE_TIMING" == "1" ]]; then
+  phase_args=()
+  for repeat in $(seq 1 "$REPEATS"); do
+    phase_args+=(--log "$OUT_DIR/${LABEL}_run_${repeat}/run.log")
+  done
+  python3 "$ROOT_DIR/tests/gpu_validation/summarize_gpu_phase_timing.py" \
+    "${phase_args[@]}" --ranks "$NP" --steps "$((MAXSTEP + 1))" \
+    --output "$PHASE_SUMMARY"
+fi
 
 python3 "$ROOT_DIR/tests/gpu_validation/summarize_tgv_performance.py" \
   --timings "$TIMINGS" --summary "$SUMMARY" --grid "$GRID" \

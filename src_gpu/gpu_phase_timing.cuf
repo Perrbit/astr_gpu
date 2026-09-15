@@ -1,0 +1,101 @@
+module gpu_phase_timing
+  use mpi
+  implicit none
+  private
+  public :: configure_gpu_phase_timing,begin_gpu_phase,end_gpu_phase
+
+  integer,parameter :: max_depth=8
+  logical,save :: configured=.false.
+  logical,save :: enabled=.false.
+  integer,save :: depth=0
+  character(len=32),save :: labels(max_depth)
+  real(8),save :: starts(max_depth)
+
+contains
+
+  integer function switch_choice(name)
+    character(len=*),intent(in) :: name
+    character(len=32) :: value
+    integer :: length,status
+
+    value=''
+    call get_environment_variable(name,value,length=length,status=status)
+    switch_choice=0
+    if(status==1 .or. length==0) return
+    if(status/=0) then
+      switch_choice=-1
+      return
+    endif
+    select case(trim(adjustl(value)))
+    case('1','t','T','true','TRUE','on','ON')
+      switch_choice=1
+    case('0','f','F','false','FALSE','off','OFF')
+      switch_choice=0
+    case default
+      switch_choice=-1
+    end select
+  end function switch_choice
+
+  subroutine configure_gpu_phase_timing(allow_tgv,allow_explicit)
+    logical,intent(in) :: allow_tgv,allow_explicit
+    integer :: requested,lowest,highest,ierr,ignored
+
+    if(configured) return
+    requested=switch_choice('ASTR_GPU_PHASE_TIMING')
+    call mpi_allreduce(requested,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,ignored)
+    call mpi_allreduce(requested,highest,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,ignored)
+    if(lowest<0 .or. lowest/=highest) then
+      print *, 'Invalid or inconsistent ASTR_GPU_PHASE_TIMING'
+      call mpi_abort(MPI_COMM_WORLD,1,ignored)
+    endif
+
+    enabled=requested==1
+    if(enabled .and. (.not.allow_tgv .or. .not.allow_explicit)) then
+      print *, 'ASTR_GPU_PHASE_TIMING requires periodic filtered viscous 3-D TGV with explicit synchronization'
+      call mpi_abort(MPI_COMM_WORLD,1,ignored)
+    endif
+    configured=.true.
+  end subroutine configure_gpu_phase_timing
+
+  subroutine begin_gpu_phase(label)
+    use parallel, only: ptime
+    character(len=*),intent(in) :: label
+    integer :: ierr
+
+    if(.not.enabled) return
+    if(depth>=max_depth) then
+      print *, 'GPU phase timing nesting exceeds max_depth'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+    endif
+    depth=depth+1
+    labels(depth)=trim(label)
+    starts(depth)=ptime()
+  end subroutine begin_gpu_phase
+
+  subroutine end_gpu_phase(label,nstep,rkstep)
+    use gpu_check, only: sync_gpu_boundary
+    use parallel, only: mpirank,ptime
+    character(len=*),intent(in) :: label
+    integer,intent(in) :: nstep,rkstep
+    real(8) :: seconds
+    integer :: ierr
+
+    if(.not.enabled) return
+    if(depth<1) then
+      print *, 'GPU phase timing nesting mismatch: ',trim(label)
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+    endif
+    if(trim(labels(depth))/=trim(label)) then
+      print *, 'GPU phase timing nesting mismatch: ',trim(label)
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+    endif
+    call sync_gpu_boundary('phase_'//trim(label))
+    seconds=ptime()-starts(depth)
+    write(*,'(A,3(1X,I0),1X,A,1X,ES24.16E3)') &
+      'ASTR_GPU_PHASE_TIMING',mpirank,nstep,rkstep,trim(label),seconds
+    depth=depth-1
+  end subroutine end_gpu_phase
+
+end module gpu_phase_timing

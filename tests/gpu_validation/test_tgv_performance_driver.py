@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Contracts for single- and multi-rank TGV performance timing."""
 
+import csv
 import os
 from pathlib import Path
 import signal
@@ -92,6 +93,68 @@ class TgvPerformanceDriverTests(unittest.TestCase):
         self.assertIn("ASTR_GPU_BENCHMARK_NO_FIELD_IO=1", SCRIPT)
         self.assertIn("benchmark_no_field_io=1", SCRIPT)
         self.assertIn("ASTR_GPU_BENCHMARK_NO_FIELD_IO enabled", SCRIPT)
+
+    def test_driver_forwards_phase_timing_and_writes_retained_summary(self) -> None:
+        self.assertIn('PHASE_TIMING="${PHASE_TIMING:-0}"', SCRIPT)
+        self.assertIn('ASTR_GPU_PHASE_TIMING="$PHASE_TIMING"', SCRIPT)
+        self.assertIn("summarize_gpu_phase_timing.py", SCRIPT)
+        self.assertIn('PHASE_SUMMARY="$OUT_DIR/${LABEL}_phase_summary.tsv"', SCRIPT)
+        self.assertIn('phase_timing=%s', SCRIPT)
+
+        lifecycle = SCRIPT[SCRIPT.index('run_once warmup f') :]
+        summary = lifecycle.index("summarize_gpu_phase_timing.py")
+        self.assertLess(lifecycle.index('run_once "$repeat" t'), summary)
+        self.assertNotIn("${LABEL}_run_warmup/run.log", lifecycle[summary:])
+
+    def test_phase_timing_requires_explicit_sync_and_boolean_value(self) -> None:
+        self.assertIn('PHASE_TIMING must be 0 or 1', SCRIPT)
+        self.assertIn('PHASE_TIMING=1 requires SYNC_MODE=explicit', SCRIPT)
+
+    def test_phase_summary_uses_five_retained_complete_logs(self) -> None:
+        solver_source = """#!/usr/bin/env bash
+printf '%s\n' 'ASTR_GPU_BENCHMARK_NO_FIELD_IO enabled'
+for step in 0 1; do
+  printf 'ASTR_GPU_RK_TIMING %s 0.1 0.2 0.3\n' "$step"
+  printf 'ASTR_GPU_RANK_RK_TIMING 0 %s 0.1 0.2 0.3\n' "$step"
+  if [[ "$ASTR_GPU_PHASE_TIMING" == "1" ]]; then
+    printf 'ASTR_GPU_PHASE_TIMING 0 %s 0 prepare 0.1\n' "$step"
+    for rkstep in 1 2 3; do
+      for phase in filter solution_halo convection diffusion_flux diffusion_halo diffusion_rhs rk_update; do
+        printf 'ASTR_GPU_PHASE_TIMING 0 %s %s %s 0.1\n' "$step" "$rkstep" "$phase"
+      done
+    done
+  fi
+done
+printf '%s\n' 'The job is done!'
+"""
+        with tempfile.TemporaryDirectory(prefix="astr-p4-phase-summary-") as temporary:
+            root = Path(temporary)
+            environment, monitor_leader, monitor_child, *_ = self._monitor_environment(
+                root, solver_source
+            )
+            environment["PHASE_TIMING"] = "1"
+            completed = self._run_driver(root, environment)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self._assert_processes_exited(monitor_leader, monitor_child)
+
+            summary = root / "out" / "monitor_contract_phase_summary.tsv"
+            with summary.open(encoding="ascii", newline="") as stream:
+                rows = {
+                    row["phase"]: int(row["samples"])
+                    for row in csv.DictReader(stream, delimiter="\t")
+                }
+            rk_phases = {
+                "filter",
+                "solution_halo",
+                "convection",
+                "diffusion_flux",
+                "diffusion_halo",
+                "diffusion_rhs",
+                "rk_update",
+            }
+            self.assertEqual(set(rows), {"prepare"} | rk_phases)
+            self.assertEqual(rows["prepare"], 10)
+            self.assertEqual({rows[phase] for phase in rk_phases}, {30})
 
     def test_driver_forces_generated_grid_and_removes_copied_hdf5(self) -> None:
         self.assertIn('args+=(--lreadgrid f)', SCRIPT)

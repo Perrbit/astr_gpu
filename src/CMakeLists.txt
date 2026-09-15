@@ -56,6 +56,7 @@ set(ASTR_SOURCES
 if(ASTR_WITH_CUDA)
   set(ASTR_GPU_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/gpu_check.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/gpu_phase_timing.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/device_runtime_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/inflow_interpolation_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/inflow_timeseries_gpu.cuf

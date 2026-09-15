@@ -4,6 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src"
+SRC_GPU = ROOT / "src_gpu"
 
 
 def _source(path: Path) -> str:
@@ -19,6 +20,9 @@ ASTR = _source(SRC / "astr.F90")
 GRID = _source(SRC / "gridgeneration.F90")
 INIT = _source(SRC / "initialisation.F90")
 MAINLOOP = _source(SRC / "mainloop.F90")
+GPU_RUNTIME = _source(SRC_GPU / "gpu_runtime.cuf")
+GPU_LOOP = _source(SRC_GPU / "mainloop_gpu.cuf")
+GPU_PHASE = _source(SRC_GPU / "gpu_phase_timing.cuf")
 
 
 def test_policy_is_configured_after_mpi_and_before_initialization() -> None:
@@ -87,3 +91,45 @@ def test_read_grid_branch_is_not_guarded_by_benchmark_policy() -> None:
 
 def test_later_output_paths_cannot_use_startup_benchmark_policy() -> None:
     assert "benchmark_field_io_disabled" not in _compact(MAINLOOP)
+
+
+def test_phase_timing_covers_required_p4_0_intervals() -> None:
+    for label in (
+        "prepare",
+        "filter",
+        "solution_halo",
+        "convection",
+        "diffusion_flux",
+        "diffusion_halo",
+        "diffusion_rhs",
+        "rk_update",
+    ):
+        source = GPU_RUNTIME if label == "prepare" else GPU_LOOP
+        assert f"begin_gpu_phase('{label}')" in source
+        assert f"end_gpu_phase('{label}'" in source
+
+
+def test_phase_timing_admission_requires_complete_explicit_tgv_schema() -> None:
+    source = _compact(GPU_RUNTIME)
+    assert "allow_selective=trim(flowtype)=='tgv'.and.ndims==3" in source
+    assert "lihomo.and.ljhomo.and.lkhomo" in source
+    assert "allow_phase_timing=allow_selective.and.lfilter.and.diffterm" in source
+    assert (
+        "callconfigure_gpu_phase_timing"
+        "(allow_phase_timing,.not.gpu_selective_sync_enabled())" in source
+    )
+
+
+def test_phase_timing_policy_is_collective_and_stack_checks_are_bounds_safe() -> None:
+    source = _compact(GPU_PHASE)
+    assert "switch_choice('astr_gpu_phase_timing')" in source
+    assert source.count("callmpi_allreduce(requested") == 2
+    assert "if(lowest<0.or.lowest/=highest)then" in source
+    assert "if(enabled.and.(.not.allow_tgv.or..not.allow_explicit))then" in source
+    assert "if(depth>=max_depth)then" in source
+    assert "if(depth<1)then" in source
+    assert "if(trim(labels(depth))/=trim(label))then" in source
+
+    disabled_return = source.index("if(.not.enabled)return", source.index("subroutineend_gpu_phase"))
+    sync = source.index("callsync_gpu_boundary('phase_'//trim(label))")
+    assert disabled_return < sync
