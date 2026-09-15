@@ -1,19 +1,23 @@
 program halo_exchange_contract_test
   use mpi
   use cudafor
-  use commvar, only: im,jm,km,hm,numq
+  use commvar, only: im,jm,km,hm,numq,flowtype,ndims,lihomo,ljhomo,lkhomo
   use commarray_gpu, only: q_d,qwork_d
   use parallel, only: isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
   use halo_transport_gpu, only: release_host_buffers
-  use halo_exchange_gpu, only: init_halo_transport_gpu,exchange_x_halo_gpu, &
+  use gpu_check, only: configure_gpu_sync_mode
+  use halo_exchange_gpu, only: init_halo_transport_gpu,release_halo_exchange_buffers_gpu, &
+    exchange_x_halo_gpu, &
     exchange_y_halo_gpu,exchange_z_halo_gpu,exchange_x_filter_halo_gpu, &
     exchange_filter_y_work_halo_gpu,exchange_filter_z_halo_gpu, &
     exchange_field_x_halo_gpu,exchange_field_y_halo_gpu,exchange_field_z_halo_gpu
   implicit none
   real(8),allocatable :: initial(:,:,:,:),expected(:,:,:,:),actual(:,:,:,:)
   real(8),allocatable,device :: field(:,:,:,:)
-  integer :: rank,nranks,ierr,devices,axis,mode,low,high,v,nvar
+  integer :: rank,nranks,ierr,devices,axis,axis_last,mode,low,high,v,nvar
   integer,parameter :: components(4)=[1,3,5,6]
+  logical :: pipeline_mode
+  character(32) :: backend
 
   axis=0
   mode=0
@@ -28,6 +32,18 @@ program halo_exchange_contract_test
   jm=12
   km=12
   numq=11
+  backend=''
+  call get_command_argument(1,backend)
+  pipeline_mode=trim(backend)=='pipeline'
+  axis_last=3
+  if(pipeline_mode) then
+    flowtype='tgv'
+    ndims=3
+    lihomo=.true.
+    ljhomo=.true.
+    lkhomo=.true.
+    call configure_gpu_sync_mode(.true.)
+  endif
   allocate(initial(-hm:im+hm,-hm:jm+hm,-hm:km+hm,11))
   allocate(expected,mold=initial)
   allocate(actual,mold=initial)
@@ -36,7 +52,7 @@ program halo_exchange_contract_test
   allocate(qwork_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,numq))
   call seed()
 
-  do axis=1,3
+  do axis=1,axis_last
     isize=1
     jsize=1
     ksize=1
@@ -114,7 +130,11 @@ program halo_exchange_contract_test
     enddo
     call release_host_buffers()
   enddo
-  if(rank==0) print *, 'production halo contract passed: axes=3, modes=2, exchanges=36, ranks=',nranks
+  call release_host_buffers()
+  call release_halo_exchange_buffers_gpu()
+  deallocate(q_d,qwork_d,field)
+  deallocate(initial,expected,actual)
+  if(rank==0) print *, 'production halo contract passed: axes=',axis_last,', modes=2, ranks=',nranks
   call mpi_finalize(ierr)
 contains
   real(8) function value(owner,c,m)

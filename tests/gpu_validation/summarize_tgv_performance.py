@@ -133,7 +133,9 @@ def main() -> int:
     parser.add_argument("--grid", required=True)
     parser.add_argument("--maxstep", required=True, type=int)
     parser.add_argument("--discard-steps", required=True, type=int)
-    parser.add_argument("--sync-mode", choices=("explicit", "selective"), default="explicit")
+    parser.add_argument(
+        "--sync-mode", choices=("explicit", "selective", "dependency"), default="explicit"
+    )
     args = parser.parse_args()
     lines = summarize(
         read_timings(args.timings), args.grid, args.maxstep, args.discard_steps, args.sync_mode

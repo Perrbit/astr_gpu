@@ -485,6 +485,53 @@ P3 已完成本机最终验收，详细证据见 `ASTR_PHASE_P3_IMPLEMENTATION_P
 - overlap 必须由时间线证明，而不是根据非阻塞 API 名称推断；
 - CUDA-aware 路径失败时可以回退到 host-staged 正确性后端。
 
+### 10.3 Phase P4：参考 OpenCFD-SCU 的任务图优化
+
+OpenCFD-SCU 静态源码审计表明，其主要参考价值是将内部区、边界带、halo
+传输组织为多 stream/event 任务图，以及针对 y/z 模板计算改善数据移动。其
+通信本身仍采用 host-staged、逐场阻塞 `MPI_Sendrecv`，不作为 ASTR 的实现基线。
+
+P4 保留 ASTR 当前一次分配并注册的 pinned host 缓冲、聚合消息、固定 tag 和
+`MPI_Irecv/Isend/Testall` 状态机。执行顺序为：
+
+1. 将 x-slab 单 context 路径推广到 y/z slab，覆盖 solution、filter 和融合
+   diffusion halo；
+2. 为 x/y/z 建立独立 context，随后支持双轴和三轴分解；
+3. 按每个算子真实 stencil 半宽划分内部区和边界带，使用 event 释放边界计算；
+4. 只有 NCU 证明 y/z 访存受限时，测试共享内存转置或 warp shuffle；
+5. 只测试局部生产者与消费者融合，不建立全 RHS 巨型 kernel。
+
+明确不采用 OpenCFD-SCU 的逐场阻塞通信、RHS `atomicAdd`、全局 rank 取模绑卡、
+循环内临时分配和朴素线程内前缀计数。OpenCFD-SCU 的实现仅提供架构候选来源，
+不构成 ASTR 性能收益证据。
+
+2026-09-15 已完成执行项 1 和 2。`pinned-pipeline` 现覆盖周期 TGV 的 x/y/z
+单轴以及双轴、三轴分解。每个活动轴拥有独立 stream、event、request、邻居、
+计数和私有固定 tag。solution halo 会先发布所有活动轴的 MPI，再按 x/y/z 顺序
+等待与 unpack。filter 保持有序的三方向 ping-pong；融合 diffusion 遍历所有轴，
+但目前只在首个活动轴通信期间执行一次内部 RHS，尚未实现多个 diffusion 轴同时
+推进。
+
+NP=2/3 三轴生产 halo 合约和双 context 精确合约通过。NP=2 单轴及 NP=4
+`2x2x1`、NP=8 `2x2x2` 的 1/10/100 步 CPU/GPU 门槛全部通过。多轴 100 步最大
+守恒场差分别为 `7.1054e-13` 和 `7.6739e-13`。NP=4 完整求解器的四 rank
+full leak-check 均为 `0 errors`、`0 bytes leaked`，racecheck 均为
+`0 errors, 0 warnings`。
+
+重启后的本地 `256^3`、NP=2、五轮完整 RK 配对中，y-slab 从
+`0.510051923` 降至 `0.479824547 s/RK`，降低 `5.926%`；z-slab 从
+`0.508967702` 降至 `0.478513546 s/RK`，降低 `5.984%`。四组相对极差均不超过
+`1.057%`，候选显存增量为 `32--33 MiB`。每轴 context 重构后，同一时段 x-slab
+五轮中位时间从 pinned explicit 的 `0.529076911 s/RK` 降至 pipeline explicit 的
+`0.506394356 s/RK`，降低 `4.287%`；pipeline dependency 为
+`0.504894878 s/RK`，只比 pipeline explicit 再低 `0.296%`。默认同步继续使用
+`explicit`，`dependency` 保持 opt-in。
+
+下一执行项是在四卡 A800 上按一秩一卡完成 NP=4 plane/cube 的 Nsight Systems
+时间线和五轮完整 RK 配对。本地 NP=4/8 共享双卡只证明正确性。只有 A800 证明
+多轴 MPI 尾部仍限制完整 RK，才继续并行推进多个 diffusion 轴或测试持久 MPI
+request；不根据本地 oversubscription 排序改变默认后端。
+
 ## 11. 候选执行流程
 
 每个候选使用：

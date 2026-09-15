@@ -91,11 +91,13 @@ program halo_transport_test
                       ' work_calls=',work_calls
   call mpi_finalize(ierr)
 contains
-  subroutine independent_work(requests)
+  subroutine independent_work(requests,axis)
     integer,intent(inout) :: requests(4)
+    integer,intent(in) :: axis
     integer :: status(MPI_STATUS_SIZE,4),code
     logical :: done
     work_calls=work_calls+1
+    call require(axis==0)
     call mpi_testall(4,requests,done,status,code)
     call require(code==MPI_SUCCESS)
   end subroutine independent_work

@@ -3,27 +3,47 @@ program halo_transport_setup_test
   use cudafor
   use iso_c_binding, only: c_loc,c_size_t
   use halo_transport_gpu, only: begin_transport_setup,register_host_buffer, &
-                              end_transport_setup,release_host_buffers
+                              end_transport_setup,release_host_buffers, &
+                              halo_pipeline_enabled,configure_pipeline_axes, &
+                              halo_axis_x,halo_axis_y,begin_host_pair_pipeline, &
+                              begin_host_pair_device_pack,start_host_pair_mpi, &
+                              complete_host_pair_mpi,begin_host_pair_device_upload, &
+                              finish_host_pair_pipeline
   implicit none
   type host_buffer
     real(8),pointer,contiguous :: values(:,:,:,:)
   end type host_buffer
   type(host_buffer) :: buffers(37)
-  integer :: rank,ierr,devices,i,n
-  logical :: pinned,overflow
-  character(32) :: mode
+  integer(kind=cuda_stream_kind) :: stream_x,stream_y
+  integer :: rank,nrank,ierr,devices,i,n,partner,count
+  logical :: pinned,overflow,multi_context,expect_pipeline
+  character(32) :: mode,backend
 
   call mpi_init(ierr)
   call mpi_comm_rank(MPI_COMM_WORLD,rank,ierr)
+  call mpi_comm_size(MPI_COMM_WORLD,nrank,ierr)
   call require(cudaGetDeviceCount(devices)==cudaSuccess)
   call require(devices>0)
   call require(cudaSetDevice(mod(rank,devices))==cudaSuccess)
   call get_command_argument(1,mode)
+  backend=''
+  call get_environment_variable('ASTR_GPU_HALO_TRANSPORT',backend)
+  expect_pipeline=trim(backend)=='pinned-pipeline'
   overflow=trim(mode)=='overflow'
-  call require(overflow .or. trim(mode)=='normal')
+  multi_context=trim(mode)=='contexts'
+  call require(overflow .or. multi_context .or. trim(mode)=='normal')
+  if(multi_context) call require(expect_pipeline .and. nrank==2)
   call begin_transport_setup(pinned)
+  if(expect_pipeline) then
+    if(multi_context) then
+      call configure_pipeline_axes((/.true.,.true.,.false./))
+    else
+      call configure_pipeline_axes((/.true.,.false.,.false./))
+    endif
+  endif
   call require(pinned)
-  n=4
+  call require(halo_pipeline_enabled .eqv. expect_pipeline)
+  n=merge(8,4,multi_context)
   if(overflow .and. rank==0) n=37
   do i=1,n
     allocate(buffers(i)%values(37,1,1,1))
@@ -31,6 +51,37 @@ program halo_transport_setup_test
   enddo
   call end_transport_setup(pinned)
   call require(pinned .neqv. overflow)
+  if(.not.overflow) call require(halo_pipeline_enabled .eqv. expect_pipeline)
+  if(multi_context) then
+    count=size(buffers(1)%values)
+    partner=1-rank
+    buffers(1)%values=1000.d0*rank+11.d0
+    buffers(2)%values=1000.d0*rank+12.d0
+    buffers(3)%values=-1.d0
+    buffers(4)%values=-1.d0
+    buffers(5)%values=1000.d0*rank+21.d0
+    buffers(6)%values=1000.d0*rank+22.d0
+    buffers(7)%values=-1.d0
+    buffers(8)%values=-1.d0
+    call begin_host_pair_pipeline(halo_axis_x,buffers(3)%values,buffers(4)%values, &
+                                  count,partner,partner,31001,31002)
+    call begin_host_pair_device_pack(halo_axis_x,stream_x)
+    call begin_host_pair_pipeline(halo_axis_y,buffers(7)%values,buffers(8)%values, &
+                                  count,partner,partner,31003,31004)
+    call begin_host_pair_device_pack(halo_axis_y,stream_y)
+    call start_host_pair_mpi(halo_axis_x,buffers(1)%values,buffers(2)%values)
+    call start_host_pair_mpi(halo_axis_y,buffers(5)%values,buffers(6)%values)
+    call complete_host_pair_mpi(halo_axis_x)
+    call complete_host_pair_mpi(halo_axis_y)
+    call begin_host_pair_device_upload(halo_axis_x,stream_x)
+    call begin_host_pair_device_upload(halo_axis_y,stream_y)
+    call finish_host_pair_pipeline(halo_axis_x)
+    call finish_host_pair_pipeline(halo_axis_y)
+    call require(all(buffers(3)%values==1000.d0*partner+11.d0))
+    call require(all(buffers(4)%values==1000.d0*partner+12.d0))
+    call require(all(buffers(7)%values==1000.d0*partner+21.d0))
+    call require(all(buffers(8)%values==1000.d0*partner+22.d0))
+  endif
   call release_host_buffers()
   ! Re-registration must succeed after both normal release and collective rollback.
   do i=1,n

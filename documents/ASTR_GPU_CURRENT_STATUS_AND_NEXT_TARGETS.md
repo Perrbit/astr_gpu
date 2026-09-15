@@ -1,6 +1,6 @@
 # ASTR GPU Current Status and Next Targets
 
-更新日期：2026-09-14。当前代码基线：`feature/gpu_dev` 当前工作树。
+更新日期：2026-09-15。当前代码基线：`feature/gpu_dev` 当前工作树。
 
 ## 1. 总体结论
 
@@ -676,6 +676,68 @@ Cartesian y 法向扩散算子中显式强制 `J_s,n=0`。由物种扩散携带�
 C3 保留一线程一单元的 FP64 正确性基线。当前 profile 已证明存在寄存器和
 local-memory 压力，但在 A800 与真实反应状态分布复测前不引入 warp 同步拒绝或分桶。
 
+### 8.8 P4 多 GPU 通信流水线
+
+2026-09-15 已完成周期 TGV x/y/z 单轴及双轴、三轴 `pinned-pipeline` 候选。
+默认 `explicit` 和既有三种 halo 后端不变，`dependency` 仍需显式选择。每个活动
+轴现拥有独立 stream、event、四个 MPI request、邻居、计数和私有固定 tag。
+solution halo 会在等待任一轴前发布所有活动轴的通信，再按 x/y/z 顺序 unpack，
+以保持 CPU 的共享面和边棱覆盖语义。
+
+完整五变量 filter 因三方向 ping-pong 数据依赖仍按轴顺序执行。融合 diffusion
+已遍历所有活动轴，并将 `sigma(1:6)` 与 `qflux(1:3)` 合成九变量 halo；当前只在
+首个轴的通信期间执行一次内部 RHS，其他轴仍串行完成。普通后端保持六分量缓冲，
+pipeline 只为活动 MPI 轴分配九分量容量。
+
+Nsight Systems 的 `256^3`、NP=2、`2x1x1` 三步 trace 显示，D2H/H2D 调用由
+`168/506` 降至 `132/470`。原 diffusion 部分的 `72` 次阻塞 `MPI_Sendrecv`
+变为 `36` 次非阻塞成对事务。首个事务中约 `16.4 ms` 内点 kernel 完整位于
+通信活跃窗口。五轮完整 RK 中位时间为 `0.509744836 s`，相对 pinned 基线
+`0.529989956 s` 降低 `3.820%`，相对 P4-0 pageable x-slab 降低 `16.944%`；
+五轮相对极差为 `0.815%`。相对 P4-0 NP=1 GPU，当前本地加速比为 `1.1692x`，
+并行效率为 `58.46%`，尚未达到 A800 `70%` 验收目标。
+
+`128^3`、NP=2 的 x/y/z 1/10/100 步，以及 NP=4 `2x2x1`、NP=8 `2x2x2`
+的 1/10/100 步 CPU/GPU 门槛全部通过。多轴 100 步最大守恒场差分别为
+`7.1054e-13` 和 `7.6739e-13`。NP=2/3 生产 halo 合约精确覆盖三轴周期邻居和
+物理端点；双 context 合约确认多个轴的 MPI 已同时处于 active 状态。
+NP=4 完整求解器的四 rank full leak-check 均为 `0 errors`、`0 bytes leaked`，
+racecheck 均为 `0 errors, 0 warnings`。该结果属于周期 TGV 数值正确性与并发安全
+证据，不覆盖物理边界、CURVE、激波和 chemistry 的异步化。
+
+系统重启后的同一时段 `256^3` 五轮配对中，y-slab 的 pinned/pipeline 中位时间
+为 `0.510051923/0.479824547 s/RK`，降低 `5.926%`；z-slab 为
+`0.508967702/0.478513546 s/RK`，降低 `5.984%`。四组相对极差均不超过
+`1.057%`，候选显存仅增加 `32--33 MiB`。y/z pipeline 因此保留为本地 opt-in
+候选，并等待 A800 NP=1/2/4 配对复测。
+
+2026-09-15 的同步审计为 pipeline 增加默认流 source-ready event，并让通信流和
+独立计算流显式等待；solution halo 内的 RHS 清零也等待该 event，避免与上一
+RK stage 读取 `qrhs_d` 的更新 kernel 形成潜在跨流竞争。`dependency` 模式的
+三步 trace 将 `cudaDeviceSynchronize` 从 `492` 次降至 `36` 次，减少
+`92.683%`，kernel 和 memcpy 次数保持不变。10 步最大守恒场差仍为
+`3.1264e-13`，双 rank memcheck 和 racecheck 均为零错误。
+
+同机同时段五轮 A/B 中，`explicit + pinned-pipeline` 为
+`0.628957548 s/RK`，`dependency + pinned-pipeline` 为
+`0.641986121 s/RK`，后者慢 `2.071%`。当前 explicit 基线相对历史
+`0.509744836 s/RK` 漂移 `23.387%`，所以不使用跨时段绝对值判断同步收益。
+全局取消非强制同步目前保留为未晋级 opt-in 候选，生产默认继续使用
+`explicit`。将 diffusion 内点计算提前到 D2H wait 前的实验进一步慢
+`7.773%`；其 MPI 区间由 `26.685 ms` 增至 `52.080 ms`，该调度已回退。
+
+现有 host halo 缓冲已经一次分配、一次 `cudaHostRegister`、循环复用并在退出时
+统一注销，循环中没有 pinned 分配/释放。`MPI_Send_init/MPI_Recv_init` 暂缓，
+因为 trace 中非阻塞请求创建不足 `1 ms`，当前瓶颈仍是 host-staged 大消息传输
+及其尾部；应先在 A800 的实际 MPI 栈复测，再作为独立候选实现。
+
+每轴 context 重构后，本地双卡 x-slab `256^3` 五轮配对的 pinned explicit、
+pipeline explicit 和 pipeline dependency 中位时间分别为 `0.529076911`、
+`0.506394356` 和 `0.504894878 s/RK`，相对极差分别为 `0.820%`、`0.763%` 和
+`0.336%`。pipeline explicit 相对 pinned 降低 `4.287%`，峰值 GPU 利用率由
+`83%` 增至 `92%`。dependency 只比 pipeline explicit 再低 `0.296%`，不足以
+晋升默认。本机只有两张 GPU，NP=4/8 共享双卡结果不能用于多轴扩展效率。
+
 ## 9. 暂缓范围
 
 以下能力不进入近期目标：
@@ -690,25 +752,31 @@ local-memory 压力，但在 A800 与真实反应状态分布复测前不引入 
 
 ## 10. 当前推荐顺序
 
-1. 人工确认 C5-6A0 非催化壁面的离散闭合：壁面质量分数采用第一内点正状态，
+1. 在 A800 上复测 P4 周期 TGV `512^3` NP=1/2/4，比较 pinned、
+   `pinned-pipeline + explicit` 与 `pinned-pipeline + dependency`，同时保存
+   Nsight Systems 时间线；只有正式矩阵达到强扩展门槛后才考虑晋升默认。
+2. P4 每轴独立 context 与双轴/三轴正确性已经完成。下一步在四卡 A800 上按
+   一秩一卡完成 NP=4 plane/cube 的时间线和五轮完整 RK 配对；仅当 MPI 尾部仍是
+   主导瓶颈时，继续并行推进多个 diffusion 轴或测试持久 MPI request。
+3. 人工确认 C5-6A0 非催化壁面的离散闭合：壁面质量分数采用第一内点正状态，
    Cartesian y 法向扩散算子显式强制 `J_s,n=0`。只关闭物种扩散对组分焓和 `Ev`
    法向通量的贡献，保留温度和 `Tv` 梯度产生的导热通量。
-2. 重跑 `31x31x7` A0 smoke，再按 CPU/GPU、网格/时间步收敛、NP=1/2/8、
+4. 重跑 `31x31x7` A0 smoke，再按 CPU/GPU、网格/时间步收敛、NP=1/2/8、
    Compute Sanitizer、守恒和常驻顺序完成高焓平板门槛。
-3. 按 `HTR 单温入口门槛 -> 独立双温平板参考 -> C5-6A 高焓平板 -> q(1:11)` 激波管与正常激波门槛
+5. 按 `HTR 单温入口门槛 -> 独立双温平板参考 -> C5-6A 高焓平板 -> q(1:11)` 激波管与正常激波门槛
    `-> C5-6B 有限速率空气 SBLI` 实现和验证；五方程边界与 Roe 特征系统不复用。
-4. 人工确认 C5-6B 使用 Ducros 区域内分量式 MP7 加局部 Lax--Friedrichs，
+6. 人工确认 C5-6B 使用 Ducros 区域内分量式 MP7 加局部 Lax--Friedrichs，
    平滑区保留 `643e`；在获得确认前不新增激波源码。
-5. 收口 A800 TGV T0 至 T7，建立 NP=1/2/4 正式性能和强扩展证据。
-6. 补齐首个 MP1 候选和 P2 通量正负对融合的长时 TGV、restart 与 A800 NP=1/2/4
+7. 收口 A800 TGV T0 至 T7，建立 NP=1/2/4 正式性能和强扩展证据。
+8. 补齐首个 MP1 候选和 P2 通量正负对融合的长时 TGV、restart 与 A800 NP=1/2/4
    复测；保持 FP64 与 `split` 为默认，分别测试后再评估组合。
-7. 完成 OpenSBLI 三网格、两时间步和外部物理比较，为激波敏感混合精度建立 FP64 物理基线。
-8. 将已本地收口的 MP2 候选带到 A800 NP=1/2/4，并推进 MP3 至 MP5 的激波敏感、
+9. 完成 OpenSBLI 三网格、两时间步和外部物理比较，为激波敏感混合精度建立 FP64 物理基线。
+10. 将已本地收口的 MP2 候选带到 A800 NP=1/2/4，并推进 MP3 至 MP5 的激波敏感、
    滤波和生产晋级验证。
-9. 完成动态入口 D3 前驱统计收敛，并在 A800 上复核已完成的 D4 常驻统计性能，
+11. 完成动态入口 D3 前驱统计收敛，并在 A800 上复核已完成的 D4 常驻统计性能，
    再进入生产级湍流 SBLI。
-10. 完成单分量滤波的 LDC、Channel、`42`、CURVE 和完整 RK 性能验收，再决定
+12. 完成单分量滤波的 LDC、Channel、`42`、CURVE 和完整 RK 性能验收，再决定
    是否允许其进入低显存生产任务。
-11. 以 A800 profile 决定非周期/SBLI overlap 和选择性同步是否继续。
-12. 建立 CUDA/HIP 后端边界原型，验证未来 DCU 路径。
-13. 由具体算例需求决定是否扩展曲线特征边界。
+13. 以 A800 profile 决定非周期/SBLI overlap 和选择性同步是否继续。
+14. 建立 CUDA/HIP 后端边界原型，验证未来 DCU 路径。
+15. 由具体算例需求决定是否扩展曲线特征边界。

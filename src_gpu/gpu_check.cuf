@@ -1,14 +1,16 @@
 module gpu_check
   use cudafor
+  use mpi
   implicit none
   logical,save :: sync_mode_configured = .false.
   logical,save :: selective_sync_enabled = .false.
+  logical,save :: dependency_sync_enabled = .false.
   character(len=128),save :: last_kernel_label = 'none'
 contains
   subroutine configure_gpu_sync_mode(allow_selective)
     logical,intent(in) :: allow_selective
     character(len=32) :: value
-    integer :: length,status
+    integer :: length,status,choice,lowest,highest,ierr,ignored
 
     if(sync_mode_configured) return
 
@@ -17,17 +19,33 @@ contains
                                   length=length,status=status)
     if(status /= 0 .or. length == 0) value='explicit'
 
+    choice=-1
     select case(trim(adjustl(value)))
     case('explicit')
-      selective_sync_enabled=.false.
+      choice=0
     case('selective')
       if(.not.allow_selective) then
         stop 'ASTR_GPU_SYNC_MODE=selective currently requires 3-D periodic TGV'
       endif
-      selective_sync_enabled=.true.
+      choice=1
+    case('dependency')
+      if(.not.allow_selective) then
+        stop 'ASTR_GPU_SYNC_MODE=dependency currently requires 3-D periodic TGV'
+      endif
+      choice=2
     case default
-      stop 'ASTR_GPU_SYNC_MODE must be explicit or selective'
+      stop 'ASTR_GPU_SYNC_MODE must be explicit, selective or dependency'
     end select
+    call mpi_allreduce(choice,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,ignored)
+    call mpi_allreduce(choice,highest,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,ignored)
+    if(lowest<0 .or. lowest/=highest) then
+      print *, 'Invalid or inconsistent ASTR_GPU_SYNC_MODE across MPI ranks'
+      call mpi_abort(MPI_COMM_WORLD,1,ignored)
+    endif
+    selective_sync_enabled=choice==1
+    dependency_sync_enabled=choice==2
     sync_mode_configured=.true.
   end subroutine configure_gpu_sync_mode
 
@@ -37,20 +55,20 @@ contains
     gpu_selective_sync_enabled=selective_sync_enabled
   end function gpu_selective_sync_enabled
 
+  logical function gpu_dependency_sync_enabled()
+    implicit none
+
+    gpu_dependency_sync_enabled=dependency_sync_enabled
+  end function gpu_dependency_sync_enabled
+
   subroutine sync_after_kernel(label,force_sync)
     character(len=*), intent(in) :: label
     logical,intent(in),optional :: force_sync
     integer :: istat
     logical :: must_sync
 
-    last_kernel_label=label
-    istat = cudaGetLastError()
-    if(istat /= cudaSuccess) then
-      print *, 'GPU kernel launch failed: ', trim(label), istat
-      stop 'GPU kernel launch failed'
-    endif
-
-    must_sync=.not.selective_sync_enabled
+    call check_kernel_launch(label)
+    must_sync=.not.(selective_sync_enabled .or. dependency_sync_enabled)
     if(present(force_sync)) must_sync=must_sync .or. force_sync
     if(.not.must_sync) return
 
@@ -60,6 +78,18 @@ contains
       stop 'GPU kernel synchronize failed'
     endif
   end subroutine sync_after_kernel
+
+  subroutine check_kernel_launch(label)
+    character(len=*),intent(in) :: label
+    integer :: istat
+
+    last_kernel_label=label
+    istat = cudaGetLastError()
+    if(istat /= cudaSuccess) then
+      print *, 'GPU kernel launch failed: ', trim(label), istat
+      stop 'GPU kernel launch failed'
+    endif
+  end subroutine check_kernel_launch
 
   subroutine sync_gpu_boundary(label)
     character(len=*),intent(in) :: label

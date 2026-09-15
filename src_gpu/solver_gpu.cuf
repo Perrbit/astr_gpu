@@ -3599,6 +3599,155 @@ contains
       (3.d0/32.d0)*v5 - (1.d0/64.d0)*v6
   end function filter6_boundary_point2
 
+  attributes(global) subroutine filter_x_periodic_interior_global_kernel(im,jm,km,hm)
+    use commarray_gpu, only: q_d,qwork_d
+    implicit none
+    integer,value :: im,jm,km,hm
+    integer :: id,ntot,ni,i,j,k,m
+
+    ni=im-2*hm+1
+    if(ni<=0) return
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    ntot=ni*(jm+1)*(km+1)
+    if(id>=ntot) return
+    i=hm+mod(id,ni)
+    j=mod(id/ni,jm+1)
+    k=id/(ni*(jm+1))
+    do m=1,5
+      qwork_d(i,j,k,m)=filter10_value(q_d(i,j,k,m), &
+        q_d(i+1,j,k,m),q_d(i-1,j,k,m), &
+        q_d(i+2,j,k,m),q_d(i-2,j,k,m), &
+        q_d(i+3,j,k,m),q_d(i-3,j,k,m), &
+        q_d(i+4,j,k,m),q_d(i-4,j,k,m), &
+        q_d(i+5,j,k,m),q_d(i-5,j,k,m))
+    enddo
+  end subroutine filter_x_periodic_interior_global_kernel
+
+  attributes(global) subroutine filter_x_periodic_boundary_global_kernel(im,jm,km,hm)
+    use commarray_gpu, only: q_d,qwork_d
+    implicit none
+    integer,value :: im,jm,km,hm
+    integer :: id,ntot,i,j,k,m
+
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    ntot=(im+1)*(jm+1)*(km+1)
+    if(id>=ntot) return
+    i=mod(id,im+1)
+    if(i>=hm .and. i<=im-hm) return
+    j=mod(id/(im+1),jm+1)
+    k=id/((im+1)*(jm+1))
+    do m=1,5
+      qwork_d(i,j,k,m)=filter10_value(q_d(i,j,k,m), &
+        q_d(i+1,j,k,m),q_d(i-1,j,k,m), &
+        q_d(i+2,j,k,m),q_d(i-2,j,k,m), &
+        q_d(i+3,j,k,m),q_d(i-3,j,k,m), &
+        q_d(i+4,j,k,m),q_d(i-4,j,k,m), &
+        q_d(i+5,j,k,m),q_d(i-5,j,k,m))
+    enddo
+  end subroutine filter_x_periodic_boundary_global_kernel
+
+  attributes(global) subroutine filter_y_periodic_interior_global_kernel(im,jm,km,hm)
+    use commarray_gpu, only: q_d,qwork_d
+    implicit none
+    integer,value :: im,jm,km,hm
+    integer :: id,ntot,nj,i,j,k,m
+
+    nj=jm-2*hm+1
+    if(nj<=0) return
+    id=(blockIdx%x-1)*blockDim%x*blockDim%y+ &
+       (threadIdx%y-1)*blockDim%x+threadIdx%x-1
+    ntot=(im+1)*nj
+    if(id>=ntot) return
+    i=mod(id,im+1)
+    j=hm+id/(im+1)
+    k=blockIdx%z-1
+    if(k>km) return
+    do m=1,5
+      q_d(i,j,k,m)=filter10_value(qwork_d(i,j,k,m), &
+        qwork_d(i,j+1,k,m),qwork_d(i,j-1,k,m), &
+        qwork_d(i,j+2,k,m),qwork_d(i,j-2,k,m), &
+        qwork_d(i,j+3,k,m),qwork_d(i,j-3,k,m), &
+        qwork_d(i,j+4,k,m),qwork_d(i,j-4,k,m), &
+        qwork_d(i,j+5,k,m),qwork_d(i,j-5,k,m))
+    enddo
+  end subroutine filter_y_periodic_interior_global_kernel
+
+  attributes(global) subroutine filter_y_periodic_boundary_global_kernel(im,jm,km,hm)
+    use commarray_gpu, only: q_d,qwork_d
+    implicit none
+    integer,value :: im,jm,km,hm
+    integer :: id,ntot,i,j,k,m
+
+    id=(blockIdx%x-1)*blockDim%x*blockDim%y+ &
+       (threadIdx%y-1)*blockDim%x+threadIdx%x-1
+    ntot=(im+1)*(jm+1)
+    if(id>=ntot) return
+    i=mod(id,im+1)
+    j=id/(im+1)
+    if(j>=hm .and. j<=jm-hm) return
+    k=blockIdx%z-1
+    if(k>km) return
+    do m=1,5
+      q_d(i,j,k,m)=filter10_value(qwork_d(i,j,k,m), &
+        qwork_d(i,j+1,k,m),qwork_d(i,j-1,k,m), &
+        qwork_d(i,j+2,k,m),qwork_d(i,j-2,k,m), &
+        qwork_d(i,j+3,k,m),qwork_d(i,j-3,k,m), &
+        qwork_d(i,j+4,k,m),qwork_d(i,j-4,k,m), &
+        qwork_d(i,j+5,k,m),qwork_d(i,j-5,k,m))
+    enddo
+  end subroutine filter_y_periodic_boundary_global_kernel
+
+  attributes(global) subroutine filter_z_periodic_interior_global_kernel(im,jm,km,hm)
+    use commarray_gpu, only: q_d,qwork_d
+    implicit none
+    integer,value :: im,jm,km,hm
+    integer :: id,ntot,nk,i,j,k,m
+
+    nk=km-2*hm+1
+    if(nk<=0) return
+    id=(blockIdx%x-1)*blockDim%x*blockDim%z+ &
+       (threadIdx%z-1)*blockDim%x+threadIdx%x-1
+    ntot=(im+1)*nk
+    if(id>=ntot) return
+    i=mod(id,im+1)
+    j=blockIdx%y-1
+    if(j>jm) return
+    k=hm+id/(im+1)
+    do m=1,5
+      qwork_d(i,j,k,m)=filter10_value(q_d(i,j,k,m), &
+        q_d(i,j,k+1,m),q_d(i,j,k-1,m), &
+        q_d(i,j,k+2,m),q_d(i,j,k-2,m), &
+        q_d(i,j,k+3,m),q_d(i,j,k-3,m), &
+        q_d(i,j,k+4,m),q_d(i,j,k-4,m), &
+        q_d(i,j,k+5,m),q_d(i,j,k-5,m))
+    enddo
+  end subroutine filter_z_periodic_interior_global_kernel
+
+  attributes(global) subroutine filter_z_periodic_boundary_global_kernel(im,jm,km,hm)
+    use commarray_gpu, only: q_d,qwork_d
+    implicit none
+    integer,value :: im,jm,km,hm
+    integer :: id,ntot,i,j,k,m
+
+    id=(blockIdx%x-1)*blockDim%x*blockDim%z+ &
+       (threadIdx%z-1)*blockDim%x+threadIdx%x-1
+    ntot=(im+1)*(km+1)
+    if(id>=ntot) return
+    i=mod(id,im+1)
+    j=blockIdx%y-1
+    if(j>jm) return
+    k=id/(im+1)
+    if(k>=hm .and. k<=km-hm) return
+    do m=1,5
+      qwork_d(i,j,k,m)=filter10_value(q_d(i,j,k,m), &
+        q_d(i,j,k+1,m),q_d(i,j,k-1,m), &
+        q_d(i,j,k+2,m),q_d(i,j,k-2,m), &
+        q_d(i,j,k+3,m),q_d(i,j,k-3,m), &
+        q_d(i,j,k+4,m),q_d(i,j,k-4,m), &
+        q_d(i,j,k+5,m),q_d(i,j,k-5,m))
+    enddo
+  end subroutine filter_z_periodic_boundary_global_kernel
+
   attributes(global) subroutine filter_x_global_kernel(im,jm,km,npdci,flat_mapping)
     use commarray_gpu, only: q_d,qwork_d
     implicit none

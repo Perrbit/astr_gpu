@@ -128,7 +128,8 @@ contains
                             gpu_periodic_boundary_case
     use inflow_timeseries_gpu, only: init_dynamic_inflow_gpu
     use commvar, only: flowtype,ndims,lihomo,ljhomo,lkhomo,lfilter,diffterm
-    use gpu_check, only: configure_gpu_sync_mode,gpu_selective_sync_enabled
+    use gpu_check, only: configure_gpu_sync_mode,gpu_selective_sync_enabled, &
+                         gpu_dependency_sync_enabled
     use gpu_phase_timing, only: configure_gpu_phase_timing
     use parallel, only: lio
     use conservative_boundary_runtime, only: conservative_boundary
@@ -147,9 +148,12 @@ contains
     call configure_gpu_sync_mode(allow_selective)
     allow_phase_timing=allow_selective .and. gpu_periodic_boundary_case() .and. &
                        lfilter .and. diffterm
-    call configure_gpu_phase_timing(allow_phase_timing,.not.gpu_selective_sync_enabled())
+    call configure_gpu_phase_timing(allow_phase_timing, &
+         .not.(gpu_selective_sync_enabled() .or. gpu_dependency_sync_enabled()))
     if(lio) then
-      if(gpu_selective_sync_enabled()) then
+      if(gpu_dependency_sync_enabled()) then
+        write(*,'(A)') ' ** GPU synchronization mode: dependency'
+      elseif(gpu_selective_sync_enabled()) then
         write(*,'(A)') ' ** GPU synchronization mode: selective'
       else
         write(*,'(A)') ' ** GPU synchronization mode: explicit'

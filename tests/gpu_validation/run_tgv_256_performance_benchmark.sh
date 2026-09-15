@@ -242,8 +242,9 @@ if [[ "$FEQCHKPT" -le "$MAXSTEP" ]]; then
   echo "FEQCHKPT must exceed MAXSTEP so measured runs do not write fields" >&2
   exit 2
 fi
-if [[ "$SYNC_MODE" != "explicit" && "$SYNC_MODE" != "selective" ]]; then
-  echo "SYNC_MODE must be explicit or selective" >&2
+if [[ "$SYNC_MODE" != "explicit" && "$SYNC_MODE" != "selective" && \
+      "$SYNC_MODE" != "dependency" ]]; then
+  echo "SYNC_MODE must be explicit, selective or dependency" >&2
   exit 2
 fi
 if [[ "$PHASE_TIMING" != "0" && "$PHASE_TIMING" != "1" ]]; then
@@ -255,8 +256,16 @@ if [[ "$PHASE_TIMING" == "1" && "$SYNC_MODE" != "explicit" ]]; then
   exit 2
 fi
 if [[ "$HALO_TRANSPORT" != "pageable" && "$HALO_TRANSPORT" != "pinned" && \
-      "$HALO_TRANSPORT" != "pinned-overlap" ]]; then
-  echo "HALO_TRANSPORT must be pageable, pinned or pinned-overlap" >&2
+      "$HALO_TRANSPORT" != "pinned-overlap" && "$HALO_TRANSPORT" != "pinned-pipeline" ]]; then
+  echo "HALO_TRANSPORT must be pageable, pinned, pinned-overlap or pinned-pipeline" >&2
+  exit 2
+fi
+if [[ "$HALO_TRANSPORT" == "pinned-pipeline" && "$SYNC_MODE" == "selective" ]]; then
+  echo "HALO_TRANSPORT=pinned-pipeline does not support SYNC_MODE=selective" >&2
+  exit 2
+fi
+if [[ "$SYNC_MODE" == "dependency" && "$HALO_TRANSPORT" != "pinned-pipeline" ]]; then
+  echo "SYNC_MODE=dependency requires HALO_TRANSPORT=pinned-pipeline" >&2
   exit 2
 fi
 if [[ "$FILTER_WORKSPACE" != "full" && "$FILTER_WORKSPACE" != "scalar" ]]; then

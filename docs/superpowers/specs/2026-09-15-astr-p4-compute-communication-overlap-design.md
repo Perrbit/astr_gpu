@@ -55,11 +55,13 @@ warm-up 的完整 RK 均值约为 `1.32896 s`，对应初步强扩展效率 `66.
 
 因此 `pinned-overlap` 是局部 MPI wait 隐藏，不是完整通信流水线。
 
-### 全局 selective sync 不是目标实现
+### 全局同步消除只作为受限候选
 
 既有单卡实验将 `cudaDeviceSynchronize` 大幅减少后没有得到完整 RK 收益。
-本阶段不重新启用全局“尽量不同步”策略。同步只根据跨流、MPI host buffer、
-halo消费和主机读回依赖移除，默认流上的计算顺序仍由 CUDA stream 保证。
+本阶段允许 `dependency` 以受限 opt-in 候选重新测量，但不将全局“尽量不同步”
+设为推荐路径。同步只根据跨流、MPI host buffer、halo消费和主机读回依赖移除，
+默认流上的计算顺序仍由 CUDA stream 保证；没有本地整步收益时继续保留
+`explicit` 默认。
 
 ## 🏗️ 目标架构
 
@@ -70,7 +72,7 @@ halo消费和主机读回依赖移除，默认流上的计算顺序仍由 CUDA s
 | `ASTR_GPU_HALO_TRANSPORT=pageable` | 兼容基线 | 默认 | 阻塞主机暂存 |
 | `ASTR_GPU_HALO_TRANSPORT=pinned` | 固页基线 | 可选 | 阻塞 MPI |
 | `ASTR_GPU_HALO_TRANSPORT=pinned-overlap` | P3 基线 | 可选 | 仅 stored diffusion 局部重叠 |
-| `ASTR_GPU_HALO_TRANSPORT=pinned-pipeline` | P4 候选 | 新增、可选 | 首期仅周期 TGV |
+| `ASTR_GPU_HALO_TRANSPORT=pinned-pipeline` | P4 候选 | 新增、可选 | 首期仅周期 TGV；可用 `explicit` 做 A/B |
 | `ASTR_GPU_SYNC_MODE=explicit` | 调试与回归 | 默认 | 每个 kernel 后设备同步 |
 | `ASTR_GPU_SYNC_MODE=dependency` | P4 候选 | 新增、可选 | 仅与 `pinned-pipeline` 联用 |
 | `ASTR_GPU_BENCHMARK_NO_FIELD_IO=1` | 计算基准 | 新增、默认关闭 | 仅 GPU TGV 且启用 RK timing |
@@ -242,6 +244,29 @@ P4-0 是后续优化的阻塞门槛。未消除HDF5生命周期开销或无法�
 4. 只有完整 RK 改善时保留消息聚合
 5. 本地 NP=4/8 共享双卡只用于正确性，不报告扩展效率
 
+### OpenCFD-SCU 交叉审计后的采用边界
+
+OpenCFD-SCU 的可复用价值主要位于任务图和模板数据移动，不位于其 MPI
+传输函数。ASTR 按下表选择性吸收，所有候选仍须经过逐场、sanitizer、时间线和
+完整 RK 门槛。
+
+| OpenCFD-SCU 做法 | ASTR 决策 | 当前执行阶段 |
+| --- | --- | --- |
+| 内点、边界和通信分 stream，用 event 建立依赖 | 采用其任务图思想，保留 ASTR 的状态机接口 | P4-1 至 P4-3 |
+| y/z 模板使用共享内存转置和 warp shuffle | 仅在 NCU 证明非合并访存或 long-scoreboard 主导后建立原型 | P4-5 候选 |
+| 共享输入的有限 kernel 融合 | 只允许生产者与直接消费者的小范围融合，检查寄存器和 occupancy | P4-5 候选 |
+| 化学活跃单元列表和积分状态分组 | 概念纳入 C5，使用高效 scan/compaction，不复制原循环计数代码 | C5 后续 |
+| 逐场 `MPI_Sendrecv` 和每方向强制 stream 同步 | 不采用；ASTR 保留聚合消息、`MPI_Irecv/Isend/Testall` | 禁止回退 |
+| `atomicAdd` 累加方向 RHS | 不采用；保持每阶段单写或显式有序累加 | 禁止引入 |
+| `world_rank % device_count` 绑定 GPU | 不采用；继续依赖节点本地 rank 或调度器绑定 | 运行时约束 |
+| 每次归约或化学调用临时分配 | 不采用；工作区必须初始化分配并循环复用 | 内存约束 |
+
+单轴 x/y/z slab 与每轴独立 context 均已完成。solution halo 会为所有活动轴完成
+pack、D2H 并发布 MPI，再按 x、y、z 顺序等待和 unpack，以保持 CPU 共享面与边棱
+覆盖语义。filter 因三方向 ping-pong 数据依赖仍按轴顺序执行。融合 diffusion 会
+遍历所有活动轴，但只在首个活动轴通信期间执行一次内部 RHS；其余轴当前串行完成，
+尚未宣称多轴 diffusion 完全重叠。
+
 ### P4-4 A800 验收
 
 本地门槛通过并形成干净提交后，才准备新的 A800 作业。该作业不复用当前
@@ -270,7 +295,8 @@ P4-0 是后续优化的阻塞门槛。未消除HDF5生命周期开销或无法�
 - NP=1/2 的 x、y、z slab 完成 1、10 和 100 步逐场比较
 - `q` 与原始变量最大绝对误差不超过 `1e-10`
 - TGV动能、拟涡能和耗散率统计差不超过既有门槛
-- NP=4/8共享双卡只验证多轴状态机、固定tag和halo内容
+- NP=4/8共享双卡完成多轴状态机、固定tag、halo内容及 1/10/100 步逐场比较；
+  该配置只提供正确性证据，不提供扩展效率证据
 
 ### 并发安全
 
@@ -289,6 +315,130 @@ P4-0 是后续优化的阻塞门槛。未消除HDF5生命周期开销或无法�
 - 本地候选相对 `pinned-overlap/explicit` 回退不得超过2%
 - 本地没有收益但具有真实重叠证据的候选只保留为opt-in，不晋升默认
 - A800最终NP=4强扩展效率不低于70%
+
+## 2026-09-15 本地实现进展
+
+`pinned-pipeline` 已覆盖周期 TGV 的 x/y/z 单轴、双轴和三轴分解。默认
+`explicit` 以及 `pageable`、`pinned`、`pinned-overlap` 后端保持不变，
+`dependency` 继续是显式选择的实验同步模式。transport 现为每轴独立 context，
+每个活动轴各自持有通信流、事件、四个 MPI request、计数、邻居和私有固定 tag。
+共享计算流只负责当前唯一的独立计算组，不承担 MPI context 所有权。
+
+普通字段 halo 缓冲仍按六分量分配。启用 pipeline 时，每个活动 MPI 轴的字段缓冲
+扩展为九分量，用于聚合 `sigma_d(1:6)` 和 `qflux_d(1:3)`；非活动轴不分配该容量，
+默认后端的常驻显存不变。
+
+融合 diffusion halo 将原来的两轮
+`pack -> D2H -> MPI -> H2D -> unpack` 合并为一轮。Nsight Systems 的三步
+`256^3` trace 中，D2H 调用由 `168` 次降为 `132` 次，H2D 调用由 `506` 次降为
+`470` 次。原 diffusion 路径的 `72` 次阻塞 `MPI_Sendrecv` 被 `36` 次
+`MPI_Irecv/MPI_Isend` 事务替代。点对点总消息字节保持不变，因此该候选减少的是
+消息和主机暂存启动次数，不是 halo 数据量。
+
+首个融合事务中，`MPI_Isend` 在相对时间约 `8.96 ms` 发布，三个 diffusion-RHS
+内点 kernel 从 `9.04 ms` 运行至 `25.44 ms`，request 在约 `36.70 ms` 完成。
+约 `16.4 ms` 内点计算位于通信活跃窗口。主机通过计算完成事件与 `MPI_Testall`
+共同推进，不再依赖对默认流的查询。
+
+本地 `256^3`、20 个保留 RK 样本、五个独立进程的结果如下：
+
+| 路径 | 完整 RK 中位时间 | 五轮相对极差 | 状态 |
+| --- | ---: | ---: | --- |
+| pinned 基线 | `0.529989956 s` | `0.606%` | 回退基线 |
+| 初始 pipeline 状态机 | `0.533358806 s` | `1.366%` | opt-in |
+| 融合 diffusion 加事件推进 | `0.509744836 s` | `0.815%` | 本地候选通过 |
+
+最终候选相对 pinned 基线降低 `3.820%`，相对初始 pipeline 降低 `4.427%`。
+相对 P4-0 pageable x-slab 的 `0.613739301 s` 降低 `16.944%`。以 P4-0 NP=1
+GPU 的 `0.5960130865 s` 为本地统一基线，当前 NP=2 加速比为 `1.1692x`，并行
+效率为 `58.46%`。它仍未达到 A800 的 `70%` 目标，且不能把本地排序外推到 A800。
+
+三轴数值门槛采用 `128^3`、NP=2。x/y/z 的 1、10 和 100 步 CPU/GPU 同相位场
+比较均通过 `1e-10` 门槛。10 步最大守恒场差依次为 `3.1264e-13`、
+`3.1264e-13` 和 `3.4106e-13`；100 步依次为 `6.5370e-13`、`6.8212e-13`
+和 `7.1054e-13`。y/z 的 10 步 `dependency` 复测得到与 `explicit` 相同的差值。
+生产 halo 合约在 NP=2 和 NP=3 下精确覆盖三轴、周期重复邻居、物理端点、
+共享面平均和 1/3/5/6 分量交换。双 rank Compute Sanitizer 对三轴合约报告
+`0 errors`、`0 bytes leaked`，racecheck 报告 `0 errors, 0 warnings`。
+
+每轴 context 接入后，NP=4 `2x2x1` 和 NP=8 `2x2x2` 的 `128^3`、1/10/100 步
+CPU/GPU 同相位逐场比较全部通过。100 步最大守恒场差分别为 `7.1054e-13` 和
+`7.6739e-13`；两种拓扑在 `dependency` 模式下的 10 步结果与 `explicit` 相同。
+纯 transport `contexts` 合约确认两个轴的 MPI request 在任一轴等待前均已发布。
+NP=4 `2x2x1` 完整求解器的 full leak-check 在四个 rank 上均为 `0 errors`、
+`0 bytes leaked`，racecheck 均为 `0 errors, 0 warnings`。当前证据仍不覆盖物理
+边界、CURVE、激波或 chemistry 的异步化，也不构成共享双卡配置的性能证据。
+
+系统重启后的同一时段本地 `256^3`、NP=2、20 个保留 RK 样本、五个独立进程
+配对结果如下。两组都使用 `explicit`，因此比较的是 pipeline 任务图与聚合通信，
+不是取消同步的收益。
+
+| slab | pinned 中位时间 | pipeline 中位时间 | 降低 | 基线/候选相对极差 | 显存增量 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| y `1x2x1` | `0.510051923 s/RK` | `0.479824547 s/RK` | `5.926%` | `0.969% / 0.869%` | `32 MiB` |
+| z `1x1x2` | `0.508967702 s/RK` | `0.478513546 s/RK` | `5.984%` | `1.057% / 0.646%` | `33 MiB` |
+
+y 的峰值 GPU 利用率由 `83%` 增至 `93%`，z 由 `94%` 增至 `96%`。这些结果
+支持在本地保留 y/z pipeline，但不替代 A800 配对矩阵，也不能作为多轴扩展效率。
+
+### P4-4 同步消除与通信启动审计
+
+`dependency` 模式现已真正省略非强制 `cudaDeviceSynchronize`，同时保留
+host 读回、归约和显式 `force_sync` 边界。默认流在每次 pipeline transaction
+记录 source-ready event，通信流和独立计算流在读取 `q_d`、`qwork_d`、
+`sigma_d/qflux_d` 前显式等待。solution halo 窗口中的 `zero_rhs_kernel` 也等待
+该 event，因为上一 RK stage 的更新 kernel 仍读取 `qrhs_d`；只把它视为独立
+输出会留下跨 stage 读写竞争。
+
+同为三步 `256^3`、NP=2 x-slab 的 Nsight Systems trace 中，kernel 和 memcpy
+调用数保持 `708/602` 不变，`cudaDeviceSynchronize` 从 `492` 次降至 `36` 次，
+减少 `92.683%`。最终 trace 包含 `102` 次 `cudaStreamWaitEvent`，其 CUDA API
+总时间约 `0.285 ms`。双 rank 的 10 步逐场比较继续通过，最大守恒场差为
+`3.1264e-13`；memcheck 为 `0 errors`，racecheck 为 `0 errors, 0 warnings`。
+
+本机当前负载状态与历史基准存在漂移，因此新增了
+`explicit + pinned-pipeline` 诊断组合，以便同一可执行文件、同一时段做配对
+A/B。当前五轮结果如下：
+
+| 同时段路径 | 完整 RK 中位时间 | 五轮相对极差 | 相对 explicit pipeline |
+| --- | ---: | ---: | ---: |
+| `explicit + pinned-pipeline` | `0.628957548 s` | `0.941%` | 基线 |
+| `dependency + pinned-pipeline` | `0.641986121 s` | `6.473%` | 慢 `2.071%` |
+
+历史 pipeline 候选为 `0.509744836 s/RK`，比当前同时段 explicit 基线快
+`23.387%`。这说明绝对时间受当前主机和 GPU 环境影响，不能用跨时段值归因；
+同时段 A/B 仍表明全局取消同步没有本地加速证据。`dependency` 继续保留为 opt-in
+候选，默认和当前推荐运行模式仍为 `explicit`，等待 A800 配对复测后再决定。
+
+另一个候选把 diffusion-RHS 内点 kernel 提前到 D2H wait 之前。逐场、memcheck
+和 racecheck 均通过，但五轮中位时间为 `0.677846560 s/RK`，相对同时段 explicit
+基线慢 `7.773%`。时间线显示 pack kernel 仍约 `0.62 ms`，不是回退来源；D2H
+结束到 H2D 开始的 MPI 区间中位数由 `26.685 ms` 增至 `52.080 ms`。提前计算
+缩短了真正慢 MPI 阶段可隐藏的计算窗口，因此该调度已从执行路径回退。
+
+当前 host halo 数组由 `ensure_*_buffers` 一次分配，在 transport 初始化时用
+`cudaHostRegister` 一次注册，在每个时间步循环复用，并在 finalize 时统一
+`cudaHostUnregister`。循环内不存在 `cudaMallocHost/cudaFreeHost`，所以改用
+`cudaHostAlloc` 或 `MPI_Alloc_mem` 不会消除当前路径上的逐步分配开销。持久
+`MPI_Send_init/MPI_Recv_init` 请求暂未实现：现有 trace 中 `MPI_Irecv/MPI_Isend`
+创建总开销不足 `1 ms`，主要代价是大消息 host staging 和传输尾部。该项保留为
+A800 MPI 栈上的独立候选，不与同步策略混合验收。
+
+每轴 context 重构后的同一时段 x-slab `256^3`、NP=2、五轮配对结果如下。每轮
+保留 10 个完整 RK 样本，并丢弃首个进程内 warm-up 样本。
+
+| 路径 | 完整 RK 中位时间 | 五轮相对极差 | 峰值 GPU 利用率 |
+| --- | ---: | ---: | ---: |
+| `pinned + explicit` | `0.529076911 s` | `0.820%` | `83%` |
+| `pinned-pipeline + explicit` | `0.506394356 s` | `0.763%` | `92%` |
+| `pinned-pipeline + dependency` | `0.504894878 s` | `0.336%` | `92%` |
+
+pipeline explicit 相对 pinned 降低 `4.287%`。dependency 相对 pinned 降低
+`4.571%`，但相对 pipeline explicit 只再降低 `0.296%`，不足以改变默认同步策略。
+因此当前推荐仍为 `pinned-pipeline + explicit`；`dependency` 保持 opt-in。
+本机只有两张 GPU，不能在一秩一卡条件下给出双轴或三轴性能结论。下一门槛是在
+四卡 A800 上完成 NP=4 plane/cube 时间线和完整 RK 配对，再决定是否并行推进多个
+diffusion 轴或实现持久 MPI request。
 
 ## 🚫 非目标
 

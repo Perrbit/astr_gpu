@@ -4418,3 +4418,55 @@ nsys stats --report cuda_api_trace,mpi_event_trace,cuda_gpu_trace \
 
 The frozen local results and interpretation boundary are recorded in
 `documents/ASTR_PHASE_P4_0_BASELINE_REPORT.md`.
+
+## P4 per-axis pipeline contexts
+
+The `pinned-pipeline` backend maintains one transport context per active MPI
+axis. Solution halos post all active-axis MPI transactions before waiting and
+unpack in x/y/z order. Filter directions remain ordered because each direction
+consumes the previous ping-pong result. Fused diffusion visits every active
+axis but overlaps the independent interior RHS only with the first transaction.
+
+Build and run the focused multi-context transport contract:
+
+```bash
+ROOT=/home/dell/workspace/astr_gpu
+cmake --build "$ROOT/build_gpu_p4" --target halo_transport_setup_test -j4
+env ASTR_GPU_HALO_TRANSPORT=pinned-pipeline \
+  mpirun -np 2 "$ROOT/build_gpu_p4/bin/halo_transport_setup_test" contexts
+```
+
+Run the two- and three-axis field gates with the full filter and diffusion path:
+
+```bash
+ROOT=/home/dell/workspace/astr_gpu
+for spec in '4 2,2,1' '8 2,2,2'; do
+  read -r np topology <<<"$spec"
+  label="np${np}_${topology//,/_}"
+  OUT_DIR="$ROOT/tests/gpu_validation/out/p4_context_${label}_100step" \
+  MAXSTEP=100 FEQCHKPT=100 MPI_NP="$np" TOPOLOGY="$topology" \
+  LFILTER=t DIFFTERM=t FILTER_WORKSPACE=full \
+  SYNC_MODE=explicit HALO_TRANSPORT=pinned-pipeline \
+  CPU_EXE="$ROOT/build_cpu_p4/bin/astr" \
+  GPU_EXE="$ROOT/build_gpu_p4/bin/astr" \
+    bash "$ROOT/tests/gpu_validation/run_tgv_mpirank2_field_compare.sh"
+done
+```
+
+Current expected result: both reports pass at `1e-10`; maximum reconstructed
+`q5` errors are `7.1054e-13` for NP=4 `2x2x1` and `7.6739e-13` for NP=8
+`2x2x2`. These ranks share two local GPUs and therefore qualify correctness,
+not scaling.
+
+The NP=4 `2x2x1` full-solver Compute Sanitizer gate uses a `32^3`, one-step
+case with the established host-only OpenMPI sanitizer isolation. All four ranks
+must report zero leaked bytes and zero errors under full memcheck, followed by
+zero hazards under racecheck. The retained evidence is under
+`build_gpu_p4/validation/multiaxis_memcheck_np4`.
+
+The latest valid one-rank-per-GPU local performance comparison is NP=2 x-slab,
+`256^3`, ten retained RK samples per process and five processes per path. The
+medians are `0.529076911 s/RK` for pinned explicit, `0.506394356 s/RK` for
+pipeline explicit, and `0.504894878 s/RK` for pipeline dependency. Explicit
+pipeline is `4.287%` faster than pinned; dependency adds only `0.296%`, so it
+remains opt-in. Multi-axis performance requires at least four physical GPUs.

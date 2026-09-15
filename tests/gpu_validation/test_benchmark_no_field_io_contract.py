@@ -126,7 +126,8 @@ def test_phase_timing_admission_requires_complete_explicit_tgv_schema() -> None:
     )
     assert (
         "callconfigure_gpu_phase_timing"
-        "(allow_phase_timing,.not.gpu_selective_sync_enabled())" in source
+        "(allow_phase_timing,.not.(gpu_selective_sync_enabled().or."
+        "gpu_dependency_sync_enabled()))" in source
     )
 
 
