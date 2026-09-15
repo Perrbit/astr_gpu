@@ -24,6 +24,9 @@ CASE_DIR="$OUT_DIR/${LABEL}_case"
 MONITOR_PID=""
 MONITOR_FILE=""
 MONITOR_ERROR=""
+SOLVER_PID=""
+CLEANUP_POLL_ATTEMPTS=50
+CLEANUP_POLL_SECONDS=0.02
 
 validate_monitor_samples() {
   local monitor="$1"
@@ -67,56 +70,102 @@ start_monitor() {
   return 1
 }
 
+process_group_alive() {
+  kill -0 -- "-$1" 2>/dev/null
+}
+
+terminate_process_group() {
+  local pid="$1"
+  local result_leader_was_alive=0 result_term_sent=0
+  local result_kill_sent=0 result_wait_status=0
+  local group_stopped=0 leader_stopped=0
+
+  if kill -0 "$pid" 2>/dev/null; then
+    result_leader_was_alive=1
+  fi
+  if process_group_alive "$pid"; then
+    if kill -TERM -- "-$pid" 2>/dev/null; then
+      result_term_sent=1
+    fi
+  fi
+
+  for _ in $(seq 1 "$CLEANUP_POLL_ATTEMPTS"); do
+    if ! process_group_alive "$pid"; then
+      group_stopped=1
+      break
+    fi
+    sleep "$CLEANUP_POLL_SECONDS"
+  done
+  if [[ "$group_stopped" -ne 1 ]]; then
+    if kill -KILL -- "-$pid" 2>/dev/null; then
+      result_kill_sent=1
+    fi
+    for _ in $(seq 1 "$CLEANUP_POLL_ATTEMPTS"); do
+      if ! process_group_alive "$pid"; then
+        group_stopped=1
+        break
+      fi
+      sleep "$CLEANUP_POLL_SECONDS"
+    done
+  fi
+
+  for _ in $(seq 1 "$CLEANUP_POLL_ATTEMPTS"); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      leader_stopped=1
+      break
+    fi
+    sleep "$CLEANUP_POLL_SECONDS"
+  done
+  if [[ "$leader_stopped" -eq 1 ]]; then
+    if wait "$pid" 2>/dev/null; then
+      result_wait_status=0
+    else
+      result_wait_status=$?
+    fi
+  fi
+
+  if [[ "$#" -eq 5 ]]; then
+    printf -v "$2" '%s' "$result_leader_was_alive"
+    printf -v "$3" '%s' "$result_term_sent"
+    printf -v "$4" '%s' "$result_kill_sent"
+    printf -v "$5" '%s' "$result_wait_status"
+  fi
+
+  [[ "$group_stopped" -eq 1 && "$leader_stopped" -eq 1 ]]
+}
+
 stop_monitor() {
   local strict="${1:-f}"
   local pid="${MONITOR_PID:-}" monitor="${MONITOR_FILE:-}"
-  local error="${MONITOR_ERROR:-}" leader_alive=0 term_sent=0 wait_status=0
-  local group_alive=0
+  local error="${MONITOR_ERROR:-}" leader_was_alive term_sent kill_sent wait_status
+  local cleanup_status=0
   if [[ -z "$pid" ]]; then
     return 0
   fi
 
-  if kill -0 "$pid" 2>/dev/null; then
-    leader_alive=1
-  fi
-  if kill -TERM -- "-$pid" 2>/dev/null; then
-    term_sent=1
-  fi
-  if wait "$pid" 2>/dev/null; then
-    wait_status=0
-  else
-    wait_status=$?
-  fi
-
-  for _ in $(seq 1 50); do
-    if ! kill -0 -- "-$pid" 2>/dev/null; then
-      group_alive=0
-      break
-    fi
-    group_alive=1
-    sleep 0.02
-  done
-  if [[ "$group_alive" -eq 1 ]]; then
-    kill -KILL -- "-$pid" 2>/dev/null || true
-  fi
-
+  terminate_process_group "$pid" leader_was_alive term_sent kill_sent wait_status || \
+    cleanup_status=$?
   MONITOR_PID=""
   MONITOR_FILE=""
   MONITOR_ERROR=""
 
   if [[ "$strict" != "t" ]]; then
-    return 0
+    return "$cleanup_status"
   fi
-  if [[ "$leader_alive" -ne 1 || "$term_sent" -ne 1 ]]; then
+  if [[ "$cleanup_status" -ne 0 ]]; then
+    echo "GPU monitor process group could not be stopped; see $error" >&2
+    return 1
+  fi
+  if [[ "$kill_sent" -eq 1 ]]; then
+    echo "GPU monitor process group required SIGKILL during cleanup; see $error" >&2
+    return 1
+  fi
+  if [[ "$leader_was_alive" -ne 1 || "$term_sent" -ne 1 ]]; then
     echo "GPU monitor exited unexpectedly with status $wait_status; see $error" >&2
     return 1
   fi
   if [[ "$wait_status" -ne 0 && "$wait_status" -ne 143 ]]; then
     echo "GPU monitor exited unexpectedly with status $wait_status; see $error" >&2
-    return 1
-  fi
-  if [[ "$group_alive" -eq 1 ]]; then
-    echo "GPU monitor process group required SIGKILL during cleanup; see $error" >&2
     return 1
   fi
   if ! validate_monitor_samples "$monitor"; then
@@ -125,9 +174,21 @@ stop_monitor() {
   fi
 }
 
+stop_solver() {
+  local pid="${SOLVER_PID:-}"
+  local cleanup_status=0
+  if [[ -z "$pid" ]]; then
+    return 0
+  fi
+  terminate_process_group "$pid" || cleanup_status=$?
+  SOLVER_PID=""
+  return "$cleanup_status"
+}
+
 handle_exit() {
   local status=$?
   trap - EXIT INT TERM
+  stop_solver || true
   stop_monitor f || true
   exit "$status"
 }
@@ -135,6 +196,7 @@ handle_exit() {
 handle_signal() {
   local status="$1"
   trap - EXIT INT TERM
+  stop_solver || true
   stop_monitor f || true
   exit "$status"
 }
@@ -242,20 +304,24 @@ run_once() {
   mkdir -p "$run_dir"
   start_monitor "$monitor" "$monitor_error"
   start="$(date +%s.%N)"
-  set +e
   (
     cd "$CASE_DIR"
-    OMPI_MCA_sharedfp="${OMPI_MCA_sharedfp:-individual}" \
+    exec setsid env OMPI_MCA_sharedfp="${OMPI_MCA_sharedfp:-individual}" \
       CUDA_VISIBLE_DEVICES="$GPU_IDS" ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
       ASTR_GPU_RK_TIMING=1 ASTR_GPU_RANK_RK_TIMING=1 \
       ASTR_GPU_BENCHMARK_NO_FIELD_IO=1 \
       ASTR_GPU_SYNC_MODE="$SYNC_MODE" ASTR_GPU_HALO_TRANSPORT="$HALO_TRANSPORT" \
       ASTR_GPU_FILTER_WORKSPACE="$FILTER_WORKSPACE" \
       mpirun -np "$NP" "$GPU_EXE" \
-      run datin/input.tgv > "$log" 2>&1
-  )
-  run_status=$?
-  set -e
+      run datin/input.tgv
+  ) > "$log" 2>&1 &
+  SOLVER_PID=$!
+  if wait "$SOLVER_PID"; then
+    run_status=0
+  else
+    run_status=$?
+  fi
+  SOLVER_PID=""
   end="$(date +%s.%N)"
   if [[ "$run_status" -ne 0 ]]; then
     stop_monitor f || true

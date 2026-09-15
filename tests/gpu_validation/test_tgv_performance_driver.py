@@ -46,6 +46,15 @@ def wait_for_process_exit(pid: int, timeout: float = 2.0) -> bool:
     return not process_is_alive(pid)
 
 
+def wait_for_file(path: Path, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return True
+        time.sleep(0.02)
+    return path.exists()
+
+
 class TgvPerformanceDriverTests(unittest.TestCase):
     def test_driver_accepts_rank_topology_and_visible_gpu_list(self) -> None:
         self.assertIn('NP="${NP:-1}"', SCRIPT)
@@ -137,11 +146,14 @@ class TgvPerformanceDriverTests(unittest.TestCase):
         *,
         date_source: str = '#!/usr/bin/env bash\nexec /usr/bin/date "$@"\n',
         monitor_source: str | None = None,
-    ) -> tuple[dict[str, str], Path, Path, Path]:
+    ) -> tuple[dict[str, str], Path, Path, Path, Path, Path, Path]:
         fake_bin = root / "bin"
         fake_bin.mkdir(parents=True)
         monitor_leader_file = root / "monitor-leader.pid"
         monitor_child_file = root / "monitor-child.pid"
+        solver_leader_file = root / "solver-leader.pid"
+        solver_child_file = root / "solver-child.pid"
+        solver_started_file = root / "solver.started"
         solver = root / "solver.sh"
         if monitor_source is None:
             monitor_source = """#!/usr/bin/env bash
@@ -180,19 +192,30 @@ exec "$@"
                 "GPU_IDS": "0",
                 "FAKE_MONITOR_LEADER_FILE": str(monitor_leader_file),
                 "FAKE_MONITOR_CHILD_FILE": str(monitor_child_file),
+                "FAKE_SOLVER_LEADER_FILE": str(solver_leader_file),
+                "FAKE_SOLVER_CHILD_FILE": str(solver_child_file),
+                "FAKE_SOLVER_STARTED_FILE": str(solver_started_file),
             }
         )
-        return environment, monitor_leader_file, monitor_child_file, solver
+        return (
+            environment,
+            monitor_leader_file,
+            monitor_child_file,
+            solver_leader_file,
+            solver_child_file,
+            solver_started_file,
+            solver,
+        )
 
-    def _assert_monitor_group_exited(self, *pid_files: Path) -> None:
+    def _assert_processes_exited(self, *pid_files: Path) -> None:
         for pid_file in pid_files:
-            self.assertTrue(pid_file.exists(), f"missing monitor PID file: {pid_file}")
+            self.assertTrue(pid_file.exists(), f"missing process PID file: {pid_file}")
             pid = int(pid_file.read_text(encoding="ascii").strip())
             exited = wait_for_process_exit(pid)
             if not exited:
                 os.kill(pid, signal.SIGKILL)
                 wait_for_process_exit(pid)
-            self.assertTrue(exited, f"monitor process {pid} survived driver exit")
+            self.assertTrue(exited, f"process {pid} survived driver exit")
 
     def _run_driver(self, root: Path, environment: dict[str, str]) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -210,8 +233,41 @@ exec "$@"
         self.assertIn("command -v setsid", SCRIPT)
         self.assertIn("setsid nvidia-smi", SCRIPT)
         self.assertIn('--loop-ms=100', SCRIPT)
-        self.assertIn('kill -TERM -- "-$pid"', function_body("stop_monitor"))
-        self.assertIn('wait "$pid"', function_body("stop_monitor"))
+        cleanup_body = function_body("terminate_process_group")
+        self.assertIn('kill -TERM -- "-$pid"', cleanup_body)
+        self.assertIn('wait "$pid"', cleanup_body)
+        self.assertLess(cleanup_body.index('kill -TERM -- "-$pid"'), cleanup_body.index("for _ in"))
+        self.assertLess(cleanup_body.index("for _ in"), cleanup_body.index('kill -KILL -- "-$pid"'))
+        self.assertLess(cleanup_body.index('kill -KILL -- "-$pid"'), cleanup_body.index('wait "$pid"'))
+
+    def test_monitor_that_ignores_term_is_killed_without_hanging(self) -> None:
+        solver_source = """#!/usr/bin/env bash
+printf '%s\n' 'ASTR_GPU_BENCHMARK_NO_FIELD_IO enabled'
+printf '%s\n' 'ASTR_GPU_RK_TIMING 0 0 0.1'
+printf '%s\n' 'ASTR_GPU_RK_TIMING 0 1 0.1'
+printf '%s\n' 'The job is done!'
+"""
+        monitor_source = """#!/usr/bin/env bash
+printf '%s\n' "$$" > "$FAKE_MONITOR_LEADER_FILE"
+trap '' TERM INT
+sleep 30 &
+child=$!
+printf '%s\n' "$child" > "$FAKE_MONITOR_CHILD_FILE"
+printf '1, 1\n'
+wait "$child"
+"""
+        with tempfile.TemporaryDirectory(prefix="astr-p4-monitor-ignore-term-") as temporary:
+            root = Path(temporary)
+            environment, leader_file, child_file, *_ = self._monitor_environment(
+                root, solver_source, monitor_source=monitor_source
+            )
+            started = time.monotonic()
+            completed = self._run_driver(root, environment)
+            elapsed = time.monotonic() - started
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertLess(elapsed, 5.0, completed.stderr)
+            self.assertIn("required SIGKILL", completed.stderr)
+            self._assert_processes_exited(leader_file, child_file)
 
     def test_failures_after_monitor_start_reap_leader_and_child(self) -> None:
         with tempfile.TemporaryDirectory(prefix="astr-p4-monitor-") as temporary:
@@ -231,12 +287,12 @@ exec "$@"
             ):
                 with self.subTest(failure_mode=failure_mode):
                     root = Path(temporary) / failure_mode
-                    environment, leader_file, child_file, _ = self._monitor_environment(
+                    environment, leader_file, child_file, *_ = self._monitor_environment(
                         root, solver_source, date_source=date_source
                     )
                     completed = self._run_driver(root, environment)
                     self.assertEqual(completed.returncode, expected_status, completed.stderr)
-                    self._assert_monitor_group_exited(leader_file, child_file)
+                    self._assert_processes_exited(leader_file, child_file)
 
     def test_signals_reap_monitor_group_and_preserve_signal_status(self) -> None:
         with tempfile.TemporaryDirectory(prefix="astr-p4-signal-") as temporary:
@@ -246,8 +302,25 @@ exec "$@"
             ):
                 with self.subTest(signal=name):
                     root = Path(temporary) / name
-                    environment, leader_file, child_file, _ = self._monitor_environment(
-                        root, "#!/usr/bin/env bash\nsleep 0.8\nexit 0\n"
+                    solver_source = """#!/usr/bin/env bash
+printf '%s\n' "$$" > "$FAKE_SOLVER_LEADER_FILE"
+trap 'wait "$child" 2>/dev/null || true; exit 0' TERM INT
+sleep 30 &
+child=$!
+printf '%s\n' "$child" > "$FAKE_SOLVER_CHILD_FILE"
+printf 'started\n' > "$FAKE_SOLVER_STARTED_FILE"
+wait "$child"
+"""
+                    (
+                        environment,
+                        monitor_leader_file,
+                        monitor_child_file,
+                        solver_leader_file,
+                        solver_child_file,
+                        solver_started_file,
+                        _,
+                    ) = self._monitor_environment(
+                        root, solver_source
                     )
                     process = subprocess.Popen(
                         ["bash", str(DRIVER)],
@@ -257,16 +330,22 @@ exec "$@"
                         stderr=subprocess.PIPE,
                         text=True,
                     )
-                    deadline = time.monotonic() + 5
-                    while not child_file.exists() and time.monotonic() < deadline:
-                        time.sleep(0.02)
                     self.assertTrue(
-                        child_file.exists(), f"monitor did not start before {name}"
+                        wait_for_file(solver_started_file),
+                        f"solver did not start before {name}",
                     )
+                    started = time.monotonic()
                     process.send_signal(sent_signal)
                     _, stderr = process.communicate(timeout=5)
+                    elapsed = time.monotonic() - started
                     self.assertEqual(process.returncode, expected_status, stderr)
-                    self._assert_monitor_group_exited(leader_file, child_file)
+                    self.assertLess(elapsed, 2.5, stderr)
+                    self._assert_processes_exited(
+                        solver_leader_file,
+                        solver_child_file,
+                        monitor_leader_file,
+                        monitor_child_file,
+                    )
 
     def test_monitor_exit_and_empty_output_fail_closed(self) -> None:
         solver_source = """#!/usr/bin/env bash
@@ -281,7 +360,9 @@ sleep 0.2
                 "crash_with_sample",
                 """#!/usr/bin/env bash
 printf '%s\n' "$$" > "$FAKE_MONITOR_LEADER_FILE"
-printf '%s\n' "$$" > "$FAKE_MONITOR_CHILD_FILE"
+sleep 30 &
+child=$!
+printf '%s\n' "$child" > "$FAKE_MONITOR_CHILD_FILE"
 printf '1, 1\n'
 sleep 0.05
 exit 42
@@ -305,12 +386,13 @@ wait "$child"
             for name, monitor_source, diagnostic in cases:
                 with self.subTest(monitor_failure=name):
                     root = Path(temporary) / name
-                    environment, _, _, _ = self._monitor_environment(
+                    environment, leader_file, child_file, *_ = self._monitor_environment(
                         root, solver_source, monitor_source=monitor_source
                     )
                     completed = self._run_driver(root, environment)
                     self.assertNotEqual(completed.returncode, 0)
                     self.assertIn(diagnostic, completed.stderr)
+                    self._assert_processes_exited(leader_file, child_file)
 
 
 if __name__ == "__main__":
