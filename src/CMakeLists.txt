@@ -12,6 +12,7 @@ set(ASTR_SOURCES
   commfunc.F90
   commtype.F90
   commvar.F90
+  benchmark_runtime.F90
   constdef.F90
   derivative.F90
   fdnn.F90
@@ -145,6 +146,14 @@ set_target_properties(boundary_faces_cpu_probe PROPERTIES
   Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/boundary_faces_cpu_modules")
 target_include_directories(boundary_faces_cpu_probe PRIVATE
   "${CMAKE_CURRENT_BINARY_DIR}/boundary_faces_cpu_modules")
+
+add_executable(benchmark_runtime_probe EXCLUDE_FROM_ALL
+  benchmark_runtime.F90 ../tests/gpu_validation/benchmark_runtime_probe.F90)
+set_target_properties(benchmark_runtime_probe PROPERTIES
+  Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/benchmark_runtime_probe_modules")
+target_include_directories(benchmark_runtime_probe PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/benchmark_runtime_probe_modules")
+target_link_libraries(benchmark_runtime_probe PRIVATE MPI::MPI_Fortran)
 
 if(ASTR_WITH_CUDA)
   add_executable(boundary_faces_gpu_probe EXCLUDE_FROM_ALL
