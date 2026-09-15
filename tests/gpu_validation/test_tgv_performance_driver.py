@@ -294,6 +294,53 @@ wait "$child"
                     self.assertEqual(completed.returncode, expected_status, completed.stderr)
                     self._assert_processes_exited(leader_file, child_file)
 
+    def test_solver_exit_reaps_orphaned_process_group_members(self) -> None:
+        cases = (
+            ("failure", 37, 37, ""),
+            (
+                "success",
+                0,
+                1,
+                "ASTR solver exited successfully but left process-group members",
+            ),
+        )
+        with tempfile.TemporaryDirectory(prefix="astr-p4-solver-orphan-") as temporary:
+            for name, solver_status, expected_status, diagnostic in cases:
+                with self.subTest(solver_exit=name):
+                    root = Path(temporary) / name
+                    solver_source = f"""#!/usr/bin/env bash
+printf '%s\n' "$$" > "$FAKE_SOLVER_LEADER_FILE"
+sleep 30 &
+child=$!
+printf '%s\n' "$child" > "$FAKE_SOLVER_CHILD_FILE"
+printf '%s\n' 'ASTR_GPU_BENCHMARK_NO_FIELD_IO enabled'
+printf '%s\n' 'ASTR_GPU_RK_TIMING 0 0 0.1'
+printf '%s\n' 'ASTR_GPU_RK_TIMING 0 1 0.1'
+printf '%s\n' 'The job is done!'
+exit {solver_status}
+"""
+                    (
+                        environment,
+                        monitor_leader_file,
+                        monitor_child_file,
+                        solver_leader_file,
+                        solver_child_file,
+                        _,
+                        _,
+                    ) = self._monitor_environment(root, solver_source)
+                    completed = self._run_driver(root, environment)
+                    self.assertEqual(
+                        completed.returncode, expected_status, completed.stderr
+                    )
+                    if diagnostic:
+                        self.assertIn(diagnostic, completed.stderr)
+                    self._assert_processes_exited(
+                        solver_leader_file,
+                        solver_child_file,
+                        monitor_leader_file,
+                        monitor_child_file,
+                    )
+
     def test_signals_reap_monitor_group_and_preserve_signal_status(self) -> None:
         with tempfile.TemporaryDirectory(prefix="astr-p4-signal-") as temporary:
             for name, sent_signal, expected_status in (

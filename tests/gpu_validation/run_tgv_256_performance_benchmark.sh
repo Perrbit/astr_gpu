@@ -295,7 +295,7 @@ run_once() {
   local repeat="$1" record="$2"
   local run_dir log monitor monitor_error start end wall
   local max_memory max_util timing_count retained_count timing_values run_status
-  local monitor_status=0
+  local monitor_status=0 solver_cleanup_status=0 solver_group_remaining=0
   assert_no_field_hdf5
   run_dir="$OUT_DIR/${LABEL}_run_${repeat}"
   log="$run_dir/run.log"
@@ -321,7 +321,19 @@ run_once() {
   else
     run_status=$?
   fi
-  SOLVER_PID=""
+  if process_group_alive "$SOLVER_PID"; then
+    solver_group_remaining=1
+    terminate_process_group "$SOLVER_PID" || solver_cleanup_status=$?
+  fi
+  if [[ "$solver_cleanup_status" -eq 0 ]]; then
+    SOLVER_PID=""
+  else
+    echo "ASTR solver process group could not be stopped" >&2
+  fi
+  if [[ "$solver_group_remaining" -eq 1 && "$run_status" -eq 0 ]]; then
+    echo "ASTR solver exited successfully but left process-group members" >&2
+    run_status=1
+  fi
   end="$(date +%s.%N)"
   if [[ "$run_status" -ne 0 ]]; then
     stop_monitor f || true
