@@ -130,109 +130,187 @@ class TgvPerformanceDriverTests(unittest.TestCase):
         self.assertIn("trap - EXIT INT TERM", function_body("handle_exit"))
         self.assertIn("trap - EXIT INT TERM", function_body("handle_signal"))
 
-    def test_failure_after_monitor_start_does_not_leave_monitor_alive(self) -> None:
+    def _monitor_environment(
+        self,
+        root: Path,
+        solver_source: str,
+        *,
+        date_source: str = '#!/usr/bin/env bash\nexec /usr/bin/date "$@"\n',
+        monitor_source: str | None = None,
+    ) -> tuple[dict[str, str], Path, Path, Path]:
+        fake_bin = root / "bin"
+        fake_bin.mkdir(parents=True)
+        monitor_leader_file = root / "monitor-leader.pid"
+        monitor_child_file = root / "monitor-child.pid"
+        solver = root / "solver.sh"
+        if monitor_source is None:
+            monitor_source = """#!/usr/bin/env bash
+printf '%s\n' "$$" > "$FAKE_MONITOR_LEADER_FILE"
+sleep 30 &
+child=$!
+printf '%s\n' "$child" > "$FAKE_MONITOR_CHILD_FILE"
+trap 'wait "$child" 2>/dev/null || true; exit 0' TERM INT
+printf '1, 1\n'
+wait "$child"
+"""
+        write_executable(fake_bin / "nvidia-smi", monitor_source)
+        write_executable(
+            fake_bin / "mpirun",
+            """#!/usr/bin/env bash
+shift 2
+exec "$@"
+""",
+        )
+        write_executable(fake_bin / "date", date_source)
+        write_executable(solver, solver_source)
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "PATH": f"{fake_bin}:{environment['PATH']}",
+                "GPU_EXE": str(solver),
+                "OUT_DIR": str(root / "out"),
+                "LABEL": "monitor_contract",
+                "GRID": "8,8,8",
+                "MAXSTEP": "1",
+                "REPEATS": "5",
+                "DISCARD_STEPS": "0",
+                "FEQCHKPT": "9999",
+                "NP": "1",
+                "TOPOLOGY": "1,1,1",
+                "GPU_IDS": "0",
+                "FAKE_MONITOR_LEADER_FILE": str(monitor_leader_file),
+                "FAKE_MONITOR_CHILD_FILE": str(monitor_child_file),
+            }
+        )
+        return environment, monitor_leader_file, monitor_child_file, solver
+
+    def _assert_monitor_group_exited(self, *pid_files: Path) -> None:
+        for pid_file in pid_files:
+            self.assertTrue(pid_file.exists(), f"missing monitor PID file: {pid_file}")
+            pid = int(pid_file.read_text(encoding="ascii").strip())
+            exited = wait_for_process_exit(pid)
+            if not exited:
+                os.kill(pid, signal.SIGKILL)
+                wait_for_process_exit(pid)
+            self.assertTrue(exited, f"monitor process {pid} survived driver exit")
+
+    def _run_driver(self, root: Path, environment: dict[str, str]) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", str(DRIVER)],
+            cwd=ROOT,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+    def test_monitor_uses_and_reaps_a_dedicated_process_group(self) -> None:
+        self.assertIn("command -v setsid", SCRIPT)
+        self.assertIn("setsid nvidia-smi", SCRIPT)
+        self.assertIn('--loop-ms=100', SCRIPT)
+        self.assertIn('kill -TERM -- "-$pid"', function_body("stop_monitor"))
+        self.assertIn('wait "$pid"', function_body("stop_monitor"))
+
+    def test_failures_after_monitor_start_reap_leader_and_child(self) -> None:
         with tempfile.TemporaryDirectory(prefix="astr-p4-monitor-") as temporary:
-            for failure_mode, date_source, expected_status in (
+            for failure_mode, solver_source, date_source, expected_status in (
                 (
                     "solver",
-                    """#!/usr/bin/env bash
-exec /usr/bin/date "$@"
-""",
+                    "#!/usr/bin/env bash\nsleep 0.2\nexit 37\n",
+                    '#!/usr/bin/env bash\nexec /usr/bin/date "$@"\n',
                     37,
                 ),
                 (
                     "shell",
-                    """#!/usr/bin/env bash
-sleep 0.2
-exit 71
-""",
+                    "#!/usr/bin/env bash\nsleep 0.2\nexit 0\n",
+                    "#!/usr/bin/env bash\nsleep 0.2\nexit 71\n",
                     71,
                 ),
             ):
                 with self.subTest(failure_mode=failure_mode):
                     root = Path(temporary) / failure_mode
-                    fake_bin = root / "bin"
-                    fake_bin.mkdir(parents=True)
-                    monitor_pid_file = root / "monitor.pid"
-                    failing_solver = root / "failing_solver.sh"
+                    environment, leader_file, child_file, _ = self._monitor_environment(
+                        root, solver_source, date_source=date_source
+                    )
+                    completed = self._run_driver(root, environment)
+                    self.assertEqual(completed.returncode, expected_status, completed.stderr)
+                    self._assert_monitor_group_exited(leader_file, child_file)
 
-                    write_executable(
-                        fake_bin / "nvidia-smi",
-                        """#!/usr/bin/env bash
-printf '%s\n' "$PPID" > "$FAKE_MONITOR_PID_FILE"
-printf '1, 1\n'
-sleep 0.02
-""",
+    def test_signals_reap_monitor_group_and_preserve_signal_status(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="astr-p4-signal-") as temporary:
+            for name, sent_signal, expected_status in (
+                ("sigterm", signal.SIGTERM, 143),
+                ("sigint", signal.SIGINT, 130),
+            ):
+                with self.subTest(signal=name):
+                    root = Path(temporary) / name
+                    environment, leader_file, child_file, _ = self._monitor_environment(
+                        root, "#!/usr/bin/env bash\nsleep 0.8\nexit 0\n"
                     )
-                    write_executable(
-                        fake_bin / "mpirun",
-                        """#!/usr/bin/env bash
-shift 2
-exec "$@"
-""",
+                    process = subprocess.Popen(
+                        ["bash", str(DRIVER)],
+                        cwd=ROOT,
+                        env=environment,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
                     )
-                    write_executable(fake_bin / "date", date_source)
-                    write_executable(
-                        failing_solver,
-                        """#!/usr/bin/env bash
+                    deadline = time.monotonic() + 5
+                    while not child_file.exists() and time.monotonic() < deadline:
+                        time.sleep(0.02)
+                    self.assertTrue(
+                        child_file.exists(), f"monitor did not start before {name}"
+                    )
+                    process.send_signal(sent_signal)
+                    _, stderr = process.communicate(timeout=5)
+                    self.assertEqual(process.returncode, expected_status, stderr)
+                    self._assert_monitor_group_exited(leader_file, child_file)
+
+    def test_monitor_exit_and_empty_output_fail_closed(self) -> None:
+        solver_source = """#!/usr/bin/env bash
+printf '%s\n' 'ASTR_GPU_BENCHMARK_NO_FIELD_IO enabled'
+printf '%s\n' 'ASTR_GPU_RK_TIMING 0 0 0.1'
+printf '%s\n' 'ASTR_GPU_RK_TIMING 0 1 0.1'
+printf '%s\n' 'The job is done!'
 sleep 0.2
-exit 37
+"""
+        cases = (
+            (
+                "crash_with_sample",
+                """#!/usr/bin/env bash
+printf '%s\n' "$$" > "$FAKE_MONITOR_LEADER_FILE"
+printf '%s\n' "$$" > "$FAKE_MONITOR_CHILD_FILE"
+printf '1, 1\n'
+sleep 0.05
+exit 42
 """,
+                "GPU monitor exited unexpectedly",
+            ),
+            (
+                "empty_monitor",
+                """#!/usr/bin/env bash
+printf '%s\n' "$$" > "$FAKE_MONITOR_LEADER_FILE"
+sleep 30 &
+child=$!
+printf '%s\n' "$child" > "$FAKE_MONITOR_CHILD_FILE"
+trap 'wait "$child" 2>/dev/null || true; exit 0' TERM INT
+wait "$child"
+""",
+                "GPU monitor produced no valid samples",
+            ),
+        )
+        with tempfile.TemporaryDirectory(prefix="astr-p4-monitor-health-") as temporary:
+            for name, monitor_source, diagnostic in cases:
+                with self.subTest(monitor_failure=name):
+                    root = Path(temporary) / name
+                    environment, _, _, _ = self._monitor_environment(
+                        root, solver_source, monitor_source=monitor_source
                     )
-
-                    environment = os.environ.copy()
-                    environment.update(
-                        {
-                            "PATH": f"{fake_bin}:{environment['PATH']}",
-                            "GPU_EXE": str(failing_solver),
-                            "OUT_DIR": str(root / "out"),
-                            "LABEL": "monitor_failure",
-                            "GRID": "8,8,8",
-                            "MAXSTEP": "1",
-                            "REPEATS": "5",
-                            "DISCARD_STEPS": "0",
-                            "FEQCHKPT": "9999",
-                            "NP": "1",
-                            "TOPOLOGY": "1,1,1",
-                            "GPU_IDS": "0",
-                            "FAKE_MONITOR_PID_FILE": str(monitor_pid_file),
-                        }
-                    )
-                    stdout_path = root / "driver.stdout"
-                    stderr_path = root / "driver.stderr"
-                    with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open(
-                        "w", encoding="utf-8"
-                    ) as stderr:
-                        completed = subprocess.run(
-                            ["bash", str(DRIVER)],
-                            cwd=ROOT,
-                            env=environment,
-                            stdout=stdout,
-                            stderr=stderr,
-                            text=True,
-                            timeout=10,
-                            check=False,
-                        )
-
-                    self.assertEqual(
-                        completed.returncode,
-                        expected_status,
-                        stderr_path.read_text(encoding="utf-8"),
-                    )
-                    self.assertTrue(
-                        monitor_pid_file.exists(), "fake monitor never started"
-                    )
-                    monitor_pid = int(
-                        monitor_pid_file.read_text(encoding="ascii").strip()
-                    )
-                    monitor_exited = wait_for_process_exit(monitor_pid)
-                    if not monitor_exited:
-                        os.kill(monitor_pid, signal.SIGTERM)
-                        wait_for_process_exit(monitor_pid)
-                    self.assertTrue(
-                        monitor_exited,
-                        f"monitor process {monitor_pid} survived driver exit",
-                    )
+                    completed = self._run_driver(root, environment)
+                    self.assertNotEqual(completed.returncode, 0)
+                    self.assertIn(diagnostic, completed.stderr)
 
 
 if __name__ == "__main__":

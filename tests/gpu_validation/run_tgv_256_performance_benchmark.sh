@@ -22,32 +22,120 @@ TIMINGS="$OUT_DIR/${LABEL}_timings.tsv"
 SUMMARY="$OUT_DIR/${LABEL}_summary.md"
 CASE_DIR="$OUT_DIR/${LABEL}_case"
 MONITOR_PID=""
-MONITOR_STOP=""
+MONITOR_FILE=""
+MONITOR_ERROR=""
+
+validate_monitor_samples() {
+  local monitor="$1"
+  awk -F',' '
+    function numeric(value) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      return value ~ /^[0-9]+([.][0-9]+)?$/
+    }
+    NF == 2 && numeric($1) && numeric($2) { valid++ ; next }
+    NF > 0 { invalid++ }
+    END { exit !(valid > 0 && invalid == 0) }
+  ' "$monitor"
+}
+
+start_monitor() {
+  local monitor="$1" error="$2" pid pgid
+  : > "$monitor"
+  : > "$error"
+  setsid nvidia-smi --id="$GPU_IDS" \
+    --query-gpu=memory.used,utilization.gpu \
+    --format=csv,noheader,nounits --loop-ms=100 \
+    > "$monitor" 2> "$error" &
+  pid=$!
+  MONITOR_PID="$pid"
+  MONITOR_FILE="$monitor"
+  MONITOR_ERROR="$error"
+
+  for _ in $(seq 1 50); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      break
+    fi
+    pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ "$pgid" == "$pid" ]]; then
+      return 0
+    fi
+    sleep 0.02
+  done
+
+  echo "GPU monitor failed to establish its process group; see $error" >&2
+  stop_monitor f || true
+  return 1
+}
 
 stop_monitor() {
-  local pid="${MONITOR_PID:-}" stop="${MONITOR_STOP:-}"
-  if [[ -n "$stop" ]]; then
-    : > "$stop" 2>/dev/null || true
+  local strict="${1:-f}"
+  local pid="${MONITOR_PID:-}" monitor="${MONITOR_FILE:-}"
+  local error="${MONITOR_ERROR:-}" leader_alive=0 term_sent=0 wait_status=0
+  local group_alive=0
+  if [[ -z "$pid" ]]; then
+    return 0
   fi
-  if [[ -n "$pid" ]]; then
-    kill "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
+
+  if kill -0 "$pid" 2>/dev/null; then
+    leader_alive=1
   fi
+  if kill -TERM -- "-$pid" 2>/dev/null; then
+    term_sent=1
+  fi
+  if wait "$pid" 2>/dev/null; then
+    wait_status=0
+  else
+    wait_status=$?
+  fi
+
+  for _ in $(seq 1 50); do
+    if ! kill -0 -- "-$pid" 2>/dev/null; then
+      group_alive=0
+      break
+    fi
+    group_alive=1
+    sleep 0.02
+  done
+  if [[ "$group_alive" -eq 1 ]]; then
+    kill -KILL -- "-$pid" 2>/dev/null || true
+  fi
+
   MONITOR_PID=""
-  MONITOR_STOP=""
+  MONITOR_FILE=""
+  MONITOR_ERROR=""
+
+  if [[ "$strict" != "t" ]]; then
+    return 0
+  fi
+  if [[ "$leader_alive" -ne 1 || "$term_sent" -ne 1 ]]; then
+    echo "GPU monitor exited unexpectedly with status $wait_status; see $error" >&2
+    return 1
+  fi
+  if [[ "$wait_status" -ne 0 && "$wait_status" -ne 143 ]]; then
+    echo "GPU monitor exited unexpectedly with status $wait_status; see $error" >&2
+    return 1
+  fi
+  if [[ "$group_alive" -eq 1 ]]; then
+    echo "GPU monitor process group required SIGKILL during cleanup; see $error" >&2
+    return 1
+  fi
+  if ! validate_monitor_samples "$monitor"; then
+    echo "GPU monitor produced no valid samples; see $monitor and $error" >&2
+    return 1
+  fi
 }
 
 handle_exit() {
   local status=$?
   trap - EXIT INT TERM
-  stop_monitor
+  stop_monitor f || true
   exit "$status"
 }
 
 handle_signal() {
   local status="$1"
   trap - EXIT INT TERM
-  stop_monitor
+  stop_monitor f || true
   exit "$status"
 }
 
@@ -67,6 +155,14 @@ fi
 
 if [[ ! -x "$GPU_EXE" ]]; then
   echo "GPU executable not found: $GPU_EXE" >&2
+  exit 2
+fi
+if ! command -v setsid >/dev/null 2>&1; then
+  echo "setsid is required for GPU monitor process-group cleanup" >&2
+  exit 2
+fi
+if ! command -v nvidia-smi >/dev/null 2>&1; then
+  echo "nvidia-smi is required for GPU benchmark monitoring" >&2
   exit 2
 fi
 if [[ "$REPEATS" -lt 5 ]]; then
@@ -135,24 +231,16 @@ assert_no_field_hdf5() {
 
 run_once() {
   local repeat="$1" record="$2"
-  local run_dir log monitor start end wall
+  local run_dir log monitor monitor_error start end wall
   local max_memory max_util timing_count retained_count timing_values run_status
+  local monitor_status=0
   assert_no_field_hdf5
   run_dir="$OUT_DIR/${LABEL}_run_${repeat}"
   log="$run_dir/run.log"
   monitor="$run_dir/gpu_monitor.csv"
-  MONITOR_STOP="$run_dir/.monitor_stop"
+  monitor_error="$run_dir/gpu_monitor.stderr"
   mkdir -p "$run_dir"
-  rm -f "$MONITOR_STOP"
-  (
-    while [[ ! -e "$MONITOR_STOP" ]]; do
-      nvidia-smi --id="$GPU_IDS" \
-        --query-gpu=memory.used,utilization.gpu \
-        --format=csv,noheader,nounits
-      sleep 0.1
-    done
-  ) > "$monitor" &
-  MONITOR_PID=$!
+  start_monitor "$monitor" "$monitor_error"
   start="$(date +%s.%N)"
   set +e
   (
@@ -169,11 +257,18 @@ run_once() {
   run_status=$?
   set -e
   end="$(date +%s.%N)"
-  stop_monitor
+  if [[ "$run_status" -ne 0 ]]; then
+    stop_monitor f || true
+  elif ! stop_monitor t; then
+    monitor_status=1
+  fi
   assert_no_field_hdf5
   if [[ "$run_status" -ne 0 ]]; then
     echo "ASTR failed with status $run_status; see $log" >&2
     return "$run_status"
+  fi
+  if [[ "$monitor_status" -ne 0 ]]; then
+    return 1
   fi
 
   grep -q 'The job is done!' "$log"
