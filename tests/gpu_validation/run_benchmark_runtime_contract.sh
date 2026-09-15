@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROBE="${1:?usage: run_benchmark_runtime_contract.sh /absolute/path/to/probe}"
+GPU_PROBE="${1:?usage: run_benchmark_runtime_contract.sh /absolute/path/to/gpu-probe /absolute/path/to/cpu-probe}"
+CPU_PROBE="${2:?usage: run_benchmark_runtime_contract.sh /absolute/path/to/gpu-probe /absolute/path/to/cpu-probe}"
+
+# Local HPC-X/Open MPI may discover HCOLL without a usable HCA. Keep the
+# contract output deterministic without changing production MPI behavior.
+export OMPI_MCA_coll_hcoll_enable=0
 
 expect_fail() {
   set +e
@@ -15,19 +20,23 @@ expect_fail() {
 }
 
 env -u ASTR_GPU_BENCHMARK_NO_FIELD_IO -u ASTR_GPU_RK_TIMING \
-  mpirun -np 1 "$PROBE" gpu tgv periodic disabled
+  mpirun -np 1 "$GPU_PROBE" gpu tgv periodic disabled
 ASTR_GPU_BENCHMARK_NO_FIELD_IO=1 ASTR_GPU_RK_TIMING=1 \
-  mpirun -np 2 "$PROBE" gpu tgv periodic enabled
+  mpirun -np 2 "$GPU_PROBE" gpu tgv periodic enabled
 expect_fail env ASTR_GPU_BENCHMARK_NO_FIELD_IO=1 ASTR_GPU_RK_TIMING=1 \
-  mpirun -np 1 "$PROBE" cpu tgv periodic enabled
+  mpirun -np 1 "$GPU_PROBE" cpu tgv periodic enabled
+expect_fail env ASTR_GPU_BENCHMARK_NO_FIELD_IO=1 ASTR_GPU_RK_TIMING=1 \
+  mpirun -np 1 "$CPU_PROBE" gpu tgv periodic enabled
 expect_fail env ASTR_GPU_BENCHMARK_NO_FIELD_IO=1 ASTR_GPU_RK_TIMING=0 \
-  mpirun -np 1 "$PROBE" gpu tgv periodic enabled
+  mpirun -np 1 "$GPU_PROBE" gpu tgv periodic enabled
 expect_fail env ASTR_GPU_BENCHMARK_NO_FIELD_IO=1 ASTR_GPU_RK_TIMING=1 \
-  mpirun -np 1 "$PROBE" gpu channel periodic enabled
+  mpirun -np 1 "$GPU_PROBE" gpu channel periodic enabled
 expect_fail env ASTR_GPU_BENCHMARK_NO_FIELD_IO=1 ASTR_GPU_RK_TIMING=1 \
-  mpirun -np 1 "$PROBE" gpu tgv physical enabled
+  mpirun -np 1 "$GPU_PROBE" gpu tgv physical enabled
 expect_fail env ASTR_GPU_BENCHMARK_NO_FIELD_IO=invalid ASTR_GPU_RK_TIMING=1 \
-  mpirun -np 1 "$PROBE" gpu tgv periodic disabled
+  mpirun -np 1 "$GPU_PROBE" gpu tgv periodic disabled
+expect_fail env -u ASTR_GPU_BENCHMARK_NO_FIELD_IO ASTR_GPU_RK_TIMING=invalid \
+  mpirun -np 1 "$GPU_PROBE" gpu tgv periodic disabled
 expect_fail mpirun -np 2 bash -c '
   if [[ "$OMPI_COMM_WORLD_RANK" == 0 ]]; then
     export ASTR_GPU_BENCHMARK_NO_FIELD_IO=1 ASTR_GPU_RK_TIMING=1
@@ -35,5 +44,14 @@ expect_fail mpirun -np 2 bash -c '
     unset ASTR_GPU_BENCHMARK_NO_FIELD_IO ASTR_GPU_RK_TIMING
   fi
   exec "$1" gpu tgv periodic enabled
-' bash "$PROBE"
+' bash "$GPU_PROBE"
+expect_fail mpirun -np 2 bash -c '
+  unset ASTR_GPU_BENCHMARK_NO_FIELD_IO
+  if [[ "$OMPI_COMM_WORLD_RANK" == 0 ]]; then
+    export ASTR_GPU_RK_TIMING=1
+  else
+    export ASTR_GPU_RK_TIMING=0
+  fi
+  exec "$1" gpu tgv periodic disabled
+' bash "$GPU_PROBE"
 echo "benchmark runtime contract passed"

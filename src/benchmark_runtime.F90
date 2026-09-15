@@ -53,8 +53,8 @@ contains
       print *, 'Invalid or inconsistent GPU benchmark environment'
       call mpi_abort(MPI_COMM_WORLD,1,ignored)
     endif
-    if(lowest==1 .and. (rk_lowest<0 .or. rk_lowest/=rk_highest)) then
-      print *, 'Invalid or inconsistent ASTR_GPU_RK_TIMING for no-field-I/O benchmark'
+    if(rk_lowest<0 .or. rk_lowest/=rk_highest) then
+      print *, 'Invalid or inconsistent ASTR_GPU_RK_TIMING environment'
       call mpi_abort(MPI_COMM_WORLD,1,ignored)
     endif
     field_io_disabled=requested==1
