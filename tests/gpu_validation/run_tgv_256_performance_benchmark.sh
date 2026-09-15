@@ -83,16 +83,28 @@ prepare_case() {
     --maxstep "$MAXSTEP" --feqchkpt "$FEQCHKPT"
     --lfilter t --diffterm t --scheme 643e
   )
+  args+=(--lreadgrid f)
   if [[ -n "$DELTAT" ]]; then
     args+=(--deltat "$DELTAT")
   fi
   python3 "${args[@]}"
 }
 
+assert_no_field_hdf5() {
+  local found
+  found="$(find "$CASE_DIR" -type f \
+    \( -name 'grid*.h5' -o -name 'flowfield*.h5' \) -print)"
+  if [[ -n "$found" ]]; then
+    printf 'benchmark generated forbidden field HDF5:\n%s\n' "$found" >&2
+    exit 1
+  fi
+}
+
 run_once() {
   local repeat="$1" record="$2"
   local run_dir log monitor stop monitor_pid start end wall
   local max_memory max_util timing_count retained_count timing_values run_status
+  assert_no_field_hdf5
   run_dir="$OUT_DIR/${LABEL}_run_${repeat}"
   log="$run_dir/run.log"
   monitor="$run_dir/gpu_monitor.csv"
@@ -115,6 +127,7 @@ run_once() {
     OMPI_MCA_sharedfp="${OMPI_MCA_sharedfp:-individual}" \
       CUDA_VISIBLE_DEVICES="$GPU_IDS" ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
       ASTR_GPU_RK_TIMING=1 ASTR_GPU_RANK_RK_TIMING=1 \
+      ASTR_GPU_BENCHMARK_NO_FIELD_IO=1 \
       ASTR_GPU_SYNC_MODE="$SYNC_MODE" ASTR_GPU_HALO_TRANSPORT="$HALO_TRANSPORT" \
       ASTR_GPU_FILTER_WORKSPACE="$FILTER_WORKSPACE" \
       mpirun -np "$NP" "$GPU_EXE" \
@@ -125,12 +138,14 @@ run_once() {
   end="$(date +%s.%N)"
   touch "$stop"
   wait "$monitor_pid"
+  assert_no_field_hdf5
   if [[ "$run_status" -ne 0 ]]; then
     echo "ASTR failed with status $run_status; see $log" >&2
     return "$run_status"
   fi
 
   grep -q 'The job is done!' "$log"
+  grep -q 'ASTR_GPU_BENCHMARK_NO_FIELD_IO enabled' "$log"
   if grep -Eq 'COMPUTATION CRASHED|ieee_invalid|ieee_divide_by_zero|(^|[^[:alpha:]])NaN([^[:alpha:]]|$)' "$log"; then
     echo "non-finite or crash marker found in $log" >&2
     exit 1
@@ -172,7 +187,9 @@ PY
 
 mkdir -p "$OUT_DIR"
 prepare_case "$CASE_DIR"
-printf 'np=%s\ntopology=%s\ngpu_ids=%s\nhalo_transport=%s\nfilter_workspace=%s\n' \
+rm -f "$CASE_DIR/datin/grid.h5"
+assert_no_field_hdf5
+printf 'np=%s\ntopology=%s\ngpu_ids=%s\nhalo_transport=%s\nfilter_workspace=%s\nbenchmark_no_field_io=1\n' \
   "$NP" "$TOPOLOGY" "$GPU_IDS" "$HALO_TRANSPORT" "$FILTER_WORKSPACE" \
   > "$OUT_DIR/${LABEL}_transport_metadata.txt"
 printf 'label\trepeat\trk_samples\tmedian_rk_seconds\tmin_rk_seconds\tmax_rk_seconds\twall_seconds\tmax_memory_mib\tmax_utilization_percent\n' > "$TIMINGS"

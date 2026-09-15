@@ -44,6 +44,20 @@ class TgvPerformanceDriverTests(unittest.TestCase):
         self.assertIn('ASTR_GPU_FILTER_WORKSPACE="$FILTER_WORKSPACE"', SCRIPT)
         self.assertIn("filter_workspace=%s", SCRIPT)
 
+    def test_driver_enables_and_records_no_field_io_mode(self) -> None:
+        self.assertIn("ASTR_GPU_BENCHMARK_NO_FIELD_IO=1", SCRIPT)
+        self.assertIn("benchmark_no_field_io=1", SCRIPT)
+        self.assertIn("ASTR_GPU_BENCHMARK_NO_FIELD_IO enabled", SCRIPT)
+
+    def test_driver_forces_generated_grid_and_removes_copied_hdf5(self) -> None:
+        self.assertIn('args+=(--lreadgrid f)', SCRIPT)
+        self.assertIn('rm -f "$CASE_DIR/datin/grid.h5"', SCRIPT)
+
+    def test_driver_rejects_generated_grid_or_flowfield_hdf5(self) -> None:
+        self.assertIn("assert_no_field_hdf5", SCRIPT)
+        self.assertIn("-name 'grid*.h5'", SCRIPT)
+        self.assertIn("-name 'flowfield*.h5'", SCRIPT)
+
 
 if __name__ == "__main__":
     unittest.main()
