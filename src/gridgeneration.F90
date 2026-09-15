@@ -26,6 +26,7 @@ module gridgeneration
     use commvar,  only : flowtype,lreadgrid,nondimen,gridfile,ref_len,ka
     use readwrite,only : readgrid,writegrid,xdmfwriter
     use userdefine,only: udf_grid
+    use benchmark_runtime, only: benchmark_field_io_disabled
     !
     if(lreadgrid) then
       call readgrid(trim(gridfile))
@@ -92,7 +93,7 @@ module gridgeneration
         ! stop ' !! error at gridgen' 
       endif
       !
-      call writegrid(trim(gridfile))
+      if(.not.benchmark_field_io_disabled()) call writegrid(trim(gridfile))
       !
     endif
     !

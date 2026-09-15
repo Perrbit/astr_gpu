@@ -14,7 +14,9 @@ program astr
                            parallelini,parapp
   use readwrite,     only: statement,readinput,fileini,infodisp
   use commarray,     only: allocommarray
-  use commvar,       only: use_gpu,prandtl
+  use commvar,       only: use_gpu,prandtl,flowtype,ndims,lihomo,     &
+                           ljhomo,lkhomo
+  use benchmark_runtime, only: configure_benchmark_runtime
   use solver,        only: refcal
   use initialisation,only: flowinit
   use sponge_layer,  only: spongelayerini
@@ -77,6 +79,8 @@ program astr
     call parapp
 
     call parallelini
+
+    call configure_benchmark_runtime(use_gpu,flowtype,ndims,lihomo,ljhomo,lkhomo)
 
     call refcal
 

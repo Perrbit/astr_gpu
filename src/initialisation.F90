@@ -38,6 +38,7 @@ module initialisation
     use statistic,only: nsamples
     use bc,       only: ninflowslice,turbinf
     use userdefine,only: udf_flowinit
+    use benchmark_runtime, only: benchmark_field_io_disabled
 #ifdef _CUDA
     use gpu_runtime,only: gpu_compact_statistics_requested
 #endif
@@ -200,7 +201,7 @@ module initialisation
     !
     if(lio) print*,' ** flowfield initialised.'
     
-    call writeflfed(timerept=.true.)
+    if(.not.benchmark_field_io_disabled()) call writeflfed(timerept=.true.)
     
     ! call mpistop
     
