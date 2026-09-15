@@ -27,8 +27,8 @@ contains
     end select
   end function switch_choice
 
-  subroutine configure_benchmark_runtime(use_gpu,flowtype,ndims,lihomo,ljhomo,lkhomo)
-    logical,intent(in) :: use_gpu,lihomo,ljhomo,lkhomo
+  subroutine configure_benchmark_runtime(use_gpu,flowtype,ndims,lihomo,ljhomo,lkhomo,periodic_boundary_case)
+    logical,intent(in) :: use_gpu,lihomo,ljhomo,lkhomo,periodic_boundary_case
     character(*),intent(in) :: flowtype
     integer,intent(in) :: ndims
     integer :: requested,rk_timing,lowest,highest,rk_lowest,rk_highest
@@ -61,6 +61,7 @@ contains
     if(field_io_disabled .and. (.not.cuda_build .or. .not.use_gpu .or. &
        ndims/=3 .or. trim(flowtype)/='tgv' .or. &
        .not.(lihomo.and.ljhomo.and.lkhomo) .or. &
+       .not.periodic_boundary_case .or. &
        rk_timing/=1)) then
       print *, 'ASTR_GPU_BENCHMARK_NO_FIELD_IO requires CUDA 3-D periodic GPU TGV with RK timing'
       call mpi_abort(MPI_COMM_WORLD,1,ignored)

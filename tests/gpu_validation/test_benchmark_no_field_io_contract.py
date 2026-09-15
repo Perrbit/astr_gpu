@@ -20,6 +20,7 @@ ASTR = _source(SRC / "astr.F90")
 GRID = _source(SRC / "gridgeneration.F90")
 INIT = _source(SRC / "initialisation.F90")
 MAINLOOP = _source(SRC / "mainloop.F90")
+BENCHMARK = _source(SRC / "benchmark_runtime.F90")
 GPU_RUNTIME = _source(SRC_GPU / "gpu_runtime.cuf")
 GPU_LOOP = _source(SRC_GPU / "mainloop_gpu.cuf")
 GPU_PHASE = _source(SRC_GPU / "gpu_phase_timing.cuf")
@@ -29,7 +30,7 @@ def test_policy_is_configured_after_mpi_and_before_initialization() -> None:
     source = _compact(ASTR)
     configure = (
         "callconfigure_benchmark_runtime"
-        "(use_gpu,flowtype,ndims,lihomo,ljhomo,lkhomo)"
+        "(use_gpu,flowtype,ndims,lihomo,ljhomo,lkhomo,all(bctype(1:6)==1))"
     )
     calls = [
         "callparallelini",
@@ -93,6 +94,12 @@ def test_later_output_paths_cannot_use_startup_benchmark_policy() -> None:
     assert "benchmark_field_io_disabled" not in _compact(MAINLOOP)
 
 
+def test_benchmark_admission_requires_independent_periodic_boundary_codes() -> None:
+    source = _compact(BENCHMARK)
+    assert "periodic_boundary_case" in source
+    assert ".not.periodic_boundary_case" in source
+
+
 def test_phase_timing_covers_required_p4_0_intervals() -> None:
     for label in (
         "prepare",
@@ -113,7 +120,10 @@ def test_phase_timing_admission_requires_complete_explicit_tgv_schema() -> None:
     source = _compact(GPU_RUNTIME)
     assert "allow_selective=trim(flowtype)=='tgv'.and.ndims==3" in source
     assert "lihomo.and.ljhomo.and.lkhomo" in source
-    assert "allow_phase_timing=allow_selective.and.lfilter.and.diffterm" in source
+    assert (
+        "allow_phase_timing=allow_selective.and.gpu_periodic_boundary_case()"
+        ".and.lfilter.and.diffterm" in source
+    )
     assert (
         "callconfigure_gpu_phase_timing"
         "(allow_phase_timing,.not.gpu_selective_sync_enabled())" in source

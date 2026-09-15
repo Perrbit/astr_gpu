@@ -124,7 +124,8 @@ contains
     use halo_exchange_gpu, only: init_halo_transport_gpu
     use mainloop_gpu, only: init_gpu
     use sponge_gpu, only: init_sponge_gpu
-    use boundary_gpu, only: init_s1_flatplate_profile_gpu,init_wall_blowing_gpu
+    use boundary_gpu, only: init_s1_flatplate_profile_gpu,init_wall_blowing_gpu, &
+                            gpu_periodic_boundary_case
     use inflow_timeseries_gpu, only: init_dynamic_inflow_gpu
     use commvar, only: flowtype,ndims,lihomo,ljhomo,lkhomo,lfilter,diffterm
     use gpu_check, only: configure_gpu_sync_mode,gpu_selective_sync_enabled
@@ -144,7 +145,8 @@ contains
     allow_selective = trim(flowtype) == 'tgv' .and. ndims == 3 .and. &
                       lihomo .and. ljhomo .and. lkhomo
     call configure_gpu_sync_mode(allow_selective)
-    allow_phase_timing=allow_selective .and. lfilter .and. diffterm
+    allow_phase_timing=allow_selective .and. gpu_periodic_boundary_case() .and. &
+                       lfilter .and. diffterm
     call configure_gpu_phase_timing(allow_phase_timing,.not.gpu_selective_sync_enabled())
     if(lio) then
       if(gpu_selective_sync_enabled()) then

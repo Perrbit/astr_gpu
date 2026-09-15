@@ -28,7 +28,7 @@ program astr
   use ibmethod,      only: ibprocess
   use test,          only: codetest
   use comsolver,     only: solvrinit
-  use bc,            only: twall
+  use bc,            only: twall,bctype
   use conservative_boundary_runtime, only: conservative_boundary, &
                            load_conservative_boundary_environment, &
                            validate_conservative_sbli_mode,        &
@@ -82,7 +82,8 @@ program astr
 
     call refcal
 
-    call configure_benchmark_runtime(use_gpu,flowtype,ndims,lihomo,ljhomo,lkhomo)
+    call configure_benchmark_runtime(use_gpu,flowtype,ndims,lihomo,ljhomo,lkhomo, &
+                                     all(bctype(1:6)==1))
 
     call load_conservative_boundary_environment()
     call validate_conservative_sbli_mode(twall(3))
