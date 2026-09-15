@@ -1,0 +1,212 @@
+module chemistry_flow_gpu_probe_kernels
+  use iso_fortran_env, only: real64
+  use cudafor
+  use chemistry_air5_data, only: air5_num_species
+  use chemistry_flow_state_gpu, only: air5_primitive_to_conservative_gpu, &
+    air5_conservative_to_primitive_gpu
+  use chemistry_transport_gpu, only: air5_transport_properties_gpu, &
+    air5_diffusive_flux_gpu
+  use gpu_check, only: sync_after_kernel
+  implicit none
+  private
+
+  public :: launch_chemistry_flow_probe_gpu
+
+contains
+
+  attributes(global) subroutine chemistry_flow_probe_kernel(rho,velocity,temperature, &
+      tv,pressure,mass_fraction,grad_velocity,grad_temperature,grad_tv, &
+      grad_mass_fraction,q_out,primitive_out,transport_out,flux_out,status_out)
+    real(real64), value :: rho,temperature,tv,pressure
+    real(real64), device, intent(in) :: velocity(3),mass_fraction(air5_num_species)
+    real(real64), device, intent(in) :: grad_velocity(3,3),grad_temperature(3), &
+      grad_tv(3),grad_mass_fraction(air5_num_species,3)
+    real(real64), device, intent(out) :: q_out(11),primitive_out(12), &
+      transport_out(38),flux_out(30)
+    integer, device, intent(out) :: status_out(4)
+    real(real64) :: q(11),rho_rebuilt,velocity_rebuilt(3),temperature_rebuilt, &
+      mass_fraction_rebuilt(air5_num_species),tv_rebuilt,pressure_rebuilt
+    real(real64) :: viscosity,conductivity_tr,conductivity_v, &
+      species_viscosity(air5_num_species),binary_diffusion(air5_num_species,air5_num_species), &
+      mixture_diffusion(air5_num_species),momentum_flux(3,3), &
+      species_flux(air5_num_species,3),energy_flux(3),ev_flux(3)
+
+    if(threadIdx%x/=1 .or. blockIdx%x/=1) return
+    call air5_primitive_to_conservative_gpu(rho,velocity,temperature,mass_fraction, &
+      tv,q,status_out(1))
+    call air5_conservative_to_primitive_gpu(q,rho_rebuilt,velocity_rebuilt, &
+      temperature_rebuilt,mass_fraction_rebuilt,tv_rebuilt,pressure_rebuilt,status_out(2))
+    call air5_transport_properties_gpu(temperature,tv,pressure,mass_fraction,viscosity, &
+      conductivity_tr,conductivity_v,species_viscosity,binary_diffusion, &
+      mixture_diffusion,status_out(3))
+    call air5_diffusive_flux_gpu(rho,velocity,temperature,tv,pressure,mass_fraction, &
+      grad_velocity,grad_temperature,grad_tv,grad_mass_fraction,momentum_flux, &
+      species_flux,energy_flux,ev_flux,status_out(4))
+    q_out=q
+    primitive_out=[rho_rebuilt,velocity_rebuilt,temperature_rebuilt, &
+      mass_fraction_rebuilt,tv_rebuilt,pressure_rebuilt]
+    transport_out=[viscosity,conductivity_tr,conductivity_v,species_viscosity, &
+      reshape(binary_diffusion,[25]),mixture_diffusion]
+    flux_out=[reshape(momentum_flux,[9]),reshape(species_flux,[15]),energy_flux,ev_flux]
+  end subroutine chemistry_flow_probe_kernel
+
+  subroutine launch_chemistry_flow_probe_gpu(rho,velocity,temperature,tv,pressure, &
+      mass_fraction,grad_velocity,grad_temperature,grad_tv,grad_mass_fraction, &
+      q_out,primitive_out,transport_out,flux_out,status_out)
+    real(real64), intent(in) :: rho,temperature,tv,pressure
+    real(real64), device, intent(in) :: velocity(3),mass_fraction(air5_num_species)
+    real(real64), device, intent(in) :: grad_velocity(3,3),grad_temperature(3), &
+      grad_tv(3),grad_mass_fraction(air5_num_species,3)
+    real(real64), device, intent(out) :: q_out(11),primitive_out(12), &
+      transport_out(38),flux_out(30)
+    integer, device, intent(out) :: status_out(4)
+
+    call chemistry_flow_probe_kernel<<<1,32>>>(rho,velocity,temperature,tv,pressure, &
+      mass_fraction,grad_velocity,grad_temperature,grad_tv,grad_mass_fraction, &
+      q_out,primitive_out,transport_out,flux_out,status_out)
+    call sync_after_kernel('chemistry_flow_probe_kernel',force_sync=.true.)
+  end subroutine launch_chemistry_flow_probe_gpu
+
+end module chemistry_flow_gpu_probe_kernels
+
+program chemistry_flow_gpu_probe
+  use iso_fortran_env, only: real64
+  use cudafor
+  use chemistry_air5_data, only: air5_num_species
+  use chemistry_flow_state, only: air5_primitive_to_conservative, &
+    air5_conservative_to_primitive
+  use chemistry_transport, only: air5_transport_properties,air5_diffusive_flux
+  use chemistry_flow_gpu_probe_kernels, only: launch_chemistry_flow_probe_gpu
+  implicit none
+
+  real(real64), parameter :: rho=0.42_real64,temperature=4200.0_real64, &
+    tv=3100.0_real64,pressure=2.0e5_real64
+  real(real64) :: velocity(3),mass_fraction(air5_num_species),grad_velocity(3,3), &
+    grad_temperature(3),grad_tv(3),grad_mass_fraction(air5_num_species,3)
+  real(real64) :: q_ref(11),q_gpu(11),primitive_ref(12),primitive_gpu(12), &
+    transport_ref(38),transport_gpu(38),flux_ref(30),flux_gpu(30)
+  real(real64) :: rho_rebuilt,velocity_rebuilt(3),temperature_rebuilt, &
+    mass_fraction_rebuilt(air5_num_species),tv_rebuilt,pressure_rebuilt
+  real(real64) :: viscosity,conductivity_tr,conductivity_v, &
+    species_viscosity(air5_num_species),binary_diffusion(air5_num_species,air5_num_species), &
+    mixture_diffusion(air5_num_species),momentum_flux(3,3), &
+    species_flux(air5_num_species,3),energy_flux(3),ev_flux(3)
+  real(real64), device :: velocity_d(3),mass_fraction_d(air5_num_species), &
+    grad_velocity_d(3,3),grad_temperature_d(3),grad_tv_d(3), &
+    grad_mass_fraction_d(air5_num_species,3),q_d(11),primitive_d(12), &
+    transport_d(38),flux_d(30)
+  integer :: status_ref(4),status_gpu(4),status_mismatches
+  integer, device :: status_d(4)
+  real(real64) :: state_ratio,transport_ratio,flux_ratio
+
+  velocity=[1200.0_real64,-37.0_real64,84.0_real64]
+  mass_fraction=[0.62_real64,0.18_real64,0.07_real64,0.05_real64,0.08_real64]
+  grad_velocity=reshape([0.8_real64,-0.3_real64,0.2_real64,0.1_real64, &
+    -0.4_real64,0.7_real64,-0.5_real64,0.6_real64,-0.2_real64],[3,3])
+  grad_temperature=[130.0_real64,-75.0_real64,42.0_real64]
+  grad_tv=[-90.0_real64,35.0_real64,11.0_real64]
+  grad_mass_fraction(:,1)=[0.012_real64,-0.006_real64,-0.002_real64,-0.001_real64,-0.003_real64]
+  grad_mass_fraction(:,2)=[-0.004_real64,0.008_real64,-0.001_real64,-0.002_real64,-0.001_real64]
+  grad_mass_fraction(:,3)=[0.002_real64,-0.005_real64,0.001_real64,0.001_real64,0.001_real64]
+
+  call air5_primitive_to_conservative(rho,velocity,temperature,mass_fraction,tv, &
+    q_ref,status_ref(1))
+  call air5_conservative_to_primitive(q_ref,rho_rebuilt,velocity_rebuilt, &
+    temperature_rebuilt,mass_fraction_rebuilt,tv_rebuilt,pressure_rebuilt,status_ref(2))
+  primitive_ref=[rho_rebuilt,velocity_rebuilt,temperature_rebuilt, &
+    mass_fraction_rebuilt,tv_rebuilt,pressure_rebuilt]
+  call air5_transport_properties(temperature,tv,pressure,mass_fraction,viscosity, &
+    conductivity_tr,conductivity_v,species_viscosity,binary_diffusion, &
+    mixture_diffusion,status_ref(3))
+  transport_ref=[viscosity,conductivity_tr,conductivity_v,species_viscosity, &
+    reshape(binary_diffusion,[25]),mixture_diffusion]
+  call air5_diffusive_flux(rho,velocity,temperature,tv,pressure,mass_fraction, &
+    grad_velocity,grad_temperature,grad_tv,grad_mass_fraction,momentum_flux, &
+    species_flux,energy_flux,ev_flux,status_ref(4))
+  flux_ref=[reshape(momentum_flux,[9]),reshape(species_flux,[15]),energy_flux,ev_flux]
+
+  velocity_d=velocity
+  mass_fraction_d=mass_fraction
+  grad_velocity_d=grad_velocity
+  grad_temperature_d=grad_temperature
+  grad_tv_d=grad_tv
+  grad_mass_fraction_d=grad_mass_fraction
+  call launch_chemistry_flow_probe_gpu(rho,velocity_d,temperature,tv,pressure, &
+    mass_fraction_d,grad_velocity_d,grad_temperature_d,grad_tv_d, &
+    grad_mass_fraction_d,q_d,primitive_d,transport_d,flux_d,status_d)
+  q_gpu=q_d
+  primitive_gpu=primitive_d
+  transport_gpu=transport_d
+  flux_gpu=flux_d
+  status_gpu=status_d
+
+  status_mismatches=count(status_gpu/=status_ref)
+  state_ratio=0.0_real64
+  transport_ratio=0.0_real64
+  flux_ratio=0.0_real64
+  call update_ratio(q_gpu,q_ref,state_ratio)
+  call update_ratio(primitive_gpu,primitive_ref,state_ratio)
+  call update_ratio(transport_gpu,transport_ref,transport_ratio)
+  call update_ratio(flux_gpu,flux_ref,flux_ratio)
+
+  mass_fraction=[1.0_real64-4.0e-14_real64,1.0e-14_real64, &
+    1.0e-14_real64,1.0e-14_real64,1.0e-14_real64]
+  grad_mass_fraction=0.0_real64
+  grad_mass_fraction(:,1)=1.0e-8_real64*[4.0_real64,-1.0_real64, &
+    -1.0_real64,-1.0_real64,-1.0_real64]
+  call air5_primitive_to_conservative(rho,velocity,temperature,mass_fraction,tv, &
+    q_ref,status_ref(1))
+  call air5_conservative_to_primitive(q_ref,rho_rebuilt,velocity_rebuilt, &
+    temperature_rebuilt,mass_fraction_rebuilt,tv_rebuilt,pressure_rebuilt,status_ref(2))
+  primitive_ref=[rho_rebuilt,velocity_rebuilt,temperature_rebuilt, &
+    mass_fraction_rebuilt,tv_rebuilt,pressure_rebuilt]
+  call air5_transport_properties(temperature,tv,pressure,mass_fraction,viscosity, &
+    conductivity_tr,conductivity_v,species_viscosity,binary_diffusion, &
+    mixture_diffusion,status_ref(3))
+  transport_ref=[viscosity,conductivity_tr,conductivity_v,species_viscosity, &
+    reshape(binary_diffusion,[25]),mixture_diffusion]
+  call air5_diffusive_flux(rho,velocity,temperature,tv,pressure,mass_fraction, &
+    grad_velocity,grad_temperature,grad_tv,grad_mass_fraction,momentum_flux, &
+    species_flux,energy_flux,ev_flux,status_ref(4))
+  flux_ref=[reshape(momentum_flux,[9]),reshape(species_flux,[15]),energy_flux,ev_flux]
+
+  mass_fraction_d=mass_fraction
+  grad_mass_fraction_d=grad_mass_fraction
+  call launch_chemistry_flow_probe_gpu(rho,velocity_d,temperature,tv,pressure, &
+    mass_fraction_d,grad_velocity_d,grad_temperature_d,grad_tv_d, &
+    grad_mass_fraction_d,q_d,primitive_d,transport_d,flux_d,status_d)
+  q_gpu=q_d
+  primitive_gpu=primitive_d
+  transport_gpu=transport_d
+  flux_gpu=flux_d
+  status_gpu=status_d
+  status_mismatches=status_mismatches+count(status_gpu/=status_ref)
+  call update_ratio(q_gpu,q_ref,state_ratio)
+  call update_ratio(primitive_gpu,primitive_ref,state_ratio)
+  call update_ratio(transport_gpu,transport_ref,transport_ratio)
+  call update_ratio(flux_gpu,flux_ref,flux_ratio)
+  write(*,'(A,1X,ES24.16)') 'CHEMISTRY_FLOW_GPU_STATE_MAX_RATIO',state_ratio
+  write(*,'(A,1X,ES24.16)') 'CHEMISTRY_FLOW_GPU_TRANSPORT_MAX_RATIO',transport_ratio
+  write(*,'(A,1X,ES24.16)') 'CHEMISTRY_FLOW_GPU_FLUX_MAX_RATIO',flux_ratio
+  write(*,'(A,1X,I0)') 'CHEMISTRY_FLOW_GPU_STATUS_MISMATCHES',status_mismatches
+  if(state_ratio>1.0_real64 .or. transport_ratio>1.0_real64 .or. &
+     flux_ratio>1.0_real64 .or. status_mismatches/=0) &
+    error stop 'GPU chemistry flow comparison failed'
+
+contains
+
+  subroutine update_ratio(actual,reference,maximum_ratio)
+    real(real64), intent(in) :: actual(:),reference(:)
+    real(real64), intent(inout) :: maximum_ratio
+    real(real64) :: scale,tolerance,difference
+    integer :: item
+
+    scale=max(maxval(abs(reference)),1.0_real64)
+    do item=1,size(reference)
+      tolerance=1.0e-13_real64*scale+5.0e-12_real64*abs(reference(item))
+      difference=abs(actual(item)-reference(item))
+      maximum_ratio=max(maximum_ratio,difference/tolerance)
+    enddo
+  end subroutine update_ratio
+
+end program chemistry_flow_gpu_probe

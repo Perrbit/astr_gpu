@@ -1,0 +1,249 @@
+{
+  "schema_version": 1,
+  "mechanism_id": "air5_kimjo12",
+  "description": "Fixed five-species, twelve-reaction, two-temperature neutral-air mechanism",
+  "species_order": ["N2", "O2", "N", "O", "NO"],
+  "units": {
+    "amount": "mol",
+    "energy": "J",
+    "length": "m",
+    "mass": "kg",
+    "temperature": "K",
+    "time": "s"
+  },
+  "validity": {
+    "temperature_k": [300.0, 8000.0],
+    "pressure_pa": [1000.0, 1000000.0]
+  },
+  "provenance": {
+    "kinetics": "Kim and Jo, Int. J. Heat Mass Transfer 169 (2021) 120950, neutral subset of Tables 2-4; Park exchange rates; audited against untracked chem/zeroDimChem.zip rct.dat",
+    "thermodynamics": "Fixed-cv two-temperature constants audited from untracked chem/astr/src/chemrct.F90; e0 is the species chemical internal-energy datum in J/kg",
+    "unit_conversion": "Legacy concentrations were mol/cm^3. Every forward path has effective order two, so A_SI=A_CGS*1e-6. For ln(Kc), add delta_nu*ln(1e6) when changing concentration basis to mol/m^3.",
+    "legacy_archive_sha256": "353edc87d665026a6650f3aa06862e1574df74248a2b2864d284fe0ea3692da1"
+  },
+  "species": [
+    {
+      "name": "N2",
+      "molecular_weight_kg_per_mol": 0.028,
+      "atoms": {"N": 2, "O": 0},
+      "formation_energy_j_per_kg": -309864.0,
+      "cv_tr_over_species_gas_constant": 2.5,
+      "vibrational_temperature_k": 3393.0,
+      "blottner_coefficients": [0.0268142, 0.3177838, -11.3155513]
+    },
+    {
+      "name": "O2",
+      "molecular_weight_kg_per_mol": 0.032,
+      "atoms": {"N": 0, "O": 2},
+      "formation_energy_j_per_kg": -271410.0,
+      "cv_tr_over_species_gas_constant": 2.5,
+      "vibrational_temperature_k": 2273.0,
+      "blottner_coefficients": [0.044929, -0.0826158, -9.2019475]
+    },
+    {
+      "name": "N",
+      "molecular_weight_kg_per_mol": 0.014,
+      "atoms": {"N": 1, "O": 0},
+      "formation_energy_j_per_kg": 33307400.0,
+      "cv_tr_over_species_gas_constant": 1.5,
+      "vibrational_temperature_k": 0.0,
+      "blottner_coefficients": [0.0115572, 0.6031679, -12.4327495]
+    },
+    {
+      "name": "O",
+      "molecular_weight_kg_per_mol": 0.016,
+      "atoms": {"N": 0, "O": 1},
+      "formation_energy_j_per_kg": 15182700.0,
+      "cv_tr_over_species_gas_constant": 1.5,
+      "vibrational_temperature_k": 0.0,
+      "blottner_coefficients": [0.0203144, 0.4294404, -11.6031403]
+    },
+    {
+      "name": "NO",
+      "molecular_weight_kg_per_mol": 0.03,
+      "atoms": {"N": 1, "O": 1},
+      "formation_energy_j_per_kg": 2718730.0,
+      "cv_tr_over_species_gas_constant": 2.5,
+      "vibrational_temperature_k": 2739.0,
+      "blottner_coefficients": [0.0436378, -0.0335511, -9.576743]
+    }
+  ],
+  "preferential_dissociation": {
+    "N2": {
+      "coefficients": [-472.4, 1.614, -0.2821, -4.826e-6, 1.193e-10],
+      "bounds": [0.248, 0.443]
+    },
+    "O2": {
+      "coefficients": [1.044, -0.7883, 0.004532, -5.011e-5, 9.229e-10],
+      "bounds": [0.231, 0.45]
+    },
+    "NO": {
+      "coefficients": [0.0, -1.204, 0.0, 0.0, 0.0],
+      "bounds": [0.3, 0.3]
+    }
+  },
+  "vibrational_relaxation": {
+    "model": "millikan_white_with_park_collision_limit",
+    "mixture_rule": "mole_fraction_weighted_inverse_pair_time",
+    "pressure_basis": "Pa",
+    "collision_partner_number_density": "relaxing_species",
+    "collision_speed_mass": "reduced_pair_molar_mass",
+    "millikan_white_A": [
+      [221.53, 228.76, 184.44, 72.4, 225.3],
+      [131.32, 130.15, 72.4, -27.32, 133.71],
+      [0.0, 0.0, 0.0, 0.0, 0.0],
+      [0.0, 0.0, 0.0, 0.0, 0.0],
+      [49.5, 49.5, 49.5, 49.5, 49.5]
+    ],
+    "millikan_white_B": [
+      [0.029, 0.0295, 0.0389, 0.015, 0.0293],
+      [0.0295, 0.0303, 0.015, 0.1465, 0.0298],
+      [0.0, 0.0, 0.0, 0.0, 0.0],
+      [0.0, 0.0, 0.0, 0.0, 0.0],
+      [0.042, 0.042, 0.042, 0.042, 0.042]
+    ],
+    "collision_sigma0_m2": [
+      [1.7e-23, 4.5e-23, 1.0e-22, 4.5e-22, 4.5e-23],
+      [7.5e-22, 5.0e-24, 7.5e-22, 0.0, 7.5e-22],
+      [0.0, 0.0, 0.0, 0.0, 0.0],
+      [0.0, 0.0, 0.0, 0.0, 0.0],
+      [5.8e-20, 5.8e-20, 5.8e-20, 5.8e-20, 5.8e-20]
+    ],
+    "collision_sigma_temperature_power": [
+      [0.55, 0.5, 0.52, 0.3, 0.5],
+      [0.28, 0.7, 0.28, 0.0, 0.28],
+      [0.0, 0.0, 0.0, 0.0, 0.0],
+      [0.0, 0.0, 0.0, 0.0, 0.0],
+      [0.0, 0.0, 0.0, 0.0, 0.0]
+    ]
+  },
+  "binary_diffusion_coefficients": [
+    [[0.0, 0.0112, 1.6182, -11.3091], [0.0, 0.0465, 0.9271, -8.1137], [0.0, 0.0195, 1.488, -10.3654], [0.0, 0.014, 1.5824, -10.8819], [0.0, 0.0291, 1.2676, -9.6878]],
+    [[0.0, 0.0465, 0.9271, -8.1137], [0.0, 0.041, 1.0023, -8.3597], [0.0, 0.0179, 1.4848, -10.281], [0.0, 0.0226, 1.37, -9.6631], [0.0, 0.0438, 0.9647, -8.238]],
+    [[0.0, 0.0195, 1.488, -10.3654], [0.0, 0.0179, 1.4848, -10.281], [0.0, 0.0033, 1.5572, -11.1616], [0.0, -0.0048, 1.9195, -11.9261], [0.0, 0.0185, 1.4882, -10.3301]],
+    [[0.0, 0.014, 1.5824, -10.8819], [0.0, 0.0226, 1.37, -9.6631], [0.0, -0.0048, 1.9195, -11.9261], [0.0, 0.0034, 1.5572, -11.1729], [0.0, 0.0179, 1.4848, -10.3155]],
+    [[0.0, 0.0291, 1.2676, -9.6878], [0.0, 0.0438, 0.9647, -8.238], [0.0, 0.0185, 1.4882, -10.3301], [0.0, 0.0179, 1.4848, -10.3155], [0.0, 0.0364, 1.1176, -8.9695]]
+  ],
+  "reactions": [
+    {
+      "id": "R1",
+      "equation": "N2 + N2 -> 2 N + N2",
+      "reactants": {"N2": 1},
+      "products": {"N": 2},
+      "third_body_efficiencies": [1.0, 0.0, 0.0, 0.0, 0.0],
+      "rate_temperature": "sqrt_T_Tv",
+      "arrhenius": {"A": 1.216e14, "temperature_exponent": -1.214, "activation_temperature_k": 113200.0, "A_units": "m^3 mol^-1 s^-1 K^-temperature_exponent"},
+      "equilibrium": {"model": "park_ln_kc_z10000", "concentration_basis": "mol m^-3", "delta_nu": 1, "ln_kc_coefficients": [2.491, 14.531010557964274, 2.091, -11.69, 0.005921]}
+    },
+    {
+      "id": "R2",
+      "equation": "N2 + (O2,NO) -> 2 N + (O2,NO)",
+      "reactants": {"N2": 1},
+      "products": {"N": 2},
+      "third_body_efficiencies": [0.0, 1.0, 0.0, 0.0, 1.0],
+      "rate_temperature": "sqrt_T_Tv",
+      "arrhenius": {"A": 7.0e15, "temperature_exponent": -1.6, "activation_temperature_k": 113200.0, "A_units": "m^3 mol^-1 s^-1 K^-temperature_exponent"},
+      "equilibrium": {"model": "park_ln_kc_z10000", "concentration_basis": "mol m^-3", "delta_nu": 1, "ln_kc_coefficients": [2.491, 14.531010557964274, 2.091, -11.69, 0.005921]}
+    },
+    {
+      "id": "R3",
+      "equation": "N2 + N -> 3 N",
+      "reactants": {"N2": 1},
+      "products": {"N": 2},
+      "third_body_efficiencies": [0.0, 0.0, 1.0, 0.0, 0.0],
+      "rate_temperature": "sqrt_T_Tv",
+      "arrhenius": {"A": 3.591e14, "temperature_exponent": -1.226, "activation_temperature_k": 113200.0, "A_units": "m^3 mol^-1 s^-1 K^-temperature_exponent"},
+      "equilibrium": {"model": "park_ln_kc_z10000", "concentration_basis": "mol m^-3", "delta_nu": 1, "ln_kc_coefficients": [2.491, 14.531010557964274, 2.091, -11.69, 0.005921]}
+    },
+    {
+      "id": "R4",
+      "equation": "N2 + O -> 2 N + O",
+      "reactants": {"N2": 1},
+      "products": {"N": 2},
+      "third_body_efficiencies": [0.0, 0.0, 0.0, 1.0, 0.0],
+      "rate_temperature": "sqrt_T_Tv",
+      "arrhenius": {"A": 3.0e16, "temperature_exponent": -1.6, "activation_temperature_k": 113200.0, "A_units": "m^3 mol^-1 s^-1 K^-temperature_exponent"},
+      "equilibrium": {"model": "park_ln_kc_z10000", "concentration_basis": "mol m^-3", "delta_nu": 1, "ln_kc_coefficients": [2.491, 14.531010557964274, 2.091, -11.69, 0.005921]}
+    },
+    {
+      "id": "R5",
+      "equation": "O2 + (N2,NO) -> 2 O + (N2,NO)",
+      "reactants": {"O2": 1},
+      "products": {"O": 2},
+      "third_body_efficiencies": [1.0, 0.0, 0.0, 0.0, 1.0],
+      "rate_temperature": "sqrt_T_Tv",
+      "arrhenius": {"A": 3.354e9, "temperature_exponent": -0.2726, "activation_temperature_k": 59500.0, "A_units": "m^3 mol^-1 s^-1 K^-temperature_exponent"},
+      "equilibrium": {"model": "park_ln_kc_z10000", "concentration_basis": "mol m^-3", "delta_nu": 1, "ln_kc_coefficients": [1.567, 15.032510557964274, 1.909, -6.281, 0.005237]}
+    },
+    {
+      "id": "R6",
+      "equation": "O2 + O2 -> 2 O + O2",
+      "reactants": {"O2": 1},
+      "products": {"O": 2},
+      "third_body_efficiencies": [0.0, 1.0, 0.0, 0.0, 0.0],
+      "rate_temperature": "sqrt_T_Tv",
+      "arrhenius": {"A": 1.117e19, "temperature_exponent": -2.585, "activation_temperature_k": 59500.0, "A_units": "m^3 mol^-1 s^-1 K^-temperature_exponent"},
+      "equilibrium": {"model": "park_ln_kc_z10000", "concentration_basis": "mol m^-3", "delta_nu": 1, "ln_kc_coefficients": [1.567, 15.032510557964274, 1.909, -6.281, 0.005237]}
+    },
+    {
+      "id": "R7",
+      "equation": "O2 + N -> 2 O + N",
+      "reactants": {"O2": 1},
+      "products": {"O": 2},
+      "third_body_efficiencies": [0.0, 0.0, 1.0, 0.0, 0.0],
+      "rate_temperature": "sqrt_T_Tv",
+      "arrhenius": {"A": 1.0e16, "temperature_exponent": -1.5, "activation_temperature_k": 59500.0, "A_units": "m^3 mol^-1 s^-1 K^-temperature_exponent"},
+      "equilibrium": {"model": "park_ln_kc_z10000", "concentration_basis": "mol m^-3", "delta_nu": 1, "ln_kc_coefficients": [1.567, 15.032510557964274, 1.909, -6.281, 0.005237]}
+    },
+    {
+      "id": "R8",
+      "equation": "O2 + O -> 3 O",
+      "reactants": {"O2": 1},
+      "products": {"O": 2},
+      "third_body_efficiencies": [0.0, 0.0, 0.0, 1.0, 0.0],
+      "rate_temperature": "sqrt_T_Tv",
+      "arrhenius": {"A": 3.0e15, "temperature_exponent": -1.5, "activation_temperature_k": 59500.0, "A_units": "m^3 mol^-1 s^-1 K^-temperature_exponent"},
+      "equilibrium": {"model": "park_ln_kc_z10000", "concentration_basis": "mol m^-3", "delta_nu": 1, "ln_kc_coefficients": [1.567, 15.032510557964274, 1.909, -6.281, 0.005237]}
+    },
+    {
+      "id": "R9",
+      "equation": "NO + (N2,O2) -> N + O + (N2,O2)",
+      "reactants": {"NO": 1},
+      "products": {"N": 1, "O": 1},
+      "third_body_efficiencies": [1.0, 1.0, 0.0, 0.0, 0.0],
+      "rate_temperature": "sqrt_T_Tv",
+      "arrhenius": {"A": 1.45e9, "temperature_exponent": 0.0, "activation_temperature_k": 75200.0, "A_units": "m^3 mol^-1 s^-1 K^-temperature_exponent"},
+      "equilibrium": {"model": "park_ln_kc_z10000", "concentration_basis": "mol m^-3", "delta_nu": 1, "ln_kc_coefficients": [2.093, 13.192610557964274, 2.028, -7.872, 0.005586]}
+    },
+    {
+      "id": "R10",
+      "equation": "NO + (N,O,NO) -> N + O + (N,O,NO)",
+      "reactants": {"NO": 1},
+      "products": {"N": 1, "O": 1},
+      "third_body_efficiencies": [0.0, 0.0, 1.0, 1.0, 1.0],
+      "rate_temperature": "sqrt_T_Tv",
+      "arrhenius": {"A": 9.64e8, "temperature_exponent": 0.0, "activation_temperature_k": 75200.0, "A_units": "m^3 mol^-1 s^-1 K^-temperature_exponent"},
+      "equilibrium": {"model": "park_ln_kc_z10000", "concentration_basis": "mol m^-3", "delta_nu": 1, "ln_kc_coefficients": [2.093, 13.192610557964274, 2.028, -7.872, 0.005586]}
+    },
+    {
+      "id": "R11",
+      "equation": "N2 + O -> NO + N",
+      "reactants": {"N2": 1, "O": 1},
+      "products": {"N": 1, "NO": 1},
+      "third_body_efficiencies": [0.0, 0.0, 0.0, 0.0, 0.0],
+      "rate_temperature": "T",
+      "arrhenius": {"A": 6.4e11, "temperature_exponent": -1.0, "activation_temperature_k": 38400.0, "A_units": "m^3 mol^-1 s^-1 K^-temperature_exponent"},
+      "equilibrium": {"model": "park_ln_kc_z10000", "concentration_basis": "mol m^-3", "delta_nu": 0, "ln_kc_coefficients": [-0.1789, 1.728, -0.2172, -3.733, -0.0002285]}
+    },
+    {
+      "id": "R12",
+      "equation": "NO + O -> N + O2",
+      "reactants": {"NO": 1, "O": 1},
+      "products": {"O2": 1, "N": 1},
+      "third_body_efficiencies": [0.0, 0.0, 0.0, 0.0, 0.0],
+      "rate_temperature": "T",
+      "arrhenius": {"A": 8.4e6, "temperature_exponent": 0.0, "activation_temperature_k": 19450.0, "A_units": "m^3 mol^-1 s^-1 K^-temperature_exponent"},
+      "equilibrium": {"model": "park_ln_kc_z10000", "concentration_basis": "mol m^-3", "delta_nu": 0, "ln_kc_coefficients": [-0.1673, -1.39, -0.1656, -1.551, -0.0001102]}
+    }
+  ]
+}

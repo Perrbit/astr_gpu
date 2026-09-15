@@ -1,0 +1,363 @@
+module chemistry_source_gpu
+  use iso_fortran_env, only: real64
+  use cudafor
+  use chemistry_air5_data, only: air5_num_species, air5_num_reactions, &
+    air5_molar_mass, air5_nu_reactant, air5_nu_product, &
+    air5_third_body_efficiency, air5_has_third_body, air5_rate_uses_tv, &
+    air5_arrhenius_a, air5_arrhenius_b, air5_activation_temperature, &
+    air5_ln_kc_coefficient, air5_psi_coefficient, air5_psi_bounds
+  use chemistry_model, only: chemistry_status_ok, chemistry_status_out_of_domain, &
+    chemistry_status_nonfinite, chemistry_status_invalid_source_mode
+  use chemistry_source, only: air5_source_mode_coupled, &
+    air5_source_mode_chemical, air5_source_mode_vt
+  use chemistry_model_gpu, only: air5_finite_gpu, &
+    air5_validate_partial_densities_gpu, air5_pressure_is_in_domain_gpu
+  use chemistry_thermo_gpu, only: air5_temperature_from_q5_gpu, &
+    air5_tv_from_ev_gpu, air5_temperature_derivatives_gpu, &
+    air5_tv_derivatives_gpu, air5_pressure_gpu, air5_species_gas_constant_gpu, &
+    air5_species_vibrational_energy_gpu, air5_species_vibrational_cv_gpu
+  use chemistry_relaxation_gpu, only: air5_vt_relaxation_source_derivatives_gpu
+  use gpu_check, only: sync_after_kernel
+  implicit none
+  private
+
+  public :: air5_instantaneous_source_jacobian_gpu
+  public :: air5_instantaneous_source_gpu
+  public :: launch_air5_source_batch_gpu
+
+contains
+
+  attributes(device) real(real64) function air5_mass_action_gpu(concentration, &
+      stoichiometry)
+    real(real64), intent(in) :: concentration(air5_num_species)
+    integer, intent(in) :: stoichiometry(air5_num_species)
+    integer :: species, exponent
+
+    air5_mass_action_gpu = 1.0_real64
+    do species = 1, air5_num_species
+      do exponent = 1, stoichiometry(species)
+        air5_mass_action_gpu = air5_mass_action_gpu*concentration(species)
+      end do
+    end do
+  end function air5_mass_action_gpu
+
+  attributes(device) real(real64) function air5_mass_action_derivative_gpu( &
+      concentration,stoichiometry,variable)
+    real(real64), intent(in) :: concentration(air5_num_species)
+    integer, intent(in) :: stoichiometry(air5_num_species), variable
+    real(real64) :: reduced_product
+    integer :: species, exponent, reduced_exponent
+
+    air5_mass_action_derivative_gpu = 0.0_real64
+    if (variable > air5_num_species) return
+    if (stoichiometry(variable) == 0) return
+    reduced_product = 1.0_real64
+    do species = 1, air5_num_species
+      reduced_exponent = stoichiometry(species)
+      if (species == variable) reduced_exponent = reduced_exponent-1
+      do exponent = 1, reduced_exponent
+        reduced_product = reduced_product*concentration(species)
+      end do
+    end do
+    air5_mass_action_derivative_gpu = real(stoichiometry(variable),real64)* &
+      reduced_product/air5_molar_mass(variable)
+  end function air5_mass_action_derivative_gpu
+
+  attributes(device) subroutine air5_preferential_factor_gpu(species,temperature, &
+      factor,derivative)
+    integer, intent(in) :: species
+    real(real64), intent(in) :: temperature
+    real(real64), intent(out) :: factor, derivative
+    real(real64) :: exponent, raw_factor, raw_derivative
+
+    exponent = air5_psi_coefficient(1,species)/temperature+ &
+      air5_psi_coefficient(2,species)+ &
+      air5_psi_coefficient(3,species)*log(temperature)+ &
+      air5_psi_coefficient(4,species)*temperature+ &
+      air5_psi_coefficient(5,species)*temperature*temperature
+    raw_factor = exp(exponent)
+    raw_derivative = raw_factor*(-air5_psi_coefficient(1,species)/( &
+      temperature*temperature)+air5_psi_coefficient(3,species)/temperature+ &
+      air5_psi_coefficient(4,species)+ &
+      2.0_real64*air5_psi_coefficient(5,species)*temperature)
+    if (raw_factor <= air5_psi_bounds(1,species)) then
+      factor = air5_psi_bounds(1,species)
+      derivative = 0.0_real64
+    else if (raw_factor >= air5_psi_bounds(2,species)) then
+      factor = air5_psi_bounds(2,species)
+      derivative = 0.0_real64
+    else
+      factor = raw_factor
+      derivative = raw_derivative
+    end if
+  end subroutine air5_preferential_factor_gpu
+
+  attributes(device) subroutine air5_instantaneous_source_jacobian_gpu(rho, &
+      momentum,q5,state,source,jacobian,reaction_progress,status,source_mode)
+    real(real64), intent(in) :: rho, momentum(3), q5, state(6)
+    real(real64), intent(out) :: source(6), jacobian(6,6)
+    real(real64), intent(out) :: reaction_progress(air5_num_reactions)
+    integer, intent(out) :: status
+    integer, intent(in) :: source_mode
+    real(real64) :: temperature, tv, pressure, concentration(air5_num_species)
+    real(real64) :: dtemperature(6), dtv(6), dt_dz(air5_num_species)
+    real(real64) :: dtv_dz(air5_num_species), dt_dev, dtv_dev
+    real(real64) :: third_body, dthird_body, forward_product, reverse_product
+    real(real64) :: forward_coefficient, reverse_coefficient, equilibrium_constant
+    real(real64) :: forward_rate, reverse_rate, progress_rate
+    real(real64) :: dforward_product, dreverse_product, dforward_coefficient
+    real(real64) :: dreverse_coefficient, dforward_rate, dreverse_rate
+    real(real64) :: dprogress_rate(6), rate_temperature, drate_temperature
+    real(real64) :: z10000, ln_kc, dln_kc_dtemperature, dln_kc
+    real(real64) :: energy_per_mass, denergy_per_mass, psi, dpsi_dtemperature
+    real(real64) :: mass_factor, vt_source, vt_derivatives(6)
+    integer :: reaction, species, variable, local_status, net_stoichiometry
+    logical :: include_chemical, include_vt
+
+    source = 0.0_real64
+    jacobian = 0.0_real64
+    reaction_progress = 0.0_real64
+    if (source_mode < air5_source_mode_coupled .or. &
+        source_mode > air5_source_mode_vt) then
+      status = chemistry_status_invalid_source_mode
+      return
+    end if
+    include_chemical = source_mode == air5_source_mode_coupled .or. &
+      source_mode == air5_source_mode_chemical
+    include_vt = source_mode == air5_source_mode_coupled .or. &
+      source_mode == air5_source_mode_vt
+    call air5_validate_partial_densities_gpu(state(1:air5_num_species),status)
+    if (status /= chemistry_status_ok) return
+    do variable = 1, 6
+      if (.not.air5_finite_gpu(state(variable))) then
+        status = chemistry_status_nonfinite
+        return
+      end if
+    end do
+    if (state(6) < 0.0_real64) then
+      status = chemistry_status_out_of_domain
+      return
+    end if
+    call air5_temperature_from_q5_gpu(rho,momentum,state(1:air5_num_species), &
+      state(6),q5,temperature,status)
+    if (status /= chemistry_status_ok) return
+    call air5_tv_from_ev_gpu(state(1:air5_num_species),state(6),tv,status)
+    if (status /= chemistry_status_ok) return
+    call air5_pressure_gpu(state(1:air5_num_species),temperature,pressure,status)
+    if (status /= chemistry_status_ok) return
+    if (.not.air5_pressure_is_in_domain_gpu(pressure)) then
+      status = chemistry_status_out_of_domain
+      return
+    end if
+    call air5_temperature_derivatives_gpu(state(1:air5_num_species),temperature, &
+      dt_dz,dt_dev,status)
+    if (status /= chemistry_status_ok) return
+    call air5_tv_derivatives_gpu(state(1:air5_num_species),tv,dtv_dz,dtv_dev,status)
+    if (status /= chemistry_status_ok) return
+    dtemperature(1:air5_num_species) = dt_dz
+    dtemperature(6) = dt_dev
+    dtv(1:air5_num_species) = dtv_dz
+    dtv(6) = dtv_dev
+
+    if (include_chemical) then
+      do species = 1, air5_num_species
+        concentration(species) = state(species)/air5_molar_mass(species)
+      end do
+      do reaction = 1, air5_num_reactions
+        third_body = 1.0_real64
+        if (air5_has_third_body(reaction)) then
+          third_body = 0.0_real64
+          do species = 1, air5_num_species
+            third_body = third_body+air5_third_body_efficiency(species,reaction)* &
+              concentration(species)
+          end do
+        end if
+        forward_product = air5_mass_action_gpu(concentration, &
+          air5_nu_reactant(:,reaction))
+        reverse_product = air5_mass_action_gpu(concentration, &
+          air5_nu_product(:,reaction))
+        if (air5_rate_uses_tv(reaction)) then
+          rate_temperature = sqrt(temperature*tv)
+        else
+          rate_temperature = temperature
+        end if
+        forward_coefficient = air5_arrhenius_a(reaction)* &
+          rate_temperature**air5_arrhenius_b(reaction)* &
+          exp(-air5_activation_temperature(reaction)/rate_temperature)
+        z10000 = 10000.0_real64/temperature
+        ln_kc = air5_ln_kc_coefficient(1,reaction)/z10000+ &
+          air5_ln_kc_coefficient(2,reaction)+ &
+          air5_ln_kc_coefficient(3,reaction)*log(z10000)+ &
+          air5_ln_kc_coefficient(4,reaction)*z10000+ &
+          air5_ln_kc_coefficient(5,reaction)*z10000*z10000
+        equilibrium_constant = exp(ln_kc)
+        reverse_coefficient = air5_arrhenius_a(reaction)* &
+          temperature**air5_arrhenius_b(reaction)* &
+          exp(-air5_activation_temperature(reaction)/temperature)/equilibrium_constant
+        forward_rate = forward_coefficient*third_body*forward_product
+        reverse_rate = reverse_coefficient*third_body*reverse_product
+        progress_rate = forward_rate-reverse_rate
+        reaction_progress(reaction) = progress_rate
+
+        dln_kc_dtemperature = (-air5_ln_kc_coefficient(1,reaction)/(z10000*z10000)+ &
+          air5_ln_kc_coefficient(3,reaction)/z10000+ &
+          air5_ln_kc_coefficient(4,reaction)+ &
+          2.0_real64*air5_ln_kc_coefficient(5,reaction)*z10000)* &
+          (-z10000/temperature)
+        do variable = 1, 6
+          if (air5_rate_uses_tv(reaction)) then
+            drate_temperature = 0.5_real64*rate_temperature*( &
+              dtemperature(variable)/temperature+dtv(variable)/tv)
+          else
+            drate_temperature = dtemperature(variable)
+          end if
+          dforward_coefficient = forward_coefficient*( &
+            air5_arrhenius_b(reaction)/rate_temperature+ &
+            air5_activation_temperature(reaction)/(rate_temperature*rate_temperature))* &
+            drate_temperature
+          dln_kc = dln_kc_dtemperature*dtemperature(variable)
+          dreverse_coefficient = reverse_coefficient*(( &
+            air5_arrhenius_b(reaction)/temperature+ &
+            air5_activation_temperature(reaction)/(temperature*temperature))* &
+            dtemperature(variable)-dln_kc)
+          dthird_body = 0.0_real64
+          if (air5_has_third_body(reaction) .and. variable <= air5_num_species) then
+            dthird_body = air5_third_body_efficiency(variable,reaction)/ &
+              air5_molar_mass(variable)
+          end if
+          dforward_product = air5_mass_action_derivative_gpu(concentration, &
+            air5_nu_reactant(:,reaction),variable)
+          dreverse_product = air5_mass_action_derivative_gpu(concentration, &
+            air5_nu_product(:,reaction),variable)
+          dforward_rate = dforward_coefficient*third_body*forward_product+ &
+            forward_coefficient*dthird_body*forward_product+ &
+            forward_coefficient*third_body*dforward_product
+          dreverse_rate = dreverse_coefficient*third_body*reverse_product+ &
+            reverse_coefficient*dthird_body*reverse_product+ &
+            reverse_coefficient*third_body*dreverse_product
+          dprogress_rate(variable) = dforward_rate-dreverse_rate
+        end do
+
+        do species = 1, air5_num_species
+          net_stoichiometry = air5_nu_product(species,reaction)- &
+            air5_nu_reactant(species,reaction)
+          if (net_stoichiometry == 0) cycle
+          mass_factor = air5_molar_mass(species)*real(net_stoichiometry,real64)
+          source(species) = source(species)+mass_factor*progress_rate
+          do variable = 1, 6
+            jacobian(species,variable) = jacobian(species,variable)+ &
+              mass_factor*dprogress_rate(variable)
+          end do
+          if (air5_psi_bounds(2,species) <= 0.0_real64) cycle
+          if (air5_rate_uses_tv(reaction)) then
+            call air5_preferential_factor_gpu(species,temperature,psi, &
+              dpsi_dtemperature)
+            energy_per_mass = psi*air5_species_gas_constant_gpu(species)* &
+              air5_activation_temperature(reaction)
+            source(6) = source(6)+mass_factor*progress_rate*energy_per_mass
+            do variable = 1, 6
+              denergy_per_mass = dpsi_dtemperature*dtemperature(variable)* &
+                air5_species_gas_constant_gpu(species)* &
+                air5_activation_temperature(reaction)
+              jacobian(6,variable) = jacobian(6,variable)+mass_factor*( &
+                dprogress_rate(variable)*energy_per_mass+ &
+                progress_rate*denergy_per_mass)
+            end do
+          else
+            energy_per_mass = air5_species_vibrational_energy_gpu(species,tv)
+            source(6) = source(6)+mass_factor*progress_rate*energy_per_mass
+            do variable = 1, 6
+              denergy_per_mass = air5_species_vibrational_cv_gpu(species,tv)*dtv(variable)
+              jacobian(6,variable) = jacobian(6,variable)+mass_factor*( &
+                dprogress_rate(variable)*energy_per_mass+ &
+                progress_rate*denergy_per_mass)
+            end do
+          end if
+        end do
+      end do
+    end if
+
+    if (include_vt) then
+      call air5_vt_relaxation_source_derivatives_gpu(state(1:air5_num_species), &
+        temperature,tv,dtemperature,dtv,vt_source,vt_derivatives,local_status)
+      if (local_status /= chemistry_status_ok) then
+        status = local_status
+        return
+      end if
+      source(6) = source(6)+vt_source
+      do variable = 1, 6
+        jacobian(6,variable) = jacobian(6,variable)+vt_derivatives(variable)
+      end do
+    end if
+    do variable = 1, 6
+      if (.not.air5_finite_gpu(source(variable))) then
+        status = chemistry_status_nonfinite
+        return
+      end if
+      do species = 1, 6
+        if (.not.air5_finite_gpu(jacobian(species,variable))) then
+          status = chemistry_status_nonfinite
+          return
+        end if
+      end do
+    end do
+    do reaction = 1, air5_num_reactions
+      if (.not.air5_finite_gpu(reaction_progress(reaction))) then
+        status = chemistry_status_nonfinite
+        return
+      end if
+    end do
+    status = chemistry_status_ok
+  end subroutine air5_instantaneous_source_jacobian_gpu
+
+  attributes(device) subroutine air5_instantaneous_source_gpu(rho,momentum,q5, &
+      state,source,status,source_mode)
+    real(real64), intent(in) :: rho, momentum(3), q5, state(6)
+    real(real64), intent(out) :: source(6)
+    integer, intent(out) :: status
+    integer, intent(in) :: source_mode
+    real(real64) :: jacobian(6,6), reaction_progress(air5_num_reactions)
+
+    call air5_instantaneous_source_jacobian_gpu(rho,momentum,q5,state,source, &
+      jacobian,reaction_progress,status,source_mode)
+  end subroutine air5_instantaneous_source_gpu
+
+  attributes(global) subroutine air5_source_batch_kernel(rho,momentum,q5,state, &
+      source,total_energy_source,jacobian,reaction_progress,status,count,source_mode)
+    integer, value :: count, source_mode
+    real(real64), device, intent(in) :: rho(count), momentum(3,count), q5(count)
+    real(real64), device, intent(in) :: state(6,count)
+    real(real64), device, intent(out) :: source(6,count), total_energy_source(count)
+    real(real64), device, intent(out) :: jacobian(6,6,count)
+    real(real64), device, intent(out) :: reaction_progress(air5_num_reactions,count)
+    integer, device, intent(out) :: status(count)
+    integer :: index
+
+    index = (blockIdx%x-1)*blockDim%x+threadIdx%x
+    if (index > count) return
+    total_energy_source(index) = 0.0_real64
+    call air5_instantaneous_source_jacobian_gpu(rho(index),momentum(:,index), &
+      q5(index),state(:,index),source(:,index),jacobian(:,:,index), &
+      reaction_progress(:,index),status(index),source_mode)
+  end subroutine air5_source_batch_kernel
+
+  subroutine launch_air5_source_batch_gpu(rho,momentum,q5,state,source, &
+      total_energy_source,jacobian,reaction_progress,status,count,source_mode)
+    integer, intent(in) :: count, source_mode
+    real(real64), device, intent(in) :: rho(count), momentum(3,count), q5(count)
+    real(real64), device, intent(in) :: state(6,count)
+    real(real64), device, intent(out) :: source(6,count), total_energy_source(count)
+    real(real64), device, intent(out) :: jacobian(6,6,count)
+    real(real64), device, intent(out) :: reaction_progress(air5_num_reactions,count)
+    integer, device, intent(out) :: status(count)
+    type(dim3) :: block, grid
+
+    if (count <= 0) return
+    block = dim3(128,1,1)
+    grid = dim3((count+block%x-1)/block%x,1,1)
+    call air5_source_batch_kernel<<<grid,block>>>(rho,momentum,q5,state,source, &
+      total_energy_source,jacobian,reaction_progress,status,count,source_mode)
+    call sync_after_kernel('air5_source_batch_kernel',force_sync=.true.)
+  end subroutine launch_air5_source_batch_gpu
+
+end module chemistry_source_gpu

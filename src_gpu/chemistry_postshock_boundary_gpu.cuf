@@ -1,0 +1,79 @@
+module chemistry_postshock_boundary_gpu
+  use cudafor
+  use iso_fortran_env, only: real64
+  use chemistry_state_layout, only: air5_num_conservative
+  implicit none
+  private
+
+  real(real64), device, save :: left_q_d(air5_num_conservative)
+  real(real64), device, save :: right_q_d(air5_num_conservative)
+  logical, save :: boundary_configured_gpu=.false.
+
+  public :: initialize_air5_postshock_boundary_gpu
+  public :: apply_air5_postshock_boundary_gpu
+
+contains
+
+  subroutine initialize_air5_postshock_boundary_gpu()
+    use commvar, only: flowtype
+    use chemistry_postshock_boundary, only: get_air5_postshock_boundary
+    real(real64) :: left_state(air5_num_conservative)
+    real(real64) :: right_state(air5_num_conservative)
+
+    if(trim(flowtype)/='air5postshock') return
+    call get_air5_postshock_boundary(left_state,right_state)
+    left_q_d=left_state
+    right_q_d=right_state
+    boundary_configured_gpu=.true.
+  end subroutine initialize_air5_postshock_boundary_gpu
+
+  attributes(global) subroutine air5_postshock_boundary_kernel(im,jm,km,hm, &
+      apply_left,apply_right)
+    use commarray_gpu, only: q_d
+    integer, value :: im,jm,km,hm,apply_left,apply_right
+    integer :: id,ntot,i,j,k,component
+
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    ntot=(jm+1)*(km+1)
+    if(id>=ntot) return
+    j=mod(id,jm+1)
+    k=id/(jm+1)
+    if(apply_left/=0) then
+      do component=1,air5_num_conservative
+        do i=-hm,0
+          q_d(i,j,k,component)=left_q_d(component)
+        enddo
+      enddo
+    endif
+    if(apply_right/=0) then
+      do component=1,air5_num_conservative
+        do i=im,im+hm
+          q_d(i,j,k,component)=right_q_d(component)
+        enddo
+      enddo
+    endif
+  end subroutine air5_postshock_boundary_kernel
+
+  subroutine apply_air5_postshock_boundary_gpu()
+    use mpi, only: MPI_PROC_NULL
+    use commvar, only: im,jm,km,hm,flowtype
+    use parallel, only: mpileft,mpiright
+    use gpu_check, only: sync_after_kernel
+    integer :: apply_left,apply_right,ntot
+    type(dim3) :: block,grid
+
+    if(trim(flowtype)/='air5postshock') return
+    if(.not.boundary_configured_gpu) &
+      error stop 'fixed air5 GPU post-shock boundary is not configured'
+    apply_left=merge(1,0,mpileft==MPI_PROC_NULL)
+    apply_right=merge(1,0,mpiright==MPI_PROC_NULL)
+    if(apply_left==0 .and. apply_right==0) return
+    ntot=(jm+1)*(km+1)
+    block=dim3(256,1,1)
+    grid=dim3((ntot+block%x-1)/block%x,1,1)
+    call air5_postshock_boundary_kernel<<<grid,block>>>(im,jm,km,hm, &
+      apply_left,apply_right)
+    call sync_after_kernel('air5_postshock_boundary_kernel',.true.)
+  end subroutine apply_air5_postshock_boundary_gpu
+
+end module chemistry_postshock_boundary_gpu

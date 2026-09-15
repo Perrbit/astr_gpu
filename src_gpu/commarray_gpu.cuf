@@ -8,13 +8,16 @@ module commarray_gpu
   real(8),allocatable,device :: q_d(:,:,:,:),qrhs_d(:,:,:,:),qsave_d(:,:,:,:),qwork_d(:,:,:,:)
   real(8),allocatable,device :: filter_work_d(:,:,:)
   real(8),allocatable,device :: rho_d(:,:,:),prs_d(:,:,:),tmp_d(:,:,:)
+  real(8),allocatable,device :: tve_d(:,:,:),spc_d(:,:,:,:)
   real(8),allocatable,device :: vel_d(:,:,:,:),jacob_d(:,:,:),x_d(:,:,:,:)
   real(8),allocatable,device :: dxi_d(:,:,:,:,:)
   real(8),allocatable,device :: bnorm_i0_d(:,:,:),bnorm_im_d(:,:,:), &
                                 bnorm_j0_d(:,:,:),bnorm_jm_d(:,:,:), &
                                 bnorm_k0_d(:,:,:),bnorm_km_d(:,:,:)
   real(8),allocatable,device :: dvel_d(:,:,:,:,:),dtmp_d(:,:,:,:)
+  real(8),allocatable,device :: dspc_d(:,:,:,:,:),dtve_d(:,:,:,:)
   real(8),allocatable,device :: sigma_d(:,:,:,:),qflux_d(:,:,:,:)
+  real(8),allocatable,device :: species_flux_d(:,:,:,:,:),ev_flux_d(:,:,:,:)
   real(4),allocatable,device :: dvel_sp_d(:,:,:,:,:),dtmp_sp_d(:,:,:,:)
   real(4),allocatable,device :: sigma_sp_d(:,:,:,:),qflux_sp_d(:,:,:,:)
   real(8),allocatable,device :: flux_work_d(:,:,:),flux_characteristic_work_d(:,:,:,:)
@@ -161,7 +164,8 @@ contains
   end subroutine validate_gpu_mixed_candidate_eligibility
 
   subroutine alloc_gpu_arrays()
-    use commvar, only: im,jm,km,hm,numq,conschm,recon_schem,lchardecomp,lfilter
+    use commvar, only: im,jm,km,hm,numq,num_species,num_modequ,conschm, &
+                       recon_schem,lchardecomp,lfilter,lcomb,diffterm
     use commcal, only: shock_sensor_validation_enabled
     use parallel, only: lio
     use precision_mode_gpu, only: configure_gpu_precision_mode,gpu_precision_mode_name
@@ -184,7 +188,10 @@ contains
     active_workspace='none'
     if(lio) write(*,'(A,A)') 'ASTR_GPU_PRECISION_MODE=',trim(gpu_precision_mode_name())
     if(.not.allocated(q_d))      allocate(q_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq))
-    if(gpu_scalar_filter_workspace_enabled() .and. lfilter) then
+    if(lcomb .and. .not.lfilter) then
+      workspace_bytes=0_8
+      if(lio) write(*,'(A)') ' ** GPU filter workspace storage: disabled for fixed air5'
+    elseif(gpu_scalar_filter_workspace_enabled() .and. lfilter) then
       if(.not.allocated(filter_work_d)) &
         allocate(filter_work_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
       workspace_bytes=int(im+2*hm+1,8)*int(jm+2*hm+1,8)*int(km+2*hm+1,8)*8_8
@@ -205,6 +212,12 @@ contains
     if(.not.allocated(prs_d))    allocate(prs_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
     if(.not.allocated(tmp_d))    allocate(tmp_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
     if(.not.allocated(vel_d))    allocate(vel_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3))
+    if(lcomb) then
+      if(num_species/=5 .or. num_modequ/=1) &
+        stop 'fixed air5 device allocation requires five species and one mode equation'
+      if(.not.allocated(spc_d)) allocate(spc_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:num_species))
+      if(.not.allocated(tve_d)) allocate(tve_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+    endif
     if(.not.allocated(jacob_d))  allocate(jacob_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
     if(.not.allocated(x_d))      allocate(x_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3))
     if(.not.allocated(dxi_d))    allocate(dxi_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3,1:3))
@@ -226,6 +239,10 @@ contains
       if(.not.allocated(dvel_d)) allocate(dvel_d(0:im,0:jm,0:km,1:3,1:3))
       if(.not.allocated(dtmp_d)) allocate(dtmp_d(0:im,0:jm,0:km,1:3))
     endif
+    if(lcomb .and. diffterm) then
+      if(.not.allocated(dspc_d)) allocate(dspc_d(0:im,0:jm,0:km,1:num_species,1:3))
+      if(.not.allocated(dtve_d)) allocate(dtve_d(0:im,0:jm,0:km,1:3))
+    endif
     if(viscous_active) then
       if(.not.allocated(sigma_sp_d)) &
         allocate(sigma_sp_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:6))
@@ -239,6 +256,12 @@ contains
         allocate(sigma_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:6))
       if(.not.allocated(qflux_d)) &
         allocate(qflux_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3))
+    endif
+    if(lcomb .and. diffterm) then
+      if(.not.allocated(species_flux_d)) &
+        allocate(species_flux_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:num_species,1:3))
+      if(.not.allocated(ev_flux_d)) &
+        allocate(ev_flux_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3))
     endif
     flux_workspace_bytes=0_8
     if(trim(conschm) == '543e' .and. (recon_schem == 1 .or. recon_schem == 3)) then
@@ -289,10 +312,14 @@ contains
     if(allocated(flux_characteristic_work_d)) deallocate(flux_characteristic_work_d)
     if(allocated(flux_work_sp_d)) deallocate(flux_work_sp_d)
     if(allocated(flux_work_d)) deallocate(flux_work_d)
+    if(allocated(ev_flux_d)) deallocate(ev_flux_d)
+    if(allocated(species_flux_d)) deallocate(species_flux_d)
     if(allocated(qflux_sp_d)) deallocate(qflux_sp_d)
     if(allocated(sigma_sp_d)) deallocate(sigma_sp_d)
     if(allocated(qflux_d)) deallocate(qflux_d)
     if(allocated(sigma_d)) deallocate(sigma_d)
+    if(allocated(dtve_d)) deallocate(dtve_d)
+    if(allocated(dspc_d)) deallocate(dspc_d)
     if(allocated(dtmp_sp_d)) deallocate(dtmp_sp_d)
     if(allocated(dvel_sp_d)) deallocate(dvel_sp_d)
     if(allocated(dtmp_d)) deallocate(dtmp_d)
@@ -307,6 +334,8 @@ contains
     if(allocated(x_d)) deallocate(x_d)
     if(allocated(jacob_d)) deallocate(jacob_d)
     if(allocated(vel_d)) deallocate(vel_d)
+    if(allocated(tve_d)) deallocate(tve_d)
+    if(allocated(spc_d)) deallocate(spc_d)
     if(allocated(tmp_d)) deallocate(tmp_d)
     if(allocated(prs_d)) deallocate(prs_d)
     if(allocated(rho_d)) deallocate(rho_d)
@@ -318,7 +347,7 @@ contains
   end subroutine release_gpu_arrays
 
   subroutine copy_flow_to_gpu()
-    use commarray, only: q,rho,vel,prs,tmp,jacob,x,dxi,bnorm_i0,bnorm_im, &
+    use commarray, only: q,rho,vel,prs,tmp,spc,tve,jacob,x,dxi,bnorm_i0,bnorm_im, &
                          bnorm_j0,bnorm_jm,bnorm_k0,bnorm_km
     implicit none
 
@@ -327,6 +356,8 @@ contains
     vel_d = vel
     prs_d = prs
     tmp_d = tmp
+    if(allocated(spc_d)) spc_d = spc
+    if(allocated(tve_d)) tve_d = tve
     jacob_d = jacob
     x_d = x
     dxi_d = dxi
@@ -345,7 +376,7 @@ contains
   end subroutine copy_flow_to_gpu
 
   subroutine copy_flow_from_gpu()
-    use commarray, only: q,rho,vel,prs,tmp
+    use commarray, only: q,rho,vel,prs,tmp,spc,tve
     use gpu_check, only: sync_gpu_boundary
     implicit none
 
@@ -355,6 +386,8 @@ contains
     vel = vel_d
     prs = prs_d
     tmp = tmp_d
+    if(allocated(spc_d)) spc = spc_d
+    if(allocated(tve_d)) tve = tve_d
   end subroutine copy_flow_from_gpu
 
   subroutine copy_rhs_from_gpu()

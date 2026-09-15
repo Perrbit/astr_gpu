@@ -13,8 +13,9 @@ module commarray
   !
   real(8),allocatable,dimension(:,:,:,:) :: x,q,qrhs,vel,spc,dtmp,     &
                                             dgrid,vor
-  real(8),allocatable,dimension(:,:,:) :: jacob,rho,prs,tmp
+  real(8),allocatable,dimension(:,:,:) :: jacob,rho,prs,tmp,tve
   real(8),allocatable,dimension(:,:,:,:,:) :: dxi,dvel,dspc
+  real(8),allocatable,dimension(:,:,:,:) :: dtve
   real(8),allocatable,dimension(:,:,:) :: bnorm_i0,bnorm_im,bnorm_j0,  &
                                           bnorm_jm,bnorm_k0,bnorm_km
   real(8),allocatable,dimension(:,:,:) :: dis2wall
@@ -55,7 +56,7 @@ module commarray
   !+-------------------------------------------------------------------+
   subroutine allocommarray
     !
-    use commvar, only : im,jm,km,hm,numq,num_species,ndims,turbmode
+    use commvar, only : im,jm,km,hm,numq,num_species,num_modequ,ndims,turbmode
     !
     ! local data
     integer :: lallo
@@ -83,6 +84,10 @@ module commarray
     !
     allocate( spc(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:num_species),stat=lallo)
     if(lallo.ne.0) stop ' !! error at allocating spc'
+    if(num_modequ>0) then
+      allocate( tve(-hm:im+hm,-hm:jm+hm,-hm:km+hm),stat=lallo)
+      if(lallo.ne.0) stop ' !! error at allocating tve'
+    endif
     !
     allocate(qrhs(0:im,0:jm,0:km,1:numq),stat=lallo)
     if(lallo.ne.0) stop ' !! error at allocating qrhs'
@@ -92,6 +97,10 @@ module commarray
     !
     allocate(dspc(0:im,0:jm,0:km,1:num_species,1:3),stat=lallo)
     if(lallo.ne.0) stop ' !! error at allocating dvel'
+    if(num_modequ>0) then
+      allocate(dtve(0:im,0:jm,0:km,1:3),stat=lallo)
+      if(lallo.ne.0) stop ' !! error at allocating dtve'
+    endif
     !
     allocate(dtmp(0:im,0:jm,0:km,1:3),stat=lallo)
     if(lallo.ne.0) stop ' !! error at allocating dvel'

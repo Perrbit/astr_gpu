@@ -13,7 +13,7 @@ program halo_exchange_contract_test
   real(8),allocatable :: initial(:,:,:,:),expected(:,:,:,:),actual(:,:,:,:)
   real(8),allocatable,device :: field(:,:,:,:)
   integer :: rank,nranks,ierr,devices,axis,mode,low,high,v,nvar
-  integer,parameter :: components(3)=[1,3,6]
+  integer,parameter :: components(4)=[1,3,5,6]
 
   axis=0
   mode=0
@@ -27,11 +27,11 @@ program halo_exchange_contract_test
   im=12
   jm=12
   km=12
-  numq=5
-  allocate(initial(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6))
+  numq=11
+  allocate(initial(-hm:im+hm,-hm:jm+hm,-hm:km+hm,11))
   allocate(expected,mold=initial)
   allocate(actual,mold=initial)
-  allocate(field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6))
+  allocate(field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,11))
   allocate(q_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,numq))
   allocate(qwork_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,numq))
   call seed()
@@ -58,8 +58,8 @@ program halo_exchange_contract_test
       mpiup=high
       mpifront=high
 
-      q_d=initial(:,:,:,1:5)
-      call reference(5,.true.)
+      q_d=initial(:,:,:,1:11)
+      call reference(11,.true.)
       select case(axis)
       case(1)
         call exchange_x_halo_gpu()
@@ -68,12 +68,12 @@ program halo_exchange_contract_test
       case(3)
         call exchange_z_halo_gpu()
       end select
-      actual(:,:,:,1:5)=q_d
-      call check_values(5,'qswap hm+1 and shared-plane averaging')
+      actual(:,:,:,1:11)=q_d
+      call check_values(11,'qswap hm+1 and shared-plane averaging')
 
-      q_d=initial(:,:,:,1:5)
-      qwork_d=initial(:,:,:,1:5)
-      call reference(5,.false.)
+      q_d=initial(:,:,:,1:11)
+      qwork_d=initial(:,:,:,1:11)
+      call reference(11,.false.)
       select case(axis)
       case(1)
         call exchange_x_filter_halo_gpu()
@@ -83,20 +83,20 @@ program halo_exchange_contract_test
         call exchange_filter_z_halo_gpu()
       end select
       if(axis==2) then
-        actual(:,:,:,1:5)=qwork_d
+        actual(:,:,:,1:11)=qwork_d
       else
-        actual(:,:,:,1:5)=q_d
+        actual(:,:,:,1:11)=q_d
       endif
-      call check_values(5,'filter hm and unchanged shared planes')
+      call check_values(11,'filter hm and unchanged shared planes')
       expected=initial
       if(axis==2) then
-        actual(:,:,:,1:5)=q_d
+        actual(:,:,:,1:11)=q_d
       else
-        actual(:,:,:,1:5)=qwork_d
+        actual(:,:,:,1:11)=qwork_d
       endif
-      call check_values(5,'filter source ownership')
+      call check_values(11,'filter source ownership')
 
-      do v=1,3
+      do v=1,4
         nvar=components(v)
         field=initial
         call reference(nvar,.false.)
@@ -109,12 +109,12 @@ program halo_exchange_contract_test
           call exchange_field_z_halo_gpu(field(:,:,:,1:nvar),nvar)
         end select
         actual=field
-        call check_values(6,'field hm, component bounds and untouched halos')
+        call check_values(11,'field hm, component bounds and untouched halos')
       enddo
     enddo
     call release_host_buffers()
   enddo
-  if(rank==0) print *, 'production halo contract passed: axes=3, modes=2, exchanges=30, ranks=',nranks
+  if(rank==0) print *, 'production halo contract passed: axes=3, modes=2, exchanges=36, ranks=',nranks
   call mpi_finalize(ierr)
 contains
   real(8) function value(owner,c,m)
@@ -125,7 +125,7 @@ contains
 
   subroutine seed()
     integer :: i,j,k,m
-    do m=1,6
+    do m=1,11
       do k=-hm,km+hm
         do j=-hm,jm+hm
           do i=-hm,im+hm

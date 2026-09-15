@@ -24,3 +24,4 @@ benchmark/
 workspace*
 fort*
 tests/gpu_validation/out/
+/chem/

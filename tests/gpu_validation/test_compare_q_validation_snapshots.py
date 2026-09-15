@@ -84,6 +84,29 @@ class CompareQValidationSnapshotsTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertAlmostEqual(result.max_abs, 1.0e-6)
 
+    def test_active_only_ignores_external_halo_difference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            suffix = "pre_chemistry.step00000000.rk01.rank00000000.bin"
+            header = (0, 0, 0, 1, 1)
+            cpu = np.zeros(27, dtype=np.float64)
+            gpu = np.ones(27, dtype=np.float64)
+            gpu[13] = 0.0
+            write_snapshot(root / f"cpu.{suffix}", header, cpu)
+            write_snapshot(root / f"gpu.{suffix}", header, gpu)
+
+            result = compare_snapshot_sets(
+                root / "cpu",
+                root / "gpu",
+                labels=("pre_chemistry",),
+                atol=0.0,
+                rtol=0.0,
+                active_only=True,
+            )
+
+        self.assertTrue(result.passed)
+        self.assertEqual(result.max_abs, 0.0)
+
     def test_header_mismatch_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

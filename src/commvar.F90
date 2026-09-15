@@ -174,9 +174,9 @@ module commvar
   !|             lreport | to control report of subroutines            |
   !+---------------------+---------------------------------------------+
   character(len=4) :: testmode
+  logical :: lcomb = .false.
   !
 #ifdef COMB
-  logical :: lcomb
   character(len=255) :: chemfile
   character(len=3) :: odetype
   real(8),parameter:: dj_i=2.36d-3,dj_o=3.81d-3,dco_i=17.78d-3

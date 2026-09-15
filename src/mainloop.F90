@@ -307,7 +307,7 @@ module mainloop
     use commvar,  only : im,jm,km,numq,deltat,lfilter,feqchkpt,hm,     &
                          lavg,feqavg,nstep,limmbou,turbmode,feqslice,  &
                          feqwsequ,lwslic,lreport,flowtype,     &
-                        ndims,num_species,maxstep,rkscheme,use_gpu
+                        ndims,num_species,maxstep,rkscheme,use_gpu,lcomb
     use commarray,only : x,q,qrhs,rho,vel,prs,tmp,spc,jacob
     use fludyna,  only : updatefvar
     use comsolver,only : filterq,filter2e,gradcal
@@ -320,6 +320,14 @@ module mainloop
     use validation_io, only: rhs_validation_requested,write_rhs_validation_snapshot, &
                              write_q_validation_snapshot, &
                              write_primitive_validation_snapshot
+#ifdef ASTR_AIR5_CHEMISTRY
+    use iso_fortran_env, only: real64
+    use chemistry_flow_runtime, only: air5_reacting_flowtype,air5_postshock_flowtype, &
+                                     air5_hbl_flowtype
+    use chemistry_flow_solver, only: air5_chemistry_half_step
+    use chemistry_postshock_boundary, only: apply_air5_postshock_boundary
+    use chemistry_hbl_boundary, only: apply_air5_hbl_boundary
+#endif
 #ifdef COMB
     use thermchem,only : imp_euler_ode,heatrate
     use fdnn
@@ -355,10 +363,21 @@ module mainloop
     logical :: nscbc_boundary_halo_required
     logical :: conservative_case
     logical :: dynamic_inflow_output
+    logical :: air5_reacting_case
+    logical :: air5_postshock_case
+    logical :: air5_hbl_case
     !
     time_beg=ptime()
     conservative_case=conservative_boundary%enabled
     dynamic_inflow_output=bctype(1)==11 .and. trim(turbinf)=='intp'
+    air5_reacting_case=.false.
+    air5_postshock_case=.false.
+    air5_hbl_case=.false.
+#ifdef ASTR_AIR5_CHEMISTRY
+    air5_reacting_case=lcomb .and. air5_reacting_flowtype(flowtype)
+    air5_postshock_case=lcomb .and. air5_postshock_flowtype(flowtype)
+    air5_hbl_case=lcomb .and. air5_hbl_flowtype(flowtype)
+#endif
 
 #ifdef _CUDA
     if(use_gpu) then
@@ -454,6 +473,20 @@ module mainloop
     endif
 
     if(rkscheme=='rk4') allocate(rhsav(0:im,0:jm,0:km,1:numq))
+
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(air5_reacting_case) then
+      if(rhs_validation_requested()) &
+        call write_q_validation_snapshot('pre_chemistry',nstep,1)
+      call air5_chemistry_half_step(0.5_real64*deltat,1)
+      call updatefvar
+      if(air5_postshock_case) call apply_air5_postshock_boundary()
+      if(air5_hbl_case) call apply_air5_hbl_boundary()
+      call qswap(timerept=ltimrpt)
+      if(rhs_validation_requested()) &
+        call write_q_validation_snapshot('post_chemistry',nstep,1)
+    endif
+#endif
     !
     do rkstep=1,n_rk_steps
       
@@ -481,7 +514,17 @@ module mainloop
           ! NSCBC transverse derivatives and optional filters need current halos.
           call qswap(timerept=ltimrpt)
         endif
-        if(flowtype(1:2)/='0d') call boucon
+        if(air5_postshock_case) then
+#ifdef ASTR_AIR5_CHEMISTRY
+          call apply_air5_postshock_boundary()
+#endif
+        elseif(air5_hbl_case) then
+#ifdef ASTR_AIR5_CHEMISTRY
+          call apply_air5_hbl_boundary()
+#endif
+        elseif(flowtype(1:2)/='0d') then
+          call boucon
+        endif
 
         if(flowtype(1:2)/='0d') call qswap(timerept=ltimrpt)
         if(rhs_validation_requested()) call write_rhs_validation_snapshot('boundary')
@@ -508,7 +551,8 @@ module mainloop
 
       if(rhs_validation_requested()) then
         call write_q_validation_snapshot('pre_rhs')
-        if(conservative_case) call write_primitive_validation_snapshot('pre_rhs_primitives')
+        if(conservative_case .or. lcomb) &
+          call write_primitive_validation_snapshot('pre_rhs_primitives')
       endif
 
       if(conservative_case) then
@@ -556,6 +600,11 @@ module mainloop
       endif
       !
       call spongefilter
+      !
+#ifdef ASTR_AIR5_CHEMISTRY
+      if(air5_postshock_case) call apply_air5_postshock_boundary()
+      if(air5_hbl_case) call apply_air5_hbl_boundary()
+#endif
       !
       time_beg_2=ptime()
       !
@@ -665,6 +714,18 @@ module mainloop
 #endif
     !
     enddo !rk
+
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(air5_reacting_case) then
+      if(rhs_validation_requested()) &
+        call write_q_validation_snapshot('post_transport',nstep,1)
+      call air5_chemistry_half_step(0.5_real64*deltat,2)
+      call updatefvar
+      if(air5_hbl_case) call apply_air5_hbl_boundary()
+      if(rhs_validation_requested()) &
+        call write_q_validation_snapshot('post_chemistry',nstep,2)
+    endif
+#endif
     !
 #ifdef COMB
     if(odetype=='dnn') then 

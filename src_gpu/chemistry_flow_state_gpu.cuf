@@ -1,0 +1,116 @@
+module chemistry_flow_state_gpu
+  use iso_fortran_env, only: real64
+  use chemistry_air5_data, only: air5_num_species
+  use chemistry_model, only: chemistry_status_ok,chemistry_status_invalid_density, &
+    chemistry_status_invalid_composition,chemistry_status_nonfinite
+  use chemistry_model_gpu, only: air5_finite_gpu, &
+    air5_validate_physical_species_state_gpu
+  use chemistry_state_layout, only: air5_idx_density,air5_idx_momentum_first, &
+    air5_idx_momentum_last,air5_idx_total_energy,air5_idx_species_first, &
+    air5_idx_species_last,air5_idx_ev,air5_num_conservative
+  use chemistry_thermo_gpu, only: air5_ev_from_tv_gpu,air5_q5_from_state_gpu, &
+    air5_temperature_from_q5_gpu,air5_tv_from_ev_gpu,air5_pressure_gpu
+  implicit none
+  private
+
+  public :: air5_primitive_to_conservative_gpu
+  public :: air5_conservative_to_primitive_gpu
+
+contains
+
+  attributes(device) subroutine air5_primitive_to_conservative_gpu(rho,velocity, &
+      temperature,mass_fraction,tv,q,status)
+    real(real64), intent(in) :: rho,velocity(3),temperature,tv
+    real(real64), intent(in) :: mass_fraction(air5_num_species)
+    real(real64), intent(out) :: q(air5_num_conservative)
+    integer, intent(out) :: status
+    real(real64) :: rho_species(air5_num_species),momentum(3),fraction_sum,tolerance
+    real(real64) :: ev
+    integer :: component
+
+    q=0.0_real64
+    if(.not.air5_finite_gpu(rho) .or. .not.air5_finite_gpu(temperature) .or. &
+       .not.air5_finite_gpu(tv)) then
+      status=chemistry_status_nonfinite
+      return
+    endif
+    if(rho<=0.0_real64) then
+      status=chemistry_status_invalid_density
+      return
+    endif
+    fraction_sum=0.0_real64
+    do component=1,3
+      if(.not.air5_finite_gpu(velocity(component))) then
+        status=chemistry_status_nonfinite
+        return
+      endif
+    enddo
+    do component=1,air5_num_species
+      if(.not.air5_finite_gpu(mass_fraction(component))) then
+        status=chemistry_status_nonfinite
+        return
+      endif
+      if(mass_fraction(component)<0.0_real64) then
+        status=chemistry_status_invalid_composition
+        return
+      endif
+      fraction_sum=fraction_sum+mass_fraction(component)
+      rho_species(component)=rho*mass_fraction(component)
+    enddo
+    tolerance=64.0_real64*epsilon(1.0_real64)
+    if(abs(fraction_sum-1.0_real64)>tolerance) then
+      status=chemistry_status_invalid_composition
+      return
+    endif
+    momentum=rho*velocity
+    call air5_validate_physical_species_state_gpu(rho,rho_species,status)
+    if(status/=chemistry_status_ok) return
+    call air5_ev_from_tv_gpu(rho_species,tv,ev,status)
+    if(status/=chemistry_status_ok) return
+    call air5_q5_from_state_gpu(rho,momentum,rho_species,ev,temperature, &
+      q(air5_idx_total_energy),status)
+    if(status/=chemistry_status_ok) return
+    q(air5_idx_density)=rho
+    q(air5_idx_momentum_first:air5_idx_momentum_last)=momentum
+    q(air5_idx_species_first:air5_idx_species_last)=rho_species
+    q(air5_idx_ev)=ev
+  end subroutine air5_primitive_to_conservative_gpu
+
+  attributes(device) subroutine air5_conservative_to_primitive_gpu(q,rho,velocity, &
+      temperature,mass_fraction,tv,pressure,status)
+    real(real64), intent(in) :: q(air5_num_conservative)
+    real(real64), intent(out) :: rho,velocity(3),temperature
+    real(real64), intent(out) :: mass_fraction(air5_num_species),tv,pressure
+    integer, intent(out) :: status
+    real(real64) :: rho_species(air5_num_species),momentum(3),ev
+    integer :: component
+
+    rho=0.0_real64
+    velocity=0.0_real64
+    temperature=0.0_real64
+    mass_fraction=0.0_real64
+    tv=0.0_real64
+    pressure=0.0_real64
+    do component=1,air5_num_conservative
+      if(.not.air5_finite_gpu(q(component))) then
+        status=chemistry_status_nonfinite
+        return
+      endif
+    enddo
+    rho=q(air5_idx_density)
+    momentum=q(air5_idx_momentum_first:air5_idx_momentum_last)
+    rho_species=q(air5_idx_species_first:air5_idx_species_last)
+    ev=q(air5_idx_ev)
+    call air5_validate_physical_species_state_gpu(rho,rho_species,status)
+    if(status/=chemistry_status_ok) return
+    velocity=momentum/rho
+    mass_fraction=rho_species/rho
+    call air5_temperature_from_q5_gpu(rho,momentum,rho_species,ev, &
+      q(air5_idx_total_energy),temperature,status)
+    if(status/=chemistry_status_ok) return
+    call air5_tv_from_ev_gpu(rho_species,ev,tv,status)
+    if(status/=chemistry_status_ok) return
+    call air5_pressure_gpu(rho_species,temperature,pressure,status)
+  end subroutine air5_conservative_to_primitive_gpu
+
+end module chemistry_flow_state_gpu

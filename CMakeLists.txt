@@ -7,6 +7,7 @@ set(AUTHOR "Jian Fang")
 set(AUTHOR_DETAILS "jian.fang@stfc.ac.uk")
 set(DESCRIPTION "Building ASTR using cmake")
 option(ASTR_WITH_CUDA "Build CUDA Fortran GPU support into the ASTR binary" OFF)
+option(ASTR_WITH_AIR5_CHEMISTRY "Build the fixed FP64 air5 chemistry backend" OFF)
 
 message(STATUS "building ${PROJECT_NAME}")
 
@@ -150,6 +151,9 @@ endif (HDF5_FOUND)
 
 # set chemistry library
 option(CHEMISTRY "Build ASTR with chemistry" OFF)
+if (ASTR_WITH_AIR5_CHEMISTRY AND CHEMISTRY)
+  message(FATAL_ERROR "ASTR_WITH_AIR5_CHEMISTRY cannot be combined with legacy Cantera CHEMISTRY")
+endif()
 if (CHEMISTRY)
   IF(EXISTS ${CANTERA_DIR})
     MESSAGE(STATUS "CANTERA directory " ${CANTERA_DIR})

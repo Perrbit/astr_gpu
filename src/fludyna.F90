@@ -191,10 +191,30 @@ module fludyna
   subroutine updatefvar
     !
     use commarray,only : q,rho,vel,prs,tmp,spc,tke,omg
-    use commvar,  only : im,jm,km,num_species,num_modequ,turbmode
+    use commvar,  only : im,jm,km,num_species,num_modequ,turbmode,lcomb
+#ifdef ASTR_AIR5_CHEMISTRY
+    use commarray, only: tve
+    use chemistry_flow_runtime, only: air5_field_conservative_to_primitive
+#endif
     !
     ! local data
     integer :: i,j,k
+#ifdef ASTR_AIR5_CHEMISTRY
+    integer :: air5_status,air5_failed_index(3)
+
+    if(lcomb) then
+      call air5_field_conservative_to_primitive(q(0:im,0:jm,0:km,:), &
+        rho(0:im,0:jm,0:km),vel(0:im,0:jm,0:km,:),prs(0:im,0:jm,0:km), &
+        tmp(0:im,0:jm,0:km),spc(0:im,0:jm,0:km,:),tve(0:im,0:jm,0:km), &
+        air5_status,air5_failed_index)
+      if(air5_status/=0) then
+        write(*,'(A,I0,A,3(I0,1X))') 'air5 updatefvar failed, status=', &
+          air5_status,', i/j/k=',air5_failed_index
+        error stop 'air5 conservative-to-primitive conversion failed'
+      endif
+      return
+    endif
+#endif
     !
     if(trim(turbmode)=='k-omega') then
       !
@@ -251,10 +271,30 @@ module fludyna
   subroutine updateq
     !
     use commarray,only : q,rho,vel,prs,tmp,spc,tke,omg
-    use commvar,  only : im,jm,km,num_species,num_modequ,turbmode,numq
+    use commvar,  only : im,jm,km,num_species,num_modequ,turbmode,numq,lcomb
     use ieee_arithmetic, only: ieee_is_nan
+#ifdef ASTR_AIR5_CHEMISTRY
+    use commarray, only: tve
+    use chemistry_flow_runtime, only: air5_field_primitive_to_conservative
+#endif
     !
     integer :: i,j,k,n
+#ifdef ASTR_AIR5_CHEMISTRY
+    integer :: air5_status,air5_failed_index(3)
+
+    if(lcomb) then
+      call air5_field_primitive_to_conservative(q(0:im,0:jm,0:km,:), &
+        rho(0:im,0:jm,0:km),vel(0:im,0:jm,0:km,:),tmp(0:im,0:jm,0:km), &
+        spc(0:im,0:jm,0:km,:),tve(0:im,0:jm,0:km),air5_status, &
+        air5_failed_index)
+      if(air5_status/=0) then
+        write(*,'(A,I0,A,3(I0,1X))') 'air5 updateq failed, status=', &
+          air5_status,', i/j/k=',air5_failed_index
+        error stop 'air5 primitive-to-conservative conversion failed'
+      endif
+      return
+    endif
+#endif
     !
     if(trim(turbmode)=='k-omega') then
       !

@@ -944,7 +944,7 @@ contains
   subroutine gpu_write_kenergy()
     use commvar, only: nstep,time,maxstep
     use parallel, only: lio
-    use stlaio, only: get_unit
+    use utility, only: listinit
     implicit none
     real(8) :: kenergy_gpu
     integer,save :: hand = -1
@@ -955,9 +955,8 @@ contains
     if(.not.lio) return
 
     if(linit) then
-      hand = get_unit()
-      open(hand,file='gpu_kenergy.dat',status='replace',action='write')
-      write(hand,'(A)') 'nstep time kenergy_gpu'
+      call listinit(filename='gpu_kenergy.dat',handle=hand, &
+                    firstline='nstep time kenergy_gpu')
       linit = .false.
     endif
 
@@ -968,7 +967,7 @@ contains
   subroutine gpu_write_flowstate()
     use commvar, only: nstep,time,maxstep
     use parallel, only: lio
-    use stlaio, only: get_unit
+    use utility, only: listinit
     implicit none
     real(8) :: kenergy_gpu,enstophy_gpu,dissipation_gpu
     integer,save :: hand = -1
@@ -982,9 +981,8 @@ contains
     if(.not.lio) return
 
     if(linit) then
-      hand = get_unit()
-      open(hand,file='flowstate.dat',status='replace',action='write')
-      write(hand,'(A)') 'nstep time kenergy enstophy dissipation'
+      call listinit(filename='flowstate.dat',handle=hand, &
+                    firstline='nstep time kenergy enstophy dissipation')
       linit = .false.
     endif
 
@@ -1075,7 +1073,7 @@ contains
   subroutine gpu_write_enstophy()
     use commvar, only: nstep,time,maxstep
     use parallel, only: lio
-    use stlaio, only: get_unit
+    use utility, only: listinit
     implicit none
     real(8) :: enstophy_gpu
     integer,save :: hand = -1
@@ -1086,9 +1084,8 @@ contains
     if(.not.lio) return
 
     if(linit) then
-      hand = get_unit()
-      open(hand,file='gpu_enstophy.dat',status='replace',action='write')
-      write(hand,'(A)') 'nstep time enstophy_gpu'
+      call listinit(filename='gpu_enstophy.dat',handle=hand, &
+                    firstline='nstep time enstophy_gpu')
       linit = .false.
     endif
 
@@ -1099,7 +1096,7 @@ contains
   subroutine gpu_write_dissipation()
     use commvar, only: nstep,time,maxstep
     use parallel, only: lio
-    use stlaio, only: get_unit
+    use utility, only: listinit
     implicit none
     real(8) :: dissipation_gpu
     integer,save :: hand = -1
@@ -1110,9 +1107,8 @@ contains
     if(.not.lio) return
 
     if(linit) then
-      hand = get_unit()
-      open(hand,file='gpu_dissipation.dat',status='replace',action='write')
-      write(hand,'(A)') 'nstep time dissipation_gpu'
+      call listinit(filename='gpu_dissipation.dat',handle=hand, &
+                    firstline='nstep time dissipation_gpu')
       linit = .false.
     endif
 

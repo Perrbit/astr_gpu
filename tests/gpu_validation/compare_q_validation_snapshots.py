@@ -68,12 +68,27 @@ def snapshot_files(prefix: Path, labels: tuple[str, ...]) -> dict[str, Path]:
     return selected
 
 
+def comparison_values(snapshot: QSnapshot, active_only: bool) -> np.ndarray:
+    if not active_only:
+        return snapshot.values
+    im, jm, km, hm, numq = snapshot.header
+    shape = (im + 2 * hm + 1, jm + 2 * hm + 1, km + 2 * hm + 1, numq)
+    q = snapshot.values.reshape(shape, order="F")
+    return q[
+        hm : hm + im + 1,
+        hm : hm + jm + 1,
+        hm : hm + km + 1,
+        :,
+    ].ravel(order="F")
+
+
 def compare_snapshot_sets(
     cpu_prefix: Path,
     gpu_prefix: Path,
     labels: tuple[str, ...],
     atol: float,
     rtol: float,
+    active_only: bool = False,
 ) -> SnapshotSetComparison:
     cpu_files = snapshot_files(cpu_prefix, labels)
     gpu_files = snapshot_files(gpu_prefix, labels)
@@ -95,12 +110,14 @@ def compare_snapshot_sets(
             raise ValueError(
                 f"{suffix}: header mismatch: cpu={cpu.header} gpu={gpu.header}"
             )
-        difference = np.abs(gpu.values - cpu.values)
+        cpu_values = comparison_values(cpu, active_only)
+        gpu_values = comparison_values(gpu, active_only)
+        difference = np.abs(gpu_values - cpu_values)
         max_index = int(np.argmax(difference))
         max_abs = float(difference[max_index])
-        scale = np.maximum(np.abs(cpu.values), max(atol, 1.0e-300))
+        scale = np.maximum(np.abs(cpu_values), max(atol, 1.0e-300))
         max_rel = float(np.max(difference / scale))
-        passed = bool(np.all(difference <= atol + rtol * np.abs(cpu.values)))
+        passed = bool(np.all(difference <= atol + rtol * np.abs(cpu_values)))
         comparisons.append(
             FileComparison(
                 suffix=suffix,
@@ -128,6 +145,7 @@ def main() -> int:
     parser.add_argument("--labels", default="pre_rhs,post_update")
     parser.add_argument("--atol", type=float, default=1.0e-10)
     parser.add_argument("--rtol", type=float, default=0.0)
+    parser.add_argument("--active-only", action="store_true")
     args = parser.parse_args()
 
     labels = tuple(label.strip() for label in args.labels.split(",") if label.strip())
@@ -139,6 +157,7 @@ def main() -> int:
         labels=labels,
         atol=args.atol,
         rtol=args.rtol,
+        active_only=args.active_only,
     )
     lines = [
         f"status: {'pass' if result.passed else 'fail'}",

@@ -1,0 +1,495 @@
+module chemistry_ros2_gpu_probe_kernels
+  use iso_fortran_env, only: real64
+  use cudafor
+  use chemistry_model, only: chemistry_status_ok
+  use chemistry_linear6_gpu, only: air5_lu_factor_6_gpu, air5_lu_solve_6_gpu
+  use gpu_check, only: sync_after_kernel
+  implicit none
+  private
+
+  public :: launch_linear6_probe_gpu
+
+contains
+
+  attributes(global) subroutine linear6_probe_kernel(matrix,rhs,solution,status,count)
+    integer, value :: count
+    real(real64), device, intent(in) :: matrix(6,6,count), rhs(6,count)
+    real(real64), device, intent(out) :: solution(6,count)
+    integer, device, intent(out) :: status(count)
+    real(real64) :: lu(6,6)
+    integer :: pivots(6), index
+
+    index = (blockIdx%x-1)*blockDim%x+threadIdx%x
+    if (index > count) return
+    call air5_lu_factor_6_gpu(matrix(:,:,index),lu,pivots,status(index))
+    if (status(index) == chemistry_status_ok) then
+      call air5_lu_solve_6_gpu(lu,pivots,rhs(:,index),solution(:,index),status(index))
+    else
+      solution(:,index) = 0.0_real64
+    end if
+  end subroutine linear6_probe_kernel
+
+  subroutine launch_linear6_probe_gpu(matrix,rhs,solution,status,count)
+    integer, intent(in) :: count
+    real(real64), device, intent(in) :: matrix(6,6,count), rhs(6,count)
+    real(real64), device, intent(out) :: solution(6,count)
+    integer, device, intent(out) :: status(count)
+
+    call linear6_probe_kernel<<<1,32>>>(matrix,rhs,solution,status,count)
+    call sync_after_kernel('linear6_probe_kernel',force_sync=.true.)
+  end subroutine launch_linear6_probe_gpu
+
+end module chemistry_ros2_gpu_probe_kernels
+
+program chemistry_ros2_gpu_probe
+  use iso_fortran_env, only: real64
+  use cudafor
+  use chemistry_air5_data, only: air5_num_species, air5_atom_count, &
+    air5_molar_mass
+  use chemistry_model, only: chemistry_status_ok
+  use chemistry_thermo, only: air5_ev_from_tv, air5_q5_from_state, &
+    air5_species_gas_constant
+  use chemistry_source, only: air5_source_mode_coupled, &
+    air5_source_mode_chemical, air5_source_mode_vt
+  use chemistry_ros2, only: air5_ros2_advance
+  use chemistry_ros2_gpu, only: launch_air5_ros2_batch_gpu
+  use chemistry_linear6, only: air5_lu_factor_6, air5_lu_solve_6
+  use chemistry_ros2_gpu_probe_kernels, only: launch_linear6_probe_gpu
+  implicit none
+
+  integer, parameter :: case_count = 4, mode_count = 3
+  integer, parameter :: modes(mode_count) = [air5_source_mode_coupled, &
+    air5_source_mode_chemical, air5_source_mode_vt]
+  real(real64), parameter :: duration = 1.0e-10_real64
+  real(real64), parameter :: rtol = 1.0e-8_real64
+  integer, parameter :: max_attempts = 200000
+  real(real64) :: rho(case_count), momentum(3,case_count), q5(case_count)
+  real(real64) :: state(6,case_count), state_after(6,case_count)
+  real(real64) :: initial_step(case_count), atol(6,case_count)
+  real(real64) :: final_ref(6,case_count), final_gpu(6,case_count)
+  real(real64) :: suggested_ref(case_count), suggested_gpu(case_count)
+  real(real64) :: q5_after(case_count)
+  integer :: accepted_ref(case_count), rejected_ref(case_count)
+  integer :: rhs_ref(case_count), jac_ref(case_count), status_ref(case_count)
+  integer :: accepted_gpu(case_count), rejected_gpu(case_count)
+  integer :: rhs_gpu(case_count), jac_gpu(case_count), status_gpu(case_count)
+  real(real64), device :: rho_d(case_count), momentum_d(3,case_count)
+  real(real64), device :: q5_d(case_count), state_d(6,case_count)
+  real(real64), device :: initial_step_d(case_count), atol_d(6,case_count)
+  real(real64), device :: final_d(6,case_count), suggested_d(case_count)
+  integer, device :: accepted_d(case_count), rejected_d(case_count)
+  integer, device :: rhs_d(case_count), jac_d(case_count), status_d(case_count)
+  real(real64), device :: rho_one_d(1), momentum_one_d(3,1), q5_one_d(1)
+  real(real64), device :: state_one_d(6,1), step_one_d(1), atol_one_d(6,1)
+  real(real64), device :: final_one_d(6,1), suggested_one_d(1)
+  integer, device :: accepted_one_d(1), rejected_one_d(1)
+  integer, device :: rhs_one_d(1), jac_one_d(1), status_one_d(1)
+  real(real64) :: state_ratio, mass_drift, nitrogen_drift, oxygen_drift
+  real(real64) :: q5_change, input_state_change
+  character(len=32) :: run_mode
+  integer :: status_mismatches, invalid_mismatches, diagnostic_mismatches
+  integer :: linear_status_mismatches
+  integer :: case_index, mode_index
+
+  call get_command_argument(1,run_mode)
+  if (trim(run_mode) == 'profile') then
+    call profile_batch
+    stop
+  end if
+
+  call make_case(2.0e3_real64,350.0_real64,350.0_real64,1,rho(1), &
+    momentum(:,1),q5(1),state(:,1))
+  call make_case(1.0e5_real64,6000.0_real64,1000.0_real64,2,rho(2), &
+    momentum(:,2),q5(2),state(:,2))
+  call make_case(1.0e4_real64,1000.0_real64,4000.0_real64,3,rho(3), &
+    momentum(:,3),q5(3),state(:,3))
+  call make_case(9.0e5_real64,7800.0_real64,7800.0_real64,4,rho(4), &
+    momentum(:,4),q5(4),state(:,4))
+  initial_step = duration
+  do case_index = 1, case_count
+    atol(1:5,case_index) = max(rho(case_index),1.0_real64)*1.0e-13_real64
+    atol(6,case_index) = max(abs(state(6,case_index)),1.0_real64)*1.0e-13_real64
+  end do
+
+  rho_d = rho
+  momentum_d = momentum
+  q5_d = q5
+  state_d = state
+  initial_step_d = initial_step
+  atol_d = atol
+  state_ratio = 0.0_real64
+  mass_drift = 0.0_real64
+  nitrogen_drift = 0.0_real64
+  oxygen_drift = 0.0_real64
+  q5_change = 0.0_real64
+  input_state_change = 0.0_real64
+  status_mismatches = 0
+  invalid_mismatches = 0
+  diagnostic_mismatches = 0
+  linear_status_mismatches = 0
+
+  call check_linear_solver(state_ratio,linear_status_mismatches)
+
+  do mode_index = 1, mode_count
+    do case_index = 1, case_count
+      call air5_ros2_advance(rho(case_index),momentum(:,case_index),q5(case_index), &
+        state(:,case_index),duration,initial_step(case_index),rtol,atol(:,case_index), &
+        max_attempts,final_ref(:,case_index),suggested_ref(case_index), &
+        accepted_ref(case_index),rejected_ref(case_index),rhs_ref(case_index), &
+        jac_ref(case_index),status_ref(case_index),modes(mode_index))
+    end do
+    call launch_air5_ros2_batch_gpu(rho_d,momentum_d,q5_d,state_d,duration, &
+      initial_step_d,rtol,atol_d,max_attempts,final_d,suggested_d,accepted_d, &
+      rejected_d,rhs_d,jac_d,status_d,case_count,modes(mode_index))
+    final_gpu = final_d
+    suggested_gpu = suggested_d
+    accepted_gpu = accepted_d
+    rejected_gpu = rejected_d
+    rhs_gpu = rhs_d
+    jac_gpu = jac_d
+    status_gpu = status_d
+    q5_after = q5_d
+    state_after = state_d
+
+    do case_index = 1, case_count
+      if (status_gpu(case_index) /= status_ref(case_index)) &
+        status_mismatches = status_mismatches+1
+      if (status_ref(case_index) /= chemistry_status_ok) cycle
+      call update_ratio(final_gpu(:,case_index),final_ref(:,case_index),state_ratio)
+      call update_invariants(state(:,case_index),final_gpu(:,case_index), &
+        rho(case_index),mass_drift,nitrogen_drift,oxygen_drift)
+      if (accepted_gpu(case_index) /= accepted_ref(case_index) .or. &
+          rejected_gpu(case_index) /= rejected_ref(case_index) .or. &
+          rhs_gpu(case_index) /= rhs_ref(case_index) .or. &
+          jac_gpu(case_index) /= jac_ref(case_index)) &
+        diagnostic_mismatches = diagnostic_mismatches+1
+    end do
+    q5_change = max(q5_change,maxval(abs(q5_after-q5)))
+    input_state_change = max(input_state_change,maxval(abs(state_after-state)))
+  end do
+
+  call check_single_state(state_ratio,status_mismatches,diagnostic_mismatches)
+  call check_invalid_controls(invalid_mismatches)
+
+  write(*,'(a,1x,es24.16)') 'CHEMISTRY_GPU_ROS2_STATE_MAX_RATIO',state_ratio
+  write(*,'(a,1x,es24.16)') 'CHEMISTRY_GPU_ROS2_MASS_MAX_DRIFT',mass_drift
+  write(*,'(a,1x,es24.16)') 'CHEMISTRY_GPU_ROS2_NITROGEN_MAX_DRIFT',nitrogen_drift
+  write(*,'(a,1x,es24.16)') 'CHEMISTRY_GPU_ROS2_OXYGEN_MAX_DRIFT',oxygen_drift
+  write(*,'(a,1x,i0)') 'CHEMISTRY_GPU_ROS2_STATUS_MISMATCHES',status_mismatches
+  write(*,'(a,1x,i0)') 'CHEMISTRY_GPU_ROS2_INVALID_MISMATCHES',invalid_mismatches
+  write(*,'(a,1x,i0)') 'CHEMISTRY_GPU_ROS2_DIAGNOSTIC_MISMATCHES', &
+    diagnostic_mismatches
+  write(*,'(a,1x,i0)') 'CHEMISTRY_GPU_ROS2_LINEAR_STATUS_MISMATCHES', &
+    linear_status_mismatches
+  write(*,'(a,1x,es24.16)') 'CHEMISTRY_GPU_ROS2_Q5_MAX_CHANGE',q5_change
+  write(*,'(a,1x,es24.16)') 'CHEMISTRY_GPU_ROS2_INPUT_STATE_MAX_CHANGE', &
+    input_state_change
+  if (state_ratio > 1.0_real64 .or. mass_drift > 5.0e-12_real64 .or. &
+      nitrogen_drift > 5.0e-12_real64 .or. oxygen_drift > 5.0e-12_real64 .or. &
+      status_mismatches /= 0 .or. invalid_mismatches /= 0 .or. &
+      diagnostic_mismatches /= 0 .or. linear_status_mismatches /= 0 .or. &
+      q5_change /= 0.0_real64 .or. &
+      input_state_change /= 0.0_real64) then
+    error stop 'GPU ROS-2 trajectory comparison failed'
+  end if
+
+contains
+
+  subroutine profile_batch
+    integer, parameter :: profile_count = 8192
+    real(real64), allocatable :: profile_rho(:), profile_momentum(:,:)
+    real(real64), allocatable :: profile_q5(:), profile_state(:,:)
+    real(real64), allocatable :: profile_step(:), profile_atol(:,:)
+    real(real64), allocatable, device :: profile_rho_d(:), profile_momentum_d(:,:)
+    real(real64), allocatable, device :: profile_q5_d(:), profile_state_d(:,:)
+    real(real64), allocatable, device :: profile_step_d(:), profile_atol_d(:,:)
+    real(real64), allocatable, device :: profile_final_d(:,:), profile_suggested_d(:)
+    integer, allocatable, device :: profile_accepted_d(:), profile_rejected_d(:)
+    integer, allocatable, device :: profile_rhs_d(:), profile_jac_d(:), profile_status_d(:)
+    integer, allocatable :: profile_accepted(:), profile_rejected(:), profile_status(:)
+    integer :: item, pattern
+    real(real64) :: start_time, end_time
+
+    allocate(profile_rho(profile_count),profile_momentum(3,profile_count), &
+      profile_q5(profile_count),profile_state(6,profile_count), &
+      profile_step(profile_count),profile_atol(6,profile_count), &
+      profile_accepted(profile_count),profile_rejected(profile_count), &
+      profile_status(profile_count))
+    allocate(profile_rho_d(profile_count),profile_momentum_d(3,profile_count), &
+      profile_q5_d(profile_count),profile_state_d(6,profile_count), &
+      profile_step_d(profile_count),profile_atol_d(6,profile_count), &
+      profile_final_d(6,profile_count),profile_suggested_d(profile_count), &
+      profile_accepted_d(profile_count),profile_rejected_d(profile_count), &
+      profile_rhs_d(profile_count),profile_jac_d(profile_count), &
+      profile_status_d(profile_count))
+    do item = 1, profile_count
+      pattern = modulo(item-1,4)+1
+      select case (pattern)
+      case (1)
+        call make_case(2.0e3_real64,350.0_real64,350.0_real64,1, &
+          profile_rho(item),profile_momentum(:,item),profile_q5(item), &
+          profile_state(:,item))
+      case (2)
+        call make_case(1.0e5_real64,6000.0_real64,1000.0_real64,2, &
+          profile_rho(item),profile_momentum(:,item),profile_q5(item), &
+          profile_state(:,item))
+      case (3)
+        call make_case(1.0e4_real64,1000.0_real64,4000.0_real64,3, &
+          profile_rho(item),profile_momentum(:,item),profile_q5(item), &
+          profile_state(:,item))
+      case default
+        call make_case(9.0e5_real64,7800.0_real64,7800.0_real64,4, &
+          profile_rho(item),profile_momentum(:,item),profile_q5(item), &
+          profile_state(:,item))
+      end select
+      profile_step(item) = 1.0e-11_real64
+      profile_atol(1:5,item) = max(profile_rho(item),1.0_real64)*1.0e-13_real64
+      profile_atol(6,item) = max(abs(profile_state(6,item)),1.0_real64)*1.0e-13_real64
+    end do
+    profile_rho_d = profile_rho
+    profile_momentum_d = profile_momentum
+    profile_q5_d = profile_q5
+    profile_state_d = profile_state
+    profile_step_d = profile_step
+    profile_atol_d = profile_atol
+    call cpu_time(start_time)
+    call launch_air5_ros2_batch_gpu(profile_rho_d,profile_momentum_d,profile_q5_d, &
+      profile_state_d,1.0e-11_real64,profile_step_d,rtol,profile_atol_d,max_attempts, &
+      profile_final_d,profile_suggested_d,profile_accepted_d,profile_rejected_d, &
+      profile_rhs_d,profile_jac_d,profile_status_d,profile_count, &
+      air5_source_mode_coupled)
+    call cpu_time(end_time)
+    profile_accepted = profile_accepted_d
+    profile_rejected = profile_rejected_d
+    profile_status = profile_status_d
+    write(*,'(a,1x,i0)') 'CHEMISTRY_GPU_ROS2_PROFILE_COUNT',profile_count
+    write(*,'(a,1x,es24.16)') 'CHEMISTRY_GPU_ROS2_PROFILE_SECONDS', &
+      end_time-start_time
+    write(*,'(a,2(1x,i0))') 'CHEMISTRY_GPU_ROS2_PROFILE_ACCEPTED_RANGE', &
+      minval(profile_accepted),maxval(profile_accepted)
+    write(*,'(a,2(1x,i0))') 'CHEMISTRY_GPU_ROS2_PROFILE_REJECTED_RANGE', &
+      minval(profile_rejected),maxval(profile_rejected)
+    write(*,'(a,1x,i0)') 'CHEMISTRY_GPU_ROS2_PROFILE_NONZERO_STATUS', &
+      count(profile_status /= chemistry_status_ok)
+  end subroutine profile_batch
+
+  subroutine check_linear_solver(maximum_ratio,status_errors)
+    integer, parameter :: matrix_count = 3
+    real(real64), intent(inout) :: maximum_ratio
+    integer, intent(inout) :: status_errors
+    real(real64) :: matrix(6,6,matrix_count), rhs(6,matrix_count)
+    real(real64) :: solution_ref(6,matrix_count), solution_gpu(6,matrix_count)
+    real(real64) :: expected(6), lu(6,6)
+    real(real64), device :: matrix_d(6,6,matrix_count), rhs_d(6,matrix_count)
+    real(real64), device :: solution_d(6,matrix_count)
+    integer :: status_ref(matrix_count), status_gpu(matrix_count), pivots(6)
+    integer, device :: status_d(matrix_count)
+    integer :: item, row
+
+    matrix = 0.0_real64
+    do row = 1, 6
+      matrix(row,row,1) = real(row+1,real64)
+      matrix(row,row,2) = real(row,real64)
+    end do
+    matrix(1,1,1) = 0.0_real64
+    matrix(2,1,1) = 3.0_real64
+    matrix(1,2,1) = -2.0_real64
+    matrix(3,2,1) = 0.5_real64
+    matrix(4,3,1) = -0.75_real64
+    matrix(5,4,1) = 1.25_real64
+    matrix(6,5,1) = -1.5_real64
+    matrix(1,1,2) = 1.0e20_real64
+    expected = [1.0_real64,-2.0_real64,3.0_real64,-4.0_real64, &
+      5.0_real64,-6.0_real64]
+    do item = 1, matrix_count
+      rhs(:,item) = matmul(matrix(:,:,item),expected)
+      call air5_lu_factor_6(matrix(:,:,item),lu,pivots,status_ref(item))
+      if (status_ref(item) == chemistry_status_ok) then
+        call air5_lu_solve_6(lu,pivots,rhs(:,item),solution_ref(:,item), &
+          status_ref(item))
+      else
+        solution_ref(:,item) = 0.0_real64
+      end if
+    end do
+    matrix_d = matrix
+    rhs_d = rhs
+    call launch_linear6_probe_gpu(matrix_d,rhs_d,solution_d,status_d,matrix_count)
+    solution_gpu = solution_d
+    status_gpu = status_d
+    do item = 1, matrix_count
+      if (status_gpu(item) /= status_ref(item)) status_errors = status_errors+1
+      if (status_ref(item) == chemistry_status_ok) &
+        call update_ratio(solution_gpu(:,item),solution_ref(:,item),maximum_ratio)
+    end do
+  end subroutine check_linear_solver
+
+  subroutine make_case(pressure,temperature,tv,composition_id,rho_value, &
+      momentum_value,q5_value,state_value)
+    real(real64), intent(in) :: pressure, temperature, tv
+    integer, intent(in) :: composition_id
+    real(real64), intent(out) :: rho_value, momentum_value(3), q5_value
+    real(real64), intent(out) :: state_value(6)
+    real(real64), parameter :: composition(air5_num_species,4) = reshape([ &
+      0.7653_real64,0.2347_real64,0.0_real64,0.0_real64,0.0_real64, &
+      0.55_real64,0.15_real64,0.10_real64,0.12_real64,0.08_real64, &
+      0.40_real64,0.10_real64,0.20_real64,0.20_real64,0.10_real64, &
+      0.25_real64,0.10_real64,0.25_real64,0.25_real64,0.15_real64], &
+      [air5_num_species,4])
+    real(real64) :: mixture_gas_constant
+    integer :: species, local_status
+
+    mixture_gas_constant = 0.0_real64
+    do species = 1, air5_num_species
+      mixture_gas_constant = mixture_gas_constant+ &
+        composition(species,composition_id)*air5_species_gas_constant(species)
+    end do
+    rho_value = pressure/(mixture_gas_constant*temperature)
+    state_value(1:air5_num_species) = rho_value*composition(:,composition_id)
+    momentum_value = rho_value*[40.0_real64,-5.0_real64,2.0_real64]
+    call air5_ev_from_tv(state_value(1:air5_num_species),tv,state_value(6), &
+      local_status)
+    if (local_status /= chemistry_status_ok) error stop 'ROS-2 probe Ev setup failed'
+    call air5_q5_from_state(rho_value,momentum_value,state_value(1:air5_num_species), &
+      state_value(6),temperature,q5_value,local_status)
+    if (local_status /= chemistry_status_ok) error stop 'ROS-2 probe q5 setup failed'
+  end subroutine make_case
+
+  subroutine update_ratio(actual,reference,maximum_ratio)
+    real(real64), intent(in) :: actual(:), reference(:)
+    real(real64), intent(inout) :: maximum_ratio
+    real(real64) :: scale, tolerance, difference
+    integer :: item
+
+    scale = max(maxval(abs(reference)),1.0_real64)
+    do item = 1, size(reference)
+      tolerance = 1.0e-13_real64*scale+5.0e-12_real64*abs(reference(item))
+      difference = abs(actual(item)-reference(item))
+      maximum_ratio = max(maximum_ratio,difference/tolerance)
+    end do
+  end subroutine update_ratio
+
+  subroutine update_invariants(initial,final,rho_value,maximum_mass,maximum_n, &
+      maximum_o)
+    real(real64), intent(in) :: initial(6), final(6), rho_value
+    real(real64), intent(inout) :: maximum_mass, maximum_n, maximum_o
+    real(real64) :: drift
+
+    maximum_mass = max(maximum_mass,abs(sum(final(1:5))-sum(initial(1:5)))/rho_value)
+    call element_drift(initial,final,1,drift)
+    maximum_n = max(maximum_n,drift)
+    call element_drift(initial,final,2,drift)
+    maximum_o = max(maximum_o,drift)
+  end subroutine update_invariants
+
+  subroutine element_drift(initial,final,element,drift)
+    real(real64), intent(in) :: initial(6), final(6)
+    integer, intent(in) :: element
+    real(real64), intent(out) :: drift
+    real(real64) :: initial_amount, final_amount
+    integer :: species
+
+    initial_amount = 0.0_real64
+    final_amount = 0.0_real64
+    do species = 1, air5_num_species
+      initial_amount = initial_amount+real(air5_atom_count(element,species),real64)* &
+        initial(species)/air5_molar_mass(species)
+      final_amount = final_amount+real(air5_atom_count(element,species),real64)* &
+        final(species)/air5_molar_mass(species)
+    end do
+    drift = abs(final_amount-initial_amount)/max(abs(initial_amount),1.0_real64)
+  end subroutine element_drift
+
+  subroutine check_single_state(maximum_ratio,status_errors,diagnostic_errors)
+    real(real64), intent(inout) :: maximum_ratio
+    integer, intent(inout) :: status_errors, diagnostic_errors
+    real(real64) :: final_cpu(6), final_device(6), suggested_cpu, suggested_device
+    integer :: accepted_cpu, rejected_cpu, rhs_cpu, jac_cpu, status_cpu
+    integer :: accepted_device, rejected_device, rhs_device, jac_device, status_device
+
+    call air5_ros2_advance(rho(2),momentum(:,2),q5(2),state(:,2),duration, &
+      initial_step(2),rtol,atol(:,2),max_attempts,final_cpu,suggested_cpu, &
+      accepted_cpu,rejected_cpu,rhs_cpu,jac_cpu,status_cpu,air5_source_mode_coupled)
+    call load_one(state(:,2),initial_step(2),atol(:,2))
+    call launch_air5_ros2_batch_gpu(rho_one_d,momentum_one_d,q5_one_d,state_one_d, &
+      duration,step_one_d,rtol,atol_one_d,max_attempts,final_one_d,suggested_one_d, &
+      accepted_one_d,rejected_one_d,rhs_one_d,jac_one_d,status_one_d,1, &
+      air5_source_mode_coupled)
+    final_device = final_one_d(:,1)
+    suggested_device = suggested_one_d(1)
+    accepted_device = accepted_one_d(1)
+    rejected_device = rejected_one_d(1)
+    rhs_device = rhs_one_d(1)
+    jac_device = jac_one_d(1)
+    status_device = status_one_d(1)
+    if (status_device /= status_cpu) status_errors = status_errors+1
+    if (status_cpu == chemistry_status_ok) call update_ratio(final_device,final_cpu, &
+      maximum_ratio)
+    if (accepted_device /= accepted_cpu .or. rejected_device /= rejected_cpu .or. &
+        rhs_device /= rhs_cpu .or. jac_device /= jac_cpu) &
+      diagnostic_errors = diagnostic_errors+1
+  end subroutine check_single_state
+
+  subroutine load_one(input_state,input_step,input_atol)
+    real(real64), intent(in) :: input_state(6), input_step, input_atol(6)
+
+    rho_one_d = rho(2:2)
+    momentum_one_d = momentum(:,2:2)
+    q5_one_d = q5(2:2)
+    state_one_d(:,1) = input_state
+    step_one_d(1) = input_step
+    atol_one_d(:,1) = input_atol
+  end subroutine load_one
+
+  subroutine check_invalid_controls(mismatches)
+    integer, intent(inout) :: mismatches
+    real(real64) :: invalid_state(6), invalid_atol(6)
+
+    invalid_state = state(:,2)
+    invalid_atol = atol(:,2)
+    call check_invalid(0.0_real64,rtol,invalid_atol,max_attempts,invalid_state,mismatches)
+    call check_invalid(duration,0.0_real64,invalid_atol,max_attempts,invalid_state, &
+      mismatches)
+    invalid_atol(1) = -1.0_real64
+    call check_invalid(duration,rtol,invalid_atol,max_attempts,invalid_state,mismatches)
+    invalid_atol = atol(:,2)
+    call check_invalid(duration,rtol,invalid_atol,0,invalid_state,mismatches)
+    invalid_state = state(:,2)
+    invalid_state(3) = -1.0e-8_real64
+    call check_invalid(duration,rtol,invalid_atol,max_attempts,invalid_state,mismatches)
+    invalid_state = state(:,2)
+    invalid_atol = 1.0e-30_real64
+    call check_invalid(duration,1.0e-15_real64,invalid_atol,1,invalid_state,mismatches)
+  end subroutine check_invalid_controls
+
+  subroutine check_invalid(input_duration,input_rtol,input_atol,input_max_attempts, &
+      input_state,mismatches)
+    real(real64), intent(in) :: input_duration, input_rtol, input_atol(6)
+    integer, intent(in) :: input_max_attempts
+    real(real64), intent(in) :: input_state(6)
+    integer, intent(inout) :: mismatches
+    real(real64) :: final_cpu(6), final_device(6), suggested_cpu, suggested_device
+    integer :: accepted_cpu, rejected_cpu, rhs_cpu, jac_cpu, status_cpu
+    integer :: accepted_device, rejected_device, rhs_device, jac_device, status_device
+
+    call air5_ros2_advance(rho(2),momentum(:,2),q5(2),input_state,input_duration, &
+      duration,input_rtol,input_atol,input_max_attempts,final_cpu,suggested_cpu, &
+      accepted_cpu,rejected_cpu,rhs_cpu,jac_cpu,status_cpu,air5_source_mode_coupled)
+    call load_one(input_state,duration,input_atol)
+    call launch_air5_ros2_batch_gpu(rho_one_d,momentum_one_d,q5_one_d,state_one_d, &
+      input_duration,step_one_d,input_rtol,atol_one_d,input_max_attempts,final_one_d, &
+      suggested_one_d,accepted_one_d,rejected_one_d,rhs_one_d,jac_one_d,status_one_d, &
+      1,air5_source_mode_coupled)
+    final_device = final_one_d(:,1)
+    suggested_device = suggested_one_d(1)
+    accepted_device = accepted_one_d(1)
+    rejected_device = rejected_one_d(1)
+    rhs_device = rhs_one_d(1)
+    jac_device = jac_one_d(1)
+    status_device = status_one_d(1)
+    if (status_device /= status_cpu .or. maxval(abs(final_device-final_cpu)) /= &
+        0.0_real64 .or. maxval(abs(final_device-input_state)) /= 0.0_real64 .or. &
+        accepted_device /= accepted_cpu .or. rejected_device /= rejected_cpu .or. &
+        rhs_device /= rhs_cpu .or. jac_device /= jac_cpu) mismatches = mismatches+1
+  end subroutine check_invalid
+
+end program chemistry_ros2_gpu_probe

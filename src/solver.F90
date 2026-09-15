@@ -32,18 +32,35 @@ module solver
                         const2,const3,const4,const5,const6,const7,     &
                         tempconst,tempconst1,reynolds,mach,num_modequ, &
                         turbmode,spcinf,nondimen,ref_tem,ref_vel,      &
-                        ref_len,ref_den,ref_miu,ref_tim
+                        ref_len,ref_den,ref_miu,ref_tim,lcomb,lfilter
     use thermchem, only: spcindex
     use fludyna,   only: thermal,sos,miucal
     use userdefine,only: udf_setflowenv
     use parallel,  only: mpisize,bcast
     use perfect_gas_transport, only: read_transport_environment
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_state_layout, only: air5_layout_status_ok, &
+                                      air5_configure_runtime_layout
+    use chemistry_air5_data, only: air5_num_species,air5_idx_n2,air5_idx_o2
+    use chemistry_model, only: chemistry_status_ok
+    use chemistry_thermo, only: air5_species_gas_constant,air5_species_cv_tr, &
+                                air5_pressure
+    use chemistry_transport, only: air5_transport_properties
+#endif
     !
     ! local data
     character(len=8) :: mpimaxname
     real(8) :: sutherland_k
     integer :: transport_status
     logical :: transport_changed
+#ifdef ASTR_AIR5_CHEMISTRY
+    integer :: air5_layout_status
+    integer :: air5_status,air5_species
+    real(8) :: air5_rho_species(air5_num_species),air5_mu,air5_ktr,air5_kv
+    real(8) :: air5_species_mu(air5_num_species)
+    real(8) :: air5_binary_diff(air5_num_species,air5_num_species)
+    real(8) :: air5_mixture_diff(air5_num_species),air5_sound_speed
+#endif
     !
     if(trim(turbmode)=='k-omega') then
       num_modequ=2
@@ -52,6 +69,66 @@ module solver
     endif
     !
     numq=5+num_species+num_modequ
+#ifdef ASTR_AIR5_CHEMISTRY
+    call air5_configure_runtime_layout(lcomb,nondimen,lfilter,turbmode,num_species, &
+      num_modequ,numq,air5_layout_status)
+    if(air5_layout_status /= air5_layout_status_ok) then
+      if(lio) write(*,'(A,I0)') &
+        ' Invalid fixed air5 runtime layout, status=',air5_layout_status
+      error stop 'invalid fixed air5 runtime layout'
+    endif
+    if(lcomb) then
+      if(.not.(ia>0 .and. ja>0 .and. ka>0)) &
+        error stop 'fixed air5 C4 transport requires a three-dimensional grid'
+      if(ia<hm .or. ja<hm .or. ka<hm) &
+        error stop 'fixed air5 C4 grid is smaller than the halo width'
+      ndims=3
+      prandtl=0.72d0
+      allocate(spcinf(air5_num_species))
+      spcinf=0.d0
+      spcinf(air5_idx_n2)=0.7653d0
+      spcinf(air5_idx_o2)=0.2347d0
+      rgas=0.d0
+      cv=0.d0
+      do air5_species=1,air5_num_species
+        rgas=rgas+spcinf(air5_species)*air5_species_gas_constant(air5_species)
+        cv=cv+spcinf(air5_species)*air5_species_cv_tr(air5_species)
+      enddo
+      cp=cv+rgas
+      gamma=cp/cv
+      uinf=ref_vel
+      vinf=0.d0
+      winf=0.d0
+      tinf=ref_tem
+      roinf=ref_den
+      air5_rho_species=roinf*spcinf
+      call air5_pressure(air5_rho_species,tinf,pinf,air5_status)
+      if(air5_status/=chemistry_status_ok) &
+        error stop 'fixed air5 reference pressure is outside the validated domain'
+      call air5_transport_properties(tinf,tinf,pinf,spcinf,air5_mu,air5_ktr, &
+        air5_kv,air5_species_mu,air5_binary_diff,air5_mixture_diff,air5_status)
+      if(air5_status/=chemistry_status_ok) &
+        error stop 'fixed air5 reference transport state is outside the validated domain'
+      ref_miu=air5_mu
+      ref_tim=ref_len/ref_vel
+      air5_sound_speed=sqrt(gamma*pinf/roinf)
+      mach=ref_vel/air5_sound_speed
+      reynolds=ref_den*ref_vel*ref_len/ref_miu
+      const1=1.d0/(gamma*(gamma-1.d0)*mach**2)
+      const2=gamma*mach**2
+      const3=(gamma-1.d0)/3.d0*prandtl*mach**2
+      const4=(gamma-1.d0)*mach**2*reynolds*prandtl
+      const5=(gamma-1.d0)*mach**2
+      const6=1.d0/(gamma-1.d0)
+      const7=(gamma-1.d0)*mach**2*reynolds*prandtl
+      call udf_setflowenv
+      if(lio .and. ltimrpt) then
+        write(mpimaxname,'(i8.8)')mpisize
+        call timereporter(message=mpimaxname)
+      endif
+      return
+    endif
+#endif
     !
     if(ia>0 .and. ja>0 .and. ka>0) then
       ndims=3
@@ -208,7 +285,10 @@ module solver
     !
     use commarray, only : qrhs,x,q
     use commvar,   only : flowtype,conschm,diffterm,im,jm,             &
-                          recon_schem,limmbou,lchardecomp,lihomo
+                          recon_schem,limmbou,lchardecomp,lihomo,lcomb
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_flow_solver, only: air5_diffusion_rhs
+#endif
     use commcal,   only : ShockSolid,ducrossensor,shock_sensor_validation_enabled
     use comsolver, only : gradcal
     use userdefine,only : udf_src
@@ -277,7 +357,17 @@ module solver
     !
     if(nscbc_farfield_viscous_source_enabled())                       &
       call capture_nscbc_farfield_y_upper_prediff_rhs()
-    if(diffterm) call diffrsdcal6(timerept=ltimrpt,physical_boundary_rhs=physical_halo_rhs)
+    if(diffterm) then
+#ifdef ASTR_AIR5_CHEMISTRY
+      if(lcomb) then
+        call air5_diffusion_rhs()
+      else
+#endif
+        call diffrsdcal6(timerept=ltimrpt,physical_boundary_rhs=physical_halo_rhs)
+#ifdef ASTR_AIR5_CHEMISTRY
+      endif
+#endif
+    endif
     if(nscbc_farfield_viscous_source_enabled())                       &
       call apply_nscbc_farfield_y_upper_viscous_source()
     call write_rhs_validation_snapshot('full')

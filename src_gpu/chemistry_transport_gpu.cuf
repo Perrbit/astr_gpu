@@ -1,0 +1,249 @@
+module chemistry_transport_gpu
+  use iso_fortran_env, only: real64
+  use chemistry_air5_data, only: air5_num_species,air5_molar_mass, &
+    air5_blottner,air5_binary_diffusion,air5_atom_count,air5_formation_energy
+  use chemistry_model, only: chemistry_status_ok,chemistry_status_invalid_composition, &
+    chemistry_status_nonfinite,chemistry_status_out_of_domain
+  use chemistry_model_gpu, only: air5_finite_gpu,air5_pressure_is_in_domain_gpu
+  use chemistry_thermo_gpu, only: air5_species_gas_constant_gpu, &
+    air5_species_cv_tr_gpu,air5_species_vibrational_energy_gpu, &
+    air5_species_vibrational_cv_gpu
+  implicit none
+  private
+
+  public :: air5_transport_properties_gpu
+  public :: air5_diffusive_flux_gpu
+
+contains
+
+  attributes(device) subroutine air5_transport_properties_gpu(temperature,tv, &
+      pressure,mass_fraction,viscosity,conductivity_tr,conductivity_v, &
+      species_viscosity,binary_diffusion,mixture_diffusion,status)
+    real(real64), intent(in) :: temperature,tv,pressure
+    real(real64), intent(in) :: mass_fraction(air5_num_species)
+    real(real64), intent(out) :: viscosity,conductivity_tr,conductivity_v
+    real(real64), intent(out) :: species_viscosity(air5_num_species)
+    real(real64), intent(out) :: binary_diffusion(air5_num_species,air5_num_species)
+    real(real64), intent(out) :: mixture_diffusion(air5_num_species)
+    integer, intent(out) :: status
+    real(real64) :: mole_fraction(air5_num_species),phi(air5_num_species,air5_num_species)
+    real(real64) :: species_conductivity(air5_num_species), &
+      species_vibrational_conductivity(air5_num_species)
+    real(real64) :: log_temperature,mole_sum,fraction_sum,denominator,numerator
+    integer :: species,partner
+
+    viscosity=0.0_real64
+    conductivity_tr=0.0_real64
+    conductivity_v=0.0_real64
+    species_viscosity=0.0_real64
+    binary_diffusion=0.0_real64
+    mixture_diffusion=0.0_real64
+    if(.not.air5_finite_gpu(temperature) .or. .not.air5_finite_gpu(tv) .or. &
+       .not.air5_finite_gpu(pressure)) then
+      status=chemistry_status_nonfinite
+      return
+    endif
+    if(temperature<=0.0_real64 .or. tv<=0.0_real64 .or. &
+       .not.air5_pressure_is_in_domain_gpu(pressure)) then
+      status=chemistry_status_out_of_domain
+      return
+    endif
+    fraction_sum=0.0_real64
+    mole_sum=0.0_real64
+    do species=1,air5_num_species
+      if(.not.air5_finite_gpu(mass_fraction(species))) then
+        status=chemistry_status_nonfinite
+        return
+      endif
+      if(mass_fraction(species)<0.0_real64) then
+        status=chemistry_status_invalid_composition
+        return
+      endif
+      fraction_sum=fraction_sum+mass_fraction(species)
+      mole_sum=mole_sum+mass_fraction(species)/air5_molar_mass(species)
+    enddo
+    if(abs(fraction_sum-1.0_real64)>64.0_real64*epsilon(1.0_real64) .or. &
+       mole_sum<=0.0_real64) then
+      status=chemistry_status_invalid_composition
+      return
+    endif
+    do species=1,air5_num_species
+      mole_fraction(species)=(mass_fraction(species)/air5_molar_mass(species))/mole_sum
+    enddo
+
+    log_temperature=log(temperature)
+    do species=1,air5_num_species
+      species_viscosity(species)=0.1_real64*exp( &
+        air5_blottner(1,species)*log_temperature*log_temperature+ &
+        air5_blottner(2,species)*log_temperature+air5_blottner(3,species))
+      if(air5_atom_count(1,species)+air5_atom_count(2,species)==1) then
+        species_conductivity(species)=3.75_real64*species_viscosity(species)* &
+          air5_species_gas_constant_gpu(species)
+      else
+        species_conductivity(species)=4.75_real64*species_viscosity(species)* &
+          air5_species_gas_constant_gpu(species)
+      endif
+      species_vibrational_conductivity(species)=species_viscosity(species)* &
+        air5_species_vibrational_cv_gpu(species,tv)
+    enddo
+    do species=1,air5_num_species
+      do partner=1,air5_num_species
+        phi(species,partner)=(1.0_real64+sqrt(species_viscosity(species)/ &
+          species_viscosity(partner))*(air5_molar_mass(partner)/ &
+          air5_molar_mass(species))**0.25_real64)**2/ &
+          sqrt(8.0_real64*(1.0_real64+air5_molar_mass(species)/ &
+          air5_molar_mass(partner)))
+      enddo
+      denominator=0.0_real64
+      do partner=1,air5_num_species
+        denominator=denominator+mole_fraction(partner)*phi(species,partner)
+      enddo
+      viscosity=viscosity+mole_fraction(species)*species_viscosity(species)/denominator
+      conductivity_tr=conductivity_tr+ &
+        mole_fraction(species)*species_conductivity(species)/denominator
+      conductivity_v=conductivity_v+ &
+        mole_fraction(species)*species_vibrational_conductivity(species)/denominator
+    enddo
+
+    do species=1,air5_num_species
+      do partner=1,air5_num_species
+        binary_diffusion(species,partner)=10.1325_real64/pressure* &
+          exp(air5_binary_diffusion(4,species,partner))* &
+          temperature**(air5_binary_diffusion(1,species,partner)* &
+          log_temperature*log_temperature+air5_binary_diffusion(2,species,partner)* &
+          log_temperature+air5_binary_diffusion(3,species,partner))
+      enddo
+    enddo
+    do species=1,air5_num_species
+      numerator=0.0_real64
+      denominator=0.0_real64
+      do partner=1,air5_num_species
+        if(partner/=species) then
+          numerator=numerator+mole_fraction(partner)
+          denominator=denominator+mole_fraction(partner)/binary_diffusion(species,partner)
+        endif
+      enddo
+      if(numerator==0.0_real64) then
+        mixture_diffusion(species)=0.0_real64
+      elseif(denominator>0.0_real64) then
+        mixture_diffusion(species)=numerator/denominator
+      else
+        status=chemistry_status_invalid_composition
+        return
+      endif
+    enddo
+    if(.not.air5_finite_gpu(viscosity) .or. &
+       .not.air5_finite_gpu(conductivity_tr) .or. &
+       .not.air5_finite_gpu(conductivity_v)) then
+      status=chemistry_status_nonfinite
+      return
+    endif
+    do species=1,air5_num_species
+      if(.not.air5_finite_gpu(mixture_diffusion(species))) then
+        status=chemistry_status_nonfinite
+        return
+      endif
+      do partner=1,air5_num_species
+        if(.not.air5_finite_gpu(binary_diffusion(species,partner))) then
+          status=chemistry_status_nonfinite
+          return
+        endif
+      enddo
+    enddo
+    status=chemistry_status_ok
+  end subroutine air5_transport_properties_gpu
+
+  attributes(device) subroutine air5_diffusive_flux_gpu(rho,velocity,temperature, &
+      tv,pressure,mass_fraction,grad_velocity,grad_temperature,grad_tv, &
+      grad_mass_fraction,momentum_flux,species_flux,energy_flux,ev_flux,status)
+    real(real64), intent(in) :: rho,velocity(3),temperature,tv,pressure
+    real(real64), intent(in) :: mass_fraction(air5_num_species)
+    real(real64), intent(in) :: grad_velocity(3,3),grad_temperature(3),grad_tv(3)
+    real(real64), intent(in) :: grad_mass_fraction(air5_num_species,3)
+    real(real64), intent(out) :: momentum_flux(3,3)
+    real(real64), intent(out) :: species_flux(air5_num_species,3)
+    real(real64), intent(out) :: energy_flux(3),ev_flux(3)
+    integer, intent(out) :: status
+    real(real64) :: viscosity,conductivity_tr,conductivity_v, &
+      species_viscosity(air5_num_species),binary_diffusion(air5_num_species,air5_num_species), &
+      mixture_diffusion(air5_num_species),raw_flux(air5_num_species)
+    real(real64) :: divergence,trace_correction,enthalpy(air5_num_species), &
+      vibrational_energy(air5_num_species),stress_work,species_energy,species_ev
+    integer :: direction,species,i,j
+
+    momentum_flux=0.0_real64
+    species_flux=0.0_real64
+    energy_flux=0.0_real64
+    ev_flux=0.0_real64
+    if(.not.air5_finite_gpu(rho) .or. rho<=0.0_real64) then
+      status=chemistry_status_nonfinite
+      return
+    endif
+    do i=1,3
+      if(.not.air5_finite_gpu(velocity(i)) .or. &
+         .not.air5_finite_gpu(grad_temperature(i)) .or. &
+         .not.air5_finite_gpu(grad_tv(i))) then
+        status=chemistry_status_nonfinite
+        return
+      endif
+      do j=1,3
+        if(.not.air5_finite_gpu(grad_velocity(i,j))) then
+          status=chemistry_status_nonfinite
+          return
+        endif
+      enddo
+    enddo
+    do species=1,air5_num_species
+      do direction=1,3
+        if(.not.air5_finite_gpu(grad_mass_fraction(species,direction))) then
+          status=chemistry_status_nonfinite
+          return
+        endif
+      enddo
+    enddo
+    call air5_transport_properties_gpu(temperature,tv,pressure,mass_fraction, &
+      viscosity,conductivity_tr,conductivity_v,species_viscosity,binary_diffusion, &
+      mixture_diffusion,status)
+    if(status/=chemistry_status_ok) return
+
+    divergence=grad_velocity(1,1)+grad_velocity(2,2)+grad_velocity(3,3)
+    do j=1,3
+      do i=1,3
+        momentum_flux(i,j)=viscosity*(grad_velocity(i,j)+grad_velocity(j,i))
+        if(i==j) momentum_flux(i,j)=momentum_flux(i,j)- &
+          (2.0_real64/3.0_real64)*viscosity*divergence
+      enddo
+    enddo
+    do species=1,air5_num_species
+      vibrational_energy(species)=air5_species_vibrational_energy_gpu(species,tv)
+      enthalpy(species)=air5_species_cv_tr_gpu(species)*temperature+ &
+        vibrational_energy(species)+air5_formation_energy(species)+ &
+        air5_species_gas_constant_gpu(species)*temperature
+    enddo
+    do direction=1,3
+      trace_correction=0.0_real64
+      do species=1,air5_num_species
+        raw_flux(species)=-rho*mixture_diffusion(species)* &
+          grad_mass_fraction(species,direction)
+        trace_correction=trace_correction+raw_flux(species)
+      enddo
+      stress_work=0.0_real64
+      species_energy=0.0_real64
+      species_ev=0.0_real64
+      do species=1,air5_num_species
+        species_flux(species,direction)=raw_flux(species)- &
+          mass_fraction(species)*trace_correction
+        species_energy=species_energy+enthalpy(species)*species_flux(species,direction)
+        species_ev=species_ev+vibrational_energy(species)*species_flux(species,direction)
+      enddo
+      do i=1,3
+        stress_work=stress_work+momentum_flux(i,direction)*velocity(i)
+      enddo
+      energy_flux(direction)=stress_work+conductivity_tr*grad_temperature(direction)+ &
+        conductivity_v*grad_tv(direction)-species_energy
+      ev_flux(direction)=conductivity_v*grad_tv(direction)-species_ev
+    enddo
+    status=chemistry_status_ok
+  end subroutine air5_diffusive_flux_gpu
+
+end module chemistry_transport_gpu

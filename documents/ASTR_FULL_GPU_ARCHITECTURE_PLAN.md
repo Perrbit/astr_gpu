@@ -672,21 +672,27 @@ Acceptance:
 
 Goal:
 
-Optional / deferred unless a non-reacting multi-species validation target becomes necessary. With chemistry and combustion deferred, species transport must not block the shock/SBLI GPU track.
+Generic species transport remains deferred. The fixed air5 route reopens only
+the `numq=11` species/`Ev` ownership required by chemistry Phase C4. That fixed
+route now has resident state conversion, convection, diffusion, and halo
+exchange after the C2 source and C3 integrator gates passed independently.
 
 Tasks:
 
-- Keep the current GPU runtime gate rejecting `num_species > 0` until this phase is explicitly reopened.
-- Reopen only for a concrete need such as passive scalar transport, non-reacting multi-species mixing, variable molecular-weight gas modeling, or later combustion prerequisites.
-- When reopened, define device layout for species variables.
-- Extend halo exchange to species fields.
-- Extend diffusion and mixture-property support.
-- Add species validation oracle.
+- Keep the GPU runtime gate rejecting generic `num_species > 0` combinations;
+  admit only the explicit fixed-air5 C4 contract.
+- Preserve the completed fixed-air5 device layout, halo exchange, mixture
+  properties, and species-diffusion oracle while C5 adds chemistry coupling.
+- Reopen a generic layout only for a concrete need such as passive scalar
+  transport, a different multicomponent gas, or later fuel chemistry.
+- For any generic reopening, define an independent layout, transport model,
+  boundary contract, and validation oracle instead of inferring support from C4.
 
 Acceptance:
 
-- Current acceptance: `num_species > 0` remains an explicit unsupported GPU path.
-- Reopened acceptance: a selected non-reacting species case passes a defined CPU/GPU oracle.
+- Generic acceptance: unsupported mechanisms and species layouts remain explicit rejects.
+- Fixed-air5 acceptance: the C4 nonreacting species-wave and topology matrix passes
+  CPU/GPU, conservation, monotone-variance, halo, and sanitizer gates.
 
 ### Phase 4: Turbulence Models
 
@@ -710,7 +716,10 @@ Acceptance:
 
 Goal:
 
-Deferred / planned for later. Add species transport and chemistry/combustion source-term capability only after the current non-reacting and shock-capable GPU paths are more mature.
+The fixed five-species, two-temperature air chemistry track has passed its
+isolated source and GPU integrator gates. C4 now owns the species-bearing
+conservative state and nonreacting CFD transport. Chemical half-step coupling
+remains closed until Phase C5 passes its independent gates.
 
 Subphases:
 
@@ -718,28 +727,49 @@ Subphases:
   - First chemistry acceptance target.
   - Use `examples/Perfectly_Stirred_Reactor` or `examples/air_reactor` style cases to isolate chemistry source evaluation from species convection, species diffusion, wall boundaries, and multi-dimensional halo effects.
   - Validate thermochemistry state update, reaction-rate evaluation, mass-fraction normalization, positivity, and CPU/GPU source-term oracle before opening transport coupling.
-  - Current status: deferred. Cantera remains the CPU oracle/reference; no GPU chemistry backend has been selected.
-- **Phase 5B: 1D flame transport gate**
-  - Add species transport, species diffusion, and one-dimensional flame oracle after the source-only gate is stable.
-- **Phase 5C: 3D flame gate**
-  - Add `hitflame` or `tgvflame` style coupled flow/chemistry validation after species transport is resident and validated.
+  - Current status: C0 and C1 are complete for the fixed five-species,
+    two-temperature CPU FP64 baseline. C2 adds a one-thread-per-state CUDA
+    batch kernel for thermodynamic recovery, coupled chemical/V-T sources,
+    twelve reaction progress rates, and the complete analytic Jacobian.
+    Single-state and fourteen-state CPU/GPU gates, out-of-domain status parity,
+    explicit synchronization, and Compute Sanitizer pass. C3 adds the matching
+    one-thread-per-state adaptive GPU ROS-2 and scaled-pivot `6x6` LU. CPU/GPU
+    states and adaptive diagnostics match, sanitizer passes, and Nsight Compute
+    identifies register and local-memory pressure. C4 adds resident `numq=11`
+    state conversion, nonreacting convection/diffusion, and multi-rank halo;
+    its CPU/GPU and independent species-variance gates pass. C5 Strang coupling
+    is the active next target. Cantera is optional and is not the complete
+    two-temperature oracle.
+- **Phase 5B: quasi-one-dimensional transport and relaxation gate**
+  - Validate an extruded species wave, binary diffusion layer, vibrational-energy
+    pulse, and post-normal-shock relaxation before opening a complex case.
+- **Phase 5C: 3D reacting-flow gate**
+  - Add high-temperature TGV or HIT coupling after species transport and Strang
+    integration are resident and validated; this is a coupling gate, not a
+    chemistry-model physics oracle.
 - **Phase 5D: chemistry with high-speed/shock coupling**
   - Combine chemistry with Phase S only after both standalone chemistry and standalone shock-capable paths have separate oracles.
 
 Tasks:
 
-- Keep the current GPU runtime gate rejecting chemistry/species cases until Phase 5 is reopened.
-- Extend device data ownership from `numq=5` to species-bearing conservative variables.
-- Extend species halo exchange, filter/diffusion participation, and boundary ownership rules.
-- Decide chemistry backend strategy.
-- Define mechanism/table ownership.
-- Design batched source-term execution.
-- Validate stiff source integration separately before full coupling.
+- Keep generic chemistry/species combinations rejected while admitting only the
+  validated fixed-air5, `lfilter=f`, `numq=11` contract.
+- Preserve the completed C4 device ownership, state conversion, convection,
+  diffusion, and halo semantics as the transport baseline.
+- In C5, insert the two chemistry half steps around the existing full transport
+  step without communication inside the cell-local adaptive solve.
+- Preserve the fixed JSON/generated-Fortran backend and table ownership closed
+  in C0.
+- Keep the completed C2 batch source/Jacobian interface independent of CFD state.
+- Preserve the completed C1/C3 CPU/GPU stiff-integration oracle while coupling C5.
 
 Acceptance:
 
 - Phase 5A: a selected 0D/PSR chemistry source-only case passes a defined CPU/GPU oracle.
-- Later subphases: selected species-transport and coupled-flow cases pass their own CPU/GPU oracles.
+- Phase C4 transport: the selected nonreacting species case has passed its
+  CPU/GPU and independent monotone-variance oracle.
+- Later subphases: selected coupled-flow and relaxation cases pass their own
+  CPU/GPU and independent physics oracles.
 
 ### Phase S: Shock And High-Speed Wall-Bounded Flows
 
@@ -1162,24 +1192,24 @@ A800 performance, or production promotion.
 - regular-grid wall/source cases.
 - shock-format readiness cases.
 - high-speed wall-bounded and SBLI cases.
-- optional species case if reopened.
-- deferred turbulence and chemistry cases if reopened.
+- fixed air5 chemistry C2-C6 gates.
+- deferred turbulence and chemistry models beyond fixed air5.
 - immersed-boundary case.
 
 ## 8. Immediate Next Work
 
 Recommended immediate work after this plan:
 
-1. Treat CURVE-C21 as the frozen static single-block curvilinear baseline and keep `run_curvilinear_c21_aggregate.sh` as the release-level regression gate.
-2. Establish the A800 FP64 NP=1/2/4 baseline with TGV and a sufficiently three-dimensional curvilinear HBL/SBLI workload. Use it to freeze timing variation, memory, and kernel evidence for mixed-precision MP0.
-3. Screen only the smooth-flow MP1 workspace candidates before OpenSBLI. Preserve the FP64 default and do not combine candidates at this stage.
+1. Implement C5 Strang coupling using the completed C3 cell-local integrator and
+   C4 resident `numq=11` transport. First require a periodic uniform embedded
+   reactor to reproduce the zero-dimensional trajectory with zero spatial RHS.
+2. Treat CURVE-C21 as the frozen static single-block curvilinear baseline and keep `run_curvilinear_c21_aggregate.sh` as the release-level regression gate.
+3. Establish the A800 FP64 NP=1/2/4 baseline with TGV and a sufficiently three-dimensional curvilinear HBL/SBLI workload. Use it to freeze timing variation, memory, and kernel evidence for mixed-precision MP0.
 4. Complete the OpenSBLI Katzer laminar-SBLI goal: `t=13000/26000` time convergence, three grids, two time steps, and external wall-pressure, skin-friction, heat-flux, shock-location, and separation-length comparisons.
-5. Resolve the long-horizon restart trajectory question with same-phase full fields, spanwise-uniformity diagnostics, and shock-sensor/mask comparisons. Do not confuse a continuous restart seam with guaranteed bitwise identity over long nonlinear evolution.
-6. Repeat the locally closed MP2 candidates on A800 NP=1/2/4, then continue MP3-MP5 only after each affected FP64 physical oracle is closed. Evaluate shock-sensitive and filter workspaces independently.
-7. Use the A800 profile to decide whether to extend overlap to nonperiodic/SBLI paths or evaluate the existing selective-synchronization option. Keep explicit synchronization as the correctness baseline.
-8. Prototype one backend-neutral CUDA/HIP boundary through the existing facade, preferably with `ISO_C_BINDING` around representative derivative, filter, and halo pack/unpack kernels, before considering a broad AMD/DCU port.
-9. Freeze CURVE-C22 as the inviscid curved upper-y source-balanced `bctype=52` gate and CURVE-C23 as its first sixth-order explicit viscous-source-coupled slice. Extend to other open faces or more general viscous boundary terms only for a concrete case and a physical-normal contract; do not generalize `12/22/51/52` branches by analogy.
-10. Keep species, chemistry, RANS/LES, compact schemes, GPU HDF5, moving/multi-block grids, and immersed boundaries deferred unless project requirements reopen them.
+5. Repeat the locally closed MP2 candidates on A800 NP=1/2/4, then continue MP3-MP5 only after each affected FP64 physical oracle is closed. Evaluate shock-sensitive and filter workspaces independently.
+6. Use the A800 profile to decide whether to extend overlap to nonperiodic/SBLI paths or evaluate the existing selective-synchronization option. Keep explicit synchronization as the correctness baseline.
+7. Prototype one backend-neutral CUDA/HIP boundary through the existing facade, preferably with `ISO_C_BINDING` around representative derivative, filter, and halo pack/unpack kernels, before considering a broad AMD/DCU port.
+8. Freeze CURVE-C22 as the inviscid curved upper-y source-balanced `bctype=52` gate and CURVE-C23 as its first sixth-order explicit viscous-source-coupled slice. Extend to other open faces or more general viscous boundary terms only for a concrete case and a physical-normal contract; do not generalize `12/22/51/52` branches by analogy.
 
 ## 9. Explicit Non-Goals
 
@@ -1191,7 +1221,7 @@ The next architecture phase will not:
 - port HDF5/checkpoint writing to GPU;
 - reopen compact finite differences or compact filters;
 - add more artificial shock slices before the current OpenSBLI physical goal is closed;
-- start with chemistry;
+- broaden the fixed air5 chemistry scope to combustion, ions, or electrons;
 - start with immersed boundary;
 - treat two-GPU oversubscription runs as performance proof;
 - convert authoritative state, geometry, MPI halos, or checkpoints to FP32 as
@@ -1253,7 +1283,8 @@ Species, turbulence, chemistry, and immersed boundary can each force major data 
 
 Mitigation:
 
-- keep species, RANS/LES, and chemistry explicitly deferred unless reopened by a concrete requirement;
+- keep RANS/LES, combustion, ions, and chemistry models beyond fixed air5
+  explicitly deferred unless reopened by a concrete requirement;
 - add physics in ordered phases;
 - require explicit validation oracles per phase.
 

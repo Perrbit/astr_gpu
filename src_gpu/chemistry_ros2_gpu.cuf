@@ -1,0 +1,323 @@
+module chemistry_ros2_gpu
+  use iso_fortran_env, only: real64
+  use cudafor
+  use chemistry_air5_data, only: air5_num_species, air5_num_reactions
+  use chemistry_model, only: chemistry_status_ok, chemistry_status_out_of_domain, &
+    chemistry_status_nonfinite, chemistry_status_invalid_timestep, &
+    chemistry_status_invalid_tolerance, chemistry_status_step_limit
+  use chemistry_ros2, only: air5_ros2_gamma, air5_ros2_a21, air5_ros2_c21, &
+    air5_ros2_m1, air5_ros2_m2, air5_ros2_e1, air5_ros2_e2
+  use chemistry_model_gpu, only: air5_finite_gpu, &
+    air5_validate_physical_species_state_gpu, air5_pressure_is_in_domain_gpu
+  use chemistry_thermo_gpu, only: air5_temperature_from_q5_gpu, &
+    air5_tv_from_ev_gpu, air5_pressure_gpu
+  use chemistry_source_gpu, only: air5_instantaneous_source_gpu, &
+    air5_instantaneous_source_jacobian_gpu
+  use chemistry_linear6_gpu, only: air5_lu_factor_6_gpu, air5_lu_solve_6_gpu
+  use gpu_check, only: sync_after_kernel
+  implicit none
+  private
+
+  public :: air5_ros2_advance_gpu
+  public :: launch_air5_ros2_batch_gpu
+
+contains
+
+  attributes(device) subroutine air5_validate_ros2_candidate_gpu(rho,momentum, &
+      q5,state,status)
+    real(real64), intent(in) :: rho, momentum(3), q5, state(6)
+    integer, intent(out) :: status
+    real(real64) :: temperature, tv, pressure
+
+    call air5_validate_physical_species_state_gpu(rho, &
+      state(1:air5_num_species),status)
+    if (status /= chemistry_status_ok) return
+    if (.not.air5_finite_gpu(state(6))) then
+      status = chemistry_status_nonfinite
+      return
+    end if
+    if (state(6) < 0.0_real64) then
+      status = chemistry_status_out_of_domain
+      return
+    end if
+    call air5_temperature_from_q5_gpu(rho,momentum,state(1:air5_num_species), &
+      state(6),q5,temperature,status)
+    if (status /= chemistry_status_ok) return
+    call air5_tv_from_ev_gpu(state(1:air5_num_species),state(6),tv,status)
+    if (status /= chemistry_status_ok) return
+    call air5_pressure_gpu(state(1:air5_num_species),temperature,pressure,status)
+    if (status /= chemistry_status_ok) return
+    if (.not.air5_pressure_is_in_domain_gpu(pressure)) then
+      status = chemistry_status_out_of_domain
+    else
+      status = chemistry_status_ok
+    end if
+  end subroutine air5_validate_ros2_candidate_gpu
+
+  attributes(device) subroutine air5_ros2_fixed_step_gpu(rho,momentum,q5,state, &
+      step,candidate,error_estimate,status,retryable,rhs_evaluations, &
+      jacobian_evaluations,source_mode)
+    real(real64), intent(in) :: rho, momentum(3), q5, state(6), step
+    real(real64), intent(out) :: candidate(6), error_estimate(6)
+    integer, intent(out) :: status, rhs_evaluations, jacobian_evaluations
+    logical, intent(out) :: retryable
+    integer, intent(in) :: source_mode
+    real(real64) :: source(6), jacobian(6,6)
+    real(real64) :: reaction_progress(air5_num_reactions)
+    real(real64) :: matrix(6,6), lu(6,6), stage_state(6)
+    real(real64) :: stage_source(6), k1(6), k2(6), rhs(6)
+    integer :: pivots(6), index, row
+
+    candidate = state
+    error_estimate = 0.0_real64
+    retryable = .false.
+    rhs_evaluations = 0
+    jacobian_evaluations = 0
+    if (.not.air5_finite_gpu(step) .or. step <= 0.0_real64) then
+      status = chemistry_status_invalid_timestep
+      return
+    end if
+    call air5_instantaneous_source_jacobian_gpu(rho,momentum,q5,state,source, &
+      jacobian,reaction_progress,status,source_mode)
+    rhs_evaluations = 1
+    jacobian_evaluations = 1
+    if (status /= chemistry_status_ok) return
+    retryable = .true.
+
+    do row = 1, 6
+      do index = 1, 6
+        matrix(row,index) = -step*air5_ros2_gamma*jacobian(row,index)
+      end do
+      matrix(row,row) = matrix(row,row)+1.0_real64
+      rhs(row) = step*air5_ros2_gamma*source(row)
+    end do
+    call air5_lu_factor_6_gpu(matrix,lu,pivots,status)
+    if (status /= chemistry_status_ok) return
+    call air5_lu_solve_6_gpu(lu,pivots,rhs,k1,status)
+    if (status /= chemistry_status_ok) return
+
+    do index = 1, 6
+      stage_state(index) = state(index)+air5_ros2_a21*k1(index)
+    end do
+    call air5_instantaneous_source_gpu(rho,momentum,q5,stage_state,stage_source, &
+      status,source_mode)
+    rhs_evaluations = 2
+    if (status /= chemistry_status_ok) return
+
+    do index = 1, 6
+      rhs(index) = step*air5_ros2_gamma*stage_source(index)+ &
+        air5_ros2_gamma*air5_ros2_c21*k1(index)
+    end do
+    call air5_lu_solve_6_gpu(lu,pivots,rhs,k2,status)
+    if (status /= chemistry_status_ok) return
+    do index = 1, 6
+      candidate(index) = state(index)+air5_ros2_m1*k1(index)+air5_ros2_m2*k2(index)
+      error_estimate(index) = air5_ros2_e1*k1(index)+air5_ros2_e2*k2(index)
+      if (.not.air5_finite_gpu(candidate(index)) .or. &
+          .not.air5_finite_gpu(error_estimate(index))) then
+        candidate = state
+        error_estimate = 0.0_real64
+        status = chemistry_status_nonfinite
+        return
+      end if
+    end do
+    call air5_validate_ros2_candidate_gpu(rho,momentum,q5,candidate,status)
+    if (status /= chemistry_status_ok) then
+      candidate = state
+      error_estimate = 0.0_real64
+    end if
+  end subroutine air5_ros2_fixed_step_gpu
+
+  attributes(device) subroutine air5_ros2_weighted_error_norm_gpu(state,candidate, &
+      estimate,rtol,atol,error_norm)
+    real(real64), intent(in) :: state(6), candidate(6), estimate(6), rtol, atol(6)
+    real(real64), intent(out) :: error_norm
+    real(real64) :: scaled(6), maximum_scaled, sum_squares
+    integer :: index
+
+    maximum_scaled = 0.0_real64
+    do index = 1, 6
+      scaled(index) = abs(estimate(index))/(atol(index)+ &
+        rtol*max(abs(state(index)),abs(candidate(index))))
+      maximum_scaled = max(maximum_scaled,scaled(index))
+    end do
+    if (.not.air5_finite_gpu(maximum_scaled)) then
+      error_norm = huge(1.0_real64)
+    else if (maximum_scaled == 0.0_real64) then
+      error_norm = 0.0_real64
+    else
+      sum_squares = 0.0_real64
+      do index = 1, 6
+        sum_squares = sum_squares+(scaled(index)/maximum_scaled)**2
+      end do
+      error_norm = maximum_scaled*sqrt(sum_squares/6.0_real64)
+    end if
+  end subroutine air5_ros2_weighted_error_norm_gpu
+
+  attributes(device) subroutine air5_ros2_advance_gpu(rho,momentum,q5,state, &
+      duration,initial_step,rtol,atol,max_attempts,final_state,suggested_step, &
+      accepted_steps,rejected_steps,rhs_evaluations,jacobian_evaluations,status, &
+      source_mode)
+    real(real64), intent(in) :: rho, momentum(3), q5, state(6), duration
+    real(real64), intent(in) :: initial_step, rtol, atol(6)
+    integer, intent(in) :: max_attempts, source_mode
+    real(real64), intent(out) :: final_state(6), suggested_step
+    integer, intent(out) :: accepted_steps, rejected_steps
+    integer, intent(out) :: rhs_evaluations, jacobian_evaluations, status
+    real(real64), parameter :: safety = 0.9_real64
+    real(real64), parameter :: minimum_factor = 0.2_real64
+    real(real64), parameter :: maximum_factor = 5.0_real64
+    real(real64) :: current(6), candidate(6), error_estimate(6)
+    real(real64) :: elapsed, step, remaining, error_norm, factor
+    integer :: attempt, attempt_rhs, attempt_jac, attempt_status, index
+    logical :: retryable, previous_rejected
+
+    final_state = state
+    suggested_step = 0.0_real64
+    accepted_steps = 0
+    rejected_steps = 0
+    rhs_evaluations = 0
+    jacobian_evaluations = 0
+    status = chemistry_status_ok
+    if (.not.air5_finite_gpu(duration) .or. .not.air5_finite_gpu(initial_step)) then
+      status = chemistry_status_invalid_timestep
+      return
+    end if
+    if (duration <= 0.0_real64 .or. initial_step <= 0.0_real64) then
+      status = chemistry_status_invalid_timestep
+      return
+    end if
+    if (.not.air5_finite_gpu(rtol)) then
+      status = chemistry_status_invalid_tolerance
+      return
+    end if
+    do index = 1, 6
+      if (.not.air5_finite_gpu(atol(index)) .or. atol(index) <= 0.0_real64) then
+        status = chemistry_status_invalid_tolerance
+        return
+      end if
+    end do
+    if (rtol <= 0.0_real64) then
+      status = chemistry_status_invalid_tolerance
+      return
+    end if
+    if (max_attempts <= 0) then
+      status = chemistry_status_step_limit
+      return
+    end if
+    call air5_validate_ros2_candidate_gpu(rho,momentum,q5,state,status)
+    if (status /= chemistry_status_ok) return
+
+    current = state
+    elapsed = 0.0_real64
+    step = min(initial_step,duration)
+    previous_rejected = .false.
+    do attempt = 1, max_attempts
+      remaining = duration-elapsed
+      step = min(step,remaining)
+      if (step <= 0.0_real64 .or. elapsed+step == elapsed) then
+        final_state = state
+        suggested_step = step
+        status = chemistry_status_step_limit
+        return
+      end if
+      call air5_ros2_fixed_step_gpu(rho,momentum,q5,current,step,candidate, &
+        error_estimate,attempt_status,retryable,attempt_rhs,attempt_jac,source_mode)
+      rhs_evaluations = rhs_evaluations+attempt_rhs
+      jacobian_evaluations = jacobian_evaluations+attempt_jac
+      if (attempt_status == chemistry_status_ok) then
+        call air5_ros2_weighted_error_norm_gpu(current,candidate,error_estimate, &
+          rtol,atol,error_norm)
+        if (error_norm <= 1.0_real64) then
+          current = candidate
+          elapsed = elapsed+step
+          accepted_steps = accepted_steps+1
+          if (error_norm == 0.0_real64) then
+            factor = maximum_factor
+          else
+            factor = min(maximum_factor,max(minimum_factor, &
+              safety/sqrt(error_norm)))
+          end if
+          if (previous_rejected) factor = min(1.0_real64,factor)
+          suggested_step = step*factor
+          previous_rejected = .false.
+          if (elapsed >= duration) then
+            final_state = current
+            status = chemistry_status_ok
+            return
+          end if
+          step = min(suggested_step,duration-elapsed)
+          cycle
+        end if
+        if (air5_finite_gpu(error_norm)) then
+          factor = max(minimum_factor,min(1.0_real64,safety/sqrt(error_norm)))
+        else
+          factor = minimum_factor
+        end if
+        step = step*factor
+      else if (retryable) then
+        step = 0.5_real64*step
+      else
+        final_state = state
+        suggested_step = step
+        status = attempt_status
+        return
+      end if
+      rejected_steps = rejected_steps+1
+      suggested_step = step
+      previous_rejected = .true.
+    end do
+
+    final_state = state
+    status = chemistry_status_step_limit
+  end subroutine air5_ros2_advance_gpu
+
+  attributes(global) subroutine air5_ros2_batch_kernel(rho,momentum,q5,state, &
+      duration,initial_step,rtol,atol,max_attempts,final_state,suggested_step, &
+      accepted_steps,rejected_steps,rhs_evaluations,jacobian_evaluations,status, &
+      count,source_mode)
+    integer, value :: count, max_attempts, source_mode
+    real(real64), value :: duration, rtol
+    real(real64), device, intent(in) :: rho(count), momentum(3,count), q5(count)
+    real(real64), device, intent(in) :: state(6,count), initial_step(count)
+    real(real64), device, intent(in) :: atol(6,count)
+    real(real64), device, intent(out) :: final_state(6,count), suggested_step(count)
+    integer, device, intent(out) :: accepted_steps(count), rejected_steps(count)
+    integer, device, intent(out) :: rhs_evaluations(count), jacobian_evaluations(count)
+    integer, device, intent(out) :: status(count)
+    integer :: index
+
+    index = (blockIdx%x-1)*blockDim%x+threadIdx%x
+    if (index > count) return
+    call air5_ros2_advance_gpu(rho(index),momentum(:,index),q5(index), &
+      state(:,index),duration,initial_step(index),rtol,atol(:,index),max_attempts, &
+      final_state(:,index),suggested_step(index),accepted_steps(index), &
+      rejected_steps(index),rhs_evaluations(index),jacobian_evaluations(index), &
+      status(index),source_mode)
+  end subroutine air5_ros2_batch_kernel
+
+  subroutine launch_air5_ros2_batch_gpu(rho,momentum,q5,state,duration, &
+      initial_step,rtol,atol,max_attempts,final_state,suggested_step, &
+      accepted_steps,rejected_steps,rhs_evaluations,jacobian_evaluations,status, &
+      count,source_mode)
+    integer, intent(in) :: count, max_attempts, source_mode
+    real(real64), intent(in) :: duration, rtol
+    real(real64), device, intent(in) :: rho(count), momentum(3,count), q5(count)
+    real(real64), device, intent(in) :: state(6,count), initial_step(count)
+    real(real64), device, intent(in) :: atol(6,count)
+    real(real64), device, intent(out) :: final_state(6,count), suggested_step(count)
+    integer, device, intent(out) :: accepted_steps(count), rejected_steps(count)
+    integer, device, intent(out) :: rhs_evaluations(count), jacobian_evaluations(count)
+    integer, device, intent(out) :: status(count)
+    type(dim3) :: block, grid
+
+    if (count <= 0) return
+    block = dim3(128,1,1)
+    grid = dim3((count+block%x-1)/block%x,1,1)
+    call air5_ros2_batch_kernel<<<grid,block>>>(rho,momentum,q5,state,duration, &
+      initial_step,rtol,atol,max_attempts,final_state,suggested_step,accepted_steps, &
+      rejected_steps,rhs_evaluations,jacobian_evaluations,status,count,source_mode)
+    call sync_after_kernel('air5_ros2_batch_kernel',force_sync=.true.)
+  end subroutine launch_air5_ros2_batch_gpu
+
+end module chemistry_ros2_gpu

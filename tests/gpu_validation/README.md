@@ -3912,3 +3912,377 @@ five-component workspace is exactly 50% of its FP64 allocation in every tested
 topology. This is classified as `hbl-cartesian-local-pass-not-promoted`.
 Long-time HBL physics, physical SBLI, NSCBC and `bctype=52`, sponge, filtering,
 CURVE, chemistry, A800 timing, and production speedup remain outside the gate.
+
+## Fixed air5 chemistry C0-C3 source and integrator gate
+
+Run the fixed-mechanism, thermodynamic, source/Jacobian, build-contract,
+independent Radau, and ROS-2 tests from the repository root:
+
+```bash
+python3 -m pytest -q \
+  tests/gpu_validation/test_air5_mechanism_generator.py \
+  tests/gpu_validation/test_chemistry_thermo.py \
+  tests/gpu_validation/test_chemistry_source.py \
+  tests/gpu_validation/test_air5_cmake_contract.py \
+  tests/gpu_validation/test_air5_radau_reference.py \
+  tests/gpu_validation/test_chemistry_ros2.py
+```
+
+The CPU-only C0-C1 result is `46 passed, 18 subtests passed`. The gate covers the
+fixed five-species/two-temperature FP64 model, analytic Jacobian, scaled
+six-by-six LU, KPP ROS-2 2(1), coupled and component-only source modes,
+representative in-domain trajectories, strict out-of-domain rejection, and
+comparison with an independent JSON-driven SciPy Radau implementation. GNU 15,
+NVHPC 26.1, and the NVHPC CUDA-enabled top-level builds pass.
+
+Build and run the C2 CUDA source probe through the top-level CMake project:
+
+```bash
+cmake -S . -B /tmp/astr_c2_build \
+  -DASTR_WITH_CUDA=ON -DASTR_WITH_AIR5_CHEMISTRY=ON
+cmake --build /tmp/astr_c2_build --target chemistry_source_gpu_probe -j2
+ASTR_CHEMISTRY_GPU_PROBE_EXE=/tmp/astr_c2_build/bin/chemistry_source_gpu_probe \
+  python3 -m pytest -q tests/gpu_validation/test_chemistry_source_gpu.py
+compute-sanitizer --tool memcheck --leak-check full \
+  /tmp/astr_c2_build/bin/chemistry_source_gpu_probe
+```
+
+The combined 2026-09-14 result is `52 passed, 18 subtests passed`. The GPU
+probe runs both `count=1` and fourteen-state batches for coupled,
+chemical-only, and VT-only modes. It covers cold, near-equilibrium, strongly
+reacting, valid pressure-endpoint, out-of-domain temperature/pressure,
+negative-species, and NaN states. Maximum normalized gate ratios are
+`1.8764e-2` for the six source components, `1.4003e-2` for the twelve reaction
+progress rates, and `4.8773e-4` for the analytic Jacobian. Total-energy source
+and `q5` change are exactly zero, all CPU/GPU status codes match, and Compute
+Sanitizer reports zero errors and zero leaked bytes.
+
+C2 is an integrator-independent CUDA source evaluator. It does not claim GPU
+`numq=11` CFD coupling, species transport or halo exchange, reacting boundary
+conditions, or reacting-flow physical validation.
+
+Build and run the C3 CUDA ROS-2 probe through the same top-level project:
+
+```bash
+cmake -S . -B /tmp/astr_c3_build \
+  -DASTR_WITH_CUDA=ON -DASTR_WITH_AIR5_CHEMISTRY=ON
+cmake --build /tmp/astr_c3_build --target \
+  chemistry_source_gpu_probe chemistry_ros2_gpu_probe -j2
+ASTR_CHEMISTRY_GPU_PROBE_EXE=/tmp/astr_c3_build/bin/chemistry_source_gpu_probe \
+ASTR_CHEMISTRY_ROS2_GPU_PROBE_EXE=/tmp/astr_c3_build/bin/chemistry_ros2_gpu_probe \
+  python3 -m pytest -q tests/gpu_validation/test_air5_cmake_contract.py \
+  tests/gpu_validation/test_air5_mechanism_generator.py \
+  tests/gpu_validation/test_air5_radau_reference.py \
+  tests/gpu_validation/test_chemistry_thermo.py \
+  tests/gpu_validation/test_chemistry_source.py \
+  tests/gpu_validation/test_chemistry_ros2.py \
+  tests/gpu_validation/test_chemistry_source_gpu.py \
+  tests/gpu_validation/test_chemistry_ros2_gpu.py
+compute-sanitizer --tool memcheck --leak-check full \
+  /tmp/astr_c3_build/bin/chemistry_ros2_gpu_probe
+```
+
+The combined C3 result is `58 passed, 18 subtests passed`. The four-state,
+three-mode trajectory matrix and `count=1` path match the CPU ROS-2 oracle;
+adaptive accept/reject and RHS/Jacobian counts are identical. The maximum final
+state gate ratio is `2.7558e-4`, while mass, nitrogen, and oxygen drifts remain
+below `1.6e-15`. Invalid controls, invalid states, and attempt exhaustion return
+the CPU status and initial state. Direct GPU LU tests cover pivoting, scaled,
+and singular matrices. Compute Sanitizer reports zero errors and zero leaked
+bytes.
+
+For local profiling only, run:
+
+```bash
+/tmp/astr_c3_build/bin/chemistry_ros2_gpu_probe profile
+ncu --set basic --kernel-name regex:air5_ros2_batch_kernel --launch-count 1 \
+  /tmp/astr_c3_build/bin/chemistry_ros2_gpu_probe profile
+```
+
+On the local RTX 4000 Ada, the 8192-state mixed batch uses 156 registers per
+thread, reaches 12.4% achieved occupancy, and shows substantial local-memory
+traffic. Accepted and rejected substep ranges are `1..15` and `0..2`. This is
+a bottleneck diagnosis on a 0.44-wave grid, not a production throughput result.
+C3 remains isolated from the CFD state. C4 owns resident `numq=11`, species/`Ev`
+transport, and halo exchange; C5 owns Strang coupling.
+
+Phase C4 connects the fixed-air5 state to the nonreacting CFD transport loop.
+Build through the top-level project and run the complete unit/probe matrix:
+
+```bash
+cmake -S . -B /tmp/astr_c4_build \
+  -DASTR_WITH_CUDA=ON -DASTR_WITH_AIR5_CHEMISTRY=ON
+cmake --build /tmp/astr_c4_build --target \
+  astr chemistry_source_gpu_probe chemistry_ros2_gpu_probe \
+  chemistry_flow_gpu_probe halo_exchange_contract_test -j2
+ASTR_CHEMISTRY_GPU_PROBE_EXE=/tmp/astr_c4_build/bin/chemistry_source_gpu_probe \
+ASTR_CHEMISTRY_ROS2_GPU_PROBE_EXE=/tmp/astr_c4_build/bin/chemistry_ros2_gpu_probe \
+ASTR_CHEMISTRY_FLOW_GPU_PROBE_EXE=/tmp/astr_c4_build/bin/chemistry_flow_gpu_probe \
+  python3 -m pytest -q \
+  tests/gpu_validation/test_air5_c4_conservation.py \
+  tests/gpu_validation/test_air5_c4_halo_contract.py \
+  tests/gpu_validation/test_air5_c4_species_variance.py \
+  tests/gpu_validation/test_air5_cmake_contract.py \
+  tests/gpu_validation/test_air5_mechanism_generator.py \
+  tests/gpu_validation/test_air5_radau_reference.py \
+  tests/gpu_validation/test_chemistry_flow.py \
+  tests/gpu_validation/test_chemistry_flow_gpu.py \
+  tests/gpu_validation/test_chemistry_thermo.py \
+  tests/gpu_validation/test_chemistry_source.py \
+  tests/gpu_validation/test_chemistry_ros2.py \
+  tests/gpu_validation/test_chemistry_source_gpu.py \
+  tests/gpu_validation/test_chemistry_ros2_gpu.py \
+  tests/gpu_validation/test_chemistry_state_layout.py
+```
+
+The C4 result is `80 passed, 18 subtests passed`. The fixed state is
+`q(1)=rho`, `q(2:4)=rho*u`, `q(5)=rho*E`, `q(6:10)=rho*Ys`, and
+`q(11)=Ev`. In an air5-enabled build, runtime `lcomb=t` requires exactly five
+species, `turbmode=none`, and `lfilter=f`, then resolves
+`num_modequ=1,numq=11`. Invalid combinations fail before changing the layout;
+`lcomb=f` preserves the established nonreacting layout.
+
+Run the independent diffusion-direction gate with a nonuniform composition:
+
+```bash
+INITIAL_CONDITION=species-wave GRID=16,16,16 MAXSTEP=0 DELTAT=1.d-6 \
+  BUILD_DIR=/tmp/astr_c4_build \
+  OUT_DIR=/tmp/air5_c4_species_wave_np1 \
+  tests/gpu_validation/run_air5_c4_transport_compare.sh
+```
+
+The `air5wave` case has zero velocity, uniform pressure and temperature, and a
+three-axis N2/O2 sinusoidal perturbation. After one RK step, the density-weighted
+N2 variance decreases by `3.3721e-6` while its mean changes by at most
+`1.46e-16`. This gate caught a shared CPU/GPU sign error that field equivalence
+and global conservation could not detect: because
+`Js=-rho*Ds*grad(Ys)`, species RHS assembly must subtract `div(Js)`. The same
+gate passes for NP=2 x/y/z slabs and NP=8 `2x2x2`.
+
+Uniform-composition TGV passes NP=1, all NP=2 slabs, and NP=8 `2x2x2`; the
+largest CPU/GPU field errors are `4.44e-15` and `3.55e-15`. The NP=1 ten-step
+maximum relative mass, energy, and elemental drift is `7.37e-14`. The
+production halo executable passes exactly for NP=2 and NP=3 with `pageable`,
+`pinned`, and `pinned-overlap` backends.
+
+For memcheck, isolate the CUDA Fortran executable from OpenMPI CUDA buffer
+instrumentation:
+
+```bash
+OMPI_MCA_pml=ob1 OMPI_MCA_btl=self OMPI_MCA_osc=pt2pt \
+OMPI_MCA_coll=^hcoll,ucc OMPI_MCA_opal_cuda_support=0 \
+UCX_MEMTYPE_CACHE=n mpirun -np 1 \
+  compute-sanitizer --tool memcheck --leak-check full --error-exitcode 99 \
+  /tmp/astr_c4_build/bin/chemistry_flow_gpu_probe
+```
+
+The isolated run reports `0 errors` and `0 bytes leaked`. Without this MPI
+isolation, Compute Sanitizer can report invalid accesses from OpenMPI's CUDA
+buffer-detection path rather than from an ASTR kernel.
+
+C4 cases do not call the ROS-2 chemistry kernel from the CFD time loop. The
+first C5 gate is a separate `air5reactor` flowtype, so the C4 TGV and
+`air5wave` cases remain frozen-chemistry references.
+
+## Fixed air5 chemistry C5 embedded-reactor gate
+
+Build the top-level CUDA and air5 executable, then run the NP=1 gate:
+
+```bash
+BUILD_DIR=/tmp/astr_c5_build \
+OUT_DIR=/tmp/air5_c5_embedded_reactor_np1 \
+  tests/gpu_validation/run_air5_c5_embedded_reactor_compare.sh
+```
+
+The driver uses a periodic `6x6x6` grid, `lfilter=f`, sixth-order explicit
+convection/diffusion, `dt=2e-10 s`, and one complete Strang step. It compares
+active CPU/GPU states before chemistry, after each chemistry half step, and
+after transport. The dedicated checker requires a uniform field, unchanged
+`q(1:5)` across chemistry, a numerically zero spatial update, a nonzero
+chemistry update, species-mass closure, and N/O elemental closure.
+
+Run the three NP=2 slab gates with local dimensions no smaller than six:
+
+```bash
+GRID=12,6,6 MPI_NP=2 TOPOLOGY=2,1,1 OUT_DIR=/tmp/air5_c5_np2_x \
+  tests/gpu_validation/run_air5_c5_embedded_reactor_compare.sh
+GRID=6,12,6 MPI_NP=2 TOPOLOGY=1,2,1 OUT_DIR=/tmp/air5_c5_np2_y \
+  tests/gpu_validation/run_air5_c5_embedded_reactor_compare.sh
+GRID=6,6,12 MPI_NP=2 TOPOLOGY=1,1,2 OUT_DIR=/tmp/air5_c5_np2_z \
+  tests/gpu_validation/run_air5_c5_embedded_reactor_compare.sh
+```
+
+NP=1 and all three NP=2 slabs pass. The maximum CPU/GPU phase error is
+`1.36e-12`; transport drift is `2.27e-13`; species-mass closure is
+`2.08e-17`; and N/O relative drift is `7.77e-16`. Each half step reports
+maximum accept/reject/RHS/Jacobian counts of `56/3/118/59`. The C5 coupling
+kernel is compiled separately from the C4 directional transport file because
+ROS-2 requires more registers than the 128-register cap used to keep the
+prescribed 512-thread transport kernels launchable.
+
+With OpenMPI CUDA detection disabled, the NP=1 full executable reports
+`ERROR SUMMARY: 0 errors` and `LEAK SUMMARY: 0 bytes leaked`. This gate does
+not validate nonuniform reacting transport, reacting boundaries or restart,
+post-shock relaxation, high-temperature TGV, or reacting SBLI.
+
+## Fixed air5 chemistry C5 frozen-transport gate
+
+The item-2 driver runs three periodic quasi-one-dimensional cases in one
+invocation: a translating N2/O2 composition wave, an N2/O2 diffusion layer on
+a fixed N/O/NO background, and a vibrational-energy pulse. Chemistry remains
+frozen. The default `dt=5e-7 s` is subject to a hard `current CFL < 1` gate.
+
+Run NP=1 and the three NP=2 slab layouts as follows:
+
+```bash
+BUILD_DIR=/tmp/astr_c5_cuda_build \
+OUT_DIR=/tmp/air5_c5_frozen_np1 \
+  tests/gpu_validation/run_air5_c5_frozen_transport_compare.sh
+
+GRID=48,6,6 MPI_NP=2 TOPOLOGY=2,1,1 \
+BUILD_DIR=/tmp/astr_c5_cuda_build OUT_DIR=/tmp/air5_c5_frozen_np2_x \
+  tests/gpu_validation/run_air5_c5_frozen_transport_compare.sh
+
+GRID=48,12,6 MPI_NP=2 TOPOLOGY=1,2,1 \
+BUILD_DIR=/tmp/astr_c5_cuda_build OUT_DIR=/tmp/air5_c5_frozen_np2_y \
+  tests/gpu_validation/run_air5_c5_frozen_transport_compare.sh
+
+GRID=48,6,12 MPI_NP=2 TOPOLOGY=1,1,2 \
+BUILD_DIR=/tmp/astr_c5_cuda_build OUT_DIR=/tmp/air5_c5_frozen_np2_z \
+  tests/gpu_validation/run_air5_c5_frozen_transport_compare.sh
+```
+
+The checker assembles the global periodic x line across x ranks and
+independently reconstructs temperature, vibrational temperature, transport
+properties, correction flux, complete `q5/Ev` diffusion flux, and the
+sixth-order semi-discrete RHS from the versioned mechanism JSON. Only the
+advection case has a continuum analytic Fourier-translation comparison. The
+diffusion-layer and `Ev`-pulse gates use the independent semi-discrete oracle,
+global conservation, invariants, extrusion consistency, and variance decay.
+
+All four layouts pass at observed CFL `0.6066073-0.6672681`. Across 12
+CPU/GPU reports the maximum absolute field difference is `1.1642e-10`.
+The maximum conservation drift is `1.8176e-13`; the Fourier translation
+scaled error is `9.0452e-11`. The diffusion layer has correction-velocity
+peak `3.5471e-3`, activates all five species RHS, and reduces N2 variance by
+about `2.1298e-5`. The `Ev` pulse reduces variance by `3.1685e-5` while the
+`q5-Ev` invariant scaled error remains below `2.0474e-14`.
+
+Prepare a diffusion-layer case and run the full executable under memcheck with
+OpenMPI CUDA buffer detection isolated:
+
+```bash
+python3 tests/gpu_validation/prepare_air5_c4_case.py \
+  --destination /tmp/air5_c5_frozen_memcheck --grid 48,6,6 \
+  --maxstep 0 --deltat 5.d-7 --diffterm t --use-gpu t \
+  --initial-condition diffusion-layer
+cd /tmp/air5_c5_frozen_memcheck
+OMPI_MCA_pml=ob1 OMPI_MCA_btl=self OMPI_MCA_osc=pt2pt \
+OMPI_MCA_coll=^hcoll,ucc OMPI_MCA_opal_cuda_support=0 \
+UCX_MEMTYPE_CACHE=n ASTR_FORCE_MPI_TOPOLOGY=1,1,1 mpirun -np 1 \
+  compute-sanitizer --tool memcheck --error-exitcode 99 \
+  /tmp/astr_c5_cuda_build/bin/astr run datin/input.air5_c4
+```
+
+The isolated run reports `ERROR SUMMARY: 0 errors`. This invocation does not
+enable full leak checking, so it provides no leak-byte conclusion. C5 item 2
+does not validate chemistry acting on nonuniform transport, reacting boundary
+conditions, restart, post-shock relaxation, high-temperature TGV, or SBLI.
+
+The complete C0-through-C5-item-2 chemistry unit, probe, and static-contract
+matrix reports `92 passed, 18 subtests passed`. The existing `air5wave`
+frozen-chemistry regression also remains passing after the C5 integration,
+with maximum CPU/GPU absolute field difference `2.91e-11`.
+
+## Fixed air5 chemistry C5 post-shock reference
+
+Generate the independent steady one-dimensional reference profile with:
+
+```bash
+python3 tests/gpu_validation/generate_air5_postshock_profile.py \
+  --mechanism chemMech/air5_kimjo12.json \
+  --output /tmp/air5_postshock_profile.dat \
+  --points 513 --length 0.02 --source-mode coupled --rtol 1e-10
+```
+
+The reference first applies a frozen normal-shock jump to a `T1=500 K`,
+`p1=5 kPa`, `M1=8`, `Tv1=500 K` air state. It then integrates the steady
+finite-rate equations while holding mass flux, momentum flux, and total
+enthalpy constant. Density, speed, pressure, and translational temperature
+are reconstructed from these fluxes at every Radau trial state. This is not a
+constant-density zero-dimensional reactor mapped from time to distance.
+
+The input composition contains positive N/O/NO seeds totaling 4 ppm so that
+the independent finite-difference Radau Jacobian can evaluate reverse
+reactions without clipping a negative trial state. N2/O2 are adjusted so the
+mass fractions sum to one. The generated columns are:
+
+```text
+x rho u p T Tv Y_N2 Y_O2 Y_N Y_O Y_NO Ev q5
+```
+
+Run the reference contracts with:
+
+```bash
+PYTHONPATH=tests/gpu_validation pytest -q \
+  tests/gpu_validation/test_air5_postshock_reference.py
+```
+
+The reference and executable contract result is now `11 passed`. The ASTR
+path adds a dedicated `air5postshock` profile initializer, complete
+`q(1:11)` x boundaries, and CPU/GPU sixth-order physical-x convection and
+diffusion closure. Run all three source modes with diffusion using:
+
+```bash
+DIFFTERM=t OUT_DIR=tests/gpu_validation/out/air5_c5_postshock_diffusion_np1 \
+  tests/gpu_validation/run_air5_c5_postshock_compare.sh
+```
+
+Repeat with `MPI_NP=2` and `TOPOLOGY=2,1,1`, `1,2,1`, and `1,1,2` for the
+three slab gates. All layouts pass. The coupled maximum CPU/GPU same-phase
+difference is `1.804437488e-9`; maximum independent internal errors are
+`6.3979e-5 m/s` for velocity, `7.845685e-4 K` for temperature,
+`4.88424e-4 K` for vibrational temperature, and `7.29805e-8` for mass
+fraction. The maximum extrusion error is `8.731e-10`. Isolated NP=1 Compute
+Sanitizer reports zero errors. These results close C5 items 3 and 4 for the
+dedicated Cartesian postshock contract.
+
+## Fixed air5 chemistry C5 reacting TGV
+
+The `air5tgv` initializer uses `rho=0.05 kg/m3`, `T=6000 K`, `Tv=1000 K`,
+a `100 m/s` TGV velocity amplitude, and fixed positive five-species mass
+fractions. It applies the standard TGV pressure perturbation and reconstructs
+the local temperature from `p/(rho*Rmix)` so the primitive and conservative
+initial states remain consistent.
+
+Run the NP=1 gate with:
+
+```bash
+OUT_DIR=tests/gpu_validation/out/air5_c5_reacting_tgv_np1 \
+  tests/gpu_validation/run_air5_c5_reacting_tgv_compare.sh
+```
+
+The same driver passes `MPI_NP=2` for all three slabs and `MPI_NP=8
+TOPOLOGY=2,2,2`. Across those layouts, the maximum CPU/GPU same-phase
+difference is `4.3201e-12`; the maximum N/O drift is `1.086e-15`; species
+mass closure is within `6.25e-17`; and the observed CFL is `1.86e-4`.
+Compute Sanitizer reports zero errors. A three-step Nsight Systems trace has
+no H2D or D2H transfer of at least 64 KiB after the first chemistry kernel;
+maximum loop H2D/D2H transfers are `320 B/72 B`. This closes C5 item 5 as a
+3-D coupling, conservation, memory-safety, and residency gate. It is not a
+chemistry-model physical validation.
+
+The current C0-through-C5-item-5 chemistry unit, probe, reference, and static
+contract matrix reports `124 passed, 18 subtests passed`. MPI field runs,
+Compute Sanitizer, and Nsight Systems remain separate gates.
+
+C5 item 6 requires a separate approved physical contract before code changes.
+The fixed-air5 wall-bounded path must define wall catalytic behavior, species
+normal flux, wall `Tv` or vibrational-energy treatment, full-state inflow,
+farfield/outflow behavior, and a reproducible high-enthalpy flat-plate and
+finite-rate-air SBLI reference. Reusing the legacy five-equation boundary
+routines would lose the complete `q(1:11)` state semantics. The current air5
+inviscid path is sixth-order centered; the fixed-gamma five-equation
+Steger-Warming, Roe, and MP7 path is not an admissible shock scheme for the
+five-species two-temperature state. A separate multispecies nonequilibrium
+shock-flux and reconstruction gate is therefore required before SBLI.

@@ -549,6 +549,9 @@ module readwrite
           read(lineread,*)nondimen,diffterm,lfilter,lreadgrid,lfftk,limmbou,ltimrpt
         endif
       endif
+#ifdef ASTR_AIR5_CHEMISTRY
+      lcomb = lcomb_input
+#endif
 #endif
       read(fh,'(/)')
       read(fh,*)lrestart
@@ -733,11 +736,11 @@ module readwrite
     call bcast(xrhjump)
     call bcast(angshk)
     call bcast(testmode)
+    call bcast(lcomb)
     !
     call readslic
     !
 #ifdef COMB
-    call bcast(lcomb)
     call bcast(odetype)
     call bcast(chemfile)
     !

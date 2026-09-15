@@ -1,0 +1,229 @@
+module chemistry_hbl_boundary_gpu
+  use cudafor
+  use iso_fortran_env, only: real64
+  use chemistry_air5_data, only: air5_num_species,air5_molar_mass,air5_ru
+  use chemistry_model, only: chemistry_status_ok,chemistry_status_invalid_density, &
+    chemistry_status_invalid_composition
+  use chemistry_state_layout, only: air5_num_conservative
+  use chemistry_flow_state_gpu, only: air5_primitive_to_conservative_gpu, &
+    air5_conservative_to_primitive_gpu
+  implicit none
+  private
+
+  real(real64), device, allocatable, save :: inlet_q_d(:,:)
+  real(real64), device, save :: farfield_q_d(air5_num_conservative)
+  real(real64), device, save :: wall_temperature_d
+  integer, device, save :: hbl_status_d
+  logical, save :: boundary_configured_gpu=.false.
+
+  public :: initialize_air5_hbl_boundary_gpu
+  public :: apply_air5_hbl_boundary_gpu
+  public :: release_air5_hbl_boundary_gpu
+
+contains
+
+  subroutine initialize_air5_hbl_boundary_gpu()
+    use commvar, only: flowtype
+    use chemistry_hbl_boundary, only: get_air5_hbl_boundary
+    real(real64), allocatable :: inlet_state(:,:)
+    real(real64) :: farfield_state(air5_num_conservative),wall_temp
+
+    if(trim(flowtype)/='air5hbl') return
+    call get_air5_hbl_boundary(inlet_state,farfield_state,wall_temp)
+    if(allocated(inlet_q_d)) deallocate(inlet_q_d)
+    allocate(inlet_q_d(0:ubound(inlet_state,1),air5_num_conservative))
+    inlet_q_d=inlet_state
+    farfield_q_d=farfield_state
+    wall_temperature_d=wall_temp
+    deallocate(inlet_state)
+    boundary_configured_gpu=.true.
+  end subroutine initialize_air5_hbl_boundary_gpu
+
+  attributes(device) subroutine record_hbl_status(status)
+    integer, value :: status
+    integer :: ignored
+
+    if(status/=chemistry_status_ok) ignored=atomicMax(hbl_status_d,status)
+  end subroutine record_hbl_status
+
+  attributes(global) subroutine air5_hbl_outflow_boundary_kernel(im,jm,km,hm)
+    use commarray_gpu, only: q_d
+    integer, value :: im,jm,km,hm
+    integer :: id,ntot,i,j,k,status,component
+    real(real64) :: q_boundary(air5_num_conservative)
+    real(real64) :: density,velocity(3),temperature,mass_fraction(air5_num_species)
+    real(real64) :: tv,pressure
+
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    ntot=(jm+1)*(km+1)
+    if(id>=ntot) return
+    j=mod(id,jm+1)
+    k=id/(jm+1)
+    q_boundary=(4.0_real64*q_d(im-1,j,k,1:air5_num_conservative)- &
+      q_d(im-2,j,k,1:air5_num_conservative))/3.0_real64
+    call air5_conservative_to_primitive_gpu(q_boundary,density,velocity, &
+      temperature,mass_fraction,tv,pressure,status)
+    if(status/=chemistry_status_ok) then
+      call record_hbl_status(status)
+      return
+    endif
+    do i=im,im+hm
+      q_d(i,j,k,1:air5_num_conservative)=q_boundary
+    enddo
+  end subroutine air5_hbl_outflow_boundary_kernel
+
+  attributes(global) subroutine air5_hbl_wall_boundary_kernel(im,jm,km,hm)
+    use commarray_gpu, only: q_d
+    integer, value :: im,jm,km,hm
+    integer :: id,ntot,i,j,k,status
+    real(real64) :: q_one(air5_num_conservative),q_two(air5_num_conservative)
+    real(real64) :: q_boundary(air5_num_conservative)
+    real(real64) :: density_one,density_two,temperature_one,temperature_two
+    real(real64) :: velocity_one(3),velocity_two(3),velocity_wall(3)
+    real(real64) :: y_one(air5_num_species),y_two(air5_num_species)
+    real(real64) :: y_wall(air5_num_species),tv_one,tv_two
+    real(real64) :: pressure_one,pressure_two,pressure_wall
+    real(real64) :: mixture_gas_constant,density_wall
+
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    ntot=(im+1)*(km+1)
+    if(id>=ntot) return
+    i=mod(id,im+1)
+    k=id/(im+1)
+    q_one=q_d(i,1,k,1:air5_num_conservative)
+    q_two=q_d(i,2,k,1:air5_num_conservative)
+    call air5_conservative_to_primitive_gpu(q_one,density_one,velocity_one, &
+      temperature_one,y_one,tv_one,pressure_one,status)
+    if(status/=chemistry_status_ok) then
+      call record_hbl_status(status)
+      return
+    endif
+    call air5_conservative_to_primitive_gpu(q_two,density_two,velocity_two, &
+      temperature_two,y_two,tv_two,pressure_two,status)
+    if(status/=chemistry_status_ok) then
+      call record_hbl_status(status)
+      return
+    endif
+    pressure_wall=(4.0_real64*pressure_one-pressure_two)/3.0_real64
+    if(pressure_wall<=0.0_real64) then
+      call record_hbl_status(chemistry_status_invalid_density)
+      return
+    endif
+    y_wall=y_one
+    if(any(y_wall<0.0_real64)) then
+      call record_hbl_status(chemistry_status_invalid_composition)
+      return
+    endif
+    mixture_gas_constant=sum(y_wall*air5_ru/air5_molar_mass)
+    if(mixture_gas_constant<=0.0_real64) then
+      call record_hbl_status(chemistry_status_invalid_composition)
+      return
+    endif
+    density_wall=pressure_wall/(mixture_gas_constant*wall_temperature_d)
+    velocity_wall=0.0_real64
+    call air5_primitive_to_conservative_gpu(density_wall,velocity_wall, &
+      wall_temperature_d,y_wall,wall_temperature_d,q_boundary,status)
+    if(status/=chemistry_status_ok) then
+      call record_hbl_status(status)
+      return
+    endif
+    do j=-hm,0
+      q_d(i,j,k,1:air5_num_conservative)=q_boundary
+    enddo
+  end subroutine air5_hbl_wall_boundary_kernel
+
+  attributes(global) subroutine air5_hbl_farfield_boundary_kernel(im,jm,km,hm)
+    use commarray_gpu, only: q_d
+    integer, value :: im,jm,km,hm
+    integer :: id,ntot,i,j,k
+
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    ntot=(im+1)*(km+1)
+    if(id>=ntot) return
+    i=mod(id,im+1)
+    k=id/(im+1)
+    do j=jm,jm+hm
+      q_d(i,j,k,1:air5_num_conservative)=farfield_q_d
+    enddo
+  end subroutine air5_hbl_farfield_boundary_kernel
+
+  attributes(global) subroutine air5_hbl_inflow_boundary_kernel(im,jm,km,hm)
+    use commarray_gpu, only: q_d
+    integer, value :: im,jm,km,hm
+    integer :: id,ntot,i,j,k
+
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    ntot=(jm+1)*(km+1)
+    if(id>=ntot) return
+    j=mod(id,jm+1)
+    k=id/(jm+1)
+    do i=-hm,0
+      q_d(i,j,k,1:air5_num_conservative)=inlet_q_d(j,:)
+    enddo
+  end subroutine air5_hbl_inflow_boundary_kernel
+
+  subroutine check_hbl_status(label)
+    use mpi
+    character(len=*), intent(in) :: label
+    integer :: local_status,global_status,ierr
+
+    local_status=hbl_status_d
+    call MPI_Allreduce(local_status,global_status,1,MPI_INTEGER,MPI_MAX, &
+      MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,local_status)
+    if(global_status/=chemistry_status_ok) then
+      write(*,'(3A,I0)') 'fixed air5 GPU HBL ',trim(label), &
+        ' boundary failed, status=',global_status
+      call MPI_Abort(MPI_COMM_WORLD,global_status,ierr)
+    endif
+  end subroutine check_hbl_status
+
+  subroutine apply_air5_hbl_boundary_gpu()
+    use mpi, only: MPI_PROC_NULL
+    use commvar, only: im,jm,km,hm,flowtype
+    use parallel, only: mpileft,mpiright,mpidown,mpiup
+    use gpu_check, only: sync_after_kernel
+    integer :: ntot
+    type(dim3) :: block,grid
+
+    if(trim(flowtype)/='air5hbl') return
+    if(.not.boundary_configured_gpu) &
+      error stop 'fixed air5 GPU HBL boundary is not configured'
+    block=dim3(256,1,1)
+
+    hbl_status_d=chemistry_status_ok
+    if(mpiright==MPI_PROC_NULL) then
+      ntot=(jm+1)*(km+1)
+      grid=dim3((ntot+block%x-1)/block%x,1,1)
+      call air5_hbl_outflow_boundary_kernel<<<grid,block>>>(im,jm,km,hm)
+      call sync_after_kernel('air5_hbl_outflow_boundary_kernel',.true.)
+    endif
+    call check_hbl_status('outflow')
+    hbl_status_d=chemistry_status_ok
+    if(mpidown==MPI_PROC_NULL) then
+      ntot=(im+1)*(km+1)
+      grid=dim3((ntot+block%x-1)/block%x,1,1)
+      call air5_hbl_wall_boundary_kernel<<<grid,block>>>(im,jm,km,hm)
+      call sync_after_kernel('air5_hbl_wall_boundary_kernel',.true.)
+    endif
+    call check_hbl_status('wall')
+    if(mpiup==MPI_PROC_NULL) then
+      ntot=(im+1)*(km+1)
+      grid=dim3((ntot+block%x-1)/block%x,1,1)
+      call air5_hbl_farfield_boundary_kernel<<<grid,block>>>(im,jm,km,hm)
+      call sync_after_kernel('air5_hbl_farfield_boundary_kernel',.true.)
+    endif
+    if(mpileft==MPI_PROC_NULL) then
+      ntot=(jm+1)*(km+1)
+      grid=dim3((ntot+block%x-1)/block%x,1,1)
+      call air5_hbl_inflow_boundary_kernel<<<grid,block>>>(im,jm,km,hm)
+      call sync_after_kernel('air5_hbl_inflow_boundary_kernel',.true.)
+    endif
+  end subroutine apply_air5_hbl_boundary_gpu
+
+  subroutine release_air5_hbl_boundary_gpu()
+    if(allocated(inlet_q_d)) deallocate(inlet_q_d)
+    boundary_configured_gpu=.false.
+  end subroutine release_air5_hbl_boundary_gpu
+
+end module chemistry_hbl_boundary_gpu

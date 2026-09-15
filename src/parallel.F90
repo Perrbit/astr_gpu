@@ -5004,9 +5004,13 @@ module parallel
   !+-------------------------------------------------------------------+
   subroutine qswap(timerept)
     !
-    use commvar,   only: numq,turbmode
+    use commvar,   only: numq,turbmode,lcomb
     use commarray, only: q,rho,vel,prs,tmp,spc,tke,omg
     use fludyna,   only: q2fvar
+#ifdef ASTR_AIR5_CHEMISTRY
+    use commarray, only: tve
+    use chemistry_flow_runtime, only: air5_field_conservative_to_primitive
+#endif
     !
     ! argument
     logical,intent(in),optional :: timerept
@@ -5014,6 +5018,9 @@ module parallel
     ! local data
     integer :: ncou
     integer :: ierr,j,k
+#ifdef ASTR_AIR5_CHEMISTRY
+    integer :: air5_status,air5_failed_index(3)
+#endif
     real(8),allocatable,dimension(:,:,:,:) :: sbuf1,sbuf2,rbuf1,rbuf2
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
@@ -5451,6 +5458,46 @@ module parallel
       !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     endif
     !
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(lcomb) then
+      call air5_field_conservative_to_primitive( &
+        q(-hm:0,0:jm,0:km,:),rho(-hm:0,0:jm,0:km), &
+        vel(-hm:0,0:jm,0:km,:),prs(-hm:0,0:jm,0:km), &
+        tmp(-hm:0,0:jm,0:km),spc(-hm:0,0:jm,0:km,:), &
+        tve(-hm:0,0:jm,0:km),air5_status,air5_failed_index)
+      if(air5_status==0) call air5_field_conservative_to_primitive( &
+        q(im:im+hm,0:jm,0:km,:),rho(im:im+hm,0:jm,0:km), &
+        vel(im:im+hm,0:jm,0:km,:),prs(im:im+hm,0:jm,0:km), &
+        tmp(im:im+hm,0:jm,0:km),spc(im:im+hm,0:jm,0:km,:), &
+        tve(im:im+hm,0:jm,0:km),air5_status,air5_failed_index)
+      if(air5_status==0) call air5_field_conservative_to_primitive( &
+        q(0:im,-hm:0,0:km,:),rho(0:im,-hm:0,0:km), &
+        vel(0:im,-hm:0,0:km,:),prs(0:im,-hm:0,0:km), &
+        tmp(0:im,-hm:0,0:km),spc(0:im,-hm:0,0:km,:), &
+        tve(0:im,-hm:0,0:km),air5_status,air5_failed_index)
+      if(air5_status==0) call air5_field_conservative_to_primitive( &
+        q(0:im,jm:jm+hm,0:km,:),rho(0:im,jm:jm+hm,0:km), &
+        vel(0:im,jm:jm+hm,0:km,:),prs(0:im,jm:jm+hm,0:km), &
+        tmp(0:im,jm:jm+hm,0:km),spc(0:im,jm:jm+hm,0:km,:), &
+        tve(0:im,jm:jm+hm,0:km),air5_status,air5_failed_index)
+      if(air5_status==0) call air5_field_conservative_to_primitive( &
+        q(0:im,0:jm,-hm:0,:),rho(0:im,0:jm,-hm:0), &
+        vel(0:im,0:jm,-hm:0,:),prs(0:im,0:jm,-hm:0), &
+        tmp(0:im,0:jm,-hm:0),spc(0:im,0:jm,-hm:0,:), &
+        tve(0:im,0:jm,-hm:0),air5_status,air5_failed_index)
+      if(air5_status==0) call air5_field_conservative_to_primitive( &
+        q(0:im,0:jm,km:km+hm,:),rho(0:im,0:jm,km:km+hm), &
+        vel(0:im,0:jm,km:km+hm,:),prs(0:im,0:jm,km:km+hm), &
+        tmp(0:im,0:jm,km:km+hm),spc(0:im,0:jm,km:km+hm,:), &
+        tve(0:im,0:jm,km:km+hm), &
+        air5_status,air5_failed_index)
+      if(air5_status/=0) then
+        write(*,'(A,I0,A,3(I0,1X))') 'air5 qswap reconstruction failed, status=', &
+          air5_status,', local i/j/k=',air5_failed_index
+        error stop 'air5 qswap conservative-to-primitive conversion failed'
+      endif
+    endif
+#endif
     if(mpitag>10000) mpitag=100
     ! reset mpitag
     !

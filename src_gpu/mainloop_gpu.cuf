@@ -119,7 +119,10 @@ contains
   end subroutine apply_explicit_filter_gpu
 
   subroutine prepare_rkfirst_stats_gpu()
-    use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,const2,const6,lfilter
+    use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,const2,const6,lfilter,lcomb
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_flow_solver_gpu, only: air5_prepare_spatial_state_gpu
+#endif
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
     use gpu_check, only: sync_after_kernel
     use halo_exchange_gpu, only: exchange_solution_halo_gpu
@@ -137,6 +140,12 @@ contains
     logical :: ldc_case,flatplate_case,periodic_filter_case
     logical :: flatplate_nscbc_farfield_case,conservative_case
 
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(lcomb) then
+      call air5_prepare_spatial_state_gpu()
+      return
+    endif
+#endif
     call validate_first_stage_gpu()
     conservative_case=conservative_boundary%enabled
     ldc_case = gpu_ldc_boundary_case_pending()
@@ -198,8 +207,14 @@ contains
   end subroutine prepare_rkfirst_stats_gpu
 
   subroutine time_integration_rk_gpu(first_stage_prepared,copy_back)
+    use iso_fortran_env, only: real64
     use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,npdcj,npdck,nstep,deltat,const2,const5,const6, &
-         diffterm,lfilter,reynolds,prandtl,tempconst,tempconst1,gamma,recon_schem
+         diffterm,lfilter,reynolds,prandtl,tempconst,tempconst1,gamma,recon_schem,lcomb,flowtype
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_flow_runtime, only: air5_reacting_flowtype
+    use chemistry_flow_solver_gpu, only: air5_transport_rk3_step_gpu
+    use chemistry_coupling_gpu, only: air5_chemistry_half_step_gpu
+#endif
     use parallel, only: isize,jsize,ksize
     use halo_transport_gpu, only: halo_overlap_enabled,progress_host_pair_during_kernel
     use boundary_gpu, only: gpu_periodic_boundary_case
@@ -399,6 +414,37 @@ contains
     integer :: rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke
     integer :: rhs_npdci,rhs_npdcj
 
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(lcomb) then
+      if(air5_reacting_flowtype(flowtype)) then
+        if(rhs_validation_requested()) then
+          call copy_flow_from_gpu()
+          call write_q_validation_snapshot('pre_chemistry',nstep,1)
+        endif
+        call air5_chemistry_half_step_gpu(0.5_real64*deltat,1)
+        if(rhs_validation_requested()) then
+          call copy_flow_from_gpu()
+          call write_q_validation_snapshot('post_chemistry',nstep,1)
+        endif
+        call air5_transport_rk3_step_gpu(.true.,.false.)
+        if(rhs_validation_requested()) then
+          call copy_flow_from_gpu()
+          call write_q_validation_snapshot('post_transport',nstep,1)
+        endif
+        call air5_chemistry_half_step_gpu(0.5_real64*deltat,2)
+        if(rhs_validation_requested()) then
+          call copy_flow_from_gpu()
+          call write_q_validation_snapshot('post_chemistry',nstep,2)
+        endif
+        if(present(copy_back)) then
+          if(copy_back) call copy_flow_from_gpu()
+        endif
+      else
+        call air5_transport_rk3_step_gpu(first_stage_prepared,copy_back)
+      endif
+      return
+    endif
+#endif
     call validate_first_stage_gpu()
     mixed_flux_workspace=gpu_mixed_flux_workspace_enabled()
     mixed_viscous_flux_workspace=gpu_mixed_viscous_flux_workspace_enabled()

@@ -1,0 +1,154 @@
+module chemistry_linear6_gpu
+  use iso_fortran_env, only: real64
+  use chemistry_model, only: chemistry_status_ok, chemistry_status_linear_failure, &
+    chemistry_status_nonfinite
+  use chemistry_model_gpu, only: air5_finite_gpu
+  implicit none
+  private
+
+  integer, parameter :: linear_size = 6
+
+  public :: air5_lu_factor_6_gpu
+  public :: air5_lu_solve_6_gpu
+
+contains
+
+  attributes(device) subroutine air5_lu_factor_6_gpu(matrix,lu,pivots,status)
+    real(real64), intent(in) :: matrix(linear_size,linear_size)
+    real(real64), intent(out) :: lu(linear_size,linear_size)
+    integer, intent(out) :: pivots(linear_size), status
+    real(real64) :: row_scale(linear_size), scaled_pivot, best_scaled_pivot
+    real(real64) :: value, scale_buffer
+    integer :: column, pivot, row, item
+
+    do row = 1, linear_size
+      pivots(row) = row
+      row_scale(row) = 0.0_real64
+      do column = 1, linear_size
+        value = matrix(row,column)
+        lu(row,column) = value
+        if (.not.air5_finite_gpu(value)) then
+          status = chemistry_status_nonfinite
+          return
+        end if
+        row_scale(row) = max(row_scale(row),abs(value))
+      end do
+      if (row_scale(row) == 0.0_real64) then
+        status = chemistry_status_linear_failure
+        return
+      end if
+    end do
+
+    do column = 1, linear_size-1
+      pivot = column
+      best_scaled_pivot = abs(lu(column,column))/row_scale(column)
+      do row = column+1, linear_size
+        scaled_pivot = abs(lu(row,column))/row_scale(row)
+        if (scaled_pivot > best_scaled_pivot) then
+          pivot = row
+          best_scaled_pivot = scaled_pivot
+        end if
+      end do
+      if (best_scaled_pivot <= 64.0_real64*epsilon(1.0_real64)) then
+        status = chemistry_status_linear_failure
+        return
+      end if
+      pivots(column) = pivot
+      if (pivot /= column) then
+        do item = 1, linear_size
+          value = lu(column,item)
+          lu(column,item) = lu(pivot,item)
+          lu(pivot,item) = value
+        end do
+        scale_buffer = row_scale(column)
+        row_scale(column) = row_scale(pivot)
+        row_scale(pivot) = scale_buffer
+      end if
+      do row = column+1, linear_size
+        lu(row,column) = lu(row,column)/lu(column,column)
+        do item = column+1, linear_size
+          lu(row,item) = lu(row,item)-lu(row,column)*lu(column,item)
+        end do
+      end do
+    end do
+    if (abs(lu(linear_size,linear_size))/row_scale(linear_size) <= &
+        64.0_real64*epsilon(1.0_real64)) then
+      status = chemistry_status_linear_failure
+      return
+    end if
+    do row = 1, linear_size
+      do column = 1, linear_size
+        if (.not.air5_finite_gpu(lu(row,column))) then
+          status = chemistry_status_linear_failure
+          return
+        end if
+      end do
+    end do
+    status = chemistry_status_ok
+  end subroutine air5_lu_factor_6_gpu
+
+  attributes(device) subroutine air5_lu_solve_6_gpu(lu,pivots,rhs,solution,status)
+    real(real64), intent(in) :: lu(linear_size,linear_size), rhs(linear_size)
+    integer, intent(in) :: pivots(linear_size)
+    real(real64), intent(out) :: solution(linear_size)
+    integer, intent(out) :: status
+    real(real64) :: value
+    integer :: column, pivot, row, item
+
+    do row = 1, linear_size
+      solution(row) = 0.0_real64
+      if (pivots(row) < 1 .or. pivots(row) > linear_size) then
+        status = chemistry_status_linear_failure
+        return
+      end if
+      if (.not.air5_finite_gpu(rhs(row))) then
+        status = chemistry_status_nonfinite
+        return
+      end if
+      do column = 1, linear_size
+        if (.not.air5_finite_gpu(lu(row,column))) then
+          status = chemistry_status_nonfinite
+          return
+        end if
+      end do
+    end do
+
+    solution = rhs
+    do column = 1, linear_size-1
+      pivot = pivots(column)
+      if (pivot /= column) then
+        value = solution(column)
+        solution(column) = solution(pivot)
+        solution(pivot) = value
+      end if
+    end do
+    do row = 2, linear_size
+      value = 0.0_real64
+      do item = 1, row-1
+        value = value+lu(row,item)*solution(item)
+      end do
+      solution(row) = solution(row)-value
+    end do
+    do row = linear_size, 1, -1
+      if (lu(row,row) == 0.0_real64) then
+        solution = 0.0_real64
+        status = chemistry_status_linear_failure
+        return
+      end if
+      value = 0.0_real64
+      do item = row+1, linear_size
+        value = value+lu(row,item)*solution(item)
+      end do
+      solution(row) = (solution(row)-value)/lu(row,row)
+    end do
+    do row = 1, linear_size
+      if (.not.air5_finite_gpu(solution(row))) then
+        solution = 0.0_real64
+        status = chemistry_status_nonfinite
+        return
+      end if
+    end do
+    status = chemistry_status_ok
+  end subroutine air5_lu_solve_6_gpu
+
+end module chemistry_linear6_gpu

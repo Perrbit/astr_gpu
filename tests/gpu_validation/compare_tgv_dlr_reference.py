@@ -61,6 +61,7 @@ def read_reference(path: Path) -> list[Sample]:
 
 def read_astr(path: Path, reynolds: float = 1600.0) -> list[Sample]:
     by_time: dict[float, Sample] = {}
+    nstep_by_time: dict[float, int] = {}
     for line_number, line in enumerate(path.read_text(encoding="ascii").splitlines(), 1):
         fields = line.split()
         if not fields or fields[0].startswith("#") or fields[0] == "nstep":
@@ -68,16 +69,18 @@ def read_astr(path: Path, reynolds: float = 1600.0) -> list[Sample]:
         if len(fields) < 5:
             raise ValueError(f"malformed ASTR row at {path}:{line_number}")
         try:
-            _, time, energy, enstrophy, dissipation = map(float, fields[:5])
+            nstep = int(fields[0])
+            time, energy, enstrophy, dissipation = map(float, fields[1:5])
         except ValueError as exc:
             raise ValueError(f"malformed ASTR row at {path}:{line_number}") from exc
         sample = Sample(time, energy, dissipation, enstrophy)
         previous = by_time.get(time)
-        if previous is not None and previous != sample:
+        if previous is not None and (previous != sample or nstep_by_time[time] != nstep):
             raise ValueError(f"conflicting duplicate ASTR time {time}")
         by_time[time] = sample
+        nstep_by_time[time] = nstep
     samples = [by_time[key] for key in sorted(by_time)]
-    if samples and samples[0].time > 0.0:
+    if samples and nstep_by_time[samples[0].time] == 1 and samples[0].time > 0.0:
         if reynolds <= 0.0:
             raise ValueError("Reynolds number must be positive")
         samples.insert(0, Sample(0.0, 0.125, 0.75 / reynolds, 0.375))
@@ -117,7 +120,17 @@ def _relative_l2(reference: list[float], candidate: list[float]) -> float:
     )
 
 
-def compare_histories(reference: list[Sample], astr: list[Sample]) -> Metrics:
+def compare_histories(
+    reference: list[Sample], astr: list[Sample], overlap_only: bool = False
+) -> Metrics:
+    if overlap_only:
+        reference = [
+            sample
+            for sample in reference
+            if astr[0].time - 1.0e-12 <= sample.time <= astr[-1].time + 1.0e-12
+        ]
+        if len(reference) < 2:
+            raise ValueError("ASTR/reference overlap must contain at least two reference samples")
     if astr[0].time > reference[0].time + 1.0e-12 or astr[-1].time < reference[-1].time - 1.0e-12:
         raise ValueError("ASTR history does not cover the reference interval")
     aligned = []
@@ -206,8 +219,20 @@ def write_plots(output_dir: Path, metrics: Metrics) -> None:
     fig, axes = plt.subplots(3, 1, figsize=(7.2, 9.0), sharex=True)
     times = [expected.time for expected, _ in metrics.aligned]
     for axis, (field, ylabel) in zip(axes, rows):
-        axis.plot(times, [getattr(expected, field) for expected, _ in metrics.aligned], "r-", label="DLR spectral")
-        axis.plot(times, [getattr(actual, field) for _, actual in metrics.aligned], "b--", label="ASTR GPU")
+        axis.plot(
+            times,
+            [getattr(expected, field) for expected, _ in metrics.aligned],
+            color="#1f77b4",
+            linestyle="--",
+            label="DLR spectral",
+        )
+        axis.plot(
+            times,
+            [getattr(actual, field) for _, actual in metrics.aligned],
+            color="#d62728",
+            linestyle="-",
+            label="ASTR GPU",
+        )
         axis.set_ylabel(ylabel)
         axis.legend(frameon=False)
     axes[-1].set_xlabel(r"$t$")
@@ -222,30 +247,44 @@ def main() -> int:
     parser.add_argument("--reference", required=True, type=Path)
     parser.add_argument("--astr-flowstate", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument(
+        "--overlap-only",
+        action="store_true",
+        help="compare only reference samples covered by the stored ASTR interval",
+    )
     parser.add_argument("--no-plot", action="store_true")
     args = parser.parse_args()
 
-    metrics = compare_histories(read_reference(args.reference), read_astr(args.astr_flowstate))
+    reference = read_reference(args.reference)
+    astr = read_astr(args.astr_flowstate)
+    metrics = compare_histories(reference, astr, overlap_only=args.overlap_only)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     write_aligned(args.output_dir / "aligned_diagnostics.tsv", metrics)
     serializable = {key: value for key, value in metrics.__dict__.items() if key != "aligned"}
+    serializable["comparison_mode"] = "overlap-only" if args.overlap_only else "full-history"
     (args.output_dir / "metrics.json").write_text(
         json.dumps(serializable, indent=2, sort_keys=True) + "\n", encoding="ascii"
     )
     summary = [
         "# TGV DLR Spectral Comparison",
         "",
+        f"- comparison mode: `{'overlap-only' if args.overlap_only else 'full-history'}`",
         f"- aligned samples: `{metrics.samples}`",
         f"- reference interval: `{metrics.start_time:.6g}` to `{metrics.end_time:.6g}`",
-        "- ASTR `t=0` sample: analytic TGV initial condition",
+        f"- stored ASTR interval: `{astr[0].time:.6g}` to `{astr[-1].time:.6g}`",
         f"- energy relative L2: `{metrics.energy_relative_l2:.9e}`",
         f"- dissipation relative L2: `{metrics.dissipation_relative_l2:.9e}`",
         f"- enstrophy relative L2: `{metrics.enstrophy_relative_l2:.9e}`",
-        f"- reference dissipation peak: `{metrics.reference_peak_dissipation:.9e}` at `t={metrics.reference_peak_time:.6g}`",
-        f"- ASTR dissipation peak: `{metrics.astr_peak_dissipation:.9e}` at `t={metrics.astr_peak_time:.6g}`",
-        f"- peak-time error: `{metrics.peak_time_error:.9e}`",
-        f"- peak-dissipation relative error: `{metrics.peak_dissipation_relative_error:.9e}`",
     ]
+    extremum = "overlap maximum" if args.overlap_only else "peak"
+    summary.extend(
+        (
+            f"- reference dissipation {extremum}: `{metrics.reference_peak_dissipation:.9e}` at `t={metrics.reference_peak_time:.6g}`",
+            f"- ASTR dissipation {extremum}: `{metrics.astr_peak_dissipation:.9e}` at `t={metrics.astr_peak_time:.6g}`",
+            f"- {extremum}-time difference: `{metrics.peak_time_error:.9e}`",
+            f"- {extremum}-dissipation relative difference: `{metrics.peak_dissipation_relative_error:.9e}`",
+        )
+    )
     (args.output_dir / "summary.md").write_text("\n".join(summary) + "\n", encoding="ascii")
     if not args.no_plot:
         write_plots(args.output_dir, metrics)

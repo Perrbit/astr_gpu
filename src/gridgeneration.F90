@@ -60,6 +60,15 @@ module gridgeneration
         call grichan(2.d0*pi*ref_len,2.d0*ref_len,pi*ref_len)
       elseif(trim(flowtype)=='0dreactor') then
         call gridhitflame(mode='cuboid')
+      elseif(trim(flowtype)=='air5postshock') then
+        call gridcube(ref_len,ref_len,ref_len)
+      elseif(trim(flowtype)=='air5hbl') then
+        call gridcube(20.d0*ref_len,2.d0*ref_len,2.d0*ref_len)
+      elseif(trim(flowtype)=='air5wave' .or. trim(flowtype)=='air5reactor' .or. &
+             trim(flowtype)=='air5tgv' .or. &
+             trim(flowtype)=='air5advection' .or. trim(flowtype)=='air5difflayer' .or. &
+             trim(flowtype)=='air5evpulse') then
+        call gridcube(ref_len*2.d0*pi,ref_len*2.d0*pi,ref_len*2.d0*pi)
       elseif(trim(flowtype)=='1dflame') then
         call gridcube(1.d-2,1.d-3,0.d0)
       elseif(trim(flowtype)=='h2supersonic') then

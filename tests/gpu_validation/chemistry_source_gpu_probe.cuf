@@ -1,0 +1,245 @@
+program chemistry_source_gpu_probe
+  use iso_fortran_env, only: real64
+  use ieee_arithmetic, only: ieee_value, ieee_quiet_nan
+  use cudafor
+  use chemistry_air5_data, only: air5_num_species, air5_num_reactions
+  use chemistry_model, only: chemistry_status_ok
+  use chemistry_thermo, only: air5_ev_from_tv, air5_q5_from_state, &
+    air5_species_gas_constant, air5_species_cv_tr
+  use chemistry_source, only: air5_instantaneous_source_jacobian, &
+    air5_source_mode_coupled, air5_source_mode_chemical, air5_source_mode_vt
+  use chemistry_source_gpu, only: launch_air5_source_batch_gpu
+  implicit none
+
+  integer, parameter :: base_cases = 6, valid_cases = 8, case_count = 14
+  integer, parameter :: mode_count = 3
+  integer, parameter :: modes(mode_count) = [air5_source_mode_coupled, &
+    air5_source_mode_chemical, air5_source_mode_vt]
+  real(real64) :: rho(case_count), momentum(3,case_count), q5(case_count)
+  real(real64) :: q5_after(case_count), state(6,case_count)
+  real(real64) :: source_ref(6,case_count), source_gpu(6,case_count)
+  real(real64) :: jacobian_ref(6,6,case_count), jacobian_gpu(6,6,case_count)
+  real(real64) :: progress_ref(air5_num_reactions,case_count)
+  real(real64) :: progress_gpu(air5_num_reactions,case_count)
+  real(real64) :: total_energy_gpu(case_count)
+  integer :: status_ref(case_count), status_gpu(case_count)
+  real(real64), device :: rho_d(case_count), momentum_d(3,case_count)
+  real(real64), device :: q5_d(case_count), state_d(6,case_count)
+  real(real64), device :: source_d(6,case_count)
+  real(real64), device :: jacobian_d(6,6,case_count)
+  real(real64), device :: progress_d(air5_num_reactions,case_count)
+  real(real64), device :: total_energy_d(case_count)
+  integer, device :: status_d(case_count)
+  real(real64), device :: rho_one_d(1), momentum_one_d(3,1), q5_one_d(1)
+  real(real64), device :: state_one_d(6,1), source_one_d(6,1)
+  real(real64), device :: jacobian_one_d(6,6,1)
+  real(real64), device :: progress_one_d(air5_num_reactions,1)
+  real(real64), device :: total_energy_one_d(1)
+  integer, device :: status_one_d(1)
+  real(real64) :: source_one_ref(6), source_one_gpu(6)
+  real(real64) :: jacobian_one_ref(6,6), jacobian_one_gpu(6,6)
+  real(real64) :: progress_one_ref(air5_num_reactions), progress_one_gpu(air5_num_reactions)
+  real(real64) :: total_energy_one_gpu, q5_one_after
+  integer :: status_one_ref, status_one_gpu
+  real(real64) :: source_ratio, rate_ratio, jacobian_ratio, energy_ratio
+  real(real64) :: q5_change
+  integer :: case_index, mode_index, status_mismatches
+
+  do case_index = 1, base_cases
+    call make_state(case_index, rho(case_index), momentum(:,case_index), &
+      q5(case_index), state(:,case_index))
+  end do
+  call make_pressure_state(1.0e3_real64,4000.0_real64,4000.0_real64, &
+    rho(7),momentum(:,7),q5(7),state(:,7))
+  call make_pressure_state(1.0e6_real64,4000.0_real64,4000.0_real64, &
+    rho(8),momentum(:,8),q5(8),state(:,8))
+  call copy_case(2,9)
+  state(3,9) = -1.0e-8_real64
+  call copy_case(2,10)
+  call replace_temperature(10,4000.0_real64,200.0_real64)
+  call copy_case(2,11)
+  call replace_temperature(11,4000.0_real64,10000.0_real64)
+  call make_pressure_state(1.0e2_real64,4000.0_real64,4000.0_real64, &
+    rho(12),momentum(:,12),q5(12),state(:,12))
+  call make_pressure_state(1.0e7_real64,4000.0_real64,4000.0_real64, &
+    rho(13),momentum(:,13),q5(13),state(:,13))
+  call copy_case(2,14)
+  state(6,14) = ieee_value(0.0_real64, ieee_quiet_nan)
+
+  rho_d = rho
+  momentum_d = momentum
+  q5_d = q5
+  state_d = state
+  source_ratio = 0.0_real64
+  rate_ratio = 0.0_real64
+  jacobian_ratio = 0.0_real64
+  energy_ratio = 0.0_real64
+  q5_change = 0.0_real64
+  status_mismatches = 0
+
+  do mode_index = 1, mode_count
+    do case_index = 1, case_count
+      call air5_instantaneous_source_jacobian(rho(case_index), &
+        momentum(:,case_index), q5(case_index), state(:,case_index), &
+        source_ref(:,case_index), jacobian_ref(:,:,case_index), &
+        status_ref(case_index), modes(mode_index), progress_ref(:,case_index))
+    end do
+    call launch_air5_source_batch_gpu(rho_d, momentum_d, q5_d, state_d, &
+      source_d, total_energy_d, jacobian_d, progress_d, status_d, &
+      case_count, modes(mode_index))
+    source_gpu = source_d
+    total_energy_gpu = total_energy_d
+    jacobian_gpu = jacobian_d
+    progress_gpu = progress_d
+    status_gpu = status_d
+    q5_after = q5_d
+
+    do case_index = 1, case_count
+      if (status_gpu(case_index) /= status_ref(case_index)) then
+        status_mismatches = status_mismatches+1
+      end if
+      if (case_index <= valid_cases .and. status_ref(case_index) /= chemistry_status_ok) &
+        status_mismatches = status_mismatches+1
+      if (case_index > valid_cases .and. status_ref(case_index) == chemistry_status_ok) &
+        status_mismatches = status_mismatches+1
+      if (status_ref(case_index) /= chemistry_status_ok) cycle
+      call update_ratio(source_gpu(:,case_index), source_ref(:,case_index), source_ratio)
+      call update_ratio(progress_gpu(:,case_index), progress_ref(:,case_index), rate_ratio)
+      call update_ratio(reshape(jacobian_gpu(:,:,case_index),[36]), &
+        reshape(jacobian_ref(:,:,case_index),[36]), jacobian_ratio)
+      call update_ratio(total_energy_gpu(case_index:case_index), [0.0_real64], energy_ratio)
+    end do
+    q5_change = max(q5_change,maxval(abs(q5_after-q5)))
+  end do
+
+  call air5_instantaneous_source_jacobian(rho(4),momentum(:,4),q5(4),state(:,4), &
+    source_one_ref,jacobian_one_ref,status_one_ref,air5_source_mode_coupled, &
+    progress_one_ref)
+  rho_one_d = rho(4:4)
+  momentum_one_d = momentum(:,4:4)
+  q5_one_d = q5(4:4)
+  state_one_d = state(:,4:4)
+  call launch_air5_source_batch_gpu(rho_one_d,momentum_one_d,q5_one_d,state_one_d, &
+    source_one_d,total_energy_one_d,jacobian_one_d,progress_one_d,status_one_d, &
+    1,air5_source_mode_coupled)
+  source_one_gpu = source_one_d(:,1)
+  total_energy_one_gpu = total_energy_one_d(1)
+  jacobian_one_gpu = jacobian_one_d(:,:,1)
+  progress_one_gpu = progress_one_d(:,1)
+  status_one_gpu = status_one_d(1)
+  q5_one_after = q5_one_d(1)
+  if (status_one_gpu /= status_one_ref) status_mismatches = status_mismatches+1
+  if (status_one_ref == chemistry_status_ok) then
+    call update_ratio(source_one_gpu,source_one_ref,source_ratio)
+    call update_ratio(progress_one_gpu,progress_one_ref,rate_ratio)
+    call update_ratio(reshape(jacobian_one_gpu,[36]), &
+      reshape(jacobian_one_ref,[36]),jacobian_ratio)
+    call update_ratio([total_energy_one_gpu],[0.0_real64],energy_ratio)
+  end if
+  q5_change = max(q5_change,abs(q5_one_after-q5(4)))
+
+  write(*,'(a,1x,es24.16)') 'CHEMISTRY_GPU_SOURCE_MAX_RATIO',source_ratio
+  write(*,'(a,1x,es24.16)') 'CHEMISTRY_GPU_RATE_MAX_RATIO',rate_ratio
+  write(*,'(a,1x,es24.16)') 'CHEMISTRY_GPU_JACOBIAN_MAX_RATIO',jacobian_ratio
+  write(*,'(a,1x,es24.16)') 'CHEMISTRY_GPU_TOTAL_ENERGY_MAX_RATIO',energy_ratio
+  write(*,'(a,1x,i0)') 'CHEMISTRY_GPU_STATUS_MISMATCHES',status_mismatches
+  write(*,'(a,1x,es24.16)') 'CHEMISTRY_GPU_Q5_MAX_CHANGE',q5_change
+  if (source_ratio > 1.0_real64 .or. rate_ratio > 1.0_real64 .or. &
+      jacobian_ratio > 1.0_real64 .or. energy_ratio > 1.0_real64 .or. &
+      status_mismatches /= 0 .or. q5_change /= 0.0_real64) then
+    error stop 'GPU chemistry batch comparison failed'
+  end if
+
+contains
+
+  subroutine update_ratio(actual, reference, maximum_ratio)
+    real(real64), intent(in) :: actual(:), reference(:)
+    real(real64), intent(inout) :: maximum_ratio
+    real(real64) :: scale, tolerance, difference
+    integer :: item
+
+    scale = max(maxval(abs(reference)),1.0_real64)
+    do item = 1, size(reference)
+      tolerance = 1.0e-13_real64*scale+5.0e-12_real64*abs(reference(item))
+      difference = abs(actual(item)-reference(item))
+      maximum_ratio = max(maximum_ratio,difference/tolerance)
+    end do
+  end subroutine update_ratio
+
+  subroutine make_state(case_index, rho_value, momentum_value, q5_value, state_value)
+    integer, intent(in) :: case_index
+    real(real64), intent(out) :: rho_value, momentum_value(3), q5_value, state_value(6)
+    real(real64), parameter :: density(base_cases) = [1.2_real64, 0.01_real64, &
+      0.02_real64, 0.05_real64, 0.01_real64, 0.012_real64]
+    real(real64), parameter :: temperature(base_cases) = [500.0_real64, 4000.0_real64, &
+      7000.0_real64, 6000.0_real64, 2926.98_real64, 7600.0_real64]
+    real(real64), parameter :: tv(base_cases) = [500.0_real64, 4000.0_real64, &
+      6000.0_real64, 1000.0_real64, 2930.0_real64, 5000.0_real64]
+    real(real64), parameter :: composition(air5_num_species,base_cases) = reshape([ &
+      0.7653_real64, 0.2347_real64, 0.0_real64, 0.0_real64, 0.0_real64, &
+      0.7653_real64, 0.2347_real64, 0.0_real64, 0.0_real64, 0.0_real64, &
+      0.40_real64, 0.10_real64, 0.20_real64, 0.20_real64, 0.10_real64, &
+      0.55_real64, 0.15_real64, 0.10_real64, 0.12_real64, 0.08_real64, &
+      0.747076_real64, 0.152197_real64, 1.27988e-5_real64, &
+      0.0616899_real64, 0.0390241_real64, &
+      0.25_real64, 0.10_real64, 0.25_real64, 0.25_real64, 0.15_real64], &
+      [air5_num_species,base_cases])
+    integer :: status
+
+    rho_value = density(case_index)
+    state_value(1:5) = rho_value*composition(:,case_index)/sum(composition(:,case_index))
+    momentum_value = rho_value*[40.0_real64,-5.0_real64,2.0_real64]
+    call air5_ev_from_tv(state_value(1:5),tv(case_index),state_value(6),status)
+    if (status /= chemistry_status_ok) error stop 'GPU probe Ev setup failed'
+    call air5_q5_from_state(rho_value,momentum_value,state_value(1:5), &
+      state_value(6),temperature(case_index),q5_value,status)
+    if (status /= chemistry_status_ok) error stop 'GPU probe q5 setup failed'
+  end subroutine make_state
+
+  subroutine make_pressure_state(target_pressure,temperature,tv,rho_value, &
+      momentum_value,q5_value,state_value)
+    real(real64), intent(in) :: target_pressure, temperature, tv
+    real(real64), intent(out) :: rho_value, momentum_value(3), q5_value, state_value(6)
+    real(real64), parameter :: composition(air5_num_species) = [ &
+      0.7653_real64,0.2347_real64,0.0_real64,0.0_real64,0.0_real64]
+    real(real64) :: mixture_gas_constant
+    integer :: species, status
+
+    mixture_gas_constant = 0.0_real64
+    do species = 1, air5_num_species
+      mixture_gas_constant = mixture_gas_constant+ &
+        composition(species)*air5_species_gas_constant(species)
+    end do
+    rho_value = target_pressure/(mixture_gas_constant*temperature)
+    state_value(1:5) = rho_value*composition
+    momentum_value = rho_value*[40.0_real64,-5.0_real64,2.0_real64]
+    call air5_ev_from_tv(state_value(1:5),tv,state_value(6),status)
+    if (status /= chemistry_status_ok) error stop 'pressure-state Ev setup failed'
+    call air5_q5_from_state(rho_value,momentum_value,state_value(1:5), &
+      state_value(6),temperature,q5_value,status)
+    if (status /= chemistry_status_ok) error stop 'pressure-state q5 setup failed'
+  end subroutine make_pressure_state
+
+  subroutine copy_case(source_index,target_index)
+    integer, intent(in) :: source_index, target_index
+
+    rho(target_index) = rho(source_index)
+    momentum(:,target_index) = momentum(:,source_index)
+    q5(target_index) = q5(source_index)
+    state(:,target_index) = state(:,source_index)
+  end subroutine copy_case
+
+  subroutine replace_temperature(case_index,old_temperature,new_temperature)
+    integer, intent(in) :: case_index
+    real(real64), intent(in) :: old_temperature, new_temperature
+    real(real64) :: cv_density
+    integer :: species
+
+    cv_density = 0.0_real64
+    do species = 1, air5_num_species
+      cv_density = cv_density+state(species,case_index)*air5_species_cv_tr(species)
+    end do
+    q5(case_index) = q5(case_index)+cv_density*(new_temperature-old_temperature)
+  end subroutine replace_temperature
+
+end program chemistry_source_gpu_probe

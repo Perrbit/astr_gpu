@@ -30,7 +30,7 @@ module initialisation
   subroutine flowinit
     !
     use commvar,  only: flowtype,nstep,time,filenumb,fnumslic,ninit,   &
-                        lrestart,lavg,turbmode,ymax,use_gpu
+                        lrestart,lavg,turbmode,ymax,use_gpu,lcomb
     use commarray,only: vel,rho,prs,spc,q,tke,omg
     use readwrite,only: readcont,readflowini3d,readflowini2d,readflowini1d,          &
                         readcheckpoint,readmeanflow,readmonc,writeflfed,write_io_tree
@@ -45,6 +45,10 @@ module initialisation
     call inletprofile
     !
     call readcont
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(lcomb .and. lrestart) &
+      error stop 'fixed air5 restart is unavailable until Tv/Ev checkpoint semantics are defined'
+#endif
     !
     if(lrestart) then
       !
@@ -124,6 +128,24 @@ module initialisation
           call ldcavityini
         case('airreactor')
           call airreactorini
+#ifdef ASTR_AIR5_CHEMISTRY
+        case('air5wave')
+          call air5waveini
+        case('air5reactor')
+          call air5reactorini
+        case('air5tgv')
+          call air5tgvini
+        case('air5postshock')
+          call air5postshockini
+        case('air5hbl')
+          call air5hblini
+        case('air5advection')
+          call air5advectionini
+        case('air5difflayer')
+          call air5difflayerini
+        case('air5evpulse')
+          call air5evpulseini
+#endif
         ! case('hitflame')
         !   call hitflameini
         ! case default
@@ -135,6 +157,20 @@ module initialisation
         !
       endif
       !
+#ifdef ASTR_AIR5_CHEMISTRY
+      if(lcomb .and. trim(flowtype)/='air5reactor' .and. &
+         trim(flowtype)/='air5tgv' .and. &
+         trim(flowtype)/='air5postshock' .and. &
+         trim(flowtype)/='air5hbl' .and. &
+         trim(flowtype)/='air5advection' .and. &
+         trim(flowtype)/='air5difflayer' .and. &
+         trim(flowtype)/='air5evpulse') then
+        block
+          use commarray, only: tve,tmp
+          tve(0:im,0:jm,0:km)=tmp(0:im,0:jm,0:km)
+        end block
+      endif
+#endif
       call updateq
       !
       nstep=0
@@ -755,6 +791,357 @@ module initialisation
   !+-------------------------------------------------------------------+
   !| The end of the subroutine tgvini.                                 |
   !+-------------------------------------------------------------------+
+#ifdef ASTR_AIR5_CHEMISTRY
+  subroutine air5waveini
+    use iso_fortran_env, only: real64
+    use chemistry_air5_data, only: air5_num_species,air5_idx_n2,air5_idx_o2, &
+      air5_molar_mass,air5_ru
+    use commvar, only: ref_len
+    use commarray, only: x,vel,rho,prs,spc,tmp,tve
+    integer :: i,j,k
+    real(real64), parameter :: target_pressure=1.0e5_real64
+    real(real64), parameter :: target_temperature=1.0e3_real64
+    real(real64), parameter :: n2_mean=0.765_real64
+    real(real64), parameter :: wave_amplitude=0.1_real64
+    real(real64) :: phase_sum,mixture_gas_constant
+
+    if(num_species/=air5_num_species) &
+      error stop 'air5wave requires the fixed five-species state'
+    if(ref_len<=0.0_real64) error stop 'air5wave requires positive ref_len'
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          phase_sum=(sin(x(i,j,k,1)/ref_len)+sin(x(i,j,k,2)/ref_len)+ &
+            sin(x(i,j,k,3)/ref_len))/3.0_real64
+          spc(i,j,k,:)=0.0_real64
+          spc(i,j,k,air5_idx_n2)=n2_mean+wave_amplitude*phase_sum
+          spc(i,j,k,air5_idx_o2)=1.0_real64-spc(i,j,k,air5_idx_n2)
+          mixture_gas_constant=sum(spc(i,j,k,:)*air5_ru/air5_molar_mass)
+          rho(i,j,k)=target_pressure/(mixture_gas_constant*target_temperature)
+          vel(i,j,k,:)=0.0_real64
+          prs(i,j,k)=target_pressure
+          tmp(i,j,k)=target_temperature
+          tve(i,j,k)=target_temperature
+        enddo
+      enddo
+    enddo
+    if(lio) write(*,'(A)') '  ** periodic air5 species wave initialised.'
+  end subroutine air5waveini
+
+  subroutine air5reactorini
+    use iso_fortran_env, only: real64
+    use chemistry_air5_data, only: air5_num_species,air5_molar_mass,air5_ru
+    use commarray, only: vel,rho,prs,spc,tmp,tve
+    integer :: i,j,k
+    real(real64), parameter :: target_density=5.0e-2_real64
+    real(real64), parameter :: target_temperature=6.0e3_real64
+    real(real64), parameter :: target_tv=1.0e3_real64
+    real(real64), parameter :: target_velocity(3)=[40.0_real64,-5.0_real64,2.0_real64]
+    real(real64), parameter :: target_mass_fraction(air5_num_species)= &
+      [0.55_real64,0.15_real64,0.10_real64,0.12_real64,0.08_real64]
+    real(real64) :: mixture_gas_constant
+
+    if(num_species/=air5_num_species) &
+      error stop 'air5reactor requires the fixed five-species state'
+    mixture_gas_constant=sum(target_mass_fraction*air5_ru/air5_molar_mass)
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          rho(i,j,k)=target_density
+          vel(i,j,k,:)=target_velocity
+          prs(i,j,k)=target_density*mixture_gas_constant*target_temperature
+          spc(i,j,k,:)=target_mass_fraction
+          tmp(i,j,k)=target_temperature
+          tve(i,j,k)=target_tv
+        enddo
+      enddo
+    enddo
+    if(lio) write(*,'(A)') '  ** periodic fixed air5 reactor initialised.'
+  end subroutine air5reactorini
+
+  subroutine air5tgvini
+    use iso_fortran_env, only: real64
+    use chemistry_air5_data, only: air5_num_species,air5_molar_mass,air5_ru
+    use commvar, only: ref_len
+    use commarray, only: x,vel,rho,prs,spc,tmp,tve
+    integer :: i,j,k
+    real(real64), parameter :: target_density=5.0e-2_real64
+    real(real64), parameter :: target_temperature=6.0e3_real64
+    real(real64), parameter :: target_tv=1.0e3_real64
+    real(real64), parameter :: velocity_amplitude=1.0e2_real64
+    real(real64), parameter :: target_mass_fraction(air5_num_species)= &
+      [0.55_real64,0.15_real64,0.10_real64,0.12_real64,0.08_real64]
+    real(real64) :: mixture_gas_constant,base_pressure
+    real(real64) :: phase_x,phase_y,phase_z,pressure_perturbation
+
+    if(num_species/=air5_num_species) &
+      error stop 'air5tgv requires the fixed five-species state'
+    if(ref_len<=0.0_real64) error stop 'air5tgv requires positive ref_len'
+    mixture_gas_constant=sum(target_mass_fraction*air5_ru/air5_molar_mass)
+    base_pressure=target_density*mixture_gas_constant*target_temperature
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          phase_x=x(i,j,k,1)/ref_len
+          phase_y=x(i,j,k,2)/ref_len
+          phase_z=x(i,j,k,3)/ref_len
+          rho(i,j,k)=target_density
+          vel(i,j,k,1)=velocity_amplitude*sin(phase_x)*cos(phase_y)*cos(phase_z)
+          vel(i,j,k,2)=-velocity_amplitude*cos(phase_x)*sin(phase_y)*cos(phase_z)
+          vel(i,j,k,3)=0.0_real64
+          pressure_perturbation=target_density*velocity_amplitude**2/16.0_real64* &
+            (cos(2.0_real64*phase_x)+cos(2.0_real64*phase_y))* &
+            (cos(2.0_real64*phase_z)+2.0_real64)
+          prs(i,j,k)=base_pressure+pressure_perturbation
+          spc(i,j,k,:)=target_mass_fraction
+          tmp(i,j,k)=prs(i,j,k)/(rho(i,j,k)*mixture_gas_constant)
+          tve(i,j,k)=target_tv
+        enddo
+      enddo
+    enddo
+    if(lio) write(*,'(A)') '  ** periodic high-temperature fixed air5 TGV initialised.'
+  end subroutine air5tgvini
+
+  subroutine air5postshockini
+    use iso_fortran_env, only: real64
+    use chemistry_air5_data, only: air5_num_species
+    use chemistry_model, only: chemistry_status_ok
+    use chemistry_state_layout, only: air5_num_conservative
+    use chemistry_flow_state, only: air5_primitive_to_conservative, &
+      air5_conservative_to_primitive
+    use chemistry_postshock_boundary, only: configure_air5_postshock_boundary
+    use commvar, only: ia
+    use commarray, only: x,vel,rho,prs,spc,tmp,tve
+    use parallel, only: ig0
+    character(len=1024) :: line
+    real(real64), allocatable :: profile(:,:),profile_q(:,:)
+    real(real64) :: row(13),local_q(air5_num_conservative)
+    real(real64) :: velocity(3),mass_fraction(air5_num_species)
+    real(real64) :: density,temperature,tv,pressure,scale,tolerance
+    integer :: unit,ios,profile_index,row_count,i,j,k,status
+
+    if(num_species/=air5_num_species) &
+      error stop 'air5postshock requires the fixed five-species state'
+    allocate(profile(13,0:ia),profile_q(air5_num_conservative,0:ia))
+    open(newunit=unit,file='datin/air5_postshock_profile.dat',status='old', &
+      action='read',iostat=ios)
+    if(ios/=0) error stop 'cannot open datin/air5_postshock_profile.dat'
+    row_count=0
+    do
+      read(unit,'(A)',iostat=ios) line
+      if(ios<0) exit
+      if(ios>0) error stop 'failed reading air5 post-shock profile'
+      line=adjustl(line)
+      if(len_trim(line)==0 .or. line(1:1)=='#') cycle
+      if(row_count>ia) error stop 'air5 post-shock profile has too many rows'
+      read(line,*,iostat=ios) row
+      if(ios/=0) error stop 'invalid air5 post-shock profile row'
+      profile(:,row_count)=row
+      row_count=row_count+1
+    enddo
+    close(unit)
+    if(row_count/=ia+1) error stop 'air5 post-shock profile point count mismatch'
+
+    tolerance=2.0e-11_real64
+    do profile_index=0,ia
+      velocity=[profile(3,profile_index),0.0_real64,0.0_real64]
+      mass_fraction=profile(7:11,profile_index)
+      call air5_primitive_to_conservative(profile(2,profile_index),velocity, &
+        profile(5,profile_index),mass_fraction,profile(6,profile_index), &
+        local_q,status)
+      if(status/=chemistry_status_ok) &
+        error stop 'air5 post-shock profile contains an invalid state'
+      profile_q(:,profile_index)=local_q
+      scale=max(abs(profile(12,profile_index)),1.0_real64)
+      if(abs(local_q(11)-profile(12,profile_index))>tolerance*scale) &
+        error stop 'air5 post-shock profile Ev is inconsistent'
+      scale=max(abs(profile(13,profile_index)),1.0_real64)
+      if(abs(local_q(5)-profile(13,profile_index))>tolerance*scale) &
+        error stop 'air5 post-shock profile q5 is inconsistent'
+      call air5_conservative_to_primitive(local_q,density,velocity,temperature, &
+        mass_fraction,tv,pressure,status)
+      if(status/=chemistry_status_ok) &
+        error stop 'air5 post-shock profile reconstruction failed'
+      scale=max(abs(profile(4,profile_index)),1.0_real64)
+      if(abs(pressure-profile(4,profile_index))>tolerance*scale) &
+        error stop 'air5 post-shock profile pressure is inconsistent'
+    enddo
+    call configure_air5_postshock_boundary(profile_q(:,0),profile_q(:,ia))
+
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          profile_index=ig0+i
+          scale=max(abs(profile(1,profile_index)),1.0_real64)
+          if(abs(x(i,j,k,1)-profile(1,profile_index))>tolerance*scale) &
+            error stop 'air5 post-shock profile does not match the x grid'
+          rho(i,j,k)=profile(2,profile_index)
+          vel(i,j,k,:)=[profile(3,profile_index),0.0_real64,0.0_real64]
+          prs(i,j,k)=profile(4,profile_index)
+          tmp(i,j,k)=profile(5,profile_index)
+          tve(i,j,k)=profile(6,profile_index)
+          spc(i,j,k,:)=profile(7:11,profile_index)
+        enddo
+      enddo
+    enddo
+    deallocate(profile,profile_q)
+    if(lio) write(*,'(A)') '  ** fixed air5 post-shock profile initialised.'
+  end subroutine air5postshockini
+
+  subroutine air5hblini
+    use iso_fortran_env, only: real64
+    use chemistry_air5_data, only: air5_num_species
+    use chemistry_model, only: chemistry_status_ok
+    use chemistry_state_layout, only: air5_num_conservative
+    use chemistry_flow_state, only: air5_conservative_to_primitive
+    use chemistry_hbl_profile, only: air5_hbl_profile_type, &
+      air5_hbl_profile_status_ok,read_air5_hbl_profile,sample_air5_hbl_profile
+    use chemistry_hbl_boundary, only: configure_air5_hbl_boundary
+    use commarray, only: x,vel,rho,prs,spc,tmp,tve
+    type(air5_hbl_profile_type) :: profile
+    real(real64) :: local_q(air5_num_conservative),velocity(3)
+    real(real64) :: mass_fraction(air5_num_species),density,temperature,tv,pressure
+    integer :: i,j,k,status,state_status
+
+    if(num_species/=air5_num_species) &
+      error stop 'air5hbl requires the fixed five-species state'
+    call read_air5_hbl_profile('datin/air5_hbl_profile.dat',profile,status)
+    if(status/=air5_hbl_profile_status_ok) &
+      error stop 'cannot read datin/air5_hbl_profile.dat'
+    call configure_air5_hbl_boundary(profile)
+    do j=0,jm
+      call sample_air5_hbl_profile(profile,x(0,j,0,2),local_q,status)
+      if(status/=air5_hbl_profile_status_ok) &
+        error stop 'failed sampling fixed air5 HBL initial profile'
+      call air5_conservative_to_primitive(local_q,density,velocity,temperature, &
+        mass_fraction,tv,pressure,state_status)
+      if(state_status/=chemistry_status_ok) &
+        error stop 'fixed air5 HBL initial profile contains an invalid state'
+      do k=0,km
+        do i=0,im
+          rho(i,j,k)=density
+          vel(i,j,k,:)=velocity
+          prs(i,j,k)=pressure
+          tmp(i,j,k)=temperature
+          tve(i,j,k)=tv
+          spc(i,j,k,:)=mass_fraction
+        enddo
+      enddo
+    enddo
+    if(lio) write(*,'(A)') &
+      '  ** fixed air5 high-enthalpy boundary-layer profile initialised.'
+  end subroutine air5hblini
+
+  subroutine air5advectionini
+    use iso_fortran_env, only: real64
+    use chemistry_air5_data, only: air5_num_species,air5_idx_n2,air5_idx_o2, &
+      air5_molar_mass,air5_ru
+    use commvar, only: ref_len
+    use commarray, only: x,vel,rho,prs,spc,tmp,tve
+    integer :: i,j,k
+    real(real64), parameter :: target_density=1.0e-1_real64
+    real(real64), parameter :: target_pressure=1.0e5_real64
+    real(real64), parameter :: target_tv=2.0e3_real64
+    real(real64), parameter :: target_velocity=1.0e2_real64
+    real(real64), parameter :: wave_amplitude=5.0e-2_real64
+    real(real64) :: phase,mixture_gas_constant
+
+    if(num_species/=air5_num_species) &
+      error stop 'air5advection requires the fixed five-species state'
+    if(ref_len<=0.0_real64) error stop 'air5advection requires positive ref_len'
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          phase=x(i,j,k,1)/ref_len
+          spc(i,j,k,:)=0.0_real64
+          spc(i,j,k,air5_idx_n2)=0.7_real64+wave_amplitude*sin(phase)
+          spc(i,j,k,air5_idx_o2)=0.3_real64-wave_amplitude*sin(phase)
+          mixture_gas_constant=sum(spc(i,j,k,:)*air5_ru/air5_molar_mass)
+          rho(i,j,k)=target_density
+          vel(i,j,k,:)=[target_velocity,0.0_real64,0.0_real64]
+          prs(i,j,k)=target_pressure
+          tmp(i,j,k)=target_pressure/(target_density*mixture_gas_constant)
+          tve(i,j,k)=target_tv
+        enddo
+      enddo
+    enddo
+    if(lio) write(*,'(A)') '  ** periodic frozen-air5 advection wave initialised.'
+  end subroutine air5advectionini
+
+  subroutine air5difflayerini
+    use iso_fortran_env, only: real64
+    use chemistry_air5_data, only: air5_num_species,air5_idx_n2,air5_idx_o2, &
+      air5_idx_n,air5_idx_o,air5_idx_no,air5_molar_mass,air5_ru
+    use commvar, only: ref_len
+    use commarray, only: x,vel,rho,prs,spc,tmp,tve
+    integer :: i,j,k
+    real(real64), parameter :: target_pressure=1.0e5_real64
+    real(real64), parameter :: target_temperature=4.0e3_real64
+    real(real64), parameter :: target_tv=2.0e3_real64
+    real(real64), parameter :: layer_amplitude=3.5e-1_real64
+    real(real64), parameter :: layer_width=6.0e-1_real64
+    real(real64) :: phase,mixture_gas_constant
+
+    if(num_species/=air5_num_species) &
+      error stop 'air5difflayer requires the fixed five-species state'
+    if(ref_len<=0.0_real64) error stop 'air5difflayer requires positive ref_len'
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          phase=x(i,j,k,1)/ref_len
+          spc(i,j,k,:)=0.0_real64
+          spc(i,j,k,air5_idx_n2)=0.475_real64+ &
+            layer_amplitude*tanh(sin(phase)/layer_width)
+          spc(i,j,k,air5_idx_o2)=0.95_real64-spc(i,j,k,air5_idx_n2)
+          spc(i,j,k,air5_idx_n)=0.02_real64
+          spc(i,j,k,air5_idx_o)=0.02_real64
+          spc(i,j,k,air5_idx_no)=0.01_real64
+          mixture_gas_constant=sum(spc(i,j,k,:)*air5_ru/air5_molar_mass)
+          rho(i,j,k)=target_pressure/(mixture_gas_constant*target_temperature)
+          vel(i,j,k,:)=0.0_real64
+          prs(i,j,k)=target_pressure
+          tmp(i,j,k)=target_temperature
+          tve(i,j,k)=target_tv
+        enddo
+      enddo
+    enddo
+    if(lio) write(*,'(A)') '  ** periodic frozen-air5 diffusion layer initialised.'
+  end subroutine air5difflayerini
+
+  subroutine air5evpulseini
+    use iso_fortran_env, only: real64
+    use chemistry_air5_data, only: air5_num_species,air5_molar_mass,air5_ru
+    use commvar, only: ref_len
+    use commarray, only: x,vel,rho,prs,spc,tmp,tve
+    integer :: i,j,k
+    real(real64), parameter :: target_density=1.0e-1_real64
+    real(real64), parameter :: target_temperature=4.0e3_real64
+    real(real64), parameter :: base_tv=1.2e3_real64
+    real(real64), parameter :: pulse_amplitude=1.8e3_real64
+    real(real64), parameter :: target_mass_fraction(air5_num_species)= &
+      [0.70_real64,0.20_real64,0.03_real64,0.02_real64,0.05_real64]
+    real(real64) :: phase,mixture_gas_constant
+
+    if(num_species/=air5_num_species) &
+      error stop 'air5evpulse requires the fixed five-species state'
+    if(ref_len<=0.0_real64) error stop 'air5evpulse requires positive ref_len'
+    mixture_gas_constant=sum(target_mass_fraction*air5_ru/air5_molar_mass)
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          phase=x(i,j,k,1)/ref_len
+          rho(i,j,k)=target_density
+          vel(i,j,k,:)=0.0_real64
+          prs(i,j,k)=target_density*mixture_gas_constant*target_temperature
+          spc(i,j,k,:)=target_mass_fraction
+          tmp(i,j,k)=target_temperature
+          tve(i,j,k)=base_tv+pulse_amplitude*exp(4.0_real64*(cos(phase)-1.0_real64))
+        enddo
+      enddo
+    enddo
+    if(lio) write(*,'(A)') '  ** periodic frozen-air5 vibrational pulse initialised.'
+  end subroutine air5evpulseini
+#endif
   !
   !+-------------------------------------------------------------------+
   !| This subroutine is used to generate an initial field for the      |

@@ -133,6 +133,10 @@ contains
     use conservative_boundary_stage_gpu, only: initialize_conservative_stage_gpu
     use commvar_gpu, only: set_metric_consistent_eps_gpu
     use production_statistics_gpu, only: initialize_compact_statistics_gpu
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_postshock_boundary_gpu, only: initialize_air5_postshock_boundary_gpu
+    use chemistry_hbl_boundary_gpu, only: initialize_air5_hbl_boundary_gpu
+#endif
     implicit none
     logical :: allow_selective
 
@@ -148,6 +152,10 @@ contains
     endif
     call init_halo_transport_gpu()
     call init_gpu()
+#ifdef ASTR_AIR5_CHEMISTRY
+    call initialize_air5_postshock_boundary_gpu()
+    call initialize_air5_hbl_boundary_gpu()
+#endif
     if(conservative_boundary%enabled) then
       call initialize_conservative_stage_gpu()
       call set_metric_consistent_eps_gpu(.true.)
@@ -168,7 +176,13 @@ contains
     use conservative_boundary_stage_gpu, only: release_conservative_stage_gpu
     use halo_exchange_gpu, only: release_halo_exchange_buffers_gpu
     use commarray_gpu, only: release_gpu_arrays
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_hbl_boundary_gpu, only: release_air5_hbl_boundary_gpu
+#endif
     implicit none
+#ifdef ASTR_AIR5_CHEMISTRY
+    call release_air5_hbl_boundary_gpu()
+#endif
     call release_compact_statistics_gpu()
     call release_dynamic_inflow_gpu()
     call release_boundary_gpu()

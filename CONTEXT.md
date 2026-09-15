@@ -68,6 +68,79 @@ _Avoid_: CRLF input files, Windows line endings in runtime inputs
 `use_gpu` is a runtime input-file option that selects CPU or GPU execution inside a CUDA-capable binary. It is not a CMake or compiler option.
 _Avoid_: `-DUSE_GPU`, compile-time `use_gpu`
 
+**Production chemistry backend**:
+The chemistry implementation called by the ASTR production time loop. The first chemistry stage means the matched CPU and CUDA Fortran implementations of the fixed Kim-Jo/Park five-species two-temperature neutral-air model; it does not depend on the Cantera runtime.
+_Avoid_: Arbitrary Cantera mechanism execution, host-side chemistry inside the GPU loop
+
+**Cantera CPU reference backend**:
+An optional independent validation tool for single-temperature thermodynamics, species reference energies, selected rates, and equilibrium checks. It is not the production chemistry backend and does not define the complete two-temperature kinetics or V-T relaxation oracle.
+_Avoid_: Linking Cantera into the production CUDA executable, treating Cantera as a complete two-temperature oracle
+
+**GPU chemistry equivalence oracle**:
+The CPU Fortran FP64 production chemistry backend using the same fixed mechanism, thermodynamics, analytic Jacobian, and ROS2 algorithm as CUDA Fortran. It isolates porting differences but cannot expose an error shared by both production implementations.
+_Avoid_: Calling CPU/GPU agreement independent chemistry validation, using the historical donor trajectory as the pass/fail reference
+
+**Independent zero-dimensional chemistry oracle**:
+A validation-only Python/SciPy driver that reads the versioned production mechanism data but independently implements the coupled two-temperature equations and integrates them with high-accuracy Radau or BDF. It tests trajectory, conservation, stiffness, and convergence without entering the production executable.
+_Avoid_: Reusing the production ROS2 implementation, bypassing the generated-data drift test, treating Cantera as a complete two-temperature oracle
+
+**Fixed air-five mechanism source**:
+`chemMech/air5_kimjo12.json` is the only manually maintained source for the first mechanism, thermodynamics, and transport constants. A deterministic repository generator emits the shared Fortran compile-time module used by CPU and CUDA Fortran, while tests enforce byte-identical regeneration and a content hash. Runtime reports only the fixed mechanism identifier and version.
+_Avoid_: Runtime mechanism parsing or MPI broadcast, duplicate hand-maintained CPU/GPU constants, printing SHA-256 at program startup, accepting arbitrary mechanisms in the first backend
+
+**Air-five validation domain**:
+The first authoritative zero-dimensional domain is 300 to 8000 K for translational and vibrational temperatures and `1e3` to `1e6` Pa. Representative states cover dissociation, near equilibrium, zero initial products, and translational-vibrational nonequilibrium. More extreme states test explicit rejection and finite failure behavior rather than physical accuracy.
+_Avoid_: Claiming physical validation above 8000 K, treating range-stress states as accuracy passes, constructing an unnecessary full Cartesian state matrix, mixing nondimensional ASTR state with SI chemistry constants
+
+**Scaled chemistry acceptance gate**:
+Separate scale-aware tolerances govern thermodynamic round trips, analytic Jacobians, CPU/GPU source equivalence, matched ROS2 trajectories, independent Radau trajectories, conservation, and positivity. Accepted chemistry states are never repaired by clipping or renormalization, and any non-finite or continued failed solve is a hard failure.
+_Avoid_: One tolerance for every chemistry quantity, relative-only checks near zero, loosening a gate to obtain a pass, calling CPU/GPU agreement independent validation
+
+**Air-five case promotion ladder**:
+The first reaction-flow path advances from a uniform reactor embedded in a periodic three-dimensional mesh, through frozen-chemistry quasi-one-dimensional transport, post-normal-shock relaxation, an extruded three-dimensional shock, high-temperature TGV, a laminar high-enthalpy flat plate, and finally finite-rate-air SBLI. Each level opens one new coupling boundary.
+_Avoid_: Treating high-temperature TGV as chemistry physics validation, using fuel-flame cases with the neutral-air mechanism, opening a separate one-dimensional GPU solver, skipping transport isolation before SBLI
+
+**Authoritative chemistry halo state**:
+Multi-rank chemistry advances active solution nodes without communication inside adaptive substeps and exchanges only `q(1:11)` at required operator boundaries. Existing `qswap` semantics carry one duplicate interface plane plus `hm` exterior halo planes; all primitive, species, temperature, and property caches are rebuilt from conservative state. Global conservation uses cell-volume integration rather than duplicate node sums.
+_Avoid_: Integrating exterior halos, exchanging derived chemistry caches, MPI inside cell-local ROS2 substeps, direct global sums over duplicate interface nodes, allowing one rank to exit while peers remain in MPI
+
+**Chemistry performance authority**:
+Local RTX 4000 Ada runs provide correctness, sanitizer, profiling, and capacity-preflight evidence only. Authoritative performance uses one rank per A800 over the fixed `256^3`, `384^3`, and `512^3` matrix with warmups, five-run stability, residency checks, and measured strong scaling. CPU speedup targets are frozen only after a correct baseline exists.
+_Avoid_: Publishing local Ada FP64 speedup as production evidence, timing before correctness, inventing a speedup target before measurement, hiding run-to-run variation or adaptive-substep statistics
+
+**Complete two-temperature total energy**:
+The fifth flow conservative variable contains kinetic, translational-rotational, vibrational, and species formation energies. Vibrational modal energy is evolved separately to determine its share of the same total energy; an adiabatic constant-volume chemistry step conserves the fifth variable while updating species and modal energy and recovering both temperatures.
+_Avoid_: Adding an explicit formation-energy source to an energy variable that already contains formation energy, treating modal energy as an additional copy of total energy
+
+**Unfiltered first chemistry path**:
+The first five-species two-temperature reaction-flow path requires `lfilter=f`. Existing full and scalar explicit-filter backends remain available for validated non-reacting cases, while reaction-flow filtering is deferred until a bounded correction can preserve species positivity, total mass, N/O elements, modal-energy admissibility, and complete total energy together.
+_Avoid_: Filtering reactive species and then clipping or renormalizing them, treating a memory-saving scalar workspace as a positivity method
+
+**Cell-local ROS2 chemistry solve**:
+The first production chemistry integrator is an adaptive second-order L-stable Rosenbrock method over five species densities and one vibrational modal-energy variable. One CUDA thread owns one cell-local adaptive solve and its private fixed-size linear algebra; threads are scheduled in warps and are not permanently assigned to physical CUDA cores.
+_Avoid_: Calling one thread one CUDA core, splitting reaction and V-T integration, treating register spill or adaptive warp divergence as already acceptable performance
+
+**Reduced five-species two-temperature thermodynamics**:
+The first chemistry backend uses an ideal neutral-air mixture with fixed translational-rotational degrees of freedom, harmonic-oscillator vibrational energy for N2/O2/NO, and fixed species formation energies. Translational temperature is recovered algebraically from complete total energy, while the shared vibrational temperature is boundedly inverted from modal energy and composition.
+_Avoid_: NASA variable-heat-capacity thermodynamics, electronic excitation, rotational nonequilibrium, ions, electrons, claiming complete high-temperature-air coverage
+
+**Reduced five-species laminar transport**:
+The first reaction-flow transport closure uses Blottner species viscosity, Wilke mixture rules, modified-Eucken translational-rotational conductivity, Gupta binary fits, and correction-velocity mixture-averaged species diffusion. Species diffusion carries complete species enthalpy in total energy and vibrational energy in the modal equation, while the summed species mass flux is zero.
+_Avoid_: Omitting formation energy from diffusive enthalpy, arbitrary small-denominator clipping, claiming Stefan-Maxwell/Soret/Dufour coverage
+
+**Air-five C4 transport status**:
+C4 keeps `q(1:11)` authoritative and resident on the GPU while applying fixed-air5 state conversion, convection, sixth-order explicit viscous/thermal/species diffusion, and fixed-width multi-rank halo exchange with `lfilter=f`. A zero-velocity, uniform-pressure/temperature composition wave independently requires density-weighted species variance to decrease while its mean is conserved. That gate exposed and corrected a shared CPU/GPU RHS sign error that equivalence and global conservation could not detect.
+_Avoid_: Calling CPU/GPU agreement an independent diffusion-direction oracle, calling C4 reacting CFD, adding `div(Js)` when `Js=-rho*Ds*grad(Ys)`, bypassing the composition-wave variance gate
+
+**Constrained chemistry Jacobian**:
+The production ROS2 Jacobian differentiates the coupled reaction and V-T source at fixed density, momentum, and complete total energy, including the induced translational- and vibrational-temperature derivatives. A scale-aware centered finite-difference Jacobian is a CPU-only derivative oracle.
+Strictly positive interior states use the centered oracle. Exact-zero species lie on the boundary of the admissible composition domain and use an admissible second-order one-sided directional derivative with Richardson extrapolation under the same tolerance. This boundary acceptance semantics was approved for Phase C0 on 2026-09-14.
+_Avoid_: Negative-species perturbations, frozen-temperature Jacobian, production GPU finite-difference Jacobian, validating one shared analytic implementation against itself
+
+**Unified two-temperature conservative state**:
+The five-species model stores flow conservation, all species densities, and vibrational modal energy in one indexed conservative state. The authoritative modal energy is the modal component of that state; vibrational temperature is a reconstructable thermodynamic cache rather than a second conserved value.
+_Avoid_: Separate authoritative `Ev/Evrhs/Evsave` evolution, independently checkpointing a derived vibrational temperature
+
 **Host-staged halo buffer**:
 The first multi-rank GPU halo-exchange baseline. Each rank packs device halo data into a GPU buffer, copies only that halo buffer to host, exchanges host halo buffers with MPI, copies the received halo buffer back to device, and unpacks it into device halo cells. It keeps full field variables resident on GPU while avoiding CUDA-aware or HIP-aware MPI as a first dependency.
 _Avoid_: Full-field D2H halo bridge, mandatory CUDA-aware MPI, device-MPI-only baseline
@@ -165,12 +238,12 @@ RANS/LES turbulence models are deliberately out of scope for the current GPU mig
 _Avoid_: Accidental RANS/LES support claims, treating shock-boundary-layer work as turbulence-model support, weakening the `turbmode='none'` gate
 
 **Combustion GPU target**:
-The future combustion GPU track includes species-bearing conservative variables, species halo/filter/diffusion ownership, and chemistry source-term execution. It is broader than adding a single source kernel to the current `numq=5` path. This track is currently deferred; Cantera remains a CPU oracle/reference rather than a selected GPU backend.
-_Avoid_: Calling the current source dispatcher chemistry-ready, treating `srccomb` as a drop-in GPU kernel, enabling chemistry without species transport ownership
+The fixed-air5 GPU track now includes resident species-bearing conservative variables, unfiltered species/`Ev` convection and diffusion, and multi-rank halo ownership. Its chemistry source and ROS2 integrator have separate CPU/GPU gates, but C5 Strang coupling has not yet connected them to the CFD time loop. Cantera remains an optional CPU reference rather than the production backend.
+_Avoid_: Calling C4 reacting CFD, treating `srccomb` as a drop-in GPU kernel, generalizing the fixed-air5 layout to arbitrary mechanisms, enabling filtered reaction flow before a conservation and positivity contract
 
-**Deferred species-transport phase**:
-With chemistry and combustion deferred, multi-species transport is optional rather than a blocker for shock/SBLI work. GPU execution should continue to reject `num_species > 0` until a concrete non-reacting multi-species or later combustion requirement reopens the phase.
-_Avoid_: Porting species only because it appears before shock in an old phase list, treating single-species shock/SBLI as blocked by species transport, weakening the `num_species=0` gate
+**Fixed-air5 versus generic species transport**:
+The fixed five-species, two-temperature air layout is the only admitted `num_species > 0` GPU path. C4 validates its resident `numq=11` state, no-reaction convection/diffusion, and fixed-halo transport. Arbitrary species counts, runtime mechanisms, and fuel chemistry remain explicit rejects.
+_Avoid_: Treating fixed-air5 C4 as generic species support, reopening arbitrary layouts by weakening the runtime gate, requiring generic species support before continuing the fixed-air5 C5 path
 
 **Shock/SBLI GPU target**:
 The future shock and shock-boundary-layer GPU track covers shock-capable numerical formats, shock sensors, shock-region filtering or added dissipation, and inlet/outlet/sponge/high-speed wall boundaries for laminar or DNS-like cases with `turbmode='none'`.

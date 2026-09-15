@@ -1,0 +1,930 @@
+module chemistry_flow_solver_gpu
+  use cudafor
+  use iso_fortran_env, only: real64
+  use constdef, only: num1d60,num1d12,num2d3
+  use chemistry_air5_data, only: air5_num_species,air5_molar_mass,air5_atom_count
+  use chemistry_model, only: chemistry_status_ok
+  use chemistry_state_layout, only: air5_num_conservative,air5_idx_density, &
+    air5_idx_momentum_first,air5_idx_momentum_last,air5_idx_total_energy, &
+    air5_idx_species_first,air5_idx_species_last,air5_idx_ev
+  use chemistry_flow_state_gpu, only: air5_conservative_to_primitive_gpu
+  use chemistry_transport_gpu, only: air5_diffusive_flux_gpu
+  implicit none
+  private
+
+  integer, device, save :: air5_flow_status_d
+  real(real64), device, save :: air5_conservation_totals_d(air5_num_conservative)
+  real(real64), save :: air5_conservation_baseline(air5_num_conservative)
+  logical, save :: air5_conservation_configured=.false.
+  logical, save :: air5_conservation_enabled=.false.
+  logical, save :: air5_conservation_baseline_set=.false.
+  logical, save :: air5_conservation_file_open=.false.
+  integer, save :: air5_conservation_unit=-1
+
+  public :: air5_prepare_spatial_state_gpu
+  public :: air5_transport_rk3_step_gpu
+  public :: launch_air5_face_primitives_gpu
+  public :: validate_air5_transport_gpu
+
+contains
+
+  attributes(device) real(real64) function air5_deriv6(fm3,fm2,fm1,fp1,fp2,fp3)
+    real(real64), value :: fm3,fm2,fm1,fp1,fp2,fp3
+
+    air5_deriv6=0.75_real64*(fp1-fm1)-0.15_real64*(fp2-fm2)+ &
+      num1d60*(fp3-fm3)
+  end function air5_deriv6
+
+  attributes(device) real(real64) function air5_deriv6_boundary(index,dim,ntype, &
+      fm3,fm2,fm1,fp1,fp2,fp3) result(derivative)
+    integer, value :: index,dim,ntype
+    real(real64), value :: fm3,fm2,fm1,fp1,fp2,fp3
+
+    if((ntype==1 .or. ntype==4) .and. index==1) then
+      derivative=0.5_real64*(fp1-fm1)
+    elseif((ntype==1 .or. ntype==4) .and. index==2) then
+      derivative=num2d3*(fp1-fm1)-num1d12*(fp2-fm2)
+    elseif((ntype==2 .or. ntype==4) .and. index==dim-1) then
+      derivative=0.5_real64*(fp1-fm1)
+    elseif((ntype==2 .or. ntype==4) .and. index==dim-2) then
+      derivative=num2d3*(fp1-fm1)-num1d12*(fp2-fm2)
+    else
+      derivative=air5_deriv6(fm3,fm2,fm1,fp1,fp2,fp3)
+    endif
+  end function air5_deriv6_boundary
+
+  attributes(device) real(real64) function air5_deriv6_full_boundary(index,dim, &
+      ntype,f0,fm3,fm2,fm1,fp1,fp2,fp3) result(derivative)
+    integer, value :: index,dim,ntype
+    real(real64), value :: f0,fm3,fm2,fm1,fp1,fp2,fp3
+
+    if((ntype==1 .or. ntype==4) .and. index==0) then
+      derivative=-0.5_real64*fp2+2.0_real64*fp1-1.5_real64*f0
+    elseif((ntype==2 .or. ntype==4) .and. index==dim) then
+      derivative=0.5_real64*fm2-2.0_real64*fm1+1.5_real64*f0
+    else
+      derivative=air5_deriv6_boundary(index,dim,ntype,fm3,fm2,fm1,fp1,fp2,fp3)
+    endif
+  end function air5_deriv6_full_boundary
+
+  attributes(device) real(real64) function air5_diffusion_rhs_sign(component)
+    integer, value :: component
+
+    ! Physical species flux Js=-rho*Ds*grad(Ys) enters the conservative RHS as -div(Js).
+    air5_diffusion_rhs_sign=1.0_real64
+    if(component>=air5_idx_species_first .and. &
+       component<=air5_idx_species_last) air5_diffusion_rhs_sign=-1.0_real64
+  end function air5_diffusion_rhs_sign
+
+  attributes(device) subroutine record_air5_status(status)
+    integer, value :: status
+    integer :: previous
+
+    if(status/=chemistry_status_ok) previous=atomicMax(air5_flow_status_d,status)
+  end subroutine record_air5_status
+
+  attributes(device) subroutine air5_store_primitive_point(i,j,k,im,jm,km,hm)
+    use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,spc_d,tve_d
+    integer, value :: i,j,k,im,jm,km,hm
+    real(real64) :: qlocal(air5_num_conservative),rho,velocity(3),temperature
+    real(real64) :: mass_fraction(air5_num_species),tv,pressure
+    integer :: status
+
+    qlocal=q_d(i,j,k,1:air5_num_conservative)
+    call air5_conservative_to_primitive_gpu(qlocal,rho,velocity,temperature, &
+      mass_fraction,tv,pressure,status)
+    if(status/=chemistry_status_ok) then
+      call record_air5_status(status)
+      return
+    endif
+    rho_d(i,j,k)=rho
+    vel_d(i,j,k,:)=velocity
+    prs_d(i,j,k)=pressure
+    tmp_d(i,j,k)=temperature
+    spc_d(i,j,k,:)=mass_fraction
+    tve_d(i,j,k)=tv
+  end subroutine air5_store_primitive_point
+
+  attributes(global) subroutine air5_q_to_primitive_interior_kernel(im,jm,km,hm)
+    integer, value :: im,jm,km,hm
+    integer :: i,j,k
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=(blockIdx%y-1)*blockDim%y+threadIdx%y-1
+    k=(blockIdx%z-1)*blockDim%z+threadIdx%z-1
+    if(i>im .or. j>jm .or. k>km) return
+    call air5_store_primitive_point(i,j,k,im,jm,km,hm)
+  end subroutine air5_q_to_primitive_interior_kernel
+
+  attributes(global) subroutine air5_q_to_primitive_face_kernel(im,jm,km,hm,axis)
+    integer, value :: im,jm,km,hm,axis
+    integer :: id,n1,n2,h,side,i,j,k
+
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    select case(axis)
+    case(1)
+      n1=jm+1
+      n2=km+1
+      if(id>=n1*n2*2*(hm+1)) return
+      j=mod(id,n1)
+      k=mod(id/n1,n2)
+      h=mod(id/(n1*n2),hm+1)
+      side=id/(n1*n2*(hm+1))
+      i=merge(-hm+h,im+h,side==0)
+    case(2)
+      n1=im+1
+      n2=km+1
+      if(id>=n1*n2*2*(hm+1)) return
+      i=mod(id,n1)
+      k=mod(id/n1,n2)
+      h=mod(id/(n1*n2),hm+1)
+      side=id/(n1*n2*(hm+1))
+      j=merge(-hm+h,jm+h,side==0)
+    case default
+      n1=im+1
+      n2=jm+1
+      if(id>=n1*n2*2*(hm+1)) return
+      i=mod(id,n1)
+      j=mod(id/n1,n2)
+      h=mod(id/(n1*n2),hm+1)
+      side=id/(n1*n2*(hm+1))
+      k=merge(-hm+h,km+h,side==0)
+    end select
+    call air5_store_primitive_point(i,j,k,im,jm,km,hm)
+  end subroutine air5_q_to_primitive_face_kernel
+
+  attributes(global) subroutine air5_zero_rhs_kernel(im,jm,km)
+    use commarray_gpu, only: qrhs_d
+    integer, value :: im,jm,km
+    integer :: id,ntot,i,j,k
+
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    ntot=(im+1)*(jm+1)*(km+1)
+    if(id>=ntot) return
+    i=mod(id,im+1)
+    j=mod(id/(im+1),jm+1)
+    k=id/((im+1)*(jm+1))
+    qrhs_d(i,j,k,1:air5_num_conservative)=0.0_real64
+  end subroutine air5_zero_rhs_kernel
+
+  attributes(global) subroutine air5_zero_conservation_totals_kernel()
+    integer :: component
+
+    component=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    if(component>air5_num_conservative) return
+    air5_conservation_totals_d(component)=0.0_real64
+  end subroutine air5_zero_conservation_totals_kernel
+
+  attributes(global) subroutine air5_integrate_unique_cells_kernel(im,jm,km)
+    use commarray_gpu, only: q_d,jacob_d
+    integer, value :: im,jm,km
+    integer :: id,ntot,i,j,k,di,dj,dk,component
+    real(real64) :: cell_total,ignored
+
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    ntot=im*jm*km
+    if(id>=ntot) return
+    i=mod(id,im)
+    j=mod(id/im,jm)
+    k=id/(im*jm)
+    do component=1,air5_num_conservative
+      cell_total=0.0_real64
+      do dk=0,1
+        do dj=0,1
+          do di=0,1
+            cell_total=cell_total+q_d(i+di,j+dj,k+dk,component)* &
+              jacob_d(i+di,j+dj,k+dk)
+          enddo
+        enddo
+      enddo
+      ignored=atomicAdd(air5_conservation_totals_d(component),0.125_real64*cell_total)
+    enddo
+  end subroutine air5_integrate_unique_cells_kernel
+
+  subroutine configure_air5_conservation_gpu()
+    use mpi
+    character(len=32) :: value
+    integer :: status,length,local_flag,minimum_flag,maximum_flag,ierr
+    logical :: local_enabled
+
+    if(air5_conservation_configured) return
+    value=''
+    call get_environment_variable('ASTR_AIR5_C4_CONSERVATION',value, &
+      length=length,status=status)
+    local_enabled=.false.
+    if(status==0 .and. length>0) then
+      select case(trim(adjustl(value)))
+      case('1','t','T','true','TRUE','yes','YES','on','ON')
+        local_enabled=.true.
+      end select
+    endif
+    local_flag=merge(1,0,local_enabled)
+    call mpi_allreduce(local_flag,minimum_flag,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,status)
+    call mpi_allreduce(local_flag,maximum_flag,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,status)
+    if(minimum_flag/=maximum_flag) then
+      write(*,'(A)') 'ASTR_AIR5_C4_CONSERVATION must be identical on every MPI rank'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+    endif
+    air5_conservation_enabled=maximum_flag==1
+    air5_conservation_configured=.true.
+  end subroutine configure_air5_conservation_gpu
+
+  subroutine calculate_air5_conservation_totals_gpu(global_totals)
+    use mpi
+    use commvar, only: im,jm,km
+    use gpu_check, only: sync_after_kernel
+    real(real64), intent(out) :: global_totals(air5_num_conservative)
+    real(real64) :: local_totals(air5_num_conservative)
+    integer :: ntot,ierr
+    type(dim3) :: block,grid
+
+    block=dim3(256,1,1)
+    grid=dim3(1,1,1)
+    call air5_zero_conservation_totals_kernel<<<grid,block>>>()
+    call sync_after_kernel('air5_zero_conservation_totals_kernel',.true.)
+    ntot=im*jm*km
+    grid=dim3((ntot+block%x-1)/block%x,1,1)
+    call air5_integrate_unique_cells_kernel<<<grid,block>>>(im,jm,km)
+    call sync_after_kernel('air5_integrate_unique_cells_kernel',.true.)
+    local_totals=air5_conservation_totals_d
+    call mpi_allreduce(local_totals,global_totals,air5_num_conservative, &
+      MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,ntot)
+  end subroutine calculate_air5_conservation_totals_gpu
+
+  subroutine write_air5_conservation_record(step,phase,global_totals)
+    use ieee_arithmetic, only: ieee_is_finite
+    use parallel, only: mpirank
+    integer, intent(in) :: step,phase
+    real(real64), intent(in) :: global_totals(air5_num_conservative)
+    real(real64) :: elements(2),baseline_elements(2),species_closure
+    real(real64) :: relative_mass,relative_energy,relative_elements(2)
+    real(real64) :: max_species_drift
+    integer :: element,species
+
+    if(.not.all(ieee_is_finite(global_totals))) &
+      error stop 'non-finite fixed air5 global conservation record'
+    elements=0.0_real64
+    baseline_elements=0.0_real64
+    do element=1,2
+      do species=1,air5_num_species
+        elements(element)=elements(element)+ &
+          global_totals(air5_idx_species_first+species-1)* &
+          real(air5_atom_count(element,species),real64)/air5_molar_mass(species)
+        baseline_elements(element)=baseline_elements(element)+ &
+          air5_conservation_baseline(air5_idx_species_first+species-1)* &
+          real(air5_atom_count(element,species),real64)/air5_molar_mass(species)
+      enddo
+    enddo
+    species_closure=sum(global_totals(air5_idx_species_first:air5_idx_species_last))- &
+      global_totals(air5_idx_density)
+    relative_mass=(global_totals(air5_idx_density)- &
+      air5_conservation_baseline(air5_idx_density))/ &
+      max(abs(air5_conservation_baseline(air5_idx_density)),tiny(1.0_real64))
+    relative_energy=(global_totals(air5_idx_total_energy)- &
+      air5_conservation_baseline(air5_idx_total_energy))/ &
+      max(abs(air5_conservation_baseline(air5_idx_total_energy)),tiny(1.0_real64))
+    relative_elements=(elements-baseline_elements)/ &
+      max(abs(baseline_elements),tiny(1.0_real64))
+    max_species_drift=maxval(abs( &
+      global_totals(air5_idx_species_first:air5_idx_species_last)- &
+      air5_conservation_baseline(air5_idx_species_first:air5_idx_species_last)))
+    if(mpirank==0) then
+      if(.not.air5_conservation_file_open) then
+        open(newunit=air5_conservation_unit,file='air5_c4_conservation.dat', &
+          status='replace',action='write')
+        air5_conservation_file_open=.true.
+        write(air5_conservation_unit,'(A)') &
+          '# step phase q1 q2 q3 q4 q5 q6 q7 q8 q9 q10 q11 element_n element_o '// &
+          'species_mass_closure rel_mass rel_energy rel_element_n rel_element_o '// &
+          'max_species_abs_drift'
+      endif
+      write(air5_conservation_unit,'(I10,1X,I1,1X,19(ES24.16E3,1X))') &
+        step,phase,global_totals,elements,species_closure,relative_mass, &
+        relative_energy,relative_elements,max_species_drift
+      flush(air5_conservation_unit)
+    endif
+  end subroutine write_air5_conservation_record
+
+  subroutine initialize_air5_conservation_gpu(step)
+    integer, intent(in) :: step
+    real(real64) :: global_totals(air5_num_conservative)
+
+    call configure_air5_conservation_gpu()
+    if(.not.air5_conservation_enabled .or. air5_conservation_baseline_set) return
+    call calculate_air5_conservation_totals_gpu(global_totals)
+    air5_conservation_baseline=global_totals
+    air5_conservation_baseline_set=.true.
+    call write_air5_conservation_record(step,0,global_totals)
+  end subroutine initialize_air5_conservation_gpu
+
+  subroutine record_air5_conservation_gpu(step)
+    integer, intent(in) :: step
+    real(real64) :: global_totals(air5_num_conservative)
+
+    call configure_air5_conservation_gpu()
+    if(.not.air5_conservation_enabled) return
+    if(.not.air5_conservation_baseline_set) &
+      error stop 'fixed air5 conservation baseline is not initialized'
+    call calculate_air5_conservation_totals_gpu(global_totals)
+    call write_air5_conservation_record(step,1,global_totals)
+  end subroutine record_air5_conservation_gpu
+
+  attributes(device) subroutine air5_convective_flux_at(i,j,k,idir,f)
+    use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d
+    integer, value :: i,j,k,idir
+    real(real64), intent(out) :: f(air5_num_conservative)
+    real(real64) :: normal_velocity,metric_jacobian
+    integer :: component
+
+    normal_velocity=dxi_d(i,j,k,idir,1)*vel_d(i,j,k,1)+ &
+      dxi_d(i,j,k,idir,2)*vel_d(i,j,k,2)+ &
+      dxi_d(i,j,k,idir,3)*vel_d(i,j,k,3)
+    metric_jacobian=jacob_d(i,j,k)
+    f(air5_idx_density)=metric_jacobian*q_d(i,j,k,air5_idx_density)*normal_velocity
+    do component=air5_idx_momentum_first,air5_idx_momentum_last
+      f(component)=metric_jacobian*(q_d(i,j,k,component)*normal_velocity+ &
+        dxi_d(i,j,k,idir,component-air5_idx_momentum_first+1)*prs_d(i,j,k))
+    enddo
+    f(air5_idx_total_energy)=metric_jacobian* &
+      (q_d(i,j,k,air5_idx_total_energy)+prs_d(i,j,k))*normal_velocity
+    do component=air5_idx_species_first,air5_idx_species_last
+      f(component)=metric_jacobian*q_d(i,j,k,component)*normal_velocity
+    enddo
+    f(air5_idx_ev)=metric_jacobian*q_d(i,j,k,air5_idx_ev)*normal_velocity
+  end subroutine air5_convective_flux_at
+
+  attributes(global) subroutine air5_convective_rhs_x_kernel(im,jm,km,npdci, &
+      is,ie,js,je,ks,ke)
+    use commarray_gpu, only: qrhs_d
+    integer, value :: im,jm,km,npdci,is,ie,js,je,ks,ke
+    integer :: id,ntot,i,j,k,component
+    real(real64) :: fp1(air5_num_conservative),fm1(air5_num_conservative)
+    real(real64) :: fp2(air5_num_conservative),fm2(air5_num_conservative)
+    real(real64) :: fp3(air5_num_conservative),fm3(air5_num_conservative)
+
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    ntot=(im+1)*(jm+1)*(km+1)
+    if(id>=ntot) return
+    i=mod(id,im+1)
+    j=mod(id/(im+1),jm+1)
+    k=id/((im+1)*(jm+1))
+    if(i<is .or. i>ie .or. j<js .or. j>je .or. k<ks .or. k>ke) return
+    call air5_convective_flux_at(i+1,j,k,1,fp1)
+    call air5_convective_flux_at(i-1,j,k,1,fm1)
+    call air5_convective_flux_at(i+2,j,k,1,fp2)
+    call air5_convective_flux_at(i-2,j,k,1,fm2)
+    call air5_convective_flux_at(i+3,j,k,1,fp3)
+    call air5_convective_flux_at(i-3,j,k,1,fm3)
+    do component=1,air5_num_conservative
+      qrhs_d(i,j,k,component)=qrhs_d(i,j,k,component)- &
+        air5_deriv6_boundary(i,im,npdci,fm3(component),fm2(component), &
+                    fm1(component),fp1(component),fp2(component),fp3(component))
+    enddo
+  end subroutine air5_convective_rhs_x_kernel
+
+  attributes(global) subroutine air5_convective_rhs_y_kernel(im,jm,km,npdcj, &
+      is,ie,js,je,ks,ke)
+    use commarray_gpu, only: qrhs_d
+    integer, value :: im,jm,km,npdcj,is,ie,js,je,ks,ke
+    integer :: id,ntot,i,j,k,component
+    real(real64) :: fp1(air5_num_conservative),fm1(air5_num_conservative)
+    real(real64) :: fp2(air5_num_conservative),fm2(air5_num_conservative)
+    real(real64) :: fp3(air5_num_conservative),fm3(air5_num_conservative)
+
+    id=(blockIdx%x-1)*blockDim%x*blockDim%y+ &
+      (threadIdx%y-1)*blockDim%x+threadIdx%x-1
+    ntot=(im+1)*(jm+1)
+    if(id>=ntot) return
+    i=mod(id,im+1)
+    j=id/(im+1)
+    k=blockIdx%z-1
+    if(i<is .or. i>ie .or. j<js .or. j>je .or. k<ks .or. k>ke) return
+    call air5_convective_flux_at(i,j+1,k,2,fp1)
+    call air5_convective_flux_at(i,j-1,k,2,fm1)
+    call air5_convective_flux_at(i,j+2,k,2,fp2)
+    call air5_convective_flux_at(i,j-2,k,2,fm2)
+    call air5_convective_flux_at(i,j+3,k,2,fp3)
+    call air5_convective_flux_at(i,j-3,k,2,fm3)
+    do component=1,air5_num_conservative
+      qrhs_d(i,j,k,component)=qrhs_d(i,j,k,component)- &
+        air5_deriv6_boundary(j,jm,npdcj,fm3(component),fm2(component), &
+                    fm1(component),fp1(component),fp2(component),fp3(component))
+    enddo
+  end subroutine air5_convective_rhs_y_kernel
+
+  attributes(global) subroutine air5_convective_rhs_z_kernel(im,jm,km,npdck, &
+      is,ie,js,je,ks,ke)
+    use commarray_gpu, only: qrhs_d
+    integer, value :: im,jm,km,npdck,is,ie,js,je,ks,ke
+    integer :: id,ntot,i,j,k,component
+    real(real64) :: fp1(air5_num_conservative),fm1(air5_num_conservative)
+    real(real64) :: fp2(air5_num_conservative),fm2(air5_num_conservative)
+    real(real64) :: fp3(air5_num_conservative),fm3(air5_num_conservative)
+
+    id=(blockIdx%x-1)*blockDim%x*blockDim%z+ &
+      (threadIdx%z-1)*blockDim%x+threadIdx%x-1
+    ntot=(im+1)*(km+1)
+    if(id>=ntot) return
+    i=mod(id,im+1)
+    j=blockIdx%y-1
+    k=id/(im+1)
+    if(i<is .or. i>ie .or. j<js .or. j>je .or. k<ks .or. k>ke) return
+    call air5_convective_flux_at(i,j,k+1,3,fp1)
+    call air5_convective_flux_at(i,j,k-1,3,fm1)
+    call air5_convective_flux_at(i,j,k+2,3,fp2)
+    call air5_convective_flux_at(i,j,k-2,3,fm2)
+    call air5_convective_flux_at(i,j,k+3,3,fp3)
+    call air5_convective_flux_at(i,j,k-3,3,fm3)
+    do component=1,air5_num_conservative
+      qrhs_d(i,j,k,component)=qrhs_d(i,j,k,component)- &
+        air5_deriv6_boundary(k,km,npdck,fm3(component),fm2(component), &
+                    fm1(component),fp1(component),fp2(component),fp3(component))
+    enddo
+  end subroutine air5_convective_rhs_z_kernel
+
+  attributes(global) subroutine air5_species_tv_gradient_kernel(im,jm,km,npdci,npdcj,npdck, &
+      zero_species_flux_lower_y)
+    use commarray_gpu, only: spc_d,tve_d,dxi_d,dspc_d,dtve_d
+    integer, value :: im,jm,km,npdci,npdcj,npdck,zero_species_flux_lower_y
+    integer :: i,j,k,species,physical_direction
+    real(real64) :: derivative_species(3),derivative_tv(3)
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=(blockIdx%y-1)*blockDim%y+threadIdx%y-1
+    k=(blockIdx%z-1)*blockDim%z+threadIdx%z-1
+    if(i>im .or. j>jm .or. k>km) return
+    derivative_tv(1)=air5_deriv6_full_boundary(i,im,npdci,tve_d(i,j,k), &
+      tve_d(i-3,j,k),tve_d(i-2,j,k),tve_d(i-1,j,k),tve_d(i+1,j,k), &
+      tve_d(i+2,j,k),tve_d(i+3,j,k))
+    derivative_tv(2)=air5_deriv6_full_boundary(j,jm,npdcj,tve_d(i,j,k), &
+      tve_d(i,j-3,k),tve_d(i,j-2,k),tve_d(i,j-1,k),tve_d(i,j+1,k), &
+      tve_d(i,j+2,k),tve_d(i,j+3,k))
+    derivative_tv(3)=air5_deriv6_full_boundary(k,km,npdck,tve_d(i,j,k), &
+      tve_d(i,j,k-3),tve_d(i,j,k-2),tve_d(i,j,k-1),tve_d(i,j,k+1), &
+      tve_d(i,j,k+2),tve_d(i,j,k+3))
+    do physical_direction=1,3
+      dtve_d(i,j,k,physical_direction)=sum(derivative_tv* &
+        dxi_d(i,j,k,1:3,physical_direction))
+    enddo
+    do species=1,air5_num_species
+      derivative_species(1)=air5_deriv6_full_boundary(i,im,npdci, &
+        spc_d(i,j,k,species),spc_d(i-3,j,k,species),spc_d(i-2,j,k,species), &
+        spc_d(i-1,j,k,species),spc_d(i+1,j,k,species),spc_d(i+2,j,k,species), &
+        spc_d(i+3,j,k,species))
+      derivative_species(2)=air5_deriv6_full_boundary(j,jm,npdcj, &
+        spc_d(i,j,k,species),spc_d(i,j-3,k,species),spc_d(i,j-2,k,species), &
+        spc_d(i,j-1,k,species),spc_d(i,j+1,k,species),spc_d(i,j+2,k,species), &
+        spc_d(i,j+3,k,species))
+      derivative_species(3)=air5_deriv6_full_boundary(k,km,npdck, &
+        spc_d(i,j,k,species),spc_d(i,j,k-3,species),spc_d(i,j,k-2,species), &
+        spc_d(i,j,k-1,species),spc_d(i,j,k+1,species),spc_d(i,j,k+2,species), &
+        spc_d(i,j,k+3,species))
+      do physical_direction=1,3
+        dspc_d(i,j,k,species,physical_direction)=sum(derivative_species* &
+          dxi_d(i,j,k,1:3,physical_direction))
+      enddo
+      if(zero_species_flux_lower_y/=0 .and. j==0) &
+        dspc_d(i,j,k,species,2)=0.0_real64
+    enddo
+  end subroutine air5_species_tv_gradient_kernel
+
+  attributes(global) subroutine air5_diffusion_flux_kernel(im,jm,km)
+    use commarray_gpu, only: rho_d,vel_d,tmp_d,tve_d,prs_d,spc_d,dvel_d, &
+      dtmp_d,dspc_d,dtve_d,sigma_d,qflux_d,species_flux_d,ev_flux_d
+    integer, value :: im,jm,km
+    integer :: i,j,k,status
+    real(real64) :: velocity(3),mass_fraction(air5_num_species)
+    real(real64) :: grad_velocity(3,3),grad_temperature(3),grad_tv(3)
+    real(real64) :: grad_mass_fraction(air5_num_species,3)
+    real(real64) :: momentum_flux(3,3),species_flux(air5_num_species,3)
+    real(real64) :: energy_flux(3),ev_flux(3)
+
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=(blockIdx%y-1)*blockDim%y+threadIdx%y-1
+    k=(blockIdx%z-1)*blockDim%z+threadIdx%z-1
+    if(i>im .or. j>jm .or. k>km) return
+    velocity=vel_d(i,j,k,:)
+    mass_fraction=spc_d(i,j,k,:)
+    grad_velocity=dvel_d(i,j,k,:,:)
+    grad_temperature=dtmp_d(i,j,k,:)
+    grad_tv=dtve_d(i,j,k,:)
+    grad_mass_fraction=dspc_d(i,j,k,:,:)
+    call air5_diffusive_flux_gpu(rho_d(i,j,k),velocity,tmp_d(i,j,k), &
+      tve_d(i,j,k),prs_d(i,j,k),mass_fraction,grad_velocity, &
+      grad_temperature,grad_tv,grad_mass_fraction,momentum_flux, &
+      species_flux,energy_flux,ev_flux,status)
+    if(status/=chemistry_status_ok) then
+      call record_air5_status(status)
+      return
+    endif
+    sigma_d(i,j,k,1)=momentum_flux(1,1)
+    sigma_d(i,j,k,2)=momentum_flux(1,2)
+    sigma_d(i,j,k,3)=momentum_flux(1,3)
+    sigma_d(i,j,k,4)=momentum_flux(2,2)
+    sigma_d(i,j,k,5)=momentum_flux(2,3)
+    sigma_d(i,j,k,6)=momentum_flux(3,3)
+    qflux_d(i,j,k,:)=energy_flux
+    species_flux_d(i,j,k,:,:)=species_flux
+    ev_flux_d(i,j,k,:)=ev_flux
+  end subroutine air5_diffusion_flux_kernel
+
+  attributes(device) subroutine air5_diffusive_flux_at(i,j,k,idir,f)
+    use commarray_gpu, only: sigma_d,qflux_d,species_flux_d,ev_flux_d,dxi_d,jacob_d
+    integer, value :: i,j,k,idir
+    real(real64), intent(out) :: f(air5_num_conservative)
+    real(real64) :: metric(3),metric_jacobian
+    integer :: species
+
+    f=0.0_real64
+    metric=dxi_d(i,j,k,idir,:)
+    metric_jacobian=jacob_d(i,j,k)
+    f(2)=metric_jacobian*dot_product([sigma_d(i,j,k,1),sigma_d(i,j,k,2), &
+      sigma_d(i,j,k,3)],metric)
+    f(3)=metric_jacobian*dot_product([sigma_d(i,j,k,2),sigma_d(i,j,k,4), &
+      sigma_d(i,j,k,5)],metric)
+    f(4)=metric_jacobian*dot_product([sigma_d(i,j,k,3),sigma_d(i,j,k,5), &
+      sigma_d(i,j,k,6)],metric)
+    f(air5_idx_total_energy)=metric_jacobian*dot_product(qflux_d(i,j,k,:),metric)
+    do species=1,air5_num_species
+      f(air5_idx_species_first+species-1)=metric_jacobian* &
+        dot_product(species_flux_d(i,j,k,species,:),metric)
+    enddo
+    f(air5_idx_ev)=metric_jacobian*dot_product(ev_flux_d(i,j,k,:),metric)
+  end subroutine air5_diffusive_flux_at
+
+  attributes(global) subroutine air5_diffusion_rhs_x_kernel(im,jm,km,npdci,is,ie,js,je,ks,ke)
+    use commarray_gpu, only: qrhs_d
+    integer, value :: im,jm,km,npdci,is,ie,js,je,ks,ke
+    integer :: id,ntot,i,j,k,component
+    real(real64) :: fp1(air5_num_conservative),fm1(air5_num_conservative)
+    real(real64) :: fp2(air5_num_conservative),fm2(air5_num_conservative)
+    real(real64) :: fp3(air5_num_conservative),fm3(air5_num_conservative)
+
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    ntot=(im+1)*(jm+1)*(km+1)
+    if(id>=ntot) return
+    i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
+    if(i<is .or. i>ie .or. j<js .or. j>je .or. k<ks .or. k>ke) return
+    fp1=0.0_real64; fm1=0.0_real64
+    fp2=0.0_real64; fm2=0.0_real64
+    fp3=0.0_real64; fm3=0.0_real64
+    if(i+1<=im .or. .not.(npdci==2 .or. npdci==4)) &
+      call air5_diffusive_flux_at(i+1,j,k,1,fp1)
+    if(i-1>=0 .or. .not.(npdci==1 .or. npdci==4)) &
+      call air5_diffusive_flux_at(i-1,j,k,1,fm1)
+    if(i+2<=im .or. .not.(npdci==2 .or. npdci==4)) &
+      call air5_diffusive_flux_at(i+2,j,k,1,fp2)
+    if(i-2>=0 .or. .not.(npdci==1 .or. npdci==4)) &
+      call air5_diffusive_flux_at(i-2,j,k,1,fm2)
+    if(i+3<=im .or. .not.(npdci==2 .or. npdci==4)) &
+      call air5_diffusive_flux_at(i+3,j,k,1,fp3)
+    if(i-3>=0 .or. .not.(npdci==1 .or. npdci==4)) &
+      call air5_diffusive_flux_at(i-3,j,k,1,fm3)
+    do component=2,air5_num_conservative
+      qrhs_d(i,j,k,component)=qrhs_d(i,j,k,component)+ &
+        air5_diffusion_rhs_sign(component)*air5_deriv6_boundary(i,im,npdci, &
+                    fm3(component),fm2(component),fm1(component), &
+                    fp1(component),fp2(component),fp3(component))
+    enddo
+  end subroutine air5_diffusion_rhs_x_kernel
+
+  attributes(global) subroutine air5_diffusion_rhs_y_kernel(im,jm,km,npdcj,is,ie,js,je,ks,ke)
+    use commarray_gpu, only: qrhs_d
+    integer, value :: im,jm,km,npdcj,is,ie,js,je,ks,ke
+    integer :: id,ntot,i,j,k,component
+    real(real64) :: fp1(air5_num_conservative),fm1(air5_num_conservative)
+    real(real64) :: fp2(air5_num_conservative),fm2(air5_num_conservative)
+    real(real64) :: fp3(air5_num_conservative),fm3(air5_num_conservative)
+
+    id=(blockIdx%x-1)*blockDim%x*blockDim%y+ &
+      (threadIdx%y-1)*blockDim%x+threadIdx%x-1
+    ntot=(im+1)*(jm+1)
+    if(id>=ntot) return
+    i=mod(id,im+1); j=id/(im+1); k=blockIdx%z-1
+    if(i<is .or. i>ie .or. j<js .or. j>je .or. k<ks .or. k>ke) return
+    call air5_diffusive_flux_at(i,j+1,k,2,fp1)
+    call air5_diffusive_flux_at(i,j-1,k,2,fm1)
+    call air5_diffusive_flux_at(i,j+2,k,2,fp2)
+    call air5_diffusive_flux_at(i,j-2,k,2,fm2)
+    call air5_diffusive_flux_at(i,j+3,k,2,fp3)
+    call air5_diffusive_flux_at(i,j-3,k,2,fm3)
+    do component=2,air5_num_conservative
+      qrhs_d(i,j,k,component)=qrhs_d(i,j,k,component)+ &
+        air5_diffusion_rhs_sign(component)*air5_deriv6_boundary(j,jm,npdcj, &
+                    fm3(component),fm2(component),fm1(component), &
+                    fp1(component),fp2(component),fp3(component))
+    enddo
+  end subroutine air5_diffusion_rhs_y_kernel
+
+  attributes(global) subroutine air5_diffusion_rhs_z_kernel(im,jm,km,npdck,is,ie,js,je,ks,ke)
+    use commarray_gpu, only: qrhs_d
+    integer, value :: im,jm,km,npdck,is,ie,js,je,ks,ke
+    integer :: id,ntot,i,j,k,component
+    real(real64) :: fp1(air5_num_conservative),fm1(air5_num_conservative)
+    real(real64) :: fp2(air5_num_conservative),fm2(air5_num_conservative)
+    real(real64) :: fp3(air5_num_conservative),fm3(air5_num_conservative)
+
+    id=(blockIdx%x-1)*blockDim%x*blockDim%z+ &
+      (threadIdx%z-1)*blockDim%x+threadIdx%x-1
+    ntot=(im+1)*(km+1)
+    if(id>=ntot) return
+    i=mod(id,im+1); j=blockIdx%y-1; k=id/(im+1)
+    if(i<is .or. i>ie .or. j<js .or. j>je .or. k<ks .or. k>ke) return
+    call air5_diffusive_flux_at(i,j,k+1,3,fp1)
+    call air5_diffusive_flux_at(i,j,k-1,3,fm1)
+    call air5_diffusive_flux_at(i,j,k+2,3,fp2)
+    call air5_diffusive_flux_at(i,j,k-2,3,fm2)
+    call air5_diffusive_flux_at(i,j,k+3,3,fp3)
+    call air5_diffusive_flux_at(i,j,k-3,3,fm3)
+    do component=2,air5_num_conservative
+      qrhs_d(i,j,k,component)=qrhs_d(i,j,k,component)+ &
+        air5_diffusion_rhs_sign(component)*air5_deriv6_boundary(k,km,npdck, &
+                    fm3(component),fm2(component),fm1(component), &
+                    fp1(component),fp2(component),fp3(component))
+    enddo
+  end subroutine air5_diffusion_rhs_z_kernel
+
+  attributes(global) subroutine air5_rk3_first_update_kernel(deltat,im,jm,km, &
+      is,ie,js,je,ks,ke)
+    use commarray_gpu, only: q_d,qsave_d,qrhs_d,jacob_d
+    real(real64), value :: deltat
+    integer, value :: im,jm,km,is,ie,js,je,ks,ke
+    integer :: id,ntot,i,j,k,component
+    real(real64) :: saved
+
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    ntot=(im+1)*(jm+1)*(km+1)
+    if(id>=ntot) return
+    i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
+    if(i<is .or. i>ie .or. j<js .or. j>je .or. k<ks .or. k>ke) return
+    do component=1,air5_num_conservative
+      saved=q_d(i,j,k,component)*jacob_d(i,j,k)
+      qsave_d(i,j,k,component)=saved
+      q_d(i,j,k,component)=(saved+deltat*qrhs_d(i,j,k,component))/jacob_d(i,j,k)
+    enddo
+  end subroutine air5_rk3_first_update_kernel
+
+  attributes(global) subroutine air5_rk3_update_kernel(deltat,a,b,c,im,jm,km, &
+      is,ie,js,je,ks,ke)
+    use commarray_gpu, only: q_d,qsave_d,qrhs_d,jacob_d
+    real(real64), value :: deltat,a,b,c
+    integer, value :: im,jm,km,is,ie,js,je,ks,ke
+    integer :: id,ntot,i,j,k,component
+
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    ntot=(im+1)*(jm+1)*(km+1)
+    if(id>=ntot) return
+    i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
+    if(i<is .or. i>ie .or. j<js .or. j>je .or. k<ks .or. k>ke) return
+    do component=1,air5_num_conservative
+      q_d(i,j,k,component)=(a*qsave_d(i,j,k,component)+ &
+        b*q_d(i,j,k,component)*jacob_d(i,j,k)+ &
+        c*deltat*qrhs_d(i,j,k,component))/jacob_d(i,j,k)
+    enddo
+  end subroutine air5_rk3_update_kernel
+
+  subroutine reset_air5_status()
+    air5_flow_status_d=chemistry_status_ok
+  end subroutine reset_air5_status
+
+  subroutine check_air5_status(label)
+    use mpi
+    character(len=*), intent(in) :: label
+    integer :: local_status,global_status,ierr
+
+    local_status=air5_flow_status_d
+    call mpi_allreduce(local_status,global_status,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,local_status)
+    if(global_status/=chemistry_status_ok) then
+      write(*,'(A,A,A,I0)') 'fixed air5 GPU ',trim(label),' failed, status=',global_status
+      call mpi_abort(MPI_COMM_WORLD,global_status,ierr)
+    endif
+  end subroutine check_air5_status
+
+  subroutine launch_air5_interior_primitive_gpu()
+    use commvar, only: im,jm,km,hm
+    use gpu_check, only: sync_after_kernel
+    type(dim3) :: block,grid
+
+    call reset_air5_status()
+    block=dim3(32,4,4)
+    grid=dim3((im+block%x)/block%x,(jm+block%y)/block%y,(km+block%z)/block%z)
+    call air5_q_to_primitive_interior_kernel<<<grid,block>>>(im,jm,km,hm)
+    call sync_after_kernel('air5_q_to_primitive_interior_kernel',.true.)
+    call check_air5_status('conservative-to-primitive')
+  end subroutine launch_air5_interior_primitive_gpu
+
+  subroutine launch_air5_face_primitives_gpu()
+    use commvar, only: im,jm,km,hm
+    use gpu_check, only: sync_after_kernel
+    type(dim3) :: block,grid
+    integer :: axis,n
+
+    call reset_air5_status()
+    block=dim3(256,1,1)
+    do axis=1,3
+      select case(axis)
+      case(1)
+        n=(jm+1)*(km+1)*2*(hm+1)
+      case(2)
+        n=(im+1)*(km+1)*2*(hm+1)
+      case default
+        n=(im+1)*(jm+1)*2*(hm+1)
+      end select
+      grid=dim3((n+block%x-1)/block%x,1,1)
+      call air5_q_to_primitive_face_kernel<<<grid,block>>>(im,jm,km,hm,axis)
+      call sync_after_kernel('air5_q_to_primitive_face_kernel',.true.)
+    enddo
+    call check_air5_status('halo conservative-to-primitive')
+  end subroutine launch_air5_face_primitives_gpu
+
+  subroutine air5_prepare_spatial_state_gpu()
+    use commvar, only: im,jm,km,hm
+    use gpu_check, only: sync_after_kernel
+    use halo_exchange_gpu, only: exchange_solution_halo_gpu
+    use chemistry_postshock_boundary_gpu, only: apply_air5_postshock_boundary_gpu
+    use chemistry_hbl_boundary_gpu, only: apply_air5_hbl_boundary_gpu
+    type(dim3) :: block,grid
+
+    call apply_air5_postshock_boundary_gpu()
+    call apply_air5_hbl_boundary_gpu()
+    call reset_air5_status()
+    block=dim3(32,4,4)
+    grid=dim3((im+block%x)/block%x,(jm+block%y)/block%y,(km+block%z)/block%z)
+    call air5_q_to_primitive_interior_kernel<<<grid,block>>>(im,jm,km,hm)
+    call sync_after_kernel('air5_q_to_primitive_interior_kernel',.true.)
+    call check_air5_status('conservative-to-primitive')
+    call exchange_solution_halo_gpu(.true.)
+    call launch_air5_face_primitives_gpu()
+  end subroutine air5_prepare_spatial_state_gpu
+
+  subroutine validate_air5_transport_gpu()
+    use commvar, only: numq,num_species,num_modequ,ndims,turbmode,rkscheme, &
+      conschm,difschm,nondimen,lfilter,lchardecomp,lihomo,ljhomo,lkhomo, &
+      im,jm,km,hm,lcomb,flowtype
+    use chemistry_flow_runtime, only: air5_postshock_flowtype,air5_hbl_flowtype
+    use commarray, only: jacob
+    use parallel, only: mpisize,isize,jsize,ksize,pmin
+    real(real64) :: minimum_jacobian
+
+    if(.not.lcomb) error stop 'fixed air5 GPU transport requires lcomb=t'
+    if(numq/=air5_num_conservative .or. num_species/=air5_num_species .or. &
+       num_modequ/=1) error stop 'fixed air5 GPU transport layout mismatch'
+    if(nondimen) error stop 'fixed air5 GPU transport currently requires dimensional state'
+    if(ndims/=3 .or. trim(turbmode)/='none' .or. trim(rkscheme)/='rk3') &
+      error stop 'fixed air5 GPU transport requires 3D laminar RK3'
+    if(trim(conschm)/='643e' .or. trim(difschm)/='643e') &
+      error stop 'fixed air5 GPU transport requires explicit 643e convection and diffusion'
+    if(lfilter .or. lchardecomp) &
+      error stop 'fixed air5 C4 transport requires lfilter=f and no characteristic reconstruction'
+    if(air5_postshock_flowtype(flowtype)) then
+      if(lihomo .or. .not.(ljhomo .and. lkhomo)) &
+        error stop 'fixed air5 post-shock transport requires physical x and periodic y/z'
+    elseif(air5_hbl_flowtype(flowtype)) then
+      if(lihomo .or. ljhomo .or. .not.lkhomo) &
+        error stop 'fixed air5 HBL transport requires physical x/y and periodic z'
+    elseif(.not.(lihomo .and. ljhomo .and. lkhomo)) then
+      error stop 'fixed air5 periodic transport requires three periodic directions'
+    endif
+    if(hm<3 .or. min(im,jm,km)<6) &
+      error stop 'fixed air5 C4 transport requires a valid sixth-order local stencil'
+    if(mpisize/=isize*jsize*ksize) &
+      error stop 'fixed air5 C4 MPI topology is inconsistent'
+    minimum_jacobian=pmin(minval(jacob(0:im,0:jm,0:km)))
+    if(minimum_jacobian<=0.0_real64) &
+      error stop 'fixed air5 C4 transport requires positive grid Jacobian'
+  end subroutine validate_air5_transport_gpu
+
+  subroutine air5_transport_rk3_step_gpu(first_stage_prepared,copy_back)
+    use mpi, only: MPI_PROC_NULL
+    use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,npdcj,npdck, &
+      deltat,diffterm,nstep,flowtype
+    use commarray_gpu, only: sigma_d,qflux_d,species_flux_d,ev_flux_d, &
+      copy_flow_from_gpu,copy_rhs_from_gpu
+    use gradcal_gpu, only: gradcal_dvel_kernel,gradcal_dvel_xphysical_kernel, &
+      gradcal_dvel_yphysical_kernel,gradcal_dvel_xyphysical_kernel
+    use halo_exchange_gpu, only: exchange_field_halo_gpu
+    use parallel, only: mpidown
+    use chemistry_flow_runtime, only: air5_hbl_flowtype
+    use gpu_check, only: sync_after_kernel
+    use validation_io, only: rhs_validation_requested,write_q_validation_snapshot, &
+      write_rhs_validation_snapshot,write_primitive_validation_snapshot
+    logical, intent(in), optional :: first_stage_prepared,copy_back
+    logical :: prepared,need_copy_back
+    integer :: ntot,rkstep,direction,apply_left_x,apply_right_x
+    integer :: apply_down_y,apply_up_y,zero_species_flux_lower_y
+    real(real64), parameter :: rk_a(3)=[1.0_real64,0.75_real64,1.0_real64/3.0_real64]
+    real(real64), parameter :: rk_b(3)=[0.0_real64,0.25_real64,2.0_real64/3.0_real64]
+    real(real64), parameter :: rk_c(3)=[1.0_real64,0.25_real64,2.0_real64/3.0_real64]
+    type(dim3) :: block1,grid1,block3,grid3,block_x,grid_x,block_y,grid_y,block_z,grid_z
+
+    call validate_air5_transport_gpu()
+    call initialize_air5_conservation_gpu(nstep)
+    prepared=.false.
+    if(present(first_stage_prepared)) prepared=first_stage_prepared
+    need_copy_back=.false.
+    if(present(copy_back)) need_copy_back=copy_back
+    ntot=(im+1)*(jm+1)*(km+1)
+    apply_left_x=merge(1,0,npdci==1 .or. npdci==4)
+    apply_right_x=merge(1,0,npdci==2 .or. npdci==4)
+    apply_down_y=merge(1,0,npdcj==1 .or. npdcj==4)
+    apply_up_y=merge(1,0,npdcj==2 .or. npdcj==4)
+    zero_species_flux_lower_y=merge(1,0, &
+      air5_hbl_flowtype(flowtype) .and. mpidown==MPI_PROC_NULL)
+    block1=dim3(256,1,1)
+    grid1=dim3((ntot+block1%x-1)/block1%x,1,1)
+    block3=dim3(8,8,8)
+    grid3=dim3((im+block3%x)/block3%x,(jm+block3%y)/block3%y, &
+      (km+block3%z)/block3%z)
+    block_x=dim3(512,1,1)
+    grid_x=dim3((ntot+block_x%x-1)/block_x%x,1,1)
+    block_y=dim3(32,16,1)
+    grid_y=dim3(((im+1)*(jm+1)+block_y%x*block_y%y-1)/ &
+      (block_y%x*block_y%y),1,km+1)
+    block_z=dim3(64,1,8)
+    grid_z=dim3(((im+1)*(km+1)+block_z%x*block_z%z-1)/ &
+      (block_z%x*block_z%z),jm+1,1)
+
+    do rkstep=1,3
+      if(.not.(prepared .and. rkstep==1)) call air5_prepare_spatial_state_gpu()
+      if(rhs_validation_requested()) then
+        call copy_flow_from_gpu()
+        call write_q_validation_snapshot('pre_rhs',nstep,rkstep)
+        call write_primitive_validation_snapshot('pre_rhs_primitives',nstep,rkstep)
+      endif
+      call air5_zero_rhs_kernel<<<grid1,block1>>>(im,jm,km)
+      call sync_after_kernel('air5_zero_rhs_kernel',.true.)
+      call air5_convective_rhs_x_kernel<<<grid_x,block_x>>>(im,jm,km,npdci, &
+        is,ie,js,je,ks,ke)
+      call sync_after_kernel('air5_convective_rhs_x_kernel',.true.)
+      call air5_convective_rhs_y_kernel<<<grid_y,block_y>>>(im,jm,km,npdcj, &
+        is,ie,js,je,ks,ke)
+      call sync_after_kernel('air5_convective_rhs_y_kernel',.true.)
+      call air5_convective_rhs_z_kernel<<<grid_z,block_z>>>(im,jm,km,npdck, &
+        is,ie,js,je,ks,ke)
+      call sync_after_kernel('air5_convective_rhs_z_kernel',.true.)
+      if(diffterm) then
+        if((apply_left_x/=0 .or. apply_right_x/=0) .and. &
+           (apply_down_y/=0 .or. apply_up_y/=0)) then
+          call gradcal_dvel_xyphysical_kernel<<<grid3,block3>>>(im,jm,km,hm, &
+            apply_left_x,apply_right_x,apply_down_y,apply_up_y)
+        elseif(apply_left_x/=0 .or. apply_right_x/=0) then
+          call gradcal_dvel_xphysical_kernel<<<grid3,block3>>>(im,jm,km,hm, &
+            apply_left_x,apply_right_x)
+        elseif(apply_down_y/=0 .or. apply_up_y/=0) then
+          call gradcal_dvel_yphysical_kernel<<<grid3,block3>>>(im,jm,km,hm, &
+            apply_down_y,apply_up_y)
+        else
+          call gradcal_dvel_kernel<<<grid3,block3>>>(im,jm,km,hm)
+        endif
+        call sync_after_kernel('air5_gradcal_dvel_kernel',.true.)
+        call air5_species_tv_gradient_kernel<<<grid3,block3>>>(im,jm,km, &
+          npdci,npdcj,npdck,zero_species_flux_lower_y)
+        call sync_after_kernel('air5_species_tv_gradient_kernel',.true.)
+        call reset_air5_status()
+        call air5_diffusion_flux_kernel<<<grid3,block3>>>(im,jm,km)
+        call sync_after_kernel('air5_diffusion_flux_kernel',.true.)
+        call check_air5_status('diffusion flux')
+        call exchange_field_halo_gpu(sigma_d,6)
+        call exchange_field_halo_gpu(qflux_d,3)
+        do direction=1,3
+          call exchange_field_halo_gpu(species_flux_d(:,:,:,:,direction),air5_num_species)
+        enddo
+        call exchange_field_halo_gpu(ev_flux_d,3)
+        call air5_diffusion_rhs_x_kernel<<<grid_x,block_x>>>(im,jm,km,npdci, &
+          is,ie,js,je,ks,ke)
+        call sync_after_kernel('air5_diffusion_rhs_x_kernel',.true.)
+        call air5_diffusion_rhs_y_kernel<<<grid_y,block_y>>>(im,jm,km,npdcj, &
+          is,ie,js,je,ks,ke)
+        call sync_after_kernel('air5_diffusion_rhs_y_kernel',.true.)
+        call air5_diffusion_rhs_z_kernel<<<grid_z,block_z>>>(im,jm,km,npdck, &
+          is,ie,js,je,ks,ke)
+        call sync_after_kernel('air5_diffusion_rhs_z_kernel',.true.)
+      endif
+      if(rhs_validation_requested()) then
+        call copy_rhs_from_gpu()
+        call write_rhs_validation_snapshot('full',nstep,rkstep)
+      endif
+      if(rkstep==1) then
+        call air5_rk3_first_update_kernel<<<grid1,block1>>>(deltat,im,jm,km, &
+          is,ie,js,je,ks,ke)
+        call sync_after_kernel('air5_rk3_first_update_kernel',.true.)
+      else
+        call air5_rk3_update_kernel<<<grid1,block1>>>(deltat,rk_a(rkstep), &
+          rk_b(rkstep),rk_c(rkstep),im,jm,km,is,ie,js,je,ks,ke)
+        call sync_after_kernel('air5_rk3_update_kernel',.true.)
+      endif
+      if(rhs_validation_requested()) then
+        call copy_flow_from_gpu()
+        call write_q_validation_snapshot('post_update',nstep,rkstep)
+      endif
+    enddo
+    call record_air5_conservation_gpu(nstep+1)
+    call launch_air5_interior_primitive_gpu()
+    if(need_copy_back) call copy_flow_from_gpu()
+  end subroutine air5_transport_rk3_step_gpu
+
+end module chemistry_flow_solver_gpu
