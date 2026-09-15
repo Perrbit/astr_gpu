@@ -4286,3 +4286,135 @@ inviscid path is sixth-order centered; the fixed-gamma five-equation
 Steger-Warming, Roe, and MP7 path is not an admissible shock scheme for the
 five-species two-temperature state. A separate multispecies nonequilibrium
 shock-flux and reconstruction gate is therefore required before SBLI.
+
+## P4-0 trusted local performance baseline
+
+P4-0 provides an opt-in, fail-closed benchmark lifecycle for three-dimensional,
+fully periodic GPU TGV. It skips only generated-grid and startup-flowfield HDF5
+writes. The default runtime, checkpoint, restart, statistics, and later output
+paths are unchanged. Local timing numbers are screening evidence only and must
+not be reported as A800 performance.
+
+Configure and build both binaries from the top-level project:
+
+```bash
+ROOT=/home/dell/workspace/astr_gpu
+cmake -S "$ROOT" -B "$ROOT/build_gpu_p4" \
+  -DCMAKE_Fortran_COMPILER=nvfortran -DASTR_WITH_CUDA=ON \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build "$ROOT/build_gpu_p4" --target astr benchmark_runtime_probe -j2
+
+cmake -S "$ROOT" -B "$ROOT/build_cpu_p4" \
+  -DCMAKE_Fortran_COMPILER=nvfortran -DASTR_WITH_CUDA=OFF \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build "$ROOT/build_cpu_p4" --target astr benchmark_runtime_probe -j2
+
+bash "$ROOT/tests/gpu_validation/run_benchmark_runtime_contract.sh" \
+  "$ROOT/build_gpu_p4/bin/benchmark_runtime_probe" \
+  "$ROOT/build_cpu_p4/bin/benchmark_runtime_probe"
+```
+
+Run the default-output CPU/GPU field gates before performance measurements:
+
+```bash
+ROOT=/home/dell/workspace/astr_gpu
+for steps in 1 10 100; do
+  OUT_DIR="$ROOT/tests/gpu_validation/out/p4_0_np1_${steps}step" \
+  MAXSTEP="$steps" FEQCHKPT="$steps" ATOL=1e-10 RTOL=1e-10 \
+  CPU_EXE="$ROOT/build_cpu_p4/bin/astr" \
+  GPU_EXE="$ROOT/build_gpu_p4/bin/astr" \
+    bash "$ROOT/tests/gpu_validation/run_tgv_field_compare.sh"
+done
+
+for topology in 2,1,1 1,2,1 1,1,2; do
+  label="${topology//,/_}"
+  OUT_DIR="$ROOT/tests/gpu_validation/out/p4_0_np2_${label}" \
+  MAXSTEP=10 FEQCHKPT=10 MPI_NP=2 TOPOLOGY="$topology" \
+  ATOL=1e-10 RTOL=1e-10 FILTER_WORKSPACE=full \
+  CPU_EXE="$ROOT/build_cpu_p4/bin/astr" \
+  GPU_EXE="$ROOT/build_gpu_p4/bin/astr" \
+    bash "$ROOT/tests/gpu_validation/run_tgv_mpirank2_field_compare.sh"
+done
+```
+
+Run one process warm-up plus five independent retained processes for NP=1 and
+all two-rank slabs. Phase timing stays off in the complete-RK baseline:
+
+```bash
+ROOT=/home/dell/workspace/astr_gpu
+BASE="$ROOT/tests/gpu_validation/out/p4_0_256_baseline"
+GPU_EXE="$ROOT/build_gpu_p4/bin/astr"
+
+OUT_DIR="$BASE" LABEL=np1 GRID=256,256,256 MAXSTEP=20 \
+DISCARD_STEPS=1 REPEATS=5 GPU_EXE="$GPU_EXE" GPU_IDS=0 \
+NP=1 TOPOLOGY=1,1,1 SYNC_MODE=explicit PHASE_TIMING=0 \
+HALO_TRANSPORT=pageable FILTER_WORKSPACE=full \
+  bash "$ROOT/tests/gpu_validation/run_tgv_256_performance_benchmark.sh"
+
+for topology in 2,1,1 1,2,1 1,1,2; do
+  label="np2_${topology//,/_}"
+  OUT_DIR="$BASE" LABEL="$label" GRID=256,256,256 MAXSTEP=20 \
+  DISCARD_STEPS=1 REPEATS=5 GPU_EXE="$GPU_EXE" GPU_IDS=0,1 \
+  NP=2 TOPOLOGY="$topology" SYNC_MODE=explicit PHASE_TIMING=0 \
+  HALO_TRANSPORT=pageable FILTER_WORKSPACE=full \
+    bash "$ROOT/tests/gpu_validation/run_tgv_256_performance_benchmark.sh"
+done
+```
+
+Collect phase attribution separately because the additional synchronization
+and logging perturb complete-RK timing:
+
+```bash
+ROOT=/home/dell/workspace/astr_gpu
+PHASE_BASE="$ROOT/tests/gpu_validation/out/p4_0_256_phases"
+GPU_EXE="$ROOT/build_gpu_p4/bin/astr"
+
+OUT_DIR="$PHASE_BASE" LABEL=np1_phase GRID=256,256,256 MAXSTEP=20 \
+DISCARD_STEPS=1 REPEATS=5 GPU_EXE="$GPU_EXE" GPU_IDS=0 NP=1 \
+TOPOLOGY=1,1,1 SYNC_MODE=explicit PHASE_TIMING=1 \
+HALO_TRANSPORT=pageable FILTER_WORKSPACE=full \
+  bash "$ROOT/tests/gpu_validation/run_tgv_256_performance_benchmark.sh"
+
+OUT_DIR="$PHASE_BASE" LABEL=np2_x_phase GRID=256,256,256 MAXSTEP=20 \
+DISCARD_STEPS=1 REPEATS=5 GPU_EXE="$GPU_EXE" GPU_IDS=0,1 NP=2 \
+TOPOLOGY=2,1,1 SYNC_MODE=explicit PHASE_TIMING=1 \
+HALO_TRANSPORT=pageable FILTER_WORKSPACE=full \
+  bash "$ROOT/tests/gpu_validation/run_tgv_256_performance_benchmark.sh"
+```
+
+Capture the matching NP=2 x-slab timeline. HCOLL is disabled for this local
+profile only because the workstation lacks the requested HCOLL transport:
+
+```bash
+ROOT=/home/dell/workspace/astr_gpu
+NSYS_OUT="$ROOT/tests/gpu_validation/out/p4_0_nsys"
+mkdir -p "$NSYS_OUT"
+python3 "$ROOT/tests/gpu_validation/prepare_tgv_case.py" \
+  --src-case "$ROOT/examples/Taylor_Green_Vortex" \
+  --dst-case "$NSYS_OUT/case" --use-gpu t --grid 256,256,256 \
+  --maxstep 2 --feqchkpt 9999 --lfilter t --diffterm t \
+  --lreadgrid f --scheme 643e
+[[ ! -e "$NSYS_OUT/case/datin/grid.h5" ]] || \
+  unlink "$NSYS_OUT/case/datin/grid.h5"
+(
+  cd "$NSYS_OUT/case"
+  CUDA_VISIBLE_DEVICES=0,1 OMPI_MCA_coll_hcoll_enable=0 \
+  ASTR_FORCE_MPI_TOPOLOGY=2,1,1 \
+  ASTR_GPU_BENCHMARK_NO_FIELD_IO=1 ASTR_GPU_RK_TIMING=1 \
+  ASTR_GPU_PHASE_TIMING=1 ASTR_GPU_SYNC_MODE=explicit \
+  ASTR_GPU_HALO_TRANSPORT=pageable ASTR_GPU_FILTER_WORKSPACE=full \
+    nsys profile --trace=cuda,mpi,nvtx --sample=none --cpuctxsw=none \
+      --force-overwrite=true -o ../np2_xslab \
+      mpirun -np 2 "$ROOT/build_gpu_p4/bin/astr" \
+      run datin/input.tgv > ../np2_xslab.log 2>&1
+)
+
+find "$NSYS_OUT/case" -type f \
+  \( -name 'grid*.h5' -o -name 'flowfield*.h5' \) -print
+nsys stats --report cuda_api_trace,mpi_event_trace,cuda_gpu_trace \
+  --format csv --output "$NSYS_OUT/np2_xslab_trace" \
+  "$NSYS_OUT/np2_xslab.nsys-rep"
+```
+
+The frozen local results and interpretation boundary are recorded in
+`documents/ASTR_PHASE_P4_0_BASELINE_REPORT.md`.
