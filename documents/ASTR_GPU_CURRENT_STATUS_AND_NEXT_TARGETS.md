@@ -115,9 +115,11 @@ CPU 已有的 RK4 不属于当前 GPU 合同。
   用于重复接口面平均；滤波、扩散和传感器 raw field 固定交换 `hm`，不平均
   接口面。
 - HaloTransport 默认采用 pageable host-staged blocking；保留可选 pinned blocking，
-  以及仅适用于完全周期 stored-diffusion 内部区域的 pinned-overlap。
-- 独立 nonblocking 候选因端到端收益不足被拒绝；CUDA-aware MPI 因当前软件栈
-  的大消息或 sanitizer 准入失败而暂缓。
+  pinned-overlap、pinned-pipeline，以及在已准入 A800 MPI/UCX 栈上的可选
+  device-aware 后端。
+- 早期 host-staged 独立 nonblocking 候选因端到端收益不足被拒绝。当前
+  device-aware 后端使用配对非阻塞 device-buffer MPI，并已通过 A800 大消息、
+  求解器统计量和 sanitizer 门槛；其他 MPI 栈仍需各自准入。
 - 统计量在 GPU 完成归约，只向主机返回少量标量。
 - HDF5、checkpoint 和完整场输出仍由 CPU 负责，不属于当前 GPU 化范围。
 - 默认正确性路径保持每个 CUDA kernel 后显式同步。
@@ -497,7 +499,8 @@ RTX 4000 Ada 的五轮配对完整步中位时间为关闭统计 `0.075387564 s`
 - 只根据 A800 profile 决定是否扩展非周期/SBLI 通信重叠。
 - 选择性同步保持独立候选，不能替换显式同步正确性基线。
 - RTX 4000 Ada 上拒绝的 P1 候选可在 A800 重新测试，但必须重新冻结同机基线。
-- 仅在新的 MPI 软件栈通过大消息正确性和 sanitizer 准入后恢复 CUDA-aware MPI。
+- A800 HPC-X 2.22.1/UCX 1.18.0 已通过大消息正确性和 sanitizer 准入；下一步
+  用五轮完整 RK 与强扩展结果决定是否将 device-aware 从 opt-in 晋升为默认。
 
 ### 8.5 曲线开放边界与 HIP/DCU
 
@@ -738,6 +741,32 @@ pipeline explicit 和 pipeline dependency 中位时间分别为 `0.529076911`、
 `83%` 增至 `92%`。dependency 只比 pipeline explicit 再低 `0.296%`，不足以
 晋升默认。本机只有两张 GPU，NP=4/8 共享双卡结果不能用于多轴扩展效率。
 
+### 8.9 A800 CUDA-aware MPI 正确性准入
+
+2026-09-16 完成了可选 `device-aware` HaloTransport。运行时在 `MPI_Init`
+前依据节点内 rank 绑定 CUDA 设备，随后用 `MPIX_Query_cuda_support` 做集体
+能力检查。能力检查失败会直接终止，不允许通信开始后静默回退。pageable、
+pinned、pinned-overlap 和 pinned-pipeline 后端均保留。
+
+当前 solution、完整和单分量 filter、FP64 diffusion、混合存储 diffusion、
+shock sensor、sponge、species 和 generic field 均复用已有打包缓冲，直接发送
+FP64 device buffer。halo 宽度、变量顺序、tag `21001:21006`、物理端点和 unpack
+语义未改变。扩散内部计算回调仍在四个非阻塞 MPI request 存活期间执行。
+
+A800 payload 作业 `460370` 在 HPC-X 2.22.1、Open MPI 4.1.7rc1、UCX 1.18.0
+上通过 `nvar=1/3/5/6/9`、宽度 5/6、periodic/`MPI_PROC_NULL`、阻塞/非阻塞
+和 Compute Sanitizer 门槛。UCX 协议日志明确记录 `cuda_ipc/cuda`。
+
+求解器作业 `460439` 和 `460441` 使用 `128^3` 周期 TGV、完整十阶滤波、
+六阶显式黏性项和显式 kernel 同步，覆盖 NP=2 三种 slab 与 NP=4 三种 plane
+分解。每项均推进 5 步，pinned 与 device-aware 的时间、动能、拟涡能和耗散率
+逐位一致。两项作业分别以 `0:0` 在 27 s 和 32 s 完成；所有拓扑均记录
+`cuda_ipc/cuda`，NP=2/4 sanitizer 为零错误，且未生成 grid/flowfield HDF5。
+
+因此该后端已通过 A800 单节点周期 TGV 的生产正确性和内存安全准入，可以显式
+选择用于同一 MPI/UCX 软件栈。它尚未晋升为默认后端：非周期物理算例矩阵、
+五轮性能与强扩展、多节点通信和 HIP/DCU 适配仍待完成。
+
 ## 9. 暂缓范围
 
 以下能力不进入近期目标：
@@ -752,12 +781,12 @@ pipeline explicit 和 pipeline dependency 中位时间分别为 `0.529076911`、
 
 ## 10. 当前推荐顺序
 
-1. 在 A800 上复测 P4 周期 TGV `512^3` NP=1/2/4，比较 pinned、
-   `pinned-pipeline + explicit` 与 `pinned-pipeline + dependency`，同时保存
-   Nsight Systems 时间线；只有正式矩阵达到强扩展门槛后才考虑晋升默认。
-2. P4 每轴独立 context 与双轴/三轴正确性已经完成。下一步在四卡 A800 上按
-   一秩一卡完成 NP=4 plane/cube 的时间线和五轮完整 RK 配对；仅当 MPI 尾部仍是
-   主导瓶颈时，继续并行推进多个 diffusion 轴或测试持久 MPI request。
+1. 在 A800 上运行 `256^3/512^3` 五轮配对，比较 pinned-pipeline 与
+   device-aware 的 NP=2/4 各拓扑完整 RK 和 halo 分相时间，确认 CUDA IPC 去除
+   host staging 后是否带来稳定收益，再决定是否晋升默认。
+2. 用 Shu-Osher、Cartesian HBL、CURVE、wall-family、shock-sensor 和 chemistry
+   smoke 补齐 pinned/device-aware 后端对比；这些门槛通过前，仅宣称周期 TGV
+   生产正确性，不外推到全部算例。
 3. 人工确认 C5-6A0 非催化壁面的离散闭合：壁面质量分数采用第一内点正状态，
    Cartesian y 法向扩散算子显式强制 `J_s,n=0`。只关闭物种扩散对组分焓和 `Ev`
    法向通量的贡献，保留温度和 `Tv` 梯度产生的导热通量。

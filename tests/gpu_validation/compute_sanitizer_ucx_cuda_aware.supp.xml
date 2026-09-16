@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ComputeSanitizerOutput>
+  <record>
+    <kind>Api</kind>
+    <what>
+      <api>cuMemRetainAllocationHandle</api>
+      <result>1</result>
+    </what>
+    <hostStack>
+      <frame><func>cuMemRetainAllocationHandle</func></frame>
+      <frame><func>uct_cuda_copy_detect_vmm</func></frame>
+    </hostStack>
+  </record>
+  <record>
+    <kind>Api</kind>
+    <what>
+      <api>cuMemRetainAllocationHandle</api>
+      <result>1</result>
+    </what>
+    <hostStack>
+      <frame><func>cuMemRetainAllocationHandle</func></frame>
+      <frame><func>mca_common_cuda_is_gpu_buffer</func></frame>
+    </hostStack>
+  </record>
+  <record>
+    <kind>Api</kind>
+    <what>
+      <api>cuPointerGetAttribute</api>
+      <result>1</result>
+    </what>
+    <hostStack>
+      <frame><func>cuPointerGetAttribute</func></frame>
+      <frame><func>mca_common_cuda_is_gpu_buffer</func></frame>
+    </hostStack>
+  </record>
+  <record>
+    <kind>Api</kind>
+    <what>
+      <api>cuPointerGetAttribute</api>
+      <result>1</result>
+    </what>
+    <hostStack>
+      <frame><func>cuPointerGetAttribute</func></frame>
+      <frame><func>uct_cuda_copy_mem_reg</func></frame>
+    </hostStack>
+  </record>
+</ComputeSanitizerOutput>

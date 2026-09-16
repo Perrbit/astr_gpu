@@ -3299,7 +3299,8 @@ mpirun -np 3 build_gpu_probe/bin/halo_transport_test
 
 These tests exercise paired messages, component counts 1/3/6, widths 5/6,
 periodic duplicate peers and MPI_PROC_NULL. They complement, rather than replace,
-the CPU/GPU CFD halo comparisons. CUDA-aware remains pending.
+the CPU/GPU CFD halo comparisons. The later device-aware section records the
+separate A800 admission; these host tests do not provide that evidence.
 The solver has an experimental pinned blocking selection. Paired nonblocking
 was screened and removed; its evidence is retained, not its runtime selection.
 
@@ -3401,15 +3402,14 @@ Run `mpiexec -np 2 build_gpu_probe/bin/halo_cuda_aware_probe 256 256`
 for representative large device-buffer messages. Optional third argument
 `early-bind` binds the device before MPI_Init for diagnosis only. Default
 arguments are 3 and 2. Exact payload checks include widths 5/6, components
-1/3/6, periodic peers and MPI_PROC_NULL. Failures abort rather than continue.
+1/3/5/6/9, periodic peers and MPI_PROC_NULL. Failures abort rather than continue.
 
-Current local HPC-X qualification failed: small NP=1/2/3 tests pass, default
-UCX large payloads fail, and non-IPC alternatives pass payload checks but fail
-zero-error Compute Sanitizer admission. The installed MPIX query returns 1
-even with CUDA runtime support disabled and cannot qualify the backend alone.
-Do not enable device-buffer communication based only on this query or on
-small-message success. No CUDA-aware solver option is installed. See
-`documents/ASTR_PHASE_P3_BASELINE_REPORT.md` for exact configurations and logs.
+The local RTX 4000 Ada HPC-X stack does not qualify CUDA IPC; its explicit
+no-IPC `cuda_copy` path is retained for local correctness checks. The installed
+MPIX query cannot qualify a backend alone. The solver now provides a fail-closed
+`device-aware` option, but IPC production evidence comes from A800 job `460370`
+and solver jobs `460439/460441`, not from this historical local probe. See the
+device-aware section below for the current contract and evidence boundary.
 
 ## P3 Retained-Backend Matrix Checkpoint
 
@@ -4470,3 +4470,52 @@ medians are `0.529076911 s/RK` for pinned explicit, `0.506394356 s/RK` for
 pipeline explicit, and `0.504894878 s/RK` for pipeline dependency. Explicit
 pipeline is `4.287%` faster than pinned; dependency adds only `0.296%`, so it
 remains opt-in. Multi-axis performance requires at least four physical GPUs.
+
+## P4 device-aware MPI admission
+
+`ASTR_GPU_HALO_TRANSPORT=device-aware` is a fail-closed optional backend. It
+binds each process to its rank-local CUDA device before `MPI_Init`, requires a
+positive collective `MPIX_Query_cuda_support` result, and sends the existing
+packed FP64 device buffers directly through MPI. The pageable, pinned,
+pinned-overlap, and pinned-pipeline paths remain available.
+
+The direct path covers solution, full and scalar filter, FP64 diffusion,
+mixed-storage diffusion, shock sensor, sponge, species, and generic-field
+halos. Widths, tags `21001:21006`, endpoint rules, and unpack semantics are
+unchanged. Build and run the source contracts with:
+
+```bash
+ROOT=/home/dell/workspace/astr_gpu
+cmake --build "$ROOT/build_gpu_probe" \
+  --target astr halo_transport_test halo_transport_setup_test -j2
+python3 -m unittest \
+  "$ROOT/tests/gpu_validation/test_device_aware_halo_contract.py" -v
+```
+
+On the local RTX 4000 Ada workstation, UCX CUDA IPC is not qualified. The
+explicit `UCX_TLS=self,sm,cuda_copy` fallback passes five-step `128^3` TGV
+pinned/device-aware comparisons for x/y/z slabs and three corresponding
+Compute Sanitizer runs. All four TGV diagnostics are bitwise identical and each
+sanitizer run reports zero errors. This is a local no-IPC correctness result.
+
+On the Zhongke A800 stack, payload job `460370` passed exact data, protocol,
+and sanitizer gates with `cuda_ipc/cuda`. Reproduce the solver admission under
+the approved work root with:
+
+```bash
+ROOT=/data/user/hd56000/weiph/astr_gpu_cuda_aware_qualification_c801eeb
+cd "$ROOT"
+sbatch tests/gpu_validation/run_zhongke_a800_device_aware_solver_admission.sbatch
+sbatch --ntasks=4 --ntasks-per-node=4 --gres=gpu:4 \
+  --export=ALL,MPI_NP=4 \
+  tests/gpu_validation/run_zhongke_a800_device_aware_solver_admission.sbatch
+```
+
+Jobs `460439` and `460441` completed in 27 s and 32 s. They cover NP=2 slabs
+and NP=4 planes with full filter/diffusion, five steps, explicit synchronization,
+and no field HDF5. Pinned/device-aware time, kinetic energy, enstrophy, and
+dissipation are bitwise identical. Every topology records `cuda_ipc/cuda`, and
+the NP=2/4 solver sanitizer reports zero errors. This admits the backend for
+single-node periodic TGV correctness on the recorded A800 MPI/UCX stack. It
+does not promote device-aware MPI to the default before repeated performance,
+non-periodic case, and multi-node gates pass.

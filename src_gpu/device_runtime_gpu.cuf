@@ -1,7 +1,71 @@
 module device_runtime_gpu
   use cudafor
   implicit none
+  logical,save :: device_prebound=.false.
+  integer,save :: prebound_device_id=-1
 contains
+  subroutine prebind_gpu_device_from_environment()
+    implicit none
+
+    character(64) :: transport
+    character(32) :: rank_value
+    character(32),parameter :: rank_names(4) = (/ &
+      'OMPI_COMM_WORLD_LOCAL_RANK      ', &
+      'SLURM_LOCALID                   ', &
+      'MV2_COMM_WORLD_LOCAL_RANK       ', &
+      'MPI_LOCALRANKID                 ' /)
+    integer :: status,length,index,ios,local_rank
+    integer :: device_count,device_id,current_device,istat
+    logical :: found
+
+    transport=''
+    call get_environment_variable('ASTR_GPU_HALO_TRANSPORT',transport, &
+                                  length=length,status=status)
+    if(status/=0 .or. trim(transport)/='device-aware') return
+
+    found=.false.
+    local_rank=-1
+    do index=1,size(rank_names)
+      rank_value=''
+      call get_environment_variable(trim(rank_names(index)),rank_value, &
+                                    length=length,status=status)
+      if(status/=0 .or. length<1) cycle
+      read(rank_value,*,iostat=ios) local_rank
+      if(ios/=0 .or. local_rank<0) then
+        print *, 'Invalid local MPI rank environment: ',trim(rank_names(index)), &
+                 '=',trim(rank_value)
+        error stop 2
+      endif
+      found=.true.
+      exit
+    enddo
+    if(.not.found) then
+      print *, 'ASTR device-aware MPI requires a pre-MPI local-rank environment variable'
+      error stop 2
+    endif
+
+    istat=cudaGetDeviceCount(device_count)
+    if(istat/=cudaSuccess .or. device_count<1) then
+      print *, 'ASTR device-aware MPI prebind cannot find a CUDA device'
+      error stop 2
+    endif
+    device_id=mod(local_rank,device_count)
+    istat=cudaSetDevice(device_id)
+    if(istat/=cudaSuccess) then
+      print *, 'ASTR device-aware MPI prebind failed for device ',device_id
+      error stop 2
+    endif
+    istat=cudaGetDevice(current_device)
+    if(istat/=cudaSuccess .or. current_device/=device_id) then
+      print *, 'ASTR device-aware MPI prebind verification failed'
+      error stop 2
+    endif
+    device_prebound=.true.
+    prebound_device_id=device_id
+    write(*,'(A,I0,A,I0)') 'ASTR_GPU_PRE_MPI_DEVICE=',device_id, &
+                            ' local_rank=',local_rank
+  end subroutine prebind_gpu_device_from_environment
+
   subroutine bind_gpu_device()
     use mpi
     use parallel, only: mpirank
@@ -21,6 +85,11 @@ contains
       stop
     endif
     device_id=mod(local_rank,device_count)
+    if(device_prebound .and. prebound_device_id/=device_id) then
+      print*,' !! GPU rank ',mpirank,' pre-MPI and post-MPI device bindings disagree.'
+      print*,' ** prebound=',prebound_device_id,' requested=',device_id
+      stop
+    endif
     istat=cudaSetDevice(device_id)
     if(istat/=0) then
       print*,' !! GPU rank ',mpirank,' failed to bind CUDA device ',device_id

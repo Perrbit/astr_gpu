@@ -9,15 +9,25 @@ Current CUDA Fortran location:
 ```text
 src_gpu/qswap_gpu.cuf
 src_gpu/halo_exchange_gpu.cuf
+src_gpu/halo_transport_gpu.cuf
+src_gpu/device_mpi_transport_gpu.cuf
 ```
 
-Current transport level:
+Current selectable transport levels:
 
 ```text
-L0 host_staged_blocking
+pageable
+pinned
+pinned-overlap
+pinned-pipeline
+device-aware
 ```
 
-The current path packs halo data on device, copies only halo buffers to host, performs blocking `MPI_SENDRECV`, copies received halo buffers back to device, then unpacks on device. It intentionally keeps every kernel followed by explicit synchronization.
+The portable default remains pageable host-staged blocking. Pinned variants
+reuse registered host buffers, while `device-aware` passes the existing packed
+FP64 device buffers directly to a qualified GPU-aware MPI. All modes preserve
+the same semantic pack/unpack kernels. Explicit post-kernel synchronization
+remains the production correctness default.
 
 ## 2. Semantic Layer
 
@@ -61,7 +71,7 @@ Target backend levels:
 | L0 | host-staged blocking | portable correctness reference | current implementation |
 | L1 | host-staged nonblocking | reduce blocking wait and prepare overlap | request lifecycle and completion points |
 | L2 | pinned host-staged | reduce host/device staging overhead | pinned buffer ownership and reuse policy |
-| L3 | CUDA-aware or HIP-aware MPI | remove host staging where supported | device-pointer MPI validation and fallback path |
+| L3 | CUDA-aware or HIP-aware MPI | remove host staging where supported | CUDA implementation admitted on the recorded A800 stack; HIP/DCU pending |
 | L4 | topology-aware multi-node transport | production scale-out | node/rank/GPU binding and multi-node profile evidence |
 
 L0 must remain available after higher transport levels are added. It is the portable correctness baseline for CUDA, HIP/DCU, and debugging.
@@ -112,6 +122,14 @@ The latest full core matrix rerun covered:
 - stats and field: `NP=8 TOPOLOGY=2,2,2`.
 
 This validates that the current L0 semantic path still runs after the reusable matrix driver was added. Higher-rank oversubscription smoke tests remain useful but are not performance evidence.
+
+The L3 CUDA backend additionally passes A800 job `460370` for representative
+device-buffer payloads and jobs `460439/460441` for `128^3` TGV with full
+filter/diffusion. NP=2 slabs and NP=4 planes have bitwise-identical
+pinned/device-aware diagnostics, explicit `cuda_ipc/cuda` protocol records,
+zero sanitizer errors, and no field HDF5. This admits one-node periodic TGV
+correctness on that MPI/UCX stack; performance promotion, non-periodic cases,
+multi-node transport, and HIP/DCU remain open.
 
 ## 6. Risks
 

@@ -256,8 +256,9 @@ if [[ "$PHASE_TIMING" == "1" && "$SYNC_MODE" != "explicit" ]]; then
   exit 2
 fi
 if [[ "$HALO_TRANSPORT" != "pageable" && "$HALO_TRANSPORT" != "pinned" && \
-      "$HALO_TRANSPORT" != "pinned-overlap" && "$HALO_TRANSPORT" != "pinned-pipeline" ]]; then
-  echo "HALO_TRANSPORT must be pageable, pinned, pinned-overlap or pinned-pipeline" >&2
+      "$HALO_TRANSPORT" != "pinned-overlap" && "$HALO_TRANSPORT" != "pinned-pipeline" && \
+      "$HALO_TRANSPORT" != "device-aware" ]]; then
+  echo "HALO_TRANSPORT must be pageable, pinned, pinned-overlap, pinned-pipeline or device-aware" >&2
   exit 2
 fi
 if [[ "$HALO_TRANSPORT" == "pinned-pipeline" && "$SYNC_MODE" == "selective" ]]; then

@@ -1,13 +1,13 @@
 module halo_transport_gpu
   use mpi
   use cudafor
-  use iso_c_binding, only: c_ptr,c_loc,c_size_t
+  use iso_c_binding, only: c_ptr,c_loc,c_size_t,c_int
   implicit none
   private
   public :: exchange_host_pair,progress_host_pair_during_kernel
   public :: progress_host_pair_during_pipeline_compute
   public :: independent_host_pair_work,halo_overlap_enabled
-  public :: halo_pipeline_enabled,begin_host_pair_pipeline
+  public :: halo_pipeline_enabled,device_aware_transport_enabled,begin_host_pair_pipeline
   public :: begin_host_pair_device_pack,start_host_pair_mpi
   public :: complete_host_pair_mpi,complete_host_pair_d2h
   public :: begin_host_pair_device_upload,finish_host_pair_pipeline
@@ -15,6 +15,7 @@ module halo_transport_gpu
   public :: begin_pipeline_compute,record_pipeline_compute,finish_pipeline_compute
   public :: begin_transport_setup,register_host_buffer,end_transport_setup,release_host_buffers
   public :: configure_pipeline_axes
+  public :: begin_external_pair_work,end_external_pair_work
   integer,parameter,public :: halo_axis_x=1
   integer,parameter,public :: halo_axis_y=2
   integer,parameter,public :: halo_axis_z=3
@@ -32,6 +33,7 @@ module halo_transport_gpu
   logical,save :: pair_active=.false.
   logical,save,protected :: halo_overlap_enabled=.false.
   logical,save,protected :: halo_pipeline_enabled=.false.
+  logical,save,protected :: device_aware_transport_enabled=.false.
   logical,save :: pipeline_compute_stream_created=.false.
   logical,save :: pipeline_compute_event_created=.false.
   logical,save :: pipeline_compute_active=.false.
@@ -60,11 +62,43 @@ module halo_transport_gpu
       integer,intent(in) :: axis
     end subroutine independent_host_pair_work
   end interface
+#ifdef ASTR_MPI_CUDA_AWARE_QUERY
+  interface
+    function query_cuda_support() bind(C,name='MPIX_Query_cuda_support') result(supported)
+      import c_int
+      integer(c_int) :: supported
+    end function query_cuda_support
+  end interface
+#endif
 contains
+  subroutine begin_external_pair_work()
+    integer :: ierr
+
+    if(pair_active) then
+      print *, 'GPU halo transport: nested external paired work is not supported'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      return
+    endif
+    pair_active=.true.
+  end subroutine begin_external_pair_work
+
+  subroutine end_external_pair_work()
+    integer :: ierr
+
+    if(.not.pair_active) then
+      print *, 'GPU halo transport: external paired work is not active'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      return
+    endif
+    pair_active=.false.
+  end subroutine end_external_pair_work
+
   subroutine begin_transport_setup(pinned)
     logical,intent(out) :: pinned
-    character(64) :: value
-    integer :: status,choice,lowest,highest,ierr
+    character(64) :: value,selected
+    character(MPI_MAX_LIBRARY_VERSION_STRING) :: library_version
+    integer :: status,choice,lowest,highest,ierr,rank,version_length
+    integer :: capability,all_capable
 
     call get_environment_variable('ASTR_GPU_HALO_TRANSPORT',value,status=status)
     choice=-1
@@ -74,18 +108,50 @@ contains
       if(trim(value)=='pinned') choice=1
       if(trim(value)=='pinned-overlap') choice=2
       if(trim(value)=='pinned-pipeline') choice=3
+      if(trim(value)=='device-aware') choice=4
     endif
     call mpi_allreduce(choice,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
     call check_mpi(ierr)
     call mpi_allreduce(choice,highest,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
     call check_mpi(ierr)
     if(lowest<0 .or. lowest/=highest) then
-      print *, 'Invalid or inconsistent ASTR_GPU_HALO_TRANSPORT: expected pageable, pinned, pinned-overlap or pinned-pipeline'
+      print *, 'Invalid or inconsistent ASTR_GPU_HALO_TRANSPORT: expected pageable, pinned, pinned-overlap, pinned-pipeline or device-aware'
       call mpi_abort(MPI_COMM_WORLD,1,ierr)
     endif
-    pinned=choice>0
+    call mpi_comm_rank(MPI_COMM_WORLD,rank,ierr)
+    call check_mpi(ierr)
+    if(choice==4) then
+#ifdef ASTR_MPI_CUDA_AWARE_QUERY
+      capability=int(query_cuda_support())
+      call mpi_allreduce(capability,all_capable,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+      call check_mpi(ierr)
+      if(all_capable/=1) then
+        if(rank==0) print *, 'ASTR_GPU_HALO_TRANSPORT=device-aware requires MPI CUDA support'
+        call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      endif
+#else
+      if(rank==0) print *, 'ASTR_GPU_HALO_TRANSPORT=device-aware was not qualified at build time'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      return
+#endif
+    endif
+    select case(choice)
+    case(0); selected='pageable'
+    case(1); selected='pinned'
+    case(2); selected='pinned-overlap'
+    case(3); selected='pinned-pipeline'
+    case(4); selected='device-aware'
+    end select
+    call mpi_get_library_version(library_version,version_length,ierr)
+    call check_mpi(ierr)
+    if(rank==0) then
+      write(*,'(A,A)') 'ASTR_GPU_HALO_TRANSPORT_SELECTED=',trim(selected)
+      write(*,'(A,A)') 'ASTR_MPI_LIBRARY_VERSION=',trim(library_version(:version_length))
+    endif
+    pinned=choice>=1 .and. choice<=3
     halo_overlap_enabled=choice==2
     halo_pipeline_enabled=choice==3
+    device_aware_transport_enabled=choice==4
     registration_failed=.false.
     pipeline_axis_enabled=.false.
   end subroutine begin_transport_setup
@@ -157,6 +223,8 @@ contains
       ' pinned=',pinned,' registered_bytes=',pinned_bytes
     write(*,'(A,I0,A,L1)') 'ASTR_GPU_HALO_OVERLAP rank=',rank,' requested=',halo_overlap_enabled
     write(*,'(A,I0,A,L1)') 'ASTR_GPU_HALO_PIPELINE rank=',rank,' active=',halo_pipeline_enabled
+    write(*,'(A,I0,A,L1)') 'ASTR_GPU_HALO_DEVICE_AWARE rank=',rank, &
+      ' active=',device_aware_transport_enabled
   end subroutine end_transport_setup
 
   subroutine create_pipeline_resources(failed)

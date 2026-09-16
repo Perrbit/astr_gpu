@@ -5,6 +5,8 @@ module halo_exchange_gpu
        start_host_pair_mpi,complete_host_pair_mpi,complete_host_pair_d2h, &
        begin_host_pair_device_upload,finish_host_pair_pipeline, &
        check_pipeline_cuda,configure_pipeline_axes,halo_axis_x,halo_axis_y,halo_axis_z
+  use halo_transport_gpu, only: device_aware_transport_enabled
+  use device_mpi_transport_gpu, only: exchange_device_pair
   implicit none
 
   integer,parameter :: tag_x_first = 21001
@@ -1822,16 +1824,20 @@ contains
     call pack_qwork_y_halo_up_kernel<<<grid,block>>>(y_halo_send_up_d,im,jm,km,hm,numq)
     call sync_after_kernel('pack_qwork_y_halo_up_kernel',.true.)
 
-    y_halo_send_down_h = y_halo_send_down_d
-    y_halo_send_up_h = y_halo_send_up_d
-
-    ncou = size(y_halo_send_down_h)
-    call exchange_host_pair(y_halo_send_down_h,y_halo_send_up_h, &
-                            y_halo_recv_up_h,y_halo_recv_down_h, &
-                            ncou,mpidown,mpiup,tag_y_first,tag_y_second)
-
-    if(mpiup /= MPI_PROC_NULL) y_halo_recv_up_d = y_halo_recv_up_h
-    if(mpidown /= MPI_PROC_NULL) y_halo_recv_down_d = y_halo_recv_down_h
+    ncou = size(y_halo_send_down_d)
+    if(device_aware_transport_enabled) then
+      call exchange_device_pair(y_halo_send_down_d,y_halo_send_up_d, &
+                                y_halo_recv_up_d,y_halo_recv_down_d, &
+                                ncou,mpidown,mpiup,tag_y_first,tag_y_second)
+    else
+      y_halo_send_down_h = y_halo_send_down_d
+      y_halo_send_up_h = y_halo_send_up_d
+      call exchange_host_pair(y_halo_send_down_h,y_halo_send_up_h, &
+                              y_halo_recv_up_h,y_halo_recv_down_h, &
+                              ncou,mpidown,mpiup,tag_y_first,tag_y_second)
+      if(mpiup /= MPI_PROC_NULL) y_halo_recv_up_d = y_halo_recv_up_h
+      if(mpidown /= MPI_PROC_NULL) y_halo_recv_down_d = y_halo_recv_down_h
+    endif
 
     nunpack = (im + 1) * (km + 1) * numq
     grid = dim3((nunpack + block%x - 1)/block%x,1,1)
@@ -1891,16 +1897,20 @@ contains
     call pack_z_halo_front_kernel<<<grid,block>>>(z_halo_send_front_d,im,jm,km,hm,numq)
     call sync_after_kernel('pack_z_halo_front_kernel',.true.)
 
-    z_halo_send_back_h = z_halo_send_back_d
-    z_halo_send_front_h = z_halo_send_front_d
-
-    ncou = size(z_halo_send_back_h)
-    call exchange_host_pair(z_halo_send_back_h,z_halo_send_front_h, &
-                            z_halo_recv_front_h,z_halo_recv_back_h, &
-                            ncou,mpiback,mpifront,tag_z_first,tag_z_second)
-
-    if(mpifront /= MPI_PROC_NULL) z_halo_recv_front_d = z_halo_recv_front_h
-    if(mpiback /= MPI_PROC_NULL) z_halo_recv_back_d = z_halo_recv_back_h
+    ncou = size(z_halo_send_back_d)
+    if(device_aware_transport_enabled) then
+      call exchange_device_pair(z_halo_send_back_d,z_halo_send_front_d, &
+                                z_halo_recv_front_d,z_halo_recv_back_d, &
+                                ncou,mpiback,mpifront,tag_z_first,tag_z_second)
+    else
+      z_halo_send_back_h = z_halo_send_back_d
+      z_halo_send_front_h = z_halo_send_front_d
+      call exchange_host_pair(z_halo_send_back_h,z_halo_send_front_h, &
+                              z_halo_recv_front_h,z_halo_recv_back_h, &
+                              ncou,mpiback,mpifront,tag_z_first,tag_z_second)
+      if(mpifront /= MPI_PROC_NULL) z_halo_recv_front_d = z_halo_recv_front_h
+      if(mpiback /= MPI_PROC_NULL) z_halo_recv_back_d = z_halo_recv_back_h
+    endif
 
     nunpack = (im + 1) * (jm + 1) * numq
     grid = dim3((nunpack + block%x - 1)/block%x,1,1)
@@ -1947,14 +1957,20 @@ contains
     call sync_after_kernel('pack_filter_scalar_y_down_kernel')
     call pack_filter_scalar_y_up_kernel<<<grid,block>>>(field_send_up_d(:,:,:,1:1),im,jm,km,hm)
     call sync_after_kernel('pack_filter_scalar_y_up_kernel',.true.)
-    field_send_down_h(:,:,:,1:1)=field_send_down_d(:,:,:,1:1)
-    field_send_up_h(:,:,:,1:1)=field_send_up_d(:,:,:,1:1)
     ncou=npack
-    call exchange_host_pair(field_send_down_h(:,:,:,1:1),field_send_up_h(:,:,:,1:1), &
-                            field_recv_up_h(:,:,:,1:1),field_recv_down_h(:,:,:,1:1), &
-                            ncou,mpidown,mpiup,tag_y_first,tag_y_second)
-    if(mpiup/=MPI_PROC_NULL) field_recv_up_d(:,:,:,1:1)=field_recv_up_h(:,:,:,1:1)
-    if(mpidown/=MPI_PROC_NULL) field_recv_down_d(:,:,:,1:1)=field_recv_down_h(:,:,:,1:1)
+    if(device_aware_transport_enabled) then
+      call exchange_device_pair(field_send_down_d(:,:,:,1:1),field_send_up_d(:,:,:,1:1), &
+                                field_recv_up_d(:,:,:,1:1),field_recv_down_d(:,:,:,1:1), &
+                                ncou,mpidown,mpiup,tag_y_first,tag_y_second)
+    else
+      field_send_down_h(:,:,:,1:1)=field_send_down_d(:,:,:,1:1)
+      field_send_up_h(:,:,:,1:1)=field_send_up_d(:,:,:,1:1)
+      call exchange_host_pair(field_send_down_h(:,:,:,1:1),field_send_up_h(:,:,:,1:1), &
+                              field_recv_up_h(:,:,:,1:1),field_recv_down_h(:,:,:,1:1), &
+                              ncou,mpidown,mpiup,tag_y_first,tag_y_second)
+      if(mpiup/=MPI_PROC_NULL) field_recv_up_d(:,:,:,1:1)=field_recv_up_h(:,:,:,1:1)
+      if(mpidown/=MPI_PROC_NULL) field_recv_down_d(:,:,:,1:1)=field_recv_down_h(:,:,:,1:1)
+    endif
     call unpack_filter_scalar_y_kernel<<<grid,block>>>(field_recv_up_d(:,:,:,1:1), &
          field_recv_down_d(:,:,:,1:1),im,jm,km,hm,merge(1,0,mpiup/=MPI_PROC_NULL), &
          merge(1,0,mpidown/=MPI_PROC_NULL))
@@ -2007,14 +2023,20 @@ contains
     call pack_q_component_z_front_kernel<<<grid,block>>>(field_send_front_d(:,:,:,1:1), &
                                                           im,jm,km,hm,component)
     call sync_after_kernel('pack_q_component_z_front_kernel',.true.)
-    field_send_back_h(:,:,:,1:1)=field_send_back_d(:,:,:,1:1)
-    field_send_front_h(:,:,:,1:1)=field_send_front_d(:,:,:,1:1)
     ncou=npack
-    call exchange_host_pair(field_send_back_h(:,:,:,1:1),field_send_front_h(:,:,:,1:1), &
-                            field_recv_front_h(:,:,:,1:1),field_recv_back_h(:,:,:,1:1), &
-                            ncou,mpiback,mpifront,tag_z_first,tag_z_second)
-    if(mpifront/=MPI_PROC_NULL) field_recv_front_d(:,:,:,1:1)=field_recv_front_h(:,:,:,1:1)
-    if(mpiback/=MPI_PROC_NULL) field_recv_back_d(:,:,:,1:1)=field_recv_back_h(:,:,:,1:1)
+    if(device_aware_transport_enabled) then
+      call exchange_device_pair(field_send_back_d(:,:,:,1:1),field_send_front_d(:,:,:,1:1), &
+                                field_recv_front_d(:,:,:,1:1),field_recv_back_d(:,:,:,1:1), &
+                                ncou,mpiback,mpifront,tag_z_first,tag_z_second)
+    else
+      field_send_back_h(:,:,:,1:1)=field_send_back_d(:,:,:,1:1)
+      field_send_front_h(:,:,:,1:1)=field_send_front_d(:,:,:,1:1)
+      call exchange_host_pair(field_send_back_h(:,:,:,1:1),field_send_front_h(:,:,:,1:1), &
+                              field_recv_front_h(:,:,:,1:1),field_recv_back_h(:,:,:,1:1), &
+                              ncou,mpiback,mpifront,tag_z_first,tag_z_second)
+      if(mpifront/=MPI_PROC_NULL) field_recv_front_d(:,:,:,1:1)=field_recv_front_h(:,:,:,1:1)
+      if(mpiback/=MPI_PROC_NULL) field_recv_back_d(:,:,:,1:1)=field_recv_back_h(:,:,:,1:1)
+    endif
     call unpack_q_component_z_kernel<<<grid,block>>>(field_recv_front_d(:,:,:,1:1), &
          field_recv_back_d(:,:,:,1:1),im,jm,km,hm,component, &
          merge(1,0,mpifront/=MPI_PROC_NULL),merge(1,0,mpiback/=MPI_PROC_NULL))
@@ -2063,16 +2085,20 @@ contains
     call pack_x_right_kernel<<<grid,block>>>(x_send_right_d,im,jm,km,hm,numq)
     call sync_after_kernel('pack_x_right_kernel',.true.)
 
-    x_send_left_h = x_send_left_d
-    x_send_right_h = x_send_right_d
-
-    ncou = size(x_send_left_h)
-    call exchange_host_pair(x_send_left_h,x_send_right_h, &
-                            x_recv_right_h,x_recv_left_h, &
-                            ncou,mpileft,mpiright,tag_x_first,tag_x_second)
-
-    if(mpiright /= MPI_PROC_NULL) x_recv_right_d = x_recv_right_h
-    if(mpileft /= MPI_PROC_NULL) x_recv_left_d = x_recv_left_h
+    if(device_aware_transport_enabled) then
+      ncou = size(x_send_left_d)
+      call exchange_device_pair(x_send_left_d,x_send_right_d,x_recv_right_d,x_recv_left_d, &
+                                ncou,mpileft,mpiright,tag_x_first,tag_x_second)
+    else
+      x_send_left_h = x_send_left_d
+      x_send_right_h = x_send_right_d
+      ncou = size(x_send_left_h)
+      call exchange_host_pair(x_send_left_h,x_send_right_h, &
+                              x_recv_right_h,x_recv_left_h, &
+                              ncou,mpileft,mpiright,tag_x_first,tag_x_second)
+      if(mpiright /= MPI_PROC_NULL) x_recv_right_d = x_recv_right_h
+      if(mpileft /= MPI_PROC_NULL) x_recv_left_d = x_recv_left_h
+    endif
 
     nunpack = (jm + 1) * (km + 1) * numq
     grid = dim3((nunpack + block%x - 1)/block%x,1,1)
@@ -2375,16 +2401,20 @@ contains
     call pack_y_up_kernel<<<grid,block>>>(y_send_up_d,im,jm,km,hm,numq)
     call sync_after_kernel('pack_y_up_kernel',.true.)
 
-    y_send_down_h = y_send_down_d
-    y_send_up_h = y_send_up_d
-
-    ncou = size(y_send_down_h)
-    call exchange_host_pair(y_send_down_h,y_send_up_h, &
-                            y_recv_up_h,y_recv_down_h, &
-                            ncou,mpidown,mpiup,tag_y_first,tag_y_second)
-
-    if(mpiup /= MPI_PROC_NULL) y_recv_up_d = y_recv_up_h
-    if(mpidown /= MPI_PROC_NULL) y_recv_down_d = y_recv_down_h
+    if(device_aware_transport_enabled) then
+      ncou = size(y_send_down_d)
+      call exchange_device_pair(y_send_down_d,y_send_up_d,y_recv_up_d,y_recv_down_d, &
+                                ncou,mpidown,mpiup,tag_y_first,tag_y_second)
+    else
+      y_send_down_h = y_send_down_d
+      y_send_up_h = y_send_up_d
+      ncou = size(y_send_down_h)
+      call exchange_host_pair(y_send_down_h,y_send_up_h, &
+                              y_recv_up_h,y_recv_down_h, &
+                              ncou,mpidown,mpiup,tag_y_first,tag_y_second)
+      if(mpiup /= MPI_PROC_NULL) y_recv_up_d = y_recv_up_h
+      if(mpidown /= MPI_PROC_NULL) y_recv_down_d = y_recv_down_h
+    endif
 
     nunpack = (im + 1) * (km + 1) * numq
     grid = dim3((nunpack + block%x - 1)/block%x,1,1)
@@ -2421,16 +2451,20 @@ contains
     call pack_z_front_kernel<<<grid,block>>>(z_send_front_d,im,jm,km,hm,numq)
     call sync_after_kernel('pack_z_front_kernel',.true.)
 
-    z_send_back_h = z_send_back_d
-    z_send_front_h = z_send_front_d
-
-    ncou = size(z_send_back_h)
-    call exchange_host_pair(z_send_back_h,z_send_front_h, &
-                            z_recv_front_h,z_recv_back_h, &
-                            ncou,mpiback,mpifront,tag_z_first,tag_z_second)
-
-    if(mpifront /= MPI_PROC_NULL) z_recv_front_d = z_recv_front_h
-    if(mpiback /= MPI_PROC_NULL) z_recv_back_d = z_recv_back_h
+    if(device_aware_transport_enabled) then
+      ncou = size(z_send_back_d)
+      call exchange_device_pair(z_send_back_d,z_send_front_d,z_recv_front_d,z_recv_back_d, &
+                                ncou,mpiback,mpifront,tag_z_first,tag_z_second)
+    else
+      z_send_back_h = z_send_back_d
+      z_send_front_h = z_send_front_d
+      ncou = size(z_send_back_h)
+      call exchange_host_pair(z_send_back_h,z_send_front_h, &
+                              z_recv_front_h,z_recv_back_h, &
+                              ncou,mpiback,mpifront,tag_z_first,tag_z_second)
+      if(mpifront /= MPI_PROC_NULL) z_recv_front_d = z_recv_front_h
+      if(mpiback /= MPI_PROC_NULL) z_recv_back_d = z_recv_back_h
+    endif
 
     nunpack = (im + 1) * (jm + 1) * numq
     grid = dim3((nunpack + block%x - 1)/block%x,1,1)
@@ -2467,16 +2501,20 @@ contains
     call pack_x_halo_right_kernel<<<grid,block>>>(x_halo_send_right_d,im,jm,km,hm,numq)
     call sync_after_kernel('pack_x_halo_right_kernel',.true.)
 
-    x_halo_send_left_h = x_halo_send_left_d
-    x_halo_send_right_h = x_halo_send_right_d
-
-    ncou = size(x_halo_send_left_h)
-    call exchange_host_pair(x_halo_send_left_h,x_halo_send_right_h, &
-                            x_halo_recv_right_h,x_halo_recv_left_h, &
-                            ncou,mpileft,mpiright,tag_x_first,tag_x_second)
-
-    if(mpiright /= MPI_PROC_NULL) x_halo_recv_right_d = x_halo_recv_right_h
-    if(mpileft /= MPI_PROC_NULL) x_halo_recv_left_d = x_halo_recv_left_h
+    ncou = size(x_halo_send_left_d)
+    if(device_aware_transport_enabled) then
+      call exchange_device_pair(x_halo_send_left_d,x_halo_send_right_d, &
+                                x_halo_recv_right_d,x_halo_recv_left_d, &
+                                ncou,mpileft,mpiright,tag_x_first,tag_x_second)
+    else
+      x_halo_send_left_h = x_halo_send_left_d
+      x_halo_send_right_h = x_halo_send_right_d
+      call exchange_host_pair(x_halo_send_left_h,x_halo_send_right_h, &
+                              x_halo_recv_right_h,x_halo_recv_left_h, &
+                              ncou,mpileft,mpiright,tag_x_first,tag_x_second)
+      if(mpiright /= MPI_PROC_NULL) x_halo_recv_right_d = x_halo_recv_right_h
+      if(mpileft /= MPI_PROC_NULL) x_halo_recv_left_d = x_halo_recv_left_h
+    endif
 
     nunpack = (jm + 1) * (km + 1) * numq
     grid = dim3((nunpack + block%x - 1)/block%x,1,1)
@@ -3036,16 +3074,22 @@ contains
     call pack_field_x_right_kernel<<<grid,block>>>(field,field_send_right_d,im,jm,km,hm,nvar)
     call sync_after_kernel('pack_field_x_right_kernel',.true.)
 
-    field_send_left_h(:,:,:,1:nvar) = field_send_left_d(:,:,:,1:nvar)
-    field_send_right_h(:,:,:,1:nvar) = field_send_right_d(:,:,:,1:nvar)
-
     ncou = hm * (jm + 1) * (km + 1) * nvar
-    call exchange_host_pair(field_send_left_h(:,:,:,1:nvar),field_send_right_h(:,:,:,1:nvar), &
-                            field_recv_right_h(:,:,:,1:nvar),field_recv_left_h(:,:,:,1:nvar), &
-                            ncou,mpileft,mpiright,tag_x_first,tag_x_second,work)
-
-    if(mpiright /= MPI_PROC_NULL) field_recv_right_d(:,:,:,1:nvar) = field_recv_right_h(:,:,:,1:nvar)
-    if(mpileft /= MPI_PROC_NULL) field_recv_left_d(:,:,:,1:nvar) = field_recv_left_h(:,:,:,1:nvar)
+    if(device_aware_transport_enabled) then
+      call exchange_device_pair(field_send_left_d(:,:,:,1:nvar),field_send_right_d(:,:,:,1:nvar), &
+                                field_recv_right_d(:,:,:,1:nvar),field_recv_left_d(:,:,:,1:nvar), &
+                                ncou,mpileft,mpiright,tag_x_first,tag_x_second,work)
+    else
+      field_send_left_h(:,:,:,1:nvar) = field_send_left_d(:,:,:,1:nvar)
+      field_send_right_h(:,:,:,1:nvar) = field_send_right_d(:,:,:,1:nvar)
+      call exchange_host_pair(field_send_left_h(:,:,:,1:nvar),field_send_right_h(:,:,:,1:nvar), &
+                              field_recv_right_h(:,:,:,1:nvar),field_recv_left_h(:,:,:,1:nvar), &
+                              ncou,mpileft,mpiright,tag_x_first,tag_x_second,work)
+      if(mpiright /= MPI_PROC_NULL) &
+        field_recv_right_d(:,:,:,1:nvar) = field_recv_right_h(:,:,:,1:nvar)
+      if(mpileft /= MPI_PROC_NULL) &
+        field_recv_left_d(:,:,:,1:nvar) = field_recv_left_h(:,:,:,1:nvar)
+    endif
 
     nunpack = (jm + 1) * (km + 1) * nvar
     grid = dim3((nunpack + block%x - 1)/block%x,1,1)
@@ -3080,16 +3124,22 @@ contains
     call pack_field_y_up_kernel<<<grid,block>>>(field,field_send_up_d,im,jm,km,hm,nvar)
     call sync_after_kernel('pack_field_y_up_kernel',.true.)
 
-    field_send_down_h(:,:,:,1:nvar) = field_send_down_d(:,:,:,1:nvar)
-    field_send_up_h(:,:,:,1:nvar) = field_send_up_d(:,:,:,1:nvar)
-
     ncou = hm * (im + 1) * (km + 1) * nvar
-    call exchange_host_pair(field_send_down_h(:,:,:,1:nvar),field_send_up_h(:,:,:,1:nvar), &
-                            field_recv_up_h(:,:,:,1:nvar),field_recv_down_h(:,:,:,1:nvar), &
-                            ncou,mpidown,mpiup,tag_y_first,tag_y_second,work)
-
-    if(mpiup /= MPI_PROC_NULL) field_recv_up_d(:,:,:,1:nvar) = field_recv_up_h(:,:,:,1:nvar)
-    if(mpidown /= MPI_PROC_NULL) field_recv_down_d(:,:,:,1:nvar) = field_recv_down_h(:,:,:,1:nvar)
+    if(device_aware_transport_enabled) then
+      call exchange_device_pair(field_send_down_d(:,:,:,1:nvar),field_send_up_d(:,:,:,1:nvar), &
+                                field_recv_up_d(:,:,:,1:nvar),field_recv_down_d(:,:,:,1:nvar), &
+                                ncou,mpidown,mpiup,tag_y_first,tag_y_second,work)
+    else
+      field_send_down_h(:,:,:,1:nvar) = field_send_down_d(:,:,:,1:nvar)
+      field_send_up_h(:,:,:,1:nvar) = field_send_up_d(:,:,:,1:nvar)
+      call exchange_host_pair(field_send_down_h(:,:,:,1:nvar),field_send_up_h(:,:,:,1:nvar), &
+                              field_recv_up_h(:,:,:,1:nvar),field_recv_down_h(:,:,:,1:nvar), &
+                              ncou,mpidown,mpiup,tag_y_first,tag_y_second,work)
+      if(mpiup /= MPI_PROC_NULL) &
+        field_recv_up_d(:,:,:,1:nvar) = field_recv_up_h(:,:,:,1:nvar)
+      if(mpidown /= MPI_PROC_NULL) &
+        field_recv_down_d(:,:,:,1:nvar) = field_recv_down_h(:,:,:,1:nvar)
+    endif
 
     nunpack = (im + 1) * (km + 1) * nvar
     grid = dim3((nunpack + block%x - 1)/block%x,1,1)
@@ -3124,16 +3174,22 @@ contains
     call pack_field_z_front_kernel<<<grid,block>>>(field,field_send_front_d,im,jm,km,hm,nvar)
     call sync_after_kernel('pack_field_z_front_kernel',.true.)
 
-    field_send_back_h(:,:,:,1:nvar) = field_send_back_d(:,:,:,1:nvar)
-    field_send_front_h(:,:,:,1:nvar) = field_send_front_d(:,:,:,1:nvar)
-
     ncou = hm * (im + 1) * (jm + 1) * nvar
-    call exchange_host_pair(field_send_back_h(:,:,:,1:nvar),field_send_front_h(:,:,:,1:nvar), &
-                            field_recv_front_h(:,:,:,1:nvar),field_recv_back_h(:,:,:,1:nvar), &
-                            ncou,mpiback,mpifront,tag_z_first,tag_z_second,work)
-
-    if(mpifront /= MPI_PROC_NULL) field_recv_front_d(:,:,:,1:nvar) = field_recv_front_h(:,:,:,1:nvar)
-    if(mpiback /= MPI_PROC_NULL) field_recv_back_d(:,:,:,1:nvar) = field_recv_back_h(:,:,:,1:nvar)
+    if(device_aware_transport_enabled) then
+      call exchange_device_pair(field_send_back_d(:,:,:,1:nvar),field_send_front_d(:,:,:,1:nvar), &
+                                field_recv_front_d(:,:,:,1:nvar),field_recv_back_d(:,:,:,1:nvar), &
+                                ncou,mpiback,mpifront,tag_z_first,tag_z_second,work)
+    else
+      field_send_back_h(:,:,:,1:nvar) = field_send_back_d(:,:,:,1:nvar)
+      field_send_front_h(:,:,:,1:nvar) = field_send_front_d(:,:,:,1:nvar)
+      call exchange_host_pair(field_send_back_h(:,:,:,1:nvar),field_send_front_h(:,:,:,1:nvar), &
+                              field_recv_front_h(:,:,:,1:nvar),field_recv_back_h(:,:,:,1:nvar), &
+                              ncou,mpiback,mpifront,tag_z_first,tag_z_second,work)
+      if(mpifront /= MPI_PROC_NULL) &
+        field_recv_front_d(:,:,:,1:nvar) = field_recv_front_h(:,:,:,1:nvar)
+      if(mpiback /= MPI_PROC_NULL) &
+        field_recv_back_d(:,:,:,1:nvar) = field_recv_back_h(:,:,:,1:nvar)
+    endif
 
     nunpack = (im + 1) * (jm + 1) * nvar
     grid = dim3((nunpack + block%x - 1)/block%x,1,1)
@@ -3233,16 +3289,22 @@ contains
     call pack_field_sp_x_right_kernel<<<grid,block>>>(field,field_send_right_d,im,jm,km,hm,nvar)
     call sync_after_kernel('pack_field_sp_x_right_kernel',.true.)
 
-    field_send_left_h(:,:,:,1:nvar)=field_send_left_d(:,:,:,1:nvar)
-    field_send_right_h(:,:,:,1:nvar)=field_send_right_d(:,:,:,1:nvar)
-
     ncou=hm*(jm+1)*(km+1)*nvar
-    call exchange_host_pair(field_send_left_h(:,:,:,1:nvar),field_send_right_h(:,:,:,1:nvar), &
-                            field_recv_right_h(:,:,:,1:nvar),field_recv_left_h(:,:,:,1:nvar), &
-                            ncou,mpileft,mpiright,tag_x_first,tag_x_second,work)
-
-    if(mpiright/=MPI_PROC_NULL) field_recv_right_d(:,:,:,1:nvar)=field_recv_right_h(:,:,:,1:nvar)
-    if(mpileft/=MPI_PROC_NULL) field_recv_left_d(:,:,:,1:nvar)=field_recv_left_h(:,:,:,1:nvar)
+    if(device_aware_transport_enabled) then
+      call exchange_device_pair(field_send_left_d(:,:,:,1:nvar),field_send_right_d(:,:,:,1:nvar), &
+                                field_recv_right_d(:,:,:,1:nvar),field_recv_left_d(:,:,:,1:nvar), &
+                                ncou,mpileft,mpiright,tag_x_first,tag_x_second,work)
+    else
+      field_send_left_h(:,:,:,1:nvar)=field_send_left_d(:,:,:,1:nvar)
+      field_send_right_h(:,:,:,1:nvar)=field_send_right_d(:,:,:,1:nvar)
+      call exchange_host_pair(field_send_left_h(:,:,:,1:nvar),field_send_right_h(:,:,:,1:nvar), &
+                              field_recv_right_h(:,:,:,1:nvar),field_recv_left_h(:,:,:,1:nvar), &
+                              ncou,mpileft,mpiright,tag_x_first,tag_x_second,work)
+      if(mpiright/=MPI_PROC_NULL) &
+        field_recv_right_d(:,:,:,1:nvar)=field_recv_right_h(:,:,:,1:nvar)
+      if(mpileft/=MPI_PROC_NULL) &
+        field_recv_left_d(:,:,:,1:nvar)=field_recv_left_h(:,:,:,1:nvar)
+    endif
 
     nunpack=(jm+1)*(km+1)*nvar
     grid=dim3((nunpack+block%x-1)/block%x,1,1)
@@ -3277,16 +3339,22 @@ contains
     call pack_field_sp_y_up_kernel<<<grid,block>>>(field,field_send_up_d,im,jm,km,hm,nvar)
     call sync_after_kernel('pack_field_sp_y_up_kernel',.true.)
 
-    field_send_down_h(:,:,:,1:nvar)=field_send_down_d(:,:,:,1:nvar)
-    field_send_up_h(:,:,:,1:nvar)=field_send_up_d(:,:,:,1:nvar)
-
     ncou=hm*(im+1)*(km+1)*nvar
-    call exchange_host_pair(field_send_down_h(:,:,:,1:nvar),field_send_up_h(:,:,:,1:nvar), &
-                            field_recv_up_h(:,:,:,1:nvar),field_recv_down_h(:,:,:,1:nvar), &
-                            ncou,mpidown,mpiup,tag_y_first,tag_y_second,work)
-
-    if(mpiup/=MPI_PROC_NULL) field_recv_up_d(:,:,:,1:nvar)=field_recv_up_h(:,:,:,1:nvar)
-    if(mpidown/=MPI_PROC_NULL) field_recv_down_d(:,:,:,1:nvar)=field_recv_down_h(:,:,:,1:nvar)
+    if(device_aware_transport_enabled) then
+      call exchange_device_pair(field_send_down_d(:,:,:,1:nvar),field_send_up_d(:,:,:,1:nvar), &
+                                field_recv_up_d(:,:,:,1:nvar),field_recv_down_d(:,:,:,1:nvar), &
+                                ncou,mpidown,mpiup,tag_y_first,tag_y_second,work)
+    else
+      field_send_down_h(:,:,:,1:nvar)=field_send_down_d(:,:,:,1:nvar)
+      field_send_up_h(:,:,:,1:nvar)=field_send_up_d(:,:,:,1:nvar)
+      call exchange_host_pair(field_send_down_h(:,:,:,1:nvar),field_send_up_h(:,:,:,1:nvar), &
+                              field_recv_up_h(:,:,:,1:nvar),field_recv_down_h(:,:,:,1:nvar), &
+                              ncou,mpidown,mpiup,tag_y_first,tag_y_second,work)
+      if(mpiup/=MPI_PROC_NULL) &
+        field_recv_up_d(:,:,:,1:nvar)=field_recv_up_h(:,:,:,1:nvar)
+      if(mpidown/=MPI_PROC_NULL) &
+        field_recv_down_d(:,:,:,1:nvar)=field_recv_down_h(:,:,:,1:nvar)
+    endif
 
     nunpack=(im+1)*(km+1)*nvar
     grid=dim3((nunpack+block%x-1)/block%x,1,1)
@@ -3321,16 +3389,22 @@ contains
     call pack_field_sp_z_front_kernel<<<grid,block>>>(field,field_send_front_d,im,jm,km,hm,nvar)
     call sync_after_kernel('pack_field_sp_z_front_kernel',.true.)
 
-    field_send_back_h(:,:,:,1:nvar)=field_send_back_d(:,:,:,1:nvar)
-    field_send_front_h(:,:,:,1:nvar)=field_send_front_d(:,:,:,1:nvar)
-
     ncou=hm*(im+1)*(jm+1)*nvar
-    call exchange_host_pair(field_send_back_h(:,:,:,1:nvar),field_send_front_h(:,:,:,1:nvar), &
-                            field_recv_front_h(:,:,:,1:nvar),field_recv_back_h(:,:,:,1:nvar), &
-                            ncou,mpiback,mpifront,tag_z_first,tag_z_second,work)
-
-    if(mpifront/=MPI_PROC_NULL) field_recv_front_d(:,:,:,1:nvar)=field_recv_front_h(:,:,:,1:nvar)
-    if(mpiback/=MPI_PROC_NULL) field_recv_back_d(:,:,:,1:nvar)=field_recv_back_h(:,:,:,1:nvar)
+    if(device_aware_transport_enabled) then
+      call exchange_device_pair(field_send_back_d(:,:,:,1:nvar),field_send_front_d(:,:,:,1:nvar), &
+                                field_recv_front_d(:,:,:,1:nvar),field_recv_back_d(:,:,:,1:nvar), &
+                                ncou,mpiback,mpifront,tag_z_first,tag_z_second,work)
+    else
+      field_send_back_h(:,:,:,1:nvar)=field_send_back_d(:,:,:,1:nvar)
+      field_send_front_h(:,:,:,1:nvar)=field_send_front_d(:,:,:,1:nvar)
+      call exchange_host_pair(field_send_back_h(:,:,:,1:nvar),field_send_front_h(:,:,:,1:nvar), &
+                              field_recv_front_h(:,:,:,1:nvar),field_recv_back_h(:,:,:,1:nvar), &
+                              ncou,mpiback,mpifront,tag_z_first,tag_z_second,work)
+      if(mpifront/=MPI_PROC_NULL) &
+        field_recv_front_d(:,:,:,1:nvar)=field_recv_front_h(:,:,:,1:nvar)
+      if(mpiback/=MPI_PROC_NULL) &
+        field_recv_back_d(:,:,:,1:nvar)=field_recv_back_h(:,:,:,1:nvar)
+    endif
 
     nunpack=(im+1)*(jm+1)*nvar
     grid=dim3((nunpack+block%x-1)/block%x,1,1)

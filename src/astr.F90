@@ -34,7 +34,8 @@ program astr
                            validate_conservative_sbli_mode,        &
                            initialize_conservative_boundary_state
 #ifdef _CUDA
-  use gpu_runtime,   only: gpu_bind_device,gpu_after_refcal,gpu_after_alloc, &
+  use gpu_runtime,   only: gpu_pre_mpi_bind_device,gpu_bind_device, &
+                           gpu_after_refcal,gpu_after_alloc, &
                            gpu_after_flowinit,gpu_before_finalize
 #endif
 
@@ -48,6 +49,9 @@ program astr
   !---------------------------------------------------------------------
   ! MPI Initialization and Command Processing
   !---------------------------------------------------------------------
+#ifdef _CUDA
+  call gpu_pre_mpi_bind_device()
+#endif
   call mpiinitial
 
   call statement

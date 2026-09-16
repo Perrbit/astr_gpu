@@ -68,6 +68,7 @@ if(ASTR_WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/commvar_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/qswap_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/halo_transport_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/device_mpi_transport_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/halo_exchange_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/nscbc_characteristic_policy_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/boundary_gpu.cuf
@@ -258,6 +259,7 @@ if(ASTR_WITH_CUDA)
   " ASTR_HAS_MPI_CUDA_QUERY)
   cmake_pop_check_state()
   if(ASTR_HAS_MPI_CUDA_QUERY)
+    target_compile_definitions(astr PRIVATE ASTR_MPI_CUDA_AWARE_QUERY)
     add_executable(halo_cuda_aware_probe EXCLUDE_FROM_ALL
       ../tests/gpu_validation/halo_cuda_aware_probe.cuf)
     target_link_libraries(halo_cuda_aware_probe PRIVATE MPI::MPI_Fortran)
@@ -363,6 +365,9 @@ if(ASTR_WITH_CUDA)
     "${CMAKE_CURRENT_BINARY_DIR}/halo_contract_modules")
   get_target_property(ASTR_HALO_CONTRACT_LIBRARIES astr LINK_LIBRARIES)
   target_link_libraries(halo_exchange_contract_test PRIVATE ${ASTR_HALO_CONTRACT_LIBRARIES})
+  if(ASTR_HAS_MPI_CUDA_QUERY)
+    target_compile_definitions(halo_exchange_contract_test PRIVATE ASTR_MPI_CUDA_AWARE_QUERY)
+  endif()
 endif()
 
 option(ASTR_BUILD_MPI_COMPLETION_TRACE "Build optional MPI completion profiling interposer" OFF)

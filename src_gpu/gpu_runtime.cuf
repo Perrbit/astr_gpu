@@ -11,6 +11,13 @@ module gpu_runtime
   real(8),save :: rk_prepare_seconds = 0.d0
   real(8),save :: complete_step_start = 0.d0
 contains
+  subroutine gpu_pre_mpi_bind_device()
+    use device_runtime_gpu, only: prebind_gpu_device_from_environment
+    implicit none
+
+    call prebind_gpu_device_from_environment()
+  end subroutine gpu_pre_mpi_bind_device
+
   subroutine configure_complete_step_timing()
     implicit none
     character(len=16) :: value
