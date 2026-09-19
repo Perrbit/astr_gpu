@@ -41,7 +41,7 @@ def test_frozen_transport_cases_have_dedicated_initializers() -> None:
 
 def test_frozen_transport_cases_do_not_enable_strang_chemistry() -> None:
     runtime = compact(
-        (ROOT / "src/chemistry_flow_runtime.F90").read_text(encoding="utf-8")
+        (ROOT / "src/chemistry_runtime.F90").read_text(encoding="utf-8")
     )
 
     assert "case('air5reactor','air5postshock','air5tgv','air5hbl')" in runtime

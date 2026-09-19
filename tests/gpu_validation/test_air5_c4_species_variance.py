@@ -46,7 +46,7 @@ class Air5SpeciesVarianceTests(unittest.TestCase):
 
 class Air5DiffusionSignContractTests(unittest.TestCase):
     def test_cpu_species_divergence_is_subtracted(self) -> None:
-        source = Path("src/chemistry_flow_solver.F90").read_text(encoding="utf-8")
+        source = Path("src/chemistry_solver.F90").read_text(encoding="utf-8")
         self.assertEqual(source.count("call add_air5_diffusive_divergence"), 3)
         self.assertIn("air5_idx_species_last", source)
         self.assertIn(
@@ -56,7 +56,7 @@ class Air5DiffusionSignContractTests(unittest.TestCase):
         )
 
     def test_gpu_species_divergence_is_subtracted(self) -> None:
-        source = Path("src_gpu/chemistry_flow_solver_gpu.cuf").read_text(encoding="utf-8")
+        source = Path("src_gpu/chemistry_solver_gpu.cuf").read_text(encoding="utf-8")
         self.assertEqual(
             source.count("air5_diffusion_rhs_sign(component)*air5_deriv6"), 3
         )

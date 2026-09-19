@@ -40,7 +40,7 @@ class ChemistrySourceGpuTests(unittest.TestCase):
 
 class ChemistrySourceGpuContractTests(unittest.TestCase):
     def test_launcher_accepts_device_resident_arrays_and_forces_sync(self):
-        source = (ROOT / "src_gpu/chemistry_source_gpu.cuf").read_text(
+        source = (ROOT / "src_gpu/chemistry_kinetics_gpu.cuf").read_text(
             encoding="utf-8"
         ).lower()
         start = source.index("subroutine launch_air5_source_batch_gpu")
@@ -52,7 +52,7 @@ class ChemistrySourceGpuContractTests(unittest.TestCase):
         self.assertNotIn("cudamemcpy", launcher)
 
     def test_batch_kernel_maps_one_thread_to_one_state(self):
-        source = (ROOT / "src_gpu/chemistry_source_gpu.cuf").read_text(
+        source = (ROOT / "src_gpu/chemistry_kinetics_gpu.cuf").read_text(
             encoding="utf-8"
         ).lower()
         self.assertIn("(blockidx%x-1)*blockdim%x+threadidx%x", source)

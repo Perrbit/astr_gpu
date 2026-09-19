@@ -9,7 +9,7 @@ def compact(path: str) -> str:
 
 
 def test_air5_hbl_is_a_dedicated_reacting_flowtype() -> None:
-    runtime = compact("src/chemistry_flow_runtime.F90")
+    runtime = compact("src/chemistry_runtime.F90")
 
     assert "air5hbl" in runtime
     assert "public::air5_hbl_flowtype" in runtime
@@ -41,7 +41,7 @@ def test_cpu_hbl_does_not_retain_backend_specific_debug_phases() -> None:
 
 
 def test_gpu_hbl_boundary_updates_q11_and_synchronizes_each_face_kernel() -> None:
-    boundary = compact("src_gpu/chemistry_hbl_boundary_gpu.cuf")
+    boundary = compact("src_gpu/chemistry_boundary_gpu.cuf")
 
     for kernel in (
         "air5_hbl_outflow_boundary_kernel",
@@ -56,7 +56,7 @@ def test_gpu_hbl_boundary_updates_q11_and_synchronizes_each_face_kernel() -> Non
 
 
 def test_gpu_hbl_status_collectives_are_called_by_every_rank_in_face_order() -> None:
-    boundary = compact("src_gpu/chemistry_hbl_boundary_gpu.cuf")
+    boundary = compact("src_gpu/chemistry_boundary_gpu.cuf")
     start = boundary.index("subroutineapply_air5_hbl_boundary_gpu()")
     body = boundary[start : boundary.index("endsubroutineapply_air5_hbl_boundary_gpu", start)]
 
@@ -71,7 +71,7 @@ def test_gpu_hbl_status_collectives_are_called_by_every_rank_in_face_order() -> 
 
 
 def test_gpu_hbl_diffusion_uses_xy_physical_gradient_closure() -> None:
-    solver = compact("src_gpu/chemistry_flow_solver_gpu.cuf")
+    solver = compact("src_gpu/chemistry_solver_gpu.cuf")
 
     assert "air5_hbl_flowtype" in solver
     assert "callgradcal_dvel_xyphysical_kernel<<<" in solver
@@ -79,8 +79,8 @@ def test_gpu_hbl_diffusion_uses_xy_physical_gradient_closure() -> None:
 
 
 def test_hbl_noncatalytic_species_flux_is_zeroed_before_flux_construction() -> None:
-    cpu_solver = compact("src/chemistry_flow_solver.F90")
-    gpu_solver = compact("src_gpu/chemistry_flow_solver_gpu.cuf")
+    cpu_solver = compact("src/chemistry_solver.F90")
+    gpu_solver = compact("src_gpu/chemistry_solver_gpu.cuf")
 
     assert "dspc(:,0,:,:,2)=0.0_real64" in cpu_solver
     assert "zero_species_flux_lower_y" in gpu_solver
@@ -91,13 +91,11 @@ def test_hbl_noncatalytic_species_flux_is_zeroed_before_flux_construction() -> N
 def test_hbl_modules_are_ordered_before_their_consumers() -> None:
     cmake = compact("src/CMakeLists.txt")
 
-    profile = cmake.index("chemistry_hbl_profile.f90")
-    state = cmake.index("chemistry_hbl_boundary_state.f90")
-    boundary = cmake.index("chemistry_hbl_boundary.f90")
-    runtime = cmake.index("chemistry_flow_solver.f90")
-    gpu_boundary = cmake.index("../src_gpu/chemistry_hbl_boundary_gpu.cuf")
-    gpu_solver = cmake.index("../src_gpu/chemistry_flow_solver_gpu.cuf")
-    assert profile < boundary < runtime
+    state = cmake.index("chemistry_boundary_state.f90")
+    boundary = cmake.index("chemistry_boundary.f90")
+    runtime = cmake.index("chemistry_solver.f90")
+    gpu_boundary = cmake.index("../src_gpu/chemistry_boundary_gpu.cuf")
+    gpu_solver = cmake.index("../src_gpu/chemistry_solver_gpu.cuf")
     assert state < boundary < runtime
     assert gpu_boundary < gpu_solver
 

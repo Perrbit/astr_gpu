@@ -182,13 +182,18 @@ class FortranScannerTest(unittest.TestCase):
         cmake = """set(ASTR_SOURCES a.F90 body.inc)
         set(ASTR_GPU_SOURCES
           ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/k.cuf)
+        list(APPEND ASTR_SOURCES optional.F90)
+        list(APPEND ASTR_GPU_SOURCES
+          ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/optional_gpu.cuf)
         add_executable(astr ${ASTR_SOURCES} ${ASTR_GPU_SOURCES})
         """
 
         membership = self.audit.parse_cmake_membership(cmake)
 
         self.assertEqual(membership["src/a.F90"], "astr CPU")
+        self.assertEqual(membership["src/optional.F90"], "astr CPU")
         self.assertEqual(membership["src_gpu/k.cuf"], "astr CUDA")
+        self.assertEqual(membership["src_gpu/optional_gpu.cuf"], "astr CUDA")
 
     def test_validate_source_anchors_rejects_missing_symbol(self):
         facts = {"src/a.F90": self.facts("src/a.F90", modules=("a",))}

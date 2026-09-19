@@ -38,8 +38,8 @@ class ChemistryFlowGpuContractTests(unittest.TestCase):
     def test_production_and_probe_sources_are_registered(self):
         source = (ROOT / "src/CMakeLists.txt").read_text(encoding="utf-8")
         for name in (
-            "chemistry_flow_state.F90",
-            "chemistry_transport.F90",
+            "chemistry_properties.F90",
+            "chemistry_core_gpu.cuf",
             "chemistry_flow_state_gpu.cuf",
             "chemistry_transport_gpu.cuf",
             "chemistry_flow_gpu_probe",

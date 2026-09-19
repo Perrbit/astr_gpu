@@ -19,12 +19,9 @@ class ChemistryRos2Tests(unittest.TestCase):
         cls.exe = Path(cls.directory.name) / "chemistry_ros2_probe"
         sources = [
             ROOT / "src/chemistry_air5_data.F90",
-            ROOT / "src/chemistry_model.F90",
-            ROOT / "src/chemistry_thermo.F90",
-            ROOT / "src/chemistry_relaxation.F90",
-            ROOT / "src/chemistry_source.F90",
-            ROOT / "src/chemistry_linear6.F90",
-            ROOT / "src/chemistry_ros2.F90",
+            ROOT / "src/chemistry_core.F90",
+            ROOT / "src/chemistry_properties.F90",
+            ROOT / "src/chemistry_kinetics.F90",
             ROOT / "tests/gpu_validation/chemistry_ros2_probe.F90",
         ]
         result = subprocess.run(

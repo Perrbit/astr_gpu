@@ -23,11 +23,8 @@ class ChemistryFlowTests(unittest.TestCase):
         subprocess.run(
             [compiler, "-std=f2008", "-O0", "-J", cls.directory.name,
              str(ROOT / "src/chemistry_air5_data.F90"),
-             str(ROOT / "src/chemistry_model.F90"),
-             str(ROOT / "src/chemistry_state_layout.F90"),
-             str(ROOT / "src/chemistry_thermo.F90"),
-             str(ROOT / "src/chemistry_flow_state.F90"),
-             str(ROOT / "src/chemistry_transport.F90"),
+             str(ROOT / "src/chemistry_core.F90"),
+             str(ROOT / "src/chemistry_properties.F90"),
              str(ROOT / "tests/gpu_validation/chemistry_flow_probe.F90"),
              "-o", str(cls.exe)],
             check=True, cwd=ROOT,

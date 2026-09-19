@@ -27,7 +27,7 @@ class ChemistryStateLayoutTests(unittest.TestCase):
                 "-J",
                 cls.directory.name,
                 str(ROOT / "src/chemistry_air5_data.F90"),
-                str(ROOT / "src/chemistry_state_layout.F90"),
+                str(ROOT / "src/chemistry_core.F90"),
                 str(ROOT / "tests/gpu_validation/chemistry_state_layout_probe.F90"),
                 "-o",
                 str(cls.exe),
@@ -80,7 +80,7 @@ class ChemistryRuntimeActivationContractTests(unittest.TestCase):
             flags=re.DOTALL,
         )
         self.assertIsNotNone(block)
-        self.assertIn("chemistry_state_layout.F90", block.group(1))
+        self.assertIn("chemistry_core.F90", block.group(1))
 
     def test_fixed_air5_input_assigns_and_broadcasts_runtime_lcomb(self):
         source = (ROOT / "src/readwrite.F90").read_text(encoding="utf-8")

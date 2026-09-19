@@ -23,7 +23,7 @@ def test_production_halo_contract_covers_full_air5_state() -> None:
 
 def test_air5_conservation_uses_unique_cells_and_small_device_record() -> None:
     source = compact(
-        (ROOT / "src_gpu/chemistry_flow_solver_gpu.cuf").read_text(encoding="utf-8")
+        (ROOT / "src_gpu/chemistry_solver_gpu.cuf").read_text(encoding="utf-8")
     )
 
     assert "astr_air5_c4_conservation" in source

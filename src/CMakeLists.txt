@@ -88,36 +88,24 @@ endif()
 if(ASTR_WITH_AIR5_CHEMISTRY)
   list(APPEND ASTR_SOURCES
     chemistry_air5_data.F90
-    chemistry_model.F90
-    chemistry_state_layout.F90
-    chemistry_thermo.F90
-    chemistry_flow_state.F90
-    chemistry_hbl_profile.F90
-    chemistry_hbl_boundary_state.F90
-    chemistry_flow_runtime.F90
-    chemistry_postshock_boundary.F90
-    chemistry_hbl_boundary.F90
-    chemistry_flow_solver.F90
-    chemistry_transport.F90
-    chemistry_relaxation.F90
-    chemistry_source.F90
-    chemistry_linear6.F90
-    chemistry_ros2.F90)
+    chemistry_core.F90
+    chemistry_properties.F90
+    chemistry_kinetics.F90
+    chemistry_boundary_state.F90
+    chemistry_boundary.F90
+    chemistry_runtime.F90
+    chemistry_solver.F90)
 endif()
 
 if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
   list(APPEND ASTR_GPU_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_model_gpu.cuf
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_thermo_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_core_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_flow_state_gpu.cuf
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_postshock_boundary_gpu.cuf
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_hbl_boundary_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_transport_gpu.cuf
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_flow_solver_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_relaxation_gpu.cuf
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_source_gpu.cuf
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_linear6_gpu.cuf
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_ros2_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_kinetics_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_boundary_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_solver_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_coupling_gpu.cuf)
 endif()
 
@@ -271,14 +259,10 @@ endif()
 if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
   add_executable(chemistry_flow_gpu_probe EXCLUDE_FROM_ALL
     chemistry_air5_data.F90
-    chemistry_model.F90
-    chemistry_state_layout.F90
-    chemistry_thermo.F90
-    chemistry_flow_state.F90
-    chemistry_transport.F90
+    chemistry_core.F90
+    chemistry_properties.F90
     ../src_gpu/gpu_check.cuf
-    ../src_gpu/chemistry_model_gpu.cuf
-    ../src_gpu/chemistry_thermo_gpu.cuf
+    ../src_gpu/chemistry_core_gpu.cuf
     ../src_gpu/chemistry_flow_state_gpu.cuf
     ../src_gpu/chemistry_transport_gpu.cuf
     ../tests/gpu_validation/chemistry_flow_gpu_probe.cuf)
@@ -286,42 +270,37 @@ if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/chemistry_flow_gpu_probe_modules")
   target_include_directories(chemistry_flow_gpu_probe PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/chemistry_flow_gpu_probe_modules")
+  target_link_libraries(chemistry_flow_gpu_probe PRIVATE MPI::MPI_Fortran)
   add_executable(chemistry_source_gpu_probe EXCLUDE_FROM_ALL
     chemistry_air5_data.F90
-    chemistry_model.F90
-    chemistry_thermo.F90
-    chemistry_relaxation.F90
-    chemistry_source.F90
+    chemistry_core.F90
+    chemistry_properties.F90
+    chemistry_kinetics.F90
     ../src_gpu/gpu_check.cuf
-    ../src_gpu/chemistry_model_gpu.cuf
-    ../src_gpu/chemistry_thermo_gpu.cuf
+    ../src_gpu/chemistry_core_gpu.cuf
     ../src_gpu/chemistry_relaxation_gpu.cuf
-    ../src_gpu/chemistry_source_gpu.cuf
+    ../src_gpu/chemistry_kinetics_gpu.cuf
     ../tests/gpu_validation/chemistry_source_gpu_probe.cuf)
   set_target_properties(chemistry_source_gpu_probe PROPERTIES
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/chemistry_source_gpu_probe_modules")
   target_include_directories(chemistry_source_gpu_probe PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/chemistry_source_gpu_probe_modules")
+  target_link_libraries(chemistry_source_gpu_probe PRIVATE MPI::MPI_Fortran)
   add_executable(chemistry_ros2_gpu_probe EXCLUDE_FROM_ALL
     chemistry_air5_data.F90
-    chemistry_model.F90
-    chemistry_thermo.F90
-    chemistry_relaxation.F90
-    chemistry_source.F90
-    chemistry_linear6.F90
-    chemistry_ros2.F90
+    chemistry_core.F90
+    chemistry_properties.F90
+    chemistry_kinetics.F90
     ../src_gpu/gpu_check.cuf
-    ../src_gpu/chemistry_model_gpu.cuf
-    ../src_gpu/chemistry_thermo_gpu.cuf
+    ../src_gpu/chemistry_core_gpu.cuf
     ../src_gpu/chemistry_relaxation_gpu.cuf
-    ../src_gpu/chemistry_source_gpu.cuf
-    ../src_gpu/chemistry_linear6_gpu.cuf
-    ../src_gpu/chemistry_ros2_gpu.cuf
+    ../src_gpu/chemistry_kinetics_gpu.cuf
     ../tests/gpu_validation/chemistry_ros2_gpu_probe.cuf)
   set_target_properties(chemistry_ros2_gpu_probe PROPERTIES
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/chemistry_ros2_gpu_probe_modules")
   target_include_directories(chemistry_ros2_gpu_probe PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/chemistry_ros2_gpu_probe_modules")
+  target_link_libraries(chemistry_ros2_gpu_probe PRIVATE MPI::MPI_Fortran)
 endif()
 
 if (ASTR_WITH_CUDA AND (Fortran_COMPILER_NAME MATCHES "PGI" OR Fortran_COMPILER_NAME MATCHES "NVHPC"))
@@ -336,7 +315,7 @@ if (ASTR_WITH_CUDA AND (Fortran_COMPILER_NAME MATCHES "PGI" OR Fortran_COMPILER_
         "NVHPC register cap for fixed air5 C4 transport kernels")
     # Keep the prescribed 512-thread directional blocks legal for the
     # higher-register 11-variable transport kernels.
-    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_flow_solver_gpu.cuf
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_solver_gpu.cuf
       PROPERTIES COMPILE_OPTIONS "-gpu=maxregcount:${ASTR_AIR5_MAXREGCOUNT}")
     set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_transport_gpu.cuf
       PROPERTIES COMPILE_OPTIONS "-gpu=maxregcount:${ASTR_AIR5_MAXREGCOUNT}")

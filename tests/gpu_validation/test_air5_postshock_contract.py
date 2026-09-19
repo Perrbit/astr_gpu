@@ -31,7 +31,7 @@ def test_case_preparer_selects_physical_x_and_periodic_yz() -> None:
 
 
 def test_cpu_boundary_sets_all_q11_x_halos_without_legacy_conversion() -> None:
-    boundary = compact("src/chemistry_postshock_boundary.F90")
+    boundary = compact("src/chemistry_boundary.F90")
 
     assert "subroutineapply_air5_postshock_boundary" in boundary
     assert "docomponent=1,air5_num_conservative" in boundary
@@ -62,7 +62,7 @@ def test_cpu_restores_postshock_boundary_after_each_rk_update() -> None:
 
 
 def test_gpu_boundary_is_resident_and_explicitly_synchronized() -> None:
-    boundary = compact("src_gpu/chemistry_postshock_boundary_gpu.cuf")
+    boundary = compact("src_gpu/chemistry_boundary_gpu.cuf")
 
     assert "attributes(global)subroutineair5_postshock_boundary_kernel" in boundary
     assert "q_d(i,j,k,component)=left_q_d(component)" in boundary
@@ -81,7 +81,7 @@ def test_gpu_applies_boundary_before_first_half_step_halo_exchange() -> None:
 
 
 def test_gpu_postshock_transport_updates_only_active_nodes() -> None:
-    solver = compact("src_gpu/chemistry_flow_solver_gpu.cuf")
+    solver = compact("src_gpu/chemistry_solver_gpu.cuf")
 
     assert "subroutineair5_transport_rk3_step_gpu" in solver
     for kernel in (
@@ -98,7 +98,7 @@ def test_gpu_postshock_transport_updates_only_active_nodes() -> None:
 
 
 def test_gpu_convective_derivative_matches_cpu_physical_boundary_closure() -> None:
-    solver = compact("src_gpu/chemistry_flow_solver_gpu.cuf")
+    solver = compact("src_gpu/chemistry_solver_gpu.cuf")
 
     assert "functionair5_deriv6_boundary" in solver
     assert "(ntype==1.or.ntype==4).and.index==1" in solver
@@ -113,9 +113,9 @@ def test_gpu_convective_derivative_matches_cpu_physical_boundary_closure() -> No
 def test_postshock_boundary_modules_are_in_the_top_level_build() -> None:
     cmake = compact("src/CMakeLists.txt")
 
-    assert "chemistry_postshock_boundary.f90" in cmake
-    gpu_boundary = cmake.index("../src_gpu/chemistry_postshock_boundary_gpu.cuf")
-    gpu_solver = cmake.index("../src_gpu/chemistry_flow_solver_gpu.cuf")
+    assert "chemistry_boundary.f90" in cmake
+    gpu_boundary = cmake.index("../src_gpu/chemistry_boundary_gpu.cuf")
+    gpu_solver = cmake.index("../src_gpu/chemistry_solver_gpu.cuf")
     assert gpu_boundary < gpu_solver
 
 
@@ -135,7 +135,7 @@ def test_postshock_runner_covers_all_source_modes_and_independent_gate() -> None
 
 
 def test_cpu_air5_diffusion_uses_physical_boundary_flux_closure() -> None:
-    solver = compact("src/chemistry_flow_solver.F90")
+    solver = compact("src/chemistry_solver.F90")
 
     assert "any([npdci,npdcj,npdck]/=3)" not in solver
     assert "calldifferentiate_air5_flux(f,df,im,hm,npdci)" in solver
@@ -148,7 +148,7 @@ def test_cpu_air5_diffusion_uses_physical_boundary_flux_closure() -> None:
 
 
 def test_gpu_air5_diffusion_closes_gradients_and_flux_divergence() -> None:
-    solver = compact("src_gpu/chemistry_flow_solver_gpu.cuf")
+    solver = compact("src_gpu/chemistry_solver_gpu.cuf")
 
     assert "functionair5_deriv6_full_boundary" in solver
     assert "index==0" in solver

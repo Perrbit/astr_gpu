@@ -30,12 +30,13 @@ class Air5CMakeContractTests(unittest.TestCase):
         block = match.group(1)
         for name in (
             "chemistry_air5_data.F90",
-            "chemistry_model.F90",
-            "chemistry_thermo.F90",
-            "chemistry_relaxation.F90",
-            "chemistry_source.F90",
-            "chemistry_linear6.F90",
-            "chemistry_ros2.F90",
+            "chemistry_core.F90",
+            "chemistry_properties.F90",
+            "chemistry_kinetics.F90",
+            "chemistry_boundary_state.F90",
+            "chemistry_boundary.F90",
+            "chemistry_runtime.F90",
+            "chemistry_solver.F90",
         ):
             self.assertIn(name, block)
         self.assertNotRegex(block.lower(), r"cantera|comb|-lcantera")
@@ -54,10 +55,14 @@ class Air5CMakeContractTests(unittest.TestCase):
         self.assertIsNotNone(match)
         block = match.group(1)
         for name in (
-            "chemistry_model_gpu.cuf",
-            "chemistry_thermo_gpu.cuf",
+            "chemistry_core_gpu.cuf",
+            "chemistry_flow_state_gpu.cuf",
+            "chemistry_transport_gpu.cuf",
             "chemistry_relaxation_gpu.cuf",
-            "chemistry_source_gpu.cuf",
+            "chemistry_kinetics_gpu.cuf",
+            "chemistry_boundary_gpu.cuf",
+            "chemistry_solver_gpu.cuf",
+            "chemistry_coupling_gpu.cuf",
         ):
             self.assertIn(name, block)
 
@@ -81,8 +86,7 @@ class Air5CMakeContractTests(unittest.TestCase):
         )
         self.assertIsNotNone(match)
         block = match.group(1)
-        self.assertIn("chemistry_linear6_gpu.cuf", block)
-        self.assertIn("chemistry_ros2_gpu.cuf", block)
+        self.assertIn("chemistry_kinetics_gpu.cuf", block)
 
     def test_air5_gpu_ros2_probe_is_an_explicit_target(self):
         source_cmake = (ROOT / "src/CMakeLists.txt").read_text(encoding="utf-8")

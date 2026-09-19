@@ -250,19 +250,20 @@ def _parse_cmake_membership_with_errors(text: str) -> tuple[dict[str, str], list
     errors = []
     labels = {"ASTR_SOURCES": "astr CPU", "ASTR_GPU_SOURCES": "astr CUDA"}
     for variable, label in labels.items():
-        match = re.search(
-            rf"set\s*\(\s*{variable}\b(.*?)\)", text, flags=re.I | re.S
+        patterns = (
+            rf"set\s*\(\s*{variable}\b(.*?)\)",
+            rf"list\s*\(\s*APPEND\s+{variable}\b(.*?)\)",
         )
-        if not match:
-            continue
-        for token in _cmake_tokens(match.group(1)):
-            path = _normalize_cmake_source(token)
-            if path is None or Path(path).suffix.lower() not in SOURCE_SUFFIXES:
-                continue
-            if path in membership:
-                errors.append(f"duplicate astr target membership: {path}")
-            else:
-                membership[path] = label
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, flags=re.I | re.S):
+                for token in _cmake_tokens(match.group(1)):
+                    path = _normalize_cmake_source(token)
+                    if path is None or Path(path).suffix.lower() not in SOURCE_SUFFIXES:
+                        continue
+                    if path in membership:
+                        errors.append(f"duplicate astr target membership: {path}")
+                    else:
+                        membership[path] = label
     return membership, errors
 
 

@@ -1,7 +1,7 @@
 # ASTR 五组分双温化学 GPU 移植计划
 
 状态：Phase C0 至 C4 已完成；Phase C5 第 1 至 5 项及第 6 项 A0 短时门槛已完成，A1 独立双温物理验证和 C5-6B 激波/SBLI 待推进
-日期：2026-09-17
+日期：2026-09-19
 适用分支：`feature/gpu_dev`
 
 ## 0. 当前实施状态
@@ -13,8 +13,8 @@ Phase C0 已形成以下可审计实现：
 - `scripts/generate_air5_mechanism.py` 在生成前拒绝未知组分、缺项、重复反应、
   非 SI 单位、非有限值和越界有效域，并确定性生成
   `src/chemistry_air5_data.F90`；
-- `src/chemistry_model.F90`、`src/chemistry_thermo.F90`、
-  `src/chemistry_relaxation.F90` 和 `src/chemistry_source.F90` 实现 FP64 纯函数
+- `src/chemistry_core.F90`、`src/chemistry_properties.F90` 和
+  `src/chemistry_kinetics.F90` 中对应 module 实现 FP64 纯函数
   状态门禁、完整总能量恢复、`Ev <-> Tv`、有限速率/V-T 耦合瞬时源项、
   质量与 N/O 元素残差以及完整六变量解析 Jacobian；
 - 根构建增加默认关闭的 `ASTR_WITH_AIR5_CHEMISTRY`。该选项与旧
@@ -23,10 +23,12 @@ Phase C0 已形成以下可审计实现：
 
 Phase C1 在此基础上增加：
 
-- `src/chemistry_linear6.F90` 实现按行尺度化、带部分主元的固定 `6x6` LU；
-- `src/chemistry_ros2.F90` 实现 KPP ROS-2 `2(1)` 固定步和单元局部自适应推进，
+- `src/chemistry_kinetics.F90` 中的 `chemistry_linear6` 实现按行尺度化、带部分
+  主元的固定 `6x6` LU；同文件的 `chemistry_ros2` 实现 KPP ROS-2 `2(1)` 固定步
+  和单元局部自适应推进，
   返回建议步长、接受/拒绝次数及 RHS/Jacobian 求值次数；
-- `src/chemistry_source.F90` 以默认 coupled、chemical-only 和 VT-only 三种模式
+- `src/chemistry_kinetics.F90` 中的 `chemistry_source` 以默认 coupled、
+  chemical-only 和 VT-only 三种模式
   共用同一套热力学闭合，非法模式在源项计算前失败；
 - `tests/gpu_validation/air5_radau_reference.py` 直接读取正式 JSON，以独立
   SciPy Radau 实现核对三种源项模式与完整轨迹；
@@ -35,8 +37,8 @@ Phase C1 在此基础上增加：
 
 Phase C2 在不修改 `numq` 和 CFD 主循环的条件下增加：
 
-- `src_gpu/chemistry_model_gpu.cuf`、`chemistry_thermo_gpu.cuf`、
-  `chemistry_relaxation_gpu.cuf` 和 `chemistry_source_gpu.cuf` 实现 FP64 设备端
+- `src_gpu/chemistry_core_gpu.cuf`、`chemistry_relaxation_gpu.cuf` 和
+  `chemistry_kinetics_gpu.cuf` 中对应 module 实现 FP64 设备端
   状态门禁、热力学反演、V-T 松弛以及瞬时源项和完整解析 Jacobian；
 - 固定五组分十二反应表以编译期参数进入设备代码。批量 launcher 只接收
   device 数组，不执行 H2D/D2H；
@@ -48,8 +50,9 @@ Phase C2 在不修改 `numq` 和 CFD 主循环的条件下增加：
 
 Phase C3 继续保持 `numq=5` 和 CFD 主循环不变，并增加：
 
-- `src_gpu/chemistry_linear6_gpu.cuf` 复刻 CPU 的缩放部分主元固定 `6x6` LU；
-- `src_gpu/chemistry_ros2_gpu.cuf` 实现一线程一状态的 FP64 KPP ROS-2 `2(1)`，
+- `src_gpu/chemistry_kinetics_gpu.cuf` 中的 `chemistry_linear6_gpu` 复刻 CPU 的
+  缩放部分主元固定 `6x6` LU；同文件的 `chemistry_ros2_gpu` 实现一线程一状态的
+  FP64 KPP ROS-2 `2(1)`，
   各状态独立接受、拒绝和调整局部子步；
 - 批量 launcher 只接收 device 数组，并在 kernel 后强制同步和检查 CUDA 错误；
 - 无效控制量、非法状态和尝试次数耗尽均按 CPU 语义 fail closed，返回初始状态，
@@ -57,7 +60,8 @@ Phase C3 继续保持 `numq=5` 和 CFD 主循环不变，并增加：
 
 Phase C4 冻结并实现 CFD 输运状态合同：
 
-- `src/chemistry_state_layout.F90` 集中定义 `q(1)` 密度、`q(2:4)` 动量、`q(5)`
+- `src/chemistry_core.F90` 中的 `chemistry_state_layout` 集中定义 `q(1)` 密度、
+  `q(2:4)` 动量、`q(5)`
   完整总能量、`q(6:10)` 五个组分密度和 `q(11)` 振动能；
 - air5-enabled 构建复用输入文件中的 `lcomb` 作为运行时开关，并向所有 MPI rank
   广播。`lcomb=f` 保持既有非反应布局；
@@ -536,15 +540,15 @@ flowchart TD
 
 | 职责 | CPU 文件 | GPU 文件 |
 |---|---|---|
-| 模型类型 | `src/chemistry_model.F90` | `src_gpu/chemistry_model_gpu.cuf` |
+| 模型类型 | `src/chemistry_core.F90` | `src_gpu/chemistry_core_gpu.cuf` |
 | 权威机理数据 | `chemMech/air5_kimjo12.json` | 不直接读取 |
 | 机理生成器 | `scripts/generate_air5_mechanism.py` | 生成共享常量模块 |
 | 五组分编译期常量 | `src/chemistry_air5_data.F90` | 复用同一 Fortran 模块 |
-| 热力学与振动能关系 | `src/chemistry_thermo.F90` | `src_gpu/chemistry_thermo_gpu.cuf` |
-| 反应速率与源项 | `src/chemistry_source.F90` | `src_gpu/chemistry_source_gpu.cuf` |
-| V-T 松弛 | `src/chemistry_relaxation.F90` | `src_gpu/chemistry_relaxation_gpu.cuf` |
-| 固定 `6x6` 线性求解 | `src/chemistry_linear6.F90` | `src_gpu/chemistry_linear6_gpu.cuf` |
-| KPP ROS-2 时间积分 | `src/chemistry_ros2.F90` | `src_gpu/chemistry_ros2_gpu.cuf` |
+| 热力学与振动能关系 | `src/chemistry_properties.F90` | `src_gpu/chemistry_core_gpu.cuf` |
+| 反应速率与源项 | `src/chemistry_kinetics.F90` | `src_gpu/chemistry_kinetics_gpu.cuf` |
+| V-T 松弛 | `src/chemistry_properties.F90` | `src_gpu/chemistry_relaxation_gpu.cuf` |
+| 固定 `6x6` 线性求解 | `src/chemistry_kinetics.F90` | `src_gpu/chemistry_kinetics_gpu.cuf` |
+| KPP ROS-2 时间积分 | `src/chemistry_kinetics.F90` | `src_gpu/chemistry_kinetics_gpu.cuf` |
 | 可选 Cantera 参考驱动 | `tests/gpu_validation/` 下独立测试目标 | 不进入 GPU 后端 |
 | 统一守恒场与派生热力学缓存 | 现有 `src/commarray.F90` | 现有 `src_gpu/commarray_gpu.cuf` |
 | 主循环编排 | 现有 `src/mainloop.F90` | 现有 `src_gpu/mainloop_gpu.cuf` |

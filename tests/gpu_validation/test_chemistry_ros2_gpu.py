@@ -47,7 +47,7 @@ class ChemistryRos2GpuTests(unittest.TestCase):
 
 class ChemistryRos2GpuContractTests(unittest.TestCase):
     def ros2_source(self):
-        path = ROOT / "src_gpu/chemistry_ros2_gpu.cuf"
+        path = ROOT / "src_gpu/chemistry_kinetics_gpu.cuf"
         self.assertTrue(path.is_file(), f"missing GPU ROS-2 implementation: {path}")
         return path.read_text(encoding="utf-8").lower()
 

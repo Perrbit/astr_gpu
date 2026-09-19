@@ -10,7 +10,7 @@ def compact(text: str) -> str:
 
 def test_reacting_flowtype_policy_is_shared_by_cpu_and_gpu() -> None:
     runtime = compact(
-        (ROOT / "src/chemistry_flow_runtime.F90").read_text(encoding="utf-8")
+        (ROOT / "src/chemistry_runtime.F90").read_text(encoding="utf-8")
     )
     cpu = compact((ROOT / "src/mainloop.F90").read_text(encoding="utf-8"))
     gpu = compact((ROOT / "src_gpu/mainloop_gpu.cuf").read_text(encoding="utf-8"))
@@ -23,10 +23,10 @@ def test_reacting_flowtype_policy_is_shared_by_cpu_and_gpu() -> None:
 
 def test_source_mode_is_runtime_selected_and_shared_by_cpu_and_gpu() -> None:
     runtime = compact(
-        (ROOT / "src/chemistry_flow_runtime.F90").read_text(encoding="utf-8")
+        (ROOT / "src/chemistry_runtime.F90").read_text(encoding="utf-8")
     )
     cpu = compact(
-        (ROOT / "src/chemistry_flow_solver.F90").read_text(encoding="utf-8")
+        (ROOT / "src/chemistry_solver.F90").read_text(encoding="utf-8")
     )
     gpu = compact(
         (ROOT / "src_gpu/chemistry_coupling_gpu.cuf").read_text(encoding="utf-8")
@@ -56,7 +56,7 @@ def test_cpu_strang_sequence_wraps_transport_once() -> None:
 
 def test_cpu_chemistry_integrates_only_active_nodes() -> None:
     source = compact(
-        (ROOT / "src/chemistry_flow_solver.F90").read_text(encoding="utf-8")
+        (ROOT / "src/chemistry_solver.F90").read_text(encoding="utf-8")
     )
 
     assert "subroutineair5_chemistry_half_step(duration,half_index)" in source

@@ -15,8 +15,8 @@ class ChemistryThermoTests(unittest.TestCase):
         cls.exe = Path(cls.directory.name) / "chemistry_thermo_probe"
         sources = [
             ROOT / "src/chemistry_air5_data.F90",
-            ROOT / "src/chemistry_model.F90",
-            ROOT / "src/chemistry_thermo.F90",
+            ROOT / "src/chemistry_core.F90",
+            ROOT / "src/chemistry_properties.F90",
             ROOT / "tests/gpu_validation/chemistry_thermo_probe.F90",
         ]
         result = subprocess.run(
