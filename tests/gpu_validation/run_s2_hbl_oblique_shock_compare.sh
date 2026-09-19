@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CPU_EXE="${CPU_EXE:-$ROOT_DIR/build_cpu_probe/bin/astr}"
 GPU_EXE="${GPU_EXE:-$ROOT_DIR/build_gpu_probe/bin/astr}"
+GPU_HALO_TRANSPORT="${GPU_HALO_TRANSPORT:-}"
+GPU_UCX_PROTO_INFO="${GPU_UCX_PROTO_INFO:-}"
+GPU_SYNC_MODE="${GPU_SYNC_MODE:-}"
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/tests/gpu_validation/out/s2_hbl_oblique_shock}"
 if [[ "$OUT_DIR" != /* ]]; then
   OUT_DIR="$ROOT_DIR/$OUT_DIR"
@@ -136,6 +139,15 @@ write_similarity_shock_field gpu
 )
 (
   cd "$OUT_DIR/gpu"
+  if [[ -n "$GPU_HALO_TRANSPORT" ]]; then
+    export ASTR_GPU_HALO_TRANSPORT="$GPU_HALO_TRANSPORT"
+  fi
+  if [[ -n "$GPU_UCX_PROTO_INFO" ]]; then
+    export UCX_PROTO_INFO="$GPU_UCX_PROTO_INFO"
+  fi
+  if [[ -n "$GPU_SYNC_MODE" ]]; then
+    export ASTR_GPU_SYNC_MODE="$GPU_SYNC_MODE"
+  fi
   if [[ "$COMPARE_SENSOR" == "t" ]]; then
     ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
     ASTR_SHOCK_SENSOR_DUMP="$OUT_DIR/gpu_shock_sensor.dat" \

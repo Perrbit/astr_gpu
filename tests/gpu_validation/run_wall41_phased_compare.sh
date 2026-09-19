@@ -5,6 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CASE_DIR="$ROOT_DIR/examples/Taylor_Green_Vortex"
 CPU_EXE="${CPU_EXE:-$ROOT_DIR/build_cpu_probe/bin/astr}"
 GPU_EXE="${GPU_EXE:-$ROOT_DIR/build_gpu_probe/bin/astr}"
+GPU_HALO_TRANSPORT="${GPU_HALO_TRANSPORT:-}"
+GPU_UCX_PROTO_INFO="${GPU_UCX_PROTO_INFO:-}"
+GPU_SYNC_MODE="${GPU_SYNC_MODE:-}"
 WALL_AXIS="${WALL_AXIS:-${ZERO_AXIS:-x}}"
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/tests/gpu_validation/out/wall41_phased_compare/${WALL_AXIS}}"
 MAXSTEP="${MAXSTEP:-1}"
@@ -77,6 +80,15 @@ done
 
 (
   cd "$OUT_DIR/gpu"
+  if [[ -n "$GPU_HALO_TRANSPORT" ]]; then
+    export ASTR_GPU_HALO_TRANSPORT="$GPU_HALO_TRANSPORT"
+  fi
+  if [[ -n "$GPU_UCX_PROTO_INFO" ]]; then
+    export UCX_PROTO_INFO="$GPU_UCX_PROTO_INFO"
+  fi
+  if [[ -n "$GPU_SYNC_MODE" ]]; then
+    export ASTR_GPU_SYNC_MODE="$GPU_SYNC_MODE"
+  fi
   ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
     mpirun -np "$NP" "$GPU_EXE" run datin/input.tgv > gpu.log 2>&1
 )

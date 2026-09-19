@@ -344,7 +344,7 @@ module mainloop
                             gpu_begin_complete_step_timing, &
                             gpu_end_complete_step_timing
 #endif
-    use readwrite, only : writechkpt
+    use readwrite, only : writechkpt,writeslice
     !
     ! argument
     logical,intent(in),optional :: timerept
@@ -361,7 +361,8 @@ module mainloop
     real(8) :: cpu_rk_seconds
     real(8),save :: subtime=0.d0
     integer,save :: n_rk_steps
-    logical :: gpu_output_due
+    logical :: gpu_checkpoint_due
+    logical :: gpu_slice_due
     logical :: nscbc_boundary_halo_required
     logical :: conservative_case
     logical :: dynamic_inflow_output
@@ -386,8 +387,9 @@ module mainloop
 #ifdef _CUDA
     if(use_gpu) then
       call gpu_begin_complete_step_timing()
-      gpu_output_due = nstep > 0 .and. mod(nstep,feqchkpt)==0
-      if(gpu_output_due) then
+      gpu_checkpoint_due = nstep > 0 .and. mod(nstep,feqchkpt)==0
+      gpu_slice_due = nstep > 0 .and. lwslic .and. mod(nstep,feqslice)==0
+      if(gpu_checkpoint_due .or. gpu_slice_due) then
         call gpu_sync_flow_to_host()
         if(flowtype(1:2)/='0d' .and. .not.conservative_case .and. &
            .not.dynamic_inflow_output) then
@@ -403,7 +405,10 @@ module mainloop
       call gpu_write_flow_statistics()
       call gpu_accumulate_compact_statistics()
       call gpu_restore_stats_snapshot()
-      if(gpu_output_due) then
+      if(gpu_slice_due) then
+        call writeslice(ctime(23),include_derivatives=.false.)
+      endif
+      if(gpu_checkpoint_due) then
         call gpu_prepare_compact_statistics_checkpoint()
         call writechkpt()
         call gpu_commit_compact_statistics_checkpoint()

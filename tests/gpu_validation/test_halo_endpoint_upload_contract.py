@@ -15,8 +15,19 @@ class HaloEndpointUploadContract(unittest.TestCase):
             "up": "mpiup", "down": "mpidown",
             "front": "mpifront", "back": "mpiback",
         }
+        logical_lines = []
+        pending = ""
+        for physical_line in source.splitlines():
+            pending += physical_line.strip() if pending else physical_line
+            if pending.rstrip().endswith("&"):
+                pending = pending.rstrip()[:-1]
+                continue
+            logical_lines.append(pending)
+            pending = ""
+        self.assertFalse(pending, "Fortran source ends inside a continuation line")
+
         uploads = []
-        for line in source.splitlines():
+        for line in logical_lines:
             match = re.search(
                 r"\b(\w+_recv_(right|left|up|down|front|back)_d)"
                 r"(?:\([^)]*\))?\s*=\s*\w+_recv_\w+_h", line

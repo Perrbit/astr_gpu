@@ -6,6 +6,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pytest
 
 
 MODULE_PATH = Path(__file__).with_name("compare_opensbli_katzer_statistics.py")
@@ -43,6 +44,38 @@ def test_error_metrics_use_reference_peak_scale():
     assert metrics["relative_linf_by_reference_peak"] == 0.5
 
 
+def test_wall_shock_location_uses_maximum_pressure_gradient():
+    x = np.linspace(0.0, 4.0, 9)
+    pressure = 1.0 + np.tanh(8.0 * (x - 2.0))
+    location = MODULE.wall_shock_location(x, pressure)
+    assert location == 2.0
+
+
+def test_relative_change_uses_shared_nonzero_scale():
+    older = np.array([0.0, 1.0, -2.0])
+    newer = np.array([0.0, 1.1, -1.8])
+    result = MODULE.relative_change(newer, older)
+    assert result["linf"] == pytest.approx(0.2)
+    assert result["relative_linf"] == pytest.approx(0.1)
+
+
+def test_wall_normal_derivative_is_columnwise_exact_on_nonuniform_grids():
+    base = np.array([0.0, 0.03, 0.09, 0.2, 0.45, 0.9])
+    y = np.column_stack((base, 1.5 * base))
+    values = 2.0 + 3.0 * y - 4.0 * y**2 + y**5
+    derivative = MODULE.wall_normal_derivative(y, values)
+    np.testing.assert_allclose(derivative, 3.0, atol=1.0e-11, rtol=0.0)
+
+
+def test_heat_flux_uses_astr_nondimensional_conductivity():
+    yline = np.array([0.0, 0.03, 0.09, 0.2, 0.45, 0.9])
+    y = yline[:, None]
+    temperature = 1.0 + 2.0 * y
+    heat_flux = MODULE.wall_heat_flux(y, temperature)
+    expected = 2.0 / (MODULE.REYNOLDS * MODULE.PRANDTL * (MODULE.GAMMA - 1.0) * MODULE.MACH**2)
+    np.testing.assert_allclose(heat_flux, expected, atol=1.0e-14, rtol=0.0)
+
+
 def test_expected_time_allows_only_sub_microsecond_accumulation_error():
     assert MODULE.time_reached(13000.000000098078, 13000.0)
     assert not MODULE.time_reached(13000.00001, 13000.0)
@@ -53,16 +86,18 @@ def test_write_plots_does_not_require_external_latex(tmp_path):
     astr = {
         "cf": np.array([1.0e-3, -2.0e-4, 8.0e-4]),
         "pressure_ratio": np.array([1.0, 1.1, 1.2]),
+        "heat_flux": np.array([2.0e-4, 2.5e-4, 3.0e-4]),
     }
     reference = {
         "cf": np.array([1.1e-3, -1.0e-4, 7.5e-4]),
         "pressure_ratio": np.array([1.0, 1.09, 1.19]),
+        "heat_flux": np.array([2.1e-4, 2.4e-4, 3.1e-4]),
     }
 
     MODULE.write_plots(tmp_path, x, astr, reference)
 
     assert plt.rcParams["text.usetex"] is False
-    for stem in ("skin_friction", "wall_pressure"):
+    for stem in ("skin_friction", "wall_pressure", "wall_heat_flux"):
         assert (tmp_path / f"{stem}.eps").stat().st_size > 0
         assert (tmp_path / f"{stem}.jpeg").stat().st_size > 0
 
@@ -73,10 +108,12 @@ def test_numerical_report_survives_plot_failure(tmp_path, monkeypatch):
     astr = {
         "cf": np.array([1.0e-3, 2.0e-3]),
         "pressure_ratio": np.array([1.0, 1.2]),
+        "heat_flux": np.array([2.0e-4, 2.5e-4]),
     }
     reference = {
         "cf": np.array([1.1e-3, 2.1e-3]),
         "pressure_ratio": np.array([1.0, 1.19]),
+        "heat_flux": np.array([2.1e-4, 2.4e-4]),
     }
 
     def fail_plot(*_args, **_kwargs):

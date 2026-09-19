@@ -3662,6 +3662,48 @@ full-field device-to-host copies only when `ASTR_VALIDATION_RHS_PREFIX` is set;
 the production path is unchanged. Physical turbulence statistics and
 production performance remain D3/D4 acceptance gates.
 
+`prepare_turbulent_inflow_from_slices.py` closes the file-contract gap between
+an ASTR precursor and `turbinf=intp`. ASTR precursor `writeslice` files contain
+absolute `u1/u2/u3/p/t`, while the inlet reader expects `ro/u1/u2/u3/t`
+fluctuations relative to `inlet.prof`. The converter reconstructs density from
+the perfect-gas EOS when `ro` is absent, forms temporal/spanwise mean primitive
+profiles, writes a pressure-consistent `inlet.prof`, and writes the residual
+fluctuations as a new uniformly timed series. It rejects a broken periodic
+endpoint, nonuniform times, nonfinite values, and nonpositive density or
+temperature before creating output.
+
+```bash
+python3 tests/gpu_validation/prepare_turbulent_inflow_from_slices.py \
+  --source-dir PRECURSOR/islice \
+  --output-dir PREPARED_INFLOW \
+  --grid PRECURSOR/datin/grid.h5 \
+  --mach MACH --reynolds RE --reference-temperature TREF \
+  --target-re-theta TARGET_RE_THETA --target-re-tau TARGET_RE_TAU \
+  --relative-re-tolerance RE_TOL \
+  --mass-flow-relative-drift-max MASSFLOW_TOL \
+  --correlation-lag LAG --correlation-abs-max CORR_TOL
+```
+
+The report contains `Re_theta`, `Re_tau`, mass-flow drift, a velocity temporal
+autocorrelation, Favre means and stresses, and the exact gate decisions. The
+tooling tests use manufactured periodic data; they do not constitute a
+statistically converged turbulent precursor.
+
+The GPU main loop now treats slice output and checkpoint output as independent
+events. If either is due, at most one full flow synchronization is performed.
+GPU slices call `writeslice(...,include_derivatives=.false.)`: they contain the
+absolute primitive fields required by the converter but deliberately omit
+`dudx...dwdz/dtdy`, because those derivative arrays are not synchronized to the
+host output phase. CPU calls keep the legacy derivative-complete format.
+
+A local end-to-end smoke used an `80x48x40`, NP=2 `2x1x1` GPU precursor for five
+steps with `feqslice=1`. It produced five HDF5 files at steps 1--5, each with
+`u1/u2/u3/p/t/time/nstep` and exact spanwise periodic endpoints. The converter
+then produced `inlet.prof` and five fluctuation slices; a separate NP=2
+`turbinf=intp` run loaded the first four slices and completed two GPU steps.
+This is a file/runtime round-trip gate only. The five-sample report remains
+`diagnostic_only` and does not satisfy D3 turbulence statistics.
+
 ## Compact GPU production statistics
 
 The compact path accumulates z-line raw moments on the GPU at completed steps
@@ -4519,3 +4561,42 @@ the NP=2/4 solver sanitizer reports zero errors. This admits the backend for
 single-node periodic TGV correctness on the recorded A800 MPI/UCX stack. It
 does not promote device-aware MPI to the default before repeated performance,
 non-periodic case, and multi-node gates pass.
+
+The non-reacting non-periodic matrix is driven by
+`run_device_aware_nonreacting_matrix.sh`. It reuses the established CPU/GPU
+comparison harnesses and injects `device-aware` only into the GPU subprocess.
+The default NP=2 matrix contains 20 cases:
+
+- three Cartesian zero-extrapolation cases with the decomposed axis normal to
+  the physical faces;
+- three CURVE `bctype=41` cases with x-, y-, and z-wavy physical walls;
+- three Cartesian HBL x/y/z slabs with the Ducros sensor and selective Roe
+  characteristic reconstruction enabled;
+- eleven supported Phase H `41/42/411/421` wall-family entries.
+
+Each case requires passing statistics and complete-RK field comparisons. The
+shock cases additionally require an exact byte mask and a raw-sensor
+comparison. Every GPU log must select `device-aware`, finish without NaN or
+IEEE exceptions, and, when `REQUIRE_CUDA_IPC=t`, record `cuda_ipc/cuda`.
+
+The local RTX/HPC-X stack only qualifies the no-IPC path, so the functional
+matrix was run with `UCX_TLS=self,sm,cuda_copy` and
+`REQUIRE_CUDA_IPC=f`. All 20 cases passed. The maximum statistics difference
+was `7.8159700933611020e-13`, the maximum conservative `q5` difference was
+`2.8421709430404007e-13`, the maximum raw-sensor difference was
+`1.1102230246251565e-15`, and all three shock masks had zero mismatches. This
+does not qualify local CUDA IPC.
+
+Run the production A800 gate only after the source and build directories point
+to the same revision:
+
+```bash
+ROOT=/data/user/hd56000/weiph/astr_gpu
+cd "$ROOT"
+sbatch tests/gpu_validation/run_zhongke_a800_device_aware_nonreacting_admission.sbatch
+```
+
+The A800 wrapper is fail-closed: it requires the earlier payload qualification,
+two Slurm-visible GPUs, resolved executable dependencies, strict floating-point
+compiler flags, all 20 numerical reports, and `cuda_ipc/cuda` in every GPU log.
+Until that job passes, non-periodic production admission remains pending.

@@ -11,6 +11,8 @@ DRIVER = ROOT / "tests/gpu_validation/run_cuda_aware_mpi_qualification.sh"
 SUMMARY = ROOT / "tests/gpu_validation/summarize_cuda_aware_mpi_qualification.py"
 A800_DRIVER = ROOT / "tests/gpu_validation/run_zhongke_a800_cuda_aware_mpi_qualification.sbatch"
 A800_SOLVER_DRIVER = ROOT / "tests/gpu_validation/run_zhongke_a800_device_aware_solver_admission.sbatch"
+A800_NONREACTING_DRIVER = ROOT / "tests/gpu_validation/run_zhongke_a800_device_aware_nonreacting_admission.sbatch"
+NONREACTING_DRIVER = ROOT / "tests/gpu_validation/run_device_aware_nonreacting_matrix.sh"
 A800_SCALING_DRIVER = ROOT / "tests/gpu_validation/run_zhongke_a800_device_aware_scaling.sbatch"
 PERFORMANCE_DRIVER = ROOT / "tests/gpu_validation/run_tgv_256_performance_benchmark.sh"
 SCALING_SUMMARY = ROOT / "tests/gpu_validation/summarize_device_aware_scaling.py"
@@ -22,6 +24,10 @@ CMAKE = ROOT / "src/CMakeLists.txt"
 ASTR_MAIN = ROOT / "src/astr.F90"
 GPU_RUNTIME = ROOT / "src_gpu/gpu_runtime.cuf"
 DEVICE_RUNTIME = ROOT / "src_gpu/device_runtime_gpu.cuf"
+ZEROEXTRAP_DRIVER = ROOT / "tests/gpu_validation/run_xextrap_phaseb_compare.sh"
+CURVE_DRIVER = ROOT / "tests/gpu_validation/run_curvilinear_tgv_compare.sh"
+SHOCK_DRIVER = ROOT / "tests/gpu_validation/run_s2_hbl_oblique_shock_compare.sh"
+WALL41_DRIVER = ROOT / "tests/gpu_validation/run_wall41_phased_compare.sh"
 
 
 class DeviceAwareProbeContractTests(unittest.TestCase):
@@ -170,6 +176,61 @@ class DeviceAwareQualificationDriverContractTests(unittest.TestCase):
         ):
             self.assertIn(marker, text)
         self.assertNotIn("compare_flowfield_h5.py", text)
+        self.assertNotIn("|| true", text)
+
+    def test_nonreacting_driver_covers_four_device_aware_case_families(self) -> None:
+        self.assertTrue(
+            NONREACTING_DRIVER.is_file(),
+            f"missing nonreacting device-aware matrix: {NONREACTING_DRIVER}",
+        )
+        text = NONREACTING_DRIVER.read_text(encoding="ascii")
+        for marker in (
+            "cartesian-boundary",
+            "curve",
+            "shock-sensor",
+            "wall-family",
+            "run_zeroextrap_phaseb_mpirank_matrix.sh",
+            "run_curvilinear_wall41_compare.sh",
+            "run_s2_hbl_selective_roe_s2c3_compare.sh",
+            "run_wall_family_phaseh_matrix.sh",
+            "GPU_HALO_TRANSPORT=device-aware",
+            "ASTR_GPU_HALO_TRANSPORT_SELECTED=device-aware",
+            "cuda_ipc/cuda",
+            "flowstate_compare.txt",
+            "flowfield_compare.txt",
+            "shock_sensor_compare.txt",
+            "NONREACTING_DEVICE_AWARE_MATRIX=PASS",
+        ):
+            self.assertIn(marker, text)
+        self.assertNotIn("|| true", text)
+
+    def test_compare_drivers_scope_transport_to_gpu_run(self) -> None:
+        for driver in (ZEROEXTRAP_DRIVER, CURVE_DRIVER, SHOCK_DRIVER, WALL41_DRIVER):
+            text = driver.read_text(encoding="ascii")
+            self.assertIn('GPU_HALO_TRANSPORT="${GPU_HALO_TRANSPORT:-}"', text)
+            self.assertIn('export ASTR_GPU_HALO_TRANSPORT="$GPU_HALO_TRANSPORT"', text)
+            cpu_block, gpu_block = text.split('cd "$OUT_DIR/gpu"', maxsplit=1)
+            self.assertNotIn("ASTR_GPU_HALO_TRANSPORT", cpu_block.split('cd "$OUT_DIR/cpu"')[-1])
+            self.assertIn("ASTR_GPU_HALO_TRANSPORT", gpu_block)
+
+    def test_a800_nonreacting_wrapper_is_fail_closed(self) -> None:
+        self.assertTrue(
+            A800_NONREACTING_DRIVER.is_file(),
+            f"missing A800 nonreacting admission driver: {A800_NONREACTING_DRIVER}",
+        )
+        text = A800_NONREACTING_DRIVER.read_text(encoding="ascii")
+        for marker in (
+            "#SBATCH --gres=gpu:2",
+            "#SBATCH --ntasks=2",
+            "production_qualified",
+            "UCX_TLS=self,sm,cuda_copy,cuda_ipc",
+            "CUDA_VISIBLE_DEVICES",
+            "ldd",
+            "prohibited relaxed-math compiler option found",
+            "run_device_aware_nonreacting_matrix.sh",
+            "refusing to overwrite",
+        ):
+            self.assertIn(marker, text)
         self.assertNotIn("|| true", text)
 
     def test_performance_driver_accepts_device_aware_transport(self) -> None:

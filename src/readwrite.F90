@@ -2622,7 +2622,7 @@ module readwrite
   !| -------------                                                     |
   !| 10-10-2021  | Created by J. Fang @ Warrington                     |
   !+-------------------------------------------------------------------+
-  subroutine writeslice(subtime)
+  subroutine writeslice(subtime,include_derivatives)
     !
     use parallel, only: irk_islice,jrk_jslice,krk_kslice,mpi_islice,   &
                         mpi_jslice,mpi_kslice
@@ -2632,6 +2632,7 @@ module readwrite
     !
     ! arguments
     real(8),intent(inout),optional :: subtime
+    logical,intent(in),optional :: include_derivatives
     !
     ! local data
     character(len=5) :: stepname
@@ -2639,8 +2640,11 @@ module readwrite
     integer :: i,j,k
     integer,save :: nstep_save=0
     real(8) :: time_beg
+    logical :: write_derivatives
     !
     if(present(subtime)) time_beg=ptime() 
+    write_derivatives=.true.
+    if(present(include_derivatives)) write_derivatives=include_derivatives
     
     if(nstep<=nstep_save) return
 
@@ -2666,15 +2670,17 @@ module readwrite
       call h5write(varname='p', var=prs(i,0:jm,0:km)  ,dir='i')
       call h5write(varname='t', var=tmp(i,0:jm,0:km)  ,dir='i')
       !
-      call h5write(varname='dudx',var=dvel(i,0:jm,0:km,1,1),dir='i')
-      call h5write(varname='dudy',var=dvel(i,0:jm,0:km,1,2),dir='i')
-      call h5write(varname='dudz',var=dvel(i,0:jm,0:km,1,3),dir='i')
-      call h5write(varname='dvdx',var=dvel(i,0:jm,0:km,2,1),dir='i')
-      call h5write(varname='dvdy',var=dvel(i,0:jm,0:km,2,2),dir='i')
-      call h5write(varname='dvdz',var=dvel(i,0:jm,0:km,2,3),dir='i')
-      call h5write(varname='dwdx',var=dvel(i,0:jm,0:km,3,1),dir='i')
-      call h5write(varname='dwdy',var=dvel(i,0:jm,0:km,3,2),dir='i')
-      call h5write(varname='dwdz',var=dvel(i,0:jm,0:km,3,3),dir='i')
+      if(write_derivatives) then
+        call h5write(varname='dudx',var=dvel(i,0:jm,0:km,1,1),dir='i')
+        call h5write(varname='dudy',var=dvel(i,0:jm,0:km,1,2),dir='i')
+        call h5write(varname='dudz',var=dvel(i,0:jm,0:km,1,3),dir='i')
+        call h5write(varname='dvdx',var=dvel(i,0:jm,0:km,2,1),dir='i')
+        call h5write(varname='dvdy',var=dvel(i,0:jm,0:km,2,2),dir='i')
+        call h5write(varname='dvdz',var=dvel(i,0:jm,0:km,2,3),dir='i')
+        call h5write(varname='dwdx',var=dvel(i,0:jm,0:km,3,1),dir='i')
+        call h5write(varname='dwdy',var=dvel(i,0:jm,0:km,3,2),dir='i')
+        call h5write(varname='dwdz',var=dvel(i,0:jm,0:km,3,3),dir='i')
+      endif
       !
       call h5io_end
       !
@@ -2707,16 +2713,18 @@ module readwrite
       call h5write(varname='p', var=prs(0:im,j,0:km)  ,dir='j')
       call h5write(varname='t', var=tmp(0:im,j,0:km)  ,dir='j')
       !
-      call h5write(varname='dudx',var=dvel(0:im,j,0:km,1,1),dir='j')
-      call h5write(varname='dudy',var=dvel(0:im,j,0:km,1,2),dir='j')
-      call h5write(varname='dudz',var=dvel(0:im,j,0:km,1,3),dir='j')
-      call h5write(varname='dvdx',var=dvel(0:im,j,0:km,2,1),dir='j')
-      call h5write(varname='dvdy',var=dvel(0:im,j,0:km,2,2),dir='j')
-      call h5write(varname='dvdz',var=dvel(0:im,j,0:km,2,3),dir='j')
-      call h5write(varname='dwdx',var=dvel(0:im,j,0:km,3,1),dir='j')
-      call h5write(varname='dwdy',var=dvel(0:im,j,0:km,3,2),dir='j')
-      call h5write(varname='dwdz',var=dvel(0:im,j,0:km,3,3),dir='j')
-      call h5write(varname='dtdy',var=dtmp(0:im,j,0:km,2),dir='j')
+      if(write_derivatives) then
+        call h5write(varname='dudx',var=dvel(0:im,j,0:km,1,1),dir='j')
+        call h5write(varname='dudy',var=dvel(0:im,j,0:km,1,2),dir='j')
+        call h5write(varname='dudz',var=dvel(0:im,j,0:km,1,3),dir='j')
+        call h5write(varname='dvdx',var=dvel(0:im,j,0:km,2,1),dir='j')
+        call h5write(varname='dvdy',var=dvel(0:im,j,0:km,2,2),dir='j')
+        call h5write(varname='dvdz',var=dvel(0:im,j,0:km,2,3),dir='j')
+        call h5write(varname='dwdx',var=dvel(0:im,j,0:km,3,1),dir='j')
+        call h5write(varname='dwdy',var=dvel(0:im,j,0:km,3,2),dir='j')
+        call h5write(varname='dwdz',var=dvel(0:im,j,0:km,3,3),dir='j')
+        call h5write(varname='dtdy',var=dtmp(0:im,j,0:km,2),dir='j')
+      endif
       !
       call h5io_end
       !
@@ -2749,15 +2757,17 @@ module readwrite
       call h5write(varname='p', var=prs(0:im,0:jm,k)  ,dir='k')
       call h5write(varname='t', var=tmp(0:im,0:jm,k)  ,dir='k')
       !
-      call h5write(varname='dudx',var=dvel(0:im,0:jm,k,1,1),dir='k')
-      call h5write(varname='dudy',var=dvel(0:im,0:jm,k,1,2),dir='k')
-      call h5write(varname='dudz',var=dvel(0:im,0:jm,k,1,3),dir='k')
-      call h5write(varname='dvdx',var=dvel(0:im,0:jm,k,2,1),dir='k')
-      call h5write(varname='dvdy',var=dvel(0:im,0:jm,k,2,2),dir='k')
-      call h5write(varname='dvdz',var=dvel(0:im,0:jm,k,2,3),dir='k')
-      call h5write(varname='dwdx',var=dvel(0:im,0:jm,k,3,1),dir='k')
-      call h5write(varname='dwdy',var=dvel(0:im,0:jm,k,3,2),dir='k')
-      call h5write(varname='dwdz',var=dvel(0:im,0:jm,k,3,3),dir='k')
+      if(write_derivatives) then
+        call h5write(varname='dudx',var=dvel(0:im,0:jm,k,1,1),dir='k')
+        call h5write(varname='dudy',var=dvel(0:im,0:jm,k,1,2),dir='k')
+        call h5write(varname='dudz',var=dvel(0:im,0:jm,k,1,3),dir='k')
+        call h5write(varname='dvdx',var=dvel(0:im,0:jm,k,2,1),dir='k')
+        call h5write(varname='dvdy',var=dvel(0:im,0:jm,k,2,2),dir='k')
+        call h5write(varname='dvdz',var=dvel(0:im,0:jm,k,2,3),dir='k')
+        call h5write(varname='dwdx',var=dvel(0:im,0:jm,k,3,1),dir='k')
+        call h5write(varname='dwdy',var=dvel(0:im,0:jm,k,3,2),dir='k')
+        call h5write(varname='dwdz',var=dvel(0:im,0:jm,k,3,3),dir='k')
+      endif
       !
       call h5io_end
       !

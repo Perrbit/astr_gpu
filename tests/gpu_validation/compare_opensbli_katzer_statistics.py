@@ -19,6 +19,7 @@ import scienceplots  # noqa: F401
 GAMMA = 1.4
 MACH = 2.0
 REYNOLDS = 950.0
+PRANDTL = 0.72
 REFERENCE_TEMPERATURE_K = 288.0
 SUTHERLAND_TEMPERATURE_K = 110.4
 REFERENCE_TIME = 13000.0
@@ -35,6 +36,32 @@ def derivative_weights(nodes: np.ndarray, evaluation_point: float) -> np.ndarray
     rhs = np.zeros(nodes.size, dtype=np.float64)
     rhs[1] = 1.0
     return np.linalg.solve(vandermonde, rhs)
+
+
+def wall_normal_derivative(y: np.ndarray, values: np.ndarray, points: int = 6) -> np.ndarray:
+    """Evaluate one wall-normal derivative for every streamwise column."""
+    y = np.asarray(y, dtype=np.float64)
+    values = np.asarray(values, dtype=np.float64)
+    if y.ndim != 2 or values.shape != y.shape or y.shape[0] < points:
+        raise ValueError("wall derivative requires matching (y,x) arrays with enough y points")
+    result = np.empty(y.shape[1], dtype=np.float64)
+    for index in range(y.shape[1]):
+        nodes = y[:points, index]
+        if not np.all(np.diff(nodes) > 0.0):
+            raise ValueError("wall-normal nodes must be strictly increasing in every x column")
+        result[index] = derivative_weights(nodes, nodes[0]) @ values[:points, index]
+    return result
+
+
+def wall_heat_flux(y: np.ndarray, temperature: np.ndarray) -> np.ndarray:
+    dtdy_wall = wall_normal_derivative(y, temperature)
+    wall_temperature = np.asarray(temperature, dtype=np.float64)[0]
+    sutherland_ratio = SUTHERLAND_TEMPERATURE_K / REFERENCE_TEMPERATURE_K
+    mu_wall = wall_temperature**1.5 * (1.0 + sutherland_ratio) / (
+        wall_temperature + sutherland_ratio
+    )
+    const5 = (GAMMA - 1.0) * MACH**2
+    return mu_wall * dtdy_wall / (REYNOLDS * PRANDTL * const5)
 
 
 def directed_zero_crossings(x: np.ndarray, values: np.ndarray) -> tuple[list[float], list[float]]:
@@ -89,13 +116,13 @@ def read_reference(reference_zip: Path) -> dict[str, np.ndarray]:
     mu_wall = temperature[0, :] ** 1.5 * (1.0 + sutherland_ratio) / (
         temperature[0, :] + sutherland_ratio
     )
-    wall_weights = derivative_weights(y[:6, 0], y[0, 0])
-    reconstructed_cf = 2.0 * mu_wall * (wall_weights @ u[:6, :]) / REYNOLDS
+    reconstructed_cf = 2.0 * mu_wall * wall_normal_derivative(y, u) / REYNOLDS
     return {
         "x": x,
         "cf": cf,
         "reconstructed_cf": reconstructed_cf,
         "pressure_ratio": pressure[0, :] / pressure[0, 0],
+        "heat_flux": wall_heat_flux(y, temperature),
     }
 
 
@@ -120,31 +147,36 @@ def read_astr(flow_path: Path, grid_path: Path) -> dict[str, np.ndarray | float 
     if np.min(fields["ro"]) <= 0.0 or np.min(fields["p"]) <= 0.0 or np.min(fields["t"]) <= 0.0:
         raise FloatingPointError("ASTR density, pressure, or temperature is non-positive")
 
+    z_unique = {name: values[:-1] for name, values in fields.items()}
     z_spread = {
         name: float(np.max(np.abs(values - np.mean(values, axis=0, keepdims=True))))
+        for name, values in z_unique.items()
+    }
+    periodic_seam = {
+        name: float(np.max(np.abs(values[0] - values[-1])))
         for name, values in fields.items()
     }
     x = np.mean(x3[:, 0, :], axis=0)
-    y_nodes = np.mean(y3[:, :6, :], axis=(0, 2))
-    if np.any(np.diff(y_nodes) <= 0.0):
-        raise ValueError("the first six wall-normal grid points are not strictly increasing")
-    weights = derivative_weights(y_nodes, y_nodes[0])
-    u_mean = np.mean(fields["u1"], axis=0)
-    dudy_wall = weights @ u_mean[:6, :]
-    temperature_wall = np.mean(fields["t"][:, 0, :], axis=0)
+    y_mean = np.mean(y3[:-1], axis=0)
+    u_mean = np.mean(z_unique["u1"], axis=0)
+    temperature_mean = np.mean(z_unique["t"], axis=0)
+    dudy_wall = wall_normal_derivative(y_mean, u_mean)
+    temperature_wall = temperature_mean[0]
     sutherland_ratio = SUTHERLAND_TEMPERATURE_K / REFERENCE_TEMPERATURE_K
     mu_wall = temperature_wall**1.5 * (1.0 + sutherland_ratio) / (
         temperature_wall + sutherland_ratio
     )
     cf = 2.0 * mu_wall * dudy_wall / REYNOLDS
-    pressure_wall = np.mean(fields["p"][:, 0, :], axis=0)
+    pressure_wall = np.mean(z_unique["p"][:, 0, :], axis=0)
     return {
         "x": x,
         "cf": cf,
         "pressure_ratio": pressure_wall / pressure_wall[0],
+        "heat_flux": wall_heat_flux(y_mean, temperature_mean),
         "nstep": nstep,
         "time": time,
         "z_spread": z_spread,
+        "periodic_seam": periodic_seam,
     }
 
 
@@ -157,6 +189,27 @@ def error_metrics(candidate: np.ndarray, reference: np.ndarray) -> dict[str, flo
         "reference_scale": reference_scale,
         "relative_linf_by_reference_peak": float(np.max(np.abs(difference)) / reference_scale),
     }
+
+
+def relative_change(newer: np.ndarray, older: np.ndarray) -> dict[str, float]:
+    newer = np.asarray(newer, dtype=np.float64)
+    older = np.asarray(older, dtype=np.float64)
+    if newer.shape != older.shape or newer.size == 0:
+        raise ValueError("relative-change arrays must be nonempty and shape-matched")
+    linf = float(np.max(np.abs(newer - older)))
+    scale = max(float(np.max(np.abs(newer))), float(np.max(np.abs(older))), np.finfo(float).tiny)
+    return {"linf": linf, "scale": scale, "relative_linf": linf / scale}
+
+
+def wall_shock_location(x: np.ndarray, pressure_ratio: np.ndarray) -> float:
+    x = np.asarray(x, dtype=np.float64)
+    pressure_ratio = np.asarray(pressure_ratio, dtype=np.float64)
+    if x.ndim != 1 or pressure_ratio.shape != x.shape or x.size < 3:
+        raise ValueError("shock-location inputs must be shape-matched one-dimensional arrays")
+    if not np.all(np.diff(x) > 0.0):
+        raise ValueError("shock-location coordinates must be strictly increasing")
+    gradient = np.gradient(pressure_ratio, x)
+    return float(x[int(np.argmax(gradient))])
 
 
 def time_reached(actual: float, expected: float, atol: float = DEFAULT_TIME_ATOL) -> bool:
@@ -185,9 +238,27 @@ def separation_metrics(x: np.ndarray, cf: np.ndarray) -> dict[str, float | None 
 def write_comparison_csv(path: Path, x: np.ndarray, astr: dict, reference: dict) -> None:
     with path.open("w", encoding="ascii", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(("x", "astr_cf", "reference_cf", "astr_pw_p1", "reference_pw_p1"))
+        writer.writerow(
+            (
+                "x",
+                "astr_cf",
+                "reference_cf",
+                "astr_pw_p1",
+                "reference_pw_p1",
+                "astr_heat_flux",
+                "reference_heat_flux",
+            )
+        )
         writer.writerows(
-            zip(x, astr["cf"], reference["cf"], astr["pressure_ratio"], reference["pressure_ratio"])
+            zip(
+                x,
+                astr["cf"],
+                reference["cf"],
+                astr["pressure_ratio"],
+                reference["pressure_ratio"],
+                astr["heat_flux"],
+                reference["heat_flux"],
+            )
         )
 
 
@@ -205,6 +276,7 @@ def write_plots(output_dir: Path, x: np.ndarray, astr: dict, reference: dict) ->
     for name, ylabel, astr_values, reference_values in (
         ("skin_friction", r"$C_f$", astr["cf"], reference["cf"]),
         ("wall_pressure", r"$p_w/p_1$", astr["pressure_ratio"], reference["pressure_ratio"]),
+        ("wall_heat_flux", r"$q_w$", astr["heat_flux"], reference["heat_flux"]),
     ):
         fig, axis = plt.subplots(figsize=(7.2, 4.6))
         axis.plot(x, reference_values, color="#d62728", linewidth=1.7, label="OpenSBLI")
@@ -244,7 +316,17 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--expected-time", type=float, default=REFERENCE_TIME)
     parser.add_argument("--time-atol", type=float, default=DEFAULT_TIME_ATOL)
+    parser.add_argument("--previous-flow", type=Path)
+    parser.add_argument("--time-convergence-relative-limit", type=float, default=1.0e-2)
+    parser.add_argument("--heat-flux-time-convergence-relative-limit", type=float)
     args = parser.parse_args()
+    if args.time_convergence_relative_limit <= 0.0:
+        raise ValueError("time-convergence relative limit must be positive")
+    if (
+        args.heat_flux_time_convergence_relative_limit is not None
+        and args.heat_flux_time_convergence_relative_limit <= 0.0
+    ):
+        raise ValueError("heat-flux time-convergence relative limit must be positive")
 
     astr = read_astr(args.astr_flow, args.astr_grid)
     reference = read_reference(args.reference_zip)
@@ -267,13 +349,16 @@ def main() -> int:
         "comparison_contract": {
             "reference_discretization": "two-dimensional fifth-order WENO-Z",
             "astr_discretization": "explicit MP reconstruction on a nine-point periodic extrusion",
-            "astr_prandtl": 0.72,
+            "astr_prandtl": PRANDTL,
             "prandtl_limit": "the archive has no Pr metadata; 0.72 is taken from the accompanying public source",
             "cf_definition": "2*mu_wall/Re*(du/dy)_wall with a six-point physical-y derivative",
             "pressure_definition": "wall pressure normalized by its inlet value",
+            "heat_flux_definition": "mu/(Re*Pr*(gamma-1)*M^2)*(dT/dy)_wall",
+            "shock_location_definition": "x at maximum positive wall-pressure gradient",
         },
         "x_grid_linf": x_error,
         "z_uniformity_linf": astr["z_spread"],
+        "periodic_seam_linf": astr["periodic_seam"],
         "reference_cf_reconstruction_error": error_metrics(
             reference["reconstructed_cf"], reference["cf"]
         ),
@@ -281,6 +366,11 @@ def main() -> int:
         "wall_pressure_ratio_error": error_metrics(
             astr["pressure_ratio"], reference["pressure_ratio"]
         ),
+        "wall_heat_flux_error": error_metrics(astr["heat_flux"], reference["heat_flux"]),
+        "wall_shock_location": {
+            "astr": wall_shock_location(astr["x"], astr["pressure_ratio"]),
+            "reference": wall_shock_location(reference["x"], reference["pressure_ratio"]),
+        },
         "astr_separation": astr_separation,
         "reference_separation": reference_separation,
     }
@@ -295,9 +385,58 @@ def main() -> int:
     else:
         report["separation_length_error"] = None
 
+    time_converged = True
+    report["time_convergence"] = None
+    if args.previous_flow is not None:
+        previous = read_astr(args.previous_flow, args.astr_grid)
+        comparisons = {
+            "skin_friction": relative_change(astr["cf"], previous["cf"]),
+            "wall_pressure_ratio": relative_change(
+                astr["pressure_ratio"], previous["pressure_ratio"]
+            ),
+            "wall_heat_flux": relative_change(astr["heat_flux"], previous["heat_flux"]),
+        }
+        previous_separation = separation_metrics(previous["x"], previous["cf"])
+        if (
+            astr_separation["separation_length"] is None
+            or previous_separation["separation_length"] is None
+        ):
+            comparisons["separation_length"] = None
+            time_converged = False
+        else:
+            newer_length = float(astr_separation["separation_length"])
+            older_length = float(previous_separation["separation_length"])
+            length_change = abs(newer_length - older_length) / max(
+                abs(newer_length), abs(older_length), np.finfo(float).tiny
+            )
+            comparisons["separation_length"] = {"relative_change": length_change}
+            time_converged = length_change <= args.time_convergence_relative_limit
+        time_converged = time_converged and all(
+            value["relative_linf"] <= args.time_convergence_relative_limit
+            for key, value in comparisons.items()
+            if key not in ("separation_length", "wall_heat_flux") and value is not None
+        )
+        heat_flux_converged = None
+        if args.heat_flux_time_convergence_relative_limit is not None:
+            heat_flux_converged = (
+                comparisons["wall_heat_flux"]["relative_linf"]
+                <= args.heat_flux_time_convergence_relative_limit
+            )
+            time_converged = time_converged and heat_flux_converged
+        report["time_convergence"] = {
+            "previous_time": previous["time"],
+            "relative_limit": args.time_convergence_relative_limit,
+            "heat_flux_relative_limit": args.heat_flux_time_convergence_relative_limit,
+            "heat_flux_passed": heat_flux_converged,
+            "metrics": comparisons,
+            "passed": time_converged,
+        }
+        if reached_expected_time and not time_converged:
+            report["status"] = "time_window_not_converged"
+
     write_outputs(args.output_dir, astr["x"], astr, reference, report)
     print(json.dumps(report, indent=2, allow_nan=False))
-    return 0 if reached_expected_time else 2
+    return 0 if reached_expected_time and time_converged else 2
 
 
 if __name__ == "__main__":

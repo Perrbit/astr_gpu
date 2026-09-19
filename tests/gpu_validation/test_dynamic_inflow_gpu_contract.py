@@ -161,6 +161,52 @@ class DynamicInflowGpuContractTests(unittest.TestCase):
             ),
         )
 
+    def test_gpu_precursor_slices_are_independent_of_checkpoint_output(self) -> None:
+        source = self.source("src/mainloop.F90")
+        body = re.search(
+            r"subroutine time_integration_rk\b(.*?)end subroutine time_integration_rk",
+            source,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(body)
+        text = body.group(1)
+        self.assertRegex(
+            text,
+            r"gpu_slice_due\s*=\s*nstep\s*>\s*0\s*\.and\.\s*lwslic\s*\.and\.\s*"
+            r"mod\(nstep,feqslice\)\s*==\s*0",
+        )
+        self.assertRegex(
+            text,
+            r"if\s*\(gpu_checkpoint_due\s*\.or\.\s*gpu_slice_due\)\s*then\s*"
+            r"call gpu_sync_flow_to_host\(\)",
+        )
+        self.assertIn(
+            "call writeslice(ctime(23),include_derivatives=.false.)",
+            text,
+        )
+
+    def test_gpu_precursor_slice_does_not_write_stale_host_derivatives(self) -> None:
+        source = self.source("src/readwrite.F90")
+        body = re.search(
+            r"subroutine writeslice\(subtime,include_derivatives\)(.*?)"
+            r"end subroutine writeslice",
+            source,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(body)
+        text = body.group(1)
+        self.assertIn("logical,intent(in),optional :: include_derivatives", text)
+        self.assertRegex(text, r"write_derivatives\s*=\s*\.true\.")
+        self.assertRegex(
+            text,
+            r"if\s*\(present\(include_derivatives\)\)\s*"
+            r"write_derivatives\s*=\s*include_derivatives",
+        )
+        self.assertGreaterEqual(
+            len(re.findall(r"if\s*\(write_derivatives\)\s*then", text)),
+            3,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
