@@ -100,6 +100,30 @@ def test_benchmark_admission_requires_independent_periodic_boundary_codes() -> N
     assert ".not.periodic_boundary_case" in source
 
 
+def test_no_field_io_supports_matched_cpu_gpu_performance_cases() -> None:
+    source = _compact(BENCHMARK)
+    assert "trim(flowtype)=='tgv'" in source
+    assert "trim(flowtype)=='shuosher'" in source
+    assert "use_gpu.and.rk_timing/=1" in source
+    assert ".not.cuda_build" not in source
+
+
+def test_cpu_rk_timing_is_benchmark_only_and_matches_gpu_output_schema() -> None:
+    benchmark = _compact(BENCHMARK)
+    mainloop = _compact(MAINLOOP)
+
+    assert "switch_choice('astr_cpu_rk_timing')" in benchmark
+    assert "benchmark_cpu_rk_timing_enabled" in benchmark
+    assert "cpu_rk_timing==1.and.(use_gpu.or..not.field_io_disabled)" in benchmark
+
+    start = mainloop.index("time_beg=ptime()")
+    advance = mainloop.index("calltime_integration_rk", start)
+    output = mainloop.index("'astr_cpu_rk_timing'", advance)
+    assert start < advance < output
+    assert "3(1x,es24.16e3)" in mainloop[output - 160 : output]
+    assert "0.d0,cpu_rk_seconds,cpu_rk_seconds" in mainloop[output : output + 200]
+
+
 def test_phase_timing_covers_required_p4_0_intervals() -> None:
     for label in (
         "prepare",

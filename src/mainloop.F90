@@ -320,6 +320,7 @@ module mainloop
     use validation_io, only: rhs_validation_requested,write_rhs_validation_snapshot, &
                              write_q_validation_snapshot, &
                              write_primitive_validation_snapshot
+    use benchmark_runtime, only: benchmark_cpu_rk_timing_enabled
 #ifdef ASTR_AIR5_CHEMISTRY
     use iso_fortran_env, only: real64
     use chemistry_flow_runtime, only: air5_reacting_flowtype,air5_postshock_flowtype, &
@@ -357,6 +358,7 @@ module mainloop
     real(8),allocatable :: rhsav(:,:,:,:)
     integer :: dt_ratio,jdnn,idnn
     real(8) :: hrr,time_beg_2
+    real(8) :: cpu_rk_seconds
     real(8),save :: subtime=0.d0
     integer,save :: n_rk_steps
     logical :: gpu_output_due
@@ -366,8 +368,10 @@ module mainloop
     logical :: air5_reacting_case
     logical :: air5_postshock_case
     logical :: air5_hbl_case
+    logical :: cpu_rk_timing
     !
     time_beg=ptime()
+    cpu_rk_timing=benchmark_cpu_rk_timing_enabled()
     conservative_case=conservative_boundary%enabled
     dynamic_inflow_output=bctype(1)==11 .and. trim(turbinf)=='intp'
     air5_reacting_case=.false.
@@ -746,6 +750,12 @@ module mainloop
     endif
     !
     if(rkscheme=='rk4') deallocate(rhsav)
+    !
+    if(cpu_rk_timing) then
+      cpu_rk_seconds=ptime()-time_beg
+      if(lio) write(*,'(A,1X,I0,3(1X,ES24.16E3))') &
+        'ASTR_CPU_RK_TIMING',nstep,0.d0,cpu_rk_seconds,cpu_rk_seconds
+    endif
     !
     ctime(3)=ctime(3)+ptime()-time_beg
     !

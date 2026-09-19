@@ -2,8 +2,10 @@ module benchmark_runtime
   use mpi
   implicit none
   private
-  public :: configure_benchmark_runtime,benchmark_field_io_disabled
+  public :: configure_benchmark_runtime,benchmark_field_io_disabled, &
+            benchmark_cpu_rk_timing_enabled
   logical,save :: configured=.false.,field_io_disabled=.false.
+  logical,save :: cpu_rk_timing_enabled_flag=.false.
 contains
   integer function switch_choice(name)
     character(*),intent(in) :: name
@@ -31,16 +33,14 @@ contains
     logical,intent(in) :: use_gpu,lihomo,ljhomo,lkhomo,periodic_boundary_case
     character(*),intent(in) :: flowtype
     integer,intent(in) :: ndims
-    integer :: requested,rk_timing,lowest,highest,rk_lowest,rk_highest
+    integer :: requested,rk_timing,cpu_rk_timing,lowest,highest
+    integer :: rk_lowest,rk_highest,cpu_rk_lowest,cpu_rk_highest
     integer :: ierr,rank,ignored
-#ifdef _CUDA
-    logical,parameter :: cuda_build=.true.
-#else
-    logical,parameter :: cuda_build=.false.
-#endif
+    logical :: supported_flow
     if(configured) return
     requested=switch_choice('ASTR_GPU_BENCHMARK_NO_FIELD_IO')
     rk_timing=switch_choice('ASTR_GPU_RK_TIMING')
+    cpu_rk_timing=switch_choice('ASTR_CPU_RK_TIMING')
     call mpi_allreduce(requested,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
     if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,ignored)
     call mpi_allreduce(requested,highest,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
@@ -48,6 +48,10 @@ contains
     call mpi_allreduce(rk_timing,rk_lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
     if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,ignored)
     call mpi_allreduce(rk_timing,rk_highest,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,ignored)
+    call mpi_allreduce(cpu_rk_timing,cpu_rk_lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,ignored)
+    call mpi_allreduce(cpu_rk_timing,cpu_rk_highest,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
     if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,ignored)
     if(lowest<0 .or. lowest/=highest) then
       print *, 'Invalid or inconsistent GPU benchmark environment'
@@ -57,13 +61,22 @@ contains
       print *, 'Invalid or inconsistent ASTR_GPU_RK_TIMING environment'
       call mpi_abort(MPI_COMM_WORLD,1,ignored)
     endif
+    if(cpu_rk_lowest<0 .or. cpu_rk_lowest/=cpu_rk_highest) then
+      print *, 'Invalid or inconsistent ASTR_CPU_RK_TIMING environment'
+      call mpi_abort(MPI_COMM_WORLD,1,ignored)
+    endif
     field_io_disabled=requested==1
-    if(field_io_disabled .and. (.not.cuda_build .or. .not.use_gpu .or. &
-       ndims/=3 .or. trim(flowtype)/='tgv' .or. &
+    if(cpu_rk_timing==1 .and. (use_gpu .or. .not.field_io_disabled)) then
+      print *, 'ASTR_CPU_RK_TIMING requires a CPU no-field-I/O benchmark run'
+      call mpi_abort(MPI_COMM_WORLD,1,ignored)
+    endif
+    cpu_rk_timing_enabled_flag=cpu_rk_timing==1
+    supported_flow=trim(flowtype)=='tgv' .or. trim(flowtype)=='shuosher'
+    if(field_io_disabled .and. (ndims/=3 .or. .not.supported_flow .or. &
        .not.(lihomo.and.ljhomo.and.lkhomo) .or. &
        .not.periodic_boundary_case .or. &
-       rk_timing/=1)) then
-      print *, 'ASTR_GPU_BENCHMARK_NO_FIELD_IO requires CUDA 3-D periodic GPU TGV with RK timing'
+       (use_gpu.and.rk_timing/=1))) then
+      print *, 'ASTR_GPU_BENCHMARK_NO_FIELD_IO requires periodic 3-D TGV/Shu-Osher; GPU runs require RK timing'
       call mpi_abort(MPI_COMM_WORLD,1,ignored)
     endif
     configured=.true.
@@ -77,4 +90,8 @@ contains
   logical function benchmark_field_io_disabled()
     benchmark_field_io_disabled=configured.and.field_io_disabled
   end function benchmark_field_io_disabled
+
+  logical function benchmark_cpu_rk_timing_enabled()
+    benchmark_cpu_rk_timing_enabled=configured.and.cpu_rk_timing_enabled_flag
+  end function benchmark_cpu_rk_timing_enabled
 end module benchmark_runtime

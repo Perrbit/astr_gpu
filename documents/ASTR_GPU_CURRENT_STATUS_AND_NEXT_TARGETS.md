@@ -1,6 +1,6 @@
 # ASTR GPU Current Status and Next Targets
 
-更新日期：2026-09-15。当前代码基线：`feature/gpu_dev` 当前工作树。
+更新日期：2026-09-19。当前代码基线：`feature/gpu_dev` 当前工作树。
 
 ## 1. 总体结论
 
@@ -15,16 +15,21 @@ C1 CPU FP64 零维 ROS-2 oracle、C2 GPU 批量瞬时源项/Jacobian 和 C3 GPU
 单元局部 ROS-2。C4 已完成运行时 `lcomb` 激活、`numq=11` 权威状态、无反应
 五组分/振动能对流扩散以及固定 halo 的 GPU 常驻接入。C5 第 1 至 5 项已完成：
 周期均匀反应器、冻结化学准一维组分平移/扩散层/振动能脉冲、Cartesian 正常
-激波后有限速率松弛、三维多 rank 挤出和高温周期反应 TGV 均已通过。C5 第 6 项
+激波后有限速率松弛、三维多 rank 挤出和高温周期反应 TGV 均已通过。
+A800 单节点 `512^3` TGV 五轮强扩展已完成：4 张 A800 相对单卡达到
+`3.777x` 加速和 `94.43%` 并行效率，CUDA-aware MPI 已在记录的 HPC-X/UCX
+软件栈上完成正确性、内存安全和周期 TGV 性能准入。C5 第 6 项
 已接入 HTR Mach 6 五组分剖面、完整 air5 边界模块和 `air5hbl` CPU/GPU 路由，
-但首个 A0 运行在化学半步后触发痕量组分负值门禁。非催化壁面离散组分通量闭合
-尚待人工确认，层流高焓平板和有限速率空气 SBLI 均未通过。
+首次 A0 运行发现的痕量组分负值已经通过离散非催化壁面通量闭合修复。NP=1、
+NP=2 三种 slab 和 NP=8 `2x2x2` 的短时 CPU/GPU、边界合同及内存安全门槛均
+通过。独立双温平板参考、长时收敛和有限速率空气 SBLI 尚未完成。
 
 当前交付范围应表述为“ASTR 单组分非反应显式格式 GPU 求解器，加固定五组分
 双温空气的 GPU 常驻输运、单元局部 ROS-2、Cartesian 激波后松弛和高温周期
 三维 Strang 反应耦合”。
 该能力尚不能称为通用反应流求解器。生产级
-SBLI 物理验证、A800 四卡真实性能、真实湍流入口和通用曲线特征边界尚未闭合。
+SBLI 物理验证、A800 非周期算例与多节点性能、真实湍流入口和通用曲线
+特征边界尚未闭合。
 在暂缓能力重新打开并通过独立验收前，不使用“整个 ASTR 已完成 GPU 移植”
 的结论。
 
@@ -34,8 +39,8 @@ SBLI 物理验证、A800 四卡真实性能、真实湍流入口和通用曲线�
 ## 2. Git 与架构基线
 
 按项目此前约定，以 `df1961bc` 的父提交作为纯 CPU 基线。到当前提交共形成
-35 个后续提交，tracked 变更覆盖 412 个文件。该文件数包含源码、验证工具、
-参考数据和文档，不表示 412 个独立 GPU 功能。
+65 个后续提交，tracked 变更覆盖 660 个文件。该文件数包含源码、验证工具、
+参考数据和文档，不表示 660 个独立 GPU 功能。
 
 主要提交阶段如下。
 
@@ -205,14 +210,19 @@ CPU checkpoint 重启路径的 complete-RK 守恒量最大绝对误差约为 `2e
 - C0 至 C5 第 2 项的 chemistry 单元、probe 和静态合约矩阵为
   `92 passed, 18 subtests passed`；C4 `air5wave` 冻结化学回归继续通过。
 
-当前已完成周期均匀反应器和冻结化学准一维非均匀输运门槛。非均匀反应耦合、
-反应边界、restart、激波后松弛和反应流物理验证仍属于 C5 至 C6。
+当前已完成 C5 第 1 至 5 项。C5 第 3、4 项以独立稳态一维参考验证
+`T1=500 K`、`p1=5 kPa`、`M1=8` 的冻结跳跃及其后 `0.02 m` 化学/V-T 松弛，
+同时保持质量、动量和总焓通量。含扩散的 NP=1 和 NP=2 x/y/z slab 均通过，
+coupled 模式 CPU/GPU 同相位最大绝对差为 `1.804437488e-9`。C5 第 5 项高温
+反应 TGV 的 NP=1、三种 NP=2 slab 和 NP=8 `2x2x2` 也已通过，最大同相位差为
+`4.3201e-12`，并确认无输出循环保持 `q(1:11)` 常驻。
 
-C5-3A 已建立独立稳态一维激波后松弛参考。`T1=500 K`、`p1=5 kPa`、`M1=8`
-的冻结跳跃及其后 `0.02 m` 化学/V-T 松弛位于固定机理有效域内；参考解同时保持
-质量、动量和总焓通量，并由质量分数和比振动能代数重建 `rho/u/T/p`。五项 oracle
-测试已经通过。该进度不等于 ASTR C5 第 3 项通过：专用 air5 开放边界、非周期
-六阶 stencil、CPU/GPU 场比较和黏性/组分扩散逐项门槛尚未接入。
+C5-6A0 已采用第一内点正组分构造非催化等温壁面，并在 Cartesian y 法向扩散
+算子中显式令 `J_s,n=0`。NP=1、NP=2 三种 slab 和 NP=8 `2x2x2` 短时门槛的
+CPU/GPU 最大绝对差为 `1.7462e-10` 至 `4.6566e-10`；最大组分质量闭合误差为
+`4.4409e-16`，最大元素相对变化为 `4.1534e-16`。Compute Sanitizer 为
+`0 errors`、`0 bytes leaked`。该结果只关闭 A0 短时 Cartesian 边界、数值等价、
+MPI 和内存安全门槛，不代表 A1 双温物理验证、长时收敛、restart 或 SBLI 已完成。
 
 ## 4. 边界条件支持范围
 
@@ -452,14 +462,19 @@ kernel 次数和 MPI 消息数最多接近当前的五倍，虽然传输总字�
 
 ### 8.1 A800 四卡真实性能与扩展
 
-修复运行时依赖后重新提交 TGV campaign，完成 T0 至 T7，并满足以下终止条件：
+周期 TGV 单节点性能矩阵已完成。作业 `460455` 在同一冻结输入和软件栈下完成
+19/19 个配置，包括 NP=1、NP=2 三种 slab、NP=4 六种 slab/plane 拓扑和 9 组
+pinned-pipeline/device-aware 配对。每个配置包含 5 次独立启动和每次 20 个
+保留 RK 样本。NP=1/2/4 最优完整 RK 时间为
+`1.755797618/0.903949536/0.464824389 s`，4 卡强扩展加速为 `3.77734x`，
+并行效率为 `94.43%`。
 
-- T0 证明单 A800 可以分配 `512^3`，并给出平台实测 `dt_CFL=1`；
-- NP=1/2/4 均有一次预热和至少五次独立重复计时；
-- 分别报告初始化/输出、纯 RK、halo、同步和 MPI 时间；
-- 给出强扩展效率、显存峰值和实际 GPU 占用；
-- 同一冻结输入比较 pageable、pinned 和适用时的 overlap；
-- TGV 分段推进到约 `t=20`，并与 DLR Re=1600 统计历史比较。
+该矩阵已满足周期 TGV 的单节点强扩展性能终止条件。尚未完成的部分必须
+分开表述：
+
+- 常规 Nsight Systems 分相仍受平台权限影响，当前主要使用求解器内部计时；
+- 约 `t=20` 的长时 TGV 及与 DLR Re=1600 历史的物理统计对比不属于这一短时性能矩阵；
+- 多节点通信、非周期算例和完整场 I/O 的端到端时间尚未建立权威包络。
 
 ### 8.2 OpenSBLI 层流 SBLI 物理验证
 
@@ -494,13 +509,46 @@ RTX 4000 Ada 的五轮配对完整步中位时间为关闭统计 `0.075387564 s`
 `0.075807734 s`，开销 `0.557%`。这些结果完成 D4 本机软件验收，不替代 D3
 湍流统计收敛，也不代表 A800 生产性能。
 
-### 8.4 性能、通信与同步
+### 8.4 性能边界、通信与运行时选项
 
-- 只根据 A800 profile 决定是否扩展非周期/SBLI 通信重叠。
-- 选择性同步保持独立候选，不能替换显式同步正确性基线。
-- RTX 4000 Ada 上拒绝的 P1 候选可在 A800 重新测试，但必须重新冻结同机基线。
-- A800 HPC-X 2.22.1/UCX 1.18.0 已通过大消息正确性和 sanitizer 准入；下一步
-  用五轮完整 RK 与强扩展结果决定是否将 device-aware 从 opt-in 晋升为默认。
+当前可对外引用的权威性能基线为单节点 `512^3` 周期 TGV。该基线使用
+FP64、六阶显式中心差分、十阶显式中心滤波、完整五分量 `qwork_d`、RK3 和
+逐 kernel 显式同步。每个配置独立启动 5 次，每次保留 20 个完整 RK 样本；
+保留 GPU 紧凑统计量，关闭完整场 HDF5 和 checkpoint 输出。
+
+| GPU 数 | 最优拓扑 | HaloTransport | 完整 RK 时间 | 强扩展加速比 | 并行效率 |
+|---:|---|---|---:|---:|---:|
+| 1 | `1x1x1` | pinned | `1.755797618 s` | `1.000x` | `100.00%` |
+| 2 | `1x1x2` | device-aware | `0.903949536 s` | `1.942x` | `97.12%` |
+| 4 | `1x2x2` | device-aware | `0.464824389 s` | `3.777x` | `94.43%` |
+
+同拓扑下，device-aware 相对 pinned-pipeline 将 NP=2 完整 RK 时间降低
+`26.395%--26.631%`，将 NP=4 时间降低 `42.798%--44.243%`。这些数字是相对单张
+A800 的 GPU 强扩展结果，不是 CPU/GPU 加速比，也不包含完整场文件 I/O。
+
+当前运行时性能选项的准确定位如下。
+
+| 功能 | 运行时选项 | 状态与边界 |
+|---|---|---|
+| Halo 通信 | `pageable` | 代码默认，兼容性基线 |
+| Halo 通信 | `pinned` | 固定注册 host 缓冲，host-staged blocking 基线 |
+| Halo 通信 | `pinned-overlap` | 仅已实现的周期存储式扩散内部区重叠，本地增益约 `2.6%--3.1%` |
+| Halo 通信 | `pinned-pipeline` | 本地双卡较 pinned 快约 `4%--6%`，A800 上明显慢于 device-aware |
+| Halo 通信 | `device-aware` | 记录的 A800 MPI/UCX 栈上的最优路径；其他软件栈必须独立准入 |
+| 滤波工作区 | `full` | 五分量 FP64 ping-pong，生产默认 |
+| 滤波工作区 | `scalar` | 单个 FP64 三维工作数组逐分量处理；本地完整 RK 快 `3.917%`，采样内存少 `4.864%`，A800 未晋级 |
+| 同步 | `explicit` | 逐 kernel 同步，权威正确性和生产基线 |
+| 同步 | `selective` | 仅周期 TGV；同步次数显著下降，但未获得整步收益 |
+| 同步 | `dependency` | 只能与 pinned-pipeline 配合；局部结果不稳定，未晋级 |
+| 上风通量 | `split` | 默认 |
+| 上风通量 | `fused` | 周期物理空间 WENO7/MP7 本地整步快约 `30%`，A800、长时和 restart 尚未晋级 |
+| 精度 | `fp64` | 唯一生产默认 |
+| 精度 | `mixed_workspace` | 只降低一组临时工作区精度；当前仅是受限显存选项 |
+
+因此，当前正式性能报告必须保留 `FP64 + full filter + explicit sync` 的基线语义。
+在已准入的 A800 软件栈上可显式选择 `device-aware`，但它不会在未知 MPI 环境中
+静默取代代码默认后端。曲线网格、物理边界、激波、动态入口和化学路径的
+正确性成果不能直接外推为与周期 TGV 相同的性能包络。
 
 ### 8.5 曲线开放边界与 HIP/DCU
 
@@ -528,9 +576,10 @@ RTX 4000 Ada 的五轮配对完整步中位时间为关闭统计 `0.075387564 s`
   首阶段保持 FP64；
 - 运行时默认 `ASTR_GPU_PRECISION_MODE=fp64`，实验模式为
   `ASTR_GPU_PRECISION_MODE=mixed_workspace`；
-- 已实现候选为 `flux_work_d`、`dvel_d/dtmp_d`、`sigma_d/qflux_d` 和周期
-  `flux_characteristic_work_d`；后续候选为 `shock_sensor_d` 和滤波工作区；
-  每次只改变一组；
+- 已实现候选为 `flux_work_d`、`dvel_d/dtmp_d`、`sigma_d/qflux_d` 和
+  `flux_characteristic_work_d`，每次只能选择一组；
+- `shock_sensor_d`、十阶滤波工作区和化学权威状态保持 FP64。FP32 滤波方案已取消，
+  不是当前运行时选项；
 - FP16、BF16、TF32 和 Tensor Core 算法重构不属于本阶段。
 
 2026-09-12 本机 MP1 证据如下：
@@ -637,10 +686,11 @@ FP64 的最大 `q5` 差均为 `8.72e-7`，继续满足 MP1 的 `2e-6` 门槛。
 不直接淘汰。进入生产默认仍需在 A800 NP=1/2/4 上证明整步不退化，并在速度、显存、
 问题容量、能耗或可移植性中至少提供一项实测价值。
 
-Phase MP 分为：MP0 冻结 FP64 基线与测量噪声，MP1 筛选光滑流工作区，MP2 处理
-黏性和曲线网格工作区，MP3 处理激波敏感工作区，MP4 最后处理十阶滤波工作区，
-MP5 在 A800 上给出晋级、保留实验或拒绝结论。OpenSBLI 的 FP64 外部物理验证是
-MP3 激波敏感候选的前置条件。
+Phase MP 的当前结论是：MP1 至 MP3 已完成本地受限数值、内存安全和交错计时
+门槛；四个候选均精确节省 50% 的对应工作区，但分别慢 `0.363%`、`2.120%`、
+`7.789%` 和 `4.913%`，没有整步加速证据。MP4 FP32 滤波不再推进。MP5 仅在明确的
+A800 显存容量需求下复测这些候选，不以当前本地结果宣称加速。OpenSBLI 的
+FP64 外部物理验证仍是特征通量混合精度进入生产物理算例的前置条件。
 
 ### 8.7 固定 air5 化学 C3 至 C6
 
@@ -653,8 +703,10 @@ MP3 激波敏感候选的前置条件。
    `12^3` 的 NP=1、三种 NP=2 slab 和 NP=8 `2x2x2` 最大 CPU/GPU 同相位差为
    `4.3201e-12`，Compute Sanitizer 为 `0 errors`，无输出循环无大块场传输；
 4. C5 第 6 项：A0 已接入 HTR Mach 6 相似解、非催化等温壁、完整入口/远场/出口
-   和 CPU/GPU `air5hbl` 路由；当前需先关闭壁面痕量组分的离散零通量问题，再完成
-   A0/A1。随后为 `q(1:11)` 选择多组分非平衡激波格式并实现有限速率空气 SBLI；
+   和 CPU/GPU `air5hbl` 路由；壁面痕量组分的离散零通量问题已修复，NP=1、
+   NP=2 三种 slab、NP=8 `2x2x2` 及 Compute Sanitizer 短时门槛通过。下一步完成
+   A1 独立双温物理验证，随后为 `q(1:11)` 选择多组分非平衡激波格式并实现
+   有限速率空气 SBLI；
 5. C6：C5 第 6 项物理门槛通过后，才进入本地与 A800 性能和生产验收。
 
 2026-09-14 的 C5 第 6 项审计已排除两种直接复用：现有五方程固定 `gamma` 的
@@ -663,18 +715,20 @@ Roe/MP7 不能处理 `q(1:11)`，HTR 公开 `LaminarSBLI` 的定比热单组分�
 `101325 Pa`、`Tw/Tinf=6.5`、`Re_delta*=4000` 的机器可读五组分相似解，可作为
 可追溯入口和单温极限，但不能验证独立 `Tv` 方程。NASA Mach 10 平板公开了
 `350 K`、`3751 m/s`、`3.55 kPa`、`6.6e6 1/m` 和非催化壁面，但缺少机器可读
-双温基流及唯一壁温。当前建议先用 HTR 文件接通 C5-6A0，再建立独立 FP64 固定
-air5 双温平板参考完成 C5-6A1；随后以 Ducros 区域内的分量式 MP7 加局部
-Lax--Friedrichs 通量推进 11 方程激波门槛。
+双温基流及唯一壁温。HTR 文件已用于完成 C5-6A0 短时门槛；下一步建立独立
+FP64 固定 air5 双温平板参考完成 C5-6A1，随后以 Ducros 区域内的分量式 MP7
+加局部 Lax--Friedrichs 通量推进 11 方程激波门槛。
 
 A0 已固定 HTR 提交和原始剖面，完成摩尔分数到质量分数重排、ASTR EOS 密度
-重建、Fortran 插值、完整 `q(1:11)` 边界及 CPU/GPU 主循环接入。16 项聚焦测试
-和顶层 CPU/CUDA 构建通过。首个 `31x31x7` NP=1 CPU smoke 在第一化学半步后
-重新施加壁面时以 `status=3` 停止，最小组分分密度约为 `4.8502e-22`。当前
-`Yw=(4Y1-Y2)/3` 对痕量组分不保持正性。推荐采用正的第一内点壁面组成，并在
-Cartesian y 法向扩散算子中显式强制 `J_s,n=0`。由物种扩散携带的焓和 `Ev`
-通量随之为零，温度和 `Tv` 梯度产生的导热通量继续保留。
-该决定尚未获人工确认，因此没有加入裁剪、投影或一阶回退，也不宣称 A0 通过。
+重建、Fortran 插值、完整 `q(1:11)` 边界及 CPU/GPU 主循环接入。首次
+`31x31x7` NP=1 CPU smoke 发现 `Yw=(4Y1-Y2)/3` 对反应后的痕量组分不保持正性，
+程序按门禁以 `status=3` 停止。修复采用第一内点正组分作为壁面组成，并在
+Cartesian y 法向扩散算子中显式强制 `J_s,n=0`；组分焓和 `Ev` 的物种扩散法向
+通量随之为零，温度和 `Tv` 梯度产生的导热通量继续保留。修复后聚焦测试为
+`12 passed`，NP=1、NP=2 三种 slab 和 NP=8 `2x2x2` 短时运行全部通过。未来
+CURVE 非催化壁面仍需用几何法向投影实现同一物理合同。
+该修复没有加入组分裁剪、归一化、限制器或一阶回退。A0 只按上述短时门槛通过，
+不能替代 A1 独立双温平板物理验证。
 
 C3 保留一线程一单元的 FP64 正确性基线。当前 profile 已证明存在寄存器和
 local-memory 压力，但在 A800 与真实反应状态分布复测前不引入 warp 同步拒绝或分桶。
@@ -711,8 +765,9 @@ racecheck 均为 `0 errors, 0 warnings`。该结果属于周期 TGV 数值正确
 系统重启后的同一时段 `256^3` 五轮配对中，y-slab 的 pinned/pipeline 中位时间
 为 `0.510051923/0.479824547 s/RK`，降低 `5.926%`；z-slab 为
 `0.508967702/0.478513546 s/RK`，降低 `5.984%`。四组相对极差均不超过
-`1.057%`，候选显存仅增加 `32--33 MiB`。y/z pipeline 因此保留为本地 opt-in
-候选，并等待 A800 NP=1/2/4 配对复测。
+`1.057%`，候选显存仅增加 `32--33 MiB`。y/z pipeline 因此保留为本地和不支持
+CUDA-aware MPI 环境的 opt-in 候选。A800 五轮配对已确认 device-aware 在 NP=2/4
+上明显优于 pinned-pipeline，因此不再将 host-staged pipeline 作为该软件栈的首选路径。
 
 2026-09-15 的同步审计为 pipeline 增加默认流 source-ready event，并让通信流和
 独立计算流显式等待；solution halo 内的 RHS 清零也等待该 event，避免与上一
@@ -731,8 +786,9 @@ RK stage 读取 `qrhs_d` 的更新 kernel 形成潜在跨流竞争。`dependency
 
 现有 host halo 缓冲已经一次分配、一次 `cudaHostRegister`、循环复用并在退出时
 统一注销，循环中没有 pinned 分配/释放。`MPI_Send_init/MPI_Recv_init` 暂缓，
-因为 trace 中非阻塞请求创建不足 `1 ms`，当前瓶颈仍是 host-staged 大消息传输
-及其尾部；应先在 A800 的实际 MPI 栈复测，再作为独立候选实现。
+因为 trace 中非阻塞请求创建不足 `1 ms`，当前 host-staged 瓶颈仍是大消息传输及其
+尾部。A800 结果证明直接去除 host staging 的收益远大于进一步减少 MPI 请求创建成本，
+因此 `MPI_Send_init/MPI_Recv_init` 不是当前优先项。
 
 每轴 context 重构后，本地双卡 x-slab `256^3` 五轮配对的 pinned explicit、
 pipeline explicit 和 pipeline dependency 中位时间分别为 `0.529076911`、
@@ -741,7 +797,7 @@ pipeline explicit 和 pipeline dependency 中位时间分别为 `0.529076911`、
 `83%` 增至 `92%`。dependency 只比 pipeline explicit 再低 `0.296%`，不足以
 晋升默认。本机只有两张 GPU，NP=4/8 共享双卡结果不能用于多轴扩展效率。
 
-### 8.9 A800 CUDA-aware MPI 正确性准入
+### 8.9 A800 CUDA-aware MPI 正确性与性能准入
 
 2026-09-16 完成了可选 `device-aware` HaloTransport。运行时在 `MPI_Init`
 前依据节点内 rank 绑定 CUDA 设备，随后用 `MPIX_Query_cuda_support` 做集体
@@ -763,9 +819,96 @@ A800 payload 作业 `460370` 在 HPC-X 2.22.1、Open MPI 4.1.7rc1、UCX 1.18.0
 逐位一致。两项作业分别以 `0:0` 在 27 s 和 32 s 完成；所有拓扑均记录
 `cuda_ipc/cuda`，NP=2/4 sanitizer 为零错误，且未生成 grid/flowfield HDF5。
 
-因此该后端已通过 A800 单节点周期 TGV 的生产正确性和内存安全准入，可以显式
-选择用于同一 MPI/UCX 软件栈。它尚未晋升为默认后端：非周期物理算例矩阵、
-五轮性能与强扩展、多节点通信和 HIP/DCU 适配仍待完成。
+性能作业 `460455` 完成了 `512^3` 周期 TGV 的 19/19 个配置和 9/9 组同拓扑
+pinned-pipeline/device-aware 配对。它使用 FP64、完整十阶滤波、显式同步和
+紧凑统计量，关闭完整场 HDF5。NP=1 为 `1.755797618 s/RK`；NP=2 最优为
+`0.903949536 s/RK`，加速 `1.94236x`，效率 `97.12%`；NP=4 最优为
+`0.464824389 s/RK`，加速 `3.77734x`，效率 `94.43%`。同拓扑下 device-aware 比
+pinned-pipeline 快 `1.36x--1.79x`。
+
+因此该后端已通过 A800 单节点周期 TGV 的正确性、内存安全和强扩展性能准入，
+是同一 MPI/UCX 软件栈上的首选性能路径。代码默认仍为 pageable，因为 device-aware
+必须在每个新 MPI 软件栈上重新准入，且能力检查失败时应直接终止而不是通信中途回退。
+非周期物理算例、多节点通信和 HIP/DCU 适配仍在该性能结论之外。
+
+### 8.10 ParaView Catalyst 原位后处理
+
+状态：规划，尚未实现。该方向的近期目标是减少生产算例的完整三维场文件，
+不是把现有 CPU-owned HDF5/checkpoint 路径改写为 GPU I/O。Catalyst 必须作为
+默认关闭的可选后端接入。规划选项 `ASTR_WITH_CATALYST=OFF` 时不增加链接依赖，
+启用后只链接 Catalyst API/stub，并在运行时加载 ParaView implementation。该后端
+不得改变无 Catalyst 构建、计算循环常驻状态或 restart 语义。Catalyst 2 使用
+Conduit Blueprint 描述运行中网格和场，并允许 Fortran
+求解器通过稳定 C API 接入；ParaView-Catalyst 负责执行 Python 分析流水线。[^catalyst-api]
+
+当前 ASTR 已有明确的完整 RK 输出边界。`gpu_sync_flow_to_host()` 在 checkpoint
+到期时下载 `q/rho/vel/prs/tmp`，随后由 CPU-owned `writechkpt()` 写出。因此首个
+Catalyst 路径应复用该相位语义，不应在任意 kernel 或 RK 子步中读取未闭合状态。
+
+```mermaid
+flowchart LR
+    accTitle: ASTR Catalyst staged integration
+    accDescr: The integration begins with the existing complete-RK host output boundary, then qualifies a packed GPU-resident path before optional live or asynchronous operation.
+
+    rk_state[Complete RK state] --> host_boundary[Host output boundary]
+    host_boundary --> host_catalyst[Batch Catalyst adaptor]
+    host_catalyst --> host_gate{Field and topology gates pass?}
+    host_gate -->|Yes| gpu_pack[Pack selected interior fields on GPU]
+    host_gate -->|No| repair_semantics[Repair mesh or field semantics]
+    repair_semantics --> host_catalyst
+    gpu_pack --> gpu_catalyst[GPU-resident Catalyst with Viskores]
+    gpu_catalyst --> production_extracts[Images, slices and reduced extracts]
+    gpu_catalyst -.-> live_async[Optional live or asynchronous mode]
+
+    classDef current fill:#f3f4f6,stroke:#6b7280,stroke-width:2px,color:#1f2937
+    classDef planned fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a5f
+    classDef decision fill:#fef9c3,stroke:#ca8a04,stroke-width:2px,color:#713f12
+    classDef output fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d
+
+    class rk_state,host_boundary current
+    class host_catalyst,repair_semantics,gpu_pack,gpu_catalyst,live_async planned
+    class host_gate decision
+    class production_extracts output
+```
+
+分阶段实施如下。
+
+| 阶段 | 实施范围 | 终止条件 |
+|---|---|---|
+| I0 依赖准入 | 冻结 Catalyst、ParaView-Catalyst、Conduit、MPI 和 NVHPC 组合；确认目标 ParaView build 是否包含 Viskores CUDA | 关闭选项时不增加链接依赖；启用后仅链接 Catalyst API/stub；ABI、动态库、MPI communicator 和 implementation 运行时加载检查通过 |
+| I1 主机镜像批处理 | 在完整 RK 输出边界构造 Cartesian/曲线结构网格，先提供 `density/velocity/pressure/temperature`；由 Catalyst pipeline 生成图片、切片、等值面或降采样场 | NP=1/2/4 的 Catalyst 字段与同相位 HDF5/CPU 数组一致；关闭 HDF5 后仍可生成可重放结果 |
+| I2 GPU 常驻批处理 | 通过 `ISO_C_BINDING` 调用窄 C++ adaptor；用 `c_devloc()` 传递设备地址，并由 Conduit `set_external()` 交给 Viskores CUDA 后端 | 调用区间无全场 D2H；设备字段与 I1 结果一致；Compute Sanitizer 和附加显存门槛通过 |
+| I3 多 rank 与曲线网格 | 每个 rank 提交一个局部 domain，记录全局偏移、`domain_id`、物理区和 ghost 区；覆盖静态曲线坐标 | Cartesian、CURVE、物理边界和 NP=1/2/4 拼接无重复面、裂缝或错误 ghost 显示 |
+| I4 交互与异步 | 评估 ParaView Live 和异步执行，不作为生产首版前置条件 | 计算节点网络策略允许；暂停、断连和 finalize 不破坏求解器；独立报告深拷贝、延迟和内存开销 |
+
+I1 是近期推荐路径。它仍包含输出步的完整 D2H，但省去完整 HDF5 写出、离线重读和
+二次派生场文件，因此可先验证网格关联、变量命名和 MPI domain 语义。I2 才允许称为
+GPU-resident 原位处理。官方 GPU 路径要求在 `catalyst_execute()` 前完成设备写入同步，
+并使用 Viskores/VTKm 过滤器保持设备端处理；普通 ParaView 过滤器可能触发隐式
+D2H。[^catalyst-gpu]
+
+ASTR 的 `q_d/rho_d/vel_d/prs_d/tmp_d/x_d` 各维均包含固定 halo。去除 halo 后的
+三维内点在展平内存中存在行、面间隔，不能默认视为单个连续外部数组。I2 的首选实现
+是把选定内点和必要坐标打包到可循环复用的连续 device visualization buffer，再交给
+Catalyst。把完整 halo 数组零拷贝暴露并通过 ghost 标记隐藏重叠区可作为后续候选，
+但必须先证明多 rank 拼接与物理边界 halo 语义正确。
+
+以下约束在所有阶段保持：
+
+- 首版采用同步批处理，不依赖计算节点到桌面 ParaView 的实时网络连接；
+- Catalyst 只读取完整 RK 状态，不得写回求解器权威场；
+- 坐标、字段关联、无量纲定义和变量命名必须与现有 HDF5 输出一致；
+- 只传递 pipeline 实际需要的字段，不默认复制全部守恒量、primitive、导数和工作数组；
+- Cartesian 网格优先使用隐式/规则坐标描述，曲线网格才传递显式 `x/y/z`；
+- 原位分析开销必须分为同步、打包或 D2H、Catalyst 执行和提取输出，不并入纯 RK 性能；
+- Catalyst 异步模式会为外部数组建立独立副本，GPU 指针可能被复制到主机，因此不能
+  自动视为零拷贝性能路径。[^catalyst-async]
+
+[^catalyst-api]: Kitware. "Catalyst and ParaView-Catalyst Blueprint." https://docs.paraview.org/en/latest/Catalyst/index.html
+
+[^catalyst-gpu]: Kitware. "GPU-Resident Workflows." https://catalyst-in-situ.readthedocs.io/en/latest/gpu_workflows.html
+
+[^catalyst-async]: Kitware. "Asynchronous Execution." https://catalyst-in-situ.readthedocs.io/en/latest/async_execution.html
 
 ## 9. 暂缓范围
 
@@ -781,31 +924,29 @@ A800 payload 作业 `460370` 在 HPC-X 2.22.1、Open MPI 4.1.7rc1、UCX 1.18.0
 
 ## 10. 当前推荐顺序
 
-1. 在 A800 上运行 `256^3/512^3` 五轮配对，比较 pinned-pipeline 与
-   device-aware 的 NP=2/4 各拓扑完整 RK 和 halo 分相时间，确认 CUDA IPC 去除
-   host staging 后是否带来稳定收益，再决定是否晋升默认。
-2. 用 Shu-Osher、Cartesian HBL、CURVE、wall-family、shock-sensor 和 chemistry
-   smoke 补齐 pinned/device-aware 后端对比；这些门槛通过前，仅宣称周期 TGV
-   生产正确性，不外推到全部算例。
-3. 人工确认 C5-6A0 非催化壁面的离散闭合：壁面质量分数采用第一内点正状态，
-   Cartesian y 法向扩散算子显式强制 `J_s,n=0`。只关闭物种扩散对组分焓和 `Ev`
-   法向通量的贡献，保留温度和 `Tv` 梯度产生的导热通量。
-4. 重跑 `31x31x7` A0 smoke，再按 CPU/GPU、网格/时间步收敛、NP=1/2/8、
-   Compute Sanitizer、守恒和常驻顺序完成高焓平板门槛。
-5. 按 `HTR 单温入口门槛 -> 独立双温平板参考 -> C5-6A 高焓平板 -> q(1:11)` 激波管与正常激波门槛
+1. 用 Shu-Osher、Cartesian HBL、CURVE、wall-family、shock-sensor 和 chemistry
+   smoke 补齐 device-aware 的非周期正确性矩阵；在这些门槛通过前，不把周期
+   TGV 的 A800 性能结论外推到全部算例。
+2. 如果权限和截止时间允许，在不重复已有强扩展矩阵的前提下，对 A800 周期 TGV
+   做一次常规 Nsight Systems 分相，定量区分计算、halo 和 MPI 尾部。
+3. 将 scalar 滤波和 `ASTR_GPU_FLUX_PAIR_MODE=fused` 分别带到 A800 NP=1/2/4，不叠加候选，
+   分别完成长时、restart、显存和完整 RK 验收。
+4. 混合精度仅在显存容量需求明确时进入 A800 复测。保持 FP64 为权威默认，不恢复
+   FP32 十阶滤波，不组合启用多个混合精度候选。
+5. 冻结 C5-6A0 已通过的 NP=1、NP=2 三种 slab、NP=8 `2x2x2`、边界合同、
+   守恒和 Compute Sanitizer 证据，并同步所有化学状态文档。
+6. 建立独立 FP64 固定 air5 双温平板参考，完成长时稳定性、网格/时间步收敛、
+   `Cf`、壁面热流、组分、`T/Tv`、restart 和常驻门槛，关闭 C5-6A1。
+7. 按 `HTR 单温入口门槛 -> 独立双温平板参考 -> C5-6A 高焓平板 -> q(1:11)` 激波管与正常激波门槛
    `-> C5-6B 有限速率空气 SBLI` 实现和验证；五方程边界与 Roe 特征系统不复用。
-6. 人工确认 C5-6B 使用 Ducros 区域内分量式 MP7 加局部 Lax--Friedrichs，
+8. 人工确认 C5-6B 使用 Ducros 区域内分量式 MP7 加局部 Lax--Friedrichs，
    平滑区保留 `643e`；在获得确认前不新增激波源码。
-7. 收口 A800 TGV T0 至 T7，建立 NP=1/2/4 正式性能和强扩展证据。
-8. 补齐首个 MP1 候选和 P2 通量正负对融合的长时 TGV、restart 与 A800 NP=1/2/4
-   复测；保持 FP64 与 `split` 为默认，分别测试后再评估组合。
 9. 完成 OpenSBLI 三网格、两时间步和外部物理比较，为激波敏感混合精度建立 FP64 物理基线。
-10. 将已本地收口的 MP2 候选带到 A800 NP=1/2/4，并推进 MP3 至 MP5 的激波敏感、
-   滤波和生产晋级验证。
-11. 完成动态入口 D3 前驱统计收敛，并在 A800 上复核已完成的 D4 常驻统计性能，
-   再进入生产级湍流 SBLI。
-12. 完成单分量滤波的 LDC、Channel、`42`、CURVE 和完整 RK 性能验收，再决定
-   是否允许其进入低显存生产任务。
-13. 以 A800 profile 决定非周期/SBLI overlap 和选择性同步是否继续。
-14. 建立 CUDA/HIP 后端边界原型，验证未来 DCU 路径。
-15. 由具体算例需求决定是否扩展曲线特征边界。
+10. 完成动态入口 D3 前驱统计收敛，并在 A800 上复核已完成的 D4 常驻统计性能，
+    再进入生产级湍流 SBLI。
+11. 将 Catalyst I0/I1 作为独立工程支线，先完成默认关闭的依赖准入和完整 RK
+    主机镜像批处理；字段与多 rank 拓扑语义通过后，再启动 I2 GPU 常驻路径。
+12. 以 A800 profile 决定非周期/SBLI overlap 和选择性同步是否继续；在有整步收益前
+    保持 `explicit` 为默认。
+13. 建立 CUDA/HIP 后端边界原型，验证未来 DCU 路径。
+14. 由具体算例需求决定是否扩展曲线特征边界。

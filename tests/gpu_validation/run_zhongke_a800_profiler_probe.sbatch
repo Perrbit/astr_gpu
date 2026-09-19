@@ -13,6 +13,7 @@ set -uo pipefail
 
 ROOT=/data/user/hd56000/weiph
 PROBE="$ROOT/a800_tgv_gpu_diagnostics_c801eeb/a800_profiler_probe"
+CUDA_TRACE_CHECKER="$ROOT/a800_tgv_gpu_diagnostics_c801eeb/check_nsys_cuda_trace.py"
 OUT="$ROOT/results/a800_profiler_probe_${SLURM_JOB_ID}"
 NSYS24=/data/apps/nvhpc/24.11/Linux_x86_64/24.11/compilers/bin/nsys
 NSYS25=/data/apps/nvhpc/25.5/Linux_x86_64/25.5/compilers/bin/nsys
@@ -24,6 +25,10 @@ module load gcc/11.5
 module load nvhpc/25.5
 mkdir -p "$OUT/tmp"
 export TMPDIR="$OUT/tmp"
+[[ -f "$CUDA_TRACE_CHECKER" ]] || {
+  printf 'missing Nsight CUDA trace checker: %s\n' "$CUDA_TRACE_CHECKER" >&2
+  exit 2
+}
 
 printf 'tool\tstatus\n' > "$OUT/status.tsv"
 
@@ -37,6 +42,10 @@ run_nsys() {
   if (( status == 0 )); then
     "$executable" stats --force-export=true --report cuda_gpu_kern_sum \
       "$report.nsys-rep" > "$OUT/${label}_kernels.txt" 2>&1 || status=$?
+    if (( status == 0 )); then
+      python3 "$CUDA_TRACE_CHECKER" "$OUT/${label}.sqlite" \
+        > "$OUT/${label}_cuda_trace_check.txt" 2>&1 || status=$?
+    fi
   fi
   printf '%s\t%s\n' "$label" "$status" >> "$OUT/status.tsv"
 }
