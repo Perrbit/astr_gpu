@@ -1,4 +1,5 @@
 module validation_io
+  use commvar, only: nstep
   implicit none
   private
   public :: rhs_validation_requested,write_rhs_validation_snapshot, &
@@ -7,22 +8,46 @@ module validation_io
             write_compact_statistics_validation_snapshot
   logical,save :: configured=.false.,enabled=.false.
   character(len=1024),save :: prefix=''
+  integer,save :: validation_step=0,validation_step_secondary=-1
   logical,save :: compact_configured=.false.,compact_enabled=.false.
   character(len=1024),save :: compact_prefix=''
 contains
   subroutine configure_rhs_validation()
-    integer :: status,length
+    character(len=64) :: step_buffer
+    integer :: status,length,step_status,step_length,ios
     if(configured) return
     call get_environment_variable('ASTR_VALIDATION_RHS_PREFIX',prefix, &
                                   length=length,status=status)
     enabled=status==0.and.length>0
     if(enabled) prefix=prefix(1:length)
+    validation_step=0
+    call get_environment_variable('ASTR_VALIDATION_RHS_STEP',step_buffer, &
+                                  length=step_length,status=step_status)
+    if(step_status==0 .and. step_length>0) then
+      read(step_buffer(1:step_length),*,iostat=ios) validation_step
+      if(ios/=0 .or. validation_step<0) &
+        error stop 'ASTR_VALIDATION_RHS_STEP must be a non-negative integer'
+    endif
+    validation_step_secondary=-1
+    call get_environment_variable('ASTR_VALIDATION_RHS_STEP_SECONDARY',step_buffer, &
+                                  length=step_length,status=step_status)
+    if(step_status==0 .and. step_length>0) then
+      read(step_buffer(1:step_length),*,iostat=ios) validation_step_secondary
+      if(ios/=0 .or. validation_step_secondary<0) &
+        error stop 'ASTR_VALIDATION_RHS_STEP_SECONDARY must be a non-negative integer'
+    endif
     configured=.true.
   end subroutine configure_rhs_validation
 
-  logical function rhs_validation_requested()
+  logical function validation_snapshot_requested(step_value)
+    integer,intent(in) :: step_value
     call configure_rhs_validation()
-    rhs_validation_requested=enabled
+    validation_snapshot_requested=enabled.and. &
+      (step_value==validation_step.or.step_value==validation_step_secondary)
+  end function validation_snapshot_requested
+
+  logical function rhs_validation_requested()
+    rhs_validation_requested=validation_snapshot_requested(nstep)
   end function rhs_validation_requested
 
   subroutine configure_compact_validation()
@@ -99,7 +124,7 @@ contains
     stage_value=rkstep
     if(present(step_index)) step_value=step_index
     if(present(stage_index)) stage_value=stage_index
-    if(.not.enabled.or.step_value/=0.or.stage_value<1) return
+    if(.not.validation_snapshot_requested(step_value).or.stage_value<1) return
     write(filename,'(A,".",A,".step",I8.8,".rk",I2.2,".rank",I8.8,".bin")') &
       trim(prefix),trim(label),step_value,stage_value,mpirank
     open(newunit=unit,file=trim(filename),access='stream',form='unformatted',status='new',action='write')
@@ -121,7 +146,7 @@ contains
     stage_value=rkstep
     if(present(step_index)) step_value=step_index
     if(present(stage_index)) stage_value=stage_index
-    if(.not.enabled.or.step_value/=0.or.stage_value<1) return
+    if(.not.validation_snapshot_requested(step_value).or.stage_value<1) return
     write(filename,'(A,".",A,".step",I8.8,".rk",I2.2,".rank",I8.8,".bin")') &
       trim(prefix),trim(label),step_value,stage_value,mpirank
     open(newunit=unit,file=trim(filename),access='stream',form='unformatted',status='new',action='write')
@@ -143,7 +168,7 @@ contains
     stage_value=rkstep
     if(present(step_index)) step_value=step_index
     if(present(stage_index)) stage_value=stage_index
-    if(.not.enabled.or.step_value/=0.or.stage_value<1) return
+    if(.not.validation_snapshot_requested(step_value).or.stage_value<1) return
     write(filename,'(A,".",A,".step",I8.8,".rk",I2.2,".rank",I8.8,".bin")') &
       trim(prefix),trim(label),step_value,stage_value,mpirank
     open(newunit=unit,file=trim(filename),access='stream',form='unformatted',status='new',action='write')
@@ -166,7 +191,7 @@ contains
     stage_value=rkstep
     if(present(step_index)) step_value=step_index
     if(present(stage_index)) stage_value=stage_index
-    if(.not.enabled.or.step_value/=0.or.stage_value<1) return
+    if(.not.validation_snapshot_requested(step_value).or.stage_value<1) return
     write(filename,'(A,".",A,".step",I8.8,".rk",I2.2,".rank",I8.8,".bin")') &
       trim(prefix),trim(label),step_value,stage_value,mpirank
     open(newunit=unit,file=trim(filename),access='stream',form='unformatted',status='new',action='write')

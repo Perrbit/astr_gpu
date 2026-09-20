@@ -33,6 +33,21 @@ def test_cpu_hbl_boundary_is_applied_at_every_required_phase() -> None:
     assert mainloop.count("callapply_air5_hbl_boundary()") >= 4
 
 
+def test_cpu_chemistry_half_steps_reconstruct_primitives_after_hbl_boundary() -> None:
+    mainloop = compact("src/mainloop.F90")
+
+    first = mainloop.index("callair5_chemistry_half_step(0.5_real64*deltat,1)")
+    first_boundary = mainloop.index("callapply_air5_hbl_boundary()", first)
+    first_update = mainloop.index("callupdatefvar", first)
+    first_halo = mainloop.index("callqswap", first)
+    assert first < first_boundary < first_update < first_halo
+
+    second = mainloop.index("callair5_chemistry_half_step(0.5_real64*deltat,2)")
+    second_boundary = mainloop.index("callapply_air5_hbl_boundary()", second)
+    second_update = mainloop.index("callupdatefvar", second)
+    assert second < second_boundary < second_update
+
+
 def test_cpu_hbl_does_not_retain_backend_specific_debug_phases() -> None:
     mainloop = compact("src/mainloop.F90")
 
@@ -53,6 +68,34 @@ def test_gpu_hbl_boundary_updates_q11_and_synchronizes_each_face_kernel() -> Non
         assert f"callsync_after_kernel('{kernel}',.true.)" in boundary
     assert "q_d(i,j,k,1:air5_num_conservative)" in boundary
     assert "fvar2q" not in boundary
+
+
+def test_gpu_chemistry_reconstructs_active_primitives_after_hbl_boundary() -> None:
+    coupling = compact("src_gpu/chemistry_coupling_gpu.cuf")
+
+    first = coupling.index("if(half_index==1)then")
+    boundary = coupling.index("callapply_air5_hbl_boundary_gpu()", first)
+    interior = coupling.index("calllaunch_air5_interior_primitive_gpu()", first)
+    halo = coupling.index("callexchange_solution_halo_gpu(.true.)", first)
+    faces = coupling.index("calllaunch_air5_face_primitives_gpu()", first)
+    assert first < boundary < interior < halo < faces
+
+    second = coupling.index("elseif(half_index==2)then")
+    second_boundary = coupling.index("callapply_air5_hbl_boundary_gpu()", second)
+    second_interior = coupling.index("calllaunch_air5_interior_primitive_gpu()", second)
+    assert second < second_boundary < second_interior
+
+
+def test_gpu_hbl_outflow_limits_species_before_full_state_fallback() -> None:
+    boundary = compact("src_gpu/chemistry_boundary_gpu.cuf")
+
+    species_limit = boundary.index("species_limited=.false.")
+    species_closure = boundary.index(
+        "q_trial(air5_idx_species_first)=q_high(air5_idx_density)"
+    )
+    full_state_limit = boundary.index("theta_upper=1.0_real64", species_closure)
+    assert species_limit < species_closure < full_state_limit
+    assert "callbuild_air5_hbl_outflow_state_gpu" in boundary
 
 
 def test_gpu_hbl_status_collectives_are_called_by_every_rank_in_face_order() -> None:

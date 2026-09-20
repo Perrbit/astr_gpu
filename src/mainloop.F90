@@ -488,9 +488,9 @@ module mainloop
       if(rhs_validation_requested()) &
         call write_q_validation_snapshot('pre_chemistry',nstep,1)
       call air5_chemistry_half_step(0.5_real64*deltat,1)
-      call updatefvar
       if(air5_postshock_case) call apply_air5_postshock_boundary()
       if(air5_hbl_case) call apply_air5_hbl_boundary()
+      call updatefvar
       call qswap(timerept=ltimrpt)
       if(rhs_validation_requested()) &
         call write_q_validation_snapshot('post_chemistry',nstep,1)
@@ -729,8 +729,8 @@ module mainloop
       if(rhs_validation_requested()) &
         call write_q_validation_snapshot('post_transport',nstep,1)
       call air5_chemistry_half_step(0.5_real64*deltat,2)
-      call updatefvar
       if(air5_hbl_case) call apply_air5_hbl_boundary()
+      call updatefvar
       if(rhs_validation_requested()) &
         call write_q_validation_snapshot('post_chemistry',nstep,2)
     endif

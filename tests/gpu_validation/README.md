@@ -4318,16 +4318,174 @@ The current C0-through-C5-item-5 chemistry unit, probe, reference, and static
 contract matrix reports `124 passed, 18 subtests passed`. MPI field runs,
 Compute Sanitizer, and Nsight Systems remain separate gates.
 
-C5 item 6 requires a separate approved physical contract before code changes.
-The fixed-air5 wall-bounded path must define wall catalytic behavior, species
-normal flux, wall `Tv` or vibrational-energy treatment, full-state inflow,
-farfield/outflow behavior, and a reproducible high-enthalpy flat-plate and
-finite-rate-air SBLI reference. Reusing the legacy five-equation boundary
-routines would lose the complete `q(1:11)` state semantics. The current air5
-inviscid path is sixth-order centered; the fixed-gamma five-equation
-Steger-Warming, Roe, and MP7 path is not an admissible shock scheme for the
-five-species two-temperature state. A separate multispecies nonequilibrium
-shock-flux and reconstruction gate is therefore required before SBLI.
+C5 item 6 A0 fixes a Cartesian noncatalytic isothermal wall with `Tv=Tw`, zero
+wall-normal species diffusion, complete-state inflow/farfield, extrapolated
+supersonic outflow, and periodic z. The `31x31x7` NP=1, NP=2 x/y/z slab, NP=8
+`2x2x2`, and Compute Sanitizer gates pass for the first complete step.
+
+`air5_hbl_diagnostics.py` provides the first C5-6A1 diagnostic layer. It reads
+an NP=1 complete `q(1:11)` snapshot, reconstructs `u/T/Tv/Ys`, and writes wall
+`Cf`, translational/vibrational/species heat-flux components and selected
+profiles to NPZ plus a text report. Heat flux is positive from the lower wall
+into the fluid. For a selected nonzero step, set both variables before running:
+
+```bash
+ASTR_VALIDATION_RHS_PREFIX=validation/air5 \
+ASTR_VALIDATION_RHS_STEP=1000 \
+  mpirun -np 1 build/bin/astr run datin/input.air5_c4
+```
+
+The default selected step remains zero. The request predicate includes the
+step gate, so the GPU does not copy the field to the host on unselected steps.
+
+The first two-step A1 attempt exposed a fail-closed numerical blocker shared by
+CPU and GPU. After RK transport, the outflow-adjacent NO partial density reached
+about `-2.89249e-21 kg/m3`, while the preceding chemistry state was positive.
+The matched `diffterm=f` run isolated the failure to explicit centered species
+diffusion.
+
+The approved repair rewrites the existing sixth-order derivative and physical
+boundary closures exactly as shared face-flux differences. At each SSPRK3 stage,
+one scalar ratio per cell bounds all negative species-diffusion contributions
+against the positive no-diffusion baseline. A face uses the minimum ratio of its
+two adjacent cells, and that ratio is applied to momentum, total-energy,
+species, and vibrational-energy diffusion together. The GPU exchanges only this
+one FP64 scalar halo. No clipping, renormalization, artificial trace floor, or
+low-order fallback is used.
+
+After the diffusion repair, the same case exposed a second independent blocker
+at step 185: centered convection made the no-diffusion baseline of trace NO
+negative. The approved species-only conservative FCT keeps the original
+sixth-order density, momentum, total-energy and vibrational-energy RHS. It uses
+the high-order density face flux to form a closed upwind species baseline, then
+limits the five-species anti-diffusive correction with one shared cell ratio and
+the adjacent minimum at each face. It does not clip, renormalize, or impose a
+trace floor. The diffusion and convection limiters execute separately and reuse
+the same haloed FP64 scalar workspace.
+
+The triggering `31x31x7`, `dt=1e-10 s` case now passes through step 185 for
+NP=1, and the one-step NP=2 `1x2x1` halo gate passes. CPU and GPU report identical
+`240/240/240` limited-point counts and minimum ratios for both limiter stages.
+At step 185, the true RK update range has maximum CPU/GPU absolute difference
+`3.5763e-7` under `atol=1e-9, rtol=1e-10`; minimum species density is
+`8.4485e-20 kg/m3`, and relative species closure is about `1e-14`. The focused
+memcheck reports zero errors and zero leaked bytes. The diffusion reconstruction
+and positivity contracts are covered by `test_air5_diffusion_limiter.py`; the
+species FCT identity, positivity and closure contracts are covered by
+`test_air5_species_convection_limiter.py`. The focused air5 suite reports
+`112 passed, 9 subtests passed`. These gates remove the observed numerical
+positivity blockers, but do not close long-time HBL convergence or independent
+physical validation.
+
+The HBL driver now keeps two acceptance modes explicit. Its default short-step
+mode remains the elementwise `atol=1e-9, rtol=1e-10` comparison and the
+`2e-10` extrusion-scaled tolerance. A `31x31x7`, `dt=1e-9 s`, NP=1 20-step
+run passes that strict mode. CPU/GPU extrusion errors are `6.7096e-12` and
+`7.1109e-12`; the largest physical-scaled difference across five same-phase
+snapshots is `4.3196e-12`.
+
+The sustained-run mode must be requested explicitly:
+
+```bash
+MAXSTEP=150 VALIDATION_STEP=150 DELTAT=1.d-9 TIMEOUT_SECONDS=1200 \
+EXTRUSION_SCALED_TOL=1e-7 SAME_PHASE_SCALED_TOL=1e-7 \
+OUT_DIR=tests/gpu_validation/out/air5_c5_hbl_long_time_step150 \
+  tests/gpu_validation/run_air5_c5_hbl_compare.sh
+```
+
+Here the same-phase scaled error is
+`max(abs(q_gpu-q_cpu)/max(abs(q_cpu),1))`. Existing step-150 snapshots pass
+with a maximum of `8.8715e-8`; CPU/GPU extrusion errors are `4.4148e-8` and
+`5.7158e-8`. Positivity, species closure, element conservation, chemistry
+activity, and inlet/farfield/wall/outflow contracts remain separate gates and
+also pass. The same snapshots still fail the default elementwise comparison,
+so the sustained mode does not weaken the strict mode. The step-150 margin is
+only about 11 percent. This is bounded sustained-integration evidence, not
+mesh/time-step convergence, restart qualification, independent two-temperature
+flat-plate validation, or a production-duration claim.
+
+The fixed-gamma five-equation Steger-Warming, Roe, and MP7 path remains
+inadmissible for the five-species two-temperature state. A separate
+multispecies nonequilibrium shock-flux and reconstruction gate is required
+before C5-6B SBLI.
+
+The later C5-6B matrix retains NASA NPARC/WIND Hypersonic Ramp Study 1 Run E as
+a public Mach-7 five-species finite-rate code-to-code benchmark. The pinned
+input and small surface/profile files live in
+`documents/reference_data/nasa_hypramp_mach7/`. Verify their hashes and data
+contract with:
+
+```bash
+python3 -m pytest -q \
+  tests/gpu_validation/test_nasa_hypramp_reference.py
+```
+
+NASA reports no analytical or experimental comparison for this study, so its
+curves must not be promoted to experimental truth or used to replace the
+independent C5-6A1 FP64 two-temperature flat-plate reference.
+
+The independent reference starts with the A1-R0 equation contract in
+`air5_hbl_reference.py`. It uses eight parabolized equations in the fixed order
+mass, streamwise momentum, independent O2/N/O/NO species, total energy, and
+vibrational energy. Dominant N2 closes total mass, avoiding cancellation when
+recovering trace NO. The implementation
+independently evaluates the streamwise conservative flux, wall-normal
+convective/diffusive flux and coupled chemistry/V-T source in FP64. Run its
+contract tests with:
+
+```bash
+python3 -m pytest -q \
+  tests/gpu_validation/test_air5_hbl_reference.py
+```
+
+Passing A1-R0 fixes signs and state ownership only. It does not qualify the
+planned streamwise marcher or the A1 two-temperature flat-plate physics gate.
+
+The authoritative source-off, single-temperature A1-R1 reference is the
+independent frozen-air5 Dorodnitsyn similarity solution in
+`air5_hbl_similarity.py`. It reads the same JSON mechanism but does not call
+ASTR Fortran or CUDA. The global x-y mass-streamfunction scaffold for R2/R3 is
+in `air5_hbl_collocation.py`. Run the authoritative reference, global-discrete
+consistency, and rejected station-candidate checks with:
+
+```bash
+python3 -m pytest -q \
+  tests/gpu_validation/test_air5_hbl_similarity.py \
+  tests/gpu_validation/test_air5_hbl_collocation.py \
+  tests/gpu_validation/test_air5_hbl_marcher.py
+```
+
+The BVP passes its boundary, FP64 solver-residual, wall-flux scaling, and
+three-grid discrete mass/momentum/energy convergence checks, closing only the
+A1-R1 frozen single-temperature reference. The global scaffold preserves
+uniform flow below `1e-12`. It uses a three-point streamwise and five-point
+wall-normal explicit derivative, strictly eliminates prescribed inlet/wall/edge
+Dirichlet values, and matches the pointwise FP64 frozen-flux oracle within
+`2e-15` relative tolerance. The `3x13`, `3x17`, and `3x25` nonlinear systems
+all close below `2.20e-14`. Their streamwise-velocity L2 errors against the BVP
+are `5.149%`, `4.999%`, and `0.880%`; temperature errors are `7.086%`, `3.729%`,
+and `0.996%`. This closes the source-off single-temperature prerequisite, not
+R2 chemistry/V-T. Long-time ASTR HBL, MPI, restart, sanitizer, and residency
+gates remain open. The backward-Euler station candidates are diagnostic only:
+they preserve uniform flow but stall above the required nonuniform residual.
+Do not relax a residual or add state clipping to convert either route into a
+pass. At the source-off checkpoint, the focused air5 suite reported
+`137 passed, 9 subtests passed`.
+
+The first frozen-composition V-T-only extension adds independent `T` and `Tv`
+unknowns, total- and vibrational-energy fluxes, and the Millikan-White/Park
+relaxation source. The vectorized two-temperature flux and direct V-T source
+match the general pointwise FP64 oracle within `4e-15` and `2e-15` relative
+tolerance. A source-free Ev predictor is followed by source-strength homotopy
+at `0/0.1/0.3/0.6/1.0`; the final stage always uses the complete source. The
+`3x13` nonuniform flat plate closes to `2.6058e-14` in 396 total function
+evaluations, remains positive, preserves all prescribed boundaries, and has a
+maximum `|T-Tv|` of `178.52 K`. A separate `3x17` diagnostic closes to
+`5.2607e-14` after 1017 evaluations, but its maximum temperature separation is
+`262.11 K`. These are a single-grid regression and a second-grid algebraic
+closure, not a grid-converged V-T physical reference. Finite-rate species,
+three-grid profile/wall convergence, and ASTR long-time gates remain open. The
+complete focused air5 suite now reports `144 passed, 9 subtests passed`.
 
 ## P4-0 trusted local performance baseline
 

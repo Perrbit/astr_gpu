@@ -116,6 +116,21 @@ class ChemistryFlowTests(unittest.TestCase):
         self.assertGreater(values[1], 0.0)
         self.assertLessEqual(values[2], 2.0e-14)
 
+    def test_transport_accepts_roundoff_level_species_closure(self):
+        status, values = self.run_probe("closure-roundoff")
+        epsilon = 2.220446049250313e-16
+        self.assertGreater(values[0], 64.0 * epsilon)
+        self.assertLessEqual(values[0], 128.0 * epsilon)
+        self.assertEqual(status, 0)
+        self.assertGreater(values[1], 0.0)
+
+    def test_hbl_outflow_composition_is_canonicalized_before_transport(self):
+        status, values = self.run_probe("closure-hbl-outflow")
+        epsilon = 2.220446049250313e-16
+        self.assertEqual(status, 0)
+        self.assertLessEqual(abs(values[0]), 2.0 * epsilon)
+        self.assertGreater(values[1], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

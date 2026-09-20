@@ -62,7 +62,7 @@ contains
       fraction_sum=fraction_sum+mass_fraction(species)
       mole_sum=mole_sum+mass_fraction(species)/air5_molar_mass(species)
     enddo
-    if(abs(fraction_sum-1.0_real64)>64.0_real64*epsilon(1.0_real64) .or. &
+    if(abs(fraction_sum-1.0_real64)>128.0_real64*epsilon(1.0_real64) .or. &
        mole_sum<=0.0_real64) then
       status=chemistry_status_invalid_composition
       return

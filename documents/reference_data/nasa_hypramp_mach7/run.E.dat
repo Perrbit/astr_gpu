@@ -1,0 +1,30 @@
+Single block, 15 degree ramp.
+Mach 7.0 Laminar Viscous Flow. Time-dependent.
+run.E.dat: Finite-Rate Non-Equilibrium Air.
+
+freestream static 7.0 14.7 520.0 0.0 0.0
+
+turbulence laminar
+
+downstream pressure extrapolate order one zone 1
+
+dq limiter on
+
+rhs roe second
+tvd factor 1
+
+cfl 0.5 
+
+cycle 80
+iterations per cycle 100 print frequency 10
+
+converge order 9
+test 128
+
+chemistry
+  file air-5sp-gen-30k.chm !Five species chem. file, valid to 30k Kelvin
+  finite rate              !multi-species Finite-rate (F-R)
+  mass fractions air       !Start with 21% O2, 79% N2, use with F-R or FZ
+endchemistry
+
+end

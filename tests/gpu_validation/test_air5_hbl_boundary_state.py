@@ -78,6 +78,18 @@ class Air5HblBoundaryStateTests(unittest.TestCase):
         self.assertAlmostEqual(values[12], 1.0, delta=4.0e-15)
         self.assertLessEqual(values[13], 2.0e-12)
 
+    def test_outflow_limits_trace_species_overshoot_without_clipping(self) -> None:
+        status, state_status, values = self.run_probe("outflow-trace")
+
+        self.assertEqual((status, state_status), (0, 0))
+        self.assertTrue(all(math.isfinite(value) for value in values))
+        self.assertAlmostEqual(values[12], 1.0, delta=4.0e-15)
+        self.assertGreater(values[13], 0.0)
+        self.assertLess(values[13], 1.0)
+        self.assertLess(values[14], 0.0)
+        self.assertGreaterEqual(values[15], 0.0)
+        self.assertLessEqual(values[16], 2.0e-12)
+
 
 if __name__ == "__main__":
     unittest.main()

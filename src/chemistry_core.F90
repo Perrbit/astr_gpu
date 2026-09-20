@@ -19,6 +19,8 @@ module chemistry_model
   integer, parameter, public :: chemistry_status_invalid_tolerance = 10
   integer, parameter, public :: chemistry_status_step_limit = 11
   integer, parameter, public :: chemistry_status_invalid_source_mode = 12
+  real(real64), parameter, public :: air5_flux_limiter_safety = &
+    1.0_real64-1.0e-8_real64
 
   public :: air5_validate_mechanism_id
   public :: air5_validate_partial_densities

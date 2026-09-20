@@ -110,7 +110,8 @@ contains
     use parallel, only: lio
     use gpu_check, only: sync_after_kernel
     use halo_exchange_gpu, only: exchange_solution_halo_gpu
-    use chemistry_flow_solver_gpu, only: launch_air5_face_primitives_gpu
+    use chemistry_flow_solver_gpu, only: launch_air5_interior_primitive_gpu, &
+      launch_air5_face_primitives_gpu
     use chemistry_postshock_boundary_gpu, only: apply_air5_postshock_boundary_gpu
     use chemistry_hbl_boundary_gpu, only: apply_air5_hbl_boundary_gpu
     real(real64), intent(in) :: duration
@@ -166,10 +167,12 @@ contains
     if(half_index==1) then
       call apply_air5_postshock_boundary_gpu()
       call apply_air5_hbl_boundary_gpu()
+      call launch_air5_interior_primitive_gpu()
       call exchange_solution_halo_gpu(.true.)
       call launch_air5_face_primitives_gpu()
     elseif(half_index==2) then
       call apply_air5_hbl_boundary_gpu()
+      call launch_air5_interior_primitive_gpu()
     endif
     if(lio .and. (nstep==0 .or. (feqchkpt>0 .and. mod(nstep,feqchkpt)==0))) then
       write(*,'(A,I0,A,5(ES12.4,1X),A,4(I0,1X))') 'AIR5_CHEMISTRY half=', &

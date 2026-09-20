@@ -11,6 +11,7 @@ module chemistry_flow_gpu_probe_kernels
   private
 
   public :: launch_chemistry_flow_probe_gpu
+  public :: launch_chemistry_transport_status_probe_gpu
 
 contains
 
@@ -50,6 +51,22 @@ contains
     flux_out=[reshape(momentum_flux,[9]),reshape(species_flux,[15]),energy_flux,ev_flux]
   end subroutine chemistry_flow_probe_kernel
 
+  attributes(global) subroutine chemistry_transport_status_probe_kernel(temperature, &
+      tv,pressure,mass_fraction,status_out)
+    real(real64), value :: temperature,tv,pressure
+    real(real64), device, intent(in) :: mass_fraction(air5_num_species)
+    integer, device, intent(out) :: status_out
+    real(real64) :: viscosity,conductivity_tr,conductivity_v, &
+      species_viscosity(air5_num_species), &
+      binary_diffusion(air5_num_species,air5_num_species), &
+      mixture_diffusion(air5_num_species)
+
+    if(threadIdx%x/=1 .or. blockIdx%x/=1) return
+    call air5_transport_properties_gpu(temperature,tv,pressure,mass_fraction,viscosity, &
+      conductivity_tr,conductivity_v,species_viscosity,binary_diffusion, &
+      mixture_diffusion,status_out)
+  end subroutine chemistry_transport_status_probe_kernel
+
   subroutine launch_chemistry_flow_probe_gpu(rho,velocity,temperature,tv,pressure, &
       mass_fraction,grad_velocity,grad_temperature,grad_tv,grad_mass_fraction, &
       q_out,primitive_out,transport_out,flux_out,status_out)
@@ -67,6 +84,17 @@ contains
     call sync_after_kernel('chemistry_flow_probe_kernel',force_sync=.true.)
   end subroutine launch_chemistry_flow_probe_gpu
 
+  subroutine launch_chemistry_transport_status_probe_gpu(temperature,tv,pressure, &
+      mass_fraction,status_out)
+    real(real64), intent(in) :: temperature,tv,pressure
+    real(real64), device, intent(in) :: mass_fraction(air5_num_species)
+    integer, device, intent(out) :: status_out
+
+    call chemistry_transport_status_probe_kernel<<<1,32>>>(temperature,tv,pressure, &
+      mass_fraction,status_out)
+    call sync_after_kernel('chemistry_transport_status_probe_kernel',force_sync=.true.)
+  end subroutine launch_chemistry_transport_status_probe_gpu
+
 end module chemistry_flow_gpu_probe_kernels
 
 program chemistry_flow_gpu_probe
@@ -76,7 +104,8 @@ program chemistry_flow_gpu_probe
   use chemistry_flow_state, only: air5_primitive_to_conservative, &
     air5_conservative_to_primitive
   use chemistry_transport, only: air5_transport_properties,air5_diffusive_flux
-  use chemistry_flow_gpu_probe_kernels, only: launch_chemistry_flow_probe_gpu
+  use chemistry_flow_gpu_probe_kernels, only: launch_chemistry_flow_probe_gpu, &
+    launch_chemistry_transport_status_probe_gpu
   implicit none
 
   real(real64), parameter :: rho=0.42_real64,temperature=4200.0_real64, &
@@ -95,8 +124,9 @@ program chemistry_flow_gpu_probe
     grad_velocity_d(3,3),grad_temperature_d(3),grad_tv_d(3), &
     grad_mass_fraction_d(air5_num_species,3),q_d(11),primitive_d(12), &
     transport_d(38),flux_d(30)
-  integer :: status_ref(4),status_gpu(4),status_mismatches
-  integer, device :: status_d(4)
+  integer :: status_ref(4),status_gpu(4),status_mismatches,closure_status_ref, &
+    closure_status_gpu
+  integer, device :: status_d(4),closure_status_d
   real(real64) :: state_ratio,transport_ratio,flux_ratio
 
   velocity=[1200.0_real64,-37.0_real64,84.0_real64]
@@ -185,12 +215,26 @@ program chemistry_flow_gpu_probe
   call update_ratio(primitive_gpu,primitive_ref,state_ratio)
   call update_ratio(transport_gpu,transport_ref,transport_ratio)
   call update_ratio(flux_gpu,flux_ref,flux_ratio)
+
+  mass_fraction=[0.76690794303092946_real64,0.23308774709158103_real64, &
+    5.1679452124184590e-11_real64,4.2992112853434266e-6_real64, &
+    1.0614510385629360e-8_real64]
+  call air5_transport_properties(1541.1514486_real64,1408.1376083_real64, &
+    74228.928248_real64,mass_fraction,viscosity,conductivity_tr,conductivity_v, &
+    species_viscosity,binary_diffusion,mixture_diffusion,closure_status_ref)
+  mass_fraction_d=mass_fraction
+  call launch_chemistry_transport_status_probe_gpu(1541.1514486_real64, &
+    1408.1376083_real64,74228.928248_real64,mass_fraction_d,closure_status_d)
+  closure_status_gpu=closure_status_d
+  status_mismatches=status_mismatches+merge(0,1,closure_status_gpu==closure_status_ref)
   write(*,'(A,1X,ES24.16)') 'CHEMISTRY_FLOW_GPU_STATE_MAX_RATIO',state_ratio
   write(*,'(A,1X,ES24.16)') 'CHEMISTRY_FLOW_GPU_TRANSPORT_MAX_RATIO',transport_ratio
   write(*,'(A,1X,ES24.16)') 'CHEMISTRY_FLOW_GPU_FLUX_MAX_RATIO',flux_ratio
   write(*,'(A,1X,I0)') 'CHEMISTRY_FLOW_GPU_STATUS_MISMATCHES',status_mismatches
+  write(*,'(A,1X,I0)') 'CHEMISTRY_FLOW_GPU_CLOSURE_STATUS',closure_status_gpu
   if(state_ratio>1.0_real64 .or. transport_ratio>1.0_real64 .or. &
-     flux_ratio>1.0_real64 .or. status_mismatches/=0) &
+     flux_ratio>1.0_real64 .or. status_mismatches/=0 .or. closure_status_ref/=0 .or. &
+     closure_status_gpu/=0) &
     error stop 'GPU chemistry flow comparison failed'
 
 contains

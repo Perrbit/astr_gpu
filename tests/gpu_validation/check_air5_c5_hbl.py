@@ -82,8 +82,12 @@ def _load_parallel_layout(path: Path) -> dict[int, RankLayout]:
     return layouts
 
 
-def _phase_files(prefix: Path, label: str, stage: int) -> dict[int, Path]:
-    pattern = f"{prefix.name}.{label}.step00000000.rk{stage:02d}.rank*.bin"
+def _phase_files(
+    prefix: Path, label: str, stage: int, step: int
+) -> dict[int, Path]:
+    if step < 0:
+        raise ValueError("HBL validation step must be non-negative")
+    pattern = f"{prefix.name}.{label}.step{step:08d}.rk{stage:02d}.rank*.bin"
     files = {
         _rank_from_path(path): path for path in sorted(prefix.parent.glob(pattern))
     }
@@ -107,8 +111,9 @@ def _assemble_global(
     label: str,
     stage: int,
     layouts: dict[int, RankLayout],
+    step: int,
 ) -> np.ndarray:
-    files = _phase_files(prefix, label, stage)
+    files = _phase_files(prefix, label, stage, step)
     if set(files) != set(layouts):
         raise ValueError(f"{label}/{stage}: snapshot and layout rank sets differ")
     ia = max(layout.i0 + layout.im for layout in layouts.values())
@@ -264,12 +269,15 @@ def analyze(
     mechanism: Path,
     *,
     ref_len: float,
+    step: int = 0,
 ) -> HblMetrics:
     if ref_len <= 0.0:
         raise ValueError("HBL reference length must be positive")
+    if step < 0:
+        raise ValueError("HBL validation step must be non-negative")
     layouts = _load_parallel_layout(prefix.parent.parent / "datin" / "parallel.info")
     phases = {
-        phase: _assemble_global(prefix, phase[0], phase[1], layouts)
+        phase: _assemble_global(prefix, phase[0], phase[1], layouts, step)
         for phase in CHEMISTRY_PHASES + BOUNDARY_PHASES
     }
     model = Air5RadauReference(mechanism)
@@ -382,6 +390,7 @@ def main() -> int:
     parser.add_argument("--profile", required=True, type=Path)
     parser.add_argument("--mechanism", required=True, type=Path)
     parser.add_argument("--ref-len", required=True, type=float)
+    parser.add_argument("--step", type=int, default=0)
     parser.add_argument("--report", required=True, type=Path)
     parser.add_argument("--mass-closure-atol", type=float, default=1.0e-10)
     parser.add_argument("--constraint-atol", type=float, default=1.0e-8)
@@ -403,7 +412,11 @@ def main() -> int:
 
     try:
         metrics = analyze(
-            args.prefix, args.profile, args.mechanism, ref_len=args.ref_len
+            args.prefix,
+            args.profile,
+            args.mechanism,
+            ref_len=args.ref_len,
+            step=args.step,
         )
         passed = (
             metrics.minimum_density > 0.0

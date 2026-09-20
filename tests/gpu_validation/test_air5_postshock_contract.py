@@ -138,13 +138,12 @@ def test_cpu_air5_diffusion_uses_physical_boundary_flux_closure() -> None:
     solver = compact("src/chemistry_solver.F90")
 
     assert "any([npdci,npdcj,npdck]/=3)" not in solver
-    assert "calldifferentiate_air5_flux(f,df,im,hm,npdci)" in solver
-    assert "calldifferentiate_air5_flux(f,df,jm,hm,npdcj)" in solver
-    assert "calldifferentiate_air5_flux(f,df,km,hm,npdck)" in solver
-    assert "puresubroutinedifferentiate_air5_flux(f,df,dim,hm,ntype)" in solver
-    assert "df(0,component)=-0.5_real64*f(2,component)+" in solver
-    assert "df(1,component)=0.5_real64*(f(2,component)-f(0,component))" in solver
-    assert "df(dim,component)=0.5_real64*f(dim-2,component)-" in solver
+    assert "subroutineprojected_air5_face_flux(" in solver
+    assert "d0=-0.5_real64*fn(2,:)+2.0_real64*fn(1,:)-1.5_real64*fn(0,:)" in solver
+    assert "d1=0.5_real64*(fn(2,:)-fn(0,:))" in solver
+    assert "d2=0.5_real64*fn(3,:)-2.0_real64*fn(4,:)+1.5_real64*fn(5,:)" in solver
+    assert "f=anchor-d2-d1-d0" in solver
+    assert "f=anchor+d0+d1+d2" in solver
 
 
 def test_gpu_air5_diffusion_closes_gradients_and_flux_divergence() -> None:
@@ -164,6 +163,7 @@ def test_gpu_air5_diffusion_closes_gradients_and_flux_divergence() -> None:
             "is,ie,js,je,ks,ke)"
         )
         assert signature in solver
-    assert "air5_deriv6_boundary(i,im,npdci" in solver
-    assert "air5_deriv6_boundary(j,jm,npdcj" in solver
-    assert "air5_deriv6_boundary(k,km,npdck" in solver
+    assert "subroutineair5_diffusive_face_flux(" in solver
+    assert "callair5_diffusive_face_flux(i,j,k,1,i-1,im,npdci,left_flux)" in solver
+    assert "callair5_diffusive_face_flux(i,j,k,2,j-1,jm,npdcj,left_flux)" in solver
+    assert "callair5_diffusive_face_flux(i,j,k,3,k-1,km,npdck,left_flux)" in solver

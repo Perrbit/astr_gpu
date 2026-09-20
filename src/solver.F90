@@ -287,7 +287,7 @@ module solver
     use commvar,   only : flowtype,conschm,diffterm,im,jm,             &
                           recon_schem,limmbou,lchardecomp,lihomo,lcomb
 #ifdef ASTR_AIR5_CHEMISTRY
-    use chemistry_flow_solver, only: air5_diffusion_rhs
+    use chemistry_flow_solver, only: air5_diffusion_rhs,air5_limit_species_convection
 #endif
     use commcal,   only : ShockSolid,ducrossensor,shock_sensor_validation_enabled
     use comsolver, only : gradcal
@@ -353,6 +353,9 @@ module solver
     !
     !
     qrhs=-qrhs
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(lcomb .and. flowtype(1:2)/='0d') call air5_limit_species_convection()
+#endif
     call write_rhs_validation_snapshot('conv')
     !
     if(nscbc_farfield_viscous_source_enabled())                       &

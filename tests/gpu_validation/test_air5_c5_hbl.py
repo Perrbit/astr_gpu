@@ -76,7 +76,9 @@ def apply_boundaries(
     q[0, :, :, :] = profile_q[:, None, :]
 
 
-def write_case(directory: Path, *, negative_trace_species: bool = False) -> tuple[Path, Path]:
+def write_case(
+    directory: Path, *, negative_trace_species: bool = False, step: int = 0
+) -> tuple[Path, Path]:
     model = Air5RadauReference(MECHANISM)
     validation = directory / "validation"
     datin = directory / "datin"
@@ -136,13 +138,13 @@ def write_case(directory: Path, *, negative_trace_species: bool = False) -> tupl
         pre_rhs[1, 1, 0, 9] = -1.0e-20
 
     snapshots = {
-        "pre_chemistry.step00000000.rk01.rank00000000.bin": pre,
-        "post_chemistry.step00000000.rk01.rank00000000.bin": post_first,
-        "post_transport.step00000000.rk01.rank00000000.bin": post_transport,
-        "post_chemistry.step00000000.rk02.rank00000000.bin": post_second,
-        "pre_rhs.step00000000.rk01.rank00000000.bin": pre_rhs,
-        "pre_rhs.step00000000.rk02.rank00000000.bin": pre_rhs,
-        "pre_rhs.step00000000.rk03.rank00000000.bin": pre_rhs,
+        f"pre_chemistry.step{step:08d}.rk01.rank00000000.bin": pre,
+        f"post_chemistry.step{step:08d}.rk01.rank00000000.bin": post_first,
+        f"post_transport.step{step:08d}.rk01.rank00000000.bin": post_transport,
+        f"post_chemistry.step{step:08d}.rk02.rank00000000.bin": post_second,
+        f"pre_rhs.step{step:08d}.rk01.rank00000000.bin": pre_rhs,
+        f"pre_rhs.step{step:08d}.rk02.rank00000000.bin": pre_rhs,
+        f"pre_rhs.step{step:08d}.rk03.rank00000000.bin": pre_rhs,
     }
     for suffix, values in snapshots.items():
         write_snapshot(validation / f"air5.{suffix}", values)
@@ -178,6 +180,14 @@ def test_hbl_checker_accepts_positive_boundary_contract(tmp_path: Path) -> None:
     assert metrics.z_extrusion_scaled_error < 1.0e-8
 
 
+def test_hbl_checker_selects_requested_long_time_step(tmp_path: Path) -> None:
+    prefix, profile = write_case(tmp_path, step=37)
+
+    metrics = analyze(prefix, profile, MECHANISM, ref_len=1.5e-5, step=37)
+
+    assert metrics.minimum_density > 0.0
+
+
 def test_hbl_checker_rejects_negative_trace_species(tmp_path: Path) -> None:
     prefix, profile = write_case(tmp_path, negative_trace_species=True)
 
@@ -196,18 +206,29 @@ def test_hbl_runner_locks_a0_phase_and_open_boundary_contracts() -> None:
     compact = "".join(runner.lower().split())
 
     assert 'grid="${grid:-31,31,7}"' in compact
+    assert 'validation_step="${validation_step:-$maxstep}"' in compact
+    assert 'validation_step_secondary="${validation_step_secondary:-}"' in compact
+    assert 'list_frequency="${list_frequency:-100}"' in compact
     assert 'deltat="${deltat:-1.d-10}"' in compact
+    assert 'extrusion_scaled_tol="${extrusion_scaled_tol:-2.0e-10}"' in compact
+    assert 'same_phase_scaled_tol="${same_phase_scaled_tol:-}"' in compact
     assert "--initial-conditionhigh-enthalpy-boundary-layer" in compact
+    assert '--list-frequency"$list_frequency"' in compact
     assert "--difftermt" in compact
     assert 'astr_air5_source_mode="coupled"' in compact
     assert 'astr_air5_c4_conservation=f' in compact
     assert "ompi_mca_coll='^hcoll,ucc'" in compact
     assert "ompi_mca_pml=ob1" in compact
     assert "ompi_mca_btl=self,vader,tcp" in compact
-    assert "timeout--kill-after=10s300smpirun--oversubscribe" in compact
+    assert 'astr_validation_rhs_step="$validation_step"' in compact
+    assert 'astr_validation_rhs_step_secondary="$validation_step_secondary"' in compact
+    assert 'timeout--kill-after=10s"${timeout_seconds}s"mpirun--oversubscribe' in compact
     assert "minimum_local_extent" in compact
     assert "smallerthanhm" in compact
     assert "--labelspost_chemistry,pre_rhs" in compact
+    assert '--step"$validation_step"' in compact
+    assert '--extrusion-scaled-tol"$extrusion_scaled_tol"' in compact
+    assert '--scaled-tol"$same_phase_scaled_tol"' in compact
     assert "check_air5_c5_hbl.py" in compact
     assert "check_air5_c4_conservation.py" not in compact
 

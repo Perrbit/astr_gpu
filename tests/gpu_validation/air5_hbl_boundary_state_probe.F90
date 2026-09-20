@@ -11,6 +11,7 @@ program air5_hbl_boundary_state_probe
 
   character(len=32) :: mode
   real(real64) :: q1(air5_num_conservative),q2(air5_num_conservative)
+  real(real64) :: q_high(air5_num_conservative),limiter_theta
   real(real64) :: result(air5_num_conservative),rho,velocity(3),temperature,tv,pressure
   real(real64) :: y1(air5_num_species),y2(air5_num_species),mass_fraction(air5_num_species)
   integer :: status,state_status
@@ -30,6 +31,19 @@ program air5_hbl_boundary_state_probe
     call build_air5_hbl_wall_state(q1,q2,2925.0_real64,result,status)
   case('outflow')
     call build_air5_hbl_outflow_state(q1,q2,result,status)
+  case('outflow-trace')
+    y1=[0.76999899899999997_real64,0.23_real64,2.0e-26_real64, &
+      1.0e-6_real64,1.0e-9_real64]
+    y2=[0.76999899899999997_real64,0.23_real64,1.0e-25_real64, &
+      1.0e-6_real64,1.0e-9_real64]
+    call air5_primitive_to_conservative(1.0_real64,[2900.0_real64,0.0_real64,0.0_real64], &
+      1500.0_real64,y1,1400.0_real64,q1,state_status)
+    if(state_status/=chemistry_status_ok) error stop 'failed to build trace inner state one'
+    call air5_primitive_to_conservative(1.0_real64,[2800.0_real64,0.0_real64,0.0_real64], &
+      1500.0_real64,y2,1400.0_real64,q2,state_status)
+    if(state_status/=chemistry_status_ok) error stop 'failed to build trace inner state two'
+    q_high=(4.0_real64*q1-q2)/3.0_real64
+    call build_air5_hbl_outflow_state(q1,q2,result,status,limiter_theta)
   case default
     error stop 'unknown air5 HBL boundary-state probe mode'
   end select
@@ -40,9 +54,16 @@ program air5_hbl_boundary_state_probe
   call air5_conservative_to_primitive(result,rho,velocity,temperature, &
     mass_fraction,tv,pressure,state_status)
   if(state_status/=chemistry_status_ok) error stop 'boundary state reconstruction failed'
-  write(*,'(2(I0,1X),14(ES25.16E3,1X))') status,state_status,rho,velocity, &
-    pressure,temperature,tv,mass_fraction,sum(mass_fraction), &
-    maxval(abs(result-(4.0_real64*q1-q2)/3.0_real64))
+  if(trim(mode)=='outflow-trace') then
+    write(*,'(2(I0,1X),17(ES25.16E3,1X))') status,state_status,rho,velocity, &
+      pressure,temperature,tv,mass_fraction,sum(mass_fraction),limiter_theta, &
+      minval(q_high(6:10)),minval(result(6:10)), &
+      max(maxval(abs(result(1:5)-q_high(1:5))),abs(result(11)-q_high(11)))
+  else
+    write(*,'(2(I0,1X),14(ES25.16E3,1X))') status,state_status,rho,velocity, &
+      pressure,temperature,tv,mass_fraction,sum(mass_fraction), &
+      maxval(abs(result-(4.0_real64*q1-q2)/3.0_real64))
+  endif
 
 contains
 

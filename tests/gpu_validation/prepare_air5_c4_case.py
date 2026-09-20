@@ -53,6 +53,7 @@ def prepare_case(
     diffterm: str,
     use_gpu: str,
     initial_condition: str,
+    list_frequency: int = 1,
 ) -> Path:
     if destination.exists():
         shutil.rmtree(destination)
@@ -136,7 +137,7 @@ def prepare_case(
     replace_after_marker(
         lines,
         "maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg",
-        f"{maxstep},{max(maxstep + 1, 2)},10,50,1,50",
+        f"{maxstep},{max(maxstep + 1, 2)},10,50,{list_frequency},50",
     )
     replace_after_marker(lines, "deltat", deltat)
     controller.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -149,6 +150,7 @@ def main() -> None:
     parser.add_argument("--grid", default="15,15,15")
     parser.add_argument("--maxstep", type=int, default=1)
     parser.add_argument("--deltat", default="1.d-7")
+    parser.add_argument("--list-frequency", type=int, default=1)
     parser.add_argument("--diffterm", choices=("t", "f"), default="f")
     parser.add_argument("--use-gpu", choices=("t", "f"), default="t")
     parser.add_argument(
@@ -169,6 +171,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.maxstep < 0:
         raise ValueError("maxstep must be non-negative")
+    if args.list_frequency <= 0:
+        raise ValueError("list frequency must be positive")
 
     source = Path(__file__).resolve().parents[2] / "examples" / "Taylor_Green_Vortex_SI" / "datin"
     input_file = prepare_case(
@@ -180,6 +184,7 @@ def main() -> None:
         args.diffterm,
         args.use_gpu,
         args.initial_condition,
+        args.list_frequency,
     )
     print(input_file)
 

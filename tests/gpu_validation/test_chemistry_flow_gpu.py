@@ -32,6 +32,7 @@ class ChemistryFlowGpuTests(unittest.TestCase):
             self.assertIn(name, metrics)
             self.assertLessEqual(metrics[name], 1.0)
         self.assertEqual(metrics["CHEMISTRY_FLOW_GPU_STATUS_MISMATCHES"], 0.0)
+        self.assertEqual(metrics["CHEMISTRY_FLOW_GPU_CLOSURE_STATUS"], 0.0)
 
 
 class ChemistryFlowGpuContractTests(unittest.TestCase):

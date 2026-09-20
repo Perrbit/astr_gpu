@@ -84,7 +84,8 @@ module chemistry_hbl_boundary_gpu
   use chemistry_air5_data, only: air5_num_species,air5_molar_mass,air5_ru
   use chemistry_model, only: chemistry_status_ok,chemistry_status_invalid_density, &
     chemistry_status_invalid_composition
-  use chemistry_state_layout, only: air5_num_conservative
+  use chemistry_state_layout, only: air5_num_conservative,air5_idx_density, &
+    air5_idx_species_first,air5_idx_species_last
   use chemistry_flow_state_gpu, only: air5_primitive_to_conservative_gpu, &
     air5_conservative_to_primitive_gpu
   implicit none
@@ -126,23 +127,119 @@ contains
     if(status/=chemistry_status_ok) ignored=atomicMax(hbl_status_d,status)
   end subroutine record_hbl_status
 
+  attributes(device) subroutine build_air5_hbl_outflow_state_gpu(q_inner_one, &
+      q_inner_two,q_outflow,status)
+    real(real64), intent(in) :: q_inner_one(air5_num_conservative)
+    real(real64), intent(in) :: q_inner_two(air5_num_conservative)
+    real(real64), intent(out) :: q_outflow(air5_num_conservative)
+    integer, intent(out) :: status
+    real(real64) :: density,velocity(3),temperature,mass_fraction(air5_num_species)
+    real(real64) :: tv,pressure,q_high(air5_num_conservative)
+    real(real64) :: q_trial(air5_num_conservative)
+    real(real64) :: theta_lower,theta_upper,theta_trial
+    integer :: component,iteration,trial_status
+    logical :: species_limited
+
+    q_high=(4.0_real64*q_inner_one-q_inner_two)/3.0_real64
+    q_outflow=q_high
+    call air5_conservative_to_primitive_gpu(q_outflow,density,velocity,temperature, &
+      mass_fraction,tv,pressure,status)
+    if(status==chemistry_status_ok) return
+
+    q_outflow=q_inner_one
+    call air5_conservative_to_primitive_gpu(q_outflow,density,velocity,temperature, &
+      mass_fraction,tv,pressure,status)
+    if(status/=chemistry_status_ok) then
+      q_outflow=0.0_real64
+      return
+    endif
+
+    q_trial=q_high
+    species_limited=.false.
+    do component=air5_idx_species_first+1,air5_idx_species_last
+      if(q_high(component)<0.0_real64) then
+        species_limited=.true.
+        if(q_inner_one(component)<=0.0_real64) then
+          theta_trial=0.0_real64
+        else
+          theta_trial=q_inner_one(component)/ &
+            (q_inner_one(component)-q_high(component))
+          theta_trial=theta_trial*(1.0_real64-256.0_real64*epsilon(1.0_real64))
+        endif
+        theta_trial=max(0.0_real64,min(1.0_real64,theta_trial))
+        q_trial(component)=q_inner_one(component)+theta_trial* &
+          (q_high(component)-q_inner_one(component))
+      endif
+    enddo
+    if(species_limited) then
+      q_trial(air5_idx_species_first)=q_high(air5_idx_density)
+      do component=air5_idx_species_first+1,air5_idx_species_last
+        q_trial(air5_idx_species_first)=q_trial(air5_idx_species_first)-q_trial(component)
+      enddo
+      call air5_conservative_to_primitive_gpu(q_trial,density,velocity,temperature, &
+        mass_fraction,tv,pressure,trial_status)
+      if(trial_status==chemistry_status_ok) then
+        q_outflow=q_trial
+        status=chemistry_status_ok
+        return
+      endif
+    endif
+
+    theta_upper=1.0_real64
+    do component=air5_idx_species_first,air5_idx_species_last
+      if(q_high(component)<0.0_real64) then
+        if(q_inner_one(component)<=0.0_real64) then
+          theta_upper=0.0_real64
+        else
+          theta_upper=min(theta_upper,q_inner_one(component)/ &
+            (q_inner_one(component)-q_high(component)))
+        endif
+      endif
+    enddo
+    theta_upper=max(0.0_real64,min(1.0_real64,theta_upper))
+    if(theta_upper<1.0_real64) &
+      theta_upper=theta_upper*(1.0_real64-256.0_real64*epsilon(1.0_real64))
+    q_trial=q_inner_one+theta_upper*(q_high-q_inner_one)
+    call air5_conservative_to_primitive_gpu(q_trial,density,velocity,temperature, &
+      mass_fraction,tv,pressure,trial_status)
+    if(trial_status==chemistry_status_ok) then
+      q_outflow=q_trial
+      status=chemistry_status_ok
+      return
+    endif
+
+    theta_lower=0.0_real64
+    do iteration=1,64
+      theta_trial=0.5_real64*(theta_lower+theta_upper)
+      q_trial=q_inner_one+theta_trial*(q_high-q_inner_one)
+      call air5_conservative_to_primitive_gpu(q_trial,density,velocity,temperature, &
+        mass_fraction,tv,pressure,trial_status)
+      if(trial_status==chemistry_status_ok) then
+        theta_lower=theta_trial
+        q_outflow=q_trial
+      else
+        theta_upper=theta_trial
+      endif
+    enddo
+    status=chemistry_status_ok
+  end subroutine build_air5_hbl_outflow_state_gpu
+
   attributes(global) subroutine air5_hbl_outflow_boundary_kernel(im,jm,km,hm)
     use commarray_gpu, only: q_d
     integer, value :: im,jm,km,hm
-    integer :: id,ntot,i,j,k,status,component
+    integer :: id,ntot,i,j,k,status
     real(real64) :: q_boundary(air5_num_conservative)
-    real(real64) :: density,velocity(3),temperature,mass_fraction(air5_num_species)
-    real(real64) :: tv,pressure
+    real(real64) :: q_inner_one(air5_num_conservative)
+    real(real64) :: q_inner_two(air5_num_conservative)
 
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     ntot=(jm+1)*(km+1)
     if(id>=ntot) return
     j=mod(id,jm+1)
     k=id/(jm+1)
-    q_boundary=(4.0_real64*q_d(im-1,j,k,1:air5_num_conservative)- &
-      q_d(im-2,j,k,1:air5_num_conservative))/3.0_real64
-    call air5_conservative_to_primitive_gpu(q_boundary,density,velocity, &
-      temperature,mass_fraction,tv,pressure,status)
+    q_inner_one=q_d(im-1,j,k,1:air5_num_conservative)
+    q_inner_two=q_d(im-2,j,k,1:air5_num_conservative)
+    call build_air5_hbl_outflow_state_gpu(q_inner_one,q_inner_two,q_boundary,status)
     if(status/=chemistry_status_ok) then
       call record_hbl_status(status)
       return

@@ -99,6 +99,30 @@ program chemistry_flow_probe
     write(*,'(I0,1X,3(ES25.16E3,1X))') status, &
       maxval(abs(species_flux(2:air5_num_species,:))),minval(mixture_diffusion), &
       maxval(abs(sum(species_flux,dim=1)))
+  case('closure-roundoff')
+    mass_fraction=[0.76690794303092946_real64,0.23308774709158103_real64, &
+      5.1679452124184590e-11_real64,4.2992112853434266e-6_real64, &
+      1.0614510385629360e-8_real64]
+    call air5_transport_properties(1541.1514486_real64,1408.1376083_real64, &
+      74228.928248_real64,mass_fraction,viscosity,conductivity_tr,conductivity_v, &
+      species_viscosity,binary_diffusion,mixture_diffusion,status)
+    write(*,'(I0,1X,2(ES25.16E3,1X))') status, &
+      abs(sum(mass_fraction)-1.0_real64),minval(mixture_diffusion)
+  case('closure-hbl-outflow')
+    q=[1.161428770839788988e-1_real64,2.375474942785869246e2_real64, &
+      1.192005396401516926e0_real64,-2.755478444608583182e-11_real64, &
+      4.021483775032878038e5_real64,8.907091130587020678e-2_real64, &
+      2.707115024895278069e-2_real64,9.467318581106629851e-12_real64, &
+      8.134607202249798363e-7_real64,2.058965052555392159e-9_real64, &
+      2.165529498430201784e4_real64]
+    call air5_conservative_to_primitive(q,rho,velocity,temperature,mass_fraction, &
+      tv,pressure,status2)
+    call air5_transport_properties(temperature,tv,pressure, &
+      mass_fraction,viscosity,conductivity_tr,conductivity_v,species_viscosity, &
+      binary_diffusion,mixture_diffusion,status)
+    status=max(status,status2)
+    write(*,'(I0,1X,2(ES25.16E3,1X))') status, &
+      sum(mass_fraction)-1.0_real64,minval(mixture_diffusion)
   case default
     error stop 'unknown chemistry flow probe mode'
   end select

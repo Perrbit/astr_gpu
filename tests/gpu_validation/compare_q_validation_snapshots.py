@@ -22,6 +22,7 @@ class FileComparison:
     passed: bool
     max_abs: float
     max_rel: float
+    max_scaled: float
     max_index: int
 
 
@@ -31,6 +32,7 @@ class SnapshotSetComparison:
     file_count: int
     max_abs: float
     max_rel: float
+    max_scaled: float
     comparisons: tuple[FileComparison, ...]
 
 
@@ -89,7 +91,12 @@ def compare_snapshot_sets(
     atol: float,
     rtol: float,
     active_only: bool = False,
+    scaled_tol: float | None = None,
 ) -> SnapshotSetComparison:
+    if atol < 0.0 or rtol < 0.0:
+        raise ValueError("atol and rtol must be non-negative")
+    if scaled_tol is not None and scaled_tol < 0.0:
+        raise ValueError("scaled_tol must be non-negative")
     cpu_files = snapshot_files(cpu_prefix, labels)
     gpu_files = snapshot_files(gpu_prefix, labels)
     if not cpu_files and not gpu_files:
@@ -117,13 +124,20 @@ def compare_snapshot_sets(
         max_abs = float(difference[max_index])
         scale = np.maximum(np.abs(cpu_values), max(atol, 1.0e-300))
         max_rel = float(np.max(difference / scale))
-        passed = bool(np.all(difference <= atol + rtol * np.abs(cpu_values)))
+        physical_scale = np.maximum(np.abs(cpu_values), 1.0)
+        scaled_difference = difference / physical_scale
+        max_scaled = float(np.max(scaled_difference))
+        if scaled_tol is None:
+            passed = bool(np.all(difference <= atol + rtol * np.abs(cpu_values)))
+        else:
+            passed = bool(np.all(scaled_difference <= scaled_tol))
         comparisons.append(
             FileComparison(
                 suffix=suffix,
                 passed=passed,
                 max_abs=max_abs,
                 max_rel=max_rel,
+                max_scaled=max_scaled,
                 max_index=max_index,
             )
         )
@@ -133,6 +147,7 @@ def compare_snapshot_sets(
         file_count=len(comparisons),
         max_abs=max(item.max_abs for item in comparisons),
         max_rel=max(item.max_rel for item in comparisons),
+        max_scaled=max(item.max_scaled for item in comparisons),
         comparisons=tuple(comparisons),
     )
 
@@ -145,6 +160,7 @@ def main() -> int:
     parser.add_argument("--labels", default="pre_rhs,post_update")
     parser.add_argument("--atol", type=float, default=1.0e-10)
     parser.add_argument("--rtol", type=float, default=0.0)
+    parser.add_argument("--scaled-tol", type=float)
     parser.add_argument("--active-only", action="store_true")
     args = parser.parse_args()
 
@@ -158,21 +174,28 @@ def main() -> int:
         atol=args.atol,
         rtol=args.rtol,
         active_only=args.active_only,
+        scaled_tol=args.scaled_tol,
     )
+    acceptance = "physical-scaled" if args.scaled_tol is not None else "elementwise"
     lines = [
         f"status: {'pass' if result.passed else 'fail'}",
         f"files: {result.file_count}",
+        f"acceptance: {acceptance}",
         f"atol: {args.atol:.16e}",
         f"rtol: {args.rtol:.16e}",
         f"max_abs: {result.max_abs:.16e}",
         f"max_rel: {result.max_rel:.16e}",
+        f"max_scaled: {result.max_scaled:.16e}",
         "",
-        "snapshot status max_abs max_rel flat_index",
+        "snapshot status max_abs max_rel max_scaled flat_index",
     ]
+    if args.scaled_tol is not None:
+        lines.insert(5, f"scaled_tol: {args.scaled_tol:.16e}")
     for item in result.comparisons:
         lines.append(
             f"{item.suffix} {'pass' if item.passed else 'fail'} "
-            f"{item.max_abs:.16e} {item.max_rel:.16e} {item.max_index}"
+            f"{item.max_abs:.16e} {item.max_rel:.16e} "
+            f"{item.max_scaled:.16e} {item.max_index}"
         )
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text("\n".join(lines) + "\n", encoding="utf-8")

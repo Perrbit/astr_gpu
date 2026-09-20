@@ -84,6 +84,38 @@ class CompareQValidationSnapshotsTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertAlmostEqual(result.max_abs, 1.0e-6)
 
+    def test_physical_scaled_gate_is_explicit_and_preserves_strict_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            suffix = "post_update.step00000150.rk03.rank00000000.bin"
+            header = (0, 0, 0, 0, 5)
+            cpu = np.array([1.0, 2.0, 3.0, 0.0, 1.0e6], dtype=np.float64)
+            gpu = cpu.copy()
+            gpu[3] += 2.0e-8
+            gpu[4] += 1.0e-3
+            write_snapshot(root / f"cpu.{suffix}", header, cpu)
+            write_snapshot(root / f"gpu.{suffix}", header, gpu)
+
+            strict = compare_snapshot_sets(
+                root / "cpu",
+                root / "gpu",
+                labels=("post_update",),
+                atol=1.0e-9,
+                rtol=1.0e-10,
+            )
+            long_time = compare_snapshot_sets(
+                root / "cpu",
+                root / "gpu",
+                labels=("post_update",),
+                atol=1.0e-9,
+                rtol=1.0e-10,
+                scaled_tol=1.0e-7,
+            )
+
+        self.assertFalse(strict.passed)
+        self.assertTrue(long_time.passed)
+        self.assertAlmostEqual(long_time.max_scaled, 2.0e-8)
+
     def test_active_only_ignores_external_halo_difference(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

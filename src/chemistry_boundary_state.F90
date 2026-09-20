@@ -217,7 +217,8 @@ module chemistry_hbl_boundary_state
   use iso_fortran_env, only: real64
   use chemistry_air5_data, only: air5_num_species,air5_molar_mass,air5_ru
   use chemistry_model, only: chemistry_status_ok,chemistry_status_invalid_density
-  use chemistry_state_layout, only: air5_num_conservative
+  use chemistry_state_layout, only: air5_num_conservative,air5_idx_density, &
+    air5_idx_species_first,air5_idx_species_last
   use chemistry_flow_state, only: air5_primitive_to_conservative, &
     air5_conservative_to_primitive
   implicit none
@@ -262,18 +263,108 @@ contains
   end subroutine build_air5_hbl_wall_state
 
   pure subroutine build_air5_hbl_outflow_state(q_inner_one,q_inner_two, &
-      q_outflow,status)
+      q_outflow,status,limiter_theta)
     real(real64), intent(in) :: q_inner_one(air5_num_conservative)
     real(real64), intent(in) :: q_inner_two(air5_num_conservative)
     real(real64), intent(out) :: q_outflow(air5_num_conservative)
     integer, intent(out) :: status
+    real(real64), intent(out), optional :: limiter_theta
     real(real64) :: density,temperature,tv,pressure,velocity(3)
     real(real64) :: mass_fraction(air5_num_species)
+    real(real64) :: q_high(air5_num_conservative),q_trial(air5_num_conservative)
+    real(real64) :: theta_lower,theta_upper,theta_trial,species_theta
+    integer :: component,iteration,trial_status
+    logical :: species_limited
 
-    q_outflow=(4.0_real64*q_inner_one-q_inner_two)/3.0_real64
+    q_high=(4.0_real64*q_inner_one-q_inner_two)/3.0_real64
+    q_outflow=q_high
     call air5_conservative_to_primitive(q_outflow,density,velocity,temperature, &
       mass_fraction,tv,pressure,status)
-    if(status/=chemistry_status_ok) q_outflow=0.0_real64
+    if(status==chemistry_status_ok) then
+      if(present(limiter_theta)) limiter_theta=1.0_real64
+      return
+    endif
+
+    q_outflow=q_inner_one
+    call air5_conservative_to_primitive(q_outflow,density,velocity,temperature, &
+      mass_fraction,tv,pressure,status)
+    if(status/=chemistry_status_ok) then
+      q_outflow=0.0_real64
+      if(present(limiter_theta)) limiter_theta=0.0_real64
+      return
+    endif
+
+    q_trial=q_high
+    species_theta=1.0_real64
+    species_limited=.false.
+    do component=air5_idx_species_first+1,air5_idx_species_last
+      if(q_high(component)<0.0_real64) then
+        species_limited=.true.
+        if(q_inner_one(component)<=0.0_real64) then
+          theta_trial=0.0_real64
+        else
+          theta_trial=q_inner_one(component)/ &
+            (q_inner_one(component)-q_high(component))
+          theta_trial=theta_trial*(1.0_real64-256.0_real64*epsilon(1.0_real64))
+        endif
+        theta_trial=max(0.0_real64,min(1.0_real64,theta_trial))
+        q_trial(component)=q_inner_one(component)+theta_trial* &
+          (q_high(component)-q_inner_one(component))
+        species_theta=min(species_theta,theta_trial)
+      endif
+    enddo
+    if(species_limited) then
+      q_trial(air5_idx_species_first)=q_high(air5_idx_density)- &
+        sum(q_trial(air5_idx_species_first+1:air5_idx_species_last))
+      call air5_conservative_to_primitive(q_trial,density,velocity,temperature, &
+        mass_fraction,tv,pressure,trial_status)
+      if(trial_status==chemistry_status_ok) then
+        q_outflow=q_trial
+        status=chemistry_status_ok
+        if(present(limiter_theta)) limiter_theta=species_theta
+        return
+      endif
+    endif
+
+    theta_upper=1.0_real64
+    do component=air5_idx_species_first,air5_idx_species_last
+      if(q_high(component)<0.0_real64) then
+        if(q_inner_one(component)<=0.0_real64) then
+          theta_upper=0.0_real64
+        else
+          theta_upper=min(theta_upper,q_inner_one(component)/ &
+            (q_inner_one(component)-q_high(component)))
+        endif
+      endif
+    enddo
+    theta_upper=max(0.0_real64,min(1.0_real64,theta_upper))
+    if(theta_upper<1.0_real64) &
+      theta_upper=theta_upper*(1.0_real64-256.0_real64*epsilon(1.0_real64))
+    q_trial=q_inner_one+theta_upper*(q_high-q_inner_one)
+    call air5_conservative_to_primitive(q_trial,density,velocity,temperature, &
+      mass_fraction,tv,pressure,trial_status)
+    if(trial_status==chemistry_status_ok) then
+      q_outflow=q_trial
+      status=chemistry_status_ok
+      if(present(limiter_theta)) limiter_theta=theta_upper
+      return
+    endif
+
+    theta_lower=0.0_real64
+    do iteration=1,64
+      theta_trial=0.5_real64*(theta_lower+theta_upper)
+      q_trial=q_inner_one+theta_trial*(q_high-q_inner_one)
+      call air5_conservative_to_primitive(q_trial,density,velocity,temperature, &
+        mass_fraction,tv,pressure,trial_status)
+      if(trial_status==chemistry_status_ok) then
+        theta_lower=theta_trial
+        q_outflow=q_trial
+      else
+        theta_upper=theta_trial
+      endif
+    enddo
+    status=chemistry_status_ok
+    if(present(limiter_theta)) limiter_theta=theta_lower
   end subroutine build_air5_hbl_outflow_state
 
 end module chemistry_hbl_boundary_state

@@ -444,7 +444,12 @@ contains
     call air5_validate_physical_species_state(rho,rho_species,status)
     if(status/=chemistry_status_ok) return
     velocity=momentum/rho
-    mass_fraction=rho_species/rho
+    mass_fraction(2:air5_num_species)=rho_species(2:air5_num_species)/rho
+    mass_fraction(1)=1.0_real64-sum(mass_fraction(2:air5_num_species))
+    if(mass_fraction(1)<0.0_real64) then
+      status=chemistry_status_invalid_composition
+      return
+    endif
     call air5_temperature_from_q5(rho,momentum,rho_species,ev, &
       q(air5_idx_total_energy),temperature,status)
     if(status/=chemistry_status_ok) return
@@ -506,7 +511,7 @@ contains
       return
     endif
     if(any(mass_fraction<0.0_real64) .or. &
-       abs(sum(mass_fraction)-1.0_real64)>64.0_real64*epsilon(1.0_real64)) then
+       abs(sum(mass_fraction)-1.0_real64)>128.0_real64*epsilon(1.0_real64)) then
       status=chemistry_status_invalid_composition
       return
     endif

@@ -8,11 +8,17 @@ OUT_DIR="${OUT_DIR:-$ROOT_DIR/tests/gpu_validation/out/air5_c5_hbl_compare}"
 TMP_DIR="${TMPDIR:-$ROOT_DIR/tests/gpu_validation/out/tmp_nvfortran}"
 GRID="${GRID:-31,31,7}"
 MAXSTEP="${MAXSTEP:-0}"
+VALIDATION_STEP="${VALIDATION_STEP:-$MAXSTEP}"
+VALIDATION_STEP_SECONDARY="${VALIDATION_STEP_SECONDARY:-}"
 DELTAT="${DELTAT:-1.d-10}"
+TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-300}"
+LIST_FREQUENCY="${LIST_FREQUENCY:-100}"
 MPI_NP="${MPI_NP:-${NP:-1}}"
 TOPOLOGY="${TOPOLOGY:-1,1,1}"
 ATOL="${ATOL:-1e-9}"
 RTOL="${RTOL:-1e-10}"
+EXTRUSION_SCALED_TOL="${EXTRUSION_SCALED_TOL:-2.0e-10}"
+SAME_PHASE_SCALED_TOL="${SAME_PHASE_SCALED_TOL:-}"
 MAX_CFL="${MAX_CFL:-1.0}"
 REF_LEN="${REF_LEN:-4.41262150017878821e-5}"
 HM="${HM:-5}"
@@ -36,6 +42,34 @@ for value in "$GI" "$GJ" "$GK" "$TI" "$TJ" "$TK" "$MPI_NP" "$HM"; do
     exit 2
   fi
 done
+for value in "$MAXSTEP" "$VALIDATION_STEP" "$TIMEOUT_SECONDS" "$LIST_FREQUENCY"; do
+  if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+    echo "MAXSTEP, VALIDATION_STEP, and TIMEOUT_SECONDS must be non-negative integers" >&2
+    exit 2
+  fi
+done
+if (( VALIDATION_STEP > MAXSTEP )); then
+  echo "VALIDATION_STEP must not exceed MAXSTEP" >&2
+  exit 2
+fi
+if [[ -n "$VALIDATION_STEP_SECONDARY" ]]; then
+  if [[ ! "$VALIDATION_STEP_SECONDARY" =~ ^[0-9]+$ ]]; then
+    echo "VALIDATION_STEP_SECONDARY must be a non-negative integer" >&2
+    exit 2
+  fi
+  if (( VALIDATION_STEP_SECONDARY > MAXSTEP )); then
+    echo "VALIDATION_STEP_SECONDARY must not exceed MAXSTEP" >&2
+    exit 2
+  fi
+fi
+if (( TIMEOUT_SECONDS == 0 )); then
+  echo "TIMEOUT_SECONDS must be positive" >&2
+  exit 2
+fi
+if (( LIST_FREQUENCY == 0 )); then
+  echo "LIST_FREQUENCY must be positive" >&2
+  exit 2
+fi
 if (( TI * TJ * TK != MPI_NP )); then
   echo "TOPOLOGY product must equal MPI_NP" >&2
   exit 2
@@ -57,6 +91,7 @@ for mode in cpu gpu; do
     --grid "$GRID" \
     --maxstep "$MAXSTEP" \
     --deltat "$DELTAT" \
+    --list-frequency "$LIST_FREQUENCY" \
     --diffterm t \
     --use-gpu "$use_gpu" \
     --initial-condition high-enthalpy-boundary-layer
@@ -66,6 +101,8 @@ for mode in cpu gpu; do
     TMPDIR="$TMP_DIR" \
       ASTR_FORCE_MPI_TOPOLOGY="$TOPOLOGY" \
       ASTR_VALIDATION_RHS_PREFIX=validation/air5 \
+      ASTR_VALIDATION_RHS_STEP="$VALIDATION_STEP" \
+      ASTR_VALIDATION_RHS_STEP_SECONDARY="$VALIDATION_STEP_SECONDARY" \
       ASTR_AIR5_C4_CONSERVATION=f \
       ASTR_AIR5_SOURCE_MODE="coupled" \
       OMPI_MCA_coll='^hcoll,ucc' \
@@ -74,7 +111,7 @@ for mode in cpu gpu; do
       OMPI_MCA_osc=pt2pt \
       OMPI_MCA_opal_cuda_support=0 \
       UCX_MEMTYPE_CACHE=n \
-      timeout --kill-after=10s 300s mpirun --oversubscribe -np "$MPI_NP" \
+      timeout --kill-after=10s "${TIMEOUT_SECONDS}s" mpirun --oversubscribe -np "$MPI_NP" \
         "$EXE" run datin/input.air5_c4 > "$mode.log" 2>&1
   )
   grep -F "ASTR_AIR5_SOURCE_MODE=coupled" "$OUT_DIR/$mode/$mode.log" >/dev/null
@@ -84,14 +121,32 @@ for mode in cpu gpu; do
     --profile "$OUT_DIR/$mode/datin/air5_hbl_profile.dat" \
     --mechanism "$ROOT_DIR/chemMech/air5_kimjo12.json" \
     --ref-len "$REF_LEN" \
+    --step "$VALIDATION_STEP" \
+    --extrusion-scaled-tol "$EXTRUSION_SCALED_TOL" \
     --report "$OUT_DIR/${mode}_hbl_contract.txt"
+  if [[ -n "$VALIDATION_STEP_SECONDARY" ]]; then
+    python3 "$ROOT_DIR/tests/gpu_validation/check_air5_c5_hbl.py" \
+      --prefix "$OUT_DIR/$mode/validation/air5" \
+      --profile "$OUT_DIR/$mode/datin/air5_hbl_profile.dat" \
+      --mechanism "$ROOT_DIR/chemMech/air5_kimjo12.json" \
+      --ref-len "$REF_LEN" \
+      --step "$VALIDATION_STEP_SECONDARY" \
+      --extrusion-scaled-tol "$EXTRUSION_SCALED_TOL" \
+      --report "$OUT_DIR/${mode}_hbl_contract_step${VALIDATION_STEP_SECONDARY}.txt"
+  fi
 done
 
-python3 "$ROOT_DIR/tests/gpu_validation/compare_q_validation_snapshots.py" \
-  --cpu-prefix "$OUT_DIR/cpu/validation/air5" \
-  --gpu-prefix "$OUT_DIR/gpu/validation/air5" \
-  --report "$OUT_DIR/cpu_gpu_same_phase_compare.txt" \
-  --labels post_chemistry,pre_rhs \
-  --atol "$ATOL" \
-  --rtol "$RTOL" \
+compare_args=(
+  --cpu-prefix "$OUT_DIR/cpu/validation/air5"
+  --gpu-prefix "$OUT_DIR/gpu/validation/air5"
+  --report "$OUT_DIR/cpu_gpu_same_phase_compare.txt"
+  --labels post_chemistry,pre_rhs
+  --atol "$ATOL"
+  --rtol "$RTOL"
   --active-only
+)
+if [[ -n "$SAME_PHASE_SCALED_TOL" ]]; then
+  compare_args+=(--scaled-tol "$SAME_PHASE_SCALED_TOL")
+fi
+python3 "$ROOT_DIR/tests/gpu_validation/compare_q_validation_snapshots.py" \
+  "${compare_args[@]}"
