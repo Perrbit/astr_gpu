@@ -225,7 +225,7 @@ def test_hbl_runner_locks_a0_phase_and_open_boundary_contracts() -> None:
     assert 'timeout--kill-after=10s"${timeout_seconds}s"mpirun--oversubscribe' in compact
     assert "minimum_local_extent" in compact
     assert "smallerthanhm" in compact
-    assert "--labelspost_chemistry,pre_rhs" in compact
+    assert "--labelspost_chemistry,pre_rhs,post_update,post_transport" in compact
     assert '--step"$validation_step"' in compact
     assert '--extrusion-scaled-tol"$extrusion_scaled_tol"' in compact
     assert '--scaled-tol"$same_phase_scaled_tol"' in compact

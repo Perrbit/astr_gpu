@@ -171,16 +171,24 @@ contains
     use parallel, only: lio
     use precision_mode_gpu, only: configure_gpu_precision_mode,gpu_precision_mode_name
     use mixed_candidate_gpu, only: configure_gpu_mixed_candidate
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_flow_runtime, only: air5_shock_capturing_enabled
+#endif
     implicit none
     integer(8) :: workspace_bytes,flux_workspace_bytes,mixed_workspace_bytes, &
                   fp64_workspace_bytes,interior_points,halo_points
     logical :: derivative_active,viscous_active,characteristic_active
+    logical :: air5_shock_active
     character(len=32) :: active_workspace
 
     call configure_gpu_precision_mode()
     call configure_gpu_mixed_candidate()
     call configure_gpu_filter_workspace()
     call validate_gpu_mixed_candidate_eligibility()
+    air5_shock_active=.false.
+#ifdef ASTR_AIR5_CHEMISTRY
+    air5_shock_active=air5_shock_capturing_enabled()
+#endif
     derivative_active=gpu_mixed_derivative_workspace_enabled()
     viscous_active=gpu_mixed_viscous_flux_workspace_enabled()
     characteristic_active=gpu_mixed_characteristic_flux_workspace_enabled()
@@ -258,13 +266,15 @@ contains
       if(.not.allocated(qflux_d)) &
         allocate(qflux_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3))
     endif
+    if(lcomb) then
+      if(.not.allocated(diffusion_ratio_d)) &
+        allocate(diffusion_ratio_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:1))
+    endif
     if(lcomb .and. diffterm) then
       if(.not.allocated(species_flux_d)) &
         allocate(species_flux_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:num_species,1:3))
       if(.not.allocated(ev_flux_d)) &
         allocate(ev_flux_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3))
-      if(.not.allocated(diffusion_ratio_d)) &
-        allocate(diffusion_ratio_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:1))
     endif
     flux_workspace_bytes=0_8
     if(trim(conschm) == '543e' .and. (recon_schem == 1 .or. recon_schem == 3)) then
@@ -299,7 +309,7 @@ contains
     if(lio) write(*,'(A,A)') 'ASTR_GPU_ACTIVE_MIXED_WORKSPACE=',trim(active_workspace)
     if(lio) write(*,'(A,I0)') 'ASTR_GPU_MIXED_WORKSPACE_BYTES=',mixed_workspace_bytes
     if(lio) write(*,'(A,I0)') 'ASTR_GPU_FP64_WORKSPACE_BYTES=',fp64_workspace_bytes
-    if(shock_sensor_validation_enabled() .or. lchardecomp) then
+    if(shock_sensor_validation_enabled() .or. lchardecomp .or. air5_shock_active) then
       if(.not.allocated(shock_sensor_d)) &
         allocate(shock_sensor_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:1))
       if(.not.allocated(shock_mask_d)) allocate(shock_mask_d(0:im,0:jm,0:km))

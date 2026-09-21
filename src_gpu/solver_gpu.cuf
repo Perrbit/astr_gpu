@@ -3599,10 +3599,10 @@ contains
       (3.d0/32.d0)*v5 - (1.d0/64.d0)*v6
   end function filter6_boundary_point2
 
-  attributes(global) subroutine filter_x_periodic_interior_global_kernel(im,jm,km,hm)
+  attributes(global) subroutine filter_x_periodic_interior_global_kernel(im,jm,km,hm,ncomponents)
     use commarray_gpu, only: q_d,qwork_d
     implicit none
-    integer,value :: im,jm,km,hm
+    integer,value :: im,jm,km,hm,ncomponents
     integer :: id,ntot,ni,i,j,k,m
 
     ni=im-2*hm+1
@@ -3613,7 +3613,7 @@ contains
     i=hm+mod(id,ni)
     j=mod(id/ni,jm+1)
     k=id/(ni*(jm+1))
-    do m=1,5
+    do m=1,ncomponents
       qwork_d(i,j,k,m)=filter10_value(q_d(i,j,k,m), &
         q_d(i+1,j,k,m),q_d(i-1,j,k,m), &
         q_d(i+2,j,k,m),q_d(i-2,j,k,m), &
@@ -3623,10 +3623,10 @@ contains
     enddo
   end subroutine filter_x_periodic_interior_global_kernel
 
-  attributes(global) subroutine filter_x_periodic_boundary_global_kernel(im,jm,km,hm)
+  attributes(global) subroutine filter_x_periodic_boundary_global_kernel(im,jm,km,hm,ncomponents)
     use commarray_gpu, only: q_d,qwork_d
     implicit none
-    integer,value :: im,jm,km,hm
+    integer,value :: im,jm,km,hm,ncomponents
     integer :: id,ntot,i,j,k,m
 
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
@@ -3636,7 +3636,7 @@ contains
     if(i>=hm .and. i<=im-hm) return
     j=mod(id/(im+1),jm+1)
     k=id/((im+1)*(jm+1))
-    do m=1,5
+    do m=1,ncomponents
       qwork_d(i,j,k,m)=filter10_value(q_d(i,j,k,m), &
         q_d(i+1,j,k,m),q_d(i-1,j,k,m), &
         q_d(i+2,j,k,m),q_d(i-2,j,k,m), &
@@ -3646,10 +3646,10 @@ contains
     enddo
   end subroutine filter_x_periodic_boundary_global_kernel
 
-  attributes(global) subroutine filter_y_periodic_interior_global_kernel(im,jm,km,hm)
+  attributes(global) subroutine filter_y_periodic_interior_global_kernel(im,jm,km,hm,ncomponents)
     use commarray_gpu, only: q_d,qwork_d
     implicit none
-    integer,value :: im,jm,km,hm
+    integer,value :: im,jm,km,hm,ncomponents
     integer :: id,ntot,nj,i,j,k,m
 
     nj=jm-2*hm+1
@@ -3662,7 +3662,7 @@ contains
     j=hm+id/(im+1)
     k=blockIdx%z-1
     if(k>km) return
-    do m=1,5
+    do m=1,ncomponents
       q_d(i,j,k,m)=filter10_value(qwork_d(i,j,k,m), &
         qwork_d(i,j+1,k,m),qwork_d(i,j-1,k,m), &
         qwork_d(i,j+2,k,m),qwork_d(i,j-2,k,m), &
@@ -3672,10 +3672,10 @@ contains
     enddo
   end subroutine filter_y_periodic_interior_global_kernel
 
-  attributes(global) subroutine filter_y_periodic_boundary_global_kernel(im,jm,km,hm)
+  attributes(global) subroutine filter_y_periodic_boundary_global_kernel(im,jm,km,hm,ncomponents)
     use commarray_gpu, only: q_d,qwork_d
     implicit none
-    integer,value :: im,jm,km,hm
+    integer,value :: im,jm,km,hm,ncomponents
     integer :: id,ntot,i,j,k,m
 
     id=(blockIdx%x-1)*blockDim%x*blockDim%y+ &
@@ -3687,7 +3687,7 @@ contains
     if(j>=hm .and. j<=jm-hm) return
     k=blockIdx%z-1
     if(k>km) return
-    do m=1,5
+    do m=1,ncomponents
       q_d(i,j,k,m)=filter10_value(qwork_d(i,j,k,m), &
         qwork_d(i,j+1,k,m),qwork_d(i,j-1,k,m), &
         qwork_d(i,j+2,k,m),qwork_d(i,j-2,k,m), &
@@ -3697,10 +3697,10 @@ contains
     enddo
   end subroutine filter_y_periodic_boundary_global_kernel
 
-  attributes(global) subroutine filter_z_periodic_interior_global_kernel(im,jm,km,hm)
+  attributes(global) subroutine filter_z_periodic_interior_global_kernel(im,jm,km,hm,ncomponents)
     use commarray_gpu, only: q_d,qwork_d
     implicit none
-    integer,value :: im,jm,km,hm
+    integer,value :: im,jm,km,hm,ncomponents
     integer :: id,ntot,nk,i,j,k,m
 
     nk=km-2*hm+1
@@ -3713,7 +3713,7 @@ contains
     j=blockIdx%y-1
     if(j>jm) return
     k=hm+id/(im+1)
-    do m=1,5
+    do m=1,ncomponents
       qwork_d(i,j,k,m)=filter10_value(q_d(i,j,k,m), &
         q_d(i,j,k+1,m),q_d(i,j,k-1,m), &
         q_d(i,j,k+2,m),q_d(i,j,k-2,m), &
@@ -3723,10 +3723,10 @@ contains
     enddo
   end subroutine filter_z_periodic_interior_global_kernel
 
-  attributes(global) subroutine filter_z_periodic_boundary_global_kernel(im,jm,km,hm)
+  attributes(global) subroutine filter_z_periodic_boundary_global_kernel(im,jm,km,hm,ncomponents)
     use commarray_gpu, only: q_d,qwork_d
     implicit none
-    integer,value :: im,jm,km,hm
+    integer,value :: im,jm,km,hm,ncomponents
     integer :: id,ntot,i,j,k,m
 
     id=(blockIdx%x-1)*blockDim%x*blockDim%z+ &
@@ -3738,7 +3738,7 @@ contains
     if(j>jm) return
     k=id/(im+1)
     if(k>=hm .and. k<=km-hm) return
-    do m=1,5
+    do m=1,ncomponents
       qwork_d(i,j,k,m)=filter10_value(q_d(i,j,k,m), &
         q_d(i,j,k+1,m),q_d(i,j,k-1,m), &
         q_d(i,j,k+2,m),q_d(i,j,k-2,m), &
@@ -3748,10 +3748,10 @@ contains
     enddo
   end subroutine filter_z_periodic_boundary_global_kernel
 
-  attributes(global) subroutine filter_x_global_kernel(im,jm,km,npdci,flat_mapping)
+  attributes(global) subroutine filter_x_global_kernel(im,jm,km,npdci,ncomponents,flat_mapping)
     use commarray_gpu, only: q_d,qwork_d
     implicit none
-    integer,value :: im,jm,km,npdci
+    integer,value :: im,jm,km,npdci,ncomponents
     logical,value :: flat_mapping
     integer :: id,ntot,i,j,k,m
 
@@ -3769,7 +3769,7 @@ contains
       if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     endif
 
-    do m=1,5
+    do m=1,ncomponents
       if((npdci == 1 .or. npdci == 4) .and. i == 0) then
         qwork_d(i,j,k,m) = q_d(i,j,k,m)
       elseif((npdci == 1 .or. npdci == 4) .and. i == 1) then
@@ -3881,10 +3881,10 @@ contains
     endif
   end subroutine filter_x_scalar_global_kernel
 
-  attributes(global) subroutine filter_y_global_kernel(im,jm,km)
+  attributes(global) subroutine filter_y_global_kernel(im,jm,km,ncomponents)
     use commarray_gpu, only: q_d,qwork_d
     implicit none
-    integer,value :: im,jm,km
+    integer,value :: im,jm,km,ncomponents
     integer :: i,j,k,m
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -3892,7 +3892,7 @@ contains
     k = blockIdx%z - 1
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
 
-    do m=1,5
+    do m=1,ncomponents
       qwork_d(i,j,k,m) = filter10_value(q_d(i,j,k,m), &
         q_d(i,idx_periodic(j+1,jm),k,m), q_d(i,idx_periodic(j-1,jm),k,m), &
         q_d(i,idx_periodic(j+2,jm),k,m), q_d(i,idx_periodic(j-2,jm),k,m), &
@@ -3902,10 +3902,10 @@ contains
     enddo
   end subroutine filter_y_global_kernel
 
-  attributes(global) subroutine filter_y_pong_to_q_global_kernel(im,jm,km)
+  attributes(global) subroutine filter_y_pong_to_q_global_kernel(im,jm,km,ncomponents)
     use commarray_gpu, only: q_d,qwork_d
     implicit none
-    integer,value :: im,jm,km
+    integer,value :: im,jm,km,ncomponents
     integer :: i,j,k,m
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -3913,7 +3913,7 @@ contains
     k = blockIdx%z - 1
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
 
-    do m=1,5
+    do m=1,ncomponents
       q_d(i,j,k,m) = filter10_value(qwork_d(i,j,k,m), &
         qwork_d(i,idx_periodic(j+1,jm),k,m), qwork_d(i,idx_periodic(j-1,jm),k,m), &
         qwork_d(i,idx_periodic(j+2,jm),k,m), qwork_d(i,idx_periodic(j-2,jm),k,m), &
@@ -3923,10 +3923,10 @@ contains
     enddo
   end subroutine filter_y_pong_to_q_global_kernel
 
-  attributes(global) subroutine filter_y_pong_to_q_halo_global_kernel(im,jm,km,npdcj,flat_mapping)
+  attributes(global) subroutine filter_y_pong_to_q_halo_global_kernel(im,jm,km,npdcj,ncomponents,flat_mapping)
     use commarray_gpu, only: q_d,qwork_d
     implicit none
-    integer,value :: im,jm,km,npdcj
+    integer,value :: im,jm,km,npdcj,ncomponents
     logical,value :: flat_mapping
     integer :: id,ntot,i,j,k,m
 
@@ -3945,7 +3945,7 @@ contains
       if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     endif
 
-    do m=1,5
+    do m=1,ncomponents
       if((npdcj == 1 .or. npdcj == 4) .and. j == 0) then
         q_d(i,j,k,m) = qwork_d(i,j,k,m)
       elseif((npdcj == 1 .or. npdcj == 4) .and. j == 1) then
@@ -4060,10 +4060,10 @@ contains
     endif
   end subroutine filter_y_scalar_to_q_halo_global_kernel
 
-  attributes(global) subroutine filter_z_global_kernel(im,jm,km)
+  attributes(global) subroutine filter_z_global_kernel(im,jm,km,ncomponents)
     use commarray_gpu, only: q_d,qwork_d
     implicit none
-    integer,value :: im,jm,km
+    integer,value :: im,jm,km,ncomponents
     integer :: i,j,k,m
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -4071,7 +4071,7 @@ contains
     k = (blockIdx%z - 1) * blockDim%z + threadIdx%z - 1
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
 
-    do m=1,5
+    do m=1,ncomponents
       qwork_d(i,j,k,m) = filter10_value(q_d(i,j,k,m), &
         q_d(i,j,idx_periodic(k+1,km),m), q_d(i,j,idx_periodic(k-1,km),m), &
         q_d(i,j,idx_periodic(k+2,km),m), q_d(i,j,idx_periodic(k-2,km),m), &
@@ -4081,10 +4081,10 @@ contains
     enddo
   end subroutine filter_z_global_kernel
 
-  attributes(global) subroutine filter_z_halo_global_kernel(im,jm,km,npdck,flat_mapping)
+  attributes(global) subroutine filter_z_halo_global_kernel(im,jm,km,npdck,ncomponents,flat_mapping)
     use commarray_gpu, only: q_d,qwork_d
     implicit none
-    integer,value :: im,jm,km,npdck
+    integer,value :: im,jm,km,npdck,ncomponents
     logical,value :: flat_mapping
     integer :: id,ntot,i,j,k,m
 
@@ -4103,7 +4103,7 @@ contains
       if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     endif
 
-    do m=1,5
+    do m=1,ncomponents
       if((npdck == 1 .or. npdck == 4) .and. k == 0) then
         qwork_d(i,j,k,m) = q_d(i,j,k,m)
       elseif((npdck == 1 .or. npdck == 4) .and. k == 1) then
@@ -4216,10 +4216,10 @@ contains
     endif
   end subroutine filter_z_scalar_global_kernel
 
-  attributes(global) subroutine copy_qwork_global_kernel(im,jm,km)
+  attributes(global) subroutine copy_qwork_global_kernel(im,jm,km,ncomponents)
     use commarray_gpu, only: q_d,qwork_d
     implicit none
-    integer,value :: im,jm,km
+    integer,value :: im,jm,km,ncomponents
     integer :: id,i,j,k,m,ntot
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -4229,7 +4229,7 @@ contains
     i = mod(id,im+1)
     j = mod(id/(im+1),jm+1)
     k = id/((im+1)*(jm+1))
-    do m=1,5
+    do m=1,ncomponents
       q_d(i,j,k,m) = qwork_d(i,j,k,m)
     enddo
   end subroutine copy_qwork_global_kernel
@@ -6163,5 +6163,183 @@ contains
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) + deriv6(fp1(m),fm1(m),fp2(m),fm2(m),fp3(m),fm3(m))
     enddo
   end subroutine diffusion_rhs_z_xyphysical_stored_sp_global_kernel
+
+  subroutine apply_explicit_filter_gpu(periodic_filter_case,label_prefix)
+    use commvar, only: im,jm,km,hm,numq,npdci,npdcj,npdck
+    use parallel, only: isize,jsize,ksize
+    use commarray_gpu, only: gpu_scalar_filter_workspace_enabled
+    use gpu_check, only: sync_after_kernel,check_kernel_launch
+    use halo_transport_gpu, only: halo_pipeline_enabled,begin_pipeline_compute, &
+                                  record_pipeline_compute,finish_pipeline_compute, &
+                                  halo_axis_x,halo_axis_y,halo_axis_z
+    use halo_exchange_gpu, only: exchange_solution_filter_halo_gpu, &
+         begin_x_filter_halo_pipeline_gpu,stage_x_filter_halo_d2h_gpu, &
+         finish_x_filter_halo_pipeline_gpu, &
+         begin_y_filter_halo_pipeline_gpu,stage_y_filter_halo_d2h_gpu, &
+         finish_y_filter_halo_pipeline_gpu, &
+         begin_z_filter_halo_pipeline_gpu,stage_z_filter_halo_d2h_gpu, &
+         finish_z_filter_halo_pipeline_gpu, &
+         exchange_filter_y_work_halo_gpu,exchange_filter_z_halo_gpu, &
+         refresh_filter_y_work_local_halo_gpu,refresh_filter_z_local_halo_gpu, &
+         exchange_filter_scalar_y_halo_gpu,refresh_filter_scalar_y_local_halo_gpu, &
+         exchange_filter_scalar_z_halo_gpu,refresh_filter_scalar_z_local_halo_gpu
+    implicit none
+    logical,intent(in) :: periodic_filter_case
+    character(len=*),intent(in) :: label_prefix
+    type(dim3) :: block1,grid1,block_x,grid_x,grid_x_flat
+    type(dim3) :: block_y,grid_y,grid_y_flat,grid_y_interior
+    type(dim3) :: block_z,grid_z,grid_z_flat,grid_z_interior
+    integer(kind=cuda_stream_kind) :: filter_compute_stream
+    integer :: ntot,component,ninterior,nboundary
+    logical :: pipeline_x_filter,pipeline_y_filter,pipeline_z_filter
+
+    ntot=(im+1)*(jm+1)*(km+1)
+    block1=dim3(256,1,1)
+    grid1=dim3((ntot+block1%x-1)/block1%x,1,1)
+    block_x=dim3(512,1,1)
+    grid_x=dim3((im+block_x%x)/block_x%x,jm+1,km+1)
+    grid_x_flat=dim3((ntot+block_x%x-1)/block_x%x,1,1)
+    block_y=dim3(32,16,1)
+    grid_y=dim3((im+block_y%x)/block_y%x,(jm+block_y%y)/block_y%y,km+1)
+    grid_y_flat=dim3(((im+1)*(jm+1)+block_y%x*block_y%y-1)/(block_y%x*block_y%y),1,km+1)
+    block_z=dim3(64,1,8)
+    grid_z=dim3((im+block_z%x)/block_z%x,jm+1,(km+block_z%z)/block_z%z)
+    grid_z_flat=dim3(((im+1)*(km+1)+block_z%x*block_z%z-1)/(block_z%x*block_z%z),jm+1,1)
+
+    pipeline_x_filter=halo_pipeline_enabled .and. periodic_filter_case .and. &
+                      .not.gpu_scalar_filter_workspace_enabled() .and. isize>1 .and. im+1>2*hm
+    pipeline_y_filter=halo_pipeline_enabled .and. periodic_filter_case .and. &
+                      .not.gpu_scalar_filter_workspace_enabled() .and. jsize>1 .and. jm+1>2*hm
+    pipeline_z_filter=halo_pipeline_enabled .and. periodic_filter_case .and. &
+                      .not.gpu_scalar_filter_workspace_enabled() .and. ksize>1 .and. km+1>2*hm
+    if(pipeline_x_filter) then
+      call begin_x_filter_halo_pipeline_gpu()
+      call begin_pipeline_compute(halo_axis_x,filter_compute_stream,.true.)
+      ninterior=(im-2*hm+1)*(jm+1)*(km+1)
+      grid_x_flat=dim3((ninterior+block_x%x-1)/block_x%x,1,1)
+      call filter_x_periodic_interior_global_kernel<<<grid_x_flat,block_x,0,filter_compute_stream>>>( &
+           im,jm,km,hm,numq)
+      call check_kernel_launch(trim(label_prefix)//'pipeline_filter_x_periodic_interior_global_kernel')
+      call record_pipeline_compute()
+      call stage_x_filter_halo_d2h_gpu()
+      call finish_x_filter_halo_pipeline_gpu()
+      call finish_pipeline_compute()
+      nboundary=ntot
+      grid_x_flat=dim3((nboundary+block_x%x-1)/block_x%x,1,1)
+      call filter_x_periodic_boundary_global_kernel<<<grid_x_flat,block_x>>>(im,jm,km,hm,numq)
+      call sync_after_kernel(trim(label_prefix)//'pipeline_filter_x_periodic_boundary_global_kernel')
+      grid_x_flat=dim3((ntot+block_x%x-1)/block_x%x,1,1)
+    else
+      call exchange_solution_filter_halo_gpu()
+    endif
+    if(gpu_scalar_filter_workspace_enabled()) then
+      do component=1,numq
+        if(periodic_filter_case) then
+          call filter_x_scalar_global_kernel<<<grid_x_flat,block_x>>>( &
+               im,jm,km,npdci,component,.true.)
+        else
+          call filter_x_scalar_global_kernel<<<grid_x,block_x>>>( &
+               im,jm,km,npdci,component,.false.)
+        endif
+        call sync_after_kernel(trim(label_prefix)//'filter_x_scalar_global_kernel')
+        if(jsize>1) then
+          call exchange_filter_scalar_y_halo_gpu()
+        else
+          call refresh_filter_scalar_y_local_halo_gpu(component)
+        endif
+        if(periodic_filter_case) then
+          call filter_y_scalar_to_q_halo_global_kernel<<<grid_y_flat,block_y>>>( &
+               im,jm,km,npdcj,component,.true.)
+        else
+          call filter_y_scalar_to_q_halo_global_kernel<<<grid_y,block_y>>>( &
+               im,jm,km,npdcj,component,.false.)
+        endif
+        call sync_after_kernel(trim(label_prefix)//'filter_y_scalar_to_q_halo_global_kernel')
+        if(ksize>1) then
+          call exchange_filter_scalar_z_halo_gpu(component)
+        else
+          call refresh_filter_scalar_z_local_halo_gpu(component)
+        endif
+        if(periodic_filter_case) then
+          call filter_z_scalar_global_kernel<<<grid_z_flat,block_z>>>( &
+               im,jm,km,npdck,component,.true.)
+        else
+          call filter_z_scalar_global_kernel<<<grid_z,block_z>>>( &
+               im,jm,km,npdck,component,.false.)
+        endif
+        call sync_after_kernel(trim(label_prefix)//'filter_z_scalar_global_kernel')
+        call copy_filter_scalar_to_q_global_kernel<<<grid1,block1>>>(im,jm,km,component)
+        call sync_after_kernel(trim(label_prefix)//'copy_filter_scalar_to_q_global_kernel')
+      enddo
+      return
+    endif
+
+    if(.not.pipeline_x_filter) then
+      if(periodic_filter_case) then
+        call filter_x_global_kernel<<<grid_x_flat,block_x>>>(im,jm,km,npdci,numq,.true.)
+      else
+        call filter_x_global_kernel<<<grid_x,block_x>>>(im,jm,km,npdci,numq,.false.)
+      endif
+      call sync_after_kernel(trim(label_prefix)//'filter_x_global_kernel')
+    endif
+    if(pipeline_y_filter) then
+      call begin_y_filter_halo_pipeline_gpu()
+      call begin_pipeline_compute(halo_axis_y,filter_compute_stream,.true.)
+      ninterior=(im+1)*(jm-2*hm+1)
+      grid_y_interior=dim3((ninterior+block_y%x*block_y%y-1)/ &
+                           (block_y%x*block_y%y),1,km+1)
+      call filter_y_periodic_interior_global_kernel<<<grid_y_interior,block_y,0,filter_compute_stream>>>( &
+           im,jm,km,hm,numq)
+      call check_kernel_launch(trim(label_prefix)//'pipeline_filter_y_periodic_interior_global_kernel')
+      call record_pipeline_compute()
+      call stage_y_filter_halo_d2h_gpu()
+      call finish_y_filter_halo_pipeline_gpu()
+      call finish_pipeline_compute()
+      call filter_y_periodic_boundary_global_kernel<<<grid_y_flat,block_y>>>(im,jm,km,hm,numq)
+      call sync_after_kernel(trim(label_prefix)//'pipeline_filter_y_periodic_boundary_global_kernel')
+    else
+      if(jsize>1) then
+        call exchange_filter_y_work_halo_gpu()
+      else
+        call refresh_filter_y_work_local_halo_gpu()
+      endif
+      if(periodic_filter_case) then
+        call filter_y_pong_to_q_halo_global_kernel<<<grid_y_flat,block_y>>>(im,jm,km,npdcj,numq,.true.)
+      else
+        call filter_y_pong_to_q_halo_global_kernel<<<grid_y,block_y>>>(im,jm,km,npdcj,numq,.false.)
+      endif
+      call sync_after_kernel(trim(label_prefix)//'filter_y_pong_to_q_halo_global_kernel')
+    endif
+    if(pipeline_z_filter) then
+      call begin_z_filter_halo_pipeline_gpu()
+      call begin_pipeline_compute(halo_axis_z,filter_compute_stream,.true.)
+      ninterior=(im+1)*(km-2*hm+1)
+      grid_z_interior=dim3((ninterior+block_z%x*block_z%z-1)/ &
+                           (block_z%x*block_z%z),jm+1,1)
+      call filter_z_periodic_interior_global_kernel<<<grid_z_interior,block_z,0,filter_compute_stream>>>( &
+           im,jm,km,hm,numq)
+      call check_kernel_launch(trim(label_prefix)//'pipeline_filter_z_periodic_interior_global_kernel')
+      call record_pipeline_compute()
+      call stage_z_filter_halo_d2h_gpu()
+      call finish_z_filter_halo_pipeline_gpu()
+      call finish_pipeline_compute()
+      call filter_z_periodic_boundary_global_kernel<<<grid_z_flat,block_z>>>(im,jm,km,hm,numq)
+      call sync_after_kernel(trim(label_prefix)//'pipeline_filter_z_periodic_boundary_global_kernel')
+    else
+      if(ksize>1) then
+        call exchange_filter_z_halo_gpu()
+      else
+        call refresh_filter_z_local_halo_gpu()
+      endif
+      if(periodic_filter_case) then
+        call filter_z_halo_global_kernel<<<grid_z_flat,block_z>>>(im,jm,km,npdck,numq,.true.)
+      else
+        call filter_z_halo_global_kernel<<<grid_z,block_z>>>(im,jm,km,npdck,numq,.false.)
+      endif
+      call sync_after_kernel(trim(label_prefix)//'filter_z_halo_global_kernel')
+    endif
+    call copy_qwork_global_kernel<<<grid1,block1>>>(im,jm,km,numq)
+    call sync_after_kernel(trim(label_prefix)//'copy_qwork_global_kernel')
+  end subroutine apply_explicit_filter_gpu
 
 end module solver_gpu

@@ -4444,9 +4444,10 @@ planned streamwise marcher or the A1 two-temperature flat-plate physics gate.
 The authoritative source-off, single-temperature A1-R1 reference is the
 independent frozen-air5 Dorodnitsyn similarity solution in
 `air5_hbl_similarity.py`. It reads the same JSON mechanism but does not call
-ASTR Fortran or CUDA. The global x-y mass-streamfunction scaffold for R2/R3 is
-in `air5_hbl_collocation.py`. Run the authoritative reference, global-discrete
-consistency, and rejected station-candidate checks with:
+ASTR Fortran or CUDA. The global x-y mass-streamfunction scaffold is in
+`air5_hbl_collocation.py`; the finite-rate A1-R2 reference uses the positive
+implicit station path in `air5_hbl_marcher.py`. Run the authoritative reference,
+global-discrete consistency, and station checks with:
 
 ```bash
 python3 -m pytest -q \
@@ -4466,10 +4467,9 @@ all close below `2.20e-14`. Their streamwise-velocity L2 errors against the BVP
 are `5.149%`, `4.999%`, and `0.880%`; temperature errors are `7.086%`, `3.729%`,
 and `0.996%`. This closes the source-off single-temperature prerequisite, not
 R2 chemistry/V-T. Long-time ASTR HBL, MPI, restart, sanitizer, and residency
-gates remain open. The backward-Euler station candidates are diagnostic only:
-they preserve uniform flow but stall above the required nonuniform residual.
-Do not relax a residual or add state clipping to convert either route into a
-pass. At the source-off checkpoint, the focused air5 suite reported
+gates remain open. The legacy explicit and generic least-squares station
+candidates remain diagnostic only. Do not relax a residual or add state clipping
+to convert either route into a pass. At the source-off checkpoint, the focused air5 suite reported
 `137 passed, 9 subtests passed`.
 
 The first frozen-composition V-T-only extension adds independent `T` and `Tv`
@@ -4483,9 +4483,34 @@ evaluations, remains positive, preserves all prescribed boundaries, and has a
 maximum `|T-Tv|` of `178.52 K`. A separate `3x17` diagnostic closes to
 `5.2607e-14` after 1017 evaluations, but its maximum temperature separation is
 `262.11 K`. These are a single-grid regression and a second-grid algebraic
-closure, not a grid-converged V-T physical reference. Finite-rate species,
-three-grid profile/wall convergence, and ASTR long-time gates remain open. The
-complete focused air5 suite now reports `144 passed, 9 subtests passed`.
+closure, not by itself a grid-converged finite-rate physical reference.
+
+The approved finite-rate station path retains all eight conservative residuals,
+eliminates fixed wall and edge degrees of freedom, and represents the four
+independent species with nonnegative ratios to N2. A 40-color block-banded
+Jacobian, sparse Newton step, and feasible line search preserve temperature and
+composition bounds without clipping, renormalization, or a trace-species floor.
+The noncatalytic wall is eliminated against the actual one-sided derivative so
+the discrete wall-normal species gradient vanishes.
+
+The opt-in streamwise and wall-normal convergence gates are:
+
+```bash
+ASTR_RUN_EXPENSIVE_REFERENCE=1 python3 -m pytest -q \
+  tests/gpu_validation/test_air5_hbl_marcher.py
+
+ASTR_RUN_LONG_REFERENCE=1 python3 -m pytest -q \
+  tests/gpu_validation/test_air5_hbl_marcher.py::test_positive_implicit_coupled_htr_profile_survives_accumulated_march
+```
+
+The 1/2/4-step comparison reduces the fine-level profile difference below
+`0.25` of the preceding difference. On 17/33/65 wall-clustered grids, the final
+two levels differ by `1.08e-4` in `Cf` and `9.48e-4` in total wall heat flux.
+The 33-point accumulated march over ten `1e-5 m` stations keeps the scaled
+residual below `7.42e-11`, closes mass fractions within `2.22e-16`, and reaches
+maximum `|T-Tv|=170.5 K`. These checks close the independent A1-R2 numerical
+baseline. ASTR CPU/GPU profile and wall-quantity comparison, restart, long-time,
+MPI, sanitizer, and residency gates remain open for A1-R3/C5-6A1.
 
 ## P4-0 trusted local performance baseline
 
@@ -4758,3 +4783,60 @@ The A800 wrapper is fail-closed: it requires the earlier payload qualification,
 two Slurm-visible GPUs, resolved executable dependencies, strict floating-point
 compiler flags, all 20 numerical reports, and `cuda_ipc/cuda` in every GPU log.
 Until that job passes, non-periodic production admission remains pending.
+
+## Fixed air5 numq11 selective shock-capturing gate
+
+The first fixed-air5 shock path is selected only by `conschm=643e`,
+`recon_schem=3`, and `lchardecomp=f`. Smooth interfaces retain the sixth-order
+explicit central flux. Ducros-marked interfaces use a frozen-composition
+spectral radius, local Lax--Friedrichs splitting, and componentwise MP7 for all
+11 conservative fluxes. The species fluxes are closed so that their sum equals
+the density flux. The full MP7 path requires at least four halo layers.
+
+Run the bounded periodic gate with:
+
+```bash
+ROOT=/home/dell/workspace/astr_gpu
+cd "$ROOT"
+OUT_DIR="$ROOT/tests/gpu_validation/out/air5_numq11_shock_tube" \
+  BUILD_DIR="$ROOT/build_gpu_probe" \
+  tests/gpu_validation/run_air5_numq11_shock_tube_compare.sh
+```
+
+The recorded `64x8x8`, five-step run passed all 12 matching CPU/GPU snapshots.
+The maximum absolute difference was `2.3283e-10`, and the maximum difference
+scaled by the conservative-variable magnitude was `6.0743e-14`. Density,
+pressure, temperature, and all species densities remained positive. Species
+mass closure was at most `1.1103e-15`, the global conservation scaled error was
+`7.7415e-14`, and the shock mask was nonempty. The three existing frozen AIR5
+transport cases remained passing after this path was added.
+
+The same short gate also passed with all three NP=2 slabs: `2x1x1`, `1x2x1`,
+and `1x1x2`. Each topology produced 24 matching CPU/GPU snapshots. The y/z
+slabs retained a maximum conservative-variable-scaled difference of
+`6.4531e-14`. Compute Sanitizer reported zero errors and zero leaked bytes on
+both ranks for x/y/z slabs.
+
+A one-step `32x8x8` GPU run under Compute Sanitizer reported zero errors and
+zero leaked bytes when OpenMPI CUDA probing was isolated with
+`OMPI_MCA_pml=ob1`, `OMPI_MCA_btl=self`, and `OMPI_MCA_osc=pt2pt`. The initial
+CUDA 700 failure exposed a real allocation defect: the species convection
+positivity limiter used `diffusion_ratio_d` even when `diffterm=f`, while the
+array was allocated only for diffusion. It is now allocated for every fixed
+AIR5 transport run.
+
+This is a periodic numerical-core gate. A 100-step `64x8x8` run passed for
+NP=1 and NP=2 `2x1x1`; the latter carries the wave system across both the MPI
+interface and global periodic seam. Maximum CPU/GPU conservative-variable-scaled
+differences were `8.0078e-13` and `9.0442e-13`. The NP=1 program-integrated
+mass, total-energy and elemental drift was at most `9.2245e-14`; the independent
+snapshot checks were at most `2.5918e-13` for NP=1 and `2.7976e-13` for NP=2.
+The shared-plane sensor decision is paired on both adjacent interfaces so the
+periodic/MPI flux difference remains conservative when the shock mask reaches a
+partition seam.
+
+This gate does not admit physical boundaries, normal-shock relaxation, or
+finite-rate SBLI. A static pressure discontinuity has zero velocity
+divergence at the first RK stage, so the current Ducros-pressure sensor begins
+marking at the second stage. Startup pre-marking or a steady normal-shock
+initial condition must be decided before the normal-shock gate is promoted.

@@ -4,7 +4,12 @@ import numpy as np
 
 
 ROOT = Path(__file__).resolve().parents[2]
-LIMITER_RESERVE = 1.0e-8
+
+def interior_ratio(value: float) -> float:
+    value = min(1.0, max(0.0, value))
+    if 0.0 < value < 1.0:
+        return float(np.nextafter(value, 0.0))
+    return value
 
 
 def derivative(values: dict[int, float], index: int, dim: int, ntype: int) -> float:
@@ -84,8 +89,6 @@ def test_shared_face_ratio_preserves_positive_species_baseline() -> None:
     species = 5
     base = 10.0 ** rng.uniform(-24.0, -2.0, size=(cells, species))
     face = rng.normal(size=(cells, species))
-    safety = 1.0 - LIMITER_RESERVE
-
     negative_budget = np.minimum(face[np.arange(cells) - 1], 0.0) + np.minimum(
         -face, 0.0
     )
@@ -93,9 +96,8 @@ def test_shared_face_ratio_preserves_positive_species_baseline() -> None:
     for cell in range(cells):
         active = negative_budget[cell] < 0.0
         if np.any(active):
-            ratio[cell] = min(
-                1.0,
-                np.min(safety * base[cell, active] / -negative_budget[cell, active]),
+            ratio[cell] = interior_ratio(
+                np.min(base[cell, active] / -negative_budget[cell, active])
             )
 
     left_theta = np.minimum(ratio, ratio[np.arange(cells) - 1])
@@ -105,16 +107,34 @@ def test_shared_face_ratio_preserves_positive_species_baseline() -> None:
     assert np.min(base + correction) >= -1.0e-30
 
 
-def test_trace_species_retains_fp64_roundoff_headroom() -> None:
+def test_trace_species_uses_one_fp64_predecessor_as_roundoff_headroom() -> None:
     base = 2.747120157690203e-26
     negative_correction = -2.747120157902086e-26
-    adverse_reconstruction_roundoff = 8.0e-11 * base
-    safety = 1.0 - LIMITER_RESERVE
 
-    ratio = min(1.0, safety * base / -negative_correction)
-    updated = base + ratio * negative_correction - adverse_reconstruction_roundoff
+    boundary_ratio = min(1.0, base / -negative_correction)
+    ratio = interior_ratio(boundary_ratio)
+    updated = base + ratio * negative_correction
 
+    assert ratio == np.nextafter(boundary_ratio, 0.0)
     assert updated > 0.0
+
+
+def test_diffusion_ratio_limits_shifted_vibrational_energy() -> None:
+    species_floor = np.array([20.0, 30.0, 0.0, 0.0, 25.0])
+    species_base = np.array([0.79, 0.21, 0.0, 0.0, 0.0])
+    vibrational_base = float(species_base @ species_floor + 1.0)
+    species_face_correction = np.zeros((2, 5))
+    vibrational_face_correction = np.array([0.0, 2.0])
+    excess_base = vibrational_base - float(species_base @ species_floor)
+    excess_face_correction = vibrational_face_correction + (
+        species_face_correction @ species_floor
+    )
+    negative_budget = min(0.0, -excess_face_correction[1])
+    ratio = interior_ratio(excess_base / -negative_budget)
+    updated_excess = excess_base - ratio * excess_face_correction[1]
+
+    assert ratio < 1.0
+    assert updated_excess > 0.0
 
 
 def test_cpu_and_gpu_use_one_shared_scalar_face_ratio() -> None:
@@ -131,8 +151,8 @@ def test_cpu_and_gpu_use_one_shared_scalar_face_ratio() -> None:
         (ROOT / "src_gpu/commarray_gpu.cuf").read_text(encoding="utf-8").lower().split()
     )
 
-    assert "air5_flux_limiter_safety" in cpu
-    assert "air5_flux_limiter_safety" in gpu
+    assert "air5_flux_limiter_safety" not in cpu
+    assert "air5_flux_limiter_safety" not in gpu
 
     assert "calllimit_air5_diffusive_fluxes(" in cpu
     assert "theta_left=min(diffusion_ratio(i,j,k)," in cpu
@@ -142,3 +162,5 @@ def test_cpu_and_gpu_use_one_shared_scalar_face_ratio() -> None:
     assert "theta_left=min(diffusion_ratio_d(i,j,k,1)," in gpu
     assert "theta_right=min(diffusion_ratio_d(i,j,k,1)," in gpu
     assert "callreport_air5_diffusion_limiter(rkstep)" in gpu
+    assert "vibrational_excess" in cpu
+    assert "vibrational_excess" in gpu

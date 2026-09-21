@@ -94,7 +94,7 @@ def test_cartesian_hbl_wall_diagnostics_match_linear_state() -> None:
     np.testing.assert_allclose(
         result.heat_flux_vibrational, conductivity_v * 5.0e6, rtol=2.0e-12
     )
-    assert np.all(np.abs(result.heat_flux_species) > 0.0)
+    np.testing.assert_allclose(result.heat_flux_species, 0.0, atol=0.0)
     np.testing.assert_allclose(
         result.heat_flux_total,
         result.heat_flux_translational

@@ -25,6 +25,7 @@ CPU_LAYOUT = {
         "chemistry_ros2",
     },
     "chemistry_boundary_state.F90": {
+        "chemistry_hbl_initial_field",
         "chemistry_hbl_profile",
         "chemistry_hbl_boundary_state",
     },

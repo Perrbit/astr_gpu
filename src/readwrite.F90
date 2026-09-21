@@ -1456,8 +1456,8 @@ module readwrite
     !
     use commvar, only: nstep,filenumb,fnumslic,time,flowtype,           &
                        num_species,im,jm,km,force,numq,turbmode,lwsequ, &
-                       nondimen
-    use commarray, only : rho,vel,prs,tmp,spc,q,tke,omg,miut
+                       nondimen,lcomb
+    use commarray, only : rho,vel,prs,tmp,spc,q,tke,omg,miut,tve
     use statistic, only : massflux,massflux_target,nsamples
     use hdf5io
     use bc,        only : ninflowslice
@@ -1526,6 +1526,10 @@ module readwrite
       call h5read(varname='u3',  var=vel(0:im,0:jm,0:km,3),mode=modeio)
       call h5read(varname='p',   var=prs(0:im,0:jm,0:km)  ,mode=modeio)
       call h5read(varname='t',   var=tmp(0:im,0:jm,0:km)  ,mode=modeio)
+      if(lcomb) then
+        if(.not.allocated(tve)) error stop 'fixed air5 restart requires Tv storage'
+        call h5read(varname='tv',var=tve(0:im,0:jm,0:km),mode=modeio)
+      endif
       do jsp=1,num_species
          write(spname,'(i3.3)')jsp
         call h5read(varname='sp'//spname,var=spc(0:im,0:jm,0:km,jsp),mode=modeio)
@@ -2014,8 +2018,9 @@ module readwrite
   
   subroutine write_io_tree(file2write)
 
-    use commvar,  only : im,jm,km,lwsequ,turbmode,feqwsequ,force,ymin,ymax,ka,num_species
-    use commarray,only : rho,vel,prs,tmp,spc,q,ssf,lshock,crinod
+    use commvar,  only : im,jm,km,lwsequ,turbmode,feqwsequ,force,ymin,ymax,ka, &
+                         num_species,lcomb
+    use commarray,only : rho,vel,prs,tmp,spc,q,ssf,lshock,crinod,tve
     use models,   only : tke,omg,miut
     use hdf5io
     use parallel, only : pgather_across_k,mpi_kgroup,mpi_k0group,krk
@@ -2036,6 +2041,10 @@ module readwrite
     character(len=3) :: spname
 
     numvar=6+num_species
+    if(lcomb) then
+      if(.not.allocated(tve)) error stop 'fixed air5 checkpoint requires Tv storage'
+      numvar=numvar+1
+    endif
 
     allocate(data_gather(numvar))
 
@@ -2048,6 +2057,8 @@ module readwrite
     do jsp=1,num_species
       call pgather_across_k(array=spc(0:im,0:jm,1:km,jsp),  data=data_gather(6+jsp)%data,communicator=mpi_kgroup)
     enddo
+    if(lcomb) call pgather_across_k(array=tve(0:im,0:jm,1:km), &
+      data=data_gather(7+num_species)%data,communicator=mpi_kgroup)
 
     if(krk==0) then
       offset=(/ig0,jg0,0/)
@@ -2068,6 +2079,10 @@ module readwrite
       call h5wa3d_r8_struct(varname='p', var=data2write,offset=offset)
       data2write=add_kface(tmp(0:im,0:jm,0),  data_gather(6)%data)
       call h5wa3d_r8_struct(varname='t', var=data2write,offset=offset)
+      if(lcomb) then
+        data2write=add_kface(tve(0:im,0:jm,0),data_gather(7+num_species)%data)
+        call h5wa3d_r8_struct(varname='tv',var=data2write,offset=offset)
+      endif
       do jsp=1,num_species
         write(spname,'(i3.3)')jsp
         data2write=add_kface(spc(0:im,0:jm,0,jsp),  data_gather(6+jsp)%data)

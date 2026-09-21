@@ -18,6 +18,7 @@ module chemistry_flow_runtime
   public :: air5_reacting_flowtype
   public :: air5_postshock_flowtype
   public :: air5_hbl_flowtype
+  public :: air5_shock_capturing_enabled
   public :: configure_air5_source_mode
   public :: air5_active_source_mode
 
@@ -45,6 +46,13 @@ contains
 
     air5_hbl_flowtype=trim(flowtype)=='air5hbl'
   end function air5_hbl_flowtype
+
+  logical function air5_shock_capturing_enabled()
+    use commvar, only: lcomb,conschm,recon_schem,lchardecomp
+
+    air5_shock_capturing_enabled=lcomb .and. trim(conschm)=='643e' .and. &
+      recon_schem==3 .and. .not.lchardecomp
+  end function air5_shock_capturing_enabled
 
   subroutine configure_air5_source_mode()
     use mpi

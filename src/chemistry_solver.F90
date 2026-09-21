@@ -1,12 +1,16 @@
 module chemistry_flow_solver
   use iso_fortran_env, only: real64
   use constdef, only: num1d60,num1d12,num2d3
-  use chemistry_air5_data, only: air5_num_species
-  use chemistry_model, only: chemistry_status_ok,air5_flux_limiter_safety
+  use chemistry_air5_data, only: air5_num_species,air5_temperature_min_k, &
+    air5_formation_energy
+  use chemistry_model, only: chemistry_status_ok,air5_ratio_bisection_iterations, &
+    air5_interior_ratio,air5_limit_filter_species
   use chemistry_state_layout, only: air5_num_conservative,air5_idx_density, &
     air5_idx_momentum_first,air5_idx_total_energy,air5_idx_species_first, &
     air5_idx_species_last,air5_idx_ev
   use chemistry_flow_state, only: air5_conservative_to_primitive
+  use chemistry_thermo, only: air5_species_gas_constant,air5_species_cv_tr, &
+    air5_species_vibrational_energy
   use chemistry_ros2, only: air5_ros2_advance
   use chemistry_flow_runtime, only: configure_air5_source_mode,air5_active_source_mode
   use chemistry_transport, only: air5_diffusive_flux
@@ -19,12 +23,320 @@ module chemistry_flow_solver
   real(real64), allocatable, save :: vibrational_flux(:,:,:,:)
   real(real64), allocatable, save :: diffusion_ratio(:,:,:)
   real(real64), allocatable, save :: transport_origin_species(:,:,:,:)
+  real(real64), allocatable, save :: transport_origin_ev(:,:,:)
+  real(real64), allocatable, save :: transport_origin_state(:,:,:,:)
+  real(real64), save :: vibrational_floor_energy(air5_num_species)=0.0_real64
+  logical, save :: vibrational_floor_configured=.false.
 
   public :: air5_diffusion_rhs
-  public :: air5_limit_species_convection
+  public :: air5_convection_rhs
+  public :: air5_limit_full_state_convection
+  public :: air5_save_filter_species_base
+  public :: air5_limit_filtered_state
   public :: air5_chemistry_half_step
 
 contains
+
+  subroutine configure_air5_vibrational_floor()
+    integer :: species
+
+    if(vibrational_floor_configured) return
+    do species=1,air5_num_species
+      vibrational_floor_energy(species)= &
+        air5_species_vibrational_energy(species,air5_temperature_min_k)
+    enddo
+    vibrational_floor_configured=.true.
+  end subroutine configure_air5_vibrational_floor
+
+  real(real64) function air5_vibrational_excess(ev,rho_species)
+    real(real64), intent(in) :: ev,rho_species(air5_num_species)
+
+    air5_vibrational_excess=ev-dot_product(vibrational_floor_energy,rho_species)
+  end function air5_vibrational_excess
+
+  pure real(real64) function air5_translational_margin(state)
+    real(real64), intent(in) :: state(air5_num_conservative)
+    real(real64) :: thermal_energy
+    integer :: species,component
+
+    if(state(air5_idx_density)<=0.0_real64) then
+      air5_translational_margin=-huge(1.0_real64)
+      return
+    endif
+    thermal_energy=state(air5_idx_total_energy)-state(air5_idx_ev)
+    do species=1,air5_num_species
+      component=air5_idx_species_first+species-1
+      thermal_energy=thermal_energy-state(component)*(air5_formation_energy(species)+ &
+        air5_temperature_min_k*air5_species_cv_tr(species))
+    enddo
+    air5_translational_margin=thermal_energy- &
+      sum(state(air5_idx_momentum_first:air5_idx_momentum_first+2)**2)/ &
+      (2.0_real64*state(air5_idx_density))
+  end function air5_translational_margin
+
+  logical function air5_state_is_admissible(state)
+    real(real64), intent(in) :: state(air5_num_conservative)
+    real(real64) :: rho_species(air5_num_species)
+
+    rho_species=state(air5_idx_species_first:air5_idx_species_last)
+    air5_state_is_admissible=state(air5_idx_density)>0.0_real64 .and. &
+      minval(rho_species)>=0.0_real64 .and. &
+      air5_vibrational_excess(state(air5_idx_ev),rho_species)>=0.0_real64 .and. &
+      air5_translational_margin(state)>=0.0_real64
+  end function air5_state_is_admissible
+
+  real(real64) function air5_admissible_face_ratio(low_state,face_correction)
+    real(real64), intent(in) :: low_state(air5_num_conservative)
+    real(real64), intent(in) :: face_correction(air5_num_conservative)
+    real(real64) :: lower,upper,middle
+    real(real64) :: trial_state(air5_num_conservative)
+    integer :: iteration
+
+    trial_state=low_state+6.0_real64*face_correction
+    if(air5_state_is_admissible(trial_state)) then
+      air5_admissible_face_ratio=1.0_real64
+      return
+    endif
+    lower=0.0_real64
+    upper=1.0_real64
+    do iteration=1,air5_ratio_bisection_iterations
+      middle=0.5_real64*(lower+upper)
+      trial_state=low_state+6.0_real64*middle*face_correction
+      if(air5_state_is_admissible(trial_state)) then
+        lower=middle
+      else
+        upper=middle
+      endif
+    enddo
+    air5_admissible_face_ratio=air5_interior_ratio(lower)
+  end function air5_admissible_face_ratio
+
+  subroutine air5_save_filter_species_base()
+    use commvar, only: im,jm,km
+    use commarray, only: q,qrhs
+
+    qrhs(0:im,0:jm,0:km,air5_idx_density)= &
+      q(0:im,0:jm,0:km,air5_idx_density)
+    qrhs(0:im,0:jm,0:km,air5_idx_species_first:air5_idx_species_last)= &
+      q(0:im,0:jm,0:km,air5_idx_species_first:air5_idx_species_last)
+  end subroutine air5_save_filter_species_base
+
+  subroutine air5_limit_filtered_state()
+    use commvar, only: im,jm,km
+    use commarray, only: q,qrhs
+    real(real64) :: state(air5_num_conservative)
+    real(real64) :: base_species(air5_num_species)
+    real(real64) :: rho_species(air5_num_species)
+    real(real64) :: theta
+    logical :: limited
+    integer :: i,j,k,status
+
+    call configure_air5_vibrational_floor()
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          base_species=qrhs(i,j,k,air5_idx_species_first:air5_idx_species_last)
+          rho_species=q(i,j,k,air5_idx_species_first:air5_idx_species_last)
+          call air5_limit_filter_species(qrhs(i,j,k,air5_idx_density),base_species, &
+            q(i,j,k,air5_idx_density),rho_species,limited,theta,status)
+          if(status/=chemistry_status_ok) then
+            write(*,'(a,3(1x,i0),3(1x,es24.16))') &
+              'air5 explicit-filter species repair failed at',i,j,k, &
+              minval(rho_species),sum(rho_species),q(i,j,k,air5_idx_density)
+            error stop 'air5 parameter-free explicit-filter species limiter failed'
+          endif
+          q(i,j,k,air5_idx_species_first:air5_idx_species_last)=rho_species
+          state=q(i,j,k,1:air5_num_conservative)
+          if(.not.air5_state_is_admissible(state)) then
+            write(*,'(a,3(1x,i0))') &
+              'air5 explicit-filter thermodynamic state failed at',i,j,k
+            error stop 'air5 explicit-filter state is not admissible'
+          endif
+        enddo
+      enddo
+    enddo
+  end subroutine air5_limit_filtered_state
+
+  pure real(real64) function air5_minmod2(first,second)
+    real(real64), intent(in) :: first,second
+
+    if(first>0.0_real64 .and. second>0.0_real64) then
+      air5_minmod2=min(abs(first),abs(second))
+    elseif(first<0.0_real64 .and. second<0.0_real64) then
+      air5_minmod2=-min(abs(first),abs(second))
+    else
+      air5_minmod2=0.0_real64
+    endif
+  end function air5_minmod2
+
+  pure real(real64) function air5_minmod4(first,second,third,fourth)
+    real(real64), intent(in) :: first,second,third,fourth
+
+    if(first>0.0_real64 .and. second>0.0_real64 .and. &
+       third>0.0_real64 .and. fourth>0.0_real64) then
+      air5_minmod4=min(abs(first),abs(second),abs(third),abs(fourth))
+    elseif(first<0.0_real64 .and. second<0.0_real64 .and. &
+           third<0.0_real64 .and. fourth<0.0_real64) then
+      air5_minmod4=-min(abs(first),abs(second),abs(third),abs(fourth))
+    else
+      air5_minmod4=0.0_real64
+    endif
+  end function air5_minmod4
+
+  pure real(real64) function air5_suw3(values)
+    real(real64), intent(in) :: values(3)
+
+    air5_suw3=(-values(1)+5.0_real64*values(2)+2.0_real64*values(3))/6.0_real64
+  end function air5_suw3
+
+  pure real(real64) function air5_mp5(values)
+    real(real64), intent(in) :: values(5)
+    real(real64) :: linear,mp,upper_limit,average,median,large_curvature
+    real(real64) :: lower,upper,dm1,d0,d1,dhm1,dh0
+
+    linear=(2.0_real64*values(1)-13.0_real64*values(2)+ &
+      47.0_real64*values(3)+27.0_real64*values(4)-3.0_real64*values(5))/60.0_real64
+    mp=values(3)+air5_minmod2(values(4)-values(3), &
+      4.0_real64*(values(3)-values(2)))
+    if((linear-values(3))*(linear-mp)<1.0e-10_real64) then
+      air5_mp5=linear
+      return
+    endif
+    dm1=values(1)-2.0_real64*values(2)+values(3)
+    d0=values(2)-2.0_real64*values(3)+values(4)
+    d1=values(3)-2.0_real64*values(4)+values(5)
+    dhm1=air5_minmod4(4.0_real64*dm1-d0,4.0_real64*d0-dm1,dm1,d0)
+    dh0=air5_minmod4(4.0_real64*d0-d1,4.0_real64*d1-d0,d0,d1)
+    upper_limit=values(3)+4.0_real64*(values(3)-values(2))
+    average=0.5_real64*(values(3)+values(4))
+    median=average-0.5_real64*dh0
+    large_curvature=values(3)+0.5_real64*(values(3)-values(2))+ &
+      (4.0_real64/3.0_real64)*dhm1
+    lower=max(min(values(3),values(4),median), &
+      min(values(3),upper_limit,large_curvature))
+    upper=min(max(values(3),values(4),median), &
+      max(values(3),upper_limit,large_curvature))
+    air5_mp5=linear+air5_minmod2(lower-linear,upper-linear)
+  end function air5_mp5
+
+  pure real(real64) function air5_mp7(values)
+    real(real64), intent(in) :: values(7)
+    real(real64) :: linear,mp,upper_limit,average,median,large_curvature
+    real(real64) :: lower,upper,dm1,d0,d1,dhm1,dh0
+
+    linear=(-3.0_real64*values(1)+25.0_real64*values(2)- &
+      101.0_real64*values(3)+319.0_real64*values(4)+ &
+      214.0_real64*values(5)-38.0_real64*values(6)+ &
+      4.0_real64*values(7))/420.0_real64
+    mp=values(4)+air5_minmod2(values(5)-values(4), &
+      4.0_real64*(values(4)-values(3)))
+    if((linear-values(4))*(linear-mp)<1.0e-10_real64) then
+      air5_mp7=linear
+      return
+    endif
+    dm1=values(2)-2.0_real64*values(3)+values(4)
+    d0=values(3)-2.0_real64*values(4)+values(5)
+    d1=values(4)-2.0_real64*values(5)+values(6)
+    dhm1=air5_minmod4(4.0_real64*dm1-d0,4.0_real64*d0-dm1,dm1,d0)
+    dh0=air5_minmod4(4.0_real64*d0-d1,4.0_real64*d1-d0,d0,d1)
+    upper_limit=values(4)+4.0_real64*(values(4)-values(3))
+    average=0.5_real64*(values(4)+values(5))
+    median=average-0.5_real64*dh0
+    large_curvature=values(4)+0.5_real64*(values(4)-values(3))+ &
+      (4.0_real64/3.0_real64)*dhm1
+    lower=max(min(values(4),values(5),median), &
+      min(values(4),upper_limit,large_curvature))
+    upper=min(max(values(4),values(5),median), &
+      max(values(4),upper_limit,large_curvature))
+    air5_mp7=linear+air5_minmod2(lower-linear,upper-linear)
+  end function air5_mp7
+
+  real(real64) function air5_frozen_spectral_radius(i,j,k,direction,index)
+    use commarray, only: rho,vel,prs,spc,dxi
+    integer, intent(in) :: i,j,k,direction,index
+    integer :: ii,jj,kk,species
+    real(real64) :: mixture_r,mixture_cv,gamma_tr,metric_norm,normal_velocity
+
+    ii=i; jj=j; kk=k
+    select case(direction)
+    case(1); ii=index
+    case(2); jj=index
+    case(3); kk=index
+    case default; error stop 'invalid air5 spectral-radius direction'
+    end select
+    if(rho(ii,jj,kk)<=0.0_real64 .or. prs(ii,jj,kk)<=0.0_real64) &
+      error stop 'air5 LLF spectral radius requires positive density and pressure'
+    mixture_r=0.0_real64
+    mixture_cv=0.0_real64
+    do species=1,air5_num_species
+      mixture_r=mixture_r+spc(ii,jj,kk,species)*air5_species_gas_constant(species)
+      mixture_cv=mixture_cv+spc(ii,jj,kk,species)*air5_species_cv_tr(species)
+    enddo
+    if(mixture_r<=0.0_real64 .or. mixture_cv<=0.0_real64) &
+      error stop 'air5 LLF spectral radius requires a valid frozen mixture'
+    gamma_tr=1.0_real64+mixture_r/mixture_cv
+    metric_norm=sqrt(sum(dxi(ii,jj,kk,direction,:)**2))
+    normal_velocity=sum(dxi(ii,jj,kk,direction,:)*vel(ii,jj,kk,:))
+    air5_frozen_spectral_radius=abs(normal_velocity)+ &
+      sqrt(gamma_tr*prs(ii,jj,kk)/rho(ii,jj,kk))*metric_norm
+  end function air5_frozen_spectral_radius
+
+  subroutine air5_llf_split_flux(i,j,k,direction,index,alpha,fplus,fminus)
+    use commarray, only: q,jacob
+    integer, intent(in) :: i,j,k,direction,index
+    real(real64), intent(in) :: alpha
+    real(real64), intent(out) :: fplus(air5_num_conservative)
+    real(real64), intent(out) :: fminus(air5_num_conservative)
+    real(real64) :: flux(air5_num_conservative),state(air5_num_conservative)
+    real(real64) :: metric_jacobian
+    integer :: ii,jj,kk
+
+    ii=i; jj=j; kk=k
+    select case(direction)
+    case(1); ii=index
+    case(2); jj=index
+    case(3); kk=index
+    end select
+    call air5_projected_convective_flux(ii,jj,kk,direction,flux)
+    state=q(ii,jj,kk,1:air5_num_conservative)
+    metric_jacobian=jacob(ii,jj,kk)
+    fplus=0.5_real64*(flux+alpha*metric_jacobian*state)
+    fminus=0.5_real64*(flux-alpha*metric_jacobian*state)
+  end subroutine air5_llf_split_flux
+
+  logical function air5_shock_interface_active(i,j,k,direction,face,dim,ntype)
+    use commarray, only: lshock
+    integer, intent(in) :: i,j,k,direction,face,dim,ntype
+
+    air5_shock_interface_active=.false.
+    if(.not.allocated(lshock)) return
+    select case(direction)
+    case(1)
+      if(face<0 .or. (face==0 .and. (ntype==2 .or. ntype==3))) then
+        air5_shock_interface_active=lshock(0,j,k)
+      elseif(face>=dim .or. (face==dim-1 .and. (ntype==1 .or. ntype==3))) then
+        air5_shock_interface_active=lshock(dim,j,k)
+      else
+        air5_shock_interface_active=lshock(face,j,k) .or. lshock(face+1,j,k)
+      endif
+    case(2)
+      if(face<0 .or. (face==0 .and. (ntype==2 .or. ntype==3))) then
+        air5_shock_interface_active=lshock(i,0,k)
+      elseif(face>=dim .or. (face==dim-1 .and. (ntype==1 .or. ntype==3))) then
+        air5_shock_interface_active=lshock(i,dim,k)
+      else
+        air5_shock_interface_active=lshock(i,face,k) .or. lshock(i,face+1,k)
+      endif
+    case(3)
+      if(face<0 .or. (face==0 .and. (ntype==2 .or. ntype==3))) then
+        air5_shock_interface_active=lshock(i,j,0)
+      elseif(face>=dim .or. (face==dim-1 .and. (ntype==1 .or. ntype==3))) then
+        air5_shock_interface_active=lshock(i,j,dim)
+      else
+        air5_shock_interface_active=lshock(i,j,face) .or. lshock(i,j,face+1)
+      endif
+    end select
+  end function air5_shock_interface_active
 
   subroutine air5_projected_convective_flux(i,j,k,direction,f)
     use commarray, only: q,vel,prs,dxi,jacob
@@ -81,6 +393,84 @@ contains
       num1d60*(fm2+fp3)
   end subroutine air5_centered_convective_face_flux
 
+  subroutine air5_shock_convective_face_flux(i,j,k,direction,face,dim,ntype,f)
+    integer, intent(in) :: i,j,k,direction,face,dim,ntype
+    real(real64), intent(out) :: f(air5_num_conservative)
+    real(real64) :: fplus(air5_num_conservative,7)
+    real(real64) :: fminus(air5_num_conservative,7)
+    real(real64) :: unused(air5_num_conservative)
+    real(real64) :: alpha
+    integer :: order,first_node,last_node,node,n,component
+
+    order=7
+    if((ntype==1 .or. ntype==4) .and. face==0) then
+      order=1
+    elseif((ntype==1 .or. ntype==4) .and. face==1) then
+      order=3
+    elseif((ntype==1 .or. ntype==4) .and. face==2) then
+      order=5
+    elseif((ntype==2 .or. ntype==4) .and. face==dim-1) then
+      order=1
+    elseif((ntype==2 .or. ntype==4) .and. face==dim-2) then
+      order=3
+    elseif((ntype==2 .or. ntype==4) .and. face==dim-3) then
+      order=5
+    endif
+
+    select case(order)
+    case(1); first_node=face;   last_node=face+1
+    case(3); first_node=face-1; last_node=face+2
+    case(5); first_node=face-2; last_node=face+3
+    case default; first_node=face-3; last_node=face+4
+    end select
+    alpha=0.0_real64
+    do node=first_node,last_node
+      alpha=max(alpha,air5_frozen_spectral_radius(i,j,k,direction,node))
+    enddo
+    if(alpha<=0.0_real64) error stop 'air5 LLF interface has non-positive spectral radius'
+
+    if(order==1) then
+      call air5_llf_split_flux(i,j,k,direction,face,alpha,fplus(:,1),unused)
+      call air5_llf_split_flux(i,j,k,direction,face+1,alpha,unused,fminus(:,1))
+      f=fplus(:,1)+fminus(:,1)
+    else
+      do n=1,order
+        select case(order)
+        case(3)
+          call air5_llf_split_flux(i,j,k,direction,face+n-2,alpha, &
+            fplus(:,n),unused)
+          call air5_llf_split_flux(i,j,k,direction,face+3-n,alpha, &
+            unused,fminus(:,n))
+        case(5)
+          call air5_llf_split_flux(i,j,k,direction,face+n-3,alpha, &
+            fplus(:,n),unused)
+          call air5_llf_split_flux(i,j,k,direction,face+4-n,alpha, &
+            unused,fminus(:,n))
+        case default
+          call air5_llf_split_flux(i,j,k,direction,face+n-4,alpha, &
+            fplus(:,n),unused)
+          call air5_llf_split_flux(i,j,k,direction,face+5-n,alpha, &
+            unused,fminus(:,n))
+        end select
+      enddo
+      do component=1,air5_num_conservative
+        select case(order)
+        case(3)
+          f(component)=air5_suw3(fplus(component,1:3))+ &
+            air5_suw3(fminus(component,1:3))
+        case(5)
+          f(component)=air5_mp5(fplus(component,1:5))+ &
+            air5_mp5(fminus(component,1:5))
+        case default
+          f(component)=air5_mp7(fplus(component,1:7))+ &
+            air5_mp7(fminus(component,1:7))
+        end select
+      enddo
+    endif
+    f(air5_idx_species_first)=f(air5_idx_density)- &
+      sum(f(air5_idx_species_first+1:air5_idx_species_last))
+  end subroutine air5_shock_convective_face_flux
+
   subroutine air5_high_order_convective_face_flux(i,j,k,direction,face,dim,ntype,f)
     integer, intent(in) :: i,j,k,direction,face,dim,ntype
     real(real64), intent(out) :: f(air5_num_conservative)
@@ -127,42 +517,76 @@ contains
       sum(f(air5_idx_species_first+1:air5_idx_species_last))
   end subroutine air5_high_order_convective_face_flux
 
-  subroutine air5_low_order_species_face_flux(i,j,k,direction,face,density_flux, &
-      species_face_flux)
-    use commarray, only: q
-    integer, intent(in) :: i,j,k,direction,face
-    real(real64), intent(in) :: density_flux
-    real(real64), intent(out) :: species_face_flux(air5_num_species)
-    integer :: donor_i,donor_j,donor_k,species,component
-    real(real64) :: density
+  subroutine air5_selective_convective_face_flux(i,j,k,direction,face,dim,ntype,f)
+    use chemistry_flow_runtime, only: air5_shock_capturing_enabled
+    integer, intent(in) :: i,j,k,direction,face,dim,ntype
+    real(real64), intent(out) :: f(air5_num_conservative)
 
-    donor_i=i; donor_j=j; donor_k=k
-    select case(direction)
-    case(1)
-      donor_i=merge(face,face+1,density_flux>=0.0_real64)
-    case(2)
-      donor_j=merge(face,face+1,density_flux>=0.0_real64)
-    case(3)
-      donor_k=merge(face,face+1,density_flux>=0.0_real64)
-    end select
-    density=q(donor_i,donor_j,donor_k,air5_idx_density)
-    if(density<=0.0_real64) error stop 'air5 low-order species flux has non-positive density'
-    do species=2,air5_num_species
-      component=air5_idx_species_first+species-1
-      species_face_flux(species)=density_flux* &
-        q(donor_i,donor_j,donor_k,component)/density
+    if(air5_shock_capturing_enabled() .and. &
+       air5_shock_interface_active(i,j,k,direction,face,dim,ntype)) then
+      call air5_shock_convective_face_flux(i,j,k,direction,face,dim,ntype,f)
+    else
+      call air5_high_order_convective_face_flux(i,j,k,direction,face,dim,ntype,f)
+    endif
+  end subroutine air5_selective_convective_face_flux
+
+  subroutine air5_convection_rhs()
+    use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,is,ie,js,je,ks,ke
+    use commarray, only: qrhs
+    use chemistry_flow_runtime, only: air5_shock_capturing_enabled
+    real(real64) :: left_flux(air5_num_conservative)
+    real(real64) :: right_flux(air5_num_conservative)
+    integer :: dims(3),ntypes(3),i,j,k,direction,index
+
+    if(.not.air5_shock_capturing_enabled()) &
+      error stop 'air5 selective convection called while shock capturing is disabled'
+    if(hm<4) error stop 'air5 shock capturing requires hm>=4'
+    dims=[im,jm,km]
+    ntypes=[npdci,npdcj,npdck]
+    do k=ks,ke
+      do j=js,je
+        do i=is,ie
+          do direction=1,3
+            select case(direction)
+            case(1); index=i
+            case(2); index=j
+            case(3); index=k
+            end select
+            call air5_selective_convective_face_flux(i,j,k,direction,index-1, &
+              dims(direction),ntypes(direction),left_flux)
+            call air5_selective_convective_face_flux(i,j,k,direction,index, &
+              dims(direction),ntypes(direction),right_flux)
+            qrhs(i,j,k,1:air5_num_conservative)= &
+              qrhs(i,j,k,1:air5_num_conservative)+right_flux-left_flux
+          enddo
+        enddo
+      enddo
     enddo
-    species_face_flux(1)=density_flux-sum(species_face_flux(2:air5_num_species))
-  end subroutine air5_low_order_species_face_flux
+  end subroutine air5_convection_rhs
 
-  subroutine air5_species_node_face_fluxes(i,j,k,dims,ntypes,high_left,high_right, &
-      low_left,low_right)
+  subroutine air5_low_order_convective_face_flux(i,j,k,direction,face,f)
+    integer, intent(in) :: i,j,k,direction,face
+    real(real64), intent(out) :: f(air5_num_conservative)
+    real(real64) :: fplus(air5_num_conservative),fminus(air5_num_conservative)
+    real(real64) :: unused(air5_num_conservative),alpha
+
+    alpha=max(air5_frozen_spectral_radius(i,j,k,direction,face), &
+      air5_frozen_spectral_radius(i,j,k,direction,face+1))
+    if(alpha<=0.0_real64) error stop 'air5 low-order LLF face has non-positive spectral radius'
+    call air5_llf_split_flux(i,j,k,direction,face,alpha,fplus,unused)
+    call air5_llf_split_flux(i,j,k,direction,face+1,alpha,unused,fminus)
+    f=fplus+fminus
+    f(air5_idx_species_first)=f(air5_idx_density)- &
+      sum(f(air5_idx_species_first+1:air5_idx_species_last))
+  end subroutine air5_low_order_convective_face_flux
+
+  subroutine air5_full_state_node_face_fluxes(i,j,k,dims,ntypes,high_left, &
+      high_right,low_left,low_right)
     integer, intent(in) :: i,j,k,dims(3),ntypes(3)
-    real(real64), intent(out) :: high_left(3,air5_num_species)
-    real(real64), intent(out) :: high_right(3,air5_num_species)
-    real(real64), intent(out) :: low_left(3,air5_num_species)
-    real(real64), intent(out) :: low_right(3,air5_num_species)
-    real(real64) :: full_left(air5_num_conservative),full_right(air5_num_conservative)
+    real(real64), intent(out) :: high_left(3,air5_num_conservative)
+    real(real64), intent(out) :: high_right(3,air5_num_conservative)
+    real(real64), intent(out) :: low_left(3,air5_num_conservative)
+    real(real64), intent(out) :: low_right(3,air5_num_conservative)
     integer :: direction,index
 
     do direction=1,3
@@ -171,32 +595,35 @@ contains
       case(2); index=j
       case(3); index=k
       end select
-      call air5_high_order_convective_face_flux(i,j,k,direction,index-1, &
-        dims(direction),ntypes(direction),full_left)
-      call air5_high_order_convective_face_flux(i,j,k,direction,index, &
-        dims(direction),ntypes(direction),full_right)
-      high_left(direction,:)=full_left(air5_idx_species_first:air5_idx_species_last)
-      high_right(direction,:)=full_right(air5_idx_species_first:air5_idx_species_last)
-      call air5_low_order_species_face_flux(i,j,k,direction,index-1, &
-        full_left(air5_idx_density),low_left(direction,:))
-      call air5_low_order_species_face_flux(i,j,k,direction,index, &
-        full_right(air5_idx_density),low_right(direction,:))
+      call air5_selective_convective_face_flux(i,j,k,direction,index-1, &
+        dims(direction),ntypes(direction),high_left(direction,:))
+      call air5_selective_convective_face_flux(i,j,k,direction,index, &
+        dims(direction),ntypes(direction),high_right(direction,:))
+      call air5_low_order_convective_face_flux(i,j,k,direction,index-1, &
+        low_left(direction,:))
+      call air5_low_order_convective_face_flux(i,j,k,direction,index, &
+        low_right(direction,:))
     enddo
-  end subroutine air5_species_node_face_fluxes
+  end subroutine air5_full_state_node_face_fluxes
 
-  subroutine air5_limit_species_convection()
+  subroutine air5_limit_full_state_convection()
     use mpi
     use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,is,ie,js,je,ks,ke, &
       deltat,rkstep,rkscheme,nstep,feqchkpt
     use commarray, only: q,qrhs,jacob
     use parallel, only: dataswap,lio
-    real(real64) :: high_left(3,air5_num_species),high_right(3,air5_num_species)
-    real(real64) :: low_left(3,air5_num_species),low_right(3,air5_num_species)
-    real(real64) :: low_rhs(air5_num_species),pminus(air5_num_species)
+    real(real64) :: high_left(3,air5_num_conservative)
+    real(real64) :: high_right(3,air5_num_conservative)
+    real(real64) :: low_left(3,air5_num_conservative)
+    real(real64) :: low_right(3,air5_num_conservative)
+    real(real64) :: low_rhs(air5_num_conservative),pminus(air5_num_species+1)
     real(real64) :: correction_left,correction_right,base,ratio,cdt
+    real(real64) :: face_correction(air5_num_conservative)
+    real(real64) :: low_state(air5_num_conservative)
+    real(real64) :: limited_rhs(air5_num_conservative)
     real(real64) :: theta_left,theta_right,rk_a,rk_b,rk_c
     real(real64) :: local_min_ratio,global_min_ratio
-    integer :: dims(3),ntypes(3),i,j,k,species,component,direction
+    integer :: dims(3),ntypes(3),i,j,k,species,component,direction,constraint
     integer :: local_limited,global_limited,local_invalid,global_invalid,ierr
     logical :: report_diagnostics
 
@@ -212,39 +639,77 @@ contains
     report_diagnostics=nstep==0 .or. (feqchkpt>0 .and. mod(nstep,feqchkpt)==0)
     diffusion_ratio=1.0_real64
     if(rkstep==1) then
+      do component=1,air5_num_conservative
+        transport_origin_state(:,:,:,component)=q(0:im,0:jm,0:km,component)* &
+          jacob(0:im,0:jm,0:km)
+      enddo
       do species=1,air5_num_species
         component=air5_idx_species_first+species-1
         transport_origin_species(:,:,:,species)=q(0:im,0:jm,0:km,component)* &
           jacob(0:im,0:jm,0:km)
       enddo
+      transport_origin_ev=q(0:im,0:jm,0:km,air5_idx_ev)* &
+        jacob(0:im,0:jm,0:km)
     endif
     local_limited=0; local_invalid=0; local_min_ratio=1.0_real64
 
     do k=ks,ke; do j=js,je; do i=is,ie
-      call air5_species_node_face_fluxes(i,j,k,dims,ntypes,high_left,high_right, &
+      call air5_full_state_node_face_fluxes(i,j,k,dims,ntypes,high_left,high_right, &
         low_left,low_right)
       low_rhs=0.0_real64; pminus=0.0_real64
-      do species=1,air5_num_species
+      do component=1,air5_num_conservative
         do direction=1,3
-          low_rhs(species)=low_rhs(species)+low_left(direction,species)- &
-            low_right(direction,species)
-          correction_left=cdt*(high_left(direction,species)-low_left(direction,species))
-          correction_right=-cdt*(high_right(direction,species)-low_right(direction,species))
+          low_rhs(component)=low_rhs(component)+low_left(direction,component)- &
+            low_right(direction,component)
+        enddo
+      enddo
+      low_state=rk_a*transport_origin_state(i,j,k,:)+ &
+        rk_b*q(i,j,k,1:air5_num_conservative)*jacob(i,j,k)+cdt*low_rhs
+      ratio=1.0_real64
+      if(.not.air5_state_is_admissible(low_state)) local_invalid=1
+      do species=1,air5_num_species
+        component=air5_idx_species_first+species-1
+        do direction=1,3
+          correction_left=cdt*(high_left(direction,component)- &
+            low_left(direction,component))
+          correction_right=-cdt*(high_right(direction,component)- &
+            low_right(direction,component))
           pminus(species)=pminus(species)+min(0.0_real64,correction_left)+ &
             min(0.0_real64,correction_right)
         enddo
-      enddo
-      ratio=1.0_real64
-      do species=1,air5_num_species
-        component=air5_idx_species_first+species-1
-        base=rk_a*transport_origin_species(i,j,k,species)+ &
-          rk_b*q(i,j,k,component)*jacob(i,j,k)+ &
-          cdt*low_rhs(species)
+        base=low_state(component)
         if(base<0.0_real64) then
           local_invalid=1
         elseif(pminus(species)<0.0_real64) then
-          ratio=min(ratio,air5_flux_limiter_safety*base/(-pminus(species)))
+          ratio=min(ratio,air5_interior_ratio(base/(-pminus(species))))
         endif
+      enddo
+      do direction=1,3
+        correction_left=cdt*((high_left(direction,air5_idx_ev)- &
+          dot_product(vibrational_floor_energy, &
+          high_left(direction,air5_idx_species_first:air5_idx_species_last)))- &
+          (low_left(direction,air5_idx_ev)-dot_product(vibrational_floor_energy, &
+          low_left(direction,air5_idx_species_first:air5_idx_species_last))))
+        correction_right=-cdt*((high_right(direction,air5_idx_ev)- &
+          dot_product(vibrational_floor_energy, &
+          high_right(direction,air5_idx_species_first:air5_idx_species_last)))- &
+          (low_right(direction,air5_idx_ev)-dot_product(vibrational_floor_energy, &
+          low_right(direction,air5_idx_species_first:air5_idx_species_last))))
+        pminus(air5_num_species+1)=pminus(air5_num_species+1)+ &
+          min(0.0_real64,correction_left)+min(0.0_real64,correction_right)
+      enddo
+      base=air5_vibrational_excess(low_state(air5_idx_ev), &
+        low_state(air5_idx_species_first:air5_idx_species_last))
+      if(base<0.0_real64) then
+        local_invalid=1
+      elseif(pminus(air5_num_species+1)<0.0_real64) then
+        ratio=min(ratio,air5_interior_ratio(base/(-pminus(air5_num_species+1))))
+      endif
+      do direction=1,3
+        face_correction=cdt*(high_left(direction,:)-low_left(direction,:))
+        ratio=min(ratio,air5_admissible_face_ratio(low_state,face_correction))
+        face_correction=-cdt*(high_right(direction,:)-low_right(direction,:))
+        ratio=min(ratio,air5_admissible_face_ratio(low_state,face_correction))
       enddo
       ratio=max(0.0_real64,min(1.0_real64,ratio))
       diffusion_ratio(i,j,k)=ratio
@@ -256,16 +721,16 @@ contains
     if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,local_invalid)
     if(global_invalid/=0) then
       if(local_invalid/=0) write(*,'(A,I0)') &
-        'air5 low-order species convection baseline failed at RK stage ',rkstep
+        'air5 low-order full-state convection baseline failed at RK stage ',rkstep
       call MPI_Abort(MPI_COMM_WORLD,3,ierr)
     endif
     call dataswap(diffusion_ratio)
 
     do k=ks,ke; do j=js,je; do i=is,ie
-      call air5_species_node_face_fluxes(i,j,k,dims,ntypes,high_left,high_right, &
+      call air5_full_state_node_face_fluxes(i,j,k,dims,ntypes,high_left,high_right, &
         low_left,low_right)
-      do species=1,air5_num_species
-        low_rhs(species)=0.0_real64
+      limited_rhs=0.0_real64
+      do component=1,air5_num_conservative
         do direction=1,3
           select case(direction)
           case(1)
@@ -278,13 +743,13 @@ contains
             theta_left=min(diffusion_ratio(i,j,k),diffusion_ratio(i,j,k-1))
             theta_right=min(diffusion_ratio(i,j,k),diffusion_ratio(i,j,k+1))
           end select
-          low_rhs(species)=low_rhs(species)+low_left(direction,species)- &
-            low_right(direction,species)+theta_left*(high_left(direction,species)- &
-            low_left(direction,species))-theta_right*(high_right(direction,species)- &
-            low_right(direction,species))
+          limited_rhs(component)=limited_rhs(component)+low_left(direction,component)- &
+            low_right(direction,component)+theta_left*(high_left(direction,component)- &
+            low_left(direction,component))-theta_right*(high_right(direction,component)- &
+            low_right(direction,component))
         enddo
-        qrhs(i,j,k,air5_idx_species_first+species-1)=low_rhs(species)
       enddo
+      qrhs(i,j,k,1:air5_num_conservative)=limited_rhs
     enddo; enddo; enddo
 
     if(report_diagnostics) then
@@ -294,10 +759,11 @@ contains
         MPI_COMM_WORLD,ierr)
       if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,local_limited)
       if(lio .and. global_limited>0) write(*,'(A,I0,A,I0,A,ES12.4)') &
-        'AIR5_CONVECTION_LIMITER stage=',rkstep,' limited_points=',global_limited, &
+        'AIR5_FULL_STATE_CONVECTION_LIMITER stage=',rkstep, &
+        ' limited_points=',global_limited, &
         ' min_ratio=',global_min_ratio
     endif
-  end subroutine air5_limit_species_convection
+  end subroutine air5_limit_full_state_convection
 
   subroutine air5_chemistry_half_step(duration,half_index)
     use mpi
@@ -478,6 +944,7 @@ contains
   subroutine allocate_air5_flux_workspace(im,jm,km,hm)
     integer, intent(in) :: im,jm,km,hm
 
+    call configure_air5_vibrational_floor()
     if(.not.allocated(momentum_flux)) &
       allocate(momentum_flux(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6))
     if(.not.allocated(energy_flux)) &
@@ -490,6 +957,10 @@ contains
       allocate(diffusion_ratio(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
     if(.not.allocated(transport_origin_species)) &
       allocate(transport_origin_species(0:im,0:jm,0:km,air5_num_species))
+    if(.not.allocated(transport_origin_ev)) &
+      allocate(transport_origin_ev(0:im,0:jm,0:km))
+    if(.not.allocated(transport_origin_state)) &
+      allocate(transport_origin_state(0:im,0:jm,0:km,air5_num_conservative))
   end subroutine allocate_air5_flux_workspace
 
   subroutine projected_air5_diffusive_flux(i,j,k,direction,f)
@@ -640,8 +1111,12 @@ contains
     real(real64), intent(in) :: deltat,rk_a,rk_b,rk_c
     real(real64) :: left_flux(3,air5_num_conservative)
     real(real64) :: right_flux(3,air5_num_conservative)
-    real(real64) :: pminus(air5_num_species),base,ratio,cdt
+    real(real64) :: pminus(air5_num_species+1),base,ratio,cdt
     real(real64) :: theta_left,theta_right,df
+    real(real64) :: base_state(air5_num_conservative)
+    real(real64) :: face_correction(air5_num_conservative),rhs_sign
+    real(real64) :: left_excess_flux,right_excess_flux
+    real(real64) :: origin_excess,current_excess,rhs_excess
     real(real64) :: local_min_ratio,global_min_ratio
     integer :: dims(3),ntypes(3),i,j,k,species,component,direction
     integer :: local_limited,global_limited,local_invalid,global_invalid,ierr
@@ -653,11 +1128,17 @@ contains
     report_diagnostics=nstep==0 .or. (feqchkpt>0 .and. mod(nstep,feqchkpt)==0)
     diffusion_ratio=1.0_real64
     if(rkstep==1) then
+      do component=1,air5_num_conservative
+        transport_origin_state(:,:,:,component)=q(0:im,0:jm,0:km,component)* &
+          jacob(0:im,0:jm,0:km)
+      enddo
       do species=1,air5_num_species
         transport_origin_species(:,:,:,species)= &
           q(0:im,0:jm,0:km,air5_idx_species_first+species-1)* &
           jacob(0:im,0:jm,0:km)
       enddo
+      transport_origin_ev=q(0:im,0:jm,0:km,air5_idx_ev)* &
+        jacob(0:im,0:jm,0:km)
     endif
 
     local_limited=0
@@ -667,6 +1148,10 @@ contains
       do j=js,je
         do i=is,ie
           call air5_node_face_fluxes(i,j,k,dims,ntypes,left_flux,right_flux)
+          do component=1,air5_num_conservative
+            base_state(component)=rk_a*transport_origin_state(i,j,k,component)+ &
+              rk_b*q(i,j,k,component)*jacob(i,j,k)+cdt*qrhs(i,j,k,component)
+          enddo
           pminus=0.0_real64
           do species=1,air5_num_species
             component=air5_idx_species_first+species-1
@@ -676,7 +1161,19 @@ contains
                 min(0.0_real64,-cdt*right_flux(direction,component))
             enddo
           enddo
+          do direction=1,3
+            left_excess_flux=left_flux(direction,air5_idx_ev)+ &
+              dot_product(vibrational_floor_energy, &
+                left_flux(direction,air5_idx_species_first:air5_idx_species_last))
+            right_excess_flux=right_flux(direction,air5_idx_ev)+ &
+              dot_product(vibrational_floor_energy, &
+                right_flux(direction,air5_idx_species_first:air5_idx_species_last))
+            pminus(air5_num_species+1)=pminus(air5_num_species+1)+ &
+              min(0.0_real64,-cdt*left_excess_flux)+ &
+              min(0.0_real64,cdt*right_excess_flux)
+          enddo
           ratio=1.0_real64
+          if(.not.air5_state_is_admissible(base_state)) local_invalid=1
           do species=1,air5_num_species
             component=air5_idx_species_first+species-1
             base=rk_a*transport_origin_species(i,j,k,species)+ &
@@ -684,8 +1181,39 @@ contains
             if(base<0.0_real64) then
               local_invalid=1
             elseif(pminus(species)<0.0_real64) then
-              ratio=min(ratio,air5_flux_limiter_safety*base/(-pminus(species)))
+              ratio=min(ratio,air5_interior_ratio(base/(-pminus(species))))
             endif
+          enddo
+          origin_excess=transport_origin_ev(i,j,k)- &
+            dot_product(vibrational_floor_energy,transport_origin_species(i,j,k,:))
+          current_excess=air5_vibrational_excess(q(i,j,k,air5_idx_ev), &
+            q(i,j,k,air5_idx_species_first:air5_idx_species_last))*jacob(i,j,k)
+          rhs_excess=qrhs(i,j,k,air5_idx_ev)- &
+            dot_product(vibrational_floor_energy, &
+              qrhs(i,j,k,air5_idx_species_first:air5_idx_species_last))
+          base=rk_a*origin_excess+rk_b*current_excess+cdt*rhs_excess
+          if(base<0.0_real64) then
+            local_invalid=1
+          elseif(pminus(air5_num_species+1)<0.0_real64) then
+            ratio=min(ratio,air5_interior_ratio(base/(-pminus(air5_num_species+1))))
+          endif
+          do direction=1,3
+            face_correction=0.0_real64
+            do component=2,air5_num_conservative
+              rhs_sign=1.0_real64
+              if(component>=air5_idx_species_first .and. &
+                 component<=air5_idx_species_last) rhs_sign=-1.0_real64
+              face_correction(component)=-cdt*rhs_sign*left_flux(direction,component)
+            enddo
+            ratio=min(ratio,air5_admissible_face_ratio(base_state,face_correction))
+            face_correction=0.0_real64
+            do component=2,air5_num_conservative
+              rhs_sign=1.0_real64
+              if(component>=air5_idx_species_first .and. &
+                 component<=air5_idx_species_last) rhs_sign=-1.0_real64
+              face_correction(component)=cdt*rhs_sign*right_flux(direction,component)
+            enddo
+            ratio=min(ratio,air5_admissible_face_ratio(base_state,face_correction))
           enddo
           ratio=max(0.0_real64,min(1.0_real64,ratio))
           diffusion_ratio(i,j,k)=ratio
@@ -699,7 +1227,7 @@ contains
     if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,local_invalid)
     if(global_invalid/=0) then
       if(local_invalid/=0) write(*,'(A,I0)') &
-        'air5 transport baseline is negative before diffusion at RK stage ',rkstep
+        'air5 transport baseline is outside the admissible domain at RK stage ',rkstep
       call MPI_Abort(MPI_COMM_WORLD,3,ierr)
     endif
     call dataswap(diffusion_ratio)

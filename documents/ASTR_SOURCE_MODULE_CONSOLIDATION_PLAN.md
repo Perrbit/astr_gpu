@@ -19,7 +19,7 @@ CPU chemistry 从 16 个文件整合为 8 个文件：
 | `src/chemistry_core.F90` | `chemistry_model`, `chemistry_state_layout` |
 | `src/chemistry_properties.F90` | `chemistry_thermo`, `chemistry_flow_state`, `chemistry_transport`, `chemistry_relaxation` |
 | `src/chemistry_kinetics.F90` | `chemistry_source`, `chemistry_linear6`, `chemistry_ros2` |
-| `src/chemistry_boundary_state.F90` | `chemistry_hbl_profile`, `chemistry_hbl_boundary_state` |
+| `src/chemistry_boundary_state.F90` | `chemistry_hbl_initial_field`, `chemistry_hbl_profile`, `chemistry_hbl_boundary_state` |
 | `src/chemistry_boundary.F90` | `chemistry_postshock_boundary`, `chemistry_hbl_boundary` |
 | `src/chemistry_runtime.F90` | `chemistry_flow_runtime` |
 | `src/chemistry_solver.F90` | `chemistry_flow_solver` |

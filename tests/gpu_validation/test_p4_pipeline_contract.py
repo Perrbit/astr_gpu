@@ -198,7 +198,7 @@ class P4PipelineContract(unittest.TestCase):
         self.assertIn("if(i>=hm.and.i<=im-hm)return", source)
 
     def test_filter_interior_is_launched_inside_x_halo_window(self) -> None:
-        source = compact(MAINLOOP)
+        source = compact(SOLVER)
         begin = source.index("callbegin_x_filter_halo_pipeline_gpu()")
         compute = source.index(
             "callbegin_pipeline_compute(halo_axis_x,filter_compute_stream,.true.)", begin
@@ -360,15 +360,15 @@ class P4PipelineContract(unittest.TestCase):
     def test_periodic_filter_pipeline_has_y_and_z_interior_boundary_pairs(self) -> None:
         exchange = compact(EXCHANGE)
         solver = compact(SOLVER)
-        mainloop = compact(MAINLOOP)
+        filter_runtime = compact(SOLVER)
         for axis in ("y", "z"):
             self.assertIn(f"subroutinebegin_{axis}_filter_halo_pipeline_gpu", exchange)
             self.assertIn(f"subroutinestage_{axis}_filter_halo_d2h_gpu", exchange)
             self.assertIn(f"subroutinefinish_{axis}_filter_halo_pipeline_gpu", exchange)
             self.assertIn(f"subroutinefilter_{axis}_periodic_interior_global_kernel", solver)
             self.assertIn(f"subroutinefilter_{axis}_periodic_boundary_global_kernel", solver)
-            self.assertIn(f"callbegin_{axis}_filter_halo_pipeline_gpu()", mainloop)
-            self.assertIn(f"callfinish_{axis}_filter_halo_pipeline_gpu()", mainloop)
+            self.assertIn(f"callbegin_{axis}_filter_halo_pipeline_gpu()", filter_runtime)
+            self.assertIn(f"callfinish_{axis}_filter_halo_pipeline_gpu()", filter_runtime)
 
     def test_fused_diffusion_pipeline_dispatches_all_slab_axes(self) -> None:
         source = compact(EXCHANGE)

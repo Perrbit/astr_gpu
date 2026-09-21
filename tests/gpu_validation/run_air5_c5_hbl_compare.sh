@@ -22,6 +22,9 @@ SAME_PHASE_SCALED_TOL="${SAME_PHASE_SCALED_TOL:-}"
 MAX_CFL="${MAX_CFL:-1.0}"
 REF_LEN="${REF_LEN:-4.41262150017878821e-5}"
 HM="${HM:-5}"
+HBL_INITIAL_FIELD="${HBL_INITIAL_FIELD:-uniform}"
+LFILTER="${LFILTER:-t}"
+FILTER_WORKSPACE="${FILTER_WORKSPACE:-full}"
 
 check_cfl() {
   local log_file="$1"
@@ -93,8 +96,10 @@ for mode in cpu gpu; do
     --deltat "$DELTAT" \
     --list-frequency "$LIST_FREQUENCY" \
     --diffterm t \
+    --lfilter "$LFILTER" \
     --use-gpu "$use_gpu" \
-    --initial-condition high-enthalpy-boundary-layer
+    --initial-condition high-enthalpy-boundary-layer \
+    --hbl-initial-field "$HBL_INITIAL_FIELD"
   mkdir -p "$OUT_DIR/$mode/validation"
   (
     cd "$OUT_DIR/$mode"
@@ -105,6 +110,7 @@ for mode in cpu gpu; do
       ASTR_VALIDATION_RHS_STEP_SECONDARY="$VALIDATION_STEP_SECONDARY" \
       ASTR_AIR5_C4_CONSERVATION=f \
       ASTR_AIR5_SOURCE_MODE="coupled" \
+      ASTR_GPU_FILTER_WORKSPACE="$FILTER_WORKSPACE" \
       OMPI_MCA_coll='^hcoll,ucc' \
       OMPI_MCA_pml=ob1 \
       OMPI_MCA_btl=self,vader,tcp \
@@ -140,7 +146,7 @@ compare_args=(
   --cpu-prefix "$OUT_DIR/cpu/validation/air5"
   --gpu-prefix "$OUT_DIR/gpu/validation/air5"
   --report "$OUT_DIR/cpu_gpu_same_phase_compare.txt"
-  --labels post_chemistry,pre_rhs
+  --labels post_chemistry,pre_rhs,post_update,post_transport
   --atol "$ATOL"
   --rtol "$RTOL"
   --active-only

@@ -1,7 +1,8 @@
-"""Rejected station-marcher candidates retained for A1-R1 diagnostics only.
+"""Independent FP64 station-marcher implementations for air5 HBL validation.
 
 The authoritative frozen-air5 A1-R1 reference is ``air5_hbl_similarity.py``.
-Neither station formulation in this module qualifies R2/R3 validation.
+The legacy explicit and generic least-squares paths remain diagnostic only. The
+positive implicit path supplies the finite-rate A1-R2 station reference.
 """
 
 from __future__ import annotations
@@ -12,8 +13,8 @@ from pathlib import Path
 import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.optimize import least_squares
-from scipy.sparse import lil_matrix
-from scipy.sparse.linalg import spsolve
+from scipy.sparse import csr_matrix, lil_matrix
+from scipy.sparse.linalg import lsmr, spsolve
 
 try:
     from tests.gpu_validation.air5_hbl_reference import (
@@ -72,6 +73,16 @@ class Air5HblMarchResult:
     x: np.ndarray
     primitive: np.ndarray
     scaled_linear_residual_max: float
+
+
+@dataclass(frozen=True)
+class Air5HblWallQuantities:
+    skin_friction: np.ndarray
+    shear_stress: np.ndarray
+    translational_heat_flux: np.ndarray
+    vibrational_heat_flux: np.ndarray
+    species_enthalpy_flux: np.ndarray
+    total_heat_flux: np.ndarray
 
 
 def _derivative_matrix(coordinate: np.ndarray) -> np.ndarray:
@@ -701,6 +712,80 @@ class Air5HblMarcher:
                 )
                 sparsity[row, column] = 1
         return sparsity.tocsr()
+
+    @staticmethod
+    def _interior_jacobian_sparsity(points: int):
+        """Return the five-station coupling after exact boundary elimination."""
+        if points < 3:
+            raise ValueError("HBL station requires at least three y points")
+        interior_points = points - 2
+        size = NUM_PRIMITIVES * interior_points
+        sparsity = lil_matrix((size, size), dtype=np.int8)
+        for station in range(interior_points):
+            physical_station = station + 1
+            row = slice(
+                station * NUM_PRIMITIVES, (station + 1) * NUM_PRIMITIVES
+            )
+            for dependency in range(
+                max(1, physical_station - 2),
+                min(points - 1, physical_station + 3),
+            ):
+                local_dependency = dependency - 1
+                column = slice(
+                    local_dependency * NUM_PRIMITIVES,
+                    (local_dependency + 1) * NUM_PRIMITIVES,
+                )
+                sparsity[row, column] = 1
+        return sparsity.tocsr()
+
+    @staticmethod
+    def _colored_block_jacobian(
+        residual,
+        current: np.ndarray,
+        current_residual: np.ndarray,
+        lower: np.ndarray,
+        upper: np.ndarray,
+        points: int,
+    ) -> tuple[csr_matrix, int]:
+        """Differentiate the five-station block operator with 40 colors."""
+        sparsity = Air5HblMarcher._interior_jacobian_sparsity(points).tocsc()
+        rows: list[int] = []
+        columns: list[int] = []
+        values: list[float] = []
+        evaluations = 0
+        station_count = points - 2
+        step_scale = np.sqrt(np.finfo(np.float64).eps)
+        for station_color in range(min(5, station_count)):
+            for variable in range(NUM_PRIMITIVES):
+                selected = np.asarray(
+                    [
+                        station * NUM_PRIMITIVES + variable
+                        for station in range(station_color, station_count, 5)
+                    ],
+                    dtype=int,
+                )
+                if selected.size == 0:
+                    continue
+                step = step_scale * np.maximum(1.0, np.abs(current[selected]))
+                use_backward = current[selected] + step >= upper[selected]
+                step[use_backward] *= -1.0
+                if np.any(current[selected] + step <= lower[selected]):
+                    raise RuntimeError("HBL Jacobian has no feasible perturbation")
+                trial = current.copy()
+                trial[selected] += step
+                difference = residual(trial) - current_residual
+                evaluations += 1
+                for column, local_step in zip(selected, step):
+                    start = sparsity.indptr[column]
+                    end = sparsity.indptr[column + 1]
+                    affected = sparsity.indices[start:end]
+                    rows.extend(affected.tolist())
+                    columns.extend([int(column)] * affected.size)
+                    values.extend((difference[affected] / local_step).tolist())
+        jacobian = csr_matrix(
+            (values, (rows, columns)), shape=(current.size, current.size)
+        )
+        return jacobian, evaluations
 
     @staticmethod
     def _three_equation_sparsity(points: int):
@@ -1336,7 +1421,7 @@ class Air5HblMarcher:
             current[0, 1] / u_scale,
             (current[0, 2] - boundary.wall_temperature) / t_scale,
             (current[0, 3] - boundary.wall_tv) / t_scale,
-            current[0, 4:8] - current[1, 4:8],
+            (y[1] - y[0]) * species_gradient[0, 1:5],
         ]
         residual[-1] = np.r_[
             (current[-1, 0] - boundary.edge_velocity[0]) / u_scale,
@@ -1438,4 +1523,392 @@ class Air5HblMarcher:
             primitive=primitive,
             scaled_residual_max=residual_max,
             function_evaluations=result.nfev,
+        )
+
+    @staticmethod
+    def _positive_coordinates(primitive: np.ndarray) -> np.ndarray:
+        """Encode composition as nonnegative ratios to the closure species."""
+        primitive = np.asarray(primitive, dtype=np.float64)
+        mass_fraction = Air5HblMarcher._mass_fraction(primitive)
+        if np.any(mass_fraction[:, 1:5] < 0.0) or np.any(
+            mass_fraction[:, 0] <= 0.0
+        ):
+            raise ValueError(
+                "positive HBL coordinates require a positive closure species"
+            )
+        coordinates = primitive.copy()
+        coordinates[:, 4:8] = mass_fraction[:, 1:5] / mass_fraction[:, 0, None]
+        return coordinates
+
+    @staticmethod
+    def _primitive_from_positive_coordinates(coordinates: np.ndarray) -> np.ndarray:
+        """Decode closure-species ratios into exactly normalized mass fractions."""
+        coordinates = np.asarray(coordinates, dtype=np.float64)
+        if coordinates.ndim != 2 or coordinates.shape[1] != NUM_PRIMITIVES:
+            raise ValueError("positive HBL coordinates must have eight columns")
+        ratios = coordinates[:, 4:8]
+        if not np.all(np.isfinite(coordinates)) or np.any(ratios < 0.0):
+            raise ValueError("positive HBL coordinates are outside the physical domain")
+        denominator = 1.0 + np.sum(ratios, axis=1)
+        primitive = coordinates.copy()
+        primitive[:, 4:8] = ratios / denominator[:, None]
+        return primitive
+
+    def march_positive_station(
+        self,
+        previous: np.ndarray,
+        y: np.ndarray,
+        streamwise_step: float,
+        boundary: Air5HblBoundaryConditions,
+        *,
+        source_mode: str = "off",
+        single_temperature: bool = False,
+        residual_tolerance: float = 1.0e-10,
+        max_function_evaluations: int = 1000,
+    ) -> Air5HblStationResult:
+        """Advance one conservative station with positive composition coordinates."""
+        self._validate_boundary(boundary)
+        previous = np.asarray(previous, dtype=np.float64)
+        y = np.asarray(y, dtype=np.float64)
+        if previous.shape != (y.size, NUM_PRIMITIVES) or y.size < 3:
+            raise ValueError("HBL primitive profile has an invalid shape")
+        if not np.isfinite(streamwise_step) or streamwise_step <= 0.0:
+            raise ValueError("HBL streamwise step must be positive and finite")
+        if residual_tolerance <= 0.0 or max_function_evaluations <= 0:
+            raise ValueError("HBL station solver limits must be positive")
+
+        previous_coordinates = self._positive_coordinates(previous)
+        ratio_scale = np.max(previous_coordinates[:, 4:8], axis=0)
+        ratio_scale[ratio_scale == 0.0] = 1.0
+        variable_scale = np.array(
+            [
+                boundary.edge_velocity[0],
+                max(
+                    np.max(np.abs(previous[:, 1])),
+                    1.0e-4 * boundary.edge_velocity[0],
+                ),
+                boundary.edge_temperature,
+                boundary.edge_tv,
+                *ratio_scale,
+            ],
+            dtype=np.float64,
+        )
+        if np.any(variable_scale <= 0.0) or not np.all(np.isfinite(variable_scale)):
+            raise ValueError(
+                "HBL positive-coordinate scale must be finite and positive"
+            )
+        tiled_scale = np.tile(variable_scale, y.size - 2)
+
+        lower_physical = np.array(
+            [
+                0.0,
+                -0.25 * boundary.edge_velocity[0],
+                self.reference.chemistry.temperature_bounds[0],
+                self.reference.chemistry.temperature_bounds[0],
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ]
+        )
+        upper_physical = np.array(
+            [
+                1.5 * boundary.edge_velocity[0],
+                0.25 * boundary.edge_velocity[0],
+                self.reference.chemistry.temperature_bounds[1],
+                self.reference.chemistry.temperature_bounds[1],
+                np.inf,
+                np.inf,
+                np.inf,
+                np.inf,
+            ]
+        )
+        lower = np.tile(lower_physical / variable_scale, y.size - 2)
+        upper = np.tile(upper_physical / variable_scale, y.size - 2)
+        derivative = _derivative_matrix(y)
+
+        def reconstruct(normalized_flat: np.ndarray) -> np.ndarray:
+            interior = normalized_flat.reshape((-1, NUM_PRIMITIVES)) * variable_scale
+            coordinates = previous_coordinates.copy()
+            coordinates[1:-1] = interior
+            coordinates[0, 0] = boundary.wall_velocity
+            coordinates[0, 1] = 0.0
+            coordinates[0, 2] = boundary.wall_temperature
+            coordinates[0, 3] = boundary.wall_tv
+            edge_mass_fraction = np.asarray(
+                boundary.edge_mass_fraction, dtype=np.float64
+            )
+            coordinates[-1, 0] = boundary.edge_velocity[0]
+            coordinates[-1, 1] = boundary.edge_velocity[1]
+            coordinates[-1, 2] = boundary.edge_temperature
+            coordinates[-1, 3] = boundary.edge_tv
+            coordinates[-1, 4:8] = (
+                edge_mass_fraction[1:5] / edge_mass_fraction[0]
+            )
+            primitive = self._primitive_from_positive_coordinates(coordinates)
+            mass_fraction = self._mass_fraction(primitive)
+            wall_mass_fraction = -(
+                derivative[0, 1] * mass_fraction[1]
+                + derivative[0, 2] * mass_fraction[2]
+            ) / derivative[0, 0]
+            if np.any(wall_mass_fraction < 0.0):
+                raise ValueError(
+                    "discrete noncatalytic wall produced a negative species"
+                )
+            primitive[0, 4:8] = wall_mass_fraction[1:5]
+            return primitive
+
+        def interior_residual(normalized_flat: np.ndarray) -> np.ndarray:
+            current = reconstruct(normalized_flat)
+            full = self.scaled_residual(
+                current.ravel(),
+                previous,
+                y,
+                streamwise_step,
+                boundary,
+                source_mode=source_mode,
+                single_temperature=single_temperature,
+            ).reshape((-1, NUM_PRIMITIVES))
+            return full[1:-1].ravel()
+
+        current = previous_coordinates[1:-1].ravel() / tiled_scale
+        current_residual = interior_residual(current)
+        evaluations = 1
+        iterations = 0
+        while np.max(np.abs(current_residual)) > residual_tolerance:
+            jacobian, jacobian_evaluations = self._colored_block_jacobian(
+                interior_residual,
+                current,
+                current_residual,
+                lower,
+                upper,
+                y.size,
+            )
+            evaluations += jacobian_evaluations
+            if evaluations > max_function_evaluations:
+                break
+            step = spsolve(jacobian, -current_residual)
+            if not np.all(np.isfinite(step)):
+                step = lsmr(
+                    jacobian,
+                    -current_residual,
+                    atol=1.0e-12,
+                    btol=1.0e-12,
+                )[0]
+            if not np.all(np.isfinite(step)):
+                raise RuntimeError("positive HBL Newton step is non-finite")
+
+            fraction = 1.0
+            increasing = step > 0.0
+            finite_upper = increasing & np.isfinite(upper)
+            if np.any(finite_upper):
+                fraction = min(
+                    fraction,
+                    0.99
+                    * float(
+                        np.min(
+                            (upper[finite_upper] - current[finite_upper])
+                            / step[finite_upper]
+                        )
+                    ),
+                )
+            decreasing = step < 0.0
+            if np.any(decreasing):
+                fraction = min(
+                    fraction,
+                    0.99
+                    * float(
+                        np.min(
+                            (lower[decreasing] - current[decreasing])
+                            / step[decreasing]
+                        )
+                    ),
+                )
+            objective = 0.5 * float(np.dot(current_residual, current_residual))
+            accepted = False
+            for _ in range(20):
+                trial = current + fraction * step
+                trial_residual = interior_residual(trial)
+                evaluations += 1
+                trial_objective = 0.5 * float(
+                    np.dot(trial_residual, trial_residual)
+                )
+                if trial_objective < objective:
+                    current = trial
+                    current_residual = trial_residual
+                    accepted = True
+                    break
+                fraction *= 0.5
+            iterations += 1
+            if not accepted:
+                raise RuntimeError(
+                    "positive HBL Newton line search failed: "
+                    f"residual={np.max(np.abs(current_residual)):.3e}"
+                )
+            if evaluations >= max_function_evaluations:
+                break
+
+        primitive = reconstruct(current)
+        residual_max = float(
+            np.max(
+                np.abs(
+                    self.scaled_residual(
+                        primitive.ravel(),
+                        previous,
+                        y,
+                        streamwise_step,
+                        boundary,
+                        source_mode=source_mode,
+                        single_temperature=single_temperature,
+                    )
+                )
+            )
+        )
+        if residual_max > residual_tolerance:
+            raise RuntimeError(
+                "positive HBL station solve failed: "
+                f"residual={residual_max:.3e} evaluations={evaluations} "
+                f"iterations={iterations}"
+            )
+        mass_fraction = self._mass_fraction(primitive)
+        if np.any(mass_fraction < 0.0):
+            raise RuntimeError("positive HBL station solve produced a negative species")
+        return Air5HblStationResult(
+            primitive=primitive,
+            scaled_residual_max=residual_max,
+            function_evaluations=evaluations,
+        )
+
+    def march_positive(
+        self,
+        initial: np.ndarray,
+        y: np.ndarray,
+        x: np.ndarray,
+        boundary: Air5HblBoundaryConditions,
+        *,
+        source_mode: str = "off",
+        single_temperature: bool = False,
+        residual_tolerance: float = 1.0e-10,
+        max_function_evaluations: int = 1000,
+    ) -> Air5HblMarchResult:
+        """March consecutive conservative stations with strict local gates."""
+        initial = np.asarray(initial, dtype=np.float64)
+        y = np.asarray(y, dtype=np.float64)
+        x = np.asarray(x, dtype=np.float64)
+        if initial.shape != (y.size, NUM_PRIMITIVES):
+            raise ValueError("HBL initial primitive profile has an invalid shape")
+        if (
+            x.ndim != 1
+            or x.size < 2
+            or not np.all(np.isfinite(x))
+            or np.any(np.diff(x) <= 0.0)
+        ):
+            raise ValueError("HBL x coordinate must be finite and strictly increasing")
+
+        history = np.empty((x.size, y.size, NUM_PRIMITIVES), dtype=np.float64)
+        history[0] = initial
+        current = initial.copy()
+        maximum_residual = 0.0
+        for station, step in enumerate(np.diff(x), start=1):
+            result = self.march_positive_station(
+                current,
+                y,
+                float(step),
+                boundary,
+                source_mode=source_mode,
+                single_temperature=single_temperature,
+                residual_tolerance=residual_tolerance,
+                max_function_evaluations=max_function_evaluations,
+            )
+            current = result.primitive
+            history[station] = current
+            maximum_residual = max(maximum_residual, result.scaled_residual_max)
+        return Air5HblMarchResult(
+            x=x.copy(),
+            primitive=history,
+            scaled_linear_residual_max=maximum_residual,
+        )
+
+    def wall_quantities(
+        self,
+        result: Air5HblMarchResult,
+        y: np.ndarray,
+        boundary: Air5HblBoundaryConditions,
+    ) -> Air5HblWallQuantities:
+        """Evaluate wall stress and heat flux positive into the fluid."""
+        y = np.asarray(y, dtype=np.float64)
+        if result.primitive.shape != (result.x.size, y.size, NUM_PRIMITIVES):
+            raise ValueError("HBL march result has an invalid shape")
+        derivative = _derivative_matrix(y)
+        count = result.x.size
+        shear = np.empty(count)
+        heat_tr = np.empty(count)
+        heat_v = np.empty(count)
+        heat_species = np.empty(count)
+        for station, primitive in enumerate(result.primitive):
+            velocity_gradient = _differentiate(derivative, primitive[:, 0:2])[0]
+            temperature_gradient = _differentiate(derivative, primitive[:, 2])[0]
+            tv_gradient = _differentiate(derivative, primitive[:, 3])[0]
+            state = self._states(primitive, boundary.pressure)[0]
+            viscosity, conductivity_tr, conductivity_v, _ = (
+                self.reference.transport.transport_properties(
+                    state.temperature,
+                    state.tv,
+                    state.pressure,
+                    state.mass_fraction,
+                )
+            )
+            diffusive = self.reference.transport.diffusive_flux(
+                rho=self.reference.density(state),
+                velocity=state.velocity,
+                temperature=state.temperature,
+                tv=state.tv,
+                pressure=state.pressure,
+                grad_velocity=np.array(
+                    [
+                        [0.0, velocity_gradient[0], 0.0],
+                        [0.0, velocity_gradient[1], 0.0],
+                        [0.0, 0.0, 0.0],
+                    ]
+                ),
+                grad_temperature=np.array([0.0, temperature_gradient, 0.0]),
+                grad_tv=np.array([0.0, tv_gradient, 0.0]),
+                mass_fraction=state.mass_fraction,
+                grad_mass_fraction=np.zeros((5, 3)),
+            )
+            vibrational_energy = (
+                self.reference.transport.species_vibrational_energy(state.tv)
+            )
+            enthalpy = (
+                self.reference.transport.cv_tr * state.temperature
+                + vibrational_energy
+                + self.reference.transport.formation_energy
+                + self.reference.transport.gas_constant * state.temperature
+            )
+            shear[station] = diffusive.momentum_flux[0, 1]
+            heat_tr[station] = -conductivity_tr * temperature_gradient
+            heat_v[station] = -conductivity_v * tv_gradient
+            heat_species[station] = float(
+                np.dot(enthalpy, diffusive.species_flux[:, 1])
+            )
+
+        edge = Air5BoundaryLayerState(
+            pressure=boundary.pressure,
+            velocity=np.asarray(boundary.edge_velocity, dtype=np.float64),
+            temperature=boundary.edge_temperature,
+            tv=boundary.edge_tv,
+            mass_fraction=np.asarray(boundary.edge_mass_fraction, dtype=np.float64),
+        )
+        edge_density = self.reference.density(edge)
+        skin_friction = 2.0 * shear / (
+            edge_density * boundary.edge_velocity[0] ** 2
+        )
+        total_heat = heat_tr + heat_v + heat_species
+        return Air5HblWallQuantities(
+            skin_friction=skin_friction,
+            shear_stress=shear,
+            translational_heat_flux=heat_tr,
+            vibrational_heat_flux=heat_v,
+            species_enthalpy_flux=heat_species,
+            total_heat_flux=total_heat,
         )

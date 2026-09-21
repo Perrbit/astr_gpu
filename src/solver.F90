@@ -287,7 +287,9 @@ module solver
     use commvar,   only : flowtype,conschm,diffterm,im,jm,             &
                           recon_schem,limmbou,lchardecomp,lihomo,lcomb
 #ifdef ASTR_AIR5_CHEMISTRY
-    use chemistry_flow_solver, only: air5_diffusion_rhs,air5_limit_species_convection
+    use chemistry_flow_solver, only: air5_convection_rhs,air5_diffusion_rhs, &
+      air5_limit_full_state_convection
+    use chemistry_flow_runtime, only: air5_shock_capturing_enabled
 #endif
     use commcal,   only : ShockSolid,ducrossensor,shock_sensor_validation_enabled
     use comsolver, only : gradcal
@@ -306,9 +308,14 @@ module solver
     ! local data
     integer :: j
     integer :: nconv
+    logical :: air5_shock_path
     !
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
+    air5_shock_path=.false.
+#ifdef ASTR_AIR5_CHEMISTRY
+    air5_shock_path=lcomb .and. air5_shock_capturing_enabled()
+#endif
     !
     if(present(timerept)) then
 
@@ -325,7 +332,12 @@ module solver
         firstcall=.false.
       endif
       !
-      if(mod(nconv,2)==0) then
+      if(air5_shock_path) then
+#ifdef ASTR_AIR5_CHEMISTRY
+        call ducrossensor(timerept=ltimrpt)
+        call air5_convection_rhs()
+#endif
+      elseif(mod(nconv,2)==0) then
         call convrsdcal6(timerept=ltimrpt)
       else
         !
@@ -354,7 +366,7 @@ module solver
     !
     qrhs=-qrhs
 #ifdef ASTR_AIR5_CHEMISTRY
-    if(lcomb .and. flowtype(1:2)/='0d') call air5_limit_species_convection()
+    if(lcomb .and. flowtype(1:2)/='0d') call air5_limit_full_state_convection()
 #endif
     call write_rhs_validation_snapshot('conv')
     !

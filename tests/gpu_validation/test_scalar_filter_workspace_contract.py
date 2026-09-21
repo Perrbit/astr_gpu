@@ -53,11 +53,11 @@ class ScalarFilterWorkspaceContract(unittest.TestCase):
         self.assertIn("exchange_filter_scalar_z_halo_gpu", HALO)
         self.assertIn("refresh_filter_scalar_z_local_halo_gpu", HALO)
 
-    def test_mainloop_dispatches_without_removing_full_backend(self):
+    def test_filter_runtime_dispatches_without_removing_full_backend(self):
         self.assertIn("apply_explicit_filter_gpu", MAINLOOP)
-        self.assertIn("gpu_scalar_filter_workspace_enabled", MAINLOOP)
-        self.assertIn("filter_x_global_kernel", MAINLOOP)
-        self.assertIn("filter_x_scalar_global_kernel", MAINLOOP)
+        self.assertIn("gpu_scalar_filter_workspace_enabled", SOLVER)
+        self.assertIn("filter_x_global_kernel", SOLVER)
+        self.assertIn("filter_x_scalar_global_kernel", SOLVER)
 
     def test_tgv_drivers_forward_mode_only_to_gpu_run(self):
         for driver in (STATS_DRIVER, FIELD_DRIVER, MPI_STATS_DRIVER, MPI_FIELD_DRIVER):

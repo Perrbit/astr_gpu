@@ -67,6 +67,7 @@ module gridgeneration
         call gridcube(20.d0*ref_len,2.d0*ref_len,2.d0*ref_len)
       elseif(trim(flowtype)=='air5wave' .or. trim(flowtype)=='air5reactor' .or. &
              trim(flowtype)=='air5tgv' .or. &
+             trim(flowtype)=='air5shocktube' .or. &
              trim(flowtype)=='air5advection' .or. trim(flowtype)=='air5difflayer' .or. &
              trim(flowtype)=='air5evpulse') then
         call gridcube(ref_len*2.d0*pi,ref_len*2.d0*pi,ref_len*2.d0*pi)

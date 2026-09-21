@@ -213,6 +213,195 @@ contains
 
 end module chemistry_hbl_profile
 
+module chemistry_hbl_initial_field
+  use iso_fortran_env, only: real64
+  use ieee_arithmetic, only: ieee_is_finite
+  use chemistry_air5_data, only: air5_num_species
+  use chemistry_model, only: chemistry_status_ok
+  use chemistry_state_layout, only: air5_num_conservative
+  use chemistry_flow_state, only: air5_conservative_to_primitive
+  implicit none
+  private
+
+  integer, parameter, public :: air5_hbl_initial_status_ok=0
+  integer, parameter, public :: air5_hbl_initial_status_io=1
+  integer, parameter, public :: air5_hbl_initial_status_format=2
+  integer, parameter, public :: air5_hbl_initial_status_invalid_state=3
+  integer, parameter, public :: air5_hbl_initial_columns=13
+
+  type, public :: air5_hbl_initial_field_type
+    private
+    real(real64), allocatable :: x(:)
+    real(real64), allocatable :: y(:)
+    real(real64), allocatable :: q(:,:,:)
+  end type air5_hbl_initial_field_type
+
+  public :: read_air5_hbl_initial_field
+  public :: sample_air5_hbl_initial_field
+
+contains
+
+  subroutine read_next_initial_data_line(unit,line,ios)
+    integer, intent(in) :: unit
+    character(len=*), intent(out) :: line
+    integer, intent(out) :: ios
+
+    do
+      read(unit,'(A)',iostat=ios) line
+      if(ios/=0) return
+      line=adjustl(line)
+      if(len_trim(line)>0 .and. line(1:1)/='#') return
+    enddo
+  end subroutine read_next_initial_data_line
+
+  subroutine clear_air5_hbl_initial_field(field)
+    type(air5_hbl_initial_field_type), intent(inout) :: field
+
+    if(allocated(field%x)) deallocate(field%x)
+    if(allocated(field%y)) deallocate(field%y)
+    if(allocated(field%q)) deallocate(field%q)
+  end subroutine clear_air5_hbl_initial_field
+
+  subroutine read_air5_hbl_initial_field(path,field,status)
+    character(len=*), intent(in) :: path
+    type(air5_hbl_initial_field_type), intent(inout) :: field
+    integer, intent(out) :: status
+    character(len=2048) :: line
+    real(real64) :: row(air5_hbl_initial_columns),scale
+    real(real64) :: density,velocity(3),temperature,mass_fraction(air5_num_species)
+    real(real64) :: tv,pressure
+    integer :: unit,ios,nx,ny,ix,iy,state_status
+
+    call clear_air5_hbl_initial_field(field)
+    status=air5_hbl_initial_status_ok
+    open(newunit=unit,file=path,status='old',action='read',iostat=ios)
+    if(ios/=0) then
+      status=air5_hbl_initial_status_io
+      return
+    endif
+    call read_next_initial_data_line(unit,line,ios)
+    if(ios/=0) then
+      status=air5_hbl_initial_status_format
+      close(unit)
+      return
+    endif
+    read(line,*,iostat=ios) nx,ny
+    if(ios/=0 .or. min(nx,ny)<2) then
+      status=air5_hbl_initial_status_format
+      close(unit)
+      return
+    endif
+    allocate(field%x(nx),field%y(ny),field%q(air5_num_conservative,nx,ny))
+
+    do ix=1,nx
+      do iy=1,ny
+        call read_next_initial_data_line(unit,line,ios)
+        if(ios/=0) then
+          status=air5_hbl_initial_status_format
+          exit
+        endif
+        read(line,*,iostat=ios) row
+        if(ios/=0 .or. .not.all(ieee_is_finite(row))) then
+          status=air5_hbl_initial_status_format
+          exit
+        endif
+        if(iy==1) then
+          field%x(ix)=row(1)
+        else
+          scale=max(abs(field%x(ix)),1.0_real64)
+          if(abs(row(1)-field%x(ix))>2.0e-12_real64*scale) then
+            status=air5_hbl_initial_status_format
+            exit
+          endif
+        endif
+        if(ix==1) then
+          field%y(iy)=row(2)
+        else
+          scale=max(abs(field%y(iy)),1.0_real64)
+          if(abs(row(2)-field%y(iy))>2.0e-12_real64*scale) then
+            status=air5_hbl_initial_status_format
+            exit
+          endif
+        endif
+        field%q(:,ix,iy)=row(3:air5_hbl_initial_columns)
+        call air5_conservative_to_primitive(field%q(:,ix,iy),density,velocity, &
+          temperature,mass_fraction,tv,pressure,state_status)
+        if(state_status/=chemistry_status_ok) then
+          status=air5_hbl_initial_status_invalid_state
+          exit
+        endif
+      enddo
+      if(status/=air5_hbl_initial_status_ok) exit
+    enddo
+    close(unit)
+    if(status==air5_hbl_initial_status_ok) then
+      if(any(field%x(2:)<=field%x(:nx-1)) .or. &
+         any(field%y(2:)<=field%y(:ny-1))) status=air5_hbl_initial_status_format
+    endif
+    if(status/=air5_hbl_initial_status_ok) call clear_air5_hbl_initial_field(field)
+  end subroutine read_air5_hbl_initial_field
+
+  subroutine coordinate_bracket(coordinate,value,lower,weight)
+    real(real64), intent(in) :: coordinate(:),value
+    integer, intent(out) :: lower
+    real(real64), intent(out) :: weight
+    integer :: upper,middle,n
+
+    n=size(coordinate)
+    if(value<=coordinate(1)) then
+      lower=1
+      weight=0.0_real64
+      return
+    elseif(value>=coordinate(n)) then
+      lower=n-1
+      weight=1.0_real64
+      return
+    endif
+    lower=1
+    upper=n
+    do while(upper-lower>1)
+      middle=(lower+upper)/2
+      if(coordinate(middle)<=value) then
+        lower=middle
+      else
+        upper=middle
+      endif
+    enddo
+    weight=(value-coordinate(lower))/(coordinate(lower+1)-coordinate(lower))
+  end subroutine coordinate_bracket
+
+  subroutine sample_air5_hbl_initial_field(field,x,y,q,status)
+    type(air5_hbl_initial_field_type), intent(in) :: field
+    real(real64), intent(in) :: x,y
+    real(real64), intent(out) :: q(air5_num_conservative)
+    integer, intent(out) :: status
+    real(real64) :: wx,wy,density,velocity(3),temperature
+    real(real64) :: mass_fraction(air5_num_species),tv,pressure
+    integer :: ix,iy,state_status
+
+    q=0.0_real64
+    if(.not.allocated(field%q)) then
+      status=air5_hbl_initial_status_format
+      return
+    endif
+    call coordinate_bracket(field%x,x,ix,wx)
+    call coordinate_bracket(field%y,y,iy,wy)
+    q=(1.0_real64-wx)*(1.0_real64-wy)*field%q(:,ix,iy)+ &
+      wx*(1.0_real64-wy)*field%q(:,ix+1,iy)+ &
+      (1.0_real64-wx)*wy*field%q(:,ix,iy+1)+ &
+      wx*wy*field%q(:,ix+1,iy+1)
+    call air5_conservative_to_primitive(q,density,velocity,temperature, &
+      mass_fraction,tv,pressure,state_status)
+    if(state_status/=chemistry_status_ok) then
+      status=air5_hbl_initial_status_invalid_state
+      q=0.0_real64
+      return
+    endif
+    status=air5_hbl_initial_status_ok
+  end subroutine sample_air5_hbl_initial_field
+
+end module chemistry_hbl_initial_field
+
 module chemistry_hbl_boundary_state
   use iso_fortran_env, only: real64
   use chemistry_air5_data, only: air5_num_species,air5_molar_mass,air5_ru

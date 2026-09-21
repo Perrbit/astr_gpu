@@ -19,13 +19,14 @@ module chemistry_model
   integer, parameter, public :: chemistry_status_invalid_tolerance = 10
   integer, parameter, public :: chemistry_status_step_limit = 11
   integer, parameter, public :: chemistry_status_invalid_source_mode = 12
-  real(real64), parameter, public :: air5_flux_limiter_safety = &
-    1.0_real64-1.0e-8_real64
+  integer, parameter, public :: air5_ratio_bisection_iterations = digits(1.0_real64)
 
   public :: air5_validate_mechanism_id
   public :: air5_validate_partial_densities
   public :: air5_validate_physical_species_state
   public :: air5_pressure_is_in_domain
+  public :: air5_interior_ratio
+  public :: air5_limit_filter_species
 
 contains
 
@@ -70,6 +71,74 @@ contains
     tolerance = 1.0e-10_real64*max(rho, 1.0_real64)
     if (abs(sum(rho_species)-rho) > tolerance) status = chemistry_status_invalid_composition
   end subroutine air5_validate_physical_species_state
+
+  pure elemental real(real64) function air5_interior_ratio(value)
+    real(real64), intent(in) :: value
+
+    air5_interior_ratio=max(0.0_real64,min(1.0_real64,value))
+    if(air5_interior_ratio>0.0_real64 .and. air5_interior_ratio<1.0_real64) &
+      air5_interior_ratio=nearest(air5_interior_ratio,-1.0_real64)
+  end function air5_interior_ratio
+
+  pure subroutine air5_limit_filter_species(rho_base,base_species,rho_filtered, &
+      filtered_species,limited,theta,status)
+    real(real64), intent(in) :: rho_base,rho_filtered
+    real(real64), intent(in) :: base_species(air5_num_species)
+    real(real64), intent(inout) :: filtered_species(air5_num_species)
+    logical, intent(out) :: limited
+    real(real64), intent(out) :: theta
+    integer, intent(out) :: status
+    real(real64) :: candidate(air5_num_species),low_species(air5_num_species)
+    real(real64) :: base_sum,direction,other_sum
+    integer :: species,closure_species
+
+    limited=.false.
+    theta=1.0_real64
+    status=chemistry_status_ok
+    call air5_validate_physical_species_state(rho_base,base_species,status)
+    if(status/=chemistry_status_ok) return
+    if(.not.ieee_is_finite(rho_filtered)) then
+      status=chemistry_status_nonfinite
+      return
+    endif
+    if(rho_filtered<=0.0_real64) then
+      status=chemistry_status_invalid_density
+      return
+    endif
+    if(.not.all(ieee_is_finite(filtered_species))) then
+      status=chemistry_status_nonfinite
+      return
+    endif
+
+    base_sum=sum(base_species)
+    closure_species=maxloc(base_species,dim=1)
+    other_sum=0.0_real64
+    do species=1,air5_num_species
+      if(species/=closure_species) other_sum=other_sum+filtered_species(species)
+    enddo
+    filtered_species(closure_species)=rho_filtered-other_sum
+    low_species=rho_filtered*base_species/base_sum
+    if(any(filtered_species<0.0_real64)) then
+      do species=1,air5_num_species
+        direction=filtered_species(species)-low_species(species)
+        if(direction<0.0_real64) theta=min(theta, &
+          low_species(species)/(low_species(species)-filtered_species(species)))
+      enddo
+      theta=air5_interior_ratio(theta)
+      limited=.true.
+    endif
+    candidate=low_species+theta*(filtered_species-low_species)
+    other_sum=0.0_real64
+    do species=1,air5_num_species
+      if(species/=closure_species) other_sum=other_sum+candidate(species)
+    enddo
+    candidate(closure_species)=rho_filtered-other_sum
+    if(any(candidate<0.0_real64)) then
+      status=chemistry_status_invalid_composition
+      return
+    endif
+    filtered_species=candidate
+  end subroutine air5_limit_filter_species
 
   pure function air5_pressure_is_in_domain(pressure) result(is_in_domain)
     real(real64), intent(in) :: pressure
@@ -134,11 +203,6 @@ contains
       status = air5_layout_status_turbulence
       return
     endif
-    if(lfilter) then
-      status = air5_layout_status_filter
-      return
-    endif
-
     num_modequ = air5_num_mode_equations
     numq = air5_num_conservative
   end subroutine air5_configure_runtime_layout

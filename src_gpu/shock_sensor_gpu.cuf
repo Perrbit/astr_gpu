@@ -170,7 +170,7 @@ contains
     dumped=.true.
   end subroutine dump_shock_sensor_gpu_validation
 
-  subroutine compute_shock_sensor_gpu(stage_index)
+  subroutine compute_shock_sensor_gpu(stage_index,force_active)
     use commvar, only: im,jm,km,hm,shkcrt,lchardecomp,npdci,npdcj,npdck,nstep
     use commcal, only: shock_sensor_validation_enabled
     use gradcal_gpu, only: compute_gradcal_gpu
@@ -182,12 +182,16 @@ contains
     use validation_io, only: rhs_validation_requested,write_sensor_validation_snapshot
     implicit none
     integer,intent(in),optional :: stage_index
+    logical,intent(in),optional :: force_active
     type(dim3) :: block3,grid3,block_x,grid_x,block_y,grid_y,block_z,grid_z
     integer :: apply_left_x,apply_right_x,apply_down_y,apply_up_y,apply_back_z,apply_front_z
     real(8),allocatable :: sensor_host(:,:,:)
     integer(1),allocatable :: mask_host(:,:,:)
+    logical :: active
 
-    if((.not.shock_sensor_validation_enabled()) .and. (.not.lchardecomp)) return
+    active=shock_sensor_validation_enabled() .or. lchardecomp
+    if(present(force_active)) active=active .or. force_active
+    if(.not.active) return
     call compute_gradcal_gpu()
     apply_left_x = merge(1,0,npdci == 1 .or. npdci == 4)
     apply_right_x = merge(1,0,npdci == 2 .or. npdci == 4)

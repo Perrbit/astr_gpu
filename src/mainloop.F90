@@ -325,7 +325,9 @@ module mainloop
     use iso_fortran_env, only: real64
     use chemistry_flow_runtime, only: air5_reacting_flowtype,air5_postshock_flowtype, &
                                      air5_hbl_flowtype
-    use chemistry_flow_solver, only: air5_chemistry_half_step
+    use chemistry_flow_solver, only: air5_chemistry_half_step, &
+                                     air5_save_filter_species_base, &
+                                     air5_limit_filtered_state
     use chemistry_postshock_boundary, only: apply_air5_postshock_boundary
     use chemistry_hbl_boundary, only: apply_air5_hbl_boundary
 #endif
@@ -392,7 +394,8 @@ module mainloop
       if(gpu_checkpoint_due .or. gpu_slice_due) then
         call gpu_sync_flow_to_host()
         if(flowtype(1:2)/='0d' .and. .not.conservative_case .and. &
-           .not.dynamic_inflow_output) then
+           .not.dynamic_inflow_output .and. .not.air5_postshock_case .and. &
+           .not.air5_hbl_case) then
           ! Match the CPU checkpoint phase without mutating resident device state.
           nscbc_boundary_halo_required = any(bctype == 22) .or. any(bctype == 52)
           if(nscbc_boundary_halo_required) call qswap(timerept=ltimrpt)
@@ -500,7 +503,13 @@ module mainloop
     do rkstep=1,n_rk_steps
       
       if(lfilter) then
+#ifdef ASTR_AIR5_CHEMISTRY
+        if(lcomb) call air5_save_filter_species_base()
+#endif
         call filterq(timerept=ltimrpt)
+#ifdef ASTR_AIR5_CHEMISTRY
+        if(lcomb) call air5_limit_filtered_state()
+#endif
       endif
 
       if( (loop_counter==feqchkpt .or. loop_counter==0) .and. rkstep==1 ) then

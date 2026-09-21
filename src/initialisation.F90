@@ -46,14 +46,14 @@ module initialisation
     call inletprofile
     !
     call readcont
-#ifdef ASTR_AIR5_CHEMISTRY
-    if(lcomb .and. lrestart) &
-      error stop 'fixed air5 restart is unavailable until Tv/Ev checkpoint semantics are defined'
-#endif
     !
     if(lrestart) then
       !
       call readcheckpoint(folder='outdat',mode='h')
+      !
+#ifdef ASTR_AIR5_CHEMISTRY
+      if(lcomb .and. trim(flowtype)=='air5hbl') call air5hblboundaryini
+#endif
       !
       call updateq
       !
@@ -136,6 +136,8 @@ module initialisation
           call air5reactorini
         case('air5tgv')
           call air5tgvini
+        case('air5shocktube')
+          call air5shocktubeini
         case('air5postshock')
           call air5postshockini
         case('air5hbl')
@@ -161,6 +163,7 @@ module initialisation
 #ifdef ASTR_AIR5_CHEMISTRY
       if(lcomb .and. trim(flowtype)/='air5reactor' .and. &
          trim(flowtype)/='air5tgv' .and. &
+         trim(flowtype)/='air5shocktube' .and. &
          trim(flowtype)/='air5postshock' .and. &
          trim(flowtype)/='air5hbl' .and. &
          trim(flowtype)/='air5advection' .and. &
@@ -903,6 +906,43 @@ module initialisation
     if(lio) write(*,'(A)') '  ** periodic high-temperature fixed air5 TGV initialised.'
   end subroutine air5tgvini
 
+  subroutine air5shocktubeini
+    use iso_fortran_env, only: real64
+    use chemistry_air5_data, only: air5_num_species,air5_molar_mass,air5_ru
+    use commvar, only: ref_len
+    use commarray, only: x,vel,rho,prs,spc,tmp,tve
+    integer :: i,j,k
+    real(real64), parameter :: left_density=1.0_real64
+    real(real64), parameter :: right_density=1.25e-1_real64
+    real(real64), parameter :: target_temperature=1.0e3_real64
+    real(real64), parameter :: target_mass_fraction(air5_num_species)= &
+      [0.765_real64,0.225_real64,0.003_real64,0.003_real64,0.004_real64]
+    real(real64) :: phase,mixture_gas_constant
+
+    if(num_species/=air5_num_species) &
+      error stop 'air5shocktube requires the fixed five-species state'
+    if(ref_len<=0.0_real64) error stop 'air5shocktube requires positive ref_len'
+    mixture_gas_constant=sum(target_mass_fraction*air5_ru/air5_molar_mass)
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          phase=modulo(x(i,j,k,1)/(2.0_real64*pi*ref_len),1.0_real64)
+          if(phase>=0.25_real64 .and. phase<0.75_real64) then
+            rho(i,j,k)=left_density
+          else
+            rho(i,j,k)=right_density
+          endif
+          vel(i,j,k,:)=0.0_real64
+          spc(i,j,k,:)=target_mass_fraction
+          prs(i,j,k)=rho(i,j,k)*mixture_gas_constant*target_temperature
+          tmp(i,j,k)=target_temperature
+          tve(i,j,k)=target_temperature
+        enddo
+      enddo
+    enddo
+    if(lio) write(*,'(A)') '  ** periodic frozen-air5 shock tube initialised.'
+  end subroutine air5shocktubeini
+
   subroutine air5postshockini
     use iso_fortran_env, only: real64
     use chemistry_air5_data, only: air5_num_species
@@ -989,6 +1029,19 @@ module initialisation
     if(lio) write(*,'(A)') '  ** fixed air5 post-shock profile initialised.'
   end subroutine air5postshockini
 
+  subroutine air5hblboundaryini
+    use chemistry_hbl_profile, only: air5_hbl_profile_type, &
+      air5_hbl_profile_status_ok,read_air5_hbl_profile
+    use chemistry_hbl_boundary, only: configure_air5_hbl_boundary
+    type(air5_hbl_profile_type) :: profile
+    integer :: status
+
+    call read_air5_hbl_profile('datin/air5_hbl_profile.dat',profile,status)
+    if(status/=air5_hbl_profile_status_ok) &
+      error stop 'cannot read datin/air5_hbl_profile.dat'
+    call configure_air5_hbl_boundary(profile)
+  end subroutine air5hblboundaryini
+
   subroutine air5hblini
     use iso_fortran_env, only: real64
     use chemistry_air5_data, only: air5_num_species
@@ -997,12 +1050,17 @@ module initialisation
     use chemistry_flow_state, only: air5_conservative_to_primitive
     use chemistry_hbl_profile, only: air5_hbl_profile_type, &
       air5_hbl_profile_status_ok,read_air5_hbl_profile,sample_air5_hbl_profile
+    use chemistry_hbl_initial_field, only: air5_hbl_initial_field_type, &
+      air5_hbl_initial_status_ok,read_air5_hbl_initial_field, &
+      sample_air5_hbl_initial_field
     use chemistry_hbl_boundary, only: configure_air5_hbl_boundary
     use commarray, only: x,vel,rho,prs,spc,tmp,tve
     type(air5_hbl_profile_type) :: profile
+    type(air5_hbl_initial_field_type) :: initial_field
     real(real64) :: local_q(air5_num_conservative),velocity(3)
     real(real64) :: mass_fraction(air5_num_species),density,temperature,tv,pressure
     integer :: i,j,k,status,state_status
+    logical :: has_initial_field
 
     if(num_species/=air5_num_species) &
       error stop 'air5hbl requires the fixed five-species state'
@@ -1010,27 +1068,57 @@ module initialisation
     if(status/=air5_hbl_profile_status_ok) &
       error stop 'cannot read datin/air5_hbl_profile.dat'
     call configure_air5_hbl_boundary(profile)
-    do j=0,jm
-      call sample_air5_hbl_profile(profile,x(0,j,0,2),local_q,status)
-      if(status/=air5_hbl_profile_status_ok) &
-        error stop 'failed sampling fixed air5 HBL initial profile'
-      call air5_conservative_to_primitive(local_q,density,velocity,temperature, &
-        mass_fraction,tv,pressure,state_status)
-      if(state_status/=chemistry_status_ok) &
-        error stop 'fixed air5 HBL initial profile contains an invalid state'
+    inquire(file='datin/air5_hbl_initial_field.dat',exist=has_initial_field)
+    if(has_initial_field) then
+      call read_air5_hbl_initial_field('datin/air5_hbl_initial_field.dat', &
+        initial_field,status)
+      if(status/=air5_hbl_initial_status_ok) &
+        error stop 'cannot read datin/air5_hbl_initial_field.dat'
       do k=0,km
-        do i=0,im
-          rho(i,j,k)=density
-          vel(i,j,k,:)=velocity
-          prs(i,j,k)=pressure
-          tmp(i,j,k)=temperature
-          tve(i,j,k)=tv
-          spc(i,j,k,:)=mass_fraction
+        do j=0,jm
+          do i=0,im
+            call sample_air5_hbl_initial_field(initial_field,x(i,j,k,1),x(i,j,k,2), &
+              local_q,status)
+            if(status/=air5_hbl_initial_status_ok) &
+              error stop 'failed sampling fixed air5 HBL matched initial field'
+            call air5_conservative_to_primitive(local_q,density,velocity, &
+              temperature,mass_fraction,tv,pressure,state_status)
+            if(state_status/=chemistry_status_ok) &
+              error stop 'fixed air5 HBL matched initial field is invalid'
+            rho(i,j,k)=density
+            vel(i,j,k,:)=velocity
+            prs(i,j,k)=pressure
+            tmp(i,j,k)=temperature
+            tve(i,j,k)=tv
+            spc(i,j,k,:)=mass_fraction
+          enddo
         enddo
       enddo
-    enddo
-    if(lio) write(*,'(A)') &
-      '  ** fixed air5 high-enthalpy boundary-layer profile initialised.'
+      if(lio) write(*,'(A)') &
+        '  ** fixed air5 matched x-y boundary-layer field initialised.'
+    else
+      do j=0,jm
+        call sample_air5_hbl_profile(profile,x(0,j,0,2),local_q,status)
+        if(status/=air5_hbl_profile_status_ok) &
+          error stop 'failed sampling fixed air5 HBL initial profile'
+        call air5_conservative_to_primitive(local_q,density,velocity,temperature, &
+          mass_fraction,tv,pressure,state_status)
+        if(state_status/=chemistry_status_ok) &
+          error stop 'fixed air5 HBL initial profile contains an invalid state'
+        do k=0,km
+          do i=0,im
+            rho(i,j,k)=density
+            vel(i,j,k,:)=velocity
+            prs(i,j,k)=pressure
+            tmp(i,j,k)=temperature
+            tve(i,j,k)=tv
+            spc(i,j,k,:)=mass_fraction
+          enddo
+        enddo
+      enddo
+      if(lio) write(*,'(A)') &
+        '  ** fixed air5 high-enthalpy boundary-layer profile initialised.'
+    endif
   end subroutine air5hblini
 
   subroutine air5advectionini

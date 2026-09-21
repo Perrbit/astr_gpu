@@ -134,7 +134,8 @@ class DynamicInflowGpuContractTests(unittest.TestCase):
                 r"dynamic_inflow_output\s*=.*?bctype\(1\)\s*==\s*11.*?"
                 r"trim\(turbinf\)\s*==\s*'intp'.*?"
                 r"if\s*\(flowtype\(1:2\)/='0d'\s*\.and\.\s*\.not\.conservative_case\s*\.and\..*?"
-                r"\.not\.dynamic_inflow_output\)\s*then.*?call boucon",
+                r"\.not\.dynamic_inflow_output\s*\.and\..*?"
+                r"\.not\.air5_hbl_case\)\s*then.*?call boucon",
                 re.DOTALL,
             ),
         )

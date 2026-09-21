@@ -7,6 +7,13 @@ import argparse
 import shutil
 from pathlib import Path
 
+import numpy as np
+
+from air5_hbl_reference_case import (
+    generate_similarity_initial_field,
+    write_astr_air5_initial_field,
+)
+
 from air5_htr_profile import (
     export_astr_air5_profile,
     load_htr_similarity_profile,
@@ -51,9 +58,11 @@ def prepare_case(
     maxstep: int,
     deltat: str,
     diffterm: str,
+    lfilter: str,
     use_gpu: str,
     initial_condition: str,
     list_frequency: int = 1,
+    hbl_initial_field: str = "uniform",
 ) -> Path:
     if destination.exists():
         shutil.rmtree(destination)
@@ -71,6 +80,8 @@ def prepare_case(
         replace_after_marker(lines, "flowtype", "air5reactor")
     elif initial_condition == "high-temperature-tgv":
         replace_after_marker(lines, "flowtype", "air5tgv")
+    elif initial_condition == "shock-tube":
+        replace_after_marker(lines, "flowtype", "air5shocktube")
     elif initial_condition == "advection-wave":
         replace_after_marker(lines, "flowtype", "air5advection")
     elif initial_condition == "diffusion-layer":
@@ -85,7 +96,7 @@ def prepare_case(
     replace_after_marker(
         lines,
         "nondimen,diffterm,lfilter,lreadgrid,lfftz,limmbou,ltimrpt,lcomb",
-        f"f,{diffterm},f,f,f,f,t,t,{use_gpu}",
+        f"f,{diffterm},{lfilter},f,f,f,t,t,{use_gpu}",
     )
     replace_after_marker(
         lines,
@@ -119,11 +130,36 @@ def prepare_case(
         export_astr_air5_profile(
             datin / "air5_hbl_profile.dat", air5_profile, metadata
         )
+        if hbl_initial_field == "matched":
+            dimensions = tuple(int(value) for value in grid.split(","))
+            if len(dimensions) != 3 or min(dimensions) < 1:
+                raise ValueError("HBL grid must contain three positive dimensions")
+            ref_len = 4.41262150017878821e-5
+            x = np.linspace(0.0, 20.0 * ref_len, dimensions[0] + 1)
+            y = np.linspace(0.0, 2.0 * ref_len, dimensions[1] + 1)
+            evidence = generate_similarity_initial_field(
+                source_profile,
+                Path(__file__).resolve().parents[2]
+                / "chemMech/air5_kimjo12.json",
+                x=x,
+                y=y,
+                pressure=101325.0,
+            )
+            write_astr_air5_initial_field(
+                datin / "air5_hbl_initial_field.dat", evidence
+            )
+        elif hbl_initial_field != "uniform":
+            raise ValueError("HBL initial field must be uniform or matched")
     replace_after_marker(lines, "conschm,difschm,rkscheme", "643e,643e,rk3")
+    reconstruction = (
+        "3,f,0.3d0,0.05d0"
+        if initial_condition == "shock-tube"
+        else "5,f,0.3d0,0.05d0"
+    )
     replace_after_marker(
         lines,
         "recon_schem, lchardecomp,bfacmpld,shkcrt",
-        "5,f,0.3d0,0.05d0",
+        reconstruction,
     )
     replace_after_marker(
         lines,
@@ -152,7 +188,11 @@ def main() -> None:
     parser.add_argument("--deltat", default="1.d-7")
     parser.add_argument("--list-frequency", type=int, default=1)
     parser.add_argument("--diffterm", choices=("t", "f"), default="f")
+    parser.add_argument("--lfilter", choices=("t", "f"), default="f")
     parser.add_argument("--use-gpu", choices=("t", "f"), default="t")
+    parser.add_argument(
+        "--hbl-initial-field", choices=("uniform", "matched"), default="uniform"
+    )
     parser.add_argument(
         "--initial-condition",
         choices=(
@@ -160,6 +200,7 @@ def main() -> None:
             "species-wave",
             "reactor",
             "high-temperature-tgv",
+            "shock-tube",
             "advection-wave",
             "diffusion-layer",
             "ev-pulse",
@@ -182,9 +223,11 @@ def main() -> None:
         args.maxstep,
         args.deltat,
         args.diffterm,
+        args.lfilter,
         args.use_gpu,
         args.initial_condition,
         args.list_frequency,
+        args.hbl_initial_field,
     )
     print(input_file)
 

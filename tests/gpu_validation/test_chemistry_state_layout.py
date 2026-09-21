@@ -55,11 +55,14 @@ class ChemistryStateLayoutTests(unittest.TestCase):
         values = [int(value) for value in self.run_probe("valid")]
         self.assertEqual(values, [1, 11, 0, 1, 11, 0, 0])
 
+    def test_filtered_air5_layout_is_numq_11(self):
+        values = [int(value) for value in self.run_probe("valid_filter")]
+        self.assertEqual(values, [1, 11, 0, 1, 11, 0, 0])
+
     def test_invalid_layouts_fail_before_modifying_outputs(self):
         for mode in (
             "invalid_species",
             "invalid_turbulence",
-            "invalid_filter",
             "invalid_nondimensional",
         ):
             values = [int(value) for value in self.run_probe(mode)]
@@ -69,6 +72,26 @@ class ChemistryStateLayoutTests(unittest.TestCase):
     def test_disabled_air5_keeps_existing_layout(self):
         values = [int(value) for value in self.run_probe("disabled")]
         self.assertEqual(values, [2, 9, 0, 2, 9, 0, 0])
+
+    def test_filter_species_limiter_preserves_closure_for_resolved_undershoot(self):
+        values = self.run_probe("limit_filter_undershoot")
+        self.assertEqual([int(values[0]), int(values[1])], [0, 1])
+        self.assertGreater(float(values[2]), 0.08)
+        self.assertLess(float(values[2]), 0.10)
+        self.assertGreaterEqual(float(values[3]), 0.0)
+        self.assertLessEqual(abs(float(values[4])), 2.0e-16)
+
+    def test_filter_species_limiter_keeps_a_positive_margin_for_roundoff_undershoot(self):
+        values = self.run_probe("limit_filter_roundoff")
+        self.assertEqual([int(values[0]), int(values[1])], [0, 1])
+        self.assertGreater(float(values[2]), 0.6)
+        self.assertLess(float(values[2]), 0.7)
+        self.assertGreater(float(values[3]), 0.0)
+        self.assertLessEqual(abs(float(values[4])), 2.0e-16)
+
+    def test_filter_species_limiter_rejects_invalid_baseline(self):
+        values = self.run_probe("reject_filter_invalid_base")
+        self.assertEqual([int(values[0]), int(values[1])], [3, 0])
 
 
 class ChemistryRuntimeActivationContractTests(unittest.TestCase):

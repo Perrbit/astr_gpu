@@ -26,6 +26,64 @@ def test_hbl_initializer_uses_the_versioned_complete_profile() -> None:
     assert "trim(flowtype)=='air5hbl'" in grid
 
 
+def test_hbl_initializer_optionally_uses_matched_xy_conservative_field() -> None:
+    state = compact("src/chemistry_boundary_state.F90")
+    initializer = compact("src/initialisation.F90")
+    preparer = compact("tests/gpu_validation/prepare_air5_c4_case.py")
+    runner = compact("tests/gpu_validation/run_air5_c5_hbl_compare.sh")
+
+    assert "modulechemistry_hbl_initial_field" in state
+    assert "read_air5_hbl_initial_field" in state
+    assert "sample_air5_hbl_initial_field" in state
+    assert "datin/air5_hbl_initial_field.dat" in initializer
+    assert "inquire(file='datin/air5_hbl_initial_field.dat',exist=has_initial_field)" in initializer
+    assert "callsample_air5_hbl_initial_field(initial_field,x(i,j,k,1),x(i,j,k,2)" in initializer
+    assert 'choices=("uniform","matched")' in preparer
+    assert "generate_similarity_initial_field" in preparer
+    assert "write_astr_air5_initial_field" in preparer
+    assert 'hbl_initial_field="${hbl_initial_field:-uniform}"' in runner
+    assert '--hbl-initial-field"$hbl_initial_field"' in runner
+
+
+def test_fixed_air5_restart_persists_independent_vibrational_temperature() -> None:
+    initializer = compact("src/initialisation.F90")
+    readwrite = compact("src/readwrite.F90")
+
+    assert "fixedair5restartisunavailable" not in initializer
+    assert "callreadcheckpoint(folder='outdat',mode='h')" in initializer
+    assert "if(lcomb.and.trim(flowtype)=='air5hbl')callair5hblboundaryini" in initializer
+    assert "callupdateq" in initializer
+    assert "callh5read(varname='tv',var=tve(" in readwrite
+    assert "callh5wa3d_r8_struct(varname='tv',var=data2write" in readwrite
+    assert "if(lcomb)then" in readwrite
+    assert "callpgather_across_k(array=tve(0:im,0:jm,1:km)" in readwrite
+
+
+def test_fixed_air5_restart_runner_compares_complete_q11_state() -> None:
+    runner = compact("tests/gpu_validation/run_air5_c5_hbl_restart.sh")
+
+    assert "continuous_step=4" in runner
+    assert "split_step=2" in runner
+    assert "hbl_initial_field=matched" in runner
+    assert "set_restart_case" in runner
+    assert "checkpointfileread" in runner
+    assert "compare_q_validation_snapshots.py" in runner
+    assert runner.count("compare_restart") >= 3
+    assert "--labelspost_chemistry,pre_rhs,post_update,post_transport" in runner
+    assert "--scaled-tol5e-9" in runner
+    assert "air5_hbl_restart_equivalence_pass" in runner
+
+
+def test_gpu_hbl_checkpoint_does_not_replay_generic_host_boundary() -> None:
+    mainloop = compact("src/mainloop.F90")
+
+    checkpoint = mainloop.index("if(gpu_checkpoint_due.or.gpu_slice_due)then")
+    integration = mainloop.index("callgpu_time_integration_rk", checkpoint)
+    body = mainloop[checkpoint:integration]
+    assert ".not.air5_postshock_case" in body
+    assert ".not.air5_hbl_case" in body
+
+
 def test_cpu_hbl_boundary_is_applied_at_every_required_phase() -> None:
     mainloop = compact("src/mainloop.F90")
 
@@ -84,6 +142,72 @@ def test_gpu_chemistry_reconstructs_active_primitives_after_hbl_boundary() -> No
     second_boundary = coupling.index("callapply_air5_hbl_boundary_gpu()", second)
     second_interior = coupling.index("calllaunch_air5_interior_primitive_gpu()", second)
     assert second < second_boundary < second_interior
+
+
+def test_gpu_transport_reapplies_air5_boundaries_after_each_rk_update() -> None:
+    solver = compact("src_gpu/chemistry_solver_gpu.cuf")
+    start = solver.index("subroutineair5_transport_rk3_step_gpu")
+    body = solver[start : solver.index("endsubroutineair5_transport_rk3_step_gpu", start)]
+
+    update_end = body.index("endif", body.index("callair5_rk3_first_update_kernel<<<"))
+    postshock = body.index("callapply_air5_postshock_boundary_gpu()", update_end)
+    hbl = body.index("callapply_air5_hbl_boundary_gpu()", update_end)
+    snapshot = body.index("callwrite_q_validation_snapshot('post_update'", update_end)
+    assert update_end < postshock < hbl < snapshot
+
+
+def test_air5_filter_supports_full_and_scalar_q11_workspaces() -> None:
+    solver = compact("src_gpu/solver_gpu.cuf")
+    chemistry = compact("src_gpu/chemistry_solver_gpu.cuf")
+    preparer = compact("tests/gpu_validation/prepare_air5_c4_case.py")
+    runner = compact("tests/gpu_validation/run_air5_c5_hbl_compare.sh")
+
+    assert "subroutineapply_explicit_filter_gpu" in solver
+    for kernel in (
+        "filter_x_periodic_interior_global_kernel",
+        "filter_x_periodic_boundary_global_kernel",
+        "filter_y_periodic_interior_global_kernel",
+        "filter_y_periodic_boundary_global_kernel",
+        "filter_z_periodic_interior_global_kernel",
+        "filter_z_periodic_boundary_global_kernel",
+        "filter_x_global_kernel",
+        "filter_y_pong_to_q_halo_global_kernel",
+        "filter_z_halo_global_kernel",
+        "copy_qwork_global_kernel",
+    ):
+        start = solver.index(f"subroutine{kernel}")
+        end = solver.index(f"endsubroutine{kernel}", start)
+        body = solver[start:end]
+        assert "ncomponents" in body
+        assert "dom=1,ncomponents" in body
+    assert "docomponent=1,numq" in solver
+    assert "callapply_explicit_filter_gpu" in chemistry
+    save = chemistry.index("callair5_save_filter_species_base_kernel<<<")
+    apply_filter = chemistry.index("callapply_explicit_filter_gpu", save)
+    limit_state = chemistry.index("callair5_limit_filtered_state_kernel<<<", apply_filter)
+    assert save < apply_filter < limit_state
+    save_start = chemistry.index("subroutineair5_save_filter_species_base_kernel")
+    save_end = chemistry.index("endsubroutineair5_save_filter_species_base_kernel")
+    save_body = chemistry[save_start:save_end]
+    assert "air5_idx_density" in save_body
+    assert "air5_idx_species_first" in save_body
+    assert "do component=1,air5_num_conservative" not in save_body
+    assert "air5_filter_roundoff_relative_tolerance" not in chemistry
+    assert "nearest(" in chemistry
+    assert "closure_species" in chemistry
+    assert "low_species" in chemistry
+    assert "theta" in chemistry
+    limiter_start = chemistry.index("subroutineair5_limit_filtered_state_kernel")
+    limiter_end = chemistry.index("endsubroutineair5_limit_filtered_state_kernel")
+    assert "candidate_state" not in chemistry[limiter_start:limiter_end]
+    assert "callair5_limit_filtered_state()" in compact("src/mainloop.F90")
+    assert "lfilter.or.lchardecomp" not in chemistry
+    assert 'parser.add_argument("--lfilter",choices=("t","f"),default="f")' in preparer
+    assert "f\"f,{diffterm},{lfilter},f,f,f,t,t,{use_gpu}\"" in preparer
+    assert 'lfilter="${lfilter:-t}"' in runner
+    assert 'filter_workspace="${filter_workspace:-full}"' in runner
+    assert '--lfilter"$lfilter"' in runner
+    assert 'astr_gpu_filter_workspace="$filter_workspace"' in runner
 
 
 def test_gpu_hbl_outflow_limits_species_before_full_state_fallback() -> None:

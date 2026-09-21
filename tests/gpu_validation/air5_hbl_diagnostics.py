@@ -242,9 +242,6 @@ def analyze_cartesian_hbl(
     dvelocity_dy = np.einsum("j,ijzc->izc", wall_weights, velocity[:, :7, :, :])
     dtemperature_dy = np.einsum("j,ijz->iz", wall_weights, temperature[:, :7, :])
     dtv_dy = np.einsum("j,ijz->iz", wall_weights, tv[:, :7, :])
-    dmass_fraction_dy = np.einsum(
-        "j,ijzs->izs", wall_weights, mass_fraction[:, :7, :, :]
-    )
     dvelocity_dx = np.einsum("li,ijzc->ljzc", x_derivative, velocity)[:, 0, :, :]
 
     skin_friction = np.empty((x.size, z.size))
@@ -260,8 +257,10 @@ def analyze_cartesian_hbl(
             gradients[:, 1] = dvelocity_dy[i, k]
             gradient_temperature = np.array([0.0, dtemperature_dy[i, k], 0.0])
             gradient_tv = np.array([0.0, dtv_dy[i, k], 0.0])
+            # The fixed-air5 HBL lower wall is noncatalytic.  Match the solver's
+            # imposed Js,n=0 boundary flux instead of differentiating the nearby
+            # cell-center composition profile.
             gradient_mass_fraction = np.zeros((5, 3))
-            gradient_mass_fraction[:, 1] = dmass_fraction_dy[i, k]
             wall_y = mass_fraction[i, 0, k]
             flux = transport.diffusive_flux(
                 rho=q[i, 0, k, 0],
