@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -63,6 +64,18 @@ class Air5HblInitialFieldEvidence:
     end_thickness_scale: float
 
 
+def load_diagnostics(path: Path) -> Air5HblDiagnostics:
+    """Load one complete diagnostic archive without accepting missing fields."""
+    path = Path(path)
+    with np.load(path) as archive:
+        names = tuple(Air5HblDiagnostics.__dataclass_fields__)
+        missing = tuple(name for name in names if name not in archive)
+        if missing:
+            raise ValueError(f"{path}: missing HBL diagnostics {missing}")
+        values = {name: np.asarray(archive[name], dtype=np.float64) for name in names}
+    return Air5HblDiagnostics(**values)
+
+
 def htr_contract_on_grid(
     profile_path: Path, y: np.ndarray, *, pressure: float
 ) -> tuple[np.ndarray, Air5HblBoundaryConditions, Air5ProfileMetadata]:
@@ -80,8 +93,8 @@ def htr_contract_on_grid(
     )
     source_y = np.asarray([row.y for row in mapped], dtype=np.float64)
     tolerance = 64.0 * np.finfo(np.float64).eps * max(source_y[-1], 1.0)
-    if abs(y[0] - source_y[0]) > tolerance or abs(y[-1] - source_y[-1]) > tolerance:
-        raise ValueError("matched HBL grid must retain the HTR wall and edge coordinates")
+    if abs(y[0] - source_y[0]) > tolerance or y[-1] < source_y[-1] - tolerance:
+        raise ValueError("matched HBL grid must cover the HTR wall and edge coordinates")
     source_primitive = np.asarray(
         [
             [row.u, row.v, row.temperature, row.tv, *row.mass_fraction[1:5]]
@@ -209,6 +222,7 @@ def generate_similarity_initial_field(
             primitive[streamwise, :, column] = np.interp(
                 mapped_y, source_y, source_primitive[:, column]
             )
+        primitive[streamwise, :, 1] /= thickness_scale
 
     inlet = primitive[0].copy()
     reference = Air5BoundaryLayerReference(Path(mechanism_path))
@@ -296,7 +310,7 @@ def generate_reference_diagnostics(
     reference_edge = float(mapped[-1].y)
     if diagnostic_y[0] != 0.0 or diagnostic_y[-1] < reference_edge:
         raise ValueError("diagnostic HBL grid must cover the complete HTR profile")
-    reference_y = reference_edge * np.linspace(0.0, 1.0, reference_points) ** 2
+    reference_y = diagnostic_y[-1] * np.linspace(0.0, 1.0, reference_points) ** 2
     initial, boundary, metadata = htr_contract_on_grid(
         profile_path, reference_y, pressure=pressure
     )
@@ -309,6 +323,7 @@ def generate_reference_diagnostics(
         metadata.x_origin + local_x,
         boundary,
         source_mode="coupled",
+        similarity_farfield=True,
         max_function_evaluations=max_function_evaluations,
     )
     wall = marcher.wall_quantities(march, reference_y, boundary)
@@ -455,3 +470,56 @@ def compare_hbl_diagnostics(
         skin_friction_l2_relative=skin_friction_error,
         total_heat_flux_l2_relative=heat_flux_error,
     )
+
+
+def format_comparison_report(
+    result: Air5HblReferenceComparison,
+    *,
+    profile_relative_tolerance: float,
+    wall_relative_tolerance: float,
+    trace_absolute_tolerance: float,
+) -> str:
+    lines = [
+        f"status: {'pass' if result.passed else 'fail'}",
+        f"profile_relative_tolerance: {profile_relative_tolerance:.16e}",
+        f"wall_relative_tolerance: {wall_relative_tolerance:.16e}",
+        f"trace_absolute_tolerance: {trace_absolute_tolerance:.16e}",
+    ]
+    lines.extend(
+        f"{name}: {value:.16e}"
+        for name, value in result.__dict__.items()
+        if name != "passed"
+    )
+    return "\n".join(lines) + "\n"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--reference", required=True, type=Path)
+    parser.add_argument("--candidate", required=True, type=Path)
+    parser.add_argument("--report", required=True, type=Path)
+    parser.add_argument("--profile-relative-tolerance", type=float, default=0.02)
+    parser.add_argument("--wall-relative-tolerance", type=float, default=0.05)
+    parser.add_argument("--trace-absolute-tolerance", type=float, default=1.0e-5)
+    args = parser.parse_args()
+    result = compare_hbl_diagnostics(
+        load_diagnostics(args.reference),
+        load_diagnostics(args.candidate),
+        profile_relative_tolerance=args.profile_relative_tolerance,
+        wall_relative_tolerance=args.wall_relative_tolerance,
+        trace_absolute_tolerance=args.trace_absolute_tolerance,
+    )
+    report = format_comparison_report(
+        result,
+        profile_relative_tolerance=args.profile_relative_tolerance,
+        wall_relative_tolerance=args.wall_relative_tolerance,
+        trace_absolute_tolerance=args.trace_absolute_tolerance,
+    )
+    args.report.parent.mkdir(parents=True, exist_ok=True)
+    args.report.write_text(report, encoding="ascii")
+    print(report, end="")
+    return 0 if result.passed else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

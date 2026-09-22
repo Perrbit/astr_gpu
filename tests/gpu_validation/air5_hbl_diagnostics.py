@@ -206,6 +206,7 @@ def analyze_cartesian_hbl(
     reference_velocity: float,
     profile_stations: tuple[float, ...],
     spanwise_tolerance: float = 2.0e-12,
+    spanwise_momentum_relative_tolerance: float | None = None,
 ) -> Air5HblDiagnostics:
     """Diagnose a spanwise-uniform Cartesian lower-wall air5 boundary layer.
 
@@ -223,12 +224,36 @@ def analyze_cartesian_hbl(
         raise ValueError("wall diagnostics require at least seven y points")
     if reference_density <= 0.0 or reference_velocity <= 0.0:
         raise ValueError("reference density and velocity must be positive")
-    scale = np.maximum(np.max(np.abs(q), axis=2, keepdims=True), 1.0)
-    spanwise_delta = np.max(np.abs(q - q[:, :, :1, :]) / scale)
+    if spanwise_tolerance < 0.0:
+        raise ValueError("spanwise tolerance must be non-negative")
+    if (
+        spanwise_momentum_relative_tolerance is not None
+        and spanwise_momentum_relative_tolerance < 0.0
+    ):
+        raise ValueError("spanwise momentum relative tolerance must be non-negative")
+    if spanwise_momentum_relative_tolerance is None:
+        spanwise_values = q
+    else:
+        spanwise_values = q[..., (0, 1, 2, 4, 5, 6, 7, 8, 9, 10)]
+    scale = np.maximum(np.max(np.abs(spanwise_values), axis=2, keepdims=True), 1.0)
+    spanwise_delta = np.max(
+        np.abs(spanwise_values - spanwise_values[:, :, :1, :]) / scale
+    )
     if spanwise_delta > spanwise_tolerance:
         raise ValueError(
             f"spanwise variation {spanwise_delta:.3e} exceeds the laminar A1 gate"
         )
+    if spanwise_momentum_relative_tolerance is not None:
+        momentum_scale = reference_density * reference_velocity
+        spanwise_mean_momentum = _spanwise_average(q[..., 3], z)
+        spanwise_momentum_relative = (
+            float(np.max(np.abs(spanwise_mean_momentum))) / momentum_scale
+        )
+        if spanwise_momentum_relative > spanwise_momentum_relative_tolerance:
+            raise ValueError(
+                "spanwise momentum mean ratio "
+                f"{spanwise_momentum_relative:.3e} exceeds the laminar A1 gate"
+            )
 
     velocity, temperature, tv, pressure, mass_fraction = _recover_primitives(q, model)
     wall_weights = finite_difference_weights(y[:7], y[0])
@@ -344,9 +369,18 @@ def main() -> int:
     parser.add_argument("--stations", required=True, type=_comma_separated_floats)
     parser.add_argument("--reference-density", required=True, type=float)
     parser.add_argument("--reference-velocity", required=True, type=float)
+    parser.add_argument("--spanwise-tolerance", type=float, default=2.0e-12)
+    parser.add_argument("--spanwise-momentum-relative-tolerance", type=float)
     args = parser.parse_args()
     if len(args.lengths) != 3 or any(value <= 0.0 for value in args.lengths):
         parser.error("--lengths requires three positive values")
+    if args.spanwise_tolerance < 0.0:
+        parser.error("--spanwise-tolerance must be non-negative")
+    if (
+        args.spanwise_momentum_relative_tolerance is not None
+        and args.spanwise_momentum_relative_tolerance < 0.0
+    ):
+        parser.error("--spanwise-momentum-relative-tolerance must be non-negative")
 
     q = load_active_q_snapshot(args.snapshot)
     x = np.linspace(0.0, args.lengths[0], q.shape[0])
@@ -362,6 +396,8 @@ def main() -> int:
         reference_density=args.reference_density,
         reference_velocity=args.reference_velocity,
         profile_stations=args.stations,
+        spanwise_tolerance=args.spanwise_tolerance,
+        spanwise_momentum_relative_tolerance=args.spanwise_momentum_relative_tolerance,
     )
     save_diagnostics(result, args.archive, args.report)
     print(args.report.read_text(encoding="ascii"), end="")

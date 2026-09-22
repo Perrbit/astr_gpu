@@ -6,7 +6,7 @@ BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/tests/gpu_validation/out/c4_cuda_build_4}"
 EXE="${EXE:-$BUILD_DIR/bin/astr}"
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/tests/gpu_validation/out/air5_c5_hbl_compare}"
 TMP_DIR="${TMPDIR:-$ROOT_DIR/tests/gpu_validation/out/tmp_nvfortran}"
-GRID="${GRID:-31,31,7}"
+GRID="${GRID:-31,127,7}"
 MAXSTEP="${MAXSTEP:-0}"
 VALIDATION_STEP="${VALIDATION_STEP:-$MAXSTEP}"
 VALIDATION_STEP_SECONDARY="${VALIDATION_STEP_SECONDARY:-}"
@@ -18,6 +18,8 @@ TOPOLOGY="${TOPOLOGY:-1,1,1}"
 ATOL="${ATOL:-1e-9}"
 RTOL="${RTOL:-1e-10}"
 EXTRUSION_SCALED_TOL="${EXTRUSION_SCALED_TOL:-2.0e-10}"
+EXTRUSION_GATE="${EXTRUSION_GATE:-raw}"
+SPANWISE_MOMENTUM_RELATIVE_TOL="${SPANWISE_MOMENTUM_RELATIVE_TOL:-1.0e-10}"
 SAME_PHASE_SCALED_TOL="${SAME_PHASE_SCALED_TOL:-}"
 MAX_CFL="${MAX_CFL:-1.0}"
 REF_LEN="${REF_LEN:-4.41262150017878821e-5}"
@@ -77,6 +79,10 @@ if (( TI * TJ * TK != MPI_NP )); then
   echo "TOPOLOGY product must equal MPI_NP" >&2
   exit 2
 fi
+if [[ "$EXTRUSION_GATE" != "raw" && "$EXTRUSION_GATE" != "long-mean" ]]; then
+  echo "EXTRUSION_GATE must be raw or long-mean" >&2
+  exit 2
+fi
 minimum_local_extent=$((GI / TI))
 minimum_local_extent=$((GJ / TJ < minimum_local_extent ? GJ / TJ : minimum_local_extent))
 minimum_local_extent=$((GK / TK < minimum_local_extent ? GK / TK : minimum_local_extent))
@@ -129,6 +135,8 @@ for mode in cpu gpu; do
     --ref-len "$REF_LEN" \
     --step "$VALIDATION_STEP" \
     --extrusion-scaled-tol "$EXTRUSION_SCALED_TOL" \
+    --extrusion-gate "$EXTRUSION_GATE" \
+    --spanwise-momentum-relative-tol "$SPANWISE_MOMENTUM_RELATIVE_TOL" \
     --report "$OUT_DIR/${mode}_hbl_contract.txt"
   if [[ -n "$VALIDATION_STEP_SECONDARY" ]]; then
     python3 "$ROOT_DIR/tests/gpu_validation/check_air5_c5_hbl.py" \
@@ -138,6 +146,8 @@ for mode in cpu gpu; do
       --ref-len "$REF_LEN" \
       --step "$VALIDATION_STEP_SECONDARY" \
       --extrusion-scaled-tol "$EXTRUSION_SCALED_TOL" \
+      --extrusion-gate "$EXTRUSION_GATE" \
+      --spanwise-momentum-relative-tol "$SPANWISE_MOMENTUM_RELATIVE_TOL" \
       --report "$OUT_DIR/${mode}_hbl_contract_step${VALIDATION_STEP_SECONDARY}.txt"
   fi
 done

@@ -20,7 +20,8 @@ contains
     real(real64) :: left_state(air5_num_conservative)
     real(real64) :: right_state(air5_num_conservative)
 
-    if(trim(flowtype)/='air5postshock') return
+    if(trim(flowtype)/='air5postshock' .and. &
+       trim(flowtype)/='air5normalshock') return
     call get_air5_postshock_boundary(left_state,right_state)
     left_q_d=left_state
     right_q_d=right_state
@@ -28,9 +29,9 @@ contains
   end subroutine initialize_air5_postshock_boundary_gpu
 
   attributes(global) subroutine air5_postshock_boundary_kernel(im,jm,km,hm, &
-      apply_left,apply_right)
+      apply_left,apply_right,normal_shock_case)
     use commarray_gpu, only: q_d
-    integer, value :: im,jm,km,hm,apply_left,apply_right
+    integer, value :: im,jm,km,hm,apply_left,apply_right,normal_shock_case
     integer :: id,ntot,i,j,k,component
 
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
@@ -46,11 +47,19 @@ contains
       enddo
     endif
     if(apply_right/=0) then
-      do component=1,air5_num_conservative
-        do i=im,im+hm
-          q_d(i,j,k,component)=right_q_d(component)
+      if(normal_shock_case/=0) then
+        do component=1,air5_num_conservative
+          do i=im,im+hm
+            q_d(i,j,k,component)=q_d(im-1,j,k,component)
+          enddo
         enddo
-      enddo
+      else
+        do component=1,air5_num_conservative
+          do i=im,im+hm
+            q_d(i,j,k,component)=right_q_d(component)
+          enddo
+        enddo
+      endif
     endif
   end subroutine air5_postshock_boundary_kernel
 
@@ -59,10 +68,11 @@ contains
     use commvar, only: im,jm,km,hm,flowtype
     use parallel, only: mpileft,mpiright
     use gpu_check, only: sync_after_kernel
-    integer :: apply_left,apply_right,ntot
+    integer :: apply_left,apply_right,normal_shock_case,ntot
     type(dim3) :: block,grid
 
-    if(trim(flowtype)/='air5postshock') return
+    normal_shock_case=merge(1,0,trim(flowtype)=='air5normalshock')
+    if(trim(flowtype)/='air5postshock' .and. normal_shock_case==0) return
     if(.not.boundary_configured_gpu) &
       error stop 'fixed air5 GPU post-shock boundary is not configured'
     apply_left=merge(1,0,mpileft==MPI_PROC_NULL)
@@ -72,7 +82,7 @@ contains
     block=dim3(256,1,1)
     grid=dim3((ntot+block%x-1)/block%x,1,1)
     call air5_postshock_boundary_kernel<<<grid,block>>>(im,jm,km,hm, &
-      apply_left,apply_right)
+      apply_left,apply_right,normal_shock_case)
     call sync_after_kernel('air5_postshock_boundary_kernel',.true.)
   end subroutine apply_air5_postshock_boundary_gpu
 
@@ -85,7 +95,8 @@ module chemistry_hbl_boundary_gpu
   use chemistry_model, only: chemistry_status_ok,chemistry_status_invalid_density, &
     chemistry_status_invalid_composition
   use chemistry_state_layout, only: air5_num_conservative,air5_idx_density, &
-    air5_idx_species_first,air5_idx_species_last
+    air5_idx_momentum_first,air5_idx_total_energy,air5_idx_species_first, &
+    air5_idx_species_last
   use chemistry_flow_state_gpu, only: air5_primitive_to_conservative_gpu, &
     air5_conservative_to_primitive_gpu
   implicit none
@@ -94,6 +105,7 @@ module chemistry_hbl_boundary_gpu
   real(real64), device, allocatable, save :: inlet_q_d(:,:)
   real(real64), device, save :: farfield_q_d(air5_num_conservative)
   real(real64), device, save :: wall_temperature_d
+  real(real64), device, save :: hbl_x_origin_d
   integer, device, save :: hbl_status_d
   logical, save :: boundary_configured_gpu=.false.
 
@@ -107,15 +119,16 @@ contains
     use commvar, only: flowtype
     use chemistry_hbl_boundary, only: get_air5_hbl_boundary
     real(real64), allocatable :: inlet_state(:,:)
-    real(real64) :: farfield_state(air5_num_conservative),wall_temp
+    real(real64) :: farfield_state(air5_num_conservative),wall_temp,x_origin
 
     if(trim(flowtype)/='air5hbl') return
-    call get_air5_hbl_boundary(inlet_state,farfield_state,wall_temp)
+    call get_air5_hbl_boundary(inlet_state,farfield_state,wall_temp,x_origin)
     if(allocated(inlet_q_d)) deallocate(inlet_q_d)
     allocate(inlet_q_d(0:ubound(inlet_state,1),air5_num_conservative))
     inlet_q_d=inlet_state
     farfield_q_d=farfield_state
     wall_temperature_d=wall_temp
+    hbl_x_origin_d=x_origin
     deallocate(inlet_state)
     boundary_configured_gpu=.true.
   end subroutine initialize_air5_hbl_boundary_gpu
@@ -310,17 +323,34 @@ contains
   end subroutine air5_hbl_wall_boundary_kernel
 
   attributes(global) subroutine air5_hbl_farfield_boundary_kernel(im,jm,km,hm)
-    use commarray_gpu, only: q_d
+    use commarray_gpu, only: q_d,x_d
     integer, value :: im,jm,km,hm
     integer :: id,ntot,i,j,k
+    integer, parameter :: normal_momentum_index=air5_idx_momentum_first+1
+    real(real64) :: density,normal_momentum,scale
+    real(real64) :: q_boundary(air5_num_conservative)
 
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     ntot=(im+1)*(km+1)
     if(id>=ntot) return
     i=mod(id,im+1)
     k=id/(im+1)
+    density=farfield_q_d(air5_idx_density)
+    if(density<=0.0_real64 .or. hbl_x_origin_d<=0.0_real64 .or. &
+       x_d(i,jm,k,1)<0.0_real64) then
+      call record_hbl_status(chemistry_status_invalid_density)
+      return
+    endif
+    scale=sqrt(hbl_x_origin_d/(hbl_x_origin_d+x_d(i,jm,k,1)))
+    q_boundary=farfield_q_d
+    normal_momentum=farfield_q_d(normal_momentum_index)*scale
+    q_boundary(normal_momentum_index)=normal_momentum
+    q_boundary(air5_idx_total_energy)=farfield_q_d(air5_idx_total_energy)+ &
+      (normal_momentum*normal_momentum- &
+       farfield_q_d(normal_momentum_index)*farfield_q_d(normal_momentum_index))/ &
+      (2.0_real64*density)
     do j=jm,jm+hm
-      q_d(i,j,k,1:air5_num_conservative)=farfield_q_d
+      q_d(i,j,k,1:air5_num_conservative)=q_boundary
     enddo
   end subroutine air5_hbl_farfield_boundary_kernel
 
@@ -384,12 +414,14 @@ contains
       call sync_after_kernel('air5_hbl_wall_boundary_kernel',.true.)
     endif
     call check_hbl_status('wall')
+    hbl_status_d=chemistry_status_ok
     if(mpiup==MPI_PROC_NULL) then
       ntot=(im+1)*(km+1)
       grid=dim3((ntot+block%x-1)/block%x,1,1)
       call air5_hbl_farfield_boundary_kernel<<<grid,block>>>(im,jm,km,hm)
       call sync_after_kernel('air5_hbl_farfield_boundary_kernel',.true.)
     endif
+    call check_hbl_status('farfield')
     if(mpileft==MPI_PROC_NULL) then
       ntot=(jm+1)*(km+1)
       grid=dim3((ntot+block%x-1)/block%x,1,1)

@@ -3,10 +3,15 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT_DIR="${OUT_DIR:?OUT_DIR must name a new evidence directory}"
-CPU_EXE="${CPU_EXE:-$ROOT_DIR/build_cpu_probe/bin/astr}"
-GPU_EXE="${GPU_EXE:-$ROOT_DIR/build_gpu_probe/bin/astr}"
-GRID="${GRID:-15,15,7}"
+BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/tests/gpu_validation/out/c4_cuda_build_4}"
+EXE="${EXE:-$BUILD_DIR/bin/astr}"
+CPU_EXE="${CPU_EXE:-$EXE}"
+GPU_EXE="${GPU_EXE:-$EXE}"
+GRID="${GRID:-15,63,7}"
 DELTAT="${DELTAT:-1.d-10}"
+LFILTER="${LFILTER:-t}"
+FILTER_WORKSPACE="${FILTER_WORKSPACE:-full}"
+TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-900}"
 CONTINUOUS_STEP=4
 SPLIT_STEP=2
 HBL_INITIAL_FIELD=matched
@@ -70,6 +75,7 @@ prepare_case() {
   python3 "$ROOT_DIR/tests/gpu_validation/prepare_air5_c4_case.py" \
     --destination "$destination" --grid "$GRID" --maxstep "$maxstep" \
     --deltat "$DELTAT" --list-frequency 1 --diffterm t \
+    --lfilter "$LFILTER" \
     --use-gpu "$use_gpu" --initial-condition high-enthalpy-boundary-layer \
     --hbl-initial-field "$HBL_INITIAL_FIELD" >/dev/null
 }
@@ -84,13 +90,14 @@ run_case() {
     ASTR_VALIDATION_RHS_STEP="$validation_step" \
     ASTR_AIR5_C4_CONSERVATION=f \
     ASTR_AIR5_SOURCE_MODE=coupled \
+    ASTR_GPU_FILTER_WORKSPACE="$FILTER_WORKSPACE" \
     OMPI_MCA_coll='^hcoll,ucc' \
     OMPI_MCA_pml=ob1 \
     OMPI_MCA_btl=self,vader,tcp \
     OMPI_MCA_osc=pt2pt \
     OMPI_MCA_opal_cuda_support=0 \
     UCX_MEMTYPE_CACHE=n \
-      timeout --kill-after=10s 300s mpirun --oversubscribe -np 1 \
+      timeout --kill-after=10s "${TIMEOUT_SECONDS}s" mpirun --oversubscribe -np 1 \
       "$exe" run datin/input.air5_c4 >"$log_name" 2>&1
   )
   grep -q 'The job is done!' "$case_dir/$log_name"

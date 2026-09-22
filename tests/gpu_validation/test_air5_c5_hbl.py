@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from tests.gpu_validation.air5_radau_reference import Air5RadauReference
-from tests.gpu_validation.check_air5_c5_hbl import analyze
+from tests.gpu_validation.check_air5_c5_hbl import analyze, _similarity_farfield_q
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -72,7 +72,9 @@ def apply_boundaries(
                 wall_temperature,
                 y_one,
             )
-    q[:, jm, :, :] = profile_q[jm]
+    x = 20.0 * 1.5e-5 * np.arange(im + 1, dtype=float) / im
+    farfield = _similarity_farfield_q(profile_q[jm], x, 1.0e-3)
+    q[:, jm, :, :] = farfield[:, None, :]
     q[0, :, :, :] = profile_q[:, None, :]
 
 
@@ -87,7 +89,7 @@ def write_case(
     prefix = validation / "air5"
     profile_path = datin / "air5_hbl_profile.dat"
 
-    y = np.asarray([0.0, 1.0e-5, 2.0e-5, 3.0e-5])
+    y = np.asarray([0.0, 4.0e-5, 8.0e-5, 1.2e-4])
     mass_fractions = np.asarray(
         [
             [0.76, 0.23, 0.002, 0.005, 0.003],
@@ -117,7 +119,10 @@ def write_case(
             temperature[index], temperature[index], *mass_fractions[index]
         )
         rows.append(" ".join(f"{value:.17e}" for value in columns))
-    profile_path.write_text("\n".join(rows) + "\n", encoding="ascii")
+    profile_path.write_text(
+        "# x_origin=1.00000000000000002e-03\n" + "\n".join(rows) + "\n",
+        encoding="ascii",
+    )
 
     base = np.empty((4, 4, 3, 11), order="F")
     for j in range(4):
@@ -178,6 +183,11 @@ def test_hbl_checker_accepts_positive_boundary_contract(tmp_path: Path) -> None:
     assert metrics.wall_scaled_error < 1.0e-8
     assert metrics.outflow_scaled_error < 1.0e-8
     assert metrics.z_extrusion_scaled_error < 1.0e-8
+    assert metrics.z_primary_extrusion_scaled_error < 1.0e-8
+    assert metrics.z_momentum_reference_scaled_error == 0.0
+    assert metrics.z_mean_momentum_reference_scaled_error == 0.0
+    assert metrics.z_momentum_reference_rms == 0.0
+    assert metrics.z_momentum_max_absolute == 0.0
 
 
 def test_hbl_checker_selects_requested_long_time_step(tmp_path: Path) -> None:
@@ -205,12 +215,22 @@ def test_hbl_runner_locks_a0_phase_and_open_boundary_contracts() -> None:
     ).read_text(encoding="utf-8")
     compact = "".join(runner.lower().split())
 
-    assert 'grid="${grid:-31,31,7}"' in compact
+    assert 'grid="${grid:-31,127,7}"' in compact
     assert 'validation_step="${validation_step:-$maxstep}"' in compact
     assert 'validation_step_secondary="${validation_step_secondary:-}"' in compact
     assert 'list_frequency="${list_frequency:-100}"' in compact
     assert 'deltat="${deltat:-1.d-10}"' in compact
     assert 'extrusion_scaled_tol="${extrusion_scaled_tol:-2.0e-10}"' in compact
+    assert 'extrusion_gate="${extrusion_gate:-raw}"' in compact
+    assert (
+        'spanwise_momentum_relative_tol="${spanwise_momentum_relative_tol:-1.0e-10}"'
+        in compact
+    )
+    assert '--extrusion-gate"$extrusion_gate"' in compact
+    assert (
+        '--spanwise-momentum-relative-tol"$spanwise_momentum_relative_tol"'
+        in compact
+    )
     assert 'same_phase_scaled_tol="${same_phase_scaled_tol:-}"' in compact
     assert "--initial-conditionhigh-enthalpy-boundary-layer" in compact
     assert '--list-frequency"$list_frequency"' in compact

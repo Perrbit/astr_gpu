@@ -5,9 +5,11 @@ import numpy as np
 from tests.gpu_validation.air5_hbl_diagnostics import Air5HblDiagnostics
 from tests.gpu_validation.air5_hbl_reference_case import (
     compare_hbl_diagnostics,
+    format_comparison_report,
     generate_reference_diagnostics,
     generate_similarity_initial_field,
     htr_contract_on_grid,
+    load_diagnostics,
     write_astr_air5_initial_field,
 )
 
@@ -91,6 +93,32 @@ def test_reference_comparison_fails_closed_when_trace_gate_is_exceeded():
 
     assert not result.passed
     assert result.trace_species_max_absolute > 1.0e-5
+
+
+def test_reference_comparison_archive_and_report_are_reproducible(tmp_path: Path):
+    diagnostics = _diagnostics()
+    archive = tmp_path / "diagnostics.npz"
+    np.savez(archive, **diagnostics.__dict__)
+
+    loaded = load_diagnostics(archive)
+    comparison = compare_hbl_diagnostics(
+        diagnostics,
+        loaded,
+        profile_relative_tolerance=0.02,
+        wall_relative_tolerance=0.05,
+        trace_absolute_tolerance=1.0e-5,
+    )
+    report = format_comparison_report(
+        comparison,
+        profile_relative_tolerance=0.02,
+        wall_relative_tolerance=0.05,
+        trace_absolute_tolerance=1.0e-5,
+    )
+
+    assert comparison.passed
+    assert report.startswith("status: pass\n")
+    assert "profile_temperature_l2_relative: 0.0000000000000000e+00" in report
+    assert "profile_relative_tolerance: 2.0000000000000000e-02" in report
 
 
 def test_reference_generation_reports_local_coordinates_and_closed_residual():
@@ -177,14 +205,27 @@ def test_similarity_initial_field_matches_all_boundaries_and_thickens_downstream
         rtol=2.0e-12,
     )
     np.testing.assert_allclose(
-        evidence.conservative[:, -1, :],
-        np.repeat(evidence.conservative[0:1, -1, :], x.size, axis=0),
+        evidence.conservative[:, -1, (0, 1, 3, 5, 6, 7, 8, 9, 10)],
+        np.repeat(
+            evidence.conservative[0:1, -1, (0, 1, 3, 5, 6, 7, 8, 9, 10)],
+            x.size,
+            axis=0,
+        ),
         atol=2.0e-12,
         rtol=2.0e-12,
     )
     inlet_u = evidence.conservative[0, :, 1] / evidence.conservative[0, :, 0]
     outlet_u = evidence.conservative[-1, :, 1] / evidence.conservative[-1, :, 0]
+    inlet_v = evidence.conservative[0, :, 2] / evidence.conservative[0, :, 0]
+    outlet_v = evidence.conservative[-1, :, 2] / evidence.conservative[-1, :, 0]
     assert outlet_u[8] < inlet_u[8]
+    np.testing.assert_allclose(
+        outlet_v[-1],
+        inlet_v[-1] / evidence.end_thickness_scale,
+        atol=2.0e-13,
+        rtol=2.0e-13,
+    )
+    assert outlet_v[0] == 0.0
 
     output = tmp_path / "air5_hbl_initial_field.dat"
     write_astr_air5_initial_field(output, evidence)

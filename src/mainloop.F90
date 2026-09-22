@@ -307,7 +307,7 @@ module mainloop
     use commvar,  only : im,jm,km,numq,deltat,lfilter,feqchkpt,hm,     &
                          lavg,feqavg,nstep,limmbou,turbmode,feqslice,  &
                          feqwsequ,lwslic,lreport,flowtype,     &
-                        ndims,num_species,maxstep,rkscheme,use_gpu,lcomb
+                         ndims,num_species,maxstep,rkscheme,use_gpu,lcomb,iomode
     use commarray,only : x,q,qrhs,rho,vel,prs,tmp,spc,jacob
     use fludyna,  only : updatefvar
     use comsolver,only : filterq,filter2e,gradcal
@@ -323,7 +323,7 @@ module mainloop
     use benchmark_runtime, only: benchmark_cpu_rk_timing_enabled
 #ifdef ASTR_AIR5_CHEMISTRY
     use iso_fortran_env, only: real64
-    use chemistry_flow_runtime, only: air5_reacting_flowtype,air5_postshock_flowtype, &
+    use chemistry_flow_runtime, only: air5_reacting_flowtype,air5_open_x_flowtype, &
                                      air5_hbl_flowtype
     use chemistry_flow_solver, only: air5_chemistry_half_step, &
                                      air5_save_filter_species_base, &
@@ -347,6 +347,7 @@ module mainloop
                             gpu_end_complete_step_timing
 #endif
     use readwrite, only : writechkpt,writeslice
+    use userdefine, only : udf_write
     !
     ! argument
     logical,intent(in),optional :: timerept
@@ -369,7 +370,7 @@ module mainloop
     logical :: conservative_case
     logical :: dynamic_inflow_output
     logical :: air5_reacting_case
-    logical :: air5_postshock_case
+    logical :: air5_open_x_case
     logical :: air5_hbl_case
     logical :: cpu_rk_timing
     !
@@ -378,11 +379,11 @@ module mainloop
     conservative_case=conservative_boundary%enabled
     dynamic_inflow_output=bctype(1)==11 .and. trim(turbinf)=='intp'
     air5_reacting_case=.false.
-    air5_postshock_case=.false.
+    air5_open_x_case=.false.
     air5_hbl_case=.false.
 #ifdef ASTR_AIR5_CHEMISTRY
     air5_reacting_case=lcomb .and. air5_reacting_flowtype(flowtype)
-    air5_postshock_case=lcomb .and. air5_postshock_flowtype(flowtype)
+    air5_open_x_case=lcomb .and. air5_open_x_flowtype(flowtype)
     air5_hbl_case=lcomb .and. air5_hbl_flowtype(flowtype)
 #endif
 
@@ -394,7 +395,7 @@ module mainloop
       if(gpu_checkpoint_due .or. gpu_slice_due) then
         call gpu_sync_flow_to_host()
         if(flowtype(1:2)/='0d' .and. .not.conservative_case .and. &
-           .not.dynamic_inflow_output .and. .not.air5_postshock_case .and. &
+           .not.dynamic_inflow_output .and. .not.air5_open_x_case .and. &
            .not.air5_hbl_case) then
           ! Match the CPU checkpoint phase without mutating resident device state.
           nscbc_boundary_halo_required = any(bctype == 22) .or. any(bctype == 52)
@@ -426,6 +427,14 @@ module mainloop
     endif
 #endif
     
+    if(air5_reacting_case .and. nstep>0 .and. mod(nstep,feqchkpt)==0) then
+      if(iomode/='n') then
+        ! AIR5 restart files represent the complete state before Strang splitting.
+        call writechkpt()
+        call udf_write
+      endif
+    endif
+
 #ifdef COMB
     if(odetype=='dnn') then 
       if(nstep==nstep0) then
@@ -491,7 +500,7 @@ module mainloop
       if(rhs_validation_requested()) &
         call write_q_validation_snapshot('pre_chemistry',nstep,1)
       call air5_chemistry_half_step(0.5_real64*deltat,1)
-      if(air5_postshock_case) call apply_air5_postshock_boundary()
+      if(air5_open_x_case) call apply_air5_postshock_boundary()
       if(air5_hbl_case) call apply_air5_hbl_boundary()
       call updatefvar
       call qswap(timerept=ltimrpt)
@@ -508,7 +517,10 @@ module mainloop
 #endif
         call filterq(timerept=ltimrpt)
 #ifdef ASTR_AIR5_CHEMISTRY
-        if(lcomb) call air5_limit_filtered_state()
+        if(lcomb) then
+          call air5_limit_filtered_state()
+          call updatefvar
+        endif
 #endif
       endif
 
@@ -532,7 +544,7 @@ module mainloop
           ! NSCBC transverse derivatives and optional filters need current halos.
           call qswap(timerept=ltimrpt)
         endif
-        if(air5_postshock_case) then
+        if(air5_open_x_case) then
 #ifdef ASTR_AIR5_CHEMISTRY
           call apply_air5_postshock_boundary()
 #endif
@@ -563,7 +575,7 @@ module mainloop
           if(rkscheme=='rk4') rhsav(0:im,0:jm,0:km,m)=0.d0
         enddo
 
-        call rkfirst
+        call rkfirst(skip_checkpoint=air5_reacting_case)
 
       endif
 
@@ -620,7 +632,7 @@ module mainloop
       call spongefilter
       !
 #ifdef ASTR_AIR5_CHEMISTRY
-      if(air5_postshock_case) call apply_air5_postshock_boundary()
+      if(air5_open_x_case) call apply_air5_postshock_boundary()
       if(air5_hbl_case) call apply_air5_hbl_boundary()
 #endif
       !
@@ -788,7 +800,7 @@ module mainloop
   !| -------------                                                     |
   !| 28-Dec-2021: Created by J. Fang @ Warrington                      |
   !+-------------------------------------------------------------------+
-  subroutine rkfirst
+  subroutine rkfirst(skip_checkpoint)
     !
     use commvar,  only : lavg,lwslic,lwsequ,feqavg,feqchkpt,feqwsequ,  &
                          feqslice,iomode
@@ -799,9 +811,15 @@ module mainloop
     use validation_io, only: write_compact_statistics_validation_snapshot
     use parallel,  only: mpistop
     !
+    logical,intent(in),optional :: skip_checkpoint
+    !
     ! local data
     integer,save :: nxtavg
     logical,save :: firstcall = .true.
+    logical :: suppress_checkpoint
+    !
+    suppress_checkpoint=.false.
+    if(present(skip_checkpoint)) suppress_checkpoint=skip_checkpoint
     !
     if(firstcall) then
       nxtavg=nstep+feqavg
@@ -854,7 +872,7 @@ module mainloop
       else
         !
         ! if(nstep==nxtchkpt) then
-        if(mod(nstep,feqchkpt)==0) then
+        if(mod(nstep,feqchkpt)==0 .and. .not.suppress_checkpoint) then
           !
           ! the checkpoint and flowfield will be writen in the same time
           call writechkpt()

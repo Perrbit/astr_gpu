@@ -1,8 +1,8 @@
 module chemistry_flow_solver
   use iso_fortran_env, only: real64
   use constdef, only: num1d60,num1d12,num2d3
-  use chemistry_air5_data, only: air5_num_species,air5_temperature_min_k, &
-    air5_formation_energy
+  use chemistry_air5_data, only: air5_num_species,air5_species_name, &
+    air5_temperature_min_k,air5_formation_energy
   use chemistry_model, only: chemistry_status_ok,air5_ratio_bisection_iterations, &
     air5_interior_ratio,air5_limit_filter_species
   use chemistry_state_layout, only: air5_num_conservative,air5_idx_density, &
@@ -27,6 +27,11 @@ module chemistry_flow_solver
   real(real64), allocatable, save :: transport_origin_state(:,:,:,:)
   real(real64), save :: vibrational_floor_energy(air5_num_species)=0.0_real64
   logical, save :: vibrational_floor_configured=.false.
+  integer, parameter :: air5_limiter_constraint_species=1
+  integer, parameter :: air5_limiter_constraint_vibrational=2
+  integer, parameter :: air5_limiter_constraint_density=3
+  integer, parameter :: air5_limiter_constraint_translational=4
+  integer, parameter :: air5_limiter_constraint_count=4
 
   public :: air5_diffusion_rhs
   public :: air5_convection_rhs
@@ -85,9 +90,35 @@ contains
       air5_translational_margin(state)>=0.0_real64
   end function air5_state_is_admissible
 
-  real(real64) function air5_admissible_face_ratio(low_state,face_correction)
+  integer function air5_state_constraint_mask(state,species_mask)
+    real(real64), intent(in) :: state(air5_num_conservative)
+    real(real64) :: rho_species(air5_num_species)
+    integer, intent(out) :: species_mask
+    integer :: species
+
+    rho_species=state(air5_idx_species_first:air5_idx_species_last)
+    air5_state_constraint_mask=0
+    species_mask=0
+    do species=1,air5_num_species
+      if(rho_species(species)<0.0_real64) species_mask=ibset(species_mask,species-1)
+    enddo
+    if(species_mask/=0) air5_state_constraint_mask=ibset( &
+      air5_state_constraint_mask,air5_limiter_constraint_species-1)
+    if(air5_vibrational_excess(state(air5_idx_ev),rho_species)<0.0_real64) &
+      air5_state_constraint_mask=ibset(air5_state_constraint_mask, &
+        air5_limiter_constraint_vibrational-1)
+    if(state(air5_idx_density)<=0.0_real64) air5_state_constraint_mask= &
+      ibset(air5_state_constraint_mask,air5_limiter_constraint_density-1)
+    if(air5_translational_margin(state)<0.0_real64) air5_state_constraint_mask= &
+      ibset(air5_state_constraint_mask,air5_limiter_constraint_translational-1)
+  end function air5_state_constraint_mask
+
+  real(real64) function air5_admissible_face_ratio(low_state,face_correction, &
+      collect_diagnostics,constraint_mask,species_mask)
     real(real64), intent(in) :: low_state(air5_num_conservative)
     real(real64), intent(in) :: face_correction(air5_num_conservative)
+    logical, intent(in) :: collect_diagnostics
+    integer, intent(out) :: constraint_mask,species_mask
     real(real64) :: lower,upper,middle
     real(real64) :: trial_state(air5_num_conservative)
     integer :: iteration
@@ -95,6 +126,8 @@ contains
     trial_state=low_state+6.0_real64*face_correction
     if(air5_state_is_admissible(trial_state)) then
       air5_admissible_face_ratio=1.0_real64
+      constraint_mask=0
+      species_mask=0
       return
     endif
     lower=0.0_real64
@@ -109,6 +142,12 @@ contains
       endif
     enddo
     air5_admissible_face_ratio=air5_interior_ratio(lower)
+    constraint_mask=0
+    species_mask=0
+    if(collect_diagnostics) then
+      trial_state=low_state+6.0_real64*upper*face_correction
+      constraint_mask=air5_state_constraint_mask(trial_state,species_mask)
+    endif
   end function air5_admissible_face_ratio
 
   subroutine air5_save_filter_species_base()
@@ -617,14 +656,25 @@ contains
     real(real64) :: low_left(3,air5_num_conservative)
     real(real64) :: low_right(3,air5_num_conservative)
     real(real64) :: low_rhs(air5_num_conservative),pminus(air5_num_species+1)
-    real(real64) :: correction_left,correction_right,base,ratio,cdt
+    real(real64) :: correction_left,correction_right,base,ratio,candidate_ratio,cdt
     real(real64) :: face_correction(air5_num_conservative)
     real(real64) :: low_state(air5_num_conservative)
     real(real64) :: limited_rhs(air5_num_conservative)
     real(real64) :: theta_left,theta_right,rk_a,rk_b,rk_c
     real(real64) :: local_min_ratio,global_min_ratio
+    real(real64) :: constraint_min_ratio(air5_limiter_constraint_count)
+    real(real64) :: global_constraint_min_ratio(air5_limiter_constraint_count)
+    real(real64) :: species_constraint_min_ratio(air5_num_species)
+    real(real64) :: global_species_constraint_min_ratio(air5_num_species)
     integer :: dims(3),ntypes(3),i,j,k,species,component,direction,constraint
+    integer :: constraint_mask,face_species_mask
     integer :: local_limited,global_limited,local_invalid,global_invalid,ierr
+    integer :: constraint_active(air5_limiter_constraint_count)
+    integer :: local_constraint_active(air5_limiter_constraint_count)
+    integer :: global_constraint_active(air5_limiter_constraint_count)
+    integer :: species_constraint_active(air5_num_species)
+    integer :: local_species_constraint_active(air5_num_species)
+    integer :: global_species_constraint_active(air5_num_species)
     logical :: report_diagnostics
 
     if(trim(rkscheme)/='rk3') error stop 'air5 convection limiter requires SSPRK3'
@@ -652,6 +702,12 @@ contains
         jacob(0:im,0:jm,0:km)
     endif
     local_limited=0; local_invalid=0; local_min_ratio=1.0_real64
+    local_constraint_active=0
+    global_constraint_active=0
+    global_constraint_min_ratio=1.0_real64
+    local_species_constraint_active=0
+    global_species_constraint_active=0
+    global_species_constraint_min_ratio=1.0_real64
 
     do k=ks,ke; do j=js,je; do i=is,ie
       call air5_full_state_node_face_fluxes(i,j,k,dims,ntypes,high_left,high_right, &
@@ -666,6 +722,10 @@ contains
       low_state=rk_a*transport_origin_state(i,j,k,:)+ &
         rk_b*q(i,j,k,1:air5_num_conservative)*jacob(i,j,k)+cdt*low_rhs
       ratio=1.0_real64
+      constraint_active=0
+      constraint_min_ratio=1.0_real64
+      species_constraint_active=0
+      species_constraint_min_ratio=1.0_real64
       if(.not.air5_state_is_admissible(low_state)) local_invalid=1
       do species=1,air5_num_species
         component=air5_idx_species_first+species-1
@@ -681,7 +741,16 @@ contains
         if(base<0.0_real64) then
           local_invalid=1
         elseif(pminus(species)<0.0_real64) then
-          ratio=min(ratio,air5_interior_ratio(base/(-pminus(species))))
+          candidate_ratio=air5_interior_ratio(base/(-pminus(species)))
+          ratio=min(ratio,candidate_ratio)
+          if(report_diagnostics .and. candidate_ratio<1.0_real64) then
+            constraint_active(air5_limiter_constraint_species)=1
+            constraint_min_ratio(air5_limiter_constraint_species)=min( &
+              constraint_min_ratio(air5_limiter_constraint_species),candidate_ratio)
+            species_constraint_active(species)=1
+            species_constraint_min_ratio(species)=min( &
+              species_constraint_min_ratio(species),candidate_ratio)
+          endif
         endif
       enddo
       do direction=1,3
@@ -703,18 +772,76 @@ contains
       if(base<0.0_real64) then
         local_invalid=1
       elseif(pminus(air5_num_species+1)<0.0_real64) then
-        ratio=min(ratio,air5_interior_ratio(base/(-pminus(air5_num_species+1))))
+        candidate_ratio=air5_interior_ratio(base/(-pminus(air5_num_species+1)))
+        ratio=min(ratio,candidate_ratio)
+        if(report_diagnostics .and. candidate_ratio<1.0_real64) then
+          constraint_active(air5_limiter_constraint_vibrational)=1
+          constraint_min_ratio(air5_limiter_constraint_vibrational)=min( &
+            constraint_min_ratio(air5_limiter_constraint_vibrational),candidate_ratio)
+        endif
       endif
       do direction=1,3
         face_correction=cdt*(high_left(direction,:)-low_left(direction,:))
-        ratio=min(ratio,air5_admissible_face_ratio(low_state,face_correction))
+        candidate_ratio=air5_admissible_face_ratio(low_state,face_correction, &
+          report_diagnostics,constraint_mask,face_species_mask)
+        ratio=min(ratio,candidate_ratio)
+        if(report_diagnostics .and. candidate_ratio<1.0_real64) then
+          do constraint=1,air5_limiter_constraint_count
+            if(btest(constraint_mask,constraint-1)) then
+              constraint_active(constraint)=1
+              constraint_min_ratio(constraint)=min( &
+                constraint_min_ratio(constraint),candidate_ratio)
+            endif
+          enddo
+          do species=1,air5_num_species
+            if(btest(face_species_mask,species-1)) then
+              species_constraint_active(species)=1
+              species_constraint_min_ratio(species)=min( &
+                species_constraint_min_ratio(species),candidate_ratio)
+            endif
+          enddo
+        endif
         face_correction=-cdt*(high_right(direction,:)-low_right(direction,:))
-        ratio=min(ratio,air5_admissible_face_ratio(low_state,face_correction))
+        candidate_ratio=air5_admissible_face_ratio(low_state,face_correction, &
+          report_diagnostics,constraint_mask,face_species_mask)
+        ratio=min(ratio,candidate_ratio)
+        if(report_diagnostics .and. candidate_ratio<1.0_real64) then
+          do constraint=1,air5_limiter_constraint_count
+            if(btest(constraint_mask,constraint-1)) then
+              constraint_active(constraint)=1
+              constraint_min_ratio(constraint)=min( &
+                constraint_min_ratio(constraint),candidate_ratio)
+            endif
+          enddo
+          do species=1,air5_num_species
+            if(btest(face_species_mask,species-1)) then
+              species_constraint_active(species)=1
+              species_constraint_min_ratio(species)=min( &
+                species_constraint_min_ratio(species),candidate_ratio)
+            endif
+          enddo
+        endif
       enddo
       ratio=max(0.0_real64,min(1.0_real64,ratio))
       diffusion_ratio(i,j,k)=ratio
       local_min_ratio=min(local_min_ratio,ratio)
       if(ratio<1.0_real64-1.0e-14_real64) local_limited=local_limited+1
+      if(report_diagnostics) then
+        local_constraint_active=local_constraint_active+constraint_active
+        do constraint=1,air5_limiter_constraint_count
+          if(constraint_active(constraint)/=0) &
+            global_constraint_min_ratio(constraint)=min( &
+              global_constraint_min_ratio(constraint),constraint_min_ratio(constraint))
+        enddo
+        local_species_constraint_active=local_species_constraint_active+ &
+          species_constraint_active
+        do species=1,air5_num_species
+          if(species_constraint_active(species)/=0) &
+            global_species_constraint_min_ratio(species)=min( &
+              global_species_constraint_min_ratio(species), &
+              species_constraint_min_ratio(species))
+        enddo
+      endif
     enddo; enddo; enddo
 
     call MPI_Allreduce(local_invalid,global_invalid,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
@@ -758,10 +885,65 @@ contains
       call MPI_Allreduce(local_min_ratio,global_min_ratio,1,MPI_DOUBLE_PRECISION,MPI_MIN, &
         MPI_COMM_WORLD,ierr)
       if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,local_limited)
+      call MPI_Allreduce(local_constraint_active,global_constraint_active, &
+        air5_limiter_constraint_count,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,local_limited)
+      constraint_min_ratio=global_constraint_min_ratio
+      call MPI_Allreduce(constraint_min_ratio,global_constraint_min_ratio, &
+        air5_limiter_constraint_count,MPI_DOUBLE_PRECISION,MPI_MIN,MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,local_limited)
+      call MPI_Allreduce(local_species_constraint_active, &
+        global_species_constraint_active,air5_num_species,MPI_INTEGER,MPI_SUM, &
+        MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,local_limited)
+      species_constraint_min_ratio=global_species_constraint_min_ratio
+      call MPI_Allreduce(species_constraint_min_ratio, &
+        global_species_constraint_min_ratio,air5_num_species, &
+        MPI_DOUBLE_PRECISION,MPI_MIN,MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,local_limited)
       if(lio .and. global_limited>0) write(*,'(A,I0,A,I0,A,ES12.4)') &
         'AIR5_FULL_STATE_CONVECTION_LIMITER stage=',rkstep, &
         ' limited_points=',global_limited, &
         ' min_ratio=',global_min_ratio
+      if(lio) then
+        do constraint=1,air5_limiter_constraint_count
+          if(global_constraint_active(constraint)<=0) cycle
+          select case(constraint)
+          case(air5_limiter_constraint_species)
+            write(*,'(A,I0,A,A,A,I0,A,ES12.4)') &
+              'AIR5_FULL_STATE_CONVECTION_CONSTRAINT stage=',rkstep, &
+              ' constraint=','species',' active_points=', &
+              global_constraint_active(constraint),' min_ratio=', &
+              global_constraint_min_ratio(constraint)
+          case(air5_limiter_constraint_vibrational)
+            write(*,'(A,I0,A,A,A,I0,A,ES12.4)') &
+              'AIR5_FULL_STATE_CONVECTION_CONSTRAINT stage=',rkstep, &
+              ' constraint=','vibrational',' active_points=', &
+              global_constraint_active(constraint),' min_ratio=', &
+              global_constraint_min_ratio(constraint)
+          case(air5_limiter_constraint_density)
+            write(*,'(A,I0,A,A,A,I0,A,ES12.4)') &
+              'AIR5_FULL_STATE_CONVECTION_CONSTRAINT stage=',rkstep, &
+              ' constraint=','density',' active_points=', &
+              global_constraint_active(constraint),' min_ratio=', &
+              global_constraint_min_ratio(constraint)
+          case(air5_limiter_constraint_translational)
+            write(*,'(A,I0,A,A,A,I0,A,ES12.4)') &
+              'AIR5_FULL_STATE_CONVECTION_CONSTRAINT stage=',rkstep, &
+              ' constraint=','translational',' active_points=', &
+              global_constraint_active(constraint),' min_ratio=', &
+              global_constraint_min_ratio(constraint)
+          end select
+        enddo
+        do species=1,air5_num_species
+          if(global_species_constraint_active(species)<=0) cycle
+          write(*,'(A,I0,A,A,A,I0,A,ES12.4)') &
+            'AIR5_FULL_STATE_CONVECTION_SPECIES_CONSTRAINT stage=',rkstep, &
+            ' species=',trim(air5_species_name(species)),' active_points=', &
+            global_species_constraint_active(species),' min_ratio=', &
+            global_species_constraint_min_ratio(species)
+        enddo
+      endif
     endif
   end subroutine air5_limit_full_state_convection
 
@@ -1118,7 +1300,8 @@ contains
     real(real64) :: left_excess_flux,right_excess_flux
     real(real64) :: origin_excess,current_excess,rhs_excess
     real(real64) :: local_min_ratio,global_min_ratio
-    integer :: dims(3),ntypes(3),i,j,k,species,component,direction
+    integer :: dims(3),ntypes(3),i,j,k,species,component,direction,constraint_mask
+    integer :: species_mask
     integer :: local_limited,global_limited,local_invalid,global_invalid,ierr
     logical :: report_diagnostics
 
@@ -1205,7 +1388,8 @@ contains
                  component<=air5_idx_species_last) rhs_sign=-1.0_real64
               face_correction(component)=-cdt*rhs_sign*left_flux(direction,component)
             enddo
-            ratio=min(ratio,air5_admissible_face_ratio(base_state,face_correction))
+            ratio=min(ratio,air5_admissible_face_ratio(base_state,face_correction, &
+              .false.,constraint_mask,species_mask))
             face_correction=0.0_real64
             do component=2,air5_num_conservative
               rhs_sign=1.0_real64
@@ -1213,7 +1397,8 @@ contains
                  component<=air5_idx_species_last) rhs_sign=-1.0_real64
               face_correction(component)=cdt*rhs_sign*right_flux(direction,component)
             enddo
-            ratio=min(ratio,air5_admissible_face_ratio(base_state,face_correction))
+            ratio=min(ratio,air5_admissible_face_ratio(base_state,face_correction, &
+              .false.,constraint_mask,species_mask))
           enddo
           ratio=max(0.0_real64,min(1.0_real64,ratio))
           diffusion_ratio(i,j,k)=ratio

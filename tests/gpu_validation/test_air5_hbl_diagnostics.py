@@ -151,6 +151,100 @@ def test_cartesian_hbl_diagnostics_reject_nonuniform_spanwise_state() -> None:
         raise AssertionError("the laminar A1 gate must reject a spanwise-varying field")
 
 
+def test_cartesian_hbl_diagnostics_accept_explicit_spanwise_tolerance() -> None:
+    q, x, y, z = _linear_wall_field()
+    q[:, :, 1, 1] *= 1.0 + 5.0e-8
+
+    result = analyze_cartesian_hbl(
+        q,
+        x,
+        y,
+        z,
+        model=Air5RadauReference(MECHANISM),
+        transport=Air5TransportReference(MECHANISM),
+        reference_density=0.78103376204034,
+        reference_velocity=2905.07,
+        profile_stations=(x[2],),
+        spanwise_tolerance=1.0e-7,
+    )
+
+    assert np.all(np.isfinite(result.skin_friction))
+
+
+def test_cartesian_hbl_long_time_gate_accepts_roundoff_spanwise_momentum() -> None:
+    q, x, y, z = _linear_wall_field()
+    reference_density = 0.78103376204034
+    reference_velocity = 2905.07
+    q[:, 1:, :, 3] = 0.5e-10 * reference_density * reference_velocity
+
+    result = analyze_cartesian_hbl(
+        q,
+        x,
+        y,
+        z,
+        model=Air5RadauReference(MECHANISM),
+        transport=Air5TransportReference(MECHANISM),
+        reference_density=reference_density,
+        reference_velocity=reference_velocity,
+        profile_stations=(x[2],),
+        spanwise_tolerance=2.0e-12,
+        spanwise_momentum_relative_tolerance=1.0e-10,
+    )
+
+    assert np.all(np.isfinite(result.skin_friction))
+
+
+def test_cartesian_hbl_long_time_gate_rejects_excess_spanwise_momentum() -> None:
+    q, x, y, z = _linear_wall_field()
+    reference_density = 0.78103376204034
+    reference_velocity = 2905.07
+    q[:, 1:, :, 3] = 1.1e-10 * reference_density * reference_velocity
+
+    try:
+        analyze_cartesian_hbl(
+            q,
+            x,
+            y,
+            z,
+            model=Air5RadauReference(MECHANISM),
+            transport=Air5TransportReference(MECHANISM),
+            reference_density=reference_density,
+            reference_velocity=reference_velocity,
+            profile_stations=(x[2],),
+            spanwise_tolerance=2.0e-12,
+            spanwise_momentum_relative_tolerance=1.0e-10,
+        )
+    except ValueError as error:
+        assert "spanwise momentum" in str(error)
+    else:
+        raise AssertionError("the long-time A1 gate must bound spanwise momentum")
+
+
+def test_cartesian_hbl_long_time_gate_uses_spanwise_mean_momentum() -> None:
+    q, x, y, z = _linear_wall_field()
+    reference_density = 0.78103376204034
+    reference_velocity = 2905.07
+    perturbation = 2.0e-10 * reference_density * reference_velocity
+    q[:, 1:, 0, 3] = perturbation
+    q[:, 1:, 2, 3] = -perturbation
+
+    result = analyze_cartesian_hbl(
+        q,
+        x,
+        y,
+        z,
+        model=Air5RadauReference(MECHANISM),
+        transport=Air5TransportReference(MECHANISM),
+        reference_density=reference_density,
+        reference_velocity=reference_velocity,
+        profile_stations=(x[2],),
+        spanwise_tolerance=2.0e-12,
+        spanwise_momentum_relative_tolerance=1.0e-10,
+    )
+
+    assert np.all(np.isfinite(result.skin_friction))
+
+
 def test_snapshot_loader_and_npz_export_preserve_diagnostics(tmp_path: Path) -> None:
     q, x, y, z = _linear_wall_field()
     snapshot = tmp_path / "air5.bin"

@@ -24,6 +24,7 @@ def test_hbl_initializer_uses_the_versioned_complete_profile() -> None:
     assert "datin/air5_hbl_profile.dat" in initializer
     assert "callconfigure_air5_hbl_boundary" in initializer
     assert "trim(flowtype)=='air5hbl'" in grid
+    assert "callgridcube(20.d0*ref_len,8.d0*ref_len,2.d0*ref_len)" in grid
 
 
 def test_hbl_initializer_optionally_uses_matched_xy_conservative_field() -> None:
@@ -65,6 +66,10 @@ def test_fixed_air5_restart_runner_compares_complete_q11_state() -> None:
     assert "continuous_step=4" in runner
     assert "split_step=2" in runner
     assert "hbl_initial_field=matched" in runner
+    assert 'grid="${grid:-15,63,7}"' in runner
+    assert 'lfilter="${lfilter:-t}"' in runner
+    assert '--lfilter"$lfilter"' in runner
+    assert 'astr_gpu_filter_workspace="$filter_workspace"' in runner
     assert "set_restart_case" in runner
     assert "checkpointfileread" in runner
     assert "compare_q_validation_snapshots.py" in runner
@@ -82,6 +87,56 @@ def test_gpu_hbl_checkpoint_does_not_replay_generic_host_boundary() -> None:
     body = mainloop[checkpoint:integration]
     assert ".not.air5_postshock_case" in body
     assert ".not.air5_hbl_case" in body
+
+
+def test_cpu_air5_checkpoint_precedes_split_step_and_is_not_replayed() -> None:
+    mainloop = compact("src/mainloop.F90")
+
+    checkpoint = mainloop.index(
+        "if(air5_reacting_case.and.nstep>0.and.mod(nstep,feqchkpt)==0)then"
+    )
+    chemistry = mainloop.index(
+        "callair5_chemistry_half_step(0.5_real64*deltat,1)", checkpoint
+    )
+    assert checkpoint < chemistry
+    assert "callrkfirst(skip_checkpoint=air5_reacting_case)" in mainloop
+
+    rkfirst = mainloop.index("subroutinerkfirst(skip_checkpoint)")
+    body = mainloop[rkfirst : mainloop.index("endsubroutinerkfirst", rkfirst)]
+    assert "logical,intent(in),optional::skip_checkpoint" in body
+    assert "suppress_checkpoint=.false." in body
+    assert "if(present(skip_checkpoint))suppress_checkpoint=skip_checkpoint" in body
+    assert "if(mod(nstep,feqchkpt)==0.and..not.suppress_checkpoint)then" in body
+
+
+def test_hbl_diagnostics_cli_requires_explicit_long_time_spanwise_tolerance() -> None:
+    diagnostics = compact("tests/gpu_validation/air5_hbl_diagnostics.py")
+
+    assert (
+        'parser.add_argument("--spanwise-tolerance",type=float,default=2.0e-12)'
+        in diagnostics
+    )
+    assert "ifargs.spanwise_tolerance<0.0:" in diagnostics
+    assert "spanwise_tolerance=args.spanwise_tolerance" in diagnostics
+    assert (
+        'parser.add_argument("--spanwise-momentum-relative-tolerance",type=float)'
+        in diagnostics
+    )
+    assert (
+        "spanwise_momentum_relative_tolerance="
+        "args.spanwise_momentum_relative_tolerance" in diagnostics
+    )
+
+
+def test_hbl_contract_exposes_separate_short_and_long_extrusion_gates() -> None:
+    checker = compact("tests/gpu_validation/check_air5_c5_hbl.py")
+
+    assert 'parser.add_argument("--extrusion-gate",choices=("raw","long-mean"),default="raw")' in checker
+    assert 'parser.add_argument("--spanwise-momentum-relative-tol",type=float,default=1.0e-10)' in checker
+    assert "z_primary_extrusion_scaled_error" in checker
+    assert "z_momentum_reference_scaled_error" in checker
+    assert "z_mean_momentum_reference_scaled_error" in checker
+    assert "z_momentum_reference_rms" in checker
 
 
 def test_cpu_hbl_boundary_is_applied_at_every_required_phase() -> None:
@@ -156,6 +211,21 @@ def test_gpu_transport_reapplies_air5_boundaries_after_each_rk_update() -> None:
     assert update_end < postshock < hbl < snapshot
 
 
+def test_air5_hbl_farfield_uses_similarity_scaled_normal_velocity() -> None:
+    cpu = compact("src/chemistry_boundary.F90")
+    state = compact("src/chemistry_boundary_state.F90")
+    gpu = compact("src_gpu/chemistry_boundary_gpu.cuf")
+    runner = compact("tests/gpu_validation/run_air5_c5_hbl_compare.sh")
+
+    assert "build_air5_hbl_similarity_farfield_state" in state
+    assert "sqrt(x_origin/(x_origin+x_coordinate))" in state
+    assert "callbuild_air5_hbl_similarity_farfield_state(farfield_q," in cpu
+    assert "x(i,jm,k,1)" in cpu
+    assert "usecommarray_gpu,only:q_d,x_d" in gpu
+    assert "sqrt(hbl_x_origin_d/(hbl_x_origin_d+x_d(i,jm,k,1)))" in gpu
+    assert 'grid="${grid:-31,127,7}"' in runner
+
+
 def test_air5_filter_supports_full_and_scalar_q11_workspaces() -> None:
     solver = compact("src_gpu/solver_gpu.cuf")
     chemistry = compact("src_gpu/chemistry_solver_gpu.cuf")
@@ -208,6 +278,18 @@ def test_air5_filter_supports_full_and_scalar_q11_workspaces() -> None:
     assert 'filter_workspace="${filter_workspace:-full}"' in runner
     assert '--lfilter"$lfilter"' in runner
     assert 'astr_gpu_filter_workspace="$filter_workspace"' in runner
+
+
+def test_cpu_air5_filter_reconstructs_primitives_before_spatial_rhs() -> None:
+    mainloop = compact("src/mainloop.F90")
+
+    stage = mainloop.index("dorkstep=1,n_rk_steps")
+    filter_start = mainloop.index("if(lfilter)then", stage)
+    spatial_rhs = mainloop.index("if((loop_counter==feqchkpt", filter_start)
+    filter_body = mainloop[filter_start:spatial_rhs]
+    limiter = filter_body.index("callair5_limit_filtered_state()")
+    primitive_refresh = filter_body.index("callupdatefvar", limiter)
+    assert limiter < primitive_refresh
 
 
 def test_gpu_hbl_outflow_limits_species_before_full_state_fallback() -> None:

@@ -70,7 +70,7 @@ class Air5HblFortranProfileTests(unittest.TestCase):
 
         self.assertEqual(status, 0)
         self.assertEqual(point_count, 200)
-        self.assertEqual(len(values), 16)
+        self.assertEqual(len(values), 17)
         y_min, y_max, y, rho, u, v, w, pressure, temperature, tv = values[:10]
         mass_fraction = values[10:15]
         self.assertEqual(y_min, 0.0)
@@ -83,6 +83,7 @@ class Air5HblFortranProfileTests(unittest.TestCase):
         self.assertAlmostEqual(tv, temperature, delta=2.0e-10)
         self.assertAlmostEqual(sum(mass_fraction), 1.0, delta=4.0e-15)
         self.assertAlmostEqual(values[15], 1.0, delta=4.0e-15)
+        self.assertAlmostEqual(values[16], 1.0612769542744582e-3, delta=2.0e-18)
 
     def test_midpoint_is_finite_and_within_endpoint_bounds(self) -> None:
         status, point_count, values = self.run_probe("midpoint")

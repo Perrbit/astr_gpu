@@ -411,3 +411,32 @@ def test_production_limiters_use_parameter_free_fp64_ratios() -> None:
     assert "nearest(" in core
     assert "nearest(" in gpu
     assert "digits(1.0_real64)" in core
+
+
+def test_full_state_convection_reports_constraint_specific_activity() -> None:
+    cpu = (
+        (ROOT / "src/chemistry_solver.F90")
+        .read_text(encoding="utf-8")
+        .lower()
+    )
+    gpu = (
+        (ROOT / "src_gpu/chemistry_solver_gpu.cuf")
+        .read_text(encoding="utf-8")
+        .lower()
+    )
+
+    for source in (cpu, gpu):
+        assert "air5_limiter_constraint_species" in source
+        assert "air5_limiter_constraint_vibrational" in source
+        assert "air5_limiter_constraint_density" in source
+        assert "air5_limiter_constraint_translational" in source
+        assert "air5_full_state_convection_constraint" in source
+
+    assert "constraint_active" in cpu
+    assert "constraint_min_ratio" in cpu
+    assert "species_constraint_active" in cpu
+    assert "species_constraint_min_ratio" in cpu
+    assert "air5_constraint_active_points_d" in gpu
+    assert "air5_constraint_minimum_ratio_bits_d" in gpu
+    assert "air5_species_constraint_active_points_d" in gpu
+    assert "air5_species_constraint_minimum_ratio_bits_d" in gpu

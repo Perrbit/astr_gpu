@@ -21,6 +21,7 @@ except ModuleNotFoundError:
 NUMQ = 11
 SPECIES = slice(5, 10)
 RANK_PATTERN = re.compile(r"\.rank(\d{8})\.bin$")
+X_ORIGIN_PATTERN = re.compile(r"(?:^|\s)x_origin=([^\s]+)")
 CHEMISTRY_PHASES = (
     ("pre_chemistry", 1),
     ("post_chemistry", 1),
@@ -60,6 +61,11 @@ class HblMetrics:
     wall_scaled_error: float
     outflow_scaled_error: float
     z_extrusion_scaled_error: float
+    z_primary_extrusion_scaled_error: float
+    z_momentum_reference_scaled_error: float
+    z_mean_momentum_reference_scaled_error: float
+    z_momentum_reference_rms: float
+    z_momentum_max_absolute: float
 
 
 def _rank_from_path(path: Path) -> int:
@@ -67,6 +73,29 @@ def _rank_from_path(path: Path) -> int:
     if match is None:
         raise ValueError(f"cannot parse rank from {path}")
     return int(match.group(1))
+
+
+def _profile_x_origin(path: Path) -> float:
+    for line in path.read_text(encoding="ascii").splitlines():
+        match = X_ORIGIN_PATTERN.search(line)
+        if match is not None:
+            value = float(match.group(1))
+            if np.isfinite(value) and value > 0.0:
+                return value
+            break
+    raise ValueError(f"{path}: missing positive x_origin metadata")
+
+
+def _similarity_farfield_q(base: np.ndarray, x: np.ndarray, x_origin: float) -> np.ndarray:
+    base = np.asarray(base, dtype=np.float64)
+    x = np.asarray(x, dtype=np.float64)
+    if base.shape != (NUMQ,) or np.any(x < 0.0) or x_origin <= 0.0:
+        raise ValueError("invalid HBL similarity farfield state")
+    result = np.repeat(base[None, :], x.size, axis=0)
+    scale = np.sqrt(x_origin / (x_origin + x))
+    result[:, 2] = base[2] * scale
+    result[:, 4] = base[4] + (result[:, 2] ** 2 - base[2] ** 2) / (2.0 * base[0])
+    return result
 
 
 def _load_parallel_layout(path: Path) -> dict[int, RankLayout]:
@@ -331,19 +360,32 @@ def analyze(
             float(np.max(np.abs(after_element - before_element) / scale)),
         )
 
-    y_coordinates = 2.0 * ref_len * np.arange(ja + 1, dtype=float) / ja
+    y_coordinates = 8.0 * ref_len * np.arange(ja + 1, dtype=float) / ja
+    x_coordinates = 20.0 * ref_len * np.arange(ia + 1, dtype=float) / ia
     profile_q = _profile_q(profile, y_coordinates, model)
+    x_origin = _profile_x_origin(profile)
+    farfield_q = _similarity_farfield_q(profile_q[-1], x_coordinates, x_origin)
     wall_temperature = float(np.loadtxt(profile, dtype=np.float64, ndmin=2)[0, 6])
     inlet_error = 0.0
     farfield_error = 0.0
     wall_error = 0.0
     outflow_error = 0.0
     extrusion_error = 0.0
+    primary_extrusion_error = 0.0
+    spanwise_momentum_max = 0.0
+    spanwise_mean_momentum_max = 0.0
+    spanwise_momentum_rms = 0.0
+    primary_components = np.asarray((0, 1, 2, 4, 5, 6, 7, 8, 9, 10))
+    reference_momentum = abs(float(profile_q[-1, 1]))
+    if reference_momentum <= 0.0:
+        raise ValueError("HBL edge streamwise momentum must be positive")
     for phase in BOUNDARY_PHASES:
         values = phases[phase]
         inlet_expected = np.broadcast_to(profile_q[:, None, :], values[0].shape)
         inlet_error = max(inlet_error, _scaled_error(values[0], inlet_expected))
-        farfield_expected = np.broadcast_to(profile_q[-1], values[:, ja, :, :].shape)
+        farfield_expected = np.broadcast_to(
+            farfield_q[:, None, :], values[:, ja, :, :].shape
+        )
         farfield_error = max(
             farfield_error, _scaled_error(values[:, ja, :, :], farfield_expected)
         )
@@ -361,6 +403,25 @@ def analyze(
         extrusion_expected = np.broadcast_to(values[:, :, :1, :], values.shape)
         extrusion_error = max(
             extrusion_error, _scaled_error(values, extrusion_expected)
+        )
+        primary_extrusion_error = max(
+            primary_extrusion_error,
+            _scaled_error(
+                values[..., primary_components],
+                extrusion_expected[..., primary_components],
+            ),
+        )
+        spanwise_momentum_max = max(
+            spanwise_momentum_max, float(np.max(np.abs(values[..., 3])))
+        )
+        spanwise_mean_momentum = np.trapezoid(values[..., 3], axis=2) / ka
+        spanwise_mean_momentum_max = max(
+            spanwise_mean_momentum_max,
+            float(np.max(np.abs(spanwise_mean_momentum))),
+        )
+        spanwise_momentum_rms = max(
+            spanwise_momentum_rms,
+            float(np.sqrt(np.mean(values[..., 3] ** 2))),
         )
 
     return HblMetrics(
@@ -381,6 +442,13 @@ def analyze(
         wall_scaled_error=wall_error,
         outflow_scaled_error=outflow_error,
         z_extrusion_scaled_error=extrusion_error,
+        z_primary_extrusion_scaled_error=primary_extrusion_error,
+        z_momentum_reference_scaled_error=spanwise_momentum_max / reference_momentum,
+        z_mean_momentum_reference_scaled_error=(
+            spanwise_mean_momentum_max / reference_momentum
+        ),
+        z_momentum_reference_rms=spanwise_momentum_rms / reference_momentum,
+        z_momentum_max_absolute=spanwise_momentum_max,
     )
 
 
@@ -398,6 +466,12 @@ def main() -> int:
     parser.add_argument("--minimum-chemistry-change", type=float, default=1.0e-14)
     parser.add_argument("--boundary-scaled-tol", type=float, default=2.0e-10)
     parser.add_argument("--extrusion-scaled-tol", type=float, default=2.0e-10)
+    parser.add_argument(
+        "--extrusion-gate", choices=("raw", "long-mean"), default="raw"
+    )
+    parser.add_argument(
+        "--spanwise-momentum-relative-tol", type=float, default=1.0e-10
+    )
     args = parser.parse_args()
     limits = (
         args.mass_closure_atol,
@@ -406,6 +480,7 @@ def main() -> int:
         args.minimum_chemistry_change,
         args.boundary_scaled_tol,
         args.extrusion_scaled_tol,
+        args.spanwise_momentum_relative_tol,
     )
     if min(limits) < 0.0:
         raise ValueError("HBL validation limits must be non-negative")
@@ -418,6 +493,17 @@ def main() -> int:
             ref_len=args.ref_len,
             step=args.step,
         )
+        if args.extrusion_gate == "raw":
+            extrusion_passed = (
+                metrics.z_extrusion_scaled_error <= args.extrusion_scaled_tol
+            )
+        else:
+            extrusion_passed = (
+                metrics.z_primary_extrusion_scaled_error
+                <= args.extrusion_scaled_tol
+                and metrics.z_mean_momentum_reference_scaled_error
+                <= args.spanwise_momentum_relative_tol
+            )
         passed = (
             metrics.minimum_density > 0.0
             and metrics.minimum_species_density >= 0.0
@@ -431,10 +517,11 @@ def main() -> int:
             and metrics.farfield_scaled_error <= args.boundary_scaled_tol
             and metrics.wall_scaled_error <= args.boundary_scaled_tol
             and metrics.outflow_scaled_error <= args.boundary_scaled_tol
-            and metrics.z_extrusion_scaled_error <= args.extrusion_scaled_tol
+            and extrusion_passed
         )
         lines = [
             f"status: {'pass' if passed else 'fail'}",
+            f"extrusion_gate: {args.extrusion_gate}",
             f"minimum_density: {metrics.minimum_density:.16e}",
             f"minimum_species_density: {metrics.minimum_species_density:.16e}",
             f"minimum_total_energy: {metrics.minimum_total_energy:.16e}",
@@ -450,6 +537,15 @@ def main() -> int:
             f"wall_scaled_error: {metrics.wall_scaled_error:.16e}",
             f"outflow_scaled_error: {metrics.outflow_scaled_error:.16e}",
             f"z_extrusion_scaled_error: {metrics.z_extrusion_scaled_error:.16e}",
+            "z_primary_extrusion_scaled_error: "
+            f"{metrics.z_primary_extrusion_scaled_error:.16e}",
+            "z_momentum_reference_scaled_error: "
+            f"{metrics.z_momentum_reference_scaled_error:.16e}",
+            "z_mean_momentum_reference_scaled_error: "
+            f"{metrics.z_mean_momentum_reference_scaled_error:.16e}",
+            "z_momentum_reference_rms: "
+            f"{metrics.z_momentum_reference_rms:.16e}",
+            f"z_momentum_max_absolute: {metrics.z_momentum_max_absolute:.16e}",
         ]
     except (OSError, KeyError, TypeError, ValueError) as error:
         passed = False

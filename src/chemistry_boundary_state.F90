@@ -18,12 +18,14 @@ module chemistry_hbl_profile
   type, public :: air5_hbl_profile_type
     private
     real(real64), allocatable :: values(:,:)
+    real(real64) :: x_origin=-1.0_real64
   end type air5_hbl_profile_type
 
   public :: read_air5_hbl_profile
   public :: sample_air5_hbl_profile
   public :: air5_hbl_profile_bounds
   public :: air5_hbl_profile_point_count
+  public :: air5_hbl_profile_x_origin
 
 contains
 
@@ -33,10 +35,11 @@ contains
     integer, intent(out) :: status
     character(len=2048) :: line
     real(real64) :: row(air5_hbl_profile_columns)
-    integer :: unit,ios,row_count,index
+    integer :: unit,ios,row_count,row_index,marker_start,token_end
 
     status=air5_hbl_profile_status_ok
     if(allocated(profile%values)) deallocate(profile%values)
+    profile%x_origin=-1.0_real64
     open(newunit=unit,file=path,status='old',action='read',iostat=ios)
     if(ios/=0) then
       status=air5_hbl_profile_status_io
@@ -52,7 +55,26 @@ contains
         return
       endif
       line=adjustl(line)
-      if(len_trim(line)==0 .or. line(1:1)=='#') cycle
+      if(len_trim(line)==0) cycle
+      if(line(1:1)=='#') then
+        marker_start=index(line,'x_origin=')
+        if(marker_start>0) then
+          marker_start=marker_start+len('x_origin=')
+          token_end=index(line(marker_start:),' ')
+          if(token_end>1) then
+            read(line(marker_start:marker_start+token_end-2),*,iostat=ios) &
+              profile%x_origin
+          else
+            read(line(marker_start:),*,iostat=ios) profile%x_origin
+          endif
+          if(ios/=0 .or. profile%x_origin<=0.0_real64) then
+            status=air5_hbl_profile_status_format
+            close(unit)
+            return
+          endif
+        endif
+        cycle
+      endif
       read(line,*,iostat=ios) row
       if(ios/=0) then
         status=air5_hbl_profile_status_format
@@ -66,10 +88,15 @@ contains
       close(unit)
       return
     endif
+    if(profile%x_origin<=0.0_real64) then
+      status=air5_hbl_profile_status_format
+      close(unit)
+      return
+    endif
 
     rewind(unit)
     allocate(profile%values(air5_hbl_profile_columns,row_count))
-    index=0
+    row_index=0
     do
       read(unit,'(A)',iostat=ios) line
       if(ios<0) exit
@@ -84,12 +111,12 @@ contains
         status=air5_hbl_profile_status_format
         exit
       endif
-      index=index+1
-      profile%values(:,index)=row
+      row_index=row_index+1
+      profile%values(:,row_index)=row
       call validate_air5_hbl_profile_row(row,status)
       if(status/=air5_hbl_profile_status_ok) exit
-      if(index>1) then
-        if(profile%values(1,index)<=profile%values(1,index-1)) then
+      if(row_index>1) then
+        if(profile%values(1,row_index)<=profile%values(1,row_index-1)) then
           status=air5_hbl_profile_status_format
           exit
         endif
@@ -100,7 +127,7 @@ contains
       deallocate(profile%values)
       return
     endif
-    if(index/=row_count) then
+    if(row_index/=row_count) then
       deallocate(profile%values)
       status=air5_hbl_profile_status_format
     endif
@@ -210,6 +237,19 @@ contains
     if(allocated(profile%values)) &
       air5_hbl_profile_point_count=size(profile%values,2)
   end function air5_hbl_profile_point_count
+
+  subroutine air5_hbl_profile_x_origin(profile,x_origin,status)
+    type(air5_hbl_profile_type), intent(in) :: profile
+    real(real64), intent(out) :: x_origin
+    integer, intent(out) :: status
+
+    x_origin=profile%x_origin
+    if(x_origin<=0.0_real64) then
+      status=air5_hbl_profile_status_unconfigured
+    else
+      status=air5_hbl_profile_status_ok
+    endif
+  end subroutine air5_hbl_profile_x_origin
 
 end module chemistry_hbl_profile
 
@@ -407,7 +447,8 @@ module chemistry_hbl_boundary_state
   use chemistry_air5_data, only: air5_num_species,air5_molar_mass,air5_ru
   use chemistry_model, only: chemistry_status_ok,chemistry_status_invalid_density
   use chemistry_state_layout, only: air5_num_conservative,air5_idx_density, &
-    air5_idx_species_first,air5_idx_species_last
+    air5_idx_momentum_first,air5_idx_total_energy,air5_idx_species_first, &
+    air5_idx_species_last
   use chemistry_flow_state, only: air5_primitive_to_conservative, &
     air5_conservative_to_primitive
   implicit none
@@ -415,8 +456,36 @@ module chemistry_hbl_boundary_state
 
   public :: build_air5_hbl_wall_state
   public :: build_air5_hbl_outflow_state
+  public :: build_air5_hbl_similarity_farfield_state
 
 contains
+
+  pure subroutine build_air5_hbl_similarity_farfield_state(q_base,x_origin, &
+      x_coordinate,q_farfield,status)
+    real(real64), intent(in) :: q_base(air5_num_conservative)
+    real(real64), intent(in) :: x_origin,x_coordinate
+    real(real64), intent(out) :: q_farfield(air5_num_conservative)
+    integer, intent(out) :: status
+    real(real64) :: density,normal_momentum,scale
+    integer, parameter :: normal_momentum_index=air5_idx_momentum_first+1
+
+    q_farfield=0.0_real64
+    density=q_base(air5_idx_density)
+    if(density<=0.0_real64 .or. x_origin<=0.0_real64 .or. &
+       x_coordinate<0.0_real64) then
+      status=chemistry_status_invalid_density
+      return
+    endif
+    scale=sqrt(x_origin/(x_origin+x_coordinate))
+    q_farfield=q_base
+    normal_momentum=q_base(normal_momentum_index)*scale
+    q_farfield(normal_momentum_index)=normal_momentum
+    q_farfield(air5_idx_total_energy)=q_base(air5_idx_total_energy)+ &
+      (normal_momentum*normal_momentum- &
+       q_base(normal_momentum_index)*q_base(normal_momentum_index))/ &
+      (2.0_real64*density)
+    status=chemistry_status_ok
+  end subroutine build_air5_hbl_similarity_farfield_state
 
   pure subroutine build_air5_hbl_wall_state(q_inner_one,q_inner_two, &
       wall_temperature,q_wall,status)

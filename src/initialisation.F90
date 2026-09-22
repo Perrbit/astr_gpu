@@ -140,6 +140,8 @@ module initialisation
           call air5shocktubeini
         case('air5postshock')
           call air5postshockini
+        case('air5normalshock')
+          call air5normalshockini
         case('air5hbl')
           call air5hblini
         case('air5advection')
@@ -165,6 +167,7 @@ module initialisation
          trim(flowtype)/='air5tgv' .and. &
          trim(flowtype)/='air5shocktube' .and. &
          trim(flowtype)/='air5postshock' .and. &
+         trim(flowtype)/='air5normalshock' .and. &
          trim(flowtype)/='air5hbl' .and. &
          trim(flowtype)/='air5advection' .and. &
          trim(flowtype)/='air5difflayer' .and. &
@@ -1028,6 +1031,88 @@ module initialisation
     deallocate(profile,profile_q)
     if(lio) write(*,'(A)') '  ** fixed air5 post-shock profile initialised.'
   end subroutine air5postshockini
+
+  subroutine air5normalshockini
+    use iso_fortran_env, only: real64
+    use chemistry_air5_data, only: air5_num_species
+    use chemistry_model, only: chemistry_status_ok
+    use chemistry_state_layout, only: air5_num_conservative
+    use chemistry_flow_state, only: air5_primitive_to_conservative, &
+      air5_conservative_to_primitive
+    use chemistry_postshock_boundary, only: configure_air5_postshock_boundary
+    use commvar, only: ref_len
+    use commarray, only: x,vel,rho,prs,spc,tmp,tve
+    character(len=1024) :: line
+    real(real64) :: state(12,2),state_q(air5_num_conservative,2)
+    real(real64) :: row(12),local_q(air5_num_conservative),velocity(3)
+    real(real64) :: mass_fraction(air5_num_species)
+    real(real64) :: density,temperature,tv,pressure,scale,tolerance
+    integer :: unit,ios,row_count,state_index,i,j,k,status
+
+    if(num_species/=air5_num_species) &
+      error stop 'air5normalshock requires the fixed five-species state'
+    if(ref_len<=0.0_real64) &
+      error stop 'air5normalshock requires positive ref_len'
+    open(newunit=unit,file='datin/air5_normal_shock_states.dat',status='old', &
+      action='read',iostat=ios)
+    if(ios/=0) error stop 'cannot open datin/air5_normal_shock_states.dat'
+    row_count=0
+    do
+      read(unit,'(A)',iostat=ios) line
+      if(ios<0) exit
+      if(ios>0) error stop 'failed reading air5 normal-shock states'
+      line=adjustl(line)
+      if(len_trim(line)==0 .or. line(1:1)=='#') cycle
+      if(row_count>=2) error stop 'air5 normal-shock state file has too many rows'
+      read(line,*,iostat=ios) row
+      if(ios/=0) error stop 'invalid air5 normal-shock state row'
+      row_count=row_count+1
+      state(:,row_count)=row
+    enddo
+    close(unit)
+    if(row_count/=2) error stop 'air5 normal-shock state file requires two rows'
+
+    tolerance=2.0e-11_real64
+    do state_index=1,2
+      velocity=[state(2,state_index),0.0_real64,0.0_real64]
+      mass_fraction=state(6:10,state_index)
+      call air5_primitive_to_conservative(state(1,state_index),velocity, &
+        state(4,state_index),mass_fraction,state(5,state_index),local_q,status)
+      if(status/=chemistry_status_ok) &
+        error stop 'air5 normal-shock file contains an invalid state'
+      state_q(:,state_index)=local_q
+      scale=max(abs(state(11,state_index)),1.0_real64)
+      if(abs(local_q(11)-state(11,state_index))>tolerance*scale) &
+        error stop 'air5 normal-shock Ev is inconsistent'
+      scale=max(abs(state(12,state_index)),1.0_real64)
+      if(abs(local_q(5)-state(12,state_index))>tolerance*scale) &
+        error stop 'air5 normal-shock q5 is inconsistent'
+      call air5_conservative_to_primitive(local_q,density,velocity,temperature, &
+        mass_fraction,tv,pressure,status)
+      if(status/=chemistry_status_ok) &
+        error stop 'air5 normal-shock state reconstruction failed'
+      scale=max(abs(state(3,state_index)),1.0_real64)
+      if(abs(pressure-state(3,state_index))>tolerance*scale) &
+        error stop 'air5 normal-shock pressure is inconsistent'
+    enddo
+    call configure_air5_postshock_boundary(state_q(:,1),state_q(:,2))
+
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          state_index=merge(1,2,x(i,j,k,1)<=0.5_real64*ref_len)
+          rho(i,j,k)=state(1,state_index)
+          vel(i,j,k,:)=[state(2,state_index),0.0_real64,0.0_real64]
+          prs(i,j,k)=state(3,state_index)
+          tmp(i,j,k)=state(4,state_index)
+          tve(i,j,k)=state(5,state_index)
+          spc(i,j,k,:)=state(6:10,state_index)
+        enddo
+      enddo
+    enddo
+    if(lio) write(*,'(A)') &
+      '  ** finite-rate air5 normal-shock initial state initialised.'
+  end subroutine air5normalshockini
 
   subroutine air5hblboundaryini
     use chemistry_hbl_profile, only: air5_hbl_profile_type, &

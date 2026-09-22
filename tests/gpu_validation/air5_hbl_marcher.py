@@ -7,7 +7,7 @@ positive implicit path supplies the finite-rate A1-R2 station reference.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -1788,6 +1788,7 @@ class Air5HblMarcher:
         *,
         source_mode: str = "off",
         single_temperature: bool = False,
+        similarity_farfield: bool = False,
         residual_tolerance: float = 1.0e-10,
         max_function_evaluations: int = 1000,
     ) -> Air5HblMarchResult:
@@ -1810,11 +1811,16 @@ class Air5HblMarcher:
         current = initial.copy()
         maximum_residual = 0.0
         for station, step in enumerate(np.diff(x), start=1):
+            station_boundary = boundary
+            if similarity_farfield:
+                edge_velocity = np.asarray(boundary.edge_velocity).copy()
+                edge_velocity[1] *= np.sqrt(x[0] / x[station])
+                station_boundary = replace(boundary, edge_velocity=edge_velocity)
             result = self.march_positive_station(
                 current,
                 y,
                 float(step),
-                boundary,
+                station_boundary,
                 source_mode=source_mode,
                 single_temperature=single_temperature,
                 residual_tolerance=residual_tolerance,

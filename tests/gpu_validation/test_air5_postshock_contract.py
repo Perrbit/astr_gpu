@@ -49,7 +49,7 @@ def test_cpu_applies_postshock_boundary_before_halo_reconstruction() -> None:
     first_boundary = mainloop.index("callapply_air5_postshock_boundary", first_chemistry)
     first_swap = mainloop.index("callqswap(timerept=ltimrpt)", first_chemistry)
     assert first_chemistry < first_boundary < first_swap
-    assert "if(air5_postshock_case)then" in mainloop
+    assert "if(air5_open_x_case)then" in mainloop
 
 
 def test_cpu_restores_postshock_boundary_after_each_rk_update() -> None:

@@ -90,6 +90,8 @@ def prepare_case(
         replace_after_marker(lines, "flowtype", "air5evpulse")
     elif initial_condition == "postshock":
         replace_after_marker(lines, "flowtype", "air5postshock")
+    elif initial_condition == "normal-shock":
+        replace_after_marker(lines, "flowtype", "air5normalshock")
     elif initial_condition == "high-enthalpy-boundary-layer":
         replace_after_marker(lines, "flowtype", "air5hbl")
     replace_after_marker(lines, "im,jm,km", grid)
@@ -103,7 +105,7 @@ def prepare_case(
         "ref_tem,ref_vel,ref_len,ref_den",
         "1000.d0,10.d0,1.d-2,1.d0",
     )
-    if initial_condition == "postshock":
+    if initial_condition in ("postshock", "normal-shock"):
         replace_after_marker(lines, "lihomo,ljhomo,lkhomo", "f,t,t")
         replace_boundary_types(lines, ("11,free", 21, 1, 1, 1, 1))
         replace_after_marker(
@@ -136,7 +138,7 @@ def prepare_case(
                 raise ValueError("HBL grid must contain three positive dimensions")
             ref_len = 4.41262150017878821e-5
             x = np.linspace(0.0, 20.0 * ref_len, dimensions[0] + 1)
-            y = np.linspace(0.0, 2.0 * ref_len, dimensions[1] + 1)
+            y = np.linspace(0.0, 8.0 * ref_len, dimensions[1] + 1)
             evidence = generate_similarity_initial_field(
                 source_profile,
                 Path(__file__).resolve().parents[2]
@@ -153,7 +155,7 @@ def prepare_case(
     replace_after_marker(lines, "conschm,difschm,rkscheme", "643e,643e,rk3")
     reconstruction = (
         "3,f,0.3d0,0.05d0"
-        if initial_condition == "shock-tube"
+        if initial_condition in ("shock-tube", "normal-shock")
         else "5,f,0.3d0,0.05d0"
     )
     replace_after_marker(
@@ -205,6 +207,7 @@ def main() -> None:
             "diffusion-layer",
             "ev-pulse",
             "postshock",
+            "normal-shock",
             "high-enthalpy-boundary-layer",
         ),
         default="tgv",

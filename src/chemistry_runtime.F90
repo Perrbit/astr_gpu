@@ -17,6 +17,8 @@ module chemistry_flow_runtime
   public :: air5_field_conservative_to_primitive
   public :: air5_reacting_flowtype
   public :: air5_postshock_flowtype
+  public :: air5_normal_shock_flowtype
+  public :: air5_open_x_flowtype
   public :: air5_hbl_flowtype
   public :: air5_shock_capturing_enabled
   public :: configure_air5_source_mode
@@ -28,7 +30,7 @@ contains
     character(len=*), intent(in) :: flowtype
 
     select case(trim(flowtype))
-    case('air5reactor','air5postshock','air5tgv','air5hbl')
+    case('air5reactor','air5postshock','air5normalshock','air5tgv','air5hbl')
       air5_reacting_flowtype=.true.
     case default
       air5_reacting_flowtype=.false.
@@ -40,6 +42,19 @@ contains
 
     air5_postshock_flowtype=trim(flowtype)=='air5postshock'
   end function air5_postshock_flowtype
+
+  pure logical function air5_normal_shock_flowtype(flowtype)
+    character(len=*), intent(in) :: flowtype
+
+    air5_normal_shock_flowtype=trim(flowtype)=='air5normalshock'
+  end function air5_normal_shock_flowtype
+
+  pure logical function air5_open_x_flowtype(flowtype)
+    character(len=*), intent(in) :: flowtype
+
+    air5_open_x_flowtype=air5_postshock_flowtype(flowtype) .or. &
+      air5_normal_shock_flowtype(flowtype)
+  end function air5_open_x_flowtype
 
   pure logical function air5_hbl_flowtype(flowtype)
     character(len=*), intent(in) :: flowtype

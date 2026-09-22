@@ -72,6 +72,7 @@ class Air5HtrProfileTests(unittest.TestCase):
             lines = output.read_text(encoding="ascii").splitlines()
 
         self.assertIn("HTR-solver commit 328f84270ce26b83e4c7a4e75c0681a129a48bda", lines[0])
+        self.assertIn(f"x_origin={metadata.x_origin:.17e}", lines[1])
         self.assertIn("columns: y rho u v w p T Tv Y_N2 Y_O2 Y_N Y_O Y_NO", lines[2])
         data_lines = [line for line in lines if line and not line.startswith("#")]
         self.assertEqual(len(data_lines), 200)

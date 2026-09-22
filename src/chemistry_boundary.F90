@@ -38,9 +38,11 @@ contains
     use commvar, only: im,jm,km,hm,flowtype
     use commarray, only: q
     use parallel, only: mpileft,mpiright
-    integer :: component
+    integer :: component,i
+    logical :: normal_shock_case
 
-    if(trim(flowtype)/='air5postshock') return
+    normal_shock_case=trim(flowtype)=='air5normalshock'
+    if(trim(flowtype)/='air5postshock' .and. .not.normal_shock_case) return
     if(.not.boundary_configured) &
       error stop 'fixed air5 post-shock boundary is not configured'
     if(mpileft==MPI_PROC_NULL) then
@@ -49,9 +51,17 @@ contains
       enddo
     endif
     if(mpiright==MPI_PROC_NULL) then
-      do component=1,air5_num_conservative
-        q(im:im+hm,0:jm,0:km,component)=right_q(component)
-      enddo
+      if(normal_shock_case) then
+        do component=1,air5_num_conservative
+          do i=im,im+hm
+            q(i,0:jm,0:km,component)=q(im-1,0:jm,0:km,component)
+          enddo
+        enddo
+      else
+        do component=1,air5_num_conservative
+          q(im:im+hm,0:jm,0:km,component)=right_q(component)
+        enddo
+      endif
     endif
   end subroutine apply_air5_postshock_boundary
 
@@ -64,15 +74,17 @@ module chemistry_hbl_boundary
     air5_idx_species_last
   use chemistry_flow_state, only: air5_conservative_to_primitive
   use chemistry_hbl_profile, only: air5_hbl_profile_type, &
-    air5_hbl_profile_status_ok,sample_air5_hbl_profile,air5_hbl_profile_bounds
+    air5_hbl_profile_status_ok,sample_air5_hbl_profile,air5_hbl_profile_bounds, &
+    air5_hbl_profile_x_origin
   use chemistry_hbl_boundary_state, only: build_air5_hbl_wall_state, &
-    build_air5_hbl_outflow_state
+    build_air5_hbl_outflow_state,build_air5_hbl_similarity_farfield_state
   implicit none
   private
 
   real(real64), allocatable, save :: inlet_q(:,:)
   real(real64), save :: farfield_q(air5_num_conservative)=0.0_real64
   real(real64), save :: wall_temperature=0.0_real64
+  real(real64), save :: hbl_x_origin=0.0_real64
   logical, save :: boundary_configured=.false.
 
   public :: configure_air5_hbl_boundary
@@ -107,6 +119,9 @@ contains
     call sample_air5_hbl_profile(profile,y_max,farfield_q,status)
     if(status/=air5_hbl_profile_status_ok) &
       error stop 'failed sampling fixed air5 HBL farfield state'
+    call air5_hbl_profile_x_origin(profile,hbl_x_origin,status)
+    if(status/=air5_hbl_profile_status_ok) &
+      error stop 'fixed air5 HBL x origin is unavailable'
     call air5_conservative_to_primitive(wall_q,density,velocity,temperature, &
       mass_fraction,tv,pressure,state_status)
     if(state_status/=chemistry_status_ok) &
@@ -117,9 +132,10 @@ contains
     boundary_configured=.true.
   end subroutine configure_air5_hbl_boundary
 
-  subroutine get_air5_hbl_boundary(inlet_state,farfield_state,wall_temp)
+  subroutine get_air5_hbl_boundary(inlet_state,farfield_state,wall_temp,x_origin)
     real(real64), allocatable, intent(out) :: inlet_state(:,:)
     real(real64), intent(out) :: farfield_state(air5_num_conservative),wall_temp
+    real(real64), intent(out) :: x_origin
 
     if(.not.boundary_configured) &
       error stop 'fixed air5 HBL boundary is not configured'
@@ -127,12 +143,13 @@ contains
     inlet_state=inlet_q
     farfield_state=farfield_q
     wall_temp=wall_temperature
+    x_origin=hbl_x_origin
   end subroutine get_air5_hbl_boundary
 
   subroutine apply_air5_hbl_boundary()
     use mpi
     use commvar, only: im,jm,km,hm,flowtype
-    use commarray, only: q
+    use commarray, only: q,x
     use parallel, only: mpileft,mpiright,mpidown,mpiup
     real(real64) :: boundary_q(air5_num_conservative)
     real(real64) :: candidate_q(air5_num_conservative)
@@ -192,8 +209,16 @@ contains
       enddo
     endif
     if(status==chemistry_status_ok .and. mpiup==MPI_PROC_NULL) then
-      do component=1,air5_num_conservative
-        q(0:im,jm:jm+hm,0:km,component)=farfield_q(component)
+      do k=0,km
+        do i=0,im
+          call build_air5_hbl_similarity_farfield_state(farfield_q,hbl_x_origin, &
+            x(i,jm,k,1),boundary_q,status)
+          if(status/=chemistry_status_ok) exit
+          do component=1,air5_num_conservative
+            q(i,jm:jm+hm,k,component)=boundary_q(component)
+          enddo
+        enddo
+        if(status/=chemistry_status_ok) exit
       enddo
     endif
     if(status==chemistry_status_ok .and. mpileft==MPI_PROC_NULL) then
