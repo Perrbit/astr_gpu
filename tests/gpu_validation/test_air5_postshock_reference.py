@@ -3,6 +3,8 @@ import subprocess
 import sys
 
 import numpy as np
+import h5py
+import pytest
 
 from air5_postshock_reference import Air5PostShockReference
 from air5_radau_reference import Air5RadauReference
@@ -11,14 +13,80 @@ from check_air5_c5_postshock import (
     load_global_x_line,
     snapshot_extrusion_max_abs,
 )
+from check_air5_c5_captured_normal_shock import (
+    analyze_captured_normal_shock_line,
+    reference_transit_time,
+    checkpoint_stationarity,
+)
+from check_air5_c5_normal_shock import pressure_outlet_error
 
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_reference_transit_integrates_the_relaxing_velocity():
+    reference = make_reference()
+    transit = reference_transit_time(reference, 0.01)
+    assert 2.328e-5 < transit < 2.330e-5
+    assert transit > 1.4 * 0.01 / reference.postshock.speed
+
+
+def test_checkpoint_stationarity_rejects_stale_data_and_detects_change(tmp_path):
+    paths = [tmp_path / name for name in ("old.h5", "new.h5")]
+    fields = ("ro", "u1", "u2", "u3", "t", "tv",
+              "sp001", "sp002", "sp003", "sp004", "sp005")
+    for path, time in zip(paths, (1.0e-5, 2.0e-5)):
+        with h5py.File(path, "w") as out:
+            out["time"] = [time]
+            for field in fields:
+                out[field] = np.ones((2, 2, 3))
+    assert checkpoint_stationarity(*paths, 2.0e-5, 2.01e-5) == 0.0
+    with h5py.File(paths[1], "a") as out:
+        out["u1"][0, 0, 0] = 1.01
+    assert checkpoint_stationarity(*paths, 2.0e-5, 2.01e-5) > 0.019
+    with pytest.raises(ValueError, match="stale"):
+        checkpoint_stationarity(*paths, 2.0e-5, 4.0e-5)
+
+
+def test_normal_shock_generator_pressure_metadata_is_opt_in(tmp_path):
+    generator = ROOT / "tests/gpu_validation/generate_air5_normal_shock_states.py"
+    paths = [tmp_path / name for name in ("legacy.dat", "pressure.dat")]
+    for path, options in zip(paths, ([], ["--outlet-reference-length", "0.01"])):
+        subprocess.run([sys.executable, str(generator), "--mechanism",
+                        str(ROOT / "chemMech/air5_kimjo12.json"),
+                        "--output", str(path), *options], check=True)
+    assert "outlet_pressure_pa=" not in paths[0].read_text()
+    metadata = next(line for line in paths[1].read_text().splitlines()
+                    if line.startswith("# outlet_pressure_pa="))
+    assert abs(float(metadata.split("=")[1]) - 402491.55371926236) < 1.0e-4
+    np.testing.assert_array_equal(np.loadtxt(paths[0]), np.loadtxt(paths[1]))
+
+
 def make_reference() -> Air5PostShockReference:
     chemistry = Air5RadauReference(ROOT / "chemMech/air5_kimjo12.json")
     return Air5PostShockReference(chemistry)
+
+
+def test_pressure_outlet_checker_measures_the_physical_face(tmp_path):
+    reference = make_reference()
+    state = reference.conservative_state(reference.postshock)
+    hm = 1
+    shape = (5, 4, 4, 11)
+    q = np.broadcast_to(state, shape).copy()
+    path = tmp_path / "air5.post_chemistry.step00000000.rk02.rank00000000.bin"
+
+    def write_snapshot():
+        with path.open("wb") as out:
+            np.asarray([2, 1, 1, hm, 11], dtype=np.int32).tofile(out)
+            q.ravel(order="F").tofile(out)
+
+    write_snapshot()
+    args = (tmp_path / "air5", ROOT / "chemMech/air5_kimjo12.json",
+            (1, 1, 1), reference.postshock.pressure)
+    assert pressure_outlet_error(*args) < 2.0e-14
+    q[hm+2, hm:hm+2, hm:hm+2, 4] += 1000.0
+    write_snapshot()
+    assert pressure_outlet_error(*args) > 1.0e-4
 
 
 def test_frozen_normal_shock_conserves_fluxes_and_stays_in_mechanism_domain():
@@ -214,6 +282,96 @@ def test_profile_line_checker_assembles_owned_x_nodes_from_multirank_snapshots(
     assert line.shape == (5, 11)
 
 
+def test_profile_line_loader_accepts_a_nonzero_validation_step(tmp_path):
+    prefix = tmp_path / "air5"
+    hm = 3
+    shape = (2 + 2 * hm + 1, 1 + 2 * hm + 1, 1 + 2 * hm + 1, 11)
+    q = np.zeros(shape, dtype=np.float64, order="F")
+    q[hm : hm + 3, hm, hm, 0] = [1.0, 2.0, 3.0]
+    path = tmp_path / "air5.post_chemistry.step00000017.rk02.rank00000000.bin"
+    with path.open("wb") as stream:
+        np.asarray([2, 1, 1, hm, 11], dtype=np.int32).tofile(stream)
+        q.ravel(order="F").tofile(stream)
+
+    line = load_global_x_line(
+        prefix,
+        label="post_chemistry",
+        step=17,
+        stage=2,
+        topology=(1, 1, 1),
+        point_count=3,
+    )
+
+    np.testing.assert_array_equal(line[:, 0], [1.0, 2.0, 3.0])
+
+
+def test_captured_normal_shock_checker_matches_an_aligned_relaxation_profile():
+    reference = make_reference()
+    x = np.linspace(0.0, 0.02, 41)
+    shock_interface = 19
+    shock_x = 0.5 * (x[shock_interface] + x[shock_interface + 1])
+    downstream_x = x[shock_interface + 1 :] - shock_x
+    result = reference.integrate(float(downstream_x[-1]), rtol=1.0e-10)
+    profile = reference.sample(result, downstream_x)
+    upstream_q = reference.conservative_state(reference.upstream)
+    q = np.repeat(upstream_q[None, :], x.size, axis=0)
+    q[shock_interface + 1 :] = np.asarray(
+        [reference.conservative_state(point) for point in profile.points]
+    )
+
+    metrics = analyze_captured_normal_shock_line(
+        q,
+        x,
+        reference,
+        shock_skip_cells=2,
+    )
+
+    assert metrics.shock_interface == shock_interface
+    assert metrics.comparison_points == x.size - shock_interface - 3
+    assert metrics.mass_flux_relative_error < 2.0e-13
+    assert metrics.momentum_flux_relative_error < 2.0e-13
+    assert metrics.energy_flux_relative_error < 2.0e-13
+    assert metrics.rho_relative_error < 2.0e-13
+    assert metrics.u_relative_error < 2.0e-13
+    assert metrics.temperature_relative_error < 2.0e-13
+    assert metrics.tv_relative_error < 2.0e-13
+    assert metrics.mass_fraction_max_abs < 2.0e-15
+    assert metrics.species_mass_closure_max_abs < 2.0e-15
+    assert metrics.minimum_species_density > 0.0
+    assert metrics.terminal_temperature_drop > 0.0
+    assert metrics.terminal_tv_rise > 0.0
+    assert metrics.terminal_atomic_oxygen_rise > 0.0
+
+
+def test_captured_normal_shock_checker_detects_downstream_species_error():
+    reference = make_reference()
+    x = np.linspace(0.0, 0.02, 41)
+    shock_interface = 19
+    shock_x = 0.5 * (x[shock_interface] + x[shock_interface + 1])
+    downstream_x = x[shock_interface + 1 :] - shock_x
+    result = reference.integrate(float(downstream_x[-1]), rtol=1.0e-10)
+    profile = reference.sample(result, downstream_x)
+    q = np.repeat(
+        reference.conservative_state(reference.upstream)[None, :],
+        x.size,
+        axis=0,
+    )
+    q[shock_interface + 1 :] = np.asarray(
+        [reference.conservative_state(point) for point in profile.points]
+    )
+    q[-4, 8] += 1.0e-5
+
+    metrics = analyze_captured_normal_shock_line(
+        q,
+        x,
+        reference,
+        shock_skip_cells=2,
+    )
+
+    assert metrics.mass_fraction_max_abs > 1.0e-5
+    assert metrics.species_mass_closure_max_abs > 1.0e-6
+
+
 def test_profile_line_checker_detects_transverse_or_interface_mismatch(tmp_path):
     prefix = tmp_path / "air5"
     topology = (2, 2, 1)
@@ -244,8 +402,17 @@ def test_profile_line_checker_detects_transverse_or_interface_mismatch(tmp_path)
         topology=topology,
         reference_line=reference_line,
     )
+    scaled_mismatch = snapshot_extrusion_max_abs(
+        prefix,
+        label="post_chemistry",
+        stage=2,
+        topology=topology,
+        reference_line=reference_line,
+        component_scaled=True,
+    )
 
     assert abs(mismatch - 2.5e-6) < 1.0e-15
+    assert abs(scaled_mismatch - 2.5e-6 / 4.0) < 1.0e-15
 
 
 def test_profile_line_checker_cli_accepts_exact_generated_profile(tmp_path):

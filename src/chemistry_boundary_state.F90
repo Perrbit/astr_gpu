@@ -1,3 +1,101 @@
+module chemistry_hbl_geometry
+  use iso_fortran_env, only: real64
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  implicit none
+  private
+  public :: read_air5_hbl_domain
+contains
+  subroutine read_air5_hbl_domain(flowtype,ref_len,lengths)
+    character(len=*), intent(in) :: flowtype
+    real(real64), intent(in) :: ref_len
+    real(real64), intent(out) :: lengths(3)
+    character(len=128) :: header
+    integer :: unit,ios
+    logical :: exists
+
+    lengths=[20.0_real64,8.0_real64,2.0_real64]*ref_len
+    if(trim(flowtype)=='air5sbli') lengths(1)=80.0_real64*ref_len
+    inquire(file='datin/air5_hbl_domain.dat',exist=exists)
+    if(exists) then
+      open(newunit=unit,file='datin/air5_hbl_domain.dat',status='old', &
+        action='read',iostat=ios)
+      if(ios/=0) error stop 'cannot open air5 HBL domain file'
+      read(unit,'(A)',iostat=ios) header
+      if(ios/=0 .or. trim(header)/='air5_hbl_domain_v1') &
+        error stop 'invalid air5 HBL domain header'
+      read(unit,*,iostat=ios) lengths
+      close(unit)
+      if(ios/=0) error stop 'invalid air5 HBL domain lengths'
+    endif
+    if(.not.all(ieee_is_finite(lengths)) .or. any(lengths<=0.0_real64)) &
+      error stop 'air5 HBL domain lengths must be finite and positive'
+  end subroutine read_air5_hbl_domain
+end module chemistry_hbl_geometry
+
+module chemistry_incident_shock_state
+  use iso_fortran_env, only: real64
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use chemistry_state_layout, only: air5_num_conservative
+  use chemistry_air5_data, only: air5_num_species
+  use chemistry_model, only: chemistry_status_ok
+  use chemistry_flow_state, only: air5_conservative_to_primitive
+  implicit none
+  private
+  public :: read_air5_incident_shock
+contains
+  subroutine read_air5_incident_shock(path,x_top,y_top,normal,states,status)
+    character(len=*), intent(in) :: path
+    real(real64), intent(out) :: x_top,y_top,normal(3),states(air5_num_conservative,2)
+    integer, intent(out) :: status
+    character(len=128) :: header
+    integer :: unit,ios,s,state_status
+    real(real64) :: rho,velocity(3),temperature,tv,pressure,ys(air5_num_species)
+    real(real64) :: speed,flux(air5_num_conservative,2),densities(2),pressures(2)
+
+    status=1
+    x_top=0.0_real64
+    y_top=0.0_real64
+    normal=0.0_real64
+    states=0.0_real64
+    open(newunit=unit,file=path,status='old',action='read',iostat=ios)
+    if(ios/=0) return
+    read(unit,'(A)',iostat=ios) header
+    if(ios/=0 .or. trim(header)/='air5_incident_shock_v1') then
+      close(unit)
+      return
+    endif
+    read(unit,*,iostat=ios) x_top,y_top,normal
+    if(ios==0) read(unit,*,iostat=ios) states(:,1)
+    if(ios==0) read(unit,*,iostat=ios) states(:,2)
+    close(unit)
+    if(ios/=0) return
+    status=2
+    if(.not.all(ieee_is_finite([x_top,y_top,normal]))) return
+    if(.not.all(ieee_is_finite(states))) return
+    if(x_top<=0.0_real64 .or. y_top<=0.0_real64) return
+    if(normal(1)<=0.0_real64 .or. normal(2)<0.0_real64) return
+    if(abs(normal(3))>2.0e-12_real64 .or. &
+       abs(sum(normal**2)-1.0_real64)>2.0e-12_real64) return
+    do s=1,2
+      call air5_conservative_to_primitive(states(:,s),rho,velocity,temperature, &
+        ys,tv,pressure,state_status)
+      if(state_status/=chemistry_status_ok) return
+      densities(s)=rho
+      pressures(s)=pressure
+      speed=dot_product(velocity,normal)
+      if(speed<=0.0_real64) return
+      flux(:,s)=states(:,s)*speed
+      flux(2:4,s)=flux(2:4,s)+pressure*normal
+      flux(5,s)=flux(5,s)+pressure*speed
+    enddo
+    if(densities(2)<=densities(1) .or. pressures(2)<=pressures(1)) return
+    status=3
+    if(any(abs(flux(:,2)-flux(:,1))>2.0e-11_real64* &
+       max(abs(flux(:,1)),abs(flux(:,2)),1.0e-280_real64))) return
+    status=chemistry_status_ok
+  end subroutine read_air5_incident_shock
+end module chemistry_incident_shock_state
+
 module chemistry_hbl_profile
   use iso_fortran_env, only: real64
   use chemistry_air5_data, only: air5_num_species,air5_molar_mass,air5_ru
@@ -626,3 +724,65 @@ contains
   end subroutine build_air5_hbl_outflow_state
 
 end module chemistry_hbl_boundary_state
+
+module chemistry_pressure_outlet_state
+  use iso_fortran_env, only: real64
+  use chemistry_air5_data, only: air5_num_species
+  use chemistry_model, only: chemistry_status_ok,chemistry_status_out_of_domain, &
+    chemistry_status_invalid_density,air5_pressure_is_in_domain
+  use chemistry_state_layout, only: air5_num_conservative
+  use chemistry_flow_state, only: air5_conservative_to_primitive,air5_primitive_to_conservative
+  use chemistry_thermo, only: air5_species_gas_constant,air5_species_cv_tr
+  implicit none
+  private
+  public :: build_air5_pressure_outlet_state
+
+contains
+
+  pure subroutine build_air5_pressure_outlet_state(inner,target_pressure,boundary,status)
+    real(real64), intent(in) :: inner(air5_num_conservative),target_pressure
+    real(real64), intent(out) :: boundary(air5_num_conservative)
+    integer, intent(out) :: status
+    real(real64) :: density,velocity(3),temperature,tv,pressure,y(air5_num_species)
+    real(real64) :: mixture_r,mixture_cv,gamma,c,dp,new_density
+    integer :: s
+
+    boundary=0.0_real64
+    status=chemistry_status_out_of_domain
+    if(.not.air5_pressure_is_in_domain(target_pressure)) return
+    call air5_conservative_to_primitive(inner,density,velocity,temperature,y,tv,pressure,status)
+    if(status/=chemistry_status_ok) return
+    if(velocity(1)<=0.0_real64) then
+      status=chemistry_status_out_of_domain
+      return
+    endif
+    mixture_r=0.0_real64
+    mixture_cv=0.0_real64
+    do s=1,air5_num_species
+      mixture_r=mixture_r+y(s)*air5_species_gas_constant(s)
+      mixture_cv=mixture_cv+y(s)*air5_species_cv_tr(s)
+    enddo
+    gamma=1.0_real64+mixture_r/mixture_cv
+    c=sqrt(gamma*pressure/density)
+    if(velocity(1)>=c .or. target_pressure==pressure) then
+      boundary=inner
+      return
+    endif
+    ! Incoming acoustic correction; composition, tangential velocity and Tv are outgoing.
+    dp=target_pressure-pressure
+    new_density=density+dp/(c*c)
+    if(new_density<=0.0_real64) then
+      status=chemistry_status_invalid_density
+      return
+    endif
+    velocity(1)=velocity(1)-dp/(density*c)
+    if(velocity(1)<=0.0_real64 .or. &
+       velocity(1)>=sqrt(gamma*target_pressure/new_density)) then
+      status=chemistry_status_out_of_domain
+      return
+    endif
+    temperature=target_pressure/(new_density*mixture_r)
+    call air5_primitive_to_conservative(new_density,velocity,temperature,y,tv,boundary,status)
+  end subroutine build_air5_pressure_outlet_state
+
+end module chemistry_pressure_outlet_state

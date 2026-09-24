@@ -27,6 +27,10 @@ module gridgeneration
     use readwrite,only : readgrid,writegrid,xdmfwriter
     use userdefine,only: udf_grid
     use benchmark_runtime, only: benchmark_field_io_disabled
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_hbl_geometry, only: read_air5_hbl_domain
+    real(8) :: hbl_lengths(3)
+#endif
     !
     if(lreadgrid) then
       call readgrid(trim(gridfile))
@@ -64,8 +68,17 @@ module gridgeneration
       elseif(trim(flowtype)=='air5postshock' .or. &
              trim(flowtype)=='air5normalshock') then
         call gridcube(ref_len,ref_len,ref_len)
-      elseif(trim(flowtype)=='air5hbl') then
-        call gridcube(20.d0*ref_len,8.d0*ref_len,2.d0*ref_len)
+      elseif(trim(flowtype)=='air5hbl' .or. trim(flowtype)=='air5sbli') then
+#ifdef ASTR_AIR5_CHEMISTRY
+        call read_air5_hbl_domain(flowtype,ref_len,hbl_lengths)
+        call gridcube(hbl_lengths(1),hbl_lengths(2),hbl_lengths(3))
+#else
+        if(trim(flowtype)=='air5hbl') then
+          call gridcube(20.d0*ref_len,8.d0*ref_len,2.d0*ref_len)
+        else
+          call gridcube(80.d0*ref_len,8.d0*ref_len,2.d0*ref_len)
+        endif
+#endif
       elseif(trim(flowtype)=='air5wave' .or. trim(flowtype)=='air5reactor' .or. &
              trim(flowtype)=='air5tgv' .or. &
              trim(flowtype)=='air5shocktube' .or. &

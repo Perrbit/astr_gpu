@@ -567,20 +567,29 @@ contains
   subroutine compute_gradcal_gpu()
     use mpi, only: MPI_PROC_NULL
     use commvar, only: im,jm,km,hm
+#ifdef ASTR_AIR5_CHEMISTRY
+    use commvar, only: flowtype,lcomb
+    use chemistry_flow_runtime, only: air5_hbl_flowtype
+#endif
     use boundary_gpu, only: gpu_physical_boundary_axis,gpu_s1_flatplate_boundary_case_pending
     use commarray_gpu, only: gpu_mixed_derivative_workspace_enabled
     use gpu_check, only: sync_after_kernel
     use parallel, only: mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
     implicit none
     type(dim3) :: block3,grid3
-    logical :: mixed_derivative
+    logical :: mixed_derivative,xyphysical
 
     mixed_derivative=gpu_mixed_derivative_workspace_enabled()
+    xyphysical=gpu_s1_flatplate_boundary_case_pending()
+#ifdef ASTR_AIR5_CHEMISTRY
+    ! The sensor shares this entry; air5 transport also has two physical axes.
+    if(lcomb) xyphysical=xyphysical .or. air5_hbl_flowtype(flowtype)
+#endif
     block3 = dim3(8,8,8)
     grid3 = dim3((im + block3%x)/block3%x, &
                  (jm + block3%y)/block3%y, &
                  (km + block3%z)/block3%z)
-    if(gpu_s1_flatplate_boundary_case_pending()) then
+    if(xyphysical) then
       if(mixed_derivative) then
         call gradcal_dvel_xyphysical_sp_kernel<<<grid3,block3>>>(im,jm,km,hm, &
              merge(1,0,mpileft == MPI_PROC_NULL),merge(1,0,mpiright == MPI_PROC_NULL), &

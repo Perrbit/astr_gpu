@@ -34,6 +34,7 @@ def load_global_x_line(
     prefix: Path,
     *,
     label: str,
+    step: int = 0,
     stage: int,
     topology: tuple[int, int, int],
     point_count: int,
@@ -41,10 +42,10 @@ def load_global_x_line(
     """Load the jrk=krk=0 line while assigning shared interfaces to the right rank."""
     prefix = Path(prefix)
     tx, ty, tz = topology
-    if min(topology) < 1 or point_count < 2:
-        raise ValueError("topology and point_count must be positive")
+    if min(topology) < 1 or point_count < 2 or step < 0:
+        raise ValueError("topology, point_count, and step are invalid")
     pattern = (
-        f"{prefix.name}.{label}.step00000000.rk{stage:02d}.rank*.bin"
+        f"{prefix.name}.{label}.step{step:08d}.rk{stage:02d}.rank*.bin"
     )
     files = sorted(prefix.parent.glob(pattern))
     expected_ranks = tx * ty * tz
@@ -82,18 +83,25 @@ def snapshot_extrusion_max_abs(
     prefix: Path,
     *,
     label: str,
+    step: int = 0,
     stage: int,
     topology: tuple[int, int, int],
     reference_line: np.ndarray,
+    component_scaled: bool = False,
 ) -> float:
     """Measure all active nodes, including shared interfaces, against one x line."""
     prefix = Path(prefix)
     tx, ty, tz = topology
     reference = np.asarray(reference_line, dtype=np.float64)
-    if min(topology) < 1 or reference.ndim != 2 or reference.shape[1] != NUMQ:
+    if (
+        min(topology) < 1
+        or step < 0
+        or reference.ndim != 2
+        or reference.shape[1] != NUMQ
+    ):
         raise ValueError("invalid topology or post-shock reference line")
     pattern = (
-        f"{prefix.name}.{label}.step00000000.rk{stage:02d}.rank*.bin"
+        f"{prefix.name}.{label}.step{step:08d}.rk{stage:02d}.rank*.bin"
     )
     paths = sorted(prefix.parent.glob(pattern))
     expected_ranks = tx * ty * tz
@@ -141,7 +149,11 @@ def snapshot_extrusion_max_abs(
             None,
             :,
         ]
-        maximum = max(maximum, float(np.max(np.abs(active - expected))))
+        error = np.abs(active - expected)
+        if component_scaled:
+            scale = np.maximum(np.max(np.abs(reference), axis=0), 1.0)
+            error = error / scale[None, None, None, :]
+        maximum = max(maximum, float(np.max(error)))
     return maximum
 
 

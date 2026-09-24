@@ -7,6 +7,7 @@ module chemistry_postshock_boundary
   real(real64), save :: left_q(air5_num_conservative)=0.0_real64
   real(real64), save :: right_q(air5_num_conservative)=0.0_real64
   logical, save :: boundary_configured=.false.
+  real(real64), save :: outlet_pressure=0.0_real64
 
   public :: configure_air5_postshock_boundary
   public :: get_air5_postshock_boundary
@@ -14,44 +15,71 @@ module chemistry_postshock_boundary
 
 contains
 
-  subroutine configure_air5_postshock_boundary(left_state,right_state)
+  subroutine configure_air5_postshock_boundary(left_state,right_state,pressure_target)
+    use chemistry_model, only: air5_pressure_is_in_domain
     real(real64), intent(in) :: left_state(air5_num_conservative)
     real(real64), intent(in) :: right_state(air5_num_conservative)
+    real(real64), intent(in), optional :: pressure_target
 
+    outlet_pressure=0.0_real64
+    if(present(pressure_target)) then
+      if(pressure_target/=0.0_real64) then
+        if(.not.air5_pressure_is_in_domain(pressure_target)) &
+          error stop 'invalid fixed air5 outlet pressure'
+        outlet_pressure=pressure_target
+      endif
+    endif
     left_q=left_state
     right_q=right_state
     boundary_configured=.true.
   end subroutine configure_air5_postshock_boundary
 
-  subroutine get_air5_postshock_boundary(left_state,right_state)
+  subroutine get_air5_postshock_boundary(left_state,right_state,pressure_target)
     real(real64), intent(out) :: left_state(air5_num_conservative)
     real(real64), intent(out) :: right_state(air5_num_conservative)
+    real(real64), intent(out), optional :: pressure_target
 
     if(.not.boundary_configured) &
       error stop 'fixed air5 post-shock boundary is not configured'
     left_state=left_q
     right_state=right_q
+    if(present(pressure_target)) pressure_target=outlet_pressure
   end subroutine get_air5_postshock_boundary
 
   subroutine apply_air5_postshock_boundary()
-    use mpi, only: MPI_PROC_NULL
+    use mpi
+    use chemistry_model, only: chemistry_status_ok
+    use chemistry_pressure_outlet_state, only: build_air5_pressure_outlet_state
     use commvar, only: im,jm,km,hm,flowtype
     use commarray, only: q
     use parallel, only: mpileft,mpiright
-    integer :: component,i
+    integer :: component,i,j,k,status,global_status,ierr
+    real(real64) :: boundary(air5_num_conservative)
     logical :: normal_shock_case
 
     normal_shock_case=trim(flowtype)=='air5normalshock'
     if(trim(flowtype)/='air5postshock' .and. .not.normal_shock_case) return
     if(.not.boundary_configured) &
       error stop 'fixed air5 post-shock boundary is not configured'
+    status=chemistry_status_ok
     if(mpileft==MPI_PROC_NULL) then
       do component=1,air5_num_conservative
         q(-hm:0,0:jm,0:km,component)=left_q(component)
       enddo
     endif
     if(mpiright==MPI_PROC_NULL) then
-      if(normal_shock_case) then
+      if(normal_shock_case .and. outlet_pressure>0.0_real64) then
+        do k=0,km
+          do j=0,jm
+            call build_air5_pressure_outlet_state(q(im-1,j,k,:),outlet_pressure,boundary,status)
+            if(status/=chemistry_status_ok) exit
+            do i=im,im+hm
+              q(i,j,k,:)=boundary
+            enddo
+          enddo
+          if(status/=chemistry_status_ok) exit
+        enddo
+      elseif(normal_shock_case) then
         do component=1,air5_num_conservative
           do i=im,im+hm
             q(i,0:jm,0:km,component)=q(im-1,0:jm,0:km,component)
@@ -61,6 +89,14 @@ contains
         do component=1,air5_num_conservative
           q(im:im+hm,0:jm,0:km,component)=right_q(component)
         enddo
+      endif
+    endif
+    if(normal_shock_case .and. outlet_pressure>0.0_real64) then
+      call MPI_Allreduce(status,global_status,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,status)
+      if(global_status/=chemistry_status_ok) then
+        write(*,'(A,I0)') 'fixed air5 pressure outlet failed, status=',global_status
+        call MPI_Abort(MPI_COMM_WORLD,global_status,ierr)
       endif
     endif
   end subroutine apply_air5_postshock_boundary
@@ -85,22 +121,29 @@ module chemistry_hbl_boundary
   real(real64), save :: farfield_q(air5_num_conservative)=0.0_real64
   real(real64), save :: wall_temperature=0.0_real64
   real(real64), save :: hbl_x_origin=0.0_real64
+  logical, save :: incident_top=.false.
+  real(real64), save :: incident_x=0.0_real64
+  real(real64), save :: incident_q(air5_num_conservative,2)=0.0_real64
   logical, save :: boundary_configured=.false.
 
   public :: configure_air5_hbl_boundary
   public :: get_air5_hbl_boundary
   public :: apply_air5_hbl_boundary
+  public :: get_air5_incident_top
 
 contains
 
   subroutine configure_air5_hbl_boundary(profile)
     use chemistry_air5_data, only: air5_num_species
-    use commvar, only: jm
+    use commvar, only: jm,flowtype,ref_len
+    use chemistry_incident_shock_state, only: read_air5_incident_shock
+    use chemistry_hbl_geometry, only: read_air5_hbl_domain
     use commarray, only: x
     type(air5_hbl_profile_type), intent(in) :: profile
     real(real64) :: y_min,y_max,wall_q(air5_num_conservative)
-    real(real64) :: density,velocity(3),temperature,tv,pressure
+    real(real64) :: density,velocity(3),temperature,tv,pressure,top_y,normal(3)
     real(real64) :: mass_fraction(air5_num_species)
+    real(real64) :: domain_lengths(3)
     integer :: j,status,state_status
 
     if(allocated(inlet_q)) deallocate(inlet_q)
@@ -129,6 +172,20 @@ contains
     if(abs(tv-temperature)>2.0e-11_real64*max(abs(temperature),1.0_real64)) &
       error stop 'fixed air5 HBL A0 requires the one-temperature limit at the wall'
     wall_temperature=temperature
+    incident_top=trim(flowtype)=='air5sbli'
+    incident_q=0.0_real64
+    incident_x=0.0_real64
+    if(incident_top) then
+      call read_air5_incident_shock('datin/air5_incident_shock.dat',incident_x, &
+        top_y,normal,incident_q,status)
+      if(status/=chemistry_status_ok) error stop 'invalid air5 incident shock data'
+      call read_air5_hbl_domain(flowtype,ref_len,domain_lengths)
+      if(abs(top_y-domain_lengths(2))>2.0e-11_real64*ref_len .or. &
+         incident_x>=domain_lengths(1)) error stop 'air5 incident shock lies outside domain'
+      if(any(abs(incident_q(:,1)-farfield_q)>2.0e-11_real64* &
+        max(abs(farfield_q),1.0e-280_real64))) &
+        error stop 'air5 incident shock upstream does not match inlet profile edge'
+    endif
     boundary_configured=.true.
   end subroutine configure_air5_hbl_boundary
 
@@ -146,6 +203,15 @@ contains
     x_origin=hbl_x_origin
   end subroutine get_air5_hbl_boundary
 
+  subroutine get_air5_incident_top(enabled,x_top,states)
+    logical, intent(out) :: enabled
+    real(real64), intent(out) :: x_top,states(air5_num_conservative,2)
+    if(.not.boundary_configured) error stop 'air5 boundary is not configured'
+    enabled=incident_top
+    x_top=incident_x
+    states=incident_q
+  end subroutine get_air5_incident_top
+
   subroutine apply_air5_hbl_boundary()
     use mpi
     use commvar, only: im,jm,km,hm,flowtype
@@ -155,7 +221,7 @@ contains
     real(real64) :: candidate_q(air5_num_conservative)
     integer :: i,j,k,component,status,global_status,ierr
 
-    if(trim(flowtype)/='air5hbl') return
+    if(trim(flowtype)/='air5hbl' .and. trim(flowtype)/='air5sbli') return
     if(.not.boundary_configured) &
       error stop 'fixed air5 HBL boundary is not configured'
     status=chemistry_status_ok
@@ -211,8 +277,16 @@ contains
     if(status==chemistry_status_ok .and. mpiup==MPI_PROC_NULL) then
       do k=0,km
         do i=0,im
-          call build_air5_hbl_similarity_farfield_state(farfield_q,hbl_x_origin, &
-            x(i,jm,k,1),boundary_q,status)
+          if(incident_top) then
+            if(x(i,jm,k,1)<incident_x) then
+              boundary_q=incident_q(:,1)
+            else
+              boundary_q=incident_q(:,2)
+            endif
+          else
+            call build_air5_hbl_similarity_farfield_state(farfield_q,hbl_x_origin, &
+              x(i,jm,k,1),boundary_q,status)
+          endif
           if(status/=chemistry_status_ok) exit
           do component=1,air5_num_conservative
             q(i,jm:jm+hm,k,component)=boundary_q(component)

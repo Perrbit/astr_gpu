@@ -2,6 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+OUTLET_REFERENCE_LENGTH="${OUTLET_REFERENCE_LENGTH:-}"
+outlet_args=()
+if [[ -n "$OUTLET_REFERENCE_LENGTH" ]]; then
+  outlet_args=(--outlet-reference-length "$OUTLET_REFERENCE_LENGTH")
+fi
 BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/tests/gpu_validation/out/c4_cuda_build_4}"
 EXE="${EXE:-$BUILD_DIR/bin/astr}"
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/tests/gpu_validation/out/air5_c5_normal_shock}"
@@ -9,11 +14,17 @@ TMP_DIR="${TMPDIR:-$ROOT_DIR/tests/gpu_validation/out/tmp_nvfortran}"
 GRID="${GRID:-32,6,6}"
 MAXSTEP="${MAXSTEP:-0}"
 DELTAT="${DELTAT:-1.d-8}"
+DIFFTERM="${DIFFTERM:-f}"
 NP="${NP:-1}"
 TOPOLOGY="${TOPOLOGY:-1,1,1}"
 ATOL="${ATOL:-2e-9}"
 RTOL="${RTOL:-2e-10}"
 MAX_CFL="${MAX_CFL:-1.0}"
+labels=pre_chemistry,post_chemistry,pre_rhs,post_update,post_transport
+# GPU startup prepares the pressure outlet before the first pre_chemistry dump.
+if [[ -n "$OUTLET_REFERENCE_LENGTH" ]]; then
+  labels=post_chemistry,pre_rhs,post_update,post_transport
+fi
 
 check_cfl() {
   local log_file="$1"
@@ -41,13 +52,13 @@ for mode in cpu gpu; do
     --grid "$GRID" \
     --maxstep "$MAXSTEP" \
     --deltat "$DELTAT" \
-    --diffterm f \
+    --diffterm "$DIFFTERM" \
     --lfilter f \
     --use-gpu "$use_gpu" \
     --initial-condition normal-shock
   python3 "$ROOT_DIR/tests/gpu_validation/generate_air5_normal_shock_states.py" \
     --mechanism "$ROOT_DIR/chemMech/air5_kimjo12.json" \
-    --output "$OUT_DIR/$mode/datin/air5_normal_shock_states.dat"
+    --output "$OUT_DIR/$mode/datin/air5_normal_shock_states.dat" "${outlet_args[@]}"
   mkdir -p "$OUT_DIR/$mode/validation"
   (
     cd "$OUT_DIR/$mode"
@@ -68,7 +79,7 @@ python3 "$ROOT_DIR/tests/gpu_validation/compare_q_validation_snapshots.py" \
   --cpu-prefix "$OUT_DIR/cpu/validation/air5" \
   --gpu-prefix "$OUT_DIR/gpu/validation/air5" \
   --report "$OUT_DIR/cpu_gpu_phase_compare.txt" \
-  --labels pre_chemistry,post_chemistry,pre_rhs,post_update,post_transport \
+  --labels "$labels" \
   --atol "$ATOL" \
   --rtol "$RTOL" \
   --active-only
@@ -76,6 +87,8 @@ python3 "$ROOT_DIR/tests/gpu_validation/compare_q_validation_snapshots.py" \
 for mode in cpu gpu; do
   python3 "$ROOT_DIR/tests/gpu_validation/check_air5_c5_normal_shock.py" \
     --prefix "$OUT_DIR/$mode/validation/air5" \
+    --boundary-states "$OUT_DIR/$mode/datin/air5_normal_shock_states.dat" \
+    --topology "$TOPOLOGY" \
     --mechanism "$ROOT_DIR/chemMech/air5_kimjo12.json" \
     --report "$OUT_DIR/${mode}_normal_shock.txt"
 done

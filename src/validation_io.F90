@@ -5,7 +5,7 @@ module validation_io
   public :: rhs_validation_requested,write_rhs_validation_snapshot, &
             write_q_validation_snapshot,write_primitive_validation_snapshot, &
             write_sensor_validation_snapshot, &
-            write_compact_statistics_validation_snapshot
+            write_compact_statistics_validation_snapshot,write_scalar_validation_snapshot
   logical,save :: configured=.false.,enabled=.false.
   character(len=1024),save :: prefix=''
   integer,save :: validation_step=0,validation_step_secondary=-1
@@ -132,6 +132,26 @@ contains
     write(unit) qrhs
     close(unit)
   end subroutine write_rhs_validation_snapshot
+
+  subroutine write_scalar_validation_snapshot(label,values,stage_index)
+    use iso_fortran_env, only: real64
+    use commvar, only: im,jm,km,hm,rkstep
+    use parallel, only: mpirank
+    character(len=*),intent(in) :: label
+    real(real64),intent(in) :: values(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    integer,intent(in),optional :: stage_index
+    character(len=1200) :: filename
+    integer :: unit,stage_value
+    if(.not.rhs_validation_requested()) return
+    stage_value=rkstep
+    if(present(stage_index)) stage_value=stage_index
+    write(filename,'(A,".",A,".step",I8.8,".rk",I2.2,".rank",I8.8,".bin")') &
+      trim(prefix),trim(label),nstep,stage_value,mpirank
+    open(newunit=unit,file=trim(filename),access='stream',form='unformatted',status='new',action='write')
+    write(unit) im,jm,km,hm
+    write(unit) values
+    close(unit)
+  end subroutine write_scalar_validation_snapshot
 
   subroutine write_q_validation_snapshot(label,step_index,stage_index)
     use commvar, only: im,jm,km,hm,numq,nstep,rkstep

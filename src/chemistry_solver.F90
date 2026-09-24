@@ -113,18 +113,37 @@ contains
       ibset(air5_state_constraint_mask,air5_limiter_constraint_translational-1)
   end function air5_state_constraint_mask
 
+  logical function air5_face_state_is_admissible(state,species_budget)
+    real(real64), intent(in) :: state(air5_num_conservative)
+    logical, intent(in) :: species_budget
+
+    if(species_budget) then
+      ! Species positivity is already enforced by the summed negative-face budget.
+      air5_face_state_is_admissible=state(air5_idx_density)>0.0_real64 .and. &
+        air5_vibrational_excess(state(air5_idx_ev), &
+          state(air5_idx_species_first:air5_idx_species_last))>=0.0_real64 .and. &
+        air5_translational_margin(state)>=0.0_real64
+    else
+      air5_face_state_is_admissible=air5_state_is_admissible(state)
+    endif
+  end function air5_face_state_is_admissible
+
   real(real64) function air5_admissible_face_ratio(low_state,face_correction, &
-      collect_diagnostics,constraint_mask,species_mask)
+      collect_diagnostics,constraint_mask,species_mask,species_budget)
     real(real64), intent(in) :: low_state(air5_num_conservative)
     real(real64), intent(in) :: face_correction(air5_num_conservative)
     logical, intent(in) :: collect_diagnostics
+    logical, intent(in), optional :: species_budget
     integer, intent(out) :: constraint_mask,species_mask
     real(real64) :: lower,upper,middle
     real(real64) :: trial_state(air5_num_conservative)
     integer :: iteration
+    logical :: use_species_budget
 
+    use_species_budget=.false.
+    if(present(species_budget)) use_species_budget=species_budget
     trial_state=low_state+6.0_real64*face_correction
-    if(air5_state_is_admissible(trial_state)) then
+    if(air5_face_state_is_admissible(trial_state,use_species_budget)) then
       air5_admissible_face_ratio=1.0_real64
       constraint_mask=0
       species_mask=0
@@ -135,7 +154,7 @@ contains
     do iteration=1,air5_ratio_bisection_iterations
       middle=0.5_real64*(lower+upper)
       trial_state=low_state+6.0_real64*middle*face_correction
-      if(air5_state_is_admissible(trial_state)) then
+      if(air5_face_state_is_admissible(trial_state,use_species_budget)) then
         lower=middle
       else
         upper=middle
@@ -147,6 +166,10 @@ contains
     if(collect_diagnostics) then
       trial_state=low_state+6.0_real64*upper*face_correction
       constraint_mask=air5_state_constraint_mask(trial_state,species_mask)
+      if(use_species_budget) then
+        constraint_mask=ibclr(constraint_mask,air5_limiter_constraint_species-1)
+        species_mask=0
+      endif
     endif
   end function air5_admissible_face_ratio
 
@@ -237,7 +260,8 @@ contains
       47.0_real64*values(3)+27.0_real64*values(4)-3.0_real64*values(5))/60.0_real64
     mp=values(3)+air5_minmod2(values(4)-values(3), &
       4.0_real64*(values(3)-values(2)))
-    if((linear-values(3))*(linear-mp)<1.0e-10_real64) then
+    ! A scale-independent interval also avoids underflow in a product test.
+    if(linear>=min(values(3),mp) .and. linear<=max(values(3),mp)) then
       air5_mp5=linear
       return
     endif
@@ -269,7 +293,8 @@ contains
       4.0_real64*values(7))/420.0_real64
     mp=values(4)+air5_minmod2(values(5)-values(4), &
       4.0_real64*(values(4)-values(3)))
-    if((linear-values(4))*(linear-mp)<1.0e-10_real64) then
+    ! A scale-independent interval also avoids underflow in a product test.
+    if(linear>=min(values(4),mp) .and. linear<=max(values(4),mp)) then
       air5_mp7=linear
       return
     endif
@@ -646,6 +671,8 @@ contains
   end subroutine air5_full_state_node_face_fluxes
 
   subroutine air5_limit_full_state_convection()
+    use validation_io, only: write_scalar_validation_snapshot
+    use chemistry_flow_runtime, only: air5_convection_species_budget
     use mpi
     use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,is,ie,js,je,ks,ke, &
       deltat,rkstep,rkscheme,nstep,feqchkpt
@@ -675,8 +702,9 @@ contains
     integer :: species_constraint_active(air5_num_species)
     integer :: local_species_constraint_active(air5_num_species)
     integer :: global_species_constraint_active(air5_num_species)
-    logical :: report_diagnostics
+    logical :: report_diagnostics,species_budget
 
+    species_budget=air5_convection_species_budget()
     if(trim(rkscheme)/='rk3') error stop 'air5 convection limiter requires SSPRK3'
     select case(rkstep)
     case(1); rk_a=1.0_real64; rk_b=0.0_real64; rk_c=1.0_real64
@@ -783,7 +811,7 @@ contains
       do direction=1,3
         face_correction=cdt*(high_left(direction,:)-low_left(direction,:))
         candidate_ratio=air5_admissible_face_ratio(low_state,face_correction, &
-          report_diagnostics,constraint_mask,face_species_mask)
+          report_diagnostics,constraint_mask,face_species_mask,species_budget)
         ratio=min(ratio,candidate_ratio)
         if(report_diagnostics .and. candidate_ratio<1.0_real64) then
           do constraint=1,air5_limiter_constraint_count
@@ -803,7 +831,7 @@ contains
         endif
         face_correction=-cdt*(high_right(direction,:)-low_right(direction,:))
         candidate_ratio=air5_admissible_face_ratio(low_state,face_correction, &
-          report_diagnostics,constraint_mask,face_species_mask)
+          report_diagnostics,constraint_mask,face_species_mask,species_budget)
         ratio=min(ratio,candidate_ratio)
         if(report_diagnostics .and. candidate_ratio<1.0_real64) then
           do constraint=1,air5_limiter_constraint_count
@@ -852,6 +880,8 @@ contains
       call MPI_Abort(MPI_COMM_WORLD,3,ierr)
     endif
     call dataswap(diffusion_ratio)
+
+    call write_scalar_validation_snapshot('convection_ratio',diffusion_ratio)
 
     do k=ks,ke; do j=js,je; do i=is,ie
       call air5_full_state_node_face_fluxes(i,j,k,dims,ntypes,high_left,high_right, &
@@ -1061,7 +1091,8 @@ contains
     species_flux=0.0_real64
     vibrational_flux=0.0_real64
     dtve=grad(tve)
-    if(trim(flowtype)=='air5hbl' .and. mpidown==MPI_PROC_NULL) &
+    if((trim(flowtype)=='air5hbl' .or. trim(flowtype)=='air5sbli') .and. &
+       mpidown==MPI_PROC_NULL) &
       dspc(:,0,:,:,2)=0.0_real64
 
     status=chemistry_status_ok

@@ -366,6 +366,7 @@ module solver
     !
     qrhs=-qrhs
 #ifdef ASTR_AIR5_CHEMISTRY
+    if(lcomb .and. flowtype(1:2)/='0d') call write_rhs_validation_snapshot('conv_raw')
     if(lcomb .and. flowtype(1:2)/='0d') call air5_limit_full_state_convection()
 #endif
     call write_rhs_validation_snapshot('conv')

@@ -4824,6 +4824,14 @@ spectral radius, local Lax--Friedrichs splitting, and componentwise MP7 for all
 11 conservative fluxes. The species fluxes are closed so that their sum equals
 the density flux. The full MP7 path requires at least four halo layers.
 
+Air5 MP5/MP7 use the scale-independent inclusive interval shortcut
+`min(center,mp) <= linear <= max(center,mp)`, then the existing full MP bounds.
+There is no absolute shortcut tolerance or product susceptible to underflow.
+Run `python3 -m pytest -q tests/gpu_validation/test_air5_mp_reconstruction.py`
+to compile the production CPU pure helpers with gfortran and check recorded
+tiny-flux data, scale homogeneity, smooth polynomials, and CPU/GPU helper
+algebra. Device execution is checked separately by the CPU/GPU case drivers.
+
 Run the bounded periodic gate with:
 
 ```bash
@@ -4898,7 +4906,302 @@ total-energy flux relative spread is `1.2849e-16`, species mass closure is at
 most `1.3878e-16`, and 396 first-stage interfaces are marked. The measured
 frozen upstream/downstream Mach numbers are `8.0000/0.39289`.
 
-This closes only the short coupled numerical, open-x boundary, and x-slab halo
-gate. It does not validate a stationary long-time shock, the independent
-post-shock relaxation profile, viscous/species diffusion, restart, Compute
-Sanitizer, y/z decomposition, or wall-bounded SBLI.
+The diffusion-enabled matrix also passes NP=1 and NP=2 x/y/z slabs. Its maximum
+CPU/GPU absolute difference is `1.8190e-10`, with species mass closure no larger
+than `1.3878e-16`. The isolated NP=1 full leak-check reports zero Compute
+Sanitizer errors and zero leaked bytes. A continuous three-step run and a run
+restarted from the step-1 checkpoint agree at step 2 with maximum
+physical-scaled error `5.1285e-14`. That gate exposed a restart lifecycle defect:
+the normal-shock constant boundary states were configured only on fresh
+initialization. Restart now rebuilds the same boundary states from the pinned
+input without changing the flow field.
+
+The long-time captured-shock driver is experimental and currently fails its
+physical gate. The completed `32x6x6`, `dt=8e-8 s`, 201-update run preserves
+positive states but develops transverse variation and a migrating shock.
+The extrapolating subsonic outlet does not impose the reference back pressure.
+Do not treat another unchanged long run as the next acceptance step. See
+[`ASTR_AIR5_NORMAL_SHOCK_LONG_RUN_DIAGNOSIS.md`](../../documents/ASTR_AIR5_NORMAL_SHOCK_LONG_RUN_DIAGNOSIS.md)
+for the failed legacy evidence and subsequently approved pressure outlet.
+
+The opt-in pressure metadata is produced by
+`generate_air5_normal_shock_states.py --outlet-reference-length 0.01`.
+Set `OUTLET_REFERENCE_LENGTH=0.01` in the normal-shock comparison, restart,
+or memcheck driver to exercise it; leaving that variable unset preserves those
+drivers' original extrapolation tests. The CMake target
+`air5_pressure_outlet_probe` checks the CPU acoustic correction, preserved
+outgoing variables, and rejected invalid states.
+
+The captured-shock long driver defaults to the pressure outlet and 601 updates
+(`MAXSTEP=600`). Use `OUTLET_REFERENCE_LENGTH=0` for the old extrapolation mode.
+The physical checker now also requires `--previous-checkpoint` and
+`--current-checkpoint`, passed from the case's `bakup/` and `outdat/`.
+Its stationarity threshold is `1e-3` maximum field-scaled primitive change per
+reference transit time. The transit uses the fixed initial post-shock length
+and the reference velocity integral, not the current moving shock location.
+
+The reproduction command is:
+
+```bash
+ROOT=/home/dell/workspace/astr_gpu
+cd "$ROOT"
+OUT_DIR="$ROOT/tests/gpu_validation/out/air5_c5_captured_normal_shock" \
+  tests/gpu_validation/run_air5_c5_captured_normal_shock.sh
+```
+
+It writes validation snapshots only at the initial and final requested steps,
+keeps periodic checkpoints, locates the captured shock from the largest
+pressure jump, excludes the shock layer, and compares downstream mass,
+momentum, and total-energy fluxes plus `rho/u/T/Tv/Ys` against the independent
+steady FP64 relaxation ODE. A separate `8x6x6`, `dt=1e-7 s`, three-step probe
+remains positive and conservative but fails this steady-profile gate as
+expected: `3e-7 s` is far shorter than one downstream flow-through time and the
+line has only three comparison nodes. Thus diffusion, all NP=2 slabs, restart,
+and memory safety are closed; stationary long-time relaxation, resolution/time
+step sensitivity, and wall-bounded reacting SBLI remain open.
+
+If a run times out after a periodic checkpoint without a failed numerical gate,
+increase `MAXSTEP` and
+resume the same evidence directory without regenerating the initial state:
+
+```bash
+OUT_DIR="$ROOT/tests/gpu_validation/out/air5_c5_captured_normal_shock" \
+  RESUME=1 MAXSTEP=800 \
+  tests/gpu_validation/run_air5_c5_captured_normal_shock.sh
+```
+
+The resume contract requires the original `GRID`, `DELTAT`, `NP`,
+`TOPOLOGY`, outlet mode, and state-file content; the driver records and checks
+them before reading the checkpoint. Legacy contracts without boundary metadata
+are rejected rather than implicitly converted to the new physical problem.
+
+### Air5 Long-Time Transverse Diagnostic
+
+`run_air5_long_time_diagnostic.py` is a separate, user-approved diagnostic,
+not a relaxed version of the captured-shock physical gate. It copies verified
+fresh-control inputs and a frozen executable, runs 625 updates at `dt=8e-8 s`
+with NP=1 and explicit GPU synchronization, and records warning-only extrusion
+plus physical-scale RMS statistics. Invalid accepted states and solver failures
+still stop. Output directories must be new; there is no automatic restart.
+
+```bash
+python3 tests/gpu_validation/run_air5_long_time_diagnostic.py \
+  --baseline tests/gpu_validation/out/air5_mp_interval_20260923/fresh_control \
+  --executable-manifest tests/gpu_validation/out/air5_transverse_diagnosis_20260923/quarter_dt40_uninterrupted19/provenance.json \
+  --output tests/gpu_validation/out/air5_long_time_diagnostic_NEW
+python3 -m unittest discover -s tests/gpu_validation -p test_air5_long_time_diagnostic.py
+```
+
+The first baseline supplies input provenance; the optional executable manifest
+supplies an already verified rebuild's provenance. Generated `grid.h5` is not
+reused (`lreadgrid=f`). Historical local artifacts are required for this frozen
+experiment; this is not a standalone case generator for arbitrary checkouts.
+`statistics.jsonl` samples checkpoints every five updates; final `50 us` is
+read from `post_chemistry.step00000624.rk02`, not the step-620 HDF.
+The full definitions and interpretation are in
+`documents/ASTR_AIR5_NORMAL_SHOCK_LONG_RUN_DIAGNOSIS.md`.
+
+The current run is maintained by user service
+`astr-air5-longdiag-20260923-r2.service` with `Restart=no`, 12-hour driver cap,
+and user linger enabled. Inspect without interfering:
+
+```bash
+systemctl --user status astr-air5-longdiag-20260923-r2.service --no-pager
+tail -n 2 tests/gpu_validation/out/air5_long_time_diagnostic_20260923/statistics.jsonl
+cat tests/gpu_validation/out/air5_long_time_diagnostic_20260923/status.json
+```
+
+### Air5 C5-6B2 Oblique-Shock Boundary Data
+
+As of 2026-09-24, transverse-error diagnosis is deferred by user decision,
+not marked passed. B2 boundary engineering may proceed while the existing
+long-time and physical gates remain open. No hard invalid-state gate is waived.
+
+`generate_air5_oblique_shock_states.py` prepares frozen oblique-shock states
+for the prescribed top boundary. It reuses the fixed-air5 normal jump, preserves
+tangential velocity, species and specific vibrational energy, and restores
+the full kinetic energy in q11. It is not a Python flow time integrator.
+
+```bash
+python3 -m pytest -q tests/gpu_validation/test_air5_oblique_shock_states.py
+python3 tests/gpu_validation/generate_air5_oblique_shock_states.py \
+  --mechanism chemMech/air5_kimjo12.json \
+  --output tests/gpu_validation/out/air5_c5_b2_preparation_20260924/oblique_m8_beta30.json \
+  --mach 8 --temperature 500 --tv 500 --pressure 5000 \
+  --shock-angle-deg 30 --top-x 0.004 --top-y 0.004
+```
+
+This example is a jump-data check, not a selected production SBLI case.
+The JSON is not yet consumed by ASTR. Twenty-one tests check normal q11 flux,
+normal-shock limit, rotated inflow, thermodynamic domain, top breakpoint and
+frozen-state invariants. `--shock-angle-deg` is relative to the upstream
+velocity; optional `--inflow-angle-deg` is measured above +x. The shock must
+descend toward the wall. The exact top breakpoint belongs to the downstream
+state. Pressure/temperature units are Pa/K; lengths are metres; q uses SI.
+`--mass-fractions` uses N2,O2,N,O,NO order and is never clipped/renormalized.
+The reported straight-line wall intersection is geometric, not a viscous
+shock-impingement prediction. No NSCBC, full-SBLI or production-performance
+pass is implied.
+
+### Air5 C5-6B2 Runtime Startup
+
+`air5sbli` retains the original HBL inlet, noncatalytic isothermal wall and
+outflow. It replaces only the top condition with complete frozen-jump q11
+states on physical and ghost nodes. `air5hbl` retains its existing behavior.
+`prepare_air5_sbli_case.py` derives the jump from the actual mapped profile
+edge and writes the four-record `datin/air5_incident_shock.dat` runtime file.
+The solver reads this ASCII file, not the diagnostic JSON.
+
+The startup gate uses beta=20 degrees relative to the actual incoming
+velocity, domain `(80,8,2)*ref_len`, top break `20*ref_len`, wall temperature
+2925 K, uniform-x initial HBL profile, coupled chemistry, diffusion and
+selective LLF/MP7, no filter. The top downstream normal inflow is subsonic:
+this is prescribed external forcing, not a nonreflecting characteristic BC.
+
+```bash
+python3 -m pytest -q tests/gpu_validation/test_air5_oblique_shock_states.py \
+  tests/gpu_validation/test_air5_sbli_case.py
+NP=1 OUT_DIR="$PWD/tests/gpu_validation/out/sbli_np1_new" \
+  bash tests/gpu_validation/run_air5_sbli_startup.sh
+NP=2 OUT_DIR="$PWD/tests/gpu_validation/out/sbli_np2_new" \
+  bash tests/gpu_validation/run_air5_sbli_startup.sh
+```
+
+The runner refuses an existing output directory. Defaults: grid upper indices
+`31,31,7`, `DELTAT=1.d-11`, `MAXSTEP=2` (iterations 0 through 2), x-slab
+by default. Set `TOPOLOGY=1,2,1` for y; z requires e.g. `GRID=31,31,15`
+and `TOPOLOGY=1,1,2` to retain a valid local stencil.
+Root-CMake must build the executable first. The checker validates
+accepted-state positivity, model bounds, mass closure, top physical/ghost
+states, wall velocity/temperature, sensor activation and CFL. It compares
+post-chemistry, pre-RHS, post-update and post-transport phases, not unmatched
+startup phases or differently timed output files.
+
+2026-09-24: NP1/NP2 CPU/GPU 18/36 snapshots passed, max scaled difference
+8.50872e-16. Global one/two-GPU same-phase fields also passed, as did the
+original HBL short regression. These tiny-time tests establish runtime
+integration only. Larger-dt testing subsequently exposed an air5-specific
+GPU sensor-gradient dispatch omission: the xy physical stencil was not selected.
+After fixing the GPU route, the NP2 x/20-update case at dt=5e-10 passes field
+comparison (max scaled 1.23e-12) and raw sensor comparison (max abs 2.02e-14),
+with identical masks. Raw sensor and exact mask comparison are now mandatory.
+NP2 y/z, NP2 restart and NP1 memcheck also pass. Source isolation and developed
+SBLI physical validation remain separate work.
+
+```bash
+python3 tests/gpu_validation/run_air5_sbli_preflight.py --mode restart \
+  --output tests/gpu_validation/out/sbli_restart_new
+python3 tests/gpu_validation/run_air5_sbli_preflight.py --mode memcheck \
+  --output tests/gpu_validation/out/sbli_memcheck_new
+```
+
+`run_air5_sbli_long.py` supervises ASTR on two GPUs with immutable executable,
+input manifest, low-frequency checkpoints and atomic `status.json`. It does
+not integrate the flow, repair invalid states or automatically restart failures.
+The 2026-09-24 attempt targeted 10001 updates at dt=5e-10 (5.0005 us), but
+stopped after checkpoint 700 (0.35 us). A bounded restart replay identifies
+step 741/RK2 wall pressure 1.020294 MPa, exceeding the fixed 1 MPa domain.
+The model bound must not be bypassed. This is an unsuccessful long-run gate.
+CPU restart from the same checkpoint reproduces the same step/stage/wall-node
+pressure failure (local peak-pressure relative difference 3.72e-10). This does
+not establish whole-field long-time equivalence or distinguish physical
+compression from a startup/grid overshoot.
+
+For failure localization, the preflight driver supports `--mode failure-replay
+--baseline <long-output>/gpu`, preserving the source checkpoint in a new output
+directory and recording a diagnostic failure rather than calling it a pass.
+`--use-gpu f` selects the matched CPU replay. This bounded diagnostic is tied
+to checkpoint 700 and observation step 741, not a generic restart launcher.
+
+`run_air5_sbli_domain_replay.py` supports bounded dt comparisons from the same
+NP2 x-slab checkpoint (`--baseline`, `--dt`, `--updates`, new `--output`). It
+copies the executable/checkpoint, keeps explicit sync and physical inputs,
+and records a domain failure as `domain-failure-not-pass`. The replay clock
+is `checkpoint_time + (step-checkpoint_step)*dt`, not `step*dt`. Its 300 s
+timeout and model-domain stop are unchanged by diagnostic intent.
+The 2026-09-24 dt/2 and dt/4 runs still failed near 0.37125 us. Wall pressure
+extrapolation was the first node to exceed the bound; an ideal frozen
+reflection estimate also exceeds 1 MPa. See
+`documents/ASTR_AIR5_SBLI_PRESSURE_DOMAIN_DIAGNOSIS.md` before scheduling a
+longer run. No wall-format or model-range change has been authorized here.
+
+### Mach-4 Low-Pressure Precursor
+
+The approved replacement case uses frozen Mach 4, T=Tv=1500 K, p=20 kPa,
+Y(N2,O2)=(0.767,0.233), and a noncatalytic no-slip wall at T=Tv=3000 K.
+`prepare_air5_mach4_case.py` prepares a new `air5hbl` directory without incident
+forcing. The analytic quartic profile is only a seed. ASTR must develop the
+plate before an inlet/initial field is extracted for SBLI; no Python flow
+integrator is used. The old profile and failed case remain separate.
+
+An optional `datin/air5_hbl_domain.dat` specifies the SI Cartesian dimensions:
+header `air5_hbl_domain_v1`, followed by Lx Ly Lz. Omission preserves existing
+air5hbl/air5sbli defaults. Both mesh generation and incident-top checks read
+the same configuration. Invalid headers and nonpositive/nonfinite lengths fail.
+
+```bash
+python3 tests/gpu_validation/run_air5_sbli_long.py \
+  --case mach4-precursor --grid 63,63,7 --updates 1001 --dt 2e-9 \
+  --checkpoint 100 --timeout 3600 --output tests/gpu_validation/out/mach4_pilot_new
+```
+
+This is a bounded 0.207-flow-through-time pilot, not a developed-state claim.
+The precursor checkpoint monitor additionally rejects T<1000 K without
+changing the mechanism bounds. New short CPU/GPU evidence is in
+`out/air5_mach4_precursor_gate_20260924/`; legacy regression is in
+`out/air5_sbli_domain_interface_regression_20260924/`.
+See `documents/ASTR_AIR5_MACH4_SBLI_PLAN.md` for the complete sequence.
+
+`run_air5_sbli_long.py --baseline <archived-case>/gpu --executable
+<archived-case>/astr` continues in a new output directory. Grid is inherited;
+mechanism and executable identity are checked. The restart clock is stored
+time plus subsequent updates times dt. Precursor checkpoints also preserve
+fixed-station profiles and full fields for time-history diagnostics.
+`check_air5_precursor_evolution.py --output <run-directory>` computes the
+density-weighted displacement thickness, wall pressure, friction and two-mode
+heat conduction without integrating a flow solution. It uses the existing
+seven-point wall-derivative diagnostic and reports changes, not an automatic
+steady or physical pass. Checkpoint evolution and last RK snapshots have
+distinct phases; do not equate the last checkpoint with the final update.
+Wall diagnostics retain both seven-point and three-point reconstructions to
+expose stencil sensitivity; neither is selected to manufacture a physical pass.
+The Mach4 y64/y128 comparison at identical t=2 us remains unresolved for wall
+quantities (three-point Cf about 18.6%, heat flux about 9.5--10% relative to the
+fine grid). The no-shock 10 us extension is bounded but not stationary. Preserve
+these distinctions before extracting an inlet or enabling incident forcing.
+
+`wall_response` also reports signed wall shear, friction velocity, wall kinematic
+viscosity and first-node y+. The nodal wall is j=0: y1=dy, not dy/2. These are
+instantaneous diagnostics, not time-averaged turbulence wall units.
+`run_air5_inlet_sensitivity.py --baseline <y128-run>/gpu --output <new-directory>`
+runs three inlet-only thickness factors (1.0, 0.9, 1.1) from one immutable
+checkpoint, using the archived executable, sequentially on two GPUs.
+The existing runner rejects thickness changes without a Mach4 restart baseline.
+`check_air5_inlet_sensitivity.py --output <matrix-directory>` checks final-stage
+states and compares checkpoint1500 at 3 us for the current step1000 baseline.
+This checker intentionally targets this experiment, not arbitrary restart steps.
+The initial interior field is unchanged; this tests a bounded inlet step response,
+not three independently equilibrated flows. Physical gates remain open; see
+`documents/ASTR_AIR5_MACH4_RESOLUTION_INLET_AUDIT.md`.
+
+`run_air5_mach4_resolution.py --baseline <y128-run> --pilot <y512-short-run>
+--output <new-directory>` runs y256/y512 at dt=2 ns and y512 at dt=1 ns,
+comparing full-RK checkpoints at t=2 us. It checks each final update's 18 state
+snapshots before proceeding. `--review-only` on a completed matrix runs no ASTR
+jobs and writes extended near-inlet/interior diagnostics. Fixed executable,
+mechanism, inlet and physical-domain identities are required. Grid interpolation
+is only for profile comparison, not for restarting or constructing a reference
+flow. Physical gates remain open despite bounded runs and y+ below one.
+
+`run_air5_convection_limiter_probe.py --baseline <y512-dt2-run>/gpu
+--reference <old-single-step-replay>/gpu --output <new-directory>` tests the
+optional `ASTR_AIR5_CONVECTION_LIMITER=species_budget` path. The immutable
+baseline must be checkpoint1000 at 2 us on topology 2,1,1. It first compares the
+default `full_state` replay with archived snapshots, then runs candidate CPU/GPU
+one-step and GPU two-half-step replays. State gates run after each case.
+The candidate retains all-variable shared face coefficients and thermal bounds;
+only the redundant artificial-face species constraint is removed because the
+summed negative-face budget already enforces accepted species nonnegativity.
+It does not alter diffusion, filtering, physical boundaries, or source integration.
+`check_air5_mach4_error_replay.py --root <new-directory>` reproduces offline
+operator diagnostics. Neither script establishes long-time physical convergence.

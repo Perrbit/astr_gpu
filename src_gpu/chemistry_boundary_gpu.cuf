@@ -8,6 +8,8 @@ module chemistry_postshock_boundary_gpu
   real(real64), device, save :: left_q_d(air5_num_conservative)
   real(real64), device, save :: right_q_d(air5_num_conservative)
   logical, save :: boundary_configured_gpu=.false.
+  real(real64), save :: outlet_pressure=0.0_real64
+  integer, device, save :: outlet_status_d
 
   public :: initialize_air5_postshock_boundary_gpu
   public :: apply_air5_postshock_boundary_gpu
@@ -22,17 +24,72 @@ contains
 
     if(trim(flowtype)/='air5postshock' .and. &
        trim(flowtype)/='air5normalshock') return
-    call get_air5_postshock_boundary(left_state,right_state)
+    call get_air5_postshock_boundary(left_state,right_state,outlet_pressure)
     left_q_d=left_state
     right_q_d=right_state
     boundary_configured_gpu=.true.
   end subroutine initialize_air5_postshock_boundary_gpu
 
+  attributes(device) subroutine build_air5_pressure_outlet_state_gpu(inner,target_pressure,boundary,status)
+    use chemistry_air5_data, only: air5_num_species
+    use chemistry_model, only: chemistry_status_ok,chemistry_status_out_of_domain, &
+      chemistry_status_invalid_density
+    use chemistry_model_gpu, only: air5_pressure_is_in_domain_gpu
+    use chemistry_flow_state_gpu, only: air5_conservative_to_primitive_gpu,air5_primitive_to_conservative_gpu
+    use chemistry_thermo_gpu, only: air5_species_gas_constant_gpu,air5_species_cv_tr_gpu
+    real(real64), intent(in) :: inner(air5_num_conservative),target_pressure
+    real(real64), intent(out) :: boundary(air5_num_conservative)
+    integer, intent(out) :: status
+    real(real64) :: density,velocity(3),temperature,tv,pressure,y(air5_num_species)
+    real(real64) :: mixture_r,mixture_cv,gamma,c,dp,new_density
+    integer :: s
+
+    boundary=0.0_real64
+    status=chemistry_status_out_of_domain
+    if(.not.air5_pressure_is_in_domain_gpu(target_pressure)) return
+    call air5_conservative_to_primitive_gpu(inner,density,velocity,temperature,y,tv,pressure,status)
+    if(status/=chemistry_status_ok) return
+    if(velocity(1)<=0.0_real64) then
+      status=chemistry_status_out_of_domain
+      return
+    endif
+    mixture_r=0.0_real64
+    mixture_cv=0.0_real64
+    do s=1,air5_num_species
+      mixture_r=mixture_r+y(s)*air5_species_gas_constant_gpu(s)
+      mixture_cv=mixture_cv+y(s)*air5_species_cv_tr_gpu(s)
+    enddo
+    gamma=1.0_real64+mixture_r/mixture_cv
+    c=sqrt(gamma*pressure/density)
+    if(velocity(1)>=c .or. target_pressure==pressure) then
+      boundary=inner
+      return
+    endif
+    ! Incoming acoustic correction; composition, tangential velocity and Tv are outgoing.
+    dp=target_pressure-pressure
+    new_density=density+dp/(c*c)
+    if(new_density<=0.0_real64) then
+      status=chemistry_status_invalid_density
+      return
+    endif
+    velocity(1)=velocity(1)-dp/(density*c)
+    if(velocity(1)<=0.0_real64 .or. &
+       velocity(1)>=sqrt(gamma*target_pressure/new_density)) then
+      status=chemistry_status_out_of_domain
+      return
+    endif
+    temperature=target_pressure/(new_density*mixture_r)
+    call air5_primitive_to_conservative_gpu(new_density,velocity,temperature,y,tv,boundary,status)
+  end subroutine build_air5_pressure_outlet_state_gpu
+
   attributes(global) subroutine air5_postshock_boundary_kernel(im,jm,km,hm, &
-      apply_left,apply_right,normal_shock_case)
+      apply_left,apply_right,normal_shock_case,pressure_target)
     use commarray_gpu, only: q_d
+    use chemistry_model, only: chemistry_status_ok
     integer, value :: im,jm,km,hm,apply_left,apply_right,normal_shock_case
-    integer :: id,ntot,i,j,k,component
+    real(real64), value :: pressure_target
+    real(real64) :: inner(air5_num_conservative),boundary(air5_num_conservative)
+    integer :: id,ntot,i,j,k,component,status,ignored
 
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     ntot=(jm+1)*(km+1)
@@ -47,7 +104,17 @@ contains
       enddo
     endif
     if(apply_right/=0) then
-      if(normal_shock_case/=0) then
+      if(normal_shock_case/=0 .and. pressure_target>0.0_real64) then
+        inner=q_d(im-1,j,k,:)
+        call build_air5_pressure_outlet_state_gpu(inner,pressure_target,boundary,status)
+        if(status/=chemistry_status_ok) then
+          ignored=atomicMax(outlet_status_d,status)
+          return
+        endif
+        do i=im,im+hm
+          q_d(i,j,k,:)=boundary
+        enddo
+      elseif(normal_shock_case/=0) then
         do component=1,air5_num_conservative
           do i=im,im+hm
             q_d(i,j,k,component)=q_d(im-1,j,k,component)
@@ -64,11 +131,12 @@ contains
   end subroutine air5_postshock_boundary_kernel
 
   subroutine apply_air5_postshock_boundary_gpu()
-    use mpi, only: MPI_PROC_NULL
+    use mpi
+    use chemistry_model, only: chemistry_status_ok
     use commvar, only: im,jm,km,hm,flowtype
     use parallel, only: mpileft,mpiright
     use gpu_check, only: sync_after_kernel
-    integer :: apply_left,apply_right,normal_shock_case,ntot
+    integer :: apply_left,apply_right,normal_shock_case,ntot,status,global_status,ierr
     type(dim3) :: block,grid
 
     normal_shock_case=merge(1,0,trim(flowtype)=='air5normalshock')
@@ -77,13 +145,22 @@ contains
       error stop 'fixed air5 GPU post-shock boundary is not configured'
     apply_left=merge(1,0,mpileft==MPI_PROC_NULL)
     apply_right=merge(1,0,mpiright==MPI_PROC_NULL)
-    if(apply_left==0 .and. apply_right==0) return
+    outlet_status_d=chemistry_status_ok
     ntot=(jm+1)*(km+1)
     block=dim3(256,1,1)
     grid=dim3((ntot+block%x-1)/block%x,1,1)
     call air5_postshock_boundary_kernel<<<grid,block>>>(im,jm,km,hm, &
-      apply_left,apply_right,normal_shock_case)
+      apply_left,apply_right,normal_shock_case,outlet_pressure)
     call sync_after_kernel('air5_postshock_boundary_kernel',.true.)
+    if(normal_shock_case/=0 .and. outlet_pressure>0.0_real64) then
+      status=outlet_status_d
+      call MPI_Allreduce(status,global_status,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,status)
+      if(global_status/=chemistry_status_ok) then
+        write(*,'(A,I0)') 'fixed air5 GPU pressure outlet failed, status=',global_status
+        call MPI_Abort(MPI_COMM_WORLD,global_status,ierr)
+      endif
+    endif
   end subroutine apply_air5_postshock_boundary_gpu
 
 end module chemistry_postshock_boundary_gpu
@@ -106,6 +183,8 @@ module chemistry_hbl_boundary_gpu
   real(real64), device, save :: farfield_q_d(air5_num_conservative)
   real(real64), device, save :: wall_temperature_d
   real(real64), device, save :: hbl_x_origin_d
+  logical, device, save :: incident_top_d
+  real(real64), device, save :: incident_x_d,incident_q_d(air5_num_conservative,2)
   integer, device, save :: hbl_status_d
   logical, save :: boundary_configured_gpu=.false.
 
@@ -117,11 +196,13 @@ contains
 
   subroutine initialize_air5_hbl_boundary_gpu()
     use commvar, only: flowtype
-    use chemistry_hbl_boundary, only: get_air5_hbl_boundary
+    use chemistry_hbl_boundary, only: get_air5_hbl_boundary,get_air5_incident_top
     real(real64), allocatable :: inlet_state(:,:)
     real(real64) :: farfield_state(air5_num_conservative),wall_temp,x_origin
+    real(real64) :: x_top,states(air5_num_conservative,2)
+    logical :: enabled
 
-    if(trim(flowtype)/='air5hbl') return
+    if(trim(flowtype)/='air5hbl' .and. trim(flowtype)/='air5sbli') return
     call get_air5_hbl_boundary(inlet_state,farfield_state,wall_temp,x_origin)
     if(allocated(inlet_q_d)) deallocate(inlet_q_d)
     allocate(inlet_q_d(0:ubound(inlet_state,1),air5_num_conservative))
@@ -129,6 +210,10 @@ contains
     farfield_q_d=farfield_state
     wall_temperature_d=wall_temp
     hbl_x_origin_d=x_origin
+    call get_air5_incident_top(enabled,x_top,states)
+    incident_top_d=enabled
+    incident_x_d=x_top
+    incident_q_d=states
     deallocate(inlet_state)
     boundary_configured_gpu=.true.
   end subroutine initialize_air5_hbl_boundary_gpu
@@ -335,6 +420,17 @@ contains
     if(id>=ntot) return
     i=mod(id,im+1)
     k=id/(im+1)
+    if(incident_top_d) then
+      if(x_d(i,jm,k,1)<incident_x_d) then
+        q_boundary=incident_q_d(:,1)
+      else
+        q_boundary=incident_q_d(:,2)
+      endif
+      do j=jm,jm+hm
+        q_d(i,j,k,1:air5_num_conservative)=q_boundary
+      enddo
+      return
+    endif
     density=farfield_q_d(air5_idx_density)
     if(density<=0.0_real64 .or. hbl_x_origin_d<=0.0_real64 .or. &
        x_d(i,jm,k,1)<0.0_real64) then
@@ -393,7 +489,7 @@ contains
     integer :: ntot
     type(dim3) :: block,grid
 
-    if(trim(flowtype)/='air5hbl') return
+    if(trim(flowtype)/='air5hbl' .and. trim(flowtype)/='air5sbli') return
     if(.not.boundary_configured_gpu) &
       error stop 'fixed air5 GPU HBL boundary is not configured'
     block=dim3(256,1,1)

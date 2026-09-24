@@ -20,6 +20,30 @@ from check_air5_numq11_shock_tube import (
 from compare_q_validation_snapshots import read_q_snapshot
 
 
+def pressure_outlet_error(prefix: Path, mechanism: Path, topology: tuple[int, int, int],
+                          target: float) -> float:
+    """Check the physical outlet after chemistry and boundary preparation."""
+    files = select_q_files(prefix, "post_chemistry", latest=True)
+    tx, ty, tz = topology
+    if set(files) != set(range(tx*ty*tz)):
+        raise ValueError("pressure-outlet snapshot ranks do not match topology")
+    thermo = Air5RadauReference(mechanism)
+    maximum = 0.0
+    for rank, path in files.items():
+        if rank % tx != tx-1:
+            continue
+        snapshot = read_q_snapshot(path)
+        im, jm, km, hm, numq = snapshot.header
+        q = snapshot.values.reshape(
+            (im+2*hm+1, jm+2*hm+1, km+2*hm+1, numq), order="F")
+        face = q[hm+im, hm:hm+jm+1, hm:hm+km+1, :]
+        _, _, _, pressure, mach = primitive_metrics(face, thermo)
+        if not np.isfinite(pressure).all() or np.any(mach <= 0.0) or np.any(mach >= 1.0):
+            raise ValueError("pressure-outlet gate requires outward subsonic flow")
+        maximum = max(maximum, float(np.max(np.abs(pressure-target))) / target)
+    return maximum
+
+
 @dataclass(frozen=True)
 class NormalShockMetrics:
     minimum_density: float
@@ -145,6 +169,8 @@ def main() -> int:
     parser.add_argument("--closure-tol", type=float, default=2.0e-12)
     parser.add_argument("--extrusion-tol", type=float, default=2.0e-11)
     parser.add_argument("--flux-tol", type=float, default=2.0e-12)
+    parser.add_argument("--boundary-states", type=Path)
+    parser.add_argument("--topology", default="1,1,1")
     args = parser.parse_args()
 
     metrics = analyze(args.prefix, args.mechanism)
@@ -176,6 +202,20 @@ def main() -> int:
         )
     )
     lines.append(f"marked_shock_interfaces: {metrics.marked_shock_interfaces}")
+    if args.boundary_states is not None:
+        targets = [float(line.split("=", 1)[1])
+                   for line in args.boundary_states.read_text().splitlines()
+                   if line.startswith("# outlet_pressure_pa=")]
+        if targets:
+            if len(targets) != 1 or not np.isfinite(targets[0]) or targets[0] <= 0.0:
+                raise ValueError("invalid pressure-outlet metadata")
+            topology = tuple(int(x) for x in args.topology.split(","))
+            if len(topology) != 3 or min(topology) < 1:
+                raise ValueError("invalid pressure-outlet topology")
+            error = pressure_outlet_error(args.prefix, args.mechanism, topology, targets[0])
+            passed = passed and error <= 2.0e-11
+            lines.append(f"outlet_pressure_relative_error: {error:.16e}")
+            lines[0] = f"status: {'pass' if passed else 'fail'}"
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))

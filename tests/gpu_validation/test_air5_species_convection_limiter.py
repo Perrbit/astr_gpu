@@ -53,32 +53,76 @@ def admissible_face_ratio(
     cv_species: np.ndarray,
     formation_energy: np.ndarray,
     vibrational_floor: np.ndarray,
+    species_budget: bool = False,
 ) -> float:
     # The six face corrections form an equal-weight convex decomposition:
     # q = (1/6) sum_f (q_low + 6 theta_f delta_q_f).
     trial_correction = 6.0 * face_correction
-    if state_is_admissible(
-        low_state + trial_correction,
-        cv_species,
-        formation_energy,
-        vibrational_floor,
-    ):
+    def admissible(state):
+        if species_budget:
+            return bool(state[0] > 0 and state[10]-state[5:10]@vibrational_floor >= 0
+                        and translational_margin(state, cv_species, formation_energy) >= 0)
+        return state_is_admissible(state, cv_species, formation_energy, vibrational_floor)
+
+    if admissible(low_state + trial_correction):
         return 1.0
 
     lower = 0.0
     upper = 1.0
     for _ in range(np.finfo(np.float64).nmant + 1):
         middle = 0.5 * (lower + upper)
-        if state_is_admissible(
-            low_state + middle * trial_correction,
-            cv_species,
-            formation_energy,
-            vibrational_floor,
-        ):
+        if admissible(low_state + middle * trial_correction):
             lower = middle
         else:
             upper = middle
     return interior_ratio(lower)
+
+
+def test_species_budget_avoids_redundant_single_face_restriction():
+    cv = np.ones(5)
+    zeros = np.zeros(5)
+    state = np.array([1., 0., 0., 0., 2000., .7, .2, .1, 0., 0., 1.])
+    correction = np.zeros(11)
+    correction[5] = .05
+    correction[7] = -.05
+    # One actual face leaves rho_N=.05, but its artificial sixfold state is negative.
+    assert state_is_admissible(state+correction, cv, zeros, zeros)
+    assert admissible_face_ratio(state, correction, cv, zeros, zeros) < .34
+    assert admissible_face_ratio(state, correction, cv, zeros, zeros, True) == 1.
+
+
+def test_species_budget_and_thermal_faces_preserve_combined_state():
+    rng = np.random.default_rng(20260924)
+    cv = np.array([742., 650., 890., 780., 690.])
+    formation = np.array([-3.1e5, -2.7e5, 3.33e7, 1.52e7, 2.72e6])
+    ev_floor = np.array([2000., 1500., 0., 0., 1000.])
+    for trace in [0., 1e-25, .003]:
+        state = np.zeros(11)
+        state[5:10] = [.78, .21, trace, .002, .005-trace]
+        state[0] = state[5:10].sum()
+        state[1:4] = [2500., 20., 0.]
+        state[10] = state[5:10]@ev_floor+1000.
+        state[4] = (state[1:4]@state[1:4]/(2*state[0])+state[10]
+                    +state[5:10]@formation+500*(state[5:10]@cv))
+        for _ in range(40):
+            correction = rng.normal(size=(6, 11))
+            correction[:, 5:10] *= np.maximum(state[5:10], 1e-26)
+            correction[:, 0] = correction[:, 5:10].sum(axis=1)
+            correction[:, 1:4] *= 1000
+            correction[:, 4] *= 1e6
+            correction[:, 10] *= 1000
+            budget = np.minimum(correction[:, 5:10], 0).sum(axis=0)
+            ratio = 1.
+            for s in range(5):
+                if budget[s] < 0:
+                    ratio = min(ratio, interior_ratio(state[5+s]/-budget[s]))
+            for face in correction:
+                ratio = min(ratio, admissible_face_ratio(state, face, cv, formation, ev_floor, True))
+            # Neighboring cells may reduce each shared face coefficient independently.
+            theta = rng.uniform(0., ratio, 6)
+            final = state+(theta[:, None]*correction).sum(axis=0)
+            assert state_is_admissible(final, cv, formation, ev_floor)
+            np.testing.assert_allclose(final[0], final[5:10].sum(), atol=1e-15)
 
 
 def close_species_flux(flux: np.ndarray, density_flux: np.ndarray) -> np.ndarray:
