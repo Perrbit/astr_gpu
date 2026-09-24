@@ -3,6 +3,7 @@
 import argparse
 import json
 from pathlib import Path
+import re
 
 import numpy as np
 import h5py
@@ -94,6 +95,69 @@ def cartesian_jacobian(case):
     return float(np.prod(spacings))
 
 
+def check_window_contract(coarse, fine):
+    for key in ('checkpoint_sha256', 'executable_sha256', 'start_step', 'start_time',
+                'baseline', 'topology', 'convection_limiter', 'diffusion_limiter'):
+        if coarse[key] != fine[key]:
+            raise ValueError(f'incompatible matched window: {key}')
+    if (coarse['topology'] != '2,1,1' or coarse['updates'] < 1 or
+        fine['updates'] != 2*coarse['updates'] or coarse['dt'] != 2*fine['dt']):
+        raise ValueError('expected NP2 dt/dt2 matched update counts')
+    times = [c['start_time']+c['dt']*c['updates'] for c in (coarse, fine)]
+    if not np.isfinite(times).all() or not np.isclose(*times, rtol=0, atol=1e-18):
+        raise ValueError('endpoint times differ')
+    for c, time in zip((coarse, fine), times):
+        if not np.isclose(c['target_time'], time, rtol=0, atol=1e-18):
+            raise ValueError('inconsistent target time')
+    return times[0]
+
+
+def matched_window(root, names=('gpu_dt2', 'gpu_dt1'), report_path=None):
+    contracts = [json.loads((root/name/'contract.json').read_text()) for name in names]
+    end_time = check_window_contract(*contracts)
+    thermo = Air5RadauReference(Path(__file__).resolve().parents[2]/'chemMech/air5_kimjo12.json')
+    report = dict(status='matched-window-diagnostic-not-physical-pass', cases=names, target_time=end_time,
+                  updates=[c['updates'] for c in contracts], states={}, ranks=[])
+    for name in names:
+        if json.loads((root/name/'result.json').read_text())['status'] != 'bounded-replay-completed-not-physical-pass':
+            raise ValueError('cannot compare incomplete replay')
+        case = root/name/'gpu'
+        report['states'][name] = state_gate(case, thermo)
+        cfl = [float(v) for v in re.findall(r'current CFL:\s+(\S+)', (case/'run.log').read_text())]
+        if not cfl or not np.isfinite(cfl).all() or not 0 <= max(cfl) < 1:
+            raise ValueError('CFL gate failed')
+        report['states'][name]['max_cfl'] = max(cfl)
+    for rank in range(2):
+        ends, starts = [], []
+        for name, c in zip(names, contracts):
+            case = root/name/'gpu'
+            starts.append(_active_array(path(case, 'pre_chemistry', 1, rank, c['start_step'])))
+            ends.append(_active_array(path(case, 'post_chemistry', 2, rank, c['start_step']+c['updates']-1)))
+        np.testing.assert_array_equal(*starts)
+        a, b = ends
+        velocity = abs(b[..., 1:4]/b[..., :1]-a[..., 1:4]/a[..., :1])
+        ua = float(abs(starts[0][..., 1]/starts[0][..., 0]).max())
+        qdiff = difference(a, b)
+        entry = dict(rank=rank, endpoint_q=qdiff,
+            max_velocity_difference_m_s=velocity.max(axis=(0, 1, 2)).tolist(),
+            max_u_difference_over_reference_velocity=float(velocity[..., 0].max()/ua),
+            max_u_local_ijk=list(map(int, np.unravel_index(np.argmax(velocity[..., 0]), velocity.shape[:3]))),
+            primitive_max_abs={}, final_coefficients={})
+        for label, aa, bb in zip(('temperature_K', 'pressure_Pa'), primitive_metrics(a, thermo)[2:4],
+                                 primitive_metrics(b, thermo)[2:4]):
+            entry['primitive_max_abs'][label] = float(abs(bb-aa).max())
+        for name, c in zip(names, contracts):
+            step = c['start_step']+c['updates']-1
+            entry['final_coefficients'][name] = {channel: min(float(scalar(path(root/name/'gpu',
+                f'diffusion_{channel}_ratio', stage, rank, step)).min()) for stage in range(1, 4))
+                for channel in ('species', 'energy')}
+        report['ranks'].append(entry)
+    output = report_path or root/'matched_window.json'
+    output.write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')
+    print(json.dumps(report, indent=2))
+    return report
+
+
 def run(root):
     cases = {key: root/key/backend for key, backend in
              [('cpu_dt2', 'cpu'), ('gpu_dt2', 'gpu'), ('gpu_dt1', 'gpu')]}
@@ -104,6 +168,8 @@ def run(root):
         raise ValueError('replays must use the identical executable')
     if len({c.get('convection_limiter', 'full_state') for c in contracts}) != 1:
         raise ValueError('replay comparisons must use the same convection limiter')
+    if len({c.get('diffusion_limiter', 'full_state') for c in contracts}) != 1:
+        raise ValueError('replay comparisons must use the same diffusion limiter')
     if (any(c['start_step'] != 1000 or c['topology'] != '2,1,1' for c in contracts) or
         [c['updates'] for c in contracts] != [1, 1, 2] or
         contracts[0]['dt'] != contracts[1]['dt'] or
@@ -187,4 +253,13 @@ def run(root):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, required=True)
-    run(parser.parse_args().root)
+    parser.add_argument('--matched-window', action='store_true')
+    parser.add_argument('--window-cases', nargs=2, default=('gpu_dt2', 'gpu_dt1'))
+    parser.add_argument('--report', type=Path)
+    args = parser.parse_args()
+    if args.matched_window:
+        matched_window(args.root, args.window_cases, args.report)
+    else:
+        if args.report is not None or tuple(args.window_cases) != ('gpu_dt2', 'gpu_dt1'):
+            parser.error('--report/--window-cases require --matched-window')
+        run(args.root)

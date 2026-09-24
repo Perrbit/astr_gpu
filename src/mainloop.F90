@@ -638,6 +638,10 @@ module mainloop
       !
       time_beg_2=ptime()
       !
+#ifdef ASTR_AIR5_CHEMISTRY
+      if(lcomb .and. rhs_validation_requested()) &
+        call write_q_validation_snapshot('pre_updatefvar')
+#endif
       call updatefvar
 
       if(rhs_validation_requested()) call write_q_validation_snapshot('post_update')

@@ -4,13 +4,26 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from check_air5_mach4_error_replay import COMPONENTS, difference, scalar
+from check_air5_mach4_error_replay import COMPONENTS, difference, scalar, check_window_contract
 
 
 def test_component_names_match_fixed_mechanism():
     mechanism = Path(__file__).resolve().parents[2]/'chemMech/air5_kimjo12.json'
     species = json.loads(mechanism.read_text())['species_order']
     assert COMPONENTS[5:10] == tuple('rho_'+name for name in species)
+
+
+def test_matched_window_rejects_phase_and_method_mismatch():
+    a = dict(checkpoint_sha256='checkpoint', executable_sha256='exe', start_step=1000,
+             start_time=2e-6, baseline='baseline', topology='2,1,1',
+             convection_limiter='species_budget', diffusion_limiter='layered',
+             updates=100, dt=2e-9, target_time=2.2e-6)
+    b = dict(a, updates=200, dt=1e-9)
+    assert check_window_contract(a, b) == a['target_time']
+    for changes in (dict(target_time=2.1e-6), dict(updates=201),
+                    dict(diffusion_limiter='full_state'), dict(executable_sha256='other')):
+        with pytest.raises(ValueError):
+            check_window_contract(a, dict(b, **changes))
 
 
 def test_scalar_reader_removes_halo_and_rejects_truncation(tmp_path):

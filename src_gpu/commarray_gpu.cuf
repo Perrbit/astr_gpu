@@ -19,6 +19,7 @@ module commarray_gpu
   real(8),allocatable,device :: sigma_d(:,:,:,:),qflux_d(:,:,:,:)
   real(8),allocatable,device :: species_flux_d(:,:,:,:,:),ev_flux_d(:,:,:,:)
   real(8),allocatable,device :: diffusion_ratio_d(:,:,:,:)
+  real(8),allocatable,device :: diffusion_energy_ratio_d(:,:,:,:),species_energy_flux_d(:,:,:,:)
   real(4),allocatable,device :: dvel_sp_d(:,:,:,:,:),dtmp_sp_d(:,:,:,:)
   real(4),allocatable,device :: sigma_sp_d(:,:,:,:),qflux_sp_d(:,:,:,:)
   real(8),allocatable,device :: flux_work_d(:,:,:),flux_characteristic_work_d(:,:,:,:)
@@ -172,7 +173,7 @@ contains
     use precision_mode_gpu, only: configure_gpu_precision_mode,gpu_precision_mode_name
     use mixed_candidate_gpu, only: configure_gpu_mixed_candidate
 #ifdef ASTR_AIR5_CHEMISTRY
-    use chemistry_flow_runtime, only: air5_shock_capturing_enabled
+    use chemistry_flow_runtime, only: air5_shock_capturing_enabled,air5_layered_diffusion
 #endif
     implicit none
     integer(8) :: workspace_bytes,flux_workspace_bytes,mixed_workspace_bytes, &
@@ -249,6 +250,15 @@ contains
       if(.not.allocated(dtmp_d)) allocate(dtmp_d(0:im,0:jm,0:km,1:3))
     endif
     if(lcomb .and. diffterm) then
+#ifdef ASTR_AIR5_CHEMISTRY
+      if(air5_layered_diffusion()) then
+        if(.not.allocated(diffusion_energy_ratio_d)) &
+          allocate(diffusion_energy_ratio_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1))
+        if(.not.allocated(species_energy_flux_d)) &
+          allocate(species_energy_flux_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6))
+        species_energy_flux_d=0.d0
+      endif
+#endif
       if(.not.allocated(dspc_d)) allocate(dspc_d(0:im,0:jm,0:km,1:num_species,1:3))
       if(.not.allocated(dtve_d)) allocate(dtve_d(0:im,0:jm,0:km,1:3))
     endif
@@ -326,6 +336,8 @@ contains
     if(allocated(flux_work_sp_d)) deallocate(flux_work_sp_d)
     if(allocated(flux_work_d)) deallocate(flux_work_d)
     if(allocated(diffusion_ratio_d)) deallocate(diffusion_ratio_d)
+    if(allocated(diffusion_energy_ratio_d)) deallocate(diffusion_energy_ratio_d)
+    if(allocated(species_energy_flux_d)) deallocate(species_energy_flux_d)
     if(allocated(ev_flux_d)) deallocate(ev_flux_d)
     if(allocated(species_flux_d)) deallocate(species_flux_d)
     if(allocated(qflux_sp_d)) deallocate(qflux_sp_d)

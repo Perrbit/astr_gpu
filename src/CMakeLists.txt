@@ -120,6 +120,13 @@ if(ASTR_WITH_AIR5_CHEMISTRY)
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/pressure_outlet_mod")
   target_include_directories(air5_pressure_outlet_probe PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/pressure_outlet_mod")
+  add_executable(air5_transport_roundoff_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90 chemistry_core.F90
+    ../tests/gpu_validation/air5_transport_roundoff_probe.F90)
+  set_target_properties(air5_transport_roundoff_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/transport_roundoff_mod")
+  target_include_directories(air5_transport_roundoff_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/transport_roundoff_mod")
 endif()
 
 if(ASTR_WITH_AIR5_CHEMISTRY)

@@ -20,12 +20,19 @@ module chemistry_model
   integer, parameter, public :: chemistry_status_step_limit = 11
   integer, parameter, public :: chemistry_status_invalid_source_mode = 12
   integer, parameter, public :: air5_ratio_bisection_iterations = digits(1.0_real64)
+  ! Upper operation budget for six-face blending, budget evaluation and RK3
+  ! recombination (computed fluxes are inputs). Not a physical species floor.
+  integer, parameter :: air5_transport_roundoff_operations=128
+  real(real64), parameter, public :: air5_transport_roundoff_gamma= &
+    (air5_transport_roundoff_operations*(0.5_real64*epsilon(1.0_real64)))/ &
+    (1.0_real64-air5_transport_roundoff_operations*(0.5_real64*epsilon(1.0_real64)))
 
   public :: air5_validate_mechanism_id
   public :: air5_validate_partial_densities
   public :: air5_validate_physical_species_state
   public :: air5_pressure_is_in_domain
   public :: air5_interior_ratio
+  public :: air5_transport_species_ratio
   public :: air5_limit_filter_species
 
 contains
@@ -79,6 +86,19 @@ contains
     if(air5_interior_ratio>0.0_real64 .and. air5_interior_ratio<1.0_real64) &
       air5_interior_ratio=nearest(air5_interior_ratio,-1.0_real64)
   end function air5_interior_ratio
+
+  pure real(real64) function air5_transport_species_ratio(base,negative_budget,scale)
+    real(real64), intent(in) :: base,negative_budget,scale
+    real(real64) :: reserve,available,denominator
+
+    air5_transport_species_ratio=1.0_real64
+    if(negative_budget>=0.0_real64) return
+    reserve=0.0_real64
+    if(scale>0.0_real64) reserve=nearest(air5_transport_roundoff_gamma*scale,1.0_real64)
+    available=max(0.0_real64,base-reserve)
+    denominator=-negative_budget+reserve
+    air5_transport_species_ratio=air5_interior_ratio(available/denominator)
+  end function air5_transport_species_ratio
 
   pure subroutine air5_limit_filter_species(rho_base,base_species,rho_filtered, &
       filtered_species,limited,theta,status)

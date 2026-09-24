@@ -45,6 +45,18 @@ def run(args):
     env = environment('2,1,1')
     limiter = getattr(args, 'convection_limiter', 'full_state')
     env['ASTR_AIR5_CONVECTION_LIMITER'] = limiter
+    diffusion_limiter = getattr(args, 'diffusion_limiter', 'full_state')
+    env['ASTR_AIR5_DIFFUSION_LIMITER'] = diffusion_limiter
+    probe_node = getattr(args, 'diffusion_probe_node', None)
+    if probe_node is not None:
+        if diffusion_limiter == 'layered':
+            raise ValueError('the full-state diffusion probe cannot describe layered fluxes')
+        values = [int(value) for value in probe_node.split(',')]
+        if backend != 'cpu' or args.snapshot_step is None or len(values) != 4 or min(values) < 0:
+            raise ValueError('diffusion probe requires CPU snapshots and nonnegative rank,i,j,k')
+        if values[0] >= 2:
+            raise ValueError('diffusion probe rank is outside NP2 replay')
+        env['ASTR_AIR5_DIFFUSION_PROBE_NODE'] = probe_node
     if args.snapshot_step is not None:
         env.update(ASTR_VALIDATION_RHS_PREFIX='validation/air5',
                    ASTR_VALIDATION_RHS_STEP=str(args.snapshot_step))
@@ -58,6 +70,8 @@ def run(args):
                     baseline=str(baseline), executable_sha256=hashlib.sha256(exe.read_bytes()).hexdigest(),
                     checkpoint_sha256=hashlib.sha256((case/'outdat/flowfield.h5').read_bytes()).hexdigest(),
                     topology='2,1,1', backend=backend, convection_limiter=limiter,
+                    diffusion_limiter=diffusion_limiter,
+                    diffusion_probe_node=probe_node,
                     snapshot_step=args.snapshot_step,
                     snapshot_step_secondary=secondary)
     (out/'contract.json').write_text(json.dumps(contract, indent=2)+'\n')
@@ -92,8 +106,10 @@ if __name__ == '__main__':
     parser.add_argument('--snapshot-step', type=int)
     parser.add_argument('--snapshot-step-secondary', type=int)
     parser.add_argument('--backend', choices=('cpu', 'gpu'), default='gpu')
+    parser.add_argument('--diffusion-probe-node', help='CPU read-only probe: rank,i,j,k')
     parser.add_argument('--convection-limiter', choices=('full_state', 'species_budget'),
                         default='full_state')
+    parser.add_argument('--diffusion-limiter', choices=('full_state', 'layered'), default='full_state')
     parser.add_argument('--executable', type=Path,
                         default=ROOT/'tests/gpu_validation/out/c4_cuda_build_4/bin/astr')
     run(parser.parse_args())

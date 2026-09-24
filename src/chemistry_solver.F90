@@ -4,7 +4,7 @@ module chemistry_flow_solver
   use chemistry_air5_data, only: air5_num_species,air5_species_name, &
     air5_temperature_min_k,air5_formation_energy
   use chemistry_model, only: chemistry_status_ok,air5_ratio_bisection_iterations, &
-    air5_interior_ratio,air5_limit_filter_species
+    air5_interior_ratio,air5_limit_filter_species,air5_transport_species_ratio
   use chemistry_state_layout, only: air5_num_conservative,air5_idx_density, &
     air5_idx_momentum_first,air5_idx_total_energy,air5_idx_species_first, &
     air5_idx_species_last,air5_idx_ev
@@ -12,7 +12,8 @@ module chemistry_flow_solver
   use chemistry_thermo, only: air5_species_gas_constant,air5_species_cv_tr, &
     air5_species_vibrational_energy
   use chemistry_ros2, only: air5_ros2_advance
-  use chemistry_flow_runtime, only: configure_air5_source_mode,air5_active_source_mode
+  use chemistry_flow_runtime, only: configure_air5_source_mode,air5_active_source_mode, &
+    air5_layered_diffusion
   use chemistry_transport, only: air5_diffusive_flux
   implicit none
   private
@@ -22,6 +23,7 @@ module chemistry_flow_solver
   real(real64), allocatable, save :: species_flux(:,:,:,:,:)
   real(real64), allocatable, save :: vibrational_flux(:,:,:,:)
   real(real64), allocatable, save :: diffusion_ratio(:,:,:)
+  real(real64), allocatable, save :: diffusion_energy_ratio(:,:,:),species_energy_flux(:,:,:,:)
   real(real64), allocatable, save :: transport_origin_species(:,:,:,:)
   real(real64), allocatable, save :: transport_origin_ev(:,:,:)
   real(real64), allocatable, save :: transport_origin_state(:,:,:,:)
@@ -684,6 +686,7 @@ contains
     real(real64) :: low_right(3,air5_num_conservative)
     real(real64) :: low_rhs(air5_num_conservative),pminus(air5_num_species+1)
     real(real64) :: correction_left,correction_right,base,ratio,candidate_ratio,cdt
+    real(real64) :: roundoff_scale,flux_scale
     real(real64) :: face_correction(air5_num_conservative)
     real(real64) :: low_state(air5_num_conservative)
     real(real64) :: limited_rhs(air5_num_conservative)
@@ -769,7 +772,15 @@ contains
         if(base<0.0_real64) then
           local_invalid=1
         elseif(pminus(species)<0.0_real64) then
-          candidate_ratio=air5_interior_ratio(base/(-pminus(species)))
+          flux_scale=0.0_real64
+          do direction=1,3
+            flux_scale=flux_scale+2.0_real64*(abs(low_left(direction,component))+ &
+              abs(low_right(direction,component)))+abs(high_left(direction,component))+ &
+              abs(high_right(direction,component))
+          enddo
+          roundoff_scale=abs(rk_a*transport_origin_state(i,j,k,component))+ &
+            abs(rk_b*q(i,j,k,component)*jacob(i,j,k))+cdt*flux_scale
+          candidate_ratio=air5_transport_species_ratio(base,pminus(species),roundoff_scale)
           ratio=min(ratio,candidate_ratio)
           if(report_diagnostics .and. candidate_ratio<1.0_real64) then
             constraint_active(air5_limiter_constraint_species)=1
@@ -1075,17 +1086,27 @@ contains
       dxi,jacob,qrhs,q
     use comsolver, only: grad
     use parallel, only: dataswap,mpidown
-    integer :: i,j,k,component,status,global_status,ierr
+    integer :: i,j,k,component,status,global_status,ierr,species,direction
     real(real64) :: local_momentum_flux(3,3)
     real(real64) :: local_species_flux(air5_num_species,3)
     real(real64) :: local_energy_flux(3),local_vibrational_flux(3)
     real(real64) :: rk_a,rk_b,rk_c
+    real(real64) :: enthalpy(air5_num_species),ev_species(air5_num_species)
+    logical :: layered
 
     if(trim(difschm)/='643e') &
       error stop 'fixed air5 CPU diffusion requires explicit 643e'
     if(any([npdci,npdcj,npdck]<1) .or. any([npdci,npdcj,npdck]>4)) &
       error stop 'fixed air5 CPU diffusion has an invalid boundary closure'
     call allocate_air5_flux_workspace(im,jm,km,hm)
+    layered=air5_layered_diffusion()
+    if(layered) then
+      if(.not.allocated(species_energy_flux)) &
+        allocate(species_energy_flux(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6))
+      if(.not.allocated(diffusion_energy_ratio)) &
+        allocate(diffusion_energy_ratio(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+      species_energy_flux=0.0_real64
+    endif
     momentum_flux=0.0_real64
     energy_flux=0.0_real64
     species_flux=0.0_real64
@@ -1114,6 +1135,20 @@ contains
           energy_flux(i,j,k,:)=local_energy_flux
           species_flux(i,j,k,:,:)=local_species_flux
           vibrational_flux(i,j,k,:)=local_vibrational_flux
+          if(layered) then
+            do species=1,air5_num_species
+              ev_species(species)=air5_species_vibrational_energy(species,tve(i,j,k))
+              enthalpy(species)=air5_species_cv_tr(species)*tmp(i,j,k)+ &
+                ev_species(species)+air5_formation_energy(species)+ &
+                air5_species_gas_constant(species)*tmp(i,j,k)
+            enddo
+            do direction=1,3
+              species_energy_flux(i,j,k,direction)= &
+                -dot_product(enthalpy,local_species_flux(:,direction))
+              species_energy_flux(i,j,k,direction+3)= &
+                -dot_product(ev_species,local_species_flux(:,direction))
+            enddo
+          endif
         enddo
         if(status/=chemistry_status_ok) exit
       enddo
@@ -1131,6 +1166,7 @@ contains
     call dataswap(energy_flux)
     call dataswap(species_flux)
     call dataswap(vibrational_flux)
+    if(layered) call dataswap(species_energy_flux)
 
     if(trim(rkscheme)/='rk3') &
       error stop 'fixed air5 diffusion limiter requires SSPRK3'
@@ -1176,9 +1212,9 @@ contains
       allocate(transport_origin_state(0:im,0:jm,0:km,air5_num_conservative))
   end subroutine allocate_air5_flux_workspace
 
-  subroutine projected_air5_diffusive_flux(i,j,k,direction,f)
+  subroutine projected_air5_diffusive_flux(i,j,k,direction,f,channel)
     use commarray, only: dxi,jacob
-    integer, intent(in) :: i,j,k,direction
+    integer, intent(in) :: i,j,k,direction,channel
     real(real64), intent(out) :: f(air5_num_conservative)
     real(real64) :: metric(3),metric_jacobian
     integer :: species
@@ -1201,53 +1237,61 @@ contains
         sum(species_flux(i,j,k,species,:)*metric)
     enddo
     f(air5_idx_ev)=metric_jacobian*sum(vibrational_flux(i,j,k,:)*metric)
+    if(channel==1) then
+      f(2:4)=0.0_real64
+      f(air5_idx_total_energy)=metric_jacobian*sum(species_energy_flux(i,j,k,1:3)*metric)
+      f(air5_idx_ev)=metric_jacobian*sum(species_energy_flux(i,j,k,4:6)*metric)
+    endif
   end subroutine projected_air5_diffusive_flux
 
-  subroutine projected_air5_line_flux(i,j,k,direction,index,f)
-    integer, intent(in) :: i,j,k,direction,index
+  subroutine projected_air5_line_flux(i,j,k,direction,index,f,channel)
+    integer, intent(in) :: i,j,k,direction,index,channel
     real(real64), intent(out) :: f(air5_num_conservative)
 
     select case(direction)
     case(1)
-      call projected_air5_diffusive_flux(index,j,k,direction,f)
+      call projected_air5_diffusive_flux(index,j,k,direction,f,channel)
     case(2)
-      call projected_air5_diffusive_flux(i,index,k,direction,f)
+      call projected_air5_diffusive_flux(i,index,k,direction,f,channel)
     case(3)
-      call projected_air5_diffusive_flux(i,j,index,direction,f)
+      call projected_air5_diffusive_flux(i,j,index,direction,f,channel)
     case default
       error stop 'invalid air5 diffusion direction'
     end select
   end subroutine projected_air5_line_flux
 
-  subroutine projected_air5_centered_face_flux(i,j,k,direction,face,f)
-    integer, intent(in) :: i,j,k,direction,face
+  subroutine projected_air5_centered_face_flux(i,j,k,direction,face,f,channel)
+    integer, intent(in) :: i,j,k,direction,face,channel
     real(real64), intent(out) :: f(air5_num_conservative)
     real(real64) :: fm2(air5_num_conservative),fm1(air5_num_conservative)
     real(real64) :: f0(air5_num_conservative),fp1(air5_num_conservative)
     real(real64) :: fp2(air5_num_conservative),fp3(air5_num_conservative)
 
-    call projected_air5_line_flux(i,j,k,direction,face-2,fm2)
-    call projected_air5_line_flux(i,j,k,direction,face-1,fm1)
-    call projected_air5_line_flux(i,j,k,direction,face,f0)
-    call projected_air5_line_flux(i,j,k,direction,face+1,fp1)
-    call projected_air5_line_flux(i,j,k,direction,face+2,fp2)
-    call projected_air5_line_flux(i,j,k,direction,face+3,fp3)
+    call projected_air5_line_flux(i,j,k,direction,face-2,fm2,channel)
+    call projected_air5_line_flux(i,j,k,direction,face-1,fm1,channel)
+    call projected_air5_line_flux(i,j,k,direction,face,f0,channel)
+    call projected_air5_line_flux(i,j,k,direction,face+1,fp1,channel)
+    call projected_air5_line_flux(i,j,k,direction,face+2,fp2,channel)
+    call projected_air5_line_flux(i,j,k,direction,face+3,fp3,channel)
     f=(37.0_real64*num1d60)*(f0+fp1)-(2.0_real64/15.0_real64)*(fm1+fp2)+ &
       num1d60*(fm2+fp3)
   end subroutine projected_air5_centered_face_flux
 
-  subroutine projected_air5_face_flux(i,j,k,direction,face,dim,ntype,f)
+  subroutine projected_air5_face_flux(i,j,k,direction,face,dim,ntype,f,channel)
     integer, intent(in) :: i,j,k,direction,face,dim,ntype
+    integer, intent(in), optional :: channel
     real(real64), intent(out) :: f(air5_num_conservative)
     real(real64) :: fn(0:5,air5_num_conservative)
     real(real64) :: anchor(air5_num_conservative),d0(air5_num_conservative)
     real(real64) :: d1(air5_num_conservative),d2(air5_num_conservative)
-    integer :: offset
+    integer :: offset,selected
 
+    selected=0
+    if(present(channel)) selected=channel
     if(dim<5) error stop 'air5 diffusion face reconstruction requires at least six points'
     if((ntype==1 .or. ntype==4) .and. face<=1) then
       do offset=0,5
-        call projected_air5_line_flux(i,j,k,direction,offset,fn(offset,:))
+        call projected_air5_line_flux(i,j,k,direction,offset,fn(offset,:),selected)
       enddo
       anchor=(37.0_real64*num1d60)*(fn(2,:)+fn(3,:))- &
         (2.0_real64/15.0_real64)*(fn(1,:)+fn(4,:))+ &
@@ -1267,7 +1311,7 @@ contains
       end select
     elseif((ntype==2 .or. ntype==4) .and. face>=dim-2) then
       do offset=0,5
-        call projected_air5_line_flux(i,j,k,direction,dim-5+offset,fn(offset,:))
+        call projected_air5_line_flux(i,j,k,direction,dim-5+offset,fn(offset,:),selected)
       enddo
       anchor=(37.0_real64*num1d60)*(fn(2,:)+fn(3,:))- &
         (2.0_real64/15.0_real64)*(fn(1,:)+fn(4,:))+ &
@@ -1286,7 +1330,7 @@ contains
         error stop 'invalid upper air5 diffusion face'
       end select
     else
-      call projected_air5_centered_face_flux(i,j,k,direction,face,f)
+      call projected_air5_centered_face_flux(i,j,k,direction,face,f,selected)
     endif
   end subroutine projected_air5_face_flux
 
@@ -1312,11 +1356,89 @@ contains
     enddo
   end subroutine air5_node_face_fluxes
 
+  subroutine layered_air5_node_faces(i,j,k,dims,ntypes,left_flux,right_flux)
+    integer, intent(in) :: i,j,k,dims(3),ntypes(3)
+    real(real64), intent(out) :: left_flux(3,air5_num_conservative)
+    real(real64), intent(out) :: right_flux(3,air5_num_conservative)
+    real(real64) :: carried(air5_num_conservative),theta
+    integer :: direction,side,index,node(3),neighbor(3)
+
+    call air5_node_face_fluxes(i,j,k,dims,ntypes,left_flux,right_flux)
+    do direction=1,3
+      node=[i,j,k]
+      do side=1,2
+        neighbor=node
+        neighbor(direction)=node(direction)+2*side-3
+        theta=min(diffusion_ratio(i,j,k),diffusion_ratio(neighbor(1),neighbor(2),neighbor(3)))
+        index=node(direction)+side-2
+        call projected_air5_face_flux(i,j,k,direction,index,dims(direction), &
+          ntypes(direction),carried,1)
+        if(side==1) then
+          call mix_air5_diffusive_face(left_flux(direction,:),carried,theta)
+        else
+          call mix_air5_diffusive_face(right_flux(direction,:),carried,theta)
+        endif
+      enddo
+    enddo
+  end subroutine layered_air5_node_faces
+
+  subroutine mix_air5_diffusive_face(flux,carried,theta)
+    real(real64), intent(inout) :: flux(air5_num_conservative)
+    real(real64), intent(in) :: carried(air5_num_conservative),theta
+
+    ! Reconstruct h_s*J_s and e_vs*J_s before limiting, using the same face stencil.
+    flux(air5_idx_species_first:air5_idx_species_last)= &
+      theta*flux(air5_idx_species_first:air5_idx_species_last)
+    if(theta==1.0_real64) return
+    flux(air5_idx_total_energy)=flux(air5_idx_total_energy)+(theta-1.0_real64)*carried(air5_idx_total_energy)
+    flux(air5_idx_ev)=flux(air5_idx_ev)+(theta-1.0_real64)*carried(air5_idx_ev)
+  end subroutine mix_air5_diffusive_face
+
+  subroutine limit_air5_diffusion_energy(q,qrhs,jacob,a,b,cdt,im,jm,km,hm, &
+      dims,ntypes,is,ie,js,je,ks,ke)
+    use parallel, only: dataswap
+    integer, intent(in) :: im,jm,km,hm,dims(3),ntypes(3),is,ie,js,je,ks,ke
+    real(real64), intent(in) :: q(-hm:,-hm:,-hm:,:),qrhs(0:,0:,0:,:), &
+      jacob(-hm:,-hm:,-hm:),a,b,cdt
+    real(real64) :: left(3,air5_num_conservative),right(3,air5_num_conservative)
+    real(real64) :: base(air5_num_conservative),correction(air5_num_conservative),ratio,sign_value
+    integer :: i,j,k,direction,side,component,mask,species_mask
+
+    diffusion_energy_ratio=1.0_real64
+    do k=ks,ke
+      do j=js,je
+        do i=is,ie
+          call layered_air5_node_faces(i,j,k,dims,ntypes,left,right)
+          base=a*transport_origin_state(i,j,k,:)+b*q(i,j,k,:)*jacob(i,j,k)+cdt*qrhs(i,j,k,:)
+          ratio=1.0_real64
+          do direction=1,3
+            do side=1,2
+              correction=0.0_real64
+              do component=2,air5_num_conservative
+                sign_value=1.0_real64
+                if(component>=air5_idx_species_first .and. component<=air5_idx_species_last) sign_value=-1.0_real64
+                if(side==1) then
+                  correction(component)=-cdt*sign_value*left(direction,component)
+                else
+                  correction(component)=cdt*sign_value*right(direction,component)
+                endif
+              enddo
+              ratio=min(ratio,air5_admissible_face_ratio(base,correction,.false.,mask,species_mask,.true.))
+            enddo
+          enddo
+          diffusion_energy_ratio(i,j,k)=ratio
+        enddo
+      enddo
+    enddo
+    call dataswap(diffusion_energy_ratio)
+  end subroutine limit_air5_diffusion_energy
+
   subroutine limit_air5_diffusive_fluxes(q,qrhs,jacob,deltat,rk_a,rk_b,rk_c, &
       rkstep,im,jm,km,hm,npdci,npdcj,npdck,is,ie,js,je,ks,ke)
     use mpi
+    use validation_io, only: rhs_validation_requested,write_scalar_validation_snapshot
     use commvar, only: nstep,feqchkpt
-    use parallel, only: dataswap,lio
+    use parallel, only: dataswap,lio,mpirank
     integer, intent(in) :: rkstep,im,jm,km,hm,npdci,npdcj,npdck
     integer, intent(in) :: is,ie,js,je,ks,ke
     real(real64), intent(in) :: q(-hm:,-hm:,-hm:,:),jacob(-hm:,-hm:,-hm:)
@@ -1330,16 +1452,36 @@ contains
     real(real64) :: face_correction(air5_num_conservative),rhs_sign
     real(real64) :: left_excess_flux,right_excess_flux
     real(real64) :: origin_excess,current_excess,rhs_excess
-    real(real64) :: local_min_ratio,global_min_ratio
+    real(real64) :: local_min_ratio,global_min_ratio,budget_ratio,roundoff_scale,flux_scale
+    character(len=128) :: probe_value
+    integer :: probe_node(4),probe_status,probe_ios
     integer :: dims(3),ntypes(3),i,j,k,species,component,direction,constraint_mask
     integer :: species_mask
     integer :: local_limited,global_limited,local_invalid,global_invalid,ierr
-    logical :: report_diagnostics
+    logical :: report_diagnostics,probe_enabled,probe_point,layered
 
     dims=[im,jm,km]
     ntypes=[npdci,npdcj,npdck]
     cdt=rk_c*deltat
+    layered=air5_layered_diffusion()
     report_diagnostics=nstep==0 .or. (feqchkpt>0 .and. mod(nstep,feqchkpt)==0)
+    probe_enabled=.false.
+    probe_node=-1
+    if(rhs_validation_requested()) then
+      call get_environment_variable('ASTR_AIR5_DIFFUSION_PROBE_NODE',probe_value,status=probe_status)
+      if(probe_status/=1) then
+        if(probe_status/=0) error stop 'invalid AIR5 diffusion probe node length'
+        read(probe_value,*,iostat=probe_ios) probe_node
+        if(probe_ios/=0 .or. any(probe_node<0)) &
+          error stop 'AIR5 diffusion probe requires rank,i,j,k >= 0'
+        probe_enabled=probe_node(1)==mpirank
+        if(layered) error stop 'full-state diffusion probe is not valid for layered diffusion'
+        if(probe_enabled .and. (probe_node(2)<is .or. probe_node(2)>ie .or. &
+          probe_node(3)<js .or. probe_node(3)>je .or. &
+          probe_node(4)<ks .or. probe_node(4)>ke)) &
+          error stop 'AIR5 diffusion probe must select an updated local point'
+      endif
+    endif
     diffusion_ratio=1.0_real64
     if(rkstep==1) then
       do component=1,air5_num_conservative
@@ -1395,9 +1537,18 @@ contains
             if(base<0.0_real64) then
               local_invalid=1
             elseif(pminus(species)<0.0_real64) then
-              ratio=min(ratio,air5_interior_ratio(base/(-pminus(species))))
+              flux_scale=0.0_real64
+              do direction=1,3
+                flux_scale=flux_scale+abs(left_flux(direction,component))+ &
+                  abs(right_flux(direction,component))
+              enddo
+              roundoff_scale=abs(rk_a*transport_origin_state(i,j,k,component))+ &
+                abs(rk_b*q(i,j,k,component)*jacob(i,j,k))+ &
+                cdt*(abs(qrhs(i,j,k,component))+flux_scale)
+              ratio=min(ratio,air5_transport_species_ratio(base,pminus(species),roundoff_scale))
             endif
           enddo
+          if(.not.layered) then
           origin_excess=transport_origin_ev(i,j,k)- &
             dot_product(vibrational_floor_energy,transport_origin_species(i,j,k,:))
           current_excess=air5_vibrational_excess(q(i,j,k,air5_idx_ev), &
@@ -1411,6 +1562,7 @@ contains
           elseif(pminus(air5_num_species+1)<0.0_real64) then
             ratio=min(ratio,air5_interior_ratio(base/(-pminus(air5_num_species+1))))
           endif
+          budget_ratio=ratio
           do direction=1,3
             face_correction=0.0_real64
             do component=2,air5_num_conservative
@@ -1431,7 +1583,11 @@ contains
             ratio=min(ratio,air5_admissible_face_ratio(base_state,face_correction, &
               .false.,constraint_mask,species_mask))
           enddo
+          endif
           ratio=max(0.0_real64,min(1.0_real64,ratio))
+          probe_point=probe_enabled .and. all(probe_node(2:4)==[i,j,k])
+          if(probe_point) call write_air5_diffusion_probe(base_state,left_flux,right_flux, &
+            pminus,cdt,jacob(i,j,k),budget_ratio,ratio,probe_node,rkstep)
           diffusion_ratio(i,j,k)=ratio
           local_min_ratio=min(local_min_ratio,ratio)
           if(ratio<1.0_real64-1.0e-14_real64) local_limited=local_limited+1
@@ -1448,10 +1604,18 @@ contains
     endif
     call dataswap(diffusion_ratio)
 
+    if(layered) then
+      call limit_air5_diffusion_energy(q,qrhs,jacob,rk_a,rk_b,cdt,im,jm,km,hm, &
+        dims,ntypes,is,ie,js,je,ks,ke)
+      call write_scalar_validation_snapshot('diffusion_species_ratio',diffusion_ratio)
+      call write_scalar_validation_snapshot('diffusion_energy_ratio',diffusion_energy_ratio)
+    endif
+
     do k=ks,ke
       do j=js,je
         do i=is,ie
           call air5_node_face_fluxes(i,j,k,dims,ntypes,left_flux,right_flux)
+          if(layered) call layered_air5_node_faces(i,j,k,dims,ntypes,left_flux,right_flux)
           do direction=1,3
             select case(direction)
             case(1)
@@ -1464,6 +1628,23 @@ contains
               theta_left=min(diffusion_ratio(i,j,k),diffusion_ratio(i,j,k-1))
               theta_right=min(diffusion_ratio(i,j,k),diffusion_ratio(i,j,k+1))
             end select
+            if(layered) then
+              select case(direction)
+              case(1)
+                theta_left=min(diffusion_energy_ratio(i,j,k),diffusion_energy_ratio(i-1,j,k))
+                theta_right=min(diffusion_energy_ratio(i,j,k),diffusion_energy_ratio(i+1,j,k))
+              case(2)
+                theta_left=min(diffusion_energy_ratio(i,j,k),diffusion_energy_ratio(i,j-1,k))
+                theta_right=min(diffusion_energy_ratio(i,j,k),diffusion_energy_ratio(i,j+1,k))
+              case(3)
+                theta_left=min(diffusion_energy_ratio(i,j,k),diffusion_energy_ratio(i,j,k-1))
+                theta_right=min(diffusion_energy_ratio(i,j,k),diffusion_energy_ratio(i,j,k+1))
+              end select
+            endif
+            if(probe_enabled .and. all(probe_node(2:4)==[i,j,k])) &
+              write(*,'(A,3(I0,1X),2(ES24.16,1X))') &
+                'AIR5_DIFFUSION_PROBE shared step/stage/axis/theta=',nstep,rkstep, &
+                direction,theta_left,theta_right
             do component=2,air5_num_conservative
               df=theta_right*right_flux(direction,component)- &
                 theta_left*left_flux(direction,component)
@@ -1488,6 +1669,53 @@ contains
         ' min_ratio=',global_min_ratio
     endif
   end subroutine limit_air5_diffusive_fluxes
+
+  subroutine write_air5_diffusion_probe(base_state,left_flux,right_flux,pminus, &
+      cdt,jacobian,budget_ratio,ratio,node,stage)
+    use commvar, only: nstep
+    real(real64), intent(in) :: base_state(air5_num_conservative)
+    real(real64), intent(in) :: left_flux(3,air5_num_conservative),right_flux(3,air5_num_conservative)
+    real(real64), intent(in) :: pminus(air5_num_species+1),cdt,jacobian,budget_ratio,ratio
+    integer, intent(in) :: node(4),stage
+    real(real64) :: correction(air5_num_conservative),trial(air5_num_conservative)
+    real(real64) :: face_ratio,thermal_ratio,relaxed_ratio,sign_value
+    integer :: direction,side,component,mask,species_mask,dummy_mask,dummy_species
+
+    ! Read-only, single-node replay evidence; no trial is accepted by the solver.
+    write(*,'(A,6(I0,1X))') 'AIR5_DIFFUSION_PROBE step/stage/rank/i/j/k=',nstep,stage,node
+    write(*,'(A,11(ES24.16,1X))') 'AIR5_DIFFUSION_PROBE base_SI=',base_state/jacobian
+    write(*,'(A,6(ES24.16,1X))') 'AIR5_DIFFUSION_PROBE negative_budget_SI=',pminus/jacobian
+    trial=base_state
+    relaxed_ratio=budget_ratio
+    do direction=1,3
+      do side=1,2
+        correction=0.0_real64
+        do component=2,air5_num_conservative
+          sign_value=1.0_real64
+          if(component>=air5_idx_species_first .and. component<=air5_idx_species_last) &
+            sign_value=-1.0_real64
+          if(side==1) then
+            correction(component)=-cdt*sign_value*left_flux(direction,component)
+          else
+            correction(component)=cdt*sign_value*right_flux(direction,component)
+          endif
+        enddo
+        face_ratio=air5_admissible_face_ratio(base_state,correction,.true.,mask,species_mask)
+        thermal_ratio=air5_admissible_face_ratio(base_state,correction,.false., &
+          dummy_mask,dummy_species,.true.)
+        relaxed_ratio=min(relaxed_ratio,thermal_ratio)
+        write(*,'(A,4(I0,1X),2(ES24.16,1X))') &
+          'AIR5_DIFFUSION_PROBE face axis/side/mask/species/ratio/thermal=', &
+          direction,side,mask,species_mask,face_ratio,thermal_ratio
+        write(*,'(A,11(ES24.16,1X))') 'AIR5_DIFFUSION_PROBE correction_SI=',correction/jacobian
+        trial=trial+correction
+      enddo
+    enddo
+    write(*,'(A,3(ES24.16,1X))') 'AIR5_DIFFUSION_PROBE ratio budget/actual/relaxed=', &
+      budget_ratio,ratio,relaxed_ratio
+    write(*,'(A,11(ES24.16,1X))') 'AIR5_DIFFUSION_PROBE raw_trial_SI=',trial/jacobian
+    write(*,'(A,L1)') 'AIR5_DIFFUSION_PROBE raw_trial_admissible=',air5_state_is_admissible(trial)
+  end subroutine write_air5_diffusion_probe
 
   pure subroutine differentiate_air5_flux(f,df,dim,hm,ntype)
     integer, intent(in) :: dim,hm,ntype

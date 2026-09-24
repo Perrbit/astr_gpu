@@ -5201,7 +5201,144 @@ default `full_state` replay with archived snapshots, then runs candidate CPU/GPU
 one-step and GPU two-half-step replays. State gates run after each case.
 The candidate retains all-variable shared face coefficients and thermal bounds;
 only the redundant artificial-face species constraint is removed because the
-summed negative-face budget already enforces accepted species nonnegativity.
+summed negative-face budget enforces species nonnegativity in exact arithmetic.
 It does not alter diffusion, filtering, physical boundaries, or source integration.
 `check_air5_mach4_error_replay.py --root <new-directory>` reproduces offline
 operator diagnostics. Neither script establishes long-time physical convergence.
+
+The pre-fix 2026-09-24 follow-up CPU two-half-step replay fails at step1001/RK3,
+local `(1,84,2)`, although the GPU replay completed. The candidate remains opt-in
+and is not production accepted. The one-step comparison did not cover this
+failure; do not reinterpret its pass as a complete CPU/GPU or positivity gate.
+
+For a read-only CPU diffusion-budget probe, add
+`--backend cpu --diffusion-probe-node 0,1,36,0 --snapshot-step 1000` to
+`run_air5_sbli_domain_replay.py`. The node argument is rank and local i,j,k,
+not global coordinates. `--snapshot-step-secondary 1001` captures the second
+update. The probe records the actual budget, signed face increments, active
+constraints and shared coefficients without changing any flux or state.
+It requires the existing RHS validation mode. Parse the log with
+`check_air5_diffusion_probe.py --log <cpu/run.log> --report <probe.json>`.
+The parser validates recorded sums; it is not a flow integrator.
+
+CPU AIR5 RHS validation additionally writes `pre_updatefvar` after the RK update
+and physical boundary application, before primitive conversion. These are
+unaccepted states and can contain negative species on a failed run. Never count
+them as accepted `post_update` states or silently ignore missing final snapshots.
+
+The finite-precision transport fix reserves a component-scaled FP64 arithmetic
+error budget before selecting conservative face coefficients. It does not clip
+the updated species, change the EOS, or disable the negative-state checks.
+Both `full_state` (default) and `species_budget` use this reserve. No bitwise
+identity with the pre-fix executable is implied.
+
+Build and run the actual Fortran algebra check through the root CMake project:
+
+```bash
+cmake --build tests/gpu_validation/out/c4_cuda_build_4 --target air5_transport_roundoff_probe -j 4
+tests/gpu_validation/out/c4_cuda_build_4/bin/air5_transport_roundoff_probe
+python3 tests/gpu_validation/run_air5_transport_roundoff_replay.py \
+  --baseline tests/gpu_validation/out/air5_mach4_resolution_20260924/y512_dt2ns/gpu \
+  --output tests/gpu_validation/out/air5_transport_roundoff_20260924
+```
+
+Use a fresh output path for every execution. The replay starts with the previously
+failing CPU two-half-step path, then checks GPU two-half-step and CPU/GPU full-step
+states. It stops on run failure, negative accepted species, model-domain failure,
+or phase mismatch. `roundoff_summary.json` distinguishes failure from bounded
+replay success; it is not a long-time convergence or inlet-accuracy acceptance.
+
+To attribute the remaining inlet-adjacent velocity difference from saved ASTR
+SSPRK3 snapshots, without integrating another flow model:
+
+```bash
+python3 tests/gpu_validation/check_air5_inlet_velocity_budget.py \
+  --root tests/gpu_validation/out/air5_transport_roundoff_20260924 \
+  --probe-root tests/gpu_validation/out/air5_inlet_stress_20260924 \
+  --report tests/gpu_validation/out/air5_inlet_stress_20260924/inlet_velocity_budget.json
+```
+
+The optional probe root must contain CPU `cpu_dt2` (one 2 ns step) and `cpu_dt1`
+(two 1 ns steps) replays with `--diffusion-probe-node 0,1,35,1`. Capture step1000
+and additionally step1001 for the two-step replay. The checker requires identical
+checkpoint/executable contracts and bitwise-identical snapshot sets with and
+without the probe. It closes density/momentum RK budgets and converts their
+differences to velocity with an exact endpoint identity, including density change.
+The face-based split separates direct stress limiting from changes in unlimited
+stress evaluated on the actual trajectories. It is not a prediction of a flow
+advanced with stress limiting disabled. No long-time physical pass is implied.
+
+### Energy-constrained layered AIR5 diffusion candidate
+
+`ASTR_AIR5_DIFFUSION_LIMITER=full_state|layered` defaults to `full_state` and
+is independent of the convection-limiter option. `layered` first applies a shared
+species budget to all species and their reconstructed enthalpy/vibrational-energy
+fluxes. It then applies a shared thermal-admissibility coefficient to the mixed
+face flux. Species limiting alone leaves stress unchanged; an active thermal
+constraint can still reduce the complete mixed flux. No state clipping is used.
+
+```bash
+python3 tests/gpu_validation/run_air5_transport_roundoff_replay.py \
+  --baseline tests/gpu_validation/out/air5_mach4_resolution_20260924/y512_dt2ns/gpu \
+  --output tests/gpu_validation/out/air5_layered_diffusion_new \
+  --diffusion-limiter layered
+
+python3 tests/gpu_validation/check_air5_inlet_velocity_budget.py \
+  --root tests/gpu_validation/out/air5_layered_diffusion_new \
+  --report tests/gpu_validation/out/air5_layered_diffusion_new/inlet_velocity_budget.json
+
+ASTR_AIR5_DIFFUSION_LIMITER=layered GRID=48,6,6 MPI_NP=2 TOPOLOGY=2,1,1 \
+OUT_DIR=/home/dell/workspace/astr_gpu/tests/gpu_validation/out/air5_layered_frozen_new \
+  bash tests/gpu_validation/run_air5_c5_frozen_transport_compare.sh
+
+ASTR_AIR5_DIFFUSION_LIMITER=layered DELTAT=1.d-11 \
+OUT_DIR=/home/dell/workspace/astr_gpu/tests/gpu_validation/out/air5_layered_memcheck_new \
+  bash tests/gpu_validation/run_air5_c5_normal_shock_memcheck.sh
+```
+
+Use absolute `OUT_DIR` paths for shell drivers, since the executable runs inside
+the prepared case directory. The Python replay resolves its output path itself.
+The old single-node `--diffusion-probe-node` describes full-state diffusion only
+and is rejected with `layered`. Use the RK snapshot budget without `--probe-root`.
+Layered validation writes `diffusion_species_ratio` and `diffusion_energy_ratio`.
+The existing `diffusion_ratio` snapshot and periodic limiter log refer to the
+species coefficient in layered mode, not the final energy coefficient.
+The replay checker requires complete coefficient snapshot sets, coefficients in
+[0,1], CPU/GPU coefficient agreement and valid accepted states. Neither algebra
+tests nor a replay in which every energy coefficient equals one establish the
+active-energy fallback or long-time physical gate. The candidate remains opt-in.
+
+The follow-up actual-ASTR stress gate covers active energy and species limits
+on an x-slab MPI interface, including CPU NP1/NP2 and GPU NP2 comparisons:
+
+```bash
+python3 tests/gpu_validation/run_air5_layered_stress_gate.py \
+  --baseline tests/gpu_validation/out/air5_layered_frozen_20260924/ev-pulse/gpu \
+  --output tests/gpu_validation/out/air5_layered_stress_new
+```
+
+The baseline must be the 48x6x6 periodic frozen `air5evpulse` case. The driver
+copies it into fresh directories and prepares constant-pressure states with
+either a localized vibrational-temperature pulse or exact-zero trace species.
+The default `ref_len=1e-4 m, dt=5e-9 s` exercises the limiter; it is not a physical
+or diffusion-accuracy test. Missing limiter activation is a failed coverage gate,
+even if the solver completes. Invalid states, interface mismatch, conservation
+failure or CPU/GPU mismatch also stop the driver. No flow integrator is in Python.
+
+For bounded Mach4 multi-step comparisons, run `run_air5_sbli_domain_replay.py`
+twice from the identical checkpoint/executable using `--convection-limiter
+species_budget --diffusion-limiter layered`. Use matched durations, not matched
+step numbers. For the step1000 checkpoint, 2 ns x 100 updates and 1 ns x 200
+updates require secondary snapshots at steps1099 and1199 respectively, in addition
+to the common `--snapshot-step 1000`. Store them as `gpu_dt2` and `gpu_dt1`:
+
+```bash
+python3 tests/gpu_validation/check_air5_mach4_error_replay.py \
+  --root tests/gpu_validation/out/air5_layered_multistep_20260924 --matched-window
+```
+
+`--window-cases gpu_dt1 gpu_dt05 --report <fresh-json-path>` compares a second
+matched pair without overwriting the first report. A 0.5 ns x 400 update run uses
+secondary step1399. The checker compares final `post_chemistry` snapshots and
+rejects incompatible provenance or clocks. It reports timestep differences,
+not an accuracy or long-time physical pass.

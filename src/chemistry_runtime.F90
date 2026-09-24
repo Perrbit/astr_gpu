@@ -14,6 +14,7 @@ module chemistry_flow_runtime
   logical, save :: source_mode_configured=.false.
   logical, save :: convection_species_budget=.false.
   logical, save :: convection_limiter_configured=.false.
+  logical, save :: diffusion_layered=.false.,diffusion_limiter_configured=.false.
 
   public :: air5_field_primitive_to_conservative
   public :: air5_field_conservative_to_primitive
@@ -26,6 +27,7 @@ module chemistry_flow_runtime
   public :: configure_air5_source_mode
   public :: air5_active_source_mode
   public :: air5_convection_species_budget
+  public :: air5_layered_diffusion
 
 contains
 
@@ -150,6 +152,42 @@ contains
     if(.not.convection_limiter_configured) call configure_air5_convection_limiter()
     air5_convection_species_budget=convection_species_budget
   end function air5_convection_species_budget
+
+  logical function air5_layered_diffusion()
+    use mpi
+    character(len=32) :: value
+    integer :: choice,lowest,highest,status,ierr,rank
+
+    if(.not.diffusion_limiter_configured) then
+      value=''
+      call get_environment_variable('ASTR_AIR5_DIFFUSION_LIMITER',value,status=status)
+      choice=-1
+      if(status==1 .or. (status==0 .and. len_trim(value)==0)) then
+        value='full_state'
+        choice=0
+      elseif(status==0) then
+        select case(trim(adjustl(value)))
+        case('full_state'); choice=0
+        case('layered'); choice=1
+        end select
+      endif
+      call MPI_Allreduce(choice,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,status)
+      call MPI_Allreduce(choice,highest,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,status)
+      call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,status)
+      if(lowest<0 .or. lowest/=highest) then
+        if(rank==0) write(*,'(A)') &
+          'Invalid or inconsistent ASTR_AIR5_DIFFUSION_LIMITER: expected full_state or layered'
+        call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+      endif
+      diffusion_layered=choice==1
+      diffusion_limiter_configured=.true.
+      if(rank==0) write(*,'(A,A)') 'ASTR_AIR5_DIFFUSION_LIMITER=',trim(adjustl(value))
+    endif
+    air5_layered_diffusion=diffusion_layered
+  end function air5_layered_diffusion
 
   integer function air5_active_source_mode()
     if(.not.source_mode_configured) &
