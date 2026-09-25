@@ -1,5 +1,51 @@
 # GPU Validation
 
+## AIR5 Same-State Reuse And Packed Chemistry Diagnostics
+
+Both candidates are opt-in and preserve FP64 and explicit synchronization:
+`ASTR_AIR5_PRIMITIVE_REUSE=chemistry` reuses only chemistry-recovered strict
+interior primitives immediately after the half-step (`off` forces recovery).
+`ASTR_AIR5_CHEMISTRY_REDUCTIONS=packed` combines like-operation diagnostics
+without removing the global failure barrier (`baseline` is the default).
+There is no persistent full-domain cache or cross-stage validity flag.
+
+The bounded replay accepts `--primitive-reuse chemistry` and
+`--chemistry-reductions packed` explicitly. Its environment sanitization does
+not forward arbitrary inherited ASTR options. The result records both flags.
+
+`run_air5_chemistry_performance_gate.py --executable EXE --output NEW_DIR`
+checks off/A/B/combined periodic reacting TGV against CPU for NP1 and NP2
+x/y/z, including state, chemistry constraints, elements and conservation.
+Add `--modes combined --filters full scalar --trace-restart` for both filter
+workspaces and strictly zero/trace composition restart cases.
+These are small numerical gates, not long-time SBLI physical validation.
+When only GPU code changes, `--reference-matrix PREVIOUS_MATRIX` reruns GPU
+cases and compares against both existing CPU and GPU snapshots with unchanged
+tolerances. Inputs are copied from the matching previous GPU case. For
+supplements alone use `--supplement-from PREVIOUS_GPU_CASE`; this skips the
+matrix and does not claim it was rerun. Zero-species supplements retain the
+TGV constraints but require nonnegative, rather than strictly positive,
+species at the deliberately zero initial state. Any negative value fails.
+
+For an isolated MPI failure gate, compile the test-only interposer and pass it
+to the preceding driver with `--fault-library`:
+
+```bash
+mpicc -std=c11 -Wall -Wextra -shared -fPIC \
+  tests/gpu_validation/air5_packed_failure_inject.c -ldl \
+  -o tests/gpu_validation/out/air5_packed_failure_inject.so
+```
+
+It injects status 99 at rank 1's packed chemistry reduction through the
+OpenMPI Fortran binding. The driver requires an explicit chemistry failure,
+exit 99, a pre-chemistry snapshot and no post-chemistry/transport snapshots.
+It must never be linked into ASTR or used in performance/production runs.
+
+After correctness gates, `run_air5_flux_ab.py --chemistry-candidates` runs
+baseline/A/B/combined sequentially with alternating order, NP1/NP2, three
+rounds each, one warmup and three measured complete steps. Existing two-way
+flux A/B mode remains the default. Keep Nsys and sanitizer runs separate.
+
 ## AIR5 Complete-Step Performance Diagnosis
 
 The GPU symmetric flux demand-pruning candidate is validated in

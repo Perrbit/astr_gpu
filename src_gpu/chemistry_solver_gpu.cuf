@@ -907,6 +907,38 @@ contains
     call air5_store_primitive_point(i,j,k,im,jm,km,hm)
   end subroutine air5_q_to_primitive_interior_kernel
 
+  attributes(global) subroutine air5_q_to_primitive_shell_kernel(im,jm,km,hm,il,ih,jl,jh,kl,kh)
+    integer, value :: im,jm,km,hm,il,ih,jl,jh,kl,kh
+    integer :: i,j,k,id,nx,ny,nz,ox,oy,oz,count_x,count_y
+
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    nx=ih-il+1; ny=jh-jl+1; nz=kh-kl+1
+    ox=im+1-nx; oy=jm+1-ny; oz=km+1-nz
+    count_x=ox*(jm+1)*(km+1)
+    count_y=nx*oy*(km+1)
+    if(id>=count_x+count_y+nx*ny*oz) return
+    ! Disjoint slabs: x outside; x inside/y outside; x,y inside/z outside.
+    if(id<count_x) then
+      i=mod(id,ox)
+      if(i>=il) i=i+nx
+      j=mod(id/ox,jm+1)
+      k=id/(ox*(jm+1))
+    elseif(id<count_x+count_y) then
+      id=id-count_x
+      i=il+mod(id,nx)
+      j=mod(id/nx,oy)
+      if(j>=jl) j=j+ny
+      k=id/(nx*oy)
+    else
+      id=id-count_x-count_y
+      i=il+mod(id,nx)
+      j=jl+mod(id/nx,ny)
+      k=id/(nx*ny)
+      if(k>=kl) k=k+nz
+    endif
+    call air5_store_primitive_point(i,j,k,im,jm,km,hm)
+  end subroutine air5_q_to_primitive_shell_kernel
+
   attributes(global) subroutine air5_q_to_primitive_face_kernel(im,jm,km,hm,axis)
     integer, value :: im,jm,km,hm,axis
     integer :: id,n1,n2,h,side,i,j,k
@@ -2762,18 +2794,37 @@ contains
     endif
   end subroutine report_air5_full_state_convection_limiter
 
-  subroutine launch_air5_interior_primitive_gpu()
+  subroutine launch_air5_interior_primitive_gpu(chemistry_recovered)
     use commvar, only: im,jm,km,hm
+    use commvar, only: is,ie,js,je,ks,ke
     use chemistry_flow_runtime, only: air5_symmetric_species_convection
     use gpu_check, only: sync_after_kernel
     type(dim3) :: block,grid
+    logical, intent(in), optional :: chemistry_recovered
+    integer :: lo(3),hi(3),shell_size
+    logical :: reuse
 
     call configure_air5_species_cache_gpu(air5_symmetric_species_convection())
     call reset_air5_status()
     block=dim3(32,4,4)
     grid=dim3((im+block%x)/block%x,(jm+block%y)/block%y,(km+block%z)/block%z)
-    call air5_q_to_primitive_interior_kernel<<<grid,block>>>(im,jm,km,hm)
-    call sync_after_kernel('air5_q_to_primitive_interior_kernel',.true.)
+    reuse=.false.
+    if(present(chemistry_recovered)) reuse=chemistry_recovered
+    lo=max([is,js,ks],1); hi=min([ie,je,ke],[im-1,jm-1,km-1])
+    reuse=reuse .and. all(hi>=lo)
+    if(reuse) then
+      ! One-call certificate: chemistry wrote primitives and only boundary planes changed.
+      ! Exclude every local face, including duplicated MPI interfaces.
+      shell_size=(im+1)*(jm+1)*(km+1)-product(hi-lo+1)
+      block=dim3(256,1,1)
+      grid=dim3((shell_size+block%x-1)/block%x,1,1)
+      call air5_q_to_primitive_shell_kernel<<<grid,block>>>(im,jm,km,hm, &
+        lo(1),hi(1),lo(2),hi(2),lo(3),hi(3))
+      call sync_after_kernel('air5_q_to_primitive_shell_kernel',.true.)
+    else
+      call air5_q_to_primitive_interior_kernel<<<grid,block>>>(im,jm,km,hm)
+      call sync_after_kernel('air5_q_to_primitive_interior_kernel',.true.)
+    endif
     call check_air5_status('conservative-to-primitive')
   end subroutine launch_air5_interior_primitive_gpu
 

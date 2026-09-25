@@ -8,6 +8,7 @@ OUT_DIR="${OUT_DIR:-$ROOT_DIR/tests/gpu_validation/out/air5_c5_reacting_tgv_comp
 TMP_DIR="${TMPDIR:-$ROOT_DIR/tests/gpu_validation/out/tmp_nvfortran}"
 GRID="${GRID:-12,12,12}"
 MAXSTEP="${MAXSTEP:-0}"
+LFILTER="${LFILTER:-f}"
 DELTAT="${DELTAT:-2.d-10}"
 MPI_NP="${MPI_NP:-${NP:-1}}"
 TOPOLOGY="${TOPOLOGY:-1,1,1}"
@@ -41,6 +42,7 @@ for mode in cpu gpu; do
     --maxstep "$MAXSTEP" \
     --deltat "$DELTAT" \
     --diffterm t \
+    --lfilter "$LFILTER" \
     --use-gpu "$use_gpu" \
     --initial-condition high-temperature-tgv
   mkdir -p "$OUT_DIR/$mode/validation"

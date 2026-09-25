@@ -24,10 +24,17 @@ def run(args):
     if any(s % 1000000 == 0 for s in range(step, step+4)):
         raise ValueError('window includes a checkpoint event')
     versions = {'baseline': args.reference.resolve(), 'candidate': args.candidate.resolve()}
+    modes = {'baseline': ('off', 'baseline'), 'candidate': ('off', 'baseline')}
+    if args.chemistry_candidates:
+        versions = dict(baseline=args.reference.resolve(), reuse=args.candidate.resolve(),
+                        packed=args.candidate.resolve(), combined=args.candidate.resolve())
+        modes = dict(baseline=('off', 'baseline'), reuse=('chemistry', 'baseline'),
+                     packed=('off', 'packed'), combined=('chemistry', 'packed'))
     report = dict(status='running', checkpoint_sha256=checkpoint_hash,
                   warmup_steps=1, measured_steps=3, rounds=3, dt=2e-9, cases={},
                   executable_sha256={k: hashlib.sha256(v.read_bytes()).hexdigest()
                                      for k, v in versions.items()})
+    report['options'] = modes
     try:
         for ranks in (1, 2):
             for repeat in range(3):
@@ -40,7 +47,8 @@ def run(args):
                         '--executable', str(versions[version]), '--backend', 'gpu', '--np', str(ranks),
                         '--dt', '2e-9', '--updates', '4', '--checkpoint-interval', '1000000',
                         '--complete-step-timing', '--convection-limiter', 'symmetric_species',
-                        '--diffusion-limiter', 'layered']
+                        '--diffusion-limiter', 'layered', '--primitive-reuse', modes[version][0],
+                        '--chemistry-reductions', modes[version][1]]
                     with (root/f'{label}_r{repeat+1}.log').open('w') as log:
                         subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
                     result = json.loads((out/'result.json').read_text())
@@ -80,4 +88,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('baseline', 'reference', 'candidate', 'output'):
         parser.add_argument('--'+name, type=Path, required=True)
+    parser.add_argument('--chemistry-candidates', action='store_true',
+                        help='four-way baseline/reuse/packed/combined comparison')
     run(parser.parse_args())

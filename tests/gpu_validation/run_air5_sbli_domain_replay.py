@@ -59,6 +59,8 @@ def run(args):
               'maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg',
               f'{maximum},{checkpoint_interval},1000000,1000000,1,1000000')
     env = environment(f'{ranks},1,1')
+    env['ASTR_AIR5_PRIMITIVE_REUSE'] = getattr(args, 'primitive_reuse', 'off')
+    env['ASTR_AIR5_CHEMISTRY_REDUCTIONS'] = getattr(args, 'chemistry_reductions', 'baseline')
     if getattr(args, 'complete_step_timing', False):
         env['ASTR_COMPLETE_STEP_TIMING'] = '1'
     limiter = getattr(args, 'convection_limiter', 'full_state')
@@ -103,6 +105,8 @@ def run(args):
                     checkpoint_sha256=hashlib.sha256((case/'outdat/flowfield.h5').read_bytes()).hexdigest(),
                     topology=f'{ranks},1,1', backend=backend, convection_limiter=limiter,
                     complete_step_timing=getattr(args, 'complete_step_timing', False),
+                    primitive_reuse=env['ASTR_AIR5_PRIMITIVE_REUSE'],
+                    chemistry_reductions=env['ASTR_AIR5_CHEMISTRY_REDUCTIONS'],
                     checkpoint_interval=checkpoint_interval,
                     memcheck=memcheck,
                     nsys_profile=nsys_profile,
@@ -177,6 +181,8 @@ if __name__ == '__main__':
     parser.add_argument('--np', type=int, choices=(1, 2), default=2)
     parser.add_argument('--checkpoint-interval', type=int, default=10)
     parser.add_argument('--complete-step-timing', action='store_true')
+    parser.add_argument('--primitive-reuse', choices=('off', 'chemistry'), default='off')
+    parser.add_argument('--chemistry-reductions', choices=('baseline', 'packed'), default='baseline')
     parser.add_argument('--memcheck', action='store_true')
     parser.add_argument('--nsys', action='store_true', help='separate CUDA/MPI timeline; not timing evidence')
     parser.add_argument('--ncu-kernel', help='single-GPU kernel regex; profile one matching launch separately')
