@@ -1,6 +1,21 @@
 """Local flux algebra only; ASTR remains the sole flow time integrator."""
 import numpy as np
 
+
+def test_rotated_slab_canonicalization():
+    from run_air5_layered_stress_gate import canonical_field
+    original = np.arange(8*3*4*11).reshape(8, 3, 4, 11)
+    for axis in range(3):
+        rotated = np.swapaxes(original, 0, axis).copy()
+        rotated[..., [1, 1+axis]] = rotated[..., [1+axis, 1]]
+        np.testing.assert_array_equal(canonical_field(rotated, axis), original)
+        parts = np.split(rotated, 2, axis=axis)
+        assembled = np.concatenate([canonical_field(p, axis) for p in parts], axis=0)
+        np.testing.assert_array_equal(assembled, original)
+        scalar = original[..., 0]
+        np.testing.assert_array_equal(
+            canonical_field(np.swapaxes(scalar, 0, axis), axis, momentum=False), scalar)
+
 from test_air5_species_convection_limiter import (
     admissible_face_ratio, interior_ratio, state_is_admissible,
 )

@@ -39,10 +39,16 @@ module initialisation
     use bc,       only: ninflowslice,turbinf
     use userdefine,only: udf_flowinit
     use benchmark_runtime, only: benchmark_field_io_disabled
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_flow_runtime, only: configure_air5_source_mode
+#endif
 #ifdef _CUDA
     use gpu_runtime,only: gpu_compact_statistics_requested
 #endif
     !
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(lcomb) call configure_air5_source_mode()
+#endif
     call inletprofile
     !
     call readcont

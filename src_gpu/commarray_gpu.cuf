@@ -19,6 +19,7 @@ module commarray_gpu
   real(8),allocatable,device :: sigma_d(:,:,:,:),qflux_d(:,:,:,:)
   real(8),allocatable,device :: species_flux_d(:,:,:,:,:),ev_flux_d(:,:,:,:)
   real(8),allocatable,device :: diffusion_ratio_d(:,:,:,:)
+  real(8),allocatable,device :: convection_fluid_ratio_d(:,:,:,:)
   real(8),allocatable,device :: diffusion_energy_ratio_d(:,:,:,:),species_energy_flux_d(:,:,:,:)
   real(4),allocatable,device :: dvel_sp_d(:,:,:,:,:),dtmp_sp_d(:,:,:,:)
   real(4),allocatable,device :: sigma_sp_d(:,:,:,:),qflux_sp_d(:,:,:,:)
@@ -173,7 +174,8 @@ contains
     use precision_mode_gpu, only: configure_gpu_precision_mode,gpu_precision_mode_name
     use mixed_candidate_gpu, only: configure_gpu_mixed_candidate
 #ifdef ASTR_AIR5_CHEMISTRY
-    use chemistry_flow_runtime, only: air5_shock_capturing_enabled,air5_layered_diffusion
+    use chemistry_flow_runtime, only: air5_shock_capturing_enabled,air5_layered_diffusion, &
+      air5_consistent_species_convection
 #endif
     implicit none
     integer(8) :: workspace_bytes,flux_workspace_bytes,mixed_workspace_bytes, &
@@ -279,6 +281,10 @@ contains
     if(lcomb) then
       if(.not.allocated(diffusion_ratio_d)) &
         allocate(diffusion_ratio_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:1))
+#ifdef ASTR_AIR5_CHEMISTRY
+      if(air5_consistent_species_convection() .and. .not.allocated(convection_fluid_ratio_d)) &
+        allocate(convection_fluid_ratio_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1))
+#endif
     endif
     if(lcomb .and. diffterm) then
       if(.not.allocated(species_flux_d)) &
@@ -336,6 +342,7 @@ contains
     if(allocated(flux_work_sp_d)) deallocate(flux_work_sp_d)
     if(allocated(flux_work_d)) deallocate(flux_work_d)
     if(allocated(diffusion_ratio_d)) deallocate(diffusion_ratio_d)
+    if(allocated(convection_fluid_ratio_d)) deallocate(convection_fluid_ratio_d)
     if(allocated(diffusion_energy_ratio_d)) deallocate(diffusion_energy_ratio_d)
     if(allocated(species_energy_flux_d)) deallocate(species_energy_flux_d)
     if(allocated(ev_flux_d)) deallocate(ev_flux_d)

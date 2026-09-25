@@ -4,7 +4,7 @@ module chemistry_flow_runtime
   use chemistry_model, only: chemistry_status_ok
   use chemistry_state_layout, only: air5_num_conservative
   use chemistry_flow_state, only: air5_primitive_to_conservative, &
-    air5_conservative_to_primitive
+    air5_conservative_to_primitive,configure_air5_species_cache
   use chemistry_source, only: air5_source_mode_coupled, &
     air5_source_mode_chemical,air5_source_mode_vt
   implicit none
@@ -13,6 +13,8 @@ module chemistry_flow_runtime
   integer, save :: active_source_mode=air5_source_mode_coupled
   logical, save :: source_mode_configured=.false.
   logical, save :: convection_species_budget=.false.
+  logical, save :: convection_consistent_species=.false.
+  logical, save :: convection_symmetric_species=.false.
   logical, save :: convection_limiter_configured=.false.
   logical, save :: diffusion_layered=.false.,diffusion_limiter_configured=.false.
 
@@ -27,6 +29,8 @@ module chemistry_flow_runtime
   public :: configure_air5_source_mode
   public :: air5_active_source_mode
   public :: air5_convection_species_budget
+  public :: air5_consistent_species_convection
+  public :: air5_symmetric_species_convection
   public :: air5_layered_diffusion
 
 contains
@@ -116,6 +120,7 @@ contains
 
   subroutine configure_air5_convection_limiter()
     use mpi
+    use commvar, only: use_gpu
     character(len=32) :: value
     integer :: choice,lowest,highest,status,ierr,rank
 
@@ -130,6 +135,8 @@ contains
       select case(trim(adjustl(value)))
       case('full_state'); choice=0
       case('species_budget'); choice=1
+      case('consistent_species'); choice=2
+      case('symmetric_species'); choice=3
       end select
     endif
     call MPI_Allreduce(choice,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
@@ -140,10 +147,13 @@ contains
     if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,status)
     if(lowest<0 .or. lowest/=highest) then
       if(rank==0) write(*,'(A)') &
-        'Invalid or inconsistent ASTR_AIR5_CONVECTION_LIMITER: expected full_state or species_budget'
+        'Invalid ASTR_AIR5_CONVECTION_LIMITER: full_state/species_budget/consistent_species/symmetric_species required'
       call MPI_Abort(MPI_COMM_WORLD,1,ierr)
     endif
     convection_species_budget=choice==1
+    convection_consistent_species=choice==2
+    convection_symmetric_species=choice==3
+    call configure_air5_species_cache(convection_symmetric_species)
     convection_limiter_configured=.true.
     if(rank==0) write(*,'(A,A)') 'ASTR_AIR5_CONVECTION_LIMITER=',trim(adjustl(value))
   end subroutine configure_air5_convection_limiter
@@ -152,6 +162,16 @@ contains
     if(.not.convection_limiter_configured) call configure_air5_convection_limiter()
     air5_convection_species_budget=convection_species_budget
   end function air5_convection_species_budget
+
+  logical function air5_consistent_species_convection()
+    if(.not.convection_limiter_configured) call configure_air5_convection_limiter()
+    air5_consistent_species_convection=convection_consistent_species
+  end function air5_consistent_species_convection
+
+  logical function air5_symmetric_species_convection()
+    if(.not.convection_limiter_configured) call configure_air5_convection_limiter()
+    air5_symmetric_species_convection=convection_symmetric_species
+  end function air5_symmetric_species_convection
 
   logical function air5_layered_diffusion()
     use mpi

@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import json
 
 import check_air5_inlet_velocity_budget as budget
 from check_air5_inlet_velocity_budget import velocity_terms, WEIGHTS, UPDATE_WEIGHTS, RK
@@ -42,3 +43,22 @@ def test_shared_stress_coefficient_breaks_local_cancellation(monkeypatch):
     records[0]['shared'][0]['theta'][1] = -1.
     with pytest.raises(ValueError, match='invalid shared'):
         budget.stress_budget(None, [1000], (1, 35, 1))
+
+
+def test_pair_rejects_changed_checkpoint_or_time_window(tmp_path):
+    coarse, fine = tmp_path/'coarse', tmp_path/'fine'
+    coarse.mkdir()
+    fine.mkdir()
+    contract = dict(checkpoint_sha256='checkpoint', executable_sha256='binary',
+        start_step=1090, start_time=2.18e-6, topology='2,1,1', backend='cpu',
+        convection_limiter='species_budget', diffusion_limiter='layered',
+        dt=2e-9, updates=1, target_time=2.182e-6)
+    (coarse/'contract.json').write_text(json.dumps(contract))
+    contract.update(dt=1e-9, updates=2, checkpoint_sha256='other')
+    (fine/'contract.json').write_text(json.dumps(contract))
+    with pytest.raises(ValueError, match='checkpoint_sha256'):
+        budget.compare_pair(coarse, fine)
+    contract.update(checkpoint_sha256='checkpoint', target_time=2.183e-6)
+    (fine/'contract.json').write_text(json.dumps(contract))
+    with pytest.raises(ValueError, match='matched-time'):
+        budget.compare_pair(coarse, fine)

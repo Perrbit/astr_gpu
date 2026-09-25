@@ -4,7 +4,8 @@ module chemistry_flow_solver
   use chemistry_air5_data, only: air5_num_species,air5_species_name, &
     air5_temperature_min_k,air5_formation_energy
   use chemistry_model, only: chemistry_status_ok,air5_ratio_bisection_iterations, &
-    air5_interior_ratio,air5_limit_filter_species,air5_transport_species_ratio
+    air5_interior_ratio,air5_limit_filter_species,air5_transport_species_ratio, &
+    air5_close_species_flux_moment,air5_transport_roundoff_gamma
   use chemistry_state_layout, only: air5_num_conservative,air5_idx_density, &
     air5_idx_momentum_first,air5_idx_total_energy,air5_idx_species_first, &
     air5_idx_species_last,air5_idx_ev
@@ -13,7 +14,7 @@ module chemistry_flow_solver
     air5_species_vibrational_energy
   use chemistry_ros2, only: air5_ros2_advance
   use chemistry_flow_runtime, only: configure_air5_source_mode,air5_active_source_mode, &
-    air5_layered_diffusion
+    air5_layered_diffusion,air5_symmetric_species_convection
   use chemistry_transport, only: air5_diffusive_flux
   implicit none
   private
@@ -23,6 +24,9 @@ module chemistry_flow_solver
   real(real64), allocatable, save :: species_flux(:,:,:,:,:)
   real(real64), allocatable, save :: vibrational_flux(:,:,:,:)
   real(real64), allocatable, save :: diffusion_ratio(:,:,:)
+  real(real64), allocatable, save :: convection_fluid_ratio(:,:,:)
+  real(real64), allocatable, save :: convection_low_state(:,:,:,:)
+  real(real64), allocatable, save :: convection_face(:,:,:,:),convection_face_buffer(:,:)
   real(real64), allocatable, save :: diffusion_energy_ratio(:,:,:),species_energy_flux(:,:,:,:)
   real(real64), allocatable, save :: transport_origin_species(:,:,:,:)
   real(real64), allocatable, save :: transport_origin_ev(:,:,:)
@@ -533,7 +537,7 @@ contains
         end select
       enddo
     endif
-    f(air5_idx_species_first)=f(air5_idx_density)- &
+    if(.not.air5_symmetric_species_convection()) f(air5_idx_species_first)=f(air5_idx_density)- &
       sum(f(air5_idx_species_first+1:air5_idx_species_last))
   end subroutine air5_shock_convective_face_flux
 
@@ -579,7 +583,7 @@ contains
     else
       call air5_centered_convective_face_flux(i,j,k,direction,face,f)
     endif
-    f(air5_idx_species_first)=f(air5_idx_density)- &
+    if(.not.air5_symmetric_species_convection()) f(air5_idx_species_first)=f(air5_idx_density)- &
       sum(f(air5_idx_species_first+1:air5_idx_species_last))
   end subroutine air5_high_order_convective_face_flux
 
@@ -642,7 +646,7 @@ contains
     call air5_llf_split_flux(i,j,k,direction,face,alpha,fplus,unused)
     call air5_llf_split_flux(i,j,k,direction,face+1,alpha,unused,fminus)
     f=fplus+fminus
-    f(air5_idx_species_first)=f(air5_idx_density)- &
+    if(.not.air5_symmetric_species_convection()) f(air5_idx_species_first)=f(air5_idx_density)- &
       sum(f(air5_idx_species_first+1:air5_idx_species_last))
   end subroutine air5_low_order_convective_face_flux
 
@@ -672,14 +676,393 @@ contains
     enddo
   end subroutine air5_full_state_node_face_fluxes
 
+  subroutine air5_consistent_convective_face(high,low,theta,phase)
+    real(real64), intent(inout) :: high(air5_num_conservative),low(air5_num_conservative)
+    real(real64), intent(in) :: theta
+    integer, intent(in) :: phase
+
+    if(phase==1) then
+      ! The fluid correction leaves the four independent species at their LF flux.
+      high(air5_idx_species_first:air5_idx_species_last)= &
+        low(air5_idx_species_first:air5_idx_species_last)
+    else
+      if(theta==1.0_real64) then
+        low(1:5)=high(1:5)
+        low(air5_idx_ev)=high(air5_idx_ev)
+      else
+        low(1:5)=low(1:5)+theta*(high(1:5)-low(1:5))
+        low(air5_idx_ev)=low(air5_idx_ev)+theta*(high(air5_idx_ev)-low(air5_idx_ev))
+      endif
+      low(air5_idx_species_first)=low(air5_idx_density)- &
+        sum(low(air5_idx_species_first+1:air5_idx_species_last))
+      high(1:5)=low(1:5)
+      high(air5_idx_ev)=low(air5_idx_ev)
+    endif
+    ! N2 is the existing dependent flux. Phase two redistributes species at fixed mass flux.
+    high(air5_idx_species_first)=high(air5_idx_density)- &
+      sum(high(air5_idx_species_first+1:air5_idx_species_last))
+  end subroutine air5_consistent_convective_face
+
+  subroutine air5_consistent_convective_faces(i,j,k,phase,high_left,high_right,low_left,low_right)
+    integer, intent(in) :: i,j,k,phase
+    real(real64), intent(inout) :: high_left(3,air5_num_conservative),high_right(3,air5_num_conservative)
+    real(real64), intent(inout) :: low_left(3,air5_num_conservative),low_right(3,air5_num_conservative)
+    real(real64) :: theta_left,theta_right
+    integer :: direction,left(3),right(3)
+
+    do direction=1,3
+      theta_left=1.0_real64; theta_right=1.0_real64
+      if(phase==2) then
+        left=[i,j,k]; right=left
+        left(direction)=left(direction)-1; right(direction)=right(direction)+1
+        theta_left=min(convection_fluid_ratio(i,j,k),convection_fluid_ratio(left(1),left(2),left(3)))
+        theta_right=min(convection_fluid_ratio(i,j,k),convection_fluid_ratio(right(1),right(2),right(3)))
+      endif
+      call air5_consistent_convective_face(high_left(direction,:),low_left(direction,:),theta_left,phase)
+      call air5_consistent_convective_face(high_right(direction,:),low_right(direction,:),theta_right,phase)
+    enddo
+  end subroutine air5_consistent_convective_faces
+
+  subroutine air5_symmetric_face_trial(high,low,base_left,base_right,ql,qr,cdt,flux,status,accepted_beta, &
+      left_active,right_active)
+    real(real64), intent(in) :: high(11),low(11),base_left(11),base_right(11),ql(11),qr(11),cdt
+    real(real64), intent(out) :: flux(11)
+    integer, intent(out) :: status
+    real(real64), intent(out), optional :: accepted_beta
+    logical, intent(in), optional :: left_active,right_active
+    real(real64) :: density,velocity(3),temperature,y(5),tv,pressure
+    real(real64) :: t_face,tv_face,u_face(3),gas(5),ev(5),energy(5),species(5)
+    real(real64) :: lower(5),upper(5),trial(11),delta(5),left_state(11),right_state(11)
+    real(real64) :: beta,beta_lo,beta_hi,best(11),reserve_left(5),reserve_right(5),bound_error
+    integer :: s,iteration,projection_status
+    logical :: admissible,check_left,check_right
+
+    flux=high
+    check_left=.true.; check_right=.true.
+    if(present(left_active)) check_left=left_active
+    if(present(right_active)) check_right=right_active
+    if(.not.check_left .and. .not.check_right) error stop 'symmetric face has no active cell'
+    if(present(accepted_beta)) accepted_beta=-1.0_real64
+    call air5_conservative_to_primitive(ql,density,velocity,temperature,y,tv,pressure,status)
+    if(status/=chemistry_status_ok) return
+    t_face=0.5_real64*temperature; tv_face=0.5_real64*tv; u_face=0.5_real64*velocity
+    call air5_conservative_to_primitive(qr,density,velocity,temperature,y,tv,pressure,status)
+    if(status/=chemistry_status_ok) return
+    t_face=t_face+0.5_real64*temperature; tv_face=tv_face+0.5_real64*tv
+    u_face=u_face+0.5_real64*velocity
+    do s=1,5
+      gas(s)=air5_species_gas_constant(s)
+      ev(s)=air5_species_vibrational_energy(s,tv_face)
+      energy(s)=air5_formation_energy(s)+air5_species_cv_tr(s)*t_face+ev(s)+ &
+        0.5_real64*sum(u_face**2)
+    enddo
+    reserve_left=128*epsilon(cdt)*(abs(base_left(6:10))+ &
+      6*cdt*(2*abs(low(6:10))+abs(high(6:10))))
+    reserve_right=128*epsilon(cdt)*(abs(base_right(6:10))+ &
+      6*cdt*(2*abs(low(6:10))+abs(high(6:10))))
+    lower=low(6:10)-max(0.0_real64,base_right(6:10)-reserve_right)/(6*cdt)
+    upper=low(6:10)+max(0.0_real64,base_left(6:10)-reserve_left)/(6*cdt)
+    beta_lo=0.0_real64; beta_hi=1.0_real64; beta=1.0_real64
+    ! First try the high candidate, then prove the low endpoint before bisection.
+    do iteration=0,air5_ratio_bisection_iterations+2
+      trial=low+beta*(high-low)
+      ! The missing side has no RK budget. Mass closure implies finite opposite
+      ! bounds from the active side alone; outward rounding adds no constraint.
+      if(.not.check_left) then
+        bound_error=128*epsilon(cdt)*(abs(trial(1))+sum(abs(lower)))
+        do s=1,5
+          upper(s)=trial(1)-sum(lower,mask=[1,2,3,4,5]/=s)+bound_error
+        enddo
+      elseif(.not.check_right) then
+        bound_error=128*epsilon(cdt)*(abs(trial(1))+sum(abs(upper)))
+        do s=1,5
+          lower(s)=trial(1)-sum(upper,mask=[1,2,3,4,5]/=s)-bound_error
+        enddo
+      endif
+      call air5_close_species_flux_moment(trial(6:10),lower,upper,trial(1), &
+        gas,dot_product(gas,trial(6:10)),species,projection_status)
+      admissible=projection_status==chemistry_status_ok
+      if(admissible) then
+        delta=species-trial(6:10)
+        trial(6:10)=species
+        trial(11)=trial(11)+dot_product(ev,delta)
+        trial(5)=trial(5)+dot_product(energy,delta)
+        left_state=base_left-6*cdt*(trial-low)
+        right_state=base_right+6*cdt*(trial-low)
+        if(check_left) admissible=admissible .and. air5_state_is_admissible(left_state)
+        if(check_right) admissible=admissible .and. air5_state_is_admissible(right_state)
+      endif
+      if(iteration==air5_ratio_bisection_iterations+2) then
+        status=201
+        if(.not.admissible) return
+        flux=trial; status=chemistry_status_ok
+        if(present(accepted_beta)) accepted_beta=beta
+        return
+      endif
+      if(iteration==0 .and. admissible) then
+        flux=trial; status=chemistry_status_ok
+        if(present(accepted_beta)) accepted_beta=beta
+        return
+      endif
+      if(iteration==0) then
+        beta=0.0_real64
+        cycle
+      endif
+      if(iteration==1 .and. .not.admissible) then
+        status=100+projection_status
+        if(projection_status==chemistry_status_ok) status=200
+        return
+      endif
+      if(admissible) then
+        best=trial; beta_lo=beta
+      else
+        beta_hi=beta
+      endif
+      beta=0.5_real64*(beta_lo+beta_hi)
+      ! Re-evaluation at the consumer must not start on a rounded energy boundary.
+      if(iteration==air5_ratio_bisection_iterations+1) &
+        beta=beta_lo*(1.0_real64-air5_transport_roundoff_gamma)
+    enddo
+    flux=best; status=chemistry_status_ok
+    if(present(accepted_beta)) accepted_beta=beta_lo
+  end subroutine air5_symmetric_face_trial
+
+  subroutine air5_share_periodic_face(direction,record)
+    use mpi
+    use commvar, only: im,jm,km,nstep,rkstep,npdci,npdcj,npdck
+    use parallel, only: isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront,mpirank
+    integer, intent(in) :: direction
+    logical, intent(in) :: record
+    integer, save :: face_comm=MPI_COMM_NULL
+    integer :: sizes(3),minus_rank(3),plus_rank(3),count,shape_face(3),ierr,unit,io_status,ntypes(3)
+    logical :: receive_plus,receive_minus
+    integer :: mpi_status(MPI_STATUS_SIZE)
+    character(len=1024) :: prefix
+    character(len=1152) :: filename
+
+    sizes=[isize,jsize,ksize]
+    ntypes=[npdci,npdcj,npdck]
+    minus_rank=[mpileft,mpidown,mpiback]; plus_rank=[mpiright,mpiup,mpifront]
+    ! Private context prevents tags 1..6 from matching other ASTR traffic.
+    if(face_comm==MPI_COMM_NULL) then
+      call MPI_Comm_dup(MPI_COMM_WORLD,face_comm,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+    endif
+    if(.not.allocated(convection_face_buffer)) &
+      allocate(convection_face_buffer(12*max((im+1)*(jm+1),(im+1)*(km+1),(jm+1)*(km+1)),4))
+    select case(direction)
+    case(1); shape_face=[jm+1,km+1,12]
+    case(2); shape_face=[im+1,km+1,12]
+    case(3); shape_face=[im+1,jm+1,12]
+    case default; error stop 'invalid symmetric face sharing direction'
+    end select
+    count=product(shape_face)
+    select case(direction)
+    case(1)
+      convection_face_buffer(:count,1)=reshape(convection_face(0,0:jm,0:km,:),[count])
+      convection_face_buffer(:count,2)=reshape(convection_face(im-1,0:jm,0:km,:),[count])
+    case(2)
+      convection_face_buffer(:count,1)=reshape(convection_face(0:im,0,0:km,:),[count])
+      convection_face_buffer(:count,2)=reshape(convection_face(0:im,jm-1,0:km,:),[count])
+    case(3)
+      convection_face_buffer(:count,1)=reshape(convection_face(0:im,0:jm,0,:),[count])
+      convection_face_buffer(:count,2)=reshape(convection_face(0:im,0:jm,km-1,:),[count])
+    end select
+    if(sizes(direction)==1 .and. ntypes(direction)==3) then
+      receive_plus=.true.; receive_minus=.true.
+      convection_face_buffer(:count,3)=convection_face_buffer(:count,1)
+      convection_face_buffer(:count,4)=convection_face_buffer(:count,2)
+    elseif(sizes(direction)==1) then
+      receive_plus=.false.; receive_minus=.false.
+      convection_face_buffer(:count,3:4)=0.0_real64
+    else
+      receive_plus=plus_rank(direction)/=MPI_PROC_NULL
+      receive_minus=minus_rank(direction)/=MPI_PROC_NULL
+      convection_face_buffer(:count,3:4)=0.0_real64
+      call MPI_Sendrecv(convection_face_buffer(:,1),count,MPI_DOUBLE_PRECISION,minus_rank(direction), &
+        2*direction-1,convection_face_buffer(:,3),count,MPI_DOUBLE_PRECISION,plus_rank(direction), &
+        2*direction-1,face_comm,mpi_status,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+      call MPI_Sendrecv(convection_face_buffer(:,2),count,MPI_DOUBLE_PRECISION,plus_rank(direction), &
+        2*direction,convection_face_buffer(:,4),count,MPI_DOUBLE_PRECISION,minus_rank(direction), &
+        2*direction,face_comm,mpi_status,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+    endif
+    ! Faces 0:dim-1 are locally owned. Face dim belongs to the next rank;
+    ! face -1 belongs to the previous rank. No averaging or recomputation.
+    select case(direction)
+    case(1)
+      if(receive_plus) convection_face(im,0:jm,0:km,:)=reshape(convection_face_buffer(:count,3),shape_face)
+      if(receive_minus) convection_face(-1,0:jm,0:km,:)=reshape(convection_face_buffer(:count,4),shape_face)
+    case(2)
+      if(receive_plus) convection_face(0:im,jm,0:km,:)=reshape(convection_face_buffer(:count,3),shape_face)
+      if(receive_minus) convection_face(0:im,-1,0:km,:)=reshape(convection_face_buffer(:count,4),shape_face)
+    case(3)
+      if(receive_plus) convection_face(0:im,0:jm,km,:)=reshape(convection_face_buffer(:count,3),shape_face)
+      if(receive_minus) convection_face(0:im,0:jm,-1,:)=reshape(convection_face_buffer(:count,4),shape_face)
+    end select
+    if(record) then
+      call get_environment_variable('ASTR_VALIDATION_RHS_PREFIX',prefix,status=io_status)
+      if(io_status/=0) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+      write(filename,'(A,A,I1,A,I8.8,A,I2.2,A,I8.8,A)') trim(prefix),'.shared_faces.axis',direction, &
+        '.step',nstep,'.rk',rkstep,'.rank',mpirank,'.bin'
+      open(newunit=unit,file=trim(filename),status='replace',access='stream',form='unformatted', &
+        action='write',iostat=io_status)
+      if(io_status/=0) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+      write(unit) nstep,rkstep,mpirank,direction,shape_face
+      write(unit) convection_face_buffer(:count,1:4)
+      close(unit)
+    endif
+  end subroutine air5_share_periodic_face
+
+  subroutine air5_limit_symmetric_convection(rk_a,rk_b,cdt)
+    use mpi
+    use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,npdcj,npdck,nstep,rkstep
+    use commarray, only: q,qrhs,jacob
+    use parallel, only: dataswap,mpirank
+    use validation_io, only: rhs_validation_requested
+    real(real64), intent(in) :: rk_a,rk_b,cdt
+    real(real64) :: high_left(3,11),high_right(3,11),low_left(3,11),low_right(3,11)
+    real(real64) :: final_left(11),final_right(11),rhs(11)
+    real(real64) :: face_state(11)
+    integer :: i,j,k,direction,neighbor_left(3),neighbor_right(3),node(3)
+    integer :: dims(3),ntypes(3),status,failed,global_failed,ierr
+    real(real64) :: beta_left,beta_right
+    character(len=8) :: probe_value
+    character(len=1024) :: probe_prefix
+    character(len=1152) :: probe_file
+    integer :: probe_unit
+    logical :: probe,right_active
+
+    call get_environment_variable('ASTR_AIR5_SYMMETRIC_FACE_PROBE',probe_value,status=status)
+    probe=status==0 .and. trim(probe_value)=='1' .and. rhs_validation_requested()
+    if(.not.allocated(convection_low_state)) &
+      allocate(convection_low_state(-hm:im+hm,-hm:jm+hm,-hm:km+hm,11))
+    if(.not.allocated(convection_face)) &
+      allocate(convection_face(-1:im,-1:jm,-1:km,12))
+    dims=[im,jm,km]; ntypes=[npdci,npdcj,npdck]
+    convection_low_state=0.0_real64; failed=0
+    do k=ks,ke; do j=js,je; do i=is,ie
+      call air5_full_state_node_face_fluxes(i,j,k,dims,ntypes,high_left,high_right,low_left,low_right)
+      rhs=sum(low_left-low_right,dim=1)
+      convection_low_state(i,j,k,:)=rk_a*transport_origin_state(i,j,k,:)+ &
+        rk_b*q(i,j,k,1:11)*jacob(i,j,k)+cdt*rhs
+      if(.not.air5_state_is_admissible(convection_low_state(i,j,k,:))) failed=1
+    enddo; enddo; enddo
+    call MPI_Allreduce(failed,global_failed,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS .or. global_failed/=0) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+    call dataswap(convection_low_state)
+    if(probe) then
+      call get_environment_variable('ASTR_VALIDATION_RHS_PREFIX',probe_prefix,status=status)
+      if(status/=0) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+      write(probe_file,'(A,A,I8.8,A)') trim(probe_prefix),'.symmetric_faces.rank',mpirank,'.txt'
+      open(newunit=probe_unit,file=trim(probe_file),status='unknown',position='append', &
+        action='write',iostat=status)
+      if(status/=0) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+    endif
+    qrhs(is:ie,js:je,ks:ke,1:11)=0.0_real64
+    do direction=1,3
+      convection_face=0.0_real64
+      do k=ks,ke; do j=js,je; do i=is,ie
+        node=[i,j,k]
+        if(node(direction)==dims(direction)) cycle
+        call air5_full_state_node_face_fluxes(i,j,k,dims,ntypes,high_left,high_right,low_left,low_right)
+        neighbor_right=node
+        neighbor_right(direction)=neighbor_right(direction)+1
+        right_active=.not.(neighbor_right(direction)==dims(direction) .and. &
+          (ntypes(direction)==2 .or. ntypes(direction)==4))
+        call air5_symmetric_face_trial(high_right(direction,:),low_right(direction,:), &
+          convection_low_state(i,j,k,:), &
+          convection_low_state(neighbor_right(1),neighbor_right(2),neighbor_right(3),:), &
+          q(i,j,k,1:11),q(neighbor_right(1),neighbor_right(2),neighbor_right(3),1:11), &
+          cdt,final_right,status,beta_right,right_active=right_active)
+        if(status/=chemistry_status_ok) then
+          if(failed==0) write(*,'(A,5(I0,1X))') 'symmetric_species right i/j/k/axis/status=', &
+            i,j,k,direction,status
+          failed=1
+        endif
+        convection_face(i,j,k,1:11)=final_right
+        convection_face(i,j,k,12)=beta_right
+        if(node(direction)==1 .and. (ntypes(direction)==1 .or. ntypes(direction)==4)) then
+          neighbor_left=node; neighbor_left(direction)=0
+          call air5_symmetric_face_trial(high_left(direction,:),low_left(direction,:), &
+            convection_low_state(neighbor_left(1),neighbor_left(2),neighbor_left(3),:), &
+            convection_low_state(i,j,k,:),q(neighbor_left(1),neighbor_left(2),neighbor_left(3),1:11), &
+            q(i,j,k,1:11),cdt,final_left,status,beta_left,left_active=.false.)
+          if(status/=chemistry_status_ok) then
+            if(failed==0) write(*,'(A,5(I0,1X))') 'symmetric physical left i/j/k/axis/status=', &
+              i,j,k,direction,status
+            failed=1
+          endif
+          convection_face(neighbor_left(1),neighbor_left(2),neighbor_left(3),1:11)=final_left
+          convection_face(neighbor_left(1),neighbor_left(2),neighbor_left(3),12)=beta_left
+        endif
+      enddo; enddo; enddo
+      call MPI_Allreduce(failed,global_failed,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS .or. global_failed/=0) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+      call air5_share_periodic_face(direction,probe)
+      do k=ks,ke; do j=js,je; do i=is,ie
+        node=[i,j,k]; neighbor_left=node
+        neighbor_left(direction)=neighbor_left(direction)-1
+        call air5_full_state_node_face_fluxes(i,j,k,dims,ntypes,high_left,high_right,low_left,low_right)
+        final_left=convection_face(neighbor_left(1),neighbor_left(2),neighbor_left(3),1:11)
+        final_right=convection_face(i,j,k,1:11)
+        beta_left=convection_face(neighbor_left(1),neighbor_left(2),neighbor_left(3),12)
+        beta_right=convection_face(i,j,k,12)
+        face_state=convection_low_state(i,j,k,:)+6*cdt*(final_left-low_left(direction,:))
+        if(.not.air5_state_is_admissible(face_state)) then
+          if(failed==0) write(*,'(A,6(I0,1X),4(ES25.17,1X))') &
+            'symmetric shared left rank/stage/i/j/k/axis beta/species/ev/tr=',mpirank,rkstep,i,j,k,direction, &
+            beta_left,minval(face_state(6:10)),air5_vibrational_excess(face_state(11),face_state(6:10)), &
+            air5_translational_margin(face_state)
+          failed=1
+        endif
+        face_state=convection_low_state(i,j,k,:)-6*cdt*(final_right-low_right(direction,:))
+        if(.not.air5_state_is_admissible(face_state)) then
+          if(failed==0) write(*,'(A,6(I0,1X),4(ES25.17,1X))') &
+            'symmetric shared right rank/stage/i/j/k/axis beta/species/ev/tr=',mpirank,rkstep,i,j,k,direction, &
+            beta_right,minval(face_state(6:10)),air5_vibrational_excess(face_state(11),face_state(6:10)), &
+            air5_translational_margin(face_state)
+          failed=1
+        endif
+        if(probe .and. direction==1 .and. j==0 .and. k==0 .and. &
+            (i<=1 .or. i>=im-1)) then
+          write(probe_unit,'(A,5(I0,1X),56(ES25.17,1X))') 'AIR5_SYMMETRIC_FACE ', &
+            nstep,rkstep,mpirank,i,0,beta_left,high_left(direction,:),low_left(direction,:),final_left, &
+            convection_low_state(i-1,j,k,:),convection_low_state(i,j,k,:)
+          write(probe_unit,'(A,5(I0,1X),56(ES25.17,1X))') 'AIR5_SYMMETRIC_FACE ', &
+            nstep,rkstep,mpirank,i,1,beta_right,high_right(direction,:),low_right(direction,:),final_right, &
+            convection_low_state(i,j,k,:),convection_low_state(i+1,j,k,:)
+        endif
+        qrhs(i,j,k,1:11)=qrhs(i,j,k,1:11)+final_left-final_right
+      enddo; enddo; enddo
+      call MPI_Allreduce(failed,global_failed,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS .or. global_failed/=0) then
+        if(failed/=0) write(*,'(A,I0)') 'symmetric_species shared face budget failed, axis=',direction
+        call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+      endif
+    enddo
+    do k=ks,ke; do j=js,je; do i=is,ie
+      face_state=rk_a*transport_origin_state(i,j,k,:)+rk_b*q(i,j,k,1:11)*jacob(i,j,k)+ &
+        cdt*qrhs(i,j,k,1:11)
+      if(.not.air5_state_is_admissible(face_state)) failed=1
+    enddo; enddo; enddo
+    if(probe) close(probe_unit)
+    call MPI_Allreduce(failed,global_failed,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS .or. global_failed/=0) then
+      if(failed/=0) write(*,'(A)') 'symmetric_species face feasibility failed'
+      call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+    endif
+  end subroutine air5_limit_symmetric_convection
+
   subroutine air5_limit_full_state_convection()
-    use validation_io, only: write_scalar_validation_snapshot
-    use chemistry_flow_runtime, only: air5_convection_species_budget
+    use validation_io, only: write_scalar_validation_snapshot,rhs_validation_requested
+    use chemistry_flow_runtime, only: air5_convection_species_budget,air5_consistent_species_convection
     use mpi
     use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,is,ie,js,je,ks,ke, &
       deltat,rkstep,rkscheme,nstep,feqchkpt
     use commarray, only: q,qrhs,jacob
-    use parallel, only: dataswap,lio
+    use parallel, only: dataswap,lio,mpirank
     real(real64) :: high_left(3,air5_num_conservative)
     real(real64) :: high_right(3,air5_num_conservative)
     real(real64) :: low_left(3,air5_num_conservative)
@@ -705,9 +1088,34 @@ contains
     integer :: species_constraint_active(air5_num_species)
     integer :: local_species_constraint_active(air5_num_species)
     integer :: global_species_constraint_active(air5_num_species)
-    logical :: report_diagnostics,species_budget
+    logical :: report_diagnostics,species_budget,consistent_species
+    integer :: phase,first_phase,last_phase
+    logical :: probe_enabled,probe_point
+    character(len=128) :: probe_value
+    integer :: probe_node(4),probe_status,probe_ios,side
+    real(real64) :: probe_species_ratio(air5_num_species),probe_scale(air5_num_species)
+    real(real64) :: probe_thermal_ratio
 
     species_budget=air5_convection_species_budget()
+    consistent_species=air5_consistent_species_convection()
+    first_phase=merge(1,0,consistent_species); last_phase=merge(2,0,consistent_species)
+    probe_enabled=.false.
+    probe_node=-1
+    if(rhs_validation_requested()) then
+      call get_environment_variable('ASTR_AIR5_CONVECTION_PROBE_NODE',probe_value,status=probe_status)
+      if(probe_status/=1) then
+        if(probe_status/=0) error stop 'invalid AIR5 convection probe node length'
+        if(consistent_species) error stop 'single-pass convection probe cannot describe consistent_species'
+        read(probe_value,*,iostat=probe_ios) probe_node
+        if(probe_ios/=0 .or. any(probe_node<0)) &
+          error stop 'AIR5 convection probe requires rank,i,j,k >= 0'
+        probe_enabled=probe_node(1)==mpirank
+        if(probe_enabled .and. (probe_node(2)<is .or. probe_node(2)>ie .or. &
+          probe_node(3)<js .or. probe_node(3)>je .or. &
+          probe_node(4)<ks .or. probe_node(4)>ke)) &
+          error stop 'AIR5 convection probe requires an updated interior node'
+      endif
+    endif
     if(trim(rkscheme)/='rk3') error stop 'air5 convection limiter requires SSPRK3'
     select case(rkstep)
     case(1); rk_a=1.0_real64; rk_b=0.0_real64; rk_c=1.0_real64
@@ -716,6 +1124,8 @@ contains
     case default; error stop 'air5 convection limiter received an invalid RK stage'
     end select
     call allocate_air5_flux_workspace(im,jm,km,hm)
+    if(consistent_species .and. .not.allocated(convection_fluid_ratio)) &
+      allocate(convection_fluid_ratio(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
     dims=[im,jm,km]; ntypes=[npdci,npdcj,npdck]; cdt=rk_c*deltat
     report_diagnostics=nstep==0 .or. (feqchkpt>0 .and. mod(nstep,feqchkpt)==0)
     diffusion_ratio=1.0_real64
@@ -732,6 +1142,13 @@ contains
       transport_origin_ev=q(0:im,0:jm,0:km,air5_idx_ev)* &
         jacob(0:im,0:jm,0:km)
     endif
+    if(air5_symmetric_species_convection()) then
+      call air5_limit_symmetric_convection(rk_a,rk_b,cdt)
+      return
+    endif
+    do phase=first_phase,last_phase
+    if(consistent_species) species_budget=phase==2
+    diffusion_ratio=1.0_real64
     local_limited=0; local_invalid=0; local_min_ratio=1.0_real64
     local_constraint_active=0
     global_constraint_active=0
@@ -741,8 +1158,16 @@ contains
     global_species_constraint_min_ratio=1.0_real64
 
     do k=ks,ke; do j=js,je; do i=is,ie
+      probe_point=probe_enabled .and. all(probe_node(2:4)==[i,j,k])
+      if(probe_point) then
+        probe_species_ratio=1.0_real64
+        probe_scale=0.0_real64
+        probe_thermal_ratio=1.0_real64
+      endif
       call air5_full_state_node_face_fluxes(i,j,k,dims,ntypes,high_left,high_right, &
         low_left,low_right)
+      if(consistent_species) call air5_consistent_convective_faces(i,j,k,phase, &
+        high_left,high_right,low_left,low_right)
       low_rhs=0.0_real64; pminus=0.0_real64
       do component=1,air5_num_conservative
         do direction=1,3
@@ -777,10 +1202,23 @@ contains
             flux_scale=flux_scale+2.0_real64*(abs(low_left(direction,component))+ &
               abs(low_right(direction,component)))+abs(high_left(direction,component))+ &
               abs(high_right(direction,component))
+            if(consistent_species .and. species==1) then
+              ! Include the operands of the dependent N2 flux, not only its residual.
+              flux_scale=flux_scale+abs(low_left(direction,1))+abs(low_right(direction,1))+ &
+                abs(high_left(direction,1))+abs(high_right(direction,1))+ &
+                sum(abs(low_left(direction,7:10)))+sum(abs(low_right(direction,7:10)))+ &
+                sum(abs(high_left(direction,7:10)))+sum(abs(high_right(direction,7:10)))
+            endif
           enddo
           roundoff_scale=abs(rk_a*transport_origin_state(i,j,k,component))+ &
             abs(rk_b*q(i,j,k,component)*jacob(i,j,k))+cdt*flux_scale
+          ! Two sequential blends: three gamma_128 budgets also bound gamma_256.
+          if(consistent_species) roundoff_scale=3.0_real64*roundoff_scale
           candidate_ratio=air5_transport_species_ratio(base,pminus(species),roundoff_scale)
+          if(probe_point) then
+            probe_species_ratio(species)=candidate_ratio
+            probe_scale(species)=roundoff_scale
+          endif
           ratio=min(ratio,candidate_ratio)
           if(report_diagnostics .and. candidate_ratio<1.0_real64) then
             constraint_active(air5_limiter_constraint_species)=1
@@ -812,6 +1250,7 @@ contains
         local_invalid=1
       elseif(pminus(air5_num_species+1)<0.0_real64) then
         candidate_ratio=air5_interior_ratio(base/(-pminus(air5_num_species+1)))
+        if(probe_point) probe_thermal_ratio=min(probe_thermal_ratio,candidate_ratio)
         ratio=min(ratio,candidate_ratio)
         if(report_diagnostics .and. candidate_ratio<1.0_real64) then
           constraint_active(air5_limiter_constraint_vibrational)=1
@@ -823,6 +1262,7 @@ contains
         face_correction=cdt*(high_left(direction,:)-low_left(direction,:))
         candidate_ratio=air5_admissible_face_ratio(low_state,face_correction, &
           report_diagnostics,constraint_mask,face_species_mask,species_budget)
+        if(probe_point) probe_thermal_ratio=min(probe_thermal_ratio,candidate_ratio)
         ratio=min(ratio,candidate_ratio)
         if(report_diagnostics .and. candidate_ratio<1.0_real64) then
           do constraint=1,air5_limiter_constraint_count
@@ -843,6 +1283,7 @@ contains
         face_correction=-cdt*(high_right(direction,:)-low_right(direction,:))
         candidate_ratio=air5_admissible_face_ratio(low_state,face_correction, &
           report_diagnostics,constraint_mask,face_species_mask,species_budget)
+        if(probe_point) probe_thermal_ratio=min(probe_thermal_ratio,candidate_ratio)
         ratio=min(ratio,candidate_ratio)
         if(report_diagnostics .and. candidate_ratio<1.0_real64) then
           do constraint=1,air5_limiter_constraint_count
@@ -862,6 +1303,28 @@ contains
         endif
       enddo
       ratio=max(0.0_real64,min(1.0_real64,ratio))
+      if(probe_point) then
+        ! Read-only operands of the accepted limiter; no alternative flux is applied.
+        write(*,'(A,6(I0,1X))') 'AIR5_CONVECTION_PROBE step/stage/rank/i/j/k=', &
+          nstep,rkstep,probe_node
+        write(*,'(A,11(ES24.16,1X))') 'AIR5_CONVECTION_PROBE base_SI=',low_state/jacob(i,j,k)
+        write(*,'(A,6(ES24.16,1X))') 'AIR5_CONVECTION_PROBE negative_budget_SI=',pminus/jacob(i,j,k)
+        write(*,'(A,5(ES24.16,1X))') 'AIR5_CONVECTION_PROBE species_ratio=',probe_species_ratio
+        write(*,'(A,5(ES24.16,1X))') 'AIR5_CONVECTION_PROBE roundoff_scale_SI=',probe_scale/jacob(i,j,k)
+        write(*,'(A,2(ES24.16,1X))') 'AIR5_CONVECTION_PROBE face_other_and_actual_ratio=', &
+          probe_thermal_ratio,ratio
+        do direction=1,3
+          do side=1,2
+            write(*,'(A,2(I0,1X))') 'AIR5_CONVECTION_PROBE face axis/side=',direction,side
+            if(side==1) then
+              face_correction=cdt*(high_left(direction,:)-low_left(direction,:))/jacob(i,j,k)
+            else
+              face_correction=-cdt*(high_right(direction,:)-low_right(direction,:))/jacob(i,j,k)
+            endif
+            write(*,'(A,11(ES24.16,1X))') 'AIR5_CONVECTION_PROBE correction_SI=',face_correction
+          enddo
+        enddo
+      endif
       diffusion_ratio(i,j,k)=ratio
       local_min_ratio=min(local_min_ratio,ratio)
       if(ratio<1.0_real64-1.0e-14_real64) local_limited=local_limited+1
@@ -892,11 +1355,19 @@ contains
     endif
     call dataswap(diffusion_ratio)
 
+    if(phase==1) then
+      convection_fluid_ratio=diffusion_ratio
+      call write_scalar_validation_snapshot('convection_fluid_ratio',convection_fluid_ratio)
+      cycle
+    endif
     call write_scalar_validation_snapshot('convection_ratio',diffusion_ratio)
+    if(phase==2) call write_scalar_validation_snapshot('convection_species_ratio',diffusion_ratio)
 
     do k=ks,ke; do j=js,je; do i=is,ie
       call air5_full_state_node_face_fluxes(i,j,k,dims,ntypes,high_left,high_right, &
         low_left,low_right)
+      if(consistent_species) call air5_consistent_convective_faces(i,j,k,phase, &
+        high_left,high_right,low_left,low_right)
       limited_rhs=0.0_real64
       do component=1,air5_num_conservative
         do direction=1,3
@@ -911,6 +1382,10 @@ contains
             theta_left=min(diffusion_ratio(i,j,k),diffusion_ratio(i,j,k-1))
             theta_right=min(diffusion_ratio(i,j,k),diffusion_ratio(i,j,k+1))
           end select
+          if(probe_enabled .and. component==1 .and. all(probe_node(2:4)==[i,j,k])) &
+            write(*,'(A,3(I0,1X),2(ES24.16,1X))') &
+              'AIR5_CONVECTION_PROBE shared step/stage/axis/theta=',nstep,rkstep, &
+              direction,theta_left,theta_right
           limited_rhs(component)=limited_rhs(component)+low_left(direction,component)- &
             low_right(direction,component)+theta_left*(high_left(direction,component)- &
             low_left(direction,component))-theta_right*(high_right(direction,component)- &
@@ -986,6 +1461,7 @@ contains
         enddo
       endif
     endif
+    enddo
   end subroutine air5_limit_full_state_convection
 
   subroutine air5_chemistry_half_step(duration,half_index)

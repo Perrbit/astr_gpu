@@ -12,8 +12,27 @@ module chemistry_flow_gpu_probe_kernels
 
   public :: launch_chemistry_flow_probe_gpu
   public :: launch_chemistry_transport_status_probe_gpu
+  public :: launch_species_cache_probe_gpu
 
 contains
+
+  attributes(global) subroutine species_cache_probe_kernel(q,y,status)
+    real(real64), device, intent(in) :: q(11)
+    real(real64), device, intent(out) :: y(5)
+    integer, device, intent(out) :: status
+    real(real64) :: local_q(11),rho,u(3),temperature,tv,p
+    if(threadIdx%x/=1 .or. blockIdx%x/=1) return
+    local_q=q
+    call air5_conservative_to_primitive_gpu(local_q,rho,u,temperature,y,tv,p,status)
+  end subroutine species_cache_probe_kernel
+
+  subroutine launch_species_cache_probe_gpu(q,y,status)
+    real(real64), device, intent(in) :: q(11)
+    real(real64), device, intent(out) :: y(5)
+    integer, device, intent(out) :: status
+    call species_cache_probe_kernel<<<1,1>>>(q,y,status)
+    call sync_after_kernel('species_cache_probe_kernel',.true.)
+  end subroutine launch_species_cache_probe_gpu
 
   attributes(global) subroutine chemistry_flow_probe_kernel(rho,velocity,temperature, &
       tv,pressure,mass_fraction,grad_velocity,grad_temperature,grad_tv, &
@@ -102,10 +121,11 @@ program chemistry_flow_gpu_probe
   use cudafor
   use chemistry_air5_data, only: air5_num_species
   use chemistry_flow_state, only: air5_primitive_to_conservative, &
-    air5_conservative_to_primitive
+    air5_conservative_to_primitive,configure_air5_species_cache
+  use chemistry_flow_state_gpu, only: configure_air5_species_cache_gpu
   use chemistry_transport, only: air5_transport_properties,air5_diffusive_flux
   use chemistry_flow_gpu_probe_kernels, only: launch_chemistry_flow_probe_gpu, &
-    launch_chemistry_transport_status_probe_gpu
+    launch_chemistry_transport_status_probe_gpu,launch_species_cache_probe_gpu
   implicit none
 
   real(real64), parameter :: rho=0.42_real64,temperature=4200.0_real64, &
@@ -128,6 +148,9 @@ program chemistry_flow_gpu_probe
     closure_status_gpu
   integer, device :: status_d(4),closure_status_d
   real(real64) :: state_ratio,transport_ratio,flux_ratio
+  real(real64) :: cache_cpu(5),cache_gpu(5),expected_cache(5),snapshot(11),amplitude
+  real(real64), parameter :: trace_values(4)=[0.0_real64,1.0e-30_real64,1.0e-16_real64,1.0e-12_real64]
+  integer :: trace_species,trace_index
 
   velocity=[1200.0_real64,-37.0_real64,84.0_real64]
   mass_fraction=[0.62_real64,0.18_real64,0.07_real64,0.05_real64,0.08_real64]
@@ -236,6 +259,46 @@ program chemistry_flow_gpu_probe
      flux_ratio>1.0_real64 .or. status_mismatches/=0 .or. closure_status_ref/=0 .or. &
      closure_status_gpu/=0) &
     error stop 'GPU chemistry flow comparison failed'
+
+  call configure_air5_species_cache(.true.)
+  call configure_air5_species_cache_gpu(.true.)
+  do trace_species=1,5
+    do trace_index=1,size(trace_values)
+      amplitude=trace_values(trace_index)
+      mass_fraction=0.0_real64
+      mass_fraction(trace_species)=amplitude
+      mass_fraction(merge(2,1,trace_species==1))=1.0_real64-amplitude
+      call air5_primitive_to_conservative(0.1_real64*rho,velocity,temperature,mass_fraction,tv,q_ref,status_ref(1))
+      if(status_ref(1)/=0) error stop 'cache fixture invalid'
+      snapshot=q_ref
+      expected_cache=q_ref(6:10)/q_ref(1)
+      call air5_conservative_to_primitive(q_ref,rho_rebuilt,velocity_rebuilt,temperature_rebuilt, &
+        cache_cpu,tv_rebuilt,pressure_rebuilt,status_ref(2))
+      q_d=q_ref
+      call launch_species_cache_probe_gpu(q_d,mass_fraction_d,closure_status_d)
+      cache_gpu=mass_fraction_d; closure_status_gpu=closure_status_d; q_gpu=q_d
+      if(status_ref(2)/=0 .or. closure_status_gpu/=0) error stop 'symmetric cache conversion failed'
+      if(any(q_ref/=snapshot) .or. any(q_gpu/=snapshot)) error stop 'cache conversion changed state'
+      if(any(abs(cache_cpu-expected_cache)>8*epsilon(rho)*abs(expected_cache)) .or. &
+         any(abs(cache_gpu-expected_cache)>8*epsilon(rho)*abs(expected_cache))) &
+        error stop 'cache lost trace or introduced absent species'
+    enddo
+  enddo
+  ! Restore the legacy option and verify that its original N2 residual remains.
+  call configure_air5_species_cache(.false.)
+  call configure_air5_species_cache_gpu(.false.)
+  mass_fraction=[1.0e-30_real64,1.0_real64,0.0_real64,0.0_real64,0.0_real64]
+  call air5_primitive_to_conservative(0.1_real64*rho,velocity,temperature,mass_fraction,tv,q_ref,status_ref(1))
+  call air5_conservative_to_primitive(q_ref,rho_rebuilt,velocity_rebuilt,temperature_rebuilt, &
+    cache_cpu,tv_rebuilt,pressure_rebuilt,status_ref(2))
+  q_d=q_ref
+  call launch_species_cache_probe_gpu(q_d,mass_fraction_d,closure_status_d)
+  cache_gpu=mass_fraction_d; closure_status_gpu=closure_status_d
+  if(status_ref(1)/=0 .or. status_ref(2)/=0 .or. closure_status_gpu/=0) &
+    error stop 'legacy cache conversion failed'
+  if(cache_cpu(1)/=1.0_real64-sum(cache_cpu(2:5)) .or. &
+     cache_gpu(1)/=1.0_real64-sum(cache_gpu(2:5))) error stop 'legacy cache mode changed'
+  write(*,'(A)') 'AIR5_SYMMETRIC_SPECIES_CACHE_PROBE pass'
 
 contains
 

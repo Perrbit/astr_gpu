@@ -6,9 +6,10 @@ module chemistry_coupling_gpu
   use chemistry_state_layout, only: air5_num_conservative,air5_idx_density, &
     air5_idx_momentum_first,air5_idx_momentum_last,air5_idx_total_energy, &
     air5_idx_species_first,air5_idx_ev
-  use chemistry_flow_state_gpu, only: air5_conservative_to_primitive_gpu
+  use chemistry_flow_state_gpu, only: air5_conservative_to_primitive_gpu,configure_air5_species_cache_gpu
   use chemistry_ros2_gpu, only: air5_ros2_advance_gpu
-  use chemistry_flow_runtime, only: configure_air5_source_mode,air5_active_source_mode
+  use chemistry_flow_runtime, only: configure_air5_source_mode,air5_active_source_mode, &
+    air5_symmetric_species_convection
   implicit none
   private
 
@@ -127,6 +128,7 @@ contains
     if(half_index<1 .or. half_index>2) &
       error stop 'air5 GPU chemistry half-step index must be one or two'
     call configure_air5_source_mode()
+    call configure_air5_species_cache_gpu(air5_symmetric_species_convection())
     source_mode=air5_active_source_mode()
     air5_chemistry_status_d=chemistry_status_ok
     air5_chemistry_counts_d=0

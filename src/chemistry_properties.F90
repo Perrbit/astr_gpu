@@ -373,8 +373,15 @@ module chemistry_flow_state
 
   public :: air5_primitive_to_conservative
   public :: air5_conservative_to_primitive
+  public :: configure_air5_species_cache
+  logical, save :: preserve_all_species_cache=.false.
 
 contains
+
+  subroutine configure_air5_species_cache(preserve_all)
+    logical, intent(in) :: preserve_all
+    preserve_all_species_cache=preserve_all
+  end subroutine configure_air5_species_cache
 
   pure subroutine air5_primitive_to_conservative(rho,velocity,temperature, &
       mass_fraction,tv,q,status)
@@ -444,8 +451,12 @@ contains
     call air5_validate_physical_species_state(rho,rho_species,status)
     if(status/=chemistry_status_ok) return
     velocity=momentum/rho
-    mass_fraction(2:air5_num_species)=rho_species(2:air5_num_species)/rho
-    mass_fraction(1)=1.0_real64-sum(mass_fraction(2:air5_num_species))
+    if(preserve_all_species_cache) then
+      mass_fraction=rho_species/rho
+    else
+      mass_fraction(2:air5_num_species)=rho_species(2:air5_num_species)/rho
+      mass_fraction(1)=1.0_real64-sum(mass_fraction(2:air5_num_species))
+    endif
     if(mass_fraction(1)<0.0_real64) then
       status=chemistry_status_invalid_composition
       return

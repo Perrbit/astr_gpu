@@ -1,5 +1,132 @@
 # GPU Validation
 
+## AIR5 Symmetric Flux Feasibility Audit
+
+Final bounded repair gate (2026-09-25): 48 candidate and 3 default runs in
+`out/air5_symmetric_final_*_20260925/` pass the frozen trace, low-N2, energy,
+species and x/y/z slab gates. Candidate evidence: 1440 bitwise-identical plane
+pairs, 32 clean rank memcheck logs, max conservation 2.920763e-14 and own-species
+error 1.571109e-15. The default remains unchanged; no long-time physics claim.
+
+`check_air5_boundary_flux_balance.py --root REPLAY_ROOT` consumes the final
+face records enabled by `run_air5_sbli_domain_replay.py --symmetric-face-probe`.
+It checks the summed owned convective RHS against net physical-boundary flux
+and verifies actual neighbor payloads bitwise. It does not test total source/
+diffusion conservation. CPU/GPU results in
+`out/air5_symmetric_boundary_balance_{cpu,gpu}_20260925/` pass all three RK
+stages (maximum residual 1.389391e-16); the GPU run has two clean memcheck logs.
+CPU/GPU replay fields, the prior matched-time half-step replay, 120 projection
+permutations, the symmetric cache probe, and 52 checker tests also pass.
+The notes below retain the earlier implementation history.
+
+GPU nonperiodic update (2026-09-25): single-sided budgets, physical-node exclusion
+and null-neighbor handling now match CPU. `run_air5_sbli_domain_replay.py` accepts
+`--convection-limiter symmetric_species` and `--memcheck` (two clean GPU-rank logs
+required in addition to successful completion). Existing step1090 replay:
+`out/air5_symmetric_gpu_boundary_late_20260925/cpu_gpu.json` passes 20 same-phase
+fields at atol1e-9/rtol1e-10. The 2 ns and two 1 ns GPU runs have 18/36 valid
+state snapshots and four clean memcheck logs. The half-step directory's
+`matched_window.json` reports inlet-rank max u difference 2.883809e-5 m/s.
+Boundary flux accounting and the final complete regression matrix remain open.
+The following CPU-only note records the preceding implementation stage.
+
+CPU nonperiodic candidate (2026-09-25): physical faces now use only the active
+cell's RK budget; the missing side's finite bounds follow from mass closure.
+Null MPI neighbors never overwrite physical faces or invoke periodic wrap.
+Eight CPU periodic controls pass. Existing Mach4 step1090, one 2 ns NP2 CPU
+replay completes with 18 valid state snapshots and max mass closure 9.002067e-16
+in `out/air5_symmetric_cpu_boundary_late_20260925/`. This does not close boundary
+flux accounting, CPU/GPU equivalence, dt/2 or memory-safety gates. GPU continues
+to reject this option with physical boundaries until its implementation lands.
+
+Latest cache gate (2026-09-25): the optional symmetric path now caches all five
+species as rho_s/rho on CPU and GPU without changing q or the legacy default.
+`chemistry_flow_gpu_probe` checks each trace species at 0, 1e-30, 1e-16 and 1e-12,
+own-species roundoff, exact zeros, unchanged q and restoration of legacy mode;
+`out/air5_species_cache_probe_memcheck_20260925.log` reports zero errors.
+The rebuilt main program passes 24 candidate and 3 default runs in
+`out/air5_symmetric_cache_primary_20260925/` and
+`out/air5_cache_scan_*_20260925/`: 720 candidate plane pairs are bitwise equal,
+16 candidate rank memcheck logs are clean, maximum scaled conservation residual
+is 2.534431e-15 and own-species difference is 1.571109e-15.
+This is a periodic frozen gate, not nonperiodic or reacting-flow acceptance.
+The runner now supports `--axis x|y|z`: it rotates grid dimensions, input fields
+and velocity, then canonicalizes diagnostic arrays and vector components.
+It checks the actual slab seam and passes the corresponding topology to the
+bitwise plane checker. In `out/air5_symmetric_{y,z}_slab_20260925/`, each axis
+passes contact/low-N2/energy/species on CPU NP1/NP2 and GPU NP2. Across both axes:
+24 runs, 720 identical plane pairs, 16 clean rank memcheck logs, maximum scaled
+conservation residual 2.920763e-14 and own-species difference 1.571109e-15.
+The energy and species constraints activate at the actual MPI seam. These are
+periodic slab tests, not mixed-axis topologies or physical-boundary validation.
+
+Current gate: the periodic GPU mainloop passes the 24-run CPU/GPU small numerical
+matrix plus three default controls. The initial error700 under memcheck was
+isolated to the device `sum(ll-lr,dim=2)` path: an initialization sync alone did
+not fix it, but an explicit fixed-loop reduction did. All eight candidate GPU
+NP2 cases now have two clean memcheck logs each and retain all numerical gates.
+Do not infer physical-boundary, y/z decomposition or SBLI acceptance from this.
+Use `--memcheck` to instrument each GPU rank; the runner requires one clean
+sanitizer log per rank as well as all ordinary numerical gates and stops on error.
+Physical boundaries remain unsupported in the new path.
+
+Build `air5_flux_gpu_probe` through the root CUDA/AIR5 CMake build. It reuses
+`air5_transport_roundoff_probe.F90` with `AIR5_FLUX_GPU_PROBE` and launches
+the device projection through `air5_flux_gpu_probe_wrappers.cuf`. Every call
+compares CPU/GPU status and flux, then runs the original probe assertions.
+The default CPU-only target remains unchanged. Example:
+
+```sh
+cmake --build build_gpu_probe --target air5_flux_gpu_probe air5_transport_roundoff_probe -j 2
+build_gpu_probe/bin/air5_transport_roundoff_probe
+compute-sanitizer --tool memcheck --error-exitcode 99 build_gpu_probe/bin/air5_flux_gpu_probe
+```
+
+The 2026-09-25 local run passes with zero memcheck errors. This is a projection
+helper gate, not the symmetric limiter GPU mainloop or MPI gate.
+It was rebuilt and rechecked with the production 128-register device-callee cap;
+`out/air5_flux_gpu_probe_reg128_memcheck_20260925.log` also reports zero errors.
+
+`run_air5_layered_stress_gate.py --backends cpu --convection-limiter symmetric_species`
+exercises the experimental CPU periodic path. Keep `--require-contact-equilibrium`
+for contact/low-N2 fixtures. The default runs both CPU and GPU; the new
+limiter rejects physical boundaries rather than silently using the old algorithm.
+It additionally checks each species difference against
+its own initial maximum, without a bulk absolute floor. The 2026-09-25 contact
+scan passed on CPU NP1/NP2, but the species stress fixture failed NP2 periodic
+conservation. That failure was subsequently fixed by including the projected
+output operands in the arithmetic residual bound, without changing the outer
+acceptance thresholds. The 18-run `air5_operand_matrix_*_20260925` CPU matrix
+passes. The subsequent `air5_owner_matrix_*_20260925` matrix plus
+`air5_symmetric_owner_energy_interior_20260925` passes with canonical CPU face
+ownership and strict receiver-side budgets. Across 16 candidate runs, 432 full
+plane pairs are bitwise identical. Two old-default controls also pass.
+The energy fixture first exposed an internal-face vibrational margin of
+`-1.21e-27` after re-evaluation; the restricted beta now retreats by the existing
+machine-roundoff gamma128 factor and is projected and checked again. Physical
+state tolerances are unchanged. GPU and nonperiodic validation remain open.
+
+`--symmetric-face-probe` writes independent
+`validation/air5.symmetric_faces.rankNNNNNNNN.txt` files. Compare both rank files
+with `check_air5_consistent_residual.py --symmetric-face-log <rank0> <rank1>`
+`--local-intervals 24 --np 2 --report <output.json>`. It samples the x-interface
+line at j=k=0; it does not certify every point of a three-dimensional interface.
+The same flag now also writes `air5.shared_faces.axis*.bin` files containing
+seven int32 header entries and four contiguous float64 plane payloads (11 flux
+components plus beta). `check_shared_face_payloads` compares every sent/received
+entry by its uint64 bit pattern for all three axes and stages. Checker tests
+cover x/y/z rank mappings and reject one-ULP corruption; actual solver runs in
+this matrix still use x-slab, not y/z MPI decomposition.
+
+`check_air5_consistent_residual.py --contact-case <recorded-case> --np 1`
+`--contact-feasibility --report <output.json>` reads the existing first-stage
+periodic contact snapshots. Use `--np 2` for the existing x-slab pair.
+It verifies the reconstructed central-flux divergence against `conv_raw`, then
+checks mass and gas-constant-weighted flux feasibility in two different boxes:
+individual low/high correction segments and sufficient six-face cell budgets.
+It does not advance the flow, constrain both energies, or accept a new limiter.
+The frozen actual-solver gates are in `ASTR_AIR5_MACH4_SBLI_PLAN.md`.
+
 ## Conservative Boundary MPI Configuration
 
 `run_boundary_config_mpi_gate.py --out <new-directory>` validates the root-owned
@@ -5342,3 +5469,121 @@ matched pair without overwriting the first report. A 0.5 ns x 400 update run use
 secondary step1399. The checker compares final `post_chemistry` snapshots and
 rejects incompatible provenance or clocks. It reports timestep differences,
 not an accuracy or long-time physical pass.
+
+For late inlet localization, the replay driver accepts a CPU-only read-only
+`--convection-probe-node rank,i,j,k` with selected snapshot steps. It records the
+actual negative species budgets, six high-minus-low face increments and shared
+coefficients without modifying the accepted flux. It also supports layered
+diffusion; the separate full-state diffusion probe does not.
+
+```bash
+python3 tests/gpu_validation/check_air5_convection_probe.py \
+  --case tests/gpu_validation/out/air5_layered_inlet_localization_20260924/cpu_dt2 \
+  --report /tmp/air5_convection_probe.json
+python3 tests/gpu_validation/check_air5_inlet_velocity_budget.py \
+  --coarse-case tests/gpu_validation/out/air5_layered_inlet_localization_20260924/cpu_dt2 \
+  --fine-case tests/gpu_validation/out/air5_layered_inlet_localization_20260924/cpu_dt1 \
+  --report /tmp/air5_late_velocity_budget.json
+```
+
+The pair checker requires one full step versus two half steps, a common checkpoint,
+binary, backend and limiter configuration, matching physical endpoints, and all
+intervening RK snapshots. The probe checker verifies the face budget and its
+identity with the recorded limiter RHS, not an independently evolved solution.
+Neither checker grants temporal convergence or physical validation. A positive
+unlimited trial at one node does not justify disabling globally shared limits.
+
+### Sequential Consistent-Species Convection Candidate
+
+`ASTR_AIR5_CONVECTION_LIMITER=consistent_species` enables an opt-in CPU/GPU
+candidate. `full_state` remains the default; `species_budget` remains available.
+The first shared-face coefficient limits fluid fluxes with independent species
+held at their LF flux. The second limits a zero-sum species correction at fixed
+mass, momentum, total-energy and vibrational-energy flux. N2 closes the mass flux
+in both layers. Species nonnegativity and both thermal constraints are retained;
+there is no species clipping or concentration floor. Invalid low/intermediate
+states abort the run. This is not a pressure-equilibrium or physical validation
+claim.
+
+The candidate allocates one additional scalar halo field. Validation snapshots
+`convection_fluid_ratio` and `convection_species_ratio` distinguish the layers;
+`convection_ratio` aliases the second. The old single-pass convection probe is
+rejected for this mode. The existing endpoint RHS budget checker still applies.
+
+```bash
+python3 tests/gpu_validation/run_air5_sbli_domain_replay.py \
+  --baseline tests/gpu_validation/out/air5_layered_multistep_20260924/gpu_dt2/gpu \
+  --output /tmp/air5_consistent_gpu_one_step \
+  --dt 2e-9 --updates 1 --snapshot-step 1090 --backend gpu \
+  --convection-limiter consistent_species --diffusion-limiter layered
+python3 tests/gpu_validation/run_air5_layered_stress_gate.py \
+  --baseline tests/gpu_validation/out/air5_layered_frozen_20260924/ev-pulse/gpu \
+  --output /tmp/air5_consistent_stress \
+  --convection-limiter consistent_species
+```
+
+Output directories must be new. The stress driver checks periodic conservation,
+accepted states, shared halo coefficients, CPU NP1/NP2 and GPU NP2 fields, and
+activation of both sequential convection layers near an MPI interface. The replay
+driver accepts `--timeout-seconds` (default 300) for explicitly bounded windows.
+Exit success alone is not acceptance: inspect `result.json`, run `state_gate`,
+and compare same-phase fields. The late checkpoint is step1090 at t=2.18 us,
+not the original step1000 checkpoint at t=2 us. Use the latter for the matched
+100/200/400-update window.
+
+Evidence and limitations are recorded in
+[`ASTR_AIR5_MACH4_RESOLUTION_INLET_AUDIT.md`](../../documents/ASTR_AIR5_MACH4_RESOLUTION_INLET_AUDIT.md).
+Local algebra tests are in `test_air5_consistent_convection.py`; Python does not
+advance the flow solution.
+
+The same stress driver now accepts `--fixture contact low_n2`. These are frozen,
+inviscid periodic ASTR runs at p=100000 Pa, T=4000 K, Tv=1500 K, u=100 m/s,
+one RK3 step of 5 ns, and grid upper bounds 48,6,6. `contact` places a localized
+NO mass fraction of 1e-12 in a smooth N2/O2 composition wave. `--contact-trace 0`
+removes that pulse as a matched control. `low_n2` tests N2 mass fractions between
+1e-12 and 2e-12; these are input states, never positivity floors.
+
+`--require-contact-equilibrium` additionally requires the final constant p/T/u
+to satisfy the same tolerances used for the initial state. The current
+`consistent_species` candidate with nonzero trace NO **fails this check**, despite
+passing positivity and conservation. Removing the pulse or using `full_state`
+preserves the constant state to roundoff in this fixture. This is a known
+method-compatibility limitation, not a CUDA discrepancy. Do not promote the
+candidate or resume long SBLI on the basis of the diagnostic driver's exit alone.
+
+`check_air5_consistent_residual.py --coarse <replay> --fine <replay> --report <json>`
+locates component/temperature differences and exactly decomposes temperature and
+pressure changes from the conservative endpoints. `--rk-budget` additionally
+requires one full step versus two half steps with every intermediate snapshot,
+and attributes all 11 conservative increments to the recorded operators.
+Long-window endpoints alone do not determine cumulative operator contributions.
+
+The first-stage contact identity in `uniform_contact_drift` compares recorded
+raw/limited convection RHS with the actual ASTR update. Diagnostic tests are in
+`test_air5_consistent_residual.py`. No Python flow time integrator is introduced.
+
+`check_air5_consistent_residual.py --contact-case <case> --np 2 --dt 5e-9
+--report <json>` reuses recorded first-stage raw/limited RHS. It reports pointwise
+EOS counterfactuals: energy-only temperature or pressure restoration, and removal
+of O2 co-limiting with dependent N2 closure. These arrays are never written to
+the solver and are not conservative flux constructions or general positivity
+proofs. The recorded contact case shows that energy-only temperature restoration
+increases the pressure error to 12.78 Pa. Removing O2 co-limiting reduces the
+local discrepancy sharply, identifying a species-coupling issue for a future
+flux-level design, not closing the pressure-equilibrium gate.
+
+The CMake target `air5_transport_roundoff_probe` additionally exercises the CPU
+`air5_close_species_flux` helper: Euclidean projection onto supplied five-species
+flux bounds and a total-mass-flux equality. It tests signed fluxes, 1000 feasible
+boxes and optimality conditions, cyclic species permutations, reversed face
+orientation, scale changes, trace budgets and failure returns. Run with:
+
+```sh
+cmake --build build_cpu_probe --target air5_transport_roundoff_probe -j 2
+build_cpu_probe/bin/air5_transport_roundoff_probe
+```
+
+This helper is not wired into the flow solver. Caller-provided intervals are not
+yet proven complete-RK positivity budgets, and thermal compatibility is not part
+of this projection. Probe success does not close the known contact-pressure
+failure or qualify a new CPU/GPU convection path.

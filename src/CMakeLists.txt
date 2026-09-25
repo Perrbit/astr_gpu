@@ -275,6 +275,16 @@ if(ASTR_WITH_CUDA)
 endif()
 
 if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
+  add_executable(air5_flux_gpu_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90 chemistry_core.F90
+    ../src_gpu/chemistry_core_gpu.cuf
+    ../tests/gpu_validation/air5_flux_gpu_probe_wrappers.cuf
+    ../tests/gpu_validation/air5_transport_roundoff_probe.F90)
+  set_target_properties(air5_flux_gpu_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/air5_flux_gpu_probe_modules")
+  target_include_directories(air5_flux_gpu_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/air5_flux_gpu_probe_modules")
+  target_compile_definitions(air5_flux_gpu_probe PRIVATE AIR5_FLUX_GPU_PROBE)
   add_executable(chemistry_flow_gpu_probe EXCLUDE_FROM_ALL
     chemistry_air5_data.F90
     chemistry_core.F90
@@ -336,6 +346,9 @@ if (ASTR_WITH_CUDA AND (Fortran_COMPILER_NAME MATCHES "PGI" OR Fortran_COMPILER_
     set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_solver_gpu.cuf
       PROPERTIES COMPILE_OPTIONS "-gpu=maxregcount:${ASTR_AIR5_MAXREGCOUNT}")
     set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_transport_gpu.cuf
+      PROPERTIES COMPILE_OPTIONS "-gpu=maxregcount:${ASTR_AIR5_MAXREGCOUNT}")
+    # Device callees must respect the launcher's register cap for RDC linking.
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_core_gpu.cuf
       PROPERTIES COMPILE_OPTIONS "-gpu=maxregcount:${ASTR_AIR5_MAXREGCOUNT}")
   endif()
 endif()

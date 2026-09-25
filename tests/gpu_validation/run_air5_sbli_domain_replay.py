@@ -18,10 +18,16 @@ from run_air5_sbli_preflight import ROOT, environment, set_value
 def run(args):
     if not math.isfinite(args.dt) or args.dt <= 0 or args.updates < 1:
         raise ValueError('require positive dt and updates')
+    timeout_seconds = getattr(args, 'timeout_seconds', 300)
+    if timeout_seconds < 1:
+        raise ValueError('require positive timeout seconds')
     baseline = args.baseline.resolve()
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     backend = getattr(args, 'backend', 'gpu')
+    memcheck = getattr(args, 'memcheck', False)
+    if memcheck and backend != 'gpu':
+        raise ValueError('--memcheck requires the GPU backend')
     case = out/backend
     shutil.copytree(baseline/'datin', case/'datin')
     (case/'outdat').mkdir()
@@ -47,6 +53,20 @@ def run(args):
     env['ASTR_AIR5_CONVECTION_LIMITER'] = limiter
     diffusion_limiter = getattr(args, 'diffusion_limiter', 'full_state')
     env['ASTR_AIR5_DIFFUSION_LIMITER'] = diffusion_limiter
+    if getattr(args, 'symmetric_face_probe', False):
+        if limiter != 'symmetric_species' or args.snapshot_step is None:
+            raise ValueError('symmetric face probe requires the symmetric limiter and snapshots')
+        env['ASTR_AIR5_SYMMETRIC_FACE_PROBE'] = '1'
+    convection_probe = getattr(args, 'convection_probe_node', None)
+    if convection_probe is not None:
+        if limiter in ('consistent_species', 'symmetric_species'):
+            raise ValueError('single-pass convection probe cannot describe the selected limiter')
+        values = [int(value) for value in convection_probe.split(',')]
+        if backend != 'cpu' or args.snapshot_step is None or len(values) != 4 or min(values) < 0:
+            raise ValueError('convection probe requires CPU snapshots and nonnegative rank,i,j,k')
+        if values[0] >= 2:
+            raise ValueError('convection probe rank is outside NP2 replay')
+        env['ASTR_AIR5_CONVECTION_PROBE_NODE'] = convection_probe
     probe_node = getattr(args, 'diffusion_probe_node', None)
     if probe_node is not None:
         if diffusion_limiter == 'layered':
@@ -70,13 +90,23 @@ def run(args):
                     baseline=str(baseline), executable_sha256=hashlib.sha256(exe.read_bytes()).hexdigest(),
                     checkpoint_sha256=hashlib.sha256((case/'outdat/flowfield.h5').read_bytes()).hexdigest(),
                     topology='2,1,1', backend=backend, convection_limiter=limiter,
+                    memcheck=memcheck,
+                    symmetric_face_probe=getattr(args, 'symmetric_face_probe', False),
                     diffusion_limiter=diffusion_limiter,
                     diffusion_probe_node=probe_node,
+                    convection_probe_node=convection_probe,
                     snapshot_step=args.snapshot_step,
-                    snapshot_step_secondary=secondary)
+                    snapshot_step_secondary=secondary, timeout_seconds=timeout_seconds)
     (out/'contract.json').write_text(json.dumps(contract, indent=2)+'\n')
-    command = ['timeout', '--kill-after=10s', '300s', shutil.which('mpirun'),
-               '--oversubscribe', '-np', '2', str(exe), 'run', 'datin/input.air5_c4']
+    instrument = []
+    if memcheck:
+        sanitizer = shutil.which('compute-sanitizer')
+        if sanitizer is None:
+            raise RuntimeError('compute-sanitizer is required for --memcheck')
+        instrument = [sanitizer, '--tool', 'memcheck', '--error-exitcode', '99',
+                      '--log-file', 'validation/memcheck.%p.log']
+    command = ['timeout', '--kill-after=10s', f'{timeout_seconds}s', shutil.which('mpirun'),
+               '--oversubscribe', '-np', '2', *instrument, str(exe), 'run', 'datin/input.air5_c4']
     start = time.monotonic()
     with (case/'run.log').open('w') as log:
         process = subprocess.run(command, cwd=case, env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -91,6 +121,13 @@ def run(args):
                       diagnostics=[line for line in log.splitlines() if 'AIR5_DIFFUSION_STATE_FAILURE' in line])
     elif process.returncode == 0 and 'The job is done!' in log:
         result['status'] = 'bounded-replay-completed-not-physical-pass'
+        if memcheck:
+            logs = sorted((case/'validation').glob('memcheck.*.log'))
+            clean = len(logs) == 2 and all('ERROR SUMMARY: 0 errors' in p.read_text() for p in logs)
+            result['memcheck_rank_logs'] = len(logs)
+            result['memcheck_clean'] = clean
+            if not clean:
+                result['status'] = 'unexpected-failure'
     (out/'result.json').write_text(json.dumps(result, indent=2)+'\n')
     print(json.dumps(result), flush=True)
     if result['status'] == 'unexpected-failure':
@@ -103,11 +140,16 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--dt', type=float, required=True)
     parser.add_argument('--updates', type=int, required=True)
+    parser.add_argument('--timeout-seconds', type=int, default=300)
     parser.add_argument('--snapshot-step', type=int)
     parser.add_argument('--snapshot-step-secondary', type=int)
     parser.add_argument('--backend', choices=('cpu', 'gpu'), default='gpu')
+    parser.add_argument('--memcheck', action='store_true')
+    parser.add_argument('--symmetric-face-probe', action='store_true')
     parser.add_argument('--diffusion-probe-node', help='CPU read-only probe: rank,i,j,k')
-    parser.add_argument('--convection-limiter', choices=('full_state', 'species_budget'),
+    parser.add_argument('--convection-probe-node', help='CPU read-only convection probe: rank,i,j,k')
+    parser.add_argument('--convection-limiter',
+                        choices=('full_state', 'species_budget', 'consistent_species', 'symmetric_species'),
                         default='full_state')
     parser.add_argument('--diffusion-limiter', choices=('full_state', 'layered'), default='full_state')
     parser.add_argument('--executable', type=Path,

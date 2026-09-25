@@ -1,0 +1,74 @@
+module air5_flux_gpu_probe_wrappers
+  use iso_fortran_env, only: real64
+  use cudafor
+  use chemistry_model, only: cpu_close=>air5_close_species_flux, &
+    cpu_moment=>air5_close_species_flux_moment,chemistry_status_ok
+  use chemistry_model_gpu, only: air5_close_species_flux_gpu,air5_close_species_flux_moment_gpu
+  implicit none
+  private
+  public :: air5_close_species_flux,air5_close_species_flux_moment
+contains
+  attributes(global) subroutine projection_kernel(inputs,mass,moment,output,status_out,with_moment)
+    real(real64), device, intent(in) :: inputs(5,4)
+    real(real64), device, intent(out) :: output(5)
+    integer, device, intent(out) :: status_out
+    real(real64), value :: mass,moment
+    logical, value :: with_moment
+    if(threadIdx%x/=1 .or. blockIdx%x/=1) return
+    if(with_moment) then
+      call air5_close_species_flux_moment_gpu(inputs(:,1),inputs(:,2),inputs(:,3), &
+        mass,inputs(:,4),moment,output,status_out)
+    else
+      call air5_close_species_flux_gpu(inputs(:,1),inputs(:,2),inputs(:,3),mass,output,status_out)
+    endif
+  end subroutine projection_kernel
+
+  subroutine checked_projection(candidate,lower,upper,mass,weights,moment,flux,status,with_moment)
+    real(real64), intent(in) :: candidate(5),lower(5),upper(5),weights(5),mass,moment
+    real(real64), intent(out) :: flux(5)
+    integer, intent(out) :: status
+    logical, intent(in) :: with_moment
+    real(real64), device :: inputs_d(5,4),output_d(5)
+    integer, device :: status_d
+    real(real64) :: reference(5),bound(5)
+    integer :: expected,ierr
+    inputs_d(:,1)=candidate; inputs_d(:,2)=lower; inputs_d(:,3)=upper; inputs_d(:,4)=weights
+    call projection_kernel<<<1,1>>>(inputs_d,mass,moment,output_d,status_d,with_moment)
+    ierr=cudaGetLastError()
+    if(ierr/=cudaSuccess) error stop 'projection kernel launch failed'
+    ierr=cudaDeviceSynchronize()
+    if(ierr/=cudaSuccess) error stop 'projection kernel execution failed'
+    flux=output_d; status=status_d
+    if(with_moment) then
+      call cpu_moment(candidate,lower,upper,mass,weights,moment,reference,expected)
+    else
+      call cpu_close(candidate,lower,upper,mass,reference,expected)
+    endif
+    if(status/=expected) then
+      write(*,*) 'projection status CPU/GPU=',expected,status
+      error stop 'projection backend status mismatch'
+    endif
+    if(status/=chemistry_status_ok) return
+    bound=256*epsilon(mass)*max(abs(lower),abs(upper),abs(candidate),abs(reference))
+    if(any(abs(flux-reference)>bound)) then
+      write(*,*) 'projection CPU=',reference
+      write(*,*) 'projection GPU=',flux
+      error stop 'projection backend flux mismatch'
+    endif
+  end subroutine checked_projection
+
+  subroutine air5_close_species_flux(candidate,lower,upper,mass_flux,flux,status)
+    real(real64), intent(in) :: candidate(5),lower(5),upper(5),mass_flux
+    real(real64), intent(out) :: flux(5)
+    integer, intent(out) :: status
+    call checked_projection(candidate,lower,upper,mass_flux, &
+      [0.0_real64,0.0_real64,0.0_real64,0.0_real64,0.0_real64],0.0_real64,flux,status,.false.)
+  end subroutine air5_close_species_flux
+
+  subroutine air5_close_species_flux_moment(candidate,lower,upper,mass_flux,weights,moment_flux,flux,status)
+    real(real64), intent(in) :: candidate(5),lower(5),upper(5),mass_flux,weights(5),moment_flux
+    real(real64), intent(out) :: flux(5)
+    integer, intent(out) :: status
+    call checked_projection(candidate,lower,upper,mass_flux,weights,moment_flux,flux,status,.true.)
+  end subroutine air5_close_species_flux_moment
+end module air5_flux_gpu_probe_wrappers
