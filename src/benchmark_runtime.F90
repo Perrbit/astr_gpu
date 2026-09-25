@@ -3,9 +3,12 @@ module benchmark_runtime
   implicit none
   private
   public :: configure_benchmark_runtime,benchmark_field_io_disabled, &
-            benchmark_cpu_rk_timing_enabled
+            benchmark_cpu_rk_timing_enabled,begin_complete_step_timing,end_complete_step_timing
   logical,save :: configured=.false.,field_io_disabled=.false.
   logical,save :: cpu_rk_timing_enabled_flag=.false.
+  logical,save :: complete_step_timing_enabled=.false.
+  real(8),save :: complete_step_start=0.d0
+  integer,save :: complete_step_rank=-1
 contains
   integer function switch_choice(name)
     character(*),intent(in) :: name
@@ -33,11 +36,25 @@ contains
     logical,intent(in) :: use_gpu,lihomo,ljhomo,lkhomo,periodic_boundary_case
     character(*),intent(in) :: flowtype
     integer,intent(in) :: ndims
-    integer :: requested,rk_timing,cpu_rk_timing,lowest,highest
+    integer :: requested,rk_timing,cpu_rk_timing,lowest,highest,complete_timing
     integer :: rk_lowest,rk_highest,cpu_rk_lowest,cpu_rk_highest
     integer :: ierr,rank,ignored
     logical :: supported_flow
     if(configured) return
+    complete_timing=switch_choice('ASTR_COMPLETE_STEP_TIMING')
+    call mpi_allreduce(complete_timing,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,ignored)
+    call mpi_allreduce(complete_timing,highest,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,ignored)
+    if(lowest<0 .or. lowest/=highest) then
+      print *, 'Invalid or inconsistent ASTR_COMPLETE_STEP_TIMING environment'
+      call mpi_abort(MPI_COMM_WORLD,1,ignored)
+    endif
+    complete_step_timing_enabled=complete_timing==1
+    if(complete_step_timing_enabled) then
+      call mpi_comm_rank(MPI_COMM_WORLD,complete_step_rank,ierr)
+      if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,ignored)
+    endif
     requested=switch_choice('ASTR_GPU_BENCHMARK_NO_FIELD_IO')
     rk_timing=switch_choice('ASTR_GPU_RK_TIMING')
     cpu_rk_timing=switch_choice('ASTR_CPU_RK_TIMING')
@@ -94,4 +111,17 @@ contains
   logical function benchmark_cpu_rk_timing_enabled()
     benchmark_cpu_rk_timing_enabled=configured.and.cpu_rk_timing_enabled_flag
   end function benchmark_cpu_rk_timing_enabled
+
+  subroutine begin_complete_step_timing()
+    if(complete_step_timing_enabled) complete_step_start=MPI_Wtime()
+  end subroutine begin_complete_step_timing
+
+  subroutine end_complete_step_timing(step)
+    integer,intent(in) :: step
+    real(8) :: elapsed
+    if(.not.complete_step_timing_enabled) return
+    elapsed=MPI_Wtime()-complete_step_start
+    write(*,'(A,1X,I0,1X,I0,1X,ES24.16E3)') &
+      'ASTR_COMPLETE_STEP_TIMING',step,complete_step_rank,elapsed
+  end subroutine end_complete_step_timing
 end module benchmark_runtime

@@ -46,6 +46,7 @@ module mainloop
     use parallel, only : bcast
     use commarray,only: x
     use userdefine, only: udf_setup_before_comp
+    use benchmark_runtime, only: begin_complete_step_timing,end_complete_step_timing
     !
     ! local data
     real(8) :: time_beg,time_next_step,crange
@@ -103,9 +104,11 @@ module mainloop
 
     do while(nstep<=maxstep)
 
+      call begin_complete_step_timing()
       call crashcheck
 
       call time_integration_rk
+      call end_complete_step_timing(nstep)
 
       if(.not.use_gpu .and. nstep+1<=maxstep .and.                     &
          mod(nstep+1,feqchkpt)==0) call write_validation_rk_snapshot()

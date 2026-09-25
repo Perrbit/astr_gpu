@@ -25,7 +25,17 @@ def run(args):
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     backend = getattr(args, 'backend', 'gpu')
+    ranks = getattr(args, 'np', 2)
+    checkpoint_interval = getattr(args, 'checkpoint_interval', 10)
+    if ranks not in (1, 2) or checkpoint_interval < 1:
+        raise ValueError('require one/two ranks and a positive checkpoint interval')
     memcheck = getattr(args, 'memcheck', False)
+    nsys_profile = getattr(args, 'nsys', False)
+    ncu_kernel = getattr(args, 'ncu_kernel', None)
+    if ncu_kernel and (backend != 'gpu' or ranks != 1 or memcheck or nsys_profile):
+        raise ValueError('Nsight Compute requires a separate single-GPU run')
+    if nsys_profile and (backend != 'gpu' or memcheck):
+        raise ValueError('Nsight requires GPU and a separate run from memcheck')
     if memcheck and backend != 'gpu':
         raise ValueError('--memcheck requires the GPU backend')
     case = out/backend
@@ -47,8 +57,10 @@ def run(args):
     set_value(case/'datin/controller', 'deltat', f'{args.dt:.17e}')
     set_value(case/'datin/controller',
               'maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg',
-              f'{maximum},10,1000000,1000000,1,1000000')
-    env = environment('2,1,1')
+              f'{maximum},{checkpoint_interval},1000000,1000000,1,1000000')
+    env = environment(f'{ranks},1,1')
+    if getattr(args, 'complete_step_timing', False):
+        env['ASTR_COMPLETE_STEP_TIMING'] = '1'
     limiter = getattr(args, 'convection_limiter', 'full_state')
     env['ASTR_AIR5_CONVECTION_LIMITER'] = limiter
     diffusion_limiter = getattr(args, 'diffusion_limiter', 'full_state')
@@ -64,8 +76,8 @@ def run(args):
         values = [int(value) for value in convection_probe.split(',')]
         if backend != 'cpu' or args.snapshot_step is None or len(values) != 4 or min(values) < 0:
             raise ValueError('convection probe requires CPU snapshots and nonnegative rank,i,j,k')
-        if values[0] >= 2:
-            raise ValueError('convection probe rank is outside NP2 replay')
+        if values[0] >= ranks:
+            raise ValueError('convection probe rank is outside replay')
         env['ASTR_AIR5_CONVECTION_PROBE_NODE'] = convection_probe
     probe_node = getattr(args, 'diffusion_probe_node', None)
     if probe_node is not None:
@@ -74,8 +86,8 @@ def run(args):
         values = [int(value) for value in probe_node.split(',')]
         if backend != 'cpu' or args.snapshot_step is None or len(values) != 4 or min(values) < 0:
             raise ValueError('diffusion probe requires CPU snapshots and nonnegative rank,i,j,k')
-        if values[0] >= 2:
-            raise ValueError('diffusion probe rank is outside NP2 replay')
+        if values[0] >= ranks:
+            raise ValueError('diffusion probe rank is outside replay')
         env['ASTR_AIR5_DIFFUSION_PROBE_NODE'] = probe_node
     if args.snapshot_step is not None:
         env.update(ASTR_VALIDATION_RHS_PREFIX='validation/air5',
@@ -89,8 +101,12 @@ def run(args):
                     updates=args.updates, target_time=start_time+args.dt*args.updates,
                     baseline=str(baseline), executable_sha256=hashlib.sha256(exe.read_bytes()).hexdigest(),
                     checkpoint_sha256=hashlib.sha256((case/'outdat/flowfield.h5').read_bytes()).hexdigest(),
-                    topology='2,1,1', backend=backend, convection_limiter=limiter,
+                    topology=f'{ranks},1,1', backend=backend, convection_limiter=limiter,
+                    complete_step_timing=getattr(args, 'complete_step_timing', False),
+                    checkpoint_interval=checkpoint_interval,
                     memcheck=memcheck,
+                    nsys_profile=nsys_profile,
+                    ncu_kernel=ncu_kernel,
                     symmetric_face_probe=getattr(args, 'symmetric_face_probe', False),
                     diffusion_limiter=diffusion_limiter,
                     diffusion_probe_node=probe_node,
@@ -105,8 +121,22 @@ def run(args):
             raise RuntimeError('compute-sanitizer is required for --memcheck')
         instrument = [sanitizer, '--tool', 'memcheck', '--error-exitcode', '99',
                       '--log-file', 'validation/memcheck.%p.log']
-    command = ['timeout', '--kill-after=10s', f'{timeout_seconds}s', shutil.which('mpirun'),
-               '--oversubscribe', '-np', '2', *instrument, str(exe), 'run', 'datin/input.air5_c4']
+    if ncu_kernel:
+        profiler = shutil.which('ncu')
+        if profiler is None:
+            raise RuntimeError('ncu is required for --ncu-kernel')
+        instrument = [profiler, '--set', 'full', '--kernel-name', f'regex:{ncu_kernel}',
+                      '--launch-count', '1', '--export', str(out/'kernel')]
+    command = [shutil.which('mpirun'), '--oversubscribe', '-np', str(ranks),
+               *instrument, str(exe), 'run', 'datin/input.air5_c4']
+    if nsys_profile:
+        profiler = shutil.which('nsys')
+        if profiler is None:
+            raise RuntimeError('nsys is required for --nsys')
+        command = [profiler, 'profile', '--trace=cuda,mpi', '--mpi-impl=openmpi',
+                   '--sample=none', '--cpuctxsw=none', '--force-overwrite=false',
+                   '--output', str(out/'profile'), *command]
+    command = ['timeout', '--kill-after=10s', f'{timeout_seconds}s', *command]
     start = time.monotonic()
     with (case/'run.log').open('w') as log:
         process = subprocess.run(command, cwd=case, env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -123,7 +153,7 @@ def run(args):
         result['status'] = 'bounded-replay-completed-not-physical-pass'
         if memcheck:
             logs = sorted((case/'validation').glob('memcheck.*.log'))
-            clean = len(logs) == 2 and all('ERROR SUMMARY: 0 errors' in p.read_text() for p in logs)
+            clean = len(logs) == ranks and all('ERROR SUMMARY: 0 errors' in p.read_text() for p in logs)
             result['memcheck_rank_logs'] = len(logs)
             result['memcheck_clean'] = clean
             if not clean:
@@ -144,7 +174,12 @@ if __name__ == '__main__':
     parser.add_argument('--snapshot-step', type=int)
     parser.add_argument('--snapshot-step-secondary', type=int)
     parser.add_argument('--backend', choices=('cpu', 'gpu'), default='gpu')
+    parser.add_argument('--np', type=int, choices=(1, 2), default=2)
+    parser.add_argument('--checkpoint-interval', type=int, default=10)
+    parser.add_argument('--complete-step-timing', action='store_true')
     parser.add_argument('--memcheck', action='store_true')
+    parser.add_argument('--nsys', action='store_true', help='separate CUDA/MPI timeline; not timing evidence')
+    parser.add_argument('--ncu-kernel', help='single-GPU kernel regex; profile one matching launch separately')
     parser.add_argument('--symmetric-face-probe', action='store_true')
     parser.add_argument('--diffusion-probe-node', help='CPU read-only probe: rank,i,j,k')
     parser.add_argument('--convection-probe-node', help='CPU read-only convection probe: rank,i,j,k')

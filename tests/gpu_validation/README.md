@@ -1,5 +1,40 @@
 # GPU Validation
 
+## AIR5 Complete-Step Performance Diagnosis
+
+The GPU symmetric flux demand-pruning candidate is validated in
+`out/air5_flux_opt_*_20260925/`. See the performance plan for numerical gates
+and measured complete-step gains. The default `full_state` mode is unchanged.
+`run_air5_flux_ab.py --baseline CHECKPOINT_CASE --reference OLD_EXE
+--candidate NEW_EXE --output NEW_DIRECTORY` performs three interleaved A/B
+rounds for NP1 and NP2, one warmup plus three measured steps per run. It
+rejects advanced field output, snapshots and executable/checkpoint drift.
+Do not interpret a faster two-GPU time as improved strong-scaling efficiency.
+
+`ASTR_COMPLETE_STEP_TIMING=1` times `crashcheck + time_integration_rk` on
+every rank, including reacting chemistry and transport. It is disabled by
+default and adds no barrier. It excludes startup and subsequent controller,
+CFL and checkpoint handling; it is not the old transport-only RK timer.
+
+```bash
+python tests/gpu_validation/run_air5_performance_diagnosis.py \
+  --baseline tests/gpu_validation/out/air5_layered_multistep_20260924/gpu_dt2/gpu \
+  --output tests/gpu_validation/out/air5_performance_new
+```
+
+The driver freezes FP64, explicit synchronization, `symmetric_species`,
+`layered`, dt=2 ns, three independent rounds, one warmup and three measured
+steps. Each step uses the maximum rank duration. The reported group median
+is over round means, not a best-case sample. Startup rewrites the initial
+checkpoint outside the measured window; the driver rejects advanced field
+output or validation snapshots during timing.
+
+Use `run_air5_sbli_domain_replay.py --nsys` for separate GPU CUDA/MPI traces,
+or `--np 1 --ncu-kernel REGEX` for one matching kernel launch. Neither
+profiler run supplies benchmark speedups. These options are mutually
+exclusive with memcheck. A completed bounded replay is not physical
+acceptance. This small Mach4 checkpoint has no incident shock.
+
 ## AIR5 Symmetric Flux Feasibility Audit
 
 Final bounded repair gate (2026-09-25): 48 candidate and 3 default runs in

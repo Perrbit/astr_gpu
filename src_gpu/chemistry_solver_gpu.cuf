@@ -76,14 +76,18 @@ contains
     use commarray_gpu, only: q_d,qsave_d,jacob_d,qrhs_d
     integer, value :: im,jm,km,ni,nj,nk,shock,stage
     real(real64), value :: a,b,cdt
-    real(real64) :: hl(11,3),hr(11,3),ll(11,3),lr(11,3),origin(11),base(11)
+    real(real64) :: ll(11,3),lr(11,3),origin(11),base(11)
     real(real64) :: low_rhs(11)
-    integer :: id,i,j,k,component,direction
+    integer :: id,i,j,k,component,direction,node(3)
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(id>=(im+1)*(jm+1)*(km+1)) return
     i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
     if(.not.air5_symmetric_active(i,j,k,im,jm,km,ni,nj,nk)) return
-    call air5_full_state_node_face_fluxes(i,j,k,im,jm,km,ni,nj,nk,shock,hl,hr,ll,lr)
+    node=[i,j,k]
+    do direction=1,3
+      call air5_low_order_convective_face_flux(i,j,k,direction,node(direction)-1,ll(:,direction))
+      call air5_low_order_convective_face_flux(i,j,k,direction,node(direction),lr(:,direction))
+    enddo
     origin=q_d(i,j,k,1:11)*jacob_d(i,j,k)
     if(stage/=1) origin=qsave_d(i,j,k,1:11)
     do component=1,11
@@ -102,7 +106,7 @@ contains
     use commarray_gpu, only: q_d
     integer, value :: im,jm,km,ni,nj,nk,shock,axis
     real(real64), value :: cdt
-    real(real64) :: hl(11,3),hr(11,3),ll(11,3),lr(11,3),flux(11),beta
+    real(real64) :: high(11),low(11),flux(11),beta
     real(real64) :: base_left(11),base_right(11),ql(11),qr(11)
     integer :: id,i,j,k,node(3),right(3),dims(3),status,types(3),left(3)
     logical :: right_active
@@ -113,12 +117,14 @@ contains
     node=[i,j,k]; dims=[im,jm,km]; types=[ni,nj,nk]
     if(node(axis)==dims(axis)) return
     right=node; right(axis)=right(axis)+1
-    call air5_full_state_node_face_fluxes(i,j,k,im,jm,km,ni,nj,nk,shock,hl,hr,ll,lr)
+    call air5_selective_convective_face_flux_gpu(i,j,k,axis,node(axis), &
+      dims(axis),types(axis),im,jm,km,shock,high)
+    call air5_low_order_convective_face_flux(i,j,k,axis,node(axis),low)
     base_left=symmetric_base_d(i,j,k,:)
     base_right=symmetric_base_d(right(1),right(2),right(3),:)
     ql=q_d(i,j,k,1:11); qr=q_d(right(1),right(2),right(3),1:11)
     right_active=.not.(right(axis)==dims(axis) .and. (types(axis)==2 .or. types(axis)==4))
-    call air5_symmetric_face_trial_gpu(hr(:,axis),lr(:,axis),base_left,base_right,ql,qr,cdt,flux,status,beta, &
+    call air5_symmetric_face_trial_gpu(high,low,base_left,base_right,ql,qr,cdt,flux,status,beta, &
       .true.,right_active)
     if(status/=chemistry_status_ok) call record_air5_status(status)
     symmetric_face_d(i,j,k,1:11)=flux
@@ -127,7 +133,10 @@ contains
       left=node; left(axis)=0
       base_right=base_left; base_left=0.0_real64
       qr=ql; ql=q_d(left(1),left(2),left(3),1:11)
-      call air5_symmetric_face_trial_gpu(hl(:,axis),ll(:,axis),base_left,base_right,ql,qr,cdt,flux,status,beta, &
+      call air5_selective_convective_face_flux_gpu(i,j,k,axis,node(axis)-1, &
+        dims(axis),types(axis),im,jm,km,shock,high)
+      call air5_low_order_convective_face_flux(i,j,k,axis,node(axis)-1,low)
+      call air5_symmetric_face_trial_gpu(high,low,base_left,base_right,ql,qr,cdt,flux,status,beta, &
         .false.,.true.)
       if(status/=chemistry_status_ok) call record_air5_status(status)
       symmetric_face_d(left(1),left(2),left(3),1:11)=flux
@@ -139,18 +148,19 @@ contains
     use commarray_gpu, only: qrhs_d
     integer, value :: im,jm,km,ni,nj,nk,shock,axis
     real(real64), value :: cdt
-    real(real64) :: hl(11,3),hr(11,3),ll(11,3),lr(11,3),fl(11),fr(11),state(11)
-    integer :: id,i,j,k,left(3)
+    real(real64) :: ll(11),lr(11),fl(11),fr(11),state(11)
+    integer :: id,i,j,k,left(3),node(3)
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(id>=(im+1)*(jm+1)*(km+1)) return
     i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
-    left=[i,j,k]; left(axis)=left(axis)-1
+    node=[i,j,k]; left=node; left(axis)=left(axis)-1
     if(.not.air5_symmetric_active(i,j,k,im,jm,km,ni,nj,nk)) return
-    call air5_full_state_node_face_fluxes(i,j,k,im,jm,km,ni,nj,nk,shock,hl,hr,ll,lr)
+    call air5_low_order_convective_face_flux(i,j,k,axis,node(axis)-1,ll)
+    call air5_low_order_convective_face_flux(i,j,k,axis,node(axis),lr)
     fl=symmetric_face_d(left(1),left(2),left(3),1:11); fr=symmetric_face_d(i,j,k,1:11)
-    state=symmetric_base_d(i,j,k,:)+6*cdt*(fl-ll(:,axis))
+    state=symmetric_base_d(i,j,k,:)+6*cdt*(fl-ll)
     if(.not.air5_state_is_admissible_gpu(state)) call record_air5_status(202)
-    state=symmetric_base_d(i,j,k,:)-6*cdt*(fr-lr(:,axis))
+    state=symmetric_base_d(i,j,k,:)-6*cdt*(fr-lr)
     if(.not.air5_state_is_admissible_gpu(state)) call record_air5_status(203)
     qrhs_d(i,j,k,1:11)=qrhs_d(i,j,k,1:11)+fl-fr
   end subroutine air5_symmetric_apply_kernel
