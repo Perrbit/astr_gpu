@@ -27,6 +27,10 @@ program chemistry_ros2_probe
     call scaled_linear_probe
   case ('fixed_step')
     call fixed_step_probe
+  case ('update_terms')
+    call update_terms_probe
+  case ('compensation_transaction')
+    call compensation_transaction_probe
   case ('invalid_step')
     call invalid_step_probe
   case ('adaptive')
@@ -38,7 +42,9 @@ program chemistry_ros2_probe
   case ('fixed_trajectory')
     call fixed_trajectory_probe
   case ('adaptive_trajectory')
-    call adaptive_trajectory_probe
+    call adaptive_trajectory_probe(.false.)
+  case ('compensated_trajectory')
+    call adaptive_trajectory_probe(.true.)
   case ('component_trajectory')
     call component_trajectory_probe
   case ('matrix_trajectory')
@@ -54,6 +60,70 @@ program chemistry_ros2_probe
   end select
 
 contains
+
+  subroutine compensation_transaction_probe
+    real(real64) :: rho,momentum(3),q5,state(6),result(6),carry(6),seed(6),atol(6),h
+    real(real64) :: candidate(6),estimate(6),terms(6,2),adjusted(6),updated(6),expected(6),low(6)
+    integer :: status,accepted,rejected,rhs,jac,part
+    call make_state(rho,momentum,q5,state)
+    seed = 0.125_real64*epsilon(rho)*state
+    atol(1:5) = 1.0e-13_real64*rho
+    atol(6) = 1.0e-13_real64*max(abs(state(6)),1.0_real64)
+    call air5_ros2_fixed_step(rho,momentum,q5,state,1.0e-15_real64, &
+      candidate,estimate,status,update_terms=terms)
+    if (status /= 0) error stop 'uncompensated fixture invalid'
+    low = seed
+    expected = state
+    do part = 1,2
+      adjusted = terms(:,part)-low
+      updated = expected+adjusted
+      low = (updated-expected)-adjusted
+      expected = updated
+    end do
+    carry = seed
+    call air5_ros2_fixed_step(rho,momentum,q5,state,1.0e-15_real64, &
+      candidate,estimate,status,compensation=carry)
+    if (status /= 0 .or. any(candidate /= expected) .or. any(carry /= low)) &
+      error stop 'fixed-step compensation disagrees with increment reference'
+    carry = seed
+    call air5_ros2_advance(rho,momentum,q5,state,2.0e-10_real64, &
+      2.0e-10_real64,1.0e-8_real64,atol,1,result,h,accepted,rejected,rhs,jac,status, &
+      compensation=carry)
+    if (status /= chemistry_status_step_limit .or. rejected /= 1 .or. &
+        any(result /= state) .or. any(carry /= seed)) error stop 'rejected transaction rollback'
+    call air5_ros2_advance(rho,momentum,q5,state,2.0e-10_real64, &
+      1.0e-15_real64,1.0e-8_real64,atol,1,result,h,accepted,rejected,rhs,jac,status, &
+      compensation=carry)
+    if (status /= chemistry_status_step_limit .or. accepted /= 1 .or. &
+        any(result /= state) .or. any(carry /= seed)) error stop 'accepted prefix rollback'
+    call air5_ros2_advance(rho,momentum,q5,state,2.0e-10_real64, &
+      2.0e-10_real64,1.0e-8_real64,atol,200000,result,h,accepted,rejected,rhs,jac,status, &
+      compensation=carry)
+    if (status /= 0 .or. accepted < 1 .or. rejected < 1) error stop 'adaptive rejection recovery'
+    write(*,*) 'COMPENSATION_TRANSACTION_PASS'
+  end subroutine compensation_transaction_probe
+
+  subroutine update_terms_probe
+    real(real64) :: rho, momentum(3), q5, state(6), plain(6), observed(6)
+    real(real64) :: error_plain(6), error_observed(6), terms(6,2), difference
+    integer :: status, observed_status
+    call make_state(rho,momentum,q5,state)
+    call air5_ros2_fixed_step(rho,momentum,q5,state,1.0e-13_real64, &
+      plain,error_plain,status)
+    call air5_ros2_fixed_step(rho,momentum,q5,state,1.0e-13_real64, &
+      observed,error_observed,observed_status,update_terms=terms)
+    if (status /= chemistry_status_ok .or. observed_status /= status) &
+      error stop 'update terms successful-step status mismatch'
+    difference = maxval(abs((state+terms(:,1)+terms(:,2))-observed))
+    write(*,'(3(es24.16,1x))') maxval(abs(plain-observed)), &
+      maxval(abs(error_plain-error_observed)),difference
+    terms = 1.0_real64
+    call air5_ros2_fixed_step(rho,momentum,q5,state,-1.0_real64, &
+      observed,error_observed,observed_status,update_terms=terms)
+    if (observed_status /= chemistry_status_invalid_timestep) &
+      error stop 'update terms invalid-step status mismatch'
+    write(*,'(2(es24.16,1x))') maxval(abs(terms)),maxval(abs(observed-state))
+  end subroutine update_terms_probe
 
   subroutine coefficient_probe
     write(*,'(7(es24.16,1x))') air5_ros2_gamma, air5_ros2_a21, &
@@ -278,17 +348,25 @@ contains
     write(*,'(i0,1x,6(es24.16,1x))') status,state
   end subroutine fixed_trajectory_probe
 
-  subroutine adaptive_trajectory_probe
+  subroutine adaptive_trajectory_probe(compensated)
+    logical, intent(in) :: compensated
     real(real64) :: rho, momentum(3), q5, state(6), final_state(6), atol(6)
-    real(real64) :: suggested_step
+    real(real64) :: suggested_step,carry(6)
     integer :: accepted, rejected, rhs_calls, jacobian_calls, status
 
     call make_state(rho,momentum,q5,state)
     atol(1:5) = rho*1.0e-13_real64
     atol(6) = max(abs(state(6)),1.0_real64)*1.0e-13_real64
-    call air5_ros2_advance(rho,momentum,q5,state,2.0e-8_real64, &
-      2.0e-8_real64,1.0e-9_real64,atol,100000,final_state,suggested_step, &
-      accepted,rejected,rhs_calls,jacobian_calls,status)
+    if (compensated) then
+      carry = 0.0_real64
+      call air5_ros2_advance(rho,momentum,q5,state,2.0e-8_real64, &
+        2.0e-8_real64,1.0e-9_real64,atol,100000,final_state,suggested_step, &
+        accepted,rejected,rhs_calls,jacobian_calls,status,compensation=carry)
+    else
+      call air5_ros2_advance(rho,momentum,q5,state,2.0e-8_real64, &
+        2.0e-8_real64,1.0e-9_real64,atol,100000,final_state,suggested_step, &
+        accepted,rejected,rhs_calls,jacobian_calls,status)
+    end if
     write(*,'(5(i0,1x))') status,accepted,rejected,rhs_calls,jacobian_calls
     write(*,'(6(es24.16,1x))') final_state
   end subroutine adaptive_trajectory_probe

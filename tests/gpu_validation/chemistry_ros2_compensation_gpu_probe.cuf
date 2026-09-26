@@ -1,0 +1,260 @@
+module compensation_probe_kernel
+  use iso_fortran_env, only: real64
+  use cudafor
+  use chemistry_ros2_gpu, only: air5_ros2_advance_gpu
+  use chemistry_source, only: air5_source_mode_coupled
+  implicit none
+contains
+  attributes(global) subroutine advance_probe(rho,momentum,q5,initial,seed,atol, &
+      duration,first_step,rtol,attempts,repeats,enabled,final,carry,metrics,counts,suggested)
+    real(real64), value :: rho,q5,duration,first_step,rtol
+    integer, value :: attempts,repeats,enabled
+    real(real64), device :: momentum(3),initial(6),seed(6),atol(6)
+    real(real64), device :: final(6),carry(6),metrics(2),suggested(1)
+    integer, device :: counts(3)
+    real(real64) :: current(6),candidate(6),correction(6),h,ysum,mass_error,y_error
+    integer :: iteration,status,accepted,rejected,rhs,jac,species,total_a,total_r
+    if (threadIdx%x /= 1) return
+    current = initial
+    correction = seed
+    mass_error = 0.0_real64
+    y_error = 0.0_real64
+    total_a = 0
+    total_r = 0
+    do iteration = 1,repeats
+      if (enabled /= 0) then
+        call air5_ros2_advance_gpu(rho,momentum,q5,current,duration,first_step,rtol,atol, &
+          attempts,candidate,h,accepted,rejected,rhs,jac,status,air5_source_mode_coupled,correction)
+      else
+        call air5_ros2_advance_gpu(rho,momentum,q5,current,duration,first_step,rtol,atol, &
+          attempts,candidate,h,accepted,rejected,rhs,jac,status,air5_source_mode_coupled)
+      end if
+      total_a = total_a+accepted
+      total_r = total_r+rejected
+      current = candidate
+      if (status /= 0) exit
+      ysum = 0.0_real64
+      do species = 1,5
+        ysum = ysum+current(species)/rho
+      end do
+      y_error = max(y_error,abs(ysum-1.0_real64))
+      mass_error = max(mass_error,abs(sum(current(1:5))-sum(initial(1:5)))/rho)
+    end do
+    final = current
+    carry = correction
+    metrics = [mass_error,y_error]
+    counts = [status,total_a,total_r]
+    suggested(1) = h
+  end subroutine advance_probe
+end module compensation_probe_kernel
+
+program chemistry_ros2_compensation_gpu_probe
+  use iso_fortran_env, only: real64,int64
+  use ieee_arithmetic, only: ieee_value,ieee_quiet_nan,ieee_positive_inf
+  use cudafor
+  use chemistry_air5_data, only: air5_ru,air5_molar_mass,air5_atom_count
+  use chemistry_model, only: chemistry_status_step_limit,chemistry_status_invalid_timestep, &
+    chemistry_status_nonfinite,chemistry_status_invalid_tolerance
+  use chemistry_thermo, only: air5_ev_from_tv,air5_q5_from_state, &
+    air5_temperature_from_q5,air5_tv_from_ev
+  use chemistry_ros2, only: air5_ros2_advance
+  use compensation_probe_kernel
+  use gpu_check, only: sync_after_kernel
+  implicit none
+  real(real64) :: rho,momentum(3),q5,initial(6),atol(6),seed(6),final_cpu(6),final_gpu(6)
+  real(real64) :: carry_cpu(6),carry_gpu(6),metric_cpu(2),metric_gpu(2),h_cpu,h_gpu
+  real(real64) :: previous_cpu(6),previous_gpu(6),saved_cpu(6),saved_gpu(6)
+  real(real64) :: saved_carry_cpu(6),saved_carry_gpu(6),temperature,tv,amount0,amount1
+  real(real64) :: nan,infinity
+  integer :: counts_cpu(3),counts_gpu(3),status,case_index,enabled,atom,repeats
+  real(real64), parameter :: temperatures(3) = [1500.0_real64,2000.0_real64,3000.0_real64]
+  character(len=32) :: argument
+
+  repeats = 20000
+  if (command_argument_count() > 0) then
+    call get_command_argument(1,argument)
+    read(argument,*) repeats
+    if (repeats < 1) error stop 'invalid repeats'
+  end if
+  do case_index = 1,3
+    call setup(temperatures(case_index),temperatures(case_index),.false.)
+    seed = 0.0_real64
+    do enabled = 0,1
+      call run_pair(5.0e-10_real64,5.0e-10_real64,1.0e-9_real64,200000,repeats,enabled)
+      if (any([counts_cpu(1),counts_gpu(1)] /= 0)) error stop 'long chemistry update failed'
+      if (enabled == 1) then
+        if (max(metric_cpu(2),metric_gpu(2)) > 128.0_real64*epsilon(rho)) &
+          error stop 'compensated trajectory crossed composition gate'
+        do atom = 1,2
+          amount0 = sum(initial(1:5)*real(air5_atom_count(atom,:),real64)/air5_molar_mass)
+          amount1 = sum(final_gpu(1:5)*real(air5_atom_count(atom,:),real64)/air5_molar_mass)
+          if (abs(amount1/amount0-1.0_real64) > 1.0e-14_real64) error stop 'element drift'
+        end do
+        if (maxval(abs(final_gpu-previous_gpu)/max(abs(final_gpu),1.0e-30_real64)) > &
+            1.0e-8_real64) error stop 'compensation changed chemistry trajectory'
+      else
+        previous_cpu = final_cpu
+        previous_gpu = final_gpu
+      end if
+      write(*,'(a,2i8,4es24.16)') 'LONG_T_MODE_CPU_GPU_MASS_YSUM ', &
+        int(temperatures(case_index)),enabled,metric_cpu,metric_gpu
+    end do
+  end do
+
+  ! Two calls and one call have the same two accepted substeps in this fixture.
+  call setup(2000.0_real64,2000.0_real64,.false.)
+  seed = 0.125_real64*epsilon(rho)*initial
+  call run_pair(5.0e-10_real64,5.0e-10_real64,1.0e-9_real64,200000,2,1)
+  saved_cpu = final_cpu
+  saved_gpu = final_gpu
+  saved_carry_cpu = carry_cpu
+  saved_carry_gpu = carry_gpu
+  call run_pair(1.0e-9_real64,5.0e-10_real64,1.0e-9_real64,200000,1,1)
+  if (any(saved_cpu /= final_cpu) .or. any(saved_gpu /= final_gpu) .or. &
+      any(saved_carry_cpu /= carry_cpu) .or. any(saved_carry_gpu /= carry_gpu)) &
+    error stop 'cross-call compensation lifecycle mismatch'
+  write(*,*) 'CROSS_CALL_EXACT_PASS'
+
+  call setup(6000.0_real64,1000.0_real64,.true.)
+  seed = 0.125_real64*epsilon(rho)*initial
+  call run_pair(2.0e-10_real64,2.0e-10_real64,1.0e-8_real64,200000,1,1)
+  if (counts_cpu(1) /= 0 .or. counts_gpu(1) /= 0 .or. &
+      min(counts_cpu(3),counts_gpu(3)) < 1) error stop 'rejection success path not exercised'
+  write(*,*) 'REJECTION_RECOVERY_COUNTS_CPU_GPU ',counts_cpu,counts_gpu
+
+  ! Force a rejected step then exhaustion, with nonzero input compensation.
+  call run_pair(2.0e-10_real64,2.0e-10_real64,1.0e-8_real64,1,1,1)
+  call check_rollback(chemistry_status_step_limit)
+  if (min(counts_cpu(3),counts_gpu(3)) < 1) error stop 'no forced rejection'
+  write(*,*) 'REJECTED_STEP_ROLLBACK_PASS'
+
+  ! Exhaustion after an accepted substep must also restore the caller's carry.
+  call run_pair(2.0e-10_real64,1.0e-15_real64,1.0e-8_real64,1,1,1)
+  call check_rollback(chemistry_status_step_limit)
+  if (min(counts_cpu(2),counts_gpu(2)) < 1) error stop 'no accepted prefix'
+  write(*,*) 'ACCEPTED_PREFIX_ROLLBACK_PASS'
+  call run_pair(-1.0_real64,1.0e-15_real64,1.0e-8_real64,1,1,1)
+  call check_rollback(chemistry_status_invalid_timestep)
+  write(*,*) 'INVALID_INPUT_ROLLBACK_PASS'
+
+  nan = ieee_value(0.0_real64,ieee_quiet_nan)
+  infinity = ieee_value(0.0_real64,ieee_positive_inf)
+  call run_pair(nan,1.0e-15_real64,1.0e-8_real64,1,1,1)
+  call check_rollback(chemistry_status_invalid_timestep)
+  call run_pair(2.0e-10_real64,infinity,1.0e-8_real64,1,1,1)
+  call check_rollback(chemistry_status_invalid_timestep)
+  call run_pair(2.0e-10_real64,1.0e-15_real64,nan,1,1,1)
+  call check_rollback(chemistry_status_invalid_tolerance)
+  seed(3) = nan
+  call run_pair(2.0e-10_real64,1.0e-15_real64,1.0e-8_real64,1,1,1)
+  call check_rollback(chemistry_status_nonfinite)
+  seed(3) = infinity
+  call run_pair(2.0e-10_real64,1.0e-15_real64,1.0e-8_real64,1,1,1)
+  call check_rollback(chemistry_status_nonfinite)
+  seed = 0.125_real64*epsilon(rho)*initial
+  initial(3) = nan
+  call run_pair(2.0e-10_real64,1.0e-15_real64,1.0e-8_real64,1,1,1)
+  call check_rollback(chemistry_status_nonfinite)
+  write(*,*) 'NONFINITE_INPUT_BITWISE_ROLLBACK_PASS'
+
+  do case_index = 1,2
+    if (case_index == 1) then
+      call setup(6000.0_real64,1000.0_real64,.true.)
+    else
+      call setup(4000.0_real64,4000.0_real64,.true.)
+    end if
+    seed = 0.0_real64
+    write(*,'(a,i0,12(1x,es24.16))') 'RADAU_INPUT ',case_index,rho,momentum,q5,initial,2.0e-8_real64
+    do enabled = 0,1
+      call run_pair(2.0e-8_real64,2.0e-8_real64,1.0e-9_real64,200000,1,enabled)
+      if (counts_cpu(1) /= 0 .or. counts_gpu(1) /= 0) error stop 'Radau fixture failed'
+      write(*,'(a,2i3,6(1x,es24.16))') 'RADAU_CPU ',case_index,enabled,final_cpu
+      write(*,'(a,2i3,6(1x,es24.16))') 'RADAU_GPU ',case_index,enabled,final_gpu
+      write(*,'(a,8i9)') 'RADAU_COUNTS ',case_index,enabled,counts_cpu,counts_gpu
+    end do
+  end do
+contains
+  subroutine setup(t,tv0,mixed)
+    real(real64), intent(in) :: t,tv0
+    logical, intent(in) :: mixed
+    real(real64) :: fractions(5)
+    fractions = [0.767_real64,0.233_real64,0.0_real64,0.0_real64,0.0_real64]
+    if (mixed) fractions = [0.55_real64,0.15_real64,0.10_real64,0.12_real64,0.08_real64]
+    rho = 20000.0_real64/(t*sum(fractions*air5_ru/air5_molar_mass))
+    momentum = rho*[2000.0_real64,0.0_real64,0.0_real64]
+    initial(1:5) = rho*fractions
+    call air5_ev_from_tv(initial(1:5),tv0,initial(6),status)
+    if (status /= 0) error stop 'setup Ev'
+    call air5_q5_from_state(rho,momentum,initial(1:5),initial(6),t,q5,status)
+    if (status /= 0) error stop 'setup q5'
+    atol(1:5) = 1.0e-13_real64*rho
+    atol(6) = 1.0e-13_real64*max(abs(initial(6)),1.0_real64)
+  end subroutine setup
+
+  subroutine run_pair(duration,first_step,rtol,attempts,calls,mode)
+    real(real64), intent(in) :: duration,first_step,rtol
+    integer, intent(in) :: attempts,calls,mode
+    real(real64), device :: m_d(3),q_d(6),seed_d(6),atol_d(6),final_d(6),carry_d(6),metrics_d(2),h_d(1)
+    integer, device :: counts_d(3)
+    real(real64) :: current(6),candidate(6),ysum,scale(6)
+    integer :: iteration,accepted,rejected,rhs,jac,species
+    current = initial
+    carry_cpu = seed
+    metric_cpu = 0.0_real64
+    counts_cpu = 0
+    do iteration = 1,calls
+      if (mode == 1) then
+        call air5_ros2_advance(rho,momentum,q5,current,duration,first_step,rtol,atol, &
+          attempts,candidate,h_cpu,accepted,rejected,rhs,jac,status,compensation=carry_cpu)
+      else
+        call air5_ros2_advance(rho,momentum,q5,current,duration,first_step,rtol,atol, &
+          attempts,candidate,h_cpu,accepted,rejected,rhs,jac,status)
+      end if
+      current = candidate
+      counts_cpu = counts_cpu+[0,accepted,rejected]
+      counts_cpu(1) = status
+      if (status /= 0) exit
+      ysum = 0.0_real64
+      do species = 1,5
+        ysum = ysum+current(species)/rho
+      end do
+      metric_cpu(1) = max(metric_cpu(1),abs(sum(current(1:5))-sum(initial(1:5)))/rho)
+      metric_cpu(2) = max(metric_cpu(2),abs(ysum-1.0_real64))
+    end do
+    final_cpu = current
+    m_d = momentum
+    q_d = initial
+    seed_d = seed
+    atol_d = atol
+    call advance_probe<<<1,32>>>(rho,m_d,q5,q_d,seed_d,atol_d,duration,first_step,rtol, &
+      attempts,calls,mode,final_d,carry_d,metrics_d,counts_d,h_d)
+    call sync_after_kernel('compensation_advance_probe',force_sync=.true.)
+    final_gpu = final_d
+    carry_gpu = carry_d
+    metric_gpu = metrics_d
+    counts_gpu = counts_d
+    h_gpu = h_d(1)
+    if (counts_cpu(1) /= counts_gpu(1)) error stop 'CPU GPU status mismatch'
+    if (counts_cpu(1) == 0) then
+      scale(1:5) = max(abs(final_cpu(1:5)),1.0e-13_real64*rho)
+      scale(6) = max(abs(final_cpu(6)),1.0_real64)
+      if (maxval(abs(final_cpu-final_gpu)/scale) > 1.0e-7_real64) error stop 'CPU GPU state mismatch'
+      if (minval(final_gpu(1:5)) < 0.0_real64) error stop 'negative species'
+      call air5_temperature_from_q5(rho,momentum,final_gpu(1:5),final_gpu(6),q5,temperature,status)
+      if (status /= 0) error stop 'final GPU T invalid'
+      call air5_tv_from_ev(final_gpu(1:5),final_gpu(6),tv,status)
+      if (status /= 0) error stop 'final GPU Tv invalid'
+    end if
+  end subroutine run_pair
+
+  subroutine check_rollback(expected)
+    integer, intent(in) :: expected
+    if (counts_cpu(1) /= expected .or. counts_gpu(1) /= expected) error stop 'wrong failure status'
+    if (any(transfer(final_cpu,[0_int64],6) /= transfer(initial,[0_int64],6)) .or. &
+        any(transfer(final_gpu,[0_int64],6) /= transfer(initial,[0_int64],6))) &
+      error stop 'state not rolled back bitwise'
+    if (any(transfer(carry_cpu,[0_int64],6) /= transfer(seed,[0_int64],6)) .or. &
+        any(transfer(carry_gpu,[0_int64],6) /= transfer(seed,[0_int64],6))) &
+      error stop 'carry not rolled back bitwise'
+  end subroutine check_rollback
+end program chemistry_ros2_compensation_gpu_probe

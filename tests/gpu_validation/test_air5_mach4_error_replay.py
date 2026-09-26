@@ -21,7 +21,8 @@ def test_matched_window_rejects_phase_and_method_mismatch():
     b = dict(a, updates=200, dt=1e-9)
     assert check_window_contract(a, b) == a['target_time']
     for changes in (dict(target_time=2.1e-6), dict(updates=201),
-                    dict(diffusion_limiter='full_state'), dict(executable_sha256='other')):
+                    dict(diffusion_limiter='full_state'), dict(executable_sha256='other'),
+                    dict(compensation='on'), dict(compensation_restart='initialize')):
         with pytest.raises(ValueError):
             check_window_contract(a, dict(b, **changes))
 

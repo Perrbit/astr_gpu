@@ -612,24 +612,34 @@ contains
 
   pure subroutine air5_ros2_fixed_step(rho, momentum, q5, state, step, &
       candidate, error_estimate, status, retryable, rhs_evaluations, &
-      jacobian_evaluations, source_mode)
+      jacobian_evaluations, source_mode, update_terms, compensation)
     real(real64), intent(in) :: rho, momentum(3), q5, state(6), step
     real(real64), intent(out) :: candidate(6), error_estimate(6)
     integer, intent(out) :: status
     logical, intent(out), optional :: retryable
     integer, intent(out), optional :: rhs_evaluations, jacobian_evaluations
     integer, intent(in), optional :: source_mode
+    real(real64), intent(out), optional :: update_terms(6,2)
+    real(real64), intent(inout), optional :: compensation(6)
+    real(real64) :: carry(6), adjusted(6), updated(6)
     real(real64) :: source(6), jacobian(6,6), matrix(6,6), lu(6,6)
     real(real64) :: stage_state(6), stage_source(6), k1(6), k2(6), rhs(6)
     integer :: pivots(6), index, active_mode
 
     candidate = state
     error_estimate = 0.0_real64
+    if (present(update_terms)) update_terms = 0.0_real64
     if (present(retryable)) retryable = .false.
     if (present(rhs_evaluations)) rhs_evaluations = 0
     if (present(jacobian_evaluations)) jacobian_evaluations = 0
     active_mode = air5_source_mode_coupled
     if (present(source_mode)) active_mode = source_mode
+    if (present(compensation)) then
+      if (.not. all(ieee_is_finite(compensation))) then
+        status = chemistry_status_nonfinite
+        return
+      end if
+    end if
     if (.not. ieee_is_finite(step)) then
       status = chemistry_status_invalid_timestep
       return
@@ -666,6 +676,15 @@ contains
     call air5_lu_solve_6(lu,pivots,rhs,k2,status)
     if (status /= chemistry_status_ok) return
     candidate = state+air5_ros2_m1*k1+air5_ros2_m2*k2
+    if (present(compensation)) then
+      carry = compensation
+      adjusted = air5_ros2_m1*k1-carry
+      updated = state+adjusted
+      carry = (updated-state)-adjusted
+      adjusted = air5_ros2_m2*k2-carry
+      candidate = updated+adjusted
+      carry = (candidate-updated)-adjusted
+    end if
     error_estimate = air5_ros2_e1*k1+air5_ros2_e2*k2
     if (.not. all(ieee_is_finite(candidate)) .or. &
         .not. all(ieee_is_finite(error_estimate))) then
@@ -678,13 +697,18 @@ contains
     if (status /= chemistry_status_ok) then
       candidate = state
       error_estimate = 0.0_real64
+    else if (present(update_terms)) then
+      ! Diagnostic access before the state addition loses low-order bits.
+      update_terms(:,1) = air5_ros2_m1*k1
+      update_terms(:,2) = air5_ros2_m2*k2
     end if
+    if (status == chemistry_status_ok .and. present(compensation)) compensation = carry
   end subroutine air5_ros2_fixed_step
 
   pure subroutine air5_ros2_advance(rho, momentum, q5, state, duration, &
       initial_step, rtol, atol, max_attempts, final_state, suggested_step, &
       accepted_steps, rejected_steps, rhs_evaluations, jacobian_evaluations, status, &
-      source_mode)
+      source_mode, compensation)
     real(real64), intent(in) :: rho, momentum(3), q5, state(6), duration
     real(real64), intent(in) :: initial_step, rtol, atol(6)
     integer, intent(in) :: max_attempts
@@ -692,6 +716,8 @@ contains
     integer, intent(out) :: accepted_steps, rejected_steps
     integer, intent(out) :: rhs_evaluations, jacobian_evaluations, status
     integer, intent(in), optional :: source_mode
+    real(real64), intent(inout), optional :: compensation(6)
+    real(real64) :: current_carry(6), trial_carry(6)
     real(real64), parameter :: safety = 0.9_real64
     real(real64), parameter :: minimum_factor = 0.2_real64
     real(real64), parameter :: maximum_factor = 5.0_real64
@@ -737,6 +763,13 @@ contains
       status = chemistry_status_step_limit
       return
     end if
+    if (present(compensation)) then
+      if (.not. all(ieee_is_finite(compensation))) then
+        status = chemistry_status_nonfinite
+        return
+      end if
+      current_carry = compensation
+    end if
     call air5_validate_ros2_candidate(rho,momentum,q5,state,status)
     if (status /= chemistry_status_ok) return
 
@@ -753,8 +786,15 @@ contains
         status = chemistry_status_step_limit
         return
       end if
-      call air5_ros2_fixed_step(rho,momentum,q5,current,step,candidate, &
-        error_estimate,attempt_status,retryable,attempt_rhs,attempt_jac,active_mode)
+      if (present(compensation)) then
+        trial_carry = current_carry
+        call air5_ros2_fixed_step(rho,momentum,q5,current,step,candidate, &
+          error_estimate,attempt_status,retryable,attempt_rhs,attempt_jac,active_mode, &
+          compensation=trial_carry)
+      else
+        call air5_ros2_fixed_step(rho,momentum,q5,current,step,candidate, &
+          error_estimate,attempt_status,retryable,attempt_rhs,attempt_jac,active_mode)
+      end if
       rhs_evaluations = rhs_evaluations+attempt_rhs
       jacobian_evaluations = jacobian_evaluations+attempt_jac
       if (attempt_status == chemistry_status_ok) then
@@ -762,6 +802,7 @@ contains
           rtol,atol,error_norm)
         if (error_norm <= 1.0_real64) then
           current = candidate
+          if (present(compensation)) current_carry = trial_carry
           elapsed = elapsed+step
           accepted_steps = accepted_steps+1
           if (error_norm == 0.0_real64) then
@@ -775,6 +816,8 @@ contains
           previous_rejected = .false.
           if (elapsed >= duration) then
             final_state = current
+            ! Commit caller-owned low bits only when the whole interval succeeds.
+            if (present(compensation)) compensation = current_carry
             status = chemistry_status_ok
             return
           end if

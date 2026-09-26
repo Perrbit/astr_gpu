@@ -94,6 +94,7 @@ contains
 
   attributes(global) subroutine air5_chemistry_half_step_kernel(duration,source_mode,is,ie, &
       js,je,ks,ke)
+    use chemistry_compensation_gpu, only: air5_compensated_d,air5_carry_d
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,spc_d,tve_d
     real(real64), value :: duration
     integer, value :: source_mode,is,ie,js,je,ks,ke
@@ -105,6 +106,7 @@ contains
     real(real64) :: density,momentum(3),state(6),final_state(6),atol(6),suggested_step
     real(real64) :: local_q(air5_num_conservative),velocity(3)
     real(real64) :: mass_fraction(air5_num_species),temperature,tv,pressure
+    real(real64) :: trial_carry(6)
 
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     nx=ie-is+1
@@ -119,9 +121,16 @@ contains
     state=q_d(i,j,k,air5_idx_species_first:air5_idx_ev)
     atol(1:air5_num_species)=atol_factor*density
     atol(6)=atol_factor*max(abs(state(6)),1.0_real64)
+    if(air5_compensated_d) then
+      trial_carry=air5_carry_d(i,j,k,air5_idx_species_first:air5_idx_ev)
+      call air5_ros2_advance_gpu(density,momentum,q_d(i,j,k,air5_idx_total_energy), &
+        state,duration,duration,rtol,atol,max_attempts,final_state,suggested_step, &
+        accepted,rejected,rhs_evaluations,jacobian_evaluations,status,source_mode,trial_carry)
+    else
     call air5_ros2_advance_gpu(density,momentum,q_d(i,j,k,air5_idx_total_energy), &
       state,duration,duration,rtol,atol,max_attempts,final_state,suggested_step, &
       accepted,rejected,rhs_evaluations,jacobian_evaluations,status,source_mode)
+    endif
     if(status/=chemistry_status_ok) then
       call record_air5_chemistry_status(status)
       return
@@ -135,6 +144,7 @@ contains
       return
     endif
     q_d(i,j,k,air5_idx_species_first:air5_idx_ev)=final_state
+    if(air5_compensated_d) air5_carry_d(i,j,k,air5_idx_species_first:air5_idx_ev)=trial_carry
     rho_d(i,j,k)=density
     vel_d(i,j,k,:)=velocity
     prs_d(i,j,k)=pressure
@@ -146,6 +156,7 @@ contains
   end subroutine air5_chemistry_half_step_kernel
 
   subroutine air5_chemistry_half_step_gpu(duration,half_index)
+    use chemistry_compensation, only: air5_compensated
     use mpi
     use commvar, only: is,ie,js,je,ks,ke,nstep,feqchkpt
     use parallel, only: lio
@@ -236,6 +247,10 @@ contains
     elseif(half_index==2) then
       call apply_air5_hbl_boundary_gpu()
       call launch_air5_interior_primitive_gpu(chemistry_recovered=reuse_primitives)
+      if(air5_compensated) then
+        call exchange_solution_halo_gpu(.true.)
+        call launch_air5_face_primitives_gpu()
+      endif
     endif
     if(lio .and. (nstep==0 .or. (feqchkpt>0 .and. mod(nstep,feqchkpt)==0))) then
       write(*,'(A,I0,A,5(ES12.4,1X),A,4(I0,1X))') 'AIR5_CHEMISTRY half=', &

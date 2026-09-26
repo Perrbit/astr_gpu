@@ -100,6 +100,9 @@ def check_window_contract(coarse, fine):
                 'baseline', 'topology', 'convection_limiter', 'diffusion_limiter'):
         if coarse[key] != fine[key]:
             raise ValueError(f'incompatible matched window: {key}')
+    for key, default in (('compensation', 'off'), ('compensation_restart', 'restore')):
+        if coarse.get(key, default) != fine.get(key, default):
+            raise ValueError(f'incompatible matched window: {key}')
     if (coarse['topology'] != '2,1,1' or coarse['updates'] < 1 or
         fine['updates'] != 2*coarse['updates'] or coarse['dt'] != 2*fine['dt']):
         raise ValueError('expected NP2 dt/dt2 matched update counts')

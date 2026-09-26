@@ -213,6 +213,7 @@ contains
   end subroutine get_air5_incident_top
 
   subroutine apply_air5_hbl_boundary()
+    use chemistry_compensation, only: air5_compensated,air5_carry
     use mpi
     use commvar, only: im,jm,km,hm,flowtype
     use commarray, only: q,x
@@ -311,6 +312,12 @@ contains
     if(global_status/=chemistry_status_ok) then
       write(*,'(A,I0)') 'fixed air5 HBL boundary failed, status=',global_status
       call MPI_Abort(MPI_COMM_WORLD,global_status,ierr)
+    endif
+    if(air5_compensated) then
+      if(mpileft==MPI_PROC_NULL) air5_carry(0,:,:,:)=0.0_real64
+      if(mpiright==MPI_PROC_NULL) air5_carry(im,:,:,:)=0.0_real64
+      if(mpidown==MPI_PROC_NULL) air5_carry(:,0,:,:)=0.0_real64
+      if(mpiup==MPI_PROC_NULL) air5_carry(:,jm,:,:)=0.0_real64
     endif
   end subroutine apply_air5_hbl_boundary
 

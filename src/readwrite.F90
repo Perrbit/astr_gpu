@@ -2017,6 +2017,9 @@ module readwrite
   end subroutine writeflfed
   
   subroutine write_io_tree(file2write)
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_compensation, only: air5_compensated,air5_carry
+#endif
 
     use commvar,  only : im,jm,km,lwsequ,turbmode,feqwsequ,force,ymin,ymax,ka, &
                          num_species,lcomb
@@ -2032,7 +2035,8 @@ module readwrite
       real(8),allocatable,dimension(:,:,:) :: data
     end type dacoll
 
-    integer :: numvar
+    integer :: numvar,basevar
+    character(len=5) :: compensation_name
     
     type(dacoll),allocatable :: data_gather(:)
     real(8),allocatable,dimension(:,:,:) :: data2write
@@ -2046,6 +2050,10 @@ module readwrite
       numvar=numvar+1
     endif
 
+    basevar=numvar
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(air5_compensated) numvar=numvar+22
+#endif
     allocate(data_gather(numvar))
 
     call pgather_across_k(array=rho(0:im,0:jm,1:km),  data=data_gather(1)%data,communicator=mpi_kgroup)
@@ -2059,6 +2067,16 @@ module readwrite
     enddo
     if(lcomb) call pgather_across_k(array=tve(0:im,0:jm,1:km), &
       data=data_gather(7+num_species)%data,communicator=mpi_kgroup)
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(air5_compensated) then
+      do jsp=1,11
+        call pgather_across_k(array=q(0:im,0:jm,1:km,jsp), &
+          data=data_gather(basevar+jsp)%data,communicator=mpi_kgroup)
+        call pgather_across_k(array=air5_carry(0:im,0:jm,1:km,jsp), &
+          data=data_gather(basevar+11+jsp)%data,communicator=mpi_kgroup)
+      enddo
+    endif
+#endif
 
     if(krk==0) then
       offset=(/ig0,jg0,0/)
@@ -2089,6 +2107,19 @@ module readwrite
         call h5wa3d_r8_struct(varname='sp'//spname, var=data2write,offset=offset)
       enddo
 
+#ifdef ASTR_AIR5_CHEMISTRY
+      if(air5_compensated) then
+        do jsp=1,11
+          write(compensation_name,'(A,I2.2)') 'acq',jsp
+          data2write=add_kface(q(0:im,0:jm,0,jsp),data_gather(basevar+jsp)%data)
+          call h5wa3d_r8_struct(varname=compensation_name,var=data2write,offset=offset)
+          write(compensation_name,'(A,I2.2)') 'acc',jsp
+          data2write=add_kface(air5_carry(0:im,0:jm,0,jsp),data_gather(basevar+11+jsp)%data)
+          call h5wa3d_r8_struct(varname=compensation_name,var=data2write,offset=offset)
+        enddo
+        call h5write(varname='air5_compensation_version',var=1)
+      endif
+#endif
       call h5io_end
 
       deallocate(data2write)
@@ -2097,6 +2128,91 @@ module readwrite
     endif
 
   end subroutine write_io_tree
+
+#ifdef ASTR_AIR5_CHEMISTRY
+  subroutine initialize_air5_compensated_flow()
+    use mpi
+    use ieee_arithmetic, only: ieee_is_finite
+    use commvar, only: lcomb,flowtype,lfilter,limmbou,rkscheme,lrestart,numq,ndims
+    use commarray, only: q
+    use sponge_layer, only: lsponge
+    use fludyna, only: updatefvar
+    use chemistry_compensation, only: configure_air5_compensation,air5_carry
+    use hdf5io
+    character(len=32) :: value,restart_mode
+    character(len=5) :: name
+    integer :: choice,low,high,status,length,ierr,m,version
+    logical :: present_version,present_high,present_carry
+    value='off'
+    call get_environment_variable('ASTR_AIR5_COMPENSATION',value,length,status)
+    if(status==1) value='off'
+    choice=-1
+    if(status==0 .or. status==1) then
+      if(trim(value)=='off') choice=0
+      if(trim(value)=='on') choice=1
+    endif
+    call MPI_Allreduce(choice,low,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(choice,high,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(low<0 .or. low/=high) error stop 'invalid or inconsistent ASTR_AIR5_COMPENSATION'
+    if(choice==1) then
+      if(.not.lcomb .or. numq/=11 .or. ndims/=3 .or. lfilter .or. limmbou .or. lsponge .or. &
+         rkscheme/='rk3' .or. (trim(flowtype)/='air5hbl' .and. trim(flowtype)/='air5sbli')) &
+        error stop 'compensation requires AIR5 HBL/SBLI RK3 without filter, immersed body, or sponge'
+    endif
+    call configure_air5_compensation(choice==1,im,jm,km)
+    if(lio .and. choice==1) print *, 'ASTR_AIR5_COMPENSATION=on (q minus carry)'
+    if(.not.lrestart .or. .not.lcomb) return
+#ifdef HDF5
+    call h5io_init('outdat/flowfield.h5','read')
+    call h5lexists_f(h5file_id,'air5_compensation_version',present_version,ierr)
+    if(ierr/=0) error stop 'cannot inspect compensation checkpoint version'
+    if(choice==0) then
+      if(present_version) error stop 'compensated checkpoint requires ASTR_AIR5_COMPENSATION=on'
+      call h5io_end
+      return
+    endif
+    if(.not.present_version) then
+      do m=1,11
+        write(name,'(A,I2.2)') 'acq',m
+        call h5lexists_f(h5file_id,name,present_high,ierr)
+        if(ierr/=0) error stop 'cannot inspect checkpoint conservative state'
+        write(name,'(A,I2.2)') 'acc',m
+        call h5lexists_f(h5file_id,name,present_carry,ierr)
+        if(ierr/=0) error stop 'cannot inspect checkpoint carry'
+        if(present_high .or. present_carry) error stop 'incomplete compensation checkpoint schema'
+      enddo
+      restart_mode=''
+      call get_environment_variable('ASTR_AIR5_COMPENSATION_RESTART',restart_mode,status=status)
+      choice=0
+      if(status==0 .and. trim(restart_mode)=='initialize') choice=1
+      call MPI_Allreduce(choice,low,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+      if(low/=1) error stop 'legacy checkpoint requires explicit compensation restart=initialize'
+      call h5io_end
+      if(lio) print *, 'AIR5 compensation: legacy checkpoint, zero initial carry'
+      return
+    endif
+    call h5read('air5_compensation_version',version)
+    if(version/=1) error stop 'unsupported compensation checkpoint version'
+    do m=1,11
+      write(name,'(A,I2.2)') 'acq',m
+      call h5read(name,q(0:im,0:jm,0:km,m),mode='h')
+      write(name,'(A,I2.2)') 'acc',m
+      call h5read(name,air5_carry(:,:,:,m),mode='h')
+    enddo
+    call h5io_end
+    choice=0
+    if(any(.not.ieee_is_finite(q(0:im,0:jm,0:km,:))) .or. &
+       any(.not.ieee_is_finite(air5_carry))) choice=1
+    if(any(abs(air5_carry)>4.0d0*spacing(q(0:im,0:jm,0:km,:)))) choice=1
+    call MPI_Allreduce(choice,high,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(high/=0) error stop 'nonfinite or invalid low-part compensated checkpoint'
+    call updatefvar
+    if(lio) print *, 'AIR5 compensation: restored conservative state and carry'
+#else
+    error stop 'compensated restart requires HDF5'
+#endif
+  end subroutine initialize_air5_compensated_flow
+#endif
 
   subroutine write_validation_rk_snapshot
     use commvar, only: hm,im,jm,km,numq,num_species

@@ -333,6 +333,8 @@ module mainloop
                                      air5_limit_filtered_state
     use chemistry_postshock_boundary, only: apply_air5_postshock_boundary
     use chemistry_hbl_boundary, only: apply_air5_hbl_boundary
+    use chemistry_compensation, only: air5_compensated,air5_carry,air5_origin, &
+      air5_origin_carry,compensated_add,compensated_rk
 #endif
 #ifdef COMB
     use thermchem,only : imp_euler_ode,heatrate
@@ -388,6 +390,8 @@ module mainloop
     air5_reacting_case=lcomb .and. air5_reacting_flowtype(flowtype)
     air5_open_x_case=lcomb .and. air5_open_x_flowtype(flowtype)
     air5_hbl_case=lcomb .and. air5_hbl_flowtype(flowtype)
+    if(air5_compensated .and. lcracon) &
+      error stop 'AIR5 compensation does not support automatic crash-fix state replacement'
 #endif
 
 #ifdef _CUDA
@@ -572,6 +576,13 @@ module mainloop
 
       if(rkstep==1) then
 
+#ifdef ASTR_AIR5_CHEMISTRY
+        if(air5_compensated) then
+          air5_origin=q(0:im,0:jm,0:km,:)
+          air5_origin_carry=air5_carry
+        endif
+#endif
+
         do m=1,numq
           qsave(0:im,0:jm,0:km,m)=q(0:im,0:jm,0:km,m)*jacob(0:im,0:jm,0:km)
 
@@ -596,6 +607,27 @@ module mainloop
       endif
 
       if(rkscheme=='rk3') then
+#ifdef ASTR_AIR5_CHEMISTRY
+        if(air5_compensated) then
+          do m=1,numq
+            do k=0,km
+              do j=0,jm
+                do i=0,im
+                  if(rkstep==1) then
+                    call compensated_add(q(i,j,k,m),air5_carry(i,j,k,m), &
+                      deltat*qrhs(i,j,k,m)/jacob(i,j,k))
+                  else
+                    call compensated_rk(q(i,j,k,m),air5_carry(i,j,k,m), &
+                      air5_origin(i,j,k,m),air5_origin_carry(i,j,k,m), &
+                      rkcoe(1,rkstep),rkcoe(2,rkstep), &
+                      rkcoe(3,rkstep)*deltat*qrhs(i,j,k,m)/jacob(i,j,k))
+                  endif
+                enddo
+              enddo
+            enddo
+          enddo
+        else
+#endif
         do m=1,numq
           !
           q(0:im,0:jm,0:km,m)=rkcoe(1,rkstep)*qsave(0:im,0:jm,0:km,m)+      &
@@ -606,6 +638,9 @@ module mainloop
           q(0:im,0:jm,0:km,m)=q(0:im,0:jm,0:km,m)/jacob(0:im,0:jm,0:km)
           !
         enddo
+#ifdef ASTR_AIR5_CHEMISTRY
+        endif
+#endif
       elseif(rkscheme=='rk4') then
         if(rkstep<=3) then
           do m=1,numq
@@ -759,6 +794,9 @@ module mainloop
       call air5_chemistry_half_step(0.5_real64*deltat,2)
       if(air5_hbl_case) call apply_air5_hbl_boundary()
       call updatefvar
+      ! A global checkpoint has one owner for each duplicated physical node.
+      ! Canonicalize every completed step, not only steps that write a file.
+      if(air5_compensated) call qswap(timerept=ltimrpt)
       if(rhs_validation_requested()) &
         call write_q_validation_snapshot('post_chemistry',nstep,2)
     endif

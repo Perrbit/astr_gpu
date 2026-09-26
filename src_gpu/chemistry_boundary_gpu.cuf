@@ -482,6 +482,7 @@ contains
   end subroutine check_hbl_status
 
   subroutine apply_air5_hbl_boundary_gpu()
+    use chemistry_compensation_gpu, only: air5_compensated,air5_carry_d
     use mpi, only: MPI_PROC_NULL
     use commvar, only: im,jm,km,hm,flowtype
     use parallel, only: mpileft,mpiright,mpidown,mpiup
@@ -523,6 +524,13 @@ contains
       grid=dim3((ntot+block%x-1)/block%x,1,1)
       call air5_hbl_inflow_boundary_kernel<<<grid,block>>>(im,jm,km,hm)
       call sync_after_kernel('air5_hbl_inflow_boundary_kernel',.true.)
+    endif
+    if(air5_compensated) then
+      if(mpileft==MPI_PROC_NULL) air5_carry_d(0,:,:,:)=0.0_real64
+      if(mpiright==MPI_PROC_NULL) air5_carry_d(im,:,:,:)=0.0_real64
+      if(mpidown==MPI_PROC_NULL) air5_carry_d(:,0,:,:)=0.0_real64
+      if(mpiup==MPI_PROC_NULL) air5_carry_d(:,jm,:,:)=0.0_real64
+      call sync_after_kernel('air5_boundary_compensation_reset',.true.)
     endif
   end subroutine apply_air5_hbl_boundary_gpu
 

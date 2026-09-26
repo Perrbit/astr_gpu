@@ -59,6 +59,13 @@ def run(args):
               'maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg',
               f'{maximum},{checkpoint_interval},1000000,1000000,1,1000000')
     env = environment(f'{ranks},1,1')
+    compensation = getattr(args, 'compensation', 'off')
+    compensation_restart = getattr(args, 'compensation_restart', 'restore')
+    env['ASTR_AIR5_COMPENSATION'] = compensation
+    if compensation_restart == 'initialize':
+        if compensation != 'on':
+            raise ValueError('carry initialization requires compensation=on')
+        env['ASTR_AIR5_COMPENSATION_RESTART'] = 'initialize'
     env['ASTR_AIR5_PRIMITIVE_REUSE'] = getattr(args, 'primitive_reuse', 'off')
     env['ASTR_AIR5_CHEMISTRY_REDUCTIONS'] = getattr(args, 'chemistry_reductions', 'baseline')
     if getattr(args, 'complete_step_timing', False):
@@ -104,6 +111,7 @@ def run(args):
                     baseline=str(baseline), executable_sha256=hashlib.sha256(exe.read_bytes()).hexdigest(),
                     checkpoint_sha256=hashlib.sha256((case/'outdat/flowfield.h5').read_bytes()).hexdigest(),
                     topology=f'{ranks},1,1', backend=backend, convection_limiter=limiter,
+                    compensation=compensation, compensation_restart=compensation_restart,
                     complete_step_timing=getattr(args, 'complete_step_timing', False),
                     primitive_reuse=env['ASTR_AIR5_PRIMITIVE_REUSE'],
                     chemistry_reductions=env['ASTR_AIR5_CHEMISTRY_REDUCTIONS'],
@@ -181,6 +189,8 @@ if __name__ == '__main__':
     parser.add_argument('--np', type=int, choices=(1, 2), default=2)
     parser.add_argument('--checkpoint-interval', type=int, default=10)
     parser.add_argument('--complete-step-timing', action='store_true')
+    parser.add_argument('--compensation', choices=('off', 'on'), default='off')
+    parser.add_argument('--compensation-restart', choices=('restore', 'initialize'), default='restore')
     parser.add_argument('--primitive-reuse', choices=('off', 'chemistry'), default='off')
     parser.add_argument('--chemistry-reductions', choices=('baseline', 'packed'), default='baseline')
     parser.add_argument('--memcheck', action='store_true')

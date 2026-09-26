@@ -94,11 +94,13 @@ if(ASTR_WITH_AIR5_CHEMISTRY)
     chemistry_boundary_state.F90
     chemistry_boundary.F90
     chemistry_runtime.F90
+    chemistry_compensation.F90
     chemistry_solver.F90)
 endif()
 
 if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
   list(APPEND ASTR_GPU_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_compensation_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_core_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_flow_state_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_transport_gpu.cuf
@@ -110,6 +112,25 @@ if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
 endif()
 
 add_executable(astr ${ASTR_SOURCES} ${ASTR_GPU_SOURCES})
+
+if(ASTR_WITH_AIR5_CHEMISTRY)
+  add_executable(chemistry_compensation_lifecycle_probe EXCLUDE_FROM_ALL
+    chemistry_compensation.F90
+    ../tests/gpu_validation/chemistry_compensation_lifecycle_probe.F90)
+  set_target_properties(chemistry_compensation_lifecycle_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/compensation_lifecycle_modules")
+  target_include_directories(chemistry_compensation_lifecycle_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/compensation_lifecycle_modules")
+  target_link_libraries(chemistry_compensation_lifecycle_probe PRIVATE MPI::MPI_Fortran)
+  add_executable(chemistry_ros2_roundoff_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90 chemistry_core.F90 chemistry_properties.F90
+    chemistry_kinetics.F90
+    ../tests/gpu_validation/chemistry_ros2_roundoff_probe.F90)
+  set_target_properties(chemistry_ros2_roundoff_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/chemistry_ros2_roundoff_probe_modules")
+  target_include_directories(chemistry_ros2_roundoff_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/chemistry_ros2_roundoff_probe_modules")
+endif()
 
 if(ASTR_WITH_AIR5_CHEMISTRY)
   add_executable(air5_pressure_outlet_probe EXCLUDE_FROM_ALL
@@ -329,6 +350,17 @@ if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
   target_include_directories(chemistry_ros2_gpu_probe PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/chemistry_ros2_gpu_probe_modules")
   target_link_libraries(chemistry_ros2_gpu_probe PRIVATE MPI::MPI_Fortran)
+  add_executable(chemistry_ros2_compensation_gpu_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90 chemistry_core.F90 chemistry_properties.F90
+    chemistry_kinetics.F90
+    ../src_gpu/gpu_check.cuf ../src_gpu/chemistry_core_gpu.cuf
+    ../src_gpu/chemistry_relaxation_gpu.cuf ../src_gpu/chemistry_kinetics_gpu.cuf
+    ../tests/gpu_validation/chemistry_ros2_compensation_gpu_probe.cuf)
+  set_target_properties(chemistry_ros2_compensation_gpu_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/chemistry_ros2_compensation_gpu_probe_modules")
+  target_include_directories(chemistry_ros2_compensation_gpu_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/chemistry_ros2_compensation_gpu_probe_modules")
+  target_link_libraries(chemistry_ros2_compensation_gpu_probe PRIVATE MPI::MPI_Fortran)
 endif()
 
 if (ASTR_WITH_CUDA AND (Fortran_COMPILER_NAME MATCHES "PGI" OR Fortran_COMPILER_NAME MATCHES "NVHPC"))

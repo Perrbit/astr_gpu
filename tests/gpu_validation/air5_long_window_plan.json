@@ -1,0 +1,73 @@
+{
+  "status": "lifecycle-and-L1-passed-L2-pending",
+  "scope": "local numerical stability and same-time comparisons, not SBLI physical acceptance",
+  "auto_launch": false,
+  "baseline": "tests/gpu_validation/out/air5_layered_multistep_20260924/gpu_dt2/gpu",
+  "checkpoint_sha256": "47ffc2ff2fd050a33d639535cc6874c91af535c79f6f500a5bcf4086d5e12def",
+  "start_step": 1090,
+  "start_time_s": 2.18e-6,
+  "global_nodes": [64, 512, 8],
+  "ranks": 2,
+  "topology": [2, 1, 1],
+  "incident_shock": false,
+  "precision": "FP64",
+  "filter": false,
+  "convection_limiter": "symmetric_species",
+  "diffusion_limiter": "layered",
+  "primitive_reuse": "chemistry",
+  "chemistry_reductions": "baseline",
+  "candidate_executable_sha256": "fd724b07fede6992ecdcb2e7267569f9171ae3904a7f501ca3a03d1d23e17e2d",
+  "candidate_runtime_selector": {
+    "ASTR_AIR5_COMPENSATION": "on",
+    "ASTR_AIR5_COMPENSATION_RESTART": "initialize"
+  },
+  "lifecycle_evidence": "tests/gpu_validation/out/air5_compensated_flow_canonical_20260926",
+  "L1_evidence": "tests/gpu_validation/out/air5_compensated_L1_20260926",
+  "L1_progress": {
+    "gpu_dt2": "completed, first/last stage gates passed",
+    "gpu_dt1": "completed beyond original step1266 failure, first/last stage gates passed",
+    "gpu_dt05": "completed beyond historical step1273/1359 failures, first/last stage gates passed"
+  },
+  "prerequisites": [
+    "validated SSP-RK carry propagation and metric-weighted qsave units",
+    "CPU/GPU flow chemistry callers actually enable persistent compensation",
+    "defined boundary, halo and duplicate-node carry ownership",
+    "explicit checkpoint carry initialization and restart serialization semantics",
+    "fail-closed handling of unsupported filtering and physics paths",
+    "default and candidate short CPU/GPU NP1/NP2 regressions and memcheck",
+    "candidate capability recorded in execution contract, not an unrecognized environment variable"
+  ],
+  "windows": [
+    {
+      "name": "L1_original_failure_window",
+      "target_time_s": 2.38e-6,
+      "checkpoint_interval": 50,
+      "runs": [
+        {"name": "gpu_dt2", "dt_s": 2e-9, "updates": 100, "last_update_step": 1189},
+        {"name": "gpu_dt1", "dt_s": 1e-9, "updates": 200, "last_update_step": 1289},
+        {"name": "gpu_dt05", "dt_s": 5e-10, "updates": 400, "last_update_step": 1489}
+      ]
+    },
+    {
+      "name": "L2_extended_window",
+      "target_time_s": 4.18e-6,
+      "checkpoint_interval": 200,
+      "runs": [
+        {"name": "gpu_dt2", "dt_s": 2e-9, "updates": 1000, "last_update_step": 2089},
+        {"name": "gpu_dt1", "dt_s": 1e-9, "updates": 2000, "last_update_step": 3089}
+      ]
+    },
+    {
+      "name": "L3_one_flow_through_increment",
+      "target_time_s": 1.218e-5,
+      "checkpoint_interval": 1000,
+      "runs": [
+        {"name": "gpu_dt2", "dt_s": 2e-9, "updates": 5000, "last_update_step": 6089},
+        {"name": "gpu_dt1", "dt_s": 1e-9, "updates": 10000, "last_update_step": 11089}
+      ]
+    }
+  ],
+  "snapshot_policy": "first and last full step only; use post_chemistry RK2 as the completed-step endpoint",
+  "stop_policy": "stop on first numerical or scientific gate failure; do not submit later windows",
+  "note": "The replay driver now enables compensation through --compensation on. This JSON is not an automatic launcher. Legacy initialization does not recover historic low parts. Stop before L2/L3 unless the preceding window passes."
+}

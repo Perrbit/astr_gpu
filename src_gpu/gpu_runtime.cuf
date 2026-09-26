@@ -128,6 +128,9 @@ contains
   end subroutine gpu_after_alloc
 
   subroutine gpu_after_flowinit()
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_compensation_gpu, only: init_air5_compensation_gpu
+#endif
     use halo_exchange_gpu, only: init_halo_transport_gpu
     use mainloop_gpu, only: init_gpu
     use sponge_gpu, only: init_sponge_gpu
@@ -167,6 +170,9 @@ contains
       endif
     endif
     call init_halo_transport_gpu()
+#ifdef ASTR_AIR5_CHEMISTRY
+    call init_air5_compensation_gpu()
+#endif
     call init_gpu()
 #ifdef ASTR_AIR5_CHEMISTRY
     call initialize_air5_postshock_boundary_gpu()
@@ -184,6 +190,9 @@ contains
   end subroutine gpu_after_flowinit
 
   subroutine gpu_before_finalize()
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_compensation_gpu, only: release_air5_compensation_gpu
+#endif
     use halo_transport_gpu, only: release_host_buffers
     use inflow_timeseries_gpu, only: release_dynamic_inflow_gpu
     use production_statistics_gpu, only: release_compact_statistics_gpu
@@ -207,6 +216,9 @@ contains
     call release_host_buffers()
     call release_halo_exchange_buffers_gpu()
     call release_gpu_arrays()
+#ifdef ASTR_AIR5_CHEMISTRY
+    call release_air5_compensation_gpu()
+#endif
   end subroutine gpu_before_finalize
 
   logical function gpu_compact_statistics_requested()
@@ -238,17 +250,29 @@ contains
   end subroutine gpu_commit_compact_statistics_checkpoint
 
   subroutine gpu_sync_flow_to_device()
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_compensation_gpu, only: sync_air5_compensation_gpu
+#endif
     use commarray_gpu, only: copy_flow_to_gpu
     implicit none
 
     call copy_flow_to_gpu()
+#ifdef ASTR_AIR5_CHEMISTRY
+    call sync_air5_compensation_gpu(.false.)
+#endif
   end subroutine gpu_sync_flow_to_device
 
   subroutine gpu_sync_flow_to_host()
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_compensation_gpu, only: sync_air5_compensation_gpu
+#endif
     use commarray_gpu, only: copy_flow_from_gpu
     implicit none
 
     call copy_flow_from_gpu()
+#ifdef ASTR_AIR5_CHEMISTRY
+    call sync_air5_compensation_gpu(.true.)
+#endif
   end subroutine gpu_sync_flow_to_host
 
   subroutine gpu_sync_output_boundary_to_host()

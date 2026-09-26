@@ -1465,6 +1465,7 @@ contains
   end subroutine air5_limit_full_state_convection
 
   subroutine air5_chemistry_half_step(duration,half_index)
+    use chemistry_compensation, only: air5_compensated,air5_carry
     use mpi
     use commvar, only: is,ie,js,je,ks,ke,nstep,feqchkpt
     use commarray, only: q
@@ -1474,7 +1475,7 @@ contains
     real(real64), parameter :: rtol=1.0e-9_real64
     real(real64), parameter :: atol_factor=1.0e-13_real64
     integer, parameter :: max_attempts=200000
-    real(real64) :: state(6),final_state(6),atol(6),suggested_step
+    real(real64) :: state(6),final_state(6),atol(6),suggested_step,trial_carry(6)
     real(real64) :: local_q(air5_num_conservative),velocity(3),mass_fraction(air5_num_species)
     real(real64) :: density,temperature,tv,pressure
     real(real64) :: local_minimums(3),global_minimums(3)
@@ -1501,11 +1502,20 @@ contains
           state=q(i,j,k,air5_idx_species_first:air5_idx_ev)
           atol(1:air5_num_species)=atol_factor*density
           atol(6)=atol_factor*max(abs(state(6)),1.0_real64)
+          if(air5_compensated) then
+            trial_carry=air5_carry(i,j,k,air5_idx_species_first:air5_idx_ev)
+            call air5_ros2_advance(density, &
+              q(i,j,k,air5_idx_momentum_first:air5_idx_momentum_first+2), &
+              q(i,j,k,air5_idx_total_energy),state,duration,duration,rtol,atol, &
+              max_attempts,final_state,suggested_step,accepted,rejected, &
+              rhs_evaluations,jacobian_evaluations,status,source_mode,trial_carry)
+          else
           call air5_ros2_advance(density, &
             q(i,j,k,air5_idx_momentum_first:air5_idx_momentum_first+2), &
             q(i,j,k,air5_idx_total_energy),state,duration,duration,rtol,atol, &
             max_attempts,final_state,suggested_step,accepted,rejected, &
             rhs_evaluations,jacobian_evaluations,status,source_mode)
+          endif
           if(status/=chemistry_status_ok) then
             failed_index=[i,j,k]
             exit
@@ -1519,6 +1529,7 @@ contains
             exit
           endif
           q(i,j,k,air5_idx_species_first:air5_idx_ev)=final_state
+          if(air5_compensated) air5_carry(i,j,k,air5_idx_species_first:air5_idx_ev)=trial_carry
           local_minimums=min(local_minimums, &
             [minval(final_state(1:air5_num_species)),temperature,tv])
           local_maximums=max(local_maximums,[temperature,tv])

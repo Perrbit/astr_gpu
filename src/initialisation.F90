@@ -41,6 +41,7 @@ module initialisation
     use benchmark_runtime, only: benchmark_field_io_disabled
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_flow_runtime, only: configure_air5_source_mode
+    use readwrite, only: initialize_air5_compensated_flow
 #endif
 #ifdef _CUDA
     use gpu_runtime,only: gpu_compact_statistics_requested
@@ -199,6 +200,9 @@ module initialisation
       !
     endif
     !
+#ifdef ASTR_AIR5_CHEMISTRY
+    call initialize_air5_compensated_flow()
+#endif
     call readmonc
     !
     if(lavg) then

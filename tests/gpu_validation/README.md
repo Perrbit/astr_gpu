@@ -1,5 +1,29 @@
 # GPU Validation
 
+## AIR5 Stage Mass-Closure Diagnostics
+
+`check_air5_mass_closure_stages.py` reads saved physical-node q snapshots; it
+does not integrate, normalize, clip, or modify the solver state. It reports
+FP64 sequential `sum(rho_s/rho)-1` against the existing transport threshold
+`128*epsilon`, and uses NumPy long double to diagnose `sum(rho_s)-rho` without
+the same FP64 summation rounding. The report records the available mantissa
+precision and missing stages explicitly. It is a diagnostic, not a pass gate.
+
+```sh
+python3 tests/gpu_validation/check_air5_mass_closure_stages.py \
+  --case CASE_DIR --rank 1 --node 11 46 5 --steps 1090 1265 \
+  --report closure.json
+python3 -m pytest -q tests/gpu_validation/test_air5_mass_closure_stages.py
+```
+
+The 2026-09-25 Mach4 replay identifies composition-sum threshold crossing,
+not negative species, at step1266. Primitive-reuse on/off produced 14 identical
+binary snapshots. Increment-form RK and combined ROS-2 increment candidates
+were then tested but failed the 0.5 ns / 400-update window at steps1273 and1359.
+Their solver changes were withdrawn; frozen executables, reports and the
+combined patch remain under `out/air5_*increment*_20260925/`. Short probe and
+CPU/GPU equivalence passes must not be reported as long-window acceptance.
+
 ## AIR5 Same-State Reuse And Packed Chemistry Diagnostics
 
 Both candidates are opt-in and preserve FP64 and explicit synchronization:
@@ -5668,3 +5692,147 @@ This helper is not wired into the flow solver. Caller-provided intervals are not
 yet proven complete-RK positivity budgets, and thermal compatibility is not part
 of this projection. Probe success does not close the known contact-pressure
 failure or qualify a new CPU/GPU convection path.
+
+### ROS-2 small-update roundoff diagnostic
+
+```sh
+cmake -S . -B build_gpu_probe
+cmake --build build_gpu_probe --target chemistry_ros2_roundoff_probe -j 4
+build_gpu_probe/bin/chemistry_ros2_roundoff_probe 20000 5e-10 2000
+python3 -m pytest -q tests/gpu_validation/test_chemistry_ros2.py
+```
+
+Arguments are update count, fixed step (seconds), and initial T=Tv (kelvin).
+This actual ASTR CPU chemistry probe compares original additions, grouped
+increments, and persistent six-component Kahan compensation. The production
+integrator is unchanged; optional `update_terms` exposes successful ROS-2
+increments before addition to the state and returns zeros on failure.
+
+`DRIFT` columns are path, maximum relative mass/N/O drift, maximum absolute
+mass-fraction-sum error, maximum scaled ROS-2 error norm, final minimum partial
+density, and first update exceeding the 128-epsilon transport composition gate
+(zero means no crossing). `STATE` reports six final chemical variables and T/Tv.
+`WIDE_DIGITS` records the actual host diagnostic mantissa: NVHPC uses 53 bits,
+whereas gfortran can use an extended accumulator. A reported zero is not an
+exact-arithmetic conservation claim.
+
+The probe stops on a failed chemistry/positivity/thermodynamic/error-norm gate.
+Composition-gate crossings are measured, not passed to a transport calculation:
+no flow RHS, spatial boundary, adaptive rejection, or restart is exercised.
+Compensation is committed only after trial-state checks. Passing this diagnostic
+does not close the outstanding coupled-flow long-window failure.
+
+### CPU/GPU adaptive compensation candidate
+
+```sh
+cmake -S . -B build_gpu_probe
+cmake --build build_gpu_probe --target chemistry_ros2_compensation_gpu_probe -j 4
+build_gpu_probe/bin/chemistry_ros2_compensation_gpu_probe 20000
+compute-sanitizer --tool memcheck --leak-check full --error-exitcode 86 \
+  build_gpu_probe/bin/chemistry_ros2_compensation_gpu_probe 100
+```
+
+The optional `compensation(6)` argument of CPU/GPU ROS-2 fixed-step and adaptive
+routines holds Kahan correction terms for five partial densities and Ev. Source
+and thermodynamic evaluations still use the FP64 high state, not a normalized
+or clipped state. Existing production callers omit this argument. The fixed-step
+routine commits correction only after candidate admissibility; adaptive advance
+works on local trial copies and commits caller-owned correction only after the
+entire requested interval succeeds. An exhausted attempt budget restores both
+the state and incoming correction even after accepted internal substeps.
+
+The probe compares CPU/GPU repeated adaptive calls for 1500/2000/3000 K air,
+ordinary versus compensated updates, then tests exact within-backend agreement
+of two calls versus one call with the same substep sequence. It also requires
+successful rejection recovery, forced rejection rollback, accepted-prefix
+rollback, and invalid-timestep rollback. Short sanitizer runs cover these paths
+but do not replace the 20000-call numerical test. The CPU pytest suite compares
+the compensated trajectory to the existing independent Radau reference.
+
+No spatial transport, full-field compensation allocation, MPI carry exchange,
+filter lifecycle or checkpoint format is implemented here. Default numerical
+mode remains unchanged; performance of the changed device interface is not
+qualified by this correctness probe.
+
+The extended probe also exports two stiff 20 ns endpoints at initial
+T/Tv=6000/1000 K and 4000/4000 K, both at 20 kPa with mixed air5 composition.
+Run the existing independent zero-dimensional reference on the emitted inputs:
+
+```sh
+set -o pipefail
+build_gpu_probe/bin/chemistry_ros2_compensation_gpu_probe 100 | tee /tmp/ros2-compensation.log
+python3 tests/gpu_validation/check_ros2_compensation_radau.py \
+  --log /tmp/ros2-compensation.log --report /tmp/ros2-compensation-radau.json
+```
+
+This compares both CPU/GPU and ordinary/compensated paths: mass-fraction
+rtol=1e-6 and atol=1e-10, T/Tv rtol=1e-7, mass/N/O relative drift <=1e-14,
+composition closure <=128 epsilon, and q5 EOS roundtrip <=32 epsilon.
+Ratios in the JSON are errors divided by their acceptance limits, not relative
+errors. EOS roundtrip checks algebraic compatibility, not an independent spatial
+energy-conservation experiment. The probe additionally checks bitwise rollback
+with NaN/Inf duration/step/tolerance, compensation, and species-state inputs.
+The `100` argument reduces repeated low-temperature calls only; it does not
+shorten the stiff 20 ns comparisons. It is not a replacement for the previous
+20000-call accumulation gate.
+
+### Prepared long-window matrix (not launchable yet)
+
+`air5_long_window_plan.json` is a declarative, disabled preparation record, not
+input to the replay driver. It fixes the step1090 Mach4 checkpoint, NP2 x-slab,
+and matched endpoint windows at 2.38, 4.18 and 12.18 microseconds. The production
+chemistry callers do not yet pass compensation, and spatial RK carry propagation
+is not implemented. Do not treat a replay of the current executable as a
+compensated full-flow acceptance run. The blocking lifecycle requirements and
+output/comparison policy are in `documents/ASTR_AIR5_MACH4_SBLI_PLAN.md`.
+## AIR5 Full-Flow Compensation Lifecycle (2026-09-26)
+
+`ASTR_AIR5_COMPENSATION=on` enables persistent FP64 low parts for the AIR5
+HBL/SBLI candidate. The default is `off`; filtering, sponge layers, immersed
+bodies, automatic crash-fix and non-RK3 integration are rejected in this candidate. This is a
+roundoff-control path, not mixed precision or a species normalization.
+
+The represented state is `q - carry`. Chemistry advances six low parts
+transactionally. SSP-RK carries all eleven conservative components and keeps
+the existing Jacobian-weighted `qsave` interface unchanged. Prescribed or
+reconstructed physical boundaries start with zero carry. MPI and periodic
+duplicate nodes combine both low parts and the rounding residual of their
+existing high-part average. Each completed step canonicalizes duplicate nodes
+before it can become a global checkpoint, independently of output frequency.
+
+Version-1 HDF5 checkpoints contain `acq01..11`, `acc01..11` and
+`air5_compensation_version`. A restart restores conservative high parts after
+the ordinary primitive reconstruction. An old checkpoint requires explicit
+`ASTR_AIR5_COMPENSATION_RESTART=initialize`; this starts a new experiment with
+zero low parts, not a continuation of unavailable historical low parts.
+
+The replay driver accepts `--compensation on` and
+`--compensation-restart initialize|restore`, and records both in its contract.
+`check_air5_compensation_checkpoint.py REFERENCE CANDIDATE --exact` compares
+all 22 fields bitwise for same-backend continuous/restart tests. Without
+`--exact`, conservative fields use the existing `atol=1e-9, rtol=1e-10` gate.
+Both modes enforce finite fields, nonnegative species, positive density and
+sequential mass-fraction closure within `128*epsilon(FP64)`.
+
+Build the arithmetic/MPI primitive probe through root CMake:
+
+```sh
+cmake --build build_gpu_probe --target chemistry_compensation_lifecycle_probe
+mpirun --mca coll '^hcoll,ucc' -np 2 build_gpu_probe/bin/chemistry_compensation_lifecycle_probe
+python3 -m pytest -q tests/gpu_validation/test_air5_compensation_checkpoint.py
+```
+
+Evidence roots:
+
+- `out/air5_compensated_flow_20260926`: first integration, including the failed
+  bitwise restart gate. Do not use this candidate for long windows.
+- `out/air5_compensated_flow_canonical_20260926`: complete-step canonicalization
+  candidate; executable SHA256 is recorded in every replay contract.
+- The first `default_frozen` attempt used an older binary without the symmetric
+  limiter and was rejected before integration. It is not a numerical comparison.
+  `default_matched` uses the actual frozen symmetric-limiter baseline.
+
+GPU face carry transport currently stages only physical face data on the host
+using a private MPI communicator. It is a correctness candidate, not an accepted
+communication optimization. Long-window admission remains separate from these
+short lifecycle checks; see `air5_long_window_plan.json` and the project status.

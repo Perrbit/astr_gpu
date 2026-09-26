@@ -1,0 +1,113 @@
+module chemistry_compensation_gpu
+  use cudafor
+  use iso_fortran_env, only: real64
+  use chemistry_compensation, only: air5_compensated,air5_carry, &
+    air5_compensation_comm,compensation_exchange_faces
+  implicit none
+  logical, device, save :: air5_compensated_d
+  real(real64), device, allocatable :: air5_carry_d(:,:,:,:)
+  real(real64), device, allocatable :: air5_origin_d(:,:,:,:),air5_origin_carry_d(:,:,:,:)
+contains
+  subroutine release_air5_compensation_gpu()
+    if(allocated(air5_carry_d)) deallocate(air5_carry_d,air5_origin_d,air5_origin_carry_d)
+    air5_compensated_d=.false.
+  end subroutine
+
+  attributes(device) subroutine compensated_add_gpu(high,carry,increment)
+    real(real64), intent(inout) :: high,carry
+    real(real64), intent(in) :: increment
+    real(real64) :: adjusted,updated
+    adjusted=increment-carry
+    updated=high+adjusted
+    carry=(updated-high)-adjusted
+    high=updated
+  end subroutine
+
+  attributes(device) subroutine compensated_rk_gpu(high,carry,origin,origin_carry,a,b,increment)
+    real(real64), intent(inout) :: high,carry
+    real(real64), intent(in) :: origin,origin_carry,a,b,increment
+    real(real64) :: difference,virtual,error
+    difference=origin-high
+    virtual=difference-origin
+    error=(origin-(difference-virtual))-(high+virtual)
+    carry=a*origin_carry+b*carry
+    call compensated_add_gpu(high,carry,a*difference)
+    call compensated_add_gpu(high,carry,a*error)
+    call compensated_add_gpu(high,carry,increment)
+  end subroutine
+
+  subroutine init_air5_compensation_gpu()
+    use commvar, only: im,jm,km
+    air5_compensated_d=air5_compensated
+    if(.not.air5_compensated) return
+    if(allocated(air5_carry_d)) deallocate(air5_carry_d,air5_origin_d,air5_origin_carry_d)
+    allocate(air5_carry_d(0:im,0:jm,0:km,11),air5_origin_d(0:im,0:jm,0:km,11), &
+      air5_origin_carry_d(0:im,0:jm,0:km,11))
+    air5_carry_d=air5_carry
+    air5_origin_d=0.0_real64
+    air5_origin_carry_d=0.0_real64
+  end subroutine
+
+  subroutine sync_air5_compensation_gpu(to_host)
+    logical, intent(in) :: to_host
+    if(.not.air5_compensated) return
+    if(to_host) then
+      air5_carry=air5_carry_d
+    else
+      air5_carry_d=air5_carry
+    endif
+  end subroutine
+
+  subroutine compensation_gpu_axis(axis)
+    use commvar, only: im,jm,km,lihomo,ljhomo,lkhomo
+    use commarray_gpu, only: q_d
+    use parallel, only: mpileft,mpiright,mpidown,mpiup,mpiback,mpifront, &
+      isize,jsize,ksize,mpirank
+    use mpi, only: MPI_PROC_NULL
+    integer, intent(in) :: axis
+    integer :: lower,upper,n1,n2
+    real(real64), allocatable :: low(:,:,:),high(:,:,:),cl(:,:,:),ch(:,:,:)
+    if(.not.air5_compensated) return
+    select case(axis)
+    case(1)
+      lower=mpileft; upper=mpiright; n1=jm+1; n2=km+1
+      if(isize==1 .and. lihomo) then
+        lower=mpirank; upper=mpirank
+      endif
+    case(2)
+      lower=mpidown; upper=mpiup; n1=im+1; n2=km+1
+      if(jsize==1 .and. ljhomo) then
+        lower=mpirank; upper=mpirank
+      endif
+    case(3)
+      lower=mpiback; upper=mpifront; n1=im+1; n2=jm+1
+      if(ksize==1 .and. lkhomo) then
+        lower=mpirank; upper=mpirank
+      endif
+    case default
+      error stop 'invalid compensation face axis'
+    end select
+    if(lower==MPI_PROC_NULL .and. upper==MPI_PROC_NULL) return
+    allocate(low(n1,n2,11),high(n1,n2,11),cl(n1,n2,11),ch(n1,n2,11))
+    select case(axis)
+    case(1)
+      low=q_d(0,0:jm,0:km,:); high=q_d(im,0:jm,0:km,:)
+      cl=air5_carry_d(0,:,:,:); ch=air5_carry_d(im,:,:,:)
+    case(2)
+      low=q_d(0:im,0,0:km,:); high=q_d(0:im,jm,0:km,:)
+      cl=air5_carry_d(:,0,:,:); ch=air5_carry_d(:,jm,:,:)
+    case(3)
+      low=q_d(0:im,0:jm,0,:); high=q_d(0:im,0:jm,km,:)
+      cl=air5_carry_d(:,:,0,:); ch=air5_carry_d(:,:,km,:)
+    end select
+    call compensation_exchange_faces(low,high,cl,ch,lower,upper,air5_compensation_comm)
+    select case(axis)
+    case(1)
+      air5_carry_d(0,:,:,:)=cl; air5_carry_d(im,:,:,:)=ch
+    case(2)
+      air5_carry_d(:,0,:,:)=cl; air5_carry_d(:,jm,:,:)=ch
+    case(3)
+      air5_carry_d(:,:,0,:)=cl; air5_carry_d(:,:,km,:)=ch
+    end select
+  end subroutine
+end module chemistry_compensation_gpu

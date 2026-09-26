@@ -57,6 +57,49 @@ class ChemistryRos2Tests(unittest.TestCase):
         for actual, reference in zip(values, expected):
             self.assertAlmostEqual(actual, reference, places=15)
 
+    def test_update_terms_preserve_default_and_clear_on_failure(self):
+        values = np.fromstring(self.run_probe("update_terms").stdout, sep=" ")
+        np.testing.assert_array_equal(values, np.zeros(5))
+
+    def test_compensation_commits_only_successful_transactions(self):
+        self.assertIn("COMPENSATION_TRANSACTION_PASS",
+                      self.run_probe("compensation_transaction").stdout)
+
+    def test_diagnostic_compensation_controls_long_small_update_drift(self):
+        executable = Path(self.directory.name) / "roundoff_probe"
+        sources = [ROOT / "src" / name for name in (
+            "chemistry_air5_data.F90", "chemistry_core.F90",
+            "chemistry_properties.F90", "chemistry_kinetics.F90",
+        )]
+        sources.append(ROOT / "tests/gpu_validation/chemistry_ros2_roundoff_probe.F90")
+        subprocess.run(
+            ["gfortran", "-std=f2008", "-O0", "-fcheck=all",
+             "-ffpe-trap=invalid,zero,overflow", *map(str, sources),
+             "-o", str(executable)], cwd=self.directory.name,
+            capture_output=True, text=True, check=True,
+        )
+        result = subprocess.run(
+            [str(executable), "20000", "5e-10", "2000"],
+            capture_output=True, text=True, check=True,
+        )
+        drift = {int(parts[1]): np.array(list(map(float, parts[2:])))
+                 for line in result.stdout.splitlines()
+                 if (parts := line.split()) and parts[0] == "DRIFT"}
+        self.assertEqual(set(drift), {1, 2, 3})
+        self.assertGreater(drift[1][-1], 0)  # Original crosses the transport gate.
+        self.assertEqual(drift[3][-1], 0)
+        self.assertLessEqual(drift[3][3], 128 * np.finfo(float).eps)
+        self.assertLess(max(drift[3][:3]), 1e-14)
+        for values in drift.values():
+            self.assertTrue(np.all(np.isfinite(values)))
+            self.assertLessEqual(values[4], 1.0)  # Same error norm as adaptive ROS2.
+            self.assertGreaterEqual(values[5], 0.0)
+        states = {int(parts[1]): np.array(list(map(float, parts[2:])))
+                  for line in result.stdout.splitlines()
+                  if (parts := line.split()) and parts[0] == "STATE"}
+        np.testing.assert_allclose(states[3][:6], states[1][:6], rtol=1e-8, atol=0)
+        np.testing.assert_allclose(states[3][6:], states[1][6:], rtol=0, atol=1e-7)
+
     def test_partial_pivot_lu_solves_and_rejects_singular_systems(self):
         solution_error, residual, solved_status, singular_status, expected_failure = (
             self.run_probe("linear").stdout.split()
@@ -153,6 +196,11 @@ class ChemistryRos2Tests(unittest.TestCase):
         self.assertGreaterEqual(observed_order, 1.8)
 
     def test_adaptive_ros2_matches_independent_radau_trajectory(self):
+        for mode in ("adaptive_trajectory", "compensated_trajectory"):
+            with self.subTest(mode=mode):
+                self.check_adaptive_radau_trajectory(mode)
+
+    def check_adaptive_radau_trajectory(self, mode):
         rho = 0.05
         momentum = rho * np.array([40.0, -5.0, 2.0])
         rho_species = rho * np.array([0.55, 0.15, 0.10, 0.12, 0.08])
@@ -165,7 +213,7 @@ class ChemistryRos2Tests(unittest.TestCase):
         radau = self.reference.integrate_radau(
             rho, momentum, q5, state, 2.0e-8, rtol=1.0e-11, atol=atol
         ).y[:, -1]
-        lines = self.run_probe("adaptive_trajectory").stdout.splitlines()
+        lines = self.run_probe(mode).stdout.splitlines()
         status, accepted, rejected, rhs_calls, jacobian_calls = map(
             int, lines[0].split()
         )

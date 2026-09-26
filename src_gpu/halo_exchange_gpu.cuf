@@ -1544,6 +1544,9 @@ contains
   end subroutine copy_q_to_qwork_y_halo_kernel
 
   subroutine exchange_solution_halo_gpu(preserve_interior_primitives)
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_compensation_gpu, only: compensation_gpu_axis,air5_compensated
+#endif
     use commvar, only: lihomo,ljhomo,lkhomo
     use parallel, only: isize,jsize,ksize
     use boundary_gpu, only: gpu_axis_is_physical
@@ -1561,6 +1564,9 @@ contains
     if(present(preserve_interior_primitives)) preserve_primitives = preserve_interior_primitives
 
     if(halo_pipeline_enabled) then
+#ifdef ASTR_AIR5_CHEMISTRY
+      if(air5_compensated) error stop 'AIR5 compensation requires baseline halo sequencing'
+#endif
       call begin_solution_halo_pipeline_gpu(preserve_primitives)
       call finish_solution_halo_pipeline_gpu()
       return
@@ -1581,6 +1587,9 @@ contains
       return
     endif
 
+#ifdef ASTR_AIR5_CHEMISTRY
+    call compensation_gpu_axis(1)
+#endif
     if(isize>1) then
       call exchange_x_halo_gpu()
       if(preserve_primitives) call refresh_primitive_x_periodic_boundary_gpu()
@@ -1593,6 +1602,9 @@ contains
       stop 'GPU halo exchange requires x MPI or homogeneous x direction'
     endif
 
+#ifdef ASTR_AIR5_CHEMISTRY
+    call compensation_gpu_axis(2)
+#endif
     if(jsize>1) then
       call exchange_y_halo_gpu()
       if(preserve_primitives) call refresh_primitive_y_periodic_boundary_gpu()
@@ -1605,6 +1617,9 @@ contains
       stop 'GPU halo exchange requires y MPI or homogeneous y direction'
     endif
 
+#ifdef ASTR_AIR5_CHEMISTRY
+    call compensation_gpu_axis(3)
+#endif
     if(ksize>1) then
       call exchange_z_halo_gpu()
       if(preserve_primitives) call refresh_primitive_z_periodic_boundary_gpu()

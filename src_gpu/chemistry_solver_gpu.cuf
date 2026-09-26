@@ -2526,6 +2526,8 @@ contains
 
   attributes(global) subroutine air5_rk3_first_update_kernel(deltat,im,jm,km, &
       is,ie,js,je,ks,ke)
+    use chemistry_compensation_gpu, only: air5_compensated_d,air5_carry_d, &
+      air5_origin_d,air5_origin_carry_d,compensated_add_gpu
     use commarray_gpu, only: q_d,qsave_d,qrhs_d,jacob_d
     real(real64), value :: deltat
     integer, value :: im,jm,km,is,ie,js,je,ks,ke
@@ -2540,12 +2542,21 @@ contains
     do component=1,air5_num_conservative
       saved=q_d(i,j,k,component)*jacob_d(i,j,k)
       qsave_d(i,j,k,component)=saved
+      if(air5_compensated_d) then
+        air5_origin_d(i,j,k,component)=q_d(i,j,k,component)
+        air5_origin_carry_d(i,j,k,component)=air5_carry_d(i,j,k,component)
+        call compensated_add_gpu(q_d(i,j,k,component),air5_carry_d(i,j,k,component), &
+          deltat*qrhs_d(i,j,k,component)/jacob_d(i,j,k))
+      else
       q_d(i,j,k,component)=(saved+deltat*qrhs_d(i,j,k,component))/jacob_d(i,j,k)
+      endif
     enddo
   end subroutine air5_rk3_first_update_kernel
 
   attributes(global) subroutine air5_rk3_update_kernel(deltat,a,b,c,im,jm,km, &
       is,ie,js,je,ks,ke)
+    use chemistry_compensation_gpu, only: air5_compensated_d,air5_carry_d, &
+      air5_origin_d,air5_origin_carry_d,compensated_rk_gpu
     use commarray_gpu, only: q_d,qsave_d,qrhs_d,jacob_d
     real(real64), value :: deltat,a,b,c
     integer, value :: im,jm,km,is,ie,js,je,ks,ke
@@ -2557,9 +2568,15 @@ contains
     i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
     if(i<is .or. i>ie .or. j<js .or. j>je .or. k<ks .or. k>ke) return
     do component=1,air5_num_conservative
+      if(air5_compensated_d) then
+        call compensated_rk_gpu(q_d(i,j,k,component),air5_carry_d(i,j,k,component), &
+          air5_origin_d(i,j,k,component),air5_origin_carry_d(i,j,k,component),a,b, &
+          c*deltat*qrhs_d(i,j,k,component)/jacob_d(i,j,k))
+      else
       q_d(i,j,k,component)=(a*qsave_d(i,j,k,component)+ &
         b*q_d(i,j,k,component)*jacob_d(i,j,k)+ &
         c*deltat*qrhs_d(i,j,k,component))/jacob_d(i,j,k)
+      endif
     enddo
   end subroutine air5_rk3_update_kernel
 

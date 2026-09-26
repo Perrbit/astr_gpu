@@ -5041,6 +5041,9 @@ module parallel
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! Message pass in i direction.
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+#ifdef ASTR_AIR5_CHEMISTRY
+    call air5_compensation_axis(1)
+#endif
     if(isize==1) then
       !
       if(lihomo) then
@@ -5179,6 +5182,9 @@ module parallel
     ! Finish message pass in i direction.
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     !
+#ifdef ASTR_AIR5_CHEMISTRY
+    call air5_compensation_axis(2)
+#endif
     if(jsize==1 .and. ljhomo) then
       !
       if(jm==0) then
@@ -5316,6 +5322,9 @@ module parallel
       !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     endif
     !
+#ifdef ASTR_AIR5_CHEMISTRY
+    call air5_compensation_axis(3)
+#endif
     if(ksize==1 .and. lkhomo) then
       !
       if(ka==0) then
@@ -5514,6 +5523,39 @@ module parallel
     return
     !
   end subroutine qswap
+#ifdef ASTR_AIR5_CHEMISTRY
+  subroutine air5_compensation_axis(axis)
+    use commarray, only: q
+    use chemistry_compensation, only: air5_compensated,air5_carry, &
+      air5_compensation_comm,compensation_exchange_faces
+    integer, intent(in) :: axis
+    integer :: lower,upper
+    if(.not.air5_compensated) return
+    select case(axis)
+    case(1)
+      lower=mpileft; upper=mpiright
+      if(isize==1 .and. lihomo) then
+        lower=mpirank; upper=mpirank
+      endif
+      call compensation_exchange_faces(q(0,0:jm,0:km,:),q(im,0:jm,0:km,:), &
+        air5_carry(0,:,:,:),air5_carry(im,:,:,:),lower,upper,air5_compensation_comm)
+    case(2)
+      lower=mpidown; upper=mpiup
+      if(jsize==1 .and. ljhomo) then
+        lower=mpirank; upper=mpirank
+      endif
+      call compensation_exchange_faces(q(0:im,0,0:km,:),q(0:im,jm,0:km,:), &
+        air5_carry(:,0,:,:),air5_carry(:,jm,:,:),lower,upper,air5_compensation_comm)
+    case(3)
+      lower=mpiback; upper=mpifront
+      if(ksize==1 .and. lkhomo) then
+        lower=mpirank; upper=mpirank
+      endif
+      call compensation_exchange_faces(q(0:im,0:jm,0,:),q(0:im,0:jm,km,:), &
+        air5_carry(:,:,0,:),air5_carry(:,:,km,:),lower,upper,air5_compensation_comm)
+    end select
+  end subroutine air5_compensation_axis
+#endif
   !+-------------------------------------------------------------------+
   !| The end of the subroutine qswap.                                  |
   !+-------------------------------------------------------------------+
