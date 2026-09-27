@@ -5471,6 +5471,9 @@ module parallel
     !
 #ifdef ASTR_AIR5_CHEMISTRY
     call air5_compensation_axis(3,normalize=.true.)
+#endif
+    call refresh_reconciled_qswap_halos()
+#ifdef ASTR_AIR5_CHEMISTRY
     if(lcomb) then
       call air5_field_conservative_to_primitive( &
         q(-hm:0,0:jm,0:km,:),rho(-hm:0,0:jm,0:km), &
@@ -5526,6 +5529,71 @@ module parallel
     return
     !
   end subroutine qswap
+
+  subroutine refresh_reconciled_qswap_halos()
+    use commvar, only: turbmode,lcomb
+    use commarray, only: q,rho,vel,prs,tmp,spc,tke,omg
+    use fludyna, only: q2fvar
+    integer :: axis,side,h,lo(3),hi(3),dims(3),sizes(3),neighbors(2,3)
+    logical :: homogeneous(3)
+
+    dims=[im,jm,km]; sizes=[isize,jsize,ksize]
+    homogeneous=[lihomo,ljhomo,lkhomo]
+    neighbors(:,1)=[mpileft,mpiright]
+    neighbors(:,2)=[mpidown,mpiup]
+    neighbors(:,3)=[mpiback,mpifront]
+    ! An earlier-axis halo predates later-axis shared-node averaging.
+    ! This second pass copies only halos, never averages the owned state again.
+    do axis=1,3
+      if(sizes(axis)==1.and.dims(axis)==0.and.homogeneous(axis)) then
+        do h=-hm,hm
+          select case(axis)
+          case(1); q(h,0:jm,0:km,:)=q(0,0:jm,0:km,:)
+          case(2); q(0:im,h,0:km,:)=q(0:im,0,0:km,:)
+          case(3); q(0:im,0:jm,h,:)=q(0:im,0:jm,0,:)
+          end select
+        enddo
+      else
+        call dataswap(q,direction=axis)
+      endif
+    enddo
+#ifdef ASTR_AIR5_CHEMISTRY
+    ! The caller reconstructs AIR5 faces with its two-temperature EOS.
+    if(lcomb) return
+#endif
+    do axis=1,3
+      do side=1,2
+        if(sizes(axis)==1) then
+          if(.not.homogeneous(axis)) cycle
+        elseif(neighbors(side,axis)==MPI_PROC_NULL) then
+          cycle
+        endif
+        lo=0; hi=dims
+        if(side==1) then
+          lo(axis)=-hm; hi(axis)=0
+        else
+          lo(axis)=dims(axis); hi(axis)=dims(axis)+hm
+        endif
+        if(trim(turbmode)=='k-omega') then
+          call q2fvar(q=q(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3),:), &
+            density=rho(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
+            velocity=vel(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3),:), &
+            pressure=prs(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
+            temperature=tmp(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
+            species=spc(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3),:), &
+            tke=tke(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
+            omega=omg(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)))
+        else
+          call q2fvar(q=q(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3),:), &
+            density=rho(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
+            velocity=vel(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3),:), &
+            pressure=prs(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
+            temperature=tmp(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3)), &
+            species=spc(lo(1):hi(1),lo(2):hi(2),lo(3):hi(3),:))
+        endif
+      enddo
+    enddo
+  end subroutine refresh_reconciled_qswap_halos
 #ifdef ASTR_AIR5_CHEMISTRY
   subroutine air5_compensation_axis(axis,normalize)
     use commarray, only: q

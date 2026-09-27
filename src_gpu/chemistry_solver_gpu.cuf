@@ -20,6 +20,9 @@ module chemistry_flow_solver_gpu
   private
 
   integer, device, save :: air5_flow_status_d
+  integer, device, save :: air5_face_failure_d(7)=0
+  real(real64), device, save :: air5_face_failure_values_d(11,6)
+  real(real64), device, save :: air5_face_failure_cdt_d
   integer, device, save :: air5_diffusion_layered_d
   integer, device, save :: air5_convection_consistent_d
   integer, device, save :: air5_convection_symmetric_d=0
@@ -249,11 +252,40 @@ contains
     call air5_symmetric_low_face(i,j,k,axis,node(axis),dims(axis),types(axis),lr)
     fl=symmetric_face_d(left(1),left(2),left(3),1:11); fr=symmetric_face_d(i,j,k,1:11)
     state=symmetric_base_d(i,j,k,:)+6*cdt*(fl-ll)
-    if(.not.air5_state_is_admissible_gpu(state)) call record_air5_status(202)
+    if(.not.air5_state_is_admissible_gpu(state)) then
+      call record_air5_face_failure(i,j,k,axis,202,cdt,state,fl,ll,im,jm,km)
+      call record_air5_status(202)
+    endif
     state=symmetric_base_d(i,j,k,:)-6*cdt*(fr-lr)
-    if(.not.air5_state_is_admissible_gpu(state)) call record_air5_status(203)
+    if(.not.air5_state_is_admissible_gpu(state)) then
+      call record_air5_face_failure(i,j,k,axis,203,cdt,state,fr,lr,im,jm,km)
+      call record_air5_status(203)
+    endif
     qrhs_d(i,j,k,1:11)=qrhs_d(i,j,k,1:11)+fl-fr
   end subroutine air5_symmetric_apply_kernel
+
+  attributes(device) subroutine record_air5_face_failure(i,j,k,axis,code,cdt,state,flux,low,im,jm,km)
+    integer,value :: i,j,k,axis,code,im,jm,km
+    real(real64),value :: cdt
+    real(real64),intent(in) :: state(11),flux(11),low(11)
+    real(real64) :: opposite_low(11)
+    integer :: previous,opposite(3),dims(3)
+    previous=atomicCAS(air5_face_failure_d(1),0,1)
+    if(previous/=0) return
+    air5_face_failure_d(2:7)=[i,j,k,axis,code,air5_symmetric_top_d]
+    air5_face_failure_values_d(:,1)=state
+    air5_face_failure_values_d(:,2)=symmetric_base_d(i,j,k,:)
+    air5_face_failure_values_d(:,3)=flux
+    air5_face_failure_values_d(:,4)=low
+    dims=[im,jm,km]
+    opposite=[i,j,k]
+    opposite(axis)=dims(axis)
+    air5_face_failure_values_d(:,5)=symmetric_base_d(opposite(1),opposite(2),opposite(3),:)
+    call air5_low_order_convective_face_flux(opposite(1),opposite(2),opposite(3), &
+      axis,dims(axis)-1,opposite_low)
+    air5_face_failure_values_d(:,6)=opposite_low
+    air5_face_failure_cdt_d=cdt
+  end subroutine record_air5_face_failure
 
   attributes(global) subroutine air5_symmetric_final_kernel(im,jm,km,ni,nj,nk,a,b,cdt,stage)
     use commarray_gpu, only: q_d,qsave_d,jacob_d,qrhs_d
@@ -2800,6 +2832,7 @@ contains
 
   subroutine reset_air5_status()
     air5_flow_status_d=chemistry_status_ok
+    air5_face_failure_d=0
   end subroutine reset_air5_status
 
   subroutine check_air5_status(label,stage_index)
@@ -2810,6 +2843,8 @@ contains
     character(len=*), intent(in) :: label
     integer, intent(in), optional :: stage_index
     integer :: local_status,global_status,ierr,field,stage
+    integer :: face_failure(7)
+    real(real64) :: face_values(11,6),face_cdt
     real(real64), allocatable :: failed_field(:,:,:)
     character(len=2), parameter :: names(3)=['T ','Tv','p ']
 
@@ -2817,6 +2852,19 @@ contains
     call mpi_allreduce(local_status,global_status,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
     if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,local_status)
     if(global_status/=chemistry_status_ok) then
+      face_failure=air5_face_failure_d
+      if(face_failure(1)/=0) then
+        stage=-1
+        if(present(stage_index)) stage=stage_index
+        face_values=air5_face_failure_values_d; face_cdt=air5_face_failure_cdt_d
+        write(*,'(A,9(I0,1X))') 'AIR5_FACE_FAILURE rank/step/stage/i/j/k/axis/status/top=', &
+          mpirank,nstep,stage,face_failure(2:7)
+        write(*,'(A,ES26.17E3)') 'AIR5_FACE_FAILURE cdt=',face_cdt
+        do field=1,6
+          write(*,'(A,I0,A,11(ES26.17E3,1X))') 'AIR5_FACE_FAILURE field=',field,' values=',face_values(:,field)
+        enddo
+        flush(6)
+      endif
       if(local_status/=chemistry_status_ok .and. trim(label)=='diffusion flux') then
         stage=-1
         if(present(stage_index)) stage=stage_index

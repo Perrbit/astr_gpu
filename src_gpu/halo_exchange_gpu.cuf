@@ -1574,15 +1574,16 @@ contains
 
     if(isize==1 .and. jsize==1 .and. ksize==1 .and. &
        lihomo .and. ljhomo .and. lkhomo) then
+      call qswap_local_x_gpu()
+      call qswap_local_y_gpu()
+      call qswap_local_z_gpu()
+      call refresh_reconciled_solution_halos_gpu()
       if(preserve_primitives) then
-        call qswap_local_x_gpu()
-        call qswap_local_y_gpu()
-        call qswap_local_z_gpu()
         call refresh_primitive_x_periodic_boundary_gpu()
         call refresh_primitive_y_periodic_boundary_gpu()
         call refresh_primitive_z_periodic_boundary_gpu()
       else
-        call qswap_single_rank_gpu()
+        call refresh_primitive_halo_gpu()
       endif
       return
     endif
@@ -1603,7 +1604,6 @@ contains
 #ifdef ASTR_AIR5_CHEMISTRY
     call compensation_gpu_axis(1,normalize=.true.)
 #endif
-    if(preserve_primitives.and.(isize>1.or.lihomo)) call refresh_primitive_x_periodic_boundary_gpu()
 #ifdef ASTR_AIR5_CHEMISTRY
     call compensation_gpu_axis(2)
 #endif
@@ -1620,7 +1620,6 @@ contains
 #ifdef ASTR_AIR5_CHEMISTRY
     call compensation_gpu_axis(2,normalize=.true.)
 #endif
-    if(preserve_primitives.and.(jsize>1.or.ljhomo)) call refresh_primitive_y_periodic_boundary_gpu()
 #ifdef ASTR_AIR5_CHEMISTRY
     call compensation_gpu_axis(3)
 #endif
@@ -1637,9 +1636,26 @@ contains
 #ifdef ASTR_AIR5_CHEMISTRY
     call compensation_gpu_axis(3,normalize=.true.)
 #endif
+    call refresh_reconciled_solution_halos_gpu()
+    if(preserve_primitives.and.(isize>1.or.lihomo)) call refresh_primitive_x_periodic_boundary_gpu()
+    if(preserve_primitives.and.(jsize>1.or.ljhomo)) call refresh_primitive_y_periodic_boundary_gpu()
     if(preserve_primitives.and.(ksize>1.or.lkhomo)) call refresh_primitive_z_periodic_boundary_gpu()
     if(.not.preserve_primitives) call refresh_primitive_halo_gpu()
   end subroutine exchange_solution_halo_gpu
+
+  subroutine refresh_reconciled_solution_halos_gpu()
+    use commvar, only: numq
+    use commarray_gpu, only: q_d
+    integer :: first,last
+
+    ! Refill halos after every shared-node average has completed. Halo-only
+    ! exchange leaves the reconciled nodes and compensation carry unchanged.
+    ! Baseline field buffers have six slots; nine is pipeline-only capacity.
+    do first=1,numq,6
+      last=min(numq,first+5)
+      call exchange_field_halo_gpu(q_d(:,:,:,first:last),last-first+1)
+    enddo
+  end subroutine refresh_reconciled_solution_halos_gpu
 
   subroutine begin_solution_halo_pipeline_gpu(preserve_interior_primitives)
     use mpi
@@ -1739,26 +1755,27 @@ contains
     call start_solution_halo_mpi_gpu()
     if(isize>1) then
       call finish_x_halo_pipeline_gpu()
-      if(solution_pipeline_preserve_primitives) call refresh_primitive_x_periodic_boundary_gpu()
     else
       call qswap_local_x_gpu()
-      if(solution_pipeline_preserve_primitives) call refresh_primitive_x_periodic_boundary_gpu()
     endif
     if(jsize>1) then
       call finish_y_halo_pipeline_gpu()
-      if(solution_pipeline_preserve_primitives) call refresh_primitive_y_periodic_boundary_gpu()
     else
       call qswap_local_y_gpu()
-      if(solution_pipeline_preserve_primitives) call refresh_primitive_y_periodic_boundary_gpu()
     endif
     if(ksize>1) then
       call finish_z_halo_pipeline_gpu()
-      if(solution_pipeline_preserve_primitives) call refresh_primitive_z_periodic_boundary_gpu()
     else
       call qswap_local_z_gpu()
-      if(solution_pipeline_preserve_primitives) call refresh_primitive_z_periodic_boundary_gpu()
     endif
-    if(.not.solution_pipeline_preserve_primitives) call refresh_primitive_halo_gpu()
+    call refresh_reconciled_solution_halos_gpu()
+    if(solution_pipeline_preserve_primitives) then
+      call refresh_primitive_x_periodic_boundary_gpu()
+      call refresh_primitive_y_periodic_boundary_gpu()
+      call refresh_primitive_z_periodic_boundary_gpu()
+    else
+      call refresh_primitive_halo_gpu()
+    endif
     solution_pipeline_preserve_primitives=.false.
     solution_pipeline_axis=0
     solution_pipeline_active=.false.
@@ -1794,6 +1811,7 @@ contains
     if(isize==1 .and. jsize==1 .and. ksize==1 .and. &
        lihomo .and. ljhomo .and. lkhomo) then
       call qswap_single_rank_gpu()
+      call refresh_reconciled_solution_halos_gpu()
       return
     endif
 
@@ -1820,6 +1838,7 @@ contains
     elseif(.not.gpu_axis_is_physical(3)) then
       stop 'GPU sponge halo exchange requires z MPI, homogeneous, or physical direction'
     endif
+    call refresh_reconciled_solution_halos_gpu()
   end subroutine exchange_solution_sponge_halo_gpu
 
   subroutine exchange_filter_y_work_halo_gpu()

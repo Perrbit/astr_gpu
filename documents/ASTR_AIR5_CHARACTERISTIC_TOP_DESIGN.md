@@ -1,5 +1,72 @@
 # AIR5 Two-Temperature Characteristic Top Boundary
 
+## V-T Face-Budget Failure: Reconciled Halo Fix (2026-09-27)
+
+The V-T-only coarse run failed at step 11 (the twelfth update), RK stage 3,
+rank 1, local `(3,0,0)`, z-left face, interior transport rather than the
+characteristic top. The z-periodic owner and consumer used identical low-order
+face fluxes but different low-order cell budgets. Their N, O and NO budget
+differences were `2.41808e-66`, `9.24272e-67` and `3.12380e-66`, respectively.
+These differences account for the negative consumer candidates. The owner's
+corresponding candidates remained positive, around `1e-77`.
+
+The RHS-input q values at z=0 and z=km were identical. Their y-minus halo
+values were not: y exchange preceded z shared-node averaging. The old y halo
+therefore described an earlier donor state. CPU qswap uses the same sequencing
+and the matched CPU case also failed a z shared-face budget check. This is a
+general solution-halo lifecycle defect, not a V-T source, NSCBC relaxation,
+MPI payload corruption, or a reason to relax species positivity.
+
+The user approved a CPU/GPU correction including single-species paths:
+
+1. Complete the existing axis-wise shared-node averaging and AIR5 carry
+   normalization.
+2. Refill face halos from the final donor state without averaging owned nodes
+   or changing their carry again.
+3. Reconstruct primitives using the existing appropriate EOS. AIR5 retains
+   its two-temperature face reconstruction; physical faces without a neighbor
+   are not overwritten by halo transport.
+
+CPU `parallel.F90` uses halo-only `dataswap` and retains collapsed-direction
+handling. GPU `halo_exchange_gpu.cuf` covers baseline exchange, the single-rank
+periodic shortcut, pipeline completion, and sponge q exchange. GPU q is sent
+in batches of at most six components, matching baseline field-buffer capacity.
+The nine-component capacity is pipeline-only, not a universal allocation.
+This adds a halo-only communication pass; no performance improvement is claimed.
+
+`check_reconciled_solution_halos.py` checks all saved RHS-input face halos
+against final donor owned states, including transverse endpoints, with exact
+equality. It rejects the old failure artifact and accepts the repaired one.
+The source-refinement driver now enforces this invariant at all saved RK phases.
+
+Verified with the common-path fix:
+
+- V-T-only GPU: dt=5/2.5/1.25 ns, 12/24/48 updates, common endpoint 60 ns,
+  original volume/top refinement criteria passed. No clipping or tolerance change.
+- Coupled chemistry GPU: the same refinement gate passed.
+- CPU V-T-only: 12 updates to 60 ns passed; 18 matched CPU/GPU phase fields
+  have maximum scaled difference `5.37584e-15` versus the existing `2e-10` gate.
+- Single-species TGV: nine CPU/GPU runs covering NP1, NP2 x/y/z slabs and
+  pinned-pipeline x-slab; exact donor/halo equality and maximum scaled field
+  difference `1.33227e-15` versus the `1e-10` gate.
+- 35 affected Python tests and six subtests passed.
+- NP2 V-T viscous Compute Sanitizer: both ranks report zero errors.
+- NP2 coupled restart: continuous six updates versus 3+restart+3 gives bitwise
+  identical q/carry and all nine sampled phases; invalid tau, missing metadata,
+  disabled compensation and the old top-policy version are still rejected.
+
+Evidence below `tests/gpu_validation/out/air5_characteristic_20260927/`:
+`face_budget_vt_endpoints`, `face_budget_vt_cpu_probe`,
+`reconciled_common_vt_gpu_v2`, `reconciled_common_coupled_gpu`,
+`reconciled_vt_cpu_60ns/comparison.json`, `reconciled_tgv_final/result.json`,
+`reconciled_vt_memcheck_v2`, `reconciled_common_restart`.
+The GPU failure-only diagnostic records the candidate, consumer budget, accepted
+flux and low flux as fields 1-4; fields 5-6 are the opposite-end budget/low flux
+and are an owner comparison only for the local-periodic case diagnosed here.
+
+These are bounded numerical checks, not long-time physical SBLI validation.
+The characteristic-top production and restart opt-in guards remain unchanged.
+
 ## Inflow-Transit Relaxation: Implemented and Refined (2026-09-27)
 
 The user approved replacing only the nonacoustic target relaxation with

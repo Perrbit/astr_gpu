@@ -12,6 +12,7 @@ import numpy as np
 from air5_radau_reference import Air5RadauReference
 from check_air5_mach4_error_replay import state_gate
 from check_air5_mass_closure_stages import metrics
+from check_reconciled_solution_halos import check as check_halos
 from run_air5_characteristic_acoustic import prepare, RHO
 from run_air5_characteristic_backend_gate import fields
 from run_air5_characteristic_restart_gate import launch
@@ -50,7 +51,7 @@ def run(output, executable, mpi_launcher=None, source_mode='coupled'):
                            else 'V-T-only diagnostic control, not coupled-source acceptance'))
     (output/'contract.json').write_text(json.dumps(contract, indent=2)+'\n')
     thermo = Air5RadauReference(ROOT/'chemMech/air5_kimjo12.json')
-    final, source, states, endpoints = [], [], [], []
+    final, source, states, endpoints, halos = [], [], [], [], []
     scales = None
     for name, steps, dt in zip(('coarse','medium','fine'),contract['steps'],contract['timesteps']):
         case = output/name
@@ -87,6 +88,11 @@ def run(output, executable, mpi_launcher=None, source_mode='coupled'):
         if abs(endpoint-contract['endpoint_seconds'])>1e-14*contract['endpoint_seconds']:
             raise ValueError('physical endpoint mismatch')
         endpoints.append(endpoint)
+        halo_checks = [check_halos(case, step, stage)
+                       for step in (0, steps-1) for stage in (1, 2, 3)]
+        if not all(row['passed'] for row in halo_checks):
+            raise ValueError(f'{name}: RHS halo differs from reconciled donor state')
+        halos.append(halo_checks)
         states.append(state_gate(case, thermo))
         data = fields(case, (steps-1,))
         for phase, q in data.items():
@@ -102,7 +108,7 @@ def run(output, executable, mpi_launcher=None, source_mode='coupled'):
         if scales is None:
             scales=np.array([RHO,*([RHO*meta['sound_speed']]*3),meta['pressure'],
                              *([RHO]*5),meta['pressure']])
-    report=dict(contract=contract, scales=scales.tolist(), states=states, endpoints=endpoints,
+    report=dict(contract=contract, scales=scales.tolist(), states=states, endpoints=endpoints, halos=halos,
                 top_ev_second_half_max_abs=source,
                 volume=refinement(*final,scales),
                 top=refinement(*(q[:,-1,:,:] for q in final),scales))

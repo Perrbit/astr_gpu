@@ -1,5 +1,37 @@
 # ASTR GPU Current Status and Next Targets
 
+## 2026-09-27 V-T-only status=202 根因定位及 CPU/GPU 通用修复
+
+根因是共享节点平均后的横向 halo 过期，不是 V-T 源项或特征松弛公式。
+y-halo 先交换，z 共享节点随后平均，使周期界面两端使用不同的低阶基态预算。
+失败发生于第 12 次更新 RK3、rank 1 的局部 `(3,0,0)`、z 左界面。
+CPU 对照也出现同类共享界面预算失败，单组分共用路径同样存在该时序缺陷。
+
+经用户批准，CPU/GPU 在所有方向节点平均完成后增加 halo-only 刷新，
+随后重建相应物性。不再平均节点，不改变补偿余量、保正容差或物理模型。
+GPU 普通、单 rank 周期、流水线收尾和 sponge q 交换入口均覆盖。
+刷新按最多六分量分批，兼容五变量及 AIR5 十一变量状态。
+
+已通过：
+
+- V-T-only GPU 60 ns 三档细化：dt=5/2.5/1.25 ns，12/24/48 次更新。
+- 耦合化学 GPU 相同细化门槛；体内与顶面判据均通过。
+- CPU V-T-only 12 次更新到 60 ns；CPU/GPU 18 个同相位场最大归一化差
+  `5.37584e-15`，小于原门槛 `2e-10`。
+- 单组分 TGV 九次回归：NP1、NP2 x/y/z slab，以及 pinned-pipeline；
+  最大 CPU/GPU 场差 `1.33227e-15`，通信面 halo 与最终供体逐值一致。
+- 35 项相关 Python 测试及六个子测试。
+- NP2 V-T 黏性 Memcheck：双 rank 均零错误。
+- NP2 耦合重启：连续六步与 3+重启+3 的 q/carry 逐位一致，九个采样相位
+  差值为零；tau、元数据、补偿开关及旧顶面策略版本错误均正常拒绝。
+
+新增自动检查 `check_reconciled_solution_halos.py`，旧失败结果能触发检查，
+修复结果通过。证据及实现位置见
+`ASTR_AIR5_CHARACTERISTIC_TOP_DESIGN.md` 的同日 halo 修复章节。
+
+当前仍是数值可信化门槛，不代表真实反应 SBLI 长时物理验收完成。
+新增 halo-only 通信成本尚未计时，后续需评估；未修改远端作业或 Git。
+
 ## 2026-09-27 单侧输运松弛通过耦合时间细化及重启检查
 
 经批准，非声学目标松弛采用 `max(-u_n,0)/(a_ref*tau)`。
@@ -29,9 +61,9 @@
 普通 prescribed 边界仍保留版本 1。NP2 GPU 连续六步与 3+重启+3 的
 q/carry 逐位一致；tau 不符、缺元数据、关闭补偿和旧策略版本均被拒绝。
 
-剩余阻塞：V-T-only 长窗的粗步长仍触发 `symmetric received face budget`
-status=202。其根因尚未定位，不因耦合算例通过而忽略；已停止下游测试。
-后续优先定位该独立预算失败，再补新策略的声学/反射及多拓扑覆盖。
+本节记录时，V-T-only 长窗粗步长触发 `symmetric received face budget`
+status=202；其后已定位并修复，见上方通用 halo 修复记录。
+后续补新策略的声学/反射及多拓扑覆盖。
 GPU 与 restart 的显式验证准入守卫尚未解除。
 
 证据根目录 `tests/gpu_validation/out/air5_characteristic_20260927/`：
