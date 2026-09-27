@@ -26,6 +26,7 @@ module chemistry_flow_solver
   real(real64), allocatable, save :: diffusion_ratio(:,:,:)
   real(real64), allocatable, save :: convection_fluid_ratio(:,:,:)
   real(real64), allocatable, save :: convection_low_state(:,:,:,:)
+  real(real64), allocatable, save :: top_normal_high_rhs(:,:,:)
   real(real64), allocatable, save :: convection_face(:,:,:,:),convection_face_buffer(:,:)
   real(real64), allocatable, save :: diffusion_energy_ratio(:,:,:),species_energy_flux(:,:,:,:)
   real(real64), allocatable, save :: transport_origin_species(:,:,:,:)
@@ -51,30 +52,30 @@ contains
 
   subroutine air5_characteristic_top_rhs()
     use mpi
-    use commvar, only: im,jm,km,npdci,npdcj,npdck,diffterm
+    use commvar, only: im,jm,km,rkstep,deltat
     use commarray, only: q,x,jacob,qrhs
-    use parallel, only: mpiup,mpileft,mpiright
+    use parallel, only: mpiup,mpileft
     use chemistry_characteristic, only: air5_top_normal_convection,air5_top_transport_rhs
-    use chemistry_hbl_boundary, only: air5_dynamic_top,get_air5_top_target,get_air5_top_rate
+    use chemistry_hbl_boundary, only: air5_dynamic_top,get_air5_top_target,get_air5_top_rate, &
+      get_air5_top_reference_sound
     real(real64) :: target(11),relaxation_rate
     real(real64) :: local_q(11),inner_one(11),inner_two(11),gradient(11),normal(11),remaining(11),rhs(11)
-    real(real64) :: left(11),right(11),density,velocity(3),temperature,tv,pressure,y(5)
+    real(real64) :: density,velocity(3),temperature,tv,pressure,y(5),a,b,c
     real(real64) :: gas(5),cv(5),beta,sound,spacing
-    integer :: i,k,s,axis,index,first_i,dims(3),ntypes(3),status,failed,global_failed,ierr
+    integer :: i,k,s,first_i,status,failed,global_failed,ierr
     logical :: valid
 
-    ! Collective entry on a validated uniform Cartesian grid, after diffusion halo preparation.
+    ! Assemble the convection baseline before the shared diffusion positivity budget.
     if(.not.air5_dynamic_top()) return
     relaxation_rate=get_air5_top_rate()
     failed=0
-    dims=[im,jm,km]
-    ntypes=[npdci,npdcj,npdck]
     do s=1,5
       gas(s)=air5_species_gas_constant(s)
       cv(s)=air5_species_cv_tr(s)
     enddo
     if(mpiup==MPI_PROC_NULL) then
-      if(jm<2.or.(diffterm.and..not.allocated(momentum_flux))) failed=1
+      if(.not.allocated(top_normal_high_rhs)) allocate(top_normal_high_rhs(0:im,0:km,11))
+      if(jm<2) failed=1
       first_i=0
       if(mpileft==MPI_PROC_NULL) first_i=1
       if(failed==0) then
@@ -103,32 +104,6 @@ contains
               exit
             endif
             remaining=0.0_real64
-            do axis=1,3,2
-              index=i
-              if(axis==3) index=k
-              if(axis==1.and.i==im.and.mpiright==MPI_PROC_NULL) then
-                ! The top owns this corner; its tangential derivative uses the x endpoint closure.
-                call air5_high_order_convective_face_flux(i,jm,k,axis,index-1,dims(axis),ntypes(axis),left)
-                call air5_high_order_convective_face_flux(i,jm,k,axis,index,dims(axis),ntypes(axis),right)
-              else
-                call air5_selective_convective_face_flux(i,jm,k,axis,index-1,dims(axis),ntypes(axis),left)
-                call air5_selective_convective_face_flux(i,jm,k,axis,index,dims(axis),ntypes(axis),right)
-              endif
-              remaining=remaining+left-right
-            enddo
-            if(diffterm) then
-              do axis=1,3
-                index=i
-                if(axis==2) index=jm
-                if(axis==3) index=k
-                call projected_air5_face_flux(i,jm,k,axis,index-1,dims(axis),ntypes(axis),left)
-                call projected_air5_face_flux(i,jm,k,axis,index,dims(axis),ntypes(axis),right)
-                ! Species arrays store mass diffusion flux, opposite to viscous energy/stress sign.
-                left(6:10)=-left(6:10)
-                right(6:10)=-right(6:10)
-                remaining=remaining+right-left
-              enddo
-            endif
             if(.not.(jacob(i,jm,k)>0.0_real64)) then
               failed=1
               exit
@@ -140,7 +115,20 @@ contains
               exit
             endif
             call air5_top_transport_rhs(local_q,target,pressure,sound,gradient,normal, &
-              remaining,relaxation_rate,rhs,valid)
+              remaining,relaxation_rate,rhs,valid,get_air5_top_reference_sound())
+            if(.not.valid) then
+              failed=1
+              exit
+            endif
+            top_normal_high_rhs(i,k,:)=jacob(i,jm,k)*rhs
+            call air5_top_normal_convection(local_q,inner_one,inner_two, &
+              spacing,pressure,gradient,normal,valid,.true.)
+            if(.not.valid) then
+              failed=1
+              exit
+            endif
+            call air5_top_transport_rhs(local_q,target,pressure,sound,gradient,normal, &
+              remaining,relaxation_rate,rhs,valid,get_air5_top_reference_sound())
             if(.not.valid) then
               failed=1
               exit
@@ -158,6 +146,13 @@ contains
     endif
     call MPI_Allreduce(failed,global_failed,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
     if(ierr/=MPI_SUCCESS.or.global_failed/=0) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+    select case(rkstep)
+    case(1); a=1.0_real64; b=0.0_real64; c=1.0_real64
+    case(2); a=0.75_real64; b=0.25_real64; c=0.25_real64
+    case(3); a=1.0_real64/3.0_real64; b=2.0_real64/3.0_real64; c=b
+    case default; error stop 'invalid characteristic top RK stage'
+    end select
+    call air5_limit_symmetric_convection(a,b,c*deltat,.true.)
   end subroutine air5_characteristic_top_rhs
 
   subroutine configure_air5_vibrational_floor()
@@ -763,15 +758,23 @@ contains
   end subroutine air5_low_order_convective_face_flux
 
   subroutine air5_full_state_node_face_fluxes(i,j,k,dims,ntypes,high_left, &
-      high_right,low_left,low_right)
+      high_right,low_left,low_right,top_only)
     integer, intent(in) :: i,j,k,dims(3),ntypes(3)
     real(real64), intent(out) :: high_left(3,air5_num_conservative)
     real(real64), intent(out) :: high_right(3,air5_num_conservative)
     real(real64), intent(out) :: low_left(3,air5_num_conservative)
     real(real64), intent(out) :: low_right(3,air5_num_conservative)
+    logical, intent(in), optional :: top_only
     integer :: direction,index
+    logical :: top
+
+    top=.false.
+    if(present(top_only)) top=top_only
+    high_left=0.0_real64; high_right=0.0_real64
+    low_left=0.0_real64; low_right=0.0_real64
 
     do direction=1,3
+      if(top.and.direction==2) cycle
       select case(direction)
       case(1); index=i
       case(2); index=j
@@ -783,8 +786,12 @@ contains
         dims(direction),ntypes(direction),high_right(direction,:))
       call air5_low_order_convective_face_flux(i,j,k,direction,index-1, &
         low_left(direction,:))
-      call air5_low_order_convective_face_flux(i,j,k,direction,index, &
-        low_right(direction,:))
+      if(top.and.direction==1.and.index==dims(1).and.(ntypes(1)==2.or.ntypes(1)==4)) then
+        ! The exterior face has no ghost-cell metric contract or external RK budget.
+        call air5_projected_convective_flux(i,j,k,direction,low_right(direction,:))
+      else
+        call air5_low_order_convective_face_flux(i,j,k,direction,index,low_right(direction,:))
+      endif
     enddo
   end subroutine air5_full_state_node_face_fluxes
 
@@ -939,18 +946,20 @@ contains
     if(present(accepted_beta)) accepted_beta=beta_lo
   end subroutine air5_symmetric_face_trial
 
-  subroutine air5_share_periodic_face(direction,record)
+  subroutine air5_share_periodic_face(direction,record,top_only)
     use mpi
     use commvar, only: im,jm,km,nstep,rkstep,npdci,npdcj,npdck
     use parallel, only: isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront,mpirank
     integer, intent(in) :: direction
     logical, intent(in) :: record
+    logical, intent(in), optional :: top_only
     integer, save :: face_comm=MPI_COMM_NULL
     integer :: sizes(3),minus_rank(3),plus_rank(3),count,shape_face(3),ierr,unit,io_status,ntypes(3)
     logical :: receive_plus,receive_minus
     integer :: mpi_status(MPI_STATUS_SIZE)
     character(len=1024) :: prefix
     character(len=1152) :: filename
+    character(len=32) :: label
 
     sizes=[isize,jsize,ksize]
     ntypes=[npdci,npdcj,npdck]
@@ -1014,9 +1023,13 @@ contains
       if(receive_minus) convection_face(0:im,0:jm,-1,:)=reshape(convection_face_buffer(:count,4),shape_face)
     end select
     if(record) then
+      label='.shared_faces.axis'
+      if(present(top_only)) then
+        if(top_only) label='.top_shared_faces.axis'
+      endif
       call get_environment_variable('ASTR_VALIDATION_RHS_PREFIX',prefix,status=io_status)
       if(io_status/=0) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
-      write(filename,'(A,A,I1,A,I8.8,A,I2.2,A,I8.8,A)') trim(prefix),'.shared_faces.axis',direction, &
+      write(filename,'(A,A,I1,A,I8.8,A,I2.2,A,I8.8,A)') trim(prefix),trim(label),direction, &
         '.step',nstep,'.rk',rkstep,'.rank',mpirank,'.bin'
       open(newunit=unit,file=trim(filename),status='replace',access='stream',form='unformatted', &
         action='write',iostat=io_status)
@@ -1027,13 +1040,14 @@ contains
     endif
   end subroutine air5_share_periodic_face
 
-  subroutine air5_limit_symmetric_convection(rk_a,rk_b,cdt)
+  subroutine air5_limit_symmetric_convection(rk_a,rk_b,cdt,top_only)
     use mpi
     use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,npdcj,npdck,nstep,rkstep
     use commarray, only: q,qrhs,jacob
     use parallel, only: dataswap,mpirank
     use validation_io, only: rhs_validation_requested
     real(real64), intent(in) :: rk_a,rk_b,cdt
+    logical, intent(in), optional :: top_only
     real(real64) :: high_left(3,11),high_right(3,11),low_left(3,11),low_right(3,11)
     real(real64) :: final_left(11),final_right(11),rhs(11)
     real(real64) :: face_state(11)
@@ -1044,7 +1058,10 @@ contains
     character(len=1024) :: probe_prefix
     character(len=1152) :: probe_file
     integer :: probe_unit
-    logical :: probe,right_active
+    logical :: probe,right_active,top
+
+    top=.false.
+    if(present(top_only)) top=top_only
 
     call get_environment_variable('ASTR_AIR5_SYMMETRIC_FACE_PROBE',probe_value,status=status)
     probe=status==0 .and. trim(probe_value)=='1' .and. rhs_validation_requested()
@@ -1054,16 +1071,41 @@ contains
       allocate(convection_face(-1:im,-1:jm,-1:km,12))
     dims=[im,jm,km]; ntypes=[npdci,npdcj,npdck]
     convection_low_state=0.0_real64; failed=0
-    do k=ks,ke; do j=js,je; do i=is,ie
-      call air5_full_state_node_face_fluxes(i,j,k,dims,ntypes,high_left,high_right,low_left,low_right)
+    do k=0,km; do j=0,jm; do i=0,im
+      if(.not.air5_convection_updated_node(i,j,k,top)) cycle
+      call air5_full_state_node_face_fluxes(i,j,k,dims,ntypes,high_left,high_right,low_left,low_right,top)
       rhs=sum(low_left-low_right,dim=1)
+      if(top) rhs=qrhs(i,j,k,:)+(low_left(1,:)-low_right(1,:))+(low_left(3,:)-low_right(3,:))
       convection_low_state(i,j,k,:)=rk_a*transport_origin_state(i,j,k,:)+ &
         rk_b*q(i,j,k,1:11)*jacob(i,j,k)+cdt*rhs
-      if(.not.air5_state_is_admissible(convection_low_state(i,j,k,:))) failed=1
+      if(.not.air5_state_is_admissible(convection_low_state(i,j,k,:))) then
+        if(failed==0) write(*,'(A,L1,A,4(I0,1X),ES25.17)') &
+          'symmetric low-order budget top=',top,' rank/i/j/k/min_species=', &
+          mpirank,i,j,k,minval(convection_low_state(i,j,k,6:10))
+        failed=1
+      endif
     enddo; enddo; enddo
     call MPI_Allreduce(failed,global_failed,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
     if(ierr/=MPI_SUCCESS .or. global_failed/=0) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
     call dataswap(convection_low_state)
+    if(top) then
+      ! One normal correction and four tangential faces share the factor-six reserve.
+      do k=0,km; do i=0,im
+        if(.not.air5_convection_updated_node(i,jm,k,.true.)) cycle
+        call air5_symmetric_face_trial(-top_normal_high_rhs(i,k,:),-qrhs(i,jm,k,:), &
+          convection_low_state(i,jm,k,:),convection_low_state(i,jm,k,:), &
+          q(i,jm,k,1:11),q(i,jm,k,1:11),cdt,final_right,status,beta_right,right_active=.false.)
+        if(status/=chemistry_status_ok) then
+          if(failed==0) write(*,'(A,4(I0,1X))') 'top normal correction rank/i/k/status=',mpirank,i,k,status
+          failed=1
+        endif
+        face_state=convection_low_state(i,jm,k,:)+6*cdt*(-final_right-qrhs(i,jm,k,:))
+        if(.not.air5_state_is_admissible(face_state)) failed=1
+        qrhs(i,jm,k,:)=-final_right
+      enddo; enddo
+      call MPI_Allreduce(failed,global_failed,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS.or.global_failed/=0) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+    endif
     if(probe) then
       call get_environment_variable('ASTR_VALIDATION_RHS_PREFIX',probe_prefix,status=status)
       if(status/=0) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
@@ -1072,17 +1114,25 @@ contains
         action='write',iostat=status)
       if(status/=0) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
     endif
-    qrhs(is:ie,js:je,ks:ke,1:11)=0.0_real64
+    if(.not.top) qrhs(is:ie,js:je,ks:ke,1:11)=0.0_real64
     do direction=1,3
+      if(top.and.direction==2) cycle
+      if(probe.and.top) write(*,'(A,3(I0,1X),ES25.17)') &
+        'AIR5_TOP_FACE before rank/stage/axis/rho_rhs=',mpirank,rkstep,direction,qrhs(im,jm,km,1)
       convection_face=0.0_real64
-      do k=ks,ke; do j=js,je; do i=is,ie
+      do k=0,km; do j=0,jm; do i=0,im
+        if(.not.air5_convection_updated_node(i,j,k,top)) cycle
         node=[i,j,k]
-        if(node(direction)==dims(direction)) cycle
-        call air5_full_state_node_face_fluxes(i,j,k,dims,ntypes,high_left,high_right,low_left,low_right)
+        if(node(direction)==dims(direction)) then
+          if(.not.(top.and.direction==1.and.(ntypes(1)==2.or.ntypes(1)==4))) cycle
+        endif
+        call air5_full_state_node_face_fluxes(i,j,k,dims,ntypes,high_left,high_right,low_left,low_right,top)
         neighbor_right=node
         neighbor_right(direction)=neighbor_right(direction)+1
         right_active=.not.(neighbor_right(direction)==dims(direction) .and. &
           (ntypes(direction)==2 .or. ntypes(direction)==4))
+        if(top) right_active=.not.(direction==1.and.node(1)==im.and. &
+          (ntypes(1)==2.or.ntypes(1)==4))
         call air5_symmetric_face_trial(high_right(direction,:),low_right(direction,:), &
           convection_low_state(i,j,k,:), &
           convection_low_state(neighbor_right(1),neighbor_right(2),neighbor_right(3),:), &
@@ -1112,13 +1162,18 @@ contains
       enddo; enddo; enddo
       call MPI_Allreduce(failed,global_failed,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
       if(ierr/=MPI_SUCCESS .or. global_failed/=0) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
-      call air5_share_periodic_face(direction,probe)
-      do k=ks,ke; do j=js,je; do i=is,ie
+      call air5_share_periodic_face(direction,probe,top)
+      do k=0,km; do j=0,jm; do i=0,im
+        if(.not.air5_convection_updated_node(i,j,k,top)) cycle
         node=[i,j,k]; neighbor_left=node
         neighbor_left(direction)=neighbor_left(direction)-1
-        call air5_full_state_node_face_fluxes(i,j,k,dims,ntypes,high_left,high_right,low_left,low_right)
+        call air5_full_state_node_face_fluxes(i,j,k,dims,ntypes,high_left,high_right,low_left,low_right,top)
         final_left=convection_face(neighbor_left(1),neighbor_left(2),neighbor_left(3),1:11)
         final_right=convection_face(i,j,k,1:11)
+        if(probe.and.top.and.i==im.and.j==jm.and.k==km) &
+          write(*,'(A,3(I0,1X),3(ES25.17,1X))') &
+            'AIR5_TOP_FACE flux rank/stage/axis/left/right/rhs=',mpirank,rkstep,direction, &
+            final_left(1),final_right(1),qrhs(i,j,k,1)
         beta_left=convection_face(neighbor_left(1),neighbor_left(2),neighbor_left(3),12)
         beta_right=convection_face(i,j,k,12)
         face_state=convection_low_state(i,j,k,:)+6*cdt*(final_left-low_left(direction,:))
@@ -1154,7 +1209,8 @@ contains
         call MPI_Abort(MPI_COMM_WORLD,3,ierr)
       endif
     enddo
-    do k=ks,ke; do j=js,je; do i=is,ie
+    do k=0,km; do j=0,jm; do i=0,im
+      if(.not.air5_convection_updated_node(i,j,k,top)) cycle
       face_state=rk_a*transport_origin_state(i,j,k,:)+rk_b*q(i,j,k,1:11)*jacob(i,j,k)+ &
         cdt*qrhs(i,j,k,1:11)
       if(.not.air5_state_is_admissible(face_state)) failed=1
@@ -1166,6 +1222,18 @@ contains
       call MPI_Abort(MPI_COMM_WORLD,3,ierr)
     endif
   end subroutine air5_limit_symmetric_convection
+
+  logical function air5_convection_updated_node(i,j,k,top) result(active)
+    use mpi, only: MPI_PROC_NULL
+    use commvar, only: im,jm,km,is,ie,js,je,ks,ke
+    use parallel, only: mpiup,mpileft
+    integer, intent(in) :: i,j,k
+    logical, intent(in) :: top
+    active=i>=is.and.i<=ie.and.j>=js.and.j<=je.and.k>=ks.and.k<=ke
+    if(.not.top) return
+    active=mpiup==MPI_PROC_NULL.and.j==jm.and.i>=0.and.i<=im.and.k>=0.and.k<=km
+    if(mpileft==MPI_PROC_NULL.and.i==0) active=.false.
+  end function air5_convection_updated_node
 
   subroutine air5_limit_full_state_convection()
     use validation_io, only: write_scalar_validation_snapshot,rhs_validation_requested
@@ -2003,6 +2071,20 @@ contains
     flux(air5_idx_ev)=flux(air5_idx_ev)+(theta-1.0_real64)*carried(air5_idx_ev)
   end subroutine mix_air5_diffusive_face
 
+  logical function air5_diffusion_updated_node(i,j,k,is,ie,js,je,ks,ke)
+    use mpi, only: MPI_PROC_NULL
+    use commvar, only: im,jm,km
+    use parallel, only: mpiup,mpileft
+    use chemistry_hbl_boundary, only: air5_dynamic_top
+    integer, intent(in) :: i,j,k,is,ie,js,je,ks,ke
+
+    air5_diffusion_updated_node=i>=is.and.i<=ie.and.j>=js.and.j<=je.and.k>=ks.and.k<=ke
+    if(air5_diffusion_updated_node) return
+    if(.not.air5_dynamic_top().or.mpiup/=MPI_PROC_NULL.or.j/=jm) return
+    if(mpileft==MPI_PROC_NULL.and.i==0) return
+    air5_diffusion_updated_node=i>=0.and.i<=im.and.k>=0.and.k<=km
+  end function air5_diffusion_updated_node
+
   subroutine limit_air5_diffusion_energy(q,qrhs,jacob,a,b,cdt,im,jm,km,hm, &
       dims,ntypes,is,ie,js,je,ks,ke)
     use parallel, only: dataswap
@@ -2014,9 +2096,10 @@ contains
     integer :: i,j,k,direction,side,component,mask,species_mask
 
     diffusion_energy_ratio=1.0_real64
-    do k=ks,ke
-      do j=js,je
-        do i=is,ie
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          if(.not.air5_diffusion_updated_node(i,j,k,is,ie,js,je,ks,ke)) cycle
           call layered_air5_node_faces(i,j,k,dims,ntypes,left,right)
           base=a*transport_origin_state(i,j,k,:)+b*q(i,j,k,:)*jacob(i,j,k)+cdt*qrhs(i,j,k,:)
           ratio=1.0_real64
@@ -2109,9 +2192,10 @@ contains
     local_limited=0
     local_invalid=0
     local_min_ratio=1.0_real64
-    do k=ks,ke
-      do j=js,je
-        do i=is,ie
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          if(.not.air5_diffusion_updated_node(i,j,k,is,ie,js,je,ks,ke)) cycle
           call air5_node_face_fluxes(i,j,k,dims,ntypes,left_flux,right_flux)
           do component=1,air5_num_conservative
             base_state(component)=rk_a*transport_origin_state(i,j,k,component)+ &
@@ -2220,9 +2304,10 @@ contains
       call write_scalar_validation_snapshot('diffusion_energy_ratio',diffusion_energy_ratio)
     endif
 
-    do k=ks,ke
-      do j=js,je
-        do i=is,ie
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          if(.not.air5_diffusion_updated_node(i,j,k,is,ie,js,je,ks,ke)) cycle
           call air5_node_face_fluxes(i,j,k,dims,ntypes,left_flux,right_flux)
           if(layered) call layered_air5_node_faces(i,j,k,dims,ntypes,left_flux,right_flux)
           do direction=1,3

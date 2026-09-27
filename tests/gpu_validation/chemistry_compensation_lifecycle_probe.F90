@@ -25,6 +25,31 @@ program chemistry_compensation_lifecycle_probe
   call compensated_mean(1.0_real64,1.0_real64+epsilon(q), &
     0.0_real64,0.0_real64,mean_c)
   if(mean_c/=-0.5_real64*epsilon(q)) error stop 'mean lost its rounding residual'
+  ! A cancelling mean can retain a valid, non-normalized compensation pair.
+  ! The checkpoint reader's spacing(high) bound is not guaranteed by this API.
+  h=2.0_real64**(-53)
+  call compensated_mean(1.0_real64,-1.0_real64,h,h,mean_c)
+  if(mean_c/=h) error stop 'cancelling mean changed represented value'
+  if(abs(mean_c)<=4.0_real64*spacing(0.0_real64)) &
+    error stop 'cancellation diagnostic did not exercise the restart contract gap'
+  if(rank==0) write(*,'(A)') 'COMPENSATION_MEAN_NONNORMAL_PAIR_REPRODUCED'
+  q=0.0_real64; c=mean_c
+  call compensated_normalize(q,c)
+  if(q/=-h.or.c/=0.0_real64) error stop 'cancelling pair normalization lost value'
+  q0=q; c0=c
+  call compensated_normalize(q,c)
+  if(q/=q0.or.c/=c0) error stop 'normalization is not idempotent'
+  q=1.0_real64; c=2.0_real64**(-54)
+  call compensated_normalize(q,c)
+  if(q/=1.0_real64.or.c/=2.0_real64**(-54)) error stop 'normalization discarded low bits'
+  q=3.3327160638660024e-23_real64; c=4.930380657631324e-32_real64
+  q0=q; c0=c
+  call compensated_normalize(q,c)
+  ! Exact Decimal subtraction of the two binary64 inputs gives this binary64 value.
+  if(q/=3.33271605893562170e-23_real64.or.c/=0.0_real64) &
+    error stop 'observed checkpoint pair changed represented value'
+  if(abs(c)>4.0_real64*spacing(q)) error stop 'observed checkpoint pair is not normalized'
+  if(rank==0) write(*,'(A)') 'COMPENSATION_NORMALIZATION_PASS'
   call configure_air5_compensation(.true.,2,3,4)
   if(any(air5_carry/=0.0_real64)) error stop 'new state did not zero carry'
   air5_carry=1.0_real64
@@ -40,9 +65,16 @@ program chemistry_compensation_lifecycle_probe
   call compensation_exchange_faces(low,high,cl,ch,lower,upper,comm)
   expected=0.5_real64*(2.0_real64**(-57)-2.0_real64**(-56))-0.5_real64*epsilon(q)
   if(any(cl/=expected) .or. any(ch/=expected)) error stop 'MPI duplicate-node carry failed'
+  low=0.0_real64; high=0.0_real64; cl=h; ch=h
+  call compensation_normalize_faces(low,high,cl,ch,lower,upper)
+  if(any(low/=-h).or.any(high/=-h).or.any(cl/=0.0_real64).or.any(ch/=0.0_real64)) &
+    error stop 'MPI face normalization failed'
   low=3.0_real64; high=5.0_real64; cl=7.0_real64; ch=9.0_real64
   call compensation_exchange_faces(low,high,cl,ch,MPI_PROC_NULL,MPI_PROC_NULL,comm)
   if(any(cl/=7.0_real64) .or. any(ch/=9.0_real64)) error stop 'physical face modified'
+  call compensation_normalize_faces(low,high,cl,ch,MPI_PROC_NULL,MPI_PROC_NULL)
+  if(any(low/=3.0_real64).or.any(high/=5.0_real64).or.any(cl/=7.0_real64).or.any(ch/=9.0_real64)) &
+    error stop 'normalization modified physical face'
   if(rank==0) write(*,'(A,I0)') 'COMPENSATION_LIFECYCLE_PRIMITIVES_PASS ranks=',nranks
   call MPI_Comm_free(comm,ierr)
   call MPI_Finalize(ierr)

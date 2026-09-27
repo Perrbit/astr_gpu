@@ -11,7 +11,7 @@ contains
     real(8),device :: endpoint(11)
     real(8) :: inner1(11),inner2(11)
     logical :: endpoint_valid
-    call air5_top_transport_rhs(q,target,p,a,g,normal,remaining,rate,rhs,valid)
+    call air5_top_transport_rhs(q,target,p,a,g,normal,remaining,rate,rhs,valid,a)
     call air5_y_flux_differential(q,p,g,normal,df)
     inner1=q+(-1.d-3+0.25d-6)*normal
     inner2=q+(-2.d-3+1.d-6)*normal
@@ -206,10 +206,83 @@ program air5_characteristic_thermo_probe
       endif
     enddo
   enddo
+  call zero_trace_normal_probe()
+  call inflow_rate_probe()
   print '(A,ES24.16)', 'AIR5_CHARACTERISTIC_THERMO_PASS max_scaled_error=',maxerror
   print '(A,2ES24.16)', 'difference_step/max_flux_error=',h,maxfluxerror
   print '(A,ES24.16)', 'source_decomposition_error=',maxsourceerror
 contains
+
+  subroutine inflow_rate_probe()
+    real(real64),parameter :: speeds(5)=[-1.d-3,-1.d-6,0.d0,1.d-6,1.d-3]
+    real(real64) :: local(11),target(11),g(11),rhs(11),expected(11),zero(11),pr,cs,b,v(3)
+    real(real64) :: fractions(5),rate,delta
+    integer :: j,st
+    logical :: valid
+#ifdef _CUDA
+    real(8),device :: qd(11),td(11),pd,ad,gd(11),nd(11),sd(11),kd,rd(11),dfd(11),epd(11)
+    logical,device :: vd
+    real(real64) :: actual(11)
+#endif
+    fractions=[.767d0,.233d0,0.d0,0.d0,0.d0]
+    b=sum(fractions*rs)/sum(fractions*cvs)
+    pr=.05d0*sum(fractions*rs)*3000.d0
+    cs=sqrt((1.d0+b)*pr/.05d0)
+    zero=0.d0; rate=1.d5; delta=1.d-4
+    do j=1,size(speeds)
+      v=[0.d0,speeds(j),0.d0]
+      call air5_primitive_to_conservative(.05d0,v,3000.d0,fractions,1500.d0,local,st)
+      if(st/=0) error stop 'inflow rate state setup'
+      g(1)=.5d0*b*sum(v*v); g(2:4)=-b*v; g(5)=b
+      g(6:10)=(rs-b*cvs)*3000.d0-b*air5_formation_energy; g(11)=-b
+      target=local; target(2)=target(2)-delta
+      expected=zero; expected(2)=-rate*(max(-v(2),0.d0)/cs)*delta
+      call air5_top_transport_rhs(local,target,pr,cs,g,zero,zero,rate,rhs,valid,cs)
+      if(.not.valid.or.maxval(abs(rhs-expected))>1.d-18) error stop 'inflow rate continuity'
+#ifdef _CUDA
+      qd=local; td=target; pd=pr; ad=cs; gd=g; nd=zero; sd=zero; kd=rate
+      call evaluate_top<<<1,1>>>(qd,td,pd,ad,gd,nd,sd,kd,rd,dfd,epd,vd)
+      st=cudaDeviceSynchronize()
+      if(st/=cudaSuccess) error stop 'inflow rate GPU launch'
+      actual=rd; valid=vd
+      if(.not.valid.or.maxval(abs(actual-expected))>1.d-18) error stop 'GPU inflow rate continuity'
+#endif
+      call air5_top_transport_rhs(local,target,pr,cs,g,zero,zero,rate,rhs,valid,2.d0*cs)
+      if(.not.valid.or.maxval(abs(rhs-.5d0*expected))>1.d-18) error stop 'reference sound scaling'
+      call air5_top_transport_rhs(local,target,pr,cs,g,zero,zero,rate,rhs,valid,0.d0)
+      if(valid) error stop 'invalid reference sound accepted'
+    enddo
+    print '(A)', 'AIR5_INFLOW_RATE_CONTINUITY_PASS'
+  end subroutine inflow_rate_probe
+  subroutine zero_trace_normal_probe()
+    real(real64) :: q0(11),q1(11),q2(11),g(11),normal(11),rhs(11),zero(11)
+    real(real64) :: ys(5),us(3),cv(5),gas(5),b,pressure0,sound0
+    integer :: species,istat
+    logical :: valid
+    ys=[0.767_real64,0.233_real64,0.0_real64,0.0_real64,0.0_real64]
+    us=[0.0_real64,5.10997467e-4_real64,0.0_real64]
+    call air5_primitive_to_conservative(0.05_real64,us,3000.0_real64,ys,1500.0_real64,q0,istat)
+    if(istat/=0) error stop 'zero-trace normal probe state'
+    do species=1,5
+      gas(species)=air5_species_gas_constant(species)
+      cv(species)=air5_species_cv_tr(species)
+    enddo
+    b=sum(ys*gas)/sum(ys*cv)
+    pressure0=pressure(q0); sound0=sqrt((1+b)*pressure0/q0(1))
+    g(1)=0.5_real64*b*sum(us*us); g(2:4)=-b*us; g(5)=b
+    g(6:10)=(gas-b*cv)*3000.0_real64-b*air5_formation_energy; g(11)=-b
+    q1=q0; q2=q0; q2(10)=3.22639442e-28_real64
+    q2(6)=q2(6)-q2(10); zero=0.0_real64
+    call air5_top_normal_convection(q0,q1,q2,7.8125e-5_real64,pressure0,g,normal,valid)
+    if(.not.valid) error stop 'high normal probe validity'
+    call air5_top_transport_rhs(q0,q0,pressure0,sound0,g,normal,zero,0.0_real64,rhs,valid,sound0)
+    if(.not.valid.or.rhs(10)>=0.0_real64) error stop 'missing high-order zero-donor counterexample'
+    call air5_top_normal_convection(q0,q1,q2,7.8125e-5_real64,pressure0,g,normal,valid,.true.)
+    if(.not.valid) error stop 'low normal probe validity'
+    call air5_top_transport_rhs(q0,q0,pressure0,sound0,g,normal,zero,0.0_real64,rhs,valid,sound0)
+    if(.not.valid.or.any(rhs/=0.0_real64)) error stop 'first-order zero-donor normal baseline'
+    print '(A)', 'AIR5_ZERO_TRACE_NORMAL_BASELINE_PASS'
+  end subroutine zero_trace_normal_probe
   subroutine check_mode(direction,speed)
     real(real64),intent(in) :: direction(11),speed
     real(real64) :: target(11),normal(11),remaining(11),rhs(11),expected(11),rate
@@ -246,7 +319,10 @@ contains
       remaining=0.d0
       rate=2.d0
       expected=-normal
-      if(mode_speed<0.d0) expected=-rate*1.d-3*normal
+      if(mode_speed<0.d0) then
+        expected=-rate*1.d-3*normal
+        if(abs(speed-u(2))<1.d-10*a) expected=expected*max(-qtest(3)/rho,0.d0)/a
+      endif
       scale=max(1.d0,abs(normal))
       flux_scale=max(abs(mode_speed*normal),a*max(abs(normal),1.d0))
       inner1=qtest+(-1.d-3+0.25d-6)*normal
@@ -258,7 +334,7 @@ contains
       if(.not.valid.or.any(endpoint/=0.d0)) error stop 'constant endpoint convection'
       call air5_top_normal_convection(qtest,inner1,inner2,0.d0,p,gtest,endpoint,valid)
       if(valid) error stop 'zero endpoint spacing accepted'
-      call air5_top_transport_rhs(qtest,target,p,a,gtest,normal,remaining,rate,rhs,valid)
+      call air5_top_transport_rhs(qtest,target,p,a,gtest,normal,remaining,rate,rhs,valid,a)
       if(.not.valid.or.any(abs(rhs-expected)>2.d-10*scale)) error stop 'top mode RHS mismatch'
 #ifdef _CUDA
       qd=qtest
@@ -287,12 +363,12 @@ contains
 #endif
       ! Transverse/diffusive increments are retained without any projection.
       remaining=normal
-      call air5_top_transport_rhs(qtest,target,p,a,gtest,normal,remaining,rate,rhs,valid)
+      call air5_top_transport_rhs(qtest,target,p,a,gtest,normal,remaining,rate,rhs,valid,a)
       if(.not.valid.or.any(abs(rhs-expected-remaining)>2.d-10*scale)) &
         error stop 'top transverse source was projected'
-      call air5_top_transport_rhs(qtest,qtest,p,a,gtest,0.d0*normal,0.d0*remaining,0.d0,rhs,valid)
+      call air5_top_transport_rhs(qtest,qtest,p,a,gtest,0.d0*normal,0.d0*remaining,0.d0,rhs,valid,a)
       if(.not.valid.or.any(rhs/=0.d0)) error stop 'top uniform state mismatch'
-      call air5_top_transport_rhs(qtest,target,p,a,gtest,normal,remaining,-1.d0,rhs,valid)
+      call air5_top_transport_rhs(qtest,target,p,a,gtest,normal,remaining,-1.d0,rhs,valid,a)
       if(valid) error stop 'negative top relaxation rate accepted'
     enddo
   end subroutine check_mode

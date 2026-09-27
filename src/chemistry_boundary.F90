@@ -124,6 +124,7 @@ module chemistry_hbl_boundary
   logical, save :: incident_top=.false.
   logical, save :: characteristic_top=.false.
   real(real64), save :: top_relaxation_rate=0.0_real64
+  real(real64), save :: top_reference_sound=0.0_real64
   real(real64), save :: incident_x=0.0_real64
   real(real64), save :: incident_q(air5_num_conservative,2)=0.0_real64
   logical, save :: boundary_configured=.false.
@@ -133,6 +134,8 @@ module chemistry_hbl_boundary
   public :: apply_air5_hbl_boundary
   public :: get_air5_incident_top
   public :: air5_dynamic_top,get_air5_top_target,get_air5_top_rate
+  public :: get_air5_top_reference_sound
+  public :: write_air5_top_checkpoint
 
 contains
 
@@ -190,10 +193,12 @@ contains
         error stop 'air5 incident shock upstream does not match inlet profile edge'
     endif
     call configure_air5_top_mode()
+    call check_air5_top_checkpoint()
     boundary_configured=.true.
   end subroutine configure_air5_hbl_boundary
 
   subroutine configure_air5_top_mode()
+    use chemistry_thermo, only: air5_species_gas_constant,air5_species_cv_tr
     use mpi
     use ieee_arithmetic, only: ieee_is_finite
     use commvar, only: im,jm,km,use_gpu,lrestart,lfilter,rkscheme
@@ -201,6 +206,7 @@ contains
     character(len=64) :: value
     integer :: status,choice,low,high,ierr,axis,i,j,k
     real(real64) :: tau,tau_low,tau_high,spacing(3),expected(3),scale
+    real(real64) :: density,velocity(3),temperature,y(5),tv,pressure,gas,cv
 
     value='prescribed'
     call get_environment_variable('ASTR_AIR5_TOP_MODE',value,status=status)
@@ -215,10 +221,19 @@ contains
     if(low<0.or.low/=high) call MPI_Abort(MPI_COMM_WORLD,90,ierr)
     characteristic_top=choice==1
     top_relaxation_rate=0.0_real64
+    top_reference_sound=0.0_real64
     if(.not.characteristic_top) return
     ! Reject unwired combinations explicitly during staged implementation.
-    if(lrestart.or.lfilter.or.rkscheme/='rk3') &
-      error stop 'characteristic AIR5 top currently requires cold-start RK3 without filter'
+    if(lfilter.or.rkscheme/='rk3') &
+      error stop 'characteristic AIR5 top currently requires RK3 without filter'
+    if(lrestart) then
+      value=''
+      call get_environment_variable('ASTR_AIR5_TOP_RESTART_VALIDATION',value,status=status)
+      choice=0
+      if(status==0.and.trim(value)=='on') choice=1
+      call MPI_Allreduce(choice,low,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+      if(low/=1) error stop 'characteristic AIR5 restart requires explicit validation opt-in'
+    endif
     if(use_gpu) then
       value=''
       call get_environment_variable('ASTR_AIR5_TOP_GPU_VALIDATION',value,status=status)
@@ -241,6 +256,16 @@ contains
     if(tau_low/=tau_high) error stop 'inconsistent AIR5 top tau across ranks'
     top_relaxation_rate=1.0_real64/tau
     if(.not.ieee_is_finite(top_relaxation_rate)) error stop 'AIR5 top relaxation rate overflow'
+    call air5_conservative_to_primitive(farfield_q,density,velocity,temperature,y,tv,pressure,status)
+    if(status/=chemistry_status_ok) error stop 'invalid AIR5 top reference state'
+    gas=0.0_real64; cv=0.0_real64
+    do axis=1,5
+      gas=gas+y(axis)*air5_species_gas_constant(axis)
+      cv=cv+y(axis)*air5_species_cv_tr(axis)
+    enddo
+    top_reference_sound=sqrt((1.0_real64+gas/cv)*pressure/density)
+    if(.not.ieee_is_finite(top_reference_sound).or.top_reference_sound<=0.0_real64) &
+      error stop 'invalid AIR5 top reference sound speed'
     choice=0
     if(min(im,jm,km)<5) choice=1
     spacing=[x(1,0,0,1)-x(0,0,0,1),x(0,1,0,2)-x(0,0,0,2),x(0,0,1,3)-x(0,0,0,3)]
@@ -257,6 +282,88 @@ contains
     if(high/=0) error stop 'characteristic AIR5 top requires uniform Cartesian local grids with >=6 nodes'
   end subroutine configure_air5_top_mode
 
+  function air5_top_contract() result(values)
+    real(real64) :: values(38)
+    values(1:5)=[top_relaxation_rate,wall_temperature,hbl_x_origin,incident_x, &
+      real(merge(1,0,incident_top),real64)]
+    values(6:16)=farfield_q
+    values(17:38)=reshape(incident_q,[22])
+  end function air5_top_contract
+
+  subroutine write_air5_top_checkpoint()
+    use hdf5io, only: h5write
+    integer :: m
+    real(real64) :: values(38)
+    character(len=32) :: name
+    if(.not.boundary_configured) return
+    call h5write(varname='air5_top_version',var=merge(2,1,characteristic_top))
+    call h5write(varname='air5_top_mode',var=merge(1,0,characteristic_top))
+    if(.not.characteristic_top) return
+    values=air5_top_contract()
+    do m=1,38
+      write(name,'(A,I2.2)') 'air5_top_contract_',m
+      call h5write(varname=trim(name),var=values(m))
+    enddo
+  end subroutine write_air5_top_checkpoint
+
+  subroutine check_air5_top_checkpoint()
+    use mpi
+    use commvar, only: lrestart
+    use hdf5io
+    use ieee_arithmetic, only: ieee_is_finite
+    integer :: version,mode,bad,global_bad,m,ierr,env_status
+    logical :: present_field
+    real(real64) :: values(38),saved
+    character(len=32) :: name,option
+    if(.not.lrestart) return
+#ifdef HDF5
+    bad=0; version=0; mode=0
+    call h5io_init('outdat/flowfield.h5',mode='read')
+    call h5lexists_f(h5file_id,'air5_top_version',present_field,ierr)
+    if(ierr/=0) bad=1
+    if(present_field) then
+      call h5read('air5_top_version',version)
+      if(version/=merge(2,1,characteristic_top)) bad=1
+      call h5lexists_f(h5file_id,'air5_top_mode',present_field,ierr)
+      if(ierr/=0.or..not.present_field) bad=1
+      if(present_field) call h5read('air5_top_mode',mode)
+    endif
+    if(mode/=merge(1,0,characteristic_top)) bad=1
+    if(characteristic_top.and.version/=2) bad=1
+    if(mode==1) then
+      option=''
+      call get_environment_variable('ASTR_AIR5_COMPENSATION',option,status=env_status)
+      if(env_status/=0.or.trim(option)/='on') bad=1
+      option='restore'
+      call get_environment_variable('ASTR_AIR5_COMPENSATION_RESTART',option,status=env_status)
+      if(env_status/=1) then
+        if(env_status/=0.or.trim(option)/='restore') bad=1
+      endif
+      values=air5_top_contract()
+      do m=1,38
+        write(name,'(A,I2.2)') 'air5_top_contract_',m
+        call h5lexists_f(h5file_id,trim(name),present_field,ierr)
+        if(ierr/=0.or..not.present_field) bad=1
+        if(present_field) then
+          call h5read(trim(name),saved)
+          if(.not.ieee_is_finite(saved)) bad=1
+          if(saved/=values(m)) bad=1
+        endif
+      enddo
+      call h5lexists_f(h5file_id,'air5_compensation_version',present_field,ierr)
+      if(ierr/=0.or..not.present_field) bad=1
+    endif
+    call h5io_end
+    call MPI_Allreduce(bad,global_bad,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(global_bad/=0) then
+      print *, 'AIR5 top checkpoint mode/target/tau mismatch or missing metadata'
+      call MPI_Abort(MPI_COMM_WORLD,91,ierr)
+    endif
+#else
+    if(characteristic_top) error stop 'characteristic AIR5 restart requires HDF5'
+#endif
+  end subroutine check_air5_top_checkpoint
+
   logical function air5_dynamic_top()
     air5_dynamic_top=characteristic_top
   end function air5_dynamic_top
@@ -264,6 +371,10 @@ contains
   real(real64) function get_air5_top_rate()
     get_air5_top_rate=top_relaxation_rate
   end function get_air5_top_rate
+
+  real(real64) function get_air5_top_reference_sound()
+    get_air5_top_reference_sound=top_reference_sound
+  end function get_air5_top_reference_sound
 
   subroutine get_air5_top_target(x_value,state,status)
     real(real64),intent(in) :: x_value

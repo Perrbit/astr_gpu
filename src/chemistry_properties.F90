@@ -714,11 +714,13 @@ contains
     integer, intent(out) :: status
     real(real64) :: concentration(air5_num_species), mole_fraction(air5_num_species)
     real(real64) :: concentration_sum, pressure, gas_density, pressure_derivative
-    real(real64) :: pair_time(air5_num_species), pair_time_derivative(air5_num_species)
-    real(real64) :: mw_time, park_time, sigma, reduced_mass, mean_speed
+    real(real64) :: pair_rate(air5_num_species), park_weight(air5_num_species)
+    real(real64) :: mw_weight(air5_num_species), density_derivative(air5_num_species)
+    real(real64) :: mw_time, sigma, reduced_mass, mean_speed
     real(real64) :: inverse_time, inverse_time_derivative, dx
     real(real64) :: equilibrium_energy, current_energy, energy_difference
-    real(real64) :: energy_derivative, relaxing_number_density
+    real(real64) :: energy_derivative, collision_coefficient, collision_rate, product, denominator
+    real(real64) :: dlog_mw, dlog_collision, pair_rate_derivative
     integer :: molecule, partner, variable, local_status
 
     source = 0.0_real64
@@ -763,22 +765,67 @@ contains
     do molecule = 1, air5_num_species
       if (air5_theta_v(molecule) <= 0.0_real64) cycle
       if (rho_species(molecule) <= 0.0_real64) cycle
-      relaxing_number_density = concentration(molecule)*avogadro
       do partner = 1, air5_num_species
         mw_time = pressure_atmosphere_pa/pressure*exp(air5_mw_a(molecule,partner)* &
           (temperature**(-1.0_real64/3.0_real64)-air5_mw_b(molecule,partner))-18.42_real64)
-        park_time = 0.0_real64
-        if (air5_collision_sigma0(molecule,partner) > 0.0_real64) then
-          sigma = air5_collision_sigma0(molecule,partner)* &
-            temperature**air5_collision_sigma_power(molecule,partner)
-          reduced_mass = air5_molar_mass(molecule)*air5_molar_mass(partner)/ &
-            (air5_molar_mass(molecule)+air5_molar_mass(partner))
-          mean_speed = sqrt(8.0_real64*air5_ru*temperature/(pi*reduced_mass))
-          park_time = 1.0_real64/(relaxing_number_density*sigma*mean_speed)
+        if (.not.ieee_is_finite(mw_time)) then
+          status=chemistry_status_nonfinite
+          return
         end if
-        pair_time(partner) = mw_time+park_time
+        if (mw_time<=0.0_real64) then
+          status=chemistry_status_out_of_domain
+          return
+        end if
+        park_weight(partner)=0.0_real64
+        mw_weight(partner)=1.0_real64
+        density_derivative(partner)=0.0_real64
+        if (air5_collision_sigma0(molecule,partner)>0.0_real64) then
+          sigma=air5_collision_sigma0(molecule,partner)* &
+            temperature**air5_collision_sigma_power(molecule,partner)
+          reduced_mass=air5_molar_mass(molecule)*air5_molar_mass(partner)/ &
+            (air5_molar_mass(molecule)+air5_molar_mass(partner))
+          mean_speed=sqrt(8.0_real64*air5_ru*temperature/(pi*reduced_mass))
+          ! Form the finite coefficient before multiplying by a trace density.
+          collision_coefficient=((avogadro/air5_molar_mass(molecule))*sigma)*mean_speed
+          if (.not.ieee_is_finite(sigma) .or. &
+              .not.ieee_is_finite(mean_speed) .or. &
+              .not.ieee_is_finite(collision_coefficient)) then
+            status=chemistry_status_nonfinite
+            return
+          end if
+          collision_rate=collision_coefficient*rho_species(molecule)
+          if (.not.ieee_is_finite(collision_rate)) then
+            status=chemistry_status_nonfinite
+            return
+          end if
+          product=mw_time*collision_rate
+          if (.not.ieee_is_finite(product)) then
+            status=chemistry_status_nonfinite
+            return
+          end if
+          denominator=1.0_real64+product
+          if (.not.ieee_is_finite(denominator)) then
+            status=chemistry_status_nonfinite
+            return
+          end if
+          park_weight(partner)=1.0_real64/denominator
+          pair_rate(partner)=collision_rate/denominator
+          mw_weight(partner)=product/denominator
+          ! Do not form denominator squared or divide by the trace density.
+          density_derivative(partner)=(collision_coefficient/denominator)/denominator
+        else
+          pair_rate(partner)=1.0_real64/mw_time
+        end if
+        if (.not.ieee_is_finite(pair_rate(partner)) .or. &
+            .not.ieee_is_finite(density_derivative(partner))) then
+          status=chemistry_status_nonfinite
+          return
+        end if
       end do
-      inverse_time = sum(mole_fraction/pair_time)
+      inverse_time=0.0_real64
+      do partner=1,air5_num_species
+        inverse_time=inverse_time+mole_fraction(partner)*pair_rate(partner)
+      end do
       equilibrium_energy = air5_species_vibrational_energy(molecule, temperature)
       current_energy = air5_species_vibrational_energy(molecule, tv)
       energy_difference = equilibrium_energy-current_energy
@@ -790,28 +837,10 @@ contains
           pressure_derivative = pressure_derivative + &
             air5_species_gas_constant(variable)*temperature
         end if
-        do partner = 1, air5_num_species
-          mw_time = pressure_atmosphere_pa/pressure*exp(air5_mw_a(molecule,partner)* &
-            (temperature**(-1.0_real64/3.0_real64)-air5_mw_b(molecule,partner))-18.42_real64)
-          pair_time_derivative(partner) = mw_time*(-pressure_derivative/pressure - &
-            air5_mw_a(molecule,partner)*temperature**(-4.0_real64/3.0_real64)* &
-            dtemperature(variable)/3.0_real64)
-          if (air5_collision_sigma0(molecule,partner) > 0.0_real64) then
-            sigma = air5_collision_sigma0(molecule,partner)* &
-              temperature**air5_collision_sigma_power(molecule,partner)
-            reduced_mass = air5_molar_mass(molecule)*air5_molar_mass(partner)/ &
-              (air5_molar_mass(molecule)+air5_molar_mass(partner))
-            mean_speed = sqrt(8.0_real64*air5_ru*temperature/(pi*reduced_mass))
-            park_time = 1.0_real64/(relaxing_number_density*sigma*mean_speed)
-            pair_time_derivative(partner) = pair_time_derivative(partner) - &
-              park_time*(air5_collision_sigma_power(molecule,partner)+0.5_real64)* &
-              dtemperature(variable)/temperature
-            if (variable == molecule) then
-              pair_time_derivative(partner) = pair_time_derivative(partner) - &
-                park_time/rho_species(molecule)
-            end if
-          end if
-        end do
+        if (.not.ieee_is_finite(pressure_derivative)) then
+          status=chemistry_status_nonfinite
+          return
+        end if
         inverse_time_derivative = 0.0_real64
         do partner = 1, air5_num_species
           dx = 0.0_real64
@@ -821,9 +850,21 @@ contains
               dx = dx + 1.0_real64/(air5_molar_mass(variable)*concentration_sum)
             end if
           end if
-          inverse_time_derivative = inverse_time_derivative + dx/pair_time(partner) - &
-            mole_fraction(partner)*pair_time_derivative(partner)/ &
-            (pair_time(partner)*pair_time(partner))
+          dlog_mw=-pressure_derivative/pressure- &
+            (air5_mw_a(molecule,partner)*temperature**(-1.0_real64/3.0_real64)/3.0_real64)* &
+            (dtemperature(variable)/temperature)
+          dlog_collision=(air5_collision_sigma_power(molecule,partner)+0.5_real64)* &
+            (dtemperature(variable)/temperature)
+          pair_rate_derivative=pair_rate(partner)*(park_weight(partner)*dlog_collision- &
+            mw_weight(partner)*dlog_mw)
+          if(variable==molecule) pair_rate_derivative=pair_rate_derivative+density_derivative(partner)
+          if (.not.ieee_is_finite(dlog_mw) .or. .not.ieee_is_finite(dlog_collision) .or. &
+              .not.ieee_is_finite(pair_rate_derivative)) then
+            status=chemistry_status_nonfinite
+            return
+          end if
+          inverse_time_derivative=inverse_time_derivative+dx*pair_rate(partner)+ &
+            mole_fraction(partner)*pair_rate_derivative
         end do
         energy_derivative = air5_species_vibrational_cv(molecule,temperature)* &
           dtemperature(variable) - air5_species_vibrational_cv(molecule,tv)*dtv(variable)

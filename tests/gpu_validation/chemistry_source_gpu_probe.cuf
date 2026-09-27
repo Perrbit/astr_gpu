@@ -1,17 +1,19 @@
 program chemistry_source_gpu_probe
-  use iso_fortran_env, only: real64
-  use ieee_arithmetic, only: ieee_value, ieee_quiet_nan
+  use iso_fortran_env, only: real64, int64
+  use ieee_arithmetic, only: ieee_value, ieee_quiet_nan, ieee_is_finite
   use cudafor
   use chemistry_air5_data, only: air5_num_species, air5_num_reactions
   use chemistry_model, only: chemistry_status_ok
   use chemistry_thermo, only: air5_ev_from_tv, air5_q5_from_state, &
     air5_species_gas_constant, air5_species_cv_tr
-  use chemistry_source, only: air5_instantaneous_source_jacobian, &
+  use chemistry_source, only: air5_instantaneous_source_jacobian, air5_centered_difference_jacobian, &
     air5_source_mode_coupled, air5_source_mode_chemical, air5_source_mode_vt, air5_source_mode_frozen
   use chemistry_source_gpu, only: launch_air5_source_batch_gpu
   implicit none
 
-  integer, parameter :: base_cases = 6, valid_cases = 8, case_count = 14
+  integer, parameter :: base_cases = 6, valid_cases = 8, case_count = 21
+  real(real64), parameter :: trace_values(6)=[0.0_real64,1.0e-20_real64, &
+    6.301775586262159e-165_real64,1.0e-250_real64,tiny(1.0_real64),transfer(1_int64,0.0_real64)]
   integer, parameter :: mode_count = 4
   integer, parameter :: modes(mode_count) = [air5_source_mode_coupled, &
     air5_source_mode_chemical, air5_source_mode_vt, air5_source_mode_frozen]
@@ -43,7 +45,8 @@ program chemistry_source_gpu_probe
   integer :: status_one_ref, status_one_gpu
   real(real64) :: source_ratio, rate_ratio, jacobian_ratio, energy_ratio
   real(real64) :: q5_change
-  integer :: case_index, mode_index, status_mismatches
+  real(real64) :: numeric_jacobian(6,6), numeric_ratio
+  integer :: case_index, mode_index, status_mismatches, setup_status
 
   do case_index = 1, base_cases
     call make_state(case_index, rho(case_index), momentum(:,case_index), &
@@ -65,6 +68,28 @@ program chemistry_source_gpu_probe
     rho(13),momentum(:,13),q5(13),state(:,13))
   call copy_case(2,14)
   state(6,14) = ieee_value(0.0_real64, ieee_quiet_nan)
+  do case_index=15,20
+    rho(case_index)=0.05_real64
+    momentum(:,case_index)=0.0_real64
+    state(1:5,case_index)=[0.03835_real64-trace_values(case_index-14), &
+      0.01165_real64,0.0_real64,0.0_real64,trace_values(case_index-14)]
+    call air5_ev_from_tv(state(1:5,case_index),1500.0_real64,state(6,case_index),setup_status)
+    if(setup_status/=chemistry_status_ok) then
+      write(*,*) 'trace setup case/status/species=',case_index,setup_status,state(1:5,case_index)
+      error stop 'trace Ev setup failed'
+    endif
+    call air5_q5_from_state(rho(case_index),momentum(:,case_index),state(1:5,case_index), &
+      state(6,case_index),3000.0_real64,q5(case_index),setup_status)
+    if(setup_status/=chemistry_status_ok) error stop 'trace q5 setup failed'
+  end do
+  ! Captured GPU failure before the second chemistry half at step index 2.
+  rho(21)=5.00000009020460864e-2_real64
+  momentum(:,21)=[-6.56704673475149387e-7_real64,3.80715410659557469e-5_real64, &
+    -5.97397080597190743e-17_real64]
+  q5(21)=1.00460567809107743e5_real64
+  state(:,21)=[3.83500006918693487e-2_real64,1.16500002101767395e-2_real64, &
+    0.0_real64,3.54731312144078128e-114_real64,6.30177558626215909e-165_real64, &
+    7.40550801210047121e3_real64]
 
   rho_d = rho
   momentum_d = momentum
@@ -76,6 +101,7 @@ program chemistry_source_gpu_probe
   energy_ratio = 0.0_real64
   q5_change = 0.0_real64
   status_mismatches = 0
+  numeric_ratio=0.0_real64
 
   do mode_index = 1, mode_count
     do case_index = 1, case_count
@@ -98,9 +124,9 @@ program chemistry_source_gpu_probe
       if (status_gpu(case_index) /= status_ref(case_index)) then
         status_mismatches = status_mismatches+1
       end if
-      if (case_index <= valid_cases .and. status_ref(case_index) /= chemistry_status_ok) &
+      if ((case_index <= valid_cases.or.case_index>14) .and. status_ref(case_index) /= chemistry_status_ok) &
         status_mismatches = status_mismatches+1
-      if (case_index > valid_cases .and. status_ref(case_index) == chemistry_status_ok) &
+      if (case_index > valid_cases.and.case_index<=14 .and. status_ref(case_index) == chemistry_status_ok) &
         status_mismatches = status_mismatches+1
       if (status_ref(case_index) /= chemistry_status_ok) cycle
       call update_ratio(source_gpu(:,case_index), source_ref(:,case_index), source_ratio)
@@ -108,6 +134,14 @@ program chemistry_source_gpu_probe
       call update_ratio(reshape(jacobian_gpu(:,:,case_index),[36]), &
         reshape(jacobian_ref(:,:,case_index),[36]), jacobian_ratio)
       call update_ratio(total_energy_gpu(case_index:case_index), [0.0_real64], energy_ratio)
+      if(mode_index==1.and.case_index>=3.and.case_index<=6) then
+        call air5_centered_difference_jacobian(rho(case_index),momentum(:,case_index),q5(case_index), &
+          state(:,case_index),numeric_jacobian,setup_status)
+        if(setup_status/=chemistry_status_ok) error stop 'numerical Jacobian failed'
+        if(.not.all(ieee_is_finite(numeric_jacobian))) error stop 'nonfinite numerical Jacobian'
+        numeric_ratio=max(numeric_ratio,maxval(abs(jacobian_gpu(:,:,case_index)-numeric_jacobian)/ &
+          (1.0e-8_real64+1.0e-6_real64*abs(numeric_jacobian))))
+      end if
     end do
     q5_change = max(q5_change,maxval(abs(q5_after-q5)))
   end do
@@ -144,9 +178,11 @@ program chemistry_source_gpu_probe
   write(*,'(a,1x,es24.16)') 'CHEMISTRY_GPU_TOTAL_ENERGY_MAX_RATIO',energy_ratio
   write(*,'(a,1x,i0)') 'CHEMISTRY_GPU_STATUS_MISMATCHES',status_mismatches
   write(*,'(a,1x,es24.16)') 'CHEMISTRY_GPU_Q5_MAX_CHANGE',q5_change
+  write(*,'(a,1x,es24.16)') 'CHEMISTRY_GPU_NUMERIC_JACOBIAN_MAX_RATIO',numeric_ratio
+  write(*,'(a,1x,i0)') 'CHEMISTRY_GPU_TRACE_CASES',case_count-14
   if (source_ratio > 1.0_real64 .or. rate_ratio > 1.0_real64 .or. &
       jacobian_ratio > 1.0_real64 .or. energy_ratio > 1.0_real64 .or. &
-      status_mismatches /= 0 .or. q5_change /= 0.0_real64) then
+      status_mismatches /= 0 .or. q5_change /= 0.0_real64 .or. numeric_ratio>1.0_real64) then
     error stop 'GPU chemistry batch comparison failed'
   end if
 
@@ -158,6 +194,8 @@ contains
     real(real64) :: scale, tolerance, difference
     integer :: item
 
+    if (.not.all(ieee_is_finite(actual)).or..not.all(ieee_is_finite(reference))) &
+      error stop 'nonfinite chemistry comparison'
     scale = max(maxval(abs(reference)),1.0_real64)
     do item = 1, size(reference)
       tolerance = 1.0e-13_real64*scale+5.0e-12_real64*abs(reference(item))

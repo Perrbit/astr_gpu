@@ -25,7 +25,8 @@ FRACTIONS = np.array([.767, .233, 0., 0., 0.])
 
 
 def prepare(output, executable, ny=256, dt=5e-9, tau_factor=1., mode='characteristic', extended=False,
-            *, nz=8, pulse_y=Y0, short_updates=None, use_gpu=False):
+            *, nz=8, pulse_y=Y0, short_updates=None, use_gpu=False,
+            temperature0=TEMP, tv0=TEMP):
     output, executable = output.resolve(), executable.resolve()
     if output.exists():
         raise FileExistsError(output)
@@ -34,8 +35,8 @@ def prepare(output, executable, ny=256, dt=5e-9, tau_factor=1., mode='characteri
     model = Air5RadauReference(ROOT/'chemMech/air5_kimjo12.json')
     gas = float(FRACTIONS @ model.gas_constant)
     gamma = 1 + gas / float(FRACTIONS @ model.cv_tr)
-    pressure = RHO*gas*TEMP
-    sound = np.sqrt(gamma*gas*TEMP)
+    pressure = RHO*gas*temperature0
+    sound = np.sqrt(gamma*gas*temperature0)
     ly = LY*(2 if extended else 1)
     nj = ny*(2 if extended else 1)
     updates = round(7.5e-6/dt) if short_updates is None else short_updates
@@ -45,10 +46,14 @@ def prepare(output, executable, ny=256, dt=5e-9, tau_factor=1., mode='characteri
     set_value(input_file, 'lihomo,ljhomo,lkhomo', 'f,f,t')
     set_value(input_file, 'lrestar', 'f')
     lines = input_file.read_text().splitlines()
-    replace_boundary_types(lines, ('11,free', 50, '41,1500.d0', 51, 1, 1))
+    replace_boundary_types(lines, ('11,free', 50, f'41,{temperature0:.17e}', 51, 1, 1))
     input_file.write_text('\n'.join(lines)+'\n')
     (output/'datin/air5_hbl_domain.dat').write_text(f'air5_hbl_domain_v1\n{LX} {ly} {LZ}\n')
-    rows = [[y, RHO, 0., 0., 0., pressure, TEMP, TEMP, *FRACTIONS] for y in (0., ly)]
+    def vibrational_temperature(y):
+        return tv0+(temperature0-tv0)*max(0., 1.-y/(.1*ly))
+    profile_y = (0., ly) if temperature0 == tv0 else (0., .1*ly, ly)
+    rows = [[y, RHO, 0., 0., 0., pressure, temperature0, vibrational_temperature(y), *FRACTIONS]
+            for y in profile_y]
     (output/'datin/air5_hbl_profile.dat').write_text('# Frozen acoustic reservoir\n# x_origin=1.0\n'+
         '\n'.join(' '.join(f'{v:.17e}' for v in row) for row in rows)+'\n')
     xs, ys = np.linspace(0., LX, 17), np.linspace(0., ly, nj+1)
@@ -62,7 +67,7 @@ def prepare(output, executable, ny=256, dt=5e-9, tau_factor=1., mode='characteri
             v = 2*sound/(gamma-1)*(ratio**((gamma-1)/(2*gamma))-1)
             momentum = rho*np.array([0., v, 0.])
             partial = rho*FRACTIONS
-            ev = model.ev_from_tv(partial, TEMP)
+            ev = model.ev_from_tv(partial, vibrational_temperature(y))
             temperature = pressure*ratio/(rho*gas)
             energy = model.q5_from_state(rho, momentum, partial, ev, temperature)
             row = [x, y, rho, *momentum, energy, *partial, ev]
@@ -80,7 +85,7 @@ def prepare(output, executable, ny=256, dt=5e-9, tau_factor=1., mode='characteri
         env_values['ASTR_AIR5_TOP_GPU_VALIDATION'] = 'on'
         env_values['ASTR_AIR5_ACOUSTIC_PROBE'] = 'on'
     metadata = dict(ny=ny, grid_intervals=[16, nj, nz], domain=[LX, ly, LZ], dt=dt,
-        pulse_y=pulse_y, use_gpu=use_gpu,
+        pulse_y=pulse_y, use_gpu=use_gpu, temperature0=temperature0, tv0=tv0,
         updates=updates, mode=mode, extended=extended, tau_factor=tau_factor,
         tau=tau_factor*LY/sound, rho=RHO, pressure=pressure, sound_speed=float(sound), gamma=gamma,
         epsilon=EPSILON, probe_xyz=[.04, jp*ly/nj, .001], environment=env_values,

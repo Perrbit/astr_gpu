@@ -23,6 +23,8 @@ module chemistry_flow_solver_gpu
   integer, device, save :: air5_diffusion_layered_d
   integer, device, save :: air5_convection_consistent_d
   integer, device, save :: air5_convection_symmetric_d=0
+  integer, device, save :: air5_symmetric_top_d=0
+  real(real64), allocatable, device, save :: top_normal_high_rhs_d(:,:,:)
   real(real64), allocatable, device, save :: symmetric_base_d(:,:,:,:),symmetric_face_d(:,:,:,:)
   real(real64), allocatable, device, save :: symmetric_buffer_d(:,:)
   real(real64), allocatable, pinned, save :: symmetric_buffer_h(:,:)
@@ -103,6 +105,11 @@ contains
     integer, value :: i,j,k,im,jm,km,ni,nj,nk
     integer :: node(3),dims(3),types(3),axis
     node=[i,j,k]; dims=[im,jm,km]; types=[ni,nj,nk]
+    if(air5_symmetric_top_d/=0) then
+      active=j==jm.and.(nj==2.or.nj==4)
+      if(i==0.and.(ni==1.or.ni==4)) active=.false.
+      return
+    endif
     active=.true.
     do axis=1,3
       if(node(axis)==0 .and. (types(axis)==1 .or. types(axis)==4)) active=.false.
@@ -110,21 +117,60 @@ contains
     enddo
   end function air5_symmetric_active
 
+  attributes(device) subroutine air5_symmetric_low_face(i,j,k,axis,face,dim,ntype,flux)
+    integer, value :: i,j,k,axis,face,dim,ntype
+    real(real64), intent(out) :: flux(11)
+    if(air5_symmetric_top_d/=0.and.axis==1.and.face==dim.and.(ntype==2.or.ntype==4)) then
+      call air5_convective_flux_at(i,j,k,axis,flux)
+    else
+      call air5_low_order_convective_face_flux(i,j,k,axis,face,flux)
+    endif
+  end subroutine air5_symmetric_low_face
+
+  attributes(global) subroutine air5_top_normal_limit_kernel(im,jm,km,ni,nj,nk,cdt)
+    use commarray_gpu, only: q_d,qrhs_d
+    integer, value :: im,jm,km,ni,nj,nk
+    real(real64), value :: cdt
+    real(real64) :: base(11),state(11),high(11),low(11),flux(11),q0(11),beta
+    integer :: id,i,k,status
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=(im+1)*(km+1)) return
+    i=mod(id,im+1); k=id/(im+1)
+    if(.not.air5_symmetric_active(i,jm,k,im,jm,km,ni,nj,nk)) return
+    base=symmetric_base_d(i,jm,k,:)
+    high=-top_normal_high_rhs_d(i,k,:); low=-qrhs_d(i,jm,k,:)
+    q0=q_d(i,jm,k,:)
+    call air5_symmetric_face_trial_gpu(high,low,base,base,q0,q0,cdt,flux,status,beta,.true.,.false.)
+    if(status/=chemistry_status_ok) then
+      call record_air5_status(status)
+      return
+    endif
+    state=base-6*cdt*(flux-low)
+    if(.not.air5_state_is_admissible_gpu(state)) then
+      call record_air5_status(205)
+      return
+    endif
+    qrhs_d(i,jm,k,:)=-flux
+  end subroutine air5_top_normal_limit_kernel
+
   attributes(global) subroutine air5_symmetric_base_kernel(im,jm,km,ni,nj,nk,shock,a,b,cdt,stage)
     use commarray_gpu, only: q_d,qsave_d,jacob_d,qrhs_d
     integer, value :: im,jm,km,ni,nj,nk,shock,stage
     real(real64), value :: a,b,cdt
     real(real64) :: ll(11,3),lr(11,3),origin(11),base(11)
     real(real64) :: low_rhs(11)
-    integer :: id,i,j,k,component,direction,node(3)
+    integer :: id,i,j,k,component,direction,node(3),dims(3),types(3)
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(id>=(im+1)*(jm+1)*(km+1)) return
     i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
     if(.not.air5_symmetric_active(i,j,k,im,jm,km,ni,nj,nk)) return
     node=[i,j,k]
+    dims=[im,jm,km]; types=[ni,nj,nk]
+    ll=0.0_real64; lr=0.0_real64
     do direction=1,3
-      call air5_low_order_convective_face_flux(i,j,k,direction,node(direction)-1,ll(:,direction))
-      call air5_low_order_convective_face_flux(i,j,k,direction,node(direction),lr(:,direction))
+      if(air5_symmetric_top_d/=0.and.direction==2) cycle
+      call air5_symmetric_low_face(i,j,k,direction,node(direction)-1,dims(direction),types(direction),ll(:,direction))
+      call air5_symmetric_low_face(i,j,k,direction,node(direction),dims(direction),types(direction),lr(:,direction))
     enddo
     origin=q_d(i,j,k,1:11)*jacob_d(i,j,k)
     if(stage/=1) origin=qsave_d(i,j,k,1:11)
@@ -133,10 +179,12 @@ contains
       do direction=1,3
         low_rhs(component)=low_rhs(component)+(ll(component,direction)-lr(component,direction))
       enddo
+      if(air5_symmetric_top_d/=0) low_rhs(component)=qrhs_d(i,j,k,component)+ &
+        (ll(component,1)-lr(component,1))+(ll(component,3)-lr(component,3))
     enddo
     base=a*origin+b*q_d(i,j,k,1:11)*jacob_d(i,j,k)+cdt*low_rhs
     symmetric_base_d(i,j,k,:)=base
-    qrhs_d(i,j,k,1:11)=0.0_real64
+    if(air5_symmetric_top_d==0) qrhs_d(i,j,k,1:11)=0.0_real64
     if(.not.air5_state_is_admissible_gpu(base)) call record_air5_status(201)
   end subroutine air5_symmetric_base_kernel
 
@@ -153,15 +201,18 @@ contains
     i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
     if(.not.air5_symmetric_active(i,j,k,im,jm,km,ni,nj,nk)) return
     node=[i,j,k]; dims=[im,jm,km]; types=[ni,nj,nk]
-    if(node(axis)==dims(axis)) return
+    if(node(axis)==dims(axis)) then
+      if(.not.(air5_symmetric_top_d/=0.and.axis==1.and.(ni==2.or.ni==4))) return
+    endif
     right=node; right(axis)=right(axis)+1
     call air5_selective_convective_face_flux_gpu(i,j,k,axis,node(axis), &
       dims(axis),types(axis),im,jm,km,shock,high)
-    call air5_low_order_convective_face_flux(i,j,k,axis,node(axis),low)
+    call air5_symmetric_low_face(i,j,k,axis,node(axis),dims(axis),types(axis),low)
     base_left=symmetric_base_d(i,j,k,:)
     base_right=symmetric_base_d(right(1),right(2),right(3),:)
     ql=q_d(i,j,k,1:11); qr=q_d(right(1),right(2),right(3),1:11)
     right_active=.not.(right(axis)==dims(axis) .and. (types(axis)==2 .or. types(axis)==4))
+    if(air5_symmetric_top_d/=0) right_active=.not.(axis==1.and.i==im.and.(ni==2.or.ni==4))
     call air5_symmetric_face_trial_gpu(high,low,base_left,base_right,ql,qr,cdt,flux,status,beta, &
       .true.,right_active)
     if(status/=chemistry_status_ok) call record_air5_status(status)
@@ -173,7 +224,7 @@ contains
       qr=ql; ql=q_d(left(1),left(2),left(3),1:11)
       call air5_selective_convective_face_flux_gpu(i,j,k,axis,node(axis)-1, &
         dims(axis),types(axis),im,jm,km,shock,high)
-      call air5_low_order_convective_face_flux(i,j,k,axis,node(axis)-1,low)
+      call air5_symmetric_low_face(i,j,k,axis,node(axis)-1,dims(axis),types(axis),low)
       call air5_symmetric_face_trial_gpu(high,low,base_left,base_right,ql,qr,cdt,flux,status,beta, &
         .false.,.true.)
       if(status/=chemistry_status_ok) call record_air5_status(status)
@@ -187,14 +238,15 @@ contains
     integer, value :: im,jm,km,ni,nj,nk,shock,axis
     real(real64), value :: cdt
     real(real64) :: ll(11),lr(11),fl(11),fr(11),state(11)
-    integer :: id,i,j,k,left(3),node(3)
+    integer :: id,i,j,k,left(3),node(3),dims(3),types(3)
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(id>=(im+1)*(jm+1)*(km+1)) return
     i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
     node=[i,j,k]; left=node; left(axis)=left(axis)-1
+    dims=[im,jm,km]; types=[ni,nj,nk]
     if(.not.air5_symmetric_active(i,j,k,im,jm,km,ni,nj,nk)) return
-    call air5_low_order_convective_face_flux(i,j,k,axis,node(axis)-1,ll)
-    call air5_low_order_convective_face_flux(i,j,k,axis,node(axis),lr)
+    call air5_symmetric_low_face(i,j,k,axis,node(axis)-1,dims(axis),types(axis),ll)
+    call air5_symmetric_low_face(i,j,k,axis,node(axis),dims(axis),types(axis),lr)
     fl=symmetric_face_d(left(1),left(2),left(3),1:11); fr=symmetric_face_d(i,j,k,1:11)
     state=symmetric_base_d(i,j,k,:)+6*cdt*(fl-ll)
     if(.not.air5_state_is_admissible_gpu(state)) call record_air5_status(202)
@@ -243,7 +295,7 @@ contains
     endif
   end subroutine air5_symmetric_plane_kernel
 
-  subroutine air5_symmetric_convection_gpu(a,b,cdt,stage,shock)
+  subroutine air5_symmetric_convection_gpu(a,b,cdt,stage,shock,top_only)
     use mpi
     use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,nstep
     use parallel, only: isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront,mpirank
@@ -252,6 +304,7 @@ contains
     use validation_io, only: rhs_validation_requested
     real(real64), intent(in) :: a,b,cdt
     integer, intent(in) :: stage,shock
+    logical, intent(in), optional :: top_only
     integer, save :: face_comm=MPI_COMM_NULL
     integer :: axis,dims(3),sizes(3),minus(3),plus(3),shape_face(3),count,ierr,unit,io_status
     integer :: mpi_status(MPI_STATUS_SIZE),capacity,ntypes(3)
@@ -259,7 +312,11 @@ contains
     character(len=8) :: probe_value
     character(len=1024) :: prefix
     character(len=1152) :: filename
-    logical :: probe,receive_plus,receive_minus
+    character(len=32) :: label
+    logical :: probe,receive_plus,receive_minus,top
+    top=.false.
+    if(present(top_only)) top=top_only
+    air5_symmetric_top_d=merge(1,0,top)
     dims=[im,jm,km]; sizes=[isize,jsize,ksize]
     ntypes=[npdci,npdcj,npdck]
     minus=[mpileft,mpidown,mpiback]; plus=[mpiright,mpiup,mpifront]
@@ -283,7 +340,13 @@ contains
     ! Reuse the six-field transport capacity without changing the shared pipeline.
     call exchange_field_halo_gpu(symmetric_base_d(:,:,:,1:6),6)
     call exchange_field_halo_gpu(symmetric_base_d(:,:,:,7:11),5)
+    if(top) then
+      call air5_top_normal_limit_kernel<<<grid,block>>>(im,jm,km,npdci,npdcj,npdck,cdt)
+      call sync_after_kernel('air5_top_normal_limit_kernel',.true.)
+      call check_air5_status('top normal correction',stage)
+    endif
     do axis=1,3
+      if(top.and.axis==2) cycle
       symmetric_face_d=0.0_real64
       call sync_after_kernel('air5_symmetric_face_initialize',.true.)
       call air5_symmetric_face_kernel<<<grid,block>>>(im,jm,km,npdci,npdcj,npdck,shock,axis,cdt)
@@ -321,9 +384,11 @@ contains
         .true.,receive_plus,receive_minus)
       call sync_after_kernel('air5_symmetric_unpack',.true.)
       if(probe) then
+        label='.shared_faces.axis'
+        if(top) label='.top_shared_faces.axis'
         call get_environment_variable('ASTR_VALIDATION_RHS_PREFIX',prefix,status=io_status)
         if(io_status/=0) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
-        write(filename,'(A,A,I1,A,I8.8,A,I2.2,A,I8.8,A)') trim(prefix),'.shared_faces.axis',axis, &
+        write(filename,'(A,A,I1,A,I8.8,A,I2.2,A,I8.8,A)') trim(prefix),trim(label),axis, &
           '.step',nstep,'.rk',stage,'.rank',mpirank,'.bin'
         open(newunit=unit,file=trim(filename),form='unformatted',access='stream',status='replace', &
           action='write',iostat=io_status)
@@ -339,6 +404,7 @@ contains
     call air5_symmetric_final_kernel<<<grid,block>>>(im,jm,km,npdci,npdcj,npdck,a,b,cdt,stage)
     call sync_after_kernel('air5_symmetric_final_kernel',.true.)
     call check_air5_status('symmetric complete RK budget',stage)
+    air5_symmetric_top_d=0
   end subroutine air5_symmetric_convection_gpu
 
   attributes(device) subroutine air5_symmetric_face_trial_gpu(high,low,base_left,base_right,ql,qr,cdt,flux,status,accepted_beta, &
@@ -2563,13 +2629,13 @@ contains
   end subroutine air5_diffusion_rhs_z_kernel
 
   attributes(global) subroutine air5_characteristic_top_rhs_kernel(im,jm,km,ni,nj,nk, &
-      first_i,right_boundary,shock,viscous,rate)
+      first_i,right_boundary,shock,rate,reference_sound)
     use commarray_gpu, only: q_d,x_d,jacob_d,qrhs_d
     use chemistry_characteristic, only: air5_top_normal_convection,air5_top_transport_rhs
     use chemistry_hbl_boundary_gpu, only: get_air5_top_target_gpu
     integer, value :: im,jm,km,ni,nj,nk,first_i,shock
-    logical, value :: right_boundary,viscous
-    real(real64), value :: rate
+    logical, value :: right_boundary
+    real(real64), value :: rate,reference_sound
     real(real64) :: local_q(11),inner_one(11),inner_two(11),target(11),gradient(11),normal(11),remaining(11),rhs(11)
     real(real64) :: left(11),right(11),rho,velocity(3),temperature,tv,pressure,y(5)
     real(real64) :: gas(5),cv(5),beta,sound,spacing
@@ -2608,32 +2674,6 @@ contains
     endif
     dims=[im,jm,km]; ntypes=[ni,nj,nk]
     remaining=0.0_real64
-    do axis=1,3,2
-      index=i
-      if(axis==3) index=k
-      if(axis==1.and.i==im.and.right_boundary) then
-        call air5_high_order_convective_face_flux(i,jm,k,axis,index-1,dims(axis),ntypes(axis),left)
-        call air5_high_order_convective_face_flux(i,jm,k,axis,index,dims(axis),ntypes(axis),right)
-      else
-        call air5_selective_convective_face_flux_gpu(i,jm,k,axis,index-1, &
-          dims(axis),ntypes(axis),im,jm,km,shock,left)
-        call air5_selective_convective_face_flux_gpu(i,jm,k,axis,index, &
-          dims(axis),ntypes(axis),im,jm,km,shock,right)
-      endif
-      remaining=remaining+left-right
-    enddo
-    if(viscous) then
-      do axis=1,3
-        index=i
-        if(axis==2) index=jm
-        if(axis==3) index=k
-        call air5_diffusive_face_flux(i,jm,k,axis,index-1,dims(axis),ntypes(axis),left,0)
-        call air5_diffusive_face_flux(i,jm,k,axis,index,dims(axis),ntypes(axis),right,0)
-        left(6:10)=-left(6:10)
-        right(6:10)=-right(6:10)
-        remaining=remaining+right-left
-      enddo
-    endif
     if(.not.(jacob_d(i,jm,k)>0.0_real64)) then
       call record_air5_status(chemistry_status_nonfinite)
       return
@@ -2644,7 +2684,7 @@ contains
       call record_air5_status(status)
       return
     endif
-    call air5_top_transport_rhs(local_q,target,pressure,sound,gradient,normal,remaining,rate,rhs,valid)
+    call air5_top_transport_rhs(local_q,target,pressure,sound,gradient,normal,remaining,rate,rhs,valid,reference_sound)
     if(.not.valid) then
       call record_air5_status(chemistry_status_nonfinite)
       return
@@ -2654,31 +2694,52 @@ contains
       call record_air5_status(chemistry_status_nonfinite)
       return
     endif
-    qrhs_d(i,jm,k,:)=rhs
+    top_normal_high_rhs_d(i,k,:)=rhs
+    call air5_top_normal_convection(local_q,inner_one,inner_two, &
+      spacing,pressure,gradient,normal,valid,.true.)
+    if(.not.valid) then
+      call record_air5_status(chemistry_status_nonfinite)
+      return
+    endif
+    call air5_top_transport_rhs(local_q,target,pressure,sound,gradient,normal,remaining,rate,rhs,valid,reference_sound)
+    if(.not.valid) then
+      call record_air5_status(chemistry_status_nonfinite)
+      return
+    endif
+    qrhs_d(i,jm,k,:)=jacob_d(i,jm,k)*rhs
   end subroutine air5_characteristic_top_rhs_kernel
 
-  subroutine air5_characteristic_top_rhs_gpu(shock)
+  subroutine air5_characteristic_top_rhs_gpu(shock,rkstep)
     use mpi, only: MPI_PROC_NULL
-    use commvar, only: im,jm,km,npdci,npdcj,npdck,diffterm
+    use commvar, only: im,jm,km,npdci,npdcj,npdck,deltat
     use parallel, only: mpiup,mpileft,mpiright
-    use chemistry_hbl_boundary, only: air5_dynamic_top,get_air5_top_rate
+    use chemistry_hbl_boundary, only: air5_dynamic_top,get_air5_top_rate,get_air5_top_reference_sound
     use gpu_check, only: sync_after_kernel
-    integer, intent(in) :: shock
+    integer, intent(in) :: shock,rkstep
     integer :: first_i,ntop
+    real(real64) :: a,b,c
     type(dim3) :: block,grid
     if(.not.air5_dynamic_top()) return
     call reset_air5_status()
     if(mpiup==MPI_PROC_NULL) then
+      if(.not.allocated(top_normal_high_rhs_d)) allocate(top_normal_high_rhs_d(0:im,0:km,11))
       first_i=0
       if(mpileft==MPI_PROC_NULL) first_i=1
       ntop=(im-first_i+1)*(km+1)
       block=dim3(128,1,1)
       grid=dim3((ntop+block%x-1)/block%x,1,1)
       call air5_characteristic_top_rhs_kernel<<<grid,block>>>(im,jm,km,npdci,npdcj,npdck, &
-        first_i,mpiright==MPI_PROC_NULL,shock,diffterm,get_air5_top_rate())
+        first_i,mpiright==MPI_PROC_NULL,shock,get_air5_top_rate(),get_air5_top_reference_sound())
       call sync_after_kernel('air5_characteristic_top_rhs_kernel',.true.)
     endif
     call check_air5_status('characteristic top RHS')
+    select case(rkstep)
+    case(1); a=1.0_real64; b=0.0_real64; c=1.0_real64
+    case(2); a=0.75_real64; b=0.25_real64; c=0.25_real64
+    case(3); a=1.0_real64/3.0_real64; b=2.0_real64/3.0_real64; c=b
+    case default; error stop 'invalid characteristic top RK stage'
+    end select
+    call air5_symmetric_convection_gpu(a,b,c*deltat,rkstep,shock,.true.)
   end subroutine air5_characteristic_top_rhs_gpu
 
   attributes(global) subroutine air5_rk3_first_update_kernel(deltat,im,jm,km, &
@@ -3266,6 +3327,10 @@ contains
       call sync_after_kernel('air5_limit_full_state_convection_kernel',.true.)
       enddo
       endif
+      ! Dynamic top convection is the baseline for the same diffusion budget as the interior.
+      call air5_characteristic_top_rhs_gpu(shock_mode,rkstep)
+      top_first_i=0
+      if(mpileft==MPI_PROC_NULL) top_first_i=1
       if(rhs_validation_requested()) then
         call copy_rhs_from_gpu()
         call write_rhs_validation_snapshot('conv',nstep,rkstep)
@@ -3311,6 +3376,12 @@ contains
           rk_b(rkstep),rk_c(rkstep),rkstep,collect_limiter_diagnostics,im,jm,km, &
           npdci,npdcj,npdck,is,ie,js,je,ks,ke)
         call sync_after_kernel('air5_diffusion_ratio_kernel',.true.)
+        if(air5_dynamic_top().and.mpiup==MPI_PROC_NULL) then
+          call air5_diffusion_ratio_kernel<<<grid1,block1>>>(deltat,rk_a(rkstep), &
+            rk_b(rkstep),rk_c(rkstep),rkstep,collect_limiter_diagnostics,im,jm,km, &
+            npdci,npdcj,npdck,top_first_i,im,jm,jm,0,km)
+          call sync_after_kernel('air5_top_diffusion_ratio_kernel',.true.)
+        endif
         call check_air5_diffusion_baseline(nstep,rkstep)
         if(collect_limiter_diagnostics/=0) call report_air5_diffusion_limiter(rkstep)
         call exchange_field_halo_gpu(diffusion_ratio_d,1)
@@ -3318,6 +3389,12 @@ contains
           call air5_diffusion_energy_ratio_kernel<<<grid1,block1>>>(deltat,rk_a(rkstep), &
             rk_b(rkstep),rk_c(rkstep),rkstep,im,jm,km,npdci,npdcj,npdck,is,ie,js,je,ks,ke)
           call sync_after_kernel('air5_diffusion_energy_ratio_kernel',.true.)
+          if(air5_dynamic_top().and.mpiup==MPI_PROC_NULL) then
+            call air5_diffusion_energy_ratio_kernel<<<grid1,block1>>>(deltat,rk_a(rkstep), &
+              rk_b(rkstep),rk_c(rkstep),rkstep,im,jm,km,npdci,npdcj,npdck, &
+              top_first_i,im,jm,jm,0,km)
+            call sync_after_kernel('air5_top_diffusion_energy_ratio_kernel',.true.)
+          endif
           call exchange_field_halo_gpu(diffusion_energy_ratio_d,1)
         endif
         if(rhs_validation_requested()) then
@@ -3340,8 +3417,18 @@ contains
         call air5_diffusion_rhs_z_kernel<<<grid_z,block_z>>>(im,jm,km,npdck, &
           is,ie,js,je,ks,ke)
         call sync_after_kernel('air5_diffusion_rhs_z_kernel',.true.)
+        if(air5_dynamic_top().and.mpiup==MPI_PROC_NULL) then
+          call air5_diffusion_rhs_x_kernel<<<grid_x,block_x>>>(im,jm,km,npdci, &
+            top_first_i,im,jm,jm,0,km)
+          call sync_after_kernel('air5_top_diffusion_rhs_x_kernel',.true.)
+          call air5_diffusion_rhs_y_kernel<<<grid_y,block_y>>>(im,jm,km,npdcj, &
+            top_first_i,im,jm,jm,0,km)
+          call sync_after_kernel('air5_top_diffusion_rhs_y_kernel',.true.)
+          call air5_diffusion_rhs_z_kernel<<<grid_z,block_z>>>(im,jm,km,npdck, &
+            top_first_i,im,jm,jm,0,km)
+          call sync_after_kernel('air5_top_diffusion_rhs_z_kernel',.true.)
+        endif
       endif
-      call air5_characteristic_top_rhs_gpu(shock_mode)
       if(rhs_validation_requested()) then
         call copy_rhs_from_gpu()
         call write_rhs_validation_snapshot('full',nstep,rkstep)

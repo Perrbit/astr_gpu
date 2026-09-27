@@ -368,6 +368,7 @@ module solver
 #ifdef ASTR_AIR5_CHEMISTRY
     if(lcomb .and. flowtype(1:2)/='0d') call write_rhs_validation_snapshot('conv_raw')
     if(lcomb .and. flowtype(1:2)/='0d') call air5_limit_full_state_convection()
+    if(lcomb) call air5_characteristic_top_rhs()
 #endif
     call write_rhs_validation_snapshot('conv')
     !
@@ -386,9 +387,6 @@ module solver
     endif
     if(nscbc_farfield_viscous_source_enabled())                       &
       call apply_nscbc_farfield_y_upper_viscous_source()
-#ifdef ASTR_AIR5_CHEMISTRY
-    if(lcomb) call air5_characteristic_top_rhs()
-#endif
     call write_rhs_validation_snapshot('full')
     !
     if(trim(flowtype)=='channel') then 

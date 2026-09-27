@@ -7,9 +7,28 @@ module chemistry_compensation
   integer, public, save :: air5_compensation_comm=MPI_COMM_NULL
   real(real64), allocatable, public, save :: air5_carry(:,:,:,:)
   real(real64), allocatable, public, save :: air5_origin(:,:,:,:),air5_origin_carry(:,:,:,:)
-  public :: compensated_add,compensated_rk,compensated_mean
+  public :: compensated_add,compensated_rk,compensated_mean,compensated_normalize
+  public :: compensation_normalize_faces
   public :: configure_air5_compensation,compensation_exchange_faces
 contains
+  pure elemental subroutine compensated_normalize(high,carry)
+    real(real64), intent(inout) :: high,carry
+    real(real64) :: total,virtual,error
+    ! TwoSum(high,-carry): retain the represented value through cancellation.
+    total=high-carry
+    virtual=total-high
+    error=(high-(total-virtual))+(-carry-virtual)
+    high=total
+    carry=-error
+  end subroutine
+
+  subroutine compensation_normalize_faces(low,high,cl,ch,lower,upper)
+    real(real64), intent(inout) :: low(:,:,:),high(:,:,:),cl(:,:,:),ch(:,:,:)
+    integer, intent(in) :: lower,upper
+    if(lower/=MPI_PROC_NULL) call compensated_normalize(low,cl)
+    if(upper/=MPI_PROC_NULL) call compensated_normalize(high,ch)
+  end subroutine
+
   ! The represented value is high - carry, matching the ROS-2 accumulator.
   pure subroutine compensated_add(high,carry,increment)
     real(real64), intent(inout) :: high,carry

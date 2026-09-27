@@ -14,6 +14,8 @@ module chemistry_coupling_gpu
   private
 
   integer, device, save :: air5_chemistry_status_d
+  integer, device, save :: air5_chemistry_failure_d(6)
+  real(real64), device, save :: air5_chemistry_failure_state_d(17)
   integer, device, save :: air5_chemistry_counts_d(4)
   integer(int64), device, save :: air5_chemistry_minimum_bits_d(3)
   integer(int64), device, save :: air5_chemistry_maximum_bits_d(2)
@@ -69,6 +71,20 @@ contains
     if(status/=chemistry_status_ok) &
       ignored=atomicMax(air5_chemistry_status_d,status)
   end subroutine record_air5_chemistry_status
+
+  attributes(device) subroutine record_air5_chemistry_failure(i,j,k,status,phase)
+    use commarray_gpu, only: q_d
+    use chemistry_compensation_gpu, only: air5_compensated_d,air5_carry_d
+    integer,value :: i,j,k,status,phase
+    integer :: previous
+
+    previous=atomicCAS(air5_chemistry_failure_d(1),0,1)
+    if(previous/=0) return
+    air5_chemistry_failure_d(2:6)=[i,j,k,status,phase]
+    air5_chemistry_failure_state_d(1:11)=q_d(i,j,k,1:11)
+    air5_chemistry_failure_state_d(12:17)=0.0_real64
+    if(air5_compensated_d) air5_chemistry_failure_state_d(12:17)=air5_carry_d(i,j,k,6:11)
+  end subroutine record_air5_chemistry_failure
 
   attributes(device) subroutine record_air5_chemistry_diagnostics(final_state, &
       temperature,tv,accepted,rejected,rhs_evaluations,jacobian_evaluations)
@@ -132,6 +148,7 @@ contains
       accepted,rejected,rhs_evaluations,jacobian_evaluations,status,source_mode)
     endif
     if(status/=chemistry_status_ok) then
+      call record_air5_chemistry_failure(i,j,k,status,1)
       call record_air5_chemistry_status(status)
       return
     endif
@@ -140,6 +157,7 @@ contains
     call air5_conservative_to_primitive_gpu(local_q,density,velocity,temperature, &
       mass_fraction,tv,pressure,status)
     if(status/=chemistry_status_ok) then
+      call record_air5_chemistry_failure(i,j,k,status,2)
       call record_air5_chemistry_status(status)
       return
     endif
@@ -159,7 +177,7 @@ contains
     use chemistry_compensation, only: air5_compensated
     use mpi
     use commvar, only: is,ie,js,je,ks,ke,nstep,feqchkpt,im,jm
-    use parallel, only: lio,mpiup,mpileft
+    use parallel, only: lio,mpiup,mpileft,mpirank
     use chemistry_hbl_boundary, only: air5_dynamic_top
     use gpu_check, only: sync_after_kernel
     use halo_exchange_gpu, only: exchange_solution_halo_gpu
@@ -171,6 +189,8 @@ contains
     integer, intent(in) :: half_index
     integer :: ntot,ierr,local_status,global_status,source_mode,first_i
     integer :: local_counts(4),global_counts(4)
+    integer :: failure(6)
+    real(real64) :: failure_state(17)
     integer :: local_status_counts(5),global_status_counts(5)
     integer(int64) :: minimum_bits(3),maximum_bits(2)
     real(real64) :: local_minimums(3),global_minimums(3)
@@ -186,6 +206,7 @@ contains
     call configure_air5_species_cache_gpu(air5_symmetric_species_convection())
     source_mode=air5_active_source_mode()
     air5_chemistry_status_d=chemistry_status_ok
+    air5_chemistry_failure_d=0
     air5_chemistry_counts_d=0
     air5_chemistry_minimum_bits_d=transfer(huge(1.0_real64),0_int64)
     air5_chemistry_maximum_bits_d=transfer(0.0_real64,0_int64)
@@ -220,6 +241,14 @@ contains
     endif
     if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,local_status)
     if(global_status/=chemistry_status_ok) then
+      failure=air5_chemistry_failure_d
+      if(failure(1)/=0) then
+        failure_state=air5_chemistry_failure_state_d
+        write(*,'(A,8(I0,1X))') 'AIR5_CHEMISTRY_FAILURE rank/step/half/i/j/k/status/phase=', &
+          mpirank,nstep,half_index,failure(2:6)
+        write(*,'(A,11(ES25.17,1X))') 'AIR5_CHEMISTRY_FAILURE q=',failure_state(1:11)
+        write(*,'(A,6(ES25.17,1X))') 'AIR5_CHEMISTRY_FAILURE carry=',failure_state(12:17)
+      endif
       write(*,'(A,I0,A,I0)') 'air5 GPU chemistry half ',half_index, &
         ' failed, status=',global_status
       call MPI_Abort(MPI_COMM_WORLD,global_status,ierr)

@@ -2019,6 +2019,7 @@ module readwrite
   subroutine write_io_tree(file2write)
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_compensation, only: air5_compensated,air5_carry
+    use chemistry_hbl_boundary, only: write_air5_top_checkpoint
 #endif
 
     use commvar,  only : im,jm,km,lwsequ,turbmode,feqwsequ,force,ymin,ymax,ka, &
@@ -2119,6 +2120,7 @@ module readwrite
         enddo
         call h5write(varname='air5_compensation_version',var=1)
       endif
+      if(lcomb) call write_air5_top_checkpoint()
 #endif
       call h5io_end
 

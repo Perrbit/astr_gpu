@@ -5183,6 +5183,7 @@ module parallel
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     !
 #ifdef ASTR_AIR5_CHEMISTRY
+    call air5_compensation_axis(1,normalize=.true.)
     call air5_compensation_axis(2)
 #endif
     if(jsize==1 .and. ljhomo) then
@@ -5323,6 +5324,7 @@ module parallel
     endif
     !
 #ifdef ASTR_AIR5_CHEMISTRY
+    call air5_compensation_axis(2,normalize=.true.)
     call air5_compensation_axis(3)
 #endif
     if(ksize==1 .and. lkhomo) then
@@ -5468,6 +5470,7 @@ module parallel
     endif
     !
 #ifdef ASTR_AIR5_CHEMISTRY
+    call air5_compensation_axis(3,normalize=.true.)
     if(lcomb) then
       call air5_field_conservative_to_primitive( &
         q(-hm:0,0:jm,0:km,:),rho(-hm:0,0:jm,0:km), &
@@ -5524,35 +5527,54 @@ module parallel
     !
   end subroutine qswap
 #ifdef ASTR_AIR5_CHEMISTRY
-  subroutine air5_compensation_axis(axis)
+  subroutine air5_compensation_axis(axis,normalize)
     use commarray, only: q
     use chemistry_compensation, only: air5_compensated,air5_carry, &
-      air5_compensation_comm,compensation_exchange_faces
+      air5_compensation_comm,compensation_exchange_faces,compensation_normalize_faces
     integer, intent(in) :: axis
+    logical, intent(in), optional :: normalize
     integer :: lower,upper
+    logical :: normalizing
     if(.not.air5_compensated) return
+    normalizing=.false.
+    if(present(normalize)) normalizing=normalize
     select case(axis)
     case(1)
       lower=mpileft; upper=mpiright
       if(isize==1 .and. lihomo) then
         lower=mpirank; upper=mpirank
       endif
-      call compensation_exchange_faces(q(0,0:jm,0:km,:),q(im,0:jm,0:km,:), &
+      if(normalizing) then
+        call compensation_normalize_faces(q(0,0:jm,0:km,:),q(im,0:jm,0:km,:), &
+          air5_carry(0,:,:,:),air5_carry(im,:,:,:),lower,upper)
+      else
+        call compensation_exchange_faces(q(0,0:jm,0:km,:),q(im,0:jm,0:km,:), &
         air5_carry(0,:,:,:),air5_carry(im,:,:,:),lower,upper,air5_compensation_comm)
+      endif
     case(2)
       lower=mpidown; upper=mpiup
       if(jsize==1 .and. ljhomo) then
         lower=mpirank; upper=mpirank
       endif
-      call compensation_exchange_faces(q(0:im,0,0:km,:),q(0:im,jm,0:km,:), &
+      if(normalizing) then
+        call compensation_normalize_faces(q(0:im,0,0:km,:),q(0:im,jm,0:km,:), &
+          air5_carry(:,0,:,:),air5_carry(:,jm,:,:),lower,upper)
+      else
+        call compensation_exchange_faces(q(0:im,0,0:km,:),q(0:im,jm,0:km,:), &
         air5_carry(:,0,:,:),air5_carry(:,jm,:,:),lower,upper,air5_compensation_comm)
+      endif
     case(3)
       lower=mpiback; upper=mpifront
       if(ksize==1 .and. lkhomo) then
         lower=mpirank; upper=mpirank
       endif
-      call compensation_exchange_faces(q(0:im,0:jm,0,:),q(0:im,0:jm,km,:), &
+      if(normalizing) then
+        call compensation_normalize_faces(q(0:im,0:jm,0,:),q(0:im,0:jm,km,:), &
+          air5_carry(:,:,0,:),air5_carry(:,:,km,:),lower,upper)
+      else
+        call compensation_exchange_faces(q(0:im,0:jm,0,:),q(0:im,0:jm,km,:), &
         air5_carry(:,:,0,:),air5_carry(:,:,km,:),lower,upper,air5_compensation_comm)
+      endif
     end select
   end subroutine air5_compensation_axis
 #endif

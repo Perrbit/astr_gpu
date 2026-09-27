@@ -1,8 +1,373 @@
 # AIR5 Two-Temperature Characteristic Top Boundary
 
-Status: source-retaining closure approved; CPU cold-start dynamic top is wired
-and stationary-uniform checked. GPU full-boundary, restart and physical gates
-remain open. Shared local CPU/GPU algebra is separately probed.
+## Inflow-Transit Relaxation: Implemented and Refined (2026-09-27)
+
+The user approved replacing only the nonacoustic target relaxation with
+`k_c = (max(-u_n,0)/a_ref)*(1/tau)`. The fixed frozen sound speed a_ref is
+computed once from the configured HBL farfield state, not from the evolving
+boundary node; L_c=a_ref*tau is the equivalent transit length. CPU and GPU
+pass the same reference to the shared host/device characteristic routine.
+The rate is evaluated without forming a mass flux followed by density
+division, and the reference speed and rate are checked for finiteness.
+
+The normal advective characteristic correction is unchanged. The two acoustic
+projections still use 1/tau, and their incoming/outgoing tests are unchanged.
+Only the nonacoustic projection uses k_c. There is no tanh weight, empirical
+velocity deadband, speed cap, or new source/diffusion projection. The rate is
+continuous at zero normal velocity but is not continuously differentiable
+there. The default prescribed boundary remains unchanged.
+
+Characteristic checkpoint policy version is now 2. The existing metadata
+already includes the farfield state and tau, so a_ref is reproducible without
+another independent parameter. Version-1 characteristic checkpoints are
+rejected rather than silently resumed under the new policy; prescribed-mode
+checkpoints retain version 1. The GPU validation/restart opt-in guards remain.
+
+Verification:
+
+- Root-CMake `astr` and characteristic probe builds pass. CPU/GPU eigenmode,
+  zero-NO baseline, +/-1e-3 and +/-1e-6 m/s and zero-speed transit tests pass.
+  Doubling the reference speed halves the isolated convective relaxation;
+  zero reference speed is rejected. Probe memcheck: zero errors.
+- 24 characteristic Python tests and six subtests pass.
+- NP2 y-slab coupled viscous three-step CPU/GPU comparison passes all 18
+  phases: max scaled difference 1.71090e-13, top 1.44970e-13, limit 2e-10.
+- Original coupled 60 ns refinement passes the unchanged volume and top
+  criteria at dt=5/2.5/1.25 ns (12/24/48 updates). Saved states are admissible
+  and mass closure <=5.56e-16.
+
+| Region/component | Coarse/medium scaled difference | Medium/fine scaled difference |
+|---|---:|---:|
+| Volume density | 8.10526e-9 | 2.01961e-9 |
+| Volume total energy | 2.20317e-8 | 5.48970e-9 |
+| Volume vibrational energy | 4.58855e-9 | 1.14334e-9 |
+| Top density | 7.31595e-12 | 1.78538e-12 |
+| Top total energy | 3.54173e-11 | 8.73798e-12 |
+| Top vibrational energy | 3.40634e-12 | 8.46495e-13 |
+
+This is short-window coupled refinement, not a formal third-order claim or
+physical SBLI admission. The formerly nonmonotonic top differences are removed.
+NP2 GPU six-step versus three-plus-restart-three comparison is bitwise identical
+for checkpoint q/carry and zero-difference for the nine saved phases. Changed
+tau, missing metadata, disabled compensation and old policy version all reject.
+
+The V-T-only long-window control still aborts in its coarse run with status 202
+(`symmetric received face budget`). No downstream tests follow that failure.
+It remains an independent admissibility-budget blocker. New-policy long
+acoustic/reflection and multi-topology coverage also remain to be completed;
+the previous policy's evidence must not be silently promoted.
+
+Evidence root: `tests/gpu_validation/out/air5_characteristic_20260927/`.
+`transit_rate_cpu_y_coupled`, `transit_rate_gpu_y_coupled`,
+`source_refinement_transit_rate_60ns`, `transit_rate_restart_gpu_y`,
+`source_refinement_transit_rate_vt_60ns`. No Git or remote operations.
+
+## Time-Refinement Attribution: Convective-Wave Switching (2026-09-27)
+
+Saved-stage analysis identifies a dominant contribution to the failed 60 ns
+refinement. At top i=1, k=0, the last-step normal velocities (m/s) are:
+
+| dt (ns) | RK1 | RK2 | RK3 |
+|---|---:|---:|---:|
+| 5 | 7.57809e-5 | -1.92908e-5 | 2.82247e-5 |
+| 2.5 | 2.93962e-5 | -1.93133e-5 | 5.03655e-6 |
+| 1.25 | 5.32927e-6 | -1.93189e-5 | -6.99599e-6 |
+
+`air5_top_transport_rhs` sets the nonacoustic incoming correction to
+`P_c*(normal_flux_gradient - (q-target)/tau)` only when v<0. Here P_c is
+the complement of the two acoustic projectors. The projected advective
+normal gradient tends to zero with v, but `-P_c*(q-target)/tau` need not.
+Source evolution makes q differ from the fixed reservoir even near v=0.
+Thus the current constant-rate nonacoustic relaxation is discontinuous at
+flow reversal. This is a boundary-policy issue, not evidence of GPU arithmetic
+failure or a general proof that all incoming-only NSCBC formulations are wrong.
+
+Using the saved states and actual SSP-RK3 weights (1/6,1/6,2/3), integrate only
+that switched relaxation contribution over the last step. At i=1, k=0:
+
+| Difference | Observed density difference | Switched contribution | Contribution/observed |
+|---|---:|---:|---:|
+| coarse - medium | -7.89817815e-10 | -7.89782258e-10 | 0.99995498 |
+| medium - fine | 1.25899539e-9 | 1.25900500e-9 | 1.00000763 |
+
+The same ratios for total energy are 1.00117874 and 0.99981161; for vibrational
+energy, 0.99779721 and 1.00041888. At i=15 the agreement is similarly close.
+This frozen-trajectory attribution accounts for the observed nonmonotonic
+differences to within 0.3% in these quantities. It is not a counterfactual flow
+integration, does not remove all residuals, and does not close the acceptance
+gate. Ordinary monotonic timestep refinement is not guaranteed while an RK
+quadrature samples a discontinuous boundary RHS across different stages.
+
+Reproduce with `tests/gpu_validation/analyze_air5_characteristic_switch.py`,
+using `--root .../source_refinement_inverse_rate_60ns` and a new `--output`
+path. The saved report is `switch_attribution.json` in that case directory.
+The script reads ASTR snapshots and projects a diagnostic vector only; it does
+not implement a second flow integrator or alter any saved field.
+
+An additional V-T-only 60 ns control (`source_refinement_inverse_rate_vt_60ns`)
+now passes the former chemistry overflow but aborts its coarse case with
+status 202 in `symmetric received face budget`. Its contract/result/log are
+preserved. This separate admissibility failure is not yet localized and is not
+a completed refinement control. No medium/fine or downstream runs follow it.
+
+Decision needed before modifying the boundary: test a continuous incoming
+convective relaxation rate `max(-v,0)/L_ref`, with L_ref=a_ref*tau from the
+fixed reservoir, while keeping acoustic relaxation and wave selection intact.
+This is a proposed candidate, not an established optimal NSCBC parameter or
+an authorized solver change. It introduces no empirical velocity deadband.
+An alternative is to retain the discontinuous policy and handle reversal
+events explicitly in time integration, which is a larger change. Do not
+silently relax the existing refinement criterion. Independently resolve the
+V-T face-budget failure before claiming complete source-active validation.
+
+## Approved Inverse-Rate V-T Jacobian Repair (2026-09-27)
+
+The user approved the shared CPU/GPU algebraic repair and explicitly requested
+safe multiplication order and finite intermediate checks. For a pair, let r
+be the relaxing-species density, M the Millikan-White time, and
+C=(N_A/W_m)*sigma*mean_speed. Define k=C*r, D=1+M*k, R=k/D,
+w_P=1/D and w_M=(M*k)/D. Then the existing pair inverse time and its derivative
+are evaluated as
+
+`R = 1/(M + 1/(C*r)) = k/D`,
+
+`dR = R*(w_P*dlog(C) - w_M*dlog(M)) + ((C/D)/D)*dr`.
+
+The explicit density term uses sequential division, not a squared denominator;
+no division by r and no Park time are formed. C is formed before multiplication
+by r, so multiplying trace density by a small cross section cannot prematurely
+underflow. w_M uses the product ratio, not `1-w_P`, avoiding cancellation in the
+small-k limit. Each pair retains the original temperature power and reduced
+collision mass. The mixture derivative remains `sum(dx*R + x*dR)`.
+Zero-cross-section pairs use R=1/M, w_P=0, w_M=1, and no explicit density term.
+The existing exact-zero relaxing-species branch is unchanged.
+
+CPU/GPU check M, collision coefficient, collision rate, M*k, D, R, explicit
+density derivative, pressure derivative and derivative factors for finiteness;
+invalid intermediates return a failure, never a clipped state. This is not a
+new physical relaxation model or a change to chemistry error tolerances.
+Validation results (same local FP64 build, no tolerance changes):
+
+- Root-CMake `astr`, `chemistry_source_gpu_probe`, `chemistry_ros2_gpu_probe`
+  builds pass. The source probe adds seven valid cases: zero NO, 1e-20,
+  captured 6.301775586262159e-165, 1e-250, minimum normal, minimum subnormal,
+  and the complete captured failure state. Four source modes give zero status
+  mismatches and finite source/Jacobian comparisons. The minimum subnormal is
+  constructed by its IEEE bit pattern, not a compile-time `nearest(0,1)`.
+- Maximum normalized source/Jacobian CPU/GPU tolerance ratios are 0.0187634
+  and 0.000522566 (pass <=1); ordinary-mixture centered-difference Jacobian
+  ratio is 0.183822 (same pre-existing 1e-8 absolute + 1e-6 relative scale).
+  Three `test_chemistry_source_gpu.py` tests pass. ROS-2 comparisons pass
+  with zero status/diagnostic mismatches. Source-probe memcheck: zero errors.
+- NP2 y-slab viscous V-T, dt=5 ns, three updates: both backends complete;
+  18 matched phases give max scaled difference 2.59848e-15 and top 1.06322e-15.
+  The former status-7 reproducer is resolved without species clipping.
+- Coupled viscous dt=1.25 ns, three updates: 18 phases give max scaled
+  difference 1.71090e-13 and top 1.44970e-13, below the unchanged 2e-10
+  threshold. Full-path memcheck reports zero errors on both MPI ranks and
+  passes the same CPU-reference field comparison.
+
+The original coupled 60 ns refinement was rerun at 5/2.5/1.25 ns. All three
+trajectories complete with admissible saved states and mass closure <=5.56e-16,
+but the unchanged refinement gate still fails:
+
+| Component | Coarse/medium scaled difference | Medium/fine scaled difference |
+|---|---:|---:|
+| Density | 1.57975673e-8 | 2.51799080e-8 |
+| Total energy | 5.20729858e-8 | 8.31169169e-8 |
+| Vibrational energy | 5.77534845e-8 | 9.18231954e-8 |
+
+Maxima remain at top j=128, i=1 or 15. Corresponding interior maxima decrease
+by approximately four. These differences are essentially unchanged from the
+pre-repair experiment, so removing the normal positivity gap and V-T overflow
+does not resolve the independent top time-refinement issue. No downstream
+restart/topology/physical SBLI acceptance follows from these local passes.
+
+Evidence root: `tests/gpu_validation/out/air5_characteristic_20260927/`.
+Runs: `inverse_rate_cpu_y_vt`, `inverse_rate_gpu_y_vt`,
+`inverse_rate_cpu_y_coupled`, `inverse_rate_gpu_y_coupled`,
+`inverse_rate_gpu_y_coupled_memcheck`, `source_refinement_inverse_rate_60ns`.
+The last directory contains the unchanged contract and failed `result.json`.
+Earlier failure evidence is retained in the following sections.
+
+## Normal Positivity Candidate and V-T Overflow Blocker (2026-09-27)
+
+The user approved the normal transport repair described below. CPU and GPU now
+construct the checked low baseline using a first-order inward normal derivative
+and tangential LLF fluxes. The second-order normal characteristic RHS is retained
+as the high candidate. Its correction uses the existing symmetric species and
+two-temperature energy trial with one active side and the same factor-six
+reserve as the four tangential faces. The characteristic eigenvalue selection,
+target and relaxation rate are unchanged. First-order projected NSCBC is not
+asserted to be universally admissible: the combined low baseline remains a
+fail-fast check. Only an additional eleven-component top plane is stored.
+
+Root-CMake builds of `astr` and `air5_characteristic_thermo_probe` pass. The
+new `AIR5_ZERO_TRACE_NORMAL_BASELINE_PASS` probe reproduces the negative
+second-order NO derivative and verifies the zero first-order RHS for that
+specific state. The original NP2 y-slab viscous V-T diagnostic at dt=5 ns now
+completes all three updates on CPU with saved-state checks passing. This does
+not establish the complete CPU/GPU or time-refinement gate.
+
+The matched GPU run passes the former first-step RK3 failure but stops at
+step index 2, chemistry half 2, status 7 (nonfinite). A failure-only GPU record
+captures local indices, input q and chemistry carry without altering arithmetic.
+The instrumented repeat reports rank 0 local (2,12,6), inside the domain, with
+rho_NO=6.301775586262159e-165 kg/m3 and finite input/carry. Failure is inside
+ROS-2, before its final conservative-to-primitive conversion.
+
+For this captured state, T=2999.6963167944064 K and the NO/N2 collision
+coefficient C=2.438135228304287e9 gives tau_Park=1/(C*rho_NO)=
+6.508475540220838e154 s. The implemented V-T Jacobian forms both
+`tau_Park/rho_NO` and `tau_pair*tau_pair`. Both overflow FP64; their subsequent
+ratio is NaN. CPU `chemistry_properties.F90` and GPU
+`chemistry_relaxation_gpu.cuf` contain the same unsafe expression. The CPU
+flow run passing does not establish robustness for this different tiny state.
+
+Proposed separate repair, awaiting approval: differentiate the inverse pair
+rate directly. With r=rho_NO, tau_Park=1/(C*r), and M=tau_MW, write
+`1/tau_pair = C*r/(1+M*C*r)` and differentiate this bounded expression,
+including temperature/pressure/composition dependence. Keep the existing
+collision-density convention, source model, tolerances and zero-species policy;
+use the original M-only expression where the collision cross section is zero.
+Validate zero/trace and ordinary mixtures in CPU/GPU before rerunning this gate.
+No negative clipping or empirical trace cutoff is proposed.
+
+Artifacts under `tests/gpu_validation/out/air5_characteristic_20260927/`:
+`normal_budget_cpu_y_vt`, `normal_budget_gpu_y_vt`, and
+`normal_budget_gpu_y_vt_failure_probe`. Coupled 60 ns refinement, restart,
+multi-topology and SBLI admission remain stopped at this failed gate.
+
+## Current Gate: Normal Baseline Positivity (2026-09-27)
+
+The user approved explicit `symmetric_species + layered` for subsequent formal
+validation, without changing solver defaults. Refinement and restart drivers
+now record/use that configuration. The coupled GPU NP2 y-slab runs at
+dt=5/2.5/1.25 ns all complete at 60 ns with admissible saved states and mass
+closure below 5.56e-16. Nevertheless the unchanged temporal-refinement criterion
+fails: scaled coarse/medium versus medium/fine differences are 1.57976e-8 versus
+2.51799e-8 (density), 5.20730e-8 versus 8.31169e-8 (total energy), and
+5.77535e-8 versus 9.18232e-8 (vibrational energy). Maxima lie near the top's
+inlet/outlet intersections (i=1 or 15); interior differences decrease by about
+a factor of four. No downstream MPI/restart or SBLI acceptance is reported.
+
+A V-T-only diagnostic control, retaining viscosity but disabling species
+reactions, aborts at the low-order baseline on the coarse timestep. CPU
+reproduces this at the first step's RK3, global (15,128,4). Saved pre-RHS fields
+give rho_NO=0 at the top and at its immediate inward neighbor, and
+rho_NO=3.22639442e-28 two inward nodes away. Tangential adjacent NO values are
+zero. With dy=7.8125e-5 m and outward v=5.10997467e-4 m/s, the existing normal
+derivative gives
+
+`-v * [1.5*(q0-q1) - 0.5*(q1-q2)]/dy = -1.05515480e-27 kg/(m3 s)`.
+
+The incoming acoustic eigenvector has zero NO component at q0_NO=0; the
+tangential LLF NO divergence also vanishes. The SSP-RK3 baseline is consequently
+-3.51718e-36 kg/m3, or -1.71737e-46 after multiplication by the uniform Jacobian.
+This matches the CPU failure log. It is a rejected candidate, not a saved
+accepted negative state. A second-order one-sided derivative is not itself a
+positivity-preserving low-order normal baseline, even for outward convection.
+
+This is an independently demonstrated normal admissibility gap; it is not yet
+proof of the complete cause of the coupled refinement nonmonotonicity. Next
+proposed numerical change requires approval: construct an admissible normal
+transport baseline and limit high-order corrections with consistent species
+mass and two-temperature energy constraints, retaining the characteristic
+incoming/outgoing acoustic policy. Do not clip negative species or relax tests.
+
+Artifacts below `tests/gpu_validation/out/air5_characteristic_20260927/`:
+`source_refinement_symmetric_layered_60ns` (formal failed criterion),
+`source_refinement_symmetric_layered_vt_control` (failed diagnostic), and
+`tangential_budget_cpu_y_vt_control` (CPU localization). The V-T run is not a
+completed refinement control. The following sections retain earlier evidence.
+
+## Tangential Positivity Repair Candidate (2026-09-27)
+
+The user approved extending positivity to the dynamic top's tangential
+convection. The candidate reuses `air5_limit_symmetric_convection` and
+`air5_symmetric_convection_gpu` in a top-only mode. It does not alter the normal
+characteristic projector, the incoming/outgoing eigenvalue test or the target.
+
+For each top node, form the SSP-RK baseline from the unchanged normal
+characteristic RHS plus the two tangential LLF flux divergences. Reject an
+inadmissible low-order baseline. For each tangential face, pass its high/low
+candidates and both active-side baselines to the existing five-species
+symmetric flux trial, including its mass, gas-constant moment and
+two-temperature energy corrections. The existing factor-six face reserve is
+retained for the four tangential faces; it is not a new empirical tolerance.
+The inlet-owned corner is excluded, the top/outlet corner is active, and an
+external face has only its active-side budget. MPI/periodic faces use the
+existing owner-to-neighbor accepted-flux exchange without face averaging.
+
+The limited tangential divergence is added to the retained normal RHS before
+the previously approved shared diffusion budget. Both per-face consumer
+budgets and the complete convective RK candidate are checked. No negative
+species clipping, relaxed nonnegativity test or new common eleven-component
+coefficient is introduced. Top face diagnostics use `top_shared_faces` names
+so they do not overwrite interior symmetric-face evidence.
+
+At the physical top/outlet exterior face, the low flux is evaluated at the
+boundary node itself, not through an exterior ghost-cell LLF pair. The ghost
+metric is not covered by the interior LLF contract. An initial implementation
+using that pair produced a spurious outward mass flux of -0.572789533166 and
+was rejected. The corrected implementation uses only the active-side budget;
+internal faces continue to use the two adjacent states and one accepted flux.
+
+This remains a correctness candidate, with the bounded results below. The
+reuse can allocate the existing volume-sized symmetric workspaces when the
+interior did not already use them; no reduced-memory or performance claim is
+made. Top-plane-only workspace specialization is a future optimization, not
+part of the numerical acceptance gate.
+
+### Repair Regression And Configuration Isolation
+
+The dt=1.25 ns, 16x128x16, NP2 1x2x1, coupled viscous three-update reproducer
+now completes on both CPU and GPU. Saved-phase state and strict species/mass
+checks pass separately. The old negative top N baseline no longer stops CPU.
+However, the original full_state/full_state configuration fails the unchanged
+CPU/GPU comparison tolerance of 2e-10. This is not reported as a completed gate.
+
+At global (1,11,0), first-stage metric-weighted energy convection RHS is zero
+on CPU and -0.32070174867108114 on GPU. The same values occur in saved artifacts
+from BEFORE the tangential repair. At the adjacent y=12 node, pre-RHS N is
+3.85641330e-20 on CPU and 1.20370622e-35 on GPU, and the full-state convection
+ratios are 1 and 0.25593171. The shared fluid/species limiter converts this
+trace-scale difference into resolved energy artificial diffusion.
+
+Matched diagnostic configurations, with all other input unchanged:
+
+| Convection | Diffusion | First RK update maximum scaled CPU/GPU difference | Result |
+|---|---|---:|---|
+| full_state | full_state | 9.81247274786966e-4 | comparison fails |
+| symmetric_species | full_state | 2.83909910906398e-8 | comparison fails |
+| symmetric_species | layered | 1.56865370316264e-13 | comparison passes |
+
+For the last configuration, all 18 saved phase comparisons at steps 0 and 2
+pass: maximum 2.202140302036423e-13, top maximum 4.9771416921588106e-14. Top Ev
+changes during the final chemical half-step, so this is not a frozen-source
+test. The matched two-rank Compute Sanitizer memcheck reports zero errors on
+both ranks and also passes the phase comparison. The root CMake build and
+24 characteristic checker tests pass. The code defaults were not changed. These option-isolation runs do not
+replace the original formal time-refinement contract. Adoption of
+`symmetric_species + layered` for that contract was subsequently approved; then
+repeat 60 ns refinement, additional MPI topologies and restart before SBLI.
+
+Evidence root: `tests/gpu_validation/out/air5_characteristic_20260927/`.
+Successful state runs are `tangential_budget_{cpu,gpu}_y_v2`; option isolation
+uses `tangential_budget_{cpu,gpu}_y_{symmetric,layered}_diagnostic`. Only the
+layered pair has a successful CPU/GPU comparison result. Initial failed
+exterior-flux diagnostic runs remain preserved and are not acceptance evidence.
+Memory-check evidence is `tangential_budget_gpu_y_layered_memcheck`.
+
+Previous gate boundary (before the repair above): frozen acoustic and short source/viscous CPU/GPU gates pass.
+The approved compensation normalization repair passes CPU NP2 and GPU NP1/NP2/
+NP8 same-mode bitwise restart, same-phase comparisons and GPU memcheck. Source
+time refinement exposed a shared CPU/GPU dynamic-top diffusion positivity gap.
+The approved shared-budget candidate now passes GPU NP2 three updates at
+dt=1.25 ns, but CPU detects a negative tangential-convection baseline before
+diffusion. Acceptance is paused at that gate. Oblique/grazing and old-seed
+conversion remain open. No new-
+boundary reacting SBLI or production admission is claimed.
 Scope: Cartesian upper-y face, outward normal +y, existing AIR5 model and N-1
 independent composition. Old all-state prescribed boundary remains the default.
 
@@ -401,6 +766,270 @@ flowchart TD
   oblique inflow, source, MPI, restart and SBLI tests. Reflection and target
   maintenance are separate measurements; exact all-variable target equality
   is not an appropriate characteristic-boundary gate.
+
+## 2026-09-27 Source And Viscous Backend Checks
+
+After the completed acoustic matrix, the user requested execution of remaining
+pre-SBLI gates. The backend driver now supports V-T-only, frozen and coupled
+source modes with optional viscosity. The short test uses 16x128x16 intervals,
+dt=5 ns, three updates, T=3000 K and bulk Tv=1500 K, a pulse centered at
+y=0.0096 m, compensation enabled and the same 2e-10 scaled field tolerance.
+The wall has T=Tv=3000 K, with Tv transitioning to 1500 K over the lower 10%
+of the domain. An initial input with a nonequilibrium wall was rejected before
+advancement; the input was corrected, not the wall model.
+
+| Same-phase comparison | Maximum scaled difference |
+| --- | ---: |
+| V-T only, inviscid GPU/CPU NP1 | 2.763221750178165e-15 |
+| Frozen source, viscous GPU/CPU NP1 | 5.246320135196957e-15 |
+| Coupled chemistry/V-T and viscosity GPU/CPU NP1 | 1.520149580689518e-13 |
+| Coupled viscous GPU NP8 2x2x2 against CPU NP1 | 1.520149580689518e-13 |
+| Coupled viscous GPU NP2 y-slab against CPU NP1 | 1.520149580689518e-13 |
+
+All 18 physical phase fields pass composition and model-domain checks. Both
+NP2 y-slab GPU ranks report zero memcheck errors. The final second chemistry
+half changes dynamic-top Ev by up to 2.319986178281397 J/m3 and changes species
+densities; this is not a zero-source case. Full total energy is unchanged by
+that chemistry half at the sampled top nodes. Evidence directories under
+`tests/gpu_validation/out/air5_characteristic_20260927/` are `source_vt_*_wall`,
+`viscous_*`, `coupled_viscous_*`. The spanwise state remains homogeneous.
+
+These are implementation-equivalence gates, not an independent proof of the
+boundary model or physical temporal convergence. No new solver numerical
+method was introduced by this test extension. Before new-boundary reacting SBLI
+startup, retain the following open requirements:
+
+1. Frozen oblique inflow, outflow and grazing physical tests, with target and
+   outgoing-wave observables distinguished. Fix quantitative physical thresholds
+   before those experiments, not after examining results.
+2. Source-active time refinement and source-retention checks beyond CPU/GPU
+   agreement. A fixed nonequilibrium target does not imply exact uniform flow.
+3. Explicit old-prescribed-seed conversion remains open. Same-mode short restart
+   now passes the repaired NP1/NP2/NP8 gates below. Restart remains limited to an
+   explicit validation opt-in; production remains unadmitted.
+4. Matched incident-shock short startup with shock sensor/limiters, actual inlet
+   and wall settings, timestep pair, and top/outlet corner checks. Only then
+   extend the reacting SBLI observation window. Filter support is not required
+   for this no-filter startup, and remains unadmitted.
+
+## 2026-09-27 Restart Check And Compensation Blocker
+
+The checkpoint now records top mode, schema version and 38 scalar contract
+values (relaxation rate, wall temperature, profile origin, incident location/
+flag, farfield and incident conservative targets). It does not fingerprint the
+entire inlet profile or chemical configuration. Characteristic restart requires
+`ASTR_AIR5_TOP_RESTART_VALIDATION=on`, compensation enabled and restored, matching
+metadata, and the existing GPU validation opt-in. Filter and non-RK3 guards
+remain. Legacy prescribed checkpoints cannot silently seed characteristic mode.
+
+`run_air5_characteristic_restart_gate.py` compares six continuous updates with
+three updates plus restart and three more, using the coupled viscous case above.
+NP1 passes: all nine final-step phase fields have zero difference, and all 11
+checkpoint conservative fields, all 11 carry fields, time and step are bitwise
+equal. The seed contains 311214 nonzero carry entries. Changed tau, missing
+top version metadata and disabled compensation each trigger the expected
+collective rejection (exit 91). Evidence: `restart_gpu_np1/result.json` beneath
+`tests/gpu_validation/out/air5_characteristic_20260927/`.
+
+NP2 y-slab continuous and seed runs complete, but restart stops before stepping:
+`nonfinite or invalid low-part compensated checkpoint`. All checkpoint q/carry
+values are finite. Only two entries violate `abs(carry)<=4*spacing(q)`, both
+normal momentum at global `(x,y,z)=(3,64,0)` and `(3,64,16)` on the shared y face
+and periodic z endpoints. Their values are:
+
+- q3 = 3.3327160638660024e-23;
+- carry3 = 4.930380657631324e-32;
+- 4*spacing(q3) = 2.350988701644575e-38.
+
+`src/chemistry_compensation.F90:compensated_mean` retains the average carry and
+TwoSum residual without renormalizing the resulting high/carry pair. Therefore
+its representation `high-carry` does not guarantee the spacing(high) bound
+enforced by `src/readwrite.F90:initialize_air5_compensated_flow`. The actual
+Fortran lifecycle probe reproduces the contract gap with high inputs +1/-1
+and both carries 2^-53: the mean high is zero and mean carry is 2^-53, exactly
+representing the mean -2^-53, yet failing the restart bound. This proves the
+bound is not an invariant of the current averaging API; it does not establish
+that all compensation arithmetic or arbitrary checkpoints are correct.
+
+The NP1/NP2 seed conservative comparison passes (largest component absolute
+difference 2.9496208468429366e-16; mass-fraction closure 4.440892098500626e-16).
+Evidence: `restart_gpu_y/split/restart.log`, `restart_gpu_y/seed/`, and
+`restart_seed_topology_comparison.json` in the same output root. No NP8 restart,
+downstream physical gate or SBLI run was launched after this failure.
+
+Human decision required for this shared CPU/GPU numerical contract. Recommended
+candidate: normalize the shared-node high/carry pair together using an
+error-free sum, preserving the represented value rather than clearing carry or
+loosening the bound. This needs coordinated CPU/GPU and face-order handling,
+then cancellation probes, mass/energy admissibility, same-phase comparisons and
+NP1/NP2/NP8 restart regressions. An alternative is explicitly supporting
+non-normalized checkpoint pairs with a newly justified validation contract.
+At discovery neither correction had been implemented. The user subsequently
+approved joint normalization; implementation and verification follow below.
+
+## Shared-Node Compensation Normalization
+
+The approved correction applies TwoSum to `(high,-carry)` after each axis has
+completed its existing conservative shared-node average, before exchanging the
+next axis. If the sum is `s` with residual `e`, the new pair is `(s,-e)`, still
+representing `high-carry`. This does not discard compensation, clip a state or
+relax checkpoint validation. The x/y/z order remains unchanged. Physical faces
+without a neighbour are untouched; periodic duplicate endpoints are included.
+
+CPU `compensated_normalize` and `compensation_normalize_faces` are dispatched
+from `parallel:air5_compensation_axis`. GPU
+`normalize_compensation_face_kernel` applies the same arithmetic only on the
+owned shared faces, with explicit synchronization and no additional full-field
+host transfer. Primitive-face refresh occurs after normalization. No change
+was made to chemistry sources, the RK scheme or the reader's spacing bound.
+
+The root-CMake lifecycle probe tests exact cancellation, retained low bits,
+idempotence, the observed checkpoint pair, MPI faces and physical-face exclusion.
+Its two-rank run reports `COMPENSATION_NORMALIZATION_PASS`. The CUDA-capable
+ASTR executable builds. Results from full restart/backend checks are recorded
+separately below; a primitive probe alone is not restart admission.
+
+### Post-Repair Acceptance
+
+The same coupled viscous 16x128x16-interval, dt=5 ns case was regenerated with
+the repaired executable. Six continuous updates are compared with three plus
+three after restart. All four runs pass nine final-step phase comparisons with
+zero difference and bitwise equality of the 11 checkpoint high fields, 11 carry
+fields, time and step:
+
+| Backend and topology | Evidence directory | Nonzero seed carry entries |
+| --- | --- | ---: |
+| GPU NP1 | `restart_normalized_gpu_np1` | 310968 |
+| GPU NP2 1x2x1 | `restart_normalized_gpu_y` | 311114 |
+| GPU NP8 2x2x2 | `restart_normalized_gpu_xyz` | 311817 |
+| CPU NP2 1x2x1 | `restart_normalized_cpu_y` | 310947 |
+
+Each directory contains `result.json`, executable/input provenance in
+`continuous/gate.json` and `split/gate.json`, fresh/restart logs, seed and final
+checkpoints. Paths are relative to
+`tests/gpu_validation/out/air5_characteristic_20260927/`. All seed and final
+checkpoints satisfy the unchanged spacing bound with zero violations. State
+domain, nonnegative species and the 128-epsilon composition gate also pass.
+Changed tau, missing metadata and compensation-off are rejected in every run.
+
+Same-phase comparisons retain the original 2e-10 bound:
+
+- CPU/GPU NP2: maximum scaled difference 1.5020056137636135e-13
+  (`normalized_cpu_gpu_y.json`).
+- GPU NP2 versus GPU NP1: 1.421085490840224e-15.
+- GPU NP8 versus GPU NP1: 1.4210855456268673e-15.
+- CPU NP2 versus GPU NP1: 1.5020056137638392e-13
+  (these three in `normalized_topology.json`).
+
+The three-update coupled-viscous NP2 case in `normalized_gpu_y_memcheck` passes
+both rank memchecks with zero errors, including the new normalization kernels.
+The targeted Python suite passes 27 tests plus six subtests. The root-CMake
+Fortran lifecycle probe passes with two ranks. NP8 shares the two local GPUs;
+it is not an eight-GPU performance measurement. These are short, spanwise-
+homogeneous implementation checks, not long-time reacting SBLI validation.
+
+No migration of the old invalid checkpoint was performed. It remains rejected
+by the unchanged reader; this repair prevents the shared-node representation
+defect in newly generated trajectories. No silent legacy-to-characteristic
+conversion, filter admission or production promotion is included.
+
+## Source Refinement Failure: Dynamic-Top Diffusion Budget
+
+`run_air5_characteristic_source_refinement.py` prepares the same coupled viscous
+16x128x16 case on GPU NP2 y-slab with dt=5/2.5/1.25 ns and 12/24/48 updates to
+60 ns. The pre-run contract compares componentwise successive endpoint
+differences scaled by rho, rho*a, pressure, rho for each species, and pressure
+for Ev. Resolved differences must decrease; differences below 100 epsilon in
+these fixed scales are labelled roundoff-unresolved, not convergence order.
+State admissibility is independently mandatory. Python does not advance flow.
+
+In `source_refinement_60ns_versioned_mpi`, coarse and medium finish at the
+logged common complete-step endpoint. Fine fails after the first RK update:
+`fixed air5 GPU HBL farfield boundary failed, status=3`. This is invalid
+composition. `fine_cpu_diagnostic` reproduces a composition failure with the CPU
+path, same dt and input, restricted to the first update. No temporal-convergence
+pass or downstream physical admission is reported.
+
+At GPU global node (2,128,0), component 8 (rho_N) is zero before RK1. The saved
+full RHS divided by the uniform Jacobian gives -4.568675475230533e-14 kg/(m3 s).
+The diagnostic first-Euler candidate, excluding unsaved carry, is
+-5.710844344038167e-23 kg/m3. This is not a measurement of the actual post-update
+device minimum. The CPU snapshot reconstruction also finds negative N candidates,
+with minimum -7.618741300470454e-23 at (6,128,12), under the same qualification.
+
+The first-stage viscous/inviscid input q fields are bitwise equal. In the
+`fine_inviscid_diagnostic` control the full first update completes normally;
+at the same node the RHS is +1.1535640793268616e-18 kg/(m3 s). The isolated added
+viscous contribution is -4.5687908316384654e-14. The top kernel directly calls
+`air5_diffusive_face_flux` and forms the viscous contribution without the
+interior diffusion-ratio budget. Its normal-convection contribution at this
+zero-N outward-flow node is positive, not the observed negative contribution.
+This isolates a boundary diffusion admissibility gap, rather than a CPU/GPU
+equivalence failure or an established fault in the normalization repair.
+
+Correction subsequently approved by the user: include dynamic-top nodes in
+the species diffusion budget, share each corrected face flux with its adjacent
+interior node, and keep the species mass constraint and two-temperature energy
+compatibility together. Do not zero negative species, relax tolerances, or
+multiply all eleven conservative components by one trace-species coefficient.
+Convective/characteristic admissibility remains a separate requirement; passing
+the inviscid one-step control is not its general proof. A corrected boundary
+must repeat the same failing input, CPU/GPU phases, MPI/restart, memcheck and
+the unchanged time-refinement contract before extending the SBLI window.
+
+All paths above are below `tests/gpu_validation/out/air5_characteristic_20260927/`.
+`diffusion_isolation.json` and `fine/top_failure_reconstruction.json` record the
+diagnostics. No solver numerical correction was made in this round.
+
+### Approved Diffusion Candidate And Remaining Convection Blocker
+
+The subsequent implementation assembles the characteristic convection baseline
+before diffusion. CPU `air5_diffusion_updated_node` includes the physical top,
+excluding the inlet-owned corner and including the outlet-owned corner, in
+species budgets, energy budgets and the final corrected flux divergence. GPU
+launches the existing budget/divergence kernels on the disjoint top bounds.
+Both paths compute top ratios before halo exchange and use the same face minimum
+as the adjacent interior. The old raw-diffusion top overwrite is removed.
+No clipping, new common eleven-component coefficient or tolerance change is
+introduced. Existing `full_state` and `layered` diffusion choices are retained;
+their coefficients are not redefined by this patch. In particular, the legacy
+`full_state` choice still shares a diffusion coefficient across its diffusive
+components. This is not a claim of independent species limiting in that mode.
+
+Build and 24 characteristic-checker unit tests pass. With the original
+`full_state` setting, `diffusion_budget_gpu_y` completes three coupled viscous
+updates at dt=1.25 ns, passes saved-phase state/mass checks, and has nonzero top
+second-half vibrational evolution (maximum absolute Ev change 0.5806364 J/m3).
+
+`diffusion_budget_cpu_y` stops at RK1 with `air5 transport baseline is outside
+the admissible domain`. From saved pre-RHS q and convection RHS, 18 active top
+nodes have negative N Euler candidates. The minimum is -4.602609197485644e-42
+kg/m3 at global (14,128,11), with q_N=0 and convection RHS
+-3.6820873579885156e-33 kg/(m3 s). These are reconstructed limiter-baseline
+values, not an accepted post-update state, and exclude unsaved compensation.
+The last three normal N densities are exactly zero and normal velocity is
+positive (0.0017322553047260777 m/s). Normal species convection and the incoming
+acoustic species contribution vanish there; the negative residual is tangential
+convection. The top still uses unrestricted high-order tangential face fluxes.
+The corresponding GPU state has a positive normal N contribution and does not
+exercise this exact zero-donor CPU pattern.
+
+The source time-refinement matrix, layered diffusion, restart, additional MPI
+topologies and memcheck have NOT been rerun after this candidate. They are paused
+at the first failed numerical gate. Next proposed correction requires approval:
+bring top tangential convective faces into an admissible low-order baseline and
+shared species/mass/two-temperature energy flux correction, preserving the
+characteristic incoming/outgoing policy. Do not fix the failure by allowing
+negative baseline values or relying on positive diffusion to cancel them.
+
+Earlier `source_refinement_60ns/coarse` and `source_refinement_60ns_v2/medium`
+returned launcher status 3 despite normal-completion logs and complete final
+snapshots. Their clean repeated/traced runs agree exactly where compared; the
+exit anomaly remains unconfirmed, and those failed launches are not acceptance
+evidence. The versioned HPC-X Open MPI 4.1.9a1 launcher is recorded explicitly
+in the latest contract; changing it did not remove the fine-case numerical
+failure. `fine_exit_status/run.log` explicitly captures MPI_ABORT and rank exit
+3, distinguishing this reproducible failure from the earlier exit anomaly.
 
 ## Literature Basis
 

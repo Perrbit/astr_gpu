@@ -58,13 +58,46 @@ contains
     endif
   end subroutine
 
-  subroutine compensation_gpu_axis(axis)
+  attributes(global) subroutine normalize_compensation_face_kernel(axis,n1,n2,ni,nj,nk,lower,upper)
+    use commarray_gpu, only: q_d
+    integer, value :: axis,n1,n2,ni,nj,nk
+    logical, value :: lower,upper
+    integer :: index,a,b,side,i,j,k,m
+    real(real64) :: high,carry,total,virtual,error
+    index=(blockidx%x-1)*blockdim%x+threadidx%x-1
+    if(index>=n1*n2) return
+    a=mod(index,n1); b=index/n1
+    do side=0,1
+      if(side==0.and..not.lower) cycle
+      if(side==1.and..not.upper) cycle
+      select case(axis)
+      case(1)
+        i=side*ni; j=a; k=b
+      case(2)
+        i=a; j=side*nj; k=b
+      case(3)
+        i=a; j=b; k=side*nk
+      end select
+      do m=1,11
+        high=q_d(i,j,k,m); carry=air5_carry_d(i,j,k,m)
+        total=high-carry
+        virtual=total-high
+        error=(high-(total-virtual))+(-carry-virtual)
+        q_d(i,j,k,m)=total
+        air5_carry_d(i,j,k,m)=-error
+      enddo
+    enddo
+  end subroutine
+
+  subroutine compensation_gpu_axis(axis,normalize)
     use commvar, only: im,jm,km,lihomo,ljhomo,lkhomo
     use commarray_gpu, only: q_d
     use parallel, only: mpileft,mpiright,mpidown,mpiup,mpiback,mpifront, &
       isize,jsize,ksize,mpirank
     use mpi, only: MPI_PROC_NULL
+    use gpu_check, only: sync_after_kernel
     integer, intent(in) :: axis
+    logical, intent(in), optional :: normalize
     integer :: lower,upper,n1,n2
     real(real64), allocatable :: low(:,:,:),high(:,:,:),cl(:,:,:),ch(:,:,:)
     if(.not.air5_compensated) return
@@ -88,6 +121,14 @@ contains
       error stop 'invalid compensation face axis'
     end select
     if(lower==MPI_PROC_NULL .and. upper==MPI_PROC_NULL) return
+    if(present(normalize)) then
+      if(normalize) then
+        call normalize_compensation_face_kernel<<<(n1*n2+255)/256,256>>>( &
+          axis,n1,n2,im,jm,km,lower/=MPI_PROC_NULL,upper/=MPI_PROC_NULL)
+        call sync_after_kernel('normalize_compensation_face',.true.)
+        return
+      endif
+    endif
     allocate(low(n1,n2,11),high(n1,n2,11),cl(n1,n2,11),ch(n1,n2,11))
     select case(axis)
     case(1)

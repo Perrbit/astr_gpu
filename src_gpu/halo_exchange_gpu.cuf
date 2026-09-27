@@ -1592,10 +1592,8 @@ contains
 #endif
     if(isize>1) then
       call exchange_x_halo_gpu()
-      if(preserve_primitives) call refresh_primitive_x_periodic_boundary_gpu()
     elseif(lihomo) then
       call qswap_local_x_gpu()
-      if(preserve_primitives) call refresh_primitive_x_periodic_boundary_gpu()
     elseif(gpu_axis_is_physical(1)) then
       continue
     else
@@ -1603,14 +1601,16 @@ contains
     endif
 
 #ifdef ASTR_AIR5_CHEMISTRY
+    call compensation_gpu_axis(1,normalize=.true.)
+#endif
+    if(preserve_primitives.and.(isize>1.or.lihomo)) call refresh_primitive_x_periodic_boundary_gpu()
+#ifdef ASTR_AIR5_CHEMISTRY
     call compensation_gpu_axis(2)
 #endif
     if(jsize>1) then
       call exchange_y_halo_gpu()
-      if(preserve_primitives) call refresh_primitive_y_periodic_boundary_gpu()
     elseif(ljhomo) then
       call qswap_local_y_gpu()
-      if(preserve_primitives) call refresh_primitive_y_periodic_boundary_gpu()
     elseif(gpu_axis_is_physical(2)) then
       continue
     else
@@ -1618,20 +1618,26 @@ contains
     endif
 
 #ifdef ASTR_AIR5_CHEMISTRY
+    call compensation_gpu_axis(2,normalize=.true.)
+#endif
+    if(preserve_primitives.and.(jsize>1.or.ljhomo)) call refresh_primitive_y_periodic_boundary_gpu()
+#ifdef ASTR_AIR5_CHEMISTRY
     call compensation_gpu_axis(3)
 #endif
     if(ksize>1) then
       call exchange_z_halo_gpu()
-      if(preserve_primitives) call refresh_primitive_z_periodic_boundary_gpu()
     elseif(lkhomo) then
       call qswap_local_z_gpu()
-      if(preserve_primitives) call refresh_primitive_z_periodic_boundary_gpu()
     elseif(gpu_axis_is_physical(3)) then
       continue
     else
       stop 'GPU halo exchange requires z MPI or homogeneous z direction'
     endif
 
+#ifdef ASTR_AIR5_CHEMISTRY
+    call compensation_gpu_axis(3,normalize=.true.)
+#endif
+    if(preserve_primitives.and.(ksize>1.or.lkhomo)) call refresh_primitive_z_periodic_boundary_gpu()
     if(.not.preserve_primitives) call refresh_primitive_halo_gpu()
   end subroutine exchange_solution_halo_gpu
 
