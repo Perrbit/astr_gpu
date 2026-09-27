@@ -6,9 +6,11 @@ program air5_transport_roundoff_probe
   use chemistry_model, only: chemistry_status_ok, &
     chemistry_status_infeasible_flux,chemistry_status_nonfinite
 #ifdef AIR5_FLUX_GPU_PROBE
-  use air5_flux_gpu_probe_wrappers, only: air5_close_species_flux,air5_close_species_flux_moment
+  use air5_flux_gpu_probe_wrappers, only: air5_close_species_flux,air5_close_species_flux_moment, &
+    air5_preserve_zero_flux_support
 #else
-  use chemistry_model, only: air5_close_species_flux,air5_close_species_flux_moment
+  use chemistry_model, only: air5_close_species_flux,air5_close_species_flux_moment, &
+    air5_preserve_zero_flux_support
 #endif
   implicit none
   real(real64) :: base,negative,operand_scale,theta,scaled_theta,factor
@@ -17,6 +19,7 @@ program air5_transport_roundoff_probe
   integer :: status,permutation(5),i,j,k,l,m,trial
   real(real64) :: witness(5),gradient(5),tolerance
   real(real64) :: gas(5),moment
+  real(real64) :: support(5,6)
 
   base=1.0e-38_real64
   negative=-base
@@ -192,4 +195,46 @@ program air5_transport_roundoff_probe
   if(abs(dot_product(gas,closed)-moment)> &
     64*epsilon(moment)*(abs(moment)+sum(abs(gas*closed)))) error stop 'RK2 redistribution moment residual'
   write(*,'(A)') 'AIR5_RK2_MOMENT_PROBE pass'
+
+  support=0.0_real64
+  support(1:2,:)=1.0_real64
+  lower=-1.0_real64; upper=1.0_real64
+  call air5_preserve_zero_flux_support(support(:,1),support(:,2),support(:,3), &
+    support(:,4),support(:,5),support(:,6),lower,upper)
+  if(any(lower(3:5)/=0).or.any(upper(3:5)/=0)) error stop 'zero support not fixed'
+  if(any(lower(1:2)/=-1).or.any(upper(1:2)/=1)) error stop 'bulk budget changed'
+  ! A nonzero contribution in ANY input, even far below a practical floor,
+  ! must prevent support locking. Endpoint states alone are insufficient.
+  do i=1,6
+    support(3,i)=1.0e-200_real64
+    lower=-1.0_real64; upper=1.0_real64
+    call air5_preserve_zero_flux_support(support(:,1),support(:,2),support(:,3), &
+      support(:,4),support(:,5),support(:,6),lower,upper)
+    if(lower(3)/=-1.or.upper(3)/=1) error stop 'nonzero trace support erased'
+    support(3,i)=0.0_real64
+  enddo
+  write(*,'(A)') 'AIR5_ZERO_FLUX_SUPPORT_PROBE pass'
+
+  ! Captured characteristic-top normal projection, step 7 / RK2, f3cced3.
+  high=[8.8586932245617473e-23_real64,2.6911023746061185e-23_real64, &
+    0.0_real64,0.0_real64,0.0_real64]
+  lower=[-7.5846354166670633e-5_real64,-2.4967447916665852e-4_real64, &
+    -3.2552083333331987e-4_real64,-3.2552083333331987e-4_real64,-3.2552083333331987e-4_real64]
+  upper=[2.4967447916664925e-4_real64,7.5846354166661376e-5_real64, &
+    0.0_real64,0.0_real64,0.0_real64]
+  gas=[296.9450935054728_real64,259.8269568172887_real64,593.8901870109456_real64, &
+    519.6539136345774_real64,277.1487539384413_real64]
+  mass=1.1549795599167551e-22_real64
+  moment=3.3297664283814732e-20_real64
+  call air5_preserve_zero_flux_support(support(:,1),support(:,2),support(:,3), &
+    support(:,4),support(:,5),support(:,6),lower,upper)
+  call air5_close_species_flux_moment(high,lower,upper,mass,gas,moment,closed,status)
+  if(status/=chemistry_status_ok) error stop 'captured zero-support face rejected'
+  if(any(closed(3:5)/=0.0_real64)) error stop 'captured face creates absent species'
+  if(any(closed<lower).or.any(closed>upper)) error stop 'captured face budget violation'
+  if(abs(sum(closed)-mass)>64*epsilon(mass)*(abs(mass)+sum(abs(closed)))) &
+    error stop 'captured face mass mismatch'
+  if(abs(dot_product(gas,closed)-moment)>64*epsilon(moment)*(abs(moment)+sum(abs(gas*closed)))) &
+    error stop 'captured face moment mismatch'
+  write(*,'(A)') 'AIR5_CAPTURED_ZERO_SUPPORT_PROBE pass'
 end program air5_transport_roundoff_probe

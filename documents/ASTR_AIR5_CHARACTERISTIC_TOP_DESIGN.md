@@ -1,5 +1,57 @@
 # AIR5 Two-Temperature Characteristic Top Boundary
 
+## Corrected Acoustic Matrix Complete (2026-09-28)
+
+All seven frozen GPU acoustic cases now pass on the same corrected executable:
+baseline, half/double tau, extended domain, coarse grid, half dt and prescribed
+control. The paired artifacts were re-read rather than recomputed. Evidence:
+`out/air5_characteristic_20260928/zero_support_acoustic_controls/result.json`.
+All sampled state/closure checks pass, including exact N/O/NO absence in 84
+saved phase states. See `ASTR_AIR5_CHARACTERISTIC_ACOUSTIC_GATE.md` for limits
+and values. The prescribed reflection is smaller; this test does not establish
+superiority of the characteristic boundary. Current CPU/GPU equivalence remains
+short-window evidence, not a new full-window bridge.
+
+Next decision remains the already agreed approval of oblique/grazing initial
+conditions, observation windows and target-retention criteria. No new physical
+case or real SBLI production run is admitted by the frozen acoustic result alone.
+
+## Zero-Species Support Correction (2026-09-28)
+
+The user approved CPU/GPU correction of artificial trace creation by the normal
+top flux projection. Shared exact support checks now pin an absent species'
+flux bounds to zero before affine closure; nonzero candidates/budgets/states
+prevent locking. No concentration floor or tolerance change is introduced.
+Captured-call CPU/GPU regression, trace counterexamples, Memcheck, matched
+short-window phases and coupled multi-topology checks pass.
+
+Original full-state baseline/extended runs both complete 1500 updates. Incident
+peak/L2 relative differences are 6.8043e-9 / 1.7953e-6 (limit 0.05), resolving
+the blocker below. The remaining acoustic controls subsequently passed on the
+corrected executable, as recorded above. Oblique/grazing physical gates
+still require approval; real SBLI remains unadmitted. See
+`ASTR_AIR5_ACOUSTIC_DOMAIN_DIAGNOSIS.md` for implementation and evidence.
+
+## Current Pre-SBLI Gate Status (2026-09-27, f3cced3)
+
+The current coupled/viscous three-update topology gate passes CPU NP1 against
+GPU NP1, NP2 x/y/z and NP8 2x2x2: maximum scaled field difference
+1.7108975961903168e-13 (limit 2e-10), with exact sampled face-halo/donor equality.
+Evidence: `out/air5_characteristic_20260927/pre_sbli_topology_f3cced3/`.
+
+Current frozen acoustic baseline and half/double tau pass, but the extended
+domain changes incident peak amplitude by 7.2512%, exceeding the approved 5%.
+The remaining acoustic controls stopped before launch. See
+`ASTR_AIR5_CHARACTERISTIC_ACOUSTIC_GATE.md` for raw-evidence paths and scope.
+The earlier acoustic pass must not be used to bypass this current failure.
+
+User-approved order: finish existing numerical and acoustic gates first, then
+submit oblique/grazing initial conditions, observation windows and quantitative
+target-state criteria for approval. Do not launch those new physical cases or
+admit real SBLI merely because the solver completes. Current acoustic failure
+is the immediate blocker; no numerical policy change is authorized by its
+diagnosis alone.
+
 ## V-T Face-Budget Failure: Reconciled Halo Fix (2026-09-27)
 
 The V-T-only coarse run failed at step 11 (the twelfth update), RK stage 3,

@@ -5,7 +5,7 @@ module chemistry_flow_solver
     air5_temperature_min_k,air5_formation_energy
   use chemistry_model, only: chemistry_status_ok,air5_ratio_bisection_iterations, &
     air5_interior_ratio,air5_limit_filter_species,air5_transport_species_ratio, &
-    air5_close_species_flux_moment,air5_transport_roundoff_gamma
+    air5_close_species_flux_moment,air5_transport_roundoff_gamma,air5_preserve_zero_flux_support
   use chemistry_state_layout, only: air5_num_conservative,air5_idx_density, &
     air5_idx_momentum_first,air5_idx_total_energy,air5_idx_species_first, &
     air5_idx_species_last,air5_idx_ev
@@ -898,6 +898,8 @@ contains
           lower(s)=trial(1)-sum(upper,mask=[1,2,3,4,5]/=s)-bound_error
         enddo
       endif
+      call air5_preserve_zero_flux_support(high(6:10),low(6:10),base_left(6:10), &
+        base_right(6:10),ql(6:10),qr(6:10),lower,upper)
       call air5_close_species_flux_moment(trial(6:10),lower,upper,trial(1), &
         gas,dot_product(gas,trial(6:10)),species,projection_status)
       admissible=projection_status==chemistry_status_ok

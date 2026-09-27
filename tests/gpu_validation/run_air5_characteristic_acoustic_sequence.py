@@ -28,7 +28,7 @@ def wait_existing_service(unit):
         time.sleep(60)
 
 
-def sequence(baseline, half_tau, output, wait_unit=None):
+def sequence(baseline, half_tau, output, wait_unit=None, reuse_extended=None):
     output.mkdir(parents=True, exist_ok=False)
     entries = {'baseline': load_case(baseline)}
     compare(entries, partial=True)
@@ -44,11 +44,15 @@ def sequence(baseline, half_tau, output, wait_unit=None):
         options = {'double_tau': {'tau_factor': 2.}, 'extended': {'extended': True},
                    'coarse': {'ny': 128}, 'half_dt': {'dt': 2.5e-9},
                    'prescribed': {'mode': 'prescribed'}}[name]
-        print(f'Preparing {name}', flush=True)
-        meta = prepare(case, executable, use_gpu=entries['baseline'][0].get('use_gpu', False), **options)
-        if meta['executable_sha256'] != entries['baseline'][0]['executable_sha256']:
-            raise ValueError('baseline executable changed; refuse new solver run')
-        run(case, meta)
+        if name == 'extended' and reuse_extended is not None:
+            case = reuse_extended
+            print(f'Rechecking existing {name}: {case}', flush=True)
+        else:
+            print(f'Preparing {name}', flush=True)
+            meta = prepare(case, executable, use_gpu=entries['baseline'][0].get('use_gpu', False), **options)
+            if meta['executable_sha256'] != entries['baseline'][0]['executable_sha256']:
+                raise ValueError('baseline executable changed; refuse new solver run')
+            run(case, meta)
         entries[name] = load_case(case)
         report = compare(entries, partial=True)
         paths[name] = str(case)
@@ -66,6 +70,8 @@ if __name__ == '__main__':
     parser.add_argument('--half-tau', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--wait-unit')
+    parser.add_argument('--reuse-extended', type=Path)
     args = parser.parse_args()
     print(json.dumps(sequence(args.baseline.resolve(), args.half_tau.resolve(),
-                              args.output.resolve(), args.wait_unit), indent=2))
+                              args.output.resolve(), args.wait_unit,
+                              args.reuse_extended.resolve() if args.reuse_extended else None), indent=2))

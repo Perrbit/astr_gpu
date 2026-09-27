@@ -1,12 +1,106 @@
 # AIR5 Characteristic Top Acoustic Gate
 
-Status: frozen GPU acoustic seven-case matrix completed and passed on 2026-09-27,
-after the CPU/GPU full-window equivalence bridge. CPU fine-grid baseline and
-half/double-tau controls are retained as independent backend evidence.
+Status: all seven frozen GPU acoustic controls pass on the corrected executable
+on 2026-09-28. Current CPU/GPU evidence is the matched short-window bridge;
+the earlier full-window CPU/GPU bridge below remains historical evidence.
 Parent: `ASTR_AIR5_CHARACTERISTIC_TOP_DESIGN.md`. Local execution only.
 This is frozen acoustic acceptance, not reacting-flow production admission.
 
-## Completed GPU Matrix
+## Completed Corrected Matrix (2026-09-28)
+
+Evidence: `out/air5_characteristic_20260928/zero_support_acoustic_controls/result.json`,
+with `passed=true`, `complete=true` and all seven raw-case paths. Baseline and
+extended artifacts were re-read and reused; only the remaining five cases ran.
+All cases use executable SHA256
+`72a1ef61c981def1979665d448ff81db99b8bfdb68ed1ce511fc2a75946fa393`,
+and logs confirm `full_state` convection. No solver change was made in this
+completion pass. SHA is validation provenance, not a solver startup message.
+
+| Case | R_peak | R_L2 | Comparison outcome |
+| --- | ---: | ---: | --- |
+| Baseline | 3.9802951e-5 | 4.8358197e-5 | Pass |
+| Half tau | 3.8976918e-5 | 4.7929617e-5 | Pass; L2 difference 4.2857991e-7 < 0.03 |
+| Double tau | 4.0240848e-5 | 4.8583898e-5 | Pass; L2 difference 2.2570144e-7 < 0.03 |
+| Extended | 3.2146554e-5 | 4.3404097e-5 | Incident peak/L2 differences 6.8043e-9 / 1.7953e-6 < 0.05 |
+| Coarse | 3.9802694e-5 | 4.8357698e-5 | Pass; L2 difference 4.9912919e-10 < 0.02 |
+| Half dt | 3.9837590e-5 | 4.8415702e-5 | Pass; L2 difference 5.7505272e-8 < 0.005 |
+| Prescribed | 2.0011047e-5 | 3.1161709e-5 | Valid comparison control; no reflection upper-bound gate |
+
+All applicable individual reflection gates and sampled physical-state checks
+pass. Across all seven cases, 84 saved pre-RHS/post-update states retain exactly
+zero N/O/NO. Maximum sequential composition closure error is
+5.551115123125783e-16. These are sampled-state checks, not every-step field dumps.
+The prescribed control has lower measured reflection in this test: no claim of
+reflection superiority is supported. Nor do the refinement pairs establish a
+formal convergence order or physical SBLI validity.
+
+The sequential driver now accepts `--reuse-extended`; it rechecks raw evidence
+through the same matrix validator and rejects a mismatched executable before
+starting subsequent cases. Eighteen monitor/matrix/driver tests and six subtests
+pass, including reuse and mismatch rejection. New oblique/grazing physical
+criteria still require approval before those cases run.
+
+## Fixed Baseline And Extended Pair (2026-09-28)
+
+Evidence: `out/air5_characteristic_20260928/zero_support_acoustic_pair/`.
+Both cases retain `full_state`, frozen sources, no filter, dt=5 ns and 1500
+updates. Baseline R_peak=3.98029511308272e-5 and R_L2=4.835819671647331e-5
+pass. Incident peak relative difference is 6.804254382153374e-9, and L2 relative
+difference is 1.7952715767322047e-6, both below 0.05. Sampled N/O/NO remain
+exactly zero; physical-state and composition checks pass. The complete
+implementation and matched CPU/GPU short-window checks are in
+`ASTR_AIR5_ACOUSTIC_DOMAIN_DIAGNOSIS.md`.
+
+The remaining controls were subsequently completed with the same executable,
+as recorded above. Older artifacts were not mixed into this corrected pass.
+
+## Failed Requalification Before Correction (2026-09-27)
+
+Subsequent diagnosis is recorded in `ASTR_AIR5_ACOUSTIC_DOMAIN_DIAGNOSIS.md`:
+top limited transport introduces initially absent trace species; interior
+full-state positivity limiting amplifies them into an acoustic-signal change.
+CPU exhibits the same species constraints. A symmetric-interior control removes
+the first-100-sample domain difference, but is not a completed acoustic gate.
+The original failure below is retained as regression evidence; the approved
+shared correction and recovered pair are recorded above.
+
+Evidence root: `out/air5_characteristic_20260927/pre_sbli_acoustic_f3cced3/`.
+All four completed solver runs use the same executable hash recorded in
+`gate.json`. Frozen sources, FP64, no filter and the existing `full_state`
+limiter settings are unchanged. The coupled topology gate instead uses
+`symmetric_species` convection and `layered` diffusion; it is not a full-window
+CPU/GPU acoustic equivalence bridge.
+
+| Case | R_peak | R_L2 | Incident peak |
+| --- | ---: | ---: | ---: |
+| baseline | 7.9542881953e-5 | 7.1564396270e-5 | 0.4010870545 |
+| half_tau | 7.8380149884e-5 | 7.2075947932e-5 | 0.4014257918 |
+| double_tau | 1.0655599575e-4 | 8.1264293703e-5 | 0.4021695830 |
+| extended | 1.3698056533e-5 | 1.1315940593e-5 | 0.4324445317 |
+
+Baseline and tau controls pass their individual reflection and pairwise
+sensitivity gates. Extended-domain relative incident errors, defined as
+`abs(baseline/extended - 1)`, are **0.0725121372991665** (peak) and
+**0.03899951062717699** (L2). The peak exceeds the approved 0.05 limit.
+The sequence exited with status 1 at this comparison and did not launch coarse,
+half_dt or prescribed. `controls/progress.json` records only the last successful
+three-case prefix, not the extended-domain failure or a completed matrix.
+
+All four sampled-state gates pass; maximum sequential composition closure is
+4.440892098500626e-16. These state checks do not override the failed comparison.
+The extended R values are diagnostics in the baseline observation window, not
+a reflection gate for its more distant top boundary.
+
+Initial-file values in the overlapping domains are exactly equal. In saved
+first-step RK1/2/3 post-update fields, the central pulse band (zero-based
+i=4:12, j=160:229, all owned k) is also exactly equal. Both incident peaks
+arrive at 1.605 us. The first central-probe difference appears at update 16,
+initially only 7.35e-28 in streamwise velocity; this does not by itself identify
+the later amplitude-error mechanism. No boundary or limiter root cause has
+been established. Preserve the failed artifacts and diagnose the first
+amplification before resuming the matrix. No threshold has been relaxed.
+
+## Historical Completed GPU Matrix
 
 Service `astr-air5-acoustic-gpu-matrix-20260927.service` exited with status 0.
 Evidence: `out/air5_characteristic_20260927/gpu_matrix/bridge.json` and

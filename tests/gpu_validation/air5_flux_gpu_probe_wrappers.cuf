@@ -2,12 +2,42 @@ module air5_flux_gpu_probe_wrappers
   use iso_fortran_env, only: real64
   use cudafor
   use chemistry_model, only: cpu_close=>air5_close_species_flux, &
-    cpu_moment=>air5_close_species_flux_moment,chemistry_status_ok
+    cpu_moment=>air5_close_species_flux_moment,chemistry_status_ok, &
+    preserve_support=>air5_preserve_zero_flux_support
   use chemistry_model_gpu, only: air5_close_species_flux_gpu,air5_close_species_flux_moment_gpu
   implicit none
   private
   public :: air5_close_species_flux,air5_close_species_flux_moment
+  public :: air5_preserve_zero_flux_support
 contains
+  attributes(global) subroutine zero_support_kernel(inputs)
+    real(real64), device, intent(inout) :: inputs(5,8)
+    if(threadIdx%x/=1.or.blockIdx%x/=1) return
+    call preserve_support(inputs(:,1),inputs(:,2),inputs(:,3),inputs(:,4), &
+      inputs(:,5),inputs(:,6),inputs(:,7),inputs(:,8))
+  end subroutine zero_support_kernel
+
+  subroutine air5_preserve_zero_flux_support(high,low,base_left,base_right,ql,qr,lower,upper)
+    real(real64), intent(in) :: high(5),low(5),base_left(5),base_right(5),ql(5),qr(5)
+    real(real64), intent(inout) :: lower(5),upper(5)
+    real(real64), device :: inputs_d(5,8)
+    real(real64) :: lo_ref(5),hi_ref(5)
+    integer :: ierr
+    inputs_d(:,1)=high; inputs_d(:,2)=low
+    inputs_d(:,3)=base_left; inputs_d(:,4)=base_right
+    inputs_d(:,5)=ql; inputs_d(:,6)=qr
+    inputs_d(:,7)=lower; inputs_d(:,8)=upper
+    lo_ref=lower; hi_ref=upper
+    call preserve_support(high,low,base_left,base_right,ql,qr,lo_ref,hi_ref)
+    call zero_support_kernel<<<1,1>>>(inputs_d)
+    ierr=cudaGetLastError()
+    if(ierr/=cudaSuccess) error stop 'zero-support kernel launch failed'
+    ierr=cudaDeviceSynchronize()
+    if(ierr/=cudaSuccess) error stop 'zero-support kernel failed'
+    lower=inputs_d(:,7); upper=inputs_d(:,8)
+    if(any(lower/=lo_ref).or.any(upper/=hi_ref)) error stop 'zero-support CPU/GPU mismatch'
+  end subroutine air5_preserve_zero_flux_support
+
   attributes(global) subroutine projection_kernel(inputs,mass,moment,output,status_out,with_moment)
     real(real64), device, intent(in) :: inputs(5,4)
     real(real64), device, intent(out) :: output(5)

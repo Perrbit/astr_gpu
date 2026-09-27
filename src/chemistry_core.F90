@@ -37,8 +37,28 @@ module chemistry_model
   public :: air5_limit_filter_species
   public :: air5_close_species_flux
   public :: air5_close_species_flux_moment
+  public :: air5_preserve_zero_flux_support
 
 contains
+
+#ifdef _CUDA
+  attributes(host,device) &
+#endif
+  pure subroutine air5_preserve_zero_flux_support(high,low,base_left,base_right,ql,qr,lower,upper)
+    real(real64), intent(in) :: high(5),low(5),base_left(5),base_right(5),ql(5),qr(5)
+    real(real64), intent(inout) :: lower(5),upper(5)
+    integer :: s
+    ! A missing exterior budget must not create support absent from both
+    ! reconstruction candidates, both RK budgets and both face states.
+    do s=1,5
+      if(high(s)==0.0_real64.and.low(s)==0.0_real64.and. &
+         base_left(s)==0.0_real64.and.base_right(s)==0.0_real64.and. &
+         ql(s)==0.0_real64.and.qr(s)==0.0_real64) then
+        lower(s)=0.0_real64
+        upper(s)=0.0_real64
+      endif
+    enddo
+  end subroutine air5_preserve_zero_flux_support
 
   pure subroutine air5_close_species_flux_moment(candidate,lower,upper,mass_flux, &
       weights,moment_flux,flux,status)

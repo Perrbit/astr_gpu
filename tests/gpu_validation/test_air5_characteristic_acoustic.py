@@ -161,6 +161,37 @@ class AcousticMatrixTests(unittest.TestCase):
                 self.assertEqual([call.args[0].name for call in prep.call_args_list], list(CASES[2:]))
                 self.assertEqual(advance.call_count, 5)
 
+    def test_reuse_extended_rechecks_without_launch(self):
+        entries = self.fixtures()
+        entries['baseline'][0]['executable'] = '/unused/astr'
+        module = 'run_air5_characteristic_acoustic_sequence'
+        pending = [key for key in CASES[2:] if key != 'extended']
+        with tempfile.TemporaryDirectory() as directory:
+            with patch(module+'.load_case', side_effect=[entries[key] for key in CASES]) as load, \
+                 patch(module+'.prepare', side_effect=[entries[key][0] for key in pending]) as prep, \
+                 patch(module+'.run') as advance:
+                report = sequence(Path('baseline'), Path('half_tau'), Path(directory)/'sequence',
+                                  reuse_extended=Path('existing_extended'))
+                self.assertTrue(report['complete'])
+                self.assertEqual([call.args[0].name for call in prep.call_args_list], pending)
+                self.assertEqual(load.call_args_list[3].args[0], Path('existing_extended'))
+                self.assertEqual(advance.call_count, 4)
+
+    def test_reused_extended_mismatch_stops_next_case(self):
+        entries = self.fixtures()
+        entries['baseline'][0]['executable'] = '/unused/astr'
+        entries['extended'][0]['executable_sha256'] = 'different'
+        module = 'run_air5_characteristic_acoustic_sequence'
+        with tempfile.TemporaryDirectory() as directory:
+            with patch(module+'.load_case', side_effect=[entries[key] for key in CASES[:4]]), \
+                 patch(module+'.prepare', return_value=entries['double_tau'][0]) as prep, \
+                 patch(module+'.run') as advance:
+                with self.assertRaisesRegex(ValueError, 'executable_sha256'):
+                    sequence(Path('baseline'), Path('half_tau'), Path(directory)/'sequence',
+                             reuse_extended=Path('existing_extended'))
+                self.assertEqual(prep.call_count, 1)
+                self.assertEqual(advance.call_count, 1)
+
 
 if __name__ == '__main__':
     unittest.main()
