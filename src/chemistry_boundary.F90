@@ -122,6 +122,8 @@ module chemistry_hbl_boundary
   real(real64), save :: wall_temperature=0.0_real64
   real(real64), save :: hbl_x_origin=0.0_real64
   logical, save :: incident_top=.false.
+  logical, save :: characteristic_top=.false.
+  real(real64), save :: top_relaxation_rate=0.0_real64
   real(real64), save :: incident_x=0.0_real64
   real(real64), save :: incident_q(air5_num_conservative,2)=0.0_real64
   logical, save :: boundary_configured=.false.
@@ -130,6 +132,7 @@ module chemistry_hbl_boundary
   public :: get_air5_hbl_boundary
   public :: apply_air5_hbl_boundary
   public :: get_air5_incident_top
+  public :: air5_dynamic_top,get_air5_top_target,get_air5_top_rate
 
 contains
 
@@ -186,8 +189,94 @@ contains
         max(abs(farfield_q),1.0e-280_real64))) &
         error stop 'air5 incident shock upstream does not match inlet profile edge'
     endif
+    call configure_air5_top_mode()
     boundary_configured=.true.
   end subroutine configure_air5_hbl_boundary
+
+  subroutine configure_air5_top_mode()
+    use mpi
+    use ieee_arithmetic, only: ieee_is_finite
+    use commvar, only: im,jm,km,use_gpu,lrestart,lfilter,rkscheme
+    use commarray, only: x
+    character(len=64) :: value
+    integer :: status,choice,low,high,ierr,axis,i,j,k
+    real(real64) :: tau,tau_low,tau_high,spacing(3),expected(3),scale
+
+    value='prescribed'
+    call get_environment_variable('ASTR_AIR5_TOP_MODE',value,status=status)
+    if(status==1) value='prescribed'
+    choice=-1
+    if(status==0.or.status==1) then
+      if(trim(value)=='prescribed') choice=0
+      if(trim(value)=='characteristic') choice=1
+    endif
+    call MPI_Allreduce(choice,low,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(choice,high,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(low<0.or.low/=high) call MPI_Abort(MPI_COMM_WORLD,90,ierr)
+    characteristic_top=choice==1
+    top_relaxation_rate=0.0_real64
+    if(.not.characteristic_top) return
+    ! Reject unwired combinations explicitly during staged implementation.
+    if(lrestart.or.lfilter.or.rkscheme/='rk3') &
+      error stop 'characteristic AIR5 top currently requires cold-start RK3 without filter'
+    if(use_gpu) then
+      value=''
+      call get_environment_variable('ASTR_AIR5_TOP_GPU_VALIDATION',value,status=status)
+      choice=0
+      if(status==0.and.trim(value)=='on') choice=1
+      call MPI_Allreduce(choice,low,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+      if(low/=1) error stop 'characteristic AIR5 GPU top requires explicit validation opt-in'
+    endif
+    value=''
+    tau=-1.0_real64
+    call get_environment_variable('ASTR_AIR5_TOP_TAU',value,status=status)
+    if(status==0) read(value,*,iostat=status) tau
+    choice=0
+    if(status/=0.or..not.ieee_is_finite(tau)) choice=1
+    if(tau<=0.0_real64) choice=1
+    call MPI_Allreduce(choice,high,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(high/=0) error stop 'characteristic AIR5 top requires explicit positive finite tau in seconds'
+    call MPI_Allreduce(tau,tau_low,1,MPI_DOUBLE_PRECISION,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(tau,tau_high,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(tau_low/=tau_high) error stop 'inconsistent AIR5 top tau across ranks'
+    top_relaxation_rate=1.0_real64/tau
+    if(.not.ieee_is_finite(top_relaxation_rate)) error stop 'AIR5 top relaxation rate overflow'
+    choice=0
+    if(min(im,jm,km)<5) choice=1
+    spacing=[x(1,0,0,1)-x(0,0,0,1),x(0,1,0,2)-x(0,0,0,2),x(0,0,1,3)-x(0,0,0,3)]
+    if(any(spacing<=0.0_real64).or.any(.not.ieee_is_finite(spacing))) choice=1
+    do k=0,km; do j=0,jm; do i=0,im
+      expected=x(0,0,0,:)+[i,j,k]*spacing
+      do axis=1,3
+        scale=max(abs(expected(axis)),spacing(axis))
+        if(.not.ieee_is_finite(x(i,j,k,axis))) choice=1
+        if(abs(x(i,j,k,axis)-expected(axis))>2.0e-11_real64*scale) choice=1
+      enddo
+    enddo; enddo; enddo
+    call MPI_Allreduce(choice,high,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(high/=0) error stop 'characteristic AIR5 top requires uniform Cartesian local grids with >=6 nodes'
+  end subroutine configure_air5_top_mode
+
+  logical function air5_dynamic_top()
+    air5_dynamic_top=characteristic_top
+  end function air5_dynamic_top
+
+  real(real64) function get_air5_top_rate()
+    get_air5_top_rate=top_relaxation_rate
+  end function get_air5_top_rate
+
+  subroutine get_air5_top_target(x_value,state,status)
+    real(real64),intent(in) :: x_value
+    real(real64),intent(out) :: state(11)
+    integer,intent(out) :: status
+    status=chemistry_status_ok
+    if(incident_top) then
+      state=incident_q(:,2)
+      if(x_value<incident_x) state=incident_q(:,1)
+    else
+      call build_air5_hbl_similarity_farfield_state(farfield_q,hbl_x_origin,x_value,state,status)
+    endif
+  end subroutine get_air5_top_target
 
   subroutine get_air5_hbl_boundary(inlet_state,farfield_state,wall_temp,x_origin)
     real(real64), allocatable, intent(out) :: inlet_state(:,:)
@@ -221,6 +310,7 @@ contains
     real(real64) :: boundary_q(air5_num_conservative)
     real(real64) :: candidate_q(air5_num_conservative)
     integer :: i,j,k,component,status,global_status,ierr
+    real(real64) :: density,velocity(3),temperature,fractions(5),tv,pressure
 
     if(trim(flowtype)/='air5hbl' .and. trim(flowtype)/='air5sbli') return
     if(.not.boundary_configured) &
@@ -230,6 +320,12 @@ contains
     if(mpiright==MPI_PROC_NULL) then
       do k=0,km
         do j=0,jm
+          if(characteristic_top.and.mpiup==MPI_PROC_NULL.and.j==jm) then
+            do i=im+1,im+hm
+              q(i,j,k,:)=q(im,j,k,:)
+            enddo
+            cycle
+          endif
           call build_air5_hbl_outflow_state(q(im-1,j,k,:),q(im-2,j,k,:), &
             boundary_q,status)
           if(status/=chemistry_status_ok) then
@@ -278,7 +374,12 @@ contains
     if(status==chemistry_status_ok .and. mpiup==MPI_PROC_NULL) then
       do k=0,km
         do i=0,im
-          if(incident_top) then
+          if(characteristic_top) then
+            boundary_q=q(i,jm,k,:)
+            call air5_conservative_to_primitive(boundary_q,density,velocity,temperature, &
+              fractions,tv,pressure,status)
+            if(status/=chemistry_status_ok) exit
+          elseif(incident_top) then
             if(x(i,jm,k,1)<incident_x) then
               boundary_q=incident_q(:,1)
             else
@@ -315,9 +416,15 @@ contains
     endif
     if(air5_compensated) then
       if(mpileft==MPI_PROC_NULL) air5_carry(0,:,:,:)=0.0_real64
-      if(mpiright==MPI_PROC_NULL) air5_carry(im,:,:,:)=0.0_real64
+      if(mpiright==MPI_PROC_NULL) then
+        if(characteristic_top.and.mpiup==MPI_PROC_NULL) then
+          air5_carry(im,0:jm-1,:,:)=0.0_real64
+        else
+          air5_carry(im,:,:,:)=0.0_real64
+        endif
+      endif
       if(mpidown==MPI_PROC_NULL) air5_carry(:,0,:,:)=0.0_real64
-      if(mpiup==MPI_PROC_NULL) air5_carry(:,jm,:,:)=0.0_real64
+      if(mpiup==MPI_PROC_NULL.and..not.characteristic_top) air5_carry(:,jm,:,:)=0.0_real64
     endif
   end subroutine apply_air5_hbl_boundary
 

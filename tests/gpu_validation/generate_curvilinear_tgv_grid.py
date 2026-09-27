@@ -117,8 +117,8 @@ def main() -> int:
     args = parser.parse_args()
 
     im, jm, km = args.grid
-    if not 0.0 < args.amplitude < 0.5:
-        raise ValueError("--amplitude must lie in (0, 0.5)")
+    if not 0.0 <= args.amplitude < 0.5:
+        raise ValueError("--amplitude must lie in [0, 0.5)")
 
     x, y, z, jacobian = mapped_grid(
         im,

@@ -41,6 +41,9 @@ module mainloop
     use readwrite,only: readcont,timerept,nxtchkpt,nxtwsequ,           &
                         write_validation_rk_snapshot
     use commcal,  only: cflcal
+#ifdef _CUDA
+    use cfl_gpu, only: collect_cfl_gpu
+#endif
     use ibmethod, only: ibforce
     use userdefine,only: udf_eom_set
     use parallel, only : bcast
@@ -49,7 +52,7 @@ module mainloop
     use benchmark_runtime, only: begin_complete_step_timing,end_complete_step_timing
     !
     ! local data
-    real(8) :: time_beg,time_next_step,crange
+    real(8) :: time_beg,time_next_step,crange,completed_step_dt
     integer :: hours,minus,secod,n,i,ios,j,k
     logical,save :: firstcall = .true.
     logical :: lfex
@@ -107,6 +110,7 @@ module mainloop
       call begin_complete_step_timing()
       call crashcheck
 
+      completed_step_dt=deltat
       call time_integration_rk
       call end_complete_step_timing(nstep)
 
@@ -119,7 +123,15 @@ module mainloop
         !
         nxtchkpt=nstep+feqchkpt
         !
-        call cflcal(deltat)
+#ifdef _CUDA
+        if(use_gpu) then
+          call cflcal(completed_step_dt,collect_cfl_gpu)
+        else
+#endif
+          call cflcal(completed_step_dt)
+#ifdef _CUDA
+        endif
+#endif
         !
         time_per_loop=ptime()-time_start
 

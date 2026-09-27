@@ -158,8 +158,9 @@ contains
   subroutine air5_chemistry_half_step_gpu(duration,half_index)
     use chemistry_compensation, only: air5_compensated
     use mpi
-    use commvar, only: is,ie,js,je,ks,ke,nstep,feqchkpt
-    use parallel, only: lio
+    use commvar, only: is,ie,js,je,ks,ke,nstep,feqchkpt,im,jm
+    use parallel, only: lio,mpiup,mpileft
+    use chemistry_hbl_boundary, only: air5_dynamic_top
     use gpu_check, only: sync_after_kernel
     use halo_exchange_gpu, only: exchange_solution_halo_gpu
     use chemistry_flow_solver_gpu, only: launch_air5_interior_primitive_gpu, &
@@ -168,7 +169,7 @@ contains
     use chemistry_hbl_boundary_gpu, only: apply_air5_hbl_boundary_gpu
     real(real64), intent(in) :: duration
     integer, intent(in) :: half_index
-    integer :: ntot,ierr,local_status,global_status,source_mode
+    integer :: ntot,ierr,local_status,global_status,source_mode,first_i
     integer :: local_counts(4),global_counts(4)
     integer :: local_status_counts(5),global_status_counts(5)
     integer(int64) :: minimum_bits(3),maximum_bits(2)
@@ -194,6 +195,16 @@ contains
     call air5_chemistry_half_step_kernel<<<grid,block>>>(duration,source_mode, &
       is,ie,js,je,ks,ke)
     call sync_after_kernel('air5_chemistry_half_step_kernel',.true.)
+
+    if(air5_dynamic_top().and.mpiup==MPI_PROC_NULL) then
+      first_i=0
+      if(mpileft==MPI_PROC_NULL) first_i=1
+      ntot=(im-first_i+1)*(ke-ks+1)
+      grid=dim3((ntot+block%x-1)/block%x,1,1)
+      call air5_chemistry_half_step_kernel<<<grid,block>>>(duration,source_mode, &
+        first_i,im,jm,jm,ks,ke)
+      call sync_after_kernel('air5_chemistry_top_half_step_kernel',.true.)
+    endif
 
     local_status=air5_chemistry_status_d
     if(packed_reductions) then

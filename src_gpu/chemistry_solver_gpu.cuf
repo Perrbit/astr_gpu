@@ -58,8 +58,46 @@ module chemistry_flow_solver_gpu
   public :: launch_air5_interior_primitive_gpu
   public :: launch_air5_face_primitives_gpu
   public :: validate_air5_transport_gpu
+  public :: write_air5_acoustic_probe_gpu
 
 contains
+
+  subroutine write_air5_acoustic_probe_gpu()
+    use commvar, only: nmonitor,imon,nstep,time,lfilter,lrestart
+    use commarray_gpu, only: vel_d,prs_d,tmp_d
+    implicit none
+    logical, save :: configured=.false.,enabled=.false.
+    integer, allocatable, save :: units(:)
+    integer :: status,n,i,j,k
+    character(len=64) :: value,filename
+    real(real64) :: velocity(3),pressure,temperature
+    if(.not.configured) then
+      value=''
+      call get_environment_variable('ASTR_AIR5_ACOUSTIC_PROBE',value,status=status)
+      enabled=status==0.and.trim(value)=='on'
+      if(enabled) then
+        value=''
+        call get_environment_variable('ASTR_AIR5_SOURCE_MODE',value,status=status)
+        if(status/=0.or.trim(value)/='frozen'.or.lfilter.or.lrestart) &
+          error stop 'acoustic GPU probe requires frozen source, no filter and cold start'
+        allocate(units(nmonitor))
+        do n=1,nmonitor
+          write(filename,'(A,I4.4,A)') 'monitor/acoustic',imon(n,4),'.dat'
+          open(newunit=units(n),file=trim(filename),status='new',action='write')
+          write(units(n),'(A)') '# step time u v w T p; first RK input after frozen half-step'
+        enddo
+      endif
+      configured=.true.
+    endif
+    if(.not.enabled) return
+    do n=1,nmonitor
+      i=imon(n,1); j=imon(n,2); k=imon(n,3)
+      velocity=vel_d(i,j,k,:)
+      pressure=prs_d(i,j,k)
+      temperature=tmp_d(i,j,k)
+      write(units(n),'(I10,6(1X,ES25.17E3))') nstep,time,velocity,temperature,pressure
+    enddo
+  end subroutine write_air5_acoustic_probe_gpu
 
   attributes(device) logical function air5_symmetric_active(i,j,k,im,jm,km,ni,nj,nk) result(active)
     integer, value :: i,j,k,im,jm,km,ni,nj,nk
@@ -2524,6 +2562,125 @@ contains
     enddo
   end subroutine air5_diffusion_rhs_z_kernel
 
+  attributes(global) subroutine air5_characteristic_top_rhs_kernel(im,jm,km,ni,nj,nk, &
+      first_i,right_boundary,shock,viscous,rate)
+    use commarray_gpu, only: q_d,x_d,jacob_d,qrhs_d
+    use chemistry_characteristic, only: air5_top_normal_convection,air5_top_transport_rhs
+    use chemistry_hbl_boundary_gpu, only: get_air5_top_target_gpu
+    integer, value :: im,jm,km,ni,nj,nk,first_i,shock
+    logical, value :: right_boundary,viscous
+    real(real64), value :: rate
+    real(real64) :: local_q(11),inner_one(11),inner_two(11),target(11),gradient(11),normal(11),remaining(11),rhs(11)
+    real(real64) :: left(11),right(11),rho,velocity(3),temperature,tv,pressure,y(5)
+    real(real64) :: gas(5),cv(5),beta,sound,spacing
+    integer :: id,i,k,s,axis,index,dims(3),ntypes(3),status
+    logical :: valid
+
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=(im-first_i+1)*(km+1)) return
+    i=first_i+mod(id,im-first_i+1)
+    k=id/(im-first_i+1)
+    local_q=q_d(i,jm,k,:)
+    call air5_conservative_to_primitive_gpu(local_q,rho,velocity,temperature,y,tv,pressure,status)
+    if(status/=chemistry_status_ok) then
+      call record_air5_status(status)
+      return
+    endif
+    do s=1,5
+      gas(s)=air5_species_gas_constant_gpu(s)
+      cv(s)=air5_species_cv_tr_gpu(s)
+    enddo
+    beta=sum(y*gas)/sum(y*cv)
+    sound=sqrt((1.0_real64+beta)*pressure/rho)
+    gradient(1)=0.5_real64*beta*sum(velocity*velocity)
+    gradient(2:4)=-beta*velocity
+    gradient(5)=beta
+    gradient(6:10)=(gas-beta*cv)*temperature-beta*air5_formation_energy
+    gradient(11)=-beta
+    spacing=x_d(i,jm,k,2)-x_d(i,jm-1,k,2)
+    inner_one=q_d(i,jm-1,k,:)
+    inner_two=q_d(i,jm-2,k,:)
+    call air5_top_normal_convection(local_q,inner_one,inner_two, &
+      spacing,pressure,gradient,normal,valid)
+    if(.not.valid) then
+      call record_air5_status(chemistry_status_nonfinite)
+      return
+    endif
+    dims=[im,jm,km]; ntypes=[ni,nj,nk]
+    remaining=0.0_real64
+    do axis=1,3,2
+      index=i
+      if(axis==3) index=k
+      if(axis==1.and.i==im.and.right_boundary) then
+        call air5_high_order_convective_face_flux(i,jm,k,axis,index-1,dims(axis),ntypes(axis),left)
+        call air5_high_order_convective_face_flux(i,jm,k,axis,index,dims(axis),ntypes(axis),right)
+      else
+        call air5_selective_convective_face_flux_gpu(i,jm,k,axis,index-1, &
+          dims(axis),ntypes(axis),im,jm,km,shock,left)
+        call air5_selective_convective_face_flux_gpu(i,jm,k,axis,index, &
+          dims(axis),ntypes(axis),im,jm,km,shock,right)
+      endif
+      remaining=remaining+left-right
+    enddo
+    if(viscous) then
+      do axis=1,3
+        index=i
+        if(axis==2) index=jm
+        if(axis==3) index=k
+        call air5_diffusive_face_flux(i,jm,k,axis,index-1,dims(axis),ntypes(axis),left,0)
+        call air5_diffusive_face_flux(i,jm,k,axis,index,dims(axis),ntypes(axis),right,0)
+        left(6:10)=-left(6:10)
+        right(6:10)=-right(6:10)
+        remaining=remaining+right-left
+      enddo
+    endif
+    if(.not.(jacob_d(i,jm,k)>0.0_real64)) then
+      call record_air5_status(chemistry_status_nonfinite)
+      return
+    endif
+    remaining=remaining/jacob_d(i,jm,k)
+    call get_air5_top_target_gpu(x_d(i,jm,k,1),target,status)
+    if(status/=chemistry_status_ok) then
+      call record_air5_status(status)
+      return
+    endif
+    call air5_top_transport_rhs(local_q,target,pressure,sound,gradient,normal,remaining,rate,rhs,valid)
+    if(.not.valid) then
+      call record_air5_status(chemistry_status_nonfinite)
+      return
+    endif
+    rhs=jacob_d(i,jm,k)*rhs
+    if(.not.all(abs(rhs)<=huge(1.0_real64))) then
+      call record_air5_status(chemistry_status_nonfinite)
+      return
+    endif
+    qrhs_d(i,jm,k,:)=rhs
+  end subroutine air5_characteristic_top_rhs_kernel
+
+  subroutine air5_characteristic_top_rhs_gpu(shock)
+    use mpi, only: MPI_PROC_NULL
+    use commvar, only: im,jm,km,npdci,npdcj,npdck,diffterm
+    use parallel, only: mpiup,mpileft,mpiright
+    use chemistry_hbl_boundary, only: air5_dynamic_top,get_air5_top_rate
+    use gpu_check, only: sync_after_kernel
+    integer, intent(in) :: shock
+    integer :: first_i,ntop
+    type(dim3) :: block,grid
+    if(.not.air5_dynamic_top()) return
+    call reset_air5_status()
+    if(mpiup==MPI_PROC_NULL) then
+      first_i=0
+      if(mpileft==MPI_PROC_NULL) first_i=1
+      ntop=(im-first_i+1)*(km+1)
+      block=dim3(128,1,1)
+      grid=dim3((ntop+block%x-1)/block%x,1,1)
+      call air5_characteristic_top_rhs_kernel<<<grid,block>>>(im,jm,km,npdci,npdcj,npdck, &
+        first_i,mpiright==MPI_PROC_NULL,shock,diffterm,get_air5_top_rate())
+      call sync_after_kernel('air5_characteristic_top_rhs_kernel',.true.)
+    endif
+    call check_air5_status('characteristic top RHS')
+  end subroutine air5_characteristic_top_rhs_gpu
+
   attributes(global) subroutine air5_rk3_first_update_kernel(deltat,im,jm,km, &
       is,ie,js,je,ks,ke)
     use chemistry_compensation_gpu, only: air5_compensated_d,air5_carry_d, &
@@ -2946,7 +3103,8 @@ contains
     use gradcal_gpu, only: gradcal_dvel_kernel,gradcal_dvel_xphysical_kernel, &
       gradcal_dvel_yphysical_kernel,gradcal_dvel_xyphysical_kernel
     use halo_exchange_gpu, only: exchange_field_halo_gpu
-    use parallel, only: mpidown
+    use parallel, only: mpidown,mpiup,mpileft
+    use chemistry_hbl_boundary, only: air5_dynamic_top
     use chemistry_flow_runtime, only: air5_hbl_flowtype,air5_shock_capturing_enabled, &
       air5_convection_species_budget,air5_layered_diffusion,air5_consistent_species_convection, &
       air5_symmetric_species_convection
@@ -2963,7 +3121,7 @@ contains
     integer :: ntot,ratio_ntot,rkstep,direction,apply_left_x,apply_right_x
     integer :: apply_down_y,apply_up_y,zero_species_flux_lower_y
     integer :: collect_limiter_diagnostics,shock_mode,species_budget
-    integer :: phase,first_phase,last_phase
+    integer :: phase,first_phase,last_phase,top_first_i
     logical :: shock_capturing,layered,consistent_species,symmetric_species
     real(real64), allocatable :: validation_ratio(:,:,:)
     real(real64), parameter :: rk_a(3)=[1.0_real64,0.75_real64,1.0_real64/3.0_real64]
@@ -3023,6 +3181,7 @@ contains
         call check_air5_status('explicit filter')
       endif
       if(lfilter .or. .not.(prepared .and. rkstep==1)) call air5_prepare_spatial_state_gpu()
+      if(rkstep==1) call write_air5_acoustic_probe_gpu()
       if(rhs_validation_requested()) then
         call copy_flow_from_gpu()
         call write_q_validation_snapshot('pre_rhs',nstep,rkstep)
@@ -3182,6 +3341,7 @@ contains
           is,ie,js,je,ks,ke)
         call sync_after_kernel('air5_diffusion_rhs_z_kernel',.true.)
       endif
+      call air5_characteristic_top_rhs_gpu(shock_mode)
       if(rhs_validation_requested()) then
         call copy_rhs_from_gpu()
         call write_rhs_validation_snapshot('full',nstep,rkstep)
@@ -3194,6 +3354,20 @@ contains
         call air5_rk3_update_kernel<<<grid1,block1>>>(deltat,rk_a(rkstep), &
           rk_b(rkstep),rk_c(rkstep),im,jm,km,is,ie,js,je,ks,ke)
         call sync_after_kernel('air5_rk3_update_kernel',.true.)
+      endif
+      if(air5_dynamic_top().and.mpiup==MPI_PROC_NULL) then
+        ! Disjoint from the interior bounds; includes the top/outlet corner.
+        top_first_i=0
+        if(mpileft==MPI_PROC_NULL) top_first_i=1
+        if(rkstep==1) then
+          call air5_rk3_first_update_kernel<<<grid1,block1>>>(deltat,im,jm,km, &
+            top_first_i,im,jm,jm,0,km)
+          call sync_after_kernel('air5_rk3_first_top_update_kernel',.true.)
+        else
+          call air5_rk3_update_kernel<<<grid1,block1>>>(deltat,rk_a(rkstep), &
+            rk_b(rkstep),rk_c(rkstep),im,jm,km,top_first_i,im,jm,jm,0,km)
+          call sync_after_kernel('air5_rk3_top_update_kernel',.true.)
+        endif
       endif
       call apply_air5_postshock_boundary_gpu()
       call apply_air5_hbl_boundary_gpu()

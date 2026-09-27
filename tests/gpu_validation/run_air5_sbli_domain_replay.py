@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import shutil
@@ -13,6 +14,18 @@ import time
 import h5py
 
 from run_air5_sbli_preflight import ROOT, environment, set_value
+
+
+def checked_topology(topology, ranks, checkpoint_shape=None):
+    topology = topology or f'{ranks},1,1'
+    dims = tuple(int(value) for value in topology.split(','))
+    if len(dims) != 3 or min(dims) < 1 or math.prod(dims) != ranks:
+        raise ValueError('topology must contain three positive factors with product np')
+    if checkpoint_shape is not None:
+        intervals = tuple(size-1 for size in reversed(checkpoint_shape))
+        if len(intervals) != 3 or any(n // d < 5 for n, d in zip(intervals, dims)):
+            raise ValueError('local extent cannot supply the fixed hm=5 halo')
+    return ','.join(map(str, dims))
 
 
 def run(args):
@@ -27,8 +40,8 @@ def run(args):
     backend = getattr(args, 'backend', 'gpu')
     ranks = getattr(args, 'np', 2)
     checkpoint_interval = getattr(args, 'checkpoint_interval', 10)
-    if ranks not in (1, 2) or checkpoint_interval < 1:
-        raise ValueError('require one/two ranks and a positive checkpoint interval')
+    if ranks not in (1, 2, 4) or checkpoint_interval < 1:
+        raise ValueError('require one/two/four ranks and a positive checkpoint interval')
     memcheck = getattr(args, 'memcheck', False)
     nsys_profile = getattr(args, 'nsys', False)
     ncu_kernel = getattr(args, 'ncu_kernel', None)
@@ -40,6 +53,8 @@ def run(args):
         raise ValueError('--memcheck requires the GPU backend')
     case = out/backend
     shutil.copytree(baseline/'datin', case/'datin')
+    if (baseline/'incident_shock_metadata.json').is_file():
+        shutil.copy2(baseline/'incident_shock_metadata.json', case/'incident_shock_metadata.json')
     (case/'outdat').mkdir()
     (case/'validation').mkdir()
     for name in ('flowfield.h5', 'auxiliary.txt'):
@@ -58,7 +73,18 @@ def run(args):
     set_value(case/'datin/controller',
               'maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg',
               f'{maximum},{checkpoint_interval},1000000,1000000,1,1000000')
-    env = environment(f'{ranks},1,1')
+    with h5py.File(case/'outdat/flowfield.h5') as checkpoint:
+        shape = checkpoint['ro'].shape
+    topology = checked_topology(getattr(args, 'topology', None), ranks, shape)
+    env = environment(topology)
+    if getattr(args, 'inherit_visible_devices', False):
+        visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+        if backend == 'gpu' and len(visible.split(',')) < ranks:
+            raise ValueError('not enough scheduler-visible GPUs for one rank per GPU')
+        if not visible:
+            raise ValueError('scheduler CUDA_VISIBLE_DEVICES is required')
+        env['CUDA_VISIBLE_DEVICES'] = visible
+        env['OMPI_MCA_coll'] = '^hcoll,ucc,cuda'
     compensation = getattr(args, 'compensation', 'off')
     compensation_restart = getattr(args, 'compensation_restart', 'restore')
     env['ASTR_AIR5_COMPENSATION'] = compensation
@@ -68,6 +94,8 @@ def run(args):
         env['ASTR_AIR5_COMPENSATION_RESTART'] = 'initialize'
     env['ASTR_AIR5_PRIMITIVE_REUSE'] = getattr(args, 'primitive_reuse', 'off')
     env['ASTR_AIR5_CHEMISTRY_REDUCTIONS'] = getattr(args, 'chemistry_reductions', 'baseline')
+    env['ASTR_CFL_DIAGNOSTICS'] = getattr(args, 'cfl_diagnostics', 'on')
+    env['ASTR_CFL_PROFILE_Y'] = '1' if getattr(args, 'cfl_profile_y', False) else '0'
     if getattr(args, 'complete_step_timing', False):
         env['ASTR_COMPLETE_STEP_TIMING'] = '1'
     limiter = getattr(args, 'convection_limiter', 'full_state')
@@ -110,7 +138,10 @@ def run(args):
                     updates=args.updates, target_time=start_time+args.dt*args.updates,
                     baseline=str(baseline), executable_sha256=hashlib.sha256(exe.read_bytes()).hexdigest(),
                     checkpoint_sha256=hashlib.sha256((case/'outdat/flowfield.h5').read_bytes()).hexdigest(),
-                    topology=f'{ranks},1,1', backend=backend, convection_limiter=limiter,
+                    topology=topology, backend=backend, convection_limiter=limiter,
+                    visible_devices=env['CUDA_VISIBLE_DEVICES'],
+                    cfl_diagnostics=env['ASTR_CFL_DIAGNOSTICS'],
+                    cfl_profile_y=env['ASTR_CFL_PROFILE_Y']=='1',
                     compensation=compensation, compensation_restart=compensation_restart,
                     complete_step_timing=getattr(args, 'complete_step_timing', False),
                     primitive_reuse=env['ASTR_AIR5_PRIMITIVE_REUSE'],
@@ -186,9 +217,13 @@ if __name__ == '__main__':
     parser.add_argument('--snapshot-step', type=int)
     parser.add_argument('--snapshot-step-secondary', type=int)
     parser.add_argument('--backend', choices=('cpu', 'gpu'), default='gpu')
-    parser.add_argument('--np', type=int, choices=(1, 2), default=2)
+    parser.add_argument('--np', type=int, choices=(1, 2, 4), default=2)
+    parser.add_argument('--inherit-visible-devices', action='store_true')
+    parser.add_argument('--topology', help='MPI dimensions i,j,k; defaults to np,1,1')
     parser.add_argument('--checkpoint-interval', type=int, default=10)
     parser.add_argument('--complete-step-timing', action='store_true')
+    parser.add_argument('--cfl-diagnostics', choices=('on', 'off'), default='on')
+    parser.add_argument('--cfl-profile-y', action='store_true')
     parser.add_argument('--compensation', choices=('off', 'on'), default='off')
     parser.add_argument('--compensation-restart', choices=('restore', 'initialize'), default='restore')
     parser.add_argument('--primitive-reuse', choices=('off', 'chemistry'), default='off')

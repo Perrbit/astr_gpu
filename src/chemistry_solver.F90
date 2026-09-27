@@ -45,8 +45,120 @@ module chemistry_flow_solver
   public :: air5_save_filter_species_base
   public :: air5_limit_filtered_state
   public :: air5_chemistry_half_step
+  public :: air5_characteristic_top_rhs
 
 contains
+
+  subroutine air5_characteristic_top_rhs()
+    use mpi
+    use commvar, only: im,jm,km,npdci,npdcj,npdck,diffterm
+    use commarray, only: q,x,jacob,qrhs
+    use parallel, only: mpiup,mpileft,mpiright
+    use chemistry_characteristic, only: air5_top_normal_convection,air5_top_transport_rhs
+    use chemistry_hbl_boundary, only: air5_dynamic_top,get_air5_top_target,get_air5_top_rate
+    real(real64) :: target(11),relaxation_rate
+    real(real64) :: local_q(11),inner_one(11),inner_two(11),gradient(11),normal(11),remaining(11),rhs(11)
+    real(real64) :: left(11),right(11),density,velocity(3),temperature,tv,pressure,y(5)
+    real(real64) :: gas(5),cv(5),beta,sound,spacing
+    integer :: i,k,s,axis,index,first_i,dims(3),ntypes(3),status,failed,global_failed,ierr
+    logical :: valid
+
+    ! Collective entry on a validated uniform Cartesian grid, after diffusion halo preparation.
+    if(.not.air5_dynamic_top()) return
+    relaxation_rate=get_air5_top_rate()
+    failed=0
+    dims=[im,jm,km]
+    ntypes=[npdci,npdcj,npdck]
+    do s=1,5
+      gas(s)=air5_species_gas_constant(s)
+      cv(s)=air5_species_cv_tr(s)
+    enddo
+    if(mpiup==MPI_PROC_NULL) then
+      if(jm<2.or.(diffterm.and..not.allocated(momentum_flux))) failed=1
+      first_i=0
+      if(mpileft==MPI_PROC_NULL) first_i=1
+      if(failed==0) then
+        do k=0,km
+          do i=first_i,im
+            local_q=q(i,jm,k,:)
+            call air5_conservative_to_primitive(local_q,density,velocity,temperature,y,tv,pressure,status)
+            if(status/=chemistry_status_ok) then
+              failed=1
+              exit
+            endif
+            beta=sum(y*gas)/sum(y*cv)
+            sound=sqrt((1.0_real64+beta)*pressure/density)
+            gradient(1)=0.5_real64*beta*sum(velocity*velocity)
+            gradient(2:4)=-beta*velocity
+            gradient(5)=beta
+            gradient(6:10)=(gas-beta*cv)*temperature-beta*air5_formation_energy
+            gradient(11)=-beta
+            spacing=x(i,jm,k,2)-x(i,jm-1,k,2)
+            inner_one=q(i,jm-1,k,:)
+            inner_two=q(i,jm-2,k,:)
+            call air5_top_normal_convection(local_q,inner_one,inner_two, &
+              spacing,pressure,gradient,normal,valid)
+            if(.not.valid) then
+              failed=1
+              exit
+            endif
+            remaining=0.0_real64
+            do axis=1,3,2
+              index=i
+              if(axis==3) index=k
+              if(axis==1.and.i==im.and.mpiright==MPI_PROC_NULL) then
+                ! The top owns this corner; its tangential derivative uses the x endpoint closure.
+                call air5_high_order_convective_face_flux(i,jm,k,axis,index-1,dims(axis),ntypes(axis),left)
+                call air5_high_order_convective_face_flux(i,jm,k,axis,index,dims(axis),ntypes(axis),right)
+              else
+                call air5_selective_convective_face_flux(i,jm,k,axis,index-1,dims(axis),ntypes(axis),left)
+                call air5_selective_convective_face_flux(i,jm,k,axis,index,dims(axis),ntypes(axis),right)
+              endif
+              remaining=remaining+left-right
+            enddo
+            if(diffterm) then
+              do axis=1,3
+                index=i
+                if(axis==2) index=jm
+                if(axis==3) index=k
+                call projected_air5_face_flux(i,jm,k,axis,index-1,dims(axis),ntypes(axis),left)
+                call projected_air5_face_flux(i,jm,k,axis,index,dims(axis),ntypes(axis),right)
+                ! Species arrays store mass diffusion flux, opposite to viscous energy/stress sign.
+                left(6:10)=-left(6:10)
+                right(6:10)=-right(6:10)
+                remaining=remaining+right-left
+              enddo
+            endif
+            if(.not.(jacob(i,jm,k)>0.0_real64)) then
+              failed=1
+              exit
+            endif
+            remaining=remaining/jacob(i,jm,k)
+            call get_air5_top_target(x(i,jm,k,1),target,status)
+            if(status/=chemistry_status_ok) then
+              failed=1
+              exit
+            endif
+            call air5_top_transport_rhs(local_q,target,pressure,sound,gradient,normal, &
+              remaining,relaxation_rate,rhs,valid)
+            if(.not.valid) then
+              failed=1
+              exit
+            endif
+            qrhs(i,jm,k,:)=jacob(i,jm,k)*rhs
+            if(.not.all(abs(qrhs(i,jm,k,:))<=huge(1.0_real64))) then
+              failed=1
+              exit
+            endif
+          enddo
+          if(failed/=0) exit
+        enddo
+      endif
+      if(failed/=0) write(*,'(A)') 'AIR5 characteristic top RHS failed before update'
+    endif
+    call MPI_Allreduce(failed,global_failed,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS.or.global_failed/=0) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+  end subroutine air5_characteristic_top_rhs
 
   subroutine configure_air5_vibrational_floor()
     integer :: species
@@ -1159,11 +1271,10 @@ contains
 
     do k=ks,ke; do j=js,je; do i=is,ie
       probe_point=probe_enabled .and. all(probe_node(2:4)==[i,j,k])
-      if(probe_point) then
-        probe_species_ratio=1.0_real64
-        probe_scale=0.0_real64
-        probe_thermal_ratio=1.0_real64
-      endif
+      ! Optimized conditional min operations may evaluate before selecting the result.
+      probe_species_ratio=1.0_real64
+      probe_scale=0.0_real64
+      probe_thermal_ratio=1.0_real64
       call air5_full_state_node_face_fluxes(i,j,k,dims,ntypes,high_left,high_right, &
         low_left,low_right)
       if(consistent_species) call air5_consistent_convective_faces(i,j,k,phase, &
@@ -1467,9 +1578,10 @@ contains
   subroutine air5_chemistry_half_step(duration,half_index)
     use chemistry_compensation, only: air5_compensated,air5_carry
     use mpi
-    use commvar, only: is,ie,js,je,ks,ke,nstep,feqchkpt
+    use commvar, only: is,ie,js,je,ks,ke,nstep,feqchkpt,im,jm,km
     use commarray, only: q
-    use parallel, only: lio
+    use parallel, only: lio,mpiup,mpileft
+    use chemistry_hbl_boundary, only: air5_dynamic_top
     real(real64), intent(in) :: duration
     integer, intent(in) :: half_index
     real(real64), parameter :: rtol=1.0e-9_real64
@@ -1482,6 +1594,7 @@ contains
     real(real64) :: local_maximums(2),global_maximums(2)
     integer :: i,j,k,status,global_status,ierr,source_mode
     integer :: accepted,rejected,rhs_evaluations,jacobian_evaluations
+    integer :: jlast,ifirst,ilast
     integer :: local_counts(4),global_counts(4),failed_index(3)
 
     if(duration<=0.0_real64) error stop 'air5 chemistry half-step requires positive duration'
@@ -1495,9 +1608,18 @@ contains
     local_maximums=-huge(1.0_real64)
     local_counts=0
 
+    jlast=je
+    if(air5_dynamic_top().and.mpiup==MPI_PROC_NULL) jlast=jm
     do k=ks,ke
-      do j=js,je
-        do i=is,ie
+      do j=js,jlast
+        ifirst=is
+        ilast=ie
+        if(j>je) then
+          ifirst=0
+          if(mpileft==MPI_PROC_NULL) ifirst=1
+          ilast=im
+        endif
+        do i=ifirst,ilast
           density=q(i,j,k,air5_idx_density)
           state=q(i,j,k,air5_idx_species_first:air5_idx_ev)
           atol(1:air5_num_species)=atol_factor*density

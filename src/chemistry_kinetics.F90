@@ -21,6 +21,7 @@ module chemistry_source
   integer, parameter, public :: air5_source_mode_coupled = 0
   integer, parameter, public :: air5_source_mode_chemical = 1
   integer, parameter, public :: air5_source_mode_vt = 2
+  integer, parameter, public :: air5_source_mode_frozen = 3
 
   public :: air5_instantaneous_source
   public :: air5_instantaneous_source_jacobian
@@ -75,7 +76,7 @@ contains
     if (present(reaction_progress)) reaction_progress = 0.0_real64
     active_mode = air5_source_mode_coupled
     if (present(source_mode)) active_mode = source_mode
-    if (active_mode < air5_source_mode_coupled .or. active_mode > air5_source_mode_vt) then
+    if (active_mode < air5_source_mode_coupled .or. active_mode > air5_source_mode_frozen) then
       status = chemistry_status_invalid_source_mode
       return
     end if
@@ -104,6 +105,7 @@ contains
       status = chemistry_status_out_of_domain
       return
     end if
+    if (active_mode == air5_source_mode_frozen) return
     call air5_temperature_derivatives(state(1:air5_num_species), temperature, &
       dt_dz, dt_dev, status)
     if (status /= chemistry_status_ok) return
@@ -589,7 +591,7 @@ module chemistry_ros2
     air5_validate_physical_species_state, air5_pressure_is_in_domain
   use chemistry_thermo, only: air5_temperature_from_q5, air5_tv_from_ev, air5_pressure
   use chemistry_source, only: air5_instantaneous_source, &
-    air5_instantaneous_source_jacobian, air5_source_mode_coupled
+    air5_instantaneous_source_jacobian, air5_source_mode_coupled, air5_source_mode_frozen
   use chemistry_linear6, only: air5_lu_factor_6, air5_lu_solve_6
   implicit none
   private
@@ -646,6 +648,10 @@ contains
     end if
     if (step <= 0.0_real64) then
       status = chemistry_status_invalid_timestep
+      return
+    end if
+    if (active_mode == air5_source_mode_frozen) then
+      call air5_validate_ros2_candidate(rho,momentum,q5,state,status)
       return
     end if
     call air5_instantaneous_source_jacobian(rho,momentum,q5,state,source, &
@@ -772,6 +778,12 @@ contains
     end if
     call air5_validate_ros2_candidate(rho,momentum,q5,state,status)
     if (status /= chemistry_status_ok) return
+
+    ! A zero RHS through compensated additions can still consume saved carry.
+    if (active_mode == air5_source_mode_frozen) then
+      suggested_step = duration
+      return
+    end if
 
     current = state
     elapsed = 0.0_real64

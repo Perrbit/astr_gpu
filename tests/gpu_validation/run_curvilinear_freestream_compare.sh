@@ -45,7 +45,7 @@ for mode in cpu gpu; do
     --amplitude "$AMPLITUDE"
   python3 "$ROOT_DIR/tests/gpu_validation/generate_uniform_flow_field.py" \
     --output "$OUT_DIR/$mode/datin/flowini3d.h5" \
-    --grid "$GRID"
+    --grid "$GRID" --u1 "${U1:-0.7}" --u2 "${U2:--0.2}" --u3 "${U3:-0.1}"
 done
 
 (
@@ -75,11 +75,13 @@ python3 "$ROOT_DIR/tests/gpu_validation/compare_flowfield_h5.py" \
 python3 "$ROOT_DIR/tests/gpu_validation/check_uniform_flowfield.py" \
   --input "$OUT_DIR/cpu/$CPU_SNAPSHOT" \
   --report "$OUT_DIR/cpu_freestream_drift.txt" \
+  --u1 "${U1:-0.7}" --u2 "${U2:--0.2}" --u3 "${U3:-0.1}" \
   --atol "$ATOL" \
   --rtol "$RTOL"
 
 python3 "$ROOT_DIR/tests/gpu_validation/check_uniform_flowfield.py" \
   --input "$OUT_DIR/gpu" \
   --report "$OUT_DIR/gpu_freestream_drift.txt" \
+  --u1 "${U1:-0.7}" --u2 "${U2:--0.2}" --u3 "${U3:-0.1}" \
   --atol "$ATOL" \
   --rtol "$RTOL"

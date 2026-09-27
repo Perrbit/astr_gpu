@@ -5,6 +5,18 @@ import numpy as np
 import pytest
 
 from check_air5_mach4_error_replay import COMPONENTS, difference, scalar, check_window_contract
+from run_air5_sbli_domain_replay import checked_topology
+
+
+def test_replay_topology_and_halo_extent():
+    assert checked_topology(None, 2, (8, 512, 64)) == '2,1,1'
+    assert checked_topology('1,2,1', 2, (8, 512, 64)) == '1,2,1'
+    assert checked_topology('1,1,2', 2, (16, 512, 64)) == '1,1,2'
+    for topology in ('1,1,1', '0,2,1', '2,1', '2,1,1,1'):
+        with pytest.raises(ValueError):
+            checked_topology(topology, 2, (8, 512, 64))
+    with pytest.raises(ValueError, match='hm=5'):
+        checked_topology('1,1,2', 2, (8, 512, 64))
 
 
 def test_component_names_match_fixed_mechanism():

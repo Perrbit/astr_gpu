@@ -9,6 +9,7 @@ set(ASTR_SOURCES
   commarray.F90
   comsolver.F90
   commcal.F90
+  cfl_spectrum.F90
   commfunc.F90
   commtype.F90
   commvar.F90
@@ -78,6 +79,7 @@ if(ASTR_WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/sponge_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/case_capability_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/statistic_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/cfl_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/gradcal_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/shock_sensor_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/solver_gpu.cuf
@@ -91,6 +93,7 @@ if(ASTR_WITH_AIR5_CHEMISTRY)
     chemistry_core.F90
     chemistry_properties.F90
     chemistry_kinetics.F90
+    chemistry_characteristic.F90
     chemistry_boundary_state.F90
     chemistry_boundary.F90
     chemistry_runtime.F90
@@ -114,6 +117,20 @@ endif()
 add_executable(astr ${ASTR_SOURCES} ${ASTR_GPU_SOURCES})
 
 if(ASTR_WITH_AIR5_CHEMISTRY)
+  add_executable(air5_frozen_source_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90 chemistry_core.F90 chemistry_properties.F90
+    chemistry_kinetics.F90
+    ../tests/gpu_validation/air5_frozen_source_probe.F90)
+  if(ASTR_WITH_CUDA)
+    target_sources(air5_frozen_source_probe PRIVATE
+      ../src_gpu/gpu_check.cuf ../src_gpu/chemistry_core_gpu.cuf
+      ../src_gpu/chemistry_relaxation_gpu.cuf ../src_gpu/chemistry_kinetics_gpu.cuf)
+  endif()
+  set_target_properties(air5_frozen_source_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/frozen_source_mod")
+  target_include_directories(air5_frozen_source_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/frozen_source_mod")
+  target_link_libraries(air5_frozen_source_probe PRIVATE MPI::MPI_Fortran)
   add_executable(chemistry_compensation_lifecycle_probe EXCLUDE_FROM_ALL
     chemistry_compensation.F90
     ../tests/gpu_validation/chemistry_compensation_lifecycle_probe.F90)
@@ -133,6 +150,14 @@ if(ASTR_WITH_AIR5_CHEMISTRY)
 endif()
 
 if(ASTR_WITH_AIR5_CHEMISTRY)
+  add_executable(air5_characteristic_thermo_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90 chemistry_core.F90 chemistry_properties.F90
+    chemistry_characteristic.F90
+    ../tests/gpu_validation/air5_characteristic_thermo_probe.F90)
+  set_target_properties(air5_characteristic_thermo_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/characteristic_thermo_mod")
+  target_include_directories(air5_characteristic_thermo_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/characteristic_thermo_mod")
   add_executable(air5_pressure_outlet_probe EXCLUDE_FROM_ALL
     chemistry_air5_data.F90 chemistry_core.F90 chemistry_properties.F90
     chemistry_boundary_state.F90
@@ -382,6 +407,8 @@ if (ASTR_WITH_CUDA AND (Fortran_COMPILER_NAME MATCHES "PGI" OR Fortran_COMPILER_
     # Device callees must respect the launcher's register cap for RDC linking.
     set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_core_gpu.cuf
       PROPERTIES COMPILE_OPTIONS "-gpu=maxregcount:${ASTR_AIR5_MAXREGCOUNT}")
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/chemistry_characteristic.F90
+      PROPERTIES COMPILE_OPTIONS "-gpu=maxregcount:${ASTR_AIR5_MAXREGCOUNT}")
   endif()
 endif()
                     
@@ -446,3 +473,10 @@ set_target_properties(rectilinear_metric_halo_probe PROPERTIES
   Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/metric_halo_probe_modules")
 target_include_directories(rectilinear_metric_halo_probe PRIVATE
   "${CMAKE_CURRENT_BINARY_DIR}/metric_halo_probe_modules")
+
+add_executable(cfl_spectrum_probe EXCLUDE_FROM_ALL
+  cfl_spectrum.F90 ../tests/gpu_validation/cfl_spectrum_probe.F90)
+set_target_properties(cfl_spectrum_probe PROPERTIES
+  Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/cfl_probe_modules")
+target_include_directories(cfl_spectrum_probe PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/cfl_probe_modules")

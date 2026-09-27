@@ -1,5 +1,7 @@
 {
-  "status": "lifecycle-and-L1-passed-L2-pending",
+  "status": "L2-completed-L3-skipped-long-checkpoint-restart-NP1-x-y-passed",
+  "restart_topology_evidence": "tests/gpu_validation/out/air5_compensated_long_restart_20260926",
+  "remaining_topology_scope": "z-slab and combined decomposition require a separate spanwise-expanded grid; not tested",
   "scope": "local numerical stability and same-time comparisons, not SBLI physical acceptance",
   "auto_launch": false,
   "baseline": "tests/gpu_validation/out/air5_layered_multistep_20260924/gpu_dt2/gpu",
@@ -23,6 +25,12 @@
   },
   "lifecycle_evidence": "tests/gpu_validation/out/air5_compensated_flow_canonical_20260926",
   "L1_evidence": "tests/gpu_validation/out/air5_compensated_L1_20260926",
+  "L2_evidence": "tests/gpu_validation/out/air5_compensated_L2_20260926",
+  "L2_service": "astr-air5-compensated-l2-dt1-20260926.service",
+  "L2_progress": {
+    "gpu_dt2": "completed 1000 updates; 40 first/last rank-stage snapshots passed; max sumY error 8.881784197001252e-16; max recorded CFL 0.2870254",
+    "gpu_dt1": "completed 2000 updates; 40 first/last rank-stage snapshots passed; max sumY error 7.771561172376096e-16; same-time diagnostic completed"
+  },
   "L1_progress": {
     "gpu_dt2": "completed, first/last stage gates passed",
     "gpu_dt1": "completed beyond original step1266 failure, first/last stage gates passed",
@@ -59,6 +67,7 @@
     },
     {
       "name": "L3_one_flow_through_increment",
+      "status": "skipped-by-user-not-passed",
       "target_time_s": 1.218e-5,
       "checkpoint_interval": 1000,
       "runs": [

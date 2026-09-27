@@ -7,14 +7,14 @@ program chemistry_source_gpu_probe
   use chemistry_thermo, only: air5_ev_from_tv, air5_q5_from_state, &
     air5_species_gas_constant, air5_species_cv_tr
   use chemistry_source, only: air5_instantaneous_source_jacobian, &
-    air5_source_mode_coupled, air5_source_mode_chemical, air5_source_mode_vt
+    air5_source_mode_coupled, air5_source_mode_chemical, air5_source_mode_vt, air5_source_mode_frozen
   use chemistry_source_gpu, only: launch_air5_source_batch_gpu
   implicit none
 
   integer, parameter :: base_cases = 6, valid_cases = 8, case_count = 14
-  integer, parameter :: mode_count = 3
+  integer, parameter :: mode_count = 4
   integer, parameter :: modes(mode_count) = [air5_source_mode_coupled, &
-    air5_source_mode_chemical, air5_source_mode_vt]
+    air5_source_mode_chemical, air5_source_mode_vt, air5_source_mode_frozen]
   real(real64) :: rho(case_count), momentum(3,case_count), q5(case_count)
   real(real64) :: q5_after(case_count), state(6,case_count)
   real(real64) :: source_ref(6,case_count), source_gpu(6,case_count)

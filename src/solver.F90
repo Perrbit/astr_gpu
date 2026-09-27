@@ -288,7 +288,7 @@ module solver
                           recon_schem,limmbou,lchardecomp,lihomo,lcomb
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_flow_solver, only: air5_convection_rhs,air5_diffusion_rhs, &
-      air5_limit_full_state_convection
+      air5_limit_full_state_convection,air5_characteristic_top_rhs
     use chemistry_flow_runtime, only: air5_shock_capturing_enabled
 #endif
     use commcal,   only : ShockSolid,ducrossensor,shock_sensor_validation_enabled
@@ -386,6 +386,9 @@ module solver
     endif
     if(nscbc_farfield_viscous_source_enabled())                       &
       call apply_nscbc_farfield_y_upper_viscous_source()
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(lcomb) call air5_characteristic_top_rhs()
+#endif
     call write_rhs_validation_snapshot('full')
     !
     if(trim(flowtype)=='channel') then 

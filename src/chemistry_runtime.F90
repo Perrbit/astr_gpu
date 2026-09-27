@@ -6,7 +6,7 @@ module chemistry_flow_runtime
   use chemistry_flow_state, only: air5_primitive_to_conservative, &
     air5_conservative_to_primitive,configure_air5_species_cache
   use chemistry_source, only: air5_source_mode_coupled, &
-    air5_source_mode_chemical,air5_source_mode_vt
+    air5_source_mode_chemical,air5_source_mode_vt,air5_source_mode_frozen
   implicit none
   private
 
@@ -99,6 +99,8 @@ contains
         choice=air5_source_mode_chemical
       case('vt')
         choice=air5_source_mode_vt
+      case('frozen')
+        choice=air5_source_mode_frozen
       end select
     endif
     call MPI_Allreduce(choice,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
@@ -109,12 +111,14 @@ contains
     if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,status)
     if(lowest<0 .or. lowest/=highest) then
       if(rank==0) write(*,'(A)') &
-        'Invalid or inconsistent ASTR_AIR5_SOURCE_MODE: expected coupled, chemical, or vt'
+        'Invalid or inconsistent ASTR_AIR5_SOURCE_MODE: expected coupled, chemical, vt, or frozen'
       call MPI_Abort(MPI_COMM_WORLD,1,ierr)
     endif
     active_source_mode=choice
     source_mode_configured=.true.
     if(rank==0) write(*,'(A,A)') 'ASTR_AIR5_SOURCE_MODE=',trim(adjustl(value))
+    if(rank==0.and.choice==air5_source_mode_frozen) &
+      write(*,'(A)') 'AIR5 frozen diagnostic: chemistry and V-T sources disabled'
     call configure_air5_convection_limiter()
   end subroutine configure_air5_source_mode
 

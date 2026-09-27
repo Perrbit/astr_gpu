@@ -164,7 +164,7 @@ module chemistry_source_gpu
   use chemistry_model, only: chemistry_status_ok, chemistry_status_out_of_domain, &
     chemistry_status_nonfinite, chemistry_status_invalid_source_mode
   use chemistry_source, only: air5_source_mode_coupled, &
-    air5_source_mode_chemical, air5_source_mode_vt
+    air5_source_mode_chemical, air5_source_mode_vt, air5_source_mode_frozen
   use chemistry_model_gpu, only: air5_finite_gpu, &
     air5_validate_partial_densities_gpu, air5_pressure_is_in_domain_gpu
   use chemistry_thermo_gpu, only: air5_temperature_from_q5_gpu, &
@@ -273,7 +273,7 @@ contains
     jacobian = 0.0_real64
     reaction_progress = 0.0_real64
     if (source_mode < air5_source_mode_coupled .or. &
-        source_mode > air5_source_mode_vt) then
+        source_mode > air5_source_mode_frozen) then
       status = chemistry_status_invalid_source_mode
       return
     end if
@@ -304,6 +304,7 @@ contains
       status = chemistry_status_out_of_domain
       return
     end if
+    if (source_mode == air5_source_mode_frozen) return
     call air5_temperature_derivatives_gpu(state(1:air5_num_species),temperature, &
       dt_dz,dt_dev,status)
     if (status /= chemistry_status_ok) return
@@ -526,6 +527,7 @@ module chemistry_ros2_gpu
     chemistry_status_invalid_tolerance, chemistry_status_step_limit
   use chemistry_ros2, only: air5_ros2_gamma, air5_ros2_a21, air5_ros2_c21, &
     air5_ros2_m1, air5_ros2_m2, air5_ros2_e1, air5_ros2_e2
+  use chemistry_source, only: air5_source_mode_frozen
   use chemistry_model_gpu, only: air5_finite_gpu, &
     air5_validate_physical_species_state_gpu, air5_pressure_is_in_domain_gpu
   use chemistry_thermo_gpu, only: air5_temperature_from_q5_gpu, &
@@ -604,6 +606,10 @@ contains
     end if
     if (.not.air5_finite_gpu(step) .or. step <= 0.0_real64) then
       status = chemistry_status_invalid_timestep
+      return
+    end if
+    if (source_mode == air5_source_mode_frozen) then
+      call air5_validate_ros2_candidate_gpu(rho,momentum,q5,state,status)
       return
     end if
     call air5_instantaneous_source_jacobian_gpu(rho,momentum,q5,state,source, &
@@ -756,6 +762,11 @@ contains
     end if
     call air5_validate_ros2_candidate_gpu(rho,momentum,q5,state,status)
     if (status /= chemistry_status_ok) return
+
+    if (source_mode == air5_source_mode_frozen) then
+      suggested_step = duration
+      return
+    end if
 
     current = state
     elapsed = 0.0_real64

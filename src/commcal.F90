@@ -24,65 +24,166 @@ module commcal
   !| -------------                                                     |
   !| 21-03-2021: Created by J. Fang @ STFC Daresbury Laboratory        |
   !+-------------------------------------------------------------------+
-  subroutine cflcal(deltat)
+  subroutine cflcal(deltat,device_collector)
     !
-    use commvar,  only: im,jm,km,nondimen
-    use commarray,only: vel,rho,prs,tmp,dxi,jacob,spc
+    use iso_fortran_env, only: int64
+    use ieee_arithmetic, only: ieee_is_finite
+    use mpi
+    use commvar, only: im,jm,km,ia,ja,lcomb,time,nstep
+    use commarray,only: vel,tmp,dxi,spc,q
     use fludyna,  only: sos
-    use parallel, only: pmax
+    use parallel, only: ig0,jg0,kg0
     use thermchem,only: aceval
+    use cfl_spectrum, only: spectral_rates
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_thermo, only: air5_temperature_from_q5, &
+      air5_species_gas_constant,air5_species_cv_tr
+#endif
     !
     ! arguments
     real(8),intent(in) :: deltat
+    abstract interface
+      subroutine cfl_provider(values,keys,yvalues,by_plane,ny)
+        use iso_fortran_env, only: int64
+        integer,intent(in) :: ny
+        real(8),intent(out) :: values(4),yvalues(4,0:ny-1)
+        integer(int64),intent(out) :: keys(4)
+        logical,intent(in) :: by_plane
+      end subroutine cfl_provider
+    end interface
+    procedure(cfl_provider),optional :: device_collector
     !
     ! local data
-    real(8) :: cfl,ubar,vbar,wbar,css,csi,csj,csk
-    integer :: i,j,k
-    real(8) :: deltai,deltaj,deltak
-    !
-    deltai=0.d0
-    deltaj=0.d0
-    deltak=0.d0
-    do k=0,km
-    do j=0,jm
-    do i=0,im
-      ubar=dxi(i,j,k,1,1)*vel(i,j,k,1)+dxi(i,j,k,1,2)*vel(i,j,k,2)+    &
-           dxi(i,j,k,1,3)*vel(i,j,k,3)
-      vbar=dxi(i,j,k,2,1)*vel(i,j,k,1)+dxi(i,j,k,2,2)*vel(i,j,k,2)+    &
-           dxi(i,j,k,2,3)*vel(i,j,k,3)
-      wbar=dxi(i,j,k,3,1)*vel(i,j,k,1)+dxi(i,j,k,3,2)*vel(i,j,k,2)+    &
-           dxi(i,j,k,3,3)*vel(i,j,k,3)
-      !
-#ifdef COMB
-      call aceval(tmp(i,j,k),spc(i,j,k,:),css)
-#else
-      css=sos(tmp(i,j,k))
+    real(8) :: cfl,css,temp,rden,cvden,velocity(3),metric(3,3),rates(4),local(4),global(4)
+    real(8),allocatable :: ylocal(:,:),yglobal(:,:)
+    integer :: i,j,k,s,axis,status,ierr,invalid,invalid_global,opts(2),omin(2),omax(2),env_status
+    integer(int64) :: key,keys(4),global_keys(4),gi,gj,gk
+    logical :: valid,enabled,profile
+    character(len=32) :: option
+
+    option='on'
+    call get_environment_variable('ASTR_CFL_DIAGNOSTICS',option,status=env_status)
+    if(env_status==1) option='on'
+    enabled=trim(option)/='off'
+    invalid=0
+    if((env_status/=0.and.env_status/=1).or. &
+      (trim(option)/='on'.and.trim(option)/='off')) invalid=1
+    option='0'
+    call get_environment_variable('ASTR_CFL_PROFILE_Y',option,status=env_status)
+    if(env_status==1) option='0'
+    profile=trim(option)=='1'
+    if((env_status/=0.and.env_status/=1).or. &
+      (trim(option)/='0'.and.trim(option)/='1')) invalid=1
+    opts=(/merge(1,0,enabled),merge(1,0,profile)/)
+    call MPI_Allreduce(opts,omin,2,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,90,status)
+    call MPI_Allreduce(opts,omax,2,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,90,status)
+    if(any(omin/=omax)) invalid=1
+    if(.not.ieee_is_finite(deltat)) invalid=1
+    if(deltat<=0.d0) invalid=1
+    call MPI_Allreduce(invalid,invalid_global,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS.or.invalid_global/=0) then
+      if(mpirank==0) write(*,*) 'Invalid or inconsistent CFL options/time step'
+      call MPI_Abort(MPI_COMM_WORLD,90,status)
+    endif
+    if(.not.enabled) return
+    allocate(ylocal(4,0:merge(ja,0,profile)),yglobal(4,0:merge(ja,0,profile)))
+    ylocal=0.d0
+    local=0.d0
+    keys=huge(0_int64)
+    if(present(device_collector)) then
+      call device_collector(local,keys,ylocal,profile,size(ylocal,2))
+    else
+      do k=0,km
+      do j=0,jm
+      do i=0,im
+        status=0
+        velocity=vel(i,j,k,:)
+#ifdef ASTR_AIR5_CHEMISTRY
+        if(lcomb) then
+          call air5_temperature_from_q5(q(i,j,k,1),q(i,j,k,2:4), &
+            q(i,j,k,6:10),q(i,j,k,11),q(i,j,k,5),temp,status)
+          css=-1.d0
+          if(status==0) then
+            velocity=q(i,j,k,2:4)/q(i,j,k,1)
+            rden=0.d0
+            cvden=0.d0
+            do s=1,5
+              rden=rden+q(i,j,k,5+s)*air5_species_gas_constant(s)
+              cvden=cvden+q(i,j,k,5+s)*air5_species_cv_tr(s)
+            enddo
+            css=sqrt((1.d0+rden/cvden)*rden*temp/q(i,j,k,1))
+          endif
+        else
 #endif
-      csi=css*sqrt(dxi(i,j,k,1,1)**2+dxi(i,j,k,1,2)**2+dxi(i,j,k,1,3)**2)
-      csj=css*sqrt(dxi(i,j,k,2,1)**2+dxi(i,j,k,2,2)**2+dxi(i,j,k,2,3)**2)
-      csk=css*sqrt(dxi(i,j,k,3,1)**2+dxi(i,j,k,3,2)**2+dxi(i,j,k,3,3)**2)
-      !
-      deltai=max(deltai,ubar,ubar-csi,ubar+csi)
-      deltaj=max(deltaj,vbar,vbar-csj,vbar+csj)
-      deltak=max(deltak,wbar,wbar-csk,wbar+csk)
-      !
-    enddo
-    enddo
-    enddo
-    !
-    deltai=pmax(deltai)
-    deltaj=pmax(deltaj)
-    deltak=pmax(deltak)
-    !
-    cfl=deltat*(deltai+deltaj+deltak)
+#ifdef COMB
+          call aceval(tmp(i,j,k),spc(i,j,k,:),css)
+#else
+          css=sos(tmp(i,j,k))
+#endif
+#ifdef ASTR_AIR5_CHEMISTRY
+        endif
+#endif
+        metric=dxi(i,j,k,:,:)
+        call spectral_rates(velocity,css,metric,rates,valid)
+        if(.not.valid.or.status/=0) rates=huge(1.d0)
+        key=(int(k+kg0,int64)*(ja+1)+j+jg0)*(ia+1)+i+ig0
+        do axis=1,4
+          if(rates(axis)>local(axis).or.(rates(axis)==local(axis).and.key<keys(axis))) then
+            local(axis)=rates(axis)
+            keys(axis)=key
+          endif
+        enddo
+        if(profile) ylocal(:,jg0+j)=max(ylocal(:,jg0+j),rates)
+      enddo
+      enddo
+      enddo
+    endif
+    call MPI_Allreduce(local,global,4,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,90,status)
+    if(any(global==huge(1.d0)).or..not.all(ieee_is_finite(global))) then
+      if(mpirank==0) write(*,*) 'Invalid state or metric in complete-step CFL diagnostic'
+      call MPI_Abort(MPI_COMM_WORLD,90,status)
+    endif
+    where(local/=global) keys=huge(0_int64)
+    call MPI_Allreduce(keys,global_keys,4,MPI_INTEGER8,MPI_MIN,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,90,status)
+    cfl=deltat*sum(global(1:3))
+    if(.not.ieee_is_finite(cfl)) then
+      if(mpirank==0) write(*,*) 'CFL diagnostic overflow'
+      call MPI_Abort(MPI_COMM_WORLD,90,status)
+    endif
     !
     if(mpirank==0) then
       write(*,"(A38)")'  =========== CFL Condition==========='
       write(*,"(A24,1x,E13.5)")'     current time step: ',deltat
       write(*,"(A24,1x,F13.7)")'           current CFL: ',cfl
-      write(*,"(A24,1x,E13.5)")'   time step for CFL=1: ',deltat/cfl
+      if(cfl>0.d0) write(*,"(A24,1x,E13.5)")'   time step for CFL=1: ',deltat/cfl
+      write(*,'(A,I0,A,ES24.16E3,A,ES24.16E3)') &
+        'ASTR_CFL complete_step=',nstep,' state_time=',time+deltat,' dt=',deltat
+      write(*,'(A,5(1X,ES24.16E3))') 'ASTR_CFL directional/local_sum/upper_bound=', &
+        deltat*global,cfl
+      do axis=1,4
+        key=global_keys(axis)
+        gi=mod(key,int(ia+1,int64))
+        gj=mod(key/(ia+1),int(ja+1,int64))
+        gk=key/(int(ia+1,int64)*(ja+1))
+        write(*,'(A,I0,A,3(1X,I0))') 'ASTR_CFL maximum=',axis,' global_ijk=',gi,gj,gk
+      enddo
       write(*,"(A38)")'  ===================================='
     end if
+    if(profile) then
+      call MPI_Allreduce(ylocal,yglobal,4*(ja+1),MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,90,status)
+      if(mpirank==0) then
+        do j=0,ja
+          write(*,'(A,I0,A,I0,4(1X,ES24.16E3))') 'ASTR_CFL_Y step=',nstep, &
+            ' j=',j,deltat*yglobal(:,j)
+        enddo
+      endif
+    endif
+    deallocate(ylocal,yglobal)
     !
   end subroutine cflcal
   !+-------------------------------------------------------------------+

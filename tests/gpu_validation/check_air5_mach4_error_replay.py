@@ -103,9 +103,12 @@ def check_window_contract(coarse, fine):
     for key, default in (('compensation', 'off'), ('compensation_restart', 'restore')):
         if coarse.get(key, default) != fine.get(key, default):
             raise ValueError(f'incompatible matched window: {key}')
-    if (coarse['topology'] != '2,1,1' or coarse['updates'] < 1 or
+    dims = tuple(int(v) for v in coarse['topology'].split(','))
+    if len(dims) != 3 or min(dims) < 1 or np.prod(dims) not in (1, 2, 4):
+        raise ValueError('unsupported matched-window topology')
+    if (coarse['updates'] < 1 or
         fine['updates'] != 2*coarse['updates'] or coarse['dt'] != 2*fine['dt']):
-        raise ValueError('expected NP2 dt/dt2 matched update counts')
+        raise ValueError('expected dt/dt2 matched update counts')
     times = [c['start_time']+c['dt']*c['updates'] for c in (coarse, fine)]
     if not np.isfinite(times).all() or not np.isclose(*times, rtol=0, atol=1e-18):
         raise ValueError('endpoint times differ')
@@ -130,7 +133,7 @@ def matched_window(root, names=('gpu_dt2', 'gpu_dt1'), report_path=None):
         if not cfl or not np.isfinite(cfl).all() or not 0 <= max(cfl) < 1:
             raise ValueError('CFL gate failed')
         report['states'][name]['max_cfl'] = max(cfl)
-    for rank in range(2):
+    for rank in range(int(np.prod(tuple(map(int, contracts[0]['topology'].split(',')))))):
         ends, starts = [], []
         for name, c in zip(names, contracts):
             case = root/name/'gpu'
@@ -145,10 +148,12 @@ def matched_window(root, names=('gpu_dt2', 'gpu_dt1'), report_path=None):
             max_velocity_difference_m_s=velocity.max(axis=(0, 1, 2)).tolist(),
             max_u_difference_over_reference_velocity=float(velocity[..., 0].max()/ua),
             max_u_local_ijk=list(map(int, np.unravel_index(np.argmax(velocity[..., 0]), velocity.shape[:3]))),
-            primitive_max_abs={}, final_coefficients={})
+            primitive_max_abs={}, primitive_max_local_ijk={}, final_coefficients={})
         for label, aa, bb in zip(('temperature_K', 'pressure_Pa'), primitive_metrics(a, thermo)[2:4],
                                  primitive_metrics(b, thermo)[2:4]):
             entry['primitive_max_abs'][label] = float(abs(bb-aa).max())
+            entry['primitive_max_local_ijk'][label] = list(map(int,
+                np.unravel_index(np.argmax(abs(bb-aa)), aa.shape)))
         for name, c in zip(names, contracts):
             step = c['start_step']+c['updates']-1
             entry['final_coefficients'][name] = {channel: min(float(scalar(path(root/name/'gpu',

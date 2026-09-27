@@ -27,6 +27,21 @@ def load_module(name: str, path: Path):
 
 
 class CurvilinearFreestreamToolsTest(unittest.TestCase):
+    def test_zero_amplitude_cli_is_cartesian_control(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'grid.h5'
+            subprocess.run([
+                'python3', str(ROOT / 'tests/gpu_validation/generate_curvilinear_tgv_grid.py'),
+                '--grid', '16,16,16', '--amplitude', '0', '--output', str(output),
+                '--report', str(Path(directory) / 'grid.txt'),
+            ], check=True, capture_output=True)
+            with h5py.File(output) as grid:
+                for name, axis in [('x', 2), ('y', 1), ('z', 0)]:
+                    field = grid[name][()]
+                    np.testing.assert_allclose(np.diff(field, axis=axis), 2*np.pi/16)
+                    for other in set(range(3))-{axis}:
+                        np.testing.assert_array_equal(np.diff(field, axis=other), 0)
+
     def test_axis_alignment_guard_uses_roundoff_scaled_tolerance(self) -> None:
         self.assertIn(
             "axis_aligned_tolerance=sqrt(epsilon(1.d0))",

@@ -1,5 +1,51 @@
 # GPU Validation
 
+## AIR5 Characteristic Top Acoustic Gate
+
+`ASTR_AIR5_SOURCE_MODE=frozen` explicitly disables chemistry and V-T sources
+for validation. Default `coupled`, `chemical`, and `vt` semantics are unchanged.
+Frozen ROS-2 calls validate inputs but preserve state and compensation bits,
+without consuming saved carry through zero-increment additions. Outer boundary,
+halo and primitive preparation remain active. This is not reacting validation.
+
+Root-CMake target `air5_frozen_source_probe` checks zero sources/Jacobians,
+nonzero-carry preservation, nonequilibrium temperatures and unchanged default
+coupled selection; CUDA builds exercise the device path too.
+`run_air5_characteristic_uniform.py --source-mode frozen` runs the CPU uniform gate.
+`run_air5_characteristic_acoustic.py` prepares/runs the approved pulse experiment;
+`--prepare-only` and `--run-prepared` separate inspection from execution.
+It rejects reused run directories and changed prepared executables.
+Its single-run reflection result is not complete acoustic acceptance: the
+extended-domain, relaxation sensitivity and refinement gates remain separate.
+`check_air5_characteristic_acoustic_matrix.py` requires `--baseline`,
+`--half-tau`, `--double-tau`, `--extended`, `--coarse`, `--half-dt` and
+`--prescribed` case directories. It checks configuration agreement and recomputes
+the gates from raw completed results before applying pairwise thresholds.
+See `documents/ASTR_AIR5_CHARACTERISTIC_ACOUSTIC_GATE.md` for fixed thresholds.
+
+## Complete-Step CFL Diagnostics
+
+`cfl_spectrum_probe` is a root-CMake CPU/GPU target for reversed-velocity,
+nonorthogonal-metric and inactive-direction arithmetic checks.
+`ASTR_CFL_DIAGNOSTICS=on|off` controls reporting only;
+`ASTR_CFL_PROFILE_Y=1` adds global computational-j plane maxima. Options must
+agree across ranks. AIR5 uses the local frozen two-temperature sound speed.
+`current CFL` is the sum of directional maxima, not proof of viscous or
+chemical stability. `ASTR_CFL` records also include the pointwise-sum maximum,
+global locations and complete-step physical time.
+
+`check_air5_cfl.py CASE --output REPORT` checks a completed uniform-Cartesian
+AIR5 replay against saved second-half chemistry states or the next checkpoint.
+It fails when a matched state is unavailable. `check_cfl_freestream_matrix.py`
+checks the fixed 16-cubed regression matrix and its flow gates, not arbitrary
+cases. `run_curvilinear_freestream_compare.sh` accepts `U1/U2/U3` and
+`AMPLITUDE=0` for reversed-flow Cartesian controls; defaults are unchanged.
+
+Evidence and remaining gates are recorded in
+`documents/ASTR_CFL_AND_AIR5_TOP_REPAIR_PLAN.md`. The first pre-chemistry incident
+restart snapshot is not a matching CPU/GPU boundary phase; do not use it in
+place of a complete-step state or silently relax its comparison tolerance.
+
 ## AIR5 Stage Mass-Closure Diagnostics
 
 `check_air5_mass_closure_stages.py` reads saved physical-node q snapshots; it
@@ -5836,3 +5882,23 @@ GPU face carry transport currently stages only physical face data on the host
 using a private MPI communicator. It is a correctness candidate, not an accepted
 communication optimization. Long-window admission remains separate from these
 short lifecycle checks; see `air5_long_window_plan.json` and the project status.
+
+### Mach4 Compensated Incident Startup
+
+`prepare_air5_mach4_incident_restart.py` copies an existing compensated Mach4
+HBL checkpoint without changing its high state or carry, verifies the saved top
+edge against the inlet profile, and attaches the approved 25-degree frozen jump.
+It refuses mismatched states or an existing destination. The precursor need not
+be steady for this startup test, but the result must not be called developed SBLI.
+
+Use `run_air5_sbli_domain_replay.py --compensation on
+--compensation-restart restore` with the prepared seed. The driver copies the
+incident metadata for `check_air5_sbli_startup.py`. Check CPU/GPU stage states,
+sensor masks, top/wall invariants, the stricter 128-epsilon sequential composition
+gate, and memcheck before extending the incident window. Preserve the no-shock
+precursor separately. The older Mach6 startup preparer is not interchangeable.
+
+Evidence: `out/air5_mach4_incident_20260926/`. The initial short matrix uses two
+updates at 1 ns. The longer startup pair uses 20 updates at 1 ns and 40 at 0.5 ns,
+both from the same step3000 checkpoint. Neither demonstrates an established
+shock/boundary-layer interaction or physical convergence.
