@@ -1016,10 +1016,14 @@ module readwrite
   !| -------------                                                     |
   !| 07-02-2021  | Created by J. Fang @ Warrington                     |
   !+-------------------------------------------------------------------+
-  subroutine writemon
+  subroutine writemon(completed_time)
     !
-    use commvar, only: nmonitor,imon,nstep,time,pinf,deltat
+    use commvar, only: nmonitor,imon,nstep,time,pinf,deltat,flowtype
     use commarray, only : x,rho,vel,prs,tmp,dvel,dtmp
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_monitor, only: write_air5_flow_monitor
+#endif
+    real(8),intent(in),optional :: completed_time
     !
     ! local data
     integer :: n,i,j,k,ios,ns
@@ -1031,6 +1035,14 @@ module readwrite
     character(len=32) :: c1
     real(8) :: rtime
     !
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(trim(flowtype)=='air5hbl'.or.trim(flowtype)=='air5sbli') then
+      ! AIR5 probes use the completed coupled state on both backends.
+      if(present(completed_time)) call write_air5_flow_monitor(completed_time)
+      return
+    endif
+#endif
+    if(present(completed_time)) return
     if(nmonitor>0) then
       !
       if(firstcall) then

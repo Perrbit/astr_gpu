@@ -478,6 +478,88 @@ _Avoid_: Treating the running job as G4 completion, treating CPU/GPU or restart 
 The next order is OpenSBLI time/grid/external-data closure, then A800 NP=1/2/4 one-rank-per-GPU performance and strong scaling, then measured nonperiodic/SBLI overlap work. The 609x255x9 OpenSBLI thin layer is a physics case, not the sole four-GPU scaling workload. Future AMD/HIP/DCU work should begin with a small backend-neutral facade plus `ISO_C_BINDING` prototype for representative derivative, filter, and halo kernels. The current deliverable is the single-species nonreacting explicit-format GPU solver scope, not every ASTR physics module.
 _Avoid_: Adding more artificial shock slices before OpenSBLI closure, using oversubscribed ranks as scaling evidence, removing explicit synchronization without a separate gate, or claiming CUDA Fortran itself is portable to AMD/DCU
 
+## In Situ Analysis Language
+
+**ASTR in situ sample**:
+A read-only observation of a completed flow advance. For reacting flow it includes the completed transport and chemistry update, rather than a transport-only RK intermediate state.
+_Avoid_: Arbitrary kernel snapshot, equating transport completion with coupled-step completion
+
+**Preset visualization product**:
+A flow image generated during the simulation from a predefined view and analysis recipe, including flow-field views, streamlines, or Q-criterion isosurfaces. Within one time sequence its Q threshold, coloring field, and color range are fixed; it does not require a live desktop connection.
+_Avoid_: Online interaction, treating a rendered image as the underlying quantitative field, silently rescaling each frame
+
+**ASTR visualization recipe**:
+A predefined selection of input fields, extraction operations, views, and display settings used to generate visualization products. It is distinct from the solver's authoritative field definitions, statistical accumulation, and postprocessing cadence.
+_Avoid_: Redefining quantitative statistics in a display recipe, silently adding another output schedule, equating offline scene preparation with live simulation control
+
+**ASTR extracted spatial product**:
+A saved slice, streamline, or isosurface together with its selected attached fields. It supports offline inspection of the extracted object, not arbitrary reanalysis of the unsaved full flow field, and is not a restart checkpoint.
+_Avoid_: Full-field archive, assuming saved geometry permits new thresholds or seed integration
+
+**ASTR statistical development monitor**:
+A comparison of flow statistics over specified time blocks used to assess their ongoing evolution. It does not by itself certify statistical stationarity or distinguish turbulent fluctuations from startup drift.
+_Avoid_: Automatic convergence certificate, labeling every short-window RMS as turbulence
+
+**ASTR statistical support**:
+The selected spatial locations or region over which statistical moments are accumulated, ranging from probes and surfaces to an explicitly requested three-dimensional field. It is distinct from which data are retained in output files.
+_Avoid_: Inferring full-field accumulation from a three-dimensional visualization, equating saved images with the statistical support
+
+**ASTR physical spatial average**:
+A reduction over an explicitly selected line, surface, or volume using its physical length, area, or volume measure. It is distinct from pointwise time averaging and does not by itself establish statistical homogeneity.
+_Avoid_: Equal-node averaging on a stretched mesh presented as a physical-measure average, duplicate contributions from MPI overlap, treating geometric averaging as evidence of homogeneous turbulence
+
+**ASTR spatially aggregated local fluctuation intensity**:
+The square root of the physical-measure average of local temporal variances, with each local fluctuation referenced to its own time mean. It is distinct from averaging pointwise RMS values or taking the temporal RMS of a spatially averaged signal.
+_Avoid_: Mixing mean spatial gradients into local fluctuations, averaging RMS instead of variance, conflating this diagnostic with collective signal variation
+
+**ASTR region-mean signal RMS**:
+The temporal RMS fluctuation of a signal formed by spatially averaging each sampled state over a declared region. Spatial cancellation can reduce it even when local fluctuations remain nonzero.
+_Avoid_: Presenting it as the spatially aggregated local fluctuation intensity, omitting the region or averaging convention
+
+**ASTR statistical time weight**:
+The duration represented by a sample in the new in situ time statistics, expressed in the solver's time convention. Adjacent valid samples share their interval through trapezoidal quadrature. The same time weights apply to ordinary moments and combine with density for Favre moments, rather than being inferred from sample count or wall-clock runtime.
+_Avoid_: Using a single solver timestep for a sparsely sampled interval, reinterpreting legacy equal-sample sums without their original convention
+
+**ASTR statistical continuation**:
+Resumption of the same statistical window using accumulated quantities and time weights consistent with the restored flow state. Starting a new window after a flow restart is a separate explicit operation, not a reconstruction of unsampled history.
+_Avoid_: Silent reset on missing statistics, merging incompatible windows, counting restart wall-clock downtime as sampled flow time
+
+**ASTR paired restart set**:
+A flow checkpoint and its compatible statistical continuation state from the same save generation. It is complete only when all required parts are present and consistent; matching step numbers alone do not establish that identity.
+_Avoid_: Combining independently saved flow and statistics, treating a partial save as a valid continuation point
+
+**ASTR averaging window**:
+A user-selected interval of simulation time contributing to formal mean and fluctuation statistics, distinct from the period recorded by development monitors or visualization. Its bounds are retained through linear interpolation of sampled statistical integrands, without extrapolating beyond valid sample coverage or modifying the flow. Its start does not certify a statistically stationary flow.
+_Avoid_: Automatically including startup monitoring in the mean, restarting the averaging clock on job resumption
+
+**ASTR synchronous postprocessing boundary**:
+A scheduled point where the solver waits for the requested analysis and visualization to finish before advancing the flow again. This describes solver/postprocessing ordering, not the synchronization policy of individual solver kernels.
+_Avoid_: Background analysis queue, interpreting synchronous visualization as a change to numerical kernel synchronization
+
+**ASTR postprocessing cadence**:
+The independently selected simulation-time or completed-step interval that schedules statistical sampling or visualization. Scheduled target times and actual observation times are distinct; a step-based cadence does not imply equal statistical time weights.
+_Avoid_: Counting RK or chemistry substeps as full steps, binding visualization cadence to statistical sampling, relabeling a late observation as an exact target-time state
+
+**ASTR distributed visualization**:
+Coordinated extraction and image generation from rank-local mesh and field partitions, without first gathering the complete flow field onto one rank. Partition interfaces are not physical boundaries, and composing images is distinct from gathering the full field.
+_Avoid_: Independent disconnected rank images presented as one domain, duplicate geometry from overlap data, terminating streamlines at MPI partition interfaces
+
+**ASTR headless rendering**:
+Image generation without a desktop session or display server, using an explicitly selected and verified hardware or software rendering backend. It is distinct from whether flow analysis and geometry extraction run on the GPU.
+_Avoid_: Treating a hidden window as proof of headless operation, inferring GPU execution solely from an EGL request, silently switching rendering backends
+
+**ASTR derived physical field**:
+A diagnostic quantity calculated by ASTR from a declared sampled state and a specified physical definition, including derivative-based quantities such as vorticity and Q. Its state, gradient, coordinates, and units must describe the same observation.
+_Avoid_: Mixing a final state with stale stage derivatives, silently replacing the field with a visualization-tool recomputation
+
+**ASTR visualization Q**:
+The rotation-strain diagnostic Q=(||Omega||_F^2-||S||_F^2)/2, using the full symmetric and antisymmetric parts of the physical velocity gradient, with velocity divergence available separately. In compressible flow it differs from the second principal velocity-gradient invariant by minus one half the squared divergence.
+_Avoid_: Calling both compressible definitions Q without qualification, removing the strain trace silently, treating an isosurface as turbulence validation
+
+**ASTR streamline product**:
+A curve tangent to a specified instantaneous velocity field or an explicitly identified Reynolds/Favre mean velocity field over a recorded averaging window. It is not a particle path through an evolving flow or a time average of streamline geometry.
+_Avoid_: Mixing instantaneous and mean velocity along a curve, implying mean coverage outside the accumulated region, calling streamlines particle trajectories
+
 ## Source Architecture Memory
 
 The canonical source-structure note is `documents/ASTR_SRC_ARCHITECTURE_MEMORY.md`.

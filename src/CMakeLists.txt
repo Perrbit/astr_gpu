@@ -98,12 +98,14 @@ if(ASTR_WITH_AIR5_CHEMISTRY)
     chemistry_boundary.F90
     chemistry_runtime.F90
     chemistry_compensation.F90
+    chemistry_monitor.F90
     chemistry_solver.F90)
 endif()
 
 if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
   list(APPEND ASTR_GPU_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_compensation_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_monitor_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_core_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_flow_state_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_transport_gpu.cuf

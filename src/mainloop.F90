@@ -39,7 +39,7 @@ module mainloop
     use commvar,  only: maxstep,time,deltat,feqchkpt,feqwsequ,feqlist, &
                         nsrpt,flowtype,limmbou,use_gpu
     use readwrite,only: readcont,timerept,nxtchkpt,nxtwsequ,           &
-                        write_validation_rk_snapshot
+                        write_validation_rk_snapshot,writemon
     use commcal,  only: cflcal
 #ifdef _CUDA
     use cfl_gpu, only: collect_cfl_gpu
@@ -113,6 +113,9 @@ module mainloop
       completed_step_dt=deltat
       call time_integration_rk
       call end_complete_step_timing(nstep)
+#ifdef ASTR_AIR5_CHEMISTRY
+      call writemon(time+completed_step_dt)
+#endif
 
       if(.not.use_gpu .and. nstep+1<=maxstep .and.                     &
          mod(nstep+1,feqchkpt)==0) call write_validation_rk_snapshot()

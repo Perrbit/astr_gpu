@@ -2638,82 +2638,112 @@ payload 资格、每项 `cuda_ipc/cuda`、20 份统计量和逐场报告全部�
 
 ### 8.10 ParaView Catalyst 原位后处理
 
-状态：规划，尚未实现。该方向的近期目标是减少生产算例的完整三维场文件，
-不是把现有 CPU-owned HDF5/checkpoint 路径改写为 GPU I/O。Catalyst 必须作为
-默认关闭的可选后端接入。规划选项 `ASTR_WITH_CATALYST=OFF` 时不增加链接依赖，
-启用后只链接 Catalyst API/stub，并在运行时加载 ParaView implementation。该后端
-不得改变无 Catalyst 构建、计算循环常驻状态或 restart 语义。Catalyst 2 使用
-Conduit Blueprint 描述运行中网格和场，并允许 Fortran
-求解器通过稳定 C API 接入；ParaView-Catalyst 负责执行 Python 分析流水线。[^catalyst-api]
+2026-09-28 顶层需求访谈收口：用户确认定量统计与批量可视化并重，首版不要求
+在线交互，须支持预设视角流场图、流线与 Q 准则等值面。
+输出采用图片与选定空间提取数据并存的方案，统计数值单独保存，不常规
+保存完整三维场；checkpoint 继续独立管理。
+首版定量统计覆盖通用均值/RMS/应力、壁面压力/摩擦/热流与分离诊断，
+以及 AIR5 双温/组分统计；完整湍流预算和谱分析暂缓。
+统计默认在指定位置或区域累计，三维平均与二阶统计按需显式开启并检查
+内存预算，不因需要三维图像而默认分配全域统计数组。
+保留逐点时间统计，并可显式开启方向或区域的空间平均，分别按物理
+长度、面积或体积加权；曲线/拉伸网格不默认采用节点等权平均。
+首版同时支持局部脉动强度的空间汇总和区域平均信号的 RMS，独立命名、
+按需开启；前者先平均局部方差再开方，后者先平均瞬时信号再求时间方差。
+Favre 组合的密度权重与归约顺序须在统计规格中明确。
+资源采用每张物理 GPU、每个节点的显式附加内存预算，数值在小算例实测后
+确定；多 rank 共享资源须合计，启动预估超额则拒绝配置，不自动减少字段
+或降低图像要求。动态几何与第三方分配仍需监测，预估通过不保证永不超限。
+统计执行采用 GPU 优先累计、CPU 保留同定义参考的方案；统计采样与出图
+频率独立，不因采样而下载完整流场。统计输出及续接保存按需传输，
+小规模结果整理与写出可由 CPU 承担；已有 GPU 统计尚未覆盖本设计全部范围。
+统计采样与可视化输出分别支持按模拟时间或完整推进步数调度，可独立
+选择模式与间隔；按步数采样仍使用实际时间加权。调度进度随重启恢复，
+时间模式记录实际完整步时刻，不修改求解器步长，也不将旧输入改义。
+新统计支持实际采样时间间隔加权，Favre 统计同时使用密度权重；旧统计
+口径不静默改变。各统计矩统一采用梯形积分，上一份有效采样数据及其时刻
+纳入内存预算和重启续接；该规则不能弥补低频采样漏掉的快速脉动。
+重启默认续接同相位统计，允许显式新开窗口；缺失或不兼容的记录不得
+自动拼接。统计采用独立文件与流场 checkpoint 严格配对，不改变原流场
+文件格式；整组写出成功后才标记可续接，恢复须核对保存批次、步数、
+时间和统计配置。首版统计续接限定同全局网格、同 rank 数和同域分解，
+不要求使用原来的物理 GPU，也不改变原有流场重启能力。
+保存全局位置与分区信息，跨拓扑统计恢复留作后续扩展，不在首版隐式支持。
+具体文件布局与发布/回滚实现仍待细化。
+发展监测与正式平均分开，正式平均使用用户
+指定的模拟时间窗口；端点处对各统计被积量线性插值并裁剪积分，不改变
+流场或时间步，不外推未覆盖区间。启动/结束补采样与缺失采样处理仍待冻结。
+首版可视化允许在输出时刻按需下载所需三维字段，独立记录同步、传输、
+分析及渲染等开销，不称为全 GPU 常驻可视化，也不默认复制全部求解器数组。
+首版采用同步批处理，完成本次后处理后再推进，不引入异步队列或双缓冲，
+也不因此改变求解器内部 kernel 同步策略。
+多 rank 可视化采用分布式处理：各 rank 提供本地网格和所需字段，协同
+提取、渲染及图像合成，不先汇集完整流场。子域接缝、重复节点、空提取
+分区及跨域流线须独立验证，不把 MPI 分区面当作物理终止边界。
+无显示渲染采用 EGL 硬件优先、OSMesa 软件显式可选的方案；计算前验证
+依赖与设备映射，记录实际后端和资源开销，不在运行中静默切换。
+该选择仅涉及渲染，不代表全部提取算子已在 GPU 上执行。
+视角、色标和提取规则采用可编辑的 ParaView/Catalyst 脚本模板，支持本地
+离线配置后导出；ASTR 仍管理字段、统计及调度。模板须核对字段契约和
+MPI 批处理行为，不增加在线交互或运行中热加载。
+故障按类别处理：数值、数据契约、统计/重启或逻辑错误停止；仅可安全
+隔离的单帧图片输出故障允许跳过并记录，未知或 MPI 状态不明的错误停止。
+Q、涡量等导数量由 ASTR 计算，可视化工具负责提取与显示；须核对或
+重算与完整耦合步同相位的梯度，不能盲用最后 RK 子步的缓存。
+涡面采用完整旋转/应变张量定义的 Q，另提供速度散度；首版不另增速度
+梯度第二主不变量输出。同一序列固定 Q 阈值、着色变量和色标，允许真实的
+空等值面结果；具体归一化与各算例的预设数值仍待确认。
+流线默认使用瞬时速度，可选已累计的 Reynolds/Favre 平均速度并标注窗口；
+不自动扩展统计空间，不在首版引入含时粒子轨迹。
+性能采用先实测记录的方案，首版不设 5%/10% 等额外耗时门槛；统计、传输、
+分析和渲染等开销独立记录，不以降低采样或遗漏产物换取性能数字。
+首个端到端验收采用独立三维 TGV 短测试，不接入当前 AIR5 前驱长任务；
+随后分别扩展壁面、AIR5 和 CURVE，TGV 通过不替代这些独立门槛。
+详细需求、源码依据、拟议文件、前置决策和验收见
+[原位分析与批量可视化实施计划](ASTR_INSITU_POSTPROCESSING_PLAN.md)。
+状态：分阶段方案待审阅，全部实现阶段尚未启动。本次只整理文档，
+不授权依赖安装、求解器修改、新测试、生产接入或 Git 操作。
 
-当前 ASTR 已有明确的完整 RK 输出边界。`gpu_sync_flow_to_host()` 在 checkpoint
-到期时下载 `q/rho/vel/prs/tmp`，随后由 CPU-owned `writechkpt()` 写出。因此首个
-Catalyst 路径应复用该相位语义，不应在任意 kernel 或 RK 子步中读取未闭合状态。
+该方向减少常规完整三维场文件，不把既有 CPU-owned HDF5/checkpoint
+路径改写为 GPU I/O。原生统计独立于渲染器；Catalyst 作为默认关闭的
+可选后端。`ASTR_WITH_CATALYST=OFF` 是拟议选项，当前尚未实现。
+计划通过窄 C ABI 接入 Catalyst，运行时加载 ParaView implementation，
+工具链与 Fortran/C++/MPI 兼容性先做准入。[^catalyst-api]
 
-```mermaid
-flowchart LR
-    accTitle: ASTR Catalyst staged integration
-    accDescr: The integration begins with the existing complete-RK host output boundary, then qualifies a packed GPU-resident path before optional live or asynchronous operation.
+源码接入不能沿用一个笼统的“输出相位”：现有 GPU 紧凑统计处于
+`time_integration_rk` 的 GPU 分支正式推进前准备段，而 AIR5 新监测
+在该例程返回后调用。
+新原位样本必须明确完整步时间、halo 与梯度状态，并验证与参考同相位；
+不能因为旧 HDF 可用，就默认其与该样本匹配，也不能因此移动旧边界或输出流程。
 
-    rk_state[Complete RK state] --> host_boundary[Host output boundary]
-    host_boundary --> host_catalyst[Batch Catalyst adaptor]
-    host_catalyst --> host_gate{Field and topology gates pass?}
-    host_gate -->|Yes| gpu_pack[Pack selected interior fields on GPU]
-    host_gate -->|No| repair_semantics[Repair mesh or field semantics]
-    repair_semantics --> host_catalyst
-    gpu_pack --> gpu_catalyst[GPU-resident Catalyst with Viskores]
-    gpu_catalyst --> production_extracts[Images, slices and reduced extracts]
-    gpu_catalyst -.-> live_async[Optional live or asynchronous mode]
+新阶段使用 IS0-IS8，替代此前 I0-I4 的推进次序：
 
-    classDef current fill:#f3f4f6,stroke:#6b7280,stroke-width:2px,color:#1f2937
-    classDef planned fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a5f
-    classDef decision fill:#fef9c3,stroke:#ca8a04,stroke-width:2px,color:#713f12
-    classDef output fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d
-
-    class rk_state,host_boundary current
-    class host_catalyst,repair_semantics,gpu_pack,gpu_catalyst,live_async planned
-    class host_gate decision
-    class production_extracts output
-```
-
-分阶段实施如下。
-
-| 阶段 | 实施范围 | 终止条件 |
+| 阶段 | 交付目标 | 完成边界 |
 |---|---|---|
-| I0 依赖准入 | 冻结 Catalyst、ParaView-Catalyst、Conduit、MPI 和 NVHPC 组合；确认目标 ParaView build 是否包含 Viskores CUDA | 关闭选项时不增加链接依赖；启用后仅链接 Catalyst API/stub；ABI、动态库、MPI communicator 和 implementation 运行时加载检查通过 |
-| I1 主机镜像批处理 | 在完整 RK 输出边界构造 Cartesian/曲线结构网格，先提供 `density/velocity/pressure/temperature`；由 Catalyst pipeline 生成图片、切片、等值面或降采样场 | NP=1/2/4 的 Catalyst 字段与同相位 HDF5/CPU 数组一致；关闭 HDF5 后仍可生成可重放结果 |
-| I2 GPU 常驻批处理 | 通过 `ISO_C_BINDING` 调用窄 C++ adaptor；用 `c_devloc()` 传递设备地址，并由 Conduit `set_external()` 交给 Viskores CUDA 后端 | 调用区间无全场 D2H；设备字段与 I1 结果一致；Compute Sanitizer 和附加显存门槛通过 |
-| I3 多 rank 与曲线网格 | 每个 rank 提交一个局部 domain，记录全局偏移、`domain_id`、物理区和 ghost 区；覆盖静态曲线坐标 | Cartesian、CURVE、物理边界和 NP=1/2/4 拼接无重复面、裂缝或错误 ghost 显示 |
-| I4 交互与异步 | 评估 ParaView Live 和异步执行，不作为生产首版前置条件 | 计算节点网络策略允许；暂停、断连和 finalize 不破坏求解器；独立报告深拷贝、延迟和内存开销 |
+| IS0 | 默认关闭的接口与依赖准入 | 构建、动态库、MPI、所选无显示后端通过短探针 |
+| IS1 | 只读同相位采样和物理导数量 | 字段/梯度可信，开关后处理不改变权威场 |
+| IS2 | 原生 CPU/GPU 统计、调度与配对续接 | 权重、两类 RMS、窗口和同拓扑重启通过 |
+| IS3 | 独立三维 TGV 端到端闭环 | 图片、统计与提取数据均通过，不等于首版全部完成 |
+| IS4 | 多 rank 和故障路径 | 接缝、跨域流线、空分区、损坏保存与故障收敛通过 |
+| IS5 | 壁面及 AIR5 | 壁面定义、双温/组分、完整耦合状态与续接分别通过 |
+| IS6 | 静态 CURVE | 物理坐标、几何权重、导数、壁面投影与拼接可信 |
+| IS7 | 首版生产准入 | IS0-IS6 证据齐备，资源与匹配开关计时完成，无未解释失败 |
+| IS8 | 可选后续优化 | 全设备可视化、异步、在线交互、跨拓扑统计恢复等另行审批 |
 
-I1 是近期推荐路径。它仍包含输出步的完整 D2H，但省去完整 HDF5 写出、离线重读和
-二次派生场文件，因此可先验证网格关联、变量命名和 MPI domain 语义。I2 才允许称为
-GPU-resident 原位处理。官方 GPU 路径要求在 `catalyst_execute()` 前完成设备写入同步，
-并使用 Viskores/VTKm 过滤器保持设备端处理；普通 ParaView 过滤器可能触发隐式
-D2H。[^catalyst-gpu]
+当前下一步仅是审阅该计划。获准实施后从 IS0 开始，不直接将新路径
+接入当前 AIR5 前驱长任务。D0-D8 前置决策表规定各阶段必须冻结的
+定义、容差、参数和预算，不把未定项设成隐含默认值。
 
-ASTR 的 `q_d/rho_d/vel_d/prs_d/tmp_d/x_d` 各维均包含固定 halo。去除 halo 后的
-三维内点在展平内存中存在行、面间隔，不能默认视为单个连续外部数组。I2 的首选实现
-是把选定内点和必要坐标打包到可循环复用的连续 device visualization buffer，再交给
-Catalyst。把完整 halo 数组零拷贝暴露并通过 ghost 标记隐藏重叠区可作为后续候选，
-但必须先证明多 rank 拼接与物理边界 halo 语义正确。
+全设备可视化已移至后续候选：设备地址传入 Catalyst 并不能证明整条
+流水线常驻，普通过滤器仍可能触发 D2H。首版按需打包本地字段并下载，
+不要求 Viskores 常驻链路先行通过。[^catalyst-gpu]
+含 halo 的 Fortran 内点布局、拉伸 Cartesian 坐标和 CURVE 几何均须
+显式描述；图像合成不等同于集中完整流场。所有扩展仍保持默认 FP64、
+现有求解器同步与数值语义，不以出图成功代替物理或统计定常验收。
 
-以下约束在所有阶段保持：
-
-- 首版采用同步批处理，不依赖计算节点到桌面 ParaView 的实时网络连接；
-- Catalyst 只读取完整 RK 状态，不得写回求解器权威场；
-- 坐标、字段关联、无量纲定义和变量命名必须与现有 HDF5 输出一致；
-- 只传递 pipeline 实际需要的字段，不默认复制全部守恒量、primitive、导数和工作数组；
-- Cartesian 网格优先使用隐式/规则坐标描述，曲线网格才传递显式 `x/y/z`；
-- 原位分析开销必须分为同步、打包或 D2H、Catalyst 执行和提取输出，不并入纯 RK 性能；
-- Catalyst 异步模式会为外部数组建立独立副本，GPU 指针可能被复制到主机，因此不能
-  自动视为零拷贝性能路径。[^catalyst-async]
-
-[^catalyst-api]: Kitware. "Catalyst and ParaView-Catalyst Blueprint." https://docs.paraview.org/en/latest/Catalyst/index.html
+[^catalyst-api]: Kitware. "Catalyst introduction." https://docs.paraview.org/en/latest/Catalyst/introduction.html
 
 [^catalyst-gpu]: Kitware. "GPU-Resident Workflows." https://catalyst-in-situ.readthedocs.io/en/latest/gpu_workflows.html
-
-[^catalyst-async]: Kitware. "Asynchronous Execution." https://catalyst-in-situ.readthedocs.io/en/latest/async_execution.html
 
 ## 9. 暂缓范围
 
@@ -2777,9 +2807,36 @@ Catalyst。把完整 halo 数组零拷贝暴露并通过 ghost 标记隐藏重�
 9. 完成 OpenSBLI 三网格、两时间步和外部物理比较，为激波敏感混合精度建立 FP64 物理基线。
 10. 完成动态入口 D3 前驱统计收敛，并在 A800 上复核已完成的 D4 常驻统计性能，
     再进入生产级湍流 SBLI。
-11. 将 Catalyst I0/I1 作为独立工程支线，先完成默认关闭的依赖准入和完整 RK
-    主机镜像批处理；字段与多 rank 拓扑语义通过后，再启动 I2 GPU 常驻路径。
+11. 原位后处理按第 8.10 节及独立计划的 IS0-IS7 推进：先审阅方案，再做
+    依赖准入、同相位采样、原生统计/续接和 TGV 闭环，然后补齐 MPI、壁面、
+    AIR5 与静态 CURVE。全设备可视化留在 IS8，不作为首版前置条件。
 12. 以 A800 profile 决定非周期/SBLI overlap 和选择性同步是否继续；在有整步收益前
     保持 `explicit` 为默认。
 13. 建立 CUDA/HIP 后端边界原型，验证未来 DCU 路径。
 14. 由具体算例需求决定是否扩展曲线特征边界。
+# 2026-09-28 Controlled Mach 4 SBLI preparation
+
+Optional complete-step AIR5 monitoring is now implemented; see
+[flow monitoring](ASTR_AIR5_FLOW_MONITOR.md). It collects fixed-plane profiles,
+wall diagnostics and supports block Reynolds/Favre statistics and separation
+interval time series without full-field downloads. CPU/GPU and NP2 x/y/z
+checks passed, including x-slab memcheck. Wall gradients are explicitly
+second-order diagnostics, not solver fluxes. No existing long job was changed;
+enable the monitor explicitly in a new validated continuation. Statistical
+stationarity and developed-inlet acceptance remain pending.
+
+The AIR5 monitor is now routed through the existing `readwrite::writemon`
+entry point. Integer-index probes reuse `datin/monitor.dat`, `readmonc`, and
+`monitorsearch` ownership on CPU/GPU; only AIR5-specific primitive conversion
+and compact device gathering are added. Non-AIR5 monitor records are unchanged.
+Existing full-field `lavg/feqavg` statistics are not duplicated and are not yet
+admitted for AIR5 GPU budgets. AIR5 extended output uses new files in a new
+continuation directory, not legacy binary same-directory rollback semantics.
+
+User selected a self-defined AIR5 case: Mach 4, 1500 K inlet, 20 kPa,
+3000 K noncatalytic wall and 25-degree incident shock angle. Preparation
+includes a precursor and three controls (no-shock coupled, shock V-T-only,
+shock coupled). These remain startup templates, not developed flow fields.
+No production run or external job was started. See
+[controlled SBLI plan](ASTR_AIR5_CONTROLLED_MACH4_SBLI_PLAN.md) for inputs,
+admission sequence and the distinction between seed preparation and validation.

@@ -56,6 +56,12 @@ flowchart LR
 | [验证与故障诊断](validation-and-troubleshooting.md) | 什么证据足以接受一次改动 | 全部 |
 | [生成源码清单](generated/source-inventory.md) | 当前 tracked source 与词法关系是什么 | 维护者 |
 
+## 待实施方案
+
+[原位分析与批量可视化实施计划](../ASTR_INSITU_POSTPROCESSING_PLAN.md)
+记录已确认需求、源码接入依据、IS0-IS8 分期和独立验收条件。
+目前为审阅稿，不属于已实现架构，也不授权修改正在运行的任务。
+
 ## 证据与新鲜度
 
 架构结论由维护者审阅，生成清单只提供 Git 已跟踪源码的词法事实。修改 `CMakeLists.txt`、`src/` 或 `src_gpu/` 后必须执行：
@@ -70,4 +76,3 @@ python3 scripts/maintenance/audit_source_inventory.py --check
 ## 范围边界
 
 详细维护范围包含根目录及 `src/` 的 CMake 配置、`src/` CPU 主求解器、`src_gpu/` CUDA Fortran 后端，以及提供验收证据的验证脚本。`pastr/`、`miniapps/`、`chemMech/`、与维护流程无关的 examples、汇报材料、参考数据库和运行输出不在本套文档的详细范围内。
-
