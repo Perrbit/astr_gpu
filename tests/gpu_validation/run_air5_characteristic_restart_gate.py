@@ -33,7 +33,7 @@ def launch(case, executable, topology, env, log_name, expected_failure=False, mp
             raise ValueError(f'unclean completion: {case}')
 
 
-def run(output, executable, topology, use_gpu=True):
+def run(output, executable, topology, use_gpu=True, filtering=False, filter_workspace='full'):
     output.mkdir(parents=True, exist_ok=False)
     cases = {key: output/key for key in ('continuous', 'split')}
     env = environment(topology)
@@ -42,16 +42,21 @@ def run(output, executable, topology, use_gpu=True):
                        short_updates=6, use_gpu=use_gpu, temperature0=3000., tv0=1500.)
         env.update(meta['environment'])
         env.pop('ASTR_AIR5_ACOUSTIC_PROBE', None)
+        if filtering:
+            env.update(ASTR_AIR5_FILTER_VALIDATION='on', ASTR_GPU_FILTER_WORKSPACE=filter_workspace)
+            set_value(case/'datin/controller', 'deltat', '1.d-10')
         env.update(ASTR_AIR5_SOURCE_MODE='coupled', ASTR_AIR5_TOP_RESTART_VALIDATION='on',
                    ASTR_AIR5_CONVECTION_LIMITER='symmetric_species',
                    ASTR_AIR5_DIFFUSION_LIMITER='layered',
                    ASTR_AIR5_COMPENSATION_RESTART='restore', ASTR_VALIDATION_RHS_STEP='5')
         set_value(case/'datin/input.air5_c4',
                   'nondimen,diffterm,lfilter,lreadgrid,lfftz,limmbou,ltimrpt,lcomb',
-                  'f,t,f,f,f,f,t,t,'+('t' if use_gpu else 'f'))
+                  'f,t,'+('t' if filtering else 'f')+',f,f,f,t,t,'+('t' if use_gpu else 'f'))
         set_value(case/'datin/controller', 'maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg',
                   f'{5 if key=="continuous" else 2},1,1000000,1000000,50,1000000')
         meta.update(source_mode='coupled', viscous=True, topology=topology,
+                    filtering=filtering, filter_workspace=filter_workspace,
+                    dt=1e-10 if filtering else meta['dt'],
                     updates=6 if key=='continuous' else 3,
                     environment={k:v for k,v in env.items() if k.startswith('ASTR_')},
                     sampling_phase='complete coupled chemistry and SSP-RK phase snapshots')
@@ -70,6 +75,13 @@ def run(output, executable, topology, use_gpu=True):
         nonzero_carry = sum(np.count_nonzero(stream[f'acc{i:02}'][()]) for i in range(1,12))
         if nonzero_carry == 0:
             raise ValueError('restart seed did not exercise nonzero compensation')
+    # AIR5 monitors deliberately refuse overwriting an existing segment.
+    # Resume the checkpoint in a new directory and retain the original files.
+    split = output/'resumed'
+    shutil.copytree(seed, split)
+    (split/'validation').mkdir()
+    (split/'monitor').mkdir()
+    cases['split'] = split
     set_value(split/'datin/input.air5_c4', 'lrestar', 't')
     set_value(split/'datin/controller', 'maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg',
               '5,1,1000000,1000000,50,1000000')
@@ -111,6 +123,7 @@ def run(output, executable, topology, use_gpu=True):
                 del stream['air5_top_version']
         launch(case, executable, topology, bad_env, 'rejection.log', expected_failure=True)
     report = dict(passed=True, topology=topology, use_gpu=use_gpu, comparison=comparison,
+                  filtering=filtering, filter_workspace=filter_workspace,
                   checkpoint_bitwise=bitwise, seed_nonzero_carry=int(nonzero_carry),
                   rejected=['tau', 'missing_metadata', 'compensation_off', 'old_top_policy'])
     (output/'result.json').write_text(json.dumps(report, indent=2)+'\n')
@@ -122,6 +135,9 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--topology', default='1,1,1')
     parser.add_argument('--cpu', action='store_true')
+    parser.add_argument('--filter', action='store_true')
+    parser.add_argument('--filter-workspace', choices=('full','scalar'), default='full')
     parser.add_argument('--executable', type=Path, default=ROOT/'build_gpu_probe/bin/astr')
     args = parser.parse_args()
-    run(args.output.resolve(), args.executable.resolve(), args.topology, not args.cpu)
+    run(args.output.resolve(), args.executable.resolve(), args.topology, not args.cpu,
+        args.filter, args.filter_workspace)

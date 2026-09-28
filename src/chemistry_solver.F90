@@ -44,6 +44,7 @@ module chemistry_flow_solver
   public :: air5_convection_rhs
   public :: air5_limit_full_state_convection
   public :: air5_save_filter_species_base
+  public :: air5_compensation_filter_state
   public :: air5_limit_filtered_state
   public :: air5_chemistry_half_step
   public :: air5_characteristic_top_rhs
@@ -286,6 +287,32 @@ contains
     endif
   end function air5_admissible_face_ratio
 
+  subroutine air5_compensation_filter_state(swap)
+    use commvar, only: im,jm,km
+    use commarray, only: q
+    use chemistry_compensation, only: air5_compensated,air5_carry,compensated_normalize
+    logical, intent(in) :: swap
+    integer :: i,j,k,m
+    real(real64) :: saved
+    if(.not.air5_compensated) return
+    ! No boundary or EOS calls while q temporarily holds signed carry data.
+    if(swap) then
+      do m=1,11
+        do k=0,km
+          do j=0,jm
+            do i=0,im
+              saved=q(i,j,k,m)
+              q(i,j,k,m)=air5_carry(i,j,k,m)
+              air5_carry(i,j,k,m)=saved
+            enddo
+          enddo
+        enddo
+      enddo
+    else
+      call compensated_normalize(q(0:im,0:jm,0:km,:),air5_carry)
+    endif
+  end subroutine
+
   subroutine air5_save_filter_species_base()
     use commvar, only: im,jm,km
     use commarray, only: q,qrhs
@@ -299,12 +326,14 @@ contains
   subroutine air5_limit_filtered_state()
     use commvar, only: im,jm,km
     use commarray, only: q,qrhs
+    use chemistry_compensation, only: air5_compensated,air5_carry,compensated_filter_projection
+    use ieee_arithmetic, only: ieee_is_finite
     real(real64) :: state(air5_num_conservative)
     real(real64) :: base_species(air5_num_species)
     real(real64) :: rho_species(air5_num_species)
     real(real64) :: theta
     logical :: limited
-    integer :: i,j,k,status
+    integer :: i,j,k,status,closure(1)
 
     call configure_air5_vibrational_floor()
     do k=0,km
@@ -320,8 +349,19 @@ contains
               minval(rho_species),sum(rho_species),q(i,j,k,air5_idx_density)
             error stop 'air5 parameter-free explicit-filter species limiter failed'
           endif
-          q(i,j,k,air5_idx_species_first:air5_idx_species_last)=rho_species
-          state=q(i,j,k,1:air5_num_conservative)
+          if(air5_compensated) then
+            closure=maxloc(base_species)
+            call compensated_filter_projection(q(i,j,k,:),air5_carry(i,j,k,:),rho_species,closure(1))
+            if(.not.all(ieee_is_finite(air5_carry(i,j,k,:)))) &
+              error stop 'air5 filtered compensation is not finite'
+            if(any(q(i,j,k,air5_idx_species_first:air5_idx_species_last)< &
+                   air5_carry(i,j,k,air5_idx_species_first:air5_idx_species_last))) &
+              error stop 'air5 filtered represented species is negative'
+            state=q(i,j,k,:)-air5_carry(i,j,k,:)
+          else
+            q(i,j,k,air5_idx_species_first:air5_idx_species_last)=rho_species
+            state=q(i,j,k,1:air5_num_conservative)
+          endif
           if(.not.air5_state_is_admissible(state)) then
             write(*,'(a,3(1x,i0))') &
               'air5 explicit-filter thermodynamic state failed at',i,j,k

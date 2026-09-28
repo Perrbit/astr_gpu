@@ -345,7 +345,7 @@ module mainloop
                                      air5_hbl_flowtype
     use chemistry_flow_solver, only: air5_chemistry_half_step, &
                                      air5_save_filter_species_base, &
-                                     air5_limit_filtered_state
+                                     air5_limit_filtered_state,air5_compensation_filter_state
     use chemistry_postshock_boundary, only: apply_air5_postshock_boundary
     use chemistry_hbl_boundary, only: apply_air5_hbl_boundary
     use chemistry_compensation, only: air5_compensated,air5_carry,air5_origin, &
@@ -535,11 +535,18 @@ module mainloop
       
       if(lfilter) then
 #ifdef ASTR_AIR5_CHEMISTRY
+        if(air5_compensated) then
+          call air5_compensation_filter_state(.false.)
+          call air5_compensation_filter_state(.true.)
+          call filterq(timerept=ltimrpt)
+          call air5_compensation_filter_state(.true.)
+        endif
         if(lcomb) call air5_save_filter_species_base()
 #endif
         call filterq(timerept=ltimrpt)
 #ifdef ASTR_AIR5_CHEMISTRY
         if(lcomb) then
+          call air5_compensation_filter_state(.false.)
           call air5_limit_filtered_state()
           call updatefvar
         endif

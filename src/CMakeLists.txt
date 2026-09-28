@@ -482,3 +482,11 @@ set_target_properties(cfl_spectrum_probe PROPERTIES
   Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/cfl_probe_modules")
 target_include_directories(cfl_spectrum_probe PRIVATE
   "${CMAKE_CURRENT_BINARY_DIR}/cfl_probe_modules")
+
+add_executable(centered_diffusion_response_probe EXCLUDE_FROM_ALL
+  constdef.F90 commtype.F90 commvar.F90 commfunc.F90 singleton.F90 derivative.F90
+  ../tests/gpu_validation/centered_diffusion_response_probe.F90)
+set_target_properties(centered_diffusion_response_probe PROPERTIES
+  Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/diffusion_response_modules")
+target_include_directories(centered_diffusion_response_probe PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/diffusion_response_modules")

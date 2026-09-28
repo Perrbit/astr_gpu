@@ -5,11 +5,30 @@ program chemistry_compensation_lifecycle_probe
   implicit none
   real(real64) :: q,c,q0,c0,h,expected,mean_c
   real(real64) :: low(2,3,11),high(2,3,11),cl(2,3,11),ch(2,3,11)
+  real(real64) :: state(11),carry(11),species(5),saved_carry
   integer :: iteration,ierr,rank,nranks,comm,lower,upper
   call MPI_Init(ierr)
   call MPI_Comm_dup(MPI_COMM_WORLD,comm,ierr)
   call MPI_Comm_rank(comm,rank,ierr)
   call MPI_Comm_size(comm,nranks,ierr)
+  state=0.0_real64; carry=0.0_real64
+  state(1)=1.0_real64
+  state(6:10)=[0.5_real64,0.25_real64,0.125_real64,0.125_real64,0.0_real64]
+  carry(7)=2.0_real64**(-57)
+  carry(2)=2.0_real64**(-60)
+  state(2)=1.0_real64
+  saved_carry=carry(7)
+  species=state(6:10)
+  call compensated_filter_projection(state,carry,species,1)
+  if(carry(7)/=saved_carry.or.carry(2)/=2.0_real64**(-60)) &
+    error stop 'filter projection discarded unchanged low parts'
+  if(carry(6)/=-saved_carry) error stop 'filter projection lost species carry closure'
+  species=state(6:10); species(5)=2.0_real64**(-40)
+  call compensated_filter_projection(state,carry,species,1)
+  if(state(10)/=species(5).or.carry(10)/=0.0_real64) &
+    error stop 'filter projection did not install corrected species target'
+  if(carry(7)/=saved_carry) error stop 'filter projection changed unaffected species'
+  if(rank==0) write(*,'(A)') 'COMPENSATED_FILTER_PROJECTION_PASS'
   q=1.0_real64; c=0.0_real64
   h=2.0_real64**(-55)
   do iteration=1,100000

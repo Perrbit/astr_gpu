@@ -9,8 +9,40 @@ module chemistry_compensation
   real(real64), allocatable, public, save :: air5_origin(:,:,:,:),air5_origin_carry(:,:,:,:)
   public :: compensated_add,compensated_rk,compensated_mean,compensated_normalize
   public :: compensation_normalize_faces
+  public :: compensated_filter_projection
   public :: configure_air5_compensation,compensation_exchange_faces
 contains
+  pure subroutine compensated_filter_projection(high,carry,species,closure)
+    real(real64), intent(inout) :: high(11),carry(11)
+    real(real64), intent(in) :: species(5)
+    integer, intent(in) :: closure
+    integer :: n,m,c
+    real(real64) :: difference,virtual,error
+    c=5+closure
+    do n=1,5
+      m=5+n
+      if(n==closure) cycle
+      ! A changed species is projected onto the admissible FP64 target.
+      ! An unchanged species retains its filtered low part.
+      if(high(m)/=species(n)) then
+        high(m)=species(n)
+        carry(m)=0.0_real64
+      endif
+    enddo
+    high(c)=high(1)
+    carry(c)=carry(1)
+    do n=1,5
+      if(n==closure) cycle
+      m=5+n
+      difference=high(c)-high(m)
+      virtual=difference-high(c)
+      error=(high(c)-(difference-virtual))-(high(m)+virtual)
+      carry(c)=(carry(c)-carry(m))-error
+      high(c)=difference
+    enddo
+    call compensated_normalize(high,carry)
+  end subroutine
+
   pure elemental subroutine compensated_normalize(high,carry)
     real(real64), intent(inout) :: high,carry
     real(real64) :: total,virtual,error

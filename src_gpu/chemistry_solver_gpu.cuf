@@ -747,6 +747,7 @@ contains
 
   attributes(global) subroutine air5_limit_filtered_state_kernel(im,jm,km)
     use commarray_gpu, only: q_d,qrhs_d
+    use chemistry_compensation_gpu, only: air5_compensated_d,air5_carry_d,compensated_filter_projection_gpu
     integer, value :: im,jm,km
     integer :: id,ntot,i,j,k,component,species,closure_species
     real(real64) :: state(air5_num_conservative)
@@ -754,6 +755,7 @@ contains
     real(real64) :: filtered_species(air5_num_species)
     real(real64) :: low_species(air5_num_species)
     real(real64) :: candidate_species(air5_num_species)
+    real(real64) :: carry(air5_num_conservative)
     real(real64) :: rho_base,rho_filtered,base_sum,base_tolerance
     real(real64) :: other_sum,direction,theta
     logical :: resolved_undershoot
@@ -851,11 +853,30 @@ contains
       endif
     enddo
 
-    do species=1,air5_num_species
-      component=air5_idx_species_first+species-1
-      state(component)=candidate_species(species)
-      q_d(i,j,k,component)=candidate_species(species)
-    enddo
+    if(air5_compensated_d) then
+      carry=air5_carry_d(i,j,k,:)
+      call compensated_filter_projection_gpu(state,carry,candidate_species,closure_species)
+      do component=1,air5_num_conservative
+        if(carry(component)/=carry(component).or.abs(carry(component))>huge(1.0_real64)) then
+          call record_air5_status(chemistry_status_nonfinite)
+          return
+        endif
+      enddo
+      if(any(state(air5_idx_species_first:air5_idx_species_last)< &
+             carry(air5_idx_species_first:air5_idx_species_last))) then
+        call record_air5_status(chemistry_status_invalid_composition)
+        return
+      endif
+      q_d(i,j,k,:)=state
+      air5_carry_d(i,j,k,:)=carry
+      state=state-carry
+    else
+      do species=1,air5_num_species
+        component=air5_idx_species_first+species-1
+        state(component)=candidate_species(species)
+        q_d(i,j,k,component)=candidate_species(species)
+      enddo
+    endif
     if(.not.air5_state_is_admissible_gpu(state)) then
       call record_air5_status(chemistry_status_invalid_composition)
     endif
@@ -3223,6 +3244,8 @@ contains
     use chemistry_hbl_boundary_gpu, only: apply_air5_hbl_boundary_gpu
     use shock_sensor_gpu, only: compute_shock_sensor_gpu
     use solver_gpu, only: apply_explicit_filter_gpu
+    use chemistry_compensation, only: air5_compensated
+    use chemistry_compensation_gpu, only: compensation_filter_state_gpu
     use gpu_check, only: sync_after_kernel
     use validation_io, only: rhs_validation_requested,write_q_validation_snapshot, &
       write_rhs_validation_snapshot,write_primitive_validation_snapshot, &
@@ -3283,9 +3306,16 @@ contains
 
     do rkstep=1,3
       if(lfilter) then
+        if(air5_compensated) then
+          call compensation_filter_state_gpu(.false.)
+          call compensation_filter_state_gpu(.true.)
+          call apply_explicit_filter_gpu(periodic_filter_case,'air5_carry_')
+          call compensation_filter_state_gpu(.true.)
+        endif
         call air5_save_filter_species_base_kernel<<<grid1,block1>>>(im,jm,km)
         call sync_after_kernel('air5_save_filter_species_base_kernel',.true.)
         call apply_explicit_filter_gpu(periodic_filter_case,'air5_')
+        call compensation_filter_state_gpu(.false.)
         call reset_air5_status()
         call air5_limit_filtered_state_kernel<<<grid1,block1>>>(im,jm,km)
         call sync_after_kernel('air5_limit_filtered_state_kernel',.true.)

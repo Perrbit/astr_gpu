@@ -5902,3 +5902,104 @@ Evidence: `out/air5_mach4_incident_20260926/`. The initial short matrix uses two
 updates at 1 ns. The longer startup pair uses 20 updates at 1 ns and 40 at 0.5 ns,
 both from the same step3000 checkpoint. Neither demonstrates an established
 shock/boundary-layer interaction or physical convergence.
+
+### AIR5 Explicit Filter Readiness
+
+`run_air5_filter_readiness.py --executable <frozen-astr> --mpirun <launcher>
+--output <new-directory>` checks the admitted filter path, not production restart
+readiness. It fixes `symmetric_species` convection and `layered` diffusion,
+prescribed top, compensation off, FP64, and one complete update at 1e-10 s.
+The 32x32x16-node matrix covers full/scalar workspaces and topologies 1x1x1,
+2x1x1, 1x2x1, and 1x1x2. Each case checks CPU/GPU phase fields, admissibility,
+species closure, physical boundaries, and spanwise invariance. Saved fields are
+also compared directly across backends, workspaces, and topologies, with
+`abs(candidate-reference)/max(1,abs(reference)) <= 2e-10`.
+
+Four startup rejection tests verify that CPU and GPU both reject characteristic
+top plus filtering and compensation plus filtering before chemistry starts.
+These are intentional unsupported combinations; do not remove their guards to
+resume a compensated characteristic-top precursor.
+
+Evidence: `out/air5_filter_readiness_20260928/result.json` and
+`cross_comparison.json`: all eight paired cases and four rejection gates passed;
+maximum cross-comparison scaled error was 3.1575e-14. This is a one-update gate,
+not a long-window, filtered restart, or compensated-filter validation.
+
+The separate `out/air5_filter_recheck_20260928_full` legacy full-state-limiter
+attempt failed the CPU spanwise-invariance gate (1.8443e-8 versus 2e-10), before
+GPU execution. It is not accepted or hidden by the passing current-limiter
+matrix. Its uniform initial field also differs from historical matched-profile
+tests. No tolerance was relaxed and no numerical source was changed.
+
+Before filtering the paused production precursor, define how the filter acts
+on the compensated representation `q - carry`, including species repair and
+boundary lifecycle. Then validate characteristic-top coupling, compensated
+restart, and a short matched filtered/unfiltered continuation before admitting
+a long run. The current driver deliberately reports `production_ready=false`.
+
+#### Compensated Characteristic-Top Filter Candidate
+
+The new combination is gated by `ASTR_AIR5_FILTER_VALIDATION=on`. The earlier
+rejection evidence above refers to its frozen executable, not the current
+candidate. `run_air5_filter_readiness.py` now checks rejection without this
+opt-in. No long precursor should be resumed solely because startup succeeds.
+
+CPU and GPU normalize the compensated pair, temporarily swap physical q/carry,
+filter the carry through the existing explicit filter and halo transport, swap
+back, and filter q. Both passes use identical closures and axis order. The
+temporary swap must never call the EOS, physical boundary reconstruction,
+checkpointing, or compensated shared-node averaging. Only filter halo exchange
+is permitted. This uses the selected full/scalar workspace without allocating
+another complete 11-component field. Filter arithmetic itself remains FP64;
+this is not a double-double filter implementation.
+
+Species repair keeps the filtered low part of unchanged non-closure species.
+Changed species are projected to the FP64 admissible target. The largest baseline
+species is reconstructed from compensated density minus the other represented
+species using TwoDiff residuals, then the pair is normalized. Represented
+species negativity and invalid thermodynamics fail immediately. There is no
+blanket carry reset. The characteristic top is not prescribed again: normal
+endpoint preservation and transverse filtering precede the existing boundary,
+primitive/halo refresh, and characteristic RHS path.
+
+`run_air5_compensated_filter_gate.py` runs the coupled, viscous short-step matrix
+on CPU/GPU, full/scalar, and single/x/y/z decompositions. This is a perturbation
+near the characteristic top, not the stopped Mach4 precursor. The existing
+`run_air5_characteristic_restart_gate.py` accepts `--filter` and
+`--filter-workspace full|scalar` for filtered checkpoint-continuation tests at
+1e-10 s. The lifecycle probe includes a low-part preservation/closure case;
+the initial implementation with sequential Kahan additions failed that case
+and was replaced by explicit subtraction residuals.
+
+Candidate results (2026-09-28):
+
+- `out/air5_compensated_filter_20260928/result.json`: 16 CPU/GPU cases,
+  single/x/y/z decompositions and full/scalar, three updates at 1e-10 s.
+  Maximum same-phase scaled difference: 1.44111e-15. Maximum checkpoint
+  represented-state relative species closure: 3.05136e-16. Nonzero carry was
+  exercised in every case. Initial reservoir T=Tv=1500 K.
+- `out/air5_compensated_filter_restart_cpu_20260928/result.json` and
+  `out/air5_compensated_filter_restart_gpu_segmented_20260928/result.json`:
+  CPU NP=1 full and GPU NP=2 x-slab scalar continuations passed. All nine
+  compared phase fields were identical; step, time, all 11 acq and 11 acc
+  datasets were bitwise identical. Initial reservoir T=3000 K, Tv=1500 K;
+  six updates at 1e-10 s. Four metadata/admission fault cases were rejected
+  on each backend.
+- The first GPU restart test stopped because the existing AIR5 monitor uses
+  `status='new'` and refuses reusing `monitor/air5_probes.dat`. The driver now
+  resumes into a separate directory, preserving the original monitor segment;
+  the monitor implementation was not changed.
+- Six filter-focused Python checks passed. The wider pair of historical
+  contract suites had 31 passes and four source-string assertion failures;
+  those same four failures were reproduced against Git HEAD, before these
+  source changes. They are not recorded as a clean full-suite pass.
+- `out/air5_compensated_filter_memcheck_20260928/validation/memcheck.*.log`:
+  GPU NP=1 scalar, three coupled viscous updates, Compute Sanitizer memcheck
+  reported zero errors. All nine phases at steps 0 and 2 matched the
+  uninstrumented GPU scalar run exactly. This does not constitute racecheck
+  coverage or a sanitizer pass for every MPI topology.
+
+These results do not admit the paused Mach4 precursor for long filtered runs.
+Filtered acoustic reflection, longer-window stability, and a matched short
+continuation from that actual checkpoint remain separate gates. Keep the
+validation opt-in and do not infer production readiness from the short matrix.

@@ -49,7 +49,8 @@ def compare(reference, candidate):
 
 def execute(case, executable, gpu, topology, sanitizer=False, source_mode='frozen',
             viscous=False, temperature=1500., tv=1500., dt=None, face_probe=False,
-            diffusion_limiter='full_state', convection_limiter='full_state'):
+            diffusion_limiter='full_state', convection_limiter='full_state',
+            filtering=False, compensation=True, filter_workspace='full'):
     meta = prepare(case, executable, ny=128, nz=16, pulse_y=.0096, short_updates=3, use_gpu=gpu,
                    temperature0=temperature, tv0=tv)
     if dt is not None:
@@ -59,15 +60,22 @@ def execute(case, executable, gpu, topology, sanitizer=False, source_mode='froze
         meta['dt'] = dt
     set_value(case/'datin/input.air5_c4',
               'nondimen,diffterm,lfilter,lreadgrid,lfftz,limmbou,ltimrpt,lcomb',
-              'f,'+('t' if viscous else 'f')+',f,f,f,f,t,t,'+('t' if gpu else 'f'))
+              'f,'+('t' if viscous else 'f')+','+('t' if filtering else 'f')+
+              ',f,f,f,t,t,'+('t' if gpu else 'f'))
     env = environment(topology)
     env.update(meta['environment'], ASTR_AIR5_TOP_GPU_VALIDATION='on')
     env['ASTR_AIR5_SOURCE_MODE'] = source_mode
     env['ASTR_AIR5_DIFFUSION_LIMITER'] = diffusion_limiter
     env['ASTR_AIR5_CONVECTION_LIMITER'] = convection_limiter
+    env['ASTR_AIR5_COMPENSATION'] = 'on' if compensation else 'off'
+    env['ASTR_GPU_FILTER_WORKSPACE'] = filter_workspace
+    if filtering:
+        env['ASTR_AIR5_FILTER_VALIDATION'] = 'on'
+        set_value(case/'datin/controller', 'maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg',
+                  '2,1,1000000,1000000,50,1000000')
     if face_probe:
         env['ASTR_AIR5_SYMMETRIC_FACE_PROBE'] = '1'
-    if source_mode != 'frozen':
+    if source_mode != 'frozen' or filtering:
         env.pop('ASTR_AIR5_ACOUSTIC_PROBE', None)
     command = [shutil.which('mpirun'), '--oversubscribe', '-np',
                str(int(np.prod([int(x) for x in topology.split(',')])))]
@@ -78,6 +86,7 @@ def execute(case, executable, gpu, topology, sanitizer=False, source_mode='froze
     meta.update(topology=topology, use_gpu=gpu, source_mode=source_mode, viscous=viscous,
                 diffusion_limiter=diffusion_limiter,
                 convection_limiter=convection_limiter,
+                filtering=filtering, compensation=compensation, filter_workspace=filter_workspace,
                 gate='short backend equivalence, not acoustic acceptance',
                 tolerance=TOLERANCE, environment={k:v for k,v in env.items() if k.startswith('ASTR_')})
     (case/'gate.json').write_text(json.dumps(meta, indent=2)+'\n')
@@ -93,7 +102,7 @@ def execute(case, executable, gpu, topology, sanitizer=False, source_mode='froze
             raise ValueError('memcheck failed')
     state_gate(case, Air5RadauReference(ROOT/'chemMech/air5_kimjo12.json'))
     data = fields(case)
-    if source_mode == 'frozen':
+    if source_mode == 'frozen' and not filtering:
         for index in (1, 2, 3):
             load_monitor(case, meta, index)
     for key, array in data.items():

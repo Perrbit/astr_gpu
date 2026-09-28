@@ -224,8 +224,16 @@ contains
     top_reference_sound=0.0_real64
     if(.not.characteristic_top) return
     ! Reject unwired combinations explicitly during staged implementation.
-    if(lfilter.or.rkscheme/='rk3') &
-      error stop 'characteristic AIR5 top currently requires RK3 without filter'
+    if(rkscheme/='rk3') &
+      error stop 'characteristic AIR5 top currently requires RK3'
+    if(lfilter) then
+      value=''
+      call get_environment_variable('ASTR_AIR5_FILTER_VALIDATION',value,status=status)
+      choice=0
+      if(status==0.and.trim(value)=='on') choice=1
+      call MPI_Allreduce(choice,low,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+      if(low/=1) error stop 'characteristic AIR5 filter requires explicit validation opt-in'
+    endif
     if(lrestart) then
       value=''
       call get_environment_variable('ASTR_AIR5_TOP_RESTART_VALIDATION',value,status=status)

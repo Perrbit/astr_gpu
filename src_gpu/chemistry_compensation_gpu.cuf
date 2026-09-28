@@ -8,6 +8,75 @@ module chemistry_compensation_gpu
   real(real64), device, allocatable :: air5_carry_d(:,:,:,:)
   real(real64), device, allocatable :: air5_origin_d(:,:,:,:),air5_origin_carry_d(:,:,:,:)
 contains
+  attributes(device) subroutine compensated_filter_projection_gpu(high,carry,species,closure)
+    real(real64), intent(inout) :: high(11),carry(11)
+    real(real64), intent(in) :: species(5)
+    integer, intent(in) :: closure
+    integer :: n,m,c
+    real(real64) :: total,virtual,error
+    c=5+closure
+    do n=1,5
+      m=5+n
+      if(n==closure) cycle
+      if(high(m)/=species(n)) then
+        high(m)=species(n)
+        carry(m)=0.0_real64
+      endif
+    enddo
+    high(c)=high(1); carry(c)=carry(1)
+    do n=1,5
+      if(n==closure) cycle
+      m=5+n
+      total=high(c)-high(m)
+      virtual=total-high(c)
+      error=(high(c)-(total-virtual))-(high(m)+virtual)
+      carry(c)=(carry(c)-carry(m))-error
+      high(c)=total
+    enddo
+    do m=1,11
+      total=high(m)-carry(m)
+      virtual=total-high(m)
+      error=(high(m)-(total-virtual))+(-carry(m)-virtual)
+      high(m)=total; carry(m)=-error
+    enddo
+  end subroutine
+
+  attributes(global) subroutine compensation_filter_state_kernel(ni,nj,nk,swap)
+    use commarray_gpu, only: q_d
+    integer, value :: ni,nj,nk
+    logical, value :: swap
+    integer :: index,i,j,k,m
+    real(real64) :: high,carry,total,virtual,error
+    index=(blockidx%x-1)*blockdim%x+threadidx%x-1
+    if(index>=(ni+1)*(nj+1)*(nk+1)) return
+    i=mod(index,ni+1); j=mod(index/(ni+1),nj+1); k=index/((ni+1)*(nj+1))
+    do m=1,11
+      high=q_d(i,j,k,m); carry=air5_carry_d(i,j,k,m)
+      if(swap) then
+        q_d(i,j,k,m)=carry
+        air5_carry_d(i,j,k,m)=high
+      else
+        total=high-carry
+        virtual=total-high
+        error=(high-(total-virtual))+(-carry-virtual)
+        q_d(i,j,k,m)=total
+        air5_carry_d(i,j,k,m)=-error
+      endif
+    enddo
+  end subroutine
+
+  subroutine compensation_filter_state_gpu(swap)
+    use commvar, only: im,jm,km
+    use gpu_check, only: sync_after_kernel
+    logical, intent(in) :: swap
+    type(dim3) :: block,grid
+    if(.not.air5_compensated) return
+    block=dim3(256,1,1)
+    grid=dim3(((im+1)*(jm+1)*(km+1)+255)/256,1,1)
+    call compensation_filter_state_kernel<<<grid,block>>>(im,jm,km,swap)
+    call sync_after_kernel('compensation_filter_state_kernel',.true.)
+  end subroutine
+
   subroutine release_air5_compensation_gpu()
     if(allocated(air5_carry_d)) deallocate(air5_carry_d,air5_origin_d,air5_origin_carry_d)
     air5_compensated_d=.false.

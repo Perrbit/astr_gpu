@@ -2147,7 +2147,7 @@ module readwrite
   subroutine initialize_air5_compensated_flow()
     use mpi
     use ieee_arithmetic, only: ieee_is_finite
-    use commvar, only: lcomb,flowtype,lfilter,limmbou,rkscheme,lrestart,numq,ndims
+    use commvar, only: lcomb,flowtype,lfilter,limmbou,rkscheme,lrestart,numq,ndims,conschm,difschm
     use commarray, only: q
     use sponge_layer, only: lsponge
     use fludyna, only: updatefvar
@@ -2169,9 +2169,19 @@ module readwrite
     call MPI_Allreduce(choice,high,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
     if(low<0 .or. low/=high) error stop 'invalid or inconsistent ASTR_AIR5_COMPENSATION'
     if(choice==1) then
-      if(.not.lcomb .or. numq/=11 .or. ndims/=3 .or. lfilter .or. limmbou .or. lsponge .or. &
+      if(.not.lcomb .or. numq/=11 .or. ndims/=3 .or. limmbou .or. lsponge .or. &
          rkscheme/='rk3' .or. (trim(flowtype)/='air5hbl' .and. trim(flowtype)/='air5sbli')) &
-        error stop 'compensation requires AIR5 HBL/SBLI RK3 without filter, immersed body, or sponge'
+        error stop 'compensation requires AIR5 HBL/SBLI RK3 without immersed body or sponge'
+      if(lfilter.and.(conschm(4:4)/='e'.or.difschm(4:4)/='e')) &
+        error stop 'compensated AIR5 filtering requires explicit schemes'
+      if(lfilter) then
+        value=''
+        call get_environment_variable('ASTR_AIR5_FILTER_VALIDATION',value,status=status)
+        low=0
+        if(status==0.and.trim(value)=='on') low=1
+        call MPI_Allreduce(low,high,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+        if(high/=1) error stop 'compensated AIR5 filter requires explicit validation opt-in'
+      endif
     endif
     call configure_air5_compensation(choice==1,im,jm,km)
     if(lio .and. choice==1) print *, 'ASTR_AIR5_COMPENSATION=on (q minus carry)'
