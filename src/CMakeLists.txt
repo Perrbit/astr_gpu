@@ -47,12 +47,15 @@ set(ASTR_SOURCES
   strings.F90
   tecio.F90
   test.F90
-  ../tests/gpu_validation/boundary_rhs_manufactured.F90
   thermchem.F90
   ../user_define_module/userdefine.F90
   utility.F90
   validation_io.F90
   vtkio.F90)
+
+if(BUILD_TESTING)
+  list(APPEND ASTR_SOURCES ../tests/gpu_validation/boundary_rhs_manufactured.F90)
+endif()
 
 if(ASTR_WITH_CUDA)
   set(ASTR_GPU_SOURCES
@@ -119,6 +122,39 @@ endif()
 add_executable(astr ${ASTR_SOURCES} ${ASTR_GPU_SOURCES})
 
 if(ASTR_WITH_AIR5_CHEMISTRY)
+  target_compile_definitions(astr PRIVATE ASTR_AIR5_CHEMISTRY)
+endif()
+
+# This capability is needed by the production transport, not only its probes.
+if(ASTR_WITH_CUDA)
+  include(CheckFortranSourceCompiles)
+  include(CMakePushCheckState)
+  cmake_push_check_state(RESET)
+  set(CMAKE_REQUIRED_LIBRARIES MPI::MPI_Fortran)
+  check_fortran_source_compiles("
+      program cuda_query_link_test
+      use iso_c_binding, only: c_int
+      interface
+        function query() bind(C,name='MPIX_Query_cuda_support')
+          import c_int
+          integer(c_int) :: query
+        end function query
+      end interface
+      print *, query()
+      end program cuda_query_link_test
+  " ASTR_HAS_MPI_CUDA_QUERY)
+  cmake_pop_check_state()
+  if(ASTR_HAS_MPI_CUDA_QUERY)
+    target_compile_definitions(astr PRIVATE ASTR_MPI_CUDA_AWARE_QUERY)
+  else()
+    message(STATUS "CUDA-aware query unavailable; host transport remains supported")
+  endif()
+endif()
+
+if(BUILD_TESTING)
+  target_compile_definitions(astr PRIVATE ASTR_BUILD_TESTING)
+
+if(ASTR_WITH_AIR5_CHEMISTRY)
   add_executable(air5_frozen_source_probe EXCLUDE_FROM_ALL
     chemistry_air5_data.F90 chemistry_core.F90 chemistry_properties.F90
     chemistry_kinetics.F90
@@ -175,10 +211,6 @@ if(ASTR_WITH_AIR5_CHEMISTRY)
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/transport_roundoff_mod")
   target_include_directories(air5_transport_roundoff_probe PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/transport_roundoff_mod")
-endif()
-
-if(ASTR_WITH_AIR5_CHEMISTRY)
-  target_compile_definitions(astr PRIVATE ASTR_AIR5_CHEMISTRY)
 endif()
 
 add_executable(boundary_contract_cpu_probe EXCLUDE_FROM_ALL
@@ -295,30 +327,10 @@ if(ASTR_WITH_CUDA)
   target_include_directories(halo_overlap_probe PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/overlap_probe_modules")
   target_link_libraries(halo_overlap_probe PRIVATE MPI::MPI_Fortran)
-  include(CheckFortranSourceCompiles)
-  include(CMakePushCheckState)
-  cmake_push_check_state(RESET)
-  set(CMAKE_REQUIRED_LIBRARIES MPI::MPI_Fortran)
-  check_fortran_source_compiles("
-      program cuda_query_link_test
-      use iso_c_binding, only: c_int
-      interface
-        function query() bind(C,name='MPIX_Query_cuda_support')
-          import c_int
-          integer(c_int) :: query
-        end function query
-      end interface
-      print *, query()
-      end program cuda_query_link_test
-  " ASTR_HAS_MPI_CUDA_QUERY)
-  cmake_pop_check_state()
   if(ASTR_HAS_MPI_CUDA_QUERY)
-    target_compile_definitions(astr PRIVATE ASTR_MPI_CUDA_AWARE_QUERY)
     add_executable(halo_cuda_aware_probe EXCLUDE_FROM_ALL
       ../tests/gpu_validation/halo_cuda_aware_probe.cuf)
     target_link_libraries(halo_cuda_aware_probe PRIVATE MPI::MPI_Fortran)
-  else()
-    message(STATUS "CUDA-aware query probe unavailable; host transport remains supported")
   endif()
 endif()
 
@@ -390,6 +402,8 @@ if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
   target_link_libraries(chemistry_ros2_compensation_gpu_probe PRIVATE MPI::MPI_Fortran)
 endif()
 
+endif() # BUILD_TESTING
+
 if (ASTR_WITH_CUDA AND (Fortran_COMPILER_NAME MATCHES "PGI" OR Fortran_COMPILER_NAME MATCHES "NVHPC"))
   set(ASTR_S0A_MAXREGCOUNT "128" CACHE STRING
       "NVHPC register cap for the controlled S0-A characteristic kernels")
@@ -423,7 +437,7 @@ if (CHEMISTRY)
   target_link_libraries(astr PRIVATE -L${CTRDIR}/lib -lcantera_fortran -lcantera -lstdc++ -pthread)
 endif (CHEMISTRY)
 
-if(ASTR_WITH_CUDA)
+if(ASTR_WITH_CUDA AND BUILD_TESTING)
   # Recompile the production modules in isolation, without the ASTR main program.
   set(ASTR_HALO_CONTRACT_SOURCES ${ASTR_SOURCES})
   list(REMOVE_ITEM ASTR_HALO_CONTRACT_SOURCES astr.F90 CMakeLists.txt)
@@ -436,12 +450,19 @@ if(ASTR_WITH_CUDA)
     "${CMAKE_CURRENT_BINARY_DIR}/halo_contract_modules")
   get_target_property(ASTR_HALO_CONTRACT_LIBRARIES astr LINK_LIBRARIES)
   target_link_libraries(halo_exchange_contract_test PRIVATE ${ASTR_HALO_CONTRACT_LIBRARIES})
+  target_compile_definitions(halo_exchange_contract_test PRIVATE ASTR_BUILD_TESTING)
+  if(ASTR_WITH_AIR5_CHEMISTRY)
+    target_compile_definitions(halo_exchange_contract_test PRIVATE ASTR_AIR5_CHEMISTRY)
+  endif()
   if(ASTR_HAS_MPI_CUDA_QUERY)
     target_compile_definitions(halo_exchange_contract_test PRIVATE ASTR_MPI_CUDA_AWARE_QUERY)
   endif()
 endif()
 
 option(ASTR_BUILD_MPI_COMPLETION_TRACE "Build optional MPI completion profiling interposer" OFF)
+if(ASTR_BUILD_MPI_COMPLETION_TRACE AND NOT BUILD_TESTING)
+  message(FATAL_ERROR "ASTR_BUILD_MPI_COMPLETION_TRACE requires BUILD_TESTING=ON")
+endif()
 if(ASTR_WITH_CUDA AND ASTR_BUILD_MPI_COMPLETION_TRACE)
   enable_language(C)
   get_filename_component(ASTR_COMPILER_BIN "${CMAKE_Fortran_COMPILER}" DIRECTORY)
@@ -469,6 +490,7 @@ install(TARGETS astr
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 
+if(BUILD_TESTING)
 add_executable(rectilinear_metric_halo_probe EXCLUDE_FROM_ALL
   rectilinear_metric_halo.F90 ../tests/gpu_validation/rectilinear_metric_halo_probe.F90)
 set_target_properties(rectilinear_metric_halo_probe PROPERTIES
@@ -490,3 +512,4 @@ set_target_properties(centered_diffusion_response_probe PROPERTIES
   Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/diffusion_response_modules")
 target_include_directories(centered_diffusion_response_probe PRIVATE
   "${CMAKE_CURRENT_BINARY_DIR}/diffusion_response_modules")
+endif()

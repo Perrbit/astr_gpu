@@ -21,9 +21,11 @@ module test
     use commvar,   only : testmode
     use parallel,  only : mpistop, bcast
     use cmdefne,   only : readkeyboad
+#ifdef ASTR_BUILD_TESTING
     use boundary_rhs_manufactured, only: check_boundary_rhs,check_boundary_stage, &
       check_initial_profile_mpi,check_conservative_admission,                     &
       check_nscbc_characteristic_policy
+#endif
     use conservative_boundary_runtime, only: load_conservative_boundary_environment,conservative_boundary
 
     !-------------------------------------------------------------------
@@ -37,21 +39,28 @@ module test
     ! Execute selected test
     !-------------------------------------------------------------------
     select case (trim(testmode))
+#ifdef ASTR_BUILD_TESTING
     case ('bcad')
       call check_conservative_admission()
     case ('bciv')
       call check_initial_profile_mpi()
     case ('bcst')
       call check_boundary_stage()
+#endif
     case ('bcfg')
       call load_conservative_boundary_environment()
       write(*,'(A,1X,I0,1X,L1,11(1X,ES25.16))') 'BOUNDARY_CONFIG_RANK',mpirank, &
         conservative_boundary%enabled,conservative_boundary%split_x, &
         conservative_boundary%q_left,conservative_boundary%q_right
+#ifdef ASTR_BUILD_TESTING
     case ('bcrh')
       call check_boundary_rhs
     case ('bcgc')
       call check_nscbc_characteristic_policy()
+#else
+    case ('bcad','bciv','bcst','bcrh','bcgc')
+      error stop 'Boundary validation commands require BUILD_TESTING=ON'
+#endif
     
     case ('grad')
       call gradtest
@@ -83,7 +92,9 @@ module test
         write(*,*) ' | accu    - Test numerical accuracy                          |'
         write(*,*) ' | enst    - Test enstrophy evaluation                        |'
         write(*,*) ' | bc      - Test boundary condition treatment                |'
+#ifdef ASTR_BUILD_TESTING
         write(*,*) ' | bcrh    - Test full-halo physical boundary RHS             |'
+#endif
         write(*,*) ' | bcfg    - Test boundary configuration MPI broadcast       |'
         write(*,*) ' +------------------------------------------------------------+'
       endif

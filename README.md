@@ -26,8 +26,33 @@ make
 The executable will be located at:
 ./bin/astr
 
+For the current CUDA Fortran implementation, see the Chinese
+[user guide](USER_GUIDE.md) for deployment, input files, boundary conditions,
+MPI/GPU configuration, restart, optional features, and supported limits.
+The legacy CPU instructions below do not define GPU feature availability.
+
 Option 2: Using CMake (Recommended)
 CMake provides a safer and more flexible build environment. To compile and install using CMake:
+
+For a production build without the added validation sources and probe targets,
+configure with `-DBUILD_TESTING=OFF`. The `tests/` directory may then be omitted
+from the source package. Keep `examples/` and `user_define_module/`: the original
+example configuration and production source dependencies remain unchanged.
+`BUILD_TESTING=ON` (the default) retains development probes and the added
+boundary-validation commands. CUDA-aware MPI detection is available in either
+mode. Reconfigure existing build directories explicitly when switching modes.
+
+With a compatible NVHPC, MPI and HDF5 environment, a CUDA production build is:
+
+```bash
+cmake -S . -B build_prod -DCMAKE_Fortran_COMPILER=nvfortran \
+  -DASTR_WITH_CUDA=ON -DBUILD_TESTING=OFF
+cmake --build build_prod --target astr -j 2
+```
+
+This enables CUDA support in the binary; `usegpu` remains an input-file choice.
+Fixed AIR5 support is a separate opt-in build option,
+`-DASTR_WITH_AIR5_CHEMISTRY=ON`, and is not the legacy Cantera `CHEMISTRY` option.
 
 Create a case directory:
 

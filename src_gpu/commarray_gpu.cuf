@@ -3,7 +3,7 @@ module commarray_gpu
   implicit none
   integer,parameter :: GPU_FILTER_WORKSPACE_FULL=0
   integer,parameter :: GPU_FILTER_WORKSPACE_SCALAR=1
-  integer,save :: gpu_filter_workspace_mode=GPU_FILTER_WORKSPACE_FULL
+  integer,save :: gpu_filter_workspace_mode=GPU_FILTER_WORKSPACE_SCALAR
   logical,save :: gpu_filter_workspace_configured=.false.
   real(8),allocatable,device :: q_d(:,:,:,:),qrhs_d(:,:,:,:),qsave_d(:,:,:,:),qwork_d(:,:,:,:)
   real(8),allocatable,device :: filter_work_d(:,:,:)
@@ -40,7 +40,7 @@ contains
     value=''
     call get_environment_variable('ASTR_GPU_FILTER_WORKSPACE',value,status=status)
     choice=-1
-    if(status==1 .or. (status==0 .and. len_trim(value)==0)) choice=GPU_FILTER_WORKSPACE_FULL
+    if(status==1 .or. (status==0 .and. len_trim(value)==0)) choice=GPU_FILTER_WORKSPACE_SCALAR
     if(status==0) then
       select case(trim(adjustl(value)))
       case('full')

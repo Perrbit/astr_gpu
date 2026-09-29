@@ -1,0 +1,12 @@
+############################################################
+# Short startup only; maxstep=2 means 3 updates from step 0.
+############################################################
+
+# lwsequ,lwslic,lavg,lcracon
+f,f,f,f
+
+# maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg
+2,2,1000000,1000000,1,1000000
+
+# deltat
+1.d-5

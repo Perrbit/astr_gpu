@@ -8,6 +8,7 @@ set(AUTHOR_DETAILS "jian.fang@stfc.ac.uk")
 set(DESCRIPTION "Building ASTR using cmake")
 option(ASTR_WITH_CUDA "Build CUDA Fortran GPU support into the ASTR binary" OFF)
 option(ASTR_WITH_AIR5_CHEMISTRY "Build the fixed FP64 air5 chemistry backend" OFF)
+option(BUILD_TESTING "Build with tests" ON)
 
 message(STATUS "building ${PROJECT_NAME}")
 
@@ -178,7 +179,6 @@ set(CMAKE_INSTALL_PREFIX ${ASTR_ROOT})
 add_subdirectory(src)
 
 # Create an example dir with all input.i3d example files
-option(BUILD_TESTING "Build with tests" ON)
 set(test_dir "${PROJECT_BINARY_DIR}/Test")
 add_subdirectory(examples)
 message(STATUS "Before test main ${test_dir}")

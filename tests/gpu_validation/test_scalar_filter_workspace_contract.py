@@ -18,10 +18,15 @@ MEMCHECK_DRIVER = (ROOT / "tests" / "gpu_validation" / "run_tgv_gpu_memcheck.sh"
 
 
 class ScalarFilterWorkspaceContract(unittest.TestCase):
-    def test_runtime_mode_defaults_to_full_and_is_rank_consistent(self):
+    def test_runtime_mode_defaults_to_scalar_and_is_rank_consistent(self):
         self.assertIn("ASTR_GPU_FILTER_WORKSPACE", COMMARRAY)
         self.assertIn("GPU_FILTER_WORKSPACE_FULL", COMMARRAY)
         self.assertIn("GPU_FILTER_WORKSPACE_SCALAR", COMMARRAY)
+        self.assertIn("gpu_filter_workspace_mode=GPU_FILTER_WORKSPACE_SCALAR", COMMARRAY)
+        self.assertIn(
+            "if(status==1 .or. (status==0 .and. len_trim(value)==0)) choice=GPU_FILTER_WORKSPACE_SCALAR",
+            COMMARRAY,
+        )
         self.assertIn("mpi_allreduce", COMMARRAY.lower())
         self.assertIn("lowest/=highest", COMMARRAY.lower())
 

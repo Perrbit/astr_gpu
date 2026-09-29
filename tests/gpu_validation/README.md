@@ -1,5 +1,34 @@
 # GPU Validation
 
+## Production Build Without Validation Sources
+
+`BUILD_TESTING` defaults to `ON`, preserving the development targets. Configure
+with `-DBUILD_TESTING=OFF` to build `astr` without any source from `tests/`.
+This disables the added `bcad/bciv/bcst/bcrh/bcgc` validation commands and the
+standalone probes. Invoking a disabled command fails with an explicit message.
+Original CPU built-in tests and the root `examples/` configuration are retained.
+Keep `examples/` in a production source distribution.
+
+CUDA-aware MPI detection and AIR5 production definitions remain independent of
+`BUILD_TESTING`. The optional MPI completion tracing interposer requires
+`BUILD_TESTING=ON` because its implementation lives under `tests/`.
+Existing development build caches with testing disabled must be reconfigured
+with `-DBUILD_TESTING=ON` before building probes or running the added commands.
+
+An opt-in integration check configures a source copy with no `tests/` directory,
+covering CPU/CUDA and AIR5 off/on. It also checks development targets:
+
+```bash
+ASTR_TEST_CMAKE_COMPILER=/path/to/nvfortran \
+HDF5_ROOT=/path/to/hdf5 \
+ASTR_TEST_CMAKE_BUILD=1 \
+python -m pytest -q tests/gpu_validation/test_cmake_production_decoupling.py
+```
+
+Set the matching MPI wrapper and compiler runtime paths in the environment.
+Omit `ASTR_TEST_CMAKE_BUILD=1` for configure-only checks. This checks build
+separation, not numerical or physical validation.
+
 ## AIR5 Characteristic Top Acoustic Gate
 
 `ASTR_AIR5_SOURCE_MODE=frozen` explicitly disables chemistry and V-T sources
