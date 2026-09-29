@@ -1,0 +1,1475 @@
+!+---------------------------------------------------------------------+
+!| This module contains subroutines in hte main computational loop.    |
+!+---------------------------------------------------------------------+
+!| CHANGE RECORD                                                       |
+!| -------------                                                       |
+!| 09-02-2021  | Created by J. Fang                                    |
+!+---------------------------------------------------------------------+
+module mainloop
+  !
+  use constdef
+  use parallel, only: lio,mpistop,mpirank,qswap,mpirankname,pmax,      &
+                      ptime,irk,jrk,irkm,jrkm
+  use commvar,  only: im,jm,km,ia,ja,ka,ctime,nstep,lcracon,lreport,   &
+                      ltimrpt,rkstep
+  use commarray,only: crinod
+  use tecio
+  use stlaio,   only: get_unit
+  use utility,  only: timereporter
+  !
+  implicit none
+  !
+  integer :: loop_counter=0
+  integer :: nxtbakup,feqbakup=5
+  integer :: fhand_err
+  integer :: nstep0
+  real(8) :: time_start
+  !
+  contains
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine is to advance the solution.                       |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 09-02-2021  | Created by J. Fang @ Warrington                     |
+  !+-------------------------------------------------------------------+
+  subroutine steploop
+    !
+    use commvar,  only: maxstep,time,deltat,feqchkpt,feqwsequ,feqlist, &
+                        nsrpt,flowtype,limmbou,use_gpu
+    use readwrite,only: readcont,timerept,nxtchkpt,nxtwsequ,           &
+                        write_validation_rk_snapshot,writemon
+    use commcal,  only: cflcal
+#ifdef _CUDA
+    use cfl_gpu, only: collect_cfl_gpu
+#endif
+    use ibmethod, only: ibforce
+    use userdefine,only: udf_eom_set
+    use parallel, only : bcast
+    use commarray,only: x
+    use userdefine, only: udf_setup_before_comp
+    use benchmark_runtime, only: begin_complete_step_timing,end_complete_step_timing
+    !
+    ! local data
+    real(8) :: time_beg,time_next_step,crange,completed_step_dt
+    integer :: hours,minus,secod,n,i,ios,j,k
+    logical,save :: firstcall = .true.
+    logical :: lfex
+    integer,dimension(8) :: value
+    integer,allocatable :: idata(:,:)
+    real(8) :: time_total,time_dowhile,time_per_loop,time_save
+    !
+    time_start=ptime()
+    time_total  =0.d0
+    time_save   =0.d0
+    time_dowhile=0.d0
+    !
+    nstep0=nstep
+    !
+    if(firstcall) then
+      
+      ! crange=0.01d0
+      ! do j=0,jm
+      ! do i=0,im
+      !   if( x(i,j,0,1)>=20.d0-crange .and. &
+      !       x(i,j,0,1)<=20.d0+crange .and. &
+      !       x(i,j,0,2)>=-crange .and. &
+      !       x(i,j,0,2)<= crange ) then
+      !     crinod(i,j,:)=.true.
+      !   else
+      !     crinod(i,j,:)=.false.
+      !   endif
+      ! enddo
+      ! enddo
+      
+      crinod=.false.
+      
+      firstcall=.false.
+      !
+    endif
+    
+    call udf_setup_before_comp()
+
+    nxtchkpt=nstep+feqchkpt
+    nxtwsequ=nstep+feqwsequ
+    nxtbakup=nstep+feqbakup
+    !
+    nsrpt   =nstep
+    !
+    fhand_err=get_unit()
+    open(fhand_err,file='errnode.log')
+    !
+    ! if(lio .and. lreport .and. ltimrpt) call timereporter(routine='steploop',timecost=time_dowhile,  &
+    !                           message='init file')
+    
+    time_beg=ptime()
+
+    do while(nstep<=maxstep)
+
+      call begin_complete_step_timing()
+      call crashcheck
+
+      completed_step_dt=deltat
+      call time_integration_rk
+      call end_complete_step_timing(nstep)
+#ifdef ASTR_AIR5_CHEMISTRY
+      call writemon(time+completed_step_dt)
+#endif
+
+      if(.not.use_gpu .and. nstep+1<=maxstep .and.                     &
+         mod(nstep+1,feqchkpt)==0) call write_validation_rk_snapshot()
+
+      if(mod(nstep,feqchkpt)==0) then
+        !
+        call readcont
+        !
+        nxtchkpt=nstep+feqchkpt
+        !
+#ifdef _CUDA
+        if(use_gpu) then
+          call cflcal(completed_step_dt,collect_cfl_gpu)
+        else
+#endif
+          call cflcal(completed_step_dt)
+#ifdef _CUDA
+        endif
+#endif
+        !
+        time_per_loop=ptime()-time_start
+
+        if(lio) then
+
+          write(*,'(A,I0,A,F16.8,A)')' ** time cost at step',nstep,':',time_per_loop-time_save,'s'
+
+          time_save=time_per_loop
+
+          ! write(*,'(A,I0)',advance='no')'  ** next checkpoint at step : ',nxtchkpt
+          ! !
+          ! if(loop_counter==0) then
+          !   write(*,*)''
+          ! else
+          !   !
+          !   time_next_step=(ctime(2)-ctime(6))*dble(feqchkpt)/dble(nstep-nsrpt)
+          !   hours=int(time_next_step/3600.d0)
+          !   minus=int((time_next_step-3600.d0*dble(hours))/60.d0)
+          !   secod=time_next_step-3600.d0*dble(hours)-60.d0*dble(minus)
+          !   !
+          !   write(*,'(3(A,I0),A)',advance='no')', after ',hours,'h:',  &
+          !                                      minus,'m:',secod,'s'
+          !   call date_and_time(VALUES=value)
+          !   !
+          !   secod=secod+value(7)
+          !   if(secod>=60) then
+          !     secod=secod-60
+          !     minus=minus+1
+          !   endif
+          !   minus=minus+value(6)
+          !   if(minus>=60) then
+          !     minus=minus-60
+          !     hours=hours+1
+          !   endif
+          !   hours=hours+value(5)
+          !   if(hours>=24) then
+          !     hours=hours-24
+          !   endif
+          !   !
+          !   write(*,'(3(A,I0))')', estimated at ',hours,':',minus,':',secod
+          !   !
+          !   time_next_step=ctime(2)*dble(maxstep-nstep)/dble(nstep-nsrpt)
+          !   hours=int(time_next_step/3600.d0)
+          !   minus=int((time_next_step-3600.d0*dble(hours))/60.d0)
+          !   secod=time_next_step-3600.d0*dble(hours)-60.d0*dble(minus)
+          !   !
+          !   write(*,'(3(A,I0),A)',advance='no')'  ** job ends after ', &
+          !                               hours,'h:',minus,'m:',secod,'s'
+          !   call date_and_time(VALUES=value)
+          !   !
+          !   secod=secod+value(7)
+          !   if(secod>=60) then
+          !     secod=secod-60
+          !     minus=minus+1
+          !   endif
+          !   minus=minus+value(6)
+          !   if(minus>=60) then
+          !     minus=minus-60
+          !     hours=hours+1
+          !   endif
+          !   hours=hours+value(5)
+          !   if(hours>=24) then
+          !     hours=hours-24
+          !   endif
+          !   !
+          !   write(*,'(3(A,I0))')', estimated at ',hours,':',minus,':',secod
+          !   !
+          !   nsrpt=nstep
+          !   !
+          !   if(lio .and. lreport .and. ltimrpt) call timereporter(routine='steploop',timecost=time_dowhile,  &
+          !                     message='main loop')
+          ! endif
+          !
+        endif
+        !
+        ! call timerept
+        !
+        ! if(limmbou) call ibforce
+        !
+        loop_counter=0
+        !
+      endif
+      !
+      call udf_eom_set
+      !
+      loop_counter=loop_counter+1
+      nstep=nstep+1
+      time=time+deltat
+      !
+    enddo
+    !
+    ! if(limmbou) call timerept
+    !
+    ! call ibforce
+    !
+    time_total=ptime()-time_start
+    !
+    ! if(lio .and. lreport .and. ltimrpt) call timereporter(timecost=time_total,mode='final')
+    !
+    ! call errest
+    !
+  end subroutine steploop
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine steploop.                               |
+  !+-------------------------------------------------------------------+
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine is to calculate error to estimate order of        |
+  !| accuracy.                                                         |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 09-02-2021  | Created by J. Fang @ Warrington                     |
+  !+-------------------------------------------------------------------+
+  subroutine errest
+    !
+    use commvar, only : flowtype,xmin,xmax,ymin,ymax,zmin,zmax,time
+    use commarray,only: x,vel,rho,prs,spc,tmp,q,acctest_ref
+    use parallel, only: psum,pmax,mpirankname
+    !
+    real(8) :: l1error,l2error,lineror
+    !
+    integer :: i,j,k,fh
+    real(8) :: xc,yc,zc,rvor,radi2,var1
+    !
+    if(trim(flowtype)=='accutest') then
+      !
+      ! error calculation
+      l1error=0.d0
+      l2error=0.d0
+      lineror=0.d0
+      !
+      do i=0,im
+        !
+        var1=(acctest_ref(i)-spc(i,0,0,1))
+        !
+        l1error=l1error+abs(var1)
+        l2error=l2error+var1**2
+        lineror=max(lineror,abs(var1))
+        !
+        ! if(lio) print*,i,acctest_ref(i),spc(i,0,0,1)
+        !
+      enddo
+      !
+      ! print*,l1error,dble(ia)
+      l1error=psum(l1error)/dble(ia)
+      l2error=sqrt(psum(l2error)/dble(ia))
+      lineror=pmax(lineror)
+      !
+      if(lio) then
+        print*,' ** nstep= ',nstep,'time= ',time
+        write(*,'(2X,A7,3(1X,A13))')'mx','L1_error','L2_error','L∞_error'
+        write(*,'(2X,I7,3(1X,E13.6E2))')ia,l1error,l2error,lineror
+      endif
+      !
+      fh=get_unit()
+      open(fh,file='prof'//mpirankname//'.dat')
+      do i=0,im
+        write(fh,*)x(i,0,0,1),acctest_ref(i),spc(i,0,0,1)
+      enddo
+      close(fh)
+      print*,' << prof',mpirankname,'.dat ... done.'
+      !
+    endif
+    !
+  end subroutine errest
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine errest.                                 |
+  !+-------------------------------------------------------------------+
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine advances the field solution in time using 3-step  |
+  !| 3rd-rder Rungle-Kutta scheme.                                     |
+  !+-------------------------------------------------------------------+
+  !| rk3: Gottlieb, S., & Shu, C. W. (1998). Total variation           |
+  !| diminishing Runge-Kutta schemes. Math. Comput., 67, 73-85         |
+  !| rk4: A. Dipankar, T.K. Sengupta, Symmetrized compact scheme for   |
+  !| receptivity study of 2D transitional channel flow, Journal of     |
+  !| Computational Physics 215 (2006) 245–273.                         |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 27-Nov-2018: Created by J. Fang @ STFC Daresbury Laboratory       |
+  !| 04-Nov-2024: add all explicit rk time integrator into one routine |
+  !+-------------------------------------------------------------------+
+  subroutine time_integration_rk(timerept)
+    !
+    use commvar,  only : im,jm,km,numq,deltat,lfilter,feqchkpt,hm,     &
+                         lavg,feqavg,nstep,limmbou,turbmode,feqslice,  &
+                         feqwsequ,lwslic,lreport,flowtype,     &
+                         ndims,num_species,maxstep,rkscheme,use_gpu,lcomb,iomode
+    use commarray,only : x,q,qrhs,rho,vel,prs,tmp,spc,jacob
+    use fludyna,  only : updatefvar
+    use comsolver,only : filterq,filter2e,gradcal
+    use sponge_layer,only : spongefilter
+    use solver,   only : rhscal
+    use bc,       only : boucon,immbody,bctype,twall,turbinf
+    use parallel, only : qswap
+    use conservative_boundary_runtime, only: conservative_boundary, &
+                           apply_conservative_boundary_stage
+    use validation_io, only: rhs_validation_requested,write_rhs_validation_snapshot, &
+                             write_q_validation_snapshot, &
+                             write_primitive_validation_snapshot
+    use benchmark_runtime, only: benchmark_cpu_rk_timing_enabled
+#ifdef ASTR_AIR5_CHEMISTRY
+    use iso_fortran_env, only: real64
+    use chemistry_flow_runtime, only: air5_reacting_flowtype,air5_open_x_flowtype, &
+                                     air5_hbl_flowtype
+    use chemistry_flow_solver, only: air5_chemistry_half_step, &
+                                     air5_save_filter_species_base, &
+                                     air5_limit_filtered_state,air5_compensation_filter_state
+    use chemistry_postshock_boundary, only: apply_air5_postshock_boundary
+    use chemistry_hbl_boundary, only: apply_air5_hbl_boundary
+    use chemistry_compensation, only: air5_compensated,air5_carry,air5_origin, &
+      air5_origin_carry,compensated_add,compensated_rk
+#endif
+#ifdef COMB
+    use thermchem,only : imp_euler_ode,heatrate
+    use fdnn
+    use commvar,  only : odetype
+#endif 
+#ifdef _CUDA
+    use gpu_runtime, only : gpu_time_integration_rk,gpu_prepare_rkfirst_stats, &
+                            gpu_write_flow_statistics,gpu_exchange_solution_halo, &
+                            gpu_sync_flow_to_host,gpu_restore_stats_snapshot, &
+                            gpu_accumulate_compact_statistics, &
+                            gpu_prepare_compact_statistics_checkpoint, &
+                            gpu_commit_compact_statistics_checkpoint, &
+                            gpu_begin_complete_step_timing, &
+                            gpu_end_complete_step_timing
+#endif
+    use readwrite, only : writechkpt,writeslice
+#ifdef _CUDA
+    use checkpoint_gpu, only: prepare_exact_checkpoint_gpu,commit_exact_checkpoint_gpu
+#endif
+    use userdefine, only : udf_write
+    !
+    ! argument
+    logical,intent(in),optional :: timerept
+    !
+    ! local data
+    logical,save :: firstcall = .true.
+    real(8),allocatable,save :: rkcoe(:,:)
+    integer :: i,j,k,m
+    real(8) :: time_beg,time_beg_rhs,time_beg_sta,time_beg_io
+    real(8),allocatable,save :: qsave(:,:,:,:)
+    real(8),allocatable :: rhsav(:,:,:,:)
+    integer :: dt_ratio,jdnn,idnn
+    real(8) :: hrr,time_beg_2
+    real(8) :: cpu_rk_seconds
+    real(8),save :: subtime=0.d0
+    integer,save :: n_rk_steps
+    logical :: gpu_checkpoint_due
+    logical :: gpu_slice_due
+    logical :: nscbc_boundary_halo_required
+    logical :: conservative_case
+    logical :: dynamic_inflow_output
+    logical :: air5_reacting_case
+    logical :: air5_open_x_case
+    logical :: air5_hbl_case
+    logical :: cpu_rk_timing
+    !
+    time_beg=ptime()
+    cpu_rk_timing=benchmark_cpu_rk_timing_enabled()
+    conservative_case=conservative_boundary%enabled
+    dynamic_inflow_output=bctype(1)==11 .and. trim(turbinf)=='intp'
+    air5_reacting_case=.false.
+    air5_open_x_case=.false.
+    air5_hbl_case=.false.
+#ifdef ASTR_AIR5_CHEMISTRY
+    air5_reacting_case=lcomb .and. air5_reacting_flowtype(flowtype)
+    air5_open_x_case=lcomb .and. air5_open_x_flowtype(flowtype)
+    air5_hbl_case=lcomb .and. air5_hbl_flowtype(flowtype)
+    if(air5_compensated .and. lcracon) &
+      error stop 'AIR5 compensation does not support automatic crash-fix state replacement'
+#endif
+
+#ifdef _CUDA
+    if(use_gpu) then
+      call gpu_begin_complete_step_timing()
+      gpu_checkpoint_due = nstep > 0 .and. mod(nstep,feqchkpt)==0
+      gpu_slice_due = nstep > 0 .and. lwslic .and. mod(nstep,feqslice)==0
+      if(gpu_checkpoint_due .or. gpu_slice_due) then
+        call gpu_sync_flow_to_host()
+        if(gpu_checkpoint_due) call prepare_exact_checkpoint_gpu()
+        if(flowtype(1:2)/='0d' .and. .not.conservative_case .and. &
+           .not.dynamic_inflow_output .and. .not.air5_open_x_case .and. &
+           .not.air5_hbl_case) then
+          ! Match the CPU checkpoint phase without mutating resident device state.
+          nscbc_boundary_halo_required = any(bctype == 22) .or. any(bctype == 52)
+          if(nscbc_boundary_halo_required) call qswap(timerept=ltimrpt)
+          call boucon
+          call qswap(timerept=ltimrpt)
+        endif
+      endif
+      call gpu_prepare_rkfirst_stats()
+      if(flowtype(1:2)/='0d') call gpu_exchange_solution_halo()
+      call gpu_write_flow_statistics()
+      call gpu_accumulate_compact_statistics()
+      call gpu_restore_stats_snapshot()
+      if(gpu_slice_due) then
+        call writeslice(ctime(23),include_derivatives=.false.)
+      endif
+      if(gpu_checkpoint_due) then
+        call gpu_prepare_compact_statistics_checkpoint()
+        call writechkpt()
+        call commit_exact_checkpoint_gpu()
+        call gpu_commit_compact_statistics_checkpoint()
+      endif
+      call gpu_time_integration_rk(.true.,.false.)
+      call gpu_end_complete_step_timing()
+      return
+    endif
+#else
+    if(use_gpu) then
+      stop 'Input requested use_gpu=t, but this binary was not built with ASTR_WITH_CUDA=ON'
+    endif
+#endif
+    
+    if(air5_reacting_case .and. nstep>0 .and. mod(nstep,feqchkpt)==0) then
+      if(iomode/='n') then
+        ! AIR5 restart files represent the complete state before Strang splitting.
+        call writechkpt()
+        call udf_write
+      endif
+    endif
+
+#ifdef COMB
+    if(odetype=='dnn') then 
+      if(nstep==nstep0) then
+        call initialization
+        call initialize_locell(im,jm,km)
+      endif 
+      dnnidx(:,:,:)=1
+      jdnn=0
+      dt_ratio=delta_t/deltat
+    endif 
+#endif
+
+    if(firstcall) then
+
+      if(rkscheme=='rk3') then
+
+        allocate(rkcoe(3,3))
+
+        rkcoe(1,1)=1.d0
+        rkcoe(2,1)=0.d0
+        rkcoe(3,1)=1.d0
+        !
+        rkcoe(1,2)=0.75d0
+        rkcoe(2,2)=0.25d0
+        rkcoe(3,2)=0.25d0
+        !
+        rkcoe(1,3)=num1d3
+        rkcoe(2,3)=num2d3
+        rkcoe(3,3)=num2d3
+
+        n_rk_steps=3
+        !
+      elseif(rkscheme=='rk4') then
+
+        allocate(rkcoe(2,4))
+
+        rkcoe(1,1)=0.5d0
+        rkcoe(1,2)=0.5d0
+        rkcoe(1,3)=1.d0
+        rkcoe(1,4)=num1d6
+        !
+        rkcoe(2,1)=1.d0
+        rkcoe(2,2)=2.d0
+        rkcoe(2,3)=2.d0
+        rkcoe(2,4)=1.d0
+
+        n_rk_steps=4
+
+      else
+        stop ' rkscheme error @  time_integration_rk'
+      endif
+      !
+      allocate(qsave(0:im,0:jm,0:km,1:numq))
+
+      firstcall=.false.
+      !
+    endif
+
+    if(rkscheme=='rk4') allocate(rhsav(0:im,0:jm,0:km,1:numq))
+
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(air5_reacting_case) then
+      if(rhs_validation_requested()) &
+        call write_q_validation_snapshot('pre_chemistry',nstep,1)
+      call air5_chemistry_half_step(0.5_real64*deltat,1)
+      if(air5_open_x_case) call apply_air5_postshock_boundary()
+      if(air5_hbl_case) call apply_air5_hbl_boundary()
+      call updatefvar
+      call qswap(timerept=ltimrpt)
+      if(rhs_validation_requested()) &
+        call write_q_validation_snapshot('post_chemistry',nstep,1)
+    endif
+#endif
+    !
+    do rkstep=1,n_rk_steps
+      
+      if(lfilter) then
+#ifdef ASTR_AIR5_CHEMISTRY
+        if(air5_compensated) then
+          call air5_compensation_filter_state(.false.)
+          call air5_compensation_filter_state(.true.)
+          call filterq(timerept=ltimrpt)
+          call air5_compensation_filter_state(.true.)
+        endif
+        if(lcomb) call air5_save_filter_species_base()
+#endif
+        call filterq(timerept=ltimrpt)
+#ifdef ASTR_AIR5_CHEMISTRY
+        if(lcomb) then
+          call air5_compensation_filter_state(.false.)
+          call air5_limit_filtered_state()
+          call updatefvar
+        endif
+#endif
+      endif
+
+      if( (loop_counter==feqchkpt .or. loop_counter==0) .and. rkstep==1 ) then
+        lreport=.true.
+      else
+        lreport=.false.
+      endif
+
+      qrhs=0.d0
+      
+      if(limmbou) then
+        call immbody(timerept=ltimrpt)
+
+        if(flowtype(1:2)/='0d') call qswap(timerept=ltimrpt)
+      endif
+
+      if(.not.conservative_case) then
+        nscbc_boundary_halo_required = any(bctype == 22) .or. any(bctype == 52)
+        if(flowtype(1:2)/='0d' .and. nscbc_boundary_halo_required) then
+          ! NSCBC transverse derivatives and optional filters need current halos.
+          call qswap(timerept=ltimrpt)
+        endif
+        if(air5_open_x_case) then
+#ifdef ASTR_AIR5_CHEMISTRY
+          call apply_air5_postshock_boundary()
+#endif
+        elseif(air5_hbl_case) then
+#ifdef ASTR_AIR5_CHEMISTRY
+          call apply_air5_hbl_boundary()
+#endif
+        elseif(flowtype(1:2)/='0d') then
+          call boucon
+        endif
+
+        if(flowtype(1:2)/='0d') call qswap(timerept=ltimrpt)
+        if(rhs_validation_requested()) call write_rhs_validation_snapshot('boundary')
+      endif
+
+      call gradcal()
+
+      if(flowtype(1:2)=='0d') jacob=1.d0
+
+
+      time_beg_2=ptime()
+
+      if(rkstep==1) then
+
+#ifdef ASTR_AIR5_CHEMISTRY
+        if(air5_compensated) then
+          air5_origin=q(0:im,0:jm,0:km,:)
+          air5_origin_carry=air5_carry
+        endif
+#endif
+
+        do m=1,numq
+          qsave(0:im,0:jm,0:km,m)=q(0:im,0:jm,0:km,m)*jacob(0:im,0:jm,0:km)
+
+          if(rkscheme=='rk4') rhsav(0:im,0:jm,0:km,m)=0.d0
+        enddo
+
+        call rkfirst(skip_checkpoint=air5_reacting_case)
+
+      endif
+
+      if(rhs_validation_requested()) then
+        call write_q_validation_snapshot('pre_rhs')
+        if(conservative_case .or. lcomb) &
+          call write_primitive_validation_snapshot('pre_rhs_primitives')
+      endif
+
+      if(conservative_case) then
+        call rhscal(timerept=ltimrpt,physical_halo_rhs=.true., &
+                    metric_consistent_eps=.true.)
+      else
+        call rhscal(timerept=ltimrpt)
+      endif
+
+      if(rkscheme=='rk3') then
+#ifdef ASTR_AIR5_CHEMISTRY
+        if(air5_compensated) then
+          do m=1,numq
+            do k=0,km
+              do j=0,jm
+                do i=0,im
+                  if(rkstep==1) then
+                    call compensated_add(q(i,j,k,m),air5_carry(i,j,k,m), &
+                      deltat*qrhs(i,j,k,m)/jacob(i,j,k))
+                  else
+                    call compensated_rk(q(i,j,k,m),air5_carry(i,j,k,m), &
+                      air5_origin(i,j,k,m),air5_origin_carry(i,j,k,m), &
+                      rkcoe(1,rkstep),rkcoe(2,rkstep), &
+                      rkcoe(3,rkstep)*deltat*qrhs(i,j,k,m)/jacob(i,j,k))
+                  endif
+                enddo
+              enddo
+            enddo
+          enddo
+        else
+#endif
+        do m=1,numq
+          !
+          q(0:im,0:jm,0:km,m)=rkcoe(1,rkstep)*qsave(0:im,0:jm,0:km,m)+      &
+                              rkcoe(2,rkstep)*q(0:im,0:jm,0:km,m)*          &
+                                       jacob(0:im,0:jm,0:km)+            &
+                              rkcoe(3,rkstep)*qrhs(0:im,0:jm,0:km,m)*deltat
+          !
+          q(0:im,0:jm,0:km,m)=q(0:im,0:jm,0:km,m)/jacob(0:im,0:jm,0:km)
+          !
+        enddo
+#ifdef ASTR_AIR5_CHEMISTRY
+        endif
+#endif
+      elseif(rkscheme=='rk4') then
+        if(rkstep<=3) then
+          do m=1,numq
+            q(0:im,0:jm,0:km,m)=qsave(0:im,0:jm,0:km,m)+                 &
+                                rkcoe(1,rkstep)*deltat*qrhs(0:im,0:jm,0:km,m)
+            !
+            q(0:im,0:jm,0:km,m)=q(0:im,0:jm,0:km,m)/jacob(0:im,0:jm,0:km)
+            !
+            rhsav(0:im,0:jm,0:km,m)=rhsav(0:im,0:jm,0:km,m)+             &
+                                    rkcoe(2,rkstep)*qrhs(0:im,0:jm,0:km,m)
+          enddo
+        else
+          do m=1,numq
+            q(0:im,0:jm,0:km,m)=qsave(0:im,0:jm,0:km,m)+                 &
+                                    rkcoe(1,rkstep)*deltat*(             &
+                                   qrhs(0:im,0:jm,0:km,m)+               &
+                                   rhsav(0:im,0:jm,0:km,m) )
+            !
+            q(0:im,0:jm,0:km,m)=q(0:im,0:jm,0:km,m)/jacob(0:im,0:jm,0:km)
+            !
+          enddo
+        endif
+      else
+        stop ' !! error2 @ time_integration_rk'
+      endif
+      !
+      call spongefilter
+      !
+#ifdef ASTR_AIR5_CHEMISTRY
+      if(air5_open_x_case) call apply_air5_postshock_boundary()
+      if(air5_hbl_case) call apply_air5_hbl_boundary()
+#endif
+      !
+      time_beg_2=ptime()
+      !
+#ifdef ASTR_AIR5_CHEMISTRY
+      if(lcomb .and. rhs_validation_requested()) &
+        call write_q_validation_snapshot('pre_updatefvar')
+#endif
+      call updatefvar
+
+      if(rhs_validation_requested()) call write_q_validation_snapshot('post_update')
+
+      if(conservative_case) then
+        call write_q_validation_snapshot('pre_boundary')
+        call write_primitive_validation_snapshot('pre_boundary_primitives')
+        call apply_conservative_boundary_stage(twall(3))
+        call write_q_validation_snapshot('post_boundary')
+        call write_primitive_validation_snapshot('post_boundary_primitives')
+      endif
+      !
+      ctime(15)=ctime(15)+ptime()-time_beg_2
+      !
+      if(lcracon) call crashfix(ctime(16))
+      !
+#ifdef COMB
+      if(rkstep==n_rk_steps) then
+        !
+        time_beg_2=ptime()
+        !
+        do i=0,im 
+        do j=0,jm
+        do k=0,km
+              !
+          if(odetype=='ime' .or. odetype=='rk3') then
+            !
+            if(odetype=='ime') &
+              call imp_euler_ode(rho(i,j,k),tmp(i,j,k),spc(i,j,k,:),deltat)
+            !
+            q(i,j,k,6:numq)=max(0.d0,spc(i,j,k,:)*rho(i,j,k))
+            q(i,j,k,6:numq)=q(i,j,k,1)*q(i,j,k,6:numq)/sum(q(i,j,k,6:numq))
+            !
+          elseif(odetype=='dnn' .and. mod(nstep,dt_ratio)==0 .and. nstep>0) then
+            !
+            ! if(locell(jcell)%tmp<1000.d0 .or. locell(jcell)%tmp>2200.d0) then 
+            !
+            hrr=heatrate(rho(i,j,k),tmp(i,j,k),spc(i,j,k,:))
+            if(hrr<1.d8) then 
+              !
+              dnnidx(i,j,k)=0
+              !
+              do idnn=1,dt_ratio
+                !
+                call imp_euler_ode(rho(i,j,k),tmp(i,j,k),spc(i,j,k,:),deltat)
+                !
+              enddo 
+              !
+            else 
+              !
+              jdnn=jdnn+1
+              inputholder(1,jdnn)=tmp(i,j,k)
+              inputholder(2,jdnn)=1.0
+              inputholder(3:num_species+1,jdnn)=spc(i,j,k,1:num_species-1)
+              !
+            endif
+            !
+          else
+            !
+            continue
+            !
+          endif !odetype
+          !
+        enddo !i
+        enddo !j
+        enddo !k
+        !
+        if(odetype=='dnn' .and. nstep>0 .and. mod(nstep,dt_ratio)==0) then
+          !
+          allocate(input(n_layer(1),jdnn),output(n_layer(1),jdnn))
+          !
+          input(:,:)=inputholder(:,1:jdnn)
+          if(jdnn/=0) output=netOneStep(input,epoch,n_layer,jdnn)
+          !
+          idnn=0
+          do i=0,im
+          do j=0,jm
+          do k=0,km
+            !
+            if(dnnidx(i,j,k)/=0) then 
+              idnn=idnn+1
+              spc(i,j,k,1:num_species-1)=output(3:num_species+1,idnn)
+              spc(i,j,k,num_species)=0.d0
+            endif 
+            !
+            q(i,j,k,6:numq)=max(0.d0,spc(i,j,k,:)*rho(i,j,k))
+            q(i,j,k,6:numq)=q(i,j,k,1)*q(i,j,k,6:numq)/sum(q(i,j,k,6:numq))
+            !
+          enddo 
+          enddo
+          enddo
+          !
+        endif 
+        !
+        ctime(13)=ctime(13)+ptime()-time_beg_2
+        !
+        time_beg_2=ptime()
+        !
+        call updatefvar
+        !
+        ctime(15)=ctime(15)+ptime()-time_beg_2
+        !
+      endif !odetype
+#endif
+    !
+    enddo !rk
+
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(air5_reacting_case) then
+      if(rhs_validation_requested()) &
+        call write_q_validation_snapshot('post_transport',nstep,1)
+      call air5_chemistry_half_step(0.5_real64*deltat,2)
+      if(air5_hbl_case) call apply_air5_hbl_boundary()
+      call updatefvar
+      ! A global checkpoint has one owner for each duplicated physical node.
+      ! Canonicalize every completed step, not only steps that write a file.
+      if(air5_compensated) call qswap(timerept=ltimrpt)
+      if(rhs_validation_requested()) &
+        call write_q_validation_snapshot('post_chemistry',nstep,2)
+    endif
+#endif
+    !
+#ifdef COMB
+    if(odetype=='dnn') then 
+      if(nstep==maxstep) call finalize()
+      if(allocated(input))deallocate(input,output)
+    endif
+    !
+#endif
+    !
+    if(present(timerept)) then
+      if(timerept) then
+      !
+      subtime=subtime+ptime()-time_beg
+      !
+      if(lio .and. loop_counter==feqchkpt .and. ltimrpt) call timereporter(routine='rk3',   &
+                                                            timecost=subtime)
+      endif
+    endif
+    !
+    if(rkscheme=='rk4') deallocate(rhsav)
+    !
+    if(cpu_rk_timing) then
+      cpu_rk_seconds=ptime()-time_beg
+      if(lio) write(*,'(A,1X,I0,3(1X,ES24.16E3))') &
+        'ASTR_CPU_RK_TIMING',nstep,0.d0,cpu_rk_seconds,cpu_rk_seconds
+    endif
+    !
+    ctime(3)=ctime(3)+ptime()-time_beg
+    !
+    return
+    !
+  end subroutine time_integration_rk
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine time_integration_rk.                    |
+  !+-------------------------------------------------------------------+
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine is to conducte operation in the fist step of rk   |
+  !| temporal advance.                                                 |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 28-Dec-2021: Created by J. Fang @ Warrington                      |
+  !+-------------------------------------------------------------------+
+  subroutine rkfirst(skip_checkpoint)
+    !
+    use commvar,  only : lavg,lwslic,lwsequ,feqavg,feqchkpt,feqwsequ,  &
+                         feqslice,iomode
+    use statistic,only : statcal,statout,meanflowcal,liosta,nsamples
+    use readwrite,only : writechkpt,writemon,writeslice,writeflfed,    &
+                         nxtchkpt,nxtwsequ
+    use userdefine,only: udf_stalist,udf_write
+    use validation_io, only: write_compact_statistics_validation_snapshot
+    use parallel,  only: mpistop
+    !
+    logical,intent(in),optional :: skip_checkpoint
+    !
+    ! local data
+    integer,save :: nxtavg
+    logical,save :: firstcall = .true.
+    logical :: suppress_checkpoint
+    !
+    suppress_checkpoint=.false.
+    if(present(skip_checkpoint)) suppress_checkpoint=skip_checkpoint
+    !
+    if(firstcall) then
+      nxtavg=nstep+feqavg
+    endif
+    
+    if(.not. firstcall) then
+    
+      call statcal(timerept=ltimrpt)
+
+      call statout(time_start)
+
+      call udf_stalist
+
+    endif
+    !
+    if(nstep==0 .or. loop_counter.ne.0) then
+      ! the first step after reading ehecking out doesn't need to do this
+      !
+      call writemon
+      !
+      if(lavg) then
+        ! if(nstep==nxtavg) then
+        if(mod(nstep,feqavg)==0) then
+          call meanflowcal(timerept=ltimrpt)
+          call write_compact_statistics_validation_snapshot()
+          !
+          nxtavg=nstep+feqavg
+        endif
+      else
+        nsamples=0
+        liosta=.false.
+        nxtavg=nstep+feqavg
+      endif
+      
+      if(.not. firstcall) then
+        if(lwslic .and. mod(nstep,feqslice)==0) then
+          call writeslice(ctime(23))
+        endif
+      endif
+
+    endif
+    !
+    if(.not. firstcall) then
+      
+      ! time to write checkpoint
+      if(iomode == 'n') then
+        !
+        continue
+        !
+      else
+        !
+        ! if(nstep==nxtchkpt) then
+        if(mod(nstep,feqchkpt)==0 .and. .not.suppress_checkpoint) then
+          !
+          ! the checkpoint and flowfield will be writen in the same time
+          call writechkpt()
+          !
+          call udf_write
+          !
+        endif
+        !
+      endif
+
+    endif
+    !
+    if(firstcall) then
+      firstcall = .false.
+    endif
+
+    return
+    !
+  end subroutine rkfirst
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine rkfirst.                                |
+  !+-------------------------------------------------------------------+
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine is to check if the computational is crashed.      |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 27-Nov-2018: Created by J. Fang @ Warrington                      |
+  !+-------------------------------------------------------------------+
+  subroutine crashcheck
+    !
+    use commvar,  only: hm
+    use commarray,only: q,rho,tmp,prs,x,nodestat
+    use parallel, only: por
+    use fludyna,  only: updateq
+    use readwrite,only: readcheckpoint
+    use statistic,only: nsamples
+    !
+    ! local data
+    integer :: i,j,k,l,fh,ii,jj,kk
+    logical :: ltocrash
+    !
+    ltocrash=.false.
+    !
+    fh=get_unit()
+    !
+    ! open(fh,file='badpoint'//mpirankname//'.dat')
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      !
+      if(nodestat(i,j,k)<=0.d0) then
+        !
+        ! only check fluid points
+        if(q(i,j,k,1)>=0.d0) then
+          continue
+        else
+          !
+          crinod(i,j,k)=.true.
+          !
+          write(fhand_err,'(A,I0)')'error node cant wiped at nstep=',nstep
+          write(fhand_err,'(2(A,I0),2(2X,I0),A,3(1X,E13.6E2))')'mpirank= ',mpirank, &
+                                               ' i,j,k= ',i,j,k,' x,y,z=',x(i,j,k,:)
+          write(fhand_err,'(A,I0)')'nodestat: ',nodestat(i,j,k)
+          write(fhand_err,'(A,5(1X,E13.6E2))')'q= ',q(i,j,k,1:5)
+          !
+          do kk=-1,1
+          do jj=-1,1
+          do ii=-1,1
+            if(ii==0 .and. jj==0 .and. kk==0) then
+              continue
+            else
+              write(fhand_err,'(3(1X,I0),5(1X,E13.6E2),1X,I0)')ii,jj,kk,  &
+                             q(i+ii,j+jj,k+kk,1:5),nodestat(i+ii,j+jj,k+kk)
+            endif
+          enddo
+          enddo
+          enddo
+          !
+          ltocrash=.true.
+          !
+          ! write(fh,'(3(1X,E13.6E2))')x(i,j,k,:)
+        endif
+        !
+      endif
+      !
+    enddo
+    enddo
+    enddo
+    ! close(fh)
+    ! print*,' << badpoint',mpirankname,'.dat'
+    !
+    ltocrash=por(ltocrash)
+    !
+    if(ltocrash) then
+      !
+      if(lcracon) then
+        if(lio) print*,' !! COMPUTATION CRASHED !!'
+        if(lio) print*,' !! FETCH AN BAKUP FLOW FIELD !!'
+        !
+        call databakup('recovery')
+        ! call readcheckpoint(folder='bakup')
+        !
+        loop_counter=0
+      else
+        if(lio) print*,' !! COMPUTATION CRASHED, JOB STOPS !!'
+        call mpistop
+      endif
+      !
+    else
+
+      if(lcracon) then
+        !
+        ! if not crash, backup data
+        !
+        if(nstep==nxtbakup) then
+          !
+          call databakup('backup')
+          !
+          nxtbakup=nstep+feqbakup
+          !
+          feqbakup=feqbakup*2
+          !
+          feqbakup=min(500,feqbakup) ! the max frequency of back is set to 500
+          !
+        endif
+      endif
+
+    endif
+    !
+    return
+    !
+  end subroutine crashcheck
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine crashcheck.                             |
+  !+-------------------------------------------------------------------+
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine is to backup or recovery data                     |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 06-04-2022: Created by J. Fang @ Warrington                       |
+  !+-------------------------------------------------------------------+
+  subroutine databakup(mode)
+    !
+    use commvar,  only:  filenumb,fnumslic,time,flowtype,force,numq
+    use bc,       only : ninflowslice
+    use statistic,only : massflux,massflux_target
+    use commarray,only : q 
+    use fludyna,  only : updatefvar
+    !
+    ! argument
+    character(len=*),intent(in) :: mode
+    !
+    ! lcoal data
+    type :: databack
+      integer :: nstep,filenumb,fnumslic,ninflowslice
+      real(8) :: time,massflux,massflux_target,force(3)
+      real(8),allocatable :: q(:,:,:,:)
+      integer :: recover_counter
+    end type databack
+    !
+    type(databack),save :: dat_a,dat_b
+    character(len=1),save :: datpnt='o'
+    integer :: counter
+
+    if(mode=='backup') then
+      
+      if(datpnt=='o') datpnt='a'
+      
+      if(datpnt=='a') then
+        
+        dat_a%nstep        =nstep       
+        dat_a%filenumb     =filenumb    
+        dat_a%fnumslic     =fnumslic    
+        dat_a%ninflowslice =ninflowslice
+        dat_a%time         =time        
+        if(flowtype=='channel') then
+          dat_a%massflux       =massflux
+          dat_a%massflux_target=massflux_target
+          dat_a%force          =force
+        endif
+        
+        if(.not. allocated(dat_a%q)) then
+          allocate(dat_a%q(0:im,0:jm,0:km,1:numq))
+        endif
+
+        dat_a%q(0:im,0:jm,0:km,1:numq)=q(0:im,0:jm,0:km,1:numq)
+        
+        dat_a%recover_counter=0
+
+        if(lio) write(*,'(A,I0)')'  ** data backed to dat_a at nstep= ',nstep
+        
+        datpnt='b'
+        
+      elseif(datpnt=='b') then
+        
+        dat_b%nstep        =nstep       
+        dat_b%filenumb     =filenumb    
+        dat_b%fnumslic     =fnumslic    
+        dat_b%ninflowslice =ninflowslice
+        dat_b%time         =time        
+        if(flowtype=='channel') then
+          dat_b%massflux       =massflux
+          dat_b%massflux_target=massflux_target
+          dat_b%force          =force
+        endif
+        
+        if(.not. allocated(dat_b%q)) then
+          allocate(dat_b%q(0:im,0:jm,0:km,1:numq))
+        endif
+
+        dat_b%q(0:im,0:jm,0:km,1:numq)=q(0:im,0:jm,0:km,1:numq)
+        
+        dat_b%recover_counter=0
+        
+        if(lio) write(*,'(2(A,I0))')'  ** data backed to dat_b at nstep= ',nstep,'filenumb= ',filenumb
+        
+        datpnt='a'
+        
+      else
+        print*,' !! datpnt: ',datpnt
+        stop ' !! error 1 of datpnt @ databakup'
+      endif
+
+    elseif(mode=='recovery') then
+
+      if(datpnt=='o') then
+        print*,' !! not backup data avaliable !!'
+        stop
+      elseif(datpnt=='a') then
+
+        nstep       =dat_a%nstep
+        ! filenumb    =dat_a%filenumb
+        fnumslic    =dat_a%fnumslic
+        ninflowslice=dat_a%ninflowslice
+        time        =dat_a%time        
+        if(flowtype=='channel') then
+          massflux       =dat_a%massflux       
+          massflux_target=dat_a%massflux_target
+          force          =dat_a%force          
+        endif
+
+        q(0:im,0:jm,0:km,1:numq)=dat_a%q(0:im,0:jm,0:km,1:numq)
+        
+        dat_a%recover_counter=dat_a%recover_counter+1
+
+        counter=dat_a%recover_counter
+
+        if(lio) write(*,'(2(A,I0),A)')'  ** data recovered to nstep= ',nstep,' from dat_a for ',counter,' times'
+
+        datpnt='b'
+
+      elseif(datpnt=='b') then
+
+        nstep       =dat_b%nstep       
+        ! filenumb    =dat_b%filenumb    
+        fnumslic    =dat_b%fnumslic    
+        ninflowslice=dat_b%ninflowslice
+        time        =dat_b%time        
+        if(flowtype=='channel') then
+          massflux       =dat_b%massflux       
+          massflux_target=dat_b%massflux_target
+          force          =dat_b%force          
+        endif
+
+        q(0:im,0:jm,0:km,1:numq)=dat_b%q(0:im,0:jm,0:km,1:numq)
+        
+        dat_b%recover_counter=dat_b%recover_counter+1
+
+        counter=dat_b%recover_counter
+
+        if(lio) write(*,'(2(A,I0),A)')'  ** data recovered to nstep= ',nstep,' from dat_b for ',counter,' times'
+
+        datpnt='a'
+
+      else
+        print*,' !! datpnt: ',datpnt
+        stop ' !! error 2 of datpnt @ databakup'
+      endif
+      
+      call updatefvar
+      
+      if(counter>1) then 
+        call crinod_expansion()
+      endif
+
+    else
+      stop ' !! mode error @ databakup'
+    endif
+
+  end subroutine databakup
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine databakup.                              |
+  !+-------------------------------------------------------------------+
+  
+  !+-------------------------------------------------------------------+
+  !| This subroutine is to expand critical nodes if computation keeps  |
+  !| crashing                                                          |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 16-12-2020: Created by J. Fang @ Warrington                       |
+  !+-------------------------------------------------------------------+
+  subroutine crinod_expansion
+
+    use parallel, only: psum,dataswap
+
+    integer :: i,j,k,ilo,jlo,klo,ihi,jhi,khi,i1,j1,k1
+    logical :: cnode_temp(-2:im+2,-2:jm+2,-2:km+2)
+    integer :: counter
+    integer,save :: ntimes=0
+
+    cnode_temp=.false.
+
+    counter=0
+    do k=-1,km+1
+    do j=-1,jm+1
+    do i=-1,im+1
+      
+      if(crinod(i,j,k)) then
+
+        ilo=i-1;  ihi=i+1
+        jlo=j-1;  jhi=j+1
+        klo=k-1;  khi=k+1
+        
+        do k1=klo,khi
+        do j1=jlo,jhi
+        do i1=ilo,ihi
+          cnode_temp(i1,j1,k1)=.true.
+          
+          counter=counter+1
+        enddo
+        enddo
+        enddo
+
+      endif
+
+    enddo
+    enddo
+    enddo
+
+    crinod(-2:im+2,-2:jm+2,-2:km+2)=cnode_temp(-2:im+2,-2:jm+2,-2:km+2)
+
+    call dataswap(crinod)
+
+    ntimes=ntimes+1
+
+    counter=psum(counter)
+
+    if(lio) write(*,'(2(A,I0),A)')'  ** crinod expanded for  ',counter,' nodes for ',ntimes,' times'
+
+  end subroutine crinod_expansion
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine crinod_expansion.                       |
+  !+-------------------------------------------------------------------+
+
+  !+-------------------------------------------------------------------+
+  !| This subroutine is to wipe the point where the result is not good.|
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 04-10-2020: Created by J. Fang @ Warrington                       |
+  !+-------------------------------------------------------------------+
+  subroutine crashfix(subtime)
+    !
+    use commvar,   only : numq,lreport,nondimen,spcinf
+    use commarray, only : q,rho,tmp,vel,prs,spc,x,nodestat
+    use parallel,  only : por,ig0,jg0,kg0,psum,ptime
+    use fludyna,   only : q2fvar,thermal
+    !
+    ! arguments
+    real(8),intent(inout),optional :: subtime
+    !
+    ! local data
+    integer :: i,j,k,l,fh,ii,jj,kk
+    real(8) :: qavg(numq)
+    integer :: norm,counter
+    !
+    logical,save :: firstcall = .true.
+    real(8),save :: eps_rho,eps_prs,eps_tmp,time_beg
+    integer,save :: step_normal = 0
+    !
+    if(present(subtime)) time_beg=ptime()
+    !
+    if(firstcall) then
+      eps_rho=1.d-5
+      eps_tmp=1.d-5
+      !
+      if(nondimen) then 
+        eps_prs=thermal(density=eps_rho,temperature=eps_tmp)
+      else 
+        eps_prs=thermal(density=eps_rho,temperature=eps_tmp,species=spcinf)
+      endif 
+    endif
+    !
+    counter=0
+    !
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      !
+      if(nodestat(i,j,k)<=0.d0) then
+        ! only check fluid points
+        !
+        if(rho(i,j,k)>=eps_rho .and. prs(i,j,k)>=eps_prs .and.         &
+           tmp(i,j,k)>=eps_tmp) then
+          continue
+        else
+          !
+          crinod(i,j,k)=.true.
+          !
+          ! print*,' !! non-positive density/energy identified !!'
+          ! write(*,'(2(A,I0),2(2X,I0),A,3(1X,E13.6E2))')'   ** mpirank= ',&
+          !                    mpirank,' i,j,k= ',i,j,k,' x,y,z=',x(i,j,k,:)
+          ! write(*,'(A,I0)')'   ** nodestat: ',nodestat(i,j,k)
+          ! write(*,'(A,5(1X,E13.6E2))')'   ** q= ',q(i,j,k,1:5)
+          ! !
+          qavg=0.d0
+          norm=0
+          do kk=-1,1
+          do jj=-1,1
+          do ii=-1,1
+            !
+            if(ii==0 .and. jj==0 .and. kk==0) then
+              continue
+            elseif( ig0+i+ii<0 .or. ig0+i+ii>ia .or.  &
+                    jg0+j+jj<0 .or. jg0+j+jj>ja ) then
+              continue
+            else
+              if(rho(i+ii,j+jj,k+kk)>=0.d0 .and. prs(i+ii,j+jj,k+kk)>=0.d0 &
+                  .and. tmp(i+ii,j+jj,k+kk)>=0.d0) then
+                qavg(:)=qavg(:)+q(i+ii,j+jj,k+kk,:)
+                norm=norm+1
+              endif
+            endif
+            !
+          enddo
+          enddo
+          enddo
+          !
+          if(norm>=1) then
+            !
+            write(fhand_err,'(A,I0)')' error nodes identified and wiped at nstep=',nstep
+            write(fhand_err,'(2(A,I0),2(2X,I0),A,3(1X,E13.6E2))')'mpirank= ', mpirank,    &
+                                                    ' i,j,k= ',i,j,k,' x,y,z=',x(i,j,k,:)
+            write(fhand_err,'(3(A,E13.6E2))')'rho=',rho(i,j,k),' prs=',prs(i,j,k),        &
+                                                               ' tmp=',tmp(i,j,k)
+            write(fhand_err,'(2(A,5(1X,E13.6E2)))')'q= ',q(i,j,k,1:5),' -> ',qavg/dble(norm)
+            !
+            q(i,j,k,:)=qavg/dble(norm)
+            !
+            call q2fvar(q=q(i,j,k,:),                       &
+                                       density=rho(i,j,k),  &
+                                      velocity=vel(i,j,k,:),&
+                                      pressure=prs(i,j,k),  &
+                                   temperature=tmp(i,j,k),  &
+                                       species=spc(i,j,k,:) )
+            !
+            counter=counter+1
+            !
+          endif
+          !
+        endif
+        !
+      endif
+      !
+    enddo
+    enddo
+    enddo
+    !
+    counter=psum(counter)
+    !
+    if(counter==0) then
+      step_normal=step_normal+1
+    else
+      step_normal=0
+    endif
+    !
+    if(lio .and. counter>1) then
+      write(*,'(A,I0,A)')'  !! ',counter,' error nodes were wiped.'
+    endif
+    !
+    if(lreport) then
+      !
+      if(lio) then
+        if(step_normal>0) then
+          write(*,'(A,I0,A)')'  ** the comput. been normal for: ',     &
+                                                    step_normal,' steps'
+        endif
+      endif
+      !
+      counter=0
+      do k=0,km
+      do j=0,jm
+      do i=0,im
+        !
+        if(crinod(i,j,k)) then
+          counter=counter+1
+        endif
+        !
+      enddo
+      enddo
+      enddo
+      !
+      counter=psum(counter)
+      !
+      if(lio) then
+        write(*,'(A,I0,A)')'  ** ',counter,' critical nodes'
+      endif
+      !
+    endif
+    !
+    if(present(subtime)) subtime=subtime+ptime()-time_beg
+    !
+    return
+    !
+  end subroutine crashfix
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine crashfix.                               |
+  !+-------------------------------------------------------------------+
+  !
+end module mainloop
+!+---------------------------------------------------------------------+
+!| The end of the module readwrite.                                    |
+!+---------------------------------------------------------------------+

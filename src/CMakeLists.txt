@@ -1,0 +1,516 @@
+message(STATUS "CMAKE_SOURCE_DIR: ${CMAKE_SOURCE_DIR}")
+message(STATUS "PROJECT_BINARY_DIR: ${PROJECT_BINARY_DIR}")
+
+set(ASTR_SOURCES
+  astr.F90
+  bc.F90
+  CMakeLists.txt
+  cmdefne.F90
+  commarray.F90
+  comsolver.F90
+  commcal.F90
+  cfl_spectrum.F90
+  commfunc.F90
+  commtype.F90
+  commvar.F90
+  benchmark_runtime.F90
+  constdef.F90
+  derivative.F90
+  fdnn.F90
+  filter.F90
+  fludyna.F90
+  flux.F90
+  geom.F90
+  gridgeneration.F90
+  hdf5io.F90
+  ibmethod.F90
+  initialisation.F90
+  interp.F90
+  mainloop.F90
+  models.F90
+  mpiio.F90
+  parallel.F90
+  pp.F90
+  readwrite.F90
+  riemann.F90
+  singleton.F90
+  solver.F90
+  perfect_gas_boundary.F90
+  conservative_boundary_config.F90
+  conservative_boundary_runtime.F90
+  rectilinear_metric_halo.F90
+  conservative_boundary_faces.F90
+  perfect_gas_transport.F90
+  sponge_layer.F90
+  statistic.F90
+  stlaio.F90
+  strings.F90
+  tecio.F90
+  test.F90
+  thermchem.F90
+  ../user_define_module/userdefine.F90
+  utility.F90
+  validation_io.F90
+  vtkio.F90)
+
+if(BUILD_TESTING)
+  list(APPEND ASTR_SOURCES ../tests/gpu_validation/boundary_rhs_manufactured.F90)
+endif()
+
+if(ASTR_WITH_CUDA)
+  set(ASTR_GPU_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/gpu_check.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/gpu_phase_timing.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/device_runtime_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/inflow_interpolation_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/inflow_timeseries_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/precision_mode_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/mixed_candidate_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/upwind_flux_mode_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/commarray_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/checkpoint_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/production_statistics_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/commvar_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/qswap_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/halo_transport_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/device_mpi_transport_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/halo_exchange_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/nscbc_characteristic_policy_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/boundary_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/perfect_gas_boundary_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/conservative_boundary_faces_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/conservative_boundary_stage_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/sponge_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/case_capability_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/statistic_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/cfl_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/gradcal_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/shock_sensor_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/solver_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/mainloop_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/gpu_runtime.cuf)
+endif()
+
+if(ASTR_WITH_AIR5_CHEMISTRY)
+  list(APPEND ASTR_SOURCES
+    chemistry_air5_data.F90
+    chemistry_core.F90
+    chemistry_properties.F90
+    chemistry_kinetics.F90
+    chemistry_characteristic.F90
+    chemistry_boundary_state.F90
+    chemistry_boundary.F90
+    chemistry_runtime.F90
+    chemistry_compensation.F90
+    chemistry_monitor.F90
+    chemistry_solver.F90)
+endif()
+
+if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
+  list(APPEND ASTR_GPU_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_compensation_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_monitor_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_core_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_flow_state_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_transport_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_relaxation_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_kinetics_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_boundary_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_solver_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_coupling_gpu.cuf)
+endif()
+
+add_executable(astr ${ASTR_SOURCES} ${ASTR_GPU_SOURCES})
+
+if(ASTR_WITH_AIR5_CHEMISTRY)
+  target_compile_definitions(astr PRIVATE ASTR_AIR5_CHEMISTRY)
+endif()
+
+# This capability is needed by the production transport, not only its probes.
+if(ASTR_WITH_CUDA)
+  include(CheckFortranSourceCompiles)
+  include(CMakePushCheckState)
+  cmake_push_check_state(RESET)
+  set(CMAKE_REQUIRED_LIBRARIES MPI::MPI_Fortran)
+  check_fortran_source_compiles("
+      program cuda_query_link_test
+      use iso_c_binding, only: c_int
+      interface
+        function query() bind(C,name='MPIX_Query_cuda_support')
+          import c_int
+          integer(c_int) :: query
+        end function query
+      end interface
+      print *, query()
+      end program cuda_query_link_test
+  " ASTR_HAS_MPI_CUDA_QUERY)
+  cmake_pop_check_state()
+  if(ASTR_HAS_MPI_CUDA_QUERY)
+    target_compile_definitions(astr PRIVATE ASTR_MPI_CUDA_AWARE_QUERY)
+  else()
+    message(STATUS "CUDA-aware query unavailable; host transport remains supported")
+  endif()
+endif()
+
+if(BUILD_TESTING)
+  target_compile_definitions(astr PRIVATE ASTR_BUILD_TESTING)
+
+if(ASTR_WITH_AIR5_CHEMISTRY)
+  add_executable(air5_frozen_source_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90 chemistry_core.F90 chemistry_properties.F90
+    chemistry_kinetics.F90
+    ../tests/gpu_validation/air5_frozen_source_probe.F90)
+  if(ASTR_WITH_CUDA)
+    target_sources(air5_frozen_source_probe PRIVATE
+      ../src_gpu/gpu_check.cuf ../src_gpu/chemistry_core_gpu.cuf
+      ../src_gpu/chemistry_relaxation_gpu.cuf ../src_gpu/chemistry_kinetics_gpu.cuf)
+  endif()
+  set_target_properties(air5_frozen_source_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/frozen_source_mod")
+  target_include_directories(air5_frozen_source_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/frozen_source_mod")
+  target_link_libraries(air5_frozen_source_probe PRIVATE MPI::MPI_Fortran)
+  add_executable(chemistry_compensation_lifecycle_probe EXCLUDE_FROM_ALL
+    chemistry_compensation.F90
+    ../tests/gpu_validation/chemistry_compensation_lifecycle_probe.F90)
+  set_target_properties(chemistry_compensation_lifecycle_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/compensation_lifecycle_modules")
+  target_include_directories(chemistry_compensation_lifecycle_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/compensation_lifecycle_modules")
+  target_link_libraries(chemistry_compensation_lifecycle_probe PRIVATE MPI::MPI_Fortran)
+  add_executable(chemistry_ros2_roundoff_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90 chemistry_core.F90 chemistry_properties.F90
+    chemistry_kinetics.F90
+    ../tests/gpu_validation/chemistry_ros2_roundoff_probe.F90)
+  set_target_properties(chemistry_ros2_roundoff_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/chemistry_ros2_roundoff_probe_modules")
+  target_include_directories(chemistry_ros2_roundoff_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/chemistry_ros2_roundoff_probe_modules")
+endif()
+
+if(ASTR_WITH_AIR5_CHEMISTRY)
+  add_executable(air5_characteristic_thermo_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90 chemistry_core.F90 chemistry_properties.F90
+    chemistry_characteristic.F90
+    ../tests/gpu_validation/air5_characteristic_thermo_probe.F90)
+  set_target_properties(air5_characteristic_thermo_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/characteristic_thermo_mod")
+  target_include_directories(air5_characteristic_thermo_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/characteristic_thermo_mod")
+  add_executable(air5_pressure_outlet_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90 chemistry_core.F90 chemistry_properties.F90
+    chemistry_boundary_state.F90
+    ../tests/gpu_validation/air5_pressure_outlet_probe.F90)
+  set_target_properties(air5_pressure_outlet_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/pressure_outlet_mod")
+  target_include_directories(air5_pressure_outlet_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/pressure_outlet_mod")
+  add_executable(air5_transport_roundoff_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90 chemistry_core.F90
+    ../tests/gpu_validation/air5_transport_roundoff_probe.F90)
+  set_target_properties(air5_transport_roundoff_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/transport_roundoff_mod")
+  target_include_directories(air5_transport_roundoff_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/transport_roundoff_mod")
+endif()
+
+add_executable(boundary_contract_cpu_probe EXCLUDE_FROM_ALL
+  perfect_gas_boundary.F90 ../tests/gpu_validation/boundary_contract_probe.F90)
+set_target_properties(boundary_contract_cpu_probe PROPERTIES
+  Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/boundary_contract_cpu_modules")
+target_include_directories(boundary_contract_cpu_probe PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/boundary_contract_cpu_modules")
+
+add_executable(conservative_boundary_config_probe EXCLUDE_FROM_ALL
+  perfect_gas_boundary.F90 conservative_boundary_config.F90
+  ../tests/gpu_validation/conservative_boundary_config_probe.F90)
+set_target_properties(conservative_boundary_config_probe PROPERTIES
+  Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/boundary_config_modules")
+target_include_directories(conservative_boundary_config_probe PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/boundary_config_modules")
+add_executable(boundary_faces_cpu_probe EXCLUDE_FROM_ALL
+  perfect_gas_boundary.F90 conservative_boundary_faces.F90
+  ../tests/gpu_validation/boundary_faces_probe.F90)
+set_target_properties(boundary_faces_cpu_probe PROPERTIES
+  Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/boundary_faces_cpu_modules")
+target_include_directories(boundary_faces_cpu_probe PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/boundary_faces_cpu_modules")
+
+add_executable(benchmark_runtime_probe EXCLUDE_FROM_ALL
+  benchmark_runtime.F90 ../tests/gpu_validation/benchmark_runtime_probe.F90)
+set_target_properties(benchmark_runtime_probe PROPERTIES
+  Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/benchmark_runtime_probe_modules")
+target_include_directories(benchmark_runtime_probe PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/benchmark_runtime_probe_modules")
+target_link_libraries(benchmark_runtime_probe PRIVATE MPI::MPI_Fortran)
+
+if(ASTR_WITH_CUDA)
+  add_executable(boundary_faces_gpu_probe EXCLUDE_FROM_ALL
+    ../src_gpu/perfect_gas_boundary_gpu.cuf ../src_gpu/conservative_boundary_faces_gpu.cuf
+    ../tests/gpu_validation/boundary_faces_probe.F90)
+  target_compile_definitions(boundary_faces_gpu_probe PRIVATE TEST_CUDA)
+  set_target_properties(boundary_faces_gpu_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/boundary_faces_gpu_modules")
+  target_include_directories(boundary_faces_gpu_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/boundary_faces_gpu_modules")
+  add_executable(boundary_contract_gpu_probe EXCLUDE_FROM_ALL
+    ../src_gpu/perfect_gas_boundary_gpu.cuf ../tests/gpu_validation/boundary_contract_probe.F90)
+  target_compile_definitions(boundary_contract_gpu_probe PRIVATE TEST_CUDA)
+  set_target_properties(boundary_contract_gpu_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/boundary_contract_gpu_modules")
+  target_include_directories(boundary_contract_gpu_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/boundary_contract_gpu_modules")
+  add_executable(halo_transport_test EXCLUDE_FROM_ALL
+    ../src_gpu/halo_transport_gpu.cuf
+    ../tests/gpu_validation/halo_transport_test.F90)
+  set_target_properties(halo_transport_test PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/halo_test_modules")
+  target_include_directories(halo_transport_test PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/halo_test_modules")
+  target_link_libraries(halo_transport_test PRIVATE MPI::MPI_Fortran)
+  add_executable(halo_pinned_probe EXCLUDE_FROM_ALL
+    ../tests/gpu_validation/halo_pinned_probe.cuf)
+  add_executable(dynamic_inflow_interpolation_probe EXCLUDE_FROM_ALL
+    ../src_gpu/inflow_interpolation_gpu.cuf
+    ../tests/gpu_validation/dynamic_inflow_interpolation_probe.cuf)
+  add_executable(compact_statistics_probe EXCLUDE_FROM_ALL
+    ../src_gpu/production_statistics_gpu.cuf
+    ../tests/gpu_validation/compact_statistics_probe.cuf)
+  target_compile_definitions(compact_statistics_probe PRIVATE TEST_COMPACT_STATS)
+  set_target_properties(compact_statistics_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/compact_statistics_probe_modules")
+  target_include_directories(compact_statistics_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/compact_statistics_probe_modules")
+  add_executable(nscbc_characteristic_policy_probe EXCLUDE_FROM_ALL
+    ../src_gpu/nscbc_characteristic_policy_gpu.cuf
+    ../tests/gpu_validation/nscbc_characteristic_policy_probe.cuf)
+  set_target_properties(nscbc_characteristic_policy_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/nscbc_policy_probe_modules")
+  target_include_directories(nscbc_characteristic_policy_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/nscbc_policy_probe_modules")
+  add_executable(precision_mode_setup_test EXCLUDE_FROM_ALL
+    ../src_gpu/precision_mode_gpu.cuf
+    ../tests/gpu_validation/precision_mode_setup_test.cuf)
+  set_target_properties(precision_mode_setup_test PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/precision_mode_probe_modules")
+  target_include_directories(precision_mode_setup_test PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/precision_mode_probe_modules")
+  target_link_libraries(precision_mode_setup_test PRIVATE MPI::MPI_Fortran)
+  add_executable(mixed_candidate_setup_test EXCLUDE_FROM_ALL
+    ../src_gpu/precision_mode_gpu.cuf
+    ../src_gpu/mixed_candidate_gpu.cuf
+    ../tests/gpu_validation/mixed_candidate_setup_test.cuf)
+  set_target_properties(mixed_candidate_setup_test PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/mixed_candidate_probe_modules")
+  target_include_directories(mixed_candidate_setup_test PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/mixed_candidate_probe_modules")
+  target_link_libraries(mixed_candidate_setup_test PRIVATE MPI::MPI_Fortran)
+  add_executable(upwind_flux_mode_setup_test EXCLUDE_FROM_ALL
+    ../src_gpu/upwind_flux_mode_gpu.cuf
+    ../tests/gpu_validation/upwind_flux_mode_setup_test.cuf)
+  set_target_properties(upwind_flux_mode_setup_test PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/upwind_flux_mode_probe_modules")
+  target_include_directories(upwind_flux_mode_setup_test PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/upwind_flux_mode_probe_modules")
+  target_link_libraries(upwind_flux_mode_setup_test PRIVATE MPI::MPI_Fortran)
+  add_executable(halo_transport_setup_test EXCLUDE_FROM_ALL
+    ../src_gpu/halo_transport_gpu.cuf
+    ../tests/gpu_validation/halo_transport_setup_test.cuf)
+  set_target_properties(halo_transport_setup_test PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/halo_setup_test_modules")
+  target_include_directories(halo_transport_setup_test PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/halo_setup_test_modules")
+  target_link_libraries(halo_transport_setup_test PRIVATE MPI::MPI_Fortran)
+  add_executable(halo_overlap_probe EXCLUDE_FROM_ALL
+    constdef.F90 ../tests/gpu_validation/halo_overlap_probe.cuf)
+  set_target_properties(halo_overlap_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/overlap_probe_modules")
+  target_include_directories(halo_overlap_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/overlap_probe_modules")
+  target_link_libraries(halo_overlap_probe PRIVATE MPI::MPI_Fortran)
+  if(ASTR_HAS_MPI_CUDA_QUERY)
+    add_executable(halo_cuda_aware_probe EXCLUDE_FROM_ALL
+      ../tests/gpu_validation/halo_cuda_aware_probe.cuf)
+    target_link_libraries(halo_cuda_aware_probe PRIVATE MPI::MPI_Fortran)
+  endif()
+endif()
+
+if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
+  add_executable(air5_flux_gpu_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90 chemistry_core.F90
+    ../src_gpu/chemistry_core_gpu.cuf
+    ../tests/gpu_validation/air5_flux_gpu_probe_wrappers.cuf
+    ../tests/gpu_validation/air5_transport_roundoff_probe.F90)
+  set_target_properties(air5_flux_gpu_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/air5_flux_gpu_probe_modules")
+  target_include_directories(air5_flux_gpu_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/air5_flux_gpu_probe_modules")
+  target_compile_definitions(air5_flux_gpu_probe PRIVATE AIR5_FLUX_GPU_PROBE)
+  add_executable(chemistry_flow_gpu_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90
+    chemistry_core.F90
+    chemistry_properties.F90
+    ../src_gpu/gpu_check.cuf
+    ../src_gpu/chemistry_core_gpu.cuf
+    ../src_gpu/chemistry_flow_state_gpu.cuf
+    ../src_gpu/chemistry_transport_gpu.cuf
+    ../tests/gpu_validation/chemistry_flow_gpu_probe.cuf)
+  set_target_properties(chemistry_flow_gpu_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/chemistry_flow_gpu_probe_modules")
+  target_include_directories(chemistry_flow_gpu_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/chemistry_flow_gpu_probe_modules")
+  target_link_libraries(chemistry_flow_gpu_probe PRIVATE MPI::MPI_Fortran)
+  add_executable(chemistry_source_gpu_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90
+    chemistry_core.F90
+    chemistry_properties.F90
+    chemistry_kinetics.F90
+    ../src_gpu/gpu_check.cuf
+    ../src_gpu/chemistry_core_gpu.cuf
+    ../src_gpu/chemistry_relaxation_gpu.cuf
+    ../src_gpu/chemistry_kinetics_gpu.cuf
+    ../tests/gpu_validation/chemistry_source_gpu_probe.cuf)
+  set_target_properties(chemistry_source_gpu_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/chemistry_source_gpu_probe_modules")
+  target_include_directories(chemistry_source_gpu_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/chemistry_source_gpu_probe_modules")
+  target_link_libraries(chemistry_source_gpu_probe PRIVATE MPI::MPI_Fortran)
+  add_executable(chemistry_ros2_gpu_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90
+    chemistry_core.F90
+    chemistry_properties.F90
+    chemistry_kinetics.F90
+    ../src_gpu/gpu_check.cuf
+    ../src_gpu/chemistry_core_gpu.cuf
+    ../src_gpu/chemistry_relaxation_gpu.cuf
+    ../src_gpu/chemistry_kinetics_gpu.cuf
+    ../tests/gpu_validation/chemistry_ros2_gpu_probe.cuf)
+  set_target_properties(chemistry_ros2_gpu_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/chemistry_ros2_gpu_probe_modules")
+  target_include_directories(chemistry_ros2_gpu_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/chemistry_ros2_gpu_probe_modules")
+  target_link_libraries(chemistry_ros2_gpu_probe PRIVATE MPI::MPI_Fortran)
+  add_executable(chemistry_ros2_compensation_gpu_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90 chemistry_core.F90 chemistry_properties.F90
+    chemistry_kinetics.F90
+    ../src_gpu/gpu_check.cuf ../src_gpu/chemistry_core_gpu.cuf
+    ../src_gpu/chemistry_relaxation_gpu.cuf ../src_gpu/chemistry_kinetics_gpu.cuf
+    ../tests/gpu_validation/chemistry_ros2_compensation_gpu_probe.cuf)
+  set_target_properties(chemistry_ros2_compensation_gpu_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/chemistry_ros2_compensation_gpu_probe_modules")
+  target_include_directories(chemistry_ros2_compensation_gpu_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/chemistry_ros2_compensation_gpu_probe_modules")
+  target_link_libraries(chemistry_ros2_compensation_gpu_probe PRIVATE MPI::MPI_Fortran)
+endif()
+
+endif() # BUILD_TESTING
+
+if (ASTR_WITH_CUDA AND (Fortran_COMPILER_NAME MATCHES "PGI" OR Fortran_COMPILER_NAME MATCHES "NVHPC"))
+  set(ASTR_S0A_MAXREGCOUNT "128" CACHE STRING
+      "NVHPC register cap for the controlled S0-A characteristic kernels")
+  # The selective Roe kernel must retain the prescribed 512-thread x block.
+  # Cap its register allocation so the launch is legal on Ada and later GPUs.
+  set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/solver_gpu.cuf
+    PROPERTIES COMPILE_OPTIONS "-gpu=maxregcount:${ASTR_S0A_MAXREGCOUNT}")
+  if(ASTR_WITH_AIR5_CHEMISTRY)
+    set(ASTR_AIR5_MAXREGCOUNT "128" CACHE STRING
+        "NVHPC register cap for fixed air5 C4 transport kernels")
+    # Keep the prescribed 512-thread directional blocks legal for the
+    # higher-register 11-variable transport kernels.
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_solver_gpu.cuf
+      PROPERTIES COMPILE_OPTIONS "-gpu=maxregcount:${ASTR_AIR5_MAXREGCOUNT}")
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_transport_gpu.cuf
+      PROPERTIES COMPILE_OPTIONS "-gpu=maxregcount:${ASTR_AIR5_MAXREGCOUNT}")
+    # Device callees must respect the launcher's register cap for RDC linking.
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_core_gpu.cuf
+      PROPERTIES COMPILE_OPTIONS "-gpu=maxregcount:${ASTR_AIR5_MAXREGCOUNT}")
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/chemistry_characteristic.F90
+      PROPERTIES COMPILE_OPTIONS "-gpu=maxregcount:${ASTR_AIR5_MAXREGCOUNT}")
+  endif()
+endif()
+                    
+target_link_libraries(astr)
+if (MPI_FOUND)
+  target_link_libraries(astr PRIVATE MPI::MPI_Fortran)
+endif (MPI_FOUND)
+if (CHEMISTRY)
+  message(STATUS "CANTERA library: ${CTRDIR}/lib")
+  target_link_libraries(astr PRIVATE -L${CTRDIR}/lib -lcantera_fortran -lcantera -lstdc++ -pthread)
+endif (CHEMISTRY)
+
+if(ASTR_WITH_CUDA AND BUILD_TESTING)
+  # Recompile the production modules in isolation, without the ASTR main program.
+  set(ASTR_HALO_CONTRACT_SOURCES ${ASTR_SOURCES})
+  list(REMOVE_ITEM ASTR_HALO_CONTRACT_SOURCES astr.F90 CMakeLists.txt)
+  add_executable(halo_exchange_contract_test EXCLUDE_FROM_ALL
+    ${ASTR_HALO_CONTRACT_SOURCES} ${ASTR_GPU_SOURCES}
+    ../tests/gpu_validation/halo_exchange_contract_test.cuf)
+  set_target_properties(halo_exchange_contract_test PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/halo_contract_modules")
+  target_include_directories(halo_exchange_contract_test PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/halo_contract_modules")
+  get_target_property(ASTR_HALO_CONTRACT_LIBRARIES astr LINK_LIBRARIES)
+  target_link_libraries(halo_exchange_contract_test PRIVATE ${ASTR_HALO_CONTRACT_LIBRARIES})
+  target_compile_definitions(halo_exchange_contract_test PRIVATE ASTR_BUILD_TESTING)
+  if(ASTR_WITH_AIR5_CHEMISTRY)
+    target_compile_definitions(halo_exchange_contract_test PRIVATE ASTR_AIR5_CHEMISTRY)
+  endif()
+  if(ASTR_HAS_MPI_CUDA_QUERY)
+    target_compile_definitions(halo_exchange_contract_test PRIVATE ASTR_MPI_CUDA_AWARE_QUERY)
+  endif()
+endif()
+
+option(ASTR_BUILD_MPI_COMPLETION_TRACE "Build optional MPI completion profiling interposer" OFF)
+if(ASTR_BUILD_MPI_COMPLETION_TRACE AND NOT BUILD_TESTING)
+  message(FATAL_ERROR "ASTR_BUILD_MPI_COMPLETION_TRACE requires BUILD_TESTING=ON")
+endif()
+if(ASTR_WITH_CUDA AND ASTR_BUILD_MPI_COMPLETION_TRACE)
+  enable_language(C)
+  get_filename_component(ASTR_COMPILER_BIN "${CMAKE_Fortran_COMPILER}" DIRECTORY)
+  find_program(ASTR_NVFORTRAN nvfortran)
+  get_filename_component(ASTR_NVFORTRAN_BIN "${ASTR_NVFORTRAN}" DIRECTORY)
+  find_path(ASTR_NVTX3_INCLUDE nvtx3/nvToolsExt.h
+    HINTS "${ASTR_COMPILER_BIN}/../include-stdpar"
+          "${ASTR_NVFORTRAN_BIN}/../include-stdpar")
+  if(NOT ASTR_NVTX3_INCLUDE)
+    message(FATAL_ERROR "MPI completion tracing requires NVTX3 headers")
+  endif()
+  add_library(mpi_completion_trace SHARED EXCLUDE_FROM_ALL
+    ../tests/gpu_validation/mpi_completion_trace.F90
+    ../tests/gpu_validation/mpi_completion_trace.c)
+  target_include_directories(mpi_completion_trace PRIVATE "${ASTR_NVTX3_INCLUDE}")
+  target_link_libraries(mpi_completion_trace PRIVATE MPI::MPI_Fortran ${CMAKE_DL_LIBS})
+  add_executable(mpi_completion_probe EXCLUDE_FROM_ALL
+    ../tests/gpu_validation/mpi_completion_probe.F90)
+  target_link_libraries(mpi_completion_probe PRIVATE MPI::MPI_Fortran)
+endif()
+
+install(TARGETS astr
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
+
+if(BUILD_TESTING)
+add_executable(rectilinear_metric_halo_probe EXCLUDE_FROM_ALL
+  rectilinear_metric_halo.F90 ../tests/gpu_validation/rectilinear_metric_halo_probe.F90)
+set_target_properties(rectilinear_metric_halo_probe PROPERTIES
+  Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/metric_halo_probe_modules")
+target_include_directories(rectilinear_metric_halo_probe PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/metric_halo_probe_modules")
+
+add_executable(cfl_spectrum_probe EXCLUDE_FROM_ALL
+  cfl_spectrum.F90 ../tests/gpu_validation/cfl_spectrum_probe.F90)
+set_target_properties(cfl_spectrum_probe PROPERTIES
+  Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/cfl_probe_modules")
+target_include_directories(cfl_spectrum_probe PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/cfl_probe_modules")
+
+add_executable(centered_diffusion_response_probe EXCLUDE_FROM_ALL
+  constdef.F90 commtype.F90 commvar.F90 commfunc.F90 singleton.F90 derivative.F90
+  ../tests/gpu_validation/centered_diffusion_response_probe.F90)
+set_target_properties(centered_diffusion_response_probe PROPERTIES
+  Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/diffusion_response_modules")
+target_include_directories(centered_diffusion_response_probe PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/diffusion_response_modules")
+endif()

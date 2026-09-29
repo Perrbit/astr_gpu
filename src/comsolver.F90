@@ -1,0 +1,817 @@
+!+---------------------------------------------------------------------+
+!| This module contains subroutines related to the method of moment.   |
+!| ==============                                                      |
+!| CHANGE RECORD                                                       |
+!| -------------                                                       |
+!| 15-08-2023: Created by J. Fang @ STFC Daresbury Laboratory          |
+!+---------------------------------------------------------------------+
+module comsolver
+  !
+  use constdef
+  use commvar,  only : im,jm,km,hm,deltat,nstep,ndims,lreport,ctime,  &
+                       ltimrpt,lfftk
+  use parallel, only : lio,ptime,mpirankname,mpistop,mpirank,lio,     &
+                       dataswap,irk,jrk,krk,irkm,jrkm,krkm
+  use utility,  only : timereporter
+  !
+  implicit none
+  !
+  real(8),allocatable :: alfa_con(:),alfa_dif(:)
+  real(8), allocatable, dimension(:,:) :: cci,ccj,cck,dci,dcj,dck,     &
+                                          fci,fcj,fck,uci,ucj,uck,     &
+                                          bci,bcj,bck
+  contains
+  !
+  !+-------------------------------------------------------------------+
+  !| Subroutine: solvrinit                                             |
+  !|                                                                   |
+  !| Purpose:                                                          |
+  !|   Initializes the numerical solver for both convection and        |
+  !|   diffusion terms, including:                                     |
+  !|     - Finite-difference schemes for derivatives                   |
+  !|     - Compact flux schemes for convection (if upwind-based)       |
+  !|     - Optional compact filtering                                  |
+  !|     - Optional turbulence model initialization                    |
+  !|                                                                   |
+  !| Notes:                                                            |
+  !|   - Scheme types are determined by the string suffix:             |
+  !|       'c' => compact  /  'e' => explicit                          |
+  !|   - For central schemes, convection and diffusion schemes must    |
+  !|     match to ensure consistency                                   |
+  !|                                                                   |
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 22-07-2022  | Moved from  diffrsdcal6 by J. Fang @ Warrington     |
+  !| 03-07-2025  | Remastered by J. Fang @ Imech, CAS, Beijing         |
+  !+-------------------------------------------------------------------+
+  subroutine solvrinit
+  
+    use commvar,    only : numq, npdci, npdcj, npdck, conschm, difschm,   &
+                           lfilter, alfa_filter, hm, turbmode
+    use models,     only : init_komegasst
+    use filter,     only : compact_filter_initiate, filter_coefficient_cal, &
+                           filter_i, filter_j, filter_k,                     &
+                           filter_ii, filter_jj, filter_kk,                 &
+                           filter_coefficient_explicit
+    use derivative, only : fd_scheme_initiate, fds_compact_i, fds_compact_j, &
+                           fds_compact_k, explicit_central, compact_central, fds
+    use flux,       only : compact_flux_initiate, ptds_aym_ini, coeffcompac, &
+                           flux_uw_i, flux_dw_i, flux_uw_j, flux_dw_j,       &
+                           flux_uw_k, flux_dw_k
+  
+    implicit none
+  
+    !-------------------------------------------------------------------
+    ! Local variables
+    !-------------------------------------------------------------------
+    integer :: nscheme, i
+  
+    !-------------------------------------------------------------------
+    ! Initialize finite-difference schemes for diffusion terms
+    !-------------------------------------------------------------------
+    call fd_scheme_initiate(asolver=fds_compact_i, scheme=difschm, ntype=npdci, dim=im, dir=1)
+    call fd_scheme_initiate(asolver=fds_compact_j, scheme=difschm, ntype=npdcj, dim=jm, dir=2)
+    call fd_scheme_initiate(asolver=fds_compact_k, scheme=difschm, ntype=npdck, dim=km, dir=3)
+  
+    select case (difschm(4:4))
+    case ('e')  ! Explicit scheme
+      allocate(explicit_central :: fds)
+    case ('c')  ! Compact scheme
+      allocate(compact_central :: fds)
+    case default
+      print *, ' !! ERROR !! Invalid scheme suffix. Must end with "c" or "e" (e.g., 642c)'
+      stop
+    end select
+  
+    !-------------------------------------------------------------------
+    ! Initialize convection scheme and check consistency
+    !-------------------------------------------------------------------
+    read(conschm(1:3), *) nscheme
+  
+    if (mod(nscheme / 100, 2) == 0) then
+      ! Central convection scheme
+      if (trim(conschm) /= trim(difschm)) then
+        print *, ' !! WARNING !! Central schemes for convection and diffusion are inconsistent.'
+        print *, ' !! WARNING !! Consider using the same scheme to avoid unexpected behavior.'
+        print *, ' ** conschm:', conschm
+        print *, ' ** difschm:', difschm
+        stop
+      end if
+    else
+      ! Upwind-biased convection scheme
+      if (conschm(4:4) == 'c') then
+        call compact_flux_initiate(flux_uw_i, nscheme, npdci, im, '+')
+        call compact_flux_initiate(flux_dw_i, nscheme, npdci, im, '-')
+        call compact_flux_initiate(flux_uw_j, nscheme, npdcj, jm, '+')
+        call compact_flux_initiate(flux_dw_j, nscheme, npdcj, jm, '-')
+        call compact_flux_initiate(flux_uw_k, nscheme, npdck, km, '+')
+        call compact_flux_initiate(flux_dw_k, nscheme, npdck, km, '-')
+  
+        ! Optional: legacy ptds coefficient setup (commented out)
+        ! alfa_con = coeffcompac(nscheme)
+        ! call ptds_aym_ini(...)
+  
+      end if
+    end if
+  
+    !-------------------------------------------------------------------
+    ! Optional: Initialize compact filters
+    !-------------------------------------------------------------------
+    if (lfilter .and. (conschm(4:4) == 'c' .or. difschm(4:4) == 'c')) then
+      call filter_coefficient_cal(alfa=alfa_filter, beter_halo=1.11d0, beter_bouond=0.98d0)
+  
+      call compact_filter_initiate(filter_i, npdci, im)
+      call compact_filter_initiate(filter_j, npdcj, jm)
+      call compact_filter_initiate(filter_k, npdck, km)
+  
+      ! Optional: filters without boundary application
+      ! call compact_filter_initiate(filter_ii, npdci, im, note='boundary_no_filter')
+      ! call compact_filter_initiate(filter_jj, npdcj, jm, note='boundary_no_filter')
+      ! call compact_filter_initiate(filter_kk, npdck, km, note='boundary_no_filter')
+    end if
+    call filter_coefficient_explicit
+  
+    !-------------------------------------------------------------------
+    ! Optional: Initialize turbulence model
+    !-------------------------------------------------------------------
+    if (trim(turbmode) == 'k-omega') then
+      call init_komegasst
+    end if
+  
+    !-------------------------------------------------------------------
+    ! Final message
+    !-------------------------------------------------------------------
+    if (lio) print *, ' ** Numerical solver initialized.'
+  
+  end subroutine solvrinit
+  !+-------------------------------------------------------------------+
+  !| End of subroutine solvrinit                                       |
+  !+-------------------------------------------------------------------+
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine is a general gradient calculater                  |
+  !|   input: scalar                                                   |
+  !|   output: the gradient of the input scalar                        |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 22-07-2022  | Moved from  diffrsdcal6 by J. Fang @ Warrington     |
+  !+-------------------------------------------------------------------+
+  function grad(var) result(dvar)
+    !
+    use commvar,   only : im,jm,km,npdci,npdcj,npdck,difschm,ndims
+    use commarray, only : dxi
+    use derivative, only : fds,fds_compact_i,fds_compact_j,fds_compact_k
+    !
+    ! arguments
+    real(8),intent(in) :: var(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8) :: dvar(0:im,0:jm,0:km,1:3)
+    !
+    ! local data
+    integer :: i,j,k
+    real(8),allocatable :: df(:),ff(:)
+    !
+    allocate(ff(-hm:im+hm),df(0:im))
+    !
+    dvar=0.d0
+    !
+    do k=0,km
+    do j=0,jm
+      !
+      ff(:)=var(:,j,k)
+      !
+      df(:)=fds%central(fds_compact_i,f=ff(:),dim=im)
+      !
+      dvar(:,j,k,1)=dvar(:,j,k,1)+df(:)*dxi(0:im,j,k,1,1)
+      dvar(:,j,k,2)=dvar(:,j,k,2)+df(:)*dxi(0:im,j,k,1,2)
+      dvar(:,j,k,3)=dvar(:,j,k,3)+df(:)*dxi(0:im,j,k,1,3)
+      !
+    enddo
+    enddo
+    !
+    deallocate(ff,df)
+    !
+    allocate(ff(-hm:jm+hm),df(0:jm))
+    do k=0,km
+    do i=0,im
+      !
+      ff(:)=var(i,:,k)
+      !
+      df(:)=fds%central(fds_compact_j,f=ff(:),dim=jm)
+      !
+      dvar(i,:,k,1)=dvar(i,:,k,1)+df(:)*dxi(i,0:jm,k,2,1)
+      dvar(i,:,k,2)=dvar(i,:,k,2)+df(:)*dxi(i,0:jm,k,2,2)
+      dvar(i,:,k,3)=dvar(i,:,k,3)+df(:)*dxi(i,0:jm,k,2,3)
+      !
+    enddo
+    enddo
+    deallocate(ff,df)
+    !
+    if(ndims==3) then
+      !
+      allocate(ff(-hm:km+hm),df(0:km))
+      do j=0,jm
+      do i=0,im
+        !
+        ff(:)=var(i,j,:)
+        !
+        df(:)=fds%central(fds_compact_k,f=ff(:),dim=km)
+        !
+        dvar(i,j,:,1)=dvar(i,j,:,1)+df(:)*dxi(i,j,0:km,3,1)
+        dvar(i,j,:,2)=dvar(i,j,:,2)+df(:)*dxi(i,j,0:km,3,2)
+        dvar(i,j,:,3)=dvar(i,j,:,3)+df(:)*dxi(i,j,0:km,3,3)
+        !
+      enddo
+      enddo
+      deallocate(ff,df)
+      !
+    endif
+    !
+    return
+    !
+  end function grad
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine grad.                                   |
+  !+-------------------------------------------------------------------+
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine is to calculate gradients of flow variables.      |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 08-10-2021  | Moved from  diffrsdcal6 by J. Fang @ Warrington     |
+  !+-------------------------------------------------------------------+
+  subroutine gradcal(timerept)
+    !
+    use commvar,   only : im,jm,km,npdci,npdcj,npdck,difschm,ndims,    &
+                          num_species,num_modequ,is,ie,js,je,ks,ke,    &
+                          turbmode
+    use commarray, only : vel,tmp,spc,dvel,dtmp,dspc,dxi,omg,tke,dtke, &
+                          domg
+    use derivative, only : fds,fds_compact_i,fds_compact_j,fds_compact_k
+    !
+    ! arguments
+    logical,intent(in),optional :: timerept
+    !
+    ! local data
+    integer :: i,j,k,n,ncolm
+    real(8),allocatable :: df(:,:),ff(:,:)
+    !
+    real(8) :: time_beg
+    real(8),save :: subtime=0.d0
+    !
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
+    !
+    dvel=0.d0
+    dtmp=0.d0
+    dspc=0.d0
+    !
+    if(trim(turbmode)=='k-omega') then
+      dtke=0.d0
+      domg=0.d0
+    endif
+    !
+    ncolm=4+num_species+num_modequ
+    !
+    ! calculate velocity and temperature gradient
+    !
+    allocate(ff(-hm:im+hm,ncolm),df(0:im,ncolm))
+    !
+    do k=0,km
+    do j=0,jm
+      !
+      ff(:,1)=vel(:,j,k,1)
+      ff(:,2)=vel(:,j,k,2)
+      ff(:,3)=vel(:,j,k,3)
+      ff(:,4)=tmp(:,j,k)
+      !
+      if(num_species>0) then
+        do n=1,num_species
+          ff(:,4+n)=spc(:,j,k,n)
+        enddo
+      endif
+      !
+      if(trim(turbmode)=='k-omega') then
+        n=4+num_species
+        !
+        ff(:,n+1)=tke(:,j,k)
+        ff(:,n+2)=omg(:,j,k)
+      endif
+      !
+      do n=1,ncolm
+        df(:,n)=fds%central(fds_compact_i,f=ff(:,n),dim=im)
+      enddo
+      !
+      dvel(:,j,k,1,1)=dvel(:,j,k,1,1)+df(:,1)*dxi(0:im,j,k,1,1)
+      dvel(:,j,k,1,2)=dvel(:,j,k,1,2)+df(:,1)*dxi(0:im,j,k,1,2)
+      dvel(:,j,k,1,3)=dvel(:,j,k,1,3)+df(:,1)*dxi(0:im,j,k,1,3)
+      !
+      dvel(:,j,k,2,1)=dvel(:,j,k,2,1)+df(:,2)*dxi(0:im,j,k,1,1)
+      dvel(:,j,k,2,2)=dvel(:,j,k,2,2)+df(:,2)*dxi(0:im,j,k,1,2)
+      dvel(:,j,k,2,3)=dvel(:,j,k,2,3)+df(:,2)*dxi(0:im,j,k,1,3)
+      !
+      dvel(:,j,k,3,1)=dvel(:,j,k,3,1)+df(:,3)*dxi(0:im,j,k,1,1)
+      dvel(:,j,k,3,2)=dvel(:,j,k,3,2)+df(:,3)*dxi(0:im,j,k,1,2)
+      dvel(:,j,k,3,3)=dvel(:,j,k,3,3)+df(:,3)*dxi(0:im,j,k,1,3)
+      !
+      dtmp(:,j,k,1)=dtmp(:,j,k,1)+df(:,4)*dxi(0:im,j,k,1,1)
+      dtmp(:,j,k,2)=dtmp(:,j,k,2)+df(:,4)*dxi(0:im,j,k,1,2)
+      dtmp(:,j,k,3)=dtmp(:,j,k,3)+df(:,4)*dxi(0:im,j,k,1,3)
+      !
+      if(num_species>0) then
+        do n=1,num_species
+          dspc(:,j,k,n,1)=dspc(:,j,k,n,1)+df(:,4+n)*dxi(0:im,j,k,1,1)
+          dspc(:,j,k,n,2)=dspc(:,j,k,n,2)+df(:,4+n)*dxi(0:im,j,k,1,2)
+          dspc(:,j,k,n,3)=dspc(:,j,k,n,3)+df(:,4+n)*dxi(0:im,j,k,1,3)
+        enddo
+      endif
+      !
+      if(trim(turbmode)=='k-omega') then
+        n=4+num_species
+        !
+        dtke(:,j,k,1)=dtke(:,j,k,1)+df(:,1+n)*dxi(0:im,j,k,1,1)
+        dtke(:,j,k,2)=dtke(:,j,k,2)+df(:,1+n)*dxi(0:im,j,k,1,2)
+        dtke(:,j,k,3)=dtke(:,j,k,3)+df(:,1+n)*dxi(0:im,j,k,1,3)
+        !
+        domg(:,j,k,1)=domg(:,j,k,1)+df(:,2+n)*dxi(0:im,j,k,1,1)
+        domg(:,j,k,2)=domg(:,j,k,2)+df(:,2+n)*dxi(0:im,j,k,1,2)
+        domg(:,j,k,3)=domg(:,j,k,3)+df(:,2+n)*dxi(0:im,j,k,1,3)
+      endif
+      !
+    enddo
+    enddo
+    !
+    deallocate(ff,df)
+    !
+    if(ndims>=2) then
+      !
+      allocate(ff(-hm:jm+hm,ncolm),df(0:jm,ncolm))
+      do k=0,km
+      do i=0,im
+        !
+        ff(:,1)=vel(i,:,k,1)
+        ff(:,2)=vel(i,:,k,2)
+        ff(:,3)=vel(i,:,k,3)
+        ff(:,4)=tmp(i,:,k)
+        !
+        if(num_species>0) then
+          do n=1,num_species
+            ff(:,4+n)=spc(i,:,k,n)
+          enddo
+        endif
+        !
+        if(trim(turbmode)=='k-omega') then
+          n=4+num_species
+          !
+          ff(:,n+1)=tke(i,:,k)
+          ff(:,n+2)=omg(i,:,k)
+        endif
+        !
+        do n=1,ncolm
+          df(:,n)=fds%central(fds_compact_j,f=ff(:,n),dim=jm)
+        enddo
+        !
+        dvel(i,:,k,1,1)=dvel(i,:,k,1,1)+df(:,1)*dxi(i,0:jm,k,2,1)
+        dvel(i,:,k,1,2)=dvel(i,:,k,1,2)+df(:,1)*dxi(i,0:jm,k,2,2)
+        dvel(i,:,k,1,3)=dvel(i,:,k,1,3)+df(:,1)*dxi(i,0:jm,k,2,3)
+        !
+        dvel(i,:,k,2,1)=dvel(i,:,k,2,1)+df(:,2)*dxi(i,0:jm,k,2,1)
+        dvel(i,:,k,2,2)=dvel(i,:,k,2,2)+df(:,2)*dxi(i,0:jm,k,2,2)
+        dvel(i,:,k,2,3)=dvel(i,:,k,2,3)+df(:,2)*dxi(i,0:jm,k,2,3)
+        !
+        dvel(i,:,k,3,1)=dvel(i,:,k,3,1)+df(:,3)*dxi(i,0:jm,k,2,1)
+        dvel(i,:,k,3,2)=dvel(i,:,k,3,2)+df(:,3)*dxi(i,0:jm,k,2,2)
+        dvel(i,:,k,3,3)=dvel(i,:,k,3,3)+df(:,3)*dxi(i,0:jm,k,2,3)
+        !
+        dtmp(i,:,k,1)=dtmp(i,:,k,1)+df(:,4)*dxi(i,0:jm,k,2,1)
+        dtmp(i,:,k,2)=dtmp(i,:,k,2)+df(:,4)*dxi(i,0:jm,k,2,2)
+        dtmp(i,:,k,3)=dtmp(i,:,k,3)+df(:,4)*dxi(i,0:jm,k,2,3)
+        !
+        if(num_species>0) then
+          do n=1,num_species
+            dspc(i,:,k,n,1)=dspc(i,:,k,n,1)+df(:,4+n)*dxi(i,0:jm,k,2,1)
+            dspc(i,:,k,n,2)=dspc(i,:,k,n,2)+df(:,4+n)*dxi(i,0:jm,k,2,2)
+            dspc(i,:,k,n,3)=dspc(i,:,k,n,3)+df(:,4+n)*dxi(i,0:jm,k,2,3)
+          enddo
+        endif
+        !
+        if(trim(turbmode)=='k-omega') then
+          n=4+num_species
+          !
+          dtke(i,:,k,1)=dtke(i,:,k,1)+df(:,1+n)*dxi(i,0:jm,k,2,1)
+          dtke(i,:,k,2)=dtke(i,:,k,2)+df(:,1+n)*dxi(i,0:jm,k,2,2)
+          dtke(i,:,k,3)=dtke(i,:,k,3)+df(:,1+n)*dxi(i,0:jm,k,2,3)
+          !
+          domg(i,:,k,1)=domg(i,:,k,1)+df(:,2+n)*dxi(i,0:jm,k,2,1)
+          domg(i,:,k,2)=domg(i,:,k,2)+df(:,2+n)*dxi(i,0:jm,k,2,2)
+          domg(i,:,k,3)=domg(i,:,k,3)+df(:,2+n)*dxi(i,0:jm,k,2,3)
+          !
+          !
+        endif
+        !
+      enddo
+      enddo
+      deallocate(ff,df)
+      !
+    endif
+    !
+    if(ndims==3) then
+      allocate(ff(-hm:km+hm,ncolm),df(0:km,ncolm))
+      do j=0,jm
+      do i=0,im
+        !
+        ff(:,1)=vel(i,j,:,1)
+        ff(:,2)=vel(i,j,:,2)
+        ff(:,3)=vel(i,j,:,3)
+        ff(:,4)=tmp(i,j,:)
+        !
+        if(num_species>0) then
+          do n=1,num_species
+            ff(:,4+n)=spc(i,j,:,n)
+          enddo
+        endif
+        !
+        if(trim(turbmode)=='k-omega') then
+          n=4+num_species
+          !
+          ff(:,n+1)=tke(i,j,:)
+          ff(:,n+2)=omg(i,j,:)
+        endif
+        !
+        do n=1,ncolm
+          df(:,n)=fds%central(fds_compact_k,f=ff(:,n),dim=km)
+        enddo
+        !
+        dvel(i,j,:,1,1)=dvel(i,j,:,1,1)+df(:,1)*dxi(i,j,0:km,3,1)
+        dvel(i,j,:,1,2)=dvel(i,j,:,1,2)+df(:,1)*dxi(i,j,0:km,3,2)
+        dvel(i,j,:,1,3)=dvel(i,j,:,1,3)+df(:,1)*dxi(i,j,0:km,3,3)
+        !
+        dvel(i,j,:,2,1)=dvel(i,j,:,2,1)+df(:,2)*dxi(i,j,0:km,3,1)
+        dvel(i,j,:,2,2)=dvel(i,j,:,2,2)+df(:,2)*dxi(i,j,0:km,3,2)
+        dvel(i,j,:,2,3)=dvel(i,j,:,2,3)+df(:,2)*dxi(i,j,0:km,3,3)
+        !
+        dvel(i,j,:,3,1)=dvel(i,j,:,3,1)+df(:,3)*dxi(i,j,0:km,3,1)
+        dvel(i,j,:,3,2)=dvel(i,j,:,3,2)+df(:,3)*dxi(i,j,0:km,3,2)
+        dvel(i,j,:,3,3)=dvel(i,j,:,3,3)+df(:,3)*dxi(i,j,0:km,3,3)
+        !
+        dtmp(i,j,:,1)=dtmp(i,j,:,1)+df(:,4)*dxi(i,j,0:km,3,1)
+        dtmp(i,j,:,2)=dtmp(i,j,:,2)+df(:,4)*dxi(i,j,0:km,3,2)
+        dtmp(i,j,:,3)=dtmp(i,j,:,3)+df(:,4)*dxi(i,j,0:km,3,3)
+        !
+        if(num_species>0) then
+          do n=1,num_species
+            dspc(i,j,:,n,1)=dspc(i,j,:,n,1)+df(:,4+n)*dxi(i,j,0:km,3,1)
+            dspc(i,j,:,n,2)=dspc(i,j,:,n,2)+df(:,4+n)*dxi(i,j,0:km,3,2)
+            dspc(i,j,:,n,3)=dspc(i,j,:,n,3)+df(:,4+n)*dxi(i,j,0:km,3,3)
+          enddo
+        endif
+        !
+        if(trim(turbmode)=='k-omega') then
+          n=4+num_species
+          !
+          dtke(i,j,:,1)=dtke(i,j,:,1)+df(:,1+n)*dxi(i,j,0:km,3,1)
+          dtke(i,j,:,2)=dtke(i,j,:,2)+df(:,1+n)*dxi(i,j,0:km,3,2)
+          dtke(i,j,:,3)=dtke(i,j,:,3)+df(:,1+n)*dxi(i,j,0:km,3,3)
+          !
+          domg(i,j,:,1)=domg(i,j,:,1)+df(:,2+n)*dxi(i,j,0:km,3,1)
+          domg(i,j,:,2)=domg(i,j,:,2)+df(:,2+n)*dxi(i,j,0:km,3,2)
+          domg(i,j,:,3)=domg(i,j,:,3)+df(:,2+n)*dxi(i,j,0:km,3,3)
+        endif
+        !
+      enddo
+      enddo
+      deallocate(ff,df)
+    endif
+    !
+    if(present(timerept)) then
+      if(timerept) then
+      !
+      subtime=subtime+ptime()-time_beg
+      !
+      if(lio .and. lreport .and. ltimrpt) call timereporter(routine='gradcal', &
+                                             timecost=subtime,  &
+                                              message='calculation of gradients')
+      endif
+    endif
+    !
+    return
+    !
+  end subroutine gradcal
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine gradcal.                                |
+  !+-------------------------------------------------------------------+
+  !!
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  ! This subroutine is used for spatial filter the conservative variable
+  ! for stabilizing the computation.
+  ! 10-order filter is incorporated.
+  ! for boundary filter: the high-order one side filter is used.
+  ! the 0-6-6-6-8-10.............-10-8-6-6-6-0. boundary order is
+  ! dopted.
+  ! Ref: Datta V. Gaitonde and Miguel R. Visbal, AIAA JOURNAL Vol.38,
+  !      No.11, November 2000.
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  ! Writen by Fang Jian, 2008-11-03.
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  subroutine filterq(timerept)
+    !
+    use commvar,  only : im,jm,km,numq,npdci,npdcj,npdck,              &
+                         alfa_filter,ndims,is,ie,js,je,ks,ke,turbmode, &
+                         conschm,difschm
+    use commarray,only : q
+    use filter,   only : compact_filter,filter_i,filter_j,filter_k,  &
+                        filter_ii,filter_jj,filter_kk,spafilter10exp
+    !
+    ! arguments
+    logical,intent(in),optional :: timerept
+    !
+    ! local data
+    integer :: i,j,k,n,m
+    real(8),allocatable :: phi(:,:),fph(:,:)
+    !
+    real(8) :: time_beg
+    real(8),save :: subtime=0.d0
+    !
+    if(present(timerept)) then
+
+      if(timerept) time_beg=ptime()
+
+    endif 
+    !
+    if(conschm(4:4)=='e' .and. difschm(4:4)=='e') then
+      call filterq_explicit10
+      if(present(timerept)) then
+        if(timerept) then
+          subtime=subtime+ptime()-time_beg
+          if(lio .and. lreport .and. ltimrpt) call timereporter(routine='filterq', &
+                                             timecost=subtime, &
+                                              message='explicit low-pass filter')
+        endif
+      endif
+      return
+    endif
+    !
+    ! filtering in i direction
+    call dataswap(q,direction=1,timerept=ltimrpt)
+    !
+    allocate(phi(-hm:im+hm,1:numq),fph(0:im,1:numq))
+    !
+    do k=0,km
+    do j=0,jm
+      !
+      phi(:,:)=q(:,j,k,:)
+      !
+      do n=1,numq
+        fph(:,n)=compact_filter(afilter=filter_i,f=phi(:,n),dim=im)
+      enddo
+      !
+      q(0:im,j,k,:)=fph(0:im,:)
+      !
+    end do
+    end do
+    !
+    deallocate(phi,fph)
+    !
+    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    ! end filter in i direction.
+    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    !
+    if(ndims>=2) then
+      !
+      ! filtering in j direction
+      call dataswap(q,direction=2,timerept=ltimrpt)
+      !
+      allocate(phi(-hm:jm+hm,1:numq),fph(0:jm,1:numq))
+      !
+      do k=0,km
+      do i=0,im
+        !
+        phi(:,:)=q(i,:,k,:)
+        !
+        do n=1,numq
+          fph(:,n)=compact_filter(afilter=filter_j,f=phi(:,n),dim=jm)
+        enddo
+        !
+        q(i,0:jm,k,:)=fph(0:jm,:)
+        !
+      end do
+      end do
+      !
+      deallocate(phi,fph)
+      !
+    endif
+    !
+    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    ! end filter in j direction.
+    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    !
+    if(ndims==3) then
+      !
+      call dataswap(q,direction=3,timerept=ltimrpt)
+      !
+      !
+      allocate(phi(-hm:km+hm,1:numq),fph(0:km,1:numq))
+      !
+      ! filtering in k direction
+      do j=0,jm
+      do i=0,im
+        !
+        phi(:,:)=q(i,j,:,:)
+        !
+        do n=1,numq
+          fph(:,n)=compact_filter(afilter=filter_k,f=phi(:,n),dim=km)
+        enddo
+        !
+        q(i,j,0:km,:)=fph
+        !
+      end do
+      end do
+      !
+      deallocate(phi,fph)
+      !
+    end if
+    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    ! end filter in k direction.
+    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    !
+    if(trim(turbmode)=='k-omega') then
+      call filter2e(q(:,:,:,7))
+    endif
+    !
+    if(present(timerept)) then
+      if(timerept) then
+      !
+      subtime=subtime+ptime()-time_beg
+      !
+      if(lio .and. lreport .and. ltimrpt) call timereporter(routine='filterq', &
+                                             timecost=subtime, &
+                                              message='low-pass filter')
+      endif
+    endif
+    !
+    return
+    !
+  end subroutine filterq
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  ! End of the subroutine filterq.
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  !!
+  subroutine filterq_explicit10
+    !
+    use commvar,  only : im,jm,km,numq,ndims,npdci,npdcj,npdck
+    use commarray,only : q
+    use filter,   only : spafilter10exp
+    !
+    integer :: i,j,k,n
+    real(8),allocatable :: phi(:,:),fph(:,:)
+    !
+    call dataswap(q,direction=1,timerept=ltimrpt)
+    allocate(phi(-hm:im+hm,1:numq),fph(0:im,1:numq))
+    do k=0,km
+    do j=0,jm
+      phi(:,:)=q(:,j,k,:)
+      do n=1,numq
+        fph(:,n)=spafilter10exp(f=phi(:,n),ntype=npdci,dim=im)
+      enddo
+      q(0:im,j,k,:)=fph(0:im,:)
+    enddo
+    enddo
+    deallocate(phi,fph)
+    !
+    if(ndims>=2) then
+      call dataswap(q,direction=2,timerept=ltimrpt)
+      allocate(phi(-hm:jm+hm,1:numq),fph(0:jm,1:numq))
+      do k=0,km
+      do i=0,im
+        phi(:,:)=q(i,:,k,:)
+        do n=1,numq
+          fph(:,n)=spafilter10exp(f=phi(:,n),ntype=npdcj,dim=jm)
+        enddo
+        q(i,0:jm,k,:)=fph(0:jm,:)
+      enddo
+      enddo
+      deallocate(phi,fph)
+    endif
+    !
+    if(ndims==3) then
+      call dataswap(q,direction=3,timerept=ltimrpt)
+      allocate(phi(-hm:km+hm,1:numq),fph(0:km,1:numq))
+      do j=0,jm
+      do i=0,im
+        phi(:,:)=q(i,j,:,:)
+        do n=1,numq
+          fph(:,n)=spafilter10exp(f=phi(:,n),ntype=npdck,dim=km)
+        enddo
+        q(i,j,0:km,:)=fph(0:km,:)
+      enddo
+      enddo
+      deallocate(phi,fph)
+    endif
+    !
+  end subroutine filterq_explicit10
+  !
+  subroutine filter2e(phi)
+    !
+    use commvar,  only : is,ie,je,js,je,ks,ke,im,jm,km
+    !
+    real(8),intent(inout) :: phi(-hm:im+hm,-hm:jm+hm,-hm:km+hm) 
+    !
+    integer :: i,j,k
+    real(8),allocatable :: phtemp(:,:,:)
+    !
+    call dataswap(phi,timerept=ltimrpt)
+    !
+    allocate(phtemp(is:ie,js:je,ks:ke))
+    do k=ks,ke
+    do i=is,ie
+      !
+      do j=js,je
+        phtemp(i,j,k)=0.01d0*(0.25d0*(phi(i,j-1,k)+phi(i,j+1,k))+0.5d0*phi(i,j,k))  + &
+                      0.99d0*phi(i,j,k)
+      enddo
+      !
+    enddo
+    enddo
+    !
+    phi(is:ie,js:je,ks:ke)=phtemp(is:ie,js:je,ks:ke)
+    !
+    return
+    !
+  end subroutine filter2e
+  !
+  subroutine filter4e(phi)
+    !
+    use commvar,  only : is,ie,je,js,je,ks,ke,im,jm,km
+    !
+    real(8),intent(inout) :: phi(-hm:im+hm,-hm:jm+hm,-hm:km+hm) 
+    !
+    integer :: i,j,k
+    real(8),allocatable :: phtemp(:,:,:)
+    !
+    call dataswap(phi,timerept=ltimrpt)
+    !
+    allocate(phtemp(is:ie,js:je,ks:ke))
+    do k=ks,ke
+    do i=is,ie
+      !
+      do j=js+1,je-1
+        phtemp(i,j,k)= 0.0001d0*(0.625d0*phi(i,j,k)               + &
+                               0.25d0*(phi(i,j-1,k)+phi(i,j+1,k)) - &
+                              0.06250*(phi(i,j-2,k)+phi(i,j+3,k)))+ &
+                       0.9999d0*phi(i,j,k)
+  
+      enddo
+      !
+    enddo
+    enddo
+    !
+    phi(is:ie,js:je,ks:ke)=phtemp(is:ie,js:je,ks:ke)
+    !
+    return
+    !
+  end subroutine filter4e
+  !
+  subroutine check_mat55_unit(matrix,normal)
+    !
+    real(8),intent(in) :: matrix(5,5)
+    logical,intent(out) :: normal
+    !
+    real(8) :: epslion
+    integer :: i,j
+    !
+    epslion=1.d-8
+    !
+    normal=.true.
+    !
+    do j=1,5
+    do i=1,5
+     if( i==j ) then
+       if(abs(matrix(i,j)-1.d0)<epslion) then
+        continue
+       else
+         print*,' !! WARNING of UNIT MARTIX'
+         print*, i,j,matrix(i,j)
+         normal=.false.
+       endif
+     else
+       if(abs(matrix(i,j))<epslion) then
+        continue
+       else
+         print*,' !! WARNING of UNIT MARTIX'
+         print*, i,j,matrix(i,j)
+         normal=.false.
+       endif
+     endif
+    enddo
+    enddo
+    !
+  end subroutine check_mat55_unit
+  !
+end module comsolver
+!+---------------------------------------------------------------------+
+!| The end of the module comsolver.                                    |
+!+---------------------------------------------------------------------+

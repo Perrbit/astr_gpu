@@ -1,0 +1,223 @@
+module chemistry_compensation_gpu
+  use cudafor
+  use iso_fortran_env, only: real64
+  use chemistry_compensation, only: air5_compensated,air5_carry, &
+    air5_compensation_comm,compensation_exchange_faces
+  implicit none
+  logical, device, save :: air5_compensated_d
+  real(real64), device, allocatable :: air5_carry_d(:,:,:,:)
+  real(real64), device, allocatable :: air5_origin_d(:,:,:,:),air5_origin_carry_d(:,:,:,:)
+contains
+  attributes(device) subroutine compensated_filter_projection_gpu(high,carry,species,closure)
+    real(real64), intent(inout) :: high(11),carry(11)
+    real(real64), intent(in) :: species(5)
+    integer, intent(in) :: closure
+    integer :: n,m,c
+    real(real64) :: total,virtual,error
+    c=5+closure
+    do n=1,5
+      m=5+n
+      if(n==closure) cycle
+      if(high(m)/=species(n)) then
+        high(m)=species(n)
+        carry(m)=0.0_real64
+      endif
+    enddo
+    high(c)=high(1); carry(c)=carry(1)
+    do n=1,5
+      if(n==closure) cycle
+      m=5+n
+      total=high(c)-high(m)
+      virtual=total-high(c)
+      error=(high(c)-(total-virtual))-(high(m)+virtual)
+      carry(c)=(carry(c)-carry(m))-error
+      high(c)=total
+    enddo
+    do m=1,11
+      total=high(m)-carry(m)
+      virtual=total-high(m)
+      error=(high(m)-(total-virtual))+(-carry(m)-virtual)
+      high(m)=total; carry(m)=-error
+    enddo
+  end subroutine
+
+  attributes(global) subroutine compensation_filter_state_kernel(ni,nj,nk,swap)
+    use commarray_gpu, only: q_d
+    integer, value :: ni,nj,nk
+    logical, value :: swap
+    integer :: index,i,j,k,m
+    real(real64) :: high,carry,total,virtual,error
+    index=(blockidx%x-1)*blockdim%x+threadidx%x-1
+    if(index>=(ni+1)*(nj+1)*(nk+1)) return
+    i=mod(index,ni+1); j=mod(index/(ni+1),nj+1); k=index/((ni+1)*(nj+1))
+    do m=1,11
+      high=q_d(i,j,k,m); carry=air5_carry_d(i,j,k,m)
+      if(swap) then
+        q_d(i,j,k,m)=carry
+        air5_carry_d(i,j,k,m)=high
+      else
+        total=high-carry
+        virtual=total-high
+        error=(high-(total-virtual))+(-carry-virtual)
+        q_d(i,j,k,m)=total
+        air5_carry_d(i,j,k,m)=-error
+      endif
+    enddo
+  end subroutine
+
+  subroutine compensation_filter_state_gpu(swap)
+    use commvar, only: im,jm,km
+    use gpu_check, only: sync_after_kernel
+    logical, intent(in) :: swap
+    type(dim3) :: block,grid
+    if(.not.air5_compensated) return
+    block=dim3(256,1,1)
+    grid=dim3(((im+1)*(jm+1)*(km+1)+255)/256,1,1)
+    call compensation_filter_state_kernel<<<grid,block>>>(im,jm,km,swap)
+    call sync_after_kernel('compensation_filter_state_kernel',.true.)
+  end subroutine
+
+  subroutine release_air5_compensation_gpu()
+    if(allocated(air5_carry_d)) deallocate(air5_carry_d,air5_origin_d,air5_origin_carry_d)
+    air5_compensated_d=.false.
+  end subroutine
+
+  attributes(device) subroutine compensated_add_gpu(high,carry,increment)
+    real(real64), intent(inout) :: high,carry
+    real(real64), intent(in) :: increment
+    real(real64) :: adjusted,updated
+    adjusted=increment-carry
+    updated=high+adjusted
+    carry=(updated-high)-adjusted
+    high=updated
+  end subroutine
+
+  attributes(device) subroutine compensated_rk_gpu(high,carry,origin,origin_carry,a,b,increment)
+    real(real64), intent(inout) :: high,carry
+    real(real64), intent(in) :: origin,origin_carry,a,b,increment
+    real(real64) :: difference,virtual,error
+    difference=origin-high
+    virtual=difference-origin
+    error=(origin-(difference-virtual))-(high+virtual)
+    carry=a*origin_carry+b*carry
+    call compensated_add_gpu(high,carry,a*difference)
+    call compensated_add_gpu(high,carry,a*error)
+    call compensated_add_gpu(high,carry,increment)
+  end subroutine
+
+  subroutine init_air5_compensation_gpu()
+    use commvar, only: im,jm,km
+    air5_compensated_d=air5_compensated
+    if(.not.air5_compensated) return
+    if(allocated(air5_carry_d)) deallocate(air5_carry_d,air5_origin_d,air5_origin_carry_d)
+    allocate(air5_carry_d(0:im,0:jm,0:km,11),air5_origin_d(0:im,0:jm,0:km,11), &
+      air5_origin_carry_d(0:im,0:jm,0:km,11))
+    air5_carry_d=air5_carry
+    air5_origin_d=0.0_real64
+    air5_origin_carry_d=0.0_real64
+  end subroutine
+
+  subroutine sync_air5_compensation_gpu(to_host)
+    logical, intent(in) :: to_host
+    if(.not.air5_compensated) return
+    if(to_host) then
+      air5_carry=air5_carry_d
+    else
+      air5_carry_d=air5_carry
+    endif
+  end subroutine
+
+  attributes(global) subroutine normalize_compensation_face_kernel(axis,n1,n2,ni,nj,nk,lower,upper)
+    use commarray_gpu, only: q_d
+    integer, value :: axis,n1,n2,ni,nj,nk
+    logical, value :: lower,upper
+    integer :: index,a,b,side,i,j,k,m
+    real(real64) :: high,carry,total,virtual,error
+    index=(blockidx%x-1)*blockdim%x+threadidx%x-1
+    if(index>=n1*n2) return
+    a=mod(index,n1); b=index/n1
+    do side=0,1
+      if(side==0.and..not.lower) cycle
+      if(side==1.and..not.upper) cycle
+      select case(axis)
+      case(1)
+        i=side*ni; j=a; k=b
+      case(2)
+        i=a; j=side*nj; k=b
+      case(3)
+        i=a; j=b; k=side*nk
+      end select
+      do m=1,11
+        high=q_d(i,j,k,m); carry=air5_carry_d(i,j,k,m)
+        total=high-carry
+        virtual=total-high
+        error=(high-(total-virtual))+(-carry-virtual)
+        q_d(i,j,k,m)=total
+        air5_carry_d(i,j,k,m)=-error
+      enddo
+    enddo
+  end subroutine
+
+  subroutine compensation_gpu_axis(axis,normalize)
+    use commvar, only: im,jm,km,lihomo,ljhomo,lkhomo
+    use commarray_gpu, only: q_d
+    use parallel, only: mpileft,mpiright,mpidown,mpiup,mpiback,mpifront, &
+      isize,jsize,ksize,mpirank
+    use mpi, only: MPI_PROC_NULL
+    use gpu_check, only: sync_after_kernel
+    integer, intent(in) :: axis
+    logical, intent(in), optional :: normalize
+    integer :: lower,upper,n1,n2
+    real(real64), allocatable :: low(:,:,:),high(:,:,:),cl(:,:,:),ch(:,:,:)
+    if(.not.air5_compensated) return
+    select case(axis)
+    case(1)
+      lower=mpileft; upper=mpiright; n1=jm+1; n2=km+1
+      if(isize==1 .and. lihomo) then
+        lower=mpirank; upper=mpirank
+      endif
+    case(2)
+      lower=mpidown; upper=mpiup; n1=im+1; n2=km+1
+      if(jsize==1 .and. ljhomo) then
+        lower=mpirank; upper=mpirank
+      endif
+    case(3)
+      lower=mpiback; upper=mpifront; n1=im+1; n2=jm+1
+      if(ksize==1 .and. lkhomo) then
+        lower=mpirank; upper=mpirank
+      endif
+    case default
+      error stop 'invalid compensation face axis'
+    end select
+    if(lower==MPI_PROC_NULL .and. upper==MPI_PROC_NULL) return
+    if(present(normalize)) then
+      if(normalize) then
+        call normalize_compensation_face_kernel<<<(n1*n2+255)/256,256>>>( &
+          axis,n1,n2,im,jm,km,lower/=MPI_PROC_NULL,upper/=MPI_PROC_NULL)
+        call sync_after_kernel('normalize_compensation_face',.true.)
+        return
+      endif
+    endif
+    allocate(low(n1,n2,11),high(n1,n2,11),cl(n1,n2,11),ch(n1,n2,11))
+    select case(axis)
+    case(1)
+      low=q_d(0,0:jm,0:km,:); high=q_d(im,0:jm,0:km,:)
+      cl=air5_carry_d(0,:,:,:); ch=air5_carry_d(im,:,:,:)
+    case(2)
+      low=q_d(0:im,0,0:km,:); high=q_d(0:im,jm,0:km,:)
+      cl=air5_carry_d(:,0,:,:); ch=air5_carry_d(:,jm,:,:)
+    case(3)
+      low=q_d(0:im,0:jm,0,:); high=q_d(0:im,0:jm,km,:)
+      cl=air5_carry_d(:,:,0,:); ch=air5_carry_d(:,:,km,:)
+    end select
+    call compensation_exchange_faces(low,high,cl,ch,lower,upper,air5_compensation_comm)
+    select case(axis)
+    case(1)
+      air5_carry_d(0,:,:,:)=cl; air5_carry_d(im,:,:,:)=ch
+    case(2)
+      air5_carry_d(:,0,:,:)=cl; air5_carry_d(:,jm,:,:)=ch
+    case(3)
+      air5_carry_d(:,:,0,:)=cl; air5_carry_d(:,:,km,:)=ch
+    end select
+  end subroutine
+end module chemistry_compensation_gpu

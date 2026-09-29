@@ -1,0 +1,63 @@
+module precision_mode_gpu
+  implicit none
+  integer,parameter :: GPU_PRECISION_FP64=0
+  integer,parameter :: GPU_PRECISION_MIXED_WORKSPACE=1
+  integer,save :: gpu_precision_mode=GPU_PRECISION_FP64
+  logical,save :: gpu_precision_mode_configured=.false.
+contains
+  subroutine configure_gpu_precision_mode()
+    use mpi
+    implicit none
+    character(len=32) :: value
+    integer :: choice,lowest,highest,status,ierr,rank
+
+    if(gpu_precision_mode_configured) return
+    value=''
+    call get_environment_variable('ASTR_GPU_PRECISION_MODE',value,status=status)
+    choice=-1
+    if(status==1 .or. (status==0 .and. len_trim(value)==0)) choice=GPU_PRECISION_FP64
+    if(status==0) then
+      select case(trim(adjustl(value)))
+      case('fp64')
+        choice=GPU_PRECISION_FP64
+      case('mixed_workspace')
+        choice=GPU_PRECISION_MIXED_WORKSPACE
+      end select
+    endif
+
+    call mpi_allreduce(choice,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,status)
+    call mpi_allreduce(choice,highest,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,status)
+    if(lowest<0 .or. lowest/=highest) then
+      call mpi_comm_rank(MPI_COMM_WORLD,rank,ierr)
+      if(rank==0) write(*,'(A)') &
+        'Invalid or inconsistent ASTR_GPU_PRECISION_MODE: expected fp64 or mixed_workspace'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+    endif
+
+    gpu_precision_mode=choice
+    gpu_precision_mode_configured=.true.
+  end subroutine configure_gpu_precision_mode
+
+  logical function gpu_mixed_workspace_requested()
+    implicit none
+
+    call configure_gpu_precision_mode()
+    gpu_mixed_workspace_requested = gpu_precision_mode==GPU_PRECISION_MIXED_WORKSPACE
+  end function gpu_mixed_workspace_requested
+
+  character(len=32) function gpu_precision_mode_name()
+    implicit none
+
+    call configure_gpu_precision_mode()
+    select case(gpu_precision_mode)
+    case(GPU_PRECISION_FP64)
+      gpu_precision_mode_name='fp64'
+    case(GPU_PRECISION_MIXED_WORKSPACE)
+      gpu_precision_mode_name='mixed_workspace'
+    case default
+      gpu_precision_mode_name='invalid'
+    end select
+  end function gpu_precision_mode_name
+end module precision_mode_gpu

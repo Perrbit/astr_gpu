@@ -1,0 +1,53 @@
+########################################################################
+# ASTR GPU quickstart: flatplate
+########################################################################
+
+# flowtype
+bl
+
+# ia,ja,ka
+32,64,16
+
+# lihomo,ljhomo,lkhomo
+f,f,t
+
+# nondimen,diffterm,lfilter,lreadgrid,lfftk,limmbou,ltimrpt,lcomb,usegpu
+t,t,t,t,f,f,t,f,t
+
+# lrestart
+f
+
+# alfa_filter,kcutoff
+0.49d0,48
+
+# reference values: T,Re,Mach (nondimen=t) or T,U,L,rho (nondimen=f)
+273.15d0,1000.d0,0.3d0
+
+# conschm,difschm,rkscheme
+543e,643e,rk3
+
+# recon_schem,lchardecomp,bfacmpld,shkcrt
+3,f,0.1d0,0.001d0
+
+# num_species and Schmidt numbers
+0
+
+# turbmode,iomode
+none,h
+
+# bctype: x-min,x-max,y-min,y-max,z-min,z-max
+11,prof
+21
+41,1.d0
+51
+1
+1
+
+# ninit
+0
+
+# sponge widths
+0,0,0,0,0,0
+
+# gridfile
+datin/grid.h5

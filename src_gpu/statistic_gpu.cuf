@@ -1,0 +1,1118 @@
+module statistic_gpu
+  use cudafor
+  implicit none
+contains
+  attributes(device) pure real(8) function determinant33_rows(a,b,c)
+    implicit none
+    real(8),intent(in) :: a(3),b(3),c(3)
+
+    determinant33_rows = a(1)*b(2)*c(3) + a(2)*b(3)*c(1) + a(3)*b(1)*c(2) - &
+                         a(3)*b(2)*c(1) - a(1)*b(3)*c(2) - a(2)*b(1)*c(3)
+  end function determinant33_rows
+
+  attributes(device) pure real(8) function quad_area3d_device(x1,x2,x3,x4)
+    implicit none
+    real(8),intent(in) :: x1(3),x2(3),x3(3),x4(3)
+    real(8) :: a(3),b(3),c(3),normal1(3),normal2(3)
+
+    a=x2-x1
+    b=x3-x1
+    c=x4-x1
+    normal1(1)=a(2)*b(3)-a(3)*b(2)
+    normal1(2)=a(3)*b(1)-a(1)*b(3)
+    normal1(3)=a(1)*b(2)-a(2)*b(1)
+    normal2(1)=b(2)*c(3)-b(3)*c(2)
+    normal2(2)=b(3)*c(1)-b(1)*c(3)
+    normal2(3)=b(1)*c(2)-b(2)*c(1)
+    quad_area3d_device=0.5d0*(sqrt(sum(normal1*normal1))+sqrt(sum(normal2*normal2)))
+  end function quad_area3d_device
+
+  attributes(device) pure real(8) function volhex_device(x1,x2,x3,x4,x5,x6,x7,x8)
+    implicit none
+    real(8),intent(in) :: x1(3),x2(3),x3(3),x4(3),x5(3),x6(3),x7(3),x8(3)
+    real(8) :: centroid(3),a(3),b(3),c(3)
+
+    centroid=0.125d0*(x1+x2+x3+x4+x5+x6+x7+x8)
+    a=centroid-x1
+    b=x3-x1
+    c=x2-x4
+    volhex_device=determinant33_rows(a,b,c)/6.d0
+    a=centroid-x5
+    b=x7-x5
+    c=x8-x6
+    volhex_device=volhex_device+determinant33_rows(a,b,c)/6.d0
+    a=centroid-x1
+    b=x5-x4
+    c=x8-x1
+    volhex_device=volhex_device+determinant33_rows(a,b,c)/6.d0
+    a=centroid-x2
+    b=x6-x3
+    c=x2-x7
+    volhex_device=volhex_device+determinant33_rows(a,b,c)/6.d0
+    a=centroid-x3
+    b=x8-x3
+    c=x7-x4
+    volhex_device=volhex_device+determinant33_rows(a,b,c)/6.d0
+    a=centroid-x1
+    b=x5-x2
+    c=x1-x6
+    volhex_device=volhex_device+determinant33_rows(a,b,c)/6.d0
+  end function volhex_device
+
+  attributes(global) subroutine kenergy_partial_kernel(rho,vel,partial,im,jm,km,hm)
+    implicit none
+    integer,value :: im,jm,km,hm
+    real(8),device :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device :: partial(*)
+    real(8),shared :: scratch(256)
+    integer :: tid,id,stride,ncell,i,j,k
+    real(8) :: local,usq
+
+    tid = threadIdx%x
+    id = (blockIdx%x - 1) * blockDim%x + tid - 1
+    stride = gridDim%x * blockDim%x
+    ncell = im * jm * km
+    local = 0.d0
+
+    do while(id < ncell)
+      i = mod(id,im) + 1
+      j = mod(id/im,jm) + 1
+      k = id/(im*jm) + 1
+      usq = vel(i,j,k,1)**2 + vel(i,j,k,2)**2 + vel(i,j,k,3)**2
+      local = local + rho(i,j,k) * usq
+      id = id + stride
+    enddo
+
+    scratch(tid) = local
+    call syncthreads()
+
+    stride = blockDim%x / 2
+    do while(stride > 0)
+      if(tid <= stride) scratch(tid) = scratch(tid) + scratch(tid + stride)
+      call syncthreads()
+      stride = stride / 2
+    enddo
+
+    if(tid == 1) partial(blockIdx%x) = scratch(1)
+  end subroutine kenergy_partial_kernel
+
+  attributes(global) subroutine enstophy_partial_kernel(rho,dvel,partial,im,jm,km,hm)
+    implicit none
+    integer,value :: im,jm,km,hm
+    real(8),device :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
+    real(8),device :: partial(*)
+    real(8),shared :: scratch(256)
+    integer :: tid,id,stride,ncell,i,j,k
+    real(8) :: local,omega1,omega2,omega3,omegam
+
+    tid = threadIdx%x
+    id = (blockIdx%x - 1) * blockDim%x + tid - 1
+    stride = gridDim%x * blockDim%x
+    ncell = im * jm * km
+    local = 0.d0
+
+    do while(id < ncell)
+      i = mod(id,im) + 1
+      j = mod(id/im,jm) + 1
+      k = id/(im*jm) + 1
+      omega1 = dvel(i,j,k,3,2) - dvel(i,j,k,2,3)
+      omega2 = dvel(i,j,k,1,3) - dvel(i,j,k,3,1)
+      omega3 = dvel(i,j,k,2,1) - dvel(i,j,k,1,2)
+      omegam = omega1*omega1 + omega2*omega2 + omega3*omega3
+      local = local + rho(i,j,k) * omegam
+      id = id + stride
+    enddo
+
+    scratch(tid) = local
+    call syncthreads()
+
+    stride = blockDim%x / 2
+    do while(stride > 0)
+      if(tid <= stride) scratch(tid) = scratch(tid) + scratch(tid + stride)
+      call syncthreads()
+      stride = stride / 2
+    enddo
+
+    if(tid == 1) partial(blockIdx%x) = scratch(1)
+  end subroutine enstophy_partial_kernel
+
+  attributes(global) subroutine dissipation_partial_kernel(tmp,dvel,partial,im,jm,km,hm, &
+       tempconst,tempconst1,reynolds,nondimen)
+    implicit none
+    integer,value :: im,jm,km,hm
+    real(8),value :: tempconst,tempconst1,reynolds
+    logical,value :: nondimen
+    real(8),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
+    real(8),device :: partial(*)
+    real(8),shared :: scratch(256)
+    integer :: tid,id,stride,ncell,i,j,k
+    real(8) :: local,tloc,miu,du11,du12,du13,du21,du22,du23,du31,du32,du33
+    real(8) :: s11,s12,s13,s22,s23,s33,div
+
+    tid = threadIdx%x
+    id = (blockIdx%x - 1) * blockDim%x + tid - 1
+    stride = gridDim%x * blockDim%x
+    ncell = im * jm * km
+    local = 0.d0
+
+    do while(id < ncell)
+      i = mod(id,im) + 1
+      j = mod(id/im,jm) + 1
+      k = id/(im*jm) + 1
+
+      tloc = tmp(i,j,k)
+      if(nondimen) then
+        miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
+      else
+        miu = 1.716d-5*(tloc/273.15d0)*sqrt(tloc/273.15d0)*(273.15d0+110.4d0)/(tloc+110.4d0)
+      endif
+
+      du11=dvel(i,j,k,1,1); du12=dvel(i,j,k,1,2); du13=dvel(i,j,k,1,3)
+      du21=dvel(i,j,k,2,1); du22=dvel(i,j,k,2,2); du23=dvel(i,j,k,2,3)
+      du31=dvel(i,j,k,3,1); du32=dvel(i,j,k,3,2); du33=dvel(i,j,k,3,3)
+      s11=du11; s12=0.5d0*(du12+du21); s13=0.5d0*(du13+du31)
+      s22=du22; s23=0.5d0*(du23+du32); s33=du33
+      div=s11+s22+s33
+      local = local + 2.d0*miu*(s11**2+s22**2+s33**2+ &
+              2.d0*(s12**2+s13**2+s23**2) - div**2/3.d0)
+      id = id + stride
+    enddo
+
+    scratch(tid) = local
+    call syncthreads()
+
+    stride = blockDim%x / 2
+    do while(stride > 0)
+      if(tid <= stride) scratch(tid) = scratch(tid) + scratch(tid + stride)
+      call syncthreads()
+      stride = stride / 2
+    enddo
+
+    if(tid == 1) partial(blockIdx%x) = scratch(1)
+  end subroutine dissipation_partial_kernel
+
+  attributes(global) subroutine maxq_partial_kernel(q,partial,im,jm,km,hm,numq,ivar)
+    implicit none
+    integer,value :: im,jm,km,hm,numq,ivar
+    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq)
+    real(8),device :: partial(*)
+    real(8),shared :: scratch(256)
+    integer :: tid,id,stride,ncell,i,j,k
+    real(8) :: local
+
+    tid = threadIdx%x
+    id = (blockIdx%x - 1) * blockDim%x + tid - 1
+    stride = gridDim%x * blockDim%x
+    ncell = (im + 1) * (jm + 1) * (km + 1)
+    local = -huge(1.d0)
+
+    do while(id < ncell)
+      i = mod(id,im + 1)
+      j = mod(id/(im + 1),jm + 1)
+      k = id/((im + 1) * (jm + 1))
+      local = max(local,q(i,j,k,ivar))
+      id = id + stride
+    enddo
+
+    scratch(tid) = local
+    call syncthreads()
+
+    stride = blockDim%x / 2
+    do while(stride > 0)
+      if(tid <= stride) scratch(tid) = max(scratch(tid),scratch(tid + stride))
+      call syncthreads()
+      stride = stride / 2
+    enddo
+
+    if(tid == 1) partial(blockIdx%x) = scratch(1)
+  end subroutine maxq_partial_kernel
+
+  attributes(global) subroutine channel_partial_kernel(q,vel,x,tmp,dvel,partial,im,jm,km,hm, &
+       tempconst,tempconst1,reynolds,nondimen,apply_down,apply_up)
+    implicit none
+    integer,value :: im,jm,km,hm,apply_down,apply_up
+    real(8),value :: tempconst,tempconst1,reynolds
+    logical,value :: nondimen
+    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
+    real(8),device :: partial(:,:)
+    real(8),shared :: scratch_mass(256),scratch_fbcx(256),scratch_wrms(256)
+    integer :: tid,id,stride,ncell,nwall,i,j,k
+    real(8) :: local_mass,local_fbcx,local_wrms,dy,var1,tloc,miu
+
+    tid = threadIdx%x
+    id = (blockIdx%x - 1) * blockDim%x + tid - 1
+    stride = gridDim%x * blockDim%x
+    ncell = im * jm * km
+    nwall = im * km
+    local_mass = 0.d0
+    local_fbcx = 0.d0
+    local_wrms = 0.d0
+
+    do while(id < max(ncell,nwall))
+      if(id < ncell) then
+        i = mod(id,im) + 1
+        j = mod(id/im,jm) + 1
+        k = id/(im*jm) + 1
+        dy = x(i,j,k,2) - x(i,j-1,k,2)
+        var1 = 0.5d0 * (q(i,j,k,2) + q(i,j-1,k,2))
+        local_mass = local_mass + var1 * dy
+        local_wrms = local_wrms + vel(i,j,k,3) * vel(i,j,k,3)
+      endif
+
+      if(id < nwall) then
+        i = mod(id,im) + 1
+        k = id/im + 1
+        if(apply_down /= 0) then
+          tloc = tmp(i,0,k)
+          if(nondimen) then
+            miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
+          else
+            miu = 1.716d-5*(tloc/273.15d0)*sqrt(tloc/273.15d0)*(273.15d0+110.4d0)/(tloc+110.4d0)
+          endif
+          local_fbcx = local_fbcx + miu*dvel(i,0,k,1,2)
+        endif
+        if(apply_up /= 0) then
+          tloc = tmp(i,jm,k)
+          if(nondimen) then
+            miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
+          else
+            miu = 1.716d-5*(tloc/273.15d0)*sqrt(tloc/273.15d0)*(273.15d0+110.4d0)/(tloc+110.4d0)
+          endif
+          local_fbcx = local_fbcx - miu*dvel(i,jm,k,1,2)
+        endif
+      endif
+
+      id = id + stride
+    enddo
+
+    scratch_mass(tid) = local_mass
+    scratch_fbcx(tid) = local_fbcx
+    scratch_wrms(tid) = local_wrms
+    call syncthreads()
+
+    stride = blockDim%x / 2
+    do while(stride > 0)
+      if(tid <= stride) then
+        scratch_mass(tid) = scratch_mass(tid) + scratch_mass(tid + stride)
+        scratch_fbcx(tid) = scratch_fbcx(tid) + scratch_fbcx(tid + stride)
+        scratch_wrms(tid) = scratch_wrms(tid) + scratch_wrms(tid + stride)
+      endif
+      call syncthreads()
+      stride = stride / 2
+    enddo
+
+    if(tid == 1) then
+      partial(blockIdx%x,1) = scratch_mass(1)
+      partial(blockIdx%x,2) = scratch_fbcx(1)
+      partial(blockIdx%x,3) = scratch_wrms(1)
+    endif
+  end subroutine channel_partial_kernel
+
+  attributes(global) subroutine s1_bl_partial_kernel(q,vel,x,tmp,dvel,dtmp,partial,im,jm,km,hm, &
+       nblocks,tempconst,tempconst1,reynolds,prandtl,const5,apply_down)
+    implicit none
+    integer,value :: im,jm,km,hm,nblocks,apply_down
+    real(8),value :: tempconst,tempconst1,reynolds,prandtl,const5
+    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
+    real(8),device :: dtmp(0:im,0:jm,0:km,1:3)
+    real(8),device :: partial(nblocks,6)
+    real(8),shared :: scratch_mass(256),scratch_fbcx(256),scratch_whf(256),scratch_wrms(256), &
+                     scratch_vol(256),scratch_area(256)
+    integer :: tid,id,stride,ncell,nwall,i,j,k
+    real(8) :: mass,fbcx,whf,wrms,volsum,areasum,vol,area,miu1,miu2,miu3,miu4,hcc1,hcc2,hcc3,hcc4
+    real(8) :: x1(3),x2(3),x3(3),x4(3),x5(3),x6(3),x7(3),x8(3)
+
+    tid = threadIdx%x
+    id = (blockIdx%x-1)*blockDim%x + tid - 1
+    stride = gridDim%x*blockDim%x
+    ncell = im*jm*km
+    nwall = im*km
+    mass = 0.d0
+    fbcx = 0.d0
+    whf = 0.d0
+    wrms = 0.d0
+    volsum = 0.d0
+    areasum = 0.d0
+    do while(id < max(ncell,nwall))
+      if(id < ncell) then
+        i = mod(id,im) + 1
+        j = mod(id/im,jm) + 1
+        k = id/(im*jm) + 1
+        x1=x(i-1,j-1,k-1,:)
+        x2=x(i,j-1,k-1,:)
+        x3=x(i,j-1,k,:)
+        x4=x(i-1,j-1,k,:)
+        x5=x(i-1,j,k-1,:)
+        x6=x(i,j,k-1,:)
+        x7=x(i,j,k,:)
+        x8=x(i-1,j,k,:)
+        vol=volhex_device(x1,x2,x3,x4,x5,x6,x7,x8)
+        mass = mass + 0.125d0*(q(i-1,j-1,k-1,2)+q(i,j-1,k-1,2)+q(i-1,j,k-1,2)+q(i,j,k-1,2)+ &
+                                q(i-1,j-1,k,2)+q(i,j-1,k,2)+q(i-1,j,k,2)+q(i,j,k,2))*vol
+        wrms = wrms + vel(i,j,k,3)*vel(i,j,k,3)
+        volsum = volsum + vol
+      endif
+      if(id < nwall .and. apply_down /= 0) then
+        i = mod(id,im) + 1
+        k = id/im + 1
+        x1=x(i-1,0,k-1,:)
+        x2=x(i,0,k-1,:)
+        x3=x(i,0,k,:)
+        x4=x(i-1,0,k,:)
+        area=quad_area3d_device(x1,x2,x3,x4)
+        areasum = areasum + area
+        miu1 = tmp(i,0,k)*sqrt(tmp(i,0,k))*tempconst1/(tmp(i,0,k)+tempconst)/reynolds
+        miu2 = tmp(i-1,0,k)*sqrt(tmp(i-1,0,k))*tempconst1/(tmp(i-1,0,k)+tempconst)/reynolds
+        miu3 = tmp(i,0,k-1)*sqrt(tmp(i,0,k-1))*tempconst1/(tmp(i,0,k-1)+tempconst)/reynolds
+        miu4 = tmp(i-1,0,k-1)*sqrt(tmp(i-1,0,k-1))*tempconst1/(tmp(i-1,0,k-1)+tempconst)/reynolds
+        hcc1 = miu1/prandtl/const5
+        hcc2 = miu2/prandtl/const5
+        hcc3 = miu3/prandtl/const5
+        hcc4 = miu4/prandtl/const5
+        fbcx = fbcx + 0.25d0*area*(miu1*dvel(i,0,k,1,2) + miu2*dvel(i-1,0,k,1,2) + &
+                                    miu3*dvel(i,0,k-1,1,2) + miu4*dvel(i-1,0,k-1,1,2))
+        whf = whf + 0.25d0*area*(hcc1*dtmp(i,0,k,2) + hcc2*dtmp(i-1,0,k,2) + &
+                                  hcc3*dtmp(i,0,k-1,2) + hcc4*dtmp(i-1,0,k-1,2))
+      endif
+      id = id + stride
+    enddo
+    scratch_mass(tid) = mass
+    scratch_fbcx(tid) = fbcx
+    scratch_whf(tid) = whf
+    scratch_wrms(tid) = wrms
+    scratch_vol(tid) = volsum
+    scratch_area(tid) = areasum
+    call syncthreads()
+    stride = blockDim%x/2
+    do while(stride > 0)
+      if(tid <= stride) then
+        scratch_mass(tid) = scratch_mass(tid) + scratch_mass(tid+stride)
+        scratch_fbcx(tid) = scratch_fbcx(tid) + scratch_fbcx(tid+stride)
+        scratch_whf(tid) = scratch_whf(tid) + scratch_whf(tid+stride)
+        scratch_wrms(tid) = scratch_wrms(tid) + scratch_wrms(tid+stride)
+        scratch_vol(tid) = scratch_vol(tid) + scratch_vol(tid+stride)
+        scratch_area(tid) = scratch_area(tid) + scratch_area(tid+stride)
+      endif
+      call syncthreads()
+      stride = stride/2
+    enddo
+    if(tid == 1) then
+      partial(blockIdx%x,1) = scratch_mass(1)
+      partial(blockIdx%x,2) = scratch_fbcx(1)
+      partial(blockIdx%x,3) = scratch_whf(1)
+      partial(blockIdx%x,4) = scratch_wrms(1)
+      partial(blockIdx%x,5) = scratch_vol(1)
+      partial(blockIdx%x,6) = scratch_area(1)
+    endif
+  end subroutine s1_bl_partial_kernel
+
+  attributes(global) subroutine enstophy_partial_sp_kernel(rho,dvel,partial,im,jm,km,hm)
+    implicit none
+    integer,value :: im,jm,km,hm
+    real(8),device :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(4),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
+    real(8),device :: partial(*)
+    real(8),shared :: scratch(256)
+    integer :: tid,id,stride,ncell,i,j,k
+    real(8) :: local,omega1,omega2,omega3,omegam
+
+    tid=threadIdx%x
+    id=(blockIdx%x-1)*blockDim%x+tid-1
+    stride=gridDim%x*blockDim%x
+    ncell=im*jm*km
+    local=0.d0
+    do while(id<ncell)
+      i=mod(id,im)+1
+      j=mod(id/im,jm)+1
+      k=id/(im*jm)+1
+      omega1=real(dvel(i,j,k,3,2),8)-real(dvel(i,j,k,2,3),8)
+      omega2=real(dvel(i,j,k,1,3),8)-real(dvel(i,j,k,3,1),8)
+      omega3=real(dvel(i,j,k,2,1),8)-real(dvel(i,j,k,1,2),8)
+      omegam=omega1*omega1+omega2*omega2+omega3*omega3
+      local=local+rho(i,j,k)*omegam
+      id=id+stride
+    enddo
+    scratch(tid)=local
+    call syncthreads()
+    stride=blockDim%x/2
+    do while(stride>0)
+      if(tid<=stride) scratch(tid)=scratch(tid)+scratch(tid+stride)
+      call syncthreads()
+      stride=stride/2
+    enddo
+    if(tid==1) partial(blockIdx%x)=scratch(1)
+  end subroutine enstophy_partial_sp_kernel
+
+  attributes(global) subroutine dissipation_partial_sp_kernel(tmp,dvel,partial,im,jm,km,hm, &
+       tempconst,tempconst1,reynolds,nondimen)
+    implicit none
+    integer,value :: im,jm,km,hm
+    real(8),value :: tempconst,tempconst1,reynolds
+    logical,value :: nondimen
+    real(8),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(4),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
+    real(8),device :: partial(*)
+    real(8),shared :: scratch(256)
+    integer :: tid,id,stride,ncell,i,j,k
+    real(8) :: local,tloc,miu,du11,du12,du13,du21,du22,du23,du31,du32,du33
+    real(8) :: s11,s12,s13,s22,s23,s33,div
+
+    tid=threadIdx%x
+    id=(blockIdx%x-1)*blockDim%x+tid-1
+    stride=gridDim%x*blockDim%x
+    ncell=im*jm*km
+    local=0.d0
+    do while(id<ncell)
+      i=mod(id,im)+1
+      j=mod(id/im,jm)+1
+      k=id/(im*jm)+1
+      tloc=tmp(i,j,k)
+      if(nondimen) then
+        miu=tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
+      else
+        miu=1.716d-5*(tloc/273.15d0)*sqrt(tloc/273.15d0)*(273.15d0+110.4d0)/(tloc+110.4d0)
+      endif
+      du11=real(dvel(i,j,k,1,1),8); du12=real(dvel(i,j,k,1,2),8); du13=real(dvel(i,j,k,1,3),8)
+      du21=real(dvel(i,j,k,2,1),8); du22=real(dvel(i,j,k,2,2),8); du23=real(dvel(i,j,k,2,3),8)
+      du31=real(dvel(i,j,k,3,1),8); du32=real(dvel(i,j,k,3,2),8); du33=real(dvel(i,j,k,3,3),8)
+      s11=du11; s12=0.5d0*(du12+du21); s13=0.5d0*(du13+du31)
+      s22=du22; s23=0.5d0*(du23+du32); s33=du33
+      div=s11+s22+s33
+      local=local+2.d0*miu*(s11**2+s22**2+s33**2+ &
+            2.d0*(s12**2+s13**2+s23**2)-div**2/3.d0)
+      id=id+stride
+    enddo
+    scratch(tid)=local
+    call syncthreads()
+    stride=blockDim%x/2
+    do while(stride>0)
+      if(tid<=stride) scratch(tid)=scratch(tid)+scratch(tid+stride)
+      call syncthreads()
+      stride=stride/2
+    enddo
+    if(tid==1) partial(blockIdx%x)=scratch(1)
+  end subroutine dissipation_partial_sp_kernel
+
+  attributes(global) subroutine channel_partial_sp_kernel(q,vel,x,tmp,dvel,partial,im,jm,km,hm, &
+       tempconst,tempconst1,reynolds,nondimen,apply_down,apply_up)
+    implicit none
+    integer,value :: im,jm,km,hm,apply_down,apply_up
+    real(8),value :: tempconst,tempconst1,reynolds
+    logical,value :: nondimen
+    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(4),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
+    real(8),device :: partial(:,:)
+    real(8),shared :: scratch_mass(256),scratch_fbcx(256),scratch_wrms(256)
+    integer :: tid,id,stride,ncell,nwall,i,j,k
+    real(8) :: local_mass,local_fbcx,local_wrms,dy,var1,tloc,miu
+
+    tid=threadIdx%x
+    id=(blockIdx%x-1)*blockDim%x+tid-1
+    stride=gridDim%x*blockDim%x
+    ncell=im*jm*km
+    nwall=im*km
+    local_mass=0.d0
+    local_fbcx=0.d0
+    local_wrms=0.d0
+    do while(id<max(ncell,nwall))
+      if(id<ncell) then
+        i=mod(id,im)+1
+        j=mod(id/im,jm)+1
+        k=id/(im*jm)+1
+        dy=x(i,j,k,2)-x(i,j-1,k,2)
+        var1=0.5d0*(q(i,j,k,2)+q(i,j-1,k,2))
+        local_mass=local_mass+var1*dy
+        local_wrms=local_wrms+vel(i,j,k,3)*vel(i,j,k,3)
+      endif
+      if(id<nwall) then
+        i=mod(id,im)+1
+        k=id/im+1
+        if(apply_down/=0) then
+          tloc=tmp(i,0,k)
+          if(nondimen) then
+            miu=tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
+          else
+            miu=1.716d-5*(tloc/273.15d0)*sqrt(tloc/273.15d0)*(273.15d0+110.4d0)/(tloc+110.4d0)
+          endif
+          local_fbcx=local_fbcx+miu*real(dvel(i,0,k,1,2),8)
+        endif
+        if(apply_up/=0) then
+          tloc=tmp(i,jm,k)
+          if(nondimen) then
+            miu=tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
+          else
+            miu=1.716d-5*(tloc/273.15d0)*sqrt(tloc/273.15d0)*(273.15d0+110.4d0)/(tloc+110.4d0)
+          endif
+          local_fbcx=local_fbcx-miu*real(dvel(i,jm,k,1,2),8)
+        endif
+      endif
+      id=id+stride
+    enddo
+    scratch_mass(tid)=local_mass
+    scratch_fbcx(tid)=local_fbcx
+    scratch_wrms(tid)=local_wrms
+    call syncthreads()
+    stride=blockDim%x/2
+    do while(stride>0)
+      if(tid<=stride) then
+        scratch_mass(tid)=scratch_mass(tid)+scratch_mass(tid+stride)
+        scratch_fbcx(tid)=scratch_fbcx(tid)+scratch_fbcx(tid+stride)
+        scratch_wrms(tid)=scratch_wrms(tid)+scratch_wrms(tid+stride)
+      endif
+      call syncthreads()
+      stride=stride/2
+    enddo
+    if(tid==1) then
+      partial(blockIdx%x,1)=scratch_mass(1)
+      partial(blockIdx%x,2)=scratch_fbcx(1)
+      partial(blockIdx%x,3)=scratch_wrms(1)
+    endif
+  end subroutine channel_partial_sp_kernel
+
+  attributes(global) subroutine s1_bl_partial_sp_kernel(q,vel,x,tmp,dvel,dtmp,partial,im,jm,km,hm, &
+       nblocks,tempconst,tempconst1,reynolds,prandtl,const5,apply_down)
+    implicit none
+    integer,value :: im,jm,km,hm,nblocks,apply_down
+    real(8),value :: tempconst,tempconst1,reynolds,prandtl,const5
+    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(8),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(4),device :: dvel(0:im,0:jm,0:km,1:3,1:3),dtmp(0:im,0:jm,0:km,1:3)
+    real(8),device :: partial(nblocks,6)
+    real(8),shared :: scratch_mass(256),scratch_fbcx(256),scratch_whf(256),scratch_wrms(256), &
+                     scratch_vol(256),scratch_area(256)
+    integer :: tid,id,stride,ncell,nwall,i,j,k
+    real(8) :: mass,fbcx,whf,wrms,volsum,areasum,vol,area,miu1,miu2,miu3,miu4,hcc1,hcc2,hcc3,hcc4
+    real(8) :: x1(3),x2(3),x3(3),x4(3),x5(3),x6(3),x7(3),x8(3)
+
+    tid=threadIdx%x
+    id=(blockIdx%x-1)*blockDim%x+tid-1
+    stride=gridDim%x*blockDim%x
+    ncell=im*jm*km
+    nwall=im*km
+    mass=0.d0; fbcx=0.d0; whf=0.d0; wrms=0.d0; volsum=0.d0; areasum=0.d0
+    do while(id<max(ncell,nwall))
+      if(id<ncell) then
+        i=mod(id,im)+1
+        j=mod(id/im,jm)+1
+        k=id/(im*jm)+1
+        x1=x(i-1,j-1,k-1,:); x2=x(i,j-1,k-1,:); x3=x(i,j-1,k,:); x4=x(i-1,j-1,k,:)
+        x5=x(i-1,j,k-1,:); x6=x(i,j,k-1,:); x7=x(i,j,k,:); x8=x(i-1,j,k,:)
+        vol=volhex_device(x1,x2,x3,x4,x5,x6,x7,x8)
+        mass=mass+0.125d0*(q(i-1,j-1,k-1,2)+q(i,j-1,k-1,2)+q(i-1,j,k-1,2)+q(i,j,k-1,2)+ &
+             q(i-1,j-1,k,2)+q(i,j-1,k,2)+q(i-1,j,k,2)+q(i,j,k,2))*vol
+        wrms=wrms+vel(i,j,k,3)*vel(i,j,k,3)
+        volsum=volsum+vol
+      endif
+      if(id<nwall .and. apply_down/=0) then
+        i=mod(id,im)+1
+        k=id/im+1
+        x1=x(i-1,0,k-1,:); x2=x(i,0,k-1,:); x3=x(i,0,k,:); x4=x(i-1,0,k,:)
+        area=quad_area3d_device(x1,x2,x3,x4)
+        areasum=areasum+area
+        miu1=tmp(i,0,k)*sqrt(tmp(i,0,k))*tempconst1/(tmp(i,0,k)+tempconst)/reynolds
+        miu2=tmp(i-1,0,k)*sqrt(tmp(i-1,0,k))*tempconst1/(tmp(i-1,0,k)+tempconst)/reynolds
+        miu3=tmp(i,0,k-1)*sqrt(tmp(i,0,k-1))*tempconst1/(tmp(i,0,k-1)+tempconst)/reynolds
+        miu4=tmp(i-1,0,k-1)*sqrt(tmp(i-1,0,k-1))*tempconst1/(tmp(i-1,0,k-1)+tempconst)/reynolds
+        hcc1=miu1/prandtl/const5; hcc2=miu2/prandtl/const5
+        hcc3=miu3/prandtl/const5; hcc4=miu4/prandtl/const5
+        fbcx=fbcx+0.25d0*area*(miu1*real(dvel(i,0,k,1,2),8)+miu2*real(dvel(i-1,0,k,1,2),8)+ &
+             miu3*real(dvel(i,0,k-1,1,2),8)+miu4*real(dvel(i-1,0,k-1,1,2),8))
+        whf=whf+0.25d0*area*(hcc1*real(dtmp(i,0,k,2),8)+hcc2*real(dtmp(i-1,0,k,2),8)+ &
+             hcc3*real(dtmp(i,0,k-1,2),8)+hcc4*real(dtmp(i-1,0,k-1,2),8))
+      endif
+      id=id+stride
+    enddo
+    scratch_mass(tid)=mass; scratch_fbcx(tid)=fbcx; scratch_whf(tid)=whf
+    scratch_wrms(tid)=wrms; scratch_vol(tid)=volsum; scratch_area(tid)=areasum
+    call syncthreads()
+    stride=blockDim%x/2
+    do while(stride>0)
+      if(tid<=stride) then
+        scratch_mass(tid)=scratch_mass(tid)+scratch_mass(tid+stride)
+        scratch_fbcx(tid)=scratch_fbcx(tid)+scratch_fbcx(tid+stride)
+        scratch_whf(tid)=scratch_whf(tid)+scratch_whf(tid+stride)
+        scratch_wrms(tid)=scratch_wrms(tid)+scratch_wrms(tid+stride)
+        scratch_vol(tid)=scratch_vol(tid)+scratch_vol(tid+stride)
+        scratch_area(tid)=scratch_area(tid)+scratch_area(tid+stride)
+      endif
+      call syncthreads()
+      stride=stride/2
+    enddo
+    if(tid==1) then
+      partial(blockIdx%x,1)=scratch_mass(1); partial(blockIdx%x,2)=scratch_fbcx(1)
+      partial(blockIdx%x,3)=scratch_whf(1); partial(blockIdx%x,4)=scratch_wrms(1)
+      partial(blockIdx%x,5)=scratch_vol(1); partial(blockIdx%x,6)=scratch_area(1)
+    endif
+  end subroutine s1_bl_partial_sp_kernel
+
+  attributes(global) subroutine s1_bl_reduce_partial_kernel(partial,reduced,nblocks)
+    implicit none
+    integer,value :: nblocks
+    real(8),device :: partial(nblocks,6),reduced(6)
+    real(8),shared :: scratch(256)
+    real(8) :: subtotal
+    integer :: tid,ivar,iblock,stride
+
+    tid = threadIdx%x
+    ivar = blockIdx%x
+    subtotal = 0.d0
+    iblock = tid
+    do while(iblock <= nblocks)
+      subtotal = subtotal + partial(iblock,ivar)
+      iblock = iblock + blockDim%x
+    enddo
+    scratch(tid) = subtotal
+    call syncthreads()
+
+    stride = blockDim%x/2
+    do while(stride > 0)
+      if(tid <= stride) scratch(tid) = scratch(tid) + scratch(tid+stride)
+      call syncthreads()
+      stride = stride/2
+    enddo
+    if(tid == 1) reduced(ivar) = scratch(1)
+  end subroutine s1_bl_reduce_partial_kernel
+
+  subroutine gpu_kenergy_scalar(kenergy_gpu)
+    use mpi
+    use commvar, only: im,jm,km,hm,ia,ja,ka,roinf,uinf
+    use commarray_gpu, only: rho_d,vel_d
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: mpisize
+    implicit none
+    real(8),intent(out) :: kenergy_gpu
+    integer,parameter :: block_size = 256
+    integer :: ncell,nblocks,ierr
+    real(8) :: local_sum,global_sum
+    real(8),allocatable,device :: partial_d(:)
+    real(8),allocatable :: partial_h(:)
+
+    ncell = im * jm * km
+    nblocks = max(1,(ncell + block_size - 1) / block_size)
+    allocate(partial_d(nblocks))
+    allocate(partial_h(nblocks))
+
+    call kenergy_partial_kernel<<<nblocks,block_size>>>(rho_d,vel_d,partial_d,im,jm,km,hm)
+    call sync_after_kernel('kenergy_partial_kernel',.true.)
+    partial_h = partial_d
+
+    local_sum = sum(partial_h)
+    if(mpisize>1) then
+      call mpi_allreduce(local_sum,global_sum,1,mpi_real8,mpi_sum,mpi_comm_world,ierr)
+    else
+      global_sum = local_sum
+    endif
+
+    kenergy_gpu = 0.5d0 * global_sum / real(ia*ja*ka,8)
+    kenergy_gpu = kenergy_gpu / (roinf * uinf * uinf)
+
+    deallocate(partial_d,partial_h)
+  end subroutine gpu_kenergy_scalar
+
+  subroutine gpu_enstophy_scalar(enstophy_gpu)
+    use mpi
+    use constdef, only: pi
+    use commvar, only: im,jm,km,hm,ia,ja,ka,roinf,uinf,xmax
+    use commarray_gpu, only: rho_d,dvel_d,dvel_sp_d,gpu_mixed_derivative_workspace_enabled
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: mpisize
+    implicit none
+    real(8),intent(out) :: enstophy_gpu
+    integer,parameter :: block_size = 256
+    integer :: ncell,nblocks,ierr
+    real(8) :: l0,local_sum,global_sum
+    real(8),allocatable,device :: partial_d(:)
+    real(8),allocatable :: partial_h(:)
+
+    ncell = im * jm * km
+    nblocks = max(1,(ncell + block_size - 1) / block_size)
+    allocate(partial_d(nblocks))
+    allocate(partial_h(nblocks))
+
+    if(gpu_mixed_derivative_workspace_enabled()) then
+      call enstophy_partial_sp_kernel<<<nblocks,block_size>>>(rho_d,dvel_sp_d,partial_d,im,jm,km,hm)
+      call sync_after_kernel('enstophy_partial_sp_kernel',.true.)
+    else
+      call enstophy_partial_kernel<<<nblocks,block_size>>>(rho_d,dvel_d,partial_d,im,jm,km,hm)
+      call sync_after_kernel('enstophy_partial_kernel',.true.)
+    endif
+    partial_h = partial_d
+
+    local_sum = sum(partial_h)
+    if(mpisize>1) then
+      call mpi_allreduce(local_sum,global_sum,1,mpi_real8,mpi_sum,mpi_comm_world,ierr)
+    else
+      global_sum = local_sum
+    endif
+
+    enstophy_gpu = 0.5d0 * global_sum / real(ia*ja*ka,8)
+    l0 = xmax / (2.d0*pi)
+    enstophy_gpu = enstophy_gpu / (roinf * (uinf/l0)**2)
+
+    deallocate(partial_d,partial_h)
+  end subroutine gpu_enstophy_scalar
+
+  subroutine gpu_dissipation_scalar(dissipation_gpu)
+    use mpi
+    use commvar, only: im,jm,km,hm,ia,ja,ka,tempconst,tempconst1,reynolds,nondimen
+    use commarray_gpu, only: tmp_d,dvel_d,dvel_sp_d,gpu_mixed_derivative_workspace_enabled
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: mpisize
+    implicit none
+    real(8),intent(out) :: dissipation_gpu
+    integer,parameter :: block_size = 256
+    integer :: ncell,nblocks,ierr
+    real(8) :: local_sum,global_sum
+    real(8),allocatable,device :: partial_d(:)
+    real(8),allocatable :: partial_h(:)
+
+    ncell = im * jm * km
+    nblocks = max(1,(ncell + block_size - 1) / block_size)
+    allocate(partial_d(nblocks))
+    allocate(partial_h(nblocks))
+
+    if(gpu_mixed_derivative_workspace_enabled()) then
+      call dissipation_partial_sp_kernel<<<nblocks,block_size>>>(tmp_d,dvel_sp_d,partial_d,im,jm,km,hm, &
+           tempconst,tempconst1,reynolds,nondimen)
+      call sync_after_kernel('dissipation_partial_sp_kernel',.true.)
+    else
+      call dissipation_partial_kernel<<<nblocks,block_size>>>(tmp_d,dvel_d,partial_d,im,jm,km,hm, &
+           tempconst,tempconst1,reynolds,nondimen)
+      call sync_after_kernel('dissipation_partial_kernel',.true.)
+    endif
+    partial_h = partial_d
+
+    local_sum = sum(partial_h)
+    if(mpisize>1) then
+      call mpi_allreduce(local_sum,global_sum,1,mpi_real8,mpi_sum,mpi_comm_world,ierr)
+    else
+      global_sum = local_sum
+    endif
+
+    dissipation_gpu = global_sum / real(ia*ja*ka,8)
+
+    deallocate(partial_d,partial_h)
+  end subroutine gpu_dissipation_scalar
+
+  subroutine gpu_maxq_scalars(maxq_gpu)
+    use mpi
+    use commvar, only: im,jm,km,hm,numq
+    use commarray_gpu, only: q_d
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: mpisize
+    implicit none
+    real(8),intent(out) :: maxq_gpu(5)
+    integer,parameter :: block_size = 256
+    integer :: ncell,nblocks,ierr,ivar
+    real(8) :: local_max,global_max
+    real(8),allocatable,device :: partial_d(:)
+    real(8),allocatable :: partial_h(:)
+
+    if(numq < 5) stop 'gpu_maxq_scalars requires numq >= 5'
+    ncell = (im + 1) * (jm + 1) * (km + 1)
+    nblocks = max(1,(ncell + block_size - 1) / block_size)
+    allocate(partial_d(nblocks))
+    allocate(partial_h(nblocks))
+
+    do ivar=1,5
+      call maxq_partial_kernel<<<nblocks,block_size>>>(q_d,partial_d,im,jm,km,hm,numq,ivar)
+      call sync_after_kernel('maxq_partial_kernel',.true.)
+      partial_h = partial_d
+      local_max = maxval(partial_h)
+      if(mpisize>1) then
+        call mpi_allreduce(local_max,global_max,1,mpi_real8,mpi_max,mpi_comm_world,ierr)
+      else
+        global_max = local_max
+      endif
+      maxq_gpu(ivar) = global_max
+    enddo
+
+    deallocate(partial_d,partial_h)
+  end subroutine gpu_maxq_scalars
+
+  subroutine gpu_channel_scalars(massflux_gpu,fbcx_gpu,wrms_gpu)
+    use mpi
+    use commvar, only: im,jm,km,hm,ia,ja,ka,tempconst,tempconst1,reynolds,nondimen
+    use commarray_gpu, only: q_d,vel_d,x_d,tmp_d,dvel_d,dvel_sp_d, &
+                             gpu_mixed_derivative_workspace_enabled
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: mpisize,jrk,jrkm
+    implicit none
+    real(8),intent(out) :: massflux_gpu,fbcx_gpu,wrms_gpu
+    integer,parameter :: block_size = 256
+    integer :: nwork,nblocks,ierr
+    real(8) :: local_sum(3),global_sum(3)
+    real(8),allocatable,device :: partial_d(:,:)
+    real(8),allocatable :: partial_h(:,:)
+
+    nwork = max(im*jm*km,im*km)
+    nblocks = max(1,(nwork + block_size - 1) / block_size)
+    allocate(partial_d(nblocks,3))
+    allocate(partial_h(nblocks,3))
+
+    if(gpu_mixed_derivative_workspace_enabled()) then
+      call channel_partial_sp_kernel<<<nblocks,block_size>>>(q_d,vel_d,x_d,tmp_d,dvel_sp_d,partial_d, &
+           im,jm,km,hm,tempconst,tempconst1,reynolds,nondimen, &
+           merge(1,0,jrk == 0),merge(1,0,jrk == jrkm))
+      call sync_after_kernel('channel_partial_sp_kernel',.true.)
+    else
+      call channel_partial_kernel<<<nblocks,block_size>>>(q_d,vel_d,x_d,tmp_d,dvel_d,partial_d, &
+           im,jm,km,hm,tempconst,tempconst1,reynolds,nondimen, &
+           merge(1,0,jrk == 0),merge(1,0,jrk == jrkm))
+      call sync_after_kernel('channel_partial_kernel',.true.)
+    endif
+    partial_h = partial_d
+
+    local_sum(1) = sum(partial_h(:,1))
+    local_sum(2) = sum(partial_h(:,2))
+    local_sum(3) = sum(partial_h(:,3))
+    if(mpisize>1) then
+      call mpi_allreduce(local_sum,global_sum,3,mpi_real8,mpi_sum,mpi_comm_world,ierr)
+    else
+      global_sum = local_sum
+    endif
+
+    massflux_gpu = global_sum(1) / real(ia*ka,8)
+    fbcx_gpu = global_sum(2) / real(ia*ka,8)
+    wrms_gpu = sqrt(global_sum(3) / real(ia*ja*ka,8))
+
+    deallocate(partial_d,partial_h)
+  end subroutine gpu_channel_scalars
+
+  subroutine gpu_s1_bl_scalars(massflux_gpu,fbcx_gpu,wallheatflux_gpu,wrms_gpu)
+    use mpi
+    use commvar, only: im,jm,km,hm,ia,ja,ka,tempconst,tempconst1,reynolds,prandtl,const5
+    use commarray_gpu, only: q_d,vel_d,x_d,tmp_d,dvel_d,dtmp_d,dvel_sp_d,dtmp_sp_d, &
+                             gpu_mixed_derivative_workspace_enabled
+    use gpu_check, only: sync_after_kernel
+    use parallel, only: mpisize
+    use boundary_gpu, only: gpu_physical_boundary_apply_mask
+    implicit none
+    real(8),intent(out) :: massflux_gpu,fbcx_gpu,wallheatflux_gpu,wrms_gpu
+    integer,parameter :: block_size=256
+    integer :: nwork,nblocks,ierr,apply_down,apply_up
+    real(8) :: local_sum(6),global_sum(6)
+    real(8),allocatable,device :: partial_d(:,:),reduced_d(:)
+    real(8),allocatable :: reduced_h(:)
+
+    nwork = max(im*jm*km,im*km)
+    nblocks = max(1,(nwork+block_size-1)/block_size)
+    allocate(partial_d(nblocks,6),reduced_d(6),reduced_h(6))
+    call gpu_physical_boundary_apply_mask(2,apply_down,apply_up)
+    if(gpu_mixed_derivative_workspace_enabled()) then
+      call s1_bl_partial_sp_kernel<<<nblocks,block_size>>>(q_d,vel_d,x_d,tmp_d,dvel_sp_d,dtmp_sp_d,partial_d, &
+           im,jm,km,hm,nblocks,tempconst,tempconst1,reynolds,prandtl,const5,apply_down)
+      call sync_after_kernel('s1_bl_partial_sp_kernel')
+    else
+      call s1_bl_partial_kernel<<<nblocks,block_size>>>(q_d,vel_d,x_d,tmp_d,dvel_d,dtmp_d,partial_d, &
+           im,jm,km,hm,nblocks,tempconst,tempconst1,reynolds,prandtl,const5,apply_down)
+      call sync_after_kernel('s1_bl_partial_kernel')
+    endif
+    call s1_bl_reduce_partial_kernel<<<6,block_size>>>(partial_d,reduced_d,nblocks)
+    call sync_after_kernel('s1_bl_reduce_partial_kernel',.true.)
+    reduced_h = reduced_d
+    local_sum = reduced_h
+    if(mpisize > 1) then
+      call mpi_allreduce(local_sum,global_sum,6,mpi_real8,mpi_sum,mpi_comm_world,ierr)
+    else
+      global_sum = local_sum
+    endif
+    if(global_sum(5) <= 0.d0 .or. global_sum(6) <= 0.d0) stop 'GPU S1 flatplate statistic geometry is invalid'
+    massflux_gpu = global_sum(1)/global_sum(5)
+    fbcx_gpu = global_sum(2)/global_sum(6)
+    wallheatflux_gpu = global_sum(3)/global_sum(6)
+    wrms_gpu = sqrt(global_sum(4)/real(ia*ja*ka,8))
+    deallocate(partial_d,reduced_d,reduced_h)
+  end subroutine gpu_s1_bl_scalars
+
+  subroutine gpu_write_kenergy()
+    use commvar, only: nstep,time,maxstep
+    use parallel, only: lio
+    use utility, only: listinit
+    implicit none
+    real(8) :: kenergy_gpu
+    integer,save :: hand = -1
+    logical,save :: linit = .true.
+
+    if(nstep <= 0 .or. nstep > maxstep) return
+    call gpu_kenergy_scalar(kenergy_gpu)
+    if(.not.lio) return
+
+    if(linit) then
+      call listinit(filename='gpu_kenergy.dat',handle=hand, &
+                    firstline='nstep time kenergy_gpu')
+      linit = .false.
+    endif
+
+    write(hand,'(I20,1X,ES24.16,1X,ES24.16)') nstep,time,kenergy_gpu
+    flush(hand)
+  end subroutine gpu_write_kenergy
+
+  subroutine gpu_write_flowstate()
+    use commvar, only: nstep,time,maxstep
+    use parallel, only: lio
+    use utility, only: listinit
+    implicit none
+    real(8) :: kenergy_gpu,enstophy_gpu,dissipation_gpu
+    integer,save :: hand = -1
+    logical,save :: linit = .true.
+
+    if(nstep <= 0 .or. nstep > maxstep) return
+
+    call gpu_kenergy_scalar(kenergy_gpu)
+    call gpu_enstophy_scalar(enstophy_gpu)
+    call gpu_dissipation_scalar(dissipation_gpu)
+    if(.not.lio) return
+
+    if(linit) then
+      call listinit(filename='flowstate.dat',handle=hand, &
+                    firstline='nstep time kenergy enstophy dissipation')
+      linit = .false.
+    endif
+
+    write(hand,'(I20,1X,ES24.16,3(1X,ES24.16))') &
+         nstep,time,kenergy_gpu,enstophy_gpu,dissipation_gpu
+    flush(hand)
+  end subroutine gpu_write_flowstate
+
+  subroutine gpu_write_generic_flowstate()
+    use commvar, only: nstep,time
+    use parallel, only: lio
+    implicit none
+    integer,save :: hand = 994
+    logical,save :: linit = .true.
+    real(8) :: maxq_gpu(5)
+
+    if(nstep == 0) return
+
+    call gpu_maxq_scalars(maxq_gpu)
+    if(lio) then
+      if(linit) then
+        open(hand,file='flowstate.dat',status='replace',action='write')
+        write(hand,'(A)') 'nstep time maxq1 maxq2 maxq3 maxq4 maxq5'
+        linit = .false.
+      endif
+      write(hand,'(I20,1X,ES24.16,5(1X,ES24.16))') nstep,time,maxq_gpu
+      flush(hand)
+    endif
+  end subroutine gpu_write_generic_flowstate
+
+  subroutine gpu_write_s1_bl_flowstate()
+    use commvar, only: nstep,time,maxstep
+    use parallel, only: lio
+    use utility, only: listinit
+    implicit none
+    real(8) :: massflux_gpu,fbcx_gpu,wallheatflux_gpu,wrms_gpu
+    integer,save :: hand=-1
+    logical,save :: linit=.true.
+
+    if(nstep <= 0 .or. nstep > maxstep) return
+    call gpu_s1_bl_scalars(massflux_gpu,fbcx_gpu,wallheatflux_gpu,wrms_gpu)
+    if(.not.lio) return
+    if(linit) then
+      call listinit(filename='flowstate.dat',handle=hand, &
+                    firstline='nstep time massflux fbcx wallheatflux wrms')
+      linit = .false.
+    endif
+    write(hand,'(I20,1X,ES24.16,4(1X,ES24.16))') nstep,time,massflux_gpu,fbcx_gpu,wallheatflux_gpu,wrms_gpu
+    flush(hand)
+  end subroutine gpu_write_s1_bl_flowstate
+
+  subroutine gpu_write_channel_flowstate()
+    use commvar, only: nstep,time,maxstep,force
+    use statistic, only: massflux,fbcx,wrms,massflux_target,chanfoce
+    use parallel, only: lio,bcast
+    use stlaio, only: get_unit
+    implicit none
+    real(8) :: massflux_gpu,fbcx_gpu,wrms_gpu
+    integer,save :: hand = -1
+    logical,save :: linit = .true.
+
+    if(nstep <= 0 .or. nstep > maxstep) return
+
+    call gpu_channel_scalars(massflux_gpu,fbcx_gpu,wrms_gpu)
+    massflux = massflux_gpu
+    fbcx = fbcx_gpu
+    wrms = wrms_gpu
+    if(abs(massflux_target)<1.d-16) then
+      massflux_target = massflux
+      force = 0.d0
+      if(lio) print*,' ** target mass flux= ',massflux_target
+    endif
+    force(1) = chanfoce(force(1),massflux,fbcx,massflux_target)
+    call bcast(force)
+
+    if(.not.lio) return
+    if(linit) then
+      hand = get_unit()
+      open(hand,file='flowstate.dat',status='replace',action='write')
+      write(hand,'(A)') 'nstep time massflux fbcx forcex wrms'
+      linit = .false.
+    endif
+    write(hand,'(I20,1X,ES24.16,4(1X,ES24.16))') &
+         nstep,time,massflux,fbcx,force(1),wrms
+    flush(hand)
+  end subroutine gpu_write_channel_flowstate
+
+  subroutine gpu_write_enstophy()
+    use commvar, only: nstep,time,maxstep
+    use parallel, only: lio
+    use utility, only: listinit
+    implicit none
+    real(8) :: enstophy_gpu
+    integer,save :: hand = -1
+    logical,save :: linit = .true.
+
+    if(nstep <= 0 .or. nstep > maxstep) return
+    call gpu_enstophy_scalar(enstophy_gpu)
+    if(.not.lio) return
+
+    if(linit) then
+      call listinit(filename='gpu_enstophy.dat',handle=hand, &
+                    firstline='nstep time enstophy_gpu')
+      linit = .false.
+    endif
+
+    write(hand,'(I20,1X,ES24.16,1X,ES24.16)') nstep,time,enstophy_gpu
+    flush(hand)
+  end subroutine gpu_write_enstophy
+
+  subroutine gpu_write_dissipation()
+    use commvar, only: nstep,time,maxstep
+    use parallel, only: lio
+    use utility, only: listinit
+    implicit none
+    real(8) :: dissipation_gpu
+    integer,save :: hand = -1
+    logical,save :: linit = .true.
+
+    if(nstep <= 0 .or. nstep > maxstep) return
+    call gpu_dissipation_scalar(dissipation_gpu)
+    if(.not.lio) return
+
+    if(linit) then
+      call listinit(filename='gpu_dissipation.dat',handle=hand, &
+                    firstline='nstep time dissipation_gpu')
+      linit = .false.
+    endif
+
+    write(hand,'(I20,1X,ES24.16,1X,ES24.16)') nstep,time,dissipation_gpu
+    flush(hand)
+  end subroutine gpu_write_dissipation
+end module statistic_gpu

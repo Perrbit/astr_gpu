@@ -1,0 +1,682 @@
+module halo_transport_gpu
+  use mpi
+  use cudafor
+  use iso_c_binding, only: c_ptr,c_loc,c_size_t,c_int
+  implicit none
+  private
+  public :: exchange_host_pair,progress_host_pair_during_kernel
+  public :: progress_host_pair_during_pipeline_compute
+  public :: independent_host_pair_work,halo_overlap_enabled
+  public :: halo_pipeline_enabled,device_aware_transport_enabled,begin_host_pair_pipeline
+  public :: begin_host_pair_device_pack,start_host_pair_mpi
+  public :: complete_host_pair_mpi,complete_host_pair_d2h
+  public :: begin_host_pair_device_upload,finish_host_pair_pipeline
+  public :: check_pipeline_cuda
+  public :: begin_pipeline_compute,record_pipeline_compute,finish_pipeline_compute
+  public :: begin_transport_setup,register_host_buffer,end_transport_setup,release_host_buffers
+  public :: configure_pipeline_axes
+  public :: begin_external_pair_work,end_external_pair_work
+  integer,parameter,public :: halo_axis_x=1
+  integer,parameter,public :: halo_axis_y=2
+  integer,parameter,public :: halo_axis_z=3
+  integer,parameter :: pipeline_idle=0
+  integer,parameter :: pipeline_receive_posted=1
+  integer,parameter :: pipeline_device_packing=2
+  integer,parameter :: pipeline_send_ready=3
+  integer,parameter :: pipeline_mpi_active=4
+  integer,parameter :: pipeline_host_complete=5
+  integer,parameter :: pipeline_device_uploading=6
+  type(c_ptr),save :: registered(36)
+  integer,save :: registered_count=0
+  integer(c_size_t),save :: pinned_bytes=0
+  logical,save :: registration_failed=.false.
+  logical,save :: pair_active=.false.
+  logical,save,protected :: halo_overlap_enabled=.false.
+  logical,save,protected :: halo_pipeline_enabled=.false.
+  logical,save,protected :: device_aware_transport_enabled=.false.
+  logical,save :: pipeline_compute_stream_created=.false.
+  logical,save :: pipeline_compute_event_created=.false.
+  logical,save :: pipeline_compute_active=.false.
+  logical,save :: pipeline_compute_recorded=.false.
+  integer(kind=cuda_stream_kind),save :: pipeline_compute_stream=0_cuda_stream_kind
+  type(cudaEvent),save :: pipeline_compute_done_event
+  type :: halo_pipeline_context
+    logical :: stream_created=.false.
+    logical :: send_event_created=.false.
+    logical :: halo_event_created=.false.
+    logical :: source_event_created=.false.
+    logical :: pair_active=.false.
+    integer(kind=cuda_stream_kind) :: stream=0_cuda_stream_kind
+    type(cudaEvent) :: send_ready_event,halo_ready_event,source_ready_event
+    integer :: state=pipeline_idle
+    integer :: requests(4)=MPI_REQUEST_NULL
+    integer :: count=0
+    integer :: low=MPI_PROC_NULL,high=MPI_PROC_NULL
+    integer :: tag_first=0,tag_second=0
+  end type halo_pipeline_context
+  type(halo_pipeline_context),save :: pipeline_contexts(3)
+  logical,save :: pipeline_axis_enabled(3)=.false.
+  abstract interface
+    subroutine independent_host_pair_work(requests,axis)
+      integer,intent(inout) :: requests(4)
+      integer,intent(in) :: axis
+    end subroutine independent_host_pair_work
+  end interface
+#ifdef ASTR_MPI_CUDA_AWARE_QUERY
+  interface
+    function query_cuda_support() bind(C,name='MPIX_Query_cuda_support') result(supported)
+      import c_int
+      integer(c_int) :: supported
+    end function query_cuda_support
+  end interface
+#endif
+contains
+  subroutine begin_external_pair_work()
+    integer :: ierr
+
+    if(pair_active) then
+      print *, 'GPU halo transport: nested external paired work is not supported'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      return
+    endif
+    pair_active=.true.
+  end subroutine begin_external_pair_work
+
+  subroutine end_external_pair_work()
+    integer :: ierr
+
+    if(.not.pair_active) then
+      print *, 'GPU halo transport: external paired work is not active'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      return
+    endif
+    pair_active=.false.
+  end subroutine end_external_pair_work
+
+  subroutine begin_transport_setup(pinned)
+    logical,intent(out) :: pinned
+    character(64) :: value,selected
+    character(MPI_MAX_LIBRARY_VERSION_STRING) :: library_version
+    integer :: status,choice,lowest,highest,ierr,rank,version_length
+    integer :: capability,all_capable
+
+    call get_environment_variable('ASTR_GPU_HALO_TRANSPORT',value,status=status)
+    choice=-1
+    if(status==1 .or. (status==0 .and. len_trim(value)==0)) choice=0
+    if(status==0) then
+      if(trim(value)=='pageable') choice=0
+      if(trim(value)=='pinned') choice=1
+      if(trim(value)=='pinned-overlap') choice=2
+      if(trim(value)=='pinned-pipeline') choice=3
+      if(trim(value)=='device-aware') choice=4
+    endif
+    call mpi_allreduce(choice,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call check_mpi(ierr)
+    call mpi_allreduce(choice,highest,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call check_mpi(ierr)
+    if(lowest<0 .or. lowest/=highest) then
+      print *, 'Invalid or inconsistent ASTR_GPU_HALO_TRANSPORT: expected pageable, pinned, pinned-overlap, pinned-pipeline or device-aware'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+    endif
+    call mpi_comm_rank(MPI_COMM_WORLD,rank,ierr)
+    call check_mpi(ierr)
+    if(choice==4) then
+#ifdef ASTR_MPI_CUDA_AWARE_QUERY
+      capability=int(query_cuda_support())
+      call mpi_allreduce(capability,all_capable,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+      call check_mpi(ierr)
+      if(all_capable/=1) then
+        if(rank==0) print *, 'ASTR_GPU_HALO_TRANSPORT=device-aware requires MPI CUDA support'
+        call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      endif
+#else
+      if(rank==0) print *, 'ASTR_GPU_HALO_TRANSPORT=device-aware was not qualified at build time'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      return
+#endif
+    endif
+    select case(choice)
+    case(0); selected='pageable'
+    case(1); selected='pinned'
+    case(2); selected='pinned-overlap'
+    case(3); selected='pinned-pipeline'
+    case(4); selected='device-aware'
+    end select
+    call mpi_get_library_version(library_version,version_length,ierr)
+    call check_mpi(ierr)
+    if(rank==0) then
+      write(*,'(A,A)') 'ASTR_GPU_HALO_TRANSPORT_SELECTED=',trim(selected)
+      write(*,'(A,A)') 'ASTR_MPI_LIBRARY_VERSION=',trim(library_version(:version_length))
+    endif
+    pinned=choice>=1 .and. choice<=3
+    halo_overlap_enabled=choice==2
+    halo_pipeline_enabled=choice==3
+    device_aware_transport_enabled=choice==4
+    registration_failed=.false.
+    pipeline_axis_enabled=.false.
+  end subroutine begin_transport_setup
+
+  subroutine configure_pipeline_axes(active)
+    logical,intent(in) :: active(3)
+    integer :: ierr
+
+    if(.not.halo_pipeline_enabled .or. any(pipeline_axis_enabled)) then
+      print *, 'GPU halo pipeline axes must be configured once after transport setup'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      return
+    endif
+    if(.not.any(active)) then
+      print *, 'GPU halo pipeline requires at least one active MPI axis'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      return
+    endif
+    pipeline_axis_enabled=active
+  end subroutine configure_pipeline_axes
+
+  subroutine register_host_buffer(buffer)
+    real(8),target,contiguous,intent(inout) :: buffer(:,:,:,:)
+    integer :: code,ignored
+    integer(c_size_t) :: bytes
+
+    if(registration_failed) return
+    if(registered_count==size(registered)) then
+      registration_failed=.true.
+      return
+    endif
+    bytes=size(buffer,kind=c_size_t)*8_c_size_t
+    code=cudaHostRegister(c_loc(buffer),bytes,0)
+    if(code/=cudaSuccess) then
+      print *, 'GPU halo host registration failed: ',code,trim(cudaGetErrorString(code))
+      registration_failed=.true.
+      ignored=cudaGetLastError()
+      return
+    endif
+    registered_count=registered_count+1
+    registered(registered_count)=c_loc(buffer)
+    pinned_bytes=pinned_bytes+bytes
+  end subroutine register_host_buffer
+
+  subroutine end_transport_setup(pinned)
+    logical,intent(inout) :: pinned
+    integer :: failed,any_failed,resource_failed,any_resource_failed,ierr,rank
+
+    failed=merge(1,0,registration_failed)
+    call mpi_allreduce(failed,any_failed,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call check_mpi(ierr)
+    resource_failed=0
+    if(any_failed==0 .and. halo_pipeline_enabled) then
+      call create_pipeline_resources(resource_failed)
+    endif
+    call mpi_allreduce(resource_failed,any_resource_failed,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call check_mpi(ierr)
+    any_failed=max(any_failed,any_resource_failed)
+    if(any_failed/=0) then
+      call release_host_buffers()
+      pinned=.false.
+      halo_overlap_enabled=.false.
+      halo_pipeline_enabled=.false.
+    endif
+    call mpi_comm_rank(MPI_COMM_WORLD,rank,ierr)
+    call check_mpi(ierr)
+    if(any_failed/=0 .and. rank==0) print *, 'GPU halo transport: registration failed; using pageable on all ranks'
+    write(*,'(A,I0,A,L1,A,I0)') 'ASTR_GPU_HALO_TRANSPORT rank=',rank, &
+      ' pinned=',pinned,' registered_bytes=',pinned_bytes
+    write(*,'(A,I0,A,L1)') 'ASTR_GPU_HALO_OVERLAP rank=',rank,' requested=',halo_overlap_enabled
+    write(*,'(A,I0,A,L1)') 'ASTR_GPU_HALO_PIPELINE rank=',rank,' active=',halo_pipeline_enabled
+    write(*,'(A,I0,A,L1)') 'ASTR_GPU_HALO_DEVICE_AWARE rank=',rank, &
+      ' active=',device_aware_transport_enabled
+  end subroutine end_transport_setup
+
+  subroutine create_pipeline_resources(failed)
+    integer,intent(out) :: failed
+    integer :: axis,code,ignored
+
+    failed=0
+    code=cudaStreamCreateWithFlags(pipeline_compute_stream,cudaStreamNonBlocking)
+    if(code/=cudaSuccess) then
+      failed=1
+      ignored=cudaGetLastError()
+      return
+    endif
+    pipeline_compute_stream_created=.true.
+    code=cudaEventCreateWithFlags(pipeline_compute_done_event,cudaEventDisableTiming)
+    if(code/=cudaSuccess) then
+      failed=1
+      ignored=cudaGetLastError()
+      return
+    endif
+    pipeline_compute_event_created=.true.
+    do axis=halo_axis_x,halo_axis_z
+      if(.not.pipeline_axis_enabled(axis)) cycle
+      code=cudaStreamCreateWithFlags(pipeline_contexts(axis)%stream,cudaStreamNonBlocking)
+      if(code/=cudaSuccess) then
+        failed=1
+        ignored=cudaGetLastError()
+        return
+      endif
+      pipeline_contexts(axis)%stream_created=.true.
+      code=cudaEventCreateWithFlags(pipeline_contexts(axis)%send_ready_event,cudaEventDisableTiming)
+      if(code/=cudaSuccess) then
+        failed=1
+        ignored=cudaGetLastError()
+        return
+      endif
+      pipeline_contexts(axis)%send_event_created=.true.
+      code=cudaEventCreateWithFlags(pipeline_contexts(axis)%halo_ready_event,cudaEventDisableTiming)
+      if(code/=cudaSuccess) then
+        failed=1
+        ignored=cudaGetLastError()
+        return
+      endif
+      pipeline_contexts(axis)%halo_event_created=.true.
+      code=cudaEventCreateWithFlags(pipeline_contexts(axis)%source_ready_event,cudaEventDisableTiming)
+      if(code/=cudaSuccess) then
+        failed=1
+        ignored=cudaGetLastError()
+        return
+      endif
+      pipeline_contexts(axis)%source_event_created=.true.
+      call reset_pipeline_context(axis)
+    enddo
+  end subroutine create_pipeline_resources
+
+  subroutine release_pipeline_resources()
+    integer :: axis,code,ierr
+
+    do axis=halo_axis_x,halo_axis_z
+      if(pipeline_contexts(axis)%state/=pipeline_idle .or. &
+         pipeline_contexts(axis)%pair_active) then
+        print *, 'GPU halo pipeline released with an active transaction on axis ',axis
+        call mpi_abort(MPI_COMM_WORLD,1,ierr)
+        return
+      endif
+    enddo
+    if(pipeline_compute_active) then
+      print *, 'GPU halo pipeline released with active independent compute'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      return
+    endif
+    if(pipeline_compute_event_created) then
+      code=cudaEventDestroy(pipeline_compute_done_event)
+      if(code/=cudaSuccess) call abort_cuda('destroy compute-done event',code)
+      pipeline_compute_event_created=.false.
+    endif
+    do axis=halo_axis_x,halo_axis_z
+      if(pipeline_contexts(axis)%source_event_created) then
+        code=cudaEventDestroy(pipeline_contexts(axis)%source_ready_event)
+        if(code/=cudaSuccess) call abort_cuda('destroy source-ready event',code)
+        pipeline_contexts(axis)%source_event_created=.false.
+      endif
+      if(pipeline_contexts(axis)%halo_event_created) then
+        code=cudaEventDestroy(pipeline_contexts(axis)%halo_ready_event)
+        if(code/=cudaSuccess) call abort_cuda('destroy halo-ready event',code)
+        pipeline_contexts(axis)%halo_event_created=.false.
+      endif
+      if(pipeline_contexts(axis)%send_event_created) then
+        code=cudaEventDestroy(pipeline_contexts(axis)%send_ready_event)
+        if(code/=cudaSuccess) call abort_cuda('destroy send-ready event',code)
+        pipeline_contexts(axis)%send_event_created=.false.
+      endif
+      if(pipeline_contexts(axis)%stream_created) then
+        code=cudaStreamDestroy(pipeline_contexts(axis)%stream)
+        if(code/=cudaSuccess) call abort_cuda('destroy communication stream',code)
+        pipeline_contexts(axis)%stream_created=.false.
+        pipeline_contexts(axis)%stream=0_cuda_stream_kind
+      endif
+    enddo
+    if(pipeline_compute_stream_created) then
+      code=cudaStreamDestroy(pipeline_compute_stream)
+      if(code/=cudaSuccess) call abort_cuda('destroy compute stream',code)
+      pipeline_compute_stream_created=.false.
+      pipeline_compute_stream=0_cuda_stream_kind
+    endif
+    pipeline_axis_enabled=.false.
+  end subroutine release_pipeline_resources
+
+  subroutine release_host_buffers()
+    integer :: i,code,ierr
+    call release_pipeline_resources()
+    do i=registered_count,1,-1
+      code=cudaHostUnregister(registered(i))
+      if(code/=cudaSuccess) then
+        print *, 'GPU halo host unregister failed: ',code,trim(cudaGetErrorString(code))
+        call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      endif
+    enddo
+    registered_count=0
+    pinned_bytes=0
+  end subroutine release_host_buffers
+
+  subroutine abort_cuda(operation,code)
+    character(len=*),intent(in) :: operation
+    integer,intent(in) :: code
+    integer :: ierr
+
+    print *, 'GPU halo pipeline CUDA failure: ',trim(operation),code,trim(cudaGetErrorString(code))
+    call mpi_abort(MPI_COMM_WORLD,1,ierr)
+  end subroutine abort_cuda
+
+  subroutine check_pipeline_cuda(operation,code)
+    character(len=*),intent(in) :: operation
+    integer,intent(in) :: code
+
+    if(code/=cudaSuccess) call abort_cuda(operation,code)
+  end subroutine check_pipeline_cuda
+
+  subroutine require_pipeline_state(axis,required,operation)
+    integer,intent(in) :: axis,required
+    character(len=*),intent(in) :: operation
+    integer :: ierr
+
+    if(.not.halo_pipeline_enabled .or. axis<halo_axis_x .or. axis>halo_axis_z) then
+      print *, 'GPU halo pipeline invalid axis: ',trim(operation),axis
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      return
+    endif
+    if(.not.pipeline_axis_enabled(axis) .or. &
+       pipeline_contexts(axis)%state/=required) then
+      print *, 'GPU halo pipeline invalid state: ',trim(operation),axis, &
+               pipeline_contexts(axis)%state,required
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+    endif
+  end subroutine require_pipeline_state
+
+  subroutine reset_pipeline_context(axis)
+    integer,intent(in) :: axis
+
+    pipeline_contexts(axis)%requests=MPI_REQUEST_NULL
+    pipeline_contexts(axis)%count=0
+    pipeline_contexts(axis)%low=MPI_PROC_NULL
+    pipeline_contexts(axis)%high=MPI_PROC_NULL
+    pipeline_contexts(axis)%tag_first=0
+    pipeline_contexts(axis)%tag_second=0
+    pipeline_contexts(axis)%state=pipeline_idle
+    pipeline_contexts(axis)%pair_active=.false.
+  end subroutine reset_pipeline_context
+
+  subroutine begin_host_pair_pipeline(axis,recv_high,recv_low,count,low,high,tag_first,tag_second)
+    real(8),intent(inout),contiguous,asynchronous :: recv_high(:,:,:,:),recv_low(:,:,:,:)
+    integer,intent(in) :: axis,count,low,high,tag_first,tag_second
+    integer :: ierr,abort_error
+
+    call require_pipeline_state(axis,pipeline_idle,'begin')
+    if(pipeline_contexts(axis)%pair_active .or. count<1 .or. &
+       size(recv_high)/=count .or. size(recv_low)/=count) then
+      print *, 'GPU halo pipeline receive buffer/count mismatch or active pair'
+      call mpi_abort(MPI_COMM_WORLD,1,abort_error)
+      return
+    endif
+    pipeline_contexts(axis)%pair_active=.true.
+    pipeline_contexts(axis)%count=count
+    pipeline_contexts(axis)%low=low
+    pipeline_contexts(axis)%high=high
+    pipeline_contexts(axis)%tag_first=tag_first
+    pipeline_contexts(axis)%tag_second=tag_second
+    pipeline_contexts(axis)%requests=MPI_REQUEST_NULL
+    call mpi_irecv(recv_high,count,MPI_REAL8,high,tag_first,MPI_COMM_WORLD, &
+                   pipeline_contexts(axis)%requests(1),ierr)
+    call check_mpi(ierr)
+    call mpi_irecv(recv_low,count,MPI_REAL8,low,tag_second,MPI_COMM_WORLD, &
+                   pipeline_contexts(axis)%requests(2),ierr)
+    call check_mpi(ierr)
+    pipeline_contexts(axis)%state=pipeline_receive_posted
+  end subroutine begin_host_pair_pipeline
+
+  subroutine begin_host_pair_device_pack(axis,stream)
+    integer,intent(in) :: axis
+    integer(kind=cuda_stream_kind),intent(out) :: stream
+    integer :: code
+
+    call require_pipeline_state(axis,pipeline_receive_posted,'device pack')
+    code=cudaEventRecord(pipeline_contexts(axis)%source_ready_event,0_cuda_stream_kind)
+    if(code/=cudaSuccess) call abort_cuda('record source-ready event',code)
+    code=cudaStreamWaitEvent(pipeline_contexts(axis)%stream, &
+                             pipeline_contexts(axis)%source_ready_event,0)
+    if(code/=cudaSuccess) call abort_cuda('wait for pack source',code)
+    stream=pipeline_contexts(axis)%stream
+    pipeline_contexts(axis)%state=pipeline_device_packing
+  end subroutine begin_host_pair_device_pack
+
+  subroutine begin_pipeline_compute(axis,stream,wait_for_source)
+    integer,intent(in) :: axis
+    integer(kind=cuda_stream_kind),intent(out) :: stream
+    logical,intent(in),optional :: wait_for_source
+    integer :: code,ierr
+    logical :: source_dependency
+
+    if(.not.halo_pipeline_enabled .or. axis<halo_axis_x .or. axis>halo_axis_z) then
+      print *, 'GPU halo pipeline independent compute received an invalid axis'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      return
+    endif
+    if(.not.pipeline_axis_enabled(axis) .or. &
+       (pipeline_contexts(axis)%state/=pipeline_device_packing .and. &
+        pipeline_contexts(axis)%state/=pipeline_mpi_active) .or. &
+       pipeline_compute_active) then
+      print *, 'GPU halo pipeline independent compute requires packing or active MPI state'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      return
+    endif
+    source_dependency=.true.
+    if(present(wait_for_source)) source_dependency=wait_for_source
+    if(source_dependency) then
+      code=cudaStreamWaitEvent(pipeline_compute_stream, &
+                               pipeline_contexts(axis)%source_ready_event,0)
+      if(code/=cudaSuccess) call abort_cuda('wait for compute source',code)
+    endif
+    pipeline_compute_active=.true.
+    pipeline_compute_recorded=.false.
+    stream=pipeline_compute_stream
+  end subroutine begin_pipeline_compute
+
+  subroutine record_pipeline_compute()
+    integer :: code,ierr
+
+    if(.not.pipeline_compute_active .or. pipeline_compute_recorded) then
+      print *, 'GPU halo pipeline compute event record requires one active unrecorded kernel group'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      return
+    endif
+    code=cudaEventRecord(pipeline_compute_done_event,pipeline_compute_stream)
+    if(code/=cudaSuccess) call abort_cuda('record compute-done event',code)
+    pipeline_compute_recorded=.true.
+  end subroutine record_pipeline_compute
+
+  subroutine finish_pipeline_compute()
+    integer :: code,ierr
+
+    if(.not.pipeline_compute_active .or. .not.pipeline_compute_recorded) then
+      print *, 'GPU halo pipeline compute finish requires one recorded kernel group'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      return
+    endif
+    code=cudaEventSynchronize(pipeline_compute_done_event)
+    if(code/=cudaSuccess) call abort_cuda('wait for independent compute',code)
+    pipeline_compute_active=.false.
+    pipeline_compute_recorded=.false.
+  end subroutine finish_pipeline_compute
+
+  subroutine start_host_pair_mpi(axis,send_low,send_high)
+    integer,intent(in) :: axis
+    real(8),intent(in),contiguous,asynchronous :: send_low(:,:,:,:),send_high(:,:,:,:)
+    integer :: code,ierr
+
+    call require_pipeline_state(axis,pipeline_device_packing,'start MPI')
+    if(size(send_low)/=pipeline_contexts(axis)%count .or. &
+       size(send_high)/=pipeline_contexts(axis)%count) then
+      print *, 'GPU halo pipeline send buffer/count mismatch'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      return
+    endif
+    code=cudaEventRecord(pipeline_contexts(axis)%send_ready_event, &
+                         pipeline_contexts(axis)%stream)
+    if(code/=cudaSuccess) call abort_cuda('record send-ready event',code)
+    pipeline_contexts(axis)%state=pipeline_send_ready
+    code=cudaEventSynchronize(pipeline_contexts(axis)%send_ready_event)
+    if(code/=cudaSuccess) call abort_cuda('wait for D2H',code)
+    call mpi_isend(send_low,pipeline_contexts(axis)%count,MPI_REAL8, &
+                   pipeline_contexts(axis)%low,pipeline_contexts(axis)%tag_first, &
+                   MPI_COMM_WORLD,pipeline_contexts(axis)%requests(3),ierr)
+    call check_mpi(ierr)
+    call mpi_isend(send_high,pipeline_contexts(axis)%count,MPI_REAL8, &
+                   pipeline_contexts(axis)%high,pipeline_contexts(axis)%tag_second, &
+                   MPI_COMM_WORLD,pipeline_contexts(axis)%requests(4),ierr)
+    call check_mpi(ierr)
+    pipeline_contexts(axis)%state=pipeline_mpi_active
+  end subroutine start_host_pair_mpi
+
+  subroutine complete_host_pair_mpi(axis,work)
+    integer,intent(in) :: axis
+    procedure(independent_host_pair_work),optional :: work
+    integer :: ierr,statuses(MPI_STATUS_SIZE,4)
+    logical :: done
+
+    call require_pipeline_state(axis,pipeline_mpi_active,'complete MPI')
+    if(present(work)) call work(pipeline_contexts(axis)%requests,axis)
+    done=.false.
+    do while(.not.done)
+      call mpi_testall(4,pipeline_contexts(axis)%requests,done,statuses,ierr)
+      call check_mpi(ierr)
+    enddo
+    pipeline_contexts(axis)%state=pipeline_host_complete
+  end subroutine complete_host_pair_mpi
+
+  subroutine complete_host_pair_d2h(axis,send_low,send_high,work)
+    integer,intent(in) :: axis
+    real(8),intent(in),contiguous,asynchronous :: send_low(:,:,:,:),send_high(:,:,:,:)
+    procedure(independent_host_pair_work),optional :: work
+
+    call start_host_pair_mpi(axis,send_low,send_high)
+    call complete_host_pair_mpi(axis,work)
+  end subroutine complete_host_pair_d2h
+
+  subroutine begin_host_pair_device_upload(axis,stream)
+    integer,intent(in) :: axis
+    integer(kind=cuda_stream_kind),intent(out) :: stream
+
+    call require_pipeline_state(axis,pipeline_host_complete,'device upload')
+    stream=pipeline_contexts(axis)%stream
+    pipeline_contexts(axis)%state=pipeline_device_uploading
+  end subroutine begin_host_pair_device_upload
+
+  subroutine finish_host_pair_pipeline(axis)
+    integer,intent(in) :: axis
+    integer :: code
+
+    call require_pipeline_state(axis,pipeline_device_uploading,'finish')
+    code=cudaEventRecord(pipeline_contexts(axis)%halo_ready_event, &
+                         pipeline_contexts(axis)%stream)
+    if(code/=cudaSuccess) call abort_cuda('record halo-ready event',code)
+    code=cudaEventSynchronize(pipeline_contexts(axis)%halo_ready_event)
+    if(code/=cudaSuccess) call abort_cuda('wait for H2D and unpack',code)
+    call reset_pipeline_context(axis)
+  end subroutine finish_host_pair_pipeline
+
+  subroutine check_mpi(code)
+    integer,intent(in) :: code
+    integer :: ierr
+    if(code/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,code,ierr)
+  end subroutine check_mpi
+
+  subroutine exchange_host_pair(send_low,send_high,recv_high,recv_low, &
+                                count,low,high,tag_first,tag_second,work)
+    implicit none
+    real(8),intent(in),contiguous,asynchronous :: send_low(:,:,:,:),send_high(:,:,:,:)
+    real(8),intent(inout),contiguous,asynchronous :: recv_high(:,:,:,:),recv_low(:,:,:,:)
+    integer,intent(in) :: count,low,high,tag_first,tag_second
+    integer :: ierr,abort_error,request_status(MPI_STATUS_SIZE)
+    integer :: requests(4),statuses(MPI_STATUS_SIZE,4)
+    procedure(independent_host_pair_work),optional :: work
+
+    if(pair_active) then
+      print *, 'GPU halo transport: nested paired exchange is not supported'
+      call mpi_abort(MPI_COMM_WORLD,1,abort_error)
+      return
+    endif
+    if(count<1 .or. size(send_low)/=count .or. size(send_high)/=count .or. &
+       size(recv_high)/=count .or. size(recv_low)/=count) then
+      print *, 'GPU halo transport buffer/count mismatch'
+      call mpi_abort(MPI_COMM_WORLD,1,abort_error)
+      return
+    endif
+    if(present(work)) then
+      pair_active=.true.
+      call mpi_irecv(recv_high,count,MPI_REAL8,high,tag_first,MPI_COMM_WORLD,requests(1),ierr)
+      call check_mpi(ierr)
+      call mpi_irecv(recv_low,count,MPI_REAL8,low,tag_second,MPI_COMM_WORLD,requests(2),ierr)
+      call check_mpi(ierr)
+      call mpi_isend(send_low,count,MPI_REAL8,low,tag_first,MPI_COMM_WORLD,requests(3),ierr)
+      call check_mpi(ierr)
+      call mpi_isend(send_high,count,MPI_REAL8,high,tag_second,MPI_COMM_WORLD,requests(4),ierr)
+      call check_mpi(ierr)
+      call work(requests,0)
+      call mpi_waitall(4,requests,statuses,ierr)
+      call check_mpi(ierr)
+      pair_active=.false.
+      return
+    endif
+    call mpi_sendrecv(send_low,count,MPI_REAL8,low,tag_first, &
+                      recv_high,count,MPI_REAL8,high,tag_first, &
+                      MPI_COMM_WORLD,request_status,ierr)
+    if(ierr/=MPI_SUCCESS) then
+      call mpi_abort(MPI_COMM_WORLD,ierr,abort_error)
+      return
+    endif
+    call mpi_sendrecv(send_high,count,MPI_REAL8,high,tag_second, &
+                      recv_low,count,MPI_REAL8,low,tag_second, &
+                      MPI_COMM_WORLD,request_status,ierr)
+    if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,abort_error)
+  end subroutine exchange_host_pair
+
+  subroutine progress_host_pair_during_kernel(requests)
+    integer,intent(inout) :: requests(4)
+    integer :: code,ierr,statuses(MPI_STATUS_SIZE,4)
+    logical :: done
+
+    ! The caller must still explicitly synchronize and check each kernel.
+    if(.not.pair_active) then
+      print *, 'GPU halo progress requires an active paired exchange'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      return
+    endif
+    do
+      code=cudaStreamQuery(0_cuda_stream_kind)
+      if(code==cudaSuccess) exit
+      if(code/=cudaErrorNotReady) then
+        print *, 'GPU halo progress stream query failed: ',trim(cudaGetErrorString(code))
+        call mpi_abort(MPI_COMM_WORLD,1,ierr)
+        return
+      endif
+      call mpi_testall(4,requests,done,statuses,ierr)
+      call check_mpi(ierr)
+      if(done) exit
+    enddo
+  end subroutine progress_host_pair_during_kernel
+
+  subroutine progress_host_pair_during_pipeline_compute(axis,requests)
+    integer,intent(in) :: axis
+    integer,intent(inout) :: requests(4)
+    integer :: code,ierr,statuses(MPI_STATUS_SIZE,4)
+    logical :: done
+
+    if(axis<halo_axis_x .or. axis>halo_axis_z) then
+      print *, 'GPU halo pipeline progress received an invalid axis'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      return
+    endif
+    if(pipeline_contexts(axis)%state/=pipeline_mpi_active .or. &
+       .not.pipeline_compute_recorded) then
+      print *, 'GPU halo pipeline progress requires active MPI and recorded compute work'
+      call mpi_abort(MPI_COMM_WORLD,1,ierr)
+      return
+    endif
+    do
+      call mpi_testall(4,requests,done,statuses,ierr)
+      call check_mpi(ierr)
+      if(done) exit
+      code=cudaEventQuery(pipeline_compute_done_event)
+      if(code==cudaSuccess) exit
+      if(code/=cudaErrorNotReady) call abort_cuda('query independent compute',code)
+    enddo
+  end subroutine progress_host_pair_during_pipeline_compute
+end module halo_transport_gpu

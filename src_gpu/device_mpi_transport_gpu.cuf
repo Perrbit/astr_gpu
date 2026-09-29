@@ -1,0 +1,57 @@
+module device_mpi_transport_gpu
+  use mpi
+  use cudafor
+  use halo_transport_gpu, only: independent_host_pair_work,begin_external_pair_work, &
+                                end_external_pair_work
+  implicit none
+  private
+  public :: exchange_device_pair
+  logical,save :: device_pair_active=.false.
+contains
+  subroutine exchange_device_pair(send_low,send_high,recv_high,recv_low, &
+                                  count,low,high,tag_first,tag_second,work)
+    real(8),device,contiguous,intent(in) :: send_low(:,:,:,:),send_high(:,:,:,:)
+    real(8),device,contiguous,intent(inout) :: recv_high(:,:,:,:),recv_low(:,:,:,:)
+    integer,intent(in) :: count,low,high,tag_first,tag_second
+    integer :: ierr,abort_error,requests(4),statuses(MPI_STATUS_SIZE,4)
+    procedure(independent_host_pair_work),optional :: work
+
+    if(device_pair_active) then
+      print *, 'GPU device-aware transport: nested paired exchange is not supported'
+      call mpi_abort(MPI_COMM_WORLD,1,abort_error)
+      return
+    endif
+    if(count<1 .or. size(send_low)/=count .or. size(send_high)/=count .or. &
+       size(recv_high)/=count .or. size(recv_low)/=count) then
+      print *, 'GPU device-aware transport buffer/count mismatch'
+      call mpi_abort(MPI_COMM_WORLD,1,abort_error)
+      return
+    endif
+
+    device_pair_active=.true.
+    requests=MPI_REQUEST_NULL
+    call mpi_irecv(recv_high,count,MPI_REAL8,high,tag_first,MPI_COMM_WORLD,requests(1),ierr)
+    call check_mpi(ierr)
+    call mpi_irecv(recv_low,count,MPI_REAL8,low,tag_second,MPI_COMM_WORLD,requests(2),ierr)
+    call check_mpi(ierr)
+    call mpi_isend(send_low,count,MPI_REAL8,low,tag_first,MPI_COMM_WORLD,requests(3),ierr)
+    call check_mpi(ierr)
+    call mpi_isend(send_high,count,MPI_REAL8,high,tag_second,MPI_COMM_WORLD,requests(4),ierr)
+    call check_mpi(ierr)
+    if(present(work)) then
+      call begin_external_pair_work()
+      call work(requests,0)
+    endif
+    call mpi_waitall(4,requests,statuses,ierr)
+    call check_mpi(ierr)
+    if(present(work)) call end_external_pair_work()
+    device_pair_active=.false.
+  end subroutine exchange_device_pair
+
+  subroutine check_mpi(code)
+    integer,intent(in) :: code
+    integer :: ierr
+
+    if(code/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,code,ierr)
+  end subroutine check_mpi
+end module device_mpi_transport_gpu

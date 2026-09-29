@@ -1,0 +1,5 @@
+! Shared algebra, separate device symbols; no host/device array copies here.
+#define BOUNDARY_PROC attributes(device)
+module perfect_gas_boundary_gpu
+#include "../src/perfect_gas_boundary_body.inc"
+end module perfect_gas_boundary_gpu

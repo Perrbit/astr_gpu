@@ -1,0 +1,3016 @@
+!+---------------------------------------------------------------------+
+!| This module contains subroutines of initialising flow field, should |
+!| be highly user defined.                                             |
+!| ==============                                                      |
+!| CHANGE RECORD                                                       |
+!| -------------                                                       |
+!| 01-02-2021: Created by J. Fang @ STFC Daresbury Laboratory          |
+!+---------------------------------------------------------------------+
+module initialisation
+  !
+  use constdef
+  use parallel,only: lio,mpistop,mpirank,mpirankname,bcast,jrk
+  use commvar, only: im,jm,km,uinf,vinf,winf,pinf,roinf,tinf,ndims,    &
+                     num_species,xmin,xmax,ymin,ymax,zmin,zmax,spcinf
+  use tecio
+  !
+  implicit none
+  !
+  real(8) :: nomi_thick,disp_thick,mome_thick,fric_velocity
+  !
+  contains
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine is the entrance of flow initialisation.           |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 07-02-2021  | Created by J. Fang @ Warrington                     |
+  !+-------------------------------------------------------------------+
+  subroutine flowinit
+    !
+    use commvar,  only: flowtype,nstep,time,filenumb,fnumslic,ninit,   &
+                        lrestart,lavg,turbmode,ymax,use_gpu,lcomb
+    use commarray,only: vel,rho,prs,spc,q,tke,omg
+    use readwrite,only: readcont,readflowini3d,readflowini2d,readflowini1d,          &
+                        readcheckpoint,readmeanflow,readmonc,writeflfed,write_io_tree
+    use fludyna,  only: updateq
+    use statistic,only: nsamples
+    use bc,       only: ninflowslice,turbinf
+    use userdefine,only: udf_flowinit
+    use benchmark_runtime, only: benchmark_field_io_disabled
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_flow_runtime, only: configure_air5_source_mode
+    use readwrite, only: initialize_air5_compensated_flow
+#endif
+#ifdef _CUDA
+    use gpu_runtime,only: gpu_compact_statistics_requested
+    use checkpoint_gpu,only: restore_exact_checkpoint_gpu
+    use readwrite,only: exact_gpu_restart_version,exact_gpu_restart_generation
+#endif
+    !
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(lcomb) call configure_air5_source_mode()
+#endif
+    call inletprofile
+    !
+    call readcont
+    !
+    if(lrestart) then
+      !
+      call readcheckpoint(folder='outdat',mode='h')
+      !
+#ifdef ASTR_AIR5_CHEMISTRY
+      if(lcomb .and. (trim(flowtype)=='air5hbl' .or. &
+                     trim(flowtype)=='air5sbli')) call air5hblboundaryini
+      if(lcomb .and. trim(flowtype)=='air5normalshock') &
+        call air5normalshockboundaryini
+#endif
+      !
+      call updateq
+#ifdef _CUDA
+      if(use_gpu) call restore_exact_checkpoint_gpu(exact_gpu_restart_version,exact_gpu_restart_generation)
+#endif
+      !
+    else
+      !
+      if(ninit==3) then
+        !
+        call readflowini3d
+        !
+        ! call blcorrect
+        ! vel(:,:,:,2)=0.d0
+        !
+        if(trim(turbmode)=='k-omega') then
+          tke=0.d0
+          omg=0.d0
+        endif
+        !
+      elseif(ninit==2) then
+        !
+        call readflowini2d
+        !
+      elseif(ninit==1) then
+        !
+        call readflowini1d
+        !
+      else
+        !
+        ! pre-defined flow initilisation
+        select case(trim(flowtype))
+        case('2dvort')
+          call vortini
+        case('channel')
+          call chanini
+        case('tgv')
+          call tgvini
+        case('hit')
+          call hitini
+        case('jet')
+          call jetini
+        case('accutest')
+          call accini
+        case('cylinder')
+          call cylinderini
+        case('mixlayer')
+          call mixlayerini
+        case('shuosher')
+          call shuosherini
+        case('openshock')
+          call openshockini
+        case('sod')
+          call sodini
+        case('riem2d')
+          call riem2dini
+        case('bl')
+          call blini
+        case('tbl')
+          call tblini
+        case('swbli')
+          call blini
+        case('windtunn')
+          call wtini
+        case('0dreactor')
+          call reactorini
+        case('1dflame')
+          call onedflameini
+        case('h2supersonic')
+          call h2supersonicini
+        case('tgvflame')
+          call tgvflameini
+        case('rti')
+          call rtini
+        case('ldcavity')
+          call ldcavityini
+        case('airreactor')
+          call airreactorini
+#ifdef ASTR_AIR5_CHEMISTRY
+        case('air5wave')
+          call air5waveini
+        case('air5reactor')
+          call air5reactorini
+        case('air5tgv')
+          call air5tgvini
+        case('air5shocktube')
+          call air5shocktubeini
+        case('air5postshock')
+          call air5postshockini
+        case('air5normalshock')
+          call air5normalshockini
+        case('air5hbl','air5sbli')
+          call air5hblini
+        case('air5advection')
+          call air5advectionini
+        case('air5difflayer')
+          call air5difflayerini
+        case('air5evpulse')
+          call air5evpulseini
+#endif
+        ! case('hitflame')
+        !   call hitflameini
+        ! case default
+        !   print*,trim(flowtype)
+        !   stop ' !! flowtype not defined @ flowinit'
+        end select
+        !
+        call udf_flowinit
+        !
+      endif
+      !
+#ifdef ASTR_AIR5_CHEMISTRY
+      if(lcomb .and. trim(flowtype)/='air5reactor' .and. &
+         trim(flowtype)/='air5tgv' .and. &
+         trim(flowtype)/='air5shocktube' .and. &
+         trim(flowtype)/='air5postshock' .and. &
+         trim(flowtype)/='air5normalshock' .and. &
+         trim(flowtype)/='air5hbl' .and. &
+         trim(flowtype)/='air5sbli' .and. &
+         trim(flowtype)/='air5advection' .and. &
+         trim(flowtype)/='air5difflayer' .and. &
+         trim(flowtype)/='air5evpulse') then
+        block
+          use commarray, only: tve,tmp
+          tve(0:im,0:jm,0:km)=tmp(0:im,0:jm,0:km)
+        end block
+      endif
+#endif
+      call updateq
+      !
+      nstep=0
+      ninflowslice=3
+      time=0.d0
+      !
+      filenumb=0
+      fnumslic=0
+      !
+    endif
+    !
+#ifdef ASTR_AIR5_CHEMISTRY
+    call initialize_air5_compensated_flow()
+#endif
+    call readmonc
+    !
+    if(lavg) then
+      !
+#ifdef _CUDA
+      if(.not.(use_gpu .and. gpu_compact_statistics_requested())) then
+        if(nsamples>0) call readmeanflow(mode='h')
+      endif
+#else
+      if(nsamples>0) then
+        call readmeanflow(mode='h')
+      endif
+#endif
+      !
+    endif
+    !
+    if(lio) print*,' ** flowfield initialised.'
+    
+    if(.not.benchmark_field_io_disabled()) call writeflfed(timerept=.true.)
+    
+    ! call mpistop
+    
+    ! stop
+    !
+  end subroutine flowinit
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine flowinit.                               |
+  !+-------------------------------------------------------------------+
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine is used to generate an initial field test of      |
+  !| accuracy.                                                         |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 01-Mar-2021: Created by J. Fang @ STFC Daresbury Laboratory       |
+  !+-------------------------------------------------------------------+
+  subroutine accini
+    !
+    use commarray,only: x,vel,rho,prs,spc,tmp,q,acctest_ref
+    use fludyna,  only: thermal
+    !
+    ! local data
+    integer :: i,j,k,l
+    real(8) :: xc,yc,zc,radi2,rvor,cvor,var1
+    real(8) :: A,slow_wl,fast_wl,damper,randomv(32),gz,zl
+    !
+    ! if(ndims==1) then
+      !
+      xc=0.5d0*(xmax-xmin)
+      yc=0.5d0*(ymax-ymin)
+      zc=0.5d0*(zmax-zmin)
+      !
+      rvor=0.5d0 
+      cvor=0.1d0*rvor
+      !
+      A = 1.d0
+      slow_wl = 4.d0
+      fast_wl = 48.d0
+      !
+      allocate(acctest_ref(0:im))
+      !
+      if(mpirank==0) then
+        do l=1,32
+          call random_number(randomv(l))
+        end do
+      endif
+      !
+      call bcast(randomv)
+      !
+      do k=0,km
+      do j=0,jm
+      do i=0,im
+        !
+        ! radi2=((x(i,j,k,1)-xc)**2+(x(i,j,k,2)-yc)**2)/rvor/rvor
+        ! var1=cvor/rvor/rvor*exp(-0.5d0*radi2)
+        radi2=(x(i,j,k,1)-xc)**2
+        var1=exp(-5.d0*radi2)
+        !
+        rho(i,j,k)  =roinf
+        vel(i,j,k,1)=1.d0
+        vel(i,j,k,2)=0.d0
+        vel(i,j,k,3)=0.d0
+        prs(i,j,k)  =pinf
+        !
+        tmp(i,j,k)=thermal(density=rho(i,j,k),pressure=prs(i,j,k))
+        !
+        ! spc(i,j,k,1)=exp(-0.5d0*radi2)
+        ! spc(i,j,k,1)=cos(1.6d0*pi*(x(i,j,k,1)-xc))*var1
+        ! spc(i,j,k,1)=cos(1.6d0*pi*(x(i,j,k,1)-xc))*var1
+        damper=exp(-0.5d0*(x(i,j,k,1)-xc)**2)
+        !
+        gz=0.d0
+        do l=1,32
+          !
+          if(l==1) then
+            zl=0.2d0/(1.d0-0.95d0**32)
+          else
+            zl=zl*0.95d0
+          end if
+          !
+          gz=gz+zl*dsin(2.d0*pi*l*(x(i,j,k,1)/(xmax-xmin)+randomv(l)))
+          !
+        end do
+        !
+        ! var1= A*cos(abs(sqrt(x(i,j,k,1)-xc)**3)*slow_wl)
+        acctest_ref(i)=gz !*damper
+        spc(i,j,k,1)=acctest_ref(i)
+        !
+      enddo
+      enddo
+      enddo
+    !
+    ! else
+    !   stop ' !! error @ accini'
+    ! endif
+    !
+    !
+    call tecbin('testout/tecinit'//mpirankname//'.plt',                &
+                                      x(0:im,0:jm,0:km,1),'x',         &
+                                      x(0:im,0:jm,0:km,2),'y',         &
+                                      x(0:im,0:jm,0:km,3),'z',         &
+                                      q(0:im,0:jm,0:km,1),'q1',        &
+                                      q(0:im,0:jm,0:km,2),'q2',        &
+                                      q(0:im,0:jm,0:km,3),'q3',        &
+                                      q(0:im,0:jm,0:km,5),'q5',        &
+                                      q(0:im,0:jm,0:km,6),'q6' )
+    !
+    if(lio)  write(*,'(A,I1,A)')'  ** Gaussian pulse initialised.'
+    !
+    ! call mpistop
+    !
+  end subroutine accini
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine accini.                                 |
+  !+-------------------------------------------------------------------+
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine is used to generate an initial field test of      |
+  !| 1D Shu-Osher problem.                                             |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 23-Mar-2021: Created by J. Fang @ STFC Daresbury Laboratory       |
+  !+-------------------------------------------------------------------+
+  subroutine shuosherini
+    !
+    use commvar,  only: mach
+    use commarray,only: x,vel,rho,prs,spc,tmp,q,acctest_ref
+    use fludyna,  only: thermal
+    !
+    ! local data
+    integer :: i,j,k,status,path_length,ios
+    real(8) :: xc,shock_x,phase_x
+    character(len=1024) :: shock_x_text
+
+    shock_x=-4.d0
+    call get_environment_variable('ASTR_SHUOSHER_SHOCK_X',shock_x_text, &
+                                  length=path_length,status=status)
+    if(status==0 .and. path_length>0) then
+      read(shock_x_text(1:path_length),*,iostat=ios) shock_x
+      if(ios/=0) stop 'ASTR_SHUOSHER_SHOCK_X must be a real value'
+    endif
+    !
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      !
+      xc=x(i,j,k,1)
+      !
+      if(xc<shock_x) then
+        rho(i,j,k)  =3.857143d0
+        vel(i,j,k,1)=2.629369d0
+        prs(i,j,k)  =10.33333d0
+        !
+        !
+      else
+        phase_x=xc-shock_x-4.d0
+        rho(i,j,k)  =1.d0+0.2d0*sin(5.d0*phase_x)
+        vel(i,j,k,1)=0.d0
+        prs(i,j,k)  =1.d0
+      endif
+      vel(i,j,k,2)=0.d0
+      vel(i,j,k,3)=0.d0
+      !
+      tmp(i,j,k)=thermal(density=rho(i,j,k),pressure=prs(i,j,k))
+      !
+    enddo
+    enddo
+    enddo
+    !
+    ! call tecbin('testout/tecinit'//mpirankname//'.plt',                &
+    !                                   x(0:im,0:jm,0:km,1),'x',         &
+    !                                   q(0:im,0:jm,0:km,1),'q1',        &
+    !                                   q(0:im,0:jm,0:km,2),'q2',        &
+    !                                   q(0:im,0:jm,0:km,3),'q3',        &
+    !                                   q(0:im,0:jm,0:km,5),'q5',        &
+    !                                   q(0:im,0:jm,0:km,6),'q6' )
+    !
+    if(lio)  write(*,'(A,I1,A)')'  ** shu-osher profile initialised.'
+    !
+    ! call mpistop
+    !
+  end subroutine shuosherini
+  !+-------------------------------------------------------------------+
+
+  subroutine openshockini
+    use commvar, only: gamma,mach,roinf,uinf,vinf,winf,pinf,im,jm,km
+    use commarray, only: x,vel,rho,prs,tmp
+    use fludyna, only: thermal
+    use parallel, only: lio
+    implicit none
+    integer :: i,j,k
+    real(8) :: shock_x,mach2,rho_ratio,prs_ratio
+
+    shock_x = 0.d0
+    mach2 = mach*mach
+    rho_ratio = (gamma+1.d0)*mach2/((gamma-1.d0)*mach2+2.d0)
+    prs_ratio = 1.d0 + 2.d0*gamma/(gamma+1.d0)*(mach2-1.d0)
+
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      if(x(i,j,k,1) < shock_x) then
+        rho(i,j,k) = roinf
+        vel(i,j,k,1) = uinf
+        vel(i,j,k,2) = vinf
+        vel(i,j,k,3) = winf
+        prs(i,j,k) = pinf
+      else
+        rho(i,j,k) = roinf*rho_ratio
+        vel(i,j,k,1) = uinf/rho_ratio
+        vel(i,j,k,2) = vinf
+        vel(i,j,k,3) = winf
+        prs(i,j,k) = pinf*prs_ratio
+      endif
+      tmp(i,j,k) = thermal(density=rho(i,j,k),pressure=prs(i,j,k))
+    enddo
+    enddo
+    enddo
+
+    if(lio) write(*,'(A,2(1X,ES12.4E3))') '  ** stationary open shock initialised; p2/pinf, rho2/rhoinf=', &
+         prs_ratio,rho_ratio
+  end subroutine openshockini
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine shuosherini.                            |
+  !+-------------------------------------------------------------------+
+  
+
+  !+-------------------------------------------------------------------+
+  !| Subroutine: sodini                                                |
+  !|                                                                   |
+  !| Purpose:                                                          |
+  !|   Generates an initial condition for the 1D Sod                   |
+  !|   shock tube problem in the x-direction.                          |
+  !|   Assumes a discontinuity at x = 0 with high-pressure gas on the  |
+  !|   left and low-pressure gas on the right.                         |
+  !|                                                                   |
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 09-Jul-2025 | Created by J. Fang @ Imech, Beijing                 |
+  !+-------------------------------------------------------------------+
+  subroutine sodini
+  
+    use commvar,    only : mach
+    use commarray,  only : x, vel, rho, prs, spc, tmp, q, acctest_ref
+    use fludyna,    only : thermal
+  
+    implicit none
+  
+    ! Local variables
+    integer :: i, j, k
+    real(8) :: xc
+  
+    !---------------------------------------------------------------
+    ! Set initial conditions: Sod-type shock tube in x-direction
+    !---------------------------------------------------------------
+    do k = 0, km
+      do j = 0, jm
+        do i = 0, im
+          xc = x(i,j,k,1)
+  
+          if (xc < 0.d0) then
+            rho(i,j,k)   = 1.d0
+            prs(i,j,k)   = 1.d0
+            vel(i,j,k,1) = 0.d0
+          else
+            rho(i,j,k)   = 0.125d0
+            prs(i,j,k)   = 0.1d0
+            vel(i,j,k,1) = 0.d0
+          end if
+  
+          vel(i,j,k,2) = 0.d0
+          vel(i,j,k,3) = 0.d0
+  
+          tmp(i,j,k) = thermal(density=rho(i,j,k), pressure=prs(i,j,k))
+        end do
+      end do
+    end do
+  
+    ! Output initialization confirmation
+    if (lio) write(*,'(A)') '  ** Sod profile initialised.'
+  
+  end subroutine sodini
+  !+-------------------------------------------------------------------+
+  !| End of subroutine sodini                                          |
+  !+-------------------------------------------------------------------+
+
+  !+-------------------------------------------------------------------+
+  !| Subroutine: riem2d                                                |
+  !|                                                                   |
+  !| Purpose:                                                          |
+  !|   Generates the initial field for the 2D Riemann problem.         |
+  !|                                                                   |
+  !| References:                                                       |
+  !|[1] Y. Wang, Y. Du, K. Zhao, and L. Yuan, ‘Modified Stencil        |
+  !|   Approximations for Fifth-Order Weighted Essentially             |
+  !|   Non-oscillatory Schemes’, J Sci Comput, vol. 81, no. 2, pp.     |
+  !|   898–922, Nov. 2019, doi: 10.1007/s10915-019-01042-w.            |
+  !|                                                                   |
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 09-Jul-2025 | Created by J. Fang @ Imech, Beijing                 |
+  !+-------------------------------------------------------------------+
+  subroutine riem2dini
+  
+    use commarray,  only : x, vel, rho, prs, tmp
+    use fludyna,    only : thermal
+  
+    implicit none
+  
+    ! Local variables
+    integer :: i, j, k
+    real(8) :: xc, yc
+  
+    !---------------------------------------------------------------
+    ! Set initial conditions for the double Mach reflection problem
+    !---------------------------------------------------------------
+    do k = 0, km
+      do j = 0, jm
+        do i = 0, im
+          xc = x(i,j,k,1)
+          yc = x(i,j,k,2)
+  
+          if (xc>=0.8d0 .and. yc>=0.8d0 ) then
+            rho(i,j,k)   = 1.5d0
+            vel(i,j,k,1) = 0.d0
+            vel(i,j,k,2) = 0.d0
+            prs(i,j,k)   = 1.5d0
+          elseif (xc<0.8d0 .and. yc>=0.8d0 ) then
+            rho(i,j,k)   = 0.5323d0
+            vel(i,j,k,1) = 1.206d0
+            vel(i,j,k,2) = 0.d0
+            prs(i,j,k)   = 0.30
+          elseif ( xc<0.8d0 .and. yc<0.8d0) then
+            rho(i,j,k)   = 0.138d0
+            vel(i,j,k,1) = 1.206d0
+            vel(i,j,k,2) = 1.206d0
+            prs(i,j,k)   = 0.029d0
+          elseif ( xc>=0.8d0 .and. yc<0.8d0) then
+            rho(i,j,k)   = 0.5323d0
+            vel(i,j,k,1) = 0.d0
+            vel(i,j,k,2) = 1.206d0
+            prs(i,j,k)   = 0.3d0
+          end if
+  
+          vel(i,j,k,3) = 0.d0
+          tmp(i,j,k) = thermal(density=rho(i,j,k), pressure=prs(i,j,k))
+        end do
+      end do
+    end do
+  
+    ! Output initialization confirmation
+    if (lio) write(*, '(A)') '  ** 2D Riemann initialised.'
+  
+  end subroutine riem2dini
+  !+-------------------------------------------------------------------+
+  !| End of subroutine riem2dini                                       |
+  !+-------------------------------------------------------------------+
+
+  
+  !+-------------------------------------------------------------------+
+  !| This subroutine is used to generate an initial field for the      |
+  !| 2D vortex transport problem.                                      |
+  !| ref: Visbal & Gaitonde, On the Use of Higher-Order Finite-        |
+  !|      Difference Schemes on Curvilinear and Deforming Meshes.      |
+  !|     Journal of Computational Physics, 2002, 181: 155–185.         |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 13-Jul-2020: Created by J. Fang @ STFC Daresbury Laboratory       |
+  !+-------------------------------------------------------------------+
+  subroutine vortini
+    !
+    use commarray,only: x,vel,rho,prs,spc,tmp,q
+    use fludyna,  only: thermal
+    !
+    ! local data
+    integer :: i,j,k,jspc
+    real(8) :: xc,yc,radi2,rvor,cvor,var1
+    !
+    xc=10.d0
+    yc=5.d0
+    rvor=0.7d0 
+    cvor=0.1d0*rvor
+    !
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      radi2=((x(i,j,k,1)-xc)**2+(x(i,j,k,2)-yc)**2)/rvor/rvor
+      var1=cvor/rvor/rvor*exp(-0.5d0*radi2)
+      !
+      rho(i,j,k)  =roinf !*(1.d0+0.1d0*cos(dble(i)*pi))*(1.d0+0.1d0*cos(dble(j)*pi))
+      vel(i,j,k,1)=uinf-var1*(x(i,j,k,2)-yc) !*(0.1d0*cos(dble(i)*pi))
+      if(ndims>=2) vel(i,j,k,2)=vinf+var1*(x(i,j,k,1)-xc) !*(0.1d0*cos(dble(j)*pi))
+      if(ndims==3) vel(i,j,k,3)=0.d0
+      prs(i,j,k)  =pinf-0.5d0*rho(i,j,k)*cvor**2/rvor**2*exp(-radi2)
+      !
+      tmp(i,j,k)=thermal(density=rho(i,j,k),pressure=prs(i,j,k))
+      !
+      if(num_species>=1) then
+        !
+        spc(i,j,k,1)=exp(-0.5d0*radi2)
+        do jspc=2,num_species
+          spc(i,j,k,jspc)=1.d0-spc(i,j,k,1)
+        enddo
+        !
+      endif
+      !
+    enddo
+    enddo
+    enddo
+    !
+    !
+    ! call tecbin('testout/tecinit'//mpirankname//'.plt',                &
+    !                                   x(0:im,0:jm,0:km,1),'x',         &
+    !                                   x(0:im,0:jm,0:km,2),'y',         &
+    !                                   q(0:im,0:jm,0:km,1),'q1',        &
+    !                                   q(0:im,0:jm,0:km,2),'q2',        &
+    !                                   q(0:im,0:jm,0:km,3),'q3',        &
+    !                                   q(0:im,0:jm,0:km,5),'q5',        &
+    !                                   q(0:im,0:jm,0:km,6),'q6' )
+    !
+    if(lio)  write(*,'(A,I1,A)')'  ** 2-D vortical field initialised.'
+    !
+  end subroutine vortini
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine vortini.                                |
+  !+-------------------------------------------------------------------+
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine is used to generate initial flow  for homogeneous |
+  !| isotropic turbulence.                                             |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 26-09-2022: Created by J. Fang @ STFC Daresbury Laboratory        |
+  !+-------------------------------------------------------------------+
+  subroutine hitini
+    !
+    use commvar,  only: ia,ja,ka
+    use commarray,only: x,vel,rho,prs,spc,tmp,q,dvel
+    use fludyna,  only: thermal
+    use comsolver,only: grad
+    use parallel, only: psum,pmax,pmin,dataswap
+    use hdf5io
+    !
+    ! local data
+    integer :: i,j,k,jspc
+    real(8) :: div,div_min,div_max,div_avg
+    !
+    call h5io_init(filename='datin/velocity.h5',mode='read')
+    ! 
+    call h5read(varname='u1', var=vel(0:im,0:jm,0:km,1),mode='h')
+    call h5read(varname='u2', var=vel(0:im,0:jm,0:km,2),mode='h')
+    call h5read(varname='u3', var=vel(0:im,0:jm,0:km,3),mode='h')
+    !
+    call h5io_end
+    !
+    call dataswap(vel)
+    !
+    dvel(0:im,0:jm,0:km,1,:)=grad(vel(:,:,:,1))
+    dvel(0:im,0:jm,0:km,2,:)=grad(vel(:,:,:,2))
+    dvel(0:im,0:jm,0:km,3,:)=grad(vel(:,:,:,3))
+    !
+    div=0.d0
+    div_min= 1.d10
+    div_max=-1.d10
+    div_avg=0.d0
+    !
+    do k=1,km
+    do j=1,jm
+    do i=1,im
+      div=dvel(i,j,k,1,1)+dvel(i,j,k,2,2)+dvel(i,j,k,3,3)
+      !
+      div_avg=div_avg+div
+      div_min=min(div_min,div)
+      div_max=max(div_max,div)
+    enddo
+    enddo
+    enddo
+    !
+    div_avg=psum(div_avg)/dble(ia*ja*ka)
+    div_min=pmin(div_min)
+    div_max=pmax(div_max)
+    !
+    if(lio) print*,' ** velocity divgence, average:',div_avg,' min:',div_min,' max:',div_max
+    !
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      !
+      rho(i,j,k)  =roinf
+      tmp(i,j,k)  =tinf 
+      prs(i,j,k)  =thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
+      !
+    enddo
+    enddo
+    enddo
+    !
+    !
+    if(lio)  write(*,'(A,I1,A)')'  ** ',ndims,'-D homogeneous isotropic fluctuation initialised.'
+    !
+  end subroutine hitini
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine hitini.                                 |
+  !+-------------------------------------------------------------------+
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine is used to generate 3d TGV initial flow           |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 12-02-2021: Created by J. Fang @ STFC Daresbury Laboratory        |
+  !+-------------------------------------------------------------------+
+  subroutine tgvini
+    !
+    use commvar,  only: nondimen,ref_len
+    use commarray,only: x,vel,rho,prs,spc,tmp,q
+    use fludyna,  only: thermal
+#ifdef COMB
+    use thermchem,only: tranco,convertxiyi
+#endif
+    !
+    ! local data
+    integer :: i,j,k,jspc
+    real(8) :: l_0,miu
+    !
+#ifdef COMB
+    tinf=347.d0
+    roinf=thermal(temperature=tinf,pressure=pinf,species=spcinf)
+    l_0=xmax/(2.d0*pi)
+    uinf=40.d0
+#endif
+
+    if(nondimen) then
+      l_0=1.d0
+    else
+      l_0=ref_len
+    endif
+    !
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      rho(i,j,k)  =roinf  !*(1.d0+0.1d0*cos(dble(i)*pi))*(1.d0+0.1d0*cos(dble(j)*pi))*(1.d0+0.1d0*cos(dble(k)*pi))
+
+      vel(i,j,k,1)= uinf*sin(x(i,j,k,1)/l_0)*cos(x(i,j,k,2)/l_0)*cos(x(i,j,k,3)/l_0)
+      vel(i,j,k,2)=-uinf*cos(x(i,j,k,1)/l_0)*sin(x(i,j,k,2)/l_0)*cos(x(i,j,k,3)/l_0)
+      vel(i,j,k,3)=0.d0
+      prs(i,j,k)  =pinf+rho(i,j,k)/16.d0*(uinf**2) &
+                        *(cos(2.d0*x(i,j,k,1)/l_0)+cos(2.d0*x(i,j,k,2)/l_0)) &
+                        *(cos(2.d0*x(i,j,k,3)/l_0)+2.d0)
+      !
+      if(nondimen) then
+        tmp(i,j,k)=thermal(density=rho(i,j,k),pressure=prs(i,j,k))
+        if(num_species>1) then
+          spc(i,j,k,1)=0.5d0+0.499d0*sin(x(i,j,k,1)/l_0)*cos(x(i,j,k,2)/l_0)*cos(x(i,j,k,3)/l_0)
+          spc(i,j,k,2)=1.d0-spc(i,j,k,1)
+        endif
+      else 
+        if(num_species>1) then
+          spc(i,j,k,:)=spcinf(:)
+          tmp(i,j,k)=thermal(density=rho(i,j,k),pressure=prs(i,j,k),species=spc(i,j,k,:))
+        else
+          tmp(i,j,k)=thermal(density=rho(i,j,k),pressure=prs(i,j,k))
+        endif
+      endif 
+      !
+    enddo
+    enddo
+    enddo
+    !
+    !
+    ! call tecbin('testout/tecinit'//mpirankname//'.plt',                &
+    !                                   x(0:im,0:jm,0:km,1),'x',         &
+    !                                   x(0:im,0:jm,0:km,2),'y',         &
+    !                                   x(0:im,0:jm,0:km,3),'z',         &
+    !                                rho(0:im,0:jm,0:km)  ,'ro',         &
+    !                                vel(0:im,0:jm,0:km,1),'u',          &
+    !                                vel(0:im,0:jm,0:km,2),'v',          &
+    !                                prs(0:im,0:jm,0:km)  ,'p',          &
+    !                                tmp(0:im,0:jm,0:km)  ,'t' )
+    !
+    if(lio)  write(*,'(A,I1,A)')'  ** ',ndims,'-D TGV initialised.'
+    !
+  end subroutine tgvini
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine tgvini.                                 |
+  !+-------------------------------------------------------------------+
+#ifdef ASTR_AIR5_CHEMISTRY
+  subroutine air5waveini
+    use iso_fortran_env, only: real64
+    use chemistry_air5_data, only: air5_num_species,air5_idx_n2,air5_idx_o2, &
+      air5_molar_mass,air5_ru
+    use commvar, only: ref_len
+    use commarray, only: x,vel,rho,prs,spc,tmp,tve
+    integer :: i,j,k
+    real(real64), parameter :: target_pressure=1.0e5_real64
+    real(real64), parameter :: target_temperature=1.0e3_real64
+    real(real64), parameter :: n2_mean=0.765_real64
+    real(real64), parameter :: wave_amplitude=0.1_real64
+    real(real64) :: phase_sum,mixture_gas_constant
+
+    if(num_species/=air5_num_species) &
+      error stop 'air5wave requires the fixed five-species state'
+    if(ref_len<=0.0_real64) error stop 'air5wave requires positive ref_len'
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          phase_sum=(sin(x(i,j,k,1)/ref_len)+sin(x(i,j,k,2)/ref_len)+ &
+            sin(x(i,j,k,3)/ref_len))/3.0_real64
+          spc(i,j,k,:)=0.0_real64
+          spc(i,j,k,air5_idx_n2)=n2_mean+wave_amplitude*phase_sum
+          spc(i,j,k,air5_idx_o2)=1.0_real64-spc(i,j,k,air5_idx_n2)
+          mixture_gas_constant=sum(spc(i,j,k,:)*air5_ru/air5_molar_mass)
+          rho(i,j,k)=target_pressure/(mixture_gas_constant*target_temperature)
+          vel(i,j,k,:)=0.0_real64
+          prs(i,j,k)=target_pressure
+          tmp(i,j,k)=target_temperature
+          tve(i,j,k)=target_temperature
+        enddo
+      enddo
+    enddo
+    if(lio) write(*,'(A)') '  ** periodic air5 species wave initialised.'
+  end subroutine air5waveini
+
+  subroutine air5reactorini
+    use iso_fortran_env, only: real64
+    use chemistry_air5_data, only: air5_num_species,air5_molar_mass,air5_ru
+    use commarray, only: vel,rho,prs,spc,tmp,tve
+    integer :: i,j,k
+    real(real64), parameter :: target_density=5.0e-2_real64
+    real(real64), parameter :: target_temperature=6.0e3_real64
+    real(real64), parameter :: target_tv=1.0e3_real64
+    real(real64), parameter :: target_velocity(3)=[40.0_real64,-5.0_real64,2.0_real64]
+    real(real64), parameter :: target_mass_fraction(air5_num_species)= &
+      [0.55_real64,0.15_real64,0.10_real64,0.12_real64,0.08_real64]
+    real(real64) :: mixture_gas_constant
+
+    if(num_species/=air5_num_species) &
+      error stop 'air5reactor requires the fixed five-species state'
+    mixture_gas_constant=sum(target_mass_fraction*air5_ru/air5_molar_mass)
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          rho(i,j,k)=target_density
+          vel(i,j,k,:)=target_velocity
+          prs(i,j,k)=target_density*mixture_gas_constant*target_temperature
+          spc(i,j,k,:)=target_mass_fraction
+          tmp(i,j,k)=target_temperature
+          tve(i,j,k)=target_tv
+        enddo
+      enddo
+    enddo
+    if(lio) write(*,'(A)') '  ** periodic fixed air5 reactor initialised.'
+  end subroutine air5reactorini
+
+  subroutine air5tgvini
+    use iso_fortran_env, only: real64
+    use chemistry_air5_data, only: air5_num_species,air5_molar_mass,air5_ru
+    use commvar, only: ref_len
+    use commarray, only: x,vel,rho,prs,spc,tmp,tve
+    integer :: i,j,k
+    real(real64), parameter :: target_density=5.0e-2_real64
+    real(real64), parameter :: target_temperature=6.0e3_real64
+    real(real64), parameter :: target_tv=1.0e3_real64
+    real(real64), parameter :: velocity_amplitude=1.0e2_real64
+    real(real64), parameter :: target_mass_fraction(air5_num_species)= &
+      [0.55_real64,0.15_real64,0.10_real64,0.12_real64,0.08_real64]
+    real(real64) :: mixture_gas_constant,base_pressure
+    real(real64) :: phase_x,phase_y,phase_z,pressure_perturbation
+
+    if(num_species/=air5_num_species) &
+      error stop 'air5tgv requires the fixed five-species state'
+    if(ref_len<=0.0_real64) error stop 'air5tgv requires positive ref_len'
+    mixture_gas_constant=sum(target_mass_fraction*air5_ru/air5_molar_mass)
+    base_pressure=target_density*mixture_gas_constant*target_temperature
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          phase_x=x(i,j,k,1)/ref_len
+          phase_y=x(i,j,k,2)/ref_len
+          phase_z=x(i,j,k,3)/ref_len
+          rho(i,j,k)=target_density
+          vel(i,j,k,1)=velocity_amplitude*sin(phase_x)*cos(phase_y)*cos(phase_z)
+          vel(i,j,k,2)=-velocity_amplitude*cos(phase_x)*sin(phase_y)*cos(phase_z)
+          vel(i,j,k,3)=0.0_real64
+          pressure_perturbation=target_density*velocity_amplitude**2/16.0_real64* &
+            (cos(2.0_real64*phase_x)+cos(2.0_real64*phase_y))* &
+            (cos(2.0_real64*phase_z)+2.0_real64)
+          prs(i,j,k)=base_pressure+pressure_perturbation
+          spc(i,j,k,:)=target_mass_fraction
+          tmp(i,j,k)=prs(i,j,k)/(rho(i,j,k)*mixture_gas_constant)
+          tve(i,j,k)=target_tv
+        enddo
+      enddo
+    enddo
+    if(lio) write(*,'(A)') '  ** periodic high-temperature fixed air5 TGV initialised.'
+  end subroutine air5tgvini
+
+  subroutine air5shocktubeini
+    use iso_fortran_env, only: real64
+    use chemistry_air5_data, only: air5_num_species,air5_molar_mass,air5_ru
+    use commvar, only: ref_len
+    use commarray, only: x,vel,rho,prs,spc,tmp,tve
+    integer :: i,j,k
+    real(real64), parameter :: left_density=1.0_real64
+    real(real64), parameter :: right_density=1.25e-1_real64
+    real(real64), parameter :: target_temperature=1.0e3_real64
+    real(real64), parameter :: target_mass_fraction(air5_num_species)= &
+      [0.765_real64,0.225_real64,0.003_real64,0.003_real64,0.004_real64]
+    real(real64) :: phase,mixture_gas_constant
+
+    if(num_species/=air5_num_species) &
+      error stop 'air5shocktube requires the fixed five-species state'
+    if(ref_len<=0.0_real64) error stop 'air5shocktube requires positive ref_len'
+    mixture_gas_constant=sum(target_mass_fraction*air5_ru/air5_molar_mass)
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          phase=modulo(x(i,j,k,1)/(2.0_real64*pi*ref_len),1.0_real64)
+          if(phase>=0.25_real64 .and. phase<0.75_real64) then
+            rho(i,j,k)=left_density
+          else
+            rho(i,j,k)=right_density
+          endif
+          vel(i,j,k,:)=0.0_real64
+          spc(i,j,k,:)=target_mass_fraction
+          prs(i,j,k)=rho(i,j,k)*mixture_gas_constant*target_temperature
+          tmp(i,j,k)=target_temperature
+          tve(i,j,k)=target_temperature
+        enddo
+      enddo
+    enddo
+    if(lio) write(*,'(A)') '  ** periodic frozen-air5 shock tube initialised.'
+  end subroutine air5shocktubeini
+
+  subroutine air5postshockini
+    use iso_fortran_env, only: real64
+    use chemistry_air5_data, only: air5_num_species
+    use chemistry_model, only: chemistry_status_ok
+    use chemistry_state_layout, only: air5_num_conservative
+    use chemistry_flow_state, only: air5_primitive_to_conservative, &
+      air5_conservative_to_primitive
+    use chemistry_postshock_boundary, only: configure_air5_postshock_boundary
+    use commvar, only: ia
+    use commarray, only: x,vel,rho,prs,spc,tmp,tve
+    use parallel, only: ig0
+    character(len=1024) :: line
+    real(real64), allocatable :: profile(:,:),profile_q(:,:)
+    real(real64) :: row(13),local_q(air5_num_conservative)
+    real(real64) :: velocity(3),mass_fraction(air5_num_species)
+    real(real64) :: density,temperature,tv,pressure,scale,tolerance
+    integer :: unit,ios,profile_index,row_count,i,j,k,status
+
+    if(num_species/=air5_num_species) &
+      error stop 'air5postshock requires the fixed five-species state'
+    allocate(profile(13,0:ia),profile_q(air5_num_conservative,0:ia))
+    open(newunit=unit,file='datin/air5_postshock_profile.dat',status='old', &
+      action='read',iostat=ios)
+    if(ios/=0) error stop 'cannot open datin/air5_postshock_profile.dat'
+    row_count=0
+    do
+      read(unit,'(A)',iostat=ios) line
+      if(ios<0) exit
+      if(ios>0) error stop 'failed reading air5 post-shock profile'
+      line=adjustl(line)
+      if(len_trim(line)==0 .or. line(1:1)=='#') cycle
+      if(row_count>ia) error stop 'air5 post-shock profile has too many rows'
+      read(line,*,iostat=ios) row
+      if(ios/=0) error stop 'invalid air5 post-shock profile row'
+      profile(:,row_count)=row
+      row_count=row_count+1
+    enddo
+    close(unit)
+    if(row_count/=ia+1) error stop 'air5 post-shock profile point count mismatch'
+
+    tolerance=2.0e-11_real64
+    do profile_index=0,ia
+      velocity=[profile(3,profile_index),0.0_real64,0.0_real64]
+      mass_fraction=profile(7:11,profile_index)
+      call air5_primitive_to_conservative(profile(2,profile_index),velocity, &
+        profile(5,profile_index),mass_fraction,profile(6,profile_index), &
+        local_q,status)
+      if(status/=chemistry_status_ok) &
+        error stop 'air5 post-shock profile contains an invalid state'
+      profile_q(:,profile_index)=local_q
+      scale=max(abs(profile(12,profile_index)),1.0_real64)
+      if(abs(local_q(11)-profile(12,profile_index))>tolerance*scale) &
+        error stop 'air5 post-shock profile Ev is inconsistent'
+      scale=max(abs(profile(13,profile_index)),1.0_real64)
+      if(abs(local_q(5)-profile(13,profile_index))>tolerance*scale) &
+        error stop 'air5 post-shock profile q5 is inconsistent'
+      call air5_conservative_to_primitive(local_q,density,velocity,temperature, &
+        mass_fraction,tv,pressure,status)
+      if(status/=chemistry_status_ok) &
+        error stop 'air5 post-shock profile reconstruction failed'
+      scale=max(abs(profile(4,profile_index)),1.0_real64)
+      if(abs(pressure-profile(4,profile_index))>tolerance*scale) &
+        error stop 'air5 post-shock profile pressure is inconsistent'
+    enddo
+    call configure_air5_postshock_boundary(profile_q(:,0),profile_q(:,ia))
+
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          profile_index=ig0+i
+          scale=max(abs(profile(1,profile_index)),1.0_real64)
+          if(abs(x(i,j,k,1)-profile(1,profile_index))>tolerance*scale) &
+            error stop 'air5 post-shock profile does not match the x grid'
+          rho(i,j,k)=profile(2,profile_index)
+          vel(i,j,k,:)=[profile(3,profile_index),0.0_real64,0.0_real64]
+          prs(i,j,k)=profile(4,profile_index)
+          tmp(i,j,k)=profile(5,profile_index)
+          tve(i,j,k)=profile(6,profile_index)
+          spc(i,j,k,:)=profile(7:11,profile_index)
+        enddo
+      enddo
+    enddo
+    deallocate(profile,profile_q)
+    if(lio) write(*,'(A)') '  ** fixed air5 post-shock profile initialised.'
+  end subroutine air5postshockini
+
+  subroutine air5normalshockini
+    use iso_fortran_env, only: real64
+    use chemistry_state_layout, only: air5_num_conservative
+    use chemistry_postshock_boundary, only: configure_air5_postshock_boundary
+    use commvar, only: ref_len
+    use commarray, only: x,vel,rho,prs,spc,tmp,tve
+    real(real64) :: state(12,2),state_q(air5_num_conservative,2)
+    real(real64) :: outlet_pressure
+    integer :: state_index,i,j,k
+
+    if(ref_len<=0.0_real64) &
+      error stop 'air5normalshock requires positive ref_len'
+    call read_air5normalshock_states(state,state_q,outlet_pressure)
+    call configure_air5_postshock_boundary(state_q(:,1),state_q(:,2),outlet_pressure)
+
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          state_index=merge(1,2,x(i,j,k,1)<=0.5_real64*ref_len)
+          rho(i,j,k)=state(1,state_index)
+          vel(i,j,k,:)=[state(2,state_index),0.0_real64,0.0_real64]
+          prs(i,j,k)=state(3,state_index)
+          tmp(i,j,k)=state(4,state_index)
+          tve(i,j,k)=state(5,state_index)
+          spc(i,j,k,:)=state(6:10,state_index)
+        enddo
+      enddo
+    enddo
+    if(lio) write(*,'(A)') &
+      '  ** finite-rate air5 normal-shock initial state initialised.'
+  end subroutine air5normalshockini
+
+  subroutine air5normalshockboundaryini
+    use iso_fortran_env, only: real64
+    use chemistry_state_layout, only: air5_num_conservative
+    use chemistry_postshock_boundary, only: configure_air5_postshock_boundary
+    real(real64) :: state(12,2),state_q(air5_num_conservative,2)
+    real(real64) :: outlet_pressure
+
+    call read_air5normalshock_states(state,state_q,outlet_pressure)
+    call configure_air5_postshock_boundary(state_q(:,1),state_q(:,2),outlet_pressure)
+  end subroutine air5normalshockboundaryini
+
+  subroutine read_air5normalshock_states(state,state_q,outlet_pressure)
+    use iso_fortran_env, only: real64
+    use chemistry_air5_data, only: air5_num_species
+    use chemistry_model, only: chemistry_status_ok,air5_pressure_is_in_domain
+    use chemistry_state_layout, only: air5_num_conservative
+    use chemistry_flow_state, only: air5_primitive_to_conservative, &
+      air5_conservative_to_primitive
+    real(real64), intent(out) :: state(12,2)
+    real(real64), intent(out) :: state_q(air5_num_conservative,2)
+    real(real64), intent(out) :: outlet_pressure
+    logical :: pressure_seen
+    character(len=*), parameter :: pressure_marker='# outlet_pressure_pa='
+    character(len=1024) :: line
+    real(real64) :: row(12),local_q(air5_num_conservative),velocity(3)
+    real(real64) :: mass_fraction(air5_num_species)
+    real(real64) :: density,temperature,tv,pressure,scale,tolerance
+    integer :: unit,ios,row_count,state_index,status
+
+    if(num_species/=air5_num_species) &
+      error stop 'air5normalshock requires the fixed five-species state'
+    open(newunit=unit,file='datin/air5_normal_shock_states.dat',status='old', &
+      action='read',iostat=ios)
+    if(ios/=0) error stop 'cannot open datin/air5_normal_shock_states.dat'
+    row_count=0
+    outlet_pressure=0.0_real64
+    pressure_seen=.false.
+    do
+      read(unit,'(A)',iostat=ios) line
+      if(ios<0) exit
+      if(ios>0) error stop 'failed reading air5 normal-shock states'
+      line=adjustl(line)
+      if(index(line,pressure_marker)==1) then
+        if(pressure_seen) error stop 'duplicate air5 outlet pressure'
+        read(line(len(pressure_marker)+1:),*,iostat=ios) outlet_pressure
+        if(ios/=0) error stop 'invalid air5 outlet pressure metadata'
+        if(.not.air5_pressure_is_in_domain(outlet_pressure)) &
+          error stop 'air5 outlet pressure is outside the model domain'
+        pressure_seen=.true.
+      endif
+      if(len_trim(line)==0 .or. line(1:1)=='#') cycle
+      if(row_count>=2) error stop 'air5 normal-shock state file has too many rows'
+      read(line,*,iostat=ios) row
+      if(ios/=0) error stop 'invalid air5 normal-shock state row'
+      row_count=row_count+1
+      state(:,row_count)=row
+    enddo
+    close(unit)
+    if(row_count/=2) error stop 'air5 normal-shock state file requires two rows'
+    if(lio .and. pressure_seen) &
+      write(*,'(A,ES24.16)') 'AIR5_PRESSURE_OUTLET target_pa=',outlet_pressure
+
+    tolerance=2.0e-11_real64
+    do state_index=1,2
+      velocity=[state(2,state_index),0.0_real64,0.0_real64]
+      mass_fraction=state(6:10,state_index)
+      call air5_primitive_to_conservative(state(1,state_index),velocity, &
+        state(4,state_index),mass_fraction,state(5,state_index),local_q,status)
+      if(status/=chemistry_status_ok) &
+        error stop 'air5 normal-shock file contains an invalid state'
+      state_q(:,state_index)=local_q
+      scale=max(abs(state(11,state_index)),1.0_real64)
+      if(abs(local_q(11)-state(11,state_index))>tolerance*scale) &
+        error stop 'air5 normal-shock Ev is inconsistent'
+      scale=max(abs(state(12,state_index)),1.0_real64)
+      if(abs(local_q(5)-state(12,state_index))>tolerance*scale) &
+        error stop 'air5 normal-shock q5 is inconsistent'
+      call air5_conservative_to_primitive(local_q,density,velocity,temperature, &
+        mass_fraction,tv,pressure,status)
+      if(status/=chemistry_status_ok) &
+        error stop 'air5 normal-shock state reconstruction failed'
+      scale=max(abs(state(3,state_index)),1.0_real64)
+      if(abs(pressure-state(3,state_index))>tolerance*scale) &
+        error stop 'air5 normal-shock pressure is inconsistent'
+    enddo
+  end subroutine read_air5normalshock_states
+
+  subroutine air5hblboundaryini
+    use chemistry_hbl_profile, only: air5_hbl_profile_type, &
+      air5_hbl_profile_status_ok,read_air5_hbl_profile
+    use chemistry_hbl_boundary, only: configure_air5_hbl_boundary
+    type(air5_hbl_profile_type) :: profile
+    integer :: status
+
+    call read_air5_hbl_profile('datin/air5_hbl_profile.dat',profile,status)
+    if(status/=air5_hbl_profile_status_ok) &
+      error stop 'cannot read datin/air5_hbl_profile.dat'
+    call configure_air5_hbl_boundary(profile)
+  end subroutine air5hblboundaryini
+
+  subroutine air5hblini
+    use iso_fortran_env, only: real64
+    use chemistry_air5_data, only: air5_num_species
+    use chemistry_model, only: chemistry_status_ok
+    use chemistry_state_layout, only: air5_num_conservative
+    use chemistry_flow_state, only: air5_conservative_to_primitive
+    use chemistry_hbl_profile, only: air5_hbl_profile_type, &
+      air5_hbl_profile_status_ok,read_air5_hbl_profile,sample_air5_hbl_profile
+    use chemistry_hbl_initial_field, only: air5_hbl_initial_field_type, &
+      air5_hbl_initial_status_ok,read_air5_hbl_initial_field, &
+      sample_air5_hbl_initial_field
+    use chemistry_hbl_boundary, only: configure_air5_hbl_boundary
+    use commarray, only: x,vel,rho,prs,spc,tmp,tve
+    type(air5_hbl_profile_type) :: profile
+    type(air5_hbl_initial_field_type) :: initial_field
+    real(real64) :: local_q(air5_num_conservative),velocity(3)
+    real(real64) :: mass_fraction(air5_num_species),density,temperature,tv,pressure
+    integer :: i,j,k,status,state_status
+    logical :: has_initial_field
+
+    if(num_species/=air5_num_species) &
+      error stop 'air5hbl requires the fixed five-species state'
+    call read_air5_hbl_profile('datin/air5_hbl_profile.dat',profile,status)
+    if(status/=air5_hbl_profile_status_ok) &
+      error stop 'cannot read datin/air5_hbl_profile.dat'
+    call configure_air5_hbl_boundary(profile)
+    inquire(file='datin/air5_hbl_initial_field.dat',exist=has_initial_field)
+    if(has_initial_field) then
+      call read_air5_hbl_initial_field('datin/air5_hbl_initial_field.dat', &
+        initial_field,status)
+      if(status/=air5_hbl_initial_status_ok) &
+        error stop 'cannot read datin/air5_hbl_initial_field.dat'
+      do k=0,km
+        do j=0,jm
+          do i=0,im
+            call sample_air5_hbl_initial_field(initial_field,x(i,j,k,1),x(i,j,k,2), &
+              local_q,status)
+            if(status/=air5_hbl_initial_status_ok) &
+              error stop 'failed sampling fixed air5 HBL matched initial field'
+            call air5_conservative_to_primitive(local_q,density,velocity, &
+              temperature,mass_fraction,tv,pressure,state_status)
+            if(state_status/=chemistry_status_ok) &
+              error stop 'fixed air5 HBL matched initial field is invalid'
+            rho(i,j,k)=density
+            vel(i,j,k,:)=velocity
+            prs(i,j,k)=pressure
+            tmp(i,j,k)=temperature
+            tve(i,j,k)=tv
+            spc(i,j,k,:)=mass_fraction
+          enddo
+        enddo
+      enddo
+      if(lio) write(*,'(A)') &
+        '  ** fixed air5 matched x-y boundary-layer field initialised.'
+    else
+      do j=0,jm
+        call sample_air5_hbl_profile(profile,x(0,j,0,2),local_q,status)
+        if(status/=air5_hbl_profile_status_ok) &
+          error stop 'failed sampling fixed air5 HBL initial profile'
+        call air5_conservative_to_primitive(local_q,density,velocity,temperature, &
+          mass_fraction,tv,pressure,state_status)
+        if(state_status/=chemistry_status_ok) &
+          error stop 'fixed air5 HBL initial profile contains an invalid state'
+        do k=0,km
+          do i=0,im
+            rho(i,j,k)=density
+            vel(i,j,k,:)=velocity
+            prs(i,j,k)=pressure
+            tmp(i,j,k)=temperature
+            tve(i,j,k)=tv
+            spc(i,j,k,:)=mass_fraction
+          enddo
+        enddo
+      enddo
+      if(lio) write(*,'(A)') &
+        '  ** fixed air5 high-enthalpy boundary-layer profile initialised.'
+    endif
+  end subroutine air5hblini
+
+  subroutine air5advectionini
+    use iso_fortran_env, only: real64
+    use chemistry_air5_data, only: air5_num_species,air5_idx_n2,air5_idx_o2, &
+      air5_molar_mass,air5_ru
+    use commvar, only: ref_len
+    use commarray, only: x,vel,rho,prs,spc,tmp,tve
+    integer :: i,j,k
+    real(real64), parameter :: target_density=1.0e-1_real64
+    real(real64), parameter :: target_pressure=1.0e5_real64
+    real(real64), parameter :: target_tv=2.0e3_real64
+    real(real64), parameter :: target_velocity=1.0e2_real64
+    real(real64), parameter :: wave_amplitude=5.0e-2_real64
+    real(real64) :: phase,mixture_gas_constant
+
+    if(num_species/=air5_num_species) &
+      error stop 'air5advection requires the fixed five-species state'
+    if(ref_len<=0.0_real64) error stop 'air5advection requires positive ref_len'
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          phase=x(i,j,k,1)/ref_len
+          spc(i,j,k,:)=0.0_real64
+          spc(i,j,k,air5_idx_n2)=0.7_real64+wave_amplitude*sin(phase)
+          spc(i,j,k,air5_idx_o2)=0.3_real64-wave_amplitude*sin(phase)
+          mixture_gas_constant=sum(spc(i,j,k,:)*air5_ru/air5_molar_mass)
+          rho(i,j,k)=target_density
+          vel(i,j,k,:)=[target_velocity,0.0_real64,0.0_real64]
+          prs(i,j,k)=target_pressure
+          tmp(i,j,k)=target_pressure/(target_density*mixture_gas_constant)
+          tve(i,j,k)=target_tv
+        enddo
+      enddo
+    enddo
+    if(lio) write(*,'(A)') '  ** periodic frozen-air5 advection wave initialised.'
+  end subroutine air5advectionini
+
+  subroutine air5difflayerini
+    use iso_fortran_env, only: real64
+    use chemistry_air5_data, only: air5_num_species,air5_idx_n2,air5_idx_o2, &
+      air5_idx_n,air5_idx_o,air5_idx_no,air5_molar_mass,air5_ru
+    use commvar, only: ref_len
+    use commarray, only: x,vel,rho,prs,spc,tmp,tve
+    integer :: i,j,k
+    real(real64), parameter :: target_pressure=1.0e5_real64
+    real(real64), parameter :: target_temperature=4.0e3_real64
+    real(real64), parameter :: target_tv=2.0e3_real64
+    real(real64), parameter :: layer_amplitude=3.5e-1_real64
+    real(real64), parameter :: layer_width=6.0e-1_real64
+    real(real64) :: phase,mixture_gas_constant
+
+    if(num_species/=air5_num_species) &
+      error stop 'air5difflayer requires the fixed five-species state'
+    if(ref_len<=0.0_real64) error stop 'air5difflayer requires positive ref_len'
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          phase=x(i,j,k,1)/ref_len
+          spc(i,j,k,:)=0.0_real64
+          spc(i,j,k,air5_idx_n2)=0.475_real64+ &
+            layer_amplitude*tanh(sin(phase)/layer_width)
+          spc(i,j,k,air5_idx_o2)=0.95_real64-spc(i,j,k,air5_idx_n2)
+          spc(i,j,k,air5_idx_n)=0.02_real64
+          spc(i,j,k,air5_idx_o)=0.02_real64
+          spc(i,j,k,air5_idx_no)=0.01_real64
+          mixture_gas_constant=sum(spc(i,j,k,:)*air5_ru/air5_molar_mass)
+          rho(i,j,k)=target_pressure/(mixture_gas_constant*target_temperature)
+          vel(i,j,k,:)=0.0_real64
+          prs(i,j,k)=target_pressure
+          tmp(i,j,k)=target_temperature
+          tve(i,j,k)=target_tv
+        enddo
+      enddo
+    enddo
+    if(lio) write(*,'(A)') '  ** periodic frozen-air5 diffusion layer initialised.'
+  end subroutine air5difflayerini
+
+  subroutine air5evpulseini
+    use iso_fortran_env, only: real64
+    use chemistry_air5_data, only: air5_num_species,air5_molar_mass,air5_ru
+    use commvar, only: ref_len
+    use commarray, only: x,vel,rho,prs,spc,tmp,tve
+    integer :: i,j,k
+    real(real64), parameter :: target_density=1.0e-1_real64
+    real(real64), parameter :: target_temperature=4.0e3_real64
+    real(real64), parameter :: base_tv=1.2e3_real64
+    real(real64), parameter :: pulse_amplitude=1.8e3_real64
+    real(real64), parameter :: target_mass_fraction(air5_num_species)= &
+      [0.70_real64,0.20_real64,0.03_real64,0.02_real64,0.05_real64]
+    real(real64) :: phase,mixture_gas_constant
+
+    if(num_species/=air5_num_species) &
+      error stop 'air5evpulse requires the fixed five-species state'
+    if(ref_len<=0.0_real64) error stop 'air5evpulse requires positive ref_len'
+    mixture_gas_constant=sum(target_mass_fraction*air5_ru/air5_molar_mass)
+    do k=0,km
+      do j=0,jm
+        do i=0,im
+          phase=x(i,j,k,1)/ref_len
+          rho(i,j,k)=target_density
+          vel(i,j,k,:)=0.0_real64
+          prs(i,j,k)=target_density*mixture_gas_constant*target_temperature
+          spc(i,j,k,:)=target_mass_fraction
+          tmp(i,j,k)=target_temperature
+          tve(i,j,k)=base_tv+pulse_amplitude*exp(4.0_real64*(cos(phase)-1.0_real64))
+        enddo
+      enddo
+    enddo
+    if(lio) write(*,'(A)') '  ** periodic frozen-air5 vibrational pulse initialised.'
+  end subroutine air5evpulseini
+#endif
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine is used to generate an initial field for the      |
+  !| simulation of Rayleigh–Taylor instability.                        |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 27-May-2020: Created by J. Fang @ STFC Daresbury Laboratory       |
+  !+-------------------------------------------------------------------+
+  subroutine rtini
+    !
+    use commarray,only: x,vel,rho,prs,tmp
+    use fludyna,  only: thermal,sos
+    !
+    ! local data
+    integer :: i,j,k
+    !
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      !
+      if(x(i,j,k,2)<0.5d0) then
+        rho(i,j,k)=2.d0
+        prs(i,j,k)=2.d0*x(i,j,k,2)+1.d0
+      else
+        rho(i,j,k)=1.d0
+        prs(i,j,k)=x(i,j,k,2)+1.5d0
+      endif
+      !
+      tmp(i,j,k)=thermal(density=rho(i,j,k),pressure=prs(i,j,k))
+      !
+      vel(i,j,k,1)=  0.d0
+      vel(i,j,k,2)= -0.025*sos(tmp(i,j,k))*cos(8.d0*pi*x(i,j,k,1))
+      vel(i,j,k,3)=  0.d0
+      !
+    enddo
+    enddo
+    enddo
+    !
+    if(lio)  write(*,'(A,I1,A)')'  ** ',ndims,'-D R–T instability initialised.'
+    !
+  end subroutine rtini
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine rtini.                                  |
+  !+-------------------------------------------------------------------+
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine is used to generate an initial field for the      |
+  !| simulation of channel flow.                                       |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 27-May-2020: Created by J. Fang @ STFC Daresbury Laboratory       |
+  !+-------------------------------------------------------------------+
+  subroutine chanini
+    !
+    use commvar,  only: prandtl,mach,gamma,turbmode,lihomo,             &
+                        xmin,xmax,ymin,ymax,zmin,zmax,Reynolds,ref_len,ref_vel
+    use commarray,only: x,vel,rho,prs,spc,tmp,q,dgrid,tke,omg,miut,res12
+    use fludyna,  only: thermal,miucal
+    use commfunc, only: dis2point2
+    use parallel, only: preadprofile
+    use bc,       only: rho_prof,vel_prof,tmp_prof,prs_prof
+    !
+    ! local data
+    integer :: i,j,k,l,ii,jj,nseed,iseed
+    integer,allocatable :: seed(:)
+    real(8) :: theta,theter,fx,gz,zl,randomv(15),ran
+    real(8) :: delta,beta1,miu
+    real(8) :: yh(0:jm),nth(0:jm),r12(0:jm)
+    integer :: seed1,seed2,seed3,seed11,seed22,seed33
+    integer, parameter :: nsemini = 1000
+    real(8), dimension(3,nsemini) :: eddy, posvor
+    real(8), dimension(3) :: dim_min, dim_max
+    real(8) :: volsemini,rrand,ddx,ddy,ddz,lsem,upr,vpr,wpr,rrand1,   &
+               init_noise,um,ftent
+    !
+    theta=0.1d0
+    !
+    beta1=0.075d0
+    call random_seed(size=nseed)
+    allocate(seed(nseed))
+    do iseed=1,nseed
+      seed(iseed)=104729+37*iseed+1009*mpirank
+    enddo
+    call random_seed(put=seed)
+    deallocate(seed)
+    !
+    if(trim(turbmode)=='udf1') then
+      !
+      call preadprofile('Results/miut.dat',dir='j',                    &
+                                              var1=yh,var2=nth,var3=r12)
+      ! do j=0,jm
+      !   print*,mpirank,'|',yh(j),nth(j),r12(j)
+      ! enddo
+      !
+      allocate(miut(0:im,0:jm,0:km),res12(0:im,0:jm,0:km))
+      !
+    endif
+    !
+    if(ndims==2) then
+      !
+      if(lihomo) then
+        !
+        do k=0,km
+        do j=0,jm
+        do i=0,im
+          rho(i,j,k)  =roinf
+          vel(i,j,k,1)=1.5d0*(1.d0-(x(i,j,k,2)/ref_len-1.d0)**2)*uinf
+          vel(i,j,k,2)=0.d0
+          vel(i,j,k,3)=0.d0
+          tmp(i,j,k)=tinf+tinf*(gamma-1.d0)*prandtl*mach**2/3.d0*             &
+                                       1.5d0*(1.d0-((x(i,j,k,2)/ref_len-1.d0)**4))
+          !
+          prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
+          !
+          if(num_species>0) then
+            spc(i,j,k,1)=(tanh((x(i,j,k,2)/ref_len-1.d0)/theta)+1.d0)*0.5d0
+          endif
+          !
+          if(trim(turbmode)=='k-omega') then
+            tke(i,j,k)=1.5d0*0.0001d0*10.d0
+            !
+            ! omg(i,j,k)=sqrt(tke(i,j,k))/(0.09d0)**0.25d0
+            delta=dis2point2(x(i,j,k,:),x(i,j+1,k,:))
+            miu=miucal(tmp(i,j,k))/Reynolds
+            omg(i,j,k)=60.d0*miu/rho(i,j,k)/beta1/delta
+            !
+          elseif(trim(turbmode)=='udf1') then
+            miut(i,j,k)=nth(j)
+            res12(i,j,k)=r12(j)
+          endif
+          !
+        enddo
+        enddo
+        enddo
+        !
+      else
+        !
+        do k=0,km
+        do j=0,jm
+        do i=0,im
+          rho(i,j,k)  =roinf
+          vel(i,j,k,1)=vel_prof(j,1)
+          vel(i,j,k,2)=0.d0
+          vel(i,j,k,3)=0.d0
+          tmp(i,j,k)  =tinf
+          !
+          prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
+          !
+        enddo
+        enddo
+        enddo
+        !
+      endif
+      !
+    elseif(ndims==3) then
+      !
+      if(mpirank==0) then
+        do l=1,15
+          call random_number(randomv(l))
+        end do
+      endif
+      !
+      call bcast(randomv)
+      !
+      do k=0,km
+      do j=0,jm
+      do i=0,im
+        !
+        call random_number(ran)
+        ran=ran*2.d0-1.d0
+        !
+        theter=x(i,0,k,1)/(xmax-xmin)*2.d0*pi
+        fx=4.d0*dsin(theter)*(1.d0-dcos(theter))*0.192450089729875d0
+        !
+        gz=0.d0
+        do l=1,10
+          !
+          if(l==1) then
+            zl=0.2d0/(1.d0-0.8d0**10)
+          else
+            zl=zl*0.8d0
+          end if
+          !
+          gz=gz+zl*dsin(2.d0*pi*l*(x(i,0,k,3)/(zmax-zmin)+randomv(l)))
+          !
+        end do
+        !
+        rho(i,j,k)  =roinf
+        vel(i,j,k,1)=1.5d0*uinf*(1.d0-(x(i,j,k,2)/ref_len-1.d0)**2)*(1.d0+0.3d0*fx*gz+0.1d0*ran)
+        vel(i,j,k,2)=0.d0
+        vel(i,j,k,3)=0.d0
+        tmp(i,j,k)  =tinf+tinf*(gamma-1.d0)*prandtl*mach**2/3.d0*             &
+                                     1.5d0*(1.d0-((x(i,j,k,2)/ref_len-1.d0)**4))
+        !
+        prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
+        !
+        if(num_species>0) then
+          spc(i,j,k,1)=(tanh((x(i,j,k,2)-1.d0)/theta)+1.d0)*0.5d0
+        endif
+        !
+      enddo
+      enddo
+      enddo
+      !
+      ! copied from xcompact 
+      !! Simplified version of SEM 
+      ! init_noise=0.03d0
+      ! !
+      ! dim_min(1) = 0.d0
+      ! dim_min(2) = 0.d0
+      ! dim_min(3) = 0.d0
+      ! dim_max(1) = xmax
+      ! dim_max(2) = ymax
+      ! dim_max(3) = zmax
+      ! volsemini = xmax * ymax * zmax
+      ! !
+      ! ! 3 int to get different random numbers
+      ! seed1 =  2345
+      ! seed2 = 13456
+      ! seed3 = 24567
+      ! do jj=1,nsemini
+      !   !
+      !   ! Vortex Position
+      !   do ii=1,3
+      !     seed11 = return_30k(seed1+jj*2+ii*379)
+      !     seed22 = return_30k(seed2+jj*5+ii*5250)
+      !     seed33 = return_30k(seed3+jj*3+ii*8170)
+      !     rrand1  = real(r8_random(seed11, seed22, seed33),8)
+      !     call random_number(rrand)
+      !     !write(*,*) ' rr r1 ', rrand, rrand1
+      !     posvor(ii,jj) = dim_min(ii)+(dim_max(ii)-dim_min(ii))*rrand
+      !   enddo
+      !   !
+      !   ! Eddy intensity
+      !   do ii=1,3
+      !      seed11 = return_30k(seed1+jj*7+ii*7924)
+      !      seed22 = return_30k(seed2+jj*11+ii*999)
+      !      seed33 = return_30k(seed3+jj*5+ii*5054)
+      !      rrand1  = real(r8_random(seed11, seed22, seed33),8)
+      !      call random_number(rrand)
+      !      !write(*,*) ' rr r1 ', rrand, rrand1
+      !      if (rrand <= 0.5d0) then
+      !         eddy(ii,jj) = -1.d0
+      !      else
+      !         eddy(ii,jj) =  1.d0
+      !      endif 
+      !   enddo
+      !   !
+      ! enddo
+      ! !
+      ! ! Loops to apply the fluctuations 
+      ! do k=0,km
+      ! do j=0,jm
+      ! do i=0,im
+      !   !
+      !   rho(i,j,k)  =roinf
+      !   vel(i,j,k,1)=1.5d0*(1.d0-(x(i,j,k,2)/ref_len-1.d0)**2)*uinf
+      !   vel(i,j,k,2)=0.d0
+      !   vel(i,j,k,3)=0.d0
+      !   tmp(i,j,k)  =tinf+tinf*(gamma-1.d0)*prandtl*mach**2/3.d0*             &
+      !                                1.5d0*(1.d0-((x(i,j,k,2)/ref_len-1.d0)**4))
+      !   !
+      !   lsem = 0.15d0 ! For the moment we keep it constant
+      !   upr = 0.d0
+      !   vpr = 0.d0
+      !   wpr = 0.d0
+      !   do jj=1,nsemini
+      !     !
+      !     ddx = abs(x(i,j,k,1)-posvor(1,jj))
+      !     ddy = abs(x(i,j,k,2)-posvor(2,jj))
+      !     ddz = abs(x(i,j,k,3)-posvor(3,jj))
+      !     if (ddx < lsem .and. ddy < lsem .and. ddz < lsem) then
+      !       ! coefficients for the intensity of the fluctuation
+      !       ftent = (1.d0-ddx/lsem)*(1.d0-ddy/lsem)*(1.d0-ddz/lsem)
+      !       ftent = ftent / (sqrt(num2d3*lsem))**3
+      !       upr = upr + eddy(1,jj) * ftent
+      !       vpr = vpr + eddy(2,jj) * ftent
+      !       wpr = wpr + eddy(3,jj) * ftent
+      !     endif
+      !     !
+      !   enddo
+      !   !
+      !   upr = upr * sqrt(volsemini/nsemini)
+      !   vpr = vpr * sqrt(volsemini/nsemini)
+      !   wpr = wpr * sqrt(volsemini/nsemini)
+      !   ! 
+      !   um=vel(i,j,k,1)
+      !   !
+      !   vel(i,j,k,1)=upr*ref_vel*sqrt(num2d3*init_noise*um) + um
+      !   vel(i,j,k,2)=vpr*ref_vel*sqrt(num2d3*init_noise*um)
+      !   vel(i,j,k,3)=wpr*ref_vel*sqrt(num2d3*init_noise*um)
+      !   !
+      !   prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
+      !   !
+      ! enddo
+      ! enddo
+      ! enddo
+      !
+    endif
+    !
+    !
+    ! call tecbin('testout/tecinit'//mpirankname//'.plt',                &
+    !                                   x(0:im,0:jm,0:km,1),'x',         &
+    !                                   x(0:im,0:jm,0:km,2),'y',         &
+    !                                   x(0:im,0:jm,0:km,3),'z',         &
+    !                                rho(0:im,0:jm,0:km)  ,'ro',         &
+    !                                vel(0:im,0:jm,0:km,1),'u',          &
+    !                                vel(0:im,0:jm,0:km,2),'v',          &
+    !                                prs(0:im,0:jm,0:km)  ,'p' )
+    
+    if(lio)  write(*,'(A,I1,A)')'  ** ',ndims,'-D channel flow initialised.'
+    !
+  end subroutine chanini
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine chanini.                                |
+  !+-------------------------------------------------------------------+
+  !!
+  !+-------------------------------------------------------------------+
+  !| This subroutine is used to generate a initial jet flow.           |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 24-02-2021: Created by J. Fang @ STFC Daresbury Laboratory        |
+  !+-------------------------------------------------------------------+
+  subroutine jetini
+    !
+    use commarray,only: x,vel,rho,prs,spc,tmp,q
+    use fludyna,  only: thermal,jetvel
+    !
+    ! local data
+    integer :: i,j,k
+    real(8) :: radi
+    !
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      rho(i,j,k)  = roinf
+      !
+      radi=sqrt(x(i,j,k,2)**2+x(i,j,k,3)**2)
+      ! radi=abs(x(i,j,k,2))
+      vel(i,j,k,:)= jetvel(radi)
+      ! vel(i,j,k,1)= 0.d0
+      vel(i,j,k,2)= 0.d0
+      vel(i,j,k,3)= 0.d0
+      !
+      tmp(i,j,k)  = tinf
+      !
+      prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
+      !
+      if(num_species>1) then
+        spc(i,j,k,1)=0.d0
+        !
+        spc(i,j,k,num_species)=1.d0-sum(spc(i,j,k,1:num_species-1))
+        !
+      endif
+      !
+    enddo
+    enddo
+    enddo
+    !
+    !
+    ! call tecbin('testout/tecinit'//mpirankname//'.plt',                &
+    !                                   x(0:im,0:jm,0:km,1),'x',         &
+    !                                   x(0:im,0:jm,0:km,2),'y',         &
+    !                                   x(0:im,0:jm,0:km,3),'z',         &
+    !                                rho(0:im,0:jm,0:km)  ,'ro',         &
+    !                                vel(0:im,0:jm,0:km,1),'u',          &
+    !                                vel(0:im,0:jm,0:km,2),'v',          &
+                                   ! prs(0:im,0:jm,0:km)  ,'p',          &
+    !                                tmp(0:im,0:jm,0:km)  ,'t' )
+    !
+    if(lio)  write(*,'(A,I1,A)')'  ** ',ndims,'-D jet flow initialised.'
+    !
+  end subroutine jetini
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine jetini.                                 |
+  !+-------------------------------------------------------------------+
+  !!
+  !+-------------------------------------------------------------------+
+  !| This subroutine is used to generate a initial mixing layer flow.  |
+  !+-------------------------------------------------------------------+
+  !| ref: Li, Z., Jaberi, F. 2010. Numerical Investigations of         |
+  !|      Shock-Turbulence Interaction in a Planar Mixing Layer.       | 
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 24-02-2021: Created by J. Fang @ STFC Daresbury Laboratory        |
+  !+-------------------------------------------------------------------+
+  subroutine mixlayerini
+    !
+    use commarray,only: x,vel,rho,prs,spc,tmp,q
+    use fludyna,  only: thermal,mixinglayervel
+    use bc,       only: rho_prof,vel_prof,tmp_prof,prs_prof,spc_prof
+    !
+    ! local data
+    integer :: i,j,k
+    real(8) :: radi
+    !
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      !
+      call mixinglayervel(x(i,j,k,2),vel(i,j,k,:),tmp(i,j,k),rho(i,j,k),lio)
+      ! rho(i,j,k)  = rho_prof(j)
+      !
+      ! vel(i,j,k,:)= mixinglayervel(x(i,j,k,2))
+      ! vel(i,j,k,:) = vel_prof(j,:)
+      !
+      ! tmp(i,j,k)  = tmp_prof(j)
+      !
+      prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
+      !
+      if(num_species>1) then
+        spc(i,j,k,1)=0.d0
+        !
+        spc(i,j,k,num_species)=1.d0-sum(spc(i,j,k,1:num_species-1))
+        !
+      endif
+      !
+    enddo
+    enddo
+    enddo
+    !
+    !
+    ! call tecbin('testout/tecinit'//mpirankname//'.plt',                &
+    !                                   x(0:im,0:jm,0:km,1),'x',         &
+    !                                   x(0:im,0:jm,0:km,2),'y',         &
+    !                                   x(0:im,0:jm,0:km,3),'z',         &
+    !                                rho(0:im,0:jm,0:km)  ,'ro',         &
+    !                                vel(0:im,0:jm,0:km,1),'u',          &
+    !                                vel(0:im,0:jm,0:km,2),'v',          &
+                                   ! prs(0:im,0:jm,0:km)  ,'p',          &
+    !                                tmp(0:im,0:jm,0:km)  ,'t' )
+    !
+    if(lio)  write(*,'(A,I1,A)')'  ** ',ndims,'-D jet flow initialised.'
+    !
+  end subroutine mixlayerini
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine mixlayerini.                            |
+  !+-------------------------------------------------------------------+
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine is to correct the boundary layer initial field.   |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 24-10-2021: Created by J. Fang @ STFC Daresbury Laboratory        |
+  !+-------------------------------------------------------------------+
+  subroutine blcorrect
+    !
+    use commarray,only: x,vel,rho,prs,spc,tmp,q
+    use fludyna,  only: thermal
+    use bc,       only: rho_prof,vel_prof,tmp_prof,prs_prof,spc_prof
+    !
+    ! local data
+    integer :: i,j,k
+    !
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      !
+      if(x(i,j,k,2)>=5.d0*nomi_thick) then
+        !
+        rho(i,j,k)  = rho_prof(j)
+        !
+        vel(i,j,k,1)= vel_prof(j,1)
+        vel(i,j,k,2)= vel_prof(j,2)
+        !
+        tmp(i,j,k)  = tmp_prof(j)
+        !
+        prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
+        ! 
+      endif
+      !
+    enddo
+    enddo
+    enddo
+    !
+  end subroutine blcorrect
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine blcorrect.                              |
+  !+-------------------------------------------------------------------+
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine is used initilise a boundary layer flow.          |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 27-09-2021: Created by J. Fang @ STFC Daresbury Laboratory        |
+  !+-------------------------------------------------------------------+
+  subroutine blini
+    !
+    use commvar,  only: turbmode,Reynolds,nondimen,spcinf
+    use commarray,only: x,vel,rho,prs,spc,tmp,q,tke,omg
+    use fludyna,  only: thermal,miucal
+    use bc,       only: rho_prof,vel_prof,tmp_prof,prs_prof,spc_prof
+    use commfunc, only: dis2point2
+#ifdef COMB
+    use thermchem, only: spcindex
+#endif
+    !
+    ! local data
+    integer :: i,j,k
+    real(8) :: radi,miu,delta,beta1
+    !
+    beta1=0.075d0
+    !
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      !
+      rho(i,j,k)  = rho_prof(j)
+      !
+      vel(i,j,k,1)= vel_prof(j,1)
+      vel(i,j,k,2)= vel_prof(j,2)
+      vel(i,j,k,3)= 0.d0
+      !
+      tmp(i,j,k)  = tmp_prof(j)
+      !
+      if(nondimen) then
+        !
+        prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
+        !
+        if(num_species>1) then
+          spc(i,j,k,1)=0.d0
+          !
+          spc(i,j,k,num_species)=1.d0-sum(spc(i,j,k,1:num_species-1))
+          !
+        endif
+      else
+        spc(i,j,k,:)=spcinf
+
+        prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k), &
+                           species=spc(i,j,k,:))
+        !
+      endif
+      
+    enddo
+    enddo
+    enddo
+
+    if(ndims==3) then
+    endif
+    ! 
+    ! call tecbin('testout/tecinit'//mpirankname//'.plt',                &
+    !                                   x(0:im,0:jm,0:km,1),'x',         &
+    !                                   x(0:im,0:jm,0:km,2),'y',         &
+    !                                   x(0:im,0:jm,0:km,3),'z',         &
+    !                                rho(0:im,0:jm,0:km)  ,'ro',         &
+    !                                vel(0:im,0:jm,0:km,1),'u',          &
+    !                                vel(0:im,0:jm,0:km,2),'v',          &
+    !                                prs(0:im,0:jm,0:km)  ,'p',          &
+    !                                tmp(0:im,0:jm,0:km)  ,'t' )
+    !
+    if(lio)  write(*,'(A,I1,A)')'  ** ',ndims,'-D BL flow initialised.'
+    !
+  end subroutine blini
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine blini.                                  |
+  !+-------------------------------------------------------------------+
+  !
+  subroutine tblini
+    !
+    use commvar,  only: prandtl,mach,gamma,turbmode,                   &
+                        xmin,xmax,ymin,ymax,zmin,zmax,Reynolds
+    use commarray,only: x,vel,rho,prs,spc,tmp,q,dgrid,tke,omg,miut,res12
+    use fludyna,  only: thermal,miucal
+    use commfunc, only: dis2point2
+    use parallel, only: preadprofile
+    use bc,       only: rho_prof,vel_prof,tmp_prof,prs_prof,spc_prof
+    !
+    ! local data
+    integer :: i,j,k,l,ii,jj
+    real(8) :: theta,theter,fx,gz,zl,randomv(15),ran,radi
+    real(8) :: delta,beta1,miu
+    real(8) :: yh(0:jm),nth(0:jm),r12(0:jm)
+    integer :: seed1,seed2,seed3,seed11,seed22,seed33
+    integer, parameter :: nsemini = 1000
+    real(8), dimension(3,nsemini) :: eddy, posvor
+    real(8), dimension(3) :: dim_min, dim_max
+    real(8) :: volsemini,rrand,ddx,ddy,ddz,lsem,upr,vpr,wpr,rrand1,   &
+               init_noise,um,ftent
+    !
+    theta=0.1d0
+    !
+    beta1=0.075d0
+    !
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      !
+      rho(i,j,k)  = rho_prof(j)
+      !
+      vel(i,j,k,1)= vel_prof(j,1)
+      vel(i,j,k,2)= vel_prof(j,2)
+      !
+      tmp(i,j,k)  = tmp_prof(j)
+      !
+      prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
+      !
+      if(num_species>1) then
+        spc(i,j,k,1)=0.d0
+        !
+        spc(i,j,k,num_species)=1.d0-sum(spc(i,j,k,1:num_species-1))
+        !
+      endif
+      !
+      if(trim(turbmode)=='k-omega') then
+        ! tke(i,j,k)=1.5d0*0.0001d0
+        !
+        tke(i,j,k)=1.5d0
+        !
+        ! omg(i,j,k)=sqrt(tke(i,j,k))/(0.09d0)**0.25d0
+        delta=dis2point2(x(i,j,k,:),x(i,j+1,k,:))
+        miu=miucal(tmp(i,j,k))/Reynolds
+        omg(i,j,k)=60.d0*miu/rho(i,j,k)/beta1/delta
+        !
+        if(x(i,j,k,2)>nomi_thick) then
+          ! add a damper for outer part of bl
+          radi=(x(i,j,k,2)-nomi_thick)**2
+          tke(i,j,k)=tke(i,j,k)*exp(-5.d0*radi)
+          omg(i,j,k)=omg(i,j,k)*exp(-5.d0*radi)
+        endif
+        !
+      endif
+    !
+    enddo
+    enddo
+    enddo
+    !
+    if(ndims==3) then
+      !
+      ! copied from xcompact 
+      !! Simplified version of SEM 
+      init_noise=0.03d0
+      !
+      dim_min(1) = 0.d0
+      dim_min(2) = 0.d0
+      dim_min(3) = 0.d0
+      dim_max(1) = xmax
+      dim_max(2) = 0.25d0
+      dim_max(3) = zmax
+      volsemini = xmax * ymax * zmax
+      !
+      ! 3 int to get different random numbers
+      seed1 =  2345
+      seed2 = 13456
+      seed3 = 24567
+      do jj=1,nsemini
+        !
+        ! Vortex Position
+        do ii=1,3
+          seed11 = return_30k(seed1+jj*2+ii*379)
+          seed22 = return_30k(seed2+jj*5+ii*5250)
+          seed33 = return_30k(seed3+jj*3+ii*8170)
+          rrand1  = real(r8_random(seed11, seed22, seed33),8)
+          call random_number(rrand)
+          !write(*,*) ' rr r1 ', rrand, rrand1
+          posvor(ii,jj) = dim_min(ii)+(dim_max(ii)-dim_min(ii))*rrand
+        enddo
+        !
+        ! Eddy intensity
+        do ii=1,3
+           seed11 = return_30k(seed1+jj*7+ii*7924)
+           seed22 = return_30k(seed2+jj*11+ii*999)
+           seed33 = return_30k(seed3+jj*5+ii*5054)
+           rrand1  = real(r8_random(seed11, seed22, seed33),8)
+           call random_number(rrand)
+           !write(*,*) ' rr r1 ', rrand, rrand1
+           if (rrand <= 0.5d0) then
+              eddy(ii,jj) = -1.d0
+           else
+              eddy(ii,jj) =  1.d0
+           endif 
+        enddo
+        !
+      enddo
+      !
+      ! Loops to apply the fluctuations 
+      do k=0,km
+      do j=0,jm
+      do i=0,im
+        !
+        lsem = 0.15d0 ! For the moment we keep it constant
+        upr = 0.d0
+        vpr = 0.d0
+        wpr = 0.d0
+        do jj=1,nsemini
+          !
+          ddx = abs(x(i,j,k,1)-posvor(1,jj))
+          ddy = abs(x(i,j,k,2)-posvor(2,jj))
+          ddz = abs(x(i,j,k,3)-posvor(3,jj))
+          if (ddx < lsem .and. ddy < lsem .and. ddz < lsem) then
+            ! coefficients for the intensity of the fluctuation
+            ftent = (1.d0-ddx/lsem)*(1.d0-ddy/lsem)*(1.d0-ddz/lsem)
+            ftent = ftent / (sqrt(num2d3*lsem))**3
+            upr = upr + eddy(1,jj) * ftent
+            vpr = vpr + eddy(2,jj) * ftent
+            wpr = wpr + eddy(3,jj) * ftent
+          endif
+          !
+        enddo
+        !
+        upr = upr * sqrt(volsemini/nsemini)
+        vpr = vpr * sqrt(volsemini/nsemini)
+        wpr = wpr * sqrt(volsemini/nsemini)
+        !
+        um=vel(i,j,k,1) 
+        !
+        vel(i,j,k,1)=0.1d0*upr*sqrt(num2d3*init_noise*um) + vel(i,j,k,1)
+        vel(i,j,k,2)=0.1d0*vpr*sqrt(num2d3*init_noise*um) + vel(i,j,k,2)
+        vel(i,j,k,3)=0.1d0*wpr*sqrt(num2d3*init_noise*um)
+        !
+      enddo
+      enddo
+      enddo
+      !
+    endif
+    !
+    !
+    ! call tecbin('testout/tecinit'//mpirankname//'.plt',                &
+    !                                   x(0:im,0:jm,0:km,1),'x',         &
+    !                                   x(0:im,0:jm,0:km,2),'y',         &
+    !                                   x(0:im,0:jm,0:km,3),'z',         &
+    !                                rho(0:im,0:jm,0:km)  ,'ro',         &
+    !                                vel(0:im,0:jm,0:km,1),'u',          &
+    !                                vel(0:im,0:jm,0:km,2),'v',          &
+    !                                vel(0:im,0:jm,0:km,3),'w',          &
+    !                                prs(0:im,0:jm,0:km)  ,'p' )
+    
+    if(lio)  write(*,'(A,I1,A)')'  ** ',ndims,'-D TBL initialised.'
+    !
+  end subroutine tblini
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine is read the boundary layer profile.               |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 27-09-2021: Created by J. Fang @ STFC Daresbury Laboratory        |
+  !+-------------------------------------------------------------------+
+  subroutine inletprofile
+    !
+    use commvar,  only: flowtype,nondimen,spcinf,num_species,jm,pinf
+    use commarray,only: x
+    use parallel, only: preadprofile
+    use bc,       only: rho_prof,vel_prof,tmp_prof,prs_prof,spc_prof,turbinf
+    use fludyna,  only: thermal
+    use stlaio,   only: get_unit
+#ifdef COMB
+    use thermchem, only: spcindex
+#endif
+    !
+    ! local data
+    integer :: fh,i,j
+    logical :: lfex,lprofile_density_provided,lprofile_pressure_provided
+    real(8) :: prs_prof_eos(0:jm),prs_prof_error,prs_prof_scale
+    character(len=255) :: profile_header
+    !
+    allocate( rho_prof(0:jm),tmp_prof(0:jm),prs_prof(0:jm),          &
+              vel_prof(0:jm,1:3),spc_prof(0:jm,1:num_species) )
+    !
+    if(lio) inquire(file='datin/inlet.prof',exist=lfex)
+    call bcast(lfex)
+    !
+    if(lfex) then
+      !
+      lprofile_density_provided=.false.
+      lprofile_pressure_provided=.false.
+      if(lio) then
+        !
+        fh=get_unit()
+        !
+        open(fh,file='datin/inlet.prof',action='read',form='formatted')
+        read(fh,'(A)')profile_header
+        lprofile_density_provided=index(profile_header,'density=provided')>0
+        lprofile_pressure_provided=index(profile_header,'pressure=provided')>0
+        read(fh,*)
+        read(fh,*)nomi_thick,disp_thick,mome_thick,fric_velocity
+        close(fh)
+        write(*,"(A)")'  -----------------------------------------------'
+        write(*,"(A)")'            δ          δ*           θ        utau'
+        write(*,"(1X,4(F12.7))")nomi_thick,disp_thick,mome_thick,fric_velocity
+        write(*,"(A)")'  -----------------------------------------------'
+        !
+      endif
+      !
+      call bcast(nomi_thick)
+      call bcast(disp_thick)
+      call bcast(mome_thick)
+      call bcast(fric_velocity)
+      call bcast(lprofile_density_provided)
+      call bcast(lprofile_pressure_provided)
+      !
+      if(lprofile_pressure_provided) then
+        call preadprofile('datin/inlet.prof',dir='j',                   &
+                                  var1=rho_prof,     var2=vel_prof(:,1),&
+                                  var3=vel_prof(:,2),var4=tmp_prof,     &
+                                  var5=prs_prof,skipline=4)
+      else
+        call preadprofile('datin/inlet.prof',dir='j',                   &
+                                  var1=rho_prof,     var2=vel_prof(:,1),&
+                                  var3=vel_prof(:,2),var4=tmp_prof,skipline=4)
+      endif
+      !
+      vel_prof(:,3)=0.d0
+      ! vel_prof(:,1)=vel_prof(:,1) + 1.d0
+      !
+      if(nondimen) then
+        if(lprofile_pressure_provided) then
+          if(lprofile_density_provided) then
+            prs_prof_eos=thermal(density=rho_prof,temperature=tmp_prof,dim=jm+1)
+            prs_prof_error=maxval(abs(prs_prof_eos-prs_prof))
+            prs_prof_scale=max(1.d0,maxval(abs(prs_prof)))
+            if(prs_prof_error > 1.d-10*prs_prof_scale) then
+              stop 'nondimensional profile pressure=provided is inconsistent with rho*T'
+            endif
+          else
+            rho_prof=thermal(pressure=prs_prof,temperature=tmp_prof,dim=jm+1)
+          endif
+        else
+          if(lprofile_density_provided) then
+            prs_prof=thermal(density=rho_prof,temperature=tmp_prof,dim=jm+1)
+            if(maxval(abs(prs_prof-pinf)) > 1.d-10*max(1.d0,abs(pinf))) then
+              stop 'nondimensional profile density=provided is inconsistent with p_inf'
+            endif
+          else
+            prs_prof=pinf
+            rho_prof=thermal(pressure=prs_prof,temperature=tmp_prof,dim=jm+1)
+          endif
+        endif
+      else
+        !
+#ifdef COMB
+        ! phi = 0.4
+        ! spc_prof(:,:)=0.d0
+        ! spc_prof(:,spcindex('O2'))=0.2302d0
+        ! spc_prof(:,spcindex('H2'))=0.0116d0
+        ! spc_prof(:,spcindex('N2'))=0.7582d0
+        ! phi=0.2
+        ! spc_prof(:,:)=0.d0
+        ! spc_prof(:,spcindex('O2'))=0.23154d0
+        ! spc_prof(:,spcindex('H2'))=0.00583d0
+        ! spc_prof(:,spcindex('N2'))=0.76263d0
+        ! phi=0.3
+        ! spc_prof(:,:)=0.d0
+        ! spc_prof(:,spcindex('O2'))=0.23087d0
+        ! spc_prof(:,spcindex('H2'))=0.00873d0
+        ! spc_prof(:,spcindex('N2'))=0.76040d0
+        ! phi = 0.8
+        ! spc_prof(:,:)=0.d0
+        ! spc_prof(:,spcindex('O2'))=0.22756d0
+        ! spc_prof(:,spcindex('H2'))=0.02294d0
+        ! spc_prof(:,spcindex('N2'))=0.74950d0
+        ! phi = 0.6
+        ! spc_prof(:,:)=0.d0
+        ! spc_prof(:,spcindex('O2'))=0.22887d0
+        ! spc_prof(:,spcindex('H2'))=0.01730d0
+        ! spc_prof(:,spcindex('N2'))=0.75383d0
+        ! phi = 0.6
+        ! spc_prof(:,:)=0.d0
+        ! spc_prof(:,spcindex('H2'))=0.031274d0  
+        ! spc_prof(:,spcindex('O2'))=0.225630d0 
+        ! spc_prof(:,spcindex('N2'))=0.743096d0 
+        ! spc_prof(:,spcindex('N2'))=1.d0-sum(spc_prof) 
+        ! non-reacting
+        do i=1,num_species
+          spc_prof(:,i) = spcinf(i)
+        enddo
+        !
+        prs_prof=thermal(density=rho_prof,temperature=tmp_prof,species=spc_prof,dim=jm+1)
+#endif        
+      endif
+      !
+    else
+      ! set uniform inlet profile
+      !
+      nomi_thick=0.d0
+      disp_thick=0.d0
+      mome_thick=0.d0
+      fric_velocity=1.d5
+      !
+      if(flowtype=='channel') then
+        !
+        rho_prof(:)  =roinf
+        do j=0,jm
+          vel_prof(j,1)=uinf*cos(0.5d0*pi*(x(0,j,0,2)-1.d0))**2
+        enddo
+        vel_prof(:,2)=vinf
+        vel_prof(:,3)=winf
+        tmp_prof(:)  =tinf
+        !
+      else
+        !
+        rho_prof(:)  =roinf
+        vel_prof(:,1)=uinf
+        vel_prof(:,2)=vinf
+        vel_prof(:,3)=winf
+        tmp_prof(:)  =tinf
+        !
+      endif
+      !
+      if(nondimen) then 
+        prs_prof(:)  =thermal(density=rho_prof(:),temperature=tmp_prof(:),dim=jm+1)
+      else
+        !
+        do i=1,num_species
+          spc_prof(:,i) = spcinf(i)
+        enddo
+        !
+        prs_prof(:)  =thermal(density=rho_prof(:),temperature=tmp_prof(:),species=spc_prof(:,:),dim=jm+1)
+      endif
+      !
+    endif
+    !
+  end subroutine inletprofile
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine inletprofile.                           |
+  !+-------------------------------------------------------------------+
+  !  
+  !+-------------------------------------------------------------------+
+  !| This subroutine is used to generate a initial mixing layer flow.  |
+  !+-------------------------------------------------------------------+
+  !| ref: Li, Z., Jaberi, F. 2010. Numerical Investigations of         |
+  !|      Shock-Turbulence Interaction in a Planar Mixing Layer.       | 
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 24-02-2021: Created by J. Fang @ STFC Daresbury Laboratory        |
+  !+-------------------------------------------------------------------+
+  subroutine wtini
+    !
+    use commarray,only: x,vel,rho,prs,spc,tmp,q
+    use fludyna,  only: thermal,mixinglayervel
+    !
+    ! local data
+    integer :: i,j,k
+    real(8) :: radi
+    !
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      rho(i,j,k)  = roinf
+      !
+      vel(i,j,k,1)= uinf
+      vel(i,j,k,2)= vinf
+      vel(i,j,k,3)= winf
+      !
+      tmp(i,j,k)  = tinf
+      !
+      prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
+      !
+      if(num_species>1) then
+        spc(i,j,k,1)=0.d0
+        !
+        spc(i,j,k,num_species)=1.d0-sum(spc(i,j,k,1:num_species-1))
+        !
+      endif
+      !
+    enddo
+    enddo
+    enddo
+    !
+    !
+    ! call tecbin('testout/tecinit'//mpirankname//'.plt',                &
+    !                                   x(0:im,0:jm,0:km,1),'x',         &
+    !                                   x(0:im,0:jm,0:km,2),'y',         &
+    !                                   x(0:im,0:jm,0:km,3),'z',         &
+    !                                rho(0:im,0:jm,0:km)  ,'ro',         &
+    !                                vel(0:im,0:jm,0:km,1),'u',          &
+    !                                vel(0:im,0:jm,0:km,2),'v',          &
+                                   ! prs(0:im,0:jm,0:km)  ,'p',          &
+    !                                tmp(0:im,0:jm,0:km)  ,'t' )
+    !
+    if(lio)  write(*,'(A,I1,A)')'  ** ',ndims,'-D wind tunnel initialised.'
+    !
+  end subroutine wtini
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine wtini.                                 |
+  !+-------------------------------------------------------------------+
+  !  
+  !+-------------------------------------------------------------------+
+  !| This subroutine is used to generate initial field for flow past a |
+  !| cylinder flow.                                                    |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 11-03-2021: Created by J. Fang @ STFC Daresbury Laboratory        |
+  !+-------------------------------------------------------------------+
+  subroutine cylinderini
+    !
+    use commarray,only: x,vel,rho,prs,spc,tmp,q
+    use fludyna,  only: thermal,jetvel
+    !
+    ! local data
+    integer :: i,j,k
+    !
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      rho(i,j,k)  = roinf
+      vel(i,j,k,1)= uinf
+      vel(i,j,k,2)= 0.d0
+      vel(i,j,k,3)= 0.d0
+      !
+      tmp(i,j,k)  = tinf
+      !
+      prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
+      !
+      if(num_species>=1) then
+        spc(i,j,k,1)=0.d0
+      endif
+      !
+    enddo
+    enddo
+    enddo
+    !
+    !
+    call tecbin('testout/tecinit'//mpirankname//'.plt',                &
+                                      x(0:im,0:jm,0:km,1),'x',         &
+                                      x(0:im,0:jm,0:km,2),'y',         &
+                                      x(0:im,0:jm,0:km,3),'z',         &
+                                   rho(0:im,0:jm,0:km)  ,'ro',         &
+                                   vel(0:im,0:jm,0:km,1),'u',          &
+                                   vel(0:im,0:jm,0:km,2),'v',          &
+                                   prs(0:im,0:jm,0:km)  ,'p',          &
+                                   tmp(0:im,0:jm,0:km)  ,'t' )
+    !
+    if(lio)  write(*,'(A,I1,A)')'  ** ',ndims,'-D jet flow initialised.'
+    !
+  end subroutine cylinderini
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine cylinderini.                            |
+  !+-------------------------------------------------------------------+
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine is used to generate an initial field for the      |
+  !| simulation of 0D reactor.                                         |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 24-01-2022: Created by Created by Z.X. Chen @ Peking University   |
+  !+-------------------------------------------------------------------+
+  subroutine reactorini
+    !
+    use commvar,  only: pinf
+    use commarray,only: x,vel,rho,prs,spc,tmp,q
+    use fludyna,  only: thermal
+    use thermchem,only: convertxiyi,spcindex
+    !
+#ifdef COMB
+    ! local data
+    integer :: i,j,k
+    real(8) :: tmpr,specr(num_species),specx(num_species)
+    !
+    ! tmpr=1000.d0/0.8d0
+    tmpr=1000.d0
+    ! prin=13.5d5
+    !reactants
+    specx(:)=0.d0
+    specx(spcindex('H2'))=0.2d0
+    specx(spcindex('O2'))=0.1d0
+    !
+    ! specx(spcindex('H2'))=0.2867d0
+    ! specx(spcindex('O2'))=0.1434d0
+    ! specx(spcindex('H2O'))=0.1819d0
+    !
+    specx(spcindex('N2'))=1.d0-sum(specx)
+    call convertxiyi(specx(:),specr(:),'X2Y')
+    !
+    !!
+    ! specr(:)=0.d0
+    ! specr(spcindex('nc7h16'))=0.07247482382311918d0
+    ! specr(spcindex('o2'))=0.28285951066551174d0
+    ! specr(spcindex('he'))=0.08059381448746926d0
+    ! specr(spcindex('n2'))=1.d0-sum(specr)
+    !
+    ! specr(spcindex('CH4'))=0.055d0
+    ! specr(spcindex('O2'))=0.220185d0
+    ! specr(spcindex('N2'))=1.d0-sum(specr)
+    !
+    ! print*,specr
+    ! stop
+    ! specr(1)=0.055d0
+    ! specr(2)=0.220185d0
+    ! specr(num_species)=1.d0-sum(specr)
+    ! specr(1)=0.06218387d0
+    ! specr(2)=0.21843332
+    ! specr(num_species)=1.d0-sum(specr)
+    !
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      !
+      vel(i,j,k,:)= 0.d0
+      !
+      tmp(i,j,k)  = tmpr
+      !
+      prs(i,j,k)=pinf
+      !
+      spc(i,j,k,:)=specr(:)
+      !
+      rho(i,j,k)=thermal(pressure=prs(i,j,k),temperature=tmp(i,j,k), &
+                          species=spc(i,j,k,:))
+      !
+      ! print*,tmp(i,j,k),prs(i,j,k),rho(i,j,k),spc(i,j,k,:)
+    enddo
+    enddo
+    enddo
+    !
+    if(lio)  write(*,'(A,I1,A)')'  ** reactor initialised.'
+    !
+#endif
+  !
+  end subroutine reactorini
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine reactorini.                             |
+  !+-------------------------------------------------------------------+
+  
+
+  !+-------------------------------------------------------------------+
+  !| This subroutine is used to generate an initial field for the      |
+  !| simulation of high temperature air reactor.                       |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 30-09-2025: Created by Created by JF @ IMECH CAS                  |
+  !+-------------------------------------------------------------------+
+  subroutine airreactorini
+    !
+    use commvar,  only: ref_den,ref_tem
+    use commarray,only: x,vel,rho,prs,spc,tmp,q
+    use fludyna,  only: thermal
+    use thermchem,only: convertxiyi,spcindex
+    !
+#ifdef COMB
+    ! local data
+    integer :: i,j,k
+    real(8) :: tmpr,specr(num_species)
+    !
+
+    specr(spcindex('N2'))=75.52d0/100.d0
+    specr(spcindex('O2'))=23.14d0/100.d0
+    specr(spcindex('Ar'))=1.d0-sum(specr)
+
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      !
+      rho(i,j,k)=ref_den
+
+      vel(i,j,k,:)= 0.d0
+
+      tmp(i,j,k)  =ref_tem
+
+      spc(i,j,k,:) =specr
+      !
+      rho(i,j,k)=thermal(pressure=prs(i,j,k),temperature=tmp(i,j,k), &
+                          species=spc(i,j,k,:))
+    enddo
+    enddo
+    enddo
+    !
+    if(lio)  write(*,'(A,I1,A)')'  ** air reactor initialised.'
+    !
+#endif
+  !
+  end subroutine airreactorini
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine airreactorini.                          |
+  !+-------------------------------------------------------------------+
+  
+  !+-------------------------------------------------------------------+
+  !| This subroutine is used to generate an initial field for the      |
+  !| simulation of 1D flame.                                           |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 30-Jan-2022: Created by Z.X. Chen @ Peking University             |
+  !+-------------------------------------------------------------------+
+  subroutine onedflameini
+    !
+    use commvar,  only: im,jm,km,ndims,roinf,uinf,nondimen,xmax,  &
+                        ia,num_species,ymax,vinf,winf,pinf,tinf,spcinf
+    use commarray,only: x,vel,rho,prs,spc,tmp,q
+    use parallel, only: lio
+    use fludyna,  only: thermal,sos
+    !
+    use parallel, only: lio,bcast
+    !
+#ifdef COMB
+    !
+    use thermchem,only : tranco,spcindex,mixture,convertxiyi
+    use cantera 
+    !
+    ! local data
+    integer :: i,j,k
+    real(8) ::  xc,yc,zc,tmpr,tmpp,xloc,xwid,specp(num_species),arg,prgvar,masflx,specx(num_species)
+    real(8) :: pthick,flamethickness
+    real(8) :: cpe,miu,kama,cs,lref
+    real(8) :: specr(num_species),dispec(num_species)
+    ! 
+    !
+    if(lio) then
+      open(12,file='datin/userinput.txt')
+      read(12,*)flamethickness
+      close(12)
+      print*, ' ** flamethickness =',flamethickness
+    endif
+    !
+    call bcast(flamethickness)
+    !
+    !reactants
+    specr(:)=0.d0
+    specr(spcindex('H2'))=0.0173
+    specr(spcindex('O2'))=0.2289
+    specr(spcindex('N2'))=1.d0-sum(specr)
+    !
+    ! pinf=5.d0*pinf
+    uinf=0.d0
+    vinf=0.d0
+    winf=0.d0
+    tinf=300.d0
+    spcinf(:)=specr(:)
+    roinf=thermal(pressure=pinf,temperature=tinf,species=spcinf(:))
+    !
+    cs=sos(tinf,spcinf)
+    !
+    lref=flamethickness
+    !
+    call tranco(den=roinf,tmp=tinf,cp=cpe,mu=miu,lam=kama, &
+                spc=specr,rhodi=dispec)
+
+    if(lio) then
+
+      print*,' ---------------------------------------------------------------'
+      print*,'                      free stream quatities                     '
+      print*,' --------------------------+------------------------------------'
+      print*,'                        u∞ | ',uinf,'m/s'
+      print*,'                        T∞ | ',tinf,'K'
+      print*,'                      rho∞ | ',roinf,'kg/m**3'
+      print*,'                        p∞ | ',pinf,'Pa'
+      print*,'          reference length | ',lref,'m'
+      print*,'                 viscosity | ',miu,'kg/(ms)'
+      print*,'                       Re∞ | ',roinf*uinf*lref/miu
+      print*,'            speed of sound | ',cs,'m/s'
+      print*,'                       Ma∞ | ',uinf/cs
+      print*,' --------------------------+------------------------------------'
+
+    endif
+    !
+    tmpr=300.d0
+    ! xloc=4.d0*xmax/5.d0
+    xloc=0.d0
+    xwid=xmax/(12.d0*5.3d0*2.d0)
+    !
+    !products
+    tmpp=2814.32d0
+    !
+    ! pthick=1.d-4
+    !
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      !
+      xc=x(i,j,k,1)
+      !
+      prgvar=1.d0*exp(-0.5d0*((xc-xloc)/xwid)**2)
+      !
+      spc(i,j,k,:)=specr(:)
+      !
+      vel(i,j,k,1)=uinf
+      !
+      vel(i,j,k,2)=0.d0
+      vel(i,j,k,3)=0.d0
+      !
+      tmp(i,j,k)=tmpr+prgvar*(tmpp-tmpr)
+      !
+      prs(i,j,k)=pinf
+      ! if(xc>0.04d0) prs(i,j,k)=2.d0*pinf
+      !
+      rho(i,j,k)=thermal(pressure=prs(i,j,k),temperature=tmp(i,j,k), &
+                          species=spc(i,j,k,:))
+    enddo
+    enddo
+    enddo
+    !
+    if(lio)  write(*,'(A,I1,A)')'  ** onedflame initialised.'
+    !
+#endif
+    !
+  end subroutine onedflameini
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine onedflameini.                           |
+  !+-------------------------------------------------------------------+
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine is used to generate an initial field for the      |
+  !| simulation of H2 supersonic jet flame                             |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 04-Feb-2022: Created by Z.X. Chen @ Peking University             |
+  !+-------------------------------------------------------------------+
+  subroutine h2supersonicini
+#ifdef COMB
+    !
+    use commvar,  only: &
+      pinf,uinf,tinf,num_species,dj_i,dj_o,dco_i,flowtype,ymax
+    use commarray,only: x,vel,rho,prs,spc,tmp,q
+    use fludyna,  only: thermal,multistream_inflow
+    !
+    use thermchem,only: convertxiyi,spcindex
+    !
+    ! local data
+    integer :: i,j,k
+    real(8) :: rb,ctr,xc,yb,zb,arg,val,xloc,xwid
+    real(8) :: vel0(ndims),prs0,rho0,tmp0,spc0(num_species)
+    !
+    ctr=0.5d0*ymax
+    !
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      !
+      xc=x(i,j,k,1)
+      yb=x(i,j,k,2)
+      zb=x(i,j,k,3)
+      !
+      if(ndims<3) then
+        rb=abs(yb-ctr)
+      else
+        rb=sqrt((yb-ctr)**2+(zb-ctr)**2)
+      endif
+      !
+      if(.true. .and. rb<=0.5d0*dj_i) then
+        call multistream_inflow(stream='fuel',rho=rho0,vel=vel0, &
+          prs=prs0,tmp=tmp0,spc=spc0,rovd=rb/dj_i)
+          !
+      elseif(.true. .and. rb>0.5d0*dj_o .and. rb<=0.5d0*dco_i) then
+        call multistream_inflow(stream='hotcoflow',rho=rho0,vel=vel0, &
+          prs=prs0,tmp=tmp0,spc=spc0, &
+          rovd=abs(rb-0.25d0*(dco_i+dj_o))/(0.5d0*(dco_i-dj_o)))
+        !
+      elseif(.true. .and. rb>0.5d0*dco_i) then
+        call multistream_inflow(stream='air',rho=rho0,vel=vel0, &
+          prs=prs0,tmp=tmp0,spc=spc0)
+        !
+      else
+        !
+        prs0=pinf
+        tmp0=tinf
+        spc0(:)=spcinf(:)
+        rho0=roinf
+        vel0(1)=uinf*100.d0
+        vel0(2:ndims)=0.d0
+        !
+      endif 
+      !
+      ! erf profile in the axial diretion
+      xloc=2.d0*dj_i
+      xwid=2.d0*dj_i
+      arg=-1.d0*(xc-xloc)/xwid
+      val=0.5d0*(1.0d0+erf(arg))
+      !
+      !0.92135039647485750
+      ! vel(i,j,k,1)=uinf+val*(vel0(1)-uinf)
+      ! vel(i,j,k,2:ndims)=0.d0
+      ! prs(i,j,k)=pinf
+      ! tmp(i,j,k)=tinf+val*(tmp0-tinf)
+      ! spc(i,j,k,:)=spcinf(:)+val*(spc0(:)-spcinf(:))
+      vel(i,j,k,1)=uinf+0.92135039647485750*(vel0(1)-uinf)
+      vel(i,j,k,2:ndims)=0.d0
+      prs(i,j,k)=pinf
+      tmp(i,j,k)=tinf+0.92135039647485750*(tmp0-tinf)
+      spc(i,j,k,:)=spcinf(:)+0.92135039647485750*(spc0(:)-spcinf(:))
+      ! vel(i,j,k,1)=uinf
+      ! vel(i,j,k,2:ndims)=0.d0
+      ! prs(i,j,k)=pinf
+      ! tmp(i,j,k)=tinf
+      ! spc(i,j,k,:)=spcinf(:)
+      !
+      rho(i,j,k)=thermal(pressure=prs(i,j,k),temperature=tmp(i,j,k), &
+                          species=spc(i,j,k,:))
+      !
+      ! print*,tmp(i,j,k),prs(i,j,k),rho(i,j,k),spc(i,j,k,:)
+    enddo
+    enddo
+    enddo
+    !
+    if(lio)  write(*,'(A,I1,3(A))')  &
+      '  ** ',ndims,'-D ',trim(flowtype),' initialised.'
+    !
+    call tecbin('testout/tecini'//mpirankname//'.plt',                &
+                                      x(0:im,0:jm,0:km,1),'x',        &
+                                      x(0:im,0:jm,0:km,2),'y',        &
+                                      x(0:im,0:jm,0:km,3),'z',        &
+                                      rho(0:im,0:jm,0:km),'ro',       &
+                                    vel(0:im,0:jm,0:km,1),'u',        &
+                                    vel(0:im,0:jm,0:km,2),'v',        &
+                                      tmp(0:im,0:jm,0:km),'T',        &
+                                    spc(0:im,0:jm,0:km,1),'Y1' )
+    !
+    !
+#endif
+    !
+  end subroutine h2supersonicini
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine h2supersonicini.                        |
+  !+-------------------------------------------------------------------+
+  !
+  !+-------------------------------------------------------------------+
+  !| This subroutine is used to generate an initial field for the      |
+  !| simulation of TGV flame.                                          |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 30-Mar-2022: Created by Yifan Xu @ Peking University              |
+  !+-------------------------------------------------------------------+
+  subroutine tgvflameini
+    !
+    use commvar,  only: nondimen,xmax
+    use commarray,only: x,vel,rho,prs,spc,tmp,q
+    use fludyna,  only: thermal
+    !
+#ifdef COMB
+    !
+    use thermchem,only : tranco,spcindex,mixture
+    use cantera 
+    !
+    ! local data
+    integer :: i,j,k,jspc
+    real(8) :: miu,xc,yc,zc,xloc,l_0,xwid,specr(num_species), &
+      specp(num_species),prgvar
+    !
+    tinf=300.d0
+    xloc=xmax/2.d0
+    xwid=xmax/8.d0
+    !
+    l_0=xmax/(2.d0*pi)
+    uinf=6.25*4.d0
+    roinf=thermal(temperature=tinf,pressure=pinf,species=spcinf)
+    !
+    ! nonpremixed reactants include fuel and oxidizer
+    specr(:)=0.d0
+    specr(spcindex('H2'))=0.0556 
+    specr(spcindex('O2'))=0.233  
+    specr(spcindex('N2'))=1.d0-sum(specr)
+    !
+    !specr(spcindex('C7H8'))=0.004180329
+    !specr(spcindex('MCYC6'))=0.016037004
+    !specr(spcindex('NC10H22'))=0.009037498
+    !specr(spcindex('NC12H26'))=0.007728134
+    !specr(spcindex('IC16H34'))=0.030821078
+    !specr(spcindex('O2'))=0.233
+    !specr(spcindex('N2'))=1.d0-sum(specr)
+    !
+    call tranco(den=roinf,tmp=tinf,mu=miu,spc=spcinf)
+    if(lio) print*, &
+      ' ** nu=',miu/roinf,'Re=',roinf*uinf*xmax/miu,'pinf=',pinf
+    !
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      !
+      xc=x(i,j,k,1)
+      yc=x(i,j,k,2)
+      zc=x(i,j,k,3)
+      !
+      prgvar=0.5d0*(1.d0+tanh(3.d0*(abs(xc-xloc)-xwid)/xwid))
+      specp(:)=0.d0
+      specp(spcindex('H2'))=specr(spcindex('H2'))*(1.d0-prgvar)
+      specp(spcindex('O2'))=specr(spcindex('O2'))*prgvar
+      specp(spcindex('N2'))=1.d0-sum(specp)
+      !
+      !specp(spcindex('C7H8'))=specr(spcindex('C7H8'))*(1.d0-prgvar)
+      !specp(spcindex('MCYC6'))=specr(spcindex('MCYC6'))*(1.d0-prgvar)
+      !specp(spcindex('NC10H22'))=specr(spcindex('NC10H22'))*(1.d0-prgvar)
+      !specp(spcindex('NC12H26'))=specr(spcindex('NC12H26'))*(1.d0-prgvar)
+      !specp(spcindex('IC16H34'))=specr(spcindex('IC16H34'))*(1.d0-prgvar)
+      !specp(spcindex('O2'))=specr(spcindex('O2'))*prgvar
+      !specp(spcindex('N2'))=1.d0-sum(specp)
+      !
+      spc(i,j,k,:)=specp(:)
+      !
+      spc(i,j,k,spcindex('N2'))=1.d0-(sum(spc(i,j,k,:))-spc(i,j,k,spcindex('N2')))
+      !
+      prs(i,j,k)=pinf
+      tmp(i,j,k)=tinf
+      ! get initial rho
+      roinf=thermal(temperature=tmp(i,j,k),pressure=prs(i,j,k),species=spc(i,j,k,:))
+      !
+      ! |--CANTERA--|
+      call setState_TPY(mixture,tmp(i,j,k),prs(i,j,k),spc(i,j,k,:))
+      call equilibrate(mixture,'HP')
+      tmp(i,j,k)=tinf+(temperature(mixture)-tinf)!*1.35d0
+      call getMassFractions(mixture,specp(:))
+      spc(i,j,k,:)=specp(:)
+      !
+      rho(i,j,k)=thermal(temperature=tmp(i,j,k),pressure=prs(i,j,k), &
+                          species=spc(i,j,k,:))
+      ! set velocity and scale vx 
+      vel(i,j,k,1)= uinf*sin(xc/l_0)*cos(yc/l_0)*cos(zc/l_0)!*roinf/rho(i,j,k)
+      vel(i,j,k,2)=-uinf*cos(xc/l_0)*sin(yc/l_0)*cos(zc/l_0)
+      vel(i,j,k,3)= 0.d0
+      !
+      prs(i,j,k)  =pinf+roinf/16.d0*(uinf**2) &
+                        *(cos(2.d0*x(i,j,k,1)/l_0)+cos(2.d0*x(i,j,k,2)/l_0)) &
+                        *(cos(2.d0*x(i,j,k,3)/l_0)+2.d0)
+      !
+    enddo
+    enddo
+    enddo
+    !
+    if(lio)  write(*,'(A,I1,A)')'  ** ',ndims,'-D tgv flame initialised.'
+    !
+#endif
+    !
+  end subroutine tgvflameini
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine tgvflameini.                            |
+  !+-------------------------------------------------------------------+
+  
+  !+-------------------------------------------------------------------+
+  !| This subroutine is used to initialise field for a lid-driven      |
+  !| cavity flow                                                       |
+  !+-------------------------------------------------------------------+
+  !| CHANGE RECORD                                                     |
+  !| -------------                                                     |
+  !| 17-04-2024: Created by J. Fang @ STFC Daresbury Laboratory        |
+  !+-------------------------------------------------------------------+
+  subroutine ldcavityini
+    !
+    use commarray,only: x,vel,rho,prs,tmp
+    use fludyna,  only: thermal
+    !
+    ! local data
+    integer :: i,j,k
+    !
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      !
+      rho(i,j,k)=1.d0
+      tmp(i,j,k)=1.d0
+      prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
+      !
+      vel(i,j,k,1)=  0.d0
+      vel(i,j,k,2)=  0.d0
+      vel(i,j,k,3)=  0.d0
+      !
+    enddo
+    enddo
+    enddo
+    !
+    if(lio)  write(*,'(A,I1,A)')'  ** ',ndims,'-D R–T instability initialised.'
+    !
+  end subroutine ldcavityini
+  !+-------------------------------------------------------------------+
+  !| The end of the subroutine ldcavityini.                            |
+  !+-------------------------------------------------------------------+
+
+  function return_30k(x) result(y)
+  
+    integer ( kind = 4 ), intent(in) :: x
+    integer ( kind = 4 )             :: y
+    integer ( kind = 4 ), parameter  :: xmax = 30000
+  
+    y = iabs(x) - int(iabs(x)/xmax)*xmax
+  end function return_30k
+  !+-------------------------------------------------------------------+
+  !| The end of the function return_30k.                               |
+  !+-------------------------------------------------------------------+
+  !
+  function r8_random ( s1, s2, s3 )
+    !*****************************************************************************80
+    !
+    !! R8_RANDOM returns a pseudorandom number between 0 and 1.
+    !
+    !  Discussion:
+    !
+    !    This function returns a pseudo-random number rectangularly distributed
+    !    between 0 and 1.   The cycle length is 6.95E+12.  (See page 123
+    !    of Applied Statistics (1984) volume 33), not as claimed in the
+    !    original article.
+    !
+    !  Licensing:
+    !
+    !    This code is distributed under the GNU LGPL license.
+    !
+    !  Modified:
+    !
+    !    08 July 2008
+    !
+    !  Author:
+    !
+    !    FORTRAN77 original version by Brian Wichman, David Hill.
+    !    FORTRAN90 version by John Burkardt.
+    !
+    !  Reference:
+    !
+    !    Brian Wichman, David Hill,
+    !    Algorithm AS 183: An Efficient and Portable Pseudo-Random
+    !    Number Generator,
+    !    Applied Statistics,
+    !    Volume 31, Number 2, 1982, pages 188-190.
+    !
+    !  Parameters:
+    !
+    !    Input/output, integer ( kind = 4 ) S1, S2, S3, three values used as the
+    !    seed for the sequence.  These values should be positive
+    !    integers between 1 and 30,000.
+    !
+    !    Output, real ( kind = 8 ) R8_RANDOM, the next value in the sequence.
+    !
+    implicit none
+
+    integer ( kind = 4 ) s1
+    integer ( kind = 4 ) s2
+    integer ( kind = 4 ) s3
+    real ( kind = 8 ) r8_random
+
+    s1 = mod ( 171 * s1, 30269 )
+    s2 = mod ( 172 * s2, 30307 )
+    s3 = mod ( 170 * s3, 30323 )
+
+    r8_random = mod ( real ( s1, kind = 8 ) / 30269.0D+00 &
+                    + real ( s2, kind = 8 ) / 30307.0D+00 &
+                    + real ( s3, kind = 8 ) / 30323.0D+00, 1.0D+00 )
+
+    return
+  end function r8_random
+  !+-------------------------------------------------------------------+
+  !| The end of the function r8_random.                                |
+  !+-------------------------------------------------------------------+
+  !!
+end module initialisation
+!+---------------------------------------------------------------------+
+!| The end of the module initialisation.                               |
+!+---------------------------------------------------------------------+

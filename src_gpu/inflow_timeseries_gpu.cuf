@@ -1,0 +1,158 @@
+module inflow_timeseries_gpu
+  use cudafor
+  implicit none
+  real(8),allocatable,device :: inflow_slices_d(:,:,:,:)
+  real(8),allocatable,save :: inflow_slice_h(:,:,:)
+  real(8),save :: inflow_times_h(0:3)=0.d0
+  integer,save :: inflow_order_h(0:3)=(/0,1,2,3/)
+  logical,save :: inflow_timeseries_ready=.false.
+contains
+  logical function dynamic_inflow_requested()
+    use bc, only: bctype,turbinf
+    implicit none
+
+    dynamic_inflow_requested=bctype(1)==11 .and. trim(turbinf)=='intp'
+  end function dynamic_inflow_requested
+
+  subroutine init_dynamic_inflow_gpu()
+    use bc, only: ninflowslice
+    use commvar, only: jm,km
+    use parallel, only: irk
+    implicit none
+    integer :: first_slice,slot
+
+    inflow_timeseries_ready=.false.
+    if(.not.dynamic_inflow_requested()) return
+    if(irk/=0) return
+    if(ninflowslice<3) &
+      stop 'GPU dynamic inflow requires ninflowslice >= 3'
+    if(allocated(inflow_slice_h)) deallocate(inflow_slice_h)
+    if(allocated(inflow_slices_d)) deallocate(inflow_slices_d)
+    allocate(inflow_slice_h(0:jm,0:km,1:5))
+    allocate(inflow_slices_d(0:jm,0:km,1:5,0:3))
+
+    first_slice=ninflowslice-3
+    do slot=0,3
+      call load_dynamic_inflow_slot(first_slice+slot,slot)
+    enddo
+    call sort_dynamic_inflow_slots()
+    call validate_dynamic_inflow_times()
+    inflow_timeseries_ready=.true.
+  end subroutine init_dynamic_inflow_gpu
+
+  subroutine prepare_dynamic_inflow_gpu(forcing_time)
+    use bc, only: ninflowslice
+    use parallel, only: irk
+    implicit none
+    real(8),intent(in) :: forcing_time
+    integer :: slot
+
+    if(.not.dynamic_inflow_requested()) return
+    if(irk/=0) return
+    if(.not.inflow_timeseries_ready) &
+      stop 'GPU dynamic inflow cache is not initialized'
+
+    do while(forcing_time>inflow_times_h(inflow_order_h(2)))
+      slot=inflow_order_h(0)
+      ninflowslice=ninflowslice+1
+      call load_dynamic_inflow_slot(ninflowslice,slot)
+      call sort_dynamic_inflow_slots()
+      call validate_dynamic_inflow_times()
+    enddo
+  end subroutine prepare_dynamic_inflow_gpu
+
+  subroutine dynamic_inflow_window(time0,delta,slot0,slot1,slot2,slot3)
+    implicit none
+    real(8),intent(out) :: time0,delta
+    integer,intent(out) :: slot0,slot1,slot2,slot3
+
+    if(.not.inflow_timeseries_ready) &
+      stop 'GPU dynamic inflow window requested before initialization'
+    slot0=inflow_order_h(0)
+    slot1=inflow_order_h(1)
+    slot2=inflow_order_h(2)
+    slot3=inflow_order_h(3)
+    time0=inflow_times_h(slot0)
+    delta=inflow_times_h(slot1)-time0
+  end subroutine dynamic_inflow_window
+
+  logical function dynamic_inflow_ready()
+    implicit none
+    dynamic_inflow_ready=inflow_timeseries_ready
+  end function dynamic_inflow_ready
+
+  subroutine release_dynamic_inflow_gpu()
+    implicit none
+    if(allocated(inflow_slice_h)) deallocate(inflow_slice_h)
+    if(allocated(inflow_slices_d)) deallocate(inflow_slices_d)
+    inflow_timeseries_ready=.false.
+    inflow_times_h=0.d0
+    inflow_order_h=(/0,1,2,3/)
+  end subroutine release_dynamic_inflow_gpu
+
+  subroutine load_dynamic_inflow_slot(slice_number,slot)
+    use hdf5io, only: h5io_init,h5read,h5io_end
+    use parallel, only: mpi_imin
+    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+    implicit none
+    integer,intent(in) :: slice_number,slot
+    character(len=5) :: slice_name
+    character(len=64) :: filename
+    logical :: exists
+
+    if(slot<0 .or. slot>3) stop 'GPU dynamic inflow slot is outside 0:3'
+    if(slice_number<0 .or. slice_number>99999) &
+      stop 'GPU dynamic inflow slice number is outside 00000:99999'
+    write(slice_name,'(I5.5)') slice_number
+    filename='inflow/islice'//slice_name//'.h5'
+    inquire(file=trim(filename),exist=exists)
+    if(.not.exists) stop 'GPU dynamic inflow slice file is missing'
+
+    call h5io_init(filename=trim(filename),mode='read',comm=mpi_imin)
+    call h5read(varname='time',var=inflow_times_h(slot))
+    call h5read(varname='ro',var=inflow_slice_h(:,:,1),dir='i',display=.false.)
+    call h5read(varname='u1',var=inflow_slice_h(:,:,2),dir='i',display=.false.)
+    call h5read(varname='u2',var=inflow_slice_h(:,:,3),dir='i',display=.false.)
+    call h5read(varname='u3',var=inflow_slice_h(:,:,4),dir='i',display=.false.)
+    call h5read(varname='t',var=inflow_slice_h(:,:,5),dir='i',display=.false.)
+    call h5io_end
+
+    if(.not.ieee_is_finite(inflow_times_h(slot))) &
+      stop 'GPU dynamic inflow slice time is not finite'
+    if(any(.not.ieee_is_finite(inflow_slice_h))) &
+      stop 'GPU dynamic inflow slice contains a non-finite value'
+    inflow_slices_d(:,:,:,slot) = inflow_slice_h
+  end subroutine load_dynamic_inflow_slot
+
+  subroutine sort_dynamic_inflow_slots()
+    implicit none
+    integer :: left,right,tmp
+
+    inflow_order_h=(/0,1,2,3/)
+    do left=0,2
+      do right=left+1,3
+        if(inflow_times_h(inflow_order_h(left))>inflow_times_h(inflow_order_h(right))) then
+          tmp=inflow_order_h(left)
+          inflow_order_h(left)=inflow_order_h(right)
+          inflow_order_h(right)=tmp
+        endif
+      enddo
+    enddo
+  end subroutine sort_dynamic_inflow_slots
+
+  subroutine validate_dynamic_inflow_times()
+    implicit none
+    integer :: n
+    real(8) :: delta,other_delta,scale
+
+    delta=inflow_times_h(inflow_order_h(1))-inflow_times_h(inflow_order_h(0))
+    if(delta<=0.d0) stop 'GPU dynamic inflow times must be strictly increasing'
+    scale=max(1.d0,maxval(abs(inflow_times_h)))
+    do n=1,2
+      other_delta=inflow_times_h(inflow_order_h(n+1))-inflow_times_h(inflow_order_h(n))
+      if(other_delta<=0.d0) stop 'GPU dynamic inflow times must be strictly increasing'
+      if(abs(other_delta-delta)>1.d-12*scale) &
+        stop 'GPU dynamic inflow requires a uniform slice interval'
+    enddo
+  end subroutine validate_dynamic_inflow_times
+end module inflow_timeseries_gpu
