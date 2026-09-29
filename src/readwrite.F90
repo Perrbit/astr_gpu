@@ -6,6 +6,8 @@
 !| 06-Oct-2018  | Created by J. Fang @ Warrington                      |
 !+---------------------------------------------------------------------+
 module readwrite
+  use iso_fortran_env, only: int64
+  ! This marker is optional in legacy auxiliary files.
   !
   use constdef
   use parallel,only : mpirank,mpirankname,mpistop,lio,irk,jrkm,jrk,    &
@@ -18,6 +20,8 @@ module readwrite
   implicit none
   !
   integer :: nxtchkpt,nxtwsequ
+  integer :: exact_gpu_restart_version=0
+  integer(int64) :: exact_gpu_restart_generation=0_int64
   !+---------------------+---------------------------------------------+
   !|            nxtchkpt | the next nstep to checkpoint.               |
   !|            nxtwsequ | the next nstep to write flow field.         |
@@ -1468,7 +1472,7 @@ module readwrite
     !
     use commvar, only: nstep,filenumb,fnumslic,time,flowtype,           &
                        num_species,im,jm,km,force,numq,turbmode,lwsequ, &
-                       nondimen,lcomb
+                       nondimen,lcomb,use_gpu
     use commarray, only : rho,vel,prs,tmp,spc,q,tke,omg,miut,tve
     use statistic, only : massflux,massflux_target,nsamples
     use hdf5io
@@ -1490,7 +1494,8 @@ module readwrite
     character(len=4) :: stepname
     logical :: lexist
 
-    NAMELIST /restart/ nstep, filenumb,fnumslic,ninflowslice,nsamples
+    NAMELIST /restart/ nstep, filenumb,fnumslic,ninflowslice,nsamples, &
+      exact_gpu_restart_version,exact_gpu_restart_generation
 
     if(present(mode)) then
       modeio=mode
@@ -1511,9 +1516,13 @@ module readwrite
     ! call h5read(varname='nsamples',var=nsamples)
     ! call h5io_end
 
+    exact_gpu_restart_version=0
+    exact_gpu_restart_generation=0_int64
     open(16, file=folder//'/auxiliary.txt')
     read(16, nml=restart)
     close(16)
+    if(exact_gpu_restart_version/=0 .and. .not.use_gpu) &
+      error stop 'Exact GPU checkpoint requires GPU restart with the original topology'
     nstep_aux=nstep
     if(lio) print*, ' >> '//folder//'/auxiliary.txt'
 
@@ -1820,6 +1829,9 @@ module readwrite
     use statistic,only : nsamples,liosta,massflux,massflux_target
     use bc,       only : ninflowslice
     use hdf5io
+#ifdef _CUDA
+    use checkpoint_gpu, only: exact_checkpoint_version_gpu,exact_checkpoint_generation_gpu
+#endif
 #ifdef COMB
     use thermchem,only : heatrate
 #endif
@@ -1839,7 +1851,8 @@ module readwrite
     logical :: lwprofile
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
-    NAMELIST /restart/ nstep, filenumb,fnumslic,ninflowslice,nsamples
+    NAMELIST /restart/ nstep, filenumb,fnumslic,ninflowslice,nsamples, &
+      exact_gpu_restart_version,exact_gpu_restart_generation
     !
     if(present(timerept)) then
 
@@ -1941,6 +1954,17 @@ module readwrite
       write(12,'(A,I11)')'fnumslic=     ',fnumslic
       write(12,'(A,I11)')'ninflowslice= ',ninflowslice
       write(12,'(A,I11)')'nsamples=     ',nsamples
+      exact_gpu_restart_version=0
+#ifdef _CUDA
+      exact_gpu_restart_version=exact_checkpoint_version_gpu()
+#endif
+      if(exact_gpu_restart_version/=0) then
+        write(12,'(A,I11)')'exact_gpu_restart_version= ',exact_gpu_restart_version
+#ifdef _CUDA
+        exact_gpu_restart_generation=exact_checkpoint_generation_gpu()
+#endif
+        write(12,'(A,I24)')'exact_gpu_restart_generation= ',exact_gpu_restart_generation
+      endif
       write(12,'(A)')'/End'
       write(12,'(A,I11)')'!========================='
 

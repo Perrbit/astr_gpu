@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+CPU_EXE="${CPU_EXE:-$ROOT_DIR/build_cpu_probe/bin/astr}"
+GPU_EXE="${GPU_EXE:-$ROOT_DIR/build_gpu_probe/bin/astr}"
 OUT_DIR="${OUT_DIR:?OUT_DIR must name a new evidence directory}"
 NX="${NX:-33}"
 NY="${NY:-33}"
@@ -30,7 +32,10 @@ run_solver() {
   local np="$2"
   local case_dir="$3"
   local log_name="$4"
-  local exe="$ROOT_DIR/build_${kind}_probe/bin/astr"
+  local exe="$CPU_EXE"
+  if [[ "$kind" == "gpu" ]]; then
+    exe="$GPU_EXE"
+  fi
   local topology="1,1,1"
   if [[ "$np" == "2" ]]; then
     topology="2,1,1"

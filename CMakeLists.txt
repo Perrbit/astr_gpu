@@ -172,7 +172,6 @@ endif (CHEMISTRY)
 
 set(ASTR_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 message(STATUS "ASTR directory: ${ASTR_ROOT}")
-set(CMAKE_INSTALL_PREFIX ${ASTR_ROOT})
 
 
 # Create the ASTR executable

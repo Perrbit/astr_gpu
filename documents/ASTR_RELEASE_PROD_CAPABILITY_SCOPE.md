@@ -146,7 +146,7 @@ ParaView/Catalyst 原位后处理仍属计划范围，不纳入本版已实现�
 | user_define_module/userdefine.F90 | 保留，主程序直接依赖；该目录其他内容逐项确认 |
 | 根及 src/CMakeLists.txt | 保留；用 BUILD_TESTING 解耦新增测试和探针，保留原 examples 行为 |
 | LICENSE、必要版权声明 | 保留 |
-| README.md、本说明 | 精简后保留最小操作和能力说明，不携带全部研发历史 |
+| README.md、USER_GUIDE.md、本说明、ASTR_DEPLOYMENT_INPUT_CONTRACT.md | 保留构建、使用、能力及数据合同；文档相对链接须在包内有效，不携带全部研发历史 |
 | .gitignore、.gitattributes | 审核后保留必要仓库配置 |
 | examples/ | 按用户确认保留，维持原 CPU CMake 行为；示例存在不代表均可 GPU 运行 |
 | tests/、miniapps/ | 生产树不携带；配置时显式设置 BUILD_TESTING=OFF |
@@ -196,6 +196,12 @@ ParaView/Catalyst 原位后处理仍属计划范围，不纳入本版已实现�
 - 未运行新的流场计算、全量物理回归或平台任务。未执行 Git 操作。
 
 ## 9. 待批准的发布步骤
+
+2026-09-29 安装路径修复已获批准并完成：不再覆盖用户安装前缀，原 examples
+改用相对安装目的地，二维 TGV 使用独立目录。CPU/CUDA 非反应流构建安装
+两项检查及七项配置检查通过。默认未指定安装位置时使用 build/opt；
+GPU_Quickstart 仍从源码包使用，不自动进入原 CPU examples 安装规则。
+详细证据和未关闭项见 [发布执行清单](ASTR_RELEASE_READINESS_CHECKLIST.md)。
 
 1. 冻结被选定的源码版本与未提交变更归属，保存开发分支及验证证据。
 2. 在授权后建立 release/prod，按白名单裁剪文件，不改写历史，不另建 worktree。

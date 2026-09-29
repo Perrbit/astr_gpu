@@ -29,6 +29,31 @@ Set the matching MPI wrapper and compiler runtime paths in the environment.
 Omit `ASTR_TEST_CMAKE_BUILD=1` for configure-only checks. This checks build
 separation, not numerical or physical validation.
 
+The source copy includes tracked production inputs and the explicit
+`PENDING_PRODUCTION_INPUTS` list of approved additions, using their current
+working-tree contents; it excludes other untracked files and local outputs. With builds enabled,
+`test_release_install_prefixes` also builds CPU/CUDA nonreacting binaries and
+checks configured and overridden install prefixes, separate 2D/3D TGV inputs,
+and an unchanged source tree. Configure/build/install logs remain under the
+pytest temporary directory. These checks do not qualify a remote runtime stack.
+
+## Nonreacting GPU Checkpoint Regression
+
+`run_release_filter_restart.py` checks 100-step TGV CPU/GPU, full/scalar,
+and step-50 restart equivalence with caller-supplied binaries.
+`run_release_boundary_filter_restart.py` checks channel or CURVE against a
+completed 100-step scalar reference, including the matching statistics window.
+Channel restart replaces its text log; CURVE appends it. Neither comparison
+changes the numerical acceptance tolerance.
+
+`check_exact_restart_rejection.py` consumes the channel helper's `restart/`
+directory (including `checkpoint_step50/`) and checks rejection of missing,
+incomplete, corrupt, mismatched and unsupported rank-local checkpoint files,
+backup failure, and warned legacy loading. `check_exact_restart_sequence.py`
+checks sequence output through a two-step/four-step channel restart.
+All tools require a new output directory and an explicit GPU executable.
+These checks do not qualify AIR5, topology migration or physical convergence.
+
 ## AIR5 Characteristic Top Acoustic Gate
 
 `ASTR_AIR5_SOURCE_MODE=frozen` explicitly disables chemistry and V-T sources

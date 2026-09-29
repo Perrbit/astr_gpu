@@ -120,8 +120,13 @@ AIR5 使用 ASTR_WITH_AIR5_CHEMISTRY=ON、CHEMISTRY=OFF。
 
 BUILD_TESTING=OFF 已支持无 tests/ 的源码包，但仍需 examples/ 和
 user_define_module/userdefine.F90。关闭测试不关闭 CUDA-aware MPI 检测。
-根 CMake 当前将安装前缀设置到源码根目录，不应假定 cmake --install
-会遵循任意指定位置。可以直接部署构建二进制并提供匹配运行库。
+未指定安装前缀时，默认安装到构建目录下的 opt。可在配置时传入
+`-DCMAKE_INSTALL_PREFIX=/absolute/install/path`，或在构建完成后运行
+`cmake --install "$ROOT/build_prod" --prefix /absolute/install/path`。
+可执行文件安装到 bin，原 CPU 示例输入安装到 examples，二维和三维 TGV
+使用不同目录。GPU_Quickstart 启动包仍从源码包的 examples/GPU_Quickstart
+使用，通过 EXE 指向安装后的 bin/astr；不会由旧 examples 安装规则自动安装。
+安装不是运行库打包，目标环境仍需匹配 MPI、HDF5 和 NVHPC 运行库。
 
 ## 3. 算例目录与启动
 
@@ -417,9 +422,11 @@ lreadgrid=f 根据 flowtype 生成网格，不代表域长可由输入中任意�
 | 单组分时序切片 | 11,intp | 四切片、均匀时间间隔三次插值，覆盖运行及重启时间 |
 | CPU intx/udef | 遗留模式 | 不承诺对应 GPU 路径 |
 
-动态切片使用绝对状态字段而非默认脉动量；不能只给 u 而忽略 p/T 一致性。
-五变量切片不直接适用 AIR5 十一变量。文件名、时间索引和字段定义需匹配
-已有生成链路，发布运行包必须附字段字典。
+当前受支持的无量纲动态入口将五变量切片作为静态剖面的增量，经过时间插值后
+叠加，不能直接填入完整瞬时状态。压力按边界模式由状态方程或内部外推确定，
+不是该切片的输入字段。五变量切片不直接适用 AIR5 十一变量。
+网格、静态剖面、切片和 AIR5 数据的具体字段见
+[部署输入数据字典](documents/ASTR_DEPLOYMENT_INPUT_CONTRACT.md)。
 
 `ASTR_PROFILE_INFLOW_MODE` 用于已实现的 x-min、bctype=11 入口：
 
@@ -578,17 +585,24 @@ ASTR_GPU_RANK_RK_TIMING=on 用于 GPU 分 rank RK 诊断。不同标签不混算
 
 ### 10.1 文件含义
 
+本轮发布验收采用 iomode=h。底层还保留 s 的一维串接 HDF5 接口，但主程序
+write_io_tree 直接采用结构化写入，并未完整按 h/s/n 分派。因此 s 不列为
+本轮已验证的主程序输出方式，n 也不能视为全局关闭文件 I/O 的保证。
+这不是新增运行时限制；选择这些遗留选项前须另行核对、测试对应路径。
+
 | 文件 | 含义 |
 |---|---|
 | run.log | 启动重定向日志、CFL、状态和异常 |
 | flowstate.dat | 以表头为准；maxq1...maxq5 不是湍动能或时间平均 |
-| outdat/flowfield.h5 + auxiliary.txt | 成套 checkpoint |
+| outdat/flowfield.h5 + auxiliary.txt | 场和辅助元数据；GPU 精确恢复还需下述配套文件 |
+| outdat/restart_q*.bin | 非反应流 GPU 实际推进状态，按 rank 保存 |
 | bakup/ | 备份，恢复前核对完整性和时间 |
 | monitor/ | 监测点及专用剖面、壁面量 |
 | 切片/场序列 | 后处理或入口数据，不默认是完整 restart |
 
 CPU/GPU 比较必须同相位。同名文件、同一步号可能处于不同边界处理阶段。
-GPU 保留完整 RK 状态语义，精确比较采用同相位快照或匹配 checkpoint 重建。
+非反应流 GPU 的 restart_q 保留下一步滤波前的实际推进状态；HDF5 场可能经过
+主机边界投影。精确场比较采用同相位快照或已核对相位的 checkpoint 重建。
 
 ### 10.2 统计与监测
 
@@ -620,6 +634,61 @@ AIR5 补偿还需主状态、carry（浮点低位余量）和版本元数据；�
 监测文件可能使用 status='new' 拒绝覆盖，因此优先新目录续算。
 不得复制仍在写入的 HDF5 作为唯一恢复来源。
 不要把场输出过程造成的 CPU/GPU 相位差直接当作数值误差。
+
+### 10.4 重启文件配套与兼容边界
+
+| 输出方式 | 新运行目录需要的文件 | 检查重点 |
+|---|---|---|
+| 非序列 HDF5 场 | outdat/flowfield.h5、outdat/auxiliary.txt | HDF5 nstep 与辅助文件 nstep 相同 |
+| 新版非反应流 GPU 续算 | 上述场文件及全部 outdat/restart_q.rankNNNNNNNN.bin | 保存实际推进的 FP64 q，含每个 rank 的重复共享节点和 halo；不能只复制 HDF5 |
+| 序列 HDF5 场 | 选定的 flowfieldNNNN.h5，及同代 auxiliaryNNNN.txt 的副本命名为 auxiliary.txt | 保持辅助文件 filenumb 指向该场，不混入其他步号的默认场 |
+| 新版非反应流 GPU 序列续算 | 上述序列文件及该步全部 restart_q.stepSSSSSSSSSS.rankNNNNNNNN.bin | S 为十位时间步号，不是四位 filenumb；保持 lwsequ 设置不变 |
+| 普通累计平均 | 上述流场及对应 meanflow.h5 | lavg=t 且 nsamples>0 时读取，步号及样本数须匹配 |
+| GPU 紧凑统计 | 流场及全部 compact_stats.rankNNNNNNNN.bin | 原 MPI 拓扑、rank 编号、局部尺寸、步号、时间和样本数须匹配 |
+| AIR5 补偿/专用边界 | 完整原始 checkpoint 及该模式要求的元数据 | 不从 primitive 字段重新拼装或删除 carry/版本字段 |
+
+普通重启读取器先读 auxiliary.txt，根据 filenumb 查找序列场；找不到时会
+尝试 flowfield.h5。因此“文件存在”不等于选中了期望的代次。应在独立目录中
+只放确定的一套恢复数据，保存原件，不通过修改 nstep 绕过一致性检查。
+输入文件、网格和入口数据也必须与该套状态配套。
+
+非反应流 GPU 的 HDF5 场保留原有展示及 CPU 场比较语义。独立 restart_q
+文件保存主机边界投影和共享节点平均之前的实际推进状态，避免重启改变下一步
+滤波输入。辅助文件记录版本和生成代次，读取时核验 rank、拓扑、尺寸、步号、
+时间及部分数值配置，并检查负载长度和有限性。该检查不是输入文件或网格的
+完整校验和；用户仍须保持全部物理配置一致。每次 checkpoint 额外写出一套
+含 halo 的五分量 FP64 q，非序列旧代随场文件保留于 bakup。
+
+带版本标识的 checkpoint 若缺文件、存在未完成的 .tmp、代次不符或配置不匹配，
+程序直接停止，不回退到展示场。不要删除标识绕过检查。精确 GPU 续算目前不支持
+更换 MPI 拓扑或切换 CPU 路径。无版本标识的历史文件仍可按旧方式读取，但会
+提示不能保证精确续算，尤其不能保证壁面滤波的连续/重启一致性。
+此格式仅适用于非反应流 numq=5；AIR5 的补偿及专用边界恢复协议不变。
+
+GPU 紧凑统计按 rank 保存二进制累计状态，当前读取器明确核验原拓扑和局部
+分块。它不是跨拓扑统计迁移格式；不得因全局 HDF5 场可重新分块，就认为
+这些统计文件也可直接迁移。完整统计恢复不能只用 flowstate.dat 替代。
+
+默认兼容范围是同一已验证二进制、相同模型、网格、边界及统计配置的续算。
+更换版本、CPU/GPU 路径、拓扑、精度或滤波方案时，先做短窗连续/重启对照，
+不承诺任意版本间或 CPU/GPU 间的逐位一致。当前本地发布回归覆盖的具体
+组合见发布执行清单，不以一个通过案例代替所有组合。
+
+### 10.5 正常停止与失败恢复
+
+生产运行宜在启动前设置明确的绝对 maxstep 和正的 checkpoint 间隔，确保
+计划停止前有完整恢复点。controller 并非每步读取：主循环在 checkpoint
+间隔处重新读取它。修改 controller 不等于即时停止，也不保证额外生成
+用户指定时刻的 checkpoint；不要在并发读取期间逐行改写该文件。
+
+进程退出码为零仍需检查正常结束标记、错误信息、场是否有限和恢复文件是否
+配套。文件写出失败、MPI 中止或强制终止后，不使用最新但未完成的文件组，
+应选择上一套已确认完整的恢复点，在新目录短跑核验后再续算。
+程序存在备份文件并不等于全部输出构成一个原子事务，不混用不同代次备份。
+
+若升级后的二进制失败，保留失败日志与新目录，用原二进制、原输入、原环境
+及升级前的完整 checkpoint 恢复。不要要求旧版本读取新版本新增的状态字段。
+任何数值异常都先定位，不通过关闭报错检查或放宽保正容差恢复生产。
 
 ## 11. 算例选择与专用处理
 
@@ -692,7 +761,9 @@ air5reactor、air5postshock、air5normalshock、air5tgv、air5hbl、air5sbli
 
 目前后续 AIR5 检查采用 `symmetric_species + layered`，但程序默认仍是
 `full_state + full_state`。要复用前者必须显式设置两个变量，不能依赖默认值。
-实际通过的工况和时间窗口见 [当前进展](documents/ASTR_GPU_CURRENT_STATUS_AND_NEXT_TARGETS.md)。
+交付范围和未关闭的物理门槛见
+[部署能力边界](documents/ASTR_RELEASE_PROD_CAPABILITY_SCOPE.md)。具体生产配置
+另附对应版本的验证记录，不将开发分支的全部历史验证作为随包能力承诺。
 
 **补偿及顶面设置的条件**
 
@@ -780,8 +851,19 @@ initialize 仅允许不含补偿字段的旧 checkpoint 以零 carry 开始新�
 
 ## 14. 部署验收及复现记录
 
+部署不绑定某一超算平台。已有本地或 A800 记录仅适用于记录中的环境和
+二进制，不能替代新部署环境的验收；CUDA Fortran 版本仍要求受支持的 NVIDIA
+GPU 和 NVHPC 工具链，不代表已经支持 AMD/DCU。
+
 最小顺序：独立构建与依赖检查 -> 单 rank 短跑与设备绑定 ->
 CPU/GPU 同相位 -> 多 rank 与目标通信 -> 输出重启 -> 目标物理长窗。
+
+依赖检查不能只查 `ldd` 是否出现 `not found`。还要核对 MPI 启动器、
+Fortran 编译包装器、HDF5 构建记录和二进制实际加载的 MPI 库是否属于
+同一套兼容环境。编译器运行库及 MPI 动态加载的通信组件也需在实际计算节点
+验证。登录节点检查通过不证明驱动、GPU 绑定或 CUDA-aware 传输可用。
+平台模块名、路径、GPU 架构及调度器启动方式应由部署方填写，不能照搬
+示例中的本地路径。先通过主机中转通信，再对 device-aware 单独验收。
 
 更换编译器、MPI/UCX、驱动、GPU 或数值配置，按影响面重新验证。
 文档更新无需重跑昂贵生产任务。生产包不带测试，可由开发分支的外部验收工具

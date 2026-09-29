@@ -45,6 +45,8 @@ module initialisation
 #endif
 #ifdef _CUDA
     use gpu_runtime,only: gpu_compact_statistics_requested
+    use checkpoint_gpu,only: restore_exact_checkpoint_gpu
+    use readwrite,only: exact_gpu_restart_version,exact_gpu_restart_generation
 #endif
     !
 #ifdef ASTR_AIR5_CHEMISTRY
@@ -66,6 +68,9 @@ module initialisation
 #endif
       !
       call updateq
+#ifdef _CUDA
+      if(use_gpu) call restore_exact_checkpoint_gpu(exact_gpu_restart_version,exact_gpu_restart_generation)
+#endif
       !
     else
       !

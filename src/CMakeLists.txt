@@ -68,6 +68,7 @@ if(ASTR_WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/mixed_candidate_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/upwind_flux_mode_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/commarray_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/checkpoint_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/production_statistics_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/commvar_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/qswap_gpu.cuf

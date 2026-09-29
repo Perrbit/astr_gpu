@@ -367,6 +367,9 @@ module mainloop
                             gpu_end_complete_step_timing
 #endif
     use readwrite, only : writechkpt,writeslice
+#ifdef _CUDA
+    use checkpoint_gpu, only: prepare_exact_checkpoint_gpu,commit_exact_checkpoint_gpu
+#endif
     use userdefine, only : udf_write
     !
     ! argument
@@ -416,6 +419,7 @@ module mainloop
       gpu_slice_due = nstep > 0 .and. lwslic .and. mod(nstep,feqslice)==0
       if(gpu_checkpoint_due .or. gpu_slice_due) then
         call gpu_sync_flow_to_host()
+        if(gpu_checkpoint_due) call prepare_exact_checkpoint_gpu()
         if(flowtype(1:2)/='0d' .and. .not.conservative_case .and. &
            .not.dynamic_inflow_output .and. .not.air5_open_x_case .and. &
            .not.air5_hbl_case) then
@@ -437,6 +441,7 @@ module mainloop
       if(gpu_checkpoint_due) then
         call gpu_prepare_compact_statistics_checkpoint()
         call writechkpt()
+        call commit_exact_checkpoint_gpu()
         call gpu_commit_compact_statistics_checkpoint()
       endif
       call gpu_time_integration_rk(.true.,.false.)

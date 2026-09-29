@@ -1,0 +1,207 @@
+module checkpoint_gpu
+  use iso_fortran_env, only: int32,int64,real64,int8
+  use iso_c_binding, only: c_char,c_int,c_null_char
+  implicit none
+  private
+  public :: prepare_exact_checkpoint_gpu,commit_exact_checkpoint_gpu
+  public :: restore_exact_checkpoint_gpu,exact_checkpoint_version_gpu
+  public :: exact_checkpoint_generation_gpu
+  logical,save :: prepared=.false.
+  integer,save :: saved_step=-1
+  integer(int64),save :: generation=0_int64
+  interface
+    function rename_file(old,new) bind(C,name='rename') result(status)
+      import c_char,c_int
+      character(c_char),intent(in) :: old(*),new(*)
+      integer(c_int) :: status
+    end function rename_file
+  end interface
+contains
+  subroutine require_all(local_error,message)
+    use mpi
+    use parallel, only: lio
+    integer,intent(in) :: local_error
+    character(len=*),intent(in) :: message
+    integer :: failed,ierr,abort_error
+    call MPI_Allreduce(merge(1,0,local_error/=0),failed,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS .or. failed/=0) then
+      if(lio) write(*,'(A)') trim(message)
+      call MPI_Abort(MPI_COMM_WORLD,1,abort_error)
+    endif
+  end subroutine require_all
+
+  subroutine paths(final,temp,backup)
+    use commvar, only: nstep,lwsequ
+    use parallel, only: mpirank
+    character(len=*),intent(out) :: final,temp,backup
+    character(len=96) :: leaf
+    if(lwsequ) then
+      write(leaf,'("restart_q.step",I10.10,".rank",I8.8,".bin")') nstep,mpirank
+    else
+      write(leaf,'("restart_q.rank",I8.8,".bin")') mpirank
+    endif
+    final='outdat/'//trim(leaf)
+    temp=trim(final)//'.tmp'
+    backup='bakup/'//trim(leaf)
+  end subroutine paths
+
+  subroutine metadata(header,parameters,names)
+    use commvar, only: ia,ja,ka,im,jm,km,hm,numq,lfilter,diffterm,nondimen, &
+      time,deltat,const2,const6,reynolds,prandtl,flowtype,conschm,difschm,rkscheme
+    use parallel, only: mpirank,isize,jsize,ksize,irk,jrk,krk,ig0,jg0,kg0
+    use bc, only: bctype,twall
+    integer(int32),intent(out) :: header(29)
+    real(real64),intent(out) :: parameters(12)
+    character(len=32),intent(out) :: names(4)
+    header=[1,int(z'01020304'),8,ia,ja,ka,isize,jsize,ksize,mpirank, &
+      irk,jrk,krk,ig0,jg0,kg0,im,jm,km,hm,numq,merge(1,0,lfilter), &
+      merge(1,0,diffterm)+2*merge(1,0,nondimen),bctype]
+    parameters=[time,deltat,const2,const6,reynolds,prandtl,twall]
+    names=[character(len=32) :: flowtype,conschm,difschm,rkscheme]
+  end subroutine metadata
+
+  integer function exact_checkpoint_version_gpu() result(version)
+    use commvar, only: nstep,use_gpu,lcomb,numq
+    version=0
+    if(use_gpu .and. .not.lcomb .and. numq==5 .and. saved_step==nstep) version=1
+  end function exact_checkpoint_version_gpu
+
+  integer(int64) function exact_checkpoint_generation_gpu() result(value)
+    value=generation
+  end function exact_checkpoint_generation_gpu
+
+  subroutine prepare_exact_checkpoint_gpu()
+    use mpi
+    use parallel, only: mpirank
+    use commvar, only: nstep,lcomb,numq,iomode
+    use commarray, only: q
+    use ieee_arithmetic, only: ieee_is_finite
+    integer(int32) :: header(29)
+    real(real64) :: parameters(12)
+    character(len=32) :: names(4)
+    character(len=256) :: final,temp,backup
+    integer :: unit,ios,close_status,failed,ierr,calendar(8)
+    if(lcomb .or. numq/=5 .or. iomode=='n') return
+    call require_all(merge(1,0,prepared),'GPU exact checkpoint already prepared')
+    call require_all(merge(0,1,all(ieee_is_finite(q))), &
+      'GPU exact checkpoint contains nonfinite state')
+    call metadata(header,parameters,names)
+    if(mpirank==0) then
+      ! NVHPC's first system_clock call starts at zero in each process.
+      call date_and_time(values=calendar)
+      generation=int(calendar(1),int64)*12+calendar(2)-1
+      generation=generation*31+calendar(3)-1
+      generation=((generation*24+calendar(5))*60+calendar(6))*60+calendar(7)
+      generation=generation*1000+calendar(8)
+    endif
+    call MPI_Bcast(generation,1,MPI_INTEGER8,0,MPI_COMM_WORLD,ierr)
+    call require_all(merge(0,1,ierr==MPI_SUCCESS),'GPU exact checkpoint generation broadcast failed')
+    call paths(final,temp,backup)
+    open(newunit=unit,file=trim(temp),access='stream',form='unformatted', &
+      status='new',action='write',convert='little_endian',iostat=ios)
+    if(ios==0) then
+      write(unit,iostat=ios) 'ASTRQ001'
+      if(ios==0) write(unit,iostat=ios) header,int(nstep,int64),generation,parameters,names
+      ! Preserve duplicated nodes and halos before host-only boundary projection.
+      if(ios==0) write(unit,iostat=ios) q
+      close(unit,iostat=close_status)
+      if(close_status/=0) ios=close_status
+    endif
+    failed=merge(0,1,ios==0)
+    call require_all(failed,'GPU exact checkpoint temporary write failed')
+    saved_step=nstep
+    prepared=.true.
+  end subroutine prepare_exact_checkpoint_gpu
+
+  integer function move_file(old,new) result(status)
+    character(len=*),intent(in) :: old,new
+    character(c_char),allocatable :: old_c(:),new_c(:)
+    integer :: i
+    allocate(old_c(len_trim(old)+1),new_c(len_trim(new)+1))
+    do i=1,len_trim(old)
+      old_c(i)=old(i:i)
+    enddo
+    do i=1,len_trim(new)
+      new_c(i)=new(i:i)
+    enddo
+    old_c(size(old_c))=c_null_char
+    new_c(size(new_c))=c_null_char
+    status=rename_file(old_c,new_c)
+  end function move_file
+
+  subroutine commit_exact_checkpoint_gpu()
+    character(len=256) :: final,temp,backup
+    logical :: exists
+    integer :: failed
+    if(.not.prepared) return
+    call paths(final,temp,backup)
+    inquire(file=trim(final),exist=exists)
+    failed=0
+    if(exists) failed=move_file(final,backup)
+    call require_all(failed,'GPU exact checkpoint backup rotation failed')
+    failed=move_file(temp,final)
+    call require_all(failed,'GPU exact checkpoint publish failed')
+    prepared=.false.
+  end subroutine commit_exact_checkpoint_gpu
+
+  subroutine restore_exact_checkpoint_gpu(version,expected_generation)
+    use commvar, only: nstep,lcomb,numq
+    use commarray, only: q
+    use parallel, only: lio
+    use ieee_arithmetic, only: ieee_is_finite
+    integer,intent(in) :: version
+    integer(int64),intent(in) :: expected_generation
+    integer(int32) :: header(29),expected(29)
+    integer(int64) :: step,file_generation
+    real(real64) :: parameters(12),expected_parameters(12)
+    character(len=32) :: names(4),expected_names(4)
+    character(len=8) :: magic
+    character(len=256) :: final,temp,backup
+    integer :: unit,ios,failed,tail_status
+    integer(int8) :: trailing
+    logical :: exists,pending
+    if(lcomb .or. numq/=5) then
+      call require_all(merge(0,1,version==0),'GPU exact checkpoint model mismatch')
+      return
+    endif
+    if(version==0) then
+      if(lio) write(*,'(A)') 'Legacy checkpoint: exact GPU continuation is not guaranteed'
+      return
+    endif
+    call require_all(merge(0,1,version==1),'Unsupported GPU exact checkpoint version')
+    call paths(final,temp,backup)
+    inquire(file=trim(final),exist=exists)
+    inquire(file=trim(temp),exist=pending)
+    call require_all(merge(0,1,exists.and..not.pending),'GPU exact checkpoint missing or incomplete')
+    call metadata(expected,expected_parameters,expected_names)
+    open(newunit=unit,file=trim(final),access='stream',form='unformatted', &
+      status='old',action='read',convert='little_endian',iostat=ios)
+    call require_all(merge(0,1,ios==0),'GPU exact checkpoint open failed')
+    read(unit,iostat=ios) magic
+    if(ios==0) read(unit,iostat=ios) header,step,file_generation,parameters,names
+    failed=merge(0,1,ios==0)
+    if(ios==0) then
+      if(magic/='ASTRQ001' .or. any(header/=expected) .or. step/=int(nstep,int64)) failed=1
+      if(file_generation<=0 .or. file_generation/=expected_generation) failed=1
+      if(any(names/=expected_names)) failed=1
+      if(.not.all(ieee_is_finite(parameters))) failed=1
+      if(any(abs(parameters-expected_parameters)> &
+        1.d-13*max(abs(expected_parameters),1.d0))) failed=1
+    endif
+    call require_all(failed,'GPU exact checkpoint metadata mismatch')
+    read(unit,iostat=ios) q
+    if(ios==0) then
+      read(unit,iostat=tail_status) trailing
+      if(tail_status>=0) ios=1
+    endif
+    close(unit)
+    call require_all(merge(0,1,ios==0),'GPU exact checkpoint payload is truncated or oversized')
+    call require_all(merge(0,1,all(ieee_is_finite(q))), &
+      'GPU exact checkpoint contains nonfinite state')
+    ! Keep the display primitives unchanged through flowinit's initial output.
+    ! The GPU first-stage preparation rebuilds primitives from this exact q.
+    saved_step=nstep
+    generation=file_generation
+    if(lio) write(*,'(A)') 'GPU exact checkpoint restored (rank-local pre-filter state)'
+  end subroutine restore_exact_checkpoint_gpu
+end module checkpoint_gpu

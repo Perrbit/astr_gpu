@@ -68,7 +68,15 @@ ctest -L nondim
 
 The binary will be installed under:
 
-test_case/bin/astr
+test_case/opt/bin/astr
+
+The default install prefix is `<build-directory>/opt`. Override it with
+`-DCMAKE_INSTALL_PREFIX=/absolute/install/path` or
+`cmake --install <build-directory> --prefix /absolute/install/path`.
+The build-tree executable remains `<build-directory>/bin/astr`.
+The legacy Make, Cantera and `script/install.sh` instructions are not the
+minimal GPU release workflow; those tools may be absent from a trimmed package.
+Use the root CMake build and `examples/GPU_Quickstart/` for that package.
 
 Enabling Combustion Module
 ASTR supports detailed chemical kinetics via Cantera. To enable this feature:

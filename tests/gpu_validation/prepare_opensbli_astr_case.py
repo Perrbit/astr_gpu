@@ -24,6 +24,7 @@ def prepare_case(destination, use_gpu, nx, ny, nz, maxstep, feqchkpt, deltat, pr
         datin / "input.opensbli", nx - 1, ny - 1, nz - 1, use_gpu,
         "t", "f", "543e", "t", 1.0e-3, 950.0, 2.0, 288.0,
         1.676194, 52, 11, 3, 0,
+        turbinf="prof", z_bctype=1,
     )
     write_controller(datin / "controller", maxstep, feqchkpt, deltat)
     shutil.copyfile(assets / "grid.h5", datin / "grid.flatplate.h5")
