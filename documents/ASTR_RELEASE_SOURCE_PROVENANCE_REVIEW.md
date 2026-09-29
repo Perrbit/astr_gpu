@@ -1,15 +1,11 @@
-# 发布源码来源初查
+# 源码版权与许可说明
 
-日期：2026-09-29。状态：按用户决定暂缓核查，不是完整许可审查结论。
+文档版次：2026-09-29。本文件汇总源码已有声明，不重新授予或替换第三方许可。
 
-## 检查范围
+## 根许可证与第三方声明
 
-静态检查根 LICENSE、src/、src_gpu/、user_define_module/ 和
-GPU_Quickstart 中显式版权、许可和复制来源注释，核对 src/CMakeLists.txt。
-没有修改第三方代码、许可证或构建列表，也未执行 Git 操作。
-关键词搜索没有命中不代表文件不存在第三方来源。
-
-## 已发现的来源记录
+根 LICENSE 保持 Apache License 2.0。各源码文件中的原作者、版权、许可、
+公开来源和参考文献声明应同时保留，不能仅根据根许可证覆盖已有第三方条款。
 
 | 位置 | 源码现有声明 | 待核实事项 |
 |---|---|---|
@@ -18,23 +14,16 @@ GPU_Quickstart 中显式版权、许可和复制来源注释，核对 src/CMakeL
 | src/initialisation.F90:2960，r8_random | GNU LGPL；Wichman/Hill 原算法、John Burkardt Fortran90 版本 | 确认引入版本及许可文本 |
 | src/geom.F90:3779，point_in_polygon | GNU LGPL；John Burkardt | 确认引入版本及许可文本 |
 | src/utility.F90:645，progress_bar | 来自 macie/fortran-libs，Maciej Zok，2010 MIT License | 核实上游版本及完整版权/许可声明 |
-| src/singleton.F90:9 | 改编自 fftn.c，提及 Mark Olesen 和 John Beale | 本次查看的文件头未给出明确许可，需追溯原始来源 |
+| src/singleton.F90:9 | 改编自 fftn.c，提及 Mark Olesen 和 John Beale | 文件头未给出明确许可，需追溯原始来源 |
 | src/initialisation.F90:1576、2004 | copied from xcompact | 确认对应版本、复制范围和适用声明 |
 
-上述五个 src 文件均在主程序 CMake 源列表中。即使某条路径运行时不启用，
-文件仍属于当前源码交付范围。不以未使用 GPU 浸入边界等理由擅自删去文件。
 
-Git 跟踪的许可相关文件还包括
-documents/reference_data/opensbli_katzer/LICENSE.upstream 和
-tests/gpu_validation/data/HTR_LICENSE.txt；它们分别随对应资料使用，不能
-代替上述生产源码的来源记录。精简包不自动复制这些参考数据。
+## 核查状态
 
-## 用户决定及保留事项
+上述条目为已有声明的来源索引，不是完整许可审查结论。
+其中部分引入版本、完整许可文本及复制范围仍待核实；这些事项保留为已知限制。
+本交付不修改这些实现及原声明，不将尚未核实的片段统一重新标注为 Apache-2.0。
 
-用户决定跳过本轮来源追溯，维持根目录 Apache-2.0 许可证。保留原有
-第三方声明及实现，不修改许可证，不为第三方代码另行标注 Apache-2.0。
-上表留作未核实来源记录，不据此新增许可文本或推断具体许可版本。
-
-该项不再阻塞当前发布准备，不判定项目已违规，也不宣称已通过许可审查。
-R11 的来源/许可项记为暂缓核查。构建和数值验证结果不受这一文档检查影响，
-但不能替代发布来源确认。
+未随本目录交付的参考数据、论文、图片或第三方运行输入，不能从源码许可证
+推定其使用权限。对外提供额外资料时，应另行核对资料本身的许可和共享条件。
+构建、数值验证或性能测试通过不能替代来源与许可核查。

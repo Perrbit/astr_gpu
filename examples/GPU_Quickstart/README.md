@@ -195,10 +195,11 @@ FILTER_VALIDATION=on。最后一个值表示用户允许进入已实现的组合
 
 lwsequ/lwslic/lavg 默认关闭，但 checkpoint 和网格输出仍保留。
 短跑最后一次更新安排 checkpoint；CPU/GPU 精确场差必须另行核对写出相位。
-当前 checkpoint 的 time 标签沿用步首计时：本次三更新短跑写出 nstep=2、
-time=2*deltat，而 GPU 场已完成该次更新。case.json 中 expected_final_time
-是三次更新的预计积分时长，不能直接拿它与文件 time 标签作相等断言。
-本次不修改已有输出时间语义；同存储方式对照需同时匹配状态和标签。
+checkpoint 的步号、文件 time 与程序最终完成的更新时间需要分别核对。
+case.json 的 expected_final_time 表示计划完成全部更新后的积分时长；程序可能在
+写出 checkpoint 后继续推进，不能据此要求二者始终相等。
+同相位场比较应匹配 checkpoint 状态及边界处理阶段，而非仅比较文件名或步号。
+非反应流 GPU 精确续算还需同代的全部 restart_q 文件，不能只复制展示场。
 AIR5 平板每步记录专用监测量，不等于已进行 Favre 统计或展向平均。
 
 检查正常结束、实际 usegpu、绑定、CFL、温度/组分和滤波存储日志。
@@ -229,27 +230,14 @@ mpirun -np 2 /absolute/path/to/astr run datin/input.dat >run.log 2>&1
 重启应按 [使用说明](../../USER_GUIDE.md) 成套复制状态和辅助文件，
 设置 lrestart=t，并核对补偿与边界配置。不要用新启动脚本覆盖旧运行目录。
 
-## 8. 本次检查记录（2026-09-29）
+## 8. 已验证范围
 
-NVHPC 26.1、Open MPI 4.1.9a1/HPC-X、HDF5 1.14.6，
-本地两张 RTX 4000 Ada。通过根 CMake 重建 CUDA+AIR5、BUILD_TESTING=OFF 二进制。
+在 NVHPC、MPI 和 HDF5 的兼容环境中，五套模板完成过 CPU NP1、
+GPU NP1 和 GPU NP2（2×1×1）三次更新的启动检查。
+启用滤波的四套模板还完成 full/scalar 对照，对应输出数值字段最大绝对差为零。
+AIR5 TGV 模板关闭滤波，不计入滤波对照。
 
-- 26 项输入准备、非法参数、脚本语法和单分量存储检查通过。
-- 五套模板各完成 CPU NP=1、GPU NP=1、GPU NP=2 三更新启动，共 15 次。
-- 四套启用滤波的模板另完成 GPU full 模式 NP=1/2，共 8 次。
-- 八对 full/默认 scalar 的 checkpoint 数值字段最大绝对差均为 0；包括 AIR5 的组分、双温、补偿主状态和低位余量字段。
-- 23 次输出字段均有限，日志 CFL 最大值不超过 0.1631082。
-
-| 算例 | CPU NP=1 | GPU NP=1 | GPU NP=2 (2,1,1) | full/scalar 最大差（NP=1/2） |
-|---|---|---|---|---|
-| tgv | 通过 | 通过 | 通过 | 0 / 0 |
-| channel | 通过 | 通过 | 通过 | 0 / 0 |
-| flatplate | 通过 | 通过 | 通过 | 0 / 0 |
-| air5_tgv | 通过 | 通过 | 通过 | 未比较，模板关闭滤波 |
-| air5_flatplate | 通过 | 通过 | 通过 | 0 / 0 |
-
-运行证据位于本机 /tmp/astr-quickstart-20260929/，重启或清理后可能消失。
-其中 flatplate_gpu 是最初中心对流与滤波组合被支持条件检查拒绝的记录，
-不计入通过项；修订后的 flatplate_gpu_v2 使用上述 543e/MP7 配置。
-所有测试均使用新目录，未修改既有生产任务。
-这里不报告 CPU/GPU 同相位误差或性能加速比，也未新增长时物理验证。
+这些结果用于说明模板可以启动及受测存储方式一致，不代表长时物理收敛、
+所有 CPU/GPU 输出同相位，或其他平台的通信与性能已经验收。
+非反应流的较长短窗、同相位场和重启结果见
+[验证摘要](../../documents/ASTR_RELEASE_LOCAL_REGRESSION_20260929.md)。

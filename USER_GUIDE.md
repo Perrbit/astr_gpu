@@ -1,8 +1,9 @@
 # ASTR GPU 使用说明
 
-版本：2026-09-29 工作目录草案。适用：当前 CUDA Fortran/MPI 实现。
-本说明依据实际输入解析、运行入口和已有验证记录编写，尚未冻结为正式发布版。
-本次编写不执行 Git、提交任务或修改算例。构建、数值一致、物理正确、统计收敛和性能达标是不同验收项目。
+文档版次：2026-09-29。适用于随本说明交付的 CUDA Fortran/MPI 源码。
+本说明覆盖部署、输入配置、算例启动、边界条件、可选功能、输出与恢复。
+基础配置面向非反应流；AIR5 和受限性能选项的使用条件在相应章节中单独列明。
+完成部署和短时数值对照不等于目标物理工况已经达到统计收敛。
 
 ## 目录
 
@@ -20,7 +21,7 @@
 12. AIR5 使用条件与配置
 13. 故障处理
 14. 部署验收及复现记录
-15. 源码索引与发布前待补附件
+15. 源码与配套文档索引
 
 ## 1. 能力与适用范围
 
@@ -63,8 +64,8 @@ Fortran 的 .mod 文件存在编译器兼容性要求，不能只看 HDF5 版本
 环境示意，路径应对应实际安装：
 
 ```bash
-export NVHPC_ROOT=/opt/nvidia/hpc_sdk/Linux_x86_64/26.1
-export HDF5_ROOT=/opt/hdf5-1.14.6
+export NVHPC_ROOT=/path/to/nvhpc
+export HDF5_ROOT=/path/to/parallel-hdf5
 export PATH="$NVHPC_ROOT/compilers/bin:$NVHPC_ROOT/comm_libs/hpcx/bin:$HDF5_ROOT/bin:$PATH"
 export LD_LIBRARY_PATH="$HDF5_ROOT/lib:$NVHPC_ROOT/compilers/lib:${LD_LIBRARY_PATH:-}"
 command -v nvfortran
@@ -82,7 +83,7 @@ MPI 初始化应通过匹配的启动器进行。HPC-X 额外环境采用平台�
 只通过根 CMakeLists.txt 构建。旧 Makefile 和 build_nvhpc*.sh 不是当前 GPU 发布权威入口。
 
 ```bash
-export ROOT=/home/dell/workspace/astr_gpu
+export ROOT=/path/to/astr
 cmake -S "$ROOT" -B "$ROOT/build_prod" \
   -DCMAKE_Fortran_COMPILER=nvfortran \
   -DCMAKE_BUILD_TYPE=Release \
@@ -150,7 +151,7 @@ case_name/
 必须进入算例目录再启动，两个任务不得共用输出目录。
 
 ```bash
-export ROOT=/home/dell/workspace/astr_gpu
+export ROOT=/path/to/astr
 export CASE=/absolute/path/to/case_name
 cd "$CASE"
 export OMP_NUM_THREADS=1
@@ -221,7 +222,8 @@ nondimen,diffterm,lfilter,lreadgrid,lfftk,limmbou,ltimrpt,lcomb,usegpu
 
 ### 4.3 显式周期 TGV 模板
 
-以下是按读取器组织的文档模板，非新完成的物理或性能验证。保留头部和空行。
+以下为显式周期 TGV 输入模板。复制时保留头部、字段顺序和空行。
+完整生成与启动方法见 [GPU Quickstart](examples/GPU_Quickstart/README.md)。
 
 ```text
 ########################################################################
@@ -476,8 +478,8 @@ CUDA-aware MPI 不是 NCCL，也不自动证明跨节点 GPUDirect RDMA 生效�
 需要构建查询、运行时支持及实际传输验证。device-aware 的 MPI_Init 前绑定
 需要启动器提供可识别 local-rank 环境，未知平台不能直接照搬别处配置。
 
-中科算联云项目操作范围仅限 /data/user/hd56000/weiph。
-本说明不授权提交、取消或修改平台任务。
+任务工作目录、可用资源和调度器启动命令由部署平台规定。
+运行脚本应使用该平台允许的目录，不混用其他环境的模块或启动器配置。
 
 ## 9. 数值与性能可选项
 
@@ -524,8 +526,8 @@ AIR5 不在这里的混合精度支持范围。滤波保持 FP64，不提供 FP3
 
 这项选择不改变滤波系数，也不取消 AIR5 保正和能量检查。
 省下的是滤波工作区，不能将整个程序的显存需求按分量数等比例缩小。
-默认值自 2026-09-29 修改，须重新编译；旧二进制不会因文档修改而改变默认值。
-旧测试或平台脚本显式设置 full 时仍使用 full。lfilter=f 时，单组分仍可能
+本版本默认 scalar；旧二进制的默认行为须核对启动日志。
+运行脚本显式设置 full 时仍使用 full。lfilter=f 时，单组分仍可能
 保留完整兼容工作数组，AIR5 则不分配滤波工作区，不能仅凭默认选项推算显存。
 
 **同步：`ASTR_GPU_SYNC_MODE`**
@@ -585,9 +587,9 @@ ASTR_GPU_RANK_RK_TIMING=on 用于 GPU 分 rank RK 诊断。不同标签不混算
 
 ### 10.1 文件含义
 
-本轮发布验收采用 iomode=h。底层还保留 s 的一维串接 HDF5 接口，但主程序
+本版本支持的标准输出方式为 iomode=h。底层还保留 s 的一维串接 HDF5 接口，但主程序
 write_io_tree 直接采用结构化写入，并未完整按 h/s/n 分派。因此 s 不列为
-本轮已验证的主程序输出方式，n 也不能视为全局关闭文件 I/O 的保证。
+本版本已验证的主程序输出方式，n 也不能视为全局关闭文件 I/O 的保证。
 这不是新增运行时限制；选择这些遗留选项前须另行核对、测试对应路径。
 
 | 文件 | 含义 |
@@ -671,8 +673,8 @@ GPU 紧凑统计按 rank 保存二进制累计状态，当前读取器明确核�
 
 默认兼容范围是同一已验证二进制、相同模型、网格、边界及统计配置的续算。
 更换版本、CPU/GPU 路径、拓扑、精度或滤波方案时，先做短窗连续/重启对照，
-不承诺任意版本间或 CPU/GPU 间的逐位一致。当前本地发布回归覆盖的具体
-组合见发布执行清单，不以一个通过案例代替所有组合。
+不承诺任意版本间或 CPU/GPU 间的逐位一致。本版本验证覆盖的具体
+组合见验证结果摘要，不以一个通过案例代替所有组合。
 
 ### 10.5 正常停止与失败恢复
 
@@ -759,7 +761,7 @@ air5reactor、air5postshock、air5normalshock、air5tgv、air5hbl、air5sbli
 - `full_state`：组分、动量和能量扩散采用共同的界面限制系数。
 - `layered`：先限制组分扩散并一致修正其携带的能量，再根据热力学可接受性检查能量相关修正。不是取消能量约束，也不是让各分量完全独立更新。
 
-目前后续 AIR5 检查采用 `symmetric_species + layered`，但程序默认仍是
+AIR5 受控验证采用 `symmetric_species + layered`，但程序默认仍是
 `full_state + full_state`。要复用前者必须显式设置两个变量，不能依赖默认值。
 交付范围和未关闭的物理门槛见
 [部署能力边界](documents/ASTR_RELEASE_PROD_CAPABILITY_SCOPE.md)。具体生产配置
@@ -851,7 +853,7 @@ initialize 仅允许不含补偿字段的旧 checkpoint 以零 carry 开始新�
 
 ## 14. 部署验收及复现记录
 
-部署不绑定某一超算平台。已有本地或 A800 记录仅适用于记录中的环境和
+部署不绑定某一超算平台。已有验证记录仅适用于记录中的环境和
 二进制，不能替代新部署环境的验收；CUDA Fortran 版本仍要求受支持的 NVIDIA
 GPU 和 NVHPC 工具链，不代表已经支持 AMD/DCU。
 
@@ -871,16 +873,16 @@ Fortran 编译包装器、HDF5 构建记录和二进制实际加载的 MPI 库�
 
 每个运行包记录：
 
-- 源码版本、未提交补丁归属、构建选项、二进制校验值。
+- 源码版本、自定义修改记录、构建选项、二进制校验值。
 - 编译器、MPI、HDF5、驱动、GPU、CPU/GPU 资源及拓扑。
 - 输入、网格/入口版本、生效环境变量。
 - 时间步、恢复时间、实际物理终点、输出和平均策略。
 - 误差定义、比较相位、阈值，以及通过/失败/未测试结论。
 
 校验值可写离线清单，不要求程序启动打印 SHA256。
-私有凭据、未发表资料和大运行产物不自动加入 Git。
+对外共享运行记录前，移除账户、凭据、内部主机名及个人目录信息。
 
-## 15. 源码索引与发布前待补附件
+## 15. 源码与配套文档索引
 
 | 主题 | 实现 |
 |---|---|
@@ -894,14 +896,14 @@ Fortran 编译包装器、HDF5 构建记录和二进制实际加载的 MPI 库�
 | AIR5 | src/chemistry_runtime.F90、src/chemistry_boundary_state.F90、src/chemistry_boundary.F90 |
 | 统计 | src/statistic.F90、src_gpu/production_statistics_gpu.cuf、src/chemistry_monitor.F90 |
 
-正式发布还应补齐，不把这些缺口交给用户猜测：
+配套文档：
 
-1. 每个交付算例完整最小运行包和输入检查，不只给边界编号。
-2. 普通剖面、时序切片、AIR5 剖面/入射状态、网格和 checkpoint 的版本化字段字典。
-3. 逐算例单位/无量纲说明，特别是壁温、出口压力、参考量和输出统计。
-4. 精确到方向、网格、格式、物理模型、通信后端的允许组合表。
-5. 已核验的平台启动模板、环境模块、绑定与内存预算。
-6. checkpoint 兼容策略、统计恢复、正常停止和失败恢复约定。
-7. 发布源码/依赖清单、许可证、已知限制与回滚版本。
+- [算例生成与启动](examples/GPU_Quickstart/README.md)：非反应流和实验性 AIR5 示例。
+- [输入数据字典](documents/ASTR_DEPLOYMENT_INPUT_CONTRACT.md)：网格、入口、初场及专用状态字段。
+- [能力边界](documents/ASTR_RELEASE_PROD_CAPABILITY_SCOPE.md)：物理模型与可选组合限制。
+- [部署验收清单](documents/ASTR_RELEASE_READINESS_CHECKLIST.md)：目标计算环境的检查顺序。
+- [验证结果摘要](documents/ASTR_RELEASE_LOCAL_REGRESSION_20260929.md)：已执行检查及其适用范围。
+- [源码许可说明](documents/ASTR_RELEASE_SOURCE_PROVENANCE_REVIEW.md)：已有版权声明与待核实事项。
 
-本次没有改变求解器或输入，没有执行文档模板的新流场仿真。
+新工况应另外准备单位与参考量说明、网格及入口数据、时间步依据、输出计划和
+预先确定的误差判据。不要将示例成功运行直接作为目标工况物理正确性的证明。
