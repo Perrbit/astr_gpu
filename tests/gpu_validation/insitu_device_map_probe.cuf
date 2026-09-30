@@ -1,0 +1,49 @@
+program insitu_device_map_probe
+  use mpi
+  use cudafor
+  use iso_c_binding
+  implicit none
+  interface
+    integer(c_int) function map_device(index,uuid,usize,message,msize) bind(C,name='astr_insitu_map_current_cuda')
+      import c_int,c_char
+      integer(c_int),intent(out) :: index
+      character(c_char),intent(out) :: uuid(*),message(*)
+      integer(c_int),value :: usize,msize
+    end function
+  end interface
+  real,device,allocatable :: marker(:)
+  character(c_char) :: uuid(37),message(256)
+  character(32) :: mode
+  integer :: ierr,rank,node,local_rank,count,status,any_bad,after
+  integer(c_int) :: index,result
+  call MPI_Init(ierr)
+  call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
+  call MPI_Comm_split_type(MPI_COMM_WORLD,MPI_COMM_TYPE_SHARED,rank,MPI_INFO_NULL,node,ierr)
+  call MPI_Comm_rank(node,local_rank,ierr)
+  call get_command_argument(1,mode)
+  if(trim(mode)/='no-context') then
+    status=cudaGetDeviceCount(count)
+    if(status/=cudaSuccess.or.count<1) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+    status=cudaSetDevice(mod(local_rank,count))
+    if(status/=cudaSuccess) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+    allocate(marker(1))
+    marker=1.0
+  endif
+  result=map_device(index,uuid,37_c_int,message,256_c_int)
+  if(trim(mode)=='no-context') then
+    status=merge(0,1,result/=0.and.index==-1)
+  else
+    status=cudaGetDevice(after)
+    if(status==cudaSuccess) status=merge(0,1,after==mod(local_rank,count).and.result==0)
+  endif
+  call MPI_Allreduce(status,any_bad,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+  if(any_bad/=0) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+  if(result==0) then
+    write(*,'(A,I0,A,I0,A,36A)') 'MAPPING rank=',rank,' egl=',index,' uuid=',uuid(1:36)
+  else
+    write(*,'(A,I0)') 'PASS no-context rejection rank=',rank
+  endif
+  if(allocated(marker)) deallocate(marker)
+  call MPI_Comm_free(node,ierr)
+  call MPI_Finalize(ierr)
+end program

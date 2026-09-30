@@ -1,0 +1,25 @@
+--- a/VTK/Filters/FlowPaths/vtkStreamTracer.cxx
++++ b/VTK/Filters/FlowPaths/vtkStreamTracer.cxx
+@@ -739,2 +739,3 @@
+     this->OutputPoints.TakeReference(vtkPoints::New());
++    this->OutputPoints->SetDataTypeToDouble();
+ 
+@@ -1517,2 +1518,3 @@
+     vtkNew<vtkPoints> outPoints;
++    outPoints->SetDataTypeToDouble();
+     outPoints->SetNumberOfPoints(numPts);
+--- a/VTK/Filters/ParallelFlowPaths/vtkPStreamTracer.cxx
++++ b/VTK/Filters/ParallelFlowPaths/vtkPStreamTracer.cxx
+@@ -269,2 +269,3 @@
+       vtkNew<vtkPoints> points;
++      points->SetDataTypeToDouble();
+       {
+@@ -311,2 +312,3 @@
+       this->Tail->SetPoints(vtkSmartPointer<vtkPoints>::New());
++      this->Tail->GetPoints()->SetDataTypeToDouble();
+       this->Tail->GetPoints()->InsertNextPoint(x);
+@@ -1722,3 +1724,3 @@
+ 
+-  vtkSmartPointer<vtkFloatArray> seeds = vtkSmartPointer<vtkFloatArray>::New();
++  vtkSmartPointer<vtkDoubleArray> seeds = vtkSmartPointer<vtkDoubleArray>::New();
+   seeds->SetNumberOfComponents(3);

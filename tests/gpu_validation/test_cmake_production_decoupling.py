@@ -11,7 +11,20 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 # Explicitly approved production addition, pending the next authorized commit.
-PENDING_PRODUCTION_INPUTS = ("src_gpu/checkpoint_gpu.cuf",)
+PENDING_PRODUCTION_INPUTS = (
+    "src_gpu/checkpoint_gpu.cuf", "src/insitu_runtime.F90", "src/catalyst_adapter.cpp",
+    "src/insitu_resource_budget.F90",
+    "src/insitu_run_config.F90", "src/insitu_config_collective.F90",
+    "src/insitu_fields.F90", "src_gpu/insitu_sample_gpu.cuf",
+    "src/insitu_session.F90", "src/insitu_schedule.F90", "src/insitu_checkpoint_batch.F90",
+    "src/insitu_time_integral.F90", "src/insitu_velocity_statistics.F90", "src/insitu_spatial_statistics.F90",
+    "src_gpu/insitu_statistics_gpu.cuf",
+    "src/insitu_device_map.cpp",
+    "src/insitu_mesh_adapter.cpp",
+    "src/insitu_resource_observer.cpp",
+    "scripts/insitu/tgv_pipeline.py", "scripts/insitu/tgv_streamlines.py",
+    "scripts/insitu/egl_identity.py",
+)
 COMPILER = os.environ.get("ASTR_TEST_CMAKE_COMPILER")
 pytestmark = pytest.mark.skipif(
     not COMPILER, reason="Set ASTR_TEST_CMAKE_COMPILER for CMake integration checks"
@@ -54,8 +67,17 @@ def test_production_without_test_sources(source_copy, tmp_path, cuda, air5):
     targets = (build / "CMakeFiles/TargetDirectories.txt").read_text()
     assert "probe.dir" not in targets
     assert "halo_exchange_contract_test.dir" not in targets
+    assert "astr_catalyst_adapter.dir" not in targets
+    cache = (build / "CMakeCache.txt").read_text()
+    assert "ASTR_WITH_CATALYST:BOOL=OFF" in cache
+    assert "catalyst_DIR:" not in cache
+    assert "CMAKE_CXX_COMPILER:" not in cache
     flags = (build / "src/CMakeFiles/astr.dir/flags.make").read_text()
     assert "ASTR_BUILD_TESTING" not in flags
+    rules = (build / "src/CMakeFiles/astr.dir/build.make").read_text()
+    assert "insitu_sample_validation" not in rules
+    assert "insitu_fields.F90" in rules
+    assert ("insitu_sample_gpu.cuf" in rules) == (cuda == "ON")
     assert ("ASTR_AIR5_CHEMISTRY" in flags) == (air5 == "ON")
     if cuda == "ON":
         cache = (build / "CMakeCache.txt").read_text()
@@ -77,6 +99,30 @@ def test_trace_requires_test_sources(source_copy, tmp_path):
     )
     assert result.returncode != 0
     assert "ASTR_BUILD_MPI_COMPLETION_TRACE requires BUILD_TESTING=ON" in result.stdout
+
+
+@pytest.mark.parametrize("cuda", ["OFF", "ON"])
+def test_native_catalyst_without_test_sources(source_copy, tmp_path, cuda):
+    catalyst = os.environ.get("ASTR_TEST_CATALYST_DIR")
+    if not catalyst:
+        pytest.skip("Set ASTR_TEST_CATALYST_DIR for native Catalyst configuration checks")
+    build = tmp_path / "build"
+    result = configure(source_copy, build, "-DBUILD_TESTING=OFF",
+                       "-DASTR_WITH_CATALYST=ON", f"-DASTR_WITH_CUDA={cuda}",
+                       f"-Dcatalyst_DIR={catalyst}")
+    assert result.returncode == 0, result.stdout
+    targets = (build / "CMakeFiles/TargetDirectories.txt").read_text()
+    assert "astr_catalyst_adapter.dir" in targets
+    assert "insitu_allocation_fault.dir" not in targets
+    assert "insitu_device_map_probe.dir" not in targets
+    rules = (build / "src/CMakeFiles/astr_catalyst_adapter.dir/build.make").read_text()
+    assert "insitu_mesh_adapter.cpp" in rules
+    assert "/tests/" not in rules
+    assert ("insitu_device_map.cpp" in rules) == (cuda == "ON")
+    install = (build / "src/cmake_install.cmake").read_text()
+    for name in ("tgv_pipeline.py", "tgv_streamlines.py", "egl_identity.py"):
+        assert name in install
+    assert "insitu_allocation_fault" not in install
 
 
 @pytest.mark.parametrize("cuda", ["OFF", "ON"])

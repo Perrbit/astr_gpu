@@ -17,6 +17,7 @@ program astr
   use commvar,       only: use_gpu,prandtl,flowtype,ndims,lihomo,     &
                            ljhomo,lkhomo
   use benchmark_runtime, only: configure_benchmark_runtime
+  use insitu_runtime, only: insitu_check
   use solver,        only: refcal
   use initialisation,only: flowinit
   use sponge_layer,  only: spongelayerini
@@ -63,7 +64,10 @@ program astr
   !---------------------------------------------------------------------
   ! Select operation based on command
   !---------------------------------------------------------------------
-  if (trim(cmd) == 'pp') then
+  if (trim(cmd) == 'insitu-check') then
+    call insitu_check()
+    call mpistop
+  elseif (trim(cmd) == 'pp') then
 
     ! Pre/Post-processing
     call ppentrance

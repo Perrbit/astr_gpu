@@ -107,6 +107,7 @@ module cmdefne
       write(*,*) ' | test           | Run code test routines                    |'
       write(*,*) ' |     usage: mpirun -np 8 ./astr test grad                   |'
       write(*,*) ' | pp             | Pre/Post-processing                       |'
+      write(*,*) ' | insitu-check   | Check Catalyst backend; no flow advance   |'
       write(*,*) ' +----------------+-------------------------------------------+'
     end if
   

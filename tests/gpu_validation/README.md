@@ -6057,3 +6057,9 @@ These results do not admit the paused Mach4 precursor for long filtered runs.
 Filtered acoustic reflection, longer-window stability, and a matched short
 continuation from that actual checkpoint remain separate gates. Keep the
 validation opt-in and do not infer production readiness from the short matrix.
+
+## Optional Catalyst Backend Admission
+
+See [INSITU_ADMISSION.md](INSITU_ADMISSION.md) for the default-off build option,
+`astr insitu-check` configuration, and MPI regression tests. This checks backend
+loading and lifecycle only; it does not sample or render ASTR fields.

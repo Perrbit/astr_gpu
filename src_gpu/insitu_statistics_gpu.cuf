@@ -1,0 +1,473 @@
+module insitu_statistics_gpu
+  use cudafor
+  use insitu_time_integral, only: clipped_trapezoid
+  use iso_fortran_env, only: int32,int64
+  use ieee_arithmetic, only: ieee_is_finite
+  use insitu_resource_budget, only: resource_budget,configure_budget,reserve_bytes,checked_bytes
+  use iso_c_binding, only: c_int,c_char,c_size_t
+  implicit none
+  private
+  public :: accumulate_statistics_gpu,release_statistics_gpu
+  public :: write_statistics_gpu_state,restore_statistics_gpu_state
+  public :: configure_statistics_device_budget
+  public :: spatial_statistics_gpu
+  public :: statistics_transfer_counts
+  public :: download_statistics_gpu_means
+  public :: download_statistics_gpu_output
+  integer(int64),save :: sample_calls=0,output_downloads=0
+  integer(int64),save :: device_budget=0,device_headroom=0
+  interface
+    integer(c_int) function pci_bus_id(name,length,device) bind(C,name='cudaDeviceGetPCIBusId')
+      import c_char,c_int
+      character(c_char),intent(out) :: name(*)
+      integer(c_int),value :: length,device
+    end function
+  end interface
+  ! State: previous rho/u, time/mass weights, two means, two symmetric central matrices.
+  ! Only half-open owned nodes are stored; no solver halo or duplicate plane is modified.
+  real(8),allocatable,device,save :: state_d(:,:,:,:),output_d(:,:,:,:)
+  real(8),allocatable,device,save :: spatial_d(:)
+  integer,allocatable,device,save :: invalid_d(:,:,:)
+  real(8),save :: previous_time=0.d0,saved_window(2)=0.d0
+  logical,save :: has_previous=.false.
+contains
+  subroutine configure_statistics_device_budget(limit,headroom,ok)
+    integer(int64),intent(in) :: limit,headroom
+    logical,intent(out) :: ok
+    ok=.false.
+    if(allocated(state_d).or.limit<=0.or.headroom<0) return
+    device_budget=limit
+    device_headroom=headroom
+    ok=.true.
+  end subroutine
+
+  subroutine admit_statistics_device_allocation()
+    use mpi
+    use commvar, only: im,jm,km
+    integer :: node,rank,nrank,i,ierr,device,status
+    character(kind=c_char,len=32) :: pci
+    character(kind=c_char,len=32),allocatable :: identities(:)
+    integer(int64) :: request,total_request,available
+    integer(int64),allocatable :: requests(:),free_values(:)
+    integer(c_size_t) :: free_memory,total_memory
+    type(resource_budget) :: budget
+    logical :: ok
+    if(device_budget==0) return
+    call checked_bytes(int([im,jm,km],int64), &
+      int(71*storage_size(0.d0)/8+storage_size(0)/8,int64),request,ok)
+    call guard(ok,'statistics byte count overflow')
+    call guard(request<=huge(request)-48_int64,'statistics reduction byte count overflow')
+    request=request+48_int64
+    call require_cuda(cudaGetDevice(device),'budget device query')
+    pci=repeat(achar(0,kind=c_char),32)
+    status=pci_bus_id(pci,32_c_int,int(device,c_int))
+    call require_cuda(status,'budget PCI identity query')
+    call require_cuda(cudaMemGetInfo(free_memory,total_memory),'budget free memory query')
+    call MPI_Comm_split_type(MPI_COMM_WORLD,MPI_COMM_TYPE_SHARED,0,MPI_INFO_NULL,node,ierr)
+    call guard(ierr==MPI_SUCCESS,'budget node communicator')
+    call MPI_Comm_rank(node,rank,ierr)
+    call guard(ierr==MPI_SUCCESS,'budget node rank')
+    call MPI_Comm_size(node,nrank,ierr)
+    call guard(ierr==MPI_SUCCESS,'budget node size')
+    allocate(identities(nrank),requests(nrank),free_values(nrank),stat=status)
+    call guard(status==0,'budget metadata allocation')
+    call MPI_Allgather(pci,32,MPI_CHARACTER,identities,32,MPI_CHARACTER,node,ierr)
+    call guard(ierr==MPI_SUCCESS,'budget identity gather')
+    call MPI_Allgather(request,1,MPI_INTEGER8,requests,1,MPI_INTEGER8,node,ierr)
+    call guard(ierr==MPI_SUCCESS,'budget demand gather')
+    available=int(free_memory,int64)
+    call MPI_Allgather(available,1,MPI_INTEGER8,free_values,1,MPI_INTEGER8,node,ierr)
+    call guard(ierr==MPI_SUCCESS,'budget free memory gather')
+    total_request=0
+    do i=1,nrank
+      if(identities(i)/=pci) cycle
+      call guard(requests(i)<=huge(total_request)-total_request,'budget aggregate overflow')
+      total_request=total_request+requests(i)
+      available=min(available,free_values(i))
+    enddo
+    call MPI_Comm_free(node,ierr)
+    call guard(ierr==MPI_SUCCESS,'budget node communicator release')
+    call configure_budget(budget,device_budget,device_headroom,ok)
+    call guard(ok,'statistics budget configuration')
+    call reserve_bytes(budget,1,total_request,available,ok)
+    call guard(ok,'statistics device allocation exceeds budget or free-memory headroom')
+  contains
+    subroutine guard(condition,message)
+      logical,intent(in) :: condition
+      character(*),intent(in) :: message
+      integer :: ignored
+      if(condition) return
+      write(*,'(A)') 'ASTR INSITU RESOURCE ERROR: '//message
+      call MPI_Abort(MPI_COMM_WORLD,1,ignored)
+    end subroutine
+  end subroutine
+
+  function state_header() result(header)
+    use commvar, only: ia,ja,ka,im,jm,km
+    use parallel, only: mpirank,isize,jsize,ksize,irk,jrk,krk,ig0,jg0,kg0
+    integer(int32) :: header(17)
+    header=int([1,ia,ja,ka,isize,jsize,ksize,mpirank,irk,jrk,krk,ig0,jg0,kg0,im,jm,km],int32)
+  end function
+
+  subroutine write_statistics_gpu_state(unit,batch,step,time,ok)
+    use commvar, only: im,jm,km
+    integer,intent(in) :: unit
+    character(*),intent(in) :: batch
+    integer(int64),intent(in) :: step
+    real(8),intent(in) :: time
+    logical,intent(out) :: ok
+    real(8),allocatable :: state(:,:,:,:)
+    character(64) :: identity
+    integer :: status
+    ok=.false.
+    if(.not.allocated(state_d).or..not.has_previous) return
+    if(len_trim(batch)==0.or.len_trim(batch)>64.or.step<0) return
+    if(.not.ieee_is_finite(time).or.previous_time>time) return
+    allocate(state(0:im-1,0:jm-1,0:km-1,30),stat=status)
+    if(status/=0) return
+    call require_cuda(cudaDeviceSynchronize(),'state save synchronization')
+    state=state_d
+    call require_cuda(cudaGetLastError(),'state save copy')
+    identity=batch
+    write(unit,iostat=status) 'ASTRGS01',state_header(),identity,step,time,previous_time,saved_window,state
+    ok=status==0
+  end subroutine
+
+  subroutine restore_statistics_gpu_state(unit,batch,step,time,window,ok)
+    use commvar, only: im,jm,km
+    use mpi
+    integer,intent(in) :: unit
+    character(*),intent(in) :: batch
+    integer(int64),intent(in) :: step
+    real(8),intent(in) :: time,window(2)
+    logical,intent(out) :: ok
+    real(8),allocatable :: state(:,:,:,:)
+    real(8) :: clock,sample_time,interval(2)
+    character(8) :: magic
+    character(64) :: identity
+    integer(int32) :: header(17)
+    integer(int64) :: saved_step
+    integer :: status,a,b,base,ierr
+    ok=.false.
+    if(len_trim(batch)==0.or.len_trim(batch)>64.or.step<0) return
+    if(.not.all(ieee_is_finite([time,window])).or.window(2)<=window(1)) return
+    read(unit,iostat=status) magic,header,identity,saved_step,clock,sample_time,interval
+    if(status/=0) return
+    if(magic/='ASTRGS01'.or.any(header/=state_header()).or.identity/=batch.or.saved_step/=step) return
+    if(.not.all(ieee_is_finite([clock,sample_time,interval]))) return
+    if(clock/=time.or.sample_time>time.or.any(interval/=window)) return
+    allocate(state(0:im-1,0:jm-1,0:km-1,30),stat=status)
+    if(status/=0) return
+    read(unit,iostat=status) state
+    if(status/=0) return
+    if(.not.all(ieee_is_finite(state))) return
+    if(any(state(:,:,:,1)<=0.d0).or.any(state(:,:,:,5:6)<0.d0)) return
+    if(any((state(:,:,:,5)==0.d0).neqv.(state(:,:,:,6)==0.d0))) return
+    do base=13,22,9
+      do b=1,3
+        if(any(state(:,:,:,base+4*(b-1))<0.d0)) return
+        do a=1,b
+          if(any(state(:,:,:,base+(b-1)*3+a-1)/=state(:,:,:,base+(a-1)*3+b-1))) return
+        enddo
+      enddo
+    enddo
+    do a=7,30
+      if(any(state(:,:,:,5)==0.d0.and.state(:,:,:,a)/=0.d0)) return
+    enddo
+    ! File validation is complete before modifying any existing device state.
+    if(allocated(state_d)) then
+      if(any(shape(state_d)/=[im,jm,km,30])) return
+    else
+      call admit_statistics_device_allocation()
+      allocate(state_d(0:im-1,0:jm-1,0:km-1,30),output_d(0:im-1,0:jm-1,0:km-1,41), &
+               invalid_d(0:im-1,0:jm-1,0:km-1),spatial_d(6),stat=status)
+      if(status/=0) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+    endif
+    state_d=state
+    call require_cuda(cudaGetLastError(),'state restore copy')
+    call require_cuda(cudaDeviceSynchronize(),'state restore synchronization')
+    call refresh_results_kernel<<<dim3((im+511)/512,jm,km),dim3(512,1,1)>>>(im,jm,km)
+    call require_cuda(cudaGetLastError(),'restored result launch')
+    call require_cuda(cudaDeviceSynchronize(),'restored result completion')
+    previous_time=sample_time
+    saved_window=interval
+    has_previous=.true.
+    ok=.true.
+  end subroutine
+
+  subroutine require_cuda(status,where)
+    use mpi
+    integer,intent(in) :: status
+    character(*),intent(in) :: where
+    integer :: ierr
+    if(status==cudaSuccess) return
+    write(*,*) 'in-situ statistics CUDA failure: ',where,': ',trim(cudaGetErrorString(status))
+    call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+  end subroutine
+  attributes(global) launch_bounds(512) subroutine statistics_kernel(im,jm,km,w0,w1,previous)
+    use commarray_gpu, only: q_d
+    integer,value :: im,jm,km
+    real(8),value :: w0,w1
+    logical,value :: previous
+    integer :: i,j,k,a,b,m,e,f,offset,total_slot,mean_slot,central_slot
+    real(8) :: s(30),u(3),delta(3),rho,w,total,new_total,factor,ratio,entry,r(41)
+    i=(blockidx%x-1)*blockdim%x+threadidx%x-1
+    j=blockidx%y-1
+    k=blockidx%z-1
+    if(i>=im.or.j>=jm.or.k>=km) return
+    invalid_d(i,j,k)=0
+    rho=q_d(i,j,k,1)
+    if(.not.(rho>0.d0.and.rho<=huge(rho))) then
+      invalid_d(i,j,k)=1
+      return
+    endif
+    s=0.d0
+    if(previous) s=state_d(i,j,k,:)
+    do e=1,2
+      w=w0
+      if(e==2) w=w1
+      if(w==0.d0) cycle
+      rho=s(1)
+      u=s(2:4)
+      if(e==2) then
+        rho=q_d(i,j,k,1)
+        u=q_d(i,j,k,2:4)/rho
+      endif
+      do f=1,2
+        total_slot=4+f
+        mean_slot=7+3*(f-1)
+        central_slot=13+9*(f-1)
+        if(f==2) w=w*rho
+        total=s(total_slot)
+        new_total=total+w
+        if(.not.(w>0.d0.and.new_total>0.d0.and.new_total<=huge(w))) then
+          invalid_d(i,j,k)=1
+          return
+        endif
+        if(total==0.d0) then
+          s(mean_slot:mean_slot+2)=u
+        else
+          delta=u-s(mean_slot:mean_slot+2)
+          ratio=w/new_total
+          factor=(total/new_total)*w
+          s(mean_slot:mean_slot+2)=s(mean_slot:mean_slot+2)+ratio*delta
+          do b=1,3
+          do a=1,b
+            offset=central_slot+(b-1)*3+a-1
+            entry=s(offset)+(factor*delta(a))*delta(b)
+            s(offset)=entry
+            s(central_slot+(a-1)*3+b-1)=entry
+          enddo
+          enddo
+        endif
+        s(total_slot)=new_total
+      enddo
+    enddo
+    s(1)=q_d(i,j,k,1)
+    s(2:4)=q_d(i,j,k,2:4)/s(1)
+    do m=1,30
+      if(.not.(abs(s(m))<=huge(w))) then
+        invalid_d(i,j,k)=1
+        return
+      endif
+    enddo
+    do a=1,3
+      if(s(13+4*(a-1))<0.d0.or.s(22+4*(a-1))<0.d0) then
+        invalid_d(i,j,k)=1
+        return
+      endif
+    enddo
+    call statistics_result(s,r)
+    do m=1,41
+      if(.not.(abs(r(m))<=huge(w))) then
+        invalid_d(i,j,k)=1
+        return
+      endif
+    enddo
+    state_d(i,j,k,:)=s
+    output_d(i,j,k,:)=r
+  end subroutine
+
+  attributes(device) subroutine statistics_result(s,r)
+    real(8),intent(in) :: s(30)
+    real(8),intent(out) :: r(41)
+    integer :: a
+    r=0.d0
+    if(s(5)>0.d0) then
+      r(1)=s(5)
+      r(2)=s(6)/s(5)
+      r(3:5)=s(7:9)
+      r(6:8)=s(10:12)
+      r(15:23)=s(13:21)/s(5)
+      r(24:32)=s(22:30)/s(6)
+      r(33:41)=s(22:30)/s(5)
+      do a=1,3
+        r(8+a)=sqrt(r(15+4*(a-1)))
+        r(11+a)=sqrt(r(24+4*(a-1)))
+      enddo
+    endif
+  end subroutine
+
+  attributes(global) launch_bounds(512) subroutine refresh_results_kernel(im,jm,km)
+    integer,value :: im,jm,km
+    integer :: i,j,k
+    real(8) :: s(30),r(41)
+    i=(blockidx%x-1)*blockdim%x+threadidx%x-1
+    j=blockidx%y-1
+    k=blockidx%z-1
+    if(i>=im.or.j>=jm.or.k>=km) return
+    s=state_d(i,j,k,:)
+    call statistics_result(s,r)
+    output_d(i,j,k,:)=r
+  end subroutine
+
+  subroutine download_statistics_gpu_means(means,covered)
+    use commvar, only: im,jm,km
+    use mpi
+    real(8),intent(out) :: means(0:im-1,0:jm-1,0:km-1,7)
+    logical,intent(out) :: covered
+    real(8) :: duration
+    integer :: ierr
+    covered=.false.
+    means=0.d0
+    if(.not.allocated(state_d)) return
+    duration=state_d(0,0,0,5)
+    call require_cuda(cudaGetLastError(),'statistics duration copy')
+    if(.not.ieee_is_finite(duration).or.duration<0.d0) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+    if(duration<=0.d0) return
+    means(:,:,:,1:6)=output_d(:,:,:,3:8)
+    means(:,:,:,7)=duration
+    call require_cuda(cudaGetLastError(),'mean fields copy')
+    if(.not.all(ieee_is_finite(means))) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+    covered=.true.
+  end subroutine
+
+  subroutine accumulate_statistics_gpu(t,window,output)
+    use commvar, only: im,jm,km
+    use mpi
+    real(8),intent(in) :: t,window(2)
+    real(8),optional,intent(out) :: output(0:im-1,0:jm-1,0:km-1,41)
+    real(8) :: weights(2),duration
+    integer :: status,ierr
+    integer :: invalid(0:im-1,0:jm-1,0:km-1)
+    logical :: ok
+    if(.not.allocated(state_d)) then
+      call admit_statistics_device_allocation()
+      allocate(state_d(0:im-1,0:jm-1,0:km-1,30),output_d(0:im-1,0:jm-1,0:km-1,41), &
+               invalid_d(0:im-1,0:jm-1,0:km-1),spatial_d(6),stat=status)
+      if(status/=0) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+      saved_window=window
+    endif
+    if(any(window/=saved_window)) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+    weights=0.d0
+    if(has_previous) then
+      call clipped_trapezoid(previous_time,t,[1.d0,0.d0],[0.d0,1.d0],window(1),window(2),weights,duration,ok)
+      if(.not.ok) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+    endif
+    call statistics_kernel<<<dim3((im+511)/512,jm,km),dim3(512,1,1)>>>(im,jm,km, &
+      weights(1),weights(2),has_previous)
+    status=cudaGetLastError()
+    call require_cuda(status,'kernel launch')
+    status=cudaDeviceSynchronize()
+    call require_cuda(status,'kernel completion')
+    invalid=invalid_d
+    if(any(invalid/=0)) then
+      write(*,*) 'in-situ statistics invalid state at time ',t,' nodes: ',count(invalid/=0)
+      call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+    endif
+    ! Only the explicit independent-oracle caller requests the full device result.
+    if(present(output)) then
+      output=output_d
+      status=cudaGetLastError()
+      call require_cuda(status,'result copy')
+      output_downloads=output_downloads+1
+    endif
+    sample_calls=sample_calls+1
+    previous_time=t
+    has_previous=.true.
+  end subroutine
+
+  subroutine statistics_transfer_counts(samples,downloads)
+    integer(int64),intent(out) :: samples,downloads
+    samples=sample_calls
+    downloads=output_downloads
+  end subroutine
+
+  subroutine download_statistics_gpu_output(output)
+    use commvar, only: im,jm,km
+    real(8),intent(out) :: output(0:im-1,0:jm-1,0:km-1,41)
+    output=output_d
+    call require_cuda(cudaGetLastError(),'requested statistics output copy')
+    output_downloads=output_downloads+1
+  end subroutine
+
+  attributes(global) launch_bounds(256) subroutine spatial_kernel(im,jm,km)
+    integer,value :: im,jm,km
+    real(8),shared :: scratch(256)
+    real(8) :: value
+    integer :: lane,component,n,i,j,k,stride
+    lane=threadidx%x
+    component=blockidx%x
+    value=0.d0
+    ! The half-open owned box excludes duplicate MPI and periodic planes.
+    do n=lane-1,im*jm*km-1,256
+      i=mod(n,im)
+      j=mod(n/im,jm)
+      k=n/(im*jm)
+      if(component<=3) then
+        value=value+state_d(i,j,k,component+1)
+      else
+        value=value+output_d(i,j,k,15+4*(component-4))
+      endif
+    enddo
+    scratch(lane)=value
+    call syncthreads()
+    stride=128
+    do while(stride>0)
+      if(lane<=stride) scratch(lane)=scratch(lane)+scratch(lane+stride)
+      call syncthreads()
+      stride=stride/2
+    enddo
+    if(lane==1) spatial_d(component)=scratch(1)
+  end subroutine
+
+  subroutine spatial_statistics_gpu(cell_volume,volume,velocity,variance,ok)
+    use commvar, only: im,jm,km
+    use mpi
+    real(8),intent(in) :: cell_volume
+    real(8),intent(out) :: volume,velocity(3),variance(3)
+    logical,intent(out) :: ok
+    real(8) :: local(7),global(7)
+    integer :: ierr,bad,any_bad
+    ok=.false.
+    volume=0.d0; velocity=0.d0; variance=0.d0
+    bad=merge(0,1,allocated(state_d).and.has_previous.and. &
+      ieee_is_finite(cell_volume).and.cell_volume>0.d0)
+    call MPI_Allreduce(bad,any_bad,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+    if(any_bad/=0) return
+    call spatial_kernel<<<6,256>>>(im,jm,km)
+    call require_cuda(cudaGetLastError(),'spatial reduction launch')
+    call require_cuda(cudaDeviceSynchronize(),'spatial reduction completion')
+    local(2:7)=spatial_d
+    call require_cuda(cudaGetLastError(),'spatial reduction copy')
+    local(1)=real(im,8)*real(jm,8)*real(km,8)
+    local=local*cell_volume
+    bad=merge(0,1,all(ieee_is_finite(local)))
+    call MPI_Allreduce(bad,any_bad,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+    if(any_bad/=0) return
+    call MPI_Allreduce(local,global,7,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+    if(.not.all(ieee_is_finite(global)).or.global(1)<=0.d0) return
+    volume=global(1)
+    velocity=global(2:4)/volume
+    variance=global(5:7)/volume
+    ok=all(ieee_is_finite(velocity)).and.all(ieee_is_finite(variance)).and.all(variance>=0.d0)
+  end subroutine
+
+  subroutine release_statistics_gpu()
+    if(allocated(state_d)) deallocate(state_d,output_d,invalid_d,spatial_d)
+    has_previous=.false.
+  end subroutine
+end module

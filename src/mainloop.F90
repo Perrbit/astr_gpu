@@ -50,6 +50,7 @@ module mainloop
     use commarray,only: x
     use userdefine, only: udf_setup_before_comp
     use benchmark_runtime, only: begin_complete_step_timing,end_complete_step_timing
+    use insitu_session, only: sample_insitu_step,finish_insitu,begin_insitu
     !
     ! local data
     real(8) :: time_beg,time_next_step,crange,completed_step_dt
@@ -104,6 +105,7 @@ module mainloop
     !                           message='init file')
     
     time_beg=ptime()
+    call begin_insitu(nstep,time)
 
     do while(nstep<=maxstep)
 
@@ -113,6 +115,7 @@ module mainloop
       completed_step_dt=deltat
       call time_integration_rk
       call end_complete_step_timing(nstep)
+      call sample_insitu_step(nstep+1,time+completed_step_dt,completed_step_dt)
 #ifdef ASTR_AIR5_CHEMISTRY
       call writemon(time+completed_step_dt)
 #endif
@@ -231,6 +234,7 @@ module mainloop
     ! call ibforce
     !
     time_total=ptime()-time_start
+    call finish_insitu()
     !
     ! if(lio .and. lreport .and. ltimrpt) call timereporter(timecost=time_total,mode='final')
     !
@@ -367,6 +371,7 @@ module mainloop
                             gpu_end_complete_step_timing
 #endif
     use readwrite, only : writechkpt,writeslice
+    use insitu_session, only: save_insitu_pair,capture_insitu_cpu_checkpoint
 #ifdef _CUDA
     use checkpoint_gpu, only: prepare_exact_checkpoint_gpu,commit_exact_checkpoint_gpu
 #endif
@@ -443,6 +448,7 @@ module mainloop
         call writechkpt()
         call commit_exact_checkpoint_gpu()
         call gpu_commit_compact_statistics_checkpoint()
+      call save_insitu_pair()
       endif
       call gpu_time_integration_rk(.true.,.false.)
       call gpu_end_complete_step_timing()
@@ -520,6 +526,7 @@ module mainloop
       !
     endif
 
+    if(loop_counter>0) call capture_insitu_cpu_checkpoint()
     if(rkscheme=='rk4') allocate(rhsav(0:im,0:jm,0:km,1:numq))
 
 #ifdef ASTR_AIR5_CHEMISTRY
@@ -617,6 +624,7 @@ module mainloop
         enddo
 
         call rkfirst(skip_checkpoint=air5_reacting_case)
+        if(nstep>0.and.loop_counter>0.and.mod(nstep,feqchkpt)==0) call save_insitu_pair()
 
       endif
 

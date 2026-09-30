@@ -39,6 +39,7 @@ module initialisation
     use bc,       only: ninflowslice,turbinf
     use userdefine,only: udf_flowinit
     use benchmark_runtime, only: benchmark_field_io_disabled
+    use insitu_session, only: prepare_insitu_pair,restore_insitu_cpu_checkpoint
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_flow_runtime, only: configure_air5_source_mode
     use readwrite, only: initialize_air5_compensated_flow
@@ -55,6 +56,7 @@ module initialisation
     call inletprofile
     !
     call readcont
+    call prepare_insitu_pair()
     !
     if(lrestart) then
       !
@@ -68,6 +70,7 @@ module initialisation
 #endif
       !
       call updateq
+      call restore_insitu_cpu_checkpoint()
 #ifdef _CUDA
       if(use_gpu) call restore_exact_checkpoint_gpu(exact_gpu_restart_version,exact_gpu_restart_generation)
 #endif

@@ -25,6 +25,17 @@ set(ASTR_SOURCES
   hdf5io.F90
   ibmethod.F90
   initialisation.F90
+  insitu_runtime.F90
+  insitu_resource_budget.F90
+  insitu_run_config.F90
+  insitu_config_collective.F90
+  insitu_fields.F90
+  insitu_session.F90
+  insitu_schedule.F90
+  insitu_checkpoint_batch.F90
+  insitu_time_integral.F90
+  insitu_velocity_statistics.F90
+  insitu_spatial_statistics.F90
   interp.F90
   mainloop.F90
   models.F90
@@ -89,6 +100,11 @@ if(ASTR_WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/solver_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/mainloop_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/gpu_runtime.cuf)
+  list(APPEND ASTR_GPU_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_sample_gpu.cuf)
+endif()
+
+if(ASTR_WITH_CUDA)
+  list(APPEND ASTR_GPU_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_statistics_gpu.cuf)
 endif()
 
 if(ASTR_WITH_AIR5_CHEMISTRY)
@@ -122,6 +138,35 @@ endif()
 
 add_executable(astr ${ASTR_SOURCES} ${ASTR_GPU_SOURCES})
 
+if(ASTR_WITH_CATALYST)
+  find_package(MPI REQUIRED COMPONENTS C)
+  add_library(astr_catalyst_adapter STATIC catalyst_adapter.cpp insitu_mesh_adapter.cpp)
+  if(ASTR_WITH_CUDA)
+    find_path(ASTR_EGL_INCLUDE_DIR EGL/eglext.h REQUIRED)
+    get_filename_component(ASTR_COMPILER_BIN "${CMAKE_Fortran_COMPILER}" DIRECTORY)
+    find_path(ASTR_NVML_INCLUDE_DIR nvml.h HINTS "${ASTR_COMPILER_BIN}/../../cuda/include" REQUIRED)
+    target_sources(astr_catalyst_adapter PRIVATE insitu_device_map.cpp insitu_resource_observer.cpp)
+    target_compile_definitions(astr_catalyst_adapter PRIVATE ASTR_CUDA_RENDERER)
+    target_include_directories(astr_catalyst_adapter PRIVATE ${ASTR_EGL_INCLUDE_DIR})
+    target_include_directories(astr_catalyst_adapter PRIVATE ${ASTR_NVML_INCLUDE_DIR})
+  endif()
+  set_target_properties(astr_catalyst_adapter PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED YES)
+  target_compile_definitions(astr_catalyst_adapter INTERFACE ASTR_WITH_CATALYST)
+  target_link_libraries(astr_catalyst_adapter PRIVATE catalyst::catalyst MPI::MPI_C ${CMAKE_DL_LIBS})
+  target_link_libraries(astr PRIVATE astr_catalyst_adapter)
+  if(BUILD_TESTING)
+    add_library(insitu_allocation_fault SHARED EXCLUDE_FROM_ALL ../tests/gpu_validation/insitu_allocation_fault.cpp)
+    target_link_libraries(insitu_allocation_fault PRIVATE ${CMAKE_DL_LIBS})
+    if(ASTR_WITH_CUDA)
+      add_executable(insitu_device_map_probe EXCLUDE_FROM_ALL ../tests/gpu_validation/insitu_device_map_probe.cuf)
+      set_target_properties(insitu_device_map_probe PROPERTIES LINKER_LANGUAGE Fortran)
+      target_link_libraries(insitu_device_map_probe PRIVATE astr_catalyst_adapter MPI::MPI_Fortran)
+    endif()
+  endif()
+  # Keep NVHPC's CUDA Fortran device-link path authoritative.
+  set_target_properties(astr PROPERTIES LINKER_LANGUAGE Fortran)
+endif()
+
 if(ASTR_WITH_AIR5_CHEMISTRY)
   target_compile_definitions(astr PRIVATE ASTR_AIR5_CHEMISTRY)
 endif()
@@ -154,6 +199,71 @@ endif()
 
 if(BUILD_TESTING)
   target_compile_definitions(astr PRIVATE ASTR_BUILD_TESTING)
+
+  add_executable(insitu_checkpoint_batch_probe EXCLUDE_FROM_ALL
+    insitu_checkpoint_batch.F90 ../tests/gpu_validation/insitu_checkpoint_batch_probe.F90)
+  set_target_properties(insitu_checkpoint_batch_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_batch_modules")
+  target_include_directories(insitu_checkpoint_batch_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/insitu_batch_modules")
+  target_link_libraries(insitu_checkpoint_batch_probe PRIVATE MPI::MPI_Fortran)
+
+  add_executable(insitu_spatial_statistics_probe EXCLUDE_FROM_ALL
+    insitu_time_integral.F90 insitu_velocity_statistics.F90 insitu_spatial_statistics.F90
+    ../tests/gpu_validation/insitu_spatial_statistics_probe.F90)
+  set_target_properties(insitu_spatial_statistics_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_spatial_modules")
+  target_include_directories(insitu_spatial_statistics_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/insitu_spatial_modules")
+  target_link_libraries(insitu_spatial_statistics_probe PRIVATE MPI::MPI_Fortran)
+
+  add_executable(insitu_velocity_statistics_probe EXCLUDE_FROM_ALL
+    insitu_time_integral.F90 insitu_velocity_statistics.F90
+    ../tests/gpu_validation/insitu_velocity_statistics_probe.F90)
+  set_target_properties(insitu_velocity_statistics_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_velocity_modules")
+  target_include_directories(insitu_velocity_statistics_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/insitu_velocity_modules")
+
+  add_executable(insitu_time_integral_probe EXCLUDE_FROM_ALL
+    insitu_time_integral.F90 ../tests/gpu_validation/insitu_time_integral_probe.F90)
+  set_target_properties(insitu_time_integral_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_integral_modules")
+  target_include_directories(insitu_time_integral_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/insitu_integral_modules")
+
+  add_executable(insitu_schedule_probe EXCLUDE_FROM_ALL
+    insitu_schedule.F90 ../tests/gpu_validation/insitu_schedule_probe.F90)
+  set_target_properties(insitu_schedule_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_schedule_modules")
+  target_include_directories(insitu_schedule_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/insitu_schedule_modules")
+
+  add_executable(insitu_resource_budget_probe EXCLUDE_FROM_ALL
+    insitu_resource_budget.F90 ../tests/gpu_validation/insitu_resource_budget_probe.F90)
+  set_target_properties(insitu_resource_budget_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_resource_modules")
+  target_include_directories(insitu_resource_budget_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/insitu_resource_modules")
+
+  add_executable(insitu_run_config_probe EXCLUDE_FROM_ALL
+    insitu_run_config.F90 ../tests/gpu_validation/insitu_run_config_probe.F90)
+  set_target_properties(insitu_run_config_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_config_modules")
+  target_include_directories(insitu_run_config_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/insitu_config_modules")
+
+  add_executable(insitu_config_collective_probe EXCLUDE_FROM_ALL
+    insitu_run_config.F90 insitu_config_collective.F90
+    ../tests/gpu_validation/insitu_config_collective_probe.F90)
+  set_target_properties(insitu_config_collective_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_collective_modules")
+  target_include_directories(insitu_config_collective_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/insitu_collective_modules")
+  target_link_libraries(insitu_config_collective_probe PRIVATE MPI::MPI_Fortran)
+
+  add_executable(insitu_runtime_probe EXCLUDE_FROM_ALL
+    insitu_runtime.F90 ../tests/gpu_validation/insitu_runtime_probe.F90)
+  set_target_properties(insitu_runtime_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_probe_modules"
+    LINKER_LANGUAGE Fortran)
+  target_include_directories(insitu_runtime_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/insitu_probe_modules")
+  target_link_libraries(insitu_runtime_probe PRIVATE MPI::MPI_Fortran)
+  if(ASTR_WITH_CATALYST)
+    target_link_libraries(insitu_runtime_probe PRIVATE astr_catalyst_adapter)
+  endif()
 
 if(ASTR_WITH_AIR5_CHEMISTRY)
   add_executable(air5_frozen_source_probe EXCLUDE_FROM_ALL
@@ -446,6 +556,7 @@ if(ASTR_WITH_CUDA AND BUILD_TESTING)
     ${ASTR_HALO_CONTRACT_SOURCES} ${ASTR_GPU_SOURCES}
     ../tests/gpu_validation/halo_exchange_contract_test.cuf)
   set_target_properties(halo_exchange_contract_test PROPERTIES
+    LINKER_LANGUAGE Fortran
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/halo_contract_modules")
   target_include_directories(halo_exchange_contract_test PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/halo_contract_modules")
@@ -490,6 +601,13 @@ install(TARGETS astr
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
+if(ASTR_WITH_CATALYST)
+  install(FILES
+    ../scripts/insitu/tgv_pipeline.py
+    ../scripts/insitu/tgv_streamlines.py
+    ../scripts/insitu/egl_identity.py
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/insitu)
+endif()
 
 if(BUILD_TESTING)
 add_executable(rectilinear_metric_halo_probe EXCLUDE_FROM_ALL

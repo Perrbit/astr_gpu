@@ -1,0 +1,24 @@
+module insitu_sample_gpu
+  use cudafor
+  implicit none
+  private
+  public :: download_sample_gpu
+contains
+  subroutine download_sample_gpu(fields)
+    use commvar, only: im,jm,km
+    use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
+    use mpi
+    real(8),intent(out) :: fields(0:im,0:jm,0:km,11)
+    integer :: status,ignored
+    ! Own host buffers only; do not refresh or overwrite solver host mirrors.
+    status=cudaDeviceSynchronize()
+    if(status/=cudaSuccess) call MPI_Abort(MPI_COMM_WORLD,1,ignored)
+    fields(:,:,:,1:5)=q_d(0:im,0:jm,0:km,1:5)
+    fields(:,:,:,6)=rho_d(0:im,0:jm,0:km)
+    fields(:,:,:,7:9)=vel_d(0:im,0:jm,0:km,1:3)
+    fields(:,:,:,10)=prs_d(0:im,0:jm,0:km)
+    fields(:,:,:,11)=tmp_d(0:im,0:jm,0:km)
+    status=cudaGetLastError()
+    if(status/=cudaSuccess) call MPI_Abort(MPI_COMM_WORLD,1,ignored)
+  end subroutine
+end module
