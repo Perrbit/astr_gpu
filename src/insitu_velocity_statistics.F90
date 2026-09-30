@@ -7,6 +7,8 @@ module insitu_velocity_statistics
   public :: velocity_statistics,velocity_statistics_result
   public :: configure_velocity_statistics,push_velocity_sample,read_velocity_statistics
   public :: write_velocity_state,restore_velocity_state
+  public :: pack_velocity_state,unpack_velocity_state,velocity_state_components
+  integer,parameter :: velocity_state_components=34
   type :: velocity_statistics
     private
     real(real64) :: window_start=0,window_end=0,last_time=0,last_rho=0,last_u(3)=0
@@ -20,6 +22,69 @@ module insitu_velocity_statistics
     real(real64) :: covariance_r(3,3)=0,covariance_f(3,3)=0,density_stress(3,3)=0
   end type
 contains
+  subroutine pack_velocity_state(s,values,ok)
+    type(velocity_statistics),intent(in) :: s
+    real(real64),intent(out) :: values(velocity_state_components)
+    logical,intent(out) :: ok
+    values=0.d0
+    ok=s%configured
+    if(.not.ok) return
+    ! Explicit scalar layout, independent of compiler derived-type padding.
+    values=[s%window_start,s%window_end,s%last_time,s%last_rho,s%last_u, &
+      s%duration,s%mass_duration,s%mean_r,s%mean_f,reshape(s%central_r,[9]), &
+      reshape(s%central_f,[9]),merge(1.d0,0.d0,s%has_previous)]
+  end subroutine
+
+  subroutine unpack_velocity_state(values,s,time,window_start,window_end,ok)
+    real(real64),intent(in) :: values(velocity_state_components),time,window_start,window_end
+    type(velocity_statistics),intent(inout) :: s
+    logical,intent(out) :: ok
+    type(velocity_statistics) :: candidate
+    ok=.false.
+    if(.not.all(ieee_is_finite([values,time,window_start,window_end]))) return
+    if(window_end<=window_start.or.values(1)/=window_start.or.values(2)/=window_end) return
+    if(values(34)/=0.d0.and.values(34)/=1.d0) return
+    candidate%window_start=values(1)
+    candidate%window_end=values(2)
+    candidate%last_time=values(3)
+    candidate%last_rho=values(4)
+    candidate%last_u=values(5:7)
+    candidate%duration=values(8)
+    candidate%mass_duration=values(9)
+    candidate%mean_r=values(10:12)
+    candidate%mean_f=values(13:15)
+    candidate%central_r=reshape(values(16:24),[3,3])
+    candidate%central_f=reshape(values(25:33),[3,3])
+    candidate%has_previous=values(34)==1.d0
+    if(.not.valid_velocity_state(candidate,time)) return
+    candidate%configured=.true.
+    s=candidate
+    ok=.true.
+  end subroutine
+
+  logical function valid_velocity_state(s,time) result(ok)
+    type(velocity_statistics),intent(in) :: s
+    real(real64),intent(in) :: time
+    integer :: i
+    ok=.false.
+    if(.not.all(ieee_is_finite([s%last_time,s%last_rho,s%last_u, &
+         s%duration,s%mass_duration,s%mean_r,s%mean_f]))) return
+    if(.not.all(ieee_is_finite(s%central_r)).or..not.all(ieee_is_finite(s%central_f))) return
+    if(s%duration<0.or.s%mass_duration<0) return
+    if((s%duration==0).neqv.(s%mass_duration==0)) return
+    if(s%has_previous) then
+      if(s%last_rho<=0.or.s%last_time>time) return
+    else
+      if(s%duration/=0.or.s%mass_duration/=0) return
+    endif
+    if(any(s%central_r/=transpose(s%central_r))) return
+    if(any(s%central_f/=transpose(s%central_f))) return
+    do i=1,3
+      if(s%central_r(i,i)<0.or.s%central_f(i,i)<0) return
+    enddo
+    ok=.true.
+  end function
+
   subroutine write_velocity_state(unit,s,batch,step,time,ok)
     integer,intent(in) :: unit
     type(velocity_statistics),intent(in) :: s
@@ -54,7 +119,7 @@ contains
     integer(int64) :: saved_step
     integer(int32) :: previous
     real(real64) :: saved_time
-    integer :: ios,i
+    integer :: ios
     ok=.false.
     if(len_trim(batch)==0.or.len_trim(batch)>64.or.step<0) return
     if(.not.all(ieee_is_finite([time,window_start,window_end]))) return
@@ -68,23 +133,8 @@ contains
     if(.not.ieee_is_finite(saved_time).or.saved_time/=time) return
     if(candidate%window_start/=window_start.or.candidate%window_end/=window_end) return
     if(previous/=0.and.previous/=1) return
-    if(.not.all(ieee_is_finite([candidate%last_time,candidate%last_rho,candidate%last_u, &
-         candidate%duration,candidate%mass_duration,candidate%mean_r,candidate%mean_f]))) return
-    if(.not.all(ieee_is_finite(candidate%central_r)).or. &
-       .not.all(ieee_is_finite(candidate%central_f))) return
-    if(candidate%duration<0.or.candidate%mass_duration<0) return
-    if((candidate%duration==0).neqv.(candidate%mass_duration==0)) return
-    if(previous==1) then
-      if(candidate%last_rho<=0.or.candidate%last_time>time) return
-    else
-      if(candidate%duration/=0.or.candidate%mass_duration/=0) return
-    endif
-    if(any(candidate%central_r/=transpose(candidate%central_r))) return
-    if(any(candidate%central_f/=transpose(candidate%central_f))) return
-    do i=1,3
-      if(candidate%central_r(i,i)<0.or.candidate%central_f(i,i)<0) return
-    enddo
     candidate%has_previous=previous==1
+    if(.not.valid_velocity_state(candidate,time)) return
     candidate%configured=.true.
     s=candidate
     ok=.true.

@@ -16,6 +16,7 @@ module mainloop
   use tecio
   use stlaio,   only: get_unit
   use utility,  only: timereporter
+  use output_runtime, only: begin_output_runtime,completed_output_runtime,new_output_enabled
   !
   implicit none
   !
@@ -24,6 +25,7 @@ module mainloop
   integer :: fhand_err
   integer :: nstep0
   real(8) :: time_start
+  logical :: rkfirst_pending=.true.
   !
   contains
   !
@@ -91,6 +93,8 @@ module mainloop
     endif
     
     call udf_setup_before_comp()
+
+    call begin_output_runtime(loop_counter,rkfirst_pending)
 
     nxtchkpt=nstep+feqchkpt
     nxtwsequ=nstep+feqwsequ
@@ -225,7 +229,9 @@ module mainloop
       !
       loop_counter=loop_counter+1
       nstep=nstep+1
-      time=time+deltat
+      ! readcont may already have selected the next step size.
+      time=time+completed_step_dt
+      call completed_output_runtime(completed_step_dt,loop_counter,rkfirst_pending)
       !
     enddo
     !
@@ -420,8 +426,8 @@ module mainloop
 #ifdef _CUDA
     if(use_gpu) then
       call gpu_begin_complete_step_timing()
-      gpu_checkpoint_due = nstep > 0 .and. mod(nstep,feqchkpt)==0
-      gpu_slice_due = nstep > 0 .and. lwslic .and. mod(nstep,feqslice)==0
+      gpu_checkpoint_due = nstep > 0 .and. mod(nstep,feqchkpt)==0 .and..not.new_output_enabled()
+      gpu_slice_due = nstep > 0 .and. lwslic .and. mod(nstep,feqslice)==0 .and..not.new_output_enabled()
       if(gpu_checkpoint_due .or. gpu_slice_due) then
         call gpu_sync_flow_to_host()
         if(gpu_checkpoint_due) call prepare_exact_checkpoint_gpu()
@@ -895,17 +901,17 @@ module mainloop
     !
     ! local data
     integer,save :: nxtavg
-    logical,save :: firstcall = .true.
     logical :: suppress_checkpoint
     !
     suppress_checkpoint=.false.
     if(present(skip_checkpoint)) suppress_checkpoint=skip_checkpoint
+    suppress_checkpoint=suppress_checkpoint.or.new_output_enabled()
     !
-    if(firstcall) then
+    if(rkfirst_pending) then
       nxtavg=nstep+feqavg
     endif
     
-    if(.not. firstcall) then
+    if(.not. rkfirst_pending) then
     
       call statcal(timerept=ltimrpt)
 
@@ -934,15 +940,15 @@ module mainloop
         nxtavg=nstep+feqavg
       endif
       
-      if(.not. firstcall) then
-        if(lwslic .and. mod(nstep,feqslice)==0) then
+      if(.not. rkfirst_pending) then
+        if(lwslic .and. mod(nstep,feqslice)==0.and..not.new_output_enabled()) then
           call writeslice(ctime(23))
         endif
       endif
 
     endif
     !
-    if(.not. firstcall) then
+    if(.not. rkfirst_pending) then
       
       ! time to write checkpoint
       if(iomode == 'n') then
@@ -965,8 +971,8 @@ module mainloop
 
     endif
     !
-    if(firstcall) then
-      firstcall = .false.
+    if(rkfirst_pending) then
+      rkfirst_pending = .false.
     endif
 
     return

@@ -537,7 +537,8 @@ contains
     use commvar, only: im,jm,km,use_gpu
 #ifdef _CUDA
     use insitu_statistics_gpu, only: accumulate_statistics_gpu,write_statistics_gpu_state, &
-      restore_statistics_gpu_state,release_statistics_gpu,spatial_statistics_gpu
+      restore_statistics_gpu_state,release_statistics_gpu,spatial_statistics_gpu, &
+      pack_statistics_gpu_state,unpack_statistics_gpu_state
 #endif
     use commarray, only: x
     use parallel, only: mpirank,ig0,jg0,kg0
@@ -616,6 +617,41 @@ contains
         call require_sample(ok,'cannot restore released device statistics state')
         close(unit,iostat=status)
         call require_sample(status==0,'cannot close device statistics state')
+        block
+          real(real64),allocatable :: packed(:,:,:,:),again(:,:,:,:)
+          real(real64) :: previous
+          integer :: allocation_status
+          call require_sample(16_int64*int(im,int64)*jm*km*34<=64_int64*1024*1024, &
+            'packed statistics test exceeds 64 MiB host buffer budget')
+          allocate(packed(im,jm,km,34),again(im,jm,km,34),stat=allocation_status)
+          call require_sample(allocation_status==0,'cannot allocate packed statistics test')
+          call pack_statistics_gpu_state(packed,ok)
+          call require_sample(ok,'cannot pack device statistics')
+          call release_statistics_gpu()
+          call unpack_statistics_gpu_state(packed,t,statistics_window,ok)
+          call require_sample(ok,'cannot restore packed device statistics')
+          call pack_statistics_gpu_state(again,ok)
+          call require_sample(ok,'cannot repack device statistics')
+          all_ok=.true.
+          do n=1,34
+            do k=1,km
+              do j=1,jm
+                do i=1,im
+                  if(transfer(packed(i,j,k,n),0_int64)/=transfer(again(i,j,k,n),0_int64)) all_ok=.false.
+                enddo
+              enddo
+            enddo
+          enddo
+          call require_sample(all_ok,'packed device statistics are not bitwise equal')
+          previous=packed(1,1,1,34)
+          packed(1,1,1,34)=2.d0
+          call unpack_statistics_gpu_state(packed,t,statistics_window,ok)
+          call require_sample(.not.ok,'accepted invalid packed statistics flag')
+          packed(1,1,1,34)=previous
+          call pack_statistics_gpu_state(again,ok)
+          call require_sample(ok.and.all(again==packed),'invalid packed restore changed device statistics')
+          if(mpirank==0) print *, 'PASS packed GPU statistics exact restore and rejection'
+        end block
       endif
     endif
 #endif

@@ -1,6 +1,32 @@
 message(STATUS "CMAKE_SOURCE_DIR: ${CMAKE_SOURCE_DIR}")
 message(STATUS "PROJECT_BINARY_DIR: ${PROJECT_BINARY_DIR}")
 
+enable_language(C)
+add_library(astr_checkpoint_filesystem STATIC checkpoint_filesystem.c)
+set_target_properties(astr_checkpoint_filesystem PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED YES)
+
+# New checkpoint publication must not emulate no-replace with a racy existence check.
+include(CheckFortranSourceCompiles)
+check_fortran_source_compiles("
+      program check_renameat2
+      use iso_c_binding
+      interface
+        function ren(a,b,c,d,e) bind(C,name='renameat2') result(status)
+          import c_int,c_char
+          integer(c_int),value :: a,c,e
+          character(c_char) :: b(*),d(*)
+          integer(c_int) :: status
+        end function
+      end interface
+      print *,ren(-100_c_int,'a'//c_null_char,-100_c_int,'b'//c_null_char,1_c_int)
+      end program
+" ASTR_HAS_RENAMEAT2)
+if(ASTR_HAS_RENAMEAT2 AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set_source_files_properties(checkpoint_bundle.F90 PROPERTIES COMPILE_DEFINITIONS ASTR_HAS_RENAMEAT2)
+else()
+  message(STATUS "New checkpoint publication unavailable: no exclusive directory rename; legacy I/O unchanged")
+endif()
+
 set(ASTR_SOURCES
   astr.F90
   bc.F90
@@ -38,6 +64,10 @@ set(ASTR_SOURCES
   insitu_spatial_statistics.F90
   interp.F90
   mainloop.F90
+  output_config.F90
+  output_runtime.F90
+  checkpoint_state_io.F90
+  checkpoint_bundle.F90
   models.F90
   mpiio.F90
   parallel.F90
@@ -80,6 +110,7 @@ if(ASTR_WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/upwind_flux_mode_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/commarray_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/checkpoint_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/checkpoint_state_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/production_statistics_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/commvar_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/qswap_gpu.cuf
@@ -137,6 +168,8 @@ if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
 endif()
 
 add_executable(astr ${ASTR_SOURCES} ${ASTR_GPU_SOURCES})
+target_link_libraries(astr PRIVATE astr_checkpoint_filesystem)
+set_target_properties(astr PROPERTIES LINKER_LANGUAGE Fortran)
 
 if(ASTR_WITH_CATALYST)
   find_package(MPI REQUIRED COMPONENTS C)
@@ -199,6 +232,35 @@ endif()
 
 if(BUILD_TESTING)
   target_compile_definitions(astr PRIVATE ASTR_BUILD_TESTING)
+
+  add_executable(checkpoint_bundle_probe EXCLUDE_FROM_ALL
+    insitu_checkpoint_batch.F90 checkpoint_bundle.F90 ../tests/gpu_validation/checkpoint_bundle_probe.F90)
+  set_target_properties(checkpoint_bundle_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/checkpoint_bundle_modules")
+  target_include_directories(checkpoint_bundle_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/checkpoint_bundle_modules")
+  target_link_libraries(checkpoint_bundle_probe PRIVATE MPI::MPI_Fortran astr_checkpoint_filesystem)
+
+  add_executable(checkpoint_state_probe EXCLUDE_FROM_ALL
+    checkpoint_state_io.F90 insitu_time_integral.F90 insitu_velocity_statistics.F90
+    ../tests/gpu_validation/checkpoint_state_probe.F90)
+  set_target_properties(checkpoint_state_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/checkpoint_state_modules")
+  target_include_directories(checkpoint_state_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/checkpoint_state_modules")
+  target_link_libraries(checkpoint_state_probe PRIVATE MPI::MPI_Fortran)
+
+  add_executable(output_config_probe EXCLUDE_FROM_ALL
+    output_config.F90 ../tests/gpu_validation/output_config_probe.F90)
+  set_target_properties(output_config_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/output_config_modules")
+  target_include_directories(output_config_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/output_config_modules")
+  target_link_libraries(output_config_probe PRIVATE MPI::MPI_Fortran)
+
+  add_executable(output_config_collective_probe EXCLUDE_FROM_ALL
+    output_config.F90 ../tests/gpu_validation/output_config_collective_probe.F90)
+  set_target_properties(output_config_collective_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/output_collective_modules")
+  target_include_directories(output_config_collective_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/output_collective_modules")
+  target_link_libraries(output_config_collective_probe PRIVATE MPI::MPI_Fortran)
 
   add_executable(insitu_checkpoint_batch_probe EXCLUDE_FROM_ALL
     insitu_checkpoint_batch.F90 ../tests/gpu_validation/insitu_checkpoint_batch_probe.F90)

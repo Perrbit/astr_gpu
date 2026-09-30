@@ -9,6 +9,7 @@ module insitu_statistics_gpu
   private
   public :: accumulate_statistics_gpu,release_statistics_gpu
   public :: write_statistics_gpu_state,restore_statistics_gpu_state
+  public :: pack_statistics_gpu_state,unpack_statistics_gpu_state
   public :: configure_statistics_device_budget
   public :: spatial_statistics_gpu
   public :: statistics_transfer_counts
@@ -31,6 +32,38 @@ module insitu_statistics_gpu
   real(8),save :: previous_time=0.d0,saved_window(2)=0.d0
   logical,save :: has_previous=.false.
 contains
+  subroutine pack_statistics_gpu_state(values,ok)
+    use commvar, only: im,jm,km
+    real(8),intent(out) :: values(:,:,:,:)
+    logical,intent(out) :: ok
+    ok=.false.
+    if(any(shape(values)/=[im,jm,km,34])) return
+    if(.not.allocated(state_d).or..not.has_previous) return
+    call require_cuda(cudaDeviceSynchronize(),'packed statistics save synchronization')
+    values(:,:,:,1)=saved_window(1)
+    values(:,:,:,2)=saved_window(2)
+    values(:,:,:,3)=previous_time
+    values(:,:,:,4:33)=state_d
+    values(:,:,:,34)=1.d0
+    call require_cuda(cudaGetLastError(),'packed statistics save copy')
+    ok=.true.
+  end subroutine
+
+  subroutine unpack_statistics_gpu_state(values,time,window,ok)
+    use commvar, only: im,jm,km
+    real(8),intent(in) :: values(:,:,:,:),time,window(2)
+    logical,intent(out) :: ok
+    real(8) :: sample_time
+    ok=.false.
+    if(any(shape(values)/=[im,jm,km,34])) return
+    if(.not.all(ieee_is_finite([time,window])).or.window(2)<=window(1)) return
+    sample_time=values(1,1,1,3)
+    if(.not.ieee_is_finite(sample_time).or.sample_time>time) return
+    if(any(values(:,:,:,1)/=window(1)).or.any(values(:,:,:,2)/=window(2))) return
+    if(any(values(:,:,:,3)/=sample_time).or.any(values(:,:,:,34)/=1.d0)) return
+    call restore_statistics_values_gpu(values(:,:,:,4:33),sample_time,window,ok)
+  end subroutine
+
   subroutine configure_statistics_device_budget(limit,headroom,ok)
     integer(int64),intent(in) :: limit,headroom
     logical,intent(out) :: ok
@@ -147,7 +180,7 @@ contains
     character(64) :: identity
     integer(int32) :: header(17)
     integer(int64) :: saved_step
-    integer :: status,a,b,base,ierr
+    integer :: status
     ok=.false.
     if(len_trim(batch)==0.or.len_trim(batch)>64.or.step<0) return
     if(.not.all(ieee_is_finite([time,window])).or.window(2)<=window(1)) return
@@ -160,6 +193,17 @@ contains
     if(status/=0) return
     read(unit,iostat=status) state
     if(status/=0) return
+    call restore_statistics_values_gpu(state,sample_time,interval,ok)
+  end subroutine
+
+  subroutine restore_statistics_values_gpu(state,sample_time,interval,ok)
+    use commvar, only: im,jm,km
+    use mpi
+    real(8),intent(in) :: state(:,:,:,:),sample_time,interval(2)
+    logical,intent(out) :: ok
+    integer :: status,a,b,base,ierr
+    ok=.false.
+    if(any(shape(state)/=[im,jm,km,30])) return
     if(.not.all(ieee_is_finite(state))) return
     if(any(state(:,:,:,1)<=0.d0).or.any(state(:,:,:,5:6)<0.d0)) return
     if(any((state(:,:,:,5)==0.d0).neqv.(state(:,:,:,6)==0.d0))) return

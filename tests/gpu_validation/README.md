@@ -1,5 +1,148 @@
 # GPU Validation
 
+## Output Redesign Foundations
+
+`output_config.F90` implements a candidate configuration parser and rank-0
+read/typed-broadcast interface. `ASTR_OUTPUT_CONFIG=<file>` now opts into the
+restricted periodic-TGV completed-step checkpoint runtime. Without this variable,
+existing runs retain the existing controller and checkpoint paths.
+See `documents/ASTR_OUTPUT_RESTART_REDESIGN_PLAN.md`, sections 6.2 and 8.1.
+
+Build through the root CMake project with `BUILD_TESTING=ON`:
+
+```bash
+cmake -S . -B <build> <existing compiler and dependency options>
+cmake --build <build> --target output_config_probe output_config_collective_probe astr
+ASTR_OUTPUT_CONFIG_PROBE=<absolute-build>/bin/output_config_probe \
+ASTR_OUTPUT_COLLECTIVE_PROBE=<absolute-build>/bin/output_config_collective_probe \
+ASTR_OUTPUT_MPIEXEC=<matching-mpiexec> \
+python3 -m pytest -q tests/gpu_validation/test_output_config.py
+```
+
+The parser requires the four namelist groups in order, with each group name
+and terminator on its own line. Tests cover valid configurations, LF/CRLF,
+invalid values, unknown/missing/duplicate groups, slice deduplication and global
+index bounds, unchanged options on failure, and NP=2 broadcasts/rejections.
+These checks do not exercise HDF5 writes, retention, restart, or resource peaks.
+
+`run_complete_step_clock.py` runs isolated 16^3 TGV CPU/GPU, NP=1/2 cases using
+a CUDA-capable development executable. It checks fixed timesteps and live
+controller changes from 0.001 to 0.002 to 0.0005, recording the actual accepted
+changes rather than assuming when the input is consumed. Its PTY driver uses
+an atomic controller replacement and stops the launched process group on error.
+
+```bash
+python3 tests/gpu_validation/run_complete_step_clock.py \
+  --executable <absolute-build>/bin/astr --mpiexec <matching-mpiexec> \
+  --output <new-test-directory>
+```
+
+Each completed-state clock is checked against accumulated used timesteps and
+every rank's in-situ sample header. The existing inclusive loop executes 12
+advances for `maxstep=11`; the test does not change that convention. This is a
+clock regression, not a new-format restart or reacting-flow validation.
+
+### Real Completed-Step TGV Restart
+
+```bash
+python3 tests/gpu_validation/run_output_restart_validation.py \
+  --executable <absolute-build>/bin/astr --mpiexec <matching-mpiexec> \
+  --output <new-test-directory> --backends cpu gpu --ranks 1 2
+```
+
+This bounded 16^3 test compares 12 complete advances with 5+7 restart advances.
+It checks final conserved/primitives/halo FP64 representations, control and schedule
+bytes, shared geometry, per-step output-on/off samples, and TGV diagnostic records.
+Use `--mode time` for physical-time scheduling (interval 0.004); default step
+interval is 5. Both paths retain two batches and always save the normal final state.
+The CPU NP=2 branch also rejects changed primary input and corrupted shared resources.
+The source restart directory is never modified; corruptions use a separate copy.
+No legacy flowfield may be produced in this new mode. Test directories must stay
+below 64 MiB; controlled host buffers are capped at 64 MiB. These are local test
+budgets, not production recommendations or measurements of library memory peaks.
+
+Use `--backends cpu --no-samples` with a CPU-only, non-testing executable: final
+exact restart, control, geometry and text statistics are checked, but no claim is
+made about per-step output-switch field equality in that run. The testing build
+provides that separate field check. This is not AIR5, boundary, repartition or
+formal in-situ statistical restart validation.
+
+### Parallel State File Prototype
+
+The statistics payload adds role 3 with 34 explicit FP64 components: window,
+previous sample, accumulated weights, Reynolds/Favre means and central moments,
+and a 0/1 previous-sample flag. `test_statistics_state_continuation` checks the
+CPU pack/HDF5/unpack/continue path at NP=1/2 x/y partitions, plus role rejection.
+The 9x7x5 probe remains within 2 MiB per rank and 4 MiB per directory.
+This is not yet a complete new-format statistics restart transaction.
+
+`insitu_velocity_statistics_probe` also checks invalid packed-state rejection
+without changing existing state. `run_insitu_sample_validation.py --statistics
+--statistics-roundtrip` exercises GPU packing, release, exact restore, invalid
+flag rejection, and continued statistics, in addition to the existing stream
+roundtrip checks. Its added pair of test buffers is capped at 64 MiB. No renderer
+or production run is needed for this check.
+
+`checkpoint_state_io.F90` stores owned global physical nodes and original-rank
+halo/duplicate values separately, without averaging the latter. The restricted
+TGV runtime uses it inside a published bundle; the primitive alone is not a
+complete checkpoint. Repartition reads fill physical nodes only; halos and
+other persistent solver state still need a separate restoration lifecycle.
+
+```bash
+cmake --build <build> --target checkpoint_state_probe
+ASTR_CHECKPOINT_STATE_PROBE=<absolute-build>/bin/checkpoint_state_probe \
+ASTR_OUTPUT_MPIEXEC=<matching-mpiexec> \
+python3 -m pytest -x -q tests/gpu_validation/test_checkpoint_state.py
+```
+
+The approved synthetic matrix is 9x7x5 nodes, 5/11 components, NP=1/2, x/y
+partitions and halo widths 0/1. No GPU or physical simulation is launched.
+Each rank's explicit test arrays/buffers are capped at 2 MiB and each test
+directory at 4 MiB; these are not production defaults or bounds on all MPI/HDF5
+internal allocations. Exact reads compare FP64 representations including signed
+zero. Distinct duplicate values prevent false passes caused by equal copies.
+Tests include 1-to-2, 2-to-1 and x-to-y/y-to-x reads, zero-length extras,
+wrong metadata/type, missing datasets, and refusing to overwrite an existing
+file. They do not yet check checksums, bundle publication, retention or actual
+flow restart equivalence.
+
+`checkpoint_bundle_probe` and `test_checkpoint_bundle.py` add bounded manifest
+and completion-record integrity checks around the real state file. Build this
+probe through the same root CMake and run with the same `ASTR_OUTPUT_MPIEXEC`;
+`ASTR_CHECKPOINT_BUNDLE_PROBE` overrides the executable location. Tests reject
+unsealed directories, missing payloads/markers, single-byte mutations, empty or
+trailing completion records and repeated sealing. CRC64 detects accidental
+corruption, not malicious modification. These checks do not yet implement
+retention or crash durability. Additional publication cases test exclusive
+directory rename and atomic LATEST replacement, including existing destinations,
+unsealed candidates, stale temporary pointers and a directory blocking LATEST.
+Old batch contents must remain unchanged on both success and failure. Linux
+renameat2 availability is checked at build time; unsupported filesystems fail
+closed without falling back to an overwrite-capable directory rename.
+
+Retention cases exercise four sequential publications with keep=1/2 using a
+single live Fortran ledger. Earlier-run/restart-source directories are not
+registered and must remain byte-identical. PROTECT excludes a batch from the
+ordinary count. Unknown files, symlink payloads and hardlinked payloads must
+stop retirement without invalidating the protected old payload or newest batch.
+The small Linux filesystem helper uses directory-relative no-follow operations
+and no recursive deletion. This still does not exercise real solver restart,
+automatic archive reference management or power-loss durability.
+
+Shared-resource cases use a run/resources directory and a checksummed RESOURCES
+table inside run/checkpoints/batch. They verify moving the entire run, missing
+or modified resources, and rejecting file/directory symlinks. The reference
+table must be included in MANIFEST. These synthetic payloads do not validate
+mesh semantics, automatic immutable snapshots or dynamic-inlet source freezing.
+
+The state-file schema is now 2, with an explicit payload role. The perfect-gas
+provider uses role 2 for five conserved fields plus rho/u/v/w/p/T caches, not
+eleven reacting-flow conserved fields. Three NP=1/2 x/y provider checks use
+independent synthetic cached values, require bitwise restore, and reject reading
+the same component count under the wrong role. These are storage-interface
+checks, not the approved 16^3 TGV continuous-versus-restart acceptance matrix.
+
 ## Production Build Without Validation Sources
 
 `BUILD_TESTING` defaults to `ON`, preserving the development targets. Configure

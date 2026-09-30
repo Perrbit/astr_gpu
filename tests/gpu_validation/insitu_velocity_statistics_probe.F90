@@ -1,11 +1,14 @@
 program velocity_statistics_probe
   use insitu_velocity_statistics
-  use iso_fortran_env, only: int64
+  use iso_fortran_env, only: int64,real64
+  use ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   implicit none
   type(velocity_statistics) :: s,copy
   type(velocity_statistics_result) :: r,other
   logical :: ok
   integer :: unit
+  real(real64) :: packed(velocity_state_components),restored(velocity_state_components),damaged(velocity_state_components)
+  integer :: defect
   call configure_velocity_statistics(s,0.25d0,0.75d0,ok)
   call require(ok)
   call push_velocity_sample(s,0.d0,1.d0,[0.d0,0.d0,0.d0],ok)
@@ -81,6 +84,52 @@ program velocity_statistics_probe
   call read_velocity_statistics(copy,other,ok)
   call require(ok.and.all(other%covariance_f==r%covariance_f))
   close(unit)
+  call pack_velocity_state(s,packed,ok)
+  call require(ok)
+  call unpack_velocity_state(packed,copy,2.d0,0.d0,2.d0,ok)
+  call require(ok)
+  call pack_velocity_state(copy,restored,ok)
+  call require(ok.and.all(transfer(packed,[0_int64],34)==transfer(restored,[0_int64],34)))
+  do defect=1,6
+    damaged=packed
+    select case(defect)
+    case(1)
+      damaged(34)=2.d0
+    case(2)
+      damaged(3)=3.d0
+    case(3)
+      damaged(8)=-1.d0
+    case(4)
+      damaged(17)=damaged(19)+1.d0
+    case(5)
+      damaged(4)=ieee_value(0.d0,ieee_quiet_nan)
+    case(6)
+      damaged(2)=3.d0
+    end select
+    call unpack_velocity_state(damaged,copy,2.d0,0.d0,2.d0,ok)
+    call require(.not.ok)
+    call pack_velocity_state(copy,restored,ok)
+    call require(ok.and.all(transfer(packed,[0_int64],34)==transfer(restored,[0_int64],34)))
+  enddo
+  call configure_velocity_statistics(s,0.d0,4.d0,ok)
+  call require(ok)
+  call push_velocity_sample(s,0.d0,1.d0,[-0.d0,2.d0,-1.d0],ok)
+  call require(ok)
+  call push_velocity_sample(s,1.d0,2.d0,[2.d0,3.d0,-2.d0],ok)
+  call require(ok)
+  call pack_velocity_state(s,packed,ok)
+  call require(ok)
+  call unpack_velocity_state(packed,copy,1.d0,0.d0,4.d0,ok)
+  call require(ok)
+  call push_velocity_sample(s,3.d0,3.d0,[4.d0,-1.d0,2.d0],ok)
+  call require(ok)
+  call push_velocity_sample(copy,3.d0,3.d0,[4.d0,-1.d0,2.d0],ok)
+  call require(ok)
+  call pack_velocity_state(s,packed,ok)
+  call require(ok)
+  call pack_velocity_state(copy,restored,ok)
+  call require(ok.and.all(transfer(packed,[0_int64],34)==transfer(restored,[0_int64],34)))
+  print *, 'PASS: explicit statistics layout, exact continuation, invalid state rejection atomicity'
   open(newunit=unit,status='scratch',access='stream',form='unformatted',convert='little_endian')
   write(unit) 'ASTRVS01'
   rewind(unit)

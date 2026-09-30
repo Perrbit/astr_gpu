@@ -1,0 +1,48 @@
+module checkpoint_state_gpu
+  use iso_fortran_env, only: int64,real64
+  use cudafor
+  use mpi
+  use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
+  use gpu_check, only: sync_gpu_boundary
+  use checkpoint_state_io, only: checkpoint_state_identity, checkpoint_state_transfer, &
+    allocate_checkpoint_buffer, checkpoint_state_require
+  implicit none
+  private
+  public :: checkpoint_perfect_gas_gpu
+contains
+  subroutine checkpoint_perfect_gas_gpu(path,writing,global_shape,origin,cells,halo,identity,budget,comm)
+    character(*),intent(in) :: path
+    logical,intent(in) :: writing
+    integer,intent(in) :: global_shape(3),origin(3),cells(3),halo,comm
+    type(checkpoint_state_identity),intent(inout) :: identity
+    integer(int64),intent(in) :: budget
+    real(real64),allocatable :: buffer(:,:,:,:)
+    integer(int64) :: remaining
+    integer :: extents(3)
+    call checkpoint_state_require(allocated(q_d).and.allocated(rho_d).and.allocated(vel_d).and. &
+      allocated(prs_d).and.allocated(tmp_d),comm,'device state not initialized')
+    call allocate_checkpoint_buffer(cells,halo,11,budget,buffer,remaining,comm)
+    extents=shape(buffer(:,:,:,1))
+    call checkpoint_state_require(all(shape(q_d)==[extents,5]).and.all(shape(rho_d)==extents).and. &
+      all(shape(vel_d)==[extents,3]).and.all(shape(prs_d)==extents).and. &
+      all(shape(tmp_d)==extents),comm,'device perfect-gas cache shape')
+    call sync_gpu_boundary('complete-state transfer entry')
+    if (writing) then
+      buffer(:,:,:,1:5)=q_d
+      buffer(:,:,:,6)=rho_d
+      buffer(:,:,:,7:9)=vel_d
+      buffer(:,:,:,10)=prs_d
+      buffer(:,:,:,11)=tmp_d
+    endif
+    call checkpoint_state_transfer(path,writing,.true.,global_shape,origin,cells,halo, &
+      buffer,identity,remaining,comm,role=2)
+    if (.not.writing) then
+      q_d=buffer(:,:,:,1:5)
+      rho_d=buffer(:,:,:,6)
+      vel_d=buffer(:,:,:,7:9)
+      prs_d=buffer(:,:,:,10)
+      tmp_d=buffer(:,:,:,11)
+      call sync_gpu_boundary('complete-state transfer restore')
+    endif
+  end subroutine
+end module

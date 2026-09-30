@@ -39,6 +39,7 @@ module initialisation
     use bc,       only: ninflowslice,turbinf
     use userdefine,only: udf_flowinit
     use benchmark_runtime, only: benchmark_field_io_disabled
+    use output_runtime, only: configure_output_runtime,new_output_enabled
     use insitu_session, only: prepare_insitu_pair,restore_insitu_cpu_checkpoint
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_flow_runtime, only: configure_air5_source_mode
@@ -56,6 +57,7 @@ module initialisation
     call inletprofile
     !
     call readcont
+    call configure_output_runtime()
     call prepare_insitu_pair()
     !
     if(lrestart) then
@@ -229,7 +231,7 @@ module initialisation
     !
     if(lio) print*,' ** flowfield initialised.'
     
-    if(.not.benchmark_field_io_disabled()) call writeflfed(timerept=.true.)
+    if(.not.benchmark_field_io_disabled().and..not.new_output_enabled()) call writeflfed(timerept=.true.)
     
     ! call mpistop
     

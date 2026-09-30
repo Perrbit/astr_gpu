@@ -480,6 +480,10 @@ _Avoid_: Adding more artificial shock slices before OpenSBLI closure, using over
 
 ## In Situ Analysis Language
 
+**ASTR completed-step output state**:
+The authoritative flow state after all updates belonging to one complete advance, including its chemistry and required finishing operations, and before preprocessing the next advance. New output products observe this state with its completed-step count and actual physical time, at independently selected cadences, without changing the numerical update sequence.
+_Avoid_: First-stage preprocessed state, transport-only state in a reacting advance, relabeling a stage field as a completed step, applying extra filtering for output
+
 **ASTR in situ sample**:
 A read-only observation of a completed flow advance. For reacting flow it includes the completed transport and chemistry update, rather than a transport-only RK intermediate state.
 _Avoid_: Arbitrary kernel snapshot, equating transport completion with coupled-step completion
@@ -495,6 +499,22 @@ _Avoid_: Redefining quantitative statistics in a display recipe, silently adding
 **ASTR extracted spatial product**:
 A saved slice, streamline, or isosurface together with its selected attached fields. It supports offline inspection of the extracted object, not arbitrary reanalysis of the unsaved full flow field, and is not a restart checkpoint.
 _Avoid_: Full-field archive, assuming saved geometry permits new thresholds or seed integration
+
+**ASTR volume-field series**:
+A sequence of selected postprocessing fields covering the full physical domain at recorded completed-step times. When enabled, all emitted frames are retained by default independently of checkpoint retention; full spatial coverage does not imply every timestep, every derived field, or complete restart state.
+_Avoid_: Rolling recovery points used as a permanent archive, confusing full-domain coverage with all solver state, assuming volume output is mandatory for slices
+
+**ASTR slice series**:
+A sequence of fields on selected sampling surfaces at recorded completed-step times, with its own output cadence. When enabled, all emitted frames are retained by default independently of volume-field and checkpoint output, but cannot reconstruct the unsaved three-dimensional domain.
+_Avoid_: A complete three-dimensional field, a restart checkpoint, deleting slice history during checkpoint rotation
+
+**ASTR grid-index slice**:
+A sampling surface formed by fixing one global computational-grid index and retaining the physical coordinates and nodal fields on that surface. It can be curved on a curvilinear mesh and is distinct from an interpolated plane specified in physical space.
+_Avoid_: Rank-local index used as a global location, identifying fixed j with constant physical y, describing a curved grid surface as a flat plane
+
+**ASTR offline checkpoint export**:
+Read-only conversion of saved continuation state into postprocessing fields with the saved state's physical definitions and required dependencies. It neither advances the flow or chemistry nor accumulates new statistical samples, and does not change the source checkpoint.
+_Avoid_: Running an extra step to produce an output file, reinitializing boundaries before presenting the saved field, treating exported visualization fields as a complete restart state
 
 **ASTR statistical development monitor**:
 A comparison of flow statistics over specified time blocks used to assess their ongoing evolution. It does not by itself certify statistical stationarity or distinguish turbulent fluctuations from startup drift.
@@ -527,6 +547,22 @@ _Avoid_: Silent reset on missing statistics, merging incompatible windows, count
 **ASTR paired restart set**:
 A flow checkpoint and its compatible statistical continuation state from the same save generation. It is complete only when all required parts are present and consistent; matching step numbers alone do not establish that identity.
 _Avoid_: Combining independently saved flow and statistics, treating a partial save as a valid continuation point
+
+**ASTR checkpoint bundle**:
+A logically complete saved continuation state from one generation, selected for restoration through one directory entry rather than by manually matching its member files. Its restart completeness is distinct from whether a visualization application can interpret its contents.
+_Avoid_: Loose files paired only by step number, assuming directory organization defines a visualization format, treating missing required members as optional
+
+**ASTR shared restart resource**:
+Immutable mesh, prescribed input data, or other unchanged run data referenced by multiple checkpoint bundles through a declared content identity. It is a required dependency when referenced, unlike time-dependent boundary history or statistical state, which belongs to a particular saved generation.
+_Avoid_: Assuming a checkpoint directory is self-contained, treating a growing inlet sequence as immutable, confusing an inlet source with its current time index
+
+**ASTR exact continuation**:
+Resumption that reproduces the numerical state of an uninterrupted run under the same executable, execution backend, MPI decomposition, numerical configuration, and deterministic execution conditions. It includes the continuation state needed by enabled statistics and stateful boundaries, but does not require identical file-container bytes or imply exact trajectories after changing the backend or decomposition.
+_Avoid_: Tolerance-only restart presented as exact continuation, deleting necessary state to reduce file count, claiming unvalidated configurations are covered
+
+**ASTR repartitioned continuation**:
+Resumption of the same mesh and physical problem after changing the MPI rank count or decomposition within the same execution backend. It requires consistent redistribution of the necessary flow, boundary, and statistical state and separate numerical-equivalence validation, rather than assuming the exact-continuation guarantee survives a different floating-point operation order.
+_Avoid_: Mesh adaptation, CPU/GPU backend migration, silently resetting statistics, treating successful field loading as validated continuation
 
 **ASTR averaging window**:
 A user-selected interval of simulation time contributing to formal mean and fluctuation statistics, distinct from the period recorded by development monitors or visualization. Its bounds are retained through linear interpolation of sampled statistical integrands, without extrapolating beyond valid sample coverage or modifying the flow. Its start does not certify a statistically stationary flow.
