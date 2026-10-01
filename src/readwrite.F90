@@ -1240,6 +1240,7 @@ module readwrite
     use commvar,   only : im,jm,km,num_species,time,roinf,tinf,pinf
     use commarray, only : rho,vel,prs,tmp,spc
     use hdf5io
+    use output_input_resources, only: initial_source_path
     use fludyna,   only : thermal
 #ifdef COMB
     use thermchem, only: spcindex
@@ -1252,7 +1253,7 @@ module readwrite
     ! real(8) :: time_initial
     !can be used to start premixed case, but not ready yet
     !
-    call h5io_init(filename='datin/flowini3d.h5',mode='read')
+    call h5io_init(filename=trim(initial_source_path(3)),mode='read')
     ! 
     ! call h5read(varname='time',var=time_initial)
     call h5read(varname='ro',var=rho(0:im,0:jm,0:km)   ,mode='h')
@@ -1310,6 +1311,7 @@ module readwrite
     use commarray, only : rho,vel,prs,tmp,spc
     use fludyna,   only : thermal
     use hdf5io
+    use output_input_resources, only: initial_source_path
     use parallel,  only : ia,ja,ig0,jg0,bcast
     use mpiio
 #ifdef COMB
@@ -1325,22 +1327,22 @@ module readwrite
     
     allocate(temp(0:ia,0:ja))
     if(mpirank==0) then
-      call h5sread(temp,'ro',ia,ja,'datin/flowini2d.h5')
+      call h5sread(temp,'ro',ia,ja,trim(initial_source_path(2)))
     endif
     call bcast(temp)
     rho(0:im,0:jm,0)=temp(ig0:ig0+im,jg0:jg0+jm)
     if(mpirank==0) then
-      call h5sread(temp,'u1',ia,ja,'datin/flowini2d.h5')
+      call h5sread(temp,'u1',ia,ja,trim(initial_source_path(2)))
     endif
     call bcast(temp)
     vel(0:im,0:jm,0,1)=temp(ig0:ig0+im,jg0:jg0+jm)
     if(mpirank==0) then
-      call h5sread(temp,'u2',ia,ja,'datin/flowini2d.h5')
+      call h5sread(temp,'u2',ia,ja,trim(initial_source_path(2)))
     endif
     call bcast(temp)
     vel(0:im,0:jm,0,2)=temp(ig0:ig0+im,jg0:jg0+jm)
     if(mpirank==0) then
-      call h5sread(temp,'t',ia,ja,'datin/flowini2d.h5')
+      call h5sread(temp,'t',ia,ja,trim(initial_source_path(2)))
     endif
     call bcast(temp)
     tmp(0:im,0:jm,0)=temp(ig0:ig0+im,jg0:jg0+jm)
@@ -1411,6 +1413,7 @@ module readwrite
     use commarray, only : rho,vel,prs,tmp,spc
     use fludyna,   only : thermal
     use hdf5io
+    use output_input_resources, only: initial_source_path
 #ifdef COMB
     use thermchem, only: spcindex
 #endif
@@ -1421,7 +1424,7 @@ module readwrite
     real(8) :: time_ini,nstep_ini
     character(len=3) :: spname
     !
-    call h5io_init(filename='datin/flowini1d.h5',mode='read')
+    call h5io_init(filename=trim(initial_source_path(1)),mode='read')
     !
     call h5read(varname='ro', var=rho(0:im,0,0),  dir='i')
     call h5read(varname='u1', var=vel(0:im,0,0,1),dir='i')

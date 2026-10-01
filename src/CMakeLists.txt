@@ -2,7 +2,17 @@ message(STATUS "CMAKE_SOURCE_DIR: ${CMAKE_SOURCE_DIR}")
 message(STATUS "PROJECT_BINARY_DIR: ${PROJECT_BINARY_DIR}")
 
 enable_language(C)
-add_library(astr_checkpoint_filesystem STATIC checkpoint_filesystem.c)
+# Parallel HDF5 headers include mpi.h; use the selected Fortran MPI installation.
+if(NOT MPI_C_COMPILER)
+  get_filename_component(ASTR_MPI_BINDIR "${MPI_Fortran_COMPILER}" DIRECTORY)
+  if(EXISTS "${ASTR_MPI_BINDIR}/mpicc")
+    set(MPI_C_COMPILER "${ASTR_MPI_BINDIR}/mpicc" CACHE FILEPATH "Matching MPI C wrapper")
+  endif()
+endif()
+find_package(MPI REQUIRED COMPONENTS C)
+add_library(astr_checkpoint_filesystem STATIC checkpoint_filesystem.c checkpoint_hdf5_resources.c)
+target_include_directories(astr_checkpoint_filesystem PRIVATE ${HDF5_INCLUDE_DIRS})
+target_link_libraries(astr_checkpoint_filesystem PRIVATE ${HDF5_LIBRARIES} MPI::MPI_C)
 set_target_properties(astr_checkpoint_filesystem PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED YES)
 
 # New checkpoint publication must not emulate no-replace with a racy existence check.
@@ -65,6 +75,9 @@ set(ASTR_SOURCES
   interp.F90
   mainloop.F90
   output_config.F90
+  output_input_resources.F90
+  output_fields.F90
+  output_archive.F90
   output_runtime.F90
   checkpoint_state_io.F90
   checkpoint_bundle.F90
@@ -111,6 +124,7 @@ if(ASTR_WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/commarray_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/checkpoint_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/checkpoint_state_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/output_fields_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/production_statistics_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/commvar_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/qswap_gpu.cuf
@@ -663,6 +677,10 @@ install(TARGETS astr
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
+install(FILES
+  ../scripts/output/export_checkpoint.py
+  ../scripts/output/README.md
+  DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/output)
 if(ASTR_WITH_CATALYST)
   install(FILES
     ../scripts/insitu/tgv_pipeline.py

@@ -1,0 +1,19 @@
+! Candidate short-test configuration for a 16x16x16-cell periodic TGV.
+! The caller creates outdat/new; its product subdirectories must not exist.
+! For optional tested derivatives, use input.output.tgv.derived.example.
+&output
+ directory='outdat/new', restore_directory='', restart_output='saved',
+ buffer_bytes=4096, host_budget_bytes=67108864, device_budget_bytes=67108864
+/
+&checkpoint
+ enabled=.true., mode='steps', interval_steps=5, keep=2, initial_frame=.false.
+/
+&volume
+ enabled=.true., mode='steps', interval_steps=2,
+ initial_frame=.true., final_frame=.true., fields='basic'
+/
+&slices
+ enabled=.true., mode='steps', interval_steps=3,
+ initial_frame=.true., final_frame=.true., fields='basic',
+ i_indices=8, j_indices=0, k_indices=16
+/

@@ -66,6 +66,9 @@ module bc
                                           bvec_j0,bvec_jm,             &
                                           bvec_k0,bvec_km
   real(8),allocatable,target :: flowvarins(:,:,:,:),timeins(:)
+  integer,private,save :: inflow_last_step=-1
+  logical,private,save :: inflow_load_initial=.true.
+  logical,private,save :: inflow_first_call=.true.
   !
   contains
   !
@@ -1991,12 +1994,11 @@ module bc
     real(8) :: ce,ri_plus,ri_mins,cb,sb,gmr,tmp_target,tmp_scale,vnormal
     real(8) :: spce(1:num_species)
     !
-    logical,save :: lfirstcal=.true.
     !
     call configure_profile_inflow
     if(ndir==1 .and. irk==0) then
       !   
-      if(lfirstcal) then
+      if(inflow_first_call) then
         !
         call alloinflow(ndir)
         !
@@ -2014,7 +2016,7 @@ module bc
           call freestreaminflow 
         endif
         !
-        lfirstcal=.false.
+        inflow_first_call=.false.
         !
       endif
       !
@@ -2410,6 +2412,86 @@ module bc
   !| -------------                                                     |
   !| 20-10-2021: Created by J. Fang @ Warrington                       |
   !+-------------------------------------------------------------------+
+  subroutine complete_inflow_cpu_file(path,writing,identity,budget)
+    use iso_fortran_env, only: int64,real64
+    use ieee_arithmetic, only: ieee_is_finite
+    use mpi
+    use commvar, only: ja,ka
+    use parallel, only: jg0,kg0,mpi_imin
+    use checkpoint_state_io
+    character(*),intent(in) :: path
+    logical,intent(in) :: writing
+    type(checkpoint_state_identity),intent(inout) :: identity
+    integer(int64),intent(in) :: budget
+    real(real64),allocatable :: buffer(:,:,:,:)
+    integer(int64) :: metadata(15),remaining
+    integer :: slot,m,c,err
+    logical :: ready
+    if(irk/=0) return
+    call allocate_checkpoint_buffer([jm,km,1],0,26,budget,buffer,remaining,mpi_imin)
+    metadata=0
+    if(writing) then
+      ready=allocated(flowvarins).and.allocated(timeins).and..not.inflow_load_initial
+      metadata(1:6)=[1_int64,0_int64,int(ninflowslice,int64),int(inflow_last_step,int64), &
+        int(merge(1,0,inflow_load_initial),int64),int(merge(1,0,ready),int64)]
+      metadata(11:14)=[0_int64,1_int64,2_int64,3_int64]
+      metadata(15)=int(merge(1,0,inflow_first_call),int64)
+      buffer=0.0_real64
+      if(ready) then
+        call checkpoint_state_require(all(shape(flowvarins)==[jm+1,km+1,5,4]).and.size(timeins)==4, &
+          mpi_imin,'CPU inflow cache shape')
+        metadata(7:10)=transfer(timeins,metadata(7:10))
+        do slot=0,3
+          do m=1,5
+            c=slot*5+m
+            buffer(:,:,1,c)=flowvarins(:,:,m,slot)
+          enddo
+        enddo
+        buffer(:,:,1,21)=rho_in
+        buffer(:,:,1,22:24)=vel_in
+        buffer(:,:,1,25)=prs_in
+        buffer(:,:,1,26)=tmp_in
+        call checkpoint_state_require(all(ieee_is_finite(buffer)),mpi_imin,'CPU inflow cache nonfinite')
+      endif
+    endif
+    call checkpoint_state_transfer(path,writing,.true.,[ja+1,ka+1,2],[jg0,kg0,0], &
+      [jm,km,1],0,buffer,identity,remaining,mpi_imin,role=8,metadata=metadata)
+    call checkpoint_state_require(metadata(1)==1.and.metadata(2)==0.and. &
+      metadata(3)>=3.and.metadata(3)<=99999.and.metadata(4)>=-1.and.metadata(4)<=identity%step.and. &
+      all(metadata(5:6)>=0).and.all(metadata(5:6)<=1).and.metadata(5)+metadata(6)==1.and. &
+      all(metadata(11:14)==[0_int64,1_int64,2_int64,3_int64]).and.metadata(15)==metadata(5), &
+      mpi_imin,'CPU inflow metadata invalid')
+    if(.not.writing) then
+      call checkpoint_state_require(all(ieee_is_finite(buffer)),mpi_imin,'restored CPU inflow cache nonfinite')
+      ninflowslice=int(metadata(3)); inflow_last_step=int(metadata(4))
+      inflow_load_initial=metadata(5)==1
+      inflow_first_call=metadata(15)==1
+      if(allocated(flowvarins)) deallocate(flowvarins)
+      if(allocated(timeins)) deallocate(timeins)
+      if(metadata(6)==1) then
+        if(.not.allocated(rho_in)) call alloinflow(1)
+        call checkpoint_state_require(allocated(vel_in).and.allocated(prs_in).and.allocated(tmp_in), &
+          mpi_imin,'restored CPU inflow target allocation')
+        call checkpoint_state_require(all(shape(rho_in)==[jm+1,km+1]).and. &
+          all(shape(vel_in)==[jm+1,km+1,3]).and.all(shape(prs_in)==[jm+1,km+1]).and. &
+          all(shape(tmp_in)==[jm+1,km+1]).and.all(lbound(rho_in)==0).and. &
+          all(lbound(vel_in)==[0,0,1]).and.all(lbound(prs_in)==0).and.all(lbound(tmp_in)==0), &
+          mpi_imin,'restored CPU inflow target shape or bounds')
+        allocate(flowvarins(0:jm,0:km,5,0:3),timeins(0:3),stat=err)
+        call checkpoint_state_require(err==0,mpi_imin,'CPU inflow cache restore allocation')
+        timeins=transfer(metadata(7:10),timeins)
+        call checkpoint_state_require(all(ieee_is_finite(timeins)),mpi_imin,'CPU inflow times nonfinite')
+        do slot=0,3
+          do m=1,5
+            flowvarins(:,:,m,slot)=buffer(:,:,1,slot*5+m)
+          enddo
+        enddo
+        rho_in=buffer(:,:,1,21); vel_in=buffer(:,:,1,22:24)
+        prs_in=buffer(:,:,1,25); tmp_in=buffer(:,:,1,26)
+      endif
+    endif
+  end subroutine
+
   subroutine inflowintp
     !
     use commvar, only : time,nstep,nondimen,num_species,spcinf
@@ -2418,14 +2500,13 @@ module bc
     use fludyna, only : thermal
     use hdf5io
     use tecio
+    use output_input_resources, only: inflow_source_path
 #ifdef COMB
     use thermchem, only: spcindex
 #endif
     !
     ! local data
     real(8),pointer,dimension(:,:,:) :: vp1,vp2,vp3,vp4
-    integer,save :: nstep_save=-1
-    logical,save :: loadiniflow=.true.
     integer :: n,n2,n0,i,j,k,jsp
     integer :: turn
     character(len=5) :: isname
@@ -2438,19 +2519,19 @@ module bc
     ! call h5read(varname='time',var=time_final)
     ! call h5io_end
     ! 
-    if(nstep<nstep_save) then
+    if(nstep<inflow_last_step) then
       ! this can happen when the solver is recovered from a bakup
-      loadiniflow=.true.
-      nstep_save=-1
+      inflow_load_initial=.true.
+      inflow_last_step=-1
       !
       deallocate(flowvarins,timeins )
     endif
     !
-    if(nstep>nstep_save) then
+    if(nstep>inflow_last_step) then
       !
-      nstep_save=nstep
+      inflow_last_step=nstep
       !
-      if(loadiniflow) then
+      if(inflow_load_initial) then
         !
         allocate(flowvarins(0:jm,0:km,1:5,0:3),timeins(0:3) )
         !
@@ -2468,7 +2549,8 @@ module bc
             ! turn=(n+ninflowslice-3)/6000
           endif
           !
-          call h5io_init(filename='inflow/islice'//isname//'.h5',mode='read',comm=mpi_imin)
+          read(isname,*) n0
+          call h5io_init(filename=trim(inflow_source_path(n0)),mode='read',comm=mpi_imin)
           !
           call h5read(varname='time',var=timeins(n))
           call h5read(varname='ro', var=flowvarins(0:jm,0:km,1,n),dir='i',display=.false.)
@@ -2596,7 +2678,7 @@ module bc
         !   !
         ! end if
         !
-        loadiniflow=.false.
+        inflow_load_initial=.false.
         !
       else
         !
@@ -2641,7 +2723,7 @@ module bc
           ! write(isname,'(i5.5)')mod(ninflowslice,6000)
           ! turn=(ninflowslice+2)/6000
           !
-          call h5io_init(filename='inflow/islice'//isname//'.h5',      &
+          call h5io_init(filename=trim(inflow_source_path(ninflowslice)), &
                                               mode='read',comm=mpi_imin)
           !
           n=nvp(0)

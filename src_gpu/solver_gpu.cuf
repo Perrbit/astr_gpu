@@ -419,8 +419,8 @@ contains
     ii = i
     jj = j
     kk = k
-    ! CPU flux_steger_warming keeps primitive variables at the pre-filter RK
-    ! state while its conservative arguments contain the filtered q state.
+    ! Read the same cached primitive phase as CPU flux_steger_warming: periodic
+    ! explicit paths rebuild after filtering; physical-face timing is unchanged.
     rho = rho_d(i,j,k)
     q1 = q_d(i,j,k,1)
     q2 = q_d(i,j,k,2)

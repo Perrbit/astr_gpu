@@ -27,13 +27,14 @@ module gridgeneration
     use readwrite,only : readgrid,writegrid,xdmfwriter
     use userdefine,only: udf_grid
     use benchmark_runtime, only: benchmark_field_io_disabled
+    use output_runtime, only: output_resource_path
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_hbl_geometry, only: read_air5_hbl_domain
     real(8) :: hbl_lengths(3)
 #endif
     !
     if(lreadgrid) then
-      call readgrid(trim(gridfile))
+      call readgrid(trim(output_resource_path('grid.h5',trim(gridfile))))
     else
       if(flowtype(1:3)=='tgv') then
         call gridcube(ref_len*2.d0*pi,ref_len*2.d0*pi,ref_len*2.d0*pi)
@@ -70,7 +71,8 @@ module gridgeneration
         call gridcube(ref_len,ref_len,ref_len)
       elseif(trim(flowtype)=='air5hbl' .or. trim(flowtype)=='air5sbli') then
 #ifdef ASTR_AIR5_CHEMISTRY
-        call read_air5_hbl_domain(flowtype,ref_len,hbl_lengths)
+        call read_air5_hbl_domain(flowtype,ref_len,hbl_lengths, &
+          trim(output_resource_path('air5_hbl_domain.dat','datin/air5_hbl_domain.dat')))
         call gridcube(hbl_lengths(1),hbl_lengths(2),hbl_lengths(3))
 #else
         if(trim(flowtype)=='air5hbl') then

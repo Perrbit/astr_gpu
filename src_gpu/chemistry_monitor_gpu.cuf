@@ -33,3 +33,184 @@ contains
     packed=packed_d
   end subroutine
 end module
+
+module chemistry_mean_statistics_gpu
+  use cudafor
+  use iso_fortran_env, only: int64,real64
+  implicit none
+  private
+  public :: initialize_air5_mean_statistics_gpu,release_air5_mean_statistics_gpu
+  public :: set_air5_mean_sampling_gpu,accumulate_air5_mean_statistics_gpu
+  public :: complete_air5_mean_statistics_file
+  public :: air5_mean_statistics_device_bytes
+  logical,save :: active=.false.,sampling_enabled=.false.
+  real(real64),allocatable,device,save :: accumulated_d(:,:,:,:)
+  integer,allocatable,device,save :: failure_d(:)
+  integer(int64),save :: sample_count=0,first_step=0,last_step=0
+  real(real64),save :: first_time=0,last_time=0
+contains
+  integer(int64) function air5_mean_statistics_device_bytes() result(bytes)
+    bytes=0
+    if(allocated(accumulated_d)) bytes=bytes+8*size(accumulated_d,kind=int64)
+    if(allocated(failure_d)) bytes=bytes+4*size(failure_d,kind=int64)
+  end function
+
+  subroutine initialize_air5_mean_statistics_gpu(device_budget)
+    use mpi, only: MPI_COMM_WORLD
+    use commvar, only: im,jm,km,numq,num_species,num_modequ,nondimen,diffterm,feqavg
+    use statistic, only: nsamples
+    use checkpoint_state_io, only: checkpoint_state_require
+    integer(int64),intent(in) :: device_budget
+    integer(int64) :: bytes
+    integer :: status
+    call checkpoint_state_require(.not.active,MPI_COMM_WORLD,'AIR5 mean statistics already initialized')
+    call checkpoint_state_require(numq==11.and.num_species==5.and.num_modequ==1.and. &
+      .not.nondimen.and.diffterm.and.feqavg>0,MPI_COMM_WORLD,'AIR5 mean statistics configuration')
+    bytes=int(im+1,int64)*(jm+1)*(km+1)*44*8+4
+    call checkpoint_state_require(bytes<=device_budget,MPI_COMM_WORLD,'AIR5 mean statistics device budget')
+    allocate(accumulated_d(0:im,0:jm,0:km,44),failure_d(1),stat=status)
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'AIR5 mean statistics allocation')
+    accumulated_d=0.d0; failure_d=0
+    sample_count=0; first_step=0; last_step=0; first_time=0; last_time=0
+    nsamples=0
+    active=.true.
+  end subroutine
+
+  subroutine release_air5_mean_statistics_gpu()
+    if(allocated(accumulated_d)) deallocate(accumulated_d)
+    if(allocated(failure_d)) deallocate(failure_d)
+    active=.false.; sampling_enabled=.false.
+  end subroutine
+
+  subroutine set_air5_mean_sampling_gpu(enabled)
+    logical,intent(in) :: enabled
+    sampling_enabled=enabled
+  end subroutine
+
+  attributes(global) subroutine accumulate_mean_kernel(im,jm,km)
+    use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d,tve_d,spc_d,dvel_d
+    use chemistry_transport_gpu, only: air5_transport_properties_gpu
+    use chemistry_model_gpu, only: air5_finite_gpu
+    use constdef, only: num1d3
+    integer,value :: im,jm,km
+    integer :: id,i,j,k,m,status,ignored
+    real(real64) :: ro,p,t,u,v,w,mu,ktr,kv,smu(5),bd(5,5),md(5),divergence
+    real(real64) :: d11,d12,d13,d21,d22,d23,d31,d32,d33,s11,s22,s33,s12,s13,s23
+    real(real64) :: values(44),mass_fraction(5)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=(im+1)*(jm+1)*(km+1)) return
+    i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
+    ro=rho_d(i,j,k); p=prs_d(i,j,k); t=tmp_d(i,j,k)
+    u=vel_d(i,j,k,1); v=vel_d(i,j,k,2); w=vel_d(i,j,k,3)
+    mass_fraction=spc_d(i,j,k,:)
+    call air5_transport_properties_gpu(t,tve_d(i,j,k),p,mass_fraction, &
+      mu,ktr,kv,smu,bd,md,status)
+    if(status/=0) then
+      ignored=atomicmax(failure_d(1),status)
+      return
+    endif
+    d11=dvel_d(i,j,k,1,1); d12=dvel_d(i,j,k,1,2); d13=dvel_d(i,j,k,1,3)
+    d21=dvel_d(i,j,k,2,1); d22=dvel_d(i,j,k,2,2); d23=dvel_d(i,j,k,2,3)
+    d31=dvel_d(i,j,k,3,1); d32=dvel_d(i,j,k,3,2); d33=dvel_d(i,j,k,3,3)
+    divergence=num1d3*(d11+d22+d33)
+    s11=2.d0*mu*(d11-divergence); s22=2.d0*mu*(d22-divergence); s33=2.d0*mu*(d33-divergence)
+    s12=mu*(d12+d21); s13=mu*(d13+d31); s23=mu*(d23+d32)
+    values=[ro,ro*u,ro*v,ro*w,p,ro*t,ro*u*u,ro*v*v,ro*w*w,ro*u*v,ro*u*w,ro*v*w, &
+      p*p,ro*t*t,ro*u*t,ro*v*t,ro*w*t,ro*u**3,ro*v**3,ro*w**3, &
+      ro*u*u*v,ro*u*u*w,ro*u*v*v,ro*u*w*w,ro*v*v*w,ro*v*w*w,ro*u*v*w, &
+      u,v,w,p*u,p*v,p*w,s11,s22,s33,s12,s13,s23, &
+      s11*d11+s12*d12+s13*d13+s12*d21+s22*d22+s23*d23+s13*d31+s23*d32+s33*d33, &
+      p*(d11+d22+d33),s11*u+s12*v+s13*w,s12*u+s22*v+s23*w,s13*u+s23*v+s33*w]
+    do m=1,44
+      if(.not.air5_finite_gpu(values(m)).or. &
+         .not.air5_finite_gpu(accumulated_d(i,j,k,m)+values(m))) then
+        ignored=atomicmax(failure_d(1),1)
+        return
+      endif
+    enddo
+    accumulated_d(i,j,k,:)=accumulated_d(i,j,k,:)+values
+  end subroutine
+
+  subroutine accumulate_air5_mean_statistics_gpu()
+    use mpi, only: MPI_COMM_WORLD
+    use commvar, only: im,jm,km,nstep,time,feqavg,lavg
+    use statistic, only: nsamples
+    use checkpoint_state_io, only: checkpoint_state_require
+    use gpu_check, only: sync_after_kernel
+    integer :: failed(1),ntot
+    if(.not.active) return
+    if(.not.sampling_enabled.or..not.lavg.or.nstep<=last_step) return
+    if(mod(nstep,feqavg)/=0) return
+    call checkpoint_state_require(sample_count<int(huge(nsamples),int64), &
+      MPI_COMM_WORLD,'AIR5 mean sample count overflow')
+    failure_d=0
+    ntot=(im+1)*(jm+1)*(km+1)
+    call accumulate_mean_kernel<<<(ntot+255)/256,256>>>(im,jm,km)
+    call sync_after_kernel('AIR5 mean statistics sampling',.true.)
+    failed=failure_d
+    call checkpoint_state_require(failed(1)==0,MPI_COMM_WORLD,'AIR5 mean sampling transport or finite-state failure')
+    if(sample_count==0) then
+      first_step=nstep; first_time=time
+    endif
+    sample_count=sample_count+1
+    last_step=nstep; last_time=time
+    nsamples=int(sample_count)
+  end subroutine
+
+  subroutine complete_air5_mean_statistics_file(path,writing,identity,budget)
+    use mpi, only: MPI_COMM_WORLD
+    use ieee_arithmetic, only: ieee_is_finite
+    use commvar, only: ia,ja,ka,im,jm,km
+    use parallel, only: ig0,jg0,kg0
+    use statistic, only: nsamples
+    use checkpoint_state_io, only: checkpoint_state_identity,checkpoint_state_transfer, &
+      allocate_checkpoint_buffer,checkpoint_state_require
+    use gpu_check, only: sync_gpu_boundary
+    character(*),intent(in) :: path
+    logical,intent(in) :: writing
+    type(checkpoint_state_identity),intent(inout) :: identity
+    integer(int64),intent(in) :: budget
+    real(real64),allocatable :: values(:,:,:,:)
+    integer(int64) :: remaining,metadata(8)
+    type(checkpoint_state_identity) :: expected
+    call checkpoint_state_require(active,MPI_COMM_WORLD,'AIR5 mean statistics not initialized')
+    call allocate_checkpoint_buffer([im,jm,km],0,44,budget,values,remaining,MPI_COMM_WORLD)
+    expected=identity
+    metadata=[2_int64,sample_count,first_step,last_step,transfer(first_time,0_int64), &
+      merge(1_int64,0_int64,sample_count>0),merge(1_int64,0_int64,sample_count>0),transfer(last_time,0_int64)]
+    call sync_gpu_boundary('AIR5 mean statistics transfer entry')
+    if(writing) then
+      call checkpoint_state_require(sample_count==int(nsamples,int64).and. &
+        (last_step<identity%step.or.(sample_count==0.and.identity%step==0)), &
+        MPI_COMM_WORLD,'AIR5 mean sampling identity')
+      values=accumulated_d
+    endif
+    call checkpoint_state_transfer(path,writing,.true.,[ia,ja,ka]+1,[ig0,jg0,kg0], &
+      [im,jm,km],0,values,identity,remaining,MPI_COMM_WORLD,role=6,metadata=metadata)
+    call checkpoint_state_require(all(ieee_is_finite(values)),MPI_COMM_WORLD,'nonfinite AIR5 mean payload')
+    call checkpoint_state_require(metadata(1)==2.and.metadata(2)>=0.and.metadata(2)<=huge(nsamples).and. &
+      metadata(3)>=0.and.metadata(3)<=identity%step.and.metadata(4)>=0.and. &
+      metadata(4)<max(1_int64,identity%step).and.metadata(6)==merge(1_int64,0_int64,metadata(2)>0).and. &
+      metadata(7)==metadata(6).and.ieee_is_finite(transfer(metadata(5),0.d0)).and. &
+      ieee_is_finite(transfer(metadata(8),0.d0)).and.transfer(metadata(5),0.d0)>=0.d0.and. &
+      transfer(metadata(8),0.d0)>=transfer(metadata(5),0.d0).and.transfer(metadata(8),0.d0)<=identity%time, &
+      MPI_COMM_WORLD,'AIR5 mean checkpoint metadata')
+    if(metadata(2)>0) then
+      call checkpoint_state_require(metadata(3)>0.and.metadata(3)<=metadata(4).and. &
+        metadata(2)<=metadata(4)-metadata(3)+1,MPI_COMM_WORLD,'AIR5 mean sample sequence')
+    else
+      call checkpoint_state_require(all(metadata(3:8)==0).and.all(values==0.d0), &
+        MPI_COMM_WORLD,'nonempty zero-sample AIR5 mean checkpoint')
+    endif
+    if(.not.writing) then
+      call checkpoint_state_require(identity%step==expected%step.and.identity%time==expected%time.and. &
+        identity%dt_used==expected%dt_used.and.identity%dt_next==expected%dt_next, &
+        MPI_COMM_WORLD,'AIR5 mean checkpoint clock mismatch')
+      accumulated_d=values
+      sample_count=metadata(2); first_step=metadata(3); last_step=metadata(4)
+      first_time=transfer(metadata(5),0.d0); last_time=transfer(metadata(8),0.d0)
+      nsamples=int(sample_count)
+      call sync_gpu_boundary('AIR5 mean statistics restored')
+    endif
+  end subroutine
+end module

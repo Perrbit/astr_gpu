@@ -16,7 +16,7 @@ module mainloop
   use tecio
   use stlaio,   only: get_unit
   use utility,  only: timereporter
-  use output_runtime, only: begin_output_runtime,completed_output_runtime,new_output_enabled
+  use output_runtime, only: begin_output_runtime,completed_output_runtime,new_output_enabled,initial_output_runtime
   !
   implicit none
   !
@@ -110,6 +110,7 @@ module mainloop
     
     time_beg=ptime()
     call begin_insitu(nstep,time)
+    call initial_output_runtime(loop_counter,rkfirst_pending)
 
     do while(nstep<=maxstep)
 
@@ -335,7 +336,7 @@ module mainloop
     use commvar,  only : im,jm,km,numq,deltat,lfilter,feqchkpt,hm,     &
                          lavg,feqavg,nstep,limmbou,turbmode,feqslice,  &
                          feqwsequ,lwslic,lreport,flowtype,     &
-                         ndims,num_species,maxstep,rkscheme,use_gpu,lcomb,iomode
+                         ndims,num_species,maxstep,rkscheme,use_gpu,lcomb,iomode,conschm,difschm
     use commarray,only : x,q,qrhs,rho,vel,prs,tmp,spc,jacob
     use fludyna,  only : updatefvar
     use comsolver,only : filterq,filter2e,gradcal
@@ -380,6 +381,9 @@ module mainloop
     use insitu_session, only: save_insitu_pair,capture_insitu_cpu_checkpoint
 #ifdef _CUDA
     use checkpoint_gpu, only: prepare_exact_checkpoint_gpu,commit_exact_checkpoint_gpu
+#ifdef ASTR_AIR5_CHEMISTRY
+    use chemistry_mean_statistics_gpu, only: set_air5_mean_sampling_gpu
+#endif
 #endif
     use userdefine, only : udf_write
     !
@@ -407,10 +411,13 @@ module mainloop
     logical :: air5_open_x_case
     logical :: air5_hbl_case
     logical :: cpu_rk_timing
+    logical :: refresh_filtered_primitives
     !
     time_beg=ptime()
     cpu_rk_timing=benchmark_cpu_rk_timing_enabled()
     conservative_case=conservative_boundary%enabled
+    refresh_filtered_primitives=.not.lcomb.and.numq==5.and.num_species==0.and. &
+      all(bctype==1).and.conschm(4:4)=='e'.and.difschm(4:4)=='e'
     dynamic_inflow_output=bctype(1)==11 .and. trim(turbinf)=='intp'
     air5_reacting_case=.false.
     air5_open_x_case=.false.
@@ -456,6 +463,9 @@ module mainloop
         call gpu_commit_compact_statistics_checkpoint()
       call save_insitu_pair()
       endif
+#ifdef ASTR_AIR5_CHEMISTRY
+      call set_air5_mean_sampling_gpu(nstep==0.or.loop_counter/=0)
+#endif
       call gpu_time_integration_rk(.true.,.false.)
       call gpu_end_complete_step_timing()
       return
@@ -466,7 +476,7 @@ module mainloop
     endif
 #endif
     
-    if(air5_reacting_case .and. nstep>0 .and. mod(nstep,feqchkpt)==0) then
+    if(air5_reacting_case .and. nstep>0 .and. mod(nstep,feqchkpt)==0.and..not.new_output_enabled()) then
       if(iomode/='n') then
         ! AIR5 restart files represent the complete state before Strang splitting.
         call writechkpt()
@@ -562,6 +572,8 @@ module mainloop
         if(lcomb) call air5_save_filter_species_base()
 #endif
         call filterq(timerept=ltimrpt)
+        ! Derivatives and fluxes must use the filtered state at every physical node.
+        if(refresh_filtered_primitives) call updatefvar
 #ifdef ASTR_AIR5_CHEMISTRY
         if(lcomb) then
           call air5_compensation_filter_state(.false.)

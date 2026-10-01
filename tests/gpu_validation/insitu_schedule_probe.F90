@@ -90,6 +90,12 @@ contains
     call require(ok)
     call poll_schedule(restored,6_int64,0.75d0,.false.,emit,crossed,ok)
     call require(.not.ok)
+    call resume_schedule(restored,ok)
+    call require(ok)
+    call poll_schedule(restored,5_int64,0.625d0,.false.,emit,crossed,ok)
+    call require(ok.and..not.emit)
+    call poll_schedule(restored,6_int64,0.75d0,.false.,emit,crossed,ok)
+    call require(ok)
     close(unit)
     open(newunit=unit,status='scratch',access='stream',form='unformatted',convert='little_endian')
     write(unit) 'ASTRSC01'

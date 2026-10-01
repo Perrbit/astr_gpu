@@ -1,0 +1,22 @@
+! Accepted short-test gate: generated periodic 16x16x16-cell TGV, NP=1/2.
+! Use dimensionless FP64, 643e/643e, viscosity and explicit filter enabled.
+! The caller creates outdat/new; its product subdirectories must not exist.
+! These limits are not production-scale defaults or other-case admission.
+&output
+ directory='outdat/new', restore_directory='', restart_output='saved',
+ buffer_bytes=4096, host_budget_bytes=67108864, device_budget_bytes=67108864
+/
+&checkpoint
+ enabled=.true., mode='steps', interval_steps=5, keep=2, initial_frame=.false.
+/
+&volume
+ enabled=.true., mode='steps', interval_steps=5,
+ initial_frame=.true., final_frame=.true., fields='basic',
+ velocity_gradient=.true., vorticity=.true., qcriterion=.true.
+/
+&slices
+ enabled=.true., mode='steps', interval_steps=5,
+ initial_frame=.true., final_frame=.true., fields='basic',
+ velocity_gradient=.true., vorticity=.true., qcriterion=.true.,
+ i_indices=8, j_indices=0, k_indices=16
+/

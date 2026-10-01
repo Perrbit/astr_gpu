@@ -1,31 +1,113 @@
 module output_runtime
-  use iso_fortran_env, only: int64,real64
+  use iso_fortran_env, only: int64,real64,int8,iostat_end
+  use iso_c_binding, only: c_int,c_char,c_null_char
   use mpi
   use commvar, only: ia,ja,ka,im,jm,km,hm,numq,num_species,num_modequ, &
     nstep,time,deltat,maxstep,use_gpu,flowtype,lcomb,lavg,lcracon,limmbou,lrestart, &
-    lwsequ,lwslic,feqchkpt,feqwsequ,feqslice,feqlist,feqavg,conschm,difschm,rkscheme
+    lwsequ,lwslic,feqchkpt,feqwsequ,feqslice,feqlist,feqavg,conschm,difschm,rkscheme,lihomo,ljhomo,lkhomo, &
+    lreadgrid,gridfile,ninit,diffterm,lfilter
   use commarray, only: q,rho,vel,prs,tmp,x,jacob,dxi
-  use parallel, only: ig0,jg0,kg0,mpirank
-  use bc, only: bctype
+  use parallel, only: ig0,jg0,kg0,mpirank,irk
+  use bc, only: bctype,turbinf,ninflowslice,complete_inflow_cpu_file
+  use output_input_resources, only: set_inflow_resource_root,inflow_source_path, &
+    inflow_source_name,discover_inflow_sources,set_initial_resource_root,initial_source_path,initial_source_name
   use output_config, only: output_options
   use output_config_collective, only: read_output_options_collective
+  use output_archive, only: configure_archives,begin_archives,observe_archives,archive_control_file,archives_enabled
   use checkpoint_state_io
   use checkpoint_bundle
   use insitu_checkpoint_batch, only: create_batch,file_fingerprint,copy_batch_file
+  use insitu_session, only: configure_output_statistics,output_statistics_file, &
+    output_render_file,begin_output_insitu,complete_output_insitu,output_render_repartition_allowed
+  use insitu_schedule, only: sample_schedule,configure_schedule,poll_schedule, &
+    write_schedule_state,restore_schedule_state
+  use statistic, only: channel_driver_state,complete_mean_statistics_file
+#ifdef ASTR_AIR5_CHEMISTRY
+  use commarray, only: tve,spc
+  use chemistry_compensation, only: air5_carry,air5_compensated
+  use chemistry_hbl_boundary, only: complete_air5_top_contract
+#endif
 #ifdef _CUDA
   use checkpoint_state_gpu, only: checkpoint_perfect_gas_gpu
+  use production_statistics_gpu, only: complete_compact_statistics_file
+  use inflow_timeseries_gpu, only: complete_inflow_gpu_file
+#ifdef ASTR_AIR5_CHEMISTRY
+  use checkpoint_state_gpu, only: checkpoint_air5_gpu
+  use chemistry_mean_statistics_gpu, only: initialize_air5_mean_statistics_gpu,complete_air5_mean_statistics_file, &
+    air5_mean_statistics_device_bytes
+  use chemistry_flow_solver_gpu, only: air5_conservation_state_gpu,restore_air5_conservation_state_gpu, &
+    begin_air5_conservation_file_gpu,configure_air5_checkpoint_conservation_gpu
+#endif
 #endif
   implicit none
   private
   public :: configure_output_runtime,begin_output_runtime,completed_output_runtime,new_output_enabled
+  public :: initial_output_runtime
+  public :: bootstrap_output_resources,output_resource_path
   logical,save :: enabled=.false.
+  logical,save :: options_loaded=.false.
+  logical,save :: statistics_active=.false.
+  logical,save :: compact_statistics=.false.
+  logical,save :: mean_statistics=.false.
+  logical,save :: conservation_statistics=.false.
+  logical,save :: repartitioning=.false.
   type(output_options),save :: options
   type(checkpoint_retention),save :: ledger
+  type(sample_schedule),save :: checkpoint_schedule
   integer(int64),save :: contract(14),last_step=-1
-  real(real64),save :: next_time=0
+  integer(int64),save :: schedule_origin_step=0
+  real(real64),save :: schedule_origin_time=0
+  real(real64),save :: initial_dt_used=0
+  integer(int64),save :: static_resource_crc(2)=0
+  integer(int64),save :: air5_resource_crc(4)=0
+  integer(int64),save :: initial_resource_crc=0
+  integer,save :: inflow_count=0
+  integer(int64),allocatable,save :: inflow_bytes(:),inflow_crc(:)
+  character(64),parameter :: air5_resources(4)=[character(64) :: &
+    'air5_hbl_domain.dat','air5_hbl_profile.dat','air5_hbl_initial_field.dat','air5_incident_shock.dat']
+  interface
+    function reuse_run(root,restore,reuse) bind(C,name='astr_checkpoint_reuse_run') result(status)
+      import c_int,c_char
+      character(c_char),intent(in) :: root(*),restore(*)
+      integer(c_int),intent(out) :: reuse
+      integer(c_int) :: status
+    end function
+    function hdf5_self_contained(path) bind(C,name='astr_checkpoint_hdf5_self_contained') result(status)
+      import c_int,c_char
+      character(c_char),intent(in) :: path(*)
+      integer(c_int) :: status
+    end function
+  end interface
 contains
+  logical function dynamic_output_case()
+    dynamic_output_case=trim(flowtype)=='bl'.and.trim(turbinf)=='intp'
+  end function
+  logical function air5_output_case()
+    air5_output_case=.false.
+#ifdef ASTR_AIR5_CHEMISTRY
+    air5_output_case=(trim(flowtype)=='air5hbl'.or.trim(flowtype)=='air5sbli').and.lcomb.and.numq==11.and. &
+      num_species==5.and.num_modequ==1.and..not.lreadgrid.and. &
+      all(bctype==[11,50,41,51,1,1])
+#endif
+  end function
+  integer function air5_resource_count() result(count)
+    count=3
+    if(trim(flowtype)=='air5sbli') count=4
+  end function
   logical function new_output_enabled()
     new_output_enabled=enabled
+  end function
+
+  logical function tgv_repartition_case()
+    tgv_repartition_case=trim(flowtype)=='tgv'.and.all(bctype==1).and..not.lreadgrid.and. &
+      ninit==0.and..not.mean_statistics.and..not.compact_statistics.and. &
+      trim(conschm)=='643e'.and.trim(difschm)=='643e'.and.lfilter.and.diffterm.and. &
+      output_render_repartition_allowed()
+  end function
+
+  integer(int64) function state_host_budget() result(bytes)
+    bytes=options%host_budget_bytes
+    if(allocated(inflow_bytes)) bytes=bytes-16_int64*size(inflow_bytes,kind=int64)
   end function
 
   subroutine check(ok,message)
@@ -34,21 +116,38 @@ contains
     call checkpoint_state_require(ok,MPI_COMM_WORLD,message)
   end subroutine
 
+  function last_runtime_checkpoint() result(path)
+    character(1200) :: path
+    path=last_published_checkpoint(ledger)
+    if(trim(path)=='none in this run'.and.len_trim(options%restore_directory)>0) path=options%restore_directory
+  end function
+
   subroutine check_capability()
-    call check(trim(flowtype)=='tgv'.and.numq==5.and.num_species==0.and.num_modequ==0.and. &
-      .not.lcomb.and..not.lavg.and..not.lcracon.and..not.limmbou.and..not.lrestart.and. &
-      all(bctype==1).and.trim(rkscheme)=='rk3', 'new output currently admits periodic nonreacting TGV RK3 only')
-    call check(.not.options%volume%enabled.and..not.options%slices%enabled, &
-      'volume and slices are not yet connected to the new output lifecycle')
+    logical :: supported_case
+    supported_case=(trim(flowtype)=='tgv'.and.all(bctype==1)).or. &
+      (trim(flowtype)=='channel'.and.all(bctype==[1,1,41,41,1,1])).or. &
+      (trim(flowtype)=='bl'.and.lreadgrid.and.(trim(turbinf)=='prof'.or.trim(turbinf)=='intp').and. &
+      all(bctype==[11,21,41,51,1,1]))
+    supported_case=supported_case.and.numq==5.and.num_species==0.and.num_modequ==0.and. &
+      .not.lcomb.and.(.not.lavg.or..not.use_gpu.or.trim(flowtype)=='bl')
+    call check((supported_case.or.air5_output_case()).and..not.lcracon.and..not.limmbou.and. &
+      .not.lrestart.and.trim(rkscheme)=='rk3', &
+      'new output admits TGV, bc41 channel, profile/dynamic flatplate or fixed AIR5 HBL/SBLI RK3')
     call check(.not.lwsequ.and..not.lwslic,'legacy field sequences must be disabled with new output')
+    call check(ninit>=0.and.ninit<=3,'new output initialization dimension must be 0:3')
+    if(air5_output_case()) call check(ninit==0,'AIR5 external initialization is not registered')
+    if(air5_output_case().and.lavg) call check(diffterm.and.feqavg>0, &
+      'AIR5 mean statistics currently require viscous gradients and a positive sample interval')
     call check(options%host_budget_bytes>0,'new output requires an explicit host buffer budget')
   end subroutine
 
-  subroutine configure_output_runtime()
+  subroutine load_output_options()
     character(1024) :: config
     character(256) :: message,value
     integer :: status,length,flag,minflag,maxflag,ierr
     logical :: ok
+    if(options_loaded) return
+    options_loaded=.true.
     config=''
     call get_environment_variable('ASTR_OUTPUT_CONFIG',config,length=length,status=status)
     flag=0
@@ -61,11 +160,162 @@ contains
     enabled=.true.
     call read_output_options_collective(trim(config),options,MPI_COMM_WORLD,ok,message)
     call check(ok,trim(message))
+  end subroutine
+
+  function output_resource_path(name,fallback) result(path)
+    character(*),intent(in) :: name,fallback
+    character(1200) :: path
+    path=fallback
+    if(enabled.and.(trim(flowtype)=='bl'.or.trim(flowtype)=='air5hbl'.or.trim(flowtype)=='air5sbli').and. &
+      len_trim(options%restore_directory)>0) &
+      path=trim(options%restore_directory)//'/../../resources/'//name
+  end function
+
+  subroutine bootstrap_output_resources()
+    character(1200) :: path
+    integer(int64) :: bytes
+    integer :: i,ierr
+    logical :: ok
+    call load_output_options()
+    if(.not.enabled) return
+    if(len_trim(options%restore_directory)>0) then
+      call validate_checkpoint_bundle(trim(options%restore_directory),MPI_COMM_WORLD,ok)
+      call check(ok,'invalid new checkpoint bundle')
+    endif
+    if(ninit>=1.and.ninit<=3) then
+      if(len_trim(options%restore_directory)>0) &
+        call set_initial_resource_root(trim(options%restore_directory)//'/../../resources')
+      path=initial_source_path(ninit)
+      ok=.true.
+      if(mpirank==0) then
+        call file_fingerprint(trim(path),bytes,initial_resource_crc,ok)
+        if(ok) ok=hdf5_self_contained(trim(path)//c_null_char)==0
+      endif
+      call check(ok,'cannot fingerprint external initialization resource')
+      call MPI_Bcast(initial_resource_crc,1,MPI_INTEGER8,0,MPI_COMM_WORLD,ierr)
+      call check(ierr==MPI_SUCCESS,'initial resource fingerprint broadcast')
+    endif
+    if(trim(flowtype)=='air5hbl'.or.trim(flowtype)=='air5sbli') then
+      do i=1,air5_resource_count()
+        path=output_resource_path(trim(air5_resources(i)),'datin/'//trim(air5_resources(i)))
+        ok=.true.
+        if(mpirank==0) call file_fingerprint(trim(path),bytes,air5_resource_crc(i),ok)
+        call check(ok,'new AIR5 output requires an explicit domain/profile/initial-field/incident resource')
+      enddo
+      call MPI_Bcast(air5_resource_crc,4,MPI_INTEGER8,0,MPI_COMM_WORLD,ierr)
+      call check(ierr==MPI_SUCCESS,'AIR5 resource fingerprint broadcast')
+    endif
+    if(trim(flowtype)/='bl') return
+    do i=1,2
+      if(i==1) then
+        path=output_resource_path('grid.h5',trim(gridfile))
+      else
+        path=output_resource_path('inlet.prof','datin/inlet.prof')
+      endif
+      ok=.true.
+      if(mpirank==0) call file_fingerprint(trim(path),bytes,static_resource_crc(i),ok)
+      if(mpirank==0.and.i==1.and.ok) ok=hdf5_self_contained(trim(path)//c_null_char)==0
+      call check(ok,'cannot fingerprint static flatplate resource')
+    enddo
+    call MPI_Bcast(static_resource_crc,2,MPI_INTEGER8,0,MPI_COMM_WORLD,ierr)
+    call check(ierr==MPI_SUCCESS,'static resource fingerprint broadcast')
+    if(dynamic_output_case()) call bootstrap_inflow_resources()
+  end subroutine
+
+  subroutine bootstrap_inflow_resources()
+    character(1400) :: path,root
+    character(8) :: magic
+    integer :: ierr,unit,err,closed,i
+    integer(int64) :: bytes,crc
+    integer(int8) :: extra
+    logical :: ok,restoring
+    restoring=len_trim(options%restore_directory)>0
+    root='inflow'
+    if(restoring) root=trim(options%restore_directory)//'/../../resources'
+    ok=.true.
+    if(mpirank==0) then
+      if(restoring) then
+        path=trim(root)//'/inflow_index.bin'
+        open(newunit=unit,file=trim(path),status='old',access='stream',form='unformatted', &
+          convert='little_endian',action='read',iostat=err)
+        ok=err==0
+        if(ok) then
+          read(unit,iostat=err) magic,inflow_count
+          close(unit,iostat=closed)
+          ok=err==0.and.closed==0.and.magic=='ASTRIF01'
+        endif
+      else
+        call discover_inflow_sources(trim(root),inflow_count,ok)
+      endif
+    endif
+    call check(ok,'dynamic inflow requires a frozen contiguous regular-file sequence from 00000')
+    call MPI_Bcast(inflow_count,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
+    call check(ierr==MPI_SUCCESS.and.inflow_count>=4.and.inflow_count<=100000,'dynamic inflow source count')
+    ! Persistent fingerprints and simultaneous resource-list allocations are bounded.
+    call check(288_int64*(int(inflow_count,int64)+6)+131072_int64<=options%host_budget_bytes, &
+      'dynamic inflow resource metadata budget')
+    allocate(inflow_bytes(inflow_count),inflow_crc(inflow_count),stat=err)
+    call check(err==0,'dynamic inflow fingerprint allocation')
+    inflow_bytes=0; inflow_crc=0
+    if(mpirank==0) then
+      if(restoring) then
+        open(newunit=unit,file=trim(path),status='old',access='stream',form='unformatted', &
+          convert='little_endian',action='read',iostat=err)
+        ok=err==0
+        if(ok) then
+          read(unit,iostat=err) magic,i,inflow_bytes,inflow_crc
+          ok=err==0.and.magic=='ASTRIF01'.and.i==inflow_count
+          if(ok) ok=checkpoint_stream_at_end(unit)
+          close(unit,iostat=closed)
+          ok=ok.and.closed==0
+        endif
+      endif
+      do i=1,inflow_count
+        if(.not.ok) exit
+        path=trim(root)//'/'//inflow_source_name(i-1)
+        call file_fingerprint(trim(path),bytes,crc,ok)
+        if(ok) ok=hdf5_self_contained(trim(path)//c_null_char)==0
+        if(restoring) then
+          ok=ok.and.bytes==inflow_bytes(i).and.crc==inflow_crc(i)
+        else
+          inflow_bytes(i)=bytes; inflow_crc(i)=crc
+        endif
+      enddo
+    endif
+    call check(ok,'dynamic inflow source identity mismatch')
+    call MPI_Bcast(inflow_bytes,inflow_count,MPI_INTEGER8,0,MPI_COMM_WORLD,ierr)
+    call check(ierr==MPI_SUCCESS,'dynamic inflow source sizes broadcast')
+    call MPI_Bcast(inflow_crc,inflow_count,MPI_INTEGER8,0,MPI_COMM_WORLD,ierr)
+    call check(ierr==MPI_SUCCESS,'dynamic inflow source checksums broadcast')
+    if(restoring) call set_inflow_resource_root(trim(root),inflow_count)
+  end subroutine
+
+  subroutine configure_output_runtime()
+    character(128) :: value
+    integer :: status
+    logical :: ok
+    call load_output_options()
+    if(.not.enabled) return
     call check_capability()
-    value=''
-    call get_environment_variable('ASTR_INSITU_CONFIG',value,status=status)
-    call check(status==1.or.(status==0.and.len_trim(value)==0), &
-      'formal in situ state is not yet registered in new checkpoints')
+    if(air5_output_case()) then
+      value=''
+      call get_environment_variable('ASTR_AIR5_C4_CONSERVATION',value,status=status)
+      call check(status==0.or.status==1,'AIR5 conservation option is truncated')
+      select case(trim(value))
+      case('1','t','T','true','TRUE','yes','YES','on','ON')
+        conservation_statistics=.true.
+      case('','0','f','F','false','FALSE','no','NO','off','OFF')
+        conservation_statistics=.false.
+      case default
+        call check(.false.,'invalid AIR5 conservation diagnostic option')
+      end select
+      call check(.not.conservation_statistics.or.use_gpu,'AIR5 conservation diagnostic is GPU-only')
+    endif
+    call configure_output_statistics(statistics_active)
+    compact_statistics=use_gpu.and.lavg.and.trim(flowtype)=='bl'
+    mean_statistics=lavg.and.(.not.use_gpu.or.air5_output_case())
+    call check(.not.(statistics_active.and.mean_statistics),'formal and CPU legacy statistics need separate transactions')
+    call configure_archives(options)
   end subroutine
 
   subroutine begin_output_runtime(counter,rkfirst_pending)
@@ -77,8 +327,19 @@ contains
     integer(int64) :: bytes,crc
     logical :: ok
     type(checkpoint_state_identity) :: identity
+    integer(c_int) :: reuse,status_reuse
     if (.not.enabled) return
     call check_capability()
+    call check(lavg.eqv.(compact_statistics.or.mean_statistics),'legacy statistics activation changed during the run')
+    call begin_output_insitu()
+#if defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
+    if(use_gpu.and.mean_statistics) call initialize_air5_mean_statistics_gpu(options%device_budget_bytes)
+    if(use_gpu.and.air5_output_case()) then
+      call configure_air5_checkpoint_conservation_gpu( &
+        options%device_budget_bytes-air5_mean_statistics_device_bytes(),ok)
+      call check(ok,'AIR5 conservation diagnostic device budget/allocation')
+    endif
+#endif
     ! Match the executable and primary input; controller stop time may differ.
     call get_command_argument(0,executable,status=status)
     call check(status==0,'executable path unavailable')
@@ -101,6 +362,9 @@ contains
     call check(ierr==MPI_SUCCESS,'contract broadcast')
     contract(5:10)=[int(feqchkpt,int64),int(feqwsequ,int64),int(feqslice,int64), &
       int(feqlist,int64),int(feqavg,int64),int(merge(1,0,use_gpu),int64)]
+    contract(12)=merge(1_int64,0_int64,statistics_active)+merge(2_int64,0_int64,compact_statistics)+ &
+      merge(4_int64,0_int64,mean_statistics)
+    contract(13:14)=static_resource_crc
     ! Numerical GPU candidates are not silently accepted by this first gate.
     do i=1,3
       value=''
@@ -116,21 +380,62 @@ contains
         contract(11)=merge(1_int64,0_int64,trim(value)=='full')
       end select
     enddo
-    next_time=options%checkpoint%interval_time
+    if(options%checkpoint%enabled) then
+      call configure_schedule(checkpoint_schedule,trim(options%checkpoint%mode), &
+        options%checkpoint%interval_steps,options%checkpoint%interval_time, &
+        schedule_origin_step,schedule_origin_time,options%checkpoint%initial_frame,.false.,ok)
+      call check(ok,'invalid checkpoint schedule')
+    endif
     if (len_trim(options%restore_directory)>0) then
       path=trim(options%restore_directory)
       call validate_checkpoint_bundle(trim(path),MPI_COMM_WORLD,ok)
       call check(ok,'invalid new checkpoint bundle')
       call control_file(trim(path)//'/control.bin',.false.,counter,rkfirst_pending,identity)
+      call archive_control_file(trim(path)//'/archives.bin',.false.,identity)
+      call output_render_file(trim(path)//'/insitu_control.bin',.false.,identity,state_host_budget(), &
+        options%restart_output=='override')
+#ifdef ASTR_AIR5_CHEMISTRY
+      if(air5_output_case()) call air5_contract_file(trim(path)//'/air5_config.bin',.false.)
+#ifdef _CUDA
+      if(air5_output_case().and.use_gpu) call conservation_file(trim(path)//'/air5_conservation.bin',.false.,identity)
+#endif
+#endif
       call geometry_file(trim(path)//'/../../resources/geometry.h5',.false.)
       call flow_file(trim(path)//'/state.h5',.false.,identity)
+      if(dynamic_output_case()) call inflow_file(trim(path)//'/inflow.h5',.false.,identity)
       call check(identity%step<=huge(nstep),'restored step exceeds solver integer range')
+      if(statistics_active) call output_statistics_file(trim(path)//'/statistics.h5',.false., &
+        identity,state_host_budget(),allow_repartition=repartitioning)
+      if(mean_statistics) call mean_statistics_file(trim(path)//'/statistics.h5',.false., &
+        identity,state_host_budget())
+#ifdef _CUDA
+      if(compact_statistics) call complete_compact_statistics_file(trim(path)//'/statistics.h5',.false., &
+        identity,state_host_budget())
+#endif
       nstep=int(identity%step)
       time=identity%time
       deltat=identity%dt_next
+      initial_dt_used=identity%dt_used
       call check(nstep<=maxstep+1,'restored step lies past requested stop')
     endif
+    identity=checkpoint_state_identity(int(nstep,int64),time,initial_dt_used,deltat)
+    if(archives_enabled().or.options%checkpoint%enabled) then
+      status_reuse=0; reuse=0
+      if(mpirank==0) status_reuse=reuse_run(trim(options%directory)//c_null_char, &
+        trim(options%restore_directory)//c_null_char,reuse)
+      call MPI_Bcast(reuse,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
+      call check(ierr==MPI_SUCCESS.and.status_reuse==0,'existing output root requires its own validated restore source')
+    endif
+    if(archives_enabled()) call begin_archives(identity,reuse==1)
+#if defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
+    if(conservation_statistics) then
+      write(value,'("air5_conservation_from_step",i12.12,".dat")') identity%step
+      call begin_air5_conservation_file_gpu(trim(options%directory)//'/'//trim(value),ok)
+      call check(ok,'cannot create exclusive AIR5 conservation diagnostic segment')
+    endif
+#endif
     if (.not.options%checkpoint%enabled) return
+    if(reuse==1) return
     ! The caller prepares the output root; exclusive subdirectories prevent reuse.
     call create_batch(trim(options%directory)//'/resources',MPI_COMM_WORLD,ok)
     call check(ok,'cannot create new run resources directory')
@@ -139,8 +444,116 @@ contains
     call geometry_file(trim(options%directory)//'/resources/geometry.h5',.true.)
     if (mpirank==0) call copy_batch_file(trim(source),trim(options%directory)//'/resources/input.txt',ok)
     call check(ok,'cannot freeze primary input resource')
-    if (options%checkpoint%initial_frame.and.last_step/=int(nstep,int64)) &
-      call completed_output_runtime(0.0_real64,counter,rkfirst_pending,initial=.true.)
+    if(trim(flowtype)=='bl') then
+      call freeze_static_resource('grid.h5',trim(gridfile),static_resource_crc(1))
+      call freeze_static_resource('inlet.prof','datin/inlet.prof',static_resource_crc(2))
+      if(dynamic_output_case()) call freeze_inflow_resources()
+    endif
+    if(air5_output_case()) then
+      do i=1,air5_resource_count()
+        call freeze_static_resource(trim(air5_resources(i)),'datin/'//trim(air5_resources(i)),air5_resource_crc(i))
+      enddo
+    endif
+    if(ninit>=1.and.ninit<=3) &
+      call freeze_static_resource(initial_source_name(ninit),trim(initial_source_path(ninit)),initial_resource_crc)
+  end subroutine
+
+  subroutine mean_statistics_file(path,writing,identity,budget)
+    character(*),intent(in) :: path
+    logical,intent(in) :: writing
+    type(checkpoint_state_identity),intent(inout) :: identity
+    integer(int64),intent(in) :: budget
+#if defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
+    if(use_gpu.and.air5_output_case()) then
+      call complete_air5_mean_statistics_file(path,writing,identity,budget)
+      return
+    endif
+#endif
+    call complete_mean_statistics_file(path,writing,identity,budget)
+  end subroutine
+
+  subroutine freeze_inflow_resources()
+    integer :: i,found,unit,err,closed
+    logical :: ok
+    character(1400) :: root,path
+    integer(int64) :: bytes,crc
+    root='inflow'
+    if(len_trim(options%restore_directory)>0) root=trim(options%restore_directory)//'/../../resources'
+    do i=1,inflow_count
+      path=inflow_source_path(i-1)
+      ok=.true.
+      if(mpirank==0) then
+        call file_fingerprint(trim(path),bytes,crc,ok)
+        ok=ok.and.bytes==inflow_bytes(i).and.crc==inflow_crc(i)
+      endif
+      call check(ok,'dynamic inflow changed while freezing')
+      call freeze_static_resource(inflow_source_name(i-1),trim(path),inflow_crc(i))
+    enddo
+    ok=.true.
+    if(mpirank==0) then
+      call discover_inflow_sources(trim(root),found,ok)
+      ok=ok.and.found==inflow_count
+      if(ok) then
+        path=trim(options%directory)//'/resources/inflow_index.bin'
+        open(newunit=unit,file=trim(path),status='new',access='stream',form='unformatted', &
+          convert='little_endian',action='write',iostat=err)
+        ok=err==0
+        if(ok) then
+          write(unit,iostat=err) 'ASTRIF01',inflow_count,inflow_bytes,inflow_crc
+          close(unit,iostat=closed)
+          ok=err==0.and.closed==0
+        endif
+      endif
+    endif
+    call check(ok,'cannot freeze unchanged dynamic inflow sequence')
+    call set_inflow_resource_root(trim(options%directory)//'/resources',inflow_count)
+  end subroutine
+
+  subroutine inflow_file(path,writing,identity)
+    character(*),intent(in) :: path
+    logical,intent(in) :: writing
+    type(checkpoint_state_identity),intent(inout) :: identity
+    type(checkpoint_state_identity) :: expected
+    expected=identity
+#ifdef _CUDA
+    if(use_gpu) then
+      call complete_inflow_gpu_file(path,writing,identity,state_host_budget())
+    else
+#endif
+      call complete_inflow_cpu_file(path,writing,identity,state_host_budget())
+#ifdef _CUDA
+    endif
+#endif
+    call check(irk/=0.or.ninflowslice<inflow_count,'dynamic inflow cache cursor outside frozen sources')
+    call check(identity%step==expected%step.and.identity%time==expected%time.and. &
+      identity%dt_used==expected%dt_used.and.identity%dt_next==expected%dt_next,'inflow/control clock mismatch')
+  end subroutine
+
+  subroutine freeze_static_resource(name,fallback,expected_crc)
+    character(*),intent(in) :: name,fallback
+    integer(int64),intent(in) :: expected_crc
+    character(1200) :: path
+    integer(int64) :: bytes,crc
+    logical :: ok
+    path=output_resource_path(name,fallback)
+    ok=.true.
+    if(mpirank==0) then
+      call file_fingerprint(trim(path),bytes,crc,ok)
+      if(ok) ok=crc==expected_crc
+      if(ok) call copy_batch_file(trim(path),trim(options%directory)//'/resources/'//name,ok)
+      if(ok) then
+        call file_fingerprint(trim(options%directory)//'/resources/'//name,bytes,crc,ok)
+        ok=ok.and.crc==expected_crc
+      endif
+    endif
+    call check(ok,'cannot freeze unchanged static resource '//name)
+  end subroutine
+
+  subroutine initial_output_runtime(counter,pending)
+    integer,intent(inout) :: counter
+    logical,intent(inout) :: pending
+    if(.not.enabled) return
+    call completed_output_runtime(initial_dt_used,counter,pending,initial=.true.)
   end subroutine
 
   subroutine flow_file(path,writing,identity)
@@ -148,80 +561,273 @@ contains
     logical,intent(in) :: writing
     type(checkpoint_state_identity),intent(inout) :: identity
     type(checkpoint_state_identity) :: expected
+    logical :: matched
     expected=identity
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(air5_output_case()) then
+#ifdef _CUDA
+      if(use_gpu) then
+        call checkpoint_air5_gpu(path,writing,[ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],hm, &
+          identity,state_host_budget(),MPI_COMM_WORLD)
+      else
+#endif
+        call checkpoint_air5_state(path,writing,[ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],hm, &
+          q,air5_carry,air5_compensated,rho,vel,prs,tmp,tve,spc,identity,state_host_budget(),MPI_COMM_WORLD)
+#ifdef _CUDA
+      endif
+#endif
+    else
+#endif
 #ifdef _CUDA
     if (use_gpu) then
       call checkpoint_perfect_gas_gpu(path,writing,[ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],hm, &
-        identity,options%host_budget_bytes,MPI_COMM_WORLD)
+        identity,state_host_budget(),MPI_COMM_WORLD,allow_repartition=tgv_repartition_case(),restored_exact=matched, &
+        refresh_halos=refresh_checkpoint_periodic_halos)
     else
 #endif
       call checkpoint_perfect_gas_state(path,writing,[ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],hm, &
-        q,rho,vel,prs,tmp,identity,options%host_budget_bytes,MPI_COMM_WORLD)
+        q,rho,vel,prs,tmp,identity,state_host_budget(),MPI_COMM_WORLD, &
+        allow_repartition=tgv_repartition_case(),restored_exact=matched,refresh_halos=refresh_checkpoint_periodic_halos)
 #ifdef _CUDA
+    endif
+#endif
+    if(.not.writing.and.tgv_repartition_case()) &
+      call check(matched.eqv.(.not.repartitioning),'flow/geometry partition identities disagree')
+#ifdef ASTR_AIR5_CHEMISTRY
     endif
 #endif
     if (.not.writing) call check(identity%step==expected%step.and.identity%time==expected%time.and. &
       identity%dt_used==expected%dt_used.and.identity%dt_next==expected%dt_next,'flow/control clock mismatch')
   end subroutine
 
+#ifdef ASTR_AIR5_CHEMISTRY
+  subroutine air5_contract_file(path,writing)
+    character(*),intent(in) :: path
+    logical,intent(in) :: writing
+    character(40),parameter :: names(10)=[character(40) :: &
+      'ASTR_AIR5_SOURCE_MODE','ASTR_AIR5_CONVECTION_LIMITER','ASTR_AIR5_DIFFUSION_LIMITER', &
+      'ASTR_AIR5_COMPENSATION','ASTR_AIR5_TOP_MODE','ASTR_AIR5_TOP_TAU', &
+      'ASTR_AIR5_PRIMITIVE_REUSE','ASTR_AIR5_CHEMISTRY_REDUCTIONS', &
+      'ASTR_AIR5_FILTER_VALIDATION','ASTR_AIR5_C4_CONSERVATION']
+    character(128) :: values(10),root_values(10),saved_values(10)
+    character(8) :: magic,expected_magic
+    real(real64) :: top(40)
+    integer(int64) :: bits(40),root_bits(40),saved_bits(40),saved_crc(4)
+    integer :: i,status,unit,err,closed,ierr,count
+    count=air5_resource_count()
+    expected_magic='ASTRA501'
+    if(count==4) expected_magic='ASTRA502'
+    do i=1,10
+      values(i)=''
+      call get_environment_variable(trim(names(i)),values(i),status=status)
+      call check(status==0.or.status==1,'AIR5 configuration is truncated')
+    enddo
+    call complete_air5_top_contract(top)
+    bits=transfer(top,bits)
+    root_values=values; root_bits=bits
+    call MPI_Bcast(root_values,1280,MPI_CHARACTER,0,MPI_COMM_WORLD,ierr)
+    call check(ierr==MPI_SUCCESS.and.all(root_values==values),'AIR5 runtime modes differ between ranks')
+    call MPI_Bcast(root_bits,40,MPI_INTEGER8,0,MPI_COMM_WORLD,ierr)
+    call check(ierr==MPI_SUCCESS.and.all(root_bits==bits),'AIR5 top contract differs between ranks')
+    err=0; closed=0
+    if(writing) then
+      if(mpirank==0) then
+        open(newunit=unit,file=path,status='new',access='stream',form='unformatted', &
+          convert='little_endian',action='write',iostat=err)
+        if(err==0) then
+          write(unit,iostat=err) expected_magic,values,bits,air5_resource_crc(:count)
+          close(unit,iostat=closed)
+        endif
+      endif
+      call check(err==0.and.closed==0,'write AIR5 configuration')
+    else
+      open(newunit=unit,file=path,status='old',access='stream',form='unformatted', &
+        convert='little_endian',action='read',iostat=err)
+      call check(err==0,'open AIR5 configuration')
+      read(unit,iostat=err) magic,saved_values,saved_bits,saved_crc(:count)
+      call check(err==0.and.checkpoint_stream_at_end(unit),'AIR5 configuration size/tail')
+      close(unit,iostat=closed)
+      call check(err==0.and.closed==0,'read AIR5 configuration')
+      call check(magic==expected_magic.and.all(saved_values==values).and.all(saved_bits==bits).and. &
+        all(saved_crc(:count)==air5_resource_crc(:count)), &
+        'AIR5 source/limiter/compensation/top/resource contract mismatch')
+    endif
+  end subroutine
+
+#ifdef _CUDA
+  subroutine conservation_file(path,writing,identity)
+    use ieee_arithmetic, only: ieee_is_finite
+    character(*),intent(in) :: path
+    logical,intent(in) :: writing
+    type(checkpoint_state_identity),intent(in) :: identity
+    integer(int64) :: metadata(5),root_metadata(5),bits(11),root_bits(11),step,file_bytes
+    real(real64) :: baseline(11),clock(3)
+    character(8) :: magic
+    integer :: unit,err,closed,ierr
+    call check(state_host_budget()>=512,'AIR5 conservation scalar state budget')
+    call air5_conservation_state_gpu(metadata,baseline)
+    call check(metadata(1)==merge(1_int64,0_int64,conservation_statistics), &
+      'AIR5 conservation activation differs from output configuration')
+    if(writing) then
+      root_metadata=metadata; bits=transfer(baseline,bits); root_bits=bits
+      call MPI_Bcast(root_metadata,5,MPI_INTEGER8,0,MPI_COMM_WORLD,ierr)
+      call check(ierr==MPI_SUCCESS.and.all(metadata==root_metadata),'AIR5 conservation history differs between ranks')
+      call MPI_Bcast(root_bits,11,MPI_INTEGER8,0,MPI_COMM_WORLD,ierr)
+      call check(ierr==MPI_SUCCESS.and.all(bits==root_bits),'AIR5 conservation baseline differs between ranks')
+    else
+      open(newunit=unit,file=path,status='old',access='stream',form='unformatted', &
+        convert='little_endian',action='read',iostat=err)
+      call check(err==0,'missing AIR5 conservation state')
+      inquire(unit=unit,size=file_bytes,iostat=err)
+      call check(err==0.and.file_bytes==168,'AIR5 conservation state size')
+      read(unit,iostat=err) magic,step,clock,metadata,baseline
+      call check(err==0.and.magic=='ASTRA5C1'.and.step==identity%step.and. &
+        all(clock==[identity%time,identity%dt_used,identity%dt_next]),'AIR5 conservation state clock/version')
+      call check(checkpoint_stream_at_end(unit),'AIR5 conservation state tail')
+      close(unit,iostat=closed)
+      call check(closed==0,'AIR5 conservation state close')
+    endif
+    call check(metadata(1)==merge(1_int64,0_int64,conservation_statistics).and. &
+      metadata(2)>=0.and.metadata(2)<=metadata(1).and.all(ieee_is_finite(baseline)), &
+      'AIR5 conservation activation/nonfinite baseline')
+    if(metadata(2)==1) then
+      call check(metadata(3)>=0.and.metadata(3)<identity%step.and.metadata(4)==identity%step.and. &
+        metadata(5)==metadata(4)-metadata(3),'AIR5 conservation sample identity')
+    else
+      call check(all(metadata(3:)==0).and.all(baseline==0).and. &
+        (.not.conservation_statistics.or.identity%step==0),'AIR5 conservation empty history')
+    endif
+    if(writing) then
+      err=0; closed=0
+      if(mpirank==0) then
+        open(newunit=unit,file=path,status='new',access='stream',form='unformatted', &
+          convert='little_endian',action='write',iostat=err)
+        if(err==0) then
+          write(unit,iostat=err) 'ASTRA5C1',identity%step,[identity%time,identity%dt_used,identity%dt_next],metadata,baseline
+          close(unit,iostat=closed)
+        endif
+      endif
+      call check(err==0.and.closed==0,'write AIR5 conservation state')
+    else
+      call restore_air5_conservation_state_gpu(metadata,baseline)
+    endif
+  end subroutine
+#endif
+#endif
+
   subroutine geometry_file(path,writing)
     character(*),intent(in) :: path
     logical,intent(in) :: writing
     real(real64),allocatable :: buffer(:,:,:,:)
     integer(int64) :: remaining
-    integer :: a,b,m,h,i,j,k
+    integer :: a,b,m
+    integer :: h
+    logical :: matched
     type(checkpoint_state_identity) :: identity
     identity=checkpoint_state_identity(0_int64,0.0_real64,0.0_real64,1.0_real64)
-    call allocate_checkpoint_buffer([im,jm,km],hm,13,options%host_budget_bytes,buffer,remaining,MPI_COMM_WORLD)
-    h=hm+1
+    call allocate_checkpoint_buffer([im,jm,km],hm,13,state_host_budget(),buffer,remaining,MPI_COMM_WORLD)
     if (writing) then
-      ! gridsendrecv defines physical nodes and face halos, not edge/corner padding.
-      buffer(:,:,:,1:3)=0.0_real64
-      buffer(:,h:h+jm,h:h+km,1:3)=x(:,0:jm,0:km,:)
-      buffer(h:h+im,:,h:h+km,1:3)=x(0:im,:,0:km,:)
-      buffer(h:h+im,h:h+jm,:,1:3)=x(0:im,0:jm,:,:)
-      buffer(:,:,:,4)=jacob
+      do m=1,3
+        call pack_geometry_field(buffer(:,:,:,m),x(:,:,:,m),.false.)
+      enddo
+      call pack_geometry_field(buffer(:,:,:,4),jacob,.true.)
       m=4
       do b=1,3
         do a=1,3
           m=m+1
-          buffer(:,:,:,m)=dxi(:,:,:,a,b)
+          call pack_geometry_field(buffer(:,:,:,m),dxi(:,:,:,a,b),.true.)
         enddo
       enddo
-      ! Metric exchanges also leave edge/corner storage outside their stencil.
-      do k=1,size(buffer,3)
-        do j=1,size(buffer,2)
-          do i=1,size(buffer,1)
-            if (count([i<h.or.i>h+im,j<h.or.j>h+jm,k<h.or.k>h+km])>=2) &
-              buffer(i,j,k,:)=0.0_real64
-          enddo
-        enddo
-      enddo
+    else
+      buffer=0.d0
     endif
     call checkpoint_state_transfer(path,writing,.true.,[ia,ja,ka]+1,[ig0,jg0,kg0], &
-      [im,jm,km],hm,buffer,identity,remaining,MPI_COMM_WORLD)
+      [im,jm,km],hm,buffer,identity,remaining,MPI_COMM_WORLD, &
+      allow_repartition=tgv_repartition_case(),restored_exact=matched)
     if (.not.writing) then
+      repartitioning=.not.matched
+      if(repartitioning) then
+        h=hm+1
+        do m=1,3
+          call check(all(buffer(h:h+im,h:h+jm,h:h+km,m)==x(0:im,0:jm,0:km,m)), &
+            'repartition physical coordinates mismatch')
+        enddo
+        call check(all(buffer(h:h+im,h:h+jm,h:h+km,4)==jacob(0:im,0:jm,0:km)), &
+          'repartition physical Jacobian mismatch')
+        m=4
+        do b=1,3
+          do a=1,3
+            m=m+1
+            call check(all(buffer(h:h+im,h:h+jm,h:h+km,m)==dxi(0:im,0:jm,0:km,a,b)), &
+              'repartition physical metric mismatch')
+          enddo
+        enddo
+        if(mpirank==0) write(*,'(a)') 'ASTR_OUTPUT_REPARTITION periodic TGV physical-node restore; new halos rebuilt'
+        return
+      endif
       do m=1,3
-        call check_geometry_field(buffer(:,:,:,m),x(:,:,:,m))
+        call check_geometry_field(buffer(:,:,:,m),x(:,:,:,m),.false.)
       enddo
-      call check_geometry_field(buffer(:,:,:,4),jacob)
+      call check_geometry_field(buffer(:,:,:,4),jacob,.true.)
       m=4
       do b=1,3
         do a=1,3
           m=m+1
-          call check_geometry_field(buffer(:,:,:,m),dxi(:,:,:,a,b))
+          call check_geometry_field(buffer(:,:,:,m),dxi(:,:,:,a,b),.true.)
         enddo
       enddo
     endif
   end subroutine
 
-  subroutine check_geometry_field(saved,actual)
-    real(real64),intent(in) :: saved(:,:,:),actual(:,:,:)
-    integer :: h
+  subroutine refresh_checkpoint_periodic_halos(buffer,cells,halo,budget,comm)
+    use parallel, only: dataswap
+    real(real64),contiguous,intent(inout) :: buffer(:,:,:,:)
+    integer,intent(in) :: cells(3),halo,comm
+    integer(int64),intent(in) :: budget
+    integer(int64) :: face,ncomp
+    call checkpoint_state_require(comm==MPI_COMM_WORLD.and.all(cells==[im,jm,km]).and.halo==hm.and. &
+      all([lihomo,ljhomo,lkhomo]).and.minval(cells)>=halo,comm,'repartition halo needs periodic solver layout')
+    ncomp=size(buffer,4,kind=int64)
+    face=max(int(cells(1)+1,int64)*(cells(2)+1),int(cells(1)+1,int64)*(cells(3)+1), &
+      int(cells(2)+1,int64)*(cells(3)+1))
+    ! Four MPI face arrays plus conservative room for two assignment temporaries.
+    call checkpoint_state_require(face<=budget/8/6/max(1,halo)/ncomp,comm,'repartition halo scratch budget')
+    call dataswap(buffer)
+  end subroutine
+
+  subroutine geometry_defined_bounds(metric,lo,hi)
+    logical,intent(in) :: metric
+    integer,intent(out) :: lo(3),hi(3)
+    lo=1
+    hi=[im,jm,km]+2*hm+1
+    if(.not.metric) return
+    ! dataswap does not define metric halos outside a nonperiodic physical face.
+    where(.not.[lihomo,ljhomo,lkhomo].and.[ig0,jg0,kg0]==0) lo=hm+1
+    where(.not.[lihomo,ljhomo,lkhomo].and.[ig0,jg0,kg0]+[im,jm,km]==[ia,ja,ka]) hi=[im,jm,km]+hm+1
+  end subroutine
+
+  subroutine pack_geometry_field(saved,actual,metric)
+    real(real64),intent(out) :: saved(:,:,:)
+    real(real64),intent(in) :: actual(:,:,:)
+    logical,intent(in) :: metric
+    integer :: h,lo(3),hi(3)
     h=hm+1
-    call check(all(saved(:,h:h+jm,h:h+km)==actual(:,h:h+jm,h:h+km)).and. &
-      all(saved(h:h+im,:,h:h+km)==actual(h:h+im,:,h:h+km)).and. &
-      all(saved(h:h+im,h:h+jm,:)==actual(h:h+im,h:h+jm,:)), &
+    call geometry_defined_bounds(metric,lo,hi)
+    saved=0.d0
+    saved(lo(1):hi(1),h:h+jm,h:h+km)=actual(lo(1):hi(1),h:h+jm,h:h+km)
+    saved(h:h+im,lo(2):hi(2),h:h+km)=actual(h:h+im,lo(2):hi(2),h:h+km)
+    saved(h:h+im,h:h+jm,lo(3):hi(3))=actual(h:h+im,h:h+jm,lo(3):hi(3))
+  end subroutine
+
+  subroutine check_geometry_field(saved,actual,metric)
+    real(real64),intent(in) :: saved(:,:,:),actual(:,:,:)
+    logical,intent(in) :: metric
+    integer :: h,lo(3),hi(3)
+    h=hm+1
+    call geometry_defined_bounds(metric,lo,hi)
+    call check(all(saved(lo(1):hi(1),h:h+jm,h:h+km)==actual(lo(1):hi(1),h:h+jm,h:h+km)).and. &
+      all(saved(h:h+im,lo(2):hi(2),h:h+km)==actual(h:h+im,lo(2):hi(2),h:h+km)).and. &
+      all(saved(h:h+im,h:h+jm,lo(3):hi(3))==actual(h:h+im,h:h+jm,lo(3):hi(3))), &
       'defined geometry restart mismatch')
   end subroutine
 
@@ -231,12 +837,39 @@ contains
     integer,intent(inout) :: counter
     logical,intent(inout) :: pending
     type(checkpoint_state_identity),intent(inout) :: identity
-    integer(int64) :: saved(14),interval,saved_last
-    real(real64) :: saved_next,dt_interval
-    integer :: unit,err,closed,saved_counter
-    logical :: saved_pending
+    integer(int64) :: saved(14),interval,saved_last,origin_step
+    real(real64) :: dt_interval,origin_time
+    integer :: unit,err,closed,saved_counter,status,ierr
+    logical :: saved_pending,saved_initial,ok,same_schedule
+    real(real64) :: driver(6),root_driver(6)
+    character(128) :: driver_config(3),saved_driver_config(3),root_config(3)
+    type(sample_schedule) :: restored_schedule
     character(8) :: magic
     character(16) :: mode
+    driver=0
+    driver_config=''
+    if(trim(flowtype)=='channel') then
+      call get_environment_variable('ASTR_CHANNEL_FORCE_MODE',driver_config(1),status=status)
+      call check(status==0.or.status==1,'channel force mode is truncated')
+      call get_environment_variable('ASTR_CHANNEL_FORCE_FIXED',driver_config(2),status=status)
+      call check(status==0.or.status==1,'channel fixed force is truncated')
+      if(writing) then
+        call channel_driver_state(driver,.true.,ok)
+        call check(ok,'invalid channel driver state')
+        root_driver=driver
+        call MPI_Bcast(root_driver,6,MPI_DOUBLE_PRECISION,0,MPI_COMM_WORLD,ierr)
+        call check(ierr==MPI_SUCCESS,'channel driver state broadcast')
+        call check(all(transfer(root_driver,[0_int64],6)==transfer(driver,[0_int64],6)), &
+          'channel driver state differs between ranks')
+      endif
+    endif
+    if(trim(flowtype)=='bl') then
+      call get_environment_variable('ASTR_PROFILE_INFLOW_MODE',driver_config(3),status=status)
+      call check(status==0.or.status==1,'profile inflow mode is truncated')
+    endif
+    root_config=driver_config
+    call MPI_Bcast(root_config,384,MPI_CHARACTER,0,MPI_COMM_WORLD,ierr)
+    call check(ierr==MPI_SUCCESS.and.all(root_config==driver_config),'boundary/driver configuration differs between ranks')
     ! Small control metadata is read by all ranks; no field data is gathered.
     if (writing) then
       err=0
@@ -245,9 +878,14 @@ contains
         open(newunit=unit,file=path,status='new',access='stream',form='unformatted', &
           convert='little_endian',action='write',iostat=err)
         if (err==0) then
-          write(unit,iostat=err) 'ASTROC01',contract,identity%step,identity%time,identity%dt_used,identity%dt_next, &
-            counter,pending,last_step,next_time,options%checkpoint%mode,options%checkpoint%interval_steps, &
-            options%checkpoint%interval_time
+          write(unit,iostat=err) 'ASTROC04',contract,identity%step,identity%time,identity%dt_used,identity%dt_next, &
+            counter,pending,last_step,options%checkpoint%mode,options%checkpoint%interval_steps, &
+            options%checkpoint%interval_time,options%checkpoint%initial_frame,schedule_origin_step,schedule_origin_time, &
+            driver_config,driver
+          if(err==0) then
+            call write_schedule_state(unit,checkpoint_schedule,'checkpoint',identity%step,identity%time,ok)
+            if(.not.ok) err=1
+          endif
           close(unit,iostat=closed)
         endif
       endif
@@ -257,19 +895,42 @@ contains
         convert='little_endian',action='read',iostat=err)
       call check(err==0,'open control metadata')
       read(unit,iostat=err) magic,saved,identity%step,identity%time,identity%dt_used,identity%dt_next, &
-        saved_counter,saved_pending,saved_last,saved_next,mode,interval,dt_interval
+        saved_counter,saved_pending,saved_last,mode,interval,dt_interval,saved_initial,origin_step,origin_time, &
+        saved_driver_config,driver
+      call check(err==0,'read control metadata')
+      call check(magic=='ASTROC04'.and.all(saved==contract),'numerical/executable/controller contract mismatch')
+      call check(all(saved_driver_config==driver_config),'boundary/driver configuration mismatch')
+      if(trim(flowtype)=='channel') then
+        call channel_driver_state(driver,.false.,ok)
+        call check(ok,'invalid restored channel driver state')
+      endif
+      call configure_schedule(restored_schedule,trim(mode),interval,dt_interval, &
+        origin_step,origin_time,saved_initial,.false.,ok)
+      call check(ok,'invalid saved checkpoint schedule')
+      call restore_schedule_state(unit,restored_schedule,'checkpoint',identity%step,identity%time,ok)
+      call check(ok.and.checkpoint_stream_at_end(unit),'control metadata tail')
       close(unit,iostat=closed)
-      call check(err==0.and.closed==0,'read control metadata')
-      call check(magic=='ASTROC01'.and.all(saved==contract),'numerical/executable/controller contract mismatch')
+      call check(ok.and.closed==0,'read checkpoint schedule state')
       counter=saved_counter
       pending=saved_pending
       last_step=saved_last
-      if (options%restart_output=='saved') then
-        call check(mode==options%checkpoint%mode.and.interval==options%checkpoint%interval_steps.and. &
-          dt_interval==options%checkpoint%interval_time,'saved output schedule differs; select explicit override')
-        next_time=saved_next
+      same_schedule=mode==options%checkpoint%mode.and.interval==options%checkpoint%interval_steps.and. &
+        dt_interval==options%checkpoint%interval_time.and.(saved_initial.eqv.options%checkpoint%initial_frame)
+      if (options%restart_output=='saved') &
+        call check(same_schedule,'saved output schedule differs; select explicit override')
+      if(same_schedule) then
+        checkpoint_schedule=restored_schedule
+        schedule_origin_step=origin_step
+        schedule_origin_time=origin_time
       else
-        next_time=identity%time+options%checkpoint%interval_time
+        schedule_origin_step=identity%step
+        schedule_origin_time=identity%time
+        if(options%checkpoint%enabled) then
+          call configure_schedule(checkpoint_schedule,trim(options%checkpoint%mode), &
+            options%checkpoint%interval_steps,options%checkpoint%interval_time, &
+            schedule_origin_step,schedule_origin_time,options%checkpoint%initial_frame,.false.,ok)
+          call check(ok,'invalid overridden checkpoint schedule')
+        endif
       endif
     endif
   end subroutine
@@ -279,44 +940,104 @@ contains
     integer,intent(inout) :: counter
     logical,intent(inout) :: pending
     logical,optional,intent(in) :: initial
-    logical :: due,ok
+    logical :: due,ok,scheduled
+    integer(int64) :: crossed
     character(64) :: name
     character(1200) :: path
-    character(128) :: resources(2),files(3)
+    character(128),allocatable :: resources(:)
+    character(128) :: files(9)
+    integer :: file_count,resource_count,i,err
     type(checkpoint_state_identity) :: identity
     if (.not.enabled) return
     call check_capability()
+    call check(lavg.eqv.(compact_statistics.or.mean_statistics),'legacy statistics activation changed during the run')
+    identity=checkpoint_state_identity(int(nstep,int64),time,dt_used,deltat)
+    call complete_output_insitu(nstep,time,nstep>maxstep)
+    if(archives_enabled()) call observe_archives(identity,nstep>maxstep)
     if (.not.options%checkpoint%enabled) return
     due=nstep>maxstep
-    if (present(initial)) due=due.or.initial
-    if (options%checkpoint%mode=='steps') then
-      due=due.or.mod(int(nstep,int64),options%checkpoint%interval_steps)==0
-    else
-      due=due.or.time>=next_time
-    endif
+    if (present(initial)) due=due.or.(initial.and.options%checkpoint%initial_frame.and.last_step==-1)
+    call poll_schedule(checkpoint_schedule,int(nstep,int64),time,.false.,scheduled,crossed,ok)
+    call check(ok,'invalid checkpoint schedule clock or unrepresentable time targets')
+    due=due.or.scheduled
     if (.not.due.or.last_step==int(nstep,int64)) return
-    if (options%checkpoint%mode=='time'.and.time>=next_time) then
-      do while(next_time<=time)
-        next_time=next_time+options%checkpoint%interval_time
-      enddo
-    endif
     write(name,'("step",i12.12)') nstep
     path=trim(options%directory)//'/checkpoints/'//trim(name)//'.tmp'
+    call checkpoint_state_context(trim(options%directory)//'/checkpoints/'//trim(name),last_runtime_checkpoint())
     call create_batch(trim(path),MPI_COMM_WORLD,ok)
     call check(ok,'cannot create checkpoint candidate')
     identity=checkpoint_state_identity(int(nstep,int64),time,dt_used,deltat)
     call flow_file(trim(path)//'/state.h5',.true.,identity)
+    if(dynamic_output_case()) call inflow_file(trim(path)//'/inflow.h5',.true.,identity)
+    if(statistics_active) call output_statistics_file(trim(path)//'/statistics.h5',.true., &
+      identity,state_host_budget())
+    if(mean_statistics) call mean_statistics_file(trim(path)//'/statistics.h5',.true., &
+      identity,state_host_budget())
+#ifdef _CUDA
+    if(compact_statistics) call complete_compact_statistics_file(trim(path)//'/statistics.h5',.true., &
+      identity,state_host_budget())
+#endif
     last_step=nstep
     call control_file(trim(path)//'/control.bin',.true.,counter,pending,identity)
-    resources=[character(128) :: 'geometry.h5','input.txt']
-    call write_checkpoint_resource_refs(trim(path),resources,MPI_COMM_WORLD,ok)
+    call archive_control_file(trim(path)//'/archives.bin',.true.,identity)
+    call output_render_file(trim(path)//'/insitu_control.bin',.true.,identity,state_host_budget(),.false.)
+    resource_count=2
+    if(trim(flowtype)=='bl') resource_count=4
+    if(dynamic_output_case()) resource_count=5+inflow_count
+    if(air5_output_case()) resource_count=2+air5_resource_count()
+    if(ninit>=1.and.ninit<=3) resource_count=resource_count+1
+    allocate(resources(resource_count),stat=err)
+    call check(err==0,'checkpoint resource-name allocation')
+    resources(1:2)=[character(128) :: 'geometry.h5','input.txt']
+    if(trim(flowtype)=='bl') resources(3:4)=[character(128) :: 'grid.h5','inlet.prof']
+    if(dynamic_output_case()) then
+      resources(5)='inflow_index.bin'
+      do i=1,inflow_count
+        resources(5+i)=inflow_source_name(i-1)
+      enddo
+    endif
+    if(air5_output_case()) then
+#ifdef ASTR_AIR5_CHEMISTRY
+      call air5_contract_file(trim(path)//'/air5_config.bin',.true.)
+#ifdef _CUDA
+      if(use_gpu) call conservation_file(trim(path)//'/air5_conservation.bin',.true.,identity)
+#endif
+#endif
+      resources(3:resource_count)=air5_resources(:air5_resource_count())
+    endif
+    if(ninit>=1.and.ninit<=3) resources(resource_count)=initial_source_name(ninit)
+    call write_checkpoint_resource_refs(trim(path),resources(:resource_count),MPI_COMM_WORLD,ok)
     call check(ok,'cannot record checkpoint resources')
-    files=[character(128) :: 'state.h5','control.bin','RESOURCES']
-    call seal_checkpoint_bundle(trim(path),files,MPI_COMM_WORLD,ok)
+    files=''
+    files(1:4)=[character(128) :: 'state.h5','control.bin','RESOURCES','archives.bin']
+    file_count=4
+    file_count=file_count+1
+    files(file_count)='insitu_control.bin'
+    if(statistics_active.or.compact_statistics.or.mean_statistics) then
+      file_count=file_count+1
+      files(file_count)='statistics.h5'
+    endif
+    if(air5_output_case()) then
+      file_count=file_count+1
+      files(file_count)='air5_config.bin'
+#if defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
+      if(use_gpu) then
+        file_count=file_count+1
+        files(file_count)='air5_conservation.bin'
+      endif
+#endif
+    endif
+    if(dynamic_output_case()) then
+      file_count=file_count+1
+      files(file_count)='inflow.h5'
+    endif
+    call seal_checkpoint_bundle(trim(path),files(:file_count),MPI_COMM_WORLD,ok)
     call check(ok,'cannot seal checkpoint')
     call publish_retained_checkpoint(trim(options%directory)//'/checkpoints',trim(name),options%keep, &
       ledger,MPI_COMM_WORLD,ok)
+    call checkpoint_state_context(trim(options%directory)//'/checkpoints/'//trim(name),last_runtime_checkpoint())
     call check(ok,'cannot publish/retain checkpoint')
+    call checkpoint_state_context('','')
     if (mpirank==0) write(*,'(a,i0,a,es24.16)') 'ASTR_OUTPUT complete_step=',nstep,' time=',time
   end subroutine
 end module

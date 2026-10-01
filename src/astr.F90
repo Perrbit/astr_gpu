@@ -22,6 +22,7 @@ program astr
   use initialisation,only: flowinit
   use sponge_layer,  only: spongelayerini
   use mainloop,      only: steploop
+  use output_runtime,only: bootstrap_output_resources
   use gridgeneration,only: gridgen
   use cmdefne,       only: getcmd,listcmd
   use pp,            only: ppentrance
@@ -114,6 +115,7 @@ program astr
 
     call ibprocess
 
+    call bootstrap_output_resources()
     call gridgen
 
     call solvrinit

@@ -203,10 +203,12 @@ contains
     use commarray_gpu, only: release_gpu_arrays
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_hbl_boundary_gpu, only: release_air5_hbl_boundary_gpu
+    use chemistry_mean_statistics_gpu, only: release_air5_mean_statistics_gpu
 #endif
     implicit none
 #ifdef ASTR_AIR5_CHEMISTRY
     call release_air5_hbl_boundary_gpu()
+    call release_air5_mean_statistics_gpu()
 #endif
     call release_compact_statistics_gpu()
     call release_dynamic_inflow_gpu()

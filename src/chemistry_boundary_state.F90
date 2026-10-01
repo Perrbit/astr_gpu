@@ -5,19 +5,23 @@ module chemistry_hbl_geometry
   private
   public :: read_air5_hbl_domain
 contains
-  subroutine read_air5_hbl_domain(flowtype,ref_len,lengths)
+  subroutine read_air5_hbl_domain(flowtype,ref_len,lengths,resource_path)
     character(len=*), intent(in) :: flowtype
     real(real64), intent(in) :: ref_len
     real(real64), intent(out) :: lengths(3)
+    character(*),optional,intent(in) :: resource_path
     character(len=128) :: header
+    character(1200) :: path
     integer :: unit,ios
     logical :: exists
 
     lengths=[20.0_real64,8.0_real64,2.0_real64]*ref_len
     if(trim(flowtype)=='air5sbli') lengths(1)=80.0_real64*ref_len
-    inquire(file='datin/air5_hbl_domain.dat',exist=exists)
+    path='datin/air5_hbl_domain.dat'
+    if(present(resource_path)) path=resource_path
+    inquire(file=trim(path),exist=exists)
     if(exists) then
-      open(newunit=unit,file='datin/air5_hbl_domain.dat',status='old', &
+      open(newunit=unit,file=trim(path),status='old', &
         action='read',iostat=ios)
       if(ios/=0) error stop 'cannot open air5 HBL domain file'
       read(unit,'(A)',iostat=ios) header

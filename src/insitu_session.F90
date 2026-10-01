@@ -1,7 +1,8 @@
 module insitu_session
   use mpi
   use iso_fortran_env, only: int32,int64,real64
-  use insitu_schedule, only: sample_schedule,configure_schedule,poll_schedule,write_schedule_state,restore_schedule_state
+  use insitu_schedule, only: sample_schedule,configure_schedule,poll_schedule,write_schedule_state,restore_schedule_state, &
+    resume_schedule
   use insitu_checkpoint_batch
   use insitu_velocity_statistics
   use insitu_resource_budget, only: resource_budget,configure_budget,reserve_bytes,checked_bytes
@@ -16,6 +17,18 @@ module insitu_session
   public :: sample_insitu_step,finish_insitu,begin_insitu
   public :: save_insitu_pair,prepare_insitu_pair
   public :: capture_insitu_cpu_checkpoint,restore_insitu_cpu_checkpoint
+  public :: configure_output_statistics,output_statistics_file
+  public :: output_render_file,begin_output_insitu,complete_output_insitu
+  public :: output_render_repartition_allowed
+  logical,save :: output_statistics_restored=.false.
+  logical,save :: native_output=.false.,output_render_restored=.false.,output_render_finalized=.false.
+  logical,save :: output_saved_rendering=.false.
+  logical,save :: resource_observer_started=.false.
+  logical,save :: output_render_initial=.false.
+  integer(int64),save :: output_render_step=0
+  real(real64),save :: output_render_time=0.d0
+  integer(int64),save :: render_origin_step=0,render_signature(4)=0
+  real(real64),save :: render_origin_time=0.d0
   real(real64),allocatable,save :: cpu_checkpoint_q(:,:,:,:)
   logical,save :: configured=.false.,enabled=.false.
   logical,save :: session_checked=.false.,formal=.false.
@@ -78,6 +91,237 @@ module insitu_session
   end interface
 #endif
 contains
+  logical function output_render_repartition_allowed()
+    output_render_repartition_allowed=.not.output_saved_rendering.and..not.(formal.and.enabled.and.options%render)
+  end function
+
+  subroutine configure_output_statistics(active)
+    logical,intent(out) :: active
+    call configure_session()
+    active=formal.and.enabled.and.statistics_enabled
+    if(formal.and.enabled) then
+      call require_sample(len_trim(options%restore_batch)==0.and.len_trim(options%batch_prefix)==0, &
+        'new checkpoint cannot be combined with legacy in situ pairs')
+    endif
+  end subroutine
+
+  subroutine begin_output_insitu()
+    integer :: status
+    if(.not.native_output.or..not.formal.or..not.enabled.or..not.options%render) return
+#if defined(ASTR_WITH_CATALYST) && defined(_CUDA)
+    if(resource_observer_started) return
+    status=resource_begin(int(MPI_COMM_WORLD,c_int), &
+      int(options%host_budget_bytes,c_int64_t),int(options%device_budget_bytes,c_int64_t), &
+      int(options%device_reserve_bytes,c_int64_t),trim(options%output_directory)//c_null_char)
+    call require_sample(status==0,'cannot initialize native resource observer')
+    resource_observer_started=.true.
+#endif
+  end subroutine
+
+  subroutine output_render_file(path,writing,identity,budget,override)
+    use checkpoint_state_io, only: checkpoint_state_identity
+    use checkpoint_bundle, only: checkpoint_stream_at_end
+    use parallel, only: mpirank
+    character(*),intent(in) :: path
+    logical,intent(in) :: writing,override
+    type(checkpoint_state_identity),intent(in) :: identity
+    integer(int64),intent(in) :: budget
+    integer(int64) :: flags(3),saved_flags(3),signature(4),step,interval,origin_step
+    real(real64) :: clock(3),period,origin_time
+    character(8) :: magic
+    character(16) :: mode
+    type(sample_schedule) :: restored
+    logical :: rendering,same,ok
+    integer :: unit,status,closed
+    call require_sample(native_output,'native render provider needs new output')
+    rendering=formal.and.enabled.and.options%render
+    flags=0; signature=0; mode=''; interval=0; period=0; origin_step=0; origin_time=0
+    call require_sample(budget>=512,'native render scalar state budget')
+    if(rendering) then
+      call require_sample(budget>=1024,'native render control state budget')
+      flags=[1_int64,merge(1_int64,0_int64,options%initial_frame),merge(1_int64,0_int64,options%final_frame)]
+      mode=options%schedule_mode; interval=options%step_interval; period=options%time_interval
+      signature=render_signature
+      origin_step=render_origin_step; origin_time=render_origin_time
+      call configure_render_schedule()
+    endif
+    if(writing) then
+      status=0; closed=0
+      if(mpirank==0) then
+        open(newunit=unit,file=path,status='new',access='stream',form='unformatted', &
+          convert='little_endian',action='write',iostat=status)
+        if(status==0) then
+          write(unit,iostat=status) 'ASTRIR01',identity%step,[identity%time,identity%dt_used,identity%dt_next], &
+            flags,mode,interval,period,origin_step,origin_time,signature
+          if(status==0.and.rendering) then
+            call write_schedule_state(unit,render_schedule,'native-render',identity%step,identity%time,ok)
+            if(.not.ok) status=1
+          endif
+          close(unit,iostat=closed)
+        endif
+      endif
+      call require_sample(status==0.and.closed==0,'cannot write native render control')
+      return
+    endif
+    open(newunit=unit,file=path,status='old',access='stream',form='unformatted', &
+      convert='little_endian',action='read',iostat=status)
+    call require_sample(status==0,'missing native render control')
+    read(unit,iostat=status) magic,step,clock,saved_flags,mode,interval,period,origin_step,origin_time,signature
+    call require_sample(status==0,'cannot read native render control')
+    call require_sample(magic=='ASTRIR01'.and.step==identity%step.and. &
+      all(clock==[identity%time,identity%dt_used,identity%dt_next]),'native render clock/version mismatch')
+    call require_sample(all(saved_flags>=0).and.all(saved_flags<=1),'invalid native render flags')
+    output_saved_rendering=saved_flags(1)==1
+    call require_sample(ieee_is_finite(period).and.ieee_is_finite(origin_time),'nonfinite native render configuration')
+    if(saved_flags(1)==1) then
+      call configure_schedule(restored,trim(mode),interval,period,origin_step,origin_time, &
+        saved_flags(2)==1,saved_flags(3)==1,ok)
+      call require_sample(ok,'invalid saved native render configuration')
+      call restore_schedule_state(unit,restored,'native-render',identity%step,identity%time,ok)
+      call require_sample(ok,'invalid native render schedule history')
+    else
+      call require_sample(all(saved_flags==0).and.mode==''.and.interval==0.and.period==0.and. &
+        origin_step==0.and.origin_time==0.and.all(signature==0),'invalid empty native render state')
+    endif
+    call require_sample(checkpoint_stream_at_end(unit),'native render control tail')
+    close(unit,iostat=closed)
+    call require_sample(closed==0,'cannot close native render control')
+    same=all(saved_flags==flags)
+    if(rendering) same=same.and.mode==options%schedule_mode.and.interval==options%step_interval.and. &
+      period==options%time_interval.and.all(signature==render_signature)
+    call require_sample(same.or.override,'native render configuration differs; select explicit override')
+    if(rendering) then
+      if(same) then
+        render_schedule=restored
+        call resume_schedule(render_schedule,ok)
+        call require_sample(ok,'cannot resume native render schedule')
+        render_origin_step=origin_step; render_origin_time=origin_time
+      else
+        render_origin_step=identity%step; render_origin_time=identity%time
+        render_configured=.false.
+        call configure_render_schedule()
+        output_render_initial=options%initial_frame
+      endif
+    endif
+    output_render_step=identity%step; output_render_time=identity%time
+    output_render_restored=.true.
+  end subroutine
+
+  subroutine complete_output_insitu(step,t,final)
+    integer,intent(in) :: step
+    real(real64),intent(in) :: t
+    logical,intent(in) :: final
+    if(.not.native_output.or..not.formal.or..not.enabled.or..not.options%render.or..not.final) return
+    if(output_render_finalized) return
+    call render_native_if_due(step,t,.true.)
+    output_render_finalized=.true.
+  end subroutine
+
+  subroutine output_statistics_file(path,writing,identity,budget,allow_repartition)
+    use commvar, only: ia,ja,ka,im,jm,km,use_gpu
+    use parallel, only: ig0,jg0,kg0
+    use checkpoint_state_io, only: checkpoint_state_identity,checkpoint_state_transfer,allocate_checkpoint_buffer
+#ifdef _CUDA
+    use insitu_statistics_gpu, only: pack_statistics_gpu_state,unpack_statistics_gpu_state
+#endif
+    character(*),intent(in) :: path
+    logical,intent(in) :: writing
+    logical,optional,intent(in) :: allow_repartition
+    type(checkpoint_state_identity),intent(in) :: identity
+    integer(int64),intent(in) :: budget
+    type(checkpoint_state_identity) :: stored
+    type(velocity_statistics) :: region
+    integer(int64) :: metadata(38),remaining
+    real(real64),allocatable :: values(:,:,:,:),native_values(:,:,:,:)
+    real(real64) :: regional_values(34)
+    logical :: ok,all_ok,native,permit
+    integer :: i,j,k,status,role
+    call require_sample(formal.and.enabled.and.statistics_enabled,'statistics provider is not active')
+    permit=.false.
+    if(present(allow_repartition)) permit=allow_repartition
+    native=native_device_statistics()
+    role=3
+    if(native) role=4
+    call admit_statistics_host()
+    ! Reserve room for a possible compiler packing temporary of the same size.
+    call require_sample(budget>=16_int64*int(im+1,int64)*(jm+1)*(km+1)*34+4096, &
+      'statistics checkpoint host buffer budget')
+    call allocate_checkpoint_buffer([im,jm,km],0,34,budget,values,remaining,MPI_COMM_WORLD)
+    metadata=0
+    values=0.d0
+    if(writing) then
+      call require_sample(statistics_step==identity%step.and.statistics_time==identity%time, &
+        'statistics and completed flow identities differ')
+      call pack_velocity_state(regional_statistics,regional_values,ok)
+      call require_sample(ok,'cannot pack regional statistics')
+      metadata(1:4)=[1_int64,int(merge(1,0,native),int64),identity%step,transfer(identity%time,0_int64)]
+      metadata(5:38)=transfer(regional_values,metadata(5:38))
+      values=0.d0
+      if(native) then
+#ifdef _CUDA
+        allocate(native_values(im,jm,km,34),stat=status)
+        call require_sample(status==0,'cannot allocate contiguous native statistics download')
+        call pack_statistics_gpu_state(native_values,ok)
+        call require_sample(ok,'cannot pack native point statistics')
+        values(1:im,1:jm,1:km,:)=native_values
+        deallocate(native_values)
+#endif
+      else
+        call require_sample(allocated(point_statistics),'point statistics not initialized')
+        all_ok=.true.
+        do k=0,km
+          do j=0,jm
+            do i=0,im
+              call pack_velocity_state(point_statistics(i,j,k),values(i+1,j+1,k+1,:),ok)
+              all_ok=all_ok.and.ok
+            enddo
+          enddo
+        enddo
+        call require_sample(all_ok,'cannot pack point statistics')
+      endif
+    endif
+    stored=identity
+    call checkpoint_state_transfer(path,writing,.true.,[ia,ja,ka]+1,[ig0,jg0,kg0], &
+      [im,jm,km],0,values,stored,remaining,MPI_COMM_WORLD,role=role,metadata=metadata,allow_repartition=permit)
+    if(writing) return
+    call require_sample(stored%step==identity%step.and.stored%time==identity%time.and. &
+      stored%dt_used==identity%dt_used.and.stored%dt_next==identity%dt_next,'statistics file clock mismatch')
+    call require_sample(all(metadata(1:4)==[1_int64,int(merge(1,0,native),int64), &
+      identity%step,transfer(identity%time,0_int64)]),'statistics metadata identity mismatch')
+    regional_values=transfer(metadata(5:38),regional_values)
+    call unpack_velocity_state(regional_values,region,identity%time,statistics_window(1),statistics_window(2),ok)
+    call require_sample(ok,'cannot restore regional statistics')
+    if(native) then
+#ifdef _CUDA
+      allocate(native_values(im,jm,km,34),stat=status)
+      call require_sample(status==0,'cannot allocate contiguous native statistics restore')
+      native_values=values(1:im,1:jm,1:km,:)
+      call unpack_statistics_gpu_state(native_values,identity%time,statistics_window,ok)
+      call require_sample(ok,'cannot restore native point statistics')
+      deallocate(native_values)
+#endif
+    else
+      call require_sample(.not.allocated(point_statistics),'point statistics already initialized before restore')
+      allocate(point_statistics(0:im,0:jm,0:km),stat=status)
+      call require_sample(status==0,'cannot allocate restored point statistics')
+      all_ok=.true.
+      do k=0,km
+        do j=0,jm
+          do i=0,im
+            call unpack_velocity_state(values(i+1,j+1,k+1,:),point_statistics(i,j,k), &
+              identity%time,statistics_window(1),statistics_window(2),ok)
+            all_ok=all_ok.and.ok
+          enddo
+        enddo
+      enddo
+      call require_sample(all_ok,'cannot restore point statistics')
+    endif
+    regional_statistics=region
+    statistics_step=int(identity%step)
+    statistics_time=identity%time
+    output_statistics_restored=.true.
+  end subroutine
+
   logical function native_device_statistics()
 #ifdef _CUDA
     use commvar, only: use_gpu
@@ -101,12 +345,16 @@ contains
 
   subroutine configure_session()
     use commvar, only: use_gpu,lrestart,lreadgrid,flowtype,ndims
+    use parallel, only: mpirank
 #ifdef _CUDA
     use insitu_statistics_gpu, only: configure_statistics_device_budget
 #endif
-    character(1024) :: filename,message
+    character(1024) :: filename,message,output_config
+    integer :: ierr
     logical :: ok
     if(session_checked) return
+    call read_consistent_env('ASTR_OUTPUT_CONFIG',output_config)
+    native_output=len_trim(output_config)>0
     call read_consistent_env('ASTR_INSITU_CONFIG',filename)
     if(len_trim(filename)>0) then
       call read_insitu_options_collective(trim(filename),MPI_COMM_WORLD,options,ok,message)
@@ -126,8 +374,13 @@ contains
           call require_sample(.false.,'formal rendering requires ASTR_WITH_CATALYST=ON')
 #endif
         endif
-        call require_sample(lrestart.eqv.(len_trim(options%restore_batch)>0), &
-          'formal restart requires both lrestart=t and restore_batch')
+        if(native_output) then
+          call require_sample(.not.lrestart.and.len_trim(options%restore_batch)==0.and.len_trim(options%batch_prefix)==0, &
+            'new checkpoint cannot be combined with legacy in situ pairs')
+        else
+          call require_sample(lrestart.eqv.(len_trim(options%restore_batch)>0), &
+            'formal restart requires both lrestart=t and restore_batch')
+        endif
         if(len_trim(options%restore_batch)>0.or.len_trim(options%batch_prefix)>0) then
           call require_sample(paired_supported(),'formal pairs require supported TGV HDF exact checkpoints')
         endif
@@ -142,6 +395,17 @@ contains
           call configure_statistics_device_budget(options%device_budget_bytes,options%device_reserve_bytes,ok)
           call require_sample(ok,'invalid statistics device budget')
 #endif
+        endif
+        if(native_output.and.options%render) then
+          render_signature=0; ok=.true.
+          if(mpirank==0) then
+            call file_fingerprint(trim(options%pipeline_file),render_signature(1),render_signature(2),ok)
+            if(ok) call file_fingerprint(trim(options%implementation_path)//'/libcatalyst-paraview.so', &
+              render_signature(3),render_signature(4),ok)
+          endif
+          call require_sample(ok,'cannot fingerprint native render pipeline/backend')
+          call MPI_Bcast(render_signature,4,MPI_INTEGER8,0,MPI_COMM_WORLD,ierr)
+          call require_sample(ierr==MPI_SUCCESS,'native render signature broadcast')
         endif
       endif
     endif
@@ -859,13 +1123,26 @@ contains
     if(formal.and..not.enabled) return
 #if defined(ASTR_WITH_CATALYST) && defined(_CUDA)
     if(formal.and.enabled.and.options%render) then
+      if(.not.resource_observer_started) then
       resource_status=resource_begin(int(MPI_COMM_WORLD,c_int), &
         int(options%host_budget_bytes,c_int64_t),int(options%device_budget_bytes,c_int64_t), &
         int(options%device_reserve_bytes,c_int64_t),trim(options%output_directory)//c_null_char)
       call require_sample(resource_status==0,'cannot initialize native resource observer')
+      resource_observer_started=.true.
+      endif
     endif
 #endif
     call configure_statistics_validation()
+    if(output_render_restored.and.formal.and.enabled) then
+      call require_sample(int(step,int64)==output_render_step.and.t==output_render_time, &
+        'native render restore clock mismatch')
+      if(output_render_initial) call render_native_if_due(step,t,.false.)
+      return
+    endif
+    if(output_statistics_restored) then
+      call require_sample(step==statistics_step.and.t==statistics_time,'new statistics restore clock mismatch')
+      return
+    endif
     if(len_trim(restore_batch)>0) then
       call require_sample(step==restore_step.and.t==restore_time,'restored flow does not match paired clock')
       write(filename,'(A,"/statistics.rank",I8.8,".bin")') trim(restore_batch),mpirank
@@ -891,7 +1168,7 @@ contains
     if(formal) then
       render_final=options%final_frame
       call configure_schedule(render_schedule,trim(options%schedule_mode),options%step_interval, &
-        options%time_interval,0_int64,0.d0,options%initial_frame,options%final_frame,ok)
+        options%time_interval,render_origin_step,render_origin_time,options%initial_frame,options%final_frame,ok)
       call require_sample(ok,'invalid native render schedule')
       render_configured=.true.
       return
@@ -933,7 +1210,8 @@ contains
 #endif
 #ifdef ASTR_WITH_CATALYST
     integer :: status
-    if(native_device_statistics()) call render_native_if_due(statistics_step,statistics_time,.true.)
+    if(native_device_statistics().and..not.native_output) &
+      call render_native_if_due(statistics_step,statistics_time,.true.)
     if(allocated(last_fields)) then
       call render_sample(last_step,last_time,last_xyz,last_fields,last_derived,.true.)
       deallocate(last_xyz,last_fields,last_derived)
@@ -947,6 +1225,8 @@ contains
       call statistics_transfer_counts(samples,downloads)
       write(*,'(A,I0,A,I0,A,I0)') 'ASTR_INSITU_GPU_STATS rank=',mpirank, &
         ' samples=',samples,' full_output_downloads=',downloads
+    endif
+    if(formal.and.enabled.and.use_gpu.and.(statistics_enabled.or.options%render)) then
       write(*,'(A,I0,A,I0)') 'ASTR_INSITU_GPU_FLOW rank=',mpirank,' frame_downloads=',native_flow_downloads
     endif
     call release_statistics_gpu()
@@ -1009,7 +1289,7 @@ contains
     call require_sample(ierr==MPI_SUCCESS.and.root==script,'test pipelines differ')
     if(len_trim(script)==0) return
     call configure_render_schedule()
-    if(render_final.and..not.final.and..not.native_device_statistics()) then
+    if(render_final.and..not.final.and..not.native_device_statistics().and..not.native_output) then
       if(.not.allocated(last_fields)) then
         allocate(last_xyz(0:im,0:jm,0:km,3),last_fields(0:im,0:jm,0:km,11), &
                  last_derived(0:im,0:jm,0:km,14),stat=status)
@@ -1098,9 +1378,9 @@ contains
     integer :: status,length,ierr
     value=''
 #ifndef ASTR_BUILD_TESTING
-    if(name/='ASTR_INSITU_CONFIG') return
+    if(name/='ASTR_INSITU_CONFIG'.and.name/='ASTR_OUTPUT_CONFIG') return
 #endif
-    if(formal.and.name/='ASTR_INSITU_CONFIG') return
+    if(formal.and.name/='ASTR_INSITU_CONFIG'.and.name/='ASTR_OUTPUT_CONFIG') return
     call get_environment_variable(name,value,length,status)
     call require_sample(status==0.or.status==1,'invalid '//name)
     root=value
@@ -1152,6 +1432,10 @@ contains
                         (step>0.and.step_dt>0.d0),'invalid completed-step metadata')
     if(native_device_statistics()) then
       call accumulate_native_device(step,time_end)
+      call render_native_if_due(step,time_end,.false.)
+      return
+    endif
+    if(native_output.and.formal.and.options%render) then
       call render_native_if_due(step,time_end,.false.)
       return
     endif

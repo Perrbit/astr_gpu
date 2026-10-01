@@ -16,6 +16,7 @@ module halo_transport_gpu
   public :: begin_transport_setup,register_host_buffer,end_transport_setup,release_host_buffers
   public :: configure_pipeline_axes
   public :: begin_external_pair_work,end_external_pair_work
+  public :: halo_transport_idle
   integer,parameter,public :: halo_axis_x=1
   integer,parameter,public :: halo_axis_y=2
   integer,parameter,public :: halo_axis_z=3
@@ -71,6 +72,11 @@ module halo_transport_gpu
   end interface
 #endif
 contains
+  logical function halo_transport_idle()
+    halo_transport_idle=.not.pair_active.and..not.pipeline_compute_active.and. &
+      all(pipeline_contexts%state==pipeline_idle).and.all(.not.pipeline_contexts%pair_active)
+  end function
+
   subroutine begin_external_pair_work()
     integer :: ierr
 

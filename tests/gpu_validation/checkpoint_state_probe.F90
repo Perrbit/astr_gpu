@@ -8,6 +8,7 @@ program checkpoint_state_probe
   integer, parameter :: global_shape(3)=[9,7,5]
   integer(int64), parameter :: budget=2_int64*1024*1024
   real(real64), allocatable :: q(:,:,:,:)
+  real(real64), allocatable :: carry(:,:,:,:)
   real(real64) :: expected
   character(1024) :: path,arg,mode
   logical :: writing,exact,is_owned,cache
@@ -23,10 +24,15 @@ program checkpoint_state_probe
   read(arg,*) ncomp
   call get_command_argument(5,arg)
   read(arg,*) halo
+  if(trim(mode)=='context_reject'.or.trim(mode)=='context_clear') then
+    call checkpoint_state_context('test-batch','test-last-complete')
+    if(trim(mode)=='context_clear') call checkpoint_state_context('','')
+    call checkpoint_state_require(rank/=np-1,MPI_COMM_WORLD,'injected single-rank failure')
+  endif
   if ((np/=1.and.np/=2).or.axis<1.or.axis>3.or. &
       (ncomp/=5.and.ncomp/=11.and.ncomp/=34).or.halo<0.or.halo>1) &
     call MPI_Abort(MPI_COMM_WORLD,2,err)
-  writing=trim(mode)=='write'.or.trim(mode)=='cache_write'
+  writing=trim(mode)=='write'.or.trim(mode)=='cache_write'.or.trim(mode)=='air5_write'
   cache=index(trim(mode),'cache_')==1
   if (cache.and.ncomp/=11) call MPI_Abort(MPI_COMM_WORLD,2,err)
   exact=trim(mode)/='repartition'
@@ -45,7 +51,7 @@ program checkpoint_state_probe
     call MPI_Finalize(err)
     stop
   endif
-  if(ncomp==34) call MPI_Abort(MPI_COMM_WORLD,2,err)
+  if(ncomp==34.and.index(trim(mode),'air5_')/=1) call MPI_Abort(MPI_COMM_WORLD,2,err)
   q=-huge(1.0_real64)
   identity=checkpoint_state_identity(2147483650_int64,0.375_real64,0.125_real64,0.0625_real64)
   if (writing) then
@@ -61,7 +67,17 @@ program checkpoint_state_probe
   else
     identity=checkpoint_state_identity()
   endif
-  if (cache) then
+  if(index(trim(mode),'air5_')==1) then
+    if(ncomp/=34) call MPI_Abort(MPI_COMM_WORLD,2,err)
+    allocate(carry(cells(1)+1,cells(2)+1,cells(3)+1,11))
+    carry=-huge(1.0_real64)
+    if(writing) carry=q(halo+1:halo+cells(1)+1,halo+1:halo+cells(2)+1,halo+1:halo+cells(3)+1,12:22)
+    call checkpoint_air5_state(trim(path),writing,global_shape,origin,cells,halo, &
+      q(:,:,:,1:11),carry,trim(mode)/='air5_compensation_off',q(:,:,:,23),q(:,:,:,24:26), &
+      q(:,:,:,27),q(:,:,:,28),q(:,:,:,29),q(:,:,:,30:34),identity,budget,MPI_COMM_WORLD)
+    q(:,:,:,12:22)=0.0_real64
+    q(halo+1:halo+cells(1)+1,halo+1:halo+cells(2)+1,halo+1:halo+cells(3)+1,12:22)=carry
+  else if (cache) then
     call checkpoint_perfect_gas_state(trim(path),writing,global_shape,origin,cells,halo, &
       q(:,:,:,1:5),q(:,:,:,6),q(:,:,:,7:9),q(:,:,:,10),q(:,:,:,11), &
       identity,budget,MPI_COMM_WORLD)
@@ -77,6 +93,8 @@ program checkpoint_state_probe
       do j=1,size(q,2)
         do i=1,size(q,1)
           expected=value(i,j,k,m,exact)
+          if(index(trim(mode),'air5_')==1.and.m>=12.and.m<=22.and. &
+            (any([i,j,k]<halo+1).or.any([i,j,k]>halo+cells+1))) expected=0.0_real64
           if (transfer(q(i,j,k,m),0_int64)/=transfer(expected,0_int64)) bad=bad+1
         enddo
       enddo
@@ -94,6 +112,7 @@ contains
     type(velocity_statistics) :: original,recovered
     real(real64) :: values(34),saved(34),continued(34),t
     integer :: role
+    integer(int64) :: metadata(4),expected_metadata(4)
     logical :: ok
     if(ncomp/=34) call MPI_Abort(MPI_COMM_WORLD,2,err)
     writing=trim(mode)=='statistics_write'
@@ -111,10 +130,14 @@ contains
     endif
     identity=checkpoint_state_identity(1_int64,1.d0,1.d0,1.d0)
     role=3
+    expected_metadata=[1_int64,transfer(-0.d0,0_int64),transfer(0.5d0,0_int64),2147483650_int64]
+    metadata=expected_metadata
+    if(.not.writing) metadata=0
     if(trim(mode)=='statistics_wrong_role') role=1
     call checkpoint_state_transfer(trim(path),writing,.true.,global_shape,origin,cells,halo, &
-      q,identity,budget,MPI_COMM_WORLD,role=role)
+      q,identity,budget,MPI_COMM_WORLD,role=role,metadata=metadata)
     bad=0
+    if(any(metadata/=expected_metadata)) bad=bad+1
     do k=1,size(q,3)
       do j=1,size(q,2)
         do i=1,size(q,1)

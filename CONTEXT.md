@@ -398,8 +398,22 @@ GPU `bctype=60` symmetry supports exactly one physical x/y/z direction, with the
 _Avoid_: Treating six-face `bctype=60` support as six-face wall/farfield/NSCBC support, replacing geometric projection with Cartesian component clamping, using physical one-sided stencils on MPI internal interfaces
 
 **Filtered primitive timing contract**:
-CPU `filterq` updates conservative variables `q` but does not immediately refresh all primitive fields. CPU `updatefvar` happens after RK updates, so each filtered RK substep uses primitive fields from the pre-filter state for interior operations, while boundary and halo primitive slices are refreshed by `boucon/qswap`. The GPU filtered zeroextrap paths mirror this by refreshing primitive fields before filtering each unprepared RK substep, then preserving interior primitive fields after filtering and refreshing only CPU-compatible boundary/halo primitive slices.
-_Avoid_: Calling a full-domain primitive refresh immediately after `filterq`, using filtered `q` to rebuild all primitive fields before `gradcal/rhscal`, treating q/primitive consistency as automatic inside a filtered CPU RK substep
+For the explicitly approved all-periodic, five-variable, non-reacting path (`num_species=0`, `lcomb=f`, both spatial schemes explicit), CPU now rebuilds all physical-node primitives immediately after each `filterq`, before boundary/halo work and `gradcal/rhscal`. GPU does the same after filtering in both first-stage preparation and later RK stages, using the resident q-to-primitive kernel with explicit synchronization. The former interior pre-filter cache mixed with refreshed shared faces caused a partition-dependent TGV result; the bounded CPU/GPU NP=1/2 x/y/z gate is recorded in output redesign plan 10.33.
+Physical-boundary paths retain their existing timing: CPU primitives at interior nodes may remain pre-filter while `boucon/qswap` refreshes boundary/halo slices. GPU filtered zeroextrap paths continue to mirror that behavior. AIR5, compact schemes and physical faces are not changed by the periodic correction.
+_Avoid_: Extending the periodic correction to unapproved wall/NSCBC/AIR5 paths, assuming all filtered paths use the same primitive phase, treating a short TGV gate as general physical or performance validation
+
+**Completed-step archive lineage**:
+New archive history `ASTROA02` stores the two current product segment IDs and SEGMENT size/CRC receipts as a separate 48-byte tail, sealed in the checkpoint. On restore, the source segment must match; SEGMENT-2 records an explicit relative parent edge, restore clock and input fingerprint. Each new frame binds SEGMENT and shared coordinates. `scripts/output/combine_series.py` follows only these edges and caps each ancestor at its child's restore point, writing independent indexes outside source products after writers stop. Old branches are preserved, and combined reading does not depend on retained source checkpoint files. Schedule payload remains exactly comparable; a new segment's receipts intentionally differ.
+_Avoid_: Guessing parents from segment numbers/times, joining unrelated future frames, treating an offline builder as live automatic recovery, loading ASTROA01 into the new runtime, claiming CURVE/AIR5 repartition from archive-only tests
+
+### Native AIR5 GPU Diagnostic Baseline
+New-output GPU AIR5 checkpoints seal the existing conservation diagnostic's eleven FP64 baseline totals and activation/first/last/count identity in `air5_conservation.bin` (168 bytes). Native-only fixed-order local GPU reduction removes atomic ordering variation for same-topology exact diagnostic continuation; its bounded partial array shares the output device budget. Disabled/unset state is canonical zero. CPU has no equivalent diagnostic and rejects enabling it. A resumed exclusive per-origin file echoes the saved baseline and appends only new phase-1 records, never overwriting an older file.
+_Avoid_: Calling these stored-q cell integrals q-carry physical totals, shifting their transport-entry/transport-exit phase to the completed coupled step, claiming open-boundary conservation or cross-topology exactness, silently resetting a baseline, or accepting short binary garbage tails as EOF
+
+### Native Completed-Step Render Continuation
+Every new checkpoint seals `insitu_control.bin` (`ASTRIR01`): canonical 144-byte inactive control or 313-byte active render schedule. Registered GPU Cartesian periodic TGV can continue its existing EGL preset through native checkpoints without old flow sidecars. Final rendering precedes final checkpoint sealing; restoration reopens only the schedule termination flag, preserving progress and emitted-step deduplication. Changed rendering needs explicit output `override`, resets only the changed render origin, and may render the restore point without resampling statistics. Old paired restart remains independent and cannot be mixed with this path.
+Native rendering starts resource observation before restored postprocessing allocation. Scheduled frames still download the full local physical q/primitive sample, then compute private host diagnostics and geometry; selected-plane basic file output remains separate. Entry-script/plugin fingerprints are not a transitive dependency lock. Plan 10.36 records NP=1/2 short same-topology gates, not CURVE/AIR5 rendering, renderer repartition or long-sequence memory acceptance.
+_Avoid_: Repeating a final frame or statistics sample after restart, accepting a missing control member as disabled rendering, inferring zero-copy from EGL, or reusing old paired sidecars in new checkpoints
 
 **Single-rank non-homogeneous CPU active range**:
 For `lihomo=f,isize=1` and the analogous y/z cases, CPU `parallelini` must set active ranges to interior nodes (`1:im-1`, `1:jm-1`, `1:km-1`) while physical boundary planes are owned by `boucon`. Leaving these module variables unset makes the CPU baseline effectively skip interior RHS for a single-rank finite-domain test.
@@ -564,6 +578,15 @@ _Avoid_: Tolerance-only restart presented as exact continuation, deleting necess
 Resumption of the same mesh and physical problem after changing the MPI rank count or decomposition within the same execution backend. It requires consistent redistribution of the necessary flow, boundary, and statistical state and separate numerical-equivalence validation, rather than assuming the exact-continuation guarantee survives a different floating-point operation order.
 _Avoid_: Mesh adaptation, CPU/GPU backend migration, silently resetting statistics, treating successful field loading as validated continuation
 
+The current native gate admits generated periodic five-variable TGV only
+(ninit=0, 643e/643e, diffusion/filter enabled, no legacy averages), for NP=1<->2
+and the six ordered NP=2 x/y/z slab changes. At 16 cubed, dt=1e-3, continuous
+12 versus 5+7 passes q/cache/statistics at 2e-10 with exact sampling clocks and
+schedule identity. Same-topology continuation remains exact. Saved or current
+render enablement forbids repartition, even if an override disables rendering;
+walls, CURVE, AIR5, larger topologies and backend migration are not admitted.
+See output redesign plan 10.38; do not reuse this TGV tolerance for SI AIR5.
+
 **ASTR averaging window**:
 A user-selected interval of simulation time contributing to formal mean and fluctuation statistics, distinct from the period recorded by development monitors or visualization. Its bounds are retained through linear interpolation of sampled statistical integrands, without extrapolating beyond valid sample coverage or modifying the flow. Its start does not certify a statistically stationary flow.
 _Avoid_: Automatically including startup monitoring in the mean, restarting the averaging clock on job resumption
@@ -587,6 +610,17 @@ _Avoid_: Treating a hidden window as proof of headless operation, inferring GPU 
 **ASTR derived physical field**:
 A diagnostic quantity calculated by ASTR from a declared sampled state and a specified physical definition, including derivative-based quantities such as vorticity and Q. Its state, gradient, coordinates, and units must describe the same observation.
 _Avoid_: Mixing a final state with stale stage derivatives, silently replacing the field with a visualization-tool recomputation
+
+Native file derivatives currently admit generated periodic 16-cubed-cell TGV
+only: dimensionless five-variable FP64, 643e/643e, viscosity/filter enabled,
+CPU/GPU NP=1/2. A private complete-step velocity snapshot receives fresh halos;
+selected physical gradients, curl, Q_rs and divergence are computed by the same
+sixth-order stencil and only selected GPU field tiles are downloaded. Private
+velocity neighbourhood and full halo buffers remain part of the budget. The
+real 12 versus 5+7 and output-switch gates preserve q/cache/statistics exactly;
+independent discrete reference and CPU/GPU errors pass 2e-10. This does not
+admit other sizes, walls, CURVE/AIR5 derivatives or production performance.
+See output redesign plan 10.44, and use explicit override for layout changes.
 
 **ASTR visualization Q**:
 The rotation-strain diagnostic Q=(||Omega||_F^2-||S||_F^2)/2, using the full symmetric and antisymmetric parts of the physical velocity gradient, with velocity divergence available separately. In compressible flow it differs from the second principal velocity-gradient invariant by minus one half the squared divergence.

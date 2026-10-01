@@ -8,8 +8,11 @@ module checkpoint_bundle
   public :: seal_checkpoint_bundle, validate_checkpoint_bundle
   public :: publish_checkpoint_bundle
   public :: checkpoint_retention, publish_retained_checkpoint
+  public :: last_published_checkpoint
   public :: write_checkpoint_resource_refs
+  public :: checkpoint_stream_at_end
   integer, parameter :: max_files=64
+  integer, parameter :: max_resources=100016
   type checkpoint_retention
     private
     character(1024) :: root=''
@@ -36,20 +39,44 @@ module checkpoint_bundle
       integer(c_int) :: status
     end function
 #endif
-    function rename_entry(old,new) bind(C,name='rename') result(status)
+    function publication_root(root) bind(C,name='astr_checkpoint_publication_root') result(status)
       import c_int,c_char
-      character(c_char),intent(in) :: old(*),new(*)
+      character(c_char),intent(in) :: root(*)
+      integer(c_int) :: status
+    end function
+    function replace_plain_file(root,temporary,target) bind(C,name='astr_checkpoint_replace_plain_file') result(status)
+      import c_int,c_char
+      character(c_char),intent(in) :: root(*),temporary(*),target(*)
       integer(c_int) :: status
     end function
   end interface
 contains
+  logical function checkpoint_stream_at_end(unit) result(finished)
+    integer,intent(in) :: unit
+    integer :: err
+    integer(int64) :: position,bytes
+    position=0; bytes=-1
+    inquire(unit=unit,pos=position,size=bytes,iostat=err)
+    finished=err==0.and.bytes>=0.and.position==bytes+1
+  end function
+
+  function resource_path(path,name) result(source)
+    character(*),intent(in) :: path,name
+    character(:),allocatable :: source
+    if(name=='SEGMENT') then
+      source=trim(path)//'/../SEGMENT'
+    else
+      source=trim(path)//'/../../resources/'//trim(name)
+    endif
+  end function
+
   subroutine write_checkpoint_resource_refs(path,names,comm,ok)
     character(*),intent(in) :: path,names(:)
     integer,intent(in) :: comm
     logical,intent(out) :: ok
-    character(128) :: root_names(max_files)
+    character(128),allocatable :: root_names(:)
     integer :: rank,err,bad,total,n,i,j,unit,closed
-    integer(int64) :: bytes(max_files),crc(max_files)
+    integer(int64),allocatable :: bytes(:),crc(:)
     logical :: valid
     call agreement(path,comm,ok,rank)
     if (.not.ok) return
@@ -57,29 +84,34 @@ contains
     call MPI_Bcast(n,1,MPI_INTEGER,0,comm,err)
     if (err/=MPI_SUCCESS) call MPI_Abort(comm,72,err)
     bad=0
-    if (n/=size(names).or.n<1.or.n>max_files) bad=1
+    if (n/=size(names).or.n<1.or.n>max_resources) bad=1
     call MPI_Allreduce(bad,total,1,MPI_INTEGER,MPI_MAX,comm,err)
     if (err/=MPI_SUCCESS) call MPI_Abort(comm,72,err)
     ok=total==0
     if (.not.ok) return
+    allocate(root_names(n),bytes(n),crc(n),stat=err)
+    bad=merge(1,0,err/=0)
+    call MPI_Allreduce(bad,total,1,MPI_INTEGER,MPI_MAX,comm,err)
+    if(err/=MPI_SUCCESS) call MPI_Abort(comm,72,err)
+    ok=total==0
+    if(.not.ok) return
+    bad=0
     root_names=''
     root_names(:n)=names
-    call MPI_Bcast(root_names,128*max_files,MPI_CHARACTER,0,comm,err)
+    call MPI_Bcast(root_names,128*n,MPI_CHARACTER,0,comm,err)
     if (err/=MPI_SUCCESS) call MPI_Abort(comm,72,err)
     do i=1,n
       if (.not.safe_name(names(i)).or.names(i)/=root_names(i)) bad=1
-      do j=1,i-1
-        if (names(i)==names(j)) bad=1
-      enddo
     enddo
+    if(.not.distinct_sorted_names(root_names)) bad=1
     call MPI_Allreduce(bad,total,1,MPI_INTEGER,MPI_MAX,comm,err)
     if (err/=MPI_SUCCESS) call MPI_Abort(comm,72,err)
     ok=total==0
     if (.not.ok) return
     if (rank==0) then
       do i=1,n
-        valid=plain_resource(trim(path)//c_null_char,trim(names(i))//c_null_char)==0
-        if (valid) call file_fingerprint(trim(path)//'/../../resources/'//trim(names(i)),bytes(i),crc(i),valid)
+        valid=plain_resource(trim(path)//c_null_char,trim(root_names(i))//c_null_char)==0
+        if (valid) call file_fingerprint(resource_path(path,root_names(i)),bytes(i),crc(i),valid)
         if (.not.valid) ok=.false.
       enddo
       if (ok) then
@@ -90,7 +122,7 @@ contains
           if (err==0) write(unit,'(i0)',iostat=err) n
           do i=1,n
             if (err/=0) exit
-            write(unit,'(a,1x,i0,1x,z16.16)',iostat=err) trim(names(i)),bytes(i),crc(i)
+            write(unit,'(a,1x,i0,1x,z16.16)',iostat=err) trim(root_names(i)),bytes(i),crc(i)
           enddo
           close(unit,iostat=closed)
           ok=err==0.and.closed==0
@@ -103,7 +135,7 @@ contains
   logical function valid_resources(path) result(ok)
     character(*),intent(in) :: path
     character(512) :: line,expected
-    character(128) :: names(max_files)
+    character(128),allocatable :: names(:)
     character(16) :: hex
     integer :: unit,err,closed,n,i,j
     integer(int64) :: bytes,crc,wanted_bytes,wanted_crc
@@ -117,14 +149,18 @@ contains
       read(unit,'(a)',iostat=err) line
       if (err==0) read(line,*,iostat=err) n
       valid=err==0
-      if (valid) valid=n>=1.and.n<=max_files
+      if (valid) valid=n>=1.and.n<=max_resources
     endif
     if (valid) then
       write(expected,'(i0)') n
       valid=trim(line)==trim(expected)
     endif
-    names=''
+    if(valid) then
+      allocate(names(n),stat=err)
+      valid=err==0
+    endif
     if (valid) then
+      names=''
       do i=1,n
         read(unit,'(a)',iostat=err) line
         if (err==0) read(line,*,iostat=err) names(i),wanted_bytes,hex
@@ -132,25 +168,57 @@ contains
         valid=err==0
         if (.not.valid) exit
         valid=safe_name(names(i)).and.wanted_bytes>=0
-        do j=1,i-1
-          if (names(i)==names(j)) valid=.false.
-        enddo
         write(expected,'(a,1x,i0,1x,z16.16)') trim(names(i)),wanted_bytes,wanted_crc
         valid=valid.and.trim(line)==trim(expected)
         if (.not.valid) exit
         valid=plain_resource(trim(path)//c_null_char,trim(names(i))//c_null_char)==0
         if (.not.valid) exit
-        call file_fingerprint(trim(path)//'/../../resources/'//trim(names(i)),bytes,crc,valid)
+        call file_fingerprint(resource_path(path,names(i)),bytes,crc,valid)
         valid=valid.and.bytes==wanted_bytes.and.crc==wanted_crc
         if (.not.valid) exit
       enddo
     endif
+    if(valid) valid=distinct_sorted_names(names)
     if (valid) then
       read(unit,'(a)',iostat=err) line
       valid=err==iostat_end
     endif
     close(unit,iostat=closed)
     ok=valid.and.closed==0
+  end function
+
+  logical function distinct_sorted_names(names) result(ok)
+    character(128),intent(inout) :: names(:)
+    character(128) :: held
+    integer :: i,last
+    ! In-place heapsort bounds metadata memory and avoids quadratic duplicate scans.
+    do i=size(names)/2,1,-1
+      call sift(i,size(names))
+    enddo
+    do last=size(names),2,-1
+      held=names(1); names(1)=names(last); names(last)=held
+      call sift(1,last-1)
+    enddo
+    ok=.true.
+    do i=2,size(names)
+      if(names(i)==names(i-1)) ok=.false.
+    enddo
+  contains
+    subroutine sift(first,limit)
+      integer,intent(in) :: first,limit
+      integer :: parent,child
+      character(128) :: value
+      parent=first; value=names(parent)
+      do while(2*parent<=limit)
+        child=2*parent
+        if(child<limit) then
+          if(names(child)<names(child+1)) child=child+1
+        endif
+        if(value>=names(child)) exit
+        names(parent)=names(child); parent=child
+      enddo
+      names(parent)=value
+    end subroutine
   end function
 
   subroutine publish_retained_checkpoint(root,name,keep,ledger,comm,ok)
@@ -213,6 +281,13 @@ contains
     ledger%count=ledger%count-1
   end subroutine
 
+  function last_published_checkpoint(ledger) result(path)
+    type(checkpoint_retention),intent(in) :: ledger
+    character(1200) :: path
+    path='none in this run'
+    if(ledger%count>0) path=trim(ledger%root)//'/'//trim(ledger%names(ledger%count))
+  end function
+
   subroutine publish_checkpoint_bundle(root,name,comm,ok)
     character(*),intent(in) :: root,name
     integer,intent(in) :: comm
@@ -230,6 +305,9 @@ contains
     if (err/=MPI_SUCCESS) call MPI_Abort(comm,72,err)
     ok=total==0
     if (.not.ok) return
+    if(rank==0) ok=publication_root(trim(root)//c_null_char)==0
+    call distribute(ok,comm)
+    if(.not.ok) return
     call validate_checkpoint_bundle(trim(root)//'/'//trim(name)//'.tmp',comm,ok)
     if (.not.ok) return
     if (rank==0) then
@@ -252,7 +330,7 @@ contains
         endif
       endif
       if (ok) then
-        err=rename_entry(trim(root)//'/.LATEST.tmp'//c_null_char,trim(root)//'/LATEST'//c_null_char)
+        err=replace_plain_file(trim(root)//c_null_char,'.LATEST.tmp'//c_null_char,'LATEST'//c_null_char)
         ok=err==0
       endif
     endif

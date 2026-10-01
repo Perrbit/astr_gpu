@@ -56,6 +56,11 @@ module chemistry_flow_solver_gpu
   logical, save :: air5_conservation_baseline_set=.false.
   logical, save :: air5_conservation_file_open=.false.
   integer, save :: air5_conservation_unit=-1
+  integer(int64),save :: air5_conservation_first_step=0,air5_conservation_last_step=0
+  integer(int64),save :: air5_conservation_samples=0
+  logical,save :: air5_conservation_echo_baseline=.false.
+  logical,save :: air5_conservation_fixed_order=.false.
+  real(real64),allocatable,device,save :: air5_conservation_partials_d(:,:)
   logical, save :: air5_vibrational_floor_configured=.false.
 
   public :: air5_prepare_spatial_state_gpu
@@ -64,6 +69,9 @@ module chemistry_flow_solver_gpu
   public :: launch_air5_face_primitives_gpu
   public :: validate_air5_transport_gpu
   public :: write_air5_acoustic_probe_gpu
+  public :: air5_conservation_state_gpu,restore_air5_conservation_state_gpu
+  public :: begin_air5_conservation_file_gpu
+  public :: configure_air5_checkpoint_conservation_gpu,air5_conservation_device_bytes
 
 contains
 
@@ -1213,30 +1221,150 @@ contains
     air5_conservation_configured=.true.
   end subroutine configure_air5_conservation_gpu
 
+  integer(int64) function air5_conservation_device_bytes() result(bytes)
+    bytes=0
+    if(allocated(air5_conservation_partials_d)) bytes=8*size(air5_conservation_partials_d,kind=int64)
+  end function
+
+  subroutine configure_air5_checkpoint_conservation_gpu(device_budget,ok)
+    use commvar, only: im,jm,km
+    integer(int64),intent(in) :: device_budget
+    logical,intent(out) :: ok
+    integer(int64) :: cells,parts,bytes
+    integer :: status
+    call configure_air5_conservation_gpu()
+    ok=.true.
+    if(.not.air5_conservation_enabled) return
+    cells=int(im,int64)*jm*km
+    parts=min(4096_int64,(cells+63)/64)
+    bytes=parts*air5_num_conservative*8
+    ok=cells>0.and.cells<=int(huge(status)-4095,int64).and.parts>0.and. &
+      bytes<=device_budget.and..not.allocated(air5_conservation_partials_d)
+    if(.not.ok) return
+    allocate(air5_conservation_partials_d(air5_num_conservative,int(parts)),stat=status)
+    ok=status==0
+    air5_conservation_fixed_order=ok
+    if(ok) write(*,'(a,i0,a)') 'ASTR_OUTPUT_AIR5_CONSERVATION device_bytes=',bytes, &
+      ' sample_download_bytes=88 fixed_order=yes'
+  end subroutine
+
+  attributes(global) subroutine air5_integrate_cell_tiles_kernel(im,jm,km,parts)
+    use commarray_gpu, only: q_d,jacob_d
+    integer,value :: im,jm,km,parts
+    integer :: component,tile,cells,chunk,first,last,id,i,j,k,di,dj,dk
+    real(real64) :: tile_total,cell_total
+    component=threadIdx%x; tile=blockIdx%x
+    if(component>air5_num_conservative) return
+    cells=im*jm*km; chunk=(cells+parts-1)/parts
+    first=(tile-1)*chunk; last=min(tile*chunk,cells)-1
+    tile_total=0.0_real64
+    do id=first,last
+      i=mod(id,im); j=mod(id/im,jm); k=id/(im*jm)
+      cell_total=0.0_real64
+      do dk=0,1
+        do dj=0,1
+          do di=0,1
+            cell_total=cell_total+q_d(i+di,j+dj,k+dk,component)*jacob_d(i+di,j+dj,k+dk)
+          enddo
+        enddo
+      enddo
+      tile_total=tile_total+0.125_real64*cell_total
+    enddo
+    air5_conservation_partials_d(component,tile)=tile_total
+  end subroutine
+
+  attributes(global) subroutine air5_sum_cell_tiles_kernel(parts)
+    integer,value :: parts
+    integer :: component,tile
+    real(real64) :: total
+    component=threadIdx%x
+    if(component>air5_num_conservative) return
+    total=0.0_real64
+    do tile=1,parts
+      total=total+air5_conservation_partials_d(component,tile)
+    enddo
+    air5_conservation_totals_d(component)=total
+  end subroutine
+
+  subroutine air5_conservation_state_gpu(metadata,baseline)
+    integer(int64),intent(out) :: metadata(5)
+    real(real64),intent(out) :: baseline(air5_num_conservative)
+    call configure_air5_conservation_gpu()
+    metadata=[merge(1_int64,0_int64,air5_conservation_enabled), &
+      merge(1_int64,0_int64,air5_conservation_baseline_set),air5_conservation_first_step, &
+      air5_conservation_last_step,air5_conservation_samples]
+    baseline=0.0_real64
+    if(air5_conservation_baseline_set) baseline=air5_conservation_baseline
+  end subroutine
+
+  subroutine restore_air5_conservation_state_gpu(metadata,baseline)
+    integer(int64),intent(in) :: metadata(5)
+    real(real64),intent(in) :: baseline(air5_num_conservative)
+    call configure_air5_conservation_gpu()
+    air5_conservation_baseline=baseline
+    air5_conservation_baseline_set=metadata(2)==1
+    air5_conservation_first_step=metadata(3)
+    air5_conservation_last_step=metadata(4)
+    air5_conservation_samples=metadata(5)
+    air5_conservation_echo_baseline=air5_conservation_baseline_set
+  end subroutine
+
+  subroutine begin_air5_conservation_file_gpu(path,ok)
+    use parallel, only: mpirank
+    character(*),intent(in) :: path
+    logical,intent(out) :: ok
+    integer :: status
+    call configure_air5_conservation_gpu()
+    ok=.true.
+    if(.not.air5_conservation_enabled.or.mpirank/=0) return
+    open(newunit=air5_conservation_unit,file=path,status='new',action='write',iostat=status)
+    ok=status==0
+    if(.not.ok) return
+    air5_conservation_file_open=.true.
+    call write_air5_conservation_header()
+  end subroutine
+
+  subroutine write_air5_conservation_header()
+    write(air5_conservation_unit,'(A)') &
+      '# step phase q1 q2 q3 q4 q5 q6 q7 q8 q9 q10 q11 element_n element_o '// &
+      'species_mass_closure rel_mass rel_energy rel_element_n rel_element_o '// &
+      'max_species_abs_drift'
+    if(air5_conservation_echo_baseline) write(air5_conservation_unit,'(A)') &
+      '# continuation: phase=0 repeats the persisted baseline, not a new sample'
+  end subroutine
+
   subroutine calculate_air5_conservation_totals_gpu(global_totals)
     use mpi
     use commvar, only: im,jm,km
     use gpu_check, only: sync_after_kernel
     real(real64), intent(out) :: global_totals(air5_num_conservative)
     real(real64) :: local_totals(air5_num_conservative)
-    integer :: ntot,ierr
+    integer :: ntot,ierr,parts
     type(dim3) :: block,grid
 
-    block=dim3(256,1,1)
-    grid=dim3(1,1,1)
-    call air5_zero_conservation_totals_kernel<<<grid,block>>>()
-    call sync_after_kernel('air5_zero_conservation_totals_kernel',.true.)
     ntot=im*jm*km
-    grid=dim3((ntot+block%x-1)/block%x,1,1)
-    call air5_integrate_unique_cells_kernel<<<grid,block>>>(im,jm,km)
-    call sync_after_kernel('air5_integrate_unique_cells_kernel',.true.)
+    if(air5_conservation_fixed_order) then
+      parts=size(air5_conservation_partials_d,2)
+      call air5_integrate_cell_tiles_kernel<<<parts,32>>>(im,jm,km,parts)
+      call sync_after_kernel('air5_integrate_cell_tiles_kernel',.true.)
+      call air5_sum_cell_tiles_kernel<<<1,32>>>(parts)
+      call sync_after_kernel('air5_sum_cell_tiles_kernel',.true.)
+    else
+      block=dim3(256,1,1)
+      grid=dim3(1,1,1)
+      call air5_zero_conservation_totals_kernel<<<grid,block>>>()
+      call sync_after_kernel('air5_zero_conservation_totals_kernel',.true.)
+      grid=dim3((ntot+block%x-1)/block%x,1,1)
+      call air5_integrate_unique_cells_kernel<<<grid,block>>>(im,jm,km)
+      call sync_after_kernel('air5_integrate_unique_cells_kernel',.true.)
+    endif
     local_totals=air5_conservation_totals_d
     call mpi_allreduce(local_totals,global_totals,air5_num_conservative, &
       MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
     if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,ntot)
   end subroutine calculate_air5_conservation_totals_gpu
 
-  subroutine write_air5_conservation_record(step,phase,global_totals)
+  recursive subroutine write_air5_conservation_record(step,phase,global_totals)
     use ieee_arithmetic, only: ieee_is_finite
     use parallel, only: mpirank
     integer, intent(in) :: step,phase
@@ -1248,6 +1376,10 @@ contains
 
     if(.not.all(ieee_is_finite(global_totals))) &
       error stop 'non-finite fixed air5 global conservation record'
+    if(phase==1.and.air5_conservation_echo_baseline) then
+      air5_conservation_echo_baseline=.false.
+      call write_air5_conservation_record(int(air5_conservation_first_step),0,air5_conservation_baseline)
+    endif
     elements=0.0_real64
     baseline_elements=0.0_real64
     do element=1,2
@@ -1278,10 +1410,7 @@ contains
         open(newunit=air5_conservation_unit,file='air5_c4_conservation.dat', &
           status='replace',action='write')
         air5_conservation_file_open=.true.
-        write(air5_conservation_unit,'(A)') &
-          '# step phase q1 q2 q3 q4 q5 q6 q7 q8 q9 q10 q11 element_n element_o '// &
-          'species_mass_closure rel_mass rel_energy rel_element_n rel_element_o '// &
-          'max_species_abs_drift'
+        call write_air5_conservation_header()
       endif
       write(air5_conservation_unit,'(I10,1X,I1,1X,19(ES24.16E3,1X))') &
         step,phase,global_totals,elements,species_closure,relative_mass, &
@@ -1299,6 +1428,9 @@ contains
     call calculate_air5_conservation_totals_gpu(global_totals)
     air5_conservation_baseline=global_totals
     air5_conservation_baseline_set=.true.
+    air5_conservation_first_step=int(step,int64)
+    air5_conservation_last_step=int(step,int64)
+    air5_conservation_samples=0
     call write_air5_conservation_record(step,0,global_totals)
   end subroutine initialize_air5_conservation_gpu
 
@@ -1310,8 +1442,12 @@ contains
     if(.not.air5_conservation_enabled) return
     if(.not.air5_conservation_baseline_set) &
       error stop 'fixed air5 conservation baseline is not initialized'
+    if(int(step,int64)/=air5_conservation_last_step+1) &
+      error stop 'fixed air5 conservation record sequence is not consecutive'
     call calculate_air5_conservation_totals_gpu(global_totals)
     call write_air5_conservation_record(step,1,global_totals)
+    air5_conservation_last_step=int(step,int64)
+    air5_conservation_samples=air5_conservation_samples+1
   end subroutine record_air5_conservation_gpu
 
   attributes(device) subroutine air5_convective_flux_at(i,j,k,idir,f)
@@ -3250,6 +3386,7 @@ contains
     use validation_io, only: rhs_validation_requested,write_q_validation_snapshot, &
       write_rhs_validation_snapshot,write_primitive_validation_snapshot, &
       write_scalar_validation_snapshot
+    use chemistry_mean_statistics_gpu, only: accumulate_air5_mean_statistics_gpu
     logical, intent(in), optional :: first_stage_prepared,copy_back
     logical :: prepared,need_copy_back,periodic_filter_case
     integer :: ntot,ratio_ntot,rkstep,direction,apply_left_x,apply_right_x
@@ -3430,6 +3567,7 @@ contains
           call gradcal_dvel_kernel<<<grid3,block3>>>(im,jm,km,hm)
         endif
         call sync_after_kernel('air5_gradcal_dvel_kernel',.true.)
+        if(rkstep==1) call accumulate_air5_mean_statistics_gpu()
         call air5_species_tv_gradient_kernel<<<grid3,block3>>>(im,jm,km, &
           npdci,npdcj,npdck,zero_species_flux_lower_y)
         call sync_after_kernel('air5_species_tv_gradient_kernel',.true.)

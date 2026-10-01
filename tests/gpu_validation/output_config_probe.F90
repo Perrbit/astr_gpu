@@ -5,6 +5,7 @@ program output_config_probe
   type(output_options) :: options
   character(1024) :: filename,message
   logical :: ok
+  integer :: derived(14),n
   call get_command_argument(1,filename)
   options%format_version=77
   call read_output_options(trim(filename),options,ok,message)
@@ -24,5 +25,9 @@ program output_config_probe
   print '(A,3(I0,1X))', 'slice_counts=',count(options%i_indices>=0), &
     count(options%j_indices>=0),count(options%k_indices>=0)
   print '(A,I0)', 'checkpoint_interval_steps=',options%checkpoint%interval_steps
+  call output_product_derived_indices(options%volume,derived,n)
+  print '(A,14(I0,1X))', 'volume_derived_indices=',derived
+  call output_product_derived_indices(options%slices,derived,n)
+  print '(A,14(I0,1X))', 'slices_derived_indices=',derived
   print '(A)', 'PASS: output configuration'
 end program

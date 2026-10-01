@@ -13,6 +13,30 @@ PROBE = Path(os.environ.get("ASTR_CHECKPOINT_STATE_PROBE", "build_insitu_gpu/bin
 MPIEXEC = os.environ.get("ASTR_OUTPUT_MPIEXEC", shutil.which("mpiexec") or "mpiexec")
 
 
+@pytest.mark.parametrize("ranks", [1, 2])
+@pytest.mark.parametrize("mode", ["context_reject", "context_clear"])
+def test_failure_context(tmp_path, ranks, mode):
+    log = run(tmp_path / "unused.h5", mode, ranks, success=False)
+    assert "injected single-rank failure" in log
+    if mode == "context_reject":
+        assert "checkpoint context: batch=test-batch; last_complete=test-last-complete" in log
+    else:
+        assert "checkpoint context:" not in log
+
+
+@pytest.mark.parametrize("ranks,axis", [(1, 1), (2, 1), (2, 2)])
+def test_air5_cache_carry_provider(tmp_path, ranks, axis):
+    path = tmp_path / "air5.h5"
+    run(path, "air5_write", ranks, axis, components=34)
+    run(path, "air5_exact", ranks, axis, components=34)
+    run(path, "air5_compensation_off", ranks, axis, components=34, success=False)
+    run(path, "statistics_exact", ranks, axis, components=34, success=False)
+    with h5py.File(path) as state:
+        assert state["identity"][12] == 7
+        assert state["metadata"][:].tolist() == [1, 1]
+        assert len(state) == 38
+
+
 @pytest.mark.parametrize("ranks,axis", [(1, 1), (2, 1), (2, 2)])
 def test_statistics_state_continuation(tmp_path, ranks, axis):
     path = tmp_path / "statistics.h5"
@@ -21,8 +45,23 @@ def test_statistics_state_continuation(tmp_path, ranks, axis):
     run(path, "statistics_wrong_role", ranks, axis, components=34, success=False)
     with h5py.File(path, "r") as state:
         assert state["identity"][12] == 3
-        assert len(state) == 37
+        assert len(state) == 38
         assert np.all(state["q0034"][:] == 1)
+        assert state["metadata"][:].tolist() == [1, -(1 << 63), 4602678819172646912, 2147483650]
+
+
+@pytest.mark.parametrize("defect", ["missing", "shape", "type"])
+def test_statistics_metadata_rejection(tmp_path, defect):
+    path = tmp_path / "statistics.h5"
+    run(path, "statistics_write", 2, components=34)
+    with h5py.File(path, "r+") as state:
+        data = state["metadata"][:]
+        del state["metadata"]
+        if defect == "shape":
+            state.create_dataset("metadata", data=data[:-1])
+        elif defect == "type":
+            state.create_dataset("metadata", data=data.astype(np.float64))
+    run(path, "statistics_exact", 2, components=34, success=False)
 
 
 def run(path, mode, ranks=1, axis=1, components=5, halo=1, success=True):

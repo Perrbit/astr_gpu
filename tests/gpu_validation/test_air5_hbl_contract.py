@@ -19,7 +19,7 @@ def test_hbl_initializer_uses_the_versioned_complete_profile() -> None:
     initializer = compact("src/initialisation.F90")
     grid = compact("src/gridgeneration.F90")
 
-    assert "case('air5hbl')" in initializer
+    assert "case('air5hbl','air5sbli')" in initializer
     assert "callair5hblini" in initializer
     assert "datin/air5_hbl_profile.dat" in initializer
     assert "callconfigure_air5_hbl_boundary" in initializer
@@ -37,7 +37,7 @@ def test_hbl_initializer_optionally_uses_matched_xy_conservative_field() -> None
     assert "read_air5_hbl_initial_field" in state
     assert "sample_air5_hbl_initial_field" in state
     assert "datin/air5_hbl_initial_field.dat" in initializer
-    assert "inquire(file='datin/air5_hbl_initial_field.dat',exist=has_initial_field)" in initializer
+    assert "inquire(file=trim(output_resource_path('air5_hbl_initial_field.dat',&'datin/air5_hbl_initial_field.dat')),exist=has_initial_field)" in initializer
     assert "callsample_air5_hbl_initial_field(initial_field,x(i,j,k,1),x(i,j,k,2)" in initializer
     assert 'choices=("uniform","matched")' in preparer
     assert "generate_similarity_initial_field" in preparer
@@ -52,7 +52,8 @@ def test_fixed_air5_restart_persists_independent_vibrational_temperature() -> No
 
     assert "fixedair5restartisunavailable" not in initializer
     assert "callreadcheckpoint(folder='outdat',mode='h')" in initializer
-    assert "if(lcomb.and.trim(flowtype)=='air5hbl')callair5hblboundaryini" in initializer
+    restart = initializer[initializer.index("if(lrestart)then"):initializer.index("callupdateq")]
+    assert "if(lcomb.and.(trim(flowtype)=='air5hbl'.or.&trim(flowtype)=='air5sbli'))callair5hblboundaryini" in restart
     assert "callupdateq" in initializer
     assert "callh5read(varname='tv',var=tve(" in readwrite
     assert "callh5wa3d_r8_struct(varname='tv',var=data2write" in readwrite
@@ -85,7 +86,7 @@ def test_gpu_hbl_checkpoint_does_not_replay_generic_host_boundary() -> None:
     checkpoint = mainloop.index("if(gpu_checkpoint_due.or.gpu_slice_due)then")
     integration = mainloop.index("callgpu_time_integration_rk", checkpoint)
     body = mainloop[checkpoint:integration]
-    assert ".not.air5_postshock_case" in body
+    assert ".not.air5_open_x_case" in body
     assert ".not.air5_hbl_case" in body
 
 
@@ -93,7 +94,7 @@ def test_cpu_air5_checkpoint_precedes_split_step_and_is_not_replayed() -> None:
     mainloop = compact("src/mainloop.F90")
 
     checkpoint = mainloop.index(
-        "if(air5_reacting_case.and.nstep>0.and.mod(nstep,feqchkpt)==0)then"
+        "if(air5_reacting_case.and.nstep>0.and.mod(nstep,feqchkpt)==0.and..not.new_output_enabled())then"
     )
     chemistry = mainloop.index(
         "callair5_chemistry_half_step(0.5_real64*deltat,1)", checkpoint
@@ -188,14 +189,14 @@ def test_gpu_chemistry_reconstructs_active_primitives_after_hbl_boundary() -> No
 
     first = coupling.index("if(half_index==1)then")
     boundary = coupling.index("callapply_air5_hbl_boundary_gpu()", first)
-    interior = coupling.index("calllaunch_air5_interior_primitive_gpu()", first)
+    interior = coupling.index("calllaunch_air5_interior_primitive_gpu(chemistry_recovered=reuse_primitives)", first)
     halo = coupling.index("callexchange_solution_halo_gpu(.true.)", first)
     faces = coupling.index("calllaunch_air5_face_primitives_gpu()", first)
     assert first < boundary < interior < halo < faces
 
     second = coupling.index("elseif(half_index==2)then")
     second_boundary = coupling.index("callapply_air5_hbl_boundary_gpu()", second)
-    second_interior = coupling.index("calllaunch_air5_interior_primitive_gpu()", second)
+    second_interior = coupling.index("calllaunch_air5_interior_primitive_gpu(chemistry_recovered=reuse_primitives)", second)
     assert second < second_boundary < second_interior
 
 

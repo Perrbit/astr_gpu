@@ -7,6 +7,20 @@ module checkpoint_state_io
   private
   public :: checkpoint_state_transfer, checkpoint_state_identity
   public :: checkpoint_perfect_gas_state, allocate_checkpoint_buffer, checkpoint_state_require
+  public :: checkpoint_air5_state
+  public :: checkpoint_state_context
+  public :: checkpoint_halo_refresh
+
+  abstract interface
+    subroutine checkpoint_halo_refresh(buffer,cells,halo,budget,comm)
+      import :: real64,int64
+      real(real64),contiguous,intent(inout) :: buffer(:,:,:,:)
+      integer,intent(in) :: cells(3),halo,comm
+      integer(int64),intent(in) :: budget
+    end subroutine
+  end interface
+
+  character(1200),save :: failure_batch='',failure_last_complete=''
 
   ! This is a state-file primitive, not a published restart bundle.
   integer(int64), parameter :: magic=int(z'4153545251533031',int64), schema=2
@@ -15,6 +29,12 @@ module checkpoint_state_io
     real(real64) :: time=0, dt_used=0, dt_next=0
   end type
 contains
+  subroutine checkpoint_state_context(batch,last_complete)
+    character(*),intent(in) :: batch,last_complete
+    failure_batch=batch
+    failure_last_complete=last_complete
+  end subroutine
+
   subroutine checkpoint_state_require(condition,comm,label)
     logical,intent(in) :: condition
     integer,intent(in) :: comm
@@ -41,9 +61,12 @@ contains
   end subroutine
 
   subroutine checkpoint_perfect_gas_state(path,writing,global_shape,origin,cells,halo, &
-                                         q,rho,vel,prs,tmp,identity,budget,comm)
+                                         q,rho,vel,prs,tmp,identity,budget,comm,allow_repartition,restored_exact,refresh_halos)
     character(*),intent(in) :: path
     logical,intent(in) :: writing
+    logical,optional,intent(in) :: allow_repartition
+    logical,optional,intent(out) :: restored_exact
+    procedure(checkpoint_halo_refresh),optional :: refresh_halos
     integer,intent(in) :: global_shape(3),origin(3),cells(3),halo,comm
     real(real64),contiguous,intent(inout) :: q(:,:,:,:),rho(:,:,:),vel(:,:,:,:), &
       prs(:,:,:),tmp(:,:,:)
@@ -52,6 +75,9 @@ contains
     real(real64),allocatable :: buffer(:,:,:,:)
     integer(int64) :: remaining
     integer :: extents(3)
+    logical :: permit,matched
+    permit=.false.
+    if(present(allow_repartition)) permit=allow_repartition
     call allocate_checkpoint_buffer(cells,halo,11,budget,buffer,remaining,comm)
     extents=shape(buffer(:,:,:,1))
     call require(all(shape(q)==[extents,5]).and.all(shape(rho)==extents).and. &
@@ -63,16 +89,75 @@ contains
       buffer(:,:,:,7:9)=vel
       buffer(:,:,:,10)=prs
       buffer(:,:,:,11)=tmp
+    else
+      buffer=0.d0
     endif
     ! Role 2 preserves q and cached primitives independently, including halos.
     call checkpoint_state_transfer(path,writing,.true.,global_shape,origin,cells,halo, &
-      buffer,identity,remaining,comm,role=2)
+      buffer,identity,remaining,comm,role=2,allow_repartition=permit,restored_exact=matched)
+    if(present(restored_exact)) restored_exact=matched
     if (.not.writing) then
+      if(.not.matched) then
+        call require(present(refresh_halos),comm,'repartition halo provider missing')
+        call refresh_halos(buffer,cells,halo,remaining,comm)
+      endif
       q=buffer(:,:,:,1:5)
       rho=buffer(:,:,:,6)
       vel=buffer(:,:,:,7:9)
       prs=buffer(:,:,:,10)
       tmp=buffer(:,:,:,11)
+    endif
+  end subroutine
+
+  subroutine checkpoint_air5_state(path,writing,global_shape,origin,cells,halo, &
+                                  q,carry,compensated,rho,vel,prs,tmp,tve,spc,identity,budget,comm)
+    character(*),intent(in) :: path
+    logical,intent(in) :: writing,compensated
+    integer,intent(in) :: global_shape(3),origin(3),cells(3),halo,comm
+    real(real64),contiguous,intent(inout) :: q(:,:,:,:),rho(:,:,:),vel(:,:,:,:), &
+      prs(:,:,:),tmp(:,:,:),tve(:,:,:),spc(:,:,:,:)
+    real(real64),allocatable,intent(inout) :: carry(:,:,:,:)
+    type(checkpoint_state_identity),intent(inout) :: identity
+    integer(int64),intent(in) :: budget
+    real(real64),allocatable :: buffer(:,:,:,:)
+    integer(int64) :: remaining,metadata(2),expected(2)
+    integer :: extents(3),h
+    call allocate_checkpoint_buffer(cells,halo,34,budget,buffer,remaining,comm)
+    extents=shape(buffer(:,:,:,1)); h=halo+1
+    call require(all(shape(q)==[extents,11]).and.all(shape(rho)==extents).and. &
+      all(shape(vel)==[extents,3]).and.all(shape(prs)==extents).and. &
+      all(shape(tmp)==extents).and.all(shape(tve)==extents).and. &
+      all(shape(spc)==[extents,5]),comm,'AIR5 cache shape')
+    if(compensated) then
+      call require(allocated(carry),comm,'AIR5 carry not initialized')
+      call require(all(shape(carry)==[cells+1,11]),comm,'AIR5 carry shape')
+    endif
+    metadata=[1_int64,int(merge(1,0,compensated),int64)]
+    expected=metadata
+    if(writing) then
+      buffer(:,:,:,1:11)=q
+      ! Carry has physical nodes only; its halo slots are canonical padding.
+      buffer(:,:,:,12:22)=0.0_real64
+      if(compensated) buffer(h:h+cells(1),h:h+cells(2),h:h+cells(3),12:22)=carry
+      buffer(:,:,:,23)=rho
+      buffer(:,:,:,24:26)=vel
+      buffer(:,:,:,27)=prs
+      buffer(:,:,:,28)=tmp
+      buffer(:,:,:,29)=tve
+      buffer(:,:,:,30:34)=spc
+    endif
+    call checkpoint_state_transfer(path,writing,.true.,global_shape,origin,cells,halo, &
+      buffer,identity,remaining,comm,role=7,metadata=metadata)
+    call require(all(metadata==expected),comm,'AIR5 compensation contract mismatch')
+    if(.not.writing) then
+      q=buffer(:,:,:,1:11)
+      if(compensated) carry=buffer(h:h+cells(1),h:h+cells(2),h:h+cells(3),12:22)
+      rho=buffer(:,:,:,23)
+      vel=buffer(:,:,:,24:26)
+      prs=buffer(:,:,:,27)
+      tmp=buffer(:,:,:,28)
+      tve=buffer(:,:,:,29)
+      spc=buffer(:,:,:,30:34)
     endif
   end subroutine
 
@@ -87,7 +172,12 @@ contains
     if (ierr/=MPI_SUCCESS) bad=1
     if (bad/=0) then
       call MPI_Comm_rank(comm,rank,ierr)
-      if (rank==0) write(error_unit,'(a)') 'checkpoint state rejected: '//label
+      if (rank==0) then
+        write(error_unit,'(a)') 'checkpoint state rejected: '//label
+        if(len_trim(failure_batch)>0) write(error_unit,'(a)') &
+          'checkpoint context: batch='//trim(failure_batch)//'; last_complete='//trim(failure_last_complete)
+        flush(error_unit)
+      endif
       call MPI_Abort(comm,71,ierr)
       error stop 'checkpoint state rejected'
     endif
@@ -188,20 +278,26 @@ contains
   end subroutine
 
   subroutine checkpoint_state_transfer(path,writing,exact,global_shape,origin,cells,halo,q,identity, &
-                                       buffer_limit,comm,role)
+                                       buffer_limit,comm,role,metadata,allow_repartition,restored_exact)
     character(*), intent(in) :: path
     logical, intent(in) :: writing,exact
+    logical,optional,intent(in) :: allow_repartition
+    logical,optional,intent(out) :: restored_exact
     integer, intent(in) :: global_shape(3),origin(3),cells(3),halo,comm
     integer,optional,intent(in) :: role
+    integer(int64),optional,intent(inout) :: metadata(:)
     real(real64), contiguous, intent(inout) :: q(:,:,:,:)
     type(checkpoint_state_identity), intent(inout) :: identity
     integer(int64), intent(in) :: buffer_limit
     integer(int64) :: header(13),agreed(13),local(8),owned(3),full(3),g(3),points,extras_count,offset,total
+    integer(int64) :: metadata_root(64)
+    integer :: metadata_count,root_metadata_count
     integer(int64), allocatable :: partitions(:),current(:)
     real(real64), allocatable :: extras(:)
     integer(hid_t) :: file,access,xfer,dset,space,mem,native
     integer(hsize_t) :: dims3(3),mdims3(3),start3(3),count3(3),dims1(1),mdims1(1),start1(1),count1(1)
-    integer :: rank,np,err,mpi_i64,ncomp,old_np,r,s,a,b,i,j,k,m,n,allocerr,mode(2),root_mode(2),state_role
+    integer :: rank,np,err,mpi_i64,ncomp,old_np,r,s,a,b,i,j,k,m,n,allocerr,mode(3),root_mode(3),state_role
+    logical :: permit,restore_exact,matched
     integer(int64) :: lo(3),hi(3),other_lo(3),other_hi(3),count(3),sum_owned,v
     character(16) :: name
     character(len(path)) :: root_path
@@ -211,10 +307,28 @@ contains
     call require(err==MPI_SUCCESS,comm,'size')
     call MPI_Type_match_size(MPI_TYPECLASS_INTEGER,8,mpi_i64,err)
     call require(err==MPI_SUCCESS,comm,'int64 MPI type')
-    mode=[merge(1,0,writing),merge(1,0,exact)]
+    permit=.false.
+    if(present(allow_repartition)) permit=allow_repartition
+    restore_exact=exact
+    mode=[merge(1,0,writing),merge(1,0,exact),merge(1,0,permit)]
     root_mode=mode
-    call MPI_Bcast(root_mode,2,MPI_INTEGER,0,comm,err)
+    call MPI_Bcast(root_mode,3,MPI_INTEGER,0,comm,err)
     call require(err==MPI_SUCCESS.and.all(root_mode==mode),comm,'transfer mode mismatch')
+    metadata_count=-1
+    if(present(metadata)) metadata_count=size(metadata)
+    root_metadata_count=metadata_count
+    call MPI_Bcast(root_metadata_count,1,MPI_INTEGER,0,comm,err)
+    call require(err==MPI_SUCCESS.and.metadata_count==root_metadata_count.and. &
+      metadata_count>=-1.and.metadata_count/=0.and.metadata_count<=64,comm,'metadata layout mismatch')
+    if(present(metadata)) then
+      call require(metadata_count>0,comm,'empty metadata payload')
+      if(writing) then
+        metadata_root(1:metadata_count)=metadata
+        call MPI_Bcast(metadata_root,metadata_count,mpi_i64,0,comm,err)
+        call require(err==MPI_SUCCESS.and.all(metadata==metadata_root(1:metadata_count)),comm, &
+          'global metadata differs between ranks')
+      endif
+    endif
     ! The path must be agreed before entering parallel HDF5.
     n=len(path)
     call MPI_Bcast(n,1,MPI_INTEGER,0,comm,err)
@@ -226,7 +340,10 @@ contains
     state_role=1
     if (present(role)) state_role=role
     call require(state_role==1.or.(state_role==2.and.ncomp==11).or. &
-      (state_role==3.and.ncomp==34),comm,'state component role')
+      ((state_role==3.or.state_role==4).and.ncomp==34).or.(state_role==5.and.ncomp==17).or. &
+      (state_role==6.and.ncomp==44).or.(state_role==7.and.ncomp==34).or. &
+      (state_role==8.and.ncomp==26), &
+      comm,'state component role')
     g=int(global_shape,int64)
     header=[magic,schema,1_int64,g,int(ncomp,int64),int(np,int64),identity%step, &
       transfer(identity%time,0_int64),transfer(identity%dt_used,0_int64),transfer(identity%dt_next,0_int64), &
@@ -347,15 +464,23 @@ contains
       total=total+partitions(a+8)
     enddo
     call require(sum_owned==volume(g,comm),comm,'saved incomplete ownership')
-    if (exact.or.writing) then
+    matched=old_np==np
+    if(matched) matched=all(partitions==current)
+    if(.not.writing.and.permit.and..not.matched) &
+      call require(np<=2.and.old_np<=2,comm, &
+        'validated repartition gate requires at most two ranks')
+    if(.not.writing.and.permit) restore_exact=matched
+    if(present(restored_exact)) restored_exact=matched
+    if (restore_exact.or.writing) then
       call require(old_np==np,comm,'exact restore rank count')
       call require(all(partitions==current),comm,'exact restore partition mismatch')
     endif
+    if(present(metadata)) call integers(file,'metadata',metadata,writing,xfer,comm,rank)
     native=h5kind_to_type(real64,H5_REAL_KIND)
     dims3=g
     mdims3=full
     count3=owned
-    if (.not.writing.and..not.exact) count3=int(cells,hsize_t)+1
+    if (.not.writing.and..not.restore_exact) count3=int(cells,hsize_t)+1
     do m=1,ncomp
       write(name,'("q",i4.4)') m
       call dataset(file,trim(name),dims3,H5T_IEEE_F64LE,writing,comm,dset,space)
@@ -379,7 +504,7 @@ contains
     enddo
     block
       ! Repartition reads validate the old extras dataset but do not reuse halos.
-      if (.not.writing.and..not.exact) extras_count=0
+      if (.not.writing.and..not.restore_exact) extras_count=0
       allocate(extras(max(1,int(extras_count))),stat=allocerr)
       call require(allocerr==0,comm,'extras allocation')
       if (writing) call extra_values(.true.)
@@ -410,7 +535,7 @@ contains
           mem_space_id=mem,file_space_id=space,xfer_prp=xfer)
       endif
       call require(err==0,comm,'extras transfer')
-      if (.not.writing.and.exact) call extra_values(.false.)
+      if (.not.writing.and.restore_exact) call extra_values(.false.)
       call close_dataset(dset,space,mem,comm)
     end block
     call h5pclose_f(xfer,err)

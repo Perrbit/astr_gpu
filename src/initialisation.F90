@@ -1176,19 +1176,24 @@ module initialisation
   end subroutine read_air5normalshock_states
 
   subroutine air5hblboundaryini
+    use output_runtime, only: output_resource_path
     use chemistry_hbl_profile, only: air5_hbl_profile_type, &
       air5_hbl_profile_status_ok,read_air5_hbl_profile
     use chemistry_hbl_boundary, only: configure_air5_hbl_boundary
     type(air5_hbl_profile_type) :: profile
     integer :: status
 
-    call read_air5_hbl_profile('datin/air5_hbl_profile.dat',profile,status)
+    call read_air5_hbl_profile(trim(output_resource_path('air5_hbl_profile.dat', &
+      'datin/air5_hbl_profile.dat')),profile,status)
     if(status/=air5_hbl_profile_status_ok) &
       error stop 'cannot read datin/air5_hbl_profile.dat'
-    call configure_air5_hbl_boundary(profile)
+    call configure_air5_hbl_boundary(profile, &
+      trim(output_resource_path('air5_hbl_domain.dat','datin/air5_hbl_domain.dat')), &
+      trim(output_resource_path('air5_incident_shock.dat','datin/air5_incident_shock.dat')))
   end subroutine air5hblboundaryini
 
   subroutine air5hblini
+    use output_runtime, only: output_resource_path
     use iso_fortran_env, only: real64
     use chemistry_air5_data, only: air5_num_species
     use chemistry_model, only: chemistry_status_ok
@@ -1210,13 +1215,18 @@ module initialisation
 
     if(num_species/=air5_num_species) &
       error stop 'air5hbl requires the fixed five-species state'
-    call read_air5_hbl_profile('datin/air5_hbl_profile.dat',profile,status)
+    call read_air5_hbl_profile(trim(output_resource_path('air5_hbl_profile.dat', &
+      'datin/air5_hbl_profile.dat')),profile,status)
     if(status/=air5_hbl_profile_status_ok) &
       error stop 'cannot read datin/air5_hbl_profile.dat'
-    call configure_air5_hbl_boundary(profile)
-    inquire(file='datin/air5_hbl_initial_field.dat',exist=has_initial_field)
+    call configure_air5_hbl_boundary(profile, &
+      trim(output_resource_path('air5_hbl_domain.dat','datin/air5_hbl_domain.dat')), &
+      trim(output_resource_path('air5_incident_shock.dat','datin/air5_incident_shock.dat')))
+    inquire(file=trim(output_resource_path('air5_hbl_initial_field.dat', &
+      'datin/air5_hbl_initial_field.dat')),exist=has_initial_field)
     if(has_initial_field) then
-      call read_air5_hbl_initial_field('datin/air5_hbl_initial_field.dat', &
+      call read_air5_hbl_initial_field(trim(output_resource_path('air5_hbl_initial_field.dat', &
+        'datin/air5_hbl_initial_field.dat')), &
         initial_field,status)
       if(status/=air5_hbl_initial_status_ok) &
         error stop 'cannot read datin/air5_hbl_initial_field.dat'
@@ -2121,6 +2131,7 @@ module initialisation
   !| 27-09-2021: Created by J. Fang @ STFC Daresbury Laboratory        |
   !+-------------------------------------------------------------------+
   subroutine inletprofile
+    use output_runtime, only: output_resource_path
     !
     use commvar,  only: flowtype,nondimen,spcinf,num_species,jm,pinf
     use commarray,only: x
@@ -2137,11 +2148,13 @@ module initialisation
     logical :: lfex,lprofile_density_provided,lprofile_pressure_provided
     real(8) :: prs_prof_eos(0:jm),prs_prof_error,prs_prof_scale
     character(len=255) :: profile_header
+    character(len=1200) :: profile_path
     !
     allocate( rho_prof(0:jm),tmp_prof(0:jm),prs_prof(0:jm),          &
               vel_prof(0:jm,1:3),spc_prof(0:jm,1:num_species) )
     !
-    if(lio) inquire(file='datin/inlet.prof',exist=lfex)
+    profile_path=output_resource_path('inlet.prof','datin/inlet.prof')
+    if(lio) inquire(file=trim(profile_path),exist=lfex)
     call bcast(lfex)
     !
     if(lfex) then
@@ -2152,7 +2165,7 @@ module initialisation
         !
         fh=get_unit()
         !
-        open(fh,file='datin/inlet.prof',action='read',form='formatted')
+        open(fh,file=trim(profile_path),action='read',form='formatted')
         read(fh,'(A)')profile_header
         lprofile_density_provided=index(profile_header,'density=provided')>0
         lprofile_pressure_provided=index(profile_header,'pressure=provided')>0
@@ -2174,12 +2187,12 @@ module initialisation
       call bcast(lprofile_pressure_provided)
       !
       if(lprofile_pressure_provided) then
-        call preadprofile('datin/inlet.prof',dir='j',                   &
+        call preadprofile(trim(profile_path),dir='j',                   &
                                   var1=rho_prof,     var2=vel_prof(:,1),&
                                   var3=vel_prof(:,2),var4=tmp_prof,     &
                                   var5=prs_prof,skipline=4)
       else
-        call preadprofile('datin/inlet.prof',dir='j',                   &
+        call preadprofile(trim(profile_path),dir='j',                   &
                                   var1=rho_prof,     var2=vel_prof(:,1),&
                                   var3=vel_prof(:,2),var4=tmp_prof,skipline=4)
       endif

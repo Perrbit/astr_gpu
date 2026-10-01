@@ -53,6 +53,20 @@ def test_valid(tmp_path, content):
         assert 'checkpoint_interval_steps=3000000000' in result.stdout
 
 
+@pytest.mark.parametrize('name,selected', [
+    ('input.output.tgv.example', [0]*14),
+    ('input.output.tgv.derived.example', list(range(1, 15))),
+])
+def test_documented_tgv_examples(tmp_path, name, selected):
+    root = Path(__file__).resolve().parents[2]
+    result = run(tmp_path, (root / 'scripts/output' / name).read_text())
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'slice_counts=1 1 1' in result.stdout
+    for product in ('volume', 'slices'):
+        line = next(line for line in result.stdout.splitlines() if line.startswith(product+'_derived_indices='))
+        assert list(map(int, line.split('=', 1)[1].split())) == selected
+
+
 @pytest.mark.parametrize('content', [
     None, '', '&old_restart\n/\n', VALID.replace('&output', '&unknown'),
     VALID.replace('&output', '&OUTPUT_WRONG'),
@@ -90,6 +104,30 @@ def test_slices_deduplicated(tmp_path):
     result = run(tmp_path, VALID.replace('i_indices=0,8,16', 'i_indices=0,8,0,8,16'))
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'slice_counts=3 2 1' in result.stdout
+
+
+@pytest.mark.parametrize('flags', range(8))
+@pytest.mark.parametrize('enabled', [True, False])
+def test_derived_switches_have_canonical_layout(tmp_path, flags, enabled):
+    controls = ','.join(f'{name}={"t" if flags & (1 << bit) else "f"}'
+                        for bit, name in enumerate(('velocity_gradient', 'qcriterion', 'vorticity')))
+    content = VALID.replace('vorticity=t', controls).replace('&slices\n', '&slices\n  ' + controls + ',\n')
+    if not enabled:
+        content = content.replace('enabled=t', 'enabled=f')
+    result = run(tmp_path, content)
+    assert result.returncode == 0, result.stdout + result.stderr
+    expected = []
+    if enabled:
+        if flags & 1:
+            expected.extend(range(1, 10))
+        if flags & 2:
+            expected.extend((10, 11))
+        if flags & 4:
+            expected.extend((12, 13, 14))
+    expected += [0]*(14-len(expected))
+    for product in ('volume', 'slices'):
+        line = next(line for line in result.stdout.splitlines() if line.startswith(product+'_derived_indices='))
+        assert list(map(int, line.split('=', 1)[1].split())) == expected
 
 
 @pytest.mark.parametrize('before,after', [('0,8,16', '0,8,17'), ('12,24', '12,25'), ('k_indices=32', 'k_indices=33')])

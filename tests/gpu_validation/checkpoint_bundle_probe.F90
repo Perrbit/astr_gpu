@@ -1,19 +1,30 @@
 program checkpoint_bundle_probe
+  use iso_fortran_env, only: output_unit
   use mpi
   use checkpoint_bundle
   implicit none
-  integer :: err,rank,keep,i
+  integer :: err,rank,keep,i,unit,closed
   logical :: ok
   character(1024) :: path,mode,name
   character(128) :: names(1)
   character(128) :: resource_names(2),with_resources(2)
+  character(13) :: stream_header
   type(checkpoint_retention) :: ledger
   call MPI_Init(err)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,err)
   call get_command_argument(1,path)
   call get_command_argument(2,mode)
   names='state.h5'
-  if (trim(mode)=='resources') then
+  if(trim(mode)=='stream') then
+    open(newunit=unit,file=trim(path),status='old',access='stream',form='unformatted',action='read',iostat=err)
+    ok=err==0
+    if(ok) then
+      read(unit,iostat=err) stream_header
+      ok=err==0.and.checkpoint_stream_at_end(unit)
+      close(unit,iostat=closed)
+      ok=ok.and.closed==0
+    endif
+  else if (trim(mode)=='resources') then
     resource_names=[character(128) :: 'mesh.h5','model.nml']
     call write_checkpoint_resource_refs(trim(path),resource_names,MPI_COMM_WORLD,ok)
   else if (trim(mode)=='seal_resources') then
@@ -36,7 +47,12 @@ program checkpoint_bundle_probe
     call validate_checkpoint_bundle(trim(path),MPI_COMM_WORLD,ok)
   endif
   if (.not.ok) then
-    if (rank==0) print *, 'REJECT bundle'
+    if (rank==0) then
+      print *, 'REJECT bundle'
+      write(output_unit,'(a)') 'LAST_COMPLETE '//trim(last_published_checkpoint(ledger))
+      flush(output_unit)
+    endif
+    call MPI_Barrier(MPI_COMM_WORLD,err)
     call MPI_Abort(MPI_COMM_WORLD,1,err)
   endif
   if (rank==0) print *, 'PASS bundle'

@@ -136,16 +136,19 @@ module chemistry_hbl_boundary
   public :: air5_dynamic_top,get_air5_top_target,get_air5_top_rate
   public :: get_air5_top_reference_sound
   public :: write_air5_top_checkpoint
+  public :: complete_air5_top_contract
 
 contains
 
-  subroutine configure_air5_hbl_boundary(profile)
+  subroutine configure_air5_hbl_boundary(profile,domain_path,incident_path)
     use chemistry_air5_data, only: air5_num_species
     use commvar, only: jm,flowtype,ref_len
     use chemistry_incident_shock_state, only: read_air5_incident_shock
     use chemistry_hbl_geometry, only: read_air5_hbl_domain
     use commarray, only: x
     type(air5_hbl_profile_type), intent(in) :: profile
+    character(*),optional,intent(in) :: domain_path,incident_path
+    character(1200) :: shock_path
     real(real64) :: y_min,y_max,wall_q(air5_num_conservative)
     real(real64) :: density,velocity(3),temperature,tv,pressure,top_y,normal(3)
     real(real64) :: mass_fraction(air5_num_species)
@@ -182,10 +185,12 @@ contains
     incident_q=0.0_real64
     incident_x=0.0_real64
     if(incident_top) then
-      call read_air5_incident_shock('datin/air5_incident_shock.dat',incident_x, &
+      shock_path='datin/air5_incident_shock.dat'
+      if(present(incident_path)) shock_path=incident_path
+      call read_air5_incident_shock(trim(shock_path),incident_x, &
         top_y,normal,incident_q,status)
       if(status/=chemistry_status_ok) error stop 'invalid air5 incident shock data'
-      call read_air5_hbl_domain(flowtype,ref_len,domain_lengths)
+      call read_air5_hbl_domain(flowtype,ref_len,domain_lengths,domain_path)
       if(abs(top_y-domain_lengths(2))>2.0e-11_real64*ref_len .or. &
          incident_x>=domain_lengths(1)) error stop 'air5 incident shock lies outside domain'
       if(any(abs(incident_q(:,1)-farfield_q)>2.0e-11_real64* &
@@ -297,6 +302,14 @@ contains
     values(6:16)=farfield_q
     values(17:38)=reshape(incident_q,[22])
   end function air5_top_contract
+
+  subroutine complete_air5_top_contract(values)
+    real(real64),intent(out) :: values(40)
+    if(.not.boundary_configured) error stop 'AIR5 boundary contract not initialized'
+    values(1:38)=air5_top_contract()
+    values(39)=real(merge(1,0,characteristic_top),real64)
+    values(40)=top_reference_sound
+  end subroutine
 
   subroutine write_air5_top_checkpoint()
     use hdf5io, only: h5write

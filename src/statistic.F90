@@ -25,6 +25,8 @@ module statistic
   end type tsta
   !
   integer :: nsamples,nstep_sbeg
+  integer,private,save :: mean_last_sample_step=0
+  real(8),private,save :: mean_last_sample_time=0.d0
   logical :: lmeanallocated=.false.
   logical :: liosta=.false.
   real(8) :: time_sbeg
@@ -32,6 +34,8 @@ module statistic
              wallheatflux,dissipation,nominal_thickness,xflame,vflame, &
              poutrt
   real(8) :: massflux_target=0.d0
+  real(8),private,save :: frozen_force=0.d0
+  logical,private,save :: frozen_initialised=.false.
   real(8) :: maxT,overall_qdot,v_H2O,v_HO2
   real(8) :: vel_incom,prs_incom,rho_incom
   real(8) :: umax,rhomax,tmpmax,qdotmax
@@ -54,6 +58,173 @@ module statistic
   type(tsta) :: hitsta
   !
   contains
+  subroutine complete_mean_statistics_file(path,writing,identity,budget)
+    use iso_fortran_env, only: int64,real64
+    use ieee_arithmetic, only: ieee_is_finite
+    use mpi, only: MPI_COMM_WORLD
+    use parallel, only: ig0,jg0,kg0
+    use checkpoint_state_io, only: checkpoint_state_identity,checkpoint_state_transfer, &
+      allocate_checkpoint_buffer,checkpoint_state_require
+    character(*),intent(in) :: path
+    logical,intent(in) :: writing
+    type(checkpoint_state_identity),intent(inout) :: identity
+    integer(int64),intent(in) :: budget
+    real(real64),allocatable :: values(:,:,:,:)
+    integer(int64) :: remaining,metadata(8)
+    type(checkpoint_state_identity) :: expected
+    call allocate_checkpoint_buffer([im,jm,km],0,44,budget,values,remaining,MPI_COMM_WORLD)
+    expected=identity
+    ! Metadata v2 retains the last sampling time independently of the current dt.
+    metadata=[2_int64,int(nsamples,int64),0_int64,0_int64,0_int64,0_int64,0_int64,0_int64]
+    if(writing) then
+      values=0.d0
+      call checkpoint_state_require(nsamples>=0,MPI_COMM_WORLD,'negative mean statistics count')
+      if(nsamples>0) then
+        call checkpoint_state_require(lmeanallocated.and.liosta.and.mean_last_sample_step<identity%step, &
+          MPI_COMM_WORLD,'mean sampling identity')
+        call checkpoint_state_require(nstep_sbeg>0.and.nstep_sbeg<=mean_last_sample_step.and. &
+          nsamples<=mean_last_sample_step-nstep_sbeg+1.and.ieee_is_finite(time_sbeg).and. &
+          ieee_is_finite(mean_last_sample_time).and.time_sbeg>=0.d0.and. &
+          mean_last_sample_time>=time_sbeg.and.mean_last_sample_time<=identity%time, &
+          MPI_COMM_WORLD,'mean sampling clock')
+        metadata(3:8)=[int(nstep_sbeg,int64),int(mean_last_sample_step,int64), &
+          transfer(time_sbeg,0_int64),1_int64,1_int64,transfer(mean_last_sample_time,0_int64)]
+        values(:,:,:,1)=rom
+        values(:,:,:,2)=u1m
+        values(:,:,:,3)=u2m
+        values(:,:,:,4)=u3m
+        values(:,:,:,5)=pm
+        values(:,:,:,6)=tm
+        values(:,:,:,7)=u11
+        values(:,:,:,8)=u22
+        values(:,:,:,9)=u33
+        values(:,:,:,10)=u12
+        values(:,:,:,11)=u13
+        values(:,:,:,12)=u23
+        values(:,:,:,13)=pp
+        values(:,:,:,14)=tt
+        values(:,:,:,15)=tu1
+        values(:,:,:,16)=tu2
+        values(:,:,:,17)=tu3
+        values(:,:,:,18)=u111
+        values(:,:,:,19)=u222
+        values(:,:,:,20)=u333
+        values(:,:,:,21)=u112
+        values(:,:,:,22)=u113
+        values(:,:,:,23)=u122
+        values(:,:,:,24)=u133
+        values(:,:,:,25)=u223
+        values(:,:,:,26)=u233
+        values(:,:,:,27)=u123
+        values(:,:,:,28)=u1rem
+        values(:,:,:,29)=u2rem
+        values(:,:,:,30)=u3rem
+        values(:,:,:,31)=pu1
+        values(:,:,:,32)=pu2
+        values(:,:,:,33)=pu3
+        values(:,:,:,34)=sgmam11
+        values(:,:,:,35)=sgmam22
+        values(:,:,:,36)=sgmam33
+        values(:,:,:,37)=sgmam12
+        values(:,:,:,38)=sgmam13
+        values(:,:,:,39)=sgmam23
+        values(:,:,:,40)=disspa
+        values(:,:,:,41)=predil
+        values(:,:,:,42)=visdif1
+        values(:,:,:,43)=visdif2
+        values(:,:,:,44)=visdif3
+      endif
+      call checkpoint_state_require(all(ieee_is_finite(values)),MPI_COMM_WORLD,'nonfinite mean statistics payload')
+    endif
+    ! Role 6 stores raw accumulated moments, including duplicated physical endpoints.
+    call checkpoint_state_transfer(path,writing,.true.,[ia,ja,ka]+1,[ig0,jg0,kg0], &
+      [im,jm,km],0,values,identity,remaining,MPI_COMM_WORLD,role=6,metadata=metadata)
+    if(.not.writing) then
+      call checkpoint_state_require(identity%step==expected%step.and.identity%time==expected%time.and. &
+        identity%dt_used==expected%dt_used.and.identity%dt_next==expected%dt_next, &
+        MPI_COMM_WORLD,'mean checkpoint clock mismatch')
+      call checkpoint_state_require(metadata(1)==2.and.metadata(2)>=0.and.metadata(2)<=huge(nsamples).and. &
+        metadata(3)>=0.and.metadata(3)<=identity%step.and.metadata(4)>=0.and. &
+        metadata(4)<max(1_int64,identity%step).and.ieee_is_finite(transfer(metadata(5),0.d0)).and. &
+        ieee_is_finite(transfer(metadata(8),0.d0)).and.transfer(metadata(5),0.d0)>=0.d0.and. &
+        transfer(metadata(8),0.d0)>=transfer(metadata(5),0.d0).and.transfer(metadata(8),0.d0)<=identity%time.and. &
+        metadata(6)==merge(1_int64,0_int64,metadata(2)>0).and.metadata(7)==metadata(6), &
+        MPI_COMM_WORLD,'mean checkpoint metadata')
+      call checkpoint_state_require(all(ieee_is_finite(values)),MPI_COMM_WORLD,'nonfinite mean statistics payload')
+      if(metadata(2)>0) then
+        call checkpoint_state_require(metadata(3)>0.and.metadata(3)<=metadata(4).and. &
+          metadata(2)<=metadata(4)-metadata(3)+1,MPI_COMM_WORLD,'mean checkpoint sample sequence')
+        if(.not.lmeanallocated) call allomeanflow
+        rom=values(:,:,:,1)
+        u1m=values(:,:,:,2)
+        u2m=values(:,:,:,3)
+        u3m=values(:,:,:,4)
+        pm=values(:,:,:,5)
+        tm=values(:,:,:,6)
+        u11=values(:,:,:,7)
+        u22=values(:,:,:,8)
+        u33=values(:,:,:,9)
+        u12=values(:,:,:,10)
+        u13=values(:,:,:,11)
+        u23=values(:,:,:,12)
+        pp=values(:,:,:,13)
+        tt=values(:,:,:,14)
+        tu1=values(:,:,:,15)
+        tu2=values(:,:,:,16)
+        tu3=values(:,:,:,17)
+        u111=values(:,:,:,18)
+        u222=values(:,:,:,19)
+        u333=values(:,:,:,20)
+        u112=values(:,:,:,21)
+        u113=values(:,:,:,22)
+        u122=values(:,:,:,23)
+        u133=values(:,:,:,24)
+        u223=values(:,:,:,25)
+        u233=values(:,:,:,26)
+        u123=values(:,:,:,27)
+        u1rem=values(:,:,:,28)
+        u2rem=values(:,:,:,29)
+        u3rem=values(:,:,:,30)
+        pu1=values(:,:,:,31)
+        pu2=values(:,:,:,32)
+        pu3=values(:,:,:,33)
+        sgmam11=values(:,:,:,34)
+        sgmam22=values(:,:,:,35)
+        sgmam33=values(:,:,:,36)
+        sgmam12=values(:,:,:,37)
+        sgmam13=values(:,:,:,38)
+        sgmam23=values(:,:,:,39)
+        disspa=values(:,:,:,40)
+        predil=values(:,:,:,41)
+        visdif1=values(:,:,:,42)
+        visdif2=values(:,:,:,43)
+        visdif3=values(:,:,:,44)
+      else
+        call checkpoint_state_require(all(metadata(3:8)==0).and.all(values==0.d0), &
+          MPI_COMM_WORLD,'nonempty zero-sample mean checkpoint')
+      endif
+      nsamples=int(metadata(2))
+      nstep_sbeg=int(metadata(3))
+      mean_last_sample_step=int(metadata(4))
+      time_sbeg=transfer(metadata(5),0.d0)
+      mean_last_sample_time=transfer(metadata(8),0.d0)
+      liosta=metadata(7)==1
+    endif
+  end subroutine complete_mean_statistics_file
+
+  subroutine channel_driver_state(values,writing,ok)
+    use ieee_arithmetic, only: ieee_is_finite
+    real(8),intent(inout) :: values(6)
+    logical,intent(in) :: writing
+    logical,intent(out) :: ok
+    if(writing) values=[force,massflux_target,frozen_force,merge(1.d0,0.d0,frozen_initialised)]
+    ok=all(ieee_is_finite(values)).and.(values(6)==0.d0.or.values(6)==1.d0)
+    if(.not.ok.or.writing) return
+    force=values(1:3)
+    massflux_target=values(4)
+    frozen_force=values(5)
+    frozen_initialised=values(6)==1.d0
+  end subroutine
   !
   !+-------------------------------------------------------------------+
   !| This subroutine is used to allocate mean flow arraies.            |
@@ -151,6 +322,13 @@ module statistic
     use commvar,   only : reynolds,nstep,time,nondimen
     use commarray, only : rho,vel,prs,tmp,dvel
     use fludyna,   only : miucal
+#ifdef ASTR_AIR5_CHEMISTRY
+    use commvar, only: lcomb,num_modequ
+    use commarray, only: tve,spc
+    use chemistry_air5_data, only: air5_num_species
+    use chemistry_transport, only: air5_transport_properties
+    use mpi, only: MPI_Abort,MPI_COMM_WORLD
+#endif
     !
     ! arguments
     logical,intent(in),optional :: timerept
@@ -163,7 +341,11 @@ module statistic
     !
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
-    integer,save :: nstep_save=0
+#ifdef ASTR_AIR5_CHEMISTRY
+    integer :: transport_status,abort_ierr
+    real(8) :: conductivity_tr,conductivity_v,species_viscosity(air5_num_species), &
+      binary_diffusion(air5_num_species,air5_num_species),mixture_diffusion(air5_num_species)
+#endif
     !
     if(present(timerept)) then
 
@@ -171,7 +353,17 @@ module statistic
 
     endif 
     
-    if(nstep<=nstep_save) return
+    if(nstep<=mean_last_sample_step) return
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(lcomb) then
+      if(nondimen.or.num_species/=air5_num_species.or.num_modequ/=1.or. &
+         .not.allocated(spc).or..not.allocated(tve)) then
+        write(*,'(A)') 'AIR5 meanflow requires dimensional five-species two-temperature state'
+        call MPI_Abort(MPI_COMM_WORLD,1,abort_ierr)
+        error stop 'AIR5 meanflow state mismatch'
+      endif
+    endif
+#endif
 
     if(nsamples==0) then
       !
@@ -220,7 +412,7 @@ module statistic
       sgmam12=0.d0
       sgmam13=0.d0
       sgmam22=0.d0
-      sgmam13=0.d0
+      sgmam23=0.d0
       sgmam33=0.d0
       !
       disspa=0.d0
@@ -290,11 +482,27 @@ module statistic
       d21=dvel(i,j,k,2,1); d22=dvel(i,j,k,2,2); d23=dvel(i,j,k,2,3)
       d31=dvel(i,j,k,3,1); d32=dvel(i,j,k,3,2); d33=dvel(i,j,k,3,3)
       !
+#ifdef ASTR_AIR5_CHEMISTRY
+      if(lcomb) then
+        call air5_transport_properties(tmp_t,tve(i,j,k),prs_t,spc(i,j,k,:), &
+          miu,conductivity_tr,conductivity_v,species_viscosity,binary_diffusion, &
+          mixture_diffusion,transport_status)
+        if(transport_status/=0) then
+          write(*,'(A,I0,A,I0,A,3(I0,1X))') 'AIR5 meanflow transport failed, rank=', &
+            mpirank,', status=',transport_status,', i/j/k=',i,j,k
+          call MPI_Abort(MPI_COMM_WORLD,transport_status,abort_ierr)
+          error stop 'AIR5 meanflow transport failed'
+        endif
+      else
+#endif
       if(nondimen) then
         miu=miucal(tmp(i,j,k))/reynolds
       else
         miu=miucal(tmp(i,j,k))
       endif
+#ifdef ASTR_AIR5_CHEMISTRY
+      endif
+#endif
       !
       skk=num1d3*(d11+d22+d33)
       !
@@ -329,7 +537,8 @@ module statistic
     !
     nsamples=nsamples+1
     
-    nstep_save=nstep
+    mean_last_sample_step=nstep
+    mean_last_sample_time=time
 
     liosta=.true.
     !
@@ -1513,10 +1722,8 @@ module statistic
     !
     ! local data
     real(8) :: gn,qn1,ly,feedback_force,fixed_force
-    real(8),save :: frozen_force=0.d0
     integer :: env_status,i,ich
     logical :: use_fixed_force
-    logical,save :: frozen_initialised=.false.
     character(len=32) :: force_mode,force_fixed
     !
     ly=(ymax-ymin)

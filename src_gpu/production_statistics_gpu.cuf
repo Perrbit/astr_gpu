@@ -23,6 +23,99 @@ module production_statistics_gpu
   logical,save :: checkpoint_prepared=.false.
 
 contains
+#ifndef TEST_COMPACT_STATS
+  subroutine complete_compact_statistics_file(path,writing,identity,budget)
+    use mpi
+    use ieee_arithmetic, only: ieee_is_finite
+    use checkpoint_state_io, only: checkpoint_state_identity,checkpoint_state_transfer, &
+      allocate_checkpoint_buffer,checkpoint_state_require
+    use commvar, only: ia,ja,ka,im,jm,km,nstep,time
+    use parallel, only: ig0,jg0,krk,isize,jsize,ksize,jrk
+    use statistic, only: nsamples
+    use gpu_check, only: sync_gpu_boundary
+    character(*),intent(in) :: path
+    logical,intent(in) :: writing
+    type(checkpoint_state_identity),intent(inout) :: identity
+    integer(int64),intent(in) :: budget
+    real(real64),allocatable :: values(:,:,:,:),plane_measure_h(:,:),plane_sum_h(:,:,:), &
+      wall_measure_h(:),wall_sum_h(:,:)
+    integer(int64) :: remaining,metadata(12),expected_step
+    real(real64) :: expected_time
+    type(checkpoint_state_identity) :: expected
+    integer :: status
+    call checkpoint_state_require(compact_statistics_active,MPI_COMM_WORLD,'compact statistics not initialized')
+    ! The third index identifies the original z partition, not a physical z node.
+    ! A terminal zero plane fits the node-ownership file layout without duplicating a volume.
+    call allocate_checkpoint_buffer([im,jm,1],0,17,budget,values,remaining,MPI_COMM_WORLD)
+    call checkpoint_state_require(remaining>=int(im+1,int64)*(jm+1)*13*8+int(im+1,int64)*4*8+4096, &
+      MPI_COMM_WORLD,'compact statistics staging budget')
+    values=0.d0
+    allocate(plane_measure_h(0:im,0:jm),plane_sum_h(0:im,0:jm,12),stat=status)
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'compact plane staging allocation')
+    if(jrk==0) then
+      allocate(wall_measure_h(0:im),wall_sum_h(0:im,3),stat=status)
+      call checkpoint_state_require(status==0,MPI_COMM_WORLD,'compact wall staging allocation')
+    else
+      call checkpoint_state_require(.true.,MPI_COMM_WORLD,'compact wall staging allocation')
+    endif
+    metadata=[1_int64,int([ia,ja,ka,isize,jsize,ksize],int64),sample_count,sampling_start_step, &
+      last_sample_step,transfer(sampling_start_time,0_int64),int(17,int64)]
+    expected_step=identity%step
+    expected_time=identity%time
+    expected=identity
+    call sync_gpu_boundary('complete compact statistics transfer entry')
+    if(writing) then
+      call checkpoint_state_require(sample_count==int(nsamples,int64).and.last_sample_step<identity%step, &
+        MPI_COMM_WORLD,'compact sampling identity')
+      plane_measure_h=plane_measure_d
+      plane_sum_h=plane_sum_d
+      values(:,:,1,1)=plane_measure_h
+      values(:,:,1,2:13)=plane_sum_h
+      if(jrk==0) then
+        wall_measure_h=wall_measure_d
+        wall_sum_h=wall_sum_d
+        values(:,1,1,14)=wall_measure_h
+        values(:,1,1,15:17)=wall_sum_h
+      endif
+    endif
+    ! Staging and the HDF5 duplicate/partition buffers coexist under one host budget.
+    remaining=remaining-int(im+1,int64)*(jm+1)*13*8
+    if(jrk==0) remaining=remaining-int(im+1,int64)*4*8
+    call checkpoint_state_transfer(path,writing,.true.,[ia+1,ja+1,ksize+1],[ig0,jg0,krk], &
+      [im,jm,1],0,values,identity,remaining,MPI_COMM_WORLD,role=5,metadata=metadata)
+    if(.not.writing) then
+      call checkpoint_state_require(identity%step==expected_step.and.identity%time==expected_time.and. &
+        identity%dt_used==expected%dt_used.and.identity%dt_next==expected%dt_next, &
+        MPI_COMM_WORLD,'compact checkpoint clock mismatch')
+      call checkpoint_state_require(all(metadata(1:7)==[1_int64,int([ia,ja,ka,isize,jsize,ksize],int64)]).and. &
+        metadata(12)==17.and.metadata(8)>=0.and.metadata(8)<=huge(nsamples).and. &
+        metadata(9)>=0.and.metadata(9)<=identity%step.and.metadata(10)<identity%step.and. &
+        ieee_is_finite(transfer(metadata(11),0.d0)),MPI_COMM_WORLD,'compact checkpoint metadata')
+      call checkpoint_state_require(all(ieee_is_finite(values)),MPI_COMM_WORLD,'nonfinite compact payload')
+      plane_measure_h=plane_measure_d
+      call checkpoint_state_require(all(plane_measure_h==values(:,:,1,1)).and.all(plane_measure_h>0.d0), &
+        MPI_COMM_WORLD,'compact plane geometry mismatch')
+      plane_sum_h=values(:,:,1,2:13)
+      plane_sum_d=plane_sum_h
+      if(jrk==0) then
+        wall_measure_h=wall_measure_d
+        call checkpoint_state_require(all(wall_measure_h==values(:,1,1,14)).and.all(wall_measure_h>0.d0), &
+          MPI_COMM_WORLD,'compact wall geometry mismatch')
+        wall_sum_h=values(:,1,1,15:17)
+        wall_sum_d=wall_sum_h
+      else
+        call checkpoint_state_require(.true.,MPI_COMM_WORLD,'compact wall geometry mismatch')
+      endif
+      sample_count=metadata(8)
+      sampling_start_step=metadata(9)
+      last_sample_step=metadata(10)
+      sampling_start_time=transfer(metadata(11),0.d0)
+      nsamples=int(sample_count)
+      call sync_gpu_boundary('complete compact statistics restore')
+    endif
+  end subroutine complete_compact_statistics_file
+#endif
+
   attributes(global) subroutine compact_plane_measure_kernel(x,measure,im,jm,km,hm)
     implicit none
     integer,value :: im,jm,km,hm
@@ -671,4 +764,13 @@ contains
     checkpoint_prepared=.false.
   end subroutine release_compact_statistics_gpu
 #endif
+
+  ! NVHPC 26.1 -g requires MPI COMMON users before this non-MPI helper.
+  integer(int64) function compact_statistics_device_bytes() result(bytes)
+    bytes=0
+    if(allocated(plane_measure_d)) bytes=bytes+8*size(plane_measure_d,kind=int64)
+    if(allocated(plane_sum_d)) bytes=bytes+8*size(plane_sum_d,kind=int64)
+    if(allocated(wall_measure_d)) bytes=bytes+8*size(wall_measure_d,kind=int64)
+    if(allocated(wall_sum_d)) bytes=bytes+8*size(wall_sum_d,kind=int64)
+  end function
 end module production_statistics_gpu

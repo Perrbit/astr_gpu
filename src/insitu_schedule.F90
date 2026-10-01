@@ -5,6 +5,7 @@ module insitu_schedule
   private
   public :: sample_schedule,configure_schedule,poll_schedule
   public :: write_schedule_state,restore_schedule_state
+  public :: resume_schedule
   type :: sample_schedule
     private
     character(5) :: mode=''
@@ -13,6 +14,13 @@ module insitu_schedule
     logical :: initial=.false.,final=.false.,ready=.false.,ended=.false.
   end type
 contains
+  subroutine resume_schedule(s,ok)
+    type(sample_schedule),intent(inout) :: s
+    logical,intent(out) :: ok
+    ok=s%ready
+    if(ok) s%ended=.false.
+  end subroutine
+
   subroutine write_schedule_state(unit,s,batch,step,time,ok)
     integer,intent(in) :: unit
     type(sample_schedule),intent(in) :: s

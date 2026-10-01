@@ -4,7 +4,9 @@
 
 `output_config.F90` implements a candidate configuration parser and rank-0
 read/typed-broadcast interface. `ASTR_OUTPUT_CONFIG=<file>` now opts into the
-restricted periodic-TGV completed-step checkpoint runtime. Without this variable,
+restricted completed-step checkpoint runtime. Its admitted cases and pending
+gates are recorded in the output redesign plan, sections 10.9 through 10.18.
+Without this variable,
 existing runs retain the existing controller and checkpoint paths.
 See `documents/ASTR_OUTPUT_RESTART_REDESIGN_PLAN.md`, sections 6.2 and 8.1.
 
@@ -61,11 +63,108 @@ No legacy flowfield may be produced in this new mode. Test directories must stay
 below 64 MiB; controlled host buffers are capped at 64 MiB. These are local test
 budgets, not production recommendations or measurements of library memory peaks.
 
+The geometry check also verifies bitwise positive-zero padding in `rank_extras`,
+using each partition's geometry-valid face ranges and periodic directions. It
+does not clip small flow values or valid geometry. `--case channel --axis y`
+covers wall-exterior padding alongside inter-rank metric halos. Run
+`python3 -m pytest -q tests/gpu_validation/test_output_geometry_padding.py` for
+the checker regression, including tiny valid values that must remain unchanged.
+
 Use `--backends cpu --no-samples` with a CPU-only, non-testing executable: final
 exact restart, control, geometry and text statistics are checked, but no claim is
 made about per-step output-switch field equality in that run. The testing build
-provides that separate field check. This is not AIR5, boundary, repartition or
-formal in-situ statistical restart validation.
+provides that separate field check. This is not AIR5, boundary or repartition
+validation.
+
+Add `--statistics` to include formal pointwise and regional Reynolds/Favre state
+in the checkpoint transaction. This mode compares periodic checkpoints against
+final-only checkpoints, not a fully disabled writer. Final state, accumulated
+statistics and exported statistics are exact comparisons. Rendering is disabled;
+the fixed statistics window is [0.0005, 0.0115]. `--initial-restart` tests restore
+from step 0 rather than step 5, including first-RK and sampling deduplication.
+`--schedule-checks` adds changed-configuration rejection and an explicit override
+whose new targets start at the restart state. Time mode also checks that an
+unrepresentably small output interval fails instead of looping indefinitely.
+
+### Dynamic Inlet Completed-Step Restart
+
+The `dynamic` fixture is a nonreacting 16^3 CURVE flat plate with `bl/intp`,
+dt=6e-6, `543e` convection, viscosity and tenth-order filtering. Source frames
+have uniform 1e-5 spacing and nonpolynomial time dependence. It checks exact
+same-backend flow/cache/control/geometry restart, not CPU/GPU bitwise equivalence
+or physical convergence. Original grid, profile and inlet sources are removed
+from the restored case; all frozen frames must remain available in resources.
+
+```bash
+python3 tests/gpu_validation/run_output_restart_validation.py \
+  --executable <absolute-build>/bin/astr --mpiexec <matching-mpiexec> \
+  --output <new-test-directory> --case dynamic --backends cpu --ranks 1 2 \
+  --axis y --restart-step 3 --no-samples
+```
+
+Use a matching CPU-only executable for that command. Repeat with a CUDA
+executable and `--backends gpu --axis x` for GPU. `--restart-step 5` crosses
+the first frame rollover before saving; `--initial-restart` restores step 0.
+Targeted extra cases are `--inflow-count 70 --legacy-statistics` for CPU NP=2 x,
+`--filter-workspace full --legacy-statistics` for GPU NP=2 y, and `--mode time`
+for physical-time scheduling. Formal statistics (`--statistics`) remain TGV-only.
+The local driver limits source counts to 12:256; this is not the solver limit.
+
+Each batch has one role-8 `inflow.h5` collectively written by inlet ranks.
+Source frames and their index are frozen once per run, not once per checkpoint.
+Runtime source sequences must be contiguous regular single-link files, contain
+at least four frames and use five-digit indices. Growing live source sequences
+are not admitted. Soft/external HDF5 links, virtual datasets and external raw
+storage are rejected rather than copied with hidden dependencies.
+
+```bash
+python3 -m pytest -q tests/gpu_validation/test_inflow_resource_filesystem.py
+ASTR_OUTPUT_H5CC=<matching-hdf5-c-wrapper> \
+  python3 -m pytest -q tests/gpu_validation/test_checkpoint_hdf5_resources.py
+```
+
+The HDF5 checker is compiled from production C source and needs matching MPI
+headers/libraries. Root CMake resolves MPI C alongside MPI Fortran; configure
+`MPI_C_COMPILER` explicitly if the wrappers are not installed together.
+Current guarded CPU/GPU reports are under `out/or3_dynamic_*_20261001/`; exact
+paths and matrix coverage are in plan section 10.17. The driver records file
+bytes and provider-specific explicit host-buffer bounds, including persistent
+source fingerprints. The 64 MiB per-directory and per-rank controlled-buffer
+limits do not measure RSS, HDF5/MPI or compiler temporary peaks. Unsupported
+providers fail the estimator rather than receiving an invented bound.
+Nonreacting external initialization `ninit=1/2/3` is registered as described
+below. AIR5 still requires `ninit=0`; legacy output is unchanged.
+
+### External Initialization Resources
+
+`--initial-dimension 1/2/3` generates a bounded smooth positive-density/temperature
+initial field and selects the original one-, two- or three-dimensional reader.
+The one-dimensional profile varies in x, the two-dimensional field in xy; these
+are the original reader conventions, not a selectable plane orientation.
+Initialization is not a substitute for checkpoint restore or classic TGV
+physical validation. Source files are copied once to resources and referenced
+by every batch. Restore tests remove the original datin file and require exact
+same-backend state/control/geometry and selected statistics continuation.
+
+```bash
+python3 tests/gpu_validation/run_output_restart_validation.py \
+  --executable <absolute-build>/bin/astr --mpiexec <matching-mpiexec> \
+  --output <new-test-directory> --backends cpu --ranks 1 2 \
+  --initial-dimension 2 --axis y --no-samples
+```
+
+Use matching CPU/CUDA binaries for each backend. Targeted matrix: dimension 1
+with x decomposition, dimension 2 with y, dimension 3 with z, each CPU/GPU
+NP=1/2; CPU dimension 2 NP=2 with `--statistics`; dimension 3 with `--case dynamic`
+and y decomposition, adding GPU full filter/compact statistics; GPU dimension 3
+NP=1 with `--initial-restart`. Source file sizes and controlled flow buffers are
+included in summary.json; each test directory remains below 64 MiB.
+These tests compare periodic against final-only checkpoints, not a completely
+disabled writer. The CPU NP=2 branch rejects corrupted initial resources and
+HDF5 external dependencies. Root CPU-only/CUDA builds and 16 positive short
+cases passed; exact evidence paths and limits are in plan section 10.18.
+The AIR5 external reader is not opened by these checks because it does not
+provide the required species/two-temperature/compensation initialization state.
 
 ### Parallel State File Prototype
 
@@ -74,7 +173,10 @@ previous sample, accumulated weights, Reynolds/Favre means and central moments,
 and a 0/1 previous-sample flag. `test_statistics_state_continuation` checks the
 CPU pack/HDF5/unpack/continue path at NP=1/2 x/y partitions, plus role rejection.
 The 9x7x5 probe remains within 2 MiB per rank and 4 MiB per directory.
-This is not yet a complete new-format statistics restart transaction.
+The primitive tests are distinct from the real-solver transaction tests above.
+Optional shared integer metadata stores regional statistics and sampling identity.
+GPU half-open point statistics use role 4 and explicit contiguous host staging;
+role 3 remains the CPU nodal layout. Neither layout currently admits repartition.
 
 `insitu_velocity_statistics_probe` also checks invalid packed-state rejection
 without changing existing state. `run_insitu_sample_validation.py --statistics
@@ -6201,8 +6303,743 @@ Filtered acoustic reflection, longer-window stability, and a matched short
 continuation from that actual checkpoint remain separate gates. Keep the
 validation opt-in and do not infer production readiness from the short matrix.
 
+## Completed-Step Output Restart Extensions
+
+`run_output_restart_validation.py --case channel --force feedback|fixed|frozen`
+uses the bounded 16-cubed channel gate. `--case curve` uses the existing warped
+static profile flatplate preset with explicit 543e convection, 643e diffusion,
+and filtering. Restored curve cases delete the original grid/profile inputs,
+requiring the frozen run resources to suffice. `--axis x|y|z` selects a slab;
+`--filter-workspace scalar|full` selects the existing filter storage implementation.
+
+`--legacy-statistics --backends cpu` includes all 44 CPU raw accumulated fields
+and sampling identity (state role 6). This includes the user-approved missing
+sgmam23 initialization fix, not a change in the statistics definition. CPU
+NP=1/2 channel, CPU NP=1 curve, zero-sample NP=2 TGV restart and NP=2 y-channel
+gates passed. With GPU this flag is restricted to `--case curve`: role 5 uses
+17 components and original z-partition slots for plane/wall partial sums, not a
+physical 3D statistics field. GPU x/y/z targeted same-topology gates passed.
+Formal `--statistics` and legacy statistics require separate runs.
+
+All these real-flow tests use 12 versus 5+7 completed steps and a 64 MiB
+per-directory cap. Statistics compare periodic versus final-only checkpoints,
+not fully disabled checkpoint output. New ordinary field/slice output, AIR5 SBLI,
+repartitioned statistics and native rendering restart remain unaccepted.
+See output redesign plan sections 10.13-10.14 for immutable evidence paths.
+
+`test_checkpoint_export.py` checks the read-only basic-field exporter on an
+asymmetric 9x7x5 synthetic bundle. The 19-test gate includes axis/slice checks,
+strict source rejection, unit declaration checks, source-tree write prevention
+and completion-publication fault injection. `run_checkpoint_export_validation.py`
+uses existing 16-cubed CPU/GPU TGV/CURVE checkpoints and real ParaView XDMF3
+readback with no rendering or new flow integration. The controlled reference
+array cap is 2 MiB and each real test directory cap is 64 MiB.
+Results: `out/or5_export_complete_20261001.xml` and
+`out/or5_paraview_final_20261001/summary.json` (four sources, passed).
+Use a ParaView build with file-reader support; the existing Catalyst-only
+edition is insufficient. This passed with system ParaView 6.0.1 Xdmf3ReaderS,
+not the old XDMF2 reader. Export and live GPU plane transfer are separate gates.
+
+AIR5 role-7 cached fields are now included without EOS reconstruction:
+density, velocity, pressure, T, Tv and Y_N2/Y_O2/Y_N/Y_O/Y_NO. Use `--units si`
+with `run_checkpoint_export_validation.py`. The new
+`out/or5_air5_export_20261001.xml` has 25 passed asymmetric-grid checks;
+`out/or5_air5_paraview_20261001/summary.json` verifies four actual CPU/GPU
+HBL/SBLI checkpoints (NP=1/2, x/y/z representatives) in ParaView 6.0.1.
+All cached scalars, vectors, coordinates, planes and time match exactly, and
+source checksums/mtimes remain unchanged. This closes the offline AIR5-export
+limit, not independent live volume/slice scheduling or GPU plane transfer.
+
+`test_output_fields.py` directly links root-production objects to test the
+native bounded writer and actual GPU tile packer. Use completed AIR5 builds:
+
+```bash
+ASTR_FIELDS_BUILD="$PWD/build_cpu_probe" python3 -m pytest -q tests/gpu_validation/test_output_fields.py
+ASTR_FIELDS_BUILD="$PWD/build_gpu_probe" ASTR_FIELDS_GPU=1 python3 -m pytest -q tests/gpu_validation/test_output_fields.py
+```
+
+The initial bounded-writer reports have 17 passed checks: six/twelve cached fields, NP=1/2,
+x/y/z decomposition, volume and three planes, plus five rejection modes.
+The 9x7x5 diagnostic uses warped coordinates and deliberate shared-node rank
+differences to verify ownership. AIR5-named scalar encodings are not a physical
+chemical state. Controlled host arrays are at most 2,160 bytes; GPU packing
+workspace is at most 1,440/1,728 bytes for six/twelve fields. Each case is
+below 4 MiB. Empty ranks issue collective HDF5 calls but do not pack/download.
+
+Evidence: `out/or5_tiled_fields_cpu_metadata_20261001.xml`,
+`out/or5_tiled_fields_gpu_metadata_20261001.xml`,
+`out/or5_tiled_fields_readback_20261001/summary.json` (eight ParaView reads),
+and `out/or5_tiled_fields_memcheck_hostcollectives_20261001/summary.json`
+(NP=2 device packing, zero errors on both processes). The sanitizer invocation
+disables UCC/HCOLL/CUDA collective plugins and GPU probing only to isolate
+this kernel; it is not CUDA-aware MPI acceptance. The failed first API-probing
+run and initial empty-rank/copy-count failures remain separate evidence.
+Native diagnostic frame readback is available with
+`pvpython --no-mpi run_checkpoint_export_validation.py --native-frame-check FRAME`,
+where FRAME contains data.h5/data.xdmf and its reader_reference.npz.
+
+The derivative-storage preparation in redesign plan 10.40 adds explicit
+fourteen-slot field selections to the shared writer, while runtime derivative
+requests remain rejected. Gradient names use velocity component first and
+physical derivative direction second. Q_rs retains the full-strain rotation/
+strain definition. Candidate `ASTR_DERIVED_FRAME_1` records, HDF5 field
+inventories/definitions/units and single-segment/parent-chain layouts are
+checked without interpreting encoded fixture values as physical derivatives.
+
+Reports `out/or5_derived_layout_cpu_20261001.xml` (30 layout/rejection checks),
+`out/or5_derived_basic_regression_20261001.xml` (51 basic regressions),
+`out/or5_derived_index_20261001.xml` (96 index/chain checks), and
+`out/or5_derived_writer_readback_20261001.xml` (two actual shared-geometry
+writer/ParaView checks) pass. The last pair reads a synthetic volume and three
+planes, with exact FP64 fields, vectors, coordinates and time. Reference arrays
+are 67128/31508 bytes; directories are 344751/277004 bytes. Controlled writer
+packing arrays stay within 2160 bytes. These are CPU/MPI file-format tests,
+not numerical, GPU-kernel, AIR5 or production derivative admission.
+
+```bash
+ASTR_FIELDS_BUILD="$PWD/build_cpu_probe" python3 -m pytest -x -q tests/gpu_validation/test_output_fields.py -k derived
+python3 -m pytest -x -q tests/gpu_validation/test_output_series_repair.py tests/gpu_validation/test_output_parent_series.py
+```
+
+The focused writer command now selects 32 checks including the two added
+actual-reader cases. Choose new output/basetemp paths when retaining evidence;
+do not replace historical reports. Real TGV gradients, private periodic halo,
+same-phase CPU/GPU comparison, exact restart and GPU slice-only transfers still
+require the proposed 10.39 gate before opening the runtime path.
+
+Plan 10.41 now implements private CPU/GPU velocity-halo providers, using the
+existing sixth-order operator and tiled selected-field downloads. Final probes
+use 11³ manufactured nodes, NP=1/2 x/y/z, and an independent discrete-wavenumber
+reference. Solver velocity and deliberately invalid solver halos remain bitwise
+unchanged. All fourteen fields, selected subsets and slice-only callbacks are
+covered, with no RK integration or runtime admission. Source/test snapshots,
+metrics and controlled host arrays stay under 2 MiB; each test directory stays
+under 4 MiB. Probe-only full velocity observation downloads are not included
+in the production callback's selected-field transfer counter. Halo face traffic
+is also separate from that counter, and full reusable halo capacities are
+charged to the workspace budget.
+
+`out/or5_private_snapshot_cpu_20261001.xml` has 13 passes and four GPU skips;
+`out/or5_private_snapshot_gpu_20261001.xml` has 17 passes. Three opt-in memcheck
+cases in `out/or5_private_snapshot_memcheck_20261001.xml` have six zero-error
+process logs. Twelve original basic packing cases pass in
+`out/or5_private_basic_gpu_20261001.xml`. These are not true TGV restart,
+CUDA-aware MPI, wall/CURVE/AIR5, renderer or physical-validation gates.
+
+```bash
+ASTR_FIELDS_BUILD="$PWD/build_cpu_probe" python3 -m pytest -x -q tests/gpu_validation/test_output_fields.py -k private_
+ASTR_FIELDS_BUILD="$PWD/build_gpu_probe" ASTR_FIELDS_GPU=1 python3 -m pytest -x -q tests/gpu_validation/test_output_fields.py -k private_
+ASTR_FIELDS_BUILD="$PWD/build_gpu_probe" ASTR_FIELDS_GPU=1 ASTR_FIELDS_MEMCHECK=1 python3 -m pytest -x -q tests/gpu_validation/test_output_fields.py -k private_derivatives_memcheck
+```
+
+Plan 10.42 wires these callbacks into completed-step frames, workspace planning,
+derived FRAME records and time indexes, but runtime derivative requests still
+abort pending the approved TGV gate. The existing ASTROA02 flags are retained;
+Q selection includes its divergence companion. Shared geometry does not acquire
+derived fields. No environment or test bypass is added.
+`out/or5_derived_switches_20261001.xml` has 67 parser/collective passes, including
+16 canonical enabled/disabled layouts. Resource-query extraction is checked by
+one CPU and one GPU NP=2 z manufactured test. The CPU/GPU basic-path reports
+`out/or5_derived_wiring_basic_cpu_20261001/summary.json` and
+`out/or5_derived_wiring_basic_gpu_20261001/summary.json` each pass the existing
+16³ NP=2 z continuous/restarted state/statistics, output-switch, schedule and
+ParaView frame/series gates. None executes the new derived runtime branch.
+The 64 MiB runtime test budget is enforced per solver-case leaf, not for the
+entire multi-case report directory. Complete derived-field lifecycle acceptance
+and admission remain pending; no stage Git commit has been made.
+
+These are writer/provider gates, not a solver model or complete live output.
+The subsequent real TGV runtime gate now admits basic volume/slices, including
+independent schedules, multi-plane aggregation and sealed frame publication.
+Other runtime case families and derived fields remain rejected.
+
+`run_output_archive_validation.py` runs the actual 16-cubed ASTR solver with
+4096-byte field tiles and per-directory/per-controlled-buffer 64 MiB limits.
+Set MPIEXEC to the MPI launcher matching the selected root build:
+
+```bash
+python3 tests/gpu_validation/run_output_archive_validation.py \
+  --executable build_gpu_probe/bin/astr --mpiexec "$MPIEXEC" \
+  --output tests/gpu_validation/out/tgv_archives_gpu_new \
+  --backends gpu --ranks 1 2 --readback
+```
+
+The output directory must be new. `--axis y|z`, `--mode time`, `--statistics`,
+`--initial-restart`, `--schedule-checks`, `--keep 1`, and `--budget-checks`
+select the documented representatives. Initial-source preparation requires
+keep=2; schedule overrides require steps mode and the step-5 source; reduced
+device-budget checks require statistics off. Invalid combinations fail before
+starting solver tests. `--readback` additionally needs /usr/bin/pvpython with
+XDMF3; it reads copies outside sealed frames and does not render images.
+
+Ten positive CPU/GPU NP=1/2 combinations cover x/y/z, step/time triggers,
+initial/final output, exact same-topology 5+7/0+12 restart, selected accumulated
+statistics and unchanged flow when output is toggled. Eight CPU/GPU NP=1/2
+volume/grouped-plane products were read in ParaView 6.0.1 against the
+authoritative same-phase checkpoint/cache values. keep=1 retires checkpoints
+without removing either archive. Only slices do not create a full volume,
+checkpoint or checkpoint geometry, and download 41,616 field bytes per frame
+for three 17x17 planes (full volume: 235,824). A 512-byte GPU packing budget
+still writes identical planes using at most 480 device/720 host tile bytes;
+47 bytes reject before publication. Workspace counts do not claim third-party
+MPI/HDF5 peak memory bounds.
+
+Exact report directories and failed-checker evidence are in redesign plan
+section 10.24. Runtime examples and format limitations are in
+scripts/output/README.md and input.output.tgv.example. Each run still needs a
+new output root and uses segment00000000; temporal indexes, reusable roots,
+shared coordinates, other case families, derived fields and Catalyst restart
+coupling remain pending. No long or remote job is part of this gate.
+
+The following shared-coordinate increment removes the per-frame geometry copy:
+each product has resources/data.h5 with coordinates/metadata only. Live HDF5
+frames omit coordinates; XDMF uses explicit relative references and sealed
+RESOURCES bind the shared file by bytes/CRC-64. Slice-only resources include
+only the selected planes, not a volume/metric/halo field. Each new run still
+creates its own resource; this is not existing-root or cross-segment reuse.
+
+`test_output_archive_resources.py` validates real relocated volume/slice frame
+bundles and rejects missing, mutated or symlink coordinates through the actual
+Fortran validator. It never advances the solver or edits source artifacts.
+Set ASTR_ARCHIVE_RESOURCE_SOURCE and ASTR_CHECKPOINT_BUNDLE_PROBE explicitly
+when the documented local defaults differ. Build the probe through root CMake
+in a BUILD_TESTING=ON build, then run the eight checks (each directory <2 MiB).
+48 original CPU/GPU provider checks and seven real shared-coordinate runtime
+representatives passed. Exact artifacts and build scope are in plan 10.25.
+
+The next increment adds per-segment series.frames/series.xdmf, indexing only
+published frames without additional field copies/downloads. `--readback` now
+also reads every time in each volume/grouped-slice sequence through ParaView
+6.0.1 and compares FP64 data, coordinates, vectors and time with sealed frames.
+Final-frame comparisons still use authoritative checkpoint caches. CPU NP=1,
+GPU NP=1/2 x, CPU NP=2 y time/statistics/0+12, and GPU NP=2 z retention/override/
+budget representatives pass; source reports are in plan 10.26. Output roots
+remain new and independent: this is not a cross-segment index.
+
+`test_output_fields.py` now has 37 checks per CPU/GPU production-object build:
+24 existing checks plus 13 valid-series/invalid-record checks. The metadata
+probe does not advance a fluid. `test_output_series_filesystem.py` has 16
+tests of the production C replacement helper, including symbolic/hard links,
+directories and unsafe names. Individual replacements are atomic, but no
+two-file transaction, crash repair or target-filesystem durability is certified.
+Full sequence references use one frame at a time (<=2 MiB reference arrays);
+whole readback case directories are checked against the approved 64 MiB limit.
+
+The basic-archive gate now accepts `--case channel|curve|dynamic|air5hbl|air5sbli`
+using the existing bounded case preparers and new-checkpoint admission rules.
+Use `--legacy-statistics` for CPU raw moments, GPU CURVE compact statistics or
+AIR5 mean44; GPU channel legacy statistics remain unsupported. Formal
+`--statistics` is TGV-only. AIR5 schedule/budget rejection permutations are
+not in this first archive matrix; their unsupported CLI combinations reject.
+`--filter-workspace full` covers the existing alternative storage path.
+Dynamic sources default to 12 frames, with a bounded 12:256-frame test range
+matching the existing restart runner, not a production input limit.
+
+Plan 10.27 lists 22 current real combinations: CPU/GPU NP=1/2 for channel,
+static/dynamic CURVE and fixed AIR5 HBL/SBLI, plus a two-rank TGV regression.
+All compare exact same-backend restart and output-toggle state, selected
+statistics, final-frame/checkpoint correspondence and actual full-sequence
+ParaView reads (264 time points). Maximum readback case size is 39,650,162
+bytes; selected-plane GPU downloads remain 41,616 or 83,232 bytes for six or
+twelve fields. No long or remote physical benchmark was run.
+
+Repeated generation also exposed NVHPC 26.1 internal-read EOF affecting an
+external source at NEWUNIT=-99. The series parser no longer deliberately
+requests an extra item past the row. A metadata-only 50-generation regression
+covers both unit parities. CPU/GPU each pass 15 targeted series checks;
+24 existing basic packing checks are unchanged. Failed real-channel/index
+diagnostics and short-source dynamic failure are retained, with paths in 10.27.
+
+The publication/retention increment in plan 10.28 adds preflight protection for
+LATEST and a common checkpoint failure context. `test_checkpoint_bundle.py`
+has 26 affected publication/retention checks covering keep=1/2, owned/protected
+directories, link rejection and injected EIO. The production C preflight and
+replacement tests in `test_output_series_filesystem.py` now pass 26 checks.
+The state probe additionally verifies NP=1/2 context reporting and clearing.
+
+`test_output_publication_failure.py` uses the real 16-cubed solver, NP=2 x,
+continuous 12 steps and step-10 failures at candidate creation, batch rename,
+LATEST rename, old COMPLETE removal or old payload removal. Each CPU/GPU
+case restores the correct complete point (5 or 10) in a new process and
+compares final state/cache values exactly. A sixth case per backend checks
+first-write failure after restart, correct source identification and immutable
+source files. Build through root CMake, then run:
+
+```bash
+ASTR_OUTPUT_RUNTIME_EXE="$PWD/build_gpu_probe/bin/astr" \
+  ASTR_OUTPUT_MPIEXEC="$MPIEXEC" python3 -m pytest -x -q \
+  tests/gpu_validation/test_output_publication_failure.py
+```
+
+The CUDA-root test runs both runtime backends (12 checks); CPU-only coverage
+selects `-k cpu` and the CPU build (6 checks). Each test has a separate output
+directory below 64 MiB; sharing every case under one capped directory was a
+test setup error, preserved in the first CPU context XML. Current maximum is
+13,425,020 bytes. Reference cases and test-only preload libraries are separate.
+The preload is compiled temporarily, targets exact test paths and returns EIO;
+it is not linked into production. It does not simulate power loss, disk full,
+MPI process loss or external filesystem races. The 26 synthetic bundle checks
+remain below 4 MiB each. Actual TGV/AIR5 archive regressions and readback
+reports, root-build scope and remaining OR6 limits are listed in plan 10.28.
+
+### Same-root archive segments and offline index repair
+
+`test_output_archive_segments.py` checks own-root new generations against
+12-step continuous versus 5+7 exact restart, old-file fingerprints, shared
+coordinate reuse, keep=1 source protection and actual ParaView series readback.
+TGV CPU/GPU NP=2 x, CPU CURVE NP=2 y and GPU AIR5 HBL NP=2 z pass; two TGV
+changed-plane requests are rejected if the shared coordinate resource lacks
+the new plane. All use existing 64 MiB directory/controlled-buffer limits and
+2 MiB/frame reader references. This is not arbitrary historical forking or
+repartition. The geometry-only probe is host-side, even in a CUDA root build.
+Evidence and the three root-build variants are in redesign plan 10.29.
+
+```bash
+python3 -m pytest -x -q tests/gpu_validation/test_output_series_filesystem.py
+ASTR_FIELDS_BUILD="$PWD/build_gpu_probe" python3 -m pytest -x -q \
+  tests/gpu_validation/test_output_fields.py -k geometry
+python3 -m pytest -x -q tests/gpu_validation/test_output_archive_segments.py
+```
+
+For the geometry probe, `ASTR_FIELDS_BUILD` selects the completed root build;
+`ASTR_FIELDS_GPU=1` additionally enables GPU field packing in ordinary field
+tests, but the geometry-only check still uses host coordinates. Set
+`ASTR_OUTPUT_MPIEXEC` to the build's matching MPI executable when necessary.
+
+`test_output_series_repair.py` uses 9x7x5 six-field volumes/twelve-field grouped
+slices, below 4 MiB/test. It checks the offline production repair tool's default
+read-only mode, exact layout references, CRC/type/unit/clock refusal, partial
+candidate preservation, index failure and bounded catalogs. It never computes
+a flow solution. `test_output_series_repair_runtime.py` copies immutable accepted
+TGV CPU NP=2 x and AIR5 HBL GPU NP=2 z products from plan 10.28, repairs only the
+copies and reads every time through ParaView 6.0.1. No solver is restarted.
+Each actual-product test, including reader copies, remains below 64 MiB.
+
+```bash
+python3 -m pytest -x -q tests/gpu_validation/test_output_series_repair.py
+ASTR_OUTPUT_REPAIR_REFERENCE_ROOT="$PWD/tests/gpu_validation/out" \
+  python3 -m pytest -x -q tests/gpu_validation/test_output_series_repair_runtime.py
+```
+
+The latter skips with an explicit reference path if the immutable artifacts
+are absent; a skipped reference is not a passed readback gate. Current evidence
+`out/or5_series_repair_final_20261001.xml` has 44 passed, no skipped checks,
+including 24 actual product timepoints. Source and all non-index copied files
+remain unchanged. CRC scans full HDF5 files without loading flow arrays.
+This is explicit stopped-segment repair, not a concurrent writer, fsync,
+cross-segment, resource-RSS peak or production-scale I/O acceptance gate.
+See plan 10.30 and scripts/output/README.md for the write opt-in and failures.
+
+`run_output_air5_restart_validation.py` covers the bounded 16-cubed AIR5 HBL
+completed-coupled-step restart. Role 7 stores q11, physical carry11 and all
+primitive/species caches independently. Domain/profile/initial-field resources
+are frozen and deleted from the restored case's original input directory.
+The test compares 12 continuous versus 5+7 updates, periodic versus final-only
+saves, nonzero carry, scalar statistics tails and source/top/compensation
+contract rejection. The conserved diagnostic baseline is not connected and
+its enabled mode is rejected before stepping, rather than reset on restore.
+
+Latest evidence: `out/or3_air5_cpu_only_20261001/summary.json` (CPU-only,
+CPU NP=1/2 x), `out/or3_air5_gpu_guard_20261001/summary.json` (GPU NP=1/2 x,
+scalar), `out/or3_air5_gpu_y_full_20261001/summary.json` (GPU NP=2 y/full).
+All passed at dt=1e-10 s with chemistry, viscosity, filtering, compensation and
+characteristic top enabled. Per-case directory cap is 64 MiB; controlled
+packing plus extras and GPU carry staging is charged against the 64 MiB host
+budget, with no new device scratch allocation. This is same-backend exact
+continuation, not a CPU/GPU bitwise equivalence or long-time physical gate.
+AIR5 accumulated statistics are covered below; repartition remains separate. SBLI
+resource/restart coverage added below supersedes the earlier HBL-only limit.
+`out/or3_air5_provider_20261001.xml` has six passed MPI provider checks;
+`out/or3_air5_boundary_interfaces_fixed_20261001.xml` has 30 passed checks.
+The earlier interface report had stale source-string expectations, now updated
+without relaxing numerical thresholds.
+
+`--case sbli` freezes the additional incident-shock resource. The existing
+AIR5 selective path is `643e`, `recon_schem=3`, `lchardecomp=f`; the value 3
+is a selector, not a claim that every interface has third-order reconstruction.
+The SBLI test defaults to this selector; HBL defaults to 5 (central path).
+Generic `543e` is not admitted by AIR5 GPU transport. Evidence:
+`out/or3_air5_sbli_selective_cpu_x_20261001/summary.json` and
+`out/or3_air5_sbli_selective_gpu_x_20261001/summary.json`, CPU/GPU each NP=1/2 x.
+Same-backend q/carry/cache, geometry, control and configuration match exactly.
+Tau/source/compensation/top-mode/incident corruption and unregistered conserved
+diagnostic modes are rejected without publishing a new COMPLETE. Selective
+y/z/full restart combinations with mean statistics are covered below;
+developed SBLI physics remains unverified here.
+The earlier `or3_air5_sbli_*` x/y/z reports use selector 5; they must not be
+presented as selective shock-path evidence. Details and bounded resource sizes
+are in the output redesign plan, section 10.19.
+
+`test_meanflow_air5_transport.py` links the tiny sampler against production
+objects from a root CMake build with AIR5 enabled. It verifies the approved
+AIR5 meanflow viscosity correction against the existing diffusive flux,
+unchanged dimensional/nondimensional nonreacting branches, duplicate-sample
+suppression and invalid AIR5 rejection. It does not model a new flow solver.
+Run after completing the build, without rebuilding objects concurrently:
+
+```bash
+ASTR_MEANFLOW_BUILD="$PWD/build_cpu_probe" python3 -m pytest -q tests/gpu_validation/test_meanflow_air5_transport.py
+```
+
+Each host-only build variant has eight passed checks. To also invoke the actual
+GPU accumulator on the same prepared states, use a completed CUDA/AIR5 build:
+
+```bash
+ASTR_MEANFLOW_BUILD="$PWD/build_gpu_probe" ASTR_MEANFLOW_GPU=1 python3 -m pytest -q tests/gpu_validation/test_meanflow_air5_transport.py
+```
+
+`out/or3_air5_mean_kernel_enabled_20261001.xml` has eight passed checks, including
+NP=1/2 actual GPU accumulation, all 44 fields and sample metadata. GPU/CPU
+same-state field differences use 1e-14*max(1,reference maximum absolute value).
+This is not a full-flow CPU/GPU bitwise equality claim.
+
+New output now supports raw44 AIR5 `lavg` for the fixed, dimensional, viscous
+HBL/SBLI cases, preserving legacy first-stage sampling rather than redefining
+it as completed-step sampling. `--mean-statistics --sample-interval 1|2|3`
+checks continuous/restarted/final-only accumulated state exactly and confirms
+statistics activation does not change flow. `--initial-restart` checks the
+zero-sample step-0 batch; `--mode time` selects physical-time checkpointing.
+There are no new species or Tv moments and no change to legacy GPU output.
+
+Twelve bounded combinations passed at 16-cubed, dt=1e-10 s: HBL CPU/GPU NP=1,
+selective SBLI CPU/GPU NP=1/2 x, NP=2 y/full, NP=2 z/prescribed/time/scalar,
+and initial restart on CPU NP=1 and GPU NP=2 y/full/time. Mean sample counts
+are 11/5/3 for intervals 1/2/3. Exact immutable report paths, transferred bytes
+and controlled array budgets are in the output redesign plan, section 10.21.
+The driver rejection matrix additionally checks changed statistics activation,
+sample interval and insufficient GPU statistics allocation budget.
+
+`out/or3_air5_mean_memcheck_hostmpi_20261001.log` reports zero errors for the
+NP=1 production GPU sampler. MPI CUDA probing was disabled only for that
+diagnostic run after the default HPC-X run reported MPI/UCX CUDA API errors.
+This does not validate CUDA-aware transport or alter production MPI settings.
+
+## Periodic Filter State And Repartition Gate
+
+After explicit approval, CPU and GPU rebuild all physical-node primitives
+after every filter only for the non-reacting, five-variable, all-periodic,
+explicit spatial path. GPU covers first-stage preparation and later RK stages,
+retaining explicit synchronization. AIR5, compact and physical-face paths are
+unchanged. The former pre-filter interior/post-filter shared-face mixture
+caused a topology-dependent result; see output redesign plan 10.32-10.33.
+
+`test_output_repartition_runtime.py` contains the approved 16-cubed TGV matrix:
+twelve CPU/GPU NP=1 <-> NP=2 x/y/z continuous-12 versus 5+7 comparisons at
+2e-10; nine partition controls (CPU, GPU scalar/full storage); four completed
+CPU/GPU field comparisons; two same-topology bitwise checks; two unvalidated
+no-filter repartition rejections. The expanded suite also covers twelve NP=2
+slab-direction changes, a GPU z->y full-workspace representative and a CPU
+NP=4 rejection with valid local halo extents. The matrix no longer
+skips by default; ASTR_OUTPUT_REPARTITION_CANDIDATE is obsolete.
+
+```bash
+ASTR_OUTPUT_RUNTIME_EXE="$PWD/build_gpu_probe/bin/astr" python3 -m pytest -q tests/gpu_validation/test_output_repartition_runtime.py
+```
+
+The final CUDA build report `out/or4_cuda_admission_final_20261001.xml` records
+20 passed checks (matrix excluding the nine earlier partition controls).
+`out/or4_cpu_admission_final_20261001.xml` records seven passed CPU-only
+checks (six bidirectional cases and no-filter rejection). Earlier repaired
+CPU/GPU reports include all nine partition controls. Maximum repartition
+state/cache difference is 2.2737367544323206e-13; statistics difference is
+1.7763568394002505e-15. Complete-step CPU/GPU state difference is
+2.5579538487363607e-13. Each case is below 64 MiB; GPU statistics compare
+unique periodic nodes rather than padded upper endpoint planes.
+
+The runtime admits changed topology only for generated-grid TGV, ninit=0,
+643e/643e, filtering/diffusion enabled and no legacy mean/compact statistics.
+Changed topology is limited to NP=1<->2 and the six ordered NP=2 slab-direction
+changes. Other settings/families and larger rank counts remain exact-topology-only.
+Saved or current render enablement rejects repartition, even when an explicit
+output override disables the saved renderer.
+`out/or4_filter_phase_exact_output_20261001/summary.json` confirms four
+same-topology CPU/GPU NP=1/2 exact-restart/output-switch combinations. The
+bounded scalar memcheck in `out/or4_filter_phase_memcheck_20261001/memcheck.log`
+reports zero errors, with MPI CUDA probing disabled for that diagnostic only.
+The original failed gate and guard-only reports are retained as history, not
+current acceptance. No tolerance, filter coefficient, or spatial/RK operator
+was changed. The first gate's reports remain immutable historical evidence,
+not qualification of every later executable.
+
+The approved direction increment (plan 10.37-10.38) is recorded in:
+
+- `out/or4_direction_cuda_matrix_20261001.xml`: 21 passed checks, including all
+  twelve directions, two exact restores, four rank-count regressions, two
+  no-filter rejections and one larger-rank rejection.
+- `out/or4_direction_cpu_fixed_20261001.xml`: eight CPU-only checks, with raw
+  runs preserved in `out/or4_direction_cpu_fixed_files_20261001`.
+- `out/or4_direction_gpu_full_20261001.xml`: GPU z->y full-workspace gate.
+- `out/or4_direction_render_guard_20261001.xml`: eight same-topology rendering
+  and saved/current render-history rejection checks.
+
+All direction final fields, velocity vectors, coordinates and three indexed
+planes match same-phase checkpoints exactly. CPU x->z and GPU z->y scalar/full
+representatives also read their actual series through ParaView Xdmf3ReaderS.
+Maximum state/cache and statistics errors are 2.5579538487363607e-13 and
+1.7763568394002505e-15. Sample identities, duration, clocks and schedules are
+exact; the largest aggregate test directory is 44572494 bytes, below 64 MiB.
+These close only the bounded periodic TGV directions, not all OR4/OR6.
+
+```bash
+ASTR_OUTPUT_RUNTIME_EXE="$PWD/build_gpu_probe/bin/astr" python3 -m pytest -x -q -o junit_family=xunit1 tests/gpu_validation/test_output_repartition_runtime.py -k 'slab_direction or keeps_exact or unapproved_larger or unvalidated_no_filter'
+```
+
+The focused command selects 18 checks; the recorded 21-check report additionally
+contains four representative rank-count regressions and predates the separate
+full-workspace test. When retaining raw evidence, choose a fresh `--basetemp` path;
+pytest replaces that directory on a new run. Do not rebuild/relink an executable
+between creating and restoring test checkpoints: the content fingerprint is
+part of the continuation contract, including for source-equivalent relinks.
+
+## Explicit Native Parent-Chain Indexes
+
+`test_output_parent_series.py` covers SEGMENT-2 binding, explicit parent
+cutoffs, unrelated branches, deep chains, whole-tree moves, external parent
+roots and rejection of cycles, aliases, changed input/parents, unsupported
+legacy lineage, changing layouts, duplicate clocks and exceeded catalogs.
+SEGMENT-1 remains valid for single-segment repair, never inferred as a chain.
+
+`test_output_archive_segments.py` additionally checks CPU/GPU 16-cubed NP=2
+same-root and historical/external-root continuations, three-segment chains,
+checkpoint-bound parent tampering refusal, CPU CURVE y and GPU AIR5 HBL z.
+Each accepted merged time is read through ParaView Xdmf3ReaderS, comparing
+saved FP64 scalars, velocity vectors, coordinates and actual clocks exactly.
+Sources are fingerprinted before/after. New archive histories use ASTROA02;
+exact schedule comparison excludes only the separately checked 48-byte segment
+receipts, not clocks, intervals, sampling or accumulated state.
+
+```bash
+python3 -m pytest -x -q tests/gpu_validation/test_output_parent_series.py tests/gpu_validation/test_output_series_repair.py tests/gpu_validation/test_output_series_filesystem.py
+ASTR_OUTPUT_RUNTIME_EXE="$PWD/build_gpu_probe/bin/astr" python3 -m pytest -x -q tests/gpu_validation/test_output_archive_segments.py
+```
+
+Plan 10.34 records 119 current synthetic checks, CPU-only/native CUDA physical
+reports and the extra three-chain/tamper/repartition report. Merged readback
+covers 110 time points, with 28 additional single-segment points. Controlled
+reference arrays remain below 2 MiB/frame and case directories below 64 MiB.
+Only the approved periodic TGV topology change is admitted; these generic
+archive checks do not certify CURVE/AIR5 repartition, new physics or production
+I/O performance. The combiner is explicit/offline, with a fresh output directory
+and immutable sources, not an automatic live index repair or durability gate.
+
+## AIR5 GPU Conservation Baseline And Binary Tail Checks
+
+`test_output_air5_conservation.py` exercises the existing GPU-only diagnostic
+through native checkpoints. Its 29 checks cover continuous 12 versus 5+7 steps
+(HBL NP=1 scalar and selective SBLI NP=2 z/full), 0+12 initialization (NP=1
+and NP=2 y/full), exact baseline/history/future diagnostic rows, enable-switch
+and CPU rejection, sealed-parser corruption tests, allocation/packing budget
+rejection, simultaneous volume/slice output and Compute Sanitizer memcheck.
+The protected step-five seed is from the same continuous reference; a
+test-only publication hook creates PROTECT after its successful rename,
+without a timing watcher or modifying the numerical state.
+
+```bash
+ASTR_OUTPUT_RUNTIME_EXE="$PWD/build_gpu_probe/bin/astr" python3 -m pytest -x -q -o junit_family=xunit1 tests/gpu_validation/test_output_air5_conservation.py
+python3 -m pytest -x -q tests/gpu_validation/test_checkpoint_stream_tail.py
+```
+
+`out/or3_air5_conservation_all_final_20261001.xml` records 29 passed tests.
+The bounded memcheck uses explicit host-MPI components (ob1, pt2pt,
+self/vader/tcp), disables optional MPI CUDA probing, and requires zero errors;
+it does not qualify CUDA-aware MPI. The first default HPC-X diagnostic failed
+with eleven UCX CUDA context API errors and is retained, not suppressed.
+The sanitizer-only successful report is also in
+`out/or3_air5_conservation_memcheck_final_20261001.xml`.
+
+Native diagnostic scratch is 5632 bytes for NP=1 and 2816 bytes/rank for these
+NP=2 slabs; its state member is 168 bytes and each evaluation downloads 88
+bytes/rank. The largest recorded 5+7 continuation directory is 21964055 bytes;
+the largest single-test root including runs/source copies is 66073804 bytes.
+Missing-member rejection cases retain the copied original template grid
+(51522584 bytes); it is budgeted, not a newly archived flow.
+Joint archive output uses host/device tile buffers of 4080/3264 bytes;
+physical volume/three-slice field downloads are 471648/83232 bytes per frame.
+These are controlled arrays and payload counts, not RSS or third-party peaks.
+All tests remain within the approved 64 MiB per-directory/resource bounds.
+
+The baseline integrates stored q, at transport entry, and phase-1 samples are
+after transport but before the second chemistry half-step. These are not
+complete-step q-carry totals or physical open-boundary conservation gates.
+Fixed-order reduction is enabled only by the new output path; legacy atomic
+behavior is preserved. Each resumed diagnostic is exclusive and origin-named;
+same-origin collisions fail, rather than silently overwrite old records.
+
+An earlier exact-initialization gate failed because atomic addition reordered
+unchanged FP64 values. A later corruption gate exposed Fortran partial-read
+EOF accepting a 1-7 byte binary tail. Both failures were diagnosed without
+loosening the gate. New binary readers use exact stream position/file-size
+checks for control, archive history, AIR5 configuration, the diagnostic and
+frozen inflow indexes. `out/or6_stream_tail_final_20261001.xml` records nine
+NP=2 probe tests covering exact, truncated and short/long-tailed records.
+This is I/O integrity validation, not a new numerical correction.
+
+Affected runtime regressions are recorded in
+`out/or6_stream_runtime_regression_20261001.xml` (four CPU/GPU TGV exact
+restore/fault-recovery checks), `out/or3_dynamic_stream_regression_20261001/summary.json`
+(two CPU/GPU dynamic-inlet cases) and
+`out/or3_air5_disabled_conservation_final_20261001/summary.json` (CPU/GPU NP=2
+y/full HBL with mean44, diagnostic disabled). The latter also requires exact,
+canonical empty GPU diagnostic state; disabling the mean sampler preserves flow.
+
 ## Optional Catalyst Backend Admission
+
+### Native Completed-Step TGV Render Continuation
+
+`test_output_insitu_restart.py` uses the root CUDA/Catalyst executable and
+the already approved TGV EGL preset; it does not change solver kernels,
+statistics, the renderer precision patch or physical acceptance definitions.
+Cases are 16-cubed, 12 continuous versus 5+7 steps, NP=1 step cadence and
+NP=2 x time cadence. The implementation and executable paths can be overridden:
+
+```bash
+ASTR_OUTPUT_INSITU_EXE="$PWD/build_insitu_gpu/bin/astr" \
+ASTR_OUTPUT_INSITU_BACKEND="/path/to/paraview/lib/catalyst" \
+python3 -m pytest -x -q -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_insitu_restart.py
+```
+
+`out/or5_insitu_native_fixed_binary_20261001.xml` records 33 passed checks.
+The suite compares saved q/cache/statistics exactly, control/schedule bytes,
+JPEG pixels and VTK pieces, frame-download counts, actual EGL/NVML GPU UUID,
+nonblank 800x600 images and the existing 2e-10 analytic crossing gate. It
+also checks final checkpoint 12->13 and 12->12 continuation, explicit render
+enable/disable/frequency/initial overrides without extra statistical sampling,
+render-only continuation, missing control and five sealed-parser corruptions.
+The required native control is 144 bytes inactive or 313 bytes active.
+
+Local observed host/device increments remain below 4 GiB/node and 2 GiB/physical
+GPU with at least 1 GiB free. Forty-seven observer files/211 phase records show
+max increments 1072877568/279449600 bytes and min free 18812960768 bytes.
+The maximum test root is 56937734 bytes, below 64 MiB; the initial failed
+render-only comparison accidentally dumped unnecessary oracle fields and
+exceeded this aggregate cap. Its corrected no-render reference explicitly
+disables that output, not the gate or saved products. Earlier failure reports
+are retained. Payloads are 432344/228888 bytes per render frame/rank for
+NP=1/NP=2 x; CPU extraction and pipeline copies remain, and no performance or
+long-sequence memory claim follows from this short suite.
+
+`out/or5_insitu_shared_fixed_binary_20261001.xml` has eight passed
+non-Catalyst checks: CPU/GPU exact TGV/direction refusal, publication failure
+recovery, AIR5 diagnostic/mean44 continuation and CURVE/AIR5 field/slice/parent
+readback. Four root build variants and the schedule probe pass. Ordinary native
+output does not load Catalyst. Only TGV same-topology rendering is admitted;
+other renderer cases remain separate pending work. Bounded real TGV file-derived
+fields are now covered by the separate gate below, not by this renderer suite.
+The earlier 33/8-test reports are retained. A subsequent CUDA relink changed
+the executable fingerprint, so the fixed-binary reports above use new references
+and verify the saved executable identities against the current files. Build
+before generating references; do not relink between seed and restoration.
+The native executable contract is not bypassed for unchanged source code.
 
 See [INSITU_ADMISSION.md](INSITU_ADMISSION.md) for the default-off build option,
 `astr insitu-check` configuration, and MPI regression tests. This checks backend
 loading and lifecycle only; it does not sample or render ASTR fields.
+
+## Variable-Step Exact Native Continuation
+
+`test_output_variable_clock.py` checks real 16-cubed periodic TGV with the
+approved controller timestep values, FP64, sixth-order explicit operators,
+filtering, viscosity and explicit GPU synchronization. No solver update or
+controller reload cadence is modified. The Linux test preload library redirects
+only a test-owned controller path to prepared complete input records. Startup
+still reads dt=0.001, completed step 1 selects 0.002, and step 6 selects 0.0005.
+The resulting 12 used steps are one at 0.001, five at 0.002 and six at 0.0005.
+
+```bash
+ASTR_OUTPUT_RUNTIME_EXE="$PWD/build_release_restart_cpu/bin/astr" \
+python3 -m pytest -x -q -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_variable_clock.py -k 'exact_continuation and cpu'
+
+ASTR_OUTPUT_RUNTIME_EXE="$PWD/build_gpu_probe/bin/astr" \
+python3 -m pytest -x -q -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_variable_clock.py -k 'exact_continuation and not cpu'
+```
+
+Each backend covers NP=1 and NP=2 x/y/z. A test root contains five short runs:
+continuous 12, seed 5, resume to 12, archives off, and slice-only continuation.
+New-format checkpoint q/cache/statistics and continuation controls must match
+exactly. Seed time is 0.009 and saved dt_next is 0.002, deliberately different
+from restarted startup input; every actual used clock and reload identity is
+checked. Final time is 0.014000000000000004 and clipped statistical duration is
+0.011. Time archives use periods 0.002/0.003 with initial/final frames; all
+resumed HDF fields match continuous same-phase frames. Actual ParaView reading
+of resumed field/slice time indexes covers five frames per test, forty total.
+
+`out/or6_variable_clock_cpu_20261001.xml` and
+`out/or6_variable_clock_gpu_20261001.xml` each record four passed gates. The
+same-named roots retain per-test inputs, logs and result.json including the
+fixed executable SHA256. No rebuild is performed between seed and resume.
+The maximum complete test root is 53795884 bytes, below 64 MiB. Host/device
+controlled budgets remain 64 MiB with the existing 1 GiB device reserve;
+maximum field tile allocations are 4032/2688 bytes. GPU slice-only downloads
+83232 field bytes for two frames of three 17-by-17 planes. This excludes
+checkpoint/statistics/halo transfers and does not represent RSS, third-party
+peaks or production performance.
+
+The first run stopped because NVHPC action='read' with default status opens
+via fopen("r+")/O_RDWR; matching only O_RDONLY did not activate the replay.
+A minimal Fortran reader, strace and GDB isolated this test-driver defect.
+Only the preload matching changed, not the solver. Eight C API/mode checks
+and that exact Fortran statement verify path scoping, source preservation
+and read order. `out/or6_variable_clock_helpers_20261001.xml` records seventeen
+helper/clock checks; `out/or6_variable_clock_fault_regression_20261001.xml`
+records one existing publish-failure recovery with replay unset. These close
+the bounded variable-clock gate, not OR6 as a whole or pending real derived
+fields beyond the separate gate below, other boundaries, CURVE/AIR5 or renderer
+combinations.
+
+## Real Complete-Step Native Derivatives
+
+`test_output_derived_runtime.py` implements the approved plan 10.39/10.44 gate:
+16-cubed cells (17-cubed nodes), generated periodic Cartesian TGV, dt=1e-3,
+dimensionless FP64, 643e/643e, viscosity/filter enabled and explicit sync.
+The root binaries must be built before generating references and must not be
+relinked between seed and restore. Default paths and local evidence:
+
+```bash
+ASTR_OUTPUT_CPU_EXE="$PWD/build_release_restart_cpu/bin/astr" \
+ASTR_OUTPUT_RUNTIME_EXE="$PWD/build_gpu_probe/bin/astr" \
+python3 -m pytest -x -q -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_derived_runtime.py
+```
+
+`out/or5_real_derived_runtime_20261001.xml` records 21 passes. Eight CPU/GPU
+NP=1/2 x/y/z tests compare continuous 12, seed 5, resume to 12, archives off,
+and slice-only continuation. Saved q/cache/statistics are exactly equal;
+control and schedule payloads match while segment identities remain distinct.
+The independent reference uses saved same-phase physical velocity, NumPy rolls
+and sixth-order central weights, then combines the fourteen physical diagnostics.
+It is not a continuous analytic derivative or ParaView default gradient.
+Four CPU/GPU checks compare every published derived frame/plane; six selected
+layout checks cover gradient-only, curl-only and Q/divergence on both backends.
+Layout changes need explicit override; same-layout parents read as a two-segment
+four-time sequence and incompatible parents are rejected. Two channel tests
+prove that basic-output admission does not silently admit derived fields.
+
+The eight final-state reports record maximum independent-reference error
+3.9968028886505635e-15; all-frame CPU/GPU maximum is 1.0069852937610868e-14,
+below the approved absolute 2e-10. ParaView XDMF3 actually reads 64 product-time
+frames across this matrix. Each selected field/plane is also checked against
+the checkpoint, including coordinates, units, definition and time metadata.
+All-selected slice-only GPU continuation downloads 277440 field bytes for
+two frames of three 17-by-17 planes, twenty columns each. Private device
+velocity/halo storage and host-staged face communication still exist and are
+not included in this field-download count. Maximum controlled host/device
+allocations are 475520/613440 bytes; allocation preserves 1 GiB device free.
+The complete per-test root maximum is 58240301 bytes, below 64 MiB. These
+limits are not MPI/HDF5/ParaView transient peak or production-memory guarantees.
+
+`out/or5_basic_cpu_regression_20261001/summary.json` and
+`out/or5_basic_gpu_regression_20261001/summary.json` retain the unaffected basic
+NP=2 z exact continuation, output-switch and actual single/series readback gates.
+Their aggregate roots are 44674980/44686320 bytes. CPU-only, CPU/AIR5 and
+CUDA/AIR5 no-Catalyst root builds pass. Device kernels are unchanged from
+the manufactured-provider gate; plan 10.41's six zero-error memcheck logs are
+reused, rather than relinking the accepted binaries or rerunning profiling.
+The initial independent reference mistook geometry q0004 (Jacobian) for dxi;
+the test stopped and its indexing was corrected to begin at q0005, without
+changing solver numerics or lowering the gate. Other sizes, boundaries, CURVE,
+AIR5 derivatives, rendering changes and OR6 as a whole remain unapproved here.
+`out/or5_config_examples_20261001.xml` records 69 parser/collective checks,
+including both committed TGV configuration examples and their exact selections.

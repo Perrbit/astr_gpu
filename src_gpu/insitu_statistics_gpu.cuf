@@ -15,6 +15,7 @@ module insitu_statistics_gpu
   public :: statistics_transfer_counts
   public :: download_statistics_gpu_means
   public :: download_statistics_gpu_output
+  public :: statistics_device_bytes
   integer(int64),save :: sample_calls=0,output_downloads=0
   integer(int64),save :: device_budget=0,device_headroom=0
   interface
@@ -32,11 +33,20 @@ module insitu_statistics_gpu
   real(8),save :: previous_time=0.d0,saved_window(2)=0.d0
   logical,save :: has_previous=.false.
 contains
+  integer(int64) function statistics_device_bytes() result(bytes)
+    bytes=0
+    if(allocated(state_d)) bytes=bytes+8*size(state_d,kind=int64)
+    if(allocated(output_d)) bytes=bytes+8*size(output_d,kind=int64)
+    if(allocated(spatial_d)) bytes=bytes+8*size(spatial_d,kind=int64)
+    if(allocated(invalid_d)) bytes=bytes+4*size(invalid_d,kind=int64)
+  end function
+
   subroutine pack_statistics_gpu_state(values,ok)
     use commvar, only: im,jm,km
     real(8),intent(out) :: values(:,:,:,:)
     logical,intent(out) :: ok
     ok=.false.
+    if(.not.is_contiguous(values)) return
     if(any(shape(values)/=[im,jm,km,34])) return
     if(.not.allocated(state_d).or..not.has_previous) return
     call require_cuda(cudaDeviceSynchronize(),'packed statistics save synchronization')
@@ -55,6 +65,7 @@ contains
     logical,intent(out) :: ok
     real(8) :: sample_time
     ok=.false.
+    if(.not.is_contiguous(values)) return
     if(any(shape(values)/=[im,jm,km,34])) return
     if(.not.all(ieee_is_finite([time,window])).or.window(2)<=window(1)) return
     sample_time=values(1,1,1,3)

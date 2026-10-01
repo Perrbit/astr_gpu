@@ -11,7 +11,9 @@ contains
 
 
   subroutine prepare_rkfirst_stats_gpu()
-    use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,const2,const6,lfilter,lcomb,nstep
+    use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,const2,const6,lfilter,lcomb,nstep, &
+      numq,num_species,conschm,difschm
+    use bc, only: bctype
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_flow_solver_gpu, only: air5_prepare_spatial_state_gpu
 #endif
@@ -32,6 +34,7 @@ contains
     integer :: ntot
     logical :: ldc_case,flatplate_case,periodic_filter_case
     logical :: flatplate_nscbc_farfield_case,conservative_case
+    logical :: refresh_filtered_primitives
 
 #ifdef ASTR_AIR5_CHEMISTRY
     if(lcomb) then
@@ -41,6 +44,8 @@ contains
 #endif
     call validate_first_stage_gpu()
     conservative_case=conservative_boundary%enabled
+    refresh_filtered_primitives=.not.lcomb.and.numq==5.and.num_species==0.and. &
+      all(bctype==1).and.conschm(4:4)=='e'.and.difschm(4:4)=='e'
     ldc_case = gpu_ldc_boundary_case_pending()
     flatplate_case = gpu_s1_flatplate_boundary_case_pending()
     flatplate_nscbc_farfield_case = (.not.conservative_case) .and. &
@@ -60,6 +65,11 @@ contains
       call begin_gpu_phase('filter')
       call apply_explicit_filter_gpu(periodic_filter_case,'prepare_')
       call end_gpu_phase('filter',nstep,1)
+      if(refresh_filtered_primitives) then
+        call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
+             q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
+        call sync_after_kernel('prepare_q_to_primitive_kernel_postfilter_periodic')
+      endif
     endif
 
     if(conservative_case) then
@@ -106,7 +116,8 @@ contains
   subroutine time_integration_rk_gpu(first_stage_prepared,copy_back)
     use iso_fortran_env, only: real64
     use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,npdcj,npdck,nstep,deltat,const2,const5,const6, &
-         diffterm,lfilter,reynolds,prandtl,tempconst,tempconst1,gamma,recon_schem,lcomb,flowtype
+         diffterm,lfilter,reynolds,prandtl,tempconst,tempconst1,gamma,recon_schem,lcomb,flowtype, &
+         numq,num_species,conschm,difschm
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_flow_runtime, only: air5_reacting_flowtype
     use chemistry_flow_solver_gpu, only: air5_transport_rk3_step_gpu
@@ -306,6 +317,7 @@ contains
     logical :: s2_sbli_nscbc_case
     logical :: s2_sbli_nscbc_sponge_case
     logical :: periodic_filter_case
+    logical :: refresh_filtered_primitives
     logical :: conservative_case
     logical :: overlap_diffusion
     logical :: mixed_flux_workspace
@@ -359,6 +371,8 @@ contains
     fused_flux_pair=gpu_fused_flux_pair_requested() .and. &
          gpu_tgv_explicit_upwind_supported()
     conservative_case=conservative_boundary%enabled
+    refresh_filtered_primitives=.not.lcomb.and.numq==5.and.num_species==0.and. &
+      all(bctype==1).and.conschm(4:4)=='e'.and.difschm(4:4)=='e'
     rhs_is=is; rhs_ie=ie; rhs_js=js; rhs_je=je; rhs_ks=ks; rhs_ke=ke
     rhs_npdci=npdci; rhs_npdcj=npdcj
     if(conservative_case) then
@@ -493,6 +507,11 @@ contains
           call begin_gpu_phase('filter')
           call apply_explicit_filter_gpu(periodic_filter_case,'')
           call end_gpu_phase('filter',nstep,rkstep)
+          if(refresh_filtered_primitives) then
+            call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
+                 q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
+            call sync_after_kernel('q_to_primitive_kernel_postfilter_periodic')
+          endif
         endif
 
         if(conservative_case) then

@@ -11,17 +11,18 @@ from test_checkpoint_state import MPIEXEC, run as state_run
 PROBE = Path(os.environ.get("ASTR_CHECKPOINT_BUNDLE_PROBE", "build_insitu_gpu/bin/checkpoint_bundle_probe")).resolve()
 
 
-def bundle(path, mode, ranks=2, success=True, name=None):
+def bundle(path, mode, ranks=2, success=True, name=None, env=None):
     if not PROBE.is_file():
         pytest.skip("build checkpoint_bundle_probe first")
     result = subprocess.run(
-        [MPIEXEC, "--oversubscribe", "-n", str(ranks), str(PROBE), str(path), mode]
+        [MPIEXEC, "--oversubscribe", "--mca", "coll_hcoll_enable", "0", "-n", str(ranks), str(PROBE), str(path), mode]
         + ([] if name is None else [name]),
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30,
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30, env=env,
     )
     assert (result.returncode == 0) == success, result.stdout
     assert ("PASS bundle" if success else "REJECT bundle") in result.stdout
     assert sum(p.stat().st_size for p in path.iterdir() if p.is_file()) < 4 * 1024**2
+    return result.stdout
 
 
 @pytest.mark.parametrize("defect", ["none", "data", "manifest", "marker", "empty_marker",
@@ -61,7 +62,7 @@ def test_no_seal_when_payload_missing(tmp_path):
 
 
 @pytest.mark.parametrize("fault", ["none", "incomplete", "destination", "destination_symlink",
-                                   "latest_temp", "latest_directory"])
+                                   "latest_temp", "latest_directory", "latest_symlink", "latest_hardlink"])
 def test_publish_keeps_old_batch(tmp_path, fault):
     def prepare(name):
         directory = tmp_path / (name + ".tmp")
@@ -86,11 +87,19 @@ def test_publish_keeps_old_batch(tmp_path, fault):
     elif fault == "latest_directory":
         (tmp_path / "LATEST").unlink()
         (tmp_path / "LATEST").mkdir()
+    elif fault in ("latest_symlink", "latest_hardlink"):
+        victim = tmp_path / "external_latest"
+        victim.write_text("batch1\n")
+        (tmp_path / "LATEST").unlink()
+        if fault == "latest_symlink":
+            (tmp_path / "LATEST").symlink_to(victim)
+        else:
+            (tmp_path / "LATEST").hardlink_to(victim)
     bundle(tmp_path, "publish", name="batch2", success=fault == "none")
     assert old == {p.name: p.read_bytes() for p in (tmp_path / "batch1").iterdir()}
     if fault != "latest_directory":
         assert (tmp_path / "LATEST").read_text() == ("batch2\n" if fault == "none" else "batch1\n")
-    if fault in {"none", "latest_temp", "latest_directory"}:
+    if fault == "none":
         bundle(tmp_path / "batch2", "validate")
         assert not candidate.exists()
     else:
@@ -98,6 +107,49 @@ def test_publish_keeps_old_batch(tmp_path, fault):
     if fault == "destination_symlink":
         assert (tmp_path / "batch2").is_symlink()
         assert not (tmp_path / "absent_destination").exists()
+    if fault in ("latest_symlink", "latest_hardlink"):
+        assert victim.read_text() == "batch1\n"
+        if fault == "latest_symlink":
+            assert (tmp_path / "LATEST").is_symlink()
+        else:
+            assert (tmp_path / "LATEST").stat().st_nlink == 2
+    assert sum(p.stat().st_size for p in tmp_path.rglob("*") if p.is_file()) < 4 * 1024**2
+
+
+@pytest.fixture(scope="module")
+def fault_library(tmp_path_factory):
+    path = tmp_path_factory.mktemp("checkpoint_fault") / "fault.so"
+    source = Path(__file__).with_name("checkpoint_fault_preload.c")
+    subprocess.run(["cc", "-std=c99", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
+                    str(source), "-ldl", "-o", str(path)], check=True, timeout=30)
+    return path
+
+
+@pytest.mark.parametrize("keep", [1, 2])
+@pytest.mark.parametrize("phase", ["batch_rename", "latest_rename", "retire_marker", "retire_payload"])
+def test_injected_publication_failure_preserves_recovery(tmp_path, fault_library, keep, phase):
+    source = tmp_path / "restore_source"
+    source.mkdir()
+    state_run(source / "state.h5", "write", ranks=2)
+    bundle(source, "seal")
+    original = {p.name: p.read_bytes() for p in source.iterdir()}
+    for number in range(1, 5):
+        shutil.copytree(source, tmp_path / f"batch{number}.tmp")
+    env = os.environ.copy()
+    env.update(LD_PRELOAD=str(fault_library), ASTR_CHECKPOINT_TEST_ROOT=str(tmp_path),
+               ASTR_CHECKPOINT_TEST_TARGET=f"batch{keep+1}", ASTR_CHECKPOINT_TEST_FAULT=phase)
+    output = bundle(tmp_path, "retain", name=str(keep), success=False, env=env)
+    latest = f"batch{keep}" if phase in ("batch_rename", "latest_rename") else f"batch{keep+1}"
+    assert (tmp_path / "LATEST").read_text() == latest + "\n"
+    assert "LAST_COMPLETE " + str(tmp_path / latest) in output, output
+    bundle(tmp_path / latest, "validate")
+    state_run(tmp_path / latest / "state.h5", "exact", ranks=2)
+    assert original == {p.name: p.read_bytes() for p in source.iterdir()}
+    if phase == "retire_payload":
+        assert not (tmp_path / "batch1/COMPLETE").exists()
+        bundle(tmp_path / "batch1", "validate", success=False)
+    else:
+        assert original == {p.name: p.read_bytes() for p in (tmp_path / "batch1").iterdir()}
     assert sum(p.stat().st_size for p in tmp_path.rglob("*") if p.is_file()) < 4 * 1024**2
 
 

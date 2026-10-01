@@ -85,6 +85,44 @@ A paired restart must preserve whether rendering is enabled and its schedule
 configuration. Changing render enablement or the step/time schedule is rejected;
 the saved statistical window and MPI topology must also match.
 
+## Completed-Step Native Checkpoints
+
+The separate new output path can now use this GPU TGV preset. Set both
+`ASTR_OUTPUT_CONFIG=datin/input.output` and `ASTR_INSITU_CONFIG=datin/input.insitu`.
+Use `output.restore_directory` to select a new checkpoint, keep legacy
+`lrestart=f`, and omit `batch_prefix`/`restore_batch`. Mixing old pairs with new
+checkpoints is rejected. See [../output/README.md](../output/README.md) for
+independent checkpoint/volume/slice configuration; all native checkpoint
+members and their shared resources must be retained together.
+
+Native checkpoints include the active renderer's saved schedule and content
+identities in `insitu_control.bin`. Unchanged settings resume progress, clear
+only the job-termination flag and avoid duplicate restored frames. Final
+rendering occurs before final checkpoint sealing. A no-advance restart exports
+saved statistics without initializing a renderer or producing another image.
+Only explicit `restart_output='override'` permits enabling/disabling rendering
+or changing its cadence/initial/final settings. Changed render origin starts
+at the restore point; a requested new initial image does not resample statistics.
+Statistical window/configuration remain a separate immutable history contract.
+
+The entry script and implementation plugin are fingerprinted, not every Python
+helper, transitive library or driver. Exact image continuation requires the
+unchanged dependency environment used by the local tests. Plan 10.36 records
+33 passed GPU TGV NP=1/2 same-topology short checks, including steps/time,
+12 versus 5+7, render-only, no-advance, override and corrupt-state rejection.
+JPEG pixels, VTK geometry and saved flow/statistics match continuous execution.
+This does not extend rendering to CPU, CURVE, AIR5 or changed decompositions.
+Repartition is rejected when either saved or current configuration enables
+rendering, including an override that disables previously enabled rendering.
+The old paired rules above remain unchanged.
+
+Resource observation begins before native restoration allocates statistics or
+postprocessing buffers. Due render frames still download the full local
+physical flow sample; private CPU halo/gradient and geometry work remain.
+Native render-only finalization reads the live completed-step state instead
+of retaining the previous frame's full sample. This is not an all-GPU analysis
+path and does not resolve the separate 256-cubed long-sequence issue below.
+
 ## Resource Observation
 
 ### Separate 256 Cubed Demonstration

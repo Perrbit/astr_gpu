@@ -7,6 +7,63 @@ module inflow_timeseries_gpu
   integer,save :: inflow_order_h(0:3)=(/0,1,2,3/)
   logical,save :: inflow_timeseries_ready=.false.
 contains
+  subroutine complete_inflow_gpu_file(path,writing,identity,budget)
+    use iso_fortran_env, only: int64,real64
+    use ieee_arithmetic, only: ieee_is_finite
+    use bc, only: ninflowslice
+    use commvar, only: ja,ka,jm,km
+    use parallel, only: irk,jg0,kg0,mpi_imin
+    use checkpoint_state_io
+    use gpu_check, only: sync_gpu_boundary
+    character(*),intent(in) :: path
+    logical,intent(in) :: writing
+    type(checkpoint_state_identity),intent(inout) :: identity
+    integer(int64),intent(in) :: budget
+    real(real64),allocatable :: buffer(:,:,:,:)
+    integer(int64) :: metadata(15),remaining
+    integer :: slot,m
+    if(irk/=0) return
+    call checkpoint_state_require(inflow_timeseries_ready.and.allocated(inflow_slices_d),mpi_imin, &
+      'device inflow cache not initialized')
+    call allocate_checkpoint_buffer([jm,km,1],0,26,budget,buffer,remaining,mpi_imin)
+    metadata=0
+    if(writing) then
+      metadata(1:6)=[1_int64,1_int64,int(ninflowslice,int64),-1_int64,0_int64,1_int64]
+      metadata(7:10)=transfer(inflow_times_h,metadata(7:10))
+      metadata(11:14)=int(inflow_order_h,int64)
+      buffer=0.0_real64
+      call sync_gpu_boundary('complete inflow device download')
+      do slot=0,3
+        do m=1,5
+          buffer(:,:,1,slot*5+m)=inflow_slices_d(:,:,m,slot)
+        enddo
+      enddo
+      call checkpoint_state_require(all(ieee_is_finite(buffer)),mpi_imin,'device inflow cache nonfinite')
+    endif
+    call checkpoint_state_transfer(path,writing,.true.,[ja+1,ka+1,2],[jg0,kg0,0], &
+      [jm,km,1],0,buffer,identity,remaining,mpi_imin,role=8,metadata=metadata)
+    call checkpoint_state_require(metadata(1)==1.and.metadata(2)==1.and. &
+      metadata(3)>=3.and.metadata(3)<=99999.and.metadata(4)==-1.and.metadata(5)==0.and.metadata(6)==1.and. &
+      all(metadata(11:14)>=0).and.all(metadata(11:14)<=3).and.metadata(15)==0, &
+      mpi_imin,'device inflow metadata invalid')
+    do m=0,3
+      call checkpoint_state_require(count(metadata(11:14)==m)==1,mpi_imin,'device inflow slot permutation invalid')
+    enddo
+    if(.not.writing) then
+      call checkpoint_state_require(all(ieee_is_finite(buffer)),mpi_imin,'restored device inflow cache nonfinite')
+      ninflowslice=int(metadata(3))
+      inflow_times_h=transfer(metadata(7:10),inflow_times_h)
+      inflow_order_h=int(metadata(11:14))
+      call validate_dynamic_inflow_times()
+      do slot=0,3
+        do m=1,5
+          inflow_slices_d(:,:,m,slot)=buffer(:,:,1,slot*5+m)
+        enddo
+      enddo
+      call sync_gpu_boundary('complete inflow device restore')
+    endif
+  end subroutine
+
   logical function dynamic_inflow_requested()
     use bc, only: bctype,turbinf
     implicit none
@@ -94,17 +151,18 @@ contains
     use hdf5io, only: h5io_init,h5read,h5io_end
     use parallel, only: mpi_imin
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+    use output_input_resources, only: inflow_source_path
     implicit none
     integer,intent(in) :: slice_number,slot
     character(len=5) :: slice_name
-    character(len=64) :: filename
+    character(len=1400) :: filename
     logical :: exists
 
     if(slot<0 .or. slot>3) stop 'GPU dynamic inflow slot is outside 0:3'
     if(slice_number<0 .or. slice_number>99999) &
       stop 'GPU dynamic inflow slice number is outside 00000:99999'
     write(slice_name,'(I5.5)') slice_number
-    filename='inflow/islice'//slice_name//'.h5'
+    filename=inflow_source_path(slice_number)
     inquire(file=trim(filename),exist=exists)
     if(.not.exists) stop 'GPU dynamic inflow slice file is missing'
 

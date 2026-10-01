@@ -5,6 +5,7 @@ module output_config
   private
   integer,parameter,public :: output_format_version=1,output_slice_capacity=256
   public :: output_product_options,output_options,read_output_options,validate_output_grid
+  public :: output_product_derived_indices
 
   type :: output_product_options
     logical :: enabled=.false.,initial_frame=.false.,final_frame=.false.
@@ -26,6 +27,23 @@ module output_config
     integer(int64) :: k_indices(output_slice_capacity)=-1
   end type
 contains
+  pure subroutine output_product_derived_indices(options,indices,n)
+    type(output_product_options),intent(in) :: options
+    integer,intent(out) :: indices(14),n
+    logical :: chosen(14)
+    integer :: m
+    indices=0; n=0; chosen=.false.
+    if(.not.options%enabled) return
+    if(options%velocity_gradient) chosen(:9)=.true.
+    ! Q uses the established full-strain definition; record its divergence companion.
+    if(options%qcriterion) chosen(10:11)=.true.
+    if(options%vorticity) chosen(12:14)=.true.
+    do m=1,14
+      if(.not.chosen(m)) cycle
+      n=n+1; indices(n)=m
+    enddo
+  end subroutine
+
   function syntax_line(line) result(clean)
     character(*),intent(in) :: line
     character(len(line)) :: clean

@@ -3039,6 +3039,39 @@ contains
     endif
   end subroutine refresh_diffusion_transverse_halos_gpu
 
+  subroutine field_halo_workspace_bytes_gpu(host_bytes,device_bytes)
+    use iso_fortran_env, only: int64
+    use commvar, only: im,jm,km,hm
+    use parallel, only: isize,jsize,ksize
+    integer(int64),intent(out) :: host_bytes,device_bytes
+    integer(int64) :: planned(3)
+    integer :: capacity
+    capacity=6
+    if(halo_pipeline_enabled) capacity=max_field_vars
+    planned=4_int64*hm*capacity*8*[int(jm+1,int64)*int(km+1,int64), &
+      int(im+1,int64)*int(km+1,int64),int(im+1,int64)*int(jm+1,int64)]
+    host_bytes=0; device_bytes=0
+    ! Charge complete allocated families, including spare components and reused buffers.
+    if(allocated(field_send_left_d)) then
+      device_bytes=device_bytes+4_int64*size(field_send_left_d,kind=int64)*8
+      host_bytes=host_bytes+4_int64*size(field_send_left_h,kind=int64)*8
+    elseif(isize>1) then
+      host_bytes=host_bytes+planned(1); device_bytes=device_bytes+planned(1)
+    endif
+    if(allocated(field_send_down_d)) then
+      device_bytes=device_bytes+4_int64*size(field_send_down_d,kind=int64)*8
+      host_bytes=host_bytes+4_int64*size(field_send_down_h,kind=int64)*8
+    elseif(jsize>1) then
+      host_bytes=host_bytes+planned(2); device_bytes=device_bytes+planned(2)
+    endif
+    if(allocated(field_send_back_d)) then
+      device_bytes=device_bytes+4_int64*size(field_send_back_d,kind=int64)*8
+      host_bytes=host_bytes+4_int64*size(field_send_back_h,kind=int64)*8
+    elseif(ksize>1) then
+      host_bytes=host_bytes+planned(3); device_bytes=device_bytes+planned(3)
+    endif
+  end subroutine field_halo_workspace_bytes_gpu
+
   subroutine exchange_field_halo_gpu(field,nvar,work)
     use commvar, only: im,jm,km,hm
     use gpu_check, only: sync_after_kernel
