@@ -16,7 +16,10 @@ module output_fields_gpu
   real(real64),allocatable,device,save :: private_velocity_d(:,:,:,:)
   integer,device,save :: selected_gpu_d(14)
   integer,save :: selected_gpu_count=0
+  integer,save :: private_types_gpu(3)=3
   integer(int64),save :: transferred=0
+  integer(int64),save :: frame_device_reserve=0
+  integer,save :: frame_comm=0
 contains
   subroutine derived_output_workspace_gpu(host_bytes,device_bytes)
     use commvar, only: im,jm,km,hm
@@ -27,25 +30,26 @@ contains
     device_bytes=product(int([im,jm,km]+2*hm+1,int64))*3*8+halo_device+14*4
   end subroutine
 
-  subroutine begin_derived_output_gpu(capacity,host_budget,device_budget,comm,indices,host_bytes,device_bytes)
+  subroutine begin_derived_output_gpu(capacity,host_budget,device_budget,comm,indices,host_bytes,device_bytes, &
+    device_reserve_bytes)
     use mpi, only: MPI_COMM_WORLD
-    use commvar, only: im,jm,km,hm,difschm,numq,num_species,lihomo,ljhomo,lkhomo
-    use bc, only: bctype
-    use output_fields, only: agree_derived_selection
+    use commvar, only: im,jm,km,hm,npdci,npdcj,npdck
+    use output_fields, only: agree_derived_selection,private_derivative_layout_valid
     use halo_exchange_gpu, only: exchange_field_halo_gpu,solution_pipeline_active
     use halo_transport_gpu, only: halo_transport_idle
     integer(int64),intent(in) :: capacity,host_budget,device_budget
     integer,intent(in) :: comm,indices(:)
     integer(int64),intent(out) :: host_bytes,device_bytes
-    integer(int64) :: nodes,free_bytes,total_bytes
+    integer(int64),intent(in),optional :: device_reserve_bytes
+    integer(int64) :: nodes,reserve
     integer :: status,selection(14)
     call checkpoint_state_require(comm==MPI_COMM_WORLD.and..not.allocated(private_velocity_d).and. &
       .not.allocated(packed_d),comm,'private GPU output lifecycle')
     call agree_derived_selection(indices,selection,comm)
     selected_gpu_count=count(selection>0)
-    call checkpoint_state_require(selected_gpu_count>0.and.numq==5.and.num_species==0.and. &
-      all(bctype==1).and.lihomo.and.ljhomo.and.lkhomo.and.hm>=3.and. &
-      min(im,jm,km)>=hm.and.trim(difschm)=='643e',comm,'private GPU derivatives require periodic perfect gas 643e')
+    call checkpoint_state_require(selected_gpu_count>0.and.private_derivative_layout_valid(),comm, &
+      'private GPU derivatives require consistent explicit 643e layout')
+    private_types_gpu=[npdci,npdcj,npdck]
     call checkpoint_state_require(halo_transport_idle().and..not.solution_pipeline_active, &
       comm,'private GPU output requires completed halo transport')
     call derived_output_workspace_gpu(host_bytes,device_bytes)
@@ -53,10 +57,11 @@ contains
     call checkpoint_state_require(host_budget>=host_bytes.and.capacity>0.and.capacity<=huge(status).and. &
       nodes<=huge(status)/3.and.device_budget>=device_bytes.and. &
       capacity<=(device_budget-device_bytes)/8,comm,'private GPU derivative budget')
-    status=cudaMemGetInfo(free_bytes,total_bytes)
-    call checkpoint_state_require(status==cudaSuccess.and.free_bytes>=device_bytes+capacity*8+1073741824_int64, &
-      comm,'private GPU derivative free memory')
-    call begin_basic_output_gpu(capacity,device_budget-device_bytes,comm)
+    reserve=0
+    if(present(device_reserve_bytes)) reserve=device_reserve_bytes
+    call checkpoint_state_require(reserve>=0,comm,'private GPU derivative reserve must not be negative')
+    call require_device_reserve(device_bytes+capacity*8,max(reserve,1073741824_int64),comm,'derived_before_allocate')
+    call begin_basic_output_gpu(capacity,device_budget-device_bytes,comm,reserve)
     allocate(private_velocity_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3),stat=status)
     call checkpoint_state_require(status==0,comm,'private GPU velocity allocation')
     selected_gpu_d=selection
@@ -80,10 +85,29 @@ contains
       private_velocity_d(i,j,k,c)=vel_d(i,j,k,c)
   end subroutine
 
-  attributes(global) subroutine pack_derived_kernel(i0,j0,k0,ni,nj,nk,nselected)
+  attributes(device) real(real64) function output_derivative6_gpu( &
+    fm3,fm2,fm1,f0,fp1,fp2,fp3,node,dim,ntype) result(value)
+    use constdef, only: num1d60,num2d3,num1d12
+    real(real64),value :: fm3,fm2,fm1,f0,fp1,fp2,fp3
+    integer,value :: node,dim,ntype
+    logical :: left,right
+    left=ntype==1.or.ntype==4; right=ntype==2.or.ntype==4
+    if(left.and.node==0) then
+      value=-0.5d0*fp2+2.d0*fp1-1.5d0*f0
+    elseif((left.and.node==1).or.(right.and.node==dim-1)) then
+      value=0.5d0*(fp1-fm1)
+    elseif((left.and.node==2).or.(right.and.node==dim-2)) then
+      value=num2d3*(fp1-fm1)-num1d12*(fp2-fm2)
+    elseif(right.and.node==dim) then
+      value=0.5d0*fm2-2.d0*fm1+1.5d0*f0
+    else
+      value=0.75d0*(fp1-fm1)-0.15d0*(fp2-fm2)+num1d60*(fp3-fm3)
+    endif
+  end function
+
+  attributes(global) subroutine pack_derived_kernel(i0,j0,k0,ni,nj,nk,basic,nselected,im,jm,km,itype,jtype,ktype)
     use commarray_gpu, only: dxi_d
-    use gradcal_gpu, only: deriv6
-    integer,value :: i0,j0,k0,ni,nj,nk,nselected
+    integer,value :: i0,j0,k0,ni,nj,nk,basic,nselected,im,jm,km,itype,jtype,ktype
     real(real64) :: gradient(3,3),directional(3),fields(14),qvalue
     integer :: node,nodes,i,j,k,c,d,m
     node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
@@ -91,15 +115,15 @@ contains
     if(node>=nodes) return
     i=i0+mod(node,ni); j=j0+mod(node/ni,nj); k=k0+node/(ni*nj)
     do c=1,3
-      directional(1)=deriv6(private_velocity_d(i-3,j,k,c),private_velocity_d(i-2,j,k,c), &
-        private_velocity_d(i-1,j,k,c),private_velocity_d(i+1,j,k,c), &
-        private_velocity_d(i+2,j,k,c),private_velocity_d(i+3,j,k,c))
-      directional(2)=deriv6(private_velocity_d(i,j-3,k,c),private_velocity_d(i,j-2,k,c), &
-        private_velocity_d(i,j-1,k,c),private_velocity_d(i,j+1,k,c), &
-        private_velocity_d(i,j+2,k,c),private_velocity_d(i,j+3,k,c))
-      directional(3)=deriv6(private_velocity_d(i,j,k-3,c),private_velocity_d(i,j,k-2,c), &
-        private_velocity_d(i,j,k-1,c),private_velocity_d(i,j,k+1,c), &
-        private_velocity_d(i,j,k+2,c),private_velocity_d(i,j,k+3,c))
+      directional(1)=output_derivative6_gpu(private_velocity_d(i-3,j,k,c),private_velocity_d(i-2,j,k,c), &
+        private_velocity_d(i-1,j,k,c),private_velocity_d(i,j,k,c),private_velocity_d(i+1,j,k,c), &
+        private_velocity_d(i+2,j,k,c),private_velocity_d(i+3,j,k,c),i,im,itype)
+      directional(2)=output_derivative6_gpu(private_velocity_d(i,j-3,k,c),private_velocity_d(i,j-2,k,c), &
+        private_velocity_d(i,j-1,k,c),private_velocity_d(i,j,k,c),private_velocity_d(i,j+1,k,c), &
+        private_velocity_d(i,j+2,k,c),private_velocity_d(i,j+3,k,c),j,jm,jtype)
+      directional(3)=output_derivative6_gpu(private_velocity_d(i,j,k-3,c),private_velocity_d(i,j,k-2,c), &
+        private_velocity_d(i,j,k-1,c),private_velocity_d(i,j,k,c),private_velocity_d(i,j,k+1,c), &
+        private_velocity_d(i,j,k+2,c),private_velocity_d(i,j,k+3,c),k,km,ktype)
       do d=1,3
         gradient(c,d)=directional(1)*dxi_d(i,j,k,1,d)+directional(2)*dxi_d(i,j,k,2,d)+ &
           directional(3)*dxi_d(i,j,k,3,d)
@@ -118,24 +142,27 @@ contains
     fields(13)=gradient(1,3)-gradient(3,1)
     fields(14)=gradient(2,1)-gradient(1,2)
     do m=1,nselected
-      packed_d((5+m)*nodes+node+1)=fields(selected_gpu_d(m))
+      packed_d((basic-1+m)*nodes+node+1)=fields(selected_gpu_d(m))
     enddo
   end subroutine
 
   subroutine pack_derived_output_gpu(start,extent,components,values)
     use commvar, only: im,jm,km
+    use output_fields, only: output_basic_components
     integer,intent(in) :: start(3),extent(3),components
     real(real64),intent(out) :: values(:)
-    integer :: nodes,count,status
+    integer :: nodes,count,status,basic
     nodes=product(extent); count=nodes*components
+    basic=output_basic_components()
     call local_require(allocated(private_velocity_d).and.allocated(packed_d),'private GPU output not initialized')
     call local_require(all(extent>0).and.all(start>=0).and.all(start+extent<=[im,jm,km]+1).and. &
       count>0.and.count<=size(packed_d).and.size(values)==count.and. &
-      components==6+selected_gpu_count,'private GPU derivative tile shape')
-    call pack_kernel<<<(nodes*6+255)/256,256>>>(start(1),start(2),start(3),extent(1),extent(2),extent(3),6)
+      components==basic+selected_gpu_count,'private GPU derivative tile shape')
+    call pack_kernel<<<(nodes*basic+255)/256,256>>>(start(1),start(2),start(3),extent(1),extent(2),extent(3),basic)
     call sync_after_kernel('private output basic tile',.true.)
     call pack_derived_kernel<<<(nodes+255)/256,256>>>(start(1),start(2),start(3), &
-      extent(1),extent(2),extent(3),selected_gpu_count)
+      extent(1),extent(2),extent(3),basic,selected_gpu_count,im,jm,km, &
+      private_types_gpu(1),private_types_gpu(2),private_types_gpu(3))
     call sync_after_kernel('private output derived tile',.true.)
     status=cudaMemcpy(values,packed_d,int(count,int64),cudaMemcpyDeviceToHost)
     call local_require(status==cudaSuccess,'private derivative tile download')
@@ -144,22 +171,50 @@ contains
 
   subroutine end_derived_output_gpu(bytes)
     integer(int64),intent(out) :: bytes
-    call end_basic_output_gpu(bytes)
     if(allocated(private_velocity_d)) deallocate(private_velocity_d)
+    call end_basic_output_gpu(bytes)
     selected_gpu_count=0
     ! Generic halo buffers belong to the solver transport, not this frame.
   end subroutine
 
-  subroutine begin_basic_output_gpu(capacity,budget,comm)
+  subroutine begin_basic_output_gpu(capacity,budget,comm,device_reserve_bytes)
     integer(int64),intent(in) :: capacity,budget
     integer,intent(in) :: comm
+    integer(int64),intent(in),optional :: device_reserve_bytes
+    integer(int64) :: reserve
     integer :: status
     call checkpoint_state_require(.not.allocated(packed_d).and.capacity>0.and. &
       capacity<=budget/8.and.capacity<=huge(status),comm,'basic output GPU packing budget')
+    reserve=0
+    if(present(device_reserve_bytes)) reserve=device_reserve_bytes
+    call checkpoint_state_require(reserve>=0,comm,'basic output GPU reserve must not be negative')
+    if(reserve>0) call require_device_reserve(capacity*8,reserve,comm,'before_allocate')
     allocate(packed_d(int(capacity)),stat=status)
     call checkpoint_state_require(status==0,comm,'basic output GPU packing allocation')
+    frame_device_reserve=reserve; frame_comm=comm
     transferred=0
     call sync_gpu_boundary('basic output device snapshot entry')
+  end subroutine
+
+  subroutine require_device_reserve(allocation_bytes,reserve,comm,phase)
+    use mpi, only: MPI_Comm_rank,MPI_SUCCESS
+    use iso_fortran_env, only: output_unit
+    integer(int64),intent(in) :: allocation_bytes,reserve
+    integer,intent(in) :: comm
+    character(*),intent(in) :: phase
+    integer(int64) :: free_bytes,total_bytes
+    integer :: status,rank
+    free_bytes=0; total_bytes=0
+    status=cudaMemGetInfo(free_bytes,total_bytes)
+    call checkpoint_state_require(status==cudaSuccess,comm,'output GPU free memory query '//phase)
+    call MPI_Comm_rank(comm,rank,status)
+    call checkpoint_state_require(status==MPI_SUCCESS,comm,'output GPU reserve rank query')
+    write(output_unit,'(a,i0,2a,3(a,i0))') 'ASTR_OUTPUT_DEVICE_RESERVE rank=',rank,' phase=',trim(phase), &
+      ' free_bytes=',free_bytes,' allocation_bytes=',allocation_bytes,' reserve_bytes=',reserve
+    flush(output_unit)
+    ! Subtraction avoids overflow even for an impossible int64 reserve.
+    call checkpoint_state_require(free_bytes>=reserve.and.allocation_bytes<=free_bytes-reserve, &
+      comm,'output GPU free memory reserve '//phase)
   end subroutine
 
   attributes(global) subroutine pack_kernel(i0,j0,k0,ni,nj,nk,components)
@@ -224,7 +279,13 @@ contains
 
   subroutine end_basic_output_gpu(bytes)
     integer(int64),intent(out) :: bytes
+    integer :: status
     bytes=transferred
-    if(allocated(packed_d)) deallocate(packed_d)
+    if(allocated(packed_d)) then
+      deallocate(packed_d,stat=status)
+      call checkpoint_state_require(status==0,frame_comm,'basic output GPU packing release')
+    endif
+    if(frame_device_reserve>0) call require_device_reserve(0_int64,frame_device_reserve,frame_comm,'after_release')
+    frame_device_reserve=0; frame_comm=0
   end subroutine
 end module

@@ -9,6 +9,7 @@ module output_archive
   use output_fields, only: write_basic_output,pack_basic_output_cpu,write_slice_output_xdmf,write_output_series_xdmf
   use output_fields, only: begin_derived_output_cpu,pack_derived_output_cpu,end_derived_output_cpu, &
     derived_output_workspace_cpu
+  use output_lineage, only: prepare_output_lineage,stage_output_lineage
   use insitu_schedule, only: sample_schedule,configure_schedule,poll_schedule, &
     write_schedule_state,restore_schedule_state
   use insitu_checkpoint_batch, only: create_batch,copy_batch_file,file_fingerprint
@@ -20,7 +21,7 @@ module output_archive
   use output_fields_gpu, only: begin_derived_output_gpu,pack_derived_output_gpu,end_derived_output_gpu, &
     derived_output_workspace_gpu
   use insitu_statistics_gpu, only: statistics_device_bytes
-  use production_statistics_gpu, only: compact_statistics_device_bytes
+  use production_statistics_gpu, only: compact_statistics_device_bytes,compact_statistics_host_bytes
 #ifdef ASTR_AIR5_CHEMISTRY
   use chemistry_mean_statistics_gpu, only: air5_mean_statistics_device_bytes
   use chemistry_flow_solver_gpu, only: air5_conservation_device_bytes
@@ -37,6 +38,7 @@ module output_archive
   integer(int64),save :: parent_ids(2)=-1,parent_bytes(2)=0,parent_crc(2)=0
   real(real64),save :: origin_times(2)=0
   logical,save :: effective_initial(2)=.false.
+  logical,save :: lineage_compatible(2)=.false.
   character(1200),save :: roots(2)=''
   character(16),parameter :: labels(2)=[character(16) :: 'fields','slices']
   interface
@@ -78,26 +80,41 @@ contains
 
   subroutine configure_archives(selected)
     use commvar, only: flowtype,num_species,lreadgrid,lcomb,limmbou,ndims, &
-      conschm,difschm,lihomo,ljhomo,lkhomo,lfilter,diffterm,hm
-    use bc, only: bctype
+      conschm,difschm,lihomo,ljhomo,lkhomo,lfilter,diffterm,hm,num_modequ
+    use bc, only: bctype,turbinf
     use parallel, only: mpisize
     type(output_options),intent(in) :: selected
-    logical :: ok
+    logical :: ok,derived_case,air5_case
     integer :: p
     character(256) :: message
     options=selected; products=[options%volume,options%slices]
     last_steps=-1; origin_steps=0; origin_times=0
     segment_ids=-1; segment_bytes=0; segment_crc=0
     parent_ids=-1; parent_bytes=0; parent_crc=0
+    lineage_compatible=.false.
     call validate_output_grid(options,int([ia,ja,ka],int64),ok,message)
     call check(ok,trim(message))
+    derived_case=trim(flowtype)=='tgv'.and..not.lreadgrid.and.all(bctype==1).and. &
+      lihomo.and.ljhomo.and.lkhomo.and.trim(conschm)=='643e'.and.lfilter
+    derived_case=derived_case.or.(trim(flowtype)=='channel'.and..not.lreadgrid.and. &
+      all(bctype==[1,1,41,41,1,1]).and.jm==ja.and.trim(conschm)=='643e'.and.lfilter)
+    derived_case=derived_case.or.(trim(flowtype)=='bl'.and.lreadgrid.and. &
+      all(bctype==[11,21,41,51,1,1]).and.jm==ja.and.trim(conschm)=='543e'.and. &
+      (trim(turbinf)=='prof'.or.trim(turbinf)=='intp'))
+    derived_case=derived_case.and.numq==5.and.num_species==0.and..not.lcomb.and.nondimen
+    air5_case=.false.
+#ifdef ASTR_AIR5_CHEMISTRY
+    air5_case=(trim(flowtype)=='air5hbl'.or.trim(flowtype)=='air5sbli').and. &
+      numq==11.and.num_species==5.and.num_modequ==1.and.lcomb.and..not.nondimen.and..not.lreadgrid.and. &
+      all(bctype==[11,50,41,51,1,1]).and.jm==ja.and.trim(conschm)=='643e'.and.lfilter.and. &
+      ((trim(flowtype)=='air5hbl'.and.im==ia).or.(trim(flowtype)=='air5sbli'.and.km==ka))
+#endif
     do p=1,2
       if(products(p)%enabled.and.(products(p)%velocity_gradient.or.products(p)%vorticity.or.products(p)%qcriterion)) &
-        call check(trim(flowtype)=='tgv'.and.numq==5.and.num_species==0.and.ndims==3.and. &
-          .not.lreadgrid.and..not.lcomb.and..not.limmbou.and.all(bctype==1).and. &
-          lihomo.and.ljhomo.and.lkhomo.and.all([ia,ja,ka]==16).and.mpisize<=2.and. &
-          hm>=3.and.min(im,jm,km)>=hm.and.trim(conschm)=='643e'.and.trim(difschm)=='643e'.and. &
-          lfilter.and.diffterm.and.nondimen,'derived fields require validated 16-cubed periodic explicit TGV NP<=2')
+        call check((derived_case.or.air5_case).and.ndims==3.and. &
+          .not.limmbou.and.all([ia,ja,ka]==16).and.mpisize<=2.and. &
+          hm>=3.and.min(im,jm,km)>=max(hm,5).and.trim(difschm)=='643e'.and. &
+          diffterm,'derived fields require registered 16-cubed explicit TGV/channel/CURVE/AIR5 NP<=2')
       effective_initial(p)=products(p)%initial_frame
       if(products(p)%enabled) then
         call configure_schedule(schedules(p),trim(products(p)%mode),products(p)%interval_steps, &
@@ -218,11 +235,12 @@ contains
     type(checkpoint_state_identity),intent(in) :: identity
     logical,intent(in) :: reuse
     logical :: ok
-    integer :: p,unit,err,closed,i
+    integer :: p,unit,err,closed,i,axes(768),indices(768),n,components,selected(14),nselected
     integer(int64) :: bytes,crc,input_bytes,input_crc,saved_bytes,saved_crc
     character(1200) :: source,resource_path,parent_path
     character(c_char) :: relative(1200)
     character(15) :: segment,parent_segment
+    character(16) :: units
     integer(c_int) :: generation,fresh,status
     do p=1,2
       if(.not.products(p)%enabled) cycle
@@ -304,6 +322,20 @@ contains
         endif
       endif
       call check(err==0.and.closed==0,'cannot create bounded series ledger')
+      call plane_selections(p,axes,indices,n)
+      components=6
+      if(numq==11) components=12
+      units='dimensionless'
+      if(.not.nondimen) units='si'
+      call output_product_derived_indices(products(p),selected,nselected)
+      ok=.true.
+      if(mpirank==0) call prepare_output_lineage(trim(roots(p)),trim(labels(p)),[ia,ja,ka]+1, &
+        axes(:n),indices(:n),components,trim(units),selected(:nselected),lineage_compatible(p),ok)
+      call check(ok,'invalid or over-budget explicit archive parent chain')
+      call MPI_Bcast(lineage_compatible(p),1,MPI_LOGICAL,0,MPI_COMM_WORLD,err)
+      call check(err==MPI_SUCCESS,'archive lineage compatibility broadcast')
+      if(mpirank==0.and..not.lineage_compatible(p)) write(*,'(a,a)') &
+        'ASTR_OUTPUT_LINEAGE unavailable: valid layout override; per-segment indexes retained product=',trim(labels(p))
     enddo
   end subroutine
 
@@ -413,6 +445,9 @@ contains
     endif
 #endif
     host_budget=options%host_budget_bytes-host_workspace
+#ifdef _CUDA
+    host_budget=host_budget-compact_statistics_host_bytes()
+#endif
     call check(host_budget>0,'private derivative halo leaves no host packing budget')
     tile_buffer=min(options%buffer_bytes,host_budget)
     device_peak=0; download=0; host_peak=0
@@ -434,11 +469,12 @@ contains
       device_peak=device_workspace+capacity*8
       if(nselected>0) then
         call begin_derived_output_gpu(capacity,options%host_budget_bytes, &
-          options%device_budget_bytes-resident,MPI_COMM_WORLD,selected(:nselected),reported_host,reported_device)
+          options%device_budget_bytes-resident,MPI_COMM_WORLD,selected(:nselected),reported_host,reported_device, &
+          options%device_reserve_bytes)
         call check(reported_host==host_workspace.and.reported_device==device_workspace, &
           'private GPU workspace changed during frame entry')
       else
-        call begin_basic_output_gpu(capacity,budget,MPI_COMM_WORLD)
+        call begin_basic_output_gpu(capacity,budget,MPI_COMM_WORLD,options%device_reserve_bytes)
       endif
     else
 #endif
@@ -554,6 +590,7 @@ contains
     integer :: axes(768),indices(768),n,components,source,unit,err,closed,status,selected(14),nselected
     character(256) :: line
     character(16) :: units
+    logical :: ok
     err=0; closed=0
     if(mpirank==0) then
       open(newunit=source,file=trim(roots(product))//'/series.frames',status='old',action='read',iostat=err)
@@ -593,6 +630,20 @@ contains
     if(mpirank==0) err=replace_plain_file(trim(roots(product))//c_null_char, &
       'series.xdmf.tmp'//c_null_char,'series.xdmf'//c_null_char)
     call check(err==0,'cannot publish time-series XDMF')
+    if(.not.lineage_compatible(product)) return
+    ok=.true.
+    if(mpirank==0) call stage_output_lineage(trim(roots(product)),ok)
+    call check(ok,'cannot stage explicit parent time series')
+    call write_output_series_xdmf(trim(roots(product))//'/lineage.xdmf.tmp', &
+      trim(roots(product))//'/lineage.frames.tmp',[ia,ja,ka]+1,axes(:n),indices(:n),components,trim(units), &
+      MPI_COMM_WORLD,selected(:nselected))
+    err=0
+    if(mpirank==0) err=replace_plain_file(trim(roots(product))//c_null_char, &
+      'lineage.frames.tmp'//c_null_char,'lineage.frames'//c_null_char)
+    call check(err==0,'cannot publish explicit parent ledger')
+    if(mpirank==0) err=replace_plain_file(trim(roots(product))//c_null_char, &
+      'lineage.xdmf.tmp'//c_null_char,'lineage.xdmf'//c_null_char)
+    call check(err==0,'cannot publish explicit parent XDMF')
   end subroutine
 
   integer(int64) function product_nodes(product) result(nodes)

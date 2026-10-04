@@ -21,32 +21,48 @@ module production_statistics_gpu
   integer(int64),save :: last_sample_step=-huge(0_int64)
   real(8),save :: sampling_start_time=0.d0
   logical,save :: checkpoint_prepared=.false.
+  ! Global history is replicated on the host, never added by a rank-local kernel.
+  real(real64),allocatable,save :: inherited_statistics(:,:,:,:)
 
 contains
 #ifndef TEST_COMPACT_STATS
-  subroutine complete_compact_statistics_file(path,writing,identity,budget)
+  subroutine complete_compact_statistics_file(path,writing,identity,budget,allow_repartition)
     use mpi
     use ieee_arithmetic, only: ieee_is_finite
     use checkpoint_state_io, only: checkpoint_state_identity,checkpoint_state_transfer, &
-      allocate_checkpoint_buffer,checkpoint_state_require
+      allocate_checkpoint_buffer,checkpoint_state_require,checkpoint_state_header
     use commvar, only: ia,ja,ka,im,jm,km,nstep,time
-    use parallel, only: ig0,jg0,krk,isize,jsize,ksize,jrk
+    use parallel, only: ig0,jg0,krk,isize,jsize,ksize,jrk,mpirank
     use statistic, only: nsamples
     use gpu_check, only: sync_gpu_boundary
     character(*),intent(in) :: path
     logical,intent(in) :: writing
+    logical,optional,intent(in) :: allow_repartition
     type(checkpoint_state_identity),intent(inout) :: identity
     integer(int64),intent(in) :: budget
     real(real64),allocatable :: values(:,:,:,:),plane_measure_h(:,:),plane_sum_h(:,:,:), &
-      wall_measure_h(:),wall_sum_h(:,:)
-    integer(int64) :: remaining,metadata(12),expected_step
+      wall_measure_h(:),wall_sum_h(:,:),old_values(:,:,:,:),measure(:,:,:,:)
+    integer(int64) :: remaining,metadata(12),expected_step,header(13),base_metadata(12),old_remaining,base_bytes,working_budget
     real(real64) :: expected_time
     type(checkpoint_state_identity) :: expected
-    integer :: status
+    integer :: status,ierr,old_shape(3)
+    logical :: permit,migrating
     call checkpoint_state_require(compact_statistics_active,MPI_COMM_WORLD,'compact statistics not initialized')
+    permit=.false.
+    if(present(allow_repartition)) permit=allow_repartition
+    migrating=.false.
+    working_budget=budget
+    base_bytes=int(ia+1,int64)*(ja+1)*2*17*8
+    if(permit.and..not.allocated(inherited_statistics)) then
+      call checkpoint_state_require(budget>=2*base_bytes+4096,MPI_COMM_WORLD,'inherited statistics host budget')
+      allocate(inherited_statistics(ia+1,ja+1,2,17),stat=status)
+      call checkpoint_state_require(status==0,MPI_COMM_WORLD,'inherited statistics allocation')
+      inherited_statistics=0.d0
+      working_budget=budget-base_bytes
+    endif
     ! The third index identifies the original z partition, not a physical z node.
     ! A terminal zero plane fits the node-ownership file layout without duplicating a volume.
-    call allocate_checkpoint_buffer([im,jm,1],0,17,budget,values,remaining,MPI_COMM_WORLD)
+    call allocate_checkpoint_buffer([im,jm,1],0,17,working_budget,values,remaining,MPI_COMM_WORLD)
     call checkpoint_state_require(remaining>=int(im+1,int64)*(jm+1)*13*8+int(im+1,int64)*4*8+4096, &
       MPI_COMM_WORLD,'compact statistics staging budget')
     values=0.d0
@@ -60,6 +76,7 @@ contains
     endif
     metadata=[1_int64,int([ia,ja,ka,isize,jsize,ksize],int64),sample_count,sampling_start_step, &
       last_sample_step,transfer(sampling_start_time,0_int64),int(17,int64)]
+    if(permit) metadata(1)=2_int64
     expected_step=identity%step
     expected_time=identity%time
     expected=identity
@@ -81,13 +98,91 @@ contains
     ! Staging and the HDF5 duplicate/partition buffers coexist under one host budget.
     remaining=remaining-int(im+1,int64)*(jm+1)*13*8
     if(jrk==0) remaining=remaining-int(im+1,int64)*4*8
-    call checkpoint_state_transfer(path,writing,.true.,[ia+1,ja+1,ksize+1],[ig0,jg0,krk], &
-      [im,jm,1],0,values,identity,remaining,MPI_COMM_WORLD,role=5,metadata=metadata)
+    if(permit) then
+      call checkpoint_state_require(remaining>=2*base_bytes+4096,MPI_COMM_WORLD,'inherited staging budget')
+      if(.not.writing) then
+        call checkpoint_state_header(path,header,metadata,MPI_COMM_SELF)
+        call checkpoint_state_require(metadata(1)==2.and.all(metadata(2:4)==int([ia,ja,ka],int64)).and. &
+          all(metadata(5:7)>=1).and.all(metadata(5:7)<=2).and.metadata(6)==1.and. &
+          product(metadata(5:7))<=2.and.header(8)==product(metadata(5:7)).and.header(13)==5.and.header(7)==17.and. &
+          all(header(4:6)==[int(ia+1,int64),int(ja+1,int64),metadata(7)+1]), &
+          MPI_COMM_WORLD,'compact migration source layout')
+        migrating=any(metadata(5:7)/=int([isize,jsize,ksize],int64))
+      endif
+    endif
+    if(migrating) then
+      old_shape=int(header(4:6))
+      call allocate_checkpoint_buffer(old_shape-1,0,17,remaining,old_values,old_remaining,MPI_COMM_WORLD)
+      old_values=0.d0
+      call checkpoint_state_transfer(path,.false.,.true.,old_shape,[0,0,0],old_shape-1,0, &
+        old_values,identity,old_remaining,MPI_COMM_SELF,role=5,metadata=metadata, &
+        allow_repartition=.true.,repartition_axes=[.true.,.false.,.true.])
+      call require_compact_clock(identity,expected)
+      base_metadata=metadata
+      call checkpoint_state_transfer(path,.false.,.true.,[ia+1,ja+1,2],[0,0,0],[ia,ja,1],0, &
+        inherited_statistics,identity,old_remaining,MPI_COMM_SELF,role=5,metadata=base_metadata,group_name='inherited')
+      call checkpoint_state_require(all(base_metadata==metadata),MPI_COMM_WORLD,'inherited sampling identity')
+      call checkpoint_state_require(all(ieee_is_finite(old_values)).and.all(ieee_is_finite(inherited_statistics)), &
+        MPI_COMM_WORLD,'nonfinite inherited statistics')
+      call compact_global_measure(measure,old_remaining)
+      call checkpoint_state_require(all(abs(sum(old_values(:,:,1:old_shape(3)-1,1),dim=3)-measure(:,:,1,1))<=2.d-10).and. &
+        all(abs(sum(old_values(:,:,1:old_shape(3)-1,14),dim=3)-measure(:,:,1,14))<=2.d-10).and. &
+        all(abs(inherited_statistics(:,:,:,1)-measure(:,:,:,1))<=2.d-10).and. &
+        all(abs(inherited_statistics(:,:,:,14)-measure(:,:,:,14))<=2.d-10), &
+        MPI_COMM_WORLD,'migrated compact geometry mismatch')
+      inherited_statistics(:,:,1,2:13)=inherited_statistics(:,:,1,2:13)+ &
+        sum(old_values(:,:,1:old_shape(3)-1,2:13),dim=3)
+      inherited_statistics(:,:,1,15:17)=inherited_statistics(:,:,1,15:17)+ &
+        sum(old_values(:,:,1:old_shape(3)-1,15:17),dim=3)
+      call checkpoint_state_require(all(ieee_is_finite(inherited_statistics)).and. &
+        all(inherited_statistics(:,:,2,:)==0.d0),MPI_COMM_WORLD,'invalid inherited cumulative history')
+      values=0.d0
+      plane_measure_h=plane_measure_d
+      values(:,:,1,1)=plane_measure_h
+      if(jrk==0) then
+        wall_measure_h=wall_measure_d
+        values(:,1,1,14)=wall_measure_h
+      endif
+      deallocate(old_values,measure)
+    else
+      call checkpoint_state_transfer(path,writing,.true.,[ia+1,ja+1,ksize+1],[ig0,jg0,krk], &
+        [im,jm,1],0,values,identity,remaining,MPI_COMM_WORLD,role=5,metadata=metadata)
+      if(.not.writing) then
+        call require_compact_clock(identity,expected)
+        call checkpoint_state_require(all(metadata(5:7)==int([isize,jsize,ksize],int64)), &
+          MPI_COMM_WORLD,'compact checkpoint topology metadata')
+      endif
+      if(permit) then
+        if(writing) then
+          call compact_global_measure(measure,remaining)
+          inherited_statistics(:,:,:,1)=measure(:,:,:,1)
+          inherited_statistics(:,:,:,14)=measure(:,:,:,14)
+          deallocate(measure)
+        endif
+        base_metadata=metadata
+        if(.not.writing.or.mpirank==0) call checkpoint_state_transfer(path,writing,.true., &
+          [ia+1,ja+1,2],[0,0,0],[ia,ja,1],0,inherited_statistics,identity,remaining,MPI_COMM_SELF, &
+          role=5,metadata=base_metadata,group_name='inherited')
+        call MPI_Barrier(MPI_COMM_WORLD,ierr)
+        call checkpoint_state_require(ierr==MPI_SUCCESS.and.all(base_metadata==metadata), &
+          MPI_COMM_WORLD,'inherited state publication')
+        call checkpoint_state_require(all(ieee_is_finite(inherited_statistics)).and. &
+          all(inherited_statistics(:,:,2,:)==0.d0),MPI_COMM_WORLD,'invalid inherited cumulative history')
+        if(.not.writing) then
+          call compact_global_measure(measure,remaining)
+          call checkpoint_state_require(all(inherited_statistics(:,:,:,1)==measure(:,:,:,1)).and. &
+            all(inherited_statistics(:,:,:,14)==measure(:,:,:,14)), &
+            MPI_COMM_WORLD,'inherited compact geometry mismatch')
+          deallocate(measure)
+        endif
+      endif
+    endif
     if(.not.writing) then
       call checkpoint_state_require(identity%step==expected_step.and.identity%time==expected_time.and. &
         identity%dt_used==expected%dt_used.and.identity%dt_next==expected%dt_next, &
         MPI_COMM_WORLD,'compact checkpoint clock mismatch')
-      call checkpoint_state_require(all(metadata(1:7)==[1_int64,int([ia,ja,ka,isize,jsize,ksize],int64)]).and. &
+      call checkpoint_state_require(metadata(1)==merge(2_int64,1_int64,permit).and. &
+        all(metadata(2:4)==int([ia,ja,ka],int64)).and. &
         metadata(12)==17.and.metadata(8)>=0.and.metadata(8)<=huge(nsamples).and. &
         metadata(9)>=0.and.metadata(9)<=identity%step.and.metadata(10)<identity%step.and. &
         ieee_is_finite(transfer(metadata(11),0.d0)),MPI_COMM_WORLD,'compact checkpoint metadata')
@@ -114,6 +209,43 @@ contains
       call sync_gpu_boundary('complete compact statistics restore')
     endif
   end subroutine complete_compact_statistics_file
+
+  subroutine require_compact_clock(actual,expected)
+    use mpi
+    use checkpoint_state_io, only: checkpoint_state_identity,checkpoint_state_require
+    type(checkpoint_state_identity),intent(in) :: actual,expected
+    call checkpoint_state_require(actual%step==expected%step.and.actual%time==expected%time.and. &
+      actual%dt_used==expected%dt_used.and.actual%dt_next==expected%dt_next, &
+      MPI_COMM_WORLD,'compact state group clock mismatch')
+  end subroutine
+
+  subroutine compact_global_measure(values,budget)
+    use mpi
+    use checkpoint_state_io, only: checkpoint_state_require
+    use commvar, only: ia,ja,im,jm
+    use parallel, only: ig0,jg0,jrk
+    real(real64),allocatable,intent(out) :: values(:,:,:,:)
+    integer(int64),intent(in) :: budget
+    real(real64),allocatable :: plane(:,:),wall(:)
+    integer :: ni,nj,ierr,status
+    call checkpoint_state_require(budget>=int(ia+1,int64)*(ja+1)*2*17*8+ &
+      int(im+1,int64)*(jm+2)*8+4096,MPI_COMM_WORLD,'global measure staging budget')
+    allocate(values(ia+1,ja+1,2,17),plane(0:im,0:jm),stat=status)
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'global measure allocation')
+    values=0.d0
+    plane=plane_measure_d
+    ni=im; nj=jm
+    if(ig0+im==ia) ni=ni+1
+    if(jg0+jm==ja) nj=nj+1
+    values(ig0+1:ig0+ni,jg0+1:jg0+nj,1,1)=plane(0:ni-1,0:nj-1)
+    if(jrk==0) then
+      allocate(wall(0:im))
+      wall=wall_measure_d
+      values(ig0+1:ig0+ni,1,1,14)=wall(0:ni-1)
+    endif
+    call MPI_Allreduce(MPI_IN_PLACE,values,size(values),MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call checkpoint_state_require(ierr==MPI_SUCCESS,MPI_COMM_WORLD,'global compact geometry reduction')
+  end subroutine
 #endif
 
   attributes(global) subroutine compact_plane_measure_kernel(x,measure,im,jm,km,hm)
@@ -553,6 +685,11 @@ contains
     integer :: unit,ios,local_error
 
     if(.not.compact_statistics_active) return
+    if(allocated(inherited_statistics)) then
+      call abort_sidecar_error(merge(1,0,any(inherited_statistics(:,:,1,2:13)/=0.d0).or. &
+        any(inherited_statistics(:,:,1,15:17)/=0.d0)), &
+        'Migrated compact history requires the complete-step HDF5 checkpoint')
+    endif
     allocate(plane_measure_h(0:im,0:jm),plane_sum_h(0:im,0:jm,1:12))
     plane_measure_h=plane_measure_d
     plane_sum_h=plane_sum_d
@@ -757,6 +894,7 @@ contains
     if(allocated(plane_sum_d)) deallocate(plane_sum_d)
     if(allocated(wall_measure_d)) deallocate(wall_measure_d)
     if(allocated(wall_sum_d)) deallocate(wall_sum_d)
+    if(allocated(inherited_statistics)) deallocate(inherited_statistics)
     compact_statistics_active=.false.
     compact_statistics_initialized=.false.
     sample_count=0_int64
@@ -772,5 +910,10 @@ contains
     if(allocated(plane_sum_d)) bytes=bytes+8*size(plane_sum_d,kind=int64)
     if(allocated(wall_measure_d)) bytes=bytes+8*size(wall_measure_d,kind=int64)
     if(allocated(wall_sum_d)) bytes=bytes+8*size(wall_sum_d,kind=int64)
+  end function
+
+  integer(int64) function compact_statistics_host_bytes() result(bytes)
+    bytes=0
+    if(allocated(inherited_statistics)) bytes=8*size(inherited_statistics,kind=int64)
   end function
 end module production_statistics_gpu

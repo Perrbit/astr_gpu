@@ -1,4 +1,6 @@
 """Real 16-cubed TGV failure/recovery with the unchanged production time integrator."""
+import hashlib
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -6,7 +8,10 @@ from types import SimpleNamespace
 import pytest
 
 from test_checkpoint_bundle import fault_library
-from run_output_restart_validation import compare_fields, run_case
+from run_output_restart_validation import archive_schedule_payload, compare_fields, run_case
+from run_output_archive_validation import groups
+from test_output_archive_segments import fingerprints
+from test_output_repartition_runtime import channel_arguments
 
 ROOT = Path(__file__).resolve().parents[2]
 EXE = Path(os.environ.get("ASTR_OUTPUT_RUNTIME_EXE", ROOT / "build_gpu_probe/bin/astr")).resolve()
@@ -70,3 +75,65 @@ def test_first_resumed_write_reports_source(reference, fault_library, tmp_path):
     assert not (failed / "outdat/new/checkpoints/LATEST").exists()
     assert before == {p.name: p.read_bytes() for p in source.iterdir() if p.is_file()}
     assert sum(p.stat().st_size for p in args.output.rglob("*") if p.is_file()) < 64 * 1024**2
+
+
+@pytest.mark.parametrize("backend,phase", [("cpu", "batch_rename"), ("gpu", "latest_rename")])
+def test_channel_first_save_failure_then_exact_recovery(tmp_path, backend, phase,
+                                                       fault_library, record_property):
+    references = Path(os.environ.get("ASTR_OUTPUT_CHANNEL_REFERENCE_ROOT",
+        ROOT / "tests/gpu_validation/out/or4_channel_repartition_fixed_20261001"))
+    candidates = []
+    for path in references.glob("test_channel_repartition_keeps[0-9]*/channel_repartition.json"):
+        report = json.loads(path.read_text())
+        if report["backend"] == backend and report["exact"]:
+            candidates.append((path.parent, report))
+    assert len(candidates) == 1, "prepare the accepted exact channel reference for this backend"
+    reference, report = candidates[0]
+    args = channel_arguments(tmp_path, backend, report["source"][1], report["filter_workspace"])
+    with args.executable.open("rb") as stream:
+        assert hashlib.file_digest(stream, "sha256").hexdigest() == report["executable_sha256"], \
+            "build changed: regenerate the channel reference, do not bypass its identity"
+    assert report["source"] == report["target"] and report["source"][0] == 2
+    assert report["state_max_abs"] == report["driver_max_abs"] == report["mean_max_abs"] == 0
+    continuous = reference / (backend+"_np2_continuous")
+    seed = reference / (backend+"_np2_seed/outdat/new")
+    source = seed / "checkpoints/step000000000005"
+    initial = seed / "resources/flowini3d.h5"
+    before = fingerprints(seed)
+    failed, _ = run_case(args, ROOT, backend, 2, phase, 12, restore=source,
+        buffer_bytes=4096, checkpoint_keep=1, initial_resource=initial, archive_groups=groups("steps"),
+        publication_fault=(fault_library, phase, 10, 5),
+        reject="cannot publish/retain checkpoint")
+    checkpoints = failed / "outdat/new/checkpoints"
+    log = (failed / "run.log").read_text()
+    assert "checkpoint context: batch=outdat/new/checkpoints/step000000000010" in log
+    assert f"last_complete={source}" in log
+    assert not (checkpoints / "LATEST").exists()
+    assert not (checkpoints / "step000000000012").exists()
+    if phase == "batch_rename":
+        assert not (checkpoints / "step000000000010").exists()
+        assert (checkpoints / "step000000000010.tmp/COMPLETE").is_file()
+    else:
+        candidate = checkpoints / "step000000000010"
+        assert (candidate / "COMPLETE").is_file()
+        compare_fields(candidate / "state.h5", continuous / "outdat/new/checkpoints/step000000000010/state.h5")
+    assert fingerprints(seed) == before
+    restored, _ = run_case(args, ROOT, backend, 2, "recovered", 12, restore=source,
+        buffer_bytes=4096, checkpoint_keep=1, initial_resource=initial, archive_groups=groups("steps"))
+    final = "outdat/new/checkpoints/step000000000012"
+    compare_fields(restored / final / "state.h5", continuous / final / "state.h5")
+    if backend == "cpu":
+        compare_fields(restored / final / "statistics.h5", continuous / final / "statistics.h5")
+    for name in ("control.bin", "insitu_control.bin"):
+        assert (restored / final / name).read_bytes() == (continuous / final / name).read_bytes()
+    assert archive_schedule_payload(restored / final / "archives.bin") == archive_schedule_payload(
+        continuous / final / "archives.bin")
+    assert fingerprints(seed) == before
+    total = sum(p.stat().st_size for p in tmp_path.rglob("*") if p.is_file())
+    assert total < 64*1024**2
+    record = dict(backend=backend, axis=args.axis, filter_workspace=args.filter_workspace,
+        failure_phase=phase, source_unchanged=True, exact_recovery=True,
+        cpu_mean44_exact=backend=="cpu", source_step=5, rejected_save_step=10,
+        final_step=12, test_root_bytes=total, executable_sha256=report["executable_sha256"])
+    (tmp_path / "channel_failure_recovery.json").write_text(json.dumps(record, indent=2)+"\n")
+    record_property("result", record)

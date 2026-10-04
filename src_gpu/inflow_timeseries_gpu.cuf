@@ -7,7 +7,7 @@ module inflow_timeseries_gpu
   integer,save :: inflow_order_h(0:3)=(/0,1,2,3/)
   logical,save :: inflow_timeseries_ready=.false.
 contains
-  subroutine complete_inflow_gpu_file(path,writing,identity,budget)
+  subroutine complete_inflow_gpu_file(path,writing,identity,budget,allow_repartition)
     use iso_fortran_env, only: int64,real64
     use ieee_arithmetic, only: ieee_is_finite
     use bc, only: ninflowslice
@@ -17,6 +17,7 @@ contains
     use gpu_check, only: sync_gpu_boundary
     character(*),intent(in) :: path
     logical,intent(in) :: writing
+    logical,optional,intent(in) :: allow_repartition
     type(checkpoint_state_identity),intent(inout) :: identity
     integer(int64),intent(in) :: budget
     real(real64),allocatable :: buffer(:,:,:,:)
@@ -41,7 +42,8 @@ contains
       call checkpoint_state_require(all(ieee_is_finite(buffer)),mpi_imin,'device inflow cache nonfinite')
     endif
     call checkpoint_state_transfer(path,writing,.true.,[ja+1,ka+1,2],[jg0,kg0,0], &
-      [jm,km,1],0,buffer,identity,remaining,mpi_imin,role=8,metadata=metadata)
+      [jm,km,1],0,buffer,identity,remaining,mpi_imin,role=8,metadata=metadata, &
+      allow_repartition=allow_repartition,repartition_axes=[.false.,.true.,.false.])
     call checkpoint_state_require(metadata(1)==1.and.metadata(2)==1.and. &
       metadata(3)>=3.and.metadata(3)<=99999.and.metadata(4)==-1.and.metadata(5)==0.and.metadata(6)==1.and. &
       all(metadata(11:14)>=0).and.all(metadata(11:14)<=3).and.metadata(15)==0, &

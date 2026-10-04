@@ -11,8 +11,11 @@ module output_fields
   public :: derived_output_names,agree_derived_selection
   public :: begin_derived_output_cpu,pack_derived_output_cpu,end_derived_output_cpu
   public :: derived_output_workspace_cpu
+  public :: private_derivative_layout_valid
+  public :: output_basic_components
   real(real64),allocatable,save :: private_velocity(:,:,:,:)
   integer,save :: selected_cpu(14)=0
+  integer,save :: private_types_cpu(3)=3
   integer(int64),save :: derived_capacity_cpu=0
   character(32),parameter :: basic_output_names(12)=[character(32) :: &
     'density','velocity_x','velocity_y','velocity_z','pressure','temperature', &
@@ -31,6 +34,48 @@ module output_fields
     end subroutine
   end interface
 contains
+  integer function output_basic_components() result(components)
+    use commvar, only: numq
+    components=6
+    if(numq==11) components=12
+  end function
+
+  logical function private_derivative_layout_valid() result(valid)
+    use commvar, only: im,jm,km,hm,difschm,numq,num_species,lihomo,ljhomo,lkhomo,npdci,npdcj,npdck
+    use bc, only: bctype
+    integer :: types(3)
+    logical :: supported_state
+    types=[npdci,npdcj,npdck]
+    supported_state=numq==5.and.num_species==0
+#ifdef ASTR_AIR5_CHEMISTRY
+    supported_state=supported_state.or.(numq==11.and.num_species==5)
+#endif
+    valid=supported_state.and.hm>=3.and.min(im,jm,km)>=max(hm,5).and. &
+      trim(difschm)=='643e'.and.all(types>=1).and.all(types<=4).and. &
+      (lihomo.eqv.all(bctype(1:2)==1)).and.(ljhomo.eqv.all(bctype(3:4)==1)).and. &
+      (lkhomo.eqv.all(bctype(5:6)==1))
+  end function
+
+  pure real(real64) function output_derivative6(fm3,fm2,fm1,f0,fp1,fp2,fp3,node,dim,ntype) result(value)
+    use constdef, only: num1d60,num2d3,num1d12
+    real(real64),intent(in) :: fm3,fm2,fm1,f0,fp1,fp2,fp3
+    integer,intent(in) :: node,dim,ntype
+    logical :: left,right
+    ! Same closure as derivative::diff6ec; only the private output field is read.
+    left=ntype==1.or.ntype==4; right=ntype==2.or.ntype==4
+    if(left.and.node==0) then
+      value=-0.5d0*fp2+2.d0*fp1-1.5d0*f0
+    elseif((left.and.node==1).or.(right.and.node==dim-1)) then
+      value=0.5d0*(fp1-fm1)
+    elseif((left.and.node==2).or.(right.and.node==dim-2)) then
+      value=num2d3*(fp1-fm1)-num1d12*(fp2-fm2)
+    elseif(right.and.node==dim) then
+      value=0.5d0*fm2-2.d0*fm1+1.5d0*f0
+    else
+      value=0.75d0*(fp1-fm1)-0.15d0*(fp2-fm2)+num1d60*(fp3-fm3)
+    endif
+  end function
+
   subroutine require(condition,comm,message)
     logical,intent(in) :: condition
     integer,intent(in) :: comm
@@ -85,9 +130,8 @@ contains
   end subroutine
 
   subroutine begin_derived_output_cpu(capacity,budget,comm,indices,workspace_bytes)
-    use commvar, only: im,jm,km,hm,difschm,numq,num_species,lihomo,ljhomo,lkhomo
+    use commvar, only: im,jm,km,hm,npdci,npdcj,npdck
     use commarray, only: vel
-    use bc, only: bctype
     use parallel, only: dataswap
     integer(int64),intent(in) :: capacity,budget
     integer,intent(in) :: comm,indices(:)
@@ -95,9 +139,9 @@ contains
     integer :: status
     call require(comm==MPI_COMM_WORLD.and..not.allocated(private_velocity),comm,'private CPU output lifecycle')
     call agree_derived_selection(indices,selected_cpu,comm)
-    call require(count(selected_cpu>0)>0.and.numq==5.and.num_species==0.and. &
-      all(bctype==1).and.lihomo.and.ljhomo.and.lkhomo.and.hm>=3.and. &
-      min(im,jm,km)>=hm.and.trim(difschm)=='643e',comm,'private derivatives require periodic perfect gas 643e')
+    call require(count(selected_cpu>0)>0.and.private_derivative_layout_valid(),comm, &
+      'private derivatives require consistent explicit 643e layout')
+    private_types_cpu=[npdci,npdcj,npdck]
     call derived_output_workspace_cpu(workspace_bytes)
     call require(capacity>0.and.capacity<=huge(status).and.budget>=workspace_bytes.and. &
       capacity<=(budget-workspace_bytes)/8,comm,'private CPU derivative budget')
@@ -114,16 +158,16 @@ contains
   subroutine pack_derived_output_cpu(start,extent,components,values)
     use commvar, only: im,jm,km
     use commarray, only: dxi
-    use constdef, only: num1d60
     integer,intent(in) :: start(3),extent(3),components
     real(real64),intent(out) :: values(:)
     real(real64) :: gradient(3,3),directional(3),fields(14)
-    integer :: i,j,k,n,nodes,c,d,m,nselected,ierr
+    integer :: i,j,k,n,nodes,c,d,m,nselected,ierr,basic
     logical :: valid
     nselected=count(selected_cpu>0)
+    basic=output_basic_components()
     nodes=product(extent)
     valid=allocated(private_velocity).and.all(extent>0).and.all(start>=0).and. &
-      all(start+extent<=[im,jm,km]+1).and.components==6+nselected.and. &
+      all(start+extent<=[im,jm,km]+1).and.components==basic+nselected.and. &
       size(values)==nodes*components.and.int(size(values),int64)<=derived_capacity_cpu
     ! The writer skips empty ranks, so callback rejection must not enter a collective.
     if(.not.valid) then
@@ -131,35 +175,35 @@ contains
       call MPI_Abort(MPI_COMM_WORLD,71,ierr)
       error stop 'private CPU derivative tile rejected'
     endif
-    call pack_basic_output_cpu(start,extent,6,values(:nodes*6))
+    call pack_basic_output_cpu(start,extent,basic,values(:nodes*basic))
     n=0
     do k=start(3),start(3)+extent(3)-1
       do j=start(2),start(2)+extent(2)-1
         do i=start(1),start(1)+extent(1)-1
           n=n+1
           do c=1,3
-            directional(1)=0.75d0*(private_velocity(i+1,j,k,c)-private_velocity(i-1,j,k,c))- &
-              0.15d0*(private_velocity(i+2,j,k,c)-private_velocity(i-2,j,k,c))+ &
-              num1d60*(private_velocity(i+3,j,k,c)-private_velocity(i-3,j,k,c))
-            directional(2)=0.75d0*(private_velocity(i,j+1,k,c)-private_velocity(i,j-1,k,c))- &
-              0.15d0*(private_velocity(i,j+2,k,c)-private_velocity(i,j-2,k,c))+ &
-              num1d60*(private_velocity(i,j+3,k,c)-private_velocity(i,j-3,k,c))
-            directional(3)=0.75d0*(private_velocity(i,j,k+1,c)-private_velocity(i,j,k-1,c))- &
-              0.15d0*(private_velocity(i,j,k+2,c)-private_velocity(i,j,k-2,c))+ &
-              num1d60*(private_velocity(i,j,k+3,c)-private_velocity(i,j,k-3,c))
+            directional(1)=output_derivative6(private_velocity(i-3,j,k,c),private_velocity(i-2,j,k,c), &
+              private_velocity(i-1,j,k,c),private_velocity(i,j,k,c),private_velocity(i+1,j,k,c), &
+              private_velocity(i+2,j,k,c),private_velocity(i+3,j,k,c),i,im,private_types_cpu(1))
+            directional(2)=output_derivative6(private_velocity(i,j-3,k,c),private_velocity(i,j-2,k,c), &
+              private_velocity(i,j-1,k,c),private_velocity(i,j,k,c),private_velocity(i,j+1,k,c), &
+              private_velocity(i,j+2,k,c),private_velocity(i,j+3,k,c),j,jm,private_types_cpu(2))
+            directional(3)=output_derivative6(private_velocity(i,j,k-3,c),private_velocity(i,j,k-2,c), &
+              private_velocity(i,j,k-1,c),private_velocity(i,j,k,c),private_velocity(i,j,k+1,c), &
+              private_velocity(i,j,k+2,c),private_velocity(i,j,k+3,c),k,km,private_types_cpu(3))
             do d=1,3
               gradient(c,d)=directional(1)*dxi(i,j,k,1,d)+directional(2)*dxi(i,j,k,2,d)+ &
                 directional(3)*dxi(i,j,k,3,d)
+              fields(c+3*(d-1))=gradient(c,d)
             enddo
           enddo
-          fields(:9)=reshape(gradient,[9])
           fields(10)=-0.5d0*sum(gradient*transpose(gradient))
           fields(11)=gradient(1,1)+gradient(2,2)+gradient(3,3)
           fields(12)=gradient(3,2)-gradient(2,3)
           fields(13)=gradient(1,3)-gradient(3,1)
           fields(14)=gradient(2,1)-gradient(1,2)
           do m=1,nselected
-            values((5+m)*nodes+n)=fields(selected_cpu(m))
+            values((basic-1+m)*nodes+n)=fields(selected_cpu(m))
           enddo
         enddo
       enddo
@@ -793,7 +837,8 @@ contains
     character(32) :: name,label
     character(128) :: magic,clock
     character(256) :: row
-    logical :: in_token
+    character(1201) :: data_reference,geometry_reference
+    logical :: in_token,lineage
     character(1),parameter :: tags(3)=['i','j','k']
     call MPI_Comm_rank(comm,rank,err)
     call require(err==MPI_SUCCESS.and.size(axes)>0.and.size(axes)==size(indices),comm,'series layout')
@@ -808,8 +853,10 @@ contains
     if(rank==0) then
       open(newunit=source,file=records,status='old',action='read',iostat=err)
       if(err==0) then
+        magic=''
         read(source,'(a)',iostat=err) magic
-        if(err==0.and.magic/='ASTR_FRAME_SERIES_1') err=1
+        lineage=magic=='ASTR_NATIVE_LINEAGE_1'
+        if(err==0.and.magic/='ASTR_FRAME_SERIES_1'.and..not.lineage) err=1
         if(err==0) then
           open(newunit=unit,file=path,status='new',action='write',iostat=err)
           if(err==0) then
@@ -844,9 +891,19 @@ contains
               endif
               identity=checkpoint_state_identity(step,time,0.0_real64,1.0_real64)
               write(name,'("step",i12.12)') step
+              data_reference=trim(name)//'/data.h5'
+              geometry_reference='../resources/data.h5'
+              if(lineage) then
+                read(source,'(a)',iostat=status) data_reference
+                if(status==0) read(source,'(a)',iostat=status) geometry_reference
+                if(status/=0.or..not.valid_lineage_reference(data_reference).or. &
+                  .not.valid_lineage_reference(geometry_reference)) then
+                  err=1; exit
+                endif
+              endif
               if(axes(1)==0) then
                 call write_grid_xml(unit,global_shape,components,identity,units,trim(name),'',err, &
-                  '../resources/data.h5',trim(name)//'/data.h5',derived_indices)
+                  trim(geometry_reference),trim(data_reference),derived_indices)
               else
                 write(clock,'(es24.16)') time
                 write(unit,'(a)',iostat=err) '<Grid Name="'//trim(name)// &
@@ -861,7 +918,7 @@ contains
                   enddo
                   write(label,'(a,i12.12)') tags(axes(n)),indices(n)
                   call write_grid_xml(unit,shape,components,identity,units,trim(label),trim(label)//'/',err, &
-                    '../resources/data.h5',trim(name)//'/data.h5',derived_indices)
+                    trim(geometry_reference),trim(data_reference),derived_indices)
                 enddo
                 if(err==0) write(unit,'(a)',iostat=err) '</Grid>'
               endif
@@ -878,6 +935,36 @@ contains
     call require(err==0.and.closed==0,comm,'write completed-frame time series')
   end subroutine
 
+  pure logical function valid_lineage_reference(value) result(valid)
+    character(*),intent(in) :: value
+    integer :: i
+    valid=len_trim(value)>0.and.len_trim(value)<=1200
+    if(.not.valid) return
+    valid=value(1:1)/='/'.and.index(value,':')==0
+    do i=1,len_trim(value)
+      if(iachar(value(i:i))<32.or.iachar(value(i:i))==127) valid=.false.
+    enddo
+  end function
+
+  pure function xml_text(value) result(escaped)
+    character(*),intent(in) :: value
+    character(:),allocatable :: escaped
+    integer :: i
+    escaped=''
+    do i=1,len_trim(value)
+      select case(value(i:i))
+      case('&')
+        escaped=escaped//'&amp;'
+      case('<')
+        escaped=escaped//'&lt;'
+      case('>')
+        escaped=escaped//'&gt;'
+      case default
+        escaped=escaped//value(i:i)
+      end select
+    enddo
+  end function
+
   subroutine write_grid_xml(unit,shape,components,identity,units,label,prefix,err,geometry_file,data_file,derived_indices)
     integer,intent(in) :: unit,shape(:),components
     type(checkpoint_state_identity),intent(in) :: identity
@@ -891,12 +978,14 @@ contains
     character(32) :: field_name
     character(128) :: dimensions,clock
     character(16) :: topology
-    character(1024) :: geometry_source
-    character(128) :: data_source
+    character(1200) :: geometry_source,data_source
+    character(:),allocatable :: geometry_xml,data_xml
     geometry_source='data.h5'
     if(present(geometry_file)) geometry_source=geometry_file
     data_source='data.h5'
     if(present(data_file)) data_source=data_file
+    geometry_xml=xml_text(geometry_source)
+    data_xml=xml_text(data_source)
     call normalize_derived_selection(derived_indices,selection,valid)
     if(.not.valid) then
       err=1; return
@@ -911,7 +1000,7 @@ contains
       '<Topology TopologyType="'//trim(topology)//'" Dimensions="'//trim(dimensions)//'"/>', &
       '<Geometry GeometryType="XYZ">', &
       '<DataItem Dimensions="'//trim(dimensions)//' 3" NumberType="Float" Precision="8" Format="HDF">', &
-      trim(geometry_source)//':/'//prefix//'coordinates</DataItem></Geometry>'
+      geometry_xml//':/'//prefix//'coordinates</DataItem></Geometry>'
     do m=1,nfields+1
       if(err/=0) exit
       if(m<=nfields) then
@@ -919,11 +1008,11 @@ contains
         write(unit,'(a)',iostat=err) '<Attribute Name="'//trim(field_name)// &
           '" AttributeType="Scalar" Center="Node">', &
           '<DataItem Dimensions="'//trim(dimensions)//'" NumberType="Float" Precision="8" Format="HDF">', &
-          trim(data_source)//':/'//prefix//trim(field_name)//'</DataItem></Attribute>'
+          data_xml//':/'//prefix//trim(field_name)//'</DataItem></Attribute>'
       else
         write(unit,'(a)',iostat=err) '<Attribute Name="velocity" AttributeType="Vector" Center="Node">', &
           '<DataItem Dimensions="'//trim(dimensions)//' 3" NumberType="Float" Precision="8" Format="HDF">', &
-          trim(data_source)//':/'//prefix//'velocity</DataItem></Attribute>'
+          data_xml//':/'//prefix//'velocity</DataItem></Attribute>'
       endif
     enddo
     if(err==0) write(unit,'(a)',iostat=err) '</Grid>'

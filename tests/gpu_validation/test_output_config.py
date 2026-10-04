@@ -51,13 +51,22 @@ def test_valid(tmp_path, content):
     assert 'checkpoint_final=T' in result.stdout
     if '3000000000' in content:
         assert 'checkpoint_interval_steps=3000000000' in result.stdout
+    assert 'device_reserve_bytes=0' in result.stdout
+
+
+@pytest.mark.parametrize('reserve', [0, 1073741824, 9223372036854775807])
+def test_device_reserve_int64(tmp_path, reserve):
+    result = run(tmp_path, VALID.replace('&output\n', f'&output\n  device_reserve_bytes={reserve},\n'))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f'device_reserve_bytes={reserve}' in result.stdout
 
 
 @pytest.mark.parametrize('name,selected', [
     ('input.output.tgv.example', [0]*14),
     ('input.output.tgv.derived.example', list(range(1, 15))),
+    ('input.output.air5.derived.example', list(range(1, 15))),
 ])
-def test_documented_tgv_examples(tmp_path, name, selected):
+def test_documented_output_examples(tmp_path, name, selected):
     root = Path(__file__).resolve().parents[2]
     result = run(tmp_path, (root / 'scripts/output' / name).read_text())
     assert result.returncode == 0, result.stdout + result.stderr
@@ -83,6 +92,7 @@ def test_documented_tgv_examples(tmp_path, name, selected):
     VALID.replace('interval_time=0.01', 'interval_time=NaN'),
     VALID.replace('host_budget_bytes=134217728', 'host_budget_bytes=1'),
     VALID.replace('device_budget_bytes=67108864', 'device_budget_bytes=-1'),
+    VALID.replace('device_budget_bytes=67108864', 'device_reserve_bytes=-1'),
     VALID.replace('device_budget_bytes=67108864', 'buffer_bytes=0'),
     VALID.replace('device_budget_bytes=67108864', "directory=''"),
     VALID.replace('device_budget_bytes=67108864', "directory='" + 'x' * 1100 + "'"),
@@ -141,6 +151,9 @@ def test_global_grid_bounds(tmp_path, before, after):
 @pytest.mark.parametrize('content,mode,accepted', [
     (DISABLED, '', True), (VALID, '', True),
     (VALID.replace('interval_steps=100', 'interval_steps=3000000000'), '', True),
+    (VALID.replace('&output\n', '&output\n  device_reserve_bytes=1073741824,\n'), '', True),
+    (VALID.replace('&output\n', '&output\n  device_reserve_bytes=9223372036854775807,\n'), '', True),
+    (VALID.replace('&output\n', '&output\n  device_reserve_bytes=-1,\n'), '', False),
     (VALID.replace('vorticity=t', 'initial_frame=t,final_frame=t,velocity_gradient=t,qcriterion=t'), '', True),
     (VALID.replace('device_budget_bytes=67108864',
                    "device_budget_bytes=9000000000,restore_directory='ckpt/saved',restart_output='override'"), '', True),

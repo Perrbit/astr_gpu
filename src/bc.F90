@@ -2412,7 +2412,7 @@ module bc
   !| -------------                                                     |
   !| 20-10-2021: Created by J. Fang @ Warrington                       |
   !+-------------------------------------------------------------------+
-  subroutine complete_inflow_cpu_file(path,writing,identity,budget)
+  subroutine complete_inflow_cpu_file(path,writing,identity,budget,allow_repartition)
     use iso_fortran_env, only: int64,real64
     use ieee_arithmetic, only: ieee_is_finite
     use mpi
@@ -2421,6 +2421,7 @@ module bc
     use checkpoint_state_io
     character(*),intent(in) :: path
     logical,intent(in) :: writing
+    logical,optional,intent(in) :: allow_repartition
     type(checkpoint_state_identity),intent(inout) :: identity
     integer(int64),intent(in) :: budget
     real(real64),allocatable :: buffer(:,:,:,:)
@@ -2455,7 +2456,8 @@ module bc
       endif
     endif
     call checkpoint_state_transfer(path,writing,.true.,[ja+1,ka+1,2],[jg0,kg0,0], &
-      [jm,km,1],0,buffer,identity,remaining,mpi_imin,role=8,metadata=metadata)
+      [jm,km,1],0,buffer,identity,remaining,mpi_imin,role=8,metadata=metadata, &
+      allow_repartition=allow_repartition,repartition_axes=[.false.,.true.,.false.])
     call checkpoint_state_require(metadata(1)==1.and.metadata(2)==0.and. &
       metadata(3)>=3.and.metadata(3)<=99999.and.metadata(4)>=-1.and.metadata(4)<=identity%step.and. &
       all(metadata(5:6)>=0).and.all(metadata(5:6)<=1).and.metadata(5)+metadata(6)==1.and. &

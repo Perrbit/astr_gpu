@@ -16,9 +16,12 @@ from run_complete_step_clock import CLOCK
 from run_output_archive_validation import check_accounting, check_frame, check_series, check_series_reader, frames, groups
 from run_output_restart_validation import archive_schedule_payload, compare_fields, controlled_checkpoint_buffers, run_case
 from test_checkpoint_bundle import fault_library
+from test_output_derived_runtime import accounting as derived_accounting, check_derivatives
+from test_output_fields import DERIVED_NAMES
 
 ROOT = Path(__file__).resolve().parents[2]
 EXE = Path(os.environ.get("ASTR_OUTPUT_RUNTIME_EXE", ROOT / "build_gpu_probe/bin/astr")).resolve()
+CPU_EXE = Path(os.environ.get("ASTR_OUTPUT_CPU_EXE", ROOT / "build_release_restart_cpu/bin/astr")).resolve()
 MPIEXEC = Path(os.environ.get("ASTR_OUTPUT_MPIEXEC",
     "/opt/nvidia/hpc_sdk/Linux_x86_64/26.1/comm_libs/hpcx/bin/mpiexec")).resolve()
 DT_NEXT = [0.002] * 5 + [0.0005] * 7
@@ -151,21 +154,26 @@ def check_checkpoint_clock(path, step):
         assert np.all(state["q0034"][nodes] == 1)
 
 
-@pytest.mark.parametrize("backend", ["cpu", "gpu"])
-@pytest.mark.parametrize("ranks,axis", [(1, "x"), (2, "x"), (2, "y"), (2, "z")])
-def test_variable_clock_exact_continuation(backend, ranks, axis, tmp_path, fault_library, record_property):
-    if not EXE.is_file() or not MPIEXEC.is_file():
+def check_variable_clock_continuation(backend, ranks, axis, tmp_path, fault_library, record_property,
+                                      derived=False, workspace="scalar"):
+    executable = CPU_EXE if derived and backend == "cpu" else EXE
+    if not executable.is_file() or not MPIEXEC.is_file():
         pytest.skip("build the root solver and provide MPI first")
-    args = SimpleNamespace(output=tmp_path, executable=EXE, mpiexec=MPIEXEC,
+    args = SimpleNamespace(output=tmp_path, executable=executable, mpiexec=MPIEXEC,
         case="tgv", mode="steps", restart_step=5, initial_dimension=0,
         legacy_statistics=False, statistics=True, initial_restart=False,
-        filter_workspace="scalar", force="feedback", axis=axis, no_samples=True)
-    archive = groups("time")
+        filter_workspace=workspace, force="feedback", axis=axis, no_samples=True)
+    extra_names = DERIVED_NAMES[9:11] if derived else ()
+
+    def archive(volume=True, enabled=True):
+        selected = groups("time", volume=volume and enabled, slices=enabled)
+        if derived and enabled:
+            selected = selected.replace("initial_frame=.true.", "qcriterion=.true., initial_frame=.true.")
+        return selected
 
     def launch(name, steps, start=0, restore=None, enabled=True):
-        selected = archive if enabled else groups("time", volume=False, slices=False)
         return run_case(args, ROOT, backend, ranks, name, steps, restore=restore,
-            buffer_bytes=4096, checkpoint_interval=99, archive_groups=selected,
+            buffer_bytes=4096, checkpoint_interval=99, archive_groups=archive(enabled=enabled),
             controller_replay=(fault_library, start, DT_NEXT[:steps]))[0]
 
     continuous = launch("continuous", 12)
@@ -198,38 +206,61 @@ def test_variable_clock_exact_continuation(backend, ranks, axis, tmp_path, fault
             assert check_series(case, product) == [TIMES[s] for s in selected]
             check_frame(frames(case, product)[selected[-1]], product,
                 case / f"outdat/new/checkpoints/step{selected[-1]:012d}",
-                case / "outdat/new/resources/geometry.h5", backend)
+                case / "outdat/new/resources/geometry.h5", backend, extra_names=extra_names)
         # Compare every resumed physical field, not only the final frame.
         for step, path in frames(resumed, product).items():
             compare_fields(path / "data.h5", frames(continuous, product)[step] / "data.h5")
-        reader_frames[product] = check_series_reader(resumed, product)["frames"]
+        reader_frames[product] = check_series_reader(resumed, product, extra_names=extra_names)["frames"]
         assert not frames(baseline, product)
-    accounting = {name: check_accounting(case, backend, ranks)
+    def measure(case):
+        return derived_accounting(case, backend) if derived else check_accounting(case, backend, ranks)
+
+    accounting = {name: measure(case)
                   for name, case in (("continuous", continuous), ("resumed", resumed))}
     # Separate slice-only restart also preserves state and downloads selected planes.
     slice_only, _ = run_case(args, ROOT, backend, ranks, "slice_only", 12, restore=source,
         override=True, buffer_bytes=4096, checkpoint_interval=99,
-        archive_groups=groups("time", volume=False), controller_replay=(fault_library, 5, DT_NEXT))
+        archive_groups=archive(volume=False), controller_replay=(fault_library, 5, DT_NEXT))
     check_used_clock(slice_only, 5, 12)
     for filename in ("state.h5", "statistics.h5"):
         compare_fields(continuous / FINAL / filename, slice_only / FINAL / filename)
     assert not frames(slice_only, "fields")
-    accounting["slice_only"] = check_accounting(slice_only, backend, ranks)
+    accounting["slice_only"] = measure(slice_only)
     slice_frames = frames(slice_only, "slices")
     assert sorted(slice_frames) == [8, 12]
     for step, path in slice_frames.items():
         compare_fields(path / "data.h5", frames(continuous, "slices")[step] / "data.h5")
     if backend == "gpu":
-        assert accounting["slice_only"]["downloaded_field_bytes"] == {"slices": 2 * 3 * 17**2 * 6 * 8}
+        assert accounting["slice_only"]["downloads" if derived else "downloaded_field_bytes"] == {
+            "slices": 2 * 3 * 17**2 * (6+len(extra_names)) * 8}
+    derivative_errors = {}
+    if derived:
+        for case in (continuous, seed, resumed, slice_only):
+            step = 5 if case == seed else 12
+            derivative_errors[case.name] = check_derivatives(case, step, "q", backend, volume=case != slice_only)
     assert before == {p.name: p.read_bytes() for p in source.iterdir() if p.is_file()}
     size = sum(p.stat().st_size for p in tmp_path.rglob("*") if p.is_file())
     assert size < 64 * 1024**2
-    with EXE.open("rb") as stream:
+    with executable.open("rb") as stream:
         executable_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
     report = dict(backend=backend, np=ranks, axis=axis, dt_used=DT_USED, dt_next=DT_NEXT,
         final_time=TIMES[-1], duration=0.011, frames=expected, reader_frames=reader_frames,
         slice_only_steps=list(slice_frames), accounting=accounting, test_root_bytes=size,
-        executable=str(EXE), executable_sha256=executable_sha256,
+        derived_fields=list(extra_names), derivative_errors=derivative_errors, filter_workspace=workspace,
+        executable=str(executable), executable_sha256=executable_sha256,
         exact_state=True, exact_statistics=True, exact_restart_schedule=True, output_switch_unchanged=True)
     (tmp_path / "result.json").write_text(json.dumps(report, indent=2) + "\n")
     record_property("result", report)
+
+
+@pytest.mark.parametrize("backend", ["cpu", "gpu"])
+@pytest.mark.parametrize("ranks,axis", [(1, "x"), (2, "x"), (2, "y"), (2, "z")])
+def test_variable_clock_exact_continuation(backend, ranks, axis, tmp_path, fault_library, record_property):
+    check_variable_clock_continuation(backend, ranks, axis, tmp_path, fault_library, record_property)
+
+
+@pytest.mark.parametrize("backend,axis,workspace", [("cpu", "x", "scalar"), ("cpu", "z", "scalar"),
+                                                   ("gpu", "x", "scalar"), ("gpu", "z", "full")])
+def test_variable_clock_derived_continuation(backend, axis, workspace, tmp_path, fault_library, record_property):
+    check_variable_clock_continuation(backend, 2, axis, tmp_path, fault_library, record_property,
+                                      derived=True, workspace=workspace)

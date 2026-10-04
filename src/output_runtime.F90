@@ -1,13 +1,14 @@
 module output_runtime
   use iso_fortran_env, only: int64,real64,int8,iostat_end
   use iso_c_binding, only: c_int,c_char,c_null_char
+  use ieee_arithmetic, only: ieee_is_finite
   use mpi
   use commvar, only: ia,ja,ka,im,jm,km,hm,numq,num_species,num_modequ, &
     nstep,time,deltat,maxstep,use_gpu,flowtype,lcomb,lavg,lcracon,limmbou,lrestart, &
     lwsequ,lwslic,feqchkpt,feqwsequ,feqslice,feqlist,feqavg,conschm,difschm,rkscheme,lihomo,ljhomo,lkhomo, &
-    lreadgrid,gridfile,ninit,diffterm,lfilter
+    lreadgrid,gridfile,ninit,diffterm,lfilter,nondimen,turbmode,recon_schem,lchardecomp
   use commarray, only: q,rho,vel,prs,tmp,x,jacob,dxi
-  use parallel, only: ig0,jg0,kg0,mpirank,irk
+  use parallel, only: ig0,jg0,kg0,mpirank,irk,mpisize
   use bc, only: bctype,turbinf,ninflowslice,complete_inflow_cpu_file
   use output_input_resources, only: set_inflow_resource_root,inflow_source_path, &
     inflow_source_name,discover_inflow_sources,set_initial_resource_root,initial_source_path,initial_source_name
@@ -29,7 +30,7 @@ module output_runtime
 #endif
 #ifdef _CUDA
   use checkpoint_state_gpu, only: checkpoint_perfect_gas_gpu
-  use production_statistics_gpu, only: complete_compact_statistics_file
+  use production_statistics_gpu, only: complete_compact_statistics_file,compact_statistics_host_bytes
   use inflow_timeseries_gpu, only: complete_inflow_gpu_file
 #ifdef ASTR_AIR5_CHEMISTRY
   use checkpoint_state_gpu, only: checkpoint_air5_gpu
@@ -51,6 +52,8 @@ module output_runtime
   logical,save :: mean_statistics=.false.
   logical,save :: conservation_statistics=.false.
   logical,save :: repartitioning=.false.
+  ! Bounded x/z channel repartition passed the approved frozen-field matrix.
+  logical,parameter :: channel_repartition_validated=.true.
   type(output_options),save :: options
   type(checkpoint_retention),save :: ledger
   type(sample_schedule),save :: checkpoint_schedule
@@ -105,9 +108,89 @@ contains
       output_render_repartition_allowed()
   end function
 
+  logical function channel_repartition_case()
+    character(128) :: mode,value
+    real(real64) :: forcing
+    integer :: status,ios
+    channel_repartition_case=.false.
+    if(.not.channel_repartition_validated) return
+    if(trim(flowtype)/='channel'.or.any(bctype/=[1,1,41,41,1,1])) return
+    if(lreadgrid.or.ninit/=3.or..not.nondimen.or.any([ia,ja,ka]/=16)) return
+    if(jg0/=0.or.jm/=ja.or..not.lihomo.or.ljhomo.or..not.lkhomo) return
+    if(compact_statistics.or.statistics_active) return
+    if(trim(conschm)/='643e'.or.trim(difschm)/='643e'.or..not.lfilter.or..not.diffterm) return
+    if(.not.output_render_repartition_allowed()) return
+    call get_environment_variable('ASTR_CHANNEL_FORCE_MODE',mode,status=status)
+    if(status/=0.or.trim(mode)/='fixed') return
+    call get_environment_variable('ASTR_CHANNEL_FORCE_FIXED',value,status=status)
+    if(status/=0) return
+    read(value,*,iostat=ios) forcing
+    if(ios/=0) return
+    if(.not.ieee_is_finite(forcing)) return
+    channel_repartition_case=forcing==1.d-4
+  end function
+
+  logical function registered_repartition_case()
+    registered_repartition_case=tgv_repartition_case().or.channel_repartition_case().or. &
+      curve_repartition_case().or.air5_repartition_case()
+  end function
+
+  logical function air5_repartition_case()
+    character(64) :: value
+    integer :: status,i
+    character(32),parameter :: names(4)=[character(32) :: 'ASTR_AIR5_SOURCE_MODE', &
+      'ASTR_AIR5_CONVECTION_LIMITER','ASTR_AIR5_DIFFUSION_LIMITER','ASTR_AIR5_TOP_MODE']
+    character(32),parameter :: expected(4)=[character(32) :: 'coupled','symmetric_species','layered','characteristic']
+    air5_repartition_case=.false.
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(.not.air5_output_case()) return
+    if(ninit/=0.or.nondimen.or.any([ia,ja,ka]/=16)) return
+    if(jg0/=0.or.jm/=ja.or.lihomo.or.ljhomo.or..not.lkhomo) return
+    if(trim(flowtype)=='air5hbl') then
+      if(ig0/=0.or.im/=ia.or.recon_schem/=5) return
+    else
+      if(kg0/=0.or.km/=ka.or.recon_schem/=3) return
+    endif
+    if(mpisize<1.or.mpisize>2.or.compact_statistics.or.statistics_active) return
+    if(.not.air5_compensated.or.trim(turbmode)/='none') return
+    if(trim(conschm)/='643e'.or.trim(difschm)/='643e'.or..not.lfilter.or..not.diffterm) return
+    if(lchardecomp.or..not.output_render_repartition_allowed()) return
+    do i=1,size(names)
+      call get_environment_variable(trim(names(i)),value,status=status)
+      if(status/=0.or.trim(value)/=trim(expected(i))) return
+    enddo
+    air5_repartition_case=.true.
+#endif
+  end function
+
+  logical function curve_repartition_case()
+    curve_repartition_case=trim(flowtype)=='bl'.and.lreadgrid.and.ninit==0.and.nondimen.and. &
+      mpisize>=1.and.mpisize<=2.and. &
+      all([ia,ja,ka]==16).and.all(bctype==[11,21,41,51,1,1]).and. &
+      (trim(turbinf)=='prof'.or.(dynamic_output_case().and.inflow_count==12)).and. &
+      jg0==0.and.jm==ja.and..not.lihomo.and..not.ljhomo.and.lkhomo.and. &
+      .not.statistics_active.and. &
+      trim(conschm)=='543e'.and.trim(difschm)=='643e'.and.lfilter.and.diffterm.and. &
+      trim(turbmode)=='none'.and.recon_schem==3.and..not.lchardecomp.and. &
+      output_render_repartition_allowed()
+  end function
+
+  function registered_repartition_axes() result(axes)
+    logical :: axes(3)
+    axes=[.true.,.not.channel_repartition_case(),.true.]
+    if(curve_repartition_case()) axes=[.true.,.false.,.true.]
+    if(air5_repartition_case()) then
+      axes=[.false.,.false.,.true.]
+      if(trim(flowtype)=='air5sbli') axes=[.true.,.false.,.false.]
+    endif
+  end function
+
   integer(int64) function state_host_budget() result(bytes)
     bytes=options%host_budget_bytes
     if(allocated(inflow_bytes)) bytes=bytes-16_int64*size(inflow_bytes,kind=int64)
+#ifdef _CUDA
+    bytes=bytes-compact_statistics_host_bytes()
+#endif
   end function
 
   subroutine check(ok,message)
@@ -322,7 +405,7 @@ contains
     integer,intent(inout) :: counter
     logical,intent(inout) :: rkfirst_pending
     character(1024) :: path,source,executable
-    character(256) :: value
+    character(256) :: value,root_probe
     integer :: status,ierr,i
     integer(int64) :: bytes,crc
     logical :: ok
@@ -402,6 +485,17 @@ contains
 #endif
       call geometry_file(trim(path)//'/../../resources/geometry.h5',.false.)
       call flow_file(trim(path)//'/state.h5',.false.,identity)
+      value=''
+      call get_environment_variable('ASTR_CHECKPOINT_TEST_RESTORE_PROBE',value,status=status)
+      call check(status==0.or.status==1,'restore probe option is truncated')
+      root_probe=value
+      call MPI_Bcast(root_probe,len(root_probe),MPI_CHARACTER,0,MPI_COMM_WORLD,ierr)
+      call check(ierr==MPI_SUCCESS.and.value==root_probe,'restore probe option differs between ranks')
+      if(len_trim(value)>0) then
+        call check(trim(value)=='1'.and.air5_repartition_case(),'restore probe requires bounded AIR5 HBL/SBLI')
+        ! Test-only reserialization of the actual host/device state before any RK stage.
+        call flow_file('outdat/restore_probe.h5',.true.,identity)
+      endif
       if(dynamic_output_case()) call inflow_file(trim(path)//'/inflow.h5',.false.,identity)
       call check(identity%step<=huge(nstep),'restored step exceeds solver integer range')
       if(statistics_active) call output_statistics_file(trim(path)//'/statistics.h5',.false., &
@@ -410,8 +504,15 @@ contains
         identity,state_host_budget())
 #ifdef _CUDA
       if(compact_statistics) call complete_compact_statistics_file(trim(path)//'/statistics.h5',.false., &
-        identity,state_host_budget())
+        identity,state_host_budget(),allow_repartition=curve_repartition_case())
 #endif
+      if(len_trim(root_probe)>0) then
+        if(mean_statistics) call mean_statistics_file('outdat/restore_statistics_probe.h5',.true., &
+          identity,state_host_budget())
+#if defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
+        if(conservation_statistics) call conservation_file('outdat/restore_conservation_probe.bin',.true.,identity)
+#endif
+      endif
       nstep=int(identity%step)
       time=identity%time
       deltat=identity%dt_next
@@ -465,11 +566,14 @@ contains
     integer(int64),intent(in) :: budget
 #if defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
     if(use_gpu.and.air5_output_case()) then
-      call complete_air5_mean_statistics_file(path,writing,identity,budget)
+      call complete_air5_mean_statistics_file(path,writing,identity,budget,allow_repartition=air5_repartition_case(), &
+        repartition_axes=registered_repartition_axes())
       return
     endif
 #endif
-    call complete_mean_statistics_file(path,writing,identity,budget)
+    call complete_mean_statistics_file(path,writing,identity,budget, &
+      allow_repartition=channel_repartition_case().or.curve_repartition_case().or.air5_repartition_case(), &
+      repartition_axes=registered_repartition_axes())
   end subroutine
 
   subroutine freeze_inflow_resources()
@@ -517,10 +621,12 @@ contains
     expected=identity
 #ifdef _CUDA
     if(use_gpu) then
-      call complete_inflow_gpu_file(path,writing,identity,state_host_budget())
+      call complete_inflow_gpu_file(path,writing,identity,state_host_budget(), &
+        allow_repartition=curve_repartition_case())
     else
 #endif
-      call complete_inflow_cpu_file(path,writing,identity,state_host_budget())
+      call complete_inflow_cpu_file(path,writing,identity,state_host_budget(), &
+        allow_repartition=curve_repartition_case())
 #ifdef _CUDA
     endif
 #endif
@@ -568,30 +674,36 @@ contains
 #ifdef _CUDA
       if(use_gpu) then
         call checkpoint_air5_gpu(path,writing,[ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],hm, &
-          identity,state_host_budget(),MPI_COMM_WORLD)
+          identity,state_host_budget(),MPI_COMM_WORLD,allow_repartition=air5_repartition_case(),restored_exact=matched, &
+          refresh_halos=refresh_checkpoint_halos,repartition_axes=registered_repartition_axes())
       else
 #endif
         call checkpoint_air5_state(path,writing,[ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],hm, &
-          q,air5_carry,air5_compensated,rho,vel,prs,tmp,tve,spc,identity,state_host_budget(),MPI_COMM_WORLD)
+          q,air5_carry,air5_compensated,rho,vel,prs,tmp,tve,spc,identity,state_host_budget(),MPI_COMM_WORLD, &
+          allow_repartition=air5_repartition_case(),restored_exact=matched,refresh_halos=refresh_checkpoint_halos, &
+          repartition_axes=registered_repartition_axes())
 #ifdef _CUDA
       endif
 #endif
+      if(.not.writing.and.air5_repartition_case()) &
+        call check(matched.eqv.(.not.repartitioning),'AIR5 flow/geometry partition identities disagree')
     else
 #endif
 #ifdef _CUDA
     if (use_gpu) then
       call checkpoint_perfect_gas_gpu(path,writing,[ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],hm, &
-        identity,state_host_budget(),MPI_COMM_WORLD,allow_repartition=tgv_repartition_case(),restored_exact=matched, &
-        refresh_halos=refresh_checkpoint_periodic_halos)
+        identity,state_host_budget(),MPI_COMM_WORLD,allow_repartition=registered_repartition_case(),restored_exact=matched, &
+        refresh_halos=refresh_checkpoint_halos,repartition_axes=registered_repartition_axes())
     else
 #endif
       call checkpoint_perfect_gas_state(path,writing,[ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],hm, &
         q,rho,vel,prs,tmp,identity,state_host_budget(),MPI_COMM_WORLD, &
-        allow_repartition=tgv_repartition_case(),restored_exact=matched,refresh_halos=refresh_checkpoint_periodic_halos)
+        allow_repartition=registered_repartition_case(),restored_exact=matched,refresh_halos=refresh_checkpoint_halos, &
+        repartition_axes=registered_repartition_axes())
 #ifdef _CUDA
     endif
 #endif
-    if(.not.writing.and.tgv_repartition_case()) &
+    if(.not.writing.and.registered_repartition_case()) &
       call check(matched.eqv.(.not.repartitioning),'flow/geometry partition identities disagree')
 #ifdef ASTR_AIR5_CHEMISTRY
     endif
@@ -743,26 +855,28 @@ contains
     endif
     call checkpoint_state_transfer(path,writing,.true.,[ia,ja,ka]+1,[ig0,jg0,kg0], &
       [im,jm,km],hm,buffer,identity,remaining,MPI_COMM_WORLD, &
-      allow_repartition=tgv_repartition_case(),restored_exact=matched)
+      allow_repartition=registered_repartition_case(),restored_exact=matched, &
+      repartition_axes=registered_repartition_axes())
     if (.not.writing) then
       repartitioning=.not.matched
       if(repartitioning) then
         h=hm+1
         do m=1,3
-          call check(all(buffer(h:h+im,h:h+jm,h:h+km,m)==x(0:im,0:jm,0:km,m)), &
+          call check(repartition_geometry_matches(buffer(h:h+im,h:h+jm,h:h+km,m),x(0:im,0:jm,0:km,m)), &
             'repartition physical coordinates mismatch')
         enddo
-        call check(all(buffer(h:h+im,h:h+jm,h:h+km,4)==jacob(0:im,0:jm,0:km)), &
+        call check(repartition_geometry_matches(buffer(h:h+im,h:h+jm,h:h+km,4),jacob(0:im,0:jm,0:km)), &
           'repartition physical Jacobian mismatch')
         m=4
         do b=1,3
           do a=1,3
             m=m+1
-            call check(all(buffer(h:h+im,h:h+jm,h:h+km,m)==dxi(0:im,0:jm,0:km,a,b)), &
+            call check(repartition_geometry_matches(buffer(h:h+im,h:h+jm,h:h+km,m),dxi(0:im,0:jm,0:km,a,b)), &
               'repartition physical metric mismatch')
           enddo
         enddo
-        if(mpirank==0) write(*,'(a)') 'ASTR_OUTPUT_REPARTITION periodic TGV physical-node restore; new halos rebuilt'
+        if(mpirank==0) write(*,'(3a)') 'ASTR_OUTPUT_REPARTITION ',trim(flowtype), &
+          ' physical-node restore; communication halos rebuilt'
         return
       endif
       do m=1,3
@@ -779,14 +893,41 @@ contains
     endif
   end subroutine
 
-  subroutine refresh_checkpoint_periodic_halos(buffer,cells,halo,budget,comm)
+  logical function repartition_geometry_matches(saved,actual) result(matches)
+    real(real64),intent(in) :: saved(:,:,:),actual(:,:,:)
+    real(real64) :: local_scale,scale
+    integer :: ierr
+    matches=all(ieee_is_finite(saved)).and.all(ieee_is_finite(actual))
+    if(air5_repartition_case()) then
+      local_scale=0.0_real64
+      if(all(ieee_is_finite(saved))) local_scale=maxval(abs(saved))
+      call MPI_Allreduce(local_scale,scale,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+      matches=matches.and.ierr==MPI_SUCCESS
+      if(matches) then
+        if(scale==0.0_real64) then
+          matches=all(actual==0.0_real64)
+        else
+          matches=maxval(abs(saved-actual))/scale<=2.d-10
+        endif
+      endif
+      return
+    endif
+    if(.not.matches) return
+    if(curve_repartition_case()) then
+      matches=maxval(abs(saved-actual))<=2.d-10
+    else
+      matches=all(saved==actual)
+    endif
+  end function
+
+  subroutine refresh_checkpoint_halos(buffer,cells,halo,budget,comm)
     use parallel, only: dataswap
     real(real64),contiguous,intent(inout) :: buffer(:,:,:,:)
     integer,intent(in) :: cells(3),halo,comm
     integer(int64),intent(in) :: budget
     integer(int64) :: face,ncomp
     call checkpoint_state_require(comm==MPI_COMM_WORLD.and.all(cells==[im,jm,km]).and.halo==hm.and. &
-      all([lihomo,ljhomo,lkhomo]).and.minval(cells)>=halo,comm,'repartition halo needs periodic solver layout')
+      registered_repartition_case().and.minval(cells)>=halo,comm,'repartition halo needs registered solver layout')
     ncomp=size(buffer,4,kind=int64)
     face=max(int(cells(1)+1,int64)*(cells(2)+1),int(cells(1)+1,int64)*(cells(3)+1), &
       int(cells(2)+1,int64)*(cells(3)+1))
@@ -975,7 +1116,7 @@ contains
       identity,state_host_budget())
 #ifdef _CUDA
     if(compact_statistics) call complete_compact_statistics_file(trim(path)//'/statistics.h5',.true., &
-      identity,state_host_budget())
+      identity,state_host_budget(),allow_repartition=curve_repartition_case())
 #endif
     last_step=nstep
     call control_file(trim(path)//'/control.bin',.true.,counter,pending,identity)

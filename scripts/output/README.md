@@ -14,6 +14,22 @@ The bounded readback gate passed with ParaView 6.0.1 `Xdmf3ReaderS`; select
 that reader rather than the older XDMF2 reader. The latter failed on the
 two-dimensional vector path and is not certified here.
 
+The root CMake installation includes this README, all three offline scripts,
+and the basic/derived TGV and SI AIR5 derived configuration examples.
+These seven files form the `OutputTools` component. To install just these files
+from an already configured build, without installing the solver or examples:
+
+```bash
+cmake --install /path/to/build --prefix /path/to/install --component OutputTools
+```
+
+They normally reside in `share/astr/output`; a configured
+`CMAKE_INSTALL_DATADIR` can change that directory. Keep the scripts together:
+`combine_series.py` imports `repair_series.py` from its own directory.
+Run them with Python using their installed absolute paths. They need no CUDA,
+Catalyst or live solver process. CPU and GPU root-build install rules have
+passed isolated installation and off-checkout CLI import checks (plan 10.46).
+
 ```bash
 python3 scripts/output/export_checkpoint.py \
   /path/to/run/checkpoints/step000000000012 /path/to/new-export \
@@ -95,16 +111,38 @@ AIR5 evidence: `tests/gpu_validation/out/or5_air5_export_20261001.xml`
 `run_checkpoint_export_validation.py --units si`; all twelve cached fields,
 coordinates, vectors, slice-only products and time match the source exactly.
 
-## Candidate Native Archives
+## Optional Native Archives
 
 The new runtime admits basic live volume/slice output for registered RK3
 checkpoint cases: periodic TGV, bc41 channel, static/dynamic CURVE flatplate,
 and fixed dimensional AIR5 HBL/SBLI, on CPU or GPU. Existing case/boundary/
 model admission checks still apply; this is not arbitrary-case support.
-These are bounded local acceptance paths, not a completed production-output
-redesign. Derivative fields have the separate narrow TGV admission below.
+The first delivery has passed its bounded local acceptance matrix (redesign
+plan 10.77-10.78, user-approved scope A), not arbitrary production-scale
+qualification. Derivative fields have the separate bounded admission below.
 The offline exporter above remains a separate interface.
 Ordinary native output requires MPI/HDF5, not Catalyst or ParaView.
+
+`&output device_reserve_bytes` is an optional nonnegative int64 resource
+setting, separate from `device_budget_bytes` (controlled workspace limit).
+For basic GPU field packing it defaults to zero, with no free-memory queries.
+A positive value checks `cudaMemGetInfo` before packing allocation and after
+release, and requires the planned allocation to leave that many bytes free.
+Each rank records `ASTR_OUTPUT_DEVICE_RESERVE` measurements. Query failure or
+insufficient free memory aborts collectively before publishing that frame;
+there is no resolution/backend fallback. An empty segment ledger or `.tmp`
+directory can remain and is not a published frame.
+Derived allocation retains its existing minimum 1 GiB reserve; a larger
+explicit setting increases that minimum. CPU output performs no CUDA query.
+The option neither changes the checkpoint schema nor output schedules and
+can be changed on restore without `restart_output='override'`. It covers
+GPU frame packing, not all checkpoint allocations or the independently
+configured `&insitu_run` rendering/statistics budgets. These are device-wide
+point measurements, not job-owned capacity or an intra-stage/OOM guarantee.
+Local basic-output acceptance uses `device_reserve_bytes=1073741824` for
+16-cubed TGV NP=1/2 and registered NP=2 channel x, static CURVE x,
+dynamic CURVE z, AIR5 HBL z and AIR5 SBLI x. This is not a production
+capacity recommendation; plan 10.59 records the added seven short checks.
 
 The shared writer and offline index tools support explicit derivative selections.
 `ASTR_DERIVED_FRAME_1` records add
@@ -114,20 +152,33 @@ coordinate space and units. Gradient names use velocity component first and
 physical derivative axis second; `velocity_gradient_yx` is du_y/dx. Q is the
 full-strain rotation/strain `Q_rs`, not the second principal invariant.
 The repair/parent-chain tools reject changing layouts and inconsistent field
-declarations. Real native derivatives are admitted only for generated periodic
-Cartesian 16-cubed-cell TGV, five variables, dimensionless input, 643e/643e,
-viscosity/filter enabled, FP64 and NP=1/2 (plan 10.44). Other cases and sizes
-are rejected, even when their basic fields are admitted. GPU rendering and
-repartition have independent admission rules.
+declarations. Real native derivatives admit 16-cubed-cell, five-variable,
+dimensionless FP64 cases with viscosity and 643e differentiation, NP=1/2:
+generated periodic TGV; bc41 channel with an unsplit wall-normal direction;
+registered static/dynamic CURVE flatplate with an unsplit wall-normal direction.
+TGV/channel require 643e convection and filtering; flatplate uses 543e convection.
+The nonperiodic matrix covers NP=1 and NP=2 x/z for channel/static CURVE, and
+NP=2 z for dynamic inflow (plan 10.60). Fixed AIR5 derivatives separately admit
+generated 16-cubed SI HBL NP=1/2 z and SBLI NP=1/2 x, with eleven conservative
+variables, five species, two temperatures, 643e/643e, viscosity/filtering and
+bc=[11,50,41,51,1,1]. The wall-normal direction remains complete. Gradients,
+vorticity and divergence use s^-1; Q_rs uses s^-2. Tests use the fixed dimensional
+scales in plan 10.61, not a dimensionless tolerance applied to raw SI values.
+Other sizes or unregistered combinations remain rejected. GPU rendering and repartition have
+independent admission rules.
 `export_checkpoint.py` still exports cached basic fields only.
 
 Within this gate, select `velocity_gradient=t` (nine components),
 `vorticity=t` (three components), or `qcriterion=t` (Q_rs and divergence)
 independently in `&volume` and `&slices`. Selection appends fields to `fields='basic'`;
-all three together produce twenty scalar fields. See
-`input.output.tgv.derived.example`; the basic example stays unchanged.
-The private complete-step velocity snapshot receives fresh periodic halos and
-sixth-order physical derivatives; stale solver gradients are not exported.
+all three together produce twenty nonreacting or twenty-six AIR5 scalar fields.
+See `input.output.tgv.derived.example` and `input.output.air5.derived.example`;
+the basic example stays unchanged.
+The private complete-step velocity snapshot receives fresh communication halos.
+Interior differences are sixth-order centered; physical-boundary closures match
+the solver's second-order one-sided, second-order centered and fourth-order
+centered formulas. Grid metrics map computational to physical derivatives.
+Stale solver gradients are not exported, including at nonperiodic faces.
 Only selected field tiles/planes cross from GPU to host. The private device
 velocity neighbourhood and halo communication are still needed, so slice-only
 derivatives are not a zero-copy or single-layer-storage path. Controlled budgets
@@ -142,6 +193,20 @@ exact 12 versus 5+7 continuation, output-switch invariance, actual HDF/ParaView
 readback, layout/parent handling and rejection. Reported final-state reference
 and CPU/GPU maxima are 4.00e-15 and 1.01e-14. This is not analytic truncation-error,
 turbulence-physics or production-scale I/O validation.
+
+Plan 10.45 adds joint lifecycle checks within this same admission. CPU/GPU
+NP=2 x/z use variable timesteps, independent physical-time schedules and
+Q/divergence output, with exact 12 versus 5+7 continuation and actual sequence
+readback. Their slice-only GPU frames download 110976 selected-field bytes
+for two frames, three 17-by-17 planes and eight columns. All-fourteen-field
+NP=2 z copies also survive relocating the complete resource tree, same-root
+continuation, `keep=1` rotation, stopped-segment index repair and parent-chain
+readback. The selected source checkpoint remains protected even with `keep=1`;
+this is not a promise of exactly one directory while a source is protected.
+Changing the checkpoint interval requires explicit `restart_output='override'`,
+just as changing the field schedules does. This override does not change q,
+cached fields or accumulated statistics. These are bounded correctness gates,
+not production I/O timings or wider derivative/repartition admission.
 
 `input.output.tgv.example` is a **16x16x16-cell short-test** configuration,
 not a production output-frequency recommendation. Disable the legacy field
@@ -177,8 +242,9 @@ outdat/new/
 
 Each frame is sealed and published after HDF5/XML/metadata close. All selected
 planes at that clock share one HDF5 file with named plane groups. Fields and
-slices are retained independently of checkpoint `keep=1|2`. Slice-only output
-does not create a volume, checkpoint or shared checkpoint geometry. On GPU
+slices are retained independently of checkpoint `keep=1|2`. With checkpointing
+disabled, slice-only output creates no volume, checkpoint or shared checkpoint
+geometry. On GPU
 only selected field nodes are downloaded, without a full-volume/halo
 copy or extra velocity-vector download. Coordinates use existing host geometry.
 The log reports actual field/download bytes and controlled tile-array bytes;
@@ -249,13 +315,14 @@ Indexes are updated after frame publication through complete temporary files
 and same-directory replacements. Each replacement is individually atomic,
 not a two-file transaction and not a power-loss durability guarantee. Failure
 can leave an index behind its complete frames; automatic repair is unfinished.
-Automatic cross-segment publication, other case families, derived quantities
-and other Catalyst restart combinations remain pending. Registered GPU TGV
-render continuation is described below. The separate explicit
+Automatic cross-segment publication and the registered case-family derivatives
+are now covered by the later sections below. Additional Catalyst case/topology
+combinations are not admitted. Registered GPU TGV render continuation is
+described below. The separate explicit
 parent-chain builder below is available for stopped native segments.
 The candidate binary schedule format is not a long-term compatibility promise.
-See redesign plan 10.24 for runtime gates, 10.25 for shared coordinates, and
-10.26 for the single-segment sequence gate, and 10.27 for the additional cases.
+See redesign plan 10.24-10.27 for the initial runtime/resource/sequence gates
+and 10.64-10.65 for dimensional derivatives and automatic parent indexes.
 
 ### Bounded TGV Repartitioned Continuation
 
@@ -269,11 +336,181 @@ Global physical-node records and pointwise statistics are redistributed; halo
 values are rebuilt under the target partition rather than replayed from old
 rank supplements. Regional/statistical histories are not reset.
 
-This does not admit walls, CURVE, AIR5, other numerical settings, larger rank
-counts or backend migration. Repartition also rejects either saved or current
+This TGV gate does not admit walls, CURVE, AIR5, other numerical settings,
+larger rank counts or backend migration. The separately bounded channel and
+static-CURVE exceptions are described below. Repartition also rejects either saved or current
 render enablement; disabling rendering with override cannot bypass the saved
 renderer's unvalidated partition history. Keep the source checkpoint and its
 shared resources immutable. See plan 10.38 for the matrix and readback evidence.
+
+### Bounded Fixed-Force Channel Repartitioned Continuation
+
+Plan 10.49 separately admits generated 16-cubed, nondimensional bc41 channel
+with ninit=3, bctype=[1,1,41,41,1,1], 643e/643e, filtering and diffusion enabled,
+ASTR_CHANNEL_FORCE_MODE=fixed and ASTR_CHANNEL_FORCE_FIXED=1.d-4. Within the
+same backend it supports NP=1<->2 x/z slabs and NP=2 x<->z; both saved and
+current y extents must span the whole domain. CPU registered mean44 histories
+are migrated; compact or in-situ accumulated statistics are not admitted.
+Rendering, feedback/frozen forcing, other walls, CURVE, AIR5 and backend
+migration remain outside this gate.
+
+CPU/GPU now refresh all physical primitive caches from filtered q before
+boundary treatment and spatial operators on nonreacting five-variable explicit
+paths. The frozen-field 12 versus 5+7 matrix uses the existing 2e-10 tolerance;
+same-topology continuation stays exact. This changes the formerly stale-cache
+numerical baseline: generate donors with the matching new executable rather
+than reuse an old binary's checkpoints for exact continuation. This is a
+short numerical gate, not long-time turbulent-channel validation.
+
+### Bounded Static-CURVE x/z Repartitioned Continuation
+
+Plans 10.52 and 10.54 separately admit the static profile flatplate configuration:
+16-cubed, nondimensional bl/prof, ninit=0, bctype=[11,21,41,51,1,1],
+543e/643e, MP7 physical-space reconstruction, no turbulence model, filtering
+and diffusion enabled, no accumulated statistics or rendering. Same-backend
+NP=1<->2 x/z and NP=2 x<->z are supported; both source and target y extents
+must span the whole domain. The tested grid is the extruded warp_x=0.08/warp_y=0.04 mapping
+with dt=1e-5, not an arbitrary three-dimensionally varying metric field.
+
+Global physical q and required caches are read into the target partition;
+communication halos are rebuilt without averaging nodes or recalculating the
+saved caches. Shared coordinates, Jacobian and nine metric components must
+be finite and agree with freshly initialized target geometry within 2e-10.
+Only this cross-topology CURVE geometry check uses a tolerance; original
+TGV/channel geometry checks and same-topology exact restore are unchanged.
+
+CPU scalar/GPU full continuous-12 versus 5+7 checks have maximum x/x-z state
+error 2.5457045834135963e-18 and zero physical geometry error. Target-layout
+shared nodes, interior x and periodic-z face halos are checked separately; undefined
+physical-face exterior/corner halos are not treated as authoritative data.
+Same-topology q/caches/rank supplements and geometry remain exactly equal.
+Original grid/profile files can be absent when matching shared resources are
+carried with the checkpoint. ParaView actually reads the resumed field and
+slice series. GPU face-cache refresh now follows CPU neighbor guards: a
+MPI_PROC_NULL face is not converted from zero conservative ghost values.
+All tested state rank supplements remain finite; no clipping is introduced.
+Nonperiodic y repartition, dynamic inflow, AIR5, derivatives,
+rendering and backend migration remain outside this
+gate. Fixed AIR5 HBL periodic-z repartition passed its separate scale-aware
+gate in plans 10.55-10.56; see below, not the CURVE evidence.
+These CURVE records enforced the controlled packing budget, not a native
+free-memory reserve. The later optional guard is documented above; they do
+not count as reserve-enabled CURVE acceptance.
+
+The later statistics gate in plan 10.67 admits CPU mean44 and GPU compact
+histories for the same 16-cubed static CURVE case. GPU metadata version 2
+retains the original local partition layout and adds an `inherited/` group
+inside `statistics.h5`, not another checkpoint file. Root `q0002:q0013`
+and `q0015:q0017` contain partition-local increments. Their global total is
+the sum over the root partition axis plus the first inherited plane, once.
+Do not sum copies of the inherited baseline across ranks. Root `q0001` and
+`q0014` are geometric measures; sum their partition contributions without
+adding the inherited geometry copies. Terminal planes are zero padding;
+wall moments occupy j=0 only. Both groups carry the same current sampling
+identity, not separate sample counts to add.
+
+On repartition, old local increments join the inherited history and new local
+increments start from zero; total sample identity is preserved. Same-topology
+restore preserves both arrays exactly. A second exact restart after migration
+is checked in both x/z directions. Nonzero migrated history cannot be written
+to legacy binary sidecars. The host baseline is replicated and budgeted; this
+bounded 16-cubed implementation is not a production-size capacity claim.
+CPU/GPU cumulative errors are at most 2.28e-13/7.11e-15. Native first/last
+frame reserve checks, controlled buffers and two-rank memcheck gates passed.
+The original geometry-only evidence above retains its original scope. Dynamic
+inflow adds the separate bounded gate below; AIR5 history migration and rendering
+repartition remain unregistered.
+
+### Bounded Dynamic-CURVE Inflow And History Repartition
+
+Plans 10.68-10.69 admit the same 16-cubed extruded geometry with dt=6e-6,
+twelve frozen nonpolynomial temporal source frames, four active cached frames,
+543e/643e, viscosity/filter, FP64 and explicit synchronization. CPU/GPU separately
+cover NP=1<->2 x/z and NP=2 x<->z. Solver y stays complete; the inlet file uses
+physical y/z/dummy axes, so only its z coordinate is repartitioned.
+
+Cached physical values are read directly for the destination partition. Past
+frames are not reinterpolated, and accumulated statistics are neither reset nor
+resampled. Time windows, slot identities, sampling and schedules are preserved.
+Tests actually advance the frame cursor and include another exact restart after
+both directional migrations. Frozen resources suffice without the original inlet
+directory. Same-topology payloads remain exact; cross-topology state/history
+errors stay below 2e-10 and inlet cache differences are zero.
+
+This admission is NP<=2 only. Larger or different dynamic configurations, y
+repartition, cross-backend migration and rendering repartition remain unavailable.
+The replicated host history baseline is bounded-test evidence, not an arbitrary
+production-grid memory guarantee. No additional checkpoint file is introduced.
+
+### Bounded AIR5 HBL Periodic-z Repartition
+
+Plans 10.55-10.56 admit the fixed 16-cubed-cell dimensional HBL short gate,
+not SBLI: generated Cartesian grid, ninit=0, bc=11/50/41/51/1/1, 643e/643e,
+recon_schem=5, physical-space reconstruction, filter/viscosity enabled and FP64
+explicit synchronization. It uses coupled sources, compensation on,
+symmetric_species convection, layered diffusion and the characteristic top.
+The original gate excluded accumulated histories. Plans 10.70-10.71 additionally
+admit mean44 and GPU global conservation history; formal in-situ statistics,
+derivatives and rendering repartition remain outside this gate. Source and target
+x/y stay complete; only same-backend NP=1<->2
+periodic-z repartition is admitted. Tests use CPU scalar and GPU full storage.
+
+The tested domain is 0.08/0.01/0.002 m, initial rho=0.05 kg/m^3, T=3000 K,
+N2/O2=0.767/0.233 and dt=1e-10 s. q, carry, their extended-precision represented
+value q-carry and caches are compared separately against frozen physical scales.
+Maximum normalized state/defined-halo differences are 2.585e-25/2.585e-26;
+all thirteen geometry fields match exactly. Pure restore preserves all 34
+physical components bitwise before the first advance; same-layout continuation
+is bitwise exact. This is a matched numerical restart gate, not independent
+chemistry physics, arbitrary-profile, long-time or performance validation.
+
+`ASTR_CHECKPOINT_TEST_RESTORE_PROBE=1` is a reserved local validation switch.
+It requires this bounded HBL restore and agreement across ranks, writes
+`outdat/restore_probe.h5` before any advance and, when enabled, writes
+`outdat/restore_statistics_probe.h5` and `outdat/restore_conservation_probe.bin`
+after restoring those histories. It leaves normal checkpoint
+schedules unchanged. The file is a standalone diagnostic state, not a published
+restart batch. Without the explicit switch there is no additional output.
+Do not use it in production launch scripts.
+
+Mean44 remains a global physical-node HDF5 array, not a partition-integrated
+history. Its actual accumulated values are redistributed directly, with counts
+and first/last sample metadata unchanged. No historical samples are regenerated.
+The global conservation baseline is restored once per rank from the same saved
+scalar state, never multiplied by the destination rank count or recomputed.
+The continuation phase-0 row echoes that baseline, not a new sample.
+
+Pure restore preserves all 34 state/cache/carry and 44 mean fields bitwise, plus
+the enabled conservation scalar history. Same-topology continuation remains
+bitwise. Cross-layout mean differences use fixed pre-run dimensional scales
+times actual sample count; conservation totals use conserved scales times the
+fixed domain volume. Both normalized gates are 2e-10. These are numerical
+restart checks, not claims about long-time statistical convergence.
+
+Seventeen main gates, eight affected real-case continuations and thirteen
+provider/padding checks pass. Per-test disk/controlled host maxima are
+65596431/9803688 bytes, below 64 MiB; MPI/HDF5/compiler transient peaks are not
+included. This AIR5 gate did not enable the later optional basic-archive
+reserve guard (plan 10.57) and is not its acceptance evidence.
+Pre/post-run free-memory observations are not a per-frame OOM guarantee.
+
+### Bounded AIR5 SBLI x Repartition
+
+Plans 10.72-10.73 additionally admit fixed dimensional 16-cubed SBLI,
+same-backend NP=1<->2 x only, with y/z complete. The HBL domain, physical
+scales, boundary inventory, FP64, explicit synchronization, filter/viscosity,
+coupled sources, compensation and limiter settings above are retained.
+SBLI uses recon_schem=3, inlet speed 4*a_ref, incident angle 25 degrees,
+top intersection x=0.035 m and the frozen initial field/Tv profile.
+
+The checkpoint restores all 34 physical state/cache/carry fields and actual
+mean44 moments bitwise before advancing. It preserves the GPU conservation
+baseline and sampling metadata, without resampling or clearing history.
+Same-topology and another exact restart after migration are bitwise;
+cross-layout fields and moments satisfy the fixed-scale 2e-10 gates.
+CPU/GPU y/z repartition fails closed. This does not admit arbitrary SBLI,
+rendering repartition, cross-backend migration or long-time physical validation.
+The reserved restore probe described above also accepts this bounded SBLI gate.
 
 ### Optional Native TGV Rendering And Continuation
 
@@ -312,6 +549,17 @@ and geometry work. It is not the plane-only file transfer path or zero-copy
 postprocessing. Render-only native runs no longer retain a full previous-frame
 snapshot for final rendering. Short observed resource peaks are not a
 long-sequence or production-scale memory guarantee.
+
+Plan 10.74 additionally checks simultaneous checkpoint, basic volume, three
+index slices and formal velocity statistics, with GPU rendering enabled.
+CPU-only and GPU NP=1/2 complete 12 versus 5+7 steps exactly; disabling archives
+and rendering leaves flow/statistics unchanged. Use the existing output examples
+and independent `&volume` / `&slices` schedules alongside `input.insitu`.
+Keep the renderer output directory distinct from the native output root.
+The joint gate retains the same topology and does not expand renderer admission.
+Scope A closes the first delivery with GPU Cartesian TGV rendering only.
+CPU/CURVE/AIR5 rendering and all render-enabled repartition remain rejected
+and require separate future implementation and acceptance goals.
 
 Checkpoint publication now rejects a stale `.LATEST.tmp`, or a `LATEST` that
 is a symbolic link, hard link or directory, before renaming the candidate.
@@ -438,3 +686,44 @@ temporary indexes before two sequential renames inside the fresh directory.
 On failure, partial diagnostics remain; no source files are removed or changed.
 This is not a two-file transaction, live-writer repair or fsync/power-loss
 guarantee. See plan 10.34 for CPU/GPU and CURVE/AIR5 local readback evidence.
+
+Plan 10.62 adds a combined lifecycle check for registered 16-cubed dynamic
+CURVE inflow (z), AIR5 HBL (z) and AIR5 SBLI (x), CPU/GPU each NP=2. A relocated
+five-step source resumes to step twelve, explicitly changing checkpoint
+scheduling to every step and keep=1. The protected source at step five and the
+latest checkpoint at step twelve both remain: keep=1 does not override restore
+source protection. Historical fields and shared resources remain unchanged.
+State, accumulated statistics, inflow history or AIR5 compensation and GPU
+conservation history match the corresponding uninterrupted run exactly.
+After another directory move, stopped-segment index repair and explicit
+parent-chain ParaView readback pass. The six matched refusal checks reject a
+schedule change without `restart_output='override'`, without publishing a new
+complete checkpoint or changing an existing one. These are same-topology basic
+field checks, not AIR5 derivative, repartition or live-writer repair acceptance.
+
+### Native Automatic Parent Index
+
+Each enabled native product now publishes a per-segment `series.xdmf` and,
+when layouts match, a `lineage.xdmf` referencing the explicit parent chain and
+current frames. Ancestors are truncated at each declared restore point, not
+at arbitrary directory order. The companion `lineage.frames` uses
+`ASTR_NATIVE_LINEAGE_1`: each frame has a clock row, a data-file reference and
+a geometry-file reference. This is distinct from the offline combined ledger.
+The solver uses native Fortran/C/HDF5 APIs; Python is not a runtime dependency.
+
+Startup validates ancestor seals, CRCs, input/segment fingerprints and typed
+HDF5 inventories. File CRC checks scan payload bytes but do not load field
+arrays. Subsequent frame publication streams cached ancestor references and
+current clock rows, without repeated ancestor CRC scans. Paths are relative,
+XML-escaped and reject aliases, controls and HDF-reference delimiters.
+The bounded catalog allows 128 segments and 8192 frames per ancestor segment;
+paths are at most 1200 characters. Exceeding a bound is an error, not truncation.
+
+An explicit legal override can change fields or planes. A valid incompatible
+layout reports `ASTR_OUTPUT_LINEAGE unavailable`, keeps all parent edges and
+per-segment indexes, and allows continuation without a unified index. It does
+not intersect field sets, fabricate missing fields or delete history. Missing,
+corrupt or invalid sources remain errors. Keep the full relative source tree
+when moving an archive; the index does not copy source fields or geometry.
+Metadata replacements are separate atomic file operations, not a two-file
+transaction. On failure, inspect staging; indexes are not checkpoint authority.

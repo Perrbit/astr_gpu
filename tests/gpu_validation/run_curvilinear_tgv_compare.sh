@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CASE_DIR="$ROOT_DIR/examples/Taylor_Green_Vortex"
+CASE_DIR="${CASE_DIR:-$ROOT_DIR/examples/Taylor_Green_Vortex}"
 CPU_EXE="${CPU_EXE:-$ROOT_DIR/build_cpu_probe/bin/astr}"
 GPU_EXE="${GPU_EXE:-$ROOT_DIR/build_gpu_probe/bin/astr}"
 GPU_HALO_TRANSPORT="${GPU_HALO_TRANSPORT:-}"

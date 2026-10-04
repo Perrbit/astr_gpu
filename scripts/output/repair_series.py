@@ -44,6 +44,7 @@ def optional_plain(path):
 def frame_catalog(segment, budget):
     names, ignored, name_bytes = [], 0, 0
     allowed = {"SEGMENT", "input.txt", "LATEST", ".LATEST.tmp",
+               "lineage.parent", "lineage.frames", "lineage.xdmf", "lineage.frames.tmp", "lineage.xdmf.tmp",
                *INDEX_NAMES, *(name + ".tmp" for name in INDEX_NAMES)}
     with os.scandir(segment) as members:
         for member in members:

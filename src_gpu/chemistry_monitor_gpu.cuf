@@ -157,7 +157,7 @@ contains
     nsamples=int(sample_count)
   end subroutine
 
-  subroutine complete_air5_mean_statistics_file(path,writing,identity,budget)
+  subroutine complete_air5_mean_statistics_file(path,writing,identity,budget,allow_repartition,repartition_axes)
     use mpi, only: MPI_COMM_WORLD
     use ieee_arithmetic, only: ieee_is_finite
     use commvar, only: ia,ja,ka,im,jm,km
@@ -168,14 +168,18 @@ contains
     use gpu_check, only: sync_gpu_boundary
     character(*),intent(in) :: path
     logical,intent(in) :: writing
+    logical,optional,intent(in) :: allow_repartition,repartition_axes(3)
     type(checkpoint_state_identity),intent(inout) :: identity
     integer(int64),intent(in) :: budget
     real(real64),allocatable :: values(:,:,:,:)
     integer(int64) :: remaining,metadata(8)
+    logical :: axes(3)
     type(checkpoint_state_identity) :: expected
     call checkpoint_state_require(active,MPI_COMM_WORLD,'AIR5 mean statistics not initialized')
     call allocate_checkpoint_buffer([im,jm,km],0,44,budget,values,remaining,MPI_COMM_WORLD)
     expected=identity
+    axes=[.false.,.false.,.true.]
+    if(present(repartition_axes)) axes=repartition_axes
     metadata=[2_int64,sample_count,first_step,last_step,transfer(first_time,0_int64), &
       merge(1_int64,0_int64,sample_count>0),merge(1_int64,0_int64,sample_count>0),transfer(last_time,0_int64)]
     call sync_gpu_boundary('AIR5 mean statistics transfer entry')
@@ -186,7 +190,8 @@ contains
       values=accumulated_d
     endif
     call checkpoint_state_transfer(path,writing,.true.,[ia,ja,ka]+1,[ig0,jg0,kg0], &
-      [im,jm,km],0,values,identity,remaining,MPI_COMM_WORLD,role=6,metadata=metadata)
+      [im,jm,km],0,values,identity,remaining,MPI_COMM_WORLD,role=6,metadata=metadata, &
+      allow_repartition=allow_repartition,repartition_axes=axes)
     call checkpoint_state_require(all(ieee_is_finite(values)),MPI_COMM_WORLD,'nonfinite AIR5 mean payload')
     call checkpoint_state_require(metadata(1)==2.and.metadata(2)>=0.and.metadata(2)<=huge(nsamples).and. &
       metadata(3)>=0.and.metadata(3)<=identity%step.and.metadata(4)>=0.and. &

@@ -10,6 +10,7 @@ module checkpoint_state_io
   public :: checkpoint_air5_state
   public :: checkpoint_state_context
   public :: checkpoint_halo_refresh
+  public :: checkpoint_state_header
 
   abstract interface
     subroutine checkpoint_halo_refresh(buffer,cells,halo,budget,comm)
@@ -29,6 +30,29 @@ module checkpoint_state_io
     real(real64) :: time=0, dt_used=0, dt_next=0
   end type
 contains
+  subroutine checkpoint_state_header(path,header,metadata,comm)
+    character(*),intent(in) :: path
+    integer(int64),intent(out) :: header(13),metadata(:)
+    integer,intent(in) :: comm
+    integer(hid_t) :: file,xfer
+    integer :: err,rank
+    call MPI_Comm_rank(comm,rank,err)
+    call require(err==MPI_SUCCESS,comm,'header rank')
+    call h5open_f(err)
+    call require(err==0,comm,'header HDF5 initialize')
+    call h5fopen_f(path,H5F_ACC_RDONLY_F,file,err)
+    call require(err==0,comm,'open state header')
+    call h5pcreate_f(H5P_DATASET_XFER_F,xfer,err)
+    call require(err==0,comm,'header transfer property')
+    call integers(file,'identity',header,.false.,xfer,comm,rank)
+    call require(header(1)==magic.and.header(2)==schema.and.header(3)==1,comm,'header identity/version/phase')
+    call integers(file,'metadata',metadata,.false.,xfer,comm,rank)
+    call h5pclose_f(xfer,err)
+    call require(err==0,comm,'close header transfer property')
+    call h5fclose_f(file,err)
+    call require(err==0,comm,'close state header')
+  end subroutine
+
   subroutine checkpoint_state_context(batch,last_complete)
     character(*),intent(in) :: batch,last_complete
     failure_batch=batch
@@ -61,10 +85,12 @@ contains
   end subroutine
 
   subroutine checkpoint_perfect_gas_state(path,writing,global_shape,origin,cells,halo, &
-                                         q,rho,vel,prs,tmp,identity,budget,comm,allow_repartition,restored_exact,refresh_halos)
+                                         q,rho,vel,prs,tmp,identity,budget,comm,allow_repartition,restored_exact,refresh_halos, &
+                                         repartition_axes)
     character(*),intent(in) :: path
     logical,intent(in) :: writing
     logical,optional,intent(in) :: allow_repartition
+    logical,optional,intent(in) :: repartition_axes(3)
     logical,optional,intent(out) :: restored_exact
     procedure(checkpoint_halo_refresh),optional :: refresh_halos
     integer,intent(in) :: global_shape(3),origin(3),cells(3),halo,comm
@@ -94,7 +120,8 @@ contains
     endif
     ! Role 2 preserves q and cached primitives independently, including halos.
     call checkpoint_state_transfer(path,writing,.true.,global_shape,origin,cells,halo, &
-      buffer,identity,remaining,comm,role=2,allow_repartition=permit,restored_exact=matched)
+      buffer,identity,remaining,comm,role=2,allow_repartition=permit,restored_exact=matched, &
+      repartition_axes=repartition_axes)
     if(present(restored_exact)) restored_exact=matched
     if (.not.writing) then
       if(.not.matched) then
@@ -110,9 +137,13 @@ contains
   end subroutine
 
   subroutine checkpoint_air5_state(path,writing,global_shape,origin,cells,halo, &
-                                  q,carry,compensated,rho,vel,prs,tmp,tve,spc,identity,budget,comm)
+                                  q,carry,compensated,rho,vel,prs,tmp,tve,spc,identity,budget,comm, &
+                                  allow_repartition,restored_exact,refresh_halos,repartition_axes)
     character(*),intent(in) :: path
     logical,intent(in) :: writing,compensated
+    logical,optional,intent(in) :: allow_repartition,repartition_axes(3)
+    logical,optional,intent(out) :: restored_exact
+    procedure(checkpoint_halo_refresh),optional :: refresh_halos
     integer,intent(in) :: global_shape(3),origin(3),cells(3),halo,comm
     real(real64),contiguous,intent(inout) :: q(:,:,:,:),rho(:,:,:),vel(:,:,:,:), &
       prs(:,:,:),tmp(:,:,:),tve(:,:,:),spc(:,:,:,:)
@@ -122,6 +153,9 @@ contains
     real(real64),allocatable :: buffer(:,:,:,:)
     integer(int64) :: remaining,metadata(2),expected(2)
     integer :: extents(3),h
+    logical :: permit,matched
+    permit=.false.
+    if(present(allow_repartition)) permit=allow_repartition
     call allocate_checkpoint_buffer(cells,halo,34,budget,buffer,remaining,comm)
     extents=shape(buffer(:,:,:,1)); h=halo+1
     call require(all(shape(q)==[extents,11]).and.all(shape(rho)==extents).and. &
@@ -145,11 +179,19 @@ contains
       buffer(:,:,:,28)=tmp
       buffer(:,:,:,29)=tve
       buffer(:,:,:,30:34)=spc
+    else
+      buffer=0.0_real64
     endif
     call checkpoint_state_transfer(path,writing,.true.,global_shape,origin,cells,halo, &
-      buffer,identity,remaining,comm,role=7,metadata=metadata)
+      buffer,identity,remaining,comm,role=7,metadata=metadata,allow_repartition=permit,restored_exact=matched, &
+      repartition_axes=repartition_axes)
+    if(present(restored_exact)) restored_exact=matched
     call require(all(metadata==expected),comm,'AIR5 compensation contract mismatch')
     if(.not.writing) then
+      if(.not.matched) then
+        call require(present(refresh_halos),comm,'AIR5 repartition halo provider missing')
+        call refresh_halos(buffer,cells,halo,remaining,comm)
+      endif
       q=buffer(:,:,:,1:11)
       if(compensated) carry=buffer(h:h+cells(1),h:h+cells(2),h:h+cells(3),12:22)
       rho=buffer(:,:,:,23)
@@ -278,10 +320,12 @@ contains
   end subroutine
 
   subroutine checkpoint_state_transfer(path,writing,exact,global_shape,origin,cells,halo,q,identity, &
-                                       buffer_limit,comm,role,metadata,allow_repartition,restored_exact)
+                                       buffer_limit,comm,role,metadata,allow_repartition,restored_exact,repartition_axes,group_name)
     character(*), intent(in) :: path
+    character(*),optional,intent(in) :: group_name
     logical, intent(in) :: writing,exact
     logical,optional,intent(in) :: allow_repartition
+    logical,optional,intent(in) :: repartition_axes(3)
     logical,optional,intent(out) :: restored_exact
     integer, intent(in) :: global_shape(3),origin(3),cells(3),halo,comm
     integer,optional,intent(in) :: role
@@ -294,9 +338,10 @@ contains
     integer :: metadata_count,root_metadata_count
     integer(int64), allocatable :: partitions(:),current(:)
     real(real64), allocatable :: extras(:)
-    integer(hid_t) :: file,access,xfer,dset,space,mem,native
+    integer(hid_t) :: file,container,access,xfer,dset,space,mem,native
     integer(hsize_t) :: dims3(3),mdims3(3),start3(3),count3(3),dims1(1),mdims1(1),start1(1),count1(1)
     integer :: rank,np,err,mpi_i64,ncomp,old_np,r,s,a,b,i,j,k,m,n,allocerr,mode(3),root_mode(3),state_role
+    integer :: axes_mode(3),root_axes(3)
     logical :: permit,restore_exact,matched
     integer(int64) :: lo(3),hi(3),other_lo(3),other_hi(3),count(3),sum_owned,v
     character(16) :: name
@@ -314,6 +359,11 @@ contains
     root_mode=mode
     call MPI_Bcast(root_mode,3,MPI_INTEGER,0,comm,err)
     call require(err==MPI_SUCCESS.and.all(root_mode==mode),comm,'transfer mode mismatch')
+    axes_mode=1
+    if(present(repartition_axes)) axes_mode=merge(1,0,repartition_axes)
+    root_axes=axes_mode
+    call MPI_Bcast(root_axes,3,MPI_INTEGER,0,comm,err)
+    call require(err==MPI_SUCCESS.and.all(root_axes==axes_mode),comm,'repartition axes mismatch')
     metadata_count=-1
     if(present(metadata)) metadata_count=size(metadata)
     root_metadata_count=metadata_count
@@ -397,7 +447,20 @@ contains
     call require(err==0,comm,'file access property')
     call h5pset_fapl_mpio_f(access,comm,MPI_INFO_NULL,err)
     call require(err==0,comm,'parallel file access')
-    if (writing) then
+    if(present(group_name)) then
+      call require(group_name=='inherited',comm,'unsupported state group')
+      if(writing) then
+        call h5fopen_f(path,H5F_ACC_RDWR_F,container,err,access_prp=access)
+      else
+        call h5fopen_f(path,H5F_ACC_RDONLY_F,container,err,access_prp=access)
+      endif
+      call require(err==0,comm,'open grouped state file')
+      if(writing) then
+        call h5gcreate_f(container,group_name,file,err)
+      else
+        call h5gopen_f(container,group_name,file,err)
+      endif
+    else if (writing) then
       call h5fcreate_f(path,H5F_ACC_EXCL_F,file,err,access_prp=access)
     else
       call h5fopen_f(path,H5F_ACC_RDONLY_F,file,err,access_prp=access)
@@ -469,6 +532,21 @@ contains
     if(.not.writing.and.permit.and..not.matched) &
       call require(np<=2.and.old_np<=2,comm, &
         'validated repartition gate requires at most two ranks')
+    if(.not.writing.and.permit.and..not.matched) then
+      do m=1,3
+        if(axes_mode(m)==1) cycle
+        do r=0,np-1
+          a=8*r
+          call require(current(a+m)==0.and.current(a+m+3)==g(m)-1,comm, &
+            'repartition nonperiodic direction must stay unpartitioned')
+        enddo
+        do r=0,old_np-1
+          a=8*r
+          call require(partitions(a+m)==0.and.partitions(a+m+3)==g(m)-1,comm, &
+            'repartition nonperiodic direction must stay unpartitioned')
+        enddo
+      enddo
+    endif
     if(.not.writing.and.permit) restore_exact=matched
     if(present(restored_exact)) restored_exact=matched
     if (restore_exact.or.writing) then
@@ -540,7 +618,13 @@ contains
     end block
     call h5pclose_f(xfer,err)
     call require(err==0,comm,'close transfer property')
-    call h5fclose_f(file,err)
+    if(present(group_name)) then
+      call h5gclose_f(file,err)
+      call require(err==0,comm,'close state group')
+      call h5fclose_f(container,err)
+    else
+      call h5fclose_f(file,err)
+    endif
     call require(err==0,comm,'close state file')
     ! Do not globally shut down HDF5: the caller may have other files open.
   contains

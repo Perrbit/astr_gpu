@@ -41,6 +41,36 @@ def run_probe(command, *, env=None, timeout=45):
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
+@pytest.mark.parametrize("kind,components", [("volume", 6), ("planes", 12)])
+def test_native_lineage_series_references(probe, kind, components, tmp_path):
+    data = "../parent & branch/segment00000000/step000000000002/data.h5"
+    geometry = "../parent & branch/resources/data.h5"
+    (tmp_path / "series.frames").write_text(
+        "ASTR_NATIVE_LINEAGE_1\n0 0\nstep000000000000/data.h5\n../resources/data.h5\n"
+        f"2 0.002\n{data}\n{geometry}\n")
+    result = run_probe([MPIEXEC, "--mca", "coll_hcoll_enable", "0", "-n", "2",
+        str(probe), str(tmp_path), str(components), "1", "series_lineage_"+kind])
+    assert result.returncode == 0, result.stdout+result.stderr
+    xml = ET.parse(tmp_path / "series.xdmf")
+    times = xml.findall("./Domain/Grid/Grid/Time")
+    assert [float(item.attrib["Value"]) for item in times] == [0., .002]
+    refs = [item.text.strip() for item in xml.findall(".//DataItem")]
+    assert any(item.startswith(data+":/") for item in refs)
+    assert any(item.startswith(geometry+":/") for item in refs)
+    assert "&amp;" in (tmp_path / "series.xdmf").read_text()
+    assert sum(p.stat().st_size for p in tmp_path.rglob("*") if p.is_file()) < 4*1024**2
+
+
+@pytest.mark.parametrize("tail", ["", "data.h5\n", "/absolute/data.h5\n../resources/data.h5\n",
+    "../parent/data.h5:/wrong\n../resources/data.h5\n", "x"*1201+"\n../resources/data.h5\n"])
+def test_native_lineage_invalid_reference_rejected(probe, tail, tmp_path):
+    (tmp_path / "series.frames").write_text("ASTR_NATIVE_LINEAGE_1\n0 0\n"+tail)
+    result = run_probe([MPIEXEC, "--mca", "coll_hcoll_enable", "0", "-n", "2",
+        str(probe), str(tmp_path), "6", "1", "series_lineage_volume"])
+    assert result.returncode != 0
+    assert "write completed-frame time series" in result.stdout+result.stderr
+
+
 @pytest.fixture(scope="module")
 def probe(tmp_path_factory):
     link = BUILD / "src/CMakeFiles/astr.dir/link.txt"
@@ -153,7 +183,7 @@ def test_private_manufactured_derivatives(probe, ranks, decomposition, mode, tmp
 
 
 @pytest.mark.parametrize("fault,message", [("budget", "private CPU derivative budget"),
-    ("boundary", "private derivatives require periodic"), ("scheme", "private derivatives require periodic")])
+    ("boundary", "private derivatives require consistent"), ("scheme", "private derivatives require consistent")])
 def test_private_derivative_provider_rejected(probe, fault, message, tmp_path):
     (tmp_path / "0_0").mkdir()
     run = run_probe([MPIEXEC, "--oversubscribe", "--mca", "coll_hcoll_enable", "0", "-n", "2",
@@ -165,8 +195,8 @@ def test_private_derivative_provider_rejected(probe, fault, message, tmp_path):
 
 @pytest.mark.skipif(not GPU, reason="requires CUDA root build and two devices")
 @pytest.mark.parametrize("fault,message", [("budget", "private GPU derivative budget"),
-    ("boundary", "private GPU derivatives require periodic"),
-    ("scheme", "private GPU derivatives require periodic"),
+    ("boundary", "private GPU derivatives require consistent"),
+    ("scheme", "private GPU derivatives require consistent"),
     ("busy", "private GPU output requires completed halo transport")])
 def test_private_gpu_derivative_provider_rejected(probe, fault, message, tmp_path):
     (tmp_path / "1_0").mkdir()
@@ -175,6 +205,26 @@ def test_private_gpu_derivative_provider_rejected(probe, fault, message, tmp_pat
     assert run.returncode != 0
     assert message in run.stdout + run.stderr
     assert not list(tmp_path.rglob("*.h5"))
+
+
+@pytest.mark.parametrize("ranks,decomposition", [(1, 1), (2, 1), (2, 2), (2, 3)])
+def test_private_curved_physical_derivatives(probe, ranks, decomposition, tmp_path):
+    """Affine physical velocity on a non-affine grid, with all faces nonperiodic."""
+    for backend in range(2 if GPU else 1):
+        for axis in range(4):
+            (tmp_path / f"{backend}_{axis}").mkdir()
+    run = run_probe([MPIEXEC, "--oversubscribe", "--mca", "coll_hcoll_enable", "0", "-n", str(ranks),
+                     str(probe), str(tmp_path), "6", str(decomposition), "numeric_walls"])
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.count("OUTPUT_PRIVATE_DERIVATIVES_PASS") == ranks
+    gradient = np.array([[2., 3., -1.], [-1., 4., 2.], [0.5, -1., 3.]])
+    expected = list(gradient.T.ravel())
+    expected += [-0.5*np.sum(gradient*gradient.T), np.trace(gradient), -3., -1.5, -4.]
+    for path in tmp_path.glob("*_*/*h5"):
+        with h5py.File(path) as data:
+            for name, value in zip(DERIVED_NAMES, expected):
+                np.testing.assert_allclose(data[name][:], value, rtol=0, atol=2e-10, err_msg=name)
+    assert sum(p.stat().st_size for p in tmp_path.rglob("*") if p.is_file()) <= 4*1024**2
 
 
 @pytest.mark.skipif(not GPU or os.environ.get("ASTR_FIELDS_MEMCHECK") != "1", reason="opt-in CUDA memcheck")

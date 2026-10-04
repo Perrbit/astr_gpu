@@ -3,6 +3,7 @@ program output_fields_probe
   use mpi
   use ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use commvar, only: im,jm,km,hm,numq,num_species,difschm,lihomo,ljhomo,lkhomo,ia,ja,ka
+  use commvar, only: npdci,npdcj,npdck
   use commarray, only: rho,vel,prs,tmp,x,dxi
   use bc, only: bctype
   use parallel, only: isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront,mpitag
@@ -11,6 +12,7 @@ program output_fields_probe
 #endif
   use output_fields, only: write_basic_output,pack_basic_output_cpu,write_slice_output_xdmf,write_output_series_xdmf
   use output_fields, only: begin_derived_output_cpu,pack_derived_output_cpu,end_derived_output_cpu
+  use output_lineage, only: prepare_output_lineage,stage_output_lineage
   use checkpoint_state_io, only: checkpoint_state_identity
 #ifdef TEST_FIELDS_GPU
   use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d,dxi_d
@@ -29,7 +31,9 @@ program output_fields_probe
   integer :: derived(14),derived_count,derived_budget
   integer,parameter :: numeric_cells=10
   integer(int64) :: peak,bytes,download,global_bytes,host_workspace,device_workspace,capacity,provider_budget
-  real(real64) :: encoded,point(3),pi
+  real(real64) :: encoded,point(3),pi,aa,bb,cc,dd
+  integer :: closure(3)
+  logical :: lineage_ok,lineage_compatible
   real(real64),allocatable :: before_velocity(:,:,:,:),after_velocity(:,:,:,:)
   type(checkpoint_state_identity) :: identity
   call MPI_Init(ierr)
@@ -42,6 +46,55 @@ program output_fields_probe
   global_shape=[9,7,5]; cells=global_shape-1; origin=0
   if(fault(1:8)=='numeric_') then
     global_shape=numeric_cells+1; cells=global_shape-1
+  endif
+  if(fault(1:15)=='native_prepare_') then
+    derived=0; derived_count=0
+    call get_command_argument(5,argument)
+    if(argument=='all') then
+      derived=[(m,m=1,14)]; derived_count=14
+    endif
+    units='dimensionless'
+    if(components==12) units='si'
+    lineage_ok=.true.; lineage_compatible=.false.
+    if(rank==0) then
+      if(fault=='native_prepare_volume') then
+        call prepare_output_lineage(trim(prefix),'fields',global_shape,[0],[0],components, &
+          trim(units),derived(:derived_count),lineage_compatible,lineage_ok)
+      else
+        if(decomposition==2) then
+          call prepare_output_lineage(trim(prefix),'slices',global_shape,[1,1,2,3],[5,4,2,1],components, &
+            trim(units),derived(:derived_count),lineage_compatible,lineage_ok)
+        else
+          call prepare_output_lineage(trim(prefix),'slices',global_shape,[1,2,3],[4,2,1],components, &
+            trim(units),derived(:derived_count),lineage_compatible,lineage_ok)
+        endif
+      endif
+    endif
+    call MPI_Bcast(lineage_ok,1,MPI_LOGICAL,0,MPI_COMM_WORLD,ierr)
+    call MPI_Bcast(lineage_compatible,1,MPI_LOGICAL,0,MPI_COMM_WORLD,ierr)
+    if(.not.lineage_ok) call MPI_Abort(MPI_COMM_WORLD,74,ierr)
+    if(lineage_compatible) then
+      if(rank==0) call stage_output_lineage(trim(prefix),lineage_ok)
+      call MPI_Bcast(lineage_ok,1,MPI_LOGICAL,0,MPI_COMM_WORLD,ierr)
+      if(.not.lineage_ok) call MPI_Abort(MPI_COMM_WORLD,75,ierr)
+      if(fault=='native_prepare_volume') then
+        call write_output_series_xdmf(trim(prefix)//'/lineage.xdmf.tmp',trim(prefix)//'/lineage.frames.tmp', &
+          global_shape,[0],[0],components,trim(units),MPI_COMM_WORLD,derived(:derived_count))
+      else
+        if(decomposition==2) then
+          call write_output_series_xdmf(trim(prefix)//'/lineage.xdmf.tmp',trim(prefix)//'/lineage.frames.tmp', &
+            global_shape,[1,1,2,3],[5,4,2,1],components,trim(units),MPI_COMM_WORLD,derived(:derived_count))
+        else
+          call write_output_series_xdmf(trim(prefix)//'/lineage.xdmf.tmp',trim(prefix)//'/lineage.frames.tmp', &
+            global_shape,[1,2,3],[4,2,1],components,trim(units),MPI_COMM_WORLD,derived(:derived_count))
+        endif
+      endif
+      print *, 'OUTPUT_NATIVE_LINEAGE_COMPATIBLE'
+    else
+      print *, 'OUTPUT_NATIVE_LINEAGE_INCOMPATIBLE'
+    endif
+    call MPI_Finalize(ierr)
+    stop
   endif
   if(trim(fault)=='series_repeat') then
     if(decomposition==2) then
@@ -56,8 +109,8 @@ program output_fields_probe
     call MPI_Finalize(ierr)
     stop
   endif
-  if(trim(fault)=='series_volume'.or.trim(fault)=='series_planes') then
-    if(trim(fault)=='series_volume') then
+  if(trim(fault)=='series_volume'.or.trim(fault)=='series_planes'.or.fault(1:15)=='series_lineage_') then
+    if(trim(fault)=='series_volume'.or.trim(fault)=='series_lineage_volume') then
       call write_output_series_xdmf(trim(prefix)//'/series.xdmf',trim(prefix)//'/series.frames', &
         global_shape,[0],[0],components,'si',MPI_COMM_WORLD)
     else
@@ -110,6 +163,7 @@ program output_fields_probe
   if(fault(1:8)=='numeric_') then
     if(components/=6) error stop 'numeric fixture only supports perfect gas'
     numq=5; num_species=0; difschm='643e'; bctype=1
+    npdci=3; npdcj=3; npdck=3
     lihomo=.true.; ljhomo=.true.; lkhomo=.true.; ia=numeric_cells; ja=numeric_cells; ka=numeric_cells
     isize=1; jsize=1; ksize=1; mpitag=100
     mpileft=rank; mpiright=rank; mpidown=rank; mpiup=rank; mpiback=rank; mpifront=rank
@@ -139,6 +193,36 @@ program output_fields_probe
         enddo
       enddo
     enddo
+    if(trim(fault)=='numeric_walls') then
+      bctype=41; lihomo=.false.; ljhomo=.false.; lkhomo=.false.
+      closure=4
+      if(ranks==2) closure(decomposition)=rank+1
+      npdci=closure(1); npdcj=closure(2); npdck=closure(3)
+      if(origin(1)==0) mpileft=MPI_PROC_NULL
+      if(origin(1)+im==ia) mpiright=MPI_PROC_NULL
+      if(origin(2)==0) mpidown=MPI_PROC_NULL
+      if(origin(2)+jm==ja) mpiup=MPI_PROC_NULL
+      if(origin(3)==0) mpiback=MPI_PROC_NULL
+      if(origin(3)+km==ka) mpifront=MPI_PROC_NULL
+      do k=0,km
+        do j=0,jm
+          do i=0,im
+            point=real(origin+[i,j,k],real64)
+            x(i,j,k,:)=[point(1)+0.02d0*point(1)**2, &
+              point(2)+0.01d0*point(1)*point(2),point(3)+0.03d0*point(2)**2]
+            aa=1.d0+0.04d0*point(1); bb=0.01d0*point(2)
+            cc=1.d0+0.01d0*point(1); dd=0.06d0*point(2)
+            dxi(i,j,k,:,:)=0.d0
+            dxi(i,j,k,1,1)=1.d0/aa
+            dxi(i,j,k,2,1)=-bb/(aa*cc); dxi(i,j,k,2,2)=1.d0/cc
+            dxi(i,j,k,3,1)=bb*dd/(aa*cc); dxi(i,j,k,3,2)=-dd/cc; dxi(i,j,k,3,3)=1.d0
+            vel(i,j,k,:)=[2*x(i,j,k,1)+3*x(i,j,k,2)-x(i,j,k,3), &
+              -x(i,j,k,1)+4*x(i,j,k,2)+2*x(i,j,k,3), &
+              0.5d0*x(i,j,k,1)-x(i,j,k,2)+3*x(i,j,k,3)]
+          enddo
+        enddo
+      enddo
+    endif
     allocate(before_velocity(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3), &
       after_velocity(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3))
     before_velocity=vel

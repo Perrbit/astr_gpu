@@ -77,6 +77,7 @@ set(ASTR_SOURCES
   output_config.F90
   output_input_resources.F90
   output_fields.F90
+  output_lineage.F90
   output_archive.F90
   output_runtime.F90
   checkpoint_state_io.F90
@@ -679,8 +680,14 @@ install(TARGETS astr
 )
 install(FILES
   ../scripts/output/export_checkpoint.py
+  ../scripts/output/repair_series.py
+  ../scripts/output/combine_series.py
+  ../scripts/output/input.output.tgv.example
+  ../scripts/output/input.output.tgv.derived.example
+  ../scripts/output/input.output.air5.derived.example
   ../scripts/output/README.md
-  DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/output)
+  DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/output
+  COMPONENT OutputTools)
 if(ASTR_WITH_CATALYST)
   install(FILES
     ../scripts/insitu/tgv_pipeline.py

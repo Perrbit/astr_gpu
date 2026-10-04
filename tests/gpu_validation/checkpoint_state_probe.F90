@@ -29,6 +29,11 @@ program checkpoint_state_probe
     if(trim(mode)=='context_clear') call checkpoint_state_context('','')
     call checkpoint_state_require(rank/=np-1,MPI_COMM_WORLD,'injected single-rank failure')
   endif
+  if(index(trim(mode),'inherited_')==1) then
+    call inherited_roundtrip()
+    call MPI_Finalize(err)
+    stop
+  endif
   if ((np/=1.and.np/=2).or.axis<1.or.axis>3.or. &
       (ncomp/=5.and.ncomp/=11.and.ncomp/=34).or.halo<0.or.halo>1) &
     call MPI_Abort(MPI_COMM_WORLD,2,err)
@@ -108,6 +113,39 @@ program checkpoint_state_probe
   if (rank==0) print *, 'PASS ',trim(mode),' NP=',np,' components=',ncomp,' halo=',halo
   call MPI_Finalize(err)
 contains
+  subroutine inherited_roundtrip()
+    integer(int64) :: metadata(12),header(13)
+    real(real64),allocatable :: values(:,:,:,:)
+    type(checkpoint_state_identity) :: saved
+    allocate(values(9,7,5,17))
+    metadata=[2_int64,8_int64,6_int64,4_int64,1_int64,1_int64,1_int64, &
+      5_int64,1_int64,4_int64,0_int64,17_int64]
+    saved=checkpoint_state_identity(5_int64,0.5d0,0.1d0,0.1d0)
+    if(trim(mode)=='inherited_write') then
+      if(rank==0) then
+        values=1.d0
+        call checkpoint_state_transfer(trim(path),.true.,.true.,global_shape,[0,0,0],global_shape-1, &
+          0,values,saved,budget,MPI_COMM_SELF,role=5,metadata=metadata)
+        values=2.d0
+        call checkpoint_state_transfer(trim(path),.true.,.true.,global_shape,[0,0,0],global_shape-1, &
+          0,values,saved,budget,MPI_COMM_SELF,role=5,metadata=metadata,group_name='inherited')
+      endif
+      call MPI_Barrier(MPI_COMM_WORLD,err)
+    else
+      call checkpoint_state_header(trim(path),header,metadata,MPI_COMM_SELF)
+      call checkpoint_state_require(header(13)==5.and.header(9)==5.and.metadata(8)==5, &
+        MPI_COMM_WORLD,'inherited probe header')
+      values=0.d0
+      call checkpoint_state_transfer(trim(path),.false.,.true.,global_shape,[0,0,0],global_shape-1, &
+        0,values,saved,budget,MPI_COMM_SELF,role=5,metadata=metadata)
+      call checkpoint_state_require(all(values==1.d0),MPI_COMM_WORLD,'root payload was overwritten')
+      call checkpoint_state_transfer(trim(path),.false.,.true.,global_shape,[0,0,0],global_shape-1, &
+        0,values,saved,budget,MPI_COMM_SELF,role=5,metadata=metadata,group_name='inherited')
+      call checkpoint_state_require(all(values==2.d0),MPI_COMM_WORLD,'inherited payload mismatch')
+    endif
+    if(rank==0) print *, 'PASS inherited group'
+  end subroutine
+
   subroutine statistics_roundtrip()
     type(velocity_statistics) :: original,recovered
     real(real64) :: values(34),saved(34),continued(34),t

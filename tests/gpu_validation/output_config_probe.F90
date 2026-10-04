@@ -21,6 +21,7 @@ program output_config_probe
   endif
   print '(A,I0)', 'format_version=',options%format_version
   print '(A,I0)', 'keep=',options%keep
+  print '(A,I0)', 'device_reserve_bytes=',options%device_reserve_bytes
   print '(A,L1)', 'checkpoint_final=',options%checkpoint%final_frame
   print '(A,3(I0,1X))', 'slice_counts=',count(options%i_indices>=0), &
     count(options%j_indices>=0),count(options%k_indices>=0)

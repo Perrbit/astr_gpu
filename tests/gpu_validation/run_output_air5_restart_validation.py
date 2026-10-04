@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import shutil
 import subprocess
@@ -117,7 +118,7 @@ def prepare(case, backend, steps, incident=False, reconstruction=5, mean_statist
 def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=None, statistics=None,
            archive_groups=None, buffer_bytes=67108864, checkpoint_keep=2, reuse_root=None,
            conservation=False, publication_hook=None, reject=None, memcheck=False,
-           device_budget_bytes=67108864):
+           device_budget_bytes=67108864, restore_probe=False, device_reserve_bytes=0, override=False):
     case = args.output / f"{backend}_np{ranks}_{name}"
     tau = prepare(case, backend, steps, incident=args.case == "sbli", reconstruction=args.reconstruction,
                   mean_statistics=args.mean_statistics if statistics is None else statistics,
@@ -135,9 +136,13 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
             raise ValueError("reuse test needs an explicit checkpoint")
         shutil.copytree(reuse_root, case / "outdat/new", dirs_exist_ok=True)
         restore = case / "outdat/new/checkpoints" / restore.name
+    prior_complete = {str(path.relative_to(case / "outdat/new")): path.read_bytes()
+                      for path in (case / "outdat/new").rglob("COMPLETE")}
     (case / "datin/input.output").write_text(f"""&output
  directory='outdat/new',restore_directory='{restore or ''}',
+ restart_output='{'override' if override else 'saved'}',
  host_budget_bytes=67108864,device_budget_bytes={1 if fault == 'statistics_device_budget' else device_budget_bytes},buffer_bytes={buffer_bytes}
+ device_reserve_bytes={device_reserve_bytes}
 /
 &checkpoint
  enabled=t,mode='{args.mode}',interval_steps={interval if args.mode == 'steps' else 0},
@@ -167,6 +172,10 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
                ASTR_AIR5_TOP_GPU_VALIDATION="on", ASTR_AIR5_FILTER_VALIDATION="on")
     if conservation:
         env["ASTR_AIR5_C4_CONSERVATION"] = "1"
+    if restore_probe:
+        if restore is None:
+            raise ValueError("restore probe requires a checkpoint")
+        env["ASTR_CHECKPOINT_TEST_RESTORE_PROBE"] = "1"
     if publication_hook is not None:
         library, target_step = publication_hook
         env.update(LD_PRELOAD=str(Path(library).resolve(strict=True)),
@@ -188,17 +197,18 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
         env["ASTR_AIR5_C4_CONSERVATION"] = "1"
     elif fault == "top_mode":
         env["ASTR_AIR5_TOP_MODE"] = "prescribed" if args.top_mode == "characteristic" else "characteristic"
-    command = [str(args.mpiexec), "--mca", "coll_hcoll_enable", "0", "-np", str(ranks),
-               str(args.executable), "run", "datin/input.air5_c4"]
+    solver_command = [str(args.executable), "run", "datin/input.air5_c4"]
     if memcheck:
         sanitizer = shutil.which("compute-sanitizer")
         if sanitizer is None:
             raise RuntimeError("compute-sanitizer is required for this explicit memory gate")
         # Keep MPI's optional CUDA context probes outside this kernel-memory gate.
         env.update(OMPI_MCA_opal_cuda_support="false", OMPI_MCA_pml="ob1",
-                   OMPI_MCA_osc="pt2pt", OMPI_MCA_btl="self,vader,tcp")
-        command = [sanitizer, "--tool", "memcheck", "--target-processes", "all",
-                   "--error-exitcode", "88", *command]
+                   OMPI_MCA_osc="pt2pt", OMPI_MCA_btl="self,vader,tcp", OMPI_MCA_coll_ucc_enable="0")
+        solver_command = [sanitizer, "--tool", "memcheck", "--target-processes", "all",
+                          "--error-exitcode", "88", "--log-file", str(case / "memcheck.%p.log"),
+                          *solver_command]
+    command = [str(args.mpiexec), "--mca", "coll_hcoll_enable", "0", "-np", str(ranks), *solver_command]
     with (case / "run.log").open("wb") as log:
         process = subprocess.Popen(command, cwd=case, env=env, stdout=log,
                                    stderr=subprocess.STDOUT, start_new_session=True)
@@ -223,10 +233,17 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
                    "AIR5 source/limiter/compensation/top/resource contract mismatch")
         if not code or message not in (case / "run.log").read_text():
             raise AssertionError(f"fault not rejected: {fault}: {case}")
-        if list((case / "outdat/new").rglob("COMPLETE")):
+        completed = {str(path.relative_to(case / "outdat/new")): path.read_bytes()
+                     for path in (case / "outdat/new").rglob("COMPLETE")}
+        if completed != prior_complete:
             raise AssertionError("failed restore published a batch")
     elif code:
         raise RuntimeError(f"solver failed: {case / 'run.log'}")
+    if memcheck:
+        counts = [int(count) for path in case.glob("memcheck.*.log")
+                  for count in re.findall(r"ERROR SUMMARY: (\d+) errors", path.read_text())]
+        if len(counts) < ranks or any(counts):
+            raise AssertionError(f"missing successful memcheck summary: {case}")
     if (case / "outdat/flowfield.h5").exists():
         raise AssertionError("legacy AIR5 checkpoint emitted")
     disk = sum(p.stat().st_size for p in case.rglob("*") if p.is_file())

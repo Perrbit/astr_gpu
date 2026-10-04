@@ -7043,3 +7043,859 @@ changing solver numerics or lowering the gate. Other sizes, boundaries, CURVE,
 AIR5 derivatives, rendering changes and OR6 as a whole remain unapproved here.
 `out/or5_config_examples_20261001.xml` records 69 parser/collective checks,
 including both committed TGV configuration examples and their exact selections.
+
+### Derived Output Joint Lifecycles And Offline-Tool Installation
+
+Plan 10.45 combines the already approved 16-cubed periodic TGV scopes, without
+changing solver numerics or admitting another case family. The same 64 MiB
+controlled host/device and aggregate per-test-directory budgets apply, with
+at least 1 GiB free device memory before private allocations.
+
+```bash
+python3 -m pytest -x -q -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_variable_clock.py -k derived_continuation
+python3 -m pytest -x -q -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_series_repair_runtime.py -k relocated_derived
+```
+
+`out/or6_derived_variable_clock_fixed_20261001.xml` records four passes:
+CPU NP=2 x/z scalar, GPU NP=2 x scalar and z full, Q/divergence fields,
+deterministic variable-step replay and independent physical-time schedules.
+Continuous 12, seed 5, resume to 12, archives off and slice-only continuation
+match q/caches/statistics exactly. Frame steps are fields 0/2/3/4/5/6/8/12,
+slices 0/2/4/5/8/12; resumed lists are 6/8/12 and 8/12. Independent discrete
+reference maximum is 3.4416913763379853e-15 and actual XDMF3 readback covers
+twenty product-time frames. Slice-only GPU field downloads are 110976 bytes,
+not a full-volume download. Including result JSON, the largest test tree is
+55944616 bytes; controlled host/device maxima are 475104/612864 bytes.
+`out/or6_variable_clock_helper_regression_20261001.xml` records two unaffected
+basic-field CPU/GPU NP=2 z checks. The first derived attempt accidentally used
+the basic tile-only resource checker; the corrected test reuses the approved
+derived aggregate checker, not a larger budget.
+
+The relocation test reuses immutable accepted NP=2 z donors from
+`out/or5_real_derived_runtime_20261001` (override with
+`ASTR_OUTPUT_DERIVED_REFERENCE_ROOT`). It requires the current executable hash
+to match the donor's result, then copies and moves complete resource trees.
+It rejects changing checkpoint interval without override, explicitly enables
+override for keep=1 rotation and compares every new frame against the donor.
+The protected step-5 restore point remains; step-10 checkpoint is retired,
+but its field/slice frames survive. After moving the completed case again,
+only damaged indexes are rebuilt; frames, coordinates and donor batches stay
+unchanged. Actual single-segment and parent-chain readback covers twenty-four
+product-time frames. All fourteen derived fields meet 2e-10, maximum
+3.774758283725532e-15. `out/or6_derived_relocation_override_20261001.xml`
+records two passes and report-inclusive test roots at most 45836162 bytes;
+controlled host/device maxima are 474272/613440 bytes.
+`out/or6_series_repair_affected_20261001.xml` records four unchanged basic
+TGV/AIR5 index-repair regressions. No original donor is advanced or edited.
+
+`test_checkpoint_export.py -k installed_output` installs the OutputTools
+component from separately root-configured CPU/GPU builds to private prefixes.
+Override build paths with `ASTR_OUTPUT_INSTALL_CPU_BUILD` and
+`ASTR_OUTPUT_INSTALL_GPU_BUILD`; defaults are `build_release_restart_cpu` and
+`build_gpu_probe`. It requires all three scripts, README and both examples,
+byte-identical to source and under 4 MiB, then checks each script's CLI from an
+unrelated working directory. Installing only this component must not install
+the solver, example tree or Catalyst. Run root CMake configuration after
+changing install metadata; no relink is needed for this gate.
+
+```bash
+python3 -m pytest -x -q tests/gpu_validation/test_checkpoint_export.py
+```
+
+`out/or6_output_install_export_20261001.xml` records all 27 passed checks,
+including two install gates and 25 existing bounded export checks. The old
+missing-component failure is preserved in `or6_output_install_before_20261001.xml`.
+The accepted numerical binary hashes are unchanged after root reconfiguration.
+These gates alone do not close all OR6, authorize wall/CURVE/AIR5 repartition or
+establish production I/O performance or third-party transient memory peaks.
+
+### Approved Channel Repartition Matrix And Generic Filter-Cache Fix
+
+Plan 10.47 freezes 16-cubed bc41 channel, dt=1e-3, FP64, 643e/643e,
+viscosity/tenth-order filtering and fixed forcing 1e-4. Each backend tests
+NP=1<->2 x/z slabs and NP=2 x<->z, continuous 12 versus 5+7, with 2e-10
+absolute tolerance for physical q/caches/driver and CPU legacy mean44.
+Metadata, sample identity, clocks and schedules stay exact; same-topology
+state remains exactly equal. No y repartition, feedback/frozen forcing,
+CURVE/AIR5, rendering or new numerical coefficients are included.
+
+`frozen_channel_initial` creates one global wall-compatible, nonconstant FP64
+HDF5 file; `run_case(initial_resource=...)` feeds that identical file through
+the original ninit=3 reader and verifies frozen restart resources. It does not
+modify the rank-dependent chanini seed or claim a turbulent channel state.
+The matrix's executable, layout and resources are generated together; old
+donors from another executable hash cannot be reused for exact continuation.
+
+The original CPU NP=1->2 x test failed at density 7.11e-8. Diagnosis subsequently
+showed identical initial state, but one-step NP=1/2 difference 5.09e-7 without
+any restart. The first-stage physical q is identical; cached pressure differs
+by 2.23e-8. The old CPU post-filter primitive refresh only admitted periodic
+boundaries, whereas qswap rebuilt interface caches from filtered q. The
+partition therefore changed where caches used the current filtered state.
+See `out/or4_channel_first_cpu_20261001.xml`,
+`out/or4_channel_partition_regression_20261001.xml` and plan 10.48. These are
+failed scientific gates, not acceptance evidence. The temporary CPU cache
+snapshot instrumentation has been removed. `run_case(rhs_snapshot_step=0)`
+remains available for bounded
+existing first-stage q/conv/full diagnostics.
+
+The user approved the generic fix, not only bc41: nonreacting numq=5,
+num_species=0, explicit convection/diffusion refreshes every physical primitive
+cache after filtering, before boundary/halo/gradient/RHS work. CPU and GPU
+first-stage preparation/ordinary stages share this condition; scalar/full are
+covered. Explicit synchronization, coefficients and boundary formulas remain
+unchanged. AIR5 keeps its existing separate limiter/refresh ordering, and
+compact paths are unchanged. Generate new donors with the matching rebuilt
+executable; old binary fingerprints are not exact-continuation evidence.
+
+```bash
+python3 -m pytest -x -q -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_repartition_runtime.py \
+  -k channel
+```
+
+Twenty-eight channel checks passed across the following immutable records:
+
+- `or4_channel_refresh_matrix_20261001.xml`: the first eight tests passed,
+  covering four partition-independence and four complete-step CPU/GPU checks;
+  the ninth sanitizer-launcher check failed. Do not report the whole XML passed.
+- `or4_channel_refresh_memcheck_per_rank_20261001.xml`: two corrected memcheck
+  gates passed, x/scalar and z/full, three steps; all four rank logs report zero
+  errors. Sanitizer runs inside MPI, not around the launcher. Only this pinned
+  diagnostic disables optional Open MPI CUDA/UCC probes; production is unchanged.
+- `or4_channel_repartition_fixed_20261001.xml`: eighteen checks passed, including
+  twelve cross-topology, two exact same-topology and four y-repartition rejections.
+
+The one-step partition difference fell from 5.092547584265717e-7 to
+7.105427357601002e-15. Complete-step CPU/GPU and repartition q/cache maximum
+error is 5.3290705182007514e-14; CPU mean44 maximum is 1.4530598946294049e-12,
+fixed-force error is zero and same-topology state is exactly equal. Sample
+identity, clocks, schedules and source immutability are checked. GPU legacy
+mean44 is not enabled or claimed. The cross-topology test root maximum is
+38727327 bytes, below 64 MiB. Admission is now enabled only for the predicate
+above; unsupported y repartition stays rejected. Plan 10.49 records the evidence.
+
+`test_filtered_boundary_refresh_runtime.py` reuses existing physical-case
+drivers with explicit synchronization, FP64, pinned halos and scalar/full,
+absolute field/statistics tolerance 2e-10 with RTOL=0, and 64 MiB test roots.
+It covers bc41 x/y/z, bc42 x/y, bc411/421 y, symmetry/zero extrapolation, LDC,
+RTI, two CURVE walls and two warped-profile flatplates. Comparisons retain
+boundary nodes and require finite state. Legacy CPU snapshots are taken at
+complete RK; the RTI driver's old mixed-phase comparison is not used.
+CURVE tests copy only required input text and generate their grid instead of
+copying an unused large example grid. The source contract checks all three
+CPU/GPU boundary-independent refresh predicates.
+
+```bash
+python3 -m pytest -x -q tests/gpu_validation/test_filtered_boundary_refresh_runtime.py
+```
+
+Fifteen physical short checks and the static contract passed:
+`filter_refresh_physical_matrix_20261001.xml` contains the first eleven physical
+passes and the static pass, then a file-budget failure from an unused old grid;
+`filter_refresh_curved_matrix_20261001.xml` records both corrected CURVE walls
+and both profile flatplates plus the static contract. Maximum CPU/GPU field
+error is 3.979039320256561e-13. These are not long-time physical gates.
+
+An additional nonreacting Ma5 bc52 flatplate with global lfilter=t is outside
+the current GPU capability contract. Its transverse boundary filter is not
+global-filter admission. `filter_refresh_capability_fixed_20261001.xml` records
+the static contract and explicit rejection (initial output stays step/time=0).
+Earlier coarse CPU state/metric and later GPU admission failures are retained
+in `filter_refresh_nscbc52*_20261001.xml`; no positive field gate is claimed.
+The first rejection-test assertion incorrectly disallowed initialized output;
+it was corrected to check its phase, without changing solver output semantics.
+
+`or4_filter_refresh_tgv_affected_20261001.xml` records nine affected periodic
+TGV checks: four CPU/GPU complete-state comparisons, two exact restores, two
+no-filter repartition rejections and one full-workspace slab-direction change.
+Root CPU and CUDA/AIR5 builds passed. All current numerical records use the
+program hashes in plan 10.49; no old-donor reuse is needed or authorized.
+
+### OR6 Channel Relocation, Rotation, Index Repair And Failed Publication
+
+Plan 10.50 extends only the already-approved bounded fixed-force channel
+lifecycle. `test_relocated_channel_restart_rotation_and_index_recovery`
+requires immutable exact-continuation donor reports from plan 10.49.
+Set `ASTR_OUTPUT_CHANNEL_REFERENCE_ROOT` to their matrix root; the default is
+`out/or4_channel_repartition_fixed_20261001`. Regenerate donors with the
+channel matrix when the executable hash changes; missing/mismatched evidence
+fails rather than silently using an older solver or skipping the test.
+
+CPU NP=2 x/scalar and GPU NP=2 z/full copy the five-step source tree, move it
+to a path containing spaces, and restore without the original initial-field
+file. Checkpoint cadence changes from five to one steps: no override rejects,
+explicit override remains exactly equal in q/caches/rank_extras, driver and
+CPU mean44. Keep=1 retires steps 6:11 while protecting source step 5 and final
+step 12. Long-lived fields/slices remain. Move the complete result again,
+corrupt only its new-segment indexes, then repair while stopped. Every new
+frame is equal to its continuous counterpart; ParaView actually reads both
+segment and explicit parent-chain indexes. Repair reads zero field-array bytes.
+Sources, resources, old frames and old checkpoints remain immutable.
+
+```bash
+python3 -m pytest -x -q -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_series_repair_runtime.py::test_relocated_channel_restart_rotation_and_index_recovery
+python3 -m pytest -x -q -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_publication_failure.py::test_channel_first_save_failure_then_exact_recovery
+```
+
+`or6_channel_relocation_gpu_20261001.xml` contains both backend checks, not
+only GPU; both passed. The earlier CPU-only corrected record is duplicate
+acceptance, not a third distinct case. New fields are steps 6/8/10/12 and
+slices 6/9/12. Each backend reads seven segment and fourteen parent-chain
+product time frames. Parent chains include the seed's normal-end step-5
+frame; do not equate that inventory to the uninterrupted reference's cadence.
+Test roots are 42544862/35131224 bytes; estimated checkpoint-provider buffers
+peak at 2234576 bytes, and mean44 buffers are checked separately. Archive
+host/device tiles stay within 4096 bytes. GPU field/slice downloads total
+943296/124848 bytes, excluding checkpoints, statistics, halos and third-party
+allocations; this is not total transfer or production-peak accounting.
+
+`or6_channel_publication_recovery_fixed_20261001.xml` records two passed
+failures at the first resumed save, step 10: CPU batch_rename and GPU
+latest_rename. The former leaves a sealed temporary candidate; the latter
+leaves a complete new directory but no successful LATEST. Neither is reported
+as success or advances to step 12. Original step 5 remains unchanged and is
+identified in the error context; fresh recovery without injection equals
+the continuous final state and CPU statistics exactly. Roots are
+18374328/14668057 bytes. This is scoped EIO injection, not power-loss testing.
+
+The first relocation negative test accidentally retained the seed's five-step
+cadence, so it correctly did not reject; the corrected test changes to one
+step. The first publication driver omitted the saved field/slice options and
+was rejected before injection; matching options fixed the harness. Both failed
+XML records are retained. No solver, tolerance or default was changed.
+Plan 10.51 was subsequently approved; its separate acceptance is recorded
+below. These channel lifecycle checks do not themselves enable CURVE or close
+all OR4/OR6.
+
+### OR4 Static-CURVE Periodic-z Repartitioned Continuation
+
+Plan 10.51 approves the 16-cubed static warped profile flatplate, bl/prof,
+ninit=0, nondimensional, warp_x=0.08/warp_y=0.04, dt=1e-5,
+bctype=[11,21,41,51,1,1], 543e/643e, no turbulence model, MP7 physical-space
+reconstruction, filtering and viscosity enabled. CPU scalar/GPU full each
+cover NP=1<->2 z with unpartitioned x/y, continuous-12 versus 5+7 and exact
+NP=2 z continuation. Statistics, derivatives and rendering stay disabled.
+This is an extruded grid/profile; do not claim general 3D metric validation.
+
+```bash
+python3 -m pytest -x -q -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_repartition_runtime.py -k curve
+```
+
+`or4_curve_matrix_20261001.xml` records sixteen passed checks: two one-step
+partition-independence controls, four bidirectional restart comparisons,
+two exact controls and eight source/target x/y refusal cases. The additional
+`or4_curve_restore_memcheck_20261001.xml` runs GPU NP=1->2 z restore under
+per-rank Compute Sanitizer; both rank logs report zero errors. Optional
+MPI CUDA/UCC pointer probes are disabled only for this diagnostic invocation.
+That historical acceptance totals seventeen checks. The command above now
+selects the expanded 26-check CURVE matrix described below, not the old inventory.
+
+Required physical q/caches and thirteen geometry fields must be finite and
+within 2e-10. Shared nodes and defined periodic-z face halos are compared
+against the continuous run in the same target layout, not old-layout extras.
+Undefined x/y exterior and corner halos are excluded from physical matching;
+all saved extras still must be finite. Same-topology state/geometry, clocks,
+control and schedule contents are exact. Source resources, batches and frames
+remain immutable. Original grid/profile inputs are absent on restore.
+Every resumed frame is compared and ParaView 6.0.1 actually reads four volume
+and three slice time points per positive case.
+
+Cross-topology state error peaks at 1.4857751988228479e-18, target-halo error
+at 1.4570025483958034e-18, with zero geometry error. One-step error peaks at
+1.859184379663986e-18. Exact controls have zero differences including all
+rank supplements. Largest matrix test root is 32504436 bytes; estimated
+controlled state/geometry host buffers peak at 3031992/3583240 bytes. Archive
+host/device tiles peak at 3672/2688 bytes. The initial description of a native
+1 GiB reserve check was incorrect for basic fields: that check exists only
+on the derivative path. Baseline free-memory observations are not a per-frame guard.
+GPU resumed volume/slice downloads are 943296/124848 bytes, excluding other
+providers, MPI and third-party allocations. None is a production peak claim.
+
+`or4_curve_affected_20261001.xml` records four passed TGV/channel representative
+repartition regressions. Both root builds passed; final binary hashes and
+precise capability limits are in plan 10.52. Three preliminary probe XMLs
+precede a narrower admission guard and are not counted as additional formal
+cases. Plan 10.53 was subsequently approved; its x/x-z evidence is below.
+
+### OR4 Static-CURVE x Slabs And x/z Changes
+
+Approved plan 10.53 retains the same 16-cubed grid/configuration and 2e-10
+absolute gate. CPU scalar/GPU full cover NP=1<->2 x and NP=2 x<->z, with
+exact NP=2 x controls and unpartitioned y. The halo checker now includes
+interior x communication faces plus shared nodes and periodic-z faces, for
+both the eleven state fields and thirteen geometry fields in the target
+layout. Undefined physical-face/corner padding is not a physical comparison,
+but all stored state extras must remain finite. Initial grid/profile donors
+remain immutable and can be absent in the resumed input directory.
+
+The first GPU 1->2 x check failed in rank supplements, not physical fields.
+Each rank had 1445 external x nodes with NaN u/v/w/p/T: GPU face conversion
+ignored MPI_PROC_NULL and divided zero ghost q by zero density. CPU qswap
+already guards these conversions. GPU x/y/z face converters now receive
+neighbor/periodic flags; no-neighbor physical faces retain boundary-owned
+caches. No q, CPU algorithm, boundary formula, averaging, clipping or sync
+policy changed. The full-box converter is outside this fix.
+
+```bash
+python3 -m pytest -x -q -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_repartition_runtime.py::test_curve_x_repartition \
+  tests/gpu_validation/test_output_repartition_runtime.py::test_curve_repartition_keeps_exact_restore \
+  tests/gpu_validation/test_output_repartition_runtime.py::test_curve_partition_independence \
+  tests/gpu_validation/test_output_repartition_runtime.py::test_curve_nonperiodic_repartition_is_rejected
+```
+
+`or4_curve_x_halo_green_20261001.xml` records the GPU one-step control after
+the corresponding red record. `or4_curve_x_matrix_fixed_20261001.xml` records
+fifteen passes: CPU one-step control, eight cross-topology comparisons, two
+exact controls and four y refusals. The additional x restore memcheck passes,
+with two zero-error per-rank logs. These are seventeen distinct formal x gates;
+preparatory controls and partial failed matrices are not counted again.
+The earlier `or4_curve_x_matrix_20261001.xml` fails after three passes and
+remains archived. Evidence retains its 20261001 filename; reporting finished
+on 2026-10-02. All positive cases actually read back four volume and three
+slice time points via ParaView, compare every field/time and keep source trees unchanged.
+
+Maximum state/required-halo differences are
+2.5457045834135963e-18/2.545281066939969e-18; physical and required extra
+geometry differences are zero. Exact controls match all rank supplements.
+Largest matrix root is 32504538 bytes; estimated state/geometry buffers peak
+at 3031992/3583240 bytes, archive host/device tiles at 4032/2688 bytes.
+Observed pre/post-run GPU free memory is 18735/18379 MiB, not an internal
+minimum or third-party peak. These records did not enable native reserve
+enforcement for basic archives; its later optional TGV gate is recorded below.
+
+`or4_curve_x_affected_20261001.xml` records ten passes: two earlier CURVE z
+directions, four TGV/channel repartitions, exact GPU TGV, physical x/z walls
+and CURVE y CPU/GPU completed-state comparison including finite rank extras.
+Physical-field error peaks at 2.5579538487363607e-13. y computation is not
+y repartition admission; the four refusals still pass. Both root builds pass;
+new hashes and the exact limits are in plan 10.54. y repartition, dynamic
+inflow, AIR5, accumulated statistics, derivatives, rendering, larger ranks
+and cross-backend restart remain outside this CURVE gate. The separate AIR5
+scale-aware acceptance in plans 10.55-10.56 is recorded below, not certified by
+these CURVE records.
+
+## Fixed AIR5 HBL Periodic-z Repartition
+
+Approved plans 10.55-10.56 use the existing fixed HBL preparer: 16-cubed cells,
+domain 0.08/0.01/0.002 m, dt=1e-10 s, rho_ref=0.05 kg/m^3, T_ref=3000 K,
+N2/O2=0.767/0.233, characteristic top, coupled chemistry with nonzero carry,
+643e/643e, filter/viscosity enabled, CPU scalar and GPU full, explicit sync/FP64.
+No new integrator, physical boundary formula or production case is introduced.
+CPU needs an AIR5-enabled executable; the non-AIR5 CPU release build is not
+a valid fallback for these tests. Root CMake builds must finish before testing.
+
+```bash
+cmake --build build_cpu_probe --target astr -j4
+cmake --build build_gpu_probe --target astr -j4
+ASTR_OUTPUT_AIR5_CPU_EXE="$PWD/build_cpu_probe/bin/astr" \
+ASTR_OUTPUT_RUNTIME_EXE="$PWD/build_gpu_probe/bin/astr" \
+python3 -m pytest -x -q -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_repartition_runtime.py -k air5
+```
+
+`out/or4_air5_matrix_20261002.xml` records sixteen passes: two one-step
+partition-independence controls, four CPU/GPU NP=1<->2 z continuations,
+two same-layout NP=2 z exact controls and eight source/target x/y refusals.
+`out/or4_air5_memcheck_20261002.xml` adds one GPU NP=1->2 z continuation with
+two per-rank zero-error Compute Sanitizer logs. The sanitizer wraps each solver
+process; optional MPI CUDA/UCC probes are disabled only for this memory gate.
+MPI production transport settings are not changed.
+
+The exact same-layout control compares full q/carry/cache/extras and geometry.
+Cross-layout comparisons use the fixed pre-advance rho, sound, pressure and
+temperature scales: a_ref=1100.3842893098433 m/s, p_ref=43244.48514856889 Pa.
+q, carry and longdouble(q)-longdouble(carry) are checked separately, not q+carry.
+Cache scales match each physical quantity; each geometry field uses its frozen
+initial global maximum magnitude, with zero fields required to remain zero.
+Dimensional and scaled errors are both retained in `air5_repartition.json`.
+State and required-target-halo scaled maxima are
+2.5849394912654093e-25/2.5849394142282115e-26; all thirteen geometry fields
+and their defined halos have zero difference. All stored extras are finite.
+
+An explicit `ASTR_CHECKPOINT_TEST_RESTORE_PROBE=1` reserializes the actual
+host/device state before the first advance, without changing the output
+schedule. A zero-advance restore and a normal advancing restore both preserve
+all 34 physical q/carry/cache fields bitwise against the seed. The standalone
+`outdat/restore_probe.h5` is test evidence, not a published restart bundle.
+High and represented species densities stay nonnegative, and existing
+128*epsilon closure checks, exact clocks/control/schedules, immutable source
+resources and restore after removal of the three original inputs remain gates.
+
+Each test root and controlled host estimate stays below 64 MiB; recorded maxima
+are 65596431 and 9803688 bytes. No explicit new device workspace is introduced
+by the AIR5 restore provider. This is not an estimate of compiler temporaries
+or third-party peaks. Native basic-archive free-memory reserve enforcement
+was not enabled in this AIR5 gate; the later TGV-only optional-guard acceptance
+is recorded below, not provided by the separate derivative-path guard.
+
+`or4_air5_affected_20261002.xml` records eight passes: TGV, channel and CURVE
+cross-layout representatives plus the existing AIR5 HBL/SBLI same-layout
+mean44/conservation diagnostic continuation. `or4_air5_provider_20261002.xml`
+and `or4_air5_geometry_padding_20261002.xml` record six and seven provider/padding
+regressions. All three root solver builds pass; final fingerprints are in
+plan 10.56. Prepared/first CPU runs use earlier fingerprints and are not counted
+again. The initial preparation failure selected a non-AIR5 build and stopped
+before advancement, not a CPU numerical defect.
+
+## Bounded Basic-Output GPU Free-Memory Reserve
+
+Approved plans 10.57-10.58 add `&output device_reserve_bytes`: nonnegative
+int64, default zero, broadcast using typed fields. A positive value queries
+`cudaMemGetInfo` before basic frame packing allocation and after release.
+Query failure or insufficient free memory aborts collectively before publishing
+the failed frame. Existing derivative allocation keeps at least 1 GiB free.
+These are device-wide point checks, not an OOM or intra-stage peak guarantee.
+Checkpoint schema, field calculation and default output modes stay unchanged.
+
+```bash
+cmake --build build_gpu_probe --target astr -j4
+python3 -m pytest -x -q -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_device_reserve.py
+```
+
+This test uses 16-cubed periodic TGV, dt=1e-3, GPU NP=1/2 x, FP64, explicit
+sync, scalar filter storage, 643e/643e and viscosity/filter enabled. With
+reserve=1073741824, continuous twelve steps, 5+7 exact continuation, default
+reserve-zero and archive-off controls have bitwise equal q/caches/extras and
+formal statistics; textual statistics and public frames also agree. Each
+packing lifecycle has paired `ASTR_OUTPUT_DEVICE_RESERVE` measurements.
+The impossible maximum int64 reserve is refused before allocation/publication;
+an empty initialized `series.frames` header is allowed, but COMPLETE, frame
+data and indexes referencing a failed frame are forbidden.
+
+`out/or6_output_reserve_config_20261002.xml` records 76 parser and two-rank
+broadcast passes. `or6_output_reserve_bounded_20261002.xml` records four real
+state/refusal passes; each `reserve_validation.json` includes executable hash,
+directory/controlled-buffer counts and native memory measurements.
+`or6_output_reserve_memcheck_20261002.xml` adds one NP=2 basic-output gate with
+two zero-error sanitizer logs. `or6_output_reserve_affected_20261002.xml` adds
+five passes: NP=2 GPU derivatives and exact continuation, CPU/GPU derivative
+comparison, CURVE x exact continuation and CPU/GPU AIR5 z exact continuation.
+The last CURVE/AIR5 controls do not enable the new reserve and do not admit
+reserve-enabled production runs for those cases.
+
+The complete positive test directory, including all five comparison cases,
+peaks at 53208457 bytes; controlled host estimate peaks at 3935984 bytes,
+below 64 MiB. Host/device basic tiles peak at 4032/2688 bytes. Checkpoint
+interval=99 saves each segment endpoint without reducing field/slice schedules.
+Shared RSS, compiler temporaries, HDF5/MPI peaks and arbitrary third-party
+device allocations are outside these controlled counts. Early test-harness
+failures and the preparation round before the aggregate directory assertion are
+retained but not counted again; plan 10.58 records their causes and final
+CPU-only/AIR5 CPU/CUDA fingerprints. No production defaults or remote jobs
+were changed; OR6 as a whole remains open.
+
+AIR5 nonperiodic x/y or SBLI repartition, accumulated/conservation histories,
+derivatives, render, other sizes/configurations and CPU/GPU migration remain
+outside this gate. No Git writes or remote job actions were performed.
+
+`out/or6_registered_reserve_20261003.xml` adds seven passes with the same binary:
+GPU NP=2 channel x, static CURVE x, dynamic CURVE z, AIR5 HBL z and SBLI x
+continuous/5+7/archive-off exact controls, plus impossible-reserve refusal for
+CURVE and SBLI. Each positive test includes native before/after measurements;
+all cases together in one test directory stay below 64 MiB (maximum 54211059
+bytes). Basic host/device packing peaks at 4080/3264 bytes. Reproduce with
+`python3 -m pytest -q -x tests/gpu_validation/test_output_device_reserve.py -k registered`.
+This extends basic guard evidence, not repartition or derivative admission.
+
+### OR5 Nonperiodic Complete-Step Derivatives
+
+`test_output_boundary_derived_runtime.py` exercises registered 16-cubed channel
+and static CURVE cases on CPU/GPU NP=1 and NP=2 x/z, and dynamic CURVE NP=2 z.
+It reuses frozen cases, the 64 MiB per-test-directory limit, explicit GPU sync
+and FP64. Continuous twelve steps, 5+7 restart and archive-off controls compare
+the complete registered state exactly; dynamic inflow history is included.
+The independent discrete reference uses the saved complete-step velocity,
+643e physical-boundary closures and the full, untransposed grid metric.
+
+`or5_boundary_derived_runtime_20261003.xml` records 18 passes, including three
+CPU/GPU comparisons with actual ParaView time-series readback and one two-rank
+Compute Sanitizer run (both logs zero errors). Maximum reference and CPU/GPU
+differences are 1.281e-14 and 2.120e-12, below 2e-10. Maximum whole-test size
+is 33899436 bytes; controlled host/device archive workspaces are 475520/613440
+bytes. This is not truncation-error, long-time physics or production-I/O acceptance.
+
+Manufactured checks use affine physical velocities on a non-affine grid with
+nonzero cross metrics and all faces nonperiodic; even the boundary closure is
+analytically exact for this quadratic computational-coordinate construction.
+`or5_boundary_derivatives_manufactured_cpu_20261003.xml` has 14 passes;
+`or5_boundary_derivatives_manufactured_gpu_20261003.xml` has 21 including
+periodic controls and provider refusal. Source velocities and poisoned original
+halos remain byte-for-byte unchanged. Whole probe directories stay below 4 MiB.
+`or5_boundary_derived_tgv_regression_20261003.xml` adds 21 original TGV passes.
+Plan 10.60 records current fingerprints and the corrected CPU tensor-flattening
+preparation failure. No solver numerical algorithm, tolerance or remote job changed.
+
+```bash
+python3 -m pytest -q -x -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_boundary_derived_runtime.py
+```
+
+At this increment AIR5 derivatives were refused pending a dimensional contract;
+the later OR5 AIR5 SI Derivatives section records their separate approved gate.
+Neither derivative extension grants new repartition or rendering combinations.
+
+### OR6 Dynamic Inflow And AIR5 Output Lifecycle
+
+`test_output_boundary_lifecycle.py` reuses registered 16-cubed CPU/GPU NP=2
+dynamic CURVE z, AIR5 HBL z and AIR5 SBLI x cases. Each shared fixture produces
+a continuous twelve-step run and a five-step source with active statistics.
+Positive tests move the source output tree, resume with explicit schedule
+override and keep=1, move the finished output tree again, and repair deliberately
+damaged indexes in stopped segments. Source checkpoints, immutable resources
+and historical frames remain unchanged. State, statistics, dynamic inflow or
+AIR5 compensation and GPU conservation histories match continuous controls
+exactly. Real ParaView reads both repaired segments and explicit parent chains.
+The six negative tests refuse changed scheduling without explicit override and
+verify that no new COMPLETE is published and no previous payload is altered.
+
+`out/or6_boundary_lifecycle_20261003.xml`: 12 passed in 184.15 seconds. The three
+solver hashes are unchanged from plan 10.60; this adds no solver-code change.
+Each positive test writes `lifecycle.json` with accounting and fingerprints.
+Maximum test-directory size is 56135486 bytes; the separately stored shared
+reference fixture is at most 33422858 bytes. Each directory is below 64 MiB;
+the combined test-plus-reference disk footprint is not claimed below 64 MiB.
+Basic field host/device packing blocks are at most 4080/3264 bytes, not full
+process RSS or third-party peak allocation. These checks do not enable AIR5
+derivatives, repartition, live index repair or production-capacity guarantees.
+
+```bash
+python3 -m pytest -q -x -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_boundary_lifecycle.py
+```
+
+The later `-k unregistered_history` subset adds twelve refusal checks for the
+same nonzero-history sources: NP=2 to NP=1 and NP=2 x/z direction changes.
+They require the exact rank/partition-mismatch diagnostic, no new COMPLETE,
+and unchanged source fingerprints. They do not grant repartition support.
+`out/or6_history_repartition_refusal_20261003.xml` records 12 passed in 94.64
+seconds, with maximum refusal-directory size 135863 bytes (shared reference
+fixtures are separate and each remains below 64 MiB). No solver change or
+relaxation of a numerical acceptance threshold is involved.
+
+### OR5 AIR5 SI Derivatives
+
+`test_output_air5_derived_runtime.py` uses registered 16-cubed HBL NP=1/2 z and
+SBLI NP=1/2 x. The independent discrete reference and CPU/GPU differences use
+fixed gradient/curl/divergence and Q scales 110038.42893098433 s^-1 and
+12108455841.599289 s^-2. Raw SI differences are also saved; neither test divides
+by the observed field maximum or relaxes the approved normalized 2e-10 gate.
+Continuous twelve steps, 5+7 continuation and archive-off controls preserve
+the exact state, mean44, compensation and GPU conservation baseline.
+
+`out/or5_air5_derived_runtime_20261003.xml`: 12 passes, two two-rank memchecks
+with zero errors in all four logs, actual volume/slice ParaView readback.
+Maximum normalized reference/CPU-GPU error: 6.034e-14/8.508e-12. Whole-test
+directory maximum: 62573394 bytes; controlled host/device maximum:
+476336/613456 bytes. The later narrowed direction gate adds six final-admission
+positive regressions and four wrong-axis refusals (plan 10.64). Later metadata
+changes are not retroactively attributed to the original executable hashes.
+
+### OR5 Native Automatic Lineage
+
+`test_output_native_lineage.py` links the production Fortran/C/HDF5 modules,
+with manufactured 9x7x5-node 6/12-field fixtures and no flow integration.
+It covers relative escaped references, explicit cutoffs, valid field/plane
+overrides, invalid clocks/types/inventory/definitions, unbound resources,
+symbolic/hard links and immutable parent payloads. No fake native file is
+accepted merely because a test re-sealed it after injecting a defect.
+
+`out/or5_native_lineage_integrity_final_20261003.xml`: 60 passed in 29.95 s,
+including 24 native and 36 offline parent-chain regressions. The native writer
+subset in `out/or5_native_writer_final_20261003.xml` adds 24 affected checks.
+`test_output_archive_segments.py` additionally checks actual automatic ledgers
+and compares native XML references against the independent stopped-source
+catalog, then feeds rebased native XML to ParaView. Eight exact continuation,
+two/three-segment and historical-cutoff checks and four valid override checks
+passed. Overrides retain per-segment indexes and the parent edge, report
+incompatibility, and do not alter advancement or statistics.
+
+`out/or6_native_lineage_lifecycle_final_20261003.xml`: six dynamic CURVE/AIR5
+HBL/SBLI CPU/GPU NP=2 relocated/retained/repaired native-reader gates passed
+in 173.23 s. Each volume/slice lineage reads 8/6 frames. Whole-test directory
+maximum: 56312943 bytes; shared reference directory separately: 33538398 bytes.
+The matrix was rerun with frozen executable fingerprints after a preparation
+round overlapped a rebuild. The executable contract check was not skipped.
+Plan 10.65 records final CPU-only/AIR5 CPU/CUDA hashes, resource limits and
+the separate, nontransactional index replacements. No Git or remote job action.
+
+The final order correction compares plane sets, not HDF5-name-order positions;
+the input permits unsorted selections and controls display order independently.
+`out/or5_native_lineage_order_fixed_20261003.xml` has 61 passes in 28.55 s,
+including a regression that first reproduced the wrong incompatibility report.
+Final CPU-only/AIR5 CPU/CUDA binaries add four dynamic CURVE/HBL CPU/GPU
+relocated exact controls and native-reader checks in 106.70 s:
+`out/or6_native_lineage_order_fixed_runtime_20261003.xml`. Previous evidence
+retains its original hashes rather than being relabeled with the newest binary.
+
+```bash
+python3 -m pytest -q -x -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_native_lineage.py \
+  tests/gpu_validation/test_output_parent_series.py
+```
+
+### OR4 Static-CURVE Accumulated Statistics Migration
+
+`test_output_curve_statistics_repartition.py` exercises the approved 16-cubed
+extruded mapping, warp_x=0.08/warp_y=0.04, dt=1e-5, 543e/643e, FP64,
+viscosity/filter and explicit synchronization. CPU mean44/GPU compact histories
+cover 1<->2 x/z and two-rank x<->z, continuous12 versus5+7, plus exact same
+topology controls. GPU x<->z adds a second exact restart after migration.
+Counts, sample clocks and schedules must match; physical q/caches/history have
+absolute tolerance 2e-10, never a tolerance on same-topology exact payloads.
+
+GPU statistics metadata v2 stores inherited global moments in the same HDF5
+file. `compact_total` independently folds baseline once plus local increments;
+it excludes geometric lengths from cumulative addition. Source hashes remain
+unchanged. Native first/last volume output measures the 1-GiB device reserve;
+explicit staging bounds and whole test directories stay below 64 MiB. These
+bounds are not HDF5/MPI/RSS or instantaneous third-party resource peaks.
+
+`out/or4_curve_statistics_resource_matrix_20261003.xml`: 18 passes, 118.51 s;
+CPU eight checks retain the final CPU hash. Final GPU-only ten checks including
+two directional memcheck runs passed in 78.37 s:
+`out/or4_curve_statistics_gpu_final_20261003.xml`. Earlier GPU hashes are not
+relabeled after additional allocation/layout/finite-history guards. CPU/GPU
+cumulative maxima: 2.2737367544323206e-13/7.105427357601002e-15;
+state maxima: 2.5457045834135963e-18/1.4857751988228479e-18.
+Largest directory: 33871910 bytes; controlled host bound: 3114696 bytes;
+compact device arrays: 30600 bytes plus at most 4096 bytes output packing.
+The refined packing bound has one additional x->z check in
+`out/or4_curve_statistics_buffer_bound_20261003.xml`.
+
+The shared-state probe adds `inherited_write/read`, proving grouped writes do
+not overwrite root data and rejecting missing/wrong-shaped/FP32 fields.
+`out/or4_inherited_state_contract_20261003.xml`: 11 passed in 22.21 s,
+including the original statistics continuation and metadata rejections.
+One final-GPU dynamic CURVE relocated exact continuation/reader regression
+passed in 19.98 s (`out/or6_compact_legacy_regression_20261003.xml`); this is
+not approval of dynamic repartition. The later plans 10.68-10.69 and separate
+matrix below close only the approved bounded dynamic-inflow contract.
+
+```bash
+python3 -m pytest -q -x -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_curve_statistics_repartition.py
+```
+
+### OR4 Dynamic-CURVE Inflow And Accumulated History Migration
+
+`test_output_dynamic_repartition.py` reuses the statistics gate with the
+approved 16-cubed dynamic case, dt=6e-6 and twelve frozen nonpolynomial source
+frames. Four cached frames are directly restored on physical nodes, with exact
+window/slot metadata. The cursor must actually change during advancement.
+CPU/GPU each cover four same-topology controls in total, twelve migrations,
+two directional two-rank memchecks, and two unsupported-y refusals: 20 checks.
+Both cross-axis migrations include a second exact restart for both backends.
+Source fingerprints, sampling identity and schedule remain unchanged.
+
+Evidence under `out/`, all dated 20261003:
+
+| XML stem | Passed | Seconds |
+| --- | --- | --- |
+| or4_dynamic_cpu_exact | 2 | 11.84 |
+| or4_dynamic_cpu_migration | 7 | 43.67 |
+| or4_dynamic_gpu_exact | 2 | 14.79 |
+| or4_dynamic_gpu_migration | 7 | 54.30 |
+| or4_dynamic_memcheck | 2 | 19.93 |
+| or4_dynamic_lifecycle_regression | 2 | 35.12 |
+| or4_dynamic_final_admission | 4 | 31.91 |
+
+CPU/GPU cumulative maxima: 2.2737367544323206e-13/7.105427357601002e-15;
+q/cache maxima: 1.2636672781850093e-18/1.1049544796932348e-18;
+inflow cache maximum: zero. Same-layout and second exact restarts are bitwise.
+Largest test directory: 47291325 bytes; controlled host/device bounds:
+3174808/80936 bytes. The original matrix's minimum native free-minus-planned
+allocation is 19012646272 bytes; final regression minimum is 19012056448 bytes.
+These selected checks are not instantaneous third-party memory peak certification.
+
+The affected-regression XML retains two static migration passes followed by a
+test-helper NameError, not a clean suite pass. The recursive HDF5 finite checker
+was corrected, and both dynamic relocated lifecycle checks were rerun successfully.
+After narrowing inherited-format admission to NP<=2, all three root builds passed
+and four final affected checks above passed. Plan 10.69 records each executable
+fingerprint separately; earlier matrices are not relabeled as newer executables.
+
+```bash
+python3 -m pytest -q -x -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_dynamic_repartition.py
+```
+
+### OR4 AIR5 HBL Mean44 And Conservation History Migration
+
+`test_output_air5_statistics_repartition.py` exercises the approved plan 10.70
+16-cubed dimensional HBL, CPU scalar/GPU full, dt=1e-10, viscosity/filter,
+FP64 explicit synchronization, coupled chemistry and nonzero compensation.
+Only periodic z may repartition; x/y remain complete. Fixed state/carry/cache
+scales retain plan 10.55. Mean44 uses the fixed plan 10.70 dimensional scale
+per component times actual sample count, not an observed near-zero denominator.
+Conserved integrals use conserved scales times the fixed domain volume.
+Both cross-layout normalized tolerances are 2e-10; exact controls remain bitwise.
+
+Before opening migration, CPU/GPU each advance NP=1/2 three steps, sampling
+once at step two. Pure restore serializes actual restored mean44 and global
+conservation histories with the existing test-only restore probe, before any
+RK update. All 34 state/cache/carry and 44 mean fields are bitwise preserved;
+the scalar conservation baseline and metadata are bitwise unchanged. These
+diagnostic files are not sealed checkpoints and are absent in normal launches.
+
+Each backend covers continuous12 versus5+7, same-topology exactness and both
+1<->2 directions. Each migration adds a second exact restart from step ten.
+GPU diagnostics match every continued full-step sample against the continuous
+reference, and phase zero must echo the saved baseline rather than count as
+another sample. The source baseline must not be multiplied by rank count or
+recomputed. Four wrong-axis refusals and four output-switch invariance checks
+retain source hashes and require no published complete state after refusal.
+
+Evidence under `out/`, dated 20261003:
+
+| XML stem | Passed | Seconds |
+| --- | --- | --- |
+| or4_air5_history_partition | 2 | 19.24 |
+| or4_air5_history_cpu_final | 3 | 105.58 |
+| or4_air5_history_gpu_final | 4 | 63.39 |
+| or4_air5_history_guards | 8 | 131.98 |
+| or4_air5_history_affected | 4 | 56.62 |
+
+The partition check predates migration-interface changes and retains its plan
+10.69 executable hashes. Later checks use the plan 10.71 final hashes; no
+computation or sampling kernel changed. GPU memcheck covers both ranks with
+zero errors. CPU/GPU resumed-state normalized maxima: 2.585e-25/3.231e-26;
+mean44 maxima: 5.736e-33/0. Conserved baseline versus independently initialized
+reference: 8.596e-16; continued integral: 2.870e-34. Persisted source baseline
+restore is bitwise, distinct from the partition-dependent initialization sum.
+
+Largest restore test directory: 58035436 bytes; separately bounded immutable
+reference fixture directory: 46791341 bytes. Controlled host/device maximum:
+9808296/2165824 bytes. Minimum native first/last archive free-minus-planned
+allocation: 18711442240 bytes. These are explicit buffers and discrete native
+measurements, not total third-party RSS or instantaneous resource certification.
+
+The first CPU restore XML retains an 82109750-byte directory-budget failure
+after passing its numerical checks. Reference fixtures now remain immutable in
+separately bounded directories and are reused across gates, rather than copied
+into every restore test. Limits were not raised; final restore gates were rerun.
+The HBL matrix does not admit SBLI migration, other axes, rendering or arbitrary
+production sizes, and does not close OR0-OR6. Plan 10.72 requests the next scope.
+The four affected regressions cover CPU dynamic exact restore, GPU dynamic x->z
+migration, GPU HBL without mean/conservation history and the existing GPU SBLI
+relocation/retention/native-reader lifecycle. Those SBLI checks were
+same-topology only; the additional x migration gate is recorded below.
+
+```bash
+python3 -m pytest -q -x -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_air5_statistics_repartition.py
+```
+
+### OR4 Fixed AIR5 SBLI x History Migration
+
+`test_output_air5_sbli_repartition.py` reuses the approved fixed 16-cubed SI
+SBLI of plan 10.72. It checks CPU/GPU no-restart partition independence,
+same-topology exact restore, NP=1<->2 x, another exact restart at step 10,
+GPU dual-rank memcheck and CPU/GPU y/z rejection. Mean44 and the original GPU
+global conservation baseline follow the state without resets or resampling.
+The HBL z admission is unchanged and has two affected reverse-migration checks.
+
+`out/or4_air5_sbli_partition_20261003.xml`,
+`out/or4_air5_sbli_cpu_restore_20261003.xml`,
+`out/or4_air5_sbli_gpu_restore_20261003.xml` and
+`out/or4_air5_sbli_guard_20261003.xml` record 13 passes.
+`out/or4_sbli_affected_hbl_20261003.xml` records two more passes.
+CPU/GPU maximum fixed-scale state differences are 1.411e-12/7.087e-13;
+mean44 differences are 1.625e-12/6.704e-13, below 2e-10.
+Same-topology and pure-restore payloads are bitwise; both memcheck ranks
+report zero errors. See plan 10.73 for exact fingerprints and budgets.
+
+```bash
+python3 -m pytest -q -x -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_air5_sbli_repartition.py
+```
+
+### OR6 Joint Completed-Step Products
+
+`test_output_joint_products.py` combines native checkpoints, independent basic
+volume/slices, formal velocity statistics and optional GPU EGL rendering in
+one 16-cubed TGV run. CPU-only NP=1/2 uses no Catalyst; GPU NP=1/2 uses the
+existing admitted preset. NP=1 uses step schedules, NP=2 physical-time schedules.
+Continuous 12 versus 5+7 steps preserves authoritative state, statistics,
+control/schedules and common archived fields bitwise. GPU JPEG pixels and VTP
+geometry are also identical. Disabling volume/slices/rendering and changing
+checkpoint frequency preserves flow and cumulative statistics.
+
+`out/or6_joint_products_final_20261003.xml` records eight passes, 47.23 s.
+Separate immutable reference/test roots stay below 64 MiB; the largest is
+60134056 bytes. Source trees remain unchanged. Native resource lifecycle checks
+are supplemented with the existing external NVML/process-tree sampler.
+Its target sleep is 20 ms; query overhead is additional, and transient peaks
+between observations are not guaranteed to be captured. Observed peak
+differences relative to statistics-only GPU controls remain below the approved
+4 GiB node RSS / 2 GiB physical-GPU limits, with more than 1 GiB free.
+The sampler reports resource observations, not a production allocation proof.
+
+The first attempt `out/or6_joint_products_20261003.xml` stopped because the
+flow/mean-state test estimator does not cover formal velocity statistics.
+The test now bounds those explicit arrays separately. Solver mathematics and
+acceptance tolerances were not changed. Renderer admission remains separate:
+these joint checks do not permit CPU rendering, CURVE/AIR5 rendering or
+render-enabled topology changes.
+
+```bash
+python3 -m pytest -q -x -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_joint_products.py
+```
+
+`out/or6_final_affected_20261003.xml` adds five final-executable passes:
+CPU batch-rename failure recovery, GPU LATEST-rename failure recovery,
+NP=2 impossible reserve rejection, active-render repartition rejection and
+render-control trailing-byte rejection. These supplement, rather than relabel,
+the earlier immutable implementation-specific evidence. The renderer delivery
+scope was subsequently resolved by user choice A in plan 10.77; the bounded
+first-delivery closure and final executable evidence are recorded in 10.78.
+
+Plan 10.76 updates the existing installation inventory to include the already
+installed AIR5 derived example. `out/or6_install_inventory_final_20261003.xml`
+records two CPU-only/CUDA installation passes, including byte-for-byte file
+comparison and off-checkout CLI imports. The earlier inventory mismatch is
+retained in `out/or6_install_inventory_first_20261003.xml` as a failure, not
+relabeled as passed. `out/or6_installed_examples_parser_20261003.xml` records
+three actual Fortran parser passes for all installed configuration examples,
+with slice counts and both products' canonical derived-field indices checked.
+No flow simulation or executable change is involved.
+
+### OR0-OR6 Scope A Final Acceptance
+
+User choice A closes the first delivery on the existing approved native matrix,
+without removing CURVE/AIR5 state, history migration or derived output.
+Rendering remains GPU Cartesian TGV, same topology only. CPU/CURVE/AIR5
+rendering and render-enabled repartition are separate future goals and rejected.
+Plan 10.77 records the implemented state/schema/defaults; 10.78 records closure.
+
+After final root CPU-only/AIR5 CPU/CUDA/CUDA-Catalyst builds, the two CUDA
+executables were relinked. Old evidence retains its original fingerprint.
+The final executable supplement is:
+
+| Artifact under `out/` | Passed tests |
+| --- | --- |
+| `or6_a_final_cuda_migration_20261003.xml` | 11, including static/dynamic CURVE and SBLI dual-rank memcheck |
+| `or6_a_final_joint_derived_20261003.xml` | 12, joint TGV products and AIR5 exact derived restart/ParaView readback |
+| `or6_a_final_fault_20261003.xml` | 5, failure recovery and reserve/render/corruption rejection |
+| `or6_a_final_install_20261003.xml` | 2, installed tools/examples inventory |
+| `or6_a_final_examples_20261003.xml` | 3, actual Fortran example parsing |
+
+All 33 pass with no skips. Largest derived directory is 62848848 bytes, below
+64 MiB. Sampled joint-render incremental RSS is at most 1113702400 bytes/node
+and 277352448 bytes/physical GPU; observed free GPU memory is at least
+18813878272 bytes. These fit the independently approved third-party limits;
+the sampler does not guarantee capture of arbitrary transient peaks.
+Final CUDA/AIR5 SHA256 is
+`5348f91c03c9df90d0a5b0e75f5dc3c7054a7835b881da60434374c45d7b0f86`;
+CUDA/Catalyst is
+`fbc02832336131f59a3c0bc19a6121260cb77e125e88cc4fad0250c80f65a2ed`.
+Bounded output correctness is not long-time physical or production-I/O
+qualification. Legacy defaults are unchanged and no Git/remote jobs were run.

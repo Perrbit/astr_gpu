@@ -1,0 +1,23 @@
+! Bounded gate only: generated 16x16x16-cell AIR5 HBL NP=1/2 z or SBLI NP=1/2 x.
+! SI units, numq=11, five species, two temperatures, 643e/643e, viscosity/filter.
+! Boundary family [11,50,41,51,1,1]; retain the registered physical input/config.
+! This config is NOT an AIR5 physical case or production-scale recommendation.
+&output
+ directory='outdat/new', restore_directory='', restart_output='saved',
+ buffer_bytes=4096, host_budget_bytes=67108864, device_budget_bytes=67108864,
+ device_reserve_bytes=1073741824
+/
+&checkpoint
+ enabled=.true., mode='steps', interval_steps=5, keep=2, initial_frame=.false.
+/
+&volume
+ enabled=.true., mode='steps', interval_steps=5,
+ initial_frame=.true., final_frame=.true., fields='basic',
+ velocity_gradient=.true., vorticity=.true., qcriterion=.true.
+/
+&slices
+ enabled=.true., mode='steps', interval_steps=5,
+ initial_frame=.true., final_frame=.true., fields='basic',
+ velocity_gradient=.true., vorticity=.true., qcriterion=.true.,
+ i_indices=8, j_indices=0, k_indices=16
+/

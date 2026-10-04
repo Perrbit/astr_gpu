@@ -417,7 +417,7 @@ module mainloop
     cpu_rk_timing=benchmark_cpu_rk_timing_enabled()
     conservative_case=conservative_boundary%enabled
     refresh_filtered_primitives=.not.lcomb.and.numq==5.and.num_species==0.and. &
-      all(bctype==1).and.conschm(4:4)=='e'.and.difschm(4:4)=='e'
+      conschm(4:4)=='e'.and.difschm(4:4)=='e'
     dynamic_inflow_output=bctype(1)==11 .and. trim(turbinf)=='intp'
     air5_reacting_case=.false.
     air5_open_x_case=.false.

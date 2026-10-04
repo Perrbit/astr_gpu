@@ -240,6 +240,31 @@
 | P4-DEVICE-AWARE-TGV-A800 | periodic TGV `128^3`, `643e`, full FP64 filter and diffusion, no field HDF5 | 2 and 4 | 2 and 4 physical A800 | t | device-aware solution/filter/diffusion/generic packed halos; NP=2 slabs and NP=4 planes; explicit synchronization | five-step pinned/device-aware diagnostics <= `1e-10`; IPC protocol on every topology; sanitizer zero errors | pass-production-correctness-opt-in | Jobs `460439` and `460441` completed `0:0` in 27 s and 32 s. Topologies `2x1x1`, `1x2x1`, `1x1x2`, `2x2x1`, `2x1x2`, and `1x2x2` have bitwise-identical time, kinetic energy, enstrophy, and dissipation. All record `cuda_ipc/cuda`; NP=2 and NP=4 Compute Sanitizer logs report zero errors; ranks 0-3 prebind devices 0-3. No grid/flowfield HDF5 was generated. The backend remains explicit opt-in pending repeated performance, non-periodic case, and multi-node gates. |
 | P4-DEVICE-AWARE-NONREACTING-LOCAL | Cartesian zero-extrapolation, CURVE wall41, selective-Roe HBL shock sensor, and Cartesian wall family | 2 | 2 physical RTX 4000 Ada | t | NP=2 x/y/z physical-direction slabs; `41/42/411/421`; full filter/diffusion where applicable; explicit synchronization; direct device buffers through `cuda_copy` without IPC | 20/20 statistics and complete-RK fields pass; three sensor fields pass with exact masks; every GPU log selects device-aware; no invalid numerical state | pass-local-no-ipc | 2026-09-19 local matrix passed 3 Cartesian boundary, 3 CURVE, 3 shock-sensor, and 11 wall-family cases. Maximum statistics, `q5`, and raw-sensor differences were `7.8159700933611020e-13`, `2.8421709430404007e-13`, and `1.1102230246251565e-15`; mask mismatches were zero. Local `cuda_ipc` remains unqualified. `run_zhongke_a800_device_aware_nonreacting_admission.sbatch` is prepared but has not been submitted, so A800 non-periodic IPC admission remains pending. |
 
+## Completed-Step Output And Restart: First Delivery
+
+User-approved scope A closes OR0-OR6 locally on 2026-10-03. These are output,
+restart and reader-correctness gates, not new flow-physics or I/O-performance
+qualification. Exact inputs, binary fingerprints, superseded failures and
+budgets are retained in `ASTR_OUTPUT_RESTART_REDESIGN_PLAN.md` 10.75-10.78.
+
+| Surface | Approved bounded matrix | Acceptance and evidence |
+| --- | --- | --- |
+| Configuration/storage | CPU/MPI asymmetric 9x7x5, 5/11 components, NP=1/2 | Ownership and exact payload; empty selections, schema/resource/corruption rejection and publication failure; plan 10.1-10.8, 10.15, 10.18-10.19, 10.28, 10.35 |
+| Complete-step same-topology restart | 16-cubed TGV/channel/static and dynamic CURVE/fixed AIR5 HBL and SBLI, CPU/GPU NP=1/2 | Own-backend 12 versus 5+7 state/statistics exact; output toggles do not change advancement; plan 10.9-10.23, 10.32-10.35, 10.74 |
+| Repartitioned state/history | TGV x/y/z; fixed channel and CURVE x/z; fixed AIR5 HBL z and SBLI x, NP=1/2 | Existing per-field 2e-10 gates, AIR5 fixed physical scales; sampling clocks/identity strict, no lost or resampled history; plan 10.38, 10.49, 10.54, 10.67, 10.69, 10.71, 10.73 |
+| Archives/derived fields/readers | Independent volume and fixed-index slices, registered 16-cubed cases | Same-phase fields, gradient/vorticity/Q_rs/divergence, actual ParaView/Python readback; basic slices download selected planes, not entire fields; plan 10.23-10.31, 10.44-10.46, 10.60, 10.64-10.65 |
+| Joint products/rendering | TGV CPU statistics, GPU Cartesian same-topology EGL, NP=1/2 | Independent step/time schedules, exact statistics and GPU image/geometry restart, output-toggle invariance; `out/or6_a_final_joint_derived_20261003.xml` (12 passes including AIR5 reader checks) |
+| Final CUDA migration/safety | Representative TGV/channel/CURVE/AIR5 migrations; static/dynamic CURVE and SBLI dual-rank memcheck | `out/or6_a_final_cuda_migration_20261003.xml`, 11 passes; zero invalid-access errors |
+| Final failure/resource guards | CPU/GPU publication failure recovery, impossible reserve, render repartition and corrupt render control | `out/or6_a_final_fault_20261003.xml`, 5 passes; previous complete source remains usable |
+| Installation/examples | CPU-only/CUDA install inventory; three actual Fortran example parses | `out/or6_a_final_install_20261003.xml` (2 passes), `out/or6_a_final_examples_20261003.xml` (3 passes) |
+
+The approved 64 MiB limits apply separately to each test/reference directory
+and controlled host/device buffers. TGV renderer third-party observations have
+separate 4 GiB node/2 GiB physical-GPU added-memory limits, with 1 GiB free.
+No arbitrary grid-size admission, cross-backend restart, CPU/CURVE/AIR5
+rendering or render-enabled repartition is inferred. Legacy output remains
+default; the new interface requires explicit `ASTR_OUTPUT_CONFIG`.
+
 ## TGV Filter Policy
 
 Path A sets `lfilter=f` in both CPU and GPU runs. It validates the minimum RHS/RK/updatefvar loop.

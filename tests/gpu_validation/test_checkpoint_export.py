@@ -1,7 +1,10 @@
 """Bounded read-only export and asymmetric-axis checks; no flow integration."""
 import importlib.util
+import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import xml.etree.ElementTree as ET
 
 import h5py
@@ -231,3 +234,39 @@ def test_failed_completion_is_not_published(bundle, tmp_path, monkeypatch):
     with pytest.raises(OSError, match="injected completion"):
         export.export_checkpoint(bundle, output, volume=False, slices=[("i", 4)])
     assert not (output / "COMPLETE.json").exists()
+
+
+@pytest.mark.parametrize("backend", ["cpu", "gpu"])
+def test_installed_output_tools_are_self_contained(backend, tmp_path):
+    variable = "ASTR_OUTPUT_INSTALL_" + backend.upper() + "_BUILD"
+    default = "build_release_restart_cpu" if backend == "cpu" else "build_gpu_probe"
+    build = Path(os.environ.get(variable, str(ROOT / default))).resolve()
+    assert (build / "CMakeCache.txt").is_file(), f"configure root CMake first: {build}"
+    prefix = tmp_path / "installation"
+    completed = subprocess.run(
+        ["cmake", "--install", str(build), "--prefix", str(prefix),
+         "--component", "OutputTools"],
+        cwd=tmp_path, capture_output=True, text=True, timeout=60,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    files = list(prefix.rglob("*"))
+    files = [path for path in files if path.is_file()]
+    expected = {
+        "README.md", "export_checkpoint.py", "repair_series.py", "combine_series.py",
+        "input.output.tgv.example", "input.output.tgv.derived.example",
+        "input.output.air5.derived.example",
+    }
+    assert {path.name for path in files} == expected
+    assert len(files) == len(expected)
+    assert len({path.parent for path in files}) == 1
+    assert sum(path.stat().st_size for path in files) <= 4 * 1024**2
+    for path in files:
+        assert not path.is_symlink()
+        assert path.read_bytes() == (ROOT / "scripts/output" / path.name).read_bytes()
+        if path.suffix == ".py":
+            help_result = subprocess.run(
+                [sys.executable, str(path), "--help"], cwd=tmp_path,
+                capture_output=True, text=True, timeout=30,
+            )
+            assert help_result.returncode == 0, help_result.stdout + help_result.stderr
+            assert "usage:" in help_result.stdout

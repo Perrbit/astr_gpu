@@ -225,10 +225,10 @@ def test_derived_layout_override_and_parent(tmp_path):
 
 
 @pytest.mark.parametrize("backend", ["cpu", "gpu"])
-def test_unvalidated_derived_boundaries_rejected(backend, tmp_path):
-    args = arguments(tmp_path, backend, "x")
+def test_unvalidated_derived_wall_partition_rejected(backend, tmp_path):
+    args = arguments(tmp_path, backend, "y")
     args.statistics = False
     args.case = "channel"
     run_case(args, ROOT, backend, 2, "rejected", 1, archive_groups=archive(),
-        buffer_bytes=4096, reject="derived fields require validated 16-cubed periodic explicit TGV NP<=2")
+        buffer_bytes=4096, reject="derived fields require registered 16-cubed explicit TGV/channel/CURVE/AIR5 NP<=2")
     directory_budget(tmp_path)

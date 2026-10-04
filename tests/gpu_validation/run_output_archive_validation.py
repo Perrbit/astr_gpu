@@ -414,7 +414,8 @@ def main():
                     derived_args = SimpleNamespace(**(vars(args) | {"case": "channel"}))
                     run_case(derived_args, root, backend, ranks, "reject_derived", 12,
                              archive_groups=archive.replace("initial_frame=.true.", "qcriterion=.true., initial_frame=.true."),
-                             buffer_bytes=4096, reject="derived fields require validated 16-cubed periodic explicit TGV NP<=2")
+                             buffer_bytes=4096, lfilter=False,
+                             reject="derived fields require registered 16-cubed explicit TGV/channel/CURVE/AIR5 NP<=2")
                     run_case(args, root, backend, ranks, "reject_buffer", 12, enabled=False,
                              archive_groups=groups(args.mode, volume=False, dt=dt), buffer_bytes=1,
                              reject="host budget cannot hold one basic node")

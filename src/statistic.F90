@@ -58,7 +58,7 @@ module statistic
   type(tsta) :: hitsta
   !
   contains
-  subroutine complete_mean_statistics_file(path,writing,identity,budget)
+  subroutine complete_mean_statistics_file(path,writing,identity,budget,allow_repartition,repartition_axes)
     use iso_fortran_env, only: int64,real64
     use ieee_arithmetic, only: ieee_is_finite
     use mpi, only: MPI_COMM_WORLD
@@ -67,6 +67,7 @@ module statistic
       allocate_checkpoint_buffer,checkpoint_state_require
     character(*),intent(in) :: path
     logical,intent(in) :: writing
+    logical,optional,intent(in) :: allow_repartition,repartition_axes(3)
     type(checkpoint_state_identity),intent(inout) :: identity
     integer(int64),intent(in) :: budget
     real(real64),allocatable :: values(:,:,:,:)
@@ -138,7 +139,8 @@ module statistic
     endif
     ! Role 6 stores raw accumulated moments, including duplicated physical endpoints.
     call checkpoint_state_transfer(path,writing,.true.,[ia,ja,ka]+1,[ig0,jg0,kg0], &
-      [im,jm,km],0,values,identity,remaining,MPI_COMM_WORLD,role=6,metadata=metadata)
+      [im,jm,km],0,values,identity,remaining,MPI_COMM_WORLD,role=6,metadata=metadata, &
+      allow_repartition=allow_repartition,repartition_axes=repartition_axes)
     if(.not.writing) then
       call checkpoint_state_require(identity%step==expected%step.and.identity%time==expected%time.and. &
         identity%dt_used==expected%dt_used.and.identity%dt_next==expected%dt_next, &

@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from types import SimpleNamespace
 
 import h5py
@@ -35,6 +36,32 @@ def fingerprints(root):
 
 def check_parent_reader(head, output, extra_names=()):
     report = combine_series(head, output=output)
+    # Check the runtime index against an independent stopped-source catalog.
+    native_rows = (head / "lineage.frames").read_text().splitlines()
+    assert native_rows[0] == "ASTR_NATIVE_LINEAGE_1"
+    expected_rows = (output / "lineage.frames").read_text().splitlines()[1:]
+    assert len(native_rows) == 1 + 3*len(expected_rows)
+    for position, expected in enumerate(expected_rows):
+        step, time, path = expected.split(maxsplit=2)
+        actual = native_rows[1+3*position:4+3*position]
+        assert len(actual[0].split()) == 2 and int(actual[0].split()[0]) == int(step)
+        assert float(actual[0].split()[1]) == float(time)
+        assert (head / actual[1]).resolve() == (output / path / "data.h5").resolve()
+        assert (head / actual[2]).resolve() == (output / path / "../../resources/data.h5").resolve()
+    native = ET.parse(head / "lineage.xdmf")
+    independent = ET.parse(output / "lineage.xdmf")
+    assert [float(t.attrib["Value"]) for t in native.findall("./Domain/Grid/Grid/Time")] == [
+        float(t.attrib["Value"]) for t in independent.findall("./Domain/Grid/Grid/Time")]
+    native_items, independent_items = native.findall(".//DataItem"), independent.findall(".//DataItem")
+    assert len(native_items) == len(independent_items)
+    for actual, expected in zip(native_items, independent_items):
+        actual_path, actual_dataset = actual.text.strip().split(":", 1)
+        expected_path, expected_dataset = expected.text.strip().split(":", 1)
+        assert actual.attrib == expected.attrib and actual_dataset == expected_dataset
+        assert (head / actual_path).resolve() == (output / expected_path).resolve()
+        actual.text = os.path.relpath(head / actual_path, output) + ":" + actual_dataset
+    # Reader receives the native writer XML, only rebased into its test directory.
+    native.write(output / "lineage.xdmf", encoding="utf-8", xml_declaration=True)
     for row in (output / "lineage.frames").read_text().splitlines()[1:]:
         step, time, source = row.split(maxsplit=2)
         frame = output / source
@@ -211,6 +238,39 @@ def test_restore_rejects_tampered_parent_identity(reference, tmp_path):
 
 def test_boundary_root_new_segment_exact_continuation(boundary_reference, tmp_path):
     assert_same_root_continuation(boundary_reference, tmp_path)
+
+
+@pytest.mark.parametrize("layout", ["planes", "derived"])
+def test_legal_layout_override_preserves_segments(reference, tmp_path, layout):
+    args, backend, continuous, seed = reference
+    args = SimpleNamespace(**vars(args)); args.output = tmp_path
+    source_root = seed / "outdat/new"
+    before = fingerprints(source_root)
+    configured = groups("steps")
+    if layout == "planes":
+        configured = configured.replace("i_indices=8", "i_indices=7")
+        changed = "slices"
+    else:
+        configured = configured.replace("&volume\n", "&volume\n velocity_gradient=.true.,\n")
+        changed = "fields"
+    restored, _ = run_case(args, ROOT, backend, 2, "layout_override", 12,
+        restore=source_root / "checkpoints/step000000000005", buffer_bytes=4096,
+        override=True, archive_groups=configured)
+    actual = restored / "outdat/new"
+    log = (restored / "run.log").read_text()
+    assert f"per-segment indexes retained product={changed}" in log
+    for name in ("state.h5", "statistics.h5"):
+        compare_fields(actual / "checkpoints/step000000000012" / name,
+                       continuous / "outdat/new/checkpoints/step000000000012" / name)
+    assert before == fingerprints(source_root)
+    for product in ("fields", "slices"):
+        head = actual / product / "segment00000000"
+        assert (head / "series.xdmf").is_file() and (head / "series.frames").is_file()
+        record = segment_record(head, require_parent=True)
+        assert (head / record["parent"]).resolve() == (source_root / product / "segment00000000").resolve()
+        assert (head / "lineage.xdmf").is_file() == (product != changed)
+        assert (head / "lineage.frames").is_file() == (product != changed)
+    assert sum(p.stat().st_size for p in tmp_path.rglob("*") if p.is_file()) < 64*1024**2
 
 
 def test_changed_planes_require_new_geometry_root(reference, tmp_path):

@@ -127,10 +127,12 @@ contains
     tmp_d(i,j,k) = pres / den * const2
   end subroutine q_to_primitive_point
 
-  attributes(global) subroutine q_to_primitive_y_periodic_boundary_kernel(im,jm,km,hm,const2,const6)
+  attributes(global) subroutine q_to_primitive_y_periodic_boundary_kernel(im,jm,km,hm,const2,const6, &
+                                                                         refresh_down,refresh_up)
     implicit none
     integer,value :: im,jm,km,hm
     real(8),value :: const2,const6
+    logical,value :: refresh_down,refresh_up
     integer :: id,i,k,h,side,n1,n2
 
     n1 = im + 1
@@ -144,17 +146,20 @@ contains
     side = id/(n1*n2*(hm+1))
 
     if(side == 0) then
+      if(.not.refresh_down) return
       call q_to_primitive_point(i,-hm+h,k,const2,const6)
     else
+      if(.not.refresh_up) return
       call q_to_primitive_point(i,jm+h,k,const2,const6)
     endif
   end subroutine q_to_primitive_y_periodic_boundary_kernel
 
-  attributes(global) subroutine q_to_primitive_x_periodic_boundary_kernel(im,jm,km,hm,const2,const6,fast_mapping)
+  attributes(global) subroutine q_to_primitive_x_periodic_boundary_kernel(im,jm,km,hm,const2,const6, &
+                                                                         fast_mapping,refresh_left,refresh_right)
     implicit none
     integer,value :: im,jm,km,hm
     real(8),value :: const2,const6
-    logical,value :: fast_mapping
+    logical,value :: fast_mapping,refresh_left,refresh_right
     integer :: id,j,k,h,side,n1,n2,nhalo,halo_id
 
     n1 = jm + 1
@@ -177,16 +182,20 @@ contains
     endif
 
     if(side == 0) then
+      if(.not.refresh_left) return
       call q_to_primitive_point(-hm+h,j,k,const2,const6)
     else
+      if(.not.refresh_right) return
       call q_to_primitive_point(im+h,j,k,const2,const6)
     endif
   end subroutine q_to_primitive_x_periodic_boundary_kernel
 
-  attributes(global) subroutine q_to_primitive_z_periodic_boundary_kernel(im,jm,km,hm,const2,const6)
+  attributes(global) subroutine q_to_primitive_z_periodic_boundary_kernel(im,jm,km,hm,const2,const6, &
+                                                                         refresh_back,refresh_front)
     implicit none
     integer,value :: im,jm,km,hm
     real(8),value :: const2,const6
+    logical,value :: refresh_back,refresh_front
     integer :: id,i,j,h,side,n1,n2
 
     n1 = im + 1
@@ -200,8 +209,10 @@ contains
     side = id/(n1*n2*(hm+1))
 
     if(side == 0) then
+      if(.not.refresh_back) return
       call q_to_primitive_point(i,j,-hm+h,const2,const6)
     else
+      if(.not.refresh_front) return
       call q_to_primitive_point(i,j,km+h,const2,const6)
     endif
   end subroutine q_to_primitive_z_periodic_boundary_kernel
@@ -287,6 +298,8 @@ contains
 
   subroutine refresh_primitive_x_periodic_boundary_gpu()
     use commvar, only: im,jm,km,hm,const2,const6,lihomo,ljhomo,lkhomo
+    use parallel, only: mpileft,mpiright
+    use mpi, only: MPI_PROC_NULL
     use gpu_check, only: sync_after_kernel
     implicit none
     type(dim3) :: block,grid
@@ -296,12 +309,15 @@ contains
     n = (jm + 1) * (km + 1) * 2 * (hm + 1)
     grid = dim3((n + block%x - 1)/block%x,1,1)
     call q_to_primitive_x_periodic_boundary_kernel<<<grid,block>>>( &
-         im,jm,km,hm,const2,const6,lihomo .and. ljhomo .and. lkhomo)
+         im,jm,km,hm,const2,const6,lihomo .and. ljhomo .and. lkhomo, &
+         lihomo.or.mpileft/=MPI_PROC_NULL,lihomo.or.mpiright/=MPI_PROC_NULL)
     call sync_after_kernel('q_to_primitive_x_periodic_boundary_kernel')
   end subroutine refresh_primitive_x_periodic_boundary_gpu
 
   subroutine refresh_primitive_y_periodic_boundary_gpu()
-    use commvar, only: im,jm,km,hm,const2,const6
+    use commvar, only: im,jm,km,hm,const2,const6,ljhomo
+    use parallel, only: mpidown,mpiup
+    use mpi, only: MPI_PROC_NULL
     use gpu_check, only: sync_after_kernel
     implicit none
     type(dim3) :: block,grid
@@ -310,12 +326,15 @@ contains
     block = dim3(256,1,1)
     n = (im + 1) * (km + 1) * 2 * (hm + 1)
     grid = dim3((n + block%x - 1)/block%x,1,1)
-    call q_to_primitive_y_periodic_boundary_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6)
+    call q_to_primitive_y_periodic_boundary_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+         ljhomo.or.mpidown/=MPI_PROC_NULL,ljhomo.or.mpiup/=MPI_PROC_NULL)
     call sync_after_kernel('q_to_primitive_y_periodic_boundary_kernel')
   end subroutine refresh_primitive_y_periodic_boundary_gpu
 
   subroutine refresh_primitive_z_periodic_boundary_gpu()
-    use commvar, only: im,jm,km,hm,const2,const6
+    use commvar, only: im,jm,km,hm,const2,const6,lkhomo
+    use parallel, only: mpiback,mpifront
+    use mpi, only: MPI_PROC_NULL
     use gpu_check, only: sync_after_kernel
     implicit none
     type(dim3) :: block,grid
@@ -324,7 +343,8 @@ contains
     block = dim3(256,1,1)
     n = (im + 1) * (jm + 1) * 2 * (hm + 1)
     grid = dim3((n + block%x - 1)/block%x,1,1)
-    call q_to_primitive_z_periodic_boundary_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6)
+    call q_to_primitive_z_periodic_boundary_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+         lkhomo.or.mpiback/=MPI_PROC_NULL,lkhomo.or.mpifront/=MPI_PROC_NULL)
     call sync_after_kernel('q_to_primitive_z_periodic_boundary_kernel')
   end subroutine refresh_primitive_z_periodic_boundary_gpu
 end module qswap_gpu

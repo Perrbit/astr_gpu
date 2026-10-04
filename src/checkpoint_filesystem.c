@@ -9,6 +9,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <stdint.h>
 
 static int plain_at(int fd, const char *name) {
     struct stat st;
@@ -33,8 +34,85 @@ static int plain_directory_path(const char *path) {
     return fd;
 }
 
+static int compare_frame_steps(const void *a, const void *b) {
+    int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
+    return (x > y) - (x < y);
+}
+
+int astr_output_plain_frame(const char *path) {
+    int fd = plain_directory_path(path), result = 1, count = 0;
+    DIR *directory = NULL;
+    struct dirent *member;
+    if (fd < 0) goto done;
+    directory = fdopendir(fd);
+    if (!directory) goto done;
+    fd = -1;
+    errno = 0;
+    while ((member = readdir(directory))) {
+        const char *name = member->d_name;
+        if (!strcmp(name, ".") || !strcmp(name, "..")) continue;
+        if (strcmp(name, "data.h5") && strcmp(name, "data.xdmf") && strcmp(name, "FRAME") &&
+            strcmp(name, "RESOURCES") && strcmp(name, "MANIFEST") && strcmp(name, "COMPLETE")) goto done;
+        if (!plain_at(dirfd(directory), name)) goto done;
+        ++count;
+        errno = 0;
+    }
+    if (!errno && count == 6) result = 0;
+done:
+    if (directory && closedir(directory)) result = 1;
+    if (fd >= 0 && close(fd)) result = 1;
+    return result;
+}
+
+/* Bounded catalog; indexes are caches, never evidence for completed frames. */
+int astr_output_frame_catalog(const char *path, int64_t *steps, int capacity, int *count) {
+    int fd = plain_directory_path(path), result = 1;
+    DIR *directory = NULL;
+    struct dirent *member;
+    *count = 0;
+    if (fd < 0 || capacity < 1) goto done;
+    directory = fdopendir(fd);
+    if (!directory) goto done;
+    fd = -1;
+    errno = 0;
+    while ((member = readdir(directory))) {
+        const char *name = member->d_name;
+        struct stat st;
+        if (!strcmp(name, ".") || !strcmp(name, "..")) continue;
+        int frame = !strncmp(name, "step", 4) && strlen(name) >= 16;
+        int64_t step = 0;
+        for (int i = 4; frame && i < 16; ++i) {
+            if (name[i] < '0' || name[i] > '9') frame = 0;
+            else step = step * 10 + name[i] - '0';
+        }
+        if (frame && (!name[16] || !strcmp(name + 16, ".tmp"))) {
+            if (fstatat(dirfd(directory), name, &st, AT_SYMLINK_NOFOLLOW) || !S_ISDIR(st.st_mode)) goto done;
+            if (name[16]) continue;
+            if (*count >= capacity) goto done;
+            steps[(*count)++] = step;
+        } else {
+            static const char *allowed[] = {"SEGMENT", "input.txt", "LATEST", ".LATEST.tmp",
+                "series.frames", "series.xdmf", "series.frames.tmp", "series.xdmf.tmp",
+                "lineage.parent", "lineage.frames", "lineage.xdmf", "lineage.frames.tmp", "lineage.xdmf.tmp"};
+            int found = 0;
+            for (size_t i = 0; i < sizeof(allowed)/sizeof(allowed[0]); ++i) found |= !strcmp(name, allowed[i]);
+            if (!found || !plain_at(dirfd(directory), name)) goto done;
+        }
+        errno = 0;
+    }
+    if (errno) goto done;
+    qsort(steps, (size_t)*count, sizeof(*steps), compare_frame_steps);
+    result = 0;
+done:
+    if (directory && closedir(directory)) result = 1;
+    if (fd >= 0 && close(fd)) result = 1;
+    return result;
+}
+
 int astr_output_archive_parent(const char *current, const char *parent, char *relative, int capacity) {
     char a[PATH_MAX], b[PATH_MAX], result[2 * PATH_MAX];
+    char product_a[PATH_MAX], product_b[PATH_MAX], *end_a, *end_b;
+    const char *label_a, *label_b;
     int fd = -1, source = -1, status = 1;
     size_t common = 0, used = 0;
     if (capacity < 1) return 1;
@@ -42,6 +120,13 @@ int astr_output_archive_parent(const char *current, const char *parent, char *re
     fd = plain_directory_path(current); source = plain_directory_path(parent);
     if (fd < 0 || source < 0 || !plain_at(source, "SEGMENT") || !plain_at(source, "input.txt") ||
         !realpath(current, a) || !realpath(parent, b) || !strcmp(a, b)) goto done;
+    strcpy(product_a, a); strcpy(product_b, b);
+    end_a = strrchr(product_a, '/'); end_b = strrchr(product_b, '/');
+    if (!end_a || !end_b) goto done;
+    *end_a = 0; *end_b = 0;
+    label_a = strrchr(product_a, '/'); label_b = strrchr(product_b, '/');
+    if (!label_a || !label_b || strcmp(label_a, label_b) ||
+        (strcmp(label_a, "/fields") && strcmp(label_a, "/slices"))) goto done;
     for (size_t i = 0; a[i] && b[i] && a[i] == b[i]; ++i) if (a[i] == '/') common = i + 1;
     /* One ../ for each remaining directory, followed by the parent's suffix. */
     for (size_t i = common; a[i]; ++i) {
@@ -299,6 +384,10 @@ done:
     return result;
 }
 #else
+int astr_output_plain_frame(const char *path) { (void)path; return 1; }
+int astr_output_frame_catalog(const char *path, long long *steps, int capacity, int *count) {
+    (void)path; (void)steps; (void)capacity; *count = 0; return 1;
+}
 int astr_output_archive_parent(const char *current, const char *parent, char *relative, int capacity) {
     (void)current; (void)parent;
     if (capacity > 0) relative[0] = 0;

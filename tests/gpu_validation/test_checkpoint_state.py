@@ -14,6 +14,32 @@ MPIEXEC = os.environ.get("ASTR_OUTPUT_MPIEXEC", shutil.which("mpiexec") or "mpie
 
 
 @pytest.mark.parametrize("ranks", [1, 2])
+def test_inherited_group_keeps_root(tmp_path, ranks):
+    path = tmp_path / "compact.h5"
+    run(path, "inherited_write", ranks)
+    run(path, "inherited_read", ranks)
+    with h5py.File(path) as state:
+        assert np.all(state["q0002"][:] == 1)
+        assert np.all(state["inherited/q0002"][:] == 2)
+        assert state["metadata"][:].tobytes() == state["inherited/metadata"][:].tobytes()
+
+
+@pytest.mark.parametrize("defect", ["missing", "shape", "type"])
+def test_inherited_group_rejects_invalid_payload(tmp_path, defect):
+    path = tmp_path / "compact.h5"
+    run(path, "inherited_write", 2)
+    with h5py.File(path, "r+") as state:
+        group = state["inherited"]
+        value = group["q0002"][:]
+        del group["q0002"]
+        if defect == "shape":
+            group["q0002"] = value[:-1]
+        elif defect == "type":
+            group["q0002"] = value.astype(np.float32)
+    run(path, "inherited_read", 2, success=False)
+
+
+@pytest.mark.parametrize("ranks", [1, 2])
 @pytest.mark.parametrize("mode", ["context_reject", "context_clear"])
 def test_failure_context(tmp_path, ranks, mode):
     log = run(tmp_path / "unused.h5", mode, ranks, success=False)

@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import shutil
 import subprocess
@@ -49,7 +50,9 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
              reject=None, change_input=False, checkpoint_interval=None, override=False,
              source_fault=None, archive_groups=None, buffer_bytes=67108864,
              device_budget_bytes=67108864, checkpoint_keep=2, publication_fault=None, reuse_root=None,
-             lfilter=True, insitu_config=None, topology=None, controller_replay=None):
+             lfilter=True, insitu_config=None, topology=None, controller_replay=None, initial_resource=None,
+             rhs_snapshot_step=None, memcheck=False, device_reserve_bytes=0,
+             monitor_resources=False, resource_baseline=None):
     case = args.output / f"{backend}_np{ranks}_{name}"
     channel = args.case == "channel"
     dynamic = args.case == "dynamic"
@@ -105,7 +108,14 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         "--maxstep", str(steps - 1), "--feqchkpt", "1", "--deltat", "1.d-3",
         "--lfilter", "t" if lfilter else "f", "--diffterm", "t", "--scheme", "643e"], check=True)
     if args.initial_dimension and source_fault != "initial_field":
-        initial_path = prepare_initial_resource(case, input_name, args.initial_dimension)
+        if initial_resource is None:
+            initial_path = prepare_initial_resource(case, input_name, args.initial_dimension)
+        else:
+            if not channel or args.initial_dimension != 3 or source_fault is not None:
+                raise ValueError("frozen external initial resource is limited to the channel gate")
+            set_ninit(case / "datin" / input_name, 3)
+            initial_path = case / "datin/flowini3d.h5"
+            shutil.copyfile(initial_resource, initial_path)
         if source_fault == "initial_external":
             with h5py.File(initial_path, "r+") as state:
                 del state["ro"]
@@ -138,6 +148,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
  directory='outdat/new', restore_directory='{restore or ''}',
  restart_output='{'override' if override else 'saved'}',
  host_budget_bytes=67108864,device_budget_bytes={device_budget_bytes},buffer_bytes={buffer_bytes}
+ device_reserve_bytes={device_reserve_bytes}
 /
 &checkpoint
         enabled={'.true.' if enabled or args.statistics or args.legacy_statistics or args.case != 'tgv' or args.initial_dimension else '.false.'},mode='{args.mode}',
@@ -169,6 +180,11 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
                ASTR_GPU_SYNC_MODE="explicit", ASTR_GPU_HALO_TRANSPORT="pinned",
                ASTR_GPU_PRECISION_MODE="fp64", ASTR_INSITU_SAMPLE_PREFIX="outdat/sample")
     env["ASTR_GPU_FILTER_WORKSPACE"] = args.filter_workspace
+    if rhs_snapshot_step is not None:
+        if not 0 <= rhs_snapshot_step < steps:
+            raise ValueError("RHS diagnostic step must be within this bounded run")
+        env.update(ASTR_VALIDATION_RHS_PREFIX="outdat/rhs",
+                   ASTR_VALIDATION_RHS_STEP=str(rhs_snapshot_step))
     if args.case != "tgv":
         env.pop("ASTR_INSITU_SAMPLE_PREFIX")
     if channel:
@@ -225,23 +241,42 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
                    ASTR_CONTROLLER_TEST_FILE=str(controller.resolve(strict=True)),
                    ASTR_CONTROLLER_TEST_REPLAY=str(replay.resolve()),
                    ASTR_CONTROLLER_TEST_START_STEP=str(start_step))
+    solver_command = [str(args.executable), "run", "datin/" + input_name]
+    if memcheck:
+        sanitizer = shutil.which("compute-sanitizer")
+        if sanitizer is None:
+            raise RuntimeError("compute-sanitizer is required for this explicit memory gate")
+        # Isolate device-memory safety from MPI's optional CUDA pointer probes.
+        env.update(OMPI_MCA_opal_cuda_support="false", OMPI_MCA_pml="ob1",
+                   OMPI_MCA_osc="pt2pt", OMPI_MCA_btl="self,vader,tcp",
+                   OMPI_MCA_coll_ucc_enable="0")
+        solver_command = [sanitizer, "--tool", "memcheck", "--target-processes", "all",
+                          "--error-exitcode", "99", "--log-file", str(case / "memcheck.%p.log"),
+                          *solver_command]
     command = [str(args.mpiexec), "--mca", "coll_hcoll_enable", "0", "-np", str(ranks),
-               str(args.executable), "run", "datin/" + input_name]
+               *solver_command]
     with (case / "run.log").open("wb") as log:
-        process = subprocess.Popen(command, cwd=case, env=env, stdout=log,
-                                   stderr=subprocess.STDOUT, start_new_session=True)
-        try:
-            returncode = process.wait(timeout=180)
-        except BaseException:
+        if monitor_resources:
+            if backend != "gpu" or reject or memcheck:
+                raise ValueError("resource sampling requires a successful GPU gate without memcheck")
+            from insitu_resource_monitor import run_monitored
+            run_monitored(command, case, env, log, case / "resources.sampled.json", baseline=resource_baseline)
+            returncode = 0
+        else:
+            process = subprocess.Popen(command, cwd=case, env=env, stdout=log,
+                                       stderr=subprocess.STDOUT, start_new_session=True)
             try:
-                os.killpg(process.pid, signal.SIGTERM)
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
-            except ProcessLookupError:
-                process.wait()
-            raise
+                returncode = process.wait(timeout=180)
+            except BaseException:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
+                except ProcessLookupError:
+                    process.wait()
+                raise
     if reject:
         if returncode == 0 or reject not in (case / "run.log").read_text():
             raise AssertionError(f"expected rejection not observed: {reject}: {case}")
@@ -249,6 +284,12 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
             raise AssertionError("failed restore published a checkpoint")
     elif returncode:
         raise RuntimeError(f"solver failed: {case / 'run.log'}")
+    if memcheck:
+        summaries = list(case.glob("memcheck.*.log"))
+        counts = [int(count) for path in summaries
+                  for count in re.findall(r"ERROR SUMMARY: (\d+) errors", path.read_text())]
+        if len(counts) < ranks or any(counts):
+            raise AssertionError(f"missing successful memcheck summary: {case}")
     if (case / "outdat/flowfield.h5").exists():
         raise AssertionError("new output emitted a legacy flowfield file")
     disk_bytes = sum(p.stat().st_size for p in case.rglob("*") if p.is_file())

@@ -19,15 +19,22 @@ module checkpoint_state_gpu
 #endif
 contains
 #ifdef ASTR_AIR5_CHEMISTRY
-  subroutine checkpoint_air5_gpu(path,writing,global_shape,origin,cells,halo,identity,budget,comm)
+  subroutine checkpoint_air5_gpu(path,writing,global_shape,origin,cells,halo,identity,budget,comm, &
+                                 allow_repartition,restored_exact,refresh_halos,repartition_axes)
     character(*),intent(in) :: path
     logical,intent(in) :: writing
+    logical,optional,intent(in) :: allow_repartition,repartition_axes(3)
+    logical,optional,intent(out) :: restored_exact
+    procedure(checkpoint_halo_refresh),optional :: refresh_halos
     integer,intent(in) :: global_shape(3),origin(3),cells(3),halo,comm
     type(checkpoint_state_identity),intent(inout) :: identity
     integer(int64),intent(in) :: budget
     real(real64),allocatable :: buffer(:,:,:,:),carry_stage(:,:,:,:)
     integer(int64) :: remaining,metadata(2),expected(2),carry_bytes,nodes
     integer :: extents(3),h,err,d
+    logical :: permit,matched
+    permit=.false.
+    if(present(allow_repartition)) permit=allow_repartition
     call checkpoint_state_require(allocated(q_d).and.allocated(rho_d).and.allocated(vel_d).and. &
       allocated(prs_d).and.allocated(tmp_d).and.allocated(tve_d).and.allocated(spc_d), &
       comm,'AIR5 device state not initialized')
@@ -66,11 +73,19 @@ contains
       buffer(:,:,:,28)=tmp_d
       buffer(:,:,:,29)=tve_d
       buffer(:,:,:,30:34)=spc_d
+    else
+      buffer=0.0_real64
     endif
     call checkpoint_state_transfer(path,writing,.true.,global_shape,origin,cells,halo, &
-      buffer,identity,remaining,comm,role=7,metadata=metadata)
+      buffer,identity,remaining,comm,role=7,metadata=metadata,allow_repartition=permit,restored_exact=matched, &
+      repartition_axes=repartition_axes)
+    if(present(restored_exact)) restored_exact=matched
     call checkpoint_state_require(all(metadata==expected),comm,'AIR5 device compensation contract mismatch')
     if(.not.writing) then
+      if(.not.matched) then
+        call checkpoint_state_require(present(refresh_halos),comm,'AIR5 device repartition halo provider missing')
+        call refresh_halos(buffer,cells,halo,remaining,comm)
+      endif
       q_d=buffer(:,:,:,1:11)
       if(air5_compensated) then
         carry_stage=buffer(h:h+cells(1),h:h+cells(2),h:h+cells(3),12:22)
@@ -87,10 +102,11 @@ contains
   end subroutine
 #endif
   subroutine checkpoint_perfect_gas_gpu(path,writing,global_shape,origin,cells,halo,identity,budget,comm, &
-                                       allow_repartition,restored_exact,refresh_halos)
+                                       allow_repartition,restored_exact,refresh_halos,repartition_axes)
     character(*),intent(in) :: path
     logical,intent(in) :: writing
     logical,optional,intent(in) :: allow_repartition
+    logical,optional,intent(in) :: repartition_axes(3)
     logical,optional,intent(out) :: restored_exact
     procedure(checkpoint_halo_refresh),optional :: refresh_halos
     integer,intent(in) :: global_shape(3),origin(3),cells(3),halo,comm
@@ -120,7 +136,8 @@ contains
       buffer=0.d0
     endif
     call checkpoint_state_transfer(path,writing,.true.,global_shape,origin,cells,halo, &
-      buffer,identity,remaining,comm,role=2,allow_repartition=permit,restored_exact=matched)
+      buffer,identity,remaining,comm,role=2,allow_repartition=permit,restored_exact=matched, &
+      repartition_axes=repartition_axes)
     if(present(restored_exact)) restored_exact=matched
     if (.not.writing) then
       if(.not.matched) then

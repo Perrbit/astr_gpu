@@ -45,7 +45,7 @@ contains
     call validate_first_stage_gpu()
     conservative_case=conservative_boundary%enabled
     refresh_filtered_primitives=.not.lcomb.and.numq==5.and.num_species==0.and. &
-      all(bctype==1).and.conschm(4:4)=='e'.and.difschm(4:4)=='e'
+      conschm(4:4)=='e'.and.difschm(4:4)=='e'
     ldc_case = gpu_ldc_boundary_case_pending()
     flatplate_case = gpu_s1_flatplate_boundary_case_pending()
     flatplate_nscbc_farfield_case = (.not.conservative_case) .and. &
@@ -68,7 +68,7 @@ contains
       if(refresh_filtered_primitives) then
         call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
              q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
-        call sync_after_kernel('prepare_q_to_primitive_kernel_postfilter_periodic')
+        call sync_after_kernel('prepare_q_to_primitive_kernel_postfilter')
       endif
     endif
 
@@ -372,7 +372,7 @@ contains
          gpu_tgv_explicit_upwind_supported()
     conservative_case=conservative_boundary%enabled
     refresh_filtered_primitives=.not.lcomb.and.numq==5.and.num_species==0.and. &
-      all(bctype==1).and.conschm(4:4)=='e'.and.difschm(4:4)=='e'
+      conschm(4:4)=='e'.and.difschm(4:4)=='e'
     rhs_is=is; rhs_ie=ie; rhs_js=js; rhs_je=je; rhs_ks=ks; rhs_ke=ke
     rhs_npdci=npdci; rhs_npdcj=npdcj
     if(conservative_case) then
@@ -510,7 +510,7 @@ contains
           if(refresh_filtered_primitives) then
             call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
                  q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
-            call sync_after_kernel('q_to_primitive_kernel_postfilter_periodic')
+            call sync_after_kernel('q_to_primitive_kernel_postfilter')
           endif
         endif
 

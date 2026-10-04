@@ -20,6 +20,7 @@ module output_config
     character(1024) :: directory='outdat/output',restore_directory=''
     character(16) :: restart_output='saved'
     integer(int64) :: buffer_bytes=67108864_int64,host_budget_bytes=0,device_budget_bytes=0
+    integer(int64) :: device_reserve_bytes=0
     type(output_product_options) :: checkpoint=output_product_options(final_frame=.true.)
     type(output_product_options) :: volume,slices
     integer(int64) :: i_indices(output_slice_capacity)=-1
@@ -101,7 +102,7 @@ contains
     character(*),intent(out) :: message
     type(output_options) :: candidate
     integer :: format_version,unit,status,closed,kind,keep
-    integer(int64) :: buffer_bytes,host_budget_bytes,device_budget_bytes
+    integer(int64) :: buffer_bytes,host_budget_bytes,device_budget_bytes,device_reserve_bytes
     character(1024) :: directory,restore_directory
     character(16) :: restart_output
     character(4096) :: line
@@ -110,7 +111,7 @@ contains
     integer(int64) :: indices(output_slice_capacity,3)
     logical :: opened,active
     namelist /output/ format_version,directory,restore_directory,restart_output, &
-      buffer_bytes,host_budget_bytes,device_budget_bytes
+      buffer_bytes,host_budget_bytes,device_budget_bytes,device_reserve_bytes
 
     ok=.false.; opened=.false.; message=''
     format_version=candidate%format_version
@@ -118,6 +119,7 @@ contains
     restart_output=candidate%restart_output
     buffer_bytes=candidate%buffer_bytes
     host_budget_bytes=candidate%host_budget_bytes; device_budget_bytes=candidate%device_budget_bytes
+    device_reserve_bytes=candidate%device_reserve_bytes
     open(newunit=unit,file=filename,status='old',action='read',iostat=status,iomsg=message)
     if(status/=0) return
     opened=.true.
@@ -133,6 +135,7 @@ contains
     candidate%restart_output=restart_output
     candidate%buffer_bytes=buffer_bytes
     candidate%host_budget_bytes=host_budget_bytes; candidate%device_budget_bytes=device_budget_bytes
+    candidate%device_reserve_bytes=device_reserve_bytes
     do kind=1,3
       call read_product(unit,trim(groups(kind)),product_options,keep,indices,ok,message)
       if(.not.ok) goto 900
@@ -165,8 +168,8 @@ contains
     if(restart_output/='saved'.and.restart_output/='override') goto 900
     message='restart output override requires restore_directory'
     if(restart_output=='override'.and.len_trim(restore_directory)==0) goto 900
-    message='buffer must be positive and budgets must not be negative'
-    if(buffer_bytes<=0.or.min(host_budget_bytes,device_budget_bytes)<0) goto 900
+    message='buffer must be positive and budgets/reserve must not be negative'
+    if(buffer_bytes<=0.or.min(host_budget_bytes,device_budget_bytes,device_reserve_bytes)<0) goto 900
     active=candidate%checkpoint%enabled.or.candidate%volume%enabled.or.candidate%slices%enabled
     if(active) then
       message='enabled output requires directory and host budget covering one buffer'
@@ -313,7 +316,7 @@ contains
     type(output_product_options) :: products(3)
     character(1024) :: root_file,wire_message,paths(2)
     character(16) :: labels(7)
-    integer(int64) :: integers(8),indices(output_slice_capacity,3)
+    integer(int64) :: integers(9),indices(output_slice_capacity,3)
     real(real64) :: intervals(3)
     logical :: flags(6,3)
     integer :: rank,status,bad,total,integer_type,real_type,i
@@ -341,7 +344,7 @@ contains
     if(rank==0) then
       products=[candidate%checkpoint,candidate%volume,candidate%slices]
       integers=[int(candidate%format_version,int64),int(candidate%keep,int64),candidate%buffer_bytes, &
-        candidate%host_budget_bytes,candidate%device_budget_bytes,products%interval_steps]
+        candidate%host_budget_bytes,candidate%device_budget_bytes,products%interval_steps,candidate%device_reserve_bytes]
       intervals=products%interval_time
       labels(1)=candidate%restart_output
       paths=[candidate%directory,candidate%restore_directory]
@@ -373,6 +376,7 @@ contains
     candidate%format_version=int(integers(1)); candidate%keep=int(integers(2))
     candidate%buffer_bytes=integers(3); candidate%host_budget_bytes=integers(4)
     candidate%device_budget_bytes=integers(5)
+    candidate%device_reserve_bytes=integers(9)
     candidate%restart_output=labels(1)
     candidate%directory=paths(1); candidate%restore_directory=paths(2)
     candidate%i_indices=indices(:,1); candidate%j_indices=indices(:,2); candidate%k_indices=indices(:,3)
