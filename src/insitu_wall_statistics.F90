@@ -3,6 +3,7 @@ module insitu_wall_statistics
   use iso_fortran_env, only: real64,int32,int64
   use insitu_velocity_statistics
   use insitu_time_integral, only: clipped_trapezoid
+  use insitu_fields, only: nonreacting_wall_candidate
   use ieee_arithmetic, only: ieee_is_finite
   implicit none
   private
@@ -49,7 +50,7 @@ contains
     integer(int64),intent(out) :: download
     real(real64),allocatable :: all_fields(:,:,:,:)
     integer :: status
-    if(trim(flowtype)=='channel') then
+    if(nonreacting_wall_candidate()) then
       nfields=3; profile=5
       call capture_channel_walls(xyz,all_fields,owned,host_limit,device_limit,reserve,download)
       allocate(fields(size(owned,1),size(owned,2),size(owned,3),3),stat=status)
@@ -225,7 +226,7 @@ contains
       call packed_state(values,.true.,identity%time)
       do w=1,size(owned,3)
         j=1
-        if(trim(flowtype)=='channel'.and.(jg0/=0.or.w==2)) j=jm+1
+        if(profile==5.and.(jg0/=0.or.w==2)) j=jm+1
         buffer(:,j,:,:)=values(:,:,w,:)
       enddo
     endif
@@ -247,7 +248,7 @@ contains
       stored%dt_used==identity%dt_used.and.stored%dt_next==identity%dt_next,'wall scalar checkpoint clock mismatch')
     do w=1,size(owned,3)
       j=1
-      if(trim(flowtype)=='channel'.and.(jg0/=0.or.w==2)) j=jm+1
+      if(profile==5.and.(jg0/=0.or.w==2)) j=jm+1
       values(:,:,w,:)=buffer(:,j,:,:)
       buffer(:,j,:,:)=0.d0
     enddo
@@ -440,7 +441,7 @@ contains
       else
         send=reshape(fields(:,1,:,:),[n])
       endif
-      if((axis==1.and.im==ia.and.trim(flowtype)=='channel').or.(axis==2.and.km==ka)) then
+      if((axis==1.and.im==ia.and.profile==5).or.(axis==2.and.km==ka)) then
         receive=send
       else
         call MPI_Sendrecv(send,n,MPI_DOUBLE_PRECISION,negative(axis),axis,receive,n,MPI_DOUBLE_PRECISION, &
@@ -448,7 +449,7 @@ contains
       endif
       call require(ierr==MPI_SUCCESS,'wall mean endpoint exchange')
       if(axis==1) then
-        if(positive(axis)/=MPI_PROC_NULL.or.(im==ia.and.trim(flowtype)=='channel')) &
+        if(positive(axis)/=MPI_PROC_NULL.or.(im==ia.and.profile==5)) &
           fields(im+1,:,:,:)=reshape(receive,[size(fields,2),size(fields,3),size(fields,4)])
       else
         fields(:,km+1,:,:)=reshape(receive,[size(fields,1),size(fields,3),size(fields,4)])

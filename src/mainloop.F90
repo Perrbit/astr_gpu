@@ -51,7 +51,8 @@ module mainloop
     use parallel, only : bcast
     use commarray,only: x
     use userdefine, only: udf_setup_before_comp
-    use benchmark_runtime, only: begin_complete_step_timing,end_complete_step_timing
+    use benchmark_runtime, only: begin_complete_step_timing,end_complete_step_timing, &
+                                insitu_clock,report_insitu_timing
     use insitu_session, only: sample_insitu_step,finish_insitu,begin_insitu
     !
     ! local data
@@ -62,6 +63,7 @@ module mainloop
     integer,dimension(8) :: value
     integer,allocatable :: idata(:,:)
     real(8) :: time_total,time_dowhile,time_per_loop,time_save
+    real(8) :: phase_started,window_started
     !
     time_start=ptime()
     time_total  =0.d0
@@ -109,18 +111,25 @@ module mainloop
     !                           message='init file')
     
     time_beg=ptime()
+    phase_started=insitu_clock()
     call begin_insitu(nstep,time)
+    call report_insitu_timing('insitu_initialization_inclusive',phase_started,nstep)
     call initial_output_runtime(loop_counter,rkfirst_pending)
 
+    window_started=insitu_clock()
     do while(nstep<=maxstep)
 
       call begin_complete_step_timing()
       call crashcheck
 
       completed_step_dt=deltat
+      phase_started=insitu_clock()
       call time_integration_rk
+      call report_insitu_timing('advance_inclusive',phase_started,nstep+1)
       call end_complete_step_timing(nstep)
+      phase_started=insitu_clock()
       call sample_insitu_step(nstep+1,time+completed_step_dt,completed_step_dt)
+      call report_insitu_timing('insitu_sample_inclusive',phase_started,nstep+1)
 #ifdef ASTR_AIR5_CHEMISTRY
       call writemon(time+completed_step_dt)
 #endif
@@ -232,16 +241,21 @@ module mainloop
       nstep=nstep+1
       ! readcont may already have selected the next step size.
       time=time+completed_step_dt
+      phase_started=insitu_clock()
       call completed_output_runtime(completed_step_dt,loop_counter,rkfirst_pending)
+      call report_insitu_timing('completed_output_inclusive',phase_started,nstep)
       !
     enddo
+    call report_insitu_timing('completed_window',window_started,nstep)
     !
     ! if(limmbou) call timerept
     !
     ! call ibforce
     !
     time_total=ptime()-time_start
+    phase_started=insitu_clock()
     call finish_insitu()
+    call report_insitu_timing('insitu_finalize_inclusive',phase_started,nstep)
     !
     ! if(lio .and. lreport .and. ltimrpt) call timereporter(timecost=time_total,mode='final')
     !

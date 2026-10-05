@@ -1,5 +1,121 @@
 # GPU Validation Matrix
 
+## 2026-10-06 IS8-A0-A9 双后端联合准入
+
+- 双后端、NP=1/2 x/y/z真实六类产品8项通过，开关不改权威场/缓存/统计；
+  三维场下载计数为零。最终几何处的独立速度/Q/平均速度插值8项通过，
+  最大差2.1649348980190553e-15，≤2e-10。
+- NP=2 x/y/z两后端精确续算/未授权切换拒绝/显式transport-only override
+  共6项通过。同后端控制、统计、JPEG像素和VTK字节一致，override保留
+  统计和产品时钟。新设备控制资源ASTRIR02，旧主机格式不变。
+- 最后根构建仅重链接GPU执行文件，源码/115个对象未重编译，执行文件指纹
+  与计时记录分开保留。补充NP=2双后端产品/零覆盖memcheck4项和x分区
+  续接/override2项；新旧执行文件最终权威场/统计逐值一致，不改写旧计时指纹。
+- 真实全产品初始零覆盖的双后端memcheck通过，四份rank报告零错误。
+  亚最小步长余量终止已获用户批准，4项针对性参考/RK45/分类器回归通过。
+- 最终实际矩阵：`out/insitu_is8_transport_20261005/products_layout.xml`，
+  16 passed，0 skip；补充真实色条像素门槛，避免代理可见但色条缺失。
+  `products_final.xml`另有四项实际预算超额拒绝，显示修饰不改变预算实现。
+- 实际算子/逐对象传输：`native_transfer_attribution.xml`，4 passed，0 skip。
+  Nsight记录每rank/每方向998064字节面负载的P2P或声明DTOH/HTOD；
+  所有统一内存DTOH在最终紧凑几何/轨迹读回区间。库工作区HTOD计入记录，
+  不宣称整次作业零DTOH，检查点/统计导出在产品区间之外。
+- 根CPU/CUDA、device ON/OFF、AIR5 device OFF构建通过。配置/计时84项、
+  独立模板15项、正式预绑定1项、合成轨迹12项及终止语义4项通过。
+  最终默认主机TGV续接2项、AIR5均值壁面续接1项通过，属于代表回归，
+  不宣称重跑全部IS0-IS7物理矩阵。
+- 最终独立计时/外部20 ms观察：`out/insitu_is8_final_20261006/report.json`。
+  相同四步/统计/检查点/十个产品帧，NP=2旧主机/设备MPI/面暂存窗口
+  4.478137/3.951360/4.006239 s；不是生产加速比或重复测量统计结论。
+  设备组主机/显存附加峰值≤1226477568/451153920字节，设备空闲
+  ≥18708037632字节，设备组目录≤93120948字节。原生资源与超额拒绝通过。
+- 两后端独立脚本真实启动及最终权威场/统计/产品核对通过。详情与边界见
+  `ASTR_INSITU_IS8_ACCEPTANCE.md`。本次IS8-A有界goal完成；PF/AP待实施，
+  CURVE、壁面、AIR5、更大网格和渲染重新分区不继承设备产品准入。
+
+## 2026-10-05 IS8-A 组件记录
+
+- `ASTR_INSITU_IS8_COMPONENT_PROGRESS.md` 记录独立依赖、GPU 缓冲借用、
+  VTK RK45 差分对照及同接受弧长网格插值结果。三项 pytest 通过，
+  原 RK45 26 个有限输入差为零，设备网格组件最大差 `1.36e-18`。
+- 三份组件 memcheck 零错误；网格探针只做单 rank MPI 初始化，明确采用
+  `ob1`/`osc=pt2pt`。初始 UCX RMA 上下文错误报告保留，不能据此放行
+  CUDA-aware halo 或跨 rank 粒子续接。
+- Nsight 确认 RK45 worklet 在 CUDA 执行；设备输入无主机镜像，观测有
+  128 KiB 统一内存 D2H 页迁移。证据目录
+  `out/insitu_is8_device_bootstrap_20261005/`，不是完整设备产品验收。
+- VTK 流线累计弧长修正已获批准，仅修改独立依赖。原版失败对照及修正
+  参考验证通过；GPU 有界轨迹端点差 `1.78e-15`、累计差零、小状态续接
+  逐值一致，新增 memcheck 零错误，四项基础回归通过。合成 MPI 网格
+  续接 NP=1/2 通过，两 rank 端点差 `1.78e-15`、接缝差零；在明确仅传递
+  主机粒子状态的配置下，两 rank memcheck 零错误。完整产品仍待验收。
+- 重启前 `7.0.0-31-generic`/`DMA-FQ` 环境中的 NP=2 CUDA IPC、大消息 MPI
+  及纯 CUDA P2P 失败记录保留。用户重启后 `7.0.0-34-generic`、
+  `iommu.passthrough=1`、双卡 `identity` 域下，同载荷正确性复测通过。
+  不把同时变化的内核与域设置解释成单因素因果验证。
+- 新独立配置/集体检查 75 项通过，固定槽快照及三层 halo/14 诊断量 24 项
+  通过。NP=1/2 x/y/z、两个后端真实两步瞬时及平均场 16 项对照通过，
+  参考差为零，权威场/统计检查点逐值不变。单独组件最大差约 `1.11e-15`。
+  真实场验证含显式测试专用 oracle 下载，不是无整场下载的产品验收。
+  证据：`out/insitu_is8_transport_20261005/` 的 `config.xml`、
+  `canonical_fields.xml`、`solver_sampling_v2.xml` 和 `solver_means.xml`。
+- 新节点级面缓冲预算拒绝见 `node_budget.xml`；正式配置的独立预绑定
+  检查见 `prebind.xml`。真实平均/零覆盖的两后端四份 rank memcheck 零错误，
+  见 `solver_means_memory_v2.xml`。恒定场三方向双向续接 6 项通过，
+  z 分区 NP=2 memcheck 两份零错误，见 `trace_axes.xml` 及对应日志。
+- 设备索引平面/原始Flying Edges组件：两项测试共8次NP=1/2 x/y/z启动，
+  非空和空等值面均通过，空rank仍参与；独立最终坐标插值差≤`1.28e-15`。
+  VTK坐标、字段、连接逐值回读一致，NP=2 y两份memcheck零错误。
+  `geometry_roundtrip.xml`、`geometry_memcheck.*.log`及
+  `geometry_device_mpi.nsys-rep`记录组件证据，后者确认CUDA算子并记录
+  统一内存页迁移，不是完整求解器产品传输准入。
+  `geometry_ranges.nsys-rep/.sqlite`区分提取/最终几何读取：前者仅16字节
+  标量D2H、无统一内存D2H迁移；1114112字节页迁移均在后者。
+  `test_insitu_device_geometry_trace.py`只读核查该组件记录。
+
+### IS8-A 两后端早期状态（历史，2026-10-05）
+
+该表保留批准时状态，当前联合准入以2026-10-06记录及IS8验收文件为准。
+
+| 后端 | 当前状态 | 待验收证据 |
+|---|---|---|
+| 设备缓冲 MPI | 重启后 NP=1/2 x/y/z 快照、halo/Q 和真实两步瞬时/平均采样通过；真实平均场 memcheck 通过；快照记录 P2P | 正式设备入口、全部产品/续接/资源及最终逐对象传输证据 |
+| 固定页锁定主机面缓冲 MPI | 固定注册双槽实现；NP=1/2 x/y/z 同上正确性通过；快照记录有限面 D2H/H2D；真实平均场 memcheck 通过 | 正式设备入口、全部产品/续接/资源及最终传输证据 |
+
+只追加 halo/共享节点面的主机暂存例外；不允许整场主机镜像、主机归属
+处理或静默切换。两后端共用 GPU 计算，分别准入；原精度、相位、产品、
+精确续接和资源门槛不变。关闭 IPC 的旧诊断没有暂存/预算证据，不能自动
+视作后一行通过。使用暂存后端必须明确报告，不宣称零 D2H 或物理直传。
+
+## 2026-10-05 IS7 首版有界验收
+
+- 详情与支持矩阵：`ASTR_INSITU_IS7_ACCEPTANCE.md`；匹配回执：
+  `tests/gpu_validation/out/insitu_is7_final_20261005/report.json`。
+- 根 CMake CPU+Catalyst、CUDA+Catalyst、CUDA+AIR5+Catalyst 构建通过。
+- 32³周期TGV、dt=1e-3、四完整步、NP=1/2，各一对匹配开关；物理输入、
+  旧统计及checkpoint设置一致。全部十个约定产品帧的JPEG/EPS/VTK、
+  完整步身份和EGL UUID通过；未降低采样频率。
+- 计时开关及同拓扑step3+1续接不改变CPU/GPU各自权威场、统计或控制；
+  GPU对应图片/几何一致。CPU/GPU唯一物理节点统计状态约1.55e-15、
+  正式导出约1.33e-15。周期重复节点填充不是独立物理样本。
+- 开关控制只允许ASTROC04 contract(12)的新统计提供器标志变化。
+  原有其他控制内容严格一致，不把预期启用标志误判成场扰动。
+- 实际全产品NP=2 memcheck两份报告零错误；原生阶段与外部20 ms资源
+  观测通过4 GiB/节点、2 GiB/设备、至少1 GiB空闲和256 MiB目录门槛。
+- 当前受影响回归：`insitu_is7_regression_20261005.xml`，25 passed，0 skip，
+  126.45 s。含聚合/模板检查、主机/设备/共享设备实际观察超额拒绝，
+  CURVE分配/余量与NP=4拒绝、CURVE平均流线/曲壁续接、笛卡尔NP=4
+  产品与空平面、AIR5壁面/续接及未支持配置拒绝。
+- 完整窗口关闭/开启：NP=1 1.111616/4.519757 s，NP=2 1.517191/5.930610 s。
+  总窗口独立测量，不累加进程、嵌套阶段或各阶段最大值；首次视图建立、
+  新统计checkpoint及最终释放均明确归属。没有性能百分比放行门槛。
+- 独立启动配置：`scripts/insitu/start_tgv_acceptance.py`与`presets/tgv32/`。
+  实际NP=2四步启动、十个产品帧和14项权威HDF5数据集与开启组逐值比较
+  通过；回执`insitu_is7_standalone_final_20261005/`。最终模板位置/空目录
+  检查9 passed，回执`insitu_is7_template_complete_20261005.xml`。
+  不认证生产容量、统计定常、全设备可视化、异步或渲染重分区。
+  旧IS0–IS6完整矩阵保持原时间/指纹，本次仅代表路径回归，不声称全量重跑。
+
 | ID | Case | MPI ranks | GPU | lfilter | Module | Tolerance | Status | Evidence |
 |---|---|---:|---:|---|---|---|---|---|
 | AIR5-SYMMETRIC-FINAL | Frozen trace/low-N2/energy/species matrix, x/y/z slabs, default control and bounded Mach4 replay | CPU 1/2; GPU 2 | 2 local Ada | f | symmetric species, full RK/2T budgets, owner MPI flux, one-sided boundaries | all predeclared numerical gates unchanged | bounded-repair-goal-pass; default-not-promoted; long-physics-not-claimed | 48 candidate +3 default runs; 1440 identical planes; 32 clean candidate rank logs. Max p/T/u drift 2.473826e-10/8.185453e-12/9.521273e-13, conservation 2.920763e-14, own-species error 1.571109e-15. Open-boundary convection residual <=1.389391e-16. 20 CPU/GPU replay fields pass, matched dt/2 max u difference 2.883809e-5 m/s. 120 projection permutations, cache probes and 52 checker tests pass. Evidence: out/air5_symmetric_final_*_20260925, out/air5_symmetric_boundary_balance_{cpu,gpu}_20260925, and preceding short-window records. |
@@ -473,6 +589,51 @@ Final rejection and unchanged-default regressions pass 11 and 10 tests in
 `insitu_is5_final_rejection_20261005.xml` and
 `insitu_is5_final_default_20261005.xml`. IS5 is closed within the approved local
 scope only; its historical numerical/render/test-fixture failures are retained.
+
+## IS6 Static Curvilinear In-Situ Gate (2026-10-05)
+
+The approved scope is 32^3 static periodic TGV and y-wavy bc41 manufactured
+wall TGV, amplitude 0.15, four steps at dt=1e-3, CPU/GPU NP=1 and NP=2 x/y/z.
+The wall fixture checks diagnostic geometry, not developed-channel physics.
+
+| Gate | Authoritative receipt / result |
+|---|---|
+| Physical fields, full-metric gradients/Q/divergence, volume and wall moments, geometry, restart, rejection and memory safety | `insitu_is6_final_20261005.xml`: 43 passes |
+| Default products with Reynolds/Favre mean streamlines, statistics and exact restart; matched 20 ms external sampling | `insitu_is6_default_mean_20261005.xml`: one pass |
+| Physical curved-wall frames, instantaneous/mean pictures, unchanged-pose framing, same-topology continuation; Cartesian wall rendering | `insitu_is6_final_framing_20261005.xml`: four passes |
+| Affected Cartesian/AIR5 statistics, exact continuation and selected products | `insitu_is6_final_regression_20261005.xml`: ten passes; AIR5 retains approved fixed scales |
+| Final host-weight allocation isolation | `insitu_is6_final_allocation_20261005.xml`: three passes; only CURVE allocates the 3-D host temporary, with y-slab exact statistics/memcheck and Cartesian statistics rechecked |
+
+`test_insitu_curve_statistics.py --verify-matrix out/insitu_is6_final_20261005`
+reads immutable artifacts and compares NP=1 with all three NP=2 slabs for both
+backends and mappings. Global fields / regional statistics / wall area and
+means maxabs are 3.410605e-13 / 1.077183e-11 / 9.458745e-11, below 2e-10.
+CPU/GPU solver fields maxabs 2.273737e-13, private derivative maxabs
+1.110223e-16, independent stencil maxabs 8.881784e-16. Geometric wall oracle
+maxabs 1.455192e-11 and CPU/GPU wall maxabs 1.818989e-11. Constant physical
+(1,0,0) streamline endpoint/straightness maxabs 1.776357e-15; real TGV traces
+are not analytic trajectory verification.
+
+Hex masses use positive trilinear 2x2x2 Gauss volume /8; wall masses use
+bilinear 2x2 Gauss area /4. Actual VTK has 2048 unique wall quads per frame.
+Independent 16/32/64 pure-geometry wall-area refinement errors are
+8.348161e-3 / 2.116518e-3 / 5.309904e-4, observed orders 1.9798/1.9949.
+This truncation result is separate from the discrete field/measure tolerance.
+All eighteen three-axis memcheck reports have zero errors. Invalid geometry,
+frames, CURVE NP=4 and insufficient host/device/free-memory budgets reject.
+Matched external host peak difference is 1,052,209,152 bytes, device peak
+differences 161,746,944 / 136,581,120 bytes. Native observations and directories
+respect 4 GiB/node, 2 GiB/physical GPU, >=1 GiB free and 256 MiB/case.
+CPU/CUDA/AIR5-CUDA root builds pass. Geometry-only probes require the explicit
+`insitu_geometry_probe` target; fluid tests reuse ASTR, not another solver.
+
+New grid resources fix exact static-TGV restart without the original file.
+Missing single-rank periodic mass assembly, a 110.4/110.3 K reference mismatch,
+an obsolete checkpoint lookup and clipped wall framing were diagnosed and
+fixed without changing advancing numerical methods or tolerances. No Git or
+remote jobs were operated. IS6 closes only this bounded scope; IS7/IS8,
+production curved geometry, chemistry on curves, moving grids and rendering
+repartition remain separate. See the plan's IS6 record for paths and limitations.
 
 ## TGV Filter Policy
 

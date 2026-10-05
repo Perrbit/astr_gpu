@@ -25,7 +25,7 @@ if profile!='all':
 
 def catalyst_execute(info):
     step, time = int(info.timestep), float(info.time)
-    if step not in (0, 2, 4) or abs(time-step*1e-3) > 1e-15 or (frames and step <= frames[-1][0]):
+    if step not in (0, 2, 3, 4) or abs(time-step*1e-3) > 1e-15 or (frames and step <= frames[-1][0]):
         raise RuntimeError('Unexpected diagnostic capture phase')
     source.UpdatePipeline(time)
     data = source.GetClientSideObject().GetOutputDataObject(0)

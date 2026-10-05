@@ -16,7 +16,8 @@ program astr
   use commarray,     only: allocommarray
   use commvar,       only: use_gpu,prandtl,flowtype,ndims,lihomo,     &
                            ljhomo,lkhomo
-  use benchmark_runtime, only: configure_benchmark_runtime
+  use benchmark_runtime, only: configure_benchmark_runtime,configure_insitu_timing, &
+                               insitu_clock,report_insitu_timing
   use insitu_runtime, only: insitu_check
   use solver,        only: refcal
   use initialisation,only: flowinit
@@ -47,6 +48,7 @@ program astr
   ! Local variables
   !---------------------------------------------------------------------
   character(len=16) :: cmd
+  real(8) :: initialization_started,solver_started
 
   !---------------------------------------------------------------------
   ! MPI Initialization and Command Processing
@@ -55,6 +57,9 @@ program astr
   call gpu_pre_mpi_bind_device()
 #endif
   call mpiinitial
+  call configure_insitu_timing()
+  solver_started=insitu_clock()
+  initialization_started=solver_started
 
   call statement
 
@@ -132,11 +137,13 @@ program astr
     if(use_gpu) call gpu_after_flowinit()
 #endif
 
+    call report_insitu_timing('solver_initialization',initialization_started,-1)
     call steploop
 #ifdef _CUDA
     if(use_gpu) call gpu_before_finalize()
 #endif
 
+    call report_insitu_timing('solver_total_after_mpi',solver_started,-1)
     call mpistop
 
   else

@@ -1,0 +1,11 @@
+--- a/VTK/Filters/FlowPaths/vtkStreamTracer.cxx
++++ b/VTK/Filters/FlowPaths/vtkStreamTracer.cxx
+@@ -1242,7 +1242,7 @@
+ 
+         integrationTime += stepTaken / speed;
+         // Calculate propagation (using the same units as MaximumPropagation
+-        propagation += std::abs(stepSize.Interval);
++        propagation += std::abs(stepTaken);
+ 
+         // Make sure we use the dataset found by the vtkAbstractInterpolatedVelocityField
+         input = func->GetLastDataSet();

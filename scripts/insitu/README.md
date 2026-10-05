@@ -1,5 +1,10 @@
 # Native In-Situ TGV Preset
 
+Current IS8 device admission and independent launch examples are in the final
+section below. Unless marked as device processing, earlier derivative/field
+sections describe the default `processing_backend='host'` compatibility path.
+Its volume downloads are not used by the new device entry.
+
 This is the bounded IS3 integration preset, not a production-scale resource
 certification. It currently admits GPU, internally generated Cartesian,
 periodic five-variable TGV with explicit sixth-order derivatives and local
@@ -544,6 +549,66 @@ and restart evidence, not a physical no-separation finding. The root algorithm
 is validated by independent synthetic sequences. No positive-inflow production
 SBLI or statistical stationarity is claimed.
 
+### Bounded Static Curvilinear Products (IS6)
+
+The local candidate uses 32^3, FP64, explicit 643e, NP=1 or NP=2 x/y/z.
+Use `tests/gpu_validation/generate_curvilinear_tgv_grid.py` with amplitude 0.15
+and `periodic` for periodic TGV, or `y-wavy` for the existing TGV/bc41
+manufactured wall diagnostic. The latter has x/z periodic, two y walls and
+physical mapping x=xi, y=eta+0.15*sin(xi)*sin(zeta), z=zeta. It is not a
+developed channel-flow physics benchmark.
+
+Periodic products retain all nine inverse metrics in physical gradients,
+Q and divergence. GPU private derivatives remain opt-in. Curved walls require
+`products='channel_walls', derivative_backend='cpu'`; their GPU solver exports
+only three compact wall layers for the CPU diagnostic. Optional wall statistics
+and `wall_mean_render=t` use the same completed-step samples and checkpoint.
+The inward normal comes from geometry, and the shear tangent is the normalized
+projection of global +x onto the wall tangent plane. `wall_normal_y` now stores
+the y component, not an integer side marker. Heat is positive into the gas.
+The existing second-order three-layer wall closure is retained; tangential
+derivatives use the periodic sixth-order stencil. Do not reuse the old
+Cartesian +/-1 assertion for this candidate.
+
+Each trilinear hex has positive Gauss Jacobians and a 2x2x2 Gauss volume,
+equally lumped to its eight nodes. MPI cell ownership is unique; shared and
+periodic endpoint masses are assembled on the node owner, including local
+periodic wrap when a direction has just one rank. The static device weights
+are uploaded once and reused. Bilinear wall quads use 2x2 Gauss areas with
+equal four-corner mass. Root log `ASTR_INSITU_CURVE_WALL wall=... area=...
+area_means=...` reports instantaneous area-weighted pressure, signed tangent
+shear and heat, not a homogeneous-direction or time average. Pointwise wall
+time moments remain pointwise.
+
+The original grid is frozen as `resources/grid.h5`; an exact same-topology
+restart needs the COMPLETE batch and its resource tree, not the original
+input path. Geometry metadata retains physical coordinates and complete-step
+identity; nondimensional TGV/wall fields explicitly say `dimensionless`.
+The constant physical-velocity streamline oracle is postprocessing-only and
+checks crossing x=pi with <=2e-10 endpoint/straightness error. Actual TGV
+streamlines are geometry/field/restart checks, not exact trajectories.
+
+Reproduce the bounded gates from the repository root after CPU/CUDA Catalyst
+builds (`insitu_geometry_probe` is an explicit CPU test target):
+
+```bash
+cmake --build build_insitu_check --target astr insitu_geometry_probe -j 4
+cmake --build build_insitu_gpu --target astr -j 4
+python3 -m pytest -q tests/gpu_validation/test_insitu_geometry.py \
+  tests/gpu_validation/test_insitu_curve_derivatives.py \
+  tests/gpu_validation/test_insitu_curve_statistics.py \
+  tests/gpu_validation/test_insitu_curve_walls.py -x
+```
+
+The test executable/MPI/Catalyst paths can be overridden through
+`ASTR_OUTPUT_CPU_EXE`, `ASTR_OUTPUT_RUNTIME_EXE`, `ASTR_OUTPUT_MPIEXEC`,
+`ASTR_CATALYST_LIBRARY` and `ASTR_INSITU_GEOMETRY_PROBE`.
+Fluid tests are 32^3 and four steps; 16/32/64 refinements are pure geometry
+quadrature, not fluid simulations. Per-case directory cap is 256 MiB, local
+host/device budgets are 4 GiB/node and 2 GiB/physical GPU with >=1 GiB free.
+These are acceptance limits, not production defaults. CURVE NP=4, arbitrary
+wall geometry or chemistry, moving grids and render repartition remain denied.
+
 ### Observation Contract
 
 Native rendering records `resources.rankNNNNNNNN.csv`. Its baseline precedes
@@ -565,3 +630,117 @@ These phase-boundary observations supplement controlled allocation admission.
 Independent external sampling is retained in validation; neither mechanism
 captures every transient third-party allocation or guarantees arbitrary OOM
 recovery. Missing observations and pre-existing resource logs are rejected.
+
+## IS7 Bounded First-Version Receipt
+
+The capability matrix, dependency conditions, phase boundaries and measured
+times are in `documents/ASTR_INSITU_IS7_ACCEPTANCE.md`. The matched local
+32^3 TGV NP=1/2 receipt is `tests/gpu_validation/out/insitu_is7_final_20261005/report.json`;
+25 affected regression gates passed in `insitu_is7_regression_20261005.xml`.
+This closes IS7's bounded record, not arbitrary production capacity or IS8.
+
+`ASTR_INSITU_TIMING=1` records local stage durations without new phase barriers.
+The completed window includes four RK steps, requested products and unchanged
+native checkpoint schedules. Aggregate by summing each rank's own durations,
+then taking the maximum rank. Do not sum nested timers or phase maxima.
+First-frame Catalyst/view initialization is inside that window; the separate
+solver initialization excludes pre-MPI device binding and MPI initialization.
+Launcher wall time includes both and the external sampler when selected.
+Compute/pack/sync and diagnostic D2H are measured separately; flow section copies,
+screenshots and VTK writers retain inclusive labels. Timed/untimed and paired
+restart field/statistics/image checks passed; the observer is not an asynchronous
+execution or performance optimization mode.
+
+An independent launcher and frozen inputs, without validation-module imports:
+
+```bash
+python3 scripts/insitu/start_tgv_acceptance.py --output /new/empty/case \
+  --executable /path/to/cuda-catalyst/astr --mpiexec /path/to/mpiexec \
+  --library /path/to/paraview/lib/catalyst --np 2
+```
+
+Use `--prepare-only` to inspect generated files; `--off` changes only the new
+in-situ enable flag. Existing directories are never overwritten. Templates are
+under `presets/tgv32/`: 32^3, dt=1e-3, four completed steps (controller's inclusive
+zero-based maxstep=3), statistics window 0.003..0.004, frames 2/4, all products,
+checkpoint interval 1/keep 2, local host/device/free budgets 4/2/1 GiB.
+Keep the positional primary/controller input layout, including header and blank
+lines. The launcher prepares separate empty output roots. The independent NP=2
+four-step launch passed with all ten product frames and exact authority against
+the matched on case; receipt: `insitu_is7_standalone_final_20261005/`.
+These are acceptance presets, not production defaults. Configure runtime libraries
+matching the build first; ParaView 6.1.1 needs the recorded FP64 streamline patch.
+
+The native launcher uses phase-boundary resource checks. Independent external
+20 ms process-tree/NVML sampling and per-case 256 MiB admission remain in the
+validation driver. Neither mechanism catches all transient third-party OOMs.
+No remote job or new production-scale benchmark was launched for IS7.
+
+## IS8 Bounded Device Products
+
+`ASTR_WITH_INSITU_DEVICE=ON` additionally requires root CUDA/Catalyst builds
+and the private FP64/CUDA/MPI Viskores components. It defaults OFF. Build steps,
+patches and the preserved EGL installation are described in
+[patches/README.md](patches/README.md). The complete local receipt is
+`documents/ASTR_INSITU_IS8_ACCEPTANCE.md`.
+
+Inside `&insitu_run`, explicitly add:
+
+```fortran
+ derivative_backend='gpu',processing_backend='device',products='all',
+ postprocess_transport='pinned',
+```
+
+Alternatively explicitly select `'device-aware'`. The selected transport is
+collectively checked and independent of the solver's halo transport. There is
+no default device transport and no fallback. Use the existing positive resource
+budgets, rendering/library/pipeline settings and native output configuration.
+Device processing requires rendering. Missing/unsupported configuration fails
+before products are accepted.
+
+Admission is internally generated 32³ periodic Cartesian FP64 TGV,
+643e/643e, NP=1 or NP=2 x/y/z. The existing frozen slice/Q/instantaneous and
+Reynolds/Favre streamline preset is retained. Samples, shared nodes, halos,
+gradients/Q and interpolated product extraction stay on the GPU. Only declared
+face buffers (pinned mode), final compact geometry and small state need the
+host. EGL rendering is on the selected GPU, while image/VTK encoding and
+publication are host work. Library workspaces may migrate managed pages;
+this is not zero total DTOH. Checkpoint/statistics exports are separate.
+
+For a fresh empty local test directory, with matching runtime libraries loaded:
+
+```bash
+python3 scripts/insitu/start_tgv_acceptance.py --output /new/empty/device-case \
+  --executable /path/to/device-enabled/astr --mpiexec /path/to/matching/mpiexec \
+  --library /path/to/paraview/lib/catalyst --np 2 \
+  --processing-backend device --postprocess-transport pinned
+```
+
+Change only `--postprocess-transport` to `device-aware` for the independently
+qualified device-buffer mode. This frozen local launcher supplies tested Open
+MPI ob1/TCP or UCX CUDA settings, keeps solver halos pinned, and performs four
+completed steps with ten scheduled product frames. Other MPI vendors/transports
+or hardware must be requalified, not assumed to match these settings.
+`--prepare-only` generates files without starting the solver; a preexisting
+directory is refused. The launcher imports no validation module. Both modes'
+actual NP=2 launch, products and final state/statistics match the controlled run.
+
+Checkpoint continuation retains the saved transport identity. Changing only
+that choice needs `restart_output='override'` in the native output configuration;
+statistics and output clocks are preserved while transient slots are rebuilt.
+No CUDA pointers, requests or pinned handles are serialized. Same-backend
+same-topology continuation is exact; render repartition remains rejected.
+Terminal streamline metadata retain raw VTK status and untravelled arc for
+the explicitly approved sub-minimum remainder condition. Other failures abort.
+The endpoint is never extrapolated.
+
+`ASTR_INSITU_TIMING=1` also records device sample/means, snapshot/halo/Q,
+slice/contour extraction, compact read, each streamline kind and inclusive
+consumer time. `ASTR_INSITU_FACE_USAGE` reports fixed capacities, allocation
+generation and cumulative D2H/MPI/H2D/local/sync times. MPI time includes error
+consensus; consumer time includes Catalyst/rendering. These nested durations
+are not additive. Matched short-window timing and actual per-object Nsight
+captures are recorded in the acceptance document, not production speed claims.
+
+CURVE, walls, AIR5, larger grids, NP>2, asynchronous execution and per-product
+variable clocks remain separate work; the prior host support is unchanged.

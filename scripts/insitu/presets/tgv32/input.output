@@ -1,0 +1,14 @@
+&output
+ directory='outdat/new',restore_directory='',restart_output='saved',
+ host_budget_bytes=67108864,device_budget_bytes=67108864,buffer_bytes=67108864,
+ device_reserve_bytes=0
+/
+&checkpoint
+ enabled=t,mode='steps',interval_steps=1,interval_time=0,keep=2,initial_frame=f
+/
+&volume
+ enabled=f
+/
+&slices
+ enabled=f
+/

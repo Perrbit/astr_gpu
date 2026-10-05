@@ -1,5 +1,6 @@
 module insitu_session
   use mpi
+  use benchmark_runtime, only: insitu_clock,report_insitu_timing
   use iso_fortran_env, only: int32,int64,real64
   use insitu_schedule, only: sample_schedule,configure_schedule,poll_schedule,write_schedule_state,restore_schedule_state, &
     resume_schedule
@@ -13,6 +14,8 @@ module insitu_session
   use insitu_spatial_statistics, only: spatial_mean
   use insitu_fields, only: capture_sample,canonicalize_sample,derive_sample,complete_periodic_endpoints
   use insitu_fields, only: insitu_owned_counts,insitu_node_weights,complete_owned_endpoints,capture_channel_statistics
+  use insitu_fields, only: insitu_volume_weights,release_insitu_geometry
+  use insitu_fields, only: nonreacting_wall_candidate
   use insitu_run_config, only: insitu_options
   use insitu_config_collective, only: read_insitu_options_collective
   use iso_c_binding, only: c_int,c_double,c_char,c_null_char,c_int64_t
@@ -165,16 +168,17 @@ contains
     logical,intent(in) :: writing,override
     type(checkpoint_state_identity),intent(in) :: identity
     integer(int64),intent(in) :: budget
-    integer(int64) :: flags(3),saved_flags(3),signature(4),step,interval,origin_step
+    integer(int64) :: flags(3),saved_flags(3),signature(4),transport_signature(4),step,interval,origin_step
     real(real64) :: clock(3),period,origin_time
     character(8) :: magic
-    character(16) :: mode
+    character(16) :: mode,saved_processing,saved_transport
     type(sample_schedule) :: restored
-    logical :: rendering,same,ok
+    logical :: rendering,same,transport_only,ok
     integer :: unit,status,closed
     call require_sample(native_output,'native render provider needs new output')
     rendering=formal.and.enabled.and.options%render
     flags=0; signature=0; mode=''; interval=0; period=0; origin_step=0; origin_time=0
+    magic='ASTRIR01'; saved_processing='host'; saved_transport=''
     call require_sample(budget>=512,'native render scalar state budget')
     if(rendering) then
       call require_sample(budget>=1024,'native render control state budget')
@@ -183,6 +187,7 @@ contains
       signature=render_signature
       origin_step=render_origin_step; origin_time=render_origin_time
       call configure_render_schedule()
+      if(options%processing_backend=='device') magic='ASTRIR02'
     endif
     if(writing) then
       status=0; closed=0
@@ -190,8 +195,10 @@ contains
         open(newunit=unit,file=path,status='new',access='stream',form='unformatted', &
           convert='little_endian',action='write',iostat=status)
         if(status==0) then
-          write(unit,iostat=status) 'ASTRIR01',identity%step,[identity%time,identity%dt_used,identity%dt_next], &
+          write(unit,iostat=status) magic,identity%step,[identity%time,identity%dt_used,identity%dt_next], &
             flags,mode,interval,period,origin_step,origin_time,signature
+          if(status==0.and.magic=='ASTRIR02') write(unit,iostat=status) &
+            options%processing_backend,options%postprocess_transport
           if(status==0.and.rendering) then
             call write_schedule_state(unit,render_schedule,'native-render',identity%step,identity%time,ok)
             if(.not.ok) status=1
@@ -207,8 +214,14 @@ contains
     call require_sample(status==0,'missing native render control')
     read(unit,iostat=status) magic,step,clock,saved_flags,mode,interval,period,origin_step,origin_time,signature
     call require_sample(status==0,'cannot read native render control')
-    call require_sample(magic=='ASTRIR01'.and.step==identity%step.and. &
+    call require_sample((magic=='ASTRIR01'.or.magic=='ASTRIR02').and.step==identity%step.and. &
       all(clock==[identity%time,identity%dt_used,identity%dt_next]),'native render clock/version mismatch')
+    if(magic=='ASTRIR02') then
+      read(unit,iostat=status) saved_processing,saved_transport
+      call require_sample(status==0,'cannot read device render identity')
+      call require_sample(saved_flags(1)==1.and.saved_processing=='device'.and. &
+        (saved_transport=='pinned'.or.saved_transport=='device-aware'),'invalid device render identity')
+    endif
     call require_sample(all(saved_flags>=0).and.all(saved_flags<=1),'invalid native render flags')
     output_saved_rendering=saved_flags(1)==1
     call require_sample(ieee_is_finite(period).and.ieee_is_finite(origin_time),'nonfinite native render configuration')
@@ -227,10 +240,20 @@ contains
     call require_sample(closed==0,'cannot close native render control')
     same=all(saved_flags==flags)
     if(rendering) same=same.and.mode==options%schedule_mode.and.interval==options%step_interval.and. &
-      period==options%time_interval.and.all(signature==render_signature)
+      period==options%time_interval.and.all(signature==render_signature).and. &
+      saved_processing==options%processing_backend
+    transport_only=.false.
+    if(rendering.and.saved_processing=='device'.and.options%processing_backend=='device') then
+      transport_signature=signature
+      transport_signature(3)=ieor(ieor(signature(3),postprocess_transport_marker(saved_transport)), &
+        postprocess_transport_marker(options%postprocess_transport))
+      transport_only=all(saved_flags==flags).and.mode==options%schedule_mode.and. &
+        interval==options%step_interval.and.period==options%time_interval.and. &
+        all(transport_signature==render_signature).and.saved_transport/=options%postprocess_transport
+    endif
     call require_sample(same.or.override,'native render configuration differs; select explicit override')
     if(rendering) then
-      if(same) then
+      if(same.or.(override.and.transport_only)) then
         render_schedule=restored
         call resume_schedule(render_schedule,ok)
         call require_sample(ok,'cannot resume native render schedule')
@@ -245,6 +268,13 @@ contains
     output_render_step=identity%step; output_render_time=identity%time
     output_render_restored=.true.
   end subroutine
+
+  integer(int64) function postprocess_transport_marker(mode) result(marker)
+    character(*),intent(in) :: mode
+    marker=0
+    if(mode=='pinned') marker=int(z'50494E4E45444643',int64)
+    if(mode=='device-aware') marker=int(z'4445564157415245',int64)
+  end function
 
   subroutine complete_output_insitu(step,t,final)
     integer,intent(in) :: step
@@ -412,7 +442,7 @@ contains
 #endif
     character(1024) :: filename,message
     integer :: ierr
-    logical :: ok,channel_wall,air5_wall
+    logical :: ok,channel_wall,air5_wall,curve_tgv
     if(session_checked) return
     native_output=.true.
     call read_consistent_env('ASTR_INSITU_CONFIG',filename)
@@ -425,16 +455,33 @@ contains
       statistics_configured=.true.
       oracle_io=.false.
       if(enabled) then
-        channel_wall=trim(flowtype)=='channel'.and.options%products=='channel_walls'
+        if(options%processing_backend=='device') then
+#ifdef ASTR_INSITU_DEVICE_PRODUCTS
+          call require_sample(use_gpu.and.trim(flowtype)=='tgv'.and..not.lreadgrid.and. &
+            all([ia,ja,ka]==32).and.all(bctype==1).and.numq==5.and.num_species==0.and.nondimen.and. &
+            ndims==3.and.mpisize<=2.and.hm>=3.and.trim(difschm)=='643e', &
+            'device products require 32^3 periodic Cartesian FP64 643e TGV NP=1/2')
+          call require_sample(options%slice_axis=='z'.and.options%slice_index==4, &
+            'device slice currently requires the approved z node 4 preset')
+#else
+          call require_sample(.false., &
+            'IS8 device processing is not connected to the native product bridge yet; no host fallback')
+#endif
+        endif
+        channel_wall=nonreacting_wall_candidate().and.options%products=='channel_walls'
         air5_wall=trim(flowtype)=='air5hbl'.and.options%products=='air5_walls'
-        call require_sample((trim(flowtype)=='tgv'.or.channel_wall.or.air5_wall).and.ndims==3.and..not.lreadgrid, &
-          'formal in situ requires a supported Cartesian TGV or wall candidate')
+        curve_tgv=lreadgrid.and.trim(flowtype)=='tgv'.and.numq==5.and.num_species==0.and. &
+          nondimen.and.all([ia,ja,ka]==32).and.(all(bctype==1).or.channel_wall).and.mpisize<=2.and. &
+          hm>=3.and.trim(difschm)=='643e'
+        call require_sample((trim(flowtype)=='tgv'.or.channel_wall.or.air5_wall).and.ndims==3.and. &
+          (.not.lreadgrid.or.curve_tgv), &
+          'formal in situ requires a supported Cartesian candidate or 32^3 periodic CURVE TGV NP=1/2')
         if(channel_wall) call require_sample( &
           options%derivative_backend=='cpu'.and.numq==5.and.num_species==0.and.nondimen.and. &
           all(bctype==[1,1,41,41,1,1]).and.max(ia,ja,ka)<=32.and.jm>=2.and.mpisize<=2.and. &
           trim(difschm)=='643e','channel wall candidate requires bc41 <=32 NP=1/2 and CPU wall diagnostics')
         call require_sample(options%products/='channel_walls'.or.channel_wall, &
-          'channel_walls product requires a channel solver')
+          'channel_walls product requires a channel or approved CURVE wall TGV solver')
         call require_sample(options%products/='air5_walls'.or.air5_wall, &
           'air5_walls product requires an AIR5 HBL solver')
         if(air5_wall) call require_sample(options%derivative_backend=='cpu'.and. &
@@ -443,7 +490,7 @@ contains
           'AIR5 wall candidate requires noncatalytic Cartesian HBL <=32 NP=1/2')
         if(options%render) then
           if(options%derivative_backend=='gpu') call require_sample(use_gpu.and. &
-            (mpisize<=2.or.(mpisize==4.and.all([isize,jsize,ksize]==[2,2,1]))).and. &
+            (mpisize<=2.or.(.not.lreadgrid.and.mpisize==4.and.all([isize,jsize,ksize]==[2,2,1]))).and. &
             all([ia,ja,ka]==32).and.all(bctype==1).and.hm>=3.and.trim(difschm)=='643e', &
             'GPU in-situ derivative candidate requires 32^3 periodic 643e TGV NP=1/2 or NP=4 (2x2x1)')
           if(options%products=='velocity_slice') call require_sample(options%slice_index<32, &
@@ -487,6 +534,10 @@ contains
           ! Domain-separate the optional algorithm in the existing configuration fingerprint.
           if(options%derivative_backend=='gpu') render_signature(2)= &
             ieor(render_signature(2),int(z'4750554445524956',int64))
+          if(options%processing_backend=='device') then
+            render_signature(2)=ieor(render_signature(2),int(z'44455650524F4453',int64))
+            render_signature(3)=ieor(render_signature(3),postprocess_transport_marker(options%postprocess_transport))
+          endif
           if(selected_product_profile()>0) render_signature(4)= &
             ieor(render_signature(4),int(selected_product_profile(),int64))
           if(options%wall_mean_render) render_signature(4)=ieor(render_signature(4),int(z'57414C4C4D45414E',int64))
@@ -825,7 +876,7 @@ contains
   end subroutine
 
   subroutine admit_statistics_host()
-    use commvar, only: im,jm,km,use_gpu
+    use commvar, only: im,jm,km,use_gpu,lreadgrid
     use commarray, only: q
     type(resource_budget) :: budget
     integer(int64) :: request,extra,total,point_bytes
@@ -842,6 +893,8 @@ contains
       ! Render-only: sampled/derived fields, bridge vectors and packing temporaries.
       if(.not.statistics_enabled) point_bytes=100_int64*8
     endif
+    ! Cached physical masses, caller copy and conservative geometric plane-exchange envelope.
+    if(lreadgrid.and.statistics_enabled) point_bytes=point_bytes+4_int64*8
     call checked_bytes(int([im,jm,km],int64)+1_int64,point_bytes,request,ok)
     call require_sample(ok,'statistics host byte count overflow')
     if(formal.and.statistics_enabled.and.selected_product_profile()>=5) then
@@ -896,7 +949,7 @@ contains
   end subroutine
 
   subroutine accumulate_statistics_validation(step,t,fields)
-    use commvar, only: im,jm,km,use_gpu
+    use commvar, only: im,jm,km,use_gpu,lreadgrid
 #ifdef _CUDA
     use insitu_statistics_gpu, only: accumulate_statistics_gpu,write_statistics_gpu_state, &
       restore_statistics_gpu_state,release_statistics_gpu,spatial_statistics_gpu, &
@@ -912,6 +965,7 @@ contains
     real(real64) :: volume,mean(3),rms_local(3),rms_regional(3),cell_volume
     real(real64) :: device_variance(3)
     real(real64) :: node_weights(0:jm)
+    real(real64) :: physical_weights(0:im,0:jm,0:km)
     integer :: extent(3)
     integer :: i,j,k,n,status,unit,close_status
     integer :: bad_unit
@@ -921,7 +975,9 @@ contains
     logical :: ok,all_ok,covered,any_covered
     character(1200) :: filename
     character(128) :: roundtrip
+    real(real64) :: statistics_started
     if(.not.statistics_enabled) return
+    statistics_started=insitu_clock()
     call admit_statistics_host()
     statistics_step=step
     statistics_time=t
@@ -1036,9 +1092,14 @@ contains
     allocate(weights((im+1)*(jm+1)*(km+1)),values(3,(im+1)*(jm+1)*(km+1)), &
              output(0:im,0:jm,0:km,41),stat=status)
     call require_sample(status==0,'cannot allocate statistics output')
-    cell_volume=(x(1,0,0,1)-x(0,0,0,1))*(x(0,1,0,2)-x(0,0,0,2))*(x(0,0,1,3)-x(0,0,0,3))
-    call require_sample(ieee_is_finite(cell_volume).and.cell_volume>0,'invalid TGV cell volume')
-    call insitu_node_weights(node_weights)
+    if(lreadgrid) then
+      cell_volume=1.d0
+      call insitu_volume_weights(physical_weights)
+    else
+      cell_volume=(x(1,0,0,1)-x(0,0,0,1))*(x(0,1,0,2)-x(0,0,0,2))*(x(0,0,1,3)-x(0,0,0,3))
+      call require_sample(ieee_is_finite(cell_volume).and.cell_volume>0,'invalid TGV cell volume')
+      call insitu_node_weights(node_weights)
+    endif
     extent=insitu_owned_counts()
     n=0
     all_ok=.true.
@@ -1049,7 +1110,11 @@ contains
     do i=0,im
       n=n+1
       weights(n)=0.d0
-      if(i<extent(1).and.j<extent(2).and.k<extent(3)) weights(n)=node_weights(j)
+      if(lreadgrid) then
+        weights(n)=physical_weights(i,j,k)
+      else
+        if(i<extent(1).and.j<extent(2).and.k<extent(3)) weights(n)=node_weights(j)
+      endif
       values(:,n)=fields(i,j,k,7:9)
       call push_velocity_sample(point_statistics(i,j,k),t,fields(i,j,k,6),values(:,n),ok)
       all_ok=all_ok.and.ok
@@ -1106,6 +1171,7 @@ contains
       final_statistics_meta=[t,statistics_window,volume,rms_local,rms_regional]
       call move_alloc(output,final_statistics)
     endif
+    call report_insitu_timing('statistics_inclusive',statistics_started,step)
     if(.not.oracle_io) return
     write(filename,'(A,".statistics.step",I8.8,".rank",I8.8,".bin")') trim(prefix),step,mpirank
     open(newunit=unit,file=trim(filename),status='new',access='stream',form='unformatted', &
@@ -1129,13 +1195,16 @@ contains
 
   subroutine accumulate_native_device(step,t)
 #ifdef _CUDA
+    use commvar, only: lreadgrid
     use insitu_statistics_gpu, only: accumulate_statistics_gpu,spatial_statistics_gpu
     use commarray, only: x
     integer,intent(in) :: step
     real(real64),intent(in) :: t
     real(real64) :: cell_volume,volume,mean(3),variance(3)
     type(velocity_statistics_result) :: regional
+    real(real64) :: statistics_started
     logical :: ok
+    statistics_started=insitu_clock()
     call admit_statistics_host()
     if(statistics_step<0) then
       call configure_velocity_statistics(regional_statistics,statistics_window(1),statistics_window(2),ok)
@@ -1143,6 +1212,7 @@ contains
     endif
     call accumulate_statistics_gpu(t,statistics_window)
     cell_volume=(x(1,0,0,1)-x(0,0,0,1))*(x(0,1,0,2)-x(0,0,0,2))*(x(0,0,1,3)-x(0,0,0,3))
+    if(lreadgrid) cell_volume=1.d0
     call spatial_statistics_gpu(cell_volume,volume,mean,variance,ok)
     call require_sample(ok,'invalid native device spatial reduction')
     call push_velocity_sample(regional_statistics,t,1.d0,mean,ok)
@@ -1151,6 +1221,7 @@ contains
     statistics_step=step
     statistics_time=t
     if(ok) final_statistics_meta=[t,statistics_window,volume,sqrt(variance),regional%rms_r]
+    call report_insitu_timing('statistics_inclusive',statistics_started,step)
 #else
     integer,intent(in) :: step
     real(real64),intent(in) :: t
@@ -1160,7 +1231,7 @@ contains
 
   subroutine export_native_statistics()
 #ifdef _CUDA
-    use commvar, only: im,jm,km
+    use commvar, only: im,jm,km,lreadgrid
     use commarray, only: x
     use insitu_statistics_gpu, only: download_statistics_gpu_output,spatial_statistics_gpu
     type(velocity_statistics_result) :: regional
@@ -1176,6 +1247,7 @@ contains
     call download_statistics_gpu_output(final_statistics(0:extent(1)-1,0:extent(2)-1,0:extent(3)-1,:))
     call complete_owned_endpoints(final_statistics)
     cell_volume=(x(1,0,0,1)-x(0,0,0,1))*(x(0,1,0,2)-x(0,0,0,2))*(x(0,0,1,3)-x(0,0,0,3))
+    if(lreadgrid) cell_volume=1.d0
     call spatial_statistics_gpu(cell_volume,volume,mean,variance,ok)
     call require_sample(ok,'invalid final native spatial statistics')
     final_statistics_meta=[statistics_time,statistics_window,volume,sqrt(variance),regional%rms_r]
@@ -1192,6 +1264,7 @@ contains
     use parallel, only: mpirank
 #ifdef _CUDA
     use insitu_sample_gpu, only: derive_sample_gpu
+    use insitu_products_gpu, only: render_device_sample_gpu
 #endif
     integer,intent(in) :: step
     real(real64),intent(in) :: t
@@ -1209,6 +1282,22 @@ contains
     call require_sample(ok,'invalid native render preview')
     if(.not.emit) then
       render_schedule=preview
+      return
+    endif
+    if(options%processing_backend=='device') then
+      render_schedule=preview
+#if defined(_CUDA) && defined(ASTR_WITH_CATALYST)
+      if(.not.native_bridge_configured) then
+        status=mesh_configure(trim(options%output_directory)//c_null_char,int(MPI_COMM_WORLD,c_int))
+        call require_sample(status==0,'cannot configure compact device renderer')
+        native_bridge_configured=.true.
+      endif
+      call render_device_sample_gpu(trim(options%postprocess_transport),trim(options%implementation_path), &
+        trim(options%pipeline_file),trim(options%products),step,t,statistics_window,statistics_enabled, &
+        options%host_budget_bytes,options%device_budget_bytes,options%device_reserve_bytes)
+#else
+      call require_sample(.false.,'device rendering requires CUDA and Catalyst; no fallback')
+#endif
       return
     endif
     if(options%products/='all') then
@@ -1511,6 +1600,7 @@ contains
   subroutine finish_insitu()
 #ifdef _CUDA
     use insitu_statistics_gpu, only: release_statistics_gpu,statistics_transfer_counts
+    use insitu_sample_gpu, only: release_device_sampling_gpu
     use commvar, only: use_gpu
     use parallel, only: mpirank
     integer(int64) :: samples,downloads
@@ -1537,6 +1627,7 @@ contains
       write(*,'(A,I0,A,I0)') 'ASTR_INSITU_GPU_FLOW rank=',mpirank,' frame_downloads=',native_flow_downloads
     endif
     call release_statistics_gpu()
+    call release_device_sampling_gpu()
 #endif
     call write_final_statistics()
     if(formal.and.enabled.and.statistics_enabled.and.selected_product_profile()>=5) &
@@ -1545,6 +1636,7 @@ contains
       call finish_air5_statistics(prefix)
     if(allocated(point_statistics)) deallocate(point_statistics)
     if(allocated(final_statistics)) deallocate(final_statistics)
+    call release_insitu_geometry()
 #if defined(ASTR_WITH_CATALYST) && defined(_CUDA)
     status=resource_finish()
     call require_sample(status==0,'cannot finalize native resource observer')
@@ -1571,6 +1663,9 @@ contains
     use commvar, only: im,jm,km,use_gpu
 #ifdef _CUDA
     use insitu_statistics_gpu, only: download_statistics_gpu_means
+#ifdef ASTR_BUILD_TESTING
+    use insitu_statistics_gpu, only: check_device_statistics_gpu_means
+#endif
 #endif
     use parallel, only: mpirank
     integer,intent(in) :: step
@@ -1651,6 +1746,9 @@ contains
         means=0.d0
         call download_statistics_gpu_means(means(0:im-1,0:jm-1,0:km-1,:),all_covered)
         if(all_covered) call complete_periodic_endpoints(means)
+#ifdef ASTR_BUILD_TESTING
+        call check_device_statistics_gpu_means(means,all_covered)
+#endif
       else
 #endif
       call require_sample(allocated(point_statistics),'mean streamlines require point statistics')
@@ -1789,7 +1887,7 @@ contains
       call write_air5_wall_sample(step,time_end,step_dt)
       return
     endif
-    if(trim(flowtype)=='channel'.and..not.formal) then
+    if(nonreacting_wall_candidate().and..not.formal) then
       call require_sample(.not.statistics_enabled,'channel wall oracle does not implement statistics')
       call write_channel_wall_sample(step,time_end,step_dt)
       return

@@ -5,10 +5,13 @@ module device_runtime_gpu
   integer,save :: prebound_device_id=-1
 contains
   subroutine prebind_gpu_device_from_environment()
+    use insitu_run_config, only: insitu_options,read_insitu_options
     implicit none
 
     character(64) :: transport
     character(32) :: rank_value
+    character(1024) :: insitu_filename,message
+    type(insitu_options) :: insitu
     character(32),parameter :: rank_names(4) = (/ &
       'OMPI_COMM_WORLD_LOCAL_RANK      ', &
       'SLURM_LOCALID                   ', &
@@ -16,12 +19,30 @@ contains
       'MPI_LOCALRANKID                 ' /)
     integer :: status,length,index,ios,local_rank
     integer :: device_count,device_id,current_device,istat
-    logical :: found
+    logical :: found,requires_context,ok
 
     transport=''
     call get_environment_variable('ASTR_GPU_HALO_TRANSPORT',transport, &
                                   length=length,status=status)
-    if(status/=0 .or. trim(transport)/='device-aware') return
+    requires_context=status==0 .and. trim(transport)=='device-aware'
+    insitu_filename=''
+    call get_environment_variable('ASTR_INSITU_CONFIG',insitu_filename, &
+                                  length=length,status=status)
+    if(status==0 .and. length>0) then
+      call read_insitu_options(trim(insitu_filename),insitu,ok,message)
+      ! Invalid inputs are reported by the later collective configuration check.
+      if(ok) requires_context=requires_context .or. &
+        (insitu%processing_backend=='device' .and. insitu%postprocess_transport=='device-aware')
+    endif
+#ifdef ASTR_BUILD_TESTING
+    ! The diagnostic transport is independent of the solver halo transport.
+    transport=''
+    call get_environment_variable('ASTR_INSITU_TEST_DEVICE_TRANSPORT',transport, &
+                                  length=length,status=status)
+    requires_context=requires_context .or. &
+      (status==0 .and. trim(transport)=='device-aware')
+#endif
+    if(.not.requires_context) return
 
     found=.false.
     local_rank=-1

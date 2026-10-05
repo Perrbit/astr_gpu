@@ -147,3 +147,46 @@ def test_collective_statistic_products(tmp_path,flag):
         capture_output=True,text=True,timeout=30)
     output=result.stdout+result.stderr
     assert result.returncode!=0 and output.count('REJECT rank ')==2,output
+
+
+DEVICE = VALID.replace('step_interval=2',
+    "step_interval=2,derivative_backend='gpu',processing_backend='device',postprocess_transport='pinned'")
+
+
+@pytest.mark.skipif(not PROBE, reason='Set ASTR_INSITU_CONFIG_PROBE')
+@pytest.mark.parametrize('content,accepted', [
+    (DEVICE, True),
+    (DEVICE.replace("'pinned'", "'device-aware'"), True),
+    (DEVICE.replace(",postprocess_transport='pinned'", ''), False),
+    (DEVICE.replace("'pinned'", "'automatic'"), False),
+    (DEVICE.replace("processing_backend='device'", "processing_backend='host'"), False),
+    (DEVICE.replace("processing_backend='device'", "processing_backend='unknown'"), False),
+    (DEVICE.replace("derivative_backend='gpu'", "derivative_backend='cpu'"), False),
+    (DEVICE.replace('render=t', 'render=f'), False),
+    (DEVICE.replace('device_budget_bytes=2147483648', 'device_budget_bytes=0'), False),
+    (DEVICE.replace('step_interval=2', "step_interval=2,products='channel_walls'"), False),
+])
+def test_device_transport_options(tmp_path, content, accepted):
+    path = tmp_path / 'device.nml'
+    path.write_text(content)
+    env = dict(os.environ, ASTR_GPU_HALO_TRANSPORT='device-aware')
+    result = subprocess.run([str(Path(PROBE).resolve()), str(path)], env=env,
+                            capture_output=True, text=True, timeout=10)
+    assert (result.returncode == 0) == accepted, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(not COLLECTIVE or not MPIEXEC, reason='Set collective probe and MPI launcher')
+@pytest.mark.parametrize('other,accepted', [
+    (DEVICE, True),
+    (DEVICE.replace("'pinned'", "'device-aware'"), False),
+    (DEVICE.replace(",postprocess_transport='pinned'", ''), False),
+    (VALID.replace('step_interval=2', "step_interval=2,derivative_backend='gpu'"), False),
+])
+def test_collective_device_transport(tmp_path, other, accepted):
+    (tmp_path / 'rank0.nml').write_text(DEVICE)
+    (tmp_path / 'rank1.nml').write_text(other)
+    result = subprocess.run([MPIEXEC, '-np', '2', str(Path(COLLECTIVE).resolve()), str(tmp_path / 'rank')],
+                            capture_output=True, text=True, timeout=30)
+    output = result.stdout + result.stderr
+    assert (result.returncode == 0) == accepted, output
+    assert output.count('PASS collective rank ' if accepted else 'REJECT rank ') == 2, output

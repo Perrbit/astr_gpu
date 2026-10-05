@@ -1,0 +1,96 @@
+module insitu_products_gpu
+  use cudafor
+  implicit none
+  private
+  public :: render_device_sample_gpu
+contains
+  subroutine render_device_sample_gpu(mode,backend,script,profile,step,t,window, &
+      statistics,host_budget,device_budget,reserve)
+    use iso_fortran_env, only: int64
+    use mpi
+    use checkpoint_state_io, only: checkpoint_state_require
+#ifdef ASTR_INSITU_DEVICE_PRODUCTS
+    use iso_c_binding, only: c_int,c_double,c_char,c_null_char,c_int64_t
+    use commvar, only: im,jm,km
+    use parallel, only: ig0,jg0,kg0,mpirank
+    use insitu_sample_gpu, only: capture_device_sample_gpu
+    use insitu_statistics_gpu, only: sample_statistics_gpu_mean_vectors
+    use insitu_device_velocity, only: extend_periodic_velocity_gpu,velocity_transport_usage_gpu
+    use insitu_device_velocity, only: velocity_transport_timing_gpu
+    use benchmark_runtime, only: insitu_clock,report_insitu_timing
+#endif
+    character(*),intent(in) :: mode,backend,script,profile
+    integer,intent(in) :: step
+    real(8),intent(in) :: t,window(2)
+    logical,intent(in) :: statistics
+    integer(int64),intent(in) :: host_budget,device_budget,reserve
+#ifdef ASTR_INSITU_DEVICE_PRODUCTS
+    real(8),device,allocatable :: velocity(:,:),halo(:,:,:,:),derived(:,:),reynolds(:,:),favre(:,:)
+    real(8),device,allocatable :: reynolds_halo(:,:,:,:),favre_halo(:,:,:,:)
+    real(8) :: duration,window_end,window_start,started,phase_started,face_times(5)
+    logical :: covered
+    type(c_devptr) :: reynolds_pointer,favre_pointer
+    integer :: status,generation
+    integer(int64) :: host_bytes,device_bytes,d2h,h2d,exchanges
+    interface
+      subroutine range_push(stage) bind(C,name='astr_insitu_device_range_push')
+        import c_int
+        integer(c_int),value :: stage
+      end subroutine
+      subroutine range_pop() bind(C,name='astr_insitu_device_range_pop')
+      end subroutine
+      integer(c_int) function device_render(backend,script,profile,comm,step,t,nx,ny,nz,ox,oy,oz, &
+          velocity,halo,derived,reynolds,favre,covered,duration,wstart,wend,host) bind(C,name='astr_insitu_device_render')
+        import c_int,c_double,c_char,c_devptr,c_int64_t
+        character(c_char),intent(in) :: backend(*),script(*),profile(*)
+        integer(c_int),value :: comm,step,nx,ny,nz,ox,oy,oz,covered
+        real(c_double),value :: t,duration,wstart,wend
+        type(c_devptr),value :: velocity,halo,derived,reynolds,favre
+        integer(c_int64_t),value :: host
+      end function
+    end interface
+    started=MPI_Wtime()
+    phase_started=insitu_clock()
+    call range_push(1_c_int)
+    call capture_device_sample_gpu(mode,velocity,halo,derived,host_budget,device_budget,reserve)
+    call range_pop()
+    call report_insitu_timing('device_sample_inclusive',phase_started,step)
+    phase_started=insitu_clock()
+    call range_push(2_c_int)
+    covered=.false.;duration=0.d0;window_start=0.d0;window_end=0.d0
+    ! These addresses are not consumed unless the explicit coverage flag is set.
+    reynolds_pointer=c_devloc(halo);favre_pointer=c_devloc(halo)
+    if(statistics.and.profile=='all') then
+      call sample_statistics_gpu_mean_vectors(reynolds,favre,covered,duration)
+      if(covered) then
+        call extend_periodic_velocity_gpu(reynolds,reynolds_halo,[im,jm,km],MPI_COMM_WORLD,device_budget,reserve)
+        call extend_periodic_velocity_gpu(favre,favre_halo,[im,jm,km],MPI_COMM_WORLD,device_budget,reserve)
+        reynolds_pointer=c_devloc(reynolds_halo);favre_pointer=c_devloc(favre_halo)
+        window_end=min(t,window(2));window_start=window_end-duration
+      endif
+    endif
+    call range_pop()
+    call report_insitu_timing('device_mean_supply_inclusive',phase_started,step)
+    phase_started=insitu_clock()
+    status=device_render(trim(backend)//c_null_char,trim(script)//c_null_char,trim(profile)//c_null_char, &
+      int(MPI_COMM_WORLD,c_int),step,t,im,jm,km,ig0,jg0,kg0,c_devloc(velocity),c_devloc(halo), &
+      c_devloc(derived),reynolds_pointer,favre_pointer,merge(1_c_int,0_c_int,covered),duration, &
+      window_start,window_end,int(host_budget,c_int64_t))
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'device product bridge failed')
+    call report_insitu_timing('device_consumer_inclusive',phase_started,step)
+    call velocity_transport_usage_gpu(host_bytes,device_bytes,d2h,h2d,exchanges,generation)
+    call velocity_transport_timing_gpu(face_times)
+    write(*,'(a,i0,a,i0,a,i0,a,i0,a,i0,a,5(es24.16,1x))') 'ASTR_INSITU_FACE_USAGE rank=',mpirank, &
+      ' step=',step,' generation=',generation,' host_bytes=',host_bytes,' device_bytes=',device_bytes, &
+      ' cumulative_seconds_d2h_mpi_h2d_local_sync=',face_times
+    write(*,'(a,i0,a,i0,3a,i0,a,i0,a,i0,a,es16.8)') 'ASTR_INSITU_DEVICE_FRAME rank=',mpirank, &
+      ' step=',step,' transport=',trim(mode),' face_d2h_bytes=',d2h,' face_h2d_bytes=',h2d, &
+      ' face_exchanges=',exchanges,' frame_inclusive=',MPI_Wtime()-started
+    deallocate(velocity,halo,derived)
+    if(allocated(reynolds)) deallocate(reynolds,favre)
+    if(allocated(reynolds_halo)) deallocate(reynolds_halo,favre_halo)
+#else
+    call checkpoint_state_require(.false.,MPI_COMM_WORLD,'device products are not built; no host fallback')
+#endif
+  end subroutine
+end module

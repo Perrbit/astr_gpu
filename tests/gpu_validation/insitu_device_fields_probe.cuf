@@ -1,0 +1,170 @@
+module insitu_device_fields_probe_kernels
+  use cudafor
+  implicit none
+contains
+  attributes(device) subroutine tgv_velocity(gi,gj,gk,value)
+    integer,value :: gi,gj,gk
+    real(8),intent(out) :: value(3)
+    real(8) :: h,x,y,z
+    h=8.d0*atan(1.d0)/32.d0
+    x=modulo(gi,32)*h; y=modulo(gj,32)*h; z=modulo(gk,32)*h
+    value=[sin(x)*cos(y)*cos(z),-cos(x)*sin(y)*cos(z),0.d0]
+  end subroutine
+
+  attributes(global) subroutine initialize_tgv(q,metrics,im,jm,km,coords)
+    integer,value :: im,jm,km
+    integer,device,intent(in) :: coords(3)
+    real(8),device,intent(out) :: q(-3:im+3,-3:jm+3,-3:km+3,5)
+    real(8),device,intent(out) :: metrics(-3:im+3,-3:jm+3,-3:km+3,3,3)
+    integer :: node,i,j,k,c,d
+    real(8) :: value(3)
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(im+7)*(jm+7)*(km+7)) return
+    i=mod(node,im+7)-3; j=mod(node/(im+7),jm+7)-3; k=node/((im+7)*(jm+7))-3
+    q(i,j,k,:)=-77.d0
+    if(i>=0.and.i<=im.and.j>=0.and.j<=jm.and.k>=0.and.k<=km) then
+      q(i,j,k,:)=[99.d0,100.d0,101.d0,102.d0,103.d0]
+      if(i<im.and.j<jm.and.k<km) then
+        call tgv_velocity(coords(1)*im+i,coords(2)*jm+j,coords(3)*km+k,value)
+        q(i,j,k,:)=[1.d0,value,2.d0]
+      endif
+    endif
+    do d=1,3
+      do c=1,3
+        metrics(i,j,k,c,d)=0.d0
+        if(c==d) metrics(i,j,k,c,d)=32.d0/(8.d0*atan(1.d0))
+      enddo
+    enddo
+  end subroutine
+
+  attributes(global) subroutine verify_tgv_source_and_halo(q,halo,errors,im,jm,km,coords)
+    use ieee_arithmetic, only: ieee_is_finite
+    integer,value :: im,jm,km
+    integer,device,intent(in) :: coords(3)
+    real(8),device,intent(in) :: q(-3:im+3,-3:jm+3,-3:km+3,5),halo(-3:im+3,-3:jm+3,-3:km+3,3)
+    integer,device,intent(inout) :: errors(*)
+    integer :: node,i,j,k,c,ignored
+    real(8) :: value(3),state(5)
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(im+7)*(jm+7)*(km+7)) return
+    i=mod(node,im+7)-3; j=mod(node/(im+7),jm+7)-3; k=node/((im+7)*(jm+7))-3
+    call tgv_velocity(coords(1)*im+i,coords(2)*jm+j,coords(3)*km+k,value)
+    do c=1,3
+      if(.not.ieee_is_finite(halo(i,j,k,c)).or.abs(halo(i,j,k,c)-value(c))>2.d-10) &
+        ignored=atomicExch(errors(1),1)
+    enddo
+    state=-77.d0
+    if(i>=0.and.i<=im.and.j>=0.and.j<=jm.and.k>=0.and.k<=km) then
+      state=[99.d0,100.d0,101.d0,102.d0,103.d0]
+      if(i<im.and.j<jm.and.k<km) state=[1.d0,value,2.d0]
+    endif
+    do c=1,5
+      if(q(i,j,k,c)/=state(c)) ignored=atomicExch(errors(2),1)
+    enddo
+  end subroutine
+end module
+
+program insitu_device_fields_probe
+  use cudafor
+  use mpi
+  use iso_fortran_env, only: int64
+  use ieee_arithmetic, only: ieee_is_finite
+  use constdef, only: num1d60
+  use insitu_device_velocity
+  use insitu_device_fields_probe_kernels
+  implicit none
+  real(8),device,allocatable :: q(:,:,:,:),metrics(:,:,:,:,:),velocity(:,:),halo(:,:,:,:),derived(:,:)
+  real(8),allocatable :: diagnostic(:,:)
+  integer,device,allocatable :: coords_d(:),errors(:)
+  integer :: rank,np,ierr,axis,comm,dims(3),coords(3),neighbors(2,3),extent(3), &
+    status,local_rank,devices,nodes,bad(2),all_bad(2),node,i,j,k,c,d,location(3),offset(3),s
+  real(8) :: gradient(3,3),fields(14),value(3),sample(3,7),h,qvalue,error,maximum
+  character(32) :: argument,mode
+  logical :: periods(3)
+  local_rank=0
+  call get_environment_variable('OMPI_COMM_WORLD_LOCAL_RANK',argument,status=status)
+  if(status==0) read(argument,*) local_rank
+  status=cudaGetDeviceCount(devices)
+  if(status/=cudaSuccess.or.local_rank>=devices) stop 1
+  status=cudaSetDevice(local_rank)
+  if(status/=cudaSuccess) stop 2
+  call MPI_Init(ierr)
+  call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
+  call MPI_Comm_size(MPI_COMM_WORLD,np,ierr)
+  if(np/=1.and.np/=2) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+  call get_command_argument(1,argument); read(argument,*) axis
+  call get_command_argument(2,mode)
+  if(axis<1.or.axis>3) call MPI_Abort(MPI_COMM_WORLD,4,ierr)
+  dims=1; dims(axis)=np; periods=.true.
+  call MPI_Cart_create(MPI_COMM_WORLD,3,dims,periods,.false.,comm,ierr)
+  call MPI_Cart_coords(comm,rank,3,coords,ierr)
+  do axis=1,3
+    call MPI_Cart_shift(comm,axis-1,1,neighbors(1,axis),neighbors(2,axis),ierr)
+  enddo
+  extent=32/dims; nodes=product(extent+7)
+  allocate(q(-3:extent(1)+3,-3:extent(2)+3,-3:extent(3)+3,5), &
+    metrics(-3:extent(1)+3,-3:extent(2)+3,-3:extent(3)+3,3,3),coords_d(3),errors(2))
+  coords_d=coords
+  call initialize_tgv<<<(nodes+255)/256,256>>>(q,metrics,extent(1),extent(2),extent(3),coords_d)
+  status=cudaDeviceSynchronize()
+  if(status/=cudaSuccess) call MPI_Abort(comm,5,ierr)
+  call begin_velocity_transport_gpu(trim(mode),extent,dims,neighbors,comm, &
+    67108864_int64,67108864_int64,1073741824_int64)
+  call snapshot_periodic_velocity_gpu(q,velocity,extent,3,5,dims,neighbors,comm, &
+    67108864_int64,1073741824_int64)
+  call extend_periodic_velocity_gpu(velocity,halo,extent,comm,67108864_int64,1073741824_int64)
+  call derive_periodic_velocity_gpu(halo,metrics,derived,extent,3,comm,67108864_int64,1073741824_int64)
+  errors=0
+  call verify_tgv_source_and_halo<<<(nodes+255)/256,256>>>(q,halo,errors,extent(1),extent(2),extent(3),coords_d)
+  status=cudaDeviceSynchronize()
+  if(status/=cudaSuccess) call MPI_Abort(comm,6,ierr)
+  bad=errors
+  call MPI_Allreduce(bad,all_bad,2,MPI_INTEGER,MPI_MAX,comm,ierr)
+  ! Full diagnostic download is solely the independent test oracle, not a
+  ! production product supply path. Velocity, q and metrics stay on device.
+  nodes=product(extent+1); allocate(diagnostic(14,nodes)); diagnostic=derived
+  if(.not.all(ieee_is_finite(diagnostic))) call MPI_Abort(comm,7,ierr)
+  h=8.d0*atan(1.d0)/32.d0; error=0.d0
+  do node=0,nodes-1
+    i=mod(node,extent(1)+1); j=mod(node/(extent(1)+1),extent(2)+1); k=node/((extent(1)+1)*(extent(2)+1))
+    location=coords*extent+[i,j,k]
+    do d=1,3
+      do s=-3,3
+        offset=location; offset(d)=offset(d)+s
+        call host_velocity(offset,sample(:,s+4))
+      enddo
+      value=(0.75d0*(sample(:,5)-sample(:,3))-0.15d0*(sample(:,6)-sample(:,2))+ &
+        num1d60*(sample(:,7)-sample(:,1)))/h
+      gradient(:,d)=value
+      fields(1+3*(d-1):3*d)=value
+    enddo
+    qvalue=0.d0
+    do d=1,3
+      do c=1,3
+        qvalue=qvalue+gradient(c,d)*gradient(d,c)
+      enddo
+    enddo
+    fields(10)=-0.5d0*qvalue
+    fields(11)=gradient(1,1)+gradient(2,2)+gradient(3,3)
+    fields(12)=gradient(3,2)-gradient(2,3)
+    fields(13)=gradient(1,3)-gradient(3,1)
+    fields(14)=gradient(2,1)-gradient(1,2)
+    error=max(error,maxval(abs(fields-diagnostic(:,node+1))))
+  enddo
+  call MPI_Allreduce(error,maximum,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+  if(rank==0) write(*,'(a,i0,3a,es24.16,2(a,i0))') 'Device periodic diagnostics NP=',np,' backend=',trim(mode), &
+    ' max_error=',maximum,' halo_errors=',all_bad(1),' source_errors=',all_bad(2)
+  call end_velocity_transport_gpu(comm)
+  deallocate(q,metrics,velocity,halo,derived,coords_d,errors,diagnostic)
+  call MPI_Comm_free(comm,ierr)
+  call MPI_Finalize(ierr)
+  if(maximum>2.d-10.or.any(all_bad/=0)) stop 8
+contains
+  subroutine host_velocity(index,value)
+    integer,intent(in) :: index(3)
+    real(8),intent(out) :: value(3)
+    real(8) :: xyz(3)
+    xyz=modulo(index,32)*h
+    value=[sin(xyz(1))*cos(xyz(2))*cos(xyz(3)), -cos(xyz(1))*sin(xyz(2))*cos(xyz(3)),0.d0]
+  end subroutine
+end program

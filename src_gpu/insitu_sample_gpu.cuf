@@ -7,7 +7,116 @@ module insitu_sample_gpu
   public :: derive_selected_sample_gpu,download_velocity_state_gpu
   public :: download_plane_state_gpu
   public :: download_wall_state_gpu
+  public :: capture_device_sample_gpu,release_device_sampling_gpu
+  logical,save :: device_sampling_initialized=.false.
+  character(16),save :: device_sampling_transport=''
 contains
+  subroutine capture_device_sample_gpu(mode,velocity,halo,derived,host_budget,device_budget,reserve)
+    use benchmark_runtime, only: insitu_clock,report_insitu_timing
+    use iso_fortran_env, only: int64
+    use commvar, only: im,jm,km,ia,ja,ka,hm,numq,use_gpu,lreadgrid,difschm,conschm,flowtype, &
+      ndims,num_species,nondimen
+    use commarray_gpu, only: q_d,dxi_d
+    use bc, only: bctype
+    use mpi
+    use parallel, only: isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
+    use checkpoint_state_io, only: checkpoint_state_require
+    use halo_transport_gpu, only: halo_transport_idle
+    use halo_exchange_gpu, only: solution_pipeline_active
+    use precision_mode_gpu, only: gpu_precision_mode,GPU_PRECISION_FP64
+    use insitu_device_velocity, only: begin_velocity_transport_gpu,snapshot_periodic_velocity_gpu, &
+      extend_periodic_velocity_gpu,derive_periodic_velocity_gpu
+    character(*),intent(in) :: mode
+    real(8),device,allocatable,intent(out) :: velocity(:,:),halo(:,:,:,:),derived(:,:)
+    integer(int64),intent(in) :: host_budget,device_budget,reserve
+    integer :: neighbors(2,3),sizes(3),extent(3),ranks,ierr
+    real(8) :: phase_started
+    extent=[im,jm,km]; sizes=[isize,jsize,ksize]
+    neighbors(:,1)=[mpileft,mpiright]; neighbors(:,2)=[mpidown,mpiup]; neighbors(:,3)=[mpiback,mpifront]
+    call MPI_Comm_size(MPI_COMM_WORLD,ranks,ierr)
+    call checkpoint_state_require(ierr==MPI_SUCCESS.and.ranks<=2.and.all([ia,ja,ka]==32).and. &
+      all(bctype==1).and.use_gpu.and..not.lreadgrid.and.numq==5.and.hm>=3.and.trim(difschm)=='643e'.and. &
+      trim(conschm)=='643e'.and.trim(flowtype)=='tgv'.and.ndims==3.and.num_species==0.and.nondimen.and. &
+      gpu_precision_mode==GPU_PRECISION_FP64, &
+      MPI_COMM_WORLD,'device sample requires 32^3 Cartesian periodic FP64 TGV NP=1/2')
+    call checkpoint_state_require(halo_transport_idle().and..not.solution_pipeline_active, &
+      MPI_COMM_WORLD,'device sample requires completed solver transport')
+    if(.not.device_sampling_initialized) then
+      call begin_velocity_transport_gpu(mode,extent,sizes,neighbors,MPI_COMM_WORLD,host_budget,device_budget,reserve)
+      device_sampling_transport=mode
+      device_sampling_initialized=.true.
+    endif
+    call checkpoint_state_require(mode==device_sampling_transport,MPI_COMM_WORLD,'device sample transport changed in session')
+    phase_started=insitu_clock()
+    call snapshot_periodic_velocity_gpu(q_d,velocity,extent,hm,numq,sizes,neighbors,MPI_COMM_WORLD,device_budget,reserve)
+    call report_insitu_timing('device_snapshot_inclusive',phase_started,-1)
+    phase_started=insitu_clock()
+    call extend_periodic_velocity_gpu(velocity,halo,extent,MPI_COMM_WORLD,device_budget,reserve)
+    call report_insitu_timing('device_halo_inclusive',phase_started,-1)
+    phase_started=insitu_clock()
+    call derive_periodic_velocity_gpu(halo,dxi_d,derived,extent,hm,MPI_COMM_WORLD,device_budget,reserve)
+    call report_insitu_timing('device_gradient_q_inclusive',phase_started,-1)
+  end subroutine
+
+  subroutine release_device_sampling_gpu()
+    use mpi
+    use insitu_device_velocity, only: end_velocity_transport_gpu
+#ifdef ASTR_INSITU_DEVICE_PRODUCTS
+    interface
+      subroutine products_release() bind(C,name='astr_insitu_device_products_release')
+      end subroutine
+    end interface
+    call products_release()
+#endif
+    if(device_sampling_initialized) call end_velocity_transport_gpu(MPI_COMM_WORLD)
+    device_sampling_initialized=.false.; device_sampling_transport=''
+  end subroutine
+
+#ifdef ASTR_BUILD_TESTING
+  subroutine check_device_sample_against_host(derived,indices,host_budget,device_budget,reserve)
+    use iso_fortran_env, only: int64
+    use commvar, only: im,jm,km
+    use mpi
+    use parallel, only: mpirank
+    use checkpoint_state_io, only: checkpoint_state_require
+    use ieee_arithmetic, only: ieee_is_finite
+    real(8),intent(in) :: derived(0:,0:,0:,:)
+    integer,intent(in) :: indices(:)
+    integer(int64),intent(in) :: host_budget,device_budget,reserve
+    real(8),device,allocatable :: velocity_d(:,:),halo_d(:,:,:,:),diagnostic_d(:,:)
+    real(8),allocatable :: diagnostic(:,:)
+    character(16) :: mode,root
+    integer :: status,ierr,node,i,j,k,c,nodes
+    real(8) :: difference,maximum
+    call get_environment_variable('ASTR_INSITU_TEST_DEVICE_TRANSPORT',mode,status=status)
+    call checkpoint_state_require(status==0.or.status==1,MPI_COMM_WORLD,'invalid device diagnostic transport')
+    root=mode
+    call MPI_Bcast(root,len(root),MPI_CHARACTER,0,MPI_COMM_WORLD,ierr)
+    call checkpoint_state_require(ierr==MPI_SUCCESS.and.mode==root,MPI_COMM_WORLD,'device diagnostic transports differ')
+    if(mode=='') return
+    call capture_device_sample_gpu(trim(mode),velocity_d,halo_d,diagnostic_d,host_budget,device_budget,reserve)
+    nodes=(im+1)*(jm+1)*(km+1)
+    call checkpoint_state_require(int(nodes,int64)*14*8<=host_budget,MPI_COMM_WORLD,'device diagnostic test oracle budget')
+    allocate(diagnostic(14,nodes),stat=status)
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'device diagnostic test oracle allocation')
+    ! Test-only oracle download, never enabled by a production device config.
+    diagnostic=diagnostic_d
+    difference=0.d0
+    do node=0,nodes-1
+      i=mod(node,im+1); j=mod(node/(im+1),jm+1); k=node/((im+1)*(jm+1))
+      do c=1,size(indices)
+        difference=max(difference,abs(derived(i,j,k,c)-diagnostic(indices(c),node+1)))
+      enddo
+    enddo
+    call MPI_Allreduce(difference,maximum,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call checkpoint_state_require(ierr==MPI_SUCCESS.and.all(ieee_is_finite(diagnostic)).and. &
+      ieee_is_finite(maximum).and.maximum<=2.d-10,MPI_COMM_WORLD,'actual completed-step device sample differs')
+    write(*,'(a,i0,3a,es24.16)') 'ASTR_INSITU_DEVICE_SAMPLE_CHECK rank=',mpirank,' backend=',trim(mode), &
+      ' maxabs=',maximum
+    deallocate(velocity_d,halo_d,diagnostic_d,diagnostic)
+  end subroutine
+#endif
+
   subroutine download_wall_state_gpu(walls,fields,device_budget,reserve)
     use iso_fortran_env, only: int64
     use commvar, only: im,jm,km,numq
@@ -132,10 +241,10 @@ contains
     real(8) :: started,prepare_seconds,compute_download_seconds
     call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
     call checkpoint_state_require(ierr==MPI_SUCCESS.and. &
-      (nranks<=2.or.(nranks==4.and.all([isize,jsize,ksize]==[2,2,1]))).and.use_gpu.and. &
-      all([ia,ja,ka]==32).and..not.lreadgrid.and.all(bctype==1).and.hm>=3.and. &
+      (nranks<=2.or.(.not.lreadgrid.and.nranks==4.and.all([isize,jsize,ksize]==[2,2,1]))).and.use_gpu.and. &
+      all([ia,ja,ka]==32).and.all(bctype==1).and.hm>=3.and. &
       trim(difschm)=='643e',MPI_COMM_WORLD, &
-      'GPU in-situ derivatives admit only 32^3 periodic TGV NP=1/2 or NP=4 (2x2x1)')
+      'GPU in-situ derivatives admit 32^3 periodic TGV NP=1/2; NP=4 (2x2x1) is Cartesian only')
     call checkpoint_state_require(all(ieee_is_finite(velocity)),MPI_COMM_WORLD,'nonfinite canonical GPU input')
     call checkpoint_state_require(size(indices)>0.and.all(shape(derived)==[im+1,jm+1,km+1,size(indices)]), &
       MPI_COMM_WORLD,'invalid selected GPU diagnostic shape')
@@ -152,6 +261,9 @@ contains
     call end_derived_output_gpu(download_bytes)
     call checkpoint_state_require(all(ieee_is_finite(derived)).and.download_bytes==capacity*8, &
       MPI_COMM_WORLD,'invalid GPU diagnostic output')
+#ifdef ASTR_BUILD_TESTING
+    call check_device_sample_against_host(derived,indices,host_budget,device_budget,reserve)
+#endif
     write(*,'(a,i0,a,2es16.8,a,i0)') 'ASTR_INSITU_GPU_DERIVATIVE_TIMING rank=',mpirank, &
       ' prepare_inclusive compute_download_inclusive=',prepare_seconds,compute_download_seconds, &
       ' download_bytes=',download_bytes

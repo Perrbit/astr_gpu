@@ -8,6 +8,7 @@ import signal
 import shutil
 import subprocess
 import sys
+from time import perf_counter
 
 import h5py
 import numpy as np
@@ -55,7 +56,8 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
              monitor_resources=False, resource_baseline=None,
              output_config_override=None, omit_output_config=False,
              legacy_restart=False, legacy_output=False, no_field_io=False, grid=None,
-             test_fault=None, failure_after_start=False):
+             test_fault=None, failure_after_start=False, tgv_mapping=None, insitu_timing=False,
+             device_sample_transport=None, postprocess_transport=None, nsys_trace=False):
     if failure_after_start and not reject:
         raise ValueError('post-start failure checks require an expected rejection')
     timeout=getattr(args,'runtime_timeout_seconds',180)
@@ -66,6 +68,9 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         raise ValueError('test directory budget must be positive')
     if grid is not None and (args.case != 'tgv' or args.initial_dimension != 0):
         raise ValueError('explicit validation grid requires internally initialized TGV')
+    if tgv_mapping is not None and (args.case != 'tgv' or args.initial_dimension != 0 or
+                                   grid != '32,32,32' or tgv_mapping not in ('periodic','y-wavy')):
+        raise ValueError('IS6 CURVE fixture requires internally initialized 32^3 TGV')
     case = args.output / f"{backend}_np{ranks}_{name}"
     channel = args.case == "channel"
     dynamic = args.case == "dynamic"
@@ -120,6 +125,19 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         "--use-gpu", "t" if backend == "gpu" else "f", "--grid", grid or "16,16,16",
         "--maxstep", str(steps - 1), "--feqchkpt", "1", "--deltat", "1.d-3",
         "--lfilter", "t" if lfilter else "f", "--diffterm", "t", "--scheme", "643e"], check=True)
+    if tgv_mapping is not None:
+        from prepare_tgv_case import set_gridfile, set_runtime_flags, set_homogeneous, set_bctype
+        subprocess.run([
+            sys.executable, str(root / 'tests/gpu_validation/generate_curvilinear_tgv_grid.py'),
+            '--grid', grid, '--amplitude', '0.15', '--mapping', tgv_mapping,
+            '--output', str(case / 'datin/grid.tgv.h5'),
+            '--report', str(case / 'grid_report.txt')], check=True)
+        primary = case / 'datin' / input_name
+        set_gridfile(primary, 'datin/grid.tgv.h5')
+        set_runtime_flags(primary, 't' if backend == 'gpu' else 'f', None, None, 't')
+        if tgv_mapping=='y-wavy':
+            set_homogeneous(primary,'t,f,t')
+            set_bctype(primary,'1;1;41,273.15d0;41,273.15d0;1;1')
     if args.initial_dimension and source_fault != "initial_field":
         if initial_resource is None:
             initial_path = prepare_initial_resource(case, input_name, args.initial_dimension)
@@ -212,6 +230,24 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
                ASTR_GPU_SYNC_MODE="explicit", ASTR_GPU_HALO_TRANSPORT="pinned",
                ASTR_GPU_PRECISION_MODE="fp64", ASTR_INSITU_SAMPLE_PREFIX="outdat/sample")
     env["ASTR_GPU_FILTER_WORKSPACE"] = args.filter_workspace
+    if insitu_timing:
+        env['ASTR_INSITU_TIMING']='1'
+    if device_sample_transport is not None:
+        if device_sample_transport not in ('device-aware','pinned'):
+            raise ValueError('device sample diagnostic requires an explicit supported transport')
+        env['ASTR_INSITU_TEST_DEVICE_TRANSPORT']=device_sample_transport
+    if postprocess_transport is not None:
+        if postprocess_transport not in ('device-aware','pinned') or insitu_config is None:
+            raise ValueError('native device products require a declared transport and configuration')
+        if postprocess_transport == 'device-aware':
+            env.update(OMPI_MCA_pml='ucx', OMPI_MCA_coll='^hcoll,ucc,cuda',
+                       OMPI_MCA_coll_hcoll_enable='0', OMPI_MCA_osc='pt2pt',
+                       UCX_MEMTYPE_CACHE='n', UCX_CUDA_COPY_ENABLE_FABRIC='no',
+                       UCX_CUDA_COPY_DMABUF='no', UCX_CUDA_IPC_ENABLE_MNNVL='no',
+                       UCX_TLS='self,sm,cuda_copy,cuda_ipc')
+        else:
+            env.update(OMPI_MCA_pml='ob1', OMPI_MCA_btl='self,tcp', OMPI_MCA_osc='pt2pt',
+                       OMPI_MCA_opal_cuda_support='false', OMPI_MCA_coll_ucc_enable='0')
     if no_field_io:
         env["ASTR_GPU_BENCHMARK_NO_FIELD_IO"] = "1"
         env["ASTR_GPU_RK_TIMING" if backend == "gpu" else "ASTR_CPU_RK_TIMING"] = "1"
@@ -246,6 +282,8 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         (case / "datin/inlet.prof").unlink()
         if dynamic:
             shutil.rmtree(case / "inflow")
+    if tgv_mapping is not None and restore:
+        (case / 'datin/grid.tgv.h5').unlink()
     if publication_fault is not None:
         library, phase, target_step, retired_step = publication_fault
         if phase not in ("batch_create", "batch_rename", "latest_rename", "retire_marker", "retire_payload", "protect_batch"):
@@ -277,6 +315,16 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
                    ASTR_CONTROLLER_TEST_REPLAY=str(replay.resolve()),
                    ASTR_CONTROLLER_TEST_START_STEP=str(start_step))
     solver_command = [str(args.executable), "run", "datin/" + input_name]
+    if nsys_trace:
+        profiler=shutil.which('nsys')
+        if profiler is None or memcheck or monitor_resources or reject:
+            raise ValueError('Nsight trace requires a successful uninstrumented GPU gate and nsys')
+        if backend!='gpu':
+            raise ValueError('Device trace requires GPU')
+        solver_command=[profiler,'profile','--trace=cuda,nvtx,mpi','--mpi-impl=openmpi',
+            '--sample=none','--cpuctxsw=none','--cuda-memory-usage=true',
+            '--cuda-um-cpu-page-faults=true','--cuda-um-gpu-page-faults=true',
+            '--export=sqlite','--output='+str(case/'trace.rank%q{OMPI_COMM_WORLD_RANK}'),*solver_command]
     if test_fault is not None:
         if publication_fault is not None or controller_replay is not None:
             raise ValueError('IS4 fault preload cannot be combined with other preloads')
@@ -288,15 +336,20 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         sanitizer = shutil.which("compute-sanitizer")
         if sanitizer is None:
             raise RuntimeError("compute-sanitizer is required for this explicit memory gate")
-        # Isolate device-memory safety from MPI's optional CUDA pointer probes.
-        env.update(OMPI_MCA_opal_cuda_support="false", OMPI_MCA_pml="ob1",
-                   OMPI_MCA_osc="pt2pt", OMPI_MCA_btl="self,vader,tcp",
-                   OMPI_MCA_coll_ucc_enable="0")
+        # Host transport can isolate optional MPI CUDA pointer probes. A device
+        # buffer diagnostic must retain its explicitly declared aware-MPI setup.
+        aware = device_sample_transport == 'device-aware' or postprocess_transport == 'device-aware'
+        if not aware:
+            env.update(OMPI_MCA_opal_cuda_support="false", OMPI_MCA_pml="ob1",
+                       OMPI_MCA_osc="pt2pt", OMPI_MCA_btl="self,vader,tcp",
+                       OMPI_MCA_coll_ucc_enable="0")
         solver_command = [sanitizer, "--tool", "memcheck", "--target-processes", "all",
                           "--error-exitcode", "99", "--log-file", str(case / "memcheck.%p.log"),
-                          *solver_command]
+                          *(["--suppressions",str(root / 'tests/gpu_validation/compute_sanitizer_ucx_cuda_aware.supp.xml')]
+                            if aware else []),*solver_command]
     command = [str(args.mpiexec), "--mca", "coll_hcoll_enable", "0", "-np", str(ranks),
                *solver_command]
+    launch_started=perf_counter()
     with (case / "run.log").open("wb") as log:
         if monitor_resources:
             if backend != "gpu" or reject or memcheck:
@@ -319,6 +372,10 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
                 except ProcessLookupError:
                     process.wait()
                 raise
+    if insitu_timing:
+        (case/'timing.launch.json').write_text(json.dumps(dict(
+            seconds=perf_counter()-launch_started,
+            scope='mpiexec launch through child exit, includes external monitor when selected'),indent=2))
     if reject:
         if returncode == 0 or reject not in (case / "run.log").read_text():
             raise AssertionError(f"expected rejection not observed: {reject}: {case}")

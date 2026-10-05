@@ -43,7 +43,7 @@ def configuration(render=True, statistics=True, mode="steps", interval=8):
 """
 
 
-def check_render(case, ranks, steps, statistics=True):
+def check_render(case, ranks, steps, statistics=True, full_volume_downloads=True):
     output = case / "outdat/render"
     for rank in range(ranks):
         with (output / f"resources.rank{rank:08d}.csv").open() as stream:
@@ -77,7 +77,8 @@ def check_render(case, ranks, steps, statistics=True):
     assert not list((case / "outdat").glob("restart_q.*"))
     assert not list((case / "outdat").glob("insitu_cpu_q.*"))
     flows = re.findall(r"ASTR_INSITU_GPU_FLOW rank=(\d+) frame_downloads=(\d+)", (case / "run.log").read_text())
-    assert len(flows) == ranks and all(int(count) == len(steps) for _, count in flows)
+    expected_downloads = len(steps) if full_volume_downloads else 0
+    assert len(flows) == ranks and all(int(count) == expected_downloads for _, count in flows)
     return pictures
 
 

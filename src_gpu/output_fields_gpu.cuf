@@ -1,6 +1,7 @@
 module output_fields_gpu
   use iso_fortran_env, only: int64,real64
   use cudafor
+  use output_derivatives_gpu, only: output_derivative6_gpu
   use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d
 #ifdef ASTR_AIR5_CHEMISTRY
   use commarray_gpu, only: tve_d,spc_d
@@ -92,26 +93,6 @@ contains
       private_velocity_d(i,j,k,c)=vel_d(i,j,k,c)
   end subroutine
 
-  attributes(device) real(real64) function output_derivative6_gpu( &
-    fm3,fm2,fm1,f0,fp1,fp2,fp3,node,dim,ntype) result(value)
-    use constdef, only: num1d60,num2d3,num1d12
-    real(real64),value :: fm3,fm2,fm1,f0,fp1,fp2,fp3
-    integer,value :: node,dim,ntype
-    logical :: left,right
-    left=ntype==1.or.ntype==4; right=ntype==2.or.ntype==4
-    if(left.and.node==0) then
-      value=-0.5d0*fp2+2.d0*fp1-1.5d0*f0
-    elseif((left.and.node==1).or.(right.and.node==dim-1)) then
-      value=0.5d0*(fp1-fm1)
-    elseif((left.and.node==2).or.(right.and.node==dim-2)) then
-      value=num2d3*(fp1-fm1)-num1d12*(fp2-fm2)
-    elseif(right.and.node==dim) then
-      value=0.5d0*fm2-2.d0*fm1+1.5d0*f0
-    else
-      value=0.75d0*(fp1-fm1)-0.15d0*(fp2-fm2)+num1d60*(fp3-fm3)
-    endif
-  end function
-
   attributes(global) subroutine pack_derived_kernel(i0,j0,k0,ni,nj,nk,basic,nselected,im,jm,km,itype,jtype,ktype)
     use commarray_gpu, only: dxi_d
     integer,value :: i0,j0,k0,ni,nj,nk,basic,nselected,im,jm,km,itype,jtype,ktype
@@ -155,10 +136,12 @@ contains
 
   subroutine pack_diagnostic_output_gpu(start,extent,values)
     use commvar, only: im,jm,km
+    use benchmark_runtime, only: insitu_clock,report_insitu_timing
     integer,intent(in) :: start(3),extent(3)
     real(real64),intent(out) :: values(:)
     integer(int64) :: count
     integer :: nodes,status
+    real(real64) :: started
     count=product(int(extent,int64))*int(selected_gpu_count,int64)
     call local_require(allocated(private_velocity_d).and.allocated(packed_d), &
       'private GPU diagnostics not initialized')
@@ -167,12 +150,16 @@ contains
       count<=huge(nodes),'private GPU diagnostic tile shape')
     nodes=product(extent)
     ! No basic-field slots precede the diagnostic-only payload.
+    started=insitu_clock()
     call pack_derived_kernel<<<(nodes+255)/256,256>>>(start(1),start(2),start(3), &
       extent(1),extent(2),extent(3),0,selected_gpu_count,im,jm,km, &
       private_types_gpu(1),private_types_gpu(2),private_types_gpu(3))
     call sync_after_kernel('private diagnostic tile',.true.)
+    call report_insitu_timing('diagnostic_compute_pack_sync',started,-1)
+    started=insitu_clock()
     status=cudaMemcpy(values,packed_d,count,cudaMemcpyDeviceToHost)
     call local_require(status==cudaSuccess,'private diagnostic tile download')
+    call report_insitu_timing('diagnostic_d2h',started,-1)
     transferred=transferred+count*8
   end subroutine
 

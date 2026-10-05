@@ -5,6 +5,7 @@ import io
 import os
 from pathlib import Path
 import sys
+from time import perf_counter
 
 import numpy as np
 from PIL import Image
@@ -23,11 +24,14 @@ from tgv_streamlines import make_trace,check_crossing
 from image_publication import publish_pair,RECOVERABLE_ERRNOS
 
 arguments=catalyst.get_args()
-if len(arguments) not in (2,3):
+if len(arguments) not in (2,3,4):
     raise RuntimeError('Native TGV pipeline requires output directory and CUDA UUID')
 output=Path(arguments[0])
 expected_uuid=arguments[1]
-profile=arguments[2] if len(arguments)==3 else 'all'
+profile=arguments[2] if len(arguments)>=3 else 'all'
+device_products=len(arguments)==4
+if device_products and arguments[3]!='device':
+    raise RuntimeError('Unknown compact geometry processing backend')
 product_names={
     'all':('q_surface','velocity_slice','instantaneous_streamlines','crossing_streamlines'),
     'q_surface':('q_surface',),
@@ -46,7 +50,7 @@ options=catalyst.Options()
 options.GlobalTrigger='TimeStep'
 options.EnableCatalystLive=0
 pv._DisableFirstRenderCameraReset()
-source=pv.TrivialProducer(registrationName='grid')
+source=None if device_products else pv.TrivialProducer(registrationName='grid')
 controller=vtkMultiProcessController.GetGlobalController()
 rank=controller.GetLocalProcessId()
 frames=[]
@@ -55,6 +59,25 @@ pipeline_objects=[]
 extraction_objects={}
 render_objects={}
 owned_colors=[]
+timing_enabled=os.environ.get('ASTR_INSITU_TIMING','').strip() in ('1','t','T','true','TRUE','on','ON')
+stage_times={}
+if device_products:
+    if profile in ('channel_walls','air5_walls'):
+        raise RuntimeError('Device compact geometry does not admit walls')
+    for name in ('q_surface','velocity_slice','instantaneous_streamlines','crossing_streamlines',
+                 'mean_reynolds_streamlines','mean_favre_streamlines'):
+        geometries[name]=pv.TrivialProducer(registrationName=name)
+        pipeline_objects.append(geometries[name])
+    source=geometries[product_names[0]]
+
+
+def clock():
+    return perf_counter() if timing_enabled else 0.
+
+
+def record_time(stage,started):
+    if timing_enabled:
+        stage_times[stage]=stage_times.get(stage,0.)+perf_counter()-started
 
 
 def collective_error(message):
@@ -121,18 +144,24 @@ def encode_image(image,quality,progressive):
 
 
 def publish_image(view,picture,name,step,time):
+    started=clock()
     error=''
     try:
         image,quality,progressive=capture_image(view)
     except Exception as exc:
         error='Collective screenshot failed: '+str(exc)
     collective_error(error)
+    record_time('screenshot_capture_inclusive',started)
     error=''
     failure=None
     if rank==0:
         try:
+            started=clock()
             jpeg,eps=encode_image(image,quality,progressive)
+            record_time('image_encoding',started)
+            started=clock()
             failure=publish_pair(picture,jpeg,eps)
+            record_time('image_publication',started)
         except Exception as exc:
             error='Image capture/encoding/publication failed: '+str(exc)
     collective_error(error)
@@ -168,8 +197,8 @@ def publish_image(view,picture,name,step,time):
     return receipt
 
 
-def empty_local_plane():
-    data=source.GetClientSideObject().GetOutputDataObject(0)
+def empty_local_plane(proxy=None):
+    data=(source if proxy is None else proxy).GetClientSideObject().GetOutputDataObject(0)
     if data.IsA('vtkDataSet'):
         return data.GetNumberOfPoints()==0
     iterator=data.NewIterator()
@@ -184,6 +213,7 @@ def empty_local_plane():
 
 
 def save_geometry(destination,proxy):
+    started=clock()
     writer=None
     error=''
     try:
@@ -201,9 +231,13 @@ def save_geometry(destination,proxy):
         if writer is not None:
             pv.Delete(writer)
     collective_error(error)
+    record_time('geometry_write_inclusive',started)
 
 
 def catalyst_execute(info):
+    stage_times.clear()
+    execute_started=clock()
+    setup_started=clock()
     step,t=int(info.timestep),float(info.time)
     if not np.isfinite(t) or step<0 or (frames and (step<=frames[-1][0] or t<=frames[-1][1])):
         raise RuntimeError('Nonmonotone or invalid complete-step render clock')
@@ -215,12 +249,35 @@ def catalyst_execute(info):
     if 'q_surface' in product_names:
         required.add('Q_rs')
     missing=required-set(source.PointData.keys())
+    if device_products:
+        # Each final geometry is checked separately below, including valid empties.
+        missing=set()
     # Conduit's VTK conversion drops zero-length arrays on empty slice domains.
     if profile in ('velocity_slice','channel_walls','air5_walls') and empty_local_plane():
         missing=set()
     collective_error('Missing required product fields: '+','.join(sorted(missing)) if missing else '')
     mean_products=()
     statistics_clocks={}
+    device_mean=False
+    if device_products:
+        def scalar_metadata(name):
+            if name not in source.FieldData.keys():
+                raise RuntimeError('Missing compact product metadata: '+name)
+            low,high=source.FieldData[name].GetRange(0)
+            if not np.isfinite(low) or low!=high:
+                raise RuntimeError('Nonuniform or nonfinite compact metadata: '+name)
+            return float(low)
+        if scalar_metadata('device_products')!=1:
+            raise RuntimeError('Missing explicit device product identity')
+        covered=scalar_metadata('mean_covered')
+        if covered not in (0.,1.):
+            raise RuntimeError('Invalid device mean coverage flag')
+        device_mean=bool(covered)
+        if device_mean:
+            statistics_clocks={key:scalar_metadata(key) for key in
+                ('statistics_duration','statistics_window_start','statistics_window_end')}
+            if not all(np.isfinite(v) for v in statistics_clocks.values()) or statistics_clocks['statistics_duration']<=0:
+                raise RuntimeError('Invalid device mean coverage')
     if profile in ('channel_walls','air5_walls'):
         local,total=vtkIntArray(),vtkIntArray()
         local.InsertNextValue(int('statistics_duration' in source.PointData.keys()))
@@ -277,7 +334,7 @@ def catalyst_execute(info):
     for name in mean_products:
         geometries[name]=source
         products.append((name,source))
-    if profile=='all' and 'mean_u_reynolds' in source.PointData.keys():
+    if profile=='all' and (device_mean or 'mean_u_reynolds' in source.PointData.keys()):
         for kind in ('reynolds','favre'):
             name=f'mean_{kind}_streamlines'
             if name not in geometries:
@@ -285,9 +342,27 @@ def catalyst_execute(info):
                 geometries[name]=trace
                 pipeline_objects.extend(objects)
             products.append((name,geometries[name]))
+    if device_products:
+        for name,geometry in products:
+            geometry.UpdatePipeline(t)
+            required={'u','v','w'}
+            if name=='q_surface':
+                required.add('Q_rs')
+            if name.startswith('mean_'):
+                required.add('mean_u_'+name.split('_')[1])
+            missing=required-set(geometry.PointData.keys())
+            if empty_local_plane(geometry):
+                missing=set()
+            collective_error('Missing compact product fields: '+name+':'+','.join(sorted(missing)) if missing else '')
     record={'rank':rank,'step':step,'time':t,'products':{}}
     if profile!='all':
         record.update(profile=profile,available_fields=sorted(source.PointData.keys()))
+    if profile!='air5_walls':
+        record['units']={name:'dimensionless' for name in source.PointData.keys()}
+    record['coordinate_space']='physical'
+    if device_products:
+        record['processing_backend']='device'
+        record['units']={field:'dimensionless' for _,geometry in products for field in geometry.PointData.keys()}
     if profile=='air5_walls':
         record['units']={name:('kg/m^3' if name=='rho' else 'm/s' if name in ('u','v','w')
                          else 'K' if 'temperature' in name else 'Pa' if name in ('pressure','wall_shear_x')
@@ -303,11 +378,17 @@ def catalyst_execute(info):
             record['units']['statistics_window_start']='s'
             record['units']['statistics_window_end']='s'
     if statistics_clocks:
-        record['statistics']=dict(statistics_clocks,average='Reynolds')
+        record['statistics']=dict(statistics_clocks)
+        if profile=='all':
+            record['statistics']['velocity_averages']=['Reynolds','Favre']
+        else:
+            record['statistics']['average']='Reynolds'
+    record_time('pipeline_setup',setup_started)
     for name,geometry in products:
         existing=any((output/f'{name}.step{step:08d}.{suffix}').exists()
                      for suffix in ('pvtp','jpeg','eps'))
         collective_error('Refusing to overwrite an existing in-situ frame' if existing else '')
+        extraction_started=clock()
         geometry.UpdatePipeline(t)
         if name not in extraction_objects:
             merged=pv.MergeBlocks(Input=geometry)
@@ -329,6 +410,10 @@ for name,value in {statistics_clocks!r}.items():
     item.SetName(name)
     item.InsertNextValue(value)
     result.GetFieldData().AddArray(item)
+space=vtkStringArray()
+space.SetName('coordinate_space')
+space.InsertNextValue('physical')
+result.GetFieldData().AddArray(space)
 units=vtkStringArray()
 units.SetName('field_units')
 for name,unit in {record.get('units',{})!r}.items():
@@ -336,7 +421,11 @@ for name,unit in {record.get('units',{})!r}.items():
 result.GetFieldData().AddArray(units)
 '''
         destination=output/f'{name}.step{step:08d}.pvtp'
+        # Materialize before writing so extraction is not attributed to writer I/O.
+        tagged.UpdatePipeline(t)
+        record_time('extraction',extraction_started)
         save_geometry(destination,tagged)
+        validation_started=clock()
         controller.Barrier()
         error=''
         if rank==0 and name=='crossing_streamlines':
@@ -348,10 +437,12 @@ result.GetFieldData().AddArray(units)
             except Exception as exc:
                 error=str(exc)
         collective_error(error)
+        record_time('geometry_validation_inclusive',validation_started)
+        setup_started=clock()
         if name not in render_objects:
             manager=servermanager.ProxyManager()
             initial_colors={group:set(manager.GetProxiesInGroup(group)) for group in
-                            ('lookup_tables','piecewise_functions')}
+                            ('lookup_tables','piecewise_functions','scalar_bars')}
             view=pv.CreateView('RenderView')
             view.ViewSize=[800,600]
             view.UseColorPaletteForBackground=0
@@ -373,6 +464,16 @@ result.GetFieldData().AddArray(units)
                 view.CameraFocalPoint=center.tolist()
                 view.CameraViewUp=[0.,1.,0.]
                 view.CameraParallelScale=.6*float(length.max())
+                # Keep the pose; enlarge only if the physical box would be clipped.
+                forward=center-np.asarray(view.CameraPosition)
+                forward/=np.linalg.norm(forward)
+                right=np.cross(forward,np.asarray(view.CameraViewUp))
+                right/=np.linalg.norm(right)
+                up=np.cross(right,forward)
+                half_height=.5*np.dot(np.abs(up),length)
+                half_width=.5*np.dot(np.abs(right),length)
+                view.CameraParallelScale=max(view.CameraParallelScale,1.05*half_height,
+                                             1.05*half_width/(800/600))
             display=pv.Show(geometry,view)
             if 'streamlines' in name:
                 display.LineWidth=2.
@@ -391,11 +492,24 @@ result.GetFieldData().AddArray(units)
                     'vibrational_temperature':(1500.,3500.),'wall_shear_x':(-1.,1.),
                     'wall_heat_into_gas':(-60000.,60000.)}.get(physical_name,(0.,1.)))
             lut.RescaleTransferFunction(*color_range)
-            render_objects[name]=(view,display)
+            display.SetScalarBarVisibility(view,True)
+            legend=pv.GetScalarBar(lut,view)
+            legend.Title={'mean_u_reynolds':'Reynolds u','mean_u_favre':'Favre u'}.get(color,color)
+            legend.ComponentTitle=''
+            legend.WindowLocation='Upper Right Corner'
+            legend.ScalarBarLength=.45
+            legend.ScalarBarThickness=16
+            legend.TitleFontSize=16
+            legend.LabelFontSize=14
+            legend.TitleColor=[0.,0.,0.]
+            legend.LabelColor=[0.,0.,0.]
+            render_objects[name]=(view,display,color,color_range)
             for group,initial in initial_colors.items():
                 owned_colors.extend(proxy for key,proxy in manager.GetProxiesInGroup(group).items()
                                     if key not in initial)
-        view,display=render_objects[name]
+        view,display,color,color_range=render_objects[name]
+        record_time('view_setup',setup_started)
+        render_started=clock()
         pv.Render(view)
         error=''
         actual=''
@@ -408,20 +522,33 @@ result.GetFieldData().AddArray(units)
         except Exception as exc:
             error=str(exc)
         collective_error(error)
+        record_time('render_inclusive',render_started)
         picture=output/f'{name}.step{step:08d}.jpeg'
         status=publish_image(view,picture,name,step,t)
         record['products'][name]={'egl_uuid':actual,'image':status}
+        record['products'][name]['color_field']=color
+        record['products'][name]['color_range']=list(color_range)
+        record['products'][name]['scalar_bar_visible']=bool(display.IsScalarBarVisible(view))
+        record['products'][name]['scalar_bar_label_color']=list(pv.GetScalarBar(display.LookupTable,view).LabelColor)
+        if name.startswith('mean_'):
+            record['products'][name]['velocity_average']='Favre' if name.startswith('mean_favre_') else 'Reynolds'
     error=''
+    metadata_started=clock()
     try:
         (output/f'mesh_step{step:08d}_rank{rank}.json').write_text(json.dumps(record,indent=2))
     except Exception as exc:
         error='Cannot record in-situ frame: '+str(exc)
     collective_error(error)
+    record_time('metadata_write_inclusive',metadata_started)
     frames.append((step,t))
+    record_time('python_execute_inclusive',execute_started)
+    if timing_enabled:
+        print('ASTR_INSITU_PIPELINE_TIMING '+json.dumps(
+            {'rank':rank,'step':step,'seconds':stage_times},sort_keys=True),flush=True)
 
 
 def catalyst_finalize():
-    for view,display in render_objects.values():
+    for view,display,color,color_range in render_objects.values():
         pv.Delete(display)
         pv.Delete(view)
     render_objects.clear()

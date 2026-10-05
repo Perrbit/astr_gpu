@@ -3,13 +3,47 @@ module benchmark_runtime
   implicit none
   private
   public :: configure_benchmark_runtime,benchmark_field_io_disabled, &
-            benchmark_cpu_rk_timing_enabled,begin_complete_step_timing,end_complete_step_timing
+            benchmark_cpu_rk_timing_enabled,begin_complete_step_timing,end_complete_step_timing, &
+            configure_insitu_timing,insitu_clock,report_insitu_timing
   logical,save :: configured=.false.,field_io_disabled=.false.
   logical,save :: cpu_rk_timing_enabled_flag=.false.
   logical,save :: complete_step_timing_enabled=.false.
   real(8),save :: complete_step_start=0.d0
   integer,save :: complete_step_rank=-1
+  logical,save :: insitu_timing_enabled=.false.
+  integer,save :: insitu_timing_rank=-1
 contains
+  subroutine configure_insitu_timing()
+    integer :: choice,lowest,highest,ierr,ignored
+    choice=switch_choice('ASTR_INSITU_TIMING')
+    call MPI_Allreduce(choice,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,ignored)
+    call MPI_Allreduce(choice,highest,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,ignored)
+    if(lowest<0.or.lowest/=highest) then
+      print *, 'Invalid or inconsistent ASTR_INSITU_TIMING environment'
+      call MPI_Abort(MPI_COMM_WORLD,1,ignored)
+    endif
+    insitu_timing_enabled=choice==1
+    call MPI_Comm_rank(MPI_COMM_WORLD,insitu_timing_rank,ierr)
+    if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,ignored)
+  end subroutine
+
+  real(8) function insitu_clock()
+    insitu_clock=0.d0
+    if(insitu_timing_enabled) insitu_clock=MPI_Wtime()
+  end function
+
+  subroutine report_insitu_timing(stage,started,step)
+    character(*),intent(in) :: stage
+    real(8),intent(in) :: started
+    integer,intent(in) :: step
+    if(.not.insitu_timing_enabled) return
+    ! Local durations only: aggregate whole windows offline, without new barriers.
+    write(*,'(A,1X,A,1X,I0,1X,I0,1X,ES24.16E3)') &
+      'ASTR_INSITU_STAGE_TIMING',stage,step,insitu_timing_rank,MPI_Wtime()-started
+  end subroutine
+
   integer function switch_choice(name)
     character(*),intent(in) :: name
     character(32) :: value

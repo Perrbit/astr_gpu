@@ -1,0 +1,551 @@
+module insitu_device_velocity
+  use cudafor
+  use mpi
+  use iso_fortran_env, only: int64
+  use iso_c_binding, only: c_int,c_loc,c_size_t
+  implicit none
+  private
+  public :: snapshot_periodic_velocity_gpu
+  public :: begin_velocity_transport_gpu,end_velocity_transport_gpu,velocity_transport_usage_gpu
+  public :: extend_periodic_velocity_gpu,derive_periodic_velocity_gpu
+  public :: complete_periodic_fields_gpu
+  public :: velocity_transport_timing_gpu
+  real(8),device,allocatable,save :: send_d(:),receive_d(:)
+  real(8),allocatable,target,save :: send_h(:),receive_h(:)
+  integer,save :: transport_comm=MPI_COMM_NULL,transport_parent=MPI_COMM_NULL
+  integer,save :: transport_extent(3)=0,transport_sizes(3)=0,transport_neighbors(2,3)=0
+  integer,save :: transport_capacity=0,transport_generation=0,transport_mode=0
+  integer(int64),save :: transport_host_bytes=0,transport_device_bytes=0
+  integer(int64),save :: transport_d2h_bytes=0,transport_h2d_bytes=0,transport_exchanges=0
+  real(8),save :: transport_seconds(5)=0.d0
+#ifdef ASTR_MPI_CUDA_AWARE_QUERY
+  interface
+    function query_cuda_support() bind(C,name='MPIX_Query_cuda_support') result(supported)
+      import c_int
+      integer(c_int) :: supported
+    end function
+  end interface
+#endif
+contains
+  subroutine require_snapshot(valid,comm,message)
+    logical,intent(in) :: valid
+    integer,intent(in) :: comm
+    character(*),intent(in) :: message
+    integer :: bad,any_bad,ierr
+    bad=merge(0,1,valid)
+    call MPI_Allreduce(bad,any_bad,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.any_bad/=0) then
+      print *, 'ASTR device velocity snapshot: ',message
+      call MPI_Abort(comm,1,ierr)
+    endif
+  end subroutine
+
+  subroutine complete_periodic_fields_gpu(fields,extent,components,comm)
+    integer,intent(in) :: extent(3),components,comm
+    real(8),device,intent(inout) :: fields(0:extent(1),0:extent(2),0:extent(3),components)
+    integer :: axis,face,status
+    integer(int64) :: count64
+    call require_snapshot(transport_comm/=MPI_COMM_NULL.and.all(extent==transport_extent).and. &
+      components>=1.and.components<=6,comm,'canonical field transport identity/components')
+    do axis=1,3
+      count64=int(components,int64)*product(int(extent+1,int64))/(extent(axis)+1)
+      call require_snapshot(count64<=transport_capacity,comm,'canonical field face capacity')
+      face=int(count64)
+      call pack_face<<<(face+255)/256,256>>>(fields,send_d,extent(1),extent(2),extent(3),axis,face,components)
+      status=cudaDeviceSynchronize()
+      call require_snapshot(status==cudaSuccess,comm,'snapshot face pack')
+      call exchange_velocity_face_gpu(face,axis,comm)
+      call unpack_face<<<(face+255)/256,256>>>(fields,receive_d,extent(1),extent(2),extent(3),axis,face,components)
+      status=cudaDeviceSynchronize()
+      call require_snapshot(status==cudaSuccess,comm,'snapshot endpoint completion')
+    enddo
+  end subroutine
+
+  ! A private communication domain and one maximum-face slot pair per session.
+  ! Host registration failure is fatal, never a pageable or backend fallback.
+  subroutine begin_velocity_transport_gpu(mode,extent,sizes,neighbors,comm,host_budget,device_budget,reserve)
+    character(*),intent(in) :: mode
+    integer,intent(in) :: extent(3),sizes(3),neighbors(2,3),comm
+    integer(int64),intent(in) :: host_budget,device_budget,reserve
+    integer :: choice,lowest,highest,ierr,ranks,status,capable,axis,node_comm
+    integer(int64) :: face64,free_bytes,total_bytes,demand,node_host_bytes
+    choice=0
+    if(mode=='device-aware') choice=1
+    if(mode=='pinned') choice=2
+    call MPI_Allreduce(choice,lowest,1,MPI_INTEGER,MPI_MIN,comm,ierr)
+    call require_snapshot(ierr==MPI_SUCCESS,comm,'transport selection minimum')
+    call MPI_Allreduce(choice,highest,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call require_snapshot(ierr==MPI_SUCCESS.and.lowest>0.and.lowest==highest,comm, &
+      'explicit consistent transport required: device-aware or pinned')
+    call MPI_Comm_size(comm,ranks,ierr)
+    call require_snapshot(ierr==MPI_SUCCESS.and.transport_comm==MPI_COMM_NULL.and. &
+      all(extent>=3).and.all(extent<huge(status)/4).and.all(sizes>0).and.all(sizes<=ranks).and. &
+      all(((neighbors>=0).and.(neighbors<ranks)).or.spread(sizes==1,1,2)).and. &
+      host_budget>=0.and.device_budget>0.and.reserve>=0, &
+      comm,'transport shape, lifecycle or budget')
+    call require_snapshot(product(int(sizes,int64))==ranks,comm,'transport process-grid size')
+    ! A three-layer, three-component halo includes tangential edges/corners.
+    face64=9_int64*max(int(extent(1)+7,int64)*(extent(2)+7), &
+      int(extent(1)+7,int64)*(extent(3)+7),int(extent(2)+7,int64)*(extent(3)+7))
+    call require_snapshot(face64<=huge(status),comm,'transport face index overflow')
+    transport_device_bytes=face64*16
+    transport_host_bytes=0
+    if(choice==2.and.any(sizes>1)) transport_host_bytes=face64*16
+    call require_snapshot(transport_host_bytes<=host_budget.and.transport_device_bytes<=device_budget, &
+      comm,'transport face-buffer budget')
+    call MPI_Comm_split_type(comm,MPI_COMM_TYPE_SHARED,0,MPI_INFO_NULL,node_comm,ierr)
+    call require_snapshot(ierr==MPI_SUCCESS,comm,'transport node communicator')
+    call MPI_Allreduce(transport_host_bytes,node_host_bytes,1,MPI_INTEGER8,MPI_SUM,node_comm,ierr)
+    call require_snapshot(ierr==MPI_SUCCESS.and.node_host_bytes<=host_budget, &
+      comm,'transport node face-buffer budget')
+    call MPI_Comm_free(node_comm,ierr)
+    call require_snapshot(ierr==MPI_SUCCESS,comm,'transport node communicator release')
+    demand=max(reserve,1073741824_int64)
+    free_bytes=0; total_bytes=0
+    status=cudaMemGetInfo(free_bytes,total_bytes)
+    call require_snapshot(status==cudaSuccess.and.free_bytes>=demand,comm,'transport device reserve')
+    call require_snapshot(transport_device_bytes<=free_bytes-demand,comm,'transport device allocation budget')
+    capable=1
+    if(choice==1.and.any(sizes>1)) then
+#ifdef ASTR_MPI_CUDA_AWARE_QUERY
+      capable=int(query_cuda_support())
+#else
+      capable=0
+#endif
+    endif
+    call require_snapshot(capable==1,comm,'device-buffer MPI required; no host fallback')
+    transport_capacity=int(face64)
+    allocate(send_d(transport_capacity),receive_d(transport_capacity),stat=status)
+    call require_snapshot(status==0,comm,'transport device slots allocation')
+    if(transport_host_bytes>0) then
+      allocate(send_h(transport_capacity),receive_h(transport_capacity),stat=status)
+      call require_snapshot(status==0,comm,'transport host slots allocation')
+      status=cudaHostRegister(c_loc(send_h),int(face64*8,c_size_t),0)
+      call require_snapshot(status==cudaSuccess,comm,'transport pinned send registration')
+      status=cudaHostRegister(c_loc(receive_h),int(face64*8,c_size_t),0)
+      call require_snapshot(status==cudaSuccess,comm,'transport pinned receive registration')
+    endif
+    call MPI_Comm_dup(comm,transport_comm,ierr)
+    call require_snapshot(ierr==MPI_SUCCESS,comm,'transport private communicator')
+    transport_parent=comm
+    transport_extent=extent; transport_sizes=sizes; transport_neighbors=neighbors
+    transport_mode=choice; transport_generation=transport_generation+1
+    transport_d2h_bytes=0; transport_h2d_bytes=0; transport_exchanges=0
+    transport_seconds=0.d0
+  end subroutine
+
+  subroutine velocity_transport_timing_gpu(seconds)
+    real(8),intent(out) :: seconds(5)
+    seconds=transport_seconds
+  end subroutine
+
+  subroutine velocity_transport_usage_gpu(host_bytes,device_bytes,d2h_bytes,h2d_bytes,exchanges,generation)
+    integer(int64),intent(out) :: host_bytes,device_bytes,d2h_bytes,h2d_bytes,exchanges
+    integer,intent(out) :: generation
+    host_bytes=transport_host_bytes; device_bytes=transport_device_bytes
+    d2h_bytes=transport_d2h_bytes; h2d_bytes=transport_h2d_bytes
+    exchanges=transport_exchanges; generation=transport_generation
+  end subroutine
+
+  subroutine end_velocity_transport_gpu(comm)
+    integer,intent(in) :: comm
+    integer :: status,ierr
+    call require_snapshot(transport_comm/=MPI_COMM_NULL,comm,'transport release without initialization')
+    status=cudaDeviceSynchronize()
+    call require_snapshot(status==cudaSuccess,comm,'transport release synchronization')
+    if(allocated(send_h)) then
+      status=cudaHostUnregister(c_loc(send_h))
+      call require_snapshot(status==cudaSuccess,comm,'transport pinned send release')
+      status=cudaHostUnregister(c_loc(receive_h))
+      call require_snapshot(status==cudaSuccess,comm,'transport pinned receive release')
+      deallocate(send_h,receive_h)
+    endif
+    deallocate(send_d,receive_d)
+    call MPI_Comm_free(transport_comm,ierr)
+    call require_snapshot(ierr==MPI_SUCCESS,comm,'transport communicator release')
+    transport_parent=MPI_COMM_NULL; transport_capacity=0; transport_mode=0
+    transport_extent=0; transport_sizes=0; transport_neighbors=0
+    transport_host_bytes=0; transport_device_bytes=0
+  end subroutine
+
+  subroutine exchange_velocity_face_gpu(face,axis,comm,reverse)
+    integer,intent(in) :: face,axis,comm
+    logical,intent(in),optional :: reverse
+    integer :: ierr,status,requests(2),statuses(MPI_STATUS_SIZE,2),destination,source,tag
+    real(8) :: started
+    call require_snapshot(face>0.and.face<=transport_capacity.and.axis>=1.and.axis<=3,comm, &
+      'transport face capacity')
+    if(transport_sizes(axis)==1) then
+      started=MPI_Wtime()
+      status=cudaMemcpy(receive_d,send_d,int(face,int64),cudaMemcpyDeviceToDevice)
+      transport_seconds(4)=transport_seconds(4)+MPI_Wtime()-started
+      call require_snapshot(status==cudaSuccess,comm,'snapshot local periodic face')
+      return
+    endif
+    destination=transport_neighbors(1,axis); source=transport_neighbors(2,axis); tag=axis
+    if(present(reverse)) then
+      if(reverse) then
+        destination=transport_neighbors(2,axis); source=transport_neighbors(1,axis); tag=axis+3
+      endif
+    endif
+    if(transport_mode==2) then
+      started=MPI_Wtime()
+      status=cudaMemcpy(send_h,send_d,int(face,int64),cudaMemcpyDeviceToHost)
+      transport_seconds(1)=transport_seconds(1)+MPI_Wtime()-started
+      call require_snapshot(status==cudaSuccess,comm,'snapshot pinned face download')
+      transport_d2h_bytes=transport_d2h_bytes+int(face,int64)*8
+    endif
+    started=MPI_Wtime()
+    if(transport_mode==2) then
+      call MPI_Irecv(receive_h,face,MPI_DOUBLE_PRECISION,source,tag, &
+        transport_comm,requests(1),ierr)
+      call require_snapshot(ierr==MPI_SUCCESS,comm,'snapshot pinned receive')
+      call MPI_Isend(send_h,face,MPI_DOUBLE_PRECISION,destination,tag, &
+        transport_comm,requests(2),ierr)
+    else
+      call MPI_Irecv(receive_d,face,MPI_DOUBLE_PRECISION,source,tag, &
+        transport_comm,requests(1),ierr)
+      call require_snapshot(ierr==MPI_SUCCESS,comm,'snapshot device receive')
+      call MPI_Isend(send_d,face,MPI_DOUBLE_PRECISION,destination,tag, &
+        transport_comm,requests(2),ierr)
+    endif
+    call require_snapshot(ierr==MPI_SUCCESS,comm,'snapshot face send')
+    call MPI_Waitall(2,requests,statuses,ierr)
+    transport_seconds(2)=transport_seconds(2)+MPI_Wtime()-started
+    call require_snapshot(ierr==MPI_SUCCESS,comm,'snapshot face exchange')
+    if(transport_mode==2) then
+      started=MPI_Wtime()
+      status=cudaMemcpy(receive_d,receive_h,int(face,int64),cudaMemcpyHostToDevice)
+      transport_seconds(3)=transport_seconds(3)+MPI_Wtime()-started
+      call require_snapshot(status==cudaSuccess,comm,'snapshot pinned face upload')
+      transport_h2d_bytes=transport_h2d_bytes+int(face,int64)*8
+    endif
+    started=MPI_Wtime()
+    status=cudaDeviceSynchronize()
+    transport_seconds(5)=transport_seconds(5)+MPI_Wtime()-started
+    call require_snapshot(status==cudaSuccess,comm,'snapshot receive visibility')
+    transport_exchanges=transport_exchanges+1
+  end subroutine
+
+  subroutine extend_periodic_velocity_gpu(velocity,halo,extent,comm,budget,reserve)
+    integer,intent(in) :: extent(3),comm
+    integer(int64),intent(in) :: budget,reserve
+    real(8),device,intent(in) :: velocity(3,*)
+    real(8),device,allocatable,intent(out) :: halo(:,:,:,:)
+    integer :: status,axis,side,face,nodes
+    integer(int64) :: bytes,free_bytes,total_bytes,retained,required
+    call require_snapshot(transport_comm/=MPI_COMM_NULL.and.all(extent==transport_extent), &
+      comm,'private velocity halo transport shape')
+    bytes=1
+    do axis=1,3
+      call require_snapshot(bytes<=int(huge(nodes)/3,int64)/(extent(axis)+7),comm,'private halo index overflow')
+      bytes=bytes*(extent(axis)+7)
+    enddo
+    nodes=int(bytes); bytes=bytes*24
+    retained=product(int(extent+1,int64))*24+transport_device_bytes
+    required=max(reserve,1073741824_int64)
+    free_bytes=0; total_bytes=0
+    status=cudaMemGetInfo(free_bytes,total_bytes)
+    call require_snapshot(status==cudaSuccess.and.budget>=retained.and.free_bytes>=required, &
+      comm,'private halo device reserve')
+    call require_snapshot(bytes<=budget-retained.and.bytes<=free_bytes-required,comm,'private halo device budget')
+    allocate(halo(-3:extent(1)+3,-3:extent(2)+3,-3:extent(3)+3,3),stat=status)
+    call require_snapshot(status==0,comm,'private velocity halo allocation')
+    call copy_velocity_halo<<<(nodes*3+255)/256,256>>>(velocity,halo,extent(1),extent(2),extent(3))
+    status=cudaDeviceSynchronize()
+    call require_snapshot(status==cudaSuccess,comm,'private velocity halo initialization')
+    ! Ordered full tangential faces carry completed earlier-axis halos onward.
+    do axis=1,3
+      face=int(9_int64*nodes/(extent(axis)+7))
+      do side=1,2
+        call pack_velocity_halo<<<(face+255)/256,256>>>(halo,send_d,extent(1),extent(2),extent(3),axis,side,face)
+        status=cudaDeviceSynchronize()
+        call require_snapshot(status==cudaSuccess,comm,'private velocity halo pack')
+        call exchange_velocity_face_gpu(face,axis,comm,reverse=side==2)
+        call unpack_velocity_halo<<<(face+255)/256,256>>>(halo,receive_d,extent(1),extent(2),extent(3),axis,side,face)
+        status=cudaDeviceSynchronize()
+        call require_snapshot(status==cudaSuccess,comm,'private velocity halo unpack')
+      enddo
+    enddo
+  end subroutine
+
+  subroutine derive_periodic_velocity_gpu(halo,metrics,derived,extent,hm,comm,budget,reserve)
+    integer,intent(in) :: extent(3),hm,comm
+    integer(int64),intent(in) :: budget,reserve
+    real(8),device,intent(in) :: halo(-3:extent(1)+3,-3:extent(2)+3,-3:extent(3)+3,3)
+    real(8),device,intent(in) :: metrics(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3,3)
+    real(8),device,allocatable,intent(out) :: derived(:,:)
+    integer,device,allocatable :: invalid(:)
+    integer :: nodes,status,bad
+    integer(int64) :: bytes,free_bytes,total_bytes,retained,required
+    call require_snapshot(transport_comm/=MPI_COMM_NULL.and.all(extent==transport_extent).and.hm>=3, &
+      comm,'private diagnostic transport shape')
+    call require_snapshot(product(int(extent+1,int64))<=huge(nodes)/14,comm,'private diagnostic index overflow')
+    nodes=product(extent+1); bytes=int(nodes,int64)*14*8+4
+    retained=transport_device_bytes+int(nodes,int64)*24+product(int(extent+7,int64))*24
+    required=max(reserve,1073741824_int64)
+    free_bytes=0; total_bytes=0
+    status=cudaMemGetInfo(free_bytes,total_bytes)
+    call require_snapshot(status==cudaSuccess.and.budget>=retained.and.free_bytes>=required, &
+      comm,'private diagnostic device reserve')
+    call require_snapshot(bytes<=budget-retained.and.bytes<=free_bytes-required,comm,'private diagnostic device budget')
+    allocate(derived(14,nodes),invalid(1),stat=status)
+    call require_snapshot(status==0,comm,'private diagnostic allocation')
+    invalid=0
+    call derive_velocity_kernel<<<(nodes+255)/256,256>>>(halo,metrics,derived,invalid, &
+      extent(1),extent(2),extent(3),hm)
+    status=cudaDeviceSynchronize()
+    call require_snapshot(status==cudaSuccess,comm,'private diagnostic synchronization')
+    bad=invalid(1)
+    call require_snapshot(bad==0,comm,'nonfinite private gradient/Q')
+    deallocate(invalid)
+  end subroutine
+
+  attributes(global) subroutine copy_velocity_halo(velocity,halo,im,jm,km)
+    integer,value :: im,jm,km
+    real(8),device,intent(in) :: velocity(3,*)
+    real(8),device,intent(out) :: halo(-3:im+3,-3:jm+3,-3:km+3,3)
+    integer :: id,node,nodes,i,j,k,c,owned
+    nodes=(im+7)*(jm+7)*(km+7)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=nodes*3) return
+    node=mod(id,nodes); c=id/nodes+1
+    i=mod(node,im+7)-3; j=mod(node/(im+7),jm+7)-3; k=node/((im+7)*(jm+7))-3
+    halo(i,j,k,c)=0.d0
+    if(i>=0.and.i<=im.and.j>=0.and.j<=jm.and.k>=0.and.k<=km) then
+      owned=i+(im+1)*(j+(jm+1)*k)+1
+      halo(i,j,k,c)=velocity(c,owned)
+    endif
+  end subroutine
+
+  attributes(device) subroutine halo_face_index(id,im,jm,km,axis,ijk,c,layer)
+    integer,value :: id,im,jm,km,axis
+    integer,intent(out) :: ijk(3),c,layer
+    integer :: tangent(2),dims(3),node,area
+    dims=[im,jm,km]+7
+    if(axis==1) tangent=[2,3]
+    if(axis==2) tangent=[1,3]
+    if(axis==3) tangent=[1,2]
+    area=dims(tangent(1))*dims(tangent(2)); node=mod(id,area)
+    layer=mod(id/area,3)+1; c=id/(3*area)+1
+    ijk=0
+    ijk(tangent(1))=mod(node,dims(tangent(1)))-3
+    ijk(tangent(2))=node/dims(tangent(1))-3
+  end subroutine
+
+  attributes(global) subroutine pack_velocity_halo(halo,face,im,jm,km,axis,side,count)
+    integer,value :: im,jm,km,axis,side,count
+    real(8),device,intent(in) :: halo(-3:im+3,-3:jm+3,-3:km+3,3)
+    real(8),device,intent(out) :: face(*)
+    integer :: id,ijk(3),c,layer,dims(3)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=count) return
+    call halo_face_index(id,im,jm,km,axis,ijk,c,layer)
+    dims=[im,jm,km]
+    ijk(axis)=layer
+    if(side==2) ijk(axis)=dims(axis)-4+layer
+    face(id+1)=halo(ijk(1),ijk(2),ijk(3),c)
+  end subroutine
+
+  attributes(global) subroutine unpack_velocity_halo(halo,face,im,jm,km,axis,side,count)
+    integer,value :: im,jm,km,axis,side,count
+    real(8),device,intent(inout) :: halo(-3:im+3,-3:jm+3,-3:km+3,3)
+    real(8),device,intent(in) :: face(*)
+    integer :: id,ijk(3),c,layer,dims(3)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=count) return
+    call halo_face_index(id,im,jm,km,axis,ijk,c,layer)
+    dims=[im,jm,km]
+    ijk(axis)=dims(axis)+layer
+    if(side==2) ijk(axis)=layer-4
+    halo(ijk(1),ijk(2),ijk(3),c)=face(id+1)
+  end subroutine
+
+  attributes(global) subroutine derive_velocity_kernel(halo,metrics,derived,invalid,im,jm,km,hm)
+    use output_derivatives_gpu, only: output_derivative6_gpu
+    use ieee_arithmetic, only: ieee_is_finite
+    integer,value :: im,jm,km,hm
+    real(8),device,intent(in) :: halo(-3:im+3,-3:jm+3,-3:km+3,3)
+    real(8),device,intent(in) :: metrics(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3)
+    real(8),device,intent(out) :: derived(14,*)
+    integer,device,intent(inout) :: invalid(*)
+    real(8) :: gradient(3,3),directional(3),fields(14),qvalue
+    integer :: node,i,j,k,c,d,ignored
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(im+1)*(jm+1)*(km+1)) return
+    i=mod(node,im+1); j=mod(node/(im+1),jm+1); k=node/((im+1)*(jm+1))
+    do c=1,3
+      directional(1)=output_derivative6_gpu(halo(i-3,j,k,c),halo(i-2,j,k,c),halo(i-1,j,k,c), &
+        halo(i,j,k,c),halo(i+1,j,k,c),halo(i+2,j,k,c),halo(i+3,j,k,c),i,im,3)
+      directional(2)=output_derivative6_gpu(halo(i,j-3,k,c),halo(i,j-2,k,c),halo(i,j-1,k,c), &
+        halo(i,j,k,c),halo(i,j+1,k,c),halo(i,j+2,k,c),halo(i,j+3,k,c),j,jm,3)
+      directional(3)=output_derivative6_gpu(halo(i,j,k-3,c),halo(i,j,k-2,c),halo(i,j,k-1,c), &
+        halo(i,j,k,c),halo(i,j,k+1,c),halo(i,j,k+2,c),halo(i,j,k+3,c),k,km,3)
+      do d=1,3
+        gradient(c,d)=directional(1)*metrics(i,j,k,1,d)+directional(2)*metrics(i,j,k,2,d)+ &
+          directional(3)*metrics(i,j,k,3,d)
+        fields(c+3*(d-1))=gradient(c,d)
+      enddo
+    enddo
+    qvalue=0.d0
+    do d=1,3
+      do c=1,3
+        qvalue=qvalue+gradient(c,d)*gradient(d,c)
+      enddo
+    enddo
+    fields(10)=-0.5d0*qvalue
+    fields(11)=gradient(1,1)+gradient(2,2)+gradient(3,3)
+    fields(12)=gradient(3,2)-gradient(2,3)
+    fields(13)=gradient(1,3)-gradient(3,1)
+    fields(14)=gradient(2,1)-gradient(1,2)
+    do c=1,14
+      if(.not.ieee_is_finite(fields(c))) ignored=atomicExch(invalid(1),1)
+      derived(c,node+1)=fields(c)
+    enddo
+  end subroutine
+
+  ! Independent, read-only snapshot. Call only at a completed step after solver
+  ! transport is idle. Periodic upper nodes use the next owner's lower face,
+  ! following the host canonicalization's x/y/z order, including edges/corners.
+  subroutine snapshot_periodic_velocity_gpu(q,velocity,extent,hm,nq,sizes,neighbors,comm,budget,reserve)
+    integer,intent(in) :: extent(3),hm,nq,sizes(3),neighbors(2,3),comm
+    integer(int64),intent(in) :: budget,reserve
+    real(8),device,intent(in) :: q(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,nq)
+    real(8),device,allocatable,intent(out) :: velocity(:,:)
+    real(8),device,allocatable :: state(:,:,:,:)
+    integer,device,allocatable :: invalid(:)
+    integer :: axis,nodes,status,ierr,bad,ranks,first,node,i,j,k,component,comparison
+    real(8) :: failure_state(4)
+    integer(int64) :: nodes64,bytes,free_bytes,total_bytes
+    call require_snapshot(transport_comm/=MPI_COMM_NULL,comm,'snapshot requires initialized transport')
+    call MPI_Comm_compare(comm,transport_parent,comparison,ierr)
+    call require_snapshot(ierr==MPI_SUCCESS.and.(comparison==MPI_IDENT.or.comparison==MPI_CONGRUENT).and. &
+      all(extent==transport_extent).and.all(sizes==transport_sizes).and.all(neighbors==transport_neighbors), &
+      comm,'snapshot transport identity/shape changed; explicit release and rebuild required')
+    call MPI_Comm_size(comm,ranks,ierr)
+    call require_snapshot(ierr==MPI_SUCCESS.and.hm>=3.and.hm<=huge(nodes)-maxval(extent).and. &
+      nq==5.and.all(sizes>0).and.all(sizes<=ranks).and. &
+      all(((neighbors>=0).and.(neighbors<ranks)).or.spread(sizes==1,1,2)).and. &
+      budget>0.and.reserve>=0,comm,'periodic shape/budget')
+    call require_snapshot(product(int(sizes,int64))==ranks,comm,'periodic process-grid size')
+    nodes64=1
+    do axis=1,3
+      call require_snapshot(nodes64<=int(huge(nodes)/4,int64)/(extent(axis)+1),comm,'snapshot index overflow')
+      nodes64=nodes64*(extent(axis)+1)
+    enddo
+    bytes=nodes64*7*8+12
+    free_bytes=0; total_bytes=0
+    status=cudaMemGetInfo(free_bytes,total_bytes)
+    call require_snapshot(status==cudaSuccess.and.budget>=transport_device_bytes.and. &
+      free_bytes>=max(reserve,1073741824_int64),comm,'snapshot device memory reserve')
+    call require_snapshot(bytes<=budget-transport_device_bytes.and. &
+      bytes<=free_bytes-max(reserve,1073741824_int64),comm,'snapshot device memory budget')
+    nodes=int(nodes64)
+    allocate(state(0:extent(1),0:extent(2),0:extent(3),4), &
+      velocity(3,nodes),invalid(3),stat=status)
+    call require_snapshot(status==0,comm,'snapshot allocation')
+    call copy_state<<<(nodes*4+255)/256,256>>>(q,state,extent(1),extent(2),extent(3),hm,nq)
+    status=cudaDeviceSynchronize()
+    call require_snapshot(status==cudaSuccess,comm,'snapshot copy synchronization')
+    call complete_periodic_fields_gpu(state,extent,4,comm)
+    invalid=0
+    call velocity_from_state<<<(nodes+255)/256,256>>>(state,velocity,invalid,extent(1),extent(2),extent(3))
+    status=cudaDeviceSynchronize()
+    call require_snapshot(status==cudaSuccess,comm,'snapshot velocity synchronization')
+    bad=invalid(1)
+    if(bad/=0) then
+      first=invalid(2); node=first-1
+      i=mod(node,extent(1)+1); j=mod(node/(extent(1)+1),extent(2)+1)
+      k=node/((extent(1)+1)*(extent(2)+1))
+      component=invalid(3)
+      do axis=1,4
+        failure_state(axis)=state(i,j,k,axis)
+      enddo
+      print *, 'Invalid canonical state at ',i,j,k,' component ',component,' values ',failure_state
+    endif
+    call require_snapshot(bad==0,comm,'nonfinite or nonpositive canonical velocity state')
+    deallocate(state,invalid)
+  end subroutine
+
+  attributes(global) subroutine copy_state(q,state,im,jm,km,hm,nq)
+    integer,value :: im,jm,km,hm,nq
+    real(8),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,nq)
+    real(8),device,intent(out) :: state(0:im,0:jm,0:km,4)
+    integer :: id,node,nodes,i,j,k,c
+    nodes=(im+1)*(jm+1)*(km+1)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=nodes*4) return
+    node=mod(id,nodes); c=id/nodes+1
+    i=mod(node,im+1); j=mod(node/(im+1),jm+1); k=node/((im+1)*(jm+1))
+    state(i,j,k,c)=q(i,j,k,c)
+  end subroutine
+
+  attributes(device) subroutine face_index(id,im,jm,km,axis,ijk,c)
+    integer,value :: id,im,jm,km,axis
+    integer,intent(out) :: ijk(3),c
+    integer :: tangent(2),dims(3),node
+    dims=[im,jm,km]+1
+    if(axis==1) tangent=[2,3]
+    if(axis==2) tangent=[1,3]
+    if(axis==3) tangent=[1,2]
+    node=mod(id,dims(tangent(1))*dims(tangent(2)))
+    c=id/(dims(tangent(1))*dims(tangent(2)))+1
+    ijk=0
+    ijk(tangent(1))=mod(node,dims(tangent(1)))
+    ijk(tangent(2))=node/dims(tangent(1))
+  end subroutine
+
+  attributes(global) subroutine pack_face(state,face,im,jm,km,axis,count,components)
+    integer,value :: im,jm,km,axis,count,components
+    real(8),device,intent(in) :: state(0:im,0:jm,0:km,components)
+    real(8),device,intent(out) :: face(*)
+    integer :: id,ijk(3),c
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=count) return
+    call face_index(id,im,jm,km,axis,ijk,c)
+    face(id+1)=state(ijk(1),ijk(2),ijk(3),c)
+  end subroutine
+
+  attributes(global) subroutine unpack_face(state,face,im,jm,km,axis,count,components)
+    integer,value :: im,jm,km,axis,count,components
+    real(8),device,intent(inout) :: state(0:im,0:jm,0:km,components)
+    real(8),device,intent(in) :: face(*)
+    integer :: id,ijk(3),c,dims(3)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=count) return
+    call face_index(id,im,jm,km,axis,ijk,c)
+    dims=[im,jm,km]; ijk(axis)=dims(axis)
+    state(ijk(1),ijk(2),ijk(3),c)=face(id+1)
+  end subroutine
+
+  attributes(global) subroutine velocity_from_state(state,velocity,invalid,im,jm,km)
+    use ieee_arithmetic, only: ieee_is_finite
+    integer,value :: im,jm,km
+    real(8),device,intent(in) :: state(0:im,0:jm,0:km,4)
+    real(8),device,intent(out) :: velocity(3,*)
+    integer,device,intent(inout) :: invalid(*)
+    integer :: node,i,j,k,c,ignored
+    real(8) :: density,value
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(im+1)*(jm+1)*(km+1)) return
+    i=mod(node,im+1); j=mod(node/(im+1),jm+1); k=node/((im+1)*(jm+1))
+    density=state(i,j,k,1)
+    if(.not.ieee_is_finite(density).or.density<=0.d0) then
+      ignored=atomicCAS(invalid(1),0,1)
+      if(ignored==0) then
+        invalid(2)=node+1; invalid(3)=1
+      endif
+      return
+    endif
+    do c=1,3
+      value=state(i,j,k,c+1)/density
+      if(.not.ieee_is_finite(value)) then
+        ignored=atomicCAS(invalid(1),0,1)
+        if(ignored==0) then
+          invalid(2)=node+1; invalid(3)=c+1
+        endif
+      endif
+      velocity(c,node+1)=value
+    enddo
+  end subroutine
+end module

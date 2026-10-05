@@ -1,0 +1,26 @@
+--- a/VTK/ThirdParty/viskores/vtkviskores/CMakeLists.txt
++++ b/VTK/ThirdParty/viskores/vtkviskores/CMakeLists.txt
+@@ -16,7 +16,9 @@
+ # Make sure Viskores is compiled for VTK types.
+ set(Viskores_USE_DEFAULT_TYPES_FOR_VTK ON)
+ set(Viskores_USE_DEFAULT_SYMBOL_VISIBILITY OFF)
+-set(Viskores_USE_DOUBLE_PRECISION OFF)
++option(ASTR_VISKORES_FP64_MPI
++  "Build the ASTR device-postprocessing candidate with FP64 and MPI" OFF)
++set(Viskores_USE_DOUBLE_PRECISION "${ASTR_VISKORES_FP64_MPI}")
+ set(Viskores_USE_64BIT_IDS "${VTK_USE_64BIT_IDS}")
+ set(Viskores_ADD_XGC_TO_DEFAULT_TYPES_VTK OFF)
+ set(Viskores_USE_DEFAULT_TYPES_FOR_ASCENT OFF)
+@@ -30,7 +32,11 @@
+ set(Viskores_ENABLE_HDF5_IO OFF)
+ set(Viskores_ENABLE_KOKKOS "${VTK_USE_KOKKOS}")
+ set(Viskores_ENABLE_LOGGING ON)
+-set(Viskores_ENABLE_MPI OFF)
++if (ASTR_VISKORES_FP64_MPI)
++  set(Viskores_ENABLE_MPI "${VTK_USE_MPI}")
++else ()
++  set(Viskores_ENABLE_MPI OFF)
++endif ()
+ set(Viskores_ENABLE_RENDERING OFF)
+ set(Viskores_ENABLE_TESTING_LIBRARY ON)
+ set(Viskores_ENABLE_TESTING_LIBRARY_ISSET ON)

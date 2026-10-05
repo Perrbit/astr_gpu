@@ -5,7 +5,7 @@ module insitu_statistics_gpu
   use ieee_arithmetic, only: ieee_is_finite
   use insitu_resource_budget, only: resource_budget,configure_budget,reserve_bytes,checked_bytes
   use iso_c_binding, only: c_int,c_char,c_size_t
-  use insitu_fields, only: insitu_owned_counts,insitu_node_weights
+  use insitu_fields, only: insitu_owned_counts,insitu_node_weights,insitu_volume_weights
   implicit none
   private
   public :: accumulate_statistics_gpu,release_statistics_gpu
@@ -15,6 +15,10 @@ module insitu_statistics_gpu
   public :: spatial_statistics_gpu
   public :: statistics_transfer_counts
   public :: download_statistics_gpu_means
+  public :: sample_statistics_gpu_mean_vectors
+#ifdef ASTR_BUILD_TESTING
+  public :: check_device_statistics_gpu_means
+#endif
   public :: download_statistics_gpu_output
   public :: statistics_device_bytes
   public :: admit_statistics_device_allocation
@@ -32,6 +36,8 @@ module insitu_statistics_gpu
   real(8),allocatable,device,save :: state_d(:,:,:,:),output_d(:,:,:,:)
   real(8),allocatable,device,save :: spatial_d(:)
   real(8),allocatable,device,save :: node_weight_d(:)
+  real(8),allocatable,device,save :: curve_weight_d(:,:,:)
+  real(8),save :: curve_local_volume=0.d0
   integer,allocatable,device,save :: invalid_d(:,:,:)
   real(8),save :: previous_time=0.d0,saved_window(2)=0.d0
   logical,save :: has_previous=.false.
@@ -43,15 +49,29 @@ contains
   end function
 
   subroutine initialize_node_weights()
-    use commvar, only: jm,flowtype
+    use commvar, only: im,jm,km,flowtype,lreadgrid
     real(8) :: weights(0:jm)
+    real(8),allocatable :: physical(:,:,:)
     integer :: status
-    call insitu_node_weights(weights)
-    if(trim(flowtype)/='channel') weights=1.d0
+    weights=1.d0
+    if(.not.lreadgrid) then
+      call insitu_node_weights(weights)
+      if(trim(flowtype)/='channel') weights=1.d0
+    endif
     allocate(node_weight_d(0:owned_ny()-1),stat=status)
     call require_cuda(merge(cudaSuccess,cudaErrorMemoryAllocation,status==0),'statistics node weights allocation')
     node_weight_d=weights(0:owned_ny()-1)
     call require_cuda(cudaGetLastError(),'statistics node weights copy')
+    if(lreadgrid) then
+      allocate(physical(0:im,0:jm,0:km),stat=status)
+      call require_cuda(merge(cudaSuccess,cudaErrorMemoryAllocation,status==0),'CURVE host weights allocation')
+      call insitu_volume_weights(physical)
+      curve_local_volume=sum(physical)
+      allocate(curve_weight_d(0:im-1,0:owned_ny()-1,0:km-1),stat=status)
+      call require_cuda(merge(cudaSuccess,cudaErrorMemoryAllocation,status==0),'CURVE device weights allocation')
+      curve_weight_d=physical(0:im-1,0:owned_ny()-1,0:km-1)
+      call require_cuda(cudaGetLastError(),'CURVE device weights upload')
+    endif
   end subroutine
 
   integer(int64) function statistics_device_bytes() result(bytes)
@@ -60,6 +80,7 @@ contains
     if(allocated(output_d)) bytes=bytes+8*size(output_d,kind=int64)
     if(allocated(spatial_d)) bytes=bytes+8*size(spatial_d,kind=int64)
     if(allocated(node_weight_d)) bytes=bytes+8*size(node_weight_d,kind=int64)
+    if(allocated(curve_weight_d)) bytes=bytes+8*size(curve_weight_d,kind=int64)
     if(allocated(invalid_d)) bytes=bytes+4*size(invalid_d,kind=int64)
   end function
 
@@ -109,7 +130,7 @@ contains
 
   subroutine admit_statistics_device_allocation(extra_bytes)
     use mpi
-    use commvar, only: im,jm,km
+    use commvar, only: im,jm,km,lreadgrid
     integer :: node,rank,nrank,i,ierr,device,status
     character(kind=c_char,len=32) :: pci
     character(kind=c_char,len=32),allocatable :: identities(:)
@@ -121,7 +142,7 @@ contains
     integer(int64),optional,intent(in) :: extra_bytes
     if(device_budget==0) return
     call checked_bytes(int([im,owned_ny(),km],int64), &
-      int(71*storage_size(0.d0)/8+storage_size(0)/8,int64),request,ok)
+      int((71+merge(1,0,lreadgrid))*storage_size(0.d0)/8+storage_size(0)/8,int64),request,ok)
     call guard(ok,'statistics byte count overflow')
     call guard(request<=huge(request)-48_int64-8_int64*owned_ny(),'statistics reduction byte count overflow')
     request=request+48_int64+8_int64*owned_ny()
@@ -404,6 +425,143 @@ contains
     output_d(i,j,k,:)=r
   end subroutine
 
+  subroutine sample_statistics_gpu_mean_vectors(reynolds,favre,covered,duration)
+    use commvar, only: im,jm,km,ia,ja,ka,lreadgrid,numq,flowtype
+    use bc, only: bctype
+    use mpi
+    use checkpoint_state_io, only: checkpoint_state_require
+    use insitu_device_velocity, only: complete_periodic_fields_gpu,velocity_transport_usage_gpu
+    real(8),device,allocatable,intent(out) :: reynolds(:,:),favre(:,:)
+    logical,intent(out) :: covered
+    real(8),intent(out) :: duration
+    real(8),device,allocatable :: canonical(:,:,:,:)
+    integer,device,allocatable :: invalid(:)
+    integer :: nodes,status,ierr,bad,generation,has_state,lowest,highest
+    integer(int64) :: host_bytes,transport_bytes,d2h,h2d,exchanges,required,free_bytes,total_bytes
+    covered=.false.; duration=0.d0
+    call checkpoint_state_require(.not.lreadgrid.and.all(bctype==1).and.numq==5.and. &
+      all([ia,ja,ka]==32).and.trim(flowtype)=='tgv',MPI_COMM_WORLD,'device mean vectors require periodic Cartesian TGV')
+    has_state=merge(1,0,allocated(state_d))
+    call MPI_Allreduce(has_state,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call checkpoint_state_require(ierr==MPI_SUCCESS,MPI_COMM_WORLD,'device mean state consensus')
+    call MPI_Allreduce(has_state,highest,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call checkpoint_state_require(ierr==MPI_SUCCESS.and.lowest==highest,MPI_COMM_WORLD,'device mean state coverage differs')
+    if(has_state==0) return
+    duration=state_d(0,0,0,5)
+    call require_cuda(cudaGetLastError(),'device mean coverage scalar')
+    call checkpoint_state_require(ieee_is_finite(duration).and.duration>=0.d0,MPI_COMM_WORLD,'invalid device mean coverage')
+    nodes=(im+1)*(jm+1)*(km+1)
+    required=int(nodes,int64)*12*8+4
+    call velocity_transport_usage_gpu(host_bytes,transport_bytes,d2h,h2d,exchanges,generation)
+    call checkpoint_state_require(transport_bytes>0,MPI_COMM_WORLD,'device mean vectors require initialized transport')
+    call admit_statistics_device_allocation(required+transport_bytes)
+    free_bytes=0; total_bytes=0
+    status=cudaMemGetInfo(free_bytes,total_bytes)
+    call checkpoint_state_require(status==cudaSuccess.and.free_bytes>=max(device_headroom,1073741824_int64), &
+      MPI_COMM_WORLD,'device mean vectors reserve')
+    call checkpoint_state_require(required<=free_bytes-max(device_headroom,1073741824_int64), &
+      MPI_COMM_WORLD,'device mean vectors allocation budget')
+    allocate(canonical(0:im,0:jm,0:km,6),invalid(1),stat=status)
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'device mean vectors allocation')
+    invalid=0
+    call mean_vectors_kernel<<<(nodes+255)/256,256>>>(canonical,invalid,im,jm,km,duration)
+    call require_cuda(cudaDeviceSynchronize(),'device mean vectors pack')
+    bad=invalid(1)
+    call checkpoint_state_require(bad==0,MPI_COMM_WORLD,'nonfinite or inconsistent device mean coverage/values')
+    ! Zero coverage is valid; do not substitute an instantaneous flow field.
+    has_state=merge(1,0,duration>0.d0)
+    call MPI_Allreduce(has_state,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call checkpoint_state_require(ierr==MPI_SUCCESS,MPI_COMM_WORLD,'device mean coverage consensus')
+    call MPI_Allreduce(has_state,highest,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call checkpoint_state_require(ierr==MPI_SUCCESS.and.lowest==highest,MPI_COMM_WORLD,'device mean coverage differs')
+    if(duration<=0.d0) then
+      deallocate(canonical,invalid)
+      return
+    endif
+    call complete_periodic_fields_gpu(canonical,[im,jm,km],6,MPI_COMM_WORLD)
+    allocate(reynolds(3,nodes),favre(3,nodes),stat=status)
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'device mean vector output allocation')
+    call split_mean_vectors_kernel<<<(nodes+255)/256,256>>>(canonical,reynolds,favre,im,jm,km)
+    call require_cuda(cudaDeviceSynchronize(),'device mean vector split')
+    deallocate(canonical,invalid)
+    covered=.true.
+  end subroutine
+
+  attributes(global) subroutine mean_vectors_kernel(canonical,invalid,im,jm,km,duration)
+    integer,value :: im,jm,km
+    real(8),value :: duration
+    real(8),device,intent(out) :: canonical(0:im,0:jm,0:km,6)
+    integer,device,intent(inout) :: invalid(*)
+    integer :: node,i,j,k,c,ignored
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(im+1)*(jm+1)*(km+1)) return
+    i=mod(node,im+1); j=mod(node/(im+1),jm+1); k=node/((im+1)*(jm+1))
+    canonical(i,j,k,:)=0.d0
+    if(i==im.or.j==jm.or.k==km) return
+    if(.not.ieee_is_finite(state_d(i,j,k,5)).or.state_d(i,j,k,5)/=duration) ignored=atomicExch(invalid(1),1)
+    if(duration<=0.d0) return
+    do c=1,6
+      if(.not.ieee_is_finite(state_d(i,j,k,c+6))) ignored=atomicExch(invalid(1),1)
+      canonical(i,j,k,c)=state_d(i,j,k,c+6)
+    enddo
+  end subroutine
+
+  attributes(global) subroutine split_mean_vectors_kernel(canonical,reynolds,favre,im,jm,km)
+    integer,value :: im,jm,km
+    real(8),device,intent(in) :: canonical(0:im,0:jm,0:km,6)
+    real(8),device,intent(out) :: reynolds(3,*),favre(3,*)
+    integer :: node,i,j,k
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(im+1)*(jm+1)*(km+1)) return
+    i=mod(node,im+1); j=mod(node/(im+1),jm+1); k=node/((im+1)*(jm+1))
+    reynolds(:,node+1)=canonical(i,j,k,1:3)
+    favre(:,node+1)=canonical(i,j,k,4:6)
+  end subroutine
+
+#ifdef ASTR_BUILD_TESTING
+  subroutine check_device_statistics_gpu_means(means,covered)
+    use mpi
+    use commvar, only: im,jm,km
+    use parallel, only: mpirank
+    use checkpoint_state_io, only: checkpoint_state_require
+    real(8),intent(in) :: means(0:,0:,0:,:)
+    logical,intent(in) :: covered
+    real(8),device,allocatable :: reynolds_d(:,:),favre_d(:,:)
+    real(8),allocatable :: reynolds(:,:),favre(:,:)
+    logical :: device_covered
+    character(16) :: mode,root
+    real(8) :: duration,difference,maximum
+    integer :: status,ierr,nodes,node,i,j,k
+    call get_environment_variable('ASTR_INSITU_TEST_DEVICE_TRANSPORT',mode,status=status)
+    call checkpoint_state_require(status==0.or.status==1,MPI_COMM_WORLD,'invalid device mean diagnostic transport')
+    root=mode
+    call MPI_Bcast(root,len(root),MPI_CHARACTER,0,MPI_COMM_WORLD,ierr)
+    call checkpoint_state_require(ierr==MPI_SUCCESS.and.mode==root,MPI_COMM_WORLD,'device mean diagnostic transports differ')
+    if(mode=='') return
+    call sample_statistics_gpu_mean_vectors(reynolds_d,favre_d,device_covered,duration)
+    call checkpoint_state_require(device_covered.eqv.covered,MPI_COMM_WORLD,'device mean diagnostic coverage differs')
+    if(.not.covered) then
+      if(mpirank==0) print *, 'ASTR_INSITU_DEVICE_MEAN_CHECK uncovered'
+      return
+    endif
+    nodes=(im+1)*(jm+1)*(km+1)
+    allocate(reynolds(3,nodes),favre(3,nodes))
+    ! Independent oracle download is restricted to testing builds and this flag.
+    reynolds=reynolds_d; favre=favre_d
+    difference=0.d0
+    do node=0,nodes-1
+      i=mod(node,im+1); j=mod(node/(im+1),jm+1); k=node/((im+1)*(jm+1))
+      difference=max(difference,maxval(abs(reynolds(:,node+1)-means(i,j,k,1:3))), &
+        maxval(abs(favre(:,node+1)-means(i,j,k,4:6))),abs(duration-means(i,j,k,7)))
+    enddo
+    call MPI_Allreduce(difference,maximum,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call checkpoint_state_require(ierr==MPI_SUCCESS.and.ieee_is_finite(maximum).and.maximum<=2.d-10, &
+      MPI_COMM_WORLD,'device mean diagnostic mismatch')
+    write(*,'(a,i0,a,es24.16)') 'ASTR_INSITU_DEVICE_MEAN_CHECK rank=',mpirank,' maxabs=',maximum
+    deallocate(reynolds_d,favre_d,reynolds,favre)
+  end subroutine
+#endif
+
   subroutine download_statistics_gpu_means(means,covered)
     use commvar, only: im,jm,km
     use mpi
@@ -491,10 +649,11 @@ contains
     output_downloads=output_downloads+1
   end subroutine
 
-  attributes(global) launch_bounds(256) subroutine spatial_kernel(im,jm,km)
+  attributes(global) launch_bounds(256) subroutine spatial_kernel(im,jm,km,curve)
     integer,value :: im,jm,km
+    logical,value :: curve
     real(8),shared :: scratch(256)
-    real(8) :: value
+    real(8) :: value,weight
     integer :: lane,component,n,i,j,k,stride
     lane=threadidx%x
     component=blockidx%x
@@ -504,10 +663,12 @@ contains
       i=mod(n,im)
       j=mod(n/im,jm)
       k=n/(im*jm)
+      weight=node_weight_d(j)
+      if(curve) weight=curve_weight_d(i,j,k)
       if(component<=3) then
-        value=value+state_d(i,j,k,component+1)*node_weight_d(j)
+        value=value+state_d(i,j,k,component+1)*weight
       else
-        value=value+output_d(i,j,k,15+4*(component-4))*node_weight_d(j)
+        value=value+output_d(i,j,k,15+4*(component-4))*weight
       endif
     enddo
     scratch(lane)=value
@@ -522,7 +683,7 @@ contains
   end subroutine
 
   subroutine spatial_statistics_gpu(cell_volume,volume,velocity,variance,ok)
-    use commvar, only: im,jm,km,flowtype
+    use commvar, only: im,jm,km,flowtype,lreadgrid
     use mpi
     real(8),intent(in) :: cell_volume
     real(8),intent(out) :: volume,velocity(3),variance(3)
@@ -537,12 +698,14 @@ contains
     if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
     if(any_bad/=0) return
     ! Preserve the established uniform-grid reduction ordering outside Channel.
-    call spatial_kernel<<<6,256>>>(im,owned_ny(),km)
+    call spatial_kernel<<<6,256>>>(im,owned_ny(),km,lreadgrid)
     call require_cuda(cudaGetLastError(),'spatial reduction launch')
     call require_cuda(cudaDeviceSynchronize(),'spatial reduction completion')
     local(2:7)=spatial_d
     call require_cuda(cudaGetLastError(),'spatial reduction copy')
-    if(trim(flowtype)=='channel') then
+    if(lreadgrid) then
+      local(1)=curve_local_volume
+    else if(trim(flowtype)=='channel') then
       block
         real(8) :: weights(0:jm)
         call insitu_node_weights(weights)
@@ -567,6 +730,8 @@ contains
 
   subroutine release_statistics_gpu()
     if(allocated(state_d)) deallocate(state_d,output_d,invalid_d,spatial_d,node_weight_d)
+    if(allocated(curve_weight_d)) deallocate(curve_weight_d)
+    curve_local_volume=0.d0
     has_previous=.false.
   end subroutine
 end module

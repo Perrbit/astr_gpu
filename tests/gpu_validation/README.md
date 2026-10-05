@@ -8317,3 +8317,56 @@ The final executable also passes 11 corrupt-state/budget/unsupported-path checks
 in `out/insitu_is5_final_rejection_20261005.xml` and 10 default TGV/channel
 rendering/continuation regressions in `out/insitu_is5_final_default_20261005.xml`.
 All three root builds pass; IS5 is closed only for this approved local scope.
+
+### IS8 Native Device Products
+
+Latest scope and dependency/transport/resource evidence:
+`documents/ASTR_INSITU_IS8_ACCEPTANCE.md`. Root native GPU build requires
+`ASTR_WITH_INSITU_DEVICE=ON`; probes remain separately optional.
+`test_insitu_device_products.py` checks actual 32³ periodic FP64/643e TGV,
+pinned/device-aware, NP=1 plus NP=2 x/y/z, all six product kinds, independent
+checkpoint interpolation at final geometry coordinates, solver isolation,
+exact continuation, transport-only override/rejection, zero mean coverage,
+actual observed budget failures and all-product memcheck. Rendered color-bar
+pixels are checked in addition to proxy visibility. No full-volume oracle
+download is added to the native product path; the checker reads checkpoint
+files offline. Set the existing executable/MPI/Catalyst overrides as needed.
+
+Bounded runs retain the explicitly approved per-case 256 MiB cap, with 2 GiB
+extra per physical GPU, 4 GiB extra host per node and >=1 GiB device reserve.
+One matrix can have several independently bounded case directories; the cap
+is not a combined suite quota. A synthetic test is not a physical-flow gate.
+
+```bash
+python3 -m pytest -q -x tests/gpu_validation/test_insitu_device_products.py \
+  -k 'actual or restart or memory or budget'
+python3 tests/gpu_validation/run_insitu_device_acceptance.py --output /new/empty/timing
+python3 tests/gpu_validation/run_insitu_device_acceptance.py --trace --output /new/empty/trace
+ASTR_IS8_NATIVE_TRACE=/new/empty/trace python3 -m pytest -q -x \
+  tests/gpu_validation/test_insitu_device_native_trace.py
+```
+
+Run these sequentially; do not overlap a timing pair with GPU tests. Nsight
+captures each rank independently with CUDA/NVTX/MPI and unified-memory tracing.
+The SQLite checker only reads existing immutable traces and distinguishes
+device sampling/extraction from final compact read and checkpoint/statistics
+export. Page migration is counted, not interpreted as an input host mirror.
+Missing trace files yield skips; skips do not pass the IS8 transfer gate.
+
+The matched driver keeps statistics and checkpoints in all four groups:
+render-off, host compatibility, pinned device and device-aware device.
+Four complete steps have images at 2/4, means only at4, ten product frames.
+It independently observes 20 ms resources against the matched render-off
+baseline and compares final authority exactly. It records executable/pipeline
+provenance and per-rank local stage aggregation, not production speedup.
+An interrupted concurrent timing run and earlier fixture failures remain
+excluded in their original directories. Do not overwrite or average them
+into accepted measurements.
+
+Configuration/timing/standalone checks are in `test_insitu_run_config.py` and
+`test_insitu_acceptance_timing.py`; component CUDA probes cover RK45, explicit
+face buffers, halo/Q, geometry, empty partitions and constant-field trajectories.
+Default device-OFF TGV and AIR5 host continuation regressions remain separate.
+No remote job, CURVE/wall/AIR5 device product or production capacity is admitted
+by this local IS8 receipt. Independent non-test startup uses
+`scripts/insitu/start_tgv_acceptance.py`, not these test helpers.

@@ -1,0 +1,7 @@
+&insitu_run
+ enabled=${enabled},statistics=t,render=t,derivative_backend='gpu',
+ statistics_window=0.003,0.004,output_directory='outdat/render',
+ schedule_mode='steps',step_interval=2,initial_frame=f,final_frame=t,
+ host_budget_bytes=4294967296,device_budget_bytes=2147483648,device_reserve_bytes=1073741824,
+ implementation_path='${library}',pipeline_file='${pipeline}'
+/

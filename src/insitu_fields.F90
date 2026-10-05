@@ -12,7 +12,104 @@ module insitu_fields
   public :: insitu_owned_counts,insitu_node_weights,complete_owned_endpoints
   public :: capture_channel_statistics
   public :: capture_air5_walls
+  public :: insitu_volume_weights,release_insitu_geometry
+  public :: nonreacting_wall_candidate
+  real(real64),allocatable,save :: curve_volume_weights(:,:,:)
 contains
+  logical function nonreacting_wall_candidate() result(supported)
+    use commvar, only: flowtype,lreadgrid
+    use bc, only: bctype
+    supported=trim(flowtype)=='channel'.or.(trim(flowtype)=='tgv'.and.lreadgrid.and. &
+      all(bctype==[1,1,41,41,1,1]))
+  end function
+
+  subroutine release_insitu_geometry()
+    if(allocated(curve_volume_weights)) deallocate(curve_volume_weights)
+  end subroutine
+
+  subroutine insitu_volume_weights(weights)
+    use commvar, only: im,jm,km,ia,ja,ka,lreadgrid
+    use commarray, only: x
+    use bc, only: bctype
+    use parallel, only: ig0,jg0,kg0,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront,mpirank
+    use insitu_geometry, only: hex_volume
+    real(real64),intent(out) :: weights(0:im,0:jm,0:km)
+    real(real64) :: points(3,0:1,0:1,0:1),volume,local,total
+    real(real64),allocatable :: send(:),receive(:)
+    integer :: i,j,k,a,b,c,axis,neighbors(2,3),count,ierr,comm,status,origin(3),cells(3),global(3)
+    logical :: ok,valid
+    call require_fields(lreadgrid,'CURVE weights require an explicit physical grid')
+    if(.not.allocated(curve_volume_weights)) then
+      allocate(curve_volume_weights(0:im,0:jm,0:km), &
+        send(max((im+1)*(jm+1),(im+1)*(km+1),(jm+1)*(km+1))), &
+        receive(max((im+1)*(jm+1),(im+1)*(km+1),(jm+1)*(km+1))),stat=status)
+      call require_fields(status==0,'cannot allocate CURVE geometric weights')
+      curve_volume_weights=0.d0; valid=.true.
+      cells_loop: do k=0,km-1
+      do j=0,jm-1
+      do i=0,im-1
+        do c=0,1
+        do b=0,1
+        do a=0,1
+          points(:,a,b,c)=x(i+a,j+b,k+c,1:3)
+        enddo
+        enddo
+        enddo
+        call hex_volume(points,volume,ok)
+        if(.not.ok) then
+          valid=.false.; exit cells_loop
+        endif
+        curve_volume_weights(i:i+1,j:j+1,k:k+1)=curve_volume_weights(i:i+1,j:j+1,k:k+1)+volume/8.d0
+      enddo
+      enddo
+      enddo cells_loop
+      call require_fields(valid,'CURVE cell has nonpositive or invalid Gauss Jacobian')
+      origin=[ig0,jg0,kg0]; cells=[im,jm,km]; global=[ia,ja,ka]
+      neighbors(:,1)=[mpileft,mpiright]; neighbors(:,2)=[mpidown,mpiup]; neighbors(:,3)=[mpiback,mpifront]
+      call MPI_Comm_dup(MPI_COMM_WORLD,comm,ierr)
+      call require_fields(ierr==MPI_SUCCESS,'cannot create geometric weight communicator')
+      ! Send upper-node contributions to the next owner's lower plane; axis order carries corners.
+      do axis=1,3
+        if(cells(axis)==global(axis).and.all(bctype(2*axis-1:2*axis)==1)) &
+          neighbors(:,axis)=mpirank
+        if(origin(axis)==0.and.bctype(2*axis-1)/=1) neighbors(1,axis)=MPI_PROC_NULL
+        if(origin(axis)+cells(axis)==global(axis).and.bctype(2*axis)/=1) neighbors(2,axis)=MPI_PROC_NULL
+        select case(axis)
+        case(1)
+          count=(jm+1)*(km+1); send(1:count)=reshape(curve_volume_weights(im,:,:),[count])
+        case(2)
+          count=(im+1)*(km+1); send(1:count)=reshape(curve_volume_weights(:,jm,:),[count])
+        case(3)
+          count=(im+1)*(jm+1); send(1:count)=reshape(curve_volume_weights(:,:,km),[count])
+        end select
+        receive(1:count)=0.d0
+        call MPI_Sendrecv(send,count,MPI_DOUBLE_PRECISION,neighbors(2,axis),axis, &
+          receive,count,MPI_DOUBLE_PRECISION,neighbors(1,axis),axis,comm,MPI_STATUS_IGNORE,ierr)
+        call require_fields(ierr==MPI_SUCCESS,'geometric weight contribution exchange failed')
+        select case(axis)
+        case(1)
+          curve_volume_weights(0,:,:)=curve_volume_weights(0,:,:)+reshape(receive(1:count),[jm+1,km+1])
+          if(neighbors(2,axis)/=MPI_PROC_NULL) curve_volume_weights(im,:,:)=0.d0
+        case(2)
+          curve_volume_weights(:,0,:)=curve_volume_weights(:,0,:)+reshape(receive(1:count),[im+1,km+1])
+          if(neighbors(2,axis)/=MPI_PROC_NULL) curve_volume_weights(:,jm,:)=0.d0
+        case(3)
+          curve_volume_weights(:,:,0)=curve_volume_weights(:,:,0)+reshape(receive(1:count),[im+1,jm+1])
+          if(neighbors(2,axis)/=MPI_PROC_NULL) curve_volume_weights(:,:,km)=0.d0
+        end select
+      enddo
+      call MPI_Comm_free(comm,ierr)
+      call require_fields(ierr==MPI_SUCCESS,'cannot release geometric weight communicator')
+      call require_fields(all(ieee_is_finite(curve_volume_weights)).and.all(curve_volume_weights>=0.d0), &
+        'invalid assembled physical geometric weights')
+      local=sum(curve_volume_weights)
+      call MPI_Allreduce(local,total,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+      call require_fields(ierr==MPI_SUCCESS.and.ieee_is_finite(total).and.total>0.d0,'invalid geometric volume')
+      if(mpirank==0) write(*,'(a,es24.16)') 'ASTR_INSITU_CURVE_VOLUME=',total
+    endif
+    weights=curve_volume_weights
+  end subroutine
+
   subroutine capture_air5_walls(coordinates,fields,owned,host_budget,device_budget,reserve,download_bytes)
     use iso_fortran_env, only: int64
     use commvar, only: im,jm,km,ia,ja,ka,numq,num_species,num_modequ,use_gpu,flowtype,lreadgrid, &
@@ -138,7 +235,7 @@ contains
     use parallel, only: jg0
     integer :: extent(3)
     extent=[im,jm,km]
-    if(trim(flowtype)=='channel'.and.jg0+jm==ja) extent(2)=jm+1
+    if(nonreacting_wall_candidate().and.jg0+jm==ja) extent(2)=jm+1
   end function
 
   subroutine insitu_node_weights(weights)
@@ -181,7 +278,7 @@ contains
     use commvar, only: im,jm,km,use_gpu,numq,num_species,flowtype
     use commarray, only: q
     real(real64),intent(out) :: fields(0:im,0:jm,0:km,11)
-    call require_fields(.not.use_gpu.and.trim(flowtype)=='channel'.and.numq==5.and.num_species==0, &
+    call require_fields(.not.use_gpu.and.nonreacting_wall_candidate().and.numq==5.and.num_species==0, &
       'channel statistics host capture requires the CPU five-variable solver')
     fields=0.d0
     fields(:,:,:,1:5)=q(0:im,0:jm,0:km,1:5)
@@ -203,6 +300,7 @@ contains
     use parallel, only: jg0,isize,ksize,mpileft,mpiright,mpiback,mpifront,mpisize
     use bc, only: bctype
     use fludyna, only: miucal
+    use insitu_geometry, only: wall_frame
 #ifdef _CUDA
     use insitu_sample_gpu, only: download_wall_state_gpu
 #endif
@@ -211,14 +309,20 @@ contains
     integer(int64),intent(in) :: host_budget,device_budget,reserve
     integer(int64),intent(out) :: download_bytes
     real(real64),allocatable :: state(:,:,:,:),send(:),receive(:)
+    real(real64),allocatable :: wall_primitive(:,:,:,:)
     real(real64) :: velocity(3,3),temperature(3),pressure(3),rho,mu,metric,du,dt
+    real(real64) :: first(3),second(3),inward(3),normal(3),tangent(3),gradient(3,3),stress(3,3),dv(3)
+    real(real64) :: directional(3,3),thermal(3)
+    real(real64),parameter :: coefficients(3)=[0.75d0,-0.15d0,1.d0/60.d0]
+    logical :: frame_ok
+    integer :: offset
     integer :: walls(2),nw,i,k,w,m,j,side,d,c,axis,count,status,ierr,comm
     integer :: neighbors(2,2),sizes(2)
     integer(int64) :: nodes,bytes
-    call require_fields(trim(flowtype)=='channel'.and.numq==5.and.num_species==0.and.nondimen.and. &
-      .not.lreadgrid.and.all(bctype==[1,1,41,41,1,1]).and.trim(difschm)=='643e'.and. &
+    call require_fields(nonreacting_wall_candidate().and.numq==5.and.num_species==0.and.nondimen.and. &
+      all(bctype==[1,1,41,41,1,1]).and.trim(difschm)=='643e'.and. &
       max(ia,ja,ka)<=32.and.min(im,km)>=1.and.jm>=2.and.mpisize<=2, &
-      'wall candidate requires Cartesian bc41 channel <=32, NP=1/2 and two local interior layers')
+      'wall candidate requires bc41 channel or CURVE TGV <=32, NP=1/2 and two local interior layers')
     call require_fields(all(ieee_is_finite([const2,const5,const6,reynolds,prandtl])).and. &
       min(const2,const5,const6,reynolds,prandtl)>0.d0,'invalid wall material constants')
     nw=0
@@ -231,6 +335,8 @@ contains
     nodes=int(im+1,int64)*(km+1)*nw
     ! Includes endpoint packing/reshape temporaries as well as retained outputs.
     bytes=nodes*(22*8+storage_size(.false.)/8)+int(max(im+1,km+1),int64)*nw*15*8*4
+    if(lreadgrid) bytes=bytes+int(im+7,int64)*(km+7)*nw*4*8+ &
+      int(max(im+1,km+1),int64)*nw*4*3*8*4
     call require_fields(bytes<=host_budget,'wall host budget')
     allocate(state(0:im,0:km,nw,15),coordinates(0:im,0:km,nw,3),fields(0:im,0:km,nw,4), &
       owned(0:im,0:km,nw),send(max(1,max(im+1,km+1)*nw*15)), &
@@ -288,6 +394,7 @@ contains
     call MPI_Comm_free(comm,ierr)
     call require_fields(ierr==MPI_SUCCESS,'cannot release wall endpoint communicator')
     call require_fields(all(ieee_is_finite(state)),'nonfinite wall state')
+    if(lreadgrid) call prepare_curve_wall_primitive(state,wall_primitive)
     owned=.false.
     owned(0:im-1,0:km-1,:)=.true.
     status=0
@@ -317,11 +424,167 @@ contains
         dt=(-0.5d0*temperature(3)+2.d0*temperature(2)-1.5d0*temperature(1))*metric
         coordinates(i,k,w,:)=x(i,j,k,1:3)
         fields(i,k,w,:)=[pressure(1),mu*du,-((mu/prandtl)/const5)*dt,real(side,real64)]
+        if(lreadgrid) then
+          first=0.d0; second=0.d0
+          do offset=1,3
+            first=first+coefficients(offset)*(x(i+offset,j,k,1:3)-x(i-offset,j,k,1:3))
+            second=second+coefficients(offset)*(x(i,j,k+offset,1:3)-x(i,j,k-offset,1:3))
+          enddo
+          inward=x(i,j+side,k,1:3)-x(i,j,k,1:3)
+          call wall_frame(first,second,inward,normal,tangent,frame_ok)
+          if(.not.frame_ok.or..not.all(ieee_is_finite(dxi(i,j,k,2,:)))) then
+            status=1; cycle
+          endif
+          dv=real(side,real64)*(-0.5d0*velocity(:,3)+2.d0*velocity(:,2)-1.5d0*velocity(:,1))
+          directional=0.d0; directional(:,2)=dv; thermal=0.d0
+          thermal(2)=real(side,real64)*(-0.5d0*temperature(3)+2.d0*temperature(2)-1.5d0*temperature(1))
+          do offset=1,3
+            directional(:,1)=directional(:,1)+coefficients(offset)*( &
+              wall_primitive(i+offset,k,w,1:3)-wall_primitive(i-offset,k,w,1:3))
+            directional(:,3)=directional(:,3)+coefficients(offset)*( &
+              wall_primitive(i,k+offset,w,1:3)-wall_primitive(i,k-offset,w,1:3))
+            thermal(1)=thermal(1)+coefficients(offset)*(wall_primitive(i+offset,k,w,4)-wall_primitive(i-offset,k,w,4))
+            thermal(3)=thermal(3)+coefficients(offset)*(wall_primitive(i,k+offset,w,4)-wall_primitive(i,k-offset,w,4))
+          enddo
+          do d=1,3
+            gradient(:,d)=matmul(directional,dxi(i,j,k,:,d))
+          enddo
+          stress=mu*(gradient+transpose(gradient))
+          do d=1,3
+            stress(d,d)=stress(d,d)-(2.d0/3.d0)*mu*(gradient(1,1)+gradient(2,2)+gradient(3,3))
+          enddo
+          fields(i,k,w,2)=dot_product(tangent,matmul(stress,normal))
+          fields(i,k,w,3)=-((mu/prandtl)/const5)*dot_product(matmul(thermal,dxi(i,j,k,:,:)),normal)
+          fields(i,k,w,4)=normal(2)
+        endif
       enddo
       enddo
     enddo
     call require_fields(status==0.and.all(ieee_is_finite(fields)).and.all(ieee_is_finite(coordinates)), &
       'invalid wall primitive state or diagnostic')
+    if(lreadgrid) call record_curve_wall_integrals(coordinates,fields,walls(1:nw))
+  end subroutine
+
+  subroutine record_curve_wall_integrals(coordinates,fields,walls)
+    use commvar, only: im,km
+    use parallel, only: jg0,mpirank
+    use insitu_geometry, only: quad_area
+    real(real64),intent(in) :: coordinates(0:,0:,:,:),fields(0:,0:,:,:)
+    integer,intent(in) :: walls(:)
+    real(real64) :: quad(3,0:1,0:1),area,local(4,2),global(4,2)
+    integer :: i,k,w,a,b,side,ierr
+    logical :: ok,valid
+    local=0.d0; valid=.true.
+    do w=1,size(walls)
+      side=2; if(jg0+walls(w)==0) side=1
+      do k=0,km-1
+      do i=0,im-1
+        do b=0,1
+        do a=0,1
+          quad(:,a,b)=coordinates(i+a,k+b,w,:)
+        enddo
+        enddo
+        call quad_area(quad,area,ok)
+        if(.not.ok) then
+          valid=.false.; cycle
+        endif
+        local(1,side)=local(1,side)+area
+        ! Each cell is owned once; its equal corner masses include periodic seam endpoints.
+        do b=0,1
+        do a=0,1
+          local(2:4,side)=local(2:4,side)+(area/4.d0)*fields(i+a,k+b,w,1:3)
+        enddo
+        enddo
+      enddo
+      enddo
+    enddo
+    call require_fields(valid.and.all(ieee_is_finite(local)),'invalid CURVE wall area/integral')
+    call MPI_Allreduce(local,global,8,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require_fields(ierr==MPI_SUCCESS.and.all(ieee_is_finite(global)).and.all(global(1,:)>0.d0), &
+      'invalid global CURVE wall area/integral')
+    if(mpirank==0) then
+      do side=1,2
+        write(*,'(a,i0,a,es24.16,a,3(es24.16,1x))') &
+          'ASTR_INSITU_CURVE_WALL wall=',side,' area=',global(1,side), &
+          ' area_means=',global(2:4,side)/global(1,side)
+      enddo
+    endif
+  end subroutine
+
+  subroutine prepare_curve_wall_primitive(state,primitive)
+    use commvar, only: im,km,const2,const6
+    use parallel, only: isize,ksize,mpileft,mpiright,mpiback,mpifront
+    real(real64),intent(in) :: state(0:,0:,:,:)
+    real(real64),allocatable,intent(out) :: primitive(:,:,:,:)
+    real(real64),allocatable :: send(:),receive(:)
+    real(real64) :: rho,velocity(3),pressure
+    integer :: i,k,w,nw,status,axis,count,comm,ierr,s,neighbors(2,2),sizes(2)
+    logical :: valid
+    nw=size(state,3)
+    allocate(primitive(-3:im+3,-3:km+3,nw,4), &
+      send(max(1,3*max(im+1,km+1)*nw*4)),receive(max(1,3*max(im+1,km+1)*nw*4)),stat=status)
+    call require_fields(status==0,'cannot allocate CURVE tangential wall halo')
+    primitive=0.d0; valid=.true.
+    do w=1,nw
+    do k=0,km
+    do i=0,im
+      rho=state(i,k,w,1)
+      if(rho<=0.d0) then
+        valid=.false.; cycle
+      endif
+      velocity=state(i,k,w,2:4)/rho
+      pressure=(state(i,k,w,5)-0.5d0*rho*sum(velocity**2))/const6
+      primitive(i,k,w,1:3)=velocity
+      primitive(i,k,w,4)=pressure/rho*const2
+    enddo
+    enddo
+    enddo
+    call require_fields(valid.and.all(ieee_is_finite(primitive)).and. &
+      all(primitive(0:im,0:km,:,4)>0.d0),'invalid CURVE wall primitive state')
+    sizes=[isize,ksize]; neighbors(:,1)=[mpileft,mpiright]; neighbors(:,2)=[mpiback,mpifront]
+    call MPI_Comm_dup(MPI_COMM_WORLD,comm,ierr)
+    call require_fields(ierr==MPI_SUCCESS,'cannot create wall tangential communicator')
+    do axis=1,2
+      if(sizes(axis)==1) then
+        do s=1,3
+          if(axis==1) then
+            primitive(-s,0:km,:,:)=primitive(im-s,0:km,:,:)
+            primitive(im+s,0:km,:,:)=primitive(s,0:km,:,:)
+          else
+            primitive(0:im,-s,:,:)=primitive(0:im,km-s,:,:)
+            primitive(0:im,km+s,:,:)=primitive(0:im,s,:,:)
+          endif
+        enddo
+        cycle
+      endif
+      count=3*merge(km+1,im+1,axis==1)*nw*4
+      if(count==0) cycle
+      if(axis==1) then
+        send(1:count)=reshape(primitive(1:3,0:km,:,:),[count])
+      else
+        send(1:count)=reshape(primitive(0:im,1:3,:,:),[count])
+      endif
+      call MPI_Sendrecv(send,count,MPI_DOUBLE_PRECISION,neighbors(1,axis),2*axis, &
+        receive,count,MPI_DOUBLE_PRECISION,neighbors(2,axis),2*axis,comm,MPI_STATUS_IGNORE,ierr)
+      call require_fields(ierr==MPI_SUCCESS,'CURVE wall positive tangential halo exchange')
+      if(axis==1) then
+        primitive(im+1:im+3,0:km,:,:)=reshape(receive(1:count),[3,km+1,nw,4])
+        send(1:count)=reshape(primitive(im-3:im-1,0:km,:,:),[count])
+      else
+        primitive(0:im,km+1:km+3,:,:)=reshape(receive(1:count),[im+1,3,nw,4])
+        send(1:count)=reshape(primitive(0:im,km-3:km-1,:,:),[count])
+      endif
+      call MPI_Sendrecv(send,count,MPI_DOUBLE_PRECISION,neighbors(2,axis),2*axis+1, &
+        receive,count,MPI_DOUBLE_PRECISION,neighbors(1,axis),2*axis+1,comm,MPI_STATUS_IGNORE,ierr)
+      call require_fields(ierr==MPI_SUCCESS,'CURVE wall negative tangential halo exchange')
+      if(axis==1) then
+        primitive(-3:-1,0:km,:,:)=reshape(receive(1:count),[3,km+1,nw,4])
+      else
+        primitive(0:im,-3:-1,:,:)=reshape(receive(1:count),[im+1,3,nw,4])
+      endif
+    enddo
+    call MPI_Comm_free(comm,ierr)
+    call require_fields(ierr==MPI_SUCCESS,'cannot release wall tangential communicator')
   end subroutine
 
   subroutine capture_index_plane(axis,index,coordinates,velocity,host_budget,device_budget,reserve)

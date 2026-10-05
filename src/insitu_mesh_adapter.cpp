@@ -6,6 +6,14 @@
 #include <vector>
 #include <algorithm>
 #include <exception>
+#include "insitu_compact_mesh.h"
+#ifdef ASTR_INSITU_DEVICE_PRODUCTS
+#include <nvtx3/nvToolsExt.h>
+extern "C" void astr_insitu_device_range_push(int stage) {
+  nvtxRangePushA(stage==1 ? "ASTR_IS8_DEVICE_SAMPLE" : "ASTR_IS8_DEVICE_MEAN_SUPPLY");
+}
+extern "C" void astr_insitu_device_range_pop() { nvtxRangePop(); }
+#endif
 #ifdef ASTR_CUDA_RENDERER
 extern "C" int astr_insitu_map_current_cuda(int*,char*,int,char*,int);
 extern "C" int astr_insitu_resource_check(const char*);
@@ -17,6 +25,7 @@ MPI_Comm render_comm = MPI_COMM_NULL;
 conduit_node* retained = nullptr;
 std::vector<double> coordinates, primitive, gradients, means;
 std::vector<conduit_int64> plane_cells;
+std::vector<astr_insitu::CompactMesh> retained_products;
 double empty_value = 0.;
 conduit_int64 empty_cell = 0;
 int shape[3] = {0,0,0};
@@ -92,6 +101,7 @@ try {
   if (profile==6 && (nx<2 || ny<2 || nz<0 || nz>1))
     return allocation_failure("wall","invalid AIR5 wall plane shape",comm);
   if (!active) {
+  const double initialize_start=MPI_Wtime();
   check_mpi(MPI_Comm_dup(comm, &render_comm),"create render communicator",comm);
   if (!native && (std::getenv("CATALYST_IMPLEMENTATION_PREFER_ENV") ||
       !std::getenv("VTK_EGL_DEVICE_INDEX") || !std::getenv("ASTR_PROBE_EXPECTED_UUID"))) {
@@ -131,6 +141,15 @@ try {
     }
   }
   active = true;
+  const char* timing=std::getenv("ASTR_INSITU_TIMING");
+  if (timing && (std::string(timing)=="1" || std::string(timing)=="true" ||
+      std::string(timing)=="TRUE" || std::string(timing)=="t" || std::string(timing)=="T" ||
+      std::string(timing)=="on" || std::string(timing)=="ON")) {
+    int rank;
+    check_mpi(MPI_Comm_rank(comm,&rank),"query initialize rank",comm);
+    std::printf("ASTR_INSITU_STAGE_TIMING catalyst_initialization_inclusive %d %d %.16e\n",
+        step,rank,MPI_Wtime()-initialize_start);
+  }
   }
   if (shape[0]!=nx || shape[1]!=ny || shape[2]!=nz || profile!=selected_profile) MPI_Abort(comm, 1);
   const double copy_start = MPI_Wtime();
@@ -265,6 +284,111 @@ extern "C" int astr_insitu_mesh_wall_statistics(const char* backend, const char*
   return mesh_execute(backend,script,fcomm,nx,ny,nz,step,time,xyz,fields,nullptr,2,statistics,profile);
 }
 
+int astr_insitu::render_compact_products(const char* backend,const char* script,int fcomm,
+    int step,double time,const char* profile,bool covered,double duration,
+    double window_start,double window_end,std::vector<CompactMesh> products)
+try {
+  const auto comm=MPI_Comm_f2c(fcomm);
+  if(!native || !backend || !script || !profile || products.empty() || (active && selected_profile!=7))
+    return allocation_failure("device products","invalid compact renderer session",comm);
+  static_assert(sizeof(std::int64_t)==sizeof(conduit_int64),"Conduit geometry requires int64 connectivity");
+  if(!active) {
+    check_mpi(MPI_Comm_dup(comm,&render_comm),"create compact render communicator",comm);
+    auto init=conduit_node_create();
+    conduit_node_set_path_char8_str(init,"catalyst_load/implementation","paraview");
+    conduit_node_set_path_char8_str(init,"catalyst_load/search_paths/astr",backend);
+    conduit_node_set_path_char8_str(init,"catalyst/scripts/probe/filename",script);
+    auto args=conduit_node_fetch(init,"catalyst/scripts/probe/args");
+    for(const char* value:{output_directory.c_str(),expected_uuid.c_str(),profile,"device"})
+      conduit_node_set_char8_str(conduit_node_append(args),value);
+    conduit_node_set_path_int64(init,"catalyst/mpi_comm",MPI_Comm_c2f(render_comm));
+    check(catalyst_initialize(init));conduit_node_destroy(init);
+    selected_profile=7;active=true;
+#ifdef ASTR_CUDA_RENDERER
+    astr_insitu_resource_check("initialized");
+#endif
+  }
+  auto params=conduit_node_create();
+  conduit_node_set_path_int64(params,"catalyst/state/timestep",step);
+  conduit_node_set_path_double(params,"catalyst/state/time",time);
+  int rank=0;check_mpi(MPI_Comm_rank(comm,&rank),"compact domain rank",comm);
+  std::size_t copy_bytes=0;
+  for(auto& product:products) {
+    const auto nodes=product.coordinates[0].size();
+    if(product.coordinates[1].size()!=nodes || product.coordinates[2].size()!=nodes)
+      return allocation_failure("device products","coordinate component sizes differ",comm);
+    const int arity=product.shape=="tri"?3:(product.shape=="quad"?4:(product.shape=="line"?2:0));
+    if(!arity || product.connectivity.size()%arity)
+      return allocation_failure("device products","invalid final connectivity",comm);
+    const auto cells=product.connectivity.size()/arity;
+    for(auto index:product.connectivity) if(index<0 || std::uint64_t(index)>=nodes)
+      return allocation_failure("device products","final vertex index out of range",comm);
+    const auto base="catalyst/channels/"+product.name;
+    conduit_node_set_path_char8_str(params,(base+"/type").c_str(),"mesh");
+    auto mesh=conduit_node_fetch(params,(base+"/data").c_str());
+    conduit_node_set_path_int64(mesh,"state/domain_id",rank);
+    conduit_node_set_path_int64(mesh,"state/fields/device_products",1);
+    conduit_node_set_path_int64(mesh,"state/fields/mean_covered",covered);
+    conduit_node_set_path_double(mesh,"state/fields/statistics_duration",duration);
+    conduit_node_set_path_double(mesh,"state/fields/statistics_window_start",window_start);
+    conduit_node_set_path_double(mesh,"state/fields/statistics_window_end",window_end);
+    conduit_node_set_path_char8_str(mesh,"coordsets/coords/type","explicit");
+    const char* axes[]={"x","y","z"};
+    for(int d=0;d<3;++d) {
+      const auto path=std::string("coordsets/coords/values/")+axes[d];
+      conduit_node_set_path_external_float64_ptr(mesh,path.c_str(),
+        nodes?product.coordinates[d].data():&empty_value,nodes);
+    }
+    conduit_node_set_path_char8_str(mesh,"topologies/mesh/coordset","coords");
+    conduit_node_set_path_char8_str(mesh,"topologies/mesh/type","unstructured");
+    conduit_node_set_path_char8_str(mesh,"topologies/mesh/elements/shape",product.shape.c_str());
+    conduit_node_set_path_external_int64_ptr(mesh,"topologies/mesh/elements/connectivity",
+      product.connectivity.empty()?&empty_cell:reinterpret_cast<conduit_int64*>(product.connectivity.data()),
+      product.connectivity.size());
+    for(auto& field:product.point_fields) {
+      if(field.second.size()!=nodes)
+        return allocation_failure("device products","final point field size differs",comm);
+      const auto path="fields/"+field.first;
+      conduit_node_set_path_char8_str(mesh,(path+"/association").c_str(),"vertex");
+      conduit_node_set_path_char8_str(mesh,(path+"/topology").c_str(),"mesh");
+      conduit_node_set_path_external_float64_ptr(mesh,(path+"/values").c_str(),
+        nodes?field.second.data():&empty_value,nodes);
+      copy_bytes+=field.second.size()*sizeof(double);
+    }
+    const auto cell_field=[&](const char* name,std::vector<std::int64_t>& values) {
+      if(values.size()!=cells) return allocation_failure("device products","final cell field size differs",comm);
+      const auto path=std::string("fields/")+name;
+      conduit_node_set_path_char8_str(mesh,(path+"/association").c_str(),"element");
+      conduit_node_set_path_char8_str(mesh,(path+"/topology").c_str(),"mesh");
+      conduit_node_set_path_external_int64_ptr(mesh,(path+"/values").c_str(),
+        values.empty()?&empty_cell:reinterpret_cast<conduit_int64*>(values.data()),values.size());
+      return 0;
+    };
+    if(product.shape=="line") {
+      cell_field("SeedIds",product.seed_ids);cell_field("IntegrationDirection",product.directions);
+    }
+    copy_bytes+=(nodes*3+product.connectivity.size()+product.seed_ids.size()+product.directions.size())*8;
+  }
+#ifdef ASTR_CUDA_RENDERER
+  astr_insitu_resource_check("frame_before");
+#endif
+  const double started=MPI_Wtime();
+  check(catalyst_execute(params));
+  // Previous storage stays alive until every consumer has taken this frame.
+  if(retained) conduit_node_destroy(retained);
+  retained=params;retained_products=std::move(products);
+  std::printf("ASTR_INSITU_COMPACT_BRIDGE rank=%d step=%d final_geometry_bytes=%zu execute_inclusive=%.9g\n",
+    rank,step,copy_bytes,MPI_Wtime()-started);
+#ifdef ASTR_CUDA_RENDERER
+  astr_insitu_resource_check("frame_after");
+#endif
+  return 0;
+} catch(const std::exception& error) {
+  return allocation_failure("compact products",error.what(),MPI_Comm_f2c(fcomm));
+} catch(...) {
+  return allocation_failure("compact products","unknown exception",MPI_Comm_f2c(fcomm));
+}
+
 extern "C" int astr_insitu_mesh_finish()
 try {
   if (!active) return 0;
@@ -284,6 +408,7 @@ try {
   std::vector<double>().swap(gradients);
   std::vector<double>().swap(means);
   std::vector<conduit_int64>().swap(plane_cells);
+  std::vector<astr_insitu::CompactMesh>().swap(retained_products);
   check_mpi(MPI_Comm_free(&render_comm),"release render communicator",MPI_COMM_WORLD);
   active = false;
   return 0;

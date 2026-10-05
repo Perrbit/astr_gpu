@@ -1,0 +1,27 @@
+module output_derivatives_gpu
+  use cudafor
+  use iso_fortran_env, only: real64
+  implicit none
+  private
+  public :: output_derivative6_gpu
+contains
+  attributes(device) real(real64) function output_derivative6_gpu( &
+    fm3,fm2,fm1,f0,fp1,fp2,fp3,node,dim,ntype) result(value)
+    use constdef, only: num1d60,num2d3,num1d12
+    real(real64),value :: fm3,fm2,fm1,f0,fp1,fp2,fp3
+    integer,value :: node,dim,ntype
+    logical :: left,right
+    left=ntype==1.or.ntype==4; right=ntype==2.or.ntype==4
+    if(left.and.node==0) then
+      value=-0.5d0*fp2+2.d0*fp1-1.5d0*f0
+    elseif((left.and.node==1).or.(right.and.node==dim-1)) then
+      value=0.5d0*(fp1-fm1)
+    elseif((left.and.node==2).or.(right.and.node==dim-2)) then
+      value=num2d3*(fp1-fm1)-num1d12*(fp2-fm2)
+    elseif(right.and.node==dim) then
+      value=0.5d0*fm2-2.d0*fm1+1.5d0*f0
+    else
+      value=0.75d0*(fp1-fm1)-0.15d0*(fp2-fm2)+num1d60*(fp3-fm3)
+    endif
+  end function
+end module

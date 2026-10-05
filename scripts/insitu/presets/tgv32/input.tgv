@@ -1,0 +1,53 @@
+########################################################################
+# IS7 four-step acceptance fixture; retain the positional input layout.
+########################################################################
+
+# flowtype
+tgv
+
+# cells
+32,32,32
+
+# homogeneous directions
+t,t,t
+
+# nondimen,diffterm,lfilter,lreadgrid,lfftz,limmbou,ltimrpt,lcomb,usegpu
+t,t,t,f,f,f,t,f,t
+
+# legacy restart
+f
+
+# filter parameters
+0.49d0,48
+
+# reference temperature, Reynolds number, Mach number
+273.15d0,1600.d0,0.1d0
+
+# convection, diffusion, time integrator, ODE integrator
+643e,643e,rk3,rk3
+
+# reconstruction, characteristic decomposition, amplitude, sensor threshold
+5,t,0.3d0,0.05d0
+
+# species count
+0
+
+# turbulence, legacy file format
+none,h
+
+# six boundary faces
+1
+1
+1
+1
+1
+1
+
+# internally initialized analytic TGV
+0
+
+# sponge widths
+0,0,0,0,0,0
+
+# unused with lreadgrid=f
+datin/grid.h5

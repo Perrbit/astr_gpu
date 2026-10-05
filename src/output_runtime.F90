@@ -209,6 +209,8 @@ contains
   subroutine check_capability()
     logical :: supported_case
     supported_case=(trim(flowtype)=='tgv'.and.all(bctype==1)).or. &
+      (trim(flowtype)=='tgv'.and.lreadgrid.and.all([ia,ja,ka]==32).and. &
+      all(bctype==[1,1,41,41,1,1]).and.trim(conschm)=='643e'.and.trim(difschm)=='643e').or. &
       (trim(flowtype)=='channel'.and.all(bctype==[1,1,41,41,1,1])).or. &
       (trim(flowtype)=='bl'.and.lreadgrid.and.(trim(turbinf)=='prof'.or.trim(turbinf)=='intp').and. &
       all(bctype==[11,21,41,51,1,1]))
@@ -252,7 +254,8 @@ contains
     character(*),intent(in) :: name,fallback
     character(1200) :: path
     path=fallback
-    if(enabled.and.(trim(flowtype)=='bl'.or.trim(flowtype)=='air5hbl'.or.trim(flowtype)=='air5sbli').and. &
+    if(enabled.and.(trim(flowtype)=='bl'.or.trim(flowtype)=='air5hbl'.or.trim(flowtype)=='air5sbli'.or. &
+      (trim(flowtype)=='tgv'.and.lreadgrid)).and. &
       len_trim(options%restore_directory)>0) &
       path=trim(options%restore_directory)//'/../../resources/'//name
   end function
@@ -260,7 +263,7 @@ contains
   subroutine bootstrap_output_resources()
     character(1200) :: path
     integer(int64) :: bytes
-    integer :: i,ierr
+    integer :: i,ierr,static_count
     logical :: ok
     call load_output_options()
     if(.not.enabled) return
@@ -291,8 +294,11 @@ contains
       call MPI_Bcast(air5_resource_crc,4,MPI_INTEGER8,0,MPI_COMM_WORLD,ierr)
       call check(ierr==MPI_SUCCESS,'AIR5 resource fingerprint broadcast')
     endif
-    if(trim(flowtype)/='bl') return
-    do i=1,2
+    static_count=0
+    if(trim(flowtype)=='tgv'.and.lreadgrid) static_count=1
+    if(trim(flowtype)=='bl') static_count=2
+    if(static_count==0) return
+    do i=1,static_count
       if(i==1) then
         path=output_resource_path('grid.h5',trim(gridfile))
       else
@@ -301,7 +307,7 @@ contains
       ok=.true.
       if(mpirank==0) call file_fingerprint(trim(path),bytes,static_resource_crc(i),ok)
       if(mpirank==0.and.i==1.and.ok) ok=hdf5_self_contained(trim(path)//c_null_char)==0
-      call check(ok,'cannot fingerprint static flatplate resource')
+      call check(ok,'cannot fingerprint static grid/profile resource')
     enddo
     call MPI_Bcast(static_resource_crc,2,MPI_INTEGER8,0,MPI_COMM_WORLD,ierr)
     call check(ierr==MPI_SUCCESS,'static resource fingerprint broadcast')
@@ -554,6 +560,8 @@ contains
     call geometry_file(trim(options%directory)//'/resources/geometry.h5',.true.)
     if (mpirank==0) call copy_batch_file(trim(source),trim(options%directory)//'/resources/input.txt',ok)
     call check(ok,'cannot freeze primary input resource')
+    if(trim(flowtype)=='tgv'.and.lreadgrid) &
+      call freeze_static_resource('grid.h5',trim(gridfile),static_resource_crc(1))
     if(trim(flowtype)=='bl') then
       call freeze_static_resource('grid.h5',trim(gridfile),static_resource_crc(1))
       call freeze_static_resource('inlet.prof','datin/inlet.prof',static_resource_crc(2))
@@ -1132,6 +1140,7 @@ contains
     call archive_control_file(trim(path)//'/archives.bin',.true.,identity)
     call output_render_file(trim(path)//'/insitu_control.bin',.true.,identity,state_host_budget(),.false.)
     resource_count=2
+    if(trim(flowtype)=='tgv'.and.lreadgrid) resource_count=3
     if(trim(flowtype)=='bl') resource_count=4
     if(dynamic_output_case()) resource_count=5+inflow_count
     if(air5_output_case()) resource_count=2+air5_resource_count()
@@ -1139,6 +1148,7 @@ contains
     allocate(resources(resource_count),stat=err)
     call check(err==0,'checkpoint resource-name allocation')
     resources(1:2)=[character(128) :: 'geometry.h5','input.txt']
+    if(trim(flowtype)=='tgv'.and.lreadgrid) resources(3)='grid.h5'
     if(trim(flowtype)=='bl') resources(3:4)=[character(128) :: 'grid.h5','inlet.prof']
     if(dynamic_output_case()) then
       resources(5)='inflow_index.bin'

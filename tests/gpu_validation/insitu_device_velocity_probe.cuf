@@ -1,0 +1,168 @@
+module insitu_device_velocity_probe_kernels
+  use cudafor
+  implicit none
+contains
+  attributes(device) subroutine expected(i,j,k,im,jm,km,ci,cj,ck,state)
+    integer,value :: i,j,k,im,jm,km,ci,cj,ck
+    real(8),intent(out) :: state(5)
+    integer :: gi,gj,gk
+    real(8) :: rho
+    state=-77.d0
+    if(i<0.or.j<0.or.k<0.or.i>im.or.j>jm.or.k>km) return
+    ! Deliberately inconsistent duplicate endpoints must be replaced on GPU.
+    if(i==im.or.j==jm.or.k==km) then
+      state=[99.d0,100.d0,101.d0,102.d0,103.d0]
+      return
+    endif
+    gi=mod(ci*im+i,32); gj=mod(cj*jm+j,32); gk=mod(ck*km+k,32)
+    rho=1.d0+dble(gi+2*gj+3*gk)/1024.d0
+    state=[rho,rho*dble(gi+1)/64.d0,rho*dble(gj+2)/64.d0,rho*dble(gk+3)/64.d0,2.d0]
+  end subroutine
+  attributes(global) subroutine initialize(q,im,jm,km,ci,cj,ck)
+    integer,value :: im,jm,km,ci,cj,ck
+    real(8),device,intent(out) :: q(-3:im+3,-3:jm+3,-3:km+3,5)
+    integer :: node,i,j,k
+    real(8) :: state(5)
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(im+7)*(jm+7)*(km+7)) return
+    i=mod(node,im+7)-3; j=mod(node/(im+7),jm+7)-3; k=node/((im+7)*(jm+7))-3
+    call expected(i,j,k,im,jm,km,ci,cj,ck,state)
+    q(i,j,k,:)=state
+  end subroutine
+  attributes(global) subroutine verify_source(q,errors,im,jm,km,ci,cj,ck)
+    integer,value :: im,jm,km,ci,cj,ck
+    real(8),device,intent(in) :: q(-3:im+3,-3:jm+3,-3:km+3,5)
+    integer,device,intent(inout) :: errors(*)
+    integer :: node,i,j,k,c,ignored
+    real(8) :: state(5)
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(im+7)*(jm+7)*(km+7)) return
+    i=mod(node,im+7)-3; j=mod(node/(im+7),jm+7)-3; k=node/((im+7)*(jm+7))-3
+    call expected(i,j,k,im,jm,km,ci,cj,ck,state)
+    do c=1,5
+      if(q(i,j,k,c)/=state(c)) ignored=atomicExch(errors(1),1)
+    enddo
+  end subroutine
+  attributes(global) subroutine verify_velocity(velocity,errors,im,jm,km,ci,cj,ck)
+    integer,value :: im,jm,km,ci,cj,ck
+    real(8),device,intent(in) :: velocity(3,*)
+    integer,device,intent(inout) :: errors(*)
+    integer :: node,i,j,k,ignored
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(im+1)*(jm+1)*(km+1)) return
+    i=mod(ci*im+mod(node,im+1),32)
+    j=mod(cj*jm+mod(node/(im+1),jm+1),32)
+    k=mod(ck*km+node/((im+1)*(jm+1)),32)
+    if(velocity(1,node+1)/=dble(i+1)/64.d0.or.velocity(2,node+1)/=dble(j+2)/64.d0.or. &
+      velocity(3,node+1)/=dble(k+3)/64.d0) ignored=atomicExch(errors(1),1)
+  end subroutine
+end module
+
+program insitu_device_velocity_probe
+  use cudafor
+  use mpi
+  use iso_fortran_env, only: int64
+  use insitu_device_velocity, only: snapshot_periodic_velocity_gpu,begin_velocity_transport_gpu, &
+    end_velocity_transport_gpu,velocity_transport_usage_gpu
+  use insitu_device_velocity_probe_kernels
+  implicit none
+  real(8),device,allocatable :: q(:,:,:,:),velocity(:,:)
+  integer,device,allocatable :: errors(:)
+  integer :: rank,np,ierr,axis,comm,dims(3),coords(3),neighbors(2,3),extent(3), &
+    status,local_rank,devices,nodes,bad,all_bad,frame,generation,last_generation,changed_extent(3)
+  integer(int64) :: host_bytes,device_bytes,d2h_bytes,h2d_bytes,exchanges,host_budget,device_budget,expected_bytes
+  character(32) :: argument,mode,scenario
+  logical :: periods(3)
+  ! Establish the rank's CUDA context before MPI optional GPU components start.
+  local_rank=0
+  call get_environment_variable('OMPI_COMM_WORLD_LOCAL_RANK',argument,status=status)
+  if(status==0) read(argument,*) local_rank
+  status=cudaGetDeviceCount(devices)
+  if(status/=cudaSuccess.or.local_rank>=devices) stop 1
+  status=cudaSetDevice(local_rank)
+  if(status/=cudaSuccess) stop 2
+  call MPI_Init(ierr)
+  call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
+  call MPI_Comm_size(MPI_COMM_WORLD,np,ierr)
+  if(np/=1.and.np/=2) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+  axis=1
+  call get_command_argument(1,argument,status=status)
+  if(status==0.and.len_trim(argument)>0) read(argument,*) axis
+  if(axis<1.or.axis>3) call MPI_Abort(MPI_COMM_WORLD,4,ierr)
+  dims=1; dims(axis)=np; periods=.true.
+  call MPI_Cart_create(MPI_COMM_WORLD,3,dims,periods,.false.,comm,ierr)
+  call MPI_Cart_coords(comm,rank,3,coords,ierr)
+  do axis=1,3
+    call MPI_Cart_shift(comm,axis-1,1,neighbors(1,axis),neighbors(2,axis),ierr)
+  enddo
+  extent=32/dims
+  ! The solver leaves unused local-axis neighbors as MPI_PROC_NULL.
+  do axis=1,3
+    if(dims(axis)==1) neighbors(:,axis)=MPI_PROC_NULL
+  enddo
+  call get_command_argument(2,mode)
+  call get_command_argument(3,scenario)
+  if(scenario=='inconsistent'.and.rank==1) mode='device-aware'
+  host_budget=67108864_int64; device_budget=67108864_int64
+  if(scenario=='host-budget') host_budget=1
+  if(scenario=='node-host-budget') host_budget=9_int64*39*39*16
+  if(scenario=='device-budget') device_budget=1
+  call begin_velocity_transport_gpu(trim(mode),extent,dims,neighbors,comm, &
+    host_budget,device_budget,1073741824_int64)
+  call velocity_transport_usage_gpu(host_bytes,device_bytes,d2h_bytes,h2d_bytes,exchanges,last_generation)
+  if(scenario=='nested') call begin_velocity_transport_gpu(trim(mode),extent,dims,neighbors,comm, &
+    host_budget,device_budget,1073741824_int64)
+  nodes=product(extent+7)
+  allocate(q(-3:extent(1)+3,-3:extent(2)+3,-3:extent(3)+3,5),errors(1))
+  call initialize<<<(nodes+255)/256,256>>>(q,extent(1),extent(2),extent(3),coords(1),coords(2),coords(3))
+  status=cudaDeviceSynchronize()
+  if(status/=cudaSuccess) call MPI_Abort(comm,5,ierr)
+  if(scenario=='shape') then
+    changed_extent=extent; changed_extent(1)=changed_extent(1)-1
+    call snapshot_periodic_velocity_gpu(q,velocity,changed_extent,3,5,dims,neighbors,comm, &
+      device_budget,1073741824_int64)
+  endif
+  errors=0
+  do frame=1,3
+  call snapshot_periodic_velocity_gpu(q,velocity,extent,3,5,dims,neighbors,comm, &
+    device_budget,1073741824_int64)
+  nodes=product(extent+1)
+  call verify_velocity<<<(nodes+255)/256,256>>>(velocity,errors,extent(1),extent(2),extent(3), &
+    coords(1),coords(2),coords(3))
+  nodes=product(extent+7)
+  call verify_source<<<(nodes+255)/256,256>>>(q,errors,extent(1),extent(2),extent(3), &
+    coords(1),coords(2),coords(3))
+  status=cudaDeviceSynchronize()
+  if(status/=cudaSuccess) call MPI_Abort(comm,6,ierr)
+  deallocate(velocity)
+  call velocity_transport_usage_gpu(host_bytes,device_bytes,d2h_bytes,h2d_bytes,exchanges,generation)
+  bad=merge(0,1,generation==last_generation.and.exchanges==int(frame*(np-1),int64))
+  expected_bytes=0
+  if(mode=='pinned'.and.np==2) expected_bytes=int(frame,int64)*4*33*33*8
+  if(d2h_bytes/=expected_bytes.or.h2d_bytes/=expected_bytes) bad=1
+  if(bad/=0) call MPI_Abort(comm,8,ierr)
+  enddo
+  bad=errors(1)
+  call MPI_Allreduce(bad,all_bad,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+  if(rank==0) then
+    write(*,'(a,i0,a,3(i0,1x),a,i0,a)') &
+      'Device canonical velocity NP=',np,' topology=',dims,' mismatches=',all_bad,' source_unchanged=1'
+    write(*,'(3a,5(a,i0))') 'Transport backend=',trim(mode),' frames=3', &
+      ' generation=',generation,' host_bytes=',host_bytes,' device_bytes=',device_bytes, &
+      ' d2h_bytes=',d2h_bytes,' h2d_bytes=',h2d_bytes
+  endif
+  call end_velocity_transport_gpu(comm)
+  call velocity_transport_usage_gpu(host_bytes,device_bytes,d2h_bytes,h2d_bytes,exchanges,generation)
+  if(host_bytes/=0.or.device_bytes/=0) call MPI_Abort(comm,9,ierr)
+  ! Reinitialize once to cover release/rebuild without carrying transient slots.
+  call begin_velocity_transport_gpu(trim(mode),extent,dims,neighbors,comm, &
+    67108864_int64,67108864_int64,1073741824_int64)
+  call velocity_transport_usage_gpu(host_bytes,device_bytes,d2h_bytes,h2d_bytes,exchanges,generation)
+  if(generation/=last_generation+1.or.d2h_bytes/=0.or.h2d_bytes/=0.or.exchanges/=0) call MPI_Abort(comm,10,ierr)
+  call end_velocity_transport_gpu(comm)
+  if(rank==0) print *, 'PASS transport slots reused, released and rebuilt'
+  deallocate(q,errors)
+  call MPI_Comm_free(comm,ierr)
+  call MPI_Finalize(ierr)
+  if(all_bad/=0) stop 7
+end program

@@ -1,0 +1,12 @@
+############################################################
+# IS7 controller. Retain the positional input layout.
+############################################################
+
+# legacy field sequence, slice, averaging, crash recovery
+f,f,f,f
+
+# inclusive zero-based maxstep: 0..3 gives four completed steps
+3,1,100,50,1,50
+
+# dt
+1.d-3
