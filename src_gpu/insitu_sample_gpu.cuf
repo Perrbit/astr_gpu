@@ -3,16 +3,188 @@ module insitu_sample_gpu
   implicit none
   private
   public :: download_sample_gpu
+  public :: derive_sample_gpu
+  public :: derive_selected_sample_gpu,download_velocity_state_gpu
+  public :: download_plane_state_gpu
+  public :: download_wall_state_gpu
 contains
+  subroutine download_wall_state_gpu(walls,fields,device_budget,reserve)
+    use iso_fortran_env, only: int64
+    use commvar, only: im,jm,km,numq
+    use mpi
+    use checkpoint_state_io, only: checkpoint_state_require
+    use gpu_check, only: sync_after_kernel
+    integer,intent(in) :: walls(:)
+    real(8),intent(out),contiguous :: fields(0:,0:,:,:)
+    integer(int64),intent(in) :: device_budget,reserve
+    real(8),allocatable,device :: packed(:,:,:,:)
+    integer(int64) :: count,free_bytes,total_bytes
+    integer :: nw,status,first
+    nw=size(walls); count=size(fields,kind=int64)
+    call checkpoint_state_require((numq==5.or.numq==11).and.nw<=2.and. &
+      all(shape(fields)==[im+1,km+1,nw,3*numq]).and. &
+      all(walls==0.or.walls==jm),MPI_COMM_WORLD,'invalid wall GPU pack shape')
+    free_bytes=0; total_bytes=0
+    status=cudaMemGetInfo(free_bytes,total_bytes)
+    call checkpoint_state_require(status==cudaSuccess.and.count*8<=device_budget.and. &
+      free_bytes>=count*8+max(reserve,1073741824_int64),MPI_COMM_WORLD,'wall GPU budget')
+    status=0
+    if(count>0) allocate(packed(im+1,km+1,nw,3*numq),stat=status)
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'wall GPU pack allocation')
+    status=cudaSuccess
+    if(count>0) then
+      first=walls(1)
+      call wall_state_kernel<<<((im+1)*(km+1)*nw+255)/256,256>>>(im,jm,km,nw,first,numq,packed)
+      call sync_after_kernel('private completed wall pack',.true.)
+      status=cudaMemcpy(fields,packed,count,cudaMemcpyDeviceToHost)
+    endif
+    call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'wall GPU download')
+    if(allocated(packed)) deallocate(packed)
+  end subroutine
+
+  attributes(global) subroutine wall_state_kernel(im,jm,km,nw,first,nq,packed)
+    use commarray_gpu, only: q_d
+    integer,value :: im,jm,km,nw,first,nq
+    real(8),device :: packed(im+1,km+1,nw,3*nq)
+    integer :: node,i,k,w,j,side,m,c
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(im+1)*(km+1)*nw) return
+    i=mod(node,im+1); k=mod(node/(im+1),km+1); w=node/((im+1)*(km+1))+1
+    j=first; if(w==2) j=jm
+    side=1; if(j==jm) side=-1
+    do m=0,2
+      do c=1,nq
+        packed(i+1,k+1,w,nq*m+c)=q_d(i,j+side*m,k,c)
+      enddo
+    enddo
+  end subroutine
+
+  subroutine download_plane_state_gpu(axis,index,tangent,fields,device_budget,reserve)
+    use iso_fortran_env, only: int64
+    use mpi
+    use checkpoint_state_io, only: checkpoint_state_require
+    use gpu_check, only: sync_after_kernel
+    integer,intent(in) :: axis,index,tangent(2)
+    real(8),intent(out) :: fields(:,:,:)
+    integer(int64),intent(in) :: device_budget,reserve
+    real(8),allocatable,device :: packed(:,:,:)
+    integer(int64) :: count,free_bytes,total_bytes
+    integer :: ni,nj,status
+    ni=size(fields,1); nj=size(fields,2)
+    count=int(ni,int64)*nj*4
+    free_bytes=0; total_bytes=0
+    status=cudaMemGetInfo(free_bytes,total_bytes)
+    call checkpoint_state_require(status==cudaSuccess.and.count*8<=device_budget.and. &
+      free_bytes>=count*8+max(reserve,1073741824_int64),MPI_COMM_WORLD,'index-plane GPU budget')
+    status=0
+    if(count>0) allocate(packed(ni,nj,4),stat=status)
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'index-plane GPU allocation')
+    status=cudaSuccess
+    if(count>0) then
+      call plane_state_kernel<<<(ni*nj+255)/256,256>>>(axis,index,tangent(1),tangent(2),ni,nj,packed)
+      call sync_after_kernel('private index-plane pack',.true.)
+      status=cudaMemcpy(fields,packed,count,cudaMemcpyDeviceToHost)
+    endif
+    call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'index-plane GPU download')
+    if(allocated(packed)) deallocate(packed)
+  end subroutine
+
+  attributes(global) subroutine plane_state_kernel(axis,index,t1,t2,ni,nj,packed)
+    use commarray_gpu, only: q_d
+    integer,value :: axis,index,t1,t2,ni,nj
+    real(8),device :: packed(ni,nj,4)
+    integer :: node,a,b,c,ijk(3)
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=ni*nj) return
+    a=mod(node,ni); b=node/ni
+    ijk(axis)=index; ijk(t1)=a; ijk(t2)=b
+    do c=1,4
+      packed(a+1,b+1,c)=q_d(ijk(1),ijk(2),ijk(3),c)
+    enddo
+  end subroutine
+
+  subroutine derive_sample_gpu(velocity,derived,host_budget,device_budget,reserve)
+    use iso_fortran_env, only: int64
+    use commvar, only: im,jm,km
+    real(8),intent(in) :: velocity(0:im,0:jm,0:km,3)
+    real(8),intent(out),target :: derived(0:im,0:jm,0:km,14)
+    integer(int64),intent(in) :: host_budget,device_budget,reserve
+    integer :: i
+    call derive_selected_sample_gpu(velocity,derived,[(i,i=1,14)],host_budget,device_budget,reserve)
+  end subroutine
+
+  subroutine derive_selected_sample_gpu(velocity,derived,indices,host_budget,device_budget,reserve)
+    use iso_fortran_env, only: int64
+    use ieee_arithmetic, only: ieee_is_finite
+    use mpi
+    use commvar, only: im,jm,km,ia,ja,ka,use_gpu,hm,difschm,lreadgrid
+    use bc, only: bctype
+    use parallel, only: mpirank,isize,jsize,ksize
+    use checkpoint_state_io, only: checkpoint_state_require
+    use output_fields_gpu, only: begin_derived_output_gpu,pack_diagnostic_output_gpu,end_derived_output_gpu
+    real(8),intent(in) :: velocity(0:im,0:jm,0:km,3)
+    real(8),intent(out),target,contiguous :: derived(0:,0:,0:,:)
+    integer,intent(in) :: indices(:)
+    integer(int64),intent(in) :: host_budget,device_budget,reserve
+    real(8),pointer :: flat(:)
+    integer(int64) :: capacity,host_bytes,device_bytes,download_bytes
+    integer :: nranks,ierr
+    real(8) :: started,prepare_seconds,compute_download_seconds
+    call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
+    call checkpoint_state_require(ierr==MPI_SUCCESS.and. &
+      (nranks<=2.or.(nranks==4.and.all([isize,jsize,ksize]==[2,2,1]))).and.use_gpu.and. &
+      all([ia,ja,ka]==32).and..not.lreadgrid.and.all(bctype==1).and.hm>=3.and. &
+      trim(difschm)=='643e',MPI_COMM_WORLD, &
+      'GPU in-situ derivatives admit only 32^3 periodic TGV NP=1/2 or NP=4 (2x2x1)')
+    call checkpoint_state_require(all(ieee_is_finite(velocity)),MPI_COMM_WORLD,'nonfinite canonical GPU input')
+    call checkpoint_state_require(size(indices)>0.and.all(shape(derived)==[im+1,jm+1,km+1,size(indices)]), &
+      MPI_COMM_WORLD,'invalid selected GPU diagnostic shape')
+    capacity=product(int([im,jm,km]+1,int64))*size(indices)
+    started=MPI_Wtime()
+    call begin_derived_output_gpu(capacity,host_budget,device_budget,MPI_COMM_WORLD,indices, &
+      host_bytes,device_bytes,reserve,canonical_velocity=velocity)
+    prepare_seconds=MPI_Wtime()-started
+    flat(1:int(capacity))=>derived
+    started=MPI_Wtime()
+    call pack_diagnostic_output_gpu([0,0,0],[im,jm,km]+1,flat)
+    compute_download_seconds=MPI_Wtime()-started
+    nullify(flat)
+    call end_derived_output_gpu(download_bytes)
+    call checkpoint_state_require(all(ieee_is_finite(derived)).and.download_bytes==capacity*8, &
+      MPI_COMM_WORLD,'invalid GPU diagnostic output')
+    write(*,'(a,i0,a,2es16.8,a,i0)') 'ASTR_INSITU_GPU_DERIVATIVE_TIMING rank=',mpirank, &
+      ' prepare_inclusive compute_download_inclusive=',prepare_seconds,compute_download_seconds, &
+      ' download_bytes=',download_bytes
+  end subroutine
+
+  subroutine download_velocity_state_gpu(fields)
+    use commvar, only: im,jm,km
+    use commarray_gpu, only: q_d
+    use mpi
+    use checkpoint_state_io, only: checkpoint_state_require
+    real(8),intent(out) :: fields(0:im,0:jm,0:km,4)
+    integer :: status
+    status=cudaDeviceSynchronize()
+    call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'velocity state synchronization')
+    fields=q_d(0:im,0:jm,0:km,1:4)
+    status=cudaGetLastError()
+    call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'velocity state download')
+  end subroutine
+
   subroutine download_sample_gpu(fields)
     use commvar, only: im,jm,km
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
+    use parallel, only: mpirank
     use mpi
     real(8),intent(out) :: fields(0:im,0:jm,0:km,11)
     integer :: status,ignored
+    real(8) :: started,sync_seconds,download_seconds
     ! Own host buffers only; do not refresh or overwrite solver host mirrors.
+    started=MPI_Wtime()
     status=cudaDeviceSynchronize()
     if(status/=cudaSuccess) call MPI_Abort(MPI_COMM_WORLD,1,ignored)
+    sync_seconds=MPI_Wtime()-started
+    started=MPI_Wtime()
     fields(:,:,:,1:5)=q_d(0:im,0:jm,0:km,1:5)
     fields(:,:,:,6)=rho_d(0:im,0:jm,0:km)
     fields(:,:,:,7:9)=vel_d(0:im,0:jm,0:km,1:3)
@@ -20,5 +192,8 @@ contains
     fields(:,:,:,11)=tmp_d(0:im,0:jm,0:km)
     status=cudaGetLastError()
     if(status/=cudaSuccess) call MPI_Abort(MPI_COMM_WORLD,1,ignored)
+    download_seconds=MPI_Wtime()-started
+    write(*,'(a,i0,a,2es16.8)') 'ASTR_INSITU_TRANSFER_TIMING rank=',mpirank, &
+      ' sync download_inclusive=',sync_seconds,download_seconds
   end subroutine
 end module

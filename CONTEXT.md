@@ -599,6 +599,18 @@ _Avoid_: Background analysis queue, interpreting synchronous visualization as a 
 The independently selected simulation-time or completed-step interval that schedules statistical sampling or visualization. Scheduled target times and actual observation times are distinct; a step-based cadence does not imply equal statistical time weights.
 _Avoid_: Counting RK or chemistry substeps as full steps, binding visualization cadence to statistical sampling, relabeling a late observation as an exact target-time state
 
+**ASTR adaptive product cadence**:
+A variable output cadence for individually selected images, extracted geometry, volume fields or slices. It is distinct from the independently fixed cadence of formal statistical sampling and checkpoints, and does not change the solver timestep.
+_Avoid_: Treating denser output as denser statistical sampling, reconstructing missed events from sparse outputs, changing checkpoint cadence implicitly
+
+**ASTR output event**:
+A monitored scalar-diagnostic condition that temporarily selects the dense cadence of its associated output products. Its activation marks an output decision, not proof of a physical transition or statistical stationarity.
+_Avoid_: Calling an output threshold a universal physical criterion, applying one event to unrelated products
+
+**ASTR important output window**:
+A configured half-open simulation-time or completed-step interval that selects the dense cadence of associated output products. It is independent of the averaging window and cannot supply states missed between completed steps.
+_Avoid_: Adding this interval to formal statistics implicitly, labeling a state outside the interval as an observation inside it
+
 **ASTR distributed visualization**:
 Coordinated extraction and image generation from rank-local mesh and field partitions, without first gathering the complete flow field onto one rank. Partition interfaces are not physical boundaries, and composing images is distinct from gathering the full field.
 _Avoid_: Independent disconnected rank images presented as one domain, duplicate geometry from overlap data, terminating streamlines at MPI partition interfaces

@@ -392,7 +392,8 @@ contains
     call require(state_role==1.or.(state_role==2.and.ncomp==11).or. &
       ((state_role==3.or.state_role==4).and.ncomp==34).or.(state_role==5.and.ncomp==17).or. &
       (state_role==6.and.ncomp==44).or.(state_role==7.and.ncomp==34).or. &
-      (state_role==8.and.ncomp==26), &
+      (state_role==8.and.ncomp==26).or.(state_role==9.and.(ncomp==34.or.ncomp==204)).or. &
+      (state_role==10.and.ncomp==136), &
       comm,'state component role')
     g=int(global_shape,int64)
     header=[magic,schema,1_int64,g,int(ncomp,int64),int(np,int64),identity%step, &
@@ -448,7 +449,9 @@ contains
     call h5pset_fapl_mpio_f(access,comm,MPI_INFO_NULL,err)
     call require(err==0,comm,'parallel file access')
     if(present(group_name)) then
-      call require(group_name=='inherited',comm,'unsupported state group')
+      call require(group_name=='inherited'.or.(group_name=='wall_statistics'.and.state_role==9).or. &
+        (group_name=='air5_volume_statistics'.and.state_role==10), &
+        comm,'unsupported state group')
       if(writing) then
         call h5fopen_f(path,H5F_ACC_RDWR_F,container,err,access_prp=access)
       else

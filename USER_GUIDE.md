@@ -186,7 +186,7 @@ readinput 使用固定跳行和 list-directed 读取，**不是键值配置**。
 | 2 | ia,ja,ka | 全局索引上限/分段数；物理节点常为 0:ia 等，不直接等于 HDF5 数组尺寸 |
 | 3 | lihomo,ljhomo,lkhomo | 齐次/周期方向，与边界和平均方向一致 |
 | 4 | 九个逻辑开关 | 见下表，旧示例可能缺少 usegpu |
-| 5 | lrestart | 从 outdat 恢复 |
+| 5 | lrestart | 必须为 f；旧 checkpoint 恢复已关闭，新恢复点由 input.output 指定 |
 | 6 | alfa_filter,kcutoff | 遗留滤波/频谱参数；不是当前显式滤波任意强度开关 |
 | 7 | 参考量 | 无量纲：ref_tem,Re,Mach；有量纲：ref_tem,ref_vel,ref_len,ref_den |
 | 8 | conschm,difschm,rkscheme | 对流、扩散、时间格式；遗留 Cantera 构建还读取 odetype |
@@ -305,19 +305,19 @@ f,f,f,f
 
 | 字段 | 含义 |
 |---|---|
-| lwsequ | 完整场序列输出 |
-| lwslic | 切片输出，需 slice.dat |
+| lwsequ | 遗留字段，忽略并提示；三维场改由 input.output 配置 |
+| lwslic | 遗留字段，忽略并提示；切片改由 input.output 的全局索引配置 |
 | lavg | 统计累计，不等于统计已收敛 |
 | lcracon | 遗留崩溃修复/续算；可信化与 AIR5 补偿保持 false |
 | maxstep | 绝对步号上限，不是追加步数或终止物理时间 |
-| feqchkpt | checkpoint 与控制文件重读相关频率 |
-| feqwsequ/feqslice | 场序列/切片频率 |
+| feqchkpt | 控制文件重读与CFL检查频率，不是新checkpoint保存间隔 |
+| feqwsequ/feqslice | 保留的旧场/切片频率，不控制新产品 |
 | feqlist | 日志/诊断频率 |
 | feqavg | 统计采样频率 |
 | deltat | 时间步，单位随模型设置 |
 
 频率使用正整数，**不要填 0 关闭输出**，路径存在 mod(nstep,frequency)。
-lwsequ=f、lwslic=f、lavg=f 不等于关闭 checkpoint。
+三类文件输出分别由 `input.output` 的 `enabled` 控制，不由这些遗留字段控制。
 
 主循环为 nstep<=maxstep。从 0 开始且无其他停止条件，maxstep=9 对应十次循环更新。
 重启时核对 checkpoint 实际步号和相位，以日志 state_time、HDF5 time 为准。
@@ -567,7 +567,7 @@ AIR5 不在这里的混合精度支持范围。滤波保持 FP64，不提供 FP3
 
 ### 9.3 无场输出与计时
 
-受限周期三维 TGV/Shu-Osher 可设置：
+已准入的周期三维 TGV benchmark 可设置：
 
 ```bash
 export ASTR_GPU_BENCHMARK_NO_FIELD_IO=on
@@ -575,6 +575,11 @@ export ASTR_GPU_RK_TIMING=on
 ```
 
 这不是任意壁面/AIR5 的通用零输出开关，不适合需要 checkpoint 的长时生产。
+benchmark 检查器保留 Shu-Osher 的分类，但当前默认新输出入口尚未准入
+该算例，不能据此认为它可以使用本段的完整启动路径。
+在已准入的 benchmark 中，该开关优先于新输出配置，关闭 checkpoint、
+三维场和切片，即使这些产品已启用且到期也不写出。原位图像和正式统计
+不由此关闭，须分别配置；该开关不意味着完全没有文件输出。
 纯 CPU 对照使用 ASTR_CPU_RK_TIMING=on，同样要求无场输出 benchmark。
 ASTR_COMPLETE_STEP_TIMING=on 记录完整时间推进调用的逐 rank 耗时；
 ASTR_GPU_RANK_RK_TIMING=on 用于 GPU 分 rank RK 诊断。不同标签不混算。
@@ -585,29 +590,26 @@ ASTR_GPU_RANK_RK_TIMING=on 用于 GPU 分 rank RK 诊断。不同标签不混算
 
 ## 10. 输出、统计与重启
 
-第 10.1–10.5 节说明默认兼容接口。第 10.6 节说明显式选择的完整步候选
-接口；两套恢复文件不能混用，候选接口尚未取代生产默认输出。
+默认且唯一的正常场文件/恢复入口为完整步新接口。第10.6节给出配置和
+准入范围，旧checkpoint不再接受，不存在自动转换或旧格式回退。
 
 ### 10.1 文件含义
 
-本版本支持的标准输出方式为 iomode=h。底层还保留 s 的一维串接 HDF5 接口，但主程序
-write_io_tree 直接采用结构化写入，并未完整按 h/s/n 分派。因此 s 不列为
-本版本已验证的主程序输出方式，n 也不能视为全局关闭文件 I/O 的保证。
-这不是新增运行时限制；选择这些遗留选项前须另行核对、测试对应路径。
+新场和checkpoint采用并行HDF5/XDMF接口，`iomode` 不选择或关闭该接口。
+旧输入仍保留该字段；关闭文件产品应使用各自的 `enabled=f`，而非 `iomode=n`。
+日志、监测量及统计属于独立用途，关闭三类流场产品不等于没有任何文件写入。
 
 | 文件 | 含义 |
 |---|---|
 | run.log | 启动重定向日志、CFL、状态和异常 |
 | flowstate.dat | 以表头为准；maxq1...maxq5 不是湍动能或时间平均 |
-| outdat/flowfield.h5 + auxiliary.txt | 场和辅助元数据；GPU 精确恢复还需下述配套文件 |
-| outdat/restart_q*.bin | 非反应流 GPU 实际推进状态，按 rank 保存 |
-| bakup/ | 备份，恢复前核对完整性和时间 |
+| output根/checkpoints/step############/ | 完整步精确恢复批次，包含状态、控制、清单及按需统计/入口记录 |
+| output根/resources/ | 共享几何、输入和冻结外部资源，恢复时必须保留 |
 | monitor/ | 监测点及专用剖面、壁面量 |
-| 切片/场序列 | 后处理或入口数据，不默认是完整 restart |
+| output根/fields、slices | 独立后处理产品及时间索引，不能代替checkpoint |
 
-CPU/GPU 比较必须同相位。同名文件、同一步号可能处于不同边界处理阶段。
-非反应流 GPU 的 restart_q 保留下一步滤波前的实际推进状态；HDF5 场可能经过
-主机边界投影。精确场比较采用同相位快照或已核对相位的 checkpoint 重建。
+新产品均观察完整步状态。派生量从同一状态的私有副本计算，不改变推进场。
+不能把历史旧场或RK内部诊断快照仅凭同一步号视为同相位数据。
 
 ### 10.2 统计与监测
 
@@ -626,64 +628,37 @@ ASTR_AIR5_FLOW_MONITOR_STRIDE 为正整数，用于已实现 air5hbl/air5sbli �
 
 ### 10.3 重启步骤
 
-1. 等待完整 checkpoint，核对 HDF5 与 auxiliary 步号、时间一致。
-2. 建立新运行目录，使用匹配输入、网格、物性、环境及入口数据。
-3. 同一次输出的文件成套放入新目录 outdat，设置 lrestart=t。
-4. 使用新的绝对 maxstep，核对追加更新数和实际物理时间。
-5. 检查恢复日志、CFL、状态和统计量后再长跑。
+1. 选择带有效 `MANIFEST/COMPLETE` 的完整新 checkpoint 目录。
+2. 保留所引用的运行级 `resources/` 和历史产品段，使用匹配的程序与输入。
+3. 主输入保持 `lrestart=f`，在 `datin/input.output` 的 `&output` 中填写
+   `restore_directory`；由新入口验证并恢复，不复制旧场文件到默认文件名。
+4. 设置绝对终止步号 `maxstep`，核对恢复步号、时间及下一步步长。
+5. 先短跑检查 CFL、状态、统计续接和输出，再决定是否长跑。
 
-AIR5 补偿还需主状态、carry（浮点低位余量）和版本元数据；特征顶面也有必须匹配的配置字段。
-紧凑统计可能另有累计状态文件。只保留 primitive 场不等于精确重启。
-改变滤波、拓扑、物性或边界是新的续算配置，应记录并验证。
-
-监测文件可能使用 status='new' 拒绝覆盖，因此优先新目录续算。
-不得复制仍在写入的 HDF5 作为唯一恢复来源。
-不要把场输出过程造成的 CPU/GPU 相位差直接当作数值误差。
+AIR5 补偿余量、已登记边界历史和累计统计由同一批次负责恢复。
+单独的可视化场不能代替 checkpoint，也不能用原始变量重新拼装低位余量。
+不得将仍在写入的批次作为唯一恢复来源。配置及跨拓扑限制见10.6节。
 
 ### 10.4 重启文件配套与兼容边界
 
-| 输出方式 | 新运行目录需要的文件 | 检查重点 |
-|---|---|---|
-| 非序列 HDF5 场 | outdat/flowfield.h5、outdat/auxiliary.txt | HDF5 nstep 与辅助文件 nstep 相同 |
-| 新版非反应流 GPU 续算 | 上述场文件及全部 outdat/restart_q.rankNNNNNNNN.bin | 保存实际推进的 FP64 q，含每个 rank 的重复共享节点和 halo；不能只复制 HDF5 |
-| 序列 HDF5 场 | 选定的 flowfieldNNNN.h5，及同代 auxiliaryNNNN.txt 的副本命名为 auxiliary.txt | 保持辅助文件 filenumb 指向该场，不混入其他步号的默认场 |
-| 新版非反应流 GPU 序列续算 | 上述序列文件及该步全部 restart_q.stepSSSSSSSSSS.rankNNNNNNNN.bin | S 为十位时间步号，不是四位 filenumb；保持 lwsequ 设置不变 |
-| 普通累计平均 | 上述流场及对应 meanflow.h5 | lavg=t 且 nsamples>0 时读取，步号及样本数须匹配 |
-| GPU 紧凑统计 | 流场及全部 compact_stats.rankNNNNNNNN.bin | 原 MPI 拓扑、rank 编号、局部尺寸、步号、时间和样本数须匹配 |
-| AIR5 补偿/专用边界 | 完整原始 checkpoint 及该模式要求的元数据 | 不从 primitive 字段重新拼装或删除 carry/版本字段 |
+当前恢复入口只接受新格式完整批次。`flowfield.h5/auxiliary.txt`、旧序列场、
+`restart_q*.bin`、旧原位配对恢复批次及旧AIR5 checkpoint均不再兼容。
+没有自动转换或失败后的旧格式回退；旧结果若需续算，应保留匹配的旧程序。
 
-普通重启读取器先读 auxiliary.txt，根据 filenumb 查找序列场；找不到时会
-尝试 flowfield.h5。因此“文件存在”不等于选中了期望的代次。应在独立目录中
-只放确定的一套恢复数据，保存原件，不通过修改 nstep 绕过一致性检查。
-输入文件、网格和入口数据也必须与该套状态配套。
+每个新 checkpoint 保存 `state.h5` 和版本化控制/清单文件，按需保存统计、
+动态入口及AIR5记录。共享几何、输入和入口源在运行级 `resources/`，
+其余历史段由相对引用连接。整体搬移必须保留这些依赖，不能只拿一个HDF5。
 
-非反应流 GPU 的 HDF5 场保留原有展示及 CPU 场比较语义。独立 restart_q
-文件保存主机边界投影和共享节点平均之前的实际推进状态，避免重启改变下一步
-滤波输入。辅助文件记录版本和生成代次，读取时核验 rank、拓扑、尺寸、步号、
-时间及部分数值配置，并检查负载长度和有限性。该检查不是输入文件或网格的
-完整校验和；用户仍须保持全部物理配置一致。每次 checkpoint 额外写出一套
-含 halo 的五分量 FP64 q，非序列旧代随场文件保留于 bakup。
-
-带版本标识的 checkpoint 若缺文件、存在未完成的 .tmp、代次不符或配置不匹配，
-程序直接停止，不回退到展示场。不要删除标识绕过检查。精确 GPU 续算目前不支持
-更换 MPI 拓扑或切换 CPU 路径。无版本标识的历史文件仍可按旧方式读取，但会
-提示不能保证精确续算，尤其不能保证壁面滤波的连续/重启一致性。
-此格式仅适用于非反应流 numq=5；AIR5 的补偿及专用边界恢复协议不变。
-
-GPU 紧凑统计按 rank 保存二进制累计状态，当前读取器明确核验原拓扑和局部
-分块。它不是跨拓扑统计迁移格式；不得因全局 HDF5 场可重新分块，就认为
-这些统计文件也可直接迁移。完整统计恢复不能只用 flowstate.dat 替代。
-
-默认兼容范围是同一已验证二进制、相同模型、网格、边界及统计配置的续算。
-更换版本、CPU/GPU 路径、拓扑、精度或滤波方案时，先做短窗连续/重启对照，
-不承诺任意版本间或 CPU/GPU 间的逐位一致。本版本验证覆盖的具体
-组合见验证结果摘要，不以一个通过案例代替所有组合。
+同后端同拓扑精确续算要求匹配程序、模型、网格、边界和统计契约。
+不同二进制、CPU/GPU互换和未登记拓扑不在精确续算承诺内。已登记的
+有界重分区能力见10.6节；不通过删标识、改步号或改文件名绕过验证。
 
 ### 10.5 正常停止与失败恢复
 
-生产运行宜在启动前设置明确的绝对 maxstep 和正的 checkpoint 间隔，确保
-计划停止前有完整恢复点。controller 并非每步读取：主循环在 checkpoint
-间隔处重新读取它。修改 controller 不等于即时停止，也不保证额外生成
+生产运行宜在启动前设置明确的绝对 maxstep 和 `input.output` 中正的checkpoint间隔，确保
+计划停止前有完整恢复点。controller 并非每步读取：主循环按旧控制频率
+`feqchkpt` 对应的步号重新读取它，与新保存频率相互独立。
+修改 controller 不等于即时停止，也不保证额外生成
 用户指定时刻的 checkpoint；不要在并发读取期间逐行改写该文件。
 
 进程退出码为零仍需检查正常结束标记、错误信息、场是否有限和恢复文件是否
@@ -695,16 +670,22 @@ GPU 紧凑统计按 rank 保存二进制累计状态，当前读取器明确核�
 及升级前的完整 checkpoint 恢复。不要要求旧版本读取新版本新增的状态字段。
 任何数值异常都先定位，不通过关闭报错检查或放宽保正容差恢复生产。
 
-### 10.6 可选完整步输出与精确重启
+### 10.6 默认完整步输出与精确重启
 
-设置 `ASTR_OUTPUT_CONFIG` 后，可分别配置 checkpoint、三维场和切片。
+启动时自动读取必需的 `datin/input.output`，可分别配置 checkpoint、三维场
+和切片。不需要设置环境变量；可选的 `ASTR_OUTPUT_CONFIG` 仅覆盖配置路径，
+未设置或为空时均使用默认文件。缺失、损坏、各rank路径不一致时明确终止，
+不回退旧输出，也不自动把旧controller频率转换成新产品调度。
 保存相位位于完整时间步之后，不在 RK stage 之间。checkpoint 保存
 权威守恒量、必要缓存、已登记的统计和调度状态；三维场和切片供后处理，
 不能代替 checkpoint。普通文件输出不依赖 Catalyst 或 ParaView。
 
 这是已完成首期有界本地验收的可选接口，不是所有算例和拓扑的通用保证。
 首期交付范围按用户确认的方案A冻结，见输出重设计计划第10.77–10.78节；
-未设置 `ASTR_OUTPUT_CONFIG` 时仍使用旧输出接口。
+旧controller的 `lwsequ/lwslic` 被忽略并提示；`feqchkpt` 仍控制既有的
+controller重读与CFL检查，不控制新checkpoint频率。`lavg/feqavg` 的
+统计定义和采样相位不变。关闭三类文件输出须在配置中分别设 `enabled=f`，
+仍需提供合法配置和当前接口要求的预算，不能靠删除文件关闭输出。
 基础字段已覆盖周期 TGV、bc41 槽道、已登记静态/动态 CURVE 平板、固定
 AIR5 HBL/SBLI 的代表性短测。文件梯度、涡量、Q_rs 和散度目前准入
 16³、五变量、无量纲、FP64、黏性开启、643e 求导、NP=1/2 的以下路径：
@@ -725,11 +706,11 @@ HBL 的 NP=1/2 z，SBLI 的 NP=1/2 x，y 方向均须完整。
 
 启动顺序：
 
-1. 按正常算例准备输入和 controller，关闭旧三维场序列及切片开关。
+1. 按正常算例准备输入和 controller，主输入 `lrestart=f`。
 2. 建立新的 `outdat/new`，其产品子目录不能预先存在。
 3. 从 `scripts/output/input.output.tgv.example` 选择基础字段，或从
    `input.output.tgv.derived.example` 选择派生量，作为 `datin/input.output`。
-4. 设置 `ASTR_OUTPUT_CONFIG=datin/input.output`，按正常命令启动 ASTR。
+4. 按正常命令 `astr run datin/input.tgv` 启动，不再要求设置输出环境变量。
    主输入中的 `usegpu` 仍决定 CPU/GPU，示例频率和预算不是生产推荐值。
 
 AIR5 登记短测可用 `scripts/output/input.output.air5.derived.example`，
@@ -756,7 +737,7 @@ AIR5 登记短测可用 `scripts/output/input.output.air5.derived.example`，
 checkpoint 时正常结束必须保存末步。`keep=1|2` 只轮换 checkpoint，
 已发布三维场和切片全部保留。当前恢复源受保护，因此目录数可超过 keep。
 
-重启时保持 controller 的 `lrestart=f`，由 `&output` 的
+重启时保持主输入的 `lrestart=f`，由 `&output` 的
 `restore_directory='/path/to/run/checkpoints/step000000000005'` 选择新格式
 批次，而非读取旧 HDF5 恢复文件。保留源根的 `resources`、所选完整批次
 和其引用的历史段，不只复制 `state.h5`。新目标根须按配置新建；已验证的
@@ -832,8 +813,106 @@ CPU/GPU 互迁和渲染重新分区仍不开放。
 索引切片及正式原位统计的联合短测，GPU可同时使用既定EGL渲染预设。
 各产品独立调度，同拓扑5+7步续算与连续12步一致，关闭场/切片/渲染
 不改变推进和统计。原位输出目录须与新文件输出根目录分开。
-首期渲染仅限GPU笛卡尔TGV同拓扑。CPU/CURVE/AIR5渲染及任何渲染重新
-分区属于后续目标，当前仍明确拒绝，也不表示生产长序列容量已经验证。
+首期渲染主线为GPU笛卡尔TGV同拓扑。另有下述有界 bc41 壁面候选。
+CPU/CURVE、一般AIR5三维渲染及任何渲染重新分区属于后续目标，当前仍明确拒绝，
+也不表示生产长序列容量已经验证。
+
+可选 `products='channel_walls'` 支持内部笛卡尔 bc41 槽道的两张壁面，
+输出壁压、沿 +x 的有符号黏性应力、壁面传向气体的导热热流。
+切向为 +x，内法向下壁 +y、上壁 -y；保留求解器无量纲尺度，
+不自动换算 Cf/St，不将短窗零剪切解释为分离。
+当前准入尺寸不超过32、NP=1/2、643e显式差分，实际短测为16³。
+壁面诊断要求 `derivative_backend='cpu'`；GPU只下载每壁三层五变量，
+在主机计算壁面量，不是全GPU后处理。渲染仍需GPU求解与EGL。
+可开启完整步速度及三项壁面标量统计，CPU/GPU均支持；GPU在设备累计，仅在导出
+统计或保存检查点时下载累计数组。两壁节点各自保留，拉伸y网格按
+真实坐标求积，不当作均匀方向。已验证四步与3+1步同拓扑精确续接，
+不外推为长时间统计定常或更大网格性能认证。
+
+另有有界 `products='air5_walls'`，仅支持内部生成的笛卡尔非催化
+AIR5平板底壁，边界 `[11,50,41,51,1,1]`、SI物性、643e，尺寸≤32、
+NP=1/2；实际验收为16³、四个完整耦合步。要求
+`derivative_backend='cpu'`；渲染要求GPU/EGL，CPU统计须 `render=f`。
+GPU下载底壁三层11变量，在主机复用AIR5状态重建与输运物性，供给
+ρ、三速度、T/Tv、压力、五组分、剪切和各热流贡献等18字段。
+输出压力、T/Tv、五组分、剪切及总热流的JPEG/EPS/VTK预设，保留SI
+单位和完整步身份；空壁面rank正常参加。总热流正方向为壁面向气体，
+本静止非催化壁面组分焓通量为零。可选 `statistics=t` 和递增的
+`statistics_window`，累计底壁18字段的时间均值、方差和RMS；默认渲染
+瞬时字段。GPU主机壁面诊断之后上传紧凑壁面字段用于设备累计，不逐步
+下载完整三维场。累计状态保存在现有 `statistics.h5` 内，同后端同拓扑
+精确续接，统计重分区仍拒绝；最终标量结果见
+`sample.wall_statistics.step*.rank*.bin`，布局见 `scripts/insitu/README.md`。
+可显式增加 `air5_volume_statistics=t`，累计三维 T/Tv/五组分及速度
+Reynolds/Favre 均值、协方差、密度加权应力。默认关闭，不给壁面
+配置自动增加三维数组。三维节点包含物理 x/y 上端，周期 z 端点只
+计一次，按真实坐标求积。可另设 `air5_volume_reduction=t` 输出全域
+几何平均速度信号的 RMS 与局部方差体积汇总，两类诊断独立命名；
+默认不作空间归约，也不据此假设全域统计均匀。该选项要求三维统计。
+三维原始累计仍保存在 `statistics.h5`，精确续接时必须保持选择一致。
+逐点最终结果为 `sample.air5_statistics.step*.rank*.bin`，区域结果为
+`sample.air5_volume_rms.step*.csv`。GPU 直接读取设备物性缓存并累计，
+每端点下载64字节归约量，累计数组只在保存或导出时下载。
+此能力限上述小型 Cartesian 验收范围，不能作为任意AIR5边界、
+生产物理验证或全GPU后处理的声明。
+
+可选 `wall_mean_render=t` 为上述两种壁面产品增加时间平均图，要求同时
+开启统计和渲染，默认关闭。采用与瞬时图相同的相机和固定色标；覆盖
+时长为正才生成平均图，JPEG/EPS/VTK 文件名增加 `mean_` 前缀。
+VTK 保留各壁面字段的均值、方差、RMS、统计窗口和覆盖时长；
+图像只输出预设字段的均值，不自动生成三维平均场图。共享接口和周期
+接缝补值来自私有统计副本，不改变流场。NP=1/2 的 x/y/z 分解、空壁面
+rank、同后端同拓扑精确续接和内存安全已有短测证据。
+
+可选 `wall_separation=t` 仅用于上述 AIR5 底壁统计，默认关闭。
+沿 +x 定义切向，以真实 z 长度加权平均有符号壁面剪切，逐完整步输出
+`sample.wall_separation.step*.csv`。相邻非零节点正变负识别为分离，
+负变正识别为再附，位置用线性插值；精确零值保留为区间，未成对零点
+不报告完整分离泡。当前热气体短测入口速度为零，文件明确标记
+`not_applicable_no_positive_inflow`，不能把它解释为物理上没有分离。
+零点算法由独立合成序列验收，未新增或认证生产 SBLI 工况。
+
+原位配置可选 `derivative_backend='gpu'`，默认仍为 `'cpu'`。GPU派生量
+候选仅准入32³周期笛卡尔TGV、GPU求解、NP=1/2或NP=4的2×2×1分解，
+以及643e显式差分，
+计算完整步速度梯度、Q、散度及旋度，使用私有halo，不改变推进状态。
+该有界候选通过数值、内存安全、实际出图及同后端精确续接检查；重启时
+切换派生量后端需显式输出配置覆盖。默认 `products='all'` 仍传基本场及
+全部派生量。可显式选择 `products='q_surface'`、`'streamlines'` 或
+`'q_streamlines'`，仅向既定TGV预设供给速度及必要的Q。流线预设仍含
+明确命名的恒定速度跨分区诊断图，该图不是物理流场。
+选定产品共用原渲染调度，不改变统计累计或检查点时刻；紧凑产品不导出
+平均流线，开启的统计仍保留。产品选择改变也需显式重启配置覆盖。
+当前仍下载密度和三分量动量，在主机按完整步所有权重建速度；Q产品
+还需上传私有速度及下载Q，因此只是减少字段供给，不是全GPU可视化。
+更大网格和其他边界不在准入范围。自定义流水线需支持新增的产品参数，
+详见[原位预设说明](scripts/insitu/README.md)。
+
+原生TGV预设仅在集体截图和编码完成后的JPEG/EPS文件暂存或发布阶段，
+允许权限拒绝、磁盘满、I/O错误记录缺帧后继续。各rank必须写入一致的
+`missing.<product>.step<step>.rank<rank>.json`，几何与统计保留，图片不补写
+替代品。若清理或缺帧记录失败则停止。渲染、编码、几何、数值、统计及
+未知错误不降级；正常检查点也不表示所有图片均已写出。
+
+保存过程被中断时，没有COMPLETE标记的临时批次不能用于恢复。应显式
+选择上一个完整checkpoint目录，不拼接不同完整步的流场、统计或渲染
+控制文件；即使重新生成校验文件，跨步时钟不一致也会拒绝恢复。
+32³ TGV的NP=2/4有界检查已覆盖这一流程，不表示生产任务MPI故障容错。
+
+同一32³周期TGV、GPU、NP=1/2或NP=4的2×2×1范围还可选择轻量速度切片：
+
+```fortran
+ products='velocity_slice', derivative_backend='gpu',
+ slice_axis='z', slice_index=4,
+```
+
+这些条目加入现有 `&insitu_run`，继续配置资源预算和步数或物理时间调度。
+方向可选 `x/y/z`，索引为全局节点的0到31，默认 `z,4` 对应z=π/4。
+不插值任意平面，不重复选择周期上端点32。GPU只打包该平面的密度和
+三分量动量，主机完成端点一致性及速度重建，不下载三维场。切片不经过
+的rank仍参与集合调用，分区面切片仅由一侧提供，避免重复单元。
+输出JPEG/EPS及VTK几何；切片方向或索引改变需显式重启配置覆盖。
+这不是全GPU渲染，也未开放壁面量、曲线网格、AIR5或平均场切片。
 
 ParaView 使用 XDMF3 读取单帧 `data.xdmf` 或段内 `series.xdmf`。
 移动目录须连同共享坐标和父段一起移动。仅在求解器及其他写入者均停止
@@ -884,7 +963,7 @@ air5reactor、air5postshock、air5normalshock、air5tgv、air5hbl、air5sbli
 | ASTR_AIR5_CONVECTION_LIMITER | full_state / species_budget / consistent_species / symmetric_species | 默认 full_state；各值采用不同的界面通量限制方法，见下文 |
 | ASTR_AIR5_DIFFUSION_LIMITER | full_state / layered | 默认 full_state；全通量共用限制系数，或分开限制组分扩散及能量 |
 | ASTR_AIR5_COMPENSATION | off / on | 默认 off；on 保存并传播浮点更新中损失的低位余量，不是添加物理补偿源项 |
-| ASTR_AIR5_COMPENSATION_RESTART | initialize | 仅旧 checkpoint 首次启用补偿，初始化零 carry |
+| ASTR_AIR5_COMPENSATION_RESTART | initialize | 旧恢复接口参数；不用于新批次，旧checkpoint恢复已关闭 |
 | ASTR_AIR5_TOP_MODE | prescribed / characteristic | 默认 prescribed，直接指定顶面状态；characteristic 按特征波传播方向推进顶面状态 |
 | ASTR_AIR5_TOP_TAU | 有限正实数，秒 | characteristic 必须给定的松弛时间尺度；减小值会增大基础松弛率 1/tau，不是自动优化参数 |
 | ASTR_AIR5_PRIMITIVE_REUSE | off / chemistry | 默认 off，重新恢复原始变量；chemistry 复用化学积分已恢复的同一状态原始变量，避免重复计算 |
@@ -975,9 +1054,9 @@ q1 q2 q3 q4 q5 q6 q7 q8 q9 q10 q11
 当前读入器要求正的 x_top/y_top、单位法向且 normal_z 近零，
 并检查压缩激波状态与法向守恒通量一致性。此文件不能用单组分 51 行代替。
 
-已有补偿 checkpoint 自动恢复 acq01...acq11、acc01...acc11 和版本号。
-initialize 仅允许不含补偿字段的旧 checkpoint 以零 carry 开始新配置，
-不能修复缺少一部分字段的损坏文件，也不能当作精确恢复已有低位余量。
+新格式AIR5批次自动恢复权威q、carry及已登记缓存/历史，不依赖旧字段文件。
+旧补偿checkpoint和以 `initialize` 把旧文件转为零carry的恢复方式已关闭。
+不得通过清零补偿或删除版本字段修复不完整批次。
 
 单位状态、短窗、拓扑、重启和声学通过不代替真实反应 SBLI 长时验收。
 仍需检查模型适用性、分辨率、入口、热流/摩阻、元素和能量收支、滤波与统计敏感性。

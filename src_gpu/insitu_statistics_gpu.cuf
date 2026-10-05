@@ -5,6 +5,7 @@ module insitu_statistics_gpu
   use ieee_arithmetic, only: ieee_is_finite
   use insitu_resource_budget, only: resource_budget,configure_budget,reserve_bytes,checked_bytes
   use iso_c_binding, only: c_int,c_char,c_size_t
+  use insitu_fields, only: insitu_owned_counts,insitu_node_weights
   implicit none
   private
   public :: accumulate_statistics_gpu,release_statistics_gpu
@@ -16,6 +17,7 @@ module insitu_statistics_gpu
   public :: download_statistics_gpu_means
   public :: download_statistics_gpu_output
   public :: statistics_device_bytes
+  public :: admit_statistics_device_allocation
   integer(int64),save :: sample_calls=0,output_downloads=0
   integer(int64),save :: device_budget=0,device_headroom=0
   interface
@@ -26,18 +28,38 @@ module insitu_statistics_gpu
     end function
   end interface
   ! State: previous rho/u, time/mass weights, two means, two symmetric central matrices.
-  ! Only half-open owned nodes are stored; no solver halo or duplicate plane is modified.
+  ! Owned nodes include a nonperiodic upper wall; solver halos/duplicates are untouched.
   real(8),allocatable,device,save :: state_d(:,:,:,:),output_d(:,:,:,:)
   real(8),allocatable,device,save :: spatial_d(:)
+  real(8),allocatable,device,save :: node_weight_d(:)
   integer,allocatable,device,save :: invalid_d(:,:,:)
   real(8),save :: previous_time=0.d0,saved_window(2)=0.d0
   logical,save :: has_previous=.false.
 contains
+  integer function owned_ny() result(ny)
+    integer :: extent(3)
+    extent=insitu_owned_counts()
+    ny=extent(2)
+  end function
+
+  subroutine initialize_node_weights()
+    use commvar, only: jm,flowtype
+    real(8) :: weights(0:jm)
+    integer :: status
+    call insitu_node_weights(weights)
+    if(trim(flowtype)/='channel') weights=1.d0
+    allocate(node_weight_d(0:owned_ny()-1),stat=status)
+    call require_cuda(merge(cudaSuccess,cudaErrorMemoryAllocation,status==0),'statistics node weights allocation')
+    node_weight_d=weights(0:owned_ny()-1)
+    call require_cuda(cudaGetLastError(),'statistics node weights copy')
+  end subroutine
+
   integer(int64) function statistics_device_bytes() result(bytes)
     bytes=0
     if(allocated(state_d)) bytes=bytes+8*size(state_d,kind=int64)
     if(allocated(output_d)) bytes=bytes+8*size(output_d,kind=int64)
     if(allocated(spatial_d)) bytes=bytes+8*size(spatial_d,kind=int64)
+    if(allocated(node_weight_d)) bytes=bytes+8*size(node_weight_d,kind=int64)
     if(allocated(invalid_d)) bytes=bytes+4*size(invalid_d,kind=int64)
   end function
 
@@ -47,7 +69,7 @@ contains
     logical,intent(out) :: ok
     ok=.false.
     if(.not.is_contiguous(values)) return
-    if(any(shape(values)/=[im,jm,km,34])) return
+    if(any(shape(values)/=[im,owned_ny(),km,34])) return
     if(.not.allocated(state_d).or..not.has_previous) return
     call require_cuda(cudaDeviceSynchronize(),'packed statistics save synchronization')
     values(:,:,:,1)=saved_window(1)
@@ -66,7 +88,7 @@ contains
     real(8) :: sample_time
     ok=.false.
     if(.not.is_contiguous(values)) return
-    if(any(shape(values)/=[im,jm,km,34])) return
+    if(any(shape(values)/=[im,owned_ny(),km,34])) return
     if(.not.all(ieee_is_finite([time,window])).or.window(2)<=window(1)) return
     sample_time=values(1,1,1,3)
     if(.not.ieee_is_finite(sample_time).or.sample_time>time) return
@@ -85,7 +107,7 @@ contains
     ok=.true.
   end subroutine
 
-  subroutine admit_statistics_device_allocation()
+  subroutine admit_statistics_device_allocation(extra_bytes)
     use mpi
     use commvar, only: im,jm,km
     integer :: node,rank,nrank,i,ierr,device,status
@@ -96,12 +118,17 @@ contains
     integer(c_size_t) :: free_memory,total_memory
     type(resource_budget) :: budget
     logical :: ok
+    integer(int64),optional,intent(in) :: extra_bytes
     if(device_budget==0) return
-    call checked_bytes(int([im,jm,km],int64), &
+    call checked_bytes(int([im,owned_ny(),km],int64), &
       int(71*storage_size(0.d0)/8+storage_size(0)/8,int64),request,ok)
     call guard(ok,'statistics byte count overflow')
-    call guard(request<=huge(request)-48_int64,'statistics reduction byte count overflow')
-    request=request+48_int64
+    call guard(request<=huge(request)-48_int64-8_int64*owned_ny(),'statistics reduction byte count overflow')
+    request=request+48_int64+8_int64*owned_ny()
+    if(present(extra_bytes)) then
+      call guard(extra_bytes>=0.and.extra_bytes<=huge(request)-request,'statistics extra byte count overflow')
+      request=request+extra_bytes
+    endif
     call require_cuda(cudaGetDevice(device),'budget device query')
     pci=repeat(achar(0,kind=c_char),32)
     status=pci_bus_id(pci,32_c_int,int(device,c_int))
@@ -167,7 +194,7 @@ contains
     if(.not.allocated(state_d).or..not.has_previous) return
     if(len_trim(batch)==0.or.len_trim(batch)>64.or.step<0) return
     if(.not.ieee_is_finite(time).or.previous_time>time) return
-    allocate(state(0:im-1,0:jm-1,0:km-1,30),stat=status)
+    allocate(state(0:im-1,0:owned_ny()-1,0:km-1,30),stat=status)
     if(status/=0) return
     call require_cuda(cudaDeviceSynchronize(),'state save synchronization')
     state=state_d
@@ -200,7 +227,7 @@ contains
     if(magic/='ASTRGS01'.or.any(header/=state_header()).or.identity/=batch.or.saved_step/=step) return
     if(.not.all(ieee_is_finite([clock,sample_time,interval]))) return
     if(clock/=time.or.sample_time>time.or.any(interval/=window)) return
-    allocate(state(0:im-1,0:jm-1,0:km-1,30),stat=status)
+    allocate(state(0:im-1,0:owned_ny()-1,0:km-1,30),stat=status)
     if(status/=0) return
     read(unit,iostat=status) state
     if(status/=0) return
@@ -214,7 +241,7 @@ contains
     logical,intent(out) :: ok
     integer :: status,a,b,base,ierr
     ok=.false.
-    if(any(shape(state)/=[im,jm,km,30])) return
+    if(any(shape(state)/=[im,owned_ny(),km,30])) return
     if(.not.all(ieee_is_finite(state))) return
     if(any(state(:,:,:,1)<=0.d0).or.any(state(:,:,:,5:6)<0.d0)) return
     if(any((state(:,:,:,5)==0.d0).neqv.(state(:,:,:,6)==0.d0))) return
@@ -231,17 +258,18 @@ contains
     enddo
     ! File validation is complete before modifying any existing device state.
     if(allocated(state_d)) then
-      if(any(shape(state_d)/=[im,jm,km,30])) return
+      if(any(shape(state_d)/=[im,owned_ny(),km,30])) return
     else
       call admit_statistics_device_allocation()
-      allocate(state_d(0:im-1,0:jm-1,0:km-1,30),output_d(0:im-1,0:jm-1,0:km-1,41), &
-               invalid_d(0:im-1,0:jm-1,0:km-1),spatial_d(6),stat=status)
+      allocate(state_d(0:im-1,0:owned_ny()-1,0:km-1,30),output_d(0:im-1,0:owned_ny()-1,0:km-1,41), &
+               invalid_d(0:im-1,0:owned_ny()-1,0:km-1),spatial_d(6),stat=status)
       if(status/=0) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+      call initialize_node_weights()
     endif
     state_d=state
     call require_cuda(cudaGetLastError(),'state restore copy')
     call require_cuda(cudaDeviceSynchronize(),'state restore synchronization')
-    call refresh_results_kernel<<<dim3((im+511)/512,jm,km),dim3(512,1,1)>>>(im,jm,km)
+    call refresh_results_kernel<<<dim3((im+511)/512,owned_ny(),km),dim3(512,1,1)>>>(im,owned_ny(),km)
     call require_cuda(cudaGetLastError(),'restored result launch')
     call require_cuda(cudaDeviceSynchronize(),'restored result completion')
     previous_time=sample_time
@@ -379,11 +407,13 @@ contains
   subroutine download_statistics_gpu_means(means,covered)
     use commvar, only: im,jm,km
     use mpi
-    real(8),intent(out) :: means(0:im-1,0:jm-1,0:km-1,7)
+    real(8),intent(out) :: means(0:,0:,0:,:)
     logical,intent(out) :: covered
     real(8) :: duration
     integer :: ierr
     covered=.false.
+    call require_cuda(merge(cudaSuccess,cudaErrorInvalidValue, &
+      all(shape(means)==[im,owned_ny(),km,7])),'statistics mean download shape')
     means=0.d0
     if(.not.allocated(state_d)) return
     duration=state_d(0,0,0,5)
@@ -401,16 +431,17 @@ contains
     use commvar, only: im,jm,km
     use mpi
     real(8),intent(in) :: t,window(2)
-    real(8),optional,intent(out) :: output(0:im-1,0:jm-1,0:km-1,41)
+    real(8),optional,intent(out) :: output(0:,0:,0:,:)
     real(8) :: weights(2),duration
     integer :: status,ierr
-    integer :: invalid(0:im-1,0:jm-1,0:km-1)
+    integer :: invalid(0:im-1,0:owned_ny()-1,0:km-1)
     logical :: ok
     if(.not.allocated(state_d)) then
       call admit_statistics_device_allocation()
-      allocate(state_d(0:im-1,0:jm-1,0:km-1,30),output_d(0:im-1,0:jm-1,0:km-1,41), &
-               invalid_d(0:im-1,0:jm-1,0:km-1),spatial_d(6),stat=status)
+      allocate(state_d(0:im-1,0:owned_ny()-1,0:km-1,30),output_d(0:im-1,0:owned_ny()-1,0:km-1,41), &
+               invalid_d(0:im-1,0:owned_ny()-1,0:km-1),spatial_d(6),stat=status)
       if(status/=0) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+      call initialize_node_weights()
       saved_window=window
     endif
     if(any(window/=saved_window)) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
@@ -419,7 +450,7 @@ contains
       call clipped_trapezoid(previous_time,t,[1.d0,0.d0],[0.d0,1.d0],window(1),window(2),weights,duration,ok)
       if(.not.ok) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
     endif
-    call statistics_kernel<<<dim3((im+511)/512,jm,km),dim3(512,1,1)>>>(im,jm,km, &
+    call statistics_kernel<<<dim3((im+511)/512,owned_ny(),km),dim3(512,1,1)>>>(im,owned_ny(),km, &
       weights(1),weights(2),has_previous)
     status=cudaGetLastError()
     call require_cuda(status,'kernel launch')
@@ -432,6 +463,8 @@ contains
     endif
     ! Only the explicit independent-oracle caller requests the full device result.
     if(present(output)) then
+      call require_cuda(merge(cudaSuccess,cudaErrorInvalidValue, &
+        all(shape(output)==[im,owned_ny(),km,41])),'statistics oracle output shape')
       output=output_d
       status=cudaGetLastError()
       call require_cuda(status,'result copy')
@@ -450,7 +483,9 @@ contains
 
   subroutine download_statistics_gpu_output(output)
     use commvar, only: im,jm,km
-    real(8),intent(out) :: output(0:im-1,0:jm-1,0:km-1,41)
+    real(8),intent(out) :: output(0:,0:,0:,:)
+    call require_cuda(merge(cudaSuccess,cudaErrorInvalidValue, &
+      all(shape(output)==[im,owned_ny(),km,41])),'statistics final output shape')
     output=output_d
     call require_cuda(cudaGetLastError(),'requested statistics output copy')
     output_downloads=output_downloads+1
@@ -470,9 +505,9 @@ contains
       j=mod(n/im,jm)
       k=n/(im*jm)
       if(component<=3) then
-        value=value+state_d(i,j,k,component+1)
+        value=value+state_d(i,j,k,component+1)*node_weight_d(j)
       else
-        value=value+output_d(i,j,k,15+4*(component-4))
+        value=value+output_d(i,j,k,15+4*(component-4))*node_weight_d(j)
       endif
     enddo
     scratch(lane)=value
@@ -487,7 +522,7 @@ contains
   end subroutine
 
   subroutine spatial_statistics_gpu(cell_volume,volume,velocity,variance,ok)
-    use commvar, only: im,jm,km
+    use commvar, only: im,jm,km,flowtype
     use mpi
     real(8),intent(in) :: cell_volume
     real(8),intent(out) :: volume,velocity(3),variance(3)
@@ -501,13 +536,22 @@ contains
     call MPI_Allreduce(bad,any_bad,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
     if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
     if(any_bad/=0) return
-    call spatial_kernel<<<6,256>>>(im,jm,km)
+    ! Preserve the established uniform-grid reduction ordering outside Channel.
+    call spatial_kernel<<<6,256>>>(im,owned_ny(),km)
     call require_cuda(cudaGetLastError(),'spatial reduction launch')
     call require_cuda(cudaDeviceSynchronize(),'spatial reduction completion')
     local(2:7)=spatial_d
     call require_cuda(cudaGetLastError(),'spatial reduction copy')
-    local(1)=real(im,8)*real(jm,8)*real(km,8)
-    local=local*cell_volume
+    if(trim(flowtype)=='channel') then
+      block
+        real(8) :: weights(0:jm)
+        call insitu_node_weights(weights)
+        local(1)=real(im,8)*real(km,8)*sum(weights(0:owned_ny()-1))
+      end block
+    else
+      local(1)=real(im,8)*real(jm,8)*real(km,8)
+      local=local*cell_volume
+    endif
     bad=merge(0,1,all(ieee_is_finite(local)))
     call MPI_Allreduce(bad,any_bad,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
     if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
@@ -522,7 +566,7 @@ contains
   end subroutine
 
   subroutine release_statistics_gpu()
-    if(allocated(state_d)) deallocate(state_d,output_d,invalid_d,spatial_d)
+    if(allocated(state_d)) deallocate(state_d,output_d,invalid_d,spatial_d,node_weight_d)
     has_previous=.false.
   end subroutine
 end module

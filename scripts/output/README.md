@@ -209,11 +209,18 @@ cached fields or accumulated statistics. These are bounded correctness gates,
 not production I/O timings or wider derivative/repartition admission.
 
 `input.output.tgv.example` is a **16x16x16-cell short-test** configuration,
-not a production output-frequency recommendation. Disable the legacy field
-sequence/slice flags in the controller, prepare `outdat/new` as a new directory,
-set `ASTR_OUTPUT_CONFIG=datin/input.output`, and launch the normal
+not a production output-frequency recommendation. Copy it to `datin/input.output`,
+prepare `outdat/new` as a new directory and launch the normal
 `astr run datin/input.tgv` command. Runtime `usegpu` still selects CPU or GPU.
-Without `ASTR_OUTPUT_CONFIG`, this path does not change legacy output.
+Completed-step output is now the only normal field/checkpoint entry. The default
+configuration file is mandatory; `ASTR_OUTPUT_CONFIG` is an optional path
+override, not an activation switch. Missing/invalid files fail without fallback.
+Legacy controller `lwsequ/lwslic` flags are ignored with a notice. `feqchkpt`
+still controls controller reload/CFL checks, not the new checkpoint schedule.
+Set all three product `enabled` values false to run without these files;
+provide the required valid configuration/budgets even for that choice.
+Legacy checkpoints, q sidecars and old paired restart batches are not accepted.
+Keep `lrestart=f` and select the new complete directory via `restore_directory`.
 
 Volume and slices have independent `mode='steps'|'time'` schedules. Set only
 the corresponding `interval_steps` or `interval_time`, not both. Initial/final
@@ -299,8 +306,9 @@ Its controlled device scratch is
 `11*8*min(4096,ceil(local_cells/64))` bytes and counts against the shared output
 device budget, together with selected statistics and frame packing. Each
 diagnostic evaluation downloads 88 bytes, not a flow array. This is not a
-cross-topology bitwise guarantee or a performance improvement claim. Without
-`ASTR_OUTPUT_CONFIG`, the legacy atomic reduction and file behavior are unchanged.
+cross-topology bitwise guarantee or a performance improvement claim. The previous
+opt-in/legacy reduction selection is historical; the mandatory native output
+entry now owns the registered continuation state and conservation history.
 
 Each continuation creates an exclusive
 `air5_conservation_from_step############.dat` in the output root. A resumed
@@ -514,7 +522,7 @@ The reserved restore probe described above also accepts this bounded SBLI gate.
 
 ### Optional Native TGV Rendering And Continuation
 
-Set both `ASTR_OUTPUT_CONFIG=datin/input.output` and
+Provide `datin/input.output` and set
 `ASTR_INSITU_CONFIG=datin/input.insitu` to use the existing GPU EGL TGV preset
 with completed-step native checkpoints. See `../insitu/README.md` for the
 renderer build and configuration. Create the renderer output directory first.

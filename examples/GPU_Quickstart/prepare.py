@@ -123,6 +123,9 @@ def prepare(case, destination, mode="gpu", np=1, topology="1,1,1",
     shutil.copytree(source, datin)
     (datin / "input.dat").write_text("\n".join(lines) + "\n", encoding="ascii")
     (datin / "controller").write_text("\n".join(controller) + "\n", encoding="ascii")
+    if case in ("tgv", "channel", "flatplate"):
+        shutil.copyfile(HERE / "input.output", datin / "input.output")
+        (destination / "outdat/output").mkdir(parents=True)
     if case == "flatplate":
         flatplate_data(datin, grid)
     elif case == "air5_flatplate":

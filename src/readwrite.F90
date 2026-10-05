@@ -786,6 +786,7 @@ module readwrite
     ! local data
     character(len=64) :: inputfile
     integer :: fh
+    logical,save :: legacy_output_reported=.false.
     !
     inputfile='datin/controller'
     !
@@ -816,6 +817,13 @@ module readwrite
     call bcast(feqlist)
     call bcast(feqavg)
     call bcast(deltat)
+    if((lwsequ.or.lwslic).and..not.legacy_output_reported) then
+      if(mpirank==0) write(*,'(a)') &
+        'ASTR_OUTPUT legacy lwsequ/lwslic are ignored; configure volume/slices in input.output'
+      legacy_output_reported=.true.
+    endif
+    lwsequ=.false.
+    lwslic=.false.
     !
   end subroutine readcont
   !+-------------------------------------------------------------------+

@@ -71,6 +71,9 @@ set(ASTR_SOURCES
   insitu_checkpoint_batch.F90
   insitu_time_integral.F90
   insitu_velocity_statistics.F90
+  insitu_wall_statistics.F90
+  insitu_wall_separation.F90
+  insitu_air5_statistics.F90
   insitu_spatial_statistics.F90
   interp.F90
   mainloop.F90
@@ -151,6 +154,8 @@ endif()
 
 if(ASTR_WITH_CUDA)
   list(APPEND ASTR_GPU_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_statistics_gpu.cuf)
+  list(APPEND ASTR_GPU_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_wall_statistics_gpu.cuf)
+  list(APPEND ASTR_GPU_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_air5_statistics_gpu.cuf)
 endif()
 
 if(ASTR_WITH_AIR5_CHEMISTRY)
@@ -304,6 +309,12 @@ if(BUILD_TESTING)
   set_target_properties(insitu_time_integral_probe PROPERTIES
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_integral_modules")
   target_include_directories(insitu_time_integral_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/insitu_integral_modules")
+
+  add_executable(insitu_wall_separation_probe EXCLUDE_FROM_ALL
+    insitu_wall_separation.F90 ../tests/gpu_validation/insitu_wall_separation_probe.F90)
+  set_target_properties(insitu_wall_separation_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_separation_modules")
+  target_include_directories(insitu_wall_separation_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/insitu_separation_modules")
 
   add_executable(insitu_schedule_probe EXCLUDE_FROM_ALL
     insitu_schedule.F90 ../tests/gpu_validation/insitu_schedule_probe.F90)
@@ -693,6 +704,7 @@ if(ASTR_WITH_CATALYST)
     ../scripts/insitu/tgv_pipeline.py
     ../scripts/insitu/tgv_streamlines.py
     ../scripts/insitu/egl_identity.py
+    ../scripts/insitu/image_publication.py
     DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/insitu)
 endif()
 

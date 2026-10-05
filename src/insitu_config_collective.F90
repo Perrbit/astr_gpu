@@ -13,10 +13,10 @@ contains
     logical,intent(out) :: ok
     character(*),intent(out) :: message
     type(insitu_options) :: candidate
-    logical :: parsed,flags(5),root_flags(5),same,all_same
-    integer(int64) :: counts(4),root_counts(4)
+    logical :: parsed,flags(9),root_flags(9),same,all_same
+    integer(int64) :: counts(5),root_counts(5)
     real(real64) :: times(3),root_times(3)
-    character(1024) :: paths(5),root_paths(5)
+    character(1024) :: paths(8),root_paths(8)
     character(16) :: root_mode
     character(1024) :: parse_message
     integer :: rank,first_bad,local_bad,ierr,int_type,real_type
@@ -38,12 +38,13 @@ contains
 
     ! Typed values avoid derived-type padding and compiler-specific serialization.
     flags=[candidate%enabled,candidate%statistics,candidate%render, &
-      candidate%initial_frame,candidate%final_frame]
+      candidate%initial_frame,candidate%final_frame,candidate%air5_volume_statistics,candidate%air5_volume_reduction, &
+      candidate%wall_mean_render,candidate%wall_separation]
     counts=[candidate%step_interval,candidate%host_budget_bytes, &
-      candidate%device_budget_bytes,candidate%device_reserve_bytes]
+      candidate%device_budget_bytes,candidate%device_reserve_bytes,int(candidate%slice_index,int64)]
     times=[candidate%time_interval,candidate%statistics_window]
     paths=[candidate%implementation_path,candidate%pipeline_file,candidate%output_directory, &
-      candidate%batch_prefix,candidate%restore_batch]
+      candidate%batch_prefix,candidate%restore_batch,candidate%derivative_backend,candidate%products,candidate%slice_axis]
     root_flags=flags; root_counts=counts; root_times=times; root_paths=paths
     root_mode=candidate%schedule_mode
     call MPI_Type_match_size(MPI_TYPECLASS_INTEGER,storage_size(counts(1))/8,int_type,ierr)

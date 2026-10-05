@@ -1,0 +1,213 @@
+module insitu_air5_statistics_gpu
+  use cudafor
+  use mpi
+  use iso_fortran_env, only: int64
+  use insitu_statistics_gpu, only: admit_statistics_device_allocation
+  implicit none
+  private
+  public :: push_air5_statistics_gpu,pack_air5_statistics_gpu,restore_air5_statistics_gpu,release_air5_statistics_gpu
+  real(8),allocatable,device,save :: state_d(:,:,:,:),weight_d(:,:,:),reduction_d(:)
+  integer,allocatable,device,save :: invalid_d(:,:,:)
+  integer,save :: layout(3)=0
+contains
+  subroutine check(status,where)
+    integer,intent(in) :: status
+    character(*),intent(in) :: where
+    integer :: ignored
+    if(status==cudaSuccess) return
+    write(*,*) 'in-situ AIR5 volume CUDA failure: ',where,trim(cudaGetErrorString(status))
+    call MPI_Abort(MPI_COMM_WORLD,1,ignored)
+  end subroutine
+
+  subroutine allocate_state(extent,weights)
+    integer,intent(in) :: extent(3)
+    real(8),intent(in) :: weights(:,:,:)
+    integer :: status
+    integer(int64) :: bytes
+    if(allocated(state_d)) then
+      call check(merge(cudaSuccess,cudaErrorInvalidValue,all(layout==extent)),'fixed volume statistics shape')
+      return
+    endif
+    layout=extent
+    call check(merge(cudaSuccess,cudaErrorInvalidValue,all(shape(weights)==layout).and.all(layout>0)), &
+      'volume statistics weight shape')
+    bytes=product(int(extent,int64))*(121_int64*8+4)+64
+    call admit_statistics_device_allocation(bytes)
+    allocate(state_d(extent(1),extent(2),extent(3),120),weight_d(extent(1),extent(2),extent(3)), &
+      invalid_d(extent(1),extent(2),extent(3)),reduction_d(8),stat=status)
+    call check(merge(cudaSuccess,cudaErrorMemoryAllocation,status==0),'allocate volume accumulators')
+    state_d=0.d0; weight_d=weights
+    call check(cudaGetLastError(),'initialize volume accumulators and physical measures')
+  end subroutine
+
+  attributes(device) subroutine current_sample(i,j,k,g,density,u)
+    use commarray_gpu, only: rho_d,vel_d,tmp_d,tve_d,spc_d
+    integer,intent(in) :: i,j,k,g
+    real(8),intent(out) :: density,u(3)
+    density=1.d0
+    select case(g)
+    case(1)
+      density=rho_d(i,j,k); u=vel_d(i,j,k,:)
+    case(2)
+      u=[tmp_d(i,j,k),tve_d(i,j,k),spc_d(i,j,k,1)]
+    case(3)
+      u=spc_d(i,j,k,2:4)
+    case(4)
+      u=[spc_d(i,j,k,5),0.d0,0.d0]
+    end select
+  end subroutine
+
+  attributes(global) launch_bounds(512) subroutine volume_statistics_kernel(nx,ny,nz,w0,w1,previous)
+    integer,value :: nx,ny,nz
+    real(8),value :: w0,w1
+    logical,value :: previous
+    integer :: i,j,k,g,base,e,f,a,b,m,total_slot,mean_slot,central_slot,offset
+    real(8) :: s(30),u(3),density,rho,current(3),delta(3),w,total,new_total,ratio,factor,entry
+    i=(blockidx%x-1)*blockdim%x+threadidx%x
+    j=blockidx%y; k=blockidx%z
+    if(i>nx.or.j>ny.or.k>nz) return
+    invalid_d(i,j,k)=0
+    do g=1,4
+      base=30*(g-1)
+      call current_sample(i-1,j-1,k-1,g,density,current)
+      if(.not.(density>0.d0.and.density<=huge(density)).or.any(.not.(abs(current)<=huge(density)))) then
+        invalid_d(i,j,k)=1; return
+      endif
+      s=0.d0
+      if(previous) s=state_d(i,j,k,base+1:base+30)
+      do e=1,2
+        w=w0; rho=s(1); u=s(2:4)
+        if(e==2) then
+          w=w1; rho=density; u=current
+        endif
+        if(w==0.d0) cycle
+        do f=1,2
+          total_slot=4+f; mean_slot=7+3*(f-1); central_slot=13+9*(f-1)
+          if(f==2) w=w*rho
+          total=s(total_slot); new_total=total+w
+          if(.not.(w>0.d0.and.new_total>0.d0.and.new_total<=huge(w))) then
+            invalid_d(i,j,k)=1; return
+          endif
+          if(total==0.d0) then
+            s(mean_slot:mean_slot+2)=u
+          else
+            delta=u-s(mean_slot:mean_slot+2)
+            ratio=w/new_total; factor=(total/new_total)*w
+            s(mean_slot:mean_slot+2)=s(mean_slot:mean_slot+2)+ratio*delta
+            do b=1,3
+            do a=1,b
+              offset=central_slot+(b-1)*3+a-1
+              entry=s(offset)+(factor*delta(a))*delta(b)
+              s(offset)=entry; s(central_slot+(a-1)*3+b-1)=entry
+            enddo
+            enddo
+          endif
+          s(total_slot)=new_total
+        enddo
+      enddo
+      s(1)=density; s(2:4)=current
+      do m=1,30
+        if(.not.(abs(s(m))<=huge(w))) then
+          invalid_d(i,j,k)=1; return
+        endif
+      enddo
+      if(any(s([13,17,21,22,26,30])<0.d0)) then
+        invalid_d(i,j,k)=1; return
+      endif
+      state_d(i,j,k,base+1:base+30)=s
+    enddo
+  end subroutine
+
+  attributes(global) launch_bounds(256) subroutine volume_reduction_kernel(nx,ny,nz)
+    integer,value :: nx,ny,nz
+    real(8),shared :: scratch(256)
+    real(8) :: value,duration,density,u(3),weight
+    integer :: lane,component,node,i,j,k,stride
+    lane=threadidx%x; component=blockidx%x; value=0.d0
+    do node=lane-1,nx*ny*nz-1,256
+      i=mod(node,nx)+1; j=mod(node/nx,ny)+1; k=node/(nx*ny)+1
+      if(component==8) then
+        value=value+real(invalid_d(i,j,k),8)
+        cycle
+      endif
+      if(invalid_d(i,j,k)/=0) cycle
+      weight=weight_d(i,j,k)
+      if(component==1) then
+        value=value+weight
+      elseif(component<=4) then
+        call current_sample(i-1,j-1,k-1,1,density,u)
+        value=value+weight*u(component-1)
+      else
+        duration=state_d(i,j,k,5)
+        if(duration>0.d0) value=value+weight*(state_d(i,j,k,13+4*(component-5))/duration)
+      endif
+    enddo
+    scratch(lane)=value
+    call syncthreads()
+    stride=128
+    do while(stride>0)
+      if(lane<=stride) scratch(lane)=scratch(lane)+scratch(lane+stride)
+      call syncthreads()
+      stride=stride/2
+    enddo
+    if(lane==1) reduction_d(component)=scratch(1)
+  end subroutine
+
+  subroutine push_air5_statistics_gpu(extent,weights,time_weights,previous,volume,velocity,variance)
+    integer,intent(in) :: extent(3)
+    real(8),intent(in) :: weights(:,:,:),time_weights(2)
+    logical,intent(in) :: previous
+    real(8),intent(out) :: volume,velocity(3),variance(3)
+    real(8) :: local(8),global(8)
+    integer :: ierr
+    call allocate_state(extent,weights)
+    call volume_statistics_kernel<<<dim3((layout(1)+511)/512,layout(2),layout(3)),dim3(512,1,1)>>>( &
+      layout(1),layout(2),layout(3),time_weights(1),time_weights(2),previous)
+    call check(cudaGetLastError(),'volume statistics kernel launch')
+    call check(cudaDeviceSynchronize(),'volume statistics kernel completion')
+    call volume_reduction_kernel<<<8,256>>>(layout(1),layout(2),layout(3))
+    call check(cudaGetLastError(),'volume physical reduction launch')
+    call check(cudaDeviceSynchronize(),'volume physical reduction completion')
+    local=reduction_d
+    call check(cudaGetLastError(),'eight-scalar volume diagnostic download')
+    call MPI_Allreduce(local,global,8,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call check(merge(cudaSuccess,cudaErrorInvalidValue,ierr==MPI_SUCCESS.and.global(8)==0.d0.and.global(1)>0.d0), &
+      'valid global volume statistics reduction')
+    volume=global(1); velocity=global(2:4)/volume; variance=global(5:7)/volume
+    call check(merge(cudaSuccess,cudaErrorInvalidValue,all(abs([volume,velocity,variance])<=huge(volume)).and. &
+      all(variance>=0.d0)),'finite global volume diagnostics')
+  end subroutine
+
+  subroutine pack_air5_statistics_gpu(values,window,time)
+    real(8),contiguous,intent(out) :: values(:,:,:,:)
+    real(8),intent(in) :: window(2),time
+    integer :: g,base
+    call check(merge(cudaSuccess,cudaErrorInvalidValue,allocated(state_d)),'volume accumulator initialized')
+    call check(merge(cudaSuccess,cudaErrorInvalidValue,all(shape(values)==[layout,136])),'volume pack shape')
+    call check(cudaDeviceSynchronize(),'volume state pack synchronization')
+    do g=1,4
+      base=34*(g-1)
+      values(:,:,:,base+1)=window(1); values(:,:,:,base+2)=window(2)
+      values(:,:,:,base+3)=time; values(:,:,:,base+34)=1.d0
+      values(:,:,:,base+4:base+33)=state_d(:,:,:,30*g-29:30*g)
+    enddo
+    call check(cudaGetLastError(),'volume state download')
+  end subroutine
+
+  subroutine restore_air5_statistics_gpu(values,weights)
+    real(8),contiguous,intent(in) :: values(:,:,:,:),weights(:,:,:)
+    integer :: g
+    call allocate_state(shape(weights),weights)
+    call check(merge(cudaSuccess,cudaErrorInvalidValue,all(shape(values)==[layout,136])),'volume restore shape')
+    do g=1,4
+      state_d(:,:,:,30*g-29:30*g)=values(:,:,:,34*g-30:34*g-1)
+    enddo
+    call check(cudaGetLastError(),'volume restored state upload')
+    call check(cudaDeviceSynchronize(),'volume restored state completion')
+  end subroutine
+
+  subroutine release_air5_statistics_gpu()
+    if(allocated(state_d)) deallocate(state_d,weight_d,invalid_d,reduction_d)
+    layout=0
+  end subroutine
+end module

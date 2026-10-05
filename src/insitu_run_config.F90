@@ -7,7 +7,15 @@ module insitu_run_config
   type :: insitu_options
     logical :: enabled=.false.,statistics=.false.,render=.false.
     logical :: initial_frame=.false.,final_frame=.false.
+    logical :: air5_volume_statistics=.false.
+    logical :: air5_volume_reduction=.false.
+    logical :: wall_mean_render=.false.
+    logical :: wall_separation=.false.
     character(16) :: schedule_mode='steps'
+    character(16) :: derivative_backend='cpu'
+    character(16) :: products='all'
+    character(16) :: slice_axis='z'
+    integer :: slice_index=4
     integer(int64) :: step_interval=0,host_budget_bytes=0,device_budget_bytes=0,device_reserve_bytes=0
     real(real64) :: time_interval=0,statistics_window(2)=0
     character(1024) :: implementation_path='',pipeline_file='',output_directory=''
@@ -19,20 +27,29 @@ contains
     type(insitu_options),intent(inout) :: options
     logical,intent(out) :: ok
     character(*),intent(out) :: message
-    logical :: enabled,statistics,render,initial_frame,final_frame
-    character(16) :: schedule_mode
+    logical :: enabled,statistics,render,initial_frame,final_frame,air5_volume_statistics,air5_volume_reduction,wall_mean_render
+    logical :: wall_separation
+    character(16) :: schedule_mode,derivative_backend,products,slice_axis
     integer(int64) :: step_interval,host_budget_bytes,device_budget_bytes,device_reserve_bytes
     real(real64) :: time_interval,statistics_window(2)
     character(1024) :: implementation_path,pipeline_file,output_directory,batch_prefix,restore_batch
-    integer :: unit,status,closed
+    integer :: unit,status,closed,slice_index
     namelist /insitu_run/ enabled,statistics,render,initial_frame,final_frame, &
       schedule_mode,step_interval,time_interval,statistics_window,host_budget_bytes, &
-      device_budget_bytes,device_reserve_bytes,implementation_path,pipeline_file,output_directory,batch_prefix,restore_batch
+      device_budget_bytes,device_reserve_bytes,implementation_path,pipeline_file,output_directory,batch_prefix,restore_batch, &
+      derivative_backend,products,slice_axis,slice_index,air5_volume_statistics,air5_volume_reduction,wall_mean_render,wall_separation
     ok=.false.
     message=''
     enabled=.false.; statistics=.false.; render=.false.
     initial_frame=.false.; final_frame=.false.
+    air5_volume_statistics=.false.
+    air5_volume_reduction=.false.
+    wall_mean_render=.false.
+    wall_separation=.false.
     schedule_mode='steps'
+    derivative_backend='cpu'
+    products='all'
+    slice_axis='z'; slice_index=4
     step_interval=0; time_interval=0; statistics_window=0
     host_budget_bytes=0; device_budget_bytes=0; device_reserve_bytes=0
     implementation_path=''; pipeline_file=''; output_directory=''
@@ -48,6 +65,30 @@ contains
     if(.not.all(ieee_is_finite([time_interval,statistics_window]))) return
     message='resource budgets and device reserve must not be negative'
     if(min(host_budget_bytes,device_budget_bytes,device_reserve_bytes)<0) return
+    message='derivative_backend must be cpu or gpu'
+    if(derivative_backend/='cpu'.and.derivative_backend/='gpu') return
+    message='invalid products selection'
+    if(products/='all'.and.products/='q_surface'.and.products/='streamlines'.and. &
+      products/='q_streamlines'.and.products/='velocity_slice'.and.products/='channel_walls'.and. &
+      products/='air5_walls') return
+    message='air5_volume_statistics requires enabled statistics and products=air5_walls'
+    if(air5_volume_statistics.and.(.not.enabled.or..not.statistics.or.products/='air5_walls')) return
+    message='air5_volume_reduction requires air5_volume_statistics'
+    if(air5_volume_reduction.and..not.air5_volume_statistics) return
+    message='wall_mean_render requires enabled statistics, rendering and a wall product'
+    if(wall_mean_render.and.(.not.enabled.or..not.statistics.or..not.render.or. &
+      (products/='channel_walls'.and.products/='air5_walls'))) return
+    message='wall_separation requires enabled AIR5 wall statistics'
+    if(wall_separation.and.(.not.enabled.or..not.statistics.or.products/='air5_walls')) return
+    message='slice_axis must be x, y or z and slice_index must not be negative'
+    if((slice_axis/='x'.and.slice_axis/='y'.and.slice_axis/='z').or.slice_index<0) return
+    message='nondefault slice settings require products=velocity_slice'
+    if(products/='velocity_slice'.and.(slice_axis/='z'.or.slice_index/=4)) return
+    message='selected products require derivative_backend=gpu'
+    if(enabled.and.render.and.products/='all'.and.products/='channel_walls'.and. &
+      products/='air5_walls'.and.derivative_backend/='gpu') return
+    message='wall products require CPU wall diagnostics'
+    if(enabled.and.(products=='channel_walls'.or.products=='air5_walls').and.derivative_backend/='cpu') return
     message='in-situ path or mode exceeds supported character capacity'
     if(len_trim(implementation_path)>=len(implementation_path).or. &
        len_trim(pipeline_file)>=len(pipeline_file).or. &
@@ -83,7 +124,14 @@ contains
     endif
     options%enabled=enabled; options%statistics=statistics; options%render=render
     options%initial_frame=initial_frame; options%final_frame=final_frame
+    options%air5_volume_statistics=air5_volume_statistics
+    options%air5_volume_reduction=air5_volume_reduction
+    options%wall_mean_render=wall_mean_render
+    options%wall_separation=wall_separation
     options%schedule_mode=schedule_mode; options%step_interval=step_interval
+    options%derivative_backend=derivative_backend
+    options%products=products
+    options%slice_axis=slice_axis; options%slice_index=slice_index
     options%time_interval=time_interval; options%statistics_window=statistics_window
     options%host_budget_bytes=host_budget_bytes; options%device_budget_bytes=device_budget_bytes
     options%device_reserve_bytes=device_reserve_bytes

@@ -1,0 +1,158 @@
+module insitu_wall_statistics_gpu
+  use cudafor
+  use iso_fortran_env, only: int64
+  use insitu_statistics_gpu, only: admit_statistics_device_allocation
+  implicit none
+  private
+  public :: push_wall_statistics_gpu,pack_wall_statistics_gpu,restore_wall_statistics_gpu,release_wall_statistics_gpu
+  real(8),allocatable,device,save :: state_d(:,:,:,:),frame_d(:,:,:,:)
+  integer,allocatable,device,save :: invalid_d(:,:,:)
+  integer,save :: layout(4)=0
+  logical,save :: initialized=.false.
+contains
+  subroutine check(status,where)
+    use mpi
+    integer,intent(in) :: status
+    character(*),intent(in) :: where
+    integer :: ignored
+    if(status==cudaSuccess) return
+    write(*,*) 'in-situ wall statistics CUDA failure: ',where,trim(cudaGetErrorString(status))
+    call MPI_Abort(MPI_COMM_WORLD,1,ignored)
+  end subroutine
+
+  subroutine allocate_state(shape4)
+    integer,intent(in) :: shape4(4)
+    integer :: status
+    integer(int64) :: bytes
+    if(initialized) then
+      call check(merge(cudaSuccess,cudaErrorInvalidValue,all(layout==shape4)),'fixed wall statistics shape')
+      return
+    endif
+    layout=shape4
+    bytes=int(shape4(1),int64)*shape4(2)*shape4(3)*(11_int64*shape4(4)*8+4)
+    call admit_statistics_device_allocation(bytes)
+    initialized=.true.
+    if(shape4(3)==0) return
+    allocate(state_d(shape4(1),shape4(2),shape4(3),10*shape4(4)), &
+      frame_d(shape4(1),shape4(2),shape4(3),shape4(4)), &
+      invalid_d(shape4(1),shape4(2),shape4(3)),stat=status)
+    call check(merge(cudaSuccess,cudaErrorMemoryAllocation,status==0),'allocate wall statistics')
+    state_d=0.d0
+    call check(cudaGetLastError(),'zero wall statistics')
+  end subroutine
+
+  subroutine push_wall_statistics_gpu(fields,weights,previous)
+    real(8),contiguous,intent(in) :: fields(:,:,:,:)
+    real(8),intent(in) :: weights(2)
+    logical,intent(in) :: previous
+    integer,allocatable :: invalid(:,:,:)
+    integer :: status
+    call allocate_state(shape(fields))
+    if(layout(3)==0) return
+    frame_d=fields
+    call check(cudaGetLastError(),'compact wall field upload')
+    call wall_statistics_kernel<<<dim3((layout(1)+511)/512,layout(2),layout(3)),dim3(512,1,1)>>>( &
+      layout(1),layout(4)/3,weights(1),weights(2),previous)
+    call check(cudaGetLastError(),'wall statistics kernel launch')
+    call check(cudaDeviceSynchronize(),'wall statistics kernel completion')
+    allocate(invalid(layout(1),layout(2),layout(3)),stat=status)
+    call check(merge(cudaSuccess,cudaErrorMemoryAllocation,status==0),'wall statistics mask')
+    invalid=invalid_d
+    call check(cudaGetLastError(),'wall statistics mask download')
+    call check(merge(cudaSuccess,cudaErrorInvalidValue,all(invalid==0)),'finite wall statistics update')
+  end subroutine
+
+  attributes(global) subroutine wall_statistics_kernel(nx,groups,w0,w1,previous)
+    integer,value :: nx,groups
+    real(8),value :: w0,w1
+    logical,value :: previous
+    integer :: i,k,wall,g,e,a,b,base,m,offset
+    real(8) :: s(30),u(3),delta(3),w,total,new_total,ratio,factor,entry
+    i=(blockidx%x-1)*blockdim%x+threadidx%x
+    k=blockidx%y; wall=blockidx%z
+    if(i>nx) return
+    invalid_d(i,k,wall)=0
+    do g=1,groups
+      base=30*(g-1)
+      s=0.d0
+      if(previous) s=state_d(i,k,wall,base+1:base+30)
+      do e=1,2
+        w=w0
+        u=s(2:4)
+        if(e==2) then
+          w=w1
+          u=frame_d(i,k,wall,3*g-2:3*g)
+        endif
+        if(w==0.d0) cycle
+        total=s(5); new_total=total+w
+        if(.not.(w>0.d0.and.new_total>0.d0.and.new_total<=huge(w))) then
+          invalid_d(i,k,wall)=1; return
+        endif
+        if(total==0.d0) then
+          s(7:9)=u
+        else
+          delta=u-s(7:9)
+          ratio=w/new_total; factor=(total/new_total)*w
+          s(7:9)=s(7:9)+ratio*delta
+          do b=1,3
+          do a=1,b
+            offset=13+(b-1)*3+a-1
+            entry=s(offset)+(factor*delta(a))*delta(b)
+            s(offset)=entry; s(13+(a-1)*3+b-1)=entry
+          enddo
+          enddo
+        endif
+        s(5)=new_total
+      enddo
+      s(1)=1.d0; s(2:4)=frame_d(i,k,wall,3*g-2:3*g)
+      ! Unit density makes the two existing weighted states identical for Reynolds scalars.
+      s(6)=s(5); s(10:12)=s(7:9); s(22:30)=s(13:21)
+      do m=1,30
+        if(.not.(abs(s(m))<=huge(w))) then
+          invalid_d(i,k,wall)=1; return
+        endif
+      enddo
+      if(any(s([13,17,21])<0.d0)) then
+        invalid_d(i,k,wall)=1; return
+      endif
+      state_d(i,k,wall,base+1:base+30)=s
+    enddo
+  end subroutine
+
+  subroutine pack_wall_statistics_gpu(values,window,time)
+    real(8),contiguous,intent(out) :: values(:,:,:,:)
+    real(8),intent(in) :: window(2),time
+    integer :: g,base
+    call check(merge(cudaSuccess,cudaErrorInvalidValue,initialized),'wall statistics initialized')
+    call check(merge(cudaSuccess,cudaErrorInvalidValue, &
+      all(shape(values)==[layout(1:3),34*(layout(4)/3)])),'wall statistics pack shape')
+    values=0.d0
+    if(layout(3)==0) return
+    call check(cudaDeviceSynchronize(),'wall statistics pack completion')
+    do g=1,layout(4)/3
+      base=34*(g-1)
+      values(:,:,:,base+1)=window(1); values(:,:,:,base+2)=window(2)
+      values(:,:,:,base+3)=time
+      values(:,:,:,base+4:base+33)=state_d(:,:,:,30*g-29:30*g)
+      values(:,:,:,base+34)=1.d0
+    enddo
+    call check(cudaGetLastError(),'wall statistics state download')
+  end subroutine
+
+  subroutine restore_wall_statistics_gpu(values)
+    real(8),contiguous,intent(in) :: values(:,:,:,:)
+    integer :: g
+    call allocate_state([size(values,1),size(values,2),size(values,3),3*(size(values,4)/34)])
+    if(layout(3)==0) return
+    do g=1,layout(4)/3
+      state_d(:,:,:,30*g-29:30*g)=values(:,:,:,34*g-30:34*g-1)
+    enddo
+    call check(cudaGetLastError(),'wall statistics restore copy')
+    call check(cudaDeviceSynchronize(),'wall statistics restore completion')
+  end subroutine
+
+  subroutine release_wall_statistics_gpu()
+    if(allocated(state_d)) deallocate(state_d,frame_d,invalid_d)
+    initialized=.false.; layout=0
+  end subroutine
+end module

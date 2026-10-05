@@ -5,7 +5,7 @@ module output_runtime
   use mpi
   use commvar, only: ia,ja,ka,im,jm,km,hm,numq,num_species,num_modequ, &
     nstep,time,deltat,maxstep,use_gpu,flowtype,lcomb,lavg,lcracon,limmbou,lrestart, &
-    lwsequ,lwslic,feqchkpt,feqwsequ,feqslice,feqlist,feqavg,conschm,difschm,rkscheme,lihomo,ljhomo,lkhomo, &
+    feqchkpt,feqwsequ,feqslice,feqlist,feqavg,conschm,difschm,rkscheme,lihomo,ljhomo,lkhomo, &
     lreadgrid,gridfile,ninit,diffterm,lfilter,nondimen,turbmode,recon_schem,lchardecomp
   use commarray, only: q,rho,vel,prs,tmp,x,jacob,dxi
   use parallel, only: ig0,jg0,kg0,mpirank,irk,mpisize
@@ -23,6 +23,7 @@ module output_runtime
   use insitu_schedule, only: sample_schedule,configure_schedule,poll_schedule, &
     write_schedule_state,restore_schedule_state
   use statistic, only: channel_driver_state,complete_mean_statistics_file
+  use benchmark_runtime, only: benchmark_field_io_disabled
 #ifdef ASTR_AIR5_CHEMISTRY
   use commarray, only: tve,spc
   use chemistry_compensation, only: air5_carry,air5_compensated
@@ -216,7 +217,6 @@ contains
     call check((supported_case.or.air5_output_case()).and..not.lcracon.and..not.limmbou.and. &
       .not.lrestart.and.trim(rkscheme)=='rk3', &
       'new output admits TGV, bc41 channel, profile/dynamic flatplate or fixed AIR5 HBL/SBLI RK3')
-    call check(.not.lwsequ.and..not.lwslic,'legacy field sequences must be disabled with new output')
     call check(ninit>=0.and.ninit<=3,'new output initialization dimension must be 0:3')
     if(air5_output_case()) call check(ninit==0,'AIR5 external initialization is not registered')
     if(air5_output_case().and.lavg) call check(diffterm.and.feqavg>0, &
@@ -226,7 +226,7 @@ contains
 
   subroutine load_output_options()
     character(1024) :: config
-    character(256) :: message,value
+    character(256) :: message
     integer :: status,length,flag,minflag,maxflag,ierr
     logical :: ok
     if(options_loaded) return
@@ -236,13 +236,16 @@ contains
     flag=0
     if (status==0.and.length>0) flag=1
     call MPI_Allreduce(flag,minflag,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
-    call check(ierr==MPI_SUCCESS,'output activation reduce')
+    call check(ierr==MPI_SUCCESS,'output configuration override reduce')
     call MPI_Allreduce(flag,maxflag,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
-    call check(ierr==MPI_SUCCESS.and.minflag==maxflag.and.status/= -1,'inconsistent output activation')
-    if (maxflag==0) return
+    call check(ierr==MPI_SUCCESS.and.minflag==maxflag.and.(status==0.or.status==1), &
+      'inconsistent or truncated output configuration override')
+    if(maxflag==0) config='datin/input.output'
     enabled=.true.
     call read_output_options_collective(trim(config),options,MPI_COMM_WORLD,ok,message)
-    call check(ok,trim(message))
+    call check(ok,'cannot load required output configuration '//trim(config)//': '//trim(message))
+    call check(.not.lrestart,'legacy checkpoint restart is disabled; use lrestart=f and output restore_directory')
+    if(mpirank==0) write(*,'(2a)') 'ASTR_OUTPUT_CONFIG_FILE ',trim(config)
   end subroutine
 
   function output_resource_path(name,fallback) result(path)
@@ -380,6 +383,12 @@ contains
     call load_output_options()
     if(.not.enabled) return
     call check_capability()
+    if(benchmark_field_io_disabled()) then
+      options%checkpoint%enabled=.false.
+      options%volume%enabled=.false.
+      options%slices%enabled=.false.
+      if(mpirank==0) write(*,'(a)') 'ASTR_OUTPUT no-field-I/O overrides checkpoint, volume and slices'
+    endif
     if(air5_output_case()) then
       value=''
       call get_environment_variable('ASTR_AIR5_C4_CONSERVATION',value,status=status)

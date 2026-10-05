@@ -5,9 +5,14 @@ module insitu_session
     resume_schedule
   use insitu_checkpoint_batch
   use insitu_velocity_statistics
+  use insitu_wall_statistics, only: accumulate_wall_statistics,wall_statistics_file, &
+    finish_wall_statistics,wall_statistics_host_bytes,wall_statistics_render_values
+  use insitu_air5_statistics, only: accumulate_air5_statistics,air5_statistics_file, &
+    finish_air5_statistics,air5_statistics_host_bytes
   use insitu_resource_budget, only: resource_budget,configure_budget,reserve_bytes,checked_bytes
   use insitu_spatial_statistics, only: spatial_mean
   use insitu_fields, only: capture_sample,canonicalize_sample,derive_sample,complete_periodic_endpoints
+  use insitu_fields, only: insitu_owned_counts,insitu_node_weights,complete_owned_endpoints,capture_channel_statistics
   use insitu_run_config, only: insitu_options
   use insitu_config_collective, only: read_insitu_options_collective
   use iso_c_binding, only: c_int,c_double,c_char,c_null_char,c_int64_t
@@ -88,9 +93,43 @@ module insitu_session
       real(c_double),value :: t
       real(c_double),intent(in) :: xyz(*),f(*),d(*),means(*)
     end function
+    integer(c_int) function mesh_selected(backend,script,comm,nx,ny,nz,step,t,xyz,f,d,profile) &
+        bind(C,name='astr_insitu_mesh_selected')
+      import c_int,c_double,c_char
+      character(c_char),intent(in) :: backend(*),script(*)
+      integer(c_int),value :: comm,nx,ny,nz,step,profile
+      real(c_double),value :: t
+      real(c_double),intent(in) :: xyz(*),f(*),d(*)
+    end function
+    integer(c_int) function mesh_wall_statistics(backend,script,comm,nx,ny,nz,step,t,xyz,f,statistics,profile) &
+        bind(C,name='astr_insitu_mesh_wall_statistics')
+      import c_int,c_double,c_char
+      character(c_char),intent(in) :: backend(*),script(*)
+      integer(c_int),value :: comm,nx,ny,nz,step,profile
+      real(c_double),value :: t
+      real(c_double),intent(in) :: xyz(*),f(*),statistics(*)
+    end function
   end interface
 #endif
 contains
+  integer function selected_product_profile() result(profile)
+    profile=0
+    select case(options%products)
+    case('q_surface')
+      profile=1
+    case('streamlines')
+      profile=2
+    case('q_streamlines')
+      profile=3
+    case('velocity_slice')
+      profile=4
+    case('channel_walls')
+      profile=5
+    case('air5_walls')
+      profile=6
+    end select
+  end function
+
   logical function output_render_repartition_allowed()
     output_render_repartition_allowed=.not.output_saved_rendering.and..not.(formal.and.enabled.and.options%render)
   end function
@@ -235,11 +274,25 @@ contains
     real(real64),allocatable :: values(:,:,:,:),native_values(:,:,:,:)
     real(real64) :: regional_values(34)
     logical :: ok,all_ok,native,permit
-    integer :: i,j,k,status,role
+    integer :: i,j,k,status,role,extent(3)
     call require_sample(formal.and.enabled.and.statistics_enabled,'statistics provider is not active')
     permit=.false.
     if(present(allow_repartition)) permit=allow_repartition
+    if(options%products=='air5_walls') then
+      call require_sample(.not.permit,'wall scalar statistics repartition is not supported')
+      call wall_statistics_file(path,writing,identity,budget,statistics_window, &
+        options%host_budget_bytes,options%device_budget_bytes,options%device_reserve_bytes,.true., &
+        options%air5_volume_statistics,options%wall_separation)
+      if(options%air5_volume_statistics) call air5_statistics_file(path,writing,identity,budget,statistics_window, &
+        options%air5_volume_reduction)
+      statistics_step=int(identity%step); statistics_time=identity%time
+      if(.not.writing) output_statistics_restored=.true.
+      return
+    endif
+    if(options%products=='channel_walls') &
+      call require_sample(.not.permit,'wall scalar statistics repartition is not supported')
     native=native_device_statistics()
+    extent=insitu_owned_counts()
     role=3
     if(native) role=4
     call admit_statistics_host()
@@ -259,11 +312,11 @@ contains
       values=0.d0
       if(native) then
 #ifdef _CUDA
-        allocate(native_values(im,jm,km,34),stat=status)
+        allocate(native_values(extent(1),extent(2),extent(3),34),stat=status)
         call require_sample(status==0,'cannot allocate contiguous native statistics download')
         call pack_statistics_gpu_state(native_values,ok)
         call require_sample(ok,'cannot pack native point statistics')
-        values(1:im,1:jm,1:km,:)=native_values
+        values(1:extent(1),1:extent(2),1:extent(3),:)=native_values
         deallocate(native_values)
 #endif
       else
@@ -283,7 +336,11 @@ contains
     stored=identity
     call checkpoint_state_transfer(path,writing,.true.,[ia,ja,ka]+1,[ig0,jg0,kg0], &
       [im,jm,km],0,values,stored,remaining,MPI_COMM_WORLD,role=role,metadata=metadata,allow_repartition=permit)
-    if(writing) return
+    if(writing) then
+      if(options%products=='channel_walls') call wall_statistics_file(path,.true.,identity,budget,statistics_window, &
+        options%host_budget_bytes,options%device_budget_bytes,options%device_reserve_bytes,.false.)
+      return
+    endif
     call require_sample(stored%step==identity%step.and.stored%time==identity%time.and. &
       stored%dt_used==identity%dt_used.and.stored%dt_next==identity%dt_next,'statistics file clock mismatch')
     call require_sample(all(metadata(1:4)==[1_int64,int(merge(1,0,native),int64), &
@@ -293,9 +350,9 @@ contains
     call require_sample(ok,'cannot restore regional statistics')
     if(native) then
 #ifdef _CUDA
-      allocate(native_values(im,jm,km,34),stat=status)
+      allocate(native_values(extent(1),extent(2),extent(3),34),stat=status)
       call require_sample(status==0,'cannot allocate contiguous native statistics restore')
-      native_values=values(1:im,1:jm,1:km,:)
+      native_values=values(1:extent(1),1:extent(2),1:extent(3),:)
       call unpack_statistics_gpu_state(native_values,identity%time,statistics_window,ok)
       call require_sample(ok,'cannot restore native point statistics')
       deallocate(native_values)
@@ -320,12 +377,14 @@ contains
     statistics_step=int(identity%step)
     statistics_time=identity%time
     output_statistics_restored=.true.
+    if(options%products=='channel_walls') call wall_statistics_file(path,.false.,identity,budget,statistics_window, &
+      options%host_budget_bytes,options%device_budget_bytes,options%device_reserve_bytes,.false.)
   end subroutine
 
   logical function native_device_statistics()
 #ifdef _CUDA
     use commvar, only: use_gpu
-    native_device_statistics=formal.and.enabled.and.statistics_enabled.and.use_gpu
+    native_device_statistics=formal.and.enabled.and.statistics_enabled.and.use_gpu.and.options%products/='air5_walls'
 #else
     native_device_statistics=.false.
 #endif
@@ -344,17 +403,18 @@ contains
   end subroutine
 
   subroutine configure_session()
-    use commvar, only: use_gpu,lrestart,lreadgrid,flowtype,ndims
-    use parallel, only: mpirank
+    use commvar, only: use_gpu,lrestart,lreadgrid,flowtype,ndims,ia,ja,ka,hm,difschm, &
+      numq,num_species,nondimen,jm
+    use bc, only: bctype
+    use parallel, only: mpirank,mpisize,isize,jsize,ksize
 #ifdef _CUDA
     use insitu_statistics_gpu, only: configure_statistics_device_budget
 #endif
-    character(1024) :: filename,message,output_config
+    character(1024) :: filename,message
     integer :: ierr
-    logical :: ok
+    logical :: ok,channel_wall,air5_wall
     if(session_checked) return
-    call read_consistent_env('ASTR_OUTPUT_CONFIG',output_config)
-    native_output=len_trim(output_config)>0
+    native_output=.true.
     call read_consistent_env('ASTR_INSITU_CONFIG',filename)
     if(len_trim(filename)>0) then
       call read_insitu_options_collective(trim(filename),MPI_COMM_WORLD,options,ok,message)
@@ -365,9 +425,29 @@ contains
       statistics_configured=.true.
       oracle_io=.false.
       if(enabled) then
-        call require_sample(trim(flowtype)=='tgv'.and.ndims==3.and..not.lreadgrid, &
-          'formal statistics currently require internally generated Cartesian TGV')
+        channel_wall=trim(flowtype)=='channel'.and.options%products=='channel_walls'
+        air5_wall=trim(flowtype)=='air5hbl'.and.options%products=='air5_walls'
+        call require_sample((trim(flowtype)=='tgv'.or.channel_wall.or.air5_wall).and.ndims==3.and..not.lreadgrid, &
+          'formal in situ requires a supported Cartesian TGV or wall candidate')
+        if(channel_wall) call require_sample( &
+          options%derivative_backend=='cpu'.and.numq==5.and.num_species==0.and.nondimen.and. &
+          all(bctype==[1,1,41,41,1,1]).and.max(ia,ja,ka)<=32.and.jm>=2.and.mpisize<=2.and. &
+          trim(difschm)=='643e','channel wall candidate requires bc41 <=32 NP=1/2 and CPU wall diagnostics')
+        call require_sample(options%products/='channel_walls'.or.channel_wall, &
+          'channel_walls product requires a channel solver')
+        call require_sample(options%products/='air5_walls'.or.air5_wall, &
+          'air5_walls product requires an AIR5 HBL solver')
+        if(air5_wall) call require_sample(options%derivative_backend=='cpu'.and. &
+          numq==11.and.num_species==5.and..not.nondimen.and.all(bctype==[11,50,41,51,1,1]).and. &
+          max(ia,ja,ka)<=32.and.jm>=2.and.mpisize<=2.and.trim(difschm)=='643e', &
+          'AIR5 wall candidate requires noncatalytic Cartesian HBL <=32 NP=1/2')
         if(options%render) then
+          if(options%derivative_backend=='gpu') call require_sample(use_gpu.and. &
+            (mpisize<=2.or.(mpisize==4.and.all([isize,jsize,ksize]==[2,2,1]))).and. &
+            all([ia,ja,ka]==32).and.all(bctype==1).and.hm>=3.and.trim(difschm)=='643e', &
+            'GPU in-situ derivative candidate requires 32^3 periodic 643e TGV NP=1/2 or NP=4 (2x2x1)')
+          if(options%products=='velocity_slice') call require_sample(options%slice_index<32, &
+            'index-plane slice requires a global node index below 32')
 #ifdef ASTR_WITH_CATALYST
           call require_sample(use_gpu,'native EGL rendering requires GPU solver binding')
 #else
@@ -404,6 +484,14 @@ contains
               render_signature(3),render_signature(4),ok)
           endif
           call require_sample(ok,'cannot fingerprint native render pipeline/backend')
+          ! Domain-separate the optional algorithm in the existing configuration fingerprint.
+          if(options%derivative_backend=='gpu') render_signature(2)= &
+            ieor(render_signature(2),int(z'4750554445524956',int64))
+          if(selected_product_profile()>0) render_signature(4)= &
+            ieor(render_signature(4),int(selected_product_profile(),int64))
+          if(options%wall_mean_render) render_signature(4)=ieor(render_signature(4),int(z'57414C4C4D45414E',int64))
+          if(options%products=='velocity_slice') render_signature(4)=ieor(render_signature(4), &
+            ishft(int(options%slice_index,int64),8)+ishft(int(index('xyz',trim(options%slice_axis)),int64),16))
           call MPI_Bcast(render_signature,4,MPI_INTEGER8,0,MPI_COMM_WORLD,ierr)
           call require_sample(ierr==MPI_SUCCESS,'native render signature broadcast')
         endif
@@ -756,6 +844,16 @@ contains
     endif
     call checked_bytes(int([im,jm,km],int64)+1_int64,point_bytes,request,ok)
     call require_sample(ok,'statistics host byte count overflow')
+    if(formal.and.statistics_enabled.and.selected_product_profile()>=5) then
+      extra=wall_statistics_host_bytes()
+      call require_sample(extra<=huge(request)-request,'wall statistics host demand overflow')
+      request=request+extra
+      if(options%air5_volume_statistics) then
+        extra=air5_statistics_host_bytes()
+        call require_sample(extra<=huge(request)-request,'AIR5 volume host demand overflow')
+        request=request+extra
+      endif
+    endif
     if(formal.and..not.use_gpu) then
       if(len_trim(options%batch_prefix)>0.or.len_trim(options%restore_batch)>0) then
         call checked_bytes(int(shape(q),int64),8_int64,extra,ok)
@@ -765,7 +863,7 @@ contains
       endif
     endif
     if(use_gpu.and.statistics_enabled) then
-      call checked_bytes(int([im,jm,km],int64),71_int64*8+storage_size(0)/8,extra,ok)
+      call checked_bytes(int(insitu_owned_counts(),int64),71_int64*8+storage_size(0)/8,extra,ok)
       call require_sample(ok,'statistics host GPU workspace byte count overflow')
       call require_sample(extra<=huge(request)-request,'statistics host demand overflow')
       request=request+extra
@@ -813,6 +911,8 @@ contains
     real(real64),allocatable :: gpu_output(:,:,:,:)
     real(real64) :: volume,mean(3),rms_local(3),rms_regional(3),cell_volume
     real(real64) :: device_variance(3)
+    real(real64) :: node_weights(0:jm)
+    integer :: extent(3)
     integer :: i,j,k,n,status,unit,close_status
     integer :: bad_unit
     integer(int32) :: saved_header(17)
@@ -938,6 +1038,8 @@ contains
     call require_sample(status==0,'cannot allocate statistics output')
     cell_volume=(x(1,0,0,1)-x(0,0,0,1))*(x(0,1,0,2)-x(0,0,0,2))*(x(0,0,1,3)-x(0,0,0,3))
     call require_sample(ieee_is_finite(cell_volume).and.cell_volume>0,'invalid TGV cell volume')
+    call insitu_node_weights(node_weights)
+    extent=insitu_owned_counts()
     n=0
     all_ok=.true.
     covered=.true.
@@ -947,7 +1049,7 @@ contains
     do i=0,im
       n=n+1
       weights(n)=0.d0
-      if(i<im.and.j<jm.and.k<km) weights(n)=cell_volume
+      if(i<extent(1).and.j<extent(2).and.k<extent(3)) weights(n)=node_weights(j)
       values(:,n)=fields(i,j,k,7:9)
       call push_velocity_sample(point_statistics(i,j,k),t,fields(i,j,k,6),values(:,n),ok)
       all_ok=all_ok.and.ok
@@ -1063,15 +1165,16 @@ contains
     use insitu_statistics_gpu, only: download_statistics_gpu_output,spatial_statistics_gpu
     type(velocity_statistics_result) :: regional
     real(real64) :: cell_volume,volume,mean(3),variance(3)
-    integer :: status
+    integer :: status,extent(3)
     logical :: ok
     call read_velocity_statistics(regional_statistics,regional,ok)
     if(.not.ok) return
     allocate(final_statistics(0:im,0:jm,0:km,41),stat=status)
     call require_sample(status==0,'cannot allocate requested final statistics')
     final_statistics=0.d0
-    call download_statistics_gpu_output(final_statistics(0:im-1,0:jm-1,0:km-1,:))
-    call complete_periodic_endpoints(final_statistics)
+    extent=insitu_owned_counts()
+    call download_statistics_gpu_output(final_statistics(0:extent(1)-1,0:extent(2)-1,0:extent(3)-1,:))
+    call complete_owned_endpoints(final_statistics)
     cell_volume=(x(1,0,0,1)-x(0,0,0,1))*(x(0,1,0,2)-x(0,0,0,2))*(x(0,0,1,3)-x(0,0,0,3))
     call spatial_statistics_gpu(cell_volume,volume,mean,variance,ok)
     call require_sample(ok,'invalid final native spatial statistics')
@@ -1086,6 +1189,10 @@ contains
   subroutine render_native_if_due(step,t,final)
     use commvar, only: im,jm,km
     use commarray, only: x
+    use parallel, only: mpirank
+#ifdef _CUDA
+    use insitu_sample_gpu, only: derive_sample_gpu
+#endif
     integer,intent(in) :: step
     real(real64),intent(in) :: t
     logical,intent(in) :: final
@@ -1094,6 +1201,7 @@ contains
     logical :: emit,ok
     integer :: status
     integer(int64) :: crossed
+    real(real64) :: started,capture_seconds,canonical_seconds,derived_seconds,render_seconds
     if(.not.options%render) return
     call configure_render_schedule()
     preview=render_schedule
@@ -1103,13 +1211,212 @@ contains
       render_schedule=preview
       return
     endif
+    if(options%products/='all') then
+      render_schedule=preview
+      if(options%products=='velocity_slice') then
+        call render_index_plane(step,t)
+      elseif(options%products=='channel_walls') then
+        call render_channel_walls(step,t)
+      elseif(options%products=='air5_walls') then
+        call render_air5_walls(step,t)
+      else
+        call render_selected_sample(step,t)
+      endif
+      return
+    endif
     allocate(fields(0:im,0:jm,0:km,11),derived(0:im,0:jm,0:km,14),stat=status)
     call require_sample(status==0,'cannot allocate requested native frame')
+    started=MPI_Wtime()
     call capture_sample(fields)
+    capture_seconds=MPI_Wtime()-started
     native_flow_downloads=native_flow_downloads+1
+    started=MPI_Wtime()
     call canonicalize_sample(fields)
-    call derive_sample(fields(:,:,:,7:9),derived)
+    canonical_seconds=MPI_Wtime()-started
+    started=MPI_Wtime()
+    if(options%derivative_backend=='gpu') then
+#ifdef _CUDA
+      call derive_sample_gpu(fields(:,:,:,7:9),derived,options%host_budget_bytes, &
+        options%device_budget_bytes,options%device_reserve_bytes)
+#else
+      call require_sample(.false.,'GPU in-situ derivatives require CUDA build')
+#endif
+    else
+      call derive_sample(fields(:,:,:,7:9),derived)
+    endif
+    derived_seconds=MPI_Wtime()-started
+    started=MPI_Wtime()
     call render_sample(step,t,x(0:im,0:jm,0:km,1:3),fields,derived,final)
+    render_seconds=MPI_Wtime()-started
+    write(*,'(a,i0,a,i0,a,4(es16.8,1x))') 'ASTR_INSITU_FRAME_TIMING rank=',mpirank, &
+      ' step=',step,' capture canonical derivative render_inclusive=', &
+      capture_seconds,canonical_seconds,derived_seconds,render_seconds
+  end subroutine
+
+  subroutine render_channel_walls(step,t)
+    use insitu_fields, only: capture_channel_walls
+    use parallel, only: mpirank
+    integer,intent(in) :: step
+    real(real64),intent(in) :: t
+    real(real64),allocatable :: coordinates(:,:,:,:),fields(:,:,:,:),means(:,:,:,:)
+    logical,allocatable :: owned(:,:,:)
+    real(real64) :: unused(1)
+    integer :: status
+    integer(int64) :: download_bytes
+    call capture_channel_walls(coordinates,fields,owned,options%host_budget_bytes, &
+      options%device_budget_bytes,options%device_reserve_bytes,download_bytes)
+    native_flow_downloads=native_flow_downloads+1
+#ifdef ASTR_WITH_CATALYST
+    if(.not.native_bridge_configured) then
+      status=mesh_configure(trim(options%output_directory)//c_null_char,int(MPI_COMM_WORLD,c_int))
+      call require_sample(status==0,'cannot configure channel wall renderer')
+      native_bridge_configured=.true.
+    endif
+    unused=0.d0
+    if(options%wall_mean_render) then
+      call wall_statistics_render_values(step,t,means)
+      status=mesh_wall_statistics(trim(options%implementation_path)//c_null_char,trim(options%pipeline_file)//c_null_char, &
+        int(MPI_COMM_WORLD,c_int),size(owned,1),size(owned,2),size(owned,3),step,t,coordinates,fields,means,5_c_int)
+    else
+      status=mesh_selected(trim(options%implementation_path)//c_null_char,trim(options%pipeline_file)//c_null_char, &
+        int(MPI_COMM_WORLD,c_int),size(owned,1),size(owned,2),size(owned,3),step,t,coordinates,fields,unused,5_c_int)
+    endif
+    call require_sample(status==0,'channel wall Catalyst mesh failed')
+#else
+    call require_sample(.false.,'channel wall rendering requires Catalyst')
+#endif
+    write(*,'(A,I0,A,I0,A,I0,A,I0)') 'ASTR_INSITU_WALL rank=',mpirank,' step=',step, &
+      ' owned_nodes=',count(owned),' field_download_bytes=',download_bytes
+  end subroutine
+
+  subroutine render_air5_walls(step,t)
+    use insitu_fields, only: capture_air5_walls
+    use parallel, only: mpirank
+    integer,intent(in) :: step
+    real(real64),intent(in) :: t
+    real(real64),allocatable :: coordinates(:,:,:,:),fields(:,:,:,:),means(:,:,:,:)
+    logical,allocatable :: owned(:,:,:)
+    real(real64) :: unused(1)
+    integer :: status
+    integer(int64) :: download_bytes
+    call capture_air5_walls(coordinates,fields,owned,options%host_budget_bytes, &
+      options%device_budget_bytes,options%device_reserve_bytes,download_bytes)
+    native_flow_downloads=native_flow_downloads+1
+#ifdef ASTR_WITH_CATALYST
+    if(.not.native_bridge_configured) then
+      status=mesh_configure(trim(options%output_directory)//c_null_char,int(MPI_COMM_WORLD,c_int))
+      call require_sample(status==0,'cannot configure AIR5 wall renderer')
+      native_bridge_configured=.true.
+    endif
+    unused=0.d0
+    if(options%wall_mean_render) then
+      call wall_statistics_render_values(step,t,means)
+      status=mesh_wall_statistics(trim(options%implementation_path)//c_null_char,trim(options%pipeline_file)//c_null_char, &
+        int(MPI_COMM_WORLD,c_int),size(owned,1),size(owned,2),size(owned,3),step,t,coordinates,fields,means,6_c_int)
+    else
+      status=mesh_selected(trim(options%implementation_path)//c_null_char,trim(options%pipeline_file)//c_null_char, &
+        int(MPI_COMM_WORLD,c_int),size(owned,1),size(owned,2),size(owned,3),step,t,coordinates,fields,unused,6_c_int)
+    endif
+    call require_sample(status==0,'AIR5 wall Catalyst mesh failed')
+#else
+    call require_sample(.false.,'AIR5 wall rendering requires Catalyst')
+#endif
+    write(*,'(A,I0,A,I0,A,I0,A,I0)') 'ASTR_INSITU_AIR5_WALL rank=',mpirank,' step=',step, &
+      ' owned_nodes=',count(owned),' field_download_bytes=',download_bytes
+  end subroutine
+
+  subroutine render_index_plane(step,t)
+    use insitu_fields, only: capture_index_plane
+    use parallel, only: mpirank
+    integer,intent(in) :: step
+    real(real64),intent(in) :: t
+    real(real64),allocatable :: coordinates(:,:,:),velocity(:,:,:)
+    real(real64) :: unused(1),started,capture_seconds,render_seconds
+    integer :: axis,status
+    integer(int64) :: nodes
+    axis=index('xyz',trim(options%slice_axis))
+    started=MPI_Wtime()
+    call capture_index_plane(axis,options%slice_index,coordinates,velocity,options%host_budget_bytes, &
+      options%device_budget_bytes,options%device_reserve_bytes)
+    capture_seconds=MPI_Wtime()-started
+    nodes=int(size(velocity,1),int64)*size(velocity,2)
+    native_flow_downloads=native_flow_downloads+1
+    started=MPI_Wtime()
+#ifdef ASTR_WITH_CATALYST
+    if(.not.native_bridge_configured) then
+      status=mesh_configure(trim(options%output_directory)//c_null_char,int(MPI_COMM_WORLD,c_int))
+      call require_sample(status==0,'cannot configure index-plane render device')
+      native_bridge_configured=.true.
+    endif
+    unused=0.d0
+    status=mesh_selected(trim(options%implementation_path)//c_null_char,trim(options%pipeline_file)//c_null_char, &
+      int(MPI_COMM_WORLD,c_int),size(velocity,1),size(velocity,2),1,step,t,coordinates,velocity,unused,4_c_int)
+    call require_sample(status==0,'index-plane Catalyst mesh failed')
+#else
+    call require_sample(.false.,'index-plane rendering requires ASTR_WITH_CATALYST=ON')
+#endif
+    render_seconds=MPI_Wtime()-started
+    write(*,'(a,i0,a,i0,a,i0,a,i0,a,2(es16.8,1x))') 'ASTR_INSITU_SLICE rank=',mpirank, &
+      ' step=',step,' nodes=',nodes,' field_download_bytes=',nodes*4*8, &
+      ' capture_inclusive render_inclusive=',capture_seconds,render_seconds
+  end subroutine
+
+  subroutine render_selected_sample(step,t)
+    use commvar, only: im,jm,km
+    use commarray, only: x
+    use parallel, only: mpirank
+    use insitu_fields, only: capture_canonical_velocity
+#ifdef _CUDA
+    use insitu_sample_gpu, only: derive_selected_sample_gpu
+#endif
+    integer,intent(in) :: step
+    real(real64),intent(in) :: t
+    real(real64),allocatable :: velocity(:,:,:,:),qfield(:,:,:,:)
+    real(real64) :: started,capture_seconds,derived_seconds,render_seconds
+    integer(int64) :: nodes,download_bytes,upload_bytes
+    integer :: status,profile
+    profile=selected_product_profile()
+    call require_sample(profile>0,'invalid selected native products')
+    allocate(velocity(0:im,0:jm,0:km,3),qfield(0:im,0:jm,0:km,1),stat=status)
+    call require_sample(status==0,'cannot allocate selected native fields')
+    started=MPI_Wtime()
+    call capture_canonical_velocity(velocity)
+    capture_seconds=MPI_Wtime()-started
+    native_flow_downloads=native_flow_downloads+1
+    nodes=product(int([im,jm,km]+1,int64))
+    download_bytes=nodes*4*8
+    upload_bytes=0
+    qfield=0.d0
+    started=MPI_Wtime()
+    if(profile/=2) then
+#ifdef _CUDA
+      call derive_selected_sample_gpu(velocity,qfield,[10],options%host_budget_bytes, &
+        options%device_budget_bytes,options%device_reserve_bytes)
+#else
+      call require_sample(.false.,'selected Q requires CUDA build')
+#endif
+      download_bytes=download_bytes+nodes*8
+      upload_bytes=nodes*3*8
+    endif
+    derived_seconds=MPI_Wtime()-started
+    started=MPI_Wtime()
+#ifdef ASTR_WITH_CATALYST
+    if(.not.native_bridge_configured) then
+      status=mesh_configure(trim(options%output_directory)//c_null_char,int(MPI_COMM_WORLD,c_int))
+      call require_sample(status==0,'cannot configure selected native render device')
+      native_bridge_configured=.true.
+    endif
+    status=mesh_selected(trim(options%implementation_path)//c_null_char,trim(options%pipeline_file)//c_null_char, &
+      int(MPI_COMM_WORLD,c_int),im+1,jm+1,km+1,step,t,x(0:im,0:jm,0:km,1:3),velocity,qfield,int(profile,c_int))
+    call require_sample(status==0,'selected Catalyst mesh failed')
+#else
+    call require_sample(.false.,'selected rendering requires ASTR_WITH_CATALYST=ON')
+#endif
+    render_seconds=MPI_Wtime()-started
+    write(*,'(a,i0,a,i0,a,a,a,i0,a,i0,a,3(es16.8,1x))') &
+      'ASTR_INSITU_SELECTED rank=',mpirank,' step=',step,' products=',trim(options%products), &
+      ' field_download_bytes=',download_bytes,' velocity_upload_bytes=',upload_bytes, &
+      ' capture_canonical derivative render_inclusive=',capture_seconds,derived_seconds,render_seconds
   end subroutine
 
   subroutine begin_insitu(step,t)
@@ -1221,7 +1528,7 @@ contains
 #endif
 #ifdef _CUDA
     if(native_device_statistics()) call export_native_statistics()
-    if(formal.and.enabled.and.use_gpu.and.statistics_enabled) then
+    if(native_device_statistics()) then
       call statistics_transfer_counts(samples,downloads)
       write(*,'(A,I0,A,I0,A,I0)') 'ASTR_INSITU_GPU_STATS rank=',mpirank, &
         ' samples=',samples,' full_output_downloads=',downloads
@@ -1232,6 +1539,10 @@ contains
     call release_statistics_gpu()
 #endif
     call write_final_statistics()
+    if(formal.and.enabled.and.statistics_enabled.and.selected_product_profile()>=5) &
+      call finish_wall_statistics(prefix)
+    if(formal.and.enabled.and.statistics_enabled.and.options%air5_volume_statistics) &
+      call finish_air5_statistics(prefix)
     if(allocated(point_statistics)) deallocate(point_statistics)
     if(allocated(final_statistics)) deallocate(final_statistics)
 #if defined(ASTR_WITH_CATALYST) && defined(_CUDA)
@@ -1388,6 +1699,65 @@ contains
     call require_sample(ierr==MPI_SUCCESS.and.root==value,'rank mismatch for '//name)
   end subroutine
 
+  subroutine write_channel_wall_sample(step,t,dt)
+    use insitu_fields, only: capture_channel_walls
+    use parallel, only: mpirank,ig0,jg0,kg0
+    integer,intent(in) :: step
+    real(real64),intent(in) :: t,dt
+    real(real64),allocatable :: coordinates(:,:,:,:),fields(:,:,:,:)
+    logical,allocatable :: owned(:,:,:)
+    character(1200) :: path
+    integer :: unit,status,closed
+    integer(int64) :: download_bytes
+    call require_sample(step>=0.and.all(ieee_is_finite([t,dt])).and. &
+      ((step==0.and.t==0.d0.and.dt==0.d0).or.(step>0.and.dt>0.d0)), &
+      'invalid complete-step wall clock')
+    call capture_channel_walls(coordinates,fields,owned,4294967296_int64,2147483648_int64, &
+      1073741824_int64,download_bytes)
+    if(oracle_io) then
+      write(path,'(A,".wall.step",I8.8,".rank",I8.8,".bin")') trim(prefix),step,mpirank
+      open(newunit=unit,file=trim(path),status='new',access='stream',form='unformatted', &
+        convert='little_endian',action='write',iostat=status)
+      call require_sample(status==0,'cannot create wall sample')
+      write(unit,iostat=status) 'ASTRIW01', &
+        int([1,step,mpirank,shape(owned),ig0,jg0,kg0],int32),t,dt,coordinates,fields, &
+        merge(1_int32,0_int32,owned)
+      close(unit,iostat=closed)
+      call require_sample(status==0.and.closed==0,'cannot write wall sample')
+    endif
+    write(*,'(A,I0,A,I0,A,I0,A,I0)') 'ASTR_INSITU_WALL rank=',mpirank,' step=',step, &
+      ' owned_nodes=',count(owned),' field_download_bytes=',download_bytes
+  end subroutine
+
+  subroutine write_air5_wall_sample(step,t,dt)
+    use insitu_fields, only: capture_air5_walls
+    use parallel, only: mpirank,ig0,jg0,kg0
+    integer,intent(in) :: step
+    real(real64),intent(in) :: t,dt
+    real(real64),allocatable :: coordinates(:,:,:,:),fields(:,:,:,:)
+    logical,allocatable :: owned(:,:,:)
+    character(1200) :: path
+    integer :: unit,status,closed
+    integer(int64) :: download_bytes
+    call require_sample(step>=0.and.all(ieee_is_finite([t,dt])).and. &
+      ((step==0.and.t==0.d0.and.dt==0.d0).or.(step>0.and.dt>0.d0)), &
+      'invalid complete-step AIR5 wall clock')
+    call capture_air5_walls(coordinates,fields,owned,4294967296_int64,2147483648_int64, &
+      1073741824_int64,download_bytes)
+    if(oracle_io) then
+      write(path,'(A,".air5_wall.step",I8.8,".rank",I8.8,".bin")') trim(prefix),step,mpirank
+      open(newunit=unit,file=trim(path),status='new',access='stream',form='unformatted', &
+        convert='little_endian',action='write',iostat=status)
+      call require_sample(status==0,'cannot create AIR5 wall sample')
+      write(unit,iostat=status) 'ASTRAW01',int([1,step,mpirank,shape(owned),ig0,jg0,kg0],int32), &
+        t,dt,coordinates,fields,merge(1_int32,0_int32,owned)
+      close(unit,iostat=closed)
+      call require_sample(status==0.and.closed==0,'cannot write AIR5 wall sample')
+    endif
+    write(*,'(A,I0,A,I0,A,I0,A,I0)') 'ASTR_INSITU_AIR5_WALL rank=',mpirank,' step=',step, &
+      ' owned_nodes=',count(owned),' field_download_bytes=',download_bytes
+  end subroutine
+
   subroutine sample_insitu_step(step,time_end,step_dt)
     use commvar, only: im,jm,km,numq,num_species,flowtype,use_gpu,hm,difschm
     use bc, only: bctype
@@ -1414,6 +1784,47 @@ contains
     endif
     if(.not.enabled) return
     call configure_statistics_validation()
+    if(trim(flowtype)=='air5hbl'.and..not.formal) then
+      call require_sample(.not.statistics_enabled,'AIR5 wall oracle does not implement cumulative statistics')
+      call write_air5_wall_sample(step,time_end,step_dt)
+      return
+    endif
+    if(trim(flowtype)=='channel'.and..not.formal) then
+      call require_sample(.not.statistics_enabled,'channel wall oracle does not implement statistics')
+      call write_channel_wall_sample(step,time_end,step_dt)
+      return
+    endif
+    if(formal.and.options%products=='air5_walls') then
+      if(statistics_enabled) then
+        call admit_statistics_host()
+        call accumulate_wall_statistics(step,time_end,statistics_window,options%host_budget_bytes, &
+          options%device_budget_bytes,options%device_reserve_bytes, &
+          merge(prefix,repeat(' ',len(prefix)),options%wall_separation))
+        if(options%air5_volume_statistics) call accumulate_air5_statistics(step,time_end,statistics_window, &
+          options%air5_volume_reduction)
+        statistics_step=step; statistics_time=time_end
+      endif
+      call render_native_if_due(step,time_end,.false.)
+      return
+    endif
+    if(formal.and.options%products=='channel_walls') then
+      if(statistics_enabled) then
+        call admit_statistics_host()
+        call accumulate_wall_statistics(step,time_end,statistics_window,options%host_budget_bytes, &
+          options%device_budget_bytes,options%device_reserve_bytes)
+        if(native_device_statistics()) then
+          call accumulate_native_device(step,time_end)
+        else
+          call admit_statistics_host()
+          allocate(fields(0:im,0:jm,0:km,11),stat=status)
+          call require_sample(status==0,'cannot allocate channel statistics buffer')
+          call capture_channel_statistics(fields)
+          call accumulate_statistics_validation(step,time_end,fields)
+        endif
+      endif
+      call render_native_if_due(step,time_end,.false.)
+      return
+    endif
     ! Validate the supported state even when this step will not be captured.
     call require_sample(trim(flowtype)=='tgv'.and.numq==5.and.num_species==0, &
                         'initial sampling gate supports five-variable TGV only')

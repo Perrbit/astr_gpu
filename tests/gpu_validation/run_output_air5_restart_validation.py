@@ -21,6 +21,21 @@ from generate_air5_oblique_shock_states import frozen_oblique_jump, jump_metadat
 ROOT = Path(__file__).resolve().parents[2]
 DT = 1e-10
 DOMAIN = (.08, .01, .002)
+REFERENCE_DENSITY = .05
+REFERENCE_TEMPERATURE = 3000.
+REFERENCE_MASS_FRACTIONS = (.767, .233, 0., 0., 0.)
+
+
+def reference_scales():
+    """Frozen input/mechanism scales, never estimated from computed fields."""
+    model = Air5RadauReference(ROOT / "chemMech/air5_kimjo12.json")
+    ys = np.array(REFERENCE_MASS_FRACTIONS)
+    gas = float(ys @ model.gas_constant)
+    gamma = 1 + gas / float(ys @ model.cv_tr)
+    sound = float(np.sqrt(gamma * gas * REFERENCE_TEMPERATURE))
+    pressure = REFERENCE_DENSITY * gas * REFERENCE_TEMPERATURE
+    return dict(density=REFERENCE_DENSITY, temperature=REFERENCE_TEMPERATURE,
+                velocity=sound, pressure=pressure, shear=pressure, heat=pressure*sound)
 
 
 def compare_air5_resources(continuous, resumed, incident):
@@ -75,9 +90,10 @@ def prepare(case, backend, steps, incident=False, reconstruction=5, mean_statist
     set_value(case / "datin/controller", "maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg",
               f"{steps-1},1,1000000,1000000,1,{sample_interval}")
     model = Air5RadauReference(ROOT / "chemMech/air5_kimjo12.json")
-    ys = np.array([.767, .233, 0., 0., 0.])
+    ys = np.array(REFERENCE_MASS_FRACTIONS)
     gas = float(ys @ model.gas_constant)
-    rho, temperature, pressure = .05, 3000., .05 * gas * 3000.
+    rho, temperature = REFERENCE_DENSITY, REFERENCE_TEMPERATURE
+    pressure = rho * gas * temperature
     sound = np.sqrt((1 + gas / float(ys @ model.cv_tr)) * gas * temperature)
     speed = 4 * sound if incident else 0.
     (case / "datin/air5_hbl_domain.dat").write_text(
@@ -118,7 +134,8 @@ def prepare(case, backend, steps, incident=False, reconstruction=5, mean_statist
 def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=None, statistics=None,
            archive_groups=None, buffer_bytes=67108864, checkpoint_keep=2, reuse_root=None,
            conservation=False, publication_hook=None, reject=None, memcheck=False,
-           device_budget_bytes=67108864, restore_probe=False, device_reserve_bytes=0, override=False):
+           device_budget_bytes=67108864, restore_probe=False, device_reserve_bytes=0, override=False,
+           wall_samples=False, insitu_config=None, directory_budget_bytes=64*1024**2):
     case = args.output / f"{backend}_np{ranks}_{name}"
     tau = prepare(case, backend, steps, incident=args.case == "sbli", reconstruction=args.reconstruction,
                   mean_statistics=args.mean_statistics if statistics is None else statistics,
@@ -170,6 +187,12 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
                ASTR_AIR5_CONVECTION_LIMITER="symmetric_species", ASTR_AIR5_DIFFUSION_LIMITER="layered",
                ASTR_AIR5_TOP_MODE=args.top_mode, ASTR_AIR5_TOP_TAU=f"{tau:.17e}",
                ASTR_AIR5_TOP_GPU_VALIDATION="on", ASTR_AIR5_FILTER_VALIDATION="on")
+    if wall_samples:
+        env['ASTR_INSITU_SAMPLE_PREFIX']='outdat/sample'
+    if insitu_config is not None:
+        (case / 'outdat/render').mkdir()
+        (case / 'datin/insitu.nml').write_text(insitu_config)
+        env['ASTR_INSITU_CONFIG']='datin/insitu.nml'
     if conservation:
         env["ASTR_AIR5_C4_CONSERVATION"] = "1"
     if restore_probe:
@@ -247,7 +270,7 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
     if (case / "outdat/flowfield.h5").exists():
         raise AssertionError("legacy AIR5 checkpoint emitted")
     disk = sum(p.stat().st_size for p in case.rglob("*") if p.is_file())
-    if disk > 64 * 1024**2:
+    if disk > directory_budget_bytes:
         raise RuntimeError(f"directory budget exceeded: {case}: {disk}")
     return case, disk
 

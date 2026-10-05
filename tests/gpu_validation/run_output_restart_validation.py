@@ -11,7 +11,7 @@ import sys
 
 import h5py
 import numpy as np
-from prepare_tgv_case import next_data_line, set_controller_deltat, set_ninit
+from prepare_tgv_case import next_data_line, set_controller_deltat, set_ninit, set_restart
 
 
 def archive_schedule_payload(path):
@@ -52,7 +52,20 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
              device_budget_bytes=67108864, checkpoint_keep=2, publication_fault=None, reuse_root=None,
              lfilter=True, insitu_config=None, topology=None, controller_replay=None, initial_resource=None,
              rhs_snapshot_step=None, memcheck=False, device_reserve_bytes=0,
-             monitor_resources=False, resource_baseline=None):
+             monitor_resources=False, resource_baseline=None,
+             output_config_override=None, omit_output_config=False,
+             legacy_restart=False, legacy_output=False, no_field_io=False, grid=None,
+             test_fault=None, failure_after_start=False):
+    if failure_after_start and not reject:
+        raise ValueError('post-start failure checks require an expected rejection')
+    timeout=getattr(args,'runtime_timeout_seconds',180)
+    if timeout<=0:
+        raise ValueError('test runtime timeout must be positive')
+    directory_budget = getattr(args, 'directory_budget_bytes', 64 * 1024**2)
+    if directory_budget <= 0:
+        raise ValueError('test directory budget must be positive')
+    if grid is not None and (args.case != 'tgv' or args.initial_dimension != 0):
+        raise ValueError('explicit validation grid requires internally initialized TGV')
     case = args.output / f"{backend}_np{ranks}_{name}"
     channel = args.case == "channel"
     dynamic = args.case == "dynamic"
@@ -104,7 +117,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         "--src-case", str(root / ("examples/Channel" if channel else "examples/Taylor_Green_Vortex")),
         "--dst-case", str(case), "--input-name", input_name,
         "--homogeneous", "t,f,t" if channel else "t,t,t",
-        "--use-gpu", "t" if backend == "gpu" else "f", "--grid", "16,16,16",
+        "--use-gpu", "t" if backend == "gpu" else "f", "--grid", grid or "16,16,16",
         "--maxstep", str(steps - 1), "--feqchkpt", "1", "--deltat", "1.d-3",
         "--lfilter", "t" if lfilter else "f", "--diffterm", "t", "--scheme", "643e"], check=True)
     if args.initial_dimension and source_fault != "initial_field":
@@ -134,6 +147,16 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         fields[2], intervals[5] = "t", "1"
         lines[flags], lines[counters] = ",".join(fields), ",".join(intervals)
         controller.write_text("\n".join(lines) + "\n")
+    if legacy_output:
+        controller = case / "datin/controller"
+        lines = controller.read_text().splitlines()
+        flags = next_data_line(lines, next(i for i, line in enumerate(lines) if "lwsequ,lwslic,lavg,lcracon" in line))
+        fields = lines[flags].split(",")
+        fields[:2] = ["t", "t"]
+        lines[flags] = ",".join(fields)
+        controller.write_text("\n".join(lines) + "\n")
+    if legacy_restart:
+        set_restart(case / "datin" / input_name, "t")
     (case / "outdat/new").mkdir(parents=True)
     if reuse_root is not None:
         if restore is None:
@@ -176,16 +199,28 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         topology["xyz".index(args.axis)] = ranks
     if len(topology) != 3 or any(n < 1 for n in topology) or np.prod(topology) != ranks:
         raise ValueError("test topology must contain three positive extents matching ranks")
-    env.update(ASTR_OUTPUT_CONFIG="datin/input.output", ASTR_FORCE_MPI_TOPOLOGY=",".join(map(str, topology)),
+    if omit_output_config:
+        config.unlink()
+    elif output_config_override:
+        destination = case / output_config_override
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination != config:
+            config.rename(destination)
+    if output_config_override is not None:
+        env["ASTR_OUTPUT_CONFIG"] = output_config_override
+    env.update(ASTR_FORCE_MPI_TOPOLOGY=",".join(map(str, topology)),
                ASTR_GPU_SYNC_MODE="explicit", ASTR_GPU_HALO_TRANSPORT="pinned",
                ASTR_GPU_PRECISION_MODE="fp64", ASTR_INSITU_SAMPLE_PREFIX="outdat/sample")
     env["ASTR_GPU_FILTER_WORKSPACE"] = args.filter_workspace
+    if no_field_io:
+        env["ASTR_GPU_BENCHMARK_NO_FIELD_IO"] = "1"
+        env["ASTR_GPU_RK_TIMING" if backend == "gpu" else "ASTR_CPU_RK_TIMING"] = "1"
     if rhs_snapshot_step is not None:
         if not 0 <= rhs_snapshot_step < steps:
             raise ValueError("RHS diagnostic step must be within this bounded run")
         env.update(ASTR_VALIDATION_RHS_PREFIX="outdat/rhs",
                    ASTR_VALIDATION_RHS_STEP=str(rhs_snapshot_step))
-    if args.case != "tgv":
+    if args.case != "tgv" and not (channel and getattr(args, "wall_samples", False)):
         env.pop("ASTR_INSITU_SAMPLE_PREFIX")
     if channel:
         env["ASTR_CHANNEL_FORCE_MODE"] = args.force
@@ -242,6 +277,13 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
                    ASTR_CONTROLLER_TEST_REPLAY=str(replay.resolve()),
                    ASTR_CONTROLLER_TEST_START_STEP=str(start_step))
     solver_command = [str(args.executable), "run", "datin/" + input_name]
+    if test_fault is not None:
+        if publication_fault is not None or controller_replay is not None:
+            raise ValueError('IS4 fault preload cannot be combined with other preloads')
+        library,phase,target_step=test_fault
+        env.update(LD_PRELOAD=str(Path(library).resolve(strict=True)),
+                   ASTR_IS4_TEST_PHASE=phase,
+                   ASTR_IS4_TEST_TARGET=str((case/'outdat/new/checkpoints'/f'step{target_step:012d}.tmp').resolve()))
     if memcheck:
         sanitizer = shutil.which("compute-sanitizer")
         if sanitizer is None:
@@ -266,7 +308,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
             process = subprocess.Popen(command, cwd=case, env=env, stdout=log,
                                        stderr=subprocess.STDOUT, start_new_session=True)
             try:
-                returncode = process.wait(timeout=180)
+                returncode = process.wait(timeout=timeout)
             except BaseException:
                 try:
                     os.killpg(process.pid, signal.SIGTERM)
@@ -280,7 +322,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
     if reject:
         if returncode == 0 or reject not in (case / "run.log").read_text():
             raise AssertionError(f"expected rejection not observed: {reject}: {case}")
-        if publication_fault is None and reuse_root is None and list((case / "outdat/new").rglob("COMPLETE")):
+        if not failure_after_start and publication_fault is None and reuse_root is None and list((case / "outdat/new").rglob("COMPLETE")):
             raise AssertionError("failed restore published a checkpoint")
     elif returncode:
         raise RuntimeError(f"solver failed: {case / 'run.log'}")
@@ -293,7 +335,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
     if (case / "outdat/flowfield.h5").exists():
         raise AssertionError("new output emitted a legacy flowfield file")
     disk_bytes = sum(p.stat().st_size for p in case.rglob("*") if p.is_file())
-    if disk_bytes > 64 * 1024**2:
+    if disk_bytes > directory_budget:
         raise RuntimeError(f"test directory budget exceeded: {case}: {disk_bytes}")
     return case, disk_bytes
 

@@ -4,10 +4,21 @@ module chemistry_monitor
   implicit none
   private
   public :: write_air5_flow_monitor
+  public :: decode_air5_monitor_state
   integer,save :: stride=-1,profile_unit,wall_unit,probe_unit,profile_count=0,probe_count=0
   integer,allocatable,save :: nodes(:,:),global_nodes(:,:)
   real(real64),allocatable,save :: local(:,:),total(:,:),primitive(:,:)
 contains
+  subroutine decode_air5_monitor_state(state,values,status)
+    use chemistry_flow_state, only: air5_conservative_to_primitive
+    real(real64),intent(in) :: state(11)
+    real(real64),intent(out) :: values(12)
+    integer,intent(out) :: status
+    real(real64) :: rho,velocity(3),temperature,tv,pressure,ys(5)
+    call air5_conservative_to_primitive(state,rho,velocity,temperature,ys,tv,pressure,status)
+    values=[rho,velocity,temperature,tv,pressure,ys]
+  end subroutine
+
   subroutine write_air5_flow_monitor(sample_time)
     use commvar, only: ia,ja,ka,im,jm,km,nstep,use_gpu,flowtype,lreadgrid,nmonitor,imon
     use commarray, only: q,x
@@ -110,9 +121,8 @@ contains
     if(any(total(15,:)/=1.d0).or..not.all(ieee_is_finite(total))) &
       call MPI_Abort(MPI_COMM_WORLD,94,ierr)
     do s=1,n
-      call air5_conservative_to_primitive(total(4:14,s),rho,vel,temp,ys,tv,pressure,status)
+      call decode_air5_monitor_state(total(4:14,s),primitive(:,s),status)
       if(status/=0) call MPI_Abort(MPI_COMM_WORLD,94,ierr)
-      primitive(:,s)=[rho,vel,temp,tv,pressure,ys]
     enddo
     do s=1,probe_count
       a=profile_count+s

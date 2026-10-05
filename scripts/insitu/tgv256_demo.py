@@ -3,11 +3,12 @@
 import json
 from pathlib import Path
 import sys
+from time import perf_counter
 
 import numpy as np
 from PIL import Image
 from paraview import catalyst
-from paraview import simple as pv
+from paraview import simple as pv, servermanager
 from paraview.modules.vtkRemotingViews import vtkPVProcessWindow
 from vtkmodules.vtkParallelCore import vtkMultiProcessController, vtkCommunicator
 from vtkmodules.vtkCommonCore import vtkIntArray
@@ -26,6 +27,10 @@ source = pv.TrivialProducer(registrationName='grid')
 controller = vtkMultiProcessController.GetGlobalController()
 rank = controller.GetLocalProcessId()
 frames = []
+products = []
+pipeline_objects = []
+profiles = []
+owned_colors = []
 
 
 def require_collective(message):
@@ -37,11 +42,12 @@ def require_collective(message):
         raise RuntimeError(message or 'Demo rendering failed on another rank')
 
 
-def catalyst_execute(info):
-    step, time = int(info.timestep), float(info.time)
-    require_collective('Invalid frame sequence' if step < 1 or not np.isfinite(time) or
-                       (frames and (step != frames[-1][0]+1 or time <= frames[-1][1])) else '')
-    source.UpdatePipeline(time)
+def initialize_products():
+    if products:
+        return
+    manager = servermanager.ProxyManager()
+    initial_colors = {group: set(manager.GetProxiesInGroup(group)) for group in
+                      ('lookup_tables', 'piecewise_functions')}
     speed = pv.Calculator(Input=source)
     speed.ResultArrayName = 'speed'
     speed.Function = 'sqrt(u*u+v*v+w*w)'
@@ -49,9 +55,8 @@ def catalyst_execute(info):
     contour.ContourBy = ['POINTS', 'Q_rs']
     contour.Isosurfaces = [0.0]
     trace, trace_objects = make_trace(speed, h=2*np.pi/256)
+    pipeline_objects.extend([*trace_objects, contour, speed])
     for name, geometry in [('q0_speed', contour), ('streamlines_speed', trace)]:
-        picture = output/f'{name}.step{step:08d}.jpeg'
-        require_collective('Refusing to overwrite frame' if picture.exists() else '')
         view = pv.CreateView('RenderView')
         view.ViewSize = [1280, 960]
         view.UseColorPaletteForBackground = 0
@@ -86,7 +91,35 @@ def catalyst_execute(info):
         bar.ScalarBarLength = 0.35
         bar.TitleFontSize = 18
         bar.LabelFontSize = 16
+        products.append((name, geometry, view, display, bar))
+    for group, initial in initial_colors.items():
+        owned_colors.extend(proxy for key, proxy in manager.GetProxiesInGroup(group).items()
+                            if key not in initial)
+
+
+def catalyst_execute(info):
+    step, time = int(info.timestep), float(info.time)
+    require_collective('Invalid frame sequence' if step < 1 or not np.isfinite(time) or
+                       (frames and (step != frames[-1][0]+1 or time <= frames[-1][1])) else '')
+    frame_start = perf_counter()
+    source.UpdatePipeline(time)
+    setup_start = perf_counter()
+    initialize_products()
+    profile = {'step': step, 'time': time, 'setup_seconds': perf_counter()-setup_start,
+               'products': {}}
+    for name, geometry, view, display, bar in products:
+        picture = output/f'{name}.step{step:08d}.jpeg'
+        require_collective('Refusing to overwrite frame' if picture.exists() or
+                           picture.with_suffix('.eps').exists() else '')
+        start = perf_counter()
+        geometry.UpdatePipeline(time)
+        details = geometry.GetDataInformation()
+        timings = {'extract_seconds': perf_counter()-start,
+                   'points': details.GetNumberOfPoints(), 'cells': details.GetNumberOfCells(),
+                   'geometry_kib': details.GetMemorySize()}
+        start = perf_counter()
         pv.Render(view)
+        timings['render_seconds'] = perf_counter()-start
         error = ''
         try:
             window = vtkPVProcessWindow.GetRenderWindow()
@@ -96,7 +129,11 @@ def catalyst_execute(info):
         except Exception as exc:
             error = str(exc)
         require_collective(error)
+        start = perf_counter()
         pv.SaveScreenshot(str(picture), view, ImageResolution=[1280, 960])
+        # SaveScreenshot also re-renders/captures; do not label this pure JPEG encoding.
+        timings['screenshot_jpeg_seconds'] = perf_counter()-start
+        start = perf_counter()
         error = ''
         if rank == 0:
             try:
@@ -105,14 +142,29 @@ def catalyst_execute(info):
             except Exception as exc:
                 error = str(exc)
         require_collective(error)
-        pv.Delete(view)
-    pv.Delete(contour)
-    for proxy in trace_objects:
-        pv.Delete(proxy)
-    pv.Delete(speed)
+        timings['eps_seconds'] = perf_counter()-start
+        profile['products'][name] = timings
+    manager = servermanager.ProxyManager()
+    profile['proxies'] = {group: len(manager.GetProxiesInGroup(group)) for group in
+                          ('sources', 'views', 'representations', 'lookup_tables', 'scalar_bars')}
+    profile['execute_seconds'] = perf_counter()-frame_start
+    profiles.append(profile)
     frames.append([step, time])
-    (output/f'demo_rank{rank}.json').write_text(json.dumps({'frames': frames, 'finalized': False}))
+    (output/f'demo_rank{rank}.json').write_text(json.dumps(
+        {'frames': frames, 'profiles': profiles, 'finalized': False}))
 
 
 def catalyst_finalize():
-    (output/f'demo_rank{rank}.json').write_text(json.dumps({'frames': frames, 'finalized': True}))
+    for _, _, view, display, bar in products:
+        pv.Delete(bar)
+        pv.Delete(display)
+        pv.Delete(view)
+    products.clear()
+    for proxy in pipeline_objects:
+        pv.Delete(proxy)
+    pipeline_objects.clear()
+    for proxy in owned_colors:
+        pv.Delete(proxy)
+    owned_colors.clear()
+    (output/f'demo_rank{rank}.json').write_text(json.dumps(
+        {'frames': frames, 'profiles': profiles, 'finalized': True}))

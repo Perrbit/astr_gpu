@@ -12,6 +12,7 @@ module output_fields_gpu
   public :: begin_basic_output_gpu,pack_basic_output_gpu,end_basic_output_gpu
   public :: begin_derived_output_gpu,pack_derived_output_gpu,end_derived_output_gpu
   public :: derived_output_workspace_gpu
+  public :: pack_diagnostic_output_gpu
   real(real64),allocatable,device,save :: packed_d(:)
   real(real64),allocatable,device,save :: private_velocity_d(:,:,:,:)
   integer,device,save :: selected_gpu_d(14)
@@ -31,7 +32,7 @@ contains
   end subroutine
 
   subroutine begin_derived_output_gpu(capacity,host_budget,device_budget,comm,indices,host_bytes,device_bytes, &
-    device_reserve_bytes)
+    device_reserve_bytes,canonical_velocity)
     use mpi, only: MPI_COMM_WORLD
     use commvar, only: im,jm,km,hm,npdci,npdcj,npdck
     use output_fields, only: agree_derived_selection,private_derivative_layout_valid
@@ -41,6 +42,7 @@ contains
     integer,intent(in) :: comm,indices(:)
     integer(int64),intent(out) :: host_bytes,device_bytes
     integer(int64),intent(in),optional :: device_reserve_bytes
+    real(real64),intent(in),optional :: canonical_velocity(0:im,0:jm,0:km,3)
     integer(int64) :: nodes,reserve
     integer :: status,selection(14)
     call checkpoint_state_require(comm==MPI_COMM_WORLD.and..not.allocated(private_velocity_d).and. &
@@ -65,14 +67,19 @@ contains
     allocate(private_velocity_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3),stat=status)
     call checkpoint_state_require(status==0,comm,'private GPU velocity allocation')
     selected_gpu_d=selection
-    call copy_private_velocity_kernel<<<(int(nodes)*3+255)/256,256>>>(im,jm,km,hm)
+    call copy_private_velocity_kernel<<<(int(nodes)*3+255)/256,256>>>(im,jm,km,hm,present(canonical_velocity))
     call sync_after_kernel('private output velocity copy',.true.)
+    if(present(canonical_velocity)) then
+      private_velocity_d(0:im,0:jm,0:km,:)=canonical_velocity
+      call sync_gpu_boundary('private canonical velocity upload')
+    endif
     call exchange_field_halo_gpu(private_velocity_d,3)
     call sync_gpu_boundary('private output velocity halo completion')
   end subroutine
 
-  attributes(global) subroutine copy_private_velocity_kernel(im,jm,km,hm)
+  attributes(global) subroutine copy_private_velocity_kernel(im,jm,km,hm,canonical)
     integer,value :: im,jm,km,hm
+    logical,value :: canonical
     integer :: id,node,nodes,i,j,k,c,ni,nj
     ni=im+2*hm+1; nj=jm+2*hm+1
     nodes=ni*nj*(km+2*hm+1)
@@ -81,7 +88,7 @@ contains
     node=mod(id,nodes); c=id/nodes+1
     i=mod(node,ni)-hm; j=mod(node/ni,nj)-hm; k=node/(ni*nj)-hm
     private_velocity_d(i,j,k,c)=0.d0
-    if(i>=0.and.i<=im.and.j>=0.and.j<=jm.and.k>=0.and.k<=km) &
+    if(.not.canonical.and.i>=0.and.i<=im.and.j>=0.and.j<=jm.and.k>=0.and.k<=km) &
       private_velocity_d(i,j,k,c)=vel_d(i,j,k,c)
   end subroutine
 
@@ -144,6 +151,29 @@ contains
     do m=1,nselected
       packed_d((basic-1+m)*nodes+node+1)=fields(selected_gpu_d(m))
     enddo
+  end subroutine
+
+  subroutine pack_diagnostic_output_gpu(start,extent,values)
+    use commvar, only: im,jm,km
+    integer,intent(in) :: start(3),extent(3)
+    real(real64),intent(out) :: values(:)
+    integer(int64) :: count
+    integer :: nodes,status
+    count=product(int(extent,int64))*int(selected_gpu_count,int64)
+    call local_require(allocated(private_velocity_d).and.allocated(packed_d), &
+      'private GPU diagnostics not initialized')
+    call local_require(all(extent>0).and.all(start>=0).and.all(start+extent<=[im,jm,km]+1).and. &
+      count>0.and.count<=size(packed_d,kind=int64).and.size(values,kind=int64)==count.and. &
+      count<=huge(nodes),'private GPU diagnostic tile shape')
+    nodes=product(extent)
+    ! No basic-field slots precede the diagnostic-only payload.
+    call pack_derived_kernel<<<(nodes+255)/256,256>>>(start(1),start(2),start(3), &
+      extent(1),extent(2),extent(3),0,selected_gpu_count,im,jm,km, &
+      private_types_gpu(1),private_types_gpu(2),private_types_gpu(3))
+    call sync_after_kernel('private diagnostic tile',.true.)
+    status=cudaMemcpy(values,packed_d,count,cudaMemcpyDeviceToHost)
+    call local_require(status==cudaSuccess,'private diagnostic tile download')
+    transferred=transferred+count*8
   end subroutine
 
   subroutine pack_derived_output_gpu(start,extent,components,values)

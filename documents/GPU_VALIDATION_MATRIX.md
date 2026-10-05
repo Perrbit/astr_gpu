@@ -254,8 +254,16 @@ budgets are retained in `ASTR_OUTPUT_RESTART_REDESIGN_PLAN.md` 10.75-10.78.
 | Repartitioned state/history | TGV x/y/z; fixed channel and CURVE x/z; fixed AIR5 HBL z and SBLI x, NP=1/2 | Existing per-field 2e-10 gates, AIR5 fixed physical scales; sampling clocks/identity strict, no lost or resampled history; plan 10.38, 10.49, 10.54, 10.67, 10.69, 10.71, 10.73 |
 | Archives/derived fields/readers | Independent volume and fixed-index slices, registered 16-cubed cases | Same-phase fields, gradient/vorticity/Q_rs/divergence, actual ParaView/Python readback; basic slices download selected planes, not entire fields; plan 10.23-10.31, 10.44-10.46, 10.60, 10.64-10.65 |
 | Joint products/rendering | TGV CPU statistics, GPU Cartesian same-topology EGL, NP=1/2 | Independent step/time schedules, exact statistics and GPU image/geometry restart, output-toggle invariance; `out/or6_a_final_joint_derived_20261003.xml` (12 passes including AIR5 reader checks) |
+| Optional native GPU diagnostics | 32-cubed periodic Cartesian TGV, FP64 643e, NP=1/2; steps 0/2/4 | All 14 derived fields pass absolute 2e-10 (max 1.11e-16); solver state bitwise invariant, discrete initial Q reference passes. Three rank memcheck reports have zero errors. NP=2 EGL products, explicit backend-switch rejection/override and exact image/VTK continuation pass. `out/insitu_r4_gpu_derivatives32_v4_20261004/summary.json`, `out/insitu_r4_gpu_derivatives32_memcheck_20261004/summary.json`, `out/insitu_r4_gpu_derivatives_render32_v2_20261004.xml` (3 tests). Not reduced transfer, larger grids or nonperiodic admission. |
+| Optional product-specific native fields | 32-cubed periodic Cartesian TGV, GPU solver, FP64 643e, NP=1/2; Q, instantaneous streamlines or both | `out/insitu_r4_products32_v3_20261004.xml`: 9 tests pass. Canonical velocity/coordinates exact, Q absolute difference <=2e-10; field inventory and requested-byte counters match. Solver and enabled statistics remain bitwise invariant. NP=2 JPEGs match full-field reference pixelwise, VTK geometry and cross-rank analytic streamline gates pass; exact restart and explicit-only profile switching pass. Both NP=2 memcheck ranks report zero errors, approved local resource budgets pass. Default-path regression: 7 tests in `out/insitu_r4_products_default_regression_20261004.xml`; config/MPI checks: 34 pass. Q field D2H payload is 5 vs 25 FP64 components for full GPU diagnostics (5 vs 11 for CPU diagnostics); bridge copy 7 vs 28 including coordinates, without means. Counters are not total PCIe traffic or a speedup measurement. No mean products, independent cadence, larger grids, walls, AIR5, CURVE or full-device rendering admission. |
+| Bounded long render demonstration | 256-cubed TGV, NP=2 x, dt=1e-4, 100 complete steps; CPU diagnostic backend | Both ranks finalize; 100 JPEG/EPS frames per Q=0/streamline product, no field HDF; two fully decoded 100-frame/20-fps/5-second videos. Observed phase-boundary added host 10.653 GiB/node, device 0.202/0.184 GiB, free at least 12.762 GiB. `out/insitu_r5_native256_render100_20261004/summary.json`. First-frame color legend absent: cosmetic issue retained. No arbitrary-length stability, transient-peak or GPU-Q large-grid claim. |
+| Optional lightweight index-plane rendering | 32-cubed periodic Cartesian TGV, GPU FP64 643e, NP=1/2 x/y/z decomposition; global x/y/z planes | `out/insitu_r4_slices32_final_20261004.xml`: 8 pass. Complete-step velocity/coordinates exact versus full-field capture, 1024 disjoint cells per plane, partition-interface ownership and empty-rank participation pass. Real NP=2 x/z JPEG/EPS and VTK readback, area error <=2e-10, same-topology x images pixel-identical to full-field slice, image/VTK/state exact restart, step/time clocks and explicit-only plane switching pass. Enabled statistics bitwise invariant; both NP=2 z memcheck ranks have zero errors. Local 4 GiB/node host, 2 GiB/GPU extra, 1 GiB reserve and 64 MiB/case bounds pass. Config/MPI: 41 pass; affected default/product regression: 16 pass. Default z plane under NP=2 x requests 35,904 field bytes versus 3,258,288 default full-field bytes (98.90% less), not a PCIe total or step speedup. No full 3-D download or derivatives in this channel; host canonical velocity and owned bridge buffers remain. No larger grids, arbitrary plane interpolation, walls, CURVE/AIR5 or mean-product admission. |
+| IS4 native rendering, NP=2 slabs | 32-cubed periodic Cartesian TGV, GPU solver, FP64 643e, dt=1e-3; x/y/z decomposition, four complete steps and same-topology 3+1 restart | `out/insitu_is4_np2_slabs_20261004.xml`: 9 pass, no skips. CPU/GPU diagnostic backends give pixel-identical JPEGs within each topology; extracted coordinates and 17 velocity/derived fields pass absolute 2e-10, connectivity exact. Solver state invariant; state/control and JPEG/VTK restart exact; silent backend changes rejected, explicit override preserves state. Existing local resource/lifecycle checks pass. The constant-velocity oracle is x-directed: this does not establish y/z directional crossings, NP=4, volume measure/unique coverage or fault-path closure. |
+| IS4 directional/NP=4 increment | 32-cubed periodic TGV, FP64 643e, dt=1e-3; NP=2 x/y/z and NP=4 2x2x1 sharing two GPUs | `out/insitu_is4_slabs_xy_v2_20261004.xml`: 13 pass. Three-axis endpoint/straightness max 1.776357e-15, unique periodic nodes/cells 32768 each, constant integral error 2.842171e-14, velocity/Q seam error zero. CPU/GPU solver field max 2.273737e-13; final statistics max 8.881784e-16 under existing squared-RMS D7 gate. Own-backend same-topology 3+1 state/statistics/control and image/VTK restart exact. Diagnostic-backend JPEGs pixel-identical, extracted 17 fields/coordinates <=2e-10 and connectivity exact. `out/insitu_is4_np4_products_planes_v2_20261004.xml`: 7 pass, selected fields/counts/statistics isolation and restart, x/y empty-rank planes, unique 1024 plane cells and actual EGL plane area/restart. Eight zero-error memcheck reports in `out/insitu_is4_np4_memcheck_logs_20261004/`. Approved case disk bound 256 MiB; observed max 113405224 bytes. Host/device/free budgets unchanged and pass. No performance claim, arbitrary NP=4, wall/CURVE/AIR5, repartitioned rendering or fault closure. |
 | Final CUDA migration/safety | Representative TGV/channel/CURVE/AIR5 migrations; static/dynamic CURVE and SBLI dual-rank memcheck | `out/or6_a_final_cuda_migration_20261003.xml`, 11 passes; zero invalid-access errors |
 | Final failure/resource guards | CPU/GPU publication failure recovery, impossible reserve, render repartition and corrupt render control | `out/or6_a_final_fault_20261003.xml`, 5 passes; previous complete source remains usable |
+| IS4 image-publication isolation | 32-cubed periodic TGV, GPU FP64 643e, dt=1e-3, NP=2 2x1x1 and NP=4 2x2x1 | `out/insitu_is4_image_final_v2_20261004.xml`: 24 pass. Twelve unit cases cover EACCES/ENOSPC/EIO at JPEG/EPS staging and publication; three more cover unknown errors, healthy pair and no overwrite. Six real cases preserve VTK geometry, all-rank identical missing-image records, exact solver state/statistics/control, next-frame JPEG/EPS and 3+1 restart. Three real NP=2 cases terminate on unknown exception, rank-1 journal failure or geometry exception; no final checkpoint/frame. `out/insitu_is4_image_default_20261004.xml`: 6 default NP=1/2 isolation/restart passes. Max case 76469268 bytes, host added phase peak 1452060672 bytes, device 98312192 bytes, min free 18364628992 bytes; approved budgets unchanged. Root GPU build and four-file installed preset inventory pass. Not crash-atomic image publication, whole-filesystem-full recovery, an unknown MPI-fault certificate or completion of IS4 interruption matrix. |
+| IS4 fatal/interruption closure | 32-cubed periodic TGV, GPU FP64 643e, explicit sync, dt=1e-3, six complete steps; NP=2 2x1x1 and NP=4 2x2x1 | `out/insitu_is4_failures_v3_20261004.xml`: 18 pass, no skips. Eight fatal gates cover private-sample NaN, rank-1 missing Q, statistics-create EIO and rank-0 MPI_ERR_OTHER return. Six real SIGKILL cases before statistics/render-control/COMPLETE creation leave unsealed candidates; incomplete restore is rejected, LATEST and old batch remain valid, before/after file hashes match. Explicit step-2 backup to step-6 continuation gives exact state/statistics datasets, control, final statistics samples and JPEG/EPS/VTK pieces. Four resealed cross-step statistics/render-control swaps are rejected despite valid checksums. Found and fixed ignored MPI return codes in C++ bridge; failing reproduction `out/insitu_is4_mpi_repro_v3_20261004.xml`. `out/insitu_is4_closure_regression_20261004.xml`: 25 affected passes. CPU-only/CUDA root builds pass. Eighteen-test max case 101477092 bytes, host added phase peak 1323286528 bytes, device 98312192 bytes, min free 18689163264 bytes. Reuse unchanged directional/product/plane/memory-safety evidence; IS4 bounded gate complete. No MPI failure recovery, hardware-fault certification, production admission or wall/AIR5/CURVE rendering. |
 | Installation/examples | CPU-only/CUDA install inventory; three actual Fortran example parses | `out/or6_a_final_install_20261003.xml` (2 passes), `out/or6_a_final_examples_20261003.xml` (3 passes) |
 
 The approved 64 MiB limits apply separately to each test/reference directory
@@ -263,7 +271,208 @@ and controlled host/device buffers. TGV renderer third-party observations have
 separate 4 GiB node/2 GiB physical-GPU added-memory limits, with 1 GiB free.
 No arbitrary grid-size admission, cross-backend restart, CPU/CURVE/AIR5
 rendering or render-enabled repartition is inferred. Legacy output remains
-default; the new interface requires explicit `ASTR_OUTPUT_CONFIG`.
+default at the first-delivery gate. On 2026-10-04 the user approved switching
+to mandatory `datin/input.output` as the default, with `ASTR_OUTPUT_CONFIG`
+only an optional path override and no legacy checkpoint fallback. See plan
+10.79 for the affected-runtime regression; old artifacts retain their original
+binary/default semantics.
+
+## IS5 bc41 Wall-Only In-Situ Candidate (2026-10-04)
+
+The wall candidate is not a completed IS5 or AIR5/statistics admission.
+CPU/GPU 16^3, four complete steps at dt=1e-3, NP=1 and NP=2 x/y/z slabs:
+12 capture checks passed; wall max absolute difference 1.5987211554602254e-14,
+checkpoint/metric oracle 1.7763568394002505e-15, full state difference
+4.263256414560601e-14. Same-backend same-topology 3+1 continuation is exact;
+sampling does not change flow and the original checkpoint remains unchanged.
+
+Eight native EGL wall-product checks passed: wall pressure, signed x shear,
+heat into gas and inward y normals, 512 disjoint surface cells, both physical
+walls, correct area and step/time tags. Geometry fields match the wall oracle
+exactly; JPEG/EPS continuation is byte-identical. Normal-slab local plane bounds
+initially failed camera admission; global MPI bounds fixed the cause without
+changing flow or acceptance tolerances. Two NP=2 y-slab memcheck logs have zero
+errors. Config/collective tests: 44 passed. Affected TGV/slice regression: 6 passed.
+
+Evidence files under `tests/gpu_validation/out/`:
+`insitu_is5_wall_capture_20261004.xml`, `insitu_is5_wall_render_v2_20261004.xml`,
+`insitu_is5_wall_memcheck_20261004.xml`, `insitu_is5_wall_config_20261004.xml`,
+`insitu_is5_wall_tgv_regression_20261004.xml`.
+Actual rendered cases stay below 26,351,478 bytes; observed added host/device
+memory is below 771,047,424/87,166,976 bytes with at least 18,964,283,392 bytes
+device memory free. Stage observations do not certify all transient peaks.
+The GPU downloads only three planes of five conserved components per wall;
+wall diagnostics remain on the host. Nonperiodic cumulative statistics, empty
+wall-rank admission, AIR5 heat/species/Tv and CURVE remain separate open gates.
+
+### Nonperiodic Channel Statistics Follow-Up
+
+The same 16^3 bc41 case now has owned upper-wall nodes and physical-coordinate
+stretched-y integration. CPU/GPU Reynolds/Favre moments and density stresses
+have maximum absolute difference 1.9984014443252818e-15; raw RMS maximum
+difference is 1.0928757898653885e-16 (squared RMS uses the 2e-10 gate).
+Independent step-3/4 checkpoint moments and domain volume 4*pi^2 pass.
+Same-backend 3+1 continuation is exact for state/statistics; output isolation
+passes all four NP=1/2 x/y/z topologies. GPU statistics stay resident between
+steps, with one final output export; checkpoints still transfer cumulative state.
+
+Receipts: `out/insitu_is5_channel_stats_v2_20261004.xml` (20),
+`out/insitu_is5_channel_stats_joint_20261004.xml` (6 passes, 3 topology-selection
+skips; includes joint wall rendering and two-rank sanitizer zero errors),
+`out/insitu_is5_channel_stats_config_20261004.xml` (44) and
+`out/insitu_is5_channel_stats_tgv_regression_20261004.xml` (6).
+AIR5 and independent empty-wall ranks are not covered by these receipts.
+
+### AIR5 Wall Gate Not Promoted (2026-10-05)
+
+Independent root AIR5/CUDA/Catalyst build passed. The 16^3 SI hot-gas HBL
+case ran four coupled steps, dt=1e-10, NP=1, with compensation and filtering.
+`out/insitu_is5_air5_wall_20261005.xml` fails the first CPU/GPU absolute wall
+field gate: translational heat differs by 2.9256790095022467e-6 W/m^2.
+The raw sampler agrees with each backend's completed checkpoint primitives
+within 2.1827872842550278e-11. Checkpoint pressure/T already differ by
+1.3194221537560225e-7 Pa / 1.05355866253376e-8 K; the boundary derivative
+amplifies the input temperature difference. This is not an AIR5 IS5 pass.
+No multi-rank, restart, cumulative-statistics or render acceptance was run
+after that first failure. The original receipt remains as historical evidence.
+The user subsequently approved fixed input-derived reference normalization for
+AIR5 cross-backend fields, not a solver change or automatic tolerance relaxation.
+
+### AIR5 Wall Sampling And Native Render (2026-10-05)
+
+`out/insitu_is5_air5_wall_scaled_20261005.xml`: 16 passes for NP=1 and all
+NP=2 slabs, four coupled steps, exact 3+1 continuation and sampling isolation.
+Input scales: rho0=0.05 kg/m^3, T0=3000 K, Y0=(0.767,0.233,0,0,0),
+a0=1100.3842893098433 m/s, p0=43244.48514856889 Pa, heat0=p0*a0.
+Velocity uses a0 (not the zero initial flow speed), shear uses p0, species/normal
+use 1. Maximum reference-scaled field difference is 3.4793001812971625e-12.
+Sampler versus its own completed-step cache retains absolute 2e-10 and differs
+by at most 2.1827872842550278e-11. SI differences remain reported per field.
+An additional direct immutable-checkpoint read in all four topologies checks
+all 11 q, 11 carry and 12 physical-cache components: maximum fixed-scale
+difference 3.511862208445867e-12. Its assertions were added to the test, but
+the original 16-pass receipt is not claimed to contain these added properties.
+
+`out/insitu_is5_air5_wall_render_v4_20261005.xml`: 9 passes for native
+`air5_walls` images/geometry and continuation in all four topologies, plus
+two-rank y-slab wall-pack memcheck (two zero-error logs). Every surface has
+256 quads and physical area 0.00016 m^2. Its 18 SI fields match the same
+backend's private wall samples exactly; ten presets produce JPEG/EPS/VTK.
+The upper y rank really has no wall nodes and participates without downloading
+flow data. Restart images match bytewise; authoritative q/carry and controls
+remain exact, and rendering does not alter evolution. Maximum directory size
+78,536,737 bytes is below the explicitly selected approved 256 MiB limit.
+Observed native-stage host/device increments peak at 1,221,595,136 /
+496,766,976 bytes; minimum device free memory is 18,573,099,008 bytes.
+These stage observations do not cover all transient third-party peaks.
+
+This does not close AIR5 cumulative statistics, wall-scalar accumulation, CURVE,
+arbitrary rank counts, production physics or complete IS5. CPU/EGL rendering,
+GPU wall diagnostic computation and AIR5 cumulative statistics are explicitly
+rejected in this product. The CPU/GPU wall sampler still uses existing FP64
+constitutive routines after compact three-layer downloads.
+Parser/collective probes have 47 passes in `out/insitu_is5_air5_config_20261005.xml`.
+`out/insitu_is5_air5_affected_20261005.xml` has 7 passes for explicit rejection
+of unsupported AIR5 configurations, TGV device-statistics/render restart and
+bc41 y-slab products/continuation. All three existing root CMake builds pass.
+
+## IS5 Wall Scalar Accumulation (2026-10-05)
+
+The approved candidate is channel pressure/shear/heat and 18 AIR5 bottom-wall
+fields, with time mean, variance and RMS. This is Reynolds scalar accumulation,
+not AIR5 volumetric velocity/Favre/stress statistics or mean-field rendering.
+The existing channel volumetric velocity statistics remain available.
+GPU accumulation stays resident after compact wall D2H diagnostics and a
+compact scalar H2D upload; no full 3-D flow download is performed per endpoint.
+Raw state lives in existing `statistics.h5`, at its root for AIR5 (204 fields)
+or in `wall_statistics` for channel (34 fields). Same-backend/topology restart
+is exact; statistical repartition is refused.
+
+| Receipt | Result / Evidence |
+|---|---|
+| `out/insitu_is5_wall_scalar_full_20261005.xml` | 26 passes before a fault-injection fixture failed at the outer bundle seal; not an all-pass receipt. NP=1/2 x/y/z, CPU/GPU, independent endpoint integration, exact state/carry/statistics/control continuation, isolation, channel wall scalars, AIR5 joint images/restart, empty wall rank and two zero-error memcheck logs. |
+| `out/insitu_is5_wall_scalar_errors_20261005.xml` | 9 passes after resource-tree copying and resealing the deliberately modified test bundle: CPU/GPU metadata/NaN/off-wall rejection and host/device/headroom budgets; sources immutable and no new COMPLETE batch. |
+| `out/insitu_is5_wall_scalar_config_20261005.xml` | 47 parser/collective passes, including AIR5 wall-statistics enablement. |
+| `out/insitu_is5_wall_scalar_regression_20261005.xml` | 8 affected passes: channel velocity and exact/render continuation plus memcheck, TGV formal exact continuation, CPU render and GPU wall-diagnostic refusals. |
+
+AIR5 maximum fixed-scale mean / variance differences are
+9.073297668749092e-13 / 1.1631045113571083e-18. Mean uses the input-derived
+field scale; variance/RMS squared use its square, all <=2e-10. Independent
+endpoint mean error is 4.163336342344337e-16. Raw RMS differences are retained;
+the largest is translational heat RMS, 1.0013876276526723e-6 W/m^2, from a
+direct reread of frozen exports. Channel mean/variance maxabs is
+1.4210854715202004e-14 under its unchanged absolute gate.
+The first smoke exposed a newly introduced CPU lower-bound indexing error;
+it was repaired and all positive checks rerun without changing tolerances,
+solver physics or numerical closures.
+
+Maximum per-run directory is 95,601,979 bytes (<256 MiB). Joint AIR5 native
+stage observations: host/device increments <=1,177,964,544 / 496,766,976 bytes,
+device free >=18,583,715,840 bytes; not all transient third-party peaks.
+All three current root CMake builds pass. This does not complete IS5; AIR5
+volumetric scalar/velocity statistics, CURVE and production physics remain open.
+
+## IS5 AIR5 Volume Statistics (2026-10-05)
+
+`out/insitu_is5_air5_volume_v3_20261005.xml`: 39 passes, 16^3 four-step
+Cartesian AIR5 HBL, NP=1/2 x/y/z, explicit FP64. Includes independently frozen
+endpoint weights 0.65/0.35, physical upper-node ownership and periodic-z
+uniqueness, CPU/GPU moments, own-cache phase, both RMS classes, exact
+continuation, selection mismatch, isolation, corrupt-state rejection and
+NP2 x-slab memcheck (both logs zero errors).
+4624 unique nodes integrate to 1.6e-6 m^3. Velocity maxabs is
+9.353834980879716e-13; scalar mean/variance fixed-scale maxima are
+3.916435768284525e-12 / 9.410349043213904e-18; independent scalar mean
+endpoint max is 1.5158245029548803e-16. SI/RMS differences remain reported;
+temperature mean SI max is 1.1749307304853573e-8 K.
+The original single-rank z-measure failure remains in the smoke receipt;
+local periodic coordinate handling was corrected without changing gates.
+
+Volume and regional-reduction flags are independently explicit and default
+false. This receipt predates wall-mean rendering integration; mean images and
+their affected regressions require separate evidence. IS5 remains active,
+and this does not certify CURVE, mature turbulence or production SBLI.
+
+## IS5 Final Product Matrix (2026-10-05)
+
+The preceding volume-only receipt is superseded for combined-product coverage
+by `out/insitu_is5_final_products_20261005.xml`: 51 passes (39 volume and 12
+mean-wall). All current selectors are optional: volume accumulation, independent
+regional reduction, wall-mean rendering and bottom-wall separation recording.
+Tests cover Cartesian 16^3, NP=1/2 x/y/z, full coupled-step phase, independent
+endpoint moments and physical measures, exact same-backend continuation,
+isolation, corrupt/mismatched state rejection, geometry/images, empty y ranks
+and zero-error memcheck. The joint test enables all four selectors together.
+
+After fixing empty C++ mean-buffer pointer arithmetic,
+`out/insitu_is5_empty_bridge_20261005.xml` repeats all 12 mean-wall passes.
+Mean geometry arrays equal the stored wall moments exactly, including shared
+and periodic endpoints. Images use the frozen camera/scales; exact restarted
+JPEG/EPS/VTK products are checked. This is wall-mean, not 3-D mean rendering.
+
+The approved Cartesian +x separation algorithm has an eleven-sequence synthetic
+probe (`insitu_is5_separation_synthetic_20261005.xml`, one pass) and four real
+topology tests (`insitu_is5_separation_sampling_20261005.xml`), with independent
+actual-span integration, CPU/GPU, isolation, exact continuation and mismatch
+rejection. Exact zeros remain intervals and unpaired roots are not bubbles.
+Zero inlet speed makes the hot-gas fixture physically ineligible: status is
+`not_applicable_no_positive_inflow`, not a measured absence of separation.
+Configuration and collective identity have 61 passes in
+`insitu_is5_final_config_20261005.xml`.
+
+The combined matrix retains volume velocity maxabs 9.353834980879716e-13 and
+scalar fixed-scale mean/variance maxima 3.916435768284525e-12 /
+9.410349043213904e-18. Temperature SI mean difference is 1.1749307304853573e-8 K;
+the normalized gate must not be restated as an absolute temperature gate.
+Native observed host/device increments <=1,867,735,040 / 743,968,768 bytes;
+device free >=18,345,426,944 bytes across the combined and post-fix matrices.
+Largest per-run directory 161,607,173 bytes. These respect the approved local
+budgets, not a guarantee on every third-party transient allocation. All three
+root CPU/CUDA/AIR5-CUDA builds pass. IS6, IS7 and IS8 remain separate gates.
+Final rejection and unchanged-default regressions pass 11 and 10 tests in
+`insitu_is5_final_rejection_20261005.xml` and
+`insitu_is5_final_default_20261005.xml`. IS5 is closed within the approved local
+scope only; its historical numerical/render/test-fixture failures are retained.
 
 ## TGV Filter Policy
 

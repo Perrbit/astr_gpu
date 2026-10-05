@@ -7899,3 +7899,421 @@ CUDA/Catalyst is
 `fbc02832336131f59a3c0bc19a6121260cb77e125e88cc4fad0250c80f65a2ed`.
 Bounded output correctness is not long-time physical or production-I/O
 qualification. Legacy defaults are unchanged and no Git/remote jobs were run.
+
+### Mandatory Default Output Entry (2026-10-04)
+
+User-approved plan 10.79 supersedes the historical opt-in default above.
+Startup requires `datin/input.output`; `ASTR_OUTPUT_CONFIG` is only an optional
+path override. Missing/invalid configuration and legacy `lrestart=true` fail,
+without fallback. Explicitly disabled products do not reactivate legacy output.
+Controller `lwsequ/lwslic` are ignored; statistics and controller/CFL clocks
+remain unchanged. Existing legacy-output test drivers need migration.
+
+`test_output_default_runtime.py` adds CPU/GPU NP=1/2 default-entry exact restart,
+missing default/override rejection, legacy restart rejection, ignored legacy
+flags, no-product execution and optional/empty override checks. It also verifies
+that three nonreacting Quickstarts generate the required configuration.
+`out/output_default_runtime_accepted_20261004.xml` records 19 passes.
+`out/output_default_joint_air5_20261004.xml` records eight default-path TGV
+joint-product/render checks and two explicit-path AIR5 HBL/SBLI derived
+continuation controls, all passing. Earlier failed attempts are retained and
+explained in plan 10.79; their acceptance tolerances were not relaxed.
+`out/output_default_install_20261004.xml` adds two passed installed-tool checks.
+The actual Fortran configuration probe also accepts the new Quickstart template.
+
+```bash
+python3 -m pytest -q -x -o junit_family=xunit1 \
+  tests/gpu_validation/test_output_default_runtime.py
+```
+
+### Optional Native GPU Gradients/Q (2026-10-04)
+
+`run_insitu_gpu_derivatives.py` uses the actual ASTR solver and Catalyst bridge
+on 32^3 Cartesian periodic TGV at NP=1/2. It compares CPU/GPU diagnostic
+backends on identical canonical completed-step velocity, all fourteen derived
+fields at steps 0/2/4 (absolute tolerance 2e-10), the discrete initial Q formula,
+and the final solver state against a CPU reference. The two diagnostic backends
+must leave the GPU solver state bitwise identical. Each case remains below
+64 MiB on disk. Resource observation uses the approved 4 GiB/node host,
+2 GiB/device additional memory and 1 GiB device reserve, at phase boundaries;
+it is not a sub-frame peak guarantee.
+
+```bash
+python3 tests/gpu_validation/run_insitu_gpu_derivatives.py \
+  --executable /path/to/build/bin/astr --mpiexec /path/to/mpiexec \
+  --backend /path/to/paraview/lib/catalyst --output /path/to/new-test-directory
+```
+
+Add `--memcheck` for the separate Compute Sanitizer gate. The native real-image,
+cross-rank streamline and exact render restart checks are in
+`test_insitu_gpu_derivatives.py`. They also reject a silent derivative-backend
+switch and verify an explicit override preserves the solver state. Image pixel
+differences are reported, not used instead of numerical field comparison.
+
+Passed artifacts: `out/insitu_r4_gpu_derivatives32_v4_20261004/summary.json`,
+`out/insitu_r4_gpu_derivatives32_memcheck_20261004/summary.json` and
+`out/insitu_r4_gpu_derivatives_render32_v2_20261004.xml` (three tests).
+Earlier failed directories retain evidence of unwanted test samples, a missing
+diagnostic directory, and a fixed derived-only packing offset. No tolerance or
+resource budget was relaxed. Larger/nonperiodic cases remain outside this gate.
+
+IS4 increment: the same real-render test module now covers NP=2 x/y/z slabs.
+`out/insitu_is4_np2_slabs_20261004.xml` records nine passes without skips.
+Within each topology, CPU/GPU diagnostic backends produce identical JPEG
+pixels; extracted geometry and all 17 velocity/derived fields pass absolute
+2e-10 with exact connectivity. State/control and JPEG/VTK continuation remain
+exact for same-backend, same-topology step 3 to 4 restart. Both runs use the GPU
+solver. The constant-velocity oracle still integrates along x only, so these
+tests do not certify directional y/z crossings, NP=4, unique volume coverage
+or IS4 fault recovery. No candidate admission or resource budget was enlarged.
+
+### IS4 Directional Crossings And NP=4 (2026-10-04)
+
+`test_insitu_is4.py` runs 32^3 periodic FP64/643e TGV at dt=1e-3,
+four complete steps versus same-topology 3+1 continuation. It covers NP=2
+x/y/z slabs and NP=4 2x2x1 sharing two local GPUs, for correctness only.
+The independent `insitu_is4_pipeline.py` uses rotated constant-velocity
+diagnostic copies without changing solver fields or the default product preset.
+It checks unique periodic half-open node/cell identities, structured Cartesian
+coverage, physical volume, constant-field trapezoidal integration, shared and
+periodic seam fields, and analytic streamline endpoints in all three directions.
+
+`out/insitu_is4_slabs_xy_v2_20261004.xml` has 13 passes. CPU/GPU solver field
+max absolute error is 2.273737e-13; final 41-component statistics pass the
+existing D7 squared-RMS gate with maximum tested error 8.881784e-16. Same-backend
+state/statistics/control and image/VTK continuation are exact. Geometry and
+17 extracted fields pass 2e-10; JPEGs agree pixelwise between diagnostic backends.
+`out/insitu_is4_np4_products_planes_v2_20261004.xml` adds seven passes for
+selected profiles, plane payload/unique cells, empty ranks and actual EGL plane
+rendering/restart. Eight zero-error rank reports are retained under
+`out/insitu_is4_np4_memcheck_logs_20261004/`.
+Default preset/backends/restart regression adds nine passes in
+`out/insitu_is4_default_np2_regression_20261004.xml`; CPU-only and CUDA root
+CMake builds pass. All new runs retain explicit synchronization and pinned
+host-staged solver communication, not CUDA-aware transport qualification.
+
+The user raised this matrix's directory allowance to 256 MiB per case; set
+`args.directory_budget_bytes` explicitly. The shared driver defaults to 64 MiB
+for unchanged tests. The 4 GiB/node host, 2 GiB/physical-GPU extra and 1 GiB free
+memory bounds remain unchanged. CPU/GPU statistics checkpoint internal layouts
+are deliberately different: compare final physical statistics across backends,
+not raw accumulator files. Sanitizer's isolated MPI configuration can change
+near-zero regional reduction bits; its numerical/safety gate is separate from
+ordinary same-environment bitwise continuation. No physics or tolerance changed.
+Only NP=4 2x2x1 is additionally admitted; other NP=4 topologies are rejected.
+Fault recovery and interrupted publication remain pending.
+
+### Native Product-Specific Supply (2026-10-04)
+
+`test_insitu_products.py` validates the optional 32^3 NP=1/2 product profiles
+`q_surface`, `streamlines`, `q_streamlines` against the full same-phase bridge.
+It checks exact velocity/coordinates, Q and extracted coordinates/fields within
+2e-10, connectivity equality, strict field inventory and requested field/bridge
+copy bytes. The NP=2 real JPEGs are pixel-identical to the full-field reference.
+Complete-step state and explicitly enabled device statistics remain bitwise
+identical. Same-profile restart reproduces image/VTK bytes; silent profile
+switch and unvalidated grid sizes are rejected. The explicit override retains
+the existing render-clock restart semantics. Two-rank selected-Q memcheck
+reports zero errors. Budgets remain 4 GiB/node host, 2 GiB/device extra,
+1 GiB/device reserve and 64 MiB per case directory; observations are at phase
+boundaries, not a guarantee on every third-party transient.
+
+`out/insitu_r4_products32_v3_20261004.xml` records nine passes and the image
+differences. `out/insitu_r4_products_default_regression_20261004.xml` records
+seven full-field/native restart regression passes. Configuration/MPI probes
+pass all 34 cases when their executable/launcher environment variables are set.
+The first product test attempt passed six gates but its override diagnostic
+sampler rejected the approved reset render clock; the test now uses the actual
+preset, without changing production clock behavior or tolerances.
+
+```bash
+python3 -m pytest -q -x tests/gpu_validation/test_insitu_products.py \
+  -o junit_family=legacy
+```
+
+The geometry readback checks require VTK Python readers in the test Python
+environment. Field-byte accounting is payload accounting, not a measured sum
+of every CUDA/MPI transfer. No performance speedup, wall/AIR5/CURVE, separate
+per-product cadence or all-device rendering claim follows from these tests.
+
+### Lightweight Native Index Planes (2026-10-04)
+
+`test_insitu_slices.py` checks the optional `velocity_slice` channel at 32^3
+periodic Cartesian TGV, GPU FP64 643e, NP=1/2. Eight final tests pass in
+`out/insitu_r4_slices32_final_20261004.xml`: x/y/z planes and decomposition
+directions, global indices 0/4/16, normal-interface single ownership, empty
+domains and tangential seams. Coordinates and velocities match the full-field
+completed-step capture exactly, with 1024 disjoint cells per plane. Native
+NP=2 x/z rendering writes JPEG/EPS and VTK, independent geometry readback
+checks area within 2e-10. Same-topology x JPEGs equal the full-field reference
+pixelwise. Exact state/image/VTK continuation, step/time clocks, explicit-only
+plane switching, enabled-statistics invariance and dual-rank z memcheck pass.
+Budgets remain 4 GiB/node host, 2 GiB/GPU extra, 1 GiB reserve and 64 MiB/case.
+
+`out/insitu_r4_slices_config_20261004.xml` records 41 parser/MPI checks, including
+axis/index disagreement. `out/insitu_r4_slices_affected_regression_20261004.xml`
+records 16 existing product and default/native restart passes. CPU/CUDA root
+builds pass. The final slice matrix reran on the final executable.
+
+The first empty-domain capture failed because VTK drops zero-length arrays;
+only a zero-point slice domain may omit its arrays, not a populated domain.
+A later resource assertion used a three-frame helper on two/one-frame cases;
+the helper now checks the supplied frame sequence and statistics lifecycle.
+Neither fix changes tolerances, resource budgets or solver state.
+
+```bash
+python3 -m pytest -q -x tests/gpu_validation/test_insitu_slices.py \
+  -o junit_family=legacy
+```
+
+This channel requests only four conservative components per plane node,
+followed by host canonical reconstruction and six-component floating bridge
+copy including coordinates. Quad connectivity is retained independently.
+It does not establish measured total-transfer savings, step acceleration,
+wall/CURVE/AIR5 rendering, arbitrary plane interpolation or mean products.
+
+### IS4 Image Publication Faults (2026-10-04)
+
+`test_insitu_image_publication.py` has 24 passing bounded checks recorded in
+`out/insitu_is4_image_final_v2_20261004.xml`. Fifteen file-only checks exercise
+JPEG/EPS staging and publication with EACCES/ENOSPC/EIO, cleanup, exclusive
+publication and fatal unknown errors. The native test-only wrapper
+`insitu_image_fault_pipeline.py` injects an EPS partial-write error at step 2
+after collective capture, without changing the solver or adding production
+fault-injection switches.
+
+Six real cases cover the three errnos at NP=2 2x1x1 and NP=4 2x2x1. Each rank
+writes the same missing-image record; geometry is retained, later JPEG/EPS
+match the healthy case exactly, and state/statistics/control plus same-topology
+3+1 continuation remain exact. Three NP=2 fatal cases cover unknown exceptions,
+rank-1 missing-journal failure and geometry exceptions, without a final frame or
+checkpoint. Six affected default NP=1/2 render/isolation/restart cases pass in
+`out/insitu_is4_image_default_20261004.xml`.
+
+```bash
+python3 -m pytest -xq tests/gpu_validation/test_insitu_image_publication.py \
+  -o junit_family=legacy
+```
+
+The test-directory cap is explicitly 256 MiB; observed maximum is 76469268
+bytes. Native phase checks retain 4 GiB/node host, 2 GiB/GPU extra device and
+1 GiB device reserve. No new CUDA kernel or numerical method was changed; this
+does not replace the existing memory-safety gates. Whole-filesystem ENOSPC that
+also prevents journaling is fatal. Process interruption, arbitrary MPI errors,
+numerical/field/statistics fault closure and production scope remain separate.
+The first injection failed to identify a relative case directory; a subsequent
+control comparison spanned an executable relink. Final evidence fixes the
+test path and uses one unchanged executable, without weakening tolerances.
+
+### IS4 Fatal Gates And Interrupted Saves (2026-10-04)
+
+`test_insitu_is4_failures.py` records 18 passes without skips in
+`out/insitu_is4_failures_v3_20261004.xml`. It uses real 32^3 periodic GPU TGV,
+FP64 643e, explicit sync, dt=1e-3, six completed steps and NP=2 2x1x1 or
+NP=4 2x2x1. Statistics cover [0.0005,0.0055]; Q images are due at 2/4/6.
+Only the existing two-batch rotation is used; the continuous reference protects
+step 2 through the existing test-only PROTECT hook.
+
+Eight fatal cases inject nonfinite private diagnostic endpoint data, rank-1
+missing Q, statistics HDF5 create EIO or MPI_ERR_OTHER at the Catalyst status
+consensus. Six interrupted-save cases SIGKILL rank zero before statistics,
+render-control or COMPLETE creation. Each rejects incomplete restore, checks
+the old backup hashes against a before-interruption record, and explicitly
+restores the old complete step-2 batch. Step-6 state/statistics datasets and
+control are exact; statistics sample files and remaining JPEG/EPS/VTK pieces
+match the uninterrupted reference bytewise. Four checksum-resealed cross-step
+statistics or render-control swaps are rejected by semantic clock checks.
+
+The test-only `insitu_is4_failure_pipeline.py` and
+`insitu_is4_fault_preload.c` do not add production switches. The shared runner
+accepts explicit post-start failures without rejecting earlier valid batches;
+each caller must check that later batches were not published. These tests use
+a 45-second timeout, not a changed production default. The maximum case is
+101477092 bytes, within the approved 256 MiB per-case budget. Existing host,
+device and device-free limits remain unchanged and pass.
+
+```bash
+python3 -m pytest -xq --tb=short tests/gpu_validation/test_insitu_is4_failures.py \
+  -o junit_family=legacy
+```
+
+The MPI reproduction initially continued through step 6 after an injected
+error return: the C++ bridge had ignored MPI_Allreduce status. It now checks
+all its MPI operation return codes and aborts on error. This return-code test
+does not emulate lost ranks, broken networks or damaged communicators, and
+does not certify MPI recovery. `out/insitu_is4_closure_regression_20261004.xml`
+adds 25 affected file-only/image-fault/default pipeline passes. CPU-only/CUDA
+root builds pass; unchanged GPU derivative/buffer memory-safety evidence is
+reused, with no new CUDA kernel or device allocation.
+
+Setup corrections: keep=4 was invalid and replaced by existing keep=2 plus
+PROTECT; explicit dlsym function casts support the NVHPC C wrapper. A test-only
+rank-asymmetric UpdatePipeline caused a timeout and was fixed to enter on all
+ranks. Independent HDF5 container hashes were not a valid value-equivalence
+oracle: formal state/statistics comparisons remain exact per dataset, while
+the same backup is independently required to remain byte-for-byte unchanged.
+IS4 is now closed only for its approved bounded scope. IS5 still requires D5
+wall-diagnostic decisions before extending native rendering admission.
+
+### IS5 bc41 Walls And Nonperiodic Velocity Statistics
+
+The bc41 definitions and AIR5 noncatalytic-wall heat contributions were approved
+on 2026-10-04. `test_insitu_channel_walls.py` and
+`test_insitu_channel_wall_render.py` verify compact three-layer capture, two
+separate quad surfaces, physical coordinates/signs, real JPEG/EPS/VTK products,
+solver isolation and exact same-topology continuation. The 16^3 four-step
+matrix covers NP=1 and NP=2 x/y/z, not production scales.
+
+`test_insitu_channel_statistics.py` adds the physical upper-wall node, actual
+stretched-y trapezoidal integration weights, Reynolds/Favre moments, density
+stresses and independent two-endpoint moment comparisons. The statistical
+window starts at t=.003, so step-3/4 immutable checkpoints provide the oracle.
+GPU accumulation remains resident; one final statistical export is not a
+per-step flow download. Joint y-slab rendering/restart and two-rank memcheck
+are separate checks. All gates use absolute 2e-10; RMS uses squared values
+and reports raw RMS differences.
+
+Receipts: `out/insitu_is5_channel_stats_v2_20261004.xml` (20 passes),
+`out/insitu_is5_channel_stats_joint_20261004.xml` (6 passes, 3 intentionally
+unselected joint-render topologies), `out/insitu_is5_channel_stats_config_20261004.xml`
+(44 passes), `out/insitu_is5_channel_stats_tgv_regression_20261004.xml` (6 passes).
+AIR5 integration and an independent empty-wall-rank gate remain open; IS5 is
+not closed by these channel results.
+
+`test_insitu_air5_walls.py` first used a strict SI gate. The AIR5/CUDA/Catalyst
+build passed; its first 16^3 SI HBL CPU/GPU comparison failed with translational
+heat maxabs 2.9256790095022467e-6 W/m^2. The run stopped before the remaining
+topology/restart/isolation matrix. Each sampler's primitive wall fields agree
+with its own completed checkpoint within 2.1827872842550278e-11, but the solver
+checkpoints already differ in pressure and interior temperature; the derivative
+amplifies the latter. That historical receipt remains:
+`out/insitu_is5_air5_wall_20261005.xml`.
+The generalized 5/11-component pack retains the old bc41 behavior:
+`out/insitu_is5_air5_pack_bc41_regression_20261005.xml` has 9 passes including
+five-variable packing memcheck and all NP=1/2 field/statistics comparisons.
+
+After explicit approval, `out/insitu_is5_air5_wall_scaled_20261005.xml` has
+16 passes: NP=1/2 x/y/z, completed-step CPU/GPU fields, exact continuation and
+sampling isolation. Scales are derived before runs from the frozen input and
+mechanism; per-field SI/normalized differences and scales are reported.
+Maximum normalized field difference is 3.4793001812971625e-12. Comparison to
+each backend's own cache remains absolute <=2e-10 (observed <=2.18279e-11).
+
+`test_insitu_air5_wall_render.py` supplies 18 SI fields and ten native presets.
+`out/insitu_is5_air5_wall_render_v4_20261005.xml` has 9 passes including all
+NP=1/2 topologies, geometry/physical-area checks, a genuinely empty wall rank,
+exact image continuation and two-rank wall-pack memcheck. Each renderer reads
+only compact wall data, not full 3-D state. Geometry field difference is zero;
+both memcheck logs have zero errors. Each render directory is below the
+explicit approved 256 MiB cap, while driver defaults remain 64 MiB.
+AIR5 cumulative statistics and wall-scalar accumulation remain open; IS5 is
+not complete. This hot-gas restart fixture is not a physical SBLI benchmark.
+Affected configuration probes: `out/insitu_is5_air5_config_20261005.xml`
+(47 passes). AIR5 unsupported requests plus TGV/bc41 regressions:
+`out/insitu_is5_air5_affected_20261005.xml` (7 passes).
+The wall field test now also checks all checkpoint q/carry/physical-cache
+components using fixed dimensional scales. A direct reread of the four frozen
+topologies passes with maximum normalized difference 3.511862208445867e-12;
+the earlier 16-pass receipt predates these additional recorded properties.
+
+### IS5 Wall Scalar Time Statistics
+
+`test_insitu_wall_scalar_statistics.py` tests channel pressure/shear/heat and
+all 18 AIR5 bottom-wall scalars. CPU reuses FP64 weighted central moments;
+GPU uses a separate resident compact accumulator with identical endpoint order.
+The approved AIR5 scale-based mean/variance gate retains per-field SI and raw
+RMS reporting; sampling against its own completed checkpoint remains absolute
+2e-10. Exact restart is bytewise, not tolerance-based. Each checkpoint still
+retains only one or two batches; early endpoint oracles use separate bounded
+short runs rather than changing that retention contract.
+
+The normal matrix in `out/insitu_is5_wall_scalar_full_20261005.xml` has 26
+passes, then a fault-injection failure at bundle sealing. That historical
+receipt is not all-pass. Its positive coverage is NP=1 and NP=2 x/y/z,
+independent frozen endpoint integration, state/carry/control/statistics exact
+restart, isolation, channel scalar moments, joint AIR5 renderer/statistics
+continuation, a genuinely empty wall rank and two zero-error memcheck logs.
+After fixing copied resources and deliberately resealing the modified test
+bundle, `out/insitu_is5_wall_scalar_errors_20261005.xml` has 9 passes for
+CPU/GPU corrupt state rejection plus host/device/headroom budgets. No source
+bundle is changed and no failed run publishes a new complete checkpoint.
+The positive numerical executable/inputs did not change, so those 26 bounded
+checks were not repeated solely for fault-fixture edits.
+
+Mean/variance fixed-scale max differences are 9.073297668749092e-13 /
+1.1631045113571083e-18; the independent endpoint oracle mean max is
+4.163336342344337e-16. Channel scalar maxabs is 1.4210854715202004e-14.
+The first smoke exposed a CPU 0-based capture / 1-based accumulation indexing
+mistake in the new module. It was corrected and positive gates rerun unchanged.
+47 config/collective checks and 8 affected channel/TGV/rejection checks pass
+in `out/insitu_is5_wall_scalar_{config,regression}_20261005.xml`.
+All root CPU/CUDA/AIR5-CUDA builds pass. Largest per-run directory is
+95,601,979 bytes under the approved 256 MiB cap; default driver cap stays64MiB.
+
+That wall receipt does not include volumetric T/Tv/species or velocity moments;
+the later volume receipt below supplies those checks. Complete IS5 is still open.
+Final binary layout and checkpoint grouping are documented in
+`scripts/insitu/README.md`. This is not a new flow/chemistry solver, all-device
+wall diagnostics or a physical/statistically converged SBLI validation.
+
+### IS5 AIR5 Volume Statistics
+
+`test_insitu_air5_volume_statistics.py` has 39 passes in
+`out/insitu_is5_air5_volume_v3_20261005.xml`: 16^3, four complete coupled steps,
+NP=1/2 x/y/z, CPU/GPU, independent clipped endpoint moments, physical nodal
+volume, both RMS classes, exact state/cache/carry/statistics/control continuation,
+isolation, optional-reduction continuation, selection mismatch, corrupt metadata,
+NaN and off-owned state rejection, and NP2 x-slab zero-error memcheck.
+The statistical window [3.1dt,3.6dt] isolates endpoint weights 0.65/0.35.
+The early single-rank periodic-z measure failure is retained in
+`out/insitu_is5_air5_volume_smoke_20261005.xml`; it was not hidden by tolerance.
+
+Unique nodes are 17*17*16=4624, volume 1.6e-6 m^3. Velocity maxabs is
+9.353834980879716e-13; fixed-scale scalar mean/variance max differences are
+3.916435768284525e-12 / 9.410349043213904e-18. Independent scalar endpoint
+mean difference is 1.5158245029548803e-16. Per-field SI/raw RMS values remain
+in the receipt; the temperature mean SI difference reaches 1.17493e-8 K.
+This is not an absolute 2e-10 temperature claim or a production physical gate.
+Volume and regional-reduction flags default false and are checked at restore.
+Layout is in `scripts/insitu/README.md`. Mean-wall rendering has a separate
+affected gate, not evidence inferred from the numerical volume receipt.
+
+### IS5 Mean-Wall Products And Separation Diagnostics
+
+`out/insitu_is5_final_products_20261005.xml`: 51 passes, comprising 39 AIR5
+volume-statistics and 12 mean-wall tests. `wall_mean_render` adds the frozen
+three channel / ten AIR5 mean presets; geometry retains all wall scalar means,
+variances, RMS and exact window/coverage metadata. Unique/seam fields are
+compared exactly against binary FP64 moments; images are read back, same-backend
+continuation is exact and all products can run together with volume reduction
+and separation recording. No 3-D mean image is introduced.
+
+`out/insitu_is5_empty_bridge_20261005.xml`: all 12 mean-wall tests passed again
+after removing null-pointer arithmetic for empty C++ mean buffers; includes NP2
+y empty ranks, joint products and both zero-error memcheck logs. The final
+combined matrix observed host/device increments <=1,867,735,040 / 743,968,768
+bytes, device free >=18,345,689,088 bytes. The post-fix run observed device free
+>=18,345,426,944 bytes. Largest run directory in either matrix is 161,607,173
+bytes; the approved caps remain 4 GiB/node, 2 GiB/physical GPU, reserve >=1 GiB
+and 256 MiB/run. Native stage observations do not capture all transient peaks.
+
+`out/insitu_is5_separation_synthetic_20261005.xml`: one test covers eleven
+independent shear sequences, including complete/multiple/unpaired crossings,
+exact-zero intervals, interrupted pairing, no crossing, all zero, extreme
+finite shear, nonmonotone coordinates and NaN rejection.
+`out/insitu_is5_separation_sampling_20261005.xml`: four topology tests cover
+CPU/GPU, independent actual-z geometric shear averaging, output isolation,
+exact 3+1 continuation and selection mismatch. The +x bottom-wall definition
+was approved by the user. The zero-inflow fixture is explicitly
+`not_applicable_no_positive_inflow`, not a physical no-separation case.
+`out/insitu_is5_final_config_20261005.xml`: 61 configuration/MPI consistency
+checks pass. All four new choices default false and enforce dependencies.
+
+These are local 16^3 Cartesian FP64 gates, NP=1/2 x/y/z. Scaled AIR5 scalar
+comparisons, absolute velocity/bc41 gates and exact same-backend continuation
+remain distinct. CURVE, production turbulence/SBLI and all-device visualization
+are not admitted by this evidence.
+The final executable also passes 11 corrupt-state/budget/unsupported-path checks
+in `out/insitu_is5_final_rejection_20261005.xml` and 10 default TGV/channel
+rendering/continuation regressions in `out/insitu_is5_final_default_20261005.xml`.
+All three root builds pass; IS5 is closed only for this approved local scope.
