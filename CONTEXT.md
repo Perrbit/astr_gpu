@@ -604,8 +604,8 @@ A variable output cadence for individually selected images, extracted geometry, 
 _Avoid_: Treating denser output as denser statistical sampling, reconstructing missed events from sparse outputs, changing checkpoint cadence implicitly
 
 **ASTR output event**:
-A monitored scalar-diagnostic condition that temporarily selects the dense cadence of its associated output products. Its activation marks an output decision, not proof of a physical transition or statistical stationarity.
-_Avoid_: Calling an output threshold a universal physical criterion, applying one event to unrelated products
+A shared scalar-diagnostic condition, evaluated at its actual observation times, that temporarily selects the dense cadence of associated output products. Its activation marks an output decision, not proof of a physical transition or statistical stationarity, and is distinct from formal statistical accumulation and product emission clocks.
+_Avoid_: Calling an output threshold a universal physical criterion, applying one event to unrelated products, independent duplicate decisions for the same shared event
 
 **ASTR important output window**:
 A configured half-open simulation-time or completed-step interval that selects the dense cadence of associated output products. It is independent of the averaging window and cannot supply states missed between completed steps.
@@ -618,6 +618,10 @@ _Avoid_: Independent disconnected rank images presented as one domain, duplicate
 **ASTR headless rendering**:
 Image generation without a desktop session or display server, using an explicitly selected and verified hardware or software rendering backend. It is distinct from whether flow analysis and geometry extraction run on the GPU.
 _Avoid_: Treating a hidden window as proof of headless operation, inferring GPU execution solely from an EGL request, silently switching rendering backends
+
+**ASTR postprocessing transport**:
+The communication of private analysis halo or shared-node face data between partitions, distinct from communication of the solver's authoritative state. A device-buffer route and a pinned-host face-staging route are alternative transports, not different flow or diagnostic definitions.
+_Avoid_: Solver transport inheritance, full-volume host mirroring presented as face staging, inferring physical GPU-direct transfer from a device pointer
 
 **ASTR derived physical field**:
 A diagnostic quantity calculated by ASTR from a declared sampled state and a specified physical definition, including derivative-based quantities such as vorticity and Q. Its state, gradient, coordinates, and units must describe the same observation.
