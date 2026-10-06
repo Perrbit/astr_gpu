@@ -27,6 +27,14 @@ implementation_path='lib/catalyst', pipeline_file='tgv.py', output_directory='ou
     (VALID.replace('step_interval=2', "step_interval=2,derivative_backend='gpu'"),True),
     (VALID.replace('step_interval=2', "step_interval=2,derivative_backend='unknown'"),False),
     (VALID.replace('step_interval=2', "step_interval=2,derivative_backend='gpu',products='q_streamlines'"),True),
+    (VALID.replace('statistics=t','statistics=f').replace('step_interval=2',
+        "step_interval=2,derivative_backend='gpu',processing_backend='device',"
+        "postprocess_transport='device-aware',products='tgv256_demo'"),True),
+    (VALID.replace('step_interval=2',
+        "step_interval=2,derivative_backend='gpu',processing_backend='device',"
+        "postprocess_transport='device-aware',products='tgv256_demo'"),False),
+    (VALID.replace('statistics=t','statistics=f').replace('step_interval=2',
+        "step_interval=2,derivative_backend='gpu',products='tgv256_demo'"),False),
     (VALID.replace('step_interval=2', "step_interval=2,derivative_backend='gpu',products='velocity_slice',slice_axis='x',slice_index=16"),True),
     (VALID.replace('step_interval=2', "step_interval=2,derivative_backend='gpu',products='velocity_slice',slice_axis='bad'"),False),
     (VALID.replace('step_interval=2', "step_interval=2,derivative_backend='gpu',products='velocity_slice',slice_index=-1"),False),

@@ -442,7 +442,7 @@ contains
 #endif
     character(1024) :: filename,message
     integer :: ierr
-    logical :: ok,channel_wall,air5_wall,curve_tgv
+    logical :: ok,channel_wall,air5_wall,curve_tgv,device_demo
     if(session_checked) return
     native_output=.true.
     call read_consistent_env('ASTR_INSITU_CONFIG',filename)
@@ -455,12 +455,17 @@ contains
       statistics_configured=.true.
       oracle_io=.false.
       if(enabled) then
+        device_demo=options%processing_backend=='device'.and.options%products=='tgv256_demo'
         if(options%processing_backend=='device') then
 #ifdef ASTR_INSITU_DEVICE_PRODUCTS
           call require_sample(use_gpu.and.trim(flowtype)=='tgv'.and..not.lreadgrid.and. &
-            all([ia,ja,ka]==32).and.all(bctype==1).and.numq==5.and.num_species==0.and.nondimen.and. &
+            (all([ia,ja,ka]==32).or.(device_demo.and.all([ia,ja,ka]==256))).and. &
+            all(bctype==1).and.numq==5.and.num_species==0.and.nondimen.and. &
             ndims==3.and.mpisize<=2.and.hm>=3.and.trim(difschm)=='643e', &
-            'device products require 32^3 periodic Cartesian FP64 643e TGV NP=1/2')
+            'device products require 32^3 TGV or explicit 256^3 render-only demonstration')
+          if(device_demo) call require_sample(all([ia,ja,ka]==256).and.mpisize==2.and. &
+            all([isize,jsize,ksize]==[2,1,1]).and..not.options%statistics, &
+            'device demonstration requires 256^3 TGV NP=2 x partition without statistics')
           call require_sample(options%slice_axis=='z'.and.options%slice_index==4, &
             'device slice currently requires the approved z node 4 preset')
 #else
@@ -491,7 +496,8 @@ contains
         if(options%render) then
           if(options%derivative_backend=='gpu') call require_sample(use_gpu.and. &
             (mpisize<=2.or.(.not.lreadgrid.and.mpisize==4.and.all([isize,jsize,ksize]==[2,2,1]))).and. &
-            all([ia,ja,ka]==32).and.all(bctype==1).and.hm>=3.and.trim(difschm)=='643e', &
+            (all([ia,ja,ka]==32).or.(device_demo.and.all([ia,ja,ka]==256))).and. &
+            all(bctype==1).and.hm>=3.and.trim(difschm)=='643e', &
             'GPU in-situ derivative candidate requires 32^3 periodic 643e TGV NP=1/2 or NP=4 (2x2x1)')
           if(options%products=='velocity_slice') call require_sample(options%slice_index<32, &
             'index-plane slice requires a global node index below 32')

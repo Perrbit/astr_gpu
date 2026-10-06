@@ -1,5 +1,45 @@
 # Native In-Situ TGV Preset
 
+### Matched 256^3 Device Visualization Timing
+
+`benchmark_tgv256_visualization.py` runs the separately approved render-only
+demonstration: 256^3 periodic Cartesian TGV, FP64, 643e/643e, tenth-order
+explicit filtering with scalar workspace, two GPUs and topology 2x1x1.
+The explicit `products='tgv256_demo'` profile emits only Q_rs=0 surfaces and
+instantaneous streamlines, both colored by speed in [0,1], at 1280x960.
+The existing sixteen seeds and RK45 rules are retained with h=2*pi/256.
+This profile requires device processing without accumulated statistics. It
+does not extend the standard 32^3 profiles, walls, AIR5, CURVE or restart gates.
+Q=0 is the strain/rotation balance surface, not a positive-Q vortex-core threshold.
+
+```bash
+python3 scripts/insitu/benchmark_tgv256_visualization.py \
+  --output /new/empty/tgv256-comparison \
+  --executable /path/to/device-enabled/astr \
+  --mpiexec /path/to/matching/mpiexec \
+  --library /path/to/paraview/lib/catalyst --transport device-aware
+```
+
+The default sequence is a two-step check, visualization on for 100 completed
+steps, then visualization off for 100 steps. Both start from the analytic
+initial condition, dt=1e-4, and use identical solver/output inputs. Every on
+step publishes two JPEG/EPS pairs; no initial/final extra frame, checkpoint,
+volume, slice or VTK geometry file is written. Small native diagnostics remain
+enabled at the same frequency in both cases. Encoding movies is not performed.
+
+The report compares the maximum rank-local completed-window duration, excluding
+solver initialization but including first-frame lazy rendering setup and image
+publication. It separately records pure RK, per-stage and process-launch time.
+Nested stage times must not be added. This is one matched pair, not a repeated
+performance distribution. Native phase resource checks remain enabled on the
+visualization side: at most 6 GiB additional device memory per physical GPU,
+16 GiB additional host memory per node, and at least 2 GiB free device memory.
+Exceeding the budget aborts, without fallback or reduced image size.
+
+`--smoke-only` stops after the two-step check. `--skip-smoke` is only for the
+same executable and pipeline after that check has already passed. The output
+directory must be fresh; failures retain logs and a failed report.
+
 Current IS8 device admission and independent launch examples are in the final
 section below. Unless marked as device processing, earlier derivative/field
 sections describe the default `processing_backend='host'` compatibility path.

@@ -87,7 +87,9 @@ contains
     message='invalid products selection'
     if(products/='all'.and.products/='q_surface'.and.products/='streamlines'.and. &
       products/='q_streamlines'.and.products/='velocity_slice'.and.products/='channel_walls'.and. &
-      products/='air5_walls') return
+      products/='air5_walls'.and.products/='tgv256_demo') return
+    message='tgv256_demo requires device rendering without statistics'
+    if(products=='tgv256_demo'.and.(processing_backend/='device'.or.statistics)) return
     message='air5_volume_statistics requires enabled statistics and products=air5_walls'
     if(air5_volume_statistics.and.(.not.enabled.or..not.statistics.or.products/='air5_walls')) return
     message='air5_volume_reduction requires air5_volume_statistics'

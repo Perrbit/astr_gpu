@@ -104,7 +104,7 @@ astr_insitu::CompactMesh streamline_mesh(const astr_insitu::DeviceStreamlines& t
   for(int i=0;i<trace.particles;++i) if(trace.subminimum_stop[i])
     std::printf("ASTR_INSITU_TRAJECTORY_TERMINATION rank=%d product=%s seed=%d direction=%d status=3 "
       "reason=sub_minimum_remaining accepted=%.17g remaining=%.17g minimum=%.17g\n",rank,name.c_str(),
-      i%16,i<16?1:-1,trace.final_state[i][4],pi-trace.final_state[i][4],.01*(2.*pi/32.));
+      i%16,i<16?1:-1,trace.final_state[i][4],pi-trace.final_state[i][4],trace.minimum_step);
   const bool mean=name.find("mean_")==0;
   std::string kind;
   if(mean) {
@@ -148,7 +148,7 @@ struct ConstantVelocity : viskores::worklet::WorkletMapField {
 }
 
 extern "C" int astr_insitu_device_render(const char* backend,const char* script,const char* profile,
-    int fcomm,int step,double time,int nx,int ny,int nz,int ox,int oy,int oz,
+    int fcomm,int step,double time,int nx,int ny,int nz,int ox,int oy,int oz,int global_cells,
     double* velocity,double* halo,double* diagnostic,double* reynolds_halo,double* favre_halo,
     int covered,double duration,double window_start,double window_end,std::int64_t host_budget)
 try {
@@ -159,18 +159,21 @@ try {
   }
   viskores::cont::GetRuntimeDeviceTracker().ForceDevice(viskores::cont::DeviceAdapterTagCuda{});
   const std::string selected=profile?profile:"";
+  const bool demo=selected=="tgv256_demo";
   if(selected!="all" && selected!="q_surface" && selected!="q_streamlines" &&
-     selected!="streamlines" && selected!="velocity_slice") throw std::invalid_argument("Unsupported device product profile");
+     selected!="streamlines" && selected!="velocity_slice" && !demo) throw std::invalid_argument("Unsupported device product profile");
+  if(global_cells!=(demo?256:32)) throw std::invalid_argument("Device product profile/resolution differs");
   if(host_budget<=0 || !std::isfinite(time) || step<0) throw std::invalid_argument("Invalid device frame identity/budget");
   const viskores::Id3 extent(nx,ny,nz),dimensions(nx+1,ny+1,nz+1),offset(ox,oy,oz),halo_dimensions(nx+7,ny+7,nz+7);
   const bool slice=selected=="all" || selected=="velocity_slice";
-  const bool surface=selected=="all" || selected=="q_surface" || selected=="q_streamlines";
-  const bool lines=selected=="all" || selected=="streamlines" || selected=="q_streamlines";
+  const bool surface=selected=="all" || selected=="q_surface" || selected=="q_streamlines" || demo;
+  const bool lines=selected=="all" || selected=="streamlines" || selected=="q_streamlines" || demo;
   std::vector<astr_insitu::CompactMesh> meshes;
   if(slice || surface) {
     ProductStage extraction("device_geometry_extract_inclusive","ASTR_IS8_DEVICE_GEOMETRY_EXTRACTION",fcomm,step);
     auto extracted=astr_insitu::extract_tgv_geometry(reinterpret_cast<viskores::Vec3f*>(velocity),
-      reinterpret_cast<astr_insitu::DeviceDiagnostics*>(diagnostic),dimensions,offset,slice,surface);
+      reinterpret_cast<astr_insitu::DeviceDiagnostics*>(diagnostic),dimensions,offset,slice,surface,
+      demo?0.:.25,nullptr,global_cells);
     extraction.finish();
     ProductStage read("device_geometry_read","ASTR_IS8_COMPACT_GEOMETRY_READ",fcomm,step);
     if(surface) meshes.push_back(geometry_mesh(extracted.surface,true,dimensions,offset));
@@ -179,9 +182,11 @@ try {
   if(lines) {
     ProductStage instant("device_instant_lines_inclusive","ASTR_IS8_DEVICE_INSTANT_LINES",fcomm,step);
     auto actual=astr_insitu::pack_component_halo(halo,halo_dimensions);
-    auto trace=astr_insitu::trace_tgv_device(actual,actual,extent,offset,comm,host_budget);
+    auto trace=astr_insitu::trace_tgv_device(actual,actual,extent,offset,comm,host_budget,
+      false,0,false,false,global_cells);
     meshes.push_back(streamline_mesh(trace,"instantaneous_streamlines"));
     instant.finish();
+    if(!demo) {
     ProductStage crossing("device_crossing_lines_inclusive","ASTR_IS8_DEVICE_CROSSING_LINES",fcomm,step);
     viskores::cont::ArrayHandle<viskores::Vec3f> constant;
     viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});
@@ -190,6 +195,7 @@ try {
     trace=astr_insitu::trace_tgv_device(constant,actual,extent,offset,comm,host_budget,true,0,true);
     meshes.push_back(streamline_mesh(trace,"crossing_streamlines"));
     crossing.finish();
+    }
     if(selected=="all" && covered) {
       if(!reynolds_halo || !favre_halo || !std::isfinite(duration) || duration<=0.)
         throw std::invalid_argument("Covered device means require authoritative halos/duration");

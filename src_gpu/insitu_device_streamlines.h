@@ -68,6 +68,7 @@ struct DeviceStreamlines {
   std::array<bool,32> subminimum_stop{};
   int rounds=0,transfers=0,particles=32;
   std::uint64_t geometry_bytes=0;
+  double minimum_step=.01*(2.*std::acos(-1.)/32.);
 };
 
 inline void trace_mpi(int status) {
@@ -105,11 +106,13 @@ inline DeviceStreamlines trace_tgv_device(
     const viskores::cont::ArrayHandle<viskores::Vec3f>& color_velocity,
     const viskores::Id3& extent,const viskores::Id3& offset,MPI_Comm comm,
     std::uint64_t host_budget,bool constant=false,int constant_axis=0,bool forward_only=false,
-    bool sample_trace_vector=false) {
+    bool sample_trace_vector=false,int global_cells=32) {
   constexpr int chunk=128;
   const int particles=forward_only?16:32;
   using State=RK45TraceWorklet::State;
-  const double pi=std::acos(-1.),h=2.*pi/32.;
+  if(global_cells!=32 && global_cells!=256)
+    throw std::invalid_argument("Unsupported bounded TGV streamline resolution");
+  const double pi=std::acos(-1.),h=2.*pi/global_cells;
   PrivateTraceComm private_comm(comm);
   comm=private_comm.value;
   int rank=0,ranks=0;
@@ -118,7 +121,7 @@ inline DeviceStreamlines trace_tgv_device(
     throw std::invalid_argument("Invalid bounded device streamline configuration");
   const viskores::Id3 dims(extent[0]+7,extent[1]+7,extent[2]+7);
   for(int d=0;d<3;++d)
-    if(extent[d]<1 || offset[d]<0 || extent[d]+offset[d]>32)
+    if(extent[d]<1 || offset[d]<0 || extent[d]+offset[d]>global_cells)
       throw std::invalid_argument("Invalid TGV streamline partition");
   if(trace_velocity.GetNumberOfValues()!=dims[0]*dims[1]*dims[2] ||
      color_velocity.GetNumberOfValues()!=trace_velocity.GetNumberOfValues())
@@ -136,7 +139,7 @@ inline DeviceStreamlines trace_tgv_device(
   viskores::Vec3f upper((offset[0]+extent[0])*h,(offset[1]+extent[1])*h,(offset[2]+extent[2])*h);
   viskores::Vec<bool,3> last;
   double bounds[6],all_bounds[12];
-  for(int d=0;d<3;++d) {bounds[d]=lower[d];bounds[d+3]=upper[d];last[d]=offset[d]+extent[d]==32;}
+  for(int d=0;d<3;++d) {bounds[d]=lower[d];bounds[d+3]=upper[d];last[d]=offset[d]+extent[d]==global_cells;}
   trace_mpi(MPI_Allgather(bounds,6,MPI_DOUBLE,all_bounds,6,MPI_DOUBLE,comm));
   auto owner=[&](const State& s) {
     for(int r=0;r<ranks;++r) {
@@ -148,6 +151,7 @@ inline DeviceStreamlines trace_tgv_device(
     throw std::runtime_error("Accepted trajectory has no physical-domain owner");
   };
   DeviceStreamlines result;
+  result.minimum_step=.01*h;
   result.particles=particles;
   auto& state=result.final_state;
   for(auto& particle:state) particle=State(0.,0.,0.,0.,0.,0.,0.,TraceLength);

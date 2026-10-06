@@ -11,7 +11,7 @@ contains
     use checkpoint_state_io, only: checkpoint_state_require
 #ifdef ASTR_INSITU_DEVICE_PRODUCTS
     use iso_c_binding, only: c_int,c_double,c_char,c_null_char,c_int64_t
-    use commvar, only: im,jm,km
+    use commvar, only: im,jm,km,ia
     use parallel, only: ig0,jg0,kg0,mpirank
     use insitu_sample_gpu, only: capture_device_sample_gpu
     use insitu_statistics_gpu, only: sample_statistics_gpu_mean_vectors
@@ -39,11 +39,11 @@ contains
       end subroutine
       subroutine range_pop() bind(C,name='astr_insitu_device_range_pop')
       end subroutine
-      integer(c_int) function device_render(backend,script,profile,comm,step,t,nx,ny,nz,ox,oy,oz, &
+      integer(c_int) function device_render(backend,script,profile,comm,step,t,nx,ny,nz,ox,oy,oz,cells, &
           velocity,halo,derived,reynolds,favre,covered,duration,wstart,wend,host) bind(C,name='astr_insitu_device_render')
         import c_int,c_double,c_char,c_devptr,c_int64_t
         character(c_char),intent(in) :: backend(*),script(*),profile(*)
-        integer(c_int),value :: comm,step,nx,ny,nz,ox,oy,oz,covered
+        integer(c_int),value :: comm,step,nx,ny,nz,ox,oy,oz,cells,covered
         real(c_double),value :: t,duration,wstart,wend
         type(c_devptr),value :: velocity,halo,derived,reynolds,favre
         integer(c_int64_t),value :: host
@@ -52,7 +52,7 @@ contains
     started=MPI_Wtime()
     phase_started=insitu_clock()
     call range_push(1_c_int)
-    call capture_device_sample_gpu(mode,velocity,halo,derived,host_budget,device_budget,reserve)
+    call capture_device_sample_gpu(mode,velocity,halo,derived,host_budget,device_budget,reserve,profile=='tgv256_demo')
     call range_pop()
     call report_insitu_timing('device_sample_inclusive',phase_started,step)
     phase_started=insitu_clock()
@@ -73,7 +73,7 @@ contains
     call report_insitu_timing('device_mean_supply_inclusive',phase_started,step)
     phase_started=insitu_clock()
     status=device_render(trim(backend)//c_null_char,trim(script)//c_null_char,trim(profile)//c_null_char, &
-      int(MPI_COMM_WORLD,c_int),step,t,im,jm,km,ig0,jg0,kg0,c_devloc(velocity),c_devloc(halo), &
+      int(MPI_COMM_WORLD,c_int),step,t,im,jm,km,ig0,jg0,kg0,ia,c_devloc(velocity),c_devloc(halo), &
       c_devloc(derived),reynolds_pointer,favre_pointer,merge(1_c_int,0_c_int,covered),duration, &
       window_start,window_end,int(host_budget,c_int64_t))
     call checkpoint_state_require(status==0,MPI_COMM_WORLD,'device product bridge failed')

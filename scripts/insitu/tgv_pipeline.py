@@ -30,6 +30,10 @@ output=Path(arguments[0])
 expected_uuid=arguments[1]
 profile=arguments[2] if len(arguments)>=3 else 'all'
 device_products=len(arguments)==4
+demonstration=profile=='tgv256_demo'
+image_size=[1280,960] if demonstration else [800,600]
+if demonstration and not device_products:
+    raise RuntimeError('256^3 demonstration requires explicit device products')
 if device_products and arguments[3]!='device':
     raise RuntimeError('Unknown compact geometry processing backend')
 product_names={
@@ -37,6 +41,7 @@ product_names={
     'q_surface':('q_surface',),
     'streamlines':('instantaneous_streamlines','crossing_streamlines'),
     'q_streamlines':('q_surface','instantaneous_streamlines','crossing_streamlines'),
+    'tgv256_demo':('q_surface','instantaneous_streamlines'),
     'velocity_slice':('velocity_slice',),
     'channel_walls':('wall_pressure','wall_shear_x','wall_heat_into_gas'),
     'air5_walls':('pressure','temperature','vibrational_temperature','Y_N2','Y_O2','Y_N','Y_O','Y_NO',
@@ -59,6 +64,7 @@ pipeline_objects=[]
 extraction_objects={}
 render_objects={}
 owned_colors=[]
+demo_colors={}
 timing_enabled=os.environ.get('ASTR_INSITU_TIMING','').strip() in ('1','t','T','true','TRUE','on','ON')
 stage_times={}
 if device_products:
@@ -119,14 +125,14 @@ def capture_image(view):
     settings.SaveAllViews=0
     settings.UpdateDefaultsAndVisibilities('frame.jpeg')
     manager.PostInitializeProxy(settings)
-    settings.ImageResolution=[800,600]
+    settings.ImageResolution=image_size
     settings.UpdateVTKObjects()
     image=settings.SMProxy.CaptureImage()
     return image,int(settings.Format.Quality),int(settings.Format.Progressive)
 
 
 def encode_image(image,quality,progressive):
-    if image is None or tuple(image.GetDimensions())!=(800,600,1):
+    if image is None or tuple(image.GetDimensions())!=(*image_size,1):
         raise RuntimeError('Missing or invalid collective screenshot')
     writer=vtkJPEGWriter()
     writer.SetInputData(image)
@@ -424,7 +430,25 @@ result.GetFieldData().AddArray(units)
         # Materialize before writing so extraction is not attributed to writer I/O.
         tagged.UpdatePipeline(t)
         record_time('extraction',extraction_started)
-        save_geometry(destination,tagged)
+        if not demonstration:
+            save_geometry(destination,tagged)
+        else:
+            details=geometry.GetDataInformation()
+            record.setdefault('geometry',{})[name]={'points':details.GetNumberOfPoints(),
+                'cells':details.GetNumberOfCells(),'bounds':list(details.GetBounds())}
+            if name=='q_surface' and not empty_local_plane(geometry):
+                limits=geometry.PointData['Q_rs'].GetRange(0)
+                collective_error('Q=0 surface field differs' if not np.isfinite(limits).all() or
+                    max(abs(value) for value in limits)>2e-10 else '')
+            elif name=='q_surface':
+                collective_error('')
+            if name not in demo_colors:
+                speed=pv.Calculator(Input=geometry)
+                speed.ResultArrayName='speed'
+                speed.Function='sqrt(u*u+v*v+w*w)'
+                demo_colors[name]=speed
+                pipeline_objects.append(speed)
+            geometry=demo_colors[name]
         validation_started=clock()
         controller.Barrier()
         error=''
@@ -444,7 +468,7 @@ result.GetFieldData().AddArray(units)
             initial_colors={group:set(manager.GetProxiesInGroup(group)) for group in
                             ('lookup_tables','piecewise_functions','scalar_bars')}
             view=pv.CreateView('RenderView')
-            view.ViewSize=[800,600]
+            view.ViewSize=image_size
             view.UseColorPaletteForBackground=0
             view.Background=[1.,1.,1.]
             view.OrientationAxesVisibility=0
@@ -478,6 +502,8 @@ result.GetFieldData().AddArray(units)
             if 'streamlines' in name:
                 display.LineWidth=2.
             color=name if profile in ('channel_walls','air5_walls') else ('mean_u_'+name.split('_')[1] if name.startswith('mean_') else 'u')
+            if demonstration:
+                color='speed'
             display.SetScalarColoring(color,0)
             lut=pv.GetColorTransferFunction(color)
             display.ColorArrayName=['POINTS',color]
@@ -487,6 +513,8 @@ result.GetFieldData().AddArray(units)
             physical_name=name.removeprefix('mean_')
             color_range={'wall_pressure':(0.,12.),'wall_shear_x':(-.02,.02),
                          'wall_heat_into_gas':(-.2,.2)}.get(physical_name,(-1.,1.))
+            if demonstration:
+                color_range=(0.,1.)
             if profile=='air5_walls':
                 color_range=({'pressure':(0.,60000.),'temperature':(1500.,3500.),
                     'vibrational_temperature':(1500.,3500.),'wall_shear_x':(-1.,1.),
@@ -494,7 +522,7 @@ result.GetFieldData().AddArray(units)
             lut.RescaleTransferFunction(*color_range)
             display.SetScalarBarVisibility(view,True)
             legend=pv.GetScalarBar(lut,view)
-            legend.Title={'mean_u_reynolds':'Reynolds u','mean_u_favre':'Favre u'}.get(color,color)
+            legend.Title={'mean_u_reynolds':'Reynolds u','mean_u_favre':'Favre u','speed':'Speed'}.get(color,color)
             legend.ComponentTitle=''
             legend.WindowLocation='Upper Right Corner'
             legend.ScalarBarLength=.45

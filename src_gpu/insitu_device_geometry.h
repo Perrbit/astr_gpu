@@ -50,13 +50,15 @@ struct DeviceGeometryAudit {
 inline DeviceGeometry extract_tgv_geometry(viskores::Vec3f* velocity_pointer,
     DeviceDiagnostics* diagnostics_pointer,const viskores::Id3& dimensions,
     const viskores::Id3& offset,bool slice_enabled,bool surface_enabled,double iso=.25,
-    DeviceGeometryAudit* audit=nullptr) {
+    DeviceGeometryAudit* audit=nullptr,int global_cells=32) {
+  if(global_cells!=32 && global_cells!=256)
+    throw std::invalid_argument("Unsupported bounded TGV geometry resolution");
   for(int d=0;d<3;++d)
-    if(dimensions[d]<2 || offset[d]<0 || offset[d]+dimensions[d]>33)
+    if(dimensions[d]<2 || offset[d]<0 || offset[d]+dimensions[d]>global_cells+1)
       throw std::invalid_argument("IS8 geometry requires a bounded 32-cell TGV partition");
   if(!std::isfinite(iso)) throw std::invalid_argument("Nonfinite contour threshold");
   const auto nodes=dimensions[0]*dimensions[1]*dimensions[2];
-  const double h=2.*std::acos(-1.)/32.;
+  const double h=2.*std::acos(-1.)/global_cells;
   const viskores::Vec3f origin(offset[0]*h,offset[1]*h,offset[2]*h),spacing(h,h,h);
   viskores::cont::GetRuntimeDeviceTracker().ForceDevice(viskores::cont::DeviceAdapterTagCuda{});
   viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});

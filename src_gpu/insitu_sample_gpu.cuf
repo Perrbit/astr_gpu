@@ -11,7 +11,7 @@ module insitu_sample_gpu
   logical,save :: device_sampling_initialized=.false.
   character(16),save :: device_sampling_transport=''
 contains
-  subroutine capture_device_sample_gpu(mode,velocity,halo,derived,host_budget,device_budget,reserve)
+  subroutine capture_device_sample_gpu(mode,velocity,halo,derived,host_budget,device_budget,reserve,demonstration)
     use benchmark_runtime, only: insitu_clock,report_insitu_timing
     use iso_fortran_env, only: int64
     use commvar, only: im,jm,km,ia,ja,ka,hm,numq,use_gpu,lreadgrid,difschm,conschm,flowtype, &
@@ -29,12 +29,17 @@ contains
     character(*),intent(in) :: mode
     real(8),device,allocatable,intent(out) :: velocity(:,:),halo(:,:,:,:),derived(:,:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
+    logical,intent(in),optional :: demonstration
+    logical :: demo
     integer :: neighbors(2,3),sizes(3),extent(3),ranks,ierr
     real(8) :: phase_started
     extent=[im,jm,km]; sizes=[isize,jsize,ksize]
+    demo=.false.
+    if(present(demonstration)) demo=demonstration
     neighbors(:,1)=[mpileft,mpiright]; neighbors(:,2)=[mpidown,mpiup]; neighbors(:,3)=[mpiback,mpifront]
     call MPI_Comm_size(MPI_COMM_WORLD,ranks,ierr)
-    call checkpoint_state_require(ierr==MPI_SUCCESS.and.ranks<=2.and.all([ia,ja,ka]==32).and. &
+    call checkpoint_state_require(ierr==MPI_SUCCESS.and.ranks<=2.and. &
+      (all([ia,ja,ka]==32).or.(demo.and.all([ia,ja,ka]==256).and.ranks==2.and.all(sizes==[2,1,1]))).and. &
       all(bctype==1).and.use_gpu.and..not.lreadgrid.and.numq==5.and.hm>=3.and.trim(difschm)=='643e'.and. &
       trim(conschm)=='643e'.and.trim(flowtype)=='tgv'.and.ndims==3.and.num_species==0.and.nondimen.and. &
       gpu_precision_mode==GPU_PRECISION_FP64, &

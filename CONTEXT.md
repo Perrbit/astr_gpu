@@ -619,6 +619,30 @@ _Avoid_: Independent disconnected rank images presented as one domain, duplicate
 Image generation without a desktop session or display server, using an explicitly selected and verified hardware or software rendering backend. It is distinct from whether flow analysis and geometry extraction run on the GPU.
 _Avoid_: Treating a hidden window as proof of headless operation, inferring GPU execution solely from an EGL request, silently switching rendering backends
 
+**ASTR processing/rendering pipeline**:
+The selected route from sampled fields or extracted geometry to visualization products within Catalyst and ParaView. It is distinct from the execution device, analysis-face transport, and hardware or software rendering backend.
+_Avoid_: Calling Catalyst and a VTK mapper mutually exclusive frameworks, treating a communication backend as a visualization pipeline
+
+**ASTR standard device-array pipeline**:
+A processing/rendering route that presents shared device-resident extracted geometry through Conduit to the supported Viskores/VTK data model and uses the standard ParaView pipeline. Device input does not by itself establish device residency through rendering.
+_Avoid_: Assuming set_external guarantees no geometry readback, describing every standard ParaView filter as device-resident
+
+**ASTR device-geometry direct pipeline**:
+A processing/rendering route that connects the same shared device-resident extracted geometry to rendering through a dedicated VTK representation or mapper while retaining Catalyst and ParaView. It shares the numerical product definitions with the standard route but requires its own end-to-end residency evidence.
+_Avoid_: A replacement visualization application, an independent definition of Q or streamlines, inferring availability from a graphics-interop API name
+
+**ASTR image-only device-residency contract**:
+The selected product route keeps volume fields and extracted geometry on the device through rendering, allowing image and bounded control-state readback, including rank-local color/depth buffers for host MPI composition and the explicitly admitted streamline continuation state. Host materialization of vertices, connectivity, normals, geometric coloring fields or accepted trajectory sequences violates the contract, including implicit library copies and managed-memory migrations.
+_Avoid_: Calling extracted geometry small metadata, equating GPU rendering or set_external with validated geometry residency
+
+**ASTR display geometry**:
+A rendering-only device representation of the shared FP64 numerical geometry, permitted to use FP32 coordinates, normals and coloring attributes. It does not replace or modify numerical geometry, streamline integration state, statistics or the authoritative flow state.
+_Avoid_: Applying the FP64 field tolerance to display pixels, treating a display conversion as mixed-precision Q or streamline computation
+
+**ASTR streamline continuation state**:
+The bounded current particle state used to determine ownership and continue an approved streamline integration across MPI partitions, distinct from its accepted trajectory geometry. Its permitted host exchange does not authorize accumulating particle-state histories into host trajectories.
+_Avoid_: Calling an entire streamline small metadata, reporting a per-round state size as total frame traffic
+
 **ASTR postprocessing transport**:
 The communication of private analysis halo or shared-node face data between partitions, distinct from communication of the solver's authoritative state. A device-buffer route and a pinned-host face-staging route are alternative transports, not different flow or diagnostic definitions.
 _Avoid_: Solver transport inheritance, full-volume host mirroring presented as face staging, inferring physical GPU-direct transfer from a device pointer
