@@ -14,6 +14,7 @@ module insitu_run_config
     character(16) :: schedule_mode='steps'
     character(16) :: derivative_backend='cpu'
     character(16) :: processing_backend='host'
+    character(16) :: rendering_pipeline='compatible'
     character(16) :: postprocess_transport=''
     character(16) :: products='all'
     character(16) :: slice_axis='z'
@@ -32,6 +33,7 @@ contains
     logical :: enabled,statistics,render,initial_frame,final_frame,air5_volume_statistics,air5_volume_reduction,wall_mean_render
     logical :: wall_separation
     character(16) :: schedule_mode,derivative_backend,products,slice_axis,processing_backend,postprocess_transport
+    character(16) :: rendering_pipeline
     integer(int64) :: step_interval,host_budget_bytes,device_budget_bytes,device_reserve_bytes
     real(real64) :: time_interval,statistics_window(2)
     character(1024) :: implementation_path,pipeline_file,output_directory,batch_prefix,restore_batch
@@ -40,7 +42,7 @@ contains
       schedule_mode,step_interval,time_interval,statistics_window,host_budget_bytes, &
       device_budget_bytes,device_reserve_bytes,implementation_path,pipeline_file,output_directory,batch_prefix,restore_batch, &
       derivative_backend,products,slice_axis,slice_index,air5_volume_statistics,air5_volume_reduction,wall_mean_render,wall_separation, &
-      processing_backend,postprocess_transport
+      processing_backend,postprocess_transport,rendering_pipeline
     ok=.false.
     message=''
     enabled=.false.; statistics=.false.; render=.false.
@@ -52,6 +54,7 @@ contains
     schedule_mode='steps'
     derivative_backend='cpu'
     processing_backend='host'; postprocess_transport=''
+    rendering_pipeline=''
     products='all'
     slice_axis='z'; slice_index=4
     step_interval=0; time_interval=0; statistics_window=0
@@ -73,6 +76,16 @@ contains
     if(derivative_backend/='cpu'.and.derivative_backend/='gpu') return
     message='processing_backend must be host or device'
     if(processing_backend/='host'.and.processing_backend/='device') return
+    if(rendering_pipeline=='') then
+      rendering_pipeline='compatible'
+      if(enabled.and.render.and.processing_backend=='device') rendering_pipeline='standard-device'
+    endif
+    message='rendering_pipeline must be compatible, standard-device or direct-device'
+    if(rendering_pipeline/='compatible'.and.rendering_pipeline/='standard-device'.and. &
+      rendering_pipeline/='direct-device') return
+    message='device rendering pipelines require enabled device processing and GPU derivatives'
+    if(rendering_pipeline/='compatible'.and.(.not.enabled.or..not.render.or. &
+      processing_backend/='device'.or.derivative_backend/='gpu')) return
     if(processing_backend=='device') then
       message='device processing requires explicit postprocess_transport=device-aware or pinned'
       if(postprocess_transport/='device-aware'.and.postprocess_transport/='pinned') return
@@ -150,6 +163,7 @@ contains
     options%schedule_mode=schedule_mode; options%step_interval=step_interval
     options%derivative_backend=derivative_backend
     options%processing_backend=processing_backend
+    options%rendering_pipeline=rendering_pipeline
     options%postprocess_transport=postprocess_transport
     options%products=products
     options%slice_axis=slice_axis; options%slice_index=slice_index

@@ -635,6 +635,40 @@ remote jobs were operated. IS6 closes only this bounded scope; IS7/IS8,
 production curved geometry, chemistry on curves, moving grids and rendering
 repartition remain separate. See the plan's IS6 record for paths and limitations.
 
+## IS8-R Device-Resident Rendering, 2026-10-06
+
+R0-R11 are complete only for internally generated periodic Cartesian FP64 TGV,
+643e/643e: 32 cubed NP=1/NP=2 x/y/z, both standard/direct entries and private
+device-aware/pinned face transports, six products. The separate 256-cubed NP=2
+x-slab exception renders Q=0 and instantaneous streamlines only.
+
+Receipts below are relative to `tests/gpu_validation/out/`.
+
+| Gate | Receipt | Result |
+|---|---|---|
+| FP64 products and CPU/GPU authoritative state | `insitu_is8_r6_20261006/numerical_v3.xml` | 16 passes; product maxabs 1.5543122344752192e-15, state/cache 1.9895196601282805e-13, below 2e-10 |
+| Projection, color/depth and partition seams | Same directory `images.xml`, `analytic_pixels.xml` | Both physical GPUs; seams/projection at most one pixel |
+| Memory, actual transfers and resources | `insitu_is8_r7_20261006/memory.xml`, `native_audits_v2.xml`, `transfer_ledger.xml` | 16 safety passes/28 zero-error rank reports; budgets/refusals pass; eight rank traces, no rendering geometry/UVM D2H |
+| Same-entry exact restart and failures | `insitu_is8_r8_20261006/frozen_pipeline.xml`, `lifecycle_v2.xml`, `interrupted_v3.xml` | 16 exact 12 versus 5+7 cases; six corrected lifecycle and six interrupted-save passes; prior healthy state retained |
+| Optional builds and compatibility | `insitu_is8_r9_20261006/` | Catalyst-OFF CPU/GPU, AIR5 non-device, native compatibility/configuration and staged startup pass; not AIR5 strict rendering |
+| Affected 32-cubed repeat | `insitu_is8_r10_32_regression_20261006/pytest_v2.xml` | 20 passes, including numerical matrix and selected restart/memcheck |
+| 256-cubed preflight, residency, matched timing | `insitu_is8_r10_256_preflight_20261006/transfer_v2.xml`, `insitu_is8_r10_256_matrix_v2_20261006/report.json` | Six rank transfer checks, twenty complete runs; strict geometry D2H zero, diagnostics exact, budgets/images pass |
+| Final default/explicit/refusal/continuation | `insitu_is8_r11_20261006/config_launcher.xml`, `native_v2.xml`, `unbuilt.xml`, `standalone_default/` | 117 configuration/launcher passes, four native passes, six unavailable-entry refusals and independent NP=2 default startup |
+
+Complete-window five-round medians: off 60.580561 s, compatible 257.746235 s,
+standard 85.719774 s, direct 85.666557 s. Initialization is excluded; first-frame
+setup and JPEG/EPS publication included. Formal runs are unprofiled; pure RK,
+raw/minimum/maximum/sample SD and nested phases are reported separately.
+This is a rendering-entry comparison, not CPU/GPU solver speedup.
+
+Device rendering now defaults to standard-device; explicit direct/compatible
+remain. Host default is compatible and in-situ/build switches remain OFF.
+No silent fallback. Allowed image/IceT traffic, bounded metadata/continuation
+and explicit pinned faces remain host-visible. Checkpoint transfers are separate.
+No CURVE/wall/AIR5 resident-rendering, general NP>2, repartition, arbitrary
+production capacity or DCU claim. Dependency/build-tree and exact binary
+provenance are in `ASTR_INSITU_IS8_RESIDENT_ACCEPTANCE.md`.
+
 ## TGV Filter Policy
 
 Path A sets `lfilter=f` in both CPU and GPU runs. It validates the minimum RHS/RK/updatefvar loop.

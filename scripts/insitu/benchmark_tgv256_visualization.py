@@ -9,7 +9,10 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-from time import perf_counter
+import signal
+import statistics
+import shutil
+from time import perf_counter, sleep
 
 ROOT = Path(__file__).resolve().parents[2]
 MPI = Path('/opt/nvidia/hpc_sdk/Linux_x86_64/26.1/comm_libs/hpcx/bin/mpiexec')
@@ -17,11 +20,11 @@ LIBRARY = Path('/home/dell/workspace/astr_dependencies/install/paraview-6.1.1-hp
 PRODUCTS = ('q_surface', 'instantaneous_streamlines')
 
 
-def prepare(case, steps, enabled, library, transport):
+def prepare(case, steps, enabled, library, transport, pipeline='compatible'):
     subprocess.run([sys.executable, str(ROOT/'tests/gpu_validation/prepare_tgv_case.py'),
         '--src-case', str(ROOT/'examples/Taylor_Green_Vortex'), '--dst-case', str(case),
         '--use-gpu', 't', '--grid', '256,256,256', '--maxstep', str(steps-1),
-        '--feqchkpt', '1000', '--feqlist', '10', '--deltat', '1.d-4',
+        '--feqchkpt', '1000', '--feqlist', '1' if steps==2 else '10', '--deltat', '1.d-4',
         '--lfilter', 't', '--diffterm', 't', '--scheme', '643e'], check=True)
     (case/'outdat/render').mkdir(parents=True)
     (case/'datin/input.output').write_text(
@@ -34,10 +37,11 @@ def prepare(case, steps, enabled, library, transport):
  enabled=t, statistics=f, render=t, output_directory='outdat/render',
  derivative_backend='gpu', processing_backend='device', products='tgv256_demo',
  postprocess_transport='{transport}',
+ rendering_pipeline='{pipeline}',
  schedule_mode='steps', step_interval=1, initial_frame=f, final_frame=f,
  host_budget_bytes=17179869184, device_budget_bytes=6442450944,
  device_reserve_bytes=2147483648,
- implementation_path='{library}', pipeline_file='{ROOT/'scripts/insitu/tgv_pipeline.py'}'
+ implementation_path='{library}', pipeline_file='{ROOT/'scripts/insitu'/('tgv_pipeline.py' if pipeline=='compatible' else 'device_render_pipeline.py')}'
 /
 """
     (case/'insitu.nml').write_text(configuration)
@@ -96,7 +100,7 @@ def timing(case, steps):
         for stage,values in stages.items()}
 
 
-def verify(case, steps, enabled):
+def verify(case, steps, enabled, pipeline='compatible'):
     from PIL import Image
     import numpy as np
     out = case/'outdat'
@@ -139,7 +143,8 @@ def verify(case, steps, enabled):
             record = json.loads((render/f'mesh_step{step:08d}_rank{rank}.json').read_text())
             assert record['processing_backend']=='device' and set(record['products'])==set(PRODUCTS)
             for product in record['products'].values():
-                assert product['image']['status']=='published' and product['color_field']=='speed'
+                status=product['image'] if isinstance(product['image'],str) else product['image']['status']
+                assert status=='published' and product['color_field']=='speed'
                 assert product['color_range']==[0.,1.]
     for name in PRODUCTS:
         for step in range(1,steps+1):
@@ -151,47 +156,189 @@ def verify(case, steps, enabled):
     return dict(resources=resources,images=2*steps,eps=2*steps)
 
 
-def launch(args, name, steps, enabled):
+def directory_bytes(path):
+    return sum(p.stat().st_size for p in path.rglob('*') if p.is_file())
+
+
+def check_storage(case,group):
+    if directory_bytes(case)>2*1024**3 or directory_bytes(group)>64*1024**3:
+        raise RuntimeError('Approved per-run/group storage budget exceeded')
+
+
+def launch(args, name, steps, enabled, pipeline='compatible', monitor=False, resource_baseline=None,
+           profile=False):
     case = args.output/name
-    prepare(case, steps, enabled, args.library, args.transport)
-    print(f'START {name}: {steps} steps, visualization={enabled}', flush=True)
+    prepare(case, steps, enabled, args.library, args.transport, pipeline)
+    print(f'START {name}: {steps} steps, visualization={enabled}, pipeline={pipeline}', flush=True)
     started = perf_counter()
+    observed=None
+    solver=[str(args.executable),'run','datin/input.tgv']
+    if profile:
+        if monitor or not shutil.which('nsys'):
+            raise ValueError('Separate attribution requires Nsight without the resource observer')
+        solver=['nsys','profile','--trace=cuda,nvtx,mpi','--sample=none','--cpuctxsw=none',
+            '--cuda-memory-usage=true','--force-overwrite=false',
+            '--output='+str(case/'native.%q{OMPI_COMM_WORLD_RANK}'),*solver]
+    command=[str(args.mpiexec),'--mca','coll_hcoll_enable','0','-np','2',*solver]
     with (case/'run.log').open('w') as stream:
-        subprocess.run([str(args.mpiexec),'--mca','coll_hcoll_enable','0','-np','2',
-            str(args.executable),'run','datin/input.tgv'],cwd=case,
-            env=environment(case,args.transport),stdout=stream,stderr=subprocess.STDOUT,check=True)
+        if monitor:
+            sys.path.insert(0,str(ROOT/'tests/gpu_validation'))
+            from insitu_resource_monitor import run_monitored
+            observed=run_monitored(command,case,environment(case,args.transport),stream,
+                case/'resources.sampled.json',baseline=resource_baseline,
+                device_extra_budget_bytes=6*1024**3,host_extra_budget_bytes=16*1024**3,
+                device_reserve_bytes=2*1024**3,timeout_seconds=args.timeout,
+                check_progress=lambda:check_storage(case,args.output))
+        else:
+            process=subprocess.Popen(command,cwd=case,env=environment(case,args.transport),
+                stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
+            try:
+                while process.poll() is None:
+                    check_storage(case,args.output)
+                    if perf_counter()-started>args.timeout:
+                        raise TimeoutError('Bounded visualization run timed out')
+                    sleep(.5)
+                if process.returncode:
+                    raise subprocess.CalledProcessError(process.returncode,process.args)
+            except BaseException:
+                if process.poll() is None:
+                    os.killpg(process.pid,signal.SIGTERM)
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid,signal.SIGKILL)
+                        process.wait()
+                raise
     launch_seconds = perf_counter()-started
-    result = dict(case=str(case),launch_seconds=launch_seconds,timing=timing(case,steps),
-        checks=verify(case,steps,enabled))
+    check_storage(case,args.output)
+    result = dict(case=str(case),pipeline=pipeline if enabled else 'off',steps=steps,profiled=profile,
+        directory_bytes=directory_bytes(case),launch_seconds=launch_seconds,timing=timing(case,steps),
+        checks=verify(case,steps,enabled,pipeline))
+    if observed is not None:
+        result['observed_resources']=observed
     (case/'result.json').write_text(json.dumps(result,indent=2)+'\n')
     print(f'PASS {name}: complete window {result["timing"]["completed_window"]["seconds"]:.6f} s',flush=True)
     return result
 
 
+def compare_diagnostics(reference,case):
+    import numpy as np
+    for name in ('input.tgv','input.output','controller'):
+        if (reference/'datin'/name).read_bytes()!=(case/'datin'/name).read_bytes():
+            raise AssertionError('Unmatched solver input: '+name)
+    a,b=[np.loadtxt(p/'flowstate.dat',skiprows=1,ndmin=2) for p in (reference,case)]
+    if a.shape!=b.shape or not np.isfinite(a).all() or not np.isfinite(b).all():
+        raise AssertionError('Statistics shape or finite-value check failed')
+    np.testing.assert_array_equal(a[:,:2],b[:,:2])
+    error=np.max(abs(a[:,2:]-b[:,2:]),axis=0)
+    if len(error)!=3 or np.any(error>2e-10):
+        raise AssertionError('Visualization changed solver statistics: '+str(error))
+    return dict(samples=len(a),maxabs=dict(zip(('kinetic_energy','enstrophy','dissipation'),error.tolist())))
+
+
 def main():
+    def interrupted(signum,frame):
+        raise InterruptedError(f'Benchmark interrupted by signal {signum}')
+    signal.signal(signal.SIGTERM,interrupted)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--executable',type=Path,default=ROOT/'build_insitu_gpu/bin/astr')
     parser.add_argument('--mpiexec',type=Path,default=MPI)
     parser.add_argument('--library',type=Path,default=LIBRARY)
     parser.add_argument('--transport',choices=('device-aware','pinned'),default='device-aware')
+    parser.add_argument('--pipelines',nargs='+',choices=('off','compatible','standard-device','direct-device'),
+        help='Explicit comparison matrix; each selected entry gets a two-step preflight')
+    parser.add_argument('--repetitions',type=int,default=1)
+    parser.add_argument('--trace-pipelines',nargs='+',choices=('compatible','standard-device','direct-device'),
+        help='Separate two-step CUDA/NVTX/MPI attribution; never part of timing rounds')
+    parser.add_argument('--timeout',type=float,default=3600.)
     parser.add_argument('--smoke-only',action='store_true')
     parser.add_argument('--skip-smoke',action='store_true',help='Use only after this exact executable passed the two-step check')
     args = parser.parse_args()
     args.output = args.output.resolve()
     args.executable = args.executable.resolve(strict=True)
-    args.mpiexec = args.mpiexec.resolve(strict=True)
+    args.mpiexec = args.mpiexec.absolute()
+    if not args.mpiexec.is_file():
+        parser.error('MPI launcher is missing')
     args.library = args.library.resolve(strict=True)
     args.output.mkdir(parents=True,exist_ok=False)
+    if args.repetitions<=0 or args.timeout<=0 or not math.isfinite(args.timeout):
+        parser.error('Repetitions and timeout must be finite and positive')
+    if args.pipelines and (len(set(args.pipelines))!=len(args.pipelines) or 'off' not in args.pipelines):
+        parser.error('The matrix requires a unique off baseline')
+    if not args.pipelines and args.repetitions!=1:
+        parser.error('Repeated timing requires an explicit pipeline matrix')
+    if args.trace_pipelines and (not args.pipelines or
+            len(set(args.trace_pipelines))!=len(args.trace_pipelines) or
+            not set(args.trace_pipelines)<=set(args.pipelines)):
+        parser.error('Trace entries must be unique selected matrix entries')
     report = dict(status='running',grid=[256]*3,np=2,topology=[2,1,1],dt=1e-4,
         steps=100,products=list(PRODUCTS),q_threshold=0.,color='speed',image_resolution=[1280,960],
         statistics=False,checkpoint=False,volume=False,slices=False,vtk_geometry=False,
         postprocess_transport=args.transport,solver_transport='pinned',precision='fp64',filter_workspace='scalar',
         timing_definition='Max of rank-local elapsed whole windows; initialization excluded from completed_window, first-frame lazy setup included; nested stages are not summed',
-        repetitions=1,provenance=dict(executable=str(args.executable),
+        repetitions=args.repetitions,provenance=dict(executable=str(args.executable),
             executable_sha256=hashlib.sha256(args.executable.read_bytes()).hexdigest(),
-            pipeline_sha256=hashlib.sha256((ROOT/'scripts/insitu/tgv_pipeline.py').read_bytes()).hexdigest()))
+            pipeline_sha256={name:hashlib.sha256((ROOT/'scripts/insitu'/name).read_bytes()).hexdigest()
+                for name in ('tgv_pipeline.py','device_render_pipeline.py')},
+            backend_sha256=hashlib.sha256((args.library/'libcatalyst-paraview.so').read_bytes()).hexdigest(),
+            gpu_info=subprocess.check_output(['nvidia-smi','--query-gpu=name,uuid,driver_version,memory.total',
+                '--format=csv'],text=True),
+            loaded_dependencies=subprocess.check_output(['ldd',str(args.executable)],text=True)))
     try:
+        if args.pipelines:
+            report['pipelines']=args.pipelines
+            report['preflight']=[]
+            report['runs']=[]
+            if args.skip_smoke:
+                raise ValueError('Matrix admission requires its own matching two-step preflight')
+            observed_baseline=None
+            for pipeline in ['off']+[p for p in args.pipelines if p!='off']:
+                result=launch(args,'smoke_'+pipeline,2,pipeline!='off',pipeline,
+                    monitor=True,resource_baseline=observed_baseline)
+                report['preflight'].append(result)
+                (args.output/'report.partial.json').write_text(json.dumps(report,indent=2)+'\n')
+                if pipeline=='off':
+                    observed_baseline=result['observed_resources']
+            baseline=Path(next(r['case'] for r in report['preflight'] if r['pipeline']=='off'))
+            for result in report['preflight']:
+                result['statistics_comparison']=compare_diagnostics(baseline,Path(result['case']))
+            if args.trace_pipelines:
+                report['attribution']=[]
+                for pipeline in args.trace_pipelines:
+                    result=launch(args,'trace_'+pipeline,2,True,pipeline,profile=True)
+                    result['statistics_comparison']=compare_diagnostics(baseline,Path(result['case']))
+                    report['attribution'].append(result)
+            if not args.smoke_only:
+                for repetition in range(args.repetitions):
+                    order=args.pipelines[repetition%len(args.pipelines):]+args.pipelines[:repetition%len(args.pipelines)]
+                    round_runs=[]
+                    for pipeline in order:
+                        result=launch(args,f'round{repetition+1:02d}_{pipeline}',100,pipeline!='off',pipeline)
+                        result['round']=repetition+1
+                        report['runs'].append(result)
+                        round_runs.append(result)
+                        (args.output/'report.partial.json').write_text(json.dumps(report,indent=2)+'\n')
+                    baseline=Path(next(r['case'] for r in round_runs if r['pipeline']=='off'))
+                    for result in round_runs:
+                        result['statistics_comparison']=compare_diagnostics(baseline,Path(result['case']))
+                report['summary']={}
+                for pipeline in args.pipelines:
+                    rows=[r for r in report['runs'] if r['pipeline']==pipeline]
+                    report['summary'][pipeline]={}
+                    for stage in sorted(set.intersection(*(set(r['timing']) for r in rows))):
+                        values=[r['timing'][stage]['seconds'] for r in rows]
+                        report['summary'][pipeline][stage]=dict(raw_seconds=values,
+                            minimum_seconds=min(values),median_seconds=statistics.median(values),
+                            maximum_seconds=max(values),range_seconds=max(values)-min(values),
+                            sample_stdev_seconds=statistics.stdev(values) if len(values)>1 else 0.)
+                base=report['summary']['off']['completed_window']['median_seconds']
+                report['comparison']={p:dict(extra_seconds=report['summary'][p]['completed_window']['median_seconds']-base,
+                    on_off_ratio=report['summary'][p]['completed_window']['median_seconds']/base)
+                    for p in args.pipelines if p!='off'}
+            report['status']='passed-bounded-matrix-preflight' if args.smoke_only else 'passed-matched-matrix'
+            report['group_directory_bytes']=directory_bytes(args.output)
+            return
         if not args.skip_smoke:
             report['smoke'] = launch(args,'smoke_on',2,True)
         if not args.smoke_only:

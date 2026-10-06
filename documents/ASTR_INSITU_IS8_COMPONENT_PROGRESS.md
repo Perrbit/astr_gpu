@@ -1,7 +1,9 @@
-# IS8-A Device Component Progress
+# IS8-A / IS8-R Device Component Progress
 
-Date: 2026-10-06. Branch: `feature/gpu_dev`. Approved bounded IS8-A0-A9 completed.
-Current admission and final evidence: `ASTR_INSITU_IS8_ACCEPTANCE.md`.
+Date: 2026-10-06. Branch: `feature/gpu_dev`. Approved bounded IS8-A0-A9 and
+IS8-R0-R11 completed. Current resident-rendering admission and final evidence:
+`ASTR_INSITU_IS8_RESIDENT_ACCEPTANCE.md`. The earlier compact-host entry is
+recorded in `ASTR_INSITU_IS8_ACCEPTANCE.md`.
 Sections below retain dated component/failure history; their pending statements
 do not supersede the latest acceptance record.
 The independent CUDA/Viskores dependency and private VTK RK45 route were approved.
@@ -451,3 +453,451 @@ pixel checks repair this display issue without changing fields or cameras.
 See the acceptance record for exact receipts, resource/timing definitions and
 exclusions. CURVE, walls, AIR5, production-scale device visualization and PF/AP
 remain outside this completed goal. No remote/Git operation was performed.
+
+## IS8-R Device-Resident Rendering Implementation (2026-10-06)
+
+The new R0-R11 goal is active in the current feature checkout. The accepted
+IS8-A route above remains the compatible baseline, not either new rendering
+pipeline. New `standard-device` and `direct-device` selections require the
+default-off native rendering build; the first Q-only bridge is under build/test,
+not a full-product admission. No remote job or Git write is authorized.
+
+### R0 Graphics Interoperability Component
+
+Root CMake builds `insitu_graphics_interop_probe`. Its VTK EGL context is
+selected by the current CUDA device UUID, before the render-window constructor.
+For VTK 9.6.2, setting the inherited DeviceIndex after construction alone does
+not update the private EGL device selection. The original GPU1 failure and the
+corrected two-GPU pass are separate observations; the production adapter
+already selects the environment before construction.
+
+Each card passes three frames with one reused CUDA-registered GL buffer,
+device-side triangle filling, map/unmap, color/depth/background pixel checks,
+mapped-buffer exposure rejection and explicit release. Only 49152 RGBA image
+bytes are read for the three 64x64 frames. Both memchecks report zero errors.
+The Nsight component records one registration, three maps/unmaps and kernels,
+three OpenGL draws/pixel reads and one unregister. It does not record CUDA
+memory-copy/UVM tables. This is not whole-Catalyst residency evidence.
+
+Evidence directory: `tests/gpu_validation/out/insitu_is8_r0_graphics_20261006/`.
+The immutable R0 receipts are `gpu0_memcheck.log`, `gpu1_memcheck.log` and
+`graphics_gpu0.nsys-rep/.sqlite`. The preserved installed VTK/EGL libraries
+remain unchanged. The separate CUDA-enabled rendering dependency has built
+Catalyst and Python wrappers. Native product integration and complete dependency
+admission remain subject to the gates below.
+
+### R1 Configuration And Restart Identity
+
+The parser accepts `rendering_pipeline=compatible|standard-device|direct-device`.
+New selections require rendering, device processing and GPU derivatives.
+Pipeline identity is included in collective configuration comparison. A native
+capability query admits compatible in ordinary builds. The separate default-off
+`ASTR_WITH_INSITU_DEVICE_RENDERING` candidate adds the two new bridges, with a
+Q-only product gate until R5 is connected; unbuilt routes fail explicitly rather
+than silently selecting compatible.
+
+The enabled render control record is ASTRIR03, with processing, transport and
+pipeline identity. Old ASTRIR01/02 controls identify compatible only. Compatible
+fingerprint semantics remain unchanged. Cross-pipeline restore is refused,
+including explicit override; changing only the existing face transport still
+requires its original explicit override.
+
+`test_insitu_run_config.py`: 87 passed. Native receipts `r1_native.xml` record
+four unavailable-pipeline refusals and one compatible exact restart/transport
+override. `r1_host_restart.xml` records four host-render continuation and
+invalid-pipeline-control checks, including q/statistics and product equivalence.
+Strict geometry-writer policy and actual new-route capability still await
+the R3/R4 integration; these passes do not close all of R1.
+
+### R2 Common Surface View Component
+
+`DeviceSurfaceOwner` retains typed FP64 coordinate/velocity/Q/u arrays, Id64
+triangle indices and read tokens for the lifetime of an immutable device view.
+Its GPU display worklets produce separate FP32 coordinates/speed and UInt32
+indices. They check field finiteness, display overflow, array extents and index
+range. GPU reductions return bounds/speed range and validation status only.
+The owner admits empty geometry without a host container. This first component
+covers triangles; slice triangulation, normals, colors and trajectory segments
+remain to be integrated. It does not change extraction or Q mathematics.
+
+`r2_geometry_final.xml`: six passed, covering empty/nonempty NP=1 and NP=2
+x/y/z, the retained compatible geometry write/read controls, and deliberate
+GPU nonfinite/index faults. The strict branch writes no geometry files. Maximum
+independent FP64 interpolation difference is 1.27675647831893e-15, display
+cast/index difference is zero, and the source fields are unchanged.
+`r2_memcheck.*.log` records zero errors for both NP=2 y rank processes.
+
+`r2_device_view.nsys-rep/.sqlite` records Flying Edges plus GPU display packing,
+index conversion and independent GPU audit kernels. The device-view range has
+exactly 72, 8 and 16 byte D2H summaries, not point/index arrays. The entire
+component capture has no managed D2H migration; extraction has its existing
+4/4/8 byte scalar D2H controls. `test_insitu_device_geometry_trace.py` independently
+checks both the old compatible transfer receipt and this new strict receipt.
+These are bounded component observations, not full solver/rendering admission.
+
+### R3 Dependency Candidate
+
+`paraview-6.1.1-device-rendering.patch` adds an opt-in CUDA-to-OpenGL buffer
+upload and a restricted path in the standard VTK polydata mapper. It is not a
+custom mapper. Contiguous device coordinates/colors/triangle indices go through
+VTK's standard arrays, VBOs and IBOs; unsupported configurations throw instead
+of entering host loops. `ASTR_VTK_STRICT_DEVICE_ACCESS=1` makes CPU value access
+to vtkmDataArray fail and uses read-only device pointer acquisition. The CUDA
+patch is in the independent source/build, not the preserved installation.
+
+The new optional root target `insitu_standard_device_probe` exercises analytic
+triangles using actual vtkmDataArray, vtkPolyData, vtkActor and the standard
+vtkOpenGLPolyDataMapper. `ASTR_BUILD_INSITU_RENDER_PROBES` is OFF by default and
+requires the existing CUDA/Catalyst/device probe switches. The private rendering
+modules and probe compile through root CMake. Both GPUs pass three analytic
+frames (green/blue/green foreground, red background triangle and black exterior),
+host-coordinate-access rejection and explicit graphics release. VTK's OpenGL
+object factory must be initialized by `vtk_module_autoinit`; without it the
+generic actor/renderer never invokes the draw function and the original probe
+correctly fails black. The mapper uses six reduced bounding-box values instead
+of walking device cells to determine clipping bounds.
+
+`r3_standard_component.xml` records the two-card component pass. Both
+`r3_gpu0_memcheck.log` and `r3_gpu1_memcheck.log` report zero errors.
+`r3_standard_gpu0.nsys-rep/.sqlite` records three registrations, nine map/unmap
+pairs, nine D2D uploads (72-byte positions, 24-byte colors and indices per frame),
+three draws, three image reads and three unregisters. It records no CUDA D2H
+or managed migration. Image reads total 49152 RGBA bytes. These are analytic
+component observations, not Catalyst end-to-end admission.
+
+The independent dependency disables the optional Viskores filter collection
+while retaining Core/DataModel CUDA arrays. ParaView's `PARAVIEW_USE_VISKORES`
+otherwise explicitly requires VTKm filters even when their module cache value
+is NO. A private dependency-link patch avoids the filter umbrella for array-only
+consumers. Its build helper also preserves user CUDA compile flags: the original
+`MODIFY_CUDA_FLAGS` call dropped the private glibc compatibility include and
+failed compiling DataModel. `catalyst-paraview`, `pvpython` and
+`paraview_all_python_modules` now build successfully; the actual `pvpython`
+imports ParaView 6.1 and the wrapped view module without `PYTHONPATH` overrides.
+Building `pvpython` alone previously failed imports because the wrappers were
+missing. Instantiating a raw view without an active session is not an import
+test and aborts; the corrected import-only check passes. This is a build-tree
+runtime, not an installed new production prefix.
+
+### R3/R4 Independent Analytic Components
+
+`r3_r4_render_components.xml`: three parametrized tests pass, each exercising
+both GPUs. The modes are Viskores/VTK arrays, actual Conduit external device
+arrays, and `DirectDeviceMapper`. The Conduit control asserts that its returned
+UInt32 connection buffer is the original CUDA allocation; it does not substitute
+a hand-built cell array after conversion. Fixed-stride cell offsets and cell
+types are VTK implicit arrays, not per-cell CPU geometry containers.
+
+`r3_r4_{conduit,direct}_gpu{0,1}_memcheck.log`: all four reports contain zero
+errors. `r3_conduit_latest` and `r4_direct_latest` Nsight receipts each show
+three registrations, nine maps/unmaps, nine device-to-device uploads, three
+draws/image reads and three unregisters; no CUDA D2H or managed-memory
+migration. Both transfer/lifecycle trace regressions pass. These traces cover
+the analytic component, not the full solver or MPI image composition.
+
+The direct mapper uses the same CUDA/GL upload implementation, stock ParaView
+shaders and cameras, but supplies raw device views rather than VTK geometry
+arrays. It is not an independent renderer. The common generic device descriptor
+contains no CUDA/GL resource handles and retains its private allocation owner.
+
+### Native Q Candidate In Progress
+
+The root-CMake default-off rendering switch compiles the narrow adapter,
+shared GPU Q extraction/display owner, Conduit entry and direct actor registry.
+Fortran passes the explicit pipeline independently of face transport. The new
+`device_render_pipeline.py` excludes merge/calculator/geometry writers and uses
+existing ParaView views, scalar bars, collective screenshot and JPEG/EPS
+publication. The common GPU coloring uses a bounded 4096-entry control palette
+from the unchanged ParaView Lab preset, not a readback of field/color arrays.
+FP32 display coordinates/UInt8 colors remain distinct from authoritative FP64
+extracted coordinates and fields.
+
+The full root-CMake CUDA/Fortran candidate now builds. The initial Q failure
+was Viskores's default managed allocation being rejected by the strict graphics
+upload. An isolated `NO_VISKORES_MANAGED_MEMORY=1` control passes; the strict
+route now disables that allocator mode itself, without requiring a user variable.
+The matching no-override test passes eight cases: both routes, NP=1 and NP=2
+x/y/z, two actual Q frames each. The second-frame JPEGs are identical across
+those cases. This is a Q short-test result, not full-product admission.
+
+Evidence is `out/insitu_is8_r3_native_q_20261006`: `native_q_policy.xml`
+(8 passes); `native_q_memcheck_diagnostic.xml` (8 cases, 14 zero-error rank
+reports with the isolated allocator override); `native_cuda_trace.xml` (8
+passes without that override); and `native_q_trace_attribution.xml` (1 pass
+checking all 14 rank traces). Each Q extraction returns only 96 bytes of bounded
+counts/ranges. The render ranges contain three D2D uploads matching the actual
+point/index/color extents, no CUDA D2H. Each rank registers/releases three GL
+buffers and maps/unmaps them six times. No UVM D2H is recorded. This does not
+claim zero image readback or quantify native IceT image traffic yet.
+
+HPC-X launcher wrappers choose their executable by the invoked basename;
+resolving `mpiexec` to `env.sh`, or to the `orterun` binary without the package
+wrapper, fails before the solver starts. The affected validation driver now
+preserves the launcher name. Failed receipts remain in the same directory.
+Nsight 2025.6.1 with OpenGL interception crashes inside its injection library's
+`dlclose` while importing Python 3.14. CUDA/NVTX/MPI-only captures succeed;
+the failed OpenGL run is retained, not used as a rendering rejection or an
+image-transfer measurement. The earlier C++ analytic OpenGL traces remain
+separate component evidence.
+
+### R5 Resident Trajectory Candidate
+
+The existing RK45 driver now has a resident-output branch. Accepted points,
+colors/integrating vectors, per-particle connection indices and concatenation
+remain on CUDA. It reads only the current 16/32 continuation states per round
+(at most 2 KiB), plus bounded reductions. It does not accumulate those host
+states into trajectory geometry. The compatible compact-output branch remains.
+The common owner is now named `DeviceGeometryOwner` with a generic cell count
+and explicit triangle/line arity; the underlying FP64/display separation is unchanged.
+
+`resident_streamlines_component.xml` records 12 passes for NP=1/2 x/y/z,
+actual TGV and constant fields, both/forward directions. The double-rank y
+memcheck has two zero-error reports under `out/insitu_is8_r5_resident_lines_20261006`.
+Its independently sampled vector maximum difference is `3.677613769070831e-16`;
+the source check is unchanged. These are synthetic-field component checks.
+
+The six-product native candidate also adds GPU slice coordinates/triangulation,
+mean-vector coloring, empty-rank products and line rendering to both entries.
+Its first full-product test produced all requested images, then correctly failed
+because finalization still downloaded/wrote the 41-component 3-D statistics
+array. Strict resident routes now skip that export; GPU statistics accumulation
+and explicit native checkpoint state are unchanged. Compatible exports remain.
+The corrected native all-product run passes eight cases (both entries, NP=1
+and NP=2 x/y/z, pinned transport). Per-frame volume downloads and final full
+statistics exports are zero. `native_all_corrected.xml` is the receipt; the
+original failed output is retained separately.
+
+The resident component Nsight pair contains two 1024-byte continuation reads
+per rank, bounded pack/count reductions of at most eight bytes, device-only
+concatenation and no UVM download. `component_trace.xml` closes this attribution,
+not the complete native transfer audit.
+
+### R6 Numerical And Display Gate
+
+`out/insitu_is8_r6_20261006/numerical_v3.xml` records 16 passes: both entries,
+both private face transports and NP=1/NP=2 x/y/z. A read-only CUDA oracle
+independently interpolates each product's source halo, checks the contour
+threshold/slice plane and constant-field trajectory, and checks display casts.
+Only two scalar error values are downloaded per product when the explicit
+diagnostic is enabled. The native rendering route never uses this oracle as
+host geometry. Maximum product field difference is `1.5543122344752192e-15`;
+display conversion difference is zero. Same-phase CPU/GPU authoritative flow
+and cache difference is at most `1.9895196601282805e-13`; common physical
+point/regional statistics differ by at most `1.1102230246251565e-15`.
+Rendering preserves the GPU authoritative checkpoint fields exactly.
+
+CPU statistics retain seam copies whereas GPU statistics pack unique periodic
+nodes and leave unused storage zero. The comparison checks the explicit
+CPU/GPU storage-role/native flags, identical clocks/partitions, the unique
+32-cubed physical nodes and decoded regional FP64 statistics. It separately
+checks CPU extra seam values against their corresponding global nodes and GPU
+unused extras against zero. Raw storage-role bits and unused seam slots are
+not physical-field errors. The earlier comparison-harness failures are retained.
+
+`images.xml` compares all six native images across the sixteen configurations.
+Colored geometry coverage differs by at most one pixel (including the
+partition crossing); this is an image seam check, not a field precision check.
+`analytic_pixels.xml` records three component modes, each on both physical
+GPUs, with analytic triangle projection at most one pixel, front/back depth
+occlusion and exact reference colors, CPU-access refusal and buffer reuse.
+Neither proof relies on downloading product geometry. The default has not changed.
+
+### R7 Transfer, Safety And Resource Gate
+
+`out/insitu_is8_r7_20261006/memory.xml` records 16 passing native cases,
+both entries and private transports, NP=1/NP=2 x/y/z. All 28 rank memcheck
+reports contain zero errors. Initial frame zero has four products without
+mean coverage; steps one and two have all six. The narrow existing UCX API
+probe suppression remains in device-aware tests, not a kernel-access suppression.
+
+`native_audits_v2.xml` records four matched external resource observations,
+eight explicit host/device budget refusals and four actual native Nsight
+captures. Sampled additional host RSS is at most 1108443136 bytes/node;
+additional device memory at most 463736832 bytes/GPU. Minimum device free
+memory exceeds 18 GB. The 20 ms observer does not prove interception of every
+third-party instantaneous peak. Native budget checks remain enabled.
+
+`transfer_ledger.xml` checks all eight rank captures. No compact geometry or
+trajectory read ranges and no UVM D2H are present. Each rank's two-frame face
+payload is 1488384 bytes per direction: pinned transport has that D2H and H2D;
+device-aware has zero face D2H/H2D and matching peer payloads. Continuation
+state reads total 28672 bytes/rank across 16 rounds, each 1024 or 2048 bytes,
+not accepted trajectory arrays. Counts/ranges are bounded scalar metadata.
+
+Render copies are D2D only, exactly matching actual display buffers: 498624
+bytes on rank zero and 233760 on rank one. Empty rank-local line products
+perform no uploads. Registrations equal releases and maps equal unmaps;
+growth is accounted separately from reuse. The optional private pixel observer
+records actual GL RGB/RGBA/depth reads without Nsight's failing Python/OpenGL
+injection. Two frames/six products read 109440000 raw pixel bytes on rank zero,
+63360000 on rank one. This includes the extra screenshot render, not geometry.
+RGB screenshot reads also occur on the empty-geometry rank.
+
+Native MPI events inside the render range show 24 Isend calls/rank (1318160
+and 2639344 bytes) and 24 Irecv calls/rank (46081056 bytes each). These are
+recorded API buffer sizes, including receive capacity and protocol metadata,
+not a claim that every reserved receive byte traversed the wire. Do not sum
+send and receive capacities to estimate image bandwidth. Geometry residency
+therefore does not mean zero host transfer or GPU-only image composition.
+
+R7 passes within the approved local budget. R8 exact continuation and failure
+gates are running; R9/R10/R11 remain pending. The first R8 harness configuration
+incorrectly requested keep=3; the solver correctly rejected it. It now uses
+the existing test-only checkpoint protection marker, retaining production
+keep=1/2 semantics. A run whose script changed between save and resume was
+correctly rejected by the configuration signature. Frozen-script checks are
+required; that failed run is not a numerical-equivalence failure.
+
+### R8 Exact Continuation And Failure Gate
+
+The sixteen exact continuation cases in `out/insitu_is8_r8_20261006/frozen_pipeline.xml`
+all pass: both entries/transports and NP=1/NP=2 x/y/z, continuous twelve
+completed steps versus checkpoint-five plus seven steps. Authoritative q,
+caches, point/regional statistics, control clocks/identities and original
+JPEG/EPS images match exactly. The source checkpoint is unchanged. Largest
+individual case is 103279878 bytes, below the approved 256 MiB bound.
+
+That receipt's later fault-wrapper test failed to inject its requested draw
+error: `runpy` returns a copied namespace, so changing that dictionary did not
+change a function's globals. It was a test fault, not a successful failure
+gate. `lifecycle_v2.xml` contains the corrected six initialization/draw/image
+publication passes. Both entries abort on initialization/draw exceptions;
+approved EIO during EPS staging removes the partial pair, records the same
+missing-frame receipt on all ranks and leaves later images and state exact.
+Encoding/publication now have separate timing entries; no geometry file is
+invented in the missing-frame receipt.
+
+`interrupted_v3.xml` records six additional passes: both entries and interruption
+before statistics, render control or COMPLETE. Partial bundles cannot resume;
+the prior COMPLETE bundle and LATEST survive, cross-pipeline identity is
+explicitly rejected, and resumed q/caches/statistics/control/images match the
+healthy reference exactly. Source resources remain immutable. A previous
+harness expected the generic override rejection rather than the more specific
+cross-pipeline error; its retained failure is not a bypass of the guard.
+
+R8 passes. R9 optional-build/compatible regressions are next; R10/R11 remain
+pending, including the 256-cubed profile and the default switch.
+
+### R9 Optional Builds And Compatibility Gate
+
+`out/insitu_is8_r9_20261006` records successful root-CMake CPU and CUDA builds
+with Catalyst disabled, and an AIR5 CUDA build without device products. The CPU
+binary links no CUDA, VTK, ParaView or Catalyst libraries; the CUDA binary links
+no VTK, ParaView or Catalyst libraries. Both disabled builds pass NP=2 four-step
+versus two-plus-two exact state/statistics continuation. `config.xml` records
+87 parser/collective passes; `unbuilt.xml` records four explicit unavailable-entry
+refusals without fallback; `compatible.xml` records three real compact-entry
+product/continuation checks. `air5.xml` records the existing bounded CPU/GPU
+AIR5 volume-statistics regression, not an AIR5 resident-rendering admission.
+
+Root-CMake staging installs the strict pipeline only when its optional rendering
+target is enabled, together with its EGL and image-publication helpers. The staged
+binary and staged pipeline pass a one-frame 32-cubed standard-device run. The
+dependency remains the independent build tree, not a completed ParaView install.
+The staged executable requires explicit runtime library discovery, for example:
+
+```sh
+export LD_LIBRARY_PATH=/home/dell/workspace/astr_dependencies/build/paraview-6.1.1-astr-device-gcc13/lib:/home/dell/workspace/astr_dependencies/install/catalyst-2.1.0-gcc13/lib:${LD_LIBRARY_PATH}
+```
+
+This is a local evidence command, not a portable deployment path or a standalone
+binary claim. A deployment must supply its own matching dependency prefix.
+R9 passes; R10 bounded 256-cubed admission and matched timing are next. The device
+default remains unchanged until R10 and the R11 selection checks pass.
+
+### R10 Bounded 256-Cubed Preflight And Attribution
+
+The isolated `tgv256_demo` branch now supplies Q=0 and instantaneous streamlines
+to both strict entries, with GPU speed coloring in [0,1] and 1280x960 JPEG/EPS.
+The 32-cubed threshold, signed-u colors, seeds and diagnostic products remain
+unchanged. The current binary passes sixteen repeated 32-cubed numerical gates,
+two selected exact continuations and two selected y/z memchecks: twenty passes
+in `insitu_is8_r10_32_regression_20261006/pytest_v2.xml`. Its initial temporary
+parent-directory failure never started a solver and is retained separately.
+
+`insitu_is8_r10_256_preflight_20261006/report.json` records all four two-step
+preflights and three separate CUDA/NVTX/MPI traces. Small physical diagnostics
+match the off baseline exactly. Strict products remain device-resident; images
+are nonblank, correctly framed and speed-colored. External 20 ms sampling shows
+strict extra node RSS at most 921567232 bytes, extra memory at most 2250944512
+bytes per GPU and minimum free memory above 12 GB. Native phase budgets pass.
+The copied input grid file is an input, not an intermediate field output.
+
+`transfer_v2.xml` independently checks all six rank traces. The compatible
+entry reads 77631488/75665408 bytes of compact geometry on the two ranks over
+two frames. Both strict entries read zero geometry and no UVM D2H pages;
+their render uploads are 27255552/26859264 D2D bytes. Each rank reads 12288
+bytes of particle continuation state in six rounds, each 2048 bytes, plus
+bounded scalar metadata. GPU buffer registrations/releases and maps/unmaps
+balance. Images/IceT composition are still host-visible, not zero total D2H.
+The first read-only checker incorrectly omitted the four-byte CUDA Fortran
+finite-state flags from its scalar whitelist; the retained failed receipt
+was corrected using the source and capture, not by allowing geometry reads.
+
+The initial five-round invocation was interrupted by SIGTERM during its
+preflight wrapper, after successful solver finalization. The sender is not
+identified; no numerical failure appears in those logs. That incomplete
+directory is retained, and is not included in timing results. The runner now
+records signal interruption and every completed preflight. A fresh five-round
+matrix subsequently completed under `insitu_is8_r10_256_matrix_v2_20261006`.
+The interrupted invocation is excluded from the results below.
+
+### R10 Five-Round Matched Matrix Complete
+
+`report.json` records twenty complete 100-step runs, rotated four-case order,
+no profiler during formal runs, and all requested 200 JPEG/200 EPS files per
+rendering run. All matched kinetic-energy/enstrophy/dissipation differences are
+zero. No checkpoint, volume, slice or VTK geometry output is present.
+
+| Entry | Complete-window min/median/max, seconds | Sample SD | Pure RK median |
+|---|---|---:|---:|
+| Off | 60.368274 / 60.580561 / 60.617399 | 0.100664 | 56.371491 |
+| Compatible | 257.208569 / 257.746235 / 264.008394 | 2.867249 | 56.784510 |
+| Standard device | 85.644225 / 85.719774 / 85.815857 | 0.072039 | 56.387421 |
+| Direct device | 85.608615 / 85.666557 / 85.994778 | 0.160788 | 56.412208 |
+
+Complete windows exclude startup and include lazy first-frame setup and image
+publication. Nested stages cannot be summed. Standard/direct add 25.139213/
+25.085996 seconds over off, versus compatible's 197.165674. Compatible/standard
+window ratio is 3.0068, not a CPU/GPU solver acceleration. Their two strict
+medians differ by only 0.053217 seconds; no reliable winner is asserted.
+All native resource budgets pass; standard/direct extra node RSS peaks are
+815087616/808374272 bytes and per-GPU extra device peak is 2036707328 bytes.
+Device free memory stays above 12 GB. The largest directory is 1560568974
+bytes, and the group 23961800971 bytes before the preserved executable copy.
+The preceding 20 ms external preflight observations independently pass.
+
+Raw values, stages, environment, input/script/binary identity and resources
+are retained in the report. Its frozen binary `benchmarked_astr` matches SHA256
+`882e1ac5b4ef40cdd5941d5151383c2eaa8e7537ddec2fcca15884786ede3728`.
+R10 closes only the approved 256-cubed two-product demonstration.
+
+### R11 Default Selection And Bounded Admission Complete
+
+`insitu_is8_r11_20261006/config_launcher.xml` has 117 passes; three unrelated
+native-observer checks were deselected, not counted as passes. `native_v2.xml`
+has four passes: default standard save to explicit standard exact resume,
+explicit direct exact resume, and NP=1/2 compatible product regressions.
+`unbuilt.xml` has six passes: explicit standard/direct and omitted pipeline,
+each at NP=1/2, fail without a compiled strict entry and without fallback.
+CPU/GPU Catalyst-OFF and AIR5 CUDA/Catalyst non-device root builds also pass.
+
+Omitted `rendering_pipeline` now selects standard-device only when device
+processing and rendering are enabled. Host/disabled defaults remain compatible;
+optional dependency switches and all in-situ work remain default OFF.
+The final binary differs from the benchmark only in tested parser/default
+selection, not compute kernels or rendering scripts. Performance provenance
+stays attached to the frozen pre-default binary.
+
+The independent NP=2 pinned launcher passes four steps with frames 2/4,
+ten JPEG/EPS pairs, no VTP, zero reported geometry host bytes and finalized
+rank receipts. Its 78518807-byte directory and native phase resources fit
+the 256 MiB, 4 GiB host, 2 GiB/GPU and 1 GiB free bounds. The existing small
+checkpoint fixture is retained for restart, unlike the 256-cubed timing run.
+No validation module is imported. Receipts are in `standalone_default`.
+
+IS8-R0-R11 are complete within the scope in
+`ASTR_INSITU_IS8_RESIDENT_ACCEPTANCE.md`. Image composition, bounded metadata,
+particle continuation and explicitly pinned faces remain permitted host traffic.
+Next are PF independent clocks and AP variable cadence; no CURVE, walls, AIR5,
+other hardware, remote work or Git operation is admitted by this completion.

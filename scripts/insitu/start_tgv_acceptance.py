@@ -7,14 +7,19 @@ from string import Template
 import subprocess
 
 
-def prepare(output,library,enabled=True,processing_backend='host',postprocess_transport=None):
+def prepare(output,library,enabled=True,processing_backend='host',postprocess_transport=None,
+            rendering_pipeline=None):
     if processing_backend not in ('host','device'):
         raise ValueError('Unsupported processing backend')
     if (processing_backend=='device' and postprocess_transport not in ('pinned','device-aware')) or (
             processing_backend=='host' and postprocess_transport is not None):
         raise ValueError('Device processing requires explicit independent face transport; host does not use it')
     preset=Path(__file__).resolve().parent/'presets/tgv32'
-    pipeline=Path(__file__).resolve().parent/'tgv_pipeline.py'
+    route=rendering_pipeline or ('standard-device' if enabled and processing_backend=='device' else 'compatible')
+    if route not in ('compatible','standard-device','direct-device') or (
+            route!='compatible' and (not enabled or processing_backend!='device')):
+        raise ValueError('Resident rendering requires enabled device processing')
+    pipeline=Path(__file__).resolve().parent/('tgv_pipeline.py' if route=='compatible' else 'device_render_pipeline.py')
     library=library.resolve(strict=True)
     if "'" in str(library) or "'" in str(pipeline):
         raise ValueError('Namelist paths cannot contain apostrophes')
@@ -26,9 +31,10 @@ def prepare(output,library,enabled=True,processing_backend='host',postprocess_tr
         shutil.copyfile(preset/name,output/'datin'/name)
     content=Template((preset/'insitu.nml.in').read_text()).substitute(
         enabled='t' if enabled else 'f',library=library,pipeline=pipeline)
-    if processing_backend=='device':
+    if enabled and processing_backend=='device':
         content=content.replace("derivative_backend='gpu',",
-            f"derivative_backend='gpu',processing_backend='device',postprocess_transport='{postprocess_transport}',")
+            f"derivative_backend='gpu',processing_backend='device',postprocess_transport='{postprocess_transport}',"
+            f"rendering_pipeline='{route}',")
     (output/'insitu.nml').write_text(content)
 
 
@@ -41,13 +47,14 @@ def main():
     p.add_argument('--np',type=int,choices=(1,2),default=1)
     p.add_argument('--processing-backend',choices=('host','device'),default='host')
     p.add_argument('--postprocess-transport',choices=('pinned','device-aware'))
+    p.add_argument('--rendering-pipeline',choices=('compatible','standard-device','direct-device'))
     p.add_argument('--off',action='store_true',help='Only disable the new in-situ function; keep native checkpoints')
     p.add_argument('--prepare-only',action='store_true')
     args=p.parse_args()
     if not args.prepare_only and (args.executable is None or args.mpiexec is None):
         p.error('Launching requires explicit --executable and --mpiexec')
     output=args.output.resolve()
-    prepare(output,args.library,not args.off,args.processing_backend,args.postprocess_transport)
+    prepare(output,args.library,not args.off,args.processing_backend,args.postprocess_transport,args.rendering_pipeline)
     if args.prepare_only:return
     env={k:v for k,v in os.environ.items() if not k.startswith('ASTR_')}
     for key in ('DISPLAY','PYTHONPATH','CATALYST_IMPLEMENTATION_PREFER_ENV','VTK_EGL_DEVICE_INDEX'):
@@ -62,7 +69,10 @@ def main():
     elif args.postprocess_transport=='pinned':
         env.update(OMPI_MCA_pml='ob1',OMPI_MCA_btl='self,tcp',OMPI_MCA_osc='pt2pt',
             OMPI_MCA_opal_cuda_support='0',OMPI_MCA_coll_ucc_enable='0')
-    command=[str(args.mpiexec.resolve(strict=True)),'--mca','coll_hcoll_enable','0',
+    launcher=args.mpiexec.absolute()
+    if not launcher.is_file():
+        p.error('MPI launcher is missing')
+    command=[str(launcher),'--mca','coll_hcoll_enable','0',
         '-np',str(args.np),str(args.executable.resolve(strict=True)),'run','datin/input.tgv']
     with (output/'run.log').open('w') as log:
         subprocess.run(command,cwd=output,env=env,stdout=log,stderr=subprocess.STDOUT,check=True)

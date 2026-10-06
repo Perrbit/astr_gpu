@@ -19,6 +19,17 @@ if [[ -n "${PV_DEVICE_TARGETS:-}" ]]; then
   fi
 fi
 python_options=()
+device_modules=()
+vtkm_plugin=ON
+viskores_filters=ON
+if [[ "${PV_DEVICE_RENDERING:-OFF}" == ON ]]; then
+  # ASTR dispatches its own GPU filters; retain standard VTK device arrays.
+  device_modules+=("-DVTK_MODULE_ENABLE_VTK_AcceleratorsVTKmCore=YES"
+                   "-DVTK_MODULE_ENABLE_VTK_AcceleratorsVTKmDataModel=YES"
+                   "-DVTK_MODULE_ENABLE_VTK_AcceleratorsVTKmFilters=NO")
+  vtkm_plugin=OFF
+  viskores_filters=OFF
+fi
 if [[ -n "${PV_DEVICE_PYTHON_INCLUDE:-}" ]]; then
   python_options+=("-DPython3_INCLUDE_DIR=$PV_DEVICE_PYTHON_INCLUDE")
 fi
@@ -41,6 +52,7 @@ cmake -S "$PV_DEVICE_SOURCE" -B "$PV_DEVICE_BUILD" -G "${CMAKE_GENERATOR:-Unix M
   -DMPI_CXX_COMPILER="$MPI_ROOT/bin/mpicxx" \
   -DPython3_EXECUTABLE="${PV_DEVICE_PYTHON:-/usr/bin/python3}" \
   "${python_options[@]}" \
+  "${device_modules[@]}" \
   -DPARAVIEW_BUILD_EDITION=CATALYST_RENDERING \
   -DPARAVIEW_BUILD_TESTING=OFF \
   -DPARAVIEW_USE_MPI=ON \
@@ -48,9 +60,10 @@ cmake -S "$PV_DEVICE_SOURCE" -B "$PV_DEVICE_BUILD" -G "${CMAKE_GENERATOR:-Unix M
   -DPARAVIEW_ENABLE_CATALYST=ON \
   -DPARAVIEW_ENABLE_WEB=OFF \
   -DPARAVIEW_USE_CUDA=ON \
-  -DPARAVIEW_USE_VISKORES=ON \
-  -DPARAVIEW_PLUGIN_ENABLE_VTKmFilters=ON \
+  -DPARAVIEW_USE_VISKORES="$viskores_filters" \
+  -DPARAVIEW_PLUGIN_ENABLE_VTKmFilters="$vtkm_plugin" \
   -DASTR_VISKORES_FP64_MPI=ON \
+  -DASTR_VTK_DEVICE_RENDERING="${PV_DEVICE_RENDERING:-OFF}" \
   -DVTK_USE_X=OFF \
   -DVTK_OPENGL_HAS_EGL=ON \
   -DVTK_DEFAULT_RENDER_WINDOW_OFFSCREEN=ON

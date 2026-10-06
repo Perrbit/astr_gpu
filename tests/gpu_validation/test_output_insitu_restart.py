@@ -18,7 +18,7 @@ from test_output_series_repair import seal_file_records, repair
 ROOT = Path(__file__).resolve().parents[2]
 EXE = Path(os.environ.get("ASTR_OUTPUT_INSITU_EXE", ROOT / "build_insitu_gpu/bin/astr")).resolve()
 MPIEXEC = Path(os.environ.get("ASTR_OUTPUT_MPIEXEC",
-    "/opt/nvidia/hpc_sdk/Linux_x86_64/26.1/comm_libs/hpcx/bin/mpiexec")).resolve()
+    "/opt/nvidia/hpc_sdk/Linux_x86_64/26.1/comm_libs/hpcx/bin/mpiexec")).absolute()
 BACKEND = Path(os.environ.get("ASTR_OUTPUT_INSITU_BACKEND",
     "/home/dell/workspace/astr_dependencies/install/paraview-6.1.1-hpcx-gcc13/lib/catalyst")).resolve()
 FINAL = "outdat/new/checkpoints/step000000000012"
@@ -92,7 +92,9 @@ def reference(request, tmp_path_factory, fault_library):
     check_render(continuous, ranks, [8, 12])
     source = continuous / "outdat/new/checkpoints/step000000000005"
     assert (source / "PROTECT").is_file()
-    assert len((source / "insitu_control.bin").read_bytes()) == 313
+    control = (source / "insitu_control.bin").read_bytes()
+    assert len(control) == 361 and control[:8] == b'ASTRIR03'
+    assert control[176:192] == b'compatible      '
     return args, ranks, mode, continuous, source, size
 
 
@@ -244,7 +246,7 @@ def test_render_override_preserves_numerical_history(reference, tmp_path, change
         assert not list((resumed / "outdat/render").glob("*.jpeg"))
 
 
-@pytest.mark.parametrize("defect", ["missing", "clock", "flags", "tail", "index", "signature"])
+@pytest.mark.parametrize("defect", ["missing", "clock", "flags", "tail", "index", "signature", "pipeline"])
 def test_corrupt_render_control_is_rejected(reference, tmp_path, defect):
     args, ranks, mode, _, source, _ = reference
     args = SimpleNamespace(**vars(args)); args.output = tmp_path
@@ -257,7 +259,8 @@ def test_corrupt_render_control_is_rejected(reference, tmp_path, defect):
     messages = {"missing": "missing native render control", "clock": "native render clock/version mismatch",
                 "flags": "invalid native render flags", "tail": "native render control tail",
                 "index": "invalid native render schedule history",
-                "signature": "native render configuration differs; select explicit override"}
+                "signature": "native render configuration differs; select explicit override",
+                "pipeline": "invalid rendering pipeline identity"}
     if defect == "missing":
         payload.unlink()
         # Remove the member from the sealed list to exercise the mandatory provider.
@@ -266,8 +269,10 @@ def test_corrupt_render_control_is_rejected(reference, tmp_path, defect):
     else:
         if defect == "tail":
             raw.extend(b"x")
+        elif defect == "pipeline":
+            raw[176:192] = b'unknown         '
         else:
-            offset = {"clock": 8, "flags": 40, "index": 285, "signature": 112}[defect]
+            offset = {"clock": 8, "flags": 40, "index": 333, "signature": 112}[defect]
             value = {"clock": 6, "flags": 2, "index": 100, "signature": 1}[defect]
             raw[offset:offset + 8] = np.array([value], dtype="<i8").tobytes()
         payload.write_bytes(raw)

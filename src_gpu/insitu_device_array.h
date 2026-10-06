@@ -38,6 +38,7 @@ viskores::cont::ArrayHandle<T> borrow_cuda_array(T* pointer, viskores::Id count)
 
 template <class T>
 void require_device_only(const viskores::cont::ArrayHandle<T>& array) {
+  if(!array.GetNumberOfValues()) return;
   for (const auto& buffer : array.GetBuffers())
     if (buffer.IsAllocatedOnHost() ||
         !buffer.IsAllocatedOnDevice(viskores::cont::DeviceAdapterTagCuda{}))

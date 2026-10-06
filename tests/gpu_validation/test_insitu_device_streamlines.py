@@ -8,19 +8,21 @@ import subprocess
 import pytest
 
 ROOT=Path(__file__).resolve().parents[2]
-BIN=ROOT/'build_insitu_device_probes/bin/insitu_device_streamlines_probe'
+BIN=Path(os.environ.get('ASTR_INSITU_STREAMLINES_PROBE',
+    ROOT/'build_insitu_device_probes/bin/insitu_device_streamlines_probe'))
 
 
 @pytest.mark.parametrize('constant,forward',[(False,False),(True,False),(True,True)])
 @pytest.mark.parametrize('ranks,axis',[(1,0),(2,0),(2,1),(2,2)])
-def test_compact_device_streamlines(ranks,axis,constant,forward):
+@pytest.mark.parametrize('storage',['compact','resident'])
+def test_compact_device_streamlines(ranks,axis,constant,forward,storage):
     prefix=os.environ.get('ASTR_INSITU_DEVICE_MPI_PREFIX')
     assert prefix,'Set the matching Open MPI prefix'
     result=subprocess.run([str(Path(prefix)/'bin/mpirun'),'--prefix',prefix,
         '--mca','pml','ob1','--mca','btl','self,tcp','--mca','osc','pt2pt',
         '--mca','coll_hcoll_enable','0','--mca','coll_ucc_enable','0',
         '--mca','opal_cuda_support','0','-np',str(ranks),str(BIN),str(axis),
-        'constant' if constant else 'tgv','forward' if forward else 'both'],
+        'constant' if constant else 'tgv','forward' if forward else 'both',storage],
         capture_output=True,text=True,timeout=120)
     assert result.returncode==0,result.stdout+result.stderr
     match=re.search(r'max_error=(\S+) vertices=(\d+) segments=(\d+) transfers=(\d+)',result.stdout)

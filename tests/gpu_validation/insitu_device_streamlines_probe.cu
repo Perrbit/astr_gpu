@@ -1,5 +1,6 @@
 #include "insitu_device_streamlines.h"
 #include <viskores/cont/Initialize.h>
+#include <viskores/cont/cuda/internal/CudaAllocator.h>
 #include <cstdio>
 #include <cstdlib>
 
@@ -23,7 +24,7 @@ __global__ void verify_halo(const double* fields,int nx,int ny,int nz,int ox,int
   const auto v=field((i%nx+ox-3)*h,(i/nx%ny+oy-3)*h,(i/(nx*ny)+oz-3)*h,constant,axis);
   for(int d=0;d<3;++d) if(fields[i+d*nodes]!=v[d]) atomicAdd(bad,1);
 }
-viskores::Vec3f interpolate(const astr_insitu::TraceVertex& point,double h,bool constant,int axis) {
+__host__ __device__ viskores::Vec3f interpolate(const astr_insitu::TraceVertex& point,double h,bool constant,int axis) {
   int base[3];double s[3];
   for(int d=0;d<3;++d) {base[d]=std::min(31,std::max(0,int(floor(point[d]/h))));s[d]=point[d]/h-base[d];}
   viskores::Vec3f result(0.);
@@ -33,16 +34,35 @@ viskores::Vec3f interpolate(const astr_insitu::TraceVertex& point,double h,bool 
   }
   return result;
 }
+__global__ void inspect_resident(const astr_insitu::TraceVertex* points,const viskores::Vec3f* velocity,
+    const viskores::Id* particle,viskores::Id count,double h,bool constant,int axis,unsigned long long* error) {
+  const auto i=static_cast<viskores::Id>(blockIdx.x)*blockDim.x+threadIdx.x;
+  if(i>=count) return;
+  const auto p=points[i];const auto v=interpolate(p,h,constant,axis);
+  double worst=0.;
+  for(int d=0;d<3;++d) worst=fmax(worst,fabs(v[d]-velocity[i][d]));
+  if(constant) {
+    const double pi=acos(-1.);
+    const viskores::Vec3f original(pi/2.,pi/8.+(particle[i]%16)*(6.*pi/8.)/15.,pi/4.);
+    for(int d=0;d<3;++d) worst=fmax(worst,fabs(p[d]-original[(d-axis+3)%3]-
+      (d==axis?(particle[i]<16?1.:-1.)*p[3]:0.)));
+  }
+  if(!isfinite(worst)) worst=INFINITY;
+  atomicMax(error,static_cast<unsigned long long>(__double_as_longlong(worst)));
+}
 int run(int argc,char** argv,int rank,int ranks) {
   if(ranks!=1 && ranks!=2) throw std::runtime_error("NP=1/2 only");
   const int axis=argc>1?std::atoi(argv[1]):0;
   const bool constant=argc>2 && std::string(argv[2])=="constant";
   const bool forward_only=argc>3 && std::string(argv[3])=="forward";
+  const bool resident=argc>4 && std::string(argv[4])=="resident";
   if(axis<0 || axis>2) throw std::runtime_error("invalid axis");
   int devices=0;
   if(cudaGetDeviceCount(&devices)!=cudaSuccess || devices<ranks || cudaSetDevice(rank)!=cudaSuccess)
     throw std::runtime_error("one physical GPU per rank required");
   viskores::cont::Initialize(argc,argv);
+  if(resident && viskores::cont::cuda::internal::CudaAllocator::UsingManagedMemory())
+    viskores::cont::cuda::internal::CudaAllocator::ForceManagedMemoryOff();
   viskores::Id3 extent(32,32,32),offset(0,0,0);
   extent[axis]=32/ranks;offset[axis]=rank*32/ranks;
   viskores::Id3 dims(extent[0]+7,extent[1]+7,extent[2]+7);
@@ -55,8 +75,31 @@ int run(int argc,char** argv,int rank,int ranks) {
   viskores::cont::GetRuntimeDeviceTracker().ForceDevice(viskores::cont::DeviceAdapterTagCuda{});
   auto vectors=astr_insitu::pack_component_halo(source,dims);
   auto geometry=astr_insitu::trace_tgv_device(vectors,vectors,extent,offset,MPI_COMM_WORLD,
-    64*1024*1024,constant,axis,forward_only);
+    64*1024*1024,constant,axis,forward_only,false,32,resident);
   double error=0.;long long vertices=0,segments=geometry.segments.size();
+  if(resident && geometry.resident_geometry.GetNumberOfCoordinateSystems()) {
+    auto accepted=geometry.resident_geometry.GetPointField("accepted").GetData().
+      AsArrayHandle<viskores::cont::ArrayHandle<astr_insitu::TraceVertex>>();
+    auto values=geometry.resident_geometry.GetPointField("velocity").GetData().
+      AsArrayHandle<viskores::cont::ArrayHandle<viskores::Vec3f>>();
+    auto particles=geometry.resident_geometry.GetPointField("particle").GetData().
+      AsArrayHandle<viskores::cont::ArrayHandle<viskores::Id>>();
+    vertices=accepted.GetNumberOfValues();segments=geometry.resident_geometry.GetCellSet().GetNumberOfCells();
+    viskores::cont::Token token;
+    const auto pointer=[&](const auto& array) {
+      astr_insitu::require_device_only(array);
+      return array.GetBuffers()[0].ReadPointerDevice(viskores::cont::DeviceAdapterTagCuda{},token);
+    };
+    unsigned long long* device_error=nullptr;
+    if(cudaMalloc(&device_error,sizeof(double))!=cudaSuccess || cudaMemset(device_error,0,sizeof(double))!=cudaSuccess)
+      throw std::runtime_error("Resident check allocation failed");
+    inspect_resident<<<(vertices+255)/256,256>>>(static_cast<const astr_insitu::TraceVertex*>(pointer(accepted)),
+      static_cast<const viskores::Vec3f*>(pointer(values)),static_cast<const viskores::Id*>(pointer(particles)),
+      vertices,h,constant,axis,device_error);
+    if(cudaDeviceSynchronize()!=cudaSuccess || cudaMemcpy(&error,device_error,sizeof(double),cudaMemcpyDeviceToHost)!=cudaSuccess)
+      throw std::runtime_error("Resident check failed");
+    cudaFree(device_error);
+  }
   for(const auto& line:geometry.segments) for(std::size_t i=0;i<line.points.size();++i) {
     ++vertices;
     const auto& p=line.points[i];const auto v=interpolate(p,h,constant,axis);
@@ -88,8 +131,9 @@ int run(int argc,char** argv,int rank,int ranks) {
   MPI_Allreduce(&error,&worst,1,MPI_DOUBLE,MPI_MAX,MPI_COMM_WORLD);
   MPI_Allreduce(local,totals,3,MPI_LONG_LONG,MPI_SUM,MPI_COMM_WORLD);
   MPI_Allreduce(&local_bad,&total_bad,1,MPI_INT,MPI_SUM,MPI_COMM_WORLD);
-  if(!rank) std::printf("IS8 CUDA compact streamlines NP=%d axis=%d constant=%d max_error=%.17g vertices=%lld segments=%lld transfers=%lld rounds=%d input_host_mirror=0 source_errors=%d particles=%d\n",
-    ranks,axis,constant,worst,totals[0],totals[1],totals[2],geometry.rounds,total_bad,geometry.particles);
+  if(!rank) std::printf("IS8 CUDA compact streamlines NP=%d axis=%d constant=%d max_error=%.17g vertices=%lld segments=%lld transfers=%lld rounds=%d input_host_mirror=0 source_errors=%d particles=%d resident=%d control_read_bytes=%llu\n",
+    ranks,axis,constant,worst,totals[0],totals[1],totals[2],geometry.rounds,total_bad,geometry.particles,resident,
+    static_cast<unsigned long long>(geometry.control_read_bytes));
   return std::isfinite(worst) && worst<=2e-10 && totals[0]>0 && total_bad==0?0:2;
 }
 int main(int argc,char** argv) {

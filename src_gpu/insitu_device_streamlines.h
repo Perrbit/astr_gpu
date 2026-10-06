@@ -6,6 +6,7 @@
 #include "insitu_device_array.h"
 #include <viskores/cont/Algorithm.h>
 #include <viskores/cont/ArrayHandleIndex.h>
+#include <viskores/cont/CellSetSingleType.h>
 #include <viskores/cont/DataSetBuilderUniform.h>
 #include <viskores/cont/Invoker.h>
 #include <viskores/cont/RuntimeDeviceTracker.h>
@@ -56,6 +57,60 @@ struct SampleTraceVelocity : viskores::worklet::WorkletMapField {
   }
 };
 
+struct CheckTraceCount : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,FieldOut);
+  using ExecutionSignature=void(_1,_2);
+  viskores::Id capacity;
+  VISKORES_CONT explicit CheckTraceCount(viskores::Id n):capacity(n) {}
+  VISKORES_EXEC void operator()(viskores::Int32 n,viskores::Id& bad) const {
+    bad=n<0 || n>capacity;
+  }
+};
+struct TraceParticleId : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,FieldOut);
+  using ExecutionSignature=void(_1,_2);
+  viskores::Id capacity;
+  VISKORES_CONT explicit TraceParticleId(viskores::Id n):capacity(n) {}
+  VISKORES_EXEC void operator()(viskores::Id i,viskores::Id& particle) const {particle=i/capacity;}
+};
+struct ResidentLineIndex : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,WholeArrayIn,WholeArrayIn,FieldOut,FieldOut);
+  using ExecutionSignature=void(_1,_2,_3,_4,_5);
+  viskores::Id chunk,base;
+  VISKORES_CONT ResidentLineIndex(viskores::Id n,viskores::Id b):chunk(n),base(b) {}
+  template<class Counts,class Offsets>
+  VISKORES_EXEC void operator()(viskores::Id i,const Counts& counts,const Offsets& offsets,
+      viskores::Id& index,viskores::UInt8& valid) const {
+    const auto particle=i/(2*chunk),edge=(i/2)%chunk;
+    valid=edge+1<counts.Get(particle);
+    index=valid?base+offsets.Get(particle)+edge+i%2:0;
+  }
+};
+struct PackResidentTrace : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,FieldIn,FieldIn,FieldOut,FieldOut,FieldOut,FieldOut);
+  using ExecutionSignature=void(_1,_2,_3,_4,_5,_6,_7);
+  VISKORES_EXEC void operator()(const TraceVertex& p,const viskores::Vec3f& v,
+      viskores::Int32 status,viskores::Vec3f& xyz,double& u,double& q,viskores::Id& bad) const {
+    xyz=viskores::Vec3f(p[0],p[1],p[2]);u=v[0];q=0.;bad=status!=0;
+    for(int d=0;d<5;++d) bad+=!viskores::IsFinite(p[d]);
+    for(int d=0;d<3;++d) bad+=!viskores::IsFinite(v[d]);
+  }
+};
+struct ResidentTraceChunk {
+  viskores::cont::ArrayHandle<TraceVertex> accepted;
+  viskores::cont::ArrayHandle<viskores::Vec3f> xyz,velocity;
+  viskores::cont::ArrayHandle<double> u,q;
+  viskores::cont::ArrayHandle<viskores::Id> indices,particle;
+};
+
+template<class T>
+inline void append_device_chunk(const viskores::cont::ArrayHandle<T>& source,
+    viskores::cont::ArrayHandle<T>& destination,viskores::Id offset) {
+  if(source.GetNumberOfValues() && !viskores::cont::Algorithm::CopySubRange(
+      viskores::cont::DeviceAdapterTagCuda{},source,0,source.GetNumberOfValues(),destination,offset))
+    throw std::runtime_error("Resident trajectory concatenation failed");
+}
+
 struct DeviceTraceSegment {
   int seed=0,direction=1;
   std::vector<TraceVertex> points;
@@ -69,6 +124,8 @@ struct DeviceStreamlines {
   int rounds=0,transfers=0,particles=32;
   std::uint64_t geometry_bytes=0;
   double minimum_step=.01*(2.*std::acos(-1.)/32.);
+  viskores::cont::DataSet resident_geometry;
+  std::uint64_t control_read_bytes=0;
 };
 
 inline void trace_mpi(int status) {
@@ -106,7 +163,7 @@ inline DeviceStreamlines trace_tgv_device(
     const viskores::cont::ArrayHandle<viskores::Vec3f>& color_velocity,
     const viskores::Id3& extent,const viskores::Id3& offset,MPI_Comm comm,
     std::uint64_t host_budget,bool constant=false,int constant_axis=0,bool forward_only=false,
-    bool sample_trace_vector=false,int global_cells=32) {
+    bool sample_trace_vector=false,int global_cells=32,bool resident=false) {
   constexpr int chunk=128;
   const int particles=forward_only?16:32;
   using State=RK45TraceWorklet::State;
@@ -167,6 +224,8 @@ inline DeviceStreamlines trace_tgv_device(
   std::array<State,32> local;
   std::array<double,32*8> wire;
   std::vector<double> incoming(particles*8*ranks);
+  std::vector<ResidentTraceChunk> chunks;
+  viskores::Id resident_points=0,resident_indices=0;
   for(;result.rounds<1000;++result.rounds) {
     int active=0;
     for(int i=0;i<particles;++i) {
@@ -202,6 +261,47 @@ inline DeviceStreamlines trace_tgv_device(
     }
     require_device_only(trace_velocity); require_device_only(color_velocity);
     nvtxRangePop();
+    if(resident) {
+      nvtxRangePushA("ASTR_IS8_RESIDENT_TRACE_PACK");
+      viskores::cont::ArrayHandle<viskores::Id> bad;
+      invoke(CheckTraceCount(chunk+1),counts,bad);
+      synchronize_device_stage("CheckTraceCount");
+      if(viskores::cont::Algorithm::Reduce(viskores::cont::DeviceAdapterTagCuda{},bad,viskores::Id(0)))
+        throw std::runtime_error("Invalid resident trajectory count");
+      viskores::cont::ArrayHandle<viskores::Int32> offsets;
+      const auto total=viskores::cont::Algorithm::ScanExclusive(viskores::cont::DeviceAdapterTagCuda{},counts,offsets);
+      if(total!=compact.GetNumberOfValues()) throw std::runtime_error("Resident trajectory compaction mismatch");
+      ResidentTraceChunk data;
+      data.accepted=compact;
+      data.velocity=sample_trace_vector?trace_vectors:colors;
+      invoke(PackResidentTrace{},compact,data.velocity,sample_trace_vector?trace_status:sample_status,
+        data.xyz,data.u,data.q,bad);
+      synchronize_device_stage("PackResidentTrace");
+      if(viskores::cont::Algorithm::Reduce(viskores::cont::DeviceAdapterTagCuda{},bad,viskores::Id(0)))
+        throw std::runtime_error("Nonfinite or out-of-halo resident trajectory");
+      viskores::cont::ArrayHandle<viskores::Id> raw_indices,raw_particle;
+      viskores::cont::ArrayHandle<viskores::UInt8> valid_indices;
+      invoke(ResidentLineIndex(chunk,resident_points),viskores::cont::ArrayHandleIndex(particles*chunk*2),
+        counts,offsets,raw_indices,valid_indices);
+      synchronize_device_stage("ResidentLineIndex");
+      invoke(TraceParticleId(chunk+1),viskores::cont::ArrayHandleIndex(particles*(chunk+1)),raw_particle);
+      synchronize_device_stage("TraceParticleId");
+      viskores::cont::Algorithm::CopyIf(viskores::cont::DeviceAdapterTagCuda{},raw_indices,valid_indices,data.indices);
+      synchronize_device_stage("CompactResidentLineIndex");
+      viskores::cont::Algorithm::CopyIf(viskores::cont::DeviceAdapterTagCuda{},raw_particle,valid,data.particle);
+      synchronize_device_stage("CompactResidentParticleId");
+      require_device_only(data.xyz);require_device_only(data.velocity);require_device_only(data.indices);
+      resident_points+=data.xyz.GetNumberOfValues();resident_indices+=data.indices.GetNumberOfValues();
+      result.geometry_bytes+=data.xyz.GetNumberOfValues()*(sizeof(TraceVertex)+sizeof(viskores::Vec3f)*2+
+        2*sizeof(double)+sizeof(viskores::Id))+data.indices.GetNumberOfValues()*sizeof(viskores::Id);
+      chunks.push_back(std::move(data));
+      nvtxRangePop();
+      nvtxRangePushA("ASTR_IS8_TRACE_CONTROL_READ");
+      const auto states=output.ReadPortal();
+      for(int i=0;i<particles;++i) for(int d=0;d<8;++d) wire[i*8+d]=states.Get(i)[d];
+      result.control_read_bytes+=particles*sizeof(State);
+      nvtxRangePop();
+    } else {
     nvtxRangePushA("ASTR_IS8_COMPACT_TRACE_READ");
     const auto sizes=counts.ReadPortal(); const auto states=output.ReadPortal();
     const auto points=compact.ReadPortal(); const auto vectors=colors.ReadPortal();
@@ -239,6 +339,7 @@ inline DeviceStreamlines trace_tgv_device(
     }
     if(position!=compact.GetNumberOfValues()) throw std::runtime_error("Trajectory compaction mismatch");
     nvtxRangePop();
+    }
     trace_mpi(MPI_Allgather(wire.data(),particles*8,MPI_DOUBLE,incoming.data(),particles*8,MPI_DOUBLE,comm));
     for(int i=0;i<particles;++i) {
       const bool running=state[i][7]==TraceActive || state[i][7]==TraceTransfer;
@@ -257,6 +358,32 @@ inline DeviceStreamlines trace_tgv_device(
     }
   }
   if(result.rounds==1000) throw std::runtime_error("Device trajectory collective round limit exceeded");
+  if(resident && resident_points) {
+    nvtxRangePushA("ASTR_IS8_RESIDENT_TRACE_CONCATENATE");
+    ResidentTraceChunk all;
+    all.xyz.Allocate(resident_points);all.velocity.Allocate(resident_points);
+    all.accepted.Allocate(resident_points);all.u.Allocate(resident_points);all.q.Allocate(resident_points);
+    all.particle.Allocate(resident_points);all.indices.Allocate(resident_indices);
+    viskores::Id point_base=0,index_base=0;
+    for(const auto& data:chunks) {
+      append_device_chunk(data.xyz,all.xyz,point_base);append_device_chunk(data.velocity,all.velocity,point_base);
+      append_device_chunk(data.accepted,all.accepted,point_base);append_device_chunk(data.u,all.u,point_base);
+      append_device_chunk(data.q,all.q,point_base);append_device_chunk(data.particle,all.particle,point_base);
+      append_device_chunk(data.indices,all.indices,index_base);
+      point_base+=data.xyz.GetNumberOfValues();index_base+=data.indices.GetNumberOfValues();
+    }
+    synchronize_device_stage("ConcatenateResidentTrace");
+    viskores::cont::CellSetSingleType<> cells;
+    cells.Fill(resident_points,viskores::CELL_SHAPE_LINE,2,all.indices);
+    result.resident_geometry.SetCellSet(cells);
+    result.resident_geometry.AddCoordinateSystem(viskores::cont::CoordinateSystem("coords",all.xyz));
+    result.resident_geometry.AddPointField("velocity",all.velocity);
+    result.resident_geometry.AddPointField("u",all.u);result.resident_geometry.AddPointField("Q_rs",all.q);
+    result.resident_geometry.AddPointField("particle",all.particle);
+    result.resident_geometry.AddPointField("accepted",all.accepted);
+    require_device_only(all.xyz);require_device_only(all.velocity);require_device_only(all.indices);
+    nvtxRangePop();
+  }
   return result;
 }
 } // namespace astr_insitu

@@ -202,3 +202,114 @@ streamtracer source are test-only requirements, not native-runtime requirements.
 Freeze generated CUDA/MPI/FP64 macros, library versions/hashes, actual root
 link command and GPU mapping alongside validation results. A cache flag alone
 does not verify device execution.
+
+## IS8-R CUDA Rendering Candidate
+
+`paraview-6.1.1-device-rendering.patch` is an unadmitted candidate for the
+separate ParaView 6.1.1 source, not the preserved IS8-A installation. It adds
+opt-in `ASTR_VTK_DEVICE_RENDERING`, a reused CUDA/GL buffer copy, and a bounded
+device-array path inside the standard vtkOpenGLPolyDataMapper. This is not the
+dedicated mapper backend. It currently requires contiguous FP32 points,
+device UInt32 homogeneous triangle or line indices and device UInt8 RGBA values named
+`_astr_display_rgba`; unsupported layouts/render modes throw.
+
+Apply without fuzz to the separate source, using a dry-run first:
+
+```bash
+patch --dry-run --fuzz=0 -p1 -d "$PV_DEVICE_SOURCE" -i "$ASTR_ROOT/scripts/insitu/patches/paraview-6.1.1-device-rendering.patch"
+patch --fuzz=0 -p1 -d "$PV_DEVICE_SOURCE" -i "$ASTR_ROOT/scripts/insitu/patches/paraview-6.1.1-device-rendering.patch"
+patch --dry-run --fuzz=0 -p1 -d "$PV_DEVICE_SOURCE" -i "$ASTR_ROOT/scripts/insitu/patches/paraview-6.1.1-device-core-dependencies.patch"
+patch --fuzz=0 -p1 -d "$PV_DEVICE_SOURCE" -i "$ASTR_ROOT/scripts/insitu/patches/paraview-6.1.1-device-core-dependencies.patch"
+PV_DEVICE_RENDERING=ON PV_DEVICE_TARGETS='RenderingOpenGL2 AcceleratorsVTKmCore AcceleratorsVTKmDataModel IOCatalystConduit' \
+  PV_DEVICE_INSTALL=0 BUILD_JOBS=2 bash scripts/insitu/build_device_paraview.sh
+```
+
+The script defaults `PV_DEVICE_RENDERING=OFF`; existing compute-only recipes
+do not implicitly enable this candidate. Never mix the candidate VTK core
+with the older Viskores ABI. Root CMake's separate default-off
+`ASTR_BUILD_INSITU_RENDER_PROBES` exposes `insitu_standard_device_probe` only
+with CUDA, Catalyst and the existing device probes enabled. Point `VTK_DIR`
+and `Viskores_DIR` to the same private build and use its real loaded libraries.
+The probe uses ordinary vtkmDataArray/vtkPolyData/vtkActor and the standard
+mapper, plus analytic pixel checks. It is not a Catalyst admission receipt.
+Launch this FP64/MPI probe with the matching MPI runner, even at NP=1. The
+core-dependencies patch keeps control/worklet libraries on the VTK array
+interface and links the filter umbrella only to the filter module (Fides
+retains its clean-grid dependency). It avoids building unrelated CUDA
+filters for an array-only target; the option-off dependency graph is preserved.
+
+`ASTR_VTK_STRICT_DEVICE_ACCESS=1` is an internal dependency guard: CPU value,
+tuple and geometry access throws; contiguous device access borrows a read
+pointer, not a write pointer that could invalidate the producer's read tokens.
+It is not a user-facing solver option or evidence that a ParaView filter runs
+on CUDA. Unsupported filters must still be excluded or rejected before use.
+The strict component uses device allocations rather than managed-memory
+fallback. Actual copies, geometry residency, resource reuse and release still
+require trace/safety verification. The probe alone is not admission; the later
+R0-R11 native gates below now provide the bounded independent evidence.
+
+The R5 common owner retains both FP64 geometry and GPU-generated FP32 display
+arrays for slice triangles and accepted trajectory line cells. Native strict
+routes use `device_render_pipeline.py`; they never call a geometry writer or
+export the final full 3-D statistics array. Statistics accumulation and explicit
+native checkpoint state remain available. The compatible route keeps the old
+geometry/statistics exports. Native R6-R11 numerical, safety, transfer,
+continuation, resource and selection gates have since completed, as recorded below.
+
+`paraview-6.1.1-pixel-audit.patch` is an optional diagnostic on that same source.
+It wraps actual OpenGL render-window and IceT color/depth reads, leaves their
+arguments unchanged and records sizes/formats/pack destinations only when
+`ASTR_VTK_PIXEL_AUDIT=1`. It is not needed for ordinary rendering. Apply with
+the same dry-run/`--fuzz=0` discipline, then rebuild `RenderingOpenGL2` and
+`RemotingViews`. Native CUDA/NVTX/MPI traces do not measure GL pixel readback;
+the audit supplies a separate pixel ledger and must not be called a zero-D2H
+proof. Unknown formats or PBO destinations need additional attribution before
+acceptance. Do not enable diagnostic output during matched performance runs.
+
+The strict homogeneous Conduit converter retains device UInt32 connectivity
+with implicit fixed-stride cell offsets. It does not convert to a host Id64
+vector or use the general Viskores-to-VTK cell conversion. Only matching
+triangle/3 or line/2 arities are accepted. The standard mapper retains its
+attribute VBOs when each frame supplies a new external array wrapper; GPU
+capacity growth re-registers the affected buffer, not every frame by default.
+
+For the actual private Catalyst Python runtime, build the wrappers explicitly:
+
+```bash
+PV_DEVICE_RENDERING=ON \
+  PV_DEVICE_TARGETS='catalyst-paraview pvpython paraview_all_python_modules' \
+  PV_DEVICE_INSTALL=0 BUILD_JOBS=8 bash scripts/insitu/build_device_paraview.sh
+"$PV_DEVICE_BUILD/bin/pvpython" --no-mpi --force-offscreen-rendering \
+  -c 'from paraview import simple; print(simple.GetParaViewVersion())'
+```
+
+`pvpython` alone does not build the Python wrappers. Do not instantiate a raw
+`vtkPVRenderView` without an active ParaView session as an import test. The
+partial build is a build-tree runtime, not a complete installable prefix;
+global `all`/install additionally requests unrelated Viskores filters. The
+array-only helper deliberately sets `PARAVIEW_USE_VISKORES=OFF` while enabling
+CUDA Core/DataModel modules explicitly. The dependency patch also preserves
+the CUDA compiler's user flags before `MODIFY_CUDA_FLAGS` appends its options,
+including any separately generated glibc compatibility include overlay.
+
+Root CMake's default-off `ASTR_WITH_INSITU_DEVICE_RENDERING` requires
+`ASTR_WITH_INSITU_DEVICE`. Select `ParaView_DIR`, `VTK_DIR` and `Viskores_DIR`
+from this same private build. It links the narrow control bridge to
+ParaView's view/preset module and exports a local actor lookup for the direct
+pipeline. CUDA/GL details remain in `src_gpu/`; no device handles enter Fortran.
+Both resident entries pass the bounded 32-cubed six-product numerical, display,
+memory, transfer and same-entry exact-continuation gates. Their script is
+`../device_render_pipeline.py`; compatible uses the existing `tgv_pipeline.py`.
+The 256-cubed Q=0/instantaneous-streamline preflight and four-entry five-round
+100-step comparison also pass. R11 configuration, launcher, default/exact
+continuation and unavailable-entry refusal gates pass. Enabled device rendering
+now defaults to standard-device; direct and compatible are explicit choices.
+Host processing remains compatible, and optional dependency switches and
+in-situ work remain default OFF. Admission is still only the approved TGV scope.
+Latest receipts and the retained benchmark binary identity are in
+`documents/ASTR_INSITU_IS8_RESIDENT_ACCEPTANCE.md`.
+
+Native Python plus Nsight OpenGL injection failed in the tool's unload path;
+successful CUDA/NVTX/MPI traces and the separately documented optional pixel
+observer must not be described as a successful native Nsight OpenGL trace.
+Do not patch the preserved baseline installation.

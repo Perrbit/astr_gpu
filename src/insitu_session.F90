@@ -80,6 +80,10 @@ module insitu_session
 #endif
 #ifdef ASTR_WITH_CATALYST
   interface
+    integer(c_int) function mesh_pipeline_available(pipeline) bind(C,name='astr_insitu_mesh_pipeline_available')
+      import c_int,c_char
+      character(c_char),intent(in) :: pipeline(*)
+    end function
     integer(c_int) function mesh_configure(output,comm) bind(C,name='astr_insitu_mesh_configure')
       import c_int,c_char
       character(c_char),intent(in) :: output(*)
@@ -171,14 +175,14 @@ contains
     integer(int64) :: flags(3),saved_flags(3),signature(4),transport_signature(4),step,interval,origin_step
     real(real64) :: clock(3),period,origin_time
     character(8) :: magic
-    character(16) :: mode,saved_processing,saved_transport
+    character(16) :: mode,saved_processing,saved_transport,saved_pipeline
     type(sample_schedule) :: restored
     logical :: rendering,same,transport_only,ok
     integer :: unit,status,closed
     call require_sample(native_output,'native render provider needs new output')
     rendering=formal.and.enabled.and.options%render
     flags=0; signature=0; mode=''; interval=0; period=0; origin_step=0; origin_time=0
-    magic='ASTRIR01'; saved_processing='host'; saved_transport=''
+    magic='ASTRIR01'; saved_processing='host'; saved_transport=''; saved_pipeline='compatible'
     call require_sample(budget>=512,'native render scalar state budget')
     if(rendering) then
       call require_sample(budget>=1024,'native render control state budget')
@@ -187,7 +191,7 @@ contains
       signature=render_signature
       origin_step=render_origin_step; origin_time=render_origin_time
       call configure_render_schedule()
-      if(options%processing_backend=='device') magic='ASTRIR02'
+      magic='ASTRIR03'
     endif
     if(writing) then
       status=0; closed=0
@@ -197,8 +201,8 @@ contains
         if(status==0) then
           write(unit,iostat=status) magic,identity%step,[identity%time,identity%dt_used,identity%dt_next], &
             flags,mode,interval,period,origin_step,origin_time,signature
-          if(status==0.and.magic=='ASTRIR02') write(unit,iostat=status) &
-            options%processing_backend,options%postprocess_transport
+          if(status==0.and.magic=='ASTRIR03') write(unit,iostat=status) &
+            options%processing_backend,options%postprocess_transport,options%rendering_pipeline
           if(status==0.and.rendering) then
             call write_schedule_state(unit,render_schedule,'native-render',identity%step,identity%time,ok)
             if(.not.ok) status=1
@@ -214,15 +218,24 @@ contains
     call require_sample(status==0,'missing native render control')
     read(unit,iostat=status) magic,step,clock,saved_flags,mode,interval,period,origin_step,origin_time,signature
     call require_sample(status==0,'cannot read native render control')
-    call require_sample((magic=='ASTRIR01'.or.magic=='ASTRIR02').and.step==identity%step.and. &
+    call require_sample((magic=='ASTRIR01'.or.magic=='ASTRIR02'.or.magic=='ASTRIR03').and.step==identity%step.and. &
       all(clock==[identity%time,identity%dt_used,identity%dt_next]),'native render clock/version mismatch')
-    if(magic=='ASTRIR02') then
+    call require_sample(all(saved_flags>=0).and.all(saved_flags<=1),'invalid native render flags')
+    if(magic=='ASTRIR02'.or.magic=='ASTRIR03') then
       read(unit,iostat=status) saved_processing,saved_transport
       call require_sample(status==0,'cannot read device render identity')
-      call require_sample(saved_flags(1)==1.and.saved_processing=='device'.and. &
-        (saved_transport=='pinned'.or.saved_transport=='device-aware'),'invalid device render identity')
+      call require_sample(saved_flags(1)==1.and. &
+        ((saved_processing=='device'.and.(saved_transport=='pinned'.or.saved_transport=='device-aware')).or. &
+         (magic=='ASTRIR03'.and.saved_processing=='host'.and.saved_transport=='')), &
+        'invalid device render identity')
+      if(magic=='ASTRIR03') then
+        read(unit,iostat=status) saved_pipeline
+        call require_sample(status==0,'cannot read rendering pipeline identity')
+        call require_sample(saved_pipeline=='compatible'.or. &
+          (saved_processing=='device'.and.(saved_pipeline=='standard-device'.or.saved_pipeline=='direct-device')), &
+          'invalid rendering pipeline identity')
+      endif
     endif
-    call require_sample(all(saved_flags>=0).and.all(saved_flags<=1),'invalid native render flags')
     output_saved_rendering=saved_flags(1)==1
     call require_sample(ieee_is_finite(period).and.ieee_is_finite(origin_time),'nonfinite native render configuration')
     if(saved_flags(1)==1) then
@@ -239,9 +252,11 @@ contains
     close(unit,iostat=closed)
     call require_sample(closed==0,'cannot close native render control')
     same=all(saved_flags==flags)
+    if(rendering.and.output_saved_rendering) call require_sample(saved_pipeline==options%rendering_pipeline, &
+      'rendering pipeline restart mismatch; cross-pipeline restore is unsupported')
     if(rendering) same=same.and.mode==options%schedule_mode.and.interval==options%step_interval.and. &
       period==options%time_interval.and.all(signature==render_signature).and. &
-      saved_processing==options%processing_backend
+      saved_processing==options%processing_backend.and.saved_pipeline==options%rendering_pipeline
     transport_only=.false.
     if(rendering.and.saved_processing=='device'.and.options%processing_backend=='device') then
       transport_signature=signature
@@ -249,7 +264,8 @@ contains
         postprocess_transport_marker(options%postprocess_transport))
       transport_only=all(saved_flags==flags).and.mode==options%schedule_mode.and. &
         interval==options%step_interval.and.period==options%time_interval.and. &
-        all(transport_signature==render_signature).and.saved_transport/=options%postprocess_transport
+        all(transport_signature==render_signature).and.saved_transport/=options%postprocess_transport.and. &
+        saved_pipeline==options%rendering_pipeline
     endif
     call require_sample(same.or.override,'native render configuration differs; select explicit override')
     if(rendering) then
@@ -494,6 +510,10 @@ contains
           max(ia,ja,ka)<=32.and.jm>=2.and.mpisize<=2.and.trim(difschm)=='643e', &
           'AIR5 wall candidate requires noncatalytic Cartesian HBL <=32 NP=1/2')
         if(options%render) then
+#ifdef ASTR_WITH_CATALYST
+          call require_sample(mesh_pipeline_available(trim(options%rendering_pipeline)//c_null_char)==1, &
+            'selected rendering pipeline is not built/admitted; no compatible fallback')
+#endif
           if(options%derivative_backend=='gpu') call require_sample(use_gpu.and. &
             (mpisize<=2.or.(.not.lreadgrid.and.mpisize==4.and.all([isize,jsize,ksize]==[2,2,1]))).and. &
             (all([ia,ja,ka]==32).or.(device_demo.and.all([ia,ja,ka]==256))).and. &
@@ -544,6 +564,10 @@ contains
             render_signature(2)=ieor(render_signature(2),int(z'44455650524F4453',int64))
             render_signature(3)=ieor(render_signature(3),postprocess_transport_marker(options%postprocess_transport))
           endif
+          if(options%rendering_pipeline=='standard-device') render_signature(2)= &
+            ieor(render_signature(2),int(z'5354414E44415244',int64))
+          if(options%rendering_pipeline=='direct-device') render_signature(2)= &
+            ieor(render_signature(2),int(z'4449524543545244',int64))
           if(selected_product_profile()>0) render_signature(4)= &
             ieor(render_signature(4),int(selected_product_profile(),int64))
           if(options%wall_mean_render) render_signature(4)=ieor(render_signature(4),int(z'57414C4C4D45414E',int64))
@@ -1244,6 +1268,13 @@ contains
     real(real64) :: cell_volume,volume,mean(3),variance(3)
     integer :: status,extent(3)
     logical :: ok
+    if(options%processing_backend=='device'.and.options%rendering_pipeline/='compatible') then
+#ifdef ASTR_WITH_CATALYST
+      status=resource_check('statistics_retained_device'//c_null_char)
+      call require_sample(status==0,'cannot check resident statistics resources')
+#endif
+      return
+    endif
     call read_velocity_statistics(regional_statistics,regional,ok)
     if(.not.ok) return
     allocate(final_statistics(0:im,0:jm,0:km,41),stat=status)
@@ -1298,7 +1329,8 @@ contains
         call require_sample(status==0,'cannot configure compact device renderer')
         native_bridge_configured=.true.
       endif
-      call render_device_sample_gpu(trim(options%postprocess_transport),trim(options%implementation_path), &
+      call render_device_sample_gpu(trim(options%postprocess_transport),trim(options%rendering_pipeline), &
+        trim(options%implementation_path), &
         trim(options%pipeline_file),trim(options%products),step,t,statistics_window,statistics_enabled, &
         options%host_budget_bytes,options%device_budget_bytes,options%device_reserve_bytes)
 #else

@@ -162,6 +162,54 @@ DEVICE = VALID.replace('step_interval=2',
 
 
 @pytest.mark.skipif(not PROBE, reason='Set ASTR_INSITU_CONFIG_PROBE')
+@pytest.mark.parametrize('content,accepted,pipeline', [
+    (VALID, True, 'compatible'),
+    (DEVICE, True, 'standard-device'),
+    (DEVICE.replace('step_interval=2', "step_interval=2,rendering_pipeline='compatible'"), True, 'compatible'),
+    (VALID.replace('step_interval=2', "step_interval=2,rendering_pipeline='compatible'"), True, 'compatible'),
+    (VALID.replace('step_interval=2', "step_interval=2,rendering_pipeline='standard-device'"), False, None),
+    (DEVICE.replace('step_interval=2', "step_interval=2,rendering_pipeline='standard-device'"), True, 'standard-device'),
+    (DEVICE.replace('step_interval=2', "step_interval=2,rendering_pipeline='direct-device'"), True, 'direct-device'),
+    (DEVICE.replace('step_interval=2', "step_interval=2,rendering_pipeline='unknown'"), False, None),
+    ("&insitu_run rendering_pipeline='standard-device' /", False, None),
+    ("&insitu_run /", True, 'compatible'),
+    (VALID.replace('render=t','render=f'), True, 'compatible'),
+])
+def test_rendering_pipeline_options(tmp_path, content, accepted, pipeline):
+    path = tmp_path / 'insitu.nml'
+    path.write_text(content)
+    result = subprocess.run([str(Path(PROBE).resolve()), str(path)],
+                            capture_output=True, text=True, timeout=10)
+    assert (result.returncode == 0) == accepted, result.stdout + result.stderr
+    if accepted:
+        assert 'rendering_pipeline=' + pipeline in result.stdout
+
+
+@pytest.mark.skipif(not COLLECTIVE or not MPIEXEC, reason='Set collective probe and MPI launcher')
+@pytest.mark.parametrize('other', ['standard-device', 'direct-device'])
+def test_collective_rendering_pipeline(tmp_path, other):
+    first = DEVICE.replace('step_interval=2', "step_interval=2,rendering_pipeline='standard-device'")
+    (tmp_path / 'rank0.nml').write_text(first)
+    (tmp_path / 'rank1.nml').write_text(first.replace('standard-device', other))
+    result = subprocess.run([MPIEXEC, '-np', '2', str(Path(COLLECTIVE).resolve()),
+                             str(tmp_path / 'rank')], capture_output=True, text=True, timeout=30)
+    output = result.stdout + result.stderr
+    assert (result.returncode == 0) == (other == 'standard-device'), output
+    assert output.count('PASS collective rank ' if other == 'standard-device' else 'REJECT rank ') == 2, output
+
+
+@pytest.mark.skipif(not COLLECTIVE or not MPIEXEC,reason='Set collective probe and MPI launcher')
+def test_collective_default_and_explicit_standard_are_identical(tmp_path):
+    (tmp_path/'rank0.nml').write_text(DEVICE)
+    (tmp_path/'rank1.nml').write_text(DEVICE.replace('step_interval=2',
+        "step_interval=2,rendering_pipeline='standard-device'"))
+    result=subprocess.run([MPIEXEC,'-np','2',str(Path(COLLECTIVE).resolve()),str(tmp_path/'rank')],
+        capture_output=True,text=True,timeout=30)
+    output=result.stdout+result.stderr
+    assert result.returncode==0 and output.count('PASS collective rank ')==2,output
+
+
+@pytest.mark.skipif(not PROBE, reason='Set ASTR_INSITU_CONFIG_PROBE')
 @pytest.mark.parametrize('content,accepted', [
     (DEVICE, True),
     (DEVICE.replace("'pinned'", "'device-aware'"), True),

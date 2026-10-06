@@ -1,0 +1,484 @@
+--- a/VTK/Rendering/OpenGL2/CMakeLists.txt
++++ b/VTK/Rendering/OpenGL2/CMakeLists.txt
+@@ -437,6 +437,13 @@
+   NOWRAP_HEADERS ${nowrap_headers}
+   PRIVATE_HEADERS ${private_headers} ${vtk_object_factory_header})
+ 
++option(ASTR_VTK_DEVICE_RENDERING "Enable bounded CUDA-resident polydata rendering" OFF)
++if(ASTR_VTK_DEVICE_RENDERING)
++  find_package(CUDAToolkit REQUIRED)
++  vtk_module_link(VTK::RenderingOpenGL2 PRIVATE CUDA::cudart)
++  vtk_module_definitions(VTK::RenderingOpenGL2 PRIVATE ASTR_VTK_DEVICE_RENDERING)
++endif()
++
+ set_property(SOURCE vtkEGLDefaultConfig.cxx vtkEGLWaylandConfig.cxx APPEND
+   PROPERTY
+     COMPILE_DEFINITIONS "VTK_OPENGL_USE_GLES=$<BOOL:${VTK_OPENGL_USE_GLES}>")
+--- a/VTK/Rendering/OpenGL2/vtkOpenGLBufferObject.h
++++ b/VTK/Rendering/OpenGL2/vtkOpenGLBufferObject.h
+@@ -93,6 +93,9 @@
+    */
+   bool Allocate(size_t size, ObjectType type, ObjectUsage usage);
+ 
++  /** CUDA-to-OpenGL copy. No host array is created; unavailable builds fail. */
++  bool UploadDevice(const void* pointer, size_t bytes, ObjectType type);
++
+   /**
+    * Get size of the buffer in bytes.
+    */
+--- a/VTK/Rendering/OpenGL2/vtkOpenGLBufferObject.cxx
++++ b/VTK/Rendering/OpenGL2/vtkOpenGLBufferObject.cxx
+@@ -4,6 +4,10 @@
+ #include "vtkObjectFactory.h"
+ 
+ #include "vtk_glad.h"
++#ifdef ASTR_VTK_DEVICE_RENDERING
++#include <cuda_gl_interop.h>
++#include <cuda_runtime.h>
++#endif
+ 
+ VTK_ABI_NAMESPACE_BEGIN
+ vtkStandardNewMacro(vtkOpenGLBufferObject);
+@@ -67,6 +71,9 @@
+   GLenum Usage;
+   GLuint Handle;
+   size_t Size;
++#ifdef ASTR_VTK_DEVICE_RENDERING
++  cudaGraphicsResource* CudaResource = nullptr;
++#endif
+ };
+ 
+ //------------------------------------------------------------------------------
+@@ -80,6 +87,13 @@
+ //------------------------------------------------------------------------------
+ vtkOpenGLBufferObject::~vtkOpenGLBufferObject()
+ {
++#ifdef ASTR_VTK_DEVICE_RENDERING
++  if (this->Internal->CudaResource)
++  {
++    cudaGraphicsUnregisterResource(this->Internal->CudaResource);
++    this->Internal->CudaResource = nullptr;
++  }
++#endif
+   if (this->Internal->Handle != 0)
+   {
+     glDeleteBuffers(1, &this->Internal->Handle);
+@@ -90,6 +104,19 @@
+ //------------------------------------------------------------------------------
+ void vtkOpenGLBufferObject::ReleaseGraphicsResources()
+ {
++#ifdef ASTR_VTK_DEVICE_RENDERING
++  if (this->Internal->CudaResource)
++  {
++    auto status = cudaGraphicsUnregisterResource(this->Internal->CudaResource);
++    if (status != cudaSuccess)
++    {
++      this->Error = cudaGetErrorString(status);
++      vtkErrorMacro(<< this->Error);
++      return;
++    }
++    this->Internal->CudaResource = nullptr;
++  }
++#endif
+   if (this->Internal->Handle != 0)
+   {
+     glBindBuffer(this->Internal->Type, 0);
+@@ -163,6 +190,18 @@
+ //------------------------------------------------------------------------------
+ bool vtkOpenGLBufferObject::Allocate(size_t size, ObjectType objectType, ObjectUsage objectUsage)
+ {
++#ifdef ASTR_VTK_DEVICE_RENDERING
++  if (this->Internal->CudaResource)
++  {
++    auto status = cudaGraphicsUnregisterResource(this->Internal->CudaResource);
++    if (status != cudaSuccess)
++    {
++      this->Error = cudaGetErrorString(status);
++      return false;
++    }
++    this->Internal->CudaResource = nullptr;
++  }
++#endif
+   const bool generated = this->GenerateBuffer(objectType);
+   if (!generated)
+   {
+@@ -179,6 +218,69 @@
+   return true;
+ }
+ 
++bool vtkOpenGLBufferObject::UploadDevice(const void* pointer, size_t bytes, ObjectType type)
++{
++#ifdef ASTR_VTK_DEVICE_RENDERING
++  cudaPointerAttributes attributes{};
++  int device = -1;
++  auto status = cudaPointerGetAttributes(&attributes, pointer);
++  if (!pointer || !bytes || status != cudaSuccess || cudaGetDevice(&device) != cudaSuccess ||
++    attributes.type != cudaMemoryTypeDevice || attributes.device != device)
++  {
++    this->Error = "CUDA display buffer must reside on the current device";
++    return false;
++  }
++  if (!this->Internal->Handle || this->GetType() != type || this->Internal->Size < bytes)
++  {
++    if (!this->Allocate(bytes, type, DynamicDraw))
++    {
++      return false;
++    }
++  }
++  if (!this->Internal->CudaResource)
++  {
++    status = cudaGraphicsGLRegisterBuffer(&this->Internal->CudaResource,
++      this->Internal->Handle, cudaGraphicsRegisterFlagsWriteDiscard);
++    if (status != cudaSuccess)
++    {
++      this->Error = cudaGetErrorString(status);
++      return false;
++    }
++  }
++  status = cudaGraphicsMapResources(1, &this->Internal->CudaResource);
++  if (status != cudaSuccess)
++  {
++    this->Error = cudaGetErrorString(status);
++    return false;
++  }
++  void* destination = nullptr;
++  size_t capacity = 0;
++  status = cudaGraphicsResourceGetMappedPointer(&destination, &capacity, this->Internal->CudaResource);
++  if (status == cudaSuccess && capacity >= bytes && destination)
++  {
++    status = cudaMemcpy(destination, pointer, bytes, cudaMemcpyDeviceToDevice);
++  }
++  else if (status == cudaSuccess)
++  {
++    status = cudaErrorInvalidValue;
++  }
++  const auto unmap = cudaGraphicsUnmapResources(1, &this->Internal->CudaResource);
++  if (status != cudaSuccess || unmap != cudaSuccess)
++  {
++    this->Error = cudaGetErrorString(status != cudaSuccess ? status : unmap);
++    return false;
++  }
++  this->Dirty = false;
++  return true;
++#else
++  (void)pointer;
++  (void)bytes;
++  (void)type;
++  this->Error = "CUDA device rendering was not built";
++  return false;
++#endif
++}
++
+ size_t vtkOpenGLBufferObject::GetSize()
+ {
+   return this->Internal->Size;
+--- a/VTK/Rendering/OpenGL2/vtkOpenGLVertexBufferObject.cxx
++++ b/VTK/Rendering/OpenGL2/vtkOpenGLVertexBufferObject.cxx
+@@ -12,6 +12,7 @@
+ #include "vtkProp3D.h"
+ 
+ #include "vtk_glad.h"
++#include <stdexcept>
+ 
+ VTK_ABI_NAMESPACE_BEGIN
+ vtkStandardNewMacro(vtkOpenGLVertexBufferObject);
+@@ -535,6 +536,27 @@
+     (this->DataTypeSize > 0) ? ((4 - (bytesNeeded % 4)) % 4) / this->DataTypeSize : 0;
+   this->Stride = (this->NumberOfComponents + extraComponents) * this->DataTypeSize;
+ 
++#ifdef ASTR_VTK_DEVICE_RENDERING
++  if (array->GetMemorySpace() != vtkDataArray::HostMemory)
++  {
++    if (array->GetMemorySpace() != vtkDataArray::CudaDeviceMemory ||
++      this->DataType != array->GetDataType() || extraComponents != 0 ||
++      this->GetCoordShiftAndScaleEnabled())
++    {
++      throw std::runtime_error("Unsupported device VBO layout or coordinate transformation");
++    }
++    this->NumberOfTuples = array->GetNumberOfTuples();
++    this->PackedVBO.clear();
++    if (!this->UploadDevice(array->GetDeviceVoidPointer(0),
++      this->NumberOfTuples * this->Stride, vtkOpenGLBufferObject::ArrayBuffer))
++    {
++      throw std::runtime_error(this->GetError());
++    }
++    this->UploadTime.Modified();
++    return;
++  }
++
++#endif
+   // handle any shift scale calcs required before upload
+   this->UpdateShiftScale(array);
+ 
+--- a/VTK/Rendering/OpenGL2/vtkOpenGLPolyDataMapper.cxx
++++ b/VTK/Rendering/OpenGL2/vtkOpenGLPolyDataMapper.cxx
+@@ -65,7 +65,10 @@
+ #include "vtkPolyDataWideLineGS.h"
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <sstream>
++#include <limits>
++#include <stdexcept>
+ 
+ //------------------------------------------------------------------------------
+ VTK_ABI_NAMESPACE_BEGIN
+@@ -3731,6 +3734,27 @@
+     vtkMath::UninitializeBounds(this->Bounds);
+     return;
+   }
++#ifdef ASTR_VTK_DEVICE_RENDERING
++  if (this->GetInput()->GetNumberOfPoints() &&
++    this->GetInput()->GetPoints()->GetData()->GetMemorySpace() != vtkDataArray::HostMemory)
++  {
++    auto info = this->GetInput()->GetInformation();
++    if (!info->Has(vtkDataObject::BOUNDING_BOX()))
++    {
++      throw std::runtime_error("Device polydata requires reduced bounds metadata");
++    }
++    info->Get(vtkDataObject::BOUNDING_BOX(), this->Bounds);
++    for (int d = 0; d < 3; ++d)
++    {
++      if (!std::isfinite(this->Bounds[2*d]) || !std::isfinite(this->Bounds[2*d+1]) ||
++        this->Bounds[2*d] > this->Bounds[2*d+1])
++      {
++        throw std::runtime_error("Invalid reduced device polydata bounds");
++      }
++    }
++    return;
++  }
++#endif
+   this->GetInput()->GetCellsBounds(this->Bounds);
+ }
+ 
+@@ -3929,6 +3953,59 @@
+     return;
+   }
+ 
++#ifdef ASTR_VTK_DEVICE_RENDERING
++  auto positions = poly->GetPoints()->GetData();
++  if (positions->GetMemorySpace() != vtkDataArray::HostMemory)
++  {
++    auto colors = poly->GetPointData()->GetArray("_astr_display_rgba");
++    const bool lines = poly->GetNumberOfLines() != 0;
++    auto cells = lines ? poly->GetLines() : poly->GetPolys();
++    auto indices = cells->GetConnectivityArray();
++    const auto indexCount = cells->GetNumberOfCells() * (lines ? 2 : 3);
++    if (positions->GetMemorySpace() != vtkDataArray::CudaDeviceMemory ||
++      positions->GetDataType() != VTK_FLOAT || positions->GetNumberOfComponents() != 3 ||
++      !colors || colors->GetMemorySpace() != vtkDataArray::CudaDeviceMemory ||
++      colors->GetDataType() != VTK_UNSIGNED_CHAR || colors->GetNumberOfComponents() != 4 ||
++      colors->GetNumberOfTuples() != positions->GetNumberOfTuples() ||
++      !indices || indices->GetMemorySpace() != vtkDataArray::CudaDeviceMemory ||
++      indices->GetDataType() != VTK_UNSIGNED_INT || indices->GetNumberOfComponents() != 1 ||
++      indices->GetNumberOfValues() != indexCount || indexCount > std::numeric_limits<int>::max() ||
++      (lines && poly->GetNumberOfPolys()) || poly->GetNumberOfVerts() || poly->GetNumberOfStrips() ||
++      act->GetProperty()->GetRepresentation() != VTK_SURFACE || act->GetProperty()->GetEdgeVisibility() ||
++      ren->GetSelector() || this->GetNumberOfClippingPlanes() || !this->ExtraAttributes.empty())
++    {
++      throw std::runtime_error("Unsupported strict CUDA polydata rendering configuration");
++    }
++    auto window = vtkOpenGLRenderWindow::SafeDownCast(ren->GetRenderWindow());
++    auto cache = window->GetVBOCache();
++    this->HaveCellScalars = false;
++    this->HaveCellNormals = false;
++    this->VBOs->AppendDataArray("vertexMC", positions, VTK_FLOAT);
++    this->VBOs->GetVBO("vertexMC")->SetCoordShiftAndScaleMethod(
++      vtkOpenGLVertexBufferObject::DISABLE_SHIFT_SCALE);
++    this->VBOs->AppendDataArray("scalarColor", colors, VTK_UNSIGNED_CHAR);
++    for (const char* name : { "normalMC", "tcoord", "colorTCoord", "tangentMC" })
++    {
++      this->VBOs->CacheDataArray(name, nullptr, cache, VTK_FLOAT);
++    }
++    this->VBOs->BuildAllVBOs(ren);
++    for (int i = PrimitiveStart; i < PrimitiveEnd; ++i)
++    {
++      this->Primitives[i].IBO->IndexCount = 0;
++    }
++    const auto primitive = lines ? PrimitiveLines : PrimitiveTris;
++    if (indexCount && !this->Primitives[primitive].IBO->UploadDevice(
++      indices->GetDeviceVoidPointer(0), indexCount * sizeof(unsigned int),
++      vtkOpenGLBufferObject::ElementArrayBuffer))
++    {
++      throw std::runtime_error(this->Primitives[primitive].IBO->GetError());
++    }
++    this->Primitives[primitive].IBO->IndexCount = indexCount;
++    this->VBOBuildTime.Modified();
++    return;
++  }
++
++#endif
+   // For vertex coloring, this sets this->Colors as side effect.
+   // For texture map coloring, this sets ColorCoordinates
+   // and ColorTextureMap as a side effect.
+--- a/VTK/Accelerators/Vtkm/Core/vtkmlib/vtkmDataArray.hxx
++++ b/VTK/Accelerators/Vtkm/Core/vtkmlib/vtkmDataArray.hxx
+@@ -20,6 +20,9 @@
+ #include <viskores/cont/UnknownArrayHandle.h>
+ 
+ #include <cassert>
++#include <cstdlib>
++#include <cstring>
++#include <stdexcept>
+ 
+ #ifndef vtkmDataArray_h
+ #error "vtkmDataArray.hxx should only be included from vtkmDataArray.h."
+@@ -30,6 +33,20 @@
+ {
+ VTK_ABI_NAMESPACE_BEGIN
+ 
++inline bool StrictDeviceAccess()
++{
++  const char* value = std::getenv("ASTR_VTK_STRICT_DEVICE_ACCESS");
++  return value && std::strcmp(value, "1") == 0;
++}
++
++inline void RejectHostAccess()
++{
++  if (StrictDeviceAccess())
++  {
++    throw std::runtime_error("Strict device array forbids CPU value/geometry access");
++  }
++}
++
+ //-----------------------------------------------------------------------------
+ struct NotMaskValue
+ {
+@@ -607,6 +624,7 @@
+ template <typename T>
+ void* vtkmDataArray<T>::GetVoidPointer(vtkIdType valueIdx)
+ {
++  fromvtkm::RejectHostAccess();
+   viskores::cont::ArrayHandleRuntimeVec<T> array{ this->GetNumberOfComponents() };
+   if (this->GetVtkmUnknownArrayHandle().template CanConvert<decltype(array)>())
+   {
+@@ -636,6 +654,10 @@
+   }
+   else
+   {
++    if (fromvtkm::StrictDeviceAccess())
++    {
++      throw std::runtime_error("Strict device array requires contiguous device storage");
++    }
+     // Data does not appear to be in a basic layout. Copy array.
+     viskores::cont::ArrayCopy(this->GetVtkmUnknownArrayHandle(), array);
+     this->SetVtkmArrayHandle(array);
+@@ -647,6 +669,12 @@
+   viskores::cont::Token token;
+   if (tracker.CanRunOn(viskores::cont::DeviceAdapterTagCuda{}))
+   {
++    if (fromvtkm::StrictDeviceAccess())
++    {
++      const T* pointer = array.GetComponentsArray().GetReadPointer(
++        viskores::cont::DeviceAdapterTagCuda{}, token);
++      return const_cast<T*>(&pointer[valueIdx]);
++    }
+     T* pointer = array.GetComponentsArray().GetWritePointer(viskores::cont::DeviceAdapterTagCuda{});
+     return &(pointer[valueIdx]);
+   }
+@@ -671,6 +699,7 @@
+ template <typename T>
+ auto vtkmDataArray<T>::GetValue(vtkIdType valueIdx) const -> ValueType
+ {
++  fromvtkm::RejectHostAccess();
+   assert(this->Helper);
+   auto idx = valueIdx / this->GetNumberOfComponents();
+   auto comp = valueIdx % this->GetNumberOfComponents();
+@@ -680,6 +709,7 @@
+ template <typename T>
+ void vtkmDataArray<T>::SetValue(vtkIdType valueIdx, ValueType value)
+ {
++  fromvtkm::RejectHostAccess();
+   assert(this->Helper);
+ 
+   auto idx = valueIdx / this->GetNumberOfComponents();
+@@ -698,6 +728,7 @@
+ template <typename T>
+ void vtkmDataArray<T>::GetTypedTuple(vtkIdType tupleIdx, ValueType* tuple) const
+ {
++  fromvtkm::RejectHostAccess();
+   assert(this->Helper);
+   this->Helper->GetTuple(this, tupleIdx, tuple);
+ }
+@@ -705,6 +736,7 @@
+ template <typename T>
+ void vtkmDataArray<T>::SetTypedTuple(vtkIdType tupleIdx, const ValueType* tuple)
+ {
++  fromvtkm::RejectHostAccess();
+   assert(this->Helper);
+ 
+   try
+@@ -721,6 +753,7 @@
+ template <typename T>
+ auto vtkmDataArray<T>::GetTypedComponent(vtkIdType tupleIdx, int compIdx) const -> ValueType
+ {
++  fromvtkm::RejectHostAccess();
+   assert(this->Helper);
+   return this->Helper->GetComponent(this, tupleIdx, compIdx);
+ }
+@@ -728,6 +761,7 @@
+ template <typename T>
+ void vtkmDataArray<T>::SetTypedComponent(vtkIdType tupleIdx, int compIdx, ValueType value)
+ {
++  fromvtkm::RejectHostAccess();
+   assert(this->Helper);
+ 
+   try
+@@ -826,6 +860,25 @@
+ template <typename T>
+ vtkDataArray::MemorySpace vtkmDataArray<T>::GetMemorySpace()
+ {
++  if (fromvtkm::StrictDeviceAccess())
++  {
++    viskores::cont::ArrayHandleRuntimeVec<T> array{ this->GetNumberOfComponents() };
++    if (!this->GetVtkmUnknownArrayHandle().template CanConvert<decltype(array)>())
++    {
++      throw std::runtime_error("Strict device array requires contiguous device storage");
++    }
++    this->GetVtkmUnknownArrayHandle().AsArrayHandle(array);
++    const auto components = array.GetComponentsArray();
++    for (const auto& buffer : components.GetBuffers())
++    {
++      if (buffer.IsAllocatedOnHost() ||
++        !buffer.IsAllocatedOnDevice(viskores::cont::DeviceAdapterTagCuda{}))
++      {
++        throw std::runtime_error("Strict device array lost CUDA-only residency");
++      }
++    }
++    return vtkDataArray::CudaDeviceMemory;
++  }
+   auto pointer = this->GetDeviceVoidPointer(0);
+   if (pointer)
+   {
+--- a/VTK/IO/CatalystConduit/vtkConduitArrayUtilities.cxx
++++ b/VTK/IO/CatalystConduit/vtkConduitArrayUtilities.cxx
+@@ -55,6 +55,8 @@
+ #include <type_traits>
+ #include <typeinfo>
+ #include <vector>
++#include <cstdlib>
++#include <stdexcept>
+ 
+ namespace internals
+ {
+@@ -654,6 +656,20 @@
+   if (isDevicePointer)
+   {
+ #if VTK_MODULE_ENABLE_VTK_AcceleratorsVTKmDataModel
++    const char* strict = std::getenv("ASTR_VTK_STRICT_DEVICE_ACCESS");
++    if (strict && std::string(strict) == "1")
++    {
++      if (connectivity->GetMemorySpace() != vtkDataArray::CudaDeviceMemory ||
++        connectivity->GetDataType() != VTK_UNSIGNED_INT ||
++        connectivity->GetNumberOfComponents() != 1 ||
++        !((cellType == VTK_TRIANGLE && cellSize == 3) ||
++          (cellType == VTK_LINE && cellSize == 2)) ||
++        connectivity->GetNumberOfValues() % cellSize || !cellArray->SetData(cellSize, connectivity))
++      {
++        throw std::runtime_error("Unsupported strict Conduit device connectivity");
++      }
++      return cellArray;
++    }
+     if (!vtkConduitArrayUtilitiesDevice::IfVTKmConvertVTKMonoShapedCellArray(
+           numberOfPoints, cellType, cellSize, connectivity, cellArray))
+     {

@@ -20,7 +20,8 @@ python3 scripts/insitu/benchmark_tgv256_visualization.py \
   --library /path/to/paraview/lib/catalyst --transport device-aware
 ```
 
-The default sequence is a two-step check, visualization on for 100 completed
+The runner's legacy default sequence is a two-step check, compatible
+visualization on for 100 completed
 steps, then visualization off for 100 steps. Both start from the analytic
 initial condition, dt=1e-4, and use identical solver/output inputs. Every on
 step publishes two JPEG/EPS pairs; no initial/final extra frame, checkpoint,
@@ -30,7 +31,8 @@ enabled at the same frequency in both cases. Encoding movies is not performed.
 The report compares the maximum rank-local completed-window duration, excluding
 solver initialization but including first-frame lazy rendering setup and image
 publication. It separately records pure RK, per-stage and process-launch time.
-Nested stage times must not be added. This is one matched pair, not a repeated
+Nested stage times must not be added. Without an explicit matrix this is one
+matched pair, not a repeated
 performance distribution. Native phase resource checks remain enabled on the
 visualization side: at most 6 GiB additional device memory per physical GPU,
 16 GiB additional host memory per node, and at least 2 GiB free device memory.
@@ -39,6 +41,28 @@ Exceeding the budget aborts, without fallback or reduced image size.
 `--smoke-only` stops after the two-step check. `--skip-smoke` is only for the
 same executable and pipeline after that check has already passed. The output
 directory must be fresh; failures retain logs and a failed report.
+
+For the IS8-R four-entry five-round matrix, use a strict-render-enabled binary:
+
+```bash
+python3 scripts/insitu/benchmark_tgv256_visualization.py \
+  --output /new/empty/tgv256-five-rounds \
+  --executable /path/to/strict-device-enabled/astr \
+  --mpiexec /path/to/matching/mpiexec \
+  --library /path/to/private/paraview/lib/catalyst --transport device-aware \
+  --pipelines off compatible standard-device direct-device --repetitions 5
+```
+
+Each entry gets its own two-step preflight; the four-case order rotates each
+round. Formal runs have no profiler or external sampler. The report retains
+raw values, minimum/median/maximum/sample SD, separate pure-RK and nested stages,
+physical diagnostics, scripts/executable/dependencies and native phase resources.
+Preflight external observation is sampled every 20 ms, not an arbitrary OOM
+guarantee. Each directory is limited to 2 GiB and the complete group to 64 GiB;
+all requested images are retained. `--trace-pipelines` optionally adds separate
+two-step CUDA/NVTX/MPI captures, never profiles the formal timing runs. The
+completed local matrix and binary provenance are in
+`documents/ASTR_INSITU_IS8_RESIDENT_ACCEPTANCE.md`.
 
 Current IS8 device admission and independent launch examples are in the final
 section below. Unless marked as device processing, earlier derivative/field
@@ -61,7 +85,8 @@ unavailable per-process memory data is an error, not a zero-memory reading.
 The local approved ParaView 6.1.1
 precision patch and rebuild procedure are in [patches/README.md](patches/README.md).
 The ParaView Python runtime needs NumPy and Pillow. CMake installation places
-the four Python pipeline/helper files under `share/astr/insitu`.
+the four baseline Python pipeline/helper files under `share/astr/insitu`, plus
+`device_render_pipeline.py` when the optional strict rendering target is enabled.
 
 Set `ASTR_INSITU_CONFIG` to a namelist file. Without it, native in-situ work is
 disabled. The output directory must exist; normal ASTR startup creates `outdat`.
@@ -716,7 +741,7 @@ The native launcher uses phase-boundary resource checks. Independent external
 validation driver. Neither mechanism catches all transient third-party OOMs.
 No remote job or new production-scale benchmark was launched for IS7.
 
-## IS8 Bounded Device Products
+## IS8-A Compatible Device Products
 
 `ASTR_WITH_INSITU_DEVICE=ON` additionally requires root CUDA/Catalyst builds
 and the private FP64/CUDA/MPI Viskores components. It defaults OFF. Build steps,
@@ -728,7 +753,7 @@ Inside `&insitu_run`, explicitly add:
 
 ```fortran
  derivative_backend='gpu',processing_backend='device',products='all',
- postprocess_transport='pinned',
+ postprocess_transport='pinned',rendering_pipeline='compatible',
 ```
 
 Alternatively explicitly select `'device-aware'`. The selected transport is
@@ -753,7 +778,8 @@ For a fresh empty local test directory, with matching runtime libraries loaded:
 python3 scripts/insitu/start_tgv_acceptance.py --output /new/empty/device-case \
   --executable /path/to/device-enabled/astr --mpiexec /path/to/matching/mpiexec \
   --library /path/to/paraview/lib/catalyst --np 2 \
-  --processing-backend device --postprocess-transport pinned
+  --processing-backend device --postprocess-transport pinned \
+  --rendering-pipeline compatible
 ```
 
 Change only `--postprocess-transport` to `device-aware` for the independently
@@ -782,5 +808,59 @@ consensus; consumer time includes Catalyst/rendering. These nested durations
 are not additive. Matched short-window timing and actual per-object Nsight
 captures are recorded in the acceptance document, not production speed claims.
 
-CURVE, walls, AIR5, larger grids, NP>2, asynchronous execution and per-product
-variable clocks remain separate work; the prior host support is unchanged.
+CURVE, walls, AIR5, general larger grids, NP>2, asynchronous execution and
+per-product variable clocks remain separate work; the prior host support is
+unchanged. The separate 256-cubed two-product exception is described above.
+
+## IS8-R Geometry-Resident Entries
+
+R0-R11 are complete within the local 32-cubed matrix and separate 256-cubed
+demonstration. Root CMake additionally needs default-OFF
+`ASTR_WITH_INSITU_DEVICE_RENDERING=ON`, matching ParaView/VTK/Viskores device
+patches and hardware EGL/CUDA interop. Plain upstream ParaView is insufficient.
+Build and reproducible patches are in [patches/README.md](patches/README.md).
+The tested dependency is an independent build-tree runtime, not a completed
+installable prefix; supply matching runtime libraries explicitly, for example:
+
+```bash
+export LD_LIBRARY_PATH=/path/to/private/paraview/lib:/path/to/catalyst-api/lib:${LD_LIBRARY_PATH}
+python3 scripts/insitu/start_tgv_acceptance.py \
+  --output /new/empty/resident-case --executable /path/to/strict-device/astr \
+  --mpiexec /path/to/matching/mpiexec \
+  --library /path/to/private/paraview/lib/catalyst --np 2 \
+  --processing-backend device --postprocess-transport pinned
+```
+
+With enabled device processing/rendering, omitting `rendering_pipeline` selects
+`standard-device`. This borrows device arrays through the patched standard VTK
+mapper. Add `--rendering-pipeline direct-device` for the dedicated VTK mapper,
+or `--rendering-pipeline compatible` for the previous compact-host route.
+The launcher chooses `device_render_pipeline.py` for strict entries and
+`tgv_pipeline.py` for compatible. In manually written namelists select the
+matching script explicitly. Host processing remains compatible by default;
+in-situ work and optional build switches remain disabled by default.
+Missing strict capability fails without fallback, including omitted selection.
+
+Both entries share FP64 extraction/RK45 and GPU-generated display arrays.
+Rendering does not read back 3-D fields, coordinates, connectivity, colors or
+accepted trajectories. Strict entries reject geometry writers and do not export
+full 3-D statistics for rendering; explicit checkpoint state and native device
+statistics accumulation remain available. Images/color/depth/IceT composition,
+bounded metadata, at most 2 KiB/rank/round continuation state, and explicitly
+pinned face staging remain permitted host traffic. This is not zero total D2H.
+
+The independent standard-device NP=2 launch passes frames 2/4 with ten JPEG/EPS
+pairs, no VTP and native budgets. The 32-cubed matrix separately covers both
+entries and face transports at NP=1/NP=2 x/y/z, six products, exact same-entry
+12 versus 5+7 continuation, safety, display, resources and failure handling.
+Cross-entry restart and render repartition are rejected. Changing only face
+transport still requires explicit output override and preserves saved clocks.
+
+Five-round 256-cubed complete-window medians are off 60.580561 s, compatible
+257.746235 s, standard 85.719774 s and direct 85.666557 s. The compatible/
+standard ratio is 3.0068, a rendering-entry comparison, not solver CPU/GPU
+speedup. The two strict entries are not distinguishable as reliable performance
+winners from this sample. Exact raw/stage/resource/provenance receipts are in
+`documents/ASTR_INSITU_IS8_RESIDENT_ACCEPTANCE.md`; these local results do not
+admit general CURVE, walls, AIR5, other hardware or production-sized capacity.
+Next: PF0-PF3 independent product clocks, then AP0.1-AP3.2 variable frequency.

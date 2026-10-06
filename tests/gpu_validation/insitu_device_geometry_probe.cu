@@ -18,6 +18,7 @@
 #include <vtkXMLPolyDataWriter.h>
 #include <vtkXMLPolyDataReader.h>
 #include <nvtx3/nvToolsExt.h>
+#include <math_constants.h>
 
 using Diagnostics=astr_insitu::DeviceDiagnostics;
 
@@ -56,7 +57,7 @@ struct Allocations {
 };
 
 // This independent probe oracle interpolates only final product coordinates.
-viskores::Vec3f interpolated(const viskores::Vec3f& p,double h,bool q,double& scalar) {
+__host__ __device__ viskores::Vec3f interpolated(const viskores::Vec3f& p,double h,bool q,double& scalar) {
   int base[3]; double fraction[3];
   for(int d=0;d<3;++d) {
     base[d]=std::max(0,std::min(31,int(std::floor(p[d]/h))));
@@ -74,6 +75,53 @@ viskores::Vec3f interpolated(const viskores::Vec3f& p,double h,bool q,double& sc
 }
 
 struct Measures { double error=0.,area=0.; long long cells=0,points=0; };
+struct SurfaceAudit {double error=0.,display_error=0.;};
+__global__ void corrupt_surface(viskores::Vec3f* coordinates,viskores::Id* connectivity,bool nonfinite) {
+  if(nonfinite) coordinates[0][0]=CUDART_INF;
+  else connectivity[0]=-1;
+}
+__device__ void maximum_error(double* result,double error) {
+  if(!isfinite(error)) error=CUDART_INF;
+  atomicMax(reinterpret_cast<unsigned long long*>(result),__double_as_longlong(error));
+}
+__global__ void inspect_surface(astr_insitu::DeviceGeometryView view,double h,double iso,SurfaceAudit* result) {
+  const viskores::Id i=blockIdx.x*blockDim.x+threadIdx.x;
+  if(i>=view.points) return;
+  double q=0.;
+  const auto expected=interpolated(view.coordinates[i],h,true,q);
+  double error=fmax(fabs(q-iso),fabs(view.q[i]-iso));
+  double display_error=0.;
+  for(int d=0;d<3;++d) {
+    error=fmax(error,fabs(view.velocity[i][d]-expected[d]));
+    display_error=fmax(display_error,fabs(double(view.display_coordinates[i][d])-
+      double(static_cast<float>(view.coordinates[i][d]))));
+  }
+  error=fmax(error,fabs(view.u[i]-view.velocity[i][0]));
+  const auto v=view.velocity[i];
+  display_error=fmax(display_error,fabs(double(view.display_speed[i])-
+    double(static_cast<float>(sqrt(viskores::Dot(v,v))))));
+  maximum_error(&result->error,error);
+  maximum_error(&result->display_error,display_error);
+}
+__global__ void inspect_display_indices(astr_insitu::DeviceGeometryView view,SurfaceAudit* result) {
+  const viskores::Id i=blockIdx.x*blockDim.x+threadIdx.x;
+  if(i<3*view.cells && view.display_connectivity[i]!=static_cast<viskores::UInt32>(view.connectivity[i]))
+    maximum_error(&result->display_error,1.);
+}
+SurfaceAudit inspect_device_view(const astr_insitu::DeviceGeometryView& view,double h,double iso) {
+  SurfaceAudit result,*device=nullptr;
+  if(!view.points) return result;
+  if(cudaMalloc(&device,sizeof(result))!=cudaSuccess || cudaMemset(device,0,sizeof(result))!=cudaSuccess)
+    throw std::runtime_error("Device view audit allocation failed");
+  inspect_surface<<<(view.points+255)/256,256>>>(view,h,iso,device);
+  astr_insitu::synchronize_device_stage("inspect_surface");
+  inspect_display_indices<<<(3*view.cells+255)/256,256>>>(view,device);
+  astr_insitu::synchronize_device_stage("inspect_display_indices");
+  const auto status=cudaMemcpy(&result,device,sizeof(result),cudaMemcpyDeviceToHost);
+  cudaFree(device);
+  if(status!=cudaSuccess) throw std::runtime_error("Device view audit reduction readback failed");
+  return result;
+}
 void roundtrip(const viskores::cont::DataSet& data,bool surface,const std::string& path) {
   vtkNew<vtkPolyData> mesh;
   vtkNew<vtkPoints> points;points->SetDataTypeToDouble();
@@ -183,6 +231,10 @@ int run(int argc,char** argv,int rank,int ranks) {
   if(ranks!=1 && ranks!=2) throw std::runtime_error("NP=1/2 only");
   int axis=argc>1?std::atoi(argv[1]):0;
   bool empty=argc>2 && std::string(argv[2])=="empty";
+  const std::string mode=argc>3?argv[3]:"";
+  const bool device_view=mode.rfind("device-view",0)==0;
+  if(device_view && mode!="device-view" && mode!="device-view-nonfinite" && mode!="device-view-bad-index")
+    throw std::invalid_argument("Unknown device-view probe mode");
   if(axis<0 || axis>2) throw std::runtime_error("invalid axis");
   int devices=0;
   if(cudaGetDeviceCount(&devices)!=cudaSuccess || devices<ranks || cudaSetDevice(rank)!=cudaSuccess)
@@ -197,22 +249,53 @@ int run(int argc,char** argv,int rank,int ranks) {
   if(cudaDeviceSynchronize()!=cudaSuccess) throw std::runtime_error("field generation failed");
   astr_insitu::DeviceGeometryAudit audit;
   nvtxRangePushA("ASTR_IS8_DEVICE_GEOMETRY_EXTRACTION");
-  auto products=astr_insitu::extract_tgv_geometry(a.velocity,a.diagnostics,dims,offset,true,true,iso,&audit);
+  auto products=astr_insitu::extract_tgv_geometry(a.velocity,a.diagnostics,dims,offset,!device_view,true,iso,&audit);
   nvtxRangePop();
   std::printf("IS8_GEOMETRY_INPUT rank=%d q=0x%llx u=0x%llx scalar_bytes=%llu velocity=0x%llx velocity_bytes=%llu diagnostics=0x%llx diagnostics_bytes=%llu\n",
     rank,static_cast<unsigned long long>(audit.q),static_cast<unsigned long long>(audit.u),
     static_cast<unsigned long long>(audit.scalar_bytes),reinterpret_cast<unsigned long long>(a.velocity),
     static_cast<unsigned long long>(nodes)*sizeof(*a.velocity),reinterpret_cast<unsigned long long>(a.diagnostics),
     static_cast<unsigned long long>(nodes)*sizeof(*a.diagnostics));
-  nvtxRangePushA("ASTR_IS8_COMPACT_GEOMETRY_READ");
-  auto slice=inspect(products.slice,false,iso),surface=inspect(products.surface,true,iso);
-  if(argc>3) {
-    const std::string prefix=argv[3];
-    roundtrip(products.slice,false,prefix+".rank"+std::to_string(rank)+".slice.vtp");
-    roundtrip(products.surface,true,prefix+".rank"+std::to_string(rank)+".surface.vtp");
-    std::printf("IS8_GEOMETRY_ROUNDTRIP rank=%d exact=1\n",rank);
+  Measures slice,surface;
+  double display_error=0.;
+  if(device_view) {
+    nvtxRangePushA("ASTR_IS8_DEVICE_SURFACE_VIEW");
+    if(mode!="device-view") {
+      auto coordinates=products.surface.GetCoordinateSystem().GetData().AsArrayHandle<
+        viskores::cont::ArrayHandle<viskores::Vec3f>>();
+      auto cells=products.surface.GetCellSet().AsCellSet<viskores::cont::CellSetSingleType<>>();
+      auto indices=cells.GetConnectivityArray(viskores::TopologyElementTagCell{},viskores::TopologyElementTagPoint{});
+      viskores::cont::Token token;
+      auto p=static_cast<viskores::Vec3f*>(coordinates.GetBuffers()[0].WritePointerDevice(
+        viskores::cont::DeviceAdapterTagCuda{},token));
+      auto c=static_cast<viskores::Id*>(indices.GetBuffers()[0].WritePointerDevice(
+        viskores::cont::DeviceAdapterTagCuda{},token));
+      corrupt_surface<<<1,1>>>(p,c,mode=="device-view-nonfinite");
+      astr_insitu::synchronize_device_stage("corrupt_surface");
+    }
+    astr_insitu::DeviceGeometryOwner owner(products.surface,12,.012);
+    const auto& view=owner.get();
+    const auto measured=inspect_device_view(view,h,iso);
+    surface.error=measured.error;surface.points=view.points;surface.cells=view.cells;
+    display_error=measured.display_error;
+    std::printf("IS8_DEVICE_SURFACE_VIEW rank=%d device=%d step=%d time=%.17g points=%lld triangles=%lld "
+      "geometry_host_bytes=0 metadata_audit_bytes=%zu bounds_bytes=%zu fp64=1 display_fp32=1\n",
+      rank,view.device,view.step,view.time,static_cast<long long>(view.points),
+      static_cast<long long>(view.cells),view.points?sizeof(SurfaceAudit):0,sizeof(view.bounds)+sizeof(view.speed_range));
+    nvtxRangePop();
+  } else {
+    nvtxRangePushA("ASTR_IS8_COMPACT_GEOMETRY_READ");
+    slice=inspect(products.slice,false,iso);surface=inspect(products.surface,true,iso);
+    if(argc>3) {
+      const std::string prefix=argv[3];
+      roundtrip(products.slice,false,prefix+".rank"+std::to_string(rank)+".slice.vtp");
+      roundtrip(products.surface,true,prefix+".rank"+std::to_string(rank)+".surface.vtp");
+      std::printf("IS8_GEOMETRY_ROUNDTRIP rank=%d exact=1\n",rank);
+    }
+    nvtxRangePop();
   }
-  nvtxRangePop();
+  double global_display_error=0.;
+  MPI_Allreduce(&display_error,&global_display_error,1,MPI_DOUBLE,MPI_MAX,MPI_COMM_WORLD);
   double local[3]={std::max(slice.error,surface.error),slice.area,surface.area},global[3];
   MPI_Allreduce(local,global,1,MPI_DOUBLE,MPI_MAX,MPI_COMM_WORLD);
   MPI_Allreduce(local+1,global+1,2,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD);
@@ -229,6 +312,11 @@ int run(int argc,char** argv,int rank,int ranks) {
   if(!rank) std::printf("IS8 CUDA geometry axis=%d NP=%d empty=%d max_error=%.17g slice_area=%.17g surface_area=%.17g slice_cells=%lld surface_cells=%lld slice_points=%lld surface_points=%lld input_host_mirror=0\n",
     axis,ranks,empty,global[0],global[1],global[2],totals[0],totals[1],totals[2],totals[3]);
   if(!rank) std::printf("source_errors=%d\n",source_total);
+  if(device_view) {
+    if(!rank) std::printf("display_error=%.17g\n",global_display_error);
+    return source_total==0 && std::isfinite(global[0]) && global[0]<=2e-10 &&
+      global_display_error==0. && (empty?totals[1]==0:totals[1]>0)?0:2;
+  }
   return source_total==0 && std::isfinite(global[0]) && global[0]<=2e-10 && totals[0]==1024 &&
     std::abs(global[1]-4*std::acos(-1.)*std::acos(-1.))<=2e-10 &&
     (empty?totals[1]==0:totals[1]>0) ? 0:2;

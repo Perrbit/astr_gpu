@@ -92,6 +92,28 @@ def test_standalone_device_transport_is_explicit(tmp_path,processor,transport,ac
             assert f"postprocess_transport='{transport}'" in content
 
 
+@pytest.mark.parametrize('route',[None,'compatible','standard-device','direct-device'])
+def test_standalone_rendering_entry_selection(tmp_path,route):
+    spec=importlib.util.spec_from_file_location('standalone_insitu_entry',ROOT/'scripts/insitu/start_tgv_acceptance.py')
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    library=tmp_path/'library';library.mkdir()
+    module.prepare(tmp_path/'case',library,True,'device','pinned',route)
+    content=(tmp_path/'case/insitu.nml').read_text()
+    expected=route or 'standard-device'
+    assert f"rendering_pipeline='{expected}'" in content
+    script='tgv_pipeline.py' if expected=='compatible' else 'device_render_pipeline.py'
+    assert f"pipeline_file='{ROOT/'scripts/insitu'/script}'" in content
+
+
+def test_standalone_device_off_does_not_request_enabled_device_processing(tmp_path):
+    spec=importlib.util.spec_from_file_location('standalone_insitu_off',ROOT/'scripts/insitu/start_tgv_acceptance.py')
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    library=tmp_path/'library';library.mkdir()
+    module.prepare(tmp_path/'case',library,False,'device','pinned')
+    content=(tmp_path/'case/insitu.nml').read_text()
+    assert 'enabled=f' in content and "processing_backend='device'" not in content
+
+
 @pytest.mark.parametrize('kind',('host','device','shared_device'))
 def test_native_observed_budget_rejects_without_fallback(tmp_path,kind,monkeypatch):
     config=preset();ranks=1

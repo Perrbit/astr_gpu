@@ -1,0 +1,44 @@
+--- a/VTK/ThirdParty/viskores/vtkviskores/CMakeLists.txt
++++ b/VTK/ThirdParty/viskores/vtkviskores/CMakeLists.txt
+@@ -108,1 +108,4 @@
+-vtk_module_link(VTK::vtkviskores INTERFACE viskores_cont viskores_cont_testing viskores_filter viskores_worklet)
++vtk_module_link(VTK::vtkviskores INTERFACE viskores_cont viskores_cont_testing viskores_worklet)
++if (NOT ASTR_VTK_DEVICE_RENDERING)
++  vtk_module_link(VTK::vtkviskores INTERFACE viskores_filter)
++endif ()
+--- a/VTK/Accelerators/Vtkm/Filters/CMakeLists.txt
++++ b/VTK/Accelerators/Vtkm/Filters/CMakeLists.txt
+@@ -102,6 +102,9 @@
+   HEADERS ${headers}
+   NOWRAP_HEADERS ${nowrap_headers}
+   CLASSES ${classes})
++if (ASTR_VTK_DEVICE_RENDERING)
++  vtk_module_link(VTK::AcceleratorsVTKmFilters PRIVATE viskores_filter)
++endif ()
+ vtk_module_set_property(VTK::AcceleratorsVTKmFilters
+   PROPERTY  JOB_POOL_COMPILE
+   VALUE     viskores_pool)
+--- a/VTK/ThirdParty/fides/vtkfides/fides/CMakeLists.txt
++++ b/VTK/ThirdParty/fides/vtkfides/fides/CMakeLists.txt
+@@ -83,6 +83,9 @@
+   PRIVATE
+     adios2::adios2
+     fides_rapidjson)
++if (ASTR_VTK_DEVICE_RENDERING)
++  vtk_module_link(VTK::fides PRIVATE viskores_filter_clean_grid)
++endif ()
+ vtk_module_include(VTK::fides
+   PUBLIC
+     $<BUILD_INTERFACE:${FIDES_SOURCE_DIR}>
+--- a/VTK/ThirdParty/viskores/vtkviskores/viskores/CMake/ViskoresWrappers.cmake
++++ b/VTK/ThirdParty/viskores/vtkviskores/viskores/CMake/ViskoresWrappers.cmake
+@@ -425,6 +425,9 @@
+     )
+ 
+   if(Viskores_TI_MODIFY_CUDA_FLAGS)
++    if(ASTR_VTK_DEVICE_RENDERING)
++      set(cuda_flags "${CMAKE_CUDA_FLAGS}")
++    endif()
+     viskores_get_cuda_flags(cuda_flags)
+     if(cuda_flags)
+       set(CMAKE_CUDA_FLAGS ${cuda_flags} PARENT_SCOPE)

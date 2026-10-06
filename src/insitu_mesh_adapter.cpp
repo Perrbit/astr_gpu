@@ -7,6 +7,12 @@
 #include <algorithm>
 #include <exception>
 #include "insitu_compact_mesh.h"
+#ifdef ASTR_INSITU_DEVICE_RENDERING
+#include "insitu_device_vtk_mapper.h"
+#include <vtkColorTransferFunction.h>
+#include <vtkSMTransferFunctionPresets.h>
+#include <vtk_jsoncpp.h>
+#endif
 #ifdef ASTR_INSITU_DEVICE_PRODUCTS
 #include <nvtx3/nvToolsExt.h>
 extern "C" void astr_insitu_device_range_push(int stage) {
@@ -26,6 +32,11 @@ conduit_node* retained = nullptr;
 std::vector<double> coordinates, primitive, gradients, means;
 std::vector<conduit_int64> plane_cells;
 std::vector<astr_insitu::CompactMesh> retained_products;
+#ifdef ASTR_INSITU_DEVICE_RENDERING
+std::vector<astr_insitu::DeviceMesh> retained_device_products;
+std::map<std::string,vtkSmartPointer<vtkActor>> device_actors;
+std::string resident_pipeline;
+#endif
 double empty_value = 0.;
 conduit_int64 empty_cell = 0;
 int shape[3] = {0,0,0};
@@ -52,6 +63,16 @@ void check(catalyst_status status)
       "Catalyst status consensus MPI failure",render_comm);
   if (any) MPI_Abort(render_comm, 1);
 }
+}
+
+extern "C" int astr_insitu_mesh_pipeline_available(const char* pipeline)
+{
+  // New routes are admitted only when their actual bridge has been built.
+#ifdef ASTR_INSITU_DEVICE_RENDERING
+  if(pipeline && (std::string(pipeline)=="standard-device" ||
+      std::string(pipeline)=="direct-device")) return 1;
+#endif
+  return pipeline && std::string(pipeline) == "compatible";
 }
 
 extern "C" int astr_insitu_mesh_configure(const char* output, int fcomm)
@@ -284,6 +305,122 @@ extern "C" int astr_insitu_mesh_wall_statistics(const char* backend, const char*
   return mesh_execute(backend,script,fcomm,nx,ny,nz,step,time,xyz,fields,nullptr,2,statistics,profile);
 }
 
+#ifdef ASTR_INSITU_DEVICE_RENDERING
+std::vector<double> astr_insitu::device_display_palette() {
+  const auto& preset=vtkSMTransferFunctionPresets::GetInstance()->GetFirstPresetWithName(
+    "Cool to Warm (Extended)");
+  const auto& points=preset["RGBPoints"];
+  if(preset["ColorSpace"].asString()!="Lab" || !points.isArray() ||
+      points.size()<8 || points.size()%4)
+    throw std::runtime_error("Unexpected fixed ParaView display preset");
+  vtkNew<vtkColorTransferFunction> transfer;
+  transfer->SetColorSpaceToLab();
+  for(Json::ArrayIndex i=0;i<points.size();i+=4)
+    transfer->AddRGBPoint(points[i].asDouble(),points[i+1].asDouble(),
+      points[i+2].asDouble(),points[i+3].asDouble());
+  std::vector<double> table(4096*3);
+  for(int i=0;i<4096;++i) transfer->GetColor(i/4095.,table.data()+3*i);
+  return table;
+}
+
+extern "C" std::uintptr_t astr_insitu_resident_actor(const char* name) {
+  const auto found=device_actors.find(name?name:"");
+  return found==device_actors.end()?0:reinterpret_cast<std::uintptr_t>(found->second.GetPointer());
+}
+
+int astr_insitu::render_resident_products(const char* pipeline,const char* backend,const char* script,int fcomm,
+    int step,double time,const char* profile,std::vector<DeviceMesh> products,bool covered)
+try {
+  const auto comm=MPI_Comm_f2c(fcomm);
+  const std::string route=pipeline?pipeline:"";
+  if(!native || !backend || !script || !profile || products.empty() ||
+      (route!="standard-device" && route!="direct-device") ||
+      (active && (selected_profile!=8 || resident_pipeline!=route)))
+    return allocation_failure("resident products","invalid renderer session",comm);
+  if(!active) {
+    if(setenv("ASTR_VTK_STRICT_DEVICE_ACCESS","1",1))
+      return allocation_failure("resident products","cannot enable strict CPU-access guard",comm);
+    check_mpi(MPI_Comm_dup(comm,&render_comm),"create resident render communicator",comm);
+    auto init=conduit_node_create();
+    conduit_node_set_path_char8_str(init,"catalyst_load/implementation","paraview");
+    conduit_node_set_path_char8_str(init,"catalyst_load/search_paths/astr",backend);
+    conduit_node_set_path_char8_str(init,"catalyst/scripts/probe/filename",script);
+    auto args=conduit_node_fetch(init,"catalyst/scripts/probe/args");
+    for(const char* value:{output_directory.c_str(),expected_uuid.c_str(),profile,route.c_str()})
+      conduit_node_set_char8_str(conduit_node_append(args),value);
+    conduit_node_set_path_int64(init,"catalyst/mpi_comm",MPI_Comm_c2f(render_comm));
+    check(catalyst_initialize(init));conduit_node_destroy(init);
+    selected_profile=8;active=true;resident_pipeline=route;
+    astr_insitu_resource_check("initialized");
+  }
+  auto params=conduit_node_create();
+  conduit_node_set_path_int64(params,"catalyst/state/timestep",step);
+  conduit_node_set_path_double(params,"catalyst/state/time",time);
+  int rank=0;check_mpi(MPI_Comm_rank(comm,&rank),"resident domain rank",comm);
+  for(auto& product:products) {
+    const auto& view=product.draw;
+    if(!product.owner || (view.arity!=2 && view.arity!=3) || (view.cells && !view.points))
+      return allocation_failure("resident products","invalid device owner/extent",comm);
+    const auto base="catalyst/channels/"+product.name;
+    conduit_node_set_path_char8_str(params,(base+"/type").c_str(),"mesh");
+    auto mesh=conduit_node_fetch(params,(base+"/data").c_str());
+    conduit_node_set_path_int64(mesh,"state/domain_id",rank);
+    for(int d=0;d<6;++d)
+      conduit_node_set_path_double(mesh,("state/fields/bound"+std::to_string(d)).c_str(),view.bounds[d]);
+    conduit_node_set_path_int64(mesh,"state/fields/device_points",view.points);
+    conduit_node_set_path_int64(mesh,"state/fields/device_cells",view.cells);
+    conduit_node_set_path_int64(mesh,"state/fields/device_arity",view.arity);
+    conduit_node_set_path_int64(mesh,"state/fields/mean_covered",covered);
+    conduit_node_set_path_char8_str(mesh,"coordsets/coords/type","explicit");
+    conduit_node_set_path_char8_str(mesh,"topologies/mesh/coordset","coords");
+    conduit_node_set_path_char8_str(mesh,"topologies/mesh/type","unstructured");
+    conduit_node_set_path_char8_str(mesh,"topologies/mesh/elements/shape",view.arity==3?"tri":"line");
+    const bool arrays=route=="standard-device" && view.points;
+    const char* axes[]={"x","y","z"};
+    for(int d=0;d<3;++d) {
+      const auto key=std::string("coordsets/coords/values/")+axes[d];
+      if(arrays) conduit_node_set_path_external_float32_ptr_detailed(mesh,key.c_str(),
+        const_cast<float*>(view.positions),view.points,d*sizeof(float),3*sizeof(float),sizeof(float),0);
+      else conduit_node_set_path_external_float64_ptr(mesh,key.c_str(),&empty_value,0);
+    }
+    if(arrays) {
+      conduit_node_set_path_external_uint32_ptr(mesh,"topologies/mesh/elements/connectivity",
+        const_cast<unsigned int*>(view.indices),view.cells*view.arity);
+      conduit_node_set_path_char8_str(mesh,"fields/_astr_display_rgba/association","vertex");
+      conduit_node_set_path_char8_str(mesh,"fields/_astr_display_rgba/topology","mesh");
+      for(int d=0;d<4;++d)
+        conduit_node_set_path_external_uint8_ptr_detailed(mesh,
+          ("fields/_astr_display_rgba/values/"+std::to_string(d)).c_str(),
+          const_cast<unsigned char*>(view.colors),view.points,d,4,1,0);
+    } else conduit_node_set_path_external_int64_ptr(mesh,"topologies/mesh/elements/connectivity",&empty_cell,0);
+    if(route=="direct-device") {
+      auto& actor=device_actors[product.name];
+      if(!actor) {
+        actor=vtkSmartPointer<vtkActor>::New();
+        vtkNew<astr_insitu::DirectDeviceMapper> mapper;
+        actor->SetMapper(mapper);
+      }
+      static_cast<astr_insitu::DirectDeviceMapper*>(actor->GetMapper())->set_view(view);
+    }
+  }
+  astr_insitu_resource_check("frame_before");
+  const double start=MPI_Wtime();
+  nvtxRangePushA("ASTR_IS8_RESIDENT_RENDER");
+  check(catalyst_execute(params));
+  nvtxRangePop();
+  if(retained) conduit_node_destroy(retained);
+  retained=params;retained_device_products=std::move(products);
+  std::printf("ASTR_INSITU_RESIDENT_BRIDGE rank=%d step=%d pipeline=%s geometry_host_bytes=0 execute_inclusive=%.9g\n",
+    rank,step,route.c_str(),MPI_Wtime()-start);
+  astr_insitu_resource_check("frame_after");
+  return 0;
+} catch(const std::exception& error) {
+  return allocation_failure("resident products",error.what(),MPI_Comm_f2c(fcomm));
+} catch(...) {
+  return allocation_failure("resident products","unknown exception",MPI_Comm_f2c(fcomm));
+}
+#endif
+
 int astr_insitu::render_compact_products(const char* backend,const char* script,int fcomm,
     int step,double time,const char* profile,bool covered,double duration,
     double window_start,double window_end,std::vector<CompactMesh> products)
@@ -409,6 +546,11 @@ try {
   std::vector<double>().swap(means);
   std::vector<conduit_int64>().swap(plane_cells);
   std::vector<astr_insitu::CompactMesh>().swap(retained_products);
+#ifdef ASTR_INSITU_DEVICE_RENDERING
+  device_actors.clear();
+  retained_device_products.clear();
+  resident_pipeline.clear();
+#endif
   check_mpi(MPI_Comm_free(&render_comm),"release render communicator",MPI_COMM_WORLD);
   active = false;
   return 0;

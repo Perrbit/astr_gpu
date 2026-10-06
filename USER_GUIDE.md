@@ -823,18 +823,32 @@ CPU渲染、一般AIR5三维渲染及任何渲染重新分区属于后续目标�
 共享节点面和 halo 面经固定页锁定主机缓冲中转，不允许下载整场作归属处理。
 该入口要求根构建同时开启 `ASTR_WITH_CUDA`、`ASTR_WITH_CATALYST` 和
 默认关闭的 `ASTR_WITH_INSITU_DEVICE`，另提供 CUDA/FP64/MPI Viskores依赖。
+几何常驻渲染另需默认关闭的 `ASTR_WITH_INSITU_DEVICE_RENDERING` 及相匹配、
+已应用设备数组/绘制补丁的ParaView/VTK。不能直接使用未修补的普通安装。
 只支持内部生成的32³周期笛卡尔TGV、FP64、643e/643e、NP=1或NP=2 x/y/z，
 所选产品为固定z=pi/4索引速度切片、Q_rs=0.25等值面及瞬时、Reynolds/Favre
 速度流线。必须启用渲染、选择`derivative_backend='gpu'`并显式填写正的资源预算。
 缺失/非法/各rank不一致的传输选择及未支持范围会报错，不退回CPU过滤器。
-采样、节点归属、halo、梯度/Q、插值和提取在GPU执行；最终紧凑几何送入EGL
-渲染，JPEG/EPS及VTK写出仍使用主机。库工作区可能有统一内存页迁移，
-不能称整次运行零D2H。保存检查点/导出统计的三维数组传输独立存在。
+采样、节点归属、halo、梯度/Q、插值和提取在GPU执行。渲染入口如下：
+
+| `rendering_pipeline` | 设备处理开启渲染时的行为 |
+|---|---|
+| `standard-device`（此时缺省选择） | 经Conduit/VTK设备数组进入标准绘制路径；几何、连接、颜色和已接受流线留在设备，不下载供主机整理。使用`device_render_pipeline.py`。 |
+| `direct-device` | 同一设备几何进入专用VTK Mapper，仍由Catalyst/ParaView出图。使用`device_render_pipeline.py`，准入范围与标准入口相同。 |
+| `compatible` | 显式选择原紧凑几何回读路径，使用`tgv_pipeline.py`；保留VTK几何导出，不具备几何常驻保证。 |
+
+严格入口禁止几何writer和完整三维统计导出供渲染。JPEG/EPS编码、颜色/深度
+图像回读及主机合成、有界元数据和每rank每轮至多2 KiB粒子续接状态仍存在；
+pinned模式另有面暂存，不能称总D2H为零。正式设备统计累计及显式检查点
+状态传输独立存在。未编译所选入口时直接报错，缺省选择也不会自动降级。
 同后端同拓扑精确续接要求传输选择一致；只改传输须显式选择
 `restart_output='override'`，保留累计统计和输出时钟，重建临时缓冲。
 默认仍是`processing_backend='host'`，兼容路径不是全设备后处理。
-CURVE、壁面、AIR5、更大网格和渲染重分区尚未准入新设备入口。
-依赖、实测和全部边界见`documents/ASTR_INSITU_IS8_ACCEPTANCE.md`。
+CURVE、壁面、AIR5和渲染重分区尚未准入新设备入口。唯一更大网格例外为
+另行验收的256³、NP=2 x分解`products='tgv256_demo'`，只输出Q=0与瞬时
+速度流线，不开累计原位统计、检查点、整场、切片或VTK几何写出。
+其本地预算为附加6 GiB/GPU、16 GiB/节点、设备空闲至少2 GiB，不是
+生产规模默认。依赖、实测与范围见`documents/ASTR_INSITU_IS8_RESIDENT_ACCEPTANCE.md`。
 
 原位首版 IS7 的有界能力矩阵、依赖条件和完整阶段耗时见
 `documents/ASTR_INSITU_IS7_ACCEPTANCE.md`。独立短测入口为
@@ -843,7 +857,9 @@ CURVE、壁面、AIR5、更大网格和渲染重分区尚未准入新设备入�
 不会同时关闭检查点。模板32³、四个完整步、NP=1/2只用于本地验收，
 不应直接作为生产规模默认值。已有算例目录拒绝覆盖。
 设备入口可追加`--processing-backend device --postprocess-transport pinned`，
-或显式选`device-aware`；不要把这两个后处理选项代入求解器halo选项。
+或显式选`device-aware`；缺省采用标准设备入口，可追加
+`--rendering-pipeline direct-device`或`--rendering-pipeline compatible`。
+不要把这两个后处理通信选项代入求解器halo选项。
 可选`ASTR_INSITU_TIMING=1`记录完整窗口及后处理阶段耗时，不改变场或
 统计续接、不增加逐阶段MPI屏障。包含子阶段的计时不能相加；记录首次
 建立管线/视图的成本，不把小型首帧耗时当成长期生产平均。

@@ -10,7 +10,9 @@ import psutil
 import pynvml as nvml
 
 
-def run_monitored(command, directory, runtime, stream, report_path, baseline=None):
+def run_monitored(command, directory, runtime, stream, report_path, baseline=None,
+                  device_extra_budget_bytes=2*1024**3, host_extra_budget_bytes=4*1024**3,
+                  device_reserve_bytes=1024**3, timeout_seconds=180, check_progress=None):
     nvml.nvmlInit()
     devices = [(nvml.nvmlDeviceGetUUID(h), h) for h in (
         nvml.nvmlDeviceGetHandleByIndex(i) for i in range(nvml.nvmlDeviceGetCount()))]
@@ -54,23 +56,25 @@ def run_monitored(command, directory, runtime, stream, report_path, baseline=Non
                 entry = report['devices'].setdefault(uuid, dict(peak_bytes=0, min_free_bytes=memory.free))
                 entry['peak_bytes'] = max(entry['peak_bytes'], sum(by_pid.values()))
                 entry['min_free_bytes'] = min(entry['min_free_bytes'], memory.free)
-                if memory.free < 1024**3:
-                    raise ValueError(f'{uuid}: less than 1 GiB free device memory')
+                if memory.free < device_reserve_bytes:
+                    raise ValueError(f'{uuid}: device free-memory reserve violated')
                 if baseline is not None:
                     if uuid not in baseline['devices']:
                         raise ValueError('GPU identity differs from off baseline')
-                    if entry['peak_bytes']-baseline['devices'][uuid]['peak_bytes'] > 2*1024**3:
-                        raise ValueError(f'{uuid}: sampled additional device memory exceeds 2 GiB')
-            if baseline is not None and rss-baseline['host_rss_peak_bytes'] > 4*1024**3:
-                raise ValueError('Sampled additional host RSS exceeds 4 GiB')
+                    if entry['peak_bytes']-baseline['devices'][uuid]['peak_bytes'] > device_extra_budget_bytes:
+                        raise ValueError(f'{uuid}: sampled additional device-memory budget exceeded')
+            if baseline is not None and rss-baseline['host_rss_peak_bytes'] > host_extra_budget_bytes:
+                raise ValueError('Sampled additional host-RSS budget exceeded')
+            if check_progress is not None:
+                check_progress()
             report['samples'] += 1
             code = process.poll()
             if code is not None:
                 if code:
                     raise subprocess.CalledProcessError(code, command)
                 break
-            if time.monotonic()-started > 180:
-                raise TimeoutError('Local resource probe exceeded 180 seconds')
+            if time.monotonic()-started > timeout_seconds:
+                raise TimeoutError('Local resource probe exceeded its time budget')
             time.sleep(0.02)
         if not report['devices']:
             raise ValueError('No GPU process memory observed')

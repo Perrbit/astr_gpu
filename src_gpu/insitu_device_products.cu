@@ -1,9 +1,11 @@
 #include "insitu_device_geometry.h"
 #include "insitu_device_streamlines.h"
 #include "insitu_compact_mesh.h"
+#include "insitu_device_product_audit.h"
 #include <viskores/cont/ArrayCopy.h>
 #include <viskores/cont/CellSetSingleType.h>
 #include <viskores/cont/Initialize.h>
+#include <viskores/cont/cuda/internal/CudaAllocator.h>
 #include <nvtx3/nvToolsExt.h>
 #include <cstdio>
 #include <cstdlib>
@@ -145,9 +147,61 @@ struct ConstantVelocity : viskores::worklet::WorkletMapField {
   using ExecutionSignature=void(_1,_2);
   VISKORES_EXEC void operator()(viskores::Id,viskores::Vec3f& v) const {v=viskores::Vec3f(1.,0.,0.);}
 };
+#ifdef ASTR_INSITU_DEVICE_RENDERING
+astr_insitu::DeviceMesh resident_mesh(const char* name,const viskores::cont::DataSet& data,
+    int step,double time,int arity=3,const double* audit_halo=nullptr,
+    const astr_insitu::DeviceDiagnostics* audit_diagnostics=nullptr,
+    viskores::Id3 extent={0,0,0},viskores::Id3 offset={0,0,0},int global_cells=32,int rank=0) {
+  auto owner=std::make_shared<astr_insitu::DeviceGeometryOwner>(data,step,time,arity);
+  static const auto palette=astr_insitu::device_display_palette();
+  const auto colors=owner->color_display(palette,global_cells==256);
+  const auto& view=owner->get();
+  if(audit_halo && std::getenv("ASTR_INSITU_RESIDENT_AUDIT") &&
+      std::string(std::getenv("ASTR_INSITU_RESIDENT_AUDIT"))=="1") {
+    const auto result=astr_insitu::audit_device_product(view,audit_halo,audit_diagnostics,
+      extent,offset,global_cells,std::string(name)=="q_surface",std::string(name)=="velocity_slice",
+      std::string(name)=="crossing_streamlines");
+    std::printf("ASTR_INSITU_RESIDENT_AUDIT rank=%d step=%d product=%s field_maxabs=%.17g "
+      "display_maxabs=%.17g points=%lld\n",rank,step,name,result.field,result.display,
+      static_cast<long long>(view.points));
+  }
+  astr_insitu::DeviceMesh mesh;
+  mesh.name=name;mesh.owner=owner;
+  mesh.draw.positions=reinterpret_cast<const float*>(view.display_coordinates);
+  mesh.draw.colors=reinterpret_cast<const unsigned char*>(colors);
+  mesh.draw.indices=view.display_connectivity;
+  mesh.draw.points=view.points;mesh.draw.cells=view.cells;mesh.draw.device=view.device;mesh.draw.arity=view.arity;
+  std::copy(view.bounds,view.bounds+6,mesh.draw.bounds);
+  return mesh;
+}
+void report_resident_trace(const astr_insitu::DeviceStreamlines& trace,const char* name,int rank) {
+  std::printf("ASTR_INSITU_RESIDENT_TRAJECTORY rank=%d product=%s rounds=%d transfers=%d "
+    "control_read_bytes=%llu geometry_device_bytes=%llu\n",rank,name,trace.rounds,trace.transfers,
+    static_cast<unsigned long long>(trace.control_read_bytes),static_cast<unsigned long long>(trace.geometry_bytes));
+  if(std::string(name)=="crossing_streamlines") {
+    double worst=0.;
+    const double pi=std::acos(-1.);
+    for(int i=0;i<16;++i) {
+      const auto& point=trace.final_state[i];
+      const double expected[3]={1.5*pi,pi/8.+i*(.75*pi/15.),pi/4.};
+      for(int d=0;d<3;++d) {
+        const double error=std::abs(point[d]-expected[d]);
+        if(!std::isfinite(error)) throw std::runtime_error("Nonfinite resident crossing endpoint");
+        worst=std::max(worst,error);
+      }
+    }
+    if(worst>2e-10) throw std::runtime_error("Resident crossing endpoint acceptance failed");
+    std::printf("ASTR_INSITU_RESIDENT_CROSSING rank=%d endpoint_maxabs=%.17g\n",rank,worst);
+  }
+  for(int i=0;i<trace.particles;++i) if(trace.subminimum_stop[i])
+    std::printf("ASTR_INSITU_TRAJECTORY_TERMINATION rank=%d product=%s seed=%d direction=%d status=3 "
+      "reason=sub_minimum_remaining accepted=%.17g remaining=%.17g minimum=%.17g\n",rank,name,
+      i%16,i<16?1:-1,trace.final_state[i][4],std::acos(-1.)-trace.final_state[i][4],trace.minimum_step);
+}
+#endif
 }
 
-extern "C" int astr_insitu_device_render(const char* backend,const char* script,const char* profile,
+extern "C" int astr_insitu_device_render(const char* pipeline,const char* backend,const char* script,const char* profile,
     int fcomm,int step,double time,int nx,int ny,int nz,int ox,int oy,int oz,int global_cells,
     double* velocity,double* halo,double* diagnostic,double* reynolds_halo,double* favre_halo,
     int covered,double duration,double window_start,double window_end,std::int64_t host_budget)
@@ -168,6 +222,62 @@ try {
   const bool slice=selected=="all" || selected=="velocity_slice";
   const bool surface=selected=="all" || selected=="q_surface" || selected=="q_streamlines" || demo;
   const bool lines=selected=="all" || selected=="streamlines" || selected=="q_streamlines" || demo;
+  const std::string route=pipeline?pipeline:"";
+  if(route!="compatible") {
+#ifdef ASTR_INSITU_DEVICE_RENDERING
+    if(route!="standard-device" && route!="direct-device")
+      throw std::invalid_argument("Unsupported resident rendering pipeline; no host fallback");
+    if(viskores::cont::cuda::internal::CudaAllocator::UsingManagedMemory())
+      viskores::cont::cuda::internal::CudaAllocator::ForceManagedMemoryOff();
+    int rank=0;astr_insitu::trace_mpi(MPI_Comm_rank(comm,&rank));
+    std::vector<astr_insitu::DeviceMesh> meshes;
+    if(slice || surface) {
+    ProductStage extraction("device_geometry_extract_inclusive","ASTR_IS8_DEVICE_GEOMETRY_EXTRACTION",fcomm,step);
+    auto extracted=astr_insitu::extract_tgv_geometry(reinterpret_cast<viskores::Vec3f*>(velocity),
+      reinterpret_cast<astr_insitu::DeviceDiagnostics*>(diagnostic),dimensions,offset,slice,surface,
+      demo?0.:.25,nullptr,global_cells);
+    if(surface) meshes.push_back(resident_mesh("q_surface",extracted.surface,step,time,3,halo,
+      reinterpret_cast<astr_insitu::DeviceDiagnostics*>(diagnostic),extent,offset,global_cells,rank));
+    if(slice) meshes.push_back(resident_mesh("velocity_slice",
+      astr_insitu::triangulate_device_slice(extracted.slice,dimensions,offset,global_cells),step,time,3,
+      halo,nullptr,extent,offset,global_cells,rank));
+    }
+    if(lines) {
+      auto actual=astr_insitu::pack_component_halo(halo,halo_dimensions);
+      const auto add_trace=[&](const char* name,const viskores::cont::ArrayHandle<viskores::Vec3f>& field,
+          bool constant,bool mean,const double* source) {
+        ProductStage phase("resident_streamlines_inclusive","ASTR_IS8_RESIDENT_STREAMLINES",fcomm,step);
+        auto trace=astr_insitu::trace_tgv_device(field,actual,extent,offset,comm,host_budget,
+          constant,0,constant,mean,global_cells,true);
+        report_resident_trace(trace,name,rank);
+        meshes.push_back(resident_mesh(name,trace.resident_geometry,step,time,2,source,nullptr,
+          extent,offset,global_cells,rank));
+      };
+      add_trace("instantaneous_streamlines",actual,false,false,halo);
+      if(!demo) {
+      viskores::cont::ArrayHandle<viskores::Vec3f> constant;
+      viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});
+      invoke(ConstantVelocity{},viskores::cont::ArrayHandleIndex(actual.GetNumberOfValues()),constant);
+      astr_insitu::synchronize_device_stage("ConstantVelocity");
+      add_trace("crossing_streamlines",constant,true,false,halo);
+      }
+      if(selected=="all" && covered) {
+        if(!reynolds_halo || !favre_halo || !std::isfinite(duration) || duration<=0.)
+          throw std::invalid_argument("Resident mean products require authoritative coverage/halos");
+        add_trace("mean_reynolds_streamlines",astr_insitu::pack_component_halo(reynolds_halo,halo_dimensions),false,true,reynolds_halo);
+        add_trace("mean_favre_streamlines",astr_insitu::pack_component_halo(favre_halo,halo_dimensions),false,true,favre_halo);
+      }
+    }
+    for(const char* name:{"q_surface","velocity_slice","instantaneous_streamlines","crossing_streamlines",
+                         "mean_reynolds_streamlines","mean_favre_streamlines"})
+      if(std::none_of(meshes.begin(),meshes.end(),[&](const astr_insitu::DeviceMesh& mesh){return mesh.name==name;}))
+        meshes.push_back(resident_mesh(name,viskores::cont::DataSet{},step,time,
+          std::string(name).find("streamlines")!=std::string::npos?2:3));
+    return astr_insitu::render_resident_products(pipeline,backend,script,fcomm,step,time,profile,std::move(meshes),covered);
+#else
+    throw std::invalid_argument("Strict device rendering is not built; no host fallback");
+#endif
+  }
   std::vector<astr_insitu::CompactMesh> meshes;
   if(slice || surface) {
     ProductStage extraction("device_geometry_extract_inclusive","ASTR_IS8_DEVICE_GEOMETRY_EXTRACTION",fcomm,step);

@@ -1,0 +1,64 @@
+--- /dev/null
++++ b/VTK/Rendering/OpenGL2/vtkASTRPixelAudit.h
+@@ -0,0 +1,41 @@
++// Optional diagnostics for the private ASTR dependency; disabled by default.
++#ifndef vtkASTRPixelAudit_h
++#define vtkASTRPixelAudit_h
++#include "vtk_glad.h"
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++
++inline void astrAuditReadPixels(GLint x,GLint y,GLsizei width,GLsizei height,
++  GLenum format,GLenum type,void* data)
++{
++  const char* option=std::getenv("ASTR_VTK_PIXEL_AUDIT");
++  if(!option || std::strcmp(option,"1"))
++  {
++    glReadPixels(x,y,width,height,format,type,data);
++    return;
++  }
++  GLint pack=0,alignment=0,row_length=0;
++  glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING,&pack);
++  glGetIntegerv(GL_PACK_ALIGNMENT,&alignment);
++  glGetIntegerv(GL_PACK_ROW_LENGTH,&row_length);
++  const int components=format==GL_RGBA?4:format==GL_RGB?3:format==GL_DEPTH_COMPONENT?1:0;
++  const int size=type==GL_UNSIGNED_BYTE?1:type==GL_FLOAT?4:0;
++  const long long bytes=static_cast<long long>(width)*height*components*size;
++  const auto start=std::chrono::steady_clock::now();
++  glReadPixels(x,y,width,height,format,type,data);
++  const double seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
++  const char* rank=std::getenv("OMPI_COMM_WORLD_RANK");
++  const char* step=std::getenv("ASTR_INSITU_PIXEL_STEP");
++  const char* product=std::getenv("ASTR_INSITU_PIXEL_PRODUCT");
++  std::fprintf(stdout,"ASTR_INSITU_PIXEL_READ rank=%s step=%s product=%s width=%d height=%d "
++    "format=%u type=%u payload_bytes=%lld pack_buffer=%d alignment=%d row_length=%d seconds=%.17g\n",
++    rank?rank:"0",step?step:"-1",product?product:"unattributed",width,height,format,type,
++    components && size?bytes:-1,pack,alignment,row_length,seconds);
++  std::fflush(stdout);
++}
++
++#undef glReadPixels
++#define glReadPixels astrAuditReadPixels
++#endif
+--- a/VTK/Rendering/OpenGL2/vtkOpenGLRenderWindow.cxx
++++ b/VTK/Rendering/OpenGL2/vtkOpenGLRenderWindow.cxx
+@@ -2,6 +2,7 @@
+ // SPDX-License-Identifier: BSD-3-Clause
+ #include "vtkOpenGLRenderWindow.h"
+ #include "vtk_glad.h"
++#include "vtkASTRPixelAudit.h"
+ 
+ #include "vtkOpenGLHelper.h"
+ 
+--- a/Remoting/Views/vtkIceTCompositePass.cxx
++++ b/Remoting/Views/vtkIceTCompositePass.cxx
+@@ -38,6 +38,7 @@
+ #include "vtkShaderProgram.h"
+ #include "vtkTextureObjectVS.h"
+ #include "vtkValuePass.h"
++#include "../../VTK/Rendering/OpenGL2/vtkASTRPixelAudit.h"
+ 
+ // this helps use avoid passing ice-t types in the public API of
+ // vtkIceTCompositePass, thus avoiding a public dependency on IceT.

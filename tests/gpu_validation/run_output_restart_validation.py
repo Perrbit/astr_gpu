@@ -56,6 +56,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
              monitor_resources=False, resource_baseline=None,
              output_config_override=None, omit_output_config=False,
              legacy_restart=False, legacy_output=False, no_field_io=False, grid=None,
+             resident_audit=False, pixel_audit=False,
              test_fault=None, failure_after_start=False, tgv_mapping=None, insitu_timing=False,
              device_sample_transport=None, postprocess_transport=None, nsys_trace=False):
     if failure_after_start and not reject:
@@ -232,6 +233,10 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
     env["ASTR_GPU_FILTER_WORKSPACE"] = args.filter_workspace
     if insitu_timing:
         env['ASTR_INSITU_TIMING']='1'
+    if resident_audit:
+        env['ASTR_INSITU_RESIDENT_AUDIT']='1'
+    if pixel_audit:
+        env['ASTR_VTK_PIXEL_AUDIT']='1'
     if device_sample_transport is not None:
         if device_sample_transport not in ('device-aware','pinned'):
             raise ValueError('device sample diagnostic requires an explicit supported transport')
@@ -321,7 +326,8 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
             raise ValueError('Nsight trace requires a successful uninstrumented GPU gate and nsys')
         if backend!='gpu':
             raise ValueError('Device trace requires GPU')
-        solver_command=[profiler,'profile','--trace=cuda,nvtx,mpi','--mpi-impl=openmpi',
+        trace_domains = getattr(args, 'nsys_trace_domains', 'cuda,nvtx,mpi')
+        solver_command=[profiler,'profile','--trace='+trace_domains,'--mpi-impl=openmpi',
             '--sample=none','--cpuctxsw=none','--cuda-memory-usage=true',
             '--cuda-um-cpu-page-faults=true','--cuda-um-gpu-page-faults=true',
             '--export=sqlite','--output='+str(case/'trace.rank%q{OMPI_COMM_WORLD_RANK}'),*solver_command]
@@ -545,7 +551,10 @@ def main():
     if args.statistics or args.legacy_statistics or args.case != "tgv":
         args.no_samples = True
     args.executable = args.executable.resolve(strict=True)
-    args.mpiexec = args.mpiexec.resolve(strict=True)
+    # HPC-X wrappers select the underlying executable from their invoked name.
+    args.mpiexec = args.mpiexec.absolute()
+    if not args.mpiexec.is_file():
+        parser.error("MPI launcher does not exist")
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=False)
     root = Path(__file__).resolve().parents[2]

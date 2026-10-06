@@ -233,6 +233,19 @@ if(ASTR_WITH_CATALYST)
   target_compile_definitions(astr_catalyst_adapter INTERFACE ASTR_WITH_CATALYST)
   target_link_libraries(astr_catalyst_adapter PRIVATE catalyst::catalyst MPI::MPI_C ${CMAKE_DL_LIBS})
   target_link_libraries(astr PRIVATE astr_catalyst_adapter)
+  if(ASTR_WITH_INSITU_DEVICE_RENDERING)
+    find_package(CUDAToolkit REQUIRED)
+    find_package(ParaView 6.1 REQUIRED COMPONENTS RemotingViews)
+    find_package(VTK REQUIRED COMPONENTS RenderingOpenGL2 AcceleratorsVTKmCore IOCatalystConduit)
+    set_target_properties(astr_catalyst_adapter PROPERTIES CXX_STANDARD 17)
+    target_compile_definitions(astr_catalyst_adapter PRIVATE ASTR_INSITU_DEVICE_RENDERING)
+    target_include_directories(astr_catalyst_adapter PRIVATE ../src_gpu ${CUDAToolkit_INCLUDE_DIRS})
+    target_link_libraries(astr_catalyst_adapter PRIVATE VTK::RenderingOpenGL2
+      VTK::AcceleratorsVTKmCore VTK::IOCatalystConduit ParaView::RemotingViews CUDA::cudart)
+    vtk_module_autoinit(TARGETS astr_catalyst_adapter MODULES VTK::RenderingOpenGL2)
+    # Python's narrow control bridge resolves only these exported local entry points.
+    set_target_properties(astr PROPERTIES ENABLE_EXPORTS YES)
+  endif()
   if(ASTR_WITH_INSITU_DEVICE)
     target_compile_definitions(astr_catalyst_adapter PRIVATE ASTR_INSITU_DEVICE_PRODUCTS)
     target_include_directories(astr_catalyst_adapter PRIVATE "${CUDAToolkit_INCLUDE_DIRS}")
@@ -249,11 +262,34 @@ if(ASTR_WITH_CATALYST)
       target_link_libraries(astr_insitu_device_products PRIVATE viskores::filter_contour)
     endif()
     target_compile_definitions(astr PRIVATE ASTR_INSITU_DEVICE_PRODUCTS)
+    if(ASTR_WITH_INSITU_DEVICE_RENDERING)
+      target_compile_definitions(astr_insitu_device_products PRIVATE ASTR_INSITU_DEVICE_RENDERING)
+    endif()
     target_link_libraries(astr PRIVATE astr_insitu_device_products)
   endif()
   if(BUILD_TESTING)
     if(ASTR_BUILD_INSITU_DEVICE_PROBES)
       find_package(VTK REQUIRED COMPONENTS CommonCore CommonMath)
+      find_package(VTK REQUIRED COMPONENTS RenderingOpenGL2)
+      add_executable(insitu_graphics_interop_probe EXCLUDE_FROM_ALL
+        ../tests/gpu_validation/insitu_graphics_interop_probe.cu insitu_device_map.cpp)
+      set_target_properties(insitu_graphics_interop_probe PROPERTIES CUDA_STANDARD 17
+        CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES native)
+      target_include_directories(insitu_graphics_interop_probe PRIVATE ../src_gpu ${ASTR_EGL_INCLUDE_DIR})
+      target_link_libraries(insitu_graphics_interop_probe PRIVATE VTK::RenderingOpenGL2 ${CMAKE_DL_LIBS})
+      if(ASTR_BUILD_INSITU_RENDER_PROBES)
+        find_package(VTK REQUIRED COMPONENTS AcceleratorsVTKmCore IOCatalystConduit)
+        add_executable(insitu_standard_device_probe EXCLUDE_FROM_ALL
+          ../tests/gpu_validation/insitu_standard_device_probe.cu insitu_device_map.cpp)
+        set_target_properties(insitu_standard_device_probe PROPERTIES CUDA_STANDARD 17
+          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES native)
+        target_include_directories(insitu_standard_device_probe PRIVATE ../src_gpu ${ASTR_EGL_INCLUDE_DIR})
+        target_compile_options(insitu_standard_device_probe PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
+        target_link_libraries(insitu_standard_device_probe PRIVATE VTK::RenderingOpenGL2
+          VTK::AcceleratorsVTKmCore VTK::IOCatalystConduit catalyst::catalyst
+          viskores::cont viskores::cuda ${CMAKE_DL_LIBS})
+        vtk_module_autoinit(TARGETS insitu_standard_device_probe MODULES VTK::RenderingOpenGL2)
+      endif()
       add_executable(insitu_device_compiler_probe EXCLUDE_FROM_ALL
         ../tests/gpu_validation/insitu_device_compiler_probe.cu)
       add_executable(insitu_device_rk45_probe EXCLUDE_FROM_ALL
@@ -856,6 +892,10 @@ if(ASTR_WITH_CATALYST)
     ../scripts/insitu/egl_identity.py
     ../scripts/insitu/image_publication.py
     DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/insitu)
+  if(ASTR_WITH_INSITU_DEVICE_RENDERING)
+    install(FILES ../scripts/insitu/device_render_pipeline.py
+      DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/insitu)
+  endif()
 endif()
 
 if(BUILD_TESTING)

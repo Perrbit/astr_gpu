@@ -11,4 +11,5 @@ program insitu_run_config_probe
     stop 1
   endif
   print *, 'PASS: parsed in-situ run configuration, enabled=',options%enabled
+  print '(A)', 'rendering_pipeline='//trim(options%rendering_pipeline)
 end program
