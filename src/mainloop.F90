@@ -17,6 +17,7 @@ module mainloop
   use stlaio,   only: get_unit
   use utility,  only: timereporter
   use output_runtime, only: begin_output_runtime,completed_output_runtime,new_output_enabled,initial_output_runtime
+  use output_runtime, only: observe_output_adaptive
   !
   implicit none
   !
@@ -112,6 +113,7 @@ module mainloop
     
     time_beg=ptime()
     phase_started=insitu_clock()
+    call observe_output_adaptive(nstep,time)
     call begin_insitu(nstep,time)
     call report_insitu_timing('insitu_initialization_inclusive',phase_started,nstep)
     call initial_output_runtime(loop_counter,rkfirst_pending)
@@ -128,6 +130,7 @@ module mainloop
       call report_insitu_timing('advance_inclusive',phase_started,nstep+1)
       call end_complete_step_timing(nstep)
       phase_started=insitu_clock()
+      call observe_output_adaptive(nstep+1,time+completed_step_dt)
       call sample_insitu_step(nstep+1,time+completed_step_dt,completed_step_dt)
       call report_insitu_timing('insitu_sample_inclusive',phase_started,nstep+1)
 #ifdef ASTR_AIR5_CHEMISTRY

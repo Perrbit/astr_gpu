@@ -1,0 +1,22 @@
+! Scheduling acceptance fixture, not a production event definition.
+! Internal periodic Cartesian 16^3/32^3 TGV, Re=1, dt=1e-3, FP64, 643e/643e.
+! Time and kinetic energy are nondimensional, using the primary input references.
+&output
+ directory='outdat/new',buffer_bytes=1048576,
+ host_budget_bytes=67108864,device_budget_bytes=67108864
+/
+&checkpoint
+ enabled=t,interval_steps=5,keep=2
+/
+&volume
+ enabled=t,interval_steps=5,adaptive=t,dense_interval_steps=1,event_ids='decay'
+/
+&slices
+ enabled=t,mode='time',interval_time=0.006,adaptive=t,dense_interval_time=0.002,
+ window_ids='burst',k_indices=4
+/
+&adaptive_output
+ enabled=t,indicator='tgv_kinetic_energy',monitor_mode='steps',monitor_steps=1,
+ event_ids='decay',s_ref=1,t_ref=1,r_on=0.74,r_off=0.723,hold_time=0.005,
+ window_ids='burst',window_modes='steps',window_steps(:,1)=3,7
+/

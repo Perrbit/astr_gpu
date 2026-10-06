@@ -1,7 +1,96 @@
 module statistic_gpu
   use cudafor
   implicit none
+  real(8),allocatable,device,save :: adaptive_partial_d(:),adaptive_reduced_d(:)
 contains
+  attributes(global) subroutine adaptive_energy_partial_kernel(im,jm,km)
+    use commarray_gpu, only: q_d
+    integer,value :: im,jm,km
+    real(8),shared :: sums(256)
+    integer,shared :: bad(256)
+    real(8) :: density,value,total
+    integer :: tid,node,stride,i,j,k,invalid
+    tid=threadIdx%x; node=(blockIdx%x-1)*blockDim%x+tid-1
+    stride=gridDim%x*blockDim%x; total=0; invalid=0
+    do while(node<im*jm*km)
+      i=mod(node,im); j=mod(node/im,jm); k=node/(im*jm)
+      density=q_d(i,j,k,1)
+      if(.not.(density>0.d0.and.density<=huge(density))) then
+        invalid=1
+      else
+        value=(q_d(i,j,k,2)**2+q_d(i,j,k,3)**2+q_d(i,j,k,4)**2)/density
+        if(.not.(value>=0.d0.and.value<=huge(value))) then
+          invalid=1
+        else
+          total=total+value
+        endif
+      endif
+      node=node+stride
+    enddo
+    sums(tid)=total; bad(tid)=invalid; call syncthreads()
+    stride=blockDim%x/2
+    do while(stride>0)
+      if(tid<=stride) then
+        sums(tid)=sums(tid)+sums(tid+stride); bad(tid)=max(bad(tid),bad(tid+stride))
+      endif
+      call syncthreads(); stride=stride/2
+    enddo
+    if(tid==1) adaptive_partial_d(blockIdx%x)=merge(sums(1),-1.d0,bad(1)==0)
+  end subroutine
+
+  attributes(global) subroutine adaptive_energy_reduce_kernel(n)
+    integer,value :: n
+    real(8),shared :: sums(256)
+    integer,shared :: bad(256)
+    integer :: tid,i,stride,invalid
+    real(8) :: total,value
+    tid=threadIdx%x; i=tid; total=0; invalid=0
+    do while(i<=n)
+      value=adaptive_partial_d(i)
+      if(.not.(value>=0.d0.and.value<=huge(value))) then
+        invalid=1
+      else
+        total=total+value
+      endif
+      i=i+blockDim%x
+    enddo
+    sums(tid)=total; bad(tid)=invalid; call syncthreads()
+    stride=blockDim%x/2
+    do while(stride>0)
+      if(tid<=stride) then
+        sums(tid)=sums(tid)+sums(tid+stride); bad(tid)=max(bad(tid),bad(tid+stride))
+      endif
+      call syncthreads(); stride=stride/2
+    enddo
+    if(tid==1) then
+      adaptive_reduced_d(1)=sums(1); adaptive_reduced_d(2)=real(bad(1),8)
+    endif
+  end subroutine
+
+  subroutine gpu_adaptive_energy_sum(local,ok)
+    use commvar, only: im,jm,km
+    use gpu_check, only: sync_after_kernel
+    use checkpoint_state_io, only: checkpoint_state_require
+    use mpi, only: MPI_COMM_WORLD
+    use ieee_arithmetic, only: ieee_is_finite
+    real(8),intent(out) :: local
+    logical,intent(out) :: ok
+    real(8) :: reduced(2)
+    integer :: blocks,status
+    blocks=min(256,max(1,(im*jm*km+255)/256))
+    if(.not.allocated(adaptive_partial_d)) then
+      allocate(adaptive_partial_d(blocks),adaptive_reduced_d(2),stat=status)
+      call checkpoint_state_require(status==0,MPI_COMM_WORLD,'adaptive monitor reduction allocation')
+    endif
+    call checkpoint_state_require(size(adaptive_partial_d)>=blocks,MPI_COMM_WORLD,'adaptive monitor extent changed')
+    call adaptive_energy_partial_kernel<<<blocks,256>>>(im,jm,km)
+    call sync_after_kernel('adaptive_energy_partial_kernel',.true.)
+    call adaptive_energy_reduce_kernel<<<1,256>>>(blocks)
+    call sync_after_kernel('adaptive_energy_reduce_kernel',.true.)
+    reduced=adaptive_reduced_d
+    local=reduced(1); ok=reduced(2)==0.and.ieee_is_finite(local).and.local>=0
+  end subroutine
+
   attributes(device) pure real(8) function determinant33_rows(a,b,c)
     implicit none
     real(8),intent(in) :: a(3),b(3),c(3)

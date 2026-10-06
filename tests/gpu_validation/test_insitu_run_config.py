@@ -24,6 +24,26 @@ implementation_path='lib/catalyst', pipeline_file='tgv.py', output_directory='ou
 @pytest.mark.parametrize('content,accepted',[
     ('&insitu_run /',True),
     (VALID,True),
+    (VALID.replace('step_interval=2',
+        "product_ids='q_surface.image','velocity_slice.geometry',product_modes='steps','time',"
+        "product_steps=2,0,product_times=0,0.003"),True),
+    (VALID.replace('step_interval=2',
+        "product_ids='q_surface.image','q_surface.image',product_modes='steps','steps',product_steps=2,3"),False),
+    (VALID.replace('step_interval=2',
+        "product_ids='unknown.image',product_modes='steps',product_steps=2"),False),
+    (VALID.replace('step_interval=2',
+        "products='channel_walls',product_ids='wall_pressure.image',product_modes='steps',product_steps=2"),False),
+    (VALID.replace('step_interval=2',
+        "product_ids='mean_favre_streamlines.image',product_modes='time',product_times=0.003"),True),
+    (VALID.replace('statistics=t','statistics=f').replace('step_interval=2',
+        "product_ids='mean_favre_streamlines.image',product_modes='time',product_times=0.003"),False),
+    (VALID.replace('step_interval=2',
+        "product_ids='q_surface.image',product_modes='time',product_times=0"),False),
+    (VALID.replace('step_interval=2',
+        "step_interval=2,product_ids='q_surface.image',product_modes='steps',product_steps=2"),False),
+    (VALID.replace('step_interval=2',
+        "derivative_backend='gpu',processing_backend='device',postprocess_transport='pinned',"
+        "product_ids='q_surface.geometry',product_modes='steps',product_steps=2"),False),
     (VALID.replace('step_interval=2', "step_interval=2,derivative_backend='gpu'"),True),
     (VALID.replace('step_interval=2', "step_interval=2,derivative_backend='unknown'"),False),
     (VALID.replace('step_interval=2', "step_interval=2,derivative_backend='gpu',products='q_streamlines'"),True),
@@ -159,6 +179,25 @@ def test_collective_statistic_products(tmp_path,flag):
 
 DEVICE = VALID.replace('step_interval=2',
     "step_interval=2,derivative_backend='gpu',processing_backend='device',postprocess_transport='pinned'")
+
+
+@pytest.mark.skipif(not COLLECTIVE or not MPIEXEC,reason='Set collective probe and MPI launcher')
+@pytest.mark.parametrize('other,accepted',[
+    ("product_ids='velocity_slice.geometry','q_surface.image',product_modes='time','steps',"
+     "product_steps=0,2,product_times=0.003,0",True),
+    ("product_ids='q_surface.image','velocity_slice.geometry',product_modes='steps','time',"
+     "product_steps=3,0,product_times=0,0.003",False),
+    ("product_ids='q_surface.image','velocity_slice.image',product_modes='steps','time',"
+     "product_steps=2,0,product_times=0,0.003",False),
+])
+def test_collective_product_clocks(tmp_path,other,accepted):
+    first="product_ids='q_surface.image','velocity_slice.geometry',product_modes='steps','time'," \
+          "product_steps=2,0,product_times=0,0.003"
+    (tmp_path/'rank0.nml').write_text(VALID.replace('step_interval=2',first))
+    (tmp_path/'rank1.nml').write_text(VALID.replace('step_interval=2',other))
+    result=subprocess.run([MPIEXEC,'-np','2',str(Path(COLLECTIVE).resolve()),str(tmp_path/'rank')],
+        capture_output=True,text=True,timeout=30)
+    assert (result.returncode==0)==accepted,result.stdout+result.stderr
 
 
 @pytest.mark.skipif(not PROBE, reason='Set ASTR_INSITU_CONFIG_PROBE')

@@ -9,6 +9,7 @@ contains
     use iso_fortran_env, only: int64
     use mpi
     use checkpoint_state_io, only: checkpoint_state_require
+    use insitu_product_schedule, only: product_scene_due,product_schedules_active
 #ifdef ASTR_INSITU_DEVICE_PRODUCTS
     use iso_c_binding, only: c_int,c_double,c_char,c_null_char,c_int64_t
     use commvar, only: im,jm,km,ia
@@ -52,7 +53,8 @@ contains
     started=MPI_Wtime()
     phase_started=insitu_clock()
     call range_push(1_c_int)
-    call capture_device_sample_gpu(mode,velocity,halo,derived,host_budget,device_budget,reserve,profile=='tgv256_demo')
+    call capture_device_sample_gpu(mode,velocity,halo,derived,host_budget,device_budget,reserve,profile=='tgv256_demo', &
+      .not.product_schedules_active().or.product_scene_due('q_surface'))
     call range_pop()
     call report_insitu_timing('device_sample_inclusive',phase_started,step)
     phase_started=insitu_clock()
@@ -60,12 +62,19 @@ contains
     covered=.false.;duration=0.d0;window_start=0.d0;window_end=0.d0
     ! These addresses are not consumed unless the explicit coverage flag is set.
     reynolds_pointer=c_devloc(halo);favre_pointer=c_devloc(halo)
-    if(statistics.and.profile=='all') then
-      call sample_statistics_gpu_mean_vectors(reynolds,favre,covered,duration)
+    if(statistics.and.profile=='all'.and.(.not.product_schedules_active().or. &
+      product_scene_due('mean_reynolds_streamlines').or.product_scene_due('mean_favre_streamlines'))) then
+      call sample_statistics_gpu_mean_vectors(reynolds,favre,covered,duration, &
+        product_scene_due('mean_reynolds_streamlines'),product_scene_due('mean_favre_streamlines'))
       if(covered) then
-        call extend_periodic_velocity_gpu(reynolds,reynolds_halo,[im,jm,km],MPI_COMM_WORLD,device_budget,reserve)
-        call extend_periodic_velocity_gpu(favre,favre_halo,[im,jm,km],MPI_COMM_WORLD,device_budget,reserve)
-        reynolds_pointer=c_devloc(reynolds_halo);favre_pointer=c_devloc(favre_halo)
+        if(product_scene_due('mean_reynolds_streamlines')) then
+          call extend_periodic_velocity_gpu(reynolds,reynolds_halo,[im,jm,km],MPI_COMM_WORLD,device_budget,reserve)
+          reynolds_pointer=c_devloc(reynolds_halo)
+        endif
+        if(product_scene_due('mean_favre_streamlines')) then
+          call extend_periodic_velocity_gpu(favre,favre_halo,[im,jm,km],MPI_COMM_WORLD,device_budget,reserve)
+          favre_pointer=c_devloc(favre_halo)
+        endif
         window_end=min(t,window(2));window_start=window_end-duration
       endif
     endif
@@ -89,7 +98,8 @@ contains
       ' face_exchanges=',exchanges,' frame_inclusive=',MPI_Wtime()-started
     deallocate(velocity,halo,derived)
     if(allocated(reynolds)) deallocate(reynolds,favre)
-    if(allocated(reynolds_halo)) deallocate(reynolds_halo,favre_halo)
+    if(allocated(reynolds_halo)) deallocate(reynolds_halo)
+    if(allocated(favre_halo)) deallocate(favre_halo)
 #else
     call checkpoint_state_require(.false.,MPI_COMM_WORLD,'device products are not built; no host fallback')
 #endif

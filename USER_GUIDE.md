@@ -850,6 +850,128 @@ CURVE、壁面、AIR5和渲染重分区尚未准入新设备入口。唯一更�
 其本地预算为附加6 GiB/GPU、16 GiB/节点、设备空闲至少2 GiB，不是
 生产规模默认。依赖、实测与范围见`documents/ASTR_INSITU_IS8_RESIDENT_ACCEPTANCE.md`。
 
+#### 各原位产品独立的固定输出周期
+
+在已有的 `&insitu_run` 配置中可填写以下数组。示例省略了已有的依赖路径、
+资源预算和渲染设置，不能作为完整启动输入使用：
+
+```fortran
+ products='all', statistics=f,
+ rendering_pipeline='compatible',
+ step_interval=0, time_interval=0.d0,
+ initial_frame=f, final_frame=f,
+ product_ids='q_surface.image','q_surface.geometry','instantaneous_streamlines.image',
+ product_modes='steps','steps','time',
+ product_steps=6,12,0,
+ product_times=0.d0,0.d0,0.008d0,
+```
+
+此例每六个完整步输出 Q 图片对，每十二步输出 Q 的 VTK 几何，每隔
+0.008 个模拟时间单位输出瞬时流线图片对。物理时间到期时取首个达到
+目标时间的完整步状态；一个步跨过多个目标时只输出当前状态，不补造过去帧。
+未列入 `product_ids` 的产品不输出。`products` 仍限定可选场景范围。
+
+产品标识由下表场景加 `.image` 或 `.geometry` 构成。`.image` 始终把
+JPEG/EPS 当作一对，不为两种格式分别设时钟。`.geometry` 写出 VTK
+几何，仅允许 `compatible` 入口；严格设备入口仍禁止几何回读和写出。
+
+| 场景标识 | 对应内容 |
+|---|---|
+| `q_surface` | 已有 Q 等值面预设 |
+| `velocity_slice` | 已有速度切片预设 |
+| `instantaneous_streamlines` | 同完整步瞬时速度流线 |
+| `crossing_streamlines` | 恒定速度跨分区诊断流线，不是另一种实际流场 |
+| `mean_reynolds_streamlines` | 已累计的 Reynolds 平均速度流线，要求 `products='all'`、`statistics=t` |
+| `mean_favre_streamlines` | 已累计的 Favre 平均速度流线，要求 `products='all'`、`statistics=t` |
+
+数组从第一项连续填写，长度一致，每项选择 `steps` 和正的 `product_steps`，
+或 `time` 和有限正的 `product_times`；另一种间隔必须为零。不允许同时
+设置共用的正 `step_interval/time_interval`、重复或未支持的标识。
+同一组条目的排列顺序不影响配置身份。`initial_frame/final_frame` 共用于
+所有已列产品。没有这些数组时，原共用时钟行为保持不变。
+
+到期产品由原生调度层决定，脚本不另设周期；Q 导数和各类流线只在请求时
+计算，均值只供给当步请求的种类。平均覆盖尚未建立时记录未覆盖，不用
+瞬时流线代替。仅已批准的 JPEG/EPS 文件发布错误可记录整组缺帧并继续，
+PF 固定时钟仍按原刻度推进；几何、数值、MPI 和编码错误仍终止。
+
+产品时钟、最近尝试/成功/缺帧身份、缺帧原因和下一目标随现有检查点保存，
+不增加独立续算文件。同配置同拓扑精确续接；只改变后处理通信方式，仍须
+显式 `restart_output='override'`，但保留各产品时钟。其他获准配置变更需
+显式覆盖，并以检查点完整步/时间重新建立产品时钟，不追补旧输出。
+覆盖不绕过能力准入；渲染入口互换续算和渲染重分区仍拒绝。
+
+该独立调度首轮仅用于非反应、周期笛卡尔 TGV，不准入壁面、CURVE 或
+AIR5。验证为 16³ CPU/GPU 推进与统计隔离，加既有 32³ GPU 实际产品，
+NP=1/2 x 分解。几何常驻入口的原范围不变；256³展示预设仍只允许原已
+批准的两个图片产品，不因配置可解析而扩大性能或重启认证。
+检查点、原生三维场/切片和正式统计沿用各自调度。可变频率见下一节。
+详见 `documents/ASTR_INSITU_PF_ACCEPTANCE.md`。
+
+#### 事件和重要时窗驱动的可变输出周期
+
+该功能默认关闭。首版只准入内部生成的 16³/32³、周期笛卡尔、非反应
+TGV。CPU 可使用原生场/切片和监测，实际图片仍要求既有 GPU/Catalyst
+渲染入口。壁面、CURVE、AIR5、256³展示和渲染重分区未准入。
+可分别加密已开启的三维场、切片、图片对及兼容入口的 VTK 几何。
+正式统计采样、检查点周期和求解器时间步不变，不自动开启关闭的产品。
+
+共享配置是 `datin/input.output` 最后的可选 `&adaptive_output` 组，
+不需要 Catalyst 也可解析。首期指标为 `tgv_kinetic_energy`，定义为
+`0.5*mean(rho*(u*u+v*v+w*w))/(roinf*uinf*uinf)`。在完整 RK 步结束后、
+渲染和文件产品调度前，从权威守恒状态计算；周期节点只计一次，halo
+不参与平均。GPU 上两级归约后，每 rank 每次监测仅回读两个 FP64 标量
+共 16 字节，再做标量 MPI 归约，不为判断事件下载三维场。
+
+| 共享字段 | 可选值或约束 |
+|---|---|
+| `enabled` | 缺省 `f`；设 `t` 才启用。 |
+| `indicator` | 当前仅 `tgv_kinetic_energy`。 |
+| `monitor_mode` | `steps` 配正 `monitor_steps`，或 `time` 配有限正 `monitor_time`，另一间隔为零。独立于任何写出周期。只有窗口、没有事件时，两间隔为零且不计算动能。 |
+| `event_ids` | 最多8个连续填写的独立事件标识，使用1至63个字母、数字、下划线或短横线；不重复。当前均消费同一次动能监测，可用不同参考尺度和阈值。 |
+| `s_ref`,`t_ref` | 与事件逐项对应的有限正参考尺度，与动能指标和模拟时间同量纲。无量纲输入采用同一无量纲约定，不使用当前指标幅值作分母。 |
+| `r_on`,`r_off`,`hold_time` | 逐项对应。`0<=r_off<r_on`，保持模拟时长有限且非负，不是墙钟时间。 |
+| `window_ids`,`window_modes` | 最多8个连续填写的独立窗口标识；每项可单独选 `steps` 或 `time`。 |
+| `window_steps(:,i)`,`window_times(:,i)` | 该窗口的 `[start,end)`，非负且递增；未选的另一种范围为零。 |
+
+初始化只建立首个动能历史。随后使用实际有效监测时间差计算
+`r=(t_ref/s_ref)*abs((s_new-s_old)/(t_new-t_old))`。
+`r>=r_on` 进入加密。最短保持时长达到后，只在新监测得到
+`r<=r_off` 时退出，不在中间步用旧变化率退出。多个关联事件和窗口
+取并集，不采用所有事件同时满足的条件。相邻完整步跨过整个窗口时，
+记录已跨过，不补造窗内状态。无效指标、非正时间差或中间运算溢出报错。
+
+产品仍在各自配置中给出常规间隔，并增加以下字段：
+
+| 产品配置 | 新字段 |
+|---|---|
+| 原生 `&volume` / `&slices` | `adaptive=t`，`dense_interval_steps` 或 `dense_interval_time`，`event_ids` / `window_ids`。 |
+| 原位 `&insitu_run` | 对应 `product_ids(i)` 的 `product_adaptive(i)=t`，`product_dense_steps(i)` 或 `product_dense_times(i)`，`product_events(:,i)` / `product_windows(:,i)`。 |
+
+常规和加密间隔必须同一种口径，加密间隔严格较小。至少关联一个已登记
+事件或窗口；未知标识、MPI 配置不一致、未启用却填写加密参数均拒绝。
+配置顺序不改变身份。`&checkpoint` 不接受自适应参数。
+
+进入加密时立即输出当前完整步状态，同步命中多个条件也只写一次。
+已经加密时新增条件不额外插帧。每次成功输出后，从其实际步/时间起算
+下一目标；退出后改用常规间隔，不强制退出帧。仅已批准的 JPEG/EPS
+发布错误允许缺帧继续：最近成功身份不变，用最近失败尝试等待当前档位
+的一个间隔，避免每步重复尝试。数值、MPI、编码和几何错误仍终止。
+
+监测历史、事件保持、窗口位置及产品成功/失败时钟保存在已有检查点
+控制文件内，不新增附属文件。同配置恢复逐值续接；变更仍要求显式
+`restart_output='override'`。修改事件只重设依赖它的产品，修改窗口亦然；
+改产品间隔或关联只重设该产品。正式累计统计和不受影响的固定时钟
+保留。仅变后处理通信保留监测和全部时钟。重设日志含标识及原因。
+
+原生短测示例：`scripts/output/input.output.tgv.adaptive.example`。
+原位模板：`scripts/insitu/presets/tgv32/adaptive.nml.in`，需填入相匹配的
+Catalyst 实现和脚本路径。示例阈值仅检验 Re=1、dt=1e-3 的短程调度，
+不是通用湍流事件判据或生产默认。32³图片短测使用独立冻结的阈值配置。
+可选 `ASTR_INSITU_TIMING=1` 分别记录监测、事件时钟/更新、产品时钟及
+原生产品的包含性耗时；不得与其内部子阶段相加。
+范围、续接和实测证据见 `documents/ASTR_INSITU_AP_ACCEPTANCE.md`。
+
 原位首版 IS7 的有界能力矩阵、依赖条件和完整阶段耗时见
 `documents/ASTR_INSITU_IS7_ACCEPTANCE.md`。独立短测入口为
 `scripts/insitu/start_tgv_acceptance.py`，要求显式指定程序、MPI 和 Catalyst

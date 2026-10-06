@@ -69,6 +69,8 @@ set(ASTR_SOURCES
   insitu_geometry.F90
   insitu_session.F90
   insitu_schedule.F90
+  adaptive_output.F90
+  insitu_product_schedule.F90
   insitu_checkpoint_batch.F90
   insitu_time_integral.F90
   insitu_velocity_statistics.F90
@@ -197,6 +199,7 @@ set_target_properties(astr PROPERTIES LINKER_LANGUAGE Fortran)
 
 if(ASTR_WITH_CATALYST)
   find_package(MPI REQUIRED COMPONENTS C)
+  set_target_properties(astr PROPERTIES ENABLE_EXPORTS YES)
   if(ASTR_WITH_INSITU_DEVICE OR (BUILD_TESTING AND ASTR_BUILD_INSITU_DEVICE_PROBES))
     if(CMAKE_VERSION VERSION_LESS 3.24)
       message(FATAL_ERROR "Device in-situ products/probes require CMake 3.24 or later")
@@ -449,14 +452,14 @@ if(BUILD_TESTING)
   target_link_libraries(checkpoint_state_probe PRIVATE MPI::MPI_Fortran)
 
   add_executable(output_config_probe EXCLUDE_FROM_ALL
-    output_config.F90 ../tests/gpu_validation/output_config_probe.F90)
+    insitu_schedule.F90 adaptive_output.F90 output_config.F90 ../tests/gpu_validation/output_config_probe.F90)
   set_target_properties(output_config_probe PROPERTIES
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/output_config_modules")
   target_include_directories(output_config_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/output_config_modules")
   target_link_libraries(output_config_probe PRIVATE MPI::MPI_Fortran)
 
   add_executable(output_config_collective_probe EXCLUDE_FROM_ALL
-    output_config.F90 ../tests/gpu_validation/output_config_collective_probe.F90)
+    insitu_schedule.F90 adaptive_output.F90 output_config.F90 ../tests/gpu_validation/output_config_collective_probe.F90)
   set_target_properties(output_config_collective_probe PROPERTIES
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/output_collective_modules")
   target_include_directories(output_config_collective_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/output_collective_modules")
@@ -508,6 +511,21 @@ if(BUILD_TESTING)
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_schedule_modules")
   target_include_directories(insitu_schedule_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/insitu_schedule_modules")
 
+  add_executable(adaptive_output_probe EXCLUDE_FROM_ALL
+    insitu_schedule.F90 adaptive_output.F90 ../tests/gpu_validation/adaptive_output_probe.F90)
+  set_target_properties(adaptive_output_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/adaptive_output_modules")
+  target_include_directories(adaptive_output_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/adaptive_output_modules")
+  target_link_libraries(adaptive_output_probe PRIVATE MPI::MPI_Fortran)
+
+  add_executable(insitu_product_schedule_probe EXCLUDE_FROM_ALL
+    insitu_schedule.F90 adaptive_output.F90 insitu_run_config.F90 insitu_product_schedule.F90
+    ../tests/gpu_validation/insitu_product_schedule_probe.F90)
+  set_target_properties(insitu_product_schedule_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_product_schedule_modules")
+  target_include_directories(insitu_product_schedule_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/insitu_product_schedule_modules")
+  target_link_libraries(insitu_product_schedule_probe PRIVATE MPI::MPI_Fortran)
+
   add_executable(insitu_resource_budget_probe EXCLUDE_FROM_ALL
     insitu_resource_budget.F90 ../tests/gpu_validation/insitu_resource_budget_probe.F90)
   set_target_properties(insitu_resource_budget_probe PROPERTIES
@@ -515,13 +533,14 @@ if(BUILD_TESTING)
   target_include_directories(insitu_resource_budget_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/insitu_resource_modules")
 
   add_executable(insitu_run_config_probe EXCLUDE_FROM_ALL
-    insitu_run_config.F90 ../tests/gpu_validation/insitu_run_config_probe.F90)
+    insitu_schedule.F90 adaptive_output.F90 insitu_run_config.F90 ../tests/gpu_validation/insitu_run_config_probe.F90)
   set_target_properties(insitu_run_config_probe PROPERTIES
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_config_modules")
   target_include_directories(insitu_run_config_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/insitu_config_modules")
+  target_link_libraries(insitu_run_config_probe PRIVATE MPI::MPI_Fortran)
 
   add_executable(insitu_config_collective_probe EXCLUDE_FROM_ALL
-    insitu_run_config.F90 insitu_config_collective.F90
+    insitu_schedule.F90 adaptive_output.F90 insitu_run_config.F90 insitu_config_collective.F90
     ../tests/gpu_validation/insitu_config_collective_probe.F90)
   set_target_properties(insitu_config_collective_probe PROPERTIES
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_collective_modules")
@@ -891,10 +910,13 @@ if(ASTR_WITH_CATALYST)
     ../scripts/insitu/tgv_streamlines.py
     ../scripts/insitu/egl_identity.py
     ../scripts/insitu/image_publication.py
-    DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/insitu)
+    ../scripts/insitu/product_dispatch.py
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/insitu
+    COMPONENT InsituTools)
   if(ASTR_WITH_INSITU_DEVICE_RENDERING)
     install(FILES ../scripts/insitu/device_render_pipeline.py
-      DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/insitu)
+      DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/insitu
+      COMPONENT InsituTools)
   endif()
 endif()
 

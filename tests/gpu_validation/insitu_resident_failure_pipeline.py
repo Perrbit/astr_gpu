@@ -27,7 +27,8 @@ def capture(view):
 
 
 def publish(path,jpeg,eps):
-    if fault=='image' and 'step00000002' in path.name:
+    if ((fault=='image' and 'step00000002' in path.name) or
+        (fault=='ap_image' and 'step00000005' in path.name and path.name.startswith('q_surface.'))):
         from image_publication import write_payload
         module=original_publish.__globals__
 

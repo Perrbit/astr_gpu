@@ -12,6 +12,8 @@ module output_archive
   use output_lineage, only: prepare_output_lineage,stage_output_lineage
   use insitu_schedule, only: sample_schedule,configure_schedule,poll_schedule, &
     write_schedule_state,restore_schedule_state
+  use adaptive_output, only: adaptive_clock,adaptive_binding,adaptive_binding_equal,adaptive_dependencies_reset, &
+    configure_adaptive_clock,poll_adaptive_clock,report_adaptive_clock,adaptive_clock_file,adaptive_shared_config
   use insitu_checkpoint_batch, only: create_batch,copy_batch_file,file_fingerprint
   use checkpoint_state_io, only: checkpoint_state_identity,checkpoint_state_require
   use checkpoint_bundle, only: seal_checkpoint_bundle,publish_checkpoint_bundle,write_checkpoint_resource_refs, &
@@ -32,6 +34,7 @@ module output_archive
   public :: configure_archives,begin_archives,observe_archives,archive_control_file,archives_enabled
   type(output_options),save :: options
   type(sample_schedule),save :: schedules(2)
+  type(adaptive_clock),save :: adaptive_clocks(2)
   type(output_product_options),save :: products(2)
   integer(int64),save :: last_steps(2)=-1,origin_steps(2)=0
   integer(int64),save :: segment_ids(2)=-1,segment_bytes(2)=0,segment_crc(2)=0
@@ -120,6 +123,12 @@ contains
         call configure_schedule(schedules(p),trim(products(p)%mode),products(p)%interval_steps, &
           products(p)%interval_time,origin_steps(p),origin_times(p),effective_initial(p),.false.,ok)
         call check(ok,'invalid '//trim(labels(p))//' schedule')
+        if(products(p)%adaptive%enabled) then
+          call configure_adaptive_clock(adaptive_clocks(p),products(p)%adaptive,products(p)%mode, &
+            products(p)%interval_steps,products(p)%interval_time,origin_steps(p),origin_times(p), &
+            effective_initial(p),products(p)%final_frame,ok)
+          call check(ok,'invalid adaptive '//trim(labels(p))//' clock')
+        endif
       endif
     enddo
   end subroutine
@@ -131,20 +140,22 @@ contains
     type(output_product_options) :: saved(2)
     integer(int64) :: indices(256,3),saved_last(2),steps(2),clock_step
     real(real64) :: times(2),clock_time
-    logical :: initial(2),checkpoint_enabled,ok,same
+    logical :: initial(2),checkpoint_enabled,ok,same,same_flags(2),clock_same
     integer :: unit,err,closed,p
     character(8) :: magic
+    magic='ASTROA02'
+    if(any(products%adaptive%enabled)) magic='ASTROA03'
     if(writing) then
       err=0; closed=0
       if(mpirank==0) then
         open(newunit=unit,file=path,status='new',access='stream',form='unformatted', &
           convert='little_endian',action='write',iostat=err)
         if(err==0) then
-          write(unit,iostat=err) 'ASTROA02',identity%step,identity%time,options%checkpoint%enabled, &
+          write(unit,iostat=err) magic,identity%step,identity%time,options%checkpoint%enabled, &
             last_steps,origin_steps,origin_times,effective_initial
           do p=1,2
             if(err/=0) exit
-            call write_product(unit,products(p),err)
+            call write_product(unit,products(p),err,magic=='ASTROA03')
           enddo
           if(err==0) write(unit,iostat=err) options%i_indices,options%j_indices,options%k_indices
           do p=1,2
@@ -153,6 +164,15 @@ contains
             call write_schedule_state(unit,schedules(p),trim(labels(p)),identity%step,identity%time,ok)
             if(.not.ok) err=1
           enddo
+          if(magic=='ASTROA03') then
+            do p=1,2
+              if(err/=0) exit
+              if(.not.products(p)%enabled.or..not.products(p)%adaptive%enabled) cycle
+              call adaptive_clock_file(unit,.true.,adaptive_clocks(p),products(p)%adaptive, &
+                identity%step,identity%time,clock_same,ok)
+              if(.not.ok) err=1
+            enddo
+          endif
           if(err==0) write(unit,iostat=err) segment_ids,segment_bytes,segment_crc
           close(unit,iostat=closed)
         endif
@@ -163,7 +183,8 @@ contains
         convert='little_endian',action='read',iostat=err)
       call check(err==0,'missing schedule history')
       read(unit,iostat=err) magic,clock_step,clock_time,checkpoint_enabled,saved_last,steps,times,initial
-      call check(err==0.and.magic=='ASTROA02'.and.clock_step==identity%step.and.clock_time==identity%time, &
+      call check(err==0.and.(magic=='ASTROA02'.or.magic=='ASTROA03').and. &
+        clock_step==identity%step.and.clock_time==identity%time, &
         'schedule history clock/version')
       call check((checkpoint_enabled.eqv.options%checkpoint%enabled).or.options%restart_output=='override', &
         'checkpoint switch changed without override')
@@ -172,6 +193,11 @@ contains
           saved(p)%initial_frame,saved(p)%final_frame,saved(p)%fields, &
           saved(p)%velocity_gradient,saved(p)%vorticity,saved(p)%qcriterion
         call check(err==0,'read product options')
+        if(magic=='ASTROA03') then
+          read(unit,iostat=err) saved(p)%adaptive%enabled,saved(p)%adaptive%dense_steps,saved(p)%adaptive%dense_time, &
+            saved(p)%adaptive%events,saved(p)%adaptive%windows
+          call check(err==0,'read adaptive product options')
+        endif
       enddo
       read(unit,iostat=err) indices(:,1),indices(:,2),indices(:,3)
       call check(err==0,'read slice selections')
@@ -183,10 +209,11 @@ contains
           call restore_schedule_state(unit,schedules(p),trim(labels(p)),identity%step,identity%time,ok)
           call check(ok,'invalid saved product history')
         endif
-        same=same_product(saved(p),products(p))
+        same=same_product(saved(p),products(p)).and..not.adaptive_dependencies_reset(products(p)%adaptive)
         if(p==2) same=same.and.all(indices(:,1)==options%i_indices).and. &
           all(indices(:,2)==options%j_indices).and.all(indices(:,3)==options%k_indices)
         call check(same.or.options%restart_output=='override','product options changed without override')
+        same_flags(p)=same
         call check(saved_last(p)>=-1.and.saved_last(p)<=identity%step,'invalid last frame step')
         if(same) then
           last_steps(p)=saved_last(p); origin_steps(p)=steps(p); origin_times(p)=times(p)
@@ -194,12 +221,29 @@ contains
         else
           last_steps(p)=identity%step; origin_steps(p)=identity%step; origin_times(p)=identity%time
           effective_initial(p)=.false.
+          if(adaptive_shared_config%enabled.and.mpirank==0) write(*,'(3a)') &
+            'ASTR_AP_RESET product ',trim(labels(p)),' reason=product_configuration_or_dependency_change'
           if(products(p)%enabled) then
             call configure_schedule(schedules(p),trim(products(p)%mode),products(p)%interval_steps, &
               products(p)%interval_time,origin_steps(p),origin_times(p),.false.,.false.,ok)
             call check(ok,'invalid overridden product schedule')
           endif
         endif
+      enddo
+      if(magic=='ASTROA03') then
+        do p=1,2
+          if(.not.saved(p)%enabled.or..not.saved(p)%adaptive%enabled) cycle
+          call adaptive_clock_file(unit,.false.,adaptive_clocks(p),products(p)%adaptive, &
+            identity%step,identity%time,clock_same,ok)
+          call check(ok.and.(clock_same.or.options%restart_output=='override'),'invalid adaptive archive history')
+        enddo
+      endif
+      do p=1,2
+        if(.not.products(p)%enabled.or..not.products(p)%adaptive%enabled.or.same_flags(p)) cycle
+        call configure_adaptive_clock(adaptive_clocks(p),products(p)%adaptive,products(p)%mode, &
+          products(p)%interval_steps,products(p)%interval_time,identity%step,identity%time, &
+          .false.,products(p)%final_frame,ok)
+        call check(ok,'invalid overridden adaptive archive clock')
       enddo
       read(unit,iostat=err) parent_ids,parent_bytes,parent_crc
       call check(err==0,'missing saved output segment identity')
@@ -214,12 +258,15 @@ contains
     endif
   end subroutine
 
-  subroutine write_product(unit,product,err)
+  subroutine write_product(unit,product,err,adaptive)
     integer,intent(in) :: unit
     type(output_product_options),intent(in) :: product
     integer,intent(out) :: err
+    logical,intent(in) :: adaptive
     write(unit,iostat=err) product%enabled,product%mode,product%interval_steps,product%interval_time, &
       product%initial_frame,product%final_frame,product%fields,product%velocity_gradient,product%vorticity,product%qcriterion
+    if(err==0.and.adaptive) write(unit,iostat=err) product%adaptive%enabled,product%adaptive%dense_steps, &
+      product%adaptive%dense_time,product%adaptive%events,product%adaptive%windows
   end subroutine
 
   logical function same_product(a,b) result(same)
@@ -228,7 +275,7 @@ contains
       a%interval_time==b%interval_time.and.(a%initial_frame.eqv.b%initial_frame).and. &
       (a%final_frame.eqv.b%final_frame).and.a%fields==b%fields.and. &
       (a%velocity_gradient.eqv.b%velocity_gradient).and.(a%vorticity.eqv.b%vorticity).and. &
-      (a%qcriterion.eqv.b%qcriterion)
+      (a%qcriterion.eqv.b%qcriterion).and.adaptive_binding_equal(a%adaptive,b%adaptive)
   end function
 
   subroutine begin_archives(identity,reuse)
@@ -395,18 +442,36 @@ contains
   end subroutine
 
   subroutine observe_archives(identity,is_final)
+    use benchmark_runtime, only: insitu_clock,report_insitu_timing
     type(checkpoint_state_identity),intent(in) :: identity
     logical,intent(in) :: is_final
     logical :: emit,ok
     integer(int64) :: crossed
     integer :: p
+    real(real64) :: started
     do p=1,2
       if(.not.products(p)%enabled) cycle
-      call poll_schedule(schedules(p),identity%step,identity%time,.false.,emit,crossed,ok)
+      ! Restored/overridden identities must not leave an unpublishable pending clock.
+      if(last_steps(p)==identity%step) cycle
+      if(products(p)%adaptive%enabled) then
+        call poll_adaptive_clock(adaptive_clocks(p),products(p)%adaptive,identity%step,identity%time,is_final,emit,ok)
+      else
+        call poll_schedule(schedules(p),identity%step,identity%time,.false.,emit,crossed,ok)
+      endif
       call check(ok,'invalid complete-step archive clock')
       emit=emit.or.(is_final.and.products(p)%final_frame)
       if(.not.emit.or.last_steps(p)==identity%step) cycle
+      started=insitu_clock()
       call write_frame(p,identity)
+      call report_insitu_timing('archive_'//trim(labels(p))//'_inclusive',started,int(identity%step))
+      if(products(p)%adaptive%enabled) then
+        if(mpirank==0) write(*,'(a,a,a,i0,a,es24.16,a,l1,a,i0,a,i0,a,es24.16)') &
+          'ASTR_AP_PRODUCT id=',trim(labels(p)),' step=',identity%step,' time=',identity%time, &
+          ' dense=',adaptive_clocks(p)%dense,' reason=',adaptive_clocks(p)%reason, &
+          ' target_step=',adaptive_clocks(p)%requested_step,' target_time=',adaptive_clocks(p)%requested_time
+        call report_adaptive_clock(adaptive_clocks(p),0,0,ok)
+        call check(ok,'adaptive archive publication history')
+      endif
       last_steps(p)=identity%step
     enddo
   end subroutine

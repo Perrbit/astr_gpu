@@ -46,8 +46,9 @@ def field_difference(first, second, atol=0.):
     return worst
 
 
-def cross_backend_statistics_difference(gpu,cpu):
+def cross_backend_statistics_difference(gpu,cpu,cells=32):
     """Compare unique periodic nodes, not CPU seam copies or storage-role bits."""
+    global_cells=cells
     worst=0.
     with h5py.File(gpu) as actual,h5py.File(cpu) as expected:
         a,b=actual['identity'][...],expected['identity'][...]
@@ -62,7 +63,7 @@ def cross_backend_statistics_difference(gpu,cpu):
         np.testing.assert_array_equal(actual['partitions'][...],expected['partitions'][...])
         for component in range(1,35):
             name=f'q{component:04d}'
-            a,b=actual[name][:32,:32,:32],expected[name][:32,:32,:32]
+            a,b=actual[name][:global_cells,:global_cells,:global_cells],expected[name][:global_cells,:global_cells,:global_cells]
             assert np.isfinite(a).all() and np.isfinite(b).all()
             error=float(np.max(abs(a-b)))
             assert error<=2e-10,(name,error)
@@ -74,7 +75,7 @@ def cross_backend_statistics_difference(gpu,cpu):
             origin,cells=partition[:3],partition[3:6]
             assert partition[6]==0
             full=cells+1
-            owned=cells+(origin+cells==32)
+            owned=cells+(origin+cells==global_cells)
             mask=np.ones(tuple(full[::-1]),dtype=bool)
             mask[:owned[2],:owned[1],:owned[0]]=False
             selection=tuple(slice(int(o),int(o+n)) for o,n in zip(origin[::-1],full[::-1]))
@@ -442,7 +443,7 @@ def check_device_render(case, ranks, steps, statistics=True, mean_steps=None):
     return pictures
 
 
-def check_geometry_fields(case, step):
+def check_geometry_fields(case, step, statistics=True, products=None, device_products=True):
     from vtkmodules.vtkIOXML import vtkXMLPPolyDataReader
     from vtkmodules.util.numpy_support import vtk_to_numpy
     checkpoint = case / f'outdat/new/checkpoints/step{step:012d}'
@@ -460,15 +461,20 @@ def check_geometry_fields(case, step):
                 -.15*(np.roll(value,-2,axis)-np.roll(value,2,axis))
                 +(np.roll(value,-3,axis)-np.roll(value,3,axis))/60)/h
     q = periodic(-.5*np.einsum('...ij,...ji->...',gradient,gradient))
-    with h5py.File(checkpoint / 'statistics.h5') as state:
-        # The checkpoint prepends three window/time fields to device state slots.
-        means = {f'mean_{component}_{kind}':periodic(state[f'q{index:04d}'][...])
-            for index,(kind,component) in enumerate(
-                ((kind,component) for kind in ('reynolds','favre') for component in ('u','v','w')),10)}
+    means={}
+    if statistics:
+        with h5py.File(checkpoint / 'statistics.h5') as state:
+            # The checkpoint prepends three window/time fields to device state slots.
+            means = {f'mean_{component}_{kind}':periodic(state[f'q{index:04d}'][...])
+                for index,(kind,component) in enumerate(
+                    ((kind,component) for kind in ('reynolds','favre') for component in ('u','v','w')),10)}
     expected = dict(zip(('u','v','w'),velocity), Q_rs=q, **means)
     worst = 0.
     paths=sorted((case / 'outdat/render').glob(f'*.step{step:08d}.pvtp'))
-    assert len(paths)==6,paths
+    if products is None:
+        assert len(paths)==6,paths
+    else:
+        assert {path.name.split('.step')[0] for path in paths}==set(products),paths
     for path in paths:
         reader=vtkXMLPPolyDataReader();reader.SetFileName(str(path));reader.Update()
         data=reader.GetOutput()
@@ -496,7 +502,7 @@ def check_geometry_fields(case, step):
             worst=max(worst,error)
         if path.name.startswith('q_surface'):
             assert np.max(abs(vtk_to_numpy(data.GetPointData().GetArray('Q_rs'))-.25))<=2e-10
-        if 'streamlines' in path.name:
+        if 'streamlines' in path.name and device_products:
             status=vtk_to_numpy(data.GetPointData().GetArray('termination_status'))
             residual=vtk_to_numpy(data.GetPointData().GetArray('untravelled_arc_length'))
             assert set(status.tolist()) <= {1.,3.,10.}

@@ -425,7 +425,7 @@ contains
     output_d(i,j,k,:)=r
   end subroutine
 
-  subroutine sample_statistics_gpu_mean_vectors(reynolds,favre,covered,duration)
+  subroutine sample_statistics_gpu_mean_vectors(reynolds,favre,covered,duration,want_reynolds,want_favre)
     use commvar, only: im,jm,km,ia,ja,ka,lreadgrid,numq,flowtype
     use bc, only: bctype
     use mpi
@@ -434,11 +434,18 @@ contains
     real(8),device,allocatable,intent(out) :: reynolds(:,:),favre(:,:)
     logical,intent(out) :: covered
     real(8),intent(out) :: duration
+    logical,optional,intent(in) :: want_reynolds,want_favre
+    logical :: need_r,need_f
     real(8),device,allocatable :: canonical(:,:,:,:)
     integer,device,allocatable :: invalid(:)
-    integer :: nodes,status,ierr,bad,generation,has_state,lowest,highest
+    integer :: nodes,status,ierr,bad,generation,has_state,lowest,highest,nf,nr
     integer(int64) :: host_bytes,transport_bytes,d2h,h2d,exchanges,required,free_bytes,total_bytes
     covered=.false.; duration=0.d0
+    need_r=.true.; need_f=.true.
+    if(present(want_reynolds)) need_r=want_reynolds
+    if(present(want_favre)) need_f=want_favre
+    call checkpoint_state_require(need_r.or.need_f,MPI_COMM_WORLD,'mean vectors need an explicit requested field')
+    nr=merge(3,0,need_r); nf=nr+merge(3,0,need_f)
     call checkpoint_state_require(.not.lreadgrid.and.all(bctype==1).and.numq==5.and. &
       all([ia,ja,ka]==32).and.trim(flowtype)=='tgv',MPI_COMM_WORLD,'device mean vectors require periodic Cartesian TGV')
     has_state=merge(1,0,allocated(state_d))
@@ -451,7 +458,7 @@ contains
     call require_cuda(cudaGetLastError(),'device mean coverage scalar')
     call checkpoint_state_require(ieee_is_finite(duration).and.duration>=0.d0,MPI_COMM_WORLD,'invalid device mean coverage')
     nodes=(im+1)*(jm+1)*(km+1)
-    required=int(nodes,int64)*12*8+4
+    required=int(nodes,int64)*int(2*nf,int64)*8+52
     call velocity_transport_usage_gpu(host_bytes,transport_bytes,d2h,h2d,exchanges,generation)
     call checkpoint_state_require(transport_bytes>0,MPI_COMM_WORLD,'device mean vectors require initialized transport')
     call admit_statistics_device_allocation(required+transport_bytes)
@@ -461,10 +468,10 @@ contains
       MPI_COMM_WORLD,'device mean vectors reserve')
     call checkpoint_state_require(required<=free_bytes-max(device_headroom,1073741824_int64), &
       MPI_COMM_WORLD,'device mean vectors allocation budget')
-    allocate(canonical(0:im,0:jm,0:km,6),invalid(1),stat=status)
+    allocate(canonical(0:im,0:jm,0:km,nf),invalid(1),stat=status)
     call checkpoint_state_require(status==0,MPI_COMM_WORLD,'device mean vectors allocation')
     invalid=0
-    call mean_vectors_kernel<<<(nodes+255)/256,256>>>(canonical,invalid,im,jm,km,duration)
+    call mean_vectors_kernel<<<(nodes+255)/256,256>>>(canonical,invalid,im,jm,km,duration,nf,nr)
     call require_cuda(cudaDeviceSynchronize(),'device mean vectors pack')
     bad=invalid(1)
     call checkpoint_state_require(bad==0,MPI_COMM_WORLD,'nonfinite or inconsistent device mean coverage/values')
@@ -478,21 +485,21 @@ contains
       deallocate(canonical,invalid)
       return
     endif
-    call complete_periodic_fields_gpu(canonical,[im,jm,km],6,MPI_COMM_WORLD)
-    allocate(reynolds(3,nodes),favre(3,nodes),stat=status)
+    call complete_periodic_fields_gpu(canonical,[im,jm,km],nf,MPI_COMM_WORLD)
+    allocate(reynolds(3,merge(nodes,1,need_r)),favre(3,merge(nodes,1,need_f)),stat=status)
     call checkpoint_state_require(status==0,MPI_COMM_WORLD,'device mean vector output allocation')
-    call split_mean_vectors_kernel<<<(nodes+255)/256,256>>>(canonical,reynolds,favre,im,jm,km)
+    call split_mean_vectors_kernel<<<(nodes+255)/256,256>>>(canonical,reynolds,favre,im,jm,km,nf,nr,need_f)
     call require_cuda(cudaDeviceSynchronize(),'device mean vector split')
     deallocate(canonical,invalid)
     covered=.true.
   end subroutine
 
-  attributes(global) subroutine mean_vectors_kernel(canonical,invalid,im,jm,km,duration)
-    integer,value :: im,jm,km
+  attributes(global) subroutine mean_vectors_kernel(canonical,invalid,im,jm,km,duration,nf,nr)
+    integer,value :: im,jm,km,nf,nr
     real(8),value :: duration
-    real(8),device,intent(out) :: canonical(0:im,0:jm,0:km,6)
+    real(8),device,intent(out) :: canonical(0:im,0:jm,0:km,nf)
     integer,device,intent(inout) :: invalid(*)
-    integer :: node,i,j,k,c,ignored
+    integer :: node,i,j,k,c,ignored,source
     node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(node>=(im+1)*(jm+1)*(km+1)) return
     i=mod(node,im+1); j=mod(node/(im+1),jm+1); k=node/((im+1)*(jm+1))
@@ -500,35 +507,39 @@ contains
     if(i==im.or.j==jm.or.k==km) return
     if(.not.ieee_is_finite(state_d(i,j,k,5)).or.state_d(i,j,k,5)/=duration) ignored=atomicExch(invalid(1),1)
     if(duration<=0.d0) return
-    do c=1,6
-      if(.not.ieee_is_finite(state_d(i,j,k,c+6))) ignored=atomicExch(invalid(1),1)
-      canonical(i,j,k,c)=state_d(i,j,k,c+6)
+    do c=1,nf
+      source=c+6
+      if(nr==0) source=source+3
+      if(.not.ieee_is_finite(state_d(i,j,k,source))) ignored=atomicExch(invalid(1),1)
+      canonical(i,j,k,c)=state_d(i,j,k,source)
     enddo
   end subroutine
 
-  attributes(global) subroutine split_mean_vectors_kernel(canonical,reynolds,favre,im,jm,km)
-    integer,value :: im,jm,km
-    real(8),device,intent(in) :: canonical(0:im,0:jm,0:km,6)
+  attributes(global) subroutine split_mean_vectors_kernel(canonical,reynolds,favre,im,jm,km,nf,nr,need_f)
+    integer,value :: im,jm,km,nf,nr
+    logical,value :: need_f
+    real(8),device,intent(in) :: canonical(0:im,0:jm,0:km,nf)
     real(8),device,intent(out) :: reynolds(3,*),favre(3,*)
     integer :: node,i,j,k
     node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(node>=(im+1)*(jm+1)*(km+1)) return
     i=mod(node,im+1); j=mod(node/(im+1),jm+1); k=node/((im+1)*(jm+1))
-    reynolds(:,node+1)=canonical(i,j,k,1:3)
-    favre(:,node+1)=canonical(i,j,k,4:6)
+    if(nr>0) reynolds(:,node+1)=canonical(i,j,k,1:3)
+    if(need_f) favre(:,node+1)=canonical(i,j,k,nr+1:nr+3)
   end subroutine
 
 #ifdef ASTR_BUILD_TESTING
-  subroutine check_device_statistics_gpu_means(means,covered)
+  subroutine check_device_statistics_gpu_means(means,covered,want_reynolds,want_favre)
     use mpi
     use commvar, only: im,jm,km
     use parallel, only: mpirank
     use checkpoint_state_io, only: checkpoint_state_require
     real(8),intent(in) :: means(0:,0:,0:,:)
     logical,intent(in) :: covered
+    logical,optional,intent(in) :: want_reynolds,want_favre
     real(8),device,allocatable :: reynolds_d(:,:),favre_d(:,:)
     real(8),allocatable :: reynolds(:,:),favre(:,:)
-    logical :: device_covered
+    logical :: device_covered,need_r,need_f
     character(16) :: mode,root
     real(8) :: duration,difference,maximum
     integer :: status,ierr,nodes,node,i,j,k
@@ -538,21 +549,25 @@ contains
     call MPI_Bcast(root,len(root),MPI_CHARACTER,0,MPI_COMM_WORLD,ierr)
     call checkpoint_state_require(ierr==MPI_SUCCESS.and.mode==root,MPI_COMM_WORLD,'device mean diagnostic transports differ')
     if(mode=='') return
-    call sample_statistics_gpu_mean_vectors(reynolds_d,favre_d,device_covered,duration)
+    need_r=.true.; need_f=.true.
+    if(present(want_reynolds)) need_r=want_reynolds
+    if(present(want_favre)) need_f=want_favre
+    call sample_statistics_gpu_mean_vectors(reynolds_d,favre_d,device_covered,duration,need_r,need_f)
     call checkpoint_state_require(device_covered.eqv.covered,MPI_COMM_WORLD,'device mean diagnostic coverage differs')
     if(.not.covered) then
       if(mpirank==0) print *, 'ASTR_INSITU_DEVICE_MEAN_CHECK uncovered'
       return
     endif
     nodes=(im+1)*(jm+1)*(km+1)
-    allocate(reynolds(3,nodes),favre(3,nodes))
+    allocate(reynolds(3,merge(nodes,1,need_r)),favre(3,merge(nodes,1,need_f)))
     ! Independent oracle download is restricted to testing builds and this flag.
     reynolds=reynolds_d; favre=favre_d
     difference=0.d0
     do node=0,nodes-1
       i=mod(node,im+1); j=mod(node/(im+1),jm+1); k=node/((im+1)*(jm+1))
-      difference=max(difference,maxval(abs(reynolds(:,node+1)-means(i,j,k,1:3))), &
-        maxval(abs(favre(:,node+1)-means(i,j,k,4:6))),abs(duration-means(i,j,k,7)))
+      if(need_r) difference=max(difference,maxval(abs(reynolds(:,node+1)-means(i,j,k,1:3))))
+      if(need_f) difference=max(difference,maxval(abs(favre(:,node+1)-means(i,j,k,4:6))))
+      difference=max(difference,abs(duration-means(i,j,k,7)))
     enddo
     call MPI_Allreduce(difference,maximum,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
     call checkpoint_state_require(ierr==MPI_SUCCESS.and.ieee_is_finite(maximum).and.maximum<=2.d-10, &
@@ -562,14 +577,19 @@ contains
   end subroutine
 #endif
 
-  subroutine download_statistics_gpu_means(means,covered)
+  subroutine download_statistics_gpu_means(means,covered,want_reynolds,want_favre)
     use commvar, only: im,jm,km
     use mpi
     real(8),intent(out) :: means(0:,0:,0:,:)
     logical,intent(out) :: covered
+    logical,optional,intent(in) :: want_reynolds,want_favre
+    logical :: need_r,need_f
     real(8) :: duration
     integer :: ierr
     covered=.false.
+    need_r=.true.; need_f=.true.
+    if(present(want_reynolds)) need_r=want_reynolds
+    if(present(want_favre)) need_f=want_favre
     call require_cuda(merge(cudaSuccess,cudaErrorInvalidValue, &
       all(shape(means)==[im,owned_ny(),km,7])),'statistics mean download shape')
     means=0.d0
@@ -578,7 +598,8 @@ contains
     call require_cuda(cudaGetLastError(),'statistics duration copy')
     if(.not.ieee_is_finite(duration).or.duration<0.d0) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
     if(duration<=0.d0) return
-    means(:,:,:,1:6)=output_d(:,:,:,3:8)
+    if(need_r) means(:,:,:,1:3)=output_d(:,:,:,3:5)
+    if(need_f) means(:,:,:,4:6)=output_d(:,:,:,6:8)
     means(:,:,:,7)=duration
     call require_cuda(cudaGetLastError(),'mean fields copy')
     if(.not.all(ieee_is_finite(means))) call MPI_Abort(MPI_COMM_WORLD,1,ierr)

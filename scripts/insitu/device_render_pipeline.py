@@ -23,6 +23,7 @@ from vtkmodules.util.numpy_support import vtk_to_numpy
 sys.path.insert(0, str(Path(catalyst.get_script_filename()).resolve().parent))
 from egl_identity import EGL
 from image_publication import publish_pair, RECOVERABLE_ERRNOS
+import product_dispatch as dispatch
 
 arguments = catalyst.get_args()
 if len(arguments) != 4 or arguments[3] not in (
@@ -192,9 +193,13 @@ def catalyst_execute(info):
     step, time = int(info.timestep), float(info.time)
     sources[product_names[0]].UpdatePipeline(time)
     first = local_piece(sources[product_names[0]].GetClientSideObject().GetOutputDataObject(0))
-    names = list(product_names)
+    names = [name for name in product_names if dispatch.scene_due(name)]
     if profile == 'all' and metadata(first, 'mean_covered'):
-        names += ['mean_reynolds_streamlines', 'mean_favre_streamlines']
+        names += [name for name in ('mean_reynolds_streamlines', 'mean_favre_streamlines') if dispatch.scene_due(name)]
+    elif profile == 'all' and dispatch.independent():
+        for name in ('mean_reynolds_streamlines', 'mean_favre_streamlines'):
+            if dispatch.scene_due(name):
+                dispatch.report_uncovered(name)
     products = {}
     for name in names:
         source = sources[name]
@@ -203,10 +208,15 @@ def catalyst_execute(info):
         points, cells = update_geometry(name, piece)
         item = render_objects[name]
         products[name] = render_product(name, item, step, time, points, cells)
+        dispatch.report(name, 'image', products[name]['image'])
     record = {'step': step, 'time': time, 'processing_backend': 'device',
         'rendering_pipeline': pipeline, 'geometry_host_bytes': 0,
-        'local_points': products[names[0]]['local_points'], 'local_cells': products[names[0]]['local_cells'],
+        'local_points': products[names[0]]['local_points'] if names else 0,
+        'local_cells': products[names[0]]['local_cells'] if names else 0,
         'products': products}
+    adaptive=dispatch.adaptive_receipts(names)
+    if adaptive:
+        record['adaptive_outputs']=adaptive
     (output / f'mesh_step{step:08d}_rank{rank}.json').write_text(json.dumps(record, indent=2))
     frames.append((step, time))
     if timing:

@@ -2,6 +2,8 @@ program output_config_collective_probe
   use mpi
   use output_config
   use output_config_collective
+  use adaptive_output
+  use adaptive_output_collective
   implicit none
   type(output_options) :: actual,expected
   character(1024) :: filename,mode,message
@@ -14,6 +16,28 @@ program output_config_collective_probe
   actual%format_version=77
   if(mode=='mismatch'.and.rank==1) filename=trim(filename)//'.other'
   call read_output_options_collective(trim(filename),actual,MPI_COMM_WORLD,ok,message)
+  if(ok.and.index(mode,'adaptive_')==1) then
+    if(rank==1.and.mode=='adaptive_scale') actual%adaptive%s_ref(1)=2*actual%adaptive%s_ref(1)
+    if(rank==1.and.mode=='adaptive_dense') actual%volume%adaptive%dense_time=0.001
+    if(rank==1.and.mode=='adaptive_permutation') then
+      actual%adaptive%event_ids(1:2)=actual%adaptive%event_ids(2:1:-1)
+      actual%adaptive%s_ref(1:2)=actual%adaptive%s_ref(2:1:-1)
+      actual%adaptive%t_ref(1:2)=actual%adaptive%t_ref(2:1:-1)
+      actual%adaptive%r_on(1:2)=actual%adaptive%r_on(2:1:-1)
+      actual%adaptive%r_off(1:2)=actual%adaptive%r_off(2:1:-1)
+      actual%adaptive%hold_time(1:2)=actual%adaptive%hold_time(2:1:-1)
+      actual%volume%adaptive%events(1:2)=actual%volume%adaptive%events(2:1:-1)
+      call canonical_adaptive_config(actual%adaptive)
+      call canonical_adaptive_binding(actual%volume%adaptive)
+    endif
+    call agree_adaptive_config(actual%adaptive,MPI_COMM_WORLD,ok)
+    if(ok) call agree_adaptive_bindings([actual%volume%adaptive,actual%slices%adaptive],MPI_COMM_WORLD,ok)
+    if(.not.ok) then
+      print '(A,I0)', 'REJECT adaptive rank ',rank
+      call MPI_Finalize(status)
+      stop 1
+    endif
+  endif
   if(.not.ok) then
     if(actual%format_version/=77) call MPI_Abort(MPI_COMM_WORLD,2,status)
     print '(A,I0,2A)', 'REJECT unchanged rank ',rank,': ',trim(message)
@@ -33,6 +57,7 @@ program output_config_collective_probe
   call compare_product(actual%checkpoint,expected%checkpoint)
   call compare_product(actual%volume,expected%volume)
   call compare_product(actual%slices,expected%slices)
+  if(.not.adaptive_config_equal(actual%adaptive,expected%adaptive)) call MPI_Abort(MPI_COMM_WORLD,7,status)
   print '(A,I0)', 'PASS collective rank ',rank
   call MPI_Finalize(status)
 contains
@@ -43,5 +68,6 @@ contains
     if(any([a%enabled,a%initial_frame,a%final_frame,a%velocity_gradient,a%vorticity,a%qcriterion].neqv. &
            [b%enabled,b%initial_frame,b%final_frame,b%velocity_gradient,b%vorticity,b%qcriterion])) &
       call MPI_Abort(MPI_COMM_WORLD,6,status)
+    if(.not.adaptive_binding_equal(a%adaptive,b%adaptive)) call MPI_Abort(MPI_COMM_WORLD,8,status)
   end subroutine
 end program

@@ -17,6 +17,8 @@ module insitu_session
   use insitu_fields, only: insitu_volume_weights,release_insitu_geometry
   use insitu_fields, only: nonreacting_wall_candidate
   use insitu_run_config, only: insitu_options
+  use insitu_product_schedule, only: configure_product_schedules,poll_product_schedules,product_schedules_active, &
+    product_scene_due,product_state_file,product_results_complete
   use insitu_config_collective, only: read_insitu_options_collective
   use iso_c_binding, only: c_int,c_double,c_char,c_null_char,c_int64_t
   use ieee_arithmetic, only: ieee_is_finite
@@ -142,12 +144,20 @@ contains
   end function
 
   subroutine configure_output_statistics(active)
+    use adaptive_output, only: validate_adaptive_binding,adaptive_shared_config
     logical,intent(out) :: active
+    logical :: ok
+    integer :: i
     call configure_session()
     active=formal.and.enabled.and.statistics_enabled
     if(formal.and.enabled) then
       call require_sample(len_trim(options%restore_batch)==0.and.len_trim(options%batch_prefix)==0, &
         'new checkpoint cannot be combined with legacy in situ pairs')
+      do i=1,options%product_count
+        call validate_adaptive_binding(options%product_adaptive(i),options%product_modes(i), &
+          options%product_steps(i),options%product_times(i),adaptive_shared_config,ok)
+        call require_sample(ok,'unknown/invalid adaptive in-situ event/window association')
+      enddo
     endif
   end subroutine
 
@@ -177,7 +187,7 @@ contains
     character(8) :: magic
     character(16) :: mode,saved_processing,saved_transport,saved_pipeline
     type(sample_schedule) :: restored
-    logical :: rendering,same,transport_only,ok
+    logical :: rendering,same,transport_only,ok,products_same
     integer :: unit,status,closed
     call require_sample(native_output,'native render provider needs new output')
     rendering=formal.and.enabled.and.options%render
@@ -192,6 +202,10 @@ contains
       origin_step=render_origin_step; origin_time=render_origin_time
       call configure_render_schedule()
       magic='ASTRIR03'
+      if(options%product_count>0) then
+        call require_sample(budget>=512+int(options%product_count,int64)*2048,'native product control state budget')
+        magic='ASTRIR04'
+      endif
     endif
     if(writing) then
       status=0; closed=0
@@ -201,10 +215,14 @@ contains
         if(status==0) then
           write(unit,iostat=status) magic,identity%step,[identity%time,identity%dt_used,identity%dt_next], &
             flags,mode,interval,period,origin_step,origin_time,signature
-          if(status==0.and.magic=='ASTRIR03') write(unit,iostat=status) &
+          if(status==0.and.(magic=='ASTRIR03'.or.magic=='ASTRIR04')) write(unit,iostat=status) &
             options%processing_backend,options%postprocess_transport,options%rendering_pipeline
           if(status==0.and.rendering) then
-            call write_schedule_state(unit,render_schedule,'native-render',identity%step,identity%time,ok)
+            if(magic=='ASTRIR04') then
+              call product_state_file(unit,.true.,identity%step,identity%time,products_same,ok)
+            else
+              call write_schedule_state(unit,render_schedule,'native-render',identity%step,identity%time,ok)
+            endif
             if(.not.ok) status=1
           endif
           close(unit,iostat=closed)
@@ -218,17 +236,18 @@ contains
     call require_sample(status==0,'missing native render control')
     read(unit,iostat=status) magic,step,clock,saved_flags,mode,interval,period,origin_step,origin_time,signature
     call require_sample(status==0,'cannot read native render control')
-    call require_sample((magic=='ASTRIR01'.or.magic=='ASTRIR02'.or.magic=='ASTRIR03').and.step==identity%step.and. &
+    call require_sample((magic=='ASTRIR01'.or.magic=='ASTRIR02'.or.magic=='ASTRIR03'.or.magic=='ASTRIR04').and. &
+      step==identity%step.and. &
       all(clock==[identity%time,identity%dt_used,identity%dt_next]),'native render clock/version mismatch')
     call require_sample(all(saved_flags>=0).and.all(saved_flags<=1),'invalid native render flags')
-    if(magic=='ASTRIR02'.or.magic=='ASTRIR03') then
+    if(magic=='ASTRIR02'.or.magic=='ASTRIR03'.or.magic=='ASTRIR04') then
       read(unit,iostat=status) saved_processing,saved_transport
       call require_sample(status==0,'cannot read device render identity')
       call require_sample(saved_flags(1)==1.and. &
         ((saved_processing=='device'.and.(saved_transport=='pinned'.or.saved_transport=='device-aware')).or. &
-         (magic=='ASTRIR03'.and.saved_processing=='host'.and.saved_transport=='')), &
+         ((magic=='ASTRIR03'.or.magic=='ASTRIR04').and.saved_processing=='host'.and.saved_transport=='')), &
         'invalid device render identity')
-      if(magic=='ASTRIR03') then
+      if(magic=='ASTRIR03'.or.magic=='ASTRIR04') then
         read(unit,iostat=status) saved_pipeline
         call require_sample(status==0,'cannot read rendering pipeline identity')
         call require_sample(saved_pipeline=='compatible'.or. &
@@ -238,7 +257,17 @@ contains
     endif
     output_saved_rendering=saved_flags(1)==1
     call require_sample(ieee_is_finite(period).and.ieee_is_finite(origin_time),'nonfinite native render configuration')
-    if(saved_flags(1)==1) then
+    products_same=options%product_count==0
+    if(magic=='ASTRIR04') then
+      if(rendering) then
+        call configure_render_schedule()
+      else
+        call configure_product_schedules(options,0_int64,0.d0,ok)
+        call require_sample(ok,'cannot initialize disabled product configuration')
+      endif
+      call product_state_file(unit,.false.,identity%step,identity%time,products_same,ok,override)
+      call require_sample(ok,'invalid native product schedule history')
+    else if(saved_flags(1)==1) then
       call configure_schedule(restored,trim(mode),interval,period,origin_step,origin_time, &
         saved_flags(2)==1,saved_flags(3)==1,ok)
       call require_sample(ok,'invalid saved native render configuration')
@@ -251,7 +280,7 @@ contains
     call require_sample(checkpoint_stream_at_end(unit),'native render control tail')
     close(unit,iostat=closed)
     call require_sample(closed==0,'cannot close native render control')
-    same=all(saved_flags==flags)
+    same=all(saved_flags==flags).and.products_same
     if(rendering.and.output_saved_rendering) call require_sample(saved_pipeline==options%rendering_pipeline, &
       'rendering pipeline restart mismatch; cross-pipeline restore is unsupported')
     if(rendering) same=same.and.mode==options%schedule_mode.and.interval==options%step_interval.and. &
@@ -262,7 +291,7 @@ contains
       transport_signature=signature
       transport_signature(3)=ieor(ieor(signature(3),postprocess_transport_marker(saved_transport)), &
         postprocess_transport_marker(options%postprocess_transport))
-      transport_only=all(saved_flags==flags).and.mode==options%schedule_mode.and. &
+      transport_only=all(saved_flags==flags).and.products_same.and.mode==options%schedule_mode.and. &
         interval==options%step_interval.and.period==options%time_interval.and. &
         all(transport_signature==render_signature).and.saved_transport/=options%postprocess_transport.and. &
         saved_pipeline==options%rendering_pipeline
@@ -270,14 +299,18 @@ contains
     call require_sample(same.or.override,'native render configuration differs; select explicit override')
     if(rendering) then
       if(same.or.(override.and.transport_only)) then
-        render_schedule=restored
-        call resume_schedule(render_schedule,ok)
-        call require_sample(ok,'cannot resume native render schedule')
+        if(magic/='ASTRIR04') then
+          render_schedule=restored
+          call resume_schedule(render_schedule,ok)
+          call require_sample(ok,'cannot resume native render schedule')
+        endif
         render_origin_step=origin_step; render_origin_time=origin_time
       else
         render_origin_step=identity%step; render_origin_time=identity%time
-        render_configured=.false.
-        call configure_render_schedule()
+        if(magic/='ASTRIR04'.or.options%product_count==0) then
+          render_configured=.false.
+          call configure_render_schedule()
+        endif
         output_render_initial=options%initial_frame
       endif
     endif
@@ -510,6 +543,9 @@ contains
           max(ia,ja,ka)<=32.and.jm>=2.and.mpisize<=2.and.trim(difschm)=='643e', &
           'AIR5 wall candidate requires noncatalytic Cartesian HBL <=32 NP=1/2')
         if(options%render) then
+          if(options%product_count>0) call require_sample(.not.lreadgrid.and.all(bctype==1).and. &
+            trim(flowtype)=='tgv'.and.numq==5.and.num_species==0.and.nondimen, &
+            'independent product clocks require the admitted periodic Cartesian TGV products')
 #ifdef ASTR_WITH_CATALYST
           call require_sample(mesh_pipeline_available(trim(options%rendering_pipeline)//c_null_char)==1, &
             'selected rendering pipeline is not built/admitted; no compatible fallback')
@@ -1299,6 +1335,7 @@ contains
     use commvar, only: im,jm,km
     use commarray, only: x
     use parallel, only: mpirank
+    use insitu_fields, only: capture_canonical_velocity
 #ifdef _CUDA
     use insitu_sample_gpu, only: derive_sample_gpu
     use insitu_products_gpu, only: render_device_sample_gpu
@@ -1314,15 +1351,21 @@ contains
     real(real64) :: started,capture_seconds,canonical_seconds,derived_seconds,render_seconds
     if(.not.options%render) return
     call configure_render_schedule()
-    preview=render_schedule
-    call poll_schedule(preview,int(step,int64),t,final,emit,crossed,ok)
+    started=insitu_clock()
+    if(product_schedules_active()) then
+      call poll_product_schedules(int(step,int64),t,final,emit,ok)
+    else
+      preview=render_schedule
+      call poll_schedule(preview,int(step,int64),t,final,emit,crossed,ok)
+    endif
     call require_sample(ok,'invalid native render preview')
+    call report_insitu_timing('product_clock',started,step)
     if(.not.emit) then
-      render_schedule=preview
+      if(.not.product_schedules_active()) render_schedule=preview
       return
     endif
     if(options%processing_backend=='device') then
-      render_schedule=preview
+      if(.not.product_schedules_active()) render_schedule=preview
 #if defined(_CUDA) && defined(ASTR_WITH_CATALYST)
       if(.not.native_bridge_configured) then
         status=mesh_configure(trim(options%output_directory)//c_null_char,int(MPI_COMM_WORLD,c_int))
@@ -1333,13 +1376,14 @@ contains
         trim(options%implementation_path), &
         trim(options%pipeline_file),trim(options%products),step,t,statistics_window,statistics_enabled, &
         options%host_budget_bytes,options%device_budget_bytes,options%device_reserve_bytes)
+      call require_sample(product_results_complete(),'device products did not report their publication results')
 #else
       call require_sample(.false.,'device rendering requires CUDA and Catalyst; no fallback')
 #endif
       return
     endif
     if(options%products/='all') then
-      render_schedule=preview
+      if(.not.product_schedules_active()) render_schedule=preview
       if(options%products=='velocity_slice') then
         call render_index_plane(step,t)
       elseif(options%products=='channel_walls') then
@@ -1349,19 +1393,27 @@ contains
       else
         call render_selected_sample(step,t)
       endif
+      call require_sample(product_results_complete(),'selected products did not report their publication results')
       return
     endif
     allocate(fields(0:im,0:jm,0:km,11),derived(0:im,0:jm,0:km,14),stat=status)
     call require_sample(status==0,'cannot allocate requested native frame')
     started=MPI_Wtime()
-    call capture_sample(fields)
+    if(product_schedules_active()) then
+      fields=0.d0
+      call capture_canonical_velocity(fields(:,:,:,7:9))
+    else
+      call capture_sample(fields)
+    endif
     capture_seconds=MPI_Wtime()-started
     native_flow_downloads=native_flow_downloads+1
     started=MPI_Wtime()
-    call canonicalize_sample(fields)
+    if(.not.product_schedules_active()) call canonicalize_sample(fields)
     canonical_seconds=MPI_Wtime()-started
     started=MPI_Wtime()
-    if(options%derivative_backend=='gpu') then
+    if(product_schedules_active().and..not.product_scene_due('q_surface')) then
+      derived=0.d0
+    else if(options%derivative_backend=='gpu') then
 #ifdef _CUDA
       call derive_sample_gpu(fields(:,:,:,7:9),derived,options%host_budget_bytes, &
         options%device_budget_bytes,options%device_reserve_bytes)
@@ -1374,6 +1426,7 @@ contains
     derived_seconds=MPI_Wtime()-started
     started=MPI_Wtime()
     call render_sample(step,t,x(0:im,0:jm,0:km,1:3),fields,derived,final)
+    call require_sample(product_results_complete(),'products did not report their publication results')
     render_seconds=MPI_Wtime()-started
     write(*,'(a,i0,a,i0,a,4(es16.8,1x))') 'ASTR_INSITU_FRAME_TIMING rank=',mpirank, &
       ' step=',step,' capture canonical derivative render_inclusive=', &
@@ -1515,7 +1568,7 @@ contains
     upload_bytes=0
     qfield=0.d0
     started=MPI_Wtime()
-    if(profile/=2) then
+    if(profile/=2.and.product_scene_due('q_surface')) then
 #ifdef _CUDA
       call derive_selected_sample_gpu(velocity,qfield,[10],options%host_budget_bytes, &
         options%device_budget_bytes,options%device_reserve_bytes)
@@ -1601,6 +1654,12 @@ contains
     if(render_configured) return
     if(formal) then
       render_final=options%final_frame
+      if(options%product_count>0) then
+        call configure_product_schedules(options,render_origin_step,render_origin_time,ok)
+        call require_sample(ok,'invalid native product schedules')
+        render_configured=.true.
+        return
+      endif
       call configure_schedule(render_schedule,trim(options%schedule_mode),options%step_interval, &
         options%time_interval,render_origin_step,render_origin_time,options%initial_frame,options%final_frame,ok)
       call require_sample(ok,'invalid native render schedule')
@@ -1714,7 +1773,7 @@ contains
     real(real64),allocatable :: means(:,:,:,:)
     character(128) :: mean_flag
     integer :: i,j,k,has_mean
-    logical :: all_covered,any_covered
+    logical :: all_covered,any_covered,need_reynolds,need_favre
     character(4096) :: script,backend,root
     character(1200) :: filename
     integer :: status,length,ierr,unit,close_status
@@ -1745,8 +1804,11 @@ contains
       last_step=step
       last_time=t
     endif
-    call poll_schedule(render_schedule,int(step,int64),t,final,emit,crossed,ok)
-    call require_sample(ok,'invalid render schedule clock')
+    emit=.true.
+    if(.not.product_schedules_active()) then
+      call poll_schedule(render_schedule,int(step,int64),t,final,emit,crossed,ok)
+      call require_sample(ok,'invalid render schedule clock')
+    endif
     if(.not.emit) return
     if(.not.formal) then
     write(filename,'(A,".schedule.step",I8.8,".rank",I8.8,".txt")') trim(prefix),step,mpirank
@@ -1772,24 +1834,38 @@ contains
     call require_sample(ierr==MPI_SUCCESS.and.root==backend,'test backends differ')
     endif
     call read_consistent_env('ASTR_INSITU_TEST_MEAN_STREAMLINES',mean_flag)
-    if(formal.and.statistics_enabled) mean_flag='1'
+    if(formal.and.statistics_enabled) then
+      if(.not.product_schedules_active().or.product_scene_due('mean_reynolds_streamlines').or. &
+        product_scene_due('mean_favre_streamlines')) mean_flag='1'
+    endif
     call require_sample(trim(mean_flag)==''.or.trim(mean_flag)=='1','invalid mean streamline flag')
     has_mean=0
     if(trim(mean_flag)=='1') then
+      need_reynolds=product_scene_due('mean_reynolds_streamlines')
+      need_favre=product_scene_due('mean_favre_streamlines')
       call require_sample(statistics_enabled,'mean streamlines require statistics')
       allocate(means(0:im,0:jm,0:km,7),stat=status)
       call require_sample(status==0,'cannot allocate mean render fields')
 #ifdef _CUDA
       if(formal.and.use_gpu) then
         means=0.d0
-        call download_statistics_gpu_means(means(0:im-1,0:jm-1,0:km-1,:),all_covered)
-        if(all_covered) call complete_periodic_endpoints(means)
+        call download_statistics_gpu_means(means(0:im-1,0:jm-1,0:km-1,:),all_covered,need_reynolds,need_favre)
+        if(all_covered) then
+          if(product_schedules_active()) then
+            if(need_reynolds) call complete_periodic_endpoints(means(:,:,:,1:3))
+            if(need_favre) call complete_periodic_endpoints(means(:,:,:,4:6))
+            means(:,:,:,7)=means(0,0,0,7)
+          else
+            call complete_periodic_endpoints(means)
+          endif
+        endif
 #ifdef ASTR_BUILD_TESTING
-        call check_device_statistics_gpu_means(means,all_covered)
+        call check_device_statistics_gpu_means(means,all_covered,need_reynolds,need_favre)
 #endif
       else
 #endif
       call require_sample(allocated(point_statistics),'mean streamlines require point statistics')
+      means=0.d0
       all_covered=.true.
       any_covered=.false.
       do k=0,km
@@ -1798,7 +1874,9 @@ contains
         call read_velocity_statistics(point_statistics(i,j,k),mean_result,ok)
         all_covered=all_covered.and.ok
         any_covered=any_covered.or.ok
-        means(i,j,k,:)=[mean_result%mean_r,mean_result%mean_f,mean_result%duration]
+        if(need_reynolds) means(i,j,k,1:3)=mean_result%mean_r
+        if(need_favre) means(i,j,k,4:6)=mean_result%mean_f
+        means(i,j,k,7)=mean_result%duration
       enddo
       enddo
       enddo

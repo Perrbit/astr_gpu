@@ -1,7 +1,8 @@
 module insitu_config_collective
   use mpi
   use iso_fortran_env, only: int64,real64
-  use insitu_run_config, only: insitu_options,read_insitu_options
+  use insitu_run_config, only: insitu_options,read_insitu_options,insitu_max_products
+  use adaptive_output_collective, only: agree_adaptive_bindings
   implicit none
   private
   public :: read_insitu_options_collective
@@ -18,6 +19,10 @@ contains
     real(real64) :: times(3),root_times(3)
     character(1024) :: paths(11),root_paths(11)
     character(16) :: root_mode
+    character(64) :: root_ids(insitu_max_products)
+    character(16) :: root_product_modes(insitu_max_products)
+    integer(int64) :: root_steps(insitu_max_products)
+    real(real64) :: root_times_product(insitu_max_products)
     character(1024) :: parse_message
     integer :: rank,first_bad,local_bad,ierr,int_type,real_type
 
@@ -62,13 +67,29 @@ contains
     call check_mpi(ierr,comm)
     call MPI_Bcast(root_mode,len(root_mode),MPI_CHARACTER,0,comm,ierr)
     call check_mpi(ierr,comm)
+    root_ids=candidate%product_ids; root_product_modes=candidate%product_modes
+    root_steps=candidate%product_steps; root_times_product=candidate%product_times
+    call MPI_Bcast(root_ids,len(root_ids)*size(root_ids),MPI_CHARACTER,0,comm,ierr)
+    call check_mpi(ierr,comm)
+    call MPI_Bcast(root_product_modes,len(root_product_modes)*size(root_product_modes),MPI_CHARACTER,0,comm,ierr)
+    call check_mpi(ierr,comm)
+    call MPI_Bcast(root_steps,size(root_steps),int_type,0,comm,ierr)
+    call check_mpi(ierr,comm)
+    call MPI_Bcast(root_times_product,size(root_times_product),real_type,0,comm,ierr)
+    call check_mpi(ierr,comm)
     same=all(flags.eqv.root_flags).and.all(counts==root_counts).and. &
       all(times==root_times).and.all(paths==root_paths).and.candidate%schedule_mode==root_mode
+    same=same.and.all(candidate%product_ids==root_ids).and.all(candidate%product_modes==root_product_modes).and. &
+      all(candidate%product_steps==root_steps).and.all(candidate%product_times==root_times_product)
     call MPI_Allreduce(same,all_same,1,MPI_LOGICAL,MPI_LAND,comm,ierr)
     call check_mpi(ierr,comm)
     if(.not.all_same) then
       message='in-situ configuration values differ between MPI ranks'
       return
+    endif
+    call agree_adaptive_bindings(candidate%product_adaptive,comm,ok)
+    if(.not.ok) then
+      message='adaptive in-situ bindings differ between MPI ranks'; return
     endif
     options=candidate
     message=''

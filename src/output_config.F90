@@ -1,6 +1,8 @@
 module output_config
   use iso_fortran_env, only: int64,real64,iostat_end
   use ieee_arithmetic, only: ieee_is_finite
+  use adaptive_output, only: adaptive_config,adaptive_binding,adaptive_capacity, &
+    validate_adaptive_config,validate_adaptive_binding,canonical_adaptive_config,canonical_adaptive_binding
   implicit none
   private
   integer,parameter,public :: output_format_version=1,output_slice_capacity=256
@@ -13,6 +15,7 @@ module output_config
     character(16) :: mode='steps',fields='basic'
     integer(int64) :: interval_steps=0
     real(real64) :: interval_time=0
+    type(adaptive_binding) :: adaptive
   end type
 
   type :: output_options
@@ -23,6 +26,7 @@ module output_config
     integer(int64) :: device_reserve_bytes=0
     type(output_product_options) :: checkpoint=output_product_options(final_frame=.true.)
     type(output_product_options) :: volume,slices
+    type(adaptive_config) :: adaptive
     integer(int64) :: i_indices(output_slice_capacity)=-1
     integer(int64) :: j_indices(output_slice_capacity)=-1
     integer(int64) :: k_indices(output_slice_capacity)=-1
@@ -155,10 +159,30 @@ contains
       ok=status==0
       message='cannot read output configuration tail'
       if(.not.ok) goto 900
-      ok=len_trim(syntax_line(line))==0
-      message='unexpected content after &slices'
+      if(len_trim(syntax_line(line))==0) cycle
+      backspace(unit,iostat=status)
+      if(status/=0) goto 900
+      call read_adaptive(unit,candidate%adaptive,ok,message)
       if(.not.ok) goto 900
+      do
+        read(unit,'(A)',iostat=status) line
+        if(status==iostat_end) exit
+        ok=status==0.and.len_trim(syntax_line(line))==0
+        message='unexpected content after &adaptive_output'
+        if(.not.ok) goto 900
+      enddo
+      exit
     enddo
+    call validate_adaptive_config(candidate%adaptive,ok,message)
+    if(.not.ok) goto 900
+    call validate_adaptive_binding(candidate%volume%adaptive,candidate%volume%mode, &
+      candidate%volume%interval_steps,candidate%volume%interval_time,candidate%adaptive,ok)
+    message='volume: invalid adaptive binding or dense interval'
+    if(.not.ok) goto 900
+    call validate_adaptive_binding(candidate%slices%adaptive,candidate%slices%mode, &
+      candidate%slices%interval_steps,candidate%slices%interval_time,candidate%adaptive,ok)
+    message='slices: invalid adaptive binding or dense interval'
+    if(.not.ok) goto 900
     ok=.false.
     message='unsupported output format_version'
     if(format_version/=output_format_version) goto 900
@@ -197,7 +221,10 @@ contains
     integer(int64),intent(out) :: indices(output_slice_capacity,3)
     logical,intent(out) :: ok
     character(*),intent(out) :: message
-    logical :: enabled,initial_frame,final_frame,velocity_gradient,vorticity,qcriterion
+    logical :: enabled,initial_frame,final_frame,velocity_gradient,vorticity,qcriterion,adaptive
+    integer(int64) :: dense_interval_steps
+    real(real64) :: dense_interval_time
+    character(64) :: event_ids(adaptive_capacity),window_ids(adaptive_capacity)
     character(16) :: mode,fields
     integer(int64) :: interval_steps,i_indices(output_slice_capacity), &
       j_indices(output_slice_capacity),k_indices(output_slice_capacity)
@@ -205,13 +232,15 @@ contains
     integer :: status,axis
     namelist /checkpoint/ enabled,mode,interval_steps,interval_time,initial_frame,keep
     namelist /volume/ enabled,mode,interval_steps,interval_time,initial_frame,final_frame, &
-      fields,velocity_gradient,vorticity,qcriterion
+      fields,velocity_gradient,vorticity,qcriterion,adaptive,dense_interval_steps,dense_interval_time,event_ids,window_ids
     namelist /slices/ enabled,mode,interval_steps,interval_time,initial_frame,final_frame, &
-      fields,velocity_gradient,vorticity,qcriterion,i_indices,j_indices,k_indices
+      fields,velocity_gradient,vorticity,qcriterion,i_indices,j_indices,k_indices, &
+      adaptive,dense_interval_steps,dense_interval_time,event_ids,window_ids
 
     options=output_product_options()
     enabled=.false.; initial_frame=.false.; final_frame=name=='checkpoint'
     velocity_gradient=.false.; vorticity=.false.; qcriterion=.false.
+    adaptive=.false.; dense_interval_steps=0; dense_interval_time=0; event_ids=''; window_ids=''
     mode='steps'; fields='basic'; interval_steps=0; interval_time=0; keep=2
     i_indices=-1; j_indices=-1; k_indices=-1; indices=-1
     call expect_group(unit,name,ok,message)
@@ -258,8 +287,41 @@ contains
     options%enabled=enabled; options%initial_frame=initial_frame; options%final_frame=final_frame
     options%mode=mode; options%interval_steps=interval_steps; options%interval_time=interval_time
     options%fields=fields; options%velocity_gradient=velocity_gradient
+    options%adaptive=adaptive_binding(adaptive,dense_interval_steps,dense_interval_time,event_ids,window_ids)
+    call canonical_adaptive_binding(options%adaptive)
     options%vorticity=vorticity; options%qcriterion=qcriterion
     ok=.true.; message=''
+  end subroutine
+
+  subroutine read_adaptive(unit,c,ok,message)
+    integer,intent(in) :: unit
+    type(adaptive_config),intent(out) :: c
+    logical,intent(out) :: ok
+    character(*),intent(out) :: message
+    logical :: enabled
+    character(32) :: indicator
+    character(16) :: monitor_mode,window_modes(adaptive_capacity)
+    integer(int64) :: monitor_steps,window_steps(2,adaptive_capacity)
+    real(real64) :: monitor_time,s_ref(adaptive_capacity),t_ref(adaptive_capacity), &
+      r_on(adaptive_capacity),r_off(adaptive_capacity),hold_time(adaptive_capacity),window_times(2,adaptive_capacity)
+    character(64) :: event_ids(adaptive_capacity),window_ids(adaptive_capacity)
+    integer :: status
+    namelist /adaptive_output/ enabled,indicator,monitor_mode,monitor_steps,monitor_time, &
+      event_ids,s_ref,t_ref,r_on,r_off,hold_time,window_ids,window_modes,window_steps,window_times
+    c=adaptive_config(); enabled=.false.; indicator=c%indicator; monitor_mode='steps'
+    monitor_steps=0; monitor_time=0; event_ids=''; window_ids=''; window_modes=''
+    s_ref=0; t_ref=0; r_on=0; r_off=0; hold_time=0; window_steps=0; window_times=0
+    call expect_group(unit,'adaptive_output',ok,message)
+    if(.not.ok) return
+    read(unit,nml=adaptive_output,iostat=status,iomsg=message)
+    ok=status==0
+    if(.not.ok) return
+    call check_group_end(unit,ok,message)
+    if(.not.ok) return
+    c=adaptive_config(enabled,indicator,monitor_mode,monitor_steps,monitor_time,event_ids,window_ids, &
+      s_ref,t_ref,r_on,r_off,hold_time,window_modes,window_steps,window_times)
+    call validate_adaptive_config(c,ok,message)
+    if(ok) call canonical_adaptive_config(c)
   end subroutine
 
   subroutine unique_indices(indices)
@@ -294,6 +356,8 @@ module output_config_collective
   use mpi
   use iso_fortran_env, only: int64,real64
   use output_config
+  use adaptive_output, only: adaptive_binding
+  use adaptive_output_collective, only: agree_adaptive_config,agree_adaptive_bindings
   implicit none
   private
   public :: read_output_options_collective
@@ -333,13 +397,23 @@ contains
     message='output configuration filenames differ or exceed character capacity'
     if(.not.ok) return
     wire_message=''
-    if(rank==0) call read_output_options(trim(filename),candidate,ok,wire_message)
-    call MPI_Bcast(ok,1,MPI_LOGICAL,0,comm,status)
+    call read_output_options(trim(filename),candidate,ok,wire_message)
+    bad=huge(bad)
+    if(.not.ok) bad=rank
+    call MPI_Allreduce(bad,total,1,MPI_INTEGER,MPI_MIN,comm,status)
     call require_mpi(status,comm)
-    call MPI_Bcast(wire_message,len(wire_message),MPI_CHARACTER,0,comm,status)
+    ok=total==huge(bad)
+    if(.not.ok) call MPI_Bcast(wire_message,len(wire_message),MPI_CHARACTER,total,comm,status)
     call require_mpi(status,comm)
     message=wire_message
     if(.not.ok) return
+    call agree_adaptive_config(candidate%adaptive,comm,ok)
+    message='adaptive output configuration differs between MPI ranks'
+    if(.not.ok) return
+    call agree_adaptive_bindings([candidate%volume%adaptive,candidate%slices%adaptive],comm,ok)
+    message='adaptive native product bindings differ between MPI ranks'
+    if(.not.ok) return
+    products=[candidate%checkpoint,candidate%volume,candidate%slices]
 
     if(rank==0) then
       products=[candidate%checkpoint,candidate%volume,candidate%slices]

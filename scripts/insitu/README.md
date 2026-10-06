@@ -177,9 +177,9 @@ The optional GPU candidate also accepts `products='q_surface'`,
 `derivative_backend='gpu'` alongside this option. Scope and budgets remain the
 32^3 periodic Cartesian TGV NP=1/2 or NP=4 2x2x1 gate above. These profiles are explicit
 subsets; omitting the option preserves all products and mean-streamline behavior.
-The existing step/time render clock applies to the selected product union;
-statistics and checkpoint clocks are unchanged. This is not independent
-per-product scheduling.
+Without `product_ids`, the existing step/time render clock applies to the
+selected product union; statistics and checkpoint clocks are unchanged.
+Independent product clocks are described below and opt in explicitly.
 
 | Profile | Fields supplied to Catalyst | Preset products |
 | --- | --- | --- |
@@ -863,4 +863,104 @@ speedup. The two strict entries are not distinguishable as reliable performance
 winners from this sample. Exact raw/stage/resource/provenance receipts are in
 `documents/ASTR_INSITU_IS8_RESIDENT_ACCEPTANCE.md`; these local results do not
 admit general CURVE, walls, AIR5, other hardware or production-sized capacity.
-Next: PF0-PF3 independent product clocks, then AP0.1-AP3.2 variable frequency.
+PF0-PF3 independent fixed product clocks now pass bounded local checks.
+AP shared monitoring and variable product frequency are described below; default off.
+
+## Independent fixed product clocks (PF)
+
+Add these entries inside an otherwise complete `&insitu_run` configuration:
+
+```fortran
+ products='all', statistics=f, rendering_pipeline='compatible',
+ step_interval=0, time_interval=0.d0, initial_frame=f, final_frame=f,
+ product_ids='q_surface.image','q_surface.geometry','instantaneous_streamlines.image',
+ product_modes='steps','steps','time', product_steps=6,12,0,
+ product_times=0.d0,0.d0,0.008d0,
+```
+
+Each stable ID is a scene followed by `.image` or `.geometry`. Scene IDs are
+`q_surface`, `velocity_slice`, `instantaneous_streamlines`,
+`crossing_streamlines`, `mean_reynolds_streamlines`, and
+`mean_favre_streamlines`, subject to the selected `products` preset.
+Mean products require `products='all'` and enabled statistics. Missing coverage
+is reported explicitly, never substituted with instantaneous flow.
+
+JPEG/EPS share one image clock; VTK geometry has its own clock and is admitted
+only by compatible. Both strict entries still reject geometry output and
+retain the no-geometry-readback contract. The explicit list defines the output
+set; unlisted scenes are not implicitly emitted. Entries must be contiguous,
+unique and use a positive steps or finite positive time interval, with the
+other interval zero. Common positive intervals cannot be mixed with the list.
+Entry order is canonicalized. Shared initial/final flags apply to all entries.
+Omitting the list preserves the old common clock.
+
+The native Fortran registry polls at complete steps, computes the due demand
+union, and requires a publication outcome for every due product. Python
+`product_dispatch.py` only reads that decision and reports results. Q/gradient
+work and each trace are skipped when not due. Device means communicate three
+or six components according to actual demand; host means also download/copy
+only requested kinds. Instantaneous `u,v,w` remain dependencies of existing
+streamline products, including their exported instantaneous point fields.
+Reserved bridge storage is not claimed to be allocation-free or globally
+minimal. The installable `InsituTools` CMake component includes the dispatch
+helper and both official pipeline scripts.
+
+The existing checkpoint's `insitu_control.bin` contains the explicit product
+registry, normal fixed clocks, origins, attempt/success/missing identities and
+times, retained missing errno/phase, and checked next targets. No new restart
+sidecar is required. Same configuration/topology resumes exactly; transport-only
+explicit override preserves clocks. Other admitted explicit changes reanchor
+product clocks at the checkpoint. Only the already approved JPEG/EPS publication
+errors remain recoverable; fixed PF ticks are not changed to adaptive attempt
+anchoring. Uncovered means are distinct from missing image publication.
+
+PF admission is periodic Cartesian nonreacting TGV only. The native flow/cache/
+statistics gate uses 16 cubed CPU/GPU NP=1/2 x; real products use the already
+admitted 32-cubed GPU scope, both face transports and three rendering entries.
+This does not admit CPU rendering, wall/CURVE/AIR5 independent products,
+render repartition, new hardware or a production-size capacity claim.
+Tests and limits are in `documents/ASTR_INSITU_PF_ACCEPTANCE.md`.
+
+## Adaptive product clocks (AP)
+
+The optional trailing `&adaptive_output` group in native `datin/input.output`
+owns the indicator, monitoring cadence, events and important windows. The first
+signal is complete-step kinetic energy of internal 16/32-cubed periodic Cartesian
+nonreacting TGV. It is independent of formal statistics and checkpoint cadence.
+GPU reduction returns only two FP64 scalars (16 bytes/rank/monitor). The existing
+8-event/8-window bounded registry is canonicalized by stable IDs. Invalid or
+overflowed signals, scales or clocks fail collectively; no implicit fallback.
+
+Each explicitly listed product may select `product_adaptive(i)=t`, its positive
+`product_dense_steps(i)` or `product_dense_times(i)`, and associated
+`product_events(:,i)` / `product_windows(:,i)`. Dense and normal periods use the
+same mode, with a strictly smaller dense period. Native volume/slice equivalents
+are `adaptive`, `dense_interval_steps/time`, `event_ids` and `window_ids`.
+Products not opting in retain their existing fixed clocks; disabled products
+are never activated by an event. Geometry remains compatible-only.
+
+The rate is `(T_ref/S_ref)*abs(delta_s/delta_t)` using actual monitored simulated
+times. Explicit finite positive scales, on/off thresholds and minimum simulated
+hold time have no production defaults. Exit is evaluated only at a new monitor
+sample after the hold, not using a stale rate. Event/window unions choose the two
+levels; window intervals are `[start,end)`. A whole-window overshoot is recorded,
+not filled with fake historical frames. Entry emits the current complete-step
+state once; additional conditions while already dense add no extra frame.
+The last successful actual publication anchors the next target. Recoverable
+JPEG/EPS failures preserve success, wait one current-level interval from the last
+failed attempt, and persist that wait exactly. Other failures remain fatal.
+
+State is embedded in existing checkpoint controls (AP01/AC01, native OA03 and
+PF02), never a new sidecar. Same configuration restores monitor history, event
+holds and product attempts/targets exactly. Explicit output override resets only
+changed dependencies while AP is enabled, preserving unrelated fixed clocks and
+statistics. Transport-only override preserves all clocks/history. AP-disabled
+fixed-only override behavior is unchanged. Reset IDs/reasons are logged.
+
+See `USER_GUIDE.md` and `documents/ASTR_INSITU_AP_ACCEPTANCE.md` for keys, state
+versions, scope and evidence. The native scheduling fixture is
+`scripts/output/input.output.tgv.adaptive.example`; the render template is
+`presets/tgv32/adaptive.nml.in`. Fill its dependency/script paths explicitly.
+Their Re=1 short-test thresholds are not general turbulence diagnostics; actual
+32-cubed acceptance uses its separately frozen configuration. No wall, CURVE,
+AIR5, CPU rendering, render repartition or 256-cubed AP admission is implied.

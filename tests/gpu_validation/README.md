@@ -8370,3 +8370,85 @@ Default device-OFF TGV and AIR5 host continuation regressions remain separate.
 No remote job, CURVE/wall/AIR5 device product or production capacity is admitted
 by this local IS8 receipt. Independent non-test startup uses
 `scripts/insitu/start_tgv_acceptance.py`, not these test helpers.
+
+## PF Independent Product Clocks (2026-10-06)
+
+`test_insitu_product_schedule.py` drives the native Fortran registry via the
+root `insitu_product_schedule_probe` target. Set
+`ASTR_INSITU_PRODUCT_SCHEDULE_PROBE` to that executable. Configuration/collective
+checks remain in `test_insitu_run_config.py`; they do not require rendering.
+
+`test_insitu_product_dispatch.py` requires explicit `ASTR_OUTPUT_INSITU_EXE`,
+`ASTR_OUTPUT_INSITU_BACKEND` and the existing `ASTR_OUTPUT_MPIEXEC` setup. Use
+the admitted resident-rendering build, not a build without strict capability.
+The test file skips without the explicit executable/backend selection. The
+private patched ParaView build's library directory and Catalyst/HDF5 libraries
+must be present in `LD_LIBRARY_PATH`, matching the selected backend.
+
+The real matrix uses 16-cubed CPU/GPU complete-state checks and 32-cubed GPU
+products, NP=1/2 x, dt=1e-3, 12 versus 5+7 continuation. Each case enforces
+64 MiB directory/controlled-buffer budgets separately from the admitted
+2 GiB/GPU, 4 GiB/node, >=1 GiB free renderer budget. No production flow is run.
+
+```bash
+python -m pytest -x -q tests/gpu_validation/test_insitu_product_dispatch.py \
+  -k 'not memcheck and not transfer_attribution'
+```
+
+Run the four `memcheck` cases and two `transfer_attribution` cases separately
+after numerical gates pass; they require Compute Sanitizer or Nsight Systems.
+Preserve their captures rather than rerunning them for documentation edits.
+Final receipts, corrected test assumptions and build fingerprints are in
+`documents/ASTR_INSITU_PF_ACCEPTANCE.md`. Fixed product clocks are implemented;
+AP variable frequency is a separate default-off stage described below.
+
+## AP Adaptive Products (2026-10-06)
+
+`test_adaptive_output.py` exercises the native `adaptive_output_probe`, parser
+probes and typed MPI agreement. Set `ASTR_ADAPTIVE_OUTPUT_PROBE` along with
+`ASTR_OUTPUT_CONFIG_PROBE`, `ASTR_OUTPUT_COLLECTIVE_PROBE`,
+`ASTR_INSITU_CONFIG_PROBE`, `ASTR_INSITU_COLLECTIVE_PROBE` and MPI launcher paths.
+No Python scheduling algorithm or fluid propagator is used.
+
+`test_adaptive_output_runtime.py` uses root CPU/GPU binaries, 16 cubed, dt=1e-3,
+NP=1/2 x and 12 versus 5+7 exact continuation. The immutable Re=1 fixture gives
+real event entry/exit and a checkpoint within its minimum hold. It checks q,
+cached properties, statistics, clocks, monitoring, fixed checkpoint isolation,
+selective overrides and admission failures. Default CPU binary is the
+Catalyst-OFF build; override using `ASTR_OUTPUT_CPU_EXE` as needed. Actual
+renderer tests require the existing explicit executable/backend environment.
+
+`test_adaptive_output_products.py` checks 32-cubed native fields/slices and
+compatible/standard/direct products at NP=1/2, pinned/device-aware. It checks
+output identity, JPEG/EPS pairs, independent VTK/slice references, missing wait
+continuation and transport/threshold/period overrides. Per-case disk and new
+controlled-buffer limits remain 64 MiB; renderer budgets are 2 GiB extra/GPU,
+4 GiB extra/node and >=1 GiB device reserve. Failed evidence is not deleted.
+
+```bash
+python -m pytest -x -q tests/gpu_validation/test_adaptive_output_runtime.py \
+  -k 'not memcheck and not attribution and not costs'
+python -m pytest -x -q tests/gpu_validation/test_adaptive_output_products.py
+python -m pytest -x -q tests/gpu_validation/test_adaptive_output_runtime.py \
+  -k 'memcheck or attribution or costs'
+```
+
+Run GPU groups sequentially. The safety trace uses two complete steps plus an
+initial baseline, no diagnostic all-field samples or field/checkpoint output.
+After each device final reduction the observed D2H is exactly 16 bytes. Timing
+separates event clock, monitor reduction, event update and product stages;
+inclusive stages are not additive. Short startup-dominated measurements are
+not production performance claims. AP does not expand the admitted physical
+cases or indicators. Final receipts and known corrected fixture/runtime defects
+are recorded in `documents/ASTR_INSITU_AP_ACCEPTANCE.md`.
+
+Final local AP receipts cover 39 native core/config/template cases, 30 native
+runtime cases, 17 actual-product cases, six safety/transfer/cost cases and eight
+fixed/common-clock regression cases. Counts overlap. The 30-case runtime gate
+uses the first 26 passing cases in `insitu_ap_runtime_final_20261006.xml` plus
+four passes in `insitu_ap_runtime_tail_20261006.xml`: the former retains one
+failed disabled-group test input, corrected without changing the parser or
+tolerance. Do not describe that first receipt as entirely passing. Five root
+build modes and production source-copy/configure decoupling also pass. Exact
+receipt names, executable hashes, short-fixture thresholds and measurements
+are in the acceptance record; no additional production scope is implied.

@@ -6,6 +6,7 @@ module insitu_schedule
   public :: sample_schedule,configure_schedule,poll_schedule
   public :: write_schedule_state,restore_schedule_state
   public :: resume_schedule
+  public :: schedule_next_target
   type :: sample_schedule
     private
     character(5) :: mode=''
@@ -14,6 +15,21 @@ module insitu_schedule
     logical :: initial=.false.,final=.false.,ready=.false.,ended=.false.
   end type
 contains
+  subroutine schedule_next_target(state,step,time,ok)
+    type(sample_schedule),intent(in) :: state
+    integer(int64),intent(out) :: step
+    real(real64),intent(out) :: time
+    logical,intent(out) :: ok
+    step=-1; time=-1.d0; ok=state%ready
+    if(.not.ok) return
+    if(state%mode=='steps') then
+      ok=state%index< (huge(step)-state%origin_step)/state%interval
+      if(ok) step=state%origin_step+(state%index+1)*state%interval
+    else
+      time=state%origin_time+real(state%index+1,real64)*state%period
+      ok=ieee_is_finite(time).and.time>state%seen_time
+    endif
+  end subroutine
   subroutine resume_schedule(s,ok)
     type(sample_schedule),intent(inout) :: s
     logical,intent(out) :: ok

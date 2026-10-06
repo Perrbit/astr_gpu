@@ -11,7 +11,7 @@ module insitu_sample_gpu
   logical,save :: device_sampling_initialized=.false.
   character(16),save :: device_sampling_transport=''
 contains
-  subroutine capture_device_sample_gpu(mode,velocity,halo,derived,host_budget,device_budget,reserve,demonstration)
+  subroutine capture_device_sample_gpu(mode,velocity,halo,derived,host_budget,device_budget,reserve,demonstration,need_q)
     use benchmark_runtime, only: insitu_clock,report_insitu_timing
     use iso_fortran_env, only: int64
     use commvar, only: im,jm,km,ia,ja,ka,hm,numq,use_gpu,lreadgrid,difschm,conschm,flowtype, &
@@ -29,13 +29,15 @@ contains
     character(*),intent(in) :: mode
     real(8),device,allocatable,intent(out) :: velocity(:,:),halo(:,:,:,:),derived(:,:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
-    logical,intent(in),optional :: demonstration
-    logical :: demo
-    integer :: neighbors(2,3),sizes(3),extent(3),ranks,ierr
+    logical,intent(in),optional :: demonstration,need_q
+    logical :: demo,calculate_q
+    integer :: neighbors(2,3),sizes(3),extent(3),ranks,ierr,status
     real(8) :: phase_started
     extent=[im,jm,km]; sizes=[isize,jsize,ksize]
     demo=.false.
     if(present(demonstration)) demo=demonstration
+    calculate_q=.true.
+    if(present(need_q)) calculate_q=need_q
     neighbors(:,1)=[mpileft,mpiright]; neighbors(:,2)=[mpidown,mpiup]; neighbors(:,3)=[mpiback,mpifront]
     call MPI_Comm_size(MPI_COMM_WORLD,ranks,ierr)
     call checkpoint_state_require(ierr==MPI_SUCCESS.and.ranks<=2.and. &
@@ -59,8 +61,14 @@ contains
     call extend_periodic_velocity_gpu(velocity,halo,extent,MPI_COMM_WORLD,device_budget,reserve)
     call report_insitu_timing('device_halo_inclusive',phase_started,-1)
     phase_started=insitu_clock()
-    call derive_periodic_velocity_gpu(halo,dxi_d,derived,extent,hm,MPI_COMM_WORLD,device_budget,reserve)
-    call report_insitu_timing('device_gradient_q_inclusive',phase_started,-1)
+    if(calculate_q) then
+      call derive_periodic_velocity_gpu(halo,dxi_d,derived,extent,hm,MPI_COMM_WORLD,device_budget,reserve)
+      call report_insitu_timing('device_gradient_q_inclusive',phase_started,-1)
+    else
+      allocate(derived(1,1),stat=status)
+      call checkpoint_state_require(status==0,MPI_COMM_WORLD,'unused Q pointer allocation')
+      derived=0.d0
+    endif
   end subroutine
 
   subroutine release_device_sampling_gpu()

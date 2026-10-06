@@ -24,6 +24,8 @@ PENDING_PRODUCTION_INPUTS = (
     "src/insitu_resource_observer.cpp",
     "scripts/insitu/tgv_pipeline.py", "scripts/insitu/tgv_streamlines.py",
     "scripts/insitu/egl_identity.py",
+    "src/adaptive_output.F90", "src/insitu_product_schedule.F90",
+    "src/insitu_product_dispatch.h", "scripts/insitu/product_dispatch.py",
 )
 COMPILER = os.environ.get("ASTR_TEST_CMAKE_COMPILER")
 pytestmark = pytest.mark.skipif(

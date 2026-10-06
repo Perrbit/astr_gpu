@@ -1,6 +1,7 @@
 # Separate adaptive products from statistical sampling
 
-Accepted design, 2026-10-04; not yet implemented. Adaptive cadence applies only
+Accepted design, 2026-10-04; bounded implementation completed 2026-10-06.
+Adaptive cadence applies only
 to individually selected images, extracted geometry, volume fields and slices.
 Formal statistical sampling and checkpoints retain independent fixed cadences,
 so event-driven output does not silently change time statistics or recovery cost.
@@ -45,3 +46,13 @@ Later cadence transitions reevaluate from that attempt anchor. Persist the
 failure/next-target state for exact continuation; this is an explicit exception
 to successful-emission anchoring, not a success flag or a historical-frame retry.
 Encoding, geometry, numerical and MPI failures remain fatal.
+
+The implemented gate admits internally generated 16/32-cubed periodic Cartesian
+nonreacting TGV kinetic energy only. Monitoring and native archives work without
+Catalyst; actual images retain existing GPU-render admission. AP01/AC01 state
+is embedded in the existing control/archive/render resources, with no new
+restart file. Unrelated fixed products/statistics retain their clocks under
+AP-enabled selective overrides; AP-disabled fixed-only overrides retain their
+previous registry-wide rule. Source, receipts, costs and deferred scope are in
+`documents/ASTR_INSITU_AP_ACCEPTANCE.md`. Production thresholds and additional
+indicators remain separate decisions, not defaults inferred from this short gate.

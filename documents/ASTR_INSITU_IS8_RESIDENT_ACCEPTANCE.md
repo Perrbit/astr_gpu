@@ -127,6 +127,7 @@ same selection rule and no validation-module imports. Its 32-cubed checkpoint
 output is the existing restart fixture, not part of the render-only 256-cubed run.
 
 Performance has no pass threshold and does not replace numerical, residency or
-lifecycle evidence. Next are PF0-PF3 independent product clocks, then
-AP0.1-AP3.2 variable frequency. CURVE/wall/AIR5 resident rendering, render
+lifecycle evidence. PF0-PF3 and AP0.1-AP3.2 were subsequently completed in the
+bounded scopes documented in [PF acceptance](ASTR_INSITU_PF_ACCEPTANCE.md) and
+[AP acceptance](ASTR_INSITU_AP_ACCEPTANCE.md). CURVE/wall/AIR5 resident rendering, render
 repartition, other hardware and asynchronous execution remain separate work.

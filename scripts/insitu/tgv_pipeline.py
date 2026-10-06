@@ -22,6 +22,7 @@ sys.path.insert(0,str(Path(catalyst.get_script_filename()).resolve().parent))
 from egl_identity import EGL
 from tgv_streamlines import make_trace,check_crossing
 from image_publication import publish_pair,RECOVERABLE_ERRNOS
+import product_dispatch as dispatch
 
 arguments=catalyst.get_args()
 if len(arguments) not in (2,3,4):
@@ -248,11 +249,12 @@ def catalyst_execute(info):
     if not np.isfinite(t) or step<0 or (frames and (step<=frames[-1][0] or t<=frames[-1][1])):
         raise RuntimeError('Nonmonotone or invalid complete-step render clock')
     source.UpdatePipeline(t)
+    current_names=tuple(name for name in product_names if dispatch.scene_due(name))
     required={'wall_pressure','wall_shear_x','wall_heat_into_gas','wall_normal_y'} if profile=='channel_walls' else {'u','v','w'}
     if profile=='air5_walls':
         required=set(product_names)|{'rho','u','v','w','wall_normal_y','wall_heat_tr_into_gas',
                                     'wall_heat_v_into_gas','wall_heat_species_into_gas'}
-    if 'q_surface' in product_names:
+    if 'q_surface' in current_names:
         required.add('Q_rs')
     missing=required-set(source.PointData.keys())
     if device_products:
@@ -290,7 +292,7 @@ def catalyst_execute(info):
         total.SetNumberOfTuples(1)
         controller.AllReduce(local,total,vtkCommunicator.MAX_OP)
         if total.GetValue(0):
-            selected=tuple('mean_'+name for name in product_names)
+            selected=tuple('mean_'+name for name in product_names if dispatch.scene_due('mean_'+name))
             absent=set(selected)|{'statistics_duration','statistics_window_start','statistics_window_end'}
             absent-=set(source.PointData.keys())
             if empty_local_plane():
@@ -310,44 +312,54 @@ def catalyst_execute(info):
                 statistics_clocks[field]=total_time.GetValue(0)
             collective_error('Invalid wall statistics window' if not all(
                 np.isfinite(value) for value in statistics_clocks.values()) else '')
-    if not geometries:
-        if profile in ('channel_walls','air5_walls'):
-            for name in product_names:
-                geometries[name]=source
-        if 'q_surface' in product_names:
-            contour=pv.Contour(Input=source)
-            contour.ContourBy=['POINTS','Q_rs']
-            contour.Isosurfaces=[0.25]
-            geometries['q_surface']=contour
-            pipeline_objects.append(contour)
-        if 'velocity_slice' in product_names:
-            if profile=='velocity_slice':
-                geometries['velocity_slice']=source
-            else:
-                cut=pv.Slice(Input=source)
-                cut.SliceType='Plane'
-                cut.SliceType.Origin=[np.pi,np.pi,np.pi/4]
-                cut.SliceType.Normal=[0.,0.,1.]
-                geometries['velocity_slice']=cut
-                pipeline_objects.append(cut)
-        for name,constant in [('instantaneous_streamlines',False),('crossing_streamlines',True)]:
-            if name not in product_names:
-                continue
-            trace,objects=make_trace(source,constant)
-            geometries[name]=trace
-            pipeline_objects.extend(objects)
-    products=[(name,geometries[name]) for name in product_names]
+    if profile in ('channel_walls','air5_walls'):
+        for name in current_names:
+            geometries[name]=source
+    if 'q_surface' in current_names and 'q_surface' not in geometries:
+        contour=pv.Contour(Input=source)
+        contour.ContourBy=['POINTS','Q_rs']
+        contour.Isosurfaces=[0.25]
+        geometries['q_surface']=contour
+        pipeline_objects.append(contour)
+    if 'velocity_slice' in current_names and 'velocity_slice' not in geometries:
+        if profile=='velocity_slice':
+            geometries['velocity_slice']=source
+        else:
+            cut=pv.Slice(Input=source)
+            cut.SliceType='Plane'
+            cut.SliceType.Origin=[np.pi,np.pi,np.pi/4]
+            cut.SliceType.Normal=[0.,0.,1.]
+            geometries['velocity_slice']=cut
+            pipeline_objects.append(cut)
+    for name,constant in [('instantaneous_streamlines',False),('crossing_streamlines',True)]:
+        if name not in current_names or name in geometries:
+            continue
+        trace,objects=make_trace(source,constant)
+        geometries[name]=trace
+        pipeline_objects.extend(objects)
+    products=[(name,geometries[name]) for name in current_names]
     for name in mean_products:
         geometries[name]=source
         products.append((name,source))
-    if profile=='all' and (device_mean or 'mean_u_reynolds' in source.PointData.keys()):
+    if profile=='all' and (device_mean or any('mean_u_'+kind in source.PointData.keys()
+        for kind in ('reynolds','favre'))):
         for kind in ('reynolds','favre'):
             name=f'mean_{kind}_streamlines'
+            if not dispatch.scene_due(name):
+                continue
             if name not in geometries:
                 trace,objects=make_trace(source,mean=kind)
                 geometries[name]=trace
                 pipeline_objects.extend(objects)
             products.append((name,geometries[name]))
+    elif profile=='all' and dispatch.independent():
+        for name in ('mean_reynolds_streamlines','mean_favre_streamlines'):
+            if dispatch.scene_due(name):
+                dispatch.report_uncovered(name)
+    if profile in ('channel_walls','air5_walls') and dispatch.independent():
+        for name in product_names:
+            if dispatch.scene_due('mean_'+name) and 'mean_'+name not in mean_products:
+                dispatch.report_uncovered('mean_'+name)
     if device_products:
         for name,geometry in products:
             geometry.UpdatePipeline(t)
@@ -361,7 +373,7 @@ def catalyst_execute(info):
                 missing=set()
             collective_error('Missing compact product fields: '+name+':'+','.join(sorted(missing)) if missing else '')
     record={'rank':rank,'step':step,'time':t,'products':{}}
-    if profile!='all':
+    if profile!='all' or dispatch.independent():
         record.update(profile=profile,available_fields=sorted(source.PointData.keys()))
     if profile!='air5_walls':
         record['units']={name:'dimensionless' for name in source.PointData.keys()}
@@ -391,18 +403,21 @@ def catalyst_execute(info):
             record['statistics']['average']='Reynolds'
     record_time('pipeline_setup',setup_started)
     for name,geometry in products:
-        existing=any((output/f'{name}.step{step:08d}.{suffix}').exists()
-                     for suffix in ('pvtp','jpeg','eps'))
+        image_due=dispatch.due(name,'image')
+        geometry_due=dispatch.due(name,'geometry') and not demonstration
+        suffixes=(('pvtp',) if geometry_due else ())+(('jpeg','eps') if image_due else ())
+        existing=any((output/f'{name}.step{step:08d}.{suffix}').exists() for suffix in suffixes)
         collective_error('Refusing to overwrite an existing in-situ frame' if existing else '')
         extraction_started=clock()
         geometry.UpdatePipeline(t)
-        if name not in extraction_objects:
-            merged=pv.MergeBlocks(Input=geometry)
-            surface=pv.ExtractSurface(Input=merged)
-            tagged=pv.ProgrammableFilter(Input=surface)
-            extraction_objects[name]=(tagged,surface,merged)
-        tagged,surface,merged=extraction_objects[name]
-        tagged.Script=f'''
+        if geometry_due:
+            if name not in extraction_objects:
+                merged=pv.MergeBlocks(Input=geometry)
+                surface=pv.ExtractSurface(Input=merged)
+                tagged=pv.ProgrammableFilter(Input=surface)
+                extraction_objects[name]=(tagged,surface,merged)
+            tagged,surface,merged=extraction_objects[name]
+            tagged.Script=f'''
 from vtkmodules.vtkCommonCore import vtkDoubleArray,vtkTypeInt64Array,vtkStringArray
 result=self.GetOutputDataObject(0)
 result.ShallowCopy(self.GetInputDataObject(0,0))
@@ -426,13 +441,14 @@ for name,unit in {record.get('units',{})!r}.items():
     units.InsertNextValue(name+'='+unit)
 result.GetFieldData().AddArray(units)
 '''
-        destination=output/f'{name}.step{step:08d}.pvtp'
-        # Materialize before writing so extraction is not attributed to writer I/O.
-        tagged.UpdatePipeline(t)
+            destination=output/f'{name}.step{step:08d}.pvtp'
+            # Materialize before writing so extraction is not attributed to writer I/O.
+            tagged.UpdatePipeline(t)
         record_time('extraction',extraction_started)
-        if not demonstration:
+        if geometry_due:
             save_geometry(destination,tagged)
-        else:
+            dispatch.report(name,'geometry')
+        elif demonstration:
             details=geometry.GetDataInformation()
             record.setdefault('geometry',{})[name]={'points':details.GetNumberOfPoints(),
                 'cells':details.GetNumberOfCells(),'bounds':list(details.GetBounds())}
@@ -452,7 +468,7 @@ result.GetFieldData().AddArray(units)
         validation_started=clock()
         controller.Barrier()
         error=''
-        if rank==0 and name=='crossing_streamlines':
+        if rank==0 and name=='crossing_streamlines' and geometry_due:
             try:
                 reader=vtkXMLPPolyDataReader()
                 reader.SetFileName(str(destination))
@@ -462,6 +478,9 @@ result.GetFieldData().AddArray(units)
                 error=str(exc)
         collective_error(error)
         record_time('geometry_validation_inclusive',validation_started)
+        if not image_due:
+            record['products'][name]={'geometry':'written'}
+            continue
         setup_started=clock()
         if name not in render_objects:
             manager=servermanager.ProxyManager()
@@ -553,6 +572,7 @@ result.GetFieldData().AddArray(units)
         record_time('render_inclusive',render_started)
         picture=output/f'{name}.step{step:08d}.jpeg'
         status=publish_image(view,picture,name,step,t)
+        dispatch.report(name,'image',status)
         record['products'][name]={'egl_uuid':actual,'image':status}
         record['products'][name]['color_field']=color
         record['products'][name]['color_range']=list(color_range)
@@ -560,6 +580,9 @@ result.GetFieldData().AddArray(units)
         record['products'][name]['scalar_bar_label_color']=list(pv.GetScalarBar(display.LookupTable,view).LabelColor)
         if name.startswith('mean_'):
             record['products'][name]['velocity_average']='Favre' if name.startswith('mean_favre_') else 'Reynolds'
+    adaptive=dispatch.adaptive_receipts(name for name,geometry in products)
+    if adaptive:
+        record['adaptive_outputs']=adaptive
     error=''
     metadata_started=clock()
     try:

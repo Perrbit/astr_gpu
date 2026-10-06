@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <exception>
 #include "insitu_compact_mesh.h"
+#include "insitu_product_dispatch.h"
 #ifdef ASTR_INSITU_DEVICE_RENDERING
 #include "insitu_device_vtk_mapper.h"
 #include <vtkColorTransferFunction.h>
@@ -174,9 +175,21 @@ try {
   }
   if (shape[0]!=nx || shape[1]!=ny || shape[2]!=nz || profile!=selected_profile) MPI_Abort(comm, 1);
   const double copy_start = MPI_Wtime();
+  std::size_t copied_values=coordinates.size();
   if (!coordinates.empty()) std::copy(xyz, xyz+coordinates.size(), coordinates.begin());
-  if (!primitive.empty()) std::copy(fields, fields+primitive.size(), primitive.begin());
-  if (!gradients.empty()) std::copy(derived, derived+gradients.size(), gradients.begin());
+  const auto nodes=long(nx)*ny*nz;
+  if(astr_insitu_independent_products() && !profile) {
+    if(nodes) std::copy(fields+6*nodes,fields+9*nodes,primitive.begin()+6*nodes);
+    copied_values+=3*nodes;
+    if(astr_insitu_scene_due("q_surface")) {
+      if(nodes) std::copy(derived+9*nodes,derived+10*nodes,gradients.begin()+9*nodes);
+      copied_values+=nodes;
+    }
+  } else {
+    if (!primitive.empty()) std::copy(fields, fields+primitive.size(), primitive.begin());
+    if (!gradients.empty()) std::copy(derived, derived+gradients.size(), gradients.begin());
+    copied_values+=primitive.size()+gradients.size();
+  }
   const double copy_seconds = MPI_Wtime()-copy_start;
   xyz=coordinates.empty() ? &empty_value : coordinates.data();
   fields=primitive.empty() ? &empty_value : primitive.data(); derived=gradients.data();
@@ -225,14 +238,23 @@ try {
   } else if (profile) {
     for (int c=0; c<3; ++c) field(names[c+6], fields+c*count);
   } else {
-    for (int c=0; c<11; ++c) field(names[c], fields+c*count);
+    for (int c=0; c<11; ++c) {
+      if(astr_insitu_independent_products() && (c<6 || c>8)) continue;
+      field(names[c], fields+c*count);
+    }
   }
   const char* diagnostics[] = {"du_dx","dv_dx","dw_dx","du_dy","dv_dy","dw_dy",
       "du_dz","dv_dz","dw_dz","Q_rs","divergence","omega_x","omega_y","omega_z"};
   if (profile) {
-    if (profile!=2 && profile<4) field("Q_rs",derived);
+    if (profile!=2 && profile<4 && astr_insitu_scene_due("q_surface")) field("Q_rs",derived);
+    else if(conduit_node_has_path(mesh,"fields/Q_rs")) conduit_node_remove_path(mesh,"fields/Q_rs");
   } else {
-    for (int c=0; c<14; ++c) field(diagnostics[c], derived+c*count);
+    for (int c=0; c<14; ++c) {
+      const auto key=std::string("fields/")+diagnostics[c];
+      if(astr_insitu_independent_products() && (c!=9 || !astr_insitu_scene_due("q_surface"))) {
+        if(conduit_node_has_path(mesh,key.c_str())) conduit_node_remove_path(mesh,key.c_str());
+      } else field(diagnostics[c], derived+c*count);
+    }
   }
   const char* mean_names[] = {"mean_u_reynolds","mean_v_reynolds","mean_w_reynolds",
     "mean_u_favre","mean_v_favre","mean_w_favre","statistics_duration"};
@@ -254,9 +276,18 @@ try {
     field("statistics_window_start",mean_data+(3*nf+1)*count);
     field("statistics_window_end",mean_data+(3*nf+2)*count);
   } else if (has_mean) {
-    means.assign(mean_fields,mean_fields+7*count);
+    means.resize(7*count);
     double* mean_data=means.empty() ? &empty_value : means.data();
-    for (int c=0;c<7;++c) field(mean_names[c],mean_data+c*count);
+    for (int c=0;c<7;++c) {
+      const bool wanted=!astr_insitu_independent_products() || c==6 ||
+        astr_insitu_scene_due(c<3 ? "mean_reynolds_streamlines" : "mean_favre_streamlines");
+      const auto key=std::string("fields/")+mean_names[c];
+      if(wanted) {
+        if(count) std::copy(mean_fields+c*count,mean_fields+(c+1)*count,means.begin()+c*count);
+        field(mean_names[c],mean_data+c*count);
+        copied_values+=count;
+      } else if(conduit_node_has_path(mesh,key.c_str())) conduit_node_remove_path(mesh,key.c_str());
+    }
   } else {
     for (auto name:mean_names) {
       const auto key=std::string("fields/")+name;
@@ -273,7 +304,7 @@ try {
   const double execute_seconds = MPI_Wtime()-execute_start;
   std::printf("ASTR_INSITU_BRIDGE_TIMING rank=%d step=%d copy=%.9g execute_inclusive=%.9g copy_bytes=%zu\n",
       rank,step,copy_seconds,execute_seconds,
-      (coordinates.size()+primitive.size()+gradients.size())*sizeof(double));
+      copied_values*sizeof(double));
 #ifdef ASTR_CUDA_RENDERER
   astr_insitu_resource_check("frame_after");
 #endif

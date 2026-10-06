@@ -1,0 +1,13 @@
+! Requires the matching native input.output adaptive events/windows.
+! Local scheduling fixture only; library/pipeline paths must be filled explicitly.
+&insitu_run
+ enabled=t,statistics=f,render=t,derivative_backend='gpu',processing_backend='device',
+ postprocess_transport='pinned',rendering_pipeline='standard-device',products='all',
+ output_directory='outdat/render',initial_frame=f,final_frame=f,
+ product_ids='q_surface.image','instantaneous_streamlines.image',
+ product_modes='steps','time',product_steps=6,0,product_times=0,0.008,
+ product_adaptive(1:2)=t,t,product_dense_steps=2,0,product_dense_times=0,0.002,
+ product_events(1,1)='decay',product_events(1,2)='decay',
+ host_budget_bytes=4294967296,device_budget_bytes=2147483648,device_reserve_bytes=1073741824,
+ implementation_path='${library}',pipeline_file='${pipeline}'
+/

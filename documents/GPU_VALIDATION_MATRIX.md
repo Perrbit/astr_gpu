@@ -1,5 +1,72 @@
 # GPU Validation Matrix
 
+## 2026-10-06 AP0.1-AP3.2 Adaptive Product Clocks
+
+Default off. Internally generated 16/32-cubed periodic Cartesian nonreacting TGV
+only; native CPU/GPU monitoring and archives, admitted GPU render products.
+Formal statistical sampling/checkpoint frequency and solver stepping are fixed.
+No new wall/CURVE/AIR5/CPU-render/production-scale or AP topology admission.
+
+| Gate | Receipt under `tests/gpu_validation/out/` | Result |
+|---|---|---|
+| AP native configuration/core/template | `insitu_ap_core_final_20261006.xml`, `insitu_ap_template_20261006.xml` | 38 + 1 passed; equality, hold, windows, failures, arithmetic, identity and typed MPI agreement |
+| Wider affected parser/clock regression | `insitu_ap_core_v3_20261006.xml` | 218 passed; counts overlap the AP subset |
+| 16-cubed NP=1/2 x, 12 vs 5+7, on/off and selective override | `insitu_ap_runtime_final_20261006.xml`, `insitu_ap_runtime_tail_20261006.xml` | First 26 passing cases plus four supplemental passes cover 30 native cases; first receipt retains one failed test-input case, not counted |
+| Actual 32-cubed GPU products/readback/recovery | `insitu_ap_products_final_20261006.xml` | 17 passed, zero skipped; three render entries, two transports, NP=1/2, missing waits and selective overrides |
+| Admission/memcheck/monitor transfer/cost | `insitu_ap_runtime_safety_final_20261006.xml` | Six passed; three zero-error rank reports, only 16-byte monitoring D2H per call/rank |
+| Production configure/source-copy decoupling | `insitu_ap_decoupling_20261006.xml` | Five passed, tests absent; optional AIR5 configure is not AP admission |
+| Fixed independent-product regression | `insitu_ap_fixed_regression_20261006.xml` | Six passed; all render entries, legacy override and missing-image continuation |
+| Common-clock exact continuation | `insitu_ap_common_clock_regression_20261006.xml` | Two passed, NP=1 steps / NP=2 time |
+
+Maximum CPU/GPU kinetic-energy difference `1.304512053934559e-15`, q/cache
+`2.5579538487363607e-13`, rank extras `2.8421709430404007e-13`, all <=2e-10.
+Same-backend continuation is exact. Actual native slices independently match
+same-step checkpoint primitives exactly; compatible geometry field difference
+is at most `4.440892098500626e-16`. AP01/AC01 history/clocks are embedded in
+existing control resources (OC05/OA03/PF02), without a new restart sidecar.
+
+Controlled additions fit 64 MiB/rank and 64 MiB/GPU; case maximum 58,955,769
+bytes. Renderer additional host/device peaks are 1,333,493,760/371,986,432
+bytes, with at least 18,791,596,032 bytes device free. Five root build modes
+passed. Cost records are bounded one-window diagnostics, not performance gains.
+Failures/fixes, reset matrix, frozen inputs and fingerprints are in
+`ASTR_INSITU_AP_ACCEPTANCE.md`. AP completes locally; more indicators,
+physics/topologies, production thresholds and X-series remain deferred.
+
+## 2026-10-06 PF0-PF3 Independent Fixed Product Clocks
+
+Periodic Cartesian nonreacting TGV only. Native CPU/GPU 16-cubed NP=1/2 x,
+dt=1e-3, 12 complete steps versus 5+7 exact restart; actual 32-cubed GPU
+products use both private face transports and compatible/standard/direct entries.
+No new CPU rendering or wall/CURVE/AIR5/render-repartition admission.
+
+| Gate | Receipt under `tests/gpu_validation/out/` | Result |
+|---|---|---|
+| Config/collective/pure clock/publication | `insitu_pf_config_20261006.xml` | 130 passed, zero skipped |
+| Native products/restart/isolation/override/missing/safety | `insitu_pf_final_20261006.xml` | 34 passed; four memcheck cases/eight zero-error rank reports |
+| Actual due-only transfer attribution | `insitu_pf_trace_v2_20261006.xml` | Two passed/four rank traces; matched three-component requested mean faces, no rendering geometry/UVM D2H |
+| Host mean field demand | `insitu_pf_host_mean_20261006.xml` | One passed; only due Reynolds/Favre fields exposed |
+| Final affected revision and common-clock compatibility | `insitu_pf_affected_final_20261006.xml` | 27 passed, 12 deselected; includes two common-clock exact continuations |
+| Strict optional build refusal | `insitu_pf_optional_20261006.xml` | Six passed, no fallback |
+
+Counts overlap, not unique test totals. Native q/cache/extras maximum CPU/GPU
+absolute difference 2.8421709430404007e-13; statistics 2.220446049250313e-15;
+geometry field interpolation at most 2.7200464103316335e-15, all <=2e-10.
+Same-backend complete state/statistics and same-entry product/control continuation
+are exact. JPEG/EPS are one product; compatible VTK is independently clocked.
+Explicit registry is saved inside existing `insitu_control.bin` (ASTRIR04/PF01),
+without another sidecar. Transport-only override preserves clocks; other
+admitted explicit changes reanchor at the checkpoint. Fixed missing ticks remain.
+
+All five requested build combinations include the optional CPU Catalyst build
+recorded in the PF acceptance report. Controlled buffers/case <=64 MiB;
+rendering <=2 GiB/GPU, <=4 GiB/node, >=1 GiB free. Native observations show
+host/device additional peaks <=1608740864/435294208 bytes and >=18209570816
+device free. Instrumented trace directory maximum 64880947 bytes.
+See `ASTR_INSITU_PF_ACCEPTANCE.md` for build fingerprints, versioned receipts
+and corrected test assumptions. PF completes locally; the subsequently completed
+AP gate is recorded above, rather than inferred from PF.
+
 ## 2026-10-06 IS8-A0-A9 双后端联合准入
 
 - 双后端、NP=1/2 x/y/z真实六类产品8项通过，开关不改权威场/缓存/统计；
@@ -30,7 +97,8 @@
   设备组主机/显存附加峰值≤1226477568/451153920字节，设备空闲
   ≥18708037632字节，设备组目录≤93120948字节。原生资源与超额拒绝通过。
 - 两后端独立脚本真实启动及最终权威场/统计/产品核对通过。详情与边界见
-  `ASTR_INSITU_IS8_ACCEPTANCE.md`。本次IS8-A有界goal完成；PF/AP待实施，
+  `ASTR_INSITU_IS8_ACCEPTANCE.md`。本次IS8-A有界goal完成；当时PF/AP待实施，
+  PF/AP最新记录见本文件前节；
   CURVE、壁面、AIR5、更大网格和渲染重新分区不继承设备产品准入。
 
 ## 2026-10-05 IS8-A 组件记录

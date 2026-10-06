@@ -18,7 +18,7 @@ from prepare_tgv_case import next_data_line, set_controller_deltat, set_ninit, s
 def archive_schedule_payload(path):
     """Compare schedules exactly, not the intentionally different segment receipts."""
     payload = path.read_bytes()
-    if len(payload) < 56 or payload[:8] != b"ASTROA02":
+    if len(payload) < 56 or payload[:8] not in (b"ASTROA02", b"ASTROA03"):
         raise AssertionError("invalid archive history version/tail")
     ids, sizes, crcs = np.frombuffer(payload[-48:], dtype="<i8").reshape(3, 2)
     if not np.all(((ids == -1) & (sizes == 0) & (crcs == 0)) |
@@ -55,7 +55,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
              rhs_snapshot_step=None, memcheck=False, device_reserve_bytes=0,
              monitor_resources=False, resource_baseline=None,
              output_config_override=None, omit_output_config=False,
-             legacy_restart=False, legacy_output=False, no_field_io=False, grid=None,
+             legacy_restart=False, legacy_output=False, no_field_io=False, grid=None,adaptive_config=None,tgv_reynolds=None,
              resident_audit=False, pixel_audit=False,
              test_fault=None, failure_after_start=False, tgv_mapping=None, insitu_timing=False,
              device_sample_transport=None, postprocess_transport=None, nsys_trace=False):
@@ -126,6 +126,18 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         "--use-gpu", "t" if backend == "gpu" else "f", "--grid", grid or "16,16,16",
         "--maxstep", str(steps - 1), "--feqchkpt", "1", "--deltat", "1.d-3",
         "--lfilter", "t" if lfilter else "f", "--diffterm", "t", "--scheme", "643e"], check=True)
+    if tgv_reynolds is not None:
+        if args.case!='tgv' or args.initial_dimension!=0 or not np.isfinite(tgv_reynolds) or tgv_reynolds<=0:
+            raise ValueError('reference Reynolds override requires internally initialized TGV and a finite positive value')
+        primary=case/'datin'/input_name
+        lines=primary.read_text().splitlines()
+        index=next_data_line(lines,next(i for i,line in enumerate(lines) if 'ref_t,reynolds,mach' in line))
+        fields=lines[index].split(',')
+        if len(fields)!=3:
+            raise ValueError('unexpected reference value inventory')
+        fields[1]=f'{tgv_reynolds:.17e}'
+        lines[index]=','.join(fields)
+        primary.write_text('\n'.join(lines)+'\n')
     if tgv_mapping is not None:
         from prepare_tgv_case import set_gridfile, set_runtime_flags, set_homogeneous, set_bctype
         subprocess.run([
@@ -209,6 +221,8 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         original = config.read_text()
         original = original.replace("&volume\n enabled=.false.\n/\n&slices\n enabled=.false.\n/\n", archive_groups)
         config.write_text(original)
+    if adaptive_config is not None:
+        config.write_text(config.read_text() + adaptive_config)
     if change_input:
         with (case / "datin" / input_name).open("a") as stream:
             stream.write("\n! changed primary input identity\n")
@@ -254,6 +268,9 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
             env.update(OMPI_MCA_pml='ob1', OMPI_MCA_btl='self,tcp', OMPI_MCA_osc='pt2pt',
                        OMPI_MCA_opal_cuda_support='false', OMPI_MCA_coll_ucc_enable='0')
     if no_field_io:
+        if args.case=='tgv' and args.initial_dimension==0 and tgv_mapping is None:
+            # The copied example grid is unused by internally generated no-I/O TGV.
+            (case/'datin/grid.h5').unlink(missing_ok=True)
         env["ASTR_GPU_BENCHMARK_NO_FIELD_IO"] = "1"
         env["ASTR_GPU_RK_TIMING" if backend == "gpu" else "ASTR_CPU_RK_TIMING"] = "1"
     if rhs_snapshot_step is not None:

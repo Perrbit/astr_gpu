@@ -2,6 +2,7 @@
 #include "insitu_device_streamlines.h"
 #include "insitu_compact_mesh.h"
 #include "insitu_device_product_audit.h"
+#include "insitu_product_dispatch.h"
 #include <viskores/cont/ArrayCopy.h>
 #include <viskores/cont/CellSetSingleType.h>
 #include <viskores/cont/Initialize.h>
@@ -219,9 +220,14 @@ try {
   if(global_cells!=(demo?256:32)) throw std::invalid_argument("Device product profile/resolution differs");
   if(host_budget<=0 || !std::isfinite(time) || step<0) throw std::invalid_argument("Invalid device frame identity/budget");
   const viskores::Id3 extent(nx,ny,nz),dimensions(nx+1,ny+1,nz+1),offset(ox,oy,oz),halo_dimensions(nx+7,ny+7,nz+7);
-  const bool slice=selected=="all" || selected=="velocity_slice";
-  const bool surface=selected=="all" || selected=="q_surface" || selected=="q_streamlines" || demo;
+  const bool slice=(selected=="all" || selected=="velocity_slice") && astr_insitu_scene_due("velocity_slice");
+  const bool surface=(selected=="all" || selected=="q_surface" || selected=="q_streamlines" || demo) &&
+    astr_insitu_scene_due("q_surface");
   const bool lines=selected=="all" || selected=="streamlines" || selected=="q_streamlines" || demo;
+  const bool instant=lines && astr_insitu_scene_due("instantaneous_streamlines");
+  const bool crossing=lines && !demo && astr_insitu_scene_due("crossing_streamlines");
+  const bool reynolds=selected=="all" && covered && astr_insitu_scene_due("mean_reynolds_streamlines");
+  const bool favre=selected=="all" && covered && astr_insitu_scene_due("mean_favre_streamlines");
   const std::string route=pipeline?pipeline:"";
   if(route!="compatible") {
 #ifdef ASTR_INSITU_DEVICE_RENDERING
@@ -242,7 +248,7 @@ try {
       astr_insitu::triangulate_device_slice(extracted.slice,dimensions,offset,global_cells),step,time,3,
       halo,nullptr,extent,offset,global_cells,rank));
     }
-    if(lines) {
+    if(instant || crossing || reynolds || favre) {
       auto actual=astr_insitu::pack_component_halo(halo,halo_dimensions);
       const auto add_trace=[&](const char* name,const viskores::cont::ArrayHandle<viskores::Vec3f>& field,
           bool constant,bool mean,const double* source) {
@@ -253,19 +259,19 @@ try {
         meshes.push_back(resident_mesh(name,trace.resident_geometry,step,time,2,source,nullptr,
           extent,offset,global_cells,rank));
       };
-      add_trace("instantaneous_streamlines",actual,false,false,halo);
-      if(!demo) {
+      if(instant) add_trace("instantaneous_streamlines",actual,false,false,halo);
+      if(crossing) {
       viskores::cont::ArrayHandle<viskores::Vec3f> constant;
       viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});
       invoke(ConstantVelocity{},viskores::cont::ArrayHandleIndex(actual.GetNumberOfValues()),constant);
       astr_insitu::synchronize_device_stage("ConstantVelocity");
       add_trace("crossing_streamlines",constant,true,false,halo);
       }
-      if(selected=="all" && covered) {
+      if(reynolds || favre) {
         if(!reynolds_halo || !favre_halo || !std::isfinite(duration) || duration<=0.)
           throw std::invalid_argument("Resident mean products require authoritative coverage/halos");
-        add_trace("mean_reynolds_streamlines",astr_insitu::pack_component_halo(reynolds_halo,halo_dimensions),false,true,reynolds_halo);
-        add_trace("mean_favre_streamlines",astr_insitu::pack_component_halo(favre_halo,halo_dimensions),false,true,favre_halo);
+        if(reynolds) add_trace("mean_reynolds_streamlines",astr_insitu::pack_component_halo(reynolds_halo,halo_dimensions),false,true,reynolds_halo);
+        if(favre) add_trace("mean_favre_streamlines",astr_insitu::pack_component_halo(favre_halo,halo_dimensions),false,true,favre_halo);
       }
     }
     for(const char* name:{"q_surface","velocity_slice","instantaneous_streamlines","crossing_streamlines",
@@ -289,35 +295,41 @@ try {
     if(surface) meshes.push_back(geometry_mesh(extracted.surface,true,dimensions,offset));
     if(slice) meshes.push_back(geometry_mesh(extracted.slice,false,dimensions,offset));
   }
-  if(lines) {
-    ProductStage instant("device_instant_lines_inclusive","ASTR_IS8_DEVICE_INSTANT_LINES",fcomm,step);
+  if(instant || crossing || reynolds || favre) {
     auto actual=astr_insitu::pack_component_halo(halo,halo_dimensions);
+    if(instant) {
+    ProductStage instant("device_instant_lines_inclusive","ASTR_IS8_DEVICE_INSTANT_LINES",fcomm,step);
     auto trace=astr_insitu::trace_tgv_device(actual,actual,extent,offset,comm,host_budget,
       false,0,false,false,global_cells);
     meshes.push_back(streamline_mesh(trace,"instantaneous_streamlines"));
     instant.finish();
-    if(!demo) {
+    }
+    if(crossing) {
     ProductStage crossing("device_crossing_lines_inclusive","ASTR_IS8_DEVICE_CROSSING_LINES",fcomm,step);
     viskores::cont::ArrayHandle<viskores::Vec3f> constant;
     viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});
     invoke(ConstantVelocity{},viskores::cont::ArrayHandleIndex(actual.GetNumberOfValues()),constant);
     astr_insitu::synchronize_device_stage("ConstantVelocity");
-    trace=astr_insitu::trace_tgv_device(constant,actual,extent,offset,comm,host_budget,true,0,true);
+    auto trace=astr_insitu::trace_tgv_device(constant,actual,extent,offset,comm,host_budget,true,0,true);
     meshes.push_back(streamline_mesh(trace,"crossing_streamlines"));
     crossing.finish();
     }
-    if(selected=="all" && covered) {
+    if(reynolds || favre) {
       if(!reynolds_halo || !favre_halo || !std::isfinite(duration) || duration<=0.)
         throw std::invalid_argument("Covered device means require authoritative halos/duration");
+      if(reynolds) {
       ProductStage reynolds_stage("device_reynolds_lines_inclusive","ASTR_IS8_DEVICE_REYNOLDS_LINES",fcomm,step);
-      auto reynolds=astr_insitu::pack_component_halo(reynolds_halo,halo_dimensions);
-      trace=astr_insitu::trace_tgv_device(reynolds,actual,extent,offset,comm,host_budget,false,0,false,true);
+      auto field=astr_insitu::pack_component_halo(reynolds_halo,halo_dimensions);
+      auto trace=astr_insitu::trace_tgv_device(field,actual,extent,offset,comm,host_budget,false,0,false,true);
       meshes.push_back(streamline_mesh(trace,"mean_reynolds_streamlines"));
       reynolds_stage.finish();
+      }
+      if(favre) {
       ProductStage favre_stage("device_favre_lines_inclusive","ASTR_IS8_DEVICE_FAVRE_LINES",fcomm,step);
-      auto favre=astr_insitu::pack_component_halo(favre_halo,halo_dimensions);
-      trace=astr_insitu::trace_tgv_device(favre,actual,extent,offset,comm,host_budget,false,0,false,true);
+      auto field=astr_insitu::pack_component_halo(favre_halo,halo_dimensions);
+      auto trace=astr_insitu::trace_tgv_device(field,actual,extent,offset,comm,host_budget,false,0,false,true);
       meshes.push_back(streamline_mesh(trace,"mean_favre_streamlines"));
+      }
     }
   }
   // Keep channel identity stable, including valid empty/uncovered products.

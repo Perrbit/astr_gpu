@@ -13,6 +13,8 @@ module output_runtime
   use output_input_resources, only: set_inflow_resource_root,inflow_source_path, &
     inflow_source_name,discover_inflow_sources,set_initial_resource_root,initial_source_path,initial_source_name
   use output_config, only: output_options
+  use adaptive_output, only: configure_adaptive,adaptive_monitor_due,observe_adaptive,feed_adaptive_signal, &
+    adaptive_shared_config,adaptive_shared_state,adaptive_shared_file
   use output_config_collective, only: read_output_options_collective
   use output_archive, only: configure_archives,begin_archives,observe_archives,archive_control_file,archives_enabled
   use checkpoint_state_io
@@ -30,6 +32,7 @@ module output_runtime
   use chemistry_hbl_boundary, only: complete_air5_top_contract
 #endif
 #ifdef _CUDA
+  use statistic_gpu, only: gpu_adaptive_energy_sum
   use checkpoint_state_gpu, only: checkpoint_perfect_gas_gpu
   use production_statistics_gpu, only: complete_compact_statistics_file,compact_statistics_host_bytes
   use inflow_timeseries_gpu, only: complete_inflow_gpu_file
@@ -45,6 +48,7 @@ module output_runtime
   private
   public :: configure_output_runtime,begin_output_runtime,completed_output_runtime,new_output_enabled
   public :: initial_output_runtime
+  public :: observe_output_adaptive
   public :: bootstrap_output_resources,output_resource_path
   logical,save :: enabled=.false.
   logical,save :: options_loaded=.false.
@@ -409,6 +413,12 @@ contains
       end select
       call check(.not.conservation_statistics.or.use_gpu,'AIR5 conservation diagnostic is GPU-only')
     endif
+    call configure_adaptive(options%adaptive,0_int64,0.d0,ok)
+    call check(ok,'invalid adaptive monitor configuration')
+    if(options%adaptive%enabled) call check(trim(flowtype)=='tgv'.and.all(bctype==1).and. &
+      .not.lreadgrid.and.numq==5.and.num_species==0.and..not.lcomb.and.nondimen.and. &
+      (all([ia,ja,ka]==16).or.all([ia,ja,ka]==32)), &
+      'adaptive output currently admits only registered 16/32-cubed periodic Cartesian nonreacting TGV')
     call configure_output_statistics(statistics_active)
     compact_statistics=use_gpu.and.lavg.and.trim(flowtype)=='bl'
     mean_statistics=lavg.and.(.not.use_gpu.or.air5_output_case())
@@ -1004,6 +1014,8 @@ contains
     type(sample_schedule) :: restored_schedule
     character(8) :: magic
     character(16) :: mode
+    magic='ASTROC04'
+    if(options%adaptive%enabled) magic='ASTROC05'
     driver=0
     driver_config=''
     if(trim(flowtype)=='channel') then
@@ -1036,12 +1048,16 @@ contains
         open(newunit=unit,file=path,status='new',access='stream',form='unformatted', &
           convert='little_endian',action='write',iostat=err)
         if (err==0) then
-          write(unit,iostat=err) 'ASTROC04',contract,identity%step,identity%time,identity%dt_used,identity%dt_next, &
+          write(unit,iostat=err) magic,contract,identity%step,identity%time,identity%dt_used,identity%dt_next, &
             counter,pending,last_step,options%checkpoint%mode,options%checkpoint%interval_steps, &
             options%checkpoint%interval_time,options%checkpoint%initial_frame,schedule_origin_step,schedule_origin_time, &
             driver_config,driver
           if(err==0) then
             call write_schedule_state(unit,checkpoint_schedule,'checkpoint',identity%step,identity%time,ok)
+            if(.not.ok) err=1
+          endif
+          if(err==0.and.magic=='ASTROC05') then
+            call adaptive_shared_file(unit,.true.,identity%step,identity%time,.false.,ok)
             if(.not.ok) err=1
           endif
           close(unit,iostat=closed)
@@ -1056,7 +1072,8 @@ contains
         saved_counter,saved_pending,saved_last,mode,interval,dt_interval,saved_initial,origin_step,origin_time, &
         saved_driver_config,driver
       call check(err==0,'read control metadata')
-      call check(magic=='ASTROC04'.and.all(saved==contract),'numerical/executable/controller contract mismatch')
+      call check((magic=='ASTROC04'.or.magic=='ASTROC05').and.all(saved==contract), &
+        'numerical/executable/controller contract mismatch')
       call check(all(saved_driver_config==driver_config),'boundary/driver configuration mismatch')
       if(trim(flowtype)=='channel') then
         call channel_driver_state(driver,.false.,ok)
@@ -1066,7 +1083,15 @@ contains
         origin_step,origin_time,saved_initial,.false.,ok)
       call check(ok,'invalid saved checkpoint schedule')
       call restore_schedule_state(unit,restored_schedule,'checkpoint',identity%step,identity%time,ok)
-      call check(ok.and.checkpoint_stream_at_end(unit),'control metadata tail')
+      call check(ok,'checkpoint schedule history')
+      if(magic=='ASTROC05') then
+        call adaptive_shared_file(unit,.false.,identity%step,identity%time,options%restart_output=='override',ok)
+      else
+        call check(.not.options%adaptive%enabled.or.options%restart_output=='override', &
+          'adaptive monitoring enabled without explicit override')
+        call configure_adaptive(options%adaptive,identity%step,identity%time,ok)
+      endif
+      call check(ok.and.checkpoint_stream_at_end(unit),'adaptive monitor/control metadata tail')
       close(unit,iostat=closed)
       call check(ok.and.closed==0,'read checkpoint schedule state')
       counter=saved_counter
@@ -1093,6 +1118,69 @@ contains
     endif
   end subroutine
 
+  subroutine observe_output_adaptive(step,t)
+    use commvar, only: roinf,uinf
+    use benchmark_runtime, only: insitu_clock,report_insitu_timing
+    integer,intent(in) :: step
+    real(real64),intent(in) :: t
+    logical :: due,ok
+    real(real64) :: local,global,value,density,reference,start,phase_started
+    integer :: i,j,k,ierr
+    if(.not.adaptive_shared_config%enabled) return
+    if(adaptive_shared_state%last_step==int(step,int64).and.adaptive_shared_state%last_time==t) return
+    start=MPI_Wtime()
+    phase_started=insitu_clock()
+    call observe_adaptive(int(step,int64),t,ok)
+    call check(ok,'invalid adaptive complete-step/window clock')
+    call adaptive_monitor_due(int(step,int64),t,due,ok)
+    call check(ok,'invalid adaptive monitoring clock')
+    call report_insitu_timing('adaptive_event_clock',phase_started,step)
+    if(.not.due) return
+    phase_started=insitu_clock()
+    local=0; ok=.true.
+#ifdef _CUDA
+    if(use_gpu) then
+      call gpu_adaptive_energy_sum(local,ok)
+    else
+#endif
+      do k=0,km-1
+      do j=0,jm-1
+      do i=0,im-1
+        density=q(i,j,k,1)
+        if(.not.ieee_is_finite(density).or.density<=0) then
+          ok=.false.; cycle
+        endif
+        value=(q(i,j,k,2)**2+q(i,j,k,3)**2+q(i,j,k,4)**2)/density
+        if(.not.ieee_is_finite(value).or.value<0) then
+          ok=.false.; cycle
+        endif
+        local=local+value
+      enddo
+      enddo
+      enddo
+#ifdef _CUDA
+    endif
+#endif
+    call check(ok.and.ieee_is_finite(local),'invalid adaptive kinetic energy node or local sum')
+    call MPI_Allreduce(local,global,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call check(ierr==MPI_SUCCESS.and.ieee_is_finite(global),'adaptive kinetic energy reduction')
+    reference=roinf*uinf
+    call check(ieee_is_finite(reference).and.reference>0,'adaptive reference density/velocity product')
+    reference=reference*uinf
+    call check(ieee_is_finite(reference).and.reference>0,'adaptive reference density/velocity square')
+    value=0.5d0*(global/(real(ia,real64)*real(ja,real64)*real(ka,real64)))/reference
+    call check(ieee_is_finite(value),'nonfinite normalized adaptive kinetic energy')
+    call report_insitu_timing('adaptive_monitor',phase_started,step)
+    phase_started=insitu_clock()
+    call feed_adaptive_signal(value,t,ok)
+    call check(ok,'adaptive finite difference, scale or event hold overflow')
+    call report_insitu_timing('adaptive_event_update',phase_started,step)
+    if(mpirank==0) write(*,'(a,i0,a,es24.16,a,es24.16,a,8(es24.16,1x),a,8(l1,1x),a,8(i0,1x),a,es16.8)') &
+      'ASTR_AP_MONITOR step=',step,' time=',t,' kinetic_energy=',value,' rates=',adaptive_shared_state%r, &
+      ' active=',adaptive_shared_state%active,' windows=',adaptive_shared_state%window_phase, &
+      ' wall_seconds=',MPI_Wtime()-start
+  end subroutine
+
   subroutine completed_output_runtime(dt_used,counter,pending,initial)
     real(real64),intent(in) :: dt_used
     integer,intent(inout) :: counter
@@ -1110,6 +1198,7 @@ contains
     call check_capability()
     call check(lavg.eqv.(compact_statistics.or.mean_statistics),'legacy statistics activation changed during the run')
     identity=checkpoint_state_identity(int(nstep,int64),time,dt_used,deltat)
+    call observe_output_adaptive(nstep,time)
     call complete_output_insitu(nstep,time,nstep>maxstep)
     if(archives_enabled()) call observe_archives(identity,nstep>maxstep)
     if (.not.options%checkpoint%enabled) return
