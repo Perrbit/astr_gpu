@@ -8821,12 +8821,20 @@ Historical interrupted runs and temporary skips are not scale acceptance.
 Current CP scale tests use `-k qzero_scale_reference_restart` with explicit
 64/128/256 selectors. The 64^3/128^3 numerical, exact continuation, sanitizer,
 resource/transfer and half-step diagnostic receipts are in plan section 5.5.
-The 256^3 NP=2 x-only candidate builds, but its first matrix was interrupted
-for a Git commit and remains unadmitted. Approved disk budgets are now
+The 256^3 NP=2 x-only candidate builds. Its first matrix was interrupted for a
+Git commit; the fresh `curve_256_runtime_v2_20261007.xml` passes both mappings
+under direct-device/device-aware, including CPU/GPU, isolation and exact 3+1
+field/control/image continuation. Only its step-3 and final step-4 checkpoints
+are written, with all acceptance comparisons retained. Remaining scale gates
+are still unadmitted. The two-step 256^3 sanitizer allows 1800 s, without
+enlarging the physical window or memory budget. Approved disk budgets are now
 192 GiB/group, 16 GiB/numerical run and 4 GiB/image-only run, with unchanged
 6 GiB/device, 16 GiB/node and 2 GiB free-memory gates. Failed evidence stays.
 `run_insitu_curve_scale_performance.py` prepares five matched four-step rounds
 for all four entry/transport combinations, excluding one process warm-up each.
 Its optional 100-step runs output both products every step and collect resource
 samples separately from the clean short timing rounds. Four report/schedule
-control tests pass; the actual scale timing and 100-step runs have not started.
+control tests pass (five after the budget receipt-counting check); the actual
+scale timing and 100-step runs have not started. The first four measured rounds
+balance all four backends' positions and directed adjacencies; the fifth repeats
+the first order. Profiler/resource-observed timings are not performance values.

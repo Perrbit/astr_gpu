@@ -1121,9 +1121,16 @@ different accepted terminal arc lengths; y-wavy endpoint differences are about
 accuracy bound or the 2e-10 same-discretization field gate. A 256^3 curve_demo,
 NP=2 x-only candidate built successfully. The first runtime matrix was interrupted
 to switch to the requested Git commit; it is not a passing 256^3 receipt.
+Its fresh replacement `curve_256_runtime_v2_20261007.xml` passes both mappings
+under direct-device/device-aware, with state/product maxima 6.253e-13/8.525e-13,
+exact ON/OFF and 3+1 field/control/JPEG/EPS continuation, and CFL <=0.405773.
+Only step-3 and default final step-4 checkpoints are needed in this large
+diagnostic; no numerical criterion was removed. These runs contain explicit
+checkpoint/oracle I/O, not zero-readback or performance evidence. Remaining
+256^3 entry/transport, sanitizer, resource/transfer and production gates stay open.
 Disk budget changes are now approved:
 192 GiB total, 16 GiB/diagnostic run, 4 GiB/image-only run, unchanged RAM/VRAM gates.
-The 256^3 admission/production and new-dependency performance gates
+The complete 256^3 admission/production and new-dependency performance gates
 remain open. See plan 5.5 for hashes; old-library timings do not transfer.
 
 ### X4 Production Source Build Separation

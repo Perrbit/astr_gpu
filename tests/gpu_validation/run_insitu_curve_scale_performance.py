@@ -30,9 +30,9 @@ def backend_key(pipeline, mode):
 
 
 def round_order(round_id):
-    shift = (round_id+1) % len(BACKENDS)
-    order = BACKENDS[shift:]+BACKENDS[:shift]
-    return order if round_id % 2 == 0 else tuple(reversed(order))
+    # Four-round Williams design balances positions and directed adjacencies.
+    design = ((0, 1, 3, 2), (1, 2, 0, 3), (2, 3, 1, 0), (3, 0, 2, 1))
+    return tuple(BACKENDS[index] for index in design[round_id % 4])
 
 
 def production_configuration(pipeline, mode):
@@ -64,9 +64,14 @@ def summarize(records, rounds):
 
 def group_bytes(build):
     # Ignore pytest's "current" aliases; retain failed and immutable evidence.
-    return sum(path.stat().st_size for directory in build.glob('curve_*')
-               if directory.is_dir() and not directory.is_symlink()
-               for path in directory.rglob('*') if path.is_file() and not path.is_symlink())
+    total = 0
+    for entry in build.glob('curve_*'):
+        if entry.is_symlink():
+            continue
+        paths = entry.rglob('*') if entry.is_dir() else (entry,)
+        total += sum(path.stat().st_size for path in paths
+                     if path.is_file() and not path.is_symlink())
+    return total
 
 
 def exclusive_devices():

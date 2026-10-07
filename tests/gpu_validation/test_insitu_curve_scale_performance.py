@@ -2,7 +2,7 @@
 import pytest
 
 from run_insitu_curve_scale_performance import (BACKENDS, METRICS, backend_key,
-                                              production_configuration, round_order, summarize)
+                                              group_bytes, production_configuration, round_order, summarize)
 
 
 def records():
@@ -15,6 +15,11 @@ def records():
 def test_order_visits_each_backend_once():
     for round_id in range(-1, 5):
         assert len(round_order(round_id)) == 4 and set(round_order(round_id)) == set(BACKENDS)
+    for position in range(4):
+        assert {round_order(round_id)[position] for round_id in range(4)} == set(BACKENDS)
+    pairs = [(first, second) for round_id in range(4)
+             for first, second in zip(round_order(round_id), round_order(round_id)[1:])]
+    assert len(set(pairs)) == 12
 
 
 def test_summary_excludes_warmup_and_selects_complete_window():
@@ -38,3 +43,13 @@ def test_every_step_production_preserves_other_configuration():
     for pipeline, mode in BACKENDS:
         assert production_configuration(pipeline, mode).replace('step_interval=1', 'step_interval=2') == \
             scale_configuration(pipeline, mode)
+
+
+def test_disk_budget_counts_receipts_once(tmp_path):
+    case = tmp_path/'curve_case'
+    case.mkdir()
+    (case/'data.bin').write_bytes(b'abcd')
+    (tmp_path/'curve_receipt.xml').write_bytes(b'abc')
+    (tmp_path/'curve_current').symlink_to(case, target_is_directory=True)
+    (tmp_path/'unrelated.bin').write_bytes(b'0123456789')
+    assert group_bytes(tmp_path) == 7

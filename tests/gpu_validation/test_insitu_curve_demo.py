@@ -123,7 +123,7 @@ def test_qzero_reference_restart(tmp_path, mapping, pipeline, mode, record_prope
 @pytest.mark.parametrize('cells', [32, 64, 128, 256])
 def test_qzero_memcheck(tmp_path, mapping, cells):
     args = current_arguments(tmp_path, samples=False)
-    args.runtime_timeout_seconds = 300
+    args.runtime_timeout_seconds = 1800 if cells == 256 else 300
     if cells >= 64:
         args.scale_timestep, args.maximum_cfl = 2e-5, .5
         args.directory_budget_bytes = (4 if cells == 256 else 2)*1024**3
@@ -147,7 +147,9 @@ def test_qzero_scale_reference_restart(tmp_path, mapping, pipeline, mode, cells,
     args.directory_budget_bytes = (16 if cells == 256 else 2)*1024**3
     args.output_host_budget_bytes = (2048 if cells == 256 else 256 if cells == 128 else 64)*1024**2
     args.scale_timestep, args.maximum_cfl = 2e-5, .5
-    kwargs = dict(grid=','.join([str(cells)]*3), tgv_mapping=mapping, checkpoint_interval=1)
+    # The large diagnostic needs only its step-3 restart source and final state.
+    kwargs = dict(grid=','.join([str(cells)]*3), tgv_mapping=mapping,
+                  checkpoint_interval=3 if cells == 256 else 1)
     config = scale_configuration(pipeline, mode)
     on, size = run_case(args, ROOT, 'gpu', 2, f'qzero{cells}', 4,
         insitu_config=config, postprocess_transport=mode,
