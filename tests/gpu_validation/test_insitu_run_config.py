@@ -20,6 +20,43 @@ implementation_path='lib/catalyst', pipeline_file='tgv.py', output_directory='ou
 """
 
 
+@pytest.mark.skipif(not PROBE, reason='Set ASTR_INSITU_CONFIG_PROBE')
+@pytest.mark.parametrize('change,accepted', [('', True), ('statistics', False), ('host', False),
+    ('compatible', False), ('no-render', False), ('independent-clock', False)])
+def test_curve_demo_config(tmp_path, change, accepted):
+    text = VALID.replace('statistics=t', 'statistics=f').replace('step_interval=2',
+        "step_interval=2,products='curve_demo',derivative_backend='gpu',processing_backend='device',"
+        "postprocess_transport='pinned',rendering_pipeline='direct-device'")
+    if change == 'statistics':
+        text = text.replace('statistics=f', 'statistics=t')
+    elif change == 'host':
+        text = text.replace("processing_backend='device'", "processing_backend='host'")
+    elif change == 'compatible':
+        text = text.replace("rendering_pipeline='direct-device'", "rendering_pipeline='compatible'")
+    elif change == 'no-render':
+        text = text.replace('render=t', 'render=f')
+    elif change == 'independent-clock':
+        text = text.replace('step_interval=2', "product_ids='q_surface.image',product_modes='steps',product_steps=2")
+    path = tmp_path/'curve.nml'
+    path.write_text(text)
+    result = subprocess.run([PROBE, str(path)], capture_output=True, text=True)
+    assert (result.returncode == 0) == accepted, result.stdout+result.stderr
+
+
+@pytest.mark.skipif(not PROBE,reason='Set ASTR_INSITU_CONFIG_PROBE')
+@pytest.mark.parametrize('reduction',(False,True))
+def test_resident_air5_volume_statistics_not_admitted(tmp_path,reduction):
+    content = VALID.replace('step_interval=2',
+        "step_interval=2,products='air5_walls',derivative_backend='gpu',"
+        "processing_backend='device',postprocess_transport='pinned',air5_volume_statistics=t," +
+        ('air5_volume_reduction=t' if reduction else 'air5_volume_reduction=f'))
+    path = tmp_path/'device_air5_volume.nml'
+    path.write_text(content)
+    result = subprocess.run([PROBE,str(path)],capture_output=True,text=True)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert 'resident AIR5 volume statistics are not yet admitted' in result.stdout + result.stderr
+
+
 @pytest.mark.skipif(not PROBE,reason='Set ASTR_INSITU_CONFIG_PROBE')
 @pytest.mark.parametrize('content,accepted',[
     ('&insitu_run /',True),
@@ -65,6 +102,36 @@ implementation_path='lib/catalyst', pipeline_file='tgv.py', output_directory='ou
     (VALID.replace('step_interval=2',"step_interval=2,products='channel_walls'"),True),
     (VALID.replace('statistics=t','statistics=f').replace('step_interval=2',
         "step_interval=2,products='channel_walls',derivative_backend='gpu'"),False),
+    (VALID.replace('statistics=t','statistics=f').replace('step_interval=2',
+        "step_interval=2,products='channel_walls',derivative_backend='gpu',"
+        "processing_backend='device',postprocess_transport='pinned'"),True),
+    (VALID.replace('statistics=t','statistics=f').replace('step_interval=2',
+        "step_interval=2,products='channel_walls',derivative_backend='gpu',"
+        "processing_backend='device',postprocess_transport='device-aware',rendering_pipeline='direct-device'"),True),
+    (VALID.replace('statistics=t','statistics=f').replace('step_interval=2',
+        "step_interval=2,products='channel_walls',derivative_backend='gpu',"
+        "processing_backend='device',postprocess_transport='pinned',rendering_pipeline='compatible'"),False),
+    (VALID.replace('statistics=t','statistics=f').replace('step_interval=2',
+        "step_interval=2,products='air5_walls',derivative_backend='gpu',"
+        "processing_backend='device',postprocess_transport='pinned'"),True),
+    (VALID.replace('statistics=t','statistics=f').replace('step_interval=2',
+        "step_interval=2,products='air5_walls',derivative_backend='gpu',"
+        "processing_backend='device',postprocess_transport='device-aware',rendering_pipeline='direct-device'"),True),
+    (VALID.replace('statistics=t','statistics=f').replace('step_interval=2',
+        "step_interval=2,products='air5_walls',derivative_backend='gpu',"
+        "processing_backend='device',postprocess_transport='pinned',rendering_pipeline='compatible'"),False),
+    (VALID.replace('step_interval=2',
+        "step_interval=2,products='air5_walls',derivative_backend='gpu',"
+        "processing_backend='device',postprocess_transport='pinned'"),True),
+    (VALID.replace('step_interval=2',
+        "step_interval=2,products='channel_walls',derivative_backend='gpu',"
+        "processing_backend='device',postprocess_transport='pinned'"),True),
+    (VALID.replace('step_interval=2',
+        "step_interval=2,products='air5_walls',derivative_backend='gpu',wall_mean_render=t,"
+        "processing_backend='device',postprocess_transport='pinned'"),True),
+    (VALID.replace('step_interval=2',
+        "step_interval=2,products='air5_walls',derivative_backend='gpu',wall_separation=t,"
+        "processing_backend='device',postprocess_transport='pinned'"),True),
     (VALID.replace('statistics=t','statistics=f').replace('step_interval=2',
         "step_interval=2,products='air5_walls'"),True),
     (VALID.replace('step_interval=2',"step_interval=2,products='air5_walls'"),True),
@@ -181,6 +248,65 @@ DEVICE = VALID.replace('step_interval=2',
     "step_interval=2,derivative_backend='gpu',processing_backend='device',postprocess_transport='pinned'")
 
 
+@pytest.mark.skipif(not PROBE, reason='Set ASTR_INSITU_CONFIG_PROBE')
+@pytest.mark.parametrize('pipeline', ['standard-device', 'direct-device'])
+@pytest.mark.parametrize('transport', ['pinned', 'device-aware'])
+def test_mean_streamline_selection(tmp_path, pipeline, transport):
+    text = DEVICE.replace('step_interval=2', "step_interval=2,products='streamlines',mean_streamline_render=t")
+    text = text.replace("postprocess_transport='pinned'", f"postprocess_transport='{transport}',rendering_pipeline='{pipeline}'")
+    path = tmp_path / 'means.nml'
+    path.write_text(text)
+    result = subprocess.run([PROBE, str(path)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'mean_streamline_render=T' in result.stdout
+
+
+@pytest.mark.skipif(not PROBE, reason='Set ASTR_INSITU_CONFIG_PROBE')
+@pytest.mark.parametrize('change', [('statistics=t', 'statistics=f'), ('render=t', 'render=f'),
+    ("products='streamlines'", "products='q_surface'"),
+    ("products='streamlines'", "products='all'")])
+def test_mean_streamline_invalid_selection(tmp_path, change):
+    text = DEVICE.replace('step_interval=2', "step_interval=2,products='streamlines',mean_streamline_render=t")
+    path = tmp_path / 'invalid_means.nml'
+    path.write_text(text.replace(*change))
+    result = subprocess.run([PROBE, str(path)], capture_output=True, text=True, timeout=10)
+    assert result.returncode != 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(not PROBE, reason='Set ASTR_INSITU_CONFIG_PROBE')
+def test_mean_streamline_default_off(tmp_path):
+    path = tmp_path / 'default_means.nml'
+    path.write_text(DEVICE.replace('step_interval=2', "step_interval=2,products='streamlines'"))
+    result = subprocess.run([PROBE, str(path)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'mean_streamline_render=F' in result.stdout
+
+
+@pytest.mark.skipif(not PROBE, reason='Set ASTR_INSITU_CONFIG_PROBE')
+@pytest.mark.parametrize('mean', [False, True])
+def test_mean_streamline_product_clock(tmp_path, mean):
+    content = DEVICE.replace('step_interval=2',
+        "products='streamlines',mean_streamline_render=" + ('t' if mean else 'f') +
+        ",product_ids='mean_reynolds_streamlines.image','mean_favre_streamlines.image',"
+        "product_modes='steps','steps',product_steps=2,2")
+    path = tmp_path / 'mean_clocks.nml'
+    path.write_text(content)
+    result = subprocess.run([PROBE, str(path)], capture_output=True, text=True, timeout=10)
+    assert (result.returncode == 0) == mean, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(not COLLECTIVE or not MPIEXEC, reason='Set collective probe and MPI launcher')
+def test_collective_mean_streamline_selection(tmp_path):
+    text = DEVICE.replace('step_interval=2', "step_interval=2,products='streamlines',mean_streamline_render=t")
+    (tmp_path / 'rank0.nml').write_text(text)
+    (tmp_path / 'rank1.nml').write_text(text.replace('mean_streamline_render=t', 'mean_streamline_render=f'))
+    result = subprocess.run([MPIEXEC, '-np', '2', str(Path(COLLECTIVE).resolve()), str(tmp_path / 'rank')],
+        capture_output=True, text=True, timeout=30)
+    output = result.stdout + result.stderr
+    assert result.returncode != 0 and output.count('REJECT rank ') == 2, output
+    assert 'values differ between MPI ranks' in output, output
+
+
 @pytest.mark.skipif(not COLLECTIVE or not MPIEXEC,reason='Set collective probe and MPI launcher')
 @pytest.mark.parametrize('other,accepted',[
     ("product_ids='velocity_slice.geometry','q_surface.image',product_modes='time','steps',"
@@ -259,7 +385,7 @@ def test_collective_default_and_explicit_standard_are_identical(tmp_path):
     (DEVICE.replace("derivative_backend='gpu'", "derivative_backend='cpu'"), False),
     (DEVICE.replace('render=t', 'render=f'), False),
     (DEVICE.replace('device_budget_bytes=2147483648', 'device_budget_bytes=0'), False),
-    (DEVICE.replace('step_interval=2', "step_interval=2,products='channel_walls'"), False),
+    (DEVICE.replace('step_interval=2', "step_interval=2,products='channel_walls'"), True),
 ])
 def test_device_transport_options(tmp_path, content, accepted):
     path = tmp_path / 'device.nml'

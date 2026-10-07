@@ -7,7 +7,7 @@ module insitu_session
   use insitu_checkpoint_batch
   use insitu_velocity_statistics
   use insitu_wall_statistics, only: accumulate_wall_statistics,wall_statistics_file, &
-    finish_wall_statistics,wall_statistics_host_bytes,wall_statistics_render_values
+    finish_wall_statistics,wall_statistics_host_bytes,wall_statistics_render_values,wall_statistics_render_clock
   use insitu_air5_statistics, only: accumulate_air5_statistics,air5_statistics_file, &
     finish_air5_statistics,air5_statistics_host_bytes
   use insitu_resource_budget, only: resource_budget,configure_budget,reserve_bytes,checked_bytes
@@ -183,16 +183,17 @@ contains
     type(checkpoint_state_identity),intent(in) :: identity
     integer(int64),intent(in) :: budget
     integer(int64) :: flags(3),saved_flags(3),signature(4),transport_signature(4),step,interval,origin_step
-    real(real64) :: clock(3),period,origin_time
+    real(real64) :: clock(3),period,origin_time,saved_plane(6)
     character(8) :: magic
-    character(16) :: mode,saved_processing,saved_transport,saved_pipeline
+    character(16) :: mode,saved_processing,saved_transport,saved_pipeline,saved_slice
     type(sample_schedule) :: restored
-    logical :: rendering,same,transport_only,ok,products_same
+    logical :: rendering,same,transport_only,ok,products_same,plane_same
     integer :: unit,status,closed
     call require_sample(native_output,'native render provider needs new output')
     rendering=formal.and.enabled.and.options%render
     flags=0; signature=0; mode=''; interval=0; period=0; origin_step=0; origin_time=0
     magic='ASTRIR01'; saved_processing='host'; saved_transport=''; saved_pipeline='compatible'
+    saved_slice='index'; saved_plane=0.d0
     call require_sample(budget>=512,'native render scalar state budget')
     if(rendering) then
       call require_sample(budget>=1024,'native render control state budget')
@@ -206,6 +207,7 @@ contains
         call require_sample(budget>=512+int(options%product_count,int64)*2048,'native product control state budget')
         magic='ASTRIR04'
       endif
+      if(options%slice_definition=='plane') magic='ASTRIR05'
     endif
     if(writing) then
       status=0; closed=0
@@ -215,8 +217,10 @@ contains
         if(status==0) then
           write(unit,iostat=status) magic,identity%step,[identity%time,identity%dt_used,identity%dt_next], &
             flags,mode,interval,period,origin_step,origin_time,signature
-          if(status==0.and.(magic=='ASTRIR03'.or.magic=='ASTRIR04')) write(unit,iostat=status) &
+          if(status==0.and.(magic=='ASTRIR03'.or.magic=='ASTRIR04'.or.magic=='ASTRIR05')) write(unit,iostat=status) &
             options%processing_backend,options%postprocess_transport,options%rendering_pipeline
+          if(status==0.and.magic=='ASTRIR05') write(unit,iostat=status) &
+            options%slice_definition,options%slice_origin,options%slice_normal
           if(status==0.and.rendering) then
             if(magic=='ASTRIR04') then
               call product_state_file(unit,.true.,identity%step,identity%time,products_same,ok)
@@ -236,18 +240,19 @@ contains
     call require_sample(status==0,'missing native render control')
     read(unit,iostat=status) magic,step,clock,saved_flags,mode,interval,period,origin_step,origin_time,signature
     call require_sample(status==0,'cannot read native render control')
-    call require_sample((magic=='ASTRIR01'.or.magic=='ASTRIR02'.or.magic=='ASTRIR03'.or.magic=='ASTRIR04').and. &
+    call require_sample((magic=='ASTRIR01'.or.magic=='ASTRIR02'.or.magic=='ASTRIR03'.or.magic=='ASTRIR04'.or. &
+      magic=='ASTRIR05').and. &
       step==identity%step.and. &
       all(clock==[identity%time,identity%dt_used,identity%dt_next]),'native render clock/version mismatch')
     call require_sample(all(saved_flags>=0).and.all(saved_flags<=1),'invalid native render flags')
-    if(magic=='ASTRIR02'.or.magic=='ASTRIR03'.or.magic=='ASTRIR04') then
+    if(magic=='ASTRIR02'.or.magic=='ASTRIR03'.or.magic=='ASTRIR04'.or.magic=='ASTRIR05') then
       read(unit,iostat=status) saved_processing,saved_transport
       call require_sample(status==0,'cannot read device render identity')
       call require_sample(saved_flags(1)==1.and. &
         ((saved_processing=='device'.and.(saved_transport=='pinned'.or.saved_transport=='device-aware')).or. &
          ((magic=='ASTRIR03'.or.magic=='ASTRIR04').and.saved_processing=='host'.and.saved_transport=='')), &
         'invalid device render identity')
-      if(magic=='ASTRIR03'.or.magic=='ASTRIR04') then
+      if(magic=='ASTRIR03'.or.magic=='ASTRIR04'.or.magic=='ASTRIR05') then
         read(unit,iostat=status) saved_pipeline
         call require_sample(status==0,'cannot read rendering pipeline identity')
         call require_sample(saved_pipeline=='compatible'.or. &
@@ -255,6 +260,17 @@ contains
           'invalid rendering pipeline identity')
       endif
     endif
+    if(magic=='ASTRIR05') then
+      read(unit,iostat=status) saved_slice,saved_plane
+      call require_sample(status==0,'cannot read physical plane identity')
+      call require_sample(saved_slice=='plane'.and.all(ieee_is_finite(saved_plane)).and. &
+        saved_processing=='device'.and.saved_pipeline/='compatible', 'invalid physical plane identity')
+      call require_sample(abs(sum(saved_plane(4:6)**2)-1.d0)<=8.d0*epsilon(1.d0).and. &
+        saved_plane(3+maxloc(abs(saved_plane(4:6)),dim=1))>0.d0,'invalid canonical plane normal')
+    endif
+    plane_same=saved_slice==options%slice_definition
+    if(plane_same.and.saved_slice=='plane') plane_same= &
+      all(saved_plane==[options%slice_origin,options%slice_normal])
     output_saved_rendering=saved_flags(1)==1
     call require_sample(ieee_is_finite(period).and.ieee_is_finite(origin_time),'nonfinite native render configuration')
     products_same=options%product_count==0
@@ -280,7 +296,7 @@ contains
     call require_sample(checkpoint_stream_at_end(unit),'native render control tail')
     close(unit,iostat=closed)
     call require_sample(closed==0,'cannot close native render control')
-    same=all(saved_flags==flags).and.products_same
+    same=all(saved_flags==flags).and.products_same.and.plane_same
     if(rendering.and.output_saved_rendering) call require_sample(saved_pipeline==options%rendering_pipeline, &
       'rendering pipeline restart mismatch; cross-pipeline restore is unsupported')
     if(rendering) same=same.and.mode==options%schedule_mode.and.interval==options%step_interval.and. &
@@ -291,7 +307,7 @@ contains
       transport_signature=signature
       transport_signature(3)=ieor(ieor(signature(3),postprocess_transport_marker(saved_transport)), &
         postprocess_transport_marker(options%postprocess_transport))
-      transport_only=all(saved_flags==flags).and.products_same.and.mode==options%schedule_mode.and. &
+      transport_only=all(saved_flags==flags).and.products_same.and.plane_same.and.mode==options%schedule_mode.and. &
         interval==options%step_interval.and.period==options%time_interval.and. &
         all(transport_signature==render_signature).and.saved_transport/=options%postprocess_transport.and. &
         saved_pipeline==options%rendering_pipeline
@@ -361,7 +377,7 @@ contains
       call require_sample(.not.permit,'wall scalar statistics repartition is not supported')
       call wall_statistics_file(path,writing,identity,budget,statistics_window, &
         options%host_budget_bytes,options%device_budget_bytes,options%device_reserve_bytes,.true., &
-        options%air5_volume_statistics,options%wall_separation)
+        options%air5_volume_statistics,options%wall_separation,options%postprocess_transport)
       if(options%air5_volume_statistics) call air5_statistics_file(path,writing,identity,budget,statistics_window, &
         options%air5_volume_reduction)
       statistics_step=int(identity%step); statistics_time=identity%time
@@ -417,7 +433,8 @@ contains
       [im,jm,km],0,values,stored,remaining,MPI_COMM_WORLD,role=role,metadata=metadata,allow_repartition=permit)
     if(writing) then
       if(options%products=='channel_walls') call wall_statistics_file(path,.true.,identity,budget,statistics_window, &
-        options%host_budget_bytes,options%device_budget_bytes,options%device_reserve_bytes,.false.)
+        options%host_budget_bytes,options%device_budget_bytes,options%device_reserve_bytes,.false., &
+        device_transport=options%postprocess_transport)
       return
     endif
     call require_sample(stored%step==identity%step.and.stored%time==identity%time.and. &
@@ -457,7 +474,8 @@ contains
     statistics_time=identity%time
     output_statistics_restored=.true.
     if(options%products=='channel_walls') call wall_statistics_file(path,.false.,identity,budget,statistics_window, &
-      options%host_budget_bytes,options%device_budget_bytes,options%device_reserve_bytes,.false.)
+      options%host_budget_bytes,options%device_budget_bytes,options%device_reserve_bytes,.false., &
+      device_transport=options%postprocess_transport)
   end subroutine
 
   logical function native_device_statistics()
@@ -482,7 +500,7 @@ contains
   end subroutine
 
   subroutine configure_session()
-    use commvar, only: use_gpu,lrestart,lreadgrid,flowtype,ndims,ia,ja,ka,hm,difschm, &
+    use commvar, only: use_gpu,lrestart,lreadgrid,flowtype,ndims,ia,ja,ka,hm,difschm,conschm, &
       numq,num_species,nondimen,jm
     use bc, only: bctype
     use parallel, only: mpirank,mpisize,isize,jsize,ksize
@@ -491,7 +509,8 @@ contains
 #endif
     character(1024) :: filename,message
     integer :: ierr
-    logical :: ok,channel_wall,air5_wall,curve_tgv,device_demo
+    logical :: ok,channel_wall,air5_wall,curve_tgv,device_demo,device_wall,device_plane,device_curve_q,device_air5_wall
+    logical :: device_curve_trace,device_curve_demo
     if(session_checked) return
     native_output=.true.
     call read_consistent_env('ASTR_INSITU_CONFIG',filename)
@@ -505,18 +524,53 @@ contains
       oracle_io=.false.
       if(enabled) then
         device_demo=options%processing_backend=='device'.and.options%products=='tgv256_demo'
+        device_curve_demo=options%processing_backend=='device'.and.options%products=='curve_demo'
+        device_wall=options%processing_backend=='device'.and.options%products=='channel_walls'
+        device_air5_wall=options%processing_backend=='device'.and.options%products=='air5_walls'
+        device_plane=options%processing_backend=='device'.and.options%slice_definition=='plane'
+        device_curve_q=options%processing_backend=='device'.and.lreadgrid.and. &
+          (options%products=='q_surface'.or.device_curve_demo)
+        device_curve_trace=options%processing_backend=='device'.and.lreadgrid.and. &
+          (options%products=='streamlines'.or.device_curve_demo)
+        if(device_curve_demo) call require_sample(lreadgrid.and. &
+          (all([ia,ja,ka]==32).or.all([ia,ja,ka]==64).or.all([ia,ja,ka]==128).or. &
+           (all([ia,ja,ka]==256).and.mpisize==2.and.all([isize,jsize,ksize]==[2,1,1]))).and. &
+          .not.options%statistics,'CURVE demonstration requires bounded 32^3/64^3/128^3 or 256^3 NP=2 x without statistics')
         if(options%processing_backend=='device') then
 #ifdef ASTR_INSITU_DEVICE_PRODUCTS
-          call require_sample(use_gpu.and.trim(flowtype)=='tgv'.and..not.lreadgrid.and. &
-            (all([ia,ja,ka]==32).or.(device_demo.and.all([ia,ja,ka]==256))).and. &
-            all(bctype==1).and.numq==5.and.num_species==0.and.nondimen.and. &
-            ndims==3.and.mpisize<=2.and.hm>=3.and.trim(difschm)=='643e', &
-            'device products require 32^3 TGV or explicit 256^3 render-only demonstration')
-          if(device_demo) call require_sample(all([ia,ja,ka]==256).and.mpisize==2.and. &
-            all([isize,jsize,ksize]==[2,1,1]).and..not.options%statistics, &
-            'device demonstration requires 256^3 TGV NP=2 x partition without statistics')
-          call require_sample(options%slice_axis=='z'.and.options%slice_index==4, &
-            'device slice currently requires the approved z node 4 preset')
+          if(device_wall) then
+            call require_sample(use_gpu.and. &
+              ((trim(flowtype)=='channel'.and..not.lreadgrid.and.all([ia,ja,ka]==16)).or. &
+               (trim(flowtype)=='tgv'.and.lreadgrid.and.all([ia,ja,ka]==32))).and. &
+              all(bctype==[1,1,41,41,1,1]).and.numq==5.and.num_species==0.and. &
+              nondimen.and.ndims==3.and.mpisize<=2.and.hm>=3.and.trim(difschm)=='643e'.and. &
+              trim(conschm)=='643e', &
+              'device wall products require bc41 channel 16^3 or CURVE TGV 32^3 NP=1/2')
+          elseif(device_air5_wall) then
+            call require_sample(use_gpu.and.trim(flowtype)=='air5hbl'.and..not.lreadgrid.and. &
+              all([ia,ja,ka]==16).and.all(bctype==[11,50,41,51,1,1]).and.numq==11.and.num_species==5.and. &
+              .not.nondimen.and.ndims==3.and.mpisize<=2.and.hm>=3.and.jm>=2.and. &
+              trim(difschm)=='643e'.and.trim(conschm)=='643e', &
+              'device AIR5 wall products require noncatalytic Cartesian HBL 16^3 NP=1/2')
+          else
+            call require_sample(use_gpu.and.trim(flowtype)=='tgv'.and. &
+              (.not.lreadgrid.or.device_plane.or.device_curve_q.or.device_curve_trace).and. &
+              (all([ia,ja,ka]==32).or.device_curve_demo.or.(device_demo.and.all([ia,ja,ka]==256))).and. &
+              (all(bctype==1).or.((device_curve_trace.or.device_curve_q).and.all(bctype==[1,1,41,41,1,1]))).and. &
+              numq==5.and.num_species==0.and.nondimen.and. &
+              ndims==3.and.mpisize<=2.and.hm>=3.and.trim(difschm)=='643e', &
+              'device products require 32^3 TGV or explicit 256^3 render-only demonstration')
+            if(device_curve_q) call require_sample(.not.options%statistics.and. &
+              options%rendering_pipeline/='compatible', &
+              'CURVE device Q requires strict rendering without statistics for this gate')
+            if(device_curve_trace) call require_sample(options%rendering_pipeline/='compatible', &
+              'CURVE device streamlines require strict physical-coordinate rendering')
+            if(device_demo) call require_sample(all([ia,ja,ka]==256).and.mpisize==2.and. &
+              all([isize,jsize,ksize]==[2,1,1]).and..not.options%statistics, &
+              'device demonstration requires 256^3 TGV NP=2 x partition without statistics')
+            call require_sample(device_plane.or.(options%slice_axis=='z'.and.options%slice_index==4), &
+              'device slice currently requires the approved z node 4 preset')
+          endif
 #else
           call require_sample(.false., &
             'IS8 device processing is not connected to the native product bridge yet; no host fallback')
@@ -525,20 +579,21 @@ contains
         channel_wall=nonreacting_wall_candidate().and.options%products=='channel_walls'
         air5_wall=trim(flowtype)=='air5hbl'.and.options%products=='air5_walls'
         curve_tgv=lreadgrid.and.trim(flowtype)=='tgv'.and.numq==5.and.num_species==0.and. &
-          nondimen.and.all([ia,ja,ka]==32).and.(all(bctype==1).or.channel_wall).and.mpisize<=2.and. &
+          nondimen.and.(all([ia,ja,ka]==32).or.device_curve_demo).and. &
+          (all(bctype==1).or.channel_wall.or.device_curve_trace.or.device_curve_q).and.mpisize<=2.and. &
           hm>=3.and.trim(difschm)=='643e'
         call require_sample((trim(flowtype)=='tgv'.or.channel_wall.or.air5_wall).and.ndims==3.and. &
           (.not.lreadgrid.or.curve_tgv), &
           'formal in situ requires a supported Cartesian candidate or 32^3 periodic CURVE TGV NP=1/2')
         if(channel_wall) call require_sample( &
-          options%derivative_backend=='cpu'.and.numq==5.and.num_species==0.and.nondimen.and. &
+          (options%derivative_backend=='cpu'.or.device_wall).and.numq==5.and.num_species==0.and.nondimen.and. &
           all(bctype==[1,1,41,41,1,1]).and.max(ia,ja,ka)<=32.and.jm>=2.and.mpisize<=2.and. &
-          trim(difschm)=='643e','channel wall candidate requires bc41 <=32 NP=1/2 and CPU wall diagnostics')
+          trim(difschm)=='643e','channel wall candidate requires bc41 <=32 NP=1/2 and an admitted wall provider')
         call require_sample(options%products/='channel_walls'.or.channel_wall, &
           'channel_walls product requires a channel or approved CURVE wall TGV solver')
         call require_sample(options%products/='air5_walls'.or.air5_wall, &
           'air5_walls product requires an AIR5 HBL solver')
-        if(air5_wall) call require_sample(options%derivative_backend=='cpu'.and. &
+        if(air5_wall) call require_sample((options%derivative_backend=='cpu'.or.device_air5_wall).and. &
           numq==11.and.num_species==5.and..not.nondimen.and.all(bctype==[11,50,41,51,1,1]).and. &
           max(ia,ja,ka)<=32.and.jm>=2.and.mpisize<=2.and.trim(difschm)=='643e', &
           'AIR5 wall candidate requires noncatalytic Cartesian HBL <=32 NP=1/2')
@@ -550,12 +605,14 @@ contains
           call require_sample(mesh_pipeline_available(trim(options%rendering_pipeline)//c_null_char)==1, &
             'selected rendering pipeline is not built/admitted; no compatible fallback')
 #endif
-          if(options%derivative_backend=='gpu') call require_sample(use_gpu.and. &
+          if(options%derivative_backend=='gpu'.and..not.device_wall.and..not.device_air5_wall.and..not.device_curve_trace) &
+            call require_sample(use_gpu.and. &
             (mpisize<=2.or.(.not.lreadgrid.and.mpisize==4.and.all([isize,jsize,ksize]==[2,2,1]))).and. &
             (all([ia,ja,ka]==32).or.(device_demo.and.all([ia,ja,ka]==256))).and. &
-            all(bctype==1).and.hm>=3.and.trim(difschm)=='643e', &
+            (all(bctype==1).or.(device_curve_q.and.all(bctype==[1,1,41,41,1,1]))).and. &
+            hm>=3.and.trim(difschm)=='643e', &
             'GPU in-situ derivative candidate requires 32^3 periodic 643e TGV NP=1/2 or NP=4 (2x2x1)')
-          if(options%products=='velocity_slice') call require_sample(options%slice_index<32, &
+          if(options%products=='velocity_slice'.and..not.device_plane) call require_sample(options%slice_index<32, &
             'index-plane slice requires a global node index below 32')
 #ifdef ASTR_WITH_CATALYST
           call require_sample(use_gpu,'native EGL rendering requires GPU solver binding')
@@ -607,8 +664,15 @@ contains
           if(selected_product_profile()>0) render_signature(4)= &
             ieor(render_signature(4),int(selected_product_profile(),int64))
           if(options%wall_mean_render) render_signature(4)=ieor(render_signature(4),int(z'57414C4C4D45414E',int64))
-          if(options%products=='velocity_slice') render_signature(4)=ieor(render_signature(4), &
-            ishft(int(options%slice_index,int64),8)+ishft(int(index('xyz',trim(options%slice_axis)),int64),16))
+          if(options%mean_streamline_render) render_signature(4)=ieor(render_signature(4),int(z'4D45414E54524143',int64))
+          if(options%products=='velocity_slice') then
+            if(device_plane) then
+              render_signature(4)=ieor(render_signature(4),int(z'50485953504C414E',int64))
+            else
+              render_signature(4)=ieor(render_signature(4), &
+                ishft(int(options%slice_index,int64),8)+ishft(int(index('xyz',trim(options%slice_axis)),int64),16))
+            endif
+          endif
           call MPI_Bcast(render_signature,4,MPI_INTEGER8,0,MPI_COMM_WORLD,ierr)
           call require_sample(ierr==MPI_SUCCESS,'native render signature broadcast')
         endif
@@ -1338,7 +1402,7 @@ contains
     use insitu_fields, only: capture_canonical_velocity
 #ifdef _CUDA
     use insitu_sample_gpu, only: derive_sample_gpu
-    use insitu_products_gpu, only: render_device_sample_gpu
+    use insitu_products_gpu, only: render_device_sample_gpu,render_device_walls_gpu,render_device_plane_gpu
 #endif
     integer,intent(in) :: step
     real(real64),intent(in) :: t
@@ -1348,7 +1412,7 @@ contains
     logical :: emit,ok
     integer :: status
     integer(int64) :: crossed
-    real(real64) :: started,capture_seconds,canonical_seconds,derived_seconds,render_seconds
+    real(real64) :: started,capture_seconds,canonical_seconds,derived_seconds,render_seconds,wall_duration,wall_window(2)
     if(.not.options%render) return
     call configure_render_schedule()
     started=insitu_clock()
@@ -1372,10 +1436,23 @@ contains
         call require_sample(status==0,'cannot configure compact device renderer')
         native_bridge_configured=.true.
       endif
-      call render_device_sample_gpu(trim(options%postprocess_transport),trim(options%rendering_pipeline), &
+      if(options%products=='channel_walls'.or.options%products=='air5_walls') then
+        wall_duration=0.d0; wall_window=0.d0
+        if(options%wall_mean_render) call wall_statistics_render_clock(step,t,wall_duration,wall_window)
+        call render_device_walls_gpu(trim(options%products),trim(options%postprocess_transport),trim(options%rendering_pipeline), &
+          trim(options%implementation_path),trim(options%pipeline_file),step,t, &
+          options%host_budget_bytes,options%device_budget_bytes,options%device_reserve_bytes, &
+          options%wall_mean_render,wall_duration,wall_window)
+      else if(options%slice_definition=='plane') then
+        call render_device_plane_gpu(trim(options%postprocess_transport),trim(options%rendering_pipeline), &
+          trim(options%implementation_path),trim(options%pipeline_file),step,t,options%slice_origin,options%slice_normal, &
+          options%host_budget_bytes,options%device_budget_bytes,options%device_reserve_bytes)
+      else
+        call render_device_sample_gpu(trim(options%postprocess_transport),trim(options%rendering_pipeline), &
         trim(options%implementation_path), &
         trim(options%pipeline_file),trim(options%products),step,t,statistics_window,statistics_enabled, &
-        options%host_budget_bytes,options%device_budget_bytes,options%device_reserve_bytes)
+        options%host_budget_bytes,options%device_budget_bytes,options%device_reserve_bytes,options%mean_streamline_render)
+      endif
       call require_sample(product_results_complete(),'device products did not report their publication results')
 #else
       call require_sample(.false.,'device rendering requires CUDA and Catalyst; no fallback')
@@ -1973,7 +2050,7 @@ contains
   end subroutine
 
   subroutine sample_insitu_step(step,time_end,step_dt)
-    use commvar, only: im,jm,km,numq,num_species,flowtype,use_gpu,hm,difschm
+    use commvar, only: im,jm,km,numq,num_species,flowtype,use_gpu,hm,difschm,lreadgrid
     use bc, only: bctype
     use commarray, only: x
     use parallel, only: mpirank,ig0,jg0,kg0
@@ -2013,7 +2090,7 @@ contains
         call admit_statistics_host()
         call accumulate_wall_statistics(step,time_end,statistics_window,options%host_budget_bytes, &
           options%device_budget_bytes,options%device_reserve_bytes, &
-          merge(prefix,repeat(' ',len(prefix)),options%wall_separation))
+          merge(prefix,repeat(' ',len(prefix)),options%wall_separation),options%postprocess_transport)
         if(options%air5_volume_statistics) call accumulate_air5_statistics(step,time_end,statistics_window, &
           options%air5_volume_reduction)
         statistics_step=step; statistics_time=time_end
@@ -2025,7 +2102,7 @@ contains
       if(statistics_enabled) then
         call admit_statistics_host()
         call accumulate_wall_statistics(step,time_end,statistics_window,options%host_budget_bytes, &
-          options%device_budget_bytes,options%device_reserve_bytes)
+          options%device_budget_bytes,options%device_reserve_bytes,device_transport=options%postprocess_transport)
         if(native_device_statistics()) then
           call accumulate_native_device(step,time_end)
         else
@@ -2049,8 +2126,10 @@ contains
       call require_sample(max(im,jm,km)<=32.and.min(im,jm,km)>=1, &
                           'initial sampling gate requires local extents <=32')
     endif
-    call require_sample(all(bctype==1).and.hm>=3.and.trim(difschm)=='643e', &
-                        'diagnostic gate requires periodic boundaries and explicit sixth-order derivatives')
+    call require_sample((all(bctype==1).or.(formal.and.lreadgrid.and.options%processing_backend=='device'.and. &
+      (options%products=='streamlines'.or.options%products=='q_surface'.or.options%products=='curve_demo').and. &
+      all(bctype==[1,1,41,41,1,1]))).and.hm>=3.and.trim(difschm)=='643e', &
+      'diagnostic gate requires admitted boundaries and explicit sixth-order derivatives')
     call require_sample(step>=0.and.ieee_is_finite(time_end).and.ieee_is_finite(step_dt), &
                         'nonfinite sample metadata')
     call require_sample((step==0.and.time_end==0.d0.and.step_dt==0.d0).or. &

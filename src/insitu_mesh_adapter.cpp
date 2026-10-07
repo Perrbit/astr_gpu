@@ -17,7 +17,13 @@
 #ifdef ASTR_INSITU_DEVICE_PRODUCTS
 #include <nvtx3/nvToolsExt.h>
 extern "C" void astr_insitu_device_range_push(int stage) {
-  nvtxRangePushA(stage==1 ? "ASTR_IS8_DEVICE_SAMPLE" : "ASTR_IS8_DEVICE_MEAN_SUPPLY");
+  const char* names[]={"ASTR_IS8_DEVICE_SAMPLE", "ASTR_IS8_DEVICE_MEAN_SUPPLY",
+    "ASTR_X4_DEVICE_WALL_SAMPLE", "ASTR_X4_DEVICE_PLANE_SAMPLE",
+    "ASTR_X4_DEVICE_WALL_CONSUMER", "ASTR_X4_DEVICE_PLANE_CONSUMER", "ASTR_X4_DEVICE_VOLUME_CONSUMER",
+    "ASTR_X4_DEVICE_WALL_STATISTICS", "ASTR_X4_DEVICE_VOLUME_STATISTICS", "ASTR_X4_DEVICE_WALL_MEAN_SUPPLY",
+    "ASTR_X4_DEVICE_WALL_SEPARATION_REDUCE"};
+  if(stage<1 || stage>11) std::abort();
+  nvtxRangePushA(names[stage-1]);
 }
 extern "C" void astr_insitu_device_range_pop() { nvtxRangePop(); }
 #endif
@@ -402,6 +408,11 @@ try {
     conduit_node_set_path_int64(mesh,"state/fields/device_cells",view.cells);
     conduit_node_set_path_int64(mesh,"state/fields/device_arity",view.arity);
     conduit_node_set_path_int64(mesh,"state/fields/mean_covered",covered);
+    for(const auto& field:product.controls) {
+      if(!std::isfinite(field.second))
+        return allocation_failure("resident products","nonfinite scalar control",comm);
+      conduit_node_set_path_double(mesh,("state/fields/"+field.first).c_str(),field.second);
+    }
     conduit_node_set_path_char8_str(mesh,"coordsets/coords/type","explicit");
     conduit_node_set_path_char8_str(mesh,"topologies/mesh/coordset","coords");
     conduit_node_set_path_char8_str(mesh,"topologies/mesh/type","unstructured");

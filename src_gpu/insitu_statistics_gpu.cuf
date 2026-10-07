@@ -38,7 +38,7 @@ module insitu_statistics_gpu
   real(8),allocatable,device,save :: node_weight_d(:)
   real(8),allocatable,device,save :: curve_weight_d(:,:,:)
   real(8),save :: curve_local_volume=0.d0
-  integer,allocatable,device,save :: invalid_d(:,:,:)
+  integer,allocatable,device,save :: invalid_d(:)
   real(8),save :: previous_time=0.d0,saved_window(2)=0.d0
   logical,save :: has_previous=.false.
 contains
@@ -283,7 +283,7 @@ contains
     else
       call admit_statistics_device_allocation()
       allocate(state_d(0:im-1,0:owned_ny()-1,0:km-1,30),output_d(0:im-1,0:owned_ny()-1,0:km-1,41), &
-               invalid_d(0:im-1,0:owned_ny()-1,0:km-1),spatial_d(6),stat=status)
+               invalid_d(1),spatial_d(6),stat=status)
       if(status/=0) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
       call initialize_node_weights()
     endif
@@ -313,16 +313,15 @@ contains
     integer,value :: im,jm,km
     real(8),value :: w0,w1
     logical,value :: previous
-    integer :: i,j,k,a,b,m,e,f,offset,total_slot,mean_slot,central_slot
+    integer :: i,j,k,a,b,m,e,f,offset,total_slot,mean_slot,central_slot,ignored
     real(8) :: s(30),u(3),delta(3),rho,w,total,new_total,factor,ratio,entry,r(41)
     i=(blockidx%x-1)*blockdim%x+threadidx%x-1
     j=blockidx%y-1
     k=blockidx%z-1
     if(i>=im.or.j>=jm.or.k>=km) return
-    invalid_d(i,j,k)=0
     rho=q_d(i,j,k,1)
     if(.not.(rho>0.d0.and.rho<=huge(rho))) then
-      invalid_d(i,j,k)=1
+      ignored=atomicAdd(invalid_d(1),1)
       return
     endif
     s=0.d0
@@ -345,7 +344,7 @@ contains
         total=s(total_slot)
         new_total=total+w
         if(.not.(w>0.d0.and.new_total>0.d0.and.new_total<=huge(w))) then
-          invalid_d(i,j,k)=1
+          ignored=atomicAdd(invalid_d(1),1)
           return
         endif
         if(total==0.d0) then
@@ -371,20 +370,20 @@ contains
     s(2:4)=q_d(i,j,k,2:4)/s(1)
     do m=1,30
       if(.not.(abs(s(m))<=huge(w))) then
-        invalid_d(i,j,k)=1
+        ignored=atomicAdd(invalid_d(1),1)
         return
       endif
     enddo
     do a=1,3
       if(s(13+4*(a-1))<0.d0.or.s(22+4*(a-1))<0.d0) then
-        invalid_d(i,j,k)=1
+        ignored=atomicAdd(invalid_d(1),1)
         return
       endif
     enddo
     call statistics_result(s,r)
     do m=1,41
       if(.not.(abs(r(m))<=huge(w))) then
-        invalid_d(i,j,k)=1
+        ignored=atomicAdd(invalid_d(1),1)
         return
       endif
     enddo
@@ -425,29 +424,30 @@ contains
     output_d(i,j,k,:)=r
   end subroutine
 
-  subroutine sample_statistics_gpu_mean_vectors(reynolds,favre,covered,duration,want_reynolds,want_favre)
+  subroutine sample_statistics_gpu_mean_vectors(reynolds,favre,covered,duration,want_reynolds,want_favre,retained_other)
     use commvar, only: im,jm,km,ia,ja,ka,lreadgrid,numq,flowtype
     use bc, only: bctype
     use mpi
     use checkpoint_state_io, only: checkpoint_state_require
-    use insitu_device_velocity, only: complete_periodic_fields_gpu,velocity_transport_usage_gpu
+    use insitu_device_velocity, only: complete_sample_fields_gpu,velocity_transport_usage_gpu
     real(8),device,allocatable,intent(out) :: reynolds(:,:),favre(:,:)
     logical,intent(out) :: covered
     real(8),intent(out) :: duration
     logical,optional,intent(in) :: want_reynolds,want_favre
+    integer(int64),optional,intent(in) :: retained_other
     logical :: need_r,need_f
     real(8),device,allocatable :: canonical(:,:,:,:)
     integer,device,allocatable :: invalid(:)
     integer :: nodes,status,ierr,bad,generation,has_state,lowest,highest,nf,nr
-    integer(int64) :: host_bytes,transport_bytes,d2h,h2d,exchanges,required,free_bytes,total_bytes
+    integer(int64) :: host_bytes,transport_bytes,d2h,h2d,exchanges,required,free_bytes,total_bytes,extra
     covered=.false.; duration=0.d0
     need_r=.true.; need_f=.true.
     if(present(want_reynolds)) need_r=want_reynolds
     if(present(want_favre)) need_f=want_favre
     call checkpoint_state_require(need_r.or.need_f,MPI_COMM_WORLD,'mean vectors need an explicit requested field')
     nr=merge(3,0,need_r); nf=nr+merge(3,0,need_f)
-    call checkpoint_state_require(.not.lreadgrid.and.all(bctype==1).and.numq==5.and. &
-      all([ia,ja,ka]==32).and.trim(flowtype)=='tgv',MPI_COMM_WORLD,'device mean vectors require periodic Cartesian TGV')
+    call checkpoint_state_require((all(bctype==1).or.(lreadgrid.and.all(bctype==[1,1,41,41,1,1]))).and.numq==5.and. &
+      all([ia,ja,ka]==32).and.trim(flowtype)=='tgv',MPI_COMM_WORLD,'device mean vectors require admitted 32^3 TGV')
     has_state=merge(1,0,allocated(state_d))
     call MPI_Allreduce(has_state,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
     call checkpoint_state_require(ierr==MPI_SUCCESS,MPI_COMM_WORLD,'device mean state consensus')
@@ -459,9 +459,13 @@ contains
     call checkpoint_state_require(ieee_is_finite(duration).and.duration>=0.d0,MPI_COMM_WORLD,'invalid device mean coverage')
     nodes=(im+1)*(jm+1)*(km+1)
     required=int(nodes,int64)*int(2*nf,int64)*8+52
+    extra=0
+    if(present(retained_other)) extra=retained_other
+    call checkpoint_state_require(extra>=0.and.extra<=huge(extra)-required,MPI_COMM_WORLD,'mean retained byte count')
     call velocity_transport_usage_gpu(host_bytes,transport_bytes,d2h,h2d,exchanges,generation)
     call checkpoint_state_require(transport_bytes>0,MPI_COMM_WORLD,'device mean vectors require initialized transport')
-    call admit_statistics_device_allocation(required+transport_bytes)
+    call checkpoint_state_require(transport_bytes<=huge(extra)-extra-required,MPI_COMM_WORLD,'mean transport byte count')
+    call admit_statistics_device_allocation(required+transport_bytes+extra)
     free_bytes=0; total_bytes=0
     status=cudaMemGetInfo(free_bytes,total_bytes)
     call checkpoint_state_require(status==cudaSuccess.and.free_bytes>=max(device_headroom,1073741824_int64), &
@@ -471,7 +475,7 @@ contains
     allocate(canonical(0:im,0:jm,0:km,nf),invalid(1),stat=status)
     call checkpoint_state_require(status==0,MPI_COMM_WORLD,'device mean vectors allocation')
     invalid=0
-    call mean_vectors_kernel<<<(nodes+255)/256,256>>>(canonical,invalid,im,jm,km,duration,nf,nr)
+    call mean_vectors_kernel<<<(nodes+255)/256,256>>>(canonical,invalid,im,jm,km,owned_ny(),duration,nf,nr)
     call require_cuda(cudaDeviceSynchronize(),'device mean vectors pack')
     bad=invalid(1)
     call checkpoint_state_require(bad==0,MPI_COMM_WORLD,'nonfinite or inconsistent device mean coverage/values')
@@ -485,7 +489,7 @@ contains
       deallocate(canonical,invalid)
       return
     endif
-    call complete_periodic_fields_gpu(canonical,[im,jm,km],nf,MPI_COMM_WORLD)
+    call complete_sample_fields_gpu(canonical,[im,jm,km],nf,MPI_COMM_WORLD)
     allocate(reynolds(3,merge(nodes,1,need_r)),favre(3,merge(nodes,1,need_f)),stat=status)
     call checkpoint_state_require(status==0,MPI_COMM_WORLD,'device mean vector output allocation')
     call split_mean_vectors_kernel<<<(nodes+255)/256,256>>>(canonical,reynolds,favre,im,jm,km,nf,nr,need_f)
@@ -494,8 +498,8 @@ contains
     covered=.true.
   end subroutine
 
-  attributes(global) subroutine mean_vectors_kernel(canonical,invalid,im,jm,km,duration,nf,nr)
-    integer,value :: im,jm,km,nf,nr
+  attributes(global) subroutine mean_vectors_kernel(canonical,invalid,im,jm,km,ny,duration,nf,nr)
+    integer,value :: im,jm,km,ny,nf,nr
     real(8),value :: duration
     real(8),device,intent(out) :: canonical(0:im,0:jm,0:km,nf)
     integer,device,intent(inout) :: invalid(*)
@@ -504,7 +508,7 @@ contains
     if(node>=(im+1)*(jm+1)*(km+1)) return
     i=mod(node,im+1); j=mod(node/(im+1),jm+1); k=node/((im+1)*(jm+1))
     canonical(i,j,k,:)=0.d0
-    if(i==im.or.j==jm.or.k==km) return
+    if(i==im.or.j>=ny.or.k==km) return
     if(.not.ieee_is_finite(state_d(i,j,k,5)).or.state_d(i,j,k,5)/=duration) ignored=atomicExch(invalid(1),1)
     if(duration<=0.d0) return
     do c=1,nf
@@ -613,12 +617,22 @@ contains
     real(8),optional,intent(out) :: output(0:,0:,0:,:)
     real(8) :: weights(2),duration
     integer :: status,ierr
-    integer :: invalid(0:im-1,0:owned_ny()-1,0:km-1)
+    integer :: invalid
     logical :: ok
+#ifdef ASTR_INSITU_DEVICE_PRODUCTS
+    interface
+      subroutine range_push(stage) bind(C,name='astr_insitu_device_range_push')
+        import c_int
+        integer(c_int),value :: stage
+      end subroutine
+      subroutine range_pop() bind(C,name='astr_insitu_device_range_pop')
+      end subroutine
+    end interface
+#endif
     if(.not.allocated(state_d)) then
       call admit_statistics_device_allocation()
       allocate(state_d(0:im-1,0:owned_ny()-1,0:km-1,30),output_d(0:im-1,0:owned_ny()-1,0:km-1,41), &
-               invalid_d(0:im-1,0:owned_ny()-1,0:km-1),spatial_d(6),stat=status)
+               invalid_d(1),spatial_d(6),stat=status)
       if(status/=0) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
       call initialize_node_weights()
       saved_window=window
@@ -629,17 +643,25 @@ contains
       call clipped_trapezoid(previous_time,t,[1.d0,0.d0],[0.d0,1.d0],window(1),window(2),weights,duration,ok)
       if(.not.ok) call MPI_Abort(MPI_COMM_WORLD,1,ierr)
     endif
+#ifdef ASTR_INSITU_DEVICE_PRODUCTS
+    call range_push(9_c_int)
+#endif
+    invalid_d=0
     call statistics_kernel<<<dim3((im+511)/512,owned_ny(),km),dim3(512,1,1)>>>(im,owned_ny(),km, &
       weights(1),weights(2),has_previous)
     status=cudaGetLastError()
     call require_cuda(status,'kernel launch')
     status=cudaDeviceSynchronize()
     call require_cuda(status,'kernel completion')
-    invalid=invalid_d
-    if(any(invalid/=0)) then
-      write(*,*) 'in-situ statistics invalid state at time ',t,' nodes: ',count(invalid/=0)
+    invalid=invalid_d(1)
+    call require_cuda(cudaGetLastError(),'statistics status download')
+    if(invalid/=0) then
+      write(*,*) 'in-situ statistics invalid state at time ',t,' nodes: ',invalid
       call MPI_Abort(MPI_COMM_WORLD,1,ierr)
     endif
+#ifdef ASTR_INSITU_DEVICE_PRODUCTS
+    call range_pop()
+#endif
     ! Only the explicit independent-oracle caller requests the full device result.
     if(present(output)) then
       call require_cuda(merge(cudaSuccess,cudaErrorInvalidValue, &

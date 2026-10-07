@@ -18,11 +18,18 @@ template <class Grid>
 struct NormalizedGrid {
   Grid evaluate;
   viskores::Vec3f lower,upper;
+  VISKORES_EXEC auto WithCache() const {
+    return NormalizedGrid<decltype(evaluate.WithCache())>{evaluate.WithCache(),lower,upper};
+  }
   VISKORES_EXEC bool operator()(const double* point, double parameter, double* tangent) const {
     for(int d=0;d<3;++d) if(point[d]<lower[d] || point[d]>upper[d]) return false;
     viskores::VecVariable<viskores::Vec3f, 2> values;
     const auto status = evaluate.Evaluate(viskores::Vec3f(point[0],point[1],point[2]), parameter, values);
-    if (status.CheckFail()) return false;
+    if (status.CheckFail()) {
+      if(status.CheckSpatialBounds() || status.CheckTemporalBounds()) return false;
+      tangent[0]=tangent[1]=tangent[2]=NAN;
+      return true;
+    }
     const auto velocity = values[0];
     const double norm = std::sqrt(velocity[0]*velocity[0] + velocity[1]*velocity[1] + velocity[2]*velocity[2]);
     if (!std::isfinite(norm)) {
@@ -113,9 +120,14 @@ public:
   template <class Evaluate,class Portal>
   VISKORES_EXEC void operator()(const State& input,const Evaluate& evaluate,
       const Portal& geometry,State& output,viskores::Int32& count,viskores::Id index) const {
+    Execute(input,evaluate,Owner{lower,upper,last},geometry,output,count,index);
+  }
+  template <class Evaluate,class Ownership,class Portal>
+  VISKORES_EXEC void Execute(const State& input,const Evaluate& evaluate,const Ownership& owner,
+      const Portal& geometry,State& output,viskores::Int32& count,viskores::Id index) const {
     TraceState state{{input[0],input[1],input[2]},input[3],input[4],input[5],
                      static_cast<int>(input[6]),static_cast<int>(input[7])};
-    count=trace_segment(evaluate,Owner{lower,upper,last},Writer<Portal>{geometry,index*(limit+1)},
+    count=trace_segment(evaluate,owner,Writer<Portal>{geometry,index*(limit+1)},
                         state,limit,minimum,maximum,tolerance,target,steps);
     output=State(state.point[0],state.point[1],state.point[2],state.suggested,state.length,
                  state.error,static_cast<double>(state.steps),static_cast<double>(state.status));
@@ -125,6 +137,22 @@ private:
   double minimum,maximum,tolerance,target;
   viskores::Vec3f lower,upper;
   viskores::Vec<bool,3> last;
+};
+
+class RK45PhysicalTraceWorklet : public RK45TraceWorklet {
+public:
+  using ControlSignature=void(FieldIn,ExecObject,ExecObject,WholeArrayInOut,FieldOut,FieldOut);
+  using ExecutionSignature=void(_1,_2,_3,_4,_5,_6,WorkIndex);
+  using InputDomain=_1;
+  RK45PhysicalTraceWorklet(int limit,double minimum,double maximum,double tolerance,double target,int steps)
+    : RK45TraceWorklet(limit,minimum,maximum,tolerance,target,steps,0.,0.,false) {}
+  template<class Evaluate,class Owner,class Portal>
+  VISKORES_EXEC void operator()(const State& input,const Evaluate& evaluate,const Owner& owner,
+      const Portal& geometry,State& output,viskores::Int32& count,viskores::Id index) const {
+    // A cursor belongs to this particle invocation, never to the shared input object.
+    const auto particle_evaluate=evaluate.WithCache();
+    this->Execute(input,particle_evaluate,owner,geometry,output,count,index);
+  }
 };
 } // namespace astr_insitu
 #endif

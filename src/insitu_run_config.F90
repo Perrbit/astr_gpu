@@ -4,7 +4,7 @@ module insitu_run_config
   use adaptive_output, only: adaptive_binding,adaptive_capacity,validate_adaptive_binding,canonical_adaptive_binding
   implicit none
   private
-  public :: insitu_options,read_insitu_options,insitu_max_products,product_scene_allowed
+  public :: insitu_options,read_insitu_options,insitu_max_products,product_scene_allowed,canonical_slice_plane
   integer,parameter :: insitu_max_products=64
   type :: insitu_options
     logical :: enabled=.false.,statistics=.false.,render=.false.
@@ -12,6 +12,7 @@ module insitu_run_config
     logical :: air5_volume_statistics=.false.
     logical :: air5_volume_reduction=.false.
     logical :: wall_mean_render=.false.
+    logical :: mean_streamline_render=.false.
     logical :: wall_separation=.false.
     character(16) :: schedule_mode='steps'
     character(16) :: derivative_backend='cpu'
@@ -20,6 +21,8 @@ module insitu_run_config
     character(16) :: postprocess_transport=''
     character(16) :: products='all'
     character(16) :: slice_axis='z'
+    character(16) :: slice_definition='index'
+    real(real64) :: slice_origin(3)=0.d0,slice_normal(3)=0.d0
     integer :: slice_index=4
     integer(int64) :: step_interval=0,host_budget_bytes=0,device_budget_bytes=0,device_reserve_bytes=0
     real(real64) :: time_interval=0,statistics_window(2)=0
@@ -39,9 +42,10 @@ contains
     logical,intent(out) :: ok
     character(*),intent(out) :: message
     logical :: enabled,statistics,render,initial_frame,final_frame,air5_volume_statistics,air5_volume_reduction,wall_mean_render
-    logical :: wall_separation
+    logical :: wall_separation,mean_streamline_render
     character(16) :: schedule_mode,derivative_backend,products,slice_axis,processing_backend,postprocess_transport
-    character(16) :: rendering_pipeline
+    character(16) :: rendering_pipeline,slice_definition
+    real(real64) :: slice_origin(3),slice_normal(3)
     character(64) :: product_ids(insitu_max_products),temporary_id
     character(16) :: product_modes(insitu_max_products),temporary_mode
     integer(int64) :: product_steps(insitu_max_products),temporary_steps
@@ -61,7 +65,9 @@ contains
       schedule_mode,step_interval,time_interval,statistics_window,host_budget_bytes, &
       device_budget_bytes,device_reserve_bytes,implementation_path,pipeline_file,output_directory,batch_prefix,restore_batch, &
       derivative_backend,products,slice_axis,slice_index,air5_volume_statistics,air5_volume_reduction,wall_mean_render,wall_separation, &
-      processing_backend,postprocess_transport,rendering_pipeline,product_ids,product_modes,product_steps,product_times, &
+      mean_streamline_render, &
+      processing_backend,postprocess_transport,rendering_pipeline,slice_definition,slice_origin,slice_normal, &
+      product_ids,product_modes,product_steps,product_times, &
       product_adaptive,product_dense_steps,product_dense_times,product_events,product_windows
     ok=.false.
     message=''
@@ -70,6 +76,7 @@ contains
     air5_volume_statistics=.false.
     air5_volume_reduction=.false.
     wall_mean_render=.false.
+    mean_streamline_render=.false.
     wall_separation=.false.
     schedule_mode='steps'
     derivative_backend='cpu'
@@ -77,6 +84,7 @@ contains
     rendering_pipeline=''
     products='all'
     slice_axis='z'; slice_index=4
+    slice_definition='index'; slice_origin=0.d0; slice_normal=0.d0
     step_interval=0; time_interval=0; statistics_window=0
     host_budget_bytes=0; device_budget_bytes=0; device_reserve_bytes=0
     implementation_path=''; pipeline_file=''; output_directory=''
@@ -113,8 +121,12 @@ contains
       if(postprocess_transport/='device-aware'.and.postprocess_transport/='pinned') return
       message='device processing requires enabled GPU rendering and positive device budget'
       if(.not.enabled.or..not.render.or.derivative_backend/='gpu'.or.device_budget_bytes<=0) return
-      message='device processing does not support wall products'
-      if(products=='channel_walls'.or.products=='air5_walls') return
+      message='device walls require standard-device or direct-device, without a compatible fallback'
+      if((products=='channel_walls'.or.products=='air5_walls').and.rendering_pipeline=='compatible') return
+      message='resident wall separation reduction is not yet admitted'
+      if(products=='channel_walls'.and.wall_separation) return
+      message='resident AIR5 volume statistics are not yet admitted'
+      if(products=='air5_walls'.and.air5_volume_statistics) return
     else
       message='postprocess_transport is only valid with processing_backend=device'
       if(postprocess_transport/='') return
@@ -122,9 +134,12 @@ contains
     message='invalid products selection'
     if(products/='all'.and.products/='q_surface'.and.products/='streamlines'.and. &
       products/='q_streamlines'.and.products/='velocity_slice'.and.products/='channel_walls'.and. &
-      products/='air5_walls'.and.products/='tgv256_demo') return
+      products/='air5_walls'.and.products/='tgv256_demo'.and.products/='curve_demo') return
     message='tgv256_demo requires device rendering without statistics'
     if(products=='tgv256_demo'.and.(processing_backend/='device'.or.statistics)) return
+    message='curve_demo requires strict device rendering without statistics or independent clocks'
+    if(products=='curve_demo'.and.(processing_backend/='device'.or.statistics.or..not.render.or. &
+      rendering_pipeline=='compatible'.or.any(product_ids/=''))) return
     message='air5_volume_statistics requires enabled statistics and products=air5_walls'
     if(air5_volume_statistics.and.(.not.enabled.or..not.statistics.or.products/='air5_walls')) return
     message='air5_volume_reduction requires air5_volume_statistics'
@@ -132,17 +147,37 @@ contains
     message='wall_mean_render requires enabled statistics, rendering and a wall product'
     if(wall_mean_render.and.(.not.enabled.or..not.statistics.or..not.render.or. &
       (products/='channel_walls'.and.products/='air5_walls'))) return
+    message='mean_streamline_render requires enabled statistics and strict device streamlines'
+    if(mean_streamline_render.and.(.not.enabled.or..not.statistics.or..not.render.or. &
+      products/='streamlines'.or.processing_backend/='device'.or.rendering_pipeline=='compatible')) return
     message='wall_separation requires enabled AIR5 wall statistics'
     if(wall_separation.and.(.not.enabled.or..not.statistics.or.products/='air5_walls')) return
     message='slice_axis must be x, y or z and slice_index must not be negative'
     if((slice_axis/='x'.and.slice_axis/='y'.and.slice_axis/='z').or.slice_index<0) return
     message='nondefault slice settings require products=velocity_slice'
     if(products/='velocity_slice'.and.(slice_axis/='z'.or.slice_index/=4)) return
+    message='slice_definition must be index or plane'
+    if(slice_definition/='index'.and.slice_definition/='plane') return
+    message='physical plane values must be finite'
+    if(.not.all(ieee_is_finite(slice_origin)).or..not.all(ieee_is_finite(slice_normal))) return
+    if(slice_definition=='plane') then
+      message='physical planes require strict device velocity_slice without index settings or product clocks'
+      if(products/='velocity_slice'.or.processing_backend/='device'.or.rendering_pipeline=='compatible'.or. &
+        .not.enabled.or..not.render.or.slice_axis/='z'.or.slice_index/=4.or.statistics.or. &
+        any(product_ids/='').or.len_trim(batch_prefix)>0.or.len_trim(restore_batch)>0) return
+      message='physical plane normal must be nonzero'
+      if(maxval(abs(slice_normal))==0.d0) return
+    else
+      message='physical plane values require slice_definition=plane'
+      if(any(slice_origin/=0.d0).or.any(slice_normal/=0.d0)) return
+    endif
     message='selected products require derivative_backend=gpu'
     if(enabled.and.render.and.products/='all'.and.products/='channel_walls'.and. &
       products/='air5_walls'.and.derivative_backend/='gpu') return
-    message='wall products require CPU wall diagnostics'
-    if(enabled.and.(products=='channel_walls'.or.products=='air5_walls').and.derivative_backend/='cpu') return
+    message='wall products require CPU diagnostics or an admitted device wall provider'
+    if(enabled.and.(products=='channel_walls'.or.products=='air5_walls').and.derivative_backend/='cpu') then
+      if(processing_backend/='device') return
+    endif
     message='in-situ path or mode exceeds supported character capacity'
     if(len_trim(implementation_path)>=len(implementation_path).or. &
        len_trim(pipeline_file)>=len(pipeline_file).or. &
@@ -176,7 +211,7 @@ contains
       dot=index(trim(product_ids(i)),'.',back=.true.)
       message='product id must be an admitted scene followed by .image or .geometry'
       if(dot<2) return
-      if(.not.product_scene_allowed(product_ids(i)(:dot-1),products,statistics)) return
+      if(.not.product_scene_allowed(product_ids(i)(:dot-1),products,statistics,mean_streamline_render)) return
       select case(trim(product_ids(i)(dot+1:)))
       case('image')
       case('geometry')
@@ -250,6 +285,7 @@ contains
     options%air5_volume_statistics=air5_volume_statistics
     options%air5_volume_reduction=air5_volume_reduction
     options%wall_mean_render=wall_mean_render
+    options%mean_streamline_render=mean_streamline_render
     options%wall_separation=wall_separation
     options%schedule_mode=schedule_mode; options%step_interval=step_interval
     options%derivative_backend=derivative_backend
@@ -258,6 +294,8 @@ contains
     options%postprocess_transport=postprocess_transport
     options%products=products
     options%slice_axis=slice_axis; options%slice_index=slice_index
+    options%slice_definition=slice_definition
+    options%slice_origin=slice_origin; options%slice_normal=slice_normal
     options%time_interval=time_interval; options%statistics_window=statistics_window
     options%host_budget_bytes=host_budget_bytes; options%device_budget_bytes=device_budget_bytes
     options%device_reserve_bytes=device_reserve_bytes
@@ -276,22 +314,51 @@ contains
     ok=.true.
     message=''
   end subroutine
-  logical function product_scene_allowed(scene,profile,statistics) result(allowed)
+
+  subroutine canonical_slice_plane(normal,ok)
+    real(real64),intent(inout) :: normal(3)
+    logical,intent(out) :: ok
+    real(real64) :: original(3),scaled(3),scale,length,direction
+    integer :: axis,d
+    ok=.false.
+    original=normal
+    if(.not.all(ieee_is_finite(original))) return
+    axis=maxloc(abs(original),dim=1); scale=abs(original(axis))
+    if(scale==0.d0) return
+    scaled=original/scale
+    if(any(original/=0.d0.and.scaled==0.d0)) return
+    length=sqrt((scaled(1)*scaled(1)+scaled(2)*scaled(2))+scaled(3)*scaled(3))
+    direction=1.d0
+    if(original(axis)<0.d0) direction=-1.d0
+    do d=1,3
+      scaled(d)=(scaled(d)/length)*direction
+      if(original(d)/=0.d0.and.scaled(d)==0.d0) return
+      if(scaled(d)==0.d0) scaled(d)=0.d0
+    enddo
+    normal=scaled; ok=.true.
+  end subroutine
+  logical function product_scene_allowed(scene,profile,statistics,mean_streamline_render) result(allowed)
     character(*),intent(in) :: scene,profile
     logical,intent(in) :: statistics
+    logical,intent(in),optional :: mean_streamline_render
+    logical :: mean_requested
+    mean_requested=.false.
+    if(present(mean_streamline_render)) mean_requested=mean_streamline_render
     allowed=.false.
     ! PF keeps the approved periodic TGV product boundary. Wall presets retain their common clock.
     select case(scene)
     case('q_surface')
-      allowed=profile=='all'.or.profile=='q_surface'.or.profile=='q_streamlines'.or.profile=='tgv256_demo'
+      allowed=profile=='all'.or.profile=='q_surface'.or.profile=='q_streamlines'.or. &
+        profile=='tgv256_demo'.or.profile=='curve_demo'
     case('velocity_slice')
       allowed=profile=='all'.or.profile=='velocity_slice'
     case('instantaneous_streamlines')
-      allowed=profile=='all'.or.profile=='streamlines'.or.profile=='q_streamlines'.or.profile=='tgv256_demo'
+      allowed=profile=='all'.or.profile=='streamlines'.or.profile=='q_streamlines'.or. &
+        profile=='tgv256_demo'.or.profile=='curve_demo'
     case('crossing_streamlines')
       allowed=profile=='all'.or.profile=='streamlines'.or.profile=='q_streamlines'
     case('mean_reynolds_streamlines','mean_favre_streamlines')
-      allowed=profile=='all'.and.statistics
+      allowed=statistics.and.(profile=='all'.or.(profile=='streamlines'.and.mean_requested))
     end select
   end function
 end module

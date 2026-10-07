@@ -135,7 +135,10 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
            archive_groups=None, buffer_bytes=67108864, checkpoint_keep=2, reuse_root=None,
            conservation=False, publication_hook=None, reject=None, memcheck=False,
            device_budget_bytes=67108864, restore_probe=False, device_reserve_bytes=0, override=False,
-           wall_samples=False, insitu_config=None, directory_budget_bytes=64*1024**2):
+           wall_samples=False, insitu_config=None, directory_budget_bytes=64*1024**2,
+           device_sample_transport=None, postprocess_transport=None, checkpoint_enabled=True,
+           insitu_timing=False, nsys_trace=False, monitor_resources=False, resource_baseline=None, pixel_audit=False,
+           wall_mean_oracle=False):
     case = args.output / f"{backend}_np{ranks}_{name}"
     tau = prepare(case, backend, steps, incident=args.case == "sbli", reconstruction=args.reconstruction,
                   mean_statistics=args.mean_statistics if statistics is None else statistics,
@@ -162,7 +165,7 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
  device_reserve_bytes={device_reserve_bytes}
 /
 &checkpoint
- enabled=t,mode='{args.mode}',interval_steps={interval if args.mode == 'steps' else 0},
+ enabled={'t' if checkpoint_enabled else 'f'},mode='{args.mode}',interval_steps={interval if args.mode == 'steps' else 0},
  interval_time={interval*DT if args.mode == 'time' else 0},keep={checkpoint_keep},initial_frame={'t' if args.initial_restart else 'f'}
 /
 &volume
@@ -189,10 +192,36 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
                ASTR_AIR5_TOP_GPU_VALIDATION="on", ASTR_AIR5_FILTER_VALIDATION="on")
     if wall_samples:
         env['ASTR_INSITU_SAMPLE_PREFIX']='outdat/sample'
+    if insitu_timing:
+        env['ASTR_INSITU_TIMING']='1'
+    if pixel_audit:
+        env['ASTR_VTK_PIXEL_AUDIT']='1'
+    if wall_mean_oracle:
+        if insitu_config is None or 'wall_mean_render=t' not in insitu_config or nsys_trace or monitor_resources:
+            raise ValueError('AIR5 wall mean oracle requires explicit means, separate from transfer/resource gates')
+        env['ASTR_INSITU_TEST_WALL_MEAN_PREFIX']='outdat/render/wall_mean_oracle'
+    if device_sample_transport is not None:
+        if device_sample_transport not in ('pinned','device-aware') or not wall_samples:
+            raise ValueError('AIR5 device oracle requires explicit wall samples and transport')
+        env['ASTR_INSITU_TEST_DEVICE_TRANSPORT']=device_sample_transport
+    if postprocess_transport is not None and (postprocess_transport not in ('pinned','device-aware') or insitu_config is None):
+        raise ValueError('AIR5 device products require explicit configuration and transport')
+    active_transport=postprocess_transport if postprocess_transport is not None else device_sample_transport
+    if active_transport=='device-aware':
+        env.update(OMPI_MCA_pml='ucx', OMPI_MCA_coll='^hcoll,ucc,cuda',
+                   OMPI_MCA_coll_hcoll_enable='0', OMPI_MCA_osc='pt2pt',
+                   UCX_MEMTYPE_CACHE='n', UCX_CUDA_COPY_ENABLE_FABRIC='no',
+                   UCX_CUDA_COPY_DMABUF='no', UCX_CUDA_IPC_ENABLE_MNNVL='no',
+                   UCX_TLS='self,sm,cuda_copy,cuda_ipc')
+    elif active_transport=='pinned':
+        env.update(OMPI_MCA_pml='ob1', OMPI_MCA_btl='self,tcp', OMPI_MCA_osc='pt2pt',
+                   OMPI_MCA_opal_cuda_support='false', OMPI_MCA_coll_ucc_enable='0')
     if insitu_config is not None:
         (case / 'outdat/render').mkdir()
         (case / 'datin/insitu.nml').write_text(insitu_config)
         env['ASTR_INSITU_CONFIG']='datin/insitu.nml'
+        for key in ('DISPLAY','PYTHONPATH','CATALYST_IMPLEMENTATION_PREFER_ENV','VTK_EGL_DEVICE_INDEX'):
+            env.pop(key,None)
     if conservation:
         env["ASTR_AIR5_C4_CONSERVATION"] = "1"
     if restore_probe:
@@ -221,32 +250,51 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
     elif fault == "top_mode":
         env["ASTR_AIR5_TOP_MODE"] = "prescribed" if args.top_mode == "characteristic" else "characteristic"
     solver_command = [str(args.executable), "run", "datin/input.air5_c4"]
+    if nsys_trace:
+        profiler=shutil.which('nsys')
+        if profiler is None or backend!='gpu' or memcheck or monitor_resources or reject or fault:
+            raise ValueError('AIR5 Nsight observation requires a validated GPU gate and separate resource run')
+        solver_command=[profiler,'profile','--trace=cuda,nvtx,mpi','--mpi-impl=openmpi',
+            '--sample=none','--cpuctxsw=none','--cuda-memory-usage=true',
+            '--cuda-um-cpu-page-faults=true','--cuda-um-gpu-page-faults=true',
+            '--export=sqlite','--output='+str(case/'trace.rank%q{OMPI_COMM_WORLD_RANK}'),*solver_command]
     if memcheck:
         sanitizer = shutil.which("compute-sanitizer")
         if sanitizer is None:
             raise RuntimeError("compute-sanitizer is required for this explicit memory gate")
         # Keep MPI's optional CUDA context probes outside this kernel-memory gate.
-        env.update(OMPI_MCA_opal_cuda_support="false", OMPI_MCA_pml="ob1",
-                   OMPI_MCA_osc="pt2pt", OMPI_MCA_btl="self,vader,tcp", OMPI_MCA_coll_ucc_enable="0")
+        aware=active_transport=='device-aware'
+        if not aware:
+            env.update(OMPI_MCA_opal_cuda_support="false", OMPI_MCA_pml="ob1",
+                       OMPI_MCA_osc="pt2pt", OMPI_MCA_btl="self,vader,tcp", OMPI_MCA_coll_ucc_enable="0")
         solver_command = [sanitizer, "--tool", "memcheck", "--target-processes", "all",
                           "--error-exitcode", "88", "--log-file", str(case / "memcheck.%p.log"),
+                          *(['--suppressions',str(ROOT / 'tests/gpu_validation/compute_sanitizer_ucx_cuda_aware.supp.xml')]
+                            if aware else []),
                           *solver_command]
     command = [str(args.mpiexec), "--mca", "coll_hcoll_enable", "0", "-np", str(ranks), *solver_command]
     with (case / "run.log").open("wb") as log:
-        process = subprocess.Popen(command, cwd=case, env=env, stdout=log,
-                                   stderr=subprocess.STDOUT, start_new_session=True)
-        try:
-            code = process.wait(timeout=180)
-        except BaseException:
+        if monitor_resources:
+            if backend!='gpu' or reject or fault or memcheck:
+                raise ValueError('AIR5 resource observation requires a successful uninstrumented GPU gate')
+            from insitu_resource_monitor import run_monitored
+            run_monitored(command,case,env,log,case/'resources.sampled.json',baseline=resource_baseline)
+            code=0
+        else:
+            process = subprocess.Popen(command, cwd=case, env=env, stdout=log,
+                                       stderr=subprocess.STDOUT, start_new_session=True)
             try:
-                os.killpg(process.pid, signal.SIGTERM)
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
-            except ProcessLookupError:
-                process.wait()
-            raise
+                code = process.wait(timeout=getattr(args,'runtime_timeout_seconds',180))
+            except BaseException:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
+                except ProcessLookupError:
+                    process.wait()
+                raise
     if fault or reject:
         message = reject or ("AIR5 conservation diagnostic is GPU-only" if fault == "conservation" and backend == "cpu" else
                    "invalid new checkpoint bundle" if fault == "incident_resource" else

@@ -5,12 +5,17 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
 #include <vector>
+#ifdef ASTR_INSITU_DEVICE_RENDERING
+#include <cuda_runtime_api.h>
+#include "insitu_allocation_budget.h"
+#endif
 
 extern "C" int astr_insitu_map_current_cuda(int*,char*,int,char*,int);
 
@@ -24,6 +29,9 @@ std::string report_path;
 Bytes host_base=0,device_base=0,host_peak=0,device_peak=0;
 Bytes host_limit=0,device_limit=0,reserve=0;
 bool active=false;
+bool allocation_single_rank_device=false;
+Bytes allocation_baseline_free=0,allocation_calls=0,largest_allocation=0;
+Bytes temporary_calls=0,graphics_allocation_calls=0;
 using Query=nvmlReturn_t (*)(nvmlDevice_t,unsigned int*,nvmlProcessInfo_v2_t*);
 Query compute_query=nullptr,graphics_query=nullptr;
 nvmlReturn_t (*memory_query)(nvmlDevice_t,nvmlMemory_t*)=nullptr;
@@ -157,6 +165,21 @@ try {
   mpi(MPI_Allgather(&device_base,1,MPI_UNSIGNED_LONG_LONG,bases.data(),1,MPI_UNSIGNED_LONG_LONG,node));
   for(int i=0;i<count;++i)
     if(std::string(identities.data()+37*i)==uuid) device_base=std::min(device_base,bases[i]);
+  int device_ranks=0;
+  for(int i=0;i<count;++i) device_ranks+=std::string(identities.data()+37*i)==uuid;
+  allocation_single_rank_device=device_ranks==1;
+#ifdef ASTR_INSITU_DEVICE_RENDERING
+  std::size_t cuda_free=0,cuda_total=0;
+  require(cudaMemGetInfo(&cuda_free,&cuda_total)==cudaSuccess,"cannot query allocation baseline");
+  allocation_baseline_free=cuda_free;
+  mpi(MPI_Allgather(&allocation_baseline_free,1,MPI_UNSIGNED_LONG_LONG,bases.data(),1,
+    MPI_UNSIGNED_LONG_LONG,node));
+  for(int i=0;i<count;++i)
+    if(std::string(identities.data()+37*i)==uuid)
+      allocation_baseline_free=std::max(allocation_baseline_free,bases[i]);
+  allocation_calls=0;largest_allocation=0;
+  temporary_calls=0;graphics_allocation_calls=0;
+#endif
   std::ofstream output(report_path);
   output<<"# device="<<identity<<" host_limit="<<host_limit<<" device_limit="<<device_limit
         <<" reserve="<<reserve<<"\n"
@@ -180,10 +203,48 @@ try {
 } catch(const std::exception& error) { return fail(error.what()); }
   catch(...) { return fail("unknown resource observation exception"); }
 
+extern "C" int astr_insitu_allocation_guard_active() {
+  return active && allocation_single_rank_device ? 1 : 0;
+}
+
+extern "C" void astr_insitu_device_allocation_preflight(std::size_t bytes,const char* source)
+try {
+#ifdef ASTR_INSITU_DEVICE_RENDERING
+  if(!active) return;
+  std::size_t free=0,total=0;
+  // Also check this job's NVML allocation total: another process freeing memory
+  // must not increase the permitted job increment above its configured budget.
+  std::map<unsigned int,Bytes> usage;
+  processes(compute_query,usage);processes(graphics_query,usage);
+  require(!usage.empty(),"allocation preflight job memory unavailable");
+  Bytes job_bytes=0;
+  for(const auto& item:usage) job_bytes=checked_sum(job_bytes,item.second);
+  const auto job_increment=job_bytes>device_base?job_bytes-device_base:0;
+  if(cudaMemGetInfo(&free,&total)!=cudaSuccess ||
+      !astr_insitu::admit_device_allocation(bytes,free,allocation_baseline_free,device_limit,reserve) ||
+      job_increment>device_limit || bytes>device_limit-job_increment) {
+    std::fprintf(stderr,"ASTR INSITU ALLOCATION REFUSED source=%s requested=%zu free=%zu "
+      "baseline_free=%llu budget=%llu reserve=%llu\n",source?source:"unknown",bytes,free,
+      allocation_baseline_free,device_limit,reserve);
+    fail("device allocation would exceed budget/reserve");
+    return;
+  }
+  ++allocation_calls;largest_allocation=std::max(largest_allocation,Bytes(bytes));
+  if(source && std::strstr(source,"Thrust")) ++temporary_calls;
+  if(source && std::strstr(source,"OpenGL")) ++graphics_allocation_calls;
+#else
+  (void)bytes;(void)source;
+#endif
+} catch(const std::exception& error) { fail(error.what()); }
+  catch(...) { fail("unknown allocation preflight exception"); }
+
 extern "C" int astr_insitu_resource_finish()
 try {
   if(!active) return 0;
   astr_insitu_resource_check("session_released");
+  std::printf("ASTR_INSITU_ALLOCATION_PREFLIGHT calls=%llu largest_request_bytes=%llu "
+    "temporary_calls=%llu graphics_calls=%llu\n",allocation_calls,largest_allocation,
+    temporary_calls,graphics_allocation_calls);
   require(shutdown_nvml()==NVML_SUCCESS,"NVML shutdown failed");
   dlclose(library); library=nullptr;
   mpi(MPI_Comm_free(&node));

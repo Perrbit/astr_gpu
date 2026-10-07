@@ -8,7 +8,7 @@ module insitu_wall_statistics
   implicit none
   private
   public :: accumulate_wall_statistics,wall_statistics_file,finish_wall_statistics,wall_statistics_host_bytes
-  public :: wall_statistics_render_values
+  public :: wall_statistics_render_values,wall_statistics_render_clock
   type(velocity_statistics),allocatable,save :: states(:,:,:,:)
   real(real64),allocatable,save :: xyz(:,:,:,:)
   logical,allocatable,save :: owned(:,:,:)
@@ -29,7 +29,7 @@ contains
   end subroutine
 
   integer(int64) function wall_statistics_host_bytes() result(bytes)
-    use commvar, only: im,km,flowtype
+    use commvar, only: im,km,ia,ja,flowtype
     integer :: nf,nw,groups
     type(velocity_statistics) :: dummy
     nf=3; nw=2
@@ -39,6 +39,8 @@ contains
     groups=nf/3
     bytes=int(im+1,int64)*(km+1)*nw*(int(storage_size(dummy)/8,int64)*groups+ &
       (4_int64*34*groups+6_int64*nf+3)*8+4)
+    if(nf==18) bytes=bytes+8_int64*(24_int64*(int(ia,int64)+1)+3_int64*(int(im,int64)+1)+ &
+      km+11_int64*(int(ja,int64)+1))
   end function
 
   subroutine capture(window,host_limit,device_limit,reserve,fields,download)
@@ -64,28 +66,79 @@ contains
     window_saved=window
   end subroutine
 
-  subroutine accumulate_wall_statistics(step,time,window,host_limit,device_limit,reserve,separation_prefix)
-    use commvar, only: use_gpu
-    use parallel, only: mpirank
+  subroutine initialize_device_metadata(window,host_limit)
+    use commvar, only: im,jm,km,ia,ja,flowtype,use_gpu
+    use commarray, only: x
+    use parallel, only: ig0,jg0
+    real(real64),intent(in) :: window(2)
+    integer(int64),intent(in) :: host_limit
+    integer :: walls(2),nw,w,status
+    integer(int64) :: bytes
+    call require(use_gpu,'resident wall statistics require GPU computation')
+    nw=0
+    if(nonreacting_wall_candidate()) then
+      profile=5; nfields=3
+      if(jg0==0) then
+        nw=nw+1; walls(nw)=0
+      endif
+      if(jg0+jm==ja) then
+        nw=nw+1; walls(nw)=jm
+      endif
+    else
+      call require(trim(flowtype)=='air5hbl','unsupported resident scalar wall solver')
+      profile=6; nfields=18
+      if(jg0==0) then
+        nw=1; walls(1)=0
+      endif
+    endif
+    if(allocated(owned)) then
+      call require(all(shape(owned)==[im+1,km+1,nw]).and.all(window==window_saved), &
+        'resident wall metadata shape/window changed')
+      return
+    endif
+    bytes=int(im+1,int64)*(km+1)*nw*(3*8+storage_size(.false.)/8)
+    call require(bytes<=host_limit,'resident wall metadata host budget')
+    allocate(xyz(0:im,0:km,nw,3),owned(0:im,0:km,nw),stat=status)
+    call require(status==0,'cannot allocate static wall metadata')
+    do w=1,nw
+      xyz(:,:,w,:)=x(0:im,walls(w),0:km,:)
+    enddo
+    call require(all(ieee_is_finite(xyz)),'nonfinite static wall geometry')
+    owned=.false.; owned(0:im-1,0:km-1,:)=.true.
+    if(profile==6.and.ig0+im==ia) owned(im,0:km-1,:)=.true.
+    window_saved=window
+  end subroutine
+
+  subroutine accumulate_wall_statistics(step,time,window,host_limit,device_limit,reserve,separation_prefix,device_transport)
+    use commvar, only: use_gpu,im,ia
+    use parallel, only: mpirank,ig0
 #ifdef _CUDA
-    use insitu_wall_statistics_gpu, only: push_wall_statistics_gpu
+    use insitu_wall_statistics_gpu, only: push_wall_statistics_gpu,capture_and_push_wall_statistics_gpu
 #endif
     integer,intent(in) :: step
     real(real64),intent(in) :: time,window(2)
     integer(int64),intent(in) :: host_limit,device_limit,reserve
     character(*),intent(in),optional :: separation_prefix
-    real(real64),allocatable :: fields(:,:,:,:)
-    real(real64) :: weights(2),duration
+    character(*),intent(in),optional :: device_transport
+    real(real64),allocatable :: fields(:,:,:,:),span_weights(:),span_profile(:,:),local_span(:,:)
+    real(real64) :: weights(2),duration,span_length,reference_u
     integer(int64) :: download
-    integer :: i,k,w,g,status,e
-    logical :: ok,all_ok
+    integer :: i,k,w,g,status,e,span_comm
+    logical :: ok,all_ok,resident,separate
     call require(all(ieee_is_finite([time,window])).and.window(2)>window(1),'invalid scalar window/time')
     if(samples>0) call require(step>last_step.and.time>previous_time.and.all(window==window_saved), &
       'wall scalar sample identity/window mismatch')
-    call capture(window,host_limit,device_limit,reserve,fields,download)
-    if(present(separation_prefix)) then
-      if(len_trim(separation_prefix)>0) call record_air5_separation(step,time,fields,separation_prefix)
+    resident=.false.
+    if(present(device_transport)) resident=len_trim(device_transport)>0
+    download=0
+    if(resident) then
+      call initialize_device_metadata(window,host_limit)
+    else
+      call capture(window,host_limit,device_limit,reserve,fields,download)
     endif
+    separate=.false.
+    if(present(separation_prefix)) separate=len_trim(separation_prefix)>0
+    if(separate.and..not.resident) call record_air5_separation(step,time,fields,separation_prefix)
     weights=0.d0
     if(samples>0) then
       call clipped_trapezoid(previous_time,time,[1.d0,0.d0],[0.d0,1.d0], &
@@ -97,7 +150,22 @@ contains
     enddo
 #ifdef _CUDA
     if(use_gpu) then
-      call push_wall_statistics_gpu(fields,weights,samples>0)
+      if(resident) then
+        if(separate) then
+          call prepare_air5_separation(span_weights,span_length,reference_u,span_comm)
+          allocate(span_profile(0:im,3),local_span(0:ia,3),stat=status)
+          call require(status==0,'cannot allocate resident separation profile')
+          call capture_and_push_wall_statistics_gpu(profile,device_transport,weights,samples>0, &
+            host_limit,device_limit,reserve,span_weights,span_profile)
+          local_span=0.d0; local_span(ig0:ig0+im,:)=span_profile
+          call publish_air5_separation(step,time,local_span,span_length,reference_u,span_comm,separation_prefix)
+        else
+          call capture_and_push_wall_statistics_gpu(profile,device_transport,weights,samples>0, &
+            host_limit,device_limit,reserve)
+        endif
+      else
+        call push_wall_statistics_gpu(fields,weights,samples>0)
+      endif
     else
 #else
     call require(.not.use_gpu,'wall scalar device statistics require CUDA')
@@ -188,7 +256,7 @@ contains
   end subroutine
 
   subroutine wall_statistics_file(path,writing,identity,budget,window,host_limit,device_limit,reserve,root,volume_enabled, &
-      separation_enabled)
+      separation_enabled,device_transport)
     use commvar, only: ia,ja,ka,im,jm,km,use_gpu,flowtype
     use parallel, only: ig0,jg0,kg0
     use checkpoint_state_io, only: checkpoint_state_identity,checkpoint_state_transfer,allocate_checkpoint_buffer
@@ -196,6 +264,7 @@ contains
     logical,intent(in) :: writing,root
     logical,intent(in),optional :: volume_enabled
     logical,intent(in),optional :: separation_enabled
+    character(*),intent(in),optional :: device_transport
     type(checkpoint_state_identity),intent(in) :: identity
     integer(int64),intent(in) :: budget,host_limit,device_limit,reserve
     real(real64),intent(in) :: window(2)
@@ -204,11 +273,20 @@ contains
     integer(int64) :: remaining,download
     integer(int64),allocatable :: metadata(:),expected(:)
     integer :: w,j,ncomp,status
+    logical :: resident
     ncomp=10
     if(present(volume_enabled)) ncomp=11
     if(present(separation_enabled)) ncomp=12
     allocate(metadata(ncomp),expected(ncomp))
-    if(.not.writing) call capture(window,host_limit,device_limit,reserve,fields,download)
+    if(.not.writing) then
+      resident=.false.
+      if(present(device_transport)) resident=len_trim(device_transport)>0
+      if(resident) then
+        call initialize_device_metadata(window,host_limit)
+      else
+        call capture(window,host_limit,device_limit,reserve,fields,download)
+      endif
+    endif
     ncomp=34*(nfields/3)
     call require(budget>=16_int64*(im+1)*(jm+1)*(km+1)*ncomp+4096,'wall scalar checkpoint budget')
     call allocate_checkpoint_buffer([im,jm,km],0,ncomp,budget,buffer,remaining,MPI_COMM_WORLD)
@@ -295,25 +373,19 @@ contains
     call require(all_ok.and.all(ieee_is_finite(moments)),'wall scalar output state')
   end subroutine
 
-  subroutine record_air5_separation(step,time,fields,prefix)
-    use commvar, only: ia,ka,im,km,flowtype
+  subroutine prepare_air5_separation(span_weights,length,reference_u,comm)
+    use commvar, only: ka,km,flowtype
     use commarray, only: x
-    use parallel, only: ig0,jg0,kg0,mpiback,mpifront,mpirank
-    use insitu_wall_separation, only: wall_crossing,find_wall_crossings,separation,reattachment,zero_interval
+    use parallel, only: kg0,mpiback,mpifront
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_hbl_boundary, only: get_air5_hbl_boundary
 #endif
-    integer,intent(in) :: step
-    real(real64),intent(in) :: time,fields(0:,0:,:,:)
-    character(*),intent(in) :: prefix
-    type(wall_crossing),allocatable :: events(:)
-    real(real64),allocatable :: local(:,:),global(:,:),positions(:),shear(:),inlet(:,:),span_weights(:)
-    real(real64) :: zmin,zmax,length,left,right,send,receive,weight,farfield(11),wall_temp,xorigin,reference_u
-    character(1200) :: filename
-    character(48) :: eligibility
-    character(16) :: classification
-    integer :: i,k,n,comm,ierr,status,unit,closed,pairs
-    logical :: ok,eligible
+    real(real64),allocatable,intent(out) :: span_weights(:)
+    real(real64),intent(out) :: length,reference_u
+    integer,intent(out) :: comm
+    real(real64),allocatable :: inlet(:,:)
+    real(real64) :: zmin,zmax,left,send,receive,farfield(11),wall_temp,xorigin
+    integer :: k,ierr,status
     call require(trim(flowtype)=='air5hbl','separation diagnostic requires Cartesian AIR5 HBL')
 #ifdef ASTR_AIR5_CHEMISTRY
     call get_air5_hbl_boundary(inlet,farfield,wall_temp,xorigin)
@@ -323,10 +395,7 @@ contains
 #endif
     call require(all(ieee_is_finite(farfield)).and.farfield(1)>0.d0,'invalid separation reference state')
     reference_u=farfield(2)/farfield(1)
-    eligible=reference_u>0.d0
-    eligibility='not_applicable_no_positive_inflow'
-    if(eligible) eligibility='eligible_positive_x_inflow'
-    allocate(local(0:ia,3),global(0:ia,3),positions(ia+1),shear(ia+1),span_weights(0:km-1),stat=status)
+    allocate(span_weights(0:km-1),stat=status)
     call require(status==0,'cannot allocate spanwise shear diagnostic')
     call MPI_Comm_dup(MPI_COMM_WORLD,comm,ierr)
     call require(ierr==MPI_SUCCESS,'separation communicator')
@@ -346,6 +415,20 @@ contains
       span_weights(k)=.5d0*(x(0,0,k+1,3)-left)
     enddo
     call require(all(ieee_is_finite(span_weights)).and.all(span_weights>0.d0),'invalid physical span weights')
+  end subroutine
+
+  subroutine record_air5_separation(step,time,fields,prefix)
+    use commvar, only: ia,im,km
+    use parallel, only: ig0,jg0
+    integer,intent(in) :: step
+    real(real64),intent(in) :: time,fields(0:,0:,:,:)
+    character(*),intent(in) :: prefix
+    real(real64),allocatable :: local(:,:),span_weights(:)
+    real(real64) :: length,reference_u,weight
+    integer :: i,k,n,comm,status
+    call prepare_air5_separation(span_weights,length,reference_u,comm)
+    allocate(local(0:ia,3),stat=status)
+    call require(status==0,'cannot allocate spanwise shear diagnostic')
     local=0.d0
     if(jg0==0) then
       do k=0,km-1
@@ -360,6 +443,28 @@ contains
       enddo
     endif
     call require(all(ieee_is_finite(local)),'nonfinite spanwise shear integral')
+    call publish_air5_separation(step,time,local,length,reference_u,comm,prefix)
+  end subroutine
+
+  subroutine publish_air5_separation(step,time,local,length,reference_u,comm,prefix)
+    use commvar, only: ia
+    use parallel, only: mpirank
+    use insitu_wall_separation, only: wall_crossing,find_wall_crossings,separation,reattachment,zero_interval
+    integer,intent(in) :: step
+    integer,intent(inout) :: comm
+    real(real64),intent(in) :: time,local(0:,:),length,reference_u
+    character(*),intent(in) :: prefix
+    type(wall_crossing),allocatable :: events(:)
+    real(real64),allocatable :: global(:,:),positions(:),shear(:)
+    character(1200) :: filename
+    character(48) :: eligibility
+    character(16) :: classification
+    integer :: i,ierr,status,unit,closed,pairs
+    logical :: ok,eligible
+    call require(all(shape(local)==[ia+1,3]).and.all(ieee_is_finite(local)), &
+      'invalid spanwise shear reduction')
+    allocate(global(0:ia,3),positions(ia+1),shear(ia+1),stat=status)
+    call require(status==0,'cannot allocate reduced wall profile')
     call MPI_Allreduce(local,global,size(local),MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
     call require(ierr==MPI_SUCCESS.and.all(ieee_is_finite(global)).and.all(global(:,3)>0.d0), &
       'invalid unique wall span measure')
@@ -368,6 +473,9 @@ contains
     positions=global(:,1)/global(:,3); shear=global(:,2)/global(:,3)
     call require(all(ieee_is_finite([positions,shear,reference_u])).and. &
       all(positions(2:ia+1)>positions(1:ia)),'invalid wall diagnostic profile')
+    eligible=reference_u>0.d0
+    eligibility='not_applicable_no_positive_inflow'
+    if(eligible) eligibility='eligible_positive_x_inflow'
     pairs=0
     if(eligible) then
       call find_wall_crossings(positions,shear,events,pairs,ok)
@@ -407,6 +515,16 @@ contains
       endif
     endif
     call require(status==0.and.closed==0,'cannot publish wall separation diagnostic')
+  end subroutine
+
+  subroutine wall_statistics_render_clock(step,time,duration,window)
+    integer,intent(in) :: step
+    real(real64),intent(in) :: time
+    real(real64),intent(out) :: duration,window(2)
+    call require(samples>0.and.last_step==step.and.previous_time==time,'wall mean render phase mismatch')
+    call require(ieee_is_finite(covered_duration).and.covered_duration>=0.d0.and. &
+      all(ieee_is_finite(window_saved)).and.window_saved(2)>window_saved(1),'invalid wall mean render clock')
+    duration=covered_duration; window=window_saved
   end subroutine
 
   subroutine wall_statistics_render_values(step,time,fields)

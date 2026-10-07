@@ -1,7 +1,7 @@
 module insitu_config_collective
   use mpi
   use iso_fortran_env, only: int64,real64
-  use insitu_run_config, only: insitu_options,read_insitu_options,insitu_max_products
+  use insitu_run_config, only: insitu_options,read_insitu_options,insitu_max_products,canonical_slice_plane
   use adaptive_output_collective, only: agree_adaptive_bindings
   implicit none
   private
@@ -14,10 +14,10 @@ contains
     logical,intent(out) :: ok
     character(*),intent(out) :: message
     type(insitu_options) :: candidate
-    logical :: parsed,flags(9),root_flags(9),same,all_same
+    logical :: parsed,flags(10),root_flags(10),same,all_same
     integer(int64) :: counts(5),root_counts(5)
-    real(real64) :: times(3),root_times(3)
-    character(1024) :: paths(11),root_paths(11)
+    real(real64) :: times(9),root_times(9),plane(6)
+    character(1024) :: paths(12),root_paths(12)
     character(16) :: root_mode
     character(64) :: root_ids(insitu_max_products)
     character(16) :: root_product_modes(insitu_max_products)
@@ -44,13 +44,13 @@ contains
     ! Typed values avoid derived-type padding and compiler-specific serialization.
     flags=[candidate%enabled,candidate%statistics,candidate%render, &
       candidate%initial_frame,candidate%final_frame,candidate%air5_volume_statistics,candidate%air5_volume_reduction, &
-      candidate%wall_mean_render,candidate%wall_separation]
+      candidate%wall_mean_render,candidate%wall_separation,candidate%mean_streamline_render]
     counts=[candidate%step_interval,candidate%host_budget_bytes, &
       candidate%device_budget_bytes,candidate%device_reserve_bytes,int(candidate%slice_index,int64)]
-    times=[candidate%time_interval,candidate%statistics_window]
+    times=[candidate%time_interval,candidate%statistics_window,candidate%slice_origin,candidate%slice_normal]
     paths=[candidate%implementation_path,candidate%pipeline_file,candidate%output_directory, &
       candidate%batch_prefix,candidate%restore_batch,candidate%derivative_backend,candidate%products,candidate%slice_axis, &
-      candidate%processing_backend,candidate%postprocess_transport,candidate%rendering_pipeline]
+      candidate%processing_backend,candidate%postprocess_transport,candidate%rendering_pipeline,candidate%slice_definition]
     root_flags=flags; root_counts=counts; root_times=times; root_paths=paths
     root_mode=candidate%schedule_mode
     call MPI_Type_match_size(MPI_TYPECLASS_INTEGER,storage_size(counts(1))/8,int_type,ierr)
@@ -90,6 +90,18 @@ contains
     call agree_adaptive_bindings(candidate%product_adaptive,comm,ok)
     if(.not.ok) then
       message='adaptive in-situ bindings differ between MPI ranks'; return
+    endif
+    if(candidate%slice_definition=='plane') then
+      plane=[candidate%slice_origin,candidate%slice_normal]
+      if(rank==0) call canonical_slice_plane(plane(4:6),ok)
+      call MPI_Bcast(ok,1,MPI_LOGICAL,0,comm,ierr)
+      call check_mpi(ierr,comm)
+      if(.not.ok) then
+        message='physical plane unit normal is not representable'; return
+      endif
+      call MPI_Bcast(plane,size(plane),real_type,0,comm,ierr)
+      call check_mpi(ierr,comm)
+      candidate%slice_origin=plane(1:3); candidate%slice_normal=plane(4:6)
     endif
     options=candidate
     message=''

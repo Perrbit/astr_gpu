@@ -1,8 +1,9 @@
-# script-version: 2.0
+# script-version: 2.1
 """Strict device products in ParaView views, without host geometry filters."""
 import ctypes
 import io
 import json
+from math import isfinite
 import os
 from pathlib import Path
 import sys
@@ -12,7 +13,7 @@ from PIL import Image
 from paraview import catalyst, servermanager
 from paraview import simple as pv
 from paraview.modules.vtkRemotingViews import vtkPVProcessWindow
-from vtkmodules.vtkCommonCore import vtkIntArray
+from vtkmodules.vtkCommonCore import vtkIntArray, vtkDoubleArray
 from vtkmodules.vtkCommonDataModel import vtkDataObject, vtkPolyData
 from vtkmodules.vtkIOImage import vtkJPEGWriter
 from vtkmodules.vtkParallelCore import vtkCommunicator, vtkMultiProcessController
@@ -38,6 +39,12 @@ product_names = {
     'streamlines': ('instantaneous_streamlines', 'crossing_streamlines'),
     'q_streamlines': ('q_surface', 'instantaneous_streamlines', 'crossing_streamlines'),
     'tgv256_demo': ('q_surface', 'instantaneous_streamlines'),
+    'curve_demo': ('q_surface', 'instantaneous_streamlines'),
+    'channel_walls': ('wall_pressure', 'wall_shear_x', 'wall_heat_into_gas'),
+    'curve_walls': ('wall_pressure', 'wall_shear_x', 'wall_heat_into_gas'),
+    'air5_walls': ('pressure', 'temperature', 'vibrational_temperature', 'Y_N2', 'Y_O2',
+                   'Y_N', 'Y_O', 'Y_NO', 'wall_shear_x', 'wall_heat_into_gas'),
+    'physical_plane': ('velocity_slice',),
 }.get(profile)
 if product_names is None:
     raise RuntimeError('Unsupported bounded resident product profile')
@@ -51,11 +58,16 @@ controller = vtkMultiProcessController.GetGlobalController()
 rank = controller.GetLocalProcessId()
 sources = {name: pv.TrivialProducer(registrationName=name) for name in (
     'q_surface', 'velocity_slice', 'instantaneous_streamlines', 'crossing_streamlines',
-    'mean_reynolds_streamlines', 'mean_favre_streamlines')}
+    'mean_reynolds_streamlines', 'mean_favre_streamlines',
+    'wall_pressure', 'wall_shear_x', 'wall_heat_into_gas', 'pressure', 'temperature',
+    'vibrational_temperature', 'Y_N2', 'Y_O2', 'Y_N', 'Y_O', 'Y_NO')}
+wall_profile = profile in ('channel_walls', 'curve_walls', 'air5_walls')
+if wall_profile:
+    sources.update({('mean_'+name): pv.TrivialProducer(registrationName='mean_'+name) for name in product_names})
 render_objects = {}
 frames = []
-image_size = [1280, 960] if profile=='tgv256_demo' else [800, 600]
-color_range = [0., 1.] if profile=='tgv256_demo' else [-1., 1.]
+image_size = [1280, 960] if profile in ('tgv256_demo','curve_demo') else [800, 600]
+color_range = [0., 1.] if profile in ('tgv256_demo','curve_demo') else [-1., 1.]
 timing = os.environ.get('ASTR_INSITU_TIMING', '') in ('1', 't', 'T', 'true', 'TRUE', 'on', 'ON')
 
 
@@ -127,11 +139,32 @@ def update_geometry(name, piece):
         actor = vtkActor(f'_{address:016x}_p_vtkActor')
         item.update(actor=actor, mapper=actor.GetMapper())
     if 'view' not in item:
-        setup_view(name, item)
+        setup_view(name, item, piece)
     return points, cells
 
 
-def setup_view(name, item):
+def global_device_bounds(piece, allow_planar=False, allow_empty=False):
+    local, total = vtkDoubleArray(), vtkDoubleArray()
+    points = int(metadata(piece, 'device_points'))
+    for d in range(6):
+        value = metadata(piece, 'bound' + str(d)) if points else (float('inf') if d % 2 == 0 else -float('inf'))
+        local.InsertNextValue(-value if d % 2 == 0 else value)
+    total.SetNumberOfTuples(6)
+    controller.AllReduce(local, total, vtkCommunicator.MAX_OP)
+    bounds = [(-1. if d % 2 == 0 else 1.) * total.GetValue(d) for d in range(6)]
+    from math import isfinite
+    if allow_empty and all(bounds[2*d] == float('inf') and bounds[2*d+1] == -float('inf') for d in range(3)):
+        return None
+    if not all(isfinite(value) for value in bounds) or any(
+            bounds[2*d] > bounds[2*d+1] if allow_planar else bounds[2*d] >= bounds[2*d+1] for d in range(3)):
+        raise RuntimeError('Invalid globally reduced device wall bounds')
+    if allow_planar and sum(bounds[2*d] < bounds[2*d+1] for d in range(3)) < 2:
+        raise RuntimeError('Physical slice has no two-dimensional extent')
+    return bounds
+
+
+def setup_view(name, item, piece):
+    field = name.removeprefix('mean_') if wall_profile else name
     if 'streamlines' in name:
         item['actor'].GetProperty().SetLineWidth(2.)
     view = pv.CreateView('RenderView')
@@ -145,13 +178,84 @@ def setup_view(name, item):
     view.CameraViewUp = [0., 0., 1.]
     view.CameraParallelProjection = 1
     view.CameraParallelScale = 5.
+    bounds = [0., 6.283185307179586] * 3
+    if profile=='channel_walls':
+        # Approved Cartesian fixture bounds; no scan of device geometry.
+        from math import pi
+        center=[pi,1.,.5*pi]
+        length=[2*pi,2.,pi]
+        view.CameraPosition=[center[d]+length[d]*[1.2,1.7,1.7][d] for d in range(3)]
+        view.CameraFocalPoint=center
+        view.CameraViewUp=[0.,1.,0.]
+        view.CameraParallelScale=.6*max(length)
+        bounds=[0.,2*pi,0.,2.,0.,pi]
+    elif profile=='curve_walls':
+        # Six metadata scalars were reduced on the GPU, not scanned in VTK.
+        bounds=global_device_bounds(piece)
+        center=[.5*(bounds[2*d]+bounds[2*d+1]) for d in range(3)]
+        length=[bounds[2*d+1]-bounds[2*d] for d in range(3)]
+        view.CameraPosition=[center[d]+length[d]*[1.2,1.7,1.7][d] for d in range(3)]
+        view.CameraFocalPoint=center
+        view.CameraViewUp=[0.,1.,0.]
+        view.CameraParallelScale=max(length)
+    elif profile=='air5_walls':
+        from math import sqrt
+        bounds=global_device_bounds(piece, allow_planar=True)
+        center=[.5*(bounds[2*d]+bounds[2*d+1]) for d in range(3)]
+        length=[bounds[2*d+1]-bounds[2*d] for d in range(3)]
+        offset=[.3,1.7,.5]
+        view.CameraPosition=[center[d]+max(length)*offset[d] for d in range(3)]
+        view.CameraFocalPoint=center
+        view.CameraViewUp=[0.,1.,0.]
+        magnitude=sqrt(sum(value*value for value in offset))
+        forward=[-value/magnitude for value in offset]
+        right=[-forward[2],0.,forward[0]]
+        magnitude=sqrt(sum(value*value for value in right))
+        right=[value/magnitude for value in right]
+        up=[right[1]*forward[2]-right[2]*forward[1],
+            right[2]*forward[0]-right[0]*forward[2],right[0]*forward[1]-right[1]*forward[0]]
+        half_height=.5*sum(abs(up[d])*length[d] for d in range(3))
+        half_width=.5*sum(abs(right[d])*length[d] for d in range(3))
+        view.CameraParallelScale=max(.6*max(length),1.05*half_height,
+            1.05*half_width/(image_size[0]/image_size[1]))
+        item['physical_bounds']=bounds
+    elif profile=='physical_plane':
+        from math import sqrt
+        plane_origin=[metadata(piece, 'plane_origin'+str(d)) for d in range(3)]
+        normal=[metadata(piece, 'plane_normal'+str(d)) for d in range(3)]
+        plane_bounds=global_device_bounds(piece, allow_planar=True, allow_empty=True)
+        center=plane_origin if plane_bounds is None else [.5*(plane_bounds[2*d]+plane_bounds[2*d+1]) for d in range(3)]
+        length=6.283185307179586 if plane_bounds is None else max(plane_bounds[2*d+1]-plane_bounds[2*d] for d in range(3))
+        axis=min(range(3), key=lambda d: abs(normal[d]))
+        up=[float(d==axis)-normal[axis]*normal[d] for d in range(3)]
+        norm=sqrt(sum(value*value for value in up))
+        view.CameraPosition=[center[d]+2.*length*normal[d] for d in range(3)]
+        view.CameraFocalPoint=center
+        view.CameraViewUp=[value/norm for value in up]
+        view.CameraParallelScale=.8*length
+        if plane_bounds is not None:
+            # Camera clipping padding only; never used to classify intersections.
+            bounds=[value+(-.05 if d%2==0 else .05)*length for d,value in enumerate(plane_bounds)]
+        item['plane']={'origin':plane_origin, 'normal':normal}
     view.UpdateVTKObjects()
     client = view.GetClientSideObject()
     client.GetRenderer().AddActor(item['actor'])
-    # The fixed physical box supplies clipping bounds, not a host geometry scan.
-    client.SetMaxClipBounds([0., 6.283185307179586] * 3)
+    client.SetMaxClipBounds(bounds)
     client.SetLockBounds(True)
-    if profile=='tgv256_demo':
+    selected_range=color_range
+    if profile in ('channel_walls','curve_walls'):
+        color=name
+        selected_range={'wall_pressure':[0.,12.], 'wall_shear_x':[-.02,.02],
+                        'wall_heat_into_gas':[-.2,.2]}[field]
+        if profile=='curve_walls':
+            selected_range={'wall_pressure':[80.,120.], 'wall_shear_x':[-.2,.2],
+                            'wall_heat_into_gas':[0.,15000.]}[field]
+    elif profile=='air5_walls':
+        color=name
+        selected_range=({'pressure':[0.,60000.], 'temperature':[1500.,3500.],
+            'vibrational_temperature':[1500.,3500.], 'wall_shear_x':[-1.,1.],
+            'wall_heat_into_gas':[-60000.,60000.]}).get(field,[0.,1.])
+    elif profile in ('tgv256_demo','curve_demo'):
         color = 'speed'
     elif name.startswith('mean_'):
         color = 'mean_u_' + ('reynolds' if name=='mean_reynolds_streamlines' else 'favre')
@@ -160,7 +264,7 @@ def setup_view(name, item):
     lut = pv.GetColorTransferFunction(color)
     lut.AutomaticRescaleRangeMode = 'Never'
     lut.ApplyPreset('Cool to Warm (Extended)', False)
-    lut.RescaleTransferFunction(*color_range)
+    lut.RescaleTransferFunction(*selected_range)
     legend = pv.GetScalarBar(lut, view)
     legend.Visibility = 1
     legend.Title = {'mean_u_reynolds': 'Reynolds u', 'mean_u_favre': 'Favre u', 'speed': 'Speed'}.get(color, color)
@@ -172,7 +276,11 @@ def setup_view(name, item):
     legend.LabelFontSize = 14
     legend.TitleColor = [0., 0., 0.]
     legend.LabelColor = [0., 0., 0.]
-    item.update(view=view, legend=legend, lut=lut, color=color)
+    if profile in ('curve_walls','physical_plane','air5_walls'):
+        legend.WindowLocation='Any Location'
+        legend.Position=[.8,.5]
+        legend.ScalarBarLength=.4
+    item.update(view=view, legend=legend, lut=lut, color=color, color_range=selected_range)
 
 
 def capture_image(view):
@@ -194,9 +302,28 @@ def catalyst_execute(info):
     sources[product_names[0]].UpdatePipeline(time)
     first = local_piece(sources[product_names[0]].GetClientSideObject().GetOutputDataObject(0))
     names = [name for name in product_names if dispatch.scene_due(name)]
-    if profile == 'all' and metadata(first, 'mean_covered'):
+    statistics = None
+    if wall_profile and first.GetFieldData().GetArray('mean_requested') is not None:
+        covered = metadata(first, 'mean_covered')
+        statistics = {key: metadata(first, key) for key in (
+            'statistics_duration', 'statistics_window_start', 'statistics_window_end')}
+        duration = statistics['statistics_duration']
+        if covered not in (0, 1) or not all(isfinite(value) for value in statistics.values()) or duration < 0. or \
+                statistics['statistics_window_end'] <= statistics['statistics_window_start'] or bool(covered) != (duration > 0.):
+            raise RuntimeError('Invalid device wall mean window/coverage')
+        if covered:
+            names += ['mean_'+name for name in product_names]
+    if profile in ('all', 'streamlines') and metadata(first, 'mean_covered'):
+        if profile=='streamlines':
+            statistics = {key: metadata(first, key) for key in (
+                'statistics_duration', 'statistics_window_start', 'statistics_window_end')}
+            span = statistics['statistics_window_end']-statistics['statistics_window_start']
+            duration = statistics['statistics_duration']
+            if not all(isfinite(value) for value in statistics.values()) or duration<=0. or span<=0. or \
+                    abs(span-duration)>64*sys.float_info.epsilon*max(1.,abs(span),abs(duration)):
+                raise RuntimeError('Invalid resident mean streamline coverage')
         names += [name for name in ('mean_reynolds_streamlines', 'mean_favre_streamlines') if dispatch.scene_due(name)]
-    elif profile == 'all' and dispatch.independent():
+    elif profile in ('all', 'streamlines') and dispatch.independent():
         for name in ('mean_reynolds_streamlines', 'mean_favre_streamlines'):
             if dispatch.scene_due(name):
                 dispatch.report_uncovered(name)
@@ -210,10 +337,12 @@ def catalyst_execute(info):
         products[name] = render_product(name, item, step, time, points, cells)
         dispatch.report(name, 'image', products[name]['image'])
     record = {'step': step, 'time': time, 'processing_backend': 'device',
-        'rendering_pipeline': pipeline, 'geometry_host_bytes': 0,
+        'rendering_pipeline': pipeline, 'profile':profile, 'geometry_host_bytes': 0,
         'local_points': products[names[0]]['local_points'] if names else 0,
         'local_cells': products[names[0]]['local_cells'] if names else 0,
         'products': products}
+    if statistics is not None:
+        record['statistics'] = statistics
     adaptive=dispatch.adaptive_receipts(names)
     if adaptive:
         record['adaptive_outputs']=adaptive
@@ -302,9 +431,17 @@ def render_product(name, item, step, time, points, cells):
             'screenshot_capture_inclusive': capture_seconds,
             'image_encoding': encoding_seconds,
             'image_publication': publication_seconds}}, sort_keys=True), flush=True)
-    return {'egl_uuid': actual, 'color_field': item['color'], 'color_range': color_range,
+    result = {'egl_uuid': actual, 'color_field': item['color'], 'color_range': item['color_range'],
         'scalar_bar_visible': bool(item['legend'].Visibility), 'scalar_bar_label_color': [0., 0., 0.],
         'local_points': points, 'local_cells': cells, 'image': 'published' if code == 0 else receipt}
+    if 'plane' in item:
+        result['plane']=item['plane']
+    if profile=='air5_walls':
+        field=name.removeprefix('mean_')
+        result['field_unit']=({'pressure':'Pa','temperature':'K','vibrational_temperature':'K',
+            'wall_shear_x':'Pa','wall_heat_into_gas':'W/m^2'}).get(field,'1')
+        result['physical_bounds']=item['physical_bounds']
+    return result
 
 
 def catalyst_finalize():

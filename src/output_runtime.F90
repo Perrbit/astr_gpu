@@ -213,7 +213,8 @@ contains
   subroutine check_capability()
     logical :: supported_case
     supported_case=(trim(flowtype)=='tgv'.and.all(bctype==1)).or. &
-      (trim(flowtype)=='tgv'.and.lreadgrid.and.all([ia,ja,ka]==32).and. &
+      (trim(flowtype)=='tgv'.and.lreadgrid.and. &
+      (all([ia,ja,ka]==32).or.all([ia,ja,ka]==64).or.all([ia,ja,ka]==128).or.all([ia,ja,ka]==256)).and. &
       all(bctype==[1,1,41,41,1,1]).and.trim(conschm)=='643e'.and.trim(difschm)=='643e').or. &
       (trim(flowtype)=='channel'.and.all(bctype==[1,1,41,41,1,1])).or. &
       (trim(flowtype)=='bl'.and.lreadgrid.and.(trim(turbinf)=='prof'.or.trim(turbinf)=='intp').and. &

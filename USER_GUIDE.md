@@ -821,11 +821,13 @@ CPU渲染、一般AIR5三维渲染及任何渲染重新分区属于后续目标�
 `postprocess_transport='device-aware'` 或 `'pinned'`，不继承求解器 halo
 通信设置。前者交给 MPI 设备缓冲，实际是否直传须检查 MPI/硬件；后者只将
 共享节点面和 halo 面经固定页锁定主机缓冲中转，不允许下载整场作归属处理。
+本地壁面追踪已观察到device-aware的MPI内部小面中转；应用暂存计数为零
+不等于整个MPI路径没有主机复制，应与整场/几何回读分开核对。
 该入口要求根构建同时开启 `ASTR_WITH_CUDA`、`ASTR_WITH_CATALYST` 和
 默认关闭的 `ASTR_WITH_INSITU_DEVICE`，另提供 CUDA/FP64/MPI Viskores依赖。
 几何常驻渲染另需默认关闭的 `ASTR_WITH_INSITU_DEVICE_RENDERING` 及相匹配、
 已应用设备数组/绘制补丁的ParaView/VTK。不能直接使用未修补的普通安装。
-只支持内部生成的32³周期笛卡尔TGV、FP64、643e/643e、NP=1或NP=2 x/y/z，
+TGV准入为内部生成的32³周期笛卡尔TGV、FP64、643e/643e、NP=1或NP=2 x/y/z，
 所选产品为固定z=pi/4索引速度切片、Q_rs=0.25等值面及瞬时、Reynolds/Favre
 速度流线。必须启用渲染、选择`derivative_backend='gpu'`并显式填写正的资源预算。
 缺失/非法/各rank不一致的传输选择及未支持范围会报错，不退回CPU过滤器。
@@ -844,7 +846,125 @@ pinned模式另有面暂存，不能称总D2H为零。正式设备统计累计�
 同后端同拓扑精确续接要求传输选择一致；只改传输须显式选择
 `restart_output='override'`，保留累计统计和输出时钟，重建临时缓冲。
 默认仍是`processing_backend='host'`，兼容路径不是全设备后处理。
-CURVE、壁面、AIR5和渲染重分区尚未准入新设备入口。唯一更大网格例外为
+X4另外完成了16³内部笛卡尔bc41槽道的有界设备壁面图片验证：
+`products='channel_walls'`、`derivative_backend='gpu'`、
+`processing_backend='device'`，显式选择两种面通信之一，采用
+`standard-device`或`direct-device`及`device_render_pipeline.py`。
+范围为FP64、643e/643e、x/z周期且y上下bc41、NP=1/2 x/y/z，
+批准的物理盒为x∈[0,2π]、y∈[0,2]、z∈[0,π]。壁面压力、x向剪切
+及入气体热流使用IS5原定义，在GPU从壁面及两层内点状态计算；
+字段、三角形和显示颜色不回读供主机整理，仍保留图片及显式检查点I/O。
+该设备壁面入口可选择`statistics=t`，直接由GPU壁面字段累计压力、
+剪切及热流的时间均值、方差和RMS。同时选择`wall_mean_render=t`
+可在GPU读取累计均值并渲染平均图片，不下载壁面场供主机整理。
+仍要求`wall_separation=f`，该bc41入口不支持设备分离诊断。
+统计窗口及完整步采样权重不变。显式统计导出/检查点会下载累计状态，
+与采样和图片路径的传输分开计账。`processing_backend='host'`的
+既有壁面统计/均值渲染不受此限制。设备壁面字段、双入口图像及同拓扑4步/3+1续算已有
+有界证据，不能据此宣称长期槽道统计或全部X4已完成。
+
+另准入32³静态y-wavy CURVE bc41 TGV短测的同三类瞬时壁面图片，
+仍要求FP64、643e/643e、NP=1/2 x/y/z及`wall_separation=f`，
+可选择`statistics=t`的GPU壁面累计和`wall_mean_render=t`的设备平均图。
+该几何夹具不代表湍流槽道物理验证。其字段和两入口4步/3+1续算
+已分别验证，固定短测色标为压力[80,120]、剪切[-0.2,0.2]、热流[0,15000]。
+上述32³静态周期CURVE TGV现还可选择`products='q_surface'`，
+FP64、643e/643e、NP=1/2 x/y/z、统计关闭、共用固定时钟，支持
+两入口及两面后端。Q阈值0.25、u色标[-1,1]保持原预设。物理坐标
+与字段共用边插值比例，最终几何在设备绘制；不是六阶几何重构。
+非有限或零面积几何直接报错，不删面或合并不同边。该Q产品准入不含
+独立PF/AP时钟、AIR5、256³或渲染重分区。
+
+32³ y-wavy bc41曲壁夹具现也可使用上述`q_surface`产品。仅此新增
+设备Q供给在物理壁面附近使用七节点六阶单边/偏置导数，内点和MPI
+接口仍为六阶中心差分，然后以完整网格度量投影到物理坐标。不改变
+求解器离散、原有输出导数或壁面剪切/热流公式。当前真实场验收覆盖
+NP=2 x/y/z的standard-device/pinned及direct-device/device-aware组合，
+并验证同拓扑精确续算；该预设仍使用Q=0.25。
+
+`products='curve_demo'`另提供Q=0及瞬时流线，按速度模长着色，固定
+1280×960及[0,1]色标。仅准入上述静态periodic/y-wavy TGV、FP64、
+643e/643e，关闭统计，使用共用时钟及严格设备入口；不开放PF/AP独立
+时钟。32³、64³、128³的NP=2 x分解已有短测，新增尺度使用dt=2e-5并逐步检查
+CFL<=0.5。两入口/两面后端交叉、独立参考、开关隔离、同拓扑精确
+续算和内存/传输检查通过。CURVE流线仍使用h=2π/32定义物理积分
+步长，不随网格加密缩小；其余RK45参数和16个双向种子不变。
+64³/128³预算为附加显存6 GiB/卡、主机16 GiB/节点、设备空闲至少2 GiB，
+不是生产默认。64³/128³的半步长诊断已完成，不改变正式积分设置；
+端点差包含不同末段接受弧长及折线插值误差，不作为积分误差上界。
+256³候选仅开放NP=2 x分解，已构建，但首轮诊断矩阵中断，独立参考及
+精确续算验收尚未完成，未准入100步长窗。
+
+32³静态周期及上述y-wavy CURVE TGV另可选择`products='streamlines'`，
+仍为FP64、643e/643e、NP=1/2 x/y/z、共用固定时钟、两严格入口及
+两面后端。GPU用真实物理六面体反求与三线性插值，不按均匀索引网格
+追踪。`mean_streamline_render`默认`f`；同时设置`statistics=t`及
+`mean_streamline_render=t`时，额外供给原Reynolds/Favre平均速度流线。
+不得用瞬时场替代零覆盖的均值；图片元数据保留实际累计起止与时长。
+此选择不计算未请求的Q，不同时开放`all`中的其它CURVE产品。
+物理坐标和最终轨迹不下载供主机整理，单元归属查询另允许每rank
+每轮最多256 B，与原2 KiB续接状态分别计账。固定相机、种子和原RK45
+门槛不变，场、几何、图片和精确续接已有有界证据。仍不准入任意
+CURVE工况、独立PF/AP时钟、AIR5流线、256³或渲染重分区。
+逐轨迹单元缓存优化后，本地32³、NP=2 x分解、direct-device/device-aware
+五轮四步窗口中位数为周期CURVE约6.000 s、y-wavy约7.302 s，分别较
+同输入冻结基线快2.21和2.41倍。窗口含统计及四类流线两帧，不代表
+纯求解器加速或生产规模保证。扩大规模仍需逐级容量与正确性验收。
+
+16³内部笛卡尔非催化AIR5平板底壁现可选择严格设备图片：
+`products='air5_walls', processing_backend='device', derivative_backend='gpu'`，
+采用`device_render_pipeline.py`及`standard-device`或`direct-device`，
+显式选择pinned/device-aware面通信。要求SI双温五组分、643e/643e、
+边界[11,50,41,51,1,1]、NP=1/2 x/y/z。
+`statistics=t`可启用18项壁面标量的GPU时间累计；同时选择
+`wall_mean_render=t`可输出十类平均壁面图片。严格设备入口暂不准入
+`air5_volume_statistics=t`；原AIR5三维统计仍可在主机兼容入口显式选择。
+本夹具物理盒为x∈[0,0.08] m、y/z∈[0,0.002] m，验收dt=1e-10 s、
+四个完整步；根构建另需`ASTR_WITH_AIR5_CHEMISTRY=ON`。
+GPU从底壁和两层内点的守恒状态重建物性，输出压力、T/Tv、五组分、
+x剪切和入气体总热流十类JPEG/EPS；不下载壁面字段或三角形供主机
+整理，不写VTK几何。保留原SI单位、固定相机及真实40:1平板比例。
+状态/化学补偿及3+1精确续算已有有界证据。此热气体夹具入口速度为零，
+不验证湍流、分离或生产SBLI。配合`statistics=t`可选择
+`wall_separation=t`：GPU沿真实z长度积分有符号x剪切，只回读随x
+变化的一维积分和有限性状态，沿用原CSV/零区间规则。该夹具仍
+记录`not_applicable_no_positive_inflow`，不能解释为物理上没有分离。
+这一选择不支持bc41/CURVE或任意AIR5工况。既有主机诊断及统计
+入口保留，不能将其主机三层采样称为设备常驻。
+
+上述三类设备壁面平均图使用与瞬时图相同的相机、色标及单位，文件名
+增加`mean_`前缀。平均值采用原时间窗口裁剪后的累计权重，输出元数据
+保留窗口和实际覆盖时长；覆盖时长为零时不输出平均图片，也不以瞬时
+值替代。法向符号来自静态几何，不参与平均。均值端点的通信仍可使用
+已选择的面后端，pinned及本机MPI内部面暂存、图片回读和显式统计/
+检查点I/O分别计账。设备平均图的字段、隔离、4步/3+1精确续接和
+双入口图片已在上述小网格验证，不代表长期生产统计或任意CURVE工况。
+
+32³周期Cartesian或上述静态periodic CURVE TGV还可显式选择物理平面。
+在已配置路径、渲染、预算和共用固定调度的`&insitu_run`中加入：
+
+```fortran
+ products='velocity_slice', statistics=f,
+ processing_backend='device', derivative_backend='gpu',
+ rendering_pipeline='standard-device', postprocess_transport='pinned',
+ slice_definition='plane',
+ slice_origin=3.d0,0.d0,0.d0,
+ slice_normal=1.d0,0.25d0,-0.125d0,
+```
+
+也可显式选择`direct-device`或`device-aware`。origin是物理点，不能单位化；
+normal由rank0单位化并广播，最大绝对分量统一为正，平局按x/y/z。
+所有rank原始输入须一致；零/非有限法向及不可表示的规范化或几何均报错。
+该路径使用一致四面体分解和FP64线性插值，不是六阶切片重构。
+切片按全局顶点/边键去重并固定绕序，不下载几何供主机整理，不计算Q。
+NP=1/2 x/y/z、两入口/面后端、4步与3+1精确续接及空产品已有短测证据。
+此候选要求统计关闭，不支持独立产品时钟、壁面/AIR5平面、256³或重分区。
+未填写`slice_definition`仍为既有`index`模式；plane模式不要同时填写
+旧`slice_axis/slice_index`。续接须保持六个规范化平面值一致，改变平面
+需显式输出override。不同边交点若舍入为同一坐标而形成退化面片，
+程序停止，不自动吸附、合并、删面或改变平面。
+
+唯一更大网格例外为
 另行验收的256³、NP=2 x分解`products='tgv256_demo'`，只输出Q=0与瞬时
 速度流线，不开累计原位统计、检查点、整场、切片或VTK几何写出。
 其本地预算为附加6 GiB/GPU、16 GiB/节点、设备空闲至少2 GiB，不是
@@ -998,10 +1118,10 @@ Catalyst 实现和脚本路径。示例阈值仅检验 Re=1、dt=1e-3 的短程�
 真实坐标求积，不当作均匀方向。已验证四步与3+1步同拓扑精确续接，
 不外推为长时间统计定常或更大网格性能认证。
 
-另有有界 `products='air5_walls'`，仅支持内部生成的笛卡尔非催化
+主机诊断另有有界 `products='air5_walls'`，仅支持内部生成的笛卡尔非催化
 AIR5平板底壁，边界 `[11,50,41,51,1,1]`、SI物性、643e，尺寸≤32、
 NP=1/2；实际验收为16³、四个完整耦合步。要求
-`derivative_backend='cpu'`；渲染要求GPU/EGL，CPU统计须 `render=f`。
+`processing_backend='host', derivative_backend='cpu'`；渲染要求GPU/EGL，CPU统计须 `render=f`。
 GPU下载底壁三层11变量，在主机复用AIR5状态重建与输运物性，供给
 ρ、三速度、T/Tv、压力、五组分、剪切和各热流贡献等18字段。
 输出压力、T/Tv、五组分、剪切及总热流的JPEG/EPS/VTK预设，保留SI
@@ -1057,7 +1177,8 @@ rank、同后端同拓扑精确续接和内存安全已有短测证据。
 更大网格和其他边界不在准入范围。自定义流水线需支持新增的产品参数，
 详见[原位预设说明](scripts/insitu/README.md)。
 
-静态CURVE原位候选限32³ TGV、NP=1或NP=2的x/y/z分解，显式643e和FP64。
+静态CURVE原位统计候选限32³ TGV、NP=1或NP=2的x/y/z分解，显式643e和FP64。
+仅图片的设备`curve_demo`另有64³ NP=2 x短测，不能据此扩大统计准入。
 周期基准使用 `generate_curvilinear_tgv_grid.py --mapping periodic --amplitude 0.15`；
 曲壁基准使用 `--mapping y-wavy --amplitude 0.15`，即
 `x=xi, y=eta+0.15*sin(xi)*sin(zeta), z=zeta`，上下y边界为bc41，x/z周期。

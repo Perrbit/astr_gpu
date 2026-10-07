@@ -274,6 +274,17 @@ Set the matching MPI wrapper and compiler runtime paths in the environment.
 Omit `ASTR_TEST_CMAKE_BUILD=1` for configure-only checks. This checks build
 separation, not numerical or physical validation.
 
+Set `ASTR_TEST_CATALYST_DIR` for the native CPU/CUDA Catalyst configuration
+cases. Set `ASTR_TEST_RESIDENT_CMAKE_CACHE` to a validated strict-render
+dependency cache for `test_strict_device_products_without_test_sources`.
+That test covers AIR5 OFF/ON with both strict device libraries and no test
+sources or test definitions. With `ASTR_TEST_CMAKE_BUILD=1`, it actually builds
+`astr`; without that switch it checks configuration only. Both modes install
+the `InsituTools` component and compare all six Python files with the source.
+Temporary output paths may themselves live under `tests/`; absence of test
+source dependencies is checked relative to the copied source root, not by
+rejecting the word `tests` anywhere in a build path.
+
 The source copy includes tracked production inputs and the explicit
 `PENDING_PRODUCTION_INPUTS` list of approved additions, using their current
 working-tree contents; it excludes other untracked files and local outputs. With builds enabled,
@@ -8452,3 +8463,370 @@ tolerance. Do not describe that first receipt as entirely passing. Five root
 build modes and production source-copy/configure decoupling also pass. Exact
 receipt names, executable hashes, short-fixture thresholds and measurements
 are in the acceptance record; no additional production scope is implied.
+
+## X4 Device Product Expansion
+
+The bounded scope is frozen in the in-situ plan section 5.4. Cartesian bc41
+channel fields/rendering use `test_insitu_device_channel_{fields,render}.py`;
+the static y-wavy fixture uses `test_insitu_device_curve_wall_{fields,render}.py`.
+`test_insitu_device_curve_fields.py` is a private gradient/Q diagnostic gate.
+`test_insitu_device_curve_surface.py` separately checks the bounded periodic
+32-cubed instantaneous Q surface: both strict entries/face transports, NP=1/2
+x/y/z, CPU/GPU state and independent interpolation, 4-versus-3+1 exact restart,
+isolation, budgets, rejections and memcheck. It does not admit CURVE streamlines
+or means. BUILD_TESTING oracle downloads are explicitly diagnostic only.
+`ASTR_INSITU_CURVE_SURFACE_MATRIX_ROOT` selects immutable completed diagnostic
+results for global oriented topology/partition comparison without rerunning.
+The curve component modes in `test_insitu_device_geometry.py` use 0.251 for
+the positive analytic fixture and 0.25 as an explicit nodal-degeneracy rejection;
+the runtime Q preset remains 0.25. Zero-area faces are never silently dropped.
+
+`test_insitu_physical_plane_config.py` checks finite canonical plane identity,
+typed MPI raw agreement and rejection. `test_insitu_device_physical_plane.py`
+checks 32-cubed periodic Cartesian/CURVE real products, globally keyed topology,
+independent same-phase CPU/GPU interpolation, strict/diagnostic isolation,
+4-versus-3+1 restart, empty/coincident partitions and memcheck. Its optional
+aggregate takes `ASTR_INSITU_PLANE_MATRIX_ROOT` pointing to the immutable
+completed matrix and compares oriented geometry and image seams without reruns.
+
+Set `ASTR_OUTPUT_INSITU_EXE` and `ASTR_OUTPUT_INSITU_BACKEND` to the matched root
+CUDA/Catalyst/strict-render build and patched ParaView implementation. Component
+probes must also match this build. Test plane downloads are enabled explicitly
+only in the diagnostic cases and require BUILD_TESTING. They are never evidence
+of no-readback rendering; separate strict cases forbid them. Failed inputs and
+receipts are retained. Do not change geometry tolerances to force a pass.
+
+After numerical and memory gates, `ASTR_INSITU_X4_OBSERVE=1` enables
+`test_insitu_x4_observation.py`. It uses both strict entries and face transports
+at NP=1/2 x/y/z for the two wall fixtures, periodic Cartesian/CURVE physical
+planes and the periodic CURVE Q surface (`-k curve-surface`). Immutable x
+receipts are reused; `-k 'not x-'` runs only the remaining three topologies.
+Checkpoints/native field output are explicitly disabled; grid input is retained.
+Each case has a separate unprofiled four-step off/on cost pair, 20 ms process/NVML
+resource observation, and two-step CUDA/NVTX/MPI capture with GL pixel records.
+Nested timings are not additive; one short pair is not a performance distribution.
+NP=1 may have no MPI point-to-point table; NP=2 still requires attributed
+MPI records. Device-aware wall faces may be internally host-staged by MPI,
+which is recorded separately from ASTR explicit staging and geometry reads.
+Per-run 256 MiB disk, 2 GiB additional device/GPU, 4 GiB host/node and 1 GiB free
+device limits apply. The opt-in test currently selects the local
+`build_insitu_device_render/bin/astr`; no remote or production job is launched.
+
+AIR5 noncatalytic device-wall checks are separate:
+`test_insitu_device_air5_fields.py` covers 18 same-phase fields and fixed IS5
+scales, eight topology/transport combinations, exact q/cache/compensation restart,
+isolation and two memchecks. `test_insitu_device_air5_render.py` covers ten strict
+image products, both entries, all four topologies/transports, two memchecks and
+unsupported configurations. Its image aggregate takes
+`ASTR_INSITU_AIR5_WALL_IMAGE_ROOTS` (os.pathsep-separated immutable matrix roots),
+then checks all sixteen configurations without rerunning the solver.
+Only the device wall normal is a geometry component; product selection must not
+mistake it for a displayed scalar. The shared wall probe tests all ten 18-field
+product positions, empty geometry, normal-component rejection and legacy colors.
+Formal image cases never enable oracle downloads. Raw SI errors, input-derived
+scales and independent raw-state/cache checks are separate assertions.
+
+These AIR5 tests use the matched root `build_insitu_air5_device_render/bin/astr`
+and the patched ParaView strict device implementation, not the frozen nonreacting
+binary. Statistics and wall means remain OFF; the zero-positive-inlet hot-gas
+fixture does not validate physical separation. After its numerical/render/safety
+gates, `ASTR_INSITU_X4_OBSERVE=1` enables `test_insitu_device_air5_observation.py`
+for image-only four-step on/off cost, external 20 ms budgets and independent
+CUDA/NVTX/MPI/GL accounting. Limits remain 256 MiB/run, 2 GiB additional device,
+4 GiB additional host and 1 GiB device reserve; no silent host fallback.
+OFF and ON explicitly use the same MPI configuration, including the resource
+baseline. `ASTR_INSITU_AIR5_TRACE_ROOTS` optionally reuses the two immutable
+sixteen-case trace roots from this frozen X4 producer; executable SHA, topology,
+pipeline/face mode, exact in-situ configuration and every two-step text input
+must match; generated grid.h5 datasets/types/values are compared exactly, not
+HDF5 container bytes. The default
+collects fresh traces. Valid traces were reused when correcting the initial OFF
+MPI setting; no renderer/solver code, scientific gates or budgets changed.
+Empty-wall consumers are required to issue no copies; nonempty consumers still
+require bounded scalar reads and correctly sized D2D display buffers.
+`ASTR_INSITU_AIR5_MATCHED_ROOT` selects the completed cost/resource matrix for
+`test_existing_air5_trace_input_identity`: all sixteen reused input identities
+are checked read-only, without any solver or profiler launches.
+
+X4-7 resident wall accumulation is tested independently in
+`test_insitu_device_wall_statistics.py`. The 24-case numerical matrix combines
+AIR5/channel/y-wavy CURVE, NP=1/2 x/y/z, and the paired
+standard-device/pinned and direct-device/device-aware configurations. It checks
+CPU/GPU mean and variance (AIR5 with fixed input-derived scales and reported raw
+SI differences), raw RMS, 4 versus 3+1 exact statistical/authoritative restart,
+isolation and empty walls. Three representative two-rank memchecks are separate.
+Three NVTX sample traces and three external 20 ms resource pairs retain the
+approved 2 GiB/GPU, 4 GiB/node, 1 GiB free and 256 MiB/run limits. Sample-span
+accounting forbids 3-D/geometry/UVM D2H, but records scalar status, actual face
+payloads and one-time NVHPC symbol H2D binding separately. Deliberate archive and
+final statistical exports are outside those sample spans, not silently ignored.
+
+Set `ASTR_INSITU_WALL_STATS_MATRIX_ROOT` to the completed immutable numerical
+matrix for read-only raw/scaled per-field reports and comparison of the sixteen
+nonreacting volume-statistics checkpoint states. The explicit-shape kernel
+regression uses those same frozen inputs, compares freshly computed GPU state
+and wall statistical files exactly, and does not rerun the unchanged CPU,
+restart or OFF references. Its reference SHA is recorded with the matrix, not
+recomputed from a replacement executable. Device wall means/separation and
+CURVE streamlines were unadmitted at that stage; this numerical matrix is not the full
+two-entry/two-transport cross product or a production performance result.
+The legacy AIR5 y-slab scalar test also guards collective budget participation
+by the empty wall rank; it must not return before its peer's budget collective.
+Strict AIR5 volume statistics remain rejected until their full-node finite-mask
+download is removed and separately validated. The original host-compatible
+volume-statistics tests retain their scope; no numerical definition is changed.
+
+X4-7b resident mean rendering is separately tested in
+`test_insitu_device_wall_mean_render.py`: 48 cases cross three wall fixtures,
+NP=1/2 x/y/z, both strict entries and both face transports. It checks exact
+owned GPU mean state and independent CPU means, clocks/units, zero-area/winding
+guards, images, output isolation and 4 versus 3+1 exact continuation. Three
+zero-window cases require no mean image. Three representative two-rank memchecks,
+six transfer captures and six matched-MPI external resource/cost pairs are
+separate gates. The frozen 2 GiB/GPU, 4 GiB/node, 1 GiB free and 256 MiB/run
+budgets remain unchanged. Only sanitizer launches allow a 600 s wait; ordinary
+launches retain 300 s. This changes neither the run length nor memory limits.
+
+```bash
+python -m pytest -x -q tests/gpu_validation/test_insitu_device_wall_mean_render.py \
+  -k 'fields_images or zero_coverage'
+python -m pytest -x -q tests/gpu_validation/test_insitu_device_wall_mean_render.py \
+  -k 'memory_safety or transfer_trace or resources_and_short_cost'
+```
+
+Use the matched executable/backend environment described above. The numerical
+cases explicitly select `ASTR_INSITU_TEST_WALL_MEAN_PREFIX` in BUILD_TESTING to
+write bounded compact-field oracles. That hook is disabled in formal safety,
+trace and resource cases and is not zero-readback evidence. The mean supply
+NVTX range is `ASTR_X4_DEVICE_WALL_MEAN_SUPPLY`; scalar status, actual face
+payloads and MPI-internal staging are attributed separately from consumer and
+device display copies. Deliberate statistical/checkpoint I/O is separate.
+
+`ASTR_INSITU_WALL_MEAN_MATRIX_ROOT` selects the immutable completed 48-case
+matrix for `test_mean_partition_and_pipeline_images` without solver reruns.
+The neutral-color foreground rule also covers near-zero signed shear; it does
+not discard gray wall geometry as blank. `ASTR_INSITU_WALL_MEAN_TRACE_ROOT`
+selects the unchanged six captures for `test_mean_immutable_trace_attribution`;
+CUDA correlation/thread and MPI intervals prove the observed device-aware face
+staging, rather than assuming zero copies from ASTR counters.
+After the version-2.1 render script changes, old producer/script CRCs are not
+same-producer control-file references. Keep those receipts immutable; use current
+same-binary continuous/restart gates instead of relabeling the earlier shape-only
+regression as a current exact-control comparison. Current means are admitted only
+for the three bounded fixtures; that receipt predates the AIR5-only separation
+gate below. CURVE streamlines remain open.
+
+X4-7c `test_insitu_device_wall_separation.py` tests the original IS5 Cartesian
+AIR5 bottom-wall diagnostic from resident fields. Eight synthetic device cases
+cover nonuniform physical span and signed shear under both transports and
+NP=1/2 x/y/z; three cases reject zero weights, nonfinite shear and insufficient
+budget. The existing CPU zero-crossing/interval probe remains independent.
+Sixteen real cases cross all four topologies, both strict entries and transports,
+with CPU/GPU and same-GPU-state host/device integrals, 4 versus 3+1 exact state/
+statistics/control/CSV/image continuation and source checkpoint immutability.
+Two extra y-slab cases combine separation with resident mean images.
+The original statistics metadata index 12 records separation selection: the
+ON/OFF checker requires 1/0 there, all other bytes equal; exact restart excludes
+no metadata. The zero-inlet fixture is physically inapplicable, not a validated
+absence of separation.
+
+```bash
+python -m pytest -x -q tests/gpu_validation/test_insitu_device_wall_separation.py \
+  -k 'synthetic_device_span_profile or reduction_rejection'
+python -m pytest -x -q tests/gpu_validation/test_insitu_device_wall_separation.py \
+  -k 'actual_profile_and_exact_restart or separation_and_mean_together'
+python -m pytest -x -q tests/gpu_validation/test_insitu_device_wall_separation.py \
+  -k 'actual_profile_memcheck'
+python -m pytest -x -q tests/gpu_validation/test_insitu_device_wall_separation.py \
+  -k 'actual_profile_transfer or actual_profile_resources'
+```
+
+Select the same AIR5 executable/backend environment and
+`ASTR_INSITU_FIELDS_PROBE` from that build. Two two-rank actual memchecks, four
+CUDA/NVTX captures and four matched-MPI external 20 ms resource/cost pairs pass
+separately. Formal runs enable no field oracle. Reduction copies are isolated
+under `ASTR_X4_DEVICE_WALL_SEPARATION_REDUCE`: each nonempty y/z rank downloads
+408-byte 1-D integrals and 4-byte status per sample; empty y rank downloads none.
+Consumer D2H is bounded <=256 bytes, device display has only D2D, with no UVM
+D2H or compact host geometry/trajectory read ranges. Deliberate statistical/
+checkpoint I/O, declared faces and pixels remain separate.
+Budgets remain 2 GiB/physical GPU, 4 GiB/node, 1 GiB free and 256 MiB/run.
+Current executable SHA and all XML receipts, including the two corrected
+checker failures, are in `documents/ASTR_INSITU_X4_ACCEPTANCE.md`.
+
+X4-4a physical CURVE streamline components use
+`test_insitu_device_streamlines.py`. First build both probes through the root
+CMake in the existing CUDA/Viskores configuration (reconfigure once when adding
+the new target):
+
+```bash
+cmake -S . -B build_insitu_air5_device_render
+cmake --build build_insitu_air5_device_render --target insitu_curve_inverse_probe insitu_device_streamlines_probe -j 2
+export ASTR_INSITU_CURVE_INVERSE_PROBE="$PWD/build_insitu_air5_device_render/bin/insitu_curve_inverse_probe"
+export ASTR_INSITU_STREAMLINES_PROBE="$PWD/build_insitu_air5_device_render/bin/insitu_device_streamlines_probe"
+# Set ASTR_INSITU_DEVICE_MPI_PREFIX to this build's matching Open MPI installation.
+python -m pytest -x -q tests/gpu_validation/test_insitu_device_streamlines.py -k inverse_residual
+python -m pytest -x -q tests/gpu_validation/test_insitu_device_streamlines.py -k curve_resident
+python -m pytest -x -q tests/gpu_validation/test_insitu_device_streamlines.py -k compact_device
+```
+
+The inverse probe checks both 32^3 physical mappings without instantiating the
+full locator/integrator, so refinement defects have a short feedback loop.
+It calls the production indexing/refinement helper and downloads only 40 bytes
+of counts and 16 bytes of residuals. Increment stagnation at FP64 roundoff is
+accepted only if the physical residual and cell-containment checks pass.
+The full component probe checks a noncentral affine vector field, a constant
+physical velocity and NP=1/2 x/y/z ownership/continuation. The displaced y-face
+has an independent owner check. Source coordinate/velocity buffers and accepted
+geometry remain device-only; owner IDs have their own <=256-byte/rank/round
+ledger in addition to the existing <=2-KiB particle-state control ledger.
+The MPI control transport is host `ob1/self,tcp`, not proof of field-face
+`pinned`/`device-aware` transport. Analytical component halos do not validate
+runtime halo supply. Actual TGV, mean rendering, restart, images, resource and
+transfer gates remain separate. The full probe uses `ptxas -O1` for diagnosis;
+the production device-product optimization flags are unchanged.
+
+X4-4b owned-coordinate halo checks extend `insitu_device_velocity_probe`:
+
+```bash
+cmake --build build_insitu_air5_device_render --target insitu_device_velocity_probe insitu_device_fields_probe -j 2
+export ASTR_INSITU_VELOCITY_PROBE="$PWD/build_insitu_air5_device_render/bin/insitu_device_velocity_probe"
+python -m pytest -x -q tests/gpu_validation/test_insitu_device_velocity.py -k physical_coordinate_halo
+python -m pytest -x -q tests/gpu_validation/test_insitu_device_velocity.py -k 'not physical_coordinate_halo'
+```
+
+The coordinate scenario poisons old solver ghosts and checks all valid private
+physical-coordinate nodes on the GPU for three frames. Global physical endpoints
+do not wrap; only internal faces communicate. NP=2 pinned copies 328536 bytes
+per rank/direction over the three frames, while aware and NP=1 copy none.
+Sixteen coordinate cases and 24 unchanged velocity/Q cases pass. Aware memcheck
+must retain the selected UCX transport and the existing narrow
+`compute_sanitizer_ucx_cuda_aware.supp.xml`; without it, expected library pointer
+probes count as API errors. Pinned may disable MPI CUDA probes. Both representative
+coordinate checks pass, with the initial unsuppressed failure retained separately.
+
+`mean_streamline_render` is a default-off parser/collective option, requiring
+statistics, rendering, device processing and a strict `streamlines` product.
+The true/false collective mismatch is rejected. Its ten new checks, the full
+126-case parser suite and two new mean clocks pass. The new real-runtime matrix
+is `test_insitu_device_curve_streamlines.py`: do not run against an old `astr`
+binary, and do not count these component receipts as proof that the runtime
+matrix, independent geometry oracle or zero-readback trace has passed.
+
+The X4-4b runtime suite uses the same selected `ASTR_OUTPUT_INSITU_EXE`, matching
+`ASTR_OUTPUT_MPIEXEC` and strict Catalyst backend. The first 32 runtime cases,
+default/zero-coverage and restart identity, two two-rank memchecks and eleven
+affected old-path cases passed on the executable recorded in the acceptance
+document. New coverage metadata and the independent trace oracle must use the
+rebuilt executable, not those earlier receipts:
+
+```bash
+cmake --build build_insitu_air5_device_render --target astr -j 2
+python -m pytest -x -q tests/gpu_validation/test_insitu_device_curve_streamlines.py -k independent_reference_affine
+python -m pytest -x -q tests/gpu_validation/test_insitu_device_curve_streamlines.py -k independent_physical_trace_geometry
+python -m pytest -x -q tests/gpu_validation/test_insitu_device_curve_streamlines.py -k 'not independent and not memcheck'
+export ASTR_INSITU_X4_OBSERVE=1
+python -m pytest -x -q tests/gpu_validation/test_insitu_device_curve_trace_observation.py
+```
+
+Only the independent diagnostic sets `ASTR_INSITU_TEST_CURVE_TRACE_PREFIX` in
+a `BUILD_TESTING` executable. Its explicitly downloaded FP64 coordinates,
+velocity, five-component accepted-point records, particle IDs and connectivity
+are compared to a NumPy physical-hexahedron inverse/interpolator and CPU/GPU
+checkpoint values. Candidate selection exhaustively checks physical cell AABBs;
+the host inverse does not call the production GPU locator. Affine/shared-face
+synthetic cases check the reference first. The constant diagnostic is axis
+rotated for y/z partitions; true TGV trajectories are not tested as straight
+lines. Diagnostic file identity is compared across 3+1 continuation.
+Those runs declare `runtime_zero_readback_evidence=0` and cannot establish
+device residency. The observation suite keeps the hook OFF, disables all
+checkpoint/field output, records mean coverage, measures an unprofiled matched
+four-step pair, uses independent 20-ms resource samples and separately captures
+CUDA/NVTX/MPI with Nsight Systems. Continuation (<=2 KiB/rank/round), geometric
+owner IDs (<=256 B/rank/round), declared faces and pixels remain separate
+exceptions. Native stage resource logs alone do not establish transient peaks.
+
+The independent real oracle exposed an adaptive final-step overshoot missed by
+the constant-flow endpoint test. Rebuild all trace consumers after changing
+`insitu_rk45_device.h`: clipping only the current request is insufficient because
+the RK45 call may enlarge it. The call's maximum must also be bounded by remaining
+propagation. `insitu_device_rk45_probe` now covers this with a curved field in both
+directions, retaining the 26 original VTK single-step comparisons. Red/green
+receipts and the failed real oracle remain recorded; they are not timing runs.
+
+After rebuilding the shared trace consumers, the full CURVE runtime file passes
+57 cases, including 16 independent real geometry/field checks and two two-rank
+memchecks. The updated binary/script identities, maximum errors and immutable
+receipt are recorded in `documents/ASTR_INSITU_X4_ACCEPTANCE.md`. Formal
+observation is a separate opt-in run with diagnostic/reference I/O OFF;
+the passing diagnostic matrix alone does not establish zero geometry readback.
+Its final 32-case matrix now passes with checkpoint/field output disabled,
+including actual CUDA/NVTX/MPI attribution, external 20-ms resources and separate
+unprofiled four-step costs. Thirteen updated Cartesian/refusal and four PF/AP
+cases pass; two testing-OFF source copies actually compile AIR5 OFF/ON strict
+executables and six optional configurations pass separately. Exact receipts,
+limits, build identities and disclosed physical-RK45 cost are in the acceptance
+record. This completes bounded X4, not general CURVE or production performance.
+
+The subsequent CP cache comparison uses `run_insitu_curve_performance.py` with
+separate immutable `--baseline` and `--candidate` executables, `--mapping`
+periodic/y-wavy, NP=2 x, and at least five alternating rounds. Pass the actual
+HPC-X launcher path, not its resolved `env.sh` symlink. The first process pair
+is excluded as system warm-up; each measured four-step window still includes
+first-frame lazy initialization. `step4_output` is `insitu_sample_inclusive`,
+not the separate checkpoint/file-output hook. Keep profilers and other GPU work
+off during timing. `refresh_report` only reparses immutable logs after reporting
+corrections; it does not run the solver.
+
+The private seven-node wall-Q closure has a separate independent reference in
+`insitu_curve_boundary_reference.py`. Build `insitu_device_boundary_probe` through
+the root CMake, set `ASTR_INSITU_BOUNDARY_PROBE` and
+`ASTR_INSITU_DEVICE_MPI_PREFIX`, then run `test_insitu_device_boundary.py`.
+The new `wall-sixth`/`wall-affine` scenarios check polynomial exactness, all nine
+metric contractions, Q, physical/MPI boundaries and unchanged source arrays.
+`test_insitu_device_curve_surface.py -k wall_curve_sixth_q` checks actual 32^3
+y-wavy NP=2 x/y/z Q=0.25, independent CPU postprocessing, CPU/GPU states,
+output isolation and exact 3+1 continuation. This diagnostic explicitly exports
+bounded geometry and is not residency evidence. `-k 'memcheck and y-wavy'`
+instead disables checkpoint/reference output and checks two actual two-rank
+paths. These tests do not admit Q=0 or larger grids by themselves.
+
+`test_insitu_curve_demo.py` isolates the approved Q=0 plus instantaneous
+streamline preset (speed coloring, 1280x960, no statistics). Its 32^3 gate checks
+independent physical geometry/fields, CPU/GPU, ON/OFF and exact 3+1 restart,
+with separate memcheck and opt-in Nsys ledgers. A rank with no local streamline
+vertices must not be required to execute the final packing kernel. Pixel checks
+include the fixed upper-right color bar, not only proxy Visibility metadata.
+Set `ASTR_OUTPUT_INSITU_EXE` and the actual `ASTR_OUTPUT_MPIEXEC` path. The
+`ASTR_INSITU_CURVE_DEMO_TRACE_REUSE` selector reparses one immutable trace.
+
+The 64^3 candidate uses `-k qzero_64_reference_restart`, then memcheck, then
+`ASTR_INSITU_X4_OBSERVE=1 -k qzero_64_observation` only after numerical gates pass.
+The latter covers both mappings, entries and transports with no checkpoint or
+volume output, separate 20-ms ON/OFF memory observations and Nsys attribution.
+Approved scale budgets are 6 GiB additional/device, 16 GiB host/node, 2 GiB device
+free reserve and 2 GiB/test directory. All mesh indices use their actual spacing,
+but CURVE RK45 step lengths stay based on h=2*pi/32. The conservative 8192-byte
+per-node preflight remains; 128^3/256^3 are not yet admitted. Scale tests are not
+turbulent statistical convergence or formal multi-round performance comparisons.
+
+The inherited y-wavy dt=1e-3 produced CFL about 5.08 at 64^3. Three short
+reference/restart cases passed before the fourth was deliberately interrupted.
+The user approved dt=2e-5 with measured CFL<=0.5 for new scale tests. They now
+use incremental full-precision log checks, reject NaN/missing/out-of-sequence
+records and terminate the local process group when an excess becomes visible.
+This is an external log monitor, not a solver-synchronous pre-step guard.
+Historical interrupted runs and temporary skips are not scale acceptance.
+
+Current CP scale tests use `-k qzero_scale_reference_restart` with explicit
+64/128/256 selectors. The 64^3/128^3 numerical, exact continuation, sanitizer,
+resource/transfer and half-step diagnostic receipts are in plan section 5.5.
+The 256^3 NP=2 x-only candidate builds, but its first matrix was interrupted
+for a Git commit and remains unadmitted. Approved disk budgets are now
+192 GiB/group, 16 GiB/numerical run and 4 GiB/image-only run, with unchanged
+6 GiB/device, 16 GiB/node and 2 GiB free-memory gates. Failed evidence stays.
+`run_insitu_curve_scale_performance.py` prepares five matched four-step rounds
+for all four entry/transport combinations, excluding one process warm-up each.
+Its optional 100-step runs output both products every step and collect resource
+samples separately from the clean short timing rounds. Four report/schedule
+control tests pass; the actual scale timing and 100-step runs have not started.

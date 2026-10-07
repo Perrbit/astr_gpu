@@ -36,15 +36,15 @@ def arguments(output, backend, axis):
 def reference(case, step):
     """Periodic six-point difference of canonical q, contracted with all nine metrics."""
     with h5py.File(case/f'outdat/new/checkpoints/step{step:012d}/state.h5') as state:
-        rho = state['q0001'][:32,:32,:32]
-        velocity = np.stack([state[f'q{c:04d}'][:32,:32,:32]/rho for c in (2,3,4)], axis=-1)
+        rho = state['q0001'][:-1,:-1,:-1]
+        velocity = np.stack([state[f'q{c:04d}'][:-1,:-1,:-1]/rho for c in (2,3,4)], axis=-1)
     gradient = np.zeros(velocity.shape+(3,))
     with h5py.File(case/'outdat/new/resources/geometry.h5') as geometry:
         for computational, axis in enumerate((2,1,0)):
             directional = sum(w*(np.roll(velocity,-n,axis=axis)-np.roll(velocity,n,axis=axis))
                               for n,w in ((1,3/4),(2,-3/20),(3,1/60)))
             for physical in range(3):
-                metric = geometry[f'q{5+computational+3*physical:04d}'][:32,:32,:32]
+                metric = geometry[f'q{5+computational+3*physical:04d}'][:-1,:-1,:-1]
                 assert np.isfinite(metric).all()
                 gradient[..., :, physical] += directional*metric[..., None]
     values = [gradient[..., c,d] for d in range(3) for c in range(3)]

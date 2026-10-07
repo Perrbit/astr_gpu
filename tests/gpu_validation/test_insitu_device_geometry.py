@@ -82,3 +82,40 @@ def test_device_surface_view_rejects_invalid_gpu_data(fault, expected, tmp_path)
     assert result.returncode != 0
     assert expected in result.stdout+result.stderr
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize('empty', [False, True])
+def test_curve_contour_empty_and_device_only_views(empty, tmp_path):
+    prefix = os.environ.get('ASTR_INSITU_DEVICE_MPI_PREFIX')
+    assert prefix, 'Set ASTR_INSITU_DEVICE_MPI_PREFIX'
+    reference = None
+    for ranks, axis in ((1, 0), (2, 0), (2, 1), (2, 2)):
+        result = subprocess.run([str(Path(prefix)/'bin/mpirun'), '--prefix', prefix,
+            '--mca', 'pml', 'ob1', '--mca', 'btl', 'self,tcp', '--mca', 'osc', 'pt2pt',
+            '--mca', 'coll_hcoll_enable', '0', '--mca', 'coll_ucc_enable', '0',
+            '--mca', 'opal_cuda_support', '0', '-np', str(ranks), str(BIN), str(axis),
+            'curve-empty' if empty else 'curve', 'device-view'], cwd=tmp_path,
+            capture_output=True, text=True, timeout=120)
+        assert result.returncode == 0, result.stdout+result.stderr
+        fields = dict(re.findall(r'(max_error|display_error|source_errors|surface_cells)=([^\s]+)', result.stdout))
+        assert float(fields['max_error']) <= 2e-10 and float(fields['display_error']) == 0.
+        assert int(fields['source_errors']) == 0
+        assert (int(fields['surface_cells']) == 0) == empty
+        if reference is None:
+            reference = fields['surface_cells']
+        assert fields['surface_cells'] == reference
+        assert result.stdout.count('geometry_host_bytes=0') == ranks
+    assert not list(tmp_path.iterdir())
+
+
+def test_curve_nodal_threshold_rejects_collapsed_triangles(tmp_path):
+    prefix = os.environ.get('ASTR_INSITU_DEVICE_MPI_PREFIX')
+    assert prefix, 'Set ASTR_INSITU_DEVICE_MPI_PREFIX'
+    result = subprocess.run([str(Path(prefix)/'bin/mpirun'), '--prefix', prefix,
+        '--mca', 'pml', 'ob1', '--mca', 'btl', 'self,tcp', '--mca', 'osc', 'pt2pt',
+        '--mca', 'coll_hcoll_enable', '0', '--mca', 'coll_ucc_enable', '0',
+        '--mca', 'opal_cuda_support', '0', '-np', '1', str(BIN), '0', 'curve-nodal', 'device-view'],
+        cwd=tmp_path, capture_output=True, text=True, timeout=120)
+    assert result.returncode != 0
+    assert 'CURVE contour has nonfinite or zero-area triangles' in result.stdout+result.stderr
+    assert not list(tmp_path.iterdir())

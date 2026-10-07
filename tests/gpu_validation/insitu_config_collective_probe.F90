@@ -18,6 +18,8 @@ program insitu_config_collective_probe
     write(*,'(A,I0,2A)') 'REJECT rank ',rank,': ',trim(message)
   else
     write(*,'(A,I0)') 'PASS collective rank ',rank
+    if(options%slice_definition=='plane') write(*,'(A,I0,6(1X,ES25.17))') &
+      'PLANE rank ',rank,options%slice_origin,options%slice_normal
   endif
   call MPI_Finalize(ierr)
   if(.not.ok) stop 1

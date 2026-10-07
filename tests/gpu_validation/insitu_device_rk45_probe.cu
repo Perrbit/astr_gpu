@@ -50,6 +50,26 @@ __global__ void run_step(Result* result, int count)
     result[i].next, 0., result[i].step, result[i].actual, .01*h, .5*h, 1e-8, result[i].error);
 }
 
+struct InteriorOwner {
+  __host__ __device__ bool operator()(const double*) const {return true;}
+};
+struct LengthWriter {
+  double* largest;
+  __host__ __device__ void operator()(int,const double*,double length,double) const {
+    *largest=std::fmax(*largest,length);
+  }
+};
+__global__ void run_length_limit(astr_insitu::TraceState* state,double* largest)
+{
+  const int i=threadIdx.x;
+  if(i>=4) return;
+  const double h=2.*std::acos(-1.)/32.;
+  state[i]={{1.,.1*(i/2),0.},i%2?-.02:.02,std::acos(-1.)-.06,0.,0,astr_insitu::TraceActive};
+  largest[i]=state[i].length;
+  astr_insitu::trace_segment(Field{1},InteriorOwner{},LengthWriter{largest+i},state[i],
+    8,.01*h,.5*h,1e-8,std::acos(-1.),100);
+}
+
 int main()
 {
   constexpr int count = 32;
@@ -96,5 +116,19 @@ int main()
   }
   if (cudaFree(results) != cudaSuccess) return 5;
   std::printf("GPU RK45 versus original VTK matched=%d max_error=%.17g\n", matches, maximum);
+  astr_insitu::TraceState* states=nullptr;
+  double* lengths=nullptr;
+  if(cudaMallocManaged(&states,4*sizeof(*states))!=cudaSuccess ||
+     cudaMallocManaged(&lengths,4*sizeof(*lengths))!=cudaSuccess) return 9;
+  run_length_limit<<<1,4>>>(states,lengths);
+  if(cudaDeviceSynchronize()!=cudaSuccess) return 10;
+  double overshoot=0.;
+  for(int i=0;i<4;++i) {
+    overshoot=std::fmax(overshoot,lengths[i]-std::acos(-1.));
+    if(states[i].status!=astr_insitu::TraceLength) return 11;
+  }
+  cudaFree(states);cudaFree(lengths);
+  std::printf("GPU RK45 adaptive terminal overshoot=%.17g\n",overshoot);
+  if(!std::isfinite(overshoot) || overshoot>2e-10) return 12;
   return std::isfinite(maximum) && maximum <= 2e-10 ? 0 : 6;
 }

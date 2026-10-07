@@ -161,9 +161,10 @@ ASTR_RK45_EXEC int trace_segment(const Evaluator& evaluate, const Owner& owner,
     if (!owner(state.point)) { state.status=TraceTransfer; break; }
     double request=state.suggested, bound=maximum;
     const double remaining=target-state.length;
+    // Adaptation may enlarge the current request: cap the whole call, not only its input.
+    if (bound>remaining) bound=remaining;
     if (std::abs(request)>remaining) {
       request=std::copysign(remaining,request);
-      bound=remaining;
     }
     double next[3]={state.point[0],state.point[1],state.point[2]},actual=0.;
     const int status=rk45_step(evaluate,state.point,next,0.,request,actual,

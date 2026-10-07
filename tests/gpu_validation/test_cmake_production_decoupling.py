@@ -2,6 +2,7 @@
 
 import os
 import hashlib
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -24,8 +25,13 @@ PENDING_PRODUCTION_INPUTS = (
     "src/insitu_resource_observer.cpp",
     "scripts/insitu/tgv_pipeline.py", "scripts/insitu/tgv_streamlines.py",
     "scripts/insitu/egl_identity.py",
+    "scripts/insitu/image_publication.py", "scripts/insitu/device_render_pipeline.py",
     "src/adaptive_output.F90", "src/insitu_product_schedule.F90",
     "src/insitu_product_dispatch.h", "scripts/insitu/product_dispatch.py",
+    "src_gpu/insitu_wall_fields_gpu.cuf", "src_gpu/insitu_device_wall.h",
+    "src_gpu/insitu_device_plane.h", "src_gpu/insitu_device_structured.h",
+    "src_gpu/insitu_device_curve_trace.h",
+    "src_gpu/insitu_plane_products.cu",
 )
 COMPILER = os.environ.get("ASTR_TEST_CMAKE_COMPILER")
 pytestmark = pytest.mark.skipif(
@@ -119,12 +125,55 @@ def test_native_catalyst_without_test_sources(source_copy, tmp_path, cuda):
     assert "insitu_device_map_probe.dir" not in targets
     rules = (build / "src/CMakeFiles/astr_catalyst_adapter.dir/build.make").read_text()
     assert "insitu_mesh_adapter.cpp" in rules
-    assert "/tests/" not in rules
+    assert str(source_copy / "tests") not in rules
     assert ("insitu_device_map.cpp" in rules) == (cuda == "ON")
     install = (build / "src/cmake_install.cmake").read_text()
     for name in ("tgv_pipeline.py", "tgv_streamlines.py", "egl_identity.py"):
         assert name in install
     assert "insitu_allocation_fault" not in install
+
+
+@pytest.mark.parametrize('air5', ('OFF', 'ON'))
+def test_strict_device_products_without_test_sources(source_copy, tmp_path, air5):
+    cache_path = os.environ.get('ASTR_TEST_RESIDENT_CMAKE_CACHE')
+    if not cache_path:
+        pytest.skip('Select the validated strict-render dependency CMake cache')
+    cache = {}
+    for line in Path(cache_path).read_text().splitlines():
+        match = re.match(r'^([^#/][^:]*):[^=]+=(.*)$', line)
+        if match:
+            cache[match[1]] = match[2]
+    keys = ('CMAKE_CXX_COMPILER', 'CMAKE_CUDA_COMPILER', 'CMAKE_CUDA_HOST_COMPILER',
+            'Viskores_DIR', 'ParaView_DIR', 'VTK_DIR', 'catalyst_DIR',
+            'ASTR_INSITU_FLYING_EDGES_SOURCE', 'ASTR_NVML_INCLUDE_DIR')
+    assert all(cache.get(key) for key in keys), 'Incomplete validated dependency cache'
+    build = tmp_path / 'build'
+    result = configure(source_copy, build, '-DBUILD_TESTING=OFF', '-DASTR_WITH_CUDA=ON',
+        '-DASTR_WITH_CATALYST=ON', '-DASTR_WITH_INSITU_DEVICE=ON',
+        '-DASTR_WITH_INSITU_DEVICE_RENDERING=ON',
+        '-DASTR_WITH_AIR5_CHEMISTRY='+air5,
+        '-DCMAKE_CUDA_FLAGS='+cache.get('CMAKE_CUDA_FLAGS', ''), *[f'-D{key}={cache[key]}' for key in keys])
+    assert result.returncode == 0, result.stdout
+    targets = (build / 'CMakeFiles/TargetDirectories.txt').read_text()
+    assert 'astr_insitu_device_products.dir' in targets and 'probe.dir' not in targets
+    rules = (build / 'src/CMakeFiles/astr_insitu_device_products.dir/build.make').read_text()
+    assert 'insitu_plane_products.cu' in rules and str(source_copy / 'tests') not in rules
+    flags = (build / 'src/CMakeFiles/astr_insitu_device_products.dir/flags.make').read_text()
+    assert 'ASTR_INSITU_DEVICE_RENDERING' in flags and 'ASTR_BUILD_TESTING' not in flags
+    assert 'ASTR_BUILD_TESTING' not in rules
+    assert '--fmad=false' in flags
+    if os.environ.get('ASTR_TEST_CMAKE_BUILD') == '1':
+        result = subprocess.run(['cmake', '--build', str(build), '--target', 'astr', '-j', '2'],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        assert result.returncode == 0, result.stdout
+        assert (build / 'bin/astr').is_file()
+    prefix = tmp_path / 'installed'
+    installed = subprocess.run(['cmake', '--install', str(build), '--component', 'InsituTools',
+        '--prefix', str(prefix)], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    assert installed.returncode == 0, installed.stdout
+    for name in ('tgv_pipeline.py', 'tgv_streamlines.py', 'egl_identity.py',
+                 'image_publication.py', 'product_dispatch.py', 'device_render_pipeline.py'):
+        assert (prefix / 'share/astr/insitu' / name).read_bytes() == (ROOT / 'scripts/insitu' / name).read_bytes()
 
 
 @pytest.mark.parametrize("cuda", ["OFF", "ON"])

@@ -28,6 +28,13 @@ __host__ __device__ viskores::Vec3f value(double x,double y,double z) {
 __host__ __device__ double q_value(double x,double y,double z) {
   return (sin(x)*sin(x)*sin(y)*sin(y)-cos(x)*cos(x)*cos(y)*cos(y))*cos(z)*cos(z);
 }
+__host__ __device__ viskores::Vec3f mapped_point(double x,double y,double z) {
+  return viskores::Vec3f(x+.15*sin(x)*sin(y),y+.15*sin(y)*sin(z),z+.15*sin(z)*sin(x));
+}
+__global__ void generate_coordinates(viskores::Vec3f* xyz,int nx,int ny,int nz,int ox,int oy,int oz,double h) {
+  const int i=blockIdx.x*blockDim.x+threadIdx.x;
+  if(i<nx*ny*nz) xyz[i]=mapped_point((i%nx+ox)*h,(i/nx%ny+oy)*h,(i/(nx*ny)+oz)*h);
+}
 __global__ void generate(viskores::Vec3f* velocity,Diagnostics* diagnostics,int nx,int ny,int nz,
                          int ox,int oy,int oz,double h) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
@@ -47,13 +54,16 @@ __global__ void verify_source(const viskores::Vec3f* velocity,const Diagnostics*
 }
 struct Allocations {
   viskores::Vec3f* velocity=nullptr;
+  viskores::Vec3f* coordinates=nullptr;
   Diagnostics* diagnostics=nullptr;
-  explicit Allocations(int n) {
+  explicit Allocations(int n,bool curve=false) {
     if(cudaMalloc(&velocity,n*sizeof(*velocity))!=cudaSuccess ||
        cudaMalloc(&diagnostics,n*sizeof(*diagnostics))!=cudaSuccess)
       throw std::runtime_error("geometry probe allocation failed");
+    if(curve && cudaMalloc(&coordinates,n*sizeof(*coordinates))!=cudaSuccess)
+      throw std::runtime_error("curve geometry probe allocation failed");
   }
-  ~Allocations() {if(velocity) cudaFree(velocity); if(diagnostics) cudaFree(diagnostics);}
+  ~Allocations() {if(velocity) cudaFree(velocity); if(diagnostics) cudaFree(diagnostics); if(coordinates) cudaFree(coordinates);}
 };
 
 // This independent probe oracle interpolates only final product coordinates.
@@ -74,6 +84,21 @@ __host__ __device__ viskores::Vec3f interpolated(const viskores::Vec3f& p,double
   return v;
 }
 
+__host__ __device__ viskores::Vec3f interpolated_geometry(const viskores::Vec3f& p,double h) {
+  int base[3];double fraction[3];
+  for(int d=0;d<3;++d) {
+    base[d]=std::max(0,std::min(31,int(std::floor(p[d]/h))));
+    fraction[d]=p[d]/h-base[d];
+  }
+  viskores::Vec3f xyz(0.);
+  for(int z=0;z<2;++z) for(int y=0;y<2;++y) for(int x=0;x<2;++x) {
+    const double weight=(x?fraction[0]:1.-fraction[0])*(y?fraction[1]:1.-fraction[1])*
+      (z?fraction[2]:1.-fraction[2]);
+    xyz+=weight*mapped_point((base[0]+x)*h,(base[1]+y)*h,(base[2]+z)*h);
+  }
+  return xyz;
+}
+
 struct Measures { double error=0.,area=0.; long long cells=0,points=0; };
 struct SurfaceAudit {double error=0.,display_error=0.;};
 __global__ void corrupt_surface(viskores::Vec3f* coordinates,viskores::Id* connectivity,bool nonfinite) {
@@ -84,15 +109,19 @@ __device__ void maximum_error(double* result,double error) {
   if(!isfinite(error)) error=CUDART_INF;
   atomicMax(reinterpret_cast<unsigned long long*>(result),__double_as_longlong(error));
 }
-__global__ void inspect_surface(astr_insitu::DeviceGeometryView view,double h,double iso,SurfaceAudit* result) {
+__global__ void inspect_surface(astr_insitu::DeviceGeometryView view,double h,double iso,SurfaceAudit* result,
+    const viskores::Vec3f* computational) {
   const viskores::Id i=blockIdx.x*blockDim.x+threadIdx.x;
   if(i>=view.points) return;
   double q=0.;
-  const auto expected=interpolated(view.coordinates[i],h,true,q);
+  const auto sample=computational?computational[i]:view.coordinates[i];
+  const auto expected=interpolated(sample,h,true,q);
+  const auto expected_xyz=computational?interpolated_geometry(sample,h):sample;
   double error=fmax(fabs(q-iso),fabs(view.q[i]-iso));
   double display_error=0.;
   for(int d=0;d<3;++d) {
     error=fmax(error,fabs(view.velocity[i][d]-expected[d]));
+    error=fmax(error,fabs(view.coordinates[i][d]-expected_xyz[d]));
     display_error=fmax(display_error,fabs(double(view.display_coordinates[i][d])-
       double(static_cast<float>(view.coordinates[i][d]))));
   }
@@ -108,12 +137,13 @@ __global__ void inspect_display_indices(astr_insitu::DeviceGeometryView view,Sur
   if(i<3*view.cells && view.display_connectivity[i]!=static_cast<viskores::UInt32>(view.connectivity[i]))
     maximum_error(&result->display_error,1.);
 }
-SurfaceAudit inspect_device_view(const astr_insitu::DeviceGeometryView& view,double h,double iso) {
+SurfaceAudit inspect_device_view(const astr_insitu::DeviceGeometryView& view,double h,double iso,
+    const viskores::Vec3f* computational=nullptr) {
   SurfaceAudit result,*device=nullptr;
   if(!view.points) return result;
   if(cudaMalloc(&device,sizeof(result))!=cudaSuccess || cudaMemset(device,0,sizeof(result))!=cudaSuccess)
     throw std::runtime_error("Device view audit allocation failed");
-  inspect_surface<<<(view.points+255)/256,256>>>(view,h,iso,device);
+  inspect_surface<<<(view.points+255)/256,256>>>(view,h,iso,device,computational);
   astr_insitu::synchronize_device_stage("inspect_surface");
   inspect_display_indices<<<(3*view.cells+255)/256,256>>>(view,device);
   astr_insitu::synchronize_device_stage("inspect_display_indices");
@@ -187,7 +217,7 @@ void roundtrip(const viskores::cont::DataSet& data,bool surface,const std::strin
   }
 }
 
-Measures inspect(const viskores::cont::DataSet& data,bool surface,double iso) {
+Measures inspect(const viskores::cont::DataSet& data,bool surface,double iso,bool curve=false) {
   Measures m;
   if(!data.GetNumberOfCoordinateSystems()) return m;
   m.points=data.GetCoordinateSystem().GetNumberOfPoints();
@@ -201,12 +231,18 @@ Measures inspect(const viskores::cont::DataSet& data,bool surface,double iso) {
   if(surface) {astr_insitu::require_device_only(coords);}
   astr_insitu::require_device_only(vectors); astr_insitu::require_device_only(u);
   const auto p=coords.ReadPortal(); const auto v=vectors.ReadPortal(); const auto color=u.ReadPortal();
+  viskores::cont::ArrayHandle<viskores::Vec3f> computational;
+  if(curve) computational=data.GetPointField("_astr_computational_xyz").GetData().AsArrayHandle<decltype(computational)>();
+  else computational=coords;
+  const auto sample=computational.ReadPortal();
   const double h=2.*std::acos(-1.)/32.;
   for(viskores::Id i=0;i<m.points;++i) {
-    double q=0.; const auto expected=interpolated(p.Get(i),h,surface,q);
+    double q=0.; const auto expected=interpolated(sample.Get(i),h,surface,q);
+    const auto expected_xyz=curve?interpolated_geometry(sample.Get(i),h):p.Get(i);
     for(int d=0;d<3;++d) {
       if(!std::isfinite(p.Get(i)[d]) || !std::isfinite(v.Get(i)[d])) throw std::runtime_error("nonfinite product");
       m.error=std::max(m.error,std::abs(v.Get(i)[d]-expected[d]));
+      m.error=std::max(m.error,std::abs(p.Get(i)[d]-expected_xyz[d]));
     }
     m.error=std::max(m.error,std::abs(color.Get(i)-v.Get(i)[0]));
     m.error=std::max(m.error,surface?std::abs(q-iso):std::abs(p.Get(i)[2]-4*h));
@@ -230,7 +266,9 @@ Measures inspect(const viskores::cont::DataSet& data,bool surface,double iso) {
 int run(int argc,char** argv,int rank,int ranks) {
   if(ranks!=1 && ranks!=2) throw std::runtime_error("NP=1/2 only");
   int axis=argc>1?std::atoi(argv[1]):0;
-  bool empty=argc>2 && std::string(argv[2])=="empty";
+  const std::string selected=argc>2?argv[2]:"surface";
+  const bool curve=selected=="curve" || selected=="curve-empty" || selected=="curve-nodal";
+  bool empty=selected=="empty" || selected=="curve-empty";
   const std::string mode=argc>3?argv[3]:"";
   const bool device_view=mode.rfind("device-view",0)==0;
   if(device_view && mode!="device-view" && mode!="device-view-nonfinite" && mode!="device-view-bad-index")
@@ -243,13 +281,19 @@ int run(int argc,char** argv,int rank,int ranks) {
   viskores::Id3 dims(33,33,33),offset(0,0,0);
   dims[axis]=32/ranks+1; offset[axis]=rank*32/ranks;
   int nodes=dims[0]*dims[1]*dims[2];
-  Allocations a(nodes);
-  double h=2.*std::acos(-1.)/32.,iso=empty?10.:.25;
+  Allocations a(nodes,curve);
+  // Keep the nodal-threshold case as an explicit degeneracy rejection. The
+  // positive CURVE fixture uses a nonnodal threshold; runtime Q stays at 0.25.
+  double h=2.*std::acos(-1.)/32.,iso=empty?10.:(curve && selected!="curve-nodal"?.251:.25);
   generate<<<(nodes+255)/256,256>>>(a.velocity,a.diagnostics,dims[0],dims[1],dims[2],offset[0],offset[1],offset[2],h);
   if(cudaDeviceSynchronize()!=cudaSuccess) throw std::runtime_error("field generation failed");
+  if(curve) {
+    generate_coordinates<<<(nodes+255)/256,256>>>(a.coordinates,dims[0],dims[1],dims[2],offset[0],offset[1],offset[2],h);
+    astr_insitu::synchronize_device_stage("generate_coordinates");
+  }
   astr_insitu::DeviceGeometryAudit audit;
   nvtxRangePushA("ASTR_IS8_DEVICE_GEOMETRY_EXTRACTION");
-  auto products=astr_insitu::extract_tgv_geometry(a.velocity,a.diagnostics,dims,offset,!device_view,true,iso,&audit);
+  auto products=astr_insitu::extract_tgv_geometry(a.velocity,a.diagnostics,dims,offset,!device_view && !curve,true,iso,&audit,32,a.coordinates);
   nvtxRangePop();
   std::printf("IS8_GEOMETRY_INPUT rank=%d q=0x%llx u=0x%llx scalar_bytes=%llu velocity=0x%llx velocity_bytes=%llu diagnostics=0x%llx diagnostics_bytes=%llu\n",
     rank,static_cast<unsigned long long>(audit.q),static_cast<unsigned long long>(audit.u),
@@ -275,7 +319,15 @@ int run(int argc,char** argv,int rank,int ranks) {
     }
     astr_insitu::DeviceGeometryOwner owner(products.surface,12,.012);
     const auto& view=owner.get();
-    const auto measured=inspect_device_view(view,h,iso);
+    viskores::cont::Token token;
+    const viskores::Vec3f* computational=nullptr;
+    if(curve && view.points) {
+      const auto field=products.surface.GetPointField("_astr_computational_xyz").GetData().AsArrayHandle<
+        viskores::cont::ArrayHandle<viskores::Vec3f>>();
+      computational=static_cast<const viskores::Vec3f*>(field.GetBuffers()[0].ReadPointerDevice(
+        viskores::cont::DeviceAdapterTagCuda{},token));
+    }
+    const auto measured=inspect_device_view(view,h,iso,computational);
     surface.error=measured.error;surface.points=view.points;surface.cells=view.cells;
     display_error=measured.display_error;
     std::printf("IS8_DEVICE_SURFACE_VIEW rank=%d device=%d step=%d time=%.17g points=%lld triangles=%lld "
@@ -285,10 +337,11 @@ int run(int argc,char** argv,int rank,int ranks) {
     nvtxRangePop();
   } else {
     nvtxRangePushA("ASTR_IS8_COMPACT_GEOMETRY_READ");
-    slice=inspect(products.slice,false,iso);surface=inspect(products.surface,true,iso);
+    if(!curve) slice=inspect(products.slice,false,iso);
+    surface=inspect(products.surface,true,iso,curve);
     if(argc>3) {
       const std::string prefix=argv[3];
-      roundtrip(products.slice,false,prefix+".rank"+std::to_string(rank)+".slice.vtp");
+      if(!curve) roundtrip(products.slice,false,prefix+".rank"+std::to_string(rank)+".slice.vtp");
       roundtrip(products.surface,true,prefix+".rank"+std::to_string(rank)+".surface.vtp");
       std::printf("IS8_GEOMETRY_ROUNDTRIP rank=%d exact=1\n",rank);
     }
@@ -309,14 +362,16 @@ int run(int argc,char** argv,int rank,int ranks) {
     throw std::runtime_error("source check failed");
   cudaFree(bad);
   int source_total=0; MPI_Allreduce(&source_errors,&source_total,1,MPI_INT,MPI_SUM,MPI_COMM_WORLD);
-  if(!rank) std::printf("IS8 CUDA geometry axis=%d NP=%d empty=%d max_error=%.17g slice_area=%.17g surface_area=%.17g slice_cells=%lld surface_cells=%lld slice_points=%lld surface_points=%lld input_host_mirror=0\n",
-    axis,ranks,empty,global[0],global[1],global[2],totals[0],totals[1],totals[2],totals[3]);
+  if(!rank) std::printf("IS8 CUDA geometry axis=%d NP=%d empty=%d curve=%d max_error=%.17g slice_area=%.17g surface_area=%.17g slice_cells=%lld surface_cells=%lld slice_points=%lld surface_points=%lld input_host_mirror=0\n",
+    axis,ranks,empty,curve,global[0],global[1],global[2],totals[0],totals[1],totals[2],totals[3]);
   if(!rank) std::printf("source_errors=%d\n",source_total);
   if(device_view) {
     if(!rank) std::printf("display_error=%.17g\n",global_display_error);
     return source_total==0 && std::isfinite(global[0]) && global[0]<=2e-10 &&
       global_display_error==0. && (empty?totals[1]==0:totals[1]>0)?0:2;
   }
+  if(curve) return source_total==0 && std::isfinite(global[0]) && global[0]<=2e-10 &&
+    totals[0]==0 && (empty?totals[1]==0:totals[1]>0) ? 0:2;
   return source_total==0 && std::isfinite(global[0]) && global[0]<=2e-10 && totals[0]==1024 &&
     std::abs(global[1]-4*std::acos(-1.)*std::acos(-1.))<=2e-10 &&
     (empty?totals[1]==0:totals[1]>0) ? 0:2;

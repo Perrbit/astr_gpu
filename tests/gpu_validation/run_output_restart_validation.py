@@ -58,26 +58,45 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
              legacy_restart=False, legacy_output=False, no_field_io=False, grid=None,adaptive_config=None,tgv_reynolds=None,
              resident_audit=False, pixel_audit=False,
              test_fault=None, failure_after_start=False, tgv_mapping=None, insitu_timing=False,
-             device_sample_transport=None, postprocess_transport=None, nsys_trace=False):
+             device_sample_transport=None, postprocess_transport=None, nsys_trace=False, plane_oracle=False,
+             checkpoint_enabled=None, curve_surface_oracle=False, wall_mean_oracle=False, curve_trace_oracle=False,
+             ncu_kernel=None, curve_trace_step_scale=None):
+    if ncu_kernel is not None and (not ncu_kernel or backend != 'gpu' or ranks != 1 or
+            nsys_trace or memcheck or monitor_resources or reject):
+        raise ValueError('Kernel profiling requires a separate successful NP=1 GPU run')
     if failure_after_start and not reject:
         raise ValueError('post-start failure checks require an expected rejection')
+    if checkpoint_enabled is not None and type(checkpoint_enabled) is not bool:
+        raise ValueError('checkpoint_enabled must be an explicit boolean')
+    if checkpoint_enabled is False and (restore is not None or args.initial_restart):
+        raise ValueError('checkpoint-free observation cannot request restart')
     timeout=getattr(args,'runtime_timeout_seconds',180)
     if timeout<=0:
         raise ValueError('test runtime timeout must be positive')
     directory_budget = getattr(args, 'directory_budget_bytes', 64 * 1024**2)
     if directory_budget <= 0:
         raise ValueError('test directory budget must be positive')
+    output_host_budget = getattr(args, 'output_host_budget_bytes', 64 * 1024**2)
+    if type(output_host_budget) is not int or output_host_budget < buffer_bytes:
+        raise ValueError('output host budget must contain the requested packing buffer')
     if grid is not None and (args.case != 'tgv' or args.initial_dimension != 0):
         raise ValueError('explicit validation grid requires internally initialized TGV')
     if tgv_mapping is not None and (args.case != 'tgv' or args.initial_dimension != 0 or
-                                   grid != '32,32,32' or tgv_mapping not in ('periodic','y-wavy')):
-        raise ValueError('IS6 CURVE fixture requires internally initialized 32^3 TGV')
+                                   grid not in ('32,32,32', '64,64,64', '128,128,128', '256,256,256') or
+                                   tgv_mapping not in ('periodic','y-wavy')):
+        raise ValueError('CURVE fixture requires internally initialized 32^3, 64^3, 128^3 or 256^3 TGV')
     case = args.output / f"{backend}_np{ranks}_{name}"
     channel = args.case == "channel"
     dynamic = args.case == "dynamic"
     curve = args.case in ("curve", "dynamic")
     input_name = "input.flatplate" if curve else ("input.chl" if channel else "input.tgv")
     dt = 6e-6 if dynamic else (1e-5 if curve else 1e-3)
+    scale_dt = getattr(args, 'scale_timestep', None)
+    cfl_limit = getattr(args, 'maximum_cfl', None)
+    if scale_dt is not None:
+        if tgv_mapping is None or not np.isfinite(scale_dt) or scale_dt <= 0 or cfl_limit is None:
+            raise ValueError('Scale timestep override requires CURVE TGV and an explicit CFL gate')
+        dt = scale_dt
     if curve:
         subprocess.run([
             sys.executable, str(root / "tests/gpu_validation/prepare_s1_flatplate_case.py"),
@@ -124,7 +143,8 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         "--dst-case", str(case), "--input-name", input_name,
         "--homogeneous", "t,f,t" if channel else "t,t,t",
         "--use-gpu", "t" if backend == "gpu" else "f", "--grid", grid or "16,16,16",
-        "--maxstep", str(steps - 1), "--feqchkpt", "1", "--deltat", "1.d-3",
+        "--maxstep", str(steps - 1), "--feqchkpt", "1", "--deltat", str(dt),
+        *(["--feqlist", "1"] if scale_dt is not None else []),
         "--lfilter", "t" if lfilter else "f", "--diffterm", "t", "--scheme", "643e"], check=True)
     if tgv_reynolds is not None:
         if args.case!='tgv' or args.initial_dimension!=0 or not np.isfinite(tgv_reynolds) or tgv_reynolds<=0:
@@ -198,14 +218,17 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
     if interval is None:
         interval = (args.restart_step if enabled else 1000000000) if args.mode == "steps" else (4*dt if enabled else 1.0)
     config = case / "datin/input.output"
+    write_checkpoint = (enabled or args.statistics or args.legacy_statistics or args.case != 'tgv' or args.initial_dimension)
+    if checkpoint_enabled is not None:
+        write_checkpoint = checkpoint_enabled
     config.write_text(f"""&output
  directory='outdat/new', restore_directory='{restore or ''}',
  restart_output='{'override' if override else 'saved'}',
- host_budget_bytes=67108864,device_budget_bytes={device_budget_bytes},buffer_bytes={buffer_bytes}
+ host_budget_bytes={output_host_budget},device_budget_bytes={device_budget_bytes},buffer_bytes={buffer_bytes}
  device_reserve_bytes={device_reserve_bytes}
 /
 &checkpoint
-        enabled={'.true.' if enabled or args.statistics or args.legacy_statistics or args.case != 'tgv' or args.initial_dimension else '.false.'},mode='{args.mode}',
+        enabled={'.true.' if write_checkpoint else '.false.'},mode='{args.mode}',
  interval_steps={interval if args.mode == 'steps' else 0},
  interval_time={interval if args.mode == 'time' else 0},keep={checkpoint_keep},
  initial_frame={'.true.' if args.initial_restart else '.false.'}
@@ -251,6 +274,35 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         env['ASTR_INSITU_RESIDENT_AUDIT']='1'
     if pixel_audit:
         env['ASTR_VTK_PIXEL_AUDIT']='1'
+    env.pop('ASTR_INSITU_TEST_PLANE_PREFIX',None)
+    env.pop('ASTR_INSITU_TEST_CURVE_Q_PREFIX',None)
+    env.pop('ASTR_INSITU_TEST_CURVE_TRACE_PREFIX',None)
+    env.pop('ASTR_INSITU_TEST_CURVE_STEP_SCALE',None)
+    env.pop('ASTR_INSITU_TEST_WALL_MEAN_PREFIX',None)
+    if wall_mean_oracle:
+        if insitu_config is None or 'wall_mean_render=t' not in insitu_config or nsys_trace or monitor_resources:
+            raise ValueError('wall mean oracle requires explicit means, separate from transfer/resource gates')
+        env['ASTR_INSITU_TEST_WALL_MEAN_PREFIX']='outdat/render/wall_mean_oracle'
+    if curve_surface_oracle:
+        if tgv_mapping not in ('periodic', 'y-wavy') or insitu_config is None or not any(
+                f"products='{profile}'" in insitu_config for profile in ('q_surface', 'curve_demo')):
+            raise ValueError('CURVE Q oracle requires an admitted physical contour configuration')
+        env['ASTR_INSITU_TEST_CURVE_Q_PREFIX']='outdat/render/curve_q_oracle'
+    if curve_trace_oracle:
+        if tgv_mapping is None or insitu_config is None or not any(
+                f"products='{p}'" in insitu_config for p in ('streamlines','curve_demo')) or \
+                nsys_trace or monitor_resources:
+            raise ValueError('CURVE trace oracle requires explicit physical streamlines, separate from transfer/resource gates')
+        env['ASTR_INSITU_TEST_CURVE_TRACE_PREFIX']='outdat/render/curve_trace_oracle'
+    if curve_trace_step_scale is not None:
+        if curve_trace_step_scale not in (1.,.5) or not curve_trace_oracle or checkpoint_enabled is not False or \
+                restore is not None or nsys_trace or monitor_resources or ncu_kernel:
+            raise ValueError('Step sensitivity requires separate checkpoint-free trace diagnostics with scale 1 or 0.5')
+        env['ASTR_INSITU_TEST_CURVE_STEP_SCALE']='1' if curve_trace_step_scale==1. else '0.5'
+    if plane_oracle:
+        if insitu_config is None or "slice_definition='plane'" not in insitu_config:
+            raise ValueError('plane oracle requires the explicit physical-plane configuration')
+        env['ASTR_INSITU_TEST_PLANE_PREFIX']='outdat/render/plane_oracle'
     if device_sample_transport is not None:
         if device_sample_transport not in ('device-aware','pinned'):
             raise ValueError('device sample diagnostic requires an explicit supported transport')
@@ -258,7 +310,9 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
     if postprocess_transport is not None:
         if postprocess_transport not in ('device-aware','pinned') or insitu_config is None:
             raise ValueError('native device products require a declared transport and configuration')
-        if postprocess_transport == 'device-aware':
+    active_transport=postprocess_transport if postprocess_transport is not None else device_sample_transport
+    if active_transport is not None:
+        if active_transport == 'device-aware':
             env.update(OMPI_MCA_pml='ucx', OMPI_MCA_coll='^hcoll,ucc,cuda',
                        OMPI_MCA_coll_hcoll_enable='0', OMPI_MCA_osc='pt2pt',
                        UCX_MEMTYPE_CACHE='n', UCX_CUDA_COPY_ENABLE_FABRIC='no',
@@ -280,6 +334,8 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
                    ASTR_VALIDATION_RHS_STEP=str(rhs_snapshot_step))
     if args.case != "tgv" and not (channel and getattr(args, "wall_samples", False)):
         env.pop("ASTR_INSITU_SAMPLE_PREFIX")
+    if args.case == 'tgv' and getattr(args, 'wall_samples', None) is False:
+        env.pop('ASTR_INSITU_SAMPLE_PREFIX', None)
     if channel:
         env["ASTR_CHANNEL_FORCE_MODE"] = args.force
         if args.force == "fixed":
@@ -337,6 +393,15 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
                    ASTR_CONTROLLER_TEST_REPLAY=str(replay.resolve()),
                    ASTR_CONTROLLER_TEST_START_STEP=str(start_step))
     solver_command = [str(args.executable), "run", "datin/" + input_name]
+    if ncu_kernel is not None:
+        profiler = shutil.which('ncu')
+        if profiler is None:
+            raise RuntimeError('Nsight Compute is required for explicit kernel profiling')
+        solver_command = [profiler, '--target-processes', 'all', '--kernel-name-base', 'demangled',
+            '--kernel-name', 'regex:'+ncu_kernel,
+            '--launch-count', '1', '--section', 'LaunchStats', '--section', 'Occupancy',
+            '--section', 'SpeedOfLight', '--section', 'SchedulerStats',
+            '--section', 'MemoryWorkloadAnalysis', '--export', str(case/'kernel'), *solver_command]
     if nsys_trace:
         profiler=shutil.which('nsys')
         if profiler is None or memcheck or monitor_resources or reject:
@@ -373,18 +438,41 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
     command = [str(args.mpiexec), "--mca", "coll_hcoll_enable", "0", "-np", str(ranks),
                *solver_command]
     launch_started=perf_counter()
+    cfl_gate = None
+    if cfl_limit is not None:
+        from insitu_cfl_gate import CflGate
+        if reject or scale_dt is None:
+            raise ValueError('CFL gate requires an explicit successful scale test')
+        first = int(restore.name.removeprefix('step')) if restore is not None else 0
+        cfl_gate = CflGate(case/'run.log', cfl_limit, dt, first, steps)
     with (case / "run.log").open("wb") as log:
         if monitor_resources:
             if backend != "gpu" or reject or memcheck:
                 raise ValueError("resource sampling requires a successful GPU gate without memcheck")
             from insitu_resource_monitor import run_monitored
-            run_monitored(command, case, env, log, case / "resources.sampled.json", baseline=resource_baseline)
+            run_monitored(command, case, env, log, case / "resources.sampled.json", baseline=resource_baseline,
+                device_extra_budget_bytes=getattr(args, 'resource_device_extra_budget_bytes', 2*1024**3),
+                host_extra_budget_bytes=getattr(args, 'resource_host_extra_budget_bytes', 4*1024**3),
+                device_reserve_bytes=getattr(args, 'resource_device_reserve_bytes', 1024**3),
+                timeout_seconds=timeout, check_progress=cfl_gate.check if cfl_gate else None)
             returncode = 0
         else:
             process = subprocess.Popen(command, cwd=case, env=env, stdout=log,
                                        stderr=subprocess.STDOUT, start_new_session=True)
             try:
-                returncode = process.wait(timeout=timeout)
+                if cfl_gate is None:
+                    returncode = process.wait(timeout=timeout)
+                else:
+                    deadline = perf_counter()+timeout
+                    while True:
+                        cfl_gate.check()
+                        if perf_counter() >= deadline:
+                            raise TimeoutError('CFL-monitored solver exceeded runtime budget')
+                        try:
+                            returncode = process.wait(timeout=.02)
+                            break
+                        except subprocess.TimeoutExpired:
+                            continue
             except BaseException:
                 try:
                     os.killpg(process.pid, signal.SIGTERM)
@@ -395,10 +483,16 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
                 except ProcessLookupError:
                     process.wait()
                 raise
+    if cfl_gate is not None and returncode == 0:
+        cfl_gate.check(final=True)
+        (case/'cfl_gate.json').write_text(json.dumps(dict(maximum=cfl_gate.maximum, limit=cfl_limit,
+            dt=dt, samples=steps-first, scope='per-step log gate; termination after log becomes visible'), indent=2))
     if insitu_timing:
         (case/'timing.launch.json').write_text(json.dumps(dict(
             seconds=perf_counter()-launch_started,
             scope='mpiexec launch through child exit, includes external monitor when selected'),indent=2))
+    if ncu_kernel is not None and not (case/'kernel.ncu-rep').is_file():
+        raise RuntimeError('Kernel profiling produced no report; inspect run.log before accepting the capture')
     if reject:
         if returncode == 0 or reject not in (case / "run.log").read_text():
             raise AssertionError(f"expected rejection not observed: {reject}: {case}")

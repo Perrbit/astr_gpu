@@ -326,9 +326,7 @@ def test_resident_q_native_smoke(tmp_path, pipeline, ranks, axis):
     args.statistics = False
     args.directory_budget_bytes = 256 * 1024**2
     args.runtime_timeout_seconds = 300
-    config = device_configuration('pinned', statistics=False, profile='q_surface')
-    config = config.replace("products='q_surface',", f"products='q_surface',rendering_pipeline='{pipeline}',")
-    config = config.replace('scripts/insitu/tgv_pipeline.py', 'scripts/insitu/device_render_pipeline.py')
+    config = resident_configuration(pipeline, 'pinned', statistics=False, profile='q_surface')
     memory_check = os.environ.get('ASTR_INSITU_RESIDENT_MEMCHECK') == '1'
     trace = os.environ.get('ASTR_INSITU_RESIDENT_TRACE') == '1'
     case, _ = run_case(args, ROOT, 'gpu', ranks, 'resident_q', 2, enabled=False,
@@ -371,9 +369,7 @@ def test_resident_all_products_smoke(tmp_path, pipeline, ranks, axis):
     args = arguments(tmp_path, axis)
     args.directory_budget_bytes = 256*1024**2
     args.runtime_timeout_seconds = 300
-    config = device_configuration('pinned')
-    config = config.replace("products='all',", f"products='all',rendering_pipeline='{pipeline}',")
-    config = config.replace('scripts/insitu/tgv_pipeline.py', 'scripts/insitu/device_render_pipeline.py')
+    config = resident_configuration(pipeline, 'pinned')
     case, _ = run_case(args, ROOT, 'gpu', ranks, 'resident_all', 2, enabled=False,
         grid='32,32,32', insitu_config=config, postprocess_transport='pinned', no_field_io=True,
         insitu_timing=True)

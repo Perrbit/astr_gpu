@@ -8,10 +8,99 @@ module insitu_sample_gpu
   public :: download_plane_state_gpu
   public :: download_wall_state_gpu
   public :: capture_device_sample_gpu,release_device_sampling_gpu
+  public :: capture_device_channel_walls_gpu
+  public :: capture_device_air5_walls_gpu
+#ifdef ASTR_BUILD_TESTING
+  public :: check_device_wall_fields_gpu
+#endif
   logical,save :: device_sampling_initialized=.false.
   character(16),save :: device_sampling_transport=''
 contains
-  subroutine capture_device_sample_gpu(mode,velocity,halo,derived,host_budget,device_budget,reserve,demonstration,need_q)
+  subroutine capture_device_air5_walls_gpu(mode,coordinates,fields,host_budget,device_budget,reserve)
+    use iso_fortran_env, only: int64
+    use mpi
+    use checkpoint_state_io, only: checkpoint_state_require
+#ifdef ASTR_AIR5_CHEMISTRY
+    use commvar, only: im,jm,km,ia,ja,ka,hm,numq,num_species,num_modequ,use_gpu,lreadgrid, &
+      difschm,conschm,flowtype,ndims,nondimen,lcomb
+    use commarray_gpu, only: q_d,x_d,dxi_d
+    use bc, only: bctype
+    use parallel, only: jg0,isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront,mpisize
+    use halo_transport_gpu, only: halo_transport_idle
+    use halo_exchange_gpu, only: solution_pipeline_active
+    use precision_mode_gpu, only: gpu_precision_mode,GPU_PRECISION_FP64
+    use insitu_device_velocity, only: begin_velocity_transport_gpu
+    use insitu_wall_fields_gpu, only: capture_air5_wall_fields_gpu
+#endif
+    character(*),intent(in) :: mode
+    real(8),device,allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
+    integer(int64),intent(in) :: host_budget,device_budget,reserve
+#ifdef ASTR_AIR5_CHEMISTRY
+    integer :: neighbors(2,3),sizes(3),extent(3)
+    extent=[im,jm,km]; sizes=[isize,jsize,ksize]
+    neighbors(:,1)=[mpileft,mpiright]; neighbors(:,2)=[mpidown,mpiup]; neighbors(:,3)=[mpiback,mpifront]
+    call checkpoint_state_require(use_gpu.and..not.lreadgrid.and.trim(flowtype)=='air5hbl'.and. &
+      all([ia,ja,ka]==16).and.numq==11.and.num_species==5.and.num_modequ==1.and.lcomb.and. &
+      .not.nondimen.and.ndims==3.and.all(bctype==[11,50,41,51,1,1]).and. &
+      trim(difschm)=='643e'.and.trim(conschm)=='643e'.and.mpisize<=2.and.hm>=3.and.jm>=2.and. &
+      gpu_precision_mode==GPU_PRECISION_FP64,MPI_COMM_WORLD, &
+      'device AIR5 walls require noncatalytic FP64 643e Cartesian HBL 16^3 NP=1/2')
+    call checkpoint_state_require(halo_transport_idle().and..not.solution_pipeline_active, &
+      MPI_COMM_WORLD,'device AIR5 walls require completed solver transport')
+    if(.not.device_sampling_initialized) then
+      call begin_velocity_transport_gpu(mode,extent,sizes,neighbors,MPI_COMM_WORLD,host_budget,device_budget,reserve, &
+        periodic=[.false.,.false.,.true.],max_components=33)
+      device_sampling_transport=mode; device_sampling_initialized=.true.
+    endif
+    call checkpoint_state_require(mode==device_sampling_transport,MPI_COMM_WORLD,'wall transport changed in session')
+    call capture_air5_wall_fields_gpu(q_d,x_d,dxi_d,coordinates,fields,extent,hm,jg0,MPI_COMM_WORLD,device_budget,reserve)
+#else
+    call checkpoint_state_require(.false.,MPI_COMM_WORLD,'device AIR5 walls require AIR5 chemistry build')
+#endif
+  end subroutine
+
+  subroutine capture_device_channel_walls_gpu(mode,coordinates,fields,host_budget,device_budget,reserve)
+    use iso_fortran_env, only: int64
+    use commvar, only: im,jm,km,ia,ja,ka,hm,numq,use_gpu,lreadgrid,difschm,conschm,flowtype, &
+      ndims,num_species,nondimen,const2,const5,const6,reynolds,prandtl,tempconst,tempconst1
+    use commarray_gpu, only: q_d,x_d,dxi_d
+    use bc, only: bctype
+    use mpi
+    use parallel, only: jg0,isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront,mpisize
+    use checkpoint_state_io, only: checkpoint_state_require
+    use halo_transport_gpu, only: halo_transport_idle
+    use halo_exchange_gpu, only: solution_pipeline_active
+    use precision_mode_gpu, only: gpu_precision_mode,GPU_PRECISION_FP64
+    use insitu_device_velocity, only: begin_velocity_transport_gpu
+    use insitu_wall_fields_gpu, only: capture_channel_wall_fields_gpu
+    character(*),intent(in) :: mode
+    real(8),device,allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
+    integer(int64),intent(in) :: host_budget,device_budget,reserve
+    integer :: neighbors(2,3),sizes(3),extent(3)
+    logical :: candidate
+    extent=[im,jm,km]; sizes=[isize,jsize,ksize]
+    neighbors(:,1)=[mpileft,mpiright]; neighbors(:,2)=[mpidown,mpiup]; neighbors(:,3)=[mpiback,mpifront]
+    candidate=(.not.lreadgrid.and.trim(flowtype)=='channel'.and.all([ia,ja,ka]==16)).or. &
+      (lreadgrid.and.trim(flowtype)=='tgv'.and.all([ia,ja,ka]==32))
+    call checkpoint_state_require(use_gpu.and.candidate.and.numq==5.and.num_species==0.and. &
+      nondimen.and.ndims==3.and.all(bctype==[1,1,41,41,1,1]).and. &
+      trim(difschm)=='643e'.and.trim(conschm)=='643e'.and.mpisize<=2.and.hm>=3.and. &
+      gpu_precision_mode==GPU_PRECISION_FP64,MPI_COMM_WORLD, &
+      'device wall fields require bc41 FP64 643e channel 16^3 or CURVE TGV 32^3 NP=1/2')
+    call checkpoint_state_require(halo_transport_idle().and..not.solution_pipeline_active, &
+      MPI_COMM_WORLD,'device wall fields require completed solver transport')
+    if(.not.device_sampling_initialized) then
+      call begin_velocity_transport_gpu(mode,extent,sizes,neighbors,MPI_COMM_WORLD,host_budget,device_budget,reserve, &
+        periodic=[.true.,.false.,.true.],max_components=33)
+      device_sampling_transport=mode; device_sampling_initialized=.true.
+    endif
+    call checkpoint_state_require(mode==device_sampling_transport,MPI_COMM_WORLD,'wall transport changed in session')
+    call capture_channel_wall_fields_gpu(q_d,x_d,dxi_d,coordinates,fields,extent,hm,ja,jg0, &
+      [const2,const5,const6,reynolds,prandtl,tempconst,tempconst1],MPI_COMM_WORLD,device_budget,reserve,lreadgrid)
+  end subroutine
+
+  subroutine capture_device_sample_gpu(mode,velocity,halo,derived,host_budget,device_budget,reserve,demonstration,need_q, &
+      curve_demonstration)
     use benchmark_runtime, only: insitu_clock,report_insitu_timing
     use iso_fortran_env, only: int64
     use commvar, only: im,jm,km,ia,ja,ka,hm,numq,use_gpu,lreadgrid,difschm,conschm,flowtype, &
@@ -24,45 +113,53 @@ contains
     use halo_transport_gpu, only: halo_transport_idle
     use halo_exchange_gpu, only: solution_pipeline_active
     use precision_mode_gpu, only: gpu_precision_mode,GPU_PRECISION_FP64
-    use insitu_device_velocity, only: begin_velocity_transport_gpu,snapshot_periodic_velocity_gpu, &
-      extend_periodic_velocity_gpu,derive_periodic_velocity_gpu
+    use insitu_device_velocity, only: begin_velocity_transport_gpu,snapshot_sample_velocity_gpu, &
+      extend_sample_velocity_gpu,derive_sample_velocity_gpu
     character(*),intent(in) :: mode
     real(8),device,allocatable,intent(out) :: velocity(:,:),halo(:,:,:,:),derived(:,:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
-    logical,intent(in),optional :: demonstration,need_q
-    logical :: demo,calculate_q
+    logical,intent(in),optional :: demonstration,need_q,curve_demonstration
+    logical :: demo,calculate_q,curve_wall,curve_demo
     integer :: neighbors(2,3),sizes(3),extent(3),ranks,ierr,status
     real(8) :: phase_started
     extent=[im,jm,km]; sizes=[isize,jsize,ksize]
     demo=.false.
     if(present(demonstration)) demo=demonstration
+    curve_demo=.false.
+    if(present(curve_demonstration)) curve_demo=curve_demonstration.and.lreadgrid
     calculate_q=.true.
     if(present(need_q)) calculate_q=need_q
+    curve_wall=lreadgrid.and.all(bctype==[1,1,41,41,1,1])
     neighbors(:,1)=[mpileft,mpiright]; neighbors(:,2)=[mpidown,mpiup]; neighbors(:,3)=[mpiback,mpifront]
     call MPI_Comm_size(MPI_COMM_WORLD,ranks,ierr)
     call checkpoint_state_require(ierr==MPI_SUCCESS.and.ranks<=2.and. &
-      (all([ia,ja,ka]==32).or.(demo.and.all([ia,ja,ka]==256).and.ranks==2.and.all(sizes==[2,1,1]))).and. &
-      all(bctype==1).and.use_gpu.and..not.lreadgrid.and.numq==5.and.hm>=3.and.trim(difschm)=='643e'.and. &
+      (all([ia,ja,ka]==32).or.(curve_demo.and.(all([ia,ja,ka]==64).or.all([ia,ja,ka]==128).or. &
+       (all([ia,ja,ka]==256).and.ranks==2.and.all(sizes==[2,1,1])))).or. &
+       (demo.and.all([ia,ja,ka]==256).and.ranks==2.and.all(sizes==[2,1,1]))).and. &
+      (all(bctype==1).or.curve_wall).and.use_gpu.and.(.not.lreadgrid.or..not.demo).and.numq==5.and.hm>=3.and. &
+      trim(difschm)=='643e'.and. &
       trim(conschm)=='643e'.and.trim(flowtype)=='tgv'.and.ndims==3.and.num_species==0.and.nondimen.and. &
       gpu_precision_mode==GPU_PRECISION_FP64, &
-      MPI_COMM_WORLD,'device sample requires 32^3 Cartesian periodic FP64 TGV NP=1/2')
+      MPI_COMM_WORLD,'device sample requires admitted 32^3 static FP64 TGV NP=1/2')
     call checkpoint_state_require(halo_transport_idle().and..not.solution_pipeline_active, &
       MPI_COMM_WORLD,'device sample requires completed solver transport')
     if(.not.device_sampling_initialized) then
-      call begin_velocity_transport_gpu(mode,extent,sizes,neighbors,MPI_COMM_WORLD,host_budget,device_budget,reserve)
+      call begin_velocity_transport_gpu(mode,extent,sizes,neighbors,MPI_COMM_WORLD,host_budget,device_budget,reserve, &
+        periodic=[.true.,.not.curve_wall,.true.])
       device_sampling_transport=mode
       device_sampling_initialized=.true.
     endif
     call checkpoint_state_require(mode==device_sampling_transport,MPI_COMM_WORLD,'device sample transport changed in session')
     phase_started=insitu_clock()
-    call snapshot_periodic_velocity_gpu(q_d,velocity,extent,hm,numq,sizes,neighbors,MPI_COMM_WORLD,device_budget,reserve)
+    call snapshot_sample_velocity_gpu(q_d,velocity,extent,hm,numq,sizes,neighbors,MPI_COMM_WORLD,device_budget,reserve)
     call report_insitu_timing('device_snapshot_inclusive',phase_started,-1)
     phase_started=insitu_clock()
-    call extend_periodic_velocity_gpu(velocity,halo,extent,MPI_COMM_WORLD,device_budget,reserve)
+    call extend_sample_velocity_gpu(velocity,halo,extent,MPI_COMM_WORLD,device_budget,reserve)
     call report_insitu_timing('device_halo_inclusive',phase_started,-1)
     phase_started=insitu_clock()
     if(calculate_q) then
-      call derive_periodic_velocity_gpu(halo,dxi_d,derived,extent,hm,MPI_COMM_WORLD,device_budget,reserve)
+      call derive_sample_velocity_gpu(halo,dxi_d,derived,extent,hm,MPI_COMM_WORLD,device_budget,reserve, &
+        wall_sixth=curve_wall)
       call report_insitu_timing('device_gradient_q_inclusive',phase_started,-1)
     else
       allocate(derived(1,1),stat=status)
@@ -86,6 +183,71 @@ contains
   end subroutine
 
 #ifdef ASTR_BUILD_TESTING
+  subroutine check_device_wall_fields_gpu(coordinates,fields,host_budget,device_budget,reserve,air5)
+    use iso_fortran_env, only: int64
+    use mpi
+    use parallel, only: mpirank
+    use checkpoint_state_io, only: checkpoint_state_require
+    use insitu_device_velocity, only: velocity_transport_usage_gpu
+    use ieee_arithmetic, only: ieee_is_finite
+    real(8),intent(in) :: coordinates(:,:,:,:),fields(:,:,:,:)
+    integer(int64),intent(in) :: host_budget,device_budget,reserve
+    logical,intent(in),optional :: air5
+    real(8),device,allocatable :: coordinates_d(:,:,:,:),fields_d(:,:,:,:)
+    real(8),allocatable :: check_coordinates(:,:,:,:),check_fields(:,:,:,:)
+    character(16) :: mode,root
+    integer :: status,ierr,generation,c
+    integer(int64) :: bytes,host_slots,device_slots,d2h,h2d,exchanges
+    real(8) :: difference,maximum
+    real(8) :: errors(size(fields,4)),global_errors(size(fields,4))
+    logical :: reacting
+    call get_environment_variable('ASTR_INSITU_TEST_DEVICE_TRANSPORT',mode,status=status)
+    call checkpoint_state_require(status==0.or.status==1,MPI_COMM_WORLD,'invalid device wall diagnostic transport')
+    root=mode
+    call MPI_Bcast(root,len(root),MPI_CHARACTER,0,MPI_COMM_WORLD,ierr)
+    call checkpoint_state_require(ierr==MPI_SUCCESS.and.mode==root,MPI_COMM_WORLD,'device wall diagnostic transports differ')
+    if(mode=='') return
+    reacting=.false.
+    if(present(air5)) reacting=air5
+    if(reacting) then
+      call capture_device_air5_walls_gpu(trim(mode),coordinates_d,fields_d,host_budget,device_budget,reserve)
+    else
+      call capture_device_channel_walls_gpu(trim(mode),coordinates_d,fields_d,host_budget,device_budget,reserve)
+    endif
+    call checkpoint_state_require(all(shape(coordinates)==shape(coordinates_d)).and. &
+      all(shape(fields)==shape(fields_d)),MPI_COMM_WORLD,'device wall diagnostic oracle shape')
+    bytes=8*(size(coordinates,kind=int64)+size(fields,kind=int64))
+    call checkpoint_state_require(bytes<=host_budget,MPI_COMM_WORLD,'device wall diagnostic oracle budget')
+    allocate(check_coordinates(size(coordinates,1),size(coordinates,2),size(coordinates,3),3), &
+      check_fields(size(fields,1),size(fields,2),size(fields,3),size(fields,4)),stat=status)
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'device wall diagnostic oracle allocation')
+    ! Deliberate test-only field download, excluded from production admission.
+    if(size(fields)>0) then
+      check_coordinates=coordinates_d; check_fields=fields_d
+    endif
+    difference=0.d0
+    if(size(fields)>0) difference=maxval(abs(coordinates-check_coordinates))
+    errors=0.d0
+    if(size(fields)>0) then
+      do c=1,size(fields,4)
+        errors(c)=maxval(abs(fields(:,:,:,c)-check_fields(:,:,:,c)))
+      enddo
+    endif
+    call MPI_Allreduce(errors,global_errors,size(errors),MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call checkpoint_state_require(ierr==MPI_SUCCESS,MPI_COMM_WORLD,'device wall diagnostic field reduction')
+    if(.not.reacting) difference=max(difference,maxval(global_errors))
+    call MPI_Allreduce(difference,maximum,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call checkpoint_state_require(ierr==MPI_SUCCESS.and.all(ieee_is_finite(check_coordinates)).and. &
+      all(ieee_is_finite(check_fields)).and.ieee_is_finite(maximum).and.maximum<=2.d-10, &
+      MPI_COMM_WORLD,'actual completed-step device wall fields differ')
+    call velocity_transport_usage_gpu(host_slots,device_slots,d2h,h2d,exchanges,generation)
+    write(*,'(a,i0,3a,es24.16,3(a,i0))') 'ASTR_INSITU_DEVICE_WALL_CHECK rank=',mpirank,' backend=',trim(mode), &
+      ' maxabs=',maximum,' oracle_download_bytes=',bytes,' face_d2h_bytes=',d2h,' face_h2d_bytes=',h2d
+    if(reacting) write(*,'(a,i0,a,18(es24.16,1x))') &
+      'ASTR_INSITU_DEVICE_AIR5_WALL_ERRORS rank=',mpirank,' raw_si_maxabs=',global_errors
+    deallocate(coordinates_d,fields_d,check_coordinates,check_fields)
+  end subroutine
+
   subroutine check_device_sample_against_host(derived,indices,host_budget,device_budget,reserve)
     use iso_fortran_env, only: int64
     use commvar, only: im,jm,km

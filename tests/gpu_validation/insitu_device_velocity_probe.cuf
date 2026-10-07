@@ -56,20 +56,105 @@ contains
     if(velocity(1,node+1)/=dble(i+1)/64.d0.or.velocity(2,node+1)/=dble(j+2)/64.d0.or. &
       velocity(3,node+1)/=dble(k+3)/64.d0) ignored=atomicExch(errors(1),1)
   end subroutine
+
+  attributes(device) subroutine physical_position(i,j,k,mapping,value)
+    integer,value :: i,j,k,mapping
+    real(8),intent(out) :: value(3)
+    real(8) :: x,y,z,h
+    h=2.d0*acos(-1.d0)/32.d0
+    x=i*h; y=j*h; z=k*h
+    if(mapping==1) then
+      value=[x+.15d0*sin(x)*sin(y),y+.15d0*sin(y)*sin(z),z+.15d0*sin(z)*sin(x)]
+    else
+      value=[x,y+.15d0*sin(x)*sin(z),z]
+    endif
+  end subroutine
+
+  attributes(global) subroutine coordinate_fixture(source,halo,errors,im,jm,km,ci,cj,ck,mapping,checking)
+    integer,value :: im,jm,km,ci,cj,ck,mapping
+    logical,value :: checking
+    real(8),device,intent(inout) :: source(-3:im+3,-3:jm+3,-3:km+3,3)
+    real(8),device,intent(in) :: halo(-3:im+3,-3:jm+3,-3:km+3,3)
+    integer,device,intent(inout) :: errors(*)
+    integer :: node,i,j,k,gi,gj,gk,c,ignored
+    real(8) :: value(3)
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(im+7)*(jm+7)*(km+7)) return
+    i=mod(node,im+7)-3; j=mod(node/(im+7),jm+7)-3; k=node/((im+7)*(jm+7))-3
+    gi=ci*im+i; gj=cj*jm+j; gk=ck*km+k
+    value=[-991.d0,-992.d0,-993.d0]
+    if(i>=0.and.i<=im.and.j>=0.and.j<=jm.and.k>=0.and.k<=km) &
+      call physical_position(gi,gj,gk,mapping,value)
+    if(.not.checking) then
+      source(i,j,k,:)=value
+      return
+    endif
+    do c=1,3
+      if(source(i,j,k,c)/=value(c)) ignored=atomicExch(errors(1),1)
+    enddo
+    if(min(gi,gj,gk)<0.or.max(gi,gj,gk)>32) return
+    call physical_position(gi,gj,gk,mapping,value)
+    do c=1,3
+      if(halo(i,j,k,c)/=value(c)) ignored=atomicExch(errors(1),1)
+    enddo
+  end subroutine
+
+  subroutine check_coordinates(mapping,extent,coords,comm,host_budget,device_budget)
+    use mpi
+    use iso_fortran_env, only: int64
+    use insitu_device_velocity, only: snapshot_sample_coordinates_gpu,extend_sample_coordinates_gpu,velocity_transport_usage_gpu
+    integer,intent(in) :: mapping,extent(3),coords(3),comm
+    integer(int64),intent(in) :: host_budget,device_budget
+    real(8),device,allocatable :: source(:,:,:,:),points(:,:),halo(:,:,:,:)
+    integer,device,allocatable :: errors(:)
+    integer :: nodes,status,frame,bad,total,rank,ierr,generation
+    integer(int64) :: host_bytes,device_bytes,d2h,h2d,exchanges,retained
+    if(mapping/=1.and.mapping/=2) call MPI_Abort(comm,11,ierr)
+    call MPI_Comm_rank(comm,rank,ierr)
+    nodes=product(extent+7)
+    allocate(source(-3:extent(1)+3,-3:extent(2)+3,-3:extent(3)+3,3),errors(1))
+    ! Initialization never reads halo. Pass the source as an unused descriptor.
+    errors=0
+    call coordinate_fixture<<<(nodes+255)/256,256>>>(source,source,errors,extent(1),extent(2),extent(3), &
+      coords(1),coords(2),coords(3),mapping,.false.)
+    status=cudaDeviceSynchronize()
+    if(status/=cudaSuccess) call MPI_Abort(comm,12,ierr)
+    retained=8*size(source,kind=int64)
+    do frame=1,3
+      call snapshot_sample_coordinates_gpu(source,points,extent,3,comm,device_budget,1073741824_int64,retained)
+      call extend_sample_coordinates_gpu(points,halo,extent,coords*extent,[32,32,32],comm, &
+        device_budget,1073741824_int64,retained)
+      call coordinate_fixture<<<(nodes+255)/256,256>>>(source,halo,errors,extent(1),extent(2),extent(3), &
+        coords(1),coords(2),coords(3),mapping,.true.)
+      status=cudaDeviceSynchronize()
+      if(status/=cudaSuccess) call MPI_Abort(comm,13,ierr)
+      deallocate(points,halo)
+    enddo
+    bad=errors(1)
+    call MPI_Allreduce(bad,total,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    call velocity_transport_usage_gpu(host_bytes,device_bytes,d2h,h2d,exchanges,generation)
+    if(rank==0) then
+      write(*,'(a,i0,a,i0,a)') 'Physical coordinate halo mapping=',mapping,' mismatches=',total, &
+        ' source_unchanged=1 outer_wrap=0 frames=3'
+      write(*,'(a,i0,a,i0)') 'coordinate_d2h_bytes=',d2h,' coordinate_h2d_bytes=',h2d
+    endif
+    deallocate(source,errors)
+    if(total/=0) call MPI_Abort(comm,14,ierr)
+  end subroutine
 end module
 
 program insitu_device_velocity_probe
   use cudafor
   use mpi
   use iso_fortran_env, only: int64
-  use insitu_device_velocity, only: snapshot_periodic_velocity_gpu,begin_velocity_transport_gpu, &
+  use insitu_device_velocity, only: snapshot_sample_velocity_gpu,begin_velocity_transport_gpu, &
     end_velocity_transport_gpu,velocity_transport_usage_gpu
   use insitu_device_velocity_probe_kernels
   implicit none
   real(8),device,allocatable :: q(:,:,:,:),velocity(:,:)
   integer,device,allocatable :: errors(:)
   integer :: rank,np,ierr,axis,comm,dims(3),coords(3),neighbors(2,3),extent(3), &
-    status,local_rank,devices,nodes,bad,all_bad,frame,generation,last_generation,changed_extent(3)
+    status,local_rank,devices,nodes,bad,all_bad,frame,generation,last_generation,changed_extent(3),mapping
   integer(int64) :: host_bytes,device_bytes,d2h_bytes,h2d_bytes,exchanges,host_budget,device_budget,expected_bytes
   character(32) :: argument,mode,scenario
   logical :: periods(3)
@@ -110,6 +195,15 @@ program insitu_device_velocity_probe
   call begin_velocity_transport_gpu(trim(mode),extent,dims,neighbors,comm, &
     host_budget,device_budget,1073741824_int64)
   call velocity_transport_usage_gpu(host_bytes,device_bytes,d2h_bytes,h2d_bytes,exchanges,last_generation)
+  if(scenario=='coordinates') then
+    call get_command_argument(4,argument)
+    read(argument,*) mapping
+    call check_coordinates(mapping,extent,coords,comm,host_budget,device_budget)
+    call end_velocity_transport_gpu(comm)
+    call MPI_Comm_free(comm,ierr)
+    call MPI_Finalize(ierr)
+    stop
+  endif
   if(scenario=='nested') call begin_velocity_transport_gpu(trim(mode),extent,dims,neighbors,comm, &
     host_budget,device_budget,1073741824_int64)
   nodes=product(extent+7)
@@ -119,12 +213,12 @@ program insitu_device_velocity_probe
   if(status/=cudaSuccess) call MPI_Abort(comm,5,ierr)
   if(scenario=='shape') then
     changed_extent=extent; changed_extent(1)=changed_extent(1)-1
-    call snapshot_periodic_velocity_gpu(q,velocity,changed_extent,3,5,dims,neighbors,comm, &
+    call snapshot_sample_velocity_gpu(q,velocity,changed_extent,3,5,dims,neighbors,comm, &
       device_budget,1073741824_int64)
   endif
   errors=0
   do frame=1,3
-  call snapshot_periodic_velocity_gpu(q,velocity,extent,3,5,dims,neighbors,comm, &
+  call snapshot_sample_velocity_gpu(q,velocity,extent,3,5,dims,neighbors,comm, &
     device_budget,1073741824_int64)
   nodes=product(extent+1)
   call verify_velocity<<<(nodes+255)/256,256>>>(velocity,errors,extent(1),extent(2),extent(3), &

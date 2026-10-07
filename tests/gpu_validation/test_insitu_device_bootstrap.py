@@ -22,6 +22,7 @@ def test_device_rk45_matches_original_vtk():
                             capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "GPU RK45 versus original VTK matched=26" in result.stdout
+    assert "GPU RK45 adaptive terminal overshoot=0" in result.stdout
 
 
 def test_accepted_length_reference_regression():

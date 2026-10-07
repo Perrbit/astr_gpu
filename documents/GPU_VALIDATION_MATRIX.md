@@ -729,13 +729,418 @@ setup and JPEG/EPS publication included. Formal runs are unprofiled; pure RK,
 raw/minimum/maximum/sample SD and nested phases are reported separately.
 This is a rendering-entry comparison, not CPU/GPU solver speedup.
 
+X4-3 adds a bounded Cartesian bc41 channel device-wall image gate: 16^3,
+FP64 643e/643e, NP=1/2 x/y/z, pinned/device-aware private endpoint transport,
+and both standard-device/direct-device entries. The actual completed-step
+field gate has CPU/GPU wall maxabs 1.5987211554602254e-14. Sixteen render,
+isolation and 4-vs-3+1 restart cases plus two unsupported-configuration
+rejections pass. Explicit test oracle downloads are separate from the strict
+render runs, which report field_download_bytes=0 and geometry_host_bytes=0.
+Device wall statistics/means and AIR5 device products are not admitted
+by this result. See ASTR_INSITU_X4_ACCEPTANCE.md for receipts and limits.
+
+X4-4 additionally admits only the bounded 32^3 static y-wavy CURVE bc41
+TGV fixture's three instantaneous device wall images. CPU/GPU wall maxabs
+is 1.8189894035458565e-11; 16 render/isolation/4-vs-3+1 cases and two
+representative memchecks pass. Four memcheck ranks report zero errors.
+Winding/positive triangles and facet/Gauss areas are separately validated;
+partition image silhouette differences are zero pixels and matched entry
+images are identical. Periodic CURVE private GPU gradients/Q have eight
+diagnostic gates (same-state exact, independent maxabs 8.881784197001252e-16),
+not a volume rendering/streamline admission. Native resource checks are
+within budget; external peaks and complete per-object transfers remain open.
+
+X4-6 admits instantaneous physical-plane velocity slices for the bounded
+32^3 periodic Cartesian/static CURVE TGV, FP64 643e/643e, NP=1/2 x/y/z,
+both strict entries and both private face transports. Statistics are OFF;
+independent PF/AP product clocks, wall/AIR5 planes and repartition are not admitted.
+Rank0 canonicalizes the normal, not the origin, after raw collective agreement;
+ASTRIR05 preserves the exact six-value plane identity. Forty-four end-to-end,
+restart/isolation, empty/coincident, rejection and memcheck cases pass (four
+clean rank reports). Independent interpolation maxabs is 8.881784197001252e-16;
+same-phase CPU/GPU is 1.1102230246251565e-15. An immutable 32-case aggregate
+has identical oriented global connectivity/coordinates, velocity maxabs
+6.851073527935903e-16, zero-pixel partition silhouettes and identical matched
+entry images. Unrepresentable FP64 coincident edge intersections fail explicitly;
+the earlier failing oblique plane is retained as a rejection case, not snapped.
+Explicit test geometry downloads are not residency evidence; separate strict
+image runs report no field/geometry host reads. Object-attributed traces,
+external resource peaks and matched cost gates remain open. Receipts/binary
+SHA are in ASTR_INSITU_X4_ACCEPTANCE.md.
+
+The subsequently instrumented root binary has 16 NP=2 x observation cases
+for both admitted wall fixtures and periodic Cartesian/CURVE physical planes.
+Separate four-step unprofiled cost pairs, 20 ms external peak observations,
+and two-step CUDA/NVTX/MPI plus GL pixel ledgers pass. Maximum additional host
+and device peaks are 1342246912/93196288 B, minimum free device 19184156672 B.
+No final geometry/full-field readback or UVM D2H is observed; allowed pixel and
+face transfers remain. Device-aware wall MPI internally stages 4080 B per rank
+per direction for Cartesian, 20592 B for CURVE; these are CUDA API-correlated
+MPI face payloads, not application field reconstruction. Zero application
+staging counters are not claimed to mean zero MPI host traffic. Evidence is
+four valid cases in the initial matrix plus twelve in the tail; the initial
+XML retains an incorrect zero-MPI-staging assertion failure. Five final
+affected guards and strict-device production-source-copy configuration/script
+installation pass. NP=1/other-topology external observations and unimplemented
+X4 families remain open; single short costs are not production performance.
+
 Device rendering now defaults to standard-device; explicit direct/compatible
 remain. Host default is compatible and in-situ/build switches remain OFF.
 No silent fallback. Allowed image/IceT traffic, bounded metadata/continuation
 and explicit pinned faces remain host-visible. Checkpoint transfers are separate.
-No CURVE/wall/AIR5 resident-rendering, general NP>2, repartition, arbitrary
+No general CURVE/AIR5 resident-rendering beyond the bounded bc41/AIR5 wall,
+periodic physical-plane and periodic Q-surface exceptions, general NP>2, repartition, arbitrary
 production capacity or DCU claim. Dependency/build-tree and exact binary
 provenance are in `ASTR_INSITU_IS8_RESIDENT_ACCEPTANCE.md`.
+
+Bounded periodic CURVE Q=0.25 surfaces additionally pass 30 runtime cases:
+both strict entries/face transports, NP=1/2 x/y/z, four complete steps versus
+3+1 exact restart, isolation, CPU/GPU state/product references, four clean
+rank memchecks and configuration/budget rejection. Statistics are OFF and
+common fixed scheduling is required. Physical coordinates and fields share
+GPU edge interpolation; no final geometry/full-field host readback is used
+by strict images. An immutable aggregate has 4424 global points/8480 oriented
+triangles, identical topology across partitions, no zero-area faces or
+nonmanifold interior edges; coordinate/velocity maxabs is 4.263256414560601e-14.
+CPU/GPU product maxabs is 4.440892098500626e-15. Analytic nodal degeneracy is
+retained as an explicit rejection, not repaired by dropping/snap tolerances.
+Four NP=2 x observation cases pass, with maximum additional host/device peaks
+1014550528/49156096 B and minimum free device 19227344896 B. Allowed pixels
+and pinned faces remain; no device-aware MPI host face copies were observed
+in this particular capture. Five old TGV/PF/AP guards and strict production
+source-copy configuration/install pass. Receipts, known component failure
+and exact executable provenance are in `ASTR_INSITU_X4_ACCEPTANCE.md`.
+Sixty further observation cases cover NP=1 and NP=2 y/z for all five admitted
+families, both strict entries/transports; immutable x captures are reused.
+Maximum additional host/device peaks are 1098903552/91099136 B, minimum free
+device 19183632384 B. Final geometry/full-field/UVM D2H is zero. Device-aware
+z-wall MPI internally stages the same small payloads as x; allowed faces,
+pixels and IceT traffic remain attributed. NP=1 absence of the point-to-point
+table is handled explicitly, with the initial test-assumption failure retained.
+A slow single off-window is not discarded or turned into a topology ranking.
+
+X4-5 admits instantaneous device wall images only for the existing noncatalytic
+Cartesian AIR5 HBL 16^3 fixture: SI dual-temperature/five-species, 643e/643e,
+boundaries [11,50,41,51,1,1], dt=1e-10 and NP=1/2 x/y/z. Eight field/restart/
+isolation cases and two field memchecks pass. Fixed IS5-scale CPU/GPU wall error
+is <=3.479301e-12; same-state independent reconstruction <=5.047551e-16.
+All 18 raw SI errors/scales remain in the XML; this is not an absolute 2e-10
+gate in every dimensional unit. Sixteen ten-product render/restart/isolation
+cases, two render memchecks and two rejections pass. All eight sanitizer rank
+reports are clean. The bottom wall has 512 positively oriented nondegenerate
+triangles and area 0.00016 m^2; y's upper rank owns no wall. Ten image silhouettes
+are identical across topologies; matched strict entries are pixel-identical.
+Device EOS/transport reconstruction reads completed q, not stale material
+caches. Private x endpoints now respect nonperiodic null neighbors, without
+changing solver/CPU communications. q/caches/chemistry compensation and images
+restart exactly; this original instantaneous gate kept statistics/means off
+and the entry refused them at that stage. Later moment/mean gates below
+supersede that configuration limit, not the physical scope of this fixture.
+Configuration 131, matched old wall/TGV/PF/AP/host-AIR5 guards 9, and six
+production-source-copy configure/install checks pass; the last are not six
+full builds. The root AIR5 strict-render and CPU/Catalyst executable builds
+pass. Sixteen per-object trace/external resource and matched-MPI cost cases pass:
+host/device extra peaks <=1387622400/236720128 B, device free >=18823839744 B,
+directory maximum 35314693 B. Final geometry/full-field/UVM D2H is zero.
+CUDA-aware MPI x/z faces stage 4488-byte payloads internally in the actual
+send/receive direction; pixels/IceT remain separate. Empty wall consumers have
+no copies, not a mandatory scalar read; nonempty controls stay <=256 B per read.
+Original mismatched-MPI cost pairs are not used as pure postprocessing overhead;
+only unprofiled costs/resources were remeasured, with immutable valid traces reused.
+This fixture
+has zero positive inlet velocity and cannot certify physical separation/SBLI.
+Receipts and matched binary SHA are in `ASTR_INSITU_X4_ACCEPTANCE.md`.
+This closes external observations for the five admitted families, not new
+products. At this stage, CURVE physical streamlines/means and resident wall
+statistics remained open; the subsequent moment and mean-image gates follow.
+
+### X4-7 Resident Wall Moments
+
+The later X4-7 implementation supersedes the instantaneous matrix's refusal of
+wall statistics, not its physical scope. The bounded Cartesian bc41, y-wavy
+CURVE bc41 and noncatalytic AIR5 fixtures now admit `statistics=t` through the
+strict device entry. Wall providers feed device moments without host field
+upload/download per sample; clipped weights and checkpoint layout are retained.
+24 CPU/GPU, exact 4 versus 3+1 restart and isolation cases pass, plus three
+two-rank memchecks. Both entries and transports are covered as two paired
+configurations, not all four cross combinations. AIR5 mean/variance use fixed
+IS5 reference scales and raw SI/RMS reports; nonreacting fields use the absolute
+2e-10 gate. Sixteen existing volume moment checkpoint states are also checked
+read-only against CPU and exact GPU restart. At this stage, wall mean rendering
+and device separation reduction were refused; this zero-positive-inlet AIR5 fixture is
+not a physical separation gate.
+Strict AIR5 walls also continue to reject AIR5 volume statistics, whose legacy
+full-node invalid-mask download is outside this admission. Host-compatible
+volume statistics remain available. The GPU host-wall wrapper's empty rank must
+participate in collective budget admission before returning; its AIR5 y-slab
+regression guards this requirement.
+
+Three representative sample traces and three matched external resource pairs
+pass. Wall/volume validity checks are scalar device reductions, with 4-byte D2H
+status rather than a full-node mask. Declared pinned/MPI-internal faces remain
+attributed; final geometry/full-field/UVM D2H is zero in these sample ranges.
+H2D module binding is recorded separately from scalar D2H. Explicit statistical
+exports/checkpoints remain deliberate I/O. The kernel's assumed-shape field
+parameter is replaced by an explicit shape to avoid its per-call descriptor;
+operation order is unchanged and immutable baseline artifacts are retained for
+exact shape-only regression. Executable identities and final gates are in
+`ASTR_INSITU_X4_ACCEPTANCE.md`. Full X4 remains open.
+
+### X4-7b Resident Wall Mean Images
+
+The same three bounded wall fixtures now admit `statistics=t` with
+`wall_mean_render=t` through both strict entries. Resident FP64 moment means
+feed the existing private endpoint exchange and geometry extractor. Only the
+sampling clock/window/coverage are supplied by host metadata; zero coverage
+publishes no mean image. Empty mean channels keep Catalyst's catalog stable
+without replacing a mean with an instantaneous field. Geometry normals are
+not averaged. Device separation and strict AIR5 volume statistics remain refused.
+
+The full 48-case cross product of three fixtures, four topologies, two entries
+and two transports passes independent CPU/GPU fields, exact owned GPU mean
+state, 4 versus 3+1 restart, isolation, geometry, images and budgets. Three
+zero-window cases pass. Nonreacting mean maximum absolute error is 1.09e-11;
+AIR5 fixed-scale maximum is 9.07e-13, with raw SI errors reported separately.
+Three representative two-rank memchecks have zero errors. Read-only aggregation
+of all 48 cases gives zero-pixel partition silhouette difference and exact
+matched-entry pixels. Formal safety/trace/resource runs do not enable the
+BUILD_TESTING mean-field oracle; that oracle is deliberate test I/O.
+
+Six transfer captures and six matched-MPI cost/external 20 ms resource pairs
+pass. Mean-supply and consumer spans have no full-field/final-geometry/UVM D2H.
+Nonempty mean packing reads a 4-byte status. Channel x/pinned faces stage
+1088 bytes per rank each way; CURVE z/device-aware still stages 2112-byte faces
+inside MPI, confirmed by CUDA runtime correlation/thread and MPI intervals.
+Pixels, explicit state I/O and declared faces are not called zero total D2H.
+Additional host/device peaks are <=1125769216/452464640 B, free device memory
+>=18655346688 B, and the largest run directory is 153191282 B. The four-step
+OFF/ON windows include explicit I/O and ON includes statistics plus both image
+types; they are not pure RK or an isolated mean-render performance benchmark.
+
+Root CPU, nonreacting CUDA and strict AIR5 incremental builds pass, along with
+116 configuration tests and nine affected old-path/refusal regressions.
+Matched executable SHA256 is
+`3721902b61509c3cf917600f9d228fefac153e8b330c22b74d18255c14605db1`.
+Receipts preserve the initial channel-catalog failure, a sanitizer timeout and
+a neutral-color image-checker failure alongside their separate passing closures.
+That receipt predates the AIR5-only separation gate below. Full X4 and CURVE
+streamlines remain open.
+
+### X4-7c Resident AIR5 Bottom-Wall Profile Reduction
+
+The original IS5 Cartesian AIR5 bottom-wall separation option now admits
+`statistics=t,wall_separation=t` under both strict entries. A GPU thread per x
+accumulates the original physical-z weighted coordinate, signed shear and
+length in increasing-k order. Only these 1-D integrals and finite status are
+downloaded, not a 2-D wall field. Existing unique ownership, zero intervals,
+CSV output and inlet applicability remain. Nonreacting bc41/CURVE separation
+and strict AIR5 volume statistics are still unadmitted.
+
+Eight nonuniform-span synthetic device cases pass (maximum absolute integral
+error 4.34e-19); three invalid-input/budget rejections and the original CPU
+zero-crossing probe pass. Sixteen real cases cross NP=1/2 x/y/z, both entries
+and face transports, with two additional separation/mean coexistence cases.
+CPU/GPU shear SI maximum error is 2.16e-14 Pa, fixed-scale error 4.99e-19;
+same-GPU-state host/device integration differs by <=8.28e-25 Pa. Continuous
+4 versus 3+1 state/cache/compensation/statistics/control/CSV/images are exact.
+The ON/OFF statistics comparison explicitly requires the existing selection
+metadata index 12 to be 1/0; all remaining bytes are equal. Restart requires
+the entire metadata to match. The fixture has zero positive inlet velocity,
+so physical separation is not applicable; this is not physical SBLI validation.
+
+Two two-rank memchecks yield four zero-error reports. Four transfer captures
+cover both entries at y/device-aware and z/pinned: each nonempty rank/sample
+downloads 408 B 1-D integrals plus 4 B status; the empty y rank has no reduction
+copies. No UVM or final geometry D2H occurs; rendering controls are <=256 B and
+device display copies are D2D. Pixels, declared faces/MPI staging and explicit
+statistics/checkpoint I/O are accounted separately.
+Four matched-MPI external 20 ms resource/cost pairs pass the unchanged budgets:
+additional host/device maxima 991363072/236720128 B, device free minimum
+18827051008 B, largest run directory 94392407 B. OFF/ON windows exclude startup
+but retain checkpoints; ON also includes statistics and instant wall images,
+not an isolated profile-reduction or pure-RK performance benchmark.
+
+Root CPU, nonreacting CUDA and strict AIR5 builds pass, along with 116 parser/
+collective cases and eleven affected old-path/refusal/mean regressions. The
+matched executable SHA256 is
+`7ccbf425e8d1fd7ec8d7540f3603dc7f965ad1cf9064cdd2cb269295898d589b`.
+Detailed immutable receipts and earlier failed-checker corrections are in the
+X4 acceptance record. CURVE physical/mean streamlines and complete X4 remain
+open; the bounded streamline configuration/control extensions were approved
+on 2026-10-07. X4-4a now passes the two-mapping inverse component, eight
+constant physical-flow/NP=1/2 x/y/z locator/continuation cases (combined error
+<=9.06e-15), 24 unchanged Cartesian compact/resident regressions, the inverse
+memcheck and two-rank deformed-y-face memcheck (all zero errors). Noncentral
+affine interpolation exposed the original 3.28e-8 error; private FP64 physical
+residual refinement handles Newton increment stagnation without relaxing the
+2e-10 field gate. These are synthetic-halo components, not admission of runtime
+coordinate halos, strict CURVE instantaneous/mean rendering, either field-face
+transport, restart, resources or performance. X4-4b/4c remain open; probe-only
+ptxas -O1 flags do not change production optimization or support timing claims.
+
+X4-4b configuration/private-coordinate components now pass separately:
+10 new mean-toggle checks, 126 parser/collective regressions and two mean
+product-clock checks; 16 physical coordinate-halo cases across both mappings,
+NP=1/2 x/y/z and both face transports; 24 old velocity/rejection/halo-Q cases.
+Coordinate halos use owned coordinates and internal MPI faces only, with no
+periodic physical-coordinate wrapping and bitwise unchanged source ghosts.
+Aware/y and pinned/z two-rank coordinate memchecks each have zero errors;
+aware uses the existing stack-specific UCX CUDA-probe suppression, not a
+kernel-memory suppression. This does not close the real CURVE streamline,
+mean-field/image/restart or formal transfer/cost gates. Runtime integration
+and its new bounded test matrix now pass locally through the root CMake:
+32 actual four-step image/state/statistics/isolation/3+1 exact-restart cases,
+four default-OFF/zero-coverage cases and a focused mean-toggle identity refusal.
+Maximum CPU/GPU state and statistics differences are 4.55e-13 and 2.75e-15.
+The original matrix XML retains one checker failure (a mismatched checkpoint
+interval masked the intended refusal); the focused corrected refusal passed.
+Two actual two-rank memchecks (periodic/x/pinned and y-wavy/y/aware) have four
+zero-error logs, and eleven affected old-product/refusal regressions pass.
+These receipts correspond to executable SHA256
+`d8409d7466d13f618bad754211dec0fb16cec263a4b4be0ac485849610b1958a`.
+Independent product/reference I/O and actual mean-coverage metadata are being
+added and require their own updated executable receipts. Two bounded host
+affine/shared-face reference checks pass; they do not close formal device-only
+transfers, external peaks, local costs or the complete X4-4b/4c gate.
+
+The first independent real trace oracle subsequently exposed adaptive terminal
+length overshoot (0.0448658 beyond pi) in the shared GPU trace segment helper.
+The request was clipped but the adaptive call's maximum was not always clipped.
+A small CUDA reproduction fails with 0.0381748 overshoot, then passes with zero
+overshoot after capping the whole call by remaining propagation; the 26 original
+VTK single-step results remain bitwise identical. Accepted-length/state-resume
+components also pass. Real CURVE and old Cartesian trace consumers require
+rebuild/reverification before admission; the original image/state matrices do
+not establish the newly checked variable-speed terminal bound. Failed and
+corrected receipts are retained in the X4 acceptance document.
+
+The rebuilt Release executable
+`5b6aef1caf65f5001878ab6b7652c1526475a6e5ac9088cfb73a04a6d742aa7f`
+now passes all 57 cases in `insitu_x4_curve_trace_final_20261007.xml`:
+32 runtime/restart/image cases, four default/zero-coverage cases, one identity
+refusal, two two-rank memchecks, two independent-reference affine checks and
+16 actual independent geometry/field cases. All four memcheck logs have zero
+errors. Maximum independent same-state field error is 1.78e-15; CPU/GPU product
+field error is 2.06e-15. State/statistics errors remain 4.55e-13/2.75e-15;
+the largest directory is 126554415 B. Actual coverage metadata, terminal
+propagation bounds and byte-exact 3+1 diagnostic geometry pass. Diagnostic
+readback is explicitly not a residency proof. Updated old Cartesian regression,
+formal no-checkpoint/no-oracle transfers/resources/costs and production-source
+builds are recorded separately below.
+
+The final 32-case observation matrix passes both mappings, all four partitions,
+both strict entries and both transports with reference/checkpoint/field output
+OFF. Final field/geometry D2H and UVM D2H are absent; continuation and geometric
+owner queries are bounded by 2048/256 B per rank/round. Pinned faces match the
+application ledger; this capture finds no large MPI-managed host copies in
+aware sampling scopes, not a guarantee for other hardware/MPI. Actual pixels
+remain host traffic. Additional sampled host/device maxima are
+1562963968/358092800 B, device free minimum 18937610240 B, and observed directory
+maximum 64157233 B. Receipt: `insitu_x4_curve_trace_observation_final_20261007.xml`.
+Matched unprofiled four-step OFF/ON windows span 0.016--0.052/12.28--18.46 s
+across different configurations, including statistics and four trace products
+at steps 2/4. These are not repeated-run performance rankings or pure rendering
+costs. Physical RK45 dominates a sampled GPU consumer trace; residency is not
+evidence of production trace performance optimization.
+
+Updated Cartesian/refusal regression passes 13 cases, PF/AP four cases, and
+optional source-copy configurations six cases. CPU/Catalyst and nonreacting
+CUDA/device builds pass; two strict source-copy builds actually compile with
+testing OFF, AIR5 OFF/ON, and byte-exact installed scripts. Their identities and
+full receipts are in the X4 acceptance record. X4-0 through X4-8 are complete
+only within approved bounded fixtures/products/NP=1/2/budgets; general CURVE,
+AIR5 volume device statistics, nonreacting separation, larger production scales,
+new PF/AP cases, repartition and asynchronous operation remain unadmitted.
+
+### CURVE Performance And Wall-Q Increment
+
+The CP0 baseline and per-particle cell-cache candidate remain frozen separately.
+The candidate passes eight CURVE components, 25 affected legacy components and
+six Release runtime/reference/restart/memcheck gates. Two matched five-round
+32^3 NP=2 x comparisons use direct-device/device-aware, four complete steps,
+statistics and four streamline products at steps 2/4. Median completed-window
+speedups are 2.20985 (periodic) and 2.41283 (y-wavy); median streamline-stage
+speedups are 2.62260 and 2.77861. They are neither solver-only nor production-scale
+speedups. Timing JSON, immutable hashes and separate NCU evidence are in the
+in-situ plan section 5.5.
+
+The new private bc41 CURVE wall-Q closure uses seven-node sixth-order biased
+derivatives only near physical boundaries and central sixth-order derivatives
+elsewhere, followed by all nine grid metrics. Legacy output/solver closures are
+unchanged. `curve_wall_sixth_components_20261007.xml` passes 59 cases, including
+32 affine/sixth-degree polynomial checks, maximum gradient/Q error 3.38e-14.
+`curve_wall_sixth_runtime_v2_20261007.xml` passes six actual y-wavy Q=0.25 cases:
+NP=2 x/y/z, standard-device/pinned and direct-device/device-aware. Independent
+Q/geometry error is 5.27e-15, CPU/GPU product error 7.16e-15, state error 4.55e-13;
+output isolation and exact 3+1 state/control/image/oracle restart pass.
+`curve_wall_sixth_memcheck_20261007.xml` passes two actual two-rank cases with
+four zero-error logs. First launch/harness failures are retained, not passed.
+`curve_qzero_20261007.xml` additionally passes six 32^3 Q=0/instantaneous-trace
+gates (both mappings, both entry/transport pairings, CPU/GPU, independent
+references, exact restart and two memchecks). Independent product error is
+5.47e-15, CPU/GPU state error 3.98e-13. Two Nsys ledgers exclude volume/final
+geometry readback. An empty local trace required a parser correction, not a
+solver rerun or relaxed byte checks. Image color-bar pixels were also checked.
+64^3 curve_demo admission is a candidate only. Three second-attempt short gates
+passed (state <=1.14e-12, independent product <=3.50e-14), but y-wavy CFL is
+about 5.08 at the inherited dt=1e-3. The remaining test was deliberately
+interrupted. Fourteen temporary scale skips and the interrupted matrix are not
+passes. The user subsequently approved dt=2e-5 and a per-step CFL<=0.5 gate;
+the six-case incremental parser gate passes and scale tests resume separately.
+`curve_qzero_64_cfl_20261007.xml` passes all four new-dt reference/restart cases:
+state error <=4.27e-13, independent product <=1.41e-14, y-wavy CFL about 0.1014.
+ON/OFF isolation and 3+1 exact continuation pass. The separate
+`curve_qzero_64_memcheck_20261007.xml` passes four 32^3/64^3 cases, eight zero-error
+logs. `curve_qzero_64_observe_20261007.xml` passes all eight 64^3 mapping/entry/
+transport combinations. External 20-ms extra host/device maxima are
+1473347584/466751488 bytes; minimum free device memory is 18741919744 bytes.
+All transfer ledgers exclude volume/final-geometry/UVM D2H. These are not timing
+speedup or half-step sensitivity evidence.
+Scale peak gates, tighter 128^3/256^3 capacity bounds and production remain open.
+An allocation-preflight candidate now checks Viskores array, Thrust scratch and
+OpenGL buffer requests before allocation, against CUDA free memory and job NVML
+increments. One rank per physical GPU is required for the larger route. Arithmetic
+and CFL parsers plus the actual CUDA array/scratch refusal probe pass eight checks
+(`curve_allocation_components_v3_20261007.xml`). Dependency/root rebuild and four
+64^3 numerical/restart cases pass (`curve_allocation_runtime64_20261007.xml`),
+state/product errors <=4.27e-13/1.41e-14. The first 128^3 run was refused before
+advance by its inherited 64-MiB checkpoint packing budget. Diagnostic inputs now
+explicitly allow 256 MiB/rank, within the approved node budget; observation runs
+still disable checkpoints. The 128^3 matrix subsequently passed all four cases
+(`curve_allocation_runtime128_v2_20261007.xml`): state <=3.98e-13, independent
+product <=5.88e-14, CPU/GPU product <=6.46e-14, CFL <=0.20283 and exact 3+1 restart.
+Nine native/CFL checks include a real MPI abort before OpenGL buffer growth;
+four 64^3/128^3 memchecks produce eight zero-error logs. All 16 scale/mapping/
+entry/transport observations pass (`curve_allocation_observe_20261007.xml`), with
+20-ms extra RSS/device maxima 1670201344/970981376 bytes, minimum free device
+17729388544 bytes, and no volume/final-geometry/UVM D2H in their transfer ledgers.
+Four real 64^3/128^3 half-step diagnostics pass (`curve_half_step_20261007.xml`),
+without changing production settings. Periodic endpoint differences include
+different accepted terminal arc lengths; y-wavy endpoint differences are about
+2.8--3.0e-6. Polyline differences include chord interpolation and are not an RK45
+accuracy bound or the 2e-10 same-discretization field gate. A 256^3 curve_demo,
+NP=2 x-only candidate built successfully. The first runtime matrix was interrupted
+to switch to the requested Git commit; it is not a passing 256^3 receipt.
+Disk budget changes are now approved:
+192 GiB total, 16 GiB/diagnostic run, 4 GiB/image-only run, unchanged RAM/VRAM gates.
+The 256^3 admission/production and new-dependency performance gates
+remain open. See plan 5.5 for hashes; old-library timings do not transfer.
+
+### X4 Production Source Build Separation
+
+Four source-copy checks pass with no copied `tests/` or `chem/` directory.
+Both strict CUDA/Catalyst device-product builds, AIR5 OFF and ON, actually
+compile `astr` through the root CMake with `BUILD_TESTING=OFF`, no test probe
+targets or test definitions, and `--fmad=false` for device geometry. Each
+installs all six in-situ Python files with byte-exact source equality. Native
+CPU/CUDA Catalyst checks are configure-only, not additional full builds.
+The initial checker failure confused a temporary path under `tests/` with an
+internal test-source dependency; its failed receipt is retained. The corrected
+check uses the copied source root and retains target/definition exclusions.
+Receipt: `insitu_x4_production_build_20261007.xml`, four passed, no skips.
+Distinct production binary identities are in the X4 acceptance record. No
+physical solver run or new numerical/performance claim is part of this gate;
+CURVE streamline admission and full X4 remain open.
 
 ## TGV Filter Policy
 

@@ -11,7 +11,7 @@ PROBE = Path(os.environ.get('ASTR_INSITU_VELOCITY_PROBE', ROOT / 'build_insitu_g
 PREFIX = os.environ.get('ASTR_INSITU_DEVICE_MPI_PREFIX')
 
 
-def launch(ranks, axis, mode, scenario='', probe=PROBE):
+def launch(ranks, axis, mode, scenario='', probe=PROBE, mapping=''):
     assert PREFIX, 'Set ASTR_INSITU_DEVICE_MPI_PREFIX to the matching MPI installation'
     env = dict(os.environ, OMPI_MCA_pml='ucx', OMPI_MCA_coll='^hcoll,ucc,cuda',
                OMPI_MCA_coll_hcoll_enable='0', UCX_MEMTYPE_CACHE='n',
@@ -19,7 +19,7 @@ def launch(ranks, axis, mode, scenario='', probe=PROBE):
                UCX_CUDA_IPC_ENABLE_MNNVL='no', UCX_TLS='self,sm,cuda_copy,cuda_ipc',
                ASTR_GPU_HALO_TRANSPORT='device-aware' if mode == 'pinned' else 'pinned')
     return subprocess.run([str(Path(PREFIX) / 'bin/mpirun'), '--prefix', PREFIX,
-                           '-np', str(ranks), str(probe), str(axis), mode, scenario],
+                           '-np', str(ranks), str(probe), str(axis), mode, scenario, str(mapping)],
                           env=env, capture_output=True, text=True, timeout=60)
 
 
@@ -67,3 +67,19 @@ def test_periodic_halo_and_q(ranks, axis, mode):
     assert 'halo_errors=0 source_errors=0' in output
     match = re.search(r'max_error=\s*(\S+)', output)
     assert match and float(match.group(1)) <= 2e-10, output
+
+
+@pytest.mark.parametrize('ranks,axis', [(1, 1), (2, 1), (2, 2), (2, 3)])
+@pytest.mark.parametrize('mode', ['device-aware', 'pinned'])
+@pytest.mark.parametrize('mapping', [1, 2], ids=['periodic', 'y-wavy'])
+def test_physical_coordinate_halo(ranks, axis, mode, mapping, record_property):
+    result = launch(ranks, axis, mode, 'coordinates', mapping=mapping)
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert f'Physical coordinate halo mapping={mapping}' in output, output
+    assert 'mismatches=0 source_unchanged=1 outer_wrap=0 frames=3' in output, output
+    match = re.search(r'coordinate_d2h_bytes=(\d+) coordinate_h2d_bytes=(\d+)', output)
+    assert match, output
+    expected = 3 * 9 * 39 * 39 * 8 if ranks == 2 and mode == 'pinned' else 0
+    assert int(match[1]) == int(match[2]) == expected, output
+    record_property('coordinate_halo_output', output)

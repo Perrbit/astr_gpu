@@ -1,0 +1,367 @@
+module insitu_wall_fields_gpu
+  use cudafor
+  use mpi
+  use iso_fortran_env, only: int64
+  use insitu_device_velocity, only: complete_sample_wall_fields_gpu,velocity_transport_usage_gpu, &
+    extend_sample_wall_primitives_gpu
+  implicit none
+  private
+  public :: capture_channel_wall_fields_gpu
+#ifdef ASTR_AIR5_CHEMISTRY
+  public :: capture_air5_wall_fields_gpu
+#endif
+contains
+  subroutine require_wall(valid,comm,message)
+    logical,intent(in) :: valid
+    integer,intent(in) :: comm
+    character(*),intent(in) :: message
+    integer :: bad,any_bad,ierr
+    bad=merge(0,1,valid)
+    call MPI_Allreduce(bad,any_bad,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(ierr/=MPI_SUCCESS.or.any_bad/=0) then
+      print *, 'ASTR device wall fields: ',message
+      call MPI_Abort(comm,1,ierr)
+    endif
+  end subroutine
+
+#ifdef ASTR_AIR5_CHEMISTRY
+  subroutine capture_air5_wall_fields_gpu(q,xyz,metrics,coordinates,fields,extent,hm,offset_y,comm,budget,reserve)
+    integer,intent(in) :: extent(3),hm,offset_y,comm
+    integer(int64),intent(in) :: budget,reserve
+    real(8),device,intent(in) :: q(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,11)
+    real(8),device,intent(in) :: xyz(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3)
+    real(8),device,intent(in) :: metrics(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3,3)
+    real(8),device,allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
+    real(8),device,allocatable :: state(:,:,:,:)
+    integer,device,allocatable :: invalid(:)
+    integer :: nw,nodes,status,bad,generation
+    integer(int64) :: bytes,free_bytes,total_bytes,required,host_slots,device_slots,d2h,h2d,exchanges
+    call require_wall(all(extent>=2).and.hm>=0.and.offset_y>=0.and.budget>0.and.reserve>=0, &
+      comm,'AIR5 wall shape/budget')
+    nw=merge(1,0,offset_y==0)
+    call require_wall(int(extent(1)+1,int64)*(extent(3)+1)*nw<=huge(nodes)/54, &
+      comm,'AIR5 wall snapshot index overflow')
+    nodes=(extent(1)+1)*(extent(3)+1)*nw
+    bytes=int(nodes,int64)*54*8+4
+    call velocity_transport_usage_gpu(host_slots,device_slots,d2h,h2d,exchanges,generation)
+    required=max(reserve,1073741824_int64)
+    free_bytes=0; total_bytes=0
+    status=cudaMemGetInfo(free_bytes,total_bytes)
+    call require_wall(status==cudaSuccess.and.free_bytes>=required.and.budget>=device_slots, &
+      comm,'AIR5 wall snapshot device reserve')
+    call require_wall(bytes<=budget-device_slots.and.bytes<=free_bytes-required,comm,'AIR5 wall snapshot allocation budget')
+    allocate(state(0:extent(1),0:extent(3),nw,33),coordinates(0:extent(1),0:extent(3),nw,3), &
+      fields(0:extent(1),0:extent(3),nw,18),invalid(1),stat=status)
+    call require_wall(status==0,comm,'AIR5 wall snapshot allocation')
+    invalid=0
+    if(nodes>0) call pack_air5_wall_state<<<(nodes+255)/256,256>>>( &
+      q,state,extent(1),extent(2),extent(3),hm,nw)
+    status=cudaDeviceSynchronize()
+    call require_wall(status==cudaSuccess,comm,'AIR5 wall snapshot pack')
+    call complete_sample_wall_fields_gpu(state,extent,nw,33,comm)
+    if(nodes>0) call derive_air5_wall_fields<<<(nodes+255)/256,256>>>(state,xyz,metrics,coordinates,fields, &
+      invalid,extent(1),extent(2),extent(3),hm,nw)
+    status=cudaDeviceSynchronize()
+    call require_wall(status==cudaSuccess,comm,'AIR5 wall field synchronization')
+    bad=invalid(1)
+    call require_wall(bad==0,comm,'invalid completed AIR5 wall fields')
+    deallocate(state,invalid)
+  end subroutine
+
+  attributes(global) subroutine pack_air5_wall_state(q,state,im,jm,km,hm,nw)
+    integer,value :: im,jm,km,hm,nw
+    real(8),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,11)
+    real(8),device,intent(out) :: state(0:im,0:km,nw,33)
+    integer :: node,i,k,m
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(im+1)*(km+1)*nw) return
+    i=mod(node,im+1); k=node/(im+1)
+    do m=0,2
+      state(i,k,1,11*m+1:11*m+11)=q(i,m,k,:)
+    enddo
+  end subroutine
+
+  attributes(global) subroutine derive_air5_wall_fields(state,xyz,metrics,coordinates,fields,invalid,im,jm,km,hm,nw)
+    use ieee_arithmetic, only: ieee_is_finite
+    use chemistry_flow_state_gpu, only: air5_conservative_to_primitive_gpu
+    use chemistry_transport_gpu, only: air5_transport_properties_gpu
+    integer,value :: im,jm,km,hm,nw
+    real(8),device,intent(in) :: state(0:im,0:km,nw,33)
+    real(8),device,intent(in) :: xyz(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(8),device,intent(in) :: metrics(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3)
+    real(8),device,intent(out) :: coordinates(0:im,0:km,nw,3),fields(0:im,0:km,nw,18)
+    integer,device,intent(inout) :: invalid(*)
+    integer :: node,i,k,m,c,d,status,ignored
+    real(8) :: primitive(12,3),local_q(11),mu,kt,kv,smu(5),binary(5,5),diffusion(5),metric,derivative(3)
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(im+1)*(km+1)*nw) return
+    i=mod(node,im+1); k=node/(im+1)
+    do m=1,3
+      c=11*(m-1)
+      do d=1,11
+        local_q(d)=state(i,k,1,c+d)
+      enddo
+      call air5_conservative_to_primitive_gpu(local_q,primitive(1,m),primitive(2:4,m), &
+        primitive(5,m),primitive(8:12,m),primitive(6,m),primitive(7,m),status)
+      if(status/=0) then
+        ignored=atomicExch(invalid(1),1); return
+      endif
+    enddo
+    call air5_transport_properties_gpu(primitive(5,1),primitive(6,1),primitive(7,1),primitive(8:12,1), &
+      mu,kt,kv,smu,binary,diffusion,status)
+    metric=metrics(i,0,k,2,2)
+    if(status/=0.or..not.ieee_is_finite(metric).or.metric<=0.d0) then
+      ignored=atomicExch(invalid(1),1); return
+    endif
+    derivative=(-0.5d0*primitive([2,5,6],3)+2.d0*primitive([2,5,6],2)- &
+      1.5d0*primitive([2,5,6],1))*metric
+    coordinates(i,k,1,:)=xyz(i,0,k,:)
+    ! Static noncatalytic wall: zero species enthalpy flux and viscous work.
+    fields(i,k,1,:)=[primitive(:,1),mu*derivative(1),-kt*derivative(2),-kv*derivative(3), &
+      0.d0,-kt*derivative(2)-kv*derivative(3),1.d0]
+    if(.not.all(ieee_is_finite(fields(i,k,1,:))).or..not.all(ieee_is_finite(coordinates(i,k,1,:)))) &
+      ignored=atomicExch(invalid(1),1)
+  end subroutine
+#endif
+
+  subroutine capture_channel_wall_fields_gpu(q,xyz,metrics,coordinates,fields,extent,hm,global_y,offset_y, &
+    material,comm,budget,reserve,curve)
+    use ieee_arithmetic, only: ieee_is_finite
+    integer,intent(in) :: extent(3),hm,global_y,offset_y,comm
+    logical,intent(in) :: curve
+    real(8),intent(in) :: material(7)
+    integer(int64),intent(in) :: budget,reserve
+    real(8),device,intent(in) :: q(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,5)
+    real(8),device,intent(in) :: xyz(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3)
+    real(8),device,intent(in) :: metrics(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3,3)
+    real(8),device,allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
+    real(8),device,allocatable :: state(:,:,:,:)
+    real(8),device,allocatable :: primitive(:,:,:,:)
+    integer,device,allocatable :: invalid(:)
+    integer :: nw,first,nodes,status,bad,generation
+    integer(int64) :: bytes,free_bytes,total_bytes,required,host_slots,device_slots,d2h,h2d,exchanges
+    call require_wall(all(extent>=2).and.hm>=0.and.global_y>=extent(2).and.offset_y>=0.and. &
+      offset_y<=global_y-extent(2).and.all(ieee_is_finite(material)).and.minval(material)>0.d0.and. &
+      budget>0.and.reserve>=0.and.(.not.curve.or.(hm>=3.and.minval(extent)>=3)), &
+      comm,'bc41 wall shape/material/budget')
+    nw=0; first=extent(2)
+    if(offset_y==0) then
+      nw=nw+1; first=0
+    endif
+    if(offset_y+extent(2)==global_y) nw=nw+1
+    call require_wall(int(extent(1)+1,int64)*(extent(3)+1)*nw<=huge(nodes)/22, &
+      comm,'wall snapshot index overflow')
+    nodes=(extent(1)+1)*(extent(3)+1)*nw
+    bytes=int(nodes,int64)*22*8+4
+    if(curve) bytes=bytes+int(extent(1)+7,int64)*(extent(3)+7)*nw*4*8
+    call velocity_transport_usage_gpu(host_slots,device_slots,d2h,h2d,exchanges,generation)
+    required=max(reserve,1073741824_int64); free_bytes=0; total_bytes=0
+    status=cudaMemGetInfo(free_bytes,total_bytes)
+    call require_wall(status==cudaSuccess.and.free_bytes>=required.and.budget>=device_slots, &
+      comm,'wall snapshot device reserve')
+    call require_wall(bytes<=budget-device_slots.and.bytes<=free_bytes-required,comm,'wall snapshot allocation budget')
+    allocate(state(0:extent(1),0:extent(3),nw,15),coordinates(0:extent(1),0:extent(3),nw,3), &
+      fields(0:extent(1),0:extent(3),nw,4),invalid(1),stat=status)
+    call require_wall(status==0,comm,'wall snapshot allocation')
+    invalid=0
+    if(nodes>0) call pack_channel_wall_state<<<(nodes+255)/256,256>>>( &
+      q,state,extent(1),extent(2),extent(3),hm,nw,first)
+    status=cudaDeviceSynchronize()
+    call require_wall(status==cudaSuccess,comm,'wall snapshot pack')
+    call complete_sample_wall_fields_gpu(state,extent,nw,15,comm)
+    if(curve) then
+      allocate(primitive(-3:extent(1)+3,-3:extent(3)+3,nw,4),stat=status)
+      call require_wall(status==0,comm,'wall primitive halo allocation')
+      primitive=0.d0
+      if(nodes>0) call pack_curve_wall_primitive<<<(nodes+255)/256,256>>>(state,primitive,invalid, &
+        extent(1),extent(3),nw,material(1),material(3))
+      status=cudaDeviceSynchronize()
+      call require_wall(status==cudaSuccess,comm,'wall primitive halo initialization')
+      bad=invalid(1)
+      call require_wall(bad==0,comm,'invalid CURVE wall primitive state')
+      call extend_sample_wall_primitives_gpu(primitive,extent,nw,comm)
+      if(nodes>0) call derive_curve_wall_fields<<<(nodes+255)/256,256>>>( &
+        state,primitive,xyz,metrics,coordinates,fields,invalid,extent(1),extent(2),extent(3),hm,nw,first, &
+        material(1),material(2),material(3),material(4),material(5),material(6),material(7))
+    else
+      if(nodes>0) call derive_channel_wall_fields<<<(nodes+255)/256,256>>>(state,xyz,metrics,coordinates,fields, &
+        invalid,extent(1),extent(2),extent(3),hm,nw,first, &
+        material(1),material(2),material(3),material(4),material(5),material(6),material(7))
+    endif
+    status=cudaDeviceSynchronize()
+    call require_wall(status==cudaSuccess,comm,'wall field synchronization')
+    bad=invalid(1)
+    call require_wall(bad==0,comm,'nonfinite or nonpositive wall primitive/field')
+    deallocate(state,invalid)
+    if(allocated(primitive)) deallocate(primitive)
+  end subroutine
+
+  attributes(global) subroutine pack_curve_wall_primitive(state,primitive,invalid,im,km,nw,const2,const6)
+    use ieee_arithmetic, only: ieee_is_finite
+    integer,value :: im,km,nw
+    real(8),value :: const2,const6
+    real(8),device,intent(in) :: state(0:im,0:km,nw,15)
+    real(8),device,intent(inout) :: primitive(-3:im+3,-3:km+3,nw,4)
+    integer,device,intent(inout) :: invalid(*)
+    integer :: node,i,k,w,ignored
+    real(8) :: rho,velocity(3),pressure,temperature
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(im+1)*(km+1)*nw) return
+    i=mod(node,im+1); k=mod(node/(im+1),km+1); w=node/((im+1)*(km+1))+1
+    rho=state(i,k,w,1)
+    if(.not.ieee_is_finite(rho).or.rho<=0.d0.or..not.all(ieee_is_finite(state(i,k,w,2:5)))) then
+      ignored=atomicExch(invalid(1),1); return
+    endif
+    velocity=state(i,k,w,2:4)/rho
+    pressure=(state(i,k,w,5)-0.5d0*rho*sum(velocity**2))/const6
+    temperature=pressure/rho*const2
+    if(.not.all(ieee_is_finite(velocity)).or..not.ieee_is_finite(temperature).or.temperature<=0.d0) then
+      ignored=atomicExch(invalid(1),1); return
+    endif
+    primitive(i,k,w,1:3)=velocity; primitive(i,k,w,4)=temperature
+  end subroutine
+
+  attributes(global) subroutine derive_curve_wall_fields(state,primitive,xyz,metrics,coordinates,fields,invalid, &
+    im,jm,km,hm,nw,first_wall,const2,const5,const6,reynolds,prandtl,tempconst,tempconst1)
+    use ieee_arithmetic, only: ieee_is_finite
+    integer,value :: im,jm,km,hm,nw,first_wall
+    real(8),value :: const2,const5,const6,reynolds,prandtl,tempconst,tempconst1
+    real(8),device,intent(in) :: state(0:im,0:km,nw,15),primitive(-3:im+3,-3:km+3,nw,4)
+    real(8),device,intent(in) :: xyz(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(8),device,intent(in) :: metrics(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3)
+    real(8),device,intent(out) :: coordinates(0:im,0:km,nw,3),fields(0:im,0:km,nw,4)
+    integer,device,intent(inout) :: invalid(*)
+    real(8),parameter :: coefficients(3)=[0.75d0,-0.15d0,1.d0/60.d0]
+    integer :: node,i,k,w,j,side,m,c,d,s,ignored
+    real(8) :: velocity(3,3),temperature(3),pressure(3),rho,mu,metric
+    real(8) :: first(3),second(3),inward(3),normal(3),tangent(3),length,orientation
+    real(8) :: directional(3,3),thermal(3),gradient(3,3),stress(3,3)
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(im+1)*(km+1)*nw) return
+    i=mod(node,im+1); k=mod(node/(im+1),km+1); w=node/((im+1)*(km+1))+1
+    j=first_wall; if(w==2) j=jm
+    side=1; if(j==jm) side=-1
+    do m=1,3
+      c=5*(m-1); rho=state(i,k,w,c+1)
+      if(.not.ieee_is_finite(rho).or.rho<=0.d0.or..not.all(ieee_is_finite(state(i,k,w,c+2:c+5)))) then
+        ignored=atomicExch(invalid(1),1); return
+      endif
+      velocity(:,m)=state(i,k,w,c+2:c+4)/rho
+      pressure(m)=(state(i,k,w,c+5)-0.5d0*rho*sum(velocity(:,m)**2))/const6
+      temperature(m)=pressure(m)/rho*const2
+    enddo
+    metric=metrics(i,j,k,2,2)
+    if(.not.all(ieee_is_finite(temperature)).or.minval(temperature)<=0.d0.or. &
+      .not.all(ieee_is_finite(metrics(i,j,k,:,:))).or.metric<=0.d0) then
+      ignored=atomicExch(invalid(1),1); return
+    endif
+    first=0.d0; second=0.d0
+    do s=1,3
+      first=first+coefficients(s)*(xyz(i+s,j,k,:)-xyz(i-s,j,k,:))
+      second=second+coefficients(s)*(xyz(i,j,k+s,:)-xyz(i,j,k-s,:))
+    enddo
+    inward=xyz(i,j+side,k,:)-xyz(i,j,k,:)
+    if(.not.all(ieee_is_finite([first,second,inward]))) then
+      ignored=atomicExch(invalid(1),1); return
+    endif
+    normal=[first(2)*second(3)-first(3)*second(2),first(3)*second(1)-first(1)*second(3), &
+      first(1)*second(2)-first(2)*second(1)]
+    length=sqrt(dot_product(normal,normal))
+    if(.not.ieee_is_finite(length).or.length<=0.d0) then
+      ignored=atomicExch(invalid(1),1); return
+    endif
+    normal=normal/length; orientation=dot_product(normal,inward)
+    if(.not.ieee_is_finite(orientation).or.orientation==0.d0) then
+      ignored=atomicExch(invalid(1),1); return
+    endif
+    if(orientation<0.d0) normal=-normal
+    tangent=[1.d0,0.d0,0.d0]-normal(1)*normal
+    length=sqrt(dot_product(tangent,tangent))
+    if(.not.ieee_is_finite(length).or.length<=0.d0) then
+      ignored=atomicExch(invalid(1),1); return
+    endif
+    tangent=tangent/length
+    directional=0.d0; thermal=0.d0
+    directional(:,2)=real(side,8)*(-0.5d0*velocity(:,3)+2.d0*velocity(:,2)-1.5d0*velocity(:,1))
+    thermal(2)=real(side,8)*(-0.5d0*temperature(3)+2.d0*temperature(2)-1.5d0*temperature(1))
+    do s=1,3
+      directional(:,1)=directional(:,1)+coefficients(s)*(primitive(i+s,k,w,1:3)-primitive(i-s,k,w,1:3))
+      directional(:,3)=directional(:,3)+coefficients(s)*(primitive(i,k+s,w,1:3)-primitive(i,k-s,w,1:3))
+      thermal(1)=thermal(1)+coefficients(s)*(primitive(i+s,k,w,4)-primitive(i-s,k,w,4))
+      thermal(3)=thermal(3)+coefficients(s)*(primitive(i,k+s,w,4)-primitive(i,k-s,w,4))
+    enddo
+    do d=1,3
+      gradient(:,d)=matmul(directional,metrics(i,j,k,:,d))
+    enddo
+    mu=temperature(1)*sqrt(temperature(1))*tempconst1/(temperature(1)+tempconst)/reynolds
+    stress=mu*(gradient+transpose(gradient))
+    do d=1,3
+      stress(d,d)=stress(d,d)-(2.d0/3.d0)*mu*(gradient(1,1)+gradient(2,2)+gradient(3,3))
+    enddo
+    fields(i,k,w,:)=[pressure(1),dot_product(tangent,matmul(stress,normal)), &
+      -((mu/prandtl)/const5)*dot_product(matmul(thermal,metrics(i,j,k,:,:)),normal),normal(2)]
+    coordinates(i,k,w,:)=xyz(i,j,k,:)
+    if(.not.all(ieee_is_finite(fields(i,k,w,:))).or..not.all(ieee_is_finite(coordinates(i,k,w,:)))) &
+      ignored=atomicExch(invalid(1),1)
+  end subroutine
+
+  attributes(global) subroutine pack_channel_wall_state(q,state,im,jm,km,hm,nw,first)
+    integer,value :: im,jm,km,hm,nw,first
+    real(8),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5)
+    real(8),device,intent(out) :: state(0:im,0:km,nw,15)
+    integer :: node,i,k,w,j,side,m,c
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(im+1)*(km+1)*nw) return
+    i=mod(node,im+1); k=mod(node/(im+1),km+1); w=node/((im+1)*(km+1))+1
+    j=first; if(w==2) j=jm
+    side=1; if(j==jm) side=-1
+    do m=0,2
+      do c=1,5
+        state(i,k,w,5*m+c)=q(i,j+side*m,k,c)
+      enddo
+    enddo
+  end subroutine
+
+  attributes(global) subroutine derive_channel_wall_fields(state,xyz,metrics,coordinates,fields,invalid, &
+    im,jm,km,hm,nw,first,const2,const5,const6,reynolds,prandtl,tempconst,tempconst1)
+    use ieee_arithmetic, only: ieee_is_finite
+    integer,value :: im,jm,km,hm,nw,first
+    real(8),value :: const2,const5,const6,reynolds,prandtl,tempconst,tempconst1
+    real(8),device,intent(in) :: state(0:im,0:km,nw,15)
+    real(8),device,intent(in) :: xyz(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(8),device,intent(in) :: metrics(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3)
+    real(8),device,intent(out) :: coordinates(0:im,0:km,nw,3),fields(0:im,0:km,nw,4)
+    integer,device,intent(inout) :: invalid(*)
+    integer :: node,i,k,w,j,side,m,c,d,ignored
+    real(8) :: velocity(3,3),temperature(3),pressure(3),rho,mu,metric,du,dt,kinetic
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(im+1)*(km+1)*nw) return
+    i=mod(node,im+1); k=mod(node/(im+1),km+1); w=node/((im+1)*(km+1))+1
+    j=first; if(w==2) j=jm
+    side=1; if(j==jm) side=-1
+    do m=1,3
+      c=5*(m-1); rho=state(i,k,w,c+1)
+      if(.not.ieee_is_finite(rho).or.rho<=0.d0.or..not.all(ieee_is_finite(state(i,k,w,c+2:c+5)))) then
+        ignored=atomicExch(invalid(1),1); return
+      endif
+      velocity(:,m)=state(i,k,w,c+2:c+4)/rho
+      kinetic=sum(velocity(:,m)**2)
+      pressure(m)=(state(i,k,w,c+5)-0.5d0*rho*kinetic)/const6
+      temperature(m)=pressure(m)/rho*const2
+    enddo
+    metric=metrics(i,j,k,2,2)
+    if(.not.all(ieee_is_finite(temperature)).or.minval(temperature)<=0.d0.or. &
+      .not.ieee_is_finite(metric).or.metric<=0.d0) then
+      ignored=atomicExch(invalid(1),1); return
+    endif
+    mu=temperature(1)*sqrt(temperature(1))*tempconst1/(temperature(1)+tempconst)/reynolds
+    du=(-0.5d0*velocity(1,3)+2.d0*velocity(1,2)-1.5d0*velocity(1,1))*metric
+    dt=(-0.5d0*temperature(3)+2.d0*temperature(2)-1.5d0*temperature(1))*metric
+    fields(i,k,w,:)=[pressure(1),mu*du,-((mu/prandtl)/const5)*dt,real(side,8)]
+    do d=1,3
+      coordinates(i,k,w,d)=xyz(i,j,k,d)
+    enddo
+    if(.not.all(ieee_is_finite(fields(i,k,w,:))).or..not.all(ieee_is_finite(coordinates(i,k,w,:)))) &
+      ignored=atomicExch(invalid(1),1)
+  end subroutine
+end module

@@ -1,5 +1,35 @@
 # ParaView Streamline Coordinate Precision
 
+## CURVE Scale Allocation Preflight
+
+`paraview-6.1.1-allocation-preflight.patch` applies to the private device
+dependency after the existing device-rendering patches. It adds an optional
+Viskores allocation callback, routes host-launched Thrust scratch through that
+allocator, and checks OpenGL buffer growth through ASTR's exported callback.
+No locator, contour, interpolation or RK45 mathematics changes. Apply without
+fuzz, then rebuild `viskores_cont RenderingOpenGL2` and the root-built ASTR
+device products. Never replace libraries while a job uses them.
+
+The callback admits each requested byte count against the decrease in CUDA
+device-wide free memory since the native observer baseline and the configured
+free-memory reserve. Thus retained arrays, deferred frees and earlier frames
+remain counted. Other processes' allocation growth is conservatively counted
+too. The job's current NVML allocation increment is checked independently so
+another process freeing memory does not increase the job's configured budget.
+This is not an atomic cross-process allocator accounting API: the scale route
+requires one MPI rank per physical GPU. Guarded Viskores
+allocations use the synchronous memory allocator, not CUDA asynchronous pools.
+The existing native NVML/RSS checks and external 20 ms measurements remain
+independent. The guard does not promise to intercept every graphics-driver
+texture or arbitrary third-party allocation.
+
+The root-CMake `insitu_allocation_guard_probe` checks large-array rejection
+before malloc, actual Thrust scratch interception, unchanged sort output and
+scratch rejection. `test_insitu_allocation_budget.py` checks overflow-safe
+admission arithmetic separately. Larger CURVE scale admission requires the
+patched dependency and an active native observer; a missing patch cannot
+silently fall back to an unguarded larger run.
+
 The user approved this local ParaView 6.1.1 dependency patch on 2026-09-29.
 It changes four `vtkPoints` allocations to double storage in the serial
 streamline thread output, merged output, and parallel tail creation/reception,

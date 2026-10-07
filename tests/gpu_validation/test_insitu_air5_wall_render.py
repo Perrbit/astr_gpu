@@ -129,7 +129,7 @@ def test_air5_wall_pack_memory_safety(tmp_path):
 @pytest.mark.parametrize('backend,change,message',[
     ('cpu',None,'native EGL rendering requires GPU solver binding'),
     ('gpu',("products='air5_walls'","products='air5_walls',derivative_backend='gpu'"),
-        'wall products require CPU wall diagnostics'),
+        'wall products require CPU diagnostics or an admitted device wall provider'),
 ])
 def test_air5_wall_unsupported_config_rejected(tmp_path,backend,change,message):
     text = config()

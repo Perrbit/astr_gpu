@@ -69,6 +69,66 @@ section below. Unless marked as device processing, earlier derivative/field
 sections describe the default `processing_backend='host'` compatibility path.
 Its volume downloads are not used by the new device entry.
 
+### X4 Bounded Wall and Physical-Plane Device Products
+
+The strict entries additionally admit instantaneous bc41 pressure, signed
++x tangential shear and heat-into-gas images for the internal 16-cubed
+Cartesian channel and the existing 32-cubed static y-wavy TGV fixture.
+Both require FP64, 643e/643e, NP=1/2 x/y/z, explicit pinned/device-aware
+postprocess transport, statistics OFF and wall means OFF. The y-wavy fixture
+checks geometry and projection, not developed-channel physics.
+
+For 32-cubed periodic Cartesian/static periodic CURVE TGV, a physical-plane
+velocity image uses these additions to an otherwise complete `insitu_run`:
+
+```fortran
+ products='velocity_slice', statistics=f,
+ processing_backend='device', derivative_backend='gpu',
+ rendering_pipeline='standard-device', postprocess_transport='pinned',
+ slice_definition='plane', slice_origin=3.d0,0.d0,0.d0,
+ slice_normal=1.d0,0.25d0,-0.125d0,
+```
+
+Use `device_render_pipeline.py`; `direct-device` and `device-aware` are also
+explicit options. Only the normal is normalized, with a globally canonical
+sign; the origin retains physical coordinates. Root broadcasts this identity
+after exact raw rank agreement. The plane uses consistent tetrahedra and FP64
+linear interpolation, not sixth-order reconstruction. Field/geometry arrays
+remain device-resident; no Q is computed for this product. Six canonical plane
+values are checked at exact restart. Common fixed steps/time scheduling is
+required; independent PF/AP clocks and plane statistics are not admitted.
+Nonfinite/zero normals, invalid cells and unrepresentable positive-area
+intersections fail rather than snap, merge or drop triangles. Defaults retain
+the old index plane. The same bounded 32-cubed periodic CURVE fixture now
+admits instantaneous `products='q_surface'`, Q=0.25, u colors [-1,1], both
+strict entries and face transports, NP=1/2 x/y/z, statistics OFF and common
+fixed scheduling. Physical coordinates and fields share GPU edge interpolation;
+this is linear geometry, not sixth-order reconstruction. Nonfinite or zero-area
+triangles fail, without snapping or dropping faces. CURVE streamlines/means,
+independent PF/AP clocks, AIR5 volume products and production-size strict products remain
+separate work. Scope, test-only oracle downloads and immutable receipts
+are in `documents/ASTR_INSITU_X4_ACCEPTANCE.md`.
+
+The existing 16-cubed Cartesian noncatalytic AIR5 HBL now admits ten instantaneous
+wall images through both strict device entries. Select `products='air5_walls'`,
+`processing_backend='device'`, `derivative_backend='gpu'`, an explicit face
+transport, and statistics/mean rendering OFF. Requirements are SI dual-temperature
+five-species, 643e/643e, boundaries [11,50,41,51,1,1] and NP=1/2 x/y/z. GPU
+state/transport reconstruction uses the completed-step wall and two interior
+layers, not a stale material cache. Pressure, T/Tv, five species, signed x shear
+and total heat-into-gas retain the IS5 units/ranges/camera and physical 40:1
+aspect. Images do not export VTK geometry. Field/image/isolation/exact restart
+and memcheck gates pass. Sixteen attributed CUDA/NVTX/MPI/GL captures, matched-MPI
+on/off cost pairs and external 20 ms resource checks pass. No final geometry,
+full-field or UVM D2H occurs. Device-aware x/z faces still incur attributed MPI
+host staging of 4488-byte face payloads; pixels and IceT traffic remain. Initial
+unmatched-MPI cost pairs are historical only, not isolated rendering overhead.
+The zero-positive-inlet fixture is not physical SBLI or separation validation.
+Resident wall accumulation, mean images and the original AIR5-only 1-D
+separation reduction have since passed separate X4-7 gates described below.
+The host diagnostic/statistics provider remains separate and must not be
+relabeled resident.
+
 This is the bounded IS3 integration preset, not a production-scale resource
 certification. It currently admits GPU, internally generated Cartesian,
 periodic five-variable TGV with explicit sixth-order derivatives and local
@@ -848,6 +908,55 @@ full 3-D statistics for rendering; explicit checkpoint state and native device
 statistics accumulation remain available. Images/color/depth/IceT composition,
 bounded metadata, at most 2 KiB/rank/round continuation state, and explicitly
 pinned face staging remain permitted host traffic. This is not zero total D2H.
+
+X4 wall profiles separately admit `statistics=t` in the bounded Cartesian bc41,
+y-wavy CURVE bc41 and noncatalytic AIR5 fixtures. Device providers feed the
+existing FP64 moments directly, with no host wall-field upload or download per
+sample. The original clipped time weights and exact checkpoint layout remain.
+Nonreacting profiles retain volume velocity moments; strict AIR5 walls reject
+`air5_volume_statistics=t`, whose legacy finite-mask download has not passed
+this resident contract. Its host-compatible entry is unchanged. Explicit statistical files and
+checkpoints still transfer state as I/O, not as rendering field supply.
+With `statistics=t`, `wall_mean_render=t` now admits resident mean images for
+these same bounded fixtures. The provider reads device moments, exchanges mean
+endpoints and keeps the original coverage/window metadata, cameras, ranges and
+units. Zero coverage emits no mean image; geometry normal signs are not averaged.
+The pipeline keeps empty mean channels from its first frame so that later
+covered products do not change Catalyst's channel catalog. `wall_separation=t`
+with statistics now admits the original Cartesian AIR5 bottom-wall diagnostic
+only. A GPU thread sums each x profile in the original increasing-z order and
+downloads three 1-D integrals plus finite status, not a 2-D wall field. Geometric
+span weights, unique nodes, zero intervals and the shared CSV publisher are
+unchanged. The zero-inlet fixture remains `not_applicable_no_positive_inflow`.
+Nonreacting bc41/CURVE profiles still require `wall_separation=f`. Host profiles
+retain their existing mean and separation capabilities. See
+`test_insitu_device_wall_statistics.py`, `test_insitu_device_wall_mean_render.py`
+and `test_insitu_device_wall_separation.py`, plus the X4 acceptance receipt.
+Formal reduction traces use `ASTR_X4_DEVICE_WALL_SEPARATION_REDUCE`: a nonempty
+y/z rank reads 408-byte integrals and 4-byte status for each of five samples;
+the y empty-wall rank has no reduction copies. Rendering consumers remain
+bounded controls only and device display copies remain D2D. Explicit archives,
+declared faces/MPI staging and pixels are separate traffic. Means/separation do
+not themselves admit CURVE streamlines or strict AIR5 volume statistics, and
+do not change default-disabled in-situ processing.
+
+X4 separately admits `products='streamlines'` for the bounded 32-cubed static
+periodic and y-wavy CURVE TGV fixtures, FP64 643e/643e, NP=1/2 x/y/z, both strict
+entries and both transports. It uses physical hexahedral location/trilinear
+interpolation rather than uniform-index tracing. Default-OFF
+`mean_streamline_render=t` additionally requires `statistics=t`; covered
+Reynolds/Favre mean velocity products retain actual coverage/start/end metadata.
+Zero coverage does not substitute an instantaneous field. Only requested traces
+are computed, not Q or the other `all` products. Geometric owner queries add at
+most 256 B/rank/round separately from the 2 KiB continuation-state allowance.
+The final 57-case real/reference/restart/safety matrix and 32-case no-oracle,
+no-checkpoint transfer/resource/cost matrix pass. Explicit test-reference I/O is
+not residency evidence. Current four-step, two-frame windows with statistics
+and all four trace products cost about 12--18 s locally; physical RK45 remains
+a measured GPU hotspot, not a completed production performance optimization.
+Independent PF/AP clocks, larger/general CURVE, AIR5 traces and render
+repartition remain unadmitted. See the X4 acceptance record for exact identities,
+raw costs and separate production-source build evidence.
 
 The independent standard-device NP=2 launch passes frames 2/4 with ten JPEG/EPS
 pairs, no VTP and native budgets. The 32-cubed matrix separately covers both

@@ -48,6 +48,18 @@ struct DeviceGeometryAudit {
   std::uint64_t scalar_bytes=0;
 };
 
+struct CheckSurfaceArea : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,WholeArrayIn,WholeArrayIn,FieldOut);
+  using ExecutionSignature=void(_1,_2,_3,_4);
+  template<class X,class I>
+  VISKORES_EXEC void operator()(viskores::Id cell,const X& xyz,const I& indices,viskores::Id& invalid) const {
+    const auto a=xyz.Get(indices.Get(3*cell)),b=xyz.Get(indices.Get(3*cell+1)),c=xyz.Get(indices.Get(3*cell+2));
+    const auto cross=viskores::Cross(b-a,c-a);
+    const auto area2=viskores::Dot(cross,cross);
+    invalid=viskores::IsFinite(area2) && area2>0.?0:1;
+  }
+};
+
 // Both rendering bridges borrow this immutable view. The owner retains every
 // array and its execution token until the graphics consumer has completed.
 struct DeviceGeometryView {
@@ -55,6 +67,7 @@ struct DeviceGeometryView {
   const viskores::Vec3f* velocity=nullptr;
   const double* q=nullptr;
   const double* u=nullptr;
+  const double* scalar=nullptr;
   const viskores::Id* connectivity=nullptr;
   const viskores::Vec3f_32* display_coordinates=nullptr;
   const float* display_speed=nullptr;
@@ -71,12 +84,14 @@ using DisplayMetadata=viskores::Vec<double,9>;
 using DisplayColor=viskores::Vec<viskores::UInt8,4>;
 struct MapDisplayColor : viskores::worklet::WorkletMapField {
   bool speed=false;
-  VISKORES_CONT explicit MapDisplayColor(bool magnitude=false):speed(magnitude) {}
+  double lower=-1.,inverse=0.5;
+  VISKORES_CONT explicit MapDisplayColor(bool magnitude=false,double minimum=-1.,double maximum=1.)
+    :speed(magnitude),lower(magnitude?0.:minimum),inverse(magnitude?1.:1./(maximum-minimum)) {}
   using ControlSignature=void(FieldIn,WholeArrayIn,FieldOut);
   using ExecutionSignature=void(_1,_2,_3);
   template<class Portal>
   VISKORES_EXEC void operator()(double value,const Portal& palette,DisplayColor& color) const {
-    const double position=viskores::Min(1.,viskores::Max(0.,speed?value:.5*(value+1.)))*
+    const double position=viskores::Min(1.,viskores::Max(0.,(value-lower)*inverse))*
       static_cast<double>(palette.GetNumberOfValues()-1);
     const auto lower=static_cast<viskores::Id>(position);
     const auto upper=viskores::Min(lower+1,palette.GetNumberOfValues()-1);
@@ -89,6 +104,20 @@ struct MapDisplayColor : viskores::worklet::WorkletMapField {
   template<class Portal>
   VISKORES_EXEC void operator()(const viskores::Vec3f& value,const Portal& palette,DisplayColor& color) const {
     operator()(viskores::Sqrt(viskores::Dot(value,value)),palette,color);
+  }
+};
+struct PackScalarDisplay : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,FieldIn,FieldOut,FieldOut);
+  using ExecutionSignature=void(_1,_2,_3,_4);
+  VISKORES_EXEC void operator()(const viskores::Vec3f& p,double scalar,
+      viskores::Vec3f_32& display,DisplayMetadata& m) const {
+    bool finite=viskores::IsFinite(scalar);
+    for(int d=0;d<3;++d) {
+      display[d]=static_cast<float>(p[d]);
+      finite=finite && viskores::IsFinite(p[d]) && viskores::IsFinite(display[d]);
+      m[2*d]=m[2*d+1]=p[d];
+    }
+    m[6]=m[7]=scalar;m[8]=finite?0.:1.;
   }
 };
 struct PackSurfaceDisplay : viskores::worklet::WorkletMapField {
@@ -134,7 +163,7 @@ struct PackSurfaceIndex : viskores::worklet::WorkletMapField {
 
 class DeviceGeometryOwner {
   viskores::cont::ArrayHandle<viskores::Vec3f> coordinates,velocity;
-  viskores::cont::ArrayHandle<double> q,u;
+  viskores::cont::ArrayHandle<double> q,u,scalar;
   viskores::cont::ArrayHandle<viskores::Id> connectivity;
   viskores::cont::ArrayHandle<viskores::Vec3f_32> display_coordinates;
   viskores::cont::ArrayHandle<float> display_speed;
@@ -150,7 +179,8 @@ class DeviceGeometryOwner {
       viskores::cont::DeviceAdapterTagCuda{},token));
   }
 public:
-  DeviceGeometryOwner(const viskores::cont::DataSet& data,int step,double time,int empty_arity=3) {
+  DeviceGeometryOwner(const viskores::cont::DataSet& data,int step,double time,int empty_arity=3,
+      const char* scalar_field=nullptr) {
     if(empty_arity!=2 && empty_arity!=3) throw std::invalid_argument("Invalid device product arity");
     view.arity=empty_arity;
     if(step<0 || !std::isfinite(time) || cudaGetDevice(&view.device)!=cudaSuccess)
@@ -167,23 +197,29 @@ public:
        view.cells>std::numeric_limits<viskores::Id>::max()/3)
       throw std::overflow_error("Display surface extent exceeds index capacity");
     coordinates=data.GetCoordinateSystem().GetData().AsArrayHandle<decltype(coordinates)>();
-    velocity=data.GetPointField("velocity").GetData().AsArrayHandle<decltype(velocity)>();
-    q=data.GetPointField("Q_rs").GetData().AsArrayHandle<decltype(q)>();
-    u=data.GetPointField("u").GetData().AsArrayHandle<decltype(u)>();
+    if(scalar_field) scalar=data.GetPointField(scalar_field).GetData().AsArrayHandle<decltype(scalar)>();
+    else {
+      velocity=data.GetPointField("velocity").GetData().AsArrayHandle<decltype(velocity)>();
+      q=data.GetPointField("Q_rs").GetData().AsArrayHandle<decltype(q)>();
+      u=data.GetPointField("u").GetData().AsArrayHandle<decltype(u)>();
+    }
     const auto cells=data.GetCellSet().AsCellSet<viskores::cont::CellSetSingleType<>>();
     const auto shape=cells.GetCellShape(0);
     if(shape!=viskores::CELL_SHAPE_TRIANGLE && shape!=viskores::CELL_SHAPE_LINE)
       throw std::runtime_error("Device product requires triangle or line connectivity");
     view.arity=shape==viskores::CELL_SHAPE_TRIANGLE?3:2;
     connectivity=cells.GetConnectivityArray(viskores::TopologyElementTagCell{},viskores::TopologyElementTagPoint{});
-    if(velocity.GetNumberOfValues()!=view.points || q.GetNumberOfValues()!=view.points ||
-       u.GetNumberOfValues()!=view.points || connectivity.GetNumberOfValues()!=view.arity*view.cells)
+    if((scalar_field?scalar.GetNumberOfValues()!=view.points:
+       velocity.GetNumberOfValues()!=view.points || q.GetNumberOfValues()!=view.points ||
+       u.GetNumberOfValues()!=view.points) || connectivity.GetNumberOfValues()!=view.arity*view.cells)
       throw std::runtime_error("Device surface fields/connectivity have inconsistent extents");
-    require_device_only(coordinates);require_device_only(velocity);
-    require_device_only(q);require_device_only(u);require_device_only(connectivity);
+    require_device_only(coordinates);require_device_only(connectivity);
+    if(scalar_field) require_device_only(scalar);
+    else {require_device_only(velocity);require_device_only(q);require_device_only(u);}
     viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});
     viskores::cont::ArrayHandle<DisplayMetadata> metadata;
-    invoke(PackSurfaceDisplay{},coordinates,velocity,q,u,display_coordinates,display_speed,metadata);
+    if(scalar_field) invoke(PackScalarDisplay{},coordinates,scalar,display_coordinates,metadata);
+    else invoke(PackSurfaceDisplay{},coordinates,velocity,q,u,display_coordinates,display_speed,metadata);
     synchronize_device_stage("PackSurfaceDisplay");
     DisplayMetadata initial;
     for(int d=0;d<4;++d) {
@@ -201,16 +237,20 @@ public:
     synchronize_device_stage("PackSurfaceIndex");
     if(viskores::cont::Algorithm::Reduce(viskores::cont::DeviceAdapterTagCuda{},bad_indices,viskores::Id(0))!=0)
       throw std::runtime_error("Out-of-range device surface connectivity");
-    view.coordinates=pin(coordinates);view.velocity=pin(velocity);
-    view.q=pin(q);view.u=pin(u);view.connectivity=pin(connectivity);
-    view.display_coordinates=pin(display_coordinates);view.display_speed=pin(display_speed);
+    view.coordinates=pin(coordinates);view.connectivity=pin(connectivity);
+    if(scalar_field) view.scalar=pin(scalar);
+    else {view.velocity=pin(velocity);view.q=pin(q);view.u=pin(u);view.display_speed=pin(display_speed);}
+    view.display_coordinates=pin(display_coordinates);
     view.display_connectivity=pin(display_connectivity);
   }
   DeviceGeometryOwner(const DeviceGeometryOwner&)=delete;
   DeviceGeometryOwner& operator=(const DeviceGeometryOwner&)=delete;
   const DeviceGeometryView& get() const {return view;}
-  const DisplayColor* color_display(const std::vector<double>& values,bool speed=false) {
+  const DisplayColor* color_display(const std::vector<double>& values,bool speed=false,
+      double minimum=-1.,double maximum=1.) {
     if(values.size()!=4096*3) throw std::invalid_argument("Invalid bounded display palette");
+    if(!std::isfinite(minimum) || !std::isfinite(maximum) || minimum>=maximum || (speed && view.scalar))
+      throw std::invalid_argument("Invalid device scalar display range");
     if(!view.points) return nullptr;
     std::vector<viskores::Vec3f> table(4096);
     for(std::size_t i=0;i<table.size();++i) for(int d=0;d<3;++d) {
@@ -221,7 +261,8 @@ public:
     }
     const auto palette=viskores::cont::make_ArrayHandle(table,viskores::CopyFlag::On);
     viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});
-    if(speed) invoke(MapDisplayColor{true},velocity,palette,display_colors);
+    if(view.scalar) invoke(MapDisplayColor{false,minimum,maximum},scalar,palette,display_colors);
+    else if(speed) invoke(MapDisplayColor{true},velocity,palette,display_colors);
     else invoke(MapDisplayColor{},u,palette,display_colors);
     synchronize_device_stage("MapDisplayColor");
     return pin(display_colors);
@@ -281,13 +322,16 @@ inline viskores::cont::DataSet triangulate_device_slice(const viskores::cont::Da
 inline DeviceGeometry extract_tgv_geometry(viskores::Vec3f* velocity_pointer,
     DeviceDiagnostics* diagnostics_pointer,const viskores::Id3& dimensions,
     const viskores::Id3& offset,bool slice_enabled,bool surface_enabled,double iso=.25,
-    DeviceGeometryAudit* audit=nullptr,int global_cells=32) {
-  if(global_cells!=32 && global_cells!=256)
+    DeviceGeometryAudit* audit=nullptr,int global_cells=32,viskores::Vec3f* physical_pointer=nullptr) {
+  if(global_cells!=32 && global_cells!=256 && !(physical_pointer && (global_cells==64 || global_cells==128)))
     throw std::invalid_argument("Unsupported bounded TGV geometry resolution");
   for(int d=0;d<3;++d)
     if(dimensions[d]<2 || offset[d]<0 || offset[d]+dimensions[d]>global_cells+1)
       throw std::invalid_argument("IS8 geometry requires a bounded 32-cell TGV partition");
   if(!std::isfinite(iso)) throw std::invalid_argument("Nonfinite contour threshold");
+  if(physical_pointer && ((global_cells!=32 && global_cells!=64 && global_cells!=128 && global_cells!=256) ||
+      slice_enabled || !surface_enabled))
+    throw std::invalid_argument("Physical contour coordinates require bounded CURVE Q-only extraction");
   const auto nodes=dimensions[0]*dimensions[1]*dimensions[2];
   const double h=2.*std::acos(-1.)/global_cells;
   const viskores::Vec3f origin(offset[0]*h,offset[1]*h,offset[2]*h),spacing(h,h,h);
@@ -319,12 +363,36 @@ inline DeviceGeometry extract_tgv_geometry(viskores::Vec3f* velocity_pointer,
     auto grid=viskores::cont::DataSetBuilderUniform().Create(dimensions,origin,spacing);
     grid.AddPointField("Q_rs",q); grid.AddPointField("u",u);
     grid.AddPointField("velocity",velocity);
+    if(physical_pointer) grid.AddPointField("_astr_physical_xyz",borrow_cuda_array(physical_pointer,nodes));
     viskores::filter::contour::ContourFlyingEdges contour;
     contour.SetActiveField("Q_rs"); contour.SetIsoValue(iso);
     contour.SetGenerateNormals(false);
-    contour.SetFieldsToPass({"Q_rs","u","velocity"});
+    if(physical_pointer) contour.SetFieldsToPass({"Q_rs","u","velocity","_astr_physical_xyz"});
+    else contour.SetFieldsToPass({"Q_rs","u","velocity"});
     products.surface=contour.Execute(grid);
     synchronize_device_stage("FlyingEdges");
+    if(physical_pointer) {
+      // The contour's edge fractions interpolate physical coordinates and fields
+      // together. Its temporary uniform coordinates are never used for rendering.
+      auto physical=products.surface.GetPointField("_astr_physical_xyz").GetData().AsArrayHandle<
+        viskores::cont::ArrayHandle<viskores::Vec3f>>();
+      auto computational=products.surface.GetCoordinateSystem().GetData().AsArrayHandle<decltype(physical)>();
+      viskores::cont::DataSet mapped;
+      mapped.SetCellSet(products.surface.GetCellSet());
+      mapped.AddCoordinateSystem(viskores::cont::CoordinateSystem("coords",physical));
+      for(const char* name:{"Q_rs","u","velocity"}) mapped.AddField(products.surface.GetPointField(name));
+      mapped.AddPointField("_astr_computational_xyz",computational);
+      products.surface=std::move(mapped);
+      const auto cells=products.surface.GetCellSet().AsCellSet<viskores::cont::CellSetSingleType<>>();
+      const auto indices=cells.GetConnectivityArray(viskores::TopologyElementTagCell{},viskores::TopologyElementTagPoint{});
+      viskores::cont::ArrayHandle<viskores::Id> invalid;
+      invoke(CheckSurfaceArea{},viskores::cont::ArrayHandleIndex(cells.GetNumberOfCells()),physical,indices,invalid);
+      synchronize_device_stage("CheckPhysicalContourArea");
+      if(viskores::cont::Algorithm::Reduce(viskores::cont::DeviceAdapterTagCuda{},invalid,viskores::Id(0))!=0)
+        throw std::runtime_error("CURVE contour has nonfinite or zero-area triangles");
+      synchronize_device_stage("ReducePhysicalContourArea");
+      require_device_only(physical);require_device_only(computational);require_device_only(invalid);
+    }
     require_device_only(diagnostics); require_device_only(q); require_device_only(u);
     if(audit) {
       viskores::cont::Token token;

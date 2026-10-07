@@ -28,6 +28,7 @@ struct DeviceMesh {
   std::string name;
   DeviceDrawView draw;
   std::shared_ptr<void> owner;
+  std::map<std::string,double> controls;
 };
 std::vector<double> device_display_palette();
 int render_resident_products(const char* pipeline,const char* backend,const char* script,int fcomm,

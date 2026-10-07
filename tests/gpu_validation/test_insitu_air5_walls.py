@@ -1,5 +1,7 @@
 """Approved noncatalytic AIR5 wall fields at the completed coupled-step hook."""
 from types import SimpleNamespace
+import os
+from pathlib import Path
 import re
 import h5py
 import numpy as np
@@ -23,7 +25,8 @@ CHECKPOINT_SCALES = np.r_[CONSERVATIVE_SCALES, CONSERVATIVE_SCALES,
 
 
 def arguments(output, topology):
-    return SimpleNamespace(output=output, executable=ROOT / "build_insitu_air5_gpu/bin/astr",
+    return SimpleNamespace(output=output, executable=Path(os.environ.get('ASTR_OUTPUT_INSITU_EXE',
+        ROOT / "build_insitu_air5_gpu/bin/astr")),
         mpiexec=MPIEXEC, case="hbl", reconstruction=5, mean_statistics=False,
         sample_interval=2, mode="steps", initial_restart=False, filter_workspace="scalar",
         axis="xyz"[next((i for i, size in enumerate(topology) if size > 1), 0)], top_mode="characteristic")
@@ -55,11 +58,11 @@ def reference(request, tmp_path_factory):
     return args, topology, ranks, cases
 
 
-def global_fields(case, ranks):
+def global_fields(case, ranks, step=4):
     coverage = np.zeros((17, 16), dtype=int)
     result = np.zeros((17, 16, 18))
     for rank in range(ranks):
-        header, xyz, fields, owned = read_wall(case / f"outdat/sample.air5_wall.step00000004.rank{rank:08d}.bin")
+        header, xyz, fields, owned = read_wall(case / f"outdat/sample.air5_wall.step{step:08d}.rank{rank:08d}.bin")
         for i, k, w in np.ndindex(owned.shape):
             if not owned[i, k, w]:
                 continue

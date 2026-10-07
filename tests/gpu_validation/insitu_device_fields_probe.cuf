@@ -62,6 +62,21 @@ contains
       if(q(i,j,k,c)/=state(c)) ignored=atomicExch(errors(2),1)
     enddo
   end subroutine
+
+  attributes(global) subroutine initialize_wall_reduction(coordinates,fields,im,km,nw,offset_x,offset_z)
+    integer,value :: im,km,nw,offset_x,offset_z
+    real(8),device,intent(out) :: coordinates(0:im,0:km,nw,3),fields(0:im,0:km,nw,18)
+    integer :: node,i,k
+    real(8) :: x,z
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(im+1)*(km+1)*nw) return
+    i=mod(node,im+1); k=node/(im+1)
+    x=.08d0*real(offset_x+i,8)/32.d0
+    z=.002d0*(real(offset_z+k,8)/32.d0)**2
+    coordinates(i,k,1,:)=[x,0.d0,z]
+    fields(i,k,1,:)=0.d0
+    fields(i,k,1,13)=(.04d0-x)*(1.d0+z/.002d0)
+  end subroutine
 end module
 
 program insitu_device_fields_probe
@@ -110,10 +125,10 @@ program insitu_device_fields_probe
   if(status/=cudaSuccess) call MPI_Abort(comm,5,ierr)
   call begin_velocity_transport_gpu(trim(mode),extent,dims,neighbors,comm, &
     67108864_int64,67108864_int64,1073741824_int64)
-  call snapshot_periodic_velocity_gpu(q,velocity,extent,3,5,dims,neighbors,comm, &
+  call snapshot_sample_velocity_gpu(q,velocity,extent,3,5,dims,neighbors,comm, &
     67108864_int64,1073741824_int64)
-  call extend_periodic_velocity_gpu(velocity,halo,extent,comm,67108864_int64,1073741824_int64)
-  call derive_periodic_velocity_gpu(halo,metrics,derived,extent,3,comm,67108864_int64,1073741824_int64)
+  call extend_sample_velocity_gpu(velocity,halo,extent,comm,67108864_int64,1073741824_int64)
+  call derive_sample_velocity_gpu(halo,metrics,derived,extent,3,comm,67108864_int64,1073741824_int64)
   errors=0
   call verify_tgv_source_and_halo<<<(nodes+255)/256,256>>>(q,halo,errors,extent(1),extent(2),extent(3),coords_d)
   status=cudaDeviceSynchronize()
@@ -154,12 +169,60 @@ program insitu_device_fields_probe
   call MPI_Allreduce(error,maximum,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
   if(rank==0) write(*,'(a,i0,3a,es24.16,2(a,i0))') 'Device periodic diagnostics NP=',np,' backend=',trim(mode), &
     ' max_error=',maximum,' halo_errors=',all_bad(1),' source_errors=',all_bad(2)
+  call verify_wall_reduction()
   call end_velocity_transport_gpu(comm)
   deallocate(q,metrics,velocity,halo,derived,coords_d,errors,diagnostic)
   call MPI_Comm_free(comm,ierr)
   call MPI_Finalize(ierr)
   if(maximum>2.d-10.or.any(all_bad/=0)) stop 8
 contains
+  subroutine verify_wall_reduction()
+    use ieee_arithmetic, only: ieee_value,ieee_quiet_nan
+    real(8),device,allocatable :: coordinates(:,:,:,:),fields(:,:,:,:)
+    real(8),allocatable :: weights(:),profile(:,:)
+    real(8) :: local(0:32,3),global(0:32,3),expected(3),left,right,z,weight,x,worst
+    integer :: im,km,nw,ox,oz,nx,gi,gk,i,k
+    integer(int64) :: budget
+    character(32) :: scenario
+    call get_command_argument(3,scenario)
+    im=extent(1); km=extent(3); ox=coords(1)*im; oz=coords(3)*km
+    nw=merge(1,0,coords(2)==0); nx=im+merge(1,0,ox+im==32)
+    allocate(coordinates(0:im,0:km,nw,3),fields(0:im,0:km,nw,18),weights(0:km-1),profile(0:im,3))
+    if(nw>0) call initialize_wall_reduction<<<((im+1)*(km+1)+255)/256,256>>>( &
+      coordinates,fields,im,km,nw,ox,oz)
+    status=cudaDeviceSynchronize()
+    if(status/=cudaSuccess) call MPI_Abort(comm,9,ierr)
+    if(nw>0.and.scenario=='wall-nonfinite') fields(0,0,1,13)=ieee_value(0.d0,ieee_quiet_nan)
+    do k=0,km-1
+      gk=oz+k
+      left=.002d0*(real(modulo(gk-1,32),8)/32.d0)**2
+      if(gk==0) left=left-.002d0
+      right=.002d0*(real(gk+1,8)/32.d0)**2
+      weights(k)=.5d0*(right-left)
+    enddo
+    if(scenario=='wall-weight') weights(0)=0.d0
+    budget=67108864_int64
+    if(scenario=='wall-budget') budget=1
+    call reduce_sample_wall_shear_gpu(coordinates,fields,weights,nx,13,profile,comm,budget,1073741824_int64,0_int64)
+    local=0.d0; local(ox:ox+im,:)=profile
+    call MPI_Allreduce(local,global,size(local),MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
+    worst=0.d0
+    do gi=0,32
+      expected=0.d0; x=.08d0*real(gi,8)/32.d0
+      do gk=0,31
+        z=.002d0*(real(gk,8)/32.d0)**2
+        left=.002d0*(real(modulo(gk-1,32),8)/32.d0)**2
+        if(gk==0) left=left-.002d0
+        right=.002d0*(real(gk+1,8)/32.d0)**2
+        weight=.5d0*(right-left)
+        expected=expected+[weight*x,weight*(.04d0-x)*(1.d0+z/.002d0),weight]
+      enddo
+      worst=max(worst,maxval(abs(global(gi,:)-expected)))
+    enddo
+    if(rank==0) write(*,'(a,es24.16)') 'PASS device physical-span shear profile max_error=',worst
+    if(worst>2.d-10.or..not.all(ieee_is_finite(global))) call MPI_Abort(comm,10,ierr)
+  end subroutine
+
   subroutine host_velocity(index,value)
     integer,intent(in) :: index(3)
     real(8),intent(out) :: value(3)

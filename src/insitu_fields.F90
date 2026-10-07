@@ -123,6 +123,9 @@ contains
 #endif
 #ifdef _CUDA
     use insitu_sample_gpu, only: download_wall_state_gpu
+#ifdef ASTR_BUILD_TESTING
+    use insitu_sample_gpu, only: check_device_wall_fields_gpu
+#endif
 #endif
     real(real64),allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
     logical,allocatable,intent(out) :: owned(:,:,:)
@@ -224,6 +227,9 @@ contains
     enddo
     call require_fields(local_status==0.and.all(ieee_is_finite(fields)).and. &
       all(ieee_is_finite(coordinates)),'invalid completed AIR5 wall fields')
+#if defined(_CUDA) && defined(ASTR_BUILD_TESTING)
+    if(use_gpu) call check_device_wall_fields_gpu(coordinates,fields,host_budget,device_budget,reserve,.true.)
+#endif
 #else
     download_bytes=0
     call require_fields(.false.,'AIR5 wall capture requires ASTR_WITH_AIR5_CHEMISTRY')
@@ -303,6 +309,9 @@ contains
     use insitu_geometry, only: wall_frame
 #ifdef _CUDA
     use insitu_sample_gpu, only: download_wall_state_gpu
+#ifdef ASTR_BUILD_TESTING
+    use insitu_sample_gpu, only: check_device_wall_fields_gpu
+#endif
 #endif
     real(real64),allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
     logical,allocatable,intent(out) :: owned(:,:,:)
@@ -462,6 +471,10 @@ contains
     enddo
     call require_fields(status==0.and.all(ieee_is_finite(fields)).and.all(ieee_is_finite(coordinates)), &
       'invalid wall primitive state or diagnostic')
+#if defined(_CUDA) && defined(ASTR_BUILD_TESTING)
+    if(use_gpu) call check_device_wall_fields_gpu( &
+      coordinates,fields,host_budget,device_budget,reserve)
+#endif
     if(lreadgrid) call record_curve_wall_integrals(coordinates,fields,walls(1:nw))
   end subroutine
 
