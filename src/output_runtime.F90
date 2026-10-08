@@ -9,7 +9,8 @@ module output_runtime
     lreadgrid,gridfile,ninit,diffterm,lfilter,nondimen,turbmode,recon_schem,lchardecomp
   use commarray, only: q,rho,vel,prs,tmp,x,jacob,dxi
   use parallel, only: ig0,jg0,kg0,mpirank,irk,mpisize
-  use bc, only: bctype,turbinf,ninflowslice,complete_inflow_cpu_file
+  use bc, only: bctype,turbinf,ninflowslice,complete_inflow_cpu_file, &
+    configure_wall_blowing,wall_blowing_legacy_random
   use output_input_resources, only: set_inflow_resource_root,inflow_source_path, &
     inflow_source_name,discover_inflow_sources,set_initial_resource_root,initial_source_path,initial_source_name
   use output_config, only: output_options
@@ -210,6 +211,24 @@ contains
     if(trim(path)=='none in this run'.and.len_trim(options%restore_directory)>0) path=options%restore_directory
   end function
 
+  logical function extruded_profile_output_case()
+    extruded_profile_output_case=trim(flowtype)=='bl'.and..not.lreadgrid.and.ninit==2.and.nondimen.and. &
+      trim(conschm)=='743e'.and.trim(difschm)=='643e'.and.recon_schem==5.and.lchardecomp.and. &
+      .not.lfilter.and.trim(turbinf)=='prof'.and.all(bctype==[11,21,41,50,1,1])
+  end function
+
+  function profile_grid_resource_name() result(name)
+    character(128) :: name
+    name='grid.h5'
+    if(extruded_profile_output_case()) name='grid.2d'
+  end function
+
+  function profile_grid_resource_source() result(path)
+    character(1200) :: path
+    path=gridfile
+    if(extruded_profile_output_case()) path='datin/grid.2d'
+  end function
+
   subroutine check_capability()
     logical :: supported_case
     supported_case=(trim(flowtype)=='tgv'.and.all(bctype==1)).or. &
@@ -218,7 +237,7 @@ contains
       all(bctype==[1,1,41,41,1,1]).and.trim(conschm)=='643e'.and.trim(difschm)=='643e').or. &
       (trim(flowtype)=='channel'.and.all(bctype==[1,1,41,41,1,1])).or. &
       (trim(flowtype)=='bl'.and.lreadgrid.and.(trim(turbinf)=='prof'.or.trim(turbinf)=='intp').and. &
-      all(bctype==[11,21,41,51,1,1]))
+      all(bctype==[11,21,41,51,1,1])).or.extruded_profile_output_case()
     supported_case=supported_case.and.numq==5.and.num_species==0.and.num_modequ==0.and. &
       .not.lcomb.and.(.not.lavg.or..not.use_gpu.or.trim(flowtype)=='bl')
     call check((supported_case.or.air5_output_case()).and..not.lcracon.and..not.limmbou.and. &
@@ -273,6 +292,11 @@ contains
     call load_output_options()
     if(.not.enabled) return
     if(len_trim(options%restore_directory)>0) then
+      call check(.not.extruded_profile_output_case(), &
+        'extruded UDF grid restart resource rebinding is not yet admitted')
+      if(trim(flowtype)=='bl'.and.bctype(3)==41) call configure_wall_blowing()
+      call check(.not.wall_blowing_legacy_random, &
+        'legacy_random restart requires RNG state support; not yet admitted')
       call validate_checkpoint_bundle(trim(options%restore_directory),MPI_COMM_WORLD,ok)
       call check(ok,'invalid new checkpoint bundle')
     endif
@@ -305,7 +329,7 @@ contains
     if(static_count==0) return
     do i=1,static_count
       if(i==1) then
-        path=output_resource_path('grid.h5',trim(gridfile))
+        path=output_resource_path(trim(profile_grid_resource_name()),trim(profile_grid_resource_source()))
       else
         path=output_resource_path('inlet.prof','datin/inlet.prof')
       endif
@@ -574,7 +598,8 @@ contains
     if(trim(flowtype)=='tgv'.and.lreadgrid) &
       call freeze_static_resource('grid.h5',trim(gridfile),static_resource_crc(1))
     if(trim(flowtype)=='bl') then
-      call freeze_static_resource('grid.h5',trim(gridfile),static_resource_crc(1))
+      call freeze_static_resource(trim(profile_grid_resource_name()),trim(profile_grid_resource_source()), &
+        static_resource_crc(1))
       call freeze_static_resource('inlet.prof','datin/inlet.prof',static_resource_crc(2))
       if(dynamic_output_case()) call freeze_inflow_resources()
     endif
@@ -1239,7 +1264,10 @@ contains
     call check(err==0,'checkpoint resource-name allocation')
     resources(1:2)=[character(128) :: 'geometry.h5','input.txt']
     if(trim(flowtype)=='tgv'.and.lreadgrid) resources(3)='grid.h5'
-    if(trim(flowtype)=='bl') resources(3:4)=[character(128) :: 'grid.h5','inlet.prof']
+    if(trim(flowtype)=='bl') then
+      resources(3)=profile_grid_resource_name()
+      resources(4)='inlet.prof'
+    endif
     if(dynamic_output_case()) then
       resources(5)='inflow_index.bin'
       do i=1,inflow_count

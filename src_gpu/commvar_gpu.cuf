@@ -3,13 +3,15 @@ module commvar_gpu
   implicit none
 
   real(8),constant :: mach_d
+  real(8),constant :: bfacmpld_d
   logical,constant :: metric_consistent_eps_d
 contains
   subroutine copy_commvar_to_gpu()
-    use commvar, only: mach
+    use commvar, only: mach,bfacmpld
     implicit none
 
     mach_d = mach
+    bfacmpld_d = bfacmpld
     metric_consistent_eps_d = .false.
   end subroutine copy_commvar_to_gpu
 

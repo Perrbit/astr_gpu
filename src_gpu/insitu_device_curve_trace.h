@@ -51,19 +51,18 @@ inline PhysicalTraceData crop_physical_trace_halo(
     const viskores::cont::ArrayHandle<viskores::Vec3f>& coordinates,
     const viskores::cont::ArrayHandle<viskores::Vec3f>& trace,
     const viskores::cont::ArrayHandle<viskores::Vec3f>& color,
-    const viskores::Id3& extent,const viskores::Id3& offset,int global_cells) {
+    const viskores::Id3& extent,const viskores::Id3& offset,const viskores::Id3& global_cells) {
   PhysicalTraceData data;
   const viskores::Id3 input_dimensions=extent+viskores::Id3(7);
   const auto nodes=input_dimensions[0]*input_dimensions[1]*input_dimensions[2];
-  if((global_cells!=32 && global_cells!=64 && global_cells!=128 && global_cells!=256) ||
-      coordinates.GetNumberOfValues()!=nodes ||
+  if(coordinates.GetNumberOfValues()!=nodes ||
       trace.GetNumberOfValues()!=nodes || color.GetNumberOfValues()!=nodes)
     throw std::invalid_argument("Invalid bounded physical streamline halo extent");
   for(int d=0;d<3;++d) {
-    if(extent[d]<1 || offset[d]<0 || offset[d]+extent[d]>global_cells)
+    if(global_cells[d]<1 || extent[d]<1 || offset[d]<0 || offset[d]+extent[d]>global_cells[d])
       throw std::invalid_argument("Invalid physical streamline partition");
     data.begin[d]=std::max<viskores::Id>(0,offset[d]-3);
-    const auto end=std::min<viskores::Id>(global_cells,offset[d]+extent[d]+3);
+    const auto end=std::min<viskores::Id>(global_cells[d],offset[d]+extent[d]+3);
     data.dimensions[d]=end-data.begin[d]+1;
   }
   // Only interior-rank halos are cells. No periodic wrap or invented outer geometry.
@@ -87,12 +86,20 @@ inline PhysicalTraceData crop_physical_trace_halo(
   return data;
 }
 
+inline PhysicalTraceData crop_physical_trace_halo(
+    const viskores::cont::ArrayHandle<viskores::Vec3f>& coordinates,
+    const viskores::cont::ArrayHandle<viskores::Vec3f>& trace,
+    const viskores::cont::ArrayHandle<viskores::Vec3f>& color,
+    const viskores::Id3& extent,const viskores::Id3& offset,int global_cells) {
+  return crop_physical_trace_halo(coordinates,trace,color,extent,offset,viskores::Id3(global_cells));
+}
+
 template<class Locator,class Coordinates>
 struct ExecutionPhysicalTraceOwner {
   Locator locator;
   Coordinates coordinates;
   viskores::Id3 cells,begin,offset,extent;
-  viskores::Id global_cells;
+  viskores::Id3 global_cells;
   VISKORES_EXEC viskores::Vec<viskores::Id,8> PointIds(viskores::Id id) const {
     const viskores::Id3 index(id%cells[0],id/cells[0]%cells[1],id/(cells[0]*cells[1]));
     const auto dims=cells+viskores::Id3(1);
@@ -171,7 +178,7 @@ struct ExecutionPhysicalTraceOwner {
       if(valid==-1) continue;
       const viskores::Id3 index(id%cells[0],id/cells[0]%cells[1],id/(cells[0]*cells[1]));
       const auto global=index+begin;
-      const auto candidate=global[0]+global_cells*(global[1]+global_cells*global[2]);
+      const auto candidate=global[0]+global_cells[0]*(global[1]+global_cells[1]*global[2]);
       if(candidate<best) {best=candidate;selected=id;pcoords=refined;}
     }
     return selected<0?-1:best;
@@ -194,7 +201,7 @@ struct ExecutionPhysicalTraceOwner {
           const viskores::Id3 index(selected%cells[0],selected/cells[0]%cells[1],
             selected/(cells[0]*cells[1]));
           const auto global=index+begin;
-          return global[0]+global_cells*(global[1]+global_cells*global[2]);
+          return global[0]+global_cells[0]*(global[1]+global_cells[1]*global[2]);
         }
       }
     }
@@ -203,7 +210,8 @@ struct ExecutionPhysicalTraceOwner {
   }
   VISKORES_EXEC bool Owns(viskores::Id id) const {
     if(id<0) return false;
-    const viskores::Id3 index(id%global_cells,id/global_cells%global_cells,id/(global_cells*global_cells));
+    const viskores::Id3 index(id%global_cells[0],id/global_cells[0]%global_cells[1],
+      id/(global_cells[0]*global_cells[1]));
     for(int d=0;d<3;++d) if(index[d]<offset[d] || index[d]>=offset[d]+extent[d]) return false;
     return true;
   }
@@ -216,10 +224,10 @@ class PhysicalTraceOwner : public viskores::cont::ExecutionObjectBase {
   viskores::cont::CellLocatorTwoLevel locator;
   viskores::cont::ArrayHandle<viskores::Vec3f> coordinates;
   viskores::Id3 cells,begin,offset,extent;
-  viskores::Id global_cells;
+  viskores::Id3 global_cells;
 public:
   PhysicalTraceOwner(const PhysicalTraceData& data,const viskores::Id3& extent,
-      const viskores::Id3& offset,int global_cells)
+      const viskores::Id3& offset,const viskores::Id3& global_cells)
     : coordinates(data.coordinates),cells(data.dimensions-viskores::Id3(1)),begin(data.begin),offset(offset),
       extent(extent),global_cells(global_cells) {
     locator.SetCoordinates(data.grid.GetCoordinateSystem());locator.SetCellSet(data.grid.GetCellSet());
@@ -227,6 +235,9 @@ public:
     synchronize_device_stage("PhysicalTraceOwnerLocator");
     require_device_only(data.coordinates);
   }
+  PhysicalTraceOwner(const PhysicalTraceData& data,const viskores::Id3& extent,
+      const viskores::Id3& offset,int global_cells)
+    :PhysicalTraceOwner(data,extent,offset,viskores::Id3(global_cells)) {}
   auto PrepareForExecution(viskores::cont::DeviceAdapterId device,viskores::cont::Token& token) const {
     auto execution=locator.PrepareForExecution(device,token);
     auto points=coordinates.PrepareForInput(device,token);

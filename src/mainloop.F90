@@ -55,6 +55,9 @@ module mainloop
     use benchmark_runtime, only: begin_complete_step_timing,end_complete_step_timing, &
                                 insitu_clock,report_insitu_timing
     use insitu_session, only: sample_insitu_step,finish_insitu,begin_insitu
+#if defined(_CUDA) && defined(ASTR_BUILD_TESTING)
+    use m12_insitu_diagnostic_check, only: check_profile_device_sample_gpu,check_profile_render_isolation_gpu
+#endif
     !
     ! local data
     real(8) :: time_beg,time_next_step,crange,completed_step_dt
@@ -129,9 +132,18 @@ module mainloop
       call time_integration_rk
       call report_insitu_timing('advance_inclusive',phase_started,nstep+1)
       call end_complete_step_timing(nstep)
+#if defined(_CUDA) && defined(ASTR_BUILD_TESTING)
+      call check_profile_device_sample_gpu()
+#endif
       phase_started=insitu_clock()
       call observe_output_adaptive(nstep+1,time+completed_step_dt)
+#if defined(_CUDA) && defined(ASTR_BUILD_TESTING)
+      call check_profile_render_isolation_gpu(.true.)
+#endif
       call sample_insitu_step(nstep+1,time+completed_step_dt,completed_step_dt)
+#if defined(_CUDA) && defined(ASTR_BUILD_TESTING)
+      call check_profile_render_isolation_gpu(.false.)
+#endif
       call report_insitu_timing('insitu_sample_inclusive',phase_started,nstep+1)
 #ifdef ASTR_AIR5_CHEMISTRY
       call writemon(time+completed_step_dt)

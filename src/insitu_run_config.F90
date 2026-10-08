@@ -136,10 +136,10 @@ contains
     message='invalid products selection'
     if(products/='all'.and.products/='q_surface'.and.products/='streamlines'.and. &
       products/='q_streamlines'.and.products/='velocity_slice'.and.products/='channel_walls'.and. &
-      products/='air5_walls'.and.products/='tgv256_demo'.and.products/='curve_demo') return
-    message='streamline_seeds must be line16 or tgv-stratified'
-    if(streamline_seeds/='line16'.and.streamline_seeds/='tgv-stratified') return
-    if(streamline_seeds/='line16') then
+      products/='air5_walls'.and.products/='tgv256_demo'.and.products/='curve_demo'.and.products/='boundary_layer') return
+    message='streamline_seeds must be line16, tgv-stratified or bl-layered64'
+    if(streamline_seeds/='line16'.and.streamline_seeds/='tgv-stratified'.and.streamline_seeds/='bl-layered64') return
+    if(streamline_seeds=='tgv-stratified') then
       message='tgv-stratified seeds require enabled strict device streamline rendering'
       if(.not.enabled.or..not.render.or.processing_backend/='device'.or.rendering_pipeline=='compatible'.or. &
         (products/='all'.and.products/='streamlines'.and.products/='q_streamlines'.and. &
@@ -150,6 +150,17 @@ contains
     message='curve_demo requires strict device rendering without statistics or independent clocks'
     if(products=='curve_demo'.and.(processing_backend/='device'.or.statistics.or..not.render.or. &
       rendering_pipeline=='compatible'.or.any(product_ids/=''))) return
+    message='boundary_layer requires the approved strict render-only preset and common clock'
+    if(products=='boundary_layer') then
+      if(.not.enabled.or..not.render.or.statistics.or.processing_backend/='device'.or. &
+        rendering_pipeline/='standard-device'.or.derivative_backend/='gpu'.or. &
+        postprocess_transport/='pinned'.or.streamline_seeds/='bl-layered64'.or. &
+        slice_definition/='plane'.or.any(slice_origin/=[0.d0,0.d0,45.d0]).or. &
+        any(slice_normal/=[0.d0,0.d0,1.d0]).or.any(product_ids/='').or. &
+        schedule_mode/='steps'.or.step_interval/=5.or.initial_frame.or.final_frame) return
+    endif
+    message='bl-layered64 seeds require the bounded boundary_layer profile'
+    if(streamline_seeds=='bl-layered64'.and.products/='boundary_layer') return
     message='air5_volume_statistics requires enabled statistics and products=air5_walls'
     if(air5_volume_statistics.and.(.not.enabled.or..not.statistics.or.products/='air5_walls')) return
     message='air5_volume_reduction requires air5_volume_statistics'
@@ -171,8 +182,9 @@ contains
     message='physical plane values must be finite'
     if(.not.all(ieee_is_finite(slice_origin)).or..not.all(ieee_is_finite(slice_normal))) return
     if(slice_definition=='plane') then
-      message='physical planes require strict device velocity_slice without index settings or product clocks'
-      if(products/='velocity_slice'.or.processing_backend/='device'.or.rendering_pipeline=='compatible'.or. &
+      message='physical planes require an admitted strict device slice profile without index settings or product clocks'
+      if((products/='velocity_slice'.and.products/='boundary_layer').or. &
+        processing_backend/='device'.or.rendering_pipeline=='compatible'.or. &
         .not.enabled.or..not.render.or.slice_axis/='z'.or.slice_index/=4.or.statistics.or. &
         any(product_ids/='').or.len_trim(batch_prefix)>0.or.len_trim(restore_batch)>0) return
       message='physical plane normal must be nonzero'
@@ -360,12 +372,12 @@ contains
     select case(scene)
     case('q_surface')
       allowed=profile=='all'.or.profile=='q_surface'.or.profile=='q_streamlines'.or. &
-        profile=='tgv256_demo'.or.profile=='curve_demo'
+        profile=='tgv256_demo'.or.profile=='curve_demo'.or.profile=='boundary_layer'
     case('velocity_slice')
-      allowed=profile=='all'.or.profile=='velocity_slice'
+      allowed=profile=='all'.or.profile=='velocity_slice'.or.profile=='boundary_layer'
     case('instantaneous_streamlines')
       allowed=profile=='all'.or.profile=='streamlines'.or.profile=='q_streamlines'.or. &
-        profile=='tgv256_demo'.or.profile=='curve_demo'
+        profile=='tgv256_demo'.or.profile=='curve_demo'.or.profile=='boundary_layer'
     case('crossing_streamlines')
       allowed=profile=='all'.or.profile=='streamlines'.or.profile=='q_streamlines'
     case('mean_reynolds_streamlines','mean_favre_streamlines')

@@ -770,7 +770,7 @@ contains
   end subroutine
 
   subroutine complete_owned_endpoints(fields)
-    use commvar, only: im,jm,km
+    use commvar, only: im,jm,km,flowtype,conschm,difschm,recon_schem,lchardecomp,lfilter
     use bc, only: bctype
     use parallel, only: isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
     real(real64),intent(inout) :: fields(0:,0:,0:,:)
@@ -779,8 +779,11 @@ contains
     nfields=size(fields,4)
     call require_fields(all(shape(fields)==[im+1,jm+1,km+1,nfields]).and.nfields>0, &
                         'invalid endpoint array shape')
-    call require_fields(all(bctype==1).or.all(bctype==[1,1,41,41,1,1]), &
-      'ownership requires periodic or bc41 channel boundaries')
+    call require_fields(all(bctype==1).or.all(bctype==[1,1,41,41,1,1]).or. &
+      (trim(flowtype)=='bl'.and.all(bctype==[11,21,41,50,1,1]).and. &
+       trim(conschm)=='743e'.and.trim(difschm)=='643e'.and.recon_schem==5.and. &
+       lchardecomp.and..not.lfilter), &
+      'ownership requires admitted periodic, channel or MP-LD profile boundaries')
     ! Retain physical upper walls; other upper endpoints are copies of the next owner.
     sizes=[isize,jsize,ksize]
     extent=[im,jm,km]

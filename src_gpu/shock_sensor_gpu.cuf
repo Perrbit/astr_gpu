@@ -176,16 +176,18 @@ contains
     use gradcal_gpu, only: compute_gradcal_gpu
     use gpu_check, only: sync_after_kernel
     use halo_exchange_gpu, only: exchange_field_halo_gpu
-    use commarray_gpu, only: shock_sensor_d,shock_mask_d
+    use commarray_gpu, only: shock_sensor_d,shock_mask_d,dvel_d,prs_d
     use boundary_gpu, only: gpu_axis_is_physical
     use parallel, only: isize,jsize,ksize
-    use validation_io, only: rhs_validation_requested,write_sensor_validation_snapshot
+    use validation_io, only: rhs_validation_requested,write_sensor_validation_snapshot, &
+      sensor_detail_requested,write_sensor_detail_validation_snapshot
     implicit none
     integer,intent(in),optional :: stage_index
     logical,intent(in),optional :: force_active
     type(dim3) :: block3,grid3,block_x,grid_x,block_y,grid_y,block_z,grid_z
     integer :: apply_left_x,apply_right_x,apply_down_y,apply_up_y,apply_back_z,apply_front_z
     real(8),allocatable :: sensor_host(:,:,:)
+    real(8),allocatable :: gradient_host(:,:,:,:,:),pressure_host(:,:,:)
     integer(1),allocatable :: mask_host(:,:,:)
     logical :: active
 
@@ -248,6 +250,13 @@ contains
       mask_host=shock_mask_d
       call write_sensor_validation_snapshot('sensor',sensor_host,mask_host,nstep,stage_index)
       deallocate(sensor_host,mask_host)
+    endif
+    if(sensor_detail_requested(stage_index)) then
+      allocate(gradient_host(0:im,0:jm,0:km,3,3),pressure_host(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+      gradient_host=dvel_d
+      pressure_host=prs_d
+      call write_sensor_detail_validation_snapshot(gradient_host,pressure_host,stage_index)
+      deallocate(gradient_host,pressure_host)
     endif
     call dump_shock_sensor_gpu_validation()
   end subroutine compute_shock_sensor_gpu

@@ -86,7 +86,7 @@ struct MapDisplayColor : viskores::worklet::WorkletMapField {
   bool speed=false;
   double lower=-1.,inverse=0.5;
   VISKORES_CONT explicit MapDisplayColor(bool magnitude=false,double minimum=-1.,double maximum=1.)
-    :speed(magnitude),lower(magnitude?0.:minimum),inverse(magnitude?1.:1./(maximum-minimum)) {}
+    :speed(magnitude),lower(magnitude?0.:minimum),inverse(1./(maximum-(magnitude?0.:minimum))) {}
   using ControlSignature=void(FieldIn,WholeArrayIn,FieldOut);
   using ExecutionSignature=void(_1,_2,_3);
   template<class Portal>
@@ -262,7 +262,7 @@ public:
     const auto palette=viskores::cont::make_ArrayHandle(table,viskores::CopyFlag::On);
     viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});
     if(view.scalar) invoke(MapDisplayColor{false,minimum,maximum},scalar,palette,display_colors);
-    else if(speed) invoke(MapDisplayColor{true},velocity,palette,display_colors);
+    else if(speed) invoke(MapDisplayColor{true,minimum,maximum},velocity,palette,display_colors);
     else invoke(MapDisplayColor{},u,palette,display_colors);
     synchronize_device_stage("MapDisplayColor");
     return pin(display_colors);
@@ -322,11 +322,13 @@ inline viskores::cont::DataSet triangulate_device_slice(const viskores::cont::Da
 inline DeviceGeometry extract_tgv_geometry(viskores::Vec3f* velocity_pointer,
     DeviceDiagnostics* diagnostics_pointer,const viskores::Id3& dimensions,
     const viskores::Id3& offset,bool slice_enabled,bool surface_enabled,double iso=.25,
-    DeviceGeometryAudit* audit=nullptr,int global_cells=32,viskores::Vec3f* physical_pointer=nullptr) {
+    DeviceGeometryAudit* audit=nullptr,int global_cells=32,viskores::Vec3f* physical_pointer=nullptr,
+    viskores::Id3 global_dimensions=viskores::Id3(0)) {
+  if(global_dimensions==viskores::Id3(0)) global_dimensions=viskores::Id3(global_cells);
   if(global_cells!=32 && global_cells!=256 && !(physical_pointer && (global_cells==64 || global_cells==128)))
     throw std::invalid_argument("Unsupported bounded TGV geometry resolution");
   for(int d=0;d<3;++d)
-    if(dimensions[d]<2 || offset[d]<0 || offset[d]+dimensions[d]>global_cells+1)
+    if(dimensions[d]<2 || offset[d]<0 || offset[d]+dimensions[d]>global_dimensions[d]+1)
       throw std::invalid_argument("IS8 geometry requires a bounded 32-cell TGV partition");
   if(!std::isfinite(iso)) throw std::invalid_argument("Nonfinite contour threshold");
   if(physical_pointer && ((global_cells!=32 && global_cells!=64 && global_cells!=128 && global_cells!=256) ||

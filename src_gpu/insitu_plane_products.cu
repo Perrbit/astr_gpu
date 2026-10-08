@@ -9,6 +9,13 @@
 namespace {
 using namespace astr_insitu;
 using PlaneAudit=viskores::Vec<double,3>;
+struct PlaneSpeed : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,FieldOut);
+  using ExecutionSignature=void(_1,_2);
+  VISKORES_EXEC void operator()(const viskores::Vec3f& velocity,double& speed) const {
+    speed=viskores::Sqrt(viskores::Dot(velocity,velocity));
+  }
+};
 struct AuditPlane : viskores::worklet::WorkletMapField {
   using ControlSignature=void(FieldIn,WholeArrayIn,WholeArrayIn,FieldOut);
   using ExecutionSignature=void(_1,_2,_3,_4);
@@ -77,15 +84,13 @@ void test_oracle(const structured_geometry::PlaneProduct& product,const DeviceGe
 #endif
 }
 
-extern "C" int astr_insitu_device_render_plane(const char* pipeline,const char* backend,const char* script,
-    int fcomm,int step,double time,int nx,int ny,int nz,int ox,int oy,int oz,
-    double* coordinates,double* velocity,const double* origin,const double* normal,
-    std::int64_t budget,std::int64_t reserve,std::int64_t retained,std::int64_t host_budget)
-try {
+astr_insitu::DeviceMesh astr_insitu::build_device_plane(int fcomm,int step,double time,const int global[3],
+    const int local[3],const int offset[3],double* coordinates,double* velocity,
+    const double origin[3],const double normal[3],std::int64_t budget,std::int64_t reserve,
+    std::int64_t retained,std::int64_t host_budget,bool speed_colors,double speed_max) {
 #ifdef ASTR_INSITU_DEVICE_RENDERING
   const auto comm=MPI_Comm_f2c(fcomm);
-  const std::string route=pipeline?pipeline:"";
-  if((route!="standard-device" && route!="direct-device") || step<0 || !std::isfinite(time) ||
+  if(step<0 || !std::isfinite(time) ||
       !coordinates || !velocity || !origin || !normal || budget<=0 || retained<0 || reserve<0 || host_budget<=0)
     throw std::invalid_argument("Invalid strict physical plane identity");
 #ifndef ASTR_BUILD_TESTING
@@ -100,7 +105,8 @@ try {
   viskores::cont::GetRuntimeDeviceTracker().ForceDevice(viskores::cont::DeviceAdapterTagCuda{});
   if(viskores::cont::cuda::internal::CudaAllocator::UsingManagedMemory())
     viskores::cont::cuda::internal::CudaAllocator::ForceManagedMemoryOff();
-  const structured_geometry::Partition partition(viskores::Id3(32),viskores::Id3(nx,ny,nz),viskores::Id3(ox,oy,oz));
+  const structured_geometry::Partition partition(viskores::Id3(global[0],global[1],global[2]),
+    viskores::Id3(local[0],local[1],local[2]),viskores::Id3(offset[0],offset[1],offset[2]));
   plane_geometry::Point point{},direction{};
   for(int d=0;d<3;++d) {point[d]=origin[d];direction[d]=normal[d];}
   std::size_t free_bytes=0,total_bytes=0;
@@ -115,11 +121,21 @@ try {
   const auto required=std::uint64_t(std::max<std::int64_t>(reserve,1073741824));
   if(allocation_bound>free_bytes-required)
     throw std::runtime_error("Physical plane controlled allocation reserve exceeded");
-  const auto product=structured_geometry::extract_plane(reinterpret_cast<viskores::Vec3f*>(coordinates),
+  auto product=structured_geometry::extract_plane(reinterpret_cast<viskores::Vec3f*>(coordinates),
     reinterpret_cast<viskores::Vec3f*>(velocity),nullptr,partition,point,direction,std::uint64_t(budget),
     std::uint64_t(retained)+display_bound,true);
-  auto owner=std::make_shared<DeviceGeometryOwner>(product.data,step,time,3,"u");
-  const auto colors=owner->color_display(device_display_palette());
+  if(speed_colors && product.data.GetNumberOfCoordinateSystems()) {
+    const auto vectors=product.data.GetPointField("velocity").GetData().AsArrayHandle<
+      viskores::cont::ArrayHandle<viskores::Vec3f>>();
+    viskores::cont::ArrayHandle<double> speed;
+    viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});
+    invoke(PlaneSpeed{},vectors,speed);
+    synchronize_device_stage("PlaneSpeed");
+    require_device_only(speed);
+    product.data.AddPointField("speed",speed);
+  }
+  auto owner=std::make_shared<DeviceGeometryOwner>(product.data,step,time,3,speed_colors?"speed":"u");
+  const auto colors=owner->color_display(device_display_palette(),false,speed_colors?0.:-1.,speed_max);
   const auto& view=owner->get();
   PlaneAudit audit(0.);
   if(view.cells) {
@@ -152,10 +168,24 @@ try {
   std::printf("ASTR_INSITU_DEVICE_PLANE rank=%d step=%d points=%lld triangles=%lld area=%.17g "
     "plane_maxabs=%.17g invalid_triangles=%.0f field_download_bytes=0 geometry_host_bytes=0 q_requested=0\n",
     rank,step,static_cast<long long>(view.points),static_cast<long long>(view.cells),audit[0],audit[1],audit[2]);
-  return render_resident_products(pipeline,backend,script,fcomm,step,time,"physical_plane",{std::move(mesh)});
+  return mesh;
 #else
   throw std::invalid_argument("Strict physical plane rendering is not built; no fallback");
 #endif
+}
+
+extern "C" int astr_insitu_device_render_plane(const char* pipeline,const char* backend,const char* script,
+    int fcomm,int step,double time,int nx,int ny,int nz,int ox,int oy,int oz,
+    double* coordinates,double* velocity,const double* origin,const double* normal,
+    std::int64_t budget,std::int64_t reserve,std::int64_t retained,std::int64_t host_budget)
+try {
+  const std::string route=pipeline?pipeline:"";
+  if(route!="standard-device" && route!="direct-device")
+    throw std::invalid_argument("Physical plane requires a strict device pipeline; no fallback");
+  const int global[3]={32,32,32},local[3]={nx,ny,nz},offset[3]={ox,oy,oz};
+  auto mesh=astr_insitu::build_device_plane(fcomm,step,time,global,local,offset,coordinates,velocity,
+    origin,normal,budget,reserve,retained,host_budget);
+  return astr_insitu::render_resident_products(pipeline,backend,script,fcomm,step,time,"physical_plane",{std::move(mesh)});
 } catch(const std::exception& error) {
   std::fprintf(stderr,"Physical plane product failed: %s\n",error.what());
   MPI_Abort(MPI_Comm_f2c(fcomm),1);return 1;

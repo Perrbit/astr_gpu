@@ -19,6 +19,10 @@ inline std::vector<std::array<double,3>> tgv_streamline_seeds(const std::string&
     seeds.reserve(256);
     for(int k=0;k<4;++k) for(int j=0;j<8;++j) for(int i=0;i<8;++i)
       seeds.push_back({(i+.5)*(2.*pi/8.),(j+.5)*(2.*pi/8.),(k+.5)*(2.*pi/4.)});
+  } else if(layout=="bl-layered64") {
+    seeds.reserve(64);
+    for(double y:{.5,1.,2.,5.}) for(int k=0;k<16;++k)
+      seeds.push_back({54.,y,90./32.+k*(90.-2.*90./32.)/15.});
   } else throw std::invalid_argument("Unsupported TGV streamline seed layout");
   return seeds;
 }

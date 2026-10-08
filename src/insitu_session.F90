@@ -65,9 +65,10 @@ module insitu_session
   character(1024),save :: restore_batch=''
 #if defined(ASTR_WITH_CATALYST) && defined(_CUDA)
   interface
-    integer(c_int) function resource_begin(comm,host,device,reserve,output) bind(C,name='astr_insitu_resource_begin')
+    integer(c_int) function resource_begin(comm,host,device,reserve,shared_fixture,output) &
+        bind(C,name='astr_insitu_resource_begin')
       import c_int,c_int64_t,c_char
-      integer(c_int),value :: comm
+      integer(c_int),value :: comm,shared_fixture
       integer(c_int64_t),value :: host,device,reserve
       character(c_char),intent(in) :: output(*)
     end function
@@ -168,11 +169,22 @@ contains
     if(resource_observer_started) return
     status=resource_begin(int(MPI_COMM_WORLD,c_int), &
       int(options%host_budget_bytes,c_int64_t),int(options%device_budget_bytes,c_int64_t), &
-      int(options%device_reserve_bytes,c_int64_t),trim(options%output_directory)//c_null_char)
+      int(options%device_reserve_bytes,c_int64_t),shared_device_fixture(), &
+      trim(options%output_directory)//c_null_char)
     call require_sample(status==0,'cannot initialize native resource observer')
     resource_observer_started=.true.
 #endif
   end subroutine
+
+  integer(c_int) function shared_device_fixture() result(allow)
+    use commvar, only: ia,ja,ka
+    use parallel, only: mpisize
+    allow=0_c_int
+    if(options%products=='boundary_layer'.and.all([ia,ja,ka]==[64,32,24]).and.mpisize==4.and. &
+       options%processing_backend=='device'.and.options%rendering_pipeline=='standard-device'.and. &
+       options%postprocess_transport=='pinned'.and.options%device_budget_bytes<=2147483648_int64.and. &
+       options%host_budget_bytes<=4294967296_int64.and.options%device_reserve_bytes>=1073741824_int64) allow=1_c_int
+  end function
 
   subroutine output_render_file(path,writing,identity,budget,override)
     use checkpoint_state_io, only: checkpoint_state_identity
@@ -506,11 +518,12 @@ contains
     use parallel, only: mpirank,mpisize,isize,jsize,ksize
 #ifdef _CUDA
     use insitu_statistics_gpu, only: configure_statistics_device_budget
+    use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported
 #endif
     character(1024) :: filename,message
     integer :: ierr
     logical :: ok,channel_wall,air5_wall,curve_tgv,device_demo,device_wall,device_plane,device_curve_q,device_air5_wall
-    logical :: device_curve_trace,device_curve_demo
+    logical :: device_curve_trace,device_curve_demo,device_boundary_layer
     if(session_checked) return
     native_output=.true.
     call read_consistent_env('ASTR_INSITU_CONFIG',filename)
@@ -525,6 +538,7 @@ contains
       if(enabled) then
         device_demo=options%processing_backend=='device'.and.options%products=='tgv256_demo'
         device_curve_demo=options%processing_backend=='device'.and.options%products=='curve_demo'
+        device_boundary_layer=options%processing_backend=='device'.and.options%products=='boundary_layer'
         device_wall=options%processing_backend=='device'.and.options%products=='channel_walls'
         device_air5_wall=options%processing_backend=='device'.and.options%products=='air5_walls'
         device_plane=options%processing_backend=='device'.and.options%slice_definition=='plane'
@@ -555,6 +569,14 @@ contains
               .not.nondimen.and.ndims==3.and.mpisize<=2.and.hm>=3.and.jm>=2.and. &
               trim(difschm)=='643e'.and.trim(conschm)=='643e', &
               'device AIR5 wall products require noncatalytic Cartesian HBL 16^3 NP=1/2')
+          elseif(device_boundary_layer) then
+#ifdef _CUDA
+            call require_sample(gpu_profile_mp_ld_flatplate_supported().and. &
+              all([ia,ja,ka]==[64,32,24]).and.mpisize<=4.and..not.options%statistics, &
+              'boundary_layer products require the approved 64x32x24 MP-LD profile short fixture')
+#else
+            call require_sample(.false.,'boundary_layer products require CUDA; no fallback')
+#endif
           else
             call require_sample(use_gpu.and.trim(flowtype)=='tgv'.and. &
               (.not.lreadgrid.or.device_plane.or.device_curve_q.or.device_curve_trace).and. &
@@ -585,8 +607,8 @@ contains
           nondimen.and.(all([ia,ja,ka]==32).or.device_curve_demo).and. &
           (all(bctype==1).or.channel_wall.or.device_curve_trace.or.device_curve_q).and.mpisize<=2.and. &
           hm>=3.and.trim(difschm)=='643e'
-        call require_sample((trim(flowtype)=='tgv'.or.channel_wall.or.air5_wall).and.ndims==3.and. &
-          (.not.lreadgrid.or.curve_tgv), &
+        call require_sample((trim(flowtype)=='tgv'.or.channel_wall.or.air5_wall.or.device_boundary_layer).and.ndims==3.and. &
+          (.not.lreadgrid.or.curve_tgv.or.device_boundary_layer), &
           'formal in situ requires a supported Cartesian candidate or 32^3 periodic CURVE TGV NP=1/2')
         if(channel_wall) call require_sample( &
           (options%derivative_backend=='cpu'.or.device_wall).and.numq==5.and.num_species==0.and.nondimen.and. &
@@ -608,7 +630,8 @@ contains
           call require_sample(mesh_pipeline_available(trim(options%rendering_pipeline)//c_null_char)==1, &
             'selected rendering pipeline is not built/admitted; no compatible fallback')
 #endif
-          if(options%derivative_backend=='gpu'.and..not.device_wall.and..not.device_air5_wall.and..not.device_curve_trace) &
+          if(options%derivative_backend=='gpu'.and..not.device_wall.and..not.device_air5_wall.and. &
+            .not.device_curve_trace.and..not.device_boundary_layer) &
             call require_sample(use_gpu.and. &
             (mpisize<=2.or.(.not.lreadgrid.and.mpisize==4.and.all([isize,jsize,ksize]==[2,2,1]))).and. &
             (all([ia,ja,ka]==32).or.(device_demo.and.all([ia,ja,ka]==256))).and. &
@@ -670,6 +693,7 @@ contains
           if(options%mean_streamline_render) render_signature(4)=ieor(render_signature(4),int(z'4D45414E54524143',int64))
           if(options%streamline_seeds=='tgv-stratified') &
             render_signature(4)=ieor(render_signature(4),int(z'5447565345454431',int64))
+          if(device_boundary_layer) render_signature(4)=ieor(render_signature(4),int(z'424C505245534554',int64))
           if(options%products=='velocity_slice') then
             if(device_plane) then
               render_signature(4)=ieor(render_signature(4),int(z'50485953504C414E',int64))
@@ -1448,7 +1472,7 @@ contains
           trim(options%implementation_path),trim(options%pipeline_file),step,t, &
           options%host_budget_bytes,options%device_budget_bytes,options%device_reserve_bytes, &
           options%wall_mean_render,wall_duration,wall_window)
-      else if(options%slice_definition=='plane') then
+      else if(options%slice_definition=='plane'.and.options%products/='boundary_layer') then
         call render_device_plane_gpu(trim(options%postprocess_transport),trim(options%rendering_pipeline), &
           trim(options%implementation_path),trim(options%pipeline_file),step,t,options%slice_origin,options%slice_normal, &
           options%host_budget_bytes,options%device_budget_bytes,options%device_reserve_bytes)
@@ -1696,7 +1720,8 @@ contains
       if(.not.resource_observer_started) then
       resource_status=resource_begin(int(MPI_COMM_WORLD,c_int), &
         int(options%host_budget_bytes,c_int64_t),int(options%device_budget_bytes,c_int64_t), &
-        int(options%device_reserve_bytes,c_int64_t),trim(options%output_directory)//c_null_char)
+        int(options%device_reserve_bytes,c_int64_t),shared_device_fixture(), &
+        trim(options%output_directory)//c_null_char)
       call require_sample(resource_status==0,'cannot initialize native resource observer')
       resource_observer_started=.true.
       endif
@@ -2119,6 +2144,13 @@ contains
           call accumulate_statistics_validation(step,time_end,fields)
         endif
       endif
+      call render_native_if_due(step,time_end,.false.)
+      return
+    endif
+    if(formal.and.options%products=='boundary_layer') then
+      call require_sample(.not.statistics_enabled,'bounded boundary-layer rendering does not accumulate statistics')
+      call require_sample(step>=0.and.ieee_is_finite(time_end).and.ieee_is_finite(step_dt), &
+        'nonfinite boundary-layer completed-step metadata')
       call render_native_if_due(step,time_end,.false.)
       return
     endif

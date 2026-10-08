@@ -40,6 +40,7 @@ product_names = {
     'q_streamlines': ('q_surface', 'instantaneous_streamlines', 'crossing_streamlines'),
     'tgv256_demo': ('q_surface', 'instantaneous_streamlines'),
     'curve_demo': ('q_surface', 'instantaneous_streamlines'),
+    'boundary_layer': ('q_surface', 'velocity_slice', 'instantaneous_streamlines'),
     'channel_walls': ('wall_pressure', 'wall_shear_x', 'wall_heat_into_gas'),
     'curve_walls': ('wall_pressure', 'wall_shear_x', 'wall_heat_into_gas'),
     'air5_walls': ('pressure', 'temperature', 'vibrational_temperature', 'Y_N2', 'Y_O2',
@@ -68,6 +69,8 @@ render_objects = {}
 frames = []
 image_size = [1280, 960] if profile in ('tgv256_demo','curve_demo') else [800, 600]
 color_range = [0., 1.] if profile in ('tgv256_demo','curve_demo') else [-1., 1.]
+if profile == 'boundary_layer':
+    image_size, color_range = [1536, 384], [0., 1.1]
 timing = os.environ.get('ASTR_INSITU_TIMING', '') in ('1', 't', 'T', 'true', 'TRUE', 'on', 'ON')
 
 
@@ -140,6 +143,8 @@ def update_geometry(name, piece):
         item.update(actor=actor, mapper=actor.GetMapper())
     if 'view' not in item:
         setup_view(name, item, piece)
+    if profile == 'boundary_layer':
+        item['local_bounds'] = [metadata(piece, 'bound'+str(d)) for d in range(6)] if points else None
     return points, cells
 
 
@@ -219,6 +224,17 @@ def setup_view(name, item, piece):
         view.CameraParallelScale=max(.6*max(length),1.05*half_height,
             1.05*half_width/(image_size[0]/image_size[1]))
         item['physical_bounds']=bounds
+    elif profile=='boundary_layer':
+        view.CameraPosition = [550., 375. if name == 'q_surface' else 75., 900.]
+        view.CameraFocalPoint = [550., 75., 45.]
+        view.CameraViewUp = [0., 1., 0.]
+        view.CameraParallelScale = 150.
+        bounds = [0., 1100., 0., 150., 0., 90.]
+        item['physical_bounds'] = bounds
+        if name == 'velocity_slice':
+            item['plane'] = {
+                'origin': [metadata(piece, 'plane_origin'+str(d)) for d in range(3)],
+                'normal': [metadata(piece, 'plane_normal'+str(d)) for d in range(3)]}
     elif profile=='physical_plane':
         from math import sqrt
         plane_origin=[metadata(piece, 'plane_origin'+str(d)) for d in range(3)]
@@ -255,7 +271,7 @@ def setup_view(name, item, piece):
         selected_range=({'pressure':[0.,60000.], 'temperature':[1500.,3500.],
             'vibrational_temperature':[1500.,3500.], 'wall_shear_x':[-1.,1.],
             'wall_heat_into_gas':[-60000.,60000.]}).get(field,[0.,1.])
-    elif profile in ('tgv256_demo','curve_demo'):
+    elif profile in ('tgv256_demo','curve_demo','boundary_layer'):
         color = 'speed'
     elif name.startswith('mean_'):
         color = 'mean_u_' + ('reynolds' if name=='mean_reynolds_streamlines' else 'favre')
@@ -337,7 +353,8 @@ def catalyst_execute(info):
         products[name] = render_product(name, item, step, time, points, cells)
         if piece.GetFieldData().GetArray('streamline_seed_count') is not None:
             products[name]['seeding'] = {
-                'layout': 'tgv-stratified' if metadata(piece, 'streamline_seed_layout') == 1 else 'line16',
+                'layout': {0: 'line16', 1: 'tgv-stratified', 2: 'bl-layered64'}[
+                    int(metadata(piece, 'streamline_seed_layout'))],
                 'seeds': int(metadata(piece, 'streamline_seed_count')),
                 'direction_trajectories': int(metadata(piece, 'streamline_particle_count'))}
         dispatch.report(name, 'image', products[name]['image'])
@@ -441,6 +458,11 @@ def render_product(name, item, step, time, points, cells):
         'local_points': points, 'local_cells': cells, 'image': 'published' if code == 0 else receipt}
     if 'plane' in item:
         result['plane']=item['plane']
+    if profile=='boundary_layer':
+        result['physical_bounds']=item['physical_bounds']
+        result['local_geometry_bounds']=item['local_bounds']
+        result['camera'] = dict(position=list(view.CameraPosition), focal_point=list(view.CameraFocalPoint),
+                                view_up=list(view.CameraViewUp), parallel_scale=float(view.CameraParallelScale))
     if profile=='air5_walls':
         field=name.removeprefix('mean_')
         result['field_unit']=({'pressure':'Pa','temperature':'K','vibrational_temperature':'K',

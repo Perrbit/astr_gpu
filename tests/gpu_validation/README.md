@@ -8928,3 +8928,53 @@ in `stratified_seed_runtime_np2_20261007_v2.xml`; maximum directory size is
 The separate NP=2 pinned memory gate passes both rank logs with zero errors
 (`stratified_seed_memcheck_20261007.xml`). RAM/VRAM settings remain unchanged.
 No new 256^3 production/performance receipt exists for these seeds.
+
+### M12 Original-Method Local Integration
+
+The bounded contract is in
+`documents/ASTR_M12_C13_GPU_INSITU_INTEGRATION_PLAN.md`. The external M12 case
+is read-only. `prepare_m12_local_case.py` selects original nodes for a
+64x32x24-interval fixture, preserving 743e/MP-LD, 643e, RK3, Sutherland,
+11/21/41/50/periodic boundaries, the original random wall supply and x/y
+sponges. The approved nonzero seed mapping is temporary seed 1 and rank+1;
+it does not reproduce the old zero-seed trace or provide restart admission.
+
+`run_m12_local_compare.py` checks all ten steps and three RK stages at
+NP=1/2/4. `run_m12_insitu_acceptance.py` independently checks the three
+actual products at completed steps 5/10 and OFF/ON authority/RNG isolation;
+`--memcheck --sanitizer PATH` is explicit. These numerical runs download
+diagnostic fields and are not zero-readback or clean timing evidence.
+
+`run_m12_device_observation.py --mode geometry` checks bounded downloaded
+plane/Q topology and physical streamline handoffs. `--mode trace --nsys PATH`
+clears numerical/geometry/isolation audit downloads and attributes actual
+CUPTI/NVTX copies, pinned private faces, resident display transfers and
+RGB/color/depth readbacks separately. `--mode timing` runs a clean, unprofiled
+OFF/ON pair; initialization is excluded and nested inclusive stages must not
+be summed. These are local observations, not a production scaling benchmark.
+
+All three drivers require explicit source, new output directory, root-built
+executable, matching MPI launcher and private Catalyst implementation path.
+They stop on the first failed gate and retain its directory. No remote or Git
+operation is performed. The NP=4 graphics exception shares two local GPUs
+with an atomic per-physical-GPU allocator ledger and the lifecycle dependency
+patch; it does not remove general CURVE's one-rank-per-GPU rule. Budgets remain
+2 GiB/GPU additional device, 4 GiB/node additional host, 1 GiB/GPU free and
+4 GiB/run disk. The approved D9 option
+`--mode trace --np4-profiler-host-budget-8gib` raises only NP=4 external
+profiler process-tree RSS allowance to 8 GiB, not the native observer budget
+or ordinary runs. NP=1/2 remain at 4 GiB. Platform architecture/ABI/EGL and original-size short runs
+must pass separately before production admission.
+
+Local closure receipts (2026-10-08): all-eight-topology seams in
+`m12_geometry_d8_20261008` (NP=1/2) and `m12_geometry_np4_d8_matched_20261008`;
+strict transfers in `m12_clean_trace_d8_20261008` (NP=1/2) and
+`m12_clean_trace_np4_d9_20261008`; clean matched cost in
+`m12_clean_timing_d9_20261008`; six affected graphics checks in
+`m12_affected_render_regression_d9_20261008.xml`. The fresh BUILD_TESTING OFF
+graphics build passes eight numerical/image OFF/ON pairs in
+`m12_no_tests_graphics_d9_20261008`, with explicit bounded field downloads,
+not transfer/timing evidence. Its loader, flags, source/resource hashes and
+local device targets are recorded in
+`m12_local_delivery_d9_20261008/build_and_dependencies.json`. These close
+local M12-0 through M12-6 only; no Git writes or remote operations occurred.

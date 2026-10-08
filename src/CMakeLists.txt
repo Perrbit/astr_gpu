@@ -40,6 +40,7 @@ endif()
 set(ASTR_SOURCES
   astr.F90
   bc.F90
+  wall_blowing_random.F90
   CMakeLists.txt
   cmdefne.F90
   commarray.F90
@@ -109,7 +110,7 @@ set(ASTR_SOURCES
   tecio.F90
   test.F90
   thermchem.F90
-  ../user_define_module/userdefine.F90
+  ${ASTR_USERDEFINE_SOURCE}
   utility.F90
   validation_io.F90
   vtkio.F90)
@@ -195,6 +196,22 @@ if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
 endif()
 
 add_executable(astr ${ASTR_SOURCES} ${ASTR_GPU_SOURCES})
+if(BUILD_TESTING)
+  add_executable(legacy_wall_random_probe EXCLUDE_FROM_ALL wall_blowing_random.F90
+    ../tests/gpu_validation/legacy_wall_random_probe.F90)
+  set_target_properties(legacy_wall_random_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/wall_random_probe_modules")
+  target_include_directories(legacy_wall_random_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/wall_random_probe_modules")
+  if(ASTR_WITH_CUDA)
+    add_executable(legacy_wall_upload_probe EXCLUDE_FROM_ALL wall_blowing_random.F90
+      ../tests/gpu_validation/legacy_wall_upload_probe.cuf)
+    set_target_properties(legacy_wall_upload_probe PROPERTIES
+      Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/wall_upload_probe_modules")
+    target_include_directories(legacy_wall_upload_probe PRIVATE
+      "${CMAKE_CURRENT_BINARY_DIR}/wall_upload_probe_modules")
+  endif()
+endif()
 target_link_libraries(astr PRIVATE astr_checkpoint_filesystem)
 set_target_properties(astr PROPERTIES LINKER_LANGUAGE Fortran)
 
@@ -226,9 +243,11 @@ if(ASTR_WITH_CATALYST)
   add_library(astr_catalyst_adapter STATIC catalyst_adapter.cpp insitu_mesh_adapter.cpp)
   if(ASTR_WITH_CUDA)
     find_path(ASTR_EGL_INCLUDE_DIR EGL/eglext.h REQUIRED)
+    find_package(Threads REQUIRED)
     get_filename_component(ASTR_COMPILER_BIN "${CMAKE_Fortran_COMPILER}" DIRECTORY)
     find_path(ASTR_NVML_INCLUDE_DIR nvml.h HINTS "${ASTR_COMPILER_BIN}/../../cuda/include" REQUIRED)
     target_sources(astr_catalyst_adapter PRIVATE insitu_device_map.cpp insitu_resource_observer.cpp)
+    target_link_libraries(astr_catalyst_adapter PRIVATE Threads::Threads)
     target_compile_definitions(astr_catalyst_adapter PRIVATE ASTR_CUDA_RENDERER)
     target_include_directories(astr_catalyst_adapter PRIVATE ${ASTR_EGL_INCLUDE_DIR})
     target_include_directories(astr_catalyst_adapter PRIVATE ${ASTR_NVML_INCLUDE_DIR})
@@ -343,6 +362,12 @@ if(ASTR_WITH_CATALYST)
         set_target_properties(insitu_allocation_guard_probe PROPERTIES CUDA_STANDARD 17
           CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES native)
         target_link_libraries(insitu_allocation_guard_probe PRIVATE viskores::cont viskores::cuda)
+        add_executable(insitu_shared_allocation_probe EXCLUDE_FROM_ALL
+          ../tests/gpu_validation/insitu_shared_allocation_probe.cpp)
+        set_target_properties(insitu_shared_allocation_probe PROPERTIES CXX_STANDARD 11
+          CXX_STANDARD_REQUIRED YES ENABLE_EXPORTS YES)
+        target_link_libraries(insitu_shared_allocation_probe PRIVATE astr_catalyst_adapter
+          viskores::cont CUDA::cudart VTK::RenderingOpenGL2 MPI::MPI_C)
         add_executable(insitu_viskores_rk45_probe EXCLUDE_FROM_ALL
           ../tests/gpu_validation/insitu_viskores_rk45_probe.cu)
         set_target_properties(insitu_viskores_rk45_probe PROPERTIES CUDA_STANDARD 17
@@ -902,8 +927,10 @@ if (CHEMISTRY)
 endif (CHEMISTRY)
 
 if(ASTR_WITH_CUDA AND BUILD_TESTING)
+  target_sources(astr PRIVATE ../tests/gpu_validation/m12_insitu_diagnostic_check.cuf)
   # Recompile the production modules in isolation, without the ASTR main program.
   set(ASTR_HALO_CONTRACT_SOURCES ${ASTR_SOURCES})
+  list(APPEND ASTR_HALO_CONTRACT_SOURCES ../tests/gpu_validation/m12_insitu_diagnostic_check.cuf)
   list(REMOVE_ITEM ASTR_HALO_CONTRACT_SOURCES astr.F90 CMakeLists.txt)
   add_executable(halo_exchange_contract_test EXCLUDE_FROM_ALL
     ${ASTR_HALO_CONTRACT_SOURCES} ${ASTR_GPU_SOURCES}
@@ -916,11 +943,23 @@ if(ASTR_WITH_CUDA AND BUILD_TESTING)
   get_target_property(ASTR_HALO_CONTRACT_LIBRARIES astr LINK_LIBRARIES)
   target_link_libraries(halo_exchange_contract_test PRIVATE ${ASTR_HALO_CONTRACT_LIBRARIES})
   target_compile_definitions(halo_exchange_contract_test PRIVATE ASTR_BUILD_TESTING)
+  add_executable(mp_ld_reconstruction_probe EXCLUDE_FROM_ALL
+    ${ASTR_HALO_CONTRACT_SOURCES} ${ASTR_GPU_SOURCES}
+    ../tests/gpu_validation/mp_ld_reconstruction_probe.cuf)
+  set_target_properties(mp_ld_reconstruction_probe PROPERTIES
+    LINKER_LANGUAGE Fortran
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/mp_ld_probe_modules")
+  target_include_directories(mp_ld_reconstruction_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/mp_ld_probe_modules")
+  target_link_libraries(mp_ld_reconstruction_probe PRIVATE ${ASTR_HALO_CONTRACT_LIBRARIES})
+  target_compile_definitions(mp_ld_reconstruction_probe PRIVATE ASTR_BUILD_TESTING)
   if(ASTR_WITH_AIR5_CHEMISTRY)
     target_compile_definitions(halo_exchange_contract_test PRIVATE ASTR_AIR5_CHEMISTRY)
+    target_compile_definitions(mp_ld_reconstruction_probe PRIVATE ASTR_AIR5_CHEMISTRY)
   endif()
   if(ASTR_HAS_MPI_CUDA_QUERY)
     target_compile_definitions(halo_exchange_contract_test PRIVATE ASTR_MPI_CUDA_AWARE_QUERY)
+    target_compile_definitions(mp_ld_reconstruction_probe PRIVATE ASTR_MPI_CUDA_AWARE_QUERY)
   endif()
 endif()
 

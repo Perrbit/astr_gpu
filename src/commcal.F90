@@ -340,7 +340,7 @@ module commcal
                          npdci,npdcj,npdck,shkcrt,lreport,ltimrpt
     use commarray,only : ssf,lshock,dvel,prs
     use parallel, only : dataswap,pmin,pmax,psum,lio,ptime
-    use validation_io, only: write_sensor_validation_snapshot
+    use validation_io, only: write_sensor_validation_snapshot,write_sensor_detail_validation_snapshot
     !
     logical,intent(in),optional :: timerept
     !
@@ -466,6 +466,7 @@ module commcal
 
     call write_sensor_validation_snapshot('sensor',ssf(0:im,0:jm,0:km), &
                                           merge(1_1,0_1,lshock))
+    call write_sensor_detail_validation_snapshot(dvel,prs)
     if(shock_sensor_validation_enabled() .and. (.not.validation_dumped)) then
       call dump_shock_sensor_validation()
       validation_dumped=.true.

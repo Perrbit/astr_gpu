@@ -40,6 +40,7 @@ module initialisation
     use userdefine,only: udf_flowinit
     use benchmark_runtime, only: benchmark_field_io_disabled
     use output_runtime, only: configure_output_runtime,new_output_enabled
+    use validation_io, only: write_q_validation_snapshot
     use insitu_session, only: prepare_insitu_pair,restore_insitu_cpu_checkpoint
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_flow_runtime, only: configure_air5_source_mode
@@ -213,6 +214,7 @@ module initialisation
 #ifdef ASTR_AIR5_CHEMISTRY
     call initialize_air5_compensated_flow()
 #endif
+    call write_q_validation_snapshot('initialized',nstep,1)
     call readmonc
     !
     if(lavg) then

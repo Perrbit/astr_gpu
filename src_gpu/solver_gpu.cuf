@@ -910,6 +910,110 @@ contains
     endif
   end function mp5_gpu
 
+  attributes(device) real(8) function mp5ld_gpu(u,weight_bw) result(uh)
+    implicit none
+    real(8) :: u(6)
+    real(8),value :: weight_bw
+    real(8) :: b(6),vadp,ulinear,u_mp,u_ul,u_av,u_md,u_lc,u_min,u_max
+    real(8) :: var1,var2,dm1,d0,d1,dhm1,dh0
+
+    vadp=1.666666666666667d-2*weight_bw
+    b(1)=-vadp+3.333333333333333d-2
+    b(2)=5.d0*vadp-2.166666666666667d-1
+    b(3)=-10.d0*vadp+7.833333333333333d-1
+    b(4)=10.d0*vadp+0.45d0
+    b(5)=-5.d0*vadp-5.d-2
+    b(6)=vadp
+    ulinear=b(1)*u(1)+b(2)*u(2)+b(3)*u(3)+b(4)*u(4)+b(5)*u(5)+b(6)*u(6)
+    var1=u(4)-u(3)
+    var2=4.d0*(u(3)-u(2))
+    u_mp=u(3)+minmod2_gpu(var1,var2)
+    var1=(ulinear-u(3))*(ulinear-u_mp)
+    if(var1>=1.d-10) then
+      dm1=u(1)-2.d0*u(2)+u(3)
+      d0=u(2)-2.d0*u(3)+u(4)
+      d1=u(3)-2.d0*u(4)+u(5)
+      dhm1=minmod4_gpu(4.d0*dm1-d0,4.d0*d0-dm1,dm1,d0)
+      dh0=minmod4_gpu(4.d0*d0-d1,4.d0*d1-d0,d0,d1)
+      u_ul=u(3)+4.d0*(u(3)-u(2))
+      u_av=0.5d0*(u(3)+u(4))
+      u_md=u_av-0.5d0*dh0
+      u_lc=u(3)+0.5d0*(u(3)-u(2))+1.333333333333333d0*dhm1
+      var1=min(u(3),u(4),u_md)
+      var2=min(u(3),u_ul,u_lc)
+      u_min=max(var1,var2)
+      var1=max(u(3),u(4),u_md)
+      var2=max(u(3),u_ul,u_lc)
+      u_max=min(var1,var2)
+      uh=ulinear+minmod2_gpu(u_min-ulinear,u_max-ulinear)
+    else
+      uh=ulinear
+    endif
+  end function mp5ld_gpu
+
+  attributes(device) real(8) function mp7ld_gpu(u,weight_bw,shock) result(uh)
+    implicit none
+    real(8) :: u(0:7)
+    real(8),value :: weight_bw
+    logical,value :: shock
+    real(8) :: b(0:7),vadp,ulinear,u_ul,u_av,u_md,u_lc,u_min,u_max
+    real(8) :: var1,var2,dm1,d0,d1,dhm1,dh0
+
+    vadp=3.571428571428571d-3*weight_bw
+    b(0)=vadp-7.142857142857143d-3
+    b(1)=-7.d0*vadp+5.952380952380952d-2
+    b(2)=21.d0*vadp-0.240476190476190d0
+    b(3)=-35.d0*vadp+0.759523809523809d0
+    b(4)=35.d0*vadp+0.509523809523809d0
+    b(5)=-21.d0*vadp-9.047619047619047d-2
+    b(6)=7.d0*vadp+9.523809523809525d-3
+    b(7)=-vadp
+    ulinear=b(0)*u(0)+b(1)*u(1)+b(2)*u(2)+b(3)*u(3)+b(4)*u(4) &
+      +b(5)*u(5)+b(6)*u(6)+b(7)*u(7)
+    if(shock) then
+      dm1=u(1)-2.d0*u(2)+u(3)
+      d0=u(2)-2.d0*u(3)+u(4)
+      d1=u(3)-2.d0*u(4)+u(5)
+      dhm1=minmod4_gpu(4.d0*dm1-d0,4.d0*d0-dm1,dm1,d0)
+      dh0=minmod4_gpu(4.d0*d0-d1,4.d0*d1-d0,d0,d1)
+      u_ul=u(3)+4.d0*(u(3)-u(2))
+      u_av=0.5d0*(u(3)+u(4))
+      u_md=u_av-0.5d0*dh0
+      u_lc=u(3)+0.5d0*(u(3)-u(2))+1.333333333333333d0*dhm1
+      var1=min(u(3),u(4),u_md)
+      var2=min(u(3),u_ul,u_lc)
+      u_min=max(var1,var2)
+      var1=max(u(3),u(4),u_md)
+      var2=max(u(3),u_ul,u_lc)
+      u_max=min(var1,var2)
+      uh=ulinear+minmod2_gpu(u_min-ulinear,u_max-ulinear)
+    else
+      uh=ulinear
+    endif
+  end function mp7ld_gpu
+
+  attributes(device) real(8) function reconstruct_mp_ld_stencil( &
+       f,inode,dim,ntype,weight_bw,shock) result(fh)
+    implicit none
+    real(8) :: f(8)
+    integer,value :: inode,dim,ntype
+    real(8),value :: weight_bw
+    logical,value :: shock
+
+    if(((ntype==1.or.ntype==4).and.inode==0).or. &
+       ((ntype==2.or.ntype==4).and.inode==dim-1)) then
+      fh=0.5d0*(f(4)+f(5))
+    elseif(((ntype==1.or.ntype==4).and.inode==1).or. &
+           ((ntype==2.or.ntype==4).and.inode==dim-2)) then
+      fh=suw3_gpu(f(3:5))
+    elseif(((ntype==1.or.ntype==4).and.inode==2).or. &
+           ((ntype==2.or.ntype==4).and.inode==dim-3)) then
+      fh=mp5ld_gpu(f(2:7),weight_bw)
+    else
+      fh=mp7ld_gpu(f,weight_bw,shock)
+    endif
+  end function reconstruct_mp_ld_stencil
+
   attributes(device) logical function shock_interface_active(i,j,k,idir,im,jm,km)
     use commarray_gpu, only: shock_mask_d
     implicit none
@@ -1147,8 +1251,86 @@ contains
     endif
   end subroutine roe_characteristic_state
 
+  attributes(device) subroutine mp_ld_interface_flux( &
+       i,j,k,idir,im,jm,km,gamma,hm,npdc,physical_dir,weight_bw,fh)
+    implicit none
+    integer,value :: i,j,k,idir,im,jm,km,hm,npdc,physical_dir
+    real(8),value :: gamma,weight_bw
+    real(8) :: fh(5)
+    real(8) :: split_plus(5,8),split_minus(5,8),fp(8),fm(8),hc(5),lev(5,5),rev(5,5)
+    integer :: n,m,ii,jj,kk,offset,inode,dim,ntype,lower,upper,idx
+    logical :: shock
+
+    select case(idir)
+    case(1)
+      inode=i; dim=im
+    case(2)
+      inode=j; dim=jm
+    case default
+      inode=k; dim=km
+    end select
+    ntype=3
+    lower=-hm
+    upper=dim+hm
+    if(physical_dir/=0) then
+      ntype=npdc
+      if(npdc==1.or.npdc==4) lower=0
+      if(npdc==2.or.npdc==4) upper=dim
+    endif
+    shock=shock_interface_active(i,j,k,idir,im,jm,km)
+    if(shock) call roe_characteristic_matrices(i,j,k,idir,gamma,lev,rev)
+    do n=1,8
+      do m=1,2
+        offset=n-4
+        if(m==2) offset=5-n
+        idx=inode+offset
+        if(physical_dir/=0) idx=max(lower,min(upper,idx))
+        ii=i; jj=j; kk=k
+        select case(idir)
+        case(1)
+          ii=idx
+        case(2)
+          jj=idx
+        case default
+          kk=idx
+        end select
+        ! Use the same cached primitive phase and sound speed as CPU splitting.
+        if(m==1) then
+          call steger_warming_split_physical_vector_at( &
+            ii,jj,kk,idir,1,im,jm,km,gamma,split_plus(:,n))
+        else
+          call steger_warming_split_physical_vector_at( &
+            ii,jj,kk,idir,-1,im,jm,km,gamma,split_minus(:,n))
+        endif
+      enddo
+    enddo
+    do m=1,5
+      if(shock) then
+        do n=1,8
+          fp(n)=lev(m,1)*split_plus(1,n)+lev(m,2)*split_plus(2,n)+ &
+            lev(m,3)*split_plus(3,n)+lev(m,4)*split_plus(4,n)+lev(m,5)*split_plus(5,n)
+          fm(n)=lev(m,1)*split_minus(1,n)+lev(m,2)*split_minus(2,n)+ &
+            lev(m,3)*split_minus(3,n)+lev(m,4)*split_minus(4,n)+lev(m,5)*split_minus(5,n)
+        enddo
+      else
+        fp=split_plus(m,:)
+        fm=split_minus(m,:)
+      endif
+      hc(m)=reconstruct_mp_ld_stencil(fp,inode,dim,ntype,weight_bw,shock)+ &
+        reconstruct_mp_ld_stencil(fm,inode,dim,ntype,weight_bw,shock)
+    enddo
+    if(shock) then
+      do m=1,5
+        fh(m)=rev(m,1)*hc(1)+rev(m,2)*hc(2)+rev(m,3)*hc(3)+rev(m,4)*hc(4)+rev(m,5)*hc(5)
+      enddo
+    else
+      fh=hc
+    endif
+  end subroutine mp_ld_interface_flux
+
   attributes(device) subroutine characteristic_reconstruction_interface_flux( &
        i,j,k,idir,im,jm,km,reconstruction_scheme,gamma,hm,npdc,physical_dir,fh)
+    use commvar_gpu, only: bfacmpld_d
     implicit none
     integer,value :: i,j,k,idir,im,jm,km,reconstruction_scheme,hm,npdc,physical_dir
     real(8),value :: gamma
@@ -1158,6 +1340,10 @@ contains
     real(8) :: lvec(5),stencil_plus(7),stencil_minus(7),fchar
     real(8) :: split_plus(5,7),split_minus(5,7)
 
+    if(reconstruction_scheme==5) then
+      call mp_ld_interface_flux(i,j,k,idir,im,jm,km,gamma,hm,npdc,physical_dir,bfacmpld_d,fh)
+      return
+    endif
     if(.not.shock_interface_active(i,j,k,idir,im,jm,km)) then
       ibeg = -hm
       iend = im + hm

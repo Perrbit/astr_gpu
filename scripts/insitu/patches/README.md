@@ -59,8 +59,8 @@ free-memory reserve. Thus retained arrays, deferred frees and earlier frames
 remain counted. Other processes' allocation growth is conservatively counted
 too. The job's current NVML allocation increment is checked independently so
 another process freeing memory does not increase the job's configured budget.
-This is not an atomic cross-process allocator accounting API: the scale route
-requires one MPI rank per physical GPU. Guarded Viskores
+The general scale route requires one MPI rank per physical GPU. The bounded
+M12 exception below uses separate atomic cross-process reservations. Guarded Viskores
 allocations use the synchronous memory allocator, not CUDA asynchronous pools.
 The existing native NVML/RSS checks and external 20 ms measurements remain
 independent. The guard does not promise to intercept every graphics-driver
@@ -72,6 +72,34 @@ scratch rejection. `test_insitu_allocation_budget.py` checks overflow-safe
 admission arithmetic separately. Larger CURVE scale admission requires the
 patched dependency and an active native observer; a missing patch cannot
 silently fall back to an unguarded larger run.
+
+### Bounded Shared-GPU Allocation Lifecycle
+
+`paraview-6.1.1-shared-allocation-lifecycle.patch` applies after the existing
+preflight and device-rendering patches, without fuzz. Rebuild `viskores_cont`
+and `RenderingOpenGL2` while no application uses these private libraries.
+Both exported lifecycle version functions must report version 1; a shared-GPU
+run rejects an older dependency instead of disabling its guard.
+
+Only the approved M12 64x32x24-interval, NP=4, standard-device/pinned fixture
+can use this exception: two ranks per physical GPU, at most 2 GiB additional
+device memory per GPU and 4 GiB host memory per node, with at least 1 GiB
+device free. A robust process-shared mutex in an MPI shared-memory window
+serializes request admission per physical GPU. Successful CUDA/OpenGL
+allocations retain their reservation until actual release; deferred CUDA frees
+do not return it when merely queued. Failed requests return their reservation.
+The ledger also checks arithmetic overflow and unmatched releases.
+
+Admission conservatively counts outstanding reservations in addition to the
+observed device-wide/NVML allocation increase. It can therefore refuse a
+request earlier than an exact allocator-only budget would. Native RSS/NVML
+and external 20 ms observations remain independent; arbitrary textures and
+unhooked third-party allocations are not guaranteed to be intercepted.
+Retained dependency buffers at finalization may leave nonzero reservations,
+which are reported rather than automatically labeled a leak. The component
+probe checks actual immediate/deferred CUDA release and concurrent refusal
+before allocation. This does not admit general shared-GPU CURVE or production
+workloads and is not a multi-GPU scaling benchmark.
 
 The user approved this local ParaView 6.1.1 dependency patch on 2026-09-29.
 It changes four `vtkPoints` allocations to double storage in the serial

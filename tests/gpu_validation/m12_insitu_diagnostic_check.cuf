@@ -1,0 +1,184 @@
+module m12_insitu_diagnostic_check
+  use cudafor
+  use insitu_sample_gpu, only: capture_device_sample_gpu,release_device_sampling_gpu
+  implicit none
+  private
+  public :: check_profile_device_sample_gpu
+  public :: check_profile_render_isolation_gpu
+  real(8),allocatable,save :: render_before(:,:,:,:)
+  integer,allocatable,save :: render_seed(:)
+contains
+  subroutine check_profile_render_isolation_gpu(before_render)
+    use iso_fortran_env, only: int64
+    use mpi
+    use commvar, only: im,jm,km,hm,numq,ia,ja,ka,nstep,use_gpu
+    use commarray_gpu, only: q_d
+    use parallel, only: mpirank
+    use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported
+    use checkpoint_state_io, only: checkpoint_state_require
+    logical,intent(in) :: before_render
+    character(8) :: option
+    integer :: status,length,count
+    integer,allocatable :: seed(:)
+    real(8),allocatable :: after(:,:,:,:)
+    call get_environment_variable('ASTR_M12_RENDER_ISOLATION',option,length=length,status=status)
+    if(status==1) return
+    call checkpoint_state_require(status==0.and.length==1.and.option=='1'.and.use_gpu.and. &
+      gpu_profile_mp_ld_flatplate_supported().and.all([ia,ja,ka]==[64,32,24]),MPI_COMM_WORLD, &
+      'render isolation requires approved bounded GPU profile fixture')
+    if(nstep/=4.and.nstep/=9) return
+    call random_seed(size=count)
+    if(before_render) then
+      call checkpoint_state_require(.not.allocated(render_before),MPI_COMM_WORLD,'nested render isolation capture')
+      allocate(render_before(-hm:im+hm,-hm:jm+hm,-hm:km+hm,numq),render_seed(count))
+      render_before=q_d
+      call random_seed(get=render_seed)
+    else
+      call checkpoint_state_require(allocated(render_before),MPI_COMM_WORLD,'missing render isolation capture')
+      allocate(after(-hm:im+hm,-hm:jm+hm,-hm:km+hm,numq),seed(count))
+      after=q_d
+      call random_seed(get=seed)
+      call checkpoint_state_require(all(seed==render_seed).and. &
+        all(transfer(after,[0_int64],size(after))==transfer(render_before,[0_int64],size(render_before))), &
+        MPI_COMM_WORLD,'rendering changes authoritative q bits or random sequence')
+      write(*,'(a,i0,a,i0,a)') 'ASTR_M12_RENDER_ISOLATION rank=',mpirank,' step=',nstep+1,' q_bits_rng_unchanged=1'
+      deallocate(after,seed,render_before,render_seed)
+    endif
+  end subroutine
+
+  subroutine check_profile_device_sample_gpu()
+    use iso_fortran_env, only: int64,real64
+    use ieee_arithmetic, only: ieee_is_finite
+    use mpi
+    use commvar, only: im,jm,km,hm,numq,ia,ja,ka,nstep,use_gpu
+    use commarray, only: q,x
+    use commarray_gpu, only: q_d,dxi_d
+    use parallel, only: mpirank,isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
+    use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported
+    use checkpoint_state_io, only: checkpoint_state_require
+    use insitu_fields, only: complete_owned_endpoints
+    use output_fields, only: begin_derived_output_cpu,pack_derived_output_cpu,end_derived_output_cpu
+    use insitu_device_velocity, only: snapshot_sample_velocity_gpu,extend_sample_velocity_gpu, &
+      derive_sample_velocity_gpu
+    character(8) :: enabled
+    character(128) :: path
+    integer :: status,length,nodes,i,j,k,c,node,unit,ierr,seed_size,extent(3),sizes(3),neighbors(2,3)
+    integer,allocatable :: seed_before(:),seed_after(:)
+    real(real64),allocatable :: before(:,:,:,:),after(:,:,:,:),state(:,:,:,:),sample_velocity(:,:,:,:), &
+      reference(:,:),actual(:,:),affine(:,:,:,:),packed(:)
+    real(8),device,allocatable :: velocity_d(:,:),halo_d(:,:,:,:),derived_d(:,:),affine_q_d(:,:,:,:)
+    real(real64) :: gradient(3,3),expected(14),difference,affine_error,global_error(2),errors(2),ranges(3), &
+      qmin,qmax,speedmax
+    integer(int64) :: workspace
+    integer(int64),parameter :: budget=64_int64*1024*1024,reserve=1024_int64**3
+    call get_environment_variable('ASTR_M12_DIAGNOSTIC_CHECK',enabled,length=length,status=status)
+    if(status==1) return
+    call checkpoint_state_require(status==0.and.length==1.and.enabled=='1',MPI_COMM_WORLD, &
+      'M12 diagnostic switch must be exactly 1')
+    call checkpoint_state_require(gpu_profile_mp_ld_flatplate_supported().and. &
+      all([ia,ja,ka]==[64,32,24]),MPI_COMM_WORLD,'M12 diagnostic requires approved bounded profile case')
+    if(nstep/=0.and.nstep/=9) return
+    extent=[im,jm,km]; sizes=[isize,jsize,ksize]; nodes=product(extent+1)
+    neighbors(:,1)=[mpileft,mpiright]; neighbors(:,2)=[mpidown,mpiup]; neighbors(:,3)=[mpiback,mpifront]
+    call random_seed(size=seed_size)
+    allocate(seed_before(seed_size),seed_after(seed_size))
+    call random_seed(get=seed_before)
+    allocate(before(-hm:im+hm,-hm:jm+hm,-hm:km+hm,numq), &
+      after(-hm:im+hm,-hm:jm+hm,-hm:km+hm,numq),state(0:im,0:jm,0:km,4), &
+      sample_velocity(0:im,0:jm,0:km,3),reference(14,nodes),actual(14,nodes), &
+      affine(0:im,0:jm,0:km,3),packed(20*nodes))
+    if(use_gpu) then
+      before=q_d
+    else
+      before=q
+    endif
+    state=before(0:im,0:jm,0:km,1:4)
+    call complete_owned_endpoints(state)
+    do c=1,3
+      sample_velocity(:,:,:,c)=state(:,:,:,c+1)/state(:,:,:,1)
+    enddo
+    call cpu_reference(sample_velocity,reference)
+    difference=0.d0
+    actual=reference
+    if(use_gpu) then
+      call capture_device_sample_gpu('pinned',velocity_d,halo_d,derived_d,budget,budget,reserve)
+      actual=derived_d
+      difference=maxval(abs(actual-reference))
+      call checkpoint_state_require(all(ieee_is_finite(actual)),MPI_COMM_WORLD,'nonfinite M12 private fields')
+      deallocate(velocity_d,halo_d,derived_d)
+    endif
+    call checkpoint_state_require(difference<=2.d-10,MPI_COMM_WORLD,'M12 same-state private derivative mismatch')
+    write(path,'(a,i4.4,a,i4.4,a)') 'diagnostics/private_step',nstep+1,'_rank',mpirank,'.bin'
+    open(newunit=unit,file=trim(path),access='stream',form='unformatted',status='new',iostat=status)
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'M12 diagnostic file open')
+    write(unit,iostat=status) extent,14,actual
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'M12 diagnostic file write')
+    close(unit)
+    qmin=minval(actual(10,:)); qmax=maxval(actual(10,:))
+    speedmax=maxval(sqrt(sum(sample_velocity**2,dim=4)))
+    call MPI_Allreduce(qmin,ranges(1),1,MPI_DOUBLE_PRECISION,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(qmax,ranges(2),1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(speedmax,ranges(3),1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+
+    ! An affine physical field checks boundary closures and metric projection.
+    ! It is z-independent so the diagnostic still satisfies periodic z.
+    gradient=reshape([.1d0,.05d0,-.02d0,.2d0,.03d0,.04d0,0.d0,0.d0,0.d0],[3,3])
+    do c=1,3
+      affine(:,:,:,c)=.1d0*c+gradient(c,1)*x(0:im,0:jm,0:km,1)+ &
+        gradient(c,2)*x(0:im,0:jm,0:km,2)
+    enddo
+    expected(1:9)=reshape(gradient,[9])
+    expected(10)=-.5d0*sum(gradient*transpose(gradient))
+    expected(11)=gradient(1,1)+gradient(2,2)+gradient(3,3)
+    expected(12:14)=[gradient(3,2)-gradient(2,3),gradient(1,3)-gradient(3,1), &
+      gradient(2,1)-gradient(1,2)]
+    call cpu_reference(affine,reference)
+    affine_error=maxval(abs(reference-spread(expected,2,nodes)))
+    if(use_gpu) then
+      after=0.d0
+      after(:,:,:,1)=1.d0
+      after(0:im,0:jm,0:km,2:4)=affine
+      after(0:im,0:jm,0:km,5)=10.d0+.5d0*sum(affine**2,dim=4)
+      allocate(affine_q_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,numq))
+      affine_q_d=after
+      call snapshot_sample_velocity_gpu(affine_q_d,velocity_d,extent,hm,numq,sizes,neighbors, &
+        MPI_COMM_WORLD,budget,reserve)
+      call extend_sample_velocity_gpu(velocity_d,halo_d,extent,MPI_COMM_WORLD,budget,reserve)
+      call derive_sample_velocity_gpu(halo_d,dxi_d,derived_d,extent,hm,MPI_COMM_WORLD,budget,reserve)
+      actual=derived_d
+      affine_error=max(affine_error,maxval(abs(actual-spread(expected,2,nodes))))
+      call checkpoint_state_require(all(ieee_is_finite(actual)),MPI_COMM_WORLD,'nonfinite M12 affine fields')
+      deallocate(affine_q_d,velocity_d,halo_d,derived_d)
+      call release_device_sampling_gpu()
+    endif
+    call checkpoint_state_require(affine_error<=2.d-10,MPI_COMM_WORLD,'M12 affine metric/closure mismatch')
+    if(use_gpu) then
+      after=q_d
+    else
+      after=q
+    endif
+    call random_seed(get=seed_after)
+    call checkpoint_state_require(all(seed_before==seed_after),MPI_COMM_WORLD,'M12 observer consumed wall RNG')
+    call checkpoint_state_require(all(transfer(before,[0_int64],size(before))== &
+      transfer(after,[0_int64],size(after))),MPI_COMM_WORLD,'M12 observer changed solver q or halo bits')
+    errors=[difference,affine_error]
+    call MPI_Allreduce(errors,global_error,2,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call checkpoint_state_require(ierr==MPI_SUCCESS,MPI_COMM_WORLD,'M12 private error reduction')
+    if(mpirank==0) write(*,'(a,i0,a,2es24.16,a,3es24.16,a)') &
+      'ASTR_M12_PRIVATE_DIAGNOSTIC step=',nstep+1,' same_state affine=',global_error, &
+      ' Q_min Q_max speed_max=',ranges,' q_bits_rng_unchanged=1'
+  contains
+    subroutine cpu_reference(sample_velocity,fields)
+      real(real64),intent(in) :: sample_velocity(0:,0:,0:,:)
+      real(real64),intent(out) :: fields(:,:)
+      integer :: indices(14),m
+      indices=[(m,m=1,14)]
+      call begin_derived_output_cpu(int(20*nodes,int64),budget,MPI_COMM_WORLD,indices,workspace, &
+        sample_velocity=sample_velocity)
+      call pack_derived_output_cpu([0,0,0],extent+1,20,packed)
+      call end_derived_output_cpu()
+      fields=transpose(reshape(packed(6*nodes+1:),[nodes,14]))
+      call checkpoint_state_require(all(ieee_is_finite(fields)),MPI_COMM_WORLD,'nonfinite CPU private reference')
+    end subroutine
+  end subroutine
+end module

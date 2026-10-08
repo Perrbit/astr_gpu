@@ -20,6 +20,10 @@ module boundary_gpu
                     wall_blowing_xb_d,wall_blowing_xc_d,wall_uinf_d,    &
                     wall_zmin_d,wall_zmax_d
   real(8),device :: wall_blowing_phase_d(15)
+  real(8),allocatable,device :: legacy_wall_velocity_d(:,:)
+  real(8),allocatable,pinned :: legacy_wall_velocity_h(:,:)
+  logical,save :: legacy_wall_forcing_gpu=.false.
+  integer,device :: legacy_wall_forcing_d
   integer,device :: wall_blowing_nmod_t_d,wall_blowing_nmod_z_d,        &
                     wall_ig0_d,wall_kg0_d,wall_ka_d,wall_blowing_enabled_d
   real(8),parameter :: GPU_PI=3.1415926535897932384626433832795d0
@@ -35,6 +39,9 @@ contains
     if(allocated(s1_bl_prs_prof_d)) deallocate(s1_bl_prs_prof_d)
     if(allocated(s1_bl_rho_prof_d)) deallocate(s1_bl_rho_prof_d)
     if(allocated(nscbc52_prediff_rhs_d)) deallocate(nscbc52_prediff_rhs_d)
+    if(allocated(legacy_wall_velocity_d)) deallocate(legacy_wall_velocity_d)
+    if(allocated(legacy_wall_velocity_h)) deallocate(legacy_wall_velocity_h)
+    legacy_wall_forcing_gpu=.false.
     s1_bl_profile_ready=.false.
     nscbc52_prediff_rhs_ready=.false.
   end subroutine release_boundary_gpu
@@ -43,7 +50,7 @@ contains
     use bc, only: configure_wall_blowing,wall_blowing_amplitude,        &
                   wall_blowing_beta,wall_blowing_phase,                 &
                   wall_blowing_xa,wall_blowing_xb,wall_blowing_xc,     &
-                  wall_blowing_nmod_t,wall_blowing_nmod_z
+                  wall_blowing_nmod_t,wall_blowing_nmod_z,wall_blowing_legacy_random
     use commvar, only: ndims,uinf,zmin,zmax,ka
     use parallel, only: ig0,kg0
     implicit none
@@ -52,6 +59,9 @@ contains
     call configure_wall_blowing
     enabled=0
     if(ndims==3 .and. abs(wall_blowing_amplitude)>1.d-10) enabled=1
+    if(wall_blowing_legacy_random .and. wall_blowing_amplitude<=1.d-10) enabled=0
+    legacy_wall_forcing_gpu=wall_blowing_legacy_random .and. enabled/=0
+    legacy_wall_forcing_d=merge(1,0,legacy_wall_forcing_gpu)
     wall_blowing_amplitude_d=wall_blowing_amplitude
     wall_blowing_beta_d=wall_blowing_beta
     wall_blowing_xa_d=wall_blowing_xa
@@ -69,6 +79,22 @@ contains
     wall_blowing_enabled_d=enabled
   end subroutine init_wall_blowing_gpu
 
+  subroutine prepare_legacy_wall_blowing_gpu(apply_lower)
+    use commvar, only: im,km
+    use bc, only: wall_blowing_velocity
+    implicit none
+    integer,intent(in) :: apply_lower
+
+    if(.not.legacy_wall_forcing_gpu .or. apply_lower==0) return
+    if(.not.allocated(legacy_wall_velocity_h)) then
+      allocate(legacy_wall_velocity_h(0:im,0:km))
+      allocate(legacy_wall_velocity_d(0:im,0:km))
+    endif
+    ! One draw sequence per actual boundary call; observers never call this.
+    legacy_wall_velocity_h=wall_blowing_velocity()
+    legacy_wall_velocity_d=legacy_wall_velocity_h
+  end subroutine prepare_legacy_wall_blowing_gpu
+
   attributes(device) real(8) function wall_blowing_velocity_gpu(i,k,xcoord,zcoord,forcing_time)
     implicit none
     integer,value :: i,k
@@ -80,6 +106,10 @@ contains
 
     wall_blowing_velocity_gpu=0.d0
     if(wall_blowing_enabled_d==0) return
+    if(legacy_wall_forcing_d/=0) then
+      wall_blowing_velocity_gpu=legacy_wall_velocity_d(i,k)
+      return
+    endif
     if(wall_blowing_nmod_t_d>0) then
       if(xcoord<wall_blowing_xa_d .or. xcoord>wall_blowing_xb_d) return
       theta=2.d0*GPU_PI*(xcoord-wall_blowing_xa_d)/                    &
@@ -251,7 +281,8 @@ contains
           bctype(1) == GPU_BC_NSCBC_INFLOW) .and. &
          bctype(2) == GPU_BC_OUTFLOW .and. &
          bctype(3) == GPU_BC_WALL_ISOTHERMAL_NOSLIP .and. &
-         (bctype(4) == GPU_BC_FARFIELD .or. bctype(4) == GPU_BC_NSCBC_FARFIELD) .and. &
+         (bctype(4) == GPU_BC_ZEROEXTRAP .or. bctype(4) == GPU_BC_FARFIELD .or. &
+          bctype(4) == GPU_BC_NSCBC_FARFIELD) .and. &
          all(bctype(5:6) == 1)
   end function gpu_s1_flatplate_boundary_case_pending
 
@@ -2398,6 +2429,7 @@ contains
     call outflow_x_kernel<<<grid_x,block>>>(im,jm,km,hm,const2,const6, &
                                              gamma,mach,pinf,pout,apply_right)
     call sync_after_kernel('s1_bl_outflow_x_kernel')
+    call prepare_legacy_wall_blowing_gpu(apply_down)
     call wall_isothermal_noslip_y_kernel<<<grid_y,block>>>(im,jm,km,hm,const2,const6, &
                                                            twall(3),twall(3),apply_down,0,preserve_rhs,time)
     call sync_after_kernel('s1_bl_wall_isothermal_noslip_y_kernel')
@@ -2454,6 +2486,7 @@ contains
         call sync_after_kernel('wall_adiabatic_noslip_x_kernel')
       endif
     case(2)
+      call prepare_legacy_wall_blowing_gpu(apply_lower)
       block = dim3(256,1,1)
       n = (im + 1) * (km + 1)
       grid = dim3((n + block%x - 1)/block%x,1,1)

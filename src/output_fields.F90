@@ -129,13 +129,14 @@ contains
     workspace_bytes=private_bytes+halo_bytes
   end subroutine
 
-  subroutine begin_derived_output_cpu(capacity,budget,comm,indices,workspace_bytes)
+  subroutine begin_derived_output_cpu(capacity,budget,comm,indices,workspace_bytes,sample_velocity)
     use commvar, only: im,jm,km,hm,npdci,npdcj,npdck
     use commarray, only: vel
     use parallel, only: dataswap
     integer(int64),intent(in) :: capacity,budget
     integer,intent(in) :: comm,indices(:)
     integer(int64),intent(out) :: workspace_bytes
+    real(real64),intent(in),optional :: sample_velocity(0:,0:,0:,:)
     integer :: status
     call require(comm==MPI_COMM_WORLD.and..not.allocated(private_velocity),comm,'private CPU output lifecycle')
     call agree_derived_selection(indices,selected_cpu,comm)
@@ -148,10 +149,21 @@ contains
     allocate(private_velocity(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3),stat=status)
     call require(status==0,comm,'private CPU velocity allocation')
     private_velocity=0.d0
-    private_velocity(0:im,0:jm,0:km,:)=vel(0:im,0:jm,0:km,:)
+    if(present(sample_velocity)) then
+      call require(all(shape(sample_velocity)==[im+1,jm+1,km+1,3]).and. &
+        all(ieee_is_finite(sample_velocity)),comm,'private completed-sample velocity shape/state')
+      private_velocity(0:im,0:jm,0:km,:)=sample_velocity
+    else
+      private_velocity(0:im,0:jm,0:km,:)=vel(0:im,0:jm,0:km,:)
+    endif
     call dataswap(private_velocity)
-    call require(all(private_velocity(0:im,0:jm,0:km,:)==vel(0:im,0:jm,0:km,:)), &
-      comm,'private exchange changed physical velocity')
+    if(present(sample_velocity)) then
+      call require(all(private_velocity(0:im,0:jm,0:km,:)==sample_velocity), &
+        comm,'private exchange changed completed-sample velocity')
+    else
+      call require(all(private_velocity(0:im,0:jm,0:km,:)==vel(0:im,0:jm,0:km,:)), &
+        comm,'private exchange changed physical velocity')
+    endif
     derived_capacity_cpu=capacity
   end subroutine
 

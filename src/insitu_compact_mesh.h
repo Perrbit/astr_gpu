@@ -31,6 +31,10 @@ struct DeviceMesh {
   std::map<std::string,double> controls;
 };
 std::vector<double> device_display_palette();
+DeviceMesh build_device_plane(int fcomm,int step,double time,const int global[3],
+  const int local[3],const int offset[3],double* coordinates,double* velocity,
+  const double origin[3],const double normal[3],std::int64_t budget,
+  std::int64_t reserve,std::int64_t retained,std::int64_t host_budget,bool speed_colors=false,double speed_max=1.);
 int render_resident_products(const char* pipeline,const char* backend,const char* script,int fcomm,
   int step,double time,const char* profile,std::vector<DeviceMesh> products,bool covered=false);
 int render_compact_products(const char* backend,const char* script,int fcomm,

@@ -7,6 +7,13 @@ set(AUTHOR "Jian Fang")
 set(AUTHOR_DETAILS "jian.fang@stfc.ac.uk")
 set(DESCRIPTION "Building ASTR using cmake")
 option(ASTR_WITH_CUDA "Build CUDA Fortran GPU support into the ASTR binary" OFF)
+set(ASTR_USERDEFINE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/user_define_module/userdefine.F90"
+    CACHE FILEPATH "Fortran source providing the userdefine module")
+get_filename_component(ASTR_USERDEFINE_SOURCE "${ASTR_USERDEFINE_SOURCE}" ABSOLUTE
+    BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+if(NOT EXISTS "${ASTR_USERDEFINE_SOURCE}" OR IS_DIRECTORY "${ASTR_USERDEFINE_SOURCE}")
+  message(FATAL_ERROR "ASTR_USERDEFINE_SOURCE must name an existing Fortran source file")
+endif()
 option(ASTR_WITH_CATALYST "Build the optional Catalyst backend admission interface" OFF)
 option(ASTR_BUILD_INSITU_DEVICE_PROBES "Build optional CUDA C++ in-situ dependency probes" OFF)
 option(ASTR_BUILD_INSITU_RENDER_PROBES "Build probes requiring the private CUDA-rendering VTK patch" OFF)

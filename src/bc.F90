@@ -43,6 +43,7 @@ module bc
   real(8),save :: nscbc_farfield_shock_x=0.d0,                         &
                   nscbc_farfield_shock_angle=0.d0
   logical,save :: wall_blowing_configured=.false.
+  logical,save :: wall_blowing_legacy_random=.false.
   logical,save :: profile_inflow_configured=.false.
   logical,save :: profile_inflow_mach_pressure=.false.
   real(8),save :: wall_blowing_amplitude=0.d0,wall_blowing_beta=1.d0,  &
@@ -119,14 +120,37 @@ module bc
   end function profile_inflow_mach_pressure_enabled
   !
   subroutine configure_wall_blowing
+    use commvar, only: lrestart
     implicit none
-    integer :: fh
+    integer :: fh,i,ich,env_status,env_length
     logical :: lexist
     character(len=64) :: filewbs,filephase
+    character(len=32) :: mode
 
     if(wall_blowing_configured) return
 
     if(mpirank==0) then
+      mode='current'
+      call get_environment_variable('ASTR_WALL_BLOWING_MODE',mode, &
+                                    length=env_length,status=env_status)
+      if(env_status==1 .or. env_length==0) then
+        mode='current'
+      elseif(env_status/=0) then
+        stop 'ASTR_WALL_BLOWING_MODE is invalid or too long'
+      endif
+      do i=1,len_trim(mode)
+        ich=iachar(mode(i:i))
+        if(ich>=iachar('A') .and. ich<=iachar('Z')) &
+          mode(i:i)=achar(ich+iachar('a')-iachar('A'))
+      enddo
+      select case(trim(mode))
+      case('current')
+        wall_blowing_legacy_random=.false.
+      case('legacy_random')
+        wall_blowing_legacy_random=.true.
+      case default
+        stop 'ASTR_WALL_BLOWING_MODE must be current or legacy_random'
+      end select
       filewbs='datin/wallbs.dat'
       inquire(file=trim(filewbs),exist=lexist)
       if(lexist) then
@@ -140,7 +164,7 @@ module bc
         read(fh,*)wall_blowing_nmod_t,wall_blowing_nmod_z
         close(fh)
 
-        if(wall_blowing_nmod_t>0) then
+        if(wall_blowing_nmod_t>0 .and. .not.wall_blowing_legacy_random) then
           filephase='datin/wallbs_phase.dat'
           inquire(file=trim(filephase),exist=lexist)
           if(.not.lexist) stop 'modal wall blowing requires datin/wallbs_phase.dat'
@@ -163,10 +187,13 @@ module bc
         write(*,"(42x,(A,1X,I0))")'    temporal modes:',wall_blowing_nmod_t
         write(*,"(42x,(A,1X,I0))")'    spanwise modes:',wall_blowing_nmod_z
         print*,'  positive amplitude acts along the inward physical normal'
+        if(wall_blowing_legacy_random) &
+          print*,'  forcing mode: legacy_random (new sample on each wall call)'
         print*,' --------------------------------------------------------------'
       endif
     endif
 
+    call bcast(wall_blowing_legacy_random)
     call bcast(wall_blowing_amplitude)
     call bcast(wall_blowing_beta)
     call bcast(wall_blowing_xa)
@@ -175,8 +202,17 @@ module bc
     call bcast(wall_blowing_nmod_t)
     call bcast(wall_blowing_nmod_z)
     call bcast(wall_blowing_phase)
+    if(wall_blowing_legacy_random) then
+      if(trim(flowtype)/='bl' .or. ndims/=3 .or. numq/=5 .or. &
+         bctype(3)/=41) &
+        stop 'legacy_random wall forcing requires 3D five-variable bl with lower bc41'
+      if(lrestart) stop 'legacy_random restart requires RNG state support; not yet admitted'
+      if(wall_blowing_xa>=wall_blowing_xb .or. &
+         wall_blowing_xb>=wall_blowing_xc .or. wall_blowing_nmod_z<1) &
+        stop 'legacy_random requires xa < xb < xc and nmod_z >= 1'
+    endif
     if(abs(wall_blowing_amplitude)>1.d-10) then
-      if(wall_blowing_nmod_t>0) then
+      if(wall_blowing_nmod_t>0 .and. .not.wall_blowing_legacy_random) then
         if(wall_blowing_nmod_t>5 .or. wall_blowing_nmod_z<1 .or.      &
            wall_blowing_nmod_z>10) then
           stop 'modal wall blowing supports 1:5 temporal and 1:10 spanwise modes'
@@ -8026,9 +8062,18 @@ module bc
   !| 27-09-2021: Created by J. Fang @ Warrington                       |
   !+-------------------------------------------------------------------+
   function wall_blowing_velocity() result(vwall)
+    use wall_blowing_random, only: sample_legacy_wall_velocity
     implicit none
     real(8) :: vwall(0:im,0:km)
 
+    if(wall_blowing_legacy_random) then
+      vwall=0.d0
+      if(ndims==3 .and. wall_blowing_amplitude>1.d-10) &
+        call sample_legacy_wall_velocity(mpirank,x(0:im,0,0:km,1),x(0:im,0,0:km,3), &
+          zmax-zmin,uinf,wall_blowing_amplitude,wall_blowing_xa, &
+          wall_blowing_xb,wall_blowing_xc,wall_blowing_nmod_z,vwall)
+      return
+    endif
     if(wall_blowing_nmod_t>0) then
       vwall=wallbs(wall_blowing_beta,wall_blowing_amplitude,          &
                    wall_blowing_xa,wall_blowing_xb,                   &

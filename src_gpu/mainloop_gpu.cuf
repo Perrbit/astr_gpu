@@ -155,7 +155,8 @@ contains
          apply_nscbc_farfield_y_upper_nonreflecting_rhs_gpu, &
          capture_nscbc_farfield_y_upper_prediff_rhs_gpu, &
          apply_nscbc_farfield_y_upper_viscous_source_gpu
-    use sponge_gpu, only: apply_xmax_sponge_gpu
+    use sponge_gpu, only: apply_xmax_sponge_gpu,apply_ymax_sponge_gpu
+    use sponge_layer, only: lspg_im,lspg_jm
     use solver_gpu, only: apply_explicit_filter_gpu,q_to_primitive_kernel,zero_rhs_kernel, &
          save_q_kernel,rk3_update_kernel,convective_rhs_x_kernel, &
          convective_rhs_y_kernel,convective_rhs_z_kernel, &
@@ -246,7 +247,7 @@ contains
          characteristic_upwind_rhs_x_xyphysical_global_kernel, &
          characteristic_upwind_rhs_y_xyphysical_global_kernel, &
          characteristic_upwind_rhs_z_xyphysical_global_kernel
-    use case_capability_gpu, only: gpu_tgv_explicit_upwind_supported, &
+    use case_capability_gpu, only: gpu_tgv_explicit_upwind_supported,gpu_profile_mp_ld_flatplate_supported, &
          gpu_sod_s0a1_supported,gpu_sod_s0a2_supported, &
          gpu_sod_s0b0_xphysical_supported,gpu_open_shock_s0b1_supported, &
          gpu_open_shock_s0b2_nscbc_supported, &
@@ -310,6 +311,7 @@ contains
     logical :: characteristic_case
     logical :: characteristic_xphysical_case
     logical :: characteristic_xyphysical_case
+    logical :: profile_mp_ld_case
     logical :: s2_hbl_selective_roe_case
     logical :: s2_hbl_selective_roe_sponge_case
     logical :: s2_hbl_selective_roe_c4_case
@@ -404,7 +406,9 @@ contains
          gpu_curvilinear_nscbc52_viscous_nonreflecting_supported()
     curvilinear_nscbc52_case = gpu_curvilinear_nscbc52_nonreflecting_supported() .or. &
          curvilinear_nscbc52_viscous_case
-    flatplate_case = conservative_case .or. gpu_s1_flatplate_s1a_supported() .or. flatplate_mp7_case .or. &
+    profile_mp_ld_case = gpu_profile_mp_ld_flatplate_supported()
+    flatplate_case = profile_mp_ld_case .or. conservative_case .or. &
+         gpu_s1_flatplate_s1a_supported() .or. flatplate_mp7_case .or. &
          curvilinear_nscbc52_case .or. &
          s2_hbl_selective_roe_case .or. s2_hbl_selective_roe_sponge_case .or. &
          s2_hbl_selective_roe_c4_case .or. s2_sbli_nscbc_case
@@ -428,7 +432,7 @@ contains
          gpu_shock_characteristic_s0a9_supported() .or. &
          gpu_shock_characteristic_s0a10_supported()
     characteristic_xphysical_case = gpu_shock_characteristic_s0b0_xphysical_supported()
-    characteristic_xyphysical_case = conservative_case .or. s2_hbl_selective_roe_case .or. &
+    characteristic_xyphysical_case = profile_mp_ld_case .or. conservative_case .or. s2_hbl_selective_roe_case .or. &
          s2_hbl_selective_roe_sponge_case .or. s2_hbl_selective_roe_c4_case .or. &
          s2_sbli_nscbc_case
     characteristic_case = characteristic_case .or. characteristic_xphysical_case .or. &
@@ -1203,8 +1207,13 @@ contains
       endif
       call end_gpu_phase('rk_update',nstep,rkstep)
       if(open_shock_sponge_case .or. s2_hbl_selective_roe_sponge_case .or. &
-         s2_hbl_selective_roe_c4_sponge_case .or. s2_sbli_nscbc_sponge_case) then
-        call apply_xmax_sponge_gpu()
+         s2_hbl_selective_roe_c4_sponge_case .or. s2_sbli_nscbc_sponge_case .or. profile_mp_ld_case) then
+        if(profile_mp_ld_case) then
+          if(lspg_im) call apply_xmax_sponge_gpu()
+          if(lspg_jm) call apply_ymax_sponge_gpu()
+        else
+          call apply_xmax_sponge_gpu()
+        endif
         call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
              q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
         call sync_after_kernel('sponge_q_to_primitive_kernel')
@@ -1288,7 +1297,7 @@ contains
          lfilter, diffterm, lchardecomp
     use boundary_gpu, only: gpu_boundary_case_supported,gpu_ldc_boundary_case_pending, &
          gpu_s1_flatplate_boundary_case_pending
-    use case_capability_gpu, only: gpu_tgv_explicit_upwind_supported, &
+    use case_capability_gpu, only: gpu_tgv_explicit_upwind_supported,gpu_profile_mp_ld_flatplate_supported, &
          gpu_sod_s0a1_supported,gpu_sod_s0a2_supported, &
          gpu_sod_s0a3_supported,gpu_sod_s0b0_xphysical_supported, &
          gpu_open_shock_s0b1_supported, &
@@ -1329,7 +1338,7 @@ contains
     if(num_modequ /= 0) stop 'GPU first-stage supports num_modequ=0 only'
     if(trim(turbmode) /= 'none') stop 'GPU first-stage supports turbmode=none only'
     if(trim(rkscheme) /= 'rk3') stop 'GPU first-stage supports rkscheme=rk3 only'
-    controlled_upwind_case = conservative_boundary%enabled .or. &
+    controlled_upwind_case = gpu_profile_mp_ld_flatplate_supported() .or. conservative_boundary%enabled .or. &
          gpu_tgv_explicit_upwind_supported() .or. gpu_sod_s0a1_supported() .or. &
          gpu_sod_s0a2_supported() .or. gpu_sod_s0a3_supported() .or. &
          gpu_sod_s0b0_xphysical_supported() .or. &
@@ -1446,7 +1455,8 @@ contains
 
     ldc_case = gpu_ldc_boundary_case_pending()
     flatplate_pending = gpu_s1_flatplate_boundary_case_pending()
-    if(flatplate_pending .and. (.not.conservative_boundary%enabled) .and. &
+    if(flatplate_pending .and. (.not.gpu_profile_mp_ld_flatplate_supported()) .and. &
+       (.not.conservative_boundary%enabled) .and. &
        (.not.gpu_s1_flatplate_s1a_supported()) .and. &
        (.not.gpu_s1_flatplate_s1a1_supported()) .and. &
        (.not.gpu_s1_flatplate_explicit_filter_supported()) .and. &

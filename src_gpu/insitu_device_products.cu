@@ -202,7 +202,7 @@ struct TraceAuditMaximum {
 
 astr_insitu::ProductAudit audit_physical_trace(const astr_insitu::DeviceGeometryView& view,
     const viskores::cont::ArrayHandle<viskores::Vec3f>& coordinates,const double* source,
-    const viskores::Id3& extent,const viskores::Id3& offset,int global_cells,bool crossing,int axis) {
+    const viskores::Id3& extent,const viskores::Id3& offset,const viskores::Id3& global_cells,bool crossing,int axis) {
   astr_insitu::ProductAudit result;
   if(!view.points) return result;
   const auto fields=astr_insitu::pack_component_halo(const_cast<double*>(source),extent+viskores::Id3(7));
@@ -230,10 +230,12 @@ astr_insitu::DeviceMesh resident_mesh(const char* name,const viskores::cont::Dat
     viskores::Id3 extent={0,0,0},viskores::Id3 offset={0,0,0},int global_cells=32,int rank=0,
     const viskores::Vec3f* physical_source=nullptr,std::uint64_t host_budget=0,
     const viskores::cont::ArrayHandle<viskores::Vec3f>* trace_coordinates=nullptr,int trace_axis=0,
-    bool speed_colors=false,double iso=.25) {
+    bool speed_colors=false,double iso=.25,viskores::Id3 global_dimensions=viskores::Id3(0),double speed_max=1.) {
+  if(global_dimensions==viskores::Id3(0)) global_dimensions=viskores::Id3(global_cells);
   auto owner=std::make_shared<astr_insitu::DeviceGeometryOwner>(data,step,time,arity);
   static const auto palette=astr_insitu::device_display_palette();
-  const auto colors=owner->color_display(palette,speed_colors || global_cells==256);
+  const bool speed=speed_colors || global_cells==256;
+  const auto colors=owner->color_display(palette,speed,speed?0.:-1.,speed?speed_max:1.);
   const auto& view=owner->get();
 #ifdef ASTR_BUILD_TESTING
   if(physical_source) astr_insitu::test_curve_surface_oracle(data,view,rank,step,host_budget);
@@ -251,7 +253,7 @@ astr_insitu::DeviceMesh resident_mesh(const char* name,const viskores::cont::Dat
         viskores::cont::DeviceAdapterTagCuda{},token));
     }
     const auto result=trace_coordinates?audit_physical_trace(view,*trace_coordinates,audit_halo,
-      extent,offset,global_cells,std::string(name)=="crossing_streamlines",trace_axis):
+      extent,offset,global_dimensions,std::string(name)=="crossing_streamlines",trace_axis):
       astr_insitu::audit_device_product(view,audit_halo,audit_diagnostics,
       extent,offset,global_cells,std::string(name)=="q_surface",std::string(name)=="velocity_slice",
       std::string(name)=="crossing_streamlines",computational,physical_source,iso);
@@ -296,7 +298,7 @@ void report_resident_trace(const astr_insitu::DeviceStreamlines& trace,const cha
   for(int i=0;i<trace.particles;++i) if(trace.subminimum_stop[i])
     std::printf("ASTR_INSITU_TRAJECTORY_TERMINATION rank=%d product=%s seed=%d direction=%d status=3 "
       "reason=sub_minimum_remaining accepted=%.17g remaining=%.17g minimum=%.17g\n",rank,name,
-      i%trace.seed_count,i<trace.seed_count?1:-1,trace.final_state[i][4],std::acos(-1.)-trace.final_state[i][4],trace.minimum_step);
+      i%trace.seed_count,i<trace.seed_count?1:-1,trace.final_state[i][4],trace.maximum_length-trace.final_state[i][4],trace.minimum_step);
 }
 #endif
 }
@@ -404,7 +406,7 @@ try {
 }
 
 extern "C" int astr_insitu_device_render(const char* pipeline,const char* backend,const char* script,const char* profile,
-    int fcomm,int step,double time,int nx,int ny,int nz,int ox,int oy,int oz,int global_cells,
+    int fcomm,int step,double time,int nx,int ny,int nz,int ox,int oy,int oz,int global_cells,int global_y,int global_z,
     double* velocity,double* halo,double* diagnostic,double* reynolds_halo,double* favre_halo,
     int covered,double duration,double window_start,double window_end,std::int64_t host_budget,
     int curve,double* coordinates,double* coordinate_halo,std::int64_t budget,std::int64_t reserve,std::int64_t retained,
@@ -434,7 +436,8 @@ try {
   }
   if(std::getenv("ASTR_INSITU_TEST_CURVE_TRACE_PREFIX")) {
 #ifdef ASTR_BUILD_TESTING
-    if(!curve || (std::string(profile?profile:"")!="streamlines" && std::string(profile?profile:"")!="curve_demo"))
+    if(!curve || (std::string(profile?profile:"")!="streamlines" && std::string(profile?profile:"")!="curve_demo" &&
+                 std::string(profile?profile:"")!="boundary_layer"))
       throw std::invalid_argument("CURVE trace test oracle requires physical streamline coordinates");
 #else
     throw std::invalid_argument("CURVE trace test oracle is unavailable in production builds");
@@ -447,11 +450,16 @@ try {
   viskores::cont::GetRuntimeDeviceTracker().ForceDevice(viskores::cont::DeviceAdapterTagCuda{});
   const std::string selected=profile?profile:"";
   const bool curve_demo=selected=="curve_demo";
-  const bool demo=selected=="tgv256_demo" || curve_demo;
+  const bool boundary_layer=selected=="boundary_layer";
+  const viskores::Id3 global_dimensions(global_cells,global_y,global_z);
+  const bool demo=selected=="tgv256_demo" || curve_demo || boundary_layer;
   if(selected!="all" && selected!="q_surface" && selected!="q_streamlines" &&
      selected!="streamlines" && selected!="velocity_slice" && !demo) throw std::invalid_argument("Unsupported device product profile");
-  if(curve_demo?(global_cells!=32 && global_cells!=64 && global_cells!=128 && global_cells!=256):
-      global_cells!=(demo?256:32))
+  if(boundary_layer?(global_dimensions!=viskores::Id3(64,32,24) || !curve || covered ||
+      seed_layout!="bl-layered64" || std::string(pipeline?pipeline:"")!="standard-device"):
+      (global_dimensions!=viskores::Id3(global_cells) ||
+       (curve_demo?(global_cells!=32 && global_cells!=64 && global_cells!=128 && global_cells!=256):
+        global_cells!=(demo?256:32))))
     throw std::invalid_argument("Device product profile/resolution differs");
   if(curve_demo && global_cells==256) {
     int ranks=0;
@@ -463,10 +471,10 @@ try {
   if(host_budget<=0 || !std::isfinite(time) || step<0) throw std::invalid_argument("Invalid device frame identity/budget");
   if(curve!=0 && curve!=1) throw std::invalid_argument("Invalid device coordinate mode");
   if(curve) {
-    if((selected!="q_surface" && selected!="streamlines" && !curve_demo) || !coordinates ||
-        (global_cells!=32 && !curve_demo) ||
-        ((selected=="q_surface" || curve_demo) && covered) ||
-        ((selected=="streamlines" || curve_demo) && !coordinate_halo) ||
+    if((selected!="q_surface" && selected!="streamlines" && !curve_demo && !boundary_layer) || !coordinates ||
+        (global_cells!=32 && !curve_demo && !boundary_layer) ||
+        ((selected=="q_surface" || curve_demo || boundary_layer) && covered) ||
+        ((selected=="streamlines" || curve_demo || boundary_layer) && !coordinate_halo) ||
         std::string(pipeline?pipeline:"")=="compatible")
       throw std::invalid_argument("CURVE requires an admitted strict bounded surface or streamline product");
 #ifdef ASTR_VISKORES_ALLOCATION_PREFLIGHT
@@ -498,6 +506,7 @@ try {
   const bool crossing=lines && !demo && astr_insitu_scene_due("crossing_streamlines");
   const bool reynolds=(selected=="all" || selected=="streamlines") && covered && astr_insitu_scene_due("mean_reynolds_streamlines");
   const bool favre=(selected=="all" || selected=="streamlines") && covered && astr_insitu_scene_due("mean_favre_streamlines");
+  const double iso=boundary_layer?.001:(demo?0.:.25);
   const std::string route=pipeline?pipeline:"";
   if(route!="compatible") {
 #ifdef ASTR_INSITU_DEVICE_RENDERING
@@ -511,15 +520,22 @@ try {
     ProductStage extraction("device_geometry_extract_inclusive","ASTR_IS8_DEVICE_GEOMETRY_EXTRACTION",fcomm,step);
     auto extracted=astr_insitu::extract_tgv_geometry(reinterpret_cast<viskores::Vec3f*>(velocity),
       reinterpret_cast<astr_insitu::DeviceDiagnostics*>(diagnostic),dimensions,offset,slice,surface,
-      demo?0.:.25,nullptr,global_cells,curve?reinterpret_cast<viskores::Vec3f*>(coordinates):nullptr);
+      iso,nullptr,global_cells,curve?reinterpret_cast<viskores::Vec3f*>(coordinates):nullptr,global_dimensions);
     if(surface) meshes.push_back(resident_mesh("q_surface",extracted.surface,step,time,3,halo,
       reinterpret_cast<astr_insitu::DeviceDiagnostics*>(diagnostic),extent,offset,global_cells,rank,
-      curve?reinterpret_cast<viskores::Vec3f*>(coordinates):nullptr,std::uint64_t(host_budget),nullptr,0,demo,demo?0.:.25));
+      curve?reinterpret_cast<viskores::Vec3f*>(coordinates):nullptr,std::uint64_t(host_budget),nullptr,0,demo,iso,
+      global_dimensions,boundary_layer?1.1:1.));
     if(curve) std::printf("ASTR_INSITU_CURVE_SURFACE_FRAME rank=%d step=%d physical_coordinates=1 "
       "field_download_bytes=0 geometry_host_bytes=0\n",rank,step);
     if(slice) meshes.push_back(resident_mesh("velocity_slice",
       astr_insitu::triangulate_device_slice(extracted.slice,dimensions,offset,global_cells),step,time,3,
       halo,nullptr,extent,offset,global_cells,rank));
+    }
+    if(boundary_layer && astr_insitu_scene_due("velocity_slice")) {
+      const int global[3]={global_cells,global_y,global_z},local[3]={nx,ny,nz},start[3]={ox,oy,oz};
+      const double origin[3]={0.,0.,45.},normal[3]={0.,0.,1.};
+      meshes.push_back(astr_insitu::build_device_plane(fcomm,step,time,global,local,start,coordinates,velocity,
+        origin,normal,budget,reserve,retained,host_budget,true,1.1));
     }
     if(instant || crossing || reynolds || favre) {
       auto actual=astr_insitu::pack_component_halo(halo,halo_dimensions);
@@ -531,7 +547,7 @@ try {
         ProductStage phase("resident_streamlines_inclusive","ASTR_IS8_RESIDENT_STREAMLINES",fcomm,step);
         auto trace=astr_insitu::trace_tgv_device(field,actual,extent,offset,comm,host_budget,
           constant,constant?trace_axis:0,constant,mean,global_cells,true,curve?&physical:nullptr,physical_step_scale,
-          constant?"line16":seed_layout);
+          constant?"line16":seed_layout,global_dimensions);
         report_resident_trace(trace,name,rank,constant?trace_axis:0);
 #ifdef ASTR_BUILD_TESTING
         if(test_step_scale && rank==0) for(int i=0;i<trace.particles;++i) {
@@ -542,8 +558,10 @@ try {
         }
 #endif
         auto mesh=resident_mesh(name,trace.resident_geometry,step,time,2,source,nullptr,
-          extent,offset,global_cells,rank,nullptr,std::uint64_t(host_budget),curve?&physical:nullptr,trace_axis,demo);
-        mesh.controls["streamline_seed_layout"]=trace.seed_layout=="tgv-stratified"?1.:0.;
+          extent,offset,global_cells,rank,nullptr,std::uint64_t(host_budget),curve?&physical:nullptr,trace_axis,demo,.25,
+          global_dimensions,boundary_layer?1.1:1.);
+        mesh.controls["streamline_seed_layout"]=trace.seed_layout=="tgv-stratified"?1.:
+          (trace.seed_layout=="bl-layered64"?2.:0.);
         mesh.controls["streamline_seed_count"]=trace.seed_count;
         mesh.controls["streamline_particle_count"]=trace.particles;
         meshes.push_back(std::move(mesh));

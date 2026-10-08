@@ -1,0 +1,60 @@
+module legacy_wall_upload_test
+  use cudafor
+  implicit none
+contains
+  attributes(global) subroutine consume_wall(im,km,wall,observed)
+    integer,value :: im,km
+    real(8),device,intent(in) :: wall(0:im,0:km)
+    real(8),device,intent(out) :: observed(0:im,0:km)
+    integer :: id,i,k
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=(im+1)*(km+1)) return
+    i=mod(id,im+1)
+    k=id/(im+1)
+    observed(i,k)=wall(i,k)
+  end subroutine consume_wall
+end module legacy_wall_upload_test
+
+program legacy_wall_upload_probe
+  use cudafor
+  use legacy_wall_upload_test
+  use wall_blowing_random, only: sample_legacy_wall_velocity
+  implicit none
+  integer,parameter :: im=64,km=24
+  real(8) :: xc(0:im,0:km),zc(0:im,0:km),result(0:im,0:km)
+  real(8),allocatable,pinned :: supplied(:,:)
+  real(8),allocatable,device :: wall(:,:),observed(:,:)
+  integer :: rank,status,i,k,c
+  integer(8) :: free_bytes,total_bytes
+  character(len=16) :: argument
+  type(dim3) :: block,grid
+
+  call get_command_argument(1,argument)
+  read(argument,*) rank
+  status=cudaSetDevice(rank)
+  if(status/=cudaSuccess) error stop 'CUDA device selection failed'
+  status=cudaMemGetInfo(free_bytes,total_bytes)
+  if(status/=cudaSuccess .or. free_bytes<1073741824_8) &
+    error stop 'CUDA free memory is below the approved floor'
+  allocate(supplied(0:im,0:km),wall(0:im,0:km),observed(0:im,0:km))
+  do k=0,km
+    do i=0,im
+      xc(i,k)=dble(i)*80.d0/dble(im)
+      zc(i,k)=dble(k)*90.d0/dble(km)
+    enddo
+  enddo
+  block=dim3(256,1,1)
+  grid=dim3(((im+1)*(km+1)+255)/256,1,1)
+  do c=1,3
+    call sample_legacy_wall_velocity(rank,xc,zc,90.d0,1.d0,0.12d0, &
+                                    20.d0,40.d0,60.d0,3,supplied)
+    wall=supplied
+    call consume_wall<<<grid,block>>>(im,km,wall,observed)
+    status=cudaDeviceSynchronize()
+    if(status/=cudaSuccess) error stop 'wall consumption kernel failed'
+    result=observed
+    if(any(result/=supplied)) error stop 'GPU wall values differ from host supply'
+  enddo
+  deallocate(observed,wall,supplied)
+  print '(A,I0,A)', 'legacy wall GPU ',rank,': PASS (3 calls, exact device consumption)'
+end program legacy_wall_upload_probe

@@ -128,6 +128,7 @@ struct DeviceStreamlines {
   std::string seed_layout;
   std::uint64_t geometry_bytes=0;
   double minimum_step=.01*(2.*std::acos(-1.)/32.);
+  double maximum_length=std::acos(-1.);
   viskores::cont::DataSet resident_geometry;
   std::uint64_t control_read_bytes=0;
   std::uint64_t owner_query_read_bytes=0;
@@ -171,11 +172,17 @@ inline DeviceStreamlines trace_partition_device(
     std::uint64_t host_budget,bool constant=false,int constant_axis=0,bool forward_only=false,
     bool sample_trace_vector=false,int global_cells=32,bool resident=false,
     const viskores::cont::ArrayHandle<viskores::Vec3f>* physical_coordinates=nullptr,
-    double physical_step_scale=1.,const std::string& seed_layout="line16") {
+    double physical_step_scale=1.,const std::string& seed_layout="line16",
+    viskores::Id3 global_dimensions=viskores::Id3(0)) {
   constexpr int chunk=128;
   const auto seeds=tgv_streamline_seeds(seed_layout);
   const int seed_count=static_cast<int>(seeds.size());
   const int particles=seed_count*(forward_only?1:2);
+  const bool boundary_layer=seed_layout=="bl-layered64";
+  if(global_dimensions==viskores::Id3(0)) global_dimensions=viskores::Id3(global_cells);
+  if(boundary_layer && (!Physical || !resident || constant || sample_trace_vector ||
+      global_dimensions!=viskores::Id3(64,32,24)))
+    throw std::invalid_argument("Layered boundary-layer seeds require the approved physical short fixture");
   using State=RK45TraceWorklet::State;
   if(global_cells!=32 && global_cells!=256 && !(Physical && (global_cells==64 || global_cells==128)))
     throw std::invalid_argument("Unsupported bounded TGV streamline resolution");
@@ -185,15 +192,20 @@ inline DeviceStreamlines trace_partition_device(
   if((physical_step_scale!=1. && physical_step_scale!=.5) || (!Physical && physical_step_scale!=1.))
     throw std::invalid_argument("Unsupported physical streamline sensitivity scale");
   const double integration_h=Physical?physical_step_scale*(2.*pi/32.):h;
+  const double minimum_step=boundary_layer?.01:.01*integration_h;
+  const double maximum_step=boundary_layer?5.:.5*integration_h;
+  const double initial_step=boundary_layer?.5:.1*integration_h;
+  const double maximum_length=boundary_layer?1200.:pi;
+  const int maximum_steps=boundary_layer?4096:100000;
   PrivateTraceComm private_comm(comm);
   comm=private_comm.value;
   int rank=0,ranks=0;
   trace_mpi(MPI_Comm_rank(comm,&rank)); trace_mpi(MPI_Comm_size(comm,&ranks));
-  if(ranks<1 || ranks>2 || constant_axis<0 || constant_axis>2 || host_budget<1024*1024)
+  if(ranks<1 || ranks>(boundary_layer?4:2) || constant_axis<0 || constant_axis>2 || host_budget<1024*1024)
     throw std::invalid_argument("Invalid bounded device streamline configuration");
   const viskores::Id3 dims(extent[0]+7,extent[1]+7,extent[2]+7);
   for(int d=0;d<3;++d)
-    if(extent[d]<1 || offset[d]<0 || extent[d]+offset[d]>global_cells)
+    if(extent[d]<1 || offset[d]<0 || extent[d]+offset[d]>global_dimensions[d])
       throw std::invalid_argument("Invalid TGV streamline partition");
   if(trace_velocity.GetNumberOfValues()!=dims[0]*dims[1]*dims[2] ||
      color_velocity.GetNumberOfValues()!=trace_velocity.GetNumberOfValues())
@@ -208,9 +220,9 @@ inline DeviceStreamlines trace_partition_device(
   if constexpr(Physical) {
     if(!physical_coordinates) throw std::invalid_argument("Missing physical streamline coordinates");
     if(!resident) throw std::invalid_argument("Physical device streamlines require resident geometry");
-    physical=crop_physical_trace_halo(*physical_coordinates,trace_velocity,color_velocity,extent,offset,global_cells);
+    physical=crop_physical_trace_halo(*physical_coordinates,trace_velocity,color_velocity,extent,offset,global_dimensions);
     grid=physical.grid;tracing=physical.trace;coloring=physical.color;
-    physical_owner=std::make_unique<PhysicalTraceOwner>(physical,extent,offset,global_cells);
+    physical_owner=std::make_unique<PhysicalTraceOwner>(physical,extent,offset,global_dimensions);
   }
   using Field=viskores::worklet::flow::VelocityField<viskores::cont::ArrayHandle<viskores::Vec3f>>;
   using Grid=std::conditional_t<Physical,PhysicalTraceGrid,viskores::worklet::flow::GridEvaluator<Field>>;
@@ -227,9 +239,10 @@ inline DeviceStreamlines trace_partition_device(
   viskores::Vec3f lower(offset[0]*h,offset[1]*h,offset[2]*h);
   viskores::Vec3f upper((offset[0]+extent[0])*h,(offset[1]+extent[1])*h,(offset[2]+extent[2])*h);
   viskores::Vec<bool,3> last;
-  double bounds[6],all_bounds[12];
-  for(int d=0;d<3;++d) {bounds[d]=lower[d];bounds[d+3]=upper[d];last[d]=offset[d]+extent[d]==global_cells;}
-  trace_mpi(MPI_Allgather(bounds,6,MPI_DOUBLE,all_bounds,6,MPI_DOUBLE,comm));
+  double bounds[6];
+  std::vector<double> all_bounds(6*ranks);
+  for(int d=0;d<3;++d) {bounds[d]=lower[d];bounds[d+3]=upper[d];last[d]=offset[d]+extent[d]==global_dimensions[d];}
+  trace_mpi(MPI_Allgather(bounds,6,MPI_DOUBLE,all_bounds.data(),6,MPI_DOUBLE,comm));
   auto owner=[&](const State& s) {
     for(int r=0;r<ranks;++r) {
       bool inside=true;
@@ -240,7 +253,7 @@ inline DeviceStreamlines trace_partition_device(
     throw std::runtime_error("Accepted trajectory has no physical-domain owner");
   };
   DeviceStreamlines result;
-  result.minimum_step=.01*integration_h;
+  result.minimum_step=minimum_step;result.maximum_length=maximum_length;
   result.particles=particles;
   result.seed_count=seed_count;result.seed_layout=seed_layout;
   result.final_state.resize(particles);
@@ -255,7 +268,7 @@ inline DeviceStreamlines trace_partition_device(
       for(int d=0;d<3;++d) seed[d]=original[(d-constant_axis+3)%3];
     }
     // Both directions share the same globally numbered seed set.
-    state[i]=State(seed[0],seed[1],seed[2],(i<seed_count?.1:-.1)*integration_h,0.,0.,0.,TraceActive);
+    state[i]=State(seed[0],seed[1],seed[2],(i<seed_count?1.:-1.)*initial_step,0.,0.,0.,TraceActive);
   }
   std::vector<State> local(particles);
   std::vector<double> wire(particles*8);
@@ -309,7 +322,7 @@ inline DeviceStreamlines trace_partition_device(
     geometry.Allocate(particles*(chunk+1));
     nvtxRangePushA("ASTR_IS8_DEVICE_TRACE_AND_COMPACT");
     if constexpr(Physical)
-      invoke(RK45PhysicalTraceWorklet(chunk,.01*integration_h,.5*integration_h,1e-8,pi,100000),
+      invoke(RK45PhysicalTraceWorklet(chunk,minimum_step,maximum_step,1e-8,maximum_length,maximum_steps),
         input,evaluate,*physical_owner,geometry,output,counts);
     else invoke(RK45TraceWorklet(chunk,.01*h,.5*h,1e-8,pi,100000,lower,upper,last),
       input,evaluate,geometry,output,counts);
@@ -418,12 +431,12 @@ inline DeviceStreamlines trace_partition_device(
       const int status=static_cast<int>(state[i][7]);
       const TraceState terminal{{state[i][0],state[i][1],state[i][2]},state[i][3],state[i][4],state[i][5],
         static_cast<int>(state[i][6]),status};
-      result.subminimum_stop[i]=trace_subminimum_stop(terminal,pi,.01*integration_h);
+      result.subminimum_stop[i]=trace_subminimum_stop(terminal,maximum_length,minimum_step);
       if(status==TraceTransfer && rank==previous_owner) ++result.transfers;
       if(status!=TraceActive && status!=TraceTransfer && status!=TraceLength && status!=Outside &&
          !result.subminimum_stop[i])
         throw std::runtime_error("Device trajectory unexpected termination status="+std::to_string(status)+
-          " remaining="+std::to_string(pi-state[i][4]));
+          " remaining="+std::to_string(maximum_length-state[i][4]));
     }
   }
   if(result.rounds==1000) throw std::runtime_error("Device trajectory collective round limit exceeded");
@@ -462,14 +475,15 @@ inline DeviceStreamlines trace_tgv_device(
     std::uint64_t host_budget,bool constant=false,int constant_axis=0,bool forward_only=false,
     bool sample_trace_vector=false,int global_cells=32,bool resident=false,
     const viskores::cont::ArrayHandle<viskores::Vec3f>* physical_coordinates=nullptr,
-    double physical_step_scale=1.,const std::string& seed_layout="line16") {
+    double physical_step_scale=1.,const std::string& seed_layout="line16",
+    viskores::Id3 global_dimensions=viskores::Id3(0)) {
   if(physical_coordinates) return trace_partition_device<true>(trace_velocity,color_velocity,extent,offset,
     comm,host_budget,constant,constant_axis,forward_only,sample_trace_vector,global_cells,resident,physical_coordinates,
-    physical_step_scale,seed_layout);
+    physical_step_scale,seed_layout,global_dimensions);
   if(physical_step_scale!=1.) throw std::invalid_argument("Sensitivity scale requires physical coordinates");
   return trace_partition_device<false>(trace_velocity,color_velocity,extent,offset,
     comm,host_budget,constant,constant_axis,forward_only,sample_trace_vector,global_cells,resident,nullptr,
-    physical_step_scale,seed_layout);
+    physical_step_scale,seed_layout,global_dimensions);
 }
 } // namespace astr_insitu
 #endif

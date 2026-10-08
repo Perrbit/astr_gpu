@@ -115,11 +115,12 @@ contains
     use precision_mode_gpu, only: gpu_precision_mode,GPU_PRECISION_FP64
     use insitu_device_velocity, only: begin_velocity_transport_gpu,snapshot_sample_velocity_gpu, &
       extend_sample_velocity_gpu,derive_sample_velocity_gpu
+    use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported
     character(*),intent(in) :: mode
     real(8),device,allocatable,intent(out) :: velocity(:,:),halo(:,:,:,:),derived(:,:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
     logical,intent(in),optional :: demonstration,need_q,curve_demonstration
-    logical :: demo,calculate_q,curve_wall,curve_demo
+    logical :: demo,calculate_q,curve_wall,curve_demo,profile_mp_ld
     integer :: neighbors(2,3),sizes(3),extent(3),ranks,ierr,status
     real(8) :: phase_started
     extent=[im,jm,km]; sizes=[isize,jsize,ksize]
@@ -132,20 +133,24 @@ contains
     curve_wall=lreadgrid.and.all(bctype==[1,1,41,41,1,1])
     neighbors(:,1)=[mpileft,mpiright]; neighbors(:,2)=[mpidown,mpiup]; neighbors(:,3)=[mpiback,mpifront]
     call MPI_Comm_size(MPI_COMM_WORLD,ranks,ierr)
-    call checkpoint_state_require(ierr==MPI_SUCCESS.and.ranks<=2.and. &
+    profile_mp_ld=gpu_profile_mp_ld_flatplate_supported().and.all([ia,ja,ka]==[64,32,24])
+    call checkpoint_state_require(ierr==MPI_SUCCESS.and. &
+      (profile_mp_ld.or.(ranks<=2.and. &
       (all([ia,ja,ka]==32).or.(curve_demo.and.(all([ia,ja,ka]==64).or.all([ia,ja,ka]==128).or. &
        (all([ia,ja,ka]==256).and.ranks==2.and.all(sizes==[2,1,1])))).or. &
        (demo.and.all([ia,ja,ka]==256).and.ranks==2.and.all(sizes==[2,1,1]))).and. &
       (all(bctype==1).or.curve_wall).and.use_gpu.and.(.not.lreadgrid.or..not.demo).and.numq==5.and.hm>=3.and. &
       trim(difschm)=='643e'.and. &
       trim(conschm)=='643e'.and.trim(flowtype)=='tgv'.and.ndims==3.and.num_species==0.and.nondimen.and. &
-      gpu_precision_mode==GPU_PRECISION_FP64, &
-      MPI_COMM_WORLD,'device sample requires admitted 32^3 static FP64 TGV NP=1/2')
+      gpu_precision_mode==GPU_PRECISION_FP64)), &
+      MPI_COMM_WORLD,'device sample requires admitted static FP64 TGV or bounded MP-LD profile case')
+    call checkpoint_state_require(use_gpu.and.numq==5.and.hm>=3.and. &
+      gpu_precision_mode==GPU_PRECISION_FP64,MPI_COMM_WORLD,'device sample requires five-variable FP64 CUDA state')
     call checkpoint_state_require(halo_transport_idle().and..not.solution_pipeline_active, &
       MPI_COMM_WORLD,'device sample requires completed solver transport')
     if(.not.device_sampling_initialized) then
       call begin_velocity_transport_gpu(mode,extent,sizes,neighbors,MPI_COMM_WORLD,host_budget,device_budget,reserve, &
-        periodic=[.true.,.not.curve_wall,.true.])
+        periodic=[.not.profile_mp_ld,.not.(curve_wall.or.profile_mp_ld),.true.])
       device_sampling_transport=mode
       device_sampling_initialized=.true.
     endif
