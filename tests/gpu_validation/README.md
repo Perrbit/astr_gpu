@@ -8825,16 +8825,106 @@ The 256^3 NP=2 x-only candidate builds. Its first matrix was interrupted for a
 Git commit; the fresh `curve_256_runtime_v2_20261007.xml` passes both mappings
 under direct-device/device-aware, including CPU/GPU, isolation and exact 3+1
 field/control/image continuation. Only its step-3 and final step-4 checkpoints
-are written, with all acceptance comparisons retained. Remaining scale gates
-are still unadmitted. The two-step 256^3 sanitizer allows 1800 s, without
-enlarging the physical window or memory budget. Approved disk budgets are now
+are written, with all acceptance comparisons retained. The two-step 256^3 sanitizer allows 1800 s, without
+enlarging the physical window or memory budget, and both maps pass with four
+zero-error logs (`curve_256_memcheck_20261007.xml`). All eight entry/transport/map
+observations also pass (`curve_256_observe_20261007.xml`), without volume or final
+geometry readback. Extra sampled device memory reaches about 5.27 GiB/card;
+this does not establish 100-frame stability. Approved disk budgets are now
 192 GiB/group, 16 GiB/numerical run and 4 GiB/image-only run, with unchanged
 6 GiB/device, 16 GiB/node and 2 GiB free-memory gates. Failed evidence stays.
 `run_insitu_curve_scale_performance.py` prepares five matched four-step rounds
 for all four entry/transport combinations, excluding one process warm-up each.
 Its optional 100-step runs output both products every step and collect resource
 samples separately from the clean short timing rounds. Four report/schedule
-control tests pass (five after the budget receipt-counting check); the actual
-scale timing and 100-step runs have not started. The first four measured rounds
+control tests pass (five after the budget receipt-counting check); the periodic
+five-round timing completed. Its 100-step OFF window is 61.366342283 s; ON
+aborted at step 98 when a 1,084,637,439-byte Thrust temporary would exceed the
+approved 6 GiB extra-device budget. This is not total-device exhaustion or a
+passing 100-frame receipt. Failed logs/images remain immutable. The first four measured rounds
 balance all four backends' positions and directed adjacencies; the fifth repeats
 the first order. Profiler/resource-observed timings are not performance values.
+
+After the capacity-reuse rendering patch, periodic CURVE completes its 100-step
+ON/OFF window. The old y-wavy scale fixture (nondimensional Tw=273.15) instead
+fails before rendering at step 29: filtering creates negative internal energy.
+The user approved Tw=1 only for this round's scale fixture. `run_case` accepts
+the explicit optional `curve_wall_temperature` override only for gated y-wavy
+64/128/256-cubed grids. Omission and 32-cubed fixtures retain the old default.
+The scale reference, sanitizer, observation and performance drivers pass Tw=1
+explicitly; performance JSON records its nondimensional value. Do not reuse
+old-input timing for the new fixture or mix in the stratified-seed candidate.
+
+Fresh receipts `curve_tw1_gate64_20261008.xml` and `curve_tw1_gate128_20261008.xml`
+pass CPU/GPU, Q reference, ON/OFF and exact 3+1 field/control/image continuation.
+`curve_tw1_safety128_256_20261008.xml` adds two-step safety at 128/256; together
+with 64-cubed, six rank logs have zero memcheck errors. The new 256-cubed
+numerical/restart, transfer, five-round and 100-step gates subsequently pass
+as recorded below.
+The user approved a group-only disk increase from 192 to 256 GiB to retain
+historical evidence and contain the fresh four-run 256-cubed diagnostic (about
+22 GiB) and remaining matrix. All individual RAM/VRAM/directory gates remain.
+The new-input 64/128-cubed half-step diagnostics also pass in
+`curve_tw1_half_step_20261008.xml`; terminal and common-arc differences are
+reported without redefining RK45 accuracy or field-equivalence thresholds.
+Its bounded oracle downloads are not strict residency evidence.
+Eight new-input 64/128-cubed entry/transport observations also pass in
+`curve_tw1_observe_{64,128}_{standard,direct}_{pinned,aware}_20261008.xml`.
+ON/OFF 20-ms resource sampling is separate from Nsys tracing; no volume/final
+geometry D2H is observed. Device/host extra peaks stay below 6/16 GiB and free
+device memory stays above 2 GiB. Pixel/control and selected pinned face transfers
+remain explicitly counted. Each three-run group reserves 6 GiB disk and runs
+only after an exclusivity check. These are not clean timing or long-window gates.
+`curve_tw1_gate256_20261008.xml` adds the new-input four-step CPU/GPU and
+exact 3+1 state/control/image gate; all four 256-cubed observation combinations
+pass in `curve_tw1_observe_256_{standard,direct}_{pinned,aware}_20261008.xml`.
+Largest diagnostic directory is 6650498731 B. Five-round/100-step results under
+`curve_tw1_capacity_performance_20261008/y-wavy` are complete: 4 excluded process
+warmups and 20 clean measured runs, with unchanged fingerprints. Standard/aware
+has the lowest complete four-step median (7.623803539 s); direct/aware is
+7.634353925 s, not evidence of a general entry speed advantage. The selected
+standard/aware 100-step OFF/ON windows are 70.125057224/267.533743141 s and
+include external resource observations, separately from clean timing. All 200
+JPEG/200 EPS files and 200 per-rank frame identities pass; CFL maximum is
+0.02613323635, extra device/host sampled peaks remain below 6/16 GiB, with
+at least 8817999872 B free device memory. First-to-last frame-after memory
+increases 2 MiB per rank rather than remaining byte-constant. ON directory is
+1969890101 B (<4 GiB), retained group use 220.17 GiB (<256 GiB). No volume,
+checkpoint or VTK geometry output. CP0-CP6 closes only the approved local
+periodic/Tw=1 y-wavy, NP=2 x, default-16-seed scale matrix, not new stratified
+seeds, arbitrary CURVE/AIR5 products or long-time physical convergence.
+
+### Optional Stratified TGV Streamline Seeds
+
+`streamline_seeds='tgv-stratified'` in `&insitu_run` selects 256 fixed physical
+sites (8x8x4 cell-center strata of the 2*pi box) and 512 bidirectional trajectories.
+The default `line16` remains the original regression seed set. New sites are
+limited to periodic TGV strict device rendering; wall/inlet presets are separate.
+The constant-velocity `crossing_streamlines` oracle keeps its 16 forward seeds.
+GPU geometry remains resident; per-rank continuation reads are bounded by
+32 KiB/round and physical ownership reads separately by 4 KiB/round. Integration
+settings, solver state and statistics weights are unchanged. Layout selection
+participates in collective input agreement and the render restart identity.
+
+Configuration and MPI parser checks are in `test_insitu_run_config.py`.
+`test_insitu_device_streamlines.py -k stratified` checks all 512 seed-direction
+starts exactly once across NP=1/2 x/y/z, independent coordinates and field samples.
+`test_insitu_stratified_seeds.py` exercises 32^3 actual TGV and periodic CURVE,
+both strict entries/transports, requested means, ON/OFF and old/new seed isolation,
+four-step vs 3+1 exact restart, image metadata, and layout-mismatch rejection.
+These are numerical/functional short tests, not a production-scale speedup claim.
+Do not insert new sites into the existing fixed-16-seed CURVE timing evidence.
+
+2026-10-07 receipts: CPU/GPU root builds, 144 config checks and 37 component
+checks pass. The NP=1 standard-device/pinned Cartesian runtime passes in
+`build_insitu_air5_device_render/stratified_seed_runtime_20261007.xml`; that XML
+also preserves the first NP=2 test-directory rejection (73,036,962 > 64 MiB),
+not a numerical failure. Only the runtime disk cap was then raised to 128 MiB.
+Both NP=2 direct-device/device-aware Cartesian and periodic CURVE cases pass
+in `stratified_seed_runtime_np2_20261007_v2.xml`; maximum directory size is
+125,446,264 bytes. Four complete steps render on steps 2/4 and compare exact
+3+1 restart states, controls and JPEG/EPS. CPU/GPU state maxabs is
+2.2737367544323206e-13 and product field maxabs is 9.9920072216264089e-16.
+The separate NP=2 pinned memory gate passes both rank logs with zero errors
+(`stratified_seed_memcheck_20261007.xml`). RAM/VRAM settings remain unchanged.
+No new 256^3 production/performance receipt exists for these seeds.

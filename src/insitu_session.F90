@@ -532,6 +532,9 @@ contains
           (options%products=='q_surface'.or.device_curve_demo)
         device_curve_trace=options%processing_backend=='device'.and.lreadgrid.and. &
           (options%products=='streamlines'.or.device_curve_demo)
+        if(options%streamline_seeds=='tgv-stratified') call require_sample( &
+          trim(flowtype)=='tgv'.and.all(bctype==1), &
+          'tgv-stratified seeds currently require periodic TGV; wall/inflow presets remain separate')
         if(device_curve_demo) call require_sample(lreadgrid.and. &
           (all([ia,ja,ka]==32).or.all([ia,ja,ka]==64).or.all([ia,ja,ka]==128).or. &
            (all([ia,ja,ka]==256).and.mpisize==2.and.all([isize,jsize,ksize]==[2,1,1]))).and. &
@@ -665,6 +668,8 @@ contains
             ieor(render_signature(4),int(selected_product_profile(),int64))
           if(options%wall_mean_render) render_signature(4)=ieor(render_signature(4),int(z'57414C4C4D45414E',int64))
           if(options%mean_streamline_render) render_signature(4)=ieor(render_signature(4),int(z'4D45414E54524143',int64))
+          if(options%streamline_seeds=='tgv-stratified') &
+            render_signature(4)=ieor(render_signature(4),int(z'5447565345454431',int64))
           if(options%products=='velocity_slice') then
             if(device_plane) then
               render_signature(4)=ieor(render_signature(4),int(z'50485953504C414E',int64))
@@ -1451,7 +1456,8 @@ contains
         call render_device_sample_gpu(trim(options%postprocess_transport),trim(options%rendering_pipeline), &
         trim(options%implementation_path), &
         trim(options%pipeline_file),trim(options%products),step,t,statistics_window,statistics_enabled, &
-        options%host_budget_bytes,options%device_budget_bytes,options%device_reserve_bytes,options%mean_streamline_render)
+        options%host_budget_bytes,options%device_budget_bytes,options%device_reserve_bytes,options%mean_streamline_render, &
+        trim(options%streamline_seeds))
       endif
       call require_sample(product_results_complete(),'device products did not report their publication results')
 #else

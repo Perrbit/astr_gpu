@@ -20,6 +20,7 @@ module insitu_run_config
     character(16) :: rendering_pipeline='compatible'
     character(16) :: postprocess_transport=''
     character(16) :: products='all'
+    character(16) :: streamline_seeds='line16'
     character(16) :: slice_axis='z'
     character(16) :: slice_definition='index'
     real(real64) :: slice_origin(3)=0.d0,slice_normal(3)=0.d0
@@ -44,7 +45,7 @@ contains
     logical :: enabled,statistics,render,initial_frame,final_frame,air5_volume_statistics,air5_volume_reduction,wall_mean_render
     logical :: wall_separation,mean_streamline_render
     character(16) :: schedule_mode,derivative_backend,products,slice_axis,processing_backend,postprocess_transport
-    character(16) :: rendering_pipeline,slice_definition
+    character(16) :: rendering_pipeline,slice_definition,streamline_seeds
     real(real64) :: slice_origin(3),slice_normal(3)
     character(64) :: product_ids(insitu_max_products),temporary_id
     character(16) :: product_modes(insitu_max_products),temporary_mode
@@ -65,7 +66,7 @@ contains
       schedule_mode,step_interval,time_interval,statistics_window,host_budget_bytes, &
       device_budget_bytes,device_reserve_bytes,implementation_path,pipeline_file,output_directory,batch_prefix,restore_batch, &
       derivative_backend,products,slice_axis,slice_index,air5_volume_statistics,air5_volume_reduction,wall_mean_render,wall_separation, &
-      mean_streamline_render, &
+      mean_streamline_render,streamline_seeds, &
       processing_backend,postprocess_transport,rendering_pipeline,slice_definition,slice_origin,slice_normal, &
       product_ids,product_modes,product_steps,product_times, &
       product_adaptive,product_dense_steps,product_dense_times,product_events,product_windows
@@ -83,6 +84,7 @@ contains
     processing_backend='host'; postprocess_transport=''
     rendering_pipeline=''
     products='all'
+    streamline_seeds='line16'
     slice_axis='z'; slice_index=4
     slice_definition='index'; slice_origin=0.d0; slice_normal=0.d0
     step_interval=0; time_interval=0; statistics_window=0
@@ -135,6 +137,14 @@ contains
     if(products/='all'.and.products/='q_surface'.and.products/='streamlines'.and. &
       products/='q_streamlines'.and.products/='velocity_slice'.and.products/='channel_walls'.and. &
       products/='air5_walls'.and.products/='tgv256_demo'.and.products/='curve_demo') return
+    message='streamline_seeds must be line16 or tgv-stratified'
+    if(streamline_seeds/='line16'.and.streamline_seeds/='tgv-stratified') return
+    if(streamline_seeds/='line16') then
+      message='tgv-stratified seeds require enabled strict device streamline rendering'
+      if(.not.enabled.or..not.render.or.processing_backend/='device'.or.rendering_pipeline=='compatible'.or. &
+        (products/='all'.and.products/='streamlines'.and.products/='q_streamlines'.and. &
+         products/='tgv256_demo'.and.products/='curve_demo')) return
+    endif
     message='tgv256_demo requires device rendering without statistics'
     if(products=='tgv256_demo'.and.(processing_backend/='device'.or.statistics)) return
     message='curve_demo requires strict device rendering without statistics or independent clocks'
@@ -293,6 +303,7 @@ contains
     options%rendering_pipeline=rendering_pipeline
     options%postprocess_transport=postprocess_transport
     options%products=products
+    options%streamline_seeds=streamline_seeds
     options%slice_axis=slice_axis; options%slice_index=slice_index
     options%slice_definition=slice_definition
     options%slice_origin=slice_origin; options%slice_normal=slice_normal

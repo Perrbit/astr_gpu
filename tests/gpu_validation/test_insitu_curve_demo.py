@@ -130,7 +130,8 @@ def test_qzero_memcheck(tmp_path, mapping, cells):
     case, _ = run_case(args, ROOT, 'gpu', 2, 'memcheck', 2,
         grid=','.join([str(cells)]*3), tgv_mapping=mapping, enabled=False, checkpoint_enabled=False,
         insitu_config=(configuration if cells == 32 else scale_configuration)('direct-device', 'device-aware'),
-        postprocess_transport='device-aware', resident_audit=True, memcheck=True)
+        postprocess_transport='device-aware', resident_audit=True, memcheck=True,
+        curve_wall_temperature=1. if mapping == 'y-wavy' and cells >= 64 else None)
     check_frames(case, 2, 'direct-device', (2,))
     no_large_io(case)
     logs = list(case.glob('memcheck.*.log'))
@@ -149,7 +150,8 @@ def test_qzero_scale_reference_restart(tmp_path, mapping, pipeline, mode, cells,
     args.scale_timestep, args.maximum_cfl = 2e-5, .5
     # The large diagnostic needs only its step-3 restart source and final state.
     kwargs = dict(grid=','.join([str(cells)]*3), tgv_mapping=mapping,
-                  checkpoint_interval=3 if cells == 256 else 1)
+                  checkpoint_interval=3 if cells == 256 else 1,
+                  curve_wall_temperature=1. if mapping == 'y-wavy' else None)
     config = scale_configuration(pipeline, mode)
     on, size = run_case(args, ROOT, 'gpu', 2, f'qzero{cells}', 4,
         insitu_config=config, postprocess_transport=mode,
@@ -198,7 +200,7 @@ def test_qzero_scale_observation(tmp_path, mapping, pipeline, mode, cells, recor
     args.resource_device_reserve_bytes = 2*1024**3
     args.nsys_trace_domains = 'cuda,nvtx,mpi'
     kwargs = dict(grid=','.join([str(cells)]*3), tgv_mapping=mapping, enabled=False, checkpoint_enabled=False,
-                  postprocess_transport=mode)
+                  postprocess_transport=mode, curve_wall_temperature=1. if mapping == 'y-wavy' else None)
     config = scale_configuration(pipeline, mode)
     off, _ = run_case(args, ROOT, 'gpu', 2, f'off{cells}', 2, monitor_resources=True,
         insitu_config='&insitu_run enabled=f /\n', **kwargs)

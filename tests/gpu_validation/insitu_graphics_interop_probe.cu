@@ -2,12 +2,16 @@
 #include <vtkEGLRenderWindow.h>
 #include <vtkNew.h>
 #include <vtkOpenGLFramebufferObject.h>
+#include <vtkOpenGLBufferObject.h>
 #include <vtkRenderer.h>
+#include <vtkSmartPointer.h>
 #include <vtkVersion.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <algorithm>
+#include <array>
 #include <stdexcept>
 #include <vector>
 
@@ -46,12 +50,56 @@ GLuint shader(GLenum type, const char* source) {
   }
   return result;
 }
+
+void probe_buffer_growth(int device) {
+  constexpr int frames=100;
+  constexpr std::size_t mib=1024*1024;
+  constexpr std::size_t initial[3]={8*mib,4*mib,mib};
+  constexpr std::size_t increment[3]={8192,4096,1024};
+  void* source=nullptr;
+  astr_insitu::require_cuda_graphics(cudaMalloc(&source,initial[0]+frames*increment[0]),"growth source");
+  astr_insitu::require_cuda_graphics(cudaMemset(source,0,initial[0]+frames*increment[0]),"growth source fill");
+  std::array<vtkSmartPointer<vtkOpenGLBufferObject>,3> buffers;
+  std::size_t baseline=0,total=0,minimum=0,last=0,live=0,capacity=0;
+  astr_insitu::require_cuda_graphics(cudaMemGetInfo(&baseline,&total),"growth baseline");
+  minimum=baseline;
+  int allocations=0;
+  for(int frame=0;frame<frames;++frame) {
+    live=capacity=0;
+    for(int component=0;component<3;++component) {
+      if(!buffers[component]) buffers[component]=vtkSmartPointer<vtkOpenGLBufferObject>::New();
+      auto* buffer=buffers[component].GetPointer();
+      const auto before=buffer->GetSize();
+      const auto bytes=initial[component]+frame*increment[component];
+      if(!buffer->UploadDevice(source,bytes,vtkOpenGLBufferObject::ArrayBuffer))
+        throw std::runtime_error(buffer->GetError());
+      if(buffer->GetSize()<bytes) throw std::runtime_error("Growth buffer capacity is smaller than upload");
+      allocations+=buffer->GetSize()!=before;
+      live+=bytes;capacity+=buffer->GetSize();
+    }
+    glFinish();
+    astr_insitu::require_cuda_graphics(cudaDeviceSynchronize(),"growth completion");
+    astr_insitu::require_cuda_graphics(cudaMemGetInfo(&last,&total),"growth sample");
+    minimum=std::min(minimum,last);
+    if(baseline-minimum>2*1024*mib || last<1024*mib)
+      throw std::runtime_error("Growth probe exceeds existing local memory budget/reserve");
+  }
+  const auto final_increment=baseline>last?baseline-last:0;
+  const auto peak_increment=baseline>minimum?baseline-minimum:0;
+  for(auto& buffer:buffers) buffer=nullptr;
+  astr_insitu::require_cuda_graphics(cudaFree(source),"release growth source");
+  std::printf("ASTR_INSITU_BUFFER_GROWTH {\"cuda_device\":%d,\"frames\":%d,"
+    "\"allocations\":%d,\"live_bytes\":%zu,\"capacity_bytes\":%zu,"
+    "\"device_increment_bytes\":%zu,\"device_peak_increment_bytes\":%zu,\"geometry_host_bytes\":0}\n",
+    device,frames,allocations,live,capacity,final_increment,peak_increment);
+}
 }
 
 int main(int argc, char** argv) {
   try {
-    if (argc != 2 || (std::strcmp(argv[1], "0") != 0 && std::strcmp(argv[1], "1") != 0))
-      throw std::invalid_argument("Usage: insitu_graphics_interop_probe CUDA_DEVICE (0 or 1)");
+    if ((argc != 2 && argc != 3) || (std::strcmp(argv[1], "0") != 0 && std::strcmp(argv[1], "1") != 0) ||
+        (argc==3 && std::strcmp(argv[2],"--growth")!=0))
+      throw std::invalid_argument("Usage: insitu_graphics_interop_probe CUDA_DEVICE (0 or 1) [--growth]");
     const int device = std::atoi(argv[1]);
     astr_insitu::require_cuda_graphics(cudaSetDevice(device), "select CUDA device");
     astr_insitu::require_cuda_graphics(cudaFree(nullptr), "initialize CUDA context");
@@ -83,6 +131,8 @@ int main(int argc, char** argv) {
       cudaGLDeviceListAll), "query OpenGL CUDA device");
     if (count != 1 || gl_device != device)
       throw std::runtime_error("OpenGL and selected CUDA devices differ");
+
+    if(argc==3) probe_buffer_growth(device);
 
     const char* vertex_source =
       "#version 330 core\nlayout(location=0) in vec3 p; layout(location=1) in vec3 c;"

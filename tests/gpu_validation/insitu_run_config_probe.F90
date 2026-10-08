@@ -12,5 +12,6 @@ program insitu_run_config_probe
   endif
   print *, 'PASS: parsed in-situ run configuration, enabled=',options%enabled
   print '(A)', 'rendering_pipeline='//trim(options%rendering_pipeline)
+  print '(A)', 'streamline_seeds='//trim(options%streamline_seeds)
   print '(A,L1)', 'mean_streamline_render=',options%mean_streamline_render
 end program

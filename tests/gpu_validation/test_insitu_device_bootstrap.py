@@ -62,6 +62,22 @@ def test_cuda_egl_graphics_interop():
         assert record['released'] and record['pixels_passed']
 
 
+@pytest.mark.parametrize('device',[0,1])
+def test_graphics_buffer_growth_is_bounded(device,record_property):
+    result=subprocess.run([str(BIN/'insitu_graphics_interop_probe'),str(device),'--growth'],
+                          capture_output=True,text=True,timeout=60)
+    assert result.returncode==0,result.stdout+result.stderr
+    rows=[json.loads(line.split('ASTR_INSITU_BUFFER_GROWTH ',1)[1])
+          for line in result.stdout.splitlines() if line.startswith('ASTR_INSITU_BUFFER_GROWTH ')]
+    assert len(rows)==1,result.stdout
+    record=rows[0]
+    record_property('graphics_growth',record)
+    assert record['cuda_device']==device and record['frames']==100
+    assert record['capacity_bytes']>=record['live_bytes'] and record['geometry_host_bytes']==0
+    assert record['allocations']==3,record
+    assert record['device_peak_increment_bytes']<=2*1024**3,record
+
+
 @pytest.mark.parametrize('pipeline',['arrays','conduit','direct'])
 def test_standard_vtk_device_arrays_render_without_host_geometry(pipeline,record_property):
     name=os.environ.get('ASTR_INSITU_STANDARD_DEVICE_PROBE')
@@ -89,6 +105,34 @@ def test_standard_vtk_device_arrays_render_without_host_geometry(pipeline,record
         assert record['conduit']==(pipeline=='conduit')
         assert record['direct']==(pipeline=='direct')
         record_property(f'{pipeline}_device{device}',record)
+
+
+@pytest.mark.parametrize('direct',[False,True])
+@pytest.mark.parametrize('growing',[False,True])
+def test_large_graphics_lifecycle(direct,growing,record_property):
+    name=os.environ.get('ASTR_INSITU_STANDARD_DEVICE_PROBE')
+    if not name:
+        pytest.skip('Explicitly build/select the private standard-device rendering probe')
+    prefix=os.environ.get('ASTR_INSITU_DEVICE_MPI_PREFIX')
+    assert prefix, 'Select the matching Open MPI installation'
+    mode='--'+('direct-' if direct else '')+'large-'+('growth' if growing else 'fixed')
+    for device in (0,1):
+        result=subprocess.run([str(Path(prefix)/'bin/mpirun'),'--prefix',prefix,
+            '--mca','pml','ob1','--mca','btl','self,tcp','--mca','osc','pt2pt',
+            '--mca','coll_hcoll_enable','0','--mca','coll_ucc_enable','0',
+            '--mca','opal_cuda_support','0','-np','1',name,str(device),mode],
+            capture_output=True,text=True,timeout=120)
+        assert result.returncode==0,result.stdout+result.stderr
+        rows=[json.loads(line.split('ASTR_INSITU_LARGE_GRAPHICS ',1)[1])
+              for line in result.stdout.splitlines() if line.startswith('ASTR_INSITU_LARGE_GRAPHICS ')]
+        assert len(rows)==1,result.stdout
+        record=rows[0]
+        record_property(f'large_graphics_device{device}',record)
+        assert record['cuda_device']==device and record['frames']==100
+        assert record['direct']==direct and record['growing']==growing
+        assert record['final_points']==270000+(198*99 if growing else 0)
+        assert record['geometry_host_bytes']==0 and record['image_host_bytes']==100*64*64*4
+        assert record['pixels_passed'] and record['peak_growth_bytes']<=2*1024**3
 
 
 def test_standard_device_render_transfer_and_lifecycle_trace():

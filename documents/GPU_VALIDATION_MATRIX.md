@@ -1054,6 +1054,109 @@ new PF/AP cases, repartition and asynchronous operation remain unadmitted.
 
 ### CURVE Performance And Wall-Q Increment
 
+Latest scale result (2026-10-08): capacity-reuse rendering dependencies pass
+`curve_capacity_gate64_20261007.xml` (six runtime/safety cases) and
+`curve_capacity_observe256_20261007.xml` (13 cases: two actual memchecks, eight
+mapping/entry/transport observations and three refusals). State/product errors
+are <=4.27e-13/1.41e-14; all four rank memcheck logs are clean. No volume,
+final-geometry or UVM D2H is observed. The approved device/host/reserve budgets
+remain 6/16/2 GiB; observed extra device/host maxima are
+5658116096/1137897472 B, minimum free device memory 8868921344 B.
+Both mappings complete five four-step timing rounds for each of four entry/
+transport configurations. Results and immutable identities are in
+`curve_capacity_performance_20261007/<mapping>/timing.json`. MPI transport
+settings affect the entire process, including pinned solver halo; window
+differences cannot be attributed solely to postprocessing face copies.
+
+Periodic CURVE 256^3 NP=2 x, dt=2e-5, default 16 bidirectional seeds completes
+100-step image-only direct-device/device-aware OFF/ON windows:
+61.256143490/282.272375421 s. These runs include external resource observation,
+not clean five-round timing. All 200 JPEG/200 EPS files are checked; maximum
+CFL is 0.02876994243 and frame-after device memory is stable for all 100 frames.
+The original step-98 resource refusal remains immutable.
+
+Old Tw=273.15 y-wavy OFF fails at complete step 29, before its ON run. A same-input
+29-step reproduction captures 24 RK files (9305129811 B, below 16 GiB).
+After RK1 the state is finite and positive, but before RK2 RHS filtering gives
+T=-0.00354555048747 at global (64,253,0). Independent separable filtering with
+the CPU coefficients reproduces all five components within 1.26e-15; the y
+closure already makes internal energy negative. Convection RHS is finite,
+whereas viscous RHS has NaNs. This is not a rendering/CFL-cache failure.
+The fixture uses nondimensional Tw=273.15 with interior T approximately one;
+linear filtering has negative weights and no positivity guarantee. The user
+approved Tw=1 for this round's gated 64/128/256-cubed y-wavy scale fixtures;
+an explicit optional harness parameter preserves the historical default and
+32-cubed fixtures. Sixteen harness controls pass. Fresh 64/128-cubed paired-entry
+CPU/GPU and 3+1 restart gates pass; state maxima are 3.41e-13/3.70e-13 and Q
+product maxima 1.38e-14/4.16e-14. ON/OFF state and restarted state/control/images
+are exact. Six rank memcheck logs across 64/128/256 are clean; the 256-cubed
+two-step CFL maximum is 0.026114. These safety runs do not replace independent
+numerical/restart/transport/five-round/100-step gates by themselves.
+Receipts: `curve_tw1_harness_final_v2_20261008.xml`, `curve_tw1_gate64_20261008.xml`,
+`curve_tw1_gate128_20261008.xml`, `curve_tw1_safety128_256_20261008.xml`.
+`curve_tw1_half_step_20261008.xml` adds two actual 64/128-cubed sensitivity
+diagnostics plus three parser controls. Endpoint component differences are
+2.85e-6/2.78e-6; common-arc polyline errors include chord interpolation and are
+not new RK45 or field-equivalence thresholds. Finite oracle downloads in this
+diagnostic are not strict residency evidence; production RK45 remains unchanged.
+Eight fresh 64/128-cubed entry/transport observations pass:
+`curve_tw1_observe_{64,128}_{standard,direct}_{pinned,aware}_20261008.xml`.
+Each has separate two-step OFF/ON 20-ms resource sampling and independent Nsys
+CUDA/NVTX/MPI attribution, with no reference/checkpoint/volume/statistics I/O.
+Additional device/host maxima are 962592768/1698775040 B, minimum device free
+memory 17737777152 B. All eight ledgers have zero volume/final-geometry D2H;
+pinned application face D2H/H2D per rank is 1224056 B at 64-cubed or 4469112 B at
+128-cubed in the first-frame window. Aware application face staging is zero;
+no MPI-managed host staging is observed in this batch. Pixel read payload is
+73728000 B for both products/ranks, not JPEG size or MPI network traffic.
+Small control reads remain separately accounted; these are not zero-D2H,
+clean performance or 100-frame stability claims. Before each three-run group,
+the harness operator checked exclusivity and reserved 6 GiB of directory space.
+The fresh `curve_tw1_gate256_20261008.xml` now passes CPU/GPU, independent Q,
+ON/OFF and exact 3+1 state/control/image continuation: state/Q maxima
+3.98e-13/4.73e-13, largest diagnostic directory 6650498731 B (<16 GiB).
+Four `curve_tw1_observe_256_{standard,direct}_{pinned,aware}_20261008.xml`
+cases also pass; extra device/host maxima are 5586812928/1138667520 B,
+minimum device free memory 8940224512 B. Field/final-geometry D2H remains zero;
+pinned face D2H/H2D is 17054072 B/rank in the first-frame window, aware staging
+is zero with no observed MPI-managed host copy. Image/control reads remain
+separate. The five-round and 100-step matrix completes under
+`curve_tw1_capacity_performance_20261008/y-wavy`: 4 excluded process warmups,
+20 clean measured runs and unchanged executable/template/dependency fingerprints.
+Complete four-step medians for standard/pinned, standard/aware, direct/pinned,
+direct/aware are 8.153985112, 7.623803539, 8.126142366, 7.634353925 s.
+The 0.14% standard/direct aware difference is not a general speed advantage.
+The selected standard-device/device-aware 100-step OFF/ON windows are
+70.125057224/267.533743141 s, additional 197.408685917 s (ratio 3.815095).
+These long runs include 20-ms resource observations and are not clean timing.
+Both have 100 CFL records with maximum 0.02613323635. All 200 JPEG/200 EPS
+files, per-frame/rank identities and zero final-geometry host bytes pass checks;
+first/last images of both products receive additional visual inspection.
+ON directory size is 1969890101 B (<4 GiB), OFF 459080373 B. Additional
+device peaks are 5607968768/5580705792 B, host peak difference 1101967360 B,
+minimum free device memory 8817999872 B. Native frame-after ranges are
+7489114112--7495405568 B (rank 0) and 7463948288--7466045440 B (rank 1),
+with a 2 MiB first-to-last increase each, not byte-constant memory or an
+arbitrary transient-OOM guarantee. No volume/checkpoint/VTK geometry output.
+Before approval, group use was 192724216865 B; the remaining 12.51 GiB under
+192 GiB could not contain the approximately 22 GiB fresh 256-cubed diagnostic.
+The user has approved raising only the group disk ceiling to 256 GiB. No solver,
+filter, timestep, tolerance or RAM/VRAM budget change has been applied.
+Final retained group use is 236403696689 B (220.17 GiB). CP0-CP6 acceptance
+work is complete for the approved local two-GPU, NP=2 x, default 16-seed,
+periodic/Tw=1 y-wavy scale matrix. This is not arbitrary CURVE/AIR5 admission,
+stratified-seed production validation or long-time physical convergence.
+Later historical paragraphs describe their original receipts, not this new gate.
+Read-only production artifact revalidation checks all 200 JPEGs and corresponding
+EPS existence, including actual legend/label pixels and per-rank frame identities;
+no solver rerun or dependency replacement is performed. Current executable,
+template and rendering-library hashes match the timing records. Cumulative
+periodic ON sample/streamline scopes are 216.726207653/172.569640954 s and are
+nested, not additive. The separate 256^3 rank-zero Nsight consumer capture has
+1.040081597 s RK45, 0.834859703 s L1/L2 locator and 0.156048046 s radix-sort GPU
+time; these instrumented values are not clean wall-time samples or updated NCU
+occupancy evidence. Static locator reuse remains unimplemented.
+
 The CP0 baseline and per-particle cell-cache candidate remain frozen separately.
 The candidate passes eight CURVE components, 25 affected legacy components and
 six Release runtime/reference/restart/memcheck gates. Two matched five-round
@@ -1126,12 +1229,46 @@ under direct-device/device-aware, with state/product maxima 6.253e-13/8.525e-13,
 exact ON/OFF and 3+1 field/control/JPEG/EPS continuation, and CFL <=0.405773.
 Only step-3 and default final step-4 checkpoints are needed in this large
 diagnostic; no numerical criterion was removed. These runs contain explicit
-checkpoint/oracle I/O, not zero-readback or performance evidence. Remaining
-256^3 entry/transport, sanitizer, resource/transfer and production gates stay open.
+checkpoint/oracle I/O, not zero-readback or performance evidence.
+`curve_256_memcheck_20261007.xml` passes both maps, with four zero-error logs.
+`curve_256_observe_20261007.xml` passes eight map/entry/transport combinations;
+20-ms extra host/device maxima are 1137545216/5658116096 bytes, minimum free
+device memory is 8868921344 bytes. All rank ledgers exclude volume, final-geometry
+and UVM D2H; explicit pinned face D2H/H2D is 17054072 bytes/rank, while the
+device-aware cases show neither explicit face host copies nor observed MPI
+host staging. The two-product pixel payload is 73728000 bytes across both ranks.
+These short observations do not prove 100-frame resource stability or clean
+performance. Matched five-round timing has started; production remains open.
 Disk budget changes are now approved:
 192 GiB total, 16 GiB/diagnostic run, 4 GiB/image-only run, unchanged RAM/VRAM gates.
 The complete 256^3 admission/production and new-dependency performance gates
 remain open. See plan 5.5 for hashes; old-library timings do not transfer.
+
+### TGV Stratified Seed Candidate
+
+Optional `streamline_seeds='tgv-stratified'` adds 256 fixed physical sites and
+512 bidirectional trajectories for periodic TGV strict device products. The
+line16 default and 16-forward-seed crossing oracle stay separate. CPU/GPU root
+builds, 144 config/MPI checks and 37 new/baseline component checks pass. All 512
+direction starts occur exactly once in NP=1/2 x/y/z component cases; independent
+field/seed errors are at most 6.6613381477509392e-16. Constant-flow line16 tests
+retain the actual rank-handoff oracle; closed initial TGV paths are not that oracle.
+
+Three 32^3 four-step runtime cases pass: NP=1 standard-device/pinned Cartesian,
+NP=2 direct-device/device-aware Cartesian and periodic CURVE. They preserve
+ON/OFF and line16/stratified GPU state/statistics, exact 3+1 continuation and
+JPEG/EPS, layout-mismatch rejection and zero final geometry/frame downloads.
+CPU/GPU state maxabs is 2.2737367544323206e-13; product field maxabs is
+9.9920072216264089e-16. NP=2 pinned memcheck reports zero errors on both ranks.
+Only runtime test-directory disk limits increase from 64 to 128 MiB after a
+73,036,962-byte NP=2 directory rejection; the largest successful periodic CURVE
+directory is 125,446,264 bytes. Keep the failed receipt; RAM/VRAM gates do not
+change. Runtime/sanitizer receipts are listed in plan 5.5. No 256^3 or wall/inlet
+seeding admission, performance gain or default promotion is implied.
+
+The previous periodic 256^3 fixed-seed five-round timing is complete, but its
+100-step ON run fails the approved 6 GiB allocation gate at step 98. Retain the
+partial evidence; do not infer a completed ON/OFF time or seed-count speedup.
 
 ### X4 Production Source Build Separation
 

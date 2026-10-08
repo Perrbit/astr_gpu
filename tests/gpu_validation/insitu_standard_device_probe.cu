@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <vector>
 
 extern "C" int astr_insitu_map_current_cuda(int*, char*, int, char*, int);
@@ -63,13 +64,127 @@ __global__ void fill(Point* points,Color* colors,viskores::UInt32* indices,int f
   colors[i]=Color(front?0:255,front && frame!=1?255:0,front && frame==1?255:0,255);
   indices[i]=i;
 }
+
+__global__ void fill_large(Point* points,Color* colors,viskores::UInt32* indices,
+                          int point_count,int index_count,int frame) {
+  const int i=blockIdx.x*blockDim.x+threadIdx.x;
+  if(i<point_count) {
+    const float xy[6]={-.75f,-.75f,.75f,-.75f,0.f,.75f};
+    const bool front=i<3;
+    const float scale=front?.5f:1.f;
+    if(i<6) {
+      points[i]=Point(scale*xy[2*(i%3)],scale*xy[2*(i%3)+1],front?.5f:-.5f);
+      colors[i]=Color(front?0:255,front && frame!=1?255:0,front && frame==1?255:0,255);
+    } else {
+      // Valid triangles outside the fixed camera keep fragment work bounded.
+      points[i]=Point(2.f+(i%3==1?.001f:0.f),i%3==2?.001f:0.f,0.f);
+      colors[i]=Color(255,0,0,255);
+    }
+  }
+  if(i<index_count) indices[i]=i%point_count;
+}
+
+void probe_large_mesh(vtkEGLRenderWindow* window,vtkRenderer* renderer,int device,
+                      bool direct,bool growing) {
+  constexpr int frames=100,initial=270000,increment=198;
+  const int maximum=initial+(growing?increment*(frames-1):0);
+  struct FrameSource {
+    Allocation<Point> points;
+    Allocation<Color> colors;
+    Allocation<viskores::UInt32> indices;
+    explicit FrameSource(int count):points(count),colors(count),indices(6*count) {}
+  };
+  std::unique_ptr<FrameSource> previous;
+  vtkSmartPointer<vtkOpenGLPolyDataMapper> mapper;
+  if(direct) mapper=vtkSmartPointer<astr_insitu::DirectDeviceMapper>::Take(astr_insitu::DirectDeviceMapper::New());
+  else mapper=vtkSmartPointer<vtkOpenGLPolyDataMapper>::New();
+  mapper->ScalarVisibilityOff();
+  vtkNew<vtkActor> actor;actor->SetMapper(mapper);actor->GetProperty()->LightingOff();
+  renderer->AddActor(actor);
+  auto* camera=renderer->GetActiveCamera();
+  camera->SetPosition(0.,0.,3.);camera->SetFocalPoint(0.,0.,0.);
+  camera->ParallelProjectionOn();camera->SetParallelScale(1.);camera->SetClippingRange(1.,5.);
+  const double bounds[6]={-.75,2.002,-.75,.75,-.5,.5};
+  vtkNew<vtkUnsignedCharArray> image;
+  std::vector<unsigned char> pixels(64*64*4);
+  image->SetNumberOfComponents(4);image->SetArray(pixels.data(),pixels.size(),1);
+  std::size_t first_free=0,last_free=0,minimum=0,total=0;
+  for(int frame=0;frame<frames;++frame) {
+    const int count=initial+(growing?increment*frame:0),index_count=6*count;
+    auto current=std::make_unique<FrameSource>(count);
+    auto& points=current->points;
+    auto& colors=current->colors;
+    auto& indices=current->indices;
+    fill_large<<<(index_count+255)/256,256>>>(points.pointer,colors.pointer,indices.pointer,count,index_count,frame);
+    astr_insitu::synchronize_device_stage("large graphics fill");
+    Node point_node,color_node,index_node;
+    const char* axes[]={"x","y","z"};
+    for(int d=0;d<3;++d) conduit_node_set_path_external_float32_ptr_detailed(
+      point_node.pointer,axes[d],reinterpret_cast<float*>(points.pointer),count,
+      d*sizeof(float),sizeof(Point),sizeof(float),0);
+    const char* channels[]={"r","g","b","a"};
+    for(int d=0;d<4;++d) conduit_node_set_path_external_uint8_ptr_detailed(
+      color_node.pointer,channels[d],reinterpret_cast<unsigned char*>(colors.pointer),count,
+      d,sizeof(Color),sizeof(unsigned char),0);
+    conduit_node_set_external_uint32_ptr(index_node.pointer,indices.pointer,index_count);
+    auto point_array=vtkConduitArrayUtilities::MCArrayToVTKArray(point_node.pointer);
+    auto color_array=vtkConduitArrayUtilities::MCArrayToVTKArray(color_node.pointer);
+    auto cells=vtkConduitArrayUtilities::MCArrayToVTKCellArray(index_count,VTK_TRIANGLE,3,index_node.pointer);
+    if(!point_array || !color_array || !cells ||
+       point_array->GetMemorySpace()!=vtkDataArray::CudaDeviceMemory ||
+       color_array->GetMemorySpace()!=vtkDataArray::CudaDeviceMemory ||
+       cells->GetConnectivityArray()->GetDeviceVoidPointer(0)!=indices.pointer)
+      throw std::runtime_error("Large graphics probe lost external CUDA geometry");
+    vtkNew<vtkPoints> vtk_points;vtk_points->SetData(point_array);
+    color_array->SetName("_astr_display_rgba");
+    vtkNew<vtkPolyData> mesh;mesh->SetPoints(vtk_points);mesh->SetPolys(cells);
+    mesh->GetPointData()->AddArray(color_array);
+    mesh->GetInformation()->Set(vtkDataObject::BOUNDING_BOX(),bounds,6);
+    if(direct) {
+      astr_insitu::DeviceDrawView draw;
+      draw.positions=reinterpret_cast<float*>(points.pointer);
+      draw.colors=reinterpret_cast<unsigned char*>(colors.pointer);
+      draw.indices=indices.pointer;draw.points=count;draw.cells=index_count/3;draw.device=device;
+      std::copy(bounds,bounds+6,draw.bounds);
+      static_cast<astr_insitu::DirectDeviceMapper*>(mapper.GetPointer())->set_view(draw);
+    } else mapper->SetInputData(mesh);
+    nvtxRangePushA("ASTR_INSITU_LARGE_GRAPHICS_FRAME");
+    window->Render();
+    if(!window->GetRGBACharPixelData(0,0,63,63,0,image))
+      throw std::runtime_error("Large graphics screenshot failed");
+    nvtxRangePop();
+    const auto at=[&](int x,int y,int channel){return pixels[4*(64*y+x)+channel];};
+    if(glGetError()!=GL_NO_ERROR || at(32,32,frame==1?2:1)!=255 || at(32,32,0)!=0 ||
+       at(16,12,0)!=255 || at(1,1,0)!=0 || at(1,1,1)!=0 || at(1,1,2)!=0)
+      throw std::runtime_error("Large graphics color/depth/background comparison failed");
+    previous=std::move(current);
+    astr_insitu::require_cuda_graphics(cudaMemGetInfo(&last_free,&total),"large graphics memory");
+    if(frame==0) first_free=minimum=last_free;
+    minimum=std::min(minimum,last_free);
+    if(first_free-minimum>2ULL*1024*1024*1024 || last_free<1024ULL*1024*1024)
+      throw std::runtime_error("Large graphics probe exceeds existing local memory budget/reserve");
+  }
+  const auto retained=first_free>last_free?first_free-last_free:0;
+  const auto peak=first_free-minimum;
+  mapper->ReleaseGraphicsResources(window);renderer->RemoveActor(actor);
+  astr_insitu::require_cuda_graphics(cudaMemGetInfo(&last_free,&total),"large graphics release");
+  std::printf("ASTR_INSITU_LARGE_GRAPHICS {\"cuda_device\":%d,\"frames\":%d,"
+    "\"direct\":%s,\"growing\":%s,\"final_points\":%d,\"live_bytes\":%zu,"
+    "\"retained_growth_bytes\":%zu,\"peak_growth_bytes\":%zu,\"geometry_host_bytes\":0,"
+    "\"image_host_bytes\":%zu,\"pixels_passed\":true}\n",
+    device,frames,direct?"true":"false",growing?"true":"false",maximum,
+    static_cast<std::size_t>(maximum)*(sizeof(Point)+sizeof(Color)+6*sizeof(viskores::UInt32)),
+    retained,peak,frames*pixels.size());
+}
 }
 
 int main(int argc,char** argv) {
   try {
     if((argc!=2 && argc!=3) || (std::strcmp(argv[1],"0") && std::strcmp(argv[1],"1")) ||
-       (argc==3 && std::strcmp(argv[2],"--conduit") && std::strcmp(argv[2],"--direct")))
-      throw std::invalid_argument("Usage: insitu_standard_device_probe CUDA_DEVICE (0 or 1) [--conduit|--direct]");
+       (argc==3 && std::strcmp(argv[2],"--conduit") && std::strcmp(argv[2],"--direct") &&
+        std::strcmp(argv[2],"--large-growth") && std::strcmp(argv[2],"--large-fixed") &&
+        std::strcmp(argv[2],"--direct-large-growth") && std::strcmp(argv[2],"--direct-large-fixed")))
+      throw std::invalid_argument("Usage: insitu_standard_device_probe CUDA_DEVICE [--conduit|--direct|--large-growth|--large-fixed|--direct-large-growth|--direct-large-fixed]");
     const bool conduit=argc==3 && !std::strcmp(argv[2],"--conduit");
     const bool direct=argc==3 && !std::strcmp(argv[2],"--direct");
     const int device=std::atoi(argv[1]);
@@ -92,6 +207,12 @@ int main(int argc,char** argv) {
     unsigned int count=0;int gl_device=-1;
     if(cudaGLGetDevices(&count,&gl_device,1,cudaGLDeviceListAll)!=cudaSuccess ||
        count!=1 || gl_device!=device) throw std::runtime_error("CUDA/EGL device mismatch");
+    if(argc==3 && std::strstr(argv[2],"large")) {
+      probe_large_mesh(window,renderer,device,std::strstr(argv[2],"direct")!=nullptr,
+                       std::strstr(argv[2],"growth")!=nullptr);
+      window->Finalize();
+      return 0;
+    }
     Allocation<Point> points(6);
     Allocation<Color> colors(6);
     Allocation<viskores::UInt32> indices(6);

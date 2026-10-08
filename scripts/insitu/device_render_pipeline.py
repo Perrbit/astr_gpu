@@ -335,6 +335,11 @@ def catalyst_execute(info):
         points, cells = update_geometry(name, piece)
         item = render_objects[name]
         products[name] = render_product(name, item, step, time, points, cells)
+        if piece.GetFieldData().GetArray('streamline_seed_count') is not None:
+            products[name]['seeding'] = {
+                'layout': 'tgv-stratified' if metadata(piece, 'streamline_seed_layout') == 1 else 'line16',
+                'seeds': int(metadata(piece, 'streamline_seed_count')),
+                'direction_trajectories': int(metadata(piece, 'streamline_particle_count'))}
         dispatch.report(name, 'image', products[name]['image'])
     record = {'step': step, 'time': time, 'processing_backend': 'device',
         'rendering_pipeline': pipeline, 'profile':profile, 'geometry_host_bytes': 0,

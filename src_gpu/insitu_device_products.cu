@@ -112,7 +112,7 @@ astr_insitu::CompactMesh streamline_mesh(const astr_insitu::DeviceStreamlines& t
   for(int i=0;i<trace.particles;++i) if(trace.subminimum_stop[i])
     std::printf("ASTR_INSITU_TRAJECTORY_TERMINATION rank=%d product=%s seed=%d direction=%d status=3 "
       "reason=sub_minimum_remaining accepted=%.17g remaining=%.17g minimum=%.17g\n",rank,name.c_str(),
-      i%16,i<16?1:-1,trace.final_state[i][4],pi-trace.final_state[i][4],trace.minimum_step);
+      i%trace.seed_count,i<trace.seed_count?1:-1,trace.final_state[i][4],pi-trace.final_state[i][4],trace.minimum_step);
   const bool mean=name.find("mean_")==0;
   std::string kind;
   if(mean) {
@@ -136,7 +136,7 @@ astr_insitu::CompactMesh streamline_mesh(const astr_insitu::DeviceStreamlines& t
         ++d;
       }
       mesh.point_fields["accepted_length"].push_back(p[3]);
-      const auto& final=trace.final_state[segment.seed+(segment.direction>0?0:16)];
+      const auto& final=trace.final_state[segment.seed+(segment.direction>0?0:trace.seed_count)];
       mesh.point_fields["termination_status"].push_back(final[7]);
       mesh.point_fields["untravelled_arc_length"].push_back(std::max(0.,pi-final[4]));
       if(i) {
@@ -270,15 +270,20 @@ astr_insitu::DeviceMesh resident_mesh(const char* name,const viskores::cont::Dat
 }
 void report_resident_trace(const astr_insitu::DeviceStreamlines& trace,const char* name,int rank,int axis=0) {
   std::printf("ASTR_INSITU_RESIDENT_TRAJECTORY rank=%d product=%s rounds=%d transfers=%d "
-    "control_read_bytes=%llu geometry_device_bytes=%llu owner_query_read_bytes=%llu\n",rank,name,trace.rounds,trace.transfers,
+    "control_read_bytes=%llu geometry_device_bytes=%llu owner_query_read_bytes=%llu "
+    "seed_layout=%s seeds=%d particles=%d control_round_limit_bytes=%llu owner_round_limit_bytes=%llu\n",
+    rank,name,trace.rounds,trace.transfers,
     static_cast<unsigned long long>(trace.control_read_bytes),static_cast<unsigned long long>(trace.geometry_bytes),
-    static_cast<unsigned long long>(trace.owner_query_read_bytes));
+    static_cast<unsigned long long>(trace.owner_query_read_bytes),trace.seed_layout.c_str(),trace.seed_count,trace.particles,
+    static_cast<unsigned long long>(trace.particles*sizeof(astr_insitu::RK45TraceWorklet::State)),
+    static_cast<unsigned long long>(trace.particles*sizeof(viskores::Id)));
   if(std::string(name)=="crossing_streamlines") {
     double worst=0.;
     const double pi=std::acos(-1.);
-    for(int i=0;i<16;++i) {
+    const auto seeds=astr_insitu::tgv_streamline_seeds(trace.seed_layout);
+    for(int i=0;i<trace.seed_count;++i) {
       const auto& point=trace.final_state[i];
-      const double original[3]={1.5*pi,pi/8.+i*(.75*pi/15.),pi/4.};
+      const double original[3]={seeds[i][0]+pi,seeds[i][1],seeds[i][2]};
       for(int d=0;d<3;++d) {
         const double error=std::abs(point[d]-original[(d-axis+3)%3]);
         if(!std::isfinite(error)) throw std::runtime_error("Nonfinite resident crossing endpoint");
@@ -291,7 +296,7 @@ void report_resident_trace(const astr_insitu::DeviceStreamlines& trace,const cha
   for(int i=0;i<trace.particles;++i) if(trace.subminimum_stop[i])
     std::printf("ASTR_INSITU_TRAJECTORY_TERMINATION rank=%d product=%s seed=%d direction=%d status=3 "
       "reason=sub_minimum_remaining accepted=%.17g remaining=%.17g minimum=%.17g\n",rank,name,
-      i%16,i<16?1:-1,trace.final_state[i][4],std::acos(-1.)-trace.final_state[i][4],trace.minimum_step);
+      i%trace.seed_count,i<trace.seed_count?1:-1,trace.final_state[i][4],std::acos(-1.)-trace.final_state[i][4],trace.minimum_step);
 }
 #endif
 }
@@ -402,9 +407,12 @@ extern "C" int astr_insitu_device_render(const char* pipeline,const char* backen
     int fcomm,int step,double time,int nx,int ny,int nz,int ox,int oy,int oz,int global_cells,
     double* velocity,double* halo,double* diagnostic,double* reynolds_halo,double* favre_halo,
     int covered,double duration,double window_start,double window_end,std::int64_t host_budget,
-    int curve,double* coordinates,double* coordinate_halo,std::int64_t budget,std::int64_t reserve,std::int64_t retained)
+    int curve,double* coordinates,double* coordinate_halo,std::int64_t budget,std::int64_t reserve,std::int64_t retained,
+    const char* seeds)
 try {
   const auto comm=MPI_Comm_f2c(fcomm);
+  const std::string seed_layout=seeds?seeds:"line16";
+  astr_insitu::tgv_streamline_seeds(seed_layout);
   double physical_step_scale=1.;
   const char* test_step_scale=std::getenv("ASTR_INSITU_TEST_CURVE_STEP_SCALE");
   if(test_step_scale) {
@@ -522,7 +530,8 @@ try {
           bool constant,bool mean,const double* source) {
         ProductStage phase("resident_streamlines_inclusive","ASTR_IS8_RESIDENT_STREAMLINES",fcomm,step);
         auto trace=astr_insitu::trace_tgv_device(field,actual,extent,offset,comm,host_budget,
-          constant,constant?trace_axis:0,constant,mean,global_cells,true,curve?&physical:nullptr,physical_step_scale);
+          constant,constant?trace_axis:0,constant,mean,global_cells,true,curve?&physical:nullptr,physical_step_scale,
+          constant?"line16":seed_layout);
         report_resident_trace(trace,name,rank,constant?trace_axis:0);
 #ifdef ASTR_BUILD_TESTING
         if(test_step_scale && rank==0) for(int i=0;i<trace.particles;++i) {
@@ -532,8 +541,12 @@ try {
             int(s[7]),s[0],s[1],s[2],s[4]);
         }
 #endif
-        meshes.push_back(resident_mesh(name,trace.resident_geometry,step,time,2,source,nullptr,
-          extent,offset,global_cells,rank,nullptr,std::uint64_t(host_budget),curve?&physical:nullptr,trace_axis,demo));
+        auto mesh=resident_mesh(name,trace.resident_geometry,step,time,2,source,nullptr,
+          extent,offset,global_cells,rank,nullptr,std::uint64_t(host_budget),curve?&physical:nullptr,trace_axis,demo);
+        mesh.controls["streamline_seed_layout"]=trace.seed_layout=="tgv-stratified"?1.:0.;
+        mesh.controls["streamline_seed_count"]=trace.seed_count;
+        mesh.controls["streamline_particle_count"]=trace.particles;
+        meshes.push_back(std::move(mesh));
       };
       if(instant) add_trace("instantaneous_streamlines",actual,false,false,halo);
       if(crossing) {

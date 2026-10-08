@@ -60,7 +60,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
              test_fault=None, failure_after_start=False, tgv_mapping=None, insitu_timing=False,
              device_sample_transport=None, postprocess_transport=None, nsys_trace=False, plane_oracle=False,
              checkpoint_enabled=None, curve_surface_oracle=False, wall_mean_oracle=False, curve_trace_oracle=False,
-             ncu_kernel=None, curve_trace_step_scale=None):
+             ncu_kernel=None, curve_trace_step_scale=None, curve_wall_temperature=None):
     if ncu_kernel is not None and (not ncu_kernel or backend != 'gpu' or ranks != 1 or
             nsys_trace or memcheck or monitor_resources or reject):
         raise ValueError('Kernel profiling requires a separate successful NP=1 GPU run')
@@ -97,6 +97,13 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         if tgv_mapping is None or not np.isfinite(scale_dt) or scale_dt <= 0 or cfl_limit is None:
             raise ValueError('Scale timestep override requires CURVE TGV and an explicit CFL gate')
         dt = scale_dt
+    if curve_wall_temperature is not None:
+        if (tgv_mapping != 'y-wavy' or grid not in ('64,64,64', '128,128,128', '256,256,256') or
+                scale_dt is None or cfl_limit is None or not np.isfinite(cfl_limit) or cfl_limit <= 0 or
+                isinstance(curve_wall_temperature, bool) or
+                not isinstance(curve_wall_temperature, (int, float)) or
+                not np.isfinite(curve_wall_temperature) or curve_wall_temperature <= 0):
+            raise ValueError('Wall temperature override requires a positive nondimensional value and a gated y-wavy scale fixture')
     if curve:
         subprocess.run([
             sys.executable, str(root / "tests/gpu_validation/prepare_s1_flatplate_case.py"),
@@ -170,7 +177,8 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         set_runtime_flags(primary, 't' if backend == 'gpu' else 'f', None, None, 't')
         if tgv_mapping=='y-wavy':
             set_homogeneous(primary,'t,f,t')
-            set_bctype(primary,'1;1;41,273.15d0;41,273.15d0;1;1')
+            wall = '273.15d0' if curve_wall_temperature is None else f'{curve_wall_temperature:.17e}'
+            set_bctype(primary,f'1;1;41,{wall};41,{wall};1;1')
     if args.initial_dimension and source_fault != "initial_field":
         if initial_resource is None:
             initial_path = prepare_initial_resource(case, input_name, args.initial_dimension)

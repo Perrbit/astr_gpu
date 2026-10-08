@@ -1,5 +1,48 @@
 # ParaView Streamline Coordinate Precision
 
+## Device Display Buffer Capacity Reuse
+
+`paraview-6.1.1-device-buffer-capacity.patch` applies after the device-rendering
+and allocation-preflight patches in the private ParaView 6.1.1 source. It changes
+only `vtkOpenGLBufferObject::UploadDevice`: a growth allocation reserves 25%
+headroom, subject to the existing allocation callback and `GLsizeiptr` bounds.
+Copies, point/cell/index counts and draw lengths still use the exact payload.
+Ordinary host uploads, extraction, interpolation and RK45 are unchanged.
+
+Apply with `--dry-run --fuzz=0`, then without `--dry-run`, and rebuild the
+`RenderingOpenGL2` target. Use `--dry-run --reverse --fuzz=0` to check an already
+patched tree. Never replace a rendering library while an application uses it.
+Retain the preceding library and its hash for comparisons and rollback.
+
+The original periodic CURVE 256-cubed 100-step image run hit its 6 GiB additional
+device budget at step 98. CUDA allocation tracking, pinned/device-aware controls
+and a Python GC control did not explain or remove the frame-to-frame growth.
+Capacity reuse removed growth in the 12-frame actual-field diagnostic, with all
+48 JPEG/EPS files byte-identical to the unmodified rendering library. This
+associates the growth with repeated exact-size graphics-buffer reallocation;
+it does not establish a general driver leak. Subsequent actual periodic CURVE
+256-cubed 100-step OFF/ON checks pass with stable frame-after device memory;
+their numerical/safety/transfer and observed-resource receipts are in plan
+section 5.5. The old y-wavy 100-step OFF case fails numerically at step 29 before
+rendering is enabled; the capacity patch does not repair that numerical failure.
+The user approved nondimensional Tw=1 for this round's y-wavy scale fixtures.
+Fresh 64/128-cubed numerical/exact-restart gates and 64/128/256-cubed memcheck
+pass; the fresh 256-cubed numerical/exact-restart and four entry/transport
+observations also pass. Five clean timing rounds per combination and the selected
+standard-device/device-aware 100-step OFF/ON complete with all 200 JPEG/200 EPS
+files and the unchanged 6/16/2 GiB budgets. Frame-after memory increases by only
+2 MiB first-to-last per rank, remaining bounded rather than byte-constant.
+The two-mapping scale matrix is closed only for these approved local fixtures,
+default 16 seeds and NP=2 x; this is not a generic thermal-wall/filter fix.
+Historical Tw=273.15 evidence is retained and not reused as new-input timing.
+
+The root-built graphics interop probe checks growing uploads and pixel output;
+the standard-device probe also draws fixed/growing meshes through both entries.
+These component controls do not replace actual-field restart, memory-safety,
+transfer, external peak-resource or complete production-window gates. Current
+evidence is under `build_insitu_air5_device_render/curve_graphics_lifecycle_20261007/`;
+the production closure is recorded in the in-situ plan, section 5.5.
+
 ## CURVE Scale Allocation Preflight
 
 `paraview-6.1.1-allocation-preflight.patch` applies to the private device

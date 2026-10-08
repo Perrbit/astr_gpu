@@ -21,6 +21,55 @@ implementation_path='lib/catalyst', pipeline_file='tgv.py', output_directory='ou
 
 
 @pytest.mark.skipif(not PROBE, reason='Set ASTR_INSITU_CONFIG_PROBE')
+@pytest.mark.parametrize('layout,accepted', [('line16', True), ('tgv-stratified', True), ('unknown', False)])
+def test_streamline_seed_layout(tmp_path, layout, accepted):
+    text = DEVICE.replace('step_interval=2',
+        f"step_interval=2,products='streamlines',streamline_seeds='{layout}'")
+    path = tmp_path / 'seeds.nml'
+    path.write_text(text)
+    result = subprocess.run([PROBE, str(path)], capture_output=True, text=True, timeout=10)
+    assert (result.returncode == 0) == accepted, result.stdout + result.stderr
+    if accepted:
+        assert f'streamline_seeds={layout}' in result.stdout
+
+
+@pytest.mark.skipif(not PROBE, reason='Set ASTR_INSITU_CONFIG_PROBE')
+@pytest.mark.parametrize('change', ['host', 'compatible', 'wall', 'surface', 'disabled'])
+def test_stratified_seeds_require_device_streamlines(tmp_path, change):
+    text = DEVICE.replace('step_interval=2',
+        "step_interval=2,products='streamlines',streamline_seeds='tgv-stratified'")
+    if change == 'host':
+        text = text.replace("processing_backend='device',postprocess_transport='pinned'", "processing_backend='host'")
+    elif change == 'compatible':
+        text = text.replace('step_interval=2', "step_interval=2,rendering_pipeline='compatible'")
+    elif change == 'wall':
+        text = text.replace("products='streamlines'", "products='channel_walls'")
+    elif change == 'surface':
+        text = text.replace("products='streamlines'", "products='q_surface'")
+    else:
+        text = text.replace('enabled=t', 'enabled=f')
+    path = tmp_path / 'invalid_seeds.nml'
+    path.write_text(text)
+    result = subprocess.run([PROBE, str(path)], capture_output=True, text=True, timeout=10)
+    assert result.returncode != 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(not COLLECTIVE or not MPIEXEC, reason='Set collective probe and MPI launcher')
+@pytest.mark.parametrize('other,accepted', [('tgv-stratified', True), ('line16', False)])
+def test_collective_streamline_seed_layout(tmp_path, other, accepted):
+    text = DEVICE.replace('step_interval=2',
+        "step_interval=2,products='streamlines',streamline_seeds='tgv-stratified'")
+    (tmp_path / 'rank0.nml').write_text(text)
+    (tmp_path / 'rank1.nml').write_text(text.replace('tgv-stratified', other))
+    result = subprocess.run([MPIEXEC, '-np', '2', str(Path(COLLECTIVE).resolve()), str(tmp_path / 'rank')],
+        capture_output=True, text=True, timeout=30)
+    output = result.stdout + result.stderr
+    assert (result.returncode == 0) == accepted, output
+    if not accepted:
+        assert 'values differ between MPI ranks' in output
+
+
+@pytest.mark.skipif(not PROBE, reason='Set ASTR_INSITU_CONFIG_PROBE')
 @pytest.mark.parametrize('change,accepted', [('', True), ('statistics', False), ('host', False),
     ('compatible', False), ('no-render', False), ('independent-clock', False)])
 def test_curve_demo_config(tmp_path, change, accepted):

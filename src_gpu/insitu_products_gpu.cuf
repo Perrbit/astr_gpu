@@ -213,7 +213,7 @@ contains
 #endif
 
   subroutine render_device_sample_gpu(mode,pipeline,backend,script,profile,step,t,window, &
-      statistics,host_budget,device_budget,reserve,mean_requested)
+      statistics,host_budget,device_budget,reserve,mean_requested,seed_layout)
     use iso_fortran_env, only: int64
     use mpi
     use checkpoint_state_io, only: checkpoint_state_require
@@ -230,7 +230,7 @@ contains
     use insitu_device_velocity, only: snapshot_sample_coordinates_gpu,extend_sample_coordinates_gpu
     use benchmark_runtime, only: insitu_clock,report_insitu_timing
 #endif
-    character(*),intent(in) :: mode,pipeline,backend,script,profile
+    character(*),intent(in) :: mode,pipeline,backend,script,profile,seed_layout
     integer,intent(in) :: step
     real(8),intent(in) :: t,window(2)
     logical,intent(in) :: statistics,mean_requested
@@ -252,10 +252,10 @@ contains
       subroutine range_pop() bind(C,name='astr_insitu_device_range_pop')
       end subroutine
       integer(c_int) function device_render(pipeline,backend,script,profile,comm,step,t,nx,ny,nz,ox,oy,oz,cells, &
-          velocity,halo,derived,reynolds,favre,covered,duration,wstart,wend,host,curve,xyz,xyz_halo,budget,reserve,retained) &
+          velocity,halo,derived,reynolds,favre,covered,duration,wstart,wend,host,curve,xyz,xyz_halo,budget,reserve,retained,seeds) &
           bind(C,name='astr_insitu_device_render')
         import c_int,c_double,c_char,c_devptr,c_int64_t
-        character(c_char),intent(in) :: pipeline(*),backend(*),script(*),profile(*)
+        character(c_char),intent(in) :: pipeline(*),backend(*),script(*),profile(*),seeds(*)
         integer(c_int),value :: comm,step,nx,ny,nz,ox,oy,oz,cells,covered,curve
         real(c_double),value :: t,duration,wstart,wend
         type(c_devptr),value :: velocity,halo,derived,reynolds,favre,xyz,xyz_halo
@@ -327,7 +327,7 @@ contains
       c_devloc(derived),reynolds_pointer,favre_pointer,merge(1_c_int,0_c_int,covered),duration, &
       window_start,window_end,int(host_budget,c_int64_t),merge(1_c_int,0_c_int,lreadgrid), &
       coordinates_pointer,coordinate_halo_pointer, &
-      int(device_budget,c_int64_t),int(reserve,c_int64_t),int(retained,c_int64_t))
+      int(device_budget,c_int64_t),int(reserve,c_int64_t),int(retained,c_int64_t),trim(seed_layout)//c_null_char)
     call range_pop()
     call checkpoint_state_require(status==0,MPI_COMM_WORLD,'device product bridge failed')
     call report_insitu_timing('device_consumer_inclusive',phase_started,step)

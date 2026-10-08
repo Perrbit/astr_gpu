@@ -95,7 +95,7 @@ def test_actual_state_half_step(tmp_path, mapping, cells, record_property):
             grid=','.join([str(cells)]*3), tgv_mapping=mapping, enabled=False, checkpoint_enabled=False,
             insitu_config=scale_configuration('direct-device', 'device-aware'),
             postprocess_transport='device-aware', resident_audit=True, curve_trace_oracle=True,
-            curve_trace_step_scale=scale)
+            curve_trace_step_scale=scale, curve_wall_temperature=1. if mapping == 'y-wavy' else None)
         check_frames(case, 2, 'direct-device', (2,))
         assert not list((case/'outdat').rglob('*.h5'))
         assert 'runtime_zero_readback_evidence=0' in (case/'run.log').read_text()
@@ -103,6 +103,7 @@ def test_actual_state_half_step(tmp_path, mapping, cells, record_property):
         paths.append(trajectories(case, scale))
         cases.append(str(case))
     report = dict(cells=cells, mapping=mapping, cases=cases,
+        wall_temperature_nondimensional=1. if mapping == 'y-wavy' else None,
         scope='Same solver steps and state; half initial/min/max physical RK45 steps, unchanged tolerance 1e-8',
         endpoint_maxabs=float(np.max(abs(states[0][:, :3]-states[1][:, :3]))),
         accepted_length_maxabs=float(np.max(abs(states[0][:, 3]-states[1][:, 3]))),

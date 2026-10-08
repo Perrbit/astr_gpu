@@ -2,6 +2,7 @@
 #define ASTR_INSITU_DEVICE_STREAMLINES_H
 
 #include "insitu_streamline_worklet.h"
+#include "insitu_streamline_seeds.h"
 #include <nvtx3/nvToolsExt.h>
 #include "insitu_device_array.h"
 #include "insitu_device_curve_trace.h"
@@ -121,9 +122,10 @@ struct DeviceTraceSegment {
 };
 struct DeviceStreamlines {
   std::vector<DeviceTraceSegment> segments;
-  std::array<RK45TraceWorklet::State,32> final_state;
-  std::array<bool,32> subminimum_stop{};
-  int rounds=0,transfers=0,particles=32;
+  std::vector<RK45TraceWorklet::State> final_state;
+  std::vector<bool> subminimum_stop;
+  int rounds=0,transfers=0,particles=0,seed_count=0;
+  std::string seed_layout;
   std::uint64_t geometry_bytes=0;
   double minimum_step=.01*(2.*std::acos(-1.)/32.);
   viskores::cont::DataSet resident_geometry;
@@ -169,9 +171,11 @@ inline DeviceStreamlines trace_partition_device(
     std::uint64_t host_budget,bool constant=false,int constant_axis=0,bool forward_only=false,
     bool sample_trace_vector=false,int global_cells=32,bool resident=false,
     const viskores::cont::ArrayHandle<viskores::Vec3f>* physical_coordinates=nullptr,
-    double physical_step_scale=1.) {
+    double physical_step_scale=1.,const std::string& seed_layout="line16") {
   constexpr int chunk=128;
-  const int particles=forward_only?16:32;
+  const auto seeds=tgv_streamline_seeds(seed_layout);
+  const int seed_count=static_cast<int>(seeds.size());
+  const int particles=seed_count*(forward_only?1:2);
   using State=RK45TraceWorklet::State;
   if(global_cells!=32 && global_cells!=256 && !(Physical && (global_cells==64 || global_cells==128)))
     throw std::invalid_argument("Unsupported bounded TGV streamline resolution");
@@ -238,35 +242,39 @@ inline DeviceStreamlines trace_partition_device(
   DeviceStreamlines result;
   result.minimum_step=.01*integration_h;
   result.particles=particles;
+  result.seed_count=seed_count;result.seed_layout=seed_layout;
+  result.final_state.resize(particles);
+  result.subminimum_stop.resize(particles,false);
   auto& state=result.final_state;
   for(auto& particle:state) particle=State(0.,0.,0.,0.,0.,0.,0.,TraceLength);
   for(int i=0;i<particles;++i) {
-    viskores::Vec3f seed(pi/2.,pi/8.+(i%16)*(6.*pi/8.)/15.,pi/4.);
+    const auto& location=seeds[i%seed_count];
+    viskores::Vec3f seed(location[0],location[1],location[2]);
     if(constant && constant_axis!=0) {
       const auto original=seed;
       for(int d=0;d<3;++d) seed[d]=original[(d-constant_axis+3)%3];
     }
-    // Both directions share the approved sixteen seeds, not reversed seed sets.
-    state[i]=State(seed[0],seed[1],seed[2],(i<16?.1:-.1)*integration_h,0.,0.,0.,TraceActive);
+    // Both directions share the same globally numbered seed set.
+    state[i]=State(seed[0],seed[1],seed[2],(i<seed_count?.1:-.1)*integration_h,0.,0.,0.,TraceActive);
   }
-  std::array<State,32> local;
-  std::array<double,32*8> wire;
+  std::vector<State> local(particles);
+  std::vector<double> wire(particles*8);
   std::vector<double> incoming(particles*8*ranks);
   std::vector<ResidentTraceChunk> chunks;
   viskores::Id resident_points=0,resident_indices=0;
   for(;result.rounds<1000;++result.rounds) {
-    std::array<int,32> owners{};
+    std::vector<int> owners(particles);
     if constexpr(Physical) {
       nvtxRangePushA("ASTR_X4_CURVE_TRACE_OWNER_QUERY");
       const auto queries=viskores::cont::make_ArrayHandle(state.data(),particles,viskores::CopyFlag::On);
       viskores::cont::ArrayHandle<viskores::Id> candidates;
       invoke(LocatePhysicalTraceOwner{},queries,*physical_owner,candidates);
       synchronize_device_stage("LocatePhysicalTraceOwner");
-      std::array<viskores::Id,32> local_candidates{};
+      std::vector<viskores::Id> local_candidates(particles);
       const auto values=candidates.ReadPortal();
       for(int i=0;i<particles;++i) local_candidates[i]=values.Get(i);
       result.owner_query_read_bytes+=particles*sizeof(viskores::Id);
-      std::array<viskores::Id,64> all_candidates{};
+      std::vector<viskores::Id> all_candidates(particles*ranks);
       trace_mpi(MPI_Allgather(local_candidates.data(),particles,MPI_INT64_T,
         all_candidates.data(),particles,MPI_INT64_T,comm));
       for(int i=0;i<particles;++i) {
@@ -379,7 +387,7 @@ inline DeviceStreamlines trace_partition_device(
         if(bytes>host_budget-result.geometry_bytes)
           throw std::runtime_error("Device trajectory compact geometry exceeds host budget");
         DeviceTraceSegment segment;
-        segment.seed=i%16; segment.direction=i<16?1:-1;
+        segment.seed=i%seed_count; segment.direction=i<seed_count?1:-1;
         segment.points.reserve(n); segment.velocity.reserve(n);
         for(int j=0;j<n;++j,++position) {
           if(sampled.Get(position)) throw std::runtime_error("Final trajectory color outside halo");
@@ -454,13 +462,14 @@ inline DeviceStreamlines trace_tgv_device(
     std::uint64_t host_budget,bool constant=false,int constant_axis=0,bool forward_only=false,
     bool sample_trace_vector=false,int global_cells=32,bool resident=false,
     const viskores::cont::ArrayHandle<viskores::Vec3f>* physical_coordinates=nullptr,
-    double physical_step_scale=1.) {
+    double physical_step_scale=1.,const std::string& seed_layout="line16") {
   if(physical_coordinates) return trace_partition_device<true>(trace_velocity,color_velocity,extent,offset,
     comm,host_budget,constant,constant_axis,forward_only,sample_trace_vector,global_cells,resident,physical_coordinates,
-    physical_step_scale);
+    physical_step_scale,seed_layout);
   if(physical_step_scale!=1.) throw std::invalid_argument("Sensitivity scale requires physical coordinates");
   return trace_partition_device<false>(trace_velocity,color_velocity,extent,offset,
-    comm,host_budget,constant,constant_axis,forward_only,sample_trace_vector,global_cells,resident,nullptr);
+    comm,host_budget,constant,constant_axis,forward_only,sample_trace_vector,global_cells,resident,nullptr,
+    physical_step_scale,seed_layout);
 }
 } // namespace astr_insitu
 #endif

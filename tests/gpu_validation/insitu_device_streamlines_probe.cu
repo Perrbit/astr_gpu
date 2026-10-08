@@ -152,11 +152,24 @@ __host__ __device__ viskores::Vec3f interpolate(const astr_insitu::TraceVertex& 
   return result;
 }
 __global__ void inspect_resident(const astr_insitu::TraceVertex* points,const viskores::Vec3f* velocity,
-    const viskores::Id* particle,viskores::Id count,double h,bool constant,int axis,unsigned long long* error) {
+    const viskores::Id* particle,viskores::Id count,double h,bool constant,int axis,unsigned long long* error,
+    int seed_count,int* starts) {
   const auto i=static_cast<viskores::Id>(blockIdx.x)*blockDim.x+threadIdx.x;
   if(i>=count) return;
   const auto p=points[i];const auto v=interpolate(p,h,constant,axis);
   double worst=0.;
+  if(particle[i]<0 || particle[i]>=2*seed_count) {
+    atomicMax(error,static_cast<unsigned long long>(__double_as_longlong(INFINITY)));return;
+  }
+  if(p[3]==0.) {
+    atomicAdd(starts+particle[i],1);
+    const auto seed=particle[i]%seed_count;
+    const double pi=acos(-1.);
+    const viskores::Vec3f expected=seed_count==256?
+      viskores::Vec3f((2*(seed%8)+1)*pi/8.,(2*(seed/8%8)+1)*pi/8.,(2*(seed/64)+1)*pi/4.):
+      viskores::Vec3f(pi/2.,pi/8.+seed*(6.*pi/8.)/15.,pi/4.);
+    for(int d=0;d<3;++d) worst=fmax(worst,fabs(p[d]-expected[constant?(d-axis+3)%3:d]));
+  }
   for(int d=0;d<3;++d) worst=fmax(worst,fabs(v[d]-velocity[i][d]));
   if(constant) {
     const double pi=acos(-1.);
@@ -174,7 +187,10 @@ int run(int argc,char** argv,int rank,int ranks) {
   const bool forward_only=argc>3 && std::string(argv[3])=="forward";
   const bool resident=argc>4 && std::string(argv[4])=="resident";
   const std::string mapping_name=argc>5?argv[5]:"";
+  const std::string seed_layout=argc>6?argv[6]:"line16";
   const int mapping=mapping_name=="periodic"?1:(mapping_name=="y-wavy"?2:0);
+  if(seed_layout!="line16" && (constant || mapping || !resident))
+    throw std::runtime_error("Stratified probe requires Cartesian resident TGV");
   if(!mapping_name.empty() && !mapping) throw std::runtime_error("invalid physical mapping");
   if(mapping && !constant) throw std::runtime_error("Physical probe currently admits only the independent constant-flow oracle");
   if(axis<0 || axis>2) throw std::runtime_error("invalid axis");
@@ -210,8 +226,9 @@ int run(int argc,char** argv,int rank,int ranks) {
     throw std::runtime_error("Physical interpolation gate failed before trajectory integration");
   }
   auto geometry=astr_insitu::trace_tgv_device(vectors,vectors,extent,offset,MPI_COMM_WORLD,
-    64*1024*1024,constant,axis,forward_only,false,32,resident,mapping?&physical:nullptr);
+    64*1024*1024,constant,axis,forward_only,false,32,resident,mapping?&physical:nullptr,1.,seed_layout);
   double error=interpolation_error;long long vertices=0,segments=geometry.segments.size();
+  std::vector<int> seed_starts(geometry.particles,0);
   if(resident && geometry.resident_geometry.GetNumberOfCoordinateSystems()) {
     auto accepted=geometry.resident_geometry.GetPointField("accepted").GetData().
       AsArrayHandle<viskores::cont::ArrayHandle<astr_insitu::TraceVertex>>();
@@ -226,15 +243,22 @@ int run(int argc,char** argv,int rank,int ranks) {
       return array.GetBuffers()[0].ReadPointerDevice(viskores::cont::DeviceAdapterTagCuda{},token);
     };
     unsigned long long* device_error=nullptr;
+    int* device_starts=nullptr;
     if(cudaMalloc(&device_error,sizeof(double))!=cudaSuccess || cudaMemset(device_error,0,sizeof(double))!=cudaSuccess)
       throw std::runtime_error("Resident check allocation failed");
+    if(cudaMalloc(&device_starts,geometry.particles*sizeof(int))!=cudaSuccess ||
+       cudaMemset(device_starts,0,geometry.particles*sizeof(int))!=cudaSuccess)
+      throw std::runtime_error("Seed coverage allocation failed");
     inspect_resident<<<(vertices+255)/256,256>>>(static_cast<const astr_insitu::TraceVertex*>(pointer(accepted)),
       static_cast<const viskores::Vec3f*>(pointer(values)),static_cast<const viskores::Id*>(pointer(particles)),
-      vertices,h,constant,axis,device_error);
+      vertices,h,constant,axis,device_error,geometry.seed_count,device_starts);
     double trajectory_error=0.;
     if(cudaDeviceSynchronize()!=cudaSuccess || cudaMemcpy(&trajectory_error,device_error,sizeof(double),cudaMemcpyDeviceToHost)!=cudaSuccess)
       throw std::runtime_error("Resident check failed");
     error=std::max(error,trajectory_error);
+    if(cudaMemcpy(seed_starts.data(),device_starts,geometry.particles*sizeof(int),cudaMemcpyDeviceToHost)!=cudaSuccess)
+      throw std::runtime_error("Seed coverage read failed");
+    cudaFree(device_starts);
     cudaFree(device_error);
   }
   for(const auto& line:geometry.segments) for(std::size_t i=0;i<line.points.size();++i) {
@@ -270,6 +294,14 @@ int run(int argc,char** argv,int rank,int ranks) {
   MPI_Allreduce(&error,&worst,1,MPI_DOUBLE,MPI_MAX,MPI_COMM_WORLD);
   MPI_Allreduce(local,totals,3,MPI_LONG_LONG,MPI_SUM,MPI_COMM_WORLD);
   MPI_Allreduce(&local_bad,&total_bad,1,MPI_INT,MPI_SUM,MPI_COMM_WORLD);
+  if(seed_layout=="tgv-stratified") {
+    std::vector<int> all_starts(geometry.particles);
+    MPI_Allreduce(seed_starts.data(),all_starts.data(),geometry.particles,MPI_INT,MPI_SUM,MPI_COMM_WORLD);
+    if(std::any_of(all_starts.begin(),all_starts.end(),[](int count){return count!=1;}))
+      throw std::runtime_error("Stratified seed direction missing or duplicated across ranks");
+    if(!rank) std::printf("STRATIFIED_SEEDS layout=%s seeds=%d unique_direction_starts=%d\n",
+      seed_layout.c_str(),geometry.seed_count,geometry.particles);
+  }
   if(!rank) std::printf("IS8 CUDA compact streamlines NP=%d axis=%d constant=%d max_error=%.17g vertices=%lld segments=%lld transfers=%lld rounds=%d input_host_mirror=0 source_errors=%d particles=%d resident=%d control_read_bytes=%llu owner_query_read_bytes=%llu curve_grid=%d mapping=%s\n",
     ranks,axis,constant,worst,totals[0],totals[1],totals[2],geometry.rounds,total_bad,geometry.particles,resident,
     static_cast<unsigned long long>(geometry.control_read_bytes),

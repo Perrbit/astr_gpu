@@ -17,7 +17,7 @@ contains
     logical :: parsed,flags(10),root_flags(10),same,all_same
     integer(int64) :: counts(5),root_counts(5)
     real(real64) :: times(9),root_times(9),plane(6)
-    character(1024) :: paths(12),root_paths(12)
+    character(1024) :: paths(13),root_paths(13)
     character(16) :: root_mode
     character(64) :: root_ids(insitu_max_products)
     character(16) :: root_product_modes(insitu_max_products)
@@ -50,7 +50,8 @@ contains
     times=[candidate%time_interval,candidate%statistics_window,candidate%slice_origin,candidate%slice_normal]
     paths=[candidate%implementation_path,candidate%pipeline_file,candidate%output_directory, &
       candidate%batch_prefix,candidate%restore_batch,candidate%derivative_backend,candidate%products,candidate%slice_axis, &
-      candidate%processing_backend,candidate%postprocess_transport,candidate%rendering_pipeline,candidate%slice_definition]
+      candidate%processing_backend,candidate%postprocess_transport,candidate%rendering_pipeline,candidate%slice_definition, &
+      candidate%streamline_seeds]
     root_flags=flags; root_counts=counts; root_times=times; root_paths=paths
     root_mode=candidate%schedule_mode
     call MPI_Type_match_size(MPI_TYPECLASS_INTEGER,storage_size(counts(1))/8,int_type,ierr)

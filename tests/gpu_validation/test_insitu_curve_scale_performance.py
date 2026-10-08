@@ -53,3 +53,52 @@ def test_disk_budget_counts_receipts_once(tmp_path):
     (tmp_path/'curve_current').symlink_to(case, target_is_directory=True)
     (tmp_path/'unrelated.bin').write_bytes(b'0123456789')
     assert group_bytes(tmp_path) == 7
+
+
+@pytest.mark.parametrize('temperature,mapping,grid,dt,cfl', [
+    (0., 'y-wavy', '64,64,64', 2e-5, .5),
+    (-1., 'y-wavy', '64,64,64', 2e-5, .5),
+    (float('nan'), 'y-wavy', '64,64,64', 2e-5, .5),
+    (float('inf'), 'y-wavy', '64,64,64', 2e-5, .5),
+    (True, 'y-wavy', '64,64,64', 2e-5, .5),
+    (1., 'periodic', '64,64,64', 2e-5, .5),
+    (1., 'y-wavy', '32,32,32', 2e-5, .5),
+    (1., 'y-wavy', '64,64,64', None, .5),
+    (1., 'y-wavy', '64,64,64', 2e-5, float('nan')),
+])
+def test_wall_override_rejects_before_preparation(tmp_path, temperature, mapping, grid, dt, cfl):
+    from run_output_restart_validation import run_case
+    from test_insitu_device_curve_wall_fields import current_arguments
+    from test_insitu_curve_derivatives import ROOT
+    args = current_arguments(tmp_path, samples=False)
+    args.scale_timestep, args.maximum_cfl = dt, cfl
+    with pytest.raises(ValueError, match='Wall temperature override'):
+        run_case(args, ROOT, 'gpu', 2, 'invalid', 2, grid=grid, tgv_mapping=mapping,
+                 curve_wall_temperature=temperature)
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize('temperature', [None, 1.])
+def test_wall_override_preserves_default_and_accepts_approved_fixture(tmp_path, monkeypatch, temperature):
+    from run_output_restart_validation import run_case
+    from test_insitu_device_curve_wall_fields import current_arguments
+    from test_insitu_curve_derivatives import ROOT
+    args = current_arguments(tmp_path, samples=False)
+    args.scale_timestep, args.maximum_cfl = 2e-5, .5
+
+    class Prepared(Exception):
+        pass
+
+    def boundary(path, value):
+        wall = '273.15d0' if temperature is None else '1.00000000000000000e+00'
+        assert path == tmp_path/'gpu_np2_valid/datin/input.tgv'
+        assert value == f'1;1;41,{wall};41,{wall};1;1'
+        raise Prepared
+
+    monkeypatch.setattr('run_output_restart_validation.subprocess.run', lambda *args, **kwargs: None)
+    for name in ('set_gridfile', 'set_runtime_flags', 'set_homogeneous'):
+        monkeypatch.setattr('prepare_tgv_case.'+name, lambda *args: None)
+    monkeypatch.setattr('prepare_tgv_case.set_bctype', boundary)
+    with pytest.raises(Prepared):
+        run_case(args, ROOT, 'gpu', 2, 'valid', 2, grid='64,64,64', tgv_mapping='y-wavy',
+                 curve_wall_temperature=temperature)

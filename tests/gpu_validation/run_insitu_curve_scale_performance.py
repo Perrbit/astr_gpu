@@ -21,7 +21,7 @@ from test_insitu_x4_observation import no_large_io, timing
 BACKENDS = tuple((pipeline, mode) for pipeline in ('standard-device', 'direct-device')
                  for mode in ('pinned', 'device-aware'))
 METRICS = ('completed_window', 'advance_inclusive', 'resident_streamlines_inclusive')
-GROUP_BUDGET = 192*1024**3
+GROUP_BUDGET = 256*1024**3
 IMAGE_BUDGET = 4*1024**3
 
 
@@ -106,6 +106,7 @@ def main():
     hashes = {str(path): digest(path) for path in dependencies}
     report = dict(mapping=args.mapping, grid=[256]*3, topology=[2, 1, 1], steps=4, frames=[2, 4],
                   dt=2e-5, maximum_cfl=.5, rounds=args.rounds, fingerprints=hashes,
+                  wall_temperature_nondimensional=1. if args.mapping == 'y-wavy' else None,
                   scope='Four-step timing: no field/checkpoint/statistics/oracle I/O, profiler or external resource sampler; JPEG/EPS only',
                   warmup='One excluded independent process per backend; first-frame lazy setup remains in each complete window',
                   records=[])
@@ -117,7 +118,7 @@ def main():
     def run(pipeline, mode, name, steps, render, resource_baseline=None):
         exclusive_devices()
         if group_bytes(build)+IMAGE_BUDGET > GROUP_BUDGET:
-            raise RuntimeError('Approved 192 GiB group budget cannot contain another image run')
+            raise RuntimeError('Approved 256 GiB group budget cannot contain another image run')
         if any(digest(path) != hashes[str(path)] for path in dependencies):
             raise RuntimeError('Executable or dependency changed during matched timing')
         settings = current_arguments(args.output, samples=False)
@@ -134,7 +135,8 @@ def main():
         case, size = run_case(settings, ROOT, 'gpu', 2, name, steps,
             grid='256,256,256', tgv_mapping=args.mapping, enabled=False, checkpoint_enabled=False,
             insitu_config=config, postprocess_transport=mode, insitu_timing=True,
-            monitor_resources=steps == 100, resource_baseline=resource_baseline)
+            monitor_resources=steps == 100, resource_baseline=resource_baseline,
+            curve_wall_temperature=report['wall_temperature_nondimensional'])
         no_large_io(case)
         if render:
             check_frames(case, 2, pipeline, tuple(range(1, 101)) if steps == 100 else (2, 4), audit=False)

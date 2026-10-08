@@ -1,0 +1,27 @@
+--- a/VTK/Rendering/OpenGL2/vtkOpenGLBufferObject.cxx
++++ b/VTK/Rendering/OpenGL2/vtkOpenGLBufferObject.cxx
+@@ -2,6 +2,7 @@
+ // SPDX-License-Identifier: BSD-3-Clause
+ #include "vtkOpenGLBufferObject.h"
+ #include "vtkObjectFactory.h"
++#include <limits>
+ 
+ #include "vtk_glad.h"
+ #ifdef ASTR_VTK_DEVICE_RENDERING
+@@ -238,7 +239,15 @@
+   }
+   if (!this->Internal->Handle || this->GetType() != type || this->Internal->Size < bytes)
+   {
+-    if (!this->Allocate(bytes, type, DynamicDraw))
++    // Draw counts remain exact; reuse capacity across small geometry changes.
++    const size_t limit = static_cast<size_t>(std::numeric_limits<GLsizeiptr>::max());
++    const size_t headroom = bytes / 4;
++    if (bytes > limit || headroom > limit - bytes)
++    {
++      this->Error = "CUDA display buffer capacity exceeds GLsizeiptr";
++      return false;
++    }
++    if (!this->Allocate(bytes + headroom, type, DynamicDraw))
+     {
+       return false;
+     }

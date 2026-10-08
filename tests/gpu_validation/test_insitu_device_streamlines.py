@@ -14,6 +14,27 @@ INVERSE_BIN=Path(os.environ.get('ASTR_INSITU_CURVE_INVERSE_PROBE',
     ROOT/'build_insitu_device_probes/bin/insitu_curve_inverse_probe'))
 
 
+@pytest.mark.parametrize('ranks,axis', [(1, 0), (2, 0), (2, 1), (2, 2)])
+def test_stratified_tgv_device_streamlines(ranks, axis, record_property):
+    prefix = os.environ.get('ASTR_INSITU_DEVICE_MPI_PREFIX')
+    assert prefix, 'Set the matching Open MPI prefix'
+    result = subprocess.run([str(Path(prefix)/'bin/mpirun'), '--prefix', prefix,
+        '--mca', 'pml', 'ob1', '--mca', 'btl', 'self,tcp', '--mca', 'osc', 'pt2pt',
+        '--mca', 'coll_hcoll_enable', '0', '--mca', 'coll_ucc_enable', '0',
+        '--mca', 'opal_cuda_support', '0', '-np', str(ranks), str(BIN), str(axis),
+        'tgv', 'both', 'resident', '', 'tgv-stratified'], capture_output=True, text=True, timeout=180)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'STRATIFIED_SEEDS layout=tgv-stratified seeds=256 unique_direction_starts=512' in result.stdout
+    assert 'particles=512 resident=1' in result.stdout
+    assert 'input_host_mirror=0 source_errors=0' in result.stdout
+    error = float(re.search(r'max_error=(\S+)', result.stdout)[1])
+    assert math.isfinite(error) and error <= 2e-10
+    rounds = int(re.search(r'rounds=(\d+)', result.stdout)[1])
+    assert int(re.search(r'control_read_bytes=(\d+)', result.stdout)[1]) <= rounds*32768
+    assert int(re.search(r'owner_query_read_bytes=(\d+)', result.stdout)[1]) == 0
+    record_property('stratified_tgv_component_output', result.stdout)
+
+
 def test_curve_inverse_residual(record_property):
     result = subprocess.run([str(INVERSE_BIN)], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
