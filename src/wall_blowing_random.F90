@@ -1,10 +1,56 @@
 module wall_blowing_random
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use iso_fortran_env, only: int64
   implicit none
   private
   public :: sample_legacy_wall_velocity
+  public :: legacy_random_state_size,get_legacy_random_state,put_legacy_random_state
+  public :: legacy_random_runtime_signature
   logical,save :: first_call=.true.
 contains
+  integer function legacy_random_state_size() result(count)
+    call random_seed(size=count)
+    count=count+1
+  end function
+
+  subroutine get_legacy_random_state(state)
+    integer,intent(out) :: state(:)
+    if(size(state)/=legacy_random_state_size()) error stop 'wall RNG snapshot size mismatch'
+    ! Unused ranks have no authoritative intrinsic seed until their first wall call.
+    state=0
+    state(1)=merge(0,1,first_call)
+    if(.not.first_call) call random_seed(get=state(2:))
+  end subroutine
+
+  subroutine put_legacy_random_state(state,ok)
+    integer,intent(in) :: state(:)
+    logical,intent(out) :: ok
+    ok=.false.
+    if(size(state)/=legacy_random_state_size()) return
+    if(state(1)/=0.and.state(1)/=1) return
+    if(state(1)==0.and.any(state(2:)/=0)) return
+    first_call=state(1)==0
+    if(.not.first_call) call random_seed(put=state(2:))
+    ok=.true.
+  end subroutine
+
+  subroutine legacy_random_runtime_signature(bits)
+    integer(int64),intent(out) :: bits(8)
+    integer,allocatable :: saved(:),probe(:)
+    real(8) :: values(8)
+    integer :: count,i
+    call random_seed(size=count)
+    allocate(saved(count),probe(count))
+    call random_seed(get=saved)
+    probe=1
+    call random_seed(put=probe)
+    do i=1,8
+      call random_number(values(i))
+    enddo
+    bits=transfer(values,bits)
+    call random_seed(put=saved)
+  end subroutine
+
   subroutine sample_legacy_wall_velocity(rank,xcoord,zcoord,lz,uinf,amplitude, &
                                         xa,xb,xc,nmod_z,velocity)
     integer,intent(in) :: rank,nmod_z

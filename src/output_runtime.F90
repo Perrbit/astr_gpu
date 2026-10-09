@@ -1,5 +1,5 @@
 module output_runtime
-  use iso_fortran_env, only: int64,real64,int8,iostat_end
+  use iso_fortran_env, only: int64,real64,int8,iostat_end,compiler_version,compiler_options
   use iso_c_binding, only: c_int,c_char,c_null_char
   use ieee_arithmetic, only: ieee_is_finite
   use mpi
@@ -12,7 +12,10 @@ module output_runtime
   use bc, only: bctype,turbinf,ninflowslice,complete_inflow_cpu_file, &
     configure_wall_blowing,wall_blowing_legacy_random
   use output_input_resources, only: set_inflow_resource_root,inflow_source_path, &
-    inflow_source_name,discover_inflow_sources,set_initial_resource_root,initial_source_path,initial_source_name
+    inflow_source_name,discover_inflow_sources,set_initial_resource_root,initial_source_path,initial_source_name, &
+    set_wall_resource_root,wall_source_path
+  use wall_blowing_random, only: legacy_random_state_size,get_legacy_random_state, &
+    put_legacy_random_state,legacy_random_runtime_signature
   use output_config, only: output_options
   use adaptive_output, only: configure_adaptive,adaptive_monitor_due,observe_adaptive,feed_adaptive_signal, &
     adaptive_shared_config,adaptive_shared_state,adaptive_shared_file
@@ -70,6 +73,7 @@ module output_runtime
   integer(int64),save :: static_resource_crc(2)=0
   integer(int64),save :: air5_resource_crc(4)=0
   integer(int64),save :: initial_resource_crc=0
+  integer(int64),save :: wall_resource_crc=0
   integer,save :: inflow_count=0
   integer(int64),allocatable,save :: inflow_bytes(:),inflow_crc(:)
   character(64),parameter :: air5_resources(4)=[character(64) :: &
@@ -292,13 +296,23 @@ contains
     call load_output_options()
     if(.not.enabled) return
     if(len_trim(options%restore_directory)>0) then
-      call check(.not.extruded_profile_output_case(), &
-        'extruded UDF grid restart resource rebinding is not yet admitted')
-      if(trim(flowtype)=='bl'.and.bctype(3)==41) call configure_wall_blowing()
-      call check(.not.wall_blowing_legacy_random, &
-        'legacy_random restart requires RNG state support; not yet admitted')
       call validate_checkpoint_bundle(trim(options%restore_directory),MPI_COMM_WORLD,ok)
       call check(ok,'invalid new checkpoint bundle')
+      if(extruded_profile_output_case()) &
+        call set_wall_resource_root(trim(options%restore_directory)//'/../../resources')
+    endif
+    if(trim(flowtype)=='bl'.and.bctype(3)==41) call configure_wall_blowing()
+    if(extruded_profile_output_case().and.len_trim(options%restore_directory)>0) &
+      call check(wall_blowing_legacy_random,'extruded profile restart requires legacy_random checkpoint')
+    if(wall_blowing_legacy_random) then
+      call check(extruded_profile_output_case(), 'random wall checkpoint requires admitted extruded profile case')
+      call check(.not.options%adaptive%enabled, 'random wall checkpoint adaptive scheduling is not admitted')
+      path=wall_source_path('datin/wallbs.dat')
+      ok=.true.
+      if(mpirank==0) call file_fingerprint(trim(path),bytes,wall_resource_crc,ok)
+      call check(ok,'cannot fingerprint random wall parameter resource')
+      call MPI_Bcast(wall_resource_crc,1,MPI_INTEGER8,0,MPI_COMM_WORLD,ierr)
+      call check(ierr==MPI_SUCCESS,'random wall resource fingerprint broadcast')
     endif
     if(ninit>=1.and.ninit<=3) then
       if(len_trim(options%restore_directory)>0) &
@@ -601,6 +615,8 @@ contains
       call freeze_static_resource(trim(profile_grid_resource_name()),trim(profile_grid_resource_source()), &
         static_resource_crc(1))
       call freeze_static_resource('inlet.prof','datin/inlet.prof',static_resource_crc(2))
+      if(wall_blowing_legacy_random) &
+        call freeze_static_resource('wallbs.dat','datin/wallbs.dat',wall_resource_crc)
       if(dynamic_output_case()) call freeze_inflow_resources()
     endif
     if(air5_output_case()) then
@@ -1040,8 +1056,34 @@ contains
     type(sample_schedule) :: restored_schedule
     character(8) :: magic
     character(16) :: mode
+    integer,allocatable :: wall_state(:,:),local_wall_state(:)
+    integer(int64) :: rng_signature(8),saved_signature(8),saved_wall_crc
+    integer :: packet_size,saved_packet,saved_ranks
+    character(16384) :: rng_compiler,rng_options,saved_compiler,saved_options
+    character(8) :: wall_magic,expected_magic
     magic='ASTROC04'
     if(options%adaptive%enabled) magic='ASTROC05'
+    if(wall_blowing_legacy_random) magic='ASTROC06'
+    expected_magic=magic
+    if(wall_blowing_legacy_random) then
+      packet_size=legacy_random_state_size()+6
+      call check(packet_size>7.and.packet_size<=4096,'random wall RNG packet size')
+      call check(4_int64*packet_size*(int(mpisize,int64)+1)+65536<=options%host_budget_bytes, &
+        'random wall RNG metadata budget')
+      allocate(wall_state(packet_size,mpisize),local_wall_state(packet_size),stat=err)
+      call check(err==0,'random wall RNG metadata allocation')
+      local_wall_state(:6)=[ig0,jg0,kg0,im,jm,km]
+      call get_legacy_random_state(local_wall_state(7:))
+      call legacy_random_runtime_signature(rng_signature)
+      call check(len(compiler_version())<=len(rng_compiler).and.len(compiler_options())<=len(rng_options), &
+        'random wall compiler identity length')
+      rng_compiler=compiler_version(); rng_options=compiler_options()
+      if(writing) then
+        call MPI_Gather(local_wall_state,packet_size,MPI_INTEGER,wall_state,packet_size,MPI_INTEGER, &
+          0,MPI_COMM_WORLD,ierr)
+        call check(ierr==MPI_SUCCESS,'random wall RNG state gather')
+      endif
+    endif
     driver=0
     driver_config=''
     if(trim(flowtype)=='channel') then
@@ -1086,6 +1128,8 @@ contains
             call adaptive_shared_file(unit,.true.,identity%step,identity%time,.false.,ok)
             if(.not.ok) err=1
           endif
+          if(err==0.and.magic=='ASTROC06') write(unit,iostat=err) 'ASTRWR01',mpisize,packet_size, &
+            wall_resource_crc,rng_compiler,rng_options,rng_signature,wall_state
           close(unit,iostat=closed)
         endif
       endif
@@ -1098,8 +1142,10 @@ contains
         saved_counter,saved_pending,saved_last,mode,interval,dt_interval,saved_initial,origin_step,origin_time, &
         saved_driver_config,driver
       call check(err==0,'read control metadata')
-      call check((magic=='ASTROC04'.or.magic=='ASTROC05').and.all(saved==contract), &
+      call check((magic=='ASTROC04'.or.magic=='ASTROC05'.or.magic=='ASTROC06').and.all(saved==contract), &
         'numerical/executable/controller contract mismatch')
+      call check((magic=='ASTROC06').eqv.(expected_magic=='ASTROC06'), &
+        'random wall checkpoint RNG mode/version mismatch')
       call check(all(saved_driver_config==driver_config),'boundary/driver configuration mismatch')
       if(trim(flowtype)=='channel') then
         call channel_driver_state(driver,.false.,ok)
@@ -1116,6 +1162,22 @@ contains
         call check(.not.options%adaptive%enabled.or.options%restart_output=='override', &
           'adaptive monitoring enabled without explicit override')
         call configure_adaptive(options%adaptive,identity%step,identity%time,ok)
+      endif
+      call check(ok,'adaptive monitor/control metadata')
+      if(magic=='ASTROC06') then
+        read(unit,iostat=err) wall_magic,saved_ranks,saved_packet,saved_wall_crc, &
+          saved_compiler,saved_options,saved_signature
+        call check(err==0,'missing random wall RNG metadata')
+        call check(wall_magic=='ASTRWR01'.and.saved_ranks==mpisize.and.saved_packet==packet_size, &
+          'random wall RNG format/rank count mismatch')
+        call check(saved_wall_crc==wall_resource_crc,'random wall parameter resource mismatch')
+        call check(saved_compiler==rng_compiler.and.saved_options==rng_options.and.all(saved_signature==rng_signature), &
+          'random wall compiler/runtime mismatch')
+        read(unit,iostat=err) wall_state
+        call check(err==0,'missing random wall RNG rank state')
+        call check(all(wall_state(:6,mpirank+1)==local_wall_state(:6)), 'random wall topology mismatch')
+        call put_legacy_random_state(wall_state(7:,mpirank+1),ok)
+        call check(ok,'invalid random wall RNG rank state')
       endif
       call check(ok.and.checkpoint_stream_at_end(unit),'adaptive monitor/control metadata tail')
       close(unit,iostat=closed)
@@ -1260,6 +1322,7 @@ contains
     if(dynamic_output_case()) resource_count=5+inflow_count
     if(air5_output_case()) resource_count=2+air5_resource_count()
     if(ninit>=1.and.ninit<=3) resource_count=resource_count+1
+    if(wall_blowing_legacy_random) resource_count=resource_count+1
     allocate(resources(resource_count),stat=err)
     call check(err==0,'checkpoint resource-name allocation')
     resources(1:2)=[character(128) :: 'geometry.h5','input.txt']
@@ -1283,7 +1346,12 @@ contains
 #endif
       resources(3:resource_count)=air5_resources(:air5_resource_count())
     endif
-    if(ninit>=1.and.ninit<=3) resources(resource_count)=initial_source_name(ninit)
+    i=resource_count
+    if(wall_blowing_legacy_random) then
+      resources(i)='wallbs.dat'
+      i=i-1
+    endif
+    if(ninit>=1.and.ninit<=3) resources(i)=initial_source_name(ninit)
     call write_checkpoint_resource_refs(trim(path),resources(:resource_count),MPI_COMM_WORLD,ok)
     call check(ok,'cannot record checkpoint resources')
     files=''

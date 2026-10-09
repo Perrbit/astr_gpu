@@ -37,15 +37,18 @@ class M12IntegrationContractTests(unittest.TestCase):
         self.assertIn('wall_blowing_nmod_t>0 .and. .not.wall_blowing_legacy_random', source)
         self.assertIn('call sample_legacy_wall_velocity', source)
 
-    def test_native_checkpoint_restore_also_rejects_unsaved_rng(self):
+    def test_native_checkpoint_restore_binds_frozen_resources_and_requires_rng(self):
         source = (ROOT / "src/output_runtime.F90").read_text()
         begin = source.index('subroutine bootstrap_output_resources()')
         end = source.index('end subroutine', begin)
         restore = source[begin:end]
         self.assertIn('call configure_wall_blowing()', restore)
-        self.assertIn('call check(.not.wall_blowing_legacy_random', restore)
-        self.assertLess(restore.index('call check(.not.wall_blowing_legacy_random'),
-                        restore.index('call validate_checkpoint_bundle'))
+        self.assertIn('call set_wall_resource_root(', restore)
+        self.assertLess(restore.index('call validate_checkpoint_bundle'),
+                        restore.index('call set_wall_resource_root('))
+        self.assertIn("if(wall_blowing_legacy_random) magic='ASTROC06'", source)
+        self.assertIn('random wall checkpoint RNG mode/version mismatch', source)
+        self.assertIn('call put_legacy_random_state(', source)
 
     def test_gpu_uploads_only_the_shared_wall_supply(self):
         source = (ROOT / "src_gpu/boundary_gpu.cuf").read_text()

@@ -88,6 +88,7 @@ module hdf5io
   subroutine h5io_init(filename,mode,comm)
     !
     use parallel, only: mpirank
+    use output_input_resources, only: wall_source_path
     !
     ! arguments
     character(len=*),intent(in) :: filename
@@ -120,7 +121,7 @@ module hdf5io
                                             h5error,access_prp=plist_id)
       if(h5error.ne.0)  stop ' !! error in h5io_init call h5fcreate_f'
     elseif(mode=='read') then
-      call h5fopen_f(filename,h5f_acc_rdwr_f,h5file_id,                &
+      call h5fopen_f(trim(wall_source_path(filename)),h5f_acc_rdwr_f,h5file_id, &
                                             h5error,access_prp=plist_id)
       if(h5error.ne.0)  stop ' !! error in h5io_init call h5fopen_f'
     else

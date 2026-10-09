@@ -17,7 +17,7 @@ from compare_flowstate import read_flowstate
 from compare_q_validation_snapshots import compare_snapshot_sets, comparison_values, read_q_snapshot
 from insitu_cfl_gate import CflGate
 from insitu_resource_monitor import run_monitored
-from prepare_m12_local_case import prepare
+from prepare_m12_local_case import prepare,replace_value
 from analyze_m12_sensor_diagnostics import analyze_pair
 
 TOPOLOGIES = ('1,1,1', '2,1,1', '1,2,1', '1,1,2',
@@ -148,17 +148,48 @@ def check_private_diagnostics(cpu, gpu, ranks):
 
 
 def run(args, backend, topology, insitu_config=None, case_label=None, resource_baseline=None,
-        observation=None):
+        observation=None, steps=10, restore=None, checkpoint_interval=None,product_oracles=False):
+    if steps not in (5,10) or (restore is not None and (steps!=10 or checkpoint_interval is None)):
+        raise ValueError('M12 restart gate is limited to ten steps or five-plus-five')
     if observation not in (None, 'images', 'geometry', 'trace'):
         raise ValueError('unknown M12 observation mode')
     if observation and (backend != 'gpu' or insitu_config is None or args.memcheck):
         raise ValueError('observation requires an uninstrumented GPU render run without memcheck')
+    if product_oracles and (backend!='gpu' or insitu_config is None or observation is not None):
+        raise ValueError('product continuation oracles require a separate instrumented GPU render gate')
     ranks = int(np.prod([int(value) for value in topology.split(',')]))
     profiler_allowance = (observation == 'trace' and ranks == 4 and
                           getattr(args, 'np4_profiler_host_budget_8gib', False))
     external_host_budget = (8 if profiler_allowance else 4)*1024**3
     case = args.output / ((case_label or backend) + '_np' + str(ranks) + '_' + topology.replace(',', 'x'))
     prepare(args.source, case, backend)
+    first_step=5 if restore is not None else 0
+    if steps!=10:
+        path=case/'datin/controller'
+        lines=path.read_text().splitlines()
+        replace_value(lines,'maxstep,feqchkpt',f'{steps-1},1,9999,9999,1,9999')
+        path.write_text('\n'.join(lines)+'\n')
+    if checkpoint_interval is not None:
+        (case/'outdat/new').mkdir()
+        (case/'datin/input.output').write_text(f"""&output
+ directory='outdat/new',restore_directory='{restore or ''}',restart_output='saved',
+ host_budget_bytes=67108864,device_budget_bytes=67108864,buffer_bytes=1048576,
+ device_reserve_bytes=1073741824
+/
+&checkpoint
+ enabled=t,mode='steps',interval_steps={checkpoint_interval},keep=2,initial_frame=f
+/
+&volume
+ enabled=f
+/
+&slices
+ enabled=f
+/
+""")
+    if restore is not None:
+        # Initialization and the UDF must use only the checkpoint's frozen resources.
+        for name in ('grid.2d','flowini2d.h5','inlet.prof','wallbs.dat'):
+            (case/'datin'/name).unlink()
     env = os.environ.copy()
     if observation:
         for key in list(env):
@@ -197,7 +228,7 @@ def run(args, backend, topology, insitu_config=None, case_label=None, resource_b
             env.pop('ASTR_INSITU_RESIDENT_AUDIT')
             env.pop('ASTR_M12_RENDER_ISOLATION')
             env['ASTR_INSITU_TEST_ORACLE_IO'] = '0'
-        if observation == 'geometry':
+        if observation == 'geometry' or product_oracles:
             env.update(ASTR_INSITU_TEST_PLANE_PREFIX='diagnostics/plane',
                        ASTR_INSITU_TEST_CURVE_Q_PREFIX='diagnostics/surface',
                        ASTR_INSITU_TEST_CURVE_TRACE_PREFIX='diagnostics/trace')
@@ -219,7 +250,7 @@ def run(args, backend, topology, insitu_config=None, case_label=None, resource_b
                     '--cuda-um-cpu-page-faults=true', '--cuda-um-gpu-page-faults=true',
                     '--export=sqlite', '--output='+str(case/'trace.rank%q{OMPI_COMM_WORLD_RANK}')]
     command += [str(args.executable), 'run', 'datin/input.dat']
-    cfl = CflGate(case/'run.log', 1., .02, 0, 10)
+    cfl = CflGate(case/'run.log', 1., .02, first_step, steps)
     checked = {}
 
     def progress(final=False):
@@ -269,7 +300,7 @@ def run(args, backend, topology, insitu_config=None, case_label=None, resource_b
                         process.wait()
                 raise
     progress(final=True)
-    if (not observation and len(checked) != 31*ranks) or 'The job is done!' not in (case/'run.log').read_text():
+    if (not observation and len(checked) != (1+3*(steps-first_step))*ranks) or 'The job is done!' not in (case/'run.log').read_text():
         raise ValueError('missing successful ten-step/three-stage state checks')
     if args.memcheck and backend == 'gpu':
         logs = list(case.glob('memcheck.*.log'))

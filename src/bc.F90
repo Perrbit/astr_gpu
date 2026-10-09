@@ -121,10 +121,12 @@ module bc
   !
   subroutine configure_wall_blowing
     use commvar, only: lrestart
+    use output_input_resources, only: wall_source_path
     implicit none
     integer :: fh,i,ich,env_status,env_length
     logical :: lexist
-    character(len=64) :: filewbs,filephase
+    character(len=1400) :: filewbs
+    character(len=64) :: filephase
     character(len=32) :: mode
 
     if(wall_blowing_configured) return
@@ -151,7 +153,7 @@ module bc
       case default
         stop 'ASTR_WALL_BLOWING_MODE must be current or legacy_random'
       end select
-      filewbs='datin/wallbs.dat'
+      filewbs=wall_source_path('datin/wallbs.dat')
       inquire(file=trim(filewbs),exist=lexist)
       if(lexist) then
         fh=get_unit()

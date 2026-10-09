@@ -143,24 +143,28 @@ def add_edges(edges, triangle):
         edges[key] = count+1, winding+(1 if a < b else -1)
 
 
-def check_transfers(case, ranks):
+def check_transfers(case, ranks, steps=STEPS, checkpoint=False):
     log = (case/'run.log').read_text()
     forbidden = ('ASTR_X4_CURVE_TRACE_TEST_ORACLE', 'ASTR_IS8_COMPACT_GEOMETRY_READ',
                  'ASTR_IS8_COMPACT_TRACE_READ', 'ASTR_M12_RENDER_ISOLATION',
                  'ASTR_INSITU_RESIDENT_AUDIT')
+    fields=list((case/'outdat').rglob('*.h5'))
+    if checkpoint:
+        fields=[p for p in fields if not (p.is_relative_to(case/'outdat/new') and
+                p.name in ('state.h5','geometry.h5','flowini2d.h5'))]
     if any(name in log for name in forbidden) or list((case/'diagnostics').iterdir()) or \
-            list((case/'outdat').rglob('*.h5')) or list((case/'outdat').rglob('*.vtp')):
+            fields or list((case/'outdat').rglob('*.vtp')):
         raise ValueError('clean capture contains diagnostics or large output')
     pixels = [dict(re.findall(r'(\w+)=([^ ]+)', row)) for row in
               re.findall(r'ASTR_INSITU_PIXEL_READ ([^\n]+)', log)]
     result = []
     for rank in range(ranks):
-        records = [json.loads((case/f'outdat/render/mesh_step{step:08d}_rank{rank}.json').read_text()) for step in STEPS]
+        records = [json.loads((case/f'outdat/render/mesh_step{step:08d}_rank{rank}.json').read_text()) for step in steps]
         with sqlite3.connect((case/f'trace.rank{rank}.sqlite').resolve().as_uri()+'?mode=ro', uri=True) as db:
             counts = dict(db.execute('select text,count(*) from NVTX_EVENTS group by text'))
             for name in ('ASTR_IS8_DEVICE_SAMPLE', 'ASTR_IS8_DEVICE_MEAN_SUPPLY',
                          'ASTR_X4_DEVICE_VOLUME_CONSUMER', 'ASTR_IS8_RESIDENT_RENDER'):
-                if counts.get(name) != len(STEPS):
+                if counts.get(name) != len(steps):
                     raise ValueError(f'incomplete NVTX frame capture: {rank}, {name}')
             if any(name in counts for name in forbidden) or db.execute(
                     'select m.bytes from CUPTI_ACTIVITY_KIND_MEMCPY m join ENUM_CUDA_MEMCPY_OPER e '
@@ -188,7 +192,7 @@ def check_transfers(case, ranks):
             faces = {name: copies(db, name) for name in ('ASTR_IS8_DEVICE_SAMPLE', 'ASTR_IS8_DEVICE_MEAN_SUPPLY')}
             face = re.findall(rf'ASTR_INSITU_DEVICE_FRAME rank={rank} step=\d+ transport=pinned '
                               r'face_d2h_bytes=(\d+) face_h2d_bytes=(\d+) face_exchanges=(\d+)', log)
-            if len(face) != len(STEPS):
+            if len(face) != len(steps):
                 raise ValueError('missing pinned face accounting')
             for kind, counter in (('DTOH', 0), ('HTOD', 1)):
                 actual = sum(n for rows in faces.values() for k, n in rows
@@ -196,7 +200,7 @@ def check_transfers(case, ranks):
                 if actual != int(face[-1][counter]):
                     raise ValueError(f'pinned face bytes differ: {rank}, {kind}, {actual}, {face[-1]}')
             reads = [p for p in pixels if int(p['rank']) == rank]
-            for step in STEPS:
+            for step in steps:
                 for name in PRODUCTS:
                     formats = Counter((int(p['format']), int(p['type'])) for p in reads
                                       if p['product'] == name and int(p['step']) == step)

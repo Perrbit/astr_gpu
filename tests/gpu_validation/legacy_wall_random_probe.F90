@@ -1,5 +1,7 @@
 program legacy_wall_random_probe
-  use wall_blowing_random, only: sample_legacy_wall_velocity
+  use wall_blowing_random, only: sample_legacy_wall_velocity,legacy_random_state_size, &
+    get_legacy_random_state,put_legacy_random_state,legacy_random_runtime_signature
+  use iso_fortran_env, only: int64
   implicit none
   integer,parameter :: im=64,km=24,calls=3
   real(8),parameter :: pi=3.1415926535897932384626433832795d0
@@ -7,6 +9,10 @@ program legacy_wall_random_probe
   real(8) :: expected(0:im,0:km,calls),theta,fx,gz,rfluc
   integer :: i,k,m,c,rank,seed_size
   integer,allocatable :: seed(:),expected_seed(:),actual_seed(:)
+  integer,allocatable :: initial(:),snapshot(:),after(:)
+  integer(int64) :: signature(8),again(8)
+  logical :: ok
+  real(8) :: continued(0:im,0:km)
   character(len=16) :: argument
 
   call get_command_argument(1,argument)
@@ -21,6 +27,9 @@ program legacy_wall_random_probe
   ! Independent call-sequence reference, including draws at zero envelope nodes.
   call random_seed(size=seed_size)
   allocate(seed(seed_size),expected_seed(seed_size),actual_seed(seed_size))
+  allocate(initial(legacy_random_state_size()),snapshot(legacy_random_state_size()),after(legacy_random_state_size()))
+  call get_legacy_random_state(initial)
+  if(any(initial/=0)) error stop 'unused wall RNG state is not canonical'
   seed=1
   call random_seed(put=seed)
   do m=1,15
@@ -62,5 +71,24 @@ program legacy_wall_random_probe
   if(maxval(abs(value(33:47,:)))==0.d0) error stop 'second wall segment is missing'
   if(any(value(0:15,:)/=0.d0) .or. any(value(49:im,:)/=0.d0)) &
     error stop 'wall forcing leaked outside its support'
-  print '(A,I0,A)', 'legacy wall rank ',rank,': PASS (3 calls, exact values and RNG state)'
+  call get_legacy_random_state(snapshot)
+  call legacy_random_runtime_signature(signature)
+  call legacy_random_runtime_signature(again)
+  call get_legacy_random_state(after)
+  if(any(snapshot/=after).or.any(signature/=again)) error stop 'RNG identity probe perturbed sequence'
+  call sample_legacy_wall_velocity(rank,xc,zc,90.d0,1.d0,0.12d0,20.d0,40.d0,60.d0,3,continued)
+  call get_legacy_random_state(after)
+  call put_legacy_random_state(snapshot,ok)
+  if(.not.ok) error stop 'RNG restore failed'
+  call sample_legacy_wall_velocity(rank,xc,zc,90.d0,1.d0,0.12d0,20.d0,40.d0,60.d0,3,value)
+  call get_legacy_random_state(snapshot)
+  if(any(value/=continued).or.any(snapshot/=after)) error stop 'RNG continuation differs'
+  snapshot(1)=2
+  call put_legacy_random_state(snapshot,ok)
+  if(ok) error stop 'invalid RNG first-call flag admitted'
+  call put_legacy_random_state(initial,ok)
+  if(.not.ok) error stop 'unused RNG restore failed'
+  call sample_legacy_wall_velocity(rank,xc,zc,90.d0,1.d0,0.12d0,20.d0,40.d0,60.d0,3,value)
+  if(any(value/=expected(:,:,1))) error stop 'first-call lifecycle was not restored'
+  print '(A,I0,A)', 'legacy wall rank ',rank,': PASS (exact sequence, snapshot, continuation, first call)'
 end program legacy_wall_random_probe

@@ -4,8 +4,10 @@ module output_input_resources
   private
   public :: set_inflow_resource_root,inflow_source_path,inflow_source_name,discover_inflow_sources
   public :: set_initial_resource_root,initial_source_path,initial_source_name
+  public :: set_wall_resource_root,wall_source_path
   character(1200),save :: inflow_root=''
   character(1200),save :: initial_root=''
+  character(1200),save :: wall_root=''
   integer,save :: frozen_count=0
   interface
     function inflow_count(path,count) bind(C,name='astr_checkpoint_inflow_count') result(status)
@@ -16,6 +18,25 @@ module output_input_resources
     end function
   end interface
 contains
+  subroutine set_wall_resource_root(path)
+    character(*),intent(in) :: path
+    if(len_trim(path)>len(wall_root)) error stop 'wall resource root is too long'
+    wall_root=path
+  end subroutine
+
+  function wall_source_path(path) result(resolved)
+    character(*),intent(in) :: path
+    character(1400) :: resolved
+    resolved=path
+    if(len_trim(wall_root)==0) return
+    select case(trim(path))
+    case('datin/grid.2d')
+      resolved=trim(wall_root)//'/grid.2d'
+    case('datin/wallbs.dat')
+      resolved=trim(wall_root)//'/wallbs.dat'
+    end select
+  end function
+
   subroutine set_initial_resource_root(path)
     character(*),intent(in) :: path
     if(len_trim(path)>len(initial_root)) error stop 'initial resource root is too long'

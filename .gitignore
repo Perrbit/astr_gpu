@@ -24,4 +24,5 @@ benchmark/
 workspace*
 fort*
 tests/gpu_validation/out/
+/test_results/m12_restart_20261009*/
 /chem/
