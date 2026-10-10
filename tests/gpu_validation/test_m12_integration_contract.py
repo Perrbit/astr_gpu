@@ -6,6 +6,78 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class M12IntegrationContractTests(unittest.TestCase):
+    def test_mp_positivity_is_opt_in_and_separate_from_posthoc_repair(self):
+        source = (ROOT/'src_gpu/mp_positivity_gpu.cuf').read_text()
+        self.assertIn('mp_positivity_enabled=.false.', source)
+        self.assertIn("get_environment_variable('ASTR_GPU_MP_POSITIVITY'", source)
+        self.assertIn("trim(value)=='flux'", source)
+        self.assertIn('.not.lfilter.and..not.lcracon', source)
+        self.assertIn('numq==5.and.num_species==0.and.num_modequ==0', source)
+        self.assertNotIn('copy_flow_from_gpu', source)
+        self.assertIn("check_mp_failure('complete low-order baseline')", source)
+        self.assertIn("check_mp_failure('complete limited RK update')", source)
+
+    def test_mp_positivity_limits_complete_rhs_before_rk_update(self):
+        source = (ROOT/'src_gpu/mainloop_gpu.cuf').read_text()
+        start = source.index('call apply_case_sources_gpu()')
+        end = source.index("call begin_gpu_phase('rk_update')", start)
+        self.assertIn('call limit_mp_update_gpu(', source[start:end])
+        source = (ROOT/'src_gpu/mp_positivity_gpu.cuf').read_text()
+        self.assertIn('call exchange_mp_planes(axis,3)', source)
+        self.assertIn('call exchange_field_halo_gpu(ratio_d,1)', source)
+        self.assertIn('tag=21401+2*(axis-1)', source)
+        self.assertIn('! Physical boundary nodes have their own RHS', source)
+
+    def test_mp_positivity_is_part_of_exact_restart_contract(self):
+        source = (ROOT/'src/output_runtime.F90').read_text()
+        self.assertIn("get_environment_variable('ASTR_GPU_MP_POSITIVITY'", source)
+        self.assertIn("if(trim(value)=='flux') contract(11)=ibset(contract(11),1)", source)
+
+    def test_new_output_does_not_forbid_crashfix(self):
+        source = (ROOT/'src/output_runtime.F90').read_text()
+        self.assertNotIn('.and..not.lcracon', source)
+        self.assertIn('lcracon.and.options%checkpoint%enabled', source)
+        self.assertIn('critical-node history persistence', source)
+
+    def test_gpu_crashfix_uses_ordered_cpu_callback_after_stage_boundary(self):
+        source = (ROOT/'src_gpu/mainloop_gpu.cuf').read_text()
+        begin = source.index('! Preserve the CPU\'s ordered in-place repair')
+        end = source.index('enddo', begin)
+        repair = source[begin:end]
+        self.assertIn("sync_after_kernel('crashfix_q_to_primitive_kernel')", repair)
+        self.assertLess(repair.index('call copy_flow_from_gpu()'),
+                        repair.index('call repair_stage(rkstep)'))
+        self.assertLess(repair.index('call repair_stage(rkstep)'), repair.index('q_d=q'))
+        self.assertIn("sync_gpu_boundary('crashfix_upload')", repair)
+        self.assertNotIn('qsave_d=', repair)
+        self.assertNotIn('copy_flow_to_gpu', repair)
+        self.assertLess(source.index('call apply_conservative_stage_gpu(twall(3))'), begin)
+        runtime = (ROOT/'src_gpu/gpu_runtime.cuf').read_text()
+        self.assertIn('call time_integration_rk_gpu(first_stage_prepared,copy_back,repair_stage)', runtime)
+        main = (ROOT/'src/mainloop.F90').read_text()
+        self.assertIn('repair_stage=gpu_crashfix_stage', main)
+        self.assertIn('call crashfix(ctime(16),repaired_nodes,max_q_change)', main)
+
+    def test_gpu_crashfix_is_opt_in_nonreacting_and_checks_the_repaired_state(self):
+        gpu = (ROOT/'src_gpu/mainloop_gpu.cuf').read_text()
+        self.assertIn('if(lcomb.or.numq/=5.or.num_species/=0)', gpu)
+        self.assertIn("if(.not.present(repair_stage)) error stop", gpu)
+        main = (ROOT/'src/mainloop.F90').read_text()
+        self.assertIn('if(use_gpu.and.lcracon) call gpu_sync_flow_to_host()', main)
+        self.assertIn('if(lcracon.and..not.new_output_enabled()) then', main)
+        self.assertIn('new output does not support legacy crash rollback', main)
+        self.assertIn('if(por(invalid)) then', main)
+        self.assertIn("'ASTR_GPU_CRASHFIX'", main)
+
+    def test_gpu_crashfix_preserves_cpu_critical_node_flux_fallback(self):
+        gpu = (ROOT/'src_gpu/solver_gpu.cuf').read_text()
+        self.assertIn('hdiss=critical_interface_active(i,j,k,idir,im,jm,km)', gpu)
+        self.assertIn('hc(m)=fp(4)+fm(4)', gpu)
+        arrays = (ROOT/'src_gpu/commarray_gpu.cuf').read_text()
+        self.assertIn('crinod_d=crinod', arrays)
+        self.assertIn('if(.not.lcracon.and..not.allocated(crinod_d)) return', arrays)
+        self.assertIn('if(.not.crashfix_enabled_d) return', gpu)
+
     def test_generated_profile_grid_is_supplied_as_physical_coordinates(self):
         source = (ROOT/'src_gpu/insitu_products_gpu.cuf').read_text()
         self.assertIn("physical_coordinates=lreadgrid.or.profile=='boundary_layer'", source)

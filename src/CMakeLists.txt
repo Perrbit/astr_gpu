@@ -151,6 +151,7 @@ if(ASTR_WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/gradcal_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/shock_sensor_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/solver_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/mp_positivity_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/mainloop_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/gpu_runtime.cuf)
   list(APPEND ASTR_GPU_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_sample_gpu.cuf

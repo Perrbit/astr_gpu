@@ -9053,3 +9053,125 @@ not transfer/timing evidence. Its loader, flags, source/resource hashes and
 local device targets are recorded in
 `m12_local_delivery_d9_20261008/build_and_dependencies.json`. These close
 local M12-0 through M12-6 only; no Git writes or remote operations occurred.
+
+### M12 Long-Window Failure Stencil Replay
+
+The 2026-10-10 medium-grid NSCBC run fails the positive-internal-energy gate
+at loop index 2845, RK stage 3, global node (2,24,71). This is not a passed
+10,000-step run. Details and immutable replay paths are recorded in
+`documents/ASTR_M12_LONG_RUN_FAILURE_DIAGNOSIS.md`.
+
+`mp_ld_reconstruction_probe` optionally reads `ASTR_MP_LD_SNAPSHOT` to compare
+the production CPU convection routine, production GPU kernels and a captured
+full-domain GPU RHS at one same-state target. The fixture is a bounded
+16x12x8-interval inlet stencil tile, with five halo layers, Ma=12 and
+reconstruction weight 0.5. Only the declared target (i,6,4), 1<=i<=11, is tested
+against the capture; the original tile uses i=2 and the x-refined tile uses i=6.
+artificial tile boundaries are not a physical-case validation. Without the
+environment variable the original analytic layout/mask matrix is unchanged.
+
+The little-endian stream contains five int32 dimensions, three int32 target
+indices, one FP64 weight, five FP64 captured RHS components, followed by
+Fortran-ordered q, Jacobian, metric and int8 physical-node sensor mask.
+Inputs and logs remain under ignored validation output directories, not Git.
+Three captured stages pass with target errors at most 8.89e-16. The default
+matrix and an isolated stage-2 tile memcheck also pass; the interrupted
+full-domain MPI memcheck is not recorded as a complete two-rank pass.
+
+For the approved local x-resolution sensitivity check,
+`run_m12_boundary_compare.py --mesh refined` is available with `--stage preflight`
+or `--stage medium`. It selects 476x130x96 intervals directly from the original
+resources: source x indices 0..25, five strides each of 2/3/4, then stride 5
+from 70 to 2250. Downstream and sponge nodes are unchanged. Each wall-forcing
+band contains four interior nodes instead of one. The legacy random algorithm
+and parameters are unchanged, but mesh-dependent draw counts prevent a claim
+of identical forcing realizations between grids. The approved first window is
+3000 steps at dt=0.02, not another automatic 10,000-step campaign. The 10-step
+preflight passes; the longer run rejects an invalid complete-step state while
+attempting t=19.62 (last valid CFL=0.26565), before its first checkpoint. Its
+failure directory is `out/m12_joint_nscbc_xrefined_3000_20261010/`. The frozen
+binary replay and near-failure capture are recorded separately under
+`out/m12_joint_nscbc_xrefined_failure_replay_20261010/`.
+The refined replay identifies two negative-internal-energy nodes after RK1,
+followed by NaNs after RK2/3. Its valid RK1 target convection agrees with CPU
+and full-domain capture to 4.79e-16, and isolated memcheck reports zero errors
+using the established HPC-X launcher and `OMPI_MCA_osc=pt2pt`. A one-step exact
+restart from complete step980 reproduces the rejection and 18 identical RK1
+diagnostics. Neither this rejection nor the finite-state stencil replay is a
+passed long-window physical test. Timesteps and numerical settings are unchanged.
+
+The approved M12 `lcracon` diagnostic now reuses the ordered CPU `crashfix`
+through an explicit GPU-stage callback. It copies q and primitives to host,
+repairs them, uploads the state and critical-node mask, and preserves RK qsave.
+MP7-LD honors the CPU first-order flux fallback at critical interfaces. The
+`mp_ld_reconstruction_probe` covers four endpoint layouts and six combinations
+of shock/critical masks; its memcheck reports zero errors, with CPU/GPU flux
+error at most 6.95e-15. This does not establish full-case memory safety.
+The opt-in GPU scope is nonreacting five-variable 643e central or 743e MP7-LD
+convection. AIR5, new checkpoint writing, and legacy whole-step rollback are
+not supported. Checkpoint writing stays rejected until critical-node history
+is persisted; the default lcracon=f path does not perform these field copies.
+
+Evidence is under `out/m12_joint_nscbc_xrefined_failure_replay_20261010/`:
+`crashfix_dt001_ten_steps_final/` completes NP=2, 2x1x1, dt=0.01 from
+step980 to990 without new field/checkpoint outputs. All 30 repaired stage
+states pass finite/positive checks; six nodes are replaced, and maximum CFL
+is 0.132874. The first two statistics rows exactly match the unrepaired replay.
+`receipt.json`, `run.log`, and per-rank `errnode.*.log` retain the diagnostics.
+The initial attempt without output override rejects before any RK step and
+remains separate evidence. The diagnostic GDB controls authorize only the
+changed executable fingerprint and the approved first-step dt in memory;
+source checkpoint files and production restart checks are unchanged.
+Density replacement reaches 0.304, so this is not roundoff removal, a
+conservative positivity limiter, or passed long-window physical validation.
+
+### Five-Variable MP7-LD Positivity Candidate
+
+`ASTR_GPU_MP_POSITIVITY=flux` selects the separate FP64 conservative face-flux
+candidate in `src_gpu/mp_positivity_gpu.cuf`; the default is `off`. It admits
+only five nonreacting variables, 743e/MP7-LD characteristic reconstruction,
+three-dimensional RK3 and periodic z, with no main filter, crashfix, immersed
+boundary or optional conservative-boundary module. It does not replace AIR5's
+limiter or establish positivity for independent boundary filtering or sponges.
+
+The original MP7-LD high flux and two-point mapped Rusanov low flux define
+the correction. Budgets include the complete viscous/source RHS and all three
+RK coefficients. A failed low-order baseline aborts with status 92, rather than
+clipping state or silently changing dt. Shared nodes use a minimum budget;
+normal interface fluxes are owned and exchanged consistently. No full field
+is downloaded. The mode is recorded in the exact restart contract, so enabling
+it on an old checkpoint is not exact continuation.
+
+Root-CMake target `mp_ld_reconstruction_probe` includes an independent host
+reference for density, momentum and energy budgets, a periodic 24^3-interval
+synthetic flux fixture with nonuniform positive Jacobian and all RK3 stages,
+and the original physical-endpoint MP7-LD operator comparisons. NaNs in
+undefined exterior q halos must not contaminate used physical faces. The
+synthetic fixture tests conservation, active limiting, bitwise unchanged
+inactive RHS and authoritative MPI face replacement; it is not an Euler
+shock or M12 physical validation.
+
+```bash
+cmake --build build_m12_gpu --target astr mp_ld_reconstruction_probe -j 8
+# Use the MPI launcher and runtime environment matching this NVHPC build.
+mpiexec -np 1 build_m12_gpu/bin/mp_ld_reconstruction_probe 0
+mpiexec -np 2 build_m12_gpu/bin/mp_ld_reconstruction_probe rank 2,1,1
+mpiexec -np 2 build_m12_gpu/bin/mp_ld_reconstruction_probe rank 1,2,1
+mpiexec -np 2 build_m12_gpu/bin/mp_ld_reconstruction_probe rank 1,1,2
+mpiexec -np 4 build_m12_gpu/bin/mp_ld_reconstruction_probe rank 2,2,1
+# Deliberately invalid low-order full update: require exit 92 and baseline label.
+mpiexec -np 1 build_m12_gpu/bin/mp_ld_reconstruction_probe 0 1,1,1 baseline_bad
+```
+
+Local evidence is under `out/mp_positivity_20261010/`; `final_np*.log` and
+`final_memcheck.log` identify the final probe implementation. The numerical
+matrix passes with host/GPU maxabs at most 1.56e-15, periodic energy-RHS sum
+residual at most 2.11e-12, and exactly unchanged inactive RHS. Memcheck reports
+zero errors for the probe, not the full M12 run. The changed-algorithm M12 replay
+is documented separately in `documents/ASTR_M12_LONG_RUN_FAILURE_DIAGNOSIS.md`.
+The final `m12_dt002_ten_steps_exterior_guard/` replay advances complete
+step980 to990 at the original dt=0.02 with NP=2 x-slab and crashfix off. All
+30 limited RK candidates pass, maximum CFL is 0.2661323, and original checkpoint
+hashes remain unchanged. No new field/checkpoint output is written. This is a
+ten-step changed-algorithm positivity gate, not long-time physical acceptance,
+full-case memcheck, exact continuation or a performance result.

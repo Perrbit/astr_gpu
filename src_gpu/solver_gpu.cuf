@@ -1050,6 +1050,27 @@ contains
     end select
   end function shock_interface_active
 
+  attributes(device) logical function critical_interface_active(i,j,k,idir,im,jm,km) result(active)
+    use commarray_gpu, only: crinod_d,crashfix_enabled_d
+    implicit none
+    integer,value :: i,j,k,idir,im,jm,km
+    integer :: il,jl,kl,ir,jr,kr
+
+    active=.false.
+    if(.not.crashfix_enabled_d) return
+    il=i; jl=j; kl=k
+    ir=i; jr=j; kr=k
+    select case(idir)
+    case(1)
+      il=max(0,i); ir=min(im,i+1)
+    case(2)
+      jl=max(0,j); jr=min(jm,j+1)
+    case default
+      kl=max(0,k); kr=min(km,k+1)
+    end select
+    active=crinod_d(il,jl,kl).or.crinod_d(ir,jr,kr)
+  end function critical_interface_active
+
   attributes(device) subroutine roe_characteristic_matrices( &
        i,j,k,idir,gamma,lev,rev)
     use commarray_gpu, only: q_d,rho_d,prs_d,vel_d,dxi_d
@@ -1259,7 +1280,7 @@ contains
     real(8) :: fh(5)
     real(8) :: split_plus(5,8),split_minus(5,8),fp(8),fm(8),hc(5),lev(5,5),rev(5,5)
     integer :: n,m,ii,jj,kk,offset,inode,dim,ntype,lower,upper,idx
-    logical :: shock
+    logical :: shock,hdiss
 
     select case(idir)
     case(1)
@@ -1278,6 +1299,7 @@ contains
       if(npdc==2.or.npdc==4) upper=dim
     endif
     shock=shock_interface_active(i,j,k,idir,im,jm,km)
+    hdiss=critical_interface_active(i,j,k,idir,im,jm,km)
     if(shock) call roe_characteristic_matrices(i,j,k,idir,gamma,lev,rev)
     do n=1,8
       do m=1,2
@@ -1316,8 +1338,12 @@ contains
         fp=split_plus(m,:)
         fm=split_minus(m,:)
       endif
-      hc(m)=reconstruct_mp_ld_stencil(fp,inode,dim,ntype,weight_bw,shock)+ &
-        reconstruct_mp_ld_stencil(fm,inode,dim,ntype,weight_bw,shock)
+      if(hdiss) then
+        hc(m)=fp(4)+fm(4)
+      else
+        hc(m)=reconstruct_mp_ld_stencil(fp,inode,dim,ntype,weight_bw,shock)+ &
+          reconstruct_mp_ld_stencil(fm,inode,dim,ntype,weight_bw,shock)
+      endif
     enddo
     if(shock) then
       do m=1,5

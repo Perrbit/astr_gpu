@@ -1,11 +1,18 @@
 module mainloop_gpu
   use cudafor
   implicit none
+  abstract interface
+    subroutine crashfix_stage_callback(stage)
+      integer,intent(in) :: stage
+    end subroutine crashfix_stage_callback
+  end interface
 contains
   subroutine init_gpu()
     use commarray_gpu, only: copy_flow_to_gpu
+    use mp_positivity_gpu, only: configure_mp_positivity_gpu
     implicit none
 
+    call configure_mp_positivity_gpu()
     call copy_flow_to_gpu()
   end subroutine init_gpu
 
@@ -113,11 +120,13 @@ contains
     endif
   end subroutine prepare_rkfirst_stats_gpu
 
-  subroutine time_integration_rk_gpu(first_stage_prepared,copy_back)
+  subroutine time_integration_rk_gpu(first_stage_prepared,copy_back,repair_stage)
+    use mp_positivity_gpu, only: mp_positivity_enabled,build_mp_convection_gpu,limit_mp_update_gpu
     use iso_fortran_env, only: real64
     use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,npdcj,npdck,nstep,deltat,const2,const5,const6, &
          diffterm,lfilter,reynolds,prandtl,tempconst,tempconst1,gamma,recon_schem,lcomb,flowtype, &
-         numq,num_species,conschm,difschm
+         numq,num_species,conschm,difschm,lcracon
+    use commarray, only: q,rho,vel,prs,tmp
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_flow_runtime, only: air5_reacting_flowtype
     use chemistry_flow_solver_gpu, only: air5_transport_rk3_step_gpu
@@ -132,11 +141,12 @@ contains
     use boundary_gpu, only: gpu_periodic_boundary_case
     use commarray_gpu, only: q_d,qrhs_d,qsave_d,rho_d,vel_d,prs_d,tmp_d, &
                              jacob_d,dxi_d,copy_flow_from_gpu,copy_rhs_from_gpu, &
+                             sync_crashfix_mask_to_gpu, &
                              gpu_mixed_flux_workspace_enabled, &
                              gpu_mixed_viscous_flux_workspace_enabled, &
                              gpu_mixed_characteristic_flux_workspace_enabled
     use upwind_flux_mode_gpu, only: gpu_fused_flux_pair_requested
-    use gpu_check, only: sync_after_kernel,check_kernel_launch
+    use gpu_check, only: sync_after_kernel,check_kernel_launch,sync_gpu_boundary
     use gpu_phase_timing, only: begin_gpu_phase,end_gpu_phase
     use halo_exchange_gpu, only: exchange_solution_halo_gpu, &
          begin_solution_halo_pipeline_gpu,stage_solution_halo_d2h_gpu, &
@@ -278,6 +288,7 @@ contains
     implicit none
     logical,intent(in),optional :: first_stage_prepared
     logical,intent(in),optional :: copy_back
+    procedure(crashfix_stage_callback),optional :: repair_stage
     type(dim3) :: block3,grid3,block_primitive,grid_primitive,block1,grid1
     type(dim3) :: block_x,grid_x,grid_x_flat,block_y,grid_y,grid_y_flat
     type(dim3) :: block_z,grid_z,grid_z_flat
@@ -336,6 +347,15 @@ contains
     integer :: ivar
     integer :: rhs_is,rhs_ie,rhs_js,rhs_je,rhs_ks,rhs_ke
     integer :: rhs_npdci,rhs_npdcj
+
+    if(lcracon) then
+      if(lcomb.or.numq/=5.or.num_species/=0) &
+        error stop 'GPU crashfix supports only non-reacting five-variable flow'
+      if(.not.present(repair_stage)) error stop 'GPU crashfix stage callback is missing'
+      if(trim(conschm)/='643e'.and..not.(trim(conschm)=='743e'.and.recon_schem==5)) &
+        error stop 'GPU crashfix admits central 643e or MP7-LD 743e convection'
+    endif
+    call sync_crashfix_mask_to_gpu()
 
 #ifdef ASTR_AIR5_CHEMISTRY
     if(lcomb) then
@@ -638,7 +658,9 @@ contains
       endif
       if(shock_sensor_case) call compute_shock_sensor_gpu(rkstep)
       call begin_gpu_phase('convection')
-      if(sod_s0a1_case) then
+      if(mp_positivity_enabled) then
+        call build_mp_convection_gpu()
+      elseif(sod_s0a1_case) then
         call upwind_s0a1_rhs_x_global_kernel<<<grid_x,block_x>>>(im,jm,km,gamma)
         call sync_after_kernel('upwind_s0a1_rhs_x_global_kernel')
         call upwind_s0a1_rhs_y_global_kernel<<<grid_y,block_y>>>(im,jm,km,gamma)
@@ -1200,6 +1222,8 @@ contains
         call apply_nscbc_farfield_y_upper_viscous_source_gpu()
 
       call apply_case_sources_gpu()
+      if(mp_positivity_enabled) &
+        call limit_mp_update_gpu(deltat,rk_a(rkstep),rk_b(rkstep),rk_c(rkstep),rkstep)
       if(rhs_validation_requested()) then
         call copy_rhs_from_gpu()
         call write_rhs_validation_snapshot('full',nstep,rkstep)
@@ -1242,6 +1266,23 @@ contains
           call write_q_validation_snapshot('post_boundary',nstep,rkstep)
           call write_primitive_validation_snapshot('post_boundary_primitives',nstep,rkstep)
         endif
+      endif
+      if(lcracon) then
+        ! Preserve the CPU's ordered in-place repair without replacing RK qsave.
+        call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
+             q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
+        call sync_after_kernel('crashfix_q_to_primitive_kernel')
+        call copy_flow_from_gpu()
+        call repair_stage(rkstep)
+        q_d=q
+        rho_d=rho
+        vel_d=vel
+        prs_d=prs
+        tmp_d=tmp
+        call sync_crashfix_mask_to_gpu()
+        call sync_gpu_boundary('crashfix_upload')
+        if(rhs_validation_requested()) &
+          call write_q_validation_snapshot('post_crashfix',nstep,rkstep)
       endif
     enddo
 

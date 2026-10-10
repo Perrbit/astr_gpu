@@ -13,7 +13,7 @@ import time
 import h5py
 import numpy as np
 
-from prepare_m12_local_case import prepare, replace_value
+from prepare_m12_local_case import REFINED_INTERVALS, prepare, replace_value
 from insitu_cfl_gate import CflGate
 from insitu_resource_monitor import run_monitored
 from compare_flowstate import read_flowstate
@@ -286,6 +286,8 @@ def main():
                         default=Path('/opt/nvidia/hpc_sdk/Linux_x86_64/26.1/comm_libs/hpcx/bin/mpiexec'))
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--stage', choices=('smoke', 'preflight', 'medium', 'restart'), required=True)
+    parser.add_argument('--mesh', choices=('medium', 'refined'), default='medium',
+                        help='Refined restores original x nodes around the wall forcing band')
     parser.add_argument('--steps', type=int, default=2000, help='Total completed steps for medium runs')
     parser.add_argument('--checkpoint-interval', type=int, help='Completed-step checkpoint interval; retain latest two')
     parser.add_argument('--order', nargs='+', choices=('nscbc', 'extrapolation'),
@@ -296,6 +298,8 @@ def main():
         parser.error('require positive steps and unique boundary selections')
     if args.checkpoint_interval is not None and args.checkpoint_interval <= 0:
         parser.error('checkpoint interval must be positive')
+    if args.mesh == 'refined' and args.stage not in ('preflight', 'medium'):
+        parser.error('refined mesh is only available for preflight or medium runs')
     args.output = args.output.resolve()
     args.executable = args.executable.resolve(strict=True)
     args.output.mkdir(parents=True, exist_ok=False)
@@ -303,8 +307,8 @@ def main():
     (args.output/'bin').mkdir()
     shutil.copy2(args.executable,args.output/'bin/astr')
     args.executable = args.output/'bin/astr'
-    report = dict(status='running', stage=args.stage, runs=[],
-                  scope='boundary sensitivity, not DNS resolution or steady-state validation')
+    report = dict(status='running', stage=args.stage, mesh=args.mesh, runs=[],
+                  scope='boundary/mesh sensitivity, not DNS resolution or steady-state validation')
     (args.output/'summary.json').write_text(json.dumps(report,indent=2)+'\n')
     try:
         if args.stage == 'restart':
@@ -318,8 +322,9 @@ def main():
             report['partition_max_abs'] = partition_check(a['case'], b['case'])
         else:
             steps = 10 if args.stage == 'preflight' else args.steps
+            shape = REFINED_INTERVALS if args.mesh == 'refined' else (450,130,96)
             for kind in args.order:
-                report['runs'].append(run_case(args, kind, kind, (450,130,96), steps,
+                report['runs'].append(run_case(args, kind, kind, shape, steps,
                                                checkpoint_interval=args.checkpoint_interval))
                 (args.output/'summary.json').write_text(json.dumps(report,indent=2)+'\n')
             if set(args.order) == {'nscbc', 'extrapolation'}:

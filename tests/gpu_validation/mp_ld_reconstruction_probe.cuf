@@ -15,11 +15,19 @@ contains
     result(inode,ntype,sample)=reconstruct_mp_ld_stencil( &
       stencils(:,sample),inode,16,ntype,weight,shock)
   end subroutine evaluate
+
+  attributes(global) subroutine evaluate_budget(base,correction,result)
+    use mp_positivity_gpu, only: mp_face_budget
+    real(8),device :: base(5,4),correction(5,4),result(4)
+    integer :: n
+    n=threadIdx%x
+    if(n<=4) result(n)=mp_face_budget(base(:,n),correction(:,n))
+  end subroutine evaluate_budget
 end module mp_ld_probe_kernels
 
 program mp_ld_reconstruction_probe
   use mpi
-  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite,ieee_value,ieee_quiet_nan
   use cudafor
   use flux, only: recons_exp
   use commvar, only: bfacmpld
@@ -92,24 +100,237 @@ program mp_ld_reconstruction_probe
   print '(A,I0,A,ES12.4)', 'MP-LD GPU ',device,': PASS; max absolute error=',max_error
   if(nranks==1) call check_full_flux()
   call check_sponge()
+  call check_mp_positivity()
   call MPI_Finalize(ierr)
 contains
+  subroutine check_mp_positivity()
+    use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,numq,ndims,lihomo,ljhomo,lkhomo
+    use commarray_gpu, only: q_d,qsave_d,qrhs_d,jacob_d
+    use parallel, only: isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront,ig0,jg0,kg0
+    use halo_exchange_gpu, only: init_halo_transport_gpu,release_halo_exchange_buffers_gpu
+    use halo_transport_gpu, only: release_host_buffers
+    use mp_positivity_gpu, only: high_d,delta_d,ratio_d,allocate_mp_positivity_gpu, &
+      release_mp_positivity_gpu,exchange_mp_planes,limit_mp_update_gpu
+    implicit none
+    real(8) :: base(5,4),correction(5,4),budgets(4),reference(4),dt
+    real(8) :: q0(5),tl,tr,theta,error,global_error,energy_sum,global_sum,scale
+    real(8),parameter :: a(3)=[1.d0,0.75d0,1.d0/3.d0], &
+      b(3)=[0.d0,0.25d0,2.d0/3.d0],c(3)=[1.d0,0.25d0,2.d0/3.d0]
+    real(8),allocatable,device :: bases_d(:,:),corrections_d(:,:),budgets_d(:)
+    real(8),allocatable :: values(:,:,:,:),expected(:,:,:,:),rhs(:,:,:,:),jac(:,:,:)
+    real(8),allocatable :: high(:,:,:,:,:),delta(:,:,:,:,:)
+    integer :: ir,jr,kr,g(3),neighbor(3),axis,j,k,m,mode,stage,global_dim(3),local_dim(3)
+    character(32) :: option
+
+    base(:,1)=[1.d0,2.d0,-0.1d0,0.3d0,2.6d0]
+    base(:,2)=base(:,1); base(:,3)=base(:,1); base(:,4)=base(:,1)
+    correction=0.d0
+    correction(5,1)=-1.d0; correction(2,2)=2.d0
+    correction(1,3)=-2.d0; correction(5,4)=1.d0
+    allocate(bases_d(5,4),corrections_d(5,4),budgets_d(4))
+    bases_d=base; corrections_d=correction
+    call evaluate_budget<<<dim3(1,1,1),dim3(32,1,1)>>>(bases_d,corrections_d,budgets_d)
+    call synchronize('MP face budget')
+    budgets=budgets_d
+    do m=1,4
+      reference(m)=host_budget(base(:,m),correction(:,m))
+    enddo
+    if(maxval(abs(budgets-reference))>2.d-10) error stop 'MP density/pressure CPU/GPU budget mismatch'
+    if(any(budgets(1:3)>=1.d0).or.budgets(4)/=1.d0) error stop 'MP budget fixture did not limit'
+    deallocate(bases_d,corrections_d,budgets_d)
+
+    global_dim=[24,24,24]
+    local_dim=global_dim/[isize,jsize,ksize]
+    im=local_dim(1); jm=local_dim(2); km=local_dim(3); numq=5; ndims=3
+    if(min(im,jm,km)<hm) error stop 'MP positivity fixture local extent is smaller than halo'
+    is=0; ie=im; js=0; je=jm; ks=0; ke=km
+    ir=mod(rank,isize); jr=mod(rank/isize,jsize); kr=rank/(isize*jsize)
+    ig0=ir*im; jg0=jr*jm; kg0=kr*km
+    mpileft=mod(ir-1+isize,isize)+jr*isize+kr*isize*jsize
+    mpiright=mod(ir+1,isize)+jr*isize+kr*isize*jsize
+    mpidown=ir+mod(jr-1+jsize,jsize)*isize+kr*isize*jsize
+    mpiup=ir+mod(jr+1,jsize)*isize+kr*isize*jsize
+    mpiback=ir+jr*isize+mod(kr-1+ksize,ksize)*isize*jsize
+    mpifront=ir+jr*isize+mod(kr+1,ksize)*isize*jsize
+    lihomo=.true.; ljhomo=.true.; lkhomo=.true.
+    call init_halo_transport_gpu()
+    allocate(q_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5),qsave_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5))
+    allocate(qrhs_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5),jacob_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+    allocate(values(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5))
+    allocate(expected,mold=values)
+    allocate(rhs,mold=values)
+    call allocate_mp_positivity_gpu()
+    allocate(high(-1:im,-1:jm,-1:km,5,3))
+    allocate(delta,mold=high)
+    allocate(jac(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+    do k=-hm,km+hm
+    do j=-hm,jm+hm
+    do i=-hm,im+hm
+      jac(i,j,k)=fixture_jacob([i+ig0,j+jg0,k+kg0])
+    enddo
+    enddo
+    enddo
+    q0=[1.d0,1.d0,0.2d0,-0.1d0,0.625d0]
+    option=''
+    call get_command_argument(3,option)
+    do mode=1,2
+    do stage=1,3
+      dt=0.2d0
+      if(mode==2) dt=1.d-5
+      scale=c(stage)*dt
+      do m=1,5
+        values(:,:,:,m)=q0(m)
+      enddo
+      rhs=0.d0; high=0.d0
+      do k=0,km
+      do j=0,jm
+      do i=0,im
+        g=[i+ir*im,j+jr*jm,k+kr*km]
+        do axis=1,3
+          neighbor=g; neighbor(axis)=neighbor(axis)-1
+          rhs(i,j,k,5)=rhs(i,j,k,5)-face_energy(g,axis)+face_energy(neighbor,axis)
+        enddo
+      enddo
+      enddo
+      enddo
+      do axis=1,3
+      do k=-1,km
+      do j=-1,jm
+      do i=-1,im
+        g=[i+ir*im,j+jr*jm,k+kr*km]
+        high(i,j,k,5,axis)=face_energy(g,axis)
+      enddo
+      enddo
+      enddo
+      enddo
+      delta=high
+      ! Deliberately corrupt ghost faces; the owning rank must replace them.
+      high(-1,:,:,5,1)=99.d0; delta(-1,:,:,5,1)=99.d0
+      high(:,-1,:,5,2)=99.d0; delta(:,-1,:,5,2)=99.d0
+      high(:,:,-1,5,3)=99.d0; delta(:,:,-1,5,3)=99.d0
+      q_d=values; jacob_d=jac
+      do m=1,5
+        values(:,:,:,m)=q0(m)*jac
+      enddo
+      qsave_d=values
+      if(trim(option)=='baseline_bad') rhs(:,:,:,5)=rhs(:,:,:,5)-100.d0
+      qrhs_d=rhs; high_d=high; delta_d=delta
+      do axis=1,3
+        call exchange_mp_planes(axis,1)
+      enddo
+      call limit_mp_update_gpu(dt,a(stage),b(stage),c(stage),stage)
+      values=qrhs_d
+      expected=rhs
+      do k=0,km
+      do j=0,jm
+      do i=0,im
+        g=[i+ir*im,j+jr*jm,k+kr*km]
+        theta=node_ratio(g,scale,q0)
+        do axis=1,3
+          neighbor=g; neighbor(axis)=neighbor(axis)+1
+          tr=min(theta,node_ratio(neighbor,scale,q0))
+          neighbor=g; neighbor(axis)=neighbor(axis)-1
+          tl=min(theta,node_ratio(neighbor,scale,q0))
+          expected(i,j,k,5)=expected(i,j,k,5)+(1.d0-tr)*face_energy(g,axis)- &
+            (1.d0-tl)*face_energy(neighbor,axis)
+        enddo
+        if(.not.host_admissible(q0+scale*values(i,j,k,:)/jac(i,j,k))) &
+          error stop 'MP limited fixture is not positive'
+      enddo
+      enddo
+      enddo
+      error=maxval(abs(values(0:im,0:jm,0:km,:)-expected(0:im,0:jm,0:km,:)))
+      call MPI_Allreduce(error,global_error,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+      energy_sum=sum(values(0:im-1,0:jm-1,0:km-1,5))
+      call MPI_Allreduce(energy_sum,global_sum,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+      if(global_error>2.d-10.or.abs(global_sum)>2.d-10) error stop 'MP conservation/reference gate failed'
+      if(mode==2.and.any(values(0:im,0:jm,0:km,:)/=rhs(0:im,0:jm,0:km,:))) &
+        error stop 'Inactive MP limiter changed RHS'
+      if(rank==0) print '(A,I0,A,I0,A,ES12.4,A,ES12.4)', &
+        'MP positivity mode=',mode,' stage=',stage,' CPU/GPU error=',global_error,' periodic energy sum=',global_sum
+    enddo
+    enddo
+    call release_host_buffers()
+    call release_halo_exchange_buffers_gpu()
+    call release_mp_positivity_gpu()
+    deallocate(q_d,qsave_d,qrhs_d,jacob_d,values,expected,rhs,high,delta,jac)
+  end subroutine check_mp_positivity
+
+  real(8) function face_energy(g,axis) result(value)
+    integer,intent(in) :: g(3),axis
+    value=2.d0*sin((dble(modulo(g(axis),24))+0.5d0)*2.d0*acos(-1.d0)/24.d0)
+  end function face_energy
+
+  real(8) function node_ratio(g,dt,q0) result(theta)
+    integer,intent(in) :: g(3)
+    real(8),intent(in) :: dt,q0(5)
+    integer :: axis,left(3)
+    real(8) :: d(5)
+    theta=1.d0
+    do axis=1,3
+      left=g; left(axis)=left(axis)-1
+      d=0.d0; d(5)=6.d0*dt/fixture_jacob(g)*face_energy(left,axis)
+      theta=min(theta,host_budget(q0,d))
+      d(5)=-6.d0*dt/fixture_jacob(g)*face_energy(g,axis)
+      theta=min(theta,host_budget(q0,d))
+    enddo
+  end function node_ratio
+
+  real(8) function fixture_jacob(g) result(value)
+    integer,intent(in) :: g(3)
+    value=1.d0+0.1d0*sin(dble(sum(modulo(g,24)))*2.d0*acos(-1.d0)/24.d0)
+  end function fixture_jacob
+
+  logical function host_admissible(q)
+    real(8),intent(in) :: q(5)
+    host_admissible=.false.
+    if(.not.all(ieee_is_finite(q)).or.q(1)<=0.d0) return
+    host_admissible=q(5)>0.5d0*sum(q(2:4)*(q(2:4)/q(1))).and. &
+      q(5)>0.5d0*q(1)*sum((q(2:4)/q(1))**2)
+  end function host_admissible
+
+  real(8) function host_budget(base,correction) result(theta)
+    real(8),intent(in) :: base(5),correction(5)
+    real(8) :: lo,hi,mid
+    integer :: iteration
+    if(host_admissible(base+correction)) then
+      theta=1.d0
+      return
+    endif
+    lo=0.d0; hi=1.d0
+    do iteration=1,64
+      mid=0.5d0*(lo+hi)
+      if(mid==lo.or.mid==hi) exit
+      if(host_admissible(base+mid*correction)) then
+        lo=mid
+      else
+        hi=mid
+      endif
+    enddo
+    theta=lo*(1.d0-256.d0*epsilon(1.d0))
+  end function host_budget
+
   subroutine check_full_flux()
     use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,npdcj,npdck, &
-      numq,num_species,num_modequ,ndims,gamma,mach,nondimen,recon_schem,lchardecomp
+      numq,num_species,num_modequ,ndims,gamma,mach,nondimen,recon_schem,lchardecomp,lcracon
     use commarray, only: q,rho,vel,prs,tmp,spc,dxi,jacob,qrhs,lshock,crinod
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,dxi_d,jacob_d,qrhs_d, &
-      shock_mask_d,flux_characteristic_work_d
+      shock_mask_d,flux_characteristic_work_d,crinod_d,sync_crashfix_mask_to_gpu
     use commvar_gpu, only: copy_commvar_to_gpu
+    use parallel, only: mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
+    use mp_positivity_gpu, only: build_mp_convection_gpu,release_mp_positivity_gpu
     use solver, only: convrsduwd
     use solver_gpu, only: characteristic_upwind_flux_x_xyphysical_global_kernel, &
       characteristic_upwind_flux_y_xyphysical_global_kernel,characteristic_upwind_flux_z_xyphysical_global_kernel, &
       characteristic_upwind_rhs_x_xyphysical_global_kernel,characteristic_upwind_rhs_y_xyphysical_global_kernel, &
       characteristic_upwind_rhs_z_xyphysical_global_kernel
     implicit none
-    real(8),allocatable :: rhs(:,:,:,:),delta(:,:,:,:)
+    real(8),allocatable :: rhs(:,:,:,:),delta(:,:,:,:),baseline_rhs(:,:,:,:,:)
     integer(1),allocatable :: mask(:,:,:)
-    integer :: j,k,mode,layout
+    integer :: j,k,mode,layout,unit,header(5),point(3),snapshot_status
+    character(1024) :: snapshot_path
+    logical :: snapshot_mode
+    real(8) :: captured_rhs(5)
     type(dim3) :: bx,by,bz,gx,gy,gz,gxi,gyi,gzi
 
     im=16; jm=12; km=8
@@ -128,6 +349,7 @@ contains
     allocate(flux_characteristic_work_d,mold=q)
     allocate(shock_mask_d(0:im,0:jm,0:km),mask(0:im,0:jm,0:km))
     allocate(rhs(0:im,0:jm,0:km,5),delta(0:im,0:jm,0:km,5))
+    allocate(baseline_rhs(0:im,0:jm,0:km,5,0:2))
     do k=-hm,km+hm
       do j=-hm,jm+hm
         do i=-hm,im+hm
@@ -148,13 +370,50 @@ contains
         enddo
       enddo
     enddo
+    call get_environment_variable('ASTR_MP_LD_SNAPSHOT',snapshot_path,status=snapshot_status)
+    if(snapshot_status/=0.and.snapshot_status/=1) error stop 'MP-LD snapshot path is truncated'
+    snapshot_mode=snapshot_status==0.and.len_trim(snapshot_path)>0
+    if(snapshot_mode) then
+      open(newunit=unit,file=trim(snapshot_path),access='stream',form='unformatted', &
+        status='old',action='read',convert='little_endian')
+      read(unit) header,point,bfacmpld,captured_rhs
+      if(any(header/=[im,jm,km,hm,5]).or.point(1)<1.or.point(1)>im-5.or. &
+         any(point(2:3)/=[6,4])) &
+        error stop 'MP-LD snapshot requires the bounded inlet stencil tile'
+      if(.not.all(ieee_is_finite(captured_rhs)).or.bfacmpld/=0.5d0) &
+        error stop 'MP-LD snapshot requires finite RHS and original reconstruction weight'
+      read(unit) q,jacob,dxi,mask
+      close(unit)
+      do k=-hm,km+hm
+        do j=-hm,jm+hm
+          do i=-hm,im+hm
+            rho(i,j,k)=q(i,j,k,1)
+            ! Physical x- closures never sample the undefined exterior state.
+            if(i<0) then
+              vel(i,j,k,:)=0.d0; prs(i,j,k)=1.d0; tmp(i,j,k)=1.d0
+              cycle
+            endif
+            if(rho(i,j,k)<=0.d0) error stop 'MP-LD snapshot density is not positive'
+            vel(i,j,k,:)=q(i,j,k,2:4)/rho(i,j,k)
+            prs(i,j,k)=(q(i,j,k,5)-0.5d0*rho(i,j,k)*sum(vel(i,j,k,:)**2))*(gamma-1.d0)
+            tmp(i,j,k)=prs(i,j,k)/rho(i,j,k)*gamma*mach*mach
+            if(tmp(i,j,k)<=0.d0) error stop 'MP-LD snapshot temperature is not positive'
+          enddo
+        enddo
+      enddo
+    endif
     q_d=q; rho_d=rho; vel_d=vel; prs_d=prs; tmp_d=tmp; dxi_d=dxi; jacob_d=jacob
     crinod=.false.
     call copy_commvar_to_gpu()
     bx=dim3(512,1,1); by=dim3(32,16,1); bz=dim3(64,1,8)
+    ! This nonperiodic analytic tile tests the local operator, not halo wrapping.
+    mpileft=MPI_PROC_NULL; mpiright=MPI_PROC_NULL
+    mpidown=MPI_PROC_NULL; mpiup=MPI_PROC_NULL
+    mpiback=MPI_PROC_NULL; mpifront=MPI_PROC_NULL
     gx=dim3(1,jm+1,km+1); gy=dim3(1,1,km+1); gz=dim3(1,jm+1,2)
     gxi=gx; gyi=gy; gzi=gz
     do layout=1,4
+      if(snapshot_mode.and.layout/=1) cycle
       npdci=layout; npdcj=layout; npdck=3
       is=0; ie=im; js=0; je=jm; ks=0; ke=km
       if(layout==1.or.layout==4) then
@@ -163,10 +422,11 @@ contains
       if(layout==2.or.layout==4) then
         ie=im-1; je=jm-1
       endif
-      do mode=0,2
+      do mode=0,5
+        if(snapshot_mode.and.mode/=1) cycle
         lshock=.false.
-        if(mode==1) lshock=.true.
-        if(mode==2) then
+        if(mode==1.or.mode==4) lshock=.true.
+        if(mode==2.or.mode==5) then
           do k=0,km
             do j=0,jm
               do i=0,im
@@ -175,8 +435,20 @@ contains
             enddo
           enddo
         endif
-        mask=merge(1_1,0_1,lshock(0:im,0:jm,0:km))
+        if(snapshot_mode) then
+          lshock(0:im,0:jm,0:km)=mask/=0
+        else
+          mask=merge(1_1,0_1,lshock(0:im,0:jm,0:km))
+        endif
         shock_mask_d=mask
+        lcracon=mode>=3
+        crinod=.false.
+        if(lcracon) then
+          crinod(0,0,0)=.true.
+          crinod(im,jm,km)=.true.
+          crinod(im/2,jm/2,km/2)=.true.
+        endif
+        call sync_crashfix_mask_to_gpu()
         qrhs=0.d0; qrhs_d=qrhs
         call convrsduwd()
         call characteristic_upwind_flux_x_xyphysical_global_kernel<<<gxi,bx>>>( &
@@ -195,16 +467,51 @@ contains
         call characteristic_upwind_rhs_z_xyphysical_global_kernel<<<gz,bz>>>(im,jm,km,is,ie,js,je,ks,ke)
         call synchronize('MP-LD z difference')
         rhs=qrhs_d(0:im,0:jm,0:km,:)
+        if(mode<=2) then
+          baseline_rhs(:,:,:,:,mode)=rhs
+        elseif(maxval(abs(rhs-baseline_rhs(:,:,:,:,mode-3)))<=1.d-12) then
+          error stop 'Critical-node flux fallback was not exercised'
+        endif
         delta=rhs+qrhs(0:im,0:jm,0:km,:)
         if(.not.all(ieee_is_finite(rhs)).or..not.all(ieee_is_finite(delta))) &
           error stop 'MP-LD flux reference/result is not finite'
         error=maxval(abs(delta))
+        if(snapshot_mode) then
+          i=point(1); j=point(2); k=point(3)
+          error=max(maxval(abs(delta(i,j,k,:))),maxval(abs(rhs(i,j,k,:)-captured_rhs)))
+          print '(a,5(es24.16,1x))', 'MP-LD snapshot CPU RHS=',-qrhs(i,j,k,:)
+          print '(a,5(es24.16,1x))', 'MP-LD snapshot GPU RHS=',rhs(i,j,k,:)
+          print '(a,5(es24.16,1x))', 'MP-LD captured production RHS=',captured_rhs
+        endif
         print '(A,2I3,A,ES12.4)', 'MP-LD flux layout/mask:',layout,mode,' error=',error
         if(error>2.d-10) error stop 'MP-LD full flux CPU/GPU gate failed'
+        if(mode<=2) then
+          ! Undefined physical exterior halos must never enter a used face.
+          if(layout==1.or.layout==4) then
+            q_d(-hm:-1,:,:,:)=ieee_value(0.d0,ieee_quiet_nan)
+            q_d(:,-hm:-1,:,:)=ieee_value(0.d0,ieee_quiet_nan)
+          endif
+          if(layout==2.or.layout==4) then
+            q_d(im+1:im+hm,:,:,:)=ieee_value(0.d0,ieee_quiet_nan)
+            q_d(:,jm+1:jm+hm,:,:)=ieee_value(0.d0,ieee_quiet_nan)
+          endif
+          qrhs_d=0.d0
+          call build_mp_convection_gpu()
+          rhs=qrhs_d(0:im,0:jm,0:km,:)
+          q_d=q
+          error=maxval(abs(rhs+qrhs(0:im,0:jm,0:km,:)))
+          print '(A,2I3,A,ES12.4)', 'MP stored flux layout/mask:',layout,mode,' error=',error
+          if(.not.all(ieee_is_finite(rhs)).or.error>2.d-10) &
+            error stop 'MP stored high-order flux changed the original operator'
+        endif
       enddo
     enddo
+    lcracon=.false.
+    call release_mp_positivity_gpu()
+    call sync_crashfix_mask_to_gpu()
+    if(allocated(crinod_d)) deallocate(crinod_d)
     deallocate(q_d,rho_d,vel_d,prs_d,tmp_d,dxi_d,jacob_d,qrhs_d,flux_characteristic_work_d,shock_mask_d)
-    deallocate(q,rho,vel,prs,tmp,dxi,jacob,qrhs,spc,lshock,crinod,rhs,delta,mask)
+    deallocate(q,rho,vel,prs,tmp,dxi,jacob,qrhs,spc,lshock,crinod,rhs,delta,mask,baseline_rhs)
   end subroutine check_full_flux
 
   subroutine check_sponge()

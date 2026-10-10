@@ -28,7 +28,21 @@ module commarray_gpu
   real(4),allocatable,device :: flux_characteristic_work_sp_d(:,:,:,:)
   real(8),allocatable,device :: shock_sensor_d(:,:,:,:)
   integer(1),allocatable,device :: shock_mask_d(:,:,:)
+  logical,allocatable,device :: crinod_d(:,:,:)
+  logical,device,save :: crashfix_enabled_d=.false.
 contains
+  subroutine sync_crashfix_mask_to_gpu()
+    use commvar, only: im,jm,km,hm,lcracon
+    use commarray, only: crinod
+    implicit none
+
+    ! CPU critical-node history still affects fluxes after lcracon is disabled.
+    if(.not.lcracon.and..not.allocated(crinod_d)) return
+    if(.not.allocated(crinod_d)) allocate(crinod_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+    crinod_d=crinod
+    crashfix_enabled_d=.true.
+  end subroutine sync_crashfix_mask_to_gpu
+
   subroutine configure_gpu_filter_workspace()
     use mpi
     use parallel, only: lio
@@ -335,6 +349,8 @@ contains
   subroutine release_gpu_arrays()
     implicit none
 
+    if(allocated(crinod_d)) deallocate(crinod_d)
+    crashfix_enabled_d=.false.
     if(allocated(shock_mask_d)) deallocate(shock_mask_d)
     if(allocated(shock_sensor_d)) deallocate(shock_sensor_d)
     if(allocated(flux_characteristic_work_sp_d)) deallocate(flux_characteristic_work_sp_d)

@@ -8,9 +8,23 @@ import h5py
 import numpy as np
 
 from run_m12_boundary_compare import compare_pair, configuration, environment
+from prepare_m12_local_case import REFINED_INTERVALS, selected_nodes
 
 
 class M12BoundaryCompareTest(unittest.TestCase):
+    def test_refinement_selects_original_nodes_and_preserves_downstream(self):
+        grid = {'x': np.arange(2251, dtype=float)[None, :]*5.4}
+        ix, iy, x = selected_nodes(grid, REFINED_INTERVALS)
+        self.assertEqual(len(ix), 477)
+        self.assertEqual(len(iy), 131)
+        np.testing.assert_array_equal(ix[:26], np.arange(26))
+        np.testing.assert_array_equal(ix[ix >= 70], np.arange(70,2251,5))
+        np.testing.assert_array_equal(iy, np.arange(0,261,2))
+        np.testing.assert_array_equal(np.diff(ix), [1]*25+[2]*5+[3]*5+[4]*5+[5]*436)
+        self.assertEqual(np.count_nonzero((x > 20) & (x < 40)), 4)
+        self.assertEqual(np.count_nonzero((x > 40) & (x < 60)), 4)
+        self.assertEqual((len(ix)-1) % 2, 0)
+
     def test_long_run_checkpoint_and_total_step_configuration(self):
         with tempfile.TemporaryDirectory() as directory:
             case = Path(directory)

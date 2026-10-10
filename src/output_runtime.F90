@@ -263,9 +263,11 @@ contains
 #endif
     supported_case=supported_case.and.numq==5.and.num_species==0.and.num_modequ==0.and. &
       .not.lcomb.and.(.not.lavg.or..not.use_gpu.or.trim(flowtype)=='bl')
-    call check((supported_case.or.air5_output_case()).and..not.lcracon.and..not.limmbou.and. &
+    call check((supported_case.or.air5_output_case()).and..not.limmbou.and. &
       .not.lrestart.and.trim(rkscheme)=='rk3', &
       'new output admits TGV, bc41 channel, profile/dynamic flatplate or fixed AIR5 HBL/SBLI RK3')
+    call check(.not.(lcracon.and.options%checkpoint%enabled), &
+      'crashfix checkpoint writing requires critical-node history persistence; disable checkpoint output')
     if(extruded_profile_output_case().and.bctype(2)==22) then
       call check(use_gpu.and..not.options%adaptive%enabled.and..not.lavg, &
         'profile joint NSCBC admits GPU archives and same-topology restart; means/adaptive not validated')
@@ -548,6 +550,9 @@ contains
       case(3)
         call get_environment_variable('ASTR_GPU_FILTER_WORKSPACE',value,status=status)
         contract(11)=merge(1_int64,0_int64,trim(value)=='full')
+        value=''
+        call get_environment_variable('ASTR_GPU_MP_POSITIVITY',value,status=status)
+        if(trim(value)=='flux') contract(11)=ibset(contract(11),1)
       end select
     enddo
     if(options%checkpoint%enabled) then

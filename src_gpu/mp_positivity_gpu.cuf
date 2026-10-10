@@ -1,0 +1,506 @@
+module mp_positivity_gpu
+  use cudafor
+  implicit none
+  logical,save :: mp_positivity_enabled=.false.,configured=.false.
+  real(8),allocatable,device :: high_d(:,:,:,:,:),delta_d(:,:,:,:,:),ratio_d(:,:,:,:)
+  real(8),allocatable,device :: send_lo_d(:,:,:,:),send_hi_d(:,:,:,:)
+  real(8),allocatable,device :: recv_lo_d(:,:,:,:),recv_hi_d(:,:,:,:)
+  real(8),allocatable,pinned :: send_lo_h(:,:,:,:),send_hi_h(:,:,:,:)
+  real(8),allocatable,pinned :: recv_lo_h(:,:,:,:),recv_hi_h(:,:,:,:)
+  integer,device :: failure_d=0,limited_d=0
+  integer,device :: failure_point_d(3)=0
+  real(8),device :: failure_state_d(5)=0.d0
+contains
+  subroutine configure_mp_positivity_gpu()
+    use mpi
+    use commvar, only: numq,num_species,num_modequ,lcomb,lfilter,lcracon, &
+      conschm,rkscheme,recon_schem,lchardecomp,ndims,lkhomo,limmbou
+    use precision_mode_gpu, only: gpu_mixed_workspace_requested
+    use conservative_boundary_runtime, only: conservative_boundary
+    implicit none
+    character(32) :: value
+    integer :: status,choice,lo,hi,ierr,rank
+    logical :: valid
+
+    if(configured) return
+    value=''
+    call get_environment_variable('ASTR_GPU_MP_POSITIVITY',value,status=status)
+    choice=-1
+    if(status==1.or.(status==0.and.len_trim(value)==0)) choice=0
+    if(status==0.and.trim(value)=='off') choice=0
+    if(status==0.and.trim(value)=='flux') choice=1
+    call MPI_Allreduce(choice,lo,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(choice,hi,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
+    if(lo<0.or.lo/=hi) then
+      if(rank==0) print *, 'ASTR_GPU_MP_POSITIVITY requires consistent off or flux'
+      call MPI_Abort(MPI_COMM_WORLD,91,ierr)
+    endif
+    mp_positivity_enabled=choice==1
+    if(mp_positivity_enabled) then
+      valid=numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb.and. &
+        .not.lfilter.and..not.lcracon.and.trim(conschm)=='743e'.and. &
+        recon_schem==5.and.lchardecomp.and.trim(rkscheme)=='rk3'.and.ndims==3.and.lkhomo
+      valid=valid.and..not.gpu_mixed_workspace_requested().and..not.conservative_boundary%enabled.and..not.limmbou
+      call MPI_Allreduce(MPI_IN_PLACE,valid,1,MPI_LOGICAL,MPI_LAND,MPI_COMM_WORLD,ierr)
+      if(.not.valid) then
+        if(rank==0) print *, 'MP positivity requires FP64 five-variable MP7-LD RK3, periodic z, no filter/crashfix'
+        call MPI_Abort(MPI_COMM_WORLD,91,ierr)
+      endif
+    endif
+    configured=.true.
+    if(rank==0) print *, 'ASTR_GPU_MP_POSITIVITY=',merge('flux','off ',mp_positivity_enabled)
+  end subroutine configure_mp_positivity_gpu
+
+  subroutine allocate_mp_positivity_gpu()
+    use commvar, only: im,jm,km,hm
+    implicit none
+    integer :: n
+    if(allocated(high_d)) return
+    allocate(high_d(-1:im,-1:jm,-1:km,5,3),delta_d(-1:im,-1:jm,-1:km,5,3))
+    allocate(ratio_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1))
+    n=10*max((im+1)*(jm+1),(im+1)*(km+1),(jm+1)*(km+1))
+    allocate(send_lo_d(n,1,1,1),send_hi_d(n,1,1,1),recv_lo_d(n,1,1,1),recv_hi_d(n,1,1,1))
+    allocate(send_lo_h(n,1,1,1),send_hi_h(n,1,1,1),recv_lo_h(n,1,1,1),recv_hi_h(n,1,1,1))
+  end subroutine allocate_mp_positivity_gpu
+
+  subroutine release_mp_positivity_gpu()
+    implicit none
+    if(.not.allocated(high_d)) return
+    deallocate(high_d,delta_d,ratio_d,send_lo_d,send_hi_d,recv_lo_d,recv_hi_d)
+    deallocate(send_lo_h,send_hi_h,recv_lo_h,recv_hi_h)
+  end subroutine release_mp_positivity_gpu
+
+  attributes(device) logical function admissible_mp_state(q)
+    implicit none
+    real(8),intent(in) :: q(5)
+    real(8) :: velocity(3),products(3),kinetic,squared_velocity(3),primitive_kinetic
+    admissible_mp_state=.false.
+    if(.not.all(abs(q)<=huge(1.d0))) return
+    if(q(1)<=0.d0) return
+    velocity=q(2:4)/q(1)
+    if(.not.all(abs(velocity)<=huge(1.d0))) return
+    products=0.5d0*q(2:4)*velocity
+    if(.not.all(abs(products)<=huge(1.d0))) return
+    kinetic=sum(products)
+    if(.not.(abs(kinetic)<=huge(1.d0))) return
+    ! Also require positivity in the production primitive kernel's ordering.
+    squared_velocity=velocity*velocity
+    if(.not.all(abs(squared_velocity)<=huge(1.d0))) return
+    primitive_kinetic=0.5d0*q(1)*sum(squared_velocity)
+    if(.not.(abs(primitive_kinetic)<=huge(1.d0))) return
+    admissible_mp_state=q(5)>kinetic.and.q(5)>primitive_kinetic
+  end function admissible_mp_state
+
+  attributes(device) subroutine record_mp_failure(code,i,j,k,state)
+    implicit none
+    integer,value :: code,i,j,k
+    real(8),intent(in) :: state(5)
+    integer :: previous
+    previous=atomiccas(failure_d,0,code)
+    if(previous==0) then
+      failure_point_d=[i,j,k]
+      failure_state_d=state
+    endif
+  end subroutine record_mp_failure
+
+  attributes(device) real(8) function mp_face_budget(base,correction) result(theta)
+    implicit none
+    real(8),intent(in) :: base(5),correction(5)
+    real(8) :: lo,hi,mid,trial(5)
+    integer :: iteration
+    theta=0.d0
+    if(.not.admissible_mp_state(base)) return
+    trial=base+correction
+    if(admissible_mp_state(trial)) then
+      theta=1.d0
+      return
+    endif
+    lo=0.d0; hi=1.d0
+    do iteration=1,64
+      mid=0.5d0*(lo+hi)
+      if(mid==lo.or.mid==hi) exit
+      trial=base+mid*correction
+      if(admissible_mp_state(trial)) then
+        lo=mid
+      else
+        hi=mid
+      endif
+    enddo
+    ! Retreat in floating-point parameter space, not by clipping physical state.
+    theta=lo*(1.d0-256.d0*epsilon(1.d0))
+  end function mp_face_budget
+
+  attributes(device) subroutine mp_low_face(i,j,k,axis,im,jm,km,hm,npdc,gamma,flux)
+    use commarray_gpu, only: q_d,dxi_d,jacob_d
+    implicit none
+    integer,value :: i,j,k,axis,im,jm,km,hm,npdc
+    real(8),value :: gamma
+    real(8),intent(out) :: flux(5)
+    integer :: left(3),right(3),dim,index
+    real(8) :: ql(5),qr(5),metric(3),ul(3),ur(3),pl,pr,cl,cr,vl,vr,alpha
+
+    left=[i,j,k]; right=left
+    dim=im
+    if(axis==2) dim=jm
+    if(axis==3) dim=km
+    index=left(axis)
+    right(axis)=index+1
+    if(npdc==1.or.npdc==4) then
+      left(axis)=max(0,left(axis)); right(axis)=max(0,right(axis))
+    endif
+    if(npdc==2.or.npdc==4) then
+      left(axis)=min(dim,left(axis)); right(axis)=min(dim,right(axis))
+    endif
+    ql=q_d(left(1),left(2),left(3),:)
+    qr=q_d(right(1),right(2),right(3),:)
+    flux=0.d0
+    if(.not.admissible_mp_state(ql)) then
+      call record_mp_failure(1,i,j,k,ql)
+      return
+    endif
+    if(.not.admissible_mp_state(qr)) then
+      call record_mp_failure(1,i,j,k,qr)
+      return
+    endif
+    metric=0.5d0*(jacob_d(left(1),left(2),left(3))*dxi_d(left(1),left(2),left(3),axis,:)+ &
+      jacob_d(right(1),right(2),right(3))*dxi_d(right(1),right(2),right(3),axis,:))
+    ul=ql(2:4)/ql(1); ur=qr(2:4)/qr(1)
+    pl=(gamma-1.d0)*(ql(5)-0.5d0*sum(ql(2:4)*ul))
+    pr=(gamma-1.d0)*(qr(5)-0.5d0*sum(qr(2:4)*ur))
+    cl=sqrt(gamma*pl/ql(1)); cr=sqrt(gamma*pr/qr(1))
+    vl=sum(metric*ul); vr=sum(metric*ur)
+    alpha=max(abs(vl)+cl*sqrt(sum(metric*metric)),abs(vr)+cr*sqrt(sum(metric*metric)))
+    flux=0.5d0*(vl*ql+vr*qr-alpha*(qr-ql))
+    flux(2:4)=flux(2:4)+0.5d0*(pl+pr)*metric
+    flux(5)=flux(5)+0.5d0*(vl*pl+vr*pr)
+    if(.not.all(abs(flux)<=huge(1.d0))) call record_mp_failure(1,i,j,k,flux)
+  end subroutine mp_low_face
+
+  attributes(global) subroutine mp_faces_kernel(axis,im,jm,km,hm,npdc,gamma,weight)
+    use solver_gpu, only: mp_ld_interface_flux
+    implicit none
+    integer,value :: axis,im,jm,km,hm,npdc
+    real(8),value :: gamma,weight
+    integer :: id,i,j,k,dim,ntot,inode
+    real(8) :: high(5),low(5)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    dim=im
+    if(axis==2) dim=jm
+    if(axis==3) dim=km
+    ntot=(dim+2)
+    if(axis==1) ntot=ntot*(jm+1)*(km+1)
+    if(axis==2) ntot=ntot*(im+1)*(km+1)
+    if(axis==3) ntot=ntot*(im+1)*(jm+1)
+    if(id>=ntot) return
+    select case(axis)
+    case(1)
+      i=mod(id,im+2)-1; j=mod(id/(im+2),jm+1); k=id/((im+2)*(jm+1))
+    case(2)
+      j=mod(id,jm+2)-1; i=mod(id/(jm+2),im+1); k=id/((jm+2)*(im+1))
+    case(3)
+      k=mod(id,km+2)-1; i=mod(id/(km+2),im+1); j=id/((km+2)*(im+1))
+    end select
+    inode=i
+    if(axis==2) inode=j
+    if(axis==3) inode=k
+    ! Physical boundary nodes have their own RHS; their exterior faces are unused.
+    if(((npdc==1.or.npdc==4).and.inode<0).or. &
+       ((npdc==2.or.npdc==4).and.inode>=dim)) then
+      high_d(i,j,k,:,axis)=0.d0
+      delta_d(i,j,k,:,axis)=0.d0
+      return
+    endif
+    call mp_low_face(i,j,k,axis,im,jm,km,hm,npdc,gamma,low)
+    call mp_ld_interface_flux(i,j,k,axis,im,jm,km,gamma,hm,npdc,axis,weight,high)
+    high_d(i,j,k,:,axis)=high
+    delta_d(i,j,k,:,axis)=high-low
+    if(.not.all(abs(high)<=huge(1.d0))) call record_mp_failure(1,i,j,k,high)
+  end subroutine mp_faces_kernel
+
+  attributes(global) subroutine mp_plane_kernel(axis,im,jm,km,mode,has_lo,has_hi)
+    implicit none
+    integer,value :: axis,im,jm,km,mode,has_lo,has_hi
+    integer :: id,nplane,dim,lo(3),hi(3),m,offset
+    real(8) :: value
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    select case(axis)
+    case(1)
+      nplane=(jm+1)*(km+1); dim=im
+      lo=[0,mod(id,jm+1),id/(jm+1)]
+    case(2)
+      nplane=(im+1)*(km+1); dim=jm
+      lo=[mod(id,im+1),0,id/(im+1)]
+    case(3)
+      nplane=(im+1)*(jm+1); dim=km
+      lo=[mod(id,im+1),id/(im+1),0]
+    end select
+    if(id>=nplane) return
+    hi=lo
+    if(mode==1) then
+      hi(axis)=dim-1
+      do m=1,5
+        offset=id+1+(m-1)*nplane
+        send_lo_d(offset,1,1,1)=high_d(lo(1),lo(2),lo(3),m,axis)
+        send_hi_d(offset,1,1,1)=high_d(hi(1),hi(2),hi(3),m,axis)
+        send_lo_d(offset+5*nplane,1,1,1)=delta_d(lo(1),lo(2),lo(3),m,axis)
+        send_hi_d(offset+5*nplane,1,1,1)=delta_d(hi(1),hi(2),hi(3),m,axis)
+      enddo
+    elseif(mode==2) then
+      lo(axis)=-1; hi(axis)=dim
+      do m=1,5
+        offset=id+1+(m-1)*nplane
+        if(has_lo/=0) then
+          high_d(lo(1),lo(2),lo(3),m,axis)=recv_lo_d(offset,1,1,1)
+          delta_d(lo(1),lo(2),lo(3),m,axis)=recv_lo_d(offset+5*nplane,1,1,1)
+        endif
+        if(has_hi/=0) then
+          high_d(hi(1),hi(2),hi(3),m,axis)=recv_hi_d(offset,1,1,1)
+          delta_d(hi(1),hi(2),hi(3),m,axis)=recv_hi_d(offset+5*nplane,1,1,1)
+        endif
+      enddo
+    elseif(mode==3) then
+      hi(axis)=dim
+      send_lo_d(id+1,1,1,1)=ratio_d(lo(1),lo(2),lo(3),1)
+      send_hi_d(id+1,1,1,1)=ratio_d(hi(1),hi(2),hi(3),1)
+    else
+      hi(axis)=dim
+      if(has_lo/=0) ratio_d(lo(1),lo(2),lo(3),1)= &
+        min(ratio_d(lo(1),lo(2),lo(3),1),recv_lo_d(id+1,1,1,1))
+      if(has_hi/=0) ratio_d(hi(1),hi(2),hi(3),1)= &
+        min(ratio_d(hi(1),hi(2),hi(3),1),recv_hi_d(id+1,1,1,1))
+    endif
+  end subroutine mp_plane_kernel
+
+  subroutine exchange_mp_planes(axis,mode)
+    use mpi
+    use commvar, only: im,jm,km
+    use parallel, only: mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
+    use halo_transport_gpu, only: exchange_host_pair,device_aware_transport_enabled
+    use device_mpi_transport_gpu, only: exchange_device_pair
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    integer,intent(in) :: axis,mode
+    integer :: lo,hi,nplane,n,tag
+    type(dim3) :: block,grid
+    select case(axis)
+    case(1); lo=mpileft; hi=mpiright; nplane=(jm+1)*(km+1)
+    case(2); lo=mpidown; hi=mpiup; nplane=(im+1)*(km+1)
+    case(3); lo=mpiback; hi=mpifront; nplane=(im+1)*(jm+1)
+    end select
+    n=nplane
+    if(mode==1) n=10*n
+    block=dim3(256,1,1); grid=dim3((nplane+255)/256,1,1)
+    call mp_plane_kernel<<<grid,block>>>(axis,im,jm,km,mode,0,0)
+    call sync_after_kernel('mp_plane_pack',.true.)
+    ! Private, blocking tag range; buffers are reused only after completion.
+    tag=21401+2*(axis-1)
+    if(device_aware_transport_enabled) then
+      call exchange_device_pair(send_lo_d(1:n,:,:,:),send_hi_d(1:n,:,:,:), &
+        recv_hi_d(1:n,:,:,:),recv_lo_d(1:n,:,:,:),n,lo,hi,tag,tag+1)
+    else
+      send_lo_h(1:n,:,:,:)=send_lo_d(1:n,:,:,:)
+      send_hi_h(1:n,:,:,:)=send_hi_d(1:n,:,:,:)
+      call exchange_host_pair(send_lo_h(1:n,:,:,:),send_hi_h(1:n,:,:,:), &
+        recv_hi_h(1:n,:,:,:),recv_lo_h(1:n,:,:,:),n,lo,hi,tag,tag+1)
+      if(lo/=MPI_PROC_NULL) recv_lo_d(1:n,:,:,:)=recv_lo_h(1:n,:,:,:)
+      if(hi/=MPI_PROC_NULL) recv_hi_d(1:n,:,:,:)=recv_hi_h(1:n,:,:,:)
+    endif
+    call mp_plane_kernel<<<grid,block>>>(axis,im,jm,km,mode+1, &
+      merge(1,0,lo/=MPI_PROC_NULL),merge(1,0,hi/=MPI_PROC_NULL))
+    call sync_after_kernel('mp_plane_unpack')
+  end subroutine exchange_mp_planes
+
+  attributes(global) subroutine mp_convection_rhs_kernel(im,jm,km,is,ie,js,je,ks,ke)
+    use commarray_gpu, only: qrhs_d
+    implicit none
+    integer,value :: im,jm,km,is,ie,js,je,ks,ke
+    integer :: id,i,j,k,axis,left(3)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=(im+1)*(jm+1)*(km+1)) return
+    i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
+    if(i<is.or.i>ie.or.j<js.or.j>je.or.k<ks.or.k>ke) return
+    do axis=1,3
+      left=[i,j,k]; left(axis)=left(axis)-1
+      qrhs_d(i,j,k,:)=qrhs_d(i,j,k,:)- &
+        (high_d(i,j,k,:,axis)-high_d(left(1),left(2),left(3),:,axis))
+    enddo
+  end subroutine mp_convection_rhs_kernel
+
+  subroutine build_mp_convection_gpu()
+    use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,npdcj,npdck,gamma,bfacmpld
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    integer :: axis,npdc(3),dim(3),n
+    type(dim3) :: block,grid
+    call check_mp_runtime_options()
+    call allocate_mp_positivity_gpu()
+    failure_d=0
+    npdc=[npdci,npdcj,npdck]; dim=[im,jm,km]
+    block=dim3(256,1,1)
+    do axis=1,3
+      n=(im+1)*(jm+1)*(km+1)/(dim(axis)+1)*(dim(axis)+2)
+      grid=dim3((n+255)/256,1,1)
+      call mp_faces_kernel<<<grid,block>>>(axis,im,jm,km,hm,npdc(axis),gamma,bfacmpld)
+      call sync_after_kernel('mp_faces_kernel')
+      call exchange_mp_planes(axis,1)
+    enddo
+    call check_mp_failure('face input/flux')
+    n=(im+1)*(jm+1)*(km+1); grid=dim3((n+255)/256,1,1)
+    call mp_convection_rhs_kernel<<<grid,block>>>(im,jm,km,is,ie,js,je,ks,ke)
+    call sync_after_kernel('mp_convection_rhs_kernel')
+  end subroutine build_mp_convection_gpu
+
+  subroutine check_mp_runtime_options()
+    use mpi
+    use commvar, only: lfilter,lcracon
+    implicit none
+    integer :: invalid,global_invalid,ierr,rank
+    invalid=merge(1,0,lfilter.or.lcracon)
+    call MPI_Allreduce(invalid,global_invalid,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(global_invalid==0) return
+    call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
+    if(rank==0) print *, 'MP positivity does not admit controller enabling filter or crashfix'
+    call MPI_Abort(MPI_COMM_WORLD,91,ierr)
+  end subroutine check_mp_runtime_options
+
+  attributes(global) subroutine mp_ratio_kernel(dt,a,b,c,stage,im,jm,km,is,ie,js,je,ks,ke)
+    use commarray_gpu, only: q_d,qsave_d,qrhs_d,jacob_d
+    implicit none
+    real(8),value :: dt,a,b,c
+    integer,value :: stage,im,jm,km,is,ie,js,je,ks,ke
+    integer :: id,i,j,k,axis,left(3),ignored
+    real(8) :: base(5),rhs(5),correction(5),scale,theta
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=(im+1)*(jm+1)*(km+1)) return
+    i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
+    if(i<is.or.i>ie.or.j<js.or.j>je.or.k<ks.or.k>ke) return
+    if(.not.(jacob_d(i,j,k)>0.d0.and.jacob_d(i,j,k)<=huge(1.d0))) then
+      base=q_d(i,j,k,:)
+      call record_mp_failure(2,i,j,k,base)
+      return
+    endif
+    rhs=qrhs_d(i,j,k,:)
+    do axis=1,3
+      left=[i,j,k]; left(axis)=left(axis)-1
+      rhs=rhs+delta_d(i,j,k,:,axis)-delta_d(left(1),left(2),left(3),:,axis)
+    enddo
+    scale=c*dt/jacob_d(i,j,k)
+    if(stage==1) then
+      base=q_d(i,j,k,:)+scale*rhs
+    else
+      base=(a*qsave_d(i,j,k,:)+b*q_d(i,j,k,:)*jacob_d(i,j,k)+c*dt*rhs)/jacob_d(i,j,k)
+    endif
+    if(.not.admissible_mp_state(base)) then
+      call record_mp_failure(2,i,j,k,base)
+      return
+    endif
+    theta=1.d0
+    ! Six admissible face states average to the complete corrected state.
+    do axis=1,3
+      left=[i,j,k]; left(axis)=left(axis)-1
+      correction=6.d0*scale*delta_d(left(1),left(2),left(3),:,axis)
+      theta=min(theta,mp_face_budget(base,correction))
+      correction=-6.d0*scale*delta_d(i,j,k,:,axis)
+      theta=min(theta,mp_face_budget(base,correction))
+    enddo
+    ratio_d(i,j,k,1)=theta
+    if(theta<1.d0) ignored=atomicadd(limited_d,1)
+  end subroutine mp_ratio_kernel
+
+  attributes(global) subroutine mp_correct_rhs_kernel(im,jm,km,is,ie,js,je,ks,ke)
+    use commarray_gpu, only: qrhs_d
+    implicit none
+    integer,value :: im,jm,km,is,ie,js,je,ks,ke
+    integer :: id,i,j,k,axis,left(3),right(3)
+    real(8) :: tl,tr
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=(im+1)*(jm+1)*(km+1)) return
+    i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
+    if(i<is.or.i>ie.or.j<js.or.j>je.or.k<ks.or.k>ke) return
+    do axis=1,3
+      left=[i,j,k]; right=left
+      left(axis)=left(axis)-1; right(axis)=right(axis)+1
+      tl=min(ratio_d(i,j,k,1),ratio_d(left(1),left(2),left(3),1))
+      tr=min(ratio_d(i,j,k,1),ratio_d(right(1),right(2),right(3),1))
+      if(tl<1.d0.or.tr<1.d0) qrhs_d(i,j,k,:)=qrhs_d(i,j,k,:)+ &
+        (1.d0-tr)*delta_d(i,j,k,:,axis)-(1.d0-tl)*delta_d(left(1),left(2),left(3),:,axis)
+    enddo
+  end subroutine mp_correct_rhs_kernel
+
+  attributes(global) subroutine mp_check_update_kernel(dt,a,b,c,stage,im,jm,km)
+    use commarray_gpu, only: q_d,qsave_d,qrhs_d,jacob_d
+    implicit none
+    real(8),value :: dt,a,b,c
+    integer,value :: stage,im,jm,km
+    integer :: id,i,j,k
+    real(8) :: trial(5)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=(im+1)*(jm+1)*(km+1)) return
+    i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
+    if(stage==1) then
+      trial=(q_d(i,j,k,:)*jacob_d(i,j,k)+qrhs_d(i,j,k,:)*dt)/jacob_d(i,j,k)
+    else
+      trial=(a*qsave_d(i,j,k,:)+b*q_d(i,j,k,:)*jacob_d(i,j,k)+c*qrhs_d(i,j,k,:)*dt)/jacob_d(i,j,k)
+    endif
+    if(.not.admissible_mp_state(trial)) call record_mp_failure(3,i,j,k,trial)
+  end subroutine mp_check_update_kernel
+
+  subroutine check_mp_failure(phase)
+    use mpi
+    use parallel, only: ig0,jg0,kg0
+    implicit none
+    character(*),intent(in) :: phase
+    integer :: local,global,ierr,rank,point(3)
+    real(8) :: state(5)
+    local=failure_d
+    call MPI_Allreduce(local,global,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(global==0) return
+    call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
+    if(local/=0) then
+      point=failure_point_d
+      state=failure_state_d
+      print *, 'ASTR_MP_POSITIVITY_FAILURE rank=',rank,' phase=',phase,' status=',local
+      print '(a,3(i0,1x),a,3(i0,1x),a,5(es24.16,1x))', &
+        ' first_observed_local=',point,' global=',point+[ig0,jg0,kg0],' values=',state
+    endif
+    call MPI_Abort(MPI_COMM_WORLD,92,ierr)
+  end subroutine check_mp_failure
+
+  subroutine limit_mp_update_gpu(dt,a,b,c,stage)
+    use mpi
+    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+    use commvar, only: im,jm,km,is,ie,js,je,ks,ke,nstep
+    use halo_exchange_gpu, only: exchange_field_halo_gpu
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    real(8),intent(in) :: dt,a,b,c
+    integer,intent(in) :: stage
+    integer :: n,axis,local_count,total_count,ierr,rank
+    type(dim3) :: block,grid
+    if(.not.all(ieee_is_finite([dt,a,b,c])).or.dt<=0.d0.or. &
+       min(a,b,c)<0.d0.or.stage<1.or.stage>3) then
+      print *, 'Invalid MP positivity RK parameters'
+      call MPI_Abort(MPI_COMM_WORLD,91,ierr)
+    endif
+    n=(im+1)*(jm+1)*(km+1)
+    block=dim3(256,1,1); grid=dim3((n+255)/256,1,1)
+    ratio_d=1.d0; failure_d=0; limited_d=0
+    call mp_ratio_kernel<<<grid,block>>>(dt,a,b,c,stage,im,jm,km,is,ie,js,je,ks,ke)
+    call sync_after_kernel('mp_ratio_kernel',.true.)
+    call check_mp_failure('complete low-order baseline')
+    do axis=1,3
+      call exchange_mp_planes(axis,3)
+    enddo
+    call exchange_field_halo_gpu(ratio_d,1)
+    call mp_correct_rhs_kernel<<<grid,block>>>(im,jm,km,is,ie,js,je,ks,ke)
+    call sync_after_kernel('mp_correct_rhs_kernel')
+    call mp_check_update_kernel<<<grid,block>>>(dt,a,b,c,stage,im,jm,km)
+    call sync_after_kernel('mp_check_update_kernel',.true.)
+    call check_mp_failure('complete limited RK update')
+    local_count=limited_d
+    call MPI_Allreduce(local_count,total_count,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
+    if(rank==0) print *, 'ASTR_MP_POSITIVITY step=',nstep,' stage=',stage,' limited_rank_nodes=',total_count
+  end subroutine limit_mp_update_gpu
+end module mp_positivity_gpu
