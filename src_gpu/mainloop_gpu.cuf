@@ -49,7 +49,7 @@ contains
     ldc_case = gpu_ldc_boundary_case_pending()
     flatplate_case = gpu_s1_flatplate_boundary_case_pending()
     flatplate_nscbc_farfield_case = (.not.conservative_case) .and. &
-                                    gpu_s1_flatplate_nscbc_farfield_filter_case()
+                                    gpu_s1_flatplate_nscbc_farfield_filter_case().and.bctype(2)/=22
     periodic_filter_case = lfilter .and. .not.(gpu_uses_physical_boundary() .or. ldc_case .or. flatplate_case)
 
     block_primitive = dim3(32,4,4)
@@ -149,6 +149,7 @@ contains
          gpu_physical_boundary_apply_mask,gpu_uses_x_nscbc, &
          gpu_nscbc_global_mach2,gpu_nscbc_outflow_mach2, &
          apply_nscbc_outflow_filter_gpu,apply_nscbc_x_rhs_gpu,apply_nscbc_inflow_x_rhs_gpu, &
+         apply_nscbc_outflow_physical_filter_gpu,apply_nscbc_outflow_x_rhs_gpu, &
          GPU_BC_NSCBC_FARFIELD,apply_nscbc_farfield_y_upper_filter_x_gpu, &
          apply_nscbc_farfield_y_upper_filter_z_gpu, &
          gpu_nscbc_farfield_y_upper_mach2,apply_nscbc_farfield_y_upper_rhs_gpu, &
@@ -312,6 +313,7 @@ contains
     logical :: characteristic_xphysical_case
     logical :: characteristic_xyphysical_case
     logical :: profile_mp_ld_case
+    logical :: profile_nscbc_case
     logical :: s2_hbl_selective_roe_case
     logical :: s2_hbl_selective_roe_sponge_case
     logical :: s2_hbl_selective_roe_c4_case
@@ -407,6 +409,7 @@ contains
     curvilinear_nscbc52_case = gpu_curvilinear_nscbc52_nonreflecting_supported() .or. &
          curvilinear_nscbc52_viscous_case
     profile_mp_ld_case = gpu_profile_mp_ld_flatplate_supported()
+    profile_nscbc_case = profile_mp_ld_case.and.bctype(2)==22
     flatplate_case = profile_mp_ld_case .or. conservative_case .or. &
          gpu_s1_flatplate_s1a_supported() .or. flatplate_mp7_case .or. &
          curvilinear_nscbc52_case .or. &
@@ -449,7 +452,7 @@ contains
          flatplate_mp7_case
     prepared = .false.
     if(present(first_stage_prepared)) prepared = first_stage_prepared
-    if(flatplate_nscbc_farfield_case) prepared = .false.
+    if(flatplate_nscbc_farfield_case.and..not.profile_nscbc_case) prepared = .false.
     need_copy_back = .false.
     if(present(copy_back)) need_copy_back = copy_back
 
@@ -598,6 +601,10 @@ contains
         call apply_s1_flatplate_boundary_conditions_gpu(.true.)
         call exchange_solution_halo_gpu()
       endif
+      if(profile_nscbc_case) then
+        call apply_nscbc_outflow_physical_filter_gpu()
+        call exchange_solution_halo_gpu()
+      endif
       if(flatplate_nscbc_nonreflecting_case) then
         call apply_nscbc_farfield_y_upper_nonreflecting_rhs_gpu()
         call exchange_solution_halo_gpu()
@@ -618,6 +625,7 @@ contains
         call copy_rhs_from_gpu()
         call write_rhs_validation_snapshot('boundary',nstep,rkstep)
       endif
+      if(profile_nscbc_case) call apply_nscbc_outflow_x_rhs_gpu()
       if(open_shock_nscbc_case) then
         call gpu_nscbc_global_mach2(gmachmax2_in)
         call gpu_nscbc_outflow_mach2(gmachmax2_out)
@@ -819,7 +827,7 @@ contains
           endif
         enddo
         do ivar=1,5
-          if(flatplate_mp7_case) then
+          if(flatplate_mp7_case .or. open_shock_nscbc_case) then
             call explicit_upwind_flux_y_physical_global_kernel<<<grid_y_interface,block_y>>>( &
                  im,jm,km,hm,is,ie,js,je,ks,ke,npdcj,ivar,1,recon_schem,gamma)
             call sync_after_kernel('explicit_upwind_flux_y_physical_plus_global_kernel')
@@ -869,7 +877,7 @@ contains
           endif
         enddo
         do ivar=1,5
-          if(flatplate_mp7_case) then
+          if(flatplate_mp7_case .or. open_shock_nscbc_case) then
             call explicit_upwind_flux_z_xyphysical_global_kernel<<<grid_z_interface,block_z>>>( &
                  im,jm,km,is,ie,js,je,ks,ke,ivar,1,recon_schem,gamma)
             call sync_after_kernel('explicit_upwind_flux_z_xyphysical_plus_global_kernel')
@@ -1321,13 +1329,15 @@ contains
          gpu_s2_sbli_nscbc_supported,gpu_s2_sbli_nscbc_sponge_supported
     use bc, only: bctype,nscbc_farfield_sbli_shock_enabled,             &
                   nscbc_farfield_nonreflecting_enabled
-    use commarray, only: jacob,dxi,bnorm_im,bnorm_j0,bnorm_jm,         &
+    use commarray, only: x,jacob,dxi,bnorm_im,bnorm_j0,bnorm_jm,         &
                          bnorm_k0,bnorm_km
     use parallel, only: mpisize,isize,jsize,ksize,pmax,lio
     use conservative_boundary_runtime, only: conservative_boundary
     implicit none
     real(8) :: min_jacob,max_jacob,geometry_error,local_error
     real(8),parameter :: axis_aligned_tolerance=sqrt(epsilon(1.d0))
+    integer :: i,j,k
+    logical :: rectilinear_coordinates
     logical :: ldc_case
     logical :: flatplate_pending
     logical :: controlled_upwind_case
@@ -1402,8 +1412,29 @@ contains
          maxval(abs(dxi(0:im,0:jm,0:km,3,1))),                      &
          maxval(abs(dxi(0:im,0:jm,0:km,3,2))))
     geometry_error=pmax(geometry_error)
-    if(any(bctype==22) .and. geometry_error>1.d-10) &
-      stop 'GPU CURVE bctype=22 is not validated on nonorthogonal grids'
+    if(any(bctype==22) .and. geometry_error>1.d-10) then
+      rectilinear_coordinates=.false.
+      if(gpu_profile_mp_ld_flatplate_supported()) then
+        ! A separable stretched grid can acquire off-axis roundoff in geomcal.
+        ! Certify its coordinates exactly rather than widening the metric gate.
+        local_error=0.d0
+        do k=0,km
+        do j=0,jm
+        do i=0,im
+          if(any(x(i,j,k,:)/=[x(i,0,0,1),x(0,j,0,2),x(0,0,k,3)])) local_error=1.d0
+        enddo
+        enddo
+        enddo
+        if(any(x(1:im,0,0,1)<=x(0:im-1,0,0,1)).or. &
+           any(x(0,1:jm,0,2)<=x(0,0:jm-1,0,2)).or. &
+           any(x(0,0,1:km,3)<=x(0,0,0:km-1,3))) local_error=1.d0
+        rectilinear_coordinates=pmax(local_error)==0.d0
+      endif
+      if(lio) write(*,'(A,ES24.16,A,L1)') 'GPU NSCBC22 maximum off-axis metric: ', &
+        geometry_error,' exact rectilinear coordinates: ',rectilinear_coordinates
+      if(.not.rectilinear_coordinates) &
+        stop 'GPU CURVE bctype=22 is not validated on nonorthogonal grids'
+    endif
 
     if(bctype(2)==21) then
       local_error=0.d0

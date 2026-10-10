@@ -15,6 +15,7 @@ module boundary_gpu
   logical,save :: s1_bl_profile_ready = .false.
   logical,save :: nscbc52_prediff_rhs_ready = .false.
   integer,device :: dynamic_inflow_error_d
+  integer,device :: nscbc_outflow_error_d
   real(8),device :: wall_blowing_amplitude_d,wall_blowing_beta_d,        &
                     wall_blowing_xa_d,                                  &
                     wall_blowing_xb_d,wall_blowing_xc_d,wall_uinf_d,    &
@@ -279,7 +280,7 @@ contains
          ((bctype(1) == GPU_BC_INFLOW .and. &
            (trim(turbinf) == 'prof' .or. trim(turbinf) == 'intp')) .or. &
           bctype(1) == GPU_BC_NSCBC_INFLOW) .and. &
-         bctype(2) == GPU_BC_OUTFLOW .and. &
+         (bctype(2) == GPU_BC_OUTFLOW .or. bctype(2) == GPU_BC_NSCBC_OUTFLOW) .and. &
          bctype(3) == GPU_BC_WALL_ISOTHERMAL_NOSLIP .and. &
          (bctype(4) == GPU_BC_ZEROEXTRAP .or. bctype(4) == GPU_BC_FARFIELD .or. &
           bctype(4) == GPU_BC_NSCBC_FARFIELD) .and. &
@@ -1533,7 +1534,7 @@ contains
     implicit none
     real(8),intent(out) :: gmachmax2
     integer,parameter :: block_size=256
-    integer :: ncell,nblocks,ierr
+    integer :: ncell,nblocks,ierr,apply_left,apply_right
     real(8) :: local_max
     real(8),allocatable,device :: partial_d(:)
     real(8),allocatable :: partial_h(:)
@@ -1541,10 +1542,14 @@ contains
     ncell = (jm+1)*(km+1)
     nblocks = max(1,(ncell+block_size-1)/block_size)
     allocate(partial_d(nblocks),partial_h(nblocks))
-    call nscbc_outflow_mach2_partial_kernel<<<nblocks,block_size>>>(partial_d,im,jm,km,hm,mach)
-    call sync_after_kernel('nscbc_outflow_mach2_partial_kernel',.true.)
-    partial_h = partial_d
-    local_max = maxval(partial_h)
+    call gpu_physical_boundary_apply_mask(1,apply_left,apply_right)
+    local_max = -huge(1.d0)
+    if(apply_right /= 0) then
+      call nscbc_outflow_mach2_partial_kernel<<<nblocks,block_size>>>(partial_d,im,jm,km,hm,mach)
+      call sync_after_kernel('nscbc_outflow_mach2_partial_kernel',.true.)
+      partial_h = partial_d
+      local_max = maxval(partial_h)
+    endif
     if(mpisize > 1) then
       call mpi_allreduce(local_max,gmachmax2,1,mpi_real8,mpi_max,mpi_comm_world,ierr)
     else
@@ -1607,14 +1612,15 @@ contains
   end subroutine apply_nscbc_outflow_filter_gpu
 
   attributes(global) subroutine nscbc_inflow_x_rhs_kernel(im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax, &
-                                                           uinf,vinf,winf,pinf,gmachmax2,apply_left)
-    use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d,qrhs_d,jacob_d,dxi_d
+                                                           roinf,uinf,vinf,winf,pinf,gmachmax2,apply_left)
+    use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,qrhs_d,jacob_d,dxi_d
     implicit none
     integer,value :: im,jm,km,hm,npdcj,npdck,apply_left
-    real(8),value :: gamma,mach,xmin,xmax,uinf,vinf,winf,pinf,gmachmax2
+    real(8),value :: gamma,mach,xmin,xmax,roinf,uinf,vinf,winf,pinf,gmachmax2
     integer :: id,j,k,ii,m,n
     real(8) :: pnor(5,5),pinv(5,5),ecs(0:2,5),decs(5),rest(5),lodi(5),lodi1(5), &
-               ddi(3),flux(5),metric0,metric1,metric2,css,kin,var1
+               ddi(3),flux(5),metric0,metric1,metric2,css,kin,var1, &
+               normal_speed,lambda(5),wave_tolerance,qtarget(5),dq(5)
 
     if(apply_left == 0) return
     id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
@@ -1646,20 +1652,26 @@ contains
       lodi(m) = sum(pinv(m,:)*lodi1(:))/jacob_d(0,j,k)
     enddo
     css = sqrt(tmp_d(0,j,k))/mach
-    kin = 0.25d0*(1.d0-gmachmax2)*css/(xmax-xmin)
+    kin = 0.25d0*css/(xmax-xmin)
     var1 = 1.d0/sqrt(sum(ddi(:)*ddi(:)))
-    lodi(1) = 0.d0
-    lodi(2) = kin*0.5d0*(ddi(1)*var1*(vel_d(0,j,k,3)-winf)-ddi(3)*var1*(vel_d(0,j,k,1)-uinf))
-    lodi(3) = kin*0.5d0*(-ddi(1)*var1*(vel_d(0,j,k,2)-vinf)+ddi(2)*var1*(vel_d(0,j,k,1)-uinf))
-    lodi(4) = kin*(ddi(1)*var1*(vel_d(0,j,k,1)-uinf)+ddi(2)*var1*(vel_d(0,j,k,2)-vinf)+ &
-                   ddi(3)*var1*(vel_d(0,j,k,3)-winf)+(prs_d(0,j,k)-pinf)/rho_d(0,j,k)/css)
+    normal_speed=sum(ddi(:)*vel_d(0,j,k,:))*var1
+    lambda(1:3)=normal_speed
+    lambda(4)=normal_speed+css
+    lambda(5)=normal_speed-css
+    wave_tolerance=64.d0*epsilon(1.d0)*max(css,abs(normal_speed))
+    qtarget=[roinf,roinf*uinf,roinf*vinf,roinf*winf, &
+             pinf/(gamma-1.d0)+0.5d0*roinf*(uinf*uinf+vinf*vinf+winf*winf)]
+    dq(:)=q_d(0,j,k,1:5)-qtarget(:)
+    ! The metric points into the domain on x-: positive waves enter.
+    do m=1,5
+      if(lambda(m)>wave_tolerance) lodi(m)=kin*sum(pinv(m,:)*dq(:))
+    enddo
     do m=1,5
       lodi1(m) = sum(pnor(m,:)*lodi(:))*jacob_d(0,j,k)
     enddo
     decs(:) = lodi1(:)+rest(:)
     call nscbc_tangential_x_rhs(0,j,k,jm,km,npdcj,npdck,decs)
-    ! CPU accumulates boundary flux derivatives before rhscal negates qrhs.
-    ! GPU convection writes the final RHS sign directly.
+    ! The GPU RK update consumes the negative flux divergence directly.
     qrhs_d(0,j,k,:) = qrhs_d(0,j,k,:) - decs(:)
   end subroutine nscbc_inflow_x_rhs_kernel
 
@@ -1669,9 +1681,9 @@ contains
     implicit none
     integer,value :: im,jm,km,hm,npdcj,npdck,apply_right
     real(8),value :: gamma,mach,xmin,xmax,pinf,pout,gmachmax2
-    integer :: id,j,k,ii,m,n
+    integer :: id,j,k,ii,m,n,ignored
     real(8) :: pnor(5,5),pinv(5,5),ecs(0:2,5),decs(5),rest(5),lodi(5),lodi1(5), &
-               ddi(3),flux(5),css,kinout
+               ddi(3),flux(5),css,kinout,normal_speed,norm,wave_tolerance
 
     if(apply_right == 0) return
     id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
@@ -1701,18 +1713,28 @@ contains
       lodi(m) = sum(pinv(m,:)*lodi1(:))/jacob_d(im,j,k)
     enddo
     css = sqrt(tmp_d(im,j,k))/mach
-    kinout = 3.75d0*(1.d0-gmachmax2)*css/(xmax-xmin)
-    lodi(5) = kinout*(prs_d(im,j,k)-pinf*pout)
+    norm=sqrt(sum(ddi(:)*ddi(:)))
+    normal_speed=sum(ddi(:)*vel_d(im,j,k,:))/norm
+    wave_tolerance=64.d0*epsilon(1.d0)*max(css,abs(normal_speed))
+    if(normal_speed < -wave_tolerance) then
+      ignored=atomicmax(nscbc_outflow_error_d,1)
+      return
+    endif
+    if(normal_speed-css < -wave_tolerance) then
+      kinout=3.75d0*max(0.d0,1.d0-(normal_speed/css)**2)*css/(xmax-xmin)
+      ! R5 has pressure amplitude rho*a/sqrt(2): dp/dt=-K*(p-p_target).
+      lodi(5)=kinout*((prs_d(im,j,k)-pinf*pout)/rho_d(im,j,k)/css)*sqrt(2.d0)
+    endif
     do m=1,5
       lodi1(m) = sum(pnor(m,:)*lodi(:))*jacob_d(im,j,k)
     enddo
     decs(:) = lodi1(:)+rest(:)
     call nscbc_tangential_x_rhs(im,j,k,jm,km,npdcj,npdck,decs)
-    qrhs_d(im,j,k,:) = qrhs_d(im,j,k,:) + decs(:)
+    qrhs_d(im,j,k,:) = qrhs_d(im,j,k,:) - decs(:)
   end subroutine nscbc_outflow_x_rhs_kernel
 
   subroutine apply_nscbc_x_rhs_gpu(gmachmax2_in,gmachmax2_out)
-    use commvar, only: im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax,uinf,vinf,winf,pinf
+    use commvar, only: im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax,roinf,uinf,vinf,winf,pinf
     use bc, only: pout
     use gpu_check, only: sync_after_kernel
     implicit none
@@ -1725,15 +1747,51 @@ contains
     n = (jm+1)*(km+1)
     grid = dim3((n+block%x-1)/block%x,1,1)
     call nscbc_inflow_x_rhs_kernel<<<grid,block>>>(im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax, &
-         uinf,vinf,winf,pinf,gmachmax2_in,apply_left)
+         roinf,uinf,vinf,winf,pinf,gmachmax2_in,apply_left)
     call sync_after_kernel('nscbc_inflow_x_rhs_kernel')
+    nscbc_outflow_error_d=0
     call nscbc_outflow_x_rhs_kernel<<<grid,block>>>(im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax, &
          pinf,pout,gmachmax2_out,apply_right)
     call sync_after_kernel('nscbc_outflow_x_rhs_kernel')
+    call check_nscbc_outflow_error_gpu()
   end subroutine apply_nscbc_x_rhs_gpu
 
+  subroutine apply_nscbc_outflow_x_rhs_gpu()
+    use commvar, only: im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax,pinf
+    use bc, only: pout
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    type(dim3) :: block,grid
+    integer :: apply_left,apply_right,n
+
+    call gpu_physical_boundary_apply_mask(1,apply_left,apply_right)
+    block=dim3(256,1,1)
+    n=(jm+1)*(km+1)
+    grid=dim3((n+block%x-1)/block%x,1,1)
+    nscbc_outflow_error_d=0
+    call nscbc_outflow_x_rhs_kernel<<<grid,block>>>(im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax, &
+         pinf,pout,0.d0,apply_right)
+    call sync_after_kernel('nscbc_outflow_x_rhs_kernel_profile')
+    call check_nscbc_outflow_error_gpu()
+  end subroutine apply_nscbc_outflow_x_rhs_gpu
+
+  subroutine check_nscbc_outflow_error_gpu()
+    use mpi
+    use parallel, only: mpirank
+    implicit none
+    integer :: local_error,global_error,ierr,ignored
+
+    local_error=nscbc_outflow_error_d
+    call MPI_Allreduce(local_error,global_error,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,ignored)
+    if(global_error/=0) then
+      if(mpirank==0) print*,'NSCBC bc22 backflow requires a full target state; pressure-only exit rejected'
+      call MPI_Abort(MPI_COMM_WORLD,1,ignored)
+    endif
+  end subroutine check_nscbc_outflow_error_gpu
+
   subroutine apply_nscbc_inflow_x_rhs_gpu(gmachmax2_in)
-    use commvar, only: im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax,uinf,vinf,winf,pinf
+    use commvar, only: im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax,roinf,uinf,vinf,winf,pinf
     use gpu_check, only: sync_after_kernel
     implicit none
     real(8),intent(in) :: gmachmax2_in
@@ -1745,7 +1803,7 @@ contains
     n = (jm+1)*(km+1)
     grid = dim3((n+block%x-1)/block%x,1,1)
     call nscbc_inflow_x_rhs_kernel<<<grid,block>>>(im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax, &
-         uinf,vinf,winf,pinf,gmachmax2_in,apply_left)
+         roinf,uinf,vinf,winf,pinf,gmachmax2_in,apply_left)
     call sync_after_kernel('nscbc_inflow_x_rhs_kernel')
   end subroutine apply_nscbc_inflow_x_rhs_gpu
 
@@ -1825,6 +1883,44 @@ contains
       nscbc_filter6_value_axis = value_0
     end select
   end function nscbc_filter6_value_axis
+
+  attributes(global) subroutine nscbc_outflow_filter_y_physical_kernel(im,jm,km,hm,npdcj,apply_right)
+    use commarray_gpu, only: q_d,qwork_d
+    implicit none
+    integer,value :: im,jm,km,hm,npdcj,apply_right
+    integer :: id,j,k,m,n
+
+    if(apply_right==0) return
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    n=(jm+1)*(km+1)*5
+    if(id>=n) return
+    j=mod(id,jm+1); k=mod(id/(jm+1),km+1); m=id/((jm+1)*(km+1))+1
+    ! The bottom-wall value is imposed, not a transverse filter unknown.
+    if(j==0.and.(npdcj==1.or.npdcj==4)) then
+      qwork_d(im,j,k,m)=q_d(im,j,k,m)
+    else
+      qwork_d(im,j,k,m)=nscbc_filter6_value_axis( &
+        q_d(im,j-5,k,m),q_d(im,j-4,k,m),q_d(im,j-3,k,m),q_d(im,j-2,k,m), &
+        q_d(im,j-1,k,m),q_d(im,j,k,m),q_d(im,j+1,k,m),q_d(im,j+2,k,m), &
+        q_d(im,j+3,k,m),q_d(im,j+4,k,m),q_d(im,j+5,k,m),j,jm,npdcj)
+    endif
+  end subroutine nscbc_outflow_filter_y_physical_kernel
+
+  subroutine apply_nscbc_outflow_physical_filter_gpu()
+    use commvar, only: im,jm,km,hm,npdcj
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    type(dim3) :: block,grid
+    integer :: apply_left,apply_right,n
+
+    call gpu_physical_boundary_apply_mask(1,apply_left,apply_right)
+    block=dim3(256,1,1); n=(jm+1)*(km+1)*5
+    grid=dim3((n+block%x-1)/block%x,1,1)
+    call nscbc_outflow_filter_y_physical_kernel<<<grid,block>>>(im,jm,km,hm,npdcj,apply_right)
+    call sync_after_kernel('nscbc_outflow_filter_y_physical_kernel')
+    call nscbc_copy_outflow_filter_y_kernel<<<grid,block>>>(im,jm,km,apply_right)
+    call sync_after_kernel('nscbc_outflow_filter_y_physical_copy_kernel')
+  end subroutine apply_nscbc_outflow_physical_filter_gpu
 
   attributes(global) subroutine nscbc_farfield_y_upper_filter_x_kernel(im,jm,km,npdci,apply_up)
     use commarray_gpu, only: q_d,qwork_d
@@ -2000,7 +2096,7 @@ contains
     real(8) :: pnor(5,5),pinv(5,5),ecs(0:2,5),decs(5),rest(5),lodi(5),lodi1(5), &
                ddi(3),flux(5),css,kinout,metric
     real(8) :: flux_m(5),flux_p(5),qtarget(5),dq(5),char_delta(5),    &
-               normal_speed,norm,lambda(5),sigma_in,sigma_out
+               normal_speed,norm,lambda(5),sigma_in,sigma_out,wave_tolerance
 
     if(apply_up == 0) return
     id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
@@ -2082,8 +2178,23 @@ contains
         endif
       enddo
     else
-      kinout = 0.25d0*(1.d0-gmachmax2)*css/(ymax-ymin)
-      lodi(5) = kinout*(prs_d(i,jm,k)-pinf)
+      norm=sqrt(sum(ddi(:)*ddi(:)))
+      normal_speed=sum(ddi(:)*vel_d(i,jm,k,:))/norm
+      lambda(1:3)=normal_speed
+      lambda(4)=normal_speed+css
+      lambda(5)=normal_speed-css
+      wave_tolerance=64.d0*epsilon(1.d0)*max(css,abs(normal_speed))
+      if(normal_speed<0.d0) then
+        qtarget=[rho_target,rho_target*u_target,rho_target*v_target,rho_target*w_target,e_target]
+        dq(:)=q_d(i,jm,k,1:5)-qtarget(:)
+        sigma_in=.25d0*css/(ymax-ymin)
+        do m=1,5
+          if(lambda(m)<-wave_tolerance) lodi(m)=sigma_in*sum(pinv(m,:)*dq(:))
+        enddo
+      elseif(lambda(5)<-wave_tolerance) then
+        kinout=.25d0*max(0.d0,1.d0-(normal_speed/css)**2)*css/(ymax-ymin)
+        lodi(5)=kinout*((prs_d(i,jm,k)-pinf)/rho_d(i,jm,k)/css)*sqrt(2.d0)
+      endif
     endif
     do m=1,5
       lodi1(m) = sum(pnor(m,:)*lodi(:))*jacob_d(i,jm,k)
@@ -2251,11 +2362,13 @@ contains
   end subroutine nscbc_farfield_y_upper_viscous_source_kernel
 
   subroutine apply_nscbc_farfield_y_upper_rhs_gpu(gmachmax2)
-    use commvar, only: im,jm,km,hm,npdci,npdck,gamma,mach,ymin,ymax,pinf,const2,const6
+    use commvar, only: im,jm,km,hm,npdci,npdck,gamma,mach,ymin,ymax,pinf,const2,const6, &
+                      roinf,uinf,vinf,winf
     use bc, only: nscbc_farfield_policy_id,                           &
                   nscbc_farfield_target_state,                        &
                   nscbc_farfield_target_states
     use gpu_check, only: sync_after_kernel
+    use nscbc_characteristic_policy_gpu, only: NSCBC_GPU_POLICY_COMPATIBILITY
     implicit none
     real(8),intent(in) :: gmachmax2
     type(dim3) :: block,grid
@@ -2275,6 +2388,10 @@ contains
              (u_target*u_target+v_target*v_target+w_target*w_target)
     e_post=(rho_post*t_post/const2)*const6+0.5d0*rho_post*             &
              (u_post*u_post+v_post*v_post+w_post*w_post)
+    if(farfield_policy==NSCBC_GPU_POLICY_COMPATIBILITY) then
+      rho_target=roinf; u_target=uinf; v_target=vinf; w_target=winf
+      e_target=pinf/(gamma-1.d0)+.5d0*roinf*(uinf*uinf+vinf*vinf+winf*winf)
+    endif
     block = dim3(256,1,1)
     n = (im+1)*(km+1)
     grid = dim3((n+block%x-1)/block%x,1,1)
@@ -2426,9 +2543,11 @@ contains
         stop 'GPU bctype=11 supports turbinf=prof or intp only'
       end select
     endif
-    call outflow_x_kernel<<<grid_x,block>>>(im,jm,km,hm,const2,const6, &
+    if(bctype(2)==GPU_BC_OUTFLOW) then
+      call outflow_x_kernel<<<grid_x,block>>>(im,jm,km,hm,const2,const6, &
                                              gamma,mach,pinf,pout,apply_right)
-    call sync_after_kernel('s1_bl_outflow_x_kernel')
+      call sync_after_kernel('s1_bl_outflow_x_kernel')
+    endif
     call prepare_legacy_wall_blowing_gpu(apply_down)
     call wall_isothermal_noslip_y_kernel<<<grid_y,block>>>(im,jm,km,hm,const2,const6, &
                                                            twall(3),twall(3),apply_down,0,preserve_rhs,time)

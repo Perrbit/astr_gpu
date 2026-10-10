@@ -109,6 +109,23 @@ def test_trace_requires_test_sources(source_copy, tmp_path):
     assert "ASTR_BUILD_MPI_COMPLETION_TRACE requires BUILD_TESTING=ON" in result.stdout
 
 
+def test_explicit_cuda_architecture(source_copy, tmp_path):
+    result = configure(source_copy, tmp_path / "build", "-DBUILD_TESTING=OFF",
+                       "-DASTR_WITH_CUDA=ON", "-DASTR_CUDA_ARCHITECTURES=80;89")
+    assert result.returncode == 0, result.stdout
+    flags = (tmp_path / "build/src/CMakeFiles/astr.dir/flags.make").read_text()
+    assert "-gpu=rdc,cc80,cc89" in flags
+    cache = (tmp_path / "build/CMakeCache.txt").read_text()
+    assert "CMAKE_CUDA_ARCHITECTURES:STRING=80;89" in cache
+
+
+def test_invalid_cuda_architecture_is_rejected(source_copy, tmp_path):
+    result = configure(source_copy, tmp_path / "build", "-DBUILD_TESTING=OFF",
+                       "-DASTR_WITH_CUDA=ON", "-DASTR_CUDA_ARCHITECTURES=native")
+    assert result.returncode != 0
+    assert "ASTR_CUDA_ARCHITECTURES requires numeric compute capabilities" in result.stdout
+
+
 @pytest.mark.parametrize("cuda", ["OFF", "ON"])
 def test_native_catalyst_without_test_sources(source_copy, tmp_path, cuda):
     catalyst = os.environ.get("ASTR_TEST_CATALYST_DIR")

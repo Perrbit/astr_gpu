@@ -7,6 +7,19 @@ set(AUTHOR "Jian Fang")
 set(AUTHOR_DETAILS "jian.fang@stfc.ac.uk")
 set(DESCRIPTION "Building ASTR using cmake")
 option(ASTR_WITH_CUDA "Build CUDA Fortran GPU support into the ASTR binary" OFF)
+set(ASTR_CUDA_ARCHITECTURES "" CACHE STRING
+    "Explicit CUDA compute capabilities for Fortran and C++ (for example 80 or 80;89); empty keeps automatic selection")
+set(ASTR_CUDA_ARCH_FLAGS "")
+if(ASTR_CUDA_ARCHITECTURES)
+  foreach(arch IN LISTS ASTR_CUDA_ARCHITECTURES)
+    if(NOT arch MATCHES "^[0-9]+$")
+      message(FATAL_ERROR "ASTR_CUDA_ARCHITECTURES requires numeric compute capabilities")
+    endif()
+    string(APPEND ASTR_CUDA_ARCH_FLAGS ",cc${arch}")
+  endforeach()
+  set(CMAKE_CUDA_ARCHITECTURES "${ASTR_CUDA_ARCHITECTURES}" CACHE STRING
+      "CUDA architectures shared with CUDA Fortran" FORCE)
+endif()
 set(ASTR_USERDEFINE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/user_define_module/userdefine.F90"
     CACHE FILEPATH "Fortran source providing the userdefine module")
 get_filename_component(ASTR_USERDEFINE_SOURCE "${ASTR_USERDEFINE_SOURCE}" ABSOLUTE
@@ -102,7 +115,7 @@ elseif (Fortran_COMPILER_NAME MATCHES "PGI" OR Fortran_COMPILER_NAME MATCHES "NV
   set(CMAKE_Fortran_FLAGS_DEBUG   "-O0 -g -DDEBG" CACHE STRING "NVHPC debug flags" FORCE)
   if(ASTR_WITH_CUDA)
     message(STATUS "Building CUDA-capable ASTR binary")
-    set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -cuda -gpu=rdc" CACHE STRING "NVHPC CUDA Fortran flags" FORCE)
+    set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -cuda -gpu=rdc${ASTR_CUDA_ARCH_FLAGS}" CACHE STRING "NVHPC CUDA Fortran flags" FORCE)
     add_definitions("-D_CUDA")
   endif()
 elseif (Fortran_COMPILER_NAME MATCHES "Fujitsu")

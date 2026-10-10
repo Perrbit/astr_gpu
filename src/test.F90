@@ -27,6 +27,9 @@ module test
       check_nscbc_characteristic_policy
 #endif
     use conservative_boundary_runtime, only: load_conservative_boundary_environment,conservative_boundary
+#if defined(ASTR_BUILD_TESTING) && defined(_CUDA)
+    use nscbc_physics_probe, only: check_nscbc_physics_gpu
+#endif
 
     !-------------------------------------------------------------------
     ! Read test mode and broadcast it
@@ -57,9 +60,17 @@ module test
       call check_boundary_rhs
     case ('bcgc')
       call check_nscbc_characteristic_policy()
+#ifdef _CUDA
+    case ('bcns')
+      call check_nscbc_physics_gpu()
+#endif
 #else
     case ('bcad','bciv','bcst','bcrh','bcgc')
       error stop 'Boundary validation commands require BUILD_TESTING=ON'
+#endif
+#if !defined(ASTR_BUILD_TESTING) || !defined(_CUDA)
+    case ('bcns')
+      error stop 'NSCBC physics probe requires BUILD_TESTING=ON and ASTR_WITH_CUDA=ON'
 #endif
     
     case ('grad')
@@ -94,6 +105,9 @@ module test
         write(*,*) ' | bc      - Test boundary condition treatment                |'
 #ifdef ASTR_BUILD_TESTING
         write(*,*) ' | bcrh    - Test full-halo physical boundary RHS             |'
+#ifdef _CUDA
+        write(*,*) ' | bcns    - Test GPU NSCBC against analytic states          |'
+#endif
 #endif
         write(*,*) ' | bcfg    - Test boundary configuration MPI broadcast       |'
         write(*,*) ' +------------------------------------------------------------+'

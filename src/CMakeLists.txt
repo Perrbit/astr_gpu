@@ -158,6 +158,10 @@ if(ASTR_WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/output_derivatives_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_device_velocity.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_wall_fields_gpu.cuf)
+  if(BUILD_TESTING)
+    list(APPEND ASTR_GPU_SOURCES
+      ${CMAKE_CURRENT_SOURCE_DIR}/../tests/gpu_validation/nscbc_physics_probe.cuf)
+  endif()
 endif()
 
 if(ASTR_WITH_CUDA)
@@ -222,6 +226,9 @@ if(ASTR_WITH_CATALYST)
     if(CMAKE_VERSION VERSION_LESS 3.24)
       message(FATAL_ERROR "Device in-situ products/probes require CMake 3.24 or later")
     endif()
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+      set(CMAKE_CUDA_ARCHITECTURES native CACHE STRING "CUDA C++ compute capabilities")
+    endif()
     enable_language(CUDA)
     if(ASTR_WITH_INSITU_DEVICE OR Viskores_DIR)
       find_package(Viskores CONFIG REQUIRED)
@@ -232,7 +239,7 @@ if(ASTR_WITH_CATALYST)
         add_library(astr_insitu_flying_edges STATIC "${ASTR_INSITU_FLYING_EDGES_SOURCE}")
         set_source_files_properties("${ASTR_INSITU_FLYING_EDGES_SOURCE}" PROPERTIES LANGUAGE CUDA)
         set_target_properties(astr_insitu_flying_edges PROPERTIES CUDA_STANDARD 17
-          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES native)
+          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
         target_compile_definitions(astr_insitu_flying_edges PRIVATE viskores_filter_contour_EXPORTS)
         target_compile_options(astr_insitu_flying_edges PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
         target_link_libraries(astr_insitu_flying_edges PRIVATE viskores::cont viskores::worklet
@@ -279,7 +286,7 @@ if(ASTR_WITH_CATALYST)
         COMPILE_DEFINITIONS ASTR_BUILD_TESTING)
     endif()
     set_target_properties(astr_insitu_device_products PROPERTIES CUDA_STANDARD 17
-      CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES native)
+      CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
     target_include_directories(astr_insitu_device_products PRIVATE . ../src_gpu)
     target_compile_options(astr_insitu_device_products PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
     target_link_libraries(astr_insitu_device_products PRIVATE astr_catalyst_adapter
@@ -302,7 +309,7 @@ if(ASTR_WITH_CATALYST)
       add_executable(insitu_graphics_interop_probe EXCLUDE_FROM_ALL
         ../tests/gpu_validation/insitu_graphics_interop_probe.cu insitu_device_map.cpp)
       set_target_properties(insitu_graphics_interop_probe PROPERTIES CUDA_STANDARD 17
-        CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES native)
+        CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
       target_include_directories(insitu_graphics_interop_probe PRIVATE ../src_gpu ${ASTR_EGL_INCLUDE_DIR})
       target_link_libraries(insitu_graphics_interop_probe PRIVATE VTK::RenderingOpenGL2 ${CMAKE_DL_LIBS})
       if(ASTR_BUILD_INSITU_RENDER_PROBES)
@@ -310,7 +317,7 @@ if(ASTR_WITH_CATALYST)
         add_executable(insitu_standard_device_probe EXCLUDE_FROM_ALL
           ../tests/gpu_validation/insitu_standard_device_probe.cu insitu_device_map.cpp)
         set_target_properties(insitu_standard_device_probe PROPERTIES CUDA_STANDARD 17
-          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES native)
+          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
         target_include_directories(insitu_standard_device_probe PRIVATE ../src_gpu ${ASTR_EGL_INCLUDE_DIR})
         target_compile_options(insitu_standard_device_probe PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
         target_link_libraries(insitu_standard_device_probe PRIVATE VTK::RenderingOpenGL2
@@ -334,7 +341,7 @@ if(ASTR_WITH_CATALYST)
       foreach(probe insitu_device_compiler_probe insitu_device_rk45_probe
           insitu_device_trace_probe insitu_device_peer_probe insitu_device_plane_probe)
         set_target_properties(${probe} PROPERTIES CUDA_STANDARD 17
-          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES native)
+          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
         target_compile_options(${probe} PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
       endforeach()
       target_include_directories(insitu_device_rk45_probe PRIVATE ../src_gpu)
@@ -360,7 +367,7 @@ if(ASTR_WITH_CATALYST)
         add_executable(insitu_allocation_guard_probe EXCLUDE_FROM_ALL
           ../tests/gpu_validation/insitu_allocation_guard_probe.cu)
         set_target_properties(insitu_allocation_guard_probe PROPERTIES CUDA_STANDARD 17
-          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES native)
+          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
         target_link_libraries(insitu_allocation_guard_probe PRIVATE viskores::cont viskores::cuda)
         add_executable(insitu_shared_allocation_probe EXCLUDE_FROM_ALL
           ../tests/gpu_validation/insitu_shared_allocation_probe.cpp)
@@ -371,14 +378,14 @@ if(ASTR_WITH_CATALYST)
         add_executable(insitu_viskores_rk45_probe EXCLUDE_FROM_ALL
           ../tests/gpu_validation/insitu_viskores_rk45_probe.cu)
         set_target_properties(insitu_viskores_rk45_probe PROPERTIES CUDA_STANDARD 17
-          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES native)
+          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
         target_include_directories(insitu_viskores_rk45_probe PRIVATE ../src_gpu)
         target_compile_options(insitu_viskores_rk45_probe PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
         target_link_libraries(insitu_viskores_rk45_probe PRIVATE viskores::cont viskores::worklet viskores::cuda)
         add_executable(insitu_viskores_trace_probe EXCLUDE_FROM_ALL
           ../tests/gpu_validation/insitu_viskores_trace_probe.cu)
         set_target_properties(insitu_viskores_trace_probe PROPERTIES CUDA_STANDARD 17
-          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES native)
+          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
         target_include_directories(insitu_viskores_trace_probe PRIVATE ../src_gpu)
         target_compile_options(insitu_viskores_trace_probe PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
         target_link_libraries(insitu_viskores_trace_probe PRIVATE
@@ -386,7 +393,7 @@ if(ASTR_WITH_CATALYST)
         add_executable(insitu_device_streamlines_probe EXCLUDE_FROM_ALL
           ../tests/gpu_validation/insitu_device_streamlines_probe.cu)
         set_target_properties(insitu_device_streamlines_probe PROPERTIES CUDA_STANDARD 17
-          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES native)
+          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
         target_include_directories(insitu_device_streamlines_probe PRIVATE ../src_gpu)
         # Numerical component probe only; production device products keep their normal optimization.
         target_compile_options(insitu_device_streamlines_probe PRIVATE
@@ -396,14 +403,14 @@ if(ASTR_WITH_CATALYST)
         add_executable(insitu_curve_inverse_probe EXCLUDE_FROM_ALL
           ../tests/gpu_validation/insitu_curve_inverse_probe.cu)
         set_target_properties(insitu_curve_inverse_probe PROPERTIES CUDA_STANDARD 17
-          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES native)
+          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
         target_include_directories(insitu_curve_inverse_probe PRIVATE ../src_gpu)
         target_compile_options(insitu_curve_inverse_probe PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
         target_link_libraries(insitu_curve_inverse_probe PRIVATE viskores::cont viskores::worklet viskores::cuda)
         add_executable(insitu_device_geometry_probe EXCLUDE_FROM_ALL
           ../tests/gpu_validation/insitu_device_geometry_probe.cu)
         set_target_properties(insitu_device_geometry_probe PROPERTIES CUDA_STANDARD 17
-          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES native)
+          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
         target_include_directories(insitu_device_geometry_probe PRIVATE ../src_gpu)
         target_compile_options(insitu_device_geometry_probe PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
         if(ASTR_INSITU_FLYING_EDGES_SOURCE)
@@ -418,7 +425,7 @@ if(ASTR_WITH_CATALYST)
         add_executable(insitu_device_structured_probe EXCLUDE_FROM_ALL
           ../tests/gpu_validation/insitu_device_structured_probe.cu)
         set_target_properties(insitu_device_structured_probe PROPERTIES CUDA_STANDARD 17
-          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES native)
+          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
         target_include_directories(insitu_device_structured_probe PRIVATE ../src_gpu)
         target_compile_options(insitu_device_structured_probe PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
         target_link_libraries(insitu_device_structured_probe PRIVATE
@@ -431,7 +438,7 @@ if(ASTR_WITH_CATALYST)
         add_executable(insitu_device_wall_probe EXCLUDE_FROM_ALL
           ../tests/gpu_validation/insitu_device_wall_probe.cu)
         set_target_properties(insitu_device_wall_probe PROPERTIES CUDA_STANDARD 17
-          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES native)
+          CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
         target_include_directories(insitu_device_wall_probe PRIVATE ../src_gpu)
         target_compile_options(insitu_device_wall_probe PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
         find_package(Python3 REQUIRED COMPONENTS Development.Embed)

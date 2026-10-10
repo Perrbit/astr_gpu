@@ -1,5 +1,80 @@
 # GPU Validation
 
+## NSCBC Physical Repair Gates
+
+The GPU bc12/bc22/bc52 compatibility repairs are checked against analytic
+characteristic states, not the older CPU boundary algorithm. Build the root
+CMake project with `ASTR_WITH_CUDA=ON` and `BUILD_TESTING=ON`, then run:
+
+```bash
+python3 tests/gpu_validation/run_nscbc_physics_gate.py \
+  --exe <absolute-build>/bin/astr --mpirun <matching-mpirun> \
+  --out <new-test-directory> --backflow-rejection --short-case
+python3 tests/gpu_validation/run_nscbc_physics_gate.py \
+  --exe <absolute-build>/bin/astr --mpirun <matching-mpirun> \
+  --out <another-new-directory> --np 1 --memcheck \
+  --modes sign inlet_sub out_sub top_in transverse_y transverse_z
+python3 -m unittest discover -s tests/gpu_validation -p test_nscbc_physics_contract.py
+```
+
+`astr test bcns` uses `ASTR_NSCBC_PROBE` to select a bounded manufacturing
+probe. It calls production CUDA kernels. The gate checks FP64 absolute errors
+at most `2e-10`, physical outlet ownership, positive relaxation, incoming-only
+prescription, supersonic outgoing-wave preservation, and collective backflow
+rejection. The six-advance OpenShock check uses `maxstep=5` under ASTR's
+inclusive loop, compares NP1/NP2 x-slab physical nodes at the last RK update,
+and requires positive density/internal energy. It is not a long-time physical
+or boundary-reflection validation. It sets the BUILD_TESTING-only
+`ASTR_VALIDATION_NSCBC_RK=1` hook, limited to this exact short case with all
+field/checkpoint products disabled and no restore directory. This does not
+register NSCBC production output or restart. Existing CPU/GPU NSCBC compare scripts are
+historical evidence, not a correctness oracle for the intentionally changed
+GPU branches. See `documents/ASTR_GPU_NSCBC_PHYSICS_REPAIR_PLAN.md`.
+
+### M12 Matched Boundary Comparison
+
+`run_m12_boundary_compare.py` prepares read-only M12 subsets and compares
+`11/21/41/50/1/1` against `11/22/41/52/1/1` using FP64 GPU computation.
+The `smoke` stage checks 64x32x24, NP1/NP2 x-slab with zero wall forcing and
+per-rank memcheck. The `preflight` stage uses 450x130x96 and the original
+random wall forcing for ten advances per boundary choice. Only after both
+pass, run `medium` for 2000 advances each (or choose `--steps`). Use a new evidence directory:
+
+```bash
+python3 tests/gpu_validation/run_m12_boundary_compare.py \
+  --stage smoke --output <new-smoke-directory>
+python3 tests/gpu_validation/run_m12_boundary_compare.py \
+  --stage preflight --output <new-preflight-directory>
+python3 tests/gpu_validation/run_m12_boundary_compare.py \
+  --stage medium --output <new-comparison-directory>
+python3 tests/gpu_validation/run_m12_boundary_compare.py \
+  --stage restart --output <new-restart-directory> --timeout 180
+python3 tests/gpu_validation/run_m12_boundary_compare.py \
+  --stage medium --steps 10000 --checkpoint-interval 1000 \
+  --order nscbc extrapolation --output <new-long-comparison-directory>
+```
+
+The `preflight` and `medium` stages use NP=2, 2x1x1, dt=0.02, and identical original
+rank-local random forcing. Rendering is disabled. Checkpoints are disabled
+unless `--checkpoint-interval` is selected; then the latest two completed-step
+bundles are retained. The checkpoint packing budget is 1 GiB per rank, including
+the medium-grid primitive and geometry packs. Basic slices and a final volume
+are retained. CFL must remain <=1; final density,
+pressure, and temperature must be finite and positive. bc22 still rejects
+undefined backflow. The comparison changes the boundary treatment, including
+its transverse filters; it does not isolate only the characteristic RHS,
+or establish steady turbulence. The `restart` stage separately checks continuous
+ten-step versus five-plus-five continuation with the original nonzero random
+wall forcing: NSCBC NP1/NP2 x-slab and extrapolation NP2 x-slab. Conservative
+state, primitive caches, halo extras, RNG/control, stage diagnostics and statistics
+must match bit for bit. Original input resources are removed from resumed case
+directories so continuation must use the checkpoint's frozen resources. A
+checkpoint-free observer control must have identical stage and statistics bytes.
+Only same-topology restart is admitted; repartition, CPU joint NSCBC, accumulated
+means and adaptive output are not admitted by this change.
+Each invocation freezes its executable under `<output>/bin/astr` so subsequent
+development rebuilds do not invalidate that run's exact restart executable contract.
+
 ## Output Redesign Foundations
 
 `output_config.F90` implements a candidate configuration parser and rank-0

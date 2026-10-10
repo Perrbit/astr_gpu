@@ -25,14 +25,20 @@ def replace_value(lines, section, value):
     lines[index] = value
 
 
-def selected_nodes(grid):
+def selected_nodes(grid, intervals=(64, 32, 24)):
     x = grid['x'][0, :]
     if x.shape != (2251,) or not np.all(np.diff(x) > 0):
         raise ValueError('unexpected source x coordinates')
-    targets = np.linspace(x[0], x[-1], 65)
-    ix = np.abs(x[:, None] - targets[None, :]).argmin(axis=0)
-    iy = np.rint(np.linspace(0, 260, 33)).astype(int)
-    if np.unique(ix).size != 65 or np.unique(iy).size != 33:
+    if intervals == (450, 130, 96):
+        ix = np.arange(0, 2251, 5)
+        iy = np.arange(0, 261, 2)
+    elif intervals == (64, 32, 24):
+        targets = np.linspace(x[0], x[-1], 65)
+        ix = np.abs(x[:, None] - targets[None, :]).argmin(axis=0)
+        iy = np.rint(np.linspace(0, 260, 33)).astype(int)
+    else:
+        raise ValueError('M12 supports the local interface or approved medium grid')
+    if np.unique(ix).size != intervals[0]+1 or np.unique(iy).size != intervals[1]+1:
         raise ValueError('subset must contain distinct original nodes')
     blow_x = x[ix]
     if not (np.any((blow_x > 20) & (blow_x < 40)) and
@@ -41,21 +47,21 @@ def selected_nodes(grid):
     return ix, iy, blow_x
 
 
-def prepare(source, destination, backend):
+def prepare(source, destination, backend, intervals=(64, 32, 24)):
     source = source.resolve(strict=True)
     destination = destination.resolve()
     if destination.exists() or destination == source or source in destination.parents:
         raise ValueError('destination must be a new directory outside the read-only case')
     datin = source / 'datin'
     with h5py.File(datin / 'grid.2d', 'r') as grid:
-        ix, iy, xline = selected_nodes(grid)
+        ix, iy, xline = selected_nodes(grid, intervals)
         if any(grid[key].shape != (261, 2251) for key in ('x', 'y', 'z')):
             raise ValueError('unexpected source grid shape')
     profile = (datin / 'inlet.prof').read_text(encoding='ascii').splitlines()
     if len(profile) != 265:
         raise ValueError('profile must have four headers and 261 node records')
     input_lines = (datin / 'input.3d').read_text(encoding='ascii').splitlines()
-    replace_value(input_lines, 'im,jm,km', '64,32,24')
+    replace_value(input_lines, 'im,jm,km', ','.join(map(str, intervals)))
     replace_value(input_lines, 'nondimen,diffterm',
                   't,t,f,f,f,f,f,f,' + ('t' if backend == 'gpu' else 'f'))
     controller = (datin / 'controller').read_text(encoding='ascii').splitlines()
@@ -94,9 +100,11 @@ def prepare(source, destination, backend):
         "&slices\n enabled=f\n/\n", encoding='ascii')
     provenance = {
         'purpose': 'local interface validation, not production DNS',
-        'intervals': [64, 32, 24], 'completed_steps': 10, 'deltat': 0.02,
-        'x_selection': 'nearest original nodes to 65 uniformly spaced physical targets',
-        'y_selection': '33 rounded uniformly spaced original node indices',
+        'intervals': list(intervals), 'completed_steps': 10, 'deltat': 0.02,
+        'x_selection': ('every fifth original node' if intervals[0] == 450 else
+                        'nearest original nodes to 65 uniformly spaced physical targets'),
+        'y_selection': ('every second original node' if intervals[1] == 130 else
+                        '33 rounded uniformly spaced original node indices'),
         'x_indices': ix.tolist(), 'y_indices': iy.tolist(),
         'nonzero_blowing_x': xline[(xline > 20) & (xline < 60)].tolist(),
         'source_sha256': sources,

@@ -218,7 +218,8 @@ contains
   logical function extruded_profile_output_case()
     extruded_profile_output_case=trim(flowtype)=='bl'.and..not.lreadgrid.and.ninit==2.and.nondimen.and. &
       trim(conschm)=='743e'.and.trim(difschm)=='643e'.and.recon_schem==5.and.lchardecomp.and. &
-      .not.lfilter.and.trim(turbinf)=='prof'.and.all(bctype==[11,21,41,50,1,1])
+      .not.lfilter.and.trim(turbinf)=='prof'.and. &
+      (all(bctype==[11,21,41,50,1,1]).or.all(bctype==[11,22,41,52,1,1]))
   end function
 
   function profile_grid_resource_name() result(name)
@@ -235,6 +236,10 @@ contains
 
   subroutine check_capability()
     logical :: supported_case
+#ifdef ASTR_BUILD_TESTING
+    character(16) :: validation_mode
+    integer :: validation_status
+#endif
     supported_case=(trim(flowtype)=='tgv'.and.all(bctype==1)).or. &
       (trim(flowtype)=='tgv'.and.lreadgrid.and. &
       (all([ia,ja,ka]==32).or.all([ia,ja,ka]==64).or.all([ia,ja,ka]==128).or.all([ia,ja,ka]==256)).and. &
@@ -242,11 +247,29 @@ contains
       (trim(flowtype)=='channel'.and.all(bctype==[1,1,41,41,1,1])).or. &
       (trim(flowtype)=='bl'.and.lreadgrid.and.(trim(turbinf)=='prof'.or.trim(turbinf)=='intp').and. &
       all(bctype==[11,21,41,51,1,1])).or.extruded_profile_output_case()
+#ifdef ASTR_BUILD_TESTING
+    ! This bounded RK probe has no output/restart contract to publish.
+    call get_environment_variable('ASTR_VALIDATION_NSCBC_RK',validation_mode,status=validation_status)
+    if(validation_status==0.and.trim(validation_mode)=='1') then
+      supported_case=trim(flowtype)=='openshock'.and.use_gpu.and. &
+        all([ia,ja,ka]==[64,8,8]).and.all(bctype==[12,22,1,1,1,1]).and. &
+        .not.lreadgrid.and.ninit==0.and.nondimen.and..not.lavg.and. &
+        .not.lfilter.and..not.diffterm.and..not.lchardecomp.and. &
+        trim(conschm)=='543e'.and.trim(difschm)=='643e'.and.recon_schem==3.and. &
+        maxstep==5.and.deltat==1.d-5.and. &
+        .not.options%checkpoint%enabled.and..not.options%volume%enabled.and..not.options%slices%enabled.and. &
+        .not.options%adaptive%enabled.and.len_trim(options%restore_directory)==0
+    endif
+#endif
     supported_case=supported_case.and.numq==5.and.num_species==0.and.num_modequ==0.and. &
       .not.lcomb.and.(.not.lavg.or..not.use_gpu.or.trim(flowtype)=='bl')
     call check((supported_case.or.air5_output_case()).and..not.lcracon.and..not.limmbou.and. &
       .not.lrestart.and.trim(rkscheme)=='rk3', &
       'new output admits TGV, bc41 channel, profile/dynamic flatplate or fixed AIR5 HBL/SBLI RK3')
+    if(extruded_profile_output_case().and.bctype(2)==22) then
+      call check(use_gpu.and..not.options%adaptive%enabled.and..not.lavg, &
+        'profile joint NSCBC admits GPU archives and same-topology restart; means/adaptive not validated')
+    endif
     call check(ninit>=0.and.ninit<=3,'new output initialization dimension must be 0:3')
     if(air5_output_case()) call check(ninit==0,'AIR5 external initialization is not registered')
     if(air5_output_case().and.lavg) call check(diffterm.and.feqavg>0, &

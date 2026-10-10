@@ -297,6 +297,7 @@ contains
     use boundary_gpu, only: gpu_s1_flatplate_nscbc_farfield_case
     use commarray_gpu, only: save_q_stats_snapshot_gpu
     use commvar, only: time,nstep
+    use bc, only: bctype
     use gpu_phase_timing, only: begin_gpu_phase,end_gpu_phase
     use inflow_timeseries_gpu, only: prepare_dynamic_inflow_gpu
     implicit none
@@ -304,7 +305,7 @@ contains
     call begin_gpu_phase('prepare')
     call begin_rk_prepare_timing()
     call prepare_dynamic_inflow_gpu(time)
-    stats_snapshot_ready = gpu_s1_flatplate_nscbc_farfield_case()
+    stats_snapshot_ready = gpu_s1_flatplate_nscbc_farfield_case().and.bctype(2)/=22
     if(stats_snapshot_ready) call save_q_stats_snapshot_gpu()
     call prepare_rkfirst_stats_gpu()
     prepared_halo_ready = .true.
