@@ -4,6 +4,7 @@
 #include "insitu_device_product_audit.h"
 #include "insitu_device_wall.h"
 #include "insitu_product_dispatch.h"
+#include "insitu_m12_products.h"
 #include <viskores/cont/ArrayCopy.h>
 #include <viskores/cont/Algorithm.h>
 #include <viskores/cont/CellSetSingleType.h>
@@ -299,6 +300,16 @@ void report_resident_trace(const astr_insitu::DeviceStreamlines& trace,const cha
     std::printf("ASTR_INSITU_TRAJECTORY_TERMINATION rank=%d product=%s seed=%d direction=%d status=3 "
       "reason=sub_minimum_remaining accepted=%.17g remaining=%.17g minimum=%.17g\n",rank,name,
       i%trace.seed_count,i<trace.seed_count?1:-1,trace.final_state[i][4],trace.maximum_length-trace.final_state[i][4],trace.minimum_step);
+  if(trace.seed_layout=="bl-layered256") for(int i=0;i<trace.particles;++i) {
+    const auto& state=trace.final_state[i];
+    const int status=int(state[7]);
+    const char* reason=status==astr_insitu::TraceSteps?"step_budget":
+      (status==astr_insitu::TraceLength?"arc_length":(status==astr_insitu::Outside?"domain_exit":"sub_minimum_remaining"));
+    std::printf("ASTR_INSITU_M12_TRAJECTORY rank=%d product=%s seed=%d direction=%d status=%d reason=%s "
+      "accepted_steps=%d accepted_length=%.17g remaining=%.17g endpoint=%.17g,%.17g,%.17g\n",rank,name,
+      i%trace.seed_count,i<trace.seed_count?1:-1,status,reason,int(state[6]),state[4],
+      trace.maximum_length-state[4],state[0],state[1],state[2]);
+  }
 }
 #endif
 }
@@ -410,7 +421,7 @@ extern "C" int astr_insitu_device_render(const char* pipeline,const char* backen
     double* velocity,double* halo,double* diagnostic,double* reynolds_halo,double* favre_halo,
     int covered,double duration,double window_start,double window_end,std::int64_t host_budget,
     int curve,double* coordinates,double* coordinate_halo,std::int64_t budget,std::int64_t reserve,std::int64_t retained,
-    const char* seeds)
+    const char* seeds,double* temperature,int plane_j)
 try {
   const auto comm=MPI_Comm_f2c(fcomm);
   const std::string seed_layout=seeds?seeds:"line16";
@@ -451,12 +462,14 @@ try {
   const std::string selected=profile?profile:"";
   const bool curve_demo=selected=="curve_demo";
   const bool boundary_layer=selected=="boundary_layer";
+  const bool m12_hd=selected=="m12_diagnostics";
   const viskores::Id3 global_dimensions(global_cells,global_y,global_z);
-  const bool demo=selected=="tgv256_demo" || curve_demo || boundary_layer;
+  const bool demo=selected=="tgv256_demo" || curve_demo || boundary_layer || m12_hd;
   if(selected!="all" && selected!="q_surface" && selected!="q_streamlines" &&
      selected!="streamlines" && selected!="velocity_slice" && !demo) throw std::invalid_argument("Unsupported device product profile");
-  if(boundary_layer?(global_dimensions!=viskores::Id3(64,32,24) || !curve || covered ||
-      seed_layout!="bl-layered64" || std::string(pipeline?pipeline:"")!="standard-device"):
+  if((boundary_layer || m12_hd)?((global_dimensions!=viskores::Id3(64,32,24) &&
+      !(m12_hd && global_dimensions==viskores::Id3(476,130,96))) || !curve || covered ||
+      seed_layout!=(m12_hd?"bl-layered256":"bl-layered64") || std::string(pipeline?pipeline:"")!="standard-device"):
       (global_dimensions!=viskores::Id3(global_cells) ||
        (curve_demo?(global_cells!=32 && global_cells!=64 && global_cells!=128 && global_cells!=256):
         global_cells!=(demo?256:32))))
@@ -471,10 +484,10 @@ try {
   if(host_budget<=0 || !std::isfinite(time) || step<0) throw std::invalid_argument("Invalid device frame identity/budget");
   if(curve!=0 && curve!=1) throw std::invalid_argument("Invalid device coordinate mode");
   if(curve) {
-    if((selected!="q_surface" && selected!="streamlines" && !curve_demo && !boundary_layer) || !coordinates ||
-        (global_cells!=32 && !curve_demo && !boundary_layer) ||
-        ((selected=="q_surface" || curve_demo || boundary_layer) && covered) ||
-        ((selected=="streamlines" || curve_demo || boundary_layer) && !coordinate_halo) ||
+    if((selected!="q_surface" && selected!="streamlines" && !curve_demo && !boundary_layer && !m12_hd) || !coordinates ||
+        (global_cells!=32 && !curve_demo && !boundary_layer && !m12_hd) ||
+        ((selected=="q_surface" || curve_demo || boundary_layer || m12_hd) && covered) ||
+        ((selected=="streamlines" || curve_demo || boundary_layer || m12_hd) && !coordinate_halo) ||
         std::string(pipeline?pipeline:"")=="compatible")
       throw std::invalid_argument("CURVE requires an admitted strict bounded surface or streamline product");
 #ifdef ASTR_VISKORES_ALLOCATION_PREFLIGHT
@@ -506,7 +519,7 @@ try {
   const bool crossing=lines && !demo && astr_insitu_scene_due("crossing_streamlines");
   const bool reynolds=(selected=="all" || selected=="streamlines") && covered && astr_insitu_scene_due("mean_reynolds_streamlines");
   const bool favre=(selected=="all" || selected=="streamlines") && covered && astr_insitu_scene_due("mean_favre_streamlines");
-  const double iso=boundary_layer?.001:(demo?0.:.25);
+  const double iso=(boundary_layer || m12_hd)?.001:(demo?0.:.25);
   const std::string route=pipeline?pipeline:"";
   if(route!="compatible") {
 #ifdef ASTR_INSITU_DEVICE_RENDERING
@@ -524,7 +537,7 @@ try {
     if(surface) meshes.push_back(resident_mesh("q_surface",extracted.surface,step,time,3,halo,
       reinterpret_cast<astr_insitu::DeviceDiagnostics*>(diagnostic),extent,offset,global_cells,rank,
       curve?reinterpret_cast<viskores::Vec3f*>(coordinates):nullptr,std::uint64_t(host_budget),nullptr,0,demo,iso,
-      global_dimensions,boundary_layer?1.1:1.));
+      global_dimensions,(boundary_layer || m12_hd)?1.1:1.));
     if(curve) std::printf("ASTR_INSITU_CURVE_SURFACE_FRAME rank=%d step=%d physical_coordinates=1 "
       "field_download_bytes=0 geometry_host_bytes=0\n",rank,step);
     if(slice) meshes.push_back(resident_mesh("velocity_slice",
@@ -536,6 +549,11 @@ try {
       const double origin[3]={0.,0.,45.},normal[3]={0.,0.,1.};
       meshes.push_back(astr_insitu::build_device_plane(fcomm,step,time,global,local,start,coordinates,velocity,
         origin,normal,budget,reserve,retained,host_budget,true,1.1));
+    }
+    if(m12_hd && astr_insitu_scene_due("velocity_slice")) {
+      if(!temperature) throw std::invalid_argument("M12 independent temperature is missing");
+      astr_insitu::append_m12_planes(meshes,comm,step,time,global_dimensions,extent,offset,coordinates,velocity,
+        temperature,plane_j,std::uint64_t(budget),std::uint64_t(retained));
     }
     if(instant || crossing || reynolds || favre) {
       auto actual=astr_insitu::pack_component_halo(halo,halo_dimensions);
@@ -559,11 +577,22 @@ try {
 #endif
         auto mesh=resident_mesh(name,trace.resident_geometry,step,time,2,source,nullptr,
           extent,offset,global_cells,rank,nullptr,std::uint64_t(host_budget),curve?&physical:nullptr,trace_axis,demo,.25,
-          global_dimensions,boundary_layer?1.1:1.);
+          global_dimensions,(boundary_layer || m12_hd)?1.1:1.);
         mesh.controls["streamline_seed_layout"]=trace.seed_layout=="tgv-stratified"?1.:
-          (trace.seed_layout=="bl-layered64"?2.:0.);
+          (trace.seed_layout=="bl-layered64"?2.:(trace.seed_layout=="bl-layered256"?3.:0.));
         mesh.controls["streamline_seed_count"]=trace.seed_count;
         mesh.controls["streamline_particle_count"]=trace.particles;
+        if(m12_hd) {
+          mesh.controls["streamline_step_limit"]=4096;
+          for(const auto& state:trace.final_state) {
+            const auto key=std::string("termination_")+(int(state[7])==astr_insitu::TraceSteps?"step_budget":
+              (int(state[7])==astr_insitu::TraceLength?"arc_length":
+               (int(state[7])==astr_insitu::Outside?"domain_exit":"sub_minimum_remaining")));
+            mesh.controls[key]+=1.;
+          }
+          for(const char* reason:{"step_budget","arc_length","domain_exit","sub_minimum_remaining"})
+            mesh.controls.emplace(std::string("termination_")+reason,0.);
+        }
         meshes.push_back(std::move(mesh));
       };
       if(instant) add_trace("instantaneous_streamlines",actual,false,false,halo);

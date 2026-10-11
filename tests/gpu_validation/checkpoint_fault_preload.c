@@ -89,8 +89,16 @@ static int target_matches(int fd, const char *path, const char *suffix) {
     const char *root = getenv("ASTR_CHECKPOINT_TEST_ROOT");
     char expected[1400], actual[1400], cwd[1024];
     const char *destination = path;
-    if (path[0] != '/' && fd == AT_FDCWD && getcwd(cwd, sizeof(cwd)) &&
-        snprintf(actual, sizeof(actual), "%s/%s", cwd, path) < (int)sizeof(actual)) destination = actual;
+    if (path[0] != '/') {
+        int valid = fd == AT_FDCWD ? getcwd(cwd, sizeof(cwd)) != NULL : 0;
+        if (fd != AT_FDCWD) {
+            char descriptor[64];
+            snprintf(descriptor, sizeof(descriptor), "/proc/self/fd/%d", fd);
+            ssize_t length = readlink(descriptor, cwd, sizeof(cwd) - 1);
+            if (length >= 0 && length < (ssize_t)sizeof(cwd) - 1) { cwd[length] = 0; valid = 1; }
+        }
+        if (valid && snprintf(actual, sizeof(actual), "%s/%s", cwd, path) < (int)sizeof(actual)) destination = actual;
+    }
     return root && target &&
         snprintf(expected, sizeof(expected), "%s/%s%s", root, target, suffix) < (int)sizeof(expected) &&
         !strcmp(destination, expected);
@@ -106,9 +114,26 @@ int mkdir(const char *path, mode_t mode) {
     return real(path, mode);
 }
 
+static int protect_published(int fd, const char *name) {
+    if (!phase("protect_batch") || !target_matches(fd, name, "")) return 0;
+    int batch = openat(fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (batch < 0) return -1;
+    int marker = openat(batch, "PROTECT", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    int saved = errno;
+    if (marker >= 0 && close(marker)) { marker = -1; saved = errno; }
+    if (close(batch) && marker >= 0) return -1;
+    if (marker < 0) { errno = saved; return -1; }
+    return 0;
+}
+
 int renameat2(int oldfd, const char *old, int newfd, const char *new, unsigned flags) {
     if (phase("batch_rename") && target_matches(newfd, new, "")) {
         errno = EIO;
+        return -1;
+    }
+    const char *unsupported = getenv("ASTR_CHECKPOINT_TEST_RENAME_ERRNO");
+    if (unsupported && flags == 1 && target_matches(newfd, new, "")) {
+        errno = atoi(unsupported);
         return -1;
     }
     int (*real)(int, const char *, int, const char *, unsigned) = dlsym(RTLD_NEXT, "renameat2");
@@ -116,19 +141,15 @@ int renameat2(int oldfd, const char *old, int newfd, const char *new, unsigned f
     int result = real(oldfd, old, newfd, new, flags);
     /* Preserve a published test checkpoint before later retention, without a
      * timing-sensitive external watcher or any change to solver state. */
-    if (!result && phase("protect_batch") && target_matches(newfd, new, "")) {
-        int batch = openat(newfd, new, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-        if (batch < 0) return -1;
-        int marker = openat(batch, "PROTECT", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
-        int saved = errno;
-        if (marker >= 0 && close(marker)) { marker = -1; saved = errno; }
-        if (close(batch) && marker >= 0) return -1;
-        if (marker < 0) { errno = saved; return -1; }
-    }
+    if (!result && protect_published(newfd, new)) return -1;
     return result;
 }
 
 int renameat(int oldfd, const char *old, int newfd, const char *new) {
+    if (phase("fallback_rename") && target_matches(newfd, new, "")) {
+        errno = EIO;
+        return -1;
+    }
     if (phase("latest_rename") && !strcmp(old, ".LATEST.tmp") && !strcmp(new, "LATEST") &&
         directory_matches(oldfd, "")) {
         const char *target = getenv("ASTR_CHECKPOINT_TEST_TARGET");
@@ -144,7 +165,9 @@ int renameat(int oldfd, const char *old, int newfd, const char *new) {
     }
     int (*real)(int, const char *, int, const char *) = dlsym(RTLD_NEXT, "renameat");
     if (!real) { errno = ENOSYS; return -1; }
-    return real(oldfd, old, newfd, new);
+    int result = real(oldfd, old, newfd, new);
+    if (!result && protect_published(newfd, new)) return -1;
+    return result;
 }
 
 int unlinkat(int fd, const char *name, int flags) {

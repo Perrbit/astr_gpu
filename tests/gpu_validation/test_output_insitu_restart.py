@@ -1,5 +1,6 @@
 """Real EGL/Catalyst continuation from completed-step native checkpoints."""
 import csv
+from collections import Counter
 import json
 import os
 from pathlib import Path
@@ -43,8 +44,39 @@ def configuration(render=True, statistics=True, mode="steps", interval=8):
 """
 
 
+def check_crossing_diagnostics(receipts, log):
+    expected = Counter()
+    for rank, receipt in receipts:
+        pipeline = receipt.get('rendering_pipeline', 'compatible')
+        if pipeline in ('standard-device', 'direct-device'):
+            expected[rank] += 1
+        else:
+            assert pipeline == 'compatible', ('Unknown rendering pipeline', pipeline)
+            if rank == 0:
+                error = receipt['crossing_maxabs']
+                assert np.isfinite(error) and 0. <= error <= 2e-10, ('Crossing receipt error', error)
+    if not expected:
+        return
+    actual = Counter()
+    for line in log.splitlines():
+        if not line.startswith('ASTR_INSITU_RESIDENT_CROSSING'):
+            continue
+        match = re.fullmatch(r'ASTR_INSITU_RESIDENT_CROSSING rank=(\d+) endpoint_maxabs=(\S+)\s*', line)
+        assert match is not None, ('Malformed crossing diagnostic', line)
+        rank = int(match[1])
+        assert rank in expected, ('Unexpected crossing rank', rank)
+        try:
+            error = float(match[2])
+        except ValueError as exc:
+            raise AssertionError('Invalid crossing endpoint value: ' + match[2]) from exc
+        assert np.isfinite(error) and 0. <= error <= 2e-10, ('Crossing endpoint error', rank, error)
+        actual[rank] += 1
+    assert actual == expected, ('Crossing diagnostic count mismatch', actual, expected)
+
+
 def check_render(case, ranks, steps, statistics=True, full_volume_downloads=True):
     output = case / "outdat/render"
+    receipts = []
     for rank in range(ranks):
         with (output / f"resources.rank{rank:08d}.csv").open() as stream:
             device = stream.readline().split()[1].removeprefix("device=GPU-")
@@ -65,8 +97,10 @@ def check_render(case, ranks, steps, statistics=True, full_volume_downloads=True
         for step in steps:
             receipt = json.loads((output / f"mesh_step{step:08d}_rank{rank}.json").read_text())
             assert receipt["step"] == step and np.isfinite(receipt["time"])
-            assert receipt["crossing_maxabs"] <= 2e-10 if rank == 0 else True
+            receipts.append((rank, receipt))
             assert all(item["egl_uuid"] == device for item in receipt["products"].values())
+    log = (case / "run.log").read_text()
+    check_crossing_diagnostics(receipts, log)
     pictures = sorted(output.glob("*.jpeg"))
     assert pictures and all(path.with_suffix(".eps").is_file() for path in pictures)
     for path in pictures:
@@ -76,7 +110,7 @@ def check_render(case, ranks, steps, statistics=True, full_volume_downloads=True
             assert np.any(pixels < 245), path
     assert not list((case / "outdat").glob("restart_q.*"))
     assert not list((case / "outdat").glob("insitu_cpu_q.*"))
-    flows = re.findall(r"ASTR_INSITU_GPU_FLOW rank=(\d+) frame_downloads=(\d+)", (case / "run.log").read_text())
+    flows = re.findall(r"ASTR_INSITU_GPU_FLOW rank=(\d+) frame_downloads=(\d+)", log)
     expected_downloads = len(steps) if full_volume_downloads else 0
     assert len(flows) == ranks and all(int(count) == expected_downloads for _, count in flows)
     return pictures

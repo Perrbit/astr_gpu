@@ -231,6 +231,53 @@ done:
     return result;
 }
 
+/* The output root is private to the writer. mkdirat reserves the name against
+ * other publishers, including on NFS where RENAME_NOREPLACE is unavailable.
+ * Never remove a reservation after failure: keep the evidence and fail closed. */
+int astr_checkpoint_publish_directory(const char *root, const char *name) {
+    char temporary[133];
+    int fd = -1, reserved = -1, result = 0;
+    struct stat source, owner, current, parent;
+    const char *operation = "open publication root";
+    if (!name[0] || name[0] == '.' || strlen(name) > 128 || strchr(name, '/')) return EINVAL;
+    snprintf(temporary, sizeof(temporary), "%s.tmp", name);
+    fd = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) { result = errno; goto done; }
+    operation = "validate temporary directory";
+    if (fstatat(fd, temporary, &source, AT_SYMLINK_NOFOLLOW)) { result = errno; goto done; }
+    if (!S_ISDIR(source.st_mode)) { result = ENOTDIR; goto done; }
+#ifdef ASTR_HAS_RENAMEAT2
+    operation = "exclusive directory rename";
+    if (!renameat2(fd, temporary, fd, name, 1)) goto done;
+    result = errno;
+    if (result != EINVAL && result != EOPNOTSUPP && result != ENOSYS) goto done;
+#endif
+    operation = "validate private publication root";
+    if (fstat(fd, &parent)) { result = errno; goto done; }
+    if (parent.st_uid != geteuid() || (parent.st_mode & (S_IWGRP | S_IWOTH))) {
+        result = EPERM; goto done;
+    }
+    operation = "reserve destination directory";
+    if (mkdirat(fd, name, 0700)) { result = errno; goto done; }
+    reserved = openat(fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (reserved < 0) { result = errno; goto done; }
+    operation = "validate owned reservation";
+    if (fstat(reserved, &owner) || fstatat(fd, name, &current, AT_SYMLINK_NOFOLLOW)) {
+        result = errno; goto done;
+    }
+    if (owner.st_dev != current.st_dev || owner.st_ino != current.st_ino || !S_ISDIR(current.st_mode)) {
+        result = ESTALE; goto done;
+    }
+    operation = "replace owned empty reservation";
+    result = renameat(fd, temporary, fd, name) ? errno : 0;
+done:
+    if (reserved >= 0 && close(reserved) && !result) result = errno;
+    if (fd >= 0 && close(fd) && !result) result = errno;
+    if (result) fprintf(stderr, "ASTR_CHECKPOINT publication failed: %s; root=%s name=%s errno=%d (%s)\n",
+                        operation, root, name, result, strerror(result));
+    return result;
+}
+
 int astr_checkpoint_replace_plain_file(const char *root, const char *temporary, const char *target) {
     int fd = -1, result = 1;
     struct stat st;
@@ -403,6 +450,10 @@ int astr_output_archive_segment(const char *root, int reuse, int *generation, in
 }
 int astr_checkpoint_publication_root(const char *root) {
     (void)root;
+    return 1;
+}
+int astr_checkpoint_publish_directory(const char *root, const char *name) {
+    (void)root; (void)name;
     return 1;
 }
 int astr_checkpoint_replace_plain_file(const char *root, const char *temporary, const char *target) {

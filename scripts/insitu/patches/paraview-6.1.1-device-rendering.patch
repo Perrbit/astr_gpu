@@ -274,7 +274,7 @@
 +      indices->GetNumberOfValues() != indexCount || indexCount > std::numeric_limits<int>::max() ||
 +      (lines && poly->GetNumberOfPolys()) || poly->GetNumberOfVerts() || poly->GetNumberOfStrips() ||
 +      act->GetProperty()->GetRepresentation() != VTK_SURFACE || act->GetProperty()->GetEdgeVisibility() ||
-+      ren->GetSelector() || this->GetNumberOfClippingPlanes() || !this->ExtraAttributes.empty())
++      ren->GetSelector() || this->GetNumberOfClippingPlanes() > 6 || !this->ExtraAttributes.empty())
 +    {
 +      throw std::runtime_error("Unsupported strict CUDA polydata rendering configuration");
 +    }

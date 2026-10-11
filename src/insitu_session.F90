@@ -21,6 +21,9 @@ module insitu_session
     product_scene_due,product_state_file,product_results_complete
   use insitu_config_collective, only: read_insitu_options_collective
   use iso_c_binding, only: c_int,c_double,c_char,c_null_char,c_int64_t
+#ifdef _CUDA
+  use insitu_m12_gpu, only: sample_m12_completed_gpu
+#endif
   use ieee_arithmetic, only: ieee_is_finite
   implicit none
   private
@@ -523,7 +526,7 @@ contains
     character(1024) :: filename,message
     integer :: ierr
     logical :: ok,channel_wall,air5_wall,curve_tgv,device_demo,device_wall,device_plane,device_curve_q,device_air5_wall
-    logical :: device_curve_trace,device_curve_demo,device_boundary_layer
+    logical :: device_curve_trace,device_curve_demo,device_boundary_layer,device_m12_hd
     if(session_checked) return
     native_output=.true.
     call read_consistent_env('ASTR_INSITU_CONFIG',filename)
@@ -538,7 +541,9 @@ contains
       if(enabled) then
         device_demo=options%processing_backend=='device'.and.options%products=='tgv256_demo'
         device_curve_demo=options%processing_backend=='device'.and.options%products=='curve_demo'
-        device_boundary_layer=options%processing_backend=='device'.and.options%products=='boundary_layer'
+        device_m12_hd=options%processing_backend=='device'.and.options%products=='m12_diagnostics'
+        device_boundary_layer=options%processing_backend=='device'.and. &
+          (options%products=='boundary_layer'.or.device_m12_hd)
         device_wall=options%processing_backend=='device'.and.options%products=='channel_walls'
         device_air5_wall=options%processing_backend=='device'.and.options%products=='air5_walls'
         device_plane=options%processing_backend=='device'.and.options%slice_definition=='plane'
@@ -571,9 +576,16 @@ contains
               'device AIR5 wall products require noncatalytic Cartesian HBL 16^3 NP=1/2')
           elseif(device_boundary_layer) then
 #ifdef _CUDA
-            call require_sample(gpu_profile_mp_ld_flatplate_supported().and. &
-              all([ia,ja,ka]==[64,32,24]).and.mpisize<=4.and..not.options%statistics, &
-              'boundary_layer products require the approved 64x32x24 MP-LD profile short fixture')
+            if(device_m12_hd) then
+              call require_sample(gpu_profile_mp_ld_flatplate_supported().and. &
+                (all([ia,ja,ka]==[64,32,24]).or.all([ia,ja,ka]==[476,130,96])).and. &
+                mpisize==2.and.all([isize,jsize,ksize]==[2,1,1]).and..not.options%statistics, &
+                'M12 HD requires the approved NP=2 x-slab diagnostic grids')
+            else
+              call require_sample(gpu_profile_mp_ld_flatplate_supported().and. &
+                all([ia,ja,ka]==[64,32,24]).and.mpisize<=4.and..not.options%statistics, &
+                'boundary_layer products require the approved 64x32x24 MP-LD profile short fixture')
+            endif
 #else
             call require_sample(.false.,'boundary_layer products require CUDA; no fallback')
 #endif
@@ -623,8 +635,8 @@ contains
           max(ia,ja,ka)<=32.and.jm>=2.and.mpisize<=2.and.trim(difschm)=='643e', &
           'AIR5 wall candidate requires noncatalytic Cartesian HBL <=32 NP=1/2')
         if(options%render) then
-          if(options%product_count>0) call require_sample(.not.lreadgrid.and.all(bctype==1).and. &
-            trim(flowtype)=='tgv'.and.numq==5.and.num_species==0.and.nondimen, &
+          if(options%product_count>0) call require_sample(device_m12_hd.or.(.not.lreadgrid.and.all(bctype==1).and. &
+            trim(flowtype)=='tgv'.and.numq==5.and.num_species==0.and.nondimen), &
             'independent product clocks require the admitted periodic Cartesian TGV products')
 #ifdef ASTR_WITH_CATALYST
           call require_sample(mesh_pipeline_available(trim(options%rendering_pipeline)//c_null_char)==1, &
@@ -2146,6 +2158,15 @@ contains
       endif
       call render_native_if_due(step,time_end,.false.)
       return
+    endif
+    if(formal.and.options%products=='m12_diagnostics') then
+#ifdef _CUDA
+      call sample_m12_completed_gpu(trim(options%output_directory),step,time_end)
+      call render_native_if_due(step,time_end,.false.)
+      return
+#else
+      call require_sample(.false.,'M12 diagnostics require CUDA')
+#endif
     endif
     if(formal.and.options%products=='boundary_layer') then
       call require_sample(.not.statistics_enabled,'bounded boundary-layer rendering does not accumulate statistics')

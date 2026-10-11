@@ -131,6 +131,7 @@ def main():
     parser.add_argument('--library',type=Path)
     parser.add_argument('--topologies',nargs='+',choices=TOPOLOGIES,default=TOPOLOGIES)
     parser.add_argument('--backends',nargs='+',choices=('cpu','gpu'),default=('cpu','gpu'))
+    parser.add_argument('--halo-transport',choices=('pageable','pinned','pinned-pipeline','device-aware'),default='pageable')
     parser.add_argument('--memcheck',action='store_true')
     parser.add_argument('--sanitizer',type=Path)
     parser.add_argument('--trace-only',action='store_true',help='Separate clean resumed-frame transfer gate')

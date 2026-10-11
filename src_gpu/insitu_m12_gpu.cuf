@@ -1,0 +1,292 @@
+module insitu_m12_gpu
+  use cudafor
+  use mpi
+  use iso_fortran_env, only: int64
+  use ieee_arithmetic, only: ieee_is_finite
+  use checkpoint_state_io, only: checkpoint_state_require
+  implicit none
+  private
+  public :: sample_m12_completed_gpu,capture_m12_temperature_gpu
+  integer,parameter :: probes=72
+  integer,device,allocatable,save :: indices_d(:,:)
+  real(8),device,allocatable,save :: probe_d(:,:),blocks_d(:,:),summary_d(:),wall_d(:,:)
+  integer,save :: local_indices(3,probes)=0,owners(probes)=0,last_step=-1
+  logical,save :: initialized=.false.
+contains
+  subroutine initialize_m12()
+    use commvar, only: im,jm,km,ia,ja,ka
+    use parallel, only: ig0,jg0,kg0,mpirank,isize,jsize,ksize
+    integer :: unit,status,closed,n,ijk(3),total(probes),ierr,nb
+    real(8) :: target(3),actual(3)
+    character(256) :: header
+    call checkpoint_state_require(all([isize,jsize,ksize]==[2,1,1]).and. &
+      (all([ia,ja,ka]==[476,130,96]).or.all([ia,ja,ka]==[64,32,24])), &
+      MPI_COMM_WORLD,'M12 HD requires the approved NP=2 x-slab grids')
+    open(newunit=unit,file='datin/insitu_probes.dat',status='old',action='read',iostat=status)
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'missing M12 HD probe map')
+    read(unit,'(a)',iostat=status) header
+    call checkpoint_state_require(status==0.and.trim(header)=='ASTR_M12_PROBES_V1 72',MPI_COMM_WORLD,'probe map identity')
+    do n=1,probes
+      read(unit,*,iostat=status) ijk,target,actual
+      call checkpoint_state_require(status==0.and.all(ijk>=0).and.all(ijk<=[ia,ja,ka]).and. &
+        all(ieee_is_finite([target,actual])),MPI_COMM_WORLD,'invalid M12 probe entry')
+      local_indices(:,n)=ijk-[ig0,jg0,kg0]
+      if(all(local_indices(:,n)>=0).and.all(local_indices(:,n)<=[im,jm,km])) then
+        ! Lower faces own shared nodes. The global x end is not a duplicate.
+        if((local_indices(1,n)<im.or.ig0+im==ia).and.local_indices(3,n)<km) owners(n)=1
+      endif
+      if(owners(n)==0) local_indices(:,n)=-1
+    enddo
+    read(unit,'(a)',iostat=status) header
+    close(unit,iostat=closed)
+    call checkpoint_state_require(status<0.and.closed==0,MPI_COMM_WORLD,'probe map has extra records')
+    call MPI_Allreduce(owners,total,probes,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call checkpoint_state_require(ierr==MPI_SUCCESS.and.all(total==1),MPI_COMM_WORLD,'probe unique ownership')
+    nb=((im+1)*(jm+1)*(km+1)+4095)/4096
+    allocate(indices_d(3,probes),probe_d(6,probes),blocks_d(3,nb),summary_d(3),wall_d(3,im+1),stat=status)
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'M12 compact diagnostic allocation')
+    indices_d=local_indices
+    initialized=.true.
+  end subroutine
+
+  subroutine sample_m12_completed_gpu(directory,step,t)
+    use commvar, only: im,jm,km,hm,numq,const2,const5,const6,tempconst,tempconst1,reynolds,prandtl, &
+      roinf,pinf,tinf,uinf,vinf,winf,ia
+    use commarray_gpu, only: q_d,x_d,dxi_d
+    use commarray, only: x
+    use parallel, only: ig0,mpirank
+    character(*),intent(in) :: directory
+    integer,intent(in) :: step
+    real(8),intent(in) :: t
+    real(8) :: local(6,probes),values(6,probes),summary(3),minimum(3),wall(3,im+1),velocity_scale
+    integer :: status,ierr,n,i,unit,closed,nb
+    character(1200) :: path
+    if(.not.initialized) call initialize_m12()
+    call checkpoint_state_require(step==last_step+1.or.(last_step==-1.and.step==1), &
+      MPI_COMM_WORLD,'M12 HD sample must follow each complete step, without initial/final duplication')
+    call checkpoint_state_require(numq==5.and.all(ieee_is_finite([t,const2,const5,const6, &
+      roinf,pinf,tinf,reynolds,prandtl])).and.min(const2,const5,const6,roinf,pinf,tinf,reynolds,prandtl)>0.d0, &
+      MPI_COMM_WORLD,'invalid M12 diagnostic reference state')
+    velocity_scale=sqrt(uinf**2+vinf**2+winf**2)
+    call checkpoint_state_require(ieee_is_finite(velocity_scale).and.velocity_scale>0.d0, &
+      MPI_COMM_WORLD,'M12 diagnostics require nonzero free-stream speed')
+    nb=size(blocks_d,2)
+    call state_minima<<<nb,256>>>(q_d,blocks_d,im,jm,km,hm,const2,const6)
+    status=cudaDeviceSynchronize()
+    call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'M12 state validation kernel')
+    call reduce_minima<<<1,1>>>(blocks_d,summary_d,nb)
+    status=cudaDeviceSynchronize()
+    call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'M12 state validation reduction')
+    summary=summary_d
+    call MPI_Allreduce(summary,minimum,3,MPI_DOUBLE_PRECISION,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call checkpoint_state_require(ierr==MPI_SUCCESS.and.all(ieee_is_finite(minimum)).and.all(minimum>0.d0), &
+      MPI_COMM_WORLD,'nonpositive/nonfinite M12 physical density, internal energy or temperature')
+    call gather_probes<<<1,128>>>(q_d,indices_d,probe_d,im,jm,km,hm,const2,const6, &
+      velocity_scale,roinf,pinf,tinf)
+    status=cudaDeviceSynchronize()
+    call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'M12 sparse probe kernel')
+    local=probe_d
+    call checkpoint_state_require(all(ieee_is_finite(local)),MPI_COMM_WORLD,'nonfinite M12 sparse probe')
+    call MPI_Reduce(local,values,6*probes,MPI_DOUBLE_PRECISION,MPI_SUM,0,MPI_COMM_WORLD,ierr)
+    call checkpoint_state_require(ierr==MPI_SUCCESS,MPI_COMM_WORLD,'M12 sparse probe reduction')
+    status=0; closed=0
+    if(mpirank==0) then
+      path=trim(directory)//'/probes.csv'
+      if(step==1) then
+        open(newunit=unit,file=trim(path),status='new',action='write',iostat=status)
+        if(status==0) write(unit,'(a)',iostat=status) 'step,time,probe,u_Uinf,v_Uinf,w_Uinf,rho_rhoinf,p_pinf,T_Tinf'
+      else
+        open(newunit=unit,file=trim(path),status='old',position='append',action='write',iostat=status)
+      endif
+      if(status==0) then
+        do n=1,probes
+          write(unit,'(i0,a,es24.16,a,i0,6(a,es24.16))',iostat=status) step,',',t,',',n,(',',values(i,n),i=1,6)
+          if(status/=0) exit
+        enddo
+        close(unit,iostat=closed)
+      endif
+    endif
+    call checkpoint_state_require(status==0.and.closed==0,MPI_COMM_WORLD,'cannot publish M12 probe time series')
+    if(mod(step,50)==0) then
+      call wall_curves<<<(im+256)/256,256>>>(q_d,x_d,dxi_d,wall_d,im,jm,km,hm,ig0,ia, &
+        const2,const5,const6,tempconst,tempconst1,reynolds,prandtl,roinf,velocity_scale)
+      status=cudaDeviceSynchronize()
+      call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'M12 wall diagnostic kernel')
+      wall=wall_d
+      call checkpoint_state_require(all(ieee_is_finite(wall)),MPI_COMM_WORLD,'nonfinite M12 wall curve')
+      write(path,'(a,"/wall.step",i8.8,".rank",i4.4,".csv")') trim(directory),step,mpirank
+      open(newunit=unit,file=trim(path),status='new',action='write',iostat=status)
+      call checkpoint_state_require(status==0,MPI_COMM_WORLD,'cannot open M12 wall curve')
+      write(unit,'(a)',iostat=status) 'global_i,x,Cf,q_into_wall_rhoinf_Uinf3'
+      do i=0,im
+        if(i==im.and.ig0+im/=ia) cycle
+        write(unit,'(i0,3(a,es24.16))',iostat=status) ig0+i,',',x(i,0,0,1),',',wall(2,i+1),',',wall(3,i+1)
+        if(status/=0) exit
+      enddo
+      close(unit,iostat=closed)
+      call checkpoint_state_require(status==0.and.closed==0,MPI_COMM_WORLD,'cannot publish M12 wall curve')
+    endif
+    if(mpirank==0) write(*,'(a,i0,a,es24.16,a,3(es24.16,1x),a)') 'ASTR_M12_HD step=',step, &
+      ' time=',t,' rho_internal_T_min=',minimum,' probes=72 volume_download_bytes=0'
+    last_step=step
+  end subroutine
+
+  attributes(device) subroutine primitive(q,i,j,k,im,jm,km,hm,c2,c6,rho,v,p,t,e)
+    integer,value :: i,j,k,im,jm,km,hm
+    real(8),value :: c2,c6
+    real(8),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5)
+    real(8),intent(out) :: rho,v(3),p,t,e
+    rho=q(i,j,k,1)
+    v=q(i,j,k,2:4)/rho
+    e=q(i,j,k,5)-0.5d0*rho*sum(v**2)
+    p=e/c6; t=p/rho*c2
+  end subroutine
+
+  attributes(global) subroutine state_minima(q,values,im,jm,km,hm,c2,c6)
+    integer,value :: im,jm,km,hm
+    real(8),value :: c2,c6
+    real(8),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5)
+    real(8),device,intent(out) :: values(3,*)
+    real(8),shared :: work(3,256)
+    real(8) :: rho,v(3),p,t,e,entry(3)
+    integer :: node,i,j,k,lane,stride,s
+    lane=threadIdx%x; entry=huge(1.d0)
+    do s=0,15
+      node=(blockIdx%x-1)*4096+lane-1+s*256
+      if(node>=(im+1)*(jm+1)*(km+1)) cycle
+      i=mod(node,im+1);j=mod(node/(im+1),jm+1);k=node/((im+1)*(jm+1))
+      if(.not.all(ieee_is_finite(q(i,j,k,:))).or.q(i,j,k,1)<=0.d0) then
+        entry=-huge(1.d0); cycle
+      endif
+      call primitive(q,i,j,k,im,jm,km,hm,c2,c6,rho,v,p,t,e)
+      if(.not.all(ieee_is_finite([rho,e,t]))) then
+        entry=-huge(1.d0)
+      else
+        entry=min(entry,[rho,e,t])
+      endif
+    enddo
+    work(:,lane)=entry
+    call syncthreads()
+    stride=128
+    do while(stride>0)
+      if(lane<=stride) work(:,lane)=min(work(:,lane),work(:,lane+stride))
+      call syncthreads()
+      stride=stride/2
+    enddo
+    if(lane==1) values(:,blockIdx%x)=work(:,1)
+  end subroutine
+
+  attributes(global) subroutine reduce_minima(blocks,summary,n)
+    integer,value :: n
+    real(8),device,intent(in) :: blocks(3,n)
+    real(8),device,intent(out) :: summary(3)
+    integer :: b
+    summary=huge(1.d0)
+    do b=1,n
+      summary=min(summary,blocks(:,b))
+    enddo
+  end subroutine
+
+  attributes(global) subroutine gather_probes(q,indices,values,im,jm,km,hm,c2,c6,uinf,rinf,pinf,tinf)
+    integer,value :: im,jm,km,hm
+    real(8),value :: c2,c6,uinf,rinf,pinf,tinf
+    real(8),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5)
+    integer,device,intent(in) :: indices(3,probes)
+    real(8),device,intent(out) :: values(6,probes)
+    integer :: n,i,j,k
+    real(8) :: rho,v(3),p,t,e
+    n=threadIdx%x
+    if(n>probes) return
+    values(:,n)=0.d0
+    i=indices(1,n);j=indices(2,n);k=indices(3,n)
+    if(i<0) return
+    call primitive(q,i,j,k,im,jm,km,hm,c2,c6,rho,v,p,t,e)
+    values(:,n)=[v/uinf,rho/rinf,p/pinf,t/tinf]
+  end subroutine
+
+  attributes(global) subroutine wall_curves(q,x,metrics,wall,im,jm,km,hm,offset,global_x, &
+      c2,c5,c6,sutherland,sutherland1,re,pr,rinf,uinf)
+    use output_derivatives_gpu, only: output_derivative6_gpu
+    integer,value :: im,jm,km,hm,offset,global_x
+    real(8),value :: c2,c5,c6,sutherland,sutherland1,re,pr,rinf,uinf
+    real(8),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5), &
+      x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3),metrics(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3)
+    real(8),device,intent(out) :: wall(3,im+1)
+    real(8) :: rho,v(3),p,t,e,u(0:2),temperature(0:2),normal_v(-3:3),du,dt,dv,mu,weight,span
+    integer :: i,k,m,nt
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(i>im) return
+    nt=3
+    if(offset==0) nt=1
+    if(offset+im==global_x) nt=2
+    if(offset==0.and.im==global_x) nt=4
+    wall(:,i+1)=0.d0
+    do k=0,km-1
+      do m=0,2
+        call primitive(q,i,m,k,im,jm,km,hm,c2,c6,rho,v,p,t,e)
+        u(m)=v(1);temperature(m)=t
+      enddo
+      do m=-3,3
+        ! Physical-side ghost values are not consumed by the selected closure.
+        if(i+m<0.and.offset==0.or.i+m>im.and.offset+im==global_x) then
+          normal_v(m)=0.d0
+        else
+          call primitive(q,i+m,0,k,im,jm,km,hm,c2,c6,rho,v,p,t,e)
+          normal_v(m)=v(2)
+        endif
+      enddo
+      du=(-1.5d0*u(0)+2.d0*u(1)-0.5d0*u(2))*metrics(i,0,k,2,2)
+      dt=(-1.5d0*temperature(0)+2.d0*temperature(1)-0.5d0*temperature(2))*metrics(i,0,k,2,2)
+      dv=output_derivative6_gpu(normal_v(-3),normal_v(-2),normal_v(-1),normal_v(0), &
+        normal_v(1),normal_v(2),normal_v(3),i,im,nt)*metrics(i,0,k,1,1)
+      mu=temperature(0)*sqrt(temperature(0))*sutherland1/(temperature(0)+sutherland)/re
+      weight=0.5d0*(x(i,0,k+1,3)-x(i,0,k,3))
+      if(k>0) then
+        weight=weight+0.5d0*(x(i,0,k,3)-x(i,0,k-1,3))
+      else
+        weight=weight+0.5d0*(x(i,0,km,3)-x(i,0,km-1,3))
+      endif
+      wall(1,i+1)=wall(1,i+1)+weight
+      wall(2,i+1)=wall(2,i+1)+weight*mu*(du+dv)/(.5d0*rinf*uinf*uinf)
+      wall(3,i+1)=wall(3,i+1)+weight*((mu/pr)/c5)*dt/(rinf*uinf*uinf*uinf)
+    enddo
+    span=wall(1,i+1)
+    wall(2:3,i+1)=wall(2:3,i+1)/span
+  end subroutine
+
+  subroutine capture_m12_temperature_gpu(temperature,budget,reserve,retained)
+    use commvar, only: im,jm,km,hm,const2,const6
+    use commarray_gpu, only: q_d
+    use insitu_device_velocity, only: complete_sample_fields_gpu
+    real(8),device,allocatable,intent(out) :: temperature(:,:,:,:)
+    integer(int64),intent(in) :: budget,reserve,retained
+    integer(int64) :: bytes,free,total
+    integer :: status,nodes
+    nodes=(im+1)*(jm+1)*(km+1);bytes=8_int64*nodes
+    status=cudaMemGetInfo(free,total)
+    call checkpoint_state_require(status==cudaSuccess.and.retained<=budget.and.free>=reserve, &
+      MPI_COMM_WORLD,'M12 temperature memory reserve')
+    call checkpoint_state_require(bytes<=budget-retained.and.bytes<=free-reserve, &
+      MPI_COMM_WORLD,'M12 temperature allocation budget')
+    allocate(temperature(0:im,0:jm,0:km,1),stat=status)
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'M12 temperature allocation')
+    call temperature_kernel<<<(nodes+255)/256,256>>>(q_d,temperature,im,jm,km,hm,const2,const6)
+    status=cudaDeviceSynchronize()
+    call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'M12 temperature snapshot')
+    call complete_sample_fields_gpu(temperature,[im,jm,km],1,MPI_COMM_WORLD)
+  end subroutine
+
+  attributes(global) subroutine temperature_kernel(q,temperature,im,jm,km,hm,c2,c6)
+    integer,value :: im,jm,km,hm
+    real(8),value :: c2,c6
+    real(8),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5)
+    real(8),device,intent(out) :: temperature(0:im,0:jm,0:km,1)
+    real(8) :: rho,v(3),p,t,e
+    integer :: node,i,j,k
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(im+1)*(jm+1)*(km+1)) return
+    i=mod(node,im+1);j=mod(node/(im+1),jm+1);k=node/((im+1)*(jm+1))
+    call primitive(q,i,j,k,im,jm,km,hm,c2,c6,rho,v,p,t,e)
+    temperature(i,j,k,1)=t
+  end subroutine
+end module

@@ -31,14 +31,11 @@ module checkpoint_bundle
       character(c_char),intent(in) :: root(*),name(*),entries(*)
       integer(c_int) :: status
     end function
-#ifdef ASTR_HAS_RENAMEAT2
-    function rename_exclusive(olddir,old,newdir,new,flags) bind(C,name='renameat2') result(status)
+    function publish_directory(root,name) bind(C,name='astr_checkpoint_publish_directory') result(status)
       import c_int,c_char
-      integer(c_int),value :: olddir,newdir,flags
-      character(c_char),intent(in) :: old(*),new(*)
+      character(c_char),intent(in) :: root(*),name(*)
       integer(c_int) :: status
     end function
-#endif
     function publication_root(root) bind(C,name='astr_checkpoint_publication_root') result(status)
       import c_int,c_char
       character(c_char),intent(in) :: root(*)
@@ -311,14 +308,8 @@ contains
     call validate_checkpoint_bundle(trim(root)//'/'//trim(name)//'.tmp',comm,ok)
     if (.not.ok) return
     if (rank==0) then
-      ! Linux RENAME_NOREPLACE is fail-closed on unsupported filesystems.
-      ! Never replace an existing destination, even an empty directory/symlink.
-#ifdef ASTR_HAS_RENAMEAT2
-      err=rename_exclusive(-100_c_int,trim(root)//'/'//trim(name)//'.tmp'//c_null_char, &
-        -100_c_int,trim(root)//'/'//trim(name)//c_null_char,1_c_int)
-#else
-      err=-1
-#endif
+      ! Native no-replace or exclusive destination reservation, including NFS.
+      err=publish_directory(trim(root)//c_null_char,trim(name)//c_null_char)
       ok=err==0
       if (ok) then
         open(newunit=unit,file=trim(root)//'/.LATEST.tmp',status='new',action='write',iostat=err)

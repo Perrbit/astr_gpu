@@ -178,13 +178,14 @@ inline DeviceStreamlines trace_partition_device(
   const auto seeds=tgv_streamline_seeds(seed_layout);
   const int seed_count=static_cast<int>(seeds.size());
   const int particles=seed_count*(forward_only?1:2);
-  const bool boundary_layer=seed_layout=="bl-layered64";
+  const bool hd=seed_layout=="bl-layered256";
+  const bool boundary_layer=seed_layout=="bl-layered64" || hd;
   if(global_dimensions==viskores::Id3(0)) global_dimensions=viskores::Id3(global_cells);
   if(boundary_layer && (!Physical || !resident || constant || sample_trace_vector ||
-      global_dimensions!=viskores::Id3(64,32,24)))
+      (global_dimensions!=viskores::Id3(64,32,24) && !(hd && global_dimensions==viskores::Id3(476,130,96)))))
     throw std::invalid_argument("Layered boundary-layer seeds require the approved physical short fixture");
   using State=RK45TraceWorklet::State;
-  if(global_cells!=32 && global_cells!=256 && !(Physical && (global_cells==64 || global_cells==128)))
+  if(global_cells!=32 && global_cells!=256 && !(Physical && (global_cells==64 || global_cells==128 || (hd && global_cells==476))))
     throw std::invalid_argument("Unsupported bounded TGV streamline resolution");
   const double pi=std::acos(-1.),h=2.*pi/global_cells;
   // Physical RK45 limits are fixed by the approved 32-cell reference scale.
@@ -434,7 +435,7 @@ inline DeviceStreamlines trace_partition_device(
       result.subminimum_stop[i]=trace_subminimum_stop(terminal,maximum_length,minimum_step);
       if(status==TraceTransfer && rank==previous_owner) ++result.transfers;
       if(status!=TraceActive && status!=TraceTransfer && status!=TraceLength && status!=Outside &&
-         !result.subminimum_stop[i])
+         !(hd && status==TraceSteps) && !result.subminimum_stop[i])
         throw std::runtime_error("Device trajectory unexpected termination status="+std::to_string(status)+
           " remaining="+std::to_string(maximum_length-state[i][4]));
     }

@@ -68,6 +68,12 @@ owned_colors=[]
 demo_colors={}
 timing_enabled=os.environ.get('ASTR_INSITU_TIMING','').strip() in ('1','t','T','true','TRUE','on','ON')
 stage_times={}
+
+
+def is_two_dimensional_product(name, profile, bounds):
+    if 'slice' in name or profile == 'physical_plane':
+        return True
+    return profile.endswith('_walls') and bounds is not None and any(bounds[2*d] == bounds[2*d+1] for d in range(3))
 if device_products:
     if profile in ('channel_walls','air5_walls'):
         raise RuntimeError('Device compact geometry does not admit walls')
@@ -497,8 +503,10 @@ result.GetFieldData().AddArray(units)
             view.CameraViewUp=[0.,0.,1.]
             view.CameraParallelProjection=1
             view.CameraParallelScale=5.
+            planar_bounds=None
             if profile in ('channel_walls','air5_walls'):
                 bounds=global_surface_bounds()
+                planar_bounds=bounds.ravel().tolist()
                 center=bounds.mean(axis=1)
                 length=bounds[:,1]-bounds[:,0]
                 view.CameraPosition=(center+length*np.array([1.2,1.7,1.7])).tolist()
@@ -518,6 +526,12 @@ result.GetFieldData().AddArray(units)
                 view.CameraParallelScale=max(view.CameraParallelScale,1.05*half_height,
                                              1.05*half_width/(800/600))
             display=pv.Show(geometry,view)
+            planar = is_two_dimensional_product(name,profile,planar_bounds)
+            if planar:
+                # ParaView representations expose material coefficients, not LightingOff.
+                display.Ambient=1.
+                display.Diffuse=0.
+                display.Specular=0.
             if 'streamlines' in name:
                 display.LineWidth=2.
             color=name if profile in ('channel_walls','air5_walls') else ('mean_u_'+name.split('_')[1] if name.startswith('mean_') else 'u')
@@ -578,6 +592,7 @@ result.GetFieldData().AddArray(units)
         record['products'][name]['color_range']=list(color_range)
         record['products'][name]['scalar_bar_visible']=bool(display.IsScalarBarVisible(view))
         record['products'][name]['scalar_bar_label_color']=list(pv.GetScalarBar(display.LookupTable,view).LabelColor)
+        record['products'][name]['flat_color_lighting']=bool(display.Ambient==1. and display.Diffuse==0. and display.Specular==0.)
         if name.startswith('mean_'):
             record['products'][name]['velocity_average']='Favre' if name.startswith('mean_favre_') else 'Reynolds'
     adaptive=dispatch.adaptive_receipts(name for name,geometry in products)

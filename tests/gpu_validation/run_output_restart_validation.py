@@ -60,7 +60,10 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
              test_fault=None, failure_after_start=False, tgv_mapping=None, insitu_timing=False,
              device_sample_transport=None, postprocess_transport=None, nsys_trace=False, plane_oracle=False,
              checkpoint_enabled=None, curve_surface_oracle=False, wall_mean_oracle=False, curve_trace_oracle=False,
-             ncu_kernel=None, curve_trace_step_scale=None, curve_wall_temperature=None):
+             ncu_kernel=None, curve_trace_step_scale=None, curve_wall_temperature=None,
+             solver_halo_transport='pinned'):
+    if solver_halo_transport not in ('pageable', 'pinned', 'pinned-pipeline', 'device-aware'):
+        raise ValueError('unknown solver halo transport')
     if ncu_kernel is not None and (not ncu_kernel or backend != 'gpu' or ranks != 1 or
             nsys_trace or memcheck or monitor_resources or reject):
         raise ValueError('Kernel profiling requires a separate successful NP=1 GPU run')
@@ -273,7 +276,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
     if output_config_override is not None:
         env["ASTR_OUTPUT_CONFIG"] = output_config_override
     env.update(ASTR_FORCE_MPI_TOPOLOGY=",".join(map(str, topology)),
-               ASTR_GPU_SYNC_MODE="explicit", ASTR_GPU_HALO_TRANSPORT="pinned",
+               ASTR_GPU_SYNC_MODE="explicit", ASTR_GPU_HALO_TRANSPORT=solver_halo_transport,
                ASTR_GPU_PRECISION_MODE="fp64", ASTR_INSITU_SAMPLE_PREFIX="outdat/sample")
     env["ASTR_GPU_FILTER_WORKSPACE"] = args.filter_workspace
     if insitu_timing:
@@ -319,10 +322,12 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         if postprocess_transport not in ('device-aware','pinned') or insitu_config is None:
             raise ValueError('native device products require a declared transport and configuration')
     active_transport=postprocess_transport if postprocess_transport is not None else device_sample_transport
-    if active_transport is not None:
-        if active_transport == 'device-aware':
+    solver_aware = backend == 'gpu' and solver_halo_transport == 'device-aware'
+    if active_transport is not None or solver_aware:
+        if active_transport == 'device-aware' or solver_aware:
             env.update(OMPI_MCA_pml='ucx', OMPI_MCA_coll='^hcoll,ucc,cuda',
                        OMPI_MCA_coll_hcoll_enable='0', OMPI_MCA_osc='pt2pt',
+                       OMPI_MCA_opal_cuda_support='true',
                        UCX_MEMTYPE_CACHE='n', UCX_CUDA_COPY_ENABLE_FABRIC='no',
                        UCX_CUDA_COPY_DMABUF='no', UCX_CUDA_IPC_ENABLE_MNNVL='no',
                        UCX_TLS='self,sm,cuda_copy,cuda_ipc')
@@ -434,7 +439,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
             raise RuntimeError("compute-sanitizer is required for this explicit memory gate")
         # Host transport can isolate optional MPI CUDA pointer probes. A device
         # buffer diagnostic must retain its explicitly declared aware-MPI setup.
-        aware = device_sample_transport == 'device-aware' or postprocess_transport == 'device-aware'
+        aware = solver_aware or device_sample_transport == 'device-aware' or postprocess_transport == 'device-aware'
         if not aware:
             env.update(OMPI_MCA_opal_cuda_support="false", OMPI_MCA_pml="ob1",
                        OMPI_MCA_osc="pt2pt", OMPI_MCA_btl="self,vader,tcp",
@@ -449,7 +454,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
     cfl_gate = None
     if cfl_limit is not None:
         from insitu_cfl_gate import CflGate
-        if reject or scale_dt is None:
+        if reject or (scale_dt is None and args.case != 'tgv'):
             raise ValueError('CFL gate requires an explicit successful scale test')
         first = int(restore.name.removeprefix('step')) if restore is not None else 0
         cfl_gate = CflGate(case/'run.log', cfl_limit, dt, first, steps)

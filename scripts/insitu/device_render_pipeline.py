@@ -15,6 +15,8 @@ from paraview import simple as pv
 from paraview.modules.vtkRemotingViews import vtkPVProcessWindow
 from vtkmodules.vtkCommonCore import vtkIntArray, vtkDoubleArray
 from vtkmodules.vtkCommonDataModel import vtkDataObject, vtkPolyData
+from vtkmodules.vtkCommonDataModel import vtkPlane
+from vtkmodules.vtkFiltersSources import vtkPlaneSource
 from vtkmodules.vtkIOImage import vtkJPEGWriter
 from vtkmodules.vtkParallelCore import vtkCommunicator, vtkMultiProcessController
 from vtkmodules.vtkRenderingCore import vtkActor
@@ -41,6 +43,7 @@ product_names = {
     'tgv256_demo': ('q_surface', 'instantaneous_streamlines'),
     'curve_demo': ('q_surface', 'instantaneous_streamlines'),
     'boundary_layer': ('q_surface', 'velocity_slice', 'instantaneous_streamlines'),
+    'm12_diagnostics': ('q_surface', 'velocity_slice', 'instantaneous_streamlines'),
     'channel_walls': ('wall_pressure', 'wall_shear_x', 'wall_heat_into_gas'),
     'curve_walls': ('wall_pressure', 'wall_shear_x', 'wall_heat_into_gas'),
     'air5_walls': ('pressure', 'temperature', 'vibrational_temperature', 'Y_N2', 'Y_O2',
@@ -61,7 +64,8 @@ sources = {name: pv.TrivialProducer(registrationName=name) for name in (
     'q_surface', 'velocity_slice', 'instantaneous_streamlines', 'crossing_streamlines',
     'mean_reynolds_streamlines', 'mean_favre_streamlines',
     'wall_pressure', 'wall_shear_x', 'wall_heat_into_gas', 'pressure', 'temperature',
-    'vibrational_temperature', 'Y_N2', 'Y_O2', 'Y_N', 'Y_O', 'Y_NO')}
+    'vibrational_temperature', 'Y_N2', 'Y_O2', 'Y_N', 'Y_O', 'Y_NO', 'temperature_slice',
+    'spanwise_slice', 'spanwise_slice_weak')}
 wall_profile = profile in ('channel_walls', 'curve_walls', 'air5_walls')
 if wall_profile:
     sources.update({('mean_'+name): pv.TrivialProducer(registrationName='mean_'+name) for name in product_names})
@@ -106,6 +110,12 @@ def metadata(piece, name):
     return array.GetTuple1(0)
 
 
+def is_two_dimensional_product(name, profile, bounds):
+    if 'slice' in name or profile == 'physical_plane':
+        return True
+    return profile.endswith('_walls') and bounds is not None and any(bounds[2*d] == bounds[2*d+1] for d in range(3))
+
+
 def update_geometry(name, piece):
     item = render_objects.setdefault(name, {})
     points = int(metadata(piece, 'device_points'))
@@ -132,6 +142,7 @@ def update_geometry(name, piece):
             actor.SetMapper(mapper)
             item.update(actor=actor, mapper=mapper)
         item['mapper'].SetInputData(poly)
+        item['poly'] = poly
     elif not item:
         bridge = ctypes.CDLL(None)
         bridge.astr_insitu_resident_actor.argtypes = [ctypes.c_char_p]
@@ -145,6 +156,19 @@ def update_geometry(name, piece):
         setup_view(name, item, piece)
     if profile == 'boundary_layer':
         item['local_bounds'] = [metadata(piece, 'bound'+str(d)) for d in range(6)] if points else None
+    if profile == 'm12_diagnostics':
+        item['local_bounds'] = [metadata(piece, 'bound'+str(d)) for d in range(6)] if points else None
+        if name in ('velocity_slice', 'temperature_slice', 'spanwise_slice', 'spanwise_slice_weak'):
+            item['actual_ranges'] = [[metadata(piece, f'range{w}_min'), metadata(piece, f'range{w}_max')]
+                                     for w in range(1 if name.startswith('spanwise_slice') else 4)]
+        if name.startswith('spanwise_slice'):
+            item['weak_half_range'] = metadata(piece, 'weak_half_range')
+        if name == 'spanwise_slice_weak':
+            selected = [metadata(piece, 'color_min'), metadata(piece, 'color_max')]
+            item['lut'].RescaleTransferFunction(*selected)
+            item['legend'].CustomLabels = [selected[0]+(selected[1]-selected[0])*i/4 for i in range(5)]
+            item['color_range'] = selected
+            item['shared_device_geometry'] = bool(metadata(piece, 'shared_device_geometry'))
     return points, cells
 
 
@@ -169,6 +193,9 @@ def global_device_bounds(piece, allow_planar=False, allow_empty=False):
 
 
 def setup_view(name, item, piece):
+    if profile == 'm12_diagnostics':
+        setup_m12_view(name, item, piece)
+        return
     field = name.removeprefix('mean_') if wall_profile else name
     if 'streamlines' in name:
         item['actor'].GetProperty().SetLineWidth(2.)
@@ -254,6 +281,7 @@ def setup_view(name, item, piece):
             bounds=[value+(-.05 if d%2==0 else .05)*length for d,value in enumerate(plane_bounds)]
         item['plane']={'origin':plane_origin, 'normal':normal}
     view.UpdateVTKObjects()
+    item['actor'].GetProperty().SetLighting(not is_two_dimensional_product(name, profile, bounds))
     client = view.GetClientSideObject()
     client.GetRenderer().AddActor(item['actor'])
     client.SetMaxClipBounds(bounds)
@@ -299,7 +327,180 @@ def setup_view(name, item, piece):
     item.update(view=view, legend=legend, lut=lut, color=color, color_range=selected_range)
 
 
-def capture_image(view):
+def m12_oblique_camera(bounds, size, streamlines=False):
+    from math import cos, radians, sin, sqrt
+    azimuth, elevation = radians(40.), radians(30. if streamlines else 18.)
+    direction = [-cos(elevation)*cos(azimuth), sin(elevation), cos(elevation)*sin(azimuth)]
+    right = [direction[2], 0., -direction[0]]
+    norm = sqrt(sum(value*value for value in right))
+    right = [value/norm for value in right]
+    up = [direction[1]*right[2], direction[2]*right[0]-direction[0]*right[2],
+          -direction[1]*right[0]]
+    center = [.5*(bounds[2*d]+bounds[2*d+1]) for d in range(3)]
+    half = [.5*(bounds[2*d+1]-bounds[2*d]) for d in range(3)]
+    width = sum(abs(right[d])*half[d] for d in range(3))
+    height = sum(abs(up[d])*half[d] for d in range(3))
+    scale = 1.25*max(height, width/(size[0]/size[1]))
+    # Fit all eight physical corners, with room below for the fixed color bar.
+    focal = [center[d]-.12*scale*up[d] for d in range(3)]
+    distance = 8.*max(half)
+    return dict(position=[focal[d]+distance*direction[d] for d in range(3)],
+                focal_point=focal, view_up=[0., 1., 0.], parallel_scale=scale)
+
+
+def setup_m12_view(name, item, piece, local_window=None):
+    enhanced = name == 'spanwise_slice_weak'
+    base = 'spanwise_slice' if enhanced else name.split('.')[0]
+    planar = base in ('velocity_slice', 'temperature_slice', 'spanwise_slice')
+    if base == 'spanwise_slice':
+        bounds, size, up = [0., 300., 1., 1., 0., 90.], [5120, 1536], [0., 0., 1.]
+    elif planar and local_window is not None:
+        bounds, size, up = [100.*local_window, 100.*(local_window+1), 0., 20., 45., 45.], [5120, 1024], [0., 1., 0.]
+    elif planar:
+        bounds, size, up = [0., 1100., 0., 150., 45., 45.], [4096, 1024], [0., 1., 0.]
+    else:
+        local = local_window is not None or base == 'instantaneous_streamlines'
+        if base == 'instantaneous_streamlines':
+            # Keep the y=5 seed layer inside the view, not on its clipping plane.
+            bounds = [20., 90., 0., 8., 39., 51.]
+        elif local:
+            bounds = [20., 90., 0., 5., 20., 70.]
+        else:
+            bounds = [0., 1100., 0., 150., 0., 90.]
+        size, up = ([3840, 2160] if local else [4096, 1024]), [0., 1., 0.]
+    center = [.5*(bounds[2*d]+bounds[2*d+1]) for d in range(3)]
+    length = [bounds[2*d+1]-bounds[2*d] for d in range(3)]
+    view = pv.CreateView('RenderView')
+    view.ViewSize = size
+    view.UseColorPaletteForBackground = 0
+    view.Background = [1., 1., 1.]
+    view.OrientationAxesVisibility = int(not planar)
+    view.OrientationAxesLabelColor = [0., 0., 0.]
+    view.RemoteRenderThreshold = 0.
+    view.CameraParallelProjection = 1
+    view.CameraFocalPoint = center
+    view.CameraViewUp = up
+    view.CameraPosition = [center[0], center[1]+(-1800. if base == 'spanwise_slice' else (900. if not planar else 0.)),
+                           center[2]+(0. if base == 'spanwise_slice' else (1200. if not planar else 1800.))]
+    height = 90. if base == 'spanwise_slice' else length[1]+(length[2] if not planar else 0.)
+    view.CameraParallelScale = .62*max(height, length[0]/(size[0]/size[1]))
+    if not planar and local:
+        camera = m12_oblique_camera(bounds, size, streamlines=base == 'instantaneous_streamlines')
+        view.CameraPosition = camera['position']
+        view.CameraFocalPoint = camera['focal_point']
+        view.CameraViewUp = camera['view_up']
+        view.CameraParallelScale = camera['parallel_scale']
+    if planar and (local_window is not None or base == 'spanwise_slice'):
+        # Leave an annotation strip below the equal-aspect physical window.
+        direction = 2 if base == 'spanwise_slice' else 1
+        shift = .14*view.CameraParallelScale
+        focal, camera = list(view.CameraFocalPoint), list(view.CameraPosition)
+        focal[direction] -= shift
+        camera[direction] -= shift
+        view.CameraFocalPoint, view.CameraPosition = focal, camera
+    view.UpdateVTKObjects()
+    item['actor'].GetProperty().SetLighting(not planar)
+    client = view.GetClientSideObject()
+    client.GetRenderer().AddActor(item['actor'])
+    if not planar:
+        # Four constant reference vertices, not downloaded flow/isosurface data.
+        wall = vtkPlaneSource()
+        wall.SetOrigin(bounds[0], 0., bounds[4])
+        wall.SetPoint1(bounds[0], 0., bounds[5])
+        wall.SetPoint2(bounds[1], 0., bounds[4])
+        wall.SetXResolution(1)
+        wall.SetYResolution(1)
+        mapper, actor = vtkOpenGLPolyDataMapper(), vtkActor()
+        mapper.SetInputConnection(wall.GetOutputPort())
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetColor(.94, .94, .94)
+        actor.GetProperty().LightingOff()
+        actor.GetProperty().EdgeVisibilityOn()
+        actor.GetProperty().SetEdgeColor(.55, .55, .55)
+        client.GetRenderer().AddActor(actor)
+        item['context_actors'] = [actor]
+        item['context_sources'] = [wall]
+        prop = item['actor'].GetProperty()
+        prop.LightingOn()
+        prop.SetAmbient(.25)
+        prop.SetDiffuse(.75)
+        prop.SetSpecular(.15)
+        prop.SetSpecularPower(25.)
+        item['presentation'] = dict(physical_aspect=True, wall_reference_y=0.,
+            orientation_axes=True, display_only_clip=True, oblique=local,
+            wall_blowing_x=[20., 60.])
+    # Clip only the display. The shared Q extraction and complete-domain
+    # trajectories are unchanged, and no host geometry filters are introduced.
+    if local_window is not None or base in ('spanwise_slice', 'instantaneous_streamlines'):
+        for d in range(3):
+            if length[d] == 0.:
+                continue
+            for side in (0, 1):
+                plane = vtkPlane()
+                origin, normal = list(center), [0., 0., 0.]
+                origin[d] = bounds[2*d+side]
+                normal[d] = 1. if side == 0 else -1.
+                plane.SetOrigin(*origin)
+                plane.SetNormal(*normal)
+                item['mapper'].AddClippingPlane(plane)
+    clip = [value+(-1. if d % 2 == 0 else 1.) for d, value in enumerate(bounds)]
+    client.SetMaxClipBounds(clip)
+    client.SetLockBounds(True)
+    if planar:
+        color = {'velocity_slice': 'u_Uinf', 'temperature_slice': 'T_Tinf', 'spanwise_slice': 'w_Uinf'}[base]
+        if enhanced:
+            color = 'w_Uinf_weak'
+        selected_range = [metadata(piece, 'color_min'), metadata(piece, 'color_max')]
+        item['plane'] = {'origin': [metadata(piece, 'plane_origin'+str(d)) for d in range(3)],
+                         'normal': [metadata(piece, 'plane_normal'+str(d)) for d in range(3)]}
+    else:
+        color, selected_range = 'speed', [0., 1.1]
+    lut = pv.GetColorTransferFunction(color)
+    lut.AutomaticRescaleRangeMode = 'Never'
+    lut.ApplyPreset('Cool to Warm (Extended)', False)
+    lut.RescaleTransferFunction(*selected_range)
+    legend = pv.GetScalarBar(lut, view)
+    legend.Visibility = 1
+    legend.Title = {'u_Uinf': 'u / U_inf', 'T_Tinf': 'T / T_inf', 'w_Uinf': 'w / U_inf',
+                    'w_Uinf_weak': 'w / U_inf (enhanced)', 'speed': 'Speed / U_inf'}[color]
+    legend.ComponentTitle = ''
+    legend.WindowLocation = 'Any Location'
+    legend.Orientation = 'Horizontal'
+    legend.Position = [.65, .03]
+    legend.ScalarBarLength = .28
+    legend.ScalarBarThickness = 24
+    legend.TitleFontSize, legend.LabelFontSize = 28, 24
+    legend.TitleColor = legend.LabelColor = [0., 0., 0.]
+    legend.UseCustomLabels = 1
+    legend.CustomLabels = [selected_range[0]+(selected_range[1]-selected_range[0])*i/4 for i in range(5)]
+    legend.AddRangeLabels = 0
+    legend.AutomaticLabelFormat = 0
+    legend.LabelFormat = '{:.2e}' if enhanced else '{:.3g}'
+    caption = f'x: {bounds[0]:g}..{bounds[1]:g}   '+\
+                    (f'z: {bounds[4]:g}..{bounds[5]:g}   y=1' if base == 'spanwise_slice' else
+                     f'y: {bounds[2]:g}..{bounds[3]:g}   z: {bounds[4]:g}..{bounds[5]:g}')
+    if not planar:
+        caption += '\nWall: y=0; blowing/suction: x=20..60'
+    if base == 'instantaneous_streamlines':
+        caption += '\nDisplay band contains 32 seed sites at x=54\nAll 256 seeds integrated globally'
+    label = pv.Text(Text=caption)
+    display = pv.Show(label, view)
+    display.WindowLocation = 'Lower Left Corner' if planar else 'Upper Left Corner'
+    display.FontSize = 24
+    display.Color = [0., 0., 0.]
+    if 'streamlines' in base:
+        prop.SetLineWidth(3.)
+        prop.SetRenderLinesAsTubes(True)
+        item['presentation'].update(streamline_style='shader-tubes', line_width_pixels=3.,
+                                    trajectory_selection='all; display-window clipping only',
+            seed_layers=[.5, 1., 2., 5.], upper_seed_display_margin=3.,
+            seed_sites_in_display_band=32)
+    item.update(view=view, legend=legend, lut=lut, color=color, color_range=selected_range,
+                physical_bounds=bounds, image_size=size, label=label, window=local_window,
+                caption=caption, enhanced=enhanced)
+
+
+def capture_image(view, size=None):
     manager = servermanager.ParaViewPipelineController()
     settings = servermanager.misc.SaveScreenshot()
     manager.PreInitializeProxy(settings)
@@ -307,7 +508,7 @@ def capture_image(view):
     settings.SaveAllViews = 0
     settings.UpdateDefaultsAndVisibilities('frame.jpeg')
     manager.PostInitializeProxy(settings)
-    settings.ImageResolution = image_size
+    settings.ImageResolution = size or image_size
     settings.UpdateVTKObjects()
     return settings.SMProxy.CaptureImage(), int(settings.Format.Quality), int(settings.Format.Progressive)
 
@@ -318,6 +519,12 @@ def catalyst_execute(info):
     sources[product_names[0]].UpdatePipeline(time)
     first = local_piece(sources[product_names[0]].GetClientSideObject().GetOutputDataObject(0))
     names = [name for name in product_names if dispatch.scene_due(name)]
+    if profile == 'm12_diagnostics' and 'velocity_slice' in names:
+        names += ['temperature_slice', 'spanwise_slice']
+        sources['spanwise_slice'].UpdatePipeline(time)
+        spanwise = local_piece(sources['spanwise_slice'].GetClientSideObject().GetOutputDataObject(0))
+        if metadata(spanwise, 'weak_half_range') > 0.:
+            names.append('spanwise_slice_weak')
     statistics = None
     if wall_profile and first.GetFieldData().GetArray('mean_requested') is not None:
         covered = metadata(first, 'mean_covered')
@@ -351,13 +558,44 @@ def catalyst_execute(info):
         points, cells = update_geometry(name, piece)
         item = render_objects[name]
         products[name] = render_product(name, item, step, time, points, cells)
+        if profile == 'm12_diagnostics' and name in ('q_surface', 'velocity_slice', 'temperature_slice'):
+            windows = range(3) if name != 'q_surface' else (0,)
+            for window in windows:
+                key = name + ('.local' if name == 'q_surface' else f'.x{window*100}_{(window+1)*100}')
+                clone = render_objects.get(key)
+                if clone is None:
+                    mapper, actor = vtkOpenGLPolyDataMapper(), vtkActor()
+                    mapper.ScalarVisibilityOff()
+                    actor.SetMapper(mapper)
+                    clone = {'mapper': mapper, 'actor': actor}
+                    setup_m12_view(key, clone, piece, local_window=window)
+                    render_objects[key] = clone
+                clone['mapper'].SetInputData(item['poly'])
+                clone['local_bounds'] = item['local_bounds']
+                if 'actual_ranges' in item:
+                    clone['actual_ranges'] = item['actual_ranges']
+                products[key] = render_product(key, clone, step, time, points, cells)
         if piece.GetFieldData().GetArray('streamline_seed_count') is not None:
             products[name]['seeding'] = {
-                'layout': {0: 'line16', 1: 'tgv-stratified', 2: 'bl-layered64'}[
+                'layout': {0: 'line16', 1: 'tgv-stratified', 2: 'bl-layered64', 3: 'bl-layered256'}[
                     int(metadata(piece, 'streamline_seed_layout'))],
                 'seeds': int(metadata(piece, 'streamline_seed_count')),
                 'direction_trajectories': int(metadata(piece, 'streamline_particle_count'))}
-        dispatch.report(name, 'image', products[name]['image'])
+            if profile == 'm12_diagnostics':
+                products[name]['termination_counts'] = {reason: int(metadata(piece, 'termination_'+reason))
+                    for reason in ('step_budget', 'arc_length', 'domain_exit', 'sub_minimum_remaining')}
+                products[name]['integration_step_limit'] = int(metadata(piece, 'streamline_step_limit'))
+        if profile == 'm12_diagnostics':
+            if name in product_names:
+                group = [p['image'] for key, p in products.items() if key == name or key.startswith(name+'.')]
+                if name == 'velocity_slice':
+                    continue
+                dispatch.report(name, 'image', next((r for r in group if isinstance(r, dict)), None))
+        else:
+            dispatch.report(name, 'image', products[name]['image'])
+    if profile == 'm12_diagnostics' and 'velocity_slice' in names:
+        group = [p['image'] for key, p in products.items() if 'slice' in key]
+        dispatch.report('velocity_slice', 'image', next((r for r in group if isinstance(r, dict)), None))
     record = {'step': step, 'time': time, 'processing_backend': 'device',
         'rendering_pipeline': pipeline, 'profile':profile, 'geometry_host_bytes': 0,
         'local_points': products[names[0]]['local_points'] if names else 0,
@@ -379,6 +617,12 @@ def render_product(name, item, step, time, points, cells):
     os.environ['ASTR_INSITU_PIXEL_PRODUCT']=name
     os.environ['ASTR_INSITU_PIXEL_STEP']=str(step)
     view = item['view']
+    if item.get('enhanced'):
+        low, high = item['color_range']
+        actual = item['actual_ranges'][0]
+        item['label'].Text = (item['caption'] + f'\nEnhanced; step={step}; t={time:.6g}; '
+            f'range=[{low:.3e}, {high:.3e}]\nActual=[{actual[0]:.3e}, {actual[1]:.3e}]; '
+            'independent scale; compare structure, not color amplitude')
     render_start = perf_counter()
     pv.Render(view)
     window = vtkPVProcessWindow.GetRenderWindow()
@@ -390,7 +634,8 @@ def render_product(name, item, step, time, points, cells):
     capture_start = perf_counter()
     error = ''
     try:
-        image, quality, progressive = capture_image(view)
+        size = item.get('image_size', image_size)
+        image, quality, progressive = capture_image(view, size)
     except Exception as exc:
         error = 'Collective screenshot failed: ' + str(exc)
     collective_error(error)
@@ -401,20 +646,29 @@ def render_product(name, item, step, time, points, cells):
     if rank == 0:
         try:
             encoding_start = perf_counter()
-            if image is None or tuple(image.GetDimensions()) != (*image_size, 1):
+            if image is None or tuple(image.GetDimensions()) != (*size, 1):
                 raise RuntimeError('Missing collective image')
-            writer = vtkJPEGWriter()
-            writer.SetInputData(image)
-            writer.SetQuality(quality)
-            writer.SetProgressive(progressive)
-            writer.WriteToMemoryOn()
-            writer.Write()
-            if writer.GetErrorCode() or writer.GetResult() is None:
-                raise RuntimeError('Image encoding failed')
-            jpeg = vtk_to_numpy(writer.GetResult()).tobytes()
             eps = io.BytesIO()
-            with Image.open(io.BytesIO(jpeg)) as decoded:
-                decoded.convert('RGB').save(eps, format='EPS')
+            if profile == 'm12_diagnostics':
+                scalars = image.GetPointData().GetScalars()
+                rgb = vtk_to_numpy(scalars).reshape(size[1], size[0], scalars.GetNumberOfComponents())[::-1, :, :3]
+                raw = Image.fromarray(rgb.copy(), 'RGB')
+                encoded = io.BytesIO()
+                raw.save(encoded, format='JPEG', quality=95, dpi=(300, 300))
+                jpeg = encoded.getvalue()
+                raw.save(eps, format='EPS')
+            else:
+                writer = vtkJPEGWriter()
+                writer.SetInputData(image)
+                writer.SetQuality(quality)
+                writer.SetProgressive(progressive)
+                writer.WriteToMemoryOn()
+                writer.Write()
+                if writer.GetErrorCode() or writer.GetResult() is None:
+                    raise RuntimeError('Image encoding failed')
+                jpeg = vtk_to_numpy(writer.GetResult()).tobytes()
+                with Image.open(io.BytesIO(jpeg)) as decoded:
+                    decoded.convert('RGB').save(eps, format='EPS')
             encoding_seconds = perf_counter() - encoding_start
             publication_start = perf_counter()
             failure = publish_pair(output / f'{name}.step{step:08d}.jpeg', jpeg, eps.getvalue())
@@ -455,14 +709,40 @@ def render_product(name, item, step, time, points, cells):
             'image_publication': publication_seconds}}, sort_keys=True), flush=True)
     result = {'egl_uuid': actual, 'color_field': item['color'], 'color_range': item['color_range'],
         'scalar_bar_visible': bool(item['legend'].Visibility), 'scalar_bar_label_color': [0., 0., 0.],
-        'local_points': points, 'local_cells': cells, 'image': 'published' if code == 0 else receipt}
+        'local_points': points, 'local_cells': cells, 'image': 'published' if code == 0 else receipt,
+        'lighting_enabled': bool(item['actor'].GetProperty().GetLighting())}
     if 'plane' in item:
         result['plane']=item['plane']
-    if profile=='boundary_layer':
+    if profile in ('boundary_layer', 'm12_diagnostics'):
         result['physical_bounds']=item['physical_bounds']
         result['local_geometry_bounds']=item['local_bounds']
         result['camera'] = dict(position=list(view.CameraPosition), focal_point=list(view.CameraFocalPoint),
                                 view_up=list(view.CameraViewUp), parallel_scale=float(view.CameraParallelScale))
+    if profile == 'm12_diagnostics':
+        local, total = vtkIntArray(), vtkIntArray()
+        local.InsertNextValue(cells)
+        total.SetNumberOfTuples(1)
+        controller.AllReduce(local, total, vtkCommunicator.SUM_OP)
+        result.update(image_size=size, jpeg_quality=95, dpi=300, eps_source='original screenshot RGB',
+                      global_cells=total.GetValue(0), empty=total.GetValue(0) == 0)
+        if 'presentation' in item:
+            result['presentation'] = item['presentation']
+            if 'streamlines' in name:
+                result['render_lines_as_tubes'] = bool(item['actor'].GetProperty().GetRenderLinesAsTubes())
+        if 'actual_ranges' in item:
+            window = 0 if item.get('window') is None else item['window']+1
+            actual = item['actual_ranges'][window]
+            outside = actual[0] < item['color_range'][0] or actual[1] > item['color_range'][1]
+            result.update(actual_range=actual, outside_fixed_color_range=outside)
+            if outside and rank == 0:
+                print(f'ASTR_INSITU_COLOR_RANGE_WARNING step={step} product={name} actual={actual}', flush=True)
+        if item.get('enhanced'):
+            result.update(auxiliary=True, source_product='spanwise_slice',
+                shared_device_geometry=item['shared_device_geometry'],
+                comparison_scope='spatial structure only; independently scaled', weak_trigger_fraction=.01)
+        elif name == 'spanwise_slice':
+            result['weak_display'] = dict(eligible=item['weak_half_range']>0.,
+                half_range=item['weak_half_range'], trigger_fraction=.01)
     if profile=='air5_walls':
         field=name.removeprefix('mean_')
         result['field_unit']=({'pressure':'Pa','temperature':'K','vibrational_temperature':'K',
@@ -478,9 +758,14 @@ def catalyst_finalize():
         window.MakeCurrent()
         item['mapper'].ReleaseGraphicsResources(window)
         view.GetClientSideObject().GetRenderer().RemoveActor(item['actor'])
+        for actor in item.get('context_actors', ()):
+            actor.GetMapper().ReleaseGraphicsResources(window)
+            view.GetClientSideObject().GetRenderer().RemoveActor(actor)
         pv.Delete(item['legend'])
         pv.Delete(view)
         pv.Delete(item['lut'])
+        if 'label' in item:
+            pv.Delete(item['label'])
     for source in sources.values():
         pv.Delete(source)
     (output / f'lifecycle_rank{rank}.json').write_text(json.dumps({'frames': frames, 'finalized': True}))

@@ -21,7 +21,8 @@ def visible_geometry_pixels(pixels):
     return int(np.count_nonzero(np.any(region < 220, axis=-1)))
 
 
-def configuration(library):
+def configuration(library, host_budget_bytes=4*1024**3, device_budget_bytes=2*1024**3,
+                  device_reserve_bytes=1024**3):
     pipeline = ROOT/'scripts/insitu/device_render_pipeline.py'
     return f"""&insitu_run
  enabled=t, statistics=f, render=t, initial_frame=f, final_frame=f,
@@ -30,7 +31,7 @@ def configuration(library):
  products='boundary_layer', streamline_seeds='bl-layered64',
  slice_definition='plane', slice_origin=0.,0.,45., slice_normal=0.,0.,1.,
  output_directory='outdat/render', schedule_mode='steps', step_interval=5,
- host_budget_bytes=4294967296, device_budget_bytes=2147483648, device_reserve_bytes=1073741824,
+ host_budget_bytes={host_budget_bytes}, device_budget_bytes={device_budget_bytes}, device_reserve_bytes={device_reserve_bytes},
  implementation_path='{library}', pipeline_file='{pipeline}'
 /
 """

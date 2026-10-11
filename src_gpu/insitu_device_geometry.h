@@ -325,13 +325,16 @@ inline DeviceGeometry extract_tgv_geometry(viskores::Vec3f* velocity_pointer,
     DeviceGeometryAudit* audit=nullptr,int global_cells=32,viskores::Vec3f* physical_pointer=nullptr,
     viskores::Id3 global_dimensions=viskores::Id3(0)) {
   if(global_dimensions==viskores::Id3(0)) global_dimensions=viskores::Id3(global_cells);
-  if(global_cells!=32 && global_cells!=256 && !(physical_pointer && (global_cells==64 || global_cells==128)))
-    throw std::invalid_argument("Unsupported bounded TGV geometry resolution");
+  const bool m12_grid=physical_pointer && global_cells==476 &&
+    global_dimensions==viskores::Id3(476,130,96);
+  if(global_cells!=32 && global_cells!=256 && !m12_grid &&
+      !(physical_pointer && (global_cells==64 || global_cells==128)))
+    throw std::invalid_argument("Unsupported bounded device geometry resolution");
   for(int d=0;d<3;++d)
     if(dimensions[d]<2 || offset[d]<0 || offset[d]+dimensions[d]>global_dimensions[d]+1)
-      throw std::invalid_argument("IS8 geometry requires a bounded 32-cell TGV partition");
+      throw std::invalid_argument("Device geometry partition exceeds the admitted global grid");
   if(!std::isfinite(iso)) throw std::invalid_argument("Nonfinite contour threshold");
-  if(physical_pointer && ((global_cells!=32 && global_cells!=64 && global_cells!=128 && global_cells!=256) ||
+  if(physical_pointer && ((!m12_grid && global_cells!=32 && global_cells!=64 && global_cells!=128 && global_cells!=256) ||
       slice_enabled || !surface_enabled))
     throw std::invalid_argument("Physical contour coordinates require bounded CURVE Q-only extraction");
   const auto nodes=dimensions[0]*dimensions[1]*dimensions[2];

@@ -136,9 +136,11 @@ contains
     message='invalid products selection'
     if(products/='all'.and.products/='q_surface'.and.products/='streamlines'.and. &
       products/='q_streamlines'.and.products/='velocity_slice'.and.products/='channel_walls'.and. &
-      products/='air5_walls'.and.products/='tgv256_demo'.and.products/='curve_demo'.and.products/='boundary_layer') return
-    message='streamline_seeds must be line16, tgv-stratified or bl-layered64'
-    if(streamline_seeds/='line16'.and.streamline_seeds/='tgv-stratified'.and.streamline_seeds/='bl-layered64') return
+      products/='air5_walls'.and.products/='tgv256_demo'.and.products/='curve_demo'.and.products/='boundary_layer'.and. &
+      products/='m12_diagnostics') return
+    message='unsupported streamline seed layout'
+    if(streamline_seeds/='line16'.and.streamline_seeds/='tgv-stratified'.and.streamline_seeds/='bl-layered64'.and. &
+      streamline_seeds/='bl-layered256') return
     if(streamline_seeds=='tgv-stratified') then
       message='tgv-stratified seeds require enabled strict device streamline rendering'
       if(.not.enabled.or..not.render.or.processing_backend/='device'.or.rendering_pipeline=='compatible'.or. &
@@ -161,6 +163,15 @@ contains
     endif
     message='bl-layered64 seeds require the bounded boundary_layer profile'
     if(streamline_seeds=='bl-layered64'.and.products/='boundary_layer') return
+    message='m12_diagnostics requires strict device rendering, independent clocks and bl-layered256 seeds'
+    if(products=='m12_diagnostics') then
+      if(.not.enabled.or..not.render.or.statistics.or.processing_backend/='device'.or. &
+        rendering_pipeline/='standard-device'.or.derivative_backend/='gpu'.or. &
+        postprocess_transport/='pinned'.or.streamline_seeds/='bl-layered256'.or. &
+        slice_definition/='index'.or.initial_frame.or.final_frame.or.count(product_ids/='')/=3) return
+    endif
+    message='bl-layered256 seeds require m12_diagnostics'
+    if(streamline_seeds=='bl-layered256'.and.products/='m12_diagnostics') return
     message='air5_volume_statistics requires enabled statistics and products=air5_walls'
     if(air5_volume_statistics.and.(.not.enabled.or..not.statistics.or.products/='air5_walls')) return
     message='air5_volume_reduction requires air5_volume_statistics'
@@ -372,12 +383,12 @@ contains
     select case(scene)
     case('q_surface')
       allowed=profile=='all'.or.profile=='q_surface'.or.profile=='q_streamlines'.or. &
-        profile=='tgv256_demo'.or.profile=='curve_demo'.or.profile=='boundary_layer'
+        profile=='tgv256_demo'.or.profile=='curve_demo'.or.profile=='boundary_layer'.or.profile=='m12_diagnostics'
     case('velocity_slice')
-      allowed=profile=='all'.or.profile=='velocity_slice'.or.profile=='boundary_layer'
+      allowed=profile=='all'.or.profile=='velocity_slice'.or.profile=='boundary_layer'.or.profile=='m12_diagnostics'
     case('instantaneous_streamlines')
       allowed=profile=='all'.or.profile=='streamlines'.or.profile=='q_streamlines'.or. &
-        profile=='tgv256_demo'.or.profile=='curve_demo'.or.profile=='boundary_layer'
+        profile=='tgv256_demo'.or.profile=='curve_demo'.or.profile=='boundary_layer'.or.profile=='m12_diagnostics'
     case('crossing_streamlines')
       allowed=profile=='all'.or.profile=='streamlines'.or.profile=='q_streamlines'
     case('mean_reynolds_streamlines','mean_favre_streamlines')

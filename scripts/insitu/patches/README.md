@@ -313,6 +313,10 @@ device-array path inside the standard vtkOpenGLPolyDataMapper. This is not the
 dedicated mapper backend. It currently requires contiguous FP32 points,
 device UInt32 homogeneous triangle or line indices and device UInt8 RGBA values named
 `_astr_display_rgba`; unsupported layouts/render modes throw.
+The M12 HD extension admits up to six mapper clipping planes. The existing
+VTK shader clips fragments using plane uniforms, without reading device
+geometry or changing the extracted mesh. Rebuild `RenderingOpenGL2` after
+updating this patch; never replace the library during a running job.
 
 Apply without fuzz to the separate source, using a dry-run first:
 

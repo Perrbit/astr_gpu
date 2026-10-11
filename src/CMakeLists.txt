@@ -15,7 +15,7 @@ target_include_directories(astr_checkpoint_filesystem PRIVATE ${HDF5_INCLUDE_DIR
 target_link_libraries(astr_checkpoint_filesystem PRIVATE ${HDF5_LIBRARIES} MPI::MPI_C)
 set_target_properties(astr_checkpoint_filesystem PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED YES)
 
-# New checkpoint publication must not emulate no-replace with a racy existence check.
+# Prefer native no-replace; unsupported filesystems use exclusive mkdir reservation.
 include(CheckFortranSourceCompiles)
 check_fortran_source_compiles("
       program check_renameat2
@@ -32,9 +32,9 @@ check_fortran_source_compiles("
       end program
 " ASTR_HAS_RENAMEAT2)
 if(ASTR_HAS_RENAMEAT2 AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  set_source_files_properties(checkpoint_bundle.F90 PROPERTIES COMPILE_DEFINITIONS ASTR_HAS_RENAMEAT2)
+  target_compile_definitions(astr_checkpoint_filesystem PRIVATE ASTR_HAS_RENAMEAT2)
 else()
-  message(STATUS "New checkpoint publication unavailable: no exclusive directory rename; legacy I/O unchanged")
+  message(STATUS "Checkpoint publication uses exclusive destination reservation (no native renameat2)")
 endif()
 
 set(ASTR_SOURCES
@@ -155,6 +155,7 @@ if(ASTR_WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/mainloop_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/gpu_runtime.cuf)
   list(APPEND ASTR_GPU_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_sample_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_m12_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_products_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/output_derivatives_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_device_velocity.cuf

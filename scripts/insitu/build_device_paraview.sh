@@ -10,6 +10,12 @@ set -euo pipefail
 : "${CUDA_ROOT:?Set the CUDA toolkit directory}"
 export OMPI_CC="${PV_DEVICE_CC:-gcc-13}"
 export OMPI_CXX="${PV_DEVICE_CXX:-g++-13}"
+cxx_runtime=$("$OMPI_CXX" -print-file-name=libstdc++.so.6)
+if [[ ! -f "$cxx_runtime" ]]; then
+  printf 'Cannot locate the selected C++ compiler runtime: %s\n' "$cxx_runtime" >&2
+  exit 2
+fi
+export LD_LIBRARY_PATH="$(dirname "$(realpath "$cxx_runtime")"):${LD_LIBRARY_PATH:-}"
 targets=()
 if [[ -n "${PV_DEVICE_TARGETS:-}" ]]; then
   read -r -a targets <<< "$PV_DEVICE_TARGETS"
@@ -40,12 +46,13 @@ fi
 cmake -S "$PV_DEVICE_SOURCE" -B "$PV_DEVICE_BUILD" -G "${CMAKE_GENERATOR:-Unix Makefiles}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$PV_DEVICE_PREFIX" \
+  -DCMAKE_INSTALL_LIBDIR=lib \
   -DCMAKE_C_COMPILER="${PV_DEVICE_CC:-gcc-13}" \
   -DCMAKE_CXX_COMPILER="${PV_DEVICE_CXX:-g++-13}" \
   -DCMAKE_CUDA_COMPILER="$CUDA_ROOT/bin/nvcc" \
   -DCMAKE_CUDA_HOST_COMPILER="${PV_DEVICE_CXX:-g++-13}" \
   -DCMAKE_CUDA_FLAGS="${PV_DEVICE_CUDA_FLAGS:-}" \
-  -DCMAKE_CUDA_ARCHITECTURES=native \
+  -DCMAKE_CUDA_ARCHITECTURES="${PV_DEVICE_CUDA_ARCHITECTURES:-native}" \
   -DCUDAToolkit_ROOT="$CUDA_ROOT" \
   -Dcatalyst_DIR="$CATALYST_DIR" \
   -DMPI_C_COMPILER="$MPI_ROOT/bin/mpicc" \

@@ -27,6 +27,8 @@
 #include <catalyst.h>
 #include <nvtx3/nvToolsExt.h>
 #include <cstdio>
+#include <cerrno>
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -180,14 +182,24 @@ void probe_large_mesh(vtkEGLRenderWindow* window,vtkRenderer* renderer,int devic
 
 int main(int argc,char** argv) {
   try {
-    if((argc!=2 && argc!=3) || (std::strcmp(argv[1],"0") && std::strcmp(argv[1],"1")) ||
+    if((argc!=2 && argc!=3) ||
        (argc==3 && std::strcmp(argv[2],"--conduit") && std::strcmp(argv[2],"--direct") &&
         std::strcmp(argv[2],"--large-growth") && std::strcmp(argv[2],"--large-fixed") &&
         std::strcmp(argv[2],"--direct-large-growth") && std::strcmp(argv[2],"--direct-large-fixed")))
       throw std::invalid_argument("Usage: insitu_standard_device_probe CUDA_DEVICE [--conduit|--direct|--large-growth|--large-fixed|--direct-large-growth|--direct-large-fixed]");
     const bool conduit=argc==3 && !std::strcmp(argv[2],"--conduit");
     const bool direct=argc==3 && !std::strcmp(argv[2],"--direct");
-    const int device=std::atoi(argv[1]);
+    errno=0;
+    char* end=nullptr;
+    const long selected=std::strtol(argv[1],&end,10);
+    if(errno || end==argv[1] || *end || selected<0 || selected>INT_MAX)
+      throw std::invalid_argument("CUDA_DEVICE must be a nonnegative integer");
+    int device_count=0;
+    if(cudaGetDeviceCount(&device_count)!=cudaSuccess)
+      throw std::runtime_error("Cannot query visible CUDA devices");
+    if(selected>=device_count)
+      throw std::invalid_argument("CUDA_DEVICE exceeds the visible device count");
+    const int device=static_cast<int>(selected);
     if(cudaSetDevice(device)!=cudaSuccess) throw std::runtime_error("CUDA selection failed");
     viskores::cont::Initialize(argc,argv);
     viskores::cont::GetRuntimeDeviceTracker().ForceDevice(viskores::cont::DeviceAdapterTagCuda{});

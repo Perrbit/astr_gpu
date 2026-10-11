@@ -222,6 +222,8 @@ contains
     use iso_c_binding, only: c_int,c_double,c_char,c_null_char,c_int64_t
     use commvar, only: im,jm,km,ia,ja,ka,hm,lreadgrid
     use commarray_gpu, only: x_d
+    use commarray, only: x
+    use insitu_m12_gpu, only: capture_m12_temperature_gpu
     use parallel, only: ig0,jg0,kg0,mpirank
     use insitu_sample_gpu, only: capture_device_sample_gpu
     use insitu_statistics_gpu, only: sample_statistics_gpu_mean_vectors,statistics_device_bytes
@@ -238,11 +240,11 @@ contains
 #ifdef ASTR_INSITU_DEVICE_PRODUCTS
     real(8),device,allocatable :: velocity(:,:),halo(:,:,:,:),derived(:,:),reynolds(:,:),favre(:,:)
     real(8),device,allocatable :: reynolds_halo(:,:,:,:),favre_halo(:,:,:,:)
-    real(8),device,allocatable :: coordinates(:,:),coordinate_halo(:,:,:,:)
+    real(8),device,allocatable :: coordinates(:,:),coordinate_halo(:,:,:,:),temperature(:,:,:,:)
     real(8) :: duration,window_end,window_start,started,phase_started,face_times(5)
     logical :: covered,lines,want_reynolds,want_favre,physical_coordinates
-    type(c_devptr) :: reynolds_pointer,favre_pointer,coordinates_pointer,coordinate_halo_pointer
-    integer :: status,generation
+    type(c_devptr) :: reynolds_pointer,favre_pointer,coordinates_pointer,coordinate_halo_pointer,temperature_pointer
+    integer :: status,generation,plane_j
     integer(int64) :: host_bytes,device_bytes,d2h,h2d,exchanges,retained
     interface
       subroutine range_push(stage) bind(C,name='astr_insitu_device_range_push')
@@ -252,13 +254,14 @@ contains
       subroutine range_pop() bind(C,name='astr_insitu_device_range_pop')
       end subroutine
       integer(c_int) function device_render(pipeline,backend,script,profile,comm,step,t,nx,ny,nz,ox,oy,oz,cells,cellsy,cellsz, &
-          velocity,halo,derived,reynolds,favre,covered,duration,wstart,wend,host,curve,xyz,xyz_halo,budget,reserve,retained,seeds) &
+          velocity,halo,derived,reynolds,favre,covered,duration,wstart,wend,host,curve,xyz,xyz_halo,budget,reserve,retained, &
+          seeds,temperature,plane_j) &
           bind(C,name='astr_insitu_device_render')
         import c_int,c_double,c_char,c_devptr,c_int64_t
         character(c_char),intent(in) :: pipeline(*),backend(*),script(*),profile(*),seeds(*)
-        integer(c_int),value :: comm,step,nx,ny,nz,ox,oy,oz,cells,cellsy,cellsz,covered,curve
+        integer(c_int),value :: comm,step,nx,ny,nz,ox,oy,oz,cells,cellsy,cellsz,covered,curve,plane_j
         real(c_double),value :: t,duration,wstart,wend
-        type(c_devptr),value :: velocity,halo,derived,reynolds,favre,xyz,xyz_halo
+        type(c_devptr),value :: velocity,halo,derived,reynolds,favre,xyz,xyz_halo,temperature
         integer(c_int64_t),value :: host,budget,reserve,retained
       end function
     end interface
@@ -267,14 +270,16 @@ contains
     call range_push(1_c_int)
     lines=profile=='all'.or.profile=='streamlines'.or.profile=='q_streamlines'.or. &
       profile=='tgv256_demo'.or.profile=='curve_demo'.or.profile=='boundary_layer'
+    if(profile=='m12_diagnostics') lines=product_scene_due('instantaneous_streamlines')
     call capture_device_sample_gpu(mode,velocity,halo,derived,host_budget,device_budget,reserve,profile=='tgv256_demo', &
       (profile=='all'.or.profile=='q_surface'.or.profile=='q_streamlines'.or. &
-        profile=='tgv256_demo'.or.profile=='curve_demo'.or.profile=='boundary_layer').and. &
-      (.not.product_schedules_active().or.product_scene_due('q_surface')),curve_demonstration=profile=='curve_demo')
+        profile=='tgv256_demo'.or.profile=='curve_demo'.or.profile=='boundary_layer'.or.profile=='m12_diagnostics').and. &
+      (.not.product_schedules_active().or.product_scene_due('q_surface')),curve_demonstration=profile=='curve_demo', &
+      m12_diagnostics=profile=='m12_diagnostics')
     coordinates_pointer=c_devloc(velocity);coordinate_halo_pointer=c_devloc(halo)
     retained=8*(size(velocity,kind=int64)+size(halo,kind=int64)+size(derived,kind=int64))
     ! The profile case creates its physical grid in userdefine even with lreadgrid=false.
-    physical_coordinates=lreadgrid.or.profile=='boundary_layer'
+    physical_coordinates=lreadgrid.or.profile=='boundary_layer'.or.profile=='m12_diagnostics'
     if(physical_coordinates) then
       call snapshot_sample_coordinates_gpu(x_d,coordinates,[im,jm,km],hm,MPI_COMM_WORLD,device_budget,reserve,retained)
       coordinates_pointer=c_devloc(coordinates)
@@ -288,6 +293,17 @@ contains
     endif
     call velocity_transport_usage_gpu(host_bytes,device_bytes,d2h,h2d,exchanges,generation)
     retained=retained+device_bytes
+    temperature_pointer=c_devloc(velocity);plane_j=0
+    if(profile=='m12_diagnostics'.and.product_scene_due('velocity_slice')) then
+      call capture_m12_temperature_gpu(temperature,device_budget,reserve,retained)
+      temperature_pointer=c_devloc(temperature)
+      retained=retained+8*size(temperature,kind=int64)
+      do plane_j=0,jm-1
+        if(x(0,plane_j+1,0,2)>=1.d0) exit
+      enddo
+      call checkpoint_state_require(plane_j<jm.and.x(0,plane_j,0,2)<=1.d0, &
+        MPI_COMM_WORLD,'M12 y=1 slice is outside the physical grid')
+    endif
     call range_pop()
     call report_insitu_timing('device_sample_inclusive',phase_started,step)
     phase_started=insitu_clock()
@@ -329,7 +345,8 @@ contains
       c_devloc(derived),reynolds_pointer,favre_pointer,merge(1_c_int,0_c_int,covered),duration, &
       window_start,window_end,int(host_budget,c_int64_t),merge(1_c_int,0_c_int,physical_coordinates), &
       coordinates_pointer,coordinate_halo_pointer, &
-      int(device_budget,c_int64_t),int(reserve,c_int64_t),int(retained,c_int64_t),trim(seed_layout)//c_null_char)
+      int(device_budget,c_int64_t),int(reserve,c_int64_t),int(retained,c_int64_t),trim(seed_layout)//c_null_char, &
+      temperature_pointer,plane_j)
     call range_pop()
     call checkpoint_state_require(status==0,MPI_COMM_WORLD,'device product bridge failed')
     call report_insitu_timing('device_consumer_inclusive',phase_started,step)
@@ -344,6 +361,7 @@ contains
     deallocate(velocity,halo,derived)
     if(allocated(coordinates)) deallocate(coordinates)
     if(allocated(coordinate_halo)) deallocate(coordinate_halo)
+    if(allocated(temperature)) deallocate(temperature)
     if(allocated(reynolds)) deallocate(reynolds,favre)
     if(allocated(reynolds_halo)) deallocate(reynolds_halo)
     if(allocated(favre_halo)) deallocate(favre_halo)

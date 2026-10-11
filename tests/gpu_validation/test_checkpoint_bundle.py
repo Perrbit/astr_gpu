@@ -1,4 +1,5 @@
 """Bounded integrity tests for the Fortran checkpoint bundle primitive."""
+import errno
 import os
 from pathlib import Path
 import subprocess
@@ -123,6 +124,72 @@ def fault_library(tmp_path_factory):
     subprocess.run(["cc", "-std=c99", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
                     str(source), "-ldl", "-o", str(path)], check=True, timeout=30)
     return path
+
+
+@pytest.mark.parametrize("unsupported", [errno.EINVAL, errno.EOPNOTSUPP, errno.ENOSYS])
+@pytest.mark.parametrize("ranks", [1, 2])
+def test_publish_without_native_noreplace(tmp_path, fault_library, unsupported, ranks):
+    candidate = tmp_path / "batch1.tmp"
+    candidate.mkdir()
+    (candidate / "state.h5").write_bytes(b"bounded payload\n")
+    bundle(candidate, "seal", ranks=1)
+    original = {p.name: p.read_bytes() for p in candidate.iterdir()}
+    env = os.environ.copy()
+    env.update(LD_PRELOAD=str(fault_library), ASTR_CHECKPOINT_TEST_ROOT=str(tmp_path),
+               ASTR_CHECKPOINT_TEST_TARGET="batch1", ASTR_CHECKPOINT_TEST_RENAME_ERRNO=str(unsupported))
+    bundle(tmp_path, "publish", ranks=ranks, name="batch1", env=env)
+    assert not candidate.exists()
+    assert (tmp_path / "LATEST").read_text() == "batch1\n"
+    assert original == {p.name: p.read_bytes() for p in (tmp_path / "batch1").iterdir()}
+    bundle(tmp_path / "batch1", "validate", ranks=1)
+
+
+@pytest.mark.parametrize("fault", ["destination", "destination_symlink", "latest_temp",
+                                   "fallback_rename", "io_error"])
+def test_fallback_rejects_conflicts_and_preserves_old_batch(tmp_path, fault_library, fault):
+    for name in ("old", "batch1.tmp"):
+        directory = tmp_path / name
+        directory.mkdir()
+        (directory / "state.h5").write_bytes(b"bounded payload\n")
+        bundle(directory, "seal", ranks=1)
+    old = {p.name: p.read_bytes() for p in (tmp_path / "old").iterdir()}
+    candidate = {p.name: p.read_bytes() for p in (tmp_path / "batch1.tmp").iterdir()}
+    (tmp_path / "LATEST").write_text("old\n")
+    if fault == "destination":
+        (tmp_path / "batch1").mkdir()
+    elif fault == "destination_symlink":
+        (tmp_path / "batch1").symlink_to("absent_destination", target_is_directory=True)
+    elif fault == "latest_temp":
+        (tmp_path / ".LATEST.tmp").write_text("incomplete update\n")
+    env = os.environ.copy()
+    env.update(LD_PRELOAD=str(fault_library), ASTR_CHECKPOINT_TEST_ROOT=str(tmp_path),
+               ASTR_CHECKPOINT_TEST_TARGET="batch1", ASTR_CHECKPOINT_TEST_RENAME_ERRNO=str(
+                   errno.EIO if fault == "io_error" else errno.EINVAL),
+               ASTR_CHECKPOINT_TEST_FAULT=fault)
+    bundle(tmp_path, "publish", ranks=1, name="batch1", env=env, success=False)
+    assert (tmp_path / "LATEST").read_text() == "old\n"
+    assert old == {p.name: p.read_bytes() for p in (tmp_path / "old").iterdir()}
+    assert candidate == {p.name: p.read_bytes() for p in (tmp_path / "batch1.tmp").iterdir()}
+    if fault == "fallback_rename":
+        assert (tmp_path / "batch1").is_dir()
+        assert not list((tmp_path / "batch1").iterdir())
+        bundle(tmp_path / "batch1", "validate", ranks=1, success=False)
+    elif fault == "destination_symlink":
+        assert (tmp_path / "batch1").is_symlink()
+        assert not (tmp_path / "absent_destination").exists()
+    elif fault == "destination":
+        assert not list((tmp_path / "batch1").iterdir())
+    else:
+        assert not (tmp_path / "batch1").exists()
+
+
+def test_filesystem_preflight_checks_retention_and_conflicts(tmp_path):
+    from run_checkpoint_publication_preflight import preflight
+    work = preflight(PROBE, MPIEXEC, tmp_path)
+    import json
+    report = json.loads((work / "report.json").read_text())
+    assert report["status"] == "passed"
+    assert len(report["checks"]) == 9
 
 
 @pytest.mark.parametrize("keep", [1, 2])

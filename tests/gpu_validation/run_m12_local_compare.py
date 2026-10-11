@@ -151,16 +151,28 @@ def run(args, backend, topology, insitu_config=None, case_label=None, resource_b
         observation=None, steps=10, restore=None, checkpoint_interval=None,product_oracles=False):
     if steps not in (5,10) or (restore is not None and (steps!=10 or checkpoint_interval is None)):
         raise ValueError('M12 restart gate is limited to ten steps or five-plus-five')
-    if observation not in (None, 'images', 'geometry', 'trace'):
+    if observation not in (None, 'plain', 'images', 'geometry', 'trace'):
         raise ValueError('unknown M12 observation mode')
-    if observation and (backend != 'gpu' or insitu_config is None or args.memcheck):
+    if observation == 'plain' and (backend != 'gpu' or insitu_config is not None or args.memcheck):
+        raise ValueError('plain observation requires an uninstrumented GPU run without rendering')
+    if observation and observation != 'plain' and (backend != 'gpu' or insitu_config is None or args.memcheck):
         raise ValueError('observation requires an uninstrumented GPU render run without memcheck')
     if product_oracles and (backend!='gpu' or insitu_config is None or observation is not None):
         raise ValueError('product continuation oracles require a separate instrumented GPU render gate')
+    halo_transport=getattr(args,'halo_transport','pageable')
+    if halo_transport not in ('pageable','pinned','pinned-pipeline','device-aware'):
+        raise ValueError('unknown M12 solver halo transport')
     ranks = int(np.prod([int(value) for value in topology.split(',')]))
     profiler_allowance = (observation == 'trace' and ranks == 4 and
                           getattr(args, 'np4_profiler_host_budget_8gib', False))
-    external_host_budget = (8 if profiler_allowance else 4)*1024**3
+    external_host_budget = getattr(args, 'resource_host_extra_budget_bytes',
+                                   (8 if profiler_allowance else 4)*1024**3)
+    device_budget = getattr(args, 'resource_device_extra_budget_bytes', 2*1024**3)
+    device_reserve = getattr(args, 'resource_device_reserve_bytes', 1024**3)
+    directory_budget = getattr(args, 'directory_budget_bytes', 4*1024**3)
+    timeout = getattr(args, 'runtime_timeout_seconds', 180)
+    if min(external_host_budget, device_budget, device_reserve, directory_budget, timeout) <= 0:
+        raise ValueError('M12 resource budgets and timeout must be positive')
     case = args.output / ((case_label or backend) + '_np' + str(ranks) + '_' + topology.replace(',', 'x'))
     prepare(args.source, case, backend)
     first_step=5 if restore is not None else 0
@@ -204,7 +216,7 @@ def run(args, backend, topology, insitu_config=None, case_label=None, resource_b
                 'ASTR_INSITU_TEST_CURVE_TRACE_PREFIX', 'ASTR_INSITU_TEST_CURVE_STEP_SCALE'):
         env.pop(key, None)
     env.update(ASTR_FORCE_MPI_TOPOLOGY=topology, ASTR_WALL_BLOWING_MODE='legacy_random',
-               ASTR_GPU_SYNC_MODE='explicit', ASTR_GPU_HALO_TRANSPORT='pageable',
+               ASTR_GPU_SYNC_MODE='explicit', ASTR_GPU_HALO_TRANSPORT=halo_transport,
                ASTR_GEOMETRY_DUMP='diagnostics/geometry.h5',
                ASTR_VALIDATION_RHS_PREFIX='diagnostics/state',
                ASTR_M12_SENSOR_DETAIL='1',
@@ -236,14 +248,24 @@ def run(args, backend, topology, insitu_config=None, case_label=None, resource_b
             env['ASTR_VTK_PIXEL_AUDIT'] = '1'
         for key in ('DISPLAY', 'PYTHONPATH', 'CATALYST_IMPLEMENTATION_PREFER_ENV', 'VTK_EGL_DEVICE_INDEX'):
             env.pop(key, None)
-    command = [str(args.mpiexec), '--mca', 'pml', 'ob1', '--mca', 'btl', 'self,vader,tcp',
+    aware=backend=='gpu' and halo_transport=='device-aware'
+    if aware:
+        env.update(OMPI_MCA_coll='^hcoll,ucc,cuda',OMPI_MCA_osc='pt2pt',
+                   OMPI_MCA_opal_cuda_support='true',
+                   UCX_MEMTYPE_CACHE='n',UCX_CUDA_COPY_ENABLE_FABRIC='no',
+                   UCX_CUDA_COPY_DMABUF='no',UCX_CUDA_IPC_ENABLE_MNNVL='no',
+                   UCX_TLS='self,sm,cuda_copy,cuda_ipc')
+    transport_args=['--mca','pml','ucx'] if aware else ['--mca','pml','ob1','--mca','btl','self,vader,tcp']
+    command = [str(args.mpiexec), *transport_args,
                '--mca', 'coll_hcoll_enable', '0', '--oversubscribe', '-np', str(ranks)]
     if args.memcheck and backend == 'gpu':
-        env.update(OMPI_MCA_opal_cuda_support='false',
-                   OMPI_MCA_osc='sm' if ranks==4 and insitu_config is not None else 'pt2pt',
-                   OMPI_MCA_coll_ucc_enable='0')
+        if not aware:
+            env.update(OMPI_MCA_opal_cuda_support='false',
+                       OMPI_MCA_osc='sm' if ranks==4 and insitu_config is not None else 'pt2pt',
+                       OMPI_MCA_coll_ucc_enable='0')
         command += [str(args.sanitizer), '--tool', 'memcheck', '--error-exitcode', '99',
-                    '--log-file', str(case/'memcheck.%p.log')]
+                    '--log-file', str(case/'memcheck.%p.log'),
+                    *(['--suppressions',str(Path(__file__).with_name('compute_sanitizer_ucx_cuda_aware.supp.xml'))] if aware else [])]
     if observation == 'trace':
         command += [str(args.nsys), 'profile', '--trace=cuda,nvtx,mpi', '--mpi-impl=openmpi',
                     '--sample=none', '--cpuctxsw=none', '--cuda-memory-usage=true',
@@ -266,27 +288,29 @@ def run(args, backend, topology, insitu_config=None, case_label=None, resource_b
             if path.stat().st_size < expected:
                 continue
             checked[path] = positive_state(path)
-        if sum(p.stat().st_size for p in case.rglob('*') if p.is_file()) > 4*1024**3:
-            raise ValueError('approved 4 GiB directory budget exceeded')
+        if sum(p.stat().st_size for p in case.rglob('*') if p.is_file()) > directory_budget:
+            raise ValueError(f'M12 directory budget exceeded: {directory_budget} bytes')
 
     with (case/'run.log').open('wb') as log:
         if backend == 'gpu':
             resources = run_monitored(command, case, env, log, case/'resources.sampled.json',
                                       baseline=resource_baseline,
                                       host_extra_budget_bytes=external_host_budget,
-                                      timeout_seconds=180, check_progress=progress)
-            if resource_baseline is None and (resources['host_rss_peak_bytes'] > 4*1024**3 or any(
-                    entry['peak_bytes'] > 2*1024**3 for entry in resources['devices'].values())):
+                                      device_extra_budget_bytes=device_budget,
+                                      device_reserve_bytes=device_reserve,
+                                      timeout_seconds=timeout, check_progress=progress)
+            if resource_baseline is None and (resources['host_rss_peak_bytes'] > external_host_budget or any(
+                    entry['peak_bytes'] > device_budget for entry in resources['devices'].values())):
                 raise ValueError('total sampled job memory exceeds even the additional-memory allowance')
         else:
             process = subprocess.Popen(command, cwd=case, env=env, stdout=log,
                                        stderr=subprocess.STDOUT, start_new_session=True)
             try:
-                deadline = time.monotonic()+180
+                deadline = time.monotonic()+timeout
                 while process.poll() is None:
                     progress()
                     if time.monotonic() > deadline:
-                        raise TimeoutError('M12 short gate exceeded 180 seconds')
+                        raise TimeoutError(f'M12 short gate exceeded {timeout} seconds')
                     time.sleep(.02)
                 if process.returncode:
                     raise subprocess.CalledProcessError(process.returncode, command)
@@ -311,7 +335,10 @@ def run(args, backend, topology, insitu_config=None, case_label=None, resource_b
         'internal_energy_min': min((s['internal_energy_min'] for s in checked.values()), default=None),
         'observation': observation,
         'external_host_budget_bytes': external_host_budget,
-        'native_postprocessing_host_budget_bytes': 4*1024**3 if insitu_config is not None else None,
+        'native_postprocessing_host_budget_bytes': getattr(args, 'resource_host_extra_budget_bytes', 4*1024**3)
+            if insitu_config is not None else None,
+        'device_budget_bytes': device_budget, 'device_reserve_bytes': device_reserve,
+        'directory_budget_bytes': directory_budget, 'runtime_timeout_seconds': timeout,
         'strict_absolute_tolerance': 2e-10, 'statistics_phase': 'legacy first-RK-stage listing',
         'final_q_phase': 'third RK update, after sequential x/y sponge',
         'memcheck': bool(args.memcheck and backend == 'gpu')}, indent=2))
