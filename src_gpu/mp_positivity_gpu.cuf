@@ -2,6 +2,11 @@ module mp_positivity_gpu
   use cudafor
   implicit none
   logical,save :: mp_positivity_enabled=.false.,configured=.false.
+  logical,save :: x_contiguous_faces=.false.,verify_face_layout=.false.
+  logical,save :: cache_mp_splits=.false.
+  real(8),allocatable,device :: split_plus_d(:,:,:,:),split_minus_d(:,:,:,:)
+  real(8),allocatable,device :: reference_high_d(:,:,:,:),reference_delta_d(:,:,:,:)
+  integer,device :: layout_mismatch_d=0
   real(8),allocatable,device :: high_d(:,:,:,:,:),delta_d(:,:,:,:,:),ratio_d(:,:,:,:)
   real(8),allocatable,device :: send_lo_d(:,:,:,:),send_hi_d(:,:,:,:)
   real(8),allocatable,device :: recv_lo_d(:,:,:,:),recv_hi_d(:,:,:,:)
@@ -47,13 +52,65 @@ contains
         if(rank==0) print *, 'MP positivity requires FP64 five-variable MP7-LD RK3, periodic z, no filter/crashfix'
         call MPI_Abort(MPI_COMM_WORLD,91,ierr)
       endif
+      call configure_mp_face_layout()
     endif
     configured=.true.
     if(rank==0) print *, 'ASTR_GPU_MP_POSITIVITY=',merge('flux','off ',mp_positivity_enabled)
   end subroutine configure_mp_positivity_gpu
 
+  subroutine configure_mp_face_layout()
+    use mpi
+    implicit none
+    character(32) :: value
+    integer :: choice,lo,hi,status,ierr,rank
+    value=''
+    call get_environment_variable('ASTR_GPU_MP_FACE_LAYOUT',value,status=status)
+    choice=-1
+    if(status==1.or.(status==0.and.len_trim(value)==0)) choice=0
+    if(status==0.and.trim(value)=='directional') choice=0
+    if(status==0.and.trim(value)=='x-contiguous') choice=1
+    call MPI_Allreduce(choice,lo,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(choice,hi,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(lo<0.or.lo/=hi) then
+      print *, 'ASTR_GPU_MP_FACE_LAYOUT requires consistent directional or x-contiguous'
+      call MPI_Abort(MPI_COMM_WORLD,91,ierr)
+    endif
+    x_contiguous_faces=choice==1
+    value=''
+    call get_environment_variable('ASTR_GPU_MP_FACE_LAYOUT_VERIFY',value,status=status)
+    choice=-1
+    if(status==1.or.(status==0.and.len_trim(value)==0)) choice=0
+    if(status==0.and.trim(value)=='0') choice=0
+    if(status==0.and.trim(value)=='1') choice=1
+    call MPI_Allreduce(choice,lo,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(choice,hi,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(lo<0.or.lo/=hi.or.(choice==1.and..not.x_contiguous_faces)) then
+      print *, 'MP face verification requires consistent 0/1 and the x-contiguous candidate'
+      call MPI_Abort(MPI_COMM_WORLD,91,ierr)
+    endif
+    verify_face_layout=choice==1
+    value=''
+    call get_environment_variable('ASTR_GPU_MP_SPLIT_CACHE',value,status=status)
+    choice=-1
+    if(status==1.or.(status==0.and.len_trim(value)==0)) choice=0
+    if(status==0.and.trim(value)=='off') choice=0
+    if(status==0.and.trim(value)=='on') choice=1
+    call MPI_Allreduce(choice,lo,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(choice,hi,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(lo<0.or.lo/=hi.or.(choice==1.and..not.x_contiguous_faces)) then
+      print *, 'ASTR_GPU_MP_SPLIT_CACHE requires consistent off/on and x-contiguous layout'
+      call MPI_Abort(MPI_COMM_WORLD,91,ierr)
+    endif
+    cache_mp_splits=choice==1
+    call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
+    if(rank==0) print *, 'ASTR_GPU_MP_FACE_LAYOUT x_contiguous=',x_contiguous_faces, &
+      ' diagnostic_verify=',verify_face_layout
+    if(rank==0) print *, 'ASTR_GPU_MP_SPLIT_CACHE enabled=',cache_mp_splits
+  end subroutine configure_mp_face_layout
+
   subroutine allocate_mp_positivity_gpu()
     use commvar, only: im,jm,km,hm
+    use iso_fortran_env, only: int64
     implicit none
     integer :: n
     if(allocated(high_d)) return
@@ -62,6 +119,14 @@ contains
     n=10*max((im+1)*(jm+1),(im+1)*(km+1),(jm+1)*(km+1))
     allocate(send_lo_d(n,1,1,1),send_hi_d(n,1,1,1),recv_lo_d(n,1,1,1),recv_hi_d(n,1,1,1))
     allocate(send_lo_h(n,1,1,1),send_hi_h(n,1,1,1),recv_lo_h(n,1,1,1),recv_hi_h(n,1,1,1))
+    if(verify_face_layout) then
+      allocate(reference_high_d(-1:im,-1:jm,-1:km,5),reference_delta_d(-1:im,-1:jm,-1:km,5))
+    endif
+    if(cache_mp_splits) then
+      allocate(split_plus_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5), &
+               split_minus_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5))
+      print *, 'ASTR_GPU_MP_SPLIT_CACHE_BYTES=',80_int64*product(int([im,jm,km]+2*hm+1,int64))
+    endif
   end subroutine allocate_mp_positivity_gpu
 
   subroutine release_mp_positivity_gpu()
@@ -69,6 +134,8 @@ contains
     if(.not.allocated(high_d)) return
     deallocate(high_d,delta_d,ratio_d,send_lo_d,send_hi_d,recv_lo_d,recv_hi_d)
     deallocate(send_lo_h,send_hi_h,recv_lo_h,recv_hi_h)
+    if(allocated(reference_high_d)) deallocate(reference_high_d,reference_delta_d)
+    if(allocated(split_plus_d)) deallocate(split_plus_d,split_minus_d)
   end subroutine release_mp_positivity_gpu
 
   attributes(device) logical function admissible_mp_state(q)
@@ -218,6 +285,138 @@ contains
     if(.not.all(abs(high)<=huge(1.d0))) call record_mp_failure(1,i,j,k,high)
   end subroutine mp_faces_kernel
 
+  ! Separate entry point keeps candidate index branches out of the reference kernel.
+  attributes(global) subroutine mp_faces_x_contiguous_kernel(axis,im,jm,km,hm,npdc,gamma,weight,cached)
+    use solver_gpu, only: mp_ld_interface_flux,mp_ld_interface_flux_cached
+    implicit none
+    integer,value :: axis,im,jm,km,hm,npdc
+    real(8),value :: gamma,weight
+    logical,value :: cached
+    integer :: id,i,j,k,dim,ntot,inode
+    real(8) :: high(5),low(5)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    dim=im
+    if(axis==2) dim=jm
+    if(axis==3) dim=km
+    ntot=(dim+2)
+    if(axis==1) ntot=ntot*(jm+1)*(km+1)
+    if(axis==2) ntot=ntot*(im+1)*(km+1)
+    if(axis==3) ntot=ntot*(im+1)*(jm+1)
+    if(id>=ntot) return
+    select case(axis)
+    case(1)
+      i=mod(id,im+2)-1; j=mod(id/(im+2),jm+1); k=id/((im+2)*(jm+1))
+    case(2)
+      i=mod(id,im+1); j=mod(id/(im+1),jm+2)-1; k=id/((im+1)*(jm+2))
+    case(3)
+      i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))-1
+    end select
+    inode=i
+    if(axis==2) inode=j
+    if(axis==3) inode=k
+    if(((npdc==1.or.npdc==4).and.inode<0).or. &
+       ((npdc==2.or.npdc==4).and.inode>=dim)) then
+      high_d(i,j,k,:,axis)=0.d0
+      delta_d(i,j,k,:,axis)=0.d0
+      return
+    endif
+    call mp_low_face(i,j,k,axis,im,jm,km,hm,npdc,gamma,low)
+    if(cached) then
+      call mp_ld_interface_flux_cached(i,j,k,axis,im,jm,km,gamma,hm,npdc,axis,weight, &
+                                      split_plus_d,split_minus_d,high)
+    else
+      call mp_ld_interface_flux(i,j,k,axis,im,jm,km,gamma,hm,npdc,axis,weight,high)
+    endif
+    high_d(i,j,k,:,axis)=high
+    delta_d(i,j,k,:,axis)=high-low
+    if(.not.all(abs(high)<=huge(1.d0))) call record_mp_failure(1,i,j,k,high)
+  end subroutine mp_faces_x_contiguous_kernel
+
+  attributes(global) subroutine mp_split_cache_kernel(axis,im,jm,km,hm,npdc,gamma)
+    use solver_gpu, only: steger_warming_split_physical_vector_at
+    implicit none
+    integer,value :: axis,im,jm,km,hm,npdc
+    real(8),value :: gamma
+    integer :: id,i,j,k,n,inode,dim
+    real(8) :: plus(5),minus(5)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    dim=im
+    if(axis==2) dim=jm
+    if(axis==3) dim=km
+    n=(im+1)*(jm+1)*(km+1)/(dim+1)*(dim+2*hm+1)
+    if(id>=n) return
+    select case(axis)
+    case(1)
+      i=mod(id,im+2*hm+1)-hm
+      j=mod(id/(im+2*hm+1),jm+1); k=id/((im+2*hm+1)*(jm+1))
+    case(2)
+      i=mod(id,im+1)
+      j=mod(id/(im+1),jm+2*hm+1)-hm; k=id/((im+1)*(jm+2*hm+1))
+    case(3)
+      i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))-hm
+    end select
+    inode=i
+    if(axis==2) inode=j
+    if(axis==3) inode=k
+    if((npdc==1.or.npdc==4).and.inode<0) return
+    if((npdc==2.or.npdc==4).and.inode>dim) return
+    call steger_warming_split_physical_vector_at(i,j,k,axis,1,im,jm,km,gamma,plus)
+    call steger_warming_split_physical_vector_at(i,j,k,axis,-1,im,jm,km,gamma,minus)
+    split_plus_d(i,j,k,:)=plus
+    split_minus_d(i,j,k,:)=minus
+  end subroutine mp_split_cache_kernel
+
+  attributes(global) subroutine compare_mp_face_layout_kernel(axis,im,jm,km)
+    use iso_fortran_env, only: int64
+    implicit none
+    integer,value :: axis,im,jm,km
+    integer :: id,i,j,k,n,m,ignored
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    n=(im+1)*(jm+1)*(km+1)
+    select case(axis)
+    case(1)
+      n=n/(im+1)*(im+2)
+      i=mod(id,im+2)-1; j=mod(id/(im+2),jm+1); k=id/((im+2)*(jm+1))
+    case(2)
+      n=n/(jm+1)*(jm+2)
+      i=mod(id,im+1); j=mod(id/(im+1),jm+2)-1; k=id/((im+1)*(jm+2))
+    case(3)
+      n=n/(km+1)*(km+2)
+      i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))-1
+    end select
+    if(id>=n) return
+    do m=1,5
+      if(transfer(high_d(i,j,k,m,axis),0_int64)/=transfer(reference_high_d(i,j,k,m),0_int64).or. &
+         transfer(delta_d(i,j,k,m,axis),0_int64)/=transfer(reference_delta_d(i,j,k,m),0_int64)) &
+        ignored=atomiccas(layout_mismatch_d,0,1)
+    enddo
+  end subroutine compare_mp_face_layout_kernel
+
+  subroutine verify_mp_faces(axis,im,jm,km,hm,npdc,gamma,weight,grid,block)
+    use mpi
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    integer,intent(in) :: axis,im,jm,km,hm,npdc
+    real(8),intent(in) :: gamma,weight
+    type(dim3),intent(in) :: grid,block
+    integer :: local,global,ierr,rank
+    reference_high_d=high_d(:,:,:,:,axis)
+    reference_delta_d=delta_d(:,:,:,:,axis)
+    call mp_faces_kernel<<<grid,block>>>(axis,im,jm,km,hm,npdc,gamma,weight)
+    call sync_after_kernel('mp_faces_reference',.true.)
+    layout_mismatch_d=0
+    call compare_mp_face_layout_kernel<<<grid,block>>>(axis,im,jm,km)
+    call sync_after_kernel('compare_mp_face_layout',.true.)
+    local=layout_mismatch_d
+    call MPI_Allreduce(local,global,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(global/=0) then
+      print *, 'MP face layout high/delta bitwise comparison failed, axis=',axis
+      call MPI_Abort(MPI_COMM_WORLD,93,ierr)
+    endif
+    call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
+    if(rank==0) print *, 'ASTR_MP_FACE_LAYOUT_VERIFIED axis=',axis
+  end subroutine verify_mp_faces
+
   attributes(global) subroutine mp_plane_kernel(axis,im,jm,km,mode,has_lo,has_hi)
     implicit none
     integer,value :: axis,im,jm,km,mode,has_lo,has_hi
@@ -296,8 +495,8 @@ contains
     ! Private, blocking tag range; buffers are reused only after completion.
     tag=21401+2*(axis-1)
     if(device_aware_transport_enabled) then
-      call exchange_device_pair(send_lo_d(1:n,:,:,:),send_hi_d(1:n,:,:,:), &
-        recv_hi_d(1:n,:,:,:),recv_lo_d(1:n,:,:,:),n,lo,hi,tag,tag+1)
+      ! Whole device buffers avoid host packing of a leading-dimension section.
+      call exchange_device_pair(send_lo_d,send_hi_d,recv_hi_d,recv_lo_d,n,lo,hi,tag,tag+1)
     else
       send_lo_h(1:n,:,:,:)=send_lo_d(1:n,:,:,:)
       send_hi_h(1:n,:,:,:)=send_hi_d(1:n,:,:,:)
@@ -339,10 +538,21 @@ contains
     npdc=[npdci,npdcj,npdck]; dim=[im,jm,km]
     block=dim3(256,1,1)
     do axis=1,3
+      if(cache_mp_splits) then
+        n=(im+1)*(jm+1)*(km+1)/(dim(axis)+1)*(dim(axis)+2*hm+1)
+        grid=dim3((n+255)/256,1,1)
+        call mp_split_cache_kernel<<<grid,block>>>(axis,im,jm,km,hm,npdc(axis),gamma)
+        call sync_after_kernel('mp_split_cache_kernel')
+      endif
       n=(im+1)*(jm+1)*(km+1)/(dim(axis)+1)*(dim(axis)+2)
       grid=dim3((n+255)/256,1,1)
-      call mp_faces_kernel<<<grid,block>>>(axis,im,jm,km,hm,npdc(axis),gamma,bfacmpld)
+      if(x_contiguous_faces) then
+        call mp_faces_x_contiguous_kernel<<<grid,block>>>(axis,im,jm,km,hm,npdc(axis),gamma,bfacmpld,cache_mp_splits)
+      else
+        call mp_faces_kernel<<<grid,block>>>(axis,im,jm,km,hm,npdc(axis),gamma,bfacmpld)
+      endif
       call sync_after_kernel('mp_faces_kernel')
+      if(verify_face_layout) call verify_mp_faces(axis,im,jm,km,hm,npdc(axis),gamma,bfacmpld,grid,block)
       call exchange_mp_planes(axis,1)
     enddo
     call check_mp_failure('face input/flux')

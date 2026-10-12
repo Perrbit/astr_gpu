@@ -202,6 +202,10 @@ if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
 endif()
 
 add_executable(astr ${ASTR_SOURCES} ${ASTR_GPU_SOURCES})
+option(ASTR_CUDA_LINEINFO "Add CUDA Fortran source line information without disabling optimization" OFF)
+if(ASTR_WITH_CUDA AND ASTR_CUDA_LINEINFO AND CMAKE_Fortran_COMPILER_ID MATCHES "NVHPC|PGI")
+  target_compile_options(astr PRIVATE $<$<COMPILE_LANGUAGE:Fortran>:-gpu=lineinfo>)
+endif()
 if(BUILD_TESTING)
   add_executable(legacy_wall_random_probe EXCLUDE_FROM_ALL wall_blowing_random.F90
     ../tests/gpu_validation/legacy_wall_random_probe.F90)

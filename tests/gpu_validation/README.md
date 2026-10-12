@@ -75,6 +75,71 @@ means and adaptive output are not admitted by this change.
 Each invocation freezes its executable under `<output>/bin/astr` so subsequent
 development rebuilds do not invalidate that run's exact restart executable contract.
 
+### M12 MP7-LD / NSCBC Performance
+
+`run_m12_mp7_nscbc_performance.py` freezes the 476x130x96-interval M12
+workload: FP64, MP7-LD 743e, flux positivity, 643e viscosity, RK3,
+11/22/41/52/1/1 boundaries, NSCBC compatibility, dt=0.02 and the original
+nonzero random wall forcing. It reuses the read-only M12 input resources.
+Build through the root CMake project with the M12 `userdefine_hbl.F90`
+selected by `ASTR_USERDEFINE_SOURCE`; `ASTR_CUDA_LINEINFO=ON` adds source
+locations without disabling device optimization.
+
+```bash
+python3 tests/gpu_validation/run_m12_mp7_nscbc_performance.py \
+  --executable <absolute-build>/bin/astr --source <read-only-M12-directory> \
+  --output <new-reference-directory>
+python3 tests/gpu_validation/run_m12_mp7_nscbc_performance.py \
+  --executable <same-executable> --source <same-M12-directory> \
+  --output <new-candidate-directory> --face-layout x-contiguous \
+  --split-cache on --transport device-aware \
+  --resource-baseline <reference-directory>/resources.json
+```
+
+The default run uses NP2 x-slab, 20 warmup and 100 measured steps, no images,
+volume sequence, slices or checkpoints, and the same small statistics output.
+RK timing includes preparation and integration: sum the whole measured window
+per rank, take the largest rank total, then divide by 100. The additional
+complete-advance metric includes `crashcheck` and RK, not post-step rendering
+or output publication. Compare five interleaved pairs with
+`--reference-rounds <five-directories> --candidate-rounds <five-directories>`.
+Raw times, median, range and MAD are reported without a minimum-speedup
+retention gate. Correctness, memory and resource gates remain independent.
+
+The optional layout is selected by `ASTR_GPU_MP_FACE_LAYOUT=x-contiguous`
+(default `directional`). `ASTR_GPU_MP_SPLIT_CACHE=on` requires that layout
+and allocates two FP64 split-flux arrays, overwritten every direction and RK
+stage (default `off`). These switches only affect the admitted five-variable
+MP positivity path. The device-aware driver selects UCX and records its exact
+runtime settings; a comparison with the pinned/ob1 reference is a backend
+configuration comparison, not a pure MPI-buffer-only experiment.
+
+Diagnostic runs may select `--diagnostic --checkpoint-every N` and
+`--verify-faces`, then `--compare <reference> <candidate> --steps N` to check
+checkpoint payloads, primitive caches, RNG, statistics and limiter counts
+bitwise. `--stage-snapshots STEP` additionally captures every RK stage without
+disabling wall forcing. Neither option belongs in formal timing. A restored
+active window must use a legal same-executable checkpoint; never rewrite its
+fingerprint. NP1/NP2 use topology-dependent random sequences, so their timings
+are cost references, not strict same-workload strong-scaling evidence.
+
+Use `--profile` for an eight-step Nsight Systems diagnostic. Export each
+report to SQLite and run `summarize_m12_mp7_nsys.py <trace.sqlite> --output
+<report.json>` for six aligned MP-stage cycles. Exposed MPI and synchronization
+intervals can overlap and must not be added. `--ncu` collects only the first
+three MP face launches; its replay time is not formal RK time. NCU resource
+comparison must use an equally profiled reference because profiler shadow
+buffers are not candidate storage. `--memcheck --sanitizer-suppressions
+tests/gpu_validation/compute_sanitizer_ucx_cuda_aware.supp.xml` uses the existing
+narrow external MPI/UCX API rules; retain raw reports and do not broaden them
+to hide solver errors.
+
+`run_m12_mp7_nscbc_campaign.py` resumes the explicitly frozen 2026-10-12
+campaign, validates its executable digest, and refuses to overwrite incomplete
+directories. It is an evidence-specific runner, not a generic production job
+script. See `docs/plans/2026-10-12-1338-perf-m12-mp7-nscbc-plan.md` and
+`documents/ASTR_GPU_PERFORMANCE_OPTIMIZATION_PLAN.md` for approved scope.
+
 ## Output Redesign Foundations
 
 `output_config.F90` implements a candidate configuration parser and rank-0

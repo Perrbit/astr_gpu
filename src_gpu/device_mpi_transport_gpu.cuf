@@ -21,8 +21,9 @@ contains
       call mpi_abort(MPI_COMM_WORLD,1,abort_error)
       return
     endif
-    if(count<1 .or. size(send_low)/=count .or. size(send_high)/=count .or. &
-       size(recv_high)/=count .or. size(recv_low)/=count) then
+    ! MPI consumes the count-element prefix of each contiguous capacity buffer.
+    if(count<1 .or. size(send_low)<count .or. size(send_high)<count .or. &
+       size(recv_high)<count .or. size(recv_low)<count) then
       print *, 'GPU device-aware transport buffer/count mismatch'
       call mpi_abort(MPI_COMM_WORLD,1,abort_error)
       return
