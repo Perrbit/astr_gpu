@@ -6,13 +6,21 @@ module insitu_m12_gpu
   use checkpoint_state_io, only: checkpoint_state_require
   implicit none
   private
-  public :: sample_m12_completed_gpu,capture_m12_temperature_gpu,m12_diagnostic_layout_supported
+  public :: begin_m12_completed_gpu,sample_m12_completed_gpu,capture_m12_temperature_gpu,m12_diagnostic_layout_supported
   integer,parameter :: probes=72
   integer,device,allocatable,save :: indices_d(:,:)
   real(8),device,allocatable,save :: probe_d(:,:),blocks_d(:,:),summary_d(:),wall_d(:,:)
   integer,save :: local_indices(3,probes)=0,owners(probes)=0,last_step=-1
+  integer,save :: segment_start_step=0
   logical,save :: initialized=.false.
 contains
+  subroutine begin_m12_completed_gpu(completed_step)
+    integer,intent(in) :: completed_step
+    call checkpoint_state_require(completed_step>=0,MPI_COMM_WORLD,'invalid M12 initial completed-step identity')
+    last_step=completed_step
+    segment_start_step=completed_step
+  end subroutine
+
   logical function m12_diagnostic_layout_supported()
     use commvar, only: ia,ja,ka
     use parallel, only: isize,jsize,ksize,mpisize
@@ -71,7 +79,7 @@ contains
     integer :: status,ierr,n,i,unit,closed,nb
     character(1200) :: path
     if(.not.initialized) call initialize_m12()
-    call checkpoint_state_require(step==last_step+1.or.(last_step==-1.and.step==1), &
+    call checkpoint_state_require(last_step>=0.and.step==last_step+1, &
       MPI_COMM_WORLD,'M12 HD sample must follow each complete step, without initial/final duplication')
     call checkpoint_state_require(numq==5.and.all(ieee_is_finite([t,const2,const5,const6, &
       roinf,pinf,tinf,reynolds,prandtl])).and.min(const2,const5,const6,roinf,pinf,tinf,reynolds,prandtl)>0.d0, &
@@ -101,7 +109,8 @@ contains
     status=0; closed=0
     if(mpirank==0) then
       path=trim(directory)//'/probes.csv'
-      if(step==1) then
+      if(segment_start_step>0) write(path,'(a,"/probes.from_step",i12.12,".csv")') trim(directory),segment_start_step
+      if(last_step==segment_start_step) then
         open(newunit=unit,file=trim(path),status='new',action='write',iostat=status)
         if(status==0) write(unit,'(a)',iostat=status) 'step,time,probe,u_Uinf,v_Uinf,w_Uinf,rho_rhoinf,p_pinf,T_Tinf'
       else

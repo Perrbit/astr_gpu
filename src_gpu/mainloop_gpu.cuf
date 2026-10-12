@@ -1,6 +1,7 @@
 module mainloop_gpu
   use cudafor
   implicit none
+  logical,save,private :: static_configuration_validated=.false.
   abstract interface
     subroutine crashfix_stage_callback(stage)
       integer,intent(in) :: stage
@@ -12,6 +13,7 @@ contains
     use mp_positivity_gpu, only: configure_mp_positivity_gpu
     implicit none
 
+    static_configuration_validated=.false.
     call configure_mp_positivity_gpu()
     call copy_flow_to_gpu()
   end subroutine init_gpu
@@ -145,7 +147,7 @@ contains
                              gpu_mixed_flux_workspace_enabled, &
                              gpu_mixed_viscous_flux_workspace_enabled, &
                              gpu_mixed_characteristic_flux_workspace_enabled
-    use upwind_flux_mode_gpu, only: gpu_fused_flux_pair_requested
+    use upwind_flux_mode_gpu, only: resolve_gpu_fused_flux_pair
     use gpu_check, only: sync_after_kernel,check_kernel_launch,sync_gpu_boundary
     use gpu_phase_timing, only: begin_gpu_phase,end_gpu_phase
     use halo_exchange_gpu, only: exchange_solution_halo_gpu, &
@@ -392,8 +394,7 @@ contains
     mixed_flux_workspace=gpu_mixed_flux_workspace_enabled()
     mixed_viscous_flux_workspace=gpu_mixed_viscous_flux_workspace_enabled()
     mixed_characteristic_flux_workspace=gpu_mixed_characteristic_flux_workspace_enabled()
-    fused_flux_pair=gpu_fused_flux_pair_requested() .and. &
-         gpu_tgv_explicit_upwind_supported()
+    fused_flux_pair=resolve_gpu_fused_flux_pair(gpu_tgv_explicit_upwind_supported())
     conservative_case=conservative_boundary%enabled
     refresh_filtered_primitives=.not.lcomb.and.numq==5.and.num_species==0.and. &
       conschm(4:4)=='e'.and.difschm(4:4)=='e'
@@ -1383,6 +1384,7 @@ contains
     logical :: flatplate_pending
     logical :: controlled_upwind_case
 
+    if(static_configuration_validated) return
     if(numq /= 5) stop 'GPU first-stage supports numq=5 only'
     if(ndims /= 3) stop 'GPU first-stage supports 3D cases only'
     if(num_species /= 0) stop 'GPU first-stage supports num_species=0 only'
@@ -1555,5 +1557,7 @@ contains
       print *, 'jacob range=', min_jacob, max_jacob
       stop 'GPU first-stage requires positive jacob'
     endif
+    static_configuration_validated=.true.
+    if(lio) write(*,'(a)') 'ASTR_GPU static configuration validated'
   end subroutine validate_first_stage_gpu
 end module mainloop_gpu

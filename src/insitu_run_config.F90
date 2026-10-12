@@ -184,7 +184,7 @@ contains
       if(.not.enabled.or..not.render.or.statistics.or.processing_backend/='device'.or. &
         rendering_pipeline/='standard-device'.or.derivative_backend/='gpu'.or. &
         postprocess_transport/='pinned'.or.streamline_seeds/='bl-layered256'.or. &
-        slice_definition/='index'.or.initial_frame.or.final_frame.or.count(product_ids/='')/=3) return
+        slice_definition/='index'.or.initial_frame.or.final_frame.or.count(product_ids/='')==0) return
     endif
     message='bl-layered256 seeds require m12_diagnostics'
     if(streamline_seeds=='bl-layered256'.and.products/='m12_diagnostics') return

@@ -12,7 +12,7 @@ from time import perf_counter
 
 import h5py
 import numpy as np
-from prepare_tgv_case import next_data_line, set_controller_deltat, set_ninit, set_restart
+from prepare_tgv_case import next_data_line, set_controller_deltat, set_flowtype, set_ninit, set_restart
 
 
 def archive_schedule_payload(path):
@@ -61,7 +61,8 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
              device_sample_transport=None, postprocess_transport=None, nsys_trace=False, plane_oracle=False,
              checkpoint_enabled=None, curve_surface_oracle=False, wall_mean_oracle=False, curve_trace_oracle=False,
              ncu_kernel=None, curve_trace_step_scale=None, curve_wall_temperature=None,
-             solver_halo_transport='pinned'):
+             solver_halo_transport='pinned', flow_type=None, gpu_precision_mode='fp64', gpu_sync_mode='explicit',
+             gpu_mixed_candidate=None):
     if solver_halo_transport not in ('pageable', 'pinned', 'pinned-pipeline', 'device-aware'):
         raise ValueError('unknown solver halo transport')
     if ncu_kernel is not None and (not ncu_kernel or backend != 'gpu' or ranks != 1 or
@@ -168,6 +169,8 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         fields[1]=f'{tgv_reynolds:.17e}'
         lines[index]=','.join(fields)
         primary.write_text('\n'.join(lines)+'\n')
+    if flow_type is not None:
+        set_flowtype(case/'datin'/input_name, flow_type)
     if tgv_mapping is not None:
         from prepare_tgv_case import set_gridfile, set_runtime_flags, set_homogeneous, set_bctype
         subprocess.run([
@@ -276,9 +279,11 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
     if output_config_override is not None:
         env["ASTR_OUTPUT_CONFIG"] = output_config_override
     env.update(ASTR_FORCE_MPI_TOPOLOGY=",".join(map(str, topology)),
-               ASTR_GPU_SYNC_MODE="explicit", ASTR_GPU_HALO_TRANSPORT=solver_halo_transport,
-               ASTR_GPU_PRECISION_MODE="fp64", ASTR_INSITU_SAMPLE_PREFIX="outdat/sample")
+               ASTR_GPU_SYNC_MODE=gpu_sync_mode, ASTR_GPU_HALO_TRANSPORT=solver_halo_transport,
+               ASTR_GPU_PRECISION_MODE=gpu_precision_mode, ASTR_INSITU_SAMPLE_PREFIX="outdat/sample")
     env["ASTR_GPU_FILTER_WORKSPACE"] = args.filter_workspace
+    if gpu_mixed_candidate is not None:
+        env['ASTR_GPU_MIXED_CANDIDATE'] = gpu_mixed_candidate
     if insitu_timing:
         env['ASTR_INSITU_TIMING']='1'
     if resident_audit:

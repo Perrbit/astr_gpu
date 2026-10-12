@@ -22,7 +22,7 @@ module insitu_session
   use insitu_config_collective, only: read_insitu_options_collective
   use iso_c_binding, only: c_int,c_double,c_char,c_null_char,c_int64_t
 #ifdef _CUDA
-  use insitu_m12_gpu, only: sample_m12_completed_gpu,m12_diagnostic_layout_supported
+  use insitu_m12_gpu, only: begin_m12_completed_gpu,sample_m12_completed_gpu,m12_diagnostic_layout_supported
 #endif
   use ieee_arithmetic, only: ieee_is_finite
   implicit none
@@ -1845,6 +1845,9 @@ contains
     integer :: resource_status
     call configure_session()
     if(formal.and..not.enabled) return
+#ifdef _CUDA
+    if(formal.and.options%products=='m12_diagnostics') call begin_m12_completed_gpu(step)
+#endif
 #if defined(ASTR_WITH_CATALYST) && defined(_CUDA)
     if(formal.and.enabled.and.options%render) then
       if(.not.resource_observer_started) then

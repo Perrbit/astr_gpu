@@ -532,9 +532,6 @@ contains
     call require(sum_owned==volume(g,comm),comm,'saved incomplete ownership')
     matched=old_np==np
     if(matched) matched=all(partitions==current)
-    if(.not.writing.and.permit.and..not.matched) &
-      call require(np<=2.and.old_np<=2,comm, &
-        'validated repartition gate requires at most two ranks')
     if(.not.writing.and.permit.and..not.matched) then
       do m=1,3
         if(axes_mode(m)==1) cycle

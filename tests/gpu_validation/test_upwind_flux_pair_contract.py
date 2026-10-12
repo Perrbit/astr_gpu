@@ -68,7 +68,7 @@ class UpwindFluxPairContract(unittest.TestCase):
 
     def test_mainloop_dispatches_one_fused_flux_kernel_and_sync_per_axis(self):
         compact = MAINLOOP.replace(" ", "").lower()
-        self.assertIn("gpu_fused_flux_pair_requested", compact)
+        self.assertIn("resolve_gpu_fused_flux_pair", compact)
         for axis in "xyz":
             for suffix in ("fused_kernel", "fused_sp_kernel"):
                 kernel = f"explicit_upwind_flux_{axis}_global_{suffix}"
@@ -80,7 +80,7 @@ class UpwindFluxPairContract(unittest.TestCase):
     def test_fused_dispatch_is_limited_to_admitted_periodic_tgv_route(self):
         compact = MAINLOOP.replace(" ", "").replace("&", "").replace("\n", "").lower()
         self.assertIn(
-            "fused_flux_pair=gpu_fused_flux_pair_requested().and.gpu_tgv_explicit_upwind_supported()",
+            "fused_flux_pair=resolve_gpu_fused_flux_pair(gpu_tgv_explicit_upwind_supported())",
             compact,
         )
 

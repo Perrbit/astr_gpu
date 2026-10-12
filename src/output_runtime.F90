@@ -3,7 +3,7 @@ module output_runtime
   use iso_c_binding, only: c_int,c_char,c_null_char
   use ieee_arithmetic, only: ieee_is_finite
   use mpi
-  use commvar, only: ia,ja,ka,im,jm,km,hm,numq,num_species,num_modequ, &
+  use commvar, only: ia,ja,ka,im,jm,km,hm,ndims,numq,num_species,num_modequ, &
     nstep,time,deltat,maxstep,use_gpu,flowtype,lcomb,lavg,lcracon,limmbou,lrestart, &
     feqchkpt,feqwsequ,feqslice,feqlist,feqavg,conschm,difschm,rkscheme,lihomo,ljhomo,lkhomo, &
     lreadgrid,gridfile,ninit,diffterm,lfilter,nondimen,turbmode,recon_schem,lchardecomp
@@ -379,6 +379,12 @@ contains
     character(16) :: validation_mode
     integer :: validation_status
 #endif
+    call check(options%host_budget_bytes>0,'new output requires an explicit host buffer budget')
+    if(options%volume%enabled.or.options%slices%enabled) call check(ndims==3.and. &
+      ((numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb).or.air5_output_case()), &
+      'field archives require a registered three-dimensional field layout')
+    ! Exact continuation has a stricter contract than ordinary solver execution.
+    if(.not.options%checkpoint%enabled.and.len_trim(options%restore_directory)==0) return
     supported_case=(trim(flowtype)=='tgv'.and.all(bctype==1)).or. &
       (trim(flowtype)=='tgv'.and.lreadgrid.and. &
       (all([ia,ja,ka]==32).or.all([ia,ja,ka]==64).or.all([ia,ja,ka]==128).or.all([ia,ja,ka]==256)).and. &
@@ -415,7 +421,6 @@ contains
     if(air5_output_case()) call check(ninit==0,'AIR5 external initialization is not registered')
     if(air5_output_case().and.lavg) call check(diffterm.and.feqavg>0, &
       'AIR5 mean statistics currently require viscous gradients and a positive sample interval')
-    call check(options%host_budget_bytes>0,'new output requires an explicit host buffer budget')
   end subroutine
 
   subroutine load_output_options()
@@ -595,13 +600,13 @@ contains
     logical :: ok
     call load_output_options()
     if(.not.enabled) return
-    call check_capability()
     if(benchmark_field_io_disabled()) then
       options%checkpoint%enabled=.false.
       options%volume%enabled=.false.
       options%slices%enabled=.false.
       if(mpirank==0) write(*,'(a)') 'ASTR_OUTPUT no-field-I/O overrides checkpoint, volume and slices'
     endif
+    call check_capability()
     if(air5_output_case()) then
       value=''
       call get_environment_variable('ASTR_AIR5_C4_CONSERVATION',value,status=status)
@@ -676,7 +681,8 @@ contains
     contract(12)=merge(1_int64,0_int64,statistics_active)+merge(2_int64,0_int64,compact_statistics)+ &
       merge(4_int64,0_int64,mean_statistics)
     contract(13:14)=static_resource_crc
-    ! Numerical GPU candidates are not silently accepted by this first gate.
+    ! Only exact checkpoint consumers require the validated FP64/sync contract.
+    if(options%checkpoint%enabled.or.len_trim(options%restore_directory)>0) then
     do i=1,3
       value=''
       select case(i)
@@ -694,6 +700,7 @@ contains
         if(trim(value)=='flux') contract(11)=ibset(contract(11),1)
       end select
     enddo
+    endif
     if(options%checkpoint%enabled) then
       call configure_schedule(checkpoint_schedule,trim(options%checkpoint%mode), &
         options%checkpoint%interval_steps,options%checkpoint%interval_time, &
@@ -949,6 +956,27 @@ contains
   end subroutine
 
 #ifdef ASTR_AIR5_CHEMISTRY
+  subroutine canonical_air5_modes(values)
+    character(128),intent(inout) :: values(10)
+    character(128),parameter :: defaults(10)=[character(128) :: &
+      'coupled','full_state','full_state','off','prescribed','', &
+      'off','baseline','off','off']
+    integer :: i
+    do i=1,10
+      values(i)=trim(adjustl(values(i)))
+      if(len_trim(values(i))==0) values(i)=defaults(i)
+    enddo
+    ! The parsed relaxation rate is compared bitwise in the separate top contract.
+    values(6)='inactive'
+    if(values(5)=='characteristic') values(6)='top-contract'
+    select case(trim(values(10)))
+    case('1','t','T','true','TRUE','yes','YES','on','ON')
+      values(10)='on'
+    case('0','f','F','false','FALSE','no','NO','off','OFF')
+      values(10)='off'
+    end select
+  end subroutine
+
   subroutine air5_contract_file(path,writing)
     character(*),intent(in) :: path
     logical,intent(in) :: writing
@@ -970,6 +998,7 @@ contains
       call get_environment_variable(trim(names(i)),values(i),status=status)
       call check(status==0.or.status==1,'AIR5 configuration is truncated')
     enddo
+    call canonical_air5_modes(values)
     call complete_air5_top_contract(top)
     bits=transfer(top,bits)
     root_values=values; root_bits=bits
@@ -996,6 +1025,7 @@ contains
       call check(err==0.and.checkpoint_stream_at_end(unit),'AIR5 configuration size/tail')
       close(unit,iostat=closed)
       call check(err==0.and.closed==0,'read AIR5 configuration')
+      call canonical_air5_modes(saved_values)
       call check(magic==expected_magic.and.all(saved_values==values).and.all(saved_bits==bits).and. &
         all(saved_crc(:count)==air5_resource_crc(:count)), &
         'AIR5 source/limiter/compensation/top/resource contract mismatch')

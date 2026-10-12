@@ -4,6 +4,7 @@ module upwind_flux_mode_gpu
   integer,parameter :: UPWIND_FLUX_FUSED=1
   integer,save :: upwind_flux_mode=UPWIND_FLUX_SPLIT
   logical,save :: upwind_flux_mode_configured=.false.
+  logical,save,private :: applied_mode_reported=.false.
 contains
   subroutine configure_gpu_upwind_flux_mode()
     use mpi
@@ -47,6 +48,25 @@ contains
     call configure_gpu_upwind_flux_mode()
     gpu_fused_flux_pair_requested = upwind_flux_mode==UPWIND_FLUX_FUSED
   end function gpu_fused_flux_pair_requested
+
+  logical function resolve_gpu_fused_flux_pair(supported) result(fused)
+    use mpi
+    logical,intent(in) :: supported
+    integer :: rank,ierr
+    fused=gpu_fused_flux_pair_requested().and.supported
+    if(applied_mode_reported) return
+    call mpi_comm_rank(MPI_COMM_WORLD,rank,ierr)
+    if(rank==0) then
+      if(fused) then
+        write(*,'(a)') 'ASTR_GPU_FLUX_PAIR_MODE_APPLIED=fused'
+      else if(upwind_flux_mode==UPWIND_FLUX_FUSED) then
+        write(*,'(a)') 'ASTR_GPU_FLUX_PAIR_MODE_APPLIED=split reason=fused kernel is unavailable for this configuration'
+      else
+        write(*,'(a)') 'ASTR_GPU_FLUX_PAIR_MODE_APPLIED=split'
+      endif
+    endif
+    applied_mode_reported=.true.
+  end function
 
   character(len=16) function gpu_upwind_flux_mode_name()
     implicit none
