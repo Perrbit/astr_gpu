@@ -1022,7 +1022,7 @@ if(ASTR_WITH_CATALYST)
     DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/insitu
     COMPONENT InsituTools)
   if(ASTR_WITH_INSITU_DEVICE_RENDERING)
-    install(FILES ../scripts/insitu/device_render_pipeline.py
+    install(FILES ../scripts/insitu/device_render_pipeline.py ../scripts/insitu/streamline_preview.py
       DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/insitu
       COMPONENT InsituTools)
   endif()

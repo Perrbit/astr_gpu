@@ -27,13 +27,17 @@ sys.path.insert(0, str(Path(catalyst.get_script_filename()).resolve().parent))
 from egl_identity import EGL
 from image_publication import publish_pair, RECOVERABLE_ERRNOS
 import product_dispatch as dispatch
+from streamline_preview import seed_projection, retain_display_resources
 
 arguments = catalyst.get_args()
-if len(arguments) != 4 or arguments[3] not in (
+if len(arguments) not in (4, 5) or arguments[3] not in (
         'standard-device', 'direct-device'):
     raise RuntimeError('Strict rendering requires an explicit resident pipeline')
 output = Path(arguments[0])
-expected_uuid, profile, pipeline = arguments[1:]
+expected_uuid, profile, pipeline = arguments[1:4]
+preview_payload = json.loads(arguments[4]) if len(arguments) == 5 else {}
+streamline_views = preview_payload.get('candidates', [])
+preview_source = preview_payload.get('source')
 product_names = {
     'all': ('q_surface', 'velocity_slice', 'instantaneous_streamlines', 'crossing_streamlines'),
     'q_surface': ('q_surface',),
@@ -518,6 +522,9 @@ def catalyst_execute(info):
     step, time = int(info.timestep), float(info.time)
     sources[product_names[0]].UpdatePipeline(time)
     first = local_piece(sources[product_names[0]].GetClientSideObject().GetOutputDataObject(0))
+    if streamline_views:
+        render_streamline_candidate(first, step, time)
+        return
     names = [name for name in product_names if dispatch.scene_due(name)]
     if profile == 'm12_diagnostics' and 'velocity_slice' in names:
         names += ['temperature_slice', 'spanwise_slice']
@@ -611,6 +618,92 @@ def catalyst_execute(info):
     if timing:
         print('ASTR_INSITU_PIPELINE_TIMING ' + json.dumps({'rank': rank, 'step': step, 'seconds': {
             'python_execute_inclusive': perf_counter()-started}}, sort_keys=True), flush=True)
+
+
+def render_streamline_candidate(first, step, time):
+    index = int(metadata(first, 'pv_candidate'))
+    candidate = streamline_views[index]
+    kind = candidate['velocity']
+    name = 'instantaneous_streamlines' if kind == 'instantaneous' else f'mean_{kind}_streamlines'
+    source = sources[name]
+    source.UpdatePipeline(time)
+    piece = local_piece(source.GetClientSideObject().GetOutputDataObject(0))
+    if kind != 'instantaneous' and not metadata(piece, 'mean_covered'):
+        raise RuntimeError('Preview mean field has no saved coverage')
+    points, cells = update_geometry(name, piece)
+    item = render_objects[name]
+    values = candidate['values']
+    view = item['view']
+    view.CameraPosition = values[0:3]
+    view.CameraFocalPoint = values[3:6]
+    view.CameraViewUp = values[6:9]
+    view.CameraParallelScale = values[9]
+    view.UpdateVTKObjects()
+    view.GetClientSideObject().SetMaxClipBounds(values[10:16])
+    item['mapper'].RemoveAllClippingPlanes()
+    center=[.5*(values[10+2*d]+values[11+2*d]) for d in range(3)]
+    for d in range(3):
+        for side in (0,1):
+            plane=vtkPlane()
+            origin,normal=list(center),[0.,0.,0.]
+            origin[d]=values[10+2*d+side];normal[d]=1. if side==0 else -1.
+            plane.SetOrigin(*origin);plane.SetNormal(*normal)
+            item['mapper'].AddClippingPlane(plane)
+    item['actor'].GetProperty().SetLineWidth(values[18])
+    item['legend'].Visibility = 0
+    retain_display_resources(item)
+    lut = pv.GetColorTransferFunction('preview_'+candidate['id'])
+    lut.AutomaticRescaleRangeMode = 'Never'
+    lut.ApplyPreset('Cool to Warm (Extended)', False)
+    lut.RescaleTransferFunction(*values[16:18])
+    legend = pv.GetScalarBar(lut, view)
+    legend.Visibility = 1
+    legend.Title = ('' if kind == 'instantaneous' else kind.title()+' ') + candidate['color']
+    legend.ComponentTitle = ''
+    legend.WindowLocation = 'Upper Right Corner'
+    legend.ScalarBarLength, legend.ScalarBarThickness = .45, 16
+    legend.TitleFontSize, legend.LabelFontSize = 16, 14
+    legend.TitleColor, legend.LabelColor = [0.,0.,0.], [0.,0.,0.]
+    item.update(lut=lut, legend=legend, color=candidate['color'], color_range=values[16:18])
+    key = 'preview.'+candidate['id'] if preview_source else name
+    rendered = render_product(key, item, step, time, points, cells)
+    reasons=('step_budget','arc_length','domain_exit','sub_minimum_remaining')
+    directions=('forward','backward')
+    layers=int(metadata(piece,'termination_layer_count'))
+    statistics=None if kind=='instantaneous' else {field:metadata(piece,field) for field in
+        ('statistics_duration','statistics_window_start','statistics_window_end')}
+    integration=dict(method='RK45',initial_step=.1*2.*3.141592653589793/32.,
+        minimum_step=.01*2.*3.141592653589793/32.,maximum_step=.5*2.*3.141592653589793/32.,
+        local_error=1e-8,arc_length_per_direction=3.141592653589793,
+        step_limit=int(metadata(piece,'streamline_step_limit')),periodic_wrap=False)
+    if candidate['seeds'].startswith('bl-layered'):
+        integration.update(initial_step=.5,minimum_step=.01,maximum_step=5.,arc_length_per_direction=1200.)
+    record = dict(step=step, time=time, candidate=candidate, processing_backend='device',
+        rendering_pipeline=pipeline, geometry_host_bytes=0, product=name, rendering=rendered,
+        source=preview_source, **seed_projection(candidate),
+        physical_display_bounds=values[10:16],
+        local_trajectory_bounds=None if points==0 else [metadata(piece,'bound'+str(d)) for d in range(6)],
+        trajectory_storage_id=int(metadata(piece,'trajectory_storage_id')),
+        trajectory_identity=dict(source=preview_source,step=step,time=time,velocity=kind,seeds=candidate['seeds'],
+            statistics=statistics,integration=integration),
+        display_identity=dict(color=candidate['color'],values=values,image_size=image_size),
+        actual_color_range=None if metadata(piece,'actual_color_empty') else
+            [metadata(piece,'actual_color_min'),metadata(piece,'actual_color_max')],
+        actual_color_scope='All vertices of the complete trajectories, before display clipping',
+        visible_line_count=None, visible_line_count_reason='Seed sites are not a visibility or occlusion count',
+        termination_counts={reason:int(metadata(piece,'termination_'+reason)) for reason in reasons},
+        termination_by_direction={direction:{reason:int(metadata(piece,'termination_'+direction+'_'+reason))
+            for reason in reasons} for direction in directions},
+        termination_by_layer=[{direction:{reason:int(metadata(piece,f'termination_layer{layer}_{direction}_{reason}'))
+            for reason in reasons} for direction in directions} for layer in range(layers)],
+        termination_scope='Global particle counts replicated per rank; do not sum rank reports',
+        budget_note='step_budget is not a physical domain exit')
+    if statistics is not None:
+        record['statistics']=statistics
+    (output / f'{key}.step{step:08d}.rank{rank:08d}.json').write_text(json.dumps(record,indent=2))
+    frames.append((step,time))
+    if dispatch.independent():
+        dispatch.report(name,'image',rendered['image'])
 
 
 def render_product(name, item, step, time, points, cells):
@@ -761,9 +854,9 @@ def catalyst_finalize():
         for actor in item.get('context_actors', ()):
             actor.GetMapper().ReleaseGraphicsResources(window)
             view.GetClientSideObject().GetRenderer().RemoveActor(actor)
-        pv.Delete(item['legend'])
+        for resource in retain_display_resources(item).values():
+            pv.Delete(resource)
         pv.Delete(view)
-        pv.Delete(item['lut'])
         if 'label' in item:
             pv.Delete(item['label'])
     for source in sources.values():

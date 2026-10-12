@@ -82,11 +82,29 @@ struct DeviceGeometryView {
 
 using DisplayMetadata=viskores::Vec<double,9>;
 using DisplayColor=viskores::Vec<viskores::UInt8,4>;
+using ColorRange=viskores::Vec<double,2>;
+struct SelectColorRange : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,FieldOut);
+  using ExecutionSignature=void(_1,_2);
+  bool speed;
+  int component;
+  VISKORES_CONT SelectColorRange(bool magnitude,int selected):speed(magnitude),component(selected) {}
+  VISKORES_EXEC void operator()(double value,ColorRange& range) const {range=ColorRange(value);}
+  VISKORES_EXEC void operator()(const viskores::Vec3f& v,ColorRange& range) const {
+    range=ColorRange(speed?viskores::Sqrt(viskores::Dot(v,v)):v[component]);
+  }
+};
+struct MergeColorRange {
+  VISKORES_EXEC_CONT ColorRange operator()(const ColorRange& a,const ColorRange& b) const {
+    return ColorRange(viskores::Min(a[0],b[0]),viskores::Max(a[1],b[1]));
+  }
+};
 struct MapDisplayColor : viskores::worklet::WorkletMapField {
   bool speed=false;
+  int component=0;
   double lower=-1.,inverse=0.5;
-  VISKORES_CONT explicit MapDisplayColor(bool magnitude=false,double minimum=-1.,double maximum=1.)
-    :speed(magnitude),lower(magnitude?0.:minimum),inverse(1./(maximum-(magnitude?0.:minimum))) {}
+  VISKORES_CONT explicit MapDisplayColor(bool magnitude=false,double minimum=-1.,double maximum=1.,int selected=0)
+    :speed(magnitude),component(selected),lower(minimum),inverse(1./(maximum-minimum)) {}
   using ControlSignature=void(FieldIn,WholeArrayIn,FieldOut);
   using ExecutionSignature=void(_1,_2,_3);
   template<class Portal>
@@ -103,7 +121,7 @@ struct MapDisplayColor : viskores::worklet::WorkletMapField {
   }
   template<class Portal>
   VISKORES_EXEC void operator()(const viskores::Vec3f& value,const Portal& palette,DisplayColor& color) const {
-    operator()(viskores::Sqrt(viskores::Dot(value,value)),palette,color);
+    operator()(speed?viskores::Sqrt(viskores::Dot(value,value)):value[component],palette,color);
   }
 };
 struct PackScalarDisplay : viskores::worklet::WorkletMapField {
@@ -170,7 +188,9 @@ class DeviceGeometryOwner {
   viskores::cont::ArrayHandle<viskores::UInt32> display_connectivity;
   viskores::cont::ArrayHandle<DisplayColor> display_colors;
   viskores::cont::Token token;
+  viskores::cont::Token color_token;
   DeviceGeometryView view;
+  ColorRange selected_color_range;
 
   template<class T> const T* pin(const viskores::cont::ArrayHandle<T>& array) {
     require_device_only(array);
@@ -246,12 +266,18 @@ public:
   DeviceGeometryOwner(const DeviceGeometryOwner&)=delete;
   DeviceGeometryOwner& operator=(const DeviceGeometryOwner&)=delete;
   const DeviceGeometryView& get() const {return view;}
+  ColorRange color_range() const {return selected_color_range;}
   const DisplayColor* color_display(const std::vector<double>& values,bool speed=false,
-      double minimum=-1.,double maximum=1.) {
+      double minimum=-1.,double maximum=1.,int component=0,bool audit_range=false) {
     if(values.size()!=4096*3) throw std::invalid_argument("Invalid bounded display palette");
-    if(!std::isfinite(minimum) || !std::isfinite(maximum) || minimum>=maximum || (speed && view.scalar))
+    if(!std::isfinite(minimum) || !std::isfinite(maximum) || minimum>=maximum || (speed && view.scalar) ||
+        component<0 || component>2)
       throw std::invalid_argument("Invalid device scalar display range");
+    selected_color_range=ColorRange(std::numeric_limits<double>::infinity(),
+      -std::numeric_limits<double>::infinity());
     if(!view.points) return nullptr;
+    // Previous synchronous render completed; only color storage may be rewritten.
+    color_token.DetachFromAll();
     std::vector<viskores::Vec3f> table(4096);
     for(std::size_t i=0;i<table.size();++i) for(int d=0;d<3;++d) {
       const double value=values[3*i+d];
@@ -263,9 +289,20 @@ public:
     viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});
     if(view.scalar) invoke(MapDisplayColor{false,minimum,maximum},scalar,palette,display_colors);
     else if(speed) invoke(MapDisplayColor{true,minimum,maximum},velocity,palette,display_colors);
-    else invoke(MapDisplayColor{},u,palette,display_colors);
+    else invoke(MapDisplayColor{false,minimum,maximum,component},velocity,palette,display_colors);
     synchronize_device_stage("MapDisplayColor");
-    return pin(display_colors);
+    if(audit_range) {
+      viskores::cont::ArrayHandle<ColorRange> ranges;
+      if(view.scalar) invoke(SelectColorRange{false,0},scalar,ranges);
+      else invoke(SelectColorRange{speed,component},velocity,ranges);
+      synchronize_device_stage("SelectColorRange");
+      selected_color_range=viskores::cont::Algorithm::Reduce(viskores::cont::DeviceAdapterTagCuda{},
+        ranges,selected_color_range,MergeColorRange{});
+      synchronize_device_stage("MergeColorRange");
+    }
+    require_device_only(display_colors);
+    return static_cast<const DisplayColor*>(display_colors.GetBuffers()[0].ReadPointerDevice(
+      viskores::cont::DeviceAdapterTagCuda{},color_token));
   }
 };
 

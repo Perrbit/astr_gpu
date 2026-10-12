@@ -19,6 +19,104 @@ implementation_path='lib/catalyst', pipeline_file='tgv.py', output_directory='ou
 /
 """
 
+PREVIEW_VIEWS = """&streamline_views
+ candidate_ids='front','oblique',
+ velocity='instantaneous','instantaneous', seeds='line16','line16',
+ camera_position(:,1)=3.14,3.14,12., camera_position(:,2)=11.,9.,10.,
+ focal_point(:,1)=3.14,3.14,3.14, focal_point(:,2)=3.14,3.14,3.14,
+ view_up(:,1)=0.,1.,0., view_up(:,2)=0.,0.,1.,
+ parallel_scale=2.,2.5,
+ display_bounds(:,1)=0.,6.28,0.,6.28,0.,6.28,
+ display_bounds(:,2)=0.,6.28,0.,6.28,0.,6.28,
+ color_field='u','speed', color_range(:,1)=-1.,1., color_range(:,2)=0.,1.,
+ line_width=2.,3.
+/
+"""
+
+
+@pytest.mark.skipif(not PROBE, reason='Set ASTR_INSITU_CONFIG_PROBE')
+@pytest.mark.parametrize('fault', [None, 'duplicate', 'unknown', 'camera', 'up',
+                                  'bounds', 'range', 'width', 'nonfinite', 'budget', 'mean'])
+def test_preview_candidate_configuration(tmp_path, fault):
+    views = PREVIEW_VIEWS
+    if fault == 'duplicate':
+        views = views.replace("'front','oblique'", "'front','front'")
+    elif fault == 'unknown':
+        views = views.replace("color_field='u','speed'", "color_field='entropy','speed'")
+    elif fault == 'camera':
+        views = views.replace('3.14,3.14,12.', '3.14,3.14,3.14')
+    elif fault == 'up':
+        views = views.replace('0.,1.,0.', '0.,0.,0.')
+    elif fault == 'bounds':
+        views = views.replace('0.,6.28,0.,6.28,0.,6.28', '0.,0.,0.,6.28,0.,6.28')
+    elif fault == 'range':
+        views = views.replace('color_range(:,1)=-1.,1.', 'color_range(:,1)=1.,1.')
+    elif fault == 'width':
+        views = views.replace('line_width=2.,3.', 'line_width=0.,3.')
+    elif fault == 'nonfinite':
+        views = views.replace('parallel_scale=2.,2.5', 'parallel_scale=NaN,2.5')
+    elif fault == 'budget':
+        views = views.replace('candidate_ids=', 'image_size=1920,1080, candidate_ids=')
+    elif fault == 'mean':
+        views = views.replace("'instantaneous','instantaneous'", "'reynolds','instantaneous'")
+    (tmp_path / 'views.nml').write_text(views)
+    text = DEVICE.replace('statistics=t', 'statistics=f').replace('step_interval=2',
+        "step_interval=2,products='streamlines',streamline_views_file='views.nml'")
+    path = tmp_path / 'preview.nml'
+    path.write_text(text)
+    result = subprocess.run([PROBE, str(path)], cwd=tmp_path, capture_output=True, text=True, timeout=10)
+    assert (result.returncode == 0) == (fault is None), result.stdout + result.stderr
+    if fault is None:
+        assert 'preview_candidates=2' in result.stdout
+        assert 'trajectory=instantaneous:line16' in result.stdout
+        assert 'display=front' in result.stdout and 'display=oblique' in result.stdout
+
+
+@pytest.mark.skipif(not COLLECTIVE or not MPIEXEC, reason='Set collective probe and MPI launcher')
+@pytest.mark.parametrize('change', ['', 'camera', 'seeds', 'invalid'])
+def test_collective_preview_values_not_only_paths(tmp_path, change):
+    prefix = tmp_path / 'rank'
+    text = DEVICE.replace('statistics=t', 'statistics=f').replace('step_interval=2',
+        "step_interval=2,products='streamlines',streamline_views_file='views.nml'")
+    for rank in range(2):
+        work = tmp_path / f'work{rank}'
+        work.mkdir()
+        views = PREVIEW_VIEWS
+        if rank == 1:
+            if change == 'camera':
+                views = views.replace('parallel_scale=2.,2.5', 'parallel_scale=3.,2.5')
+            elif change == 'seeds':
+                views = views.replace("seeds='line16','line16'", "seeds='tgv-stratified','line16'")
+            elif change == 'invalid':
+                views = views.replace('line_width=2.,3.', 'line_width=0.,3.')
+        (work / 'views.nml').write_text(views)
+        (tmp_path / f'rank{rank}.nml').write_text(text)
+    command = [MPIEXEC, '-np', '1', '--wdir', str(tmp_path / 'work0'), str(Path(COLLECTIVE).resolve()), str(prefix),
+               ':', '-np', '1', '--wdir', str(tmp_path / 'work1'), str(Path(COLLECTIVE).resolve()), str(prefix)]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    assert (result.returncode == 0) == (change == ''), result.stdout + result.stderr
+    if change in ('camera', 'seeds'):
+        assert 'values differ between MPI ranks' in result.stdout
+
+
+@pytest.mark.skipif(not COLLECTIVE or not MPIEXEC, reason='Set collective probe and MPI launcher')
+def test_collective_single_selected_preview(tmp_path):
+    text=DEVICE.replace('statistics=t','statistics=f').replace('step_interval=2',
+        "step_interval=2,products='streamlines',streamline_views_file='views.nml'")
+    views="""&streamline_views
+ candidate_ids='selected',velocity='instantaneous',seeds='line16',color_field='u',
+ camera_position(:,1)=11.,9.,10.,focal_point(:,1)=3.14,3.14,3.14,view_up(:,1)=0.,1.,0.,
+ parallel_scale(1)=2.,display_bounds(:,1)=0.,6.28,0.,6.28,0.,6.28,
+ color_range(:,1)=-1.,1.,line_width(1)=3.
+/
+"""
+    for rank in range(2):
+        (tmp_path/f'rank{rank}.nml').write_text(text)
+    (tmp_path/'views.nml').write_text(views)
+    result=subprocess.run([MPIEXEC,'-np','2',str(Path(COLLECTIVE).resolve()),str(tmp_path/'rank')],
+        cwd=tmp_path,capture_output=True,text=True,timeout=30)
+    assert result.returncode==0,result.stdout+result.stderr
+
 
 @pytest.mark.skipif(not PROBE, reason='Set ASTR_INSITU_CONFIG_PROBE')
 @pytest.mark.parametrize('layout,accepted', [('line16', True), ('tgv-stratified', True), ('unknown', False)])

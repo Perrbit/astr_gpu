@@ -2,6 +2,7 @@
 #define ASTR_INSITU_COMPACT_MESH_H
 
 #include <cstdint>
+#include <array>
 #include <map>
 #include <memory>
 #include <string>
@@ -30,6 +31,12 @@ struct DeviceMesh {
   std::shared_ptr<void> owner;
   std::map<std::string,double> controls;
 };
+struct StreamlineView {
+  std::string id,velocity,seeds,color;
+  std::array<double,19> values;
+};
+const std::vector<StreamlineView>& streamline_views();
+bool streamline_preview_active();
 std::vector<double> device_display_palette();
 DeviceMesh build_device_plane(int fcomm,int step,double time,const int global[3],
   const int local[3],const int offset[3],double* coordinates,double* velocity,

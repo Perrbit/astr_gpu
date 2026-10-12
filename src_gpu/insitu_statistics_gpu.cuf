@@ -18,6 +18,11 @@ module insitu_statistics_gpu
   public :: sample_statistics_gpu_mean_vectors
 #ifdef ASTR_BUILD_TESTING
   public :: check_device_statistics_gpu_means
+  public :: begin_preview_statistics_check,end_preview_statistics_check
+  real(8),allocatable,device,save :: preview_state_d(:,:,:,:)
+  real(8),save :: preview_previous_time=0.d0,preview_window(2)=0.d0
+  logical,save :: preview_has_previous=.false.,preview_had_state=.false.
+  integer(int64),save :: preview_samples=0,preview_downloads=0
 #endif
   public :: download_statistics_gpu_output
   public :: statistics_device_bytes
@@ -42,6 +47,58 @@ module insitu_statistics_gpu
   real(8),save :: previous_time=0.d0,saved_window(2)=0.d0
   logical,save :: has_previous=.false.
 contains
+#ifdef ASTR_BUILD_TESTING
+  subroutine begin_preview_statistics_check()
+    integer :: status
+    preview_previous_time=previous_time;preview_window=saved_window;preview_has_previous=has_previous
+    preview_samples=sample_calls;preview_downloads=output_downloads
+    preview_had_state=allocated(state_d)
+    if(preview_had_state) then
+      allocate(preview_state_d(size(state_d,1),size(state_d,2),size(state_d,3),size(state_d,4)),stat=status)
+      call require_cuda(merge(cudaSuccess,cudaErrorMemoryAllocation,status==0),'preview statistics snapshot allocation')
+      preview_state_d=state_d
+      call require_cuda(cudaDeviceSynchronize(),'preview statistics snapshot')
+    endif
+  end subroutine
+
+  attributes(global) subroutine compare_preview_statistics(n1,n2,n3,n4,current,saved,bad)
+    integer,value :: n1,n2,n3,n4
+    real(8),device,intent(in) :: current(n1,n2,n3,n4),saved(n1,n2,n3,n4)
+    integer,device :: bad(*)
+    integer :: n,i,j,k,c,old
+    n=(blockidx%x-1)*blockdim%x+threadidx%x-1
+    if(n>=n1*n2*n3) return
+    i=mod(n,n1)+1;j=mod(n/n1,n2)+1;k=n/(n1*n2)+1
+    do c=1,n4
+      if(current(i,j,k,c)/=saved(i,j,k,c)) then
+        old=atomicadd(bad(1),1)
+        return
+      endif
+    enddo
+  end subroutine
+
+  subroutine end_preview_statistics_check(mismatches)
+    integer,intent(out) :: mismatches
+    integer,device :: bad(1)
+    integer :: n
+    mismatches=0
+    if(previous_time/=preview_previous_time.or.any(saved_window/=preview_window).or. &
+      (has_previous.neqv.preview_has_previous).or.sample_calls/=preview_samples.or. &
+      output_downloads/=preview_downloads.or.(allocated(state_d).neqv.preview_had_state)) mismatches=1
+    if(preview_had_state.and.allocated(state_d)) then
+      if(any(shape(state_d)/=shape(preview_state_d))) then
+        mismatches=mismatches+1
+      else
+        bad=0;n=size(state_d,1)*size(state_d,2)*size(state_d,3)
+        call compare_preview_statistics<<<(n+255)/256,256>>>(size(state_d,1),size(state_d,2), &
+          size(state_d,3),size(state_d,4),state_d,preview_state_d,bad)
+        call require_cuda(cudaDeviceSynchronize(),'preview statistics comparison')
+        mismatches=mismatches+bad(1)
+      endif
+      deallocate(preview_state_d)
+    endif
+  end subroutine
+#endif
   integer function owned_ny() result(ny)
     integer :: extent(3)
     extent=insitu_owned_counts()

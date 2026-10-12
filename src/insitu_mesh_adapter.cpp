@@ -10,6 +10,7 @@
 #include "insitu_product_dispatch.h"
 #ifdef ASTR_INSITU_DEVICE_RENDERING
 #include "insitu_device_vtk_mapper.h"
+#include "insitu_streamline_seeds.h"
 #include <vtkColorTransferFunction.h>
 #include <vtkSMTransferFunctionPresets.h>
 #include <vtk_jsoncpp.h>
@@ -43,6 +44,7 @@ std::vector<astr_insitu::CompactMesh> retained_products;
 std::vector<astr_insitu::DeviceMesh> retained_device_products;
 std::map<std::string,vtkSmartPointer<vtkActor>> device_actors;
 std::string resident_pipeline;
+Json::Value preview_source;
 #endif
 double empty_value = 0.;
 conduit_int64 empty_cell = 0;
@@ -50,6 +52,7 @@ int shape[3] = {0,0,0};
 int selected_profile = 0;
 bool native = false;
 std::string output_directory, expected_uuid;
+std::vector<astr_insitu::StreamlineView> streamline_candidates;
 int allocation_failure(const char* stage, const char* detail, MPI_Comm comm)
 {
   std::fprintf(stderr,"ASTR INSITU BRIDGE ERROR: %s: %s\n",stage,detail);
@@ -70,6 +73,49 @@ void check(catalyst_status status)
       "Catalyst status consensus MPI failure",render_comm);
   if (any) MPI_Abort(render_comm, 1);
 }
+}
+
+const std::vector<astr_insitu::StreamlineView>& astr_insitu::streamline_views() {
+  return streamline_candidates;
+}
+bool astr_insitu::streamline_preview_active() {
+#ifdef ASTR_INSITU_DEVICE_RENDERING
+  return !preview_source.isNull();
+#else
+  return false;
+#endif
+}
+
+extern "C" int astr_insitu_preview_source_set(const char* path,std::int64_t step,double time,
+    const std::int64_t* signatures,int fcomm) {
+#ifdef ASTR_INSITU_DEVICE_RENDERING
+  if(active || !path || !*path || !signatures || step<0 || !std::isfinite(time)) return 1;
+  int ranks=0;
+  if(MPI_Comm_size(MPI_Comm_f2c(fcomm),&ranks)!=MPI_SUCCESS) return 1;
+  preview_source["checkpoint"]=path;
+  preview_source["step"]=Json::Int64(step);preview_source["time"]=time;
+  preview_source["ranks"]=ranks;
+  for(int i=0;i<6;++i) preview_source["signatures"].append(Json::Int64(signatures[i]));
+  return 0;
+#else
+  return 1;
+#endif
+}
+
+extern "C" int astr_insitu_streamline_view_add(int index,const char* id,const char* velocity,
+    const char* seeds,const char* color,const double* values) {
+#ifdef ASTR_INSITU_DEVICE_RENDERING
+  if(active || index!=static_cast<int>(streamline_candidates.size()) || index>=6 ||
+      !id || !velocity || !seeds || !color || !values) return 1;
+  astr_insitu::StreamlineView view;
+  view.id=id;view.velocity=velocity;view.seeds=seeds;view.color=color;
+  std::copy(values,values+19,view.values.begin());
+  if(!std::all_of(view.values.begin(),view.values.end(),[](double v){return std::isfinite(v);})) return 1;
+  streamline_candidates.push_back(std::move(view));
+  return 0;
+#else
+  return 1;
+#endif
 }
 
 extern "C" int astr_insitu_mesh_pipeline_available(const char* pipeline)
@@ -385,6 +431,24 @@ try {
     auto args=conduit_node_fetch(init,"catalyst/scripts/probe/args");
     for(const char* value:{output_directory.c_str(),expected_uuid.c_str(),profile,route.c_str()})
       conduit_node_set_char8_str(conduit_node_append(args),value);
+    if(!streamline_candidates.empty()) {
+      Json::Value candidates(Json::arrayValue);
+      for(const auto& view:streamline_candidates) {
+        Json::Value item;
+        item["id"]=view.id;item["velocity"]=view.velocity;item["seeds"]=view.seeds;item["color"]=view.color;
+        for(double value:view.values) item["values"].append(value);
+        for(const auto& site:astr_insitu::tgv_streamline_seeds(view.seeds)) {
+          Json::Value point(Json::arrayValue);
+          for(double value:site) point.append(value);
+          item["seed_sites"].append(point);
+        }
+        candidates.append(item);
+      }
+      Json::StreamWriterBuilder writer;writer["indentation"]="";
+      Json::Value payload;payload["candidates"]=candidates;payload["source"]=preview_source;
+      const auto text=Json::writeString(writer,payload);
+      conduit_node_set_char8_str(conduit_node_append(args),text.c_str());
+    }
     conduit_node_set_path_int64(init,"catalyst/mpi_comm",MPI_Comm_c2f(render_comm));
     check(catalyst_initialize(init));conduit_node_destroy(init);
     selected_profile=8;active=true;resident_pipeline=route;
@@ -591,6 +655,7 @@ try {
 #ifdef ASTR_INSITU_DEVICE_RENDERING
   device_actors.clear();
   retained_device_products.clear();
+  streamline_candidates.clear();
   resident_pipeline.clear();
 #endif
   check_mpi(MPI_Comm_free(&render_comm),"release render communicator",MPI_COMM_WORLD);

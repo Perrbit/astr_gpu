@@ -34,6 +34,38 @@ static int plain_directory_path(const char *path) {
     return fd;
 }
 
+int astr_checkpoint_preview_output(const char *batch, const char *output) {
+    char source[PATH_MAX], destination[PATH_MAX], cwd[PATH_MAX], *parent;
+    int sourcefd = plain_directory_path(batch), outputfd = plain_directory_path(output), result = 1;
+    DIR *directory = NULL;
+    struct dirent *member;
+    if (sourcefd < 0 || outputfd < 0 || !realpath(batch, source) ||
+        !realpath(output, destination) || !getcwd(cwd, sizeof(cwd))) goto done;
+    /* A bundle is run/checkpoints/step; no preview writes belong in that run. */
+    for (int i = 0; i < 2; ++i) {
+        parent = strrchr(source, '/');
+        if (!parent || parent == source) goto done;
+        *parent = 0;
+    }
+    size_t n = strlen(source);
+    if ((!strncmp(source, destination, n) && (!destination[n] || destination[n] == '/')) ||
+        (!strncmp(source, cwd, n) && (!cwd[n] || cwd[n] == '/'))) goto done;
+    directory = fdopendir(outputfd);
+    if (!directory) goto done;
+    outputfd = -1;
+    errno = 0;
+    while ((member = readdir(directory))) {
+        if (strcmp(member->d_name, ".") && strcmp(member->d_name, "..")) goto done;
+        errno = 0;
+    }
+    if (!errno) result = 0;
+done:
+    if (directory && closedir(directory)) result = 1;
+    if (sourcefd >= 0 && close(sourcefd)) result = 1;
+    if (outputfd >= 0 && close(outputfd)) result = 1;
+    return result;
+}
+
 static int compare_frame_steps(const void *a, const void *b) {
     int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
     return (x > y) - (x < y);
@@ -431,6 +463,9 @@ done:
     return result;
 }
 #else
+int astr_checkpoint_preview_output(const char *batch, const char *output) {
+    (void)batch; (void)output; return 1;
+}
 int astr_output_plain_frame(const char *path) { (void)path; return 1; }
 int astr_output_frame_catalog(const char *path, long long *steps, int capacity, int *count) {
     (void)path; (void)steps; (void)capacity; *count = 0; return 1;

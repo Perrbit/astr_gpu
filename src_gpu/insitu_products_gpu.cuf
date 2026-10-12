@@ -5,7 +5,90 @@ module insitu_products_gpu
   public :: render_device_sample_gpu
   public :: render_device_walls_gpu
   public :: render_device_plane_gpu
+#ifdef ASTR_BUILD_TESTING
+  public :: begin_preview_state_check,end_preview_state_check
+  real(8),allocatable,device,save :: preview_flow_d(:,:,:,:)
+#endif
 contains
+#ifdef ASTR_BUILD_TESTING
+  subroutine begin_preview_state_check(budget,reserve)
+    use iso_fortran_env, only: int64
+    use iso_c_binding, only: c_size_t
+    use commvar, only: im,jm,km,hm
+    use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
+    use insitu_statistics_gpu, only: begin_preview_statistics_check,statistics_device_bytes
+    use checkpoint_state_io, only: checkpoint_state_require
+    use mpi
+    integer(int64),intent(in) :: budget,reserve
+    integer(int64) :: required
+    integer(c_size_t) :: free_bytes,total_bytes
+    integer :: status
+    required=8_int64*int(im+2*hm+1,int64)*int(jm+2*hm+1,int64)*int(km+2*hm+1,int64)*11
+    required=required+statistics_device_bytes()
+    status=cudaMemGetInfo(free_bytes,total_bytes)
+    call checkpoint_state_require(status==cudaSuccess.and.required+statistics_device_bytes()<=budget.and. &
+      free_bytes>=reserve,MPI_COMM_WORLD,'preview isolation snapshot budget')
+    call checkpoint_state_require(required<=free_bytes-reserve,MPI_COMM_WORLD,'preview isolation snapshot reserve')
+    allocate(preview_flow_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,11),stat=status)
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'preview flow snapshot allocation')
+    preview_flow_d(:,:,:,1:5)=q_d
+    preview_flow_d(:,:,:,6)=rho_d
+    preview_flow_d(:,:,:,7:9)=vel_d
+    preview_flow_d(:,:,:,10)=prs_d
+    preview_flow_d(:,:,:,11)=tmp_d
+    status=cudaDeviceSynchronize()
+    call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'preview flow snapshot')
+    call begin_preview_statistics_check()
+  end subroutine
+
+  attributes(global) subroutine compare_preview_flow(im,jm,km,hm,saved,q,rho,vel,prs,tmp,bad)
+    use iso_fortran_env, only: int64
+    integer,value :: im,jm,km,hm
+    real(8),device,intent(in) :: saved(-hm:im+hm,-hm:jm+hm,-hm:km+hm,11)
+    real(8),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5)
+    real(8),device,intent(in) :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm),prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(8),device,intent(in) :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm),vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    integer,device :: bad(*)
+    integer :: n,n1,n2,n3,i,j,k,c,old
+    logical :: mismatch
+    n1=im+2*hm+1;n2=jm+2*hm+1;n3=km+2*hm+1
+    n=(blockidx%x-1)*blockdim%x+threadidx%x-1
+    if(n>=n1*n2*n3) return
+    i=mod(n,n1)-hm;j=mod(n/n1,n2)-hm;k=n/(n1*n2)-hm
+    ! Unused physical halos may contain saved NaNs; compare their storage exactly.
+    mismatch=transfer(rho(i,j,k),0_int64)/=transfer(saved(i,j,k,6),0_int64).or. &
+      transfer(prs(i,j,k),0_int64)/=transfer(saved(i,j,k,10),0_int64).or. &
+      transfer(tmp(i,j,k),0_int64)/=transfer(saved(i,j,k,11),0_int64)
+    do c=1,5
+      mismatch=mismatch.or.transfer(q(i,j,k,c),0_int64)/=transfer(saved(i,j,k,c),0_int64)
+    enddo
+    do c=1,3
+      mismatch=mismatch.or.transfer(vel(i,j,k,c),0_int64)/=transfer(saved(i,j,k,c+6),0_int64)
+    enddo
+    if(mismatch) old=atomicadd(bad(1),1)
+  end subroutine
+
+  subroutine end_preview_state_check()
+    use commvar, only: im,jm,km,hm
+    use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
+    use insitu_statistics_gpu, only: end_preview_statistics_check
+    use checkpoint_state_io, only: checkpoint_state_require
+    use parallel, only: mpirank
+    use mpi
+    integer,device :: bad(1)
+    integer :: n,status,flow_bad,stats_bad
+    bad=0;n=(im+2*hm+1)*(jm+2*hm+1)*(km+2*hm+1)
+    call compare_preview_flow<<<(n+255)/256,256>>>(im,jm,km,hm,preview_flow_d,q_d,rho_d,vel_d,prs_d,tmp_d,bad)
+    status=cudaDeviceSynchronize()
+    call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'preview flow comparison')
+    flow_bad=bad(1)
+    call end_preview_statistics_check(stats_bad)
+    write(*,'(a,i0,a,i0,a,i0)') 'ASTR_INSITU_PREVIEW_ISOLATION rank=',mpirank, &
+      ' flow_mismatches=',flow_bad,' statistics_mismatches=',stats_bad
+    call checkpoint_state_require(flow_bad==0.and.stats_bad==0,MPI_COMM_WORLD,'preview changed authoritative state')
+    deallocate(preview_flow_d)
+  end subroutine
+#endif
   subroutine render_device_plane_gpu(mode,pipeline,backend,script,step,t,origin,normal,host_budget,device_budget,reserve)
     use iso_fortran_env, only: int64
     use mpi
@@ -213,7 +296,7 @@ contains
 #endif
 
   subroutine render_device_sample_gpu(mode,pipeline,backend,script,profile,step,t,window, &
-      statistics,host_budget,device_budget,reserve,mean_requested,seed_layout)
+      statistics,host_budget,device_budget,reserve,mean_requested,seed_layout,require_covered_means,preview_flatplate)
     use iso_fortran_env, only: int64
     use mpi
     use checkpoint_state_io, only: checkpoint_state_require
@@ -236,13 +319,15 @@ contains
     integer,intent(in) :: step
     real(8),intent(in) :: t,window(2)
     logical,intent(in) :: statistics,mean_requested
+    logical,optional,intent(in) :: require_covered_means
+    logical,optional,intent(in) :: preview_flatplate
     integer(int64),intent(in) :: host_budget,device_budget,reserve
 #ifdef ASTR_INSITU_DEVICE_PRODUCTS
     real(8),device,allocatable :: velocity(:,:),halo(:,:,:,:),derived(:,:),reynolds(:,:),favre(:,:)
     real(8),device,allocatable :: reynolds_halo(:,:,:,:),favre_halo(:,:,:,:)
     real(8),device,allocatable :: coordinates(:,:),coordinate_halo(:,:,:,:),temperature(:,:,:,:)
     real(8) :: duration,window_end,window_start,started,phase_started,face_times(5)
-    logical :: covered,lines,want_reynolds,want_favre,physical_coordinates
+    logical :: covered,lines,want_reynolds,want_favre,physical_coordinates,read_only_bl
     type(c_devptr) :: reynolds_pointer,favre_pointer,coordinates_pointer,coordinate_halo_pointer,temperature_pointer
     integer :: status,generation,plane_j
     integer(int64) :: host_bytes,device_bytes,d2h,h2d,exchanges,retained
@@ -266,6 +351,8 @@ contains
       end function
     end interface
     started=MPI_Wtime()
+    read_only_bl=.false.
+    if(present(preview_flatplate)) read_only_bl=preview_flatplate
     phase_started=insitu_clock()
     call range_push(1_c_int)
     lines=profile=='all'.or.profile=='streamlines'.or.profile=='q_streamlines'.or. &
@@ -275,11 +362,11 @@ contains
       (profile=='all'.or.profile=='q_surface'.or.profile=='q_streamlines'.or. &
         profile=='tgv256_demo'.or.profile=='curve_demo'.or.profile=='boundary_layer'.or.profile=='m12_diagnostics').and. &
       (.not.product_schedules_active().or.product_scene_due('q_surface')),curve_demonstration=profile=='curve_demo', &
-      m12_diagnostics=profile=='m12_diagnostics')
+      m12_diagnostics=profile=='m12_diagnostics',preview_flatplate=read_only_bl)
     coordinates_pointer=c_devloc(velocity);coordinate_halo_pointer=c_devloc(halo)
     retained=8*(size(velocity,kind=int64)+size(halo,kind=int64)+size(derived,kind=int64))
     ! The profile case creates its physical grid in userdefine even with lreadgrid=false.
-    physical_coordinates=lreadgrid.or.profile=='boundary_layer'.or.profile=='m12_diagnostics'
+    physical_coordinates=lreadgrid.or.profile=='boundary_layer'.or.profile=='m12_diagnostics'.or.read_only_bl
     if(physical_coordinates) then
       call snapshot_sample_coordinates_gpu(x_d,coordinates,[im,jm,km],hm,MPI_COMM_WORLD,device_budget,reserve,retained)
       coordinates_pointer=c_devloc(coordinates)
@@ -333,6 +420,10 @@ contains
         endif
         window_end=min(t,window(2));window_start=window_end-duration
       endif
+    endif
+    if(present(require_covered_means)) then
+      call checkpoint_state_require(.not.require_covered_means.or.covered,MPI_COMM_WORLD, &
+        'preview mean streamlines require complete saved statistics coverage')
     endif
     call range_pop()
     call report_insitu_timing('device_mean_supply_inclusive',phase_started,step)

@@ -27,7 +27,7 @@ PENDING_PRODUCTION_INPUTS = (
     "scripts/insitu/egl_identity.py",
     "scripts/insitu/image_publication.py", "scripts/insitu/device_render_pipeline.py",
     "src/adaptive_output.F90", "src/insitu_product_schedule.F90",
-    "src/insitu_product_dispatch.h", "scripts/insitu/product_dispatch.py",
+    "src/insitu_product_dispatch.h", "scripts/insitu/product_dispatch.py", "scripts/insitu/streamline_preview.py",
     "src_gpu/insitu_wall_fields_gpu.cuf", "src_gpu/insitu_device_wall.h",
     "src_gpu/insitu_device_plane.h", "src_gpu/insitu_device_structured.h",
     "src_gpu/insitu_device_curve_trace.h",
@@ -189,7 +189,7 @@ def test_strict_device_products_without_test_sources(source_copy, tmp_path, air5
         '--prefix', str(prefix)], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     assert installed.returncode == 0, installed.stdout
     for name in ('tgv_pipeline.py', 'tgv_streamlines.py', 'egl_identity.py',
-                 'image_publication.py', 'product_dispatch.py', 'device_render_pipeline.py'):
+                 'image_publication.py', 'product_dispatch.py', 'device_render_pipeline.py', 'streamline_preview.py'):
         assert (prefix / 'share/astr/insitu' / name).read_bytes() == (ROOT / 'scripts/insitu' / name).read_bytes()
 
 

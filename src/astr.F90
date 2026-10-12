@@ -12,10 +12,10 @@ program astr
   !---------------------------------------------------------------------
   use parallel,      only: mpiinitial,mpistop,mpisizedis,lio,          &
                            parallelini,parapp
-  use readwrite,     only: statement,readinput,fileini,infodisp
+  use readwrite,     only: statement,readinput,readcont,fileini,infodisp
   use commarray,     only: allocommarray
   use commvar,       only: use_gpu,prandtl,flowtype,ndims,lihomo,     &
-                           ljhomo,lkhomo
+                           ljhomo,lkhomo,nstep,time
   use benchmark_runtime, only: configure_benchmark_runtime,configure_insitu_timing, &
                                insitu_clock,report_insitu_timing
   use insitu_runtime, only: insitu_check
@@ -23,7 +23,9 @@ program astr
   use initialisation,only: flowinit
   use sponge_layer,  only: spongelayerini
   use mainloop,      only: steploop
-  use output_runtime,only: bootstrap_output_resources
+  use output_runtime,only: bootstrap_output_resources,prepare_preview_paths, &
+                           configure_preview_runtime,restore_preview_runtime
+  use insitu_session,only: render_preview_insitu
   use gridgeneration,only: gridgen
   use cmdefne,       only: getcmd,listcmd
   use pp,            only: ppentrance
@@ -48,6 +50,7 @@ program astr
   ! Local variables
   !---------------------------------------------------------------------
   character(len=16) :: cmd
+  logical :: preview_mode
   real(8) :: initialization_started,solver_started
 
   !---------------------------------------------------------------------
@@ -83,10 +86,12 @@ program astr
     ! code tests
     call codetest
 
-  elseif (trim(cmd) == 'run') then
+  elseif (trim(cmd) == 'run'.or.trim(cmd)=='insitu-preview') then
+    preview_mode=trim(cmd)=='insitu-preview'
 
     ! Main simulation run
     call readinput
+    if(preview_mode) call prepare_preview_paths()
 
     call mpisizedis
 
@@ -109,7 +114,11 @@ program astr
     if(use_gpu) call gpu_after_refcal()
 #endif
 
-    call fileini
+    if(preview_mode) then
+      call readcont
+      call configure_preview_runtime()
+    endif
+    if(.not.preview_mode) call fileini
 
     call infodisp
 
@@ -118,6 +127,10 @@ program astr
     if(use_gpu) call gpu_after_alloc()
 #endif
 
+    if(preview_mode) then
+      call restore_preview_runtime()
+      call render_preview_insitu(nstep,time)
+    else
     call ibprocess
 
     call bootstrap_output_resources()
@@ -139,6 +152,7 @@ program astr
 
     call report_insitu_timing('solver_initialization',initialization_started,-1)
     call steploop
+    endif
 #ifdef _CUDA
     if(use_gpu) call gpu_before_finalize()
 #endif

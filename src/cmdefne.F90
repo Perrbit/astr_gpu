@@ -108,6 +108,7 @@ module cmdefne
       write(*,*) ' |     usage: mpirun -np 8 ./astr test grad                   |'
       write(*,*) ' | pp             | Pre/Post-processing                       |'
       write(*,*) ' | insitu-check   | Check Catalyst backend; no flow advance   |'
+      write(*,*) ' | insitu-preview | Read a checkpoint; render without advance |'
       write(*,*) ' +----------------+-------------------------------------------+'
     end if
   

@@ -33,6 +33,7 @@ module insitu_session
   public :: configure_output_statistics,output_statistics_file
   public :: output_render_file,begin_output_insitu,complete_output_insitu
   public :: output_render_repartition_allowed
+  public :: configure_preview_insitu,render_preview_insitu
   logical,save :: output_statistics_restored=.false.
   logical,save :: native_output=.false.,output_render_restored=.false.,output_render_finalized=.false.
   logical,save :: output_saved_rendering=.false.
@@ -125,6 +126,59 @@ module insitu_session
   end interface
 #endif
 contains
+  subroutine configure_preview_insitu(directory)
+    character(*),intent(out) :: directory
+    call require_sample(formal.and.enabled.and.options%render.and.options%processing_backend=='device'.and. &
+      options%rendering_pipeline/='compatible'.and.options%products=='streamlines', &
+      'preview requires an enabled strict device streamline product')
+    call require_sample(options%product_count==0.and.len_trim(options%batch_prefix)==0.and. &
+      len_trim(options%restore_batch)==0,'preview cannot use production product clocks or legacy pairs')
+    call require_sample(statistics_enabled.eqv.options%mean_streamline_render, &
+      'preview statistics must be selected explicitly with mean_streamline_render')
+    directory=options%output_directory
+  end subroutine
+
+  subroutine render_preview_insitu(step,t)
+    use commvar, only: flowtype
+#if defined(_CUDA) && defined(ASTR_WITH_CATALYST)
+    use insitu_products_gpu, only: render_device_sample_gpu
+#ifdef ASTR_BUILD_TESTING
+    use insitu_products_gpu, only: begin_preview_state_check,end_preview_state_check
+#endif
+#endif
+    integer,intent(in) :: step
+    real(real64),intent(in) :: t
+    integer :: status
+    character(1024) :: directory
+    character(16) :: isolation
+    call configure_preview_insitu(directory)
+    call require_sample(.not.product_schedules_active().and..not.render_configured, &
+      'preview must not consume production rendering clocks')
+#if defined(_CUDA) && defined(ASTR_WITH_CATALYST)
+    status=mesh_configure(trim(directory)//c_null_char,int(MPI_COMM_WORLD,c_int))
+    call require_sample(status==0,'cannot configure preview device renderer')
+    native_bridge_configured=.true.
+    call read_consistent_env('ASTR_INSITU_TEST_PREVIEW_ISOLATION',isolation)
+    call require_sample(isolation==''.or.isolation=='1','preview isolation oracle expects 1 or unset')
+#ifdef ASTR_BUILD_TESTING
+    if(isolation=='1') call begin_preview_state_check(options%device_budget_bytes,options%device_reserve_bytes)
+#else
+    call require_sample(isolation=='','preview isolation oracle requires BUILD_TESTING')
+#endif
+    call render_device_sample_gpu(trim(options%postprocess_transport),trim(options%rendering_pipeline), &
+      trim(options%implementation_path),trim(options%pipeline_file),trim(options%products),step,t, &
+      statistics_window,statistics_enabled,options%host_budget_bytes,options%device_budget_bytes, &
+      options%device_reserve_bytes,options%mean_streamline_render,trim(options%streamline_seeds), &
+      require_covered_means=options%mean_streamline_render,preview_flatplate=trim(flowtype)=='bl')
+#ifdef ASTR_BUILD_TESTING
+    if(isolation=='1') call end_preview_state_check()
+#endif
+#else
+    call require_sample(.false.,'preview requires CUDA and Catalyst; no host fallback')
+#endif
+    call finish_insitu(read_only=.true.)
+  end subroutine
+
   integer function selected_product_profile() result(profile)
     profile=0
     select case(options%products)
@@ -524,9 +578,23 @@ contains
     use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported
 #endif
     character(1024) :: filename,message
-    integer :: ierr
+    character(16) :: entry_command
+    integer :: ierr,i,status
+    integer(int64) :: view_signature(2)
+    real(c_double) :: view_values(19)
     logical :: ok,channel_wall,air5_wall,curve_tgv,device_demo,device_wall,device_plane,device_curve_q,device_air5_wall
-    logical :: device_curve_trace,device_curve_demo,device_boundary_layer,device_m12_hd
+    logical :: device_curve_trace,device_curve_demo,device_boundary_layer,device_m12_hd,device_preview_bl
+#ifdef ASTR_WITH_CATALYST
+    interface
+      integer(c_int) function add_streamline_view(index,id,velocity,seeds,color,values) &
+          bind(C,name='astr_insitu_streamline_view_add')
+        import c_int,c_double,c_char
+        integer(c_int),value :: index
+        character(c_char),intent(in) :: id(*),velocity(*),seeds(*),color(*)
+        real(c_double),intent(in) :: values(*)
+      end function
+    end interface
+#endif
     if(session_checked) return
     native_output=.true.
     call read_consistent_env('ASTR_INSITU_CONFIG',filename)
@@ -539,11 +607,42 @@ contains
       statistics_configured=.true.
       oracle_io=.false.
       if(enabled) then
+        call get_command_argument(1,entry_command)
+        device_preview_bl=trim(entry_command)=='insitu-preview'.and.trim(flowtype)=='bl'.and. &
+          all([ia,ja,ka]==[450,130,96]).and.options%products=='streamlines'.and.options%view_count>0
+        if(options%view_count>0) then
+          call require_sample(trim(entry_command)=='insitu-preview'.or.options%view_count==1, &
+            'formal rendering requires one explicitly selected streamline view, not a preview batch')
+          do i=1,options%view_count
+            if(device_preview_bl) then
+              call require_sample(options%views(i)%velocity=='instantaneous'.and. &
+                (options%views(i)%seeds=='bl-layered64'.or.options%views(i)%seeds=='bl-layered256'), &
+                'M12 preview admits instantaneous layered64/256 views only')
+            else
+              call require_sample(options%views(i)%seeds=='line16'.or.options%views(i)%seeds=='tgv-stratified', &
+                'TGV views require line16 or tgv-stratified seeds')
+            endif
+          enddo
+          call require_sample(device_preview_bl.or.(trim(flowtype)=='tgv'.and.all(bctype==1).and. &
+            all([ia,ja,ka]==32)),'streamline views require admitted TGV or read-only M12 state')
+#ifdef ASTR_WITH_CATALYST
+          do i=1,options%view_count
+            view_values=[options%views(i)%camera,options%views(i)%focal,options%views(i)%up, &
+              options%views(i)%scale,options%views(i)%bounds,options%views(i)%range,options%views(i)%width]
+            status=add_streamline_view(int(i-1,c_int),trim(options%views(i)%id)//c_null_char, &
+              trim(options%views(i)%velocity)//c_null_char,trim(options%views(i)%seeds)//c_null_char, &
+              trim(options%views(i)%color)//c_null_char,view_values)
+            call require_sample(status==0,'cannot configure strict streamline views')
+          enddo
+#else
+          call require_sample(.false.,'streamline views require a strict Catalyst device build')
+#endif
+        endif
         device_demo=options%processing_backend=='device'.and.options%products=='tgv256_demo'
         device_curve_demo=options%processing_backend=='device'.and.options%products=='curve_demo'
         device_m12_hd=options%processing_backend=='device'.and.options%products=='m12_diagnostics'
         device_boundary_layer=options%processing_backend=='device'.and. &
-          (options%products=='boundary_layer'.or.device_m12_hd)
+          (options%products=='boundary_layer'.or.device_m12_hd.or.device_preview_bl)
         device_wall=options%processing_backend=='device'.and.options%products=='channel_walls'
         device_air5_wall=options%processing_backend=='device'.and.options%products=='air5_walls'
         device_plane=options%processing_backend=='device'.and.options%slice_definition=='plane'
@@ -576,7 +675,12 @@ contains
               'device AIR5 wall products require noncatalytic Cartesian HBL 16^3 NP=1/2')
           elseif(device_boundary_layer) then
 #ifdef _CUDA
-            if(device_m12_hd) then
+            if(device_preview_bl) then
+              call require_sample(gpu_profile_mp_ld_flatplate_supported().and. &
+                all(bctype==[11,21,41,50,1,1]).and.mpisize==2.and.all([isize,jsize,ksize]==[2,1,1]).and. &
+                options%rendering_pipeline=='standard-device'.and.options%postprocess_transport=='pinned'.and. &
+                .not.options%statistics,'M12 preview requires original NP=2 x, pinned standard-device and no means')
+            elseif(device_m12_hd) then
               call require_sample(gpu_profile_mp_ld_flatplate_supported().and. &
                 (all([ia,ja,ka]==[64,32,24]).or.all([ia,ja,ka]==[476,130,96])).and. &
                 mpisize==2.and.all([isize,jsize,ksize]==[2,1,1]).and..not.options%statistics, &
@@ -705,6 +809,15 @@ contains
           if(options%mean_streamline_render) render_signature(4)=ieor(render_signature(4),int(z'4D45414E54524143',int64))
           if(options%streamline_seeds=='tgv-stratified') &
             render_signature(4)=ieor(render_signature(4),int(z'5447565345454431',int64))
+          if(len_trim(options%streamline_views_file)>0) then
+            if(mpirank==0) call file_fingerprint(trim(options%streamline_views_file), &
+              view_signature(1),view_signature(2),ok)
+            call require_sample(ok,'cannot fingerprint selected streamline views')
+            if(mpirank==0) then
+              render_signature(3)=ieor(render_signature(3),view_signature(1))
+              render_signature(4)=ieor(render_signature(4),view_signature(2))
+            endif
+          endif
           if(device_boundary_layer) render_signature(4)=ieor(render_signature(4),int(z'424C505245534554',int64))
           if(options%products=='velocity_slice') then
             if(device_plane) then
@@ -1814,7 +1927,7 @@ contains
     call require_sample(ok,'invalid render schedule configuration')
     render_configured=.true.
   end subroutine
-  subroutine finish_insitu()
+  subroutine finish_insitu(read_only)
 #ifdef _CUDA
     use insitu_statistics_gpu, only: release_statistics_gpu,statistics_transfer_counts
     use insitu_sample_gpu, only: release_device_sampling_gpu
@@ -1824,6 +1937,12 @@ contains
 #endif
 #ifdef ASTR_WITH_CATALYST
     integer :: status
+#endif
+    logical,optional,intent(in) :: read_only
+    logical :: preview
+    preview=.false.
+    if(present(read_only)) preview=read_only
+#ifdef ASTR_WITH_CATALYST
     if(native_device_statistics().and..not.native_output) &
       call render_native_if_due(statistics_step,statistics_time,.true.)
     if(allocated(last_fields)) then
@@ -1834,7 +1953,7 @@ contains
     call require_sample(status==0,'Catalyst mesh finalization failed')
 #endif
 #ifdef _CUDA
-    if(native_device_statistics()) call export_native_statistics()
+    if(native_device_statistics().and..not.preview) call export_native_statistics()
     if(native_device_statistics()) then
       call statistics_transfer_counts(samples,downloads)
       write(*,'(A,I0,A,I0,A,I0)') 'ASTR_INSITU_GPU_STATS rank=',mpirank, &
@@ -1846,7 +1965,7 @@ contains
     call release_statistics_gpu()
     call release_device_sampling_gpu()
 #endif
-    call write_final_statistics()
+    if(.not.preview) call write_final_statistics()
     if(formal.and.enabled.and.statistics_enabled.and.selected_product_profile()>=5) &
       call finish_wall_statistics(prefix)
     if(formal.and.enabled.and.statistics_enabled.and.options%air5_volume_statistics) &
@@ -2025,7 +2144,8 @@ contains
 #ifndef ASTR_BUILD_TESTING
     if(name/='ASTR_INSITU_CONFIG'.and.name/='ASTR_OUTPUT_CONFIG') return
 #endif
-    if(formal.and.name/='ASTR_INSITU_CONFIG'.and.name/='ASTR_OUTPUT_CONFIG') return
+    if(formal.and.name/='ASTR_INSITU_CONFIG'.and.name/='ASTR_OUTPUT_CONFIG'.and. &
+      name/='ASTR_INSITU_TEST_PREVIEW_ISOLATION') return
     call get_environment_variable(name,value,length,status)
     call require_sample(status==0.or.status==1,'invalid '//name)
     root=value

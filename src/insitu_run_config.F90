@@ -5,7 +5,15 @@ module insitu_run_config
   implicit none
   private
   public :: insitu_options,read_insitu_options,insitu_max_products,product_scene_allowed,canonical_slice_plane
+  public :: streamline_view,insitu_max_views,read_streamline_views,streamline_trajectory_key,streamline_display_key
   integer,parameter :: insitu_max_products=64
+  integer,parameter :: insitu_max_views=6
+  type :: streamline_view
+    character(64) :: id=''
+    character(16) :: velocity='',seeds='',color=''
+    real(real64) :: camera(3)=0.d0,focal(3)=0.d0,up(3)=0.d0,scale=0.d0
+    real(real64) :: bounds(6)=0.d0,range(2)=0.d0,width=0.d0
+  end type
   type :: insitu_options
     logical :: enabled=.false.,statistics=.false.,render=.false.
     logical :: initial_frame=.false.,final_frame=.false.
@@ -29,6 +37,9 @@ module insitu_run_config
     real(real64) :: time_interval=0,statistics_window(2)=0
     character(1024) :: implementation_path='',pipeline_file='',output_directory=''
     character(1024) :: batch_prefix='',restore_batch=''
+    character(1024) :: streamline_views_file=''
+    integer :: view_count=0
+    type(streamline_view) :: views(insitu_max_views)
     integer :: product_count=0
     character(64) :: product_ids(insitu_max_products)=''
     character(16) :: product_modes(insitu_max_products)=''
@@ -60,13 +71,16 @@ contains
     logical :: temporary_adaptive,valid_binding
     integer(int64) :: step_interval,host_budget_bytes,device_budget_bytes,device_reserve_bytes
     real(real64) :: time_interval,statistics_window(2)
-    character(1024) :: implementation_path,pipeline_file,output_directory,batch_prefix,restore_batch
+    character(1024) :: implementation_path,pipeline_file,output_directory,batch_prefix,restore_batch,streamline_views_file
+    type(streamline_view) :: views(insitu_max_views)
+    integer :: view_count
+    logical :: views_ok,views_have_means
     integer :: unit,status,closed,slice_index,n,i,j,dot
     namelist /insitu_run/ enabled,statistics,render,initial_frame,final_frame, &
       schedule_mode,step_interval,time_interval,statistics_window,host_budget_bytes, &
       device_budget_bytes,device_reserve_bytes,implementation_path,pipeline_file,output_directory,batch_prefix,restore_batch, &
       derivative_backend,products,slice_axis,slice_index,air5_volume_statistics,air5_volume_reduction,wall_mean_render,wall_separation, &
-      mean_streamline_render,streamline_seeds, &
+      mean_streamline_render,streamline_seeds,streamline_views_file, &
       processing_backend,postprocess_transport,rendering_pipeline,slice_definition,slice_origin,slice_normal, &
       product_ids,product_modes,product_steps,product_times, &
       product_adaptive,product_dense_steps,product_dense_times,product_events,product_windows
@@ -91,6 +105,8 @@ contains
     host_budget_bytes=0; device_budget_bytes=0; device_reserve_bytes=0
     implementation_path=''; pipeline_file=''; output_directory=''
     batch_prefix=''; restore_batch=''
+    streamline_views_file=''; view_count=0
+    call clear_streamline_views(views)
     product_ids=''; product_modes=''; product_steps=0; product_times=0.d0
     product_adaptive=.false.; product_dense_steps=0; product_dense_times=0; product_events=''; product_windows=''
     open(newunit=unit,file=filename,status='old',action='read',iostat=status,iomsg=message)
@@ -313,6 +329,19 @@ contains
         if(step_interval/=0.or.time_interval/=0.d0) return
       endif
     endif
+    if(len_trim(streamline_views_file)>0) then
+      message='streamline views require enabled strict device streamlines without legacy pairs'
+      if(.not.enabled.or..not.render.or.products/='streamlines'.or.processing_backend/='device'.or. &
+        rendering_pipeline=='compatible'.or.len_trim(batch_prefix)>0.or.len_trim(restore_batch)>0.or. &
+        len_trim(streamline_views_file)>=len(streamline_views_file)) return
+      message='first streamline views use the common render clock, not independent product clocks'
+      if(n/=0) return
+      call read_streamline_views(trim(streamline_views_file),views,view_count,views_ok,message)
+      if(.not.views_ok) return
+      views_have_means=any(views(1:view_count)%velocity/='instantaneous')
+      message='mean view candidates require statistics and mean_streamline_render'
+      if(views_have_means.and.(.not.statistics.or..not.mean_streamline_render)) return
+    endif
     options%enabled=enabled; options%statistics=statistics; options%render=render
     options%initial_frame=initial_frame; options%final_frame=final_frame
     options%air5_volume_statistics=air5_volume_statistics
@@ -327,6 +356,8 @@ contains
     options%postprocess_transport=postprocess_transport
     options%products=products
     options%streamline_seeds=streamline_seeds
+    options%streamline_views_file=streamline_views_file
+    options%view_count=view_count; options%views=views
     options%slice_axis=slice_axis; options%slice_index=slice_index
     options%slice_definition=slice_definition
     options%slice_origin=slice_origin; options%slice_normal=slice_normal
@@ -348,6 +379,111 @@ contains
     ok=.true.
     message=''
   end subroutine
+
+  subroutine read_streamline_views(filename,views,count,ok,message)
+    character(*),intent(in) :: filename
+    type(streamline_view),intent(out) :: views(insitu_max_views)
+    integer,intent(out) :: count
+    logical,intent(out) :: ok
+    character(*),intent(out) :: message
+    character(64) :: candidate_ids(insitu_max_views)
+    character(16) :: velocity(insitu_max_views),seeds(insitu_max_views),color_field(insitu_max_views)
+    real(real64) :: camera_position(3,insitu_max_views),focal_point(3,insitu_max_views),view_up(3,insitu_max_views)
+    real(real64) :: parallel_scale(insitu_max_views),display_bounds(6,insitu_max_views)
+    real(real64) :: color_range(2,insitu_max_views),line_width(insitu_max_views),direction(3),up(3),cross(3),delta
+    integer :: image_size(2),unit,status,closed,i,j
+    namelist /streamline_views/ candidate_ids,velocity,seeds,camera_position,focal_point,view_up, &
+      parallel_scale,display_bounds,color_field,color_range,line_width,image_size
+    call clear_streamline_views(views)
+    count=0; ok=.false.
+    candidate_ids='';velocity='';seeds='';color_field=''
+    camera_position=0.d0;focal_point=0.d0;view_up=0.d0;parallel_scale=0.d0
+    display_bounds=0.d0;color_range=0.d0;line_width=0.d0;image_size=[800,600]
+    open(newunit=unit,file=filename,status='old',action='read',iostat=status,iomsg=message)
+    if(status/=0) return
+    read(unit,nml=streamline_views,iostat=status,iomsg=message)
+    close(unit,iostat=closed)
+    if(status/=0) return
+    message='cannot close streamline view configuration'
+    if(closed/=0) return
+    count=count_nonempty(candidate_ids)
+    message='streamline views require one to six contiguous explicit candidates at 800x600'
+    if(count<1.or.any(candidate_ids(1:count)=='').or.any(image_size/=[800,600])) return
+    message='unexpected values beyond the declared streamline candidates'
+    if(any(velocity(count+1:)/='').or.any(seeds(count+1:)/='').or.any(color_field(count+1:)/='').or. &
+      any(camera_position(:,count+1:)/=0.d0).or.any(focal_point(:,count+1:)/=0.d0).or. &
+      any(view_up(:,count+1:)/=0.d0).or.any(parallel_scale(count+1:)/=0.d0).or. &
+      any(display_bounds(:,count+1:)/=0.d0).or.any(color_range(:,count+1:)/=0.d0).or. &
+      any(line_width(count+1:)/=0.d0)) return
+    do i=1,count
+      message='candidate ids must be unique ASCII names, not paths'
+      if(len_trim(candidate_ids(i))>=len(candidate_ids(i)).or. &
+        verify(trim(candidate_ids(i)),'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-')/=0) return
+      do j=1,i-1
+        if(candidate_ids(i)==candidate_ids(j)) return
+      enddo
+      message='unsupported streamline velocity, seed layout or color field'
+      if(velocity(i)/='instantaneous'.and.velocity(i)/='reynolds'.and.velocity(i)/='favre') return
+      if(seeds(i)/='line16'.and.seeds(i)/='tgv-stratified'.and. &
+        seeds(i)/='bl-layered64'.and.seeds(i)/='bl-layered256') return
+      if(color_field(i)/='u'.and.color_field(i)/='v'.and.color_field(i)/='w'.and.color_field(i)/='speed') return
+      message='nonfinite streamline view values'
+      if(.not.all(ieee_is_finite([camera_position(:,i),focal_point(:,i),view_up(:,i),parallel_scale(i), &
+        display_bounds(:,i),color_range(:,i),line_width(i)]))) return
+      direction=camera_position(:,i)-focal_point(:,i);up=view_up(:,i)
+      message='streamline camera must have a finite nonzero direction and nonparallel up vector'
+      if(.not.all(ieee_is_finite(direction))) return
+      if(maxval(abs(direction))==0.d0.or.maxval(abs(up))==0.d0) return
+      direction=direction/maxval(abs(direction));up=up/maxval(abs(up))
+      cross=[direction(2)*up(3)-direction(3)*up(2),direction(3)*up(1)-direction(1)*up(3), &
+        direction(1)*up(2)-direction(2)*up(1)]
+      if(maxval(abs(cross))==0.d0) return
+      message='streamline scale, line width, bounds and color range must be positive and ordered'
+      if(parallel_scale(i)<=0.d0.or.line_width(i)<=0.d0) return
+      do j=1,3
+        if(display_bounds(2*j,i)<=display_bounds(2*j-1,i)) return
+      enddo
+      if(color_range(2,i)<=color_range(1,i)) return
+      delta=color_range(2,i)-color_range(1,i)
+      if(.not.ieee_is_finite(delta)) return
+      if(delta<tiny(delta)) return
+      views(i)%id=candidate_ids(i);views(i)%velocity=velocity(i);views(i)%seeds=seeds(i);views(i)%color=color_field(i)
+      views(i)%camera=camera_position(:,i);views(i)%focal=focal_point(:,i);views(i)%up=view_up(:,i)
+      views(i)%scale=parallel_scale(i);views(i)%bounds=display_bounds(:,i);views(i)%range=color_range(:,i)
+      views(i)%width=line_width(i)
+    enddo
+    ok=.true.;message=''
+  end subroutine
+
+  subroutine clear_streamline_views(views)
+    type(streamline_view),intent(out) :: views(:)
+    integer :: i
+    ! Explicit assignments avoid indeterminate unused fields with NVHPC derived constructors.
+    do i=1,size(views)
+      views(i)%id='';views(i)%velocity='';views(i)%seeds='';views(i)%color=''
+      views(i)%camera=0.d0;views(i)%focal=0.d0;views(i)%up=0.d0;views(i)%scale=0.d0
+      views(i)%bounds=0.d0;views(i)%range=0.d0;views(i)%width=0.d0
+    enddo
+  end subroutine
+
+  integer function count_nonempty(values) result(n)
+    character(*),intent(in) :: values(:)
+    n=count(values/='')
+  end function
+
+  function streamline_trajectory_key(view) result(key)
+    type(streamline_view),intent(in) :: view
+    character(128) :: key
+    ! The state, topology, statistics window and fixed integrator scope the cache externally.
+    key=trim(view%velocity)//':'//trim(view%seeds)
+  end function
+
+  function streamline_display_key(view) result(key)
+    type(streamline_view),intent(in) :: view
+    character(1024) :: key
+    write(key,'(a,19(1x,es26.17e3))') trim(view%color), &
+      view%camera,view%focal,view%up,view%scale,view%bounds,view%range,view%width
+  end function
 
   subroutine canonical_slice_plane(normal,ok)
     real(real64),intent(inout) :: normal(3)

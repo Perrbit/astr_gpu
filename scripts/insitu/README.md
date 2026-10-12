@@ -1,5 +1,193 @@
 # Native In-Situ TGV Preset
 
+### Read-Only Streamline Preview
+
+The new `insitu-preview` command is separate from simulation and exact restart.
+It reads an existing sealed new-format checkpoint and renders its completed-step
+state once, without calling grid generation, flow initialization, RK, RHS,
+boundary evolution or statistics accumulation. The first candidate admits only
+32-cubed periodic Cartesian FP64 GPU TGV, 643e/643e, with the saved MPI topology.
+The approved extension is the existing M12 450x130x96, NP=2 x checkpoint:
+instantaneous layered64/256 views only, standard-device plus pinned. Its
+random-wall control prefix is read as provenance; RNG is neither restored nor
+advanced. CURVE, AIR5, repartitioning and M12 means are not admitted here.
+The bounded TGV matrix passed for NP=1/2 (x decomposition), `standard-device`
+plus `pinned`, instantaneous and saved-window Reynolds/Favre products, six-view
+batches and selected-view replay. Other pipelines/transports are not validated
+for this new entry. PV0-PV6 passed within this bounded scope: the final TGV
+regression passed 34 checks, and the M12 representative passed both layered64
+and layered256 views. M12 uses an explicitly approved 3 GiB/GPU additional-device
+exception; the common TGV limit remains 2 GiB/GPU and production defaults are
+unchanged. Host, free-device, directory and timeout limits remain 4 GiB/node,
+1 GiB/GPU, 256 MiB and 300 seconds respectively.
+
+Run from a fresh directory outside the source new-output root. Copy the source
+`resources/input.txt` byte-for-byte to `datin/input.tgv` and provide a matching
+`datin/controller` with legacy averaging disabled. Keep the command-line input
+path shorter than the existing 64-character reader limit. Create the empty
+`outdat/render` directory before launch. Use the existing `datin/input.output`
+grammar with the source batch as `restore_directory` and checkpoint, volume,
+slices and adaptive scheduling disabled. Preview reads the frozen grid and
+flow/cache files; it does not recompute them or write a new checkpoint.
+
+Use an explicit `ASTR_INSITU_CONFIG` with `products='streamlines'`,
+`processing_backend='device'`, `derivative_backend='gpu'`, an explicit
+`postprocess_transport`, and `rendering_pipeline='standard-device'` or
+`'direct-device'`. Select `device_render_pipeline.py` with the matching ParaView
+implementation. Set the approved memory budgets explicitly. The normal schedule
+syntax remains required by the shared parser, but preview neither restores nor
+polls production rendering clocks.
+
+```bash
+export ASTR_INSITU_CONFIG=datin/input.insitu
+export ASTR_FORCE_MPI_TOPOLOGY=2,1,1
+mpiexec -np 2 /path/to/device-enabled/astr insitu-preview datin/input.tgv
+```
+
+For instantaneous streamlines, set both `statistics=f` and
+`mean_streamline_render=f`. For instantaneous plus Reynolds/Favre streamlines,
+set both true and specify the saved statistics window exactly. Missing or
+incomplete statistics coverage is fatal, with no instantaneous fallback. The
+first preset also emits the existing constant-velocity crossing diagnostic.
+Preview publishes JPEG/EPS and compact lifecycle/resource receipts, not VTK
+trajectory geometry, full fields, final statistics arrays or restart files.
+Checkpoint input passes through bounded host buffers and uploads to GPU; this
+is not a zero-I/O operation. During strict rendering, fields and trajectory
+geometry stay device-resident, apart from the selected face-transport staging
+and permitted image/metadata transfers.
+
+Source-bundle validation and the frozen primary input still apply. Preview does
+not require the source executable to equal the preview executable, because it
+does not claim an exact continuation. Exact production restart retains its
+existing executable and state contract unchanged. The first opt-in GPU check
+is `tests/gpu_validation/test_insitu_preview.py`; without
+`ASTR_INSITU_PREVIEW_CANDIDATE=1`, TGV GPU tests are skipped. M12 additionally
+requires `ASTR_INSITU_PREVIEW_M12=1`. Host configuration/export/filesystem tests
+do not require GPU execution.
+Batch rendering is configured by `streamline_views_file='datin/views.nml'` in
+`&insitu_run`. It admits at most six explicit views, each 800x600, with a common
+clock. There is no automatic parameter sweep. For example:
+
+```fortran
+&streamline_views
+ candidate_ids='front','oblique',
+ velocity='instantaneous','instantaneous', seeds='line16','line16',
+ camera_position(:,1)=3.14,3.14,12., camera_position(:,2)=11.,9.,10.,
+ focal_point(:,1)=3.14,3.14,3.14, focal_point(:,2)=3.14,3.14,3.14,
+ view_up(:,1)=0.,1.,0., view_up(:,2)=0.,1.,0.,
+ parallel_scale=2.,2., line_width=2.,3., color_field='u','u',
+ display_bounds(:,1)=0.,6.283185307179586,0.,6.283185307179586,0.,6.283185307179586,
+ display_bounds(:,2)=0.,6.283185307179586,0.,6.283185307179586,0.,6.283185307179586,
+ color_range(:,1)=-1.,1., color_range(:,2)=-1.,1.
+/
+```
+
+TGV seeds are `line16` and `tgv-stratified`. Velocity is `instantaneous`,
+`reynolds` or `favre`; the latter two require the saved, covered statistics
+window. Color is `u`, `v`, `w` or `speed`, with an explicit fixed range. The
+integrator and physical velocities are not tuned by this file. Camera,
+display-only clipping, color and line width reuse the current GPU trajectory;
+velocity/seed changes are integrated separately. The cache is scoped to this
+one completed state, topology, statistics window and fixed integrator. Groups
+are processed serially; the renderer may retain the previous borrowed owner
+until the next synchronous execution completes.
+
+Each candidate publishes JPEG/EPS and per-rank JSON. Reports contain source
+checkpoint identity, full-trajectory scalar extrema reduced on GPU, local
+trajectory bounds, projected seed spacing, y-layer/direction termination counts
+and separate trajectory/display identities. Global termination counts are
+replicated, not summed over rank reports. Seed count is not visible-line count;
+projected spacing does not account for occlusion. `step_budget` is not a
+physical domain exit. Geometry remains on device; only small diagnostics and
+images reach the host. Existing native stage and pipeline timers separate
+restore, device sampling, integration, render, capture, encoding and publication.
+
+After reviewing the images, export exactly one selected candidate:
+
+```bash
+python3 /path/to/astr/scripts/insitu/streamline_preview.py \
+  outdat/render/preview.oblique.step00000004.rank00000000.json datin/selected.nml
+```
+
+The destination and its `.json` provenance sidecar must not already exist.
+Set `streamline_views_file='datin/selected.nml'` for the admitted formal TGV
+product. Keep the sidecar with the configuration. The shared parser/renderer
+consumes the same values, and the views file participates in the restart
+rendering signature. This imports parameters only, not preview clocks/history;
+formal rendering rejects batches with more than one view. It does not bypass
+exact restart checks. M12 formal configuration import remains outside its
+read-only preview admission.
+
+The approved first check used step 4, time 0.004, saved statistics window
+[0.003,0.004], and the existing 800x600 preset. With the opt-in enabled, the
+preview and filesystem suites passed all 12 cases; source hashes/mtimes were
+unchanged, no CFD advancement or new statistics samples occurred, and no full
+fields, trajectory geometry or checkpoints were published. Every rank finalized.
+Results are in `tests/gpu_validation/out/pv1_readonly_20261011_01/`, with JUnit
+record `build_insitu_device_render/pv1_readonly_20261011_01.xml`. Runtime was
+2.78-3.50 seconds including launch/restore/render/exit, not a performance ratio.
+Native phase observations stayed within the approved 4 GiB/node host,
+2 GiB/GPU additional device and 1 GiB free-device budgets; they do not guarantee
+capture of arbitrary transient third-party peaks. Each directory was below
+11.22 MiB (limit 256 MiB), and the subprocess limit was 300 seconds. These initial
+results are retained as historical smoke evidence, not the final batch
+acceptance. The inherited camera is not a tuned production view.
+
+The subsequent configuration suite passed 160 checks. In
+`build_insitu_device_render/pv_final_20261011_02.xml`, all 30 checks preceding
+the M12 representative passed: TGV whole-state/statistics isolation, six-view
+reuse, selected-view pixel equality, vector colors, rejection cases and dual-rank
+Compute Sanitizer memcheck (zero errors on both ranks). Unused candidate fields
+are explicitly zeroed; a regression guards their MPI consistency. The M12
+representative failed with `Nonfinite or out-of-halo resident trajectory` after
+successful restore, so the full matrix stopped. This is not M12 image acceptance
+or complete PV6. It does not authorize changing integrator tolerances or source
+physics to obtain a prettier view.
+
+The M12 failure was a Cash-Karp final combination outside the bottom wall,
+despite contained stage points. `trace_segment` now checks the final point before
+publication, preserving the last valid point on domain exit. RK45 coefficients,
+step limits and error control are unchanged. The CPU regression and GPU RK45
+probe passed; the latter still matches all 26 original-VTK step cases exactly.
+In `pv_m12_final_20261012_01`, layered64 publishes JPEG/EPS, then layered256 is
+refused before a temporary allocation would raise the device increment to about
+2.112 GiB. That task did not finalize or reach its final isolation check. The
+user subsequently approved a 3 GiB M12-only limit; all other budgets stay unchanged.
+The final affected TGV regression is
+`build_insitu_device_render/pv_tgv_final_20261012_02.xml`: 34 checks passed,
+with the separately tested M12 case explicitly deselected. It repeats state/source
+isolation, six-view reuse, selected-view pixel equality, colors, rejections,
+finalization and dual-rank memcheck (zero errors), and covers the endpoint guard
+and display-resource ownership regression. Native phase observations, including
+memcheck, stayed below 1.028 GiB additional host and 0.414 GiB additional device,
+with at least 17.511 GiB device free. Each test directory was below 19.96 MiB.
+The earlier matrix remains historical evidence, not the only proof of the final
+code.
+
+The first 3 GiB M12 run (`pv_m12_final_20261012_02`) published both views but
+failed the test-only isolation comparison. Its frozen unused physical halos
+contain NaNs, which compare unequal to themselves. All eleven fields inside
+the physical grid are finite. The flow/cache oracle now compares all FP64
+storage bit-for-bit, including every halo, NaN payload and signed zero; it does
+not replace invalid values or change the saved field. The frozen M12 source
+serves as a regression for this case, with physical density/temperature positivity
+checked separately.
+
+`build_insitu_device_render/pv_m12_final_20261012_03.xml` passes the M12 closure:
+source hashes/mtimes unchanged, zero advancement, bit-identical flow/cache,
+unchanged statistics and both ranks finalized. The 64/256 seed candidates each
+publish an 800x600 JPEG/EPS, with zero field/trajectory geometry readback.
+Their 128/512 branches terminate at 104/424 physical exits and 24/88 original
+4096-step limits; the latter are not natural exits. Native phase observations
+were at most 0.726 GiB additional host and 1.119 GiB additional device, with at
+least 15.291 GiB device free. The directory is 6.03 MiB and the test wall time
+46.45 seconds. These phase observations are not full transient allocation peaks
+or a solver benchmark; the 3 GiB allocation guard remains enabled.
+Images are under
+`tests/gpu_validation/out/pv_m12_final_20261012_03/test_m12_native_preview0/outdat/render/`.
+This closes only the approved PV scope, not production physics, arbitrary
+checkpoints, CURVE/AIR5, repartitioning or M12 mean/HD formal import.
+
 ### Matched 256^3 Device Visualization Timing
 
 `benchmark_tgv256_visualization.py` runs the separately approved render-only

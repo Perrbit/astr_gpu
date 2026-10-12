@@ -127,6 +127,17 @@ contains
     call alloc_gpu_arrays()
   end subroutine gpu_after_alloc
 
+  subroutine gpu_prepare_preview_geometry()
+    use commarray, only: x,jacob,dxi
+    use commarray_gpu, only: x_d,jacob_d,dxi_d
+    use gpu_check, only: sync_gpu_boundary
+    implicit none
+    x_d=x
+    jacob_d=jacob
+    dxi_d=dxi
+    call sync_gpu_boundary('preview geometry restore')
+  end subroutine gpu_prepare_preview_geometry
+
   subroutine gpu_after_flowinit()
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_compensation_gpu, only: init_air5_compensation_gpu

@@ -100,7 +100,7 @@ contains
   end subroutine
 
   subroutine capture_device_sample_gpu(mode,velocity,halo,derived,host_budget,device_budget,reserve,demonstration,need_q, &
-      curve_demonstration,m12_diagnostics)
+      curve_demonstration,m12_diagnostics,preview_flatplate)
     use benchmark_runtime, only: insitu_clock,report_insitu_timing
     use iso_fortran_env, only: int64
     use commvar, only: im,jm,km,ia,ja,ka,hm,numq,use_gpu,lreadgrid,difschm,conschm,flowtype, &
@@ -120,6 +120,7 @@ contains
     real(8),device,allocatable,intent(out) :: velocity(:,:),halo(:,:,:,:),derived(:,:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
     logical,intent(in),optional :: demonstration,need_q,curve_demonstration,m12_diagnostics
+    logical,intent(in),optional :: preview_flatplate
     logical :: demo,calculate_q,curve_wall,curve_demo,profile_mp_ld
     integer :: neighbors(2,3),sizes(3),extent(3),ranks,ierr,status
     real(8) :: phase_started
@@ -138,6 +139,10 @@ contains
       if(m12_diagnostics) profile_mp_ld=gpu_profile_mp_ld_flatplate_supported().and. &
         (all([ia,ja,ka]==[64,32,24]).or.all([ia,ja,ka]==[476,130,96])).and. &
         ranks==2.and.all(sizes==[2,1,1])
+    endif
+    if(present(preview_flatplate)) then
+      if(preview_flatplate) profile_mp_ld=gpu_profile_mp_ld_flatplate_supported().and. &
+        all([ia,ja,ka]==[450,130,96]).and.ranks==2.and.all(sizes==[2,1,1]).and..not.calculate_q
     endif
     call checkpoint_state_require(ierr==MPI_SUCCESS.and. &
       (profile_mp_ld.or.(ranks<=2.and. &

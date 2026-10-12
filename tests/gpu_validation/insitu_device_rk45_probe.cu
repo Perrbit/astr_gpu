@@ -10,7 +10,10 @@ struct Field {
   int mode;
   __host__ __device__ bool operator()(const double* x, double, double* f) const {
     if (mode == 2 && x[0] > 1.01) return false;
-    if (mode == 1) {
+    if (mode == 5) {
+      if(x[1]<0.) return false;
+      f[0]=1.;f[1]=-x[0]*x[0]*x[0];f[2]=0.;
+    } else if (mode == 1) {
       const double radius = std::sqrt(x[0]*x[0] + x[1]*x[1]);
       f[0] = -x[1]/radius; f[1] = x[0]/radius; f[2] = 0.;
     } else if (mode == 3) {
@@ -70,6 +73,13 @@ __global__ void run_length_limit(astr_insitu::TraceState* state,double* largest)
     8,.01*h,.5*h,1e-8,std::acos(-1.),100);
 }
 
+__global__ void run_endpoint_guard(astr_insitu::TraceState* state,double* largest)
+{
+  state[0]={{0.,.24,0.},1.,0.,0.,0,astr_insitu::TraceActive};largest[0]=0.;
+  astr_insitu::trace_segment(Field{5},InteriorOwner{},LengthWriter{largest},state[0],
+    1,1.,1.,1e-8,2.,8);
+}
+
 int main()
 {
   constexpr int count = 32;
@@ -127,7 +137,11 @@ int main()
     overshoot=std::fmax(overshoot,lengths[i]-std::acos(-1.));
     if(states[i].status!=astr_insitu::TraceLength) return 11;
   }
+  run_endpoint_guard<<<1,1>>>(states,lengths);
+  if(cudaDeviceSynchronize()!=cudaSuccess || states[0].status!=astr_insitu::Outside ||
+      states[0].steps!=0 || states[0].length!=0. || states[0].point[1]!=.24 || lengths[0]!=0.) return 13;
   cudaFree(states);cudaFree(lengths);
+  std::puts("GPU RK45 final-combination domain guard passed");
   std::printf("GPU RK45 adaptive terminal overshoot=%.17g\n",overshoot);
   if(!std::isfinite(overshoot) || overshoot>2e-10) return 12;
   return std::isfinite(maximum) && maximum <= 2e-10 ? 0 : 6;

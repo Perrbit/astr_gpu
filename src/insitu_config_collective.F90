@@ -1,7 +1,7 @@
 module insitu_config_collective
   use mpi
   use iso_fortran_env, only: int64,real64
-  use insitu_run_config, only: insitu_options,read_insitu_options,insitu_max_products,canonical_slice_plane
+  use insitu_run_config, only: insitu_options,read_insitu_options,insitu_max_products,canonical_slice_plane,insitu_max_views
   use adaptive_output_collective, only: agree_adaptive_bindings
   implicit none
   private
@@ -15,16 +15,18 @@ contains
     character(*),intent(out) :: message
     type(insitu_options) :: candidate
     logical :: parsed,flags(10),root_flags(10),same,all_same
-    integer(int64) :: counts(5),root_counts(5)
+    integer(int64) :: counts(6),root_counts(6)
     real(real64) :: times(9),root_times(9),plane(6)
-    character(1024) :: paths(13),root_paths(13)
+    character(1024) :: paths(14),root_paths(14)
+    character(64) :: view_strings(4,insitu_max_views),root_view_strings(4,insitu_max_views)
+    real(real64) :: view_values(19,insitu_max_views),root_view_values(19,insitu_max_views)
     character(16) :: root_mode
     character(64) :: root_ids(insitu_max_products)
     character(16) :: root_product_modes(insitu_max_products)
     integer(int64) :: root_steps(insitu_max_products)
     real(real64) :: root_times_product(insitu_max_products)
     character(1024) :: parse_message
-    integer :: rank,first_bad,local_bad,ierr,int_type,real_type
+    integer :: rank,first_bad,local_bad,ierr,int_type,real_type,i
 
     ok=.false.
     call MPI_Comm_rank(comm,rank,ierr)
@@ -46,12 +48,20 @@ contains
       candidate%initial_frame,candidate%final_frame,candidate%air5_volume_statistics,candidate%air5_volume_reduction, &
       candidate%wall_mean_render,candidate%wall_separation,candidate%mean_streamline_render]
     counts=[candidate%step_interval,candidate%host_budget_bytes, &
-      candidate%device_budget_bytes,candidate%device_reserve_bytes,int(candidate%slice_index,int64)]
+      candidate%device_budget_bytes,candidate%device_reserve_bytes,int(candidate%slice_index,int64), &
+      int(candidate%view_count,int64)]
     times=[candidate%time_interval,candidate%statistics_window,candidate%slice_origin,candidate%slice_normal]
     paths=[candidate%implementation_path,candidate%pipeline_file,candidate%output_directory, &
       candidate%batch_prefix,candidate%restore_batch,candidate%derivative_backend,candidate%products,candidate%slice_axis, &
       candidate%processing_backend,candidate%postprocess_transport,candidate%rendering_pipeline,candidate%slice_definition, &
-      candidate%streamline_seeds]
+      candidate%streamline_seeds,candidate%streamline_views_file]
+    do i=1,insitu_max_views
+      view_strings(:,i)=[character(64) :: candidate%views(i)%id,candidate%views(i)%velocity, &
+        candidate%views(i)%seeds,candidate%views(i)%color]
+      view_values(:,i)=[candidate%views(i)%camera,candidate%views(i)%focal,candidate%views(i)%up, &
+        candidate%views(i)%scale,candidate%views(i)%bounds,candidate%views(i)%range,candidate%views(i)%width]
+    enddo
+    root_view_strings=view_strings; root_view_values=view_values
     root_flags=flags; root_counts=counts; root_times=times; root_paths=paths
     root_mode=candidate%schedule_mode
     call MPI_Type_match_size(MPI_TYPECLASS_INTEGER,storage_size(counts(1))/8,int_type,ierr)
@@ -68,6 +78,10 @@ contains
     call check_mpi(ierr,comm)
     call MPI_Bcast(root_mode,len(root_mode),MPI_CHARACTER,0,comm,ierr)
     call check_mpi(ierr,comm)
+    call MPI_Bcast(root_view_strings,len(root_view_strings)*size(root_view_strings),MPI_CHARACTER,0,comm,ierr)
+    call check_mpi(ierr,comm)
+    call MPI_Bcast(root_view_values,size(root_view_values),real_type,0,comm,ierr)
+    call check_mpi(ierr,comm)
     root_ids=candidate%product_ids; root_product_modes=candidate%product_modes
     root_steps=candidate%product_steps; root_times_product=candidate%product_times
     call MPI_Bcast(root_ids,len(root_ids)*size(root_ids),MPI_CHARACTER,0,comm,ierr)
@@ -80,6 +94,7 @@ contains
     call check_mpi(ierr,comm)
     same=all(flags.eqv.root_flags).and.all(counts==root_counts).and. &
       all(times==root_times).and.all(paths==root_paths).and.candidate%schedule_mode==root_mode
+    same=same.and.all(view_strings==root_view_strings).and.all(view_values==root_view_values)
     same=same.and.all(candidate%product_ids==root_ids).and.all(candidate%product_modes==root_product_modes).and. &
       all(candidate%product_steps==root_steps).and.all(candidate%product_times==root_times_product)
     call MPI_Allreduce(same,all_same,1,MPI_LOGICAL,MPI_LAND,comm,ierr)

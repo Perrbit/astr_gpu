@@ -171,6 +171,12 @@ ASTR_RK45_EXEC int trace_segment(const Evaluator& evaluate, const Owner& owner,
                                minimum,bound,tolerance,state.error);
     state.suggested=request;
     if (status!=StepOk) { state.status=status; break; }
+    // Cash-Karp stage containment does not guarantee containment of its final combination.
+    double tangent[3];
+    if (!evaluate(next,0.,tangent)) { state.status=Outside; break; }
+    bool finite=true;
+    for(int d=0;d<3;++d) finite=finite && std::isfinite(tangent[d]);
+    if(!finite) { state.status=Nonfinite; break; }
     // Use accepted length, never the NEXT suggested step returned by RK45.
     state.length+=std::abs(actual);
     if (!std::isfinite(state.length)) { state.status=Nonfinite; break; }

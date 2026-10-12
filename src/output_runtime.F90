@@ -54,6 +54,7 @@ module output_runtime
   public :: initial_output_runtime
   public :: observe_output_adaptive
   public :: bootstrap_output_resources,output_resource_path
+  public :: prepare_preview_paths,configure_preview_runtime,restore_preview_runtime
   logical,save :: enabled=.false.
   logical,save :: options_loaded=.false.
   logical,save :: statistics_active=.false.
@@ -79,6 +80,11 @@ module output_runtime
   character(64),parameter :: air5_resources(4)=[character(64) :: &
     'air5_hbl_domain.dat','air5_hbl_profile.dat','air5_hbl_initial_field.dat','air5_incident_shock.dat']
   interface
+    function preview_output(batch,output) bind(C,name='astr_checkpoint_preview_output') result(status)
+      import c_int,c_char
+      character(c_char),intent(in) :: batch(*),output(*)
+      integer(c_int) :: status
+    end function
     function reuse_run(root,restore,reuse) bind(C,name='astr_checkpoint_reuse_run') result(status)
       import c_int,c_char
       character(c_char),intent(in) :: root(*),restore(*)
@@ -92,6 +98,139 @@ module output_runtime
     end function
   end interface
 contains
+  subroutine prepare_preview_paths()
+    use insitu_run_config, only: insitu_options
+    use insitu_config_collective, only: read_insitu_options_collective
+    type(insitu_options) :: preview
+    character(1024) :: filename,message
+    integer :: status
+    logical :: ok
+    call load_output_options()
+    filename=''
+    call get_environment_variable('ASTR_INSITU_CONFIG',filename,status=status)
+    call check(status==0.and.len_trim(filename)>0,'preview requires an explicit in-situ configuration')
+    call read_insitu_options_collective(trim(filename),MPI_COMM_WORLD,preview,ok,message)
+    call check(ok,trim(message))
+    call check(preview_output(trim(options%restore_directory)//c_null_char, &
+      trim(preview%output_directory)//c_null_char)==0, &
+      'preview requires an empty output directory and working directory outside the source run')
+  end subroutine
+
+  subroutine configure_preview_runtime()
+    use insitu_session, only: configure_preview_insitu
+    character(1024) :: directory
+    call configure_output_runtime()
+    call check(use_gpu.and. &
+      ((trim(flowtype)=='tgv'.and.all([ia,ja,ka]==32).and.all(bctype==1).and.ninit==0.and.trim(conschm)=='643e').or. &
+       (trim(flowtype)=='bl'.and.all([ia,ja,ka]==[450,130,96]).and.all(bctype==[11,21,41,50,1,1]).and. &
+        ninit==2.and.trim(conschm)=='743e'.and.recon_schem==5.and.lchardecomp)).and. &
+      .not.lreadgrid.and.nondimen.and.numq==5.and.num_species==0.and.num_modequ==0.and. &
+      .not.lcomb.and..not.lavg.and.trim(difschm)=='643e', &
+      'preview requires approved FP64 TGV 32^3 or frozen M12 450x130x96 state')
+    call check(len_trim(options%restore_directory)>0,'preview requires an existing new-format checkpoint')
+    call check(.not.options%checkpoint%enabled.and..not.options%volume%enabled.and. &
+      .not.options%slices%enabled.and..not.options%adaptive%enabled,'preview forbids production output and adaptive clocks')
+    call configure_preview_insitu(directory)
+    call check(preview_output(trim(options%restore_directory)//c_null_char,trim(directory)//c_null_char)==0, &
+      'preview requires an empty output directory and working directory outside the source run')
+  end subroutine
+
+  subroutine restore_preview_runtime()
+    use iso_c_binding, only: c_int64_t,c_double
+#ifdef _CUDA
+    use gpu_runtime, only: gpu_prepare_preview_geometry
+#endif
+    type(checkpoint_state_identity) :: identity,expected,geometry_identity
+    character(1024) :: source
+    character(8) :: magic
+    integer(int64) :: saved(14),bytes,crc,remaining
+    real(real64),allocatable :: buffer(:,:,:,:)
+    integer :: unit,status,closed,a,b,m
+    logical :: ok,matched
+    real(real64) :: restore_started,restore_seconds,restore_max
+#ifdef ASTR_WITH_CATALYST
+    interface
+      integer(c_int) function preview_source_set(path,step,t,signatures,fcomm) &
+          bind(C,name='astr_insitu_preview_source_set')
+        import c_char,c_int,c_int64_t,c_double
+        character(c_char),intent(in) :: path(*)
+        integer(c_int64_t),value :: step
+        real(c_double),value :: t
+        integer(c_int64_t),intent(in) :: signatures(*)
+        integer(c_int),value :: fcomm
+      end function
+    end interface
+#endif
+    restore_started=MPI_Wtime()
+    magic='';saved=0;bytes=0;crc=0;matched=.false.
+    call validate_checkpoint_bundle(trim(options%restore_directory),MPI_COMM_WORLD,ok)
+    call check(ok,'invalid preview checkpoint bundle')
+    ! Only read the control prefix. Production clocks, RNG and driver history stay untouched.
+    open(newunit=unit,file=trim(options%restore_directory)//'/control.bin',status='old', &
+      access='stream',form='unformatted',convert='little_endian',action='read',iostat=status)
+    call check(status==0,'open preview control metadata')
+    read(unit,iostat=status) magic,saved,identity%step,identity%time,identity%dt_used,identity%dt_next
+    close(unit,iostat=closed)
+    call check(status==0.and.closed==0.and. &
+      ((trim(flowtype)=='tgv'.and.magic=='ASTROC04').or.(trim(flowtype)=='bl'.and.magic=='ASTROC06')), &
+      'preview control prefix differs from the admitted source; adaptive/RNG restoration is not performed')
+    call get_command_argument(2,source,status=status)
+    call check(status==0,'preview input path unavailable')
+    call file_fingerprint(trim(source),bytes,crc,ok)
+    call check(ok.and.all(saved(3:4)==[bytes,crc]).and.saved(10)==1, &
+      'preview frozen input/backend mismatch')
+    call check(.not.statistics_active.or.btest(saved(12),0),'preview checkpoint lacks native statistics')
+    expected=identity
+    geometry_identity=checkpoint_state_identity(0_int64,0.d0,0.d0,1.d0)
+    call allocate_checkpoint_buffer([im,jm,km],hm,13,state_host_budget(),buffer,remaining,MPI_COMM_WORLD)
+    call checkpoint_state_transfer(trim(options%restore_directory)//'/../../resources/geometry.h5',.false.,.true., &
+      [ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],hm,buffer,geometry_identity,remaining,MPI_COMM_WORLD, &
+      allow_repartition=.false.,restored_exact=matched)
+    call check(matched.and.geometry_identity%step==0.and.geometry_identity%time==0.d0.and. &
+      geometry_identity%dt_used==0.d0.and.geometry_identity%dt_next==1.d0,'preview geometry identity mismatch')
+    call check(.not.allocated(jacob).and..not.allocated(dxi),'preview geometry was already initialized')
+    allocate(jacob(-hm:im+hm,-hm:jm+hm,-hm:km+hm), &
+      dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3),stat=status)
+    call check(status==0,'cannot allocate saved preview metrics')
+    x=buffer(:,:,:,1:3)
+    jacob=buffer(:,:,:,4)
+    m=4
+    do b=1,3
+      do a=1,3
+        m=m+1
+        dxi(:,:,:,a,b)=buffer(:,:,:,m)
+      enddo
+    enddo
+    deallocate(buffer)
+#ifdef _CUDA
+    call gpu_prepare_preview_geometry()
+    call checkpoint_perfect_gas_gpu(trim(options%restore_directory)//'/state.h5',.false., &
+      [ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],hm,identity,state_host_budget(),MPI_COMM_WORLD, &
+      allow_repartition=.false.,restored_exact=matched)
+#else
+    call check(.false.,'device preview requires a CUDA build')
+#endif
+    call check(matched.and.identity%step==expected%step.and.identity%time==expected%time.and. &
+      identity%dt_used==expected%dt_used.and.identity%dt_next==expected%dt_next,'preview flow/control clock mismatch')
+    call check(identity%step<=huge(nstep),'preview step exceeds solver integer range')
+    nstep=int(identity%step);time=identity%time;deltat=identity%dt_next
+#ifdef ASTR_WITH_CATALYST
+    call check(preview_source_set(trim(options%restore_directory)//c_null_char,identity%step,identity%time, &
+      [saved(1:4),saved(13:14)],int(MPI_COMM_WORLD,c_int))==0,'cannot register preview source identity')
+#endif
+    call begin_output_insitu()
+    if(statistics_active) call output_statistics_file(trim(options%restore_directory)//'/statistics.h5', &
+      .false.,identity,state_host_budget(),allow_repartition=.false.)
+    restore_seconds=MPI_Wtime()-restore_started
+    call MPI_Allreduce(restore_seconds,restore_max,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,status)
+    call check(status==MPI_SUCCESS,'preview restore timing consensus')
+    if(mpirank==0) then
+      write(*,'(a,es24.16)') 'ASTR_INSITU_PREVIEW_RESTORE seconds=',restore_max
+      write(*,'(a,i0,a,es24.16,a)') 'ASTR_INSITU_PREVIEW restored_step=',nstep,' time=',time,' advances=0'
+      write(*,'(a,2(z16.16,1x))') 'ASTR_INSITU_PREVIEW source_executable_bytes_crc=',saved(1:2)
+    endif
+  end subroutine
+
   logical function dynamic_output_case()
     dynamic_output_case=trim(flowtype)=='bl'.and.trim(turbinf)=='intp'
   end function

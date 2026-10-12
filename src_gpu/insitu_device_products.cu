@@ -464,12 +464,14 @@ try {
   const bool boundary_layer=selected=="boundary_layer";
   const bool m12_hd=selected=="m12_diagnostics";
   const viskores::Id3 global_dimensions(global_cells,global_y,global_z);
+  const bool preview_bl=selected=="streamlines" && astr_insitu::streamline_preview_active() &&
+    !astr_insitu::streamline_views().empty() && global_dimensions==viskores::Id3(450,130,96);
   const bool demo=selected=="tgv256_demo" || curve_demo || boundary_layer || m12_hd;
   if(selected!="all" && selected!="q_surface" && selected!="q_streamlines" &&
      selected!="streamlines" && selected!="velocity_slice" && !demo) throw std::invalid_argument("Unsupported device product profile");
-  if((boundary_layer || m12_hd)?((global_dimensions!=viskores::Id3(64,32,24) &&
-      !(m12_hd && global_dimensions==viskores::Id3(476,130,96))) || !curve || covered ||
-      seed_layout!=(m12_hd?"bl-layered256":"bl-layered64") || std::string(pipeline?pipeline:"")!="standard-device"):
+  if((boundary_layer || m12_hd || preview_bl)?((global_dimensions!=viskores::Id3(64,32,24) &&
+      !(m12_hd && global_dimensions==viskores::Id3(476,130,96)) && !preview_bl) || !curve || covered ||
+      (!preview_bl && seed_layout!=(m12_hd?"bl-layered256":"bl-layered64")) || std::string(pipeline?pipeline:"")!="standard-device"):
       (global_dimensions!=viskores::Id3(global_cells) ||
        (curve_demo?(global_cells!=32 && global_cells!=64 && global_cells!=128 && global_cells!=256):
         global_cells!=(demo?256:32))))
@@ -485,7 +487,7 @@ try {
   if(curve!=0 && curve!=1) throw std::invalid_argument("Invalid device coordinate mode");
   if(curve) {
     if((selected!="q_surface" && selected!="streamlines" && !curve_demo && !boundary_layer && !m12_hd) || !coordinates ||
-        (global_cells!=32 && !curve_demo && !boundary_layer && !m12_hd) ||
+        (global_cells!=32 && !curve_demo && !boundary_layer && !m12_hd && !preview_bl) ||
         ((selected=="q_surface" || curve_demo || boundary_layer || m12_hd) && covered) ||
         ((selected=="streamlines" || curve_demo || boundary_layer || m12_hd) && !coordinate_halo) ||
         std::string(pipeline?pipeline:"")=="compatible")
@@ -561,11 +563,11 @@ try {
         viskores::cont::ArrayHandle<viskores::Vec3f>{};
       const int trace_axis=curve?(ny<global_cells?1:(nz<global_cells?2:0)):0;
       const auto add_trace=[&](const char* name,const viskores::cont::ArrayHandle<viskores::Vec3f>& field,
-          bool constant,bool mean,const double* source) {
+          bool constant,bool mean,const double* source,const std::string& trace_seeds) {
         ProductStage phase("resident_streamlines_inclusive","ASTR_IS8_RESIDENT_STREAMLINES",fcomm,step);
         auto trace=astr_insitu::trace_tgv_device(field,actual,extent,offset,comm,host_budget,
           constant,constant?trace_axis:0,constant,mean,global_cells,true,curve?&physical:nullptr,physical_step_scale,
-          constant?"line16":seed_layout,global_dimensions);
+          constant?"line16":trace_seeds,global_dimensions);
         report_resident_trace(trace,name,rank,constant?trace_axis:0);
 #ifdef ASTR_BUILD_TESTING
         if(test_step_scale && rank==0) for(int i=0;i<trace.particles;++i) {
@@ -582,33 +584,99 @@ try {
           (trace.seed_layout=="bl-layered64"?2.:(trace.seed_layout=="bl-layered256"?3.:0.));
         mesh.controls["streamline_seed_count"]=trace.seed_count;
         mesh.controls["streamline_particle_count"]=trace.particles;
-        if(m12_hd) {
-          mesh.controls["streamline_step_limit"]=4096;
-          for(const auto& state:trace.final_state) {
-            const auto key=std::string("termination_")+(int(state[7])==astr_insitu::TraceSteps?"step_budget":
+        if(m12_hd || !astr_insitu::streamline_views().empty()) {
+          mesh.controls["streamline_step_limit"]=trace.seed_layout.rfind("bl-layered",0)==0?4096:100000;
+          const auto sites=astr_insitu::tgv_streamline_seeds(trace.seed_layout);
+          std::vector<double> layers;
+          for(const auto& site:sites) layers.push_back(site[1]);
+          std::sort(layers.begin(),layers.end());layers.erase(std::unique(layers.begin(),layers.end()),layers.end());
+          mesh.controls["termination_layer_count"]=layers.size();
+          for(std::size_t i=0;i<trace.final_state.size();++i) {
+            const auto& state=trace.final_state[i];
+            const auto reason=std::string(int(state[7])==astr_insitu::TraceSteps?"step_budget":
               (int(state[7])==astr_insitu::TraceLength?"arc_length":
                (int(state[7])==astr_insitu::Outside?"domain_exit":"sub_minimum_remaining")));
-            mesh.controls[key]+=1.;
+            mesh.controls["termination_"+reason]+=1.;
+            const auto layer=std::lower_bound(layers.begin(),layers.end(),sites[i%trace.seed_count][1])-layers.begin();
+            const auto direction=i<std::size_t(trace.seed_count)?"forward":"backward";
+            mesh.controls[std::string("termination_")+direction+"_"+reason]+=1.;
+            mesh.controls["termination_layer"+std::to_string(layer)+"_"+direction+"_"+reason]+=1.;
           }
-          for(const char* reason:{"step_budget","arc_length","domain_exit","sub_minimum_remaining"})
+          for(const char* reason:{"step_budget","arc_length","domain_exit","sub_minimum_remaining"}) {
             mesh.controls.emplace(std::string("termination_")+reason,0.);
+            for(const char* direction:{"forward","backward"}) {
+              mesh.controls.emplace(std::string("termination_")+direction+"_"+reason,0.);
+              for(std::size_t layer=0;layer<layers.size();++layer)
+                mesh.controls.emplace("termination_layer"+std::to_string(layer)+"_"+direction+"_"+reason,0.);
+            }
+          }
         }
-        meshes.push_back(std::move(mesh));
+        return mesh;
       };
-      if(instant) add_trace("instantaneous_streamlines",actual,false,false,halo);
+      const auto& candidates=astr_insitu::streamline_views();
+      if(!candidates.empty()) {
+        // One state/frame scopes the cache; display-only variants reuse its owner.
+        std::vector<bool> done(candidates.size(),false);
+        for(std::size_t i=0;i<candidates.size();++i) if(!done[i]) {
+          const auto& first=candidates[i];
+          const bool mean=first.velocity!="instantaneous";
+          const char* name=mean?(first.velocity=="reynolds"?"mean_reynolds_streamlines":"mean_favre_streamlines"):
+            "instantaneous_streamlines";
+          double* source=mean?(first.velocity=="reynolds"?reynolds_halo:favre_halo):halo;
+          if(mean && (!covered || !source)) throw std::invalid_argument("Preview mean coverage is unavailable");
+          auto field=mean?astr_insitu::pack_component_halo(source,halo_dimensions):actual;
+          auto mesh=add_trace(name,field,false,mean,source,first.seeds);
+          auto owner=std::static_pointer_cast<astr_insitu::DeviceGeometryOwner>(mesh.owner);
+          for(std::size_t j=i;j<candidates.size();++j) {
+            const auto& candidate=candidates[j];
+            if(candidate.velocity!=first.velocity || candidate.seeds!=first.seeds) continue;
+            done[j]=true;
+            const int component=candidate.color=="v"?1:(candidate.color=="w"?2:0);
+            mesh.draw.colors=reinterpret_cast<const unsigned char*>(owner->color_display(
+              astr_insitu::device_display_palette(),candidate.color=="speed",candidate.values[16],candidate.values[17],component,true));
+            const auto local_range=owner->color_range();
+            double actual_range[2];
+            astr_insitu::trace_mpi(MPI_Allreduce(&local_range[0],actual_range,1,MPI_DOUBLE,MPI_MIN,comm));
+            astr_insitu::trace_mpi(MPI_Allreduce(&local_range[1],actual_range+1,1,MPI_DOUBLE,MPI_MAX,comm));
+            const bool color_empty=!std::isfinite(actual_range[0]) || !std::isfinite(actual_range[1]);
+            mesh.controls["actual_color_empty"]=color_empty;
+            mesh.controls["actual_color_min"]=color_empty?0.:actual_range[0];
+            mesh.controls["actual_color_max"]=color_empty?0.:actual_range[1];
+            mesh.controls["trajectory_storage_id"]=reinterpret_cast<std::uintptr_t>(owner->get().coordinates);
+            mesh.controls["pv_candidate"]=j;
+            mesh.controls["statistics_duration"]=duration;
+            mesh.controls["statistics_window_start"]=window_start;
+            mesh.controls["statistics_window_end"]=window_end;
+            std::vector<astr_insitu::DeviceMesh> frame{mesh};
+            for(const char* other:{"instantaneous_streamlines","crossing_streamlines",
+                                  "mean_reynolds_streamlines","mean_favre_streamlines"})
+              if(std::string(other)!=name) {
+                auto empty=resident_mesh(other,viskores::cont::DataSet{},step,time,2);
+                empty.controls["pv_candidate"]=j;frame.push_back(std::move(empty));
+              }
+            const int status=astr_insitu::render_resident_products(pipeline,backend,script,fcomm,step,time,
+              profile,std::move(frame),covered);
+            if(status) return status;
+            std::printf("ASTR_INSITU_PREVIEW_CACHE rank=%d step=%d candidate=%s velocity=%s seeds=%s integrated=%d\n",
+              rank,step,candidate.id.c_str(),candidate.velocity.c_str(),candidate.seeds.c_str(),j==i);
+          }
+        }
+        return 0;
+      }
+      if(instant) meshes.push_back(add_trace("instantaneous_streamlines",actual,false,false,halo,seed_layout));
       if(crossing) {
       viskores::cont::ArrayHandle<viskores::Vec3f> constant;
       viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});
       ConstantVelocity constant_field;constant_field.axis=trace_axis;
       invoke(constant_field,viskores::cont::ArrayHandleIndex(actual.GetNumberOfValues()),constant);
       astr_insitu::synchronize_device_stage("ConstantVelocity");
-      add_trace("crossing_streamlines",constant,true,false,halo);
+      meshes.push_back(add_trace("crossing_streamlines",constant,true,false,halo,seed_layout));
       }
       if(reynolds || favre) {
         if(!reynolds_halo || !favre_halo || !std::isfinite(duration) || duration<=0.)
           throw std::invalid_argument("Resident mean products require authoritative coverage/halos");
-        if(reynolds) add_trace("mean_reynolds_streamlines",astr_insitu::pack_component_halo(reynolds_halo,halo_dimensions),false,true,reynolds_halo);
-        if(favre) add_trace("mean_favre_streamlines",astr_insitu::pack_component_halo(favre_halo,halo_dimensions),false,true,favre_halo);
+        if(reynolds) meshes.push_back(add_trace("mean_reynolds_streamlines",astr_insitu::pack_component_halo(reynolds_halo,halo_dimensions),false,true,reynolds_halo,seed_layout));
+        if(favre) meshes.push_back(add_trace("mean_favre_streamlines",astr_insitu::pack_component_halo(favre_halo,halo_dimensions),false,true,favre_halo,seed_layout));
       }
       if(curve) std::printf("ASTR_INSITU_CURVE_TRACE_FRAME rank=%d step=%d physical_coordinates=1 "
         "physical_hexahedral_interpolation=1 field_download_bytes=0 geometry_host_bytes=0\n",rank,step);
