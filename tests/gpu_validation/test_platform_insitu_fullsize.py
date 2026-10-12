@@ -151,3 +151,49 @@ def test_fullsize_configuration_keeps_optional_images_optional():
     assert 'product_steps=10,10,10' in gate.render_configuration(args)
     assert 'product_steps=1000000000,1000000000,1000000000' in gate.render_configuration(args, False)
     assert 'statistics=f' in gate.render_configuration(args)
+
+
+def test_slices_wall_configuration_excludes_volume_geometry():
+    args = SimpleNamespace(host_budget=32*gate.GIB, device_budget=80*gate.GIB,
+        reserve=0, library='/catalyst', m12_products='slices-wall')
+    config = gate.render_configuration(args)
+    assert "product_ids='velocity_slice.image'" in config
+    assert 'q_surface.image' not in config and 'instantaneous_streamlines.image' not in config
+    assert "product_modes='steps',product_steps=10" in config
+    assert 'product_steps=1000000000' in gate.render_configuration(args, False)
+
+
+def test_slices_wall_publication_does_not_require_disabled_products(tmp_path):
+    case = product_case(tmp_path)
+    directory = case/'outdat/render'
+    for name in ('q_surface', 'q_surface.local', 'instantaneous_streamlines'):
+        for path in directory.glob(name+'.step*'):
+            path.unlink()
+    for path in directory.glob('mesh_step*.json'):
+        receipt = json.loads(path.read_text())
+        for name in ('q_surface', 'q_surface.local', 'instantaneous_streamlines'):
+            del receipt['products'][name]
+        path.write_text(json.dumps(receipt))
+    assert gate.inspect_products(case, 10, 'slices-wall')['publication_complete']
+    assert not gate.inspect_products(case, 10)['publication_complete']
+
+
+def test_nscbc_preparation_changes_only_outlet_and_top(tmp_path, monkeypatch):
+    original = '# bctype\n11, prof\n21\n41, 10.d0\n50\n1\n1\n'
+    def prepare(source, case, backend, shape):
+        (case/'datin').mkdir(parents=True)
+        (case/'outdat').mkdir()
+        (case/'fixture.json').write_text('{}')
+        (case/'datin/input.dat').write_text(original)
+        (case/'datin/controller').write_text('# maxstep,feqchkpt\n9,1,9999,9999,1,9999\n')
+    monkeypatch.setattr(gate, 'prepare', prepare)
+    monkeypatch.setattr(gate, 'prepare_probe_map', lambda *args: None)
+    args = SimpleNamespace(source=tmp_path, host_budget=1, device_budget=1, reserve=0,
+        library='/lib', m12_boundary='nscbc', m12_products='slices-wall')
+    case = tmp_path/'nscbc'
+    gate.prepare_case(args, case, (64,32,24), 10, True)
+    assert (case/'datin/input.dat').read_text() == original.replace('\n21\n', '\n22,1.d0\n').replace('\n50\n', '\n52\n')
+    assert json.loads((case/'fixture.json').read_text())['boundary'] == 'nscbc'
+    env = gate.runtime_environment('device-aware', 'nscbc')
+    assert env['ASTR_NSCBC_FARFIELD_MODE'] == 'compatibility'
+    assert env['ASTR_GPU_HALO_TRANSPORT'] == 'device-aware'

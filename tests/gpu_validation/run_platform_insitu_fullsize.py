@@ -62,6 +62,11 @@ def publication_preflight(directory):
 
 def render_configuration(args, images=True):
     interval = 10 if images else 10**9
+    products = ['velocity_slice.image'] if getattr(args, 'm12_products', 'all') == 'slices-wall' else [
+        'q_surface.image', 'velocity_slice.image', 'instantaneous_streamlines.image']
+    product_ids = ','.join(repr(name) for name in products)
+    product_modes = ','.join("'steps'" for _ in products)
+    product_steps = ','.join(str(interval) for _ in products)
     return f"""&insitu_run
  enabled=t, statistics=f, render=t, initial_frame=f, final_frame=f,
  products='m12_diagnostics',streamline_seeds='bl-layered256',
@@ -69,20 +74,32 @@ def render_configuration(args, images=True):
  postprocess_transport='pinned',output_directory='outdat/render',
  host_budget_bytes={args.host_budget},device_budget_bytes={args.device_budget},device_reserve_bytes={args.reserve},
  implementation_path='{args.library}',pipeline_file='{ROOT}/scripts/insitu/device_render_pipeline.py',
- product_ids='q_surface.image','velocity_slice.image','instantaneous_streamlines.image',
- product_modes='steps','steps','steps',product_steps={interval},{interval},{interval}
+ product_ids={product_ids},
+ product_modes={product_modes},product_steps={product_steps}
 /
 """
 
 
 def prepare_case(args, case, shape, steps, images, checkpoint=False):
     prepare(args.source, case, 'gpu', shape)
+    boundary = getattr(args, 'm12_boundary', 'original')
+    if boundary == 'nscbc':
+        path = case/'datin/input.dat'
+        lines = path.read_text().splitlines()
+        first = next(i for i, line in enumerate(lines) if line.startswith('# bctype'))+1
+        lines[first+1] = '22,1.d0'
+        lines[first+3] = '52'
+        path.write_text('\n'.join(lines)+'\n')
     controller = case/'datin/controller'
     lines = controller.read_text().splitlines()
     replace_value(lines, 'maxstep,feqchkpt', f'{steps-1},1,999999,999999,1,999999')
     controller.write_text('\n'.join(lines)+'\n')
     fixture = json.loads((case/'fixture.json').read_text())
-    fixture.update(completed_steps=steps, topology=[4,1,1], images=images, checkpoint=checkpoint)
+    fixture.update(completed_steps=steps, topology=[4,1,1], images=images, checkpoint=checkpoint,
+        boundary=boundary, products=getattr(args, 'm12_products', 'all'))
+    if boundary == 'nscbc':
+        fixture['unchanged'] = [item for item in fixture.get('unchanged', []) if item != 'boundary types']
+        fixture['changes'] = fixture.get('changes', [])+['x+ bc22 and y+ bc52, validated compatibility mode']
     save(case/'fixture.json', fixture)
     (case/'outdat/render').mkdir()
     (case/'datin/input.insitu').write_text(render_configuration(args, images))
@@ -95,7 +112,7 @@ def prepare_case(args, case, shape, steps, images, checkpoint=False):
             f'&checkpoint\n enabled=t,mode=\'steps\',interval_steps={steps},keep=1,initial_frame=f'))
 
 
-def runtime_environment(solver_halo):
+def runtime_environment(solver_halo, boundary='original'):
     env = {key: value for key, value in os.environ.items() if not key.startswith('ASTR_')}
     env.update(ASTR_FORCE_MPI_TOPOLOGY='4,1,1', ASTR_WALL_BLOWING_MODE='legacy_random',
         ASTR_GPU_HALO_TRANSPORT=solver_halo, ASTR_GPU_SYNC_MODE='explicit', ASTR_GPU_PRECISION_MODE='fp64',
@@ -104,6 +121,8 @@ def runtime_environment(solver_halo):
         ASTR_INSITU_TIMING='1', ASTR_INSITU_CONFIG='datin/input.insitu',
         ASTR_INSITU_M12_W_COLOR_MAX='0.01', ASTR_INSITU_RESIDENT_AUDIT='1',
         OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1', MKL_NUM_THREADS='1')
+    if boundary == 'nscbc':
+        env['ASTR_NSCBC_FARFIELD_MODE'] = 'compatibility'
     for key in ('DISPLAY', 'VTK_EGL_DEVICE_INDEX', 'CATALYST_IMPLEMENTATION_PREFER_ENV'):
         env.pop(key, None)
     return env
@@ -176,11 +195,13 @@ def compact_diagnostics(case, shape, steps):
     return dict(probe_rows=len(probes), wall_steps=list(range(50, steps+1, 50)))
 
 
-def inspect_products(case, steps):
+def inspect_products(case, steps, profile='all'):
     directory = case/'outdat/render'
     required = {'q_surface', 'q_surface.local', 'instantaneous_streamlines', 'velocity_slice',
         'temperature_slice', 'spanwise_slice'} | {f'{field}.x{100*n}_{100*(n+1)}'
             for field in ('velocity_slice', 'temperature_slice') for n in range(3)}
+    if profile == 'slices-wall':
+        required -= {'q_surface', 'q_surface.local', 'instantaneous_streamlines'}
     warnings, frames = [], []
     for step in range(10, steps+1, 10):
         for rank in range(4):
@@ -224,7 +245,7 @@ def run_m12(args, label, shape, steps, images, baseline=None, checkpoint=False):
     case = args.output/label
     prepare_case(args, case, shape, steps, images, checkpoint)
     executable = args.diagnostic_executable if checkpoint else args.executable
-    env = runtime_environment(args.solver_halo)
+    env = runtime_environment(args.solver_halo, getattr(args, 'm12_boundary', 'original'))
     if args.component_only:
         # Shared allocation accounting uses MPI_Win_allocate_shared locally.
         env['OMPI_MCA_osc'] = 'sm'
@@ -233,6 +254,7 @@ def run_m12(args, label, shape, steps, images, baseline=None, checkpoint=False):
     command = [str(args.mpiexec), '--bind-to', 'none', '-np', '4', str(executable), 'run', 'datin/input.dat']
     receipt = dict(status='running', intervals=shape, topology=[4,1,1], steps=steps, dt=.02,
         images=images, checkpoint=checkpoint, command=command,
+        boundary=getattr(args, 'm12_boundary', 'original'), product_profile=getattr(args, 'm12_products', 'all'),
         executable_sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
         runtime={k:v for k,v in env.items() if k.startswith(('ASTR_', 'OMPI_MCA_', 'UCX_'))})
     save(case/'receipt.json', receipt)
@@ -272,7 +294,7 @@ def run_m12(args, label, shape, steps, images, baseline=None, checkpoint=False):
             postprocess_frame_downloads=0,
             caveat='input initialization and the small exact-state checkpoint are separate I/O; legacy crash repair, if invoked, is not a postprocessing transfer')
         if images:
-            receipt['products'] = inspect_products(case, steps)
+            receipt['products'] = inspect_products(case, steps, getattr(args, 'm12_products', 'all'))
             if not receipt['products']['publication_complete']:
                 receipt['status'] = 'completed-with-missing-products'
         elif list((case/'outdat/render').glob('*.jpeg')):
@@ -346,6 +368,8 @@ def main():
     parser.add_argument('--preflight-only', action='store_true')
     parser.add_argument('--component-only', action='store_true', help='local four-rank correctness; not four-GPU qualification')
     parser.add_argument('--solver-halo', choices=('device-aware','pinned'), default='device-aware')
+    parser.add_argument('--m12-products', choices=('all','slices-wall'), default='all')
+    parser.add_argument('--m12-boundary', choices=('original','nscbc'), default='original')
     parser.add_argument('--timeout', type=float, default=7*3600)
     parser.add_argument('--host-budget', type=int)
     parser.add_argument('--device-budget', type=int)
@@ -361,8 +385,9 @@ def main():
         parser.error('Device free-memory reserve must be nonnegative')
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=False)
-    report = dict(status='running', base_commit='2afcd49e403b6bd3abc21d325361dc63ea777db5',
-        source='base commit plus explicitly recorded four-GPU admission/test patch',
+    report = dict(status='running', base_commit=os.environ.get('ASTR_PLATFORM_SOURCE_COMMIT', 'unknown'),
+        source='tracked snapshot plus any explicitly recorded deployment patch',
+        boundary=args.m12_boundary, products=args.m12_products,
         scope='platform capability and short-window timing, not production physics',
         resource_limits=dict(host_extra_budget_bytes=args.host_budget,
             device_extra_budget_bytes=args.device_budget, device_reserve_bytes=args.reserve), tests={})
@@ -389,7 +414,8 @@ def main():
                 report['tests']['dependencies'] = dependency_gate(SimpleNamespace(output=args.output,
                     probe_directory=args.probe_directory, mpiexec=args.mpiexec, m12_topologies=['4,1,1'],
                     probe_timeout_seconds=1800))
-                report['tests']['tgv_means'] = tgv_means(args)
+                if args.m12_products == 'all':
+                    report['tests']['tgv_means'] = tgv_means(args)
             shape = (64,32,24)
             off, a = run_m12(args, 'small_off', shape, 10, False, checkpoint=True)
             on, b = run_m12(args, 'small_on', shape, 10, True, baseline=a['resources'], checkpoint=True)

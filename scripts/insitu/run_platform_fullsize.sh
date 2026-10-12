@@ -49,6 +49,8 @@ python3 -u "$ROOT/src/astr/tests/gpu_validation/run_platform_insitu_fullsize.py"
   --executable "$ROOT/build/astr-native/bin/astr" --diagnostic-executable "$ROOT/build/astr-debug/bin/astr" \
   --mpiexec "$MPI_ROOT/bin/mpiexec" --library "$PV/lib/catalyst" \
   --probe-directory "$ROOT/build/astr-debug/bin" \
+  --m12-products "${ASTR_PLATFORM_M12_PRODUCTS:-all}" \
+  --m12-boundary "${ASTR_PLATFORM_M12_BOUNDARY:-original}" \
   --device-budget "${ASTR_PLATFORM_INSITU_DEVICE_BUDGET_BYTES:-34359738368}" \
   --reserve "${ASTR_PLATFORM_INSITU_DEVICE_RESERVE_BYTES:-8589934592}"
 printf 'ASTR_PLATFORM_FULLSIZE_RUN=COMPLETED; inspect coverage/report.json for image completeness\n'
