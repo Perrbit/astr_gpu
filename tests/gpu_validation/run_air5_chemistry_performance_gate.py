@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import sys
 
@@ -31,6 +32,88 @@ def check_trace_metrics(metrics):
             metrics.transport_change >= 1e-12 and
             metrics.x_velocity_range >= 1. and metrics.y_velocity_range >= 1. and
             metrics.z_modulation >= 1.)
+
+
+def chemistry_failure_hook(executable, library):
+    symbol = 'chemistry_coupling_gpu_air5_chemistry_half_step_gpu_'
+    rows = [line.split() for line in subprocess.check_output(
+        ['nm', '-S', '--defined-only', str(executable)], text=True).splitlines()]
+    rows = [row for row in rows if len(row) == 4 and row[2] == 'T' and row[3] == symbol]
+    if len(rows) != 1:
+        raise ValueError('need the unique chemistry half-step symbol for targeted failure injection')
+    with executable.open('rb') as stream:
+        header = stream.read(18)
+    if header[:6] != b'\x7fELF\x02\x01':
+        raise ValueError('targeted failure injection requires a little-endian ELF64 executable')
+    kind = struct.unpack_from('<H', header, 16)[0]
+    if kind not in (2, 3):
+        raise ValueError('unsupported executable relocation type')
+    begin, length = (int(row, 16) for row in rows[0][:2])
+    return library.resolve(strict=True), begin, begin+length, kind == 3
+
+
+def report_diagnostic_gates(args):
+    from argparse import Namespace
+    from run_output_air5_restart_validation import launch, state_sanity
+    from run_output_restart_validation import compare_fields
+
+    root = args.output.resolve()
+    root.mkdir(parents=True, exist_ok=False)
+    fixture = Namespace(output=root, executable=args.executable.resolve(strict=True),
+        mpiexec=Path(shutil.which('mpiexec')).resolve(), case='sbli', reconstruction=3,
+        mean_statistics=False, sample_interval=2, mode='steps', initial_restart=False,
+        axis='x', filter_workspace='scalar', top_mode='characteristic', report_interval=4)
+    report = dict(status='running', checks=[], executable_sha256=hashlib.sha256(
+        fixture.executable.read_bytes()).hexdigest(), scope='new-output bounded AIR5 diagnostics only')
+    try:
+        for ranks in (1, 2):
+            common = dict(chemistry_diagnostics='report-steps')
+            continuous, _ = launch(fixture, 'gpu', ranks, 'continuous', 12, interval=12, **common)
+            first, _ = launch(fixture, 'gpu', ranks, 'first', 5, **common)
+            seed = first/'outdat/new/checkpoints/step000000000005'
+            with h5py.File(seed/'state.h5') as state:
+                nonzero_carry = sum(np.count_nonzero(state[f'q{m:04}'][:]) for m in range(12, 23))
+                if not nonzero_carry:
+                    raise ValueError('restart does not exercise nonzero compensation')
+            resumed, _ = launch(fixture, 'gpu', ranks, 'resumed', 12, restore=seed, interval=12,
+                                override=True, **common)
+            relative = Path('outdat/new/checkpoints/step000000000012/state.h5')
+            equal = compare_fields(continuous/relative, resumed/relative)
+            full = np.loadtxt(continuous/'flowstate.dat', skiprows=1, ndmin=2)
+            tail = np.loadtxt(resumed/'flowstate.dat', skiprows=1, ndmin=2)
+            if full[full[:, 0] >= 5].tobytes() != tail.tobytes():
+                raise ValueError('scalar statistics continuation differs')
+            entry = dict(ranks=ranks, exact_restart_datasets=equal, nonzero_carry=int(nonzero_carry),
+                         sanity=state_sanity(resumed/relative))
+            if ranks == 2:
+                packed, _ = launch(fixture, 'gpu', ranks, 'packed', 12, interval=12,
+                                   chemistry_reductions='packed', **common)
+                entry['packed_equal_datasets'] = compare_fields(continuous/relative, packed/relative)
+                if (continuous/'flowstate.dat').read_bytes() != (packed/'flowstate.dat').read_bytes():
+                    raise ValueError('packed scalar statistics differ')
+                if args.fault_library:
+                    # Reduction mode is part of the existing exact-restart contract.
+                    packed_first, _ = launch(fixture, 'gpu', 2, 'packed_first', 5,
+                        chemistry_reductions='packed', **common)
+                    packed_seed = packed_first/'outdat/new/checkpoints/step000000000005'
+                    failed, _ = launch(fixture, 'gpu', 2, 'nonreport_failure', 12, restore=packed_seed,
+                        override=True, chemistry_reductions='packed', air5_phase_timing=True,
+                        chemistry_failure_hook=chemistry_failure_hook(fixture.executable, args.fault_library),
+                        reject='air5 GPU chemistry half 1 failed, status=99', **common)
+                    text = (failed/'run.log').read_text()
+                    if ('AIR5_TEST_INJECT chemistry rank=1 count=1 status=99' not in text or
+                            'chem_failure_reduce' not in text or 'chem_boundary' in text or
+                            'chem_report_reduce' in text or 'transport_filter' in text):
+                        raise ValueError('nonreport failure escaped the chemistry success gate')
+                    entry['nonreport_failure'] = 'scalar status retained; no downstream boundary/transport/publication'
+            report['checks'].append(entry)
+        report['status'] = 'report-diagnostics-restart-gates-pass-not-physical-validation'
+    except BaseException as exc:
+        report.update(status='failed', error=str(exc))
+        raise
+    finally:
+        (root/'summary.json').write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')
+    print(json.dumps(report))
 
 
 def trace_restarts(args, root, reference):
@@ -200,4 +283,10 @@ if __name__ == '__main__':
                         help='reuse a completed reacting TGV GPU case for supplements only; skip the matrix')
     parser.add_argument('--reference-matrix', type=Path,
                         help='GPU-only rerun against immutable CPU/GPU snapshots when CPU and inputs are unchanged')
-    run(parser.parse_args())
+    parser.add_argument('--report-diagnostics', action='store_true',
+                        help='Current-output AIR5 NP1/2 restart and report/packed diagnostic gates')
+    args = parser.parse_args()
+    if args.report_diagnostics:
+        report_diagnostic_gates(args)
+    else:
+        run(args)

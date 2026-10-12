@@ -20,6 +20,7 @@ module chemistry_coupling_gpu
   integer(int64), device, save :: air5_chemistry_minimum_bits_d(3)
   integer(int64), device, save :: air5_chemistry_maximum_bits_d(2)
   logical, save :: performance_configured=.false.,reuse_primitives=.false.,packed_reductions=.false.
+  logical, save :: report_steps_only=.false.
 
   public :: air5_chemistry_half_step_gpu
 
@@ -29,7 +30,7 @@ contains
     use mpi
     use parallel, only: lio
     character(len=32) :: value
-    integer :: status,length,ierr,local(6),global(6),bad
+    integer :: status,length,ierr,local(8),global(8),bad
 
     if(performance_configured) return
     bad=0
@@ -51,16 +52,26 @@ contains
       case default; bad=1
       end select
     endif
-    local(1:3)=[merge(1,0,reuse_primitives),merge(1,0,packed_reductions),bad]
-    local(4:6)=-local(1:3)
-    call MPI_Allreduce(local,global,6,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call get_environment_variable('ASTR_AIR5_CHEMISTRY_DIAGNOSTICS',value,length,status)
+    if(status/=1) then
+      if(status/=0) bad=1
+      select case(trim(value))
+      case('every-step'); report_steps_only=.false.
+      case('report-steps'); report_steps_only=.true.
+      case default; bad=1
+      end select
+    endif
+    local(1:4)=[merge(1,0,reuse_primitives),merge(1,0,packed_reductions), &
+      merge(1,0,report_steps_only),bad]
+    local(5:8)=-local(1:4)
+    call MPI_Allreduce(local,global,8,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
     if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,status)
-    if(global(3)/=0 .or. any(global(1:2)/=-global(4:5))) then
+    if(global(4)/=0 .or. any(global(1:3)/=-global(5:7))) then
       if(lio) write(*,'(A)') 'invalid or rank-inconsistent AIR5 chemistry performance options'
       call MPI_Abort(MPI_COMM_WORLD,1,ierr)
     endif
-    if(lio) write(*,'(A,L1,A,L1)') 'AIR5_CHEMISTRY_OPTIONS reuse=',reuse_primitives, &
-      ' packed_reductions=',packed_reductions
+    if(lio) write(*,'(A,L1,A,L1,A,L1)') 'AIR5_CHEMISTRY_OPTIONS reuse=',reuse_primitives, &
+      ' packed_reductions=',packed_reductions,' report_steps_only=',report_steps_only
     performance_configured=.true.
   end subroutine configure_chemistry_performance
 
@@ -109,11 +120,12 @@ contains
   end subroutine record_air5_chemistry_diagnostics
 
   attributes(global) subroutine air5_chemistry_half_step_kernel(duration,source_mode,is,ie, &
-      js,je,ks,ke)
+      js,je,ks,ke,collect_diagnostics)
     use chemistry_compensation_gpu, only: air5_compensated_d,air5_carry_d
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,spc_d,tve_d
     real(real64), value :: duration
     integer, value :: source_mode,is,ie,js,je,ks,ke
+    logical, value :: collect_diagnostics
     real(real64), parameter :: rtol=1.0e-9_real64
     real(real64), parameter :: atol_factor=1.0e-13_real64
     integer, parameter :: max_attempts=200000
@@ -169,7 +181,7 @@ contains
     tmp_d(i,j,k)=temperature
     spc_d(i,j,k,:)=mass_fraction
     tve_d(i,j,k)=tv
-    call record_air5_chemistry_diagnostics(final_state,temperature,tv,accepted, &
+    if(collect_diagnostics) call record_air5_chemistry_diagnostics(final_state,temperature,tv,accepted, &
       rejected,rhs_evaluations,jacobian_evaluations)
   end subroutine air5_chemistry_half_step_kernel
 
@@ -180,6 +192,7 @@ contains
     use parallel, only: lio,mpiup,mpileft,mpirank
     use chemistry_hbl_boundary, only: air5_dynamic_top
     use gpu_check, only: sync_after_kernel
+    use gpu_phase_timing, only: begin_air5_phase,mark_air5_phase
     use halo_exchange_gpu, only: exchange_solution_halo_gpu
     use chemistry_flow_solver_gpu, only: launch_air5_interior_primitive_gpu, &
       launch_air5_face_primitives_gpu
@@ -196,25 +209,34 @@ contains
     real(real64) :: local_minimums(3),global_minimums(3)
     real(real64) :: local_maximums(2),global_maximums(2)
     real(real64) :: local_extrema(5),global_extrema(5)
+    real(real64) :: phase_started
+    logical :: report_step,collect_diagnostics
     type(dim3) :: block,grid
 
     if(duration<=0.0_real64) error stop 'air5 GPU chemistry half-step requires positive duration'
     if(half_index<1 .or. half_index>2) &
       error stop 'air5 GPU chemistry half-step index must be one or two'
+    phase_started=begin_air5_phase()
     call configure_air5_source_mode()
     call configure_chemistry_performance()
     call configure_air5_species_cache_gpu(air5_symmetric_species_convection())
     source_mode=air5_active_source_mode()
+    report_step=nstep==0
+    if(feqchkpt>0) report_step=report_step .or. mod(nstep,feqchkpt)==0
+    collect_diagnostics=.not.report_steps_only .or. report_step
     air5_chemistry_status_d=chemistry_status_ok
     air5_chemistry_failure_d=0
+    if(collect_diagnostics) then
     air5_chemistry_counts_d=0
     air5_chemistry_minimum_bits_d=transfer(huge(1.0_real64),0_int64)
     air5_chemistry_maximum_bits_d=transfer(0.0_real64,0_int64)
+    endif
     ntot=(ie-is+1)*(je-js+1)*(ke-ks+1)
     block=dim3(128,1,1)
     grid=dim3((ntot+block%x-1)/block%x,1,1)
+    call mark_air5_phase('chem_setup',phase_started,half_index)
     call air5_chemistry_half_step_kernel<<<grid,block>>>(duration,source_mode, &
-      is,ie,js,je,ks,ke)
+      is,ie,js,je,ks,ke,collect_diagnostics)
     call sync_after_kernel('air5_chemistry_half_step_kernel',.true.)
 
     if(air5_dynamic_top().and.mpiup==MPI_PROC_NULL) then
@@ -223,12 +245,13 @@ contains
       ntot=(im-first_i+1)*(ke-ks+1)
       grid=dim3((ntot+block%x-1)/block%x,1,1)
       call air5_chemistry_half_step_kernel<<<grid,block>>>(duration,source_mode, &
-        first_i,im,jm,jm,ks,ke)
+        first_i,im,jm,jm,ks,ke,collect_diagnostics)
       call sync_after_kernel('air5_chemistry_top_half_step_kernel',.true.)
     endif
 
+    call mark_air5_phase('chem_kernels',phase_started,half_index)
     local_status=air5_chemistry_status_d
-    if(packed_reductions) then
+    if(packed_reductions.and.collect_diagnostics) then
       local_counts=air5_chemistry_counts_d
       local_status_counts=[local_status,local_counts]
       call MPI_Allreduce(local_status_counts,global_status_counts,5,MPI_INTEGER,MPI_MAX, &
@@ -240,6 +263,7 @@ contains
         MPI_COMM_WORLD,ierr)
     endif
     if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,local_status)
+    call mark_air5_phase('chem_failure_reduce',phase_started,half_index)
     if(global_status/=chemistry_status_ok) then
       failure=air5_chemistry_failure_d
       if(failure(1)/=0) then
@@ -254,6 +278,7 @@ contains
       call MPI_Abort(MPI_COMM_WORLD,global_status,ierr)
     endif
 
+    if(collect_diagnostics) then
     minimum_bits=air5_chemistry_minimum_bits_d
     maximum_bits=air5_chemistry_maximum_bits_d
     local_minimums=transfer(minimum_bits,local_minimums)
@@ -277,22 +302,32 @@ contains
         MPI_COMM_WORLD,ierr)
       if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,local_status)
     endif
+    endif
 
+    call mark_air5_phase('chem_report_reduce',phase_started,half_index)
     if(half_index==1) then
       call apply_air5_postshock_boundary_gpu()
       call apply_air5_hbl_boundary_gpu()
+      call mark_air5_phase('chem_boundary',phase_started,half_index)
       call launch_air5_interior_primitive_gpu(chemistry_recovered=reuse_primitives)
+      call mark_air5_phase('chem_interior_primitives',phase_started,half_index)
       call exchange_solution_halo_gpu(.true.)
+      call mark_air5_phase('chem_solution_halo',phase_started,half_index)
       call launch_air5_face_primitives_gpu()
+      call mark_air5_phase('chem_face_primitives',phase_started,half_index)
     elseif(half_index==2) then
       call apply_air5_hbl_boundary_gpu()
+      call mark_air5_phase('chem_boundary',phase_started,half_index)
       call launch_air5_interior_primitive_gpu(chemistry_recovered=reuse_primitives)
+      call mark_air5_phase('chem_interior_primitives',phase_started,half_index)
       if(air5_compensated) then
         call exchange_solution_halo_gpu(.true.)
+        call mark_air5_phase('chem_solution_halo',phase_started,half_index)
         call launch_air5_face_primitives_gpu()
+        call mark_air5_phase('chem_face_primitives',phase_started,half_index)
       endif
     endif
-    if(lio .and. (nstep==0 .or. (feqchkpt>0 .and. mod(nstep,feqchkpt)==0))) then
+    if(lio .and. report_step) then
       write(*,'(A,I0,A,5(ES12.4,1X),A,4(I0,1X))') 'AIR5_CHEMISTRY half=', &
         half_index,' min_rhos/min_T/max_T/min_Tv/max_Tv=',global_minimums(1), &
         global_minimums(2),global_maximums(1),global_minimums(3), &

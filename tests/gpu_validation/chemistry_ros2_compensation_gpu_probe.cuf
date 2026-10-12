@@ -5,6 +5,27 @@ module compensation_probe_kernel
   use chemistry_source, only: air5_source_mode_coupled
   implicit none
 contains
+  attributes(global) subroutine advance_state_batch(input,output,counts,count,duration,source_mode)
+    integer, value :: count,source_mode
+    real(real64), value :: duration
+    real(real64), device, intent(in) :: input(17,count)
+    real(real64), device, intent(out) :: output(13,count)
+    integer, device, intent(out) :: counts(5,count)
+    real(real64) :: atol(6),correction(6)
+    integer :: index
+
+    index=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    if(index>count) return
+    atol(1:5)=1.0e-13_real64*input(1,index)
+    atol(6)=1.0e-13_real64*max(abs(input(11,index)),1.0_real64)
+    correction=input(12:17,index)
+    call air5_ros2_advance_gpu(input(1,index),input(2:4,index),input(5,index), &
+      input(6:11,index),duration,duration,1.0e-9_real64,atol,200000,output(1:6,index), &
+      output(13,index),counts(2,index),counts(3,index),counts(4,index),counts(5,index), &
+      counts(1,index),source_mode,correction)
+    output(7:12,index)=correction
+  end subroutine advance_state_batch
+
   attributes(global) subroutine advance_probe(rho,momentum,q5,initial,seed,atol, &
       duration,first_step,rtol,attempts,repeats,enabled,final,carry,metrics,counts,suggested)
     real(real64), value :: rho,q5,duration,first_step,rtol
@@ -73,6 +94,10 @@ program chemistry_ros2_compensation_gpu_probe
   repeats = 20000
   if (command_argument_count() > 0) then
     call get_command_argument(1,argument)
+    if(trim(argument)=='batch') then
+      call run_state_batch
+      stop
+    endif
     read(argument,*) repeats
     if (repeats < 1) error stop 'invalid repeats'
   end if
@@ -174,6 +199,40 @@ program chemistry_ros2_compensation_gpu_probe
     end do
   end do
 contains
+  subroutine run_state_batch
+    real(real64), allocatable :: input(:,:),output(:,:)
+    real(real64), allocatable, device :: input_d(:,:),output_d(:,:)
+    integer, allocatable :: counts(:,:)
+    integer, allocatable, device :: counts_d(:,:)
+    character(4096) :: input_path,output_path
+    integer :: count,source_mode,unit,index,ios
+    real(real64) :: duration
+
+    if(command_argument_count()/=3) error stop 'batch requires input and output paths'
+    call get_command_argument(2,input_path)
+    call get_command_argument(3,output_path)
+    open(newunit=unit,file=trim(input_path),status='old',action='read')
+    read(unit,*) count,duration,source_mode
+    if(count<1.or.count>10000.or.duration<=0.0_real64) error stop 'invalid bounded state batch'
+    allocate(input(17,count),output(13,count),counts(5,count))
+    read(unit,*) input
+    read(unit,*,iostat=ios)
+    if(ios/=-1) error stop 'extra or malformed batch input'
+    close(unit)
+    allocate(input_d(17,count),output_d(13,count),counts_d(5,count))
+    input_d=input
+    call advance_state_batch<<<(count+127)/128,128>>>(input_d,output_d,counts_d,count,duration,source_mode)
+    call sync_after_kernel('air5_compensated_state_batch',force_sync=.true.)
+    output=output_d
+    counts=counts_d
+    open(newunit=unit,file=trim(output_path),status='new',action='write')
+    do index=1,count
+      write(unit,'(6(I0,1X),13(ES25.17,1X))') index,counts(:,index),output(:,index)
+    enddo
+    close(unit)
+    if(any(counts(1,:)/=0)) error stop 'state batch chemistry failed; inspect output statuses'
+  end subroutine run_state_batch
+
   subroutine setup(t,tv0,mixed)
     real(real64), intent(in) :: t,tv0
     logical, intent(in) :: mixed

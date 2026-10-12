@@ -3,15 +3,53 @@ module gpu_phase_timing
   implicit none
   private
   public :: configure_gpu_phase_timing,begin_gpu_phase,end_gpu_phase
+  public :: begin_air5_phase,mark_air5_phase
 
   integer,parameter :: max_depth=8
   logical,save :: configured=.false.
   logical,save :: enabled=.false.
+  logical,save :: air5_configured=.false.,air5_enabled=.false.
   integer,save :: depth=0
   character(len=32),save :: labels(max_depth)
   real(8),save :: starts(max_depth)
 
 contains
+
+  real(8) function begin_air5_phase() result(started)
+    integer :: requested,lowest,highest,ierr,ignored
+
+    if(.not.air5_configured) then
+      requested=switch_choice('ASTR_AIR5_PHASE_TIMING')
+      call MPI_Allreduce(requested,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,ignored)
+      call MPI_Allreduce(requested,highest,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,ignored)
+      if(lowest<0 .or. lowest/=highest) then
+        print *, 'Invalid or inconsistent ASTR_AIR5_PHASE_TIMING'
+        call MPI_Abort(MPI_COMM_WORLD,1,ignored)
+      endif
+      air5_enabled=requested==1
+      air5_configured=.true.
+    endif
+    started=0.d0
+    if(air5_enabled) started=MPI_Wtime()
+  end function begin_air5_phase
+
+  subroutine mark_air5_phase(label,started,stage)
+    use commvar, only: nstep
+    use parallel, only: mpirank
+    character(len=*),intent(in) :: label
+    real(8),intent(inout) :: started
+    integer,intent(in) :: stage
+    real(8) :: finished
+
+    if(.not.air5_enabled) return
+    ! Attribute existing completion points without inserting new GPU fences.
+    finished=MPI_Wtime()
+    write(*,'(A,3(1X,I0),1X,A,1X,ES24.16E3)') &
+      'ASTR_AIR5_PHASE_TIMING',mpirank,nstep,stage,trim(label),finished-started
+    started=MPI_Wtime()
+  end subroutine mark_air5_phase
 
   integer function switch_choice(name)
     character(len=*),intent(in) :: name

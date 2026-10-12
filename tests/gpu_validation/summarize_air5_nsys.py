@@ -23,7 +23,20 @@ def duration(intervals):
     return sum(b-a for a, b in merged(intervals))
 
 
-def analyze(filename):
+def chemistry_cycle_window(entries, dynamic_top=False):
+    entries = sorted(entries, key=lambda row: row['start'])
+    if dynamic_top and len(entries) == 16:
+        # Current bounded fixture launches the interior followed by the smaller top face.
+        for interior, top in zip(entries[::2], entries[1::2]):
+            if interior['gridX'] <= top['gridX'] or interior['end'] > top['start']:
+                raise ValueError('ambiguous interior/top chemistry launches')
+        entries = entries[::2]
+    if len(entries) != 8:
+        raise ValueError('expected four full steps / eight interior chemistry launches per rank')
+    return entries[2]['start'], entries[6]['start']
+
+
+def analyze(filename, dynamic_top=False):
     db = sqlite3.connect(f'file:{filename.resolve()}?mode=ro', uri=True)
     db.row_factory = sqlite3.Row
     names = dict(db.execute('SELECT id,value FROM StringIds'))
@@ -39,11 +52,8 @@ def analyze(filename):
         # Nsight encodes process identity above the low 24 thread-id bits.
         pid = (tid >> 24) << 24
         own = [r for r in kernels if r['globalPid'] == pid]
-        chemical = sorted(r['start'] for r in own
-                          if 'air5_chemistry_half_step_kernel' in names[r['shortName']])
-        if len(chemical) != 8:
-            raise ValueError('expected four full steps / eight chemistry launches per rank')
-        start, end = chemical[2], chemical[6]
+        chemical = [r for r in own if 'air5_chemistry_half_step_kernel' in names[r['shortName']]]
+        start, end = chemistry_cycle_window(chemical, dynamic_top)
         inside = [r for r in own if start <= r['start'] < end]
         if any(r['end'] > end for r in inside):
             raise ValueError('kernel crosses the cycle boundary')
@@ -96,8 +106,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('sqlite', type=Path)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--dynamic-top', action='store_true', help='Allow the bounded interior/top launch pair')
     args = parser.parse_args()
-    report = analyze(args.sqlite)
+    report = analyze(args.sqlite, args.dynamic_top)
     args.output.write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')
     for rank, row in report['ranks'].items():
         print(rank, {k: v for k, v in row.items() if k.endswith('_seconds')})

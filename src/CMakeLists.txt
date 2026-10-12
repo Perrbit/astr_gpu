@@ -841,6 +841,9 @@ if(ASTR_WITH_CUDA)
 endif()
 
 if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
+  add_library(air5_packed_failure_inject SHARED EXCLUDE_FROM_ALL
+    ../tests/gpu_validation/air5_packed_failure_inject.c)
+  target_link_libraries(air5_packed_failure_inject PRIVATE MPI::MPI_C ${CMAKE_DL_LIBS})
   add_executable(air5_flux_gpu_probe EXCLUDE_FROM_ALL
     chemistry_air5_data.F90 chemistry_core.F90
     ../src_gpu/chemistry_core_gpu.cuf

@@ -1,6 +1,7 @@
 """Bounded completed-step AIR5 HBL/SBLI restart gate, not a physical benchmark."""
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -71,7 +72,8 @@ def state_sanity(path):
                                          "max_extended_relative_residual")}
 
 
-def prepare(case, backend, steps, incident=False, reconstruction=5, mean_statistics=False, sample_interval=2):
+def prepare(case, backend, steps, incident=False, reconstruction=5, mean_statistics=False, sample_interval=2,
+            report_interval=1):
     if case.exists():
         raise FileExistsError(case)
     inp = prepare_case(ROOT / "examples/Taylor_Green_Vortex_SI/datin", case,
@@ -88,7 +90,7 @@ def prepare(case, backend, steps, incident=False, reconstruction=5, mean_statist
     set_value(case / "datin/controller", "lwsequ,lwslic,lavg,lcracon",
               f"f,f,{'t' if mean_statistics else 'f'},f")
     set_value(case / "datin/controller", "maxstep,feqchkpt,feqwsequ,feqslice,feqlist,feqavg",
-              f"{steps-1},1,1000000,1000000,1,{sample_interval}")
+              f"{steps-1},{report_interval},1000000,1000000,1,{sample_interval}")
     model = Air5RadauReference(ROOT / "chemMech/air5_kimjo12.json")
     ys = np.array(REFERENCE_MASS_FRACTIONS)
     gas = float(ys @ model.gas_constant)
@@ -138,11 +140,13 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
            wall_samples=False, insitu_config=None, directory_budget_bytes=64*1024**2,
            device_sample_transport=None, postprocess_transport=None, checkpoint_enabled=True,
            insitu_timing=False, nsys_trace=False, monitor_resources=False, resource_baseline=None, pixel_audit=False,
-           wall_mean_oracle=False):
+           wall_mean_oracle=False, complete_step_timing=False, air5_phase_timing=False,
+           chemistry_diagnostics=None, chemistry_reductions=None, chemistry_failure_hook=None,
+           explicit_contract_defaults=False):
     case = args.output / f"{backend}_np{ranks}_{name}"
     tau = prepare(case, backend, steps, incident=args.case == "sbli", reconstruction=args.reconstruction,
                   mean_statistics=args.mean_statistics if statistics is None else statistics,
-                  sample_interval=args.sample_interval)
+                  sample_interval=args.sample_interval, report_interval=getattr(args, 'report_interval', 1))
     if fault == "statistics_activation":
         set_value(case / "datin/controller", "lwsequ,lwslic,lavg,lcracon",
                   f"f,f,{'f' if args.mean_statistics else 't'},f")
@@ -183,6 +187,10 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
     env = {k: v for k, v in os.environ.items() if not k.startswith("ASTR_")}
     topology = [1, 1, 1]
     topology["xyz".index(args.axis)] = ranks
+    if getattr(args, 'topology', None) is not None:
+        topology = list(args.topology)
+        if len(topology) != 3 or min(topology) < 1 or math.prod(topology) != ranks:
+            raise ValueError('AIR5 topology must contain three positive factors of NP')
     env.update(ASTR_OUTPUT_CONFIG="datin/input.output", ASTR_GPU_SYNC_MODE="explicit",
                ASTR_GPU_PRECISION_MODE="fp64", ASTR_GPU_FILTER_WORKSPACE=args.filter_workspace,
                ASTR_GPU_HALO_TRANSPORT="pinned", ASTR_FORCE_MPI_TOPOLOGY=",".join(map(str, topology)),
@@ -190,6 +198,18 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
                ASTR_AIR5_CONVECTION_LIMITER="symmetric_species", ASTR_AIR5_DIFFUSION_LIMITER="layered",
                ASTR_AIR5_TOP_MODE=args.top_mode, ASTR_AIR5_TOP_TAU=f"{tau:.17e}",
                ASTR_AIR5_TOP_GPU_VALIDATION="on", ASTR_AIR5_FILTER_VALIDATION="on")
+    if complete_step_timing:
+        env['ASTR_COMPLETE_STEP_TIMING'] = '1'
+    if air5_phase_timing:
+        env['ASTR_AIR5_PHASE_TIMING'] = '1'
+    if chemistry_diagnostics is not None:
+        if chemistry_diagnostics not in ('every-step', 'report-steps'):
+            raise ValueError('unknown AIR5 chemistry diagnostic schedule')
+        env['ASTR_AIR5_CHEMISTRY_DIAGNOSTICS'] = chemistry_diagnostics
+    if chemistry_reductions is not None:
+        if chemistry_reductions not in ('baseline', 'packed'):
+            raise ValueError('unknown AIR5 chemistry reduction mode')
+        env['ASTR_AIR5_CHEMISTRY_REDUCTIONS'] = chemistry_reductions
     if wall_samples:
         env['ASTR_INSITU_SAMPLE_PREFIX']='outdat/sample'
     if insitu_timing:
@@ -224,6 +244,10 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
             env.pop(key,None)
     if conservation:
         env["ASTR_AIR5_C4_CONSERVATION"] = "1"
+    if explicit_contract_defaults:
+        env.update(ASTR_AIR5_PRIMITIVE_REUSE='off', ASTR_AIR5_CHEMISTRY_REDUCTIONS='baseline',
+                   ASTR_AIR5_C4_CONSERVATION='on' if conservation else 'off')
+        env['ASTR_AIR5_TOP_TAU']=f'{tau:.17e}'.replace('e','d')
     if restore_probe:
         if restore is None:
             raise ValueError("restore probe requires a checkpoint")
@@ -250,6 +274,11 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
     elif fault == "top_mode":
         env["ASTR_AIR5_TOP_MODE"] = "prescribed" if args.top_mode == "characteristic" else "characteristic"
     solver_command = [str(args.executable), "run", "datin/input.air5_c4"]
+    if chemistry_failure_hook is not None:
+        library, begin, end, pie = chemistry_failure_hook
+        solver_command = ['env', f'LD_PRELOAD={Path(library).resolve(strict=True)}',
+            f'AIR5_TEST_HALF_BEGIN={begin:x}', f'AIR5_TEST_HALF_END={end:x}',
+            *(['AIR5_TEST_HALF_PIE=1'] if pie else []), *solver_command]
     if nsys_trace:
         profiler=shutil.which('nsys')
         if profiler is None or backend!='gpu' or memcheck or monitor_resources or reject or fault:
@@ -273,6 +302,10 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
                             if aware else []),
                           *solver_command]
     command = [str(args.mpiexec), "--mca", "coll_hcoll_enable", "0", "-np", str(ranks), *solver_command]
+    if complete_step_timing:
+        (case / 'timing_environment.json').write_text(json.dumps(dict(
+            command=command, environment={k: v for k, v in env.items()
+                if k.startswith(('ASTR_', 'OMPI_', 'UCX_'))}), indent=2) + '\n')
     with (case / "run.log").open("wb") as log:
         if monitor_resources:
             if backend!='gpu' or reject or fault or memcheck:

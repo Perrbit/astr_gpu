@@ -78,7 +78,22 @@ def test_reuse_is_single_call_and_failure_precedes_boundary():
     assert 'lo=max([is,js,ks],1); hi=min([ie,je,ke],[im-1,jm-1,km-1])' in solver
     half = coupling.split('  subroutine air5_chemistry_half_step_gpu(')[1]
     assert half.index('if(global_status/=chemistry_status_ok)') < half.index('if(half_index==1)')
-    assert 'any(global(1:2)/=-global(4:5))' in coupling
+    assert 'any(global(1:3)/=-global(5:7))' in coupling
+
+
+def test_report_schedule_keeps_failure_collective_and_dynamic_top_coverage():
+    coupling = (ROOT/'src_gpu/chemistry_coupling_gpu.cuf').read_text()
+    kernel = coupling.split('  attributes(global) subroutine air5_chemistry_half_step_kernel(')[1]
+    kernel = kernel.split('  end subroutine air5_chemistry_half_step_kernel')[0]
+    assert 'if(collect_diagnostics) call record_air5_chemistry_diagnostics' in kernel
+    half = coupling.split('  subroutine air5_chemistry_half_step_gpu(')[1]
+    assert 'is,ie,js,je,ks,ke,collect_diagnostics)' in half
+    assert 'first_i,im,jm,jm,ks,ke,collect_diagnostics)' in half
+    status = half.index('local_status=air5_chemistry_status_d')
+    report = half.index('if(collect_diagnostics) then', status)
+    assert status < half.index('if(global_status/=chemistry_status_ok)') < report
+    assert 'call MPI_Allreduce(local_status,global_status,1,MPI_INTEGER,MPI_MAX' in half[:report]
+    assert 'if(lio .and. report_step)' in half
 
 
 def test_prescribed_zero_is_allowed_but_negative_or_invalid_state_is_not():

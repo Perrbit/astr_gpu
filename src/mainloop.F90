@@ -136,7 +136,6 @@ module mainloop
       phase_started=insitu_clock()
       call time_integration_rk
       call report_insitu_timing('advance_inclusive',phase_started,nstep+1)
-      call end_complete_step_timing(nstep)
 #if defined(_CUDA) && defined(ASTR_BUILD_TESTING)
       call check_profile_device_sample_gpu()
 #endif
@@ -153,6 +152,8 @@ module mainloop
 #ifdef ASTR_AIR5_CHEMISTRY
       call writemon(time+completed_step_dt)
 #endif
+      ! Include completed-step scalar statistics, not subsequent field output.
+      call end_complete_step_timing(nstep)
 
       if(.not.use_gpu .and. nstep+1<=maxstep .and.                     &
          mod(nstep+1,feqchkpt)==0) call write_validation_rk_snapshot()
