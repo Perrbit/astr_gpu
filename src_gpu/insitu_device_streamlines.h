@@ -5,6 +5,7 @@
 #include "insitu_streamline_seeds.h"
 #include <nvtx3/nvToolsExt.h>
 #include "insitu_device_array.h"
+#include "insitu_device_geometry.h"
 #include "insitu_device_curve_trace.h"
 #include <viskores/cont/Algorithm.h>
 #include <viskores/cont/ArrayHandleIndex.h>
@@ -183,11 +184,11 @@ inline DeviceStreamlines trace_partition_device(
   if(global_dimensions==viskores::Id3(0)) global_dimensions=viskores::Id3(global_cells);
   if(boundary_layer && (!Physical || !resident || constant || sample_trace_vector ||
       (global_dimensions!=viskores::Id3(64,32,24) && global_dimensions!=viskores::Id3(450,130,96) &&
-       !(hd && global_dimensions==viskores::Id3(476,130,96)))))
+       !(hd && m12_hd_grid(global_dimensions)))))
     throw std::invalid_argument("Layered boundary-layer seeds require the approved physical short fixture");
   using State=RK45TraceWorklet::State;
   if(global_cells!=32 && global_cells!=256 && !(Physical && (global_cells==64 || global_cells==128 ||
-      (boundary_layer && global_cells==450) || (hd && global_cells==476))))
+      (boundary_layer && global_cells==450) || (hd && m12_hd_grid(global_dimensions)))))
     throw std::invalid_argument("Unsupported bounded TGV streamline resolution");
   const double pi=std::acos(-1.),h=2.*pi/global_cells;
   // Physical RK45 limits are fixed by the approved 32-cell reference scale.

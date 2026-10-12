@@ -19,6 +19,11 @@ using DeviceDiagnostics = viskores::Vec<double,14>;
 static_assert(sizeof(viskores::Vec3f)==3*sizeof(double), "IS8 requires FP64 coordinates/vectors");
 static_assert(sizeof(DeviceDiagnostics)==14*sizeof(double), "IS8 diagnostic layout must be interleaved FP64");
 
+inline bool m12_hd_grid(const viskores::Id3& dimensions) {
+  return dimensions==viskores::Id3(64,32,24) || dimensions==viskores::Id3(476,130,96) ||
+    dimensions==viskores::Id3(2250,260,480);
+}
+
 struct SelectQAndU : viskores::worklet::WorkletMapField {
   using ControlSignature=void(FieldIn,FieldIn,FieldOut,FieldOut);
   using ExecutionSignature=void(_1,_2,_3,_4);
@@ -362,8 +367,7 @@ inline DeviceGeometry extract_tgv_geometry(viskores::Vec3f* velocity_pointer,
     DeviceGeometryAudit* audit=nullptr,int global_cells=32,viskores::Vec3f* physical_pointer=nullptr,
     viskores::Id3 global_dimensions=viskores::Id3(0)) {
   if(global_dimensions==viskores::Id3(0)) global_dimensions=viskores::Id3(global_cells);
-  const bool m12_grid=physical_pointer && global_cells==476 &&
-    global_dimensions==viskores::Id3(476,130,96);
+  const bool m12_grid=physical_pointer && m12_hd_grid(global_dimensions) && global_cells==global_dimensions[0];
   if(global_cells!=32 && global_cells!=256 && !m12_grid &&
       !(physical_pointer && (global_cells==64 || global_cells==128)))
     throw std::invalid_argument("Unsupported bounded device geometry resolution");

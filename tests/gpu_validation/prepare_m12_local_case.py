@@ -12,6 +12,7 @@ import numpy as np
 
 
 REFINED_INTERVALS = (476, 130, 96)
+FULL_INTERVALS = (2250, 260, 480)
 
 
 def replace_value(lines, section, value):
@@ -32,7 +33,9 @@ def selected_nodes(grid, intervals=(64, 32, 24)):
     x = grid['x'][0, :]
     if x.shape != (2251,) or not np.all(np.diff(x) > 0):
         raise ValueError('unexpected source x coordinates')
-    if intervals == REFINED_INTERVALS:
+    if intervals == FULL_INTERVALS:
+        ix, iy = np.arange(2251), np.arange(261)
+    elif intervals == REFINED_INTERVALS:
         # Resolve the forcing band, then rejoin the unchanged downstream subset.
         strides = np.array([1]*25 + [2]*5 + [3]*5 + [4]*5 + [5]*436)
         ix = np.concatenate(([0], np.cumsum(strides)))
@@ -45,7 +48,7 @@ def selected_nodes(grid, intervals=(64, 32, 24)):
         ix = np.abs(x[:, None] - targets[None, :]).argmin(axis=0)
         iy = np.rint(np.linspace(0, 260, 33)).astype(int)
     else:
-        raise ValueError('M12 supports the interface, medium or locally refined grid')
+        raise ValueError('M12 supports the interface, medium, locally refined or original full grid')
     if np.unique(ix).size != intervals[0]+1 or np.unique(iy).size != intervals[1]+1:
         raise ValueError('subset must contain distinct original nodes')
     blow_x = x[ix]
@@ -73,7 +76,14 @@ def prepare(source, destination, backend, intervals=(64, 32, 24)):
     replace_value(input_lines, 'nondimen,diffterm',
                   't,t,f,f,f,f,f,f,' + ('t' if backend == 'gpu' else 'f'))
     controller = (datin / 'controller').read_text(encoding='ascii').splitlines()
-    replace_value(controller, 'lwsequ,lwslic', 'f,f,f,f')
+    if intervals == FULL_INTERVALS:
+        index = next(i for i, line in enumerate(controller) if '# lwsequ,lwslic' in line) + 1
+        while not controller[index].strip() or controller[index].lstrip().startswith('#'):
+            index += 1
+        repair = controller[index].split(',')[-1].strip()
+        replace_value(controller, 'lwsequ,lwslic', 'f,f,f,' + repair)
+    else:
+        replace_value(controller, 'lwsequ,lwslic', 'f,f,f,f')
     # ASTR's inclusive nstep loop advances from 0 through maxstep.
     replace_value(controller, 'maxstep,feqchkpt', '9,1,9999,9999,1,9999')
     destination.mkdir(parents=True)
@@ -107,21 +117,24 @@ def prepare(source, destination, backend, intervals=(64, 32, 24)):
         "&checkpoint\n enabled=f\n/\n&volume\n enabled=f\n/\n"
         "&slices\n enabled=f\n/\n", encoding='ascii')
     provenance = {
-        'purpose': 'local interface validation, not production DNS',
+        'purpose': 'bounded interface/scale validation, not production DNS',
         'intervals': list(intervals), 'completed_steps': 10, 'deltat': 0.02,
         'x_selection': (
+            'all original nodes, unchanged' if intervals == FULL_INTERVALS else
             'original indices 0..25; five strides each of 2,3,4; stride 5 from 70 to 2250'
             if intervals == REFINED_INTERVALS else
             'every fifth original node' if intervals[0] == 450 else
             'nearest original nodes to 65 uniformly spaced physical targets'),
-        'y_selection': ('every second original node' if intervals[1] == 130 else
+        'y_selection': ('all original nodes, unchanged' if intervals == FULL_INTERVALS else
+                        'every second original node' if intervals[1] == 130 else
                         '33 rounded uniformly spaced original node indices'),
         'x_indices': ix.tolist(), 'y_indices': iy.tolist(),
         'nonzero_blowing_x': xline[(xline > 20) & (xline < 60)].tolist(),
         'wall_rng_comparison': 'same algorithm and parameters; spatial draw mapping depends on mesh',
         'source_sha256': sources,
-        'changes': ['subset dimensions', 'runtime usegpu', 'LF input text',
+        'changes': [*(['subset dimensions'] if intervals != FULL_INTERVALS else []), 'runtime usegpu', 'LF input text',
                     'ten-step local limit and per-step reporting',
+                    'original crash repair preserved' if intervals == FULL_INTERVALS else
                     'crash repair disabled for first-failure gate',
                     'field and checkpoint output disabled'],
         'unchanged': ['743e MP-LD', '643e diffusion', 'RK3', 'physical parameters',

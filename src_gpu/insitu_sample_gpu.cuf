@@ -116,6 +116,7 @@ contains
     use insitu_device_velocity, only: begin_velocity_transport_gpu,snapshot_sample_velocity_gpu, &
       extend_sample_velocity_gpu,derive_sample_velocity_gpu
     use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported
+    use insitu_m12_gpu, only: m12_diagnostic_layout_supported
     character(*),intent(in) :: mode
     real(8),device,allocatable,intent(out) :: velocity(:,:),halo(:,:,:,:),derived(:,:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
@@ -137,8 +138,7 @@ contains
     profile_mp_ld=gpu_profile_mp_ld_flatplate_supported().and.all([ia,ja,ka]==[64,32,24])
     if(present(m12_diagnostics)) then
       if(m12_diagnostics) profile_mp_ld=gpu_profile_mp_ld_flatplate_supported().and. &
-        (all([ia,ja,ka]==[64,32,24]).or.all([ia,ja,ka]==[476,130,96])).and. &
-        ranks==2.and.all(sizes==[2,1,1])
+        m12_diagnostic_layout_supported()
     endif
     if(present(preview_flatplate)) then
       if(preview_flatplate) profile_mp_ld=gpu_profile_mp_ld_flatplate_supported().and. &

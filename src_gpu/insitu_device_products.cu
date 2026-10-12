@@ -470,7 +470,7 @@ try {
   if(selected!="all" && selected!="q_surface" && selected!="q_streamlines" &&
      selected!="streamlines" && selected!="velocity_slice" && !demo) throw std::invalid_argument("Unsupported device product profile");
   if((boundary_layer || m12_hd || preview_bl)?((global_dimensions!=viskores::Id3(64,32,24) &&
-      !(m12_hd && global_dimensions==viskores::Id3(476,130,96)) && !preview_bl) || !curve || covered ||
+      !(m12_hd && astr_insitu::m12_hd_grid(global_dimensions)) && !preview_bl) || !curve || covered ||
       (!preview_bl && seed_layout!=(m12_hd?"bl-layered256":"bl-layered64")) || std::string(pipeline?pipeline:"")!="standard-device"):
       (global_dimensions!=viskores::Id3(global_cells) ||
        (curve_demo?(global_cells!=32 && global_cells!=64 && global_cells!=128 && global_cells!=256):

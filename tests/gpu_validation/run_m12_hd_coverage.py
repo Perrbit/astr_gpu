@@ -13,7 +13,7 @@ import h5py
 import numpy as np
 from PIL import Image
 
-from prepare_m12_local_case import prepare, REFINED_INTERVALS, replace_value
+from prepare_m12_local_case import prepare, REFINED_INTERVALS, FULL_INTERVALS, replace_value
 from run_m12_boundary_compare import environment
 from insitu_cfl_gate import CflGate
 from insitu_resource_monitor import run_monitored
@@ -53,7 +53,8 @@ def prepare_probe_map(case, shape):
                 if ijk[2] == shape[2]:
                     raise ValueError('Probe maps to a periodic duplicate endpoint')
                 records.append(dict(id=len(records)+1, target=target, indices=ijk, actual=actual))
-    if shape == REFINED_INTERVALS and any(p['actual'][0] >= axes[0][-51] or p['actual'][1] >= axes[1][-21] for p in records):
+    if shape in (REFINED_INTERVALS, FULL_INTERVALS) and any(
+            p['actual'][0] >= axes[0][-51] or p['actual'][1] >= axes[1][-21] for p in records):
         raise ValueError('A probe lies inside the configured sponge')
     (case/'datin/insitu_probes.dat').write_text('ASTR_M12_PROBES_V1 72\n'+''.join(
         ' '.join(map(str, p['indices']+list(p['target'])+p['actual']))+'\n' for p in records))

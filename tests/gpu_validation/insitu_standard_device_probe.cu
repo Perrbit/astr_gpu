@@ -14,6 +14,7 @@
 #include <vtkOpenGLFramebufferObject.h>
 #include <vtkOpenGLPolyDataMapper.h>
 #include <vtkPointData.h>
+#include <vtkPlane.h>
 #include <vtkPoints.h>
 #include <vtkPolyData.h>
 #include <vtkProperty.h>
@@ -183,11 +184,12 @@ void probe_large_mesh(vtkEGLRenderWindow* window,vtkRenderer* renderer,int devic
 int main(int argc,char** argv) {
   try {
     if((argc!=2 && argc!=3) ||
-       (argc==3 && std::strcmp(argv[2],"--conduit") && std::strcmp(argv[2],"--direct") &&
+       (argc==3 && std::strcmp(argv[2],"--conduit") && std::strcmp(argv[2],"--conduit-clipped") && std::strcmp(argv[2],"--direct") &&
         std::strcmp(argv[2],"--large-growth") && std::strcmp(argv[2],"--large-fixed") &&
         std::strcmp(argv[2],"--direct-large-growth") && std::strcmp(argv[2],"--direct-large-fixed")))
-      throw std::invalid_argument("Usage: insitu_standard_device_probe CUDA_DEVICE [--conduit|--direct|--large-growth|--large-fixed|--direct-large-growth|--direct-large-fixed]");
-    const bool conduit=argc==3 && !std::strcmp(argv[2],"--conduit");
+      throw std::invalid_argument("Usage: insitu_standard_device_probe CUDA_DEVICE [--conduit|--conduit-clipped|--direct|--large-growth|--large-fixed|--direct-large-growth|--direct-large-fixed]");
+    const bool clipped=argc==3 && !std::strcmp(argv[2],"--conduit-clipped");
+    const bool conduit=clipped || (argc==3 && !std::strcmp(argv[2],"--conduit"));
     const bool direct=argc==3 && !std::strcmp(argv[2],"--direct");
     errno=0;
     char* end=nullptr;
@@ -280,6 +282,16 @@ int main(int argc,char** argv) {
     if(direct) mapper=vtkSmartPointer<astr_insitu::DirectDeviceMapper>::Take(astr_insitu::DirectDeviceMapper::New());
     else {mapper=vtkSmartPointer<vtkOpenGLPolyDataMapper>::New();mapper->SetInputData(mesh);}
     mapper->ScalarVisibilityOff();
+    if(clipped) {
+      for(int d=0;d<3;++d) for(int side=0;side<2;++side) {
+        vtkNew<vtkPlane> plane;
+        double origin[3]{},normal[3]{};
+        origin[d]=(side?1.:-1.)*(d==0?.5:1.);
+        normal[d]=side?-1.:1.;
+        plane->SetOrigin(origin);plane->SetNormal(normal);
+        mapper->AddClippingPlane(plane);
+      }
+    }
     vtkNew<vtkActor> actor;actor->SetMapper(mapper);actor->GetProperty()->LightingOff();
     renderer->AddActor(actor);
     auto camera=renderer->GetActiveCamera();
@@ -315,11 +327,13 @@ int main(int argc,char** argv) {
           std::to_string(at(1,1,1))+","+std::to_string(at(1,1,2)));
       for(int y=0;y<64;++y) for(int x=0;x<64;++x) {
         const double px=2.*(x+.5)/64.-1.,py=2.*(y+.5)/64.-1.;
-        const bool expected=py>=-.75 && py<=.75 && std::abs(px)<=.75-.5*(py+.75);
+        const bool expected=py>=-.75 && py<=.75 && std::abs(px)<=.75-.5*(py+.75) &&
+          (!clipped || std::abs(px)<=.5);
         const bool covered=at(x,y,0)||at(x,y,1)||at(x,y,2);
         if(covered!=expected) {
-          const double distance=std::min(std::abs(py+.75),
+          double distance=std::min(std::abs(py+.75),
             std::min(std::abs(px+.5*py-.375),std::abs(-px+.5*py-.375))/std::sqrt(1.25));
+          if(clipped) distance=std::min(distance,std::abs(std::abs(px)-.5));
           projection_error=std::max(projection_error,32.*distance);
         }
       }
@@ -332,8 +346,9 @@ int main(int argc,char** argv) {
     std::printf("ASTR_INSITU_STANDARD_DEVICE_PROBE {\"cuda_device\":%d,\"gl_cuda_device\":%d,"
       "\"uuid\":\"%s\",\"vtk\":\"%s\",\"frames\":3,\"geometry_host_bytes\":0,"
       "\"image_host_bytes\":49152,\"projection_max_pixels\":%.17g,\"host_access_refused\":true,"
-      "\"pixels_passed\":true,\"conduit\":%s,\"direct\":%s}\n",
-      device,gl_device,uuid,vtkVersion::GetVTKVersion(),projection_error,conduit?"true":"false",direct?"true":"false");
+      "\"pixels_passed\":true,\"conduit\":%s,\"direct\":%s,\"clipping_planes\":%d}\n",
+      device,gl_device,uuid,vtkVersion::GetVTKVersion(),projection_error,conduit?"true":"false",direct?"true":"false",
+      mapper->GetNumberOfClippingPlanes());
     return 0;
   } catch(const std::exception& error) {
     std::fprintf(stderr,"Standard device probe failed: %s\n",error.what());

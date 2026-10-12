@@ -6,22 +6,31 @@ module insitu_m12_gpu
   use checkpoint_state_io, only: checkpoint_state_require
   implicit none
   private
-  public :: sample_m12_completed_gpu,capture_m12_temperature_gpu
+  public :: sample_m12_completed_gpu,capture_m12_temperature_gpu,m12_diagnostic_layout_supported
   integer,parameter :: probes=72
   integer,device,allocatable,save :: indices_d(:,:)
   real(8),device,allocatable,save :: probe_d(:,:),blocks_d(:,:),summary_d(:),wall_d(:,:)
   integer,save :: local_indices(3,probes)=0,owners(probes)=0,last_step=-1
   logical,save :: initialized=.false.
 contains
+  logical function m12_diagnostic_layout_supported()
+    use commvar, only: ia,ja,ka
+    use parallel, only: isize,jsize,ksize,mpisize
+    m12_diagnostic_layout_supported= &
+      (all([ia,ja,ka]==[64,32,24]).and.(mpisize==2.or.mpisize==4).and. &
+       all([isize,jsize,ksize]==[mpisize,1,1])).or. &
+      (all([ia,ja,ka]==[476,130,96]).and.mpisize==2.and.all([isize,jsize,ksize]==[2,1,1])).or. &
+      (all([ia,ja,ka]==[2250,260,480]).and.mpisize==4.and.all([isize,jsize,ksize]==[4,1,1]))
+  end function
+
   subroutine initialize_m12()
     use commvar, only: im,jm,km,ia,ja,ka
     use parallel, only: ig0,jg0,kg0,mpirank,isize,jsize,ksize
     integer :: unit,status,closed,n,ijk(3),total(probes),ierr,nb
     real(8) :: target(3),actual(3)
     character(256) :: header
-    call checkpoint_state_require(all([isize,jsize,ksize]==[2,1,1]).and. &
-      (all([ia,ja,ka]==[476,130,96]).or.all([ia,ja,ka]==[64,32,24])), &
-      MPI_COMM_WORLD,'M12 HD requires the approved NP=2 x-slab grids')
+    call checkpoint_state_require(m12_diagnostic_layout_supported(), &
+      MPI_COMM_WORLD,'M12 HD requires an admitted x-slab grid and rank count')
     open(newunit=unit,file='datin/insitu_probes.dat',status='old',action='read',iostat=status)
     call checkpoint_state_require(status==0,MPI_COMM_WORLD,'missing M12 HD probe map')
     read(unit,'(a)',iostat=status) header

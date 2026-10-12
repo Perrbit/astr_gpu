@@ -67,7 +67,7 @@ module mainloop
     integer,dimension(8) :: value
     integer,allocatable :: idata(:,:)
     real(8) :: time_total,time_dowhile,time_per_loop,time_save
-    real(8) :: phase_started,window_started
+    real(8) :: phase_started,window_started,iteration_started
     !
     time_start=ptime()
     time_total  =0.d0
@@ -128,6 +128,7 @@ module mainloop
     window_started=insitu_clock()
     do while(nstep<=maxstep)
 
+      iteration_started=insitu_clock()
       call begin_complete_step_timing()
       call crashcheck
 
@@ -263,6 +264,7 @@ module mainloop
       phase_started=insitu_clock()
       call completed_output_runtime(completed_step_dt,loop_counter,rkfirst_pending)
       call report_insitu_timing('completed_output_inclusive',phase_started,nstep)
+      call report_insitu_timing('completed_step_inclusive',iteration_started,nstep)
       !
     enddo
     call report_insitu_timing('completed_window',window_started,nstep)

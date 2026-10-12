@@ -107,7 +107,7 @@ def dependency_gate(args):
         mappings.append(dict(ranks=ranks, actual=actual))
     graphics = []
     for ordinal in range(required):
-        log = execute([args.mpiexec, '-np', '1', probes / 'insitu_standard_device_probe', ordinal, '--conduit'],
+        log = execute([args.mpiexec, '-np', '1', probes / 'insitu_standard_device_probe', ordinal, '--conduit-clipped'],
                       args.output / f'graphics_device{ordinal}.log', timeout=timeout)
         rows = re.findall(r'ASTR_INSITU_STANDARD_DEVICE_PROBE (\{[^\n]+\})', log)
         if len(rows) != 1:
@@ -115,7 +115,7 @@ def dependency_gate(args):
         receipt = json.loads(rows[0])
         if receipt['cuda_device'] != ordinal or receipt['gl_cuda_device'] != ordinal or \
                 receipt['geometry_host_bytes'] != 0 or receipt['host_access_refused'] is not True or \
-                receipt['pixels_passed'] is not True or receipt['conduit'] is not True or \
+                receipt['pixels_passed'] is not True or receipt['conduit'] is not True or receipt.get('clipping_planes') != 6 or \
                 receipt['uuid'].removeprefix('GPU-') != expected[ordinal]['uuid']:
             raise ValueError('Device buffer rendering probe failed')
         graphics.append(receipt)

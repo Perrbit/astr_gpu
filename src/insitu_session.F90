@@ -22,7 +22,7 @@ module insitu_session
   use insitu_config_collective, only: read_insitu_options_collective
   use iso_c_binding, only: c_int,c_double,c_char,c_null_char,c_int64_t
 #ifdef _CUDA
-  use insitu_m12_gpu, only: sample_m12_completed_gpu
+  use insitu_m12_gpu, only: sample_m12_completed_gpu,m12_diagnostic_layout_supported
 #endif
   use ieee_arithmetic, only: ieee_is_finite
   implicit none
@@ -236,11 +236,17 @@ contains
   integer(c_int) function shared_device_fixture() result(allow)
     use commvar, only: ia,ja,ka
     use parallel, only: mpisize
+    integer(int64) :: device_limit,host_limit
     allow=0_c_int
-    if(options%products=='boundary_layer'.and.all([ia,ja,ka]==[64,32,24]).and.mpisize==4.and. &
+    device_limit=2147483648_int64; host_limit=4294967296_int64
+    if(options%products=='m12_diagnostics') then
+      device_limit=12884901888_int64; host_limit=17179869184_int64
+    endif
+    if((options%products=='boundary_layer'.or.options%products=='m12_diagnostics').and. &
+       all([ia,ja,ka]==[64,32,24]).and.mpisize==4.and. &
        options%processing_backend=='device'.and.options%rendering_pipeline=='standard-device'.and. &
-       options%postprocess_transport=='pinned'.and.options%device_budget_bytes<=2147483648_int64.and. &
-       options%host_budget_bytes<=4294967296_int64.and.options%device_reserve_bytes>=1073741824_int64) allow=1_c_int
+       options%postprocess_transport=='pinned'.and.options%device_budget_bytes<=device_limit.and. &
+       options%host_budget_bytes<=host_limit.and.options%device_reserve_bytes>=1073741824_int64) allow=1_c_int
   end function
 
   subroutine output_render_file(path,writing,identity,budget,override)
@@ -682,9 +688,8 @@ contains
                 .not.options%statistics,'M12 preview requires original NP=2 x, pinned standard-device and no means')
             elseif(device_m12_hd) then
               call require_sample(gpu_profile_mp_ld_flatplate_supported().and. &
-                (all([ia,ja,ka]==[64,32,24]).or.all([ia,ja,ka]==[476,130,96])).and. &
-                mpisize==2.and.all([isize,jsize,ksize]==[2,1,1]).and..not.options%statistics, &
-                'M12 HD requires the approved NP=2 x-slab diagnostic grids')
+                m12_diagnostic_layout_supported().and..not.options%statistics, &
+                'M12 HD requires an admitted x-slab diagnostic grid without volume statistics')
             else
               call require_sample(gpu_profile_mp_ld_flatplate_supported().and. &
                 all([ia,ja,ka]==[64,32,24]).and.mpisize<=4.and..not.options%statistics, &

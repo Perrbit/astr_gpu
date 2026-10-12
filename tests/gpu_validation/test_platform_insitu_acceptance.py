@@ -9,6 +9,40 @@ import pytest
 from PIL import Image
 
 import run_platform_insitu_acceptance as gate
+import check_platform_rendering_runtime as runtime
+
+
+def test_rendering_runtime_accepts_selected_library_symlink(tmp_path, monkeypatch):
+    expected = tmp_path/'overlay/lib.so.6.1'
+    expected.parent.mkdir()
+    expected.touch()
+    link = expected.with_name(runtime.SONAME)
+    link.symlink_to(expected.name)
+    monkeypatch.setattr(runtime.subprocess, 'run', lambda *a, **kw: SimpleNamespace(
+        stdout=f'\t{runtime.SONAME} => {link} (0x1234)\n', stderr=''))
+    assert runtime.check_library('/probe', expected) == expected
+
+
+def test_rendering_runtime_rejects_existing_but_wrong_library(tmp_path, monkeypatch):
+    expected = tmp_path/'overlay.so'
+    old = tmp_path/'old.so'
+    expected.touch()
+    old.touch()
+    monkeypatch.setattr(runtime.subprocess, 'run', lambda *a, **kw: SimpleNamespace(
+        stdout=f'\t{runtime.SONAME} => {old} (0x1234)\n', stderr=''))
+    with pytest.raises(ValueError, match='Wrong rendering library'):
+        runtime.check_library('/probe', expected)
+
+
+@pytest.mark.parametrize('listing', ['libother.so => /lib/libother.so (0x1234)\n',
+                                     'libother.so => not found\n', 'undefined symbol: example\n'])
+def test_rendering_runtime_rejects_missing_or_unresolved_library(tmp_path, monkeypatch, listing):
+    expected = tmp_path/'overlay.so'
+    expected.touch()
+    monkeypatch.setattr(runtime.subprocess, 'run', lambda *a, **kw: SimpleNamespace(
+        stdout=listing, stderr=''))
+    with pytest.raises(ValueError, match='Missing rendering|Unresolved runtime'):
+        runtime.check_library('/probe', expected)
 
 
 def arguments(tmp_path, topologies=('1,1,2',)):
@@ -20,7 +54,7 @@ def test_default_m12_topologies_use_x_slabs():
     assert gate.M12_TOPOLOGIES == ('2,1,1', '4,1,1')
 
 
-def probe_runner(monkeypatch, wrong_graphics=False, device_count=2):
+def probe_runner(monkeypatch, wrong_graphics=False, device_count=2, clipping_planes=6):
     devices = [dict(uuid=f'00000000-0000-0000-0000-{i+1:012d}', egl_index=i+3)
                for i in range(device_count)]
     mask = ','.join(str(4+2*i) for i in range(device_count))
@@ -37,11 +71,11 @@ def probe_runner(monkeypatch, wrong_graphics=False, device_count=2):
             ranks = int(command[command.index('-np')+1])
             return '\n'.join(f"MAPPING rank={r} egl={devices[r]['egl_index']} uuid={devices[r]['uuid']}"
                              for r in range(ranks))
-        if str(command[-1]) == '--conduit':
+        if str(command[-1]) == '--conduit-clipped':
             device = int(command[-2])
             receipt = dict(cuda_device=device, gl_cuda_device=1-device if wrong_graphics else device,
                 uuid=devices[device]['uuid'], geometry_host_bytes=0, host_access_refused=True,
-                pixels_passed=True, conduit=True)
+                pixels_passed=True, conduit=True, clipping_planes=clipping_planes)
             return 'ASTR_INSITU_STANDARD_DEVICE_PROBE '+json.dumps(receipt)
         return 'supported=1\nsupported=1\nCUDA-aware device-buffer exact tests passed'
 
@@ -61,6 +95,21 @@ def test_allocated_device_mask_is_not_replaced(tmp_path, monkeypatch):
 
 def test_wrong_graphics_device_stops_before_transport_and_flow(tmp_path, monkeypatch):
     commands = probe_runner(monkeypatch, wrong_graphics=True)
+    with pytest.raises(ValueError, match='Device buffer rendering probe failed'):
+        gate.dependency_gate(arguments(tmp_path))
+    assert len(commands) == 4
+
+
+def test_render_dependency_gate_requires_six_plane_clipping(tmp_path, monkeypatch):
+    commands = probe_runner(monkeypatch)
+    receipt = gate.dependency_gate(arguments(tmp_path))
+    assert all(row['clipping_planes'] == 6 for row in receipt['graphics'])
+    assert sum(str(command[-1]) == '--conduit-clipped' for command in commands) == 2
+
+
+@pytest.mark.parametrize('clipping_planes', [0, None])
+def test_old_render_dependency_fails_before_transport_and_flow(tmp_path, monkeypatch, clipping_planes):
+    commands = probe_runner(monkeypatch, clipping_planes=clipping_planes)
     with pytest.raises(ValueError, match='Device buffer rendering probe failed'):
         gate.dependency_gate(arguments(tmp_path))
     assert len(commands) == 4

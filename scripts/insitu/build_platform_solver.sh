@@ -52,6 +52,13 @@ if grep -E 'not found|undefined symbol' "$ROOT/logs/login-runtime-dependencies.t
   printf 'Unresolved login-node dependency\n' >&2
   exit 2
 fi
+if [[ -n "${ASTR_PLATFORM_RENDERING_LIBRARY:-}" ]]; then
+  python3 "$ROOT/src/astr/tests/gpu_validation/check_platform_rendering_runtime.py" \
+    --expected "$ASTR_PLATFORM_RENDERING_LIBRARY" \
+    "$ROOT/build/astr-debug/bin/astr" "$ROOT/build/astr-native/bin/astr" \
+    "$ROOT/build/astr-debug/bin/insitu_standard_device_probe" \
+    "$PV/lib/catalyst/libcatalyst-paraview.so"
+fi
 python3 "$ROOT/src/astr/tests/gpu_validation/run_checkpoint_publication_preflight.py" \
   --probe "$ROOT/build/astr-debug/bin/checkpoint_bundle_probe" --mpiexec "$MPI_ROOT/bin/mpiexec" \
   --directory "$ROOT/logs"

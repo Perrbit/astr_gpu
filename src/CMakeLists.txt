@@ -326,6 +326,10 @@ if(ASTR_WITH_CATALYST)
           CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
         target_include_directories(insitu_standard_device_probe PRIVATE ../src_gpu ${ASTR_EGL_INCLUDE_DIR})
         target_compile_options(insitu_standard_device_probe PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+          # Match the solver: allow an explicitly selected rendering library overlay.
+          target_link_options(insitu_standard_device_probe PRIVATE "LINKER:--enable-new-dtags")
+        endif()
         target_link_libraries(insitu_standard_device_probe PRIVATE VTK::RenderingOpenGL2
           VTK::AcceleratorsVTKmCore VTK::IOCatalystConduit catalyst::catalyst
           viskores::cont viskores::cuda ${CMAKE_DL_LIBS})
