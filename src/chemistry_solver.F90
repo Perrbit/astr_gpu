@@ -1687,6 +1687,8 @@ contains
 
   subroutine air5_chemistry_half_step(duration,half_index)
     use chemistry_compensation, only: air5_compensated,air5_carry
+    use chemistry_flow_runtime, only: air5_chemistry_rtol,air5_chemistry_atol_factor, &
+      air5_history_enabled,air5_step_history
     use mpi
     use commvar, only: is,ie,js,je,ks,ke,nstep,feqchkpt,im,jm,km
     use commarray, only: q
@@ -1694,12 +1696,11 @@ contains
     use chemistry_hbl_boundary, only: air5_dynamic_top
     real(real64), intent(in) :: duration
     integer, intent(in) :: half_index
-    real(real64), parameter :: rtol=1.0e-9_real64
-    real(real64), parameter :: atol_factor=1.0e-13_real64
     integer, parameter :: max_attempts=200000
     real(real64) :: state(6),final_state(6),atol(6),suggested_step,trial_carry(6)
     real(real64) :: local_q(air5_num_conservative),velocity(3),mass_fraction(air5_num_species)
     real(real64) :: density,temperature,tv,pressure
+    real(real64) :: trial_history
     real(real64) :: local_minimums(3),global_minimums(3)
     real(real64) :: local_maximums(2),global_maximums(2)
     integer :: i,j,k,status,global_status,ierr,source_mode
@@ -1732,21 +1733,38 @@ contains
         do i=ifirst,ilast
           density=q(i,j,k,air5_idx_density)
           state=q(i,j,k,air5_idx_species_first:air5_idx_ev)
-          atol(1:air5_num_species)=atol_factor*density
-          atol(6)=atol_factor*max(abs(state(6)),1.0_real64)
+          atol(1:air5_num_species)=air5_chemistry_atol_factor*density
+          atol(6)=air5_chemistry_atol_factor*max(abs(state(6)),1.0_real64)
+          if(air5_history_enabled) trial_history=air5_step_history(i,j,k)
           if(air5_compensated) then
             trial_carry=air5_carry(i,j,k,air5_idx_species_first:air5_idx_ev)
+            if(air5_history_enabled) then
+              call air5_ros2_advance(density, &
+                q(i,j,k,air5_idx_momentum_first:air5_idx_momentum_first+2), &
+                q(i,j,k,air5_idx_total_energy),state,duration,duration,air5_chemistry_rtol,atol, &
+                max_attempts,final_state,suggested_step,accepted,rejected, &
+                rhs_evaluations,jacobian_evaluations,status,source_mode,trial_carry,trial_history)
+            else
             call air5_ros2_advance(density, &
               q(i,j,k,air5_idx_momentum_first:air5_idx_momentum_first+2), &
-              q(i,j,k,air5_idx_total_energy),state,duration,duration,rtol,atol, &
+              q(i,j,k,air5_idx_total_energy),state,duration,duration,air5_chemistry_rtol,atol, &
               max_attempts,final_state,suggested_step,accepted,rejected, &
               rhs_evaluations,jacobian_evaluations,status,source_mode,trial_carry)
+            endif
+          else
+          if(air5_history_enabled) then
+            call air5_ros2_advance(density, &
+              q(i,j,k,air5_idx_momentum_first:air5_idx_momentum_first+2), &
+              q(i,j,k,air5_idx_total_energy),state,duration,duration,air5_chemistry_rtol,atol, &
+              max_attempts,final_state,suggested_step,accepted,rejected, &
+              rhs_evaluations,jacobian_evaluations,status,source_mode,step_history=trial_history)
           else
           call air5_ros2_advance(density, &
             q(i,j,k,air5_idx_momentum_first:air5_idx_momentum_first+2), &
-            q(i,j,k,air5_idx_total_energy),state,duration,duration,rtol,atol, &
+            q(i,j,k,air5_idx_total_energy),state,duration,duration,air5_chemistry_rtol,atol, &
             max_attempts,final_state,suggested_step,accepted,rejected, &
             rhs_evaluations,jacobian_evaluations,status,source_mode)
+          endif
           endif
           if(status/=chemistry_status_ok) then
             failed_index=[i,j,k]
@@ -1762,6 +1780,7 @@ contains
           endif
           q(i,j,k,air5_idx_species_first:air5_idx_ev)=final_state
           if(air5_compensated) air5_carry(i,j,k,air5_idx_species_first:air5_idx_ev)=trial_carry
+          if(air5_history_enabled) air5_step_history(i,j,k)=trial_history
           local_minimums=min(local_minimums, &
             [minval(final_state(1:air5_num_species)),temperature,tv])
           local_maximums=max(local_maximums,[temperature,tv])

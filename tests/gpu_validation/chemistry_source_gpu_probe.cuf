@@ -8,7 +8,7 @@ program chemistry_source_gpu_probe
     air5_species_gas_constant, air5_species_cv_tr
   use chemistry_source, only: air5_instantaneous_source_jacobian, air5_centered_difference_jacobian, &
     air5_source_mode_coupled, air5_source_mode_chemical, air5_source_mode_vt, air5_source_mode_frozen
-  use chemistry_source_gpu, only: launch_air5_source_batch_gpu
+  use chemistry_source_gpu, only: launch_air5_source_batch_gpu,set_air5_source_only_gpu
   implicit none
 
   integer, parameter :: base_cases = 6, valid_cases = 8, case_count = 21
@@ -45,6 +45,8 @@ program chemistry_source_gpu_probe
   integer :: status_one_ref, status_one_gpu
   real(real64) :: source_ratio, rate_ratio, jacobian_ratio, energy_ratio
   real(real64) :: q5_change
+  real(real64) :: pure_source(6,case_count),pure_ratio
+  integer :: pure_status(case_count)
   real(real64) :: numeric_jacobian(6,6), numeric_ratio
   integer :: case_index, mode_index, status_mismatches, setup_status
 
@@ -102,6 +104,7 @@ program chemistry_source_gpu_probe
   q5_change = 0.0_real64
   status_mismatches = 0
   numeric_ratio=0.0_real64
+  pure_ratio=0.0_real64
 
   do mode_index = 1, mode_count
     do case_index = 1, case_count
@@ -144,7 +147,20 @@ program chemistry_source_gpu_probe
       end if
     end do
     q5_change = max(q5_change,maxval(abs(q5_after-q5)))
+    call set_air5_source_only_gpu(.true.)
+    call launch_air5_source_batch_gpu(rho_d,momentum_d,q5_d,state_d, &
+      source_d,total_energy_d,jacobian_d,progress_d,status_d,case_count,modes(mode_index),source_only=.true.)
+    pure_source=source_d
+    pure_status=status_d
+    do case_index=1,case_count
+      if(pure_status(case_index)/=status_gpu(case_index)) error stop 'pure source changed physical failure status'
+      if(pure_status(case_index)/=chemistry_status_ok) cycle
+      call update_ratio(pure_source(:,case_index),source_gpu(:,case_index),pure_ratio)
+    enddo
+    call set_air5_source_only_gpu(.false.)
   end do
+  write(*,'(A,ES25.17)') 'SOURCE_ONLY_SOURCE_RATIO ',pure_ratio
+  if(pure_ratio>1.0_real64) error stop 'pure source exceeds existing source tolerance'
 
   call air5_instantaneous_source_jacobian(rho(4),momentum(:,4),q5(4),state(:,4), &
     source_one_ref,jacobian_one_ref,status_one_ref,air5_source_mode_coupled, &

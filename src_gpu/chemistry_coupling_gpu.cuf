@@ -8,8 +8,10 @@ module chemistry_coupling_gpu
     air5_idx_species_first,air5_idx_ev
   use chemistry_flow_state_gpu, only: air5_conservative_to_primitive_gpu,configure_air5_species_cache_gpu
   use chemistry_ros2_gpu, only: air5_ros2_advance_gpu
+  use chemistry_source_gpu, only: set_air5_source_only_gpu
   use chemistry_flow_runtime, only: configure_air5_source_mode,air5_active_source_mode, &
-    air5_symmetric_species_convection
+    air5_symmetric_species_convection,air5_chemistry_rtol,air5_chemistry_atol_factor, &
+    air5_history_enabled,air5_step_history
   implicit none
   private
 
@@ -21,16 +23,37 @@ module chemistry_coupling_gpu
   integer(int64), device, save :: air5_chemistry_maximum_bits_d(2)
   logical, save :: performance_configured=.false.,reuse_primitives=.false.,packed_reductions=.false.
   logical, save :: report_steps_only=.false.
+  logical, save :: source_only=.false.
+  integer, save :: chemistry_block_size=128
+  real(real64), device, save :: chemistry_rtol_d,chemistry_atol_factor_d
+  logical, device, save :: history_enabled_d
+  real(real64), device, allocatable, save, public :: air5_step_history_d(:,:,:)
 
   public :: air5_chemistry_half_step_gpu
+  public :: init_air5_integration_control_gpu,release_air5_integration_control_gpu
 
 contains
+
+  subroutine init_air5_integration_control_gpu()
+    use commvar, only: im,jm,km
+    chemistry_rtol_d=air5_chemistry_rtol
+    chemistry_atol_factor_d=air5_chemistry_atol_factor
+    history_enabled_d=air5_history_enabled
+    if(air5_history_enabled) then
+      allocate(air5_step_history_d(0:im,0:jm,0:km))
+      air5_step_history_d=air5_step_history
+    endif
+  end subroutine init_air5_integration_control_gpu
+
+  subroutine release_air5_integration_control_gpu()
+    if(allocated(air5_step_history_d)) deallocate(air5_step_history_d)
+  end subroutine release_air5_integration_control_gpu
 
   subroutine configure_chemistry_performance()
     use mpi
     use parallel, only: lio
     character(len=32) :: value
-    integer :: status,length,ierr,local(8),global(8),bad
+    integer :: status,length,ierr,local(12),global(12),bad
 
     if(performance_configured) return
     bad=0
@@ -61,17 +84,37 @@ contains
       case default; bad=1
       end select
     endif
-    local(1:4)=[merge(1,0,reuse_primitives),merge(1,0,packed_reductions), &
-      merge(1,0,report_steps_only),bad]
-    local(5:8)=-local(1:4)
-    call MPI_Allreduce(local,global,8,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call get_environment_variable('ASTR_AIR5_SOURCE_EVALUATION',value,length,status)
+    if(status/=1) then
+      if(status/=0) bad=1
+      select case(trim(value))
+      case('joint'); source_only=.false.
+      case('source-only'); source_only=.true.
+      case default; bad=1
+      end select
+    endif
+    call get_environment_variable('ASTR_AIR5_CHEMISTRY_BLOCK_SIZE',value,length,status)
+    if(status/=1) then
+      if(status/=0) bad=1
+      select case(trim(value))
+      case('128'); chemistry_block_size=128
+      case('32'); chemistry_block_size=32
+      case default; bad=1
+      end select
+    endif
+    local(1:6)=[merge(1,0,reuse_primitives),merge(1,0,packed_reductions), &
+      merge(1,0,report_steps_only),merge(1,0,source_only),chemistry_block_size,bad]
+    local(7:12)=-local(1:6)
+    call MPI_Allreduce(local,global,12,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
     if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,status)
-    if(global(4)/=0 .or. any(global(1:3)/=-global(5:7))) then
+    if(global(6)/=0 .or. any(global(1:5)/=-global(7:11))) then
       if(lio) write(*,'(A)') 'invalid or rank-inconsistent AIR5 chemistry performance options'
       call MPI_Abort(MPI_COMM_WORLD,1,ierr)
     endif
-    if(lio) write(*,'(A,L1,A,L1,A,L1)') 'AIR5_CHEMISTRY_OPTIONS reuse=',reuse_primitives, &
-      ' packed_reductions=',packed_reductions,' report_steps_only=',report_steps_only
+    call set_air5_source_only_gpu(source_only)
+    if(lio) write(*,'(A,L1,A,L1,A,L1,A,L1,A,I0)') 'AIR5_CHEMISTRY_OPTIONS reuse=',reuse_primitives, &
+      ' packed_reductions=',packed_reductions,' report_steps_only=',report_steps_only, &
+      ' source_only=',source_only,' block_size=',chemistry_block_size
     performance_configured=.true.
   end subroutine configure_chemistry_performance
 
@@ -126,15 +169,13 @@ contains
     real(real64), value :: duration
     integer, value :: source_mode,is,ie,js,je,ks,ke
     logical, value :: collect_diagnostics
-    real(real64), parameter :: rtol=1.0e-9_real64
-    real(real64), parameter :: atol_factor=1.0e-13_real64
     integer, parameter :: max_attempts=200000
     integer :: id,nx,ny,ntot,i,j,k,status
     integer :: accepted,rejected,rhs_evaluations,jacobian_evaluations
     real(real64) :: density,momentum(3),state(6),final_state(6),atol(6),suggested_step
     real(real64) :: local_q(air5_num_conservative),velocity(3)
     real(real64) :: mass_fraction(air5_num_species),temperature,tv,pressure
-    real(real64) :: trial_carry(6)
+    real(real64) :: trial_carry(6),trial_history
 
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     nx=ie-is+1
@@ -147,17 +188,30 @@ contains
     density=q_d(i,j,k,air5_idx_density)
     momentum=q_d(i,j,k,air5_idx_momentum_first:air5_idx_momentum_last)
     state=q_d(i,j,k,air5_idx_species_first:air5_idx_ev)
-    atol(1:air5_num_species)=atol_factor*density
-    atol(6)=atol_factor*max(abs(state(6)),1.0_real64)
+    atol(1:air5_num_species)=chemistry_atol_factor_d*density
+    atol(6)=chemistry_atol_factor_d*max(abs(state(6)),1.0_real64)
+    if(history_enabled_d) trial_history=air5_step_history_d(i,j,k)
     if(air5_compensated_d) then
       trial_carry=air5_carry_d(i,j,k,air5_idx_species_first:air5_idx_ev)
+      if(history_enabled_d) then
+        call air5_ros2_advance_gpu(density,momentum,q_d(i,j,k,air5_idx_total_energy), &
+          state,duration,duration,chemistry_rtol_d,atol,max_attempts,final_state,suggested_step, &
+          accepted,rejected,rhs_evaluations,jacobian_evaluations,status,source_mode,trial_carry,trial_history)
+      else
       call air5_ros2_advance_gpu(density,momentum,q_d(i,j,k,air5_idx_total_energy), &
-        state,duration,duration,rtol,atol,max_attempts,final_state,suggested_step, &
+        state,duration,duration,chemistry_rtol_d,atol,max_attempts,final_state,suggested_step, &
         accepted,rejected,rhs_evaluations,jacobian_evaluations,status,source_mode,trial_carry)
+      endif
+    else
+    if(history_enabled_d) then
+      call air5_ros2_advance_gpu(density,momentum,q_d(i,j,k,air5_idx_total_energy), &
+        state,duration,duration,chemistry_rtol_d,atol,max_attempts,final_state,suggested_step, &
+        accepted,rejected,rhs_evaluations,jacobian_evaluations,status,source_mode,step_history=trial_history)
     else
     call air5_ros2_advance_gpu(density,momentum,q_d(i,j,k,air5_idx_total_energy), &
-      state,duration,duration,rtol,atol,max_attempts,final_state,suggested_step, &
+      state,duration,duration,chemistry_rtol_d,atol,max_attempts,final_state,suggested_step, &
       accepted,rejected,rhs_evaluations,jacobian_evaluations,status,source_mode)
+    endif
     endif
     if(status/=chemistry_status_ok) then
       call record_air5_chemistry_failure(i,j,k,status,1)
@@ -175,6 +229,7 @@ contains
     endif
     q_d(i,j,k,air5_idx_species_first:air5_idx_ev)=final_state
     if(air5_compensated_d) air5_carry_d(i,j,k,air5_idx_species_first:air5_idx_ev)=trial_carry
+    if(history_enabled_d) air5_step_history_d(i,j,k)=trial_history
     rho_d(i,j,k)=density
     vel_d(i,j,k,:)=velocity
     prs_d(i,j,k)=pressure
@@ -232,7 +287,7 @@ contains
     air5_chemistry_maximum_bits_d=transfer(0.0_real64,0_int64)
     endif
     ntot=(ie-is+1)*(je-js+1)*(ke-ks+1)
-    block=dim3(128,1,1)
+    block=dim3(chemistry_block_size,1,1)
     grid=dim3((ntot+block%x-1)/block%x,1,1)
     call mark_air5_phase('chem_setup',phase_started,half_index)
     call air5_chemistry_half_step_kernel<<<grid,block>>>(duration,source_mode, &

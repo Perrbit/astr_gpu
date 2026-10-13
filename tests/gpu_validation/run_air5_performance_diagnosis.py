@@ -127,7 +127,8 @@ def run(args):
         timing_scope='crashcheck + chemistry/transport/chemistry + completed-step scalar monitor; startup and field I/O excluded',
         primary_metric='max over ranks of measured-window cumulative seconds / measured steps',
         report_interval=args.report_interval, profiled=args.nsys, phase_timing=args.phase_timing,
-        chemistry_diagnostics=args.chemistry_diagnostics, axis=args.axis,
+        chemistry_diagnostics=args.chemistry_diagnostics, source_evaluation=args.source_evaluation,
+        chemistry_block_size=args.chemistry_block_size, axis=args.axis,
         topology=list(args.topology) if args.topology else None,
         top_mode=args.top_mode, filter_workspace=args.filter_workspace)
     try:
@@ -228,6 +229,8 @@ if __name__ == '__main__':
     parser.add_argument('--filter-workspace', choices=('scalar', 'full'), default='scalar')
     parser.add_argument('--report-interval', type=int, default=4)
     parser.add_argument('--chemistry-diagnostics', choices=('every-step', 'report-steps'), default='every-step')
+    parser.add_argument('--source-evaluation', choices=('joint', 'source-only'), default='joint')
+    parser.add_argument('--chemistry-block-size', type=int, choices=(32, 128), default=128)
     parser.add_argument('--repeats', type=int, default=3)
     parser.add_argument('--warmup', type=int, default=1)
     parser.add_argument('--steps', type=int, default=3)

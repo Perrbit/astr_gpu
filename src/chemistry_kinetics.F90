@@ -714,7 +714,7 @@ contains
   pure subroutine air5_ros2_advance(rho, momentum, q5, state, duration, &
       initial_step, rtol, atol, max_attempts, final_state, suggested_step, &
       accepted_steps, rejected_steps, rhs_evaluations, jacobian_evaluations, status, &
-      source_mode, compensation)
+      source_mode, compensation, step_history)
     real(real64), intent(in) :: rho, momentum(3), q5, state(6), duration
     real(real64), intent(in) :: initial_step, rtol, atol(6)
     integer, intent(in) :: max_attempts
@@ -723,12 +723,13 @@ contains
     integer, intent(out) :: rhs_evaluations, jacobian_evaluations, status
     integer, intent(in), optional :: source_mode
     real(real64), intent(inout), optional :: compensation(6)
+    real(real64), intent(inout), optional :: step_history
     real(real64) :: current_carry(6), trial_carry(6)
     real(real64), parameter :: safety = 0.9_real64
     real(real64), parameter :: minimum_factor = 0.2_real64
     real(real64), parameter :: maximum_factor = 5.0_real64
     real(real64) :: current(6), candidate(6), error_estimate(6)
-    real(real64) :: elapsed, step, remaining, error_norm, factor
+    real(real64) :: elapsed, step, remaining, error_norm, factor, unclipped_step
     integer :: attempt, attempt_rhs, attempt_jac, attempt_status, active_mode
     logical :: retryable, previous_rejected
 
@@ -752,6 +753,16 @@ contains
     if (duration <= 0.0_real64 .or. initial_step <= 0.0_real64) then
       status = chemistry_status_invalid_timestep
       return
+    end if
+    if (present(step_history)) then
+      if (.not.ieee_is_finite(step_history)) then
+        status = chemistry_status_invalid_timestep
+        return
+      end if
+      if (step_history < 0.0_real64) then
+        status = chemistry_status_invalid_timestep
+        return
+      end if
     end if
     if (.not. ieee_is_finite(rtol)) then
       status = chemistry_status_invalid_tolerance
@@ -782,15 +793,21 @@ contains
     ! A zero RHS through compensated additions can still consume saved carry.
     if (active_mode == air5_source_mode_frozen) then
       suggested_step = duration
+      if (present(step_history)) step_history = duration
       return
     end if
 
     current = state
     elapsed = 0.0_real64
     step = min(initial_step,duration)
+    if (present(step_history)) then
+      ! Zero denotes first use; accepted history is only a starting suggestion.
+      if (step_history > 0.0_real64) step = min(step_history,duration)
+    end if
     previous_rejected = .false.
     do attempt = 1, max_attempts
       remaining = duration-elapsed
+      unclipped_step = step
       step = min(step,remaining)
       if (step <= 0.0_real64 .or. elapsed+step == elapsed) then
         final_state = state
@@ -830,10 +847,16 @@ contains
             final_state = current
             ! Commit caller-owned low bits only when the whole interval succeeds.
             if (present(compensation)) compensation = current_carry
+            if (present(step_history)) then
+              ! A short final remainder is not a stiffness estimate for the next call.
+              step_history = min(suggested_step,duration)
+              if (step < unclipped_step) step_history = min(unclipped_step,duration)
+            end if
             status = chemistry_status_ok
             return
           end if
           step = min(suggested_step,duration-elapsed)
+          if (present(step_history)) step = suggested_step
           cycle
         end if
         if (ieee_is_finite(error_norm)) then

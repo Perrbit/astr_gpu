@@ -138,7 +138,7 @@ contains
 
   subroutine checkpoint_air5_state(path,writing,global_shape,origin,cells,halo, &
                                   q,carry,compensated,rho,vel,prs,tmp,tve,spc,identity,budget,comm, &
-                                  allow_repartition,restored_exact,refresh_halos,repartition_axes)
+                                  allow_repartition,restored_exact,refresh_halos,repartition_axes,step_history)
     character(*),intent(in) :: path
     logical,intent(in) :: writing,compensated
     logical,optional,intent(in) :: allow_repartition,repartition_axes(3)
@@ -148,15 +148,18 @@ contains
     real(real64),contiguous,intent(inout) :: q(:,:,:,:),rho(:,:,:),vel(:,:,:,:), &
       prs(:,:,:),tmp(:,:,:),tve(:,:,:),spc(:,:,:,:)
     real(real64),allocatable,intent(inout) :: carry(:,:,:,:)
+    real(real64),allocatable,optional,intent(inout) :: step_history(:,:,:)
     type(checkpoint_state_identity),intent(inout) :: identity
     integer(int64),intent(in) :: budget
     real(real64),allocatable :: buffer(:,:,:,:)
     integer(int64) :: remaining,metadata(2),expected(2)
     integer :: extents(3),h
-    logical :: permit,matched
+    logical :: permit,matched,has_history
     permit=.false.
     if(present(allow_repartition)) permit=allow_repartition
-    call allocate_checkpoint_buffer(cells,halo,34,budget,buffer,remaining,comm)
+    has_history=.false.
+    if(present(step_history)) has_history=allocated(step_history)
+    call allocate_checkpoint_buffer(cells,halo,34+merge(1,0,has_history),budget,buffer,remaining,comm)
     extents=shape(buffer(:,:,:,1)); h=halo+1
     call require(all(shape(q)==[extents,11]).and.all(shape(rho)==extents).and. &
       all(shape(vel)==[extents,3]).and.all(shape(prs)==extents).and. &
@@ -166,6 +169,7 @@ contains
       call require(allocated(carry),comm,'AIR5 carry not initialized')
       call require(all(shape(carry)==[cells+1,11]),comm,'AIR5 carry shape')
     endif
+    if(has_history) call require(all(shape(step_history)==cells+1),comm,'AIR5 step history shape')
     metadata=[1_int64,int(merge(1,0,compensated),int64)]
     expected=metadata
     if(writing) then
@@ -179,6 +183,12 @@ contains
       buffer(:,:,:,28)=tmp
       buffer(:,:,:,29)=tve
       buffer(:,:,:,30:34)=spc
+      if(has_history) then
+        call require(all(ieee_is_finite(step_history)).and.all(step_history>=0.0_real64), &
+          comm,'AIR5 invalid step history')
+        buffer(:,:,:,35)=0.0_real64
+        buffer(h:h+cells(1),h:h+cells(2),h:h+cells(3),35)=step_history
+      endif
     else
       buffer=0.0_real64
     endif
@@ -200,6 +210,11 @@ contains
       tmp=buffer(:,:,:,28)
       tve=buffer(:,:,:,29)
       spc=buffer(:,:,:,30:34)
+      if(has_history) then
+        step_history=buffer(h:h+cells(1),h:h+cells(2),h:h+cells(3),35)
+        call require(all(ieee_is_finite(step_history)).and.all(step_history>=0.0_real64), &
+          comm,'AIR5 invalid restored step history')
+      endif
     endif
   end subroutine
 
@@ -391,7 +406,7 @@ contains
     if (present(role)) state_role=role
     call require(state_role==1.or.(state_role==2.and.ncomp==11).or. &
       ((state_role==3.or.state_role==4).and.ncomp==34).or.(state_role==5.and.ncomp==17).or. &
-      (state_role==6.and.ncomp==44).or.(state_role==7.and.ncomp==34).or. &
+      (state_role==6.and.ncomp==44).or.(state_role==7.and.(ncomp==34.or.ncomp==35)).or. &
       (state_role==8.and.ncomp==26).or.(state_role==9.and.(ncomp==34.or.ncomp==204)).or. &
       (state_role==10.and.ncomp==136), &
       comm,'state component role')

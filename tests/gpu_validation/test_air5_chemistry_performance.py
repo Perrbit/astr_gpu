@@ -78,7 +78,23 @@ def test_reuse_is_single_call_and_failure_precedes_boundary():
     assert 'lo=max([is,js,ks],1); hi=min([ie,je,ke],[im-1,jm-1,km-1])' in solver
     half = coupling.split('  subroutine air5_chemistry_half_step_gpu(')[1]
     assert half.index('if(global_status/=chemistry_status_ok)') < half.index('if(half_index==1)')
-    assert 'any(global(1:3)/=-global(5:7))' in coupling
+    assert 'any(global(1:5)/=-global(7:11))' in coupling
+
+
+def test_source_only_is_opt_in_and_first_ros2_stage_retains_jacobian():
+    kinetics = (ROOT/'src_gpu/chemistry_kinetics_gpu.cuf').read_text()
+    coupling = (ROOT/'src_gpu/chemistry_coupling_gpu.cuf').read_text()
+    fixed = kinetics.split('  attributes(device) subroutine air5_ros2_fixed_step_gpu(')[1]
+    fixed = fixed.split('  end subroutine air5_ros2_fixed_step_gpu')[0]
+    assert 'source_only_d=.false.' in kinetics and 'source_only=.false.' in coupling
+    assert 'ASTR_AIR5_SOURCE_EVALUATION' in coupling
+    assert fixed.index('call air5_instantaneous_source_jacobian_gpu') < fixed.index('call air5_lu_factor_6_gpu')
+    assert fixed.index('call air5_lu_factor_6_gpu') < fixed.index('call air5_instantaneous_source_gpu')
+    pure = kinetics.split('  attributes(device) subroutine air5_pure_source_gpu(')[1]
+    pure = pure.split('  end subroutine air5_pure_source_gpu')[0]
+    assert 'call air5_vt_relaxation_source_gpu' in pure
+    assert 'call air5_temperature_from_q5_gpu' in pure and 'call air5_tv_from_ev_gpu' in pure
+    assert 'jacobian' not in pure and 'temperature_derivatives' not in pure
 
 
 def test_report_schedule_keeps_failure_collective_and_dynamic_top_coverage():
@@ -94,6 +110,17 @@ def test_report_schedule_keeps_failure_collective_and_dynamic_top_coverage():
     assert status < half.index('if(global_status/=chemistry_status_ok)') < report
     assert 'call MPI_Allreduce(local_status,global_status,1,MPI_INTEGER,MPI_MAX' in half[:report]
     assert 'if(lio .and. report_step)' in half
+
+
+def test_chemistry_block_option_changes_launch_only():
+    coupling = (ROOT/'src_gpu/chemistry_coupling_gpu.cuf').read_text()
+    assert 'chemistry_block_size=128' in coupling
+    assert "'ASTR_AIR5_CHEMISTRY_BLOCK_SIZE'" in coupling
+    assert 'block=dim3(chemistry_block_size,1,1)' in coupling
+    kernel = coupling.split('  attributes(global) subroutine air5_chemistry_half_step_kernel(')[1]
+    kernel = kernel.split('  end subroutine air5_chemistry_half_step_kernel')[0]
+    assert 'chemistry_block_size' not in kernel
+    assert 'if(id>=ntot) return' in kernel
 
 
 def test_prescribed_zero_is_allowed_but_negative_or_invalid_state_is_not():

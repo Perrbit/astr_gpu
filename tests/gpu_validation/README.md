@@ -577,23 +577,131 @@ rounds for NP1 and NP2, one warmup plus three measured steps per run. It
 rejects advanced field output, snapshots and executable/checkpoint drift.
 Do not interpret a faster two-GPU time as improved strong-scaling efficiency.
 
-`ASTR_COMPLETE_STEP_TIMING=1` times `crashcheck + time_integration_rk` on
-every rank, including reacting chemistry and transport. It is disabled by
-default and adds no barrier. It excludes startup and subsequent controller,
-CFL and checkpoint handling; it is not the old transport-only RK timer.
+`ASTR_COMPLETE_STEP_TIMING=1` times `crashcheck + time_integration_rk` and
+the completed-step scalar monitor on every rank, including both reacting
+chemistry halves and transport. It is disabled by default and adds no barrier.
+It excludes startup and subsequent controller/CFL/checkpoint handling; it is
+not the old transport-only RK timer.
 
 ```bash
-python tests/gpu_validation/run_air5_performance_diagnosis.py \
-  --baseline tests/gpu_validation/out/air5_layered_multistep_20260924/gpu_dt2/gpu \
-  --output tests/gpu_validation/out/air5_performance_new
+python3 tests/gpu_validation/run_air5_performance_diagnosis.py \
+  --output <new-joint-directory>
+python3 tests/gpu_validation/run_air5_performance_diagnosis.py \
+  --output <new-source-directory> --compare-to <new-joint-directory> \
+  --source-evaluation source-only
 ```
 
-The driver freezes FP64, explicit synchronization, `symmetric_species`,
-`layered`, dt=2 ns, three independent rounds, one warmup and three measured
-steps. Each step uses the maximum rank duration. The reported group median
-is over round means, not a best-case sample. Startup rewrites the initial
-checkpoint outside the measured window; the driver rejects advanced field
-output or validation snapshots during timing.
+The current driver uses a new-output 16³ AIR5 fixture, FP64, explicit
+synchronization, `symmetric_species`, `layered`, dt=0.1 ns, three rounds,
+one warmup and three measured steps. The primary metric takes the maximum
+rank's cumulative window time, then divides by measured steps. Historical
+per-step maxima are supplemental only. Initial checkpoint creation/restoration
+is outside timing; field output and validation snapshots are disabled inside
+the measured window. Historical legacy-checkpoint timings are not regenerated
+by this revised driver. `--phase-timing` and `--nsys` are separate attribution
+runs, not performance denominators; do not overlap sanitizer and timing.
+
+`ASTR_AIR5_SOURCE_EVALUATION=source-only` is an opt-in FP64 engineering
+candidate. It skips the unused second-stage Jacobian only; first-stage
+Jacobian/LU, ROS-2 error control and compensation remain unchanged. Actual
+source/T/Tv/pressure/admissibility failures still reject the state. The
+approved difference is that an unused second-stage Jacobian can no longer
+cause rejection. Default is `joint`. The choice is appended to the existing
+`air5_config.bin`, must match on exact restart, and cannot be selected on CPU.
+Pre-extension new-format batches mean `joint` only; all other executable,
+numerical and resource contracts still apply. No new file is added.
+
+`test_air5_source_evaluation_restart.py` checks NP1/2 matching modes,
+mode changes, pre-extension metadata and corrupt tails. The source-only,
+report-step and packed-reduction combination can be checked with
+`run_air5_chemistry_performance_gate.py --report-diagnostics
+--source-evaluation source-only`. Recompile any optional failure interposer
+from the current test source before using it. `run_air5_state_workload.py`
+restores q/carry and non-owner physical shared copies for isolated next-first-
+half work distributions, including dynamic-top tasks; it is not a full CFD
+trajectory. `run_air5_reference_convergence.py` prepares independent 0D
+Radau convergence records and does not authorize numerical candidate ranking.
+See `documents/ASTR_AIR5_STAGE_COORDINATION_LOCAL_RESULTS_20261013.md`.
+
+`check_air5_actual_error.py --reference <reference.json> --output <new-directory>`
+reuses those 11 reference endpoints and the existing compensated GPU probe.
+The user approved its first-round G1 thresholds on 2026-10-13. It reports
+componentwise Y, ev, T/Tv errors for q and q-carry, reference margins and
+physical invariants, records input/output hashes, and stops at the first
+failed gate. `--tolerance baseline|loose|tight` selects the three approved
+rtol/atol-factor pairs (1e-9/1e-13, 1e-8/1e-12, 1e-10/1e-14) in the isolated
+probe only; production defaults are unchanged. Historical pre-approval
+reports remain immutable diagnostics, not full-flow qualification.
+`test_air5_actual_error.py` covers near-zero scaling,
+reference uncertainty, small carry and invalid-state rejection. No new
+Python CFD integrator is introduced.
+
+`--segments 4` divides the same reference duration into four equal chemistry
+calls; `--step-history` enables the optional CPU/GPU ROS-2 starting-step
+history. Compare reset and history with the same segmentation and tolerance.
+The final short remainder must not become the next call's stiffness estimate.
+`chemistry_ros2_compensation_gpu_probe history-contract` and
+`test_air5_step_history.py` check first-use equivalence, interval clipping,
+remainder handling, transactional rollback and nondefault-history CPU/GPU
+array continuation. This is not a solver checkpoint or complete-flow gate:
+the separate solver lifecycle tests below cover checkpoint persistence.
+
+`ASTR_AIR5_CHEMISTRY_TOLERANCE=baseline|loose|tight` selects the same three
+approved pairs in CPU/GPU half-step callers; default remains baseline.
+`ASTR_AIR5_STEP_HISTORY=previous` optionally retains one FP64 starting-step
+suggestion per physical node across both chemistry halves, transport and
+filtering. Default is off. Zero means first use; invalid history is rejected.
+History is neither averaged at shared nodes nor filtered or halo-exchanged.
+It commits after the full local chemistry interval and primitive recovery
+succeed; the mandatory global failure collective still precedes consumers.
+
+Enabled history is saved in the existing `state.h5` as q0035, with exact
+non-owner copies in `rank_extras` and canonical zero halo padding. The
+tolerance index/history flag append 16 bytes to `air5_config.bin` only for
+nondefault control. Missing fields are not reconstructed on exact restart;
+no numeric extension means baseline/off only. No extra checkpoint file is
+added, and baseline/off retains the 34-component layout.
+`test_air5_integration_control_restart.py` covers CPU/GPU NP1/2 x/y/z,
+12 vs 5+7 complete steps, nondefault history, scalar/full filter storage,
+control-contract rejection, an uncompensated branch, the engineering
+combination and a separate NP2 full-CFD memcheck. These are bounded lifecycle
+and interaction checks, not full-flow actual-error or physical qualification.
+
+`run_air5_state_workload.py --checkpoint <batch> --tolerance baseline
+--step-history previous` reads saved history and exact rank copies from the
+16-cubed fixture. `off` explicitly compares a reset on the same frozen state.
+The compensation probe accepts `history-from-input` with an 18th input
+column; existing reset/history modes still read 17 columns. Counts describe
+only the next first chemistry half, not complete-step timing or a trajectory.
+Current same-state history work increased, so it stays a research option.
+`compare_history_work()` compares paired frozen inputs byte-for-byte,
+attributes count changes to individual tasks, and reports sums of per-warp
+maximum attempts in rectangular launch order. This host-only SIMT loop-bound
+proxy is not measured occupancy, kernel timing or an actual-error gate.
+`test_air5_state_workload.py` covers state/carry identity, successful task
+ordering, count validity and partially active final warps.
+
+`ASTR_AIR5_CHEMISTRY_BLOCK_SIZE=32` optionally launches the same interior
+and dynamic-top chemistry kernels with one warp per block; default is 128.
+It changes neither node indexing nor per-node arithmetic and allocates no
+additional field buffers. The option is not a numerical checkpoint field:
+`test_air5_chemistry_block_size.py` checks exact 128-to-32 continuation and
+same-topology state/report equivalence for NP1 and NP2 x/y/z decompositions.
+Both performance drivers accept `--chemistry-block-size 32`; source-only,
+report-step and block options may be combined. Freeze the executable and
+regenerate a same-binary baseline after rebuilding; do not compare across
+executable hashes. Current gains apply to the small local fixture, not A800
+or production scaling, and the three engineering candidates exhaust this
+round's approved mechanism budget.
+
+`test_air5_stage_coordination_holdout.py` adds five 24-step / 17+7-step
+engineering checks with cumulative statistics, scalar/full filtering and
+characteristic/prescribed top boundaries. It compares joint/every-step/128
+with source-only/report-steps/32, and separately checks exact candidate
+continuation. State and statistics datasets, scalar samples and report
+values must match; statistics must be finite and restart carry nonzero.
+The zero-inflow HBL fixture is not a physical flat-plate qualification.
+Use `-o junit_family=xunit1` when exporting its evidence properties.
 
 Use `run_air5_sbli_domain_replay.py --nsys` for separate GPU CUDA/MPI traces,
 or `--np 1 --ncu-kernel REGEX` for one matching kernel launch. Neither

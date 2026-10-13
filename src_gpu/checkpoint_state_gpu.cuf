@@ -7,6 +7,8 @@ module checkpoint_state_gpu
   use commarray_gpu, only: tve_d,spc_d
   use chemistry_compensation, only: air5_compensated
   use chemistry_compensation_gpu, only: air5_carry_d
+  use chemistry_flow_runtime, only: air5_history_enabled
+  use chemistry_coupling_gpu, only: air5_step_history_d
 #endif
   use gpu_check, only: sync_gpu_boundary
   use checkpoint_state_io, only: checkpoint_state_identity, checkpoint_state_transfer, &
@@ -21,6 +23,7 @@ contains
 #ifdef ASTR_AIR5_CHEMISTRY
   subroutine checkpoint_air5_gpu(path,writing,global_shape,origin,cells,halo,identity,budget,comm, &
                                  allow_repartition,restored_exact,refresh_halos,repartition_axes)
+    use ieee_arithmetic, only: ieee_is_finite
     character(*),intent(in) :: path
     logical,intent(in) :: writing
     logical,optional,intent(in) :: allow_repartition,repartition_axes(3)
@@ -30,15 +33,16 @@ contains
     type(checkpoint_state_identity),intent(inout) :: identity
     integer(int64),intent(in) :: budget
     real(real64),allocatable :: buffer(:,:,:,:),carry_stage(:,:,:,:)
+    real(real64),allocatable :: history_stage(:,:,:)
     integer(int64) :: remaining,metadata(2),expected(2),carry_bytes,nodes
-    integer :: extents(3),h,err,d
+    integer :: extents(3),h,err,d,bytes_per_node
     logical :: permit,matched
     permit=.false.
     if(present(allow_repartition)) permit=allow_repartition
     call checkpoint_state_require(allocated(q_d).and.allocated(rho_d).and.allocated(vel_d).and. &
       allocated(prs_d).and.allocated(tmp_d).and.allocated(tve_d).and.allocated(spc_d), &
       comm,'AIR5 device state not initialized')
-    call allocate_checkpoint_buffer(cells,halo,34,budget,buffer,remaining,comm)
+    call allocate_checkpoint_buffer(cells,halo,34+merge(1,0,air5_history_enabled),budget,buffer,remaining,comm)
     extents=shape(buffer(:,:,:,1)); h=halo+1
     call checkpoint_state_require(all(shape(q_d)==[extents,11]).and.all(shape(rho_d)==extents).and. &
       all(shape(vel_d)==[extents,3]).and.all(shape(prs_d)==extents).and. &
@@ -47,15 +51,29 @@ contains
     if(air5_compensated) then
       call checkpoint_state_require(allocated(air5_carry_d),comm,'AIR5 device carry not initialized')
       call checkpoint_state_require(all(shape(air5_carry_d)==[cells+1,11]),comm,'AIR5 device carry shape')
+    endif
+    if(air5_history_enabled) then
+      call checkpoint_state_require(allocated(air5_step_history_d),comm,'AIR5 device history not initialized')
+      call checkpoint_state_require(all(shape(air5_step_history_d)==cells+1),comm,'AIR5 device history shape')
+    endif
+    bytes_per_node=merge(88,0,air5_compensated)+merge(8,0,air5_history_enabled)
+    if(bytes_per_node>0) then
       nodes=1
       do d=1,3
-        call checkpoint_state_require(nodes<=remaining/88/(int(cells(d),int64)+1),comm,'AIR5 carry buffer budget')
+        call checkpoint_state_require(nodes<=remaining/bytes_per_node/(int(cells(d),int64)+1), &
+          comm,'AIR5 auxiliary buffer budget')
         nodes=nodes*(int(cells(d),int64)+1)
       enddo
-      carry_bytes=nodes*88
+      carry_bytes=nodes*bytes_per_node
       remaining=remaining-carry_bytes
+    endif
+    if(air5_compensated) then
       allocate(carry_stage(cells(1)+1,cells(2)+1,cells(3)+1,11),stat=err)
       call checkpoint_state_require(err==0,comm,'AIR5 carry buffer allocation')
+    endif
+    if(air5_history_enabled) then
+      allocate(history_stage(cells(1)+1,cells(2)+1,cells(3)+1),stat=err)
+      call checkpoint_state_require(err==0,comm,'AIR5 history buffer allocation')
     endif
     metadata=[1_int64,int(merge(1,0,air5_compensated),int64)]; expected=metadata
     call sync_gpu_boundary('AIR5 complete-state transfer entry')
@@ -73,6 +91,13 @@ contains
       buffer(:,:,:,28)=tmp_d
       buffer(:,:,:,29)=tve_d
       buffer(:,:,:,30:34)=spc_d
+      if(air5_history_enabled) then
+        history_stage=air5_step_history_d
+        call checkpoint_state_require(all(ieee_is_finite(history_stage)).and.all(history_stage>=0.0_real64), &
+          comm,'AIR5 invalid device step history')
+        buffer(:,:,:,35)=0.0_real64
+        buffer(h:h+cells(1),h:h+cells(2),h:h+cells(3),35)=history_stage
+      endif
     else
       buffer=0.0_real64
     endif
@@ -97,6 +122,12 @@ contains
       tmp_d=buffer(:,:,:,28)
       tve_d=buffer(:,:,:,29)
       spc_d=buffer(:,:,:,30:34)
+      if(air5_history_enabled) then
+        history_stage=buffer(h:h+cells(1),h:h+cells(2),h:h+cells(3),35)
+        call checkpoint_state_require(all(ieee_is_finite(history_stage)).and.all(history_stage>=0.0_real64), &
+          comm,'AIR5 invalid restored step history')
+        air5_step_history_d=history_stage
+      endif
       call sync_gpu_boundary('AIR5 complete-state transfer restore')
     endif
   end subroutine

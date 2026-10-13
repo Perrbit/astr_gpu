@@ -5,45 +5,70 @@ module compensation_probe_kernel
   use chemistry_source, only: air5_source_mode_coupled
   implicit none
 contains
-  attributes(global) subroutine advance_state_batch(input,output,counts,count,duration,source_mode)
-    integer, value :: count,source_mode
-    real(real64), value :: duration
-    real(real64), device, intent(in) :: input(17,count)
+  attributes(global) subroutine advance_state_batch(input,output,counts,count,duration,source_mode, &
+      rtol,atol_factor,segments,use_history)
+    integer, value :: count,source_mode,segments
+    logical, value :: use_history
+    real(real64), value :: duration,rtol,atol_factor
+    real(real64), device, intent(in) :: input(18,count)
     real(real64), device, intent(out) :: output(13,count)
     integer, device, intent(out) :: counts(5,count)
-    real(real64) :: atol(6),correction(6)
-    integer :: index
+    real(real64) :: atol(6),correction(6),current(6),candidate(6),interval,history,suggested
+    integer :: index,iteration,local_counts(5)
 
     index=(blockIdx%x-1)*blockDim%x+threadIdx%x
     if(index>count) return
-    atol(1:5)=1.0e-13_real64*input(1,index)
-    atol(6)=1.0e-13_real64*max(abs(input(11,index)),1.0_real64)
+    current=input(6:11,index)
     correction=input(12:17,index)
-    call air5_ros2_advance_gpu(input(1,index),input(2:4,index),input(5,index), &
-      input(6:11,index),duration,duration,1.0e-9_real64,atol,200000,output(1:6,index), &
-      output(13,index),counts(2,index),counts(3,index),counts(4,index),counts(5,index), &
-      counts(1,index),source_mode,correction)
+    interval=duration/real(segments,real64)
+    history=input(18,index)
+    counts(:,index)=0
+    do iteration=1,segments
+      atol(1:5)=atol_factor*input(1,index)
+      atol(6)=atol_factor*max(abs(current(6)),1.0_real64)
+      if(use_history) then
+        call air5_ros2_advance_gpu(input(1,index),input(2:4,index),input(5,index), &
+          current,interval,interval,rtol,atol,200000,candidate,suggested, &
+          local_counts(2),local_counts(3),local_counts(4),local_counts(5),local_counts(1), &
+          source_mode,correction,history)
+      else
+        call air5_ros2_advance_gpu(input(1,index),input(2:4,index),input(5,index), &
+          current,interval,interval,rtol,atol,200000,candidate,suggested, &
+          local_counts(2),local_counts(3),local_counts(4),local_counts(5),local_counts(1), &
+          source_mode,correction)
+      endif
+      counts(1,index)=local_counts(1)
+      counts(2:5,index)=counts(2:5,index)+local_counts(2:5)
+      current=candidate
+      if(local_counts(1)/=0) exit
+    enddo
+    output(1:6,index)=current
     output(7:12,index)=correction
+    output(13,index)=suggested
   end subroutine advance_state_batch
 
   attributes(global) subroutine advance_probe(rho,momentum,q5,initial,seed,atol, &
-      duration,first_step,rtol,attempts,repeats,enabled,final,carry,metrics,counts,suggested)
-    real(real64), value :: rho,q5,duration,first_step,rtol
+      duration,first_step,rtol,attempts,repeats,enabled,history_seed,final,carry,metrics,counts,suggested)
+    real(real64), value :: rho,q5,duration,first_step,rtol,history_seed
     integer, value :: attempts,repeats,enabled
     real(real64), device :: momentum(3),initial(6),seed(6),atol(6)
     real(real64), device :: final(6),carry(6),metrics(2),suggested(1)
     integer, device :: counts(3)
-    real(real64) :: current(6),candidate(6),correction(6),h,ysum,mass_error,y_error
+    real(real64) :: current(6),candidate(6),correction(6),h,ysum,mass_error,y_error,history
     integer :: iteration,status,accepted,rejected,rhs,jac,species,total_a,total_r
     if (threadIdx%x /= 1) return
     current = initial
     correction = seed
+    history = history_seed
     mass_error = 0.0_real64
     y_error = 0.0_real64
     total_a = 0
     total_r = 0
     do iteration = 1,repeats
-      if (enabled /= 0) then
+      if (enabled == 2) then
+        call air5_ros2_advance_gpu(rho,momentum,q5,current,duration,first_step,rtol,atol, &
+          attempts,candidate,h,accepted,rejected,rhs,jac,status,air5_source_mode_coupled,correction,history)
+      else if (enabled /= 0) then
         call air5_ros2_advance_gpu(rho,momentum,q5,current,duration,first_step,rtol,atol, &
           attempts,candidate,h,accepted,rejected,rhs,jac,status,air5_source_mode_coupled,correction)
       else
@@ -66,6 +91,7 @@ contains
     metrics = [mass_error,y_error]
     counts = [status,total_a,total_r]
     suggested(1) = h
+    if(enabled==2) suggested(1)=history
   end subroutine advance_probe
 end module compensation_probe_kernel
 
@@ -79,6 +105,7 @@ program chemistry_ros2_compensation_gpu_probe
   use chemistry_thermo, only: air5_ev_from_tv,air5_q5_from_state, &
     air5_temperature_from_q5,air5_tv_from_ev
   use chemistry_ros2, only: air5_ros2_advance
+  use chemistry_source_gpu, only: set_air5_source_only_gpu
   use compensation_probe_kernel
   use gpu_check, only: sync_after_kernel
   implicit none
@@ -90,12 +117,26 @@ program chemistry_ros2_compensation_gpu_probe
   integer :: counts_cpu(3),counts_gpu(3),status,case_index,enabled,atom,repeats
   real(real64), parameter :: temperatures(3) = [1500.0_real64,2000.0_real64,3000.0_real64]
   character(len=32) :: argument
+  integer :: option_status
 
   repeats = 20000
+  call get_environment_variable('ASTR_AIR5_SOURCE_EVALUATION',argument,status=option_status)
+  if(option_status/=1) then
+    if(option_status/=0) error stop 'invalid source evaluation option'
+    select case(trim(argument))
+    case('joint'); call set_air5_source_only_gpu(.false.)
+    case('source-only'); call set_air5_source_only_gpu(.true.)
+    case default; error stop 'invalid source evaluation option'
+    end select
+  endif
   if (command_argument_count() > 0) then
     call get_command_argument(1,argument)
     if(trim(argument)=='batch') then
       call run_state_batch
+      stop
+    endif
+    if(trim(argument)=='history-contract') then
+      call run_history_contract
       stop
     endif
     read(argument,*) repeats
@@ -199,29 +240,133 @@ program chemistry_ros2_compensation_gpu_probe
     end do
   end do
 contains
+  subroutine run_history_contract
+    real(real64) :: expected_cpu(6),expected_gpu(6),expected_cc(6),expected_cg(6)
+    real(real64) :: expected_hc,expected_hg,current(6),candidate(6),history,continuation_seed
+    real(real64) :: invalid(3)
+    integer :: expected_counts(3),iteration,a,r,f,j
+
+    call setup(2000.0_real64,2000.0_real64,.false.)
+    seed=0.125_real64*epsilon(rho)*initial
+    call run_pair(5.0e-10_real64,5.0e-10_real64,1.0e-9_real64,200000,1,1)
+    expected_cpu=final_cpu; expected_gpu=final_gpu
+    expected_cc=carry_cpu; expected_cg=carry_gpu; expected_counts=counts_gpu
+    call run_pair(5.0e-10_real64,5.0e-10_real64,1.0e-9_real64,200000,1,2)
+    if(any(final_cpu/=expected_cpu).or.any(final_gpu/=expected_gpu).or. &
+       any(carry_cpu/=expected_cc).or.any(carry_gpu/=expected_cg).or. &
+       any(counts_gpu/=expected_counts)) error stop 'first history call differs from baseline'
+    if(min(h_cpu,h_gpu)<=0.0_real64.or.max(h_cpu,h_gpu)>5.0e-10_real64) &
+      error stop 'invalid committed step history'
+    write(*,*) 'HISTORY_FIRST_CALL_BASELINE_EXACT_PASS'
+    call run_pair(5.0e-10_real64,5.0e-10_real64,1.0e-9_real64,200000,1,2,1.0e-6_real64)
+    if(any(final_cpu/=expected_cpu).or.any(final_gpu/=expected_gpu)) &
+      error stop 'history was not limited to interval'
+    write(*,*) 'HISTORY_INTERVAL_CLIP_PASS'
+    call run_pair(1.0e-9_real64,1.0e-9_real64,1.0e-9_real64,200000,1,2, &
+      1.0e-9_real64*(1.0_real64-1.0e-8_real64))
+    if(min(counts_cpu(2),counts_gpu(2))/=2.or.h_cpu/=1.0e-9_real64.or.h_gpu/=1.0e-9_real64) &
+      error stop 'final remainder polluted the next starting step'
+    write(*,*) 'HISTORY_FINAL_REMAINDER_NOT_REUSED_PASS'
+
+    call setup(6000.0_real64,1000.0_real64,.true.)
+    seed=0.125_real64*epsilon(rho)*initial
+    call run_pair(2.0e-10_real64,2.0e-10_real64,1.0e-8_real64,1,1,2,2.0e-10_real64)
+    call check_rollback(chemistry_status_step_limit)
+    if(min(counts_cpu(3),counts_gpu(3))<1.or.h_cpu/=2.0e-10_real64.or.h_gpu/=2.0e-10_real64) &
+      error stop 'rejection committed history'
+    call run_pair(2.0e-10_real64,2.0e-10_real64,1.0e-8_real64,1,1,2,1.0e-15_real64)
+    call check_rollback(chemistry_status_step_limit)
+    if(min(counts_cpu(2),counts_gpu(2))<1.or.h_cpu/=1.0e-15_real64.or.h_gpu/=1.0e-15_real64) &
+      error stop 'accepted prefix committed history'
+    write(*,*) 'HISTORY_REJECTION_AND_PREFIX_ROLLBACK_PASS'
+    invalid=[-1.0_real64,ieee_value(0.0_real64,ieee_quiet_nan), &
+             ieee_value(0.0_real64,ieee_positive_inf)]
+    do iteration=1,3
+      call run_pair(2.0e-10_real64,2.0e-10_real64,1.0e-8_real64,200000,1,2,invalid(iteration))
+      call check_rollback(chemistry_status_invalid_timestep)
+      if(transfer(h_cpu,0_int64)/=transfer(invalid(iteration),0_int64).or. &
+         transfer(h_gpu,0_int64)/=transfer(invalid(iteration),0_int64)) &
+        error stop 'invalid history was silently replaced'
+    enddo
+    write(*,*) 'HISTORY_INVALID_BITWISE_ROLLBACK_PASS'
+
+    call run_pair(2.0e-10_real64,2.0e-10_real64,1.0e-9_real64,200000,4,2)
+    expected_cpu=final_cpu; expected_gpu=final_gpu
+    expected_cc=carry_cpu; expected_cg=carry_gpu
+    expected_hc=h_cpu; expected_hg=h_gpu
+    call run_pair(2.0e-10_real64,2.0e-10_real64,1.0e-9_real64,200000,2,2)
+    current=final_cpu; history=h_cpu
+    do iteration=1,2
+      call air5_ros2_advance(rho,momentum,q5,current,2.0e-10_real64,2.0e-10_real64, &
+        1.0e-9_real64,atol,200000,candidate,h_cpu,a,r,f,j,status, &
+        compensation=carry_cpu,step_history=history)
+      if(status/=0) error stop 'history CPU continuation failed'
+      current=candidate
+    enddo
+    if(any(current/=expected_cpu).or.any(carry_cpu/=expected_cc).or.history/=expected_hc) &
+      error stop 'CPU history continuation not exact'
+    initial=final_gpu; seed=carry_gpu; continuation_seed=h_gpu
+    if(continuation_seed==2.0e-10_real64) error stop 'restart did not exercise nondefault history'
+    call run_pair(2.0e-10_real64,2.0e-10_real64,1.0e-9_real64,200000,2,2,continuation_seed)
+    if(any(final_gpu/=expected_gpu).or.any(carry_gpu/=expected_cg).or.h_gpu/=expected_hg) &
+      error stop 'GPU history continuation not exact'
+    write(*,*) 'HISTORY_NONDEFAULT_CPU_GPU_CONTINUATION_EXACT_PASS'
+  end subroutine run_history_contract
+
   subroutine run_state_batch
     real(real64), allocatable :: input(:,:),output(:,:)
     real(real64), allocatable, device :: input_d(:,:),output_d(:,:)
     integer, allocatable :: counts(:,:)
     integer, allocatable, device :: counts_d(:,:)
     character(4096) :: input_path,output_path
-    integer :: count,source_mode,unit,index,ios
-    real(real64) :: duration
+    integer :: count,source_mode,unit,index,ios,segments
+    real(real64) :: duration,rtol,atol_factor
+    logical :: use_history,history_from_input
 
-    if(command_argument_count()/=3) error stop 'batch requires input and output paths'
+    if(command_argument_count()/=3.and.command_argument_count()/=5.and.command_argument_count()/=7) &
+      error stop 'batch requires paths, optional tolerances and segments/history mode'
+    rtol=1.0e-9_real64
+    atol_factor=1.0e-13_real64
+    segments=1
+    use_history=.false.
+    history_from_input=.false.
+    if(command_argument_count()>=5) then
+      call get_command_argument(4,argument)
+      read(argument,*) rtol
+      call get_command_argument(5,argument)
+      read(argument,*) atol_factor
+    endif
+    if(command_argument_count()==7) then
+      call get_command_argument(6,argument)
+      read(argument,*) segments
+      if(segments<1.or.segments>16) error stop 'bounded sequence requires 1 to 16 segments'
+      call get_command_argument(7,argument)
+      select case(trim(argument))
+      case('reset'); use_history=.false.
+      case('history'); use_history=.true.
+      case('history-from-input'); use_history=.true.; history_from_input=.true.
+      case default; error stop 'invalid step-history probe mode'
+      end select
+    endif
     call get_command_argument(2,input_path)
     call get_command_argument(3,output_path)
     open(newunit=unit,file=trim(input_path),status='old',action='read')
     read(unit,*) count,duration,source_mode
     if(count<1.or.count>10000.or.duration<=0.0_real64) error stop 'invalid bounded state batch'
-    allocate(input(17,count),output(13,count),counts(5,count))
-    read(unit,*) input
+    allocate(input(18,count),output(13,count),counts(5,count))
+    input=0.0_real64
+    if(history_from_input) then
+      read(unit,*) input
+    else
+      read(unit,*) input(1:17,:)
+    endif
     read(unit,*,iostat=ios)
     if(ios/=-1) error stop 'extra or malformed batch input'
     close(unit)
-    allocate(input_d(17,count),output_d(13,count),counts_d(5,count))
+    allocate(input_d(18,count),output_d(13,count),counts_d(5,count))
     input_d=input
-    call advance_state_batch<<<(count+127)/128,128>>>(input_d,output_d,counts_d,count,duration,source_mode)
+    call advance_state_batch<<<(count+127)/128,128>>>(input_d,output_d,counts_d,count,duration,source_mode, &
+      rtol,atol_factor,segments,use_history)
     call sync_after_kernel('air5_compensated_state_batch',force_sync=.true.)
     output=output_d
     counts=counts_d
@@ -250,19 +395,26 @@ contains
     atol(6) = 1.0e-13_real64*max(abs(initial(6)),1.0_real64)
   end subroutine setup
 
-  subroutine run_pair(duration,first_step,rtol,attempts,calls,mode)
+  subroutine run_pair(duration,first_step,rtol,attempts,calls,mode,history_seed)
     real(real64), intent(in) :: duration,first_step,rtol
     integer, intent(in) :: attempts,calls,mode
+    real(real64), intent(in), optional :: history_seed
     real(real64), device :: m_d(3),q_d(6),seed_d(6),atol_d(6),final_d(6),carry_d(6),metrics_d(2),h_d(1)
     integer, device :: counts_d(3)
-    real(real64) :: current(6),candidate(6),ysum,scale(6)
+    real(real64) :: current(6),candidate(6),ysum,scale(6),history,history0
     integer :: iteration,accepted,rejected,rhs,jac,species
     current = initial
     carry_cpu = seed
     metric_cpu = 0.0_real64
     counts_cpu = 0
+    history0=0.0_real64
+    if(present(history_seed)) history0=history_seed
+    history=history0
     do iteration = 1,calls
-      if (mode == 1) then
+      if (mode == 2) then
+        call air5_ros2_advance(rho,momentum,q5,current,duration,first_step,rtol,atol, &
+          attempts,candidate,h_cpu,accepted,rejected,rhs,jac,status,compensation=carry_cpu,step_history=history)
+      else if (mode == 1) then
         call air5_ros2_advance(rho,momentum,q5,current,duration,first_step,rtol,atol, &
           attempts,candidate,h_cpu,accepted,rejected,rhs,jac,status,compensation=carry_cpu)
       else
@@ -280,13 +432,14 @@ contains
       metric_cpu(1) = max(metric_cpu(1),abs(sum(current(1:5))-sum(initial(1:5)))/rho)
       metric_cpu(2) = max(metric_cpu(2),abs(ysum-1.0_real64))
     end do
+    if(mode==2) h_cpu=history
     final_cpu = current
     m_d = momentum
     q_d = initial
     seed_d = seed
     atol_d = atol
     call advance_probe<<<1,32>>>(rho,m_d,q5,q_d,seed_d,atol_d,duration,first_step,rtol, &
-      attempts,calls,mode,final_d,carry_d,metrics_d,counts_d,h_d)
+      attempts,calls,mode,history0,final_d,carry_d,metrics_d,counts_d,h_d)
     call sync_after_kernel('compensation_advance_probe',force_sync=.true.)
     final_gpu = final_d
     carry_gpu = carry_d

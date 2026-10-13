@@ -17,6 +17,12 @@ module chemistry_flow_runtime
   logical, save :: convection_symmetric_species=.false.
   logical, save :: convection_limiter_configured=.false.
   logical, save :: diffusion_layered=.false.,diffusion_limiter_configured=.false.
+  logical, save :: integration_control_configured=.false.
+  integer, protected, save, public :: air5_tolerance_choice=0
+  logical, protected, save, public :: air5_history_enabled=.false.
+  real(real64), protected, save, public :: air5_chemistry_rtol=1.0e-9_real64
+  real(real64), protected, save, public :: air5_chemistry_atol_factor=1.0e-13_real64
+  real(real64), allocatable, save, public :: air5_step_history(:,:,:)
 
   public :: air5_field_primitive_to_conservative
   public :: air5_field_conservative_to_primitive
@@ -32,8 +38,64 @@ module chemistry_flow_runtime
   public :: air5_consistent_species_convection
   public :: air5_symmetric_species_convection
   public :: air5_layered_diffusion
+  public :: configure_air5_integration_control
 
 contains
+
+  subroutine configure_air5_integration_control(im,jm,km)
+    use mpi
+    integer, intent(in) :: im,jm,km
+    character(32) :: value
+    integer :: status,ierr,local(3),lowest(3),highest(3),rank
+
+    if(integration_control_configured) return
+    local=0
+    call get_environment_variable('ASTR_AIR5_CHEMISTRY_TOLERANCE',value,status=status)
+    if(status/=1) then
+      if(status/=0) local(3)=1
+      select case(trim(value))
+      case('baseline'); local(1)=0
+      case('loose'); local(1)=1
+      case('tight'); local(1)=2
+      case default; local(3)=1
+      end select
+    endif
+    call get_environment_variable('ASTR_AIR5_STEP_HISTORY',value,status=status)
+    if(status/=1) then
+      if(status/=0) local(3)=1
+      select case(trim(value))
+      case('off'); local(2)=0
+      case('previous'); local(2)=1
+      case default; local(3)=1
+      end select
+    endif
+    call MPI_Allreduce(local,lowest,3,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,status)
+    call MPI_Allreduce(local,highest,3,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,status)
+    call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
+    if(highest(3)/=0.or.any(lowest/=highest)) then
+      if(rank==0) write(*,'(A)') 'invalid or rank-inconsistent AIR5 integration control options'
+      call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+    endif
+    air5_tolerance_choice=local(1)
+    select case(air5_tolerance_choice)
+    case(1)
+      air5_chemistry_rtol=1.0e-8_real64
+      air5_chemistry_atol_factor=1.0e-12_real64
+    case(2)
+      air5_chemistry_rtol=1.0e-10_real64
+      air5_chemistry_atol_factor=1.0e-14_real64
+    end select
+    air5_history_enabled=local(2)==1
+    if(air5_history_enabled) then
+      allocate(air5_step_history(0:im,0:jm,0:km))
+      air5_step_history=0.0_real64
+    endif
+    integration_control_configured=.true.
+    if(rank==0) write(*,'(A,I0,A,L1)') 'AIR5_INTEGRATION_CONTROL tolerance=', &
+      air5_tolerance_choice,' history=',air5_history_enabled
+  end subroutine configure_air5_integration_control
 
   pure logical function air5_reacting_flowtype(flowtype)
     character(len=*), intent(in) :: flowtype

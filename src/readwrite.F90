@@ -2187,11 +2187,13 @@ module readwrite
     use sponge_layer, only: lsponge
     use fludyna, only: updatefvar
     use chemistry_compensation, only: configure_air5_compensation,air5_carry
+    use chemistry_flow_runtime, only: configure_air5_integration_control
     use hdf5io
     character(len=32) :: value,restart_mode
     character(len=5) :: name
     integer :: choice,low,high,status,length,ierr,m,version
     logical :: present_version,present_high,present_carry
+    if(lcomb) call configure_air5_integration_control(im,jm,km)
     value='off'
     call get_environment_variable('ASTR_AIR5_COMPENSATION',value,length,status)
     if(status==1) value='off'

@@ -62,9 +62,11 @@ def report_diagnostic_gates(args):
     fixture = Namespace(output=root, executable=args.executable.resolve(strict=True),
         mpiexec=Path(shutil.which('mpiexec')).resolve(), case='sbli', reconstruction=3,
         mean_statistics=False, sample_interval=2, mode='steps', initial_restart=False,
-        axis='x', filter_workspace='scalar', top_mode='characteristic', report_interval=4)
+        axis='x', filter_workspace='scalar', top_mode='characteristic', report_interval=4,
+        source_evaluation=args.source_evaluation, chemistry_block_size=args.chemistry_block_size)
     report = dict(status='running', checks=[], executable_sha256=hashlib.sha256(
-        fixture.executable.read_bytes()).hexdigest(), scope='new-output bounded AIR5 diagnostics only')
+        fixture.executable.read_bytes()).hexdigest(), scope='new-output bounded AIR5 diagnostics only',
+        source_evaluation=args.source_evaluation, chemistry_block_size=args.chemistry_block_size)
     try:
         for ranks in (1, 2):
             common = dict(chemistry_diagnostics='report-steps')
@@ -285,6 +287,8 @@ if __name__ == '__main__':
                         help='GPU-only rerun against immutable CPU/GPU snapshots when CPU and inputs are unchanged')
     parser.add_argument('--report-diagnostics', action='store_true',
                         help='Current-output AIR5 NP1/2 restart and report/packed diagnostic gates')
+    parser.add_argument('--source-evaluation', choices=('joint', 'source-only'), default='joint')
+    parser.add_argument('--chemistry-block-size', type=int, choices=(32, 128), default=128)
     args = parser.parse_args()
     if args.report_diagnostics:
         report_diagnostic_gates(args)

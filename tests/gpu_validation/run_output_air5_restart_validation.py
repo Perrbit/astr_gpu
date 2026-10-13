@@ -198,6 +198,11 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
                ASTR_AIR5_CONVECTION_LIMITER="symmetric_species", ASTR_AIR5_DIFFUSION_LIMITER="layered",
                ASTR_AIR5_TOP_MODE=args.top_mode, ASTR_AIR5_TOP_TAU=f"{tau:.17e}",
                ASTR_AIR5_TOP_GPU_VALIDATION="on", ASTR_AIR5_FILTER_VALIDATION="on")
+    env['ASTR_AIR5_SOURCE_EVALUATION'] = getattr(args, 'source_evaluation', 'joint')
+    env['ASTR_AIR5_CHEMISTRY_BLOCK_SIZE'] = str(getattr(args, 'chemistry_block_size', 128))
+    env['ASTR_AIR5_CHEMISTRY_TOLERANCE'] = getattr(args, 'chemistry_tolerance', 'baseline')
+    env['ASTR_AIR5_STEP_HISTORY'] = getattr(args, 'step_history', 'off')
+    env['ASTR_AIR5_COMPENSATION'] = getattr(args, 'compensation', 'on')
     if complete_step_timing:
         env['ASTR_COMPLETE_STEP_TIMING'] = '1'
     if air5_phase_timing:
@@ -369,6 +374,7 @@ def main():
     p.add_argument("--reconstruction", type=int, choices=(0, 3, 5),
                    help="Existing AIR5 selector: default 3 (selective shock) for SBLI, 5 for HBL")
     p.add_argument("--filter-workspace", choices=("scalar", "full"), default="scalar")
+    p.add_argument("--source-evaluation", choices=("joint", "source-only"), default="joint")
     p.add_argument("--rejections", action="store_true")
     p.add_argument("--mean-statistics", action="store_true", help="Preserve raw 44-field legacy statistics")
     p.add_argument("--sample-interval", type=int, choices=(1, 2, 3), default=2)
@@ -456,7 +462,8 @@ def main():
                     if (resumed / "datin/air5_incident_shock.dat").exists():
                         raise AssertionError("original incident resource was not removed")
                     contract = (continuous / final / "air5_config.bin").read_bytes()
-                    if len(contract) != 1640 or contract[:8] != b"ASTRA502":
+                    if (len(contract) != 1768 or contract[:8] != b"ASTRA502" or
+                            contract[1640:].decode("ascii").rstrip() != getattr(args, 'source_evaluation', 'joint')):
                         raise AssertionError("SBLI configuration layout mismatch")
                     top = np.frombuffer(contract[1288:1608], dtype="<f8")
                     if top[4] != 1 or top[38] != int(args.top_mode == "characteristic"):

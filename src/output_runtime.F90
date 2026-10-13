@@ -33,6 +33,7 @@ module output_runtime
 #ifdef ASTR_AIR5_CHEMISTRY
   use commarray, only: tve,spc
   use chemistry_compensation, only: air5_carry,air5_compensated
+  use chemistry_flow_runtime, only: air5_step_history,air5_history_enabled,air5_tolerance_choice
   use chemistry_hbl_boundary, only: complete_air5_top_contract
 #endif
 #ifdef _CUDA
@@ -924,7 +925,7 @@ contains
         call checkpoint_air5_state(path,writing,[ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],hm, &
           q,air5_carry,air5_compensated,rho,vel,prs,tmp,tve,spc,identity,state_host_budget(),MPI_COMM_WORLD, &
           allow_repartition=air5_repartition_case(),restored_exact=matched,refresh_halos=refresh_checkpoint_halos, &
-          repartition_axes=registered_repartition_axes())
+          repartition_axes=registered_repartition_axes(),step_history=air5_step_history)
 #ifdef _CUDA
       endif
 #endif
@@ -986,9 +987,11 @@ contains
       'ASTR_AIR5_PRIMITIVE_REUSE','ASTR_AIR5_CHEMISTRY_REDUCTIONS', &
       'ASTR_AIR5_FILTER_VALIDATION','ASTR_AIR5_C4_CONSERVATION']
     character(128) :: values(10),root_values(10),saved_values(10)
+    character(128) :: source_evaluation,root_source_evaluation,saved_source_evaluation
     character(8) :: magic,expected_magic
     real(real64) :: top(40)
     integer(int64) :: bits(40),root_bits(40),saved_bits(40),saved_crc(4)
+    integer(int64) :: integration_control(2),saved_integration_control(2)
     integer :: i,status,unit,err,closed,ierr,count
     count=air5_resource_count()
     expected_magic='ASTRA501'
@@ -999,11 +1002,23 @@ contains
       call check(status==0.or.status==1,'AIR5 configuration is truncated')
     enddo
     call canonical_air5_modes(values)
+    source_evaluation=''
+    call get_environment_variable('ASTR_AIR5_SOURCE_EVALUATION',source_evaluation,status=status)
+    call check(status==0.or.status==1,'AIR5 source evaluation is truncated')
+    source_evaluation=trim(adjustl(source_evaluation))
+    if(len_trim(source_evaluation)==0) source_evaluation='joint'
+    call check(source_evaluation=='joint'.or.source_evaluation=='source-only','invalid AIR5 source evaluation')
+    call check(use_gpu.or.source_evaluation=='joint','AIR5 source-only evaluation is GPU-only')
+    integration_control=[int(air5_tolerance_choice,int64),merge(1_int64,0_int64,air5_history_enabled)]
     call complete_air5_top_contract(top)
     bits=transfer(top,bits)
     root_values=values; root_bits=bits
     call MPI_Bcast(root_values,1280,MPI_CHARACTER,0,MPI_COMM_WORLD,ierr)
     call check(ierr==MPI_SUCCESS.and.all(root_values==values),'AIR5 runtime modes differ between ranks')
+    root_source_evaluation=source_evaluation
+    call MPI_Bcast(root_source_evaluation,128,MPI_CHARACTER,0,MPI_COMM_WORLD,ierr)
+    call check(ierr==MPI_SUCCESS.and.root_source_evaluation==source_evaluation, &
+      'AIR5 source evaluation differs between ranks')
     call MPI_Bcast(root_bits,40,MPI_INTEGER8,0,MPI_COMM_WORLD,ierr)
     call check(ierr==MPI_SUCCESS.and.all(root_bits==bits),'AIR5 top contract differs between ranks')
     err=0; closed=0
@@ -1012,7 +1027,8 @@ contains
         open(newunit=unit,file=path,status='new',access='stream',form='unformatted', &
           convert='little_endian',action='write',iostat=err)
         if(err==0) then
-          write(unit,iostat=err) expected_magic,values,bits,air5_resource_crc(:count)
+          write(unit,iostat=err) expected_magic,values,bits,air5_resource_crc(:count),source_evaluation
+          if(err==0.and.any(integration_control/=0)) write(unit,iostat=err) integration_control
           close(unit,iostat=closed)
         endif
       endif
@@ -1022,10 +1038,20 @@ contains
         convert='little_endian',action='read',iostat=err)
       call check(err==0,'open AIR5 configuration')
       read(unit,iostat=err) magic,saved_values,saved_bits,saved_crc(:count)
+      call check(err==0,'AIR5 configuration size/tail')
+      ! Batches predating the appended field used the joint evaluator exclusively.
+      saved_source_evaluation='joint'
+      if(.not.checkpoint_stream_at_end(unit)) read(unit,iostat=err) saved_source_evaluation
+      call check(err==0,'AIR5 configuration size/tail')
+      ! No numeric extension means baseline tolerance with history disabled.
+      saved_integration_control=0
+      if(.not.checkpoint_stream_at_end(unit)) read(unit,iostat=err) saved_integration_control
       call check(err==0.and.checkpoint_stream_at_end(unit),'AIR5 configuration size/tail')
       close(unit,iostat=closed)
       call check(err==0.and.closed==0,'read AIR5 configuration')
       call canonical_air5_modes(saved_values)
+      call check(saved_source_evaluation==source_evaluation,'AIR5 source evaluation contract mismatch')
+      call check(all(saved_integration_control==integration_control),'AIR5 integration control contract mismatch')
       call check(magic==expected_magic.and.all(saved_values==values).and.all(saved_bits==bits).and. &
         all(saved_crc(:count)==air5_resource_crc(:count)), &
         'AIR5 source/limiter/compensation/top/resource contract mismatch')

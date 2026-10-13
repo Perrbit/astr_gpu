@@ -141,6 +141,7 @@ contains
   subroutine gpu_after_flowinit()
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_compensation_gpu, only: init_air5_compensation_gpu
+    use chemistry_coupling_gpu, only: init_air5_integration_control_gpu
 #endif
     use halo_exchange_gpu, only: init_halo_transport_gpu
     use mainloop_gpu, only: init_gpu
@@ -183,6 +184,7 @@ contains
     call init_halo_transport_gpu()
 #ifdef ASTR_AIR5_CHEMISTRY
     call init_air5_compensation_gpu()
+    call init_air5_integration_control_gpu()
 #endif
     call init_gpu()
 #ifdef ASTR_AIR5_CHEMISTRY
@@ -203,6 +205,7 @@ contains
   subroutine gpu_before_finalize()
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_compensation_gpu, only: release_air5_compensation_gpu
+    use chemistry_coupling_gpu, only: release_air5_integration_control_gpu
 #endif
     use halo_transport_gpu, only: release_host_buffers
     use inflow_timeseries_gpu, only: release_dynamic_inflow_gpu
@@ -233,6 +236,7 @@ contains
     call release_gpu_arrays()
 #ifdef ASTR_AIR5_CHEMISTRY
     call release_air5_compensation_gpu()
+    call release_air5_integration_control_gpu()
 #endif
   end subroutine gpu_before_finalize
 
