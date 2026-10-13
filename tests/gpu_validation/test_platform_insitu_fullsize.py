@@ -14,6 +14,15 @@ def test_actual_image_publisher_preflight(tmp_path):
     assert gate.publication_preflight(tmp_path)['status'] == 'passed'
 
 
+@pytest.mark.parametrize('value', ['0', '1'])
+def test_preflight_uses_selected_image_formats(tmp_path, monkeypatch, value):
+    monkeypatch.setenv('ASTR_INSITU_WRITE_EPS', value)
+    result = gate.publication_preflight(tmp_path)
+    assert result['image_formats'] == (['jpeg'] if value == '0' else ['jpeg', 'eps'])
+    assert bool(list(tmp_path.rglob('*.eps'))) is (value == '1')
+    assert not list(tmp_path.rglob('*.partial'))
+
+
 def test_explicit_full_gpu_budget_allows_zero_reserve(tmp_path, monkeypatch):
     output = tmp_path/'zero_reserve'
     monkeypatch.setattr(gate.sys, 'argv', [__file__, '--preflight-only', '--output', str(output),
@@ -133,6 +142,23 @@ def test_missing_image_is_recorded_not_promoted_to_pass_or_abort(tmp_path):
     record = gate.inspect_products(case, 10)
     assert not record['publication_complete']
     assert any('Missing image pair' in warning for warning in record['warnings'])
+
+
+def test_product_inspection_respects_jpeg_only(tmp_path, monkeypatch):
+    case = product_case(tmp_path)
+    for path in (case/'outdat/render').glob('*.eps'):
+        path.unlink()
+    monkeypatch.setenv('ASTR_INSITU_WRITE_EPS', '0')
+    assert gate.inspect_products(case, 10)['publication_complete']
+    (case/'outdat/render/velocity_slice.step00000010.jpeg').unlink()
+    assert not gate.inspect_products(case, 10)['publication_complete']
+
+
+def test_default_product_inspection_still_requires_eps(tmp_path, monkeypatch):
+    monkeypatch.delenv('ASTR_INSITU_WRITE_EPS', raising=False)
+    case = product_case(tmp_path)
+    (case/'outdat/render/velocity_slice.step00000010.eps').unlink()
+    assert not gate.inspect_products(case, 10)['publication_complete']
 
 
 def test_host_geometry_still_fails(tmp_path):

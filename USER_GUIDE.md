@@ -1069,8 +1069,14 @@ NP=1/2 x/y/z、两入口/面后端、4步与3+1精确续接及空产品已有短
 目标时间的完整步状态；一个步跨过多个目标时只输出当前状态，不补造过去帧。
 未列入 `product_ids` 的产品不输出。`products` 仍限定可选场景范围。
 
-产品标识由下表场景加 `.image` 或 `.geometry` 构成。`.image` 始终把
-JPEG/EPS 当作一对，不为两种格式分别设时钟。`.geometry` 写出 VTK
+产品标识由下表场景加 `.image` 或 `.geometry` 构成。`.image` 默认把
+JPEG/EPS 当作一对，不为两种格式分别设时钟。严格设备渲染入口
+`standard-device` 和 `direct-device` 可设置 `ASTR_INSITU_WRITE_EPS=0`，
+仅编码和发布 JPEG，不生成 EPS 或其暂存文件；未设置或设为 `1` 时
+保留双格式。其他值报错。各 MPI rank 应使用相同设置，图片记录中的
+`image_formats` 标明实际选择。此开关不影响求解器状态、产品调度、
+像素分辨率或 JPEG 质量，也不改变 `compatible` 渲染入口。
+`.geometry` 写出 VTK
 几何，仅允许 `compatible` 入口；严格设备入口仍禁止几何回读和写出。
 
 | 场景标识 | 对应内容 |

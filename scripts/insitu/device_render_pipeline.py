@@ -25,7 +25,7 @@ from vtkmodules.util.numpy_support import vtk_to_numpy
 
 sys.path.insert(0, str(Path(catalyst.get_script_filename()).resolve().parent))
 from egl_identity import EGL
-from image_publication import publish_pair, RECOVERABLE_ERRNOS
+from image_publication import publish_pair, eps_output_enabled, RECOVERABLE_ERRNOS
 import product_dispatch as dispatch
 from streamline_preview import seed_projection, retain_display_resources
 
@@ -35,6 +35,7 @@ if len(arguments) not in (4, 5) or arguments[3] not in (
     raise RuntimeError('Strict rendering requires an explicit resident pipeline')
 output = Path(arguments[0])
 expected_uuid, profile, pipeline = arguments[1:4]
+write_eps = eps_output_enabled()
 preview_payload = json.loads(arguments[4]) if len(arguments) == 5 else {}
 streamline_views = preview_payload.get('candidates', [])
 preview_source = preview_payload.get('source')
@@ -741,7 +742,7 @@ def render_product(name, item, step, time, points, cells):
             encoding_start = perf_counter()
             if image is None or tuple(image.GetDimensions()) != (*size, 1):
                 raise RuntimeError('Missing collective image')
-            eps = io.BytesIO()
+            eps = io.BytesIO() if write_eps else None
             if profile == 'm12_diagnostics':
                 scalars = image.GetPointData().GetScalars()
                 rgb = vtk_to_numpy(scalars).reshape(size[1], size[0], scalars.GetNumberOfComponents())[::-1, :, :3]
@@ -749,7 +750,8 @@ def render_product(name, item, step, time, points, cells):
                 encoded = io.BytesIO()
                 raw.save(encoded, format='JPEG', quality=95, dpi=(300, 300))
                 jpeg = encoded.getvalue()
-                raw.save(eps, format='EPS')
+                if write_eps:
+                    raw.save(eps, format='EPS')
             else:
                 writer = vtkJPEGWriter()
                 writer.SetInputData(image)
@@ -760,11 +762,13 @@ def render_product(name, item, step, time, points, cells):
                 if writer.GetErrorCode() or writer.GetResult() is None:
                     raise RuntimeError('Image encoding failed')
                 jpeg = vtk_to_numpy(writer.GetResult()).tobytes()
-                with Image.open(io.BytesIO(jpeg)) as decoded:
-                    decoded.convert('RGB').save(eps, format='EPS')
+                if write_eps:
+                    with Image.open(io.BytesIO(jpeg)) as decoded:
+                        decoded.convert('RGB').save(eps, format='EPS')
             encoding_seconds = perf_counter() - encoding_start
             publication_start = perf_counter()
-            failure = publish_pair(output / f'{name}.step{step:08d}.jpeg', jpeg, eps.getvalue())
+            failure = publish_pair(output / f'{name}.step{step:08d}.jpeg', jpeg,
+                                   eps.getvalue() if write_eps else None)
             publication_seconds = perf_counter() - publication_start
         except Exception as exc:
             error = str(exc)
@@ -803,7 +807,8 @@ def render_product(name, item, step, time, points, cells):
     result = {'egl_uuid': actual, 'color_field': item['color'], 'color_range': item['color_range'],
         'scalar_bar_visible': bool(item['legend'].Visibility), 'scalar_bar_label_color': [0., 0., 0.],
         'local_points': points, 'local_cells': cells, 'image': 'published' if code == 0 else receipt,
-        'lighting_enabled': bool(item['actor'].GetProperty().GetLighting())}
+        'lighting_enabled': bool(item['actor'].GetProperty().GetLighting()),
+        'image_formats': ['jpeg', 'eps'] if write_eps else ['jpeg']}
     if 'plane' in item:
         result['plane']=item['plane']
     if profile in ('boundary_layer', 'm12_diagnostics'):
@@ -816,8 +821,10 @@ def render_product(name, item, step, time, points, cells):
         local.InsertNextValue(cells)
         total.SetNumberOfTuples(1)
         controller.AllReduce(local, total, vtkCommunicator.SUM_OP)
-        result.update(image_size=size, jpeg_quality=95, dpi=300, eps_source='original screenshot RGB',
+        result.update(image_size=size, jpeg_quality=95, dpi=300,
                       global_cells=total.GetValue(0), empty=total.GetValue(0) == 0)
+        if write_eps:
+            result['eps_source'] = 'original screenshot RGB'
         if 'presentation' in item:
             result['presentation'] = item['presentation']
             if 'streamlines' in name:

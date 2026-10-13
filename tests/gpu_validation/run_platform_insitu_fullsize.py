@@ -24,7 +24,7 @@ from insitu_resource_monitor import run_monitored
 ROOT = Path(__file__).resolve().parents[2]
 GIB = 1024**3
 sys.path.insert(0, str(ROOT/'scripts/insitu'))
-from image_publication import publish_pair
+from image_publication import publish_pair, eps_output_enabled
 
 
 def save(path, record):
@@ -32,29 +32,37 @@ def save(path, record):
 
 
 def publication_preflight(directory):
-    """Exercise the actual fsync/hard-link JPEG/EPS publisher on the destination FS."""
+    """Exercise the selected image formats on the destination filesystem."""
+    write_eps = eps_output_enabled()
     work = Path(tempfile.mkdtemp(prefix='image-publication-', dir=directory))
     image = Image.new('RGB', (8, 8), (170, 20, 40))
-    jpeg, eps = io.BytesIO(), io.BytesIO()
+    jpeg = io.BytesIO()
+    eps = io.BytesIO() if write_eps else None
     image.save(jpeg, 'JPEG', quality=95, dpi=(300, 300))
-    image.save(eps, 'EPS')
+    if write_eps:
+        image.save(eps, 'EPS')
     path = work/'probe.jpeg'
-    failure = publish_pair(path, jpeg.getvalue(), eps.getvalue())
+    eps_bytes = eps.getvalue() if write_eps else None
+    failure = publish_pair(path, jpeg.getvalue(), eps_bytes)
     if failure:
         raise OSError(f'Image filesystem preflight failed: {failure}; {work}')
     with Image.open(path) as decoded:
         decoded.load()
         if decoded.size != (8, 8):
             raise ValueError('Published JPEG cannot be decoded')
-    if path.with_suffix('.eps').read_bytes() != eps.getvalue() or list(work.glob('*.partial')):
-        raise ValueError('Incomplete published image pair')
+    if write_eps and path.with_suffix('.eps').read_bytes() != eps_bytes:
+        raise ValueError('Incomplete published EPS')
+    if list(work.glob('*.partial')):
+        raise ValueError('Incomplete image publication')
     try:
-        publish_pair(path, jpeg.getvalue(), eps.getvalue())
+        publish_pair(path, jpeg.getvalue(), eps_bytes)
     except FileExistsError:
         pass
     else:
         raise ValueError('Image publisher overwrote an existing frame')
-    result = dict(status='passed', directory=str(work), checks=['JPEG decode', 'EPS bytes',
+    result = dict(status='passed', directory=str(work),
+        image_formats=['jpeg', 'eps'] if write_eps else ['jpeg'],
+        checks=['JPEG decode']+(['EPS bytes'] if write_eps else [])+[
         'fsync and hard-link publication', 'no partial files', 'existing destination protected'])
     save(work/'report.json', result)
     return result
@@ -197,6 +205,7 @@ def compact_diagnostics(case, shape, steps):
 
 def inspect_products(case, steps, profile='all'):
     directory = case/'outdat/render'
+    write_eps = eps_output_enabled()
     required = {'q_surface', 'q_surface.local', 'instantaneous_streamlines', 'velocity_slice',
         'temperature_slice', 'spanwise_slice'} | {f'{field}.x{100*n}_{100*(n+1)}'
             for field in ('velocity_slice', 'temperature_slice') for n in range(3)}
@@ -224,8 +233,9 @@ def inspect_products(case, steps, profile='all'):
             frames.append(dict(step=step, rank=rank, products=sorted(receipt['products'])))
         for name in required:
             path = directory/f'{name}.step{step:08d}.jpeg'
-            if not path.is_file() or not path.with_suffix('.eps').is_file():
-                warnings.append(f'Missing image pair: {path.name}')
+            if not path.is_file() or (write_eps and not path.with_suffix('.eps').is_file()):
+                label = 'image pair' if write_eps else 'JPEG image'
+                warnings.append(f'Missing {label}: {path.name}')
                 continue
             try:
                 with Image.open(path) as image:
