@@ -1,0 +1,465 @@
+module air5_filter_multidim_fixture
+  use iso_fortran_env, only: real64
+  use cudafor
+  use air5_filter_flux_fixture, only: coefficients,face_bounds,thermal_limit
+  use chemistry_model, only: air5_close_species_flux
+  use chemistry_model_gpu, only: air5_close_species_flux_gpu
+  use chemistry_compensation, only: compensated_add
+  use chemistry_filter_math, only: filter_state_magnitude
+  implicit none
+  integer, parameter :: hm=5,threads=128
+contains
+  attributes(host,device) subroutine index3(index,nx,ny,i,j,k)
+    integer, value :: index,nx,ny
+    integer, intent(out) :: i,j,k
+    i=modulo(index,nx)
+    j=modulo(index/nx,ny)
+    k=index/(nx*ny)
+  end subroutine
+
+  attributes(host,device) subroutine raw_face(q,carry,nx,ny,nz,i,j,k,axis,use_carry,high,left,right,left_magnitude,right_magnitude)
+    integer, value :: nx,ny,nz,i,j,k,axis
+    logical, value :: use_carry
+    real(real64), intent(in) :: q(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm), &
+      carry(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm)
+    real(real64), intent(out) :: high(11),left(11),right(11),left_magnitude(11),right_magnitude(11)
+    real(real64) :: pairs,pair
+    integer :: a(3),b(3),component,m,r
+    a=[i,j,k]; b=a; b(axis)=b(axis)+1
+    left=q(:,i,j,k); right=q(:,b(1),b(2),b(3))
+    left_magnitude=abs(left); right_magnitude=abs(right)
+    if(use_carry) then
+      call filter_state_magnitude(left,carry(:,i,j,k),left_magnitude)
+      call filter_state_magnitude(right,carry(:,b(1),b(2),b(3)),right_magnitude)
+      left=left-carry(:,i,j,k)
+      right=right-carry(:,b(1),b(2),b(3))
+    endif
+    do component=1,11
+      high(component)=0.0_real64
+      do m=1,5
+        pairs=0.0_real64
+        do r=0,m-1
+          a=[i,j,k]; b=a; a(axis)=a(axis)-r; b(axis)=b(axis)+r+1
+          pair=q(component,b(1),b(2),b(3))-q(component,a(1),a(2),a(3))
+          if(use_carry) pair=pair-(carry(component,b(1),b(2),b(3))-carry(component,a(1),a(2),a(3)))
+          pairs=pairs+pair
+        enddo
+        high(component)=high(component)+coefficients(m)*pairs
+      enddo
+    enddo
+  end subroutine
+
+  subroutine cpu_faces3(q,carry,nx,ny,nz,axis,use_carry,tr,v,high,flux,ratios,status)
+    integer, intent(in) :: nx,ny,nz,axis
+    logical, intent(in) :: use_carry
+    real(real64), intent(in) :: q(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm), &
+      carry(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm),tr(5),v(5)
+    real(real64), intent(out) :: high(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm), &
+      flux(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm),ratios(0:nx-1,0:ny-1,0:nz-1)
+    integer, intent(out) :: status(0:nx-1,0:ny-1,0:nz-1)
+    real(real64) :: left(11),right(11),candidate(11),lower(5),upper(5),mass,left_magnitude(11),right_magnitude(11)
+    integer :: i,j,k
+    status=0
+    do k=0,nz-1
+      do j=0,ny-1
+        do i=0,nx-1
+          call raw_face(q,carry,nx,ny,nz,i,j,k,axis,use_carry,high(:,i,j,k),left,right,left_magnitude,right_magnitude)
+          call face_bounds(left,right,high(:,i,j,k),lower,upper,mass)
+          candidate=high(:,i,j,k); candidate(1)=mass
+          call air5_close_species_flux(candidate(6:10),lower,upper,mass,flux(6:10,i,j,k),status(i,j,k))
+          if(status(i,j,k)/=0) return
+          candidate(6:10)=flux(6:10,i,j,k)
+          call thermal_limit(left,right,candidate,tr,v,flux(:,i,j,k),ratios(i,j,k),status(i,j,k), &
+            left_magnitude,right_magnitude,use_carry)
+          if(status(i,j,k)/=0) return
+        enddo
+      enddo
+    enddo
+  end subroutine
+
+  attributes(global) subroutine gpu_faces3(q,carry,nx,ny,nz,axis,use_carry,tr,v,high,flux,ratios,status)
+    integer, value :: nx,ny,nz,axis
+    logical, value :: use_carry
+    real(real64), device, intent(in) :: q(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm), &
+      carry(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm),tr(5),v(5)
+    real(real64), device, intent(out) :: high(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm), &
+      flux(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm),ratios(0:nx-1,0:ny-1,0:nz-1)
+    integer, device, intent(out) :: status(0:nx-1,0:ny-1,0:nz-1)
+    real(real64) :: left(11),right(11),candidate(11),lower(5),upper(5),mass,left_magnitude(11),right_magnitude(11)
+    integer :: index,i,j,k
+    index=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(index>=nx*ny*nz) return
+    call index3(index,nx,ny,i,j,k)
+    call raw_face(q,carry,nx,ny,nz,i,j,k,axis,use_carry,high(:,i,j,k),left,right,left_magnitude,right_magnitude)
+    call face_bounds(left,right,high(:,i,j,k),lower,upper,mass)
+    candidate=high(:,i,j,k); candidate(1)=mass
+    call air5_close_species_flux_gpu(high(6:10,i,j,k),lower,upper,mass,candidate(6:10),status(i,j,k))
+    if(status(i,j,k)/=0) return
+    call thermal_limit(left,right,candidate,tr,v,flux(:,i,j,k),ratios(i,j,k),status(i,j,k), &
+      left_magnitude,right_magnitude,use_carry)
+  end subroutine
+
+  attributes(host,device) subroutine update_component(q,carry,flux,nx,ny,nz,i,j,k,axis,component,use_carry,h,c)
+    integer, value :: nx,ny,nz,i,j,k,axis,component
+    logical, value :: use_carry
+    real(real64), intent(in) :: q(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm), &
+      carry(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm),flux(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm)
+    real(real64), intent(out) :: h,c
+    integer :: a(3)
+    a=[i,j,k]; a(axis)=a(axis)-1
+    h=q(component,i,j,k); c=carry(component,i,j,k)
+    if(flux(component,i,j,k)==0.0_real64.and.flux(component,a(1),a(2),a(3))==0.0_real64) return
+    if(use_carry) then
+      call compensated_add(h,c,flux(component,i,j,k))
+      call compensated_add(h,c,-flux(component,a(1),a(2),a(3)))
+    else
+      h=(h+flux(component,i,j,k))-flux(component,a(1),a(2),a(3))
+      c=0.0_real64
+    endif
+  end subroutine
+
+  attributes(global) subroutine gpu_work(q,carry,flux,nx,ny,nz,axis,component,use_carry,work,work_c)
+    integer, value :: nx,ny,nz,axis,component
+    logical, value :: use_carry
+    real(real64), device, intent(in) :: q(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm), &
+      carry(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm),flux(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm)
+    real(real64), device, intent(out) :: work(0:nx-1,0:ny-1,0:nz-1),work_c(0:nx-1,0:ny-1,0:nz-1)
+    integer :: index,i,j,k
+    index=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(index>=nx*ny*nz) return
+    call index3(index,nx,ny,i,j,k)
+    call update_component(q,carry,flux,nx,ny,nz,i,j,k,axis,component,use_carry,work(i,j,k),work_c(i,j,k))
+  end subroutine
+
+  attributes(global) subroutine gpu_copy(q,carry,nx,ny,nz,component,work,work_c)
+    integer, value :: nx,ny,nz,component
+    real(real64), device, intent(inout) :: q(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm), &
+      carry(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm)
+    real(real64), device, intent(in) :: work(0:nx-1,0:ny-1,0:nz-1),work_c(0:nx-1,0:ny-1,0:nz-1)
+    integer :: index,i,j,k
+    index=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(index>=nx*ny*nz) return
+    call index3(index,nx,ny,i,j,k)
+    q(component,i,j,k)=work(i,j,k); carry(component,i,j,k)=work_c(i,j,k)
+  end subroutine
+end module
+
+program air5_filter_multidim_probe
+  use iso_fortran_env, only: real64,int32,int64
+  use mpi
+  use air5_filter_multidim_fixture
+  use chemistry_air5_data, only: air5_formation_energy,air5_temperature_min_k
+  use chemistry_thermo, only: air5_species_cv_tr,air5_species_vibrational_energy, &
+    air5_temperature_from_q5,air5_tv_from_ev,air5_pressure
+  use air5_filter_flux_fixture, only: lower_admissible
+  use chemistry_filter_math, only: filter_pressure_energy_floor,filter_pressure_represented_admissible
+  use gpu_check, only: sync_after_kernel
+  implicit none
+  integer :: ierr,rank,nranks,comm,dims(3),coords(3),n(3),offset(3),slab,axes(3),naxes,axis,ia
+  integer :: nx,ny,nz,nwork,component,slot,i,j,k,s,unit,status_local,status_global,device_count,blocks
+  integer :: header(3),st,low,up,sendcount,a(3),b(3),idx,layer,other1,other2,t1,t2,pass
+  integer :: limited_local,limited_global
+  integer(int64) :: position,global_values,host_bytes,device_bytes,halo_values,owned_values,buffer_values
+  integer, allocatable :: statuses(:,:,:)
+  integer, allocatable, device :: statuses_d(:,:,:)
+  logical :: periods(3),use_carry,use_gpu,full
+  real(real64) :: tr(5),v(5),state(11),temperature,tv,pressure,ratio_min_local,ratio_min_global
+  real(real64), allocatable :: q(:,:,:,:),carry(:,:,:,:),high(:,:,:,:),flux(:,:,:,:),ratios(:,:,:)
+  real(real64), allocatable :: source(:,:,:,:),source_c(:,:,:,:),work(:,:,:,:),work_c(:,:,:,:)
+  real(real64), allocatable :: sendlow(:),sendup(:),recvlow(:),recvup(:)
+  real(real64), allocatable, device :: q_d(:,:,:,:),carry_d(:,:,:,:),high_d(:,:,:,:),flux_d(:,:,:,:)
+  real(real64), allocatable, device :: work_d(:,:,:,:),work_c_d(:,:,:,:),ratios_d(:,:,:),tr_d(:),v_d(:)
+  character(4096) :: backend,storage,carry_mode,input_path,prefix,arg,output_path
+  call MPI_Init(ierr)
+  call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
+  call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
+  if(command_argument_count()/=7) call fail('requires backend, storage, carry, input, output prefix, slab, axes')
+  call get_command_argument(1,backend); call get_command_argument(2,storage)
+  call get_command_argument(3,carry_mode); call get_command_argument(4,input_path)
+  call get_command_argument(5,prefix); call get_command_argument(6,arg); read(arg,*) slab
+  call get_command_argument(7,arg)
+  select case(trim(arg))
+  case('1','2','3')
+    naxes=1; read(arg,*) axes(1)
+  case('123')
+    naxes=3; axes=[1,2,3]
+  case default
+    call fail('invalid axis sequence')
+  end select
+  if(trim(backend)/='cpu'.and.trim(backend)/='gpu') call fail('invalid backend')
+  if(trim(storage)/='scalar'.and.trim(storage)/='full') call fail('invalid storage')
+  if(trim(carry_mode)/='off'.and.trim(carry_mode)/='on') call fail('invalid carry mode')
+  if(nranks/=1.and.nranks/=2) call fail('approved probe requires NP=1/2')
+  if(nranks==1.and.slab/=0) call fail('NP=1 requires slab=0')
+  if(nranks==2.and.(slab<1.or.slab>3)) call fail('NP=2 requires slab=1/2/3')
+  use_gpu=trim(backend)=='gpu'; use_carry=trim(carry_mode)=='on'; full=trim(storage)=='full'
+  dims=1; if(slab>0) dims(slab)=nranks
+  periods=.true.
+  call MPI_Cart_create(MPI_COMM_WORLD,3,dims,periods,.false.,comm,ierr)
+  call MPI_Cart_coords(comm,rank,3,coords,ierr)
+  n=32/dims; offset=coords*n; nx=n(1); ny=n(2); nz=n(3)
+  nwork=1; if(full) nwork=11
+  owned_values=int(11,int64)*product(n)
+  halo_values=int(11,int64)*product(n+2*hm+1)
+  buffer_values=int(22*hm,int64)*max((nx+1)*(ny+1),(nx+1)*(nz+1),(ny+1)*(nz+1))
+  host_bytes=8*(4*halo_values+2*owned_values+2*int(nwork,int64)*product(n)+4*buffer_values)+12_int64*product(n)
+  device_bytes=0
+  if(use_gpu) device_bytes=8*(4*halo_values+2*int(nwork,int64)*product(n)+10)+12_int64*product(n)
+  if(host_bytes>64_int64*1024**2.or.device_bytes>64_int64*1024**2) call fail('controlled allocation budget exceeded')
+  allocate(q(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm),carry(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm), &
+    high(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm),flux(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm), &
+    source(11,0:nx-1,0:ny-1,0:nz-1),source_c(11,0:nx-1,0:ny-1,0:nz-1), &
+    work(0:nx-1,0:ny-1,0:nz-1,nwork),work_c(0:nx-1,0:ny-1,0:nz-1,nwork), &
+    ratios(0:nx-1,0:ny-1,0:nz-1),statuses(0:nx-1,0:ny-1,0:nz-1), &
+    sendlow(buffer_values),sendup(buffer_values),recvlow(buffer_values),recvup(buffer_values))
+  q=0.0_real64; carry=0.0_real64; high=0.0_real64; flux=0.0_real64
+  open(newunit=unit,file=trim(input_path),status='old',access='stream',form='unformatted',action='read')
+  read(unit) header
+  if(any(header/=32)) call fail('requires 32^3 unique periodic nodes')
+  global_values=11_int64*32**3
+  do k=0,nz-1
+    do j=0,ny-1
+      position=13_int64+8*11_int64*(offset(1)+32_int64*(j+offset(2)+32_int64*(k+offset(3))))
+      read(unit,pos=position) q(:,0:nx-1,j,k)
+      read(unit,pos=position+8*global_values) carry(:,0:nx-1,j,k)
+    enddo
+  enddo
+  close(unit)
+  if(.not.use_carry) carry=0.0_real64
+  do s=1,5
+    tr(s)=air5_formation_energy(s)+air5_temperature_min_k*air5_species_cv_tr(s)
+    v(s)=air5_species_vibrational_energy(s,air5_temperature_min_k)
+  enddo
+  if(use_gpu) then
+    ierr=cudaGetDeviceCount(device_count)
+    if(ierr/=0.or.device_count<nranks) call fail('requires one visible GPU per rank')
+    ierr=cudaSetDevice(rank)
+    if(ierr/=0) call fail('cudaSetDevice failed')
+    allocate(q_d(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm),carry_d(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm), &
+      high_d(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm),flux_d(11,-hm:nx+hm,-hm:ny+hm,-hm:nz+hm), &
+      work_d(0:nx-1,0:ny-1,0:nz-1,nwork),work_c_d(0:nx-1,0:ny-1,0:nz-1,nwork), &
+      ratios_d(0:nx-1,0:ny-1,0:nz-1),statuses_d(0:nx-1,0:ny-1,0:nz-1),tr_d(5),v_d(5))
+    tr_d=tr; v_d=v; high_d=0.0_real64; flux_d=0.0_real64
+    blocks=(nx*ny*nz+threads-1)/threads
+  endif
+  limited_local=0; ratio_min_local=1.0_real64
+  do ia=1,naxes
+    axis=axes(ia)
+    call refresh_all()
+    call check_states()
+    source=q(:,0:nx-1,0:ny-1,0:nz-1); source_c=carry(:,0:nx-1,0:ny-1,0:nz-1)
+    statuses=0
+    if(use_gpu) then
+      q_d=q; carry_d=carry; statuses_d=0
+      call gpu_faces3<<<blocks,threads>>>(q_d,carry_d,nx,ny,nz,axis,use_carry,tr_d,v_d, &
+        high_d,flux_d,ratios_d,statuses_d)
+      call sync_after_kernel('t3_p1_faces',force_sync=.true.)
+      statuses=statuses_d; high=high_d; flux=flux_d; ratios=ratios_d
+    else
+      call cpu_faces3(q,carry,nx,ny,nz,axis,use_carry,tr,v,high,flux,ratios,statuses)
+    endif
+    status_local=maxval(statuses)
+    call MPI_Allreduce(status_local,status_global,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(status_global/=0) then
+      write(*,*) 'face failure rank,axis,status ',rank,axis,status_local
+      if(status_local/=0) call dump_face_failure()
+      call fail('face projection/energy gate failed before commit')
+    endif
+    limited_local=limited_local+count(ratios<1.0_real64)
+    ratio_min_local=min(ratio_min_local,minval(ratios))
+    call publish_incoming_face()
+    if(use_gpu) flux_d=flux
+    do component=1,11
+      slot=1; if(full) slot=component
+      if(use_gpu) then
+        call gpu_work<<<blocks,threads>>>(q_d,carry_d,flux_d,nx,ny,nz,axis,component,use_carry, &
+          work_d(:,:,:,slot),work_c_d(:,:,:,slot))
+        call sync_after_kernel('t3_p1_work',force_sync=.true.)
+      else
+        do k=0,nz-1
+          do j=0,ny-1
+            do i=0,nx-1
+              call update_component(q,carry,flux,nx,ny,nz,i,j,k,axis,component,use_carry, &
+                work(i,j,k,slot),work_c(i,j,k,slot))
+            enddo
+          enddo
+        enddo
+      endif
+      if(.not.full) call copy_component(component,slot)
+    enddo
+    if(full) then
+      do component=1,11
+        call copy_component(component,component)
+      enddo
+    endif
+    if(use_gpu) then
+      q=q_d; carry=carry_d
+    endif
+    call check_states()
+  enddo
+  call refresh_all()
+  call MPI_Allreduce(limited_local,limited_global,1,MPI_INTEGER,MPI_SUM,comm,ierr)
+  call MPI_Allreduce(ratio_min_local,ratio_min_global,1,MPI_DOUBLE_PRECISION,MPI_MIN,comm,ierr)
+  write(output_path,'(A,A,I0,A)') trim(prefix),'.rank',rank,'.bin'
+  open(newunit=unit,file=trim(output_path),status='new',access='stream',form='unformatted',action='write')
+  write(unit) int([n,offset,rank,nranks],int32)
+  write(unit) q(:,0:nx,0:ny,0:nz),carry(:,0:nx,0:ny,0:nz),source,source_c, &
+    high(:,0:nx-1,0:ny-1,0:nz-1),flux(:,0:nx-1,0:ny-1,0:nz-1),tr,v, &
+    air5_formation_energy,filter_pressure_energy_floor
+  close(unit)
+  write(*,*) 'PASS rank,host_bytes,device_bytes ',rank,host_bytes,device_bytes
+  if(rank==0) write(*,*) 'energy_limited_faces,min_ratio ',limited_global,ratio_min_global
+  if(use_gpu) deallocate(q_d,carry_d,high_d,flux_d,work_d,work_c_d,ratios_d,statuses_d,tr_d,v_d)
+  call MPI_Comm_free(comm,ierr)
+  call MPI_Finalize(ierr)
+contains
+  subroutine dump_face_failure()
+    real(real64) :: left(11),right(11),raw(11),lower(5),upper(5),mass,left_magnitude(11),right_magnitude(11)
+    integer :: ii,jj,kk
+    do kk=0,nz-1
+      do jj=0,ny-1
+        do ii=0,nx-1
+          if(statuses(ii,jj,kk)==0) cycle
+          call raw_face(q,carry,nx,ny,nz,ii,jj,kk,axis,use_carry,raw,left,right,left_magnitude,right_magnitude)
+          call face_bounds(left,right,high(:,ii,jj,kk),lower,upper,mass)
+          write(output_path,'(A,A,I0,A)') trim(prefix),'.face_failure.rank',rank,'.dat'
+          open(newunit=unit,file=trim(output_path),status='new',action='write')
+          write(unit,'(6(I0,1X))') rank,axis,ii,jj,kk,statuses(ii,jj,kk)
+          write(unit,'(16(ES25.17,1X))') high(6:10,ii,jj,kk),lower,upper,mass
+          write(unit,'(22(ES25.17,1X))') left,right
+          close(unit)
+          return
+        enddo
+      enddo
+    enddo
+  end subroutine
+
+  subroutine fail(message)
+    character(*), intent(in) :: message
+    write(*,*) trim(message)
+    call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+  end subroutine
+
+  subroutine copy_component(c,work_slot)
+    integer, intent(in) :: c,work_slot
+    if(use_gpu) then
+      call gpu_copy<<<blocks,threads>>>(q_d,carry_d,nx,ny,nz,c,work_d(:,:,:,work_slot),work_c_d(:,:,:,work_slot))
+      call sync_after_kernel('t3_p1_copy',force_sync=.true.)
+    else
+      q(c,0:nx-1,0:ny-1,0:nz-1)=work(:,:,:,work_slot)
+      carry(c,0:nx-1,0:ny-1,0:nz-1)=work_c(:,:,:,work_slot)
+    endif
+  end subroutine
+
+  subroutine refresh_all()
+    integer :: direction
+    ! Endpoint aliases and transverse corners are copies, never shared-node means.
+    do pass=1,2
+      do direction=1,3
+        call MPI_Cart_shift(comm,direction-1,1,low,up,ierr)
+        other1=modulo(direction,3)+1; other2=modulo(direction+1,3)+1
+        idx=0
+        do t2=0,n(other2)
+          do t1=0,n(other1)
+            do layer=0,hm-1
+              a=0; a(other1)=t1; a(other2)=t2; a(direction)=layer
+              b=a; b(direction)=n(direction)-hm+layer
+              sendlow(idx+1:idx+11)=q(:,a(1),a(2),a(3))
+              sendlow(idx+12:idx+22)=carry(:,a(1),a(2),a(3))
+              sendup(idx+1:idx+11)=q(:,b(1),b(2),b(3))
+              sendup(idx+12:idx+22)=carry(:,b(1),b(2),b(3))
+              idx=idx+22
+            enddo
+          enddo
+        enddo
+        sendcount=idx
+        call MPI_Sendrecv(sendlow,sendcount,MPI_DOUBLE_PRECISION,low,10,recvup,sendcount, &
+          MPI_DOUBLE_PRECISION,up,10,comm,MPI_STATUS_IGNORE,ierr)
+        call MPI_Sendrecv(sendup,sendcount,MPI_DOUBLE_PRECISION,up,11,recvlow,sendcount, &
+          MPI_DOUBLE_PRECISION,low,11,comm,MPI_STATUS_IGNORE,ierr)
+        idx=0
+        do t2=0,n(other2)
+          do t1=0,n(other1)
+            do layer=0,hm-1
+              a=0; a(other1)=t1; a(other2)=t2; a(direction)=n(direction)+layer
+              b=a; b(direction)=layer-hm
+              q(:,a(1),a(2),a(3))=recvup(idx+1:idx+11)
+              carry(:,a(1),a(2),a(3))=recvup(idx+12:idx+22)
+              q(:,b(1),b(2),b(3))=recvlow(idx+1:idx+11)
+              carry(:,b(1),b(2),b(3))=recvlow(idx+12:idx+22)
+              idx=idx+22
+            enddo
+          enddo
+        enddo
+      enddo
+    enddo
+  end subroutine
+
+  subroutine publish_incoming_face()
+    call MPI_Cart_shift(comm,axis-1,1,low,up,ierr)
+    other1=modulo(axis,3)+1; other2=modulo(axis+1,3)+1
+    idx=0
+    do t2=0,n(other2)-1
+      do t1=0,n(other1)-1
+        a=0; a(axis)=n(axis)-1; a(other1)=t1; a(other2)=t2
+        sendup(idx+1:idx+11)=flux(:,a(1),a(2),a(3)); idx=idx+11
+      enddo
+    enddo
+    sendcount=idx
+    call MPI_Sendrecv(sendup,sendcount,MPI_DOUBLE_PRECISION,up,12,recvlow,sendcount, &
+      MPI_DOUBLE_PRECISION,low,12,comm,MPI_STATUS_IGNORE,ierr)
+    idx=0
+    do t2=0,n(other2)-1
+      do t1=0,n(other1)-1
+        a=0; a(axis)=-1; a(other1)=t1; a(other2)=t2
+        flux(:,a(1),a(2),a(3))=recvlow(idx+1:idx+11); idx=idx+11
+      enddo
+    enddo
+  end subroutine
+
+  subroutine check_states()
+    status_local=0
+    do k=0,nz-1
+      do j=0,ny-1
+        do i=0,nx-1
+          state=q(:,i,j,k)
+          if(use_carry) state=state-carry(:,i,j,k)
+          if(.not.lower_admissible(state,tr,v)) then
+            status_local=3
+          else if(use_carry.and..not.filter_pressure_represented_admissible(q(:,i,j,k),carry(:,i,j,k))) then
+            status_local=3
+          else
+            call air5_temperature_from_q5(state(1),state(2:4),state(6:10),state(11),state(5),temperature,st)
+            if(st==0) call air5_tv_from_ev(state(6:10),state(11),tv,st)
+            if(st==0) call air5_pressure(state(6:10),temperature,pressure,st)
+            if(st/=0) then
+              status_local=st
+            else if(temperature<300.0_real64.or.temperature>8000.0_real64.or. &
+              tv<300.0_real64.or.tv>8000.0_real64.or.pressure<1.0e3_real64.or.pressure>1.0e6_real64) then
+              status_local=4
+            endif
+          endif
+          if(status_local/=0) exit
+        enddo
+        if(status_local/=0) exit
+      enddo
+      if(status_local/=0) exit
+    enddo
+    call MPI_Allreduce(status_local,status_global,1,MPI_INTEGER,MPI_MAX,comm,ierr)
+    if(status_global/=0) then
+      write(*,*) 'state failure rank,axis,status,i,j,k ',rank,axis,status_local,i,j,k
+      if(status_local/=0) then
+        write(*,'(A,11(ES25.17,1X))') 'failed_state=',state
+        write(*,'(A,5(ES25.17,1X))') 'v_floor=',v
+        write(*,'(A,5(ES25.17,1X))') 'tr_floor=',tr
+      endif
+      write(output_path,'(A,A,I0,A)') trim(prefix),'.failed.rank',rank,'.bin'
+      open(newunit=unit,file=trim(output_path),status='new',access='stream',form='unformatted',action='write')
+      write(unit) int([n,offset,rank,nranks,axis],int32)
+      write(unit) q(:,0:nx-1,0:ny-1,0:nz-1),carry(:,0:nx-1,0:ny-1,0:nz-1),source,source_c, &
+        high(:,0:nx-1,0:ny-1,0:nz-1),flux(:,0:nx-1,0:ny-1,0:nz-1),tr,v
+      close(unit)
+      call fail('state/EOS gate failed')
+    endif
+  end subroutine
+end program

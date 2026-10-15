@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from run_air5_performance_diagnosis import batch_identity, digest
+from air5_checkpoint_contract import read_air5_contract
 from run_output_air5_restart_validation import launch, state_sanity, DT
 from run_output_restart_validation import compare_fields
 from test_air5_source_evaluation_restart import modified_batch
@@ -81,9 +82,9 @@ def test_full_field_control_exact_restart(reference, tmp_path, record_property):
     config = (resumed / FINAL / 'air5_config.bin').read_bytes()
     assert config == (full / FINAL / 'air5_config.bin').read_bytes()
     assert len(config) == 1784
-    assert np.frombuffer(config[-16:], dtype='<i8').tolist() == [
+    assert read_air5_contract(config)['integration_control'] == (
         {'baseline': 0, 'loose': 1, 'tight': 2}[args.chemistry_tolerance],
-        int(args.step_history == 'previous')]
+        int(args.step_history == 'previous'))
     full_stats = np.loadtxt(full / 'flowstate.dat', skiprows=1, ndmin=2)
     resumed_stats = np.loadtxt(resumed / 'flowstate.dat', skiprows=1, ndmin=2)
     assert full_stats[full_stats[:, 0] >= 5].tobytes() == resumed_stats.tobytes()

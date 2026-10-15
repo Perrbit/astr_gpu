@@ -33,7 +33,8 @@ module output_runtime
 #ifdef ASTR_AIR5_CHEMISTRY
   use commarray, only: tve,spc
   use chemistry_compensation, only: air5_carry,air5_compensated
-  use chemistry_flow_runtime, only: air5_step_history,air5_history_enabled,air5_tolerance_choice
+  use chemistry_flow_runtime, only: air5_step_history,air5_history_enabled,air5_tolerance_choice, &
+    air5_conservative_filter,air5_filter_identity
   use chemistry_hbl_boundary, only: complete_air5_top_contract
 #endif
 #ifdef _CUDA
@@ -988,10 +989,11 @@ contains
       'ASTR_AIR5_FILTER_VALIDATION','ASTR_AIR5_C4_CONSERVATION']
     character(128) :: values(10),root_values(10),saved_values(10)
     character(128) :: source_evaluation,root_source_evaluation,saved_source_evaluation
-    character(8) :: magic,expected_magic
+    character(8) :: magic,expected_magic,filter_magic
     real(real64) :: top(40)
     integer(int64) :: bits(40),root_bits(40),saved_bits(40),saved_crc(4)
     integer(int64) :: integration_control(2),saved_integration_control(2)
+    integer(int64) :: filter_control(5),saved_filter_control(5)
     integer :: i,status,unit,err,closed,ierr,count
     count=air5_resource_count()
     expected_magic='ASTRA501'
@@ -1010,6 +1012,8 @@ contains
     call check(source_evaluation=='joint'.or.source_evaluation=='source-only','invalid AIR5 source evaluation')
     call check(use_gpu.or.source_evaluation=='joint','AIR5 source-only evaluation is GPU-only')
     integration_control=[int(air5_tolerance_choice,int64),merge(1_int64,0_int64,air5_history_enabled)]
+    filter_control=0
+    if(air5_conservative_filter) filter_control=int(air5_filter_identity,int64)
     call complete_air5_top_contract(top)
     bits=transfer(top,bits)
     root_values=values; root_bits=bits
@@ -1028,7 +1032,9 @@ contains
           convert='little_endian',action='write',iostat=err)
         if(err==0) then
           write(unit,iostat=err) expected_magic,values,bits,air5_resource_crc(:count),source_evaluation
-          if(err==0.and.any(integration_control/=0)) write(unit,iostat=err) integration_control
+          if(err==0.and.(any(integration_control/=0).or.air5_conservative_filter)) &
+            write(unit,iostat=err) integration_control
+          if(err==0.and.air5_conservative_filter) write(unit,iostat=err) 'ASTRF001',filter_control
           close(unit,iostat=closed)
         endif
       endif
@@ -1046,12 +1052,20 @@ contains
       ! No numeric extension means baseline tolerance with history disabled.
       saved_integration_control=0
       if(.not.checkpoint_stream_at_end(unit)) read(unit,iostat=err) saved_integration_control
+      call check(err==0,'AIR5 configuration size/tail')
+      saved_filter_control=0
+      if(.not.checkpoint_stream_at_end(unit)) then
+        read(unit,iostat=err) filter_magic,saved_filter_control
+        call check(err==0.and.filter_magic=='ASTRF001','AIR5 filter control version/size')
+        call check(all(saved_filter_control==int(air5_filter_identity,int64)),'AIR5 filter control contract mismatch')
+      endif
       call check(err==0.and.checkpoint_stream_at_end(unit),'AIR5 configuration size/tail')
       close(unit,iostat=closed)
       call check(err==0.and.closed==0,'read AIR5 configuration')
       call canonical_air5_modes(saved_values)
       call check(saved_source_evaluation==source_evaluation,'AIR5 source evaluation contract mismatch')
       call check(all(saved_integration_control==integration_control),'AIR5 integration control contract mismatch')
+      call check(all(saved_filter_control==filter_control),'AIR5 filter control contract mismatch')
       call check(magic==expected_magic.and.all(saved_values==values).and.all(saved_bits==bits).and. &
         all(saved_crc(:count)==air5_resource_crc(:count)), &
         'AIR5 source/limiter/compensation/top/resource contract mismatch')

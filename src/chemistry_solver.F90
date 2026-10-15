@@ -48,8 +48,326 @@ module chemistry_flow_solver
   public :: air5_limit_filtered_state
   public :: air5_chemistry_half_step
   public :: air5_characteristic_top_rhs
+  public :: air5_filter_conservative,configure_air5_filter_exchange,exchange_air5_filter_strips
+  public :: exchange_air5_filter_faces,check_air5_filter_status
+  public :: filter_send,filter_receive,filter_comm,filter_local,filter_global,filter_offset,filter_periodic
+  public :: filter_lower,filter_upper,filter_area,filter_width,filter_plane
+  public :: filter_tr_floor,filter_v_floor
+  real(real64), save :: filter_tr_floor(5),filter_v_floor(5)
+  real(real64), allocatable, save :: filter_send(:,:,:,:),filter_receive(:,:,:,:)
+  integer, save :: filter_comm=-1,filter_local(3),filter_global(3),filter_offset(3)
+  integer, save :: filter_lower(3),filter_upper(3),filter_area,filter_width,filter_plane(2,3)
+  logical, save :: filter_periodic(3)
+#ifdef ASTR_BUILD_TESTING
+  public :: air5_filter_test_active,air5_filter_test_begin,air5_filter_test_end
+  integer, save :: filter_test_rank=-1
+  logical, save :: filter_test_configured=.false.
+  real(real64), allocatable, save :: filter_test_high(:,:,:,:),filter_test_carry(:,:,:,:)
+#endif
 
 contains
+#ifdef ASTR_BUILD_TESTING
+  logical function air5_filter_test_active()
+    use mpi
+    character(32) :: value
+    integer :: status,nranks,ierr
+    if(.not.filter_test_configured) then
+      call get_environment_variable('ASTR_TEST_AIR5_FILTER_FAIL_RANK',value,status=status)
+      if(status/=1) then
+        if(status/=0) error stop 'invalid AIR5 filter failure probe rank'
+        read(value,*,iostat=status) filter_test_rank
+        call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
+        if(status/=0.or.filter_test_rank<0.or.filter_test_rank>=nranks) &
+          error stop 'invalid AIR5 filter failure probe rank'
+      endif
+      filter_test_configured=.true.
+    endif
+    air5_filter_test_active=filter_test_rank>=0
+  end function
+
+  subroutine air5_filter_test_begin(high,carry)
+    real(real64), intent(in) :: high(:,:,:,:),carry(:,:,:,:)
+    filter_test_high=high; filter_test_carry=carry
+  end subroutine
+
+  subroutine air5_filter_test_end(high,carry)
+    use iso_fortran_env, only: int64,output_unit
+    use mpi
+    real(real64), intent(in) :: high(:,:,:,:),carry(:,:,:,:)
+    integer :: rank,ierr,status
+    logical :: unchanged
+    unchanged=all(transfer(high,[0_int64],size(high))==transfer(filter_test_high,[0_int64],size(high))).and. &
+      all(transfer(carry,[0_int64],size(carry))==transfer(filter_test_carry,[0_int64],size(carry)))
+    call check_air5_filter_status(merge(0,1,unchanged),'failure probe mutated state before commit')
+    call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
+    write(*,'(A,I0,A,L1)') 'AIR5_FILTER_TRANSACTION rank=',rank,' unchanged=',unchanged
+    flush(output_unit)
+    status=merge(3,0,rank==filter_test_rank)
+    call check_air5_filter_status(status,'injected failure before commit')
+  end subroutine
+#endif
+
+  subroutine check_air5_filter_status(status,phase)
+    use mpi
+    integer, intent(in) :: status
+    character(*), intent(in) :: phase
+    integer :: global_status,ierr,abort_error,rank
+    call MPI_Allreduce(status,global_status,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,abort_error)
+    if(global_status==0) return
+    call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
+    if(rank==0) write(*,'(A,A,A,I0)') 'AIR5 conservative filter ',phase,' status=',global_status
+    call MPI_Abort(MPI_COMM_WORLD,global_status,abort_error)
+  end subroutine
+
+  subroutine configure_air5_filter_exchange()
+    use mpi
+    use ieee_arithmetic, only: ieee_is_finite
+    use commvar, only: im,jm,km,ia,ja,ka,hm,ndims,lihomo,ljhomo,lkhomo,conschm,difschm
+    use commarray, only: x
+    use parallel, only: ig0,jg0,kg0,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront,mpirank
+    integer :: ierr,status,i,j,k,d,a(3),n
+    real(real64) :: step(3),lowest(3),highest(3),expected,scale
+    if(filter_comm/=-1) return
+    filter_local=[im,jm,km]; filter_global=[ia,ja,ka]; filter_offset=[ig0,jg0,kg0]
+    filter_periodic=[lihomo,ljhomo,lkhomo]
+    filter_lower=[mpileft,mpidown,mpiback]; filter_upper=[mpiright,mpiup,mpifront]
+    do d=1,3
+      if(.not.filter_periodic(d)) cycle
+      if(filter_lower(d)==MPI_PROC_NULL) filter_lower(d)=mpirank
+      if(filter_upper(d)==MPI_PROC_NULL) filter_upper(d)=mpirank
+    enddo
+    filter_plane(:,1)=[jm,km]; filter_plane(:,2)=[im,km]; filter_plane(:,3)=[im,jm]
+    status=0
+    if(ndims/=3.or.hm<5.or.minval(filter_local)<hm.or.minval(filter_global)<7.or. &
+      trim(conschm)/='643e'.or.trim(difschm)/='643e') status=1
+    call check_air5_filter_status(status,'grid/stencil contract')
+    ! The face proof currently covers separable uniform Cartesian geometry only.
+    do d=1,3
+      a=0; a(d)=filter_local(d)
+      step(d)=(x(a(1),a(2),a(3),d)-x(0,0,0,d))/filter_local(d)
+      if(.not.ieee_is_finite(step(d)).or.step(d)<=0.0_real64) status=1
+      do k=0,km
+        do j=0,jm
+          do i=0,im
+            a=[i,j,k]; n=a(d)
+            expected=x(0,0,0,d)+n*step(d)
+            scale=max(abs(expected),abs(x(0,0,0,d)),abs(step(d)))
+            if(.not.ieee_is_finite(x(i,j,k,d))) status=1
+            if(abs(x(i,j,k,d)-expected)>128.0_real64*epsilon(scale)*scale) status=1
+          enddo
+        enddo
+      enddo
+    enddo
+    call MPI_Allreduce(step,lowest,3,MPI_DOUBLE_PRECISION,MPI_MIN,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) status=1
+    call MPI_Allreduce(step,highest,3,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS) status=1
+    if(any(highest-lowest>128.0_real64*epsilon(1.0_real64)*highest)) status=1
+    call check_air5_filter_status(status,'uniform Cartesian geometry')
+    call MPI_Comm_dup(MPI_COMM_WORLD,filter_comm,ierr)
+    call check_air5_filter_status(merge(0,1,ierr==MPI_SUCCESS),'communicator')
+    filter_width=hm+1
+    filter_area=maxval((filter_plane(1,:)+1)*(filter_plane(2,:)+1))
+    allocate(filter_send(22,0:hm,0:filter_area-1,2),filter_receive(22,0:hm,0:filter_area-1,2))
+    filter_send=0.0_real64; filter_receive=0.0_real64
+    do d=1,5
+      filter_tr_floor(d)=air5_formation_energy(d)+air5_temperature_min_k*air5_species_cv_tr(d)
+      filter_v_floor(d)=air5_species_vibrational_energy(d,air5_temperature_min_k)
+    enddo
+  end subroutine
+
+  subroutine exchange_air5_filter_strips(axis)
+    use mpi
+    integer, intent(in) :: axis
+    integer :: ierr,status,count
+    count=22*filter_width*product(filter_plane(:,axis)+1); status=0
+    call MPI_Sendrecv(filter_send(1,0,0,1),count,MPI_DOUBLE_PRECISION,filter_lower(axis),10, &
+      filter_receive(1,0,0,2),count,MPI_DOUBLE_PRECISION,filter_upper(axis),10,filter_comm,MPI_STATUS_IGNORE,ierr)
+    if(ierr/=MPI_SUCCESS) status=1
+    call MPI_Sendrecv(filter_send(1,0,0,2),count,MPI_DOUBLE_PRECISION,filter_upper(axis),11, &
+      filter_receive(1,0,0,1),count,MPI_DOUBLE_PRECISION,filter_lower(axis),11,filter_comm,MPI_STATUS_IGNORE,ierr)
+    if(ierr/=MPI_SUCCESS) status=1
+    call check_air5_filter_status(status,'state strips')
+  end subroutine
+
+  subroutine exchange_air5_filter_faces(axis)
+    use mpi
+    integer, intent(in) :: axis
+    integer :: ierr,status,area
+    area=product(filter_plane(:,axis)+1)
+    call MPI_Sendrecv(filter_send(:,0,0:area-1,2),22*area,MPI_DOUBLE_PRECISION,filter_upper(axis),12, &
+      filter_receive(:,0,0:area-1,1),22*area,MPI_DOUBLE_PRECISION,filter_lower(axis),12, &
+      filter_comm,MPI_STATUS_IGNORE,ierr)
+    status=merge(0,1,ierr==MPI_SUCCESS)
+    call check_air5_filter_status(status,'owned faces')
+  end subroutine
+
+  subroutine air5_filter_conservative()
+    use mpi
+    use commvar, only: im,jm,km,hm
+    use commarray, only: q,qrhs
+    use chemistry_compensation, only: air5_compensated,air5_carry,compensated_add
+    use chemistry_filter_math, only: filter_state_magnitude,filter_pressure_represented_admissible
+    use chemistry_filter_operator, only: filter_node,filter_high_face,face_bounds,thermal_limit,lower_admissible
+    use chemistry_model, only: air5_close_species_flux
+    real(real64) :: stencil(11,-4:5),stencil_c(11,-4:5),left(11),right(11),lh(11),lc(11),rh(11),rc(11)
+    real(real64) :: lm(11),rm(11),high(11),candidate(11),flux(11),lower(5),upper(5),mass,ratio
+    real(real64) :: tr(5),v(5),h,c,fr,fl
+    real(real64) :: state(11),low(11),density,velocity(3),temperature,tv,pressure,y(5)
+    integer :: axis,t1,t2,t,r,s,layer,side,a(3),b(3),status,failed,n,g,plane_size
+    call configure_air5_filter_exchange()
+    tr=filter_tr_floor; v=filter_v_floor
+    do axis=1,3
+      n=filter_local(axis); plane_size=filter_plane(1,axis)+1
+#ifdef ASTR_BUILD_TESTING
+      if(air5_filter_test_active()) then
+        if(.not.air5_compensated) error stop 'filter failure probe requires compensation'
+        call air5_filter_test_begin(q(0:im,0:jm,0:km,:),air5_carry)
+      endif
+#endif
+      call pack_state()
+      call exchange_air5_filter_strips(axis)
+      failed=0
+      do t2=0,filter_plane(2,axis)
+        do t1=0,filter_plane(1,axis)
+          t=t1+plane_size*t2
+          do r=0,n
+            call filter_node(axis,r,t1,t2,a)
+            flux=0.0_real64
+            g=filter_offset(axis)+r
+            if(r<n.and.(filter_periodic(axis).or.(g>0.and.g<filter_global(axis)-1))) then
+              stencil=0.0_real64; stencil_c=0.0_real64
+              do layer=-4,5
+                ! The factorized boundary never reads outside the free physical nodes.
+                if(.not.filter_periodic(axis)) then
+                  if(g+layer<1.or.g+layer>filter_global(axis)-1) cycle
+                endif
+                call get_state(r+layer,lh,lc)
+                stencil(:,layer)=lh
+                stencil_c(:,layer)=lc
+              enddo
+              call get_state(r,lh,lc); call get_state(r+1,rh,rc)
+              left=lh; right=rh; lm=abs(lh); rm=abs(rh)
+              if(air5_compensated) then
+                call filter_state_magnitude(lh,lc,lm); call filter_state_magnitude(rh,rc,rm)
+                left=lh-lc; right=rh-rc
+              endif
+              call filter_high_face(stencil,stencil_c,g,filter_global(axis),filter_periodic(axis),air5_compensated,high)
+              call face_bounds(left,right,high,lower,upper,mass)
+              candidate=high; candidate(1)=mass
+              call air5_close_species_flux(high(6:10),lower,upper,mass,candidate(6:10),status)
+              if(status==0) call thermal_limit(left,right,candidate,tr,v,flux,ratio,status,lm,rm,air5_compensated)
+              if(status/=0.and.failed==0) then
+                write(*,'(A,4I8,2L3)') 'AIR5_FILTER_FAILED_FACE axis/i/j/k, base admissible=',axis,a, &
+                  lower_admissible(left,tr,v),lower_admissible(right,tr,v)
+                write(*,'(A,11ES25.17)') 'left=',left
+                write(*,'(A,11ES25.17)') 'right=',right
+                write(*,'(A,11ES25.17)') 'high=',high
+                write(*,'(A,11ES25.17)') 'candidate=',candidate
+              endif
+              failed=max(failed,status)
+            endif
+            qrhs(a(1),a(2),a(3),:)=flux
+          enddo
+          call filter_node(axis,n-1,t1,t2,a)
+          filter_send(1:11,0,t,2)=qrhs(a(1),a(2),a(3),:)
+        enddo
+      enddo
+      call check_air5_filter_status(failed,'face constraints before commit')
+#ifdef ASTR_BUILD_TESTING
+      if(air5_filter_test_active()) call air5_filter_test_end(q(0:im,0:jm,0:km,:),air5_carry)
+#endif
+      call exchange_air5_filter_faces(axis)
+      do t2=0,filter_plane(2,axis)
+        do t1=0,filter_plane(1,axis)
+          t=t1+plane_size*t2
+          do r=0,n
+            if(r==n.and.filter_upper(axis)/=MPI_PROC_NULL) cycle
+            g=filter_offset(axis)+r
+            if(.not.filter_periodic(axis).and.(g==0.or.g==filter_global(axis))) cycle
+            call filter_node(axis,r,t1,t2,a); call filter_node(axis,r-1,t1,t2,b)
+            do s=1,11
+              fr=qrhs(a(1),a(2),a(3),s); fl=0.0_real64
+              if(r==0) then
+                if(filter_lower(axis)/=MPI_PROC_NULL) fl=filter_receive(s,0,t,1)
+              else
+                fl=qrhs(b(1),b(2),b(3),s)
+              endif
+              if(fr==0.0_real64.and.fl==0.0_real64) cycle
+              h=q(a(1),a(2),a(3),s)
+              if(air5_compensated) then
+                c=air5_carry(a(1),a(2),a(3),s)
+                call compensated_add(h,c,fr); call compensated_add(h,c,-fl)
+                air5_carry(a(1),a(2),a(3),s)=c
+              else
+                h=(h+fr)-fl
+              endif
+              q(a(1),a(2),a(3),s)=h
+            enddo
+          enddo
+        enddo
+      enddo
+      ! Copy the unique right owner's node, including its low part; never average it.
+      call pack_state()
+      call exchange_air5_filter_strips(axis)
+      if(filter_upper(axis)/=MPI_PROC_NULL) then
+        do t2=0,filter_plane(2,axis)
+          do t1=0,filter_plane(1,axis)
+            t=t1+plane_size*t2; call filter_node(axis,n,t1,t2,a)
+            q(a(1),a(2),a(3),:)=filter_receive(1:11,0,t,2)
+            if(air5_compensated) air5_carry(a(1),a(2),a(3),:)=filter_receive(12:22,0,t,2)
+          enddo
+        enddo
+      endif
+      failed=0
+      do t2=0,km
+        do t1=0,jm
+          do r=0,im
+            state=q(r,t1,t2,:); low=0.0_real64
+            if(air5_compensated) low=air5_carry(r,t1,t2,:)
+            if(.not.filter_pressure_represented_admissible(state,low)) failed=3
+            state=state-low
+            call air5_conservative_to_primitive(state,density,velocity,temperature,y,tv,pressure,status)
+            failed=max(failed,status)
+          enddo
+        enddo
+      enddo
+      call check_air5_filter_status(failed,'committed axis model domain')
+    enddo
+  contains
+    subroutine pack_state()
+      filter_send=0.0_real64
+      do t2=0,filter_plane(2,axis)
+        do t1=0,filter_plane(1,axis)
+          t=t1+plane_size*t2
+          do layer=0,hm
+            do side=1,2
+              r=layer
+              if(side==2) r=n-hm+layer
+              call filter_node(axis,r,t1,t2,a)
+              filter_send(1:11,layer,t,side)=q(a(1),a(2),a(3),:)
+              if(air5_compensated) filter_send(12:22,layer,t,side)=air5_carry(a(1),a(2),a(3),:)
+            enddo
+          enddo
+        enddo
+      enddo
+    end subroutine
+    subroutine get_state(index,h,c)
+      integer, intent(in) :: index
+      real(real64), intent(out) :: h(11),c(11)
+      integer :: pos(3)
+      if(index<0) then
+        h=filter_receive(1:11,index+hm,t,1); c=filter_receive(12:22,index+hm,t,1)
+      elseif(index>=n.and.filter_upper(axis)/=MPI_PROC_NULL) then
+        h=filter_receive(1:11,index-n,t,2); c=filter_receive(12:22,index-n,t,2)
+      else
+        call filter_node(axis,index,t1,t2,pos)
+        h=q(pos(1),pos(2),pos(3),:); c=0.0_real64
+        if(air5_compensated) c=air5_carry(pos(1),pos(2),pos(3),:)
+      endif
+    end subroutine
+  end subroutine air5_filter_conservative
 
   subroutine air5_characteristic_top_rhs()
     use mpi

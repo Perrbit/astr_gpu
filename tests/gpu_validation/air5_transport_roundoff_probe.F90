@@ -20,6 +20,26 @@ program air5_transport_roundoff_probe
   real(real64) :: witness(5),gradient(5),tolerance
   real(real64) :: gas(5),moment
   real(real64) :: support(5,6)
+  character(4096) :: input_path,output_path
+  integer :: unit
+
+  if(command_argument_count()==2) then
+    call get_command_argument(1,input_path)
+    call get_command_argument(2,output_path)
+    open(newunit=unit,file=trim(input_path),status='old',action='read')
+    read(unit,*) mass
+    read(unit,*) high
+    read(unit,*) lower
+    read(unit,*) upper
+    close(unit)
+    call air5_close_species_flux(high,lower,upper,mass,closed,status)
+    open(newunit=unit,file=trim(output_path),status='new',action='write')
+    write(unit,'(I0,1X,5ES25.17)') status,closed
+    close(unit)
+    stop
+  elseif(command_argument_count()/=0) then
+    error stop 'requires no arguments or a captured projection input/output pair'
+  endif
 
   base=1.0e-38_real64
   negative=-base
@@ -87,6 +107,30 @@ program air5_transport_roundoff_probe
   lower=0.0_real64; high(1)=ieee_value(0.0_real64,ieee_quiet_nan)
   call air5_close_species_flux(high,lower,upper,0.0_real64,closed,status)
   if(status/=chemistry_status_nonfinite) error stop 'NaN candidate accepted'
+
+  ! Captured physical-filter face: feasible zero mass flux with wide species budgets.
+  high=[-6.77626357803440271e-20_real64,0.0_real64,1.36718750000000006e-21_real64, &
+    -1.84114728110395408e-20_real64,0.0_real64]
+  lower=[-1.91749997361107399e-2_real64,-5.82499999999999945e-3_real64, &
+    -2.49999999999999994e-20_real64,-2.63889255825490058e-10_real64,0.0_real64]
+  upper=[1.91749997404329110e-2_real64,5.82499999999999945e-3_real64, &
+    2.49999999999999994e-20_real64,2.59567085809127194e-10_real64,0.0_real64]
+  do power=-100,100,100
+    factor=scale(1.0_real64,power)
+    call air5_close_species_flux(high*factor,lower*factor,upper*factor,0.0_real64,closed,status)
+    if(status/=chemistry_status_ok) error stop 'captured trace projection rejected'
+    if(any(closed<lower*factor).or.any(closed>upper*factor)) &
+      error stop 'captured trace projection outside budgets'
+    operand_scale=maxval(abs([high,lower,upper]))*factor
+    tolerance=32*epsilon(factor)*sum(abs(high*factor/operand_scale))
+    if(abs(sum(closed/operand_scale))>tolerance) error stop 'captured trace mass closure'
+    if(closed(5)/=0.0_real64) error stop 'captured trace created absent species'
+    call air5_close_species_flux(-high*factor,-upper*factor,-lower*factor,0.0_real64,permuted,status)
+    if(status/=chemistry_status_ok) error stop 'reversed captured trace projection rejected'
+    if(maxval(abs(permuted+closed))>128*epsilon(factor)*maxval(abs(high*factor))) &
+      error stop 'captured trace projection depends on face orientation'
+  enddo
+  write(*,'(A)') 'AIR5_TRACE_PROJECTION_CONTINUATION_PROBE pass'
 
   do trial=1,1000
     do i=1,5

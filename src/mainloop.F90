@@ -389,10 +389,10 @@ module mainloop
 #ifdef ASTR_AIR5_CHEMISTRY
     use iso_fortran_env, only: real64
     use chemistry_flow_runtime, only: air5_reacting_flowtype,air5_open_x_flowtype, &
-                                     air5_hbl_flowtype
+                                     air5_hbl_flowtype,air5_conservative_filter
     use chemistry_flow_solver, only: air5_chemistry_half_step, &
                                      air5_save_filter_species_base, &
-                                     air5_limit_filtered_state,air5_compensation_filter_state
+                                     air5_limit_filtered_state,air5_compensation_filter_state,air5_filter_conservative
     use chemistry_postshock_boundary, only: apply_air5_postshock_boundary
     use chemistry_hbl_boundary, only: apply_air5_hbl_boundary
     use chemistry_compensation, only: air5_compensated,air5_carry,air5_origin, &
@@ -599,6 +599,10 @@ module mainloop
       
       if(lfilter) then
 #ifdef ASTR_AIR5_CHEMISTRY
+        if(lcomb.and.air5_conservative_filter) then
+          call air5_filter_conservative()
+          call updatefvar
+        else
         if(air5_compensated) then
           call air5_compensation_filter_state(.false.)
           call air5_compensation_filter_state(.true.)
@@ -615,6 +619,7 @@ module mainloop
           call air5_compensation_filter_state(.false.)
           call air5_limit_filtered_state()
           call updatefvar
+        endif
         endif
 #endif
       endif

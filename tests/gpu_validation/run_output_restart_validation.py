@@ -597,7 +597,7 @@ def check_geometry_padding(path, homogeneous):
     return checked
 
 
-def controlled_checkpoint_buffers(path, persistent_bytes, backend=None):
+def controlled_checkpoint_buffers(path, persistent_bytes, backend=None, budget_bytes=64*1024**2):
     """Explicit allocations only; not RSS, HDF5/MPI peaks or compiler temporaries."""
     with h5py.File(path) as state:
         components, role = int(state["identity"][6]), int(state["identity"][12])
@@ -617,10 +617,11 @@ def controlled_checkpoint_buffers(path, persistent_bytes, backend=None):
                 staging = int((row[3] + 1) * (row[4] + 1)) * 13 * 8
                 if row[1] == 0:
                     staging += int(row[3] + 1) * 4 * 8
-            if role == 7 and backend == "gpu" and state["metadata"][1] == 1:
-                staging = int(np.prod(row[3:6] + 1)) * 11 * 8
+            if role == 7 and backend == "gpu":
+                auxiliary = (11 if state["metadata"][1] == 1 else 0) + int(components == 35)
+                staging = int(np.prod(row[3:6] + 1)) * auxiliary * 8
             bounds.append(packing + extras + tables + staging + persistent_bytes)
-        if max(bounds) > 64 * 1024**2:
+        if max(bounds) > budget_bytes:
             raise AssertionError("controlled checkpoint host budget exceeded")
         return bounds
 

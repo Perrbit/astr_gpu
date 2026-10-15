@@ -62,6 +62,9 @@ contains
   end subroutine
 
   ! The represented value is high - carry, matching the ROS-2 accumulator.
+#ifdef _CUDA
+  attributes(host,device) &
+#endif
   pure subroutine compensated_add(high,carry,increment)
     real(real64), intent(inout) :: high,carry
     real(real64), intent(in) :: increment

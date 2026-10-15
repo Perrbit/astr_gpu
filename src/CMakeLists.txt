@@ -183,6 +183,8 @@ if(ASTR_WITH_AIR5_CHEMISTRY)
     chemistry_boundary.F90
     chemistry_runtime.F90
     chemistry_compensation.F90
+    chemistry_filter_math.F90
+    chemistry_filter_operator.F90
     chemistry_monitor.F90
     chemistry_solver.F90)
 endif()
@@ -474,6 +476,16 @@ endif()
 
 if(ASTR_WITH_AIR5_CHEMISTRY)
   target_compile_definitions(astr PRIVATE ASTR_AIR5_CHEMISTRY)
+endif()
+
+set(ASTR_AIR5_REFERENCE_LEVEL "off" CACHE STRING "Test-only CPU full-flow chemistry reference: off, 11 or 12")
+set_property(CACHE ASTR_AIR5_REFERENCE_LEVEL PROPERTY STRINGS off 11 12)
+if(NOT ASTR_AIR5_REFERENCE_LEVEL STREQUAL "off")
+  if(NOT ASTR_AIR5_REFERENCE_LEVEL MATCHES "^(11|12)$" OR
+     NOT BUILD_TESTING OR NOT ASTR_WITH_AIR5_CHEMISTRY OR ASTR_WITH_CUDA)
+    message(FATAL_ERROR "AIR5 reference levels 11/12 require a CPU-only AIR5 test build")
+  endif()
+  target_compile_definitions(astr PRIVATE ASTR_AIR5_REFERENCE_LEVEL=${ASTR_AIR5_REFERENCE_LEVEL})
 endif()
 
 # This capability is needed by the production transport, not only its probes.
@@ -909,6 +921,66 @@ if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
   target_include_directories(chemistry_ros2_compensation_gpu_probe PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/chemistry_ros2_compensation_gpu_probe_modules")
   target_link_libraries(chemistry_ros2_compensation_gpu_probe PRIVATE MPI::MPI_Fortran)
+  add_executable(air5_filter_flux_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90 chemistry_core.F90 chemistry_properties.F90
+    ../src_gpu/gpu_check.cuf ../src_gpu/chemistry_core_gpu.cuf
+    ../tests/gpu_validation/air5_filter_flux_probe.cuf)
+  set_target_properties(air5_filter_flux_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/air5_filter_flux_probe_modules")
+  target_include_directories(air5_filter_flux_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/air5_filter_flux_probe_modules")
+  target_link_libraries(air5_filter_flux_probe PRIVATE MPI::MPI_Fortran)
+  add_executable(air5_filter_boundary_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90 chemistry_core.F90 chemistry_properties.F90
+    ../src_gpu/gpu_check.cuf ../src_gpu/chemistry_core_gpu.cuf
+    ../tests/gpu_validation/air5_filter_flux_probe.cuf)
+  target_compile_definitions(air5_filter_boundary_probe PRIVATE ASTR_FILTER_BOUNDARY_PROBE)
+  set_target_properties(air5_filter_boundary_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/air5_filter_boundary_probe_modules")
+  target_include_directories(air5_filter_boundary_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/air5_filter_boundary_probe_modules")
+  target_link_libraries(air5_filter_boundary_probe PRIVATE MPI::MPI_Fortran)
+  add_executable(air5_filter_multidim_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90 chemistry_core.F90 chemistry_properties.F90 chemistry_compensation.F90
+    ../src_gpu/gpu_check.cuf ../src_gpu/chemistry_core_gpu.cuf
+    ../tests/gpu_validation/air5_filter_flux_probe.cuf
+    ../tests/gpu_validation/air5_filter_multidim_probe.cuf)
+  target_compile_definitions(air5_filter_multidim_probe PRIVATE ASTR_FILTER_MULTIDIM_PROBE)
+  set_target_properties(air5_filter_multidim_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/air5_filter_multidim_probe_modules")
+  target_include_directories(air5_filter_multidim_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/air5_filter_multidim_probe_modules")
+  target_link_libraries(air5_filter_multidim_probe PRIVATE MPI::MPI_Fortran)
+  add_executable(air5_filter_predicate_probe EXCLUDE_FROM_ALL
+    chemistry_air5_data.F90 chemistry_core.F90 chemistry_properties.F90
+    ../src_gpu/gpu_check.cuf ../src_gpu/chemistry_core_gpu.cuf
+    ../tests/gpu_validation/air5_filter_flux_probe.cuf
+    ../tests/gpu_validation/air5_filter_predicate_probe.cuf)
+  target_compile_definitions(air5_filter_predicate_probe PRIVATE ASTR_FILTER_MULTIDIM_PROBE)
+  set_target_properties(air5_filter_predicate_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/air5_filter_predicate_probe_modules")
+  target_include_directories(air5_filter_predicate_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/air5_filter_predicate_probe_modules")
+  target_link_libraries(air5_filter_predicate_probe PRIVATE MPI::MPI_Fortran)
+  foreach(probe air5_filter_flux_probe air5_filter_boundary_probe
+                air5_filter_multidim_probe air5_filter_predicate_probe)
+    target_sources(${probe} PRIVATE chemistry_filter_math.F90 chemistry_filter_operator.F90)
+  endforeach()
+  # Error-free product/sum transformations require separate IEEE operations.
+endif()
+
+if(ASTR_WITH_AIR5_CHEMISTRY)
+  if(CMAKE_Fortran_COMPILER_ID MATCHES "NVHPC|PGI")
+    set_source_files_properties(chemistry_filter_math.F90 chemistry_filter_operator.F90
+      PROPERTIES COMPILE_OPTIONS "-Kieee;-Mnofma")
+    if(ASTR_WITH_CUDA)
+      set_property(SOURCE chemistry_filter_math.F90 APPEND PROPERTY COMPILE_OPTIONS "-gpu=nofma,noflushz")
+      set_property(SOURCE chemistry_filter_operator.F90 APPEND PROPERTY COMPILE_OPTIONS "-gpu=nofma,noflushz")
+    endif()
+  elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+    set_source_files_properties(chemistry_filter_math.F90 chemistry_filter_operator.F90
+      PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+  endif()
 endif()
 
 endif() # BUILD_TESTING
@@ -923,6 +995,10 @@ if (ASTR_WITH_CUDA AND (Fortran_COMPILER_NAME MATCHES "PGI" OR Fortran_COMPILER_
   if(ASTR_WITH_AIR5_CHEMISTRY)
     set(ASTR_AIR5_MAXREGCOUNT "128" CACHE STRING
         "NVHPC register cap for fixed air5 C4 transport kernels")
+    set_property(SOURCE chemistry_filter_math.F90 APPEND PROPERTY
+      COMPILE_OPTIONS "-gpu=maxregcount:${ASTR_AIR5_MAXREGCOUNT}")
+    set_property(SOURCE chemistry_filter_operator.F90 APPEND PROPERTY
+      COMPILE_OPTIONS "-gpu=maxregcount:${ASTR_AIR5_MAXREGCOUNT}")
     # Keep the prescribed 512-thread directional blocks legal for the
     # higher-register 11-variable transport kernels.
     set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_solver_gpu.cuf

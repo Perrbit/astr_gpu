@@ -177,11 +177,15 @@ contains
     endif
 
     left=minval(lo-c); right=maxval(hi-c)
-    do iteration=1,2*digits(1.0_real64)
+    iteration=0
+    do
+      iteration=iteration+1
       middle=0.5_real64*left+0.5_real64*right
       trial=max(lo,min(hi,c+middle))
       residual=sum(trial)-target
       if(residual==0.0_real64 .or. middle==left .or. middle==right) exit
+      ! Preserve the old successful path; extend only an exhausted bracket.
+      if(iteration>=2*digits(1.0_real64).and.abs(residual)<=tolerance) exit
       if(residual<0.0_real64) then
         left=middle
       else

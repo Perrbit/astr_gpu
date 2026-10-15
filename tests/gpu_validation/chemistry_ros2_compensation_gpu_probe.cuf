@@ -6,11 +6,12 @@ module compensation_probe_kernel
   implicit none
 contains
   attributes(global) subroutine advance_state_batch(input,output,counts,count,duration,source_mode, &
-      rtol,atol_factor,segments,use_history)
+      rtol,atol_factor,segments,use_history,vector_atol,use_vector_atol)
     integer, value :: count,source_mode,segments
-    logical, value :: use_history
+    logical, value :: use_history,use_vector_atol
     real(real64), value :: duration,rtol,atol_factor
     real(real64), device, intent(in) :: input(18,count)
+    real(real64), device, intent(in) :: vector_atol(6,count)
     real(real64), device, intent(out) :: output(13,count)
     integer, device, intent(out) :: counts(5,count)
     real(real64) :: atol(6),correction(6),current(6),candidate(6),interval,history,suggested
@@ -24,8 +25,12 @@ contains
     history=input(18,index)
     counts(:,index)=0
     do iteration=1,segments
-      atol(1:5)=atol_factor*input(1,index)
-      atol(6)=atol_factor*max(abs(current(6)),1.0_real64)
+      if(use_vector_atol) then
+        atol=vector_atol(:,index)
+      else
+        atol(1:5)=atol_factor*input(1,index)
+        atol(6)=atol_factor*max(abs(current(6)),1.0_real64)
+      endif
       if(use_history) then
         call air5_ros2_advance_gpu(input(1,index),input(2:4,index),input(5,index), &
           current,interval,interval,rtol,atol,200000,candidate,suggested, &
@@ -97,7 +102,7 @@ end module compensation_probe_kernel
 
 program chemistry_ros2_compensation_gpu_probe
   use iso_fortran_env, only: real64,int64
-  use ieee_arithmetic, only: ieee_value,ieee_quiet_nan,ieee_positive_inf
+  use ieee_arithmetic, only: ieee_value,ieee_quiet_nan,ieee_positive_inf,ieee_is_finite
   use cudafor
   use chemistry_air5_data, only: air5_ru,air5_molar_mass,air5_atom_count
   use chemistry_model, only: chemistry_status_step_limit,chemistry_status_invalid_timestep, &
@@ -120,6 +125,13 @@ program chemistry_ros2_compensation_gpu_probe
   integer :: option_status
 
   repeats = 20000
+  if(command_argument_count()>0) then
+    call get_command_argument(1,argument)
+    if(trim(argument)=='batch-cpu') then
+      call run_state_batch(.true.)
+      stop
+    endif
+  endif
   call get_environment_variable('ASTR_AIR5_SOURCE_EVALUATION',argument,status=option_status)
   if(option_status/=1) then
     if(option_status/=0) error stop 'invalid source evaluation option'
@@ -132,7 +144,7 @@ program chemistry_ros2_compensation_gpu_probe
   if (command_argument_count() > 0) then
     call get_command_argument(1,argument)
     if(trim(argument)=='batch') then
-      call run_state_batch
+      call run_state_batch(.false.)
       stop
     endif
     if(trim(argument)=='history-contract') then
@@ -313,30 +325,35 @@ contains
     write(*,*) 'HISTORY_NONDEFAULT_CPU_GPU_CONTINUATION_EXACT_PASS'
   end subroutine run_history_contract
 
-  subroutine run_state_batch
-    real(real64), allocatable :: input(:,:),output(:,:)
-    real(real64), allocatable, device :: input_d(:,:),output_d(:,:)
+  subroutine run_state_batch(cpu_batch)
+    logical, intent(in) :: cpu_batch
+    real(real64), allocatable :: input(:,:),output(:,:),vector_atol(:,:)
+    real(real64), allocatable, device :: input_d(:,:),output_d(:,:),vector_atol_d(:,:)
     integer, allocatable :: counts(:,:)
     integer, allocatable, device :: counts_d(:,:)
-    character(4096) :: input_path,output_path
-    integer :: count,source_mode,unit,index,ios,segments
+    character(4096) :: input_path,output_path,atol_path
+    integer :: count,source_mode,unit,index,ios,segments,iteration,local_counts(5),base_arguments,atol_count
     real(real64) :: duration,rtol,atol_factor
-    logical :: use_history,history_from_input
+    real(real64) :: current(6),candidate(6),correction(6),local_atol(6),interval,history,suggested
+    logical :: use_history,history_from_input,use_vector_atol
 
-    if(command_argument_count()/=3.and.command_argument_count()/=5.and.command_argument_count()/=7) &
+    use_vector_atol=mod(command_argument_count(),2)==0
+    base_arguments=command_argument_count()
+    if(use_vector_atol) base_arguments=base_arguments-1
+    if(base_arguments/=3.and.base_arguments/=5.and.base_arguments/=7) &
       error stop 'batch requires paths, optional tolerances and segments/history mode'
     rtol=1.0e-9_real64
     atol_factor=1.0e-13_real64
     segments=1
     use_history=.false.
     history_from_input=.false.
-    if(command_argument_count()>=5) then
+    if(base_arguments>=5) then
       call get_command_argument(4,argument)
       read(argument,*) rtol
       call get_command_argument(5,argument)
       read(argument,*) atol_factor
     endif
-    if(command_argument_count()==7) then
+    if(base_arguments==7) then
       call get_command_argument(6,argument)
       read(argument,*) segments
       if(segments<1.or.segments>16) error stop 'bounded sequence requires 1 to 16 segments'
@@ -353,7 +370,8 @@ contains
     open(newunit=unit,file=trim(input_path),status='old',action='read')
     read(unit,*) count,duration,source_mode
     if(count<1.or.count>10000.or.duration<=0.0_real64) error stop 'invalid bounded state batch'
-    allocate(input(18,count),output(13,count),counts(5,count))
+    allocate(input(18,count),output(13,count),counts(5,count),vector_atol(6,count))
+    vector_atol=0.0_real64
     input=0.0_real64
     if(history_from_input) then
       read(unit,*) input
@@ -363,13 +381,62 @@ contains
     read(unit,*,iostat=ios)
     if(ios/=-1) error stop 'extra or malformed batch input'
     close(unit)
-    allocate(input_d(18,count),output_d(13,count),counts_d(5,count))
-    input_d=input
-    call advance_state_batch<<<(count+127)/128,128>>>(input_d,output_d,counts_d,count,duration,source_mode, &
-      rtol,atol_factor,segments,use_history)
-    call sync_after_kernel('air5_compensated_state_batch',force_sync=.true.)
-    output=output_d
-    counts=counts_d
+    if(use_vector_atol) then
+      call get_command_argument(command_argument_count(),atol_path)
+      open(newunit=unit,file=trim(atol_path),status='old',action='read')
+      read(unit,*) atol_count
+      if(atol_count/=count) error stop 'vector tolerance batch count mismatch'
+      read(unit,*) vector_atol
+      read(unit,*,iostat=ios)
+      if(ios/=-1) error stop 'extra or malformed vector tolerance input'
+      close(unit)
+      if(.not.all(ieee_is_finite(vector_atol)).or.any(vector_atol<=0.0_real64)) &
+        error stop 'vector tolerances must be finite and positive'
+    endif
+    if(cpu_batch) then
+      counts=0
+      interval=duration/real(segments,real64)
+      do index=1,count
+        current=input(6:11,index)
+        correction=input(12:17,index)
+        history=input(18,index)
+        do iteration=1,segments
+          if(use_vector_atol) then
+            local_atol=vector_atol(:,index)
+          else
+            local_atol(1:5)=atol_factor*input(1,index)
+            local_atol(6)=atol_factor*max(abs(current(6)),1.0_real64)
+          endif
+          if(use_history) then
+            call air5_ros2_advance(input(1,index),input(2:4,index),input(5,index), &
+              current,interval,interval,rtol,local_atol,200000,candidate,suggested, &
+              local_counts(2),local_counts(3),local_counts(4),local_counts(5),local_counts(1), &
+              source_mode,correction,history)
+          else
+            call air5_ros2_advance(input(1,index),input(2:4,index),input(5,index), &
+              current,interval,interval,rtol,local_atol,200000,candidate,suggested, &
+              local_counts(2),local_counts(3),local_counts(4),local_counts(5),local_counts(1), &
+              source_mode,correction)
+          endif
+          counts(1,index)=local_counts(1)
+          counts(2:5,index)=counts(2:5,index)+local_counts(2:5)
+          current=candidate
+          if(local_counts(1)/=0) exit
+        enddo
+        output(1:6,index)=current
+        output(7:12,index)=correction
+        output(13,index)=suggested
+      enddo
+    else
+      allocate(input_d(18,count),output_d(13,count),counts_d(5,count),vector_atol_d(6,count))
+      input_d=input
+      vector_atol_d=vector_atol
+      call advance_state_batch<<<(count+127)/128,128>>>(input_d,output_d,counts_d,count,duration,source_mode, &
+        rtol,atol_factor,segments,use_history,vector_atol_d,use_vector_atol)
+      call sync_after_kernel('air5_compensated_state_batch',force_sync=.true.)
+      output=output_d
+      counts=counts_d
+    endif
     open(newunit=unit,file=trim(output_path),status='new',action='write')
     do index=1,count
       write(unit,'(6(I0,1X),13(ES25.17,1X))') index,counts(:,index),output(:,index)

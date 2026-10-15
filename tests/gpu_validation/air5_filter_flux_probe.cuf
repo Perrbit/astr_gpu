@@ -1,0 +1,209 @@
+module air5_filter_flux_fixture
+  use iso_fortran_env, only: real64
+  use cudafor
+  use chemistry_model, only: air5_close_species_flux,air5_ratio_bisection_iterations, &
+    air5_transport_roundoff_gamma
+  use chemistry_model_gpu, only: air5_close_species_flux_gpu
+  use chemistry_filter_math, only: filter_lower_energy_admissible,filter_pressure_admissible,filter_feasible_mass, &
+    filter_pressure_pair_safe
+  use chemistry_filter_operator, only: face_bounds,lower_admissible,pair_admissible,thermal_limit,filter_high_face
+  implicit none
+#ifdef ASTR_FILTER_BOUNDARY_PROBE
+  integer, parameter :: nodes=33
+  logical, parameter :: physical_boundary=.true.
+#else
+  integer, parameter :: nodes=32
+  logical, parameter :: physical_boundary=.false.
+#endif
+  integer, parameter :: block_threads=32*((nodes+31)/32)
+  integer, parameter :: difference4(0:4)=[1,-4,6,-4,1]
+  real(real64), parameter :: boundary_strength=1.0_real64/1024.0_real64
+  real(real64), parameter :: coefficients(5)=[105.0_real64/512.0_real64, &
+    -15.0_real64/128.0_real64,45.0_real64/1024.0_real64, &
+    -5.0_real64/512.0_real64,1.0_real64/1024.0_real64]
+contains
+  attributes(host,device) subroutine high_face(q,face,high)
+    real(real64), intent(in) :: q(11,nodes)
+    integer, value :: face
+    real(real64), intent(out) :: high(11)
+    real(real64) :: stencil(11,-4:5),carry(11,-4:5)
+    integer :: r,index
+    stencil=0.0_real64; carry=0.0_real64
+    do r=-4,5
+      index=face+r
+      if(physical_boundary) then
+        if(index<2.or.index>nodes-1) cycle
+      else
+        index=modulo(index-1,nodes)+1
+      endif
+      stencil(:,r)=q(:,index)
+    enddo
+    call filter_high_face(stencil,carry,face-1,nodes-1,.not.physical_boundary,.false.,high)
+  end subroutine
+
+
+  subroutine cpu_faces(q,tr_floor,v_floor,high,flux,ratios,status)
+    real(real64), intent(in) :: q(11,nodes),tr_floor(5),v_floor(5)
+    real(real64), intent(out) :: high(11,nodes),flux(11,nodes),ratios(nodes)
+    integer, intent(out) :: status(nodes)
+    real(real64) :: lower(5),upper(5),candidate(11),mass,left_magnitude(11),right_magnitude(11)
+    integer :: i,j
+    status=0
+    do i=1,nodes
+      if(physical_boundary.and.(i==1.or.i>=nodes-1)) then
+        high(:,i)=0.0_real64; flux(:,i)=0.0_real64; ratios(i)=1.0_real64
+        cycle
+      endif
+      j=modulo(i,nodes)+1
+      call high_face(q,i,high(:,i))
+      call face_bounds(q(:,i),q(:,j),high(:,i),lower,upper,mass)
+      candidate=high(:,i)
+      candidate(1)=mass
+      call air5_close_species_flux(high(6:10,i),lower,upper,mass,candidate(6:10),status(i))
+      if(status(i)/=0) then
+        write(*,*) 'T3 failed projection face ',i
+        write(*,'(A,5(ES25.17,1X))') 'candidate=',high(6:10,i)
+        write(*,'(A,5(ES25.17,1X))') 'lower=',lower
+        write(*,'(A,5(ES25.17,1X))') 'upper=',upper
+        write(*,'(A,ES25.17)') 'mass=',mass
+        return
+      endif
+      left_magnitude=abs(q(:,i)); right_magnitude=abs(q(:,j))
+      call thermal_limit(q(:,i),q(:,j),candidate,tr_floor,v_floor,flux(:,i),ratios(i),status(i), &
+        left_magnitude,right_magnitude,.false.)
+      if(status(i)/=0) then
+        write(*,*) 'thermal failed face, ratio, bases=',i,ratios(i), &
+          lower_admissible(q(:,i),tr_floor,v_floor),lower_admissible(q(:,j),tr_floor,v_floor)
+        write(*,*) 'accepted pair=', &
+          pair_admissible(q(:,i),q(:,j),flux(:,i),tr_floor,v_floor,left_magnitude,right_magnitude,.false.)
+        write(*,'(A,11ES25.17)') 'q=',q(:,i)
+        write(*,'(A,11ES25.17)') 'high=',high(:,i)
+        write(*,'(A,11ES25.17)') 'candidate=',candidate
+        return
+      endif
+    enddo
+  end subroutine
+
+  attributes(global) subroutine gpu_faces(q,tr_floor,v_floor,high,flux,ratios,status)
+    real(real64), device, intent(in) :: q(11,nodes),tr_floor(5),v_floor(5)
+    real(real64), device, intent(out) :: high(11,nodes),flux(11,nodes),ratios(nodes)
+    integer, device, intent(out) :: status(nodes)
+    real(real64) :: lower(5),upper(5),candidate(11),mass,left_magnitude(11),right_magnitude(11)
+    integer :: i,j
+    i=threadIdx%x
+    if(i>nodes) return
+    if(physical_boundary.and.(i==1.or.i>=nodes-1)) then
+      high(:,i)=0.0_real64; flux(:,i)=0.0_real64; ratios(i)=1.0_real64
+      status(i)=0
+      return
+    endif
+    j=modulo(i,nodes)+1
+    call high_face(q,i,high(:,i))
+    call face_bounds(q(:,i),q(:,j),high(:,i),lower,upper,mass)
+    candidate=high(:,i)
+    candidate(1)=mass
+    call air5_close_species_flux_gpu(high(6:10,i),lower,upper,mass,candidate(6:10),status(i))
+    if(status(i)/=0) return
+    left_magnitude=abs(q(:,i)); right_magnitude=abs(q(:,j))
+    call thermal_limit(q(:,i),q(:,j),candidate,tr_floor,v_floor,flux(:,i),ratios(i),status(i), &
+      left_magnitude,right_magnitude,.false.)
+  end subroutine
+
+  attributes(host,device) subroutine update_node(q,flux,i,result)
+    real(real64), intent(in) :: q(11,nodes),flux(11,nodes)
+    integer, value :: i
+    real(real64), intent(out) :: result(11)
+    if(physical_boundary.and.(i==1.or.i==nodes)) then
+      result=q(:,i)
+      return
+    endif
+    result=(q(:,i)+flux(:,i))-flux(:,modulo(i-2,nodes)+1)
+  end subroutine
+
+  attributes(global) subroutine gpu_update(q,flux,result)
+    real(real64), device, intent(in) :: q(11,nodes),flux(11,nodes)
+    real(real64), device, intent(out) :: result(11,nodes)
+    integer :: i
+    i=threadIdx%x
+    if(i<=nodes) call update_node(q,flux,i,result(:,i))
+  end subroutine
+end module
+
+#ifndef ASTR_FILTER_MULTIDIM_PROBE
+program air5_filter_flux_probe
+  use air5_filter_flux_fixture
+  use chemistry_air5_data, only: air5_formation_energy,air5_temperature_min_k
+  use chemistry_thermo, only: air5_species_cv_tr,air5_species_vibrational_energy, &
+    air5_temperature_from_q5,air5_tv_from_ev,air5_pressure
+  use gpu_check, only: sync_after_kernel
+  implicit none
+  real(real64) :: q(11,nodes),result(11,nodes),high(11,nodes),flux(11,nodes),ratios(nodes)
+  real(real64) :: tr_floor(5),v_floor(5),temperature,tv,pressure
+  real(real64), allocatable, device :: q_d(:,:),result_d(:,:),high_d(:,:),flux_d(:,:),ratios_d(:)
+  real(real64), allocatable, device :: tr_d(:),v_d(:)
+  integer, allocatable, device :: status_d(:)
+  integer :: status(nodes),node_status(nodes),unit,count,i,s,ios
+  character(4096) :: backend,input_path,output_path
+  if(command_argument_count()/=3) error stop 'requires cpu/gpu, input and output'
+  call get_command_argument(1,backend)
+  call get_command_argument(2,input_path)
+  call get_command_argument(3,output_path)
+  open(newunit=unit,file=trim(input_path),status='old',action='read')
+  read(unit,*) count
+  if(count/=nodes) error stop 'unexpected T3 fixture node count'
+  read(unit,*) q
+  read(unit,*,iostat=ios)
+  if(ios/=-1) error stop 'extra or malformed T3 state input'
+  close(unit)
+  do s=1,5
+    tr_floor(s)=air5_formation_energy(s)+air5_temperature_min_k*air5_species_cv_tr(s)
+    v_floor(s)=air5_species_vibrational_energy(s,air5_temperature_min_k)
+  enddo
+  status=0
+  select case(trim(backend))
+  case('cpu')
+    call cpu_faces(q,tr_floor,v_floor,high,flux,ratios,status)
+    if(any(status/=0)) then
+      write(*,*) 'T3 CPU face statuses ',status
+      error stop 'T3 CPU face projection failed'
+    endif
+    do i=1,nodes
+      call update_node(q,flux,i,result(:,i))
+    enddo
+  case('gpu')
+    allocate(q_d(11,nodes),result_d(11,nodes),high_d(11,nodes),flux_d(11,nodes), &
+      ratios_d(nodes),status_d(nodes),tr_d(5),v_d(5))
+    q_d=q; tr_d=tr_floor; v_d=v_floor
+    call gpu_faces<<<1,block_threads>>>(q_d,tr_d,v_d,high_d,flux_d,ratios_d,status_d)
+    call sync_after_kernel('t3_filter_faces',force_sync=.true.)
+    status=status_d
+    if(any(status/=0)) then
+      write(*,*) 'T3 GPU face statuses ',status
+      error stop 'T3 GPU face projection failed'
+    endif
+    call gpu_update<<<1,block_threads>>>(q_d,flux_d,result_d)
+    call sync_after_kernel('t3_filter_update',force_sync=.true.)
+    result=result_d; high=high_d; flux=flux_d; ratios=ratios_d
+  case default
+    error stop 'invalid T3 backend'
+  end select
+  node_status=0
+  do i=1,nodes
+    if(.not.lower_admissible(result(:,i),tr_floor,v_floor)) node_status(i)=3
+    if(node_status(i)/=0) cycle
+    call air5_temperature_from_q5(result(1,i),result(2:4,i),result(6:10,i), &
+      result(11,i),result(5,i),temperature,node_status(i))
+    if(node_status(i)/=0) cycle
+    call air5_tv_from_ev(result(6:10,i),result(11,i),tv,node_status(i))
+    if(node_status(i)/=0) cycle
+    call air5_pressure(result(6:10,i),temperature,pressure,node_status(i))
+  enddo
+  open(newunit=unit,file=trim(output_path),status='new',action='write')
+  do i=1,nodes
+    write(unit,'(3(I0,1X),34(ES25.17,1X))') i,status(i),node_status(i), &
+      result(:,i),high(:,i),flux(:,i),ratios(i)
+  enddo
+  close(unit)
+  if(any(node_status/=0)) error stop 'T3 final thermodynamic state failed'
+end program
+#endif

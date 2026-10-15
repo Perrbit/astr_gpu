@@ -101,6 +101,16 @@ def check_no_field_output(case):
         raise ValueError(f'field/validation output during timing: {large or validation}')
 
 
+def compare_scalar_statistics(actual, expected, single_initial_update=False):
+    actual_file, expected_file = actual/'flowstate.dat', expected/'flowstate.dat'
+    # Native rkfirst intentionally skips scalar output on its first call.
+    if single_initial_update and not actual_file.exists() and not expected_file.exists():
+        return 'not-emitted-in-first-rk-call'
+    if actual_file.read_bytes() != expected_file.read_bytes():
+        raise ValueError('scalar statistics differ')
+    return 'equal'
+
+
 def run(args):
     diagnostic = args.nsys or args.phase_timing
     if args.repeats < (1 if diagnostic else 3) or args.warmup < 1 or args.steps < 1 or args.report_interval < 1:
@@ -111,15 +121,20 @@ def run(args):
     args.mpiexec = args.mpiexec.resolve(strict=True)
     args.reconstruction = 3 if args.case == 'sbli' else 5
     args.mean_statistics, args.sample_interval = False, 2
-    args.mode, args.initial_restart = 'steps', False
+    args.mode, args.initial_restart = 'steps', args.start_from_initial
     binary_hash = digest(args.executable)
     source_diff = subprocess.check_output(['git', 'diff', '--', 'src', 'src_gpu',
         'tests/gpu_validation/run_air5_performance_diagnosis.py',
         'tests/gpu_validation/run_output_air5_restart_validation.py'], cwd=ROOT)
     (args.output/'source_changes.patch').write_bytes(source_diff)
     updates = args.warmup+args.steps
+    start = 0 if args.start_from_initial else 2
+    seed_updates = max(start, 1)
+    output_budgets = dict(host_budget_bytes=args.host_budget_bytes,
+                         device_budget_bytes=args.device_budget_bytes,
+                         directory_budget_bytes=args.directory_budget_bytes)
     summary = dict(status='running', cases={}, warmup=args.warmup, measured_steps=args.steps,
-        repeats=args.repeats, dt=DT, grid_intervals=[16, 16, 16], case=args.case,
+        repeats=args.repeats, dt=DT, grid_intervals=list(args.grid), case=args.case, timing_start_step=start,
         executable=str(args.executable), executable_sha256=binary_hash,
         source_diff_sha256=hashlib.sha256(source_diff).hexdigest(),
         git_head=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
@@ -128,9 +143,10 @@ def run(args):
         primary_metric='max over ranks of measured-window cumulative seconds / measured steps',
         report_interval=args.report_interval, profiled=args.nsys, phase_timing=args.phase_timing,
         chemistry_diagnostics=args.chemistry_diagnostics, source_evaluation=args.source_evaluation,
+        chemistry_tolerance=args.chemistry_tolerance, step_history=args.step_history,
         chemistry_block_size=args.chemistry_block_size, axis=args.axis,
         topology=list(args.topology) if args.topology else None,
-        top_mode=args.top_mode, filter_workspace=args.filter_workspace)
+        top_mode=args.top_mode, filter_workspace=args.filter_workspace, **output_budgets)
     try:
         baseline = None
         if args.compare_to is not None:
@@ -139,25 +155,27 @@ def run(args):
                 raise ValueError('comparison requires a successful unprofiled baseline')
             for key in ('executable_sha256', 'dt', 'grid_intervals', 'case', 'report_interval',
                         'warmup', 'measured_steps', 'repeats', 'primary_metric',
-                        'axis', 'topology', 'top_mode', 'filter_workspace'):
+                        'axis', 'topology', 'top_mode', 'filter_workspace', 'chemistry_tolerance', 'step_history',
+                        'timing_start_step'):
                 if baseline[key] != summary[key]:
                     raise ValueError(f'baseline protocol mismatch: {key}')
         for label in args.cases:
             backend, n = label.split('_np')
             ranks = int(n)
-            seed_case, _ = launch(args, backend, ranks, 'seed', 2, interval=2,
-                                 chemistry_diagnostics=args.chemistry_diagnostics)
-            seed = seed_case/'outdat/new/checkpoints/step000000000002'
+            seed_case, _ = launch(args, backend, ranks, 'seed', seed_updates, interval=seed_updates,
+                                 chemistry_diagnostics=args.chemistry_diagnostics, **output_budgets)
+            seed = seed_case/f'outdat/new/checkpoints/step{start:012d}'
             sanity = state_sanity(seed/'state.h5')
             identity = batch_identity(seed)
-            timed_check, _ = launch(args, backend, ranks, 'timing_check', 2, interval=2,
+            timed_check, _ = launch(args, backend, ranks, 'timing_check', seed_updates, interval=seed_updates,
                                     complete_step_timing=True, air5_phase_timing=args.phase_timing,
-                                    chemistry_diagnostics=args.chemistry_diagnostics)
-            compared = compare_fields(seed/'state.h5',
-                timed_check/'outdat/new/checkpoints/step000000000002/state.h5')
-            verification, _ = launch(args, backend, ranks, 'verification', 2+updates, restore=seed,
-                interval=2+updates, override=True, chemistry_diagnostics=args.chemistry_diagnostics)
-            final = verification/f'outdat/new/checkpoints/step{2+updates:012d}/state.h5'
+                                    chemistry_diagnostics=args.chemistry_diagnostics, **output_budgets)
+            activation_state = f'outdat/new/checkpoints/step{seed_updates:012d}/state.h5'
+            compared = compare_fields(seed_case/activation_state, timed_check/activation_state)
+            verification, _ = launch(args, backend, ranks, 'verification', start+updates, restore=seed,
+                interval=start+updates, override=True, chemistry_diagnostics=args.chemistry_diagnostics,
+                **output_budgets)
+            final = verification/f'outdat/new/checkpoints/step{start+updates:012d}/state.h5'
             final_sanity = state_sanity(final)
             rounds = []
             summary['cases'][label] = dict(rounds=rounds, seed=str(seed), seed_files_sha256=identity,
@@ -170,27 +188,29 @@ def run(args):
                 compare_fields(seed/'state.h5', Path(reference['seed'])/'state.h5')
                 relative = final.relative_to(verification)
                 equal = compare_fields(final, Path(reference['verification'])/relative)
-                for actual, expected in ((seed_case, Path(reference['seed']).parents[3]),
-                                         (verification, Path(reference['verification']))):
+                scalar_checks = {}
+                for phase, actual, expected in (('seed', seed_case, Path(reference['seed']).parents[3]),
+                                               ('verification', verification, Path(reference['verification']))):
                     reports = lambda case: [line for line in (case/'run.log').read_text().splitlines()
                                            if line.startswith('AIR5_CHEMISTRY half=')]
                     if reports(actual) != reports(expected):
                         raise ValueError('chemistry report identity/values differ')
-                    if (actual/'flowstate.dat').read_bytes() != (expected/'flowstate.dat').read_bytes():
-                        raise ValueError('scalar statistics differ')
+                    scalar_checks[phase] = compare_scalar_statistics(actual, expected,
+                        single_initial_update=phase=='seed' and seed_updates==1)
                 summary['cases'][label]['baseline_equal_datasets'] = equal
+                summary['cases'][label]['baseline_scalar_statistics'] = scalar_checks
             for repeat in range(args.repeats):
                 if digest(args.executable) != binary_hash:
                     raise ValueError('executable changed within the timing matrix')
-                case, disk = launch(args, backend, ranks, f'r{repeat+1}', 2+updates,
+                case, disk = launch(args, backend, ranks, f'r{repeat+1}', start+updates,
                     restore=seed, checkpoint_enabled=False, override=True,
                     complete_step_timing=True, nsys_trace=args.nsys, air5_phase_timing=args.phase_timing,
-                    chemistry_diagnostics=args.chemistry_diagnostics)
+                    chemistry_diagnostics=args.chemistry_diagnostics, **output_budgets)
                 check_no_field_output(case)
                 log = (case/'run.log').read_text()
-                record = window_summary(log, ranks, 2, updates, args.warmup)
+                record = window_summary(log, ranks, start, updates, args.warmup)
                 if args.phase_timing:
-                    record['phase_seconds_per_step'] = phase_summary(log, ranks, 2, updates, args.warmup)
+                    record['phase_seconds_per_step'] = phase_summary(log, ranks, start, updates, args.warmup)
                 record.update(directory=str(case), directory_bytes=disk)
                 rounds.append(record)
                 print(label, repeat+1, record['seconds_per_step'], flush=True)
@@ -223,6 +243,11 @@ if __name__ == '__main__':
     parser.add_argument('--cases', nargs='+', choices=tuple(f'{b}_np{n}' for b in ('cpu', 'gpu') for n in (1, 2, 4)),
                         default=['gpu_np1', 'gpu_np2'])
     parser.add_argument('--case', choices=('hbl', 'sbli'), default='sbli')
+    parser.add_argument('--grid', nargs=3, type=int, default=(16, 16, 16), metavar=('NX', 'NY', 'NZ'),
+                        help='Global interval counts; physical domain and dt remain fixed')
+    parser.add_argument('--host-budget-bytes', type=int, default=64*1024**2)
+    parser.add_argument('--device-budget-bytes', type=int, default=64*1024**2)
+    parser.add_argument('--directory-budget-bytes', type=int, default=64*1024**2)
     parser.add_argument('--axis', choices=('x', 'y', 'z'), default='x')
     parser.add_argument('--topology', type=lambda value: tuple(map(int, value.split(','))))
     parser.add_argument('--top-mode', choices=('characteristic', 'prescribed'), default='characteristic')
@@ -231,9 +256,13 @@ if __name__ == '__main__':
     parser.add_argument('--chemistry-diagnostics', choices=('every-step', 'report-steps'), default='every-step')
     parser.add_argument('--source-evaluation', choices=('joint', 'source-only'), default='joint')
     parser.add_argument('--chemistry-block-size', type=int, choices=(32, 128), default=128)
+    parser.add_argument('--chemistry-tolerance', choices=('baseline', 'loose', 'tight'), default='baseline')
+    parser.add_argument('--step-history', choices=('off', 'previous'), default='off')
     parser.add_argument('--repeats', type=int, default=3)
     parser.add_argument('--warmup', type=int, default=1)
     parser.add_argument('--steps', type=int, default=3)
+    parser.add_argument('--start-from-initial', action='store_true',
+                        help='Start at exact step-0 checkpoint to match the full-flow error window')
     parser.add_argument('--nsys', action='store_true', help='Separate attribution runs; never a speedup denominator')
     parser.add_argument('--phase-timing', action='store_true', help='Diagnostic host phases; adds no GPU fences')
     parser.add_argument('--runtime-timeout-seconds', type=float, default=180)

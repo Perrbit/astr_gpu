@@ -13,6 +13,7 @@ import h5py
 import numpy as np
 
 from air5_radau_reference import Air5RadauReference
+from air5_checkpoint_contract import read_air5_contract
 from prepare_air5_c4_case import prepare_case, replace_boundary_types
 from run_air5_sbli_preflight import set_value
 from run_output_restart_validation import archive_schedule_payload, compare_fields, controlled_checkpoint_buffers
@@ -73,11 +74,13 @@ def state_sanity(path):
 
 
 def prepare(case, backend, steps, incident=False, reconstruction=5, mean_statistics=False, sample_interval=2,
-            report_interval=1):
+            report_interval=1, grid=(16, 16, 16)):
+    if len(grid) != 3 or min(grid) < 1:
+        raise ValueError('AIR5 fixture grid requires three positive interval counts')
     if case.exists():
         raise FileExistsError(case)
     inp = prepare_case(ROOT / "examples/Taylor_Green_Vortex_SI/datin", case,
-                       "16,16,16", steps - 1, "1.d-10", "t", "t",
+                       ','.join(map(str, grid)), steps - 1, "1.d-10", "t", "t",
                        "t" if backend == "gpu" else "f", "species-wave", list_frequency=1)
     set_value(inp, "flowtype", "air5sbli" if incident else "air5hbl")
     set_value(inp, "lihomo,ljhomo,lkhomo", "f,f,t")
@@ -107,9 +110,10 @@ def prepare(case, backend, steps, incident=False, reconstruction=5, mean_statist
     (case / "datin/air5_hbl_profile.dat").write_text(
         "# Bounded hot-gas restart test\n# x_origin=1.0\n" +
         "\n".join(" ".join(f"{v:.17e}" for v in row) for row in rows) + "\n")
-    field = ["# ASTR_AIR5_HBL_INITIAL_FIELD_V1", "# Restart gate, not a production profile", "17 17"]
-    for x in np.linspace(0., DOMAIN[0], 17):
-        for y in np.linspace(0., DOMAIN[1], 17):
+    nx, ny = grid[0]+1, grid[1]+1
+    field = ["# ASTR_AIR5_HBL_INITIAL_FIELD_V1", "# Restart gate, not a production profile", f"{nx} {ny}"]
+    for x in np.linspace(0., DOMAIN[0], nx):
+        for y in np.linspace(0., DOMAIN[1], ny):
             v = .01 * np.sin(np.pi*x/DOMAIN[0]) * np.sin(np.pi*y/DOMAIN[1])
             momentum = rho * np.array([speed * min(y/.001, 1.), v, 0.])
             partial = rho * ys
@@ -142,11 +146,12 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
            insitu_timing=False, nsys_trace=False, monitor_resources=False, resource_baseline=None, pixel_audit=False,
            wall_mean_oracle=False, complete_step_timing=False, air5_phase_timing=False,
            chemistry_diagnostics=None, chemistry_reductions=None, chemistry_failure_hook=None,
-           explicit_contract_defaults=False):
+           explicit_contract_defaults=False, host_budget_bytes=67108864,filter_failure_rank=None):
     case = args.output / f"{backend}_np{ranks}_{name}"
     tau = prepare(case, backend, steps, incident=args.case == "sbli", reconstruction=args.reconstruction,
                   mean_statistics=args.mean_statistics if statistics is None else statistics,
-                  sample_interval=args.sample_interval, report_interval=getattr(args, 'report_interval', 1))
+                  sample_interval=args.sample_interval, report_interval=getattr(args, 'report_interval', 1),
+                  grid=getattr(args, 'grid', (16, 16, 16)))
     if fault == "statistics_activation":
         set_value(case / "datin/controller", "lwsequ,lwslic,lavg,lcracon",
                   f"f,f,{'f' if args.mean_statistics else 't'},f")
@@ -165,7 +170,7 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
     (case / "datin/input.output").write_text(f"""&output
  directory='outdat/new',restore_directory='{restore or ''}',
  restart_output='{'override' if override else 'saved'}',
- host_budget_bytes=67108864,device_budget_bytes={1 if fault == 'statistics_device_budget' else device_budget_bytes},buffer_bytes={buffer_bytes}
+ host_budget_bytes={host_budget_bytes},device_budget_bytes={1 if fault == 'statistics_device_budget' else device_budget_bytes},buffer_bytes={buffer_bytes}
  device_reserve_bytes={device_reserve_bytes}
 /
 &checkpoint
@@ -202,6 +207,10 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
     env['ASTR_AIR5_CHEMISTRY_BLOCK_SIZE'] = str(getattr(args, 'chemistry_block_size', 128))
     env['ASTR_AIR5_CHEMISTRY_TOLERANCE'] = getattr(args, 'chemistry_tolerance', 'baseline')
     env['ASTR_AIR5_STEP_HISTORY'] = getattr(args, 'step_history', 'off')
+    if getattr(args, 'air5_filter_mode', 'legacy') is not None:
+        env['ASTR_AIR5_FILTER_MODE'] = getattr(args, 'air5_filter_mode', 'legacy')
+    if filter_failure_rank is not None:
+        env['ASTR_TEST_AIR5_FILTER_FAIL_RANK'] = str(filter_failure_rank)
     env['ASTR_AIR5_COMPENSATION'] = getattr(args, 'compensation', 'on')
     if complete_step_timing:
         env['ASTR_COMPLETE_STEP_TIMING'] = '1'
@@ -462,8 +471,8 @@ def main():
                     if (resumed / "datin/air5_incident_shock.dat").exists():
                         raise AssertionError("original incident resource was not removed")
                     contract = (continuous / final / "air5_config.bin").read_bytes()
-                    if (len(contract) != 1768 or contract[:8] != b"ASTRA502" or
-                            contract[1640:].decode("ascii").rstrip() != getattr(args, 'source_evaluation', 'joint')):
+                    if (contract[:8] != b"ASTRA502" or read_air5_contract(contract)['source_evaluation'] !=
+                            getattr(args, 'source_evaluation', 'joint')):
                         raise AssertionError("SBLI configuration layout mismatch")
                     top = np.frombuffer(contract[1288:1608], dtype="<f8")
                     if top[4] != 1 or top[38] != int(args.top_mode == "characteristic"):

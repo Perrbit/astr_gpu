@@ -1,0 +1,75 @@
+module air5_filter_predicate_launch
+  use iso_fortran_env, only: real64
+  use cudafor
+  use chemistry_filter_math, only: filter_lower_energy_admissible,filter_pressure_admissible, &
+    filter_pressure_represented_admissible
+  implicit none
+contains
+  attributes(host,device) logical function admissible(values,mode)
+    real(real64), intent(in) :: values(*)
+    integer, value :: mode
+    if(mode==2) then
+      admissible=filter_pressure_represented_admissible(values(1:11),values(12:22))
+    else if(mode==1) then
+      admissible=filter_pressure_admissible(values(1:11))
+    else
+      admissible=filter_lower_energy_admissible(values(1:11),values(12:16),values(17:21))
+    endif
+  end function
+
+  attributes(global) subroutine evaluate(values,result,n,width,mode)
+    integer, value :: n,width,mode
+    real(real64), device, intent(in) :: values(width,n)
+    integer, device, intent(out) :: result(n)
+    integer :: index
+    index=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    if(index<=n) result(index)=merge(1,0,admissible(values(:,index),mode))
+  end subroutine
+end module
+
+program air5_filter_predicate_probe
+  use iso_fortran_env, only: real64
+  use cudafor
+  use air5_filter_predicate_launch, only: evaluate,admissible
+  use gpu_check, only: sync_after_kernel
+  implicit none
+  real(real64), allocatable :: inputs(:,:)
+  real(real64), allocatable, device :: inputs_d(:,:)
+  integer, allocatable :: cpu(:),gpu(:)
+  integer, allocatable, device :: gpu_d(:)
+  integer :: count,unit,i,mode,width
+  character(4096) :: input_path,output_path,mode_name
+  if(command_argument_count()<2.or.command_argument_count()>3) error stop 'requires input, output, optional pressure mode'
+  call get_command_argument(1,input_path)
+  call get_command_argument(2,output_path)
+  mode=0; width=21
+  if(command_argument_count()==3) then
+    call get_command_argument(3,mode_name)
+    select case(trim(mode_name))
+    case('pressure')
+      mode=1
+    case('pressure-represented')
+      mode=2; width=22
+    case default
+      error stop 'unknown predicate mode'
+    end select
+  endif
+  open(newunit=unit,file=trim(input_path),status='old',action='read')
+  read(unit,*) count
+  if(count<1.or.count>1024) error stop 'predicate probe budget requires 1..1024 states'
+  allocate(inputs(width,count),inputs_d(width,count),cpu(count),gpu(count),gpu_d(count))
+  read(unit,*) inputs
+  close(unit)
+  do i=1,count
+    cpu(i)=merge(1,0,admissible(inputs(:,i),mode))
+  enddo
+  inputs_d=inputs
+  call evaluate<<<(count+127)/128,128>>>(inputs_d,gpu_d,count,width,mode)
+  call sync_after_kernel('t3_predicate_probe',force_sync=.true.)
+  gpu=gpu_d
+  open(newunit=unit,file=trim(output_path),status='new',action='write')
+  do i=1,count
+    write(unit,'(3(I0,1X))') i,cpu(i),gpu(i)
+  enddo
+  close(unit)
+end program

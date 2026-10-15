@@ -18,6 +18,8 @@ module chemistry_flow_runtime
   logical, save :: convection_limiter_configured=.false.
   logical, save :: diffusion_layered=.false.,diffusion_limiter_configured=.false.
   logical, save :: integration_control_configured=.false.
+  logical, protected, save, public :: air5_conservative_filter=.false.
+  integer, parameter, public :: air5_filter_identity(5)=[1,123,5,1,1]
   integer, protected, save, public :: air5_tolerance_choice=0
   logical, protected, save, public :: air5_history_enabled=.false.
   real(real64), protected, save, public :: air5_chemistry_rtol=1.0e-9_real64
@@ -46,10 +48,19 @@ contains
     use mpi
     integer, intent(in) :: im,jm,km
     character(32) :: value
-    integer :: status,ierr,local(3),lowest(3),highest(3),rank
+    integer :: status,ierr,local(4),lowest(4),highest(4),rank
 
     if(integration_control_configured) return
     local=0
+    call get_environment_variable('ASTR_AIR5_FILTER_MODE',value,status=status)
+    if(status/=1) then
+      if(status/=0) local(3)=1
+      select case(trim(value))
+      case('legacy'); local(4)=0
+      case('conservative-flux'); local(4)=1
+      case default; local(3)=1
+      end select
+    endif
     call get_environment_variable('ASTR_AIR5_CHEMISTRY_TOLERANCE',value,status=status)
     if(status/=1) then
       if(status/=0) local(3)=1
@@ -69,9 +80,12 @@ contains
       case default; local(3)=1
       end select
     endif
-    call MPI_Allreduce(local,lowest,3,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+#ifdef ASTR_AIR5_REFERENCE_LEVEL
+    if(any(local(1:2)/=0)) local(3)=1
+#endif
+    call MPI_Allreduce(local,lowest,4,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
     if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,status)
-    call MPI_Allreduce(local,highest,3,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(local,highest,4,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
     if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,status)
     call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
     if(highest(3)/=0.or.any(lowest/=highest)) then
@@ -79,6 +93,7 @@ contains
       call MPI_Abort(MPI_COMM_WORLD,1,ierr)
     endif
     air5_tolerance_choice=local(1)
+    air5_conservative_filter=local(4)==1
     select case(air5_tolerance_choice)
     case(1)
       air5_chemistry_rtol=1.0e-8_real64
@@ -87,6 +102,19 @@ contains
       air5_chemistry_rtol=1.0e-10_real64
       air5_chemistry_atol_factor=1.0e-14_real64
     end select
+#ifdef ASTR_AIR5_REFERENCE_LEVEL
+    ! Distinct checkpoint control IDs keep test references out of production restarts.
+    air5_tolerance_choice=ASTR_AIR5_REFERENCE_LEVEL
+#if ASTR_AIR5_REFERENCE_LEVEL == 11
+    air5_chemistry_rtol=1.0e-11_real64
+    air5_chemistry_atol_factor=1.0e-15_real64
+#elif ASTR_AIR5_REFERENCE_LEVEL == 12
+    air5_chemistry_rtol=1.0e-12_real64
+    air5_chemistry_atol_factor=1.0e-16_real64
+#endif
+    if(rank==0) write(*,'(A,2ES25.16)') 'AIR5_TEST_REFERENCE rtol/atol_factor=', &
+      air5_chemistry_rtol,air5_chemistry_atol_factor
+#endif
     air5_history_enabled=local(2)==1
     if(air5_history_enabled) then
       allocate(air5_step_history(0:im,0:jm,0:km))

@@ -62,6 +62,8 @@ module chemistry_flow_solver_gpu
   logical,save :: air5_conservation_fixed_order=.false.
   real(real64),allocatable,device,save :: air5_conservation_partials_d(:,:)
   logical, save :: air5_vibrational_floor_configured=.false.
+  real(real64), allocatable, device, save :: filter_send_d(:,:,:,:),filter_receive_d(:,:,:,:)
+  real(real64), device, save :: filter_tr_floor_d(5),filter_v_floor_d(5)
 
   public :: air5_prepare_spatial_state_gpu
   public :: air5_transport_rk3_step_gpu
@@ -74,6 +76,298 @@ module chemistry_flow_solver_gpu
   public :: configure_air5_checkpoint_conservation_gpu,air5_conservation_device_bytes
 
 contains
+
+  attributes(device) subroutine filter_gpu_index(axis,ni,nj,nk,a,valid)
+    integer, value :: axis,ni,nj,nk
+    integer, intent(out) :: a(3)
+    logical, intent(out) :: valid
+    integer :: index
+    select case(axis)
+    case(1)
+      index=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+      a=[modulo(index,ni+1),modulo(index/(ni+1),nj+1),index/((ni+1)*(nj+1))]
+    case(2)
+      index=(blockIdx%x-1)*blockDim%x*blockDim%y+(threadIdx%y-1)*blockDim%x+threadIdx%x-1
+      a=[modulo(index,ni+1),index/(ni+1),blockIdx%z-1]
+    case(3)
+      index=(blockIdx%x-1)*blockDim%x*blockDim%z+(threadIdx%z-1)*blockDim%x+threadIdx%x-1
+      a=[modulo(index,ni+1),blockIdx%y-1,index/(ni+1)]
+    end select
+    valid=all(a<=[ni,nj,nk])
+  end subroutine
+
+  attributes(global) subroutine filter_pack_gpu(axis,n,n1,n2,hm,area)
+    use commarray_gpu, only: q_d
+    use chemistry_compensation_gpu, only: air5_carry_d,air5_compensated_d
+    use chemistry_filter_operator, only: filter_node
+    integer, value :: axis,n,n1,n2,hm,area
+    integer :: index,t,layer,side,t1,t2,r,a(3),s
+    index=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(index>=area*(hm+1)*2) return
+    t=modulo(index,area); layer=modulo(index/area,hm+1); side=index/(area*(hm+1))+1
+    do s=1,22
+      filter_send_d(s,layer,t,side)=0.0_real64
+    enddo
+    if(t>=(n1+1)*(n2+1)) return
+    t1=modulo(t,n1+1); t2=t/(n1+1); r=layer
+    if(side==2) r=n-hm+layer
+    call filter_node(axis,r,t1,t2,a)
+    do s=1,11
+      filter_send_d(s,layer,t,side)=q_d(a(1),a(2),a(3),s)
+      if(air5_compensated_d) filter_send_d(s+11,layer,t,side)=air5_carry_d(a(1),a(2),a(3),s)
+    enddo
+  end subroutine
+
+  attributes(device) subroutine filter_get_gpu(axis,n,n1,hm,r,t1,t2,has_upper,h,c)
+    use commarray_gpu, only: q_d
+    use chemistry_compensation_gpu, only: air5_carry_d,air5_compensated_d
+    use chemistry_filter_operator, only: filter_node
+    integer, value :: axis,n,n1,hm,r,t1,t2
+    logical, value :: has_upper
+    real(real64), intent(out) :: h(11),c(11)
+    integer :: t,a(3),s
+    t=t1+(n1+1)*t2
+    if(r<0) then
+      do s=1,11
+        h(s)=filter_receive_d(s,r+hm,t,1); c(s)=filter_receive_d(s+11,r+hm,t,1)
+      enddo
+    elseif(r>=n.and.has_upper) then
+      do s=1,11
+        h(s)=filter_receive_d(s,r-n,t,2); c(s)=filter_receive_d(s+11,r-n,t,2)
+      enddo
+    else
+      call filter_node(axis,r,t1,t2,a)
+      do s=1,11
+        h(s)=q_d(a(1),a(2),a(3),s); c(s)=0.0_real64
+        if(air5_compensated_d) c(s)=air5_carry_d(a(1),a(2),a(3),s)
+      enddo
+    endif
+  end subroutine
+
+  attributes(global) subroutine filter_faces_gpu(axis,ni,nj,nk,hm,n,n1,offset,global_n,periodic,has_upper)
+    use commarray_gpu, only: qrhs_d
+    use chemistry_compensation_gpu, only: air5_compensated_d
+    use chemistry_filter_math, only: filter_state_magnitude
+    use chemistry_filter_operator, only: filter_high_face,face_bounds,thermal_limit
+    use chemistry_model_gpu, only: air5_close_species_flux_gpu
+    integer, value :: axis,ni,nj,nk,hm,n,n1,offset,global_n
+    logical, value :: periodic,has_upper
+    real(real64) :: stencil(11,-4:5),stencil_c(11,-4:5),lh(11),lc(11),rh(11),rc(11),left(11),right(11)
+    real(real64) :: lm(11),rm(11),high(11),candidate(11),flux(11),lower(5),upper(5),mass,ratio
+    integer :: a(3),r,t1,t2,t,s,layer,g,status,ignored
+    logical :: valid
+    call filter_gpu_index(axis,ni,nj,nk,a,valid)
+    if(.not.valid) return
+    r=a(axis); g=offset+r
+    select case(axis)
+    case(1); t1=a(2); t2=a(3)
+    case(2); t1=a(1); t2=a(3)
+    case(3); t1=a(1); t2=a(2)
+    end select
+    t=t1+(n1+1)*t2
+    flux=0.0_real64; status=0
+    if(r<n.and.(periodic.or.(g>0.and.g<global_n-1))) then
+      stencil=0.0_real64; stencil_c=0.0_real64
+      do layer=-4,5
+        if(.not.periodic) then
+          if(g+layer<1.or.g+layer>global_n-1) cycle
+        endif
+        call filter_get_gpu(axis,n,n1,hm,r+layer,t1,t2,has_upper,lh,lc)
+        do s=1,11
+          stencil(s,layer)=lh(s); stencil_c(s,layer)=lc(s)
+        enddo
+      enddo
+      call filter_get_gpu(axis,n,n1,hm,r,t1,t2,has_upper,lh,lc)
+      call filter_get_gpu(axis,n,n1,hm,r+1,t1,t2,has_upper,rh,rc)
+      left=lh; right=rh; lm=abs(lh); rm=abs(rh)
+      if(air5_compensated_d) then
+        call filter_state_magnitude(lh,lc,lm); call filter_state_magnitude(rh,rc,rm)
+        left=lh-lc; right=rh-rc
+      endif
+      call filter_high_face(stencil,stencil_c,g,global_n,periodic,air5_compensated_d,high)
+      call face_bounds(left,right,high,lower,upper,mass)
+      candidate=high; candidate(1)=mass
+      call air5_close_species_flux_gpu(high(6:10),lower,upper,mass,candidate(6:10),status)
+      if(status==0) call thermal_limit(left,right,candidate,filter_tr_floor_d,filter_v_floor_d, &
+        flux,ratio,status,lm,rm,air5_compensated_d)
+      if(status/=0) ignored=atomicMax(air5_flow_status_d,status)
+    endif
+    do s=1,11
+      qrhs_d(a(1),a(2),a(3),s)=flux(s)
+      if(r==n-1) filter_send_d(s,0,t,2)=flux(s)
+    enddo
+  end subroutine
+
+  attributes(global) subroutine filter_update_gpu(axis,ni,nj,nk,n,n1,offset,global_n,periodic,has_lower,has_upper,scalar)
+    use commarray_gpu, only: q_d,qrhs_d,qwork_d,filter_work_d
+    use chemistry_compensation_gpu, only: air5_carry_d,air5_compensated_d
+    use chemistry_compensation, only: compensated_add
+    integer, value :: axis,ni,nj,nk,n,n1,offset,global_n
+    logical, value :: periodic,has_lower,has_upper,scalar
+    integer :: a(3),b(3),r,t1,t2,t,s,g
+    logical :: valid
+    real(real64) :: h,c,fr,fl
+    call filter_gpu_index(axis,ni,nj,nk,a,valid)
+    if(.not.valid) return
+    r=a(axis); g=offset+r
+    if(r==n.and.has_upper) return
+    if(.not.periodic.and.(g==0.or.g==global_n)) return
+    select case(axis)
+    case(1); t1=a(2); t2=a(3)
+    case(2); t1=a(1); t2=a(3)
+    case(3); t1=a(1); t2=a(2)
+    end select
+    t=t1+(n1+1)*t2; b=a; b(axis)=r-1
+    do s=1,11
+      fr=qrhs_d(a(1),a(2),a(3),s); fl=0.0_real64
+      if(r==0) then
+        if(has_lower) fl=filter_receive_d(s,0,t,1)
+      else
+        fl=qrhs_d(b(1),b(2),b(3),s)
+      endif
+      h=q_d(a(1),a(2),a(3),s)
+      if(fr/=0.0_real64.or.fl/=0.0_real64) then
+        if(air5_compensated_d) then
+          c=air5_carry_d(a(1),a(2),a(3),s)
+          call compensated_add(h,c,fr); call compensated_add(h,c,-fl)
+          air5_carry_d(a(1),a(2),a(3),s)=c
+        else
+          h=(h+fr)-fl
+        endif
+      endif
+      if(scalar) then
+        ! Faces are frozen; component-local staging does not depend on other nodes.
+        filter_work_d(a(1),a(2),a(3))=h
+        q_d(a(1),a(2),a(3),s)=filter_work_d(a(1),a(2),a(3))
+      else
+        qwork_d(a(1),a(2),a(3),s)=h
+        q_d(a(1),a(2),a(3),s)=qwork_d(a(1),a(2),a(3),s)
+      endif
+    enddo
+  end subroutine
+
+  attributes(global) subroutine filter_alias_gpu(axis,n,n1,n2)
+    use commarray_gpu, only: q_d
+    use chemistry_compensation_gpu, only: air5_carry_d,air5_compensated_d
+    use chemistry_filter_operator, only: filter_node
+    integer, value :: axis,n,n1,n2
+    integer :: t,t1,t2,a(3),s
+    t=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(t>=(n1+1)*(n2+1)) return
+    t1=modulo(t,n1+1); t2=t/(n1+1)
+    call filter_node(axis,n,t1,t2,a)
+    do s=1,11
+      q_d(a(1),a(2),a(3),s)=filter_receive_d(s,0,t,2)
+      if(air5_compensated_d) air5_carry_d(a(1),a(2),a(3),s)=filter_receive_d(s+11,0,t,2)
+    enddo
+  end subroutine
+
+  attributes(global) subroutine filter_check_state_gpu(ni,nj,nk)
+    use commarray_gpu, only: q_d
+    use chemistry_compensation_gpu, only: air5_carry_d,air5_compensated_d
+    use chemistry_filter_math, only: filter_pressure_represented_admissible
+    integer, value :: ni,nj,nk
+    integer :: index,i,j,k,s,status,ignored
+    real(real64) :: state(11),low(11),density,velocity(3),temperature,tv,pressure,y(5)
+    index=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(index>=(ni+1)*(nj+1)*(nk+1)) return
+    i=modulo(index,ni+1); j=modulo(index/(ni+1),nj+1); k=index/((ni+1)*(nj+1))
+    do s=1,11
+      state(s)=q_d(i,j,k,s); low(s)=0.0_real64
+      if(air5_compensated_d) low(s)=air5_carry_d(i,j,k,s)
+    enddo
+    if(.not.filter_pressure_represented_admissible(state,low)) then
+      ignored=atomicMax(air5_flow_status_d,3)
+      return
+    endif
+    state=state-low
+    call air5_conservative_to_primitive_gpu(state,density,velocity,temperature,y,tv,pressure,status)
+    if(status/=0) ignored=atomicMax(air5_flow_status_d,status)
+  end subroutine
+
+  subroutine air5_filter_conservative_gpu()
+    use mpi, only: MPI_PROC_NULL
+    use commvar, only: im,jm,km,hm
+    use commarray_gpu, only: gpu_scalar_filter_workspace_enabled
+    use chemistry_flow_solver, only: configure_air5_filter_exchange,exchange_air5_filter_strips, &
+      exchange_air5_filter_faces,filter_send,filter_receive,filter_local,filter_global,filter_offset, &
+      filter_periodic,filter_lower,filter_upper,filter_area,filter_plane,filter_tr_floor,filter_v_floor
+    use gpu_check, only: sync_after_kernel
+#ifdef ASTR_BUILD_TESTING
+    use chemistry_flow_solver, only: air5_filter_test_active,air5_filter_test_begin,air5_filter_test_end
+    use commarray_gpu, only: q_d
+    use chemistry_compensation_gpu, only: air5_carry_d
+    use chemistry_compensation, only: air5_compensated
+#endif
+    integer :: axis,n,n1,n2,pack_blocks
+    logical :: has_lower,has_upper,scalar
+    type(dim3) :: block,grid
+#ifdef ASTR_BUILD_TESTING
+    real(real64), allocatable :: probe_q(:,:,:,:),probe_c(:,:,:,:)
+#endif
+    call configure_air5_filter_exchange()
+    if(.not.allocated(filter_send_d)) then
+      allocate(filter_send_d(22,0:hm,0:filter_area-1,2),filter_receive_d(22,0:hm,0:filter_area-1,2))
+      filter_receive_d=0.0_real64
+      filter_tr_floor_d=filter_tr_floor; filter_v_floor_d=filter_v_floor
+    endif
+    scalar=gpu_scalar_filter_workspace_enabled()
+    pack_blocks=(filter_area*(hm+1)*2+255)/256
+    do axis=1,3
+      n=filter_local(axis); n1=filter_plane(1,axis); n2=filter_plane(2,axis)
+#ifdef ASTR_BUILD_TESTING
+      if(air5_filter_test_active()) then
+        if(.not.air5_compensated) error stop 'filter failure probe requires compensation'
+        probe_q=q_d(0:im,0:jm,0:km,:); probe_c=air5_carry_d
+        call air5_filter_test_begin(probe_q,probe_c)
+      endif
+#endif
+      has_lower=filter_lower(axis)/=MPI_PROC_NULL; has_upper=filter_upper(axis)/=MPI_PROC_NULL
+      call filter_pack_gpu<<<pack_blocks,256>>>(axis,n,n1,n2,hm,filter_area)
+      call sync_after_kernel('air5_filter_pack',.true.)
+      filter_send=filter_send_d
+      call exchange_air5_filter_strips(axis)
+      filter_receive_d=filter_receive
+      select case(axis)
+      case(1)
+        block=dim3(512,1,1); grid=dim3(((im+1)*(jm+1)*(km+1)+511)/512,1,1)
+      case(2)
+        block=dim3(32,16,1); grid=dim3(((im+1)*(jm+1)+511)/512,1,km+1)
+      case(3)
+        block=dim3(64,1,8); grid=dim3(((im+1)*(km+1)+511)/512,jm+1,1)
+      end select
+      call reset_air5_status()
+      call filter_faces_gpu<<<grid,block>>>(axis,im,jm,km,hm,n,n1,filter_offset(axis),filter_global(axis), &
+        filter_periodic(axis),has_upper)
+      call sync_after_kernel('air5_filter_faces',.true.)
+      call check_air5_status('conservative filter before commit')
+#ifdef ASTR_BUILD_TESTING
+      if(air5_filter_test_active()) then
+        probe_q=q_d(0:im,0:jm,0:km,:); probe_c=air5_carry_d
+        call air5_filter_test_end(probe_q,probe_c)
+      endif
+#endif
+      filter_send(:,0,:,2)=filter_send_d(:,0,:,2)
+      call exchange_air5_filter_faces(axis)
+      filter_receive_d(:,0,:,1)=filter_receive(:,0,:,1)
+      call filter_update_gpu<<<grid,block>>>(axis,im,jm,km,n,n1,filter_offset(axis),filter_global(axis), &
+        filter_periodic(axis),has_lower,has_upper,scalar)
+      call sync_after_kernel('air5_filter_update',.true.)
+      call filter_pack_gpu<<<pack_blocks,256>>>(axis,n,n1,n2,hm,filter_area)
+      call sync_after_kernel('air5_filter_alias_pack',.true.)
+      filter_send=filter_send_d
+      call exchange_air5_filter_strips(axis)
+      filter_receive_d=filter_receive
+      if(has_upper) then
+        call filter_alias_gpu<<<((n1+1)*(n2+1)+255)/256,256>>>(axis,n,n1,n2)
+        call sync_after_kernel('air5_filter_alias',.true.)
+      endif
+      call reset_air5_status()
+      call filter_check_state_gpu<<<((im+1)*(jm+1)*(km+1)+255)/256,256>>>(im,jm,km)
+      call sync_after_kernel('air5_filter_model_domain',.true.)
+      call check_air5_status('conservative filter committed axis model domain')
+    enddo
+  end subroutine air5_filter_conservative_gpu
 
   subroutine write_air5_acoustic_probe_gpu()
     use commvar, only: nmonitor,imon,nstep,time,lfilter,lrestart
@@ -3376,7 +3670,7 @@ contains
     use chemistry_hbl_boundary, only: air5_dynamic_top
     use chemistry_flow_runtime, only: air5_hbl_flowtype,air5_shock_capturing_enabled, &
       air5_convection_species_budget,air5_layered_diffusion,air5_consistent_species_convection, &
-      air5_symmetric_species_convection
+      air5_symmetric_species_convection,air5_conservative_filter
     use chemistry_postshock_boundary_gpu, only: apply_air5_postshock_boundary_gpu
     use chemistry_hbl_boundary_gpu, only: apply_air5_hbl_boundary_gpu
     use shock_sensor_gpu, only: compute_shock_sensor_gpu
@@ -3446,6 +3740,9 @@ contains
     do rkstep=1,3
       phase_started=begin_air5_phase()
       if(lfilter) then
+        if(air5_conservative_filter) then
+          call air5_filter_conservative_gpu()
+        else
         if(air5_compensated) then
           call compensation_filter_state_gpu(.false.)
           call compensation_filter_state_gpu(.true.)
@@ -3460,6 +3757,7 @@ contains
         call air5_limit_filtered_state_kernel<<<grid1,block1>>>(im,jm,km)
         call sync_after_kernel('air5_limit_filtered_state_kernel',.true.)
         call check_air5_status('explicit filter')
+        endif
       endif
       call mark_air5_phase('transport_filter',phase_started,rkstep)
       if(lfilter .or. .not.(prepared .and. rkstep==1)) call air5_prepare_spatial_state_gpu()
