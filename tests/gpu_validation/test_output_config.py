@@ -61,6 +61,19 @@ def test_device_reserve_int64(tmp_path, reserve):
     assert f'device_reserve_bytes={reserve}' in result.stdout
 
 
+@pytest.mark.parametrize('flags,exact,statistics', [
+    ('', 'F', 'T'),
+    ('exact_restart=t', 'T', 'T'),
+    ('checkpoint_statistics=f', 'F', 'F'),
+    ('exact_restart=t,checkpoint_statistics=f', 'T', 'F'),
+])
+def test_restart_switches_and_defaults(tmp_path, flags, exact, statistics):
+    result = run(tmp_path, VALID.replace('&output\n', f'&output\n {flags}\n'))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f'exact_restart={exact}' in result.stdout
+    assert f'checkpoint_statistics={statistics}' in result.stdout
+
+
 @pytest.mark.parametrize('name,selected', [
     ('input.output.tgv.example', [0]*14),
     ('input.output.tgv.derived.example', list(range(1, 15))),
@@ -150,6 +163,7 @@ def test_global_grid_bounds(tmp_path, before, after):
 @pytest.mark.skipif(not COLLECTIVE or not MPIEXEC, reason='Set output collective probe and MPI launcher')
 @pytest.mark.parametrize('content,mode,accepted', [
     (DISABLED, '', True), (VALID, '', True),
+    (VALID.replace('&output\n', '&output\n exact_restart=t,checkpoint_statistics=f,\n'), '', True),
     (VALID.replace('interval_steps=100', 'interval_steps=3000000000'), '', True),
     (VALID.replace('&output\n', '&output\n  device_reserve_bytes=1073741824,\n'), '', True),
     (VALID.replace('&output\n', '&output\n  device_reserve_bytes=9223372036854775807,\n'), '', True),

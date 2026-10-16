@@ -12,14 +12,177 @@ module checkpoint_state_gpu
 #endif
   use gpu_check, only: sync_gpu_boundary
   use checkpoint_state_io, only: checkpoint_state_identity, checkpoint_state_transfer, &
-    allocate_checkpoint_buffer, checkpoint_state_require,checkpoint_halo_refresh
+    allocate_checkpoint_buffer, checkpoint_state_require,checkpoint_halo_refresh,checkpoint_crashfix_words
   implicit none
   private
   public :: checkpoint_perfect_gas_gpu
+  public :: checkpoint_crashfix_gpu
+  public :: checkpoint_lean_perfect_gas_gpu,rebuild_checkpoint_primitives_gpu
 #ifdef ASTR_AIR5_CHEMISTRY
   public :: checkpoint_air5_gpu
 #endif
 contains
+  attributes(global) subroutine checkpoint_component_kernel(stage,im,jm,km,component,packing)
+    real(real64),device :: stage(:,:,:)
+    integer,value :: im,jm,km,component
+    logical,value :: packing
+    integer :: i,j,k
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    j=(blockIdx%y-1)*blockDim%y+threadIdx%y-1
+    k=(blockIdx%z-1)*blockDim%z+threadIdx%z-1
+    if(i>im.or.j>jm.or.k>km) return
+    if(packing) then
+      stage(i+1,j+1,k+1)=q_d(i,j,k,component)
+    else
+      q_d(i,j,k,component)=stage(i+1,j+1,k+1)
+    endif
+  end subroutine checkpoint_component_kernel
+
+  subroutine rebuild_checkpoint_primitives_gpu()
+    use commvar, only: im,jm,km,hm,const2,const6
+    use solver_gpu, only: q_to_primitive_kernel
+    use halo_exchange_gpu, only: exchange_solution_halo_gpu
+    use gpu_check, only: sync_after_kernel
+    type(dim3) :: block,grid
+    block=dim3(32,4,4)
+    grid=dim3((im+32)/32,(jm+4)/4,(km+4)/4)
+    call q_to_primitive_kernel<<<grid,block>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
+    call sync_after_kernel('checkpoint_rebuild_primitives',.true.)
+    ! Halo exchange only: do not reapply walls or draw new blowing randomness.
+    call exchange_solution_halo_gpu()
+  end subroutine rebuild_checkpoint_primitives_gpu
+
+  subroutine checkpoint_lean_perfect_gas_gpu(path,writing,global_shape,origin,cells,identity,budget,device_budget,comm, &
+                                            allow_repartition,restored_exact,repartition_axes)
+    character(*),intent(in) :: path
+    logical,intent(in) :: writing,allow_repartition,repartition_axes(3)
+    logical,intent(out) :: restored_exact
+    integer,intent(in) :: global_shape(3),origin(3),cells(3),comm
+    type(checkpoint_state_identity),intent(inout) :: identity
+    integer(int64),intent(in) :: budget,device_budget
+    real(real64),allocatable :: buffer(:,:,:,:)
+    real(real64),allocatable,device :: stage(:,:,:)
+    integer(int64) :: remaining,stage_bytes
+    integer :: component,err
+    type(dim3) :: block,grid
+    call allocate_checkpoint_buffer(cells,0,5,budget,buffer,remaining,comm)
+    stage_bytes=8_int64*product(int(cells,int64)+1)
+    if(device_budget>0) call checkpoint_state_require(stage_bytes<=device_budget,comm,'lean checkpoint device pack budget')
+    allocate(stage(cells(1)+1,cells(2)+1,cells(3)+1),stat=err)
+    call checkpoint_state_require(err==0,comm,'lean checkpoint device pack allocation')
+    block=dim3(32,4,4); grid=dim3((cells(1)+32)/32,(cells(2)+4)/4,(cells(3)+4)/4)
+    if(writing) then
+      do component=1,5
+        call checkpoint_component_kernel<<<grid,block>>>(stage,cells(1),cells(2),cells(3),component,.true.)
+        call sync_gpu_boundary('lean checkpoint component pack')
+        buffer(:,:,:,component)=stage
+      enddo
+    else
+      buffer=0.d0
+    endif
+    call checkpoint_state_transfer(path,writing,.false.,global_shape,origin,cells,0,buffer,identity,remaining,comm, &
+      role=11,allow_repartition=allow_repartition,restored_exact=restored_exact,repartition_axes=repartition_axes, &
+      physical_only=.true.)
+    if(.not.writing) then
+      q_d=0.d0
+      do component=1,5
+        stage=buffer(:,:,:,component)
+        call checkpoint_component_kernel<<<grid,block>>>(stage,cells(1),cells(2),cells(3),component,.false.)
+        call sync_gpu_boundary('lean checkpoint component restore')
+      enddo
+    endif
+    deallocate(stage)
+    if(.not.writing) call rebuild_checkpoint_primitives_gpu()
+  end subroutine checkpoint_lean_perfect_gas_gpu
+
+  attributes(global) subroutine pack_crashfix_kernel(words,nodes,nx,ny,halo)
+    use commarray_gpu, only: crinod_d
+    integer(int64),device :: words(:)
+    integer(int64),value :: nodes
+    integer,value :: nx,ny,halo
+    integer(int64) :: word,id,value
+    integer :: bit,i,j,k
+    word=int(blockIdx%x-1,int64)*blockDim%x+threadIdx%x
+    if(word>size(words,kind=int64)) return
+    value=0
+    do bit=0,63
+      id=(word-1)*64+bit
+      if(id>=nodes) exit
+      i=int(mod(id,int(nx,int64)))-halo
+      j=int(mod(id/nx,int(ny,int64)))-halo
+      k=int(id/(int(nx,int64)*ny))-halo
+      if(crinod_d(i,j,k)) value=ibset(value,bit)
+    enddo
+    words(word)=value
+  end subroutine pack_crashfix_kernel
+
+  attributes(global) subroutine unpack_crashfix_kernel(words,nodes,nx,ny,halo)
+    use commarray_gpu, only: crinod_d
+    integer(int64),device :: words(:)
+    integer(int64),value :: nodes
+    integer,value :: nx,ny,halo
+    integer(int64) :: id
+    integer :: i,j,k
+    id=int(blockIdx%x-1,int64)*blockDim%x+threadIdx%x-1
+    if(id>=nodes) return
+    i=int(mod(id,int(nx,int64)))-halo
+    j=int(mod(id/nx,int(ny,int64)))-halo
+    k=int(id/(int(nx,int64)*ny))-halo
+    crinod_d(i,j,k)=btest(words(id/64+1),int(mod(id,64_int64)))
+  end subroutine unpack_crashfix_kernel
+
+  subroutine checkpoint_crashfix_gpu(path,writing,budget,device_budget,comm,restored_exact,allow_inexact)
+    use commvar, only: im,jm,km,hm,lcracon
+    use commarray_gpu, only: crinod_d,crashfix_enabled_d,sync_crashfix_mask_to_gpu
+    use gpu_check, only: sync_after_kernel
+    character(*),intent(in) :: path
+    logical,intent(in) :: writing,restored_exact
+    logical,optional,intent(in) :: allow_inexact
+    integer(int64),intent(in) :: budget,device_budget
+    integer,intent(in) :: comm
+    integer(int64),allocatable :: words(:)
+    integer(int64),allocatable,device :: words_d(:)
+    integer(int64) :: nodes,nwords
+    integer :: extents(3),err
+    logical :: active
+    extents=[im,jm,km]+2*hm+1
+    nodes=product(int(extents,int64)); nwords=(nodes+63)/64
+    active=lcracon.or.allocated(crinod_d)
+    call MPI_Allreduce(MPI_IN_PLACE,active,1,MPI_LOGICAL,MPI_LOR,comm,err)
+    call checkpoint_state_require(err==MPI_SUCCESS,comm,'device crashfix history activation')
+    if(writing.and.active) then
+      if(.not.allocated(crinod_d)) call sync_crashfix_mask_to_gpu()
+      if(.not.allocated(crinod_d)) then
+        allocate(crinod_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+        crinod_d=.false.
+      endif
+      crashfix_enabled_d=.true.
+      call checkpoint_state_require(nwords<=min(budget,device_budget)/8.and.nwords<=huge(1), &
+        comm,'device crashfix pack budget')
+      allocate(words(int(nwords)),words_d(int(nwords)),stat=err)
+      call checkpoint_state_require(err==0,comm,'device crashfix pack allocation')
+      call pack_crashfix_kernel<<<int((nwords+255)/256),256>>>(words_d,nodes,extents(1),extents(2),hm)
+      call sync_after_kernel('pack_crashfix_history',.true.)
+      words=words_d
+    endif
+    call checkpoint_crashfix_words(path,writing,lcracon,active,nodes,budget,comm,words,restored_exact,allow_inexact)
+    if(.not.writing) then
+      if(active) then
+        call checkpoint_state_require(nwords<=device_budget/8,comm,'device crashfix restore budget')
+        allocate(words_d(int(nwords)),stat=err)
+        call checkpoint_state_require(err==0,comm,'device crashfix restore allocation')
+        if(.not.allocated(crinod_d)) allocate(crinod_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+        words_d=words
+        call unpack_crashfix_kernel<<<int((nodes+255)/256),256>>>(words_d,nodes,extents(1),extents(2),hm)
+        call sync_after_kernel('unpack_crashfix_history',.true.)
+      else
+        if(allocated(crinod_d)) deallocate(crinod_d)
+      endif
+      crashfix_enabled_d=active
+    endif
+    if(allocated(words_d)) deallocate(words_d)
+  end subroutine checkpoint_crashfix_gpu
+
 #ifdef ASTR_AIR5_CHEMISTRY
   subroutine checkpoint_air5_gpu(path,writing,global_shape,origin,cells,halo,identity,budget,comm, &
                                  allow_repartition,restored_exact,refresh_halos,repartition_axes)

@@ -5,11 +5,14 @@ import subprocess
 
 import pytest
 import numpy as np
+import h5py
 
 from run_m12_mp7_nscbc_performance import mpi_command, runtime
 from prepare_m12_local_case import prepare, replace_value
 from run_m12_boundary_compare import configuration
 from compare_q_validation_snapshots import read_q_snapshot, comparison_values
+from run_output_restart_validation import compare_fields
+from compare_flowstate import read_flowstate
 
 
 PROBE = os.environ.get("ASTR_MP_WALL_PROBE")
@@ -18,11 +21,11 @@ MPIEXEC = os.environ.get("ASTR_TEST_MPIEXEC", "/opt/nvidia/hpc_sdk/Linux_x86_64/
 pytestmark = pytest.mark.skipif(not PROBE, reason="set ASTR_MP_WALL_PROBE to the built production-module probe")
 
 
-def run_probe(ranks, binding, *extra, transport="pinned"):
+def run_probe(ranks, binding, *extra, transport="pinned", cwd=None):
     env = runtime(f"{ranks},1,1",transport)
     env.update(ASTR_GPU_MP_FACE_LAYOUT="x-contiguous", ASTR_GPU_MP_SPLIT_CACHE="on")
     command = mpi_command(MPIEXEC, ranks, transport)
-    return subprocess.run([*command, str(Path(PROBE).resolve()), binding, "wall-blowing", *extra], env=env,
+    return subprocess.run([*command, str(Path(PROBE).resolve()), binding, "wall-blowing", *extra], env=env,cwd=cwd,
                           text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
 
 
@@ -70,6 +73,89 @@ def test_gpu_ordered_repair_matches_original_cpu_and_preserves_history(ranks):
     rows = [line.split() for line in result.stdout.splitlines() if line.startswith("GPU_CRASHFIX_ORDER ")]
     assert len(rows) == 4,result.stdout
     assert all(float(row[-1]) <= 2e-10 for row in rows),result.stdout
+
+
+@pytest.mark.parametrize("ranks,transport", [(1,"pinned"),(2,"pinned"),(4,"pinned"),(2,"device-aware")])
+def test_actual_repaired_history_roundtrip_and_mp_flux_are_exact(tmp_path,ranks,transport):
+    result = run_probe(ranks,"rank","history",transport=transport,cwd=tmp_path)
+    assert result.returncode == 0,result.stdout
+    assert result.stdout.count("GPU repaired history roundtrip: PASS") == 2,result.stdout
+    for mode,name in ((1,"enabled"),(0,"disabled")):
+        with h5py.File(tmp_path/f"history-{name}.h5") as state:
+            layout=state["crashfix_layout"][...]
+            counts=state["crashfix_partitions"][...].reshape(-1,2)
+            words=state["crashfix_history"][...]
+            np.testing.assert_array_equal(layout[:3],[1,mode,ranks])
+            assert words.dtype.kind == "i" and words.dtype.itemsize == 8
+            assert len(words) == layout[3] == counts[:,1].sum()
+            offset=0
+            for nodes,count in counts:
+                assert words[offset] == -1  # All 64 bits, including the sign bit.
+                assert int(words[offset+count-1]) & (1 << int((nodes-1)%64))
+                offset+=int(count)
+
+
+@pytest.mark.parametrize("option,message",[("history-missing","checkpoint lacks required crashfix history"),
+    ("history-mode","crashfix mode/layout mismatch"),("history-topology","crashfix history requires the same MPI topology")])
+def test_history_restart_contract_rejects_missing_or_incompatible_state(tmp_path,option,message):
+    result = run_probe(2,"rank",option,cwd=tmp_path)
+    assert result.returncode != 0,result.stdout
+    assert message in result.stdout,result.stdout
+
+
+@pytest.mark.skipif(not EXECUTABLE, reason="set ASTR_M12_CRASHFIX_EXECUTABLE to the M12 production binary")
+@pytest.mark.parametrize("backend,ranks",[("gpu",1),("gpu",2),("gpu",4),("cpu",1),("cpu",2)])
+def test_m12_nonzero_history_twelve_steps_match_five_plus_seven(tmp_path,backend,ranks):
+    executable=str(Path(EXECUTABLE).resolve())
+    def launch(name,steps,restore=None):
+        case=tmp_path/name
+        prepare(Path("/home/dell/workspace/M12_C13"),case,backend)
+        configuration(case,"nscbc" if backend=="gpu" else "extrapolation",(64,32,24),steps,
+                      archive=False,checkpoint_interval=5,restore=restore)
+        controller=case/"datin/controller"
+        lines=controller.read_text().splitlines()
+        replace_value(lines,"lwsequ,lwslic","f,f,f,t")
+        controller.write_text("\n".join(lines)+"\n")
+        env=runtime(f"{ranks},1,1")
+        env.update(ASTR_GPU_MP_FACE_LAYOUT="x-contiguous",ASTR_GPU_MP_SPLIT_CACHE="on")
+        command=[*mpi_command(MPIEXEC,ranks,"pinned"),executable,"run","datin/input.dat"]
+        with (case/"run.log").open("w") as log:
+            result=subprocess.run(command,cwd=case,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=120)
+        text=(case/"run.log").read_text()
+        assert result.returncode == 0,text[-8000:]
+        assert "ASTR_MP_INPUT_CRASHFIX" not in text,text[-8000:]
+        return case
+    seed=launch("seed",1)/"outdat/new/checkpoints/step000000000001"
+    # Add explicit diagnostic critical nodes to a valid completed-step seed.
+    # Actual negative-wall recovery and its saved history are covered above.
+    with h5py.File(seed/"state.h5","r+") as state:
+        words=state["crashfix_history"][...].view(np.uint64)
+        offset=0
+        for partition in state["partitions"][...].reshape(-1,8):
+            cells=partition[3:6]; halo=int(partition[6]); extents=cells+2*halo+1
+            nodes=int(np.prod(extents)); count=(nodes+63)//64
+            points=[0,nodes-1]
+            for i in (int(cells[0]//2),int(cells[0])):
+                points.append(int(i+halo+extents[0]*(cells[1]//2+halo+extents[1]*(cells[2]//2+halo))))
+            for point in points:
+                words[offset+point//64] |= np.uint64(1) << np.uint64(point%64)
+            offset+=count
+        state["crashfix_history"][...]=words.view(np.int64)
+        initial_history=words.copy()
+    continuous=launch("continuous",13,seed)
+    first=launch("first",6,seed)
+    resumed=launch("resumed",13,first/"outdat/new/checkpoints/step000000000006")
+    final=Path("outdat/new/checkpoints/step000000000013")
+    compare_fields(continuous/final/"state.h5",resumed/final/"state.h5")
+    for filename in ("control.bin","insitu_control.bin"):
+        assert (continuous/final/filename).read_bytes() == (resumed/final/filename).read_bytes()
+    with h5py.File(resumed/final/"state.h5") as state:
+        np.testing.assert_array_equal(state["crashfix_history"][...].view(np.uint64),initial_history)
+    header,values=read_flowstate(continuous)
+    first_header,first_values=read_flowstate(first)
+    resumed_header,resumed_values=read_flowstate(resumed)
+    assert header == first_header == resumed_header
+    np.testing.assert_array_equal(values,np.concatenate([first_values,resumed_values]))
 
 
 @pytest.mark.skipif(not EXECUTABLE, reason="set ASTR_M12_CRASHFIX_EXECUTABLE to the M12 production binary")

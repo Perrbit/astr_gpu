@@ -30,7 +30,7 @@ module insitu_session
   public :: sample_insitu_step,finish_insitu,begin_insitu
   public :: save_insitu_pair,prepare_insitu_pair
   public :: capture_insitu_cpu_checkpoint,restore_insitu_cpu_checkpoint
-  public :: configure_output_statistics,output_statistics_file
+  public :: configure_output_statistics,output_statistics_file,restart_output_statistics
   public :: output_render_file,begin_output_insitu,complete_output_insitu
   public :: output_render_repartition_allowed
   public :: configure_preview_insitu,render_preview_insitu
@@ -1834,6 +1834,44 @@ contains
       'ASTR_INSITU_SELECTED rank=',mpirank,' step=',step,' products=',trim(options%products), &
       ' field_download_bytes=',download_bytes,' velocity_upload_bytes=',upload_bytes, &
       ' capture_canonical derivative render_inclusive=',capture_seconds,derived_seconds,render_seconds
+  end subroutine
+
+  subroutine restart_output_statistics(step,t)
+    use commvar, only: im,jm,km
+    integer,intent(in) :: step
+    real(real64),intent(in) :: t
+    real(real64),allocatable :: fields(:,:,:,:)
+    integer :: status
+    call configure_statistics_validation()
+    if(.not.statistics_enabled) return
+    ! Seed the resumed interval without advancing a rendering schedule.
+    if(formal.and.(options%products=='air5_walls'.or.options%products=='channel_walls')) then
+      call admit_statistics_host()
+      call accumulate_wall_statistics(step,t,statistics_window,options%host_budget_bytes, &
+        options%device_budget_bytes,options%device_reserve_bytes,device_transport=options%postprocess_transport)
+      if(options%products=='air5_walls') then
+        if(options%air5_volume_statistics) call accumulate_air5_statistics(step,t,statistics_window, &
+          options%air5_volume_reduction)
+      endif
+    endif
+    if(.not.(formal.and.options%products=='air5_walls')) then
+      if(native_device_statistics()) then
+        call accumulate_native_device(step,t)
+      else
+        call admit_statistics_host()
+        allocate(fields(0:im,0:jm,0:km,11),stat=status)
+        call require_sample(status==0,'cannot allocate resumed statistics seed')
+        if(formal.and.options%products=='channel_walls') then
+          call capture_channel_statistics(fields)
+        else
+          call capture_sample(fields)
+          call canonicalize_sample(fields)
+        endif
+        call accumulate_statistics_validation(step,t,fields)
+      endif
+    endif
+    statistics_step=step; statistics_time=t
+    output_statistics_restored=.true.
   end subroutine
 
   subroutine begin_insitu(step,t)

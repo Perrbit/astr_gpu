@@ -11,6 +11,7 @@ module checkpoint_state_io
   public :: checkpoint_state_context
   public :: checkpoint_halo_refresh
   public :: checkpoint_state_header
+  public :: checkpoint_crashfix_state,checkpoint_crashfix_words
 
   abstract interface
     subroutine checkpoint_halo_refresh(buffer,cells,halo,budget,comm)
@@ -30,9 +31,154 @@ module checkpoint_state_io
     real(real64) :: time=0, dt_used=0, dt_next=0
   end type
 contains
+  subroutine checkpoint_crashfix_words(path,writing,mode,active,nodes,budget,comm,words,restored_exact,allow_inexact)
+    character(*),intent(in) :: path
+    logical,intent(in) :: writing,mode,restored_exact
+    logical,optional,intent(in) :: allow_inexact
+    logical,intent(inout) :: active
+    integer(int64),intent(in) :: nodes,budget
+    integer,intent(in) :: comm
+    integer(int64),allocatable,intent(inout) :: words(:)
+    integer(int64) :: header(4),nwords,local(2),offset,total
+    integer(int64),allocatable :: counts(:),expected(:)
+    integer(hid_t) :: file,access,xfer,dset,space,mem,native
+    integer(hsize_t) :: dims(1),start(1),count(1),mdims(1)
+    integer :: rank,np,err,mpi_i64,r
+    logical :: exists,inexact
+    inexact=.false.
+    if(present(allow_inexact)) inexact=allow_inexact
+    if(writing.and..not.active) return
+    call MPI_Comm_rank(comm,rank,err)
+    call MPI_Comm_size(comm,np,err)
+    call MPI_Type_match_size(MPI_TYPECLASS_INTEGER,8,mpi_i64,err)
+    call require(err==MPI_SUCCESS,comm,'crashfix integer type')
+    call h5open_f(err)
+    call require(err==0,comm,'crashfix HDF5 initialize')
+    call h5pcreate_f(H5P_FILE_ACCESS_F,access,err)
+    call require(err==0,comm,'crashfix file access')
+    call h5pset_fapl_mpio_f(access,comm,MPI_INFO_NULL,err)
+    call require(err==0,comm,'crashfix parallel file access')
+    if(writing) then
+      call h5fopen_f(path,H5F_ACC_RDWR_F,file,err,access_prp=access)
+    else
+      call h5fopen_f(path,H5F_ACC_RDONLY_F,file,err,access_prp=access)
+    endif
+    call require(err==0,comm,'open crashfix state')
+    call h5pclose_f(access,err)
+    call require(err==0,comm,'close crashfix file access')
+    if(.not.writing) then
+      call h5lexists_f(file,'crashfix_layout',exists,err)
+      call require(err==0,comm,'read crashfix presence')
+      active=exists
+      if(.not.active) then
+        call require(.not.mode.or.inexact,comm,'checkpoint lacks required crashfix history')
+        call h5fclose_f(file,err)
+        call require(err==0,comm,'close state without crashfix history')
+        return
+      endif
+    endif
+    call require(writing.or.restored_exact,comm,'crashfix history requires the same MPI topology')
+    nwords=(nodes+63_int64)/64_int64
+    call require(nodes>0.and.nwords<=huge(1).and. &
+      nwords<=budget/8-int(np,int64)*4-4,comm,'crashfix packing budget')
+    allocate(counts(2*np),expected(2*np),stat=err)
+    call require(err==0,comm,'crashfix partition allocation')
+    local=[nodes,nwords]
+    call MPI_Allgather(local,2,mpi_i64,expected,2,mpi_i64,comm,err)
+    call require(err==MPI_SUCCESS,comm,'crashfix partition gather')
+    counts=expected
+    header=[1_int64,int(merge(1,0,mode),int64),int(np,int64),sum(expected(2::2))]
+    call h5pcreate_f(H5P_DATASET_XFER_F,xfer,err)
+    call require(err==0,comm,'crashfix transfer property')
+    call h5pset_dxpl_mpio_f(xfer,H5FD_MPIO_COLLECTIVE_F,err)
+    call require(err==0,comm,'crashfix collective transfer')
+    call integers(file,'crashfix_layout',header,writing,xfer,comm,rank)
+    call require(header(1)==1.and.(header(2)==merge(1,0,mode).or.inexact).and.header(3)==np.and. &
+      header(4)==sum(expected(2::2)),comm,'crashfix mode/layout mismatch')
+    call integers(file,'crashfix_partitions',counts,writing,xfer,comm,rank)
+    call require(all(counts==expected),comm,'crashfix partition mismatch')
+    if(writing) then
+      call require(allocated(words),comm,'missing packed crashfix history')
+      call require(size(words,kind=int64)==nwords,comm,'crashfix word count')
+    else
+      allocate(words(int(nwords)),stat=err)
+      call require(err==0,comm,'crashfix read buffer allocation')
+    endif
+    offset=0
+    do r=1,rank
+      offset=offset+counts(2*r)
+    enddo
+    total=header(4)
+    dims=total; mdims=nwords; start=offset; count=nwords
+    call dataset(file,'crashfix_history',dims,H5T_STD_I64LE,writing,comm,dset,space)
+    call h5screate_simple_f(1,mdims,mem,err)
+    call require(err==0,comm,'crashfix memory space')
+    call h5sselect_hyperslab_f(space,H5S_SELECT_SET_F,start,count,err)
+    call require(err==0,comm,'crashfix file selection')
+    native=h5kind_to_type(int64,H5_INTEGER_KIND)
+    if(writing) then
+      call h5dwrite_f(dset,native,words,mdims,err,mem_space_id=mem,file_space_id=space,xfer_prp=xfer)
+    else
+      call h5dread_f(dset,native,words,mdims,err,mem_space_id=mem,file_space_id=space,xfer_prp=xfer)
+    endif
+    call require(err==0,comm,'crashfix history transfer')
+    call close_dataset(dset,space,mem,comm)
+    call h5pclose_f(xfer,err)
+    call require(err==0,comm,'close crashfix transfer property')
+    call h5fclose_f(file,err)
+    call require(err==0,comm,'close crashfix state')
+  end subroutine checkpoint_crashfix_words
+
+  subroutine checkpoint_crashfix_state(path,writing,mask,mode,budget,comm,restored_exact,allow_inexact)
+    character(*),intent(in) :: path
+    logical,intent(in) :: writing,mode,restored_exact
+    logical,optional,intent(in) :: allow_inexact
+    logical,contiguous,intent(inout) :: mask(:,:,:)
+    integer(int64),intent(in) :: budget
+    integer,intent(in) :: comm
+    integer(int64),allocatable :: words(:)
+    integer(int64) :: nodes,id
+    integer :: i,j,k,err
+    logical :: active
+    nodes=size(mask,kind=int64)
+    active=mode.or.any(mask)
+    call MPI_Allreduce(MPI_IN_PLACE,active,1,MPI_LOGICAL,MPI_LOR,comm,err)
+    call require(err==MPI_SUCCESS,comm,'crashfix history activation')
+    if(writing.and.active) then
+      call require((nodes+63)/64<=budget/8,comm,'crashfix pack buffer budget')
+      allocate(words(int((nodes+63)/64)),stat=err)
+      call require(err==0,comm,'crashfix pack buffer allocation')
+      words=0; id=0
+      do k=1,size(mask,3)
+      do j=1,size(mask,2)
+      do i=1,size(mask,1)
+        if(mask(i,j,k)) words(id/64+1)=ibset(words(id/64+1),int(mod(id,64_int64)))
+        id=id+1
+      enddo
+      enddo
+      enddo
+    endif
+    call checkpoint_crashfix_words(path,writing,mode,active,nodes,budget,comm,words,restored_exact,allow_inexact)
+    if(.not.writing) then
+      mask=.false.
+      if(active) then
+        id=0
+        do k=1,size(mask,3)
+        do j=1,size(mask,2)
+        do i=1,size(mask,1)
+          mask(i,j,k)=btest(words(id/64+1),int(mod(id,64_int64)))
+          id=id+1
+        enddo
+        enddo
+        enddo
+      endif
+    endif
+  end subroutine checkpoint_crashfix_state
+
   subroutine checkpoint_state_header(path,header,metadata,comm)
     character(*),intent(in) :: path
-    integer(int64),intent(out) :: header(13),metadata(:)
+    integer(int64),intent(out) :: header(13)
+    integer(int64),optional,intent(out) :: metadata(:)
     integer,intent(in) :: comm
     integer(hid_t) :: file,xfer
     integer :: err,rank
@@ -46,7 +192,7 @@ contains
     call require(err==0,comm,'header transfer property')
     call integers(file,'identity',header,.false.,xfer,comm,rank)
     call require(header(1)==magic.and.header(2)==schema.and.header(3)==1,comm,'header identity/version/phase')
-    call integers(file,'metadata',metadata,.false.,xfer,comm,rank)
+    if(present(metadata)) call integers(file,'metadata',metadata,.false.,xfer,comm,rank)
     call h5pclose_f(xfer,err)
     call require(err==0,comm,'close header transfer property')
     call h5fclose_f(file,err)
@@ -335,11 +481,13 @@ contains
   end subroutine
 
   subroutine checkpoint_state_transfer(path,writing,exact,global_shape,origin,cells,halo,q,identity, &
-                                       buffer_limit,comm,role,metadata,allow_repartition,restored_exact,repartition_axes,group_name)
+                                       buffer_limit,comm,role,metadata,allow_repartition,restored_exact,repartition_axes,group_name, &
+                                       physical_only)
     character(*), intent(in) :: path
     character(*),optional,intent(in) :: group_name
     logical, intent(in) :: writing,exact
     logical,optional,intent(in) :: allow_repartition
+    logical,optional,intent(in) :: physical_only
     logical,optional,intent(in) :: repartition_axes(3)
     logical,optional,intent(out) :: restored_exact
     integer, intent(in) :: global_shape(3),origin(3),cells(3),halo,comm
@@ -357,7 +505,7 @@ contains
     integer(hsize_t) :: dims3(3),mdims3(3),start3(3),count3(3),dims1(1),mdims1(1),start1(1),count1(1)
     integer :: rank,np,err,mpi_i64,ncomp,old_np,r,s,a,b,i,j,k,m,n,allocerr,mode(3),root_mode(3),state_role
     integer :: axes_mode(3),root_axes(3)
-    logical :: permit,restore_exact,matched
+    logical :: permit,restore_exact,matched,lean
     integer(int64) :: lo(3),hi(3),other_lo(3),other_hi(3),count(3),sum_owned,v
     character(16) :: name
     character(len(path)) :: root_path
@@ -370,6 +518,8 @@ contains
     permit=.false.
     if(present(allow_repartition)) permit=allow_repartition
     restore_exact=exact
+    lean=.false.
+    if(present(physical_only)) lean=physical_only
     mode=[merge(1,0,writing),merge(1,0,exact),merge(1,0,permit)]
     root_mode=mode
     call MPI_Bcast(root_mode,3,MPI_INTEGER,0,comm,err)
@@ -408,7 +558,7 @@ contains
       ((state_role==3.or.state_role==4).and.ncomp==34).or.(state_role==5.and.ncomp==17).or. &
       (state_role==6.and.ncomp==44).or.(state_role==7.and.(ncomp==34.or.ncomp==35)).or. &
       (state_role==8.and.ncomp==26).or.(state_role==9.and.(ncomp==34.or.ncomp==204)).or. &
-      (state_role==10.and.ncomp==136), &
+      (state_role==10.and.ncomp==136).or.(state_role==11.and.ncomp==5.and.lean), &
       comm,'state component role')
     g=int(global_shape,int64)
     header=[magic,schema,1_int64,g,int(ncomp,int64),int(np,int64),identity%step, &
@@ -429,6 +579,7 @@ contains
     points=volume(full,comm)-volume(owned,comm)
     call require(points<=huge(points)/ncomp,comm,'extras overflow')
     extras_count=points*ncomp
+    if(lean) extras_count=0
     call require(buffer_limit>=0.and.extras_count<=buffer_limit/8,comm,'extras buffer budget')
     call require(extras_count<=huge(n)-1,comm,'extras indexing capacity')
     call require(int(np,int64)*8<=huge(n),comm,'partition table capacity')
@@ -530,7 +681,11 @@ contains
       v=volume(count,comm)
       points=volume(other_hi,comm)-v
       call require(points<=huge(points)/ncomp,comm,'saved extras overflow')
-      call require(partitions(a+8)==points*ncomp,comm,'saved extras count')
+      if(lean) then
+        call require(partitions(a+8)==0,comm,'lean checkpoint contains duplicate state')
+      else
+        call require(partitions(a+8)==points*ncomp,comm,'saved extras count')
+      endif
       call require(sum_owned<=huge(v)-v,comm,'saved ownership overflow')
       sum_owned=sum_owned+v
       do s=0,r-1
@@ -563,6 +718,10 @@ contains
       enddo
     endif
     if(.not.writing.and.permit) restore_exact=matched
+    if(lean) then
+      call require(writing.or.matched.or.permit,comm,'lean restart topology is not registered')
+      restore_exact=.false.
+    endif
     if(present(restored_exact)) restored_exact=matched
     if (restore_exact.or.writing) then
       call require(old_np==np,comm,'exact restore rank count')
@@ -600,7 +759,7 @@ contains
       if (.not.writing.and..not.restore_exact) extras_count=0
       allocate(extras(max(1,int(extras_count))),stat=allocerr)
       call require(allocerr==0,comm,'extras allocation')
-      if (writing) call extra_values(.true.)
+      if (writing.and..not.lean) call extra_values(.true.)
       dims1=total
       mdims1=size(extras,kind=hsize_t)
       call dataset(file,'rank_extras',dims1,H5T_IEEE_F64LE,writing,comm,dset,space)

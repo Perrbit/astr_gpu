@@ -7,7 +7,7 @@ module output_runtime
     nstep,time,deltat,maxstep,use_gpu,flowtype,lcomb,lavg,lcracon,limmbou,lrestart, &
     feqchkpt,feqwsequ,feqslice,feqlist,feqavg,conschm,difschm,rkscheme,lihomo,ljhomo,lkhomo, &
     lreadgrid,gridfile,ninit,diffterm,lfilter,nondimen,turbmode,recon_schem,lchardecomp
-  use commarray, only: q,rho,vel,prs,tmp,x,jacob,dxi
+  use commarray, only: q,rho,vel,prs,tmp,x,jacob,dxi,crinod
   use parallel, only: ig0,jg0,kg0,mpirank,irk,mpisize
   use bc, only: bctype,turbinf,ninflowslice,complete_inflow_cpu_file, &
     configure_wall_blowing,wall_blowing_legacy_random
@@ -25,10 +25,11 @@ module output_runtime
   use checkpoint_bundle
   use insitu_checkpoint_batch, only: create_batch,copy_batch_file
   use insitu_session, only: configure_output_statistics,output_statistics_file, &
-    output_render_file,begin_output_insitu,complete_output_insitu,output_render_repartition_allowed
+    output_render_file,begin_output_insitu,complete_output_insitu,output_render_repartition_allowed, &
+    restart_output_statistics
   use insitu_schedule, only: sample_schedule,configure_schedule,poll_schedule, &
     write_schedule_state,restore_schedule_state
-  use statistic, only: channel_driver_state,complete_mean_statistics_file
+  use statistic, only: channel_driver_state,complete_mean_statistics_file,nsamples
   use benchmark_runtime, only: benchmark_field_io_disabled
 #ifdef ASTR_AIR5_CHEMISTRY
   use commarray, only: tve,spc
@@ -39,7 +40,8 @@ module output_runtime
 #endif
 #ifdef _CUDA
   use statistic_gpu, only: gpu_adaptive_energy_sum
-  use checkpoint_state_gpu, only: checkpoint_perfect_gas_gpu
+  use checkpoint_state_gpu, only: checkpoint_perfect_gas_gpu,checkpoint_crashfix_gpu, &
+    checkpoint_lean_perfect_gas_gpu,rebuild_checkpoint_primitives_gpu
   use production_statistics_gpu, only: complete_compact_statistics_file,compact_statistics_host_bytes
   use inflow_timeseries_gpu, only: complete_inflow_gpu_file
 #ifdef ASTR_AIR5_CHEMISTRY
@@ -64,6 +66,7 @@ module output_runtime
   logical,save :: mean_statistics=.false.
   logical,save :: conservation_statistics=.false.
   logical,save :: repartitioning=.false.
+  logical,save :: restored_statistics_saved=.true.
   ! Bounded x/z channel repartition passed the approved frozen-field matrix.
   logical,parameter :: channel_repartition_validated=.true.
   type(output_options),save :: options
@@ -134,7 +137,7 @@ contains
 #endif
     type(checkpoint_state_identity) :: identity,expected,geometry_identity
     character(8) :: magic
-    integer(int64) :: saved(8),remaining
+    integer(int64) :: saved(8),remaining,header(13)
     real(real64),allocatable :: buffer(:,:,:,:)
     integer :: unit,status,closed,a,b,m
     logical :: ok,matched
@@ -155,6 +158,8 @@ contains
     magic='';saved=0;matched=.false.
     call validate_checkpoint_bundle(trim(options%restore_directory),MPI_COMM_WORLD,ok)
     call check(ok,'invalid preview checkpoint bundle')
+    call checkpoint_state_header(trim(options%restore_directory)//'/state.h5',header,comm=MPI_COMM_WORLD)
+    call check(header(13)==2,'preview requires a full checkpoint written with exact_restart=t')
     ! Only read the control prefix. Production clocks, RNG and driver history stay untouched.
     open(newunit=unit,file=trim(options%restore_directory)//'/control.bin',status='old', &
       access='stream',form='unformatted',convert='little_endian',action='read',iostat=status)
@@ -371,6 +376,8 @@ contains
       'field archives require a registered three-dimensional field layout')
     ! Exact continuation has a stricter contract than ordinary solver execution.
     if(.not.options%checkpoint%enabled.and.len_trim(options%restore_directory)==0) return
+    call check(.not.air5_output_case().or.options%exact_restart, &
+      'AIR5 checkpoint currently requires exact_restart=t to preserve chemical continuation state')
     supported_case=(trim(flowtype)=='tgv'.and.all(bctype==1)).or. &
       (trim(flowtype)=='tgv'.and.lreadgrid.and. &
       (all([ia,ja,ka]==32).or.all([ia,ja,ka]==64).or.all([ia,ja,ka]==128).or.all([ia,ja,ka]==256)).and. &
@@ -397,8 +404,8 @@ contains
     call check((supported_case.or.air5_output_case()).and..not.limmbou.and. &
       .not.lrestart.and.trim(rkscheme)=='rk3', &
       'new output admits TGV, bc41 channel, profile/dynamic flatplate or fixed AIR5 HBL/SBLI RK3')
-    call check(.not.(lcracon.and.options%checkpoint%enabled), &
-      'crashfix checkpoint writing requires critical-node history persistence; disable checkpoint output')
+    call check(.not.lcracon.or.(numq==5.and.num_species==0.and..not.lcomb), &
+      'checkpoint crashfix supports only non-reacting five-variable flow')
     if(extruded_profile_output_case().and.bctype(2)==22) then
       call check(use_gpu.and..not.options%adaptive%enabled.and..not.lavg, &
         'profile joint NSCBC admits GPU archives and same-topology restart; means/adaptive not validated')
@@ -565,6 +572,7 @@ contains
       int(feqlist,int64),int(feqavg,int64),int(merge(1,0,use_gpu),int64)]
     contract(8)=merge(1_int64,0_int64,statistics_active)+merge(2_int64,0_int64,compact_statistics)+ &
       merge(4_int64,0_int64,mean_statistics)
+    if(.not.options%checkpoint_statistics) contract(8)=ibset(contract(8),3)
     ! Only exact checkpoint consumers require the validated FP64/sync contract.
     if(options%checkpoint%enabled.or.len_trim(options%restore_directory)>0) then
     do i=1,3
@@ -619,6 +627,7 @@ contains
       endif
       if(dynamic_output_case()) call inflow_file(trim(path)//'/inflow.h5',.false.,identity)
       call check(identity%step<=huge(nstep),'restored step exceeds solver integer range')
+      if(options%checkpoint_statistics.and.restored_statistics_saved) then
       if(statistics_active) call output_statistics_file(trim(path)//'/statistics.h5',.false., &
         identity,state_host_budget(),allow_repartition=repartitioning)
       if(mean_statistics) call mean_statistics_file(trim(path)//'/statistics.h5',.false., &
@@ -627,6 +636,10 @@ contains
       if(compact_statistics) call complete_compact_statistics_file(trim(path)//'/statistics.h5',.false., &
         identity,state_host_budget(),allow_repartition=curve_repartition_case())
 #endif
+      else
+        nsamples=0
+        call restart_output_statistics(int(identity%step),identity%time)
+      endif
       if(len_trim(root_probe)>0) then
         if(mean_statistics) call mean_statistics_file('outdat/restore_statistics_probe.h5',.true., &
           identity,state_host_budget())
@@ -663,7 +676,7 @@ contains
     call check(ok,'cannot create new run resources directory')
     call create_batch(trim(options%directory)//'/checkpoints',MPI_COMM_WORLD,ok)
     call check(ok,'cannot create new run checkpoints directory')
-    call write_geometry_resource(trim(options%directory)//'/resources/geometry.h5')
+    if(options%exact_restart) call write_geometry_resource(trim(options%directory)//'/resources/geometry.h5')
     if (mpirank==0) call copy_batch_file(trim(source),trim(options%directory)//'/resources/input.txt',ok)
     call check(ok,'cannot freeze primary input resource')
     if(trim(flowtype)=='tgv'.and.lreadgrid) &
@@ -773,12 +786,23 @@ contains
   end subroutine
 
   subroutine flow_file(path,writing,identity)
+    use fludyna, only: updatefvar
+    use parallel, only: qswap
     character(*),intent(in) :: path
     logical,intent(in) :: writing
     type(checkpoint_state_identity),intent(inout) :: identity
     type(checkpoint_state_identity) :: expected
-    logical :: matched
+    real(real64),allocatable :: buffer(:,:,:,:)
+    integer(int64) :: header(13),remaining
+    logical :: matched,lean
     expected=identity
+    lean=.not.options%exact_restart
+    if(.not.writing) then
+      call checkpoint_state_header(path,header,comm=MPI_COMM_WORLD)
+      if(options%exact_restart) call check(header(13)/=11, &
+        'exact_restart=t cannot restore a non-exact checkpoint')
+      lean=header(13)==11
+    endif
 #ifdef ASTR_AIR5_CHEMISTRY
     if(air5_output_case()) then
 #ifdef _CUDA
@@ -799,15 +823,44 @@ contains
 #endif
 #ifdef _CUDA
     if (use_gpu) then
+      if(lean) then
+      call checkpoint_lean_perfect_gas_gpu(path,writing,[ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km], &
+        identity,state_host_budget(),options%device_budget_bytes,MPI_COMM_WORLD, &
+        registered_repartition_case(),matched,registered_repartition_axes())
+      else
       call checkpoint_perfect_gas_gpu(path,writing,[ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],hm, &
         identity,state_host_budget(),MPI_COMM_WORLD,allow_repartition=registered_repartition_case(),restored_exact=matched, &
         refresh_halos=refresh_checkpoint_halos,repartition_axes=registered_repartition_axes())
+      if(.not.writing.and..not.options%exact_restart) call rebuild_checkpoint_primitives_gpu()
+      endif
+      call checkpoint_crashfix_gpu(path,writing,state_host_budget(),options%device_budget_bytes,MPI_COMM_WORLD,matched, &
+        allow_inexact=.not.options%exact_restart)
     else
 #endif
-      call checkpoint_perfect_gas_state(path,writing,[ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],hm, &
+      if(lean) then
+        call allocate_checkpoint_buffer([im,jm,km],0,5,state_host_budget(),buffer,remaining,MPI_COMM_WORLD)
+        buffer=0.d0
+        if(writing) buffer=q(0:im,0:jm,0:km,:)
+        call checkpoint_state_transfer(path,writing,.false.,[ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],0, &
+          buffer,identity,remaining,MPI_COMM_WORLD,role=11,allow_repartition=registered_repartition_case(), &
+          restored_exact=matched,repartition_axes=registered_repartition_axes(),physical_only=.true.)
+        if(.not.writing) then
+          q=0.d0
+          q(0:im,0:jm,0:km,:)=buffer
+        endif
+        deallocate(buffer)
+      else
+        call checkpoint_perfect_gas_state(path,writing,[ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],hm, &
         q,rho,vel,prs,tmp,identity,state_host_budget(),MPI_COMM_WORLD, &
         allow_repartition=registered_repartition_case(),restored_exact=matched,refresh_halos=refresh_checkpoint_halos, &
         repartition_axes=registered_repartition_axes())
+      endif
+      if(.not.writing.and..not.options%exact_restart) then
+        call updatefvar()
+        call qswap()
+      endif
+      call checkpoint_crashfix_state(path,writing,crinod,lcracon,state_host_budget(),MPI_COMM_WORLD,matched, &
+        allow_inexact=.not.options%exact_restart)
 #ifdef _CUDA
     endif
 #endif
@@ -1188,7 +1241,10 @@ contains
         saved_counter,saved_pending,saved_last,mode,interval,dt_interval,saved_initial,origin_step,origin_time, &
         saved_driver_config,driver
       call check(err==0,'read control metadata')
-      call check(all(saved==contract),'numerical/controller contract mismatch')
+      restored_statistics_saved=.not.btest(saved(8),3)
+      saved(8)=ibclr(saved(8),3)
+      call check(all(saved(1:7)==contract(1:7)).and.saved(8)==ibclr(contract(8),3), &
+        'numerical/controller contract mismatch')
       call check((magic=='ASTROC06'.or.magic=='ASTROC09').eqv.(expected_magic=='ASTROC09'), &
         'random wall checkpoint RNG mode/version mismatch')
       call check(all(saved_driver_config==driver_config),'boundary/driver configuration mismatch')
@@ -1351,6 +1407,7 @@ contains
     identity=checkpoint_state_identity(int(nstep,int64),time,dt_used,deltat)
     call flow_file(trim(path)//'/state.h5',.true.,identity)
     if(dynamic_output_case()) call inflow_file(trim(path)//'/inflow.h5',.true.,identity)
+    if(options%checkpoint_statistics) then
     if(statistics_active) call output_statistics_file(trim(path)//'/statistics.h5',.true., &
       identity,state_host_budget())
     if(mean_statistics) call mean_statistics_file(trim(path)//'/statistics.h5',.true., &
@@ -1359,6 +1416,7 @@ contains
     if(compact_statistics) call complete_compact_statistics_file(trim(path)//'/statistics.h5',.true., &
       identity,state_host_budget(),allow_repartition=curve_repartition_case())
 #endif
+    endif
     last_step=nstep
     call control_file(trim(path)//'/control.bin',.true.,counter,pending,identity)
     call archive_control_file(trim(path)//'/archives.bin',.true.,identity)
@@ -1399,6 +1457,8 @@ contains
       i=i-1
     endif
     if(ninit>=1.and.ninit<=3) resources(i)=initial_source_name(ninit)
+    if(.not.options%exact_restart) resources=pack(resources,resources/='geometry.h5')
+    resource_count=size(resources)
     call write_checkpoint_resource_refs(trim(path),resources(:resource_count),MPI_COMM_WORLD,ok)
     call check(ok,'cannot record checkpoint resources')
     files=''
@@ -1406,7 +1466,7 @@ contains
     file_count=4
     file_count=file_count+1
     files(file_count)='insitu_control.bin'
-    if(statistics_active.or.compact_statistics.or.mean_statistics) then
+    if(options%checkpoint_statistics.and.(statistics_active.or.compact_statistics.or.mean_statistics)) then
       file_count=file_count+1
       files(file_count)='statistics.h5'
     endif

@@ -4,6 +4,7 @@
 ! This config is NOT an AIR5 physical case or production-scale recommendation.
 &output
  directory='outdat/new', restore_directory='', restart_output='saved',
+ exact_restart=t,
  buffer_bytes=4096, host_budget_bytes=67108864, device_budget_bytes=67108864,
  device_reserve_bytes=1073741824
 /

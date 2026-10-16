@@ -38,8 +38,12 @@ class M12IntegrationContractTests(unittest.TestCase):
     def test_new_output_does_not_forbid_crashfix(self):
         source = (ROOT/'src/output_runtime.F90').read_text()
         self.assertNotIn('.and..not.lcracon', source)
-        self.assertIn('lcracon.and.options%checkpoint%enabled', source)
-        self.assertIn('critical-node history persistence', source)
+        self.assertNotIn('lcracon.and.options%checkpoint%enabled', source)
+        self.assertIn('call checkpoint_crashfix_gpu(',source)
+        self.assertIn('call checkpoint_crashfix_state(',source)
+        io=(ROOT/'src/checkpoint_state_io.F90').read_text()
+        self.assertIn("dataset(file,'crashfix_history',dims,H5T_STD_I64LE",io)
+        self.assertIn('checkpoint lacks required crashfix history',io)
 
     def test_gpu_crashfix_stays_on_device_after_stage_boundary(self):
         source = (ROOT/'src_gpu/mainloop_gpu.cuf').read_text()

@@ -62,7 +62,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
              checkpoint_enabled=None, curve_surface_oracle=False, wall_mean_oracle=False, curve_trace_oracle=False,
              ncu_kernel=None, curve_trace_step_scale=None, curve_wall_temperature=None,
              solver_halo_transport='pinned', flow_type=None, gpu_precision_mode='fp64', gpu_sync_mode='explicit',
-             gpu_mixed_candidate=None):
+             gpu_mixed_candidate=None, exact_restart=True, checkpoint_statistics=True):
     if solver_halo_transport not in ('pageable', 'pinned', 'pinned-pipeline', 'device-aware'):
         raise ValueError('unknown solver halo transport')
     if ncu_kernel is not None and (not ncu_kernel or backend != 'gpu' or ranks != 1 or
@@ -238,6 +238,8 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
     config.write_text(f"""&output
  directory='outdat/new', restore_directory='{restore or ''}',
  restart_output='{'override' if override else 'saved'}',
+ exact_restart={'.true.' if exact_restart else '.false.'},
+ checkpoint_statistics={'.true.' if checkpoint_statistics else '.false.'},
  host_budget_bytes={output_host_budget},device_budget_bytes={device_budget_bytes},buffer_bytes={buffer_bytes}
  device_reserve_bytes={device_reserve_bytes}
 /

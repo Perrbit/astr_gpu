@@ -109,6 +109,8 @@ def validate_bundle(batch):
     for name in members:
         plain_file(batch / name)
     resources = bundle_members(batch / "RESOURCES", "ASTR_SHARED_RESOURCES")
+    if "geometry.h5" not in resources:
+        raise ValueError("checkpoint lacks geometry/input resources; export requires exact_restart=t")
     if not {"geometry.h5", "input.txt"}.issubset(resources):
         raise ValueError("checkpoint lacks geometry/input resources")
     resource_root = batch.parent.parent / "resources"

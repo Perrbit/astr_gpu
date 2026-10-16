@@ -359,6 +359,8 @@ contains
         if(rank==0) write(*,'(a,1x,a,1x,f5.2,1x,i0,6(1x,es15.7))') &
           'MP_WALL_REPAIR',trim(forcing_name),ratios(pressure_case),merge(1,0,repaired), &
           global_error,global_vmin,global_vmax,wall_min
+        if(forcing==1.and.pressure_case==4.and.index(trim(repair_option),'history')==1) &
+          call check_repaired_history(trim(repair_option))
       enddo
     enddo
     close(fhand_err)
@@ -371,6 +373,71 @@ contains
     deallocate(q_d,qsave_d,qrhs_d,rho_d,vel_d,prs_d,tmp_d,x_d,jacob_d,dxi_d,shock_mask_d,bnorm_j0_d)
     if(rank==0) print *, 'MP wall blowing input repair: PASS; cases=8 ranks=',nranks
   end subroutine check_wall_blowing_repair
+
+  subroutine check_repaired_history(option)
+    use iso_fortran_env, only: int64
+    use commvar, only: im,jm,km,hm,lcracon
+    use commarray_gpu, only: q_d,qrhs_d,crinod_d,crashfix_enabled_d
+    use checkpoint_state_io, only: checkpoint_state_identity,checkpoint_crashfix_state
+    use checkpoint_state_gpu, only: checkpoint_perfect_gas_gpu,checkpoint_crashfix_gpu
+    use mp_positivity_gpu, only: build_mp_convection_gpu
+    use parallel, only: ig0,jg0,kg0
+    implicit none
+    character(*),intent(in) :: option
+    type(checkpoint_state_identity) :: identity
+    real(8),allocatable :: reference(:,:,:,:),actual(:,:,:,:),rhs(:,:,:,:)
+    logical,allocatable :: history(:,:,:),actual_history(:,:,:)
+    integer :: mode,id,i,j,k,nx,ny
+    character(32) :: filename
+    logical :: matched
+    allocate(history(-hm:im+hm,-hm:jm+hm,-hm:km+hm),actual_history(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+    history=crinod_d
+    if(rank==0.and..not.any(history(0:im,0:jm,0:km))) error stop 'history test needs actual repaired nodes'
+    ! Include all-ones words, word boundaries and the final padded word.
+    nx=im+2*hm+1; ny=jm+2*hm+1
+    do id=0,130
+      i=mod(id,nx)-hm; j=mod(id/nx,ny)-hm; k=id/(nx*ny)-hm
+      history(i,j,k)=.true.
+    enddo
+    history(im+hm,jm+hm,km+hm)=.true.
+    crinod_d=history
+    allocate(reference,mold=q_d); allocate(actual,mold=q_d); allocate(rhs,mold=qrhs_d)
+    reference=q_d
+    do mode=1,2
+      lcracon=mode==1
+      filename='history-enabled.h5'
+      if(mode==2) filename='history-disabled.h5'
+      identity=checkpoint_state_identity(1_int64,0.02d0,0.02d0,0.02d0)
+      qrhs_d=0.d0
+      call build_mp_convection_gpu()
+      rhs=qrhs_d
+      call checkpoint_perfect_gas_gpu(filename,.true.,[im*nranks,jm,km]+1,[ig0,jg0,kg0], &
+        [im,jm,km],hm,identity,67108864_int64,MPI_COMM_WORLD,restored_exact=matched)
+      if(option/='history-missing') call checkpoint_crashfix_gpu(filename,.true., &
+        67108864_int64,67108864_int64,MPI_COMM_WORLD,matched)
+      if(option=='history-mode') lcracon=.false.
+      if(option=='history-topology') matched=.false.
+      if(option/='history') then
+        call checkpoint_crashfix_gpu(filename,.false.,67108864_int64,67108864_int64,MPI_COMM_WORLD,matched)
+        error stop 'invalid history restart was accepted'
+      endif
+      actual_history=.false.
+      call checkpoint_crashfix_state(filename,.false.,actual_history,lcracon,67108864_int64,MPI_COMM_WORLD,.true.)
+      if(any(actual_history.neqv.history)) error stop 'CPU read of device crashfix history differs'
+      q_d=-777.d0; crinod_d=.false.; crashfix_enabled_d=.false.
+      call checkpoint_perfect_gas_gpu(filename,.false.,[im*nranks,jm,km]+1,[ig0,jg0,kg0], &
+        [im,jm,km],hm,identity,67108864_int64,MPI_COMM_WORLD,restored_exact=matched)
+      call checkpoint_crashfix_gpu(filename,.false.,67108864_int64,67108864_int64,MPI_COMM_WORLD,matched)
+      actual=q_d; actual_history=crinod_d
+      if(any(actual/=reference).or.any(actual_history.neqv.history)) error stop 'GPU repaired checkpoint differs'
+      qrhs_d=0.d0
+      call build_mp_convection_gpu()
+      actual(0:im,0:jm,0:km,:)=qrhs_d
+      if(any(actual(0:im,0:jm,0:km,:)/=rhs)) error stop 'history restart changed MP convection'
+      if(rank==0) print *, 'GPU repaired history roundtrip: PASS; mode=',mode,' ranks=',nranks
+    enddo
+    lcracon=.true.
+  end subroutine check_repaired_history
 
   subroutine check_mp_positivity()
     use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,numq,ndims,lihomo,ljhomo,lkhomo

@@ -1,5 +1,31 @@
 # ASTR GPU Current Status and Next Targets
 
+## 2026-10-16 检查点轻量默认与修复历史续接
+
+非反应五变量的 `&output` 默认采用
+`exact_restart=f, checkpoint_statistics=t`。
+轻量检查点只保存唯一物理节点守恒量，省去六个物性缓存、场 halo/共享
+副本和检查点专用几何；恢复时重建，不承诺逐值一致。
+显式 `exact_restart=t` 保留完整精确流场续算。
+累计统计的检查点 I/O 可独立设 `checkpoint_statistics=f`：不保存或
+加载累计数组，重启后重新累计，但正常统计计算和标量监测仍启用。
+AIR5 检查点此轮仍须显式 `exact_restart=t`，化学补偿和必要历史不删减。
+
+GPU crashfix 已移至设备实现，不再整场回读后调用 CPU。
+CPU/GPU 压缩节点修复历史写入现有 `state.h5`，不新增旁路文件；
+带历史的同拓扑精确续接已有本地短测证据。
+本节覆盖下文早期记录中“主机 crashfix 回调、禁止检查点写入”的现状表述，
+不改变历史失效诊断或放行长时物理工况。
+配置和实施细节见 `USER_GUIDE.md` 第10.6节及
+`documents/ASTR_OUTPUT_RESTART_REDESIGN_PLAN.md` 首节。
+
+其他算例追加61项本地短测通过：槽道、静态/动态CURVE平板的轻量及
+精确续算、CPU/GPU与NP=1/2代表分解、统计I/O切换，以及AIR5 HBL/SBLI
+精确续接和均值/壁面/体积统计重新累计。非反应轻量续算最大场差
+2.49e-14，精确模式逐值一致。槽道y向及CURVE CUDA-aware MPI保存/恢复
+内存检查8份日志均零错误。AIR5轻量模式仍明确不准入。
+本轮没有修改求解器源码、操作Git或平台作业，也未扩展长时物理验收结论。
+
 ## 2026-10-10 GPU NSCBC 明确物理问题修复
 
 用户已批准以物理特征关系而不是旧 CPU 数值语义为准修复 GPU 边界。

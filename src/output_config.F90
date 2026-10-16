@@ -19,6 +19,7 @@ module output_config
   end type
 
   type :: output_options
+    logical :: exact_restart=.false.,checkpoint_statistics=.true.
     integer :: format_version=output_format_version,keep=2
     character(1024) :: directory='outdat/output',restore_directory=''
     character(16) :: restart_output='saved'
@@ -113,9 +114,9 @@ contains
     character(10),parameter :: groups(3)=[character(10)::'checkpoint','volume','slices']
     type(output_product_options) :: product_options
     integer(int64) :: indices(output_slice_capacity,3)
-    logical :: opened,active
+    logical :: opened,active,exact_restart,checkpoint_statistics
     namelist /output/ format_version,directory,restore_directory,restart_output, &
-      buffer_bytes,host_budget_bytes,device_budget_bytes,device_reserve_bytes
+      buffer_bytes,host_budget_bytes,device_budget_bytes,device_reserve_bytes,exact_restart,checkpoint_statistics
 
     ok=.false.; opened=.false.; message=''
     format_version=candidate%format_version
@@ -124,6 +125,7 @@ contains
     buffer_bytes=candidate%buffer_bytes
     host_budget_bytes=candidate%host_budget_bytes; device_budget_bytes=candidate%device_budget_bytes
     device_reserve_bytes=candidate%device_reserve_bytes
+    exact_restart=candidate%exact_restart; checkpoint_statistics=candidate%checkpoint_statistics
     open(newunit=unit,file=filename,status='old',action='read',iostat=status,iomsg=message)
     if(status/=0) return
     opened=.true.
@@ -140,6 +142,7 @@ contains
     candidate%buffer_bytes=buffer_bytes
     candidate%host_budget_bytes=host_budget_bytes; candidate%device_budget_bytes=device_budget_bytes
     candidate%device_reserve_bytes=device_reserve_bytes
+    candidate%exact_restart=exact_restart; candidate%checkpoint_statistics=checkpoint_statistics
     do kind=1,3
       call read_product(unit,trim(groups(kind)),product_options,keep,indices,ok,message)
       if(.not.ok) goto 900
@@ -382,7 +385,7 @@ contains
     character(16) :: labels(7)
     integer(int64) :: integers(9),indices(output_slice_capacity,3)
     real(real64) :: intervals(3)
-    logical :: flags(6,3)
+    logical :: flags(6,3),restart_flags(2)
     integer :: rank,status,bad,total,integer_type,real_type,i
 
     call MPI_Comm_rank(comm,rank,status)
@@ -422,6 +425,7 @@ contains
       intervals=products%interval_time
       labels(1)=candidate%restart_output
       paths=[candidate%directory,candidate%restore_directory]
+      restart_flags=[candidate%exact_restart,candidate%checkpoint_statistics]
       indices(:,1)=candidate%i_indices; indices(:,2)=candidate%j_indices; indices(:,3)=candidate%k_indices
       do i=1,3
         flags(:,i)=[products(i)%enabled,products(i)%initial_frame,products(i)%final_frame, &
@@ -442,6 +446,8 @@ contains
     call require_mpi(status,comm)
     call MPI_Bcast(flags,size(flags),MPI_LOGICAL,0,comm,status)
     call require_mpi(status,comm)
+    call MPI_Bcast(restart_flags,2,MPI_LOGICAL,0,comm,status)
+    call require_mpi(status,comm)
     call MPI_Bcast(labels,size(labels)*len(labels),MPI_CHARACTER,0,comm,status)
     call require_mpi(status,comm)
     call MPI_Bcast(paths,size(paths)*len(paths),MPI_CHARACTER,0,comm,status)
@@ -452,6 +458,7 @@ contains
     candidate%device_budget_bytes=integers(5)
     candidate%device_reserve_bytes=integers(9)
     candidate%restart_output=labels(1)
+    candidate%exact_restart=restart_flags(1); candidate%checkpoint_statistics=restart_flags(2)
     candidate%directory=paths(1); candidate%restore_directory=paths(2)
     candidate%i_indices=indices(:,1); candidate%j_indices=indices(:,2); candidate%k_indices=indices(:,3)
     do i=1,3

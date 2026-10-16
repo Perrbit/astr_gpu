@@ -52,6 +52,8 @@ program output_config_collective_probe
      actual%restart_output/=expected%restart_output.or.actual%buffer_bytes/=expected%buffer_bytes.or. &
      actual%host_budget_bytes/=expected%host_budget_bytes.or.actual%device_budget_bytes/=expected%device_budget_bytes.or. &
      actual%device_reserve_bytes/=expected%device_reserve_bytes.or. &
+     (actual%exact_restart.neqv.expected%exact_restart).or. &
+     (actual%checkpoint_statistics.neqv.expected%checkpoint_statistics).or. &
      any(actual%i_indices/=expected%i_indices).or.any(actual%j_indices/=expected%j_indices).or. &
      any(actual%k_indices/=expected%k_indices)) call MPI_Abort(MPI_COMM_WORLD,4,status)
   call compare_product(actual%checkpoint,expected%checkpoint)

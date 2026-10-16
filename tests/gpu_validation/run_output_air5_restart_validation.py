@@ -146,7 +146,8 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
            insitu_timing=False, nsys_trace=False, monitor_resources=False, resource_baseline=None, pixel_audit=False,
            wall_mean_oracle=False, complete_step_timing=False, air5_phase_timing=False,
            chemistry_diagnostics=None, chemistry_reductions=None, chemistry_failure_hook=None,
-           explicit_contract_defaults=False, host_budget_bytes=67108864,filter_failure_rank=None):
+           explicit_contract_defaults=False, host_budget_bytes=67108864,filter_failure_rank=None,
+           exact_restart=True,checkpoint_statistics=True):
     case = args.output / f"{backend}_np{ranks}_{name}"
     tau = prepare(case, backend, steps, incident=args.case == "sbli", reconstruction=args.reconstruction,
                   mean_statistics=args.mean_statistics if statistics is None else statistics,
@@ -170,6 +171,7 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
     (case / "datin/input.output").write_text(f"""&output
  directory='outdat/new',restore_directory='{restore or ''}',
  restart_output='{'override' if override else 'saved'}',
+ exact_restart={'t' if exact_restart else 'f'},checkpoint_statistics={'t' if checkpoint_statistics else 'f'},
  host_budget_bytes={host_budget_bytes},device_budget_bytes={1 if fault == 'statistics_device_budget' else device_budget_bytes},buffer_bytes={buffer_bytes}
  device_reserve_bytes={device_reserve_bytes}
 /

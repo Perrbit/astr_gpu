@@ -23,7 +23,8 @@ from run_output_restart_validation import compare_fields, archive_schedule_paylo
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def configuration(case, kind, shape, steps, archive=True, checkpoint_interval=None, restore=None):
+def configuration(case, kind, shape, steps, archive=True, checkpoint_interval=None, restore=None,
+                  exact_restart=True, checkpoint_statistics=True):
     if steps <= 0 or (checkpoint_interval is not None and checkpoint_interval <= 0):
         raise ValueError('step counts and checkpoint intervals must be positive')
     if restore is not None and checkpoint_interval is None:
@@ -43,6 +44,7 @@ def configuration(case, kind, shape, steps, archive=True, checkpoint_interval=No
     path.write_text('\n'.join(lines)+'\n')
     (case/'datin/input.output').write_text(f"""&output
  directory='outdat/new',restore_directory='{restore or ''}',restart_output='saved',
+ exact_restart={'t' if exact_restart else 'f'},checkpoint_statistics={'t' if checkpoint_statistics else 'f'},
  host_budget_bytes=1073741824,device_budget_bytes=67108864,
  buffer_bytes=8388608,device_reserve_bytes=1073741824
 /

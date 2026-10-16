@@ -450,6 +450,35 @@ checks sequence output through a two-step/four-step channel restart.
 All tools require a new output directory and an explicit GPU executable.
 These checks do not qualify AIR5, topology migration or physical convergence.
 
+## Lightweight And Exact Checkpoint Modes
+
+`test_output_restart_other_cases.py` covers channel and static/dynamic CURVE
+flatplates on CPU/GPU at 16 cubed intervals. It compares ten continuous steps
+with a five-plus-five restart in lightweight and exact modes, including NP=1,
+NP=2 x/z and channel y decomposition, inlet-cache rollover, cumulative-statistics
+I/O switches and fresh sample counts/coverage. Lightweight physical-state and
+packed-statistics differences must be <=2e-10; exact continuation is bitwise.
+
+AIR5 HBL/SBLI use four steps with a two-plus-two exact restart, preserving
+chemistry compensation. Mean, wall and volume statistics can restart fresh
+without changing the flow. AIR5 lightweight saving is explicitly rejected.
+The AIR5 CPU reference runs with `usegpu=f` in the same CUDA/AIR5 executable.
+Two GPU save/restore memchecks cover pinned channel y and CUDA-aware CURVE x.
+
+With the root-CMake CPU-only and CUDA/AIR5 builds available:
+
+```bash
+ASTR_OUTPUT_RUNTIME_EXE="$PWD/build_gpu_probe/bin/astr" \
+ASTR_OUTPUT_CPU_EXE="$PWD/build_release_restart_cpu/bin/astr" \
+python3 -m pytest -q tests/gpu_validation/test_output_restart_other_cases.py -x
+```
+
+The 2026-10-16 run passed 61 checks, with eight zero-error memcheck logs.
+Evidence: `out/restart_other_gpu_20261016.xml`,
+`out/restart_other_air5_20261016.xml`, `out/restart_other_halo_20261016.xml`
+and their matching directories. These are local restart checks, not long-time
+physical or remote-platform qualification.
+
 ## AIR5 Characteristic Top Acoustic Gate
 
 `ASTR_AIR5_SOURCE_MODE=frozen` explicitly disables chemistry and V-T sources
