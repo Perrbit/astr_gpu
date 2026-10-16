@@ -18,7 +18,7 @@ module mp_positivity_gpu
 contains
   subroutine configure_mp_positivity_gpu()
     use mpi
-    use commvar, only: numq,num_species,num_modequ,lcomb,lfilter,lcracon, &
+    use commvar, only: numq,num_species,num_modequ,lcomb,lfilter, &
       conschm,rkscheme,recon_schem,lchardecomp,ndims,lkhomo,limmbou
     use precision_mode_gpu, only: gpu_mixed_workspace_requested
     use conservative_boundary_runtime, only: conservative_boundary
@@ -44,12 +44,12 @@ contains
     mp_positivity_enabled=choice==1
     if(mp_positivity_enabled) then
       valid=numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb.and. &
-        .not.lfilter.and..not.lcracon.and.trim(conschm)=='743e'.and. &
+        .not.lfilter.and.trim(conschm)=='743e'.and. &
         recon_schem==5.and.lchardecomp.and.trim(rkscheme)=='rk3'.and.ndims==3.and.lkhomo
       valid=valid.and..not.gpu_mixed_workspace_requested().and..not.conservative_boundary%enabled.and..not.limmbou
       call MPI_Allreduce(MPI_IN_PLACE,valid,1,MPI_LOGICAL,MPI_LAND,MPI_COMM_WORLD,ierr)
       if(.not.valid) then
-        if(rank==0) print *, 'MP positivity requires FP64 five-variable MP7-LD RK3, periodic z, no filter/crashfix'
+        if(rank==0) print *, 'MP positivity requires FP64 five-variable MP7-LD RK3, periodic z, no filter'
         call MPI_Abort(MPI_COMM_WORLD,91,ierr)
       endif
       call configure_mp_face_layout()
@@ -158,6 +158,36 @@ contains
     if(.not.(abs(primitive_kinetic)<=huge(1.d0))) return
     admissible_mp_state=q(5)>kinetic.and.q(5)>primitive_kinetic
   end function admissible_mp_state
+
+  attributes(global) subroutine mp_input_check_kernel(im,jm,km)
+    use commarray_gpu, only: q_d
+    implicit none
+    integer,value :: im,jm,km
+    integer :: id,i,j,k
+    real(8) :: state(5)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=(im+1)*(jm+1)*(km+1)) return
+    i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
+    state=q_d(i,j,k,:)
+    if(.not.admissible_mp_state(state)) call record_mp_failure(1,i,j,k,state)
+  end subroutine mp_input_check_kernel
+
+  logical function mp_inputs_need_repair_gpu() result(invalid)
+    use mpi
+    use commvar, only: im,jm,km
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    integer :: local,global,ierr,n
+    type(dim3) :: block,grid
+    failure_d=0
+    n=(im+1)*(jm+1)*(km+1)
+    block=dim3(256,1,1); grid=dim3((n+255)/256,1,1)
+    call mp_input_check_kernel<<<grid,block>>>(im,jm,km)
+    call sync_after_kernel('mp_input_check_kernel',.true.)
+    local=failure_d
+    call MPI_Allreduce(local,global,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    invalid=global/=0
+  end function mp_inputs_need_repair_gpu
 
   attributes(device) subroutine record_mp_failure(code,i,j,k,state)
     implicit none
@@ -563,14 +593,14 @@ contains
 
   subroutine check_mp_runtime_options()
     use mpi
-    use commvar, only: lfilter,lcracon
+    use commvar, only: lfilter
     implicit none
     integer :: invalid,global_invalid,ierr,rank
-    invalid=merge(1,0,lfilter.or.lcracon)
+    invalid=merge(1,0,lfilter)
     call MPI_Allreduce(invalid,global_invalid,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
     if(global_invalid==0) return
     call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
-    if(rank==0) print *, 'MP positivity does not admit controller enabling filter or crashfix'
+    if(rank==0) print *, 'MP positivity does not admit controller enabling filter'
     call MPI_Abort(MPI_COMM_WORLD,91,ierr)
   end subroutine check_mp_runtime_options
 

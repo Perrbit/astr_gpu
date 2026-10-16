@@ -6,12 +6,14 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class M12IntegrationContractTests(unittest.TestCase):
-    def test_mp_positivity_is_opt_in_and_separate_from_posthoc_repair(self):
+    def test_mp_positivity_is_opt_in_and_allows_explicit_crashfix(self):
         source = (ROOT/'src_gpu/mp_positivity_gpu.cuf').read_text()
         self.assertIn('mp_positivity_enabled=.false.', source)
         self.assertIn("get_environment_variable('ASTR_GPU_MP_POSITIVITY'", source)
         self.assertIn("trim(value)=='flux'", source)
-        self.assertIn('.not.lfilter.and..not.lcracon', source)
+        self.assertIn(".not.lfilter.and.trim(conschm)=='743e'", source)
+        self.assertNotIn('.not.lcracon', source)
+        self.assertNotIn('lfilter.or.lcracon', source)
         self.assertIn('numq==5.and.num_species==0.and.num_modequ==0', source)
         self.assertNotIn('copy_flow_from_gpu', source)
         self.assertIn("check_mp_failure('complete low-order baseline')", source)
@@ -31,7 +33,7 @@ class M12IntegrationContractTests(unittest.TestCase):
     def test_mp_positivity_is_part_of_exact_restart_contract(self):
         source = (ROOT/'src/output_runtime.F90').read_text()
         self.assertIn("get_environment_variable('ASTR_GPU_MP_POSITIVITY'", source)
-        self.assertIn("if(trim(value)=='flux') contract(11)=ibset(contract(11),1)", source)
+        self.assertIn("if(trim(value)=='flux') contract(7)=ibset(contract(7),1)", source)
 
     def test_new_output_does_not_forbid_crashfix(self):
         source = (ROOT/'src/output_runtime.F90').read_text()
@@ -39,35 +41,52 @@ class M12IntegrationContractTests(unittest.TestCase):
         self.assertIn('lcracon.and.options%checkpoint%enabled', source)
         self.assertIn('critical-node history persistence', source)
 
-    def test_gpu_crashfix_uses_ordered_cpu_callback_after_stage_boundary(self):
+    def test_gpu_crashfix_stays_on_device_after_stage_boundary(self):
         source = (ROOT/'src_gpu/mainloop_gpu.cuf').read_text()
-        begin = source.index('! Preserve the CPU\'s ordered in-place repair')
-        end = source.index('enddo', begin)
-        repair = source[begin:end]
-        self.assertIn("sync_after_kernel('crashfix_q_to_primitive_kernel')", repair)
-        self.assertLess(repair.index('call copy_flow_from_gpu()'),
-                        repair.index('call repair_stage(rkstep)'))
-        self.assertLess(repair.index('call repair_stage(rkstep)'), repair.index('q_d=q'))
-        self.assertIn("sync_gpu_boundary('crashfix_upload')", repair)
+        repair = (ROOT/'src_gpu/crashfix_gpu.cuf').read_text()
+        self.assertIn('call ordered_repair_kernel<<<1,1>>>', repair)
+        self.assertIn('do i=first_d(j,k),last_d(j,k)', repair)
+        self.assertNotIn('copy_flow_from_gpu', repair)
+        self.assertNotIn('call crashfix(', repair)
+        self.assertNotIn('q_d=q', repair)
         self.assertNotIn('qsave_d=', repair)
         self.assertNotIn('copy_flow_to_gpu', repair)
-        self.assertLess(source.index('call apply_conservative_stage_gpu(twall(3))'), begin)
+        stage_boundary = source.index('call apply_conservative_stage_gpu(twall(3))')
+        self.assertLess(stage_boundary,source.index('call repair_crashfix_state_gpu(rkstep)',stage_boundary))
         runtime = (ROOT/'src_gpu/gpu_runtime.cuf').read_text()
-        self.assertIn('call time_integration_rk_gpu(first_stage_prepared,copy_back,repair_stage)', runtime)
+        self.assertIn('call time_integration_rk_gpu(first_stage_prepared,copy_back)', runtime)
         main = (ROOT/'src/mainloop.F90').read_text()
-        self.assertIn('repair_stage=gpu_crashfix_stage', main)
-        self.assertIn('call crashfix(ctime(16),repaired_nodes,max_q_change)', main)
+        self.assertNotIn('gpu_crashfix_stage', main)
+        self.assertIn('call check_crashfix_state_gpu()', main)
+        self.assertIn('if(lcracon) call crashfix(ctime(16))', main)
+
+    def test_mp_input_repair_precedes_flux_and_refreshes_halos_without_reapplying_wall(self):
+        source = (ROOT/'src_gpu/mainloop_gpu.cuf').read_text()
+        begin = source.index('subroutine repair_mp_stage_inputs_gpu(')
+        end = source.index('end subroutine repair_mp_stage_inputs_gpu',begin)
+        repair = source[begin:end]
+        self.assertIn('if(.not.(mp_positivity_enabled.and.lcracon)) return',repair)
+        self.assertIn('if(.not.mp_inputs_need_repair_gpu()) return',repair)
+        self.assertLess(repair.index('call repair_crashfix_state_gpu('),
+                        repair.index('call exchange_solution_halo_gpu()'))
+        self.assertIn("check_mp_failure('input after crashfix/halo refresh')",repair)
+        self.assertNotIn('call apply_',repair)
+        start = source.index('do rkstep=1,3')
+        self.assertLess(source.index("rkstep,'physical boundary'",start),
+                        source.index('call build_mp_convection_gpu()',start))
 
     def test_gpu_crashfix_is_opt_in_nonreacting_and_checks_the_repaired_state(self):
         gpu = (ROOT/'src_gpu/mainloop_gpu.cuf').read_text()
         self.assertIn('if(lcomb.or.numq/=5.or.num_species/=0)', gpu)
-        self.assertIn("if(.not.present(repair_stage)) error stop", gpu)
         main = (ROOT/'src/mainloop.F90').read_text()
-        self.assertIn('if(use_gpu.and.lcracon) call gpu_sync_flow_to_host()', main)
+        self.assertNotIn('if(use_gpu.and.lcracon) call gpu_sync_flow_to_host()', main)
         self.assertIn('if(lcracon.and..not.new_output_enabled()) then', main)
         self.assertIn('new output does not support legacy crash rollback', main)
-        self.assertIn('if(por(invalid)) then', main)
-        self.assertIn("'ASTR_GPU_CRASHFIX'", main)
+        repair = (ROOT/'src_gpu/crashfix_gpu.cuf').read_text()
+        self.assertIn('if(global/=0) then', repair)
+        self.assertIn("'ASTR_GPU_CRASHFIX'", repair)
+        self.assertIn('call MPI_Abort(MPI_COMM_WORLD,92,ierr)', repair)
+        self.assertIn('if(lcracon.and..not.allocated(crinod_d)) call sync_crashfix_mask_to_gpu()',gpu)
 
     def test_gpu_crashfix_preserves_cpu_critical_node_flux_fallback(self):
         gpu = (ROOT/'src_gpu/solver_gpu.cuf').read_text()
@@ -116,9 +135,9 @@ class M12IntegrationContractTests(unittest.TestCase):
         restore = source[begin:end]
         self.assertIn('call configure_wall_blowing()', restore)
         self.assertIn('call set_wall_resource_root(', restore)
-        self.assertLess(restore.index('call validate_checkpoint_bundle'),
-                        restore.index('call set_wall_resource_root('))
-        self.assertIn("if(wall_blowing_legacy_random) magic='ASTROC06'", source)
+        self.assertLess(restore.index('call set_wall_resource_root('),restore.index('call configure_wall_blowing()'))
+        self.assertNotIn('file_fingerprint', source)
+        self.assertIn("if(wall_blowing_legacy_random) magic='ASTROC09'", source)
         self.assertIn('random wall checkpoint RNG mode/version mismatch', source)
         self.assertIn('call put_legacy_random_state(', source)
 

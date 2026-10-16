@@ -39,7 +39,7 @@ program mp_ld_reconstruction_probe
   integer :: device,status,i,sample,ntype,inode,w,flag,ierr,nranks,rank,devices
   integer(8) :: free_bytes,total_bytes
   logical :: shock
-  character(len=16) :: argument
+  character(len=16) :: argument,mode_argument
 
   call MPI_Init(ierr)
   call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
@@ -59,6 +59,12 @@ program mp_ld_reconstruction_probe
   status=cudaMemGetInfo(free_bytes,total_bytes)
   if(status/=cudaSuccess.or.free_bytes<1073741824_8) &
     error stop 'MP-LD free memory is below the approved floor'
+  call get_command_argument(2,mode_argument)
+  if(trim(mode_argument)=='wall-blowing'.or.trim(mode_argument)=='crashfix-order') then
+    call check_wall_blowing_repair()
+    call MPI_Finalize(ierr)
+    stop
+  endif
   allocate(samples_d(8,12),result_d(-1:16,4,12))
   do i=1,8
     samples(i,1)=2.d0
@@ -103,6 +109,269 @@ program mp_ld_reconstruction_probe
   call check_mp_positivity()
   call MPI_Finalize(ierr)
 contains
+  subroutine check_wall_blowing_repair()
+    use commvar, only: im,jm,km,hm,ia,ja,ka,numq,num_species,num_modequ,ndims, &
+      flowtype,nondimen,lcomb,lfilter,lcracon,lkhomo,lihomo,ljhomo,lreport,lrestart, &
+      gamma,mach,const2,const6,uinf,zmin,zmax,conschm,difschm,rkscheme,recon_schem, &
+      lchardecomp,turbmode,npdci,npdcj,npdck,is,ie,js,je,ks,ke,nstep,ctime
+    use commarray, only: q,rho,vel,prs,tmp,spc,x,bnorm_j0,nodestat,crinod
+    use commarray_gpu, only: q_d,qsave_d,qrhs_d,rho_d,vel_d,prs_d,tmp_d,x_d, &
+      jacob_d,dxi_d,shock_mask_d,bnorm_j0_d,crinod_d,sync_crashfix_mask_to_gpu
+    use commvar_gpu, only: copy_commvar_to_gpu
+    use parallel, only: mpirank,lio,jrk,jrkm,ig0,jg0,kg0,isize,jsize,ksize, &
+      mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
+    use bc, only: noslip,bctype,wall_blowing_configured,wall_blowing_legacy_random, &
+      wall_blowing_amplitude,wall_blowing_beta,wall_blowing_xa,wall_blowing_xb, &
+      wall_blowing_xc,wall_blowing_nmod_t,wall_blowing_nmod_z,wall_blowing_phase
+    use boundary_gpu, only: init_wall_blowing_gpu,prepare_legacy_wall_blowing_gpu, &
+      wall_isothermal_noslip_y_kernel,release_boundary_gpu
+    use wall_blowing_random, only: legacy_random_state_size,get_legacy_random_state,put_legacy_random_state
+    use mp_positivity_gpu, only: configure_mp_positivity_gpu,mp_inputs_need_repair_gpu, &
+      build_mp_convection_gpu,release_mp_positivity_gpu
+    use mainloop_gpu, only: repair_mp_stage_inputs_gpu
+    use mainloop, only: fhand_err,crashfix
+    use crashfix_gpu, only: repair_crashfix_state_gpu,release_crashfix_gpu
+    use fludyna, only: q2fvar
+    use halo_exchange_gpu, only: init_halo_transport_gpu,release_halo_exchange_buffers_gpu
+    use halo_transport_gpu, only: release_host_buffers
+    implicit none
+    real(8),parameter :: ratios(4)=[1.d0,3.9d0,4.d0,4.1d0],p1=1.d-3,tw=10.d0
+    real(8),allocatable :: actual(:,:,:,:),field(:,:,:),velocity(:,:,:,:)
+    integer,allocatable :: rng_before(:),rng_cpu(:),rng_gpu(:)
+    real(8) :: error,global_error,wall_min(3),vmin,vmax,global_vmin,global_vmax,pressure_ratio
+    integer :: i,j,k,m,forcing,pressure_case,expected_calls,err,repaired_nodes,scenario
+    logical,allocatable :: mask(:,:,:)
+    logical :: ok,invalid,repaired,detect_only
+    character(16) :: forcing_name,repair_option
+    type(dim3) :: block,grid
+
+    im=16; jm=8; km=16; numq=5; num_species=0; num_modequ=0; ndims=3
+    ia=im*nranks; ja=jm; ka=km
+    is=0; ie=im; js=0; je=jm; ks=0; ke=km
+    mpirank=rank; lio=rank==0; jrk=0; jrkm=0
+    ig0=rank*im; jg0=0; kg0=0
+    isize=nranks; jsize=1; ksize=1
+    mpileft=rank-1; mpiright=rank+1
+    if(rank==0) mpileft=MPI_PROC_NULL
+    if(rank==nranks-1) mpiright=MPI_PROC_NULL
+    mpidown=MPI_PROC_NULL; mpiup=MPI_PROC_NULL; mpiback=rank; mpifront=rank
+    npdci=0
+    if(rank==0) npdci=1
+    if(rank==nranks-1) npdci=2
+    if(nranks==1) npdci=4
+    npdcj=4; npdck=0
+    flowtype='bl'; nondimen=.true.; lcomb=.false.; lfilter=.false.; lcracon=.true.
+    call get_command_argument(3,repair_option)
+    detect_only=trim(repair_option)=='detect-only'
+    if(detect_only) lcracon=.false.
+    lihomo=.false.; ljhomo=.false.; lkhomo=.true.; lrestart=.false.; lreport=.false.
+    conschm='743e'; difschm='643e'; rkscheme='rk3'; recon_schem=5; lchardecomp=.true.
+    turbmode='none'; gamma=1.4d0; mach=12.d0; bfacmpld=0.5d0
+    const2=gamma*mach**2; const6=1.d0/(gamma-1.d0)
+    uinf=1.d0; zmin=0.d0; zmax=16.d0; nstep=0; ctime=0.d0
+    bctype=[11,22,41,52,1,1]
+    wall_blowing_configured=.true.; wall_blowing_legacy_random=.true.
+    wall_blowing_beta=0.d0; wall_blowing_xa=20.d0; wall_blowing_xb=40.d0; wall_blowing_xc=60.d0
+    wall_blowing_nmod_t=1; wall_blowing_nmod_z=3; wall_blowing_phase=0.d0
+    call copy_commvar_to_gpu()
+    call configure_mp_positivity_gpu()
+    call init_halo_transport_gpu()
+    open(newunit=fhand_err,status='scratch',form='formatted',action='write')
+    allocate(q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5),vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3))
+    allocate(rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm),prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+    allocate(tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm),spc(-hm:im+hm,-hm:jm+hm,-hm:km+hm,0))
+    allocate(x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3),bnorm_j0(0:im,0:km,3))
+    allocate(nodestat(-hm:im+hm,-hm:jm+hm,-hm:km+hm),crinod(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+    allocate(q_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5),qsave_d(0:im,0:jm,0:km,5))
+    allocate(qrhs_d(0:im,0:jm,0:km,5),vel_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3))
+    allocate(rho_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm),prs_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+    allocate(tmp_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm),x_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3))
+    allocate(jacob_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+    allocate(dxi_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3),shock_mask_d(0:im,0:jm,0:km))
+    allocate(bnorm_j0_d(0:im,0:km,3))
+    allocate(actual,mold=q); allocate(field,mold=rho); allocate(velocity,mold=vel)
+    allocate(rng_before(legacy_random_state_size()),rng_cpu(legacy_random_state_size()), &
+      rng_gpu(legacy_random_state_size()))
+    rng_before=0
+    call put_legacy_random_state(rng_before,ok)
+    if(.not.ok) error stop 'wall fixture RNG reset failed'
+    bnorm_j0=0.d0; bnorm_j0(:,:,2)=1.d0; bnorm_j0_d=bnorm_j0
+    do k=-hm,km+hm
+    do j=-hm,jm+hm
+    do i=-hm,im+hm
+      x(i,j,k,:)=[20.d0+40.d0*dble(ig0+i)/dble(ia),0.01d0*dble(j),dble(k)]
+    enddo
+    enddo
+    enddo
+    x_d=x; jacob_d=1.d0; dxi_d=0.d0; shock_mask_d=0_1
+    do m=1,3
+      dxi_d(:,:,:,m,m)=1.d0
+    enddo
+    if(trim(mode_argument)=='crashfix-order') then
+      allocate(mask,mold=crinod)
+      do scenario=1,4
+        rho=1.d0; prs=1.d-3; tmp=prs*const2; vel=0.d0; vel(:,:,:,1)=0.2d0
+        q(:,:,:,1)=rho; q(:,:,:,2)=rho*0.2d0; q(:,:,:,3:4)=0.d0
+        q(:,:,:,5)=prs*const6+0.5d0*rho*0.2d0**2
+        ! Asymmetric neighbors make an accidentally simultaneous average fail.
+        do k=-hm,km+hm
+        do j=-hm,jm+hm
+        do i=-hm,im+hm
+          q(i,j,k,5)=q(i,j,k,5)+1.d-5*dble(i+2*j+3*k+6*hm)
+        enddo
+        enddo
+        enddo
+        nodestat=0; crinod=.false.; qsave_d=777.d0
+        q(2,2,2,1)=-1.d0; q(3,2,2,1)=-2.d0; q(3,3,2,5)=-1.d0
+        q(0,0,0,1)=-1.d0; q(im,jm,km,1)=-1.d0
+        if(scenario==2) q(2,2,2,5)=ieee_value(0.d0,ieee_quiet_nan)
+        if(scenario==3) then
+          q(2,2,2,:)=q(1,1,1,:)*1.d-6
+          q(2,2,2,5)=1.d-20
+          q(2,2,2,2:4)=0.d0
+        endif
+        if(scenario==4) then
+          nodestat(3,3,2)=1
+          nodestat(1,2,2)=1
+        endif
+        do k=-hm,km+hm
+        do j=-hm,jm+hm
+        do i=-hm,im+hm
+          if(.not.all(ieee_is_finite(q(i,j,k,:))).or.q(i,j,k,1)<=0.d0.or.q(i,j,k,5)<=0.d0) then
+            rho(i,j,k)=q(i,j,k,1); vel(i,j,k,:)=0.d0
+            prs(i,j,k)=-1.d0; tmp(i,j,k)=-1.d0
+          else
+            call q2fvar(q(i,j,k,:),rho(i,j,k),vel(i,j,k,:),prs(i,j,k),tmp(i,j,k),spc(i,j,k,:))
+          endif
+        enddo
+        enddo
+        enddo
+        q_d=q; rho_d=rho; vel_d=vel; prs_d=prs; tmp_d=tmp
+        call sync_crashfix_mask_to_gpu()
+        call release_crashfix_gpu()
+        call crashfix(repaired_nodes=repaired_nodes)
+        call repair_crashfix_state_gpu(scenario)
+        actual=q_d; mask=crinod_d
+        if(any(mask.neqv.crinod)) error stop 'GPU critical-node history differs from CPU'
+        error=0.d0
+        do k=0,km
+        do j=0,jm
+        do i=0,im
+          if(nodestat(i,j,k)>0) cycle
+          if(.not.all(ieee_is_finite(actual(i,j,k,:)))) error stop 'GPU ordered repair left nonfinite q'
+          error=max(error,maxval(abs(actual(i,j,k,:)-q(i,j,k,:))))
+        enddo
+        enddo
+        enddo
+        field=rho_d; error=max(error,maxval(abs(field-rho)))
+        field=prs_d; error=max(error,maxval(abs(field-prs)))
+        field=tmp_d; error=max(error,maxval(abs(field-tmp)))
+        velocity=vel_d; error=max(error,maxval(abs(velocity-vel)))
+        call MPI_Allreduce(error,global_error,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,err)
+        if(global_error>2.d-10) error stop 'GPU ordered repair differs from original CPU crashfix'
+        q=actual
+        actual(0:im,0:jm,0:km,:)=qsave_d
+        if(any(actual(0:im,0:jm,0:km,:)/=777.d0)) error stop 'GPU repair changed RK origin'
+        if(rank==0) write(*,'(a,2(1x,i0),1x,es15.7)') 'GPU_CRASHFIX_ORDER',scenario,repaired_nodes,global_error
+        ! A second call must not lose critical-node history or change healthy q.
+        call repair_crashfix_state_gpu(scenario)
+        actual=q_d; mask=crinod_d
+        if(any(mask.neqv.crinod)) error stop 'GPU critical-node history was overwritten'
+        if(any(actual/=q)) error stop 'GPU healthy repair changed the repaired state'
+      enddo
+      deallocate(mask)
+      if(rank==0) print *, 'GPU ordered crashfix: PASS; cases=4 ranks=',nranks
+      call release_crashfix_gpu()
+      close(fhand_err)
+      return
+    endif
+    block=dim3(256,1,1); grid=dim3(((im+1)*(km+1)+255)/256,1,1)
+    do forcing=0,1
+      forcing_name='off'
+      wall_blowing_amplitude=0.d0
+      if(forcing==1) then
+        forcing_name='legacy_random'; wall_blowing_amplitude=0.12d0
+      endif
+      call init_wall_blowing_gpu()
+      do pressure_case=1,size(ratios)
+        pressure_ratio=1.d0
+        if(rank==0) pressure_ratio=ratios(pressure_case)
+        prs=p1; prs(:,2,:)=pressure_ratio*p1; tmp=1.d0; rho=prs*const2
+        vel=0.d0; vel(:,:,:,1)=uinf
+        q(:,:,:,1)=rho; q(:,:,:,2)=rho*uinf; q(:,:,:,3:4)=0.d0
+        q(:,:,:,5)=prs*const6+0.5d0*rho*uinf**2
+        nodestat=0; crinod=.false.; qsave_d=777.d0; qrhs_d=0.d0
+        q_d=q; rho_d=rho; prs_d=prs; tmp_d=tmp; vel_d=vel
+        call sync_crashfix_mask_to_gpu()
+        call get_legacy_random_state(rng_before)
+        call noslip(3,tw)
+        call get_legacy_random_state(rng_cpu)
+        call put_legacy_random_state(rng_before,ok)
+        if(.not.ok) error stop 'wall fixture RNG restore failed'
+        call prepare_legacy_wall_blowing_gpu(1)
+        call wall_isothermal_noslip_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6,tw,tw,1,0,0,0.d0)
+        call synchronize('synthetic bc41 wall blowing')
+        call get_legacy_random_state(rng_gpu)
+        if(any(rng_cpu/=rng_gpu)) error stop 'CPU/GPU wall draw order differs'
+        actual=q_d
+        error=maxval(abs(actual-q))
+        call MPI_Allreduce(error,global_error,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,err)
+        if(global_error>2.d-10) error stop 'synthetic wall CPU/GPU mismatch'
+        if(trim(repair_option)=='no-neighbor') then
+          q_d=0.d0; q_d(:,:,:,1)=-1.d0; q_d(:,:,:,5)=-1.d0
+          rho_d=-1.d0; prs_d=-1.d0; tmp_d=-1.d0
+          call repair_mp_stage_inputs_gpu(1,'synthetic no valid neighbor')
+          error stop 'unrepairable state was accepted'
+        endif
+        invalid=mp_inputs_need_repair_gpu()
+        if(invalid.neqv.(ratios(pressure_case)>=4.d0)) error stop 'synthetic wall did not reproduce input failure'
+        if(rank==0) write(*,'(a,1x,a,1x,f5.2,2(1x,es15.7))') &
+          'MP_WALL_INPUT',trim(forcing_name),ratios(pressure_case),minval(prs(:,0,:)),minval(rho(:,0,:))
+        vmin=minval(vel(:,0,:,2)); vmax=maxval(vel(:,0,:,2))
+        call MPI_Allreduce(vmin,global_vmin,1,MPI_DOUBLE_PRECISION,MPI_MIN,MPI_COMM_WORLD,err)
+        call MPI_Allreduce(vmax,global_vmax,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,err)
+        if(forcing==1.and.(global_vmin>=0.d0.or.global_vmax<=0.d0)) &
+          error stop 'fixture must contain both blowing and suction'
+        q=-777.d0
+        call repair_mp_stage_inputs_gpu(1,'synthetic bc41',repaired)
+        if(any(q/=-777.d0)) error stop 'GPU repair unexpectedly downloaded or used the host flow field'
+        if(detect_only.and.invalid) call build_mp_convection_gpu()
+        expected_calls=merge(1,0,ratios(pressure_case)>=4.d0)
+        if(merge(1,0,repaired)/=expected_calls.or.(repaired.neqv.invalid)) error stop 'MP repair trigger mismatch'
+        if(mp_inputs_need_repair_gpu()) error stop 'MP input repair left an invalid physical state'
+        actual=q_d; field=rho_d; wall_min(1)=minval(field(0:im,0,0:km))
+        if(any(field/=actual(:,:,:,1))) error stop 'repaired density cache mismatch'
+        velocity=vel_d
+        do m=1,3
+          if(maxval(abs(velocity(:,:,:,m)-actual(:,:,:,m+1)/field))>2.d-10) &
+            error stop 'repaired velocity cache mismatch'
+        enddo
+        field=prs_d; wall_min(2)=minval(field(0:im,0,0:km))
+        if(maxval(abs(field-(actual(:,:,:,5)-0.5d0*actual(:,:,:,1)* &
+          sum(velocity*velocity,dim=4))/const6))>2.d-10) error stop 'repaired pressure cache mismatch'
+        field=tmp_d; wall_min(3)=minval(field(0:im,0,0:km))
+        if(any(wall_min<=0.d0)) error stop 'repaired wall state is not positive'
+        call get_legacy_random_state(rng_before)
+        if(any(rng_before/=rng_gpu)) error stop 'repair advanced wall RNG'
+        call build_mp_convection_gpu()
+        actual(0:im,0:jm,0:km,:)=qsave_d
+        if(any(actual(0:im,0:jm,0:km,:)/=777.d0)) error stop 'input repair changed RK origin'
+        if(rank==0) write(*,'(a,1x,a,1x,f5.2,1x,i0,6(1x,es15.7))') &
+          'MP_WALL_REPAIR',trim(forcing_name),ratios(pressure_case),merge(1,0,repaired), &
+          global_error,global_vmin,global_vmax,wall_min
+      enddo
+    enddo
+    close(fhand_err)
+    call release_boundary_gpu()
+    call release_mp_positivity_gpu()
+    call release_crashfix_gpu()
+    call release_host_buffers()
+    call release_halo_exchange_buffers_gpu()
+    deallocate(q,rho,vel,prs,tmp,spc,x,bnorm_j0,nodestat,crinod)
+    deallocate(q_d,qsave_d,qrhs_d,rho_d,vel_d,prs_d,tmp_d,x_d,jacob_d,dxi_d,shock_mask_d,bnorm_j0_d)
+    if(rank==0) print *, 'MP wall blowing input repair: PASS; cases=8 ranks=',nranks
+  end subroutine check_wall_blowing_repair
+
   subroutine check_mp_positivity()
     use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,numq,ndims,lihomo,ljhomo,lkhomo
     use commarray_gpu, only: q_d,qsave_d,qrhs_d,jacob_d

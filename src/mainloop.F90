@@ -502,7 +502,7 @@ module mainloop
 #ifdef ASTR_AIR5_CHEMISTRY
       call set_air5_mean_sampling_gpu(nstep==0.or.loop_counter/=0)
 #endif
-      call gpu_time_integration_rk(.true.,.false.,repair_stage=gpu_crashfix_stage)
+      call gpu_time_integration_rk(.true.,.false.)
       call gpu_end_complete_step_timing()
       return
     endif
@@ -1052,7 +1052,7 @@ module mainloop
     use statistic,only: nsamples
 #ifdef _CUDA
     use commvar, only: use_gpu
-    use gpu_runtime, only: gpu_sync_flow_to_host
+    use crashfix_gpu, only: check_crashfix_state_gpu
 #endif
     !
     ! local data
@@ -1061,7 +1061,10 @@ module mainloop
     !
     ltocrash=.false.
 #ifdef _CUDA
-    if(use_gpu.and.lcracon) call gpu_sync_flow_to_host()
+    if(use_gpu.and.lcracon) then
+      call check_crashfix_state_gpu()
+      return
+    endif
 #endif
     !
     fh=get_unit()
@@ -1549,58 +1552,6 @@ module mainloop
     return
     !
   end subroutine crashfix
-#ifdef _CUDA
-  subroutine gpu_crashfix_stage(stage)
-    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-    use commarray, only: q,rho,prs,tmp,nodestat
-    use parallel, only: por,pmin
-    implicit none
-    integer,intent(in) :: stage
-    integer :: i,j,k,m,repaired_nodes
-    real(8) :: max_q_change(5),min_state(4),internal_energy
-    logical :: invalid
-
-    call crashfix(ctime(16),repaired_nodes,max_q_change)
-    invalid=.false.
-    min_state=huge(1.d0)
-    do k=0,km
-    do j=0,jm
-    do i=0,im
-      if(nodestat(i,j,k)>0) cycle
-      if(.not.all(ieee_is_finite(q(i,j,k,1:5))).or. &
-         .not.ieee_is_finite(rho(i,j,k)).or. &
-         .not.ieee_is_finite(prs(i,j,k)).or. &
-         .not.ieee_is_finite(tmp(i,j,k))) then
-        invalid=.true.
-        cycle
-      endif
-      if(rho(i,j,k)<=0.d0.or.prs(i,j,k)<=0.d0.or.tmp(i,j,k)<=0.d0) then
-        invalid=.true.
-        cycle
-      endif
-      internal_energy=q(i,j,k,5)-0.5d0*sum(q(i,j,k,2:4)**2)/q(i,j,k,1)
-      if(.not.ieee_is_finite(internal_energy).or.internal_energy<=0.d0) then
-        invalid=.true.
-        cycle
-      endif
-      min_state=min(min_state,(/rho(i,j,k),prs(i,j,k),tmp(i,j,k),internal_energy/))
-    enddo
-    enddo
-    enddo
-    do m=1,5
-      max_q_change(m)=pmax(max_q_change(m))
-    enddo
-    do m=1,4
-      min_state(m)=pmin(min_state(m))
-    enddo
-    if(lio) write(*,'(A,3(1X,I0),9(1X,ES24.16E3))') &
-      'ASTR_GPU_CRASHFIX',nstep,stage,repaired_nodes,max_q_change,min_state
-    if(por(invalid)) then
-      if(lio) print*,' !! GPU crashfix left a nonfinite or non-positive physical state !!'
-      call mpistop
-    endif
-  end subroutine gpu_crashfix_stage
-#endif
   !+-------------------------------------------------------------------+
   !| The end of the subroutine crashfix.                               |
   !+-------------------------------------------------------------------+
