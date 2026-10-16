@@ -269,13 +269,14 @@ def frozen_channel_initial(path):
 
 def compare_channel_control(reference, actual, exact=False):
     left, right = reference.read_bytes(), actual.read_bytes()
-    assert left[:8] == right[:8] == b"ASTROC04"
-    assert len(left) == len(right) and len(left) >= 652
+    assert left[:8] == right[:8] and left[:8] in (b"ASTROC04", b"ASTROC07")
+    driver = 604 if left[:8] == b"ASTROC04" else 556
+    assert len(left) == len(right) and len(left) >= driver + 48
     if exact:
         assert left == right
     # The six driver reals follow contract/clock/schedules and three 128-byte strings.
-    assert left[:604] == right[:604] and left[652:] == right[652:]
-    a, b = (np.frombuffer(payload[604:652], dtype="<f8") for payload in (left, right))
+    assert left[:driver] == right[:driver] and left[driver+48:] == right[driver+48:]
+    a, b = (np.frombuffer(payload[driver:driver+48], dtype="<f8") for payload in (left, right))
     assert np.isfinite(a).all() and np.isfinite(b).all()
     assert np.array_equal(a[:3], [1e-4, 0, 0]) and np.array_equal(b[:3], a[:3])
     assert a[-1:].tobytes() == b[-1:].tobytes()

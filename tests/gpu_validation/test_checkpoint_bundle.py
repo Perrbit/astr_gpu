@@ -1,4 +1,4 @@
-"""Bounded integrity tests for the Fortran checkpoint bundle primitive."""
+"""Checkpoint publication metadata, I/O failure and retention tests."""
 import errno
 import os
 from pathlib import Path
@@ -26,9 +26,9 @@ def bundle(path, mode, ranks=2, success=True, name=None, env=None):
     return result.stdout
 
 
-@pytest.mark.parametrize("defect", ["none", "data", "manifest", "marker", "empty_marker",
+@pytest.mark.parametrize("defect", ["none", "manifest", "marker", "empty_marker",
                                     "missing_marker", "missing_data", "trailing_marker"])
-def test_sealed_state_integrity(tmp_path, defect):
+def test_sealed_publication_metadata(tmp_path, defect):
     state_run(tmp_path / "state.h5", "write", ranks=2, components=11)
     bundle(tmp_path, "validate", success=False)
     bundle(tmp_path, "seal")
@@ -40,8 +40,8 @@ def test_sealed_state_integrity(tmp_path, defect):
         bundle(tmp_path, "validate")
         state_run(tmp_path / "state.h5", "exact", ranks=2, components=11)
         return
-    if defect in {"data", "manifest", "marker"}:
-        name = {"data": "state.h5", "manifest": "MANIFEST", "marker": "COMPLETE"}[defect]
+    if defect in {"manifest", "marker"}:
+        name = {"manifest": "MANIFEST", "marker": "COMPLETE"}[defect]
         path = tmp_path / name
         data = bytearray(path.read_bytes())
         data[len(data) // 2] ^= 1
@@ -54,6 +54,22 @@ def test_sealed_state_integrity(tmp_path, defect):
     else:
         (tmp_path / ("COMPLETE" if defect == "missing_marker" else "state.h5")).unlink()
     bundle(tmp_path, "validate", success=False)
+
+
+def test_payload_content_is_not_checked(tmp_path):
+    (tmp_path / "state.h5").write_bytes(b"payload before publication\n")
+    bundle(tmp_path, "seal")
+    assert (tmp_path / "MANIFEST").read_text() == "ASTR_CHECKPOINT_BUNDLE 2\n1\nstate.h5\n"
+    assert (tmp_path / "COMPLETE").read_text() == "ASTR_COMPLETE_2\n"
+    (tmp_path / "state.h5").write_bytes(b"different bytes and a different length\n")
+    bundle(tmp_path, "validate")
+
+
+def test_existing_crc_metadata_is_read_without_content_checks(tmp_path):
+    (tmp_path / "state.h5").write_bytes(b"payload\n")
+    (tmp_path / "MANIFEST").write_text("ASTR_CHECKPOINT_BUNDLE 1\n1\nstate.h5 1 0000000000000000\n")
+    (tmp_path / "COMPLETE").write_text("ASTR_COMPLETE_1 1 0000000000000000\n")
+    bundle(tmp_path, "validate")
 
 
 def test_no_seal_when_payload_missing(tmp_path):
@@ -124,6 +140,28 @@ def fault_library(tmp_path_factory):
     subprocess.run(["cc", "-std=c99", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
                     str(source), "-ldl", "-o", str(path)], check=True, timeout=30)
     return path
+
+
+def test_seal_publish_and_retire_never_open_payload(tmp_path, fault_library):
+    env = os.environ.copy()
+    env.update(LD_PRELOAD=str(fault_library), ASTR_CHECKPOINT_TEST_NO_PAYLOAD_READ=str(tmp_path))
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    (resources / "mesh.h5").write_bytes(b"geometry bytes\n")
+    (resources / "model.nml").write_text("&model /\n")
+    checkpoints = tmp_path / "checkpoints"
+    checkpoints.mkdir()
+    for number in range(1, 5):
+        batch = checkpoints / f"batch{number}.tmp"
+        batch.mkdir()
+        (batch / "state.h5").write_bytes(b"state bytes\n")
+        bundle(batch, "resources", env=env)
+        bundle(batch, "seal_resources", env=env)
+    bundle(checkpoints, "retain", name="2", env=env)
+    assert not (checkpoints / "batch1").exists()
+    assert not (checkpoints / "batch2").exists()
+    for number in (3, 4):
+        bundle(checkpoints / f"batch{number}", "validate", env=env)
 
 
 @pytest.mark.parametrize("unsupported", [errno.EINVAL, errno.EOPNOTSUPP, errno.ENOSYS])
@@ -291,5 +329,5 @@ def test_shared_resources_and_relocation(tmp_path, fault):
     elif fault == "resource_dir_symlink":
         resources.rename(tmp_path / "external_resources")
         resources.symlink_to(tmp_path / "external_resources", target_is_directory=True)
-    bundle(batch, "validate", success=fault == "none")
+    bundle(batch, "validate", success=fault in {"none", "mutated"})
     assert sum(p.stat().st_size for p in tmp_path.rglob("*") if p.is_file()) < 4 * 1024**2

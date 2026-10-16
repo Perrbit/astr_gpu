@@ -87,15 +87,14 @@ bool astr_insitu::streamline_preview_active() {
 }
 
 extern "C" int astr_insitu_preview_source_set(const char* path,std::int64_t step,double time,
-    const std::int64_t* signatures,int fcomm) {
+    int fcomm) {
 #ifdef ASTR_INSITU_DEVICE_RENDERING
-  if(active || !path || !*path || !signatures || step<0 || !std::isfinite(time)) return 1;
+  if(active || !path || !*path || step<0 || !std::isfinite(time)) return 1;
   int ranks=0;
   if(MPI_Comm_size(MPI_Comm_f2c(fcomm),&ranks)!=MPI_SUCCESS) return 1;
   preview_source["checkpoint"]=path;
   preview_source["step"]=Json::Int64(step);preview_source["time"]=time;
   preview_source["ranks"]=ranks;
-  for(int i=0;i<6;++i) preview_source["signatures"].append(Json::Int64(signatures[i]));
   return 0;
 #else
   return 1;

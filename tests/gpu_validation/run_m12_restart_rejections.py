@@ -10,7 +10,6 @@ import subprocess
 import numpy as np
 
 from prepare_m12_local_case import prepare
-from test_output_series_repair import seal_file_records,repair
 
 
 def altered_source(source,root,defect):
@@ -19,32 +18,24 @@ def altered_source(source,root,defect):
     shutil.copytree(source,batch)
     path=batch/'control.bin'
     raw=bytearray(path.read_bytes())
-    offset=raw.index(b'ASTRWR01')
-    if defect=='resource':
-        (root/'resources/wallbs.dat').unlink()
-        return batch
-    if defect=='corrupt':
-        raw[-1]^=1
-        path.write_bytes(raw)
-        return batch  # Deliberately do not repair the integrity receipt.
+    offset=max(raw.find(b'ASTRWR01'),raw.find(b'ASTRWR02'))
+    if offset<0:
+        raise ValueError('missing random wall RNG trailer')
+    prefix=24 if raw[offset:offset+8]==b'ASTRWR01' else 16
     if defect=='missing':
         del raw[offset:]
     elif defect=='compiler':
-        raw[offset+24]^=1
+        raw[offset+prefix]^=1
     elif defect=='runtime':
-        raw[offset+24+2*16384]^=1
+        raw[offset+prefix+2*16384]^=1
     elif defect=='flag':
-        start=offset+24+2*16384+64+6*4
+        start=offset+prefix+2*16384+64+6*4
         raw[start:start+4]=np.asarray([2],dtype='<i4').tobytes()
     elif defect=='mode_version':
-        raw[:8]=b'ASTROC04'
+        raw[:8]=b'ASTROC04' if raw[:8]==b'ASTROC06' else b'ASTROC07'
     else:
         raise ValueError('unknown checkpoint defect')
     path.write_bytes(raw)
-    names=[row.split()[0] for row in (batch/'MANIFEST').read_text().splitlines()[2:]]
-    (batch/'MANIFEST').write_text(seal_file_records(batch,names,'ASTR_CHECKPOINT_BUNDLE 1'))
-    size,crc=repair.fingerprint(batch/'MANIFEST')
-    (batch/'COMPLETE').write_text(f'ASTR_COMPLETE_1 {size} {crc:016X}\n')
     return batch
 
 
@@ -89,8 +80,7 @@ def main():
     source=source.resolve(strict=True)
     cases={'missing':'missing random wall RNG metadata',
         'compiler':'random wall compiler/runtime mismatch','runtime':'random wall compiler/runtime mismatch',
-        'flag':'invalid random wall RNG rank state','corrupt':'invalid new checkpoint bundle',
-        'resource':'invalid new checkpoint bundle','mode_version':'random wall checkpoint RNG mode/version mismatch'}
+        'flag':'invalid random wall RNG rank state','mode_version':'random wall checkpoint RNG mode/version mismatch'}
     checks=[]
     for defect,message in cases.items():
         modified=altered_source(source,args.output/('source_'+defect),defect)

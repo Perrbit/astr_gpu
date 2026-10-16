@@ -67,14 +67,17 @@ contains
     endif
   end function
 
-  subroutine write_checkpoint_resource_refs(path,names,comm,ok)
+  subroutine write_checkpoint_resource_refs(path,names,comm,ok,with_checksums)
     character(*),intent(in) :: path,names(:)
     integer,intent(in) :: comm
     logical,intent(out) :: ok
+    logical,optional,intent(in) :: with_checksums
     character(128),allocatable :: root_names(:)
     integer :: rank,err,bad,total,n,i,j,unit,closed
     integer(int64),allocatable :: bytes(:),crc(:)
-    logical :: valid
+    logical :: valid,checksums
+    checksums=.false.
+    if(present(with_checksums)) checksums=with_checksums
     call agreement(path,comm,ok,rank)
     if (.not.ok) return
     n=size(names)
@@ -108,18 +111,26 @@ contains
     if (rank==0) then
       do i=1,n
         valid=plain_resource(trim(path)//c_null_char,trim(root_names(i))//c_null_char)==0
-        if (valid) call file_fingerprint(resource_path(path,root_names(i)),bytes(i),crc(i),valid)
+        if (valid.and.checksums) call file_fingerprint(resource_path(path,root_names(i)),bytes(i),crc(i),valid)
         if (.not.valid) ok=.false.
       enddo
       if (ok) then
         open(newunit=unit,file=trim(path)//'/RESOURCES',status='new',action='write',iostat=err)
         ok=err==0
         if (ok) then
-          write(unit,'(a)',iostat=err) 'ASTR_SHARED_RESOURCES 1'
+          if(checksums) then
+            write(unit,'(a)',iostat=err) 'ASTR_SHARED_RESOURCES 1'
+          else
+            write(unit,'(a)',iostat=err) 'ASTR_SHARED_RESOURCES 2'
+          endif
           if (err==0) write(unit,'(i0)',iostat=err) n
           do i=1,n
             if (err/=0) exit
-            write(unit,'(a,1x,i0,1x,z16.16)',iostat=err) trim(root_names(i)),bytes(i),crc(i)
+            if(checksums) then
+              write(unit,'(a,1x,i0,1x,z16.16)',iostat=err) trim(root_names(i)),bytes(i),crc(i)
+            else
+              write(unit,'(a)',iostat=err) trim(root_names(i))
+            endif
           enddo
           close(unit,iostat=closed)
           ok=err==0.and.closed==0
@@ -129,19 +140,21 @@ contains
     call distribute(ok,comm)
   end subroutine
 
-  logical function valid_resources(path) result(ok)
+  logical function valid_resources(path,checksums) result(ok)
     character(*),intent(in) :: path
+    logical,intent(in) :: checksums
     character(512) :: line,expected
     character(128),allocatable :: names(:)
     character(16) :: hex
     integer :: unit,err,closed,n,i,j
     integer(int64) :: bytes,crc,wanted_bytes,wanted_crc
-    logical :: valid
+    logical :: valid,legacy
     ok=.false.
     open(newunit=unit,file=trim(path)//'/RESOURCES',status='old',action='read',iostat=err)
     if (err/=0) return
     read(unit,'(a)',iostat=err) line
-    valid=err==0.and.trim(line)=='ASTR_SHARED_RESOURCES 1'
+    legacy=trim(line)=='ASTR_SHARED_RESOURCES 1'
+    valid=err==0.and.(legacy.or.trim(line)=='ASTR_SHARED_RESOURCES 2')
     if (valid) then
       read(unit,'(a)',iostat=err) line
       if (err==0) read(line,*,iostat=err) n
@@ -160,18 +173,27 @@ contains
       names=''
       do i=1,n
         read(unit,'(a)',iostat=err) line
-        if (err==0) read(line,*,iostat=err) names(i),wanted_bytes,hex
-        if (err==0) read(hex,'(z16)',iostat=err) wanted_crc
+        if (err==0) then
+          if(legacy) then
+            read(line,*,iostat=err) names(i),wanted_bytes,hex
+            if(err==0) read(hex,'(z16)',iostat=err) wanted_crc
+          else
+            names(i)=trim(line)
+          endif
+        endif
         valid=err==0
         if (.not.valid) exit
-        valid=safe_name(names(i)).and.wanted_bytes>=0
-        write(expected,'(a,1x,i0,1x,z16.16)') trim(names(i)),wanted_bytes,wanted_crc
+        valid=safe_name(names(i))
+        expected=trim(names(i))
+        if(legacy) write(expected,'(a,1x,i0,1x,z16.16)') trim(names(i)),wanted_bytes,wanted_crc
         valid=valid.and.trim(line)==trim(expected)
         if (.not.valid) exit
         valid=plain_resource(trim(path)//c_null_char,trim(names(i))//c_null_char)==0
         if (.not.valid) exit
-        call file_fingerprint(resource_path(path,names(i)),bytes,crc,valid)
-        valid=valid.and.bytes==wanted_bytes.and.crc==wanted_crc
+        if(legacy.and.checksums) then
+          call file_fingerprint(resource_path(path,names(i)),bytes,crc,valid)
+          valid=valid.and.bytes==wanted_bytes.and.crc==wanted_crc
+        endif
         if (.not.valid) exit
       enddo
     endif
@@ -285,10 +307,11 @@ contains
     if(ledger%count>0) path=trim(ledger%root)//'/'//trim(ledger%names(ledger%count))
   end function
 
-  subroutine publish_checkpoint_bundle(root,name,comm,ok)
+  subroutine publish_checkpoint_bundle(root,name,comm,ok,with_checksums)
     character(*),intent(in) :: root,name
     integer,intent(in) :: comm
     logical,intent(out) :: ok
+    logical,optional,intent(in) :: with_checksums
     character(128) :: agreed_name
     integer :: rank,err,bad,total,unit,closed
     call agreement(root,comm,ok,rank)
@@ -305,7 +328,7 @@ contains
     if(rank==0) ok=publication_root(trim(root)//c_null_char)==0
     call distribute(ok,comm)
     if(.not.ok) return
-    call validate_checkpoint_bundle(trim(root)//'/'//trim(name)//'.tmp',comm,ok)
+    call validate_checkpoint_bundle(trim(root)//'/'//trim(name)//'.tmp',comm,ok,with_checksums=with_checksums)
     if (.not.ok) return
     if (rank==0) then
       ! Native no-replace or exclusive destination reservation, including NFS.
@@ -371,14 +394,17 @@ contains
     if (err/=MPI_SUCCESS) call MPI_Abort(comm,72,err)
   end subroutine
 
-  subroutine seal_checkpoint_bundle(path,names,comm,ok)
+  subroutine seal_checkpoint_bundle(path,names,comm,ok,with_checksums)
     character(*),intent(in) :: path,names(:)
     integer,intent(in) :: comm
     logical,intent(out) :: ok
+    logical,optional,intent(in) :: with_checksums
     integer :: rank,err,i,j,n,unit,closed,bad,total
     character(128) :: root_names(max_files)
     integer(int64) :: bytes(max_files),crc(max_files),manifest_bytes,manifest_crc
-    logical :: valid,has_resources
+    logical :: valid,has_resources,checksums
+    checksums=.false.
+    if(present(with_checksums)) checksums=with_checksums
     call agreement(path,comm,ok,rank)
     if (.not.ok) return
     n=size(names)
@@ -406,7 +432,9 @@ contains
     if (.not.ok) return
     if (rank==0) then
       do i=1,n
-        call file_fingerprint(trim(path)//'/'//trim(names(i)),bytes(i),crc(i),valid)
+        inquire(file=trim(path)//'/'//trim(names(i)),exist=valid,iostat=err)
+        valid=valid.and.err==0
+        if(valid.and.checksums) call file_fingerprint(trim(path)//'/'//trim(names(i)),bytes(i),crc(i),valid)
         if (.not.valid) ok=.false.
       enddo
       inquire(file=trim(path)//'/RESOURCES',exist=has_resources,iostat=err)
@@ -416,17 +444,25 @@ contains
         open(newunit=unit,file=trim(path)//'/MANIFEST',status='new',action='write',iostat=err)
         ok=err==0
         if (ok) then
-          write(unit,'(a)',iostat=err) 'ASTR_CHECKPOINT_BUNDLE 1'
+          if(checksums) then
+            write(unit,'(a)',iostat=err) 'ASTR_CHECKPOINT_BUNDLE 1'
+          else
+            write(unit,'(a)',iostat=err) 'ASTR_CHECKPOINT_BUNDLE 2'
+          endif
           if (err==0) write(unit,'(i0)',iostat=err) n
           do i=1,n
             if (err/=0) exit
-            write(unit,'(a,1x,i0,1x,z16.16)',iostat=err) trim(names(i)),bytes(i),crc(i)
+            if(checksums) then
+              write(unit,'(a,1x,i0,1x,z16.16)',iostat=err) trim(names(i)),bytes(i),crc(i)
+            else
+              write(unit,'(a)',iostat=err) trim(names(i))
+            endif
           enddo
           close(unit,iostat=closed)
           ok=err==0.and.closed==0
         endif
       endif
-      if (ok) then
+      if (ok.and.checksums) then
         call file_fingerprint(trim(path)//'/MANIFEST',manifest_bytes,manifest_crc,ok)
       endif
       if (ok) then
@@ -434,7 +470,11 @@ contains
         open(newunit=unit,file=trim(path)//'/COMPLETE',status='new',action='write',iostat=err)
         ok=err==0
         if (ok) then
-          write(unit,'(a,1x,i0,1x,z16.16)',iostat=err) 'ASTR_COMPLETE_1',manifest_bytes,manifest_crc
+          if(checksums) then
+            write(unit,'(a,1x,i0,1x,z16.16)',iostat=err) 'ASTR_COMPLETE_1',manifest_bytes,manifest_crc
+          else
+            write(unit,'(a)',iostat=err) 'ASTR_COMPLETE_2'
+          endif
           close(unit,iostat=closed)
           ok=err==0.and.closed==0
         endif
@@ -443,18 +483,21 @@ contains
     call distribute(ok,comm)
   end subroutine
 
-  subroutine validate_checkpoint_bundle(path,comm,ok,files,file_count)
+  subroutine validate_checkpoint_bundle(path,comm,ok,files,file_count,with_checksums)
     character(*),intent(in) :: path
     integer,intent(in) :: comm
     logical,intent(out) :: ok
     character(128),optional,intent(out) :: files(max_files)
     integer,optional,intent(out) :: file_count
+    logical,optional,intent(in) :: with_checksums
     integer :: rank,unit,err,closed,n,i,j
     character(512) :: line,expected
     character(128) :: names(max_files),label
     character(16) :: hex
     integer(int64) :: wanted_bytes,wanted_crc,bytes,crc
-    logical :: valid
+    logical :: valid,legacy,checksums,legacy_marker
+    checksums=.false.
+    if(present(with_checksums)) checksums=with_checksums
     names=''
     n=0
     call agreement(path,comm,ok,rank)
@@ -475,22 +518,28 @@ contains
       open(newunit=unit,file=trim(path)//'/COMPLETE',status='old',action='read',iostat=err)
       if (err/=0) return
       read(unit,'(a)',iostat=err) line
-      if (err==0) read(line,*,iostat=err) label,wanted_bytes,hex
-      if (err==0) read(hex,'(z16)',iostat=err) wanted_crc
-      if (err==0) then
+      legacy_marker=index(line,'ASTR_COMPLETE_1 ')==1
+      if(err==0.and.legacy_marker) read(line,*,iostat=err) label,wanted_bytes,hex
+      if(err==0.and.legacy_marker) read(hex,'(z16)',iostat=err) wanted_crc
+      if (err==0.and.legacy_marker) then
         write(expected,'(a,1x,i0,1x,z16.16)') 'ASTR_COMPLETE_1',wanted_bytes,wanted_crc
         if (trim(line)/=trim(expected)) err=1
+      else if(err==0.and.trim(line)/='ASTR_COMPLETE_2') then
+        err=1
       endif
       valid=err==0
       if (valid) read(unit,'(a)',iostat=err) line
       close(unit,iostat=closed)
       if (.not.valid.or.err/=iostat_end.or.closed/=0) return
-      call file_fingerprint(trim(path)//'/MANIFEST',bytes,crc,valid)
-      if (.not.valid.or.bytes/=wanted_bytes.or.crc/=wanted_crc) return
+      if(legacy_marker.and.checksums) then
+        call file_fingerprint(trim(path)//'/MANIFEST',bytes,crc,valid)
+        if (.not.valid.or.bytes/=wanted_bytes.or.crc/=wanted_crc) return
+      endif
       open(newunit=unit,file=trim(path)//'/MANIFEST',status='old',action='read',iostat=err)
       if (err/=0) return
       read(unit,'(a)',iostat=err) line
-      valid=err==0.and.trim(line)=='ASTR_CHECKPOINT_BUNDLE 1'
+      legacy=trim(line)=='ASTR_CHECKPOINT_BUNDLE 1'
+      valid=err==0.and.(legacy.or.trim(line)=='ASTR_CHECKPOINT_BUNDLE 2')
       if (valid) then
         read(unit,'(a)',iostat=err) line
         if (err==0) read(line,*,iostat=err) n
@@ -505,19 +554,30 @@ contains
       if (valid) then
         do i=1,n
           read(unit,'(a)',iostat=err) line
-          if (err==0) read(line,*,iostat=err) names(i),wanted_bytes,hex
-          if (err==0) read(hex,'(z16)',iostat=err) wanted_crc
+          if (err==0) then
+            if(legacy) then
+              read(line,*,iostat=err) names(i),wanted_bytes,hex
+              if(err==0) read(hex,'(z16)',iostat=err) wanted_crc
+            else
+              names(i)=trim(line)
+            endif
+          endif
           valid=err==0
           if (.not.valid) exit
-          valid=safe_name(names(i)).and.wanted_bytes>=0
+          valid=safe_name(names(i))
           do j=1,i-1
             if (names(j)==names(i)) valid=.false.
           enddo
-          write(expected,'(a,1x,i0,1x,z16.16)') trim(names(i)),wanted_bytes,wanted_crc
+          expected=trim(names(i))
+          if(legacy) write(expected,'(a,1x,i0,1x,z16.16)') trim(names(i)),wanted_bytes,wanted_crc
           valid=valid.and.trim(line)==trim(expected)
           if (.not.valid) exit
-          call file_fingerprint(trim(path)//'/'//trim(names(i)),bytes,crc,valid)
-          valid=valid.and.bytes==wanted_bytes.and.crc==wanted_crc
+          inquire(file=trim(path)//'/'//trim(names(i)),exist=valid,iostat=err)
+          valid=valid.and.err==0
+          if(valid.and.legacy.and.checksums) then
+            call file_fingerprint(trim(path)//'/'//trim(names(i)),bytes,crc,valid)
+            valid=valid.and.bytes==wanted_bytes.and.crc==wanted_crc
+          endif
           if (.not.valid) exit
         enddo
       endif
@@ -527,7 +587,7 @@ contains
       endif
       close(unit,iostat=closed)
       ok=valid.and.closed==0
-      if (ok.and.any(names=='RESOURCES')) ok=valid_resources(path)
+      if (ok.and.any(names=='RESOURCES')) ok=valid_resources(path,checksums)
     end subroutine
   end subroutine
 end module

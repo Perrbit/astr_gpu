@@ -1,6 +1,7 @@
 """Mandatory completed-step output entry; no legacy restart fallback."""
 import subprocess
 import sys
+import struct
 
 import pytest
 
@@ -42,6 +43,27 @@ def test_default_entry_exact_restart(tmp_path, backend, ranks):
         assert (reference / FINAL / name).read_bytes() == (resumed / FINAL / name).read_bytes()
     assert_no_legacy_files(reference)
     assert_no_legacy_files(resumed)
+
+
+@pytest.mark.parametrize("backend", ["cpu", "gpu"])
+def test_existing_checkpoint_fingerprints_are_ignored(tmp_path, backend):
+    args = options(tmp_path, backend)
+    reference, _ = run_case(args, ROOT, backend, 2, "reference", 4, checkpoint_interval=2, buffer_bytes=4096)
+    source = reference / "outdat/new/checkpoints/step000000000002"
+    control = (source / "control.bin").read_bytes()
+    assert control[:8] == b"ASTROC07"
+    (source / "control.bin").write_bytes(b"ASTROC04" + struct.pack("<4q", 1, 2, 3, 4)
+        + control[8:72] + struct.pack("<2q", 5, 6) + control[72:])
+    for name, kind in (("MANIFEST", "ASTR_CHECKPOINT_BUNDLE"), ("RESOURCES", "ASTR_SHARED_RESOURCES")):
+        names = (source / name).read_text().splitlines()[2:]
+        (source / name).write_text(kind + " 1\n" + str(len(names)) + "\n" +
+            "".join(member + " 1 0000000000000000\n" for member in names))
+    (source / "COMPLETE").write_text("ASTR_COMPLETE_1 1 0000000000000000\n")
+    resumed, _ = run_case(args, ROOT, backend, 2, "resumed", 4, restore=source,
+        checkpoint_interval=2, buffer_bytes=4096, change_input=True)
+    for name in ("state.h5", "statistics.h5"):
+        compare_fields(reference / FINAL / name, resumed / FINAL / name)
+    assert (reference / FINAL / "control.bin").read_bytes() == (resumed / FINAL / "control.bin").read_bytes()
 
 
 @pytest.mark.parametrize("backend", ["cpu", "gpu"])

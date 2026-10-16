@@ -5,7 +5,7 @@ FILTER_IDENTITY = (1, 123, 5, 1, 1)
 
 
 def read_air5_contract(payload):
-    counts = {b'ASTRA501': 3, b'ASTRA502': 4}
+    counts = {b'ASTRA501': 3, b'ASTRA502': 4, b'ASTRA503': 0, b'ASTRA504': 0}
     if payload[:8] not in counts:
         raise ValueError('unknown AIR5 configuration version')
     base = 1608 + 8*counts[payload[:8]]

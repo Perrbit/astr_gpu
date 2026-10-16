@@ -1,13 +1,14 @@
 """Source evaluator selection is part of the AIR5 exact-restart contract."""
 from types import SimpleNamespace
 import shutil
+import struct
 
 import pytest
 
 from run_output_air5_restart_validation import launch
 from run_output_restart_validation import compare_fields
 from test_output_air5_conservation import arguments, FINAL
-from test_output_series_repair import seal_file_records, repair, snapshot
+from test_output_series_repair import snapshot
 
 
 @pytest.fixture(scope="module", params=[(n, mode) for n in (1, 2) for mode in ("joint", "source-only")])
@@ -27,11 +28,13 @@ def modified_batch(seed, root, payload):
     batch = root / "checkpoints" / seed.name
     shutil.copytree(seed, batch)
     (batch / "air5_config.bin").write_bytes(payload)
-    names = [row.split()[0] for row in (batch / "MANIFEST").read_text().splitlines()[2:]]
-    (batch / "MANIFEST").write_text(seal_file_records(batch, names, "ASTR_CHECKPOINT_BUNDLE 1"))
-    size, crc = repair.fingerprint(batch / "MANIFEST")
-    (batch / "COMPLETE").write_text(f"ASTR_COMPLETE_1 {size} {crc:016X}\n")
     return batch
+
+
+def pre_extension_config(payload):
+    count = 4 if payload[:8] == b"ASTRA504" else 3
+    magic = b"ASTRA502" if count == 4 else b"ASTRA501"
+    return magic + payload[8:1608] + struct.pack("<"+"q"*count, *range(1, count+1))
 
 
 def test_matching_mode_continues_exactly(reference, tmp_path):
@@ -42,8 +45,8 @@ def test_matching_mode_continues_exactly(reference, tmp_path):
     resumed, _ = launch(args, "gpu", ranks, "resumed", 12, restore=seed)
     compare_fields(full / FINAL / "state.h5", resumed / FINAL / "state.h5")
     config = (resumed / FINAL / "air5_config.bin").read_bytes()
-    assert len(config) == 1768 and config[:8] == b"ASTRA502"
-    assert config[1640:] == args.source_evaluation.encode().ljust(128, b" ")
+    assert len(config) == 1736 and config[:8] == b"ASTRA504"
+    assert config[1608:] == args.source_evaluation.encode().ljust(128, b" ")
     assert config == (full / FINAL / "air5_config.bin").read_bytes()
     assert before == snapshot(seed.parent.parent)
 
@@ -63,7 +66,7 @@ def test_pre_extension_batch_means_joint_only(reference, tmp_path):
         pytest.skip("pre-extension batches were joint-only")
     args = SimpleNamespace(**vars(args))
     args.output = tmp_path
-    batch = modified_batch(seed, tmp_path / "pre_extension", (seed / "air5_config.bin").read_bytes()[:1640])
+    batch = modified_batch(seed, tmp_path / "pre_extension", pre_extension_config((seed / "air5_config.bin").read_bytes()))
     before = snapshot(batch.parent.parent)
     resumed, _ = launch(args, "gpu", ranks, "legacy_joint", 12, restore=batch)
     compare_fields(full / FINAL / "state.h5", resumed / FINAL / "state.h5")
@@ -79,7 +82,7 @@ def test_invalid_appended_field_is_rejected(tmp_path, tail):
     args.mean_statistics = False
     first, _ = launch(args, "gpu", 1, "first", 1)
     seed = first / "outdat/new/checkpoints/step000000000001"
-    batch = modified_batch(seed, tmp_path / "modified", (seed / "air5_config.bin").read_bytes()[:1640] + tail)
+    batch = modified_batch(seed, tmp_path / "modified", (seed / "air5_config.bin").read_bytes()[:1608] + tail)
     message = "AIR5 source evaluation contract mismatch" if len(tail) == 128 else "AIR5 configuration size/tail"
     launch(args, "gpu", 1, "invalid", 2, restore=batch, reject=message)
 
@@ -98,9 +101,9 @@ def test_cpu_joint_three_resource_metadata_continues_exactly(tmp_path):
     first, _ = launch(args, "cpu", 1, "first", 1)
     seed = first / "outdat/new/checkpoints/step000000000001"
     config = (seed / "air5_config.bin").read_bytes()
-    assert len(config) == 1760 and config[:8] == b"ASTRA501"
-    assert config[1632:] == b"joint".ljust(128, b" ")
-    batch = modified_batch(seed, tmp_path / "pre_extension", config[:1632])
+    assert len(config) == 1736 and config[:8] == b"ASTRA503"
+    assert config[1608:] == b"joint".ljust(128, b" ")
+    batch = modified_batch(seed, tmp_path / "pre_extension", pre_extension_config(config))
     relative = "outdat/new/checkpoints/step000000000002/state.h5"
     for name, source in (("new", seed), ("old", batch)):
         resumed, _ = launch(args, "cpu", 1, name, 2, restore=source)

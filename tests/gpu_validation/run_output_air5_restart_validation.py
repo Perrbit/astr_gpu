@@ -344,11 +344,10 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
                 raise
     if fault or reject:
         message = reject or ("AIR5 conservation diagnostic is GPU-only" if fault == "conservation" and backend == "cpu" else
-                   "invalid new checkpoint bundle" if fault == "incident_resource" else
-                   "numerical/executable/controller contract mismatch" if fault in
+                   "numerical/controller contract mismatch" if fault in
                    ("statistics_activation", "sample_interval") else
                    "AIR5 mean statistics device budget" if fault == "statistics_device_budget" else
-                   "AIR5 source/limiter/compensation/top/resource contract mismatch")
+                   "AIR5 source/limiter/compensation/top contract mismatch")
         if not code or message not in (case / "run.log").read_text():
             raise AssertionError(f"fault not rejected: {fault}: {case}")
         completed = {str(path.relative_to(case / "outdat/new")): path.read_bytes()
@@ -471,7 +470,7 @@ def main():
                     if (resumed / "datin/air5_incident_shock.dat").exists():
                         raise AssertionError("original incident resource was not removed")
                     contract = (continuous / final / "air5_config.bin").read_bytes()
-                    if (contract[:8] != b"ASTRA502" or read_air5_contract(contract)['source_evaluation'] !=
+                    if (contract[:8] not in (b"ASTRA502", b"ASTRA504") or read_air5_contract(contract)['source_evaluation'] !=
                             getattr(args, 'source_evaluation', 'joint')):
                         raise AssertionError("SBLI configuration layout mismatch")
                     top = np.frombuffer(contract[1288:1608], dtype="<f8")
@@ -500,14 +499,6 @@ def main():
                     for fault in rejection_modes:
                         launch(args, backend, ranks, "reject_" + fault, 12, restore=seed, fault=fault)
                         faults.append(fault)
-                    if args.case == "sbli":
-                        corrupt = args.output / f"{backend}_np{ranks}_corrupt_incident"
-                        shutil.copytree(first / "outdat/new", corrupt)
-                        with (corrupt / "resources/air5_incident_shock.dat").open("ab") as stream:
-                            stream.write(b"changed incident state")
-                        launch(args, backend, ranks, "reject_incident", 12,
-                               restore=corrupt / f"checkpoints/step{restart_step:012d}", fault="incident_resource")
-                        faults.append("incident_resource")
                 buffer_bounds = controlled_checkpoint_buffers(continuous / final / "state.h5", 0, backend)
                 transfer_bytes = []
                 if backend == "gpu":

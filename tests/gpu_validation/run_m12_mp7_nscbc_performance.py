@@ -203,13 +203,13 @@ def compare_state(reference, candidate):
 
 def wall_rng(path):
     data = path.read_bytes()
-    offset = data.rfind(b'ASTRWR01')
+    offset = max(data.rfind(b'ASTRWR01'), data.rfind(b'ASTRWR02'))
     if offset < 0:
         raise ValueError('missing legacy wall RNG trailer')
     ranks, packet = struct.unpack_from('<ii', data, offset+8)
     if ranks < 1 or packet < 8 or packet > 4096:
         raise ValueError('invalid RNG trailer')
-    size = 8+8+8+2*16384+64+4*ranks*packet
+    size = 8+8+2*16384+64+4*ranks*packet+(8 if data[offset:offset+8] == b'ASTRWR01' else 0)
     if len(data)-offset != size:
         raise ValueError('incorrect RNG trailer length')
     return data[offset:]

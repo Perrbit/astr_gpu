@@ -208,7 +208,7 @@ contains
     ok=.false.; selected=0; nselected=0
     if(plain_frame(path//c_null_char)/=0) return
     if(.not.registered_frame_resources(path)) return
-    call validate_checkpoint_bundle(path,MPI_COMM_SELF,valid,files,n)
+    call validate_checkpoint_bundle(path,MPI_COMM_SELF,valid,files,n,with_checksums=.true.)
     if(.not.valid) return
     if(n/=4.or..not.all([any(files=='data.h5'),any(files=='data.xdmf'),any(files=='FRAME'),any(files=='RESOURCES')])) return
     open(newunit=unit,file=path//'/FRAME',status='old',action='read',iostat=err)

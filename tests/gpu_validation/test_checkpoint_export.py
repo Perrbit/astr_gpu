@@ -176,13 +176,9 @@ def test_invalid_air5_source_rejected(air5_bundle, tmp_path, defect):
     assert not (output / "COMPLETE.json").exists()
 
 
-@pytest.mark.parametrize("defect", ["crc", "resource", "missing", "phase", "role", "fp32", "nan", "symlink", "external"])
+@pytest.mark.parametrize("defect", ["missing", "phase", "role", "fp32", "nan", "symlink", "external"])
 def test_invalid_source_rejected(bundle, tmp_path, defect):
-    if defect in {"crc", "resource"}:
-        path = bundle / "state.h5" if defect == "crc" else bundle.parent.parent / "resources/input.txt"
-        with path.open("ab") as stream:
-            stream.write(b"corrupt")
-    elif defect == "missing":
+    if defect == "missing":
         (bundle / "COMPLETE").unlink()
     elif defect == "symlink":
         data = bundle / "state.h5"
@@ -208,6 +204,21 @@ def test_invalid_source_rejected(bundle, tmp_path, defect):
     with pytest.raises((ValueError, FileNotFoundError)):
         export.export_checkpoint(bundle, output, buffer_bytes=1024)
     assert not (output / "COMPLETE.json").exists()
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_checkpoint_export_does_not_fingerprint(bundle, tmp_path, monkeypatch, version):
+    if version == 2:
+        for name, kind in (("MANIFEST", "ASTR_CHECKPOINT_BUNDLE"), ("RESOURCES", "ASTR_SHARED_RESOURCES")):
+            members = export.entries(bundle / name, kind + " 1")
+            (bundle / name).write_text(kind + " 2\n" + str(len(members)) + "\n" + "\n".join(members) + "\n")
+        (bundle / "COMPLETE").write_text("ASTR_COMPLETE_2\n")
+
+    def unexpected_fingerprint(path):
+        raise AssertionError(f"checkpoint payload was fingerprinted: {path}")
+
+    monkeypatch.setattr(export, "fingerprint", unexpected_fingerprint)
+    export.export_checkpoint(bundle, tmp_path / "export_without_checksums", buffer_bytes=1024)
 
 
 @pytest.mark.parametrize("slice", [("i", 9), ("j", -1), ("k", 5), ("x", 0), ("ij", 0)])

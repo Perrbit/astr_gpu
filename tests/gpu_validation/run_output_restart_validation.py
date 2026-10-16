@@ -808,45 +808,16 @@ def main():
                                               initial_resource=initial_info,
                                               bytes=[a_size, b_size, c_size, d_size]))
                 if backend == "cpu" and ranks == 2:
-                    run_case(args, root, backend, ranks, "reject_input", 12, restore=source,
-                             reject="numerical/executable/controller contract mismatch", change_input=True)
-                    corrupt = args.output / f"{backend}_np{ranks}_corrupt_resource"
-                    shutil.copytree(first / "outdat/new", corrupt)
-                    with (corrupt / "resources/input.txt").open("ab") as stream:
-                        stream.write(b"changed")
-                    run_case(args, root, backend, ranks, "reject_resource", 12,
-                             restore=corrupt / f"checkpoints/step{restart_step:012d}",
-                             reject="invalid new checkpoint bundle")
-                    report["checks"][-1]["rejections"] = ["primary_input_mismatch", "resource_corruption"]
-                    if args.initial_dimension:
-                        initial_corrupt = args.output / f"{backend}_np{ranks}_corrupt_initial"
-                        shutil.copytree(first / "outdat/new", initial_corrupt)
-                        with (initial_corrupt / "resources" / f"flowini{args.initial_dimension}d.h5").open("ab") as stream:
-                            stream.write(b"changed initial field")
-                        run_case(args, root, backend, ranks, "reject_initial", 12,
-                                 restore=initial_corrupt / f"checkpoints/step{restart_step:012d}",
-                                 reject="invalid new checkpoint bundle")
-                        run_case(args, root, backend, ranks, "reject_initial_external", 12,
-                                 reject="cannot fingerprint external initialization resource",
-                                 source_fault="initial_external")
-                        report["checks"][-1]["rejections"] += ["initial_resource_corruption", "initial_hdf5_dependency"]
+                    changed, _ = run_case(args, root, backend, ranks, "input_comment", 12, restore=source,
+                                          change_input=True)
+                    compare_fields(continuous / final, changed / final)
+                    report["checks"][-1]["input_comment_ignored"] = True
+                    report["checks"][-1]["rejections"] = []
                     if args.case == "dynamic":
-                        for fault, message in [
-                            ("hole", "dynamic inflow requires a frozen contiguous regular-file sequence"),
-                            ("external", "dynamic inflow source identity mismatch"),
-                            ("initial_field", "cannot fingerprint external initialization resource"),
-                        ]:
-                            run_case(args, root, backend, ranks, "reject_" + fault, 12,
-                                     reject=message, source_fault=fault)
-                        frame_corrupt = args.output / f"{backend}_np{ranks}_corrupt_frame"
-                        shutil.copytree(first / "outdat/new", frame_corrupt)
-                        with (frame_corrupt / "resources/islice00001.h5").open("ab") as stream:
-                            stream.write(b"changed frame")
-                        run_case(args, root, backend, ranks, "reject_frame", 12,
-                                 restore=frame_corrupt / f"checkpoints/step{restart_step:012d}",
-                                 reject="invalid new checkpoint bundle")
-                        report["checks"][-1]["rejections"] += ["source_hole", "hdf5_dependency",
-                                                               "missing_initial_field", "source_frame_corruption"]
+                        run_case(args, root, backend, ranks, "reject_hole", 12,
+                                 reject="dynamic inflow requires a frozen contiguous regular-file sequence",
+                                 source_fault="hole")
+                        report["checks"][-1]["rejections"] = ["source_hole"]
                 if args.schedule_checks:
                     interval = 4 if args.mode == "steps" else 0.003
                     run_case(args, root, backend, ranks, "reject_schedule", 12, restore=source,

@@ -160,7 +160,8 @@ def main():
                     restore=first/'outdat/new/checkpoints/step000000000005')
                 compare_fields(plain/FINAL/'state.h5',resumed/FINAL/'state.h5')
                 def rng_tail(case):
-                    return (case/FINAL/'control.bin').read_bytes().split(b'ASTRWR01',1)[1]
+                    data = (case/FINAL/'control.bin').read_bytes()
+                    return data.split(b'ASTRWR02' if b'ASTRWR02' in data else b'ASTRWR01',1)[1]
                 if rng_tail(plain)!=rng_tail(resumed):
                     raise ValueError('clean render/restart capture changed RNG state')
                 report['checks'].append({'topology':topology,'transfers':check_transfers(

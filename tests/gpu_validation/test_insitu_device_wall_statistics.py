@@ -301,10 +301,10 @@ def test_statistics_kernel_shape_regression(tmp_path,profile,topology,pipeline,m
         compare_fields(actual/FINAL/name,reference/FINAL/name)
     old_control = (reference/FINAL/'control.bin').read_bytes()
     new_control = (actual/FINAL/'control.bin').read_bytes()
-    # Cross-binary regression excludes only the executable size/CRC in
-    # ASTROC04 contract(1:2); same-binary restart still compares every byte.
-    assert old_control[:8] == new_control[:8] == b'ASTROC04'
-    assert old_control[24:] == new_control[24:]
+    # Compare numerical metadata across the removal of checkpoint fingerprints.
+    assert old_control[:8] in (b'ASTROC04', b'ASTROC07') and new_control[:8] == b'ASTROC07'
+    old_payload = old_control[40:104]+old_control[120:] if old_control[:8] == b'ASTROC04' else old_control[8:]
+    assert old_payload == new_control[8:]
     assert (actual/FINAL/'insitu_control.bin').read_bytes() == (reference/FINAL/'insitu_control.bin').read_bytes()
     for rank in range(ranks):
         name = f'outdat/render/sample.wall_statistics.step00000004.rank{rank:08d}.bin'

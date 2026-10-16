@@ -94,7 +94,7 @@ def test_conservation_switch_change_is_rejected(reference, tmp_path):
     args = SimpleNamespace(**vars(args))
     args.output = tmp_path
     launch(args, "gpu", ranks, "disabled", 12, restore=source,
-           reject="AIR5 source/limiter/compensation/top/resource contract mismatch")
+           reject="AIR5 source/limiter/compensation/top contract mismatch")
 
 
 def test_cpu_does_not_silently_enable_gpu_diagnostic(tmp_path):

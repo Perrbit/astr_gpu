@@ -142,13 +142,14 @@ def run(args):
         with h5py.File(batch / 'state.h5') as state:
             grid = (state['identity'][3:6] - 1).tolist()
         config = (batch / 'air5_config.bin').read_bytes()
-        if config[:8] not in (b'ASTRA501', b'ASTRA502') or config[8:136].decode('ascii').strip() != 'coupled':
+        if config[:8] not in (b'ASTRA501', b'ASTRA502', b'ASTRA503', b'ASTRA504') or \
+                config[8:136].decode('ascii').strip() != 'coupled':
             raise ValueError('require coupled AIR5 HBL/SBLI fixture configuration')
         top_mode = config[8 + 4 * 128:8 + 5 * 128].decode('ascii').strip()
         if top_mode not in ('prescribed', 'characteristic'):
             raise ValueError('invalid fixture top mode')
         baseline = dict(status='checkpoint-read-only', grid_intervals=grid,
-            case='sbli' if config[:8] == b'ASTRA502' else 'hbl',
+            case='sbli' if config[:8] in (b'ASTRA502', b'ASTRA504') else 'hbl',
             top_mode=top_mode, cases={'gpu_checkpoint': dict(seed=str(batch), seed_files_sha256=batch_identity(batch))})
     else:
         baseline = json.loads((args.baseline / 'timing_summary.json').read_text())

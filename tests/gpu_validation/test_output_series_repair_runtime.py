@@ -108,7 +108,7 @@ def test_relocated_derived_restart_rotation_and_index_recovery(tmp_path, backend
         resumed / FINAL / "archives.bin")
     expected_control = (continuous / FINAL / "control.bin").read_bytes()
     actual_control = (resumed / FINAL / "control.bin").read_bytes()
-    assert expected_control[:8] == actual_control[:8] == b"ASTROC04"
+    assert expected_control[:8] == actual_control[:8] == b"ASTROC07"
     # Contract, completed clock, loop state and last save match; the explicit
     # checkpoint schedule override begins after this fixed-format prefix.
     assert expected_control[:168] == actual_control[:168]
@@ -210,7 +210,7 @@ def test_relocated_channel_restart_rotation_and_index_recovery(tmp_path, backend
         resumed / FINAL / "archives.bin")
     expected_control = (continuous / FINAL / "control.bin").read_bytes()
     actual_control = (resumed / FINAL / "control.bin").read_bytes()
-    assert expected_control[:8] == actual_control[:8] == b"ASTROC04"
+    assert expected_control[:8] == actual_control[:8] == b"ASTROC07"
     assert expected_control[:168] == actual_control[:168]
     # Output schedule override changes control bytes, not the saved driver state.
     assert expected_control[220:652] == actual_control[220:652]

@@ -80,28 +80,40 @@ def entries(path, magic):
     return result
 
 
+def bundle_members(path, kind):
+    lines = small_text(path).splitlines()
+    if lines and lines[0] == kind + " 1":
+        return entries(path, kind + " 1")
+    if len(lines) < 2 or lines[0] != kind + " 2" or not re.fullmatch(r"[1-9][0-9]*", lines[1]):
+        raise ValueError(f"invalid bundle metadata: {path}")
+    count = int(lines[1])
+    names = lines[2:]
+    if len(names) != count or len(set(names)) != count or any(
+            not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,127}", name)
+            or name in {"MANIFEST", "COMPLETE"} for name in names):
+        raise ValueError(f"invalid bundle member list: {path}")
+    return dict.fromkeys(names)
+
+
 def validate_bundle(batch):
     # Keep the same relative resource contract as the native restart reader.
     for directory in (batch, batch.parent, batch.parent.parent, batch.parent.parent / "resources"):
         if not stat.S_ISDIR(directory.lstat().st_mode):
             raise ValueError(f"not a plain bundle directory: {directory}")
     marker = small_text(batch / "COMPLETE")
-    size, crc = fingerprint(batch / "MANIFEST")
-    if marker != f"ASTR_COMPLETE_1 {size} {crc:016X}\n":
-        raise ValueError("checkpoint completion marker does not bind its manifest")
-    members = entries(batch / "MANIFEST", "ASTR_CHECKPOINT_BUNDLE 1")
+    if marker != "ASTR_COMPLETE_2\n" and not re.fullmatch(r"ASTR_COMPLETE_1 [0-9]+ [0-9A-F]{16}\n", marker):
+        raise ValueError("invalid checkpoint completion marker")
+    members = bundle_members(batch / "MANIFEST", "ASTR_CHECKPOINT_BUNDLE")
     if not {"state.h5", "control.bin", "RESOURCES"}.issubset(members):
         raise ValueError("checkpoint lacks mandatory members")
-    for name, expected in members.items():
-        if fingerprint(batch / name) != expected:
-            raise ValueError(f"checkpoint checksum mismatch: {name}")
-    resources = entries(batch / "RESOURCES", "ASTR_SHARED_RESOURCES 1")
+    for name in members:
+        plain_file(batch / name)
+    resources = bundle_members(batch / "RESOURCES", "ASTR_SHARED_RESOURCES")
     if not {"geometry.h5", "input.txt"}.issubset(resources):
         raise ValueError("checkpoint lacks geometry/input resources")
     resource_root = batch.parent.parent / "resources"
-    for name, expected in resources.items():
-        if fingerprint(resource_root / name) != expected:
-            raise ValueError(f"resource checksum mismatch: {name}")
+    for name in resources:
+        plain_file(resource_root / name)
     return resource_root
 
 

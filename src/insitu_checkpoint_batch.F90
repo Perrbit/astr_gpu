@@ -30,12 +30,13 @@ contains
     character(*),intent(in) :: source,destination
     logical,intent(out) :: ok
     integer(int8) :: buffer(65536)
-    integer(int64) :: bytes,crc,copied_bytes,copied_crc,left
+    integer(int64) :: bytes,left
     integer :: input,output,status,read_status,write_status,closed,n
     logical :: valid
     ok=.false.
-    call file_fingerprint(source,bytes,crc,valid)
-    if(.not.valid) return
+    inquire(file=source,size=bytes,iostat=status)
+    if(status/=0.or.bytes<0) return
+    valid=.true.
     open(newunit=input,file=source,status='old',access='stream',form='unformatted',action='read',iostat=status)
     if(status/=0) return
     open(newunit=output,file=destination,status='new',access='stream',form='unformatted',action='write',iostat=status)
@@ -63,8 +64,7 @@ contains
     close(output,iostat=closed)
     valid=valid.and.closed==0
     if(.not.valid) return
-    call file_fingerprint(destination,copied_bytes,copied_crc,valid)
-    ok=valid.and.copied_bytes==bytes.and.copied_crc==crc
+    ok=valid
   end subroutine
 
   logical function unanimous(local,comm) result(ok)

@@ -92,7 +92,7 @@ def test_boundary_relocated_retention_and_index_recovery(reference, tmp_path, re
         resumed / FINAL / "archives.bin")
     expected = (continuous / FINAL / "control.bin").read_bytes()
     actual = (resumed / FINAL / "control.bin").read_bytes()
-    assert expected[:8] == actual[:8] == b"ASTROC04" and expected[:168] == actual[:168]
+    assert expected[:8] == actual[:8] == b"ASTROC07" and expected[:120] == actual[:120]
     assert (continuous / FINAL / "insitu_control.bin").read_bytes() == (resumed / FINAL / "insitu_control.bin").read_bytes()
     accounting = check_accounting(resumed, backend, 2)
     relocated = tmp_path / "relocated complete run"

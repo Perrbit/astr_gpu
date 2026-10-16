@@ -13,6 +13,13 @@
 /* Deterministic, test-owned controller reads; the solver and its reload cadence
  * are unchanged. The initial read remains stale deliberately to test dt_next. */
 static const char *controller_path(const char *path, char *replacement, size_t size) {
+    const char *no_payload = getenv("ASTR_CHECKPOINT_TEST_NO_PAYLOAD_READ");
+    size_t length = strlen(path);
+    if (no_payload && !strncmp(path, no_payload, strlen(no_payload)) &&
+        length >= 3 && !strcmp(path + length - 3, ".h5")) {
+        errno = EIO;
+        return NULL;
+    }
     const char *source = getenv("ASTR_CONTROLLER_TEST_FILE");
     const char *replay = getenv("ASTR_CONTROLLER_TEST_REPLAY");
     const char *start = getenv("ASTR_CONTROLLER_TEST_START_STEP");

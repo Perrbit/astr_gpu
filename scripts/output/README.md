@@ -41,9 +41,11 @@ Use `--slices-only` to omit the volume. Repeated `--slice` selects fixed global
 node indices, including endpoints; duplicate indices are removed and out-of-grid
 indices are rejected before creating output. The output directory must be new
 and outside the source run. Keep the source immutable during export and copy
-its shared resources when moving it. Validation rejects incomplete batches,
-CRC-64 mismatches, symlink/hardlink members, unsupported roles/phase/types,
+its shared resources when moving it. The reader rejects incomplete batches,
+symlink/hardlink members, unsupported roles/phase/types,
 external HDF5 links/storage, and nonfinite exported physical fields.
+Checkpoint manifests now list names only (version 2); old version 1 receipts
+are also readable, but neither route computes or compares checksums.
 
 `--units dimensionless|si` is explicit, checked against the frozen primary
 input's `nondimen` flag, and performs no conversion. SI labeling additionally
@@ -85,11 +87,10 @@ independent copies, so subsequent checkpoint retention does not remove them.
 Exports are for postprocessing, not restart.
 
 The report records field-read bytes, file bytes, the configured tile capacity
-and peak controlled FP64-array/finite-mask bytes. CRC validation streams all
-bundle members with a separate 64 KiB buffer. Slice-only field extraction reads
-only selected planes, **but integrity validation still scans complete source
-files**. This does not prove a zero-full-file-read path or a bounded HDF5/
-ParaView memory peak. No GPU is used by this offline tool. The native gates
+and peak controlled FP64-array/finite-mask bytes. Slice-only field extraction reads
+only selected planes and the small HDF5/manifest metadata, without a full-file
+checksum pass. This does not bound HDF5 internal I/O or ParaView memory peaks.
+No GPU is used by this offline tool. The native gates
 below, not this export, provide evidence for selected-plane GPU transfers and
 independent live schedules.
 
