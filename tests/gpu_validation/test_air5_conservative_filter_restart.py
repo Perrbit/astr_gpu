@@ -66,6 +66,7 @@ def test_filter_identity_required(coupled, tmp_path, fault):
         pytest.skip('contract parser is topology independent')
     args = SimpleNamespace(**vars(original))
     args.output = tmp_path
+    args.filter_workspace = 'scalar'
     seed = seeds['gpu']
     config = (seed/'air5_config.bin').read_bytes()
     offset = read_air5_contract(config)['filter_offset']
@@ -103,3 +104,71 @@ def test_default_is_legacy(tmp_path,backend):
     relative='outdat/new/checkpoints/step000000000002'
     compare_fields(default/relative/'state.h5',explicit/relative/'state.h5')
     assert (default/relative/'air5_config.bin').read_bytes()==(explicit/relative/'air5_config.bin').read_bytes()
+
+
+@pytest.mark.parametrize('ranks,axis', [(1,'x'), (2,'x'), (2,'y'), (2,'z')])
+@pytest.mark.parametrize('workspace', ['scalar','full'])
+def test_conservative_filter_memcheck(tmp_path,ranks,axis,workspace):
+    args=arguments(tmp_path,case='sbli',axis=axis,workspace=workspace)
+    args.air5_filter_mode='conservative-flux'
+    args.mean_statistics=False
+    args.runtime_timeout_seconds=300
+    case,_=launch(args,'gpu',ranks,'memcheck',2,memcheck=True)
+    state_sanity(case/'outdat/new/checkpoints/step000000000002/state.h5')
+
+
+@pytest.mark.parametrize('ranks', [1,2])
+@pytest.mark.parametrize('history', ['off','previous'])
+def test_engineering_combination_with_conservative_filter(tmp_path,ranks,history):
+    args=arguments(tmp_path,case='sbli')
+    args.air5_filter_mode='conservative-flux'
+    args.report_interval=4
+    args.runtime_timeout_seconds=300
+    args.step_history=history
+    baseline,_=launch(args,'gpu',ranks,'baseline',12)
+    args.source_evaluation='source-only'
+    args.chemistry_block_size=32
+    combined,_=launch(args,'gpu',ranks,'combined',12,chemistry_diagnostics='report-steps')
+    first,_=launch(args,'gpu',ranks,'first',5,chemistry_diagnostics='report-steps')
+    seed=first/'outdat/new/checkpoints/step000000000005'
+    resumed,_=launch(args,'gpu',ranks,'resumed',12,restore=seed,chemistry_diagnostics='report-steps')
+    datasets={}
+    for name in ('state.h5','statistics.h5'):
+        compare_fields(baseline/FINAL/name,combined/FINAL/name)
+        datasets[name]=compare_fields(combined/FINAL/name,resumed/FINAL/name)
+    assert (baseline/'flowstate.dat').read_bytes()==(combined/'flowstate.dat').read_bytes()
+    reports=lambda case: [line for line in (case/'run.log').read_text().splitlines()
+                         if line.startswith('AIR5_CHEMISTRY half=')]
+    baseline_reports=reports(baseline)
+    assert all(any(line.startswith(f'AIR5_CHEMISTRY half={half} ') for line in baseline_reports) for half in (1,2))
+    assert baseline_reports==reports(combined)
+    assert reports(first)+reports(resumed)==baseline_reports
+    assert (combined/FINAL/'air5_config.bin').read_bytes()==(resumed/FINAL/'air5_config.bin').read_bytes()
+    evidence=dict(executable_sha256=digest(args.executable),ranks=ranks,topology=[ranks,1,1],
+        grid_intervals=[16]*3,steps=12,restart_step=5,dt=1e-10,
+        source_evaluation='source-only',chemistry_block_size=32,diagnostics='report-steps',step_history=history,
+        filter_mode='conservative-flux',exact_datasets=datasets,
+        sanity=state_sanity(combined/FINAL/'state.h5'),timing_is_performance_evidence=False)
+    (tmp_path/'engineering_filter.json').write_text(json.dumps(evidence,indent=2,allow_nan=False)+'\n')
+
+
+def test_engineering_history_filter_memcheck(tmp_path):
+    args=arguments(tmp_path,case='sbli')
+    args.air5_filter_mode='conservative-flux'
+    args.step_history='previous'
+    args.source_evaluation='source-only'
+    args.chemistry_block_size=32
+    args.report_interval=4
+    args.mean_statistics=False
+    args.runtime_timeout_seconds=300
+    case,_=launch(args,'gpu',2,'history_combined_memcheck',2,memcheck=True,
+                  chemistry_diagnostics='report-steps')
+    logs=sorted(case.glob('memcheck.*.log'))
+    assert len(logs)==2
+    assert all('ERROR SUMMARY: 0 errors' in path.read_text() for path in logs)
+    evidence=dict(executable_sha256=digest(args.executable),topology=[2,1,1],
+        grid_intervals=[16]*3,steps=2,filter_mode='conservative-flux',step_history='previous',
+        source_evaluation='source-only',chemistry_block_size=32,diagnostics='report-steps',
+        memcheck_logs=[str(path) for path in logs],
+        sanity=state_sanity(case/'outdat/new/checkpoints/step000000000002/state.h5'))
+    (tmp_path/'engineering_filter_memcheck.json').write_text(json.dumps(evidence,indent=2,allow_nan=False)+'\n')

@@ -966,9 +966,11 @@ if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
                 air5_filter_multidim_probe air5_filter_predicate_probe)
     target_sources(${probe} PRIVATE chemistry_filter_math.F90 chemistry_filter_operator.F90)
   endforeach()
-  # Error-free product/sum transformations require separate IEEE operations.
 endif()
 
+endif() # BUILD_TESTING
+
+# Error-free product/sum transformations require separate IEEE operations.
 if(ASTR_WITH_AIR5_CHEMISTRY)
   if(CMAKE_Fortran_COMPILER_ID MATCHES "NVHPC|PGI")
     set_source_files_properties(chemistry_filter_math.F90 chemistry_filter_operator.F90
@@ -982,8 +984,6 @@ if(ASTR_WITH_AIR5_CHEMISTRY)
       PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
   endif()
 endif()
-
-endif() # BUILD_TESTING
 
 if (ASTR_WITH_CUDA AND (Fortran_COMPILER_NAME MATCHES "PGI" OR Fortran_COMPILER_NAME MATCHES "NVHPC"))
   set(ASTR_S0A_MAXREGCOUNT "128" CACHE STRING

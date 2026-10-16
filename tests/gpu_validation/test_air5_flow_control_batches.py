@@ -1,6 +1,8 @@
 """Host-only checks for staged G2 execution without changing native defaults."""
 import json
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import numpy as np
@@ -9,7 +11,7 @@ import pytest
 import run_air5_flow_control_gate as gate
 
 
-@pytest.mark.parametrize('selected', [None, ['gpu_np1', 'gpu_np2']])
+@pytest.mark.parametrize('selected', [None, ['gpu_np1', 'gpu_np2'], ['gpu_np4']])
 @pytest.mark.parametrize('cpu_timeout', [None, 1800, 14400])
 def test_control_matrix_records_selected_backends_and_separate_cpu_budget(tmp_path, monkeypatch,
                                                                          selected, cpu_timeout):
@@ -39,16 +41,25 @@ def test_control_matrix_records_selected_backends_and_separate_cpu_budget(tmp_pa
     monkeypatch.setattr(gate, 'compare_checkpoints', lambda *args: dict(
         within_reference_margin=True, within_candidate_error=True))
     gate.run(args)
-    expected = [('cpu', 1), ('gpu', 1), ('gpu', 2)] if selected is None else [('gpu', 1), ('gpu', 2)]
+    expected = [('cpu', 1), ('gpu', 1), ('gpu', 2)] if selected is None else [
+        (label.split('_np')[0], int(label.split('_np')[1])) for label in selected]
     expected_cpu_timeout = 14400 if cpu_timeout is None else cpu_timeout
     assert calls == [(backend, ranks, tolerance, history, expected_cpu_timeout if backend == 'cpu' else 1800)
                      for tolerance, history in gate.CONTROLS for backend, ranks in expected]
     report = json.loads((args.output / 'flow_control.json').read_text())
     assert report['selected_cases'] == (['cpu_np1', 'gpu_np1', 'gpu_np2'] if selected is None else selected)
+    assert report['backend_topologies'] == {f'{backend}_np{ranks}': [ranks, 1, 1]
+                                           for backend, ranks in expected}
     assert report['cpu_runtime_timeout_seconds'] == expected_cpu_timeout
     assert report['reference_runtime_timeout_seconds'] == 14400
     assert report['status'] == ('local-flow-control-error-passed-not-performance' if selected is None else
                                 'local-selected-flow-control-error-passed-not-performance')
+
+
+def test_cli_exposes_np4_without_running_the_solver():
+    result = subprocess.run([sys.executable, gate.__file__, '--help'],
+                            check=True, capture_output=True, text=True)
+    assert 'gpu_np4' in result.stdout
 
 
 def test_failed_reference_margin_retains_component_evidence(tmp_path, monkeypatch):

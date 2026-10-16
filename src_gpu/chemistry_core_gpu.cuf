@@ -146,7 +146,7 @@ contains
     real(real64), intent(out) :: flux(air5_num_species)
     integer, intent(out) :: status
     real(real64) :: magnitude,c(air5_num_species),lo(air5_num_species),hi(air5_num_species)
-    real(real64) :: trial(air5_num_species),target,left,right,middle,residual,tolerance
+    real(real64) :: trial(air5_num_species),target,left,right,middle,residual,scaled_residual,tolerance
     integer :: iteration
 
     flux=candidate
@@ -196,7 +196,22 @@ contains
     if(abs(residual)>tolerance) return
     ! Clamp only roundoff in the rescaling of a bounded flux, never a cell state.
     trial=max(lower,min(upper,trial*magnitude))
-    if(abs(sum(trial/magnitude)-target)>tolerance) return
+    scaled_residual=sum(trial/magnitude)-target
+    ! Refine only failed rescaling, accepting both original closure checks.
+    do while(abs(scaled_residual)>tolerance.or.abs(residual)>tolerance)
+      if(middle==left.or.middle==right) return
+      if(abs(scaled_residual)>tolerance) residual=scaled_residual
+      if(residual<0.0_real64) then
+        left=middle
+      else
+        right=middle
+      endif
+      middle=0.5_real64*left+0.5_real64*right
+      trial=max(lo,min(hi,c+middle))
+      residual=sum(trial)-target
+      trial=max(lower,min(upper,trial*magnitude))
+      scaled_residual=sum(trial/magnitude)-target
+    enddo
     flux=trial
     status=chemistry_status_ok
   end subroutine air5_close_species_flux_gpu

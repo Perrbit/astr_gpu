@@ -21,6 +21,7 @@ INITIAL = 'outdat/new/checkpoints/step000000000000'
 CONTROLS = (('baseline', 'off'), ('loose', 'off'), ('tight', 'off'),
             ('baseline', 'previous'), ('loose', 'previous'))
 CPU_TIMEOUT_SECONDS = 4*3600
+CASE_LABELS = ('cpu_np1', 'gpu_np1', 'gpu_np2', 'gpu_np4')
 
 
 def arguments(args, executable):
@@ -159,8 +160,8 @@ def run(args):
     selected_cases = getattr(args, 'cases', ('cpu_np1', 'gpu_np1', 'gpu_np2'))
     cpu_timeout = getattr(args, 'cpu_timeout_seconds', CPU_TIMEOUT_SECONDS)
     report = dict(status='running', grid_intervals=[64]*3, dt=DT, complete_steps=24,
-        coupled_duration=24*DT, backend_topologies={'cpu_np1': [1, 1, 1],
-            'gpu_np1': [1, 1, 1], 'gpu_np2': [2, 1, 1]}, cases=[],
+        coupled_duration=24*DT,
+        backend_topologies={label: [int(label.split('_np')[1]), 1, 1] for label in selected_cases}, cases=[],
         mechanism_sha256=digest(mechanism), checker_sha256=digest(Path(__file__).with_name('check_air5_flow_actual_error.py')),
         executable_sha256=digest(args.executable), host_budget_bytes=256*1024**2,
         device_budget_bytes=256*1024**2, directory_budget_bytes=1024**3,
@@ -222,7 +223,7 @@ if __name__ == '__main__':
     parser.add_argument('--campaign-budget-bytes', type=int, default=16*1024**3)
     parser.add_argument('--engineering-only', action='store_true',
                         help='Independent same-algorithm exact field gate; no new reference or timing')
-    parser.add_argument('--cases', nargs='+', choices=('cpu_np1', 'gpu_np1', 'gpu_np2'),
+    parser.add_argument('--cases', nargs='+', choices=CASE_LABELS,
                         default=['cpu_np1', 'gpu_np1', 'gpu_np2'],
                         help='Backend subset for a staged control error matrix; omitted cases remain unvalidated')
     parser.add_argument('--cpu-timeout-seconds', type=float, default=CPU_TIMEOUT_SECONDS,

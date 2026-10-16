@@ -132,6 +132,31 @@ program air5_transport_roundoff_probe
   enddo
   write(*,'(A)') 'AIR5_TRACE_PROJECTION_CONTINUATION_PROBE pass'
 
+  ! Captured T3-P3 face: normalized closure passes before rescaling fails.
+  high=[-7.46456591169233065e-23_real64,-8.44728200031146220e-24_real64, &
+    5.44962107913232811e-25_real64,3.93514023170964434e-24_real64,3.48157356024232533e-24_real64]
+  lower=[-1.91749999942424122e-2_real64,-5.82499999816384929e-3_real64, &
+    -1.02070959651466458e-21_real64,-8.71050892605313622e-14_real64,-3.04502846226511376e-21_real64]
+  upper=[1.91749999942424122e-2_real64,5.82499999816384929e-3_real64, &
+    1.01774712436516967e-21_real64,8.71050892653534985e-14_real64,3.04748413095627950e-21_real64]
+  mass=-2.08161917387942470e-23_real64
+  do power=-100,100,100
+    factor=scale(1.0_real64,power)
+    call air5_close_species_flux(high*factor,lower*factor,upper*factor,mass*factor,closed,status)
+    if(status/=chemistry_status_ok) error stop 'rescaled captured projection rejected'
+    if(any(closed<lower*factor).or.any(closed>upper*factor)) &
+      error stop 'rescaled captured projection outside budgets'
+    operand_scale=max(abs(mass),maxval(abs([high,lower,upper])))*factor
+    tolerance=32*epsilon(factor)*max(abs(mass*factor/operand_scale),sum(abs(high*factor/operand_scale)))
+    if(abs(sum(closed/operand_scale)-mass*factor/operand_scale)>tolerance) &
+      error stop 'rescaled captured mass closure'
+    call air5_close_species_flux(-high*factor,-upper*factor,-lower*factor,-mass*factor,permuted,status)
+    if(status/=chemistry_status_ok) error stop 'reversed rescaled captured projection rejected'
+    if(maxval(abs(permuted+closed))>128*epsilon(factor)*maxval(abs(high*factor))) &
+      error stop 'rescaled captured projection depends on face orientation'
+  enddo
+  write(*,'(A)') 'AIR5_RESCALED_PROJECTION_CONTINUATION_PROBE pass'
+
   do trial=1,1000
     do i=1,5
       lower(i)=sin(real(13*trial+i,real64))

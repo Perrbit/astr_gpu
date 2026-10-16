@@ -1,5 +1,7 @@
 """Host-only grid and output-budget plumbing for the U1/U4 AIR5 fixture."""
 import json
+import struct
+from pathlib import Path
 from types import SimpleNamespace
 
 import h5py
@@ -87,7 +89,8 @@ def test_gpu_auxiliary_staging_counts_history_independently_of_compensation(tmp_
 
 
 @pytest.mark.parametrize('from_initial', [False, True])
-def test_timing_driver_records_grid_and_forwards_budget_without_running_solver(tmp_path, monkeypatch, from_initial):
+@pytest.mark.parametrize('filter_mode', ['legacy', 'conservative-flux'])
+def test_timing_driver_records_grid_and_forwards_budget_without_running_solver(tmp_path, monkeypatch, from_initial, filter_mode):
     binary = tmp_path / 'unused'
     binary.touch()
     args = SimpleNamespace(output=tmp_path / 'matrix', executable=binary, mpiexec=binary,
@@ -97,7 +100,7 @@ def test_timing_driver_records_grid_and_forwards_budget_without_running_solver(t
         chemistry_block_size=128, axis='x', topology=None, top_mode='characteristic',
         filter_workspace='scalar', compare_to=None, cases=['gpu_np1'], grid=(64, 64, 64),
         host_budget_bytes=256*1024**2, device_budget_bytes=128*1024**2,
-        directory_budget_bytes=1024**3, start_from_initial=from_initial)
+        directory_budget_bytes=1024**3, start_from_initial=from_initial, air5_filter_mode=filter_mode)
     calls = []
 
     def stop_before_solver(*positional, **kwargs):
@@ -113,6 +116,8 @@ def test_timing_driver_records_grid_and_forwards_budget_without_running_solver(t
     assert summary['device_budget_bytes'] == args.device_budget_bytes
     assert summary['directory_budget_bytes'] == args.directory_budget_bytes
     assert summary['timing_start_step'] == (0 if from_initial else 2)
+    assert summary['air5_filter_mode'] == filter_mode
+    assert calls[0][0][0].air5_filter_mode == filter_mode
     assert args.initial_restart == from_initial
     assert calls[0][0][-1] == (1 if from_initial else 2)
     assert calls[0][1]['host_budget_bytes'] == args.host_budget_bytes
@@ -138,6 +143,165 @@ def test_present_scalar_statistics_must_still_match(tmp_path, single_initial_upd
     (actual / 'flowstate.dat').write_text('changed scalar records\n')
     with pytest.raises(ValueError, match='scalar statistics differ'):
         performance.compare_scalar_statistics(actual, expected, single_initial_update)
+
+
+@pytest.fixture
+def qualified_flow(tmp_path):
+    binary = tmp_path/'frozen.astr'
+    binary.write_bytes(b'host-only fake executable')
+    args = SimpleNamespace(output=tmp_path/'timing', executable=binary, mpiexec=binary,
+        nsys=False, phase_timing=False, repeats=5, warmup=4, steps=20, report_interval=4,
+        case='sbli', chemistry_diagnostics='every-step', source_evaluation='joint',
+        chemistry_tolerance='baseline', step_history='off', chemistry_block_size=128,
+        axis='x', topology=None, top_mode='characteristic', filter_workspace='scalar',
+        compare_to=None, cases=['gpu_np1'], grid=(64, 64, 64),
+        host_budget_bytes=256*1024**2, device_budget_bytes=256*1024**2,
+        directory_budget_bytes=1024**3, start_from_initial=True,
+        air5_filter_mode='conservative-flux', flow_control=tmp_path/'flow_control.json')
+    payload = b'ASTRA502'+bytes(1632)+b'joint'.ljust(128)+struct.pack('<2q', 0, 0)
+    payload += b'ASTRF001'+struct.pack('<5q', *performance.FILTER_IDENTITY)
+
+    def batch(case, step):
+        path = case/f'outdat/new/checkpoints/step{step:012d}'
+        path.mkdir(parents=True)
+        (path/'COMPLETE').touch()
+        (path/'state.h5').write_bytes(b'host-only checkpoint identity')
+        (path/'air5_config.bin').write_bytes(payload)
+        return path
+
+    case = tmp_path/'qualified_gpu_np1'
+    initial, final = batch(case, 0), batch(case, 24)
+    (case/'flowstate.dat').write_text('qualified scalar sequence\n')
+    row = dict(backend='gpu', ranks=1, tolerance='baseline', history='off', case=str(case),
+        state=str(final/'state.h5'), executable_sha256=performance.digest(binary),
+        batch_files_sha256=performance.batch_identity(final),
+        error=dict(within_reference_margin=True, within_candidate_error=True))
+    references = {str(level): dict(state=str(batch(tmp_path/f'reference{level}', 24)/'state.h5'))
+                  for level in (11, 12)}
+    for ref in references.values():
+        ref['batch_files_sha256'] = performance.batch_identity(Path(ref['state']).parent)
+    report = dict(status='local-flow-control-error-passed-not-performance',
+        executable_sha256=performance.digest(binary), grid_intervals=[64]*3, dt=restart.DT,
+        complete_steps=24, air5_filter_mode='conservative-flux', cases=[row],
+        mechanism_sha256=performance.digest(restart.ROOT/'chemMech/air5_kimjo12.json'),
+        checker_sha256=performance.digest(restart.ROOT/'tests/gpu_validation/check_air5_flow_actual_error.py'),
+        reference_summary=dict(initial=str(initial/'state.h5'),
+            initial_batch_sha256=performance.batch_identity(initial), references=references))
+    args.flow_control.write_text(json.dumps(report))
+    return args, report, row
+
+
+def test_qualified_flow_reuses_the_selected_immutable_case(qualified_flow):
+    args, _, row = qualified_flow
+    assert performance.qualified_flow_case(args, 'gpu_np1', performance.digest(args.executable)) == row
+
+
+@pytest.mark.parametrize('change', ['binary', 'filter', 'dt', 'failed', 'control', 'checkpoint', 'reference', 'source'])
+def test_qualified_flow_rejects_changed_evidence_or_protocol(qualified_flow, change):
+    args, report, row = qualified_flow
+    if change == 'binary':
+        report['executable_sha256'] = 'changed'
+    elif change == 'filter':
+        args.air5_filter_mode = 'legacy'
+    elif change == 'dt':
+        report['dt'] *= 2
+    elif change == 'failed':
+        row['error']['within_candidate_error'] = False
+    elif change == 'control':
+        args.chemistry_tolerance = 'tight'
+    elif change == 'checkpoint':
+        Path(row['state']).write_bytes(b'changed candidate')
+    elif change == 'reference':
+        Path(report['reference_summary']['references']['12']['state']).write_bytes(b'changed reference')
+    elif change == 'source':
+        args.source_evaluation = 'source-only'
+    args.flow_control.write_text(json.dumps(report))
+    with pytest.raises(ValueError):
+        performance.qualified_flow_case(args, 'gpu_np1', performance.digest(args.executable))
+
+
+@pytest.mark.parametrize('phase_timing', [False, True])
+def test_qualified_timing_runs_only_one_verification_and_five_output_free_rounds(qualified_flow, monkeypatch, phase_timing):
+    args, _, row = qualified_flow
+    args.phase_timing = phase_timing
+    calls = []
+
+    def no_solver(options, backend, ranks, name, steps, **kwargs):
+        calls.append((name, kwargs))
+        case = options.output/f'{backend}_np{ranks}_{name}'
+        case.mkdir()
+        (case/'run.log').write_text('\n'.join(
+            f'ASTR_COMPLETE_STEP_TIMING {step} 0 0.1' for step in range(24)))
+        (case/'flowstate.dat').write_text('qualified scalar sequence\n')
+        return case, 1024
+
+    monkeypatch.setattr(performance, 'launch', no_solver)
+    monkeypatch.setattr(performance, 'state_sanity', lambda path: dict(checked=True))
+    monkeypatch.setattr(performance, 'compare_fields', lambda left, right: [f'dataset{i}' for i in range(38)])
+    monkeypatch.setattr(performance, 'phase_summary', lambda *args: {})
+    performance.run(args)
+    assert [name for name, _ in calls] == ['verification', 'r1', 'r2', 'r3', 'r4', 'r5']
+    assert calls[0][1]['complete_step_timing'] is True
+    assert calls[0][1]['air5_phase_timing'] is phase_timing
+    assert all(kwargs['checkpoint_enabled'] is False for _, kwargs in calls[1:])
+    summary = json.loads((args.output/'timing_summary.json').read_text())
+    assert summary['status'] == ('instrumented-attribution-not-performance' if phase_timing else 'bounded-timing-collected')
+    reused = summary['cases']['gpu_np1']['qualified_flow_reuse']
+    assert reused['source_case'] == row['case']
+    assert len(reused['timer_and_restart_equal_datasets']) == 38
+    assert reused['verification_is_performance_evidence'] is False
+
+
+def test_timing_campaign_reserves_disk_before_launch(tmp_path, monkeypatch):
+    args = SimpleNamespace(campaign_root=tmp_path, campaign_budget_bytes=8, directory_budget_bytes=9)
+    monkeypatch.setattr(performance, 'launch', lambda *a, **k: pytest.fail('must not start solver'))
+    with pytest.raises(RuntimeError, match='per-run disk reservation'):
+        performance.budgeted_launch(args, 'gpu', 1, 'unused', 24)
+
+
+def test_initial_state_comparison_uses_full_window_statistics_not_seed_run_length(qualified_flow, monkeypatch):
+    args, _, row = qualified_flow
+    Path(row['case'],'run.log').write_text('AIR5_CHEMISTRY half=1 qualified-window\n')
+
+    def no_solver(options, backend, ranks, name, steps, **kwargs):
+        case=options.output/f'{backend}_np{ranks}_{name}'
+        case.mkdir()
+        log='\n'.join(f'ASTR_COMPLETE_STEP_TIMING {step} 0 0.1' for step in range(steps))
+        if steps>1:
+            log+='\nAIR5_CHEMISTRY half=1 qualified-window\n'
+            (case/'flowstate.dat').write_text('qualified scalar sequence\n')
+        (case/'run.log').write_text(log)
+        if name in ('seed','timing_check'):
+            batch=case/'outdat/new/checkpoints/step000000000000'
+            batch.mkdir(parents=True)
+            (batch/'state.h5').write_bytes(b'host-only initial state')
+            (batch/'COMPLETE').touch()
+        return case,1024
+
+    monkeypatch.setattr(performance,'launch',no_solver)
+    monkeypatch.setattr(performance,'state_sanity',lambda path: dict(checked=True))
+    monkeypatch.setattr(performance,'compare_fields',lambda left,right: ['state'])
+    performance.run(args)
+    candidate=SimpleNamespace(**vars(args))
+    candidate.output=args.output.parent/'fresh_engineering'
+    candidate.flow_control=None
+    candidate.compare_to=args.output
+    candidate.source_evaluation='source-only'
+    performance.run(candidate)
+    summary=json.loads((candidate.output/'timing_summary.json').read_text())
+    assert summary['cases']['gpu_np1']['baseline_scalar_statistics']=={'verification':'equal'}
+
+
+def test_timing_campaign_checks_actual_growth(tmp_path, monkeypatch):
+    args = SimpleNamespace(campaign_root=tmp_path, campaign_budget_bytes=8, directory_budget_bytes=4)
+
+    def too_large(*args, **kwargs):
+        (tmp_path/'unexpected_growth').write_bytes(b'123456789')
+        return tmp_path, 9
+
+    monkeypatch.setattr(performance, 'launch', too_large)
+    with pytest.raises(RuntimeError, match='disk budget exceeded'):
+        performance.budgeted_launch(args, 'gpu', 1, 'unused', 24)
 
 
 @pytest.mark.parametrize('one_present', [False, True])

@@ -9,6 +9,7 @@ import shutil
 import statistics
 import subprocess
 
+from air5_checkpoint_contract import FILTER_IDENTITY, read_air5_contract
 from run_output_air5_restart_validation import DT, ROOT, launch, state_sanity
 from run_output_restart_validation import compare_fields
 
@@ -111,11 +112,76 @@ def compare_scalar_statistics(actual, expected, single_initial_update=False):
     return 'equal'
 
 
+def qualified_flow_case(args, label, binary_hash):
+    report = json.loads(args.flow_control.read_text())
+    expected = dict(status='local-flow-control-error-passed-not-performance',
+        executable_sha256=binary_hash, grid_intervals=list(args.grid), dt=DT,
+        complete_steps=args.warmup+args.steps, air5_filter_mode=args.air5_filter_mode,
+        mechanism_sha256=digest(ROOT/'chemMech/air5_kimjo12.json'),
+        checker_sha256=digest(Path(__file__).with_name('check_air5_flow_actual_error.py')))
+    for key, value in expected.items():
+        if report[key] != value:
+            raise ValueError(f'qualified flow protocol mismatch: {key}')
+    if (not args.start_from_initial or args.case != 'sbli' or args.axis != 'x' or
+            args.top_mode != 'characteristic' or args.filter_workspace != 'scalar' or
+            args.report_interval != 4):
+        raise ValueError('qualified flow reuse requires the original G2 phase and fixture')
+    backend, ranks = label.split('_np')
+    ranks = int(ranks)
+    if args.topology is not None and tuple(args.topology) != (ranks, 1, 1):
+        raise ValueError('qualified flow topology mismatch')
+    rows = [row for row in report['cases'] if (row['backend'], row['ranks'],
+        row['tolerance'], row['history']) == (backend, ranks, args.chemistry_tolerance, args.step_history)]
+    if len(rows) != 1:
+        raise ValueError('require one qualified flow case for the selected control/backend')
+    row = rows[0]
+    if row['executable_sha256'] != binary_hash:
+        raise ValueError('qualified flow case executable changed')
+    if not row['error']['within_reference_margin'] or not row['error']['within_candidate_error']:
+        raise ValueError('qualified flow numerical gate failed')
+    reference = report['reference_summary']
+    if batch_identity(Path(reference['initial']).parent) != reference['initial_batch_sha256']:
+        raise ValueError('qualified reference initial batch changed')
+    for item in (*reference['references'].values(), row):
+        if batch_identity(Path(item['state']).parent) != item['batch_files_sha256']:
+            raise ValueError('qualified flow/reference checkpoint batch changed')
+    contract = read_air5_contract((Path(row['state']).parent/'air5_config.bin').read_bytes())
+    control = (('baseline', 'loose', 'tight').index(args.chemistry_tolerance),
+               int(args.step_history == 'previous'))
+    filter_control = FILTER_IDENTITY if args.air5_filter_mode == 'conservative-flux' else (0,)*5
+    if (contract['source_evaluation'] != args.source_evaluation or
+            contract['integration_control'] != control or contract['filter_identity'] != filter_control):
+        raise ValueError('qualified flow numerical configuration mismatch')
+    return row
+
+
+def campaign_bytes(root):
+    return sum(path.stat().st_size for path in root.rglob('*') if path.is_file())
+
+
+def budgeted_launch(args, *positional, **kwargs):
+    root = getattr(args, 'campaign_root', None)
+    if root is not None and campaign_bytes(root)+args.directory_budget_bytes > args.campaign_budget_bytes:
+        raise RuntimeError('timing campaign lacks a per-run disk reservation')
+    result = launch(args, *positional, **kwargs)
+    if root is not None and campaign_bytes(root) > args.campaign_budget_bytes:
+        raise RuntimeError('timing campaign disk budget exceeded')
+    return result
+
+
 def run(args):
     diagnostic = args.nsys or args.phase_timing
     if args.repeats < (1 if diagnostic else 3) or args.warmup < 1 or args.steps < 1 or args.report_interval < 1:
         raise ValueError('require >=3 unprofiled repeats (>=1 profiled), >=1 warmup/measured step/report interval')
     args.output = args.output.resolve()
+    args.air5_filter_mode = getattr(args, 'air5_filter_mode', 'legacy')
+    args.flow_control = getattr(args, 'flow_control', None)
+    args.campaign_root = getattr(args, 'campaign_root', None)
+    if args.campaign_root is not None:
+        args.campaign_root = args.campaign_root.resolve(strict=True)
+        args.output.relative_to(args.campaign_root)
+        if args.campaign_budget_bytes is None:
+            raise ValueError('an explicit timing campaign requires its byte budget')
     args.output.mkdir(parents=True, exist_ok=False)
     args.executable = args.executable.resolve(strict=True)
     args.mpiexec = args.mpiexec.resolve(strict=True)
@@ -146,7 +212,11 @@ def run(args):
         chemistry_tolerance=args.chemistry_tolerance, step_history=args.step_history,
         chemistry_block_size=args.chemistry_block_size, axis=args.axis,
         topology=list(args.topology) if args.topology else None,
-        top_mode=args.top_mode, filter_workspace=args.filter_workspace, **output_budgets)
+        top_mode=args.top_mode, filter_workspace=args.filter_workspace,
+        air5_filter_mode=args.air5_filter_mode,
+        qualified_flow_control=str(args.flow_control) if args.flow_control is not None else None,
+        campaign_root=str(args.campaign_root) if args.campaign_root is not None else None,
+        campaign_budget_bytes=getattr(args, 'campaign_budget_bytes', None), **output_budgets)
     try:
         baseline = None
         if args.compare_to is not None:
@@ -156,53 +226,72 @@ def run(args):
             for key in ('executable_sha256', 'dt', 'grid_intervals', 'case', 'report_interval',
                         'warmup', 'measured_steps', 'repeats', 'primary_metric',
                         'axis', 'topology', 'top_mode', 'filter_workspace', 'chemistry_tolerance', 'step_history',
-                        'timing_start_step'):
+                        'timing_start_step', 'air5_filter_mode'):
                 if baseline[key] != summary[key]:
                     raise ValueError(f'baseline protocol mismatch: {key}')
         for label in args.cases:
             backend, n = label.split('_np')
             ranks = int(n)
-            seed_case, _ = launch(args, backend, ranks, 'seed', seed_updates, interval=seed_updates,
-                                 chemistry_diagnostics=args.chemistry_diagnostics, **output_budgets)
+            reused = qualified_flow_case(args, label, binary_hash) if args.flow_control is not None else None
+            if reused is None:
+                seed_case, _ = budgeted_launch(args, backend, ranks, 'seed', seed_updates, interval=seed_updates,
+                    chemistry_diagnostics=args.chemistry_diagnostics, **output_budgets)
+            else:
+                seed_case = Path(reused['case'])
             seed = seed_case/f'outdat/new/checkpoints/step{start:012d}'
             sanity = state_sanity(seed/'state.h5')
             identity = batch_identity(seed)
-            timed_check, _ = launch(args, backend, ranks, 'timing_check', seed_updates, interval=seed_updates,
-                                    complete_step_timing=True, air5_phase_timing=args.phase_timing,
-                                    chemistry_diagnostics=args.chemistry_diagnostics, **output_budgets)
-            activation_state = f'outdat/new/checkpoints/step{seed_updates:012d}/state.h5'
-            compared = compare_fields(seed_case/activation_state, timed_check/activation_state)
-            verification, _ = launch(args, backend, ranks, 'verification', start+updates, restore=seed,
+            if reused is None:
+                timed_check, _ = budgeted_launch(args, backend, ranks, 'timing_check', seed_updates,
+                    interval=seed_updates, complete_step_timing=True, air5_phase_timing=args.phase_timing,
+                    chemistry_diagnostics=args.chemistry_diagnostics, **output_budgets)
+                activation_state = f'outdat/new/checkpoints/step{seed_updates:012d}/state.h5'
+                compared = compare_fields(seed_case/activation_state, timed_check/activation_state)
+            verification, _ = budgeted_launch(args, backend, ranks, 'verification', start+updates, restore=seed,
                 interval=start+updates, override=True, chemistry_diagnostics=args.chemistry_diagnostics,
-                **output_budgets)
+                complete_step_timing=reused is not None, air5_phase_timing=args.phase_timing, **output_budgets)
             final = verification/f'outdat/new/checkpoints/step{start+updates:012d}/state.h5'
             final_sanity = state_sanity(final)
+            if reused is not None:
+                compared = compare_fields(final, Path(reused['state']))
+                compare_scalar_statistics(verification, seed_case)
+                window_summary((verification/'run.log').read_text(), ranks, start, updates, args.warmup)
             rounds = []
             summary['cases'][label] = dict(rounds=rounds, seed=str(seed), seed_files_sha256=identity,
                 seed_sanity=sanity, timing_activation_equal_datasets=compared,
                 verification=str(verification), final_sanity=final_sanity)
+            if reused is not None:
+                summary['cases'][label]['qualified_flow_reuse'] = dict(
+                    report_sha256=digest(args.flow_control), source_case=str(seed_case),
+                    source_final_batch_sha256=reused['batch_files_sha256'],
+                    timer_and_restart_equal_datasets=compared,
+                    verification_is_performance_evidence=False)
             if baseline is not None:
                 reference = baseline['cases'][label]
                 if batch_identity(Path(reference['seed'])) != reference['seed_files_sha256']:
                     raise ValueError('baseline checkpoint batch changed')
-                compare_fields(seed/'state.h5', Path(reference['seed'])/'state.h5')
+                initial_equal = compare_fields(seed/'state.h5', Path(reference['seed'])/'state.h5')
                 relative = final.relative_to(verification)
                 equal = compare_fields(final, Path(reference['verification'])/relative)
                 scalar_checks = {}
-                for phase, actual, expected in (('seed', seed_case, Path(reference['seed']).parents[3]),
-                                               ('verification', verification, Path(reference['verification']))):
+                phases = [('verification', verification, Path(reference['verification']))]
+                # Step-0 batches may belong to seed generators or full G2 trajectories.
+                if start > 0:
+                    phases.insert(0, ('seed', seed_case, Path(reference['seed']).parents[3]))
+                for phase, actual, expected in phases:
                     reports = lambda case: [line for line in (case/'run.log').read_text().splitlines()
                                            if line.startswith('AIR5_CHEMISTRY half=')]
-                    if reports(actual) != reports(expected):
+                    if not reports(expected) or reports(actual) != reports(expected):
                         raise ValueError('chemistry report identity/values differ')
                     scalar_checks[phase] = compare_scalar_statistics(actual, expected,
                         single_initial_update=phase=='seed' and seed_updates==1)
                 summary['cases'][label]['baseline_equal_datasets'] = equal
+                summary['cases'][label]['baseline_initial_equal_datasets'] = initial_equal
                 summary['cases'][label]['baseline_scalar_statistics'] = scalar_checks
             for repeat in range(args.repeats):
                 if digest(args.executable) != binary_hash:
                     raise ValueError('executable changed within the timing matrix')
-                case, disk = launch(args, backend, ranks, f'r{repeat+1}', start+updates,
+                case, disk = budgeted_launch(args, backend, ranks, f'r{repeat+1}', start+updates,
                     restore=seed, checkpoint_enabled=False, override=True,
                     complete_step_timing=True, nsys_trace=args.nsys, air5_phase_timing=args.phase_timing,
                     chemistry_diagnostics=args.chemistry_diagnostics, **output_budgets)
@@ -231,6 +320,8 @@ def run(args):
         summary.update(status='failed', error=str(exc))
         raise
     finally:
+        if args.campaign_root is not None:
+            summary['campaign_directory_bytes'] = campaign_bytes(args.campaign_root)
         (args.output/'timing_summary.json').write_text(json.dumps(summary, indent=2, allow_nan=False)+'\n')
 
 
@@ -252,6 +343,11 @@ if __name__ == '__main__':
     parser.add_argument('--topology', type=lambda value: tuple(map(int, value.split(','))))
     parser.add_argument('--top-mode', choices=('characteristic', 'prescribed'), default='characteristic')
     parser.add_argument('--filter-workspace', choices=('scalar', 'full'), default='scalar')
+    parser.add_argument('--air5-filter-mode', choices=('legacy', 'conservative-flux'), default='legacy')
+    parser.add_argument('--flow-control', type=Path,
+                        help='Reuse qualified G2 step-0 batches and verify timed restore against their final states')
+    parser.add_argument('--campaign-root', type=Path)
+    parser.add_argument('--campaign-budget-bytes', type=int)
     parser.add_argument('--report-interval', type=int, default=4)
     parser.add_argument('--chemistry-diagnostics', choices=('every-step', 'report-steps'), default='every-step')
     parser.add_argument('--source-evaluation', choices=('joint', 'source-only'), default='joint')
