@@ -83,6 +83,11 @@ def analyze(directory, window_samples):
         return analyze_probes(probes, window_samples)
     times, keys, data = load_series(directory/'air5_profiles.dat', [2, 3, 4], 8)
     wt, wk, wall = load_series(directory/'air5_wall.dat', [2], 6)
+    wall_variables = ['tau_xy', 'q_into_gas', 'p']
+    if wall.shape[-1] == 5:
+        wall_variables += ['q_tr_into_gas', 'q_v_into_gas']
+    elif wall.shape[-1] != 3:
+        raise ValueError('unknown wall monitor columns')
     if not np.array_equal(times, wt) or len(times) < 2*window_samples or window_samples < 2:
         raise ValueError('matching wall/profile series and two complete windows required')
     recent = data[-window_samples:]
@@ -107,7 +112,7 @@ def analyze(directory, window_samples):
         variables=VARIABLES, keys=keys.tolist(), window_samples=window_samples,
         window_duration=float(window_samples*(times[1]-times[0])),
         previous=a, recent=b, block_mean_change=(np.array(b['mean'])-np.array(a['mean'])).tolist(),
-        wall_variables=['tau_xy', 'q_into_gas', 'p'], wall_indices=wk.tolist(),
+        wall_variables=wall_variables, wall_indices=wk.tolist(),
         wall_previous_mean=wall[-2*window_samples:-window_samples].mean(axis=0).tolist(),
         wall_recent_mean=wall[-window_samples:].mean(axis=0).tolist(),
         wall_recent_rms=wall[-window_samples:].std(axis=0).tolist(), separation=separation,

@@ -58,6 +58,7 @@ def test_launch_passes_grid_and_explicit_host_budget(tmp_path, monkeypatch):
                              directory_budget_bytes=1024**3)
     config = (case / 'datin/input.output').read_text()
     assert 'host_budget_bytes=268435456' in config
+    assert 'exact_restart=t,checkpoint_statistics=t' in config
     assert (case / 'datin/air5_hbl_initial_field.dat').read_text().splitlines()[2] == '65 65'
     assert len(calls) == 1
 

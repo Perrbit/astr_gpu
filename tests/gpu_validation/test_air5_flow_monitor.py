@@ -2,6 +2,31 @@ import numpy as np
 from analyze_air5_flow_monitor import analyze, block_statistics, separated_intervals
 
 
+def monitor_difference(old, new, filename):
+    assert np.isfinite(old).all() and np.isfinite(new).all()
+    if filename == 'air5_wall.dat':
+        assert old.shape[1] in (9,11) and new.shape[1] in (9,11)
+        width = min(old.shape[1],new.shape[1])
+        old,new = old[:,:width],new[:,:width]
+    assert old.shape == new.shape
+    return float(np.max(abs(new-old)/np.maximum(1.,abs(old))))
+
+
+def test_monitor_comparison_registered_wall_schemas():
+    old = np.ones((2,9))
+    new = np.ones((2,11))
+    assert monitor_difference(old,new,'air5_wall.dat') == 0.
+    new[:,10] = 2.
+    assert monitor_difference(np.ones((2,11)),new,'air5_wall.dat') == 1.
+    with np.testing.assert_raises(AssertionError):
+        monitor_difference(old,new[:,:10],'air5_wall.dat')
+    with np.testing.assert_raises(AssertionError):
+        monitor_difference(old,new,'air5_profiles.dat')
+    new[:,10] = np.nan
+    with np.testing.assert_raises(AssertionError):
+        monitor_difference(old,new,'air5_wall.dat')
+
+
 def test_constant_has_no_false_fluctuations():
     a=np.ones((4,2,12))
     result=block_statistics(a)
@@ -34,6 +59,25 @@ def test_original_probe_configuration_analysis(tmp_path):
     assert result['keys'] == [[1.0]]
     assert result['recent_time_range'] == [0.75,1.0]
     np.testing.assert_array_equal(result['recent']['rms'], 0)
+
+
+def test_wall_heat_components_keep_original_columns(tmp_path):
+    profiles, walls = [], []
+    for step in range(4):
+        time = (step+1)*.25
+        for j in range(3):
+            profiles.append([step,time,1,1,j,1.,float(j),0.,
+                             1.,float(j),0.,0.,1500.,1500.,20000.,.767,.233,0.,0.,0.])
+        walls.append([step,time,1,1.,0.,0.,2.,-5.,20000.,-2.,-3.])
+    np.savetxt(tmp_path/'air5_profiles.dat', profiles)
+    np.savetxt(tmp_path/'air5_wall.dat', walls)
+    result = analyze(tmp_path, 2)
+    assert result['wall_variables'] == ['tau_xy','q_into_gas','p',
+                                       'q_tr_into_gas','q_v_into_gas']
+    assert result['wall_recent_mean'] == [[2.,-5.,20000.,-2.,-3.]]
+    np.savetxt(tmp_path/'air5_wall.dat', np.asarray(walls)[:,:9])
+    old = analyze(tmp_path, 2)
+    assert old['wall_variables'] == ['tau_xy','q_into_gas','p']
 
 
 def integration(baseline, output, executable):
@@ -89,7 +133,7 @@ def integration(baseline, output, executable):
             for filename in ('air5_profiles.dat', 'air5_wall.dat'):
                 old = np.loadtxt(baseline/('gpu_np2' if gpu else 'cpu_np1')/'monitor'/filename)
                 new = np.loadtxt(case/'monitor'/filename)
-                change = float(np.max(abs(new-old)/np.maximum(1.,abs(old))))
+                change = monitor_difference(old,new,filename)
                 assert change <= 2e-10, change
                 report[name][filename] = change
         else:

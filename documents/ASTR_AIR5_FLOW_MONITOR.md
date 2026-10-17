@@ -34,12 +34,12 @@ states after the complete transport/chemistry update and shared-node processing,
 with physical sample time `time + completed_step_dt`. Step labels retain ASTR's
 zero-based update index. Monitoring does not modify the solution.
 
-Existing `statistic::meanflowcal`, `lavg/feqavg`, and mean-field checkpoint
-formats are not duplicated or redefined. They are NOT yet an admitted AIR5 GPU
-full-field statistics path. In particular their viscosity/budget terms need
-AIR5-specific physical properties; simply adding an AIR5 flowtype would not
-make those terms valid. The small fixed-probe block analysis below supplements
-these routines, rather than replacing full-field mean/restart statistics.
+Existing `statistic::meanflowcal` and `lavg/feqavg` are not duplicated or
+redefined. The current output/restart implementation has a separate admitted
+AIR5 CPU/GPU mean-statistics path and exact statistics restoration. The compact
+fixed-probe analysis below is independent of those full-field accumulators;
+enabling this monitor does not enable `lavg`, turbulence budgets, or spanwise
+averaging.
 
 Three fixed x stations are nearest global grid indices to 1/4, 1/2 and 3/4
 of the x index range. Every y point at k=floor(ka/2) is a fixed probe.
@@ -59,7 +59,11 @@ This is deliberately not a full GPU postprocessing implementation.
 `monitor/air5_profiles.dat` contains step, physical time, station and global
 indices, coordinates, rho, u/v/w, T/Tv, p and all five mass fractions.
 `monitor/air5_wall.dat` contains step, time, global x index, coordinates,
-tau_xy, heat flux into the gas and wall pressure. Files use `status=new` to
+tau_xy, heat flux into the gas and wall pressure. Since 2026-10-17, columns
+10 and 11 append the translational and vibrational contributions
+`q_tr_into_gas` and `q_v_into_gas`; the first nine columns and the original
+total-heat expression are unchanged. The analysis reader accepts both the
+original nine-column and new eleven-column files. Files use `status=new` to
 avoid silently overwriting an earlier window. Restart in a separate case
 directory; concatenate only compatible coordinates and nonoverlapping times.
 The same no-overwrite rule applies to the AIR5 probe extension. This integration
@@ -69,6 +73,8 @@ On a stationary planar noncatalytic wall:
 
     tau_xy = mu_w * d(u)/dy |_w
     q_into_gas = -k_TR,w * d(T)/dy |_w - k_V,w * d(Tv)/dy |_w
+    q_tr_into_gas = -k_TR,w * d(T)/dy |_w
+    q_v_into_gas = -k_V,w * d(Tv)/dy |_w
 
 The wall value and first two interior values give a three-point one-sided
 derivative, using their physical y coordinates. The temperature gradients are
@@ -114,6 +120,16 @@ maximum records. Existing long jobs are not modified by enabling this feature
 in a separately launched validation case.
 
 ## Verification on 2026-09-28
+
+The 2026-10-17 update adds the two wall heat components without changing the
+first nine columns. Registered 9/11-column comparison and analysis tests pass.
+A four-update CPU/GPU NP2 Mach-4 check on 64x128x16 nodes gives maximum scaled
+profile/wall differences of 8.13e-15/6.53e-14 (including both heat components).
+Evidence: `air5_g2_64_20261013/local_monitor_final_20261017.xml` under the
+validation output root, with 18 host checks and one native check. The two
+24000-update GPU development windows also have byte-identical monitor files;
+this does not establish physical stationarity or independent heat-flux accuracy.
+Historical checks below retain their original scope.
 
 Root CMake GPU and CPU-only builds passed. CPU NP1 versus GPU NP2 x-slab
 two-update tests passed the physical-state gates. Maximum scaled differences

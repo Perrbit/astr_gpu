@@ -26,3 +26,18 @@ def test_rejects_invalid_or_missing(tmp_path, text):
     path.write_text(text)
     with pytest.raises(ValueError):
         CflGate(path, .5, 2e-5, 0, 1).check(final=True)
+
+
+def test_report_cadence_is_explicit(tmp_path):
+    path = tmp_path/'run.log'
+    path.write_text(record(0)+record(100))
+    gate = CflGate(path, .5, 2e-5, 0, 200, step_stride=100)
+    gate.check(final=True)
+    assert gate.next_step == 200 and gate.maximum == .1
+
+
+def test_report_cadence_does_not_accept_missing_report(tmp_path):
+    path = tmp_path/'run.log'
+    path.write_text(record(0)+record(200))
+    with pytest.raises(ValueError):
+        CflGate(path, .5, 2e-5, 0, 300, step_stride=100).check(final=True)

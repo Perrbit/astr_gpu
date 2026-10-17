@@ -1439,6 +1439,65 @@ air5reactor、air5postshock、air5normalshock、air5tgv、air5hbl、air5sbli
 | ASTR_AIR5_TOP_TAU | 有限正实数，秒 | characteristic 必须给定的松弛时间尺度；减小值会增大基础松弛率 1/tau，不是自动优化参数 |
 | ASTR_AIR5_PRIMITIVE_REUSE | off / chemistry | 默认 off，重新恢复原始变量；chemistry 复用化学积分已恢复的同一状态原始变量，避免重复计算 |
 | ASTR_AIR5_CHEMISTRY_REDUCTIONS | baseline / packed | 默认 baseline，分开汇总状态码、极值和计数；packed 合并为两个 MPI_Allreduce，保持所汇总诊断量的含义 |
+| ASTR_AIR5_SOURCE_EVALUATION | joint / source-only | 默认 joint；source-only 仅供 GPU，将 ROS-2 第二阶段改为只计算实际使用的源项，不计算未使用的 Jacobian |
+| ASTR_AIR5_CHEMISTRY_BLOCK_SIZE | 128 / 32 | 默认 128；GPU 化学核的每块线程数，不改变节点对应关系或单元内运算顺序 |
+| ASTR_AIR5_CHEMISTRY_DIAGNOSTICS | every-step / report-steps | 默认 every-step；report-steps 只在报告步计算工作计数和极值，化学失败检查仍在每个半步执行 |
+| ASTR_AIR5_CHEMISTRY_TOLERANCE | baseline / loose / tight | 默认 baseline；三档 ROS-2 局部误差参数，具体数值见下文，不是完整 CFD 误差保证 |
+| ASTR_AIR5_STEP_HISTORY | off / previous | 默认 off；previous 用上一化学调用的建议子步作为下一次试探初值，仍执行接受、拒绝和物理检查 |
+| ASTR_AIR5_FILTER_MODE | legacy / conservative-flux | 默认 legacy；conservative-flux 是显式选择的新保守通量式滤波，只有 lfilter=t 才施加滤波 |
+
+**化学求值与积分控制**
+
+`source-only` 不改变第一阶段 Jacobian、6x6 LU、ROS-2 系数和误差估计。
+第二阶段仍检查实际源项、T/Tv、压力及模型有效域，但不再因未使用的
+Jacobian 非有限而拒绝该阶段。CPU 路径使用 `joint`。
+
+三档容差的 `(rtol, atol_factor)` 分别为 `baseline=(1e-9,1e-13)`、
+`loose=(1e-8,1e-12)`、`tight=(1e-10,1e-14)`。组分与振动能使用各自的
+绝对尺度，不能将 `atol_factor` 当作所有守恒分量共用的有量纲误差。
+局部误差控制不保证每个痕量组分的相对精度。当前本地窗口中三档容差
+没有产生可靠性能差异，不能把 `loose` 直接推荐为更快的生产设置。
+
+`previous` 保存逐节点建议步长，首次没有历史时使用基线初值。建议值限制
+到当前化学半步长度，试探失败不提交历史。历史不参与共享节点平均或
+空间滤波；启用后纳入现有检查点。该选项在当前本地窗口略增耗时，保留
+作为可选对照，不默认开启。
+
+**保守滤波候选**
+
+`conservative-flux` 将滤波修正写成相邻节点之间的成对交换，结合逐组分
+预算、质量一致性和双温能量约束，不对负组分逐点截零。内部保留十阶
+中心滤波，物理边界采用已批准的五阶因子化闭合；与 `legacy` 是不同
+数值算法，不是滤波存储方式的同义选项。两者均可选择
+`ASTR_GPU_FILTER_WORKSPACE=scalar|full`，默认仍为 `scalar`。
+压力保护使用模型导出的凸充分条件，接近压力下界时可能比原有效域更保守。
+
+新候选已有周期纯滤波、多方向 MPI、补偿、完整耦合短步和精确续算证据。
+最新完整场误差及成本窗口为本地64³区间、24步、`dt=1e-10 s`；不能据此
+认定长时反应平板或 SBLI 已验证。另有64×128×16节点、NP2 x-slab、
+dt=0.25 ns的两组24000步/6 us发展窗：工程配置的初末状态及监测
+逐值一致，但尚未定常，不是独立物理参考验证。模式、积分容差、历史开关及源项求值
+模式记录在现有 `air5_config.bin`；精确续算必须保持这些数值身份一致。
+GPU 线程块和报告频率不因此成为新的物理模型。
+
+本地工程对照的推荐候选为：
+
+```bash
+export ASTR_GPU_PRECISION_MODE=fp64 ASTR_GPU_SYNC_MODE=explicit
+export ASTR_GPU_HALO_TRANSPORT=pinned ASTR_GPU_FILTER_WORKSPACE=scalar
+export ASTR_AIR5_SOURCE_EVALUATION=source-only
+export ASTR_AIR5_CHEMISTRY_BLOCK_SIZE=32
+export ASTR_AIR5_CHEMISTRY_DIAGNOSTICS=report-steps
+export ASTR_AIR5_CHEMISTRY_TOLERANCE=baseline ASTR_AIR5_STEP_HISTORY=off
+export ASTR_AIR5_FILTER_MODE=conservative-flux
+```
+
+这不是独立的算例启动脚本。输入仍需显式启用 AIR5、滤波及其已登记
+边界组合，并匹配下文的组分限制器、补偿和特征顶面配置。
+AIR5 检查点必须设置 `exact_restart=t`。上述候选仅推荐用于复现本地
+已验证的误差/成本对照，不改变程序默认值，也不代表 A800 性能推荐。
+完整基线/候选参数、五轮命令和本地交付清单见
+[阶段协同实施记录](documents/ASTR_AIR5_STAGE_COORDINATION_LOCAL_RESULTS_20261013.md#53-2026-10-17-本地交付收口结论)。
 
 **反应与能量交换：ASTR_AIR5_SOURCE_MODE**
 
@@ -1526,6 +1585,9 @@ q1 q2 q3 q4 q5 q6 q7 q8 q9 q10 q11
 并检查压缩激波状态与法向守恒通量一致性。此文件不能用单组分 51 行代替。
 
 新格式AIR5批次自动恢复权威q、carry及已登记缓存/历史，不依赖旧字段文件。
+域文件和入口剖面必须存在；二维`air5_hbl_initial_field.dat`可省略，
+此时从入口剖面生成沿x均匀的初态。检查点只冻结实际存在的二维初场，
+不会因选择剖面初始化而要求补造文件；SBLI的入射激波文件仍为必需。
 旧补偿checkpoint和以 `initialize` 把旧文件转为零carry的恢复方式已关闭。
 不得通过清零补偿或删除版本字段修复不完整批次。
 

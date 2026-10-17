@@ -33,7 +33,7 @@ contains
     character(len=64) :: value
     integer :: status,lo,hi,ierr,n,s,i,j,k,a,b,station
     real(real64) :: rho,vel(3),temp,tv,pressure,ys(5),mu,kt,kv,smu(5),bd(5,5),md(5)
-    real(real64) :: h1,h2,w(3),tau,heat
+    real(real64) :: h1,h2,w(3),tau,heat,heat_tr,heat_v
     if(stride==-1) then
       stride=0; value=''
       call get_environment_variable('ASTR_AIR5_FLOW_MONITOR_STRIDE',value,status=status)
@@ -88,7 +88,8 @@ contains
         open(newunit=profile_unit,file='monitor/air5_profiles.dat',status='new')
         write(profile_unit,'(A)') '# step time station i j x y z rho u v w T Tv p Y_N2 Y_O2 Y_N Y_O Y_NO'
         open(newunit=wall_unit,file='monitor/air5_wall.dat',status='new')
-        write(wall_unit,'(A)') '# step time i x y z tau_xy q_into_gas p; three-point diagnostic, not solver flux'
+        write(wall_unit,'(A)') &
+          '# step time i x y z tau_xy q_into_gas p q_tr_into_gas q_v_into_gas; three-point diagnostic, not solver flux'
         endif
         if(probe_count>0) then
           open(newunit=probe_unit,file='monitor/air5_probes.dat',status='new')
@@ -147,9 +148,11 @@ contains
       if(status/=0) call MPI_Abort(MPI_COMM_WORLD,94,ierr)
       tau=mu*dot_product(w,primitive(2,a:b))
       heat=-kt*dot_product(w,primitive(5,a:b))-kv*dot_product(w,primitive(6,a:b))
+      heat_tr=-kt*dot_product(w,primitive(5,a:b))
+      heat_v=-kv*dot_product(w,primitive(6,a:b))
       if(.not.ieee_is_finite(tau).or..not.ieee_is_finite(heat)) call MPI_Abort(MPI_COMM_WORLD,94,ierr)
-      write(wall_unit,'(I12,1X,ES25.17E3,1X,I8,6(1X,ES25.17E3))') &
-        nstep,sample_time,i,total(1:3,a),tau,heat,primitive(7,a)
+      write(wall_unit,'(I12,1X,ES25.17E3,1X,I8,8(1X,ES25.17E3))') &
+        nstep,sample_time,i,total(1:3,a),tau,heat,primitive(7,a),heat_tr,heat_v
     enddo
     flush(profile_unit); flush(wall_unit)
   end subroutine

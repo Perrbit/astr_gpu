@@ -275,8 +275,9 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
                    ASTR_CHECKPOINT_TEST_ROOT=str((case / "outdat/new/checkpoints").resolve()),
                    ASTR_CHECKPOINT_TEST_TARGET=f"step{target_step:012d}")
     if restore:
-        for name in ("domain", "profile", "initial_field"):
+        for name in ("domain", "profile"):
             (case / f"datin/air5_hbl_{name}.dat").unlink()
+        (case / 'datin/air5_hbl_initial_field.dat').unlink(missing_ok=True)
         if args.case == "sbli":
             (case / "datin/air5_incident_shock.dat").unlink()
     if fault == "tau":

@@ -4,10 +4,13 @@ import re
 
 
 class CflGate:
-    def __init__(self, path, limit, dt, first_step, stop_step):
+    def __init__(self, path, limit, dt, first_step, stop_step, step_stride=1):
         if not isfinite(limit) or limit <= 0 or not isfinite(dt) or dt <= 0:
             raise ValueError('CFL gate requires a positive finite limit and timestep')
         self.path, self.limit, self.dt = path, limit, dt
+        if step_stride < 1:
+            raise ValueError('CFL report stride must be positive')
+        self.step_stride = step_stride
         self.next_step, self.stop_step = first_step, stop_step
         self.offset, self.pending, self.header = 0, b'', None
         self.maximum = 0.
@@ -36,7 +39,7 @@ class CflGate:
                 if values[-1] > self.limit:
                     raise ValueError(f'CFL gate exceeded at step {self.header}: {values[-1]} > {self.limit}')
                 self.maximum = max(self.maximum, values[-1])
-                self.next_step += 1
+                self.next_step += self.step_stride
                 self.header = None
         if final and (self.header is not None or self.next_step != self.stop_step):
             raise ValueError('Missing per-step CFL records')

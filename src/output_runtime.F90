@@ -238,6 +238,14 @@ contains
     count=3
     if(trim(flowtype)=='air5sbli') count=4
   end function
+  function air5_checkpoint_resources() result(names)
+    character(64),allocatable :: names(:)
+    logical :: selected(4)
+    selected=[.true.,.true.,.false.,trim(flowtype)=='air5sbli']
+    inquire(file=trim(output_resource_path('air5_hbl_initial_field.dat', &
+      'datin/air5_hbl_initial_field.dat')),exist=selected(3))
+    names=pack(air5_resources,selected)
+  end function
   logical function new_output_enabled()
     new_output_enabled=enabled
   end function
@@ -689,9 +697,13 @@ contains
       if(dynamic_output_case()) call freeze_inflow_resources()
     endif
     if(air5_output_case()) then
-      do i=1,air5_resource_count()
-        call freeze_static_resource(trim(air5_resources(i)),'datin/'//trim(air5_resources(i)))
-      enddo
+      block
+        character(64),allocatable :: names(:)
+        names=air5_checkpoint_resources()
+        do i=1,size(names)
+          call freeze_static_resource(trim(names(i)),'datin/'//trim(names(i)))
+        enddo
+      end block
     endif
     if(ninit>=1.and.ninit<=3) &
       call freeze_static_resource(initial_source_name(ninit),trim(initial_source_path(ninit)))
@@ -1425,7 +1437,7 @@ contains
     if(trim(flowtype)=='tgv'.and.lreadgrid) resource_count=3
     if(trim(flowtype)=='bl') resource_count=4
     if(dynamic_output_case()) resource_count=5+inflow_count
-    if(air5_output_case()) resource_count=2+air5_resource_count()
+    if(air5_output_case()) resource_count=2+size(air5_checkpoint_resources())
     if(ninit>=1.and.ninit<=3) resource_count=resource_count+1
     if(wall_blowing_legacy_random) resource_count=resource_count+1
     allocate(resources(resource_count),stat=err)
@@ -1449,7 +1461,7 @@ contains
       if(use_gpu) call conservation_file(trim(path)//'/air5_conservation.bin',.true.,identity)
 #endif
 #endif
-      resources(3:resource_count)=air5_resources(:air5_resource_count())
+      resources(3:resource_count)=air5_checkpoint_resources()
     endif
     i=resource_count
     if(wall_blowing_legacy_random) then
