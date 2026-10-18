@@ -63,6 +63,28 @@ def test_launch_passes_grid_and_explicit_host_budget(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize('reuse', ['off','chemistry'])
+@pytest.mark.parametrize('reductions', ['baseline','packed'])
+def test_launch_forwards_primitive_and_reduction_modes(tmp_path, monkeypatch, reuse, reductions):
+    from test_output_air5_conservation import arguments
+    args = arguments(tmp_path)
+    args.mean_statistics = False
+    args.primitive_reuse, args.chemistry_reductions = reuse, reductions
+    environments = []
+
+    class NoSolver:
+        def __init__(self, command, **kwargs):
+            environments.append(kwargs['env'])
+
+        def wait(self, timeout):
+            return 0
+
+    monkeypatch.setattr(restart.subprocess,'Popen',NoSolver)
+    restart.launch(args,'gpu',2,'modes',2)
+    assert environments[0].get('ASTR_AIR5_PRIMITIVE_REUSE') == reuse
+    assert environments[0].get('ASTR_AIR5_CHEMISTRY_REDUCTIONS') == reductions
+
+
 def test_checkpoint_estimator_uses_declared_budget(tmp_path):
     path = tmp_path / 'synthetic.h5'
     with h5py.File(path, 'w') as state:
@@ -76,6 +98,69 @@ def test_checkpoint_estimator_uses_declared_budget(tmp_path):
     bounds = controlled_checkpoint_buffers(path, 0, 'gpu', budget_bytes=256*1024**2)
     assert bounds == [75**3*35*8 + 8 + 128 + 65**3*12*8]
     assert 64*1024**2 < bounds[0] < 256*1024**2
+
+
+@pytest.mark.parametrize('transport', ['pageable','pinned','device-aware'])
+def test_launch_selects_solver_transport(tmp_path,monkeypatch,transport):
+    from test_output_air5_conservation import arguments
+    args=arguments(tmp_path)
+    args.halo_transport=transport
+    calls=[]
+
+    class NoSolver:
+        def __init__(self,command,**kwargs):
+            calls.append(kwargs['env'])
+
+        def wait(self,timeout):
+            return 0
+
+    monkeypatch.setattr(restart.subprocess,'Popen',NoSolver)
+    restart.launch(args,'gpu',2,'transport',2)
+    assert calls[0]['ASTR_GPU_HALO_TRANSPORT']==transport
+    if transport=='device-aware':
+        assert calls[0]['OMPI_MCA_pml']=='ucx'
+        assert 'cuda_copy' in calls[0]['UCX_TLS']
+
+
+@pytest.mark.parametrize('enabled', [False,True])
+def test_shared_face_probe_is_explicit_and_uses_the_existing_snapshot_phase(tmp_path,monkeypatch,enabled):
+    from test_output_air5_conservation import arguments
+    calls=[]
+
+    class NoSolver:
+        def __init__(self,command,**kwargs):
+            calls.append(kwargs['env'])
+
+        def wait(self,timeout):
+            return 0
+
+    monkeypatch.setattr(restart.subprocess,'Popen',NoSolver)
+    case,_=restart.launch(arguments(tmp_path),'gpu',2,'probe',1,symmetric_face_probe=enabled)
+    environment=calls[0]
+    if enabled:
+        assert environment['ASTR_AIR5_SYMMETRIC_FACE_PROBE']=='1'
+        assert environment['ASTR_VALIDATION_RHS_STEP']=='0'
+        assert environment['ASTR_VALIDATION_RHS_PREFIX']=='validation/air5'
+        assert (case/'validation').is_dir()
+    else:
+        assert 'ASTR_AIR5_SYMMETRIC_FACE_PROBE' not in environment
+        assert 'ASTR_VALIDATION_RHS_PREFIX' not in environment
+
+
+def test_campaign_reservation_uses_the_actual_per_run_directory_limit(tmp_path,monkeypatch):
+    args=SimpleNamespace(campaign_root=tmp_path,campaign_budget_bytes=64*1024**3,
+                         directory_budget_bytes=512*1024**2)
+    monkeypatch.setattr(performance,'campaign_bytes',lambda _:64*1024**3-64*1024**2)
+    calls=[]
+    def no_solver(*positional,**kwargs):
+        calls.append(kwargs)
+        return tmp_path,1
+    monkeypatch.setattr(performance,'launch',no_solver)
+    assert performance.budgeted_launch(args,'gpu',2,'no_field',24,
+        checkpoint_enabled=False,directory_budget_bytes=32*1024**2)==(tmp_path,1)
+    assert len(calls)==1
+    with pytest.raises(RuntimeError,match='lacks a per-run disk reservation'):
+        performance.budgeted_launch(args,'gpu',2,'field',24)
 
 
 @pytest.mark.parametrize('compensated,components,auxiliary', [(0, 35, 1), (1, 34, 11)])
@@ -98,6 +183,7 @@ def test_timing_driver_records_grid_and_forwards_budget_without_running_solver(t
         nsys=False, phase_timing=False, repeats=5, warmup=4, steps=20, report_interval=4,
         case='sbli', chemistry_diagnostics='every-step', source_evaluation='joint',
         chemistry_tolerance='baseline', step_history='off',
+        primitive_reuse='chemistry', chemistry_reductions='packed',
         chemistry_block_size=128, axis='x', topology=None, top_mode='characteristic',
         filter_workspace='scalar', compare_to=None, cases=['gpu_np1'], grid=(64, 64, 64),
         host_budget_bytes=256*1024**2, device_budget_bytes=128*1024**2,
@@ -106,9 +192,13 @@ def test_timing_driver_records_grid_and_forwards_budget_without_running_solver(t
 
     def stop_before_solver(*positional, **kwargs):
         calls.append((positional, kwargs))
+        if positional[-2]=='seed':
+            return tmp_path/'unused_seed',0
         raise RuntimeError('host-only test stops before solver')
 
     monkeypatch.setattr(performance, 'launch', stop_before_solver)
+    monkeypatch.setattr(performance, 'state_sanity', lambda _: {})
+    monkeypatch.setattr(performance, 'batch_identity', lambda _: {})
     with pytest.raises(RuntimeError, match='host-only test'):
         performance.run(args)
     summary = json.loads((args.output / 'timing_summary.json').read_text())
@@ -118,12 +208,16 @@ def test_timing_driver_records_grid_and_forwards_budget_without_running_solver(t
     assert summary['directory_budget_bytes'] == args.directory_budget_bytes
     assert summary['timing_start_step'] == (0 if from_initial else 2)
     assert summary['air5_filter_mode'] == filter_mode
+    assert summary['primitive_reuse'] == 'chemistry'
+    assert summary['chemistry_reductions'] == 'packed'
     assert calls[0][0][0].air5_filter_mode == filter_mode
     assert args.initial_restart == from_initial
     assert calls[0][0][-1] == (1 if from_initial else 2)
     assert calls[0][1]['host_budget_bytes'] == args.host_budget_bytes
     assert calls[0][1]['device_budget_bytes'] == args.device_budget_bytes
     assert calls[0][1]['directory_budget_bytes'] == args.directory_budget_bytes
+    assert len(calls)==2 and calls[1][0][-2]=='timing_check'
+    assert calls[1][0][0].initial_restart is False
 
 
 def test_one_initial_update_has_explicitly_unemitted_scalar_statistics(tmp_path):
@@ -159,7 +253,10 @@ def qualified_flow(tmp_path):
         host_budget_bytes=256*1024**2, device_budget_bytes=256*1024**2,
         directory_budget_bytes=1024**3, start_from_initial=True,
         air5_filter_mode='conservative-flux', flow_control=tmp_path/'flow_control.json')
-    payload = b'ASTRA502'+bytes(1632)+b'joint'.ljust(128)+struct.pack('<2q', 0, 0)
+    modes = bytearray(1632)
+    modes[6*128:7*128] = b'off'.ljust(128,b' ')
+    modes[7*128:8*128] = b'baseline'.ljust(128,b' ')
+    payload = b'ASTRA502'+modes+b'joint'.ljust(128)+struct.pack('<2q', 0, 0)
     payload += b'ASTRF001'+struct.pack('<5q', *performance.FILTER_IDENTITY)
 
     def batch(case, step):
@@ -197,7 +294,8 @@ def test_qualified_flow_reuses_the_selected_immutable_case(qualified_flow):
     assert performance.qualified_flow_case(args, 'gpu_np1', performance.digest(args.executable)) == row
 
 
-@pytest.mark.parametrize('change', ['binary', 'filter', 'dt', 'failed', 'control', 'checkpoint', 'reference', 'source'])
+@pytest.mark.parametrize('change', ['binary', 'filter', 'dt', 'failed', 'control', 'checkpoint', 'reference', 'source',
+                                  'reuse','reductions'])
 def test_qualified_flow_rejects_changed_evidence_or_protocol(qualified_flow, change):
     args, report, row = qualified_flow
     if change == 'binary':
@@ -216,6 +314,10 @@ def test_qualified_flow_rejects_changed_evidence_or_protocol(qualified_flow, cha
         Path(report['reference_summary']['references']['12']['state']).write_bytes(b'changed reference')
     elif change == 'source':
         args.source_evaluation = 'source-only'
+    elif change == 'reuse':
+        args.primitive_reuse = 'chemistry'
+    elif change == 'reductions':
+        args.chemistry_reductions = 'packed'
     args.flow_control.write_text(json.dumps(report))
     with pytest.raises(ValueError):
         performance.qualified_flow_case(args, 'gpu_np1', performance.digest(args.executable))

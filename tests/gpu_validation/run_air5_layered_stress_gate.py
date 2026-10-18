@@ -210,7 +210,7 @@ def symmetric_species_error(reference, candidate, initial):
     return relative
 
 
-def check_shared_face_payloads(case, topology):
+def check_shared_face_payloads(case, topology, periodic=(True,True,True)):
     """Bitwise owner/receiver checks for complete planes, including signed zero."""
     topology = tuple(topology)
     if len(topology) != 3 or min(topology) < 1:
@@ -242,10 +242,15 @@ def check_shared_face_payloads(case, topology):
                 def rank_of(node):
                     return node[0]+topology[0]*(node[1]+topology[1]*node[2])
                 # First -> previous rank's plus face; last -> next rank's minus.
-                if (not np.array_equal(own[0], payloads[rank_of(previous)][2]) or
-                        not np.array_equal(own[1], payloads[rank_of(following)][3])):
-                    raise ValueError(f'shared face is not bitwise identical: RK{stage}, axis{axis}, rank{rank}')
-                checked += 2
+                coordinate=(i,j,k)[axis-1]
+                for present,sent,received in (
+                    (periodic[axis-1] or coordinate>0,own[0],payloads[rank_of(previous)][2]),
+                    (periodic[axis-1] or coordinate<topology[axis-1]-1,own[1],payloads[rank_of(following)][3])):
+                    if not present:
+                        continue
+                    if not np.array_equal(sent,received):
+                        raise ValueError(f'shared face is not bitwise identical: RK{stage}, axis{axis}, rank{rank}')
+                    checked += 1
     return dict(plane_pairs=checked, bitwise_identical=True)
 
 

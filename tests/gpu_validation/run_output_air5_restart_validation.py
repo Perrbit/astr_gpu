@@ -147,7 +147,7 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
            wall_mean_oracle=False, complete_step_timing=False, air5_phase_timing=False,
            chemistry_diagnostics=None, chemistry_reductions=None, chemistry_failure_hook=None,
            explicit_contract_defaults=False, host_budget_bytes=67108864,filter_failure_rank=None,
-           exact_restart=True,checkpoint_statistics=True):
+           exact_restart=True,checkpoint_statistics=True,primitive_reuse=None,symmetric_face_probe=False):
     case = args.output / f"{backend}_np{ranks}_{name}"
     tau = prepare(case, backend, steps, incident=args.case == "sbli", reconstruction=args.reconstruction,
                   mean_statistics=args.mean_statistics if statistics is None else statistics,
@@ -198,9 +198,12 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
         topology = list(args.topology)
         if len(topology) != 3 or min(topology) < 1 or math.prod(topology) != ranks:
             raise ValueError('AIR5 topology must contain three positive factors of NP')
+    halo_transport = getattr(args, 'halo_transport', 'pinned')
+    if halo_transport not in ('pageable','pinned','device-aware'):
+        raise ValueError('unknown GPU halo transport')
     env.update(ASTR_OUTPUT_CONFIG="datin/input.output", ASTR_GPU_SYNC_MODE="explicit",
                ASTR_GPU_PRECISION_MODE="fp64", ASTR_GPU_FILTER_WORKSPACE=args.filter_workspace,
-               ASTR_GPU_HALO_TRANSPORT="pinned", ASTR_FORCE_MPI_TOPOLOGY=",".join(map(str, topology)),
+               ASTR_GPU_HALO_TRANSPORT=halo_transport, ASTR_FORCE_MPI_TOPOLOGY=",".join(map(str, topology)),
                ASTR_AIR5_SOURCE_MODE="coupled", ASTR_AIR5_COMPENSATION="on",
                ASTR_AIR5_CONVECTION_LIMITER="symmetric_species", ASTR_AIR5_DIFFUSION_LIMITER="layered",
                ASTR_AIR5_TOP_MODE=args.top_mode, ASTR_AIR5_TOP_TAU=f"{tau:.17e}",
@@ -222,10 +225,20 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
         if chemistry_diagnostics not in ('every-step', 'report-steps'):
             raise ValueError('unknown AIR5 chemistry diagnostic schedule')
         env['ASTR_AIR5_CHEMISTRY_DIAGNOSTICS'] = chemistry_diagnostics
-    if chemistry_reductions is not None:
-        if chemistry_reductions not in ('baseline', 'packed'):
-            raise ValueError('unknown AIR5 chemistry reduction mode')
-        env['ASTR_AIR5_CHEMISTRY_REDUCTIONS'] = chemistry_reductions
+    if primitive_reuse is None:
+        primitive_reuse = getattr(args,'primitive_reuse','off')
+    if primitive_reuse not in ('off','chemistry'):
+        raise ValueError('unknown AIR5 primitive reuse mode')
+    env['ASTR_AIR5_PRIMITIVE_REUSE'] = primitive_reuse
+    if chemistry_reductions is None:
+        chemistry_reductions = getattr(args,'chemistry_reductions','baseline')
+    if chemistry_reductions not in ('baseline','packed'):
+        raise ValueError('unknown AIR5 chemistry reduction mode')
+    env['ASTR_AIR5_CHEMISTRY_REDUCTIONS'] = chemistry_reductions
+    if symmetric_face_probe:
+        (case/'validation').mkdir(exist_ok=True)
+        env.update(ASTR_AIR5_SYMMETRIC_FACE_PROBE='1',
+                   ASTR_VALIDATION_RHS_PREFIX='validation/air5',ASTR_VALIDATION_RHS_STEP='0')
     if wall_samples:
         env['ASTR_INSITU_SAMPLE_PREFIX']='outdat/sample'
     if insitu_timing:
@@ -243,7 +256,8 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
     if postprocess_transport is not None and (postprocess_transport not in ('pinned','device-aware') or insitu_config is None):
         raise ValueError('AIR5 device products require explicit configuration and transport')
     active_transport=postprocess_transport if postprocess_transport is not None else device_sample_transport
-    if active_transport=='device-aware':
+    solver_device_aware=backend=='gpu' and halo_transport=='device-aware'
+    if solver_device_aware or active_transport=='device-aware':
         env.update(OMPI_MCA_pml='ucx', OMPI_MCA_coll='^hcoll,ucc,cuda',
                    OMPI_MCA_coll_hcoll_enable='0', OMPI_MCA_osc='pt2pt',
                    UCX_MEMTYPE_CACHE='n', UCX_CUDA_COPY_ENABLE_FABRIC='no',
@@ -261,7 +275,7 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
     if conservation:
         env["ASTR_AIR5_C4_CONSERVATION"] = "1"
     if explicit_contract_defaults:
-        env.update(ASTR_AIR5_PRIMITIVE_REUSE='off', ASTR_AIR5_CHEMISTRY_REDUCTIONS='baseline',
+        env.update(ASTR_AIR5_PRIMITIVE_REUSE=primitive_reuse, ASTR_AIR5_CHEMISTRY_REDUCTIONS=chemistry_reductions,
                    ASTR_AIR5_C4_CONSERVATION='on' if conservation else 'off')
         env['ASTR_AIR5_TOP_TAU']=f'{tau:.17e}'.replace('e','d')
     if restore_probe:
@@ -309,7 +323,7 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
         if sanitizer is None:
             raise RuntimeError("compute-sanitizer is required for this explicit memory gate")
         # Keep MPI's optional CUDA context probes outside this kernel-memory gate.
-        aware=active_transport=='device-aware'
+        aware=solver_device_aware or active_transport=='device-aware'
         if not aware:
             env.update(OMPI_MCA_opal_cuda_support="false", OMPI_MCA_pml="ob1",
                        OMPI_MCA_osc="pt2pt", OMPI_MCA_btl="self,vader,tcp", OMPI_MCA_coll_ucc_enable="0")
@@ -318,7 +332,9 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
                           *(['--suppressions',str(ROOT / 'tests/gpu_validation/compute_sanitizer_ucx_cuda_aware.supp.xml')]
                             if aware else []),
                           *solver_command]
-    command = [str(args.mpiexec), "--mca", "coll_hcoll_enable", "0", "-np", str(ranks), *solver_command]
+    command = [str(args.mpiexec), "--mca", "coll_hcoll_enable", "0",
+               *(['--oversubscribe'] if getattr(args,'share_gpus',False) else []),
+               "-np", str(ranks), *solver_command]
     if complete_step_timing:
         (case / 'timing_environment.json').write_text(json.dumps(dict(
             command=command, environment={k: v for k, v in env.items()

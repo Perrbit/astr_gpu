@@ -216,6 +216,15 @@ if(BUILD_TESTING)
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/wall_random_probe_modules")
   target_include_directories(legacy_wall_random_probe PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/wall_random_probe_modules")
+  if(ASTR_WITH_AIR5_CHEMISTRY)
+    add_executable(air5_density_padding_probe EXCLUDE_FROM_ALL
+      commtype.F90 commvar.F90 commarray.F90 ../tests/gpu_validation/air5_density_padding_probe.F90)
+    set_target_properties(air5_density_padding_probe PROPERTIES
+      Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/air5_density_padding_modules")
+    target_include_directories(air5_density_padding_probe PRIVATE
+      "${CMAKE_CURRENT_BINARY_DIR}/air5_density_padding_modules")
+    target_compile_definitions(air5_density_padding_probe PRIVATE ASTR_AIR5_CHEMISTRY)
+  endif()
   if(ASTR_WITH_CUDA)
     add_executable(legacy_wall_upload_probe EXCLUDE_FROM_ALL wall_blowing_random.F90
       ../tests/gpu_validation/legacy_wall_upload_probe.cuf)

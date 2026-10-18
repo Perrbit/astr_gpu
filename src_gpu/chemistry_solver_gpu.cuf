@@ -63,6 +63,9 @@ module chemistry_flow_solver_gpu
   real(real64),allocatable,device,save :: air5_conservation_partials_d(:,:)
   logical, save :: air5_vibrational_floor_configured=.false.
   real(real64), allocatable, device, save :: filter_send_d(:,:,:,:),filter_receive_d(:,:,:,:)
+  real(real64), allocatable, pinned, save :: filter_send_h(:,:,:,:),filter_receive_h(:,:,:,:)
+  real(real64), allocatable, device, save :: filter_face_d(:,:,:),filter_alias_d(:,:,:)
+  real(real64), allocatable, pinned, save :: filter_face_h(:,:,:),filter_alias_h(:,:,:)
   real(real64), device, save :: filter_tr_floor_d(5),filter_v_floor_d(5)
 
   public :: air5_prepare_spatial_state_gpu
@@ -194,7 +197,7 @@ contains
     endif
     do s=1,11
       qrhs_d(a(1),a(2),a(3),s)=flux(s)
-      if(r==n-1) filter_send_d(s,0,t,2)=flux(s)
+      if(r==n-1) filter_face_d(s,t,1)=flux(s)
     enddo
   end subroutine
 
@@ -221,7 +224,7 @@ contains
     do s=1,11
       fr=qrhs_d(a(1),a(2),a(3),s); fl=0.0_real64
       if(r==0) then
-        if(has_lower) fl=filter_receive_d(s,0,t,1)
+        if(has_lower) fl=filter_face_d(s,t,2)
       else
         fl=qrhs_d(b(1),b(2),b(3),s)
       endif
@@ -246,20 +249,120 @@ contains
     enddo
   end subroutine
 
-  attributes(global) subroutine filter_alias_gpu(axis,n,n1,n2)
+  attributes(global) subroutine filter_alias_gpu(axis,n,n1,n2,unpack)
     use commarray_gpu, only: q_d
     use chemistry_compensation_gpu, only: air5_carry_d,air5_compensated_d
     use chemistry_filter_operator, only: filter_node
     integer, value :: axis,n,n1,n2
+    logical, value :: unpack
     integer :: t,t1,t2,a(3),s
     t=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(t>=(n1+1)*(n2+1)) return
     t1=modulo(t,n1+1); t2=t/(n1+1)
-    call filter_node(axis,n,t1,t2,a)
-    do s=1,11
-      q_d(a(1),a(2),a(3),s)=filter_receive_d(s,0,t,2)
-      if(air5_compensated_d) air5_carry_d(a(1),a(2),a(3),s)=filter_receive_d(s+11,0,t,2)
-    enddo
+    if(unpack) then
+      call filter_node(axis,n,t1,t2,a)
+      do s=1,11
+        q_d(a(1),a(2),a(3),s)=filter_alias_d(s,t,2)
+        if(air5_compensated_d) air5_carry_d(a(1),a(2),a(3),s)=filter_alias_d(s+11,t,2)
+      enddo
+    else
+      call filter_node(axis,0,t1,t2,a)
+      do s=1,11
+        filter_alias_d(s,t,1)=q_d(a(1),a(2),a(3),s)
+        filter_alias_d(s+11,t,1)=0.0_real64
+        if(air5_compensated_d) filter_alias_d(s+11,t,1)=air5_carry_d(a(1),a(2),a(3),s)
+      enddo
+    endif
+  end subroutine
+
+  subroutine exchange_air5_filter_strips_gpu(axis,hm,area)
+    use mpi
+    use parallel, only: mpirank
+    use chemistry_flow_solver, only: filter_lower,filter_upper,filter_comm,check_air5_filter_status
+    use halo_transport_gpu, only: device_aware_transport_enabled
+    use gpu_check, only: sync_after_kernel
+    integer, intent(in) :: axis,hm,area
+    integer :: count,ierr,status
+    count=22*(hm+1)*area; status=0
+    if(filter_lower(axis)==MPI_PROC_NULL.and.filter_upper(axis)==MPI_PROC_NULL) then
+      ! Physical closures consume no remote strip.
+    elseif(filter_lower(axis)==mpirank.and.filter_upper(axis)==mpirank) then
+      filter_receive_d(:,:,0:area-1,2)=filter_send_d(:,:,0:area-1,1)
+      filter_receive_d(:,:,0:area-1,1)=filter_send_d(:,:,0:area-1,2)
+      call sync_after_kernel('air5_filter_local_strips',.true.)
+    elseif(device_aware_transport_enabled) then
+      call MPI_Sendrecv(filter_send_d(:,:,:,1),count,MPI_DOUBLE_PRECISION,filter_lower(axis),10, &
+        filter_receive_d(:,:,:,2),count,MPI_DOUBLE_PRECISION,filter_upper(axis),10, &
+        filter_comm,MPI_STATUS_IGNORE,ierr)
+      if(ierr/=MPI_SUCCESS) status=1
+      call MPI_Sendrecv(filter_send_d(:,:,:,2),count,MPI_DOUBLE_PRECISION,filter_upper(axis),11, &
+        filter_receive_d(:,:,:,1),count,MPI_DOUBLE_PRECISION,filter_lower(axis),11, &
+        filter_comm,MPI_STATUS_IGNORE,ierr)
+      if(ierr/=MPI_SUCCESS) status=1
+    else
+      if(filter_lower(axis)/=MPI_PROC_NULL) filter_send_h(:,:,0:area-1,1)=filter_send_d(:,:,0:area-1,1)
+      if(filter_upper(axis)/=MPI_PROC_NULL) filter_send_h(:,:,0:area-1,2)=filter_send_d(:,:,0:area-1,2)
+      call MPI_Sendrecv(filter_send_h(:,:,:,1),count,MPI_DOUBLE_PRECISION,filter_lower(axis),10, &
+        filter_receive_h(:,:,:,2),count,MPI_DOUBLE_PRECISION,filter_upper(axis),10, &
+        filter_comm,MPI_STATUS_IGNORE,ierr)
+      if(ierr/=MPI_SUCCESS) status=1
+      call MPI_Sendrecv(filter_send_h(:,:,:,2),count,MPI_DOUBLE_PRECISION,filter_upper(axis),11, &
+        filter_receive_h(:,:,:,1),count,MPI_DOUBLE_PRECISION,filter_lower(axis),11, &
+        filter_comm,MPI_STATUS_IGNORE,ierr)
+      if(ierr/=MPI_SUCCESS) status=1
+      if(filter_lower(axis)/=MPI_PROC_NULL) filter_receive_d(:,:,0:area-1,1)=filter_receive_h(:,:,0:area-1,1)
+      if(filter_upper(axis)/=MPI_PROC_NULL) filter_receive_d(:,:,0:area-1,2)=filter_receive_h(:,:,0:area-1,2)
+    endif
+    call check_air5_filter_status(status,'GPU state strips')
+  end subroutine
+
+  subroutine exchange_air5_filter_plane_gpu(axis,area,alias)
+    use mpi
+    use parallel, only: mpirank
+    use chemistry_flow_solver, only: filter_lower,filter_upper,filter_comm,check_air5_filter_status
+    use halo_transport_gpu, only: device_aware_transport_enabled
+    use gpu_check, only: sync_after_kernel
+    integer, intent(in) :: axis,area
+    logical, intent(in) :: alias
+    integer :: ierr,status
+    status=0
+    if(filter_lower(axis)==MPI_PROC_NULL.and.filter_upper(axis)==MPI_PROC_NULL) then
+      ! No owned face or high-end alias crosses this physical direction.
+    elseif(filter_lower(axis)==mpirank.and.filter_upper(axis)==mpirank) then
+      if(alias) then
+        filter_alias_d(:,0:area-1,2)=filter_alias_d(:,0:area-1,1)
+      else
+        filter_face_d(:,0:area-1,2)=filter_face_d(:,0:area-1,1)
+      endif
+      call sync_after_kernel('air5_filter_local_plane',.true.)
+    elseif(alias) then
+      if(device_aware_transport_enabled) then
+        call MPI_Sendrecv(filter_alias_d(:,:,1),22*area,MPI_DOUBLE_PRECISION,filter_lower(axis),10, &
+          filter_alias_d(:,:,2),22*area,MPI_DOUBLE_PRECISION,filter_upper(axis),10, &
+          filter_comm,MPI_STATUS_IGNORE,ierr)
+      else
+        if(filter_lower(axis)/=MPI_PROC_NULL) filter_alias_h(:,0:area-1,1)=filter_alias_d(:,0:area-1,1)
+        call MPI_Sendrecv(filter_alias_h(:,:,1),22*area,MPI_DOUBLE_PRECISION,filter_lower(axis),10, &
+          filter_alias_h(:,:,2),22*area,MPI_DOUBLE_PRECISION,filter_upper(axis),10, &
+          filter_comm,MPI_STATUS_IGNORE,ierr)
+        if(filter_upper(axis)/=MPI_PROC_NULL) filter_alias_d(:,0:area-1,2)=filter_alias_h(:,0:area-1,2)
+      endif
+      if(ierr/=MPI_SUCCESS) status=1
+    else
+      if(device_aware_transport_enabled) then
+        call MPI_Sendrecv(filter_face_d(:,:,1),11*area,MPI_DOUBLE_PRECISION,filter_upper(axis),12, &
+          filter_face_d(:,:,2),11*area,MPI_DOUBLE_PRECISION,filter_lower(axis),12, &
+          filter_comm,MPI_STATUS_IGNORE,ierr)
+      else
+        if(filter_upper(axis)/=MPI_PROC_NULL) filter_face_h(:,0:area-1,1)=filter_face_d(:,0:area-1,1)
+        call MPI_Sendrecv(filter_face_h(:,:,1),11*area,MPI_DOUBLE_PRECISION,filter_upper(axis),12, &
+          filter_face_h(:,:,2),11*area,MPI_DOUBLE_PRECISION,filter_lower(axis),12, &
+          filter_comm,MPI_STATUS_IGNORE,ierr)
+        if(filter_lower(axis)/=MPI_PROC_NULL) filter_face_d(:,0:area-1,2)=filter_face_h(:,0:area-1,2)
+      endif
+      if(ierr/=MPI_SUCCESS) status=1
+    endif
+    call check_air5_filter_status(status,'GPU owned/alias plane')
   end subroutine
 
   attributes(global) subroutine filter_check_state_gpu(ni,nj,nk)
@@ -289,9 +392,9 @@ contains
     use mpi, only: MPI_PROC_NULL
     use commvar, only: im,jm,km,hm
     use commarray_gpu, only: gpu_scalar_filter_workspace_enabled
-    use chemistry_flow_solver, only: configure_air5_filter_exchange,exchange_air5_filter_strips, &
-      exchange_air5_filter_faces,filter_send,filter_receive,filter_local,filter_global,filter_offset, &
+    use chemistry_flow_solver, only: configure_air5_filter_exchange,filter_local,filter_global,filter_offset, &
       filter_periodic,filter_lower,filter_upper,filter_area,filter_plane,filter_tr_floor,filter_v_floor
+    use halo_transport_gpu, only: device_aware_transport_enabled
     use gpu_check, only: sync_after_kernel
 #ifdef ASTR_BUILD_TESTING
     use chemistry_flow_solver, only: air5_filter_test_active,air5_filter_test_begin,air5_filter_test_end
@@ -299,7 +402,7 @@ contains
     use chemistry_compensation_gpu, only: air5_carry_d
     use chemistry_compensation, only: air5_compensated
 #endif
-    integer :: axis,n,n1,n2,pack_blocks
+    integer :: axis,n,n1,n2,pack_blocks,area
     logical :: has_lower,has_upper,scalar
     type(dim3) :: block,grid
 #ifdef ASTR_BUILD_TESTING
@@ -308,13 +411,19 @@ contains
     call configure_air5_filter_exchange()
     if(.not.allocated(filter_send_d)) then
       allocate(filter_send_d(22,0:hm,0:filter_area-1,2),filter_receive_d(22,0:hm,0:filter_area-1,2))
+      allocate(filter_face_d(11,0:filter_area-1,2),filter_alias_d(22,0:filter_area-1,2))
       filter_receive_d=0.0_real64
+      if(.not.device_aware_transport_enabled) then
+        allocate(filter_send_h(22,0:hm,0:filter_area-1,2),filter_receive_h(22,0:hm,0:filter_area-1,2))
+        allocate(filter_face_h(11,0:filter_area-1,2),filter_alias_h(22,0:filter_area-1,2))
+        filter_receive_h=0.0_real64; filter_face_h=0.0_real64; filter_alias_h=0.0_real64
+      endif
       filter_tr_floor_d=filter_tr_floor; filter_v_floor_d=filter_v_floor
     endif
     scalar=gpu_scalar_filter_workspace_enabled()
-    pack_blocks=(filter_area*(hm+1)*2+255)/256
     do axis=1,3
       n=filter_local(axis); n1=filter_plane(1,axis); n2=filter_plane(2,axis)
+      area=(n1+1)*(n2+1); pack_blocks=(area*(hm+1)*2+255)/256
 #ifdef ASTR_BUILD_TESTING
       if(air5_filter_test_active()) then
         if(.not.air5_compensated) error stop 'filter failure probe requires compensation'
@@ -323,11 +432,9 @@ contains
       endif
 #endif
       has_lower=filter_lower(axis)/=MPI_PROC_NULL; has_upper=filter_upper(axis)/=MPI_PROC_NULL
-      call filter_pack_gpu<<<pack_blocks,256>>>(axis,n,n1,n2,hm,filter_area)
+      call filter_pack_gpu<<<pack_blocks,256>>>(axis,n,n1,n2,hm,area)
       call sync_after_kernel('air5_filter_pack',.true.)
-      filter_send=filter_send_d
-      call exchange_air5_filter_strips(axis)
-      filter_receive_d=filter_receive
+      call exchange_air5_filter_strips_gpu(axis,hm,area)
       select case(axis)
       case(1)
         block=dim3(512,1,1); grid=dim3(((im+1)*(jm+1)*(km+1)+511)/512,1,1)
@@ -347,19 +454,15 @@ contains
         call air5_filter_test_end(probe_q,probe_c)
       endif
 #endif
-      filter_send(:,0,:,2)=filter_send_d(:,0,:,2)
-      call exchange_air5_filter_faces(axis)
-      filter_receive_d(:,0,:,1)=filter_receive(:,0,:,1)
+      call exchange_air5_filter_plane_gpu(axis,area,.false.)
       call filter_update_gpu<<<grid,block>>>(axis,im,jm,km,n,n1,filter_offset(axis),filter_global(axis), &
         filter_periodic(axis),has_lower,has_upper,scalar)
       call sync_after_kernel('air5_filter_update',.true.)
-      call filter_pack_gpu<<<pack_blocks,256>>>(axis,n,n1,n2,hm,filter_area)
+      call filter_alias_gpu<<<(area+255)/256,256>>>(axis,n,n1,n2,.false.)
       call sync_after_kernel('air5_filter_alias_pack',.true.)
-      filter_send=filter_send_d
-      call exchange_air5_filter_strips(axis)
-      filter_receive_d=filter_receive
+      call exchange_air5_filter_plane_gpu(axis,area,.true.)
       if(has_upper) then
-        call filter_alias_gpu<<<((n1+1)*(n2+1)+255)/256,256>>>(axis,n,n1,n2)
+        call filter_alias_gpu<<<(area+255)/256,256>>>(axis,n,n1,n2,.true.)
         call sync_after_kernel('air5_filter_alias',.true.)
       endif
       call reset_air5_status()
@@ -634,6 +737,7 @@ contains
     use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,nstep
     use parallel, only: isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront,mpirank
     use halo_exchange_gpu, only: exchange_field_halo_gpu
+    use halo_transport_gpu, only: device_aware_transport_enabled
     use gpu_check, only: sync_after_kernel
     use validation_io, only: rhs_validation_requested
     real(real64), intent(in) :: a,b,cdt
@@ -700,24 +804,40 @@ contains
       call air5_symmetric_plane_kernel<<<plane_grid,block>>>(axis,shape_face(1),shape_face(2),dims(axis), &
         .false.,receive_plus,receive_minus)
       call sync_after_kernel('air5_symmetric_pack',.true.)
-      ! Transfer only the two packed planes; the volume state remains resident.
-      symmetric_buffer_h(:count,1:2)=symmetric_buffer_d(:count,1:2)
-      symmetric_buffer_h(:count,3:4)=0.0_real64
       if(sizes(axis)==1 .and. ntypes(axis)==3) then
-        symmetric_buffer_h(:count,3:4)=symmetric_buffer_h(:count,1:2)
+        symmetric_buffer_d(:count,3)=symmetric_buffer_d(:count,1)
+        symmetric_buffer_d(:count,4)=symmetric_buffer_d(:count,2)
+        call sync_after_kernel('air5_symmetric_local_planes',.true.)
       elseif(sizes(axis)>1) then
-        call MPI_Sendrecv(symmetric_buffer_h(:,1),count,MPI_DOUBLE_PRECISION,minus(axis),2*axis-1, &
-          symmetric_buffer_h(:,3),count,MPI_DOUBLE_PRECISION,plus(axis),2*axis-1,face_comm,mpi_status,ierr)
-        if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
-        call MPI_Sendrecv(symmetric_buffer_h(:,2),count,MPI_DOUBLE_PRECISION,plus(axis),2*axis, &
-          symmetric_buffer_h(:,4),count,MPI_DOUBLE_PRECISION,minus(axis),2*axis,face_comm,mpi_status,ierr)
-        if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+        if(device_aware_transport_enabled) then
+          call MPI_Sendrecv(symmetric_buffer_d(:,1),count,MPI_DOUBLE_PRECISION,minus(axis),2*axis-1, &
+            symmetric_buffer_d(:,3),count,MPI_DOUBLE_PRECISION,plus(axis),2*axis-1,face_comm,mpi_status,ierr)
+          if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+          call MPI_Sendrecv(symmetric_buffer_d(:,2),count,MPI_DOUBLE_PRECISION,plus(axis),2*axis, &
+            symmetric_buffer_d(:,4),count,MPI_DOUBLE_PRECISION,minus(axis),2*axis,face_comm,mpi_status,ierr)
+          if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+        else
+          if(receive_minus) symmetric_buffer_h(:count,1)=symmetric_buffer_d(:count,1)
+          if(receive_plus) symmetric_buffer_h(:count,2)=symmetric_buffer_d(:count,2)
+          call MPI_Sendrecv(symmetric_buffer_h(:,1),count,MPI_DOUBLE_PRECISION,minus(axis),2*axis-1, &
+            symmetric_buffer_h(:,3),count,MPI_DOUBLE_PRECISION,plus(axis),2*axis-1,face_comm,mpi_status,ierr)
+          if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+          call MPI_Sendrecv(symmetric_buffer_h(:,2),count,MPI_DOUBLE_PRECISION,plus(axis),2*axis, &
+            symmetric_buffer_h(:,4),count,MPI_DOUBLE_PRECISION,minus(axis),2*axis,face_comm,mpi_status,ierr)
+          if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,3,ierr)
+          if(receive_plus) symmetric_buffer_d(:count,3)=symmetric_buffer_h(:count,3)
+          if(receive_minus) symmetric_buffer_d(:count,4)=symmetric_buffer_h(:count,4)
+        endif
       endif
-      symmetric_buffer_d(:count,3:4)=symmetric_buffer_h(:count,3:4)
       call air5_symmetric_plane_kernel<<<plane_grid,block>>>(axis,shape_face(1),shape_face(2),dims(axis), &
         .true.,receive_plus,receive_minus)
       call sync_after_kernel('air5_symmetric_unpack',.true.)
       if(probe) then
+        symmetric_buffer_h(:count,1)=symmetric_buffer_d(:count,1)
+        symmetric_buffer_h(:count,2)=symmetric_buffer_d(:count,2)
+        symmetric_buffer_h(:count,3:4)=0.0_real64
+        if(receive_plus) symmetric_buffer_h(:count,3)=symmetric_buffer_d(:count,3)
+        if(receive_minus) symmetric_buffer_h(:count,4)=symmetric_buffer_d(:count,4)
         label='.shared_faces.axis'
         if(top) label='.top_shared_faces.axis'
         call get_environment_variable('ASTR_VALIDATION_RHS_PREFIX',prefix,status=io_status)

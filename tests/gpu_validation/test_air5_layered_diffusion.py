@@ -1,5 +1,37 @@
 """Local flux algebra only; ASTR remains the sole flow time integrator."""
 import numpy as np
+import pytest
+
+
+@pytest.mark.parametrize('fault', [None,'absent','interior'])
+def test_nonperiodic_shared_faces_skip_only_absent_neighbors(tmp_path,fault):
+    from run_air5_layered_stress_gate import check_shared_face_payloads
+    folder=tmp_path/'validation'
+    folder.mkdir()
+    for stage in range(1,4):
+        for axis in range(1,4):
+            payload=np.zeros((2,4,12))
+            for rank in range(2):
+                payload[rank,0]=np.arange(12)+100*rank+1
+                payload[rank,1]=np.arange(12)+100*rank+21
+            if axis==1:
+                payload[0,2]=payload[1,0]
+                payload[1,3]=payload[0,1]
+                if fault=='absent':
+                    payload[0,3]=99.
+                if fault=='interior':
+                    payload[0,2,0]+=1.
+            elif axis==3:
+                payload[:,2:4]=payload[:,:2]
+            for rank in range(2):
+                header=np.array([0,stage,rank,axis,1,1,12],dtype=np.int32)
+                name=f'air5.shared_faces.axis{axis}.step00000000.rk{stage:02d}.rank{rank:08d}.bin'
+                (folder/name).write_bytes(header.tobytes()+payload[rank].tobytes())
+    if fault=='interior':
+        with pytest.raises(ValueError,match='shared face is not bitwise identical'):
+            check_shared_face_payloads(tmp_path,(2,1,1),periodic=(False,False,True))
+    else:
+        assert check_shared_face_payloads(tmp_path,(2,1,1),periodic=(False,False,True))['plane_pairs']==18
 
 
 def test_rotated_slab_canonicalization():

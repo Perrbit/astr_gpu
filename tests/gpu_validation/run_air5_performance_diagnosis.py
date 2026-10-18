@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Current-output AIR5 complete-step baseline; historical legacy runs remain archived."""
 import argparse
+from copy import copy
 import hashlib
 import json
 import math
@@ -150,7 +151,9 @@ def qualified_flow_case(args, label, binary_hash):
                int(args.step_history == 'previous'))
     filter_control = FILTER_IDENTITY if args.air5_filter_mode == 'conservative-flux' else (0,)*5
     if (contract['source_evaluation'] != args.source_evaluation or
-            contract['integration_control'] != control or contract['filter_identity'] != filter_control):
+            contract['integration_control'] != control or contract['filter_identity'] != filter_control or
+            contract['primitive_reuse'] != getattr(args,'primitive_reuse','off') or
+            contract['chemistry_reductions'] != getattr(args,'chemistry_reductions','baseline')):
         raise ValueError('qualified flow numerical configuration mismatch')
     return row
 
@@ -161,7 +164,8 @@ def campaign_bytes(root):
 
 def budgeted_launch(args, *positional, **kwargs):
     root = getattr(args, 'campaign_root', None)
-    if root is not None and campaign_bytes(root)+args.directory_budget_bytes > args.campaign_budget_bytes:
+    reservation=kwargs.get('directory_budget_bytes',args.directory_budget_bytes)
+    if root is not None and campaign_bytes(root)+reservation > args.campaign_budget_bytes:
         raise RuntimeError('timing campaign lacks a per-run disk reservation')
     result = launch(args, *positional, **kwargs)
     if root is not None and campaign_bytes(root) > args.campaign_budget_bytes:
@@ -176,6 +180,9 @@ def run(args):
     args.output = args.output.resolve()
     args.air5_filter_mode = getattr(args, 'air5_filter_mode', 'legacy')
     args.flow_control = getattr(args, 'flow_control', None)
+    args.primitive_reuse = getattr(args,'primitive_reuse','off')
+    args.chemistry_reductions = getattr(args,'chemistry_reductions','baseline')
+    args.halo_transport = getattr(args,'halo_transport','pinned')
     args.campaign_root = getattr(args, 'campaign_root', None)
     if args.campaign_root is not None:
         args.campaign_root = args.campaign_root.resolve(strict=True)
@@ -199,6 +206,9 @@ def run(args):
     output_budgets = dict(host_budget_bytes=args.host_budget_bytes,
                          device_budget_bytes=args.device_budget_bytes,
                          directory_budget_bytes=args.directory_budget_bytes)
+    timing_budgets=dict(output_budgets)
+    if not diagnostic:
+        timing_budgets['directory_budget_bytes']=min(args.directory_budget_bytes,32*1024**2)
     summary = dict(status='running', cases={}, warmup=args.warmup, measured_steps=args.steps,
         repeats=args.repeats, dt=DT, grid_intervals=list(args.grid), case=args.case, timing_start_step=start,
         executable=str(args.executable), executable_sha256=binary_hash,
@@ -209,6 +219,8 @@ def run(args):
         primary_metric='max over ranks of measured-window cumulative seconds / measured steps',
         report_interval=args.report_interval, profiled=args.nsys, phase_timing=args.phase_timing,
         chemistry_diagnostics=args.chemistry_diagnostics, source_evaluation=args.source_evaluation,
+        primitive_reuse=args.primitive_reuse, chemistry_reductions=args.chemistry_reductions,
+        halo_transport=args.halo_transport,
         chemistry_tolerance=args.chemistry_tolerance, step_history=args.step_history,
         chemistry_block_size=args.chemistry_block_size, axis=args.axis,
         topology=list(args.topology) if args.topology else None,
@@ -217,6 +229,8 @@ def run(args):
         qualified_flow_control=str(args.flow_control) if args.flow_control is not None else None,
         campaign_root=str(args.campaign_root) if args.campaign_root is not None else None,
         campaign_budget_bytes=getattr(args, 'campaign_budget_bytes', None), **output_budgets)
+    summary['timing_directory_budget_bytes']=timing_budgets['directory_budget_bytes']
+    summary['timer_activation_initial_frame']=False
     try:
         baseline = None
         if args.compare_to is not None:
@@ -242,7 +256,9 @@ def run(args):
             sanity = state_sanity(seed/'state.h5')
             identity = batch_identity(seed)
             if reused is None:
-                timed_check, _ = budgeted_launch(args, backend, ranks, 'timing_check', seed_updates,
+                activation=copy(args)
+                activation.initial_restart=False
+                timed_check, _ = budgeted_launch(activation, backend, ranks, 'timing_check', seed_updates,
                     interval=seed_updates, complete_step_timing=True, air5_phase_timing=args.phase_timing,
                     chemistry_diagnostics=args.chemistry_diagnostics, **output_budgets)
                 activation_state = f'outdat/new/checkpoints/step{seed_updates:012d}/state.h5'
@@ -294,7 +310,7 @@ def run(args):
                 case, disk = budgeted_launch(args, backend, ranks, f'r{repeat+1}', start+updates,
                     restore=seed, checkpoint_enabled=False, override=True,
                     complete_step_timing=True, nsys_trace=args.nsys, air5_phase_timing=args.phase_timing,
-                    chemistry_diagnostics=args.chemistry_diagnostics, **output_budgets)
+                    chemistry_diagnostics=args.chemistry_diagnostics, **timing_budgets)
                 check_no_field_output(case)
                 log = (case/'run.log').read_text()
                 record = window_summary(log, ranks, start, updates, args.warmup)
@@ -351,6 +367,9 @@ if __name__ == '__main__':
     parser.add_argument('--report-interval', type=int, default=4)
     parser.add_argument('--chemistry-diagnostics', choices=('every-step', 'report-steps'), default='every-step')
     parser.add_argument('--source-evaluation', choices=('joint', 'source-only'), default='joint')
+    parser.add_argument('--primitive-reuse', choices=('off','chemistry'), default='off')
+    parser.add_argument('--chemistry-reductions', choices=('baseline','packed'), default='baseline')
+    parser.add_argument('--halo-transport', choices=('pageable','pinned','device-aware'), default='pinned')
     parser.add_argument('--chemistry-block-size', type=int, choices=(32, 128), default=128)
     parser.add_argument('--chemistry-tolerance', choices=('baseline', 'loose', 'tight'), default='baseline')
     parser.add_argument('--step-history', choices=('off', 'previous'), default='off')

@@ -56,10 +56,10 @@ module commarray
   !+-------------------------------------------------------------------+
   subroutine allocommarray
     !
-    use commvar, only : im,jm,km,hm,numq,num_species,num_modequ,ndims,turbmode
+    use commvar, only : im,jm,km,hm,numq,num_species,num_modequ,ndims,turbmode,lcomb
     !
     ! local data
-    integer :: lallo
+    integer :: lallo,j,k
     !
     allocate( x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3),stat=lallo)
     if(lallo.ne.0) stop ' !! error at allocating x'
@@ -72,6 +72,21 @@ module commarray
     !
     allocate( rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm),stat=lallo)
     if(lallo.ne.0) stop ' !! error at allocating rho'
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(lcomb) then
+      ! Cartesian stencils use physical nodes and face halos, not these corners.
+      do k=-hm,km+hm
+        do j=-hm,jm+hm
+          if((j<0.or.j>jm).and.(k<0.or.k>km)) then
+            rho(:,j,k)=0.d0
+          elseif(j<0.or.j>jm.or.k<0.or.k>km) then
+            rho(-hm:-1,j,k)=0.d0
+            rho(im+1:im+hm,j,k)=0.d0
+          endif
+        enddo
+      enddo
+    endif
+#endif
     !
     allocate( prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm),stat=lallo)
     if(lallo.ne.0) stop ' !! error at allocating prs'

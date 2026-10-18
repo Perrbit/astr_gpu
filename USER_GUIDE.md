@@ -1438,7 +1438,7 @@ air5reactor、air5postshock、air5normalshock、air5tgv、air5hbl、air5sbli
 | ASTR_AIR5_TOP_MODE | prescribed / characteristic | 默认 prescribed，直接指定顶面状态；characteristic 按特征波传播方向推进顶面状态 |
 | ASTR_AIR5_TOP_TAU | 有限正实数，秒 | characteristic 必须给定的松弛时间尺度；减小值会增大基础松弛率 1/tau，不是自动优化参数 |
 | ASTR_AIR5_PRIMITIVE_REUSE | off / chemistry | 默认 off，重新恢复原始变量；chemistry 复用化学积分已恢复的同一状态原始变量，避免重复计算 |
-| ASTR_AIR5_CHEMISTRY_REDUCTIONS | baseline / packed | 默认 baseline，分开汇总状态码、极值和计数；packed 合并为两个 MPI_Allreduce，保持所汇总诊断量的含义 |
+| ASTR_AIR5_CHEMISTRY_REDUCTIONS | baseline / packed | 默认 baseline；有诊断的半步用4次归约，packed 合并为2次。report-steps 的非报告半步只作1次失败状态归约，两种模式都不跳过失败检查 |
 | ASTR_AIR5_SOURCE_EVALUATION | joint / source-only | 默认 joint；source-only 仅供 GPU，将 ROS-2 第二阶段改为只计算实际使用的源项，不计算未使用的 Jacobian |
 | ASTR_AIR5_CHEMISTRY_BLOCK_SIZE | 128 / 32 | 默认 128；GPU 化学核的每块线程数，不改变节点对应关系或单元内运算顺序 |
 | ASTR_AIR5_CHEMISTRY_DIAGNOSTICS | every-step / report-steps | 默认 every-step；report-steps 只在报告步计算工作计数和极值，化学失败检查仍在每个半步执行 |
@@ -1479,6 +1479,31 @@ dt=0.25 ns的两组24000步/6 us发展窗：工程配置的初末状态及监测
 逐值一致，但尚未定常，不是独立物理参考验证。模式、积分容差、历史开关及源项求值
 模式记录在现有 `air5_config.bin`；精确续算必须保持这些数值身份一致。
 GPU 线程块和报告频率不因此成为新的物理模型。
+
+GPU AIR5 的保守滤波和对称组分通量消息沿用
+`ASTR_GPU_HALO_TRANSPORT`。`device-aware` 直接向支持CUDA的MPI传入
+连续设备缓冲；其他取值使用一次分配、循环复用的固定pinned私有缓冲，
+不在每次通信中分配或注册主机内存。`pageable` 对公共halo的含义不变，
+不把AIR5私有缓冲改为pageable。同rank的周期消息在设备内复制，
+没有远端邻居的物理方向不传输私有面数据。唯一面仅发送实际使用的
+11分量通量，共享端点仅发送22分量q及补偿，不重复发送完整滤波条带。
+设备指针接口不保证MPI内部一定使用P2P，也不意味着输出或检查点无回读。
+
+私有通信以最大横向节点数`A`预分配缓冲。相对旧实现，设备端新增
+`528*A`字节的唯一面/端点缓冲；主机暂存路径另新增`4752*A`字节
+固定pinned缓冲（hm=5、FP64），device-aware不分配这组主机镜像。
+例如64³区间的NP1或NP2 x分解，`A=65*65`，每rank分别新增约
+2.13 MiB设备内存和19.15 MiB pinned内存。旧CPU工作缓冲仍保留，
+因此减少主机传输不等于减少进程总内存。
+
+这两种私有通信路径已有CPU/GPU、scalar/full、NP1、NP2三方向和
+NP4/8混合拓扑的本地短测证据；NP4/8共享两张卡，仅证明正确性。
+`chemistry/packed`组合的本地64³区间五轮完整步中位耗时为pinned
+单/双卡2.315811/1.404472秒、device-aware为2.314148/1.373335秒。
+packed单项无可辨别的整步收益，仍可显式选择以减少报告归约次数。
+物性复用默认off、归约默认baseline均不变；不据此保证其他算例或
+硬件上的收益。完整范围和样本见
+[阶段实施记录第61节](documents/ASTR_AIR5_STAGE_COORDINATION_LOCAL_RESULTS_20261013.md#61-2026-10-18-le1-le3本地交付与五轮成本)。
 
 本地工程对照的推荐候选为：
 
