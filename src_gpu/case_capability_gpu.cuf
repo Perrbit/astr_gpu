@@ -216,24 +216,28 @@ contains
   logical function gpu_profile_mp_ld_flatplate_supported()
     use commvar, only: flowtype,ndims,numq,num_species,num_modequ,conschm,difschm, &
       recon_schem,lchardecomp,lfilter,diffterm,nondimen,lihomo,ljhomo,lkhomo,turbmode,spg_def
-    use bc, only: bctype,turbinf,nscbc_farfield_policy_id,NSCBC_FARFIELD_POLICY_COMPATIBILITY
+    use bc, only: bctype,turbinf,nscbc_farfield_policy_id,NSCBC_FARFIELD_POLICY_COMPATIBILITY, &
+      nscbc_farfield_incoming_only_enabled,nscbc_farfield_sbli_shock_enabled
     use sponge_layer, only: spg_i0,spg_j0,spg_k0,spg_km
     use parallel, only: mpisize,isize,jsize,ksize
     implicit none
     logical :: boundary_supported
 
     boundary_supported=all(bctype==[11,21,41,50,1,1])
-    if(all(bctype==[11,22,41,52,1,1])) &
+    if(all(bctype==[11,22,41,52,1,1])) then
       boundary_supported=nscbc_farfield_policy_id()==NSCBC_FARFIELD_POLICY_COMPATIBILITY
+      if(difschm=='643c') boundary_supported=nscbc_farfield_incoming_only_enabled().and. &
+        .not.nscbc_farfield_sbli_shock_enabled()
+    endif
 
     gpu_profile_mp_ld_flatplate_supported = trim(flowtype)=='bl'.and.ndims==3.and. &
       numq==5.and.num_species==0.and.num_modequ==0.and.trim(turbmode)=='none'.and. &
-      trim(conschm)=='743e'.and.trim(difschm)=='643e'.and.recon_schem==5.and.lchardecomp.and. &
-      .not.lfilter.and.diffterm.and.nondimen.and..not.lihomo.and..not.ljhomo.and.lkhomo.and. &
+      trim(conschm)=='743e'.and.(difschm=='643e'.or.difschm=='643c').and.recon_schem==5.and.lchardecomp.and. &
+      (.not.lfilter.or.difschm=='643c').and.diffterm.and.nondimen.and..not.lihomo.and..not.ljhomo.and.lkhomo.and. &
       trim(turbinf)=='prof'.and.boundary_supported.and. &
       trim(spg_def)=='layer'.and. &
       all([spg_i0,spg_j0,spg_k0,spg_km]==0).and. &
-      (mpisize==1.or.(mpisize==2.and.max(isize,jsize,ksize)==2).or. &
+      (difschm=='643c'.or.mpisize==1.or.(mpisize==2.and.max(isize,jsize,ksize)==2).or. &
       (mpisize==4.and.((isize==4.and.jsize==1.and.ksize==1).or. &
       (isize==2.and.jsize==2.and.ksize==1).or.(isize==2.and.jsize==1.and.ksize==2).or. &
       (isize==1.and.jsize==2.and.ksize==2))))

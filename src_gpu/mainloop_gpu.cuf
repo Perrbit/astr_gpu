@@ -3,6 +3,49 @@ module mainloop_gpu
   implicit none
   logical,save,private :: static_configuration_validated=.false.
 contains
+  subroutine prepare_compact_profile_nscbc_gpu()
+    use commvar, only: im,jm,km,hm,const2,const6,lfilter
+    use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,qrhs_d
+    use solver_gpu, only: q_to_primitive_kernel,zero_rhs_kernel
+    use compact_operator_gpu, only: compact_filter_state_gpu
+    use boundary_gpu, only: apply_s1_flatplate_boundary_conditions_gpu,apply_s1_flatplate_wall_gpu, &
+      prepare_compact_outlet_wall_gpu, &
+      apply_nscbc_outflow_physical_filter_gpu,apply_nscbc_outflow_x_rhs_gpu, &
+      gpu_nscbc_farfield_y_upper_mach2,apply_nscbc_farfield_y_upper_filter_x_gpu, &
+      apply_nscbc_farfield_y_upper_filter_z_gpu,apply_nscbc_farfield_y_upper_rhs_gpu
+    use halo_exchange_gpu, only: exchange_solution_halo_gpu
+    use gpu_check, only: sync_after_kernel
+    type(dim3) :: block,grid
+    real(8) :: mach2
+    integer :: ntot
+    block=dim3(32,4,4)
+    grid=dim3((im+32)/32,(jm+4)/4,(km+4)/4)
+    if(lfilter) call compact_filter_state_gpu()
+    call q_to_primitive_kernel<<<grid,block>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
+    call sync_after_kernel('compact_nscbc_primitives')
+    ntot=(im+1)*(jm+1)*(km+1)
+    call zero_rhs_kernel<<<(ntot+255)/256,256>>>(qrhs_d,im,jm,km)
+    call sync_after_kernel('compact_nscbc_zero_rhs')
+    call exchange_solution_halo_gpu()
+    ! Prepare the outlet/wall intersection once before outlet classification.
+    call apply_s1_flatplate_boundary_conditions_gpu(defer_wall=.true.)
+    call prepare_compact_outlet_wall_gpu()
+    call apply_nscbc_outflow_physical_filter_gpu()
+    call q_to_primitive_kernel<<<grid,block>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
+    call sync_after_kernel('compact_nscbc_outflow_primitives')
+    call exchange_solution_halo_gpu()
+    call apply_nscbc_outflow_x_rhs_gpu()
+    call apply_s1_flatplate_wall_gpu(2,reuse_forcing=.true.)
+    call gpu_nscbc_farfield_y_upper_mach2(mach2)
+    call apply_nscbc_farfield_y_upper_filter_x_gpu()
+    if(.not.lfilter) call exchange_solution_halo_gpu()
+    call apply_nscbc_farfield_y_upper_filter_z_gpu()
+    call q_to_primitive_kernel<<<grid,block>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
+    call sync_after_kernel('compact_nscbc_farfield_primitives')
+    call apply_nscbc_farfield_y_upper_rhs_gpu(mach2)
+    call exchange_solution_halo_gpu()
+  end subroutine
+
   subroutine init_gpu()
     use commarray_gpu, only: copy_flow_to_gpu
     use mp_positivity_gpu, only: configure_mp_positivity_gpu
@@ -15,9 +58,11 @@ contains
 
 
   subroutine prepare_rkfirst_stats_gpu()
+    use compact_operator_gpu, only: compact_global_enabled,compact_filter_state_gpu
     use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,const2,const6,lfilter,lcomb,nstep, &
       numq,num_species,conschm,difschm
     use bc, only: bctype
+    use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_flow_solver_gpu, only: air5_prepare_spatial_state_gpu
 #endif
@@ -47,9 +92,14 @@ contains
     endif
 #endif
     call validate_first_stage_gpu()
+    if(compact_global_enabled().and.gpu_profile_mp_ld_flatplate_supported().and.bctype(2)==22) then
+      call prepare_compact_profile_nscbc_gpu()
+      return
+    endif
     conservative_case=conservative_boundary%enabled
     refresh_filtered_primitives=.not.lcomb.and.numq==5.and.num_species==0.and. &
-      conschm(4:4)=='e'.and.difschm(4:4)=='e'
+      ((conschm(4:4)=='e'.and.difschm(4:4)=='e').or. &
+      ((conschm=='643c'.or.conschm=='743e').and.difschm=='643c'))
     ldc_case = gpu_ldc_boundary_case_pending()
     flatplate_case = gpu_s1_flatplate_boundary_case_pending()
     flatplate_nscbc_farfield_case = (.not.conservative_case) .and. &
@@ -67,7 +117,11 @@ contains
         call sync_after_kernel('prepare_q_to_primitive_kernel_prefilter')
       endif
       call begin_gpu_phase('filter')
-      call apply_explicit_filter_gpu(periodic_filter_case,'prepare_')
+      if(compact_global_enabled()) then
+        call compact_filter_state_gpu()
+      else
+        call apply_explicit_filter_gpu(periodic_filter_case,'prepare_')
+      endif
       call end_gpu_phase('filter',nstep,1)
       if(refresh_filtered_primitives) then
         call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
@@ -147,6 +201,8 @@ contains
   end subroutine repair_mp_stage_inputs_gpu
 
   subroutine time_integration_rk_gpu(first_stage_prepared,copy_back)
+    use compact_operator_gpu, only: compact_global_enabled,compact_convection_gpu, &
+      compact_diffusion_flux_gpu,compact_diffusion_rhs_gpu,compact_filter_state_gpu
     use mp_positivity_gpu, only: mp_positivity_enabled,build_mp_convection_gpu,limit_mp_update_gpu
     use iso_fortran_env, only: real64
     use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,npdcj,npdck,nstep,deltat,const2,const5,const6, &
@@ -351,6 +407,7 @@ contains
     logical :: characteristic_xyphysical_case
     logical :: profile_mp_ld_case
     logical :: profile_nscbc_case
+    logical :: compact_profile_nscbc_case
     logical :: repaired_boundary,repaired_filter
     logical :: s2_hbl_selective_roe_case
     logical :: s2_hbl_selective_roe_sponge_case
@@ -421,7 +478,8 @@ contains
     fused_flux_pair=resolve_gpu_fused_flux_pair(gpu_tgv_explicit_upwind_supported())
     conservative_case=conservative_boundary%enabled
     refresh_filtered_primitives=.not.lcomb.and.numq==5.and.num_species==0.and. &
-      conschm(4:4)=='e'.and.difschm(4:4)=='e'
+      ((conschm(4:4)=='e'.and.difschm(4:4)=='e').or. &
+      ((conschm=='643c'.or.conschm=='743e').and.difschm=='643c'))
     rhs_is=is; rhs_ie=ie; rhs_js=js; rhs_je=je; rhs_ks=ks; rhs_ke=ke
     rhs_npdci=npdci; rhs_npdcj=npdcj
     if(conservative_case) then
@@ -430,7 +488,8 @@ contains
     endif
     overlap_diffusion=(halo_overlap_enabled .or. halo_pipeline_enabled) .and. diffterm .and. &
                       gpu_periodic_boundary_case() .and. &
-                      isize*jsize*ksize>1 .and. min(im,jm,km)>=6
+                      isize*jsize*ksize>1 .and. min(im,jm,km)>=6 .and. &
+                      .not.compact_global_enabled()
     if((halo_overlap_enabled .or. halo_pipeline_enabled) .and. .not.overlap_reported) then
       write(*,'(A,L1)') 'ASTR_GPU_HALO_OVERLAP periodic_diffusion_active=',overlap_diffusion
       overlap_reported=.true.
@@ -455,6 +514,7 @@ contains
          curvilinear_nscbc52_viscous_case
     profile_mp_ld_case = gpu_profile_mp_ld_flatplate_supported()
     profile_nscbc_case = profile_mp_ld_case.and.bctype(2)==22
+    compact_profile_nscbc_case=profile_nscbc_case.and.compact_global_enabled()
     flatplate_case = profile_mp_ld_case .or. conservative_case .or. &
          gpu_s1_flatplate_s1a_supported() .or. flatplate_mp7_case .or. &
          curvilinear_nscbc52_case .or. &
@@ -541,7 +601,9 @@ contains
     do rkstep=1,3
       solution_pipeline_pending=.false.
       zero_rhs_overlapped=.false.
-      if(.not.(prepared .and. rkstep == 1)) then
+      if(compact_profile_nscbc_case) then
+        if(.not.(prepared.and.rkstep==1)) call prepare_compact_profile_nscbc_gpu()
+      elseif(.not.(prepared .and. rkstep == 1)) then
         if(conservative_case) then
           continue
         elseif(s2_hbl_selective_roe_c4_case) then
@@ -557,7 +619,11 @@ contains
 
         if(lfilter) then
           call begin_gpu_phase('filter')
-          call apply_explicit_filter_gpu(periodic_filter_case,'')
+          if(compact_global_enabled()) then
+            call compact_filter_state_gpu()
+          else
+            call apply_explicit_filter_gpu(periodic_filter_case,'')
+          endif
           call end_gpu_phase('filter',nstep,rkstep)
           if(refresh_filtered_primitives) then
             call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
@@ -630,12 +696,14 @@ contains
       if(rhs_validation_requested()) then
         call copy_flow_from_gpu()
         call write_q_validation_snapshot('pre_rhs',nstep,rkstep)
-        if(conservative_case) then
+        if(conservative_case.or.compact_global_enabled()) then
           call write_primitive_validation_snapshot('pre_rhs_primitives',nstep,rkstep)
         endif
       endif
 
-      if(zero_rhs_overlapped) then
+      if(compact_profile_nscbc_case) then
+        continue
+      elseif(zero_rhs_overlapped) then
         call sync_after_kernel('pipeline_zero_rhs_kernel')
       else
         call zero_rhs_kernel<<<grid1,block1>>>(qrhs_d,im,jm,km)
@@ -648,12 +716,14 @@ contains
         call exchange_solution_halo_gpu()
         call repair_mp_stage_inputs_gpu(rkstep,'NSCBC inlet/lower wall')
       endif
-      if(profile_nscbc_case) then
+      if(profile_nscbc_case.and..not.compact_profile_nscbc_case) then
         call apply_nscbc_outflow_physical_filter_gpu()
         call exchange_solution_halo_gpu()
         call repair_mp_stage_inputs_gpu(rkstep,'outflow filter')
       endif
-      if(flatplate_nscbc_nonreflecting_case) then
+      if(compact_profile_nscbc_case) then
+        continue
+      elseif(flatplate_nscbc_nonreflecting_case) then
         call apply_nscbc_farfield_y_upper_nonreflecting_rhs_gpu()
         call exchange_solution_halo_gpu()
       elseif(flatplate_nscbc_farfield_case) then
@@ -676,7 +746,7 @@ contains
         call copy_rhs_from_gpu()
         call write_rhs_validation_snapshot('boundary',nstep,rkstep)
       endif
-      if(profile_nscbc_case) call apply_nscbc_outflow_x_rhs_gpu()
+      if(profile_nscbc_case.and..not.compact_profile_nscbc_case) call apply_nscbc_outflow_x_rhs_gpu()
       if(open_shock_nscbc_case) then
         call gpu_nscbc_global_mach2(gmachmax2_in)
         call gpu_nscbc_outflow_mach2(gmachmax2_out)
@@ -694,7 +764,9 @@ contains
       endif
       if(shock_sensor_case) call compute_shock_sensor_gpu(rkstep)
       call begin_gpu_phase('convection')
-      if(mp_positivity_enabled) then
+      if(compact_global_enabled().and.conschm=='643c') then
+        call compact_convection_gpu()
+      elseif(mp_positivity_enabled) then
         call build_mp_convection_gpu()
       elseif(sod_s0a1_case) then
         call upwind_s0a1_rhs_x_global_kernel<<<grid_x,block_x>>>(im,jm,km,gamma)
@@ -1040,7 +1112,9 @@ contains
 
       if(diffterm) then
         call begin_gpu_phase('diffusion_flux')
-        if(ldc_case .or. flatplate_case) then
+        if(compact_global_enabled()) then
+          call compact_diffusion_flux_gpu()
+        elseif(ldc_case .or. flatplate_case) then
           if(mixed_viscous_flux_workspace) then
           call diffusion_flux_xyphysical_sp_global_kernel<<<grid3,block3>>>(im,jm,km,reynolds,prandtl,const5, &
                                                                          tempconst,tempconst1, &
@@ -1115,7 +1189,9 @@ contains
         endif
         call end_gpu_phase('diffusion_halo',nstep,rkstep)
         call begin_gpu_phase('diffusion_rhs')
-        if(ldc_case .or. flatplate_case) then
+        if(compact_global_enabled()) then
+          call compact_diffusion_rhs_gpu()
+        elseif(ldc_case .or. flatplate_case) then
           if(mixed_viscous_flux_workspace) then
           call diffusion_rhs_x_xyphysical_stored_sp_global_kernel<<<grid_x,block_x>>>( &
                                                                                    im,jm,km,rhs_is,rhs_ie, &
@@ -1365,6 +1441,7 @@ contains
   end subroutine time_integration_rk_gpu
 
   subroutine validate_first_stage_gpu()
+    use compact_operator_gpu, only: compact_global_enabled
     use commvar, only: numq, ndims, num_species, num_modequ, &
          turbmode, rkscheme, flowtype, conschm, difschm, im, jm, km, &
          lfilter, diffterm, lchardecomp
@@ -1408,6 +1485,10 @@ contains
     logical :: controlled_upwind_case
 
     if(static_configuration_validated) return
+    if(compact_global_enabled()) then
+      static_configuration_validated=.true.
+      return
+    endif
     if(numq /= 5) stop 'GPU first-stage supports numq=5 only'
     if(ndims /= 3) stop 'GPU first-stage supports 3D cases only'
     if(num_species /= 0) stop 'GPU first-stage supports num_species=0 only'

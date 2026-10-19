@@ -13,6 +13,7 @@ module commtype
   type :: compact_scheme
     
     integer :: first_node,last_node,dimension,nbctype
+    integer :: direction=0
     real(8),allocatable :: a(:),c(:),ac(:,:)
     character(len=1) :: wind
 

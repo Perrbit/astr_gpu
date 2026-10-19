@@ -701,6 +701,7 @@ module solver
   !| add the round scheme: by Xi Deng.                                 |
   !+-------------------------------------------------------------------+
   subroutine convrsduwd(timerept,physical_halo_rhs,metric_consistent_eps)
+    use commcal, only: compact_expanded_mask_enabled
     !
     use commvar,  only: im,jm,km,hm,numq,num_species,num_modequ,       &
                         npdci_base=>npdci,npdcj_base=>npdcj,npdck_base=>npdck, &
@@ -737,7 +738,7 @@ module solver
     real(8) :: time_beg
     real(8),save :: subtime=0.d0
     !
-    logical :: lsh,lso,sson,hdiss,lvar,ldebug
+    logical :: lsh,lso,sson,hdiss,lvar,ldebug,expanded_mask_halo
     !
     is=is_base; ie=ie_base; js=js_base; je=je_base; ks=ks_base; ke=ke_base
     npdci=npdci_base; npdcj=npdcj_base; npdck=npdck_base
@@ -759,6 +760,7 @@ module solver
     endif 
     !
     sson=allocated(lshock)
+    expanded_mask_halo=compact_expanded_mask_enabled()
     !
     eps=0.04d0
     ! gm2=0.5d0/gamma
@@ -821,7 +823,9 @@ module solver
         !
         if(sson) then
           !
-          if(i<0) then
+          if(expanded_mask_halo) then
+            lsh=lshock(i,j,k).or.lshock(i+1,j,k)
+          elseif(i<0) then
             lsh=lshock(i+1,j,k)
           elseif(i+1>im) then
             lsh=lshock(i,j,k)
@@ -1028,7 +1032,9 @@ module solver
         !
         if(sson) then
           !
-          if(j<0) then
+          if(expanded_mask_halo) then
+            lsh=lshock(i,j,k).or.lshock(i,j+1,k)
+          elseif(j<0) then
             lsh=lshock(i,j+1,k)
           elseif(j+1>jm) then
             lsh=lshock(i,j,k)
@@ -1233,7 +1239,9 @@ module solver
         !
         if(sson) then
           !
-          if(k<0) then
+          if(expanded_mask_halo) then
+            lsh=lshock(i,j,k).or.lshock(i,j,k+1)
+          elseif(k<0) then
             lsh=lshock(i,j,k+1)
           elseif(k+1>km) then
             lsh=lshock(i,j,k)

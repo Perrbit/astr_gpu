@@ -51,6 +51,7 @@ module bc
                   wall_blowing_xc=0.d0
   real(8),save :: wall_blowing_phase(15)=0.d0
   integer,save :: wall_blowing_nmod_t=0,wall_blowing_nmod_z=0
+  real(8),allocatable,private :: compact_stage_wall_velocity(:,:)
   !+---------------------+---------------------------------------------+
   !|              bctype | define type of boundary condition.          |
   !|               twall | wall temperature.                           |
@@ -956,7 +957,7 @@ module bc
   !+-------------------------------------------------------------------+
   subroutine boucon(subtime)
     !
-    use commvar, only : limmbou
+    use commvar, only : limmbou,conschm,difschm,lcomb,nondimen
     use userdefine, only : udf_bc
     !
     ! arguments
@@ -964,12 +965,24 @@ module bc
     !
     ! local data
     integer :: n
+    logical :: compact_stage_wall
     real(8) :: time_beg
     !
     if(bctype(3)==41 .or. bctype(3)==42 .or. bctype(3)==411 .or.       &
        bctype(3)==421) call configure_wall_blowing
+    compact_stage_wall=conschm=='743e'.and.difschm=='643c'.and. &
+      numq==5.and..not.lcomb.and.nondimen.and.ndims==3.and. &
+      trim(flowtype)=='bl'.and.bctype(2)==22.and.bctype(3)==41.and.jrk==0
     !
     do n=1,6
+      if(n==2.and.compact_stage_wall) then
+        if(.not.allocated(compact_stage_wall_velocity)) &
+          allocate(compact_stage_wall_velocity(0:im,0:km))
+        compact_stage_wall_velocity=0.d0
+        if(abs(wall_blowing_amplitude)>1.d-10) &
+          compact_stage_wall_velocity=wall_blowing_velocity()
+        call noslip(3,twall(3),supplied_velocity=compact_stage_wall_velocity,outlet_only=.true.)
+      endif
       !
       if(bctype(n)==12) then
         call inflow_nscbc(n)
@@ -984,7 +997,11 @@ module bc
       endif
       !
       if(bctype(n)==41) then
-        call noslip(n,twall(n))
+        if(compact_stage_wall.and.n==3) then
+          call noslip(n,twall(n),supplied_velocity=compact_stage_wall_velocity)
+        else
+          call noslip(n,twall(n))
+        endif
       endif
       !
       if(bctype(n)==42) then
@@ -5512,12 +5529,12 @@ module bc
   !+-------------------------------------------------------------------+
   subroutine outflow_nscbc(ndir)
     !
-    use commvar,   only : xmin,xmax,mach,nondimen
+    use commvar,   only : xmin,xmax,mach,nondimen,conschm,difschm,lcomb
     use fludyna,   only : thermal,fvar2q,q2fvar,sos
     use commfunc,  only : deriv
     use derivative,only : ddfc
     use filter,    only : spafilter6exp
-    use parallel,  only : psum,mpi_imax
+    use parallel,  only : psum,mpi_imax,qswap
 #ifdef COMB
     use thermchem, only : aceval
 #endif
@@ -5531,7 +5548,11 @@ module bc
                jcbi(3),LODi1(5),LODi(5)
     real(8),allocatable :: Ecs(:,:),dEcs(:),fcs(:,:),dfcs(:,:),qfilt(:,:)
     real(8) :: uu,css,gmachmax2,kinout,kin,var1,var2,psonic,rncout,fdamp
+    real(8) :: normal_speed,wave_tolerance,metric_norm
+    logical :: compact_plate_outlet
     !
+    compact_plate_outlet=ndir==2.and.numq==5.and..not.lcomb.and. &
+      conschm=='743e'.and.difschm=='643c'
     gmachmax2=0.d0
     !
     if(ndir==1 .and. irk==0) then
@@ -5742,6 +5763,8 @@ module bc
         !
         do jq=1,numq
           qfilt(:,jq)=spafilter6exp(q(i,:,k,jq),npdcj,jm)
+          if(compact_plate_outlet.and.bctype(3)==41.and.(npdcj==1.or.npdcj==4)) &
+            qfilt(0,jq)=q(i,0,k,jq)
           q(i,0:jm,k,jq)=qfilt(:,jq)
         enddo
         call q2fvar(      q=  q(i,0:jm,k,:),                   &
@@ -5753,7 +5776,11 @@ module bc
         !
       enddo
       deallocate(qfilt)
-      
+    endif
+    ! All ranks participate: transverse derivatives must see the filtered face.
+    if(compact_plate_outlet) call qswap()
+    if(ndir==2 .and. irk==irkm) then
+      i=im
 
       allocate(Ecs(0:2,1:numq),dEcs(1:numq))
 
@@ -5874,8 +5901,22 @@ module bc
         
         css=sos(tmp(i,j,k),spc(i,j,k,:))
         !
-        kinout=3.75d0*(1.d0-gmachmax2)*css/(xmax-xmin)
-        LODi(5)=kinout*(prs(i,j,k)-pinf*pout)
+        if(compact_plate_outlet) then
+          metric_norm=sqrt(sum(dxi(i,j,k,1,:)**2))
+          normal_speed=sum(dxi(i,j,k,1,:)*vel(i,j,k,:))/metric_norm
+          wave_tolerance=64.d0*epsilon(1.d0)*max(css,abs(normal_speed))
+          if(normal_speed < -wave_tolerance) then
+            print *,'bc22 right-x outlet does not support backflow',i,j,k,normal_speed
+            error stop 'bc22 right-x outlet backflow'
+          endif
+          if(normal_speed-css < -wave_tolerance) then
+            kinout=3.75d0*max(0.d0,1.d0-(normal_speed/css)**2)*css/(xmax-xmin)
+            LODi(5)=kinout*((prs(i,j,k)-pinf*pout)/rho(i,j,k)/css)*sqrt(2.d0)
+          endif
+        else
+          kinout=3.75d0*(1.d0-gmachmax2)*css/(xmax-xmin)
+          LODi(5)=kinout*(prs(i,j,k)-pinf*pout)
+        endif
 
         LODi1=MatMul(pnor,LODi)*jacob(i,j,k)
         !
@@ -7150,7 +7191,7 @@ module bc
   !| -------------                                                     |
   !| 13-02-2021: Created by J. Fang @ Warrington                       |
   !+-------------------------------------------------------------------+
-  subroutine noslip(ndir,tw)
+  subroutine noslip(ndir,tw,supplied_velocity,outlet_only)
     !
     use commvar,   only : Reynolds,turbmode,nondimen,spcinf
     use commarray, only : tke,omg
@@ -7161,9 +7202,11 @@ module bc
     ! arguments
     integer,intent(in) :: ndir
     real(8),intent(in) :: tw
+    real(8),intent(in),optional :: supplied_velocity(0:im,0:km)
+    logical,intent(in),optional :: outlet_only
     !
     ! local data
-    integer :: i,j,k,jspec
+    integer :: i,j,k,jspec,first_i
     real(8) :: pe,te,ue,delta_d1,miu,beta1
     real(8) :: vwall(0:im,0:km)
     real(8) :: xtran
@@ -7265,9 +7308,18 @@ module bc
     elseif(ndir==3) then
       !
       if(jrk==0) then
+        first_i=0
+        if(present(outlet_only)) then
+          if(outlet_only) then
+            if(irk/=irkm) return
+            first_i=im
+          endif
+        endif
         !
         call configure_wall_blowing
-        if(ndims==3 .and. abs(wall_blowing_amplitude)>1.d-10) then
+        if(present(supplied_velocity)) then
+          vwall=supplied_velocity
+        elseif(ndims==3 .and. abs(wall_blowing_amplitude)>1.d-10) then
           vwall=wall_blowing_velocity()
         else
           vwall=0.d0
@@ -7278,7 +7330,7 @@ module bc
         xtran=1.d0
 
         do k=0,km
-        do i=0,im
+        do i=first_i,im
           !
           pe=num1d3*(4.d0*prs(i,1,k)-prs(i,2,k))
           !

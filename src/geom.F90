@@ -39,8 +39,11 @@ module geom
     !
     use commvar,   only : limmbou
     use stlaio,    only : stla_write
+    use compact_runtime, only: begin_compact_geometry,end_compact_geometry
     !
+    call begin_compact_geometry()
     call gridgeom
+    call end_compact_geometry()
     !
     if(limmbou) call immsgrid
     !

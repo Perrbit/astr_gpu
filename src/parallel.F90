@@ -5002,6 +5002,30 @@ module parallel
   !| -------------                                                     |
   !| 08-Feb-2021 | Created by J. Fang @ Warringon.                     |
   !+-------------------------------------------------------------------+
+  subroutine exchange_shock_mask_faces(sendbuf,recvbuf,n,axis)
+    integer,intent(in) :: n,axis
+    integer(1),intent(in) :: sendbuf(n,2)
+    integer(1),intent(out) :: recvbuf(n,2)
+    integer :: lower,upper,ierr,status(MPI_STATUS_SIZE)
+
+    select case(axis)
+    case(1)
+      lower=mpileft; upper=mpiright
+    case(2)
+      lower=mpidown; upper=mpiup
+    case(3)
+      lower=mpiback; upper=mpifront
+    end select
+    recvbuf=0_1
+    ! One expanded-mask layer, excluding the duplicated shared node.
+    call MPI_Sendrecv(sendbuf(:,1),n,MPI_BYTE,lower,24401, &
+      recvbuf(:,2),n,MPI_BYTE,upper,24401,MPI_COMM_WORLD,status,ierr)
+    if(ierr/=MPI_SUCCESS) error stop 'Expanded shock-mask lower exchange failed'
+    call MPI_Sendrecv(sendbuf(:,2),n,MPI_BYTE,upper,24402, &
+      recvbuf(:,1),n,MPI_BYTE,lower,24402,MPI_COMM_WORLD,status,ierr)
+    if(ierr/=MPI_SUCCESS) error stop 'Expanded shock-mask upper exchange failed'
+  end subroutine exchange_shock_mask_faces
+
   subroutine qswap(timerept)
     !
     use commvar,   only: numq,turbmode,lcomb

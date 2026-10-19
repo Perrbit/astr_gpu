@@ -1,0 +1,345 @@
+module compact_distributed_gpu
+  use mpi
+  use cudafor
+  use iso_fortran_env, only: real64,int64
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use compact_operator, only: compact_line_partition
+  use compact_line_solver, only: compact_matrix,compact_endpoint_responses
+  use compact_line_solver_gpu, only: compact_line_gpu_plan,prepare_compact_gpu,solve_compact_gpu,release_compact_gpu
+  use compact_transport_gpu
+  use gpu_check, only: sync_after_kernel
+  implicit none
+  private
+  public :: compact_distributed_plan,prepare_distributed_compact_gpu,solve_distributed_compact_gpu
+  public :: restore_compact_line_nodes_gpu,release_distributed_compact_gpu
+
+  type :: compact_distributed_plan
+    type(compact_line_partition) :: partition
+    type(compact_line_gpu_plan) :: local
+    type(compact_transport) :: transport
+    integer :: n=0,capacity=0,levels=0
+    integer(int64) :: device_bytes=0_int64
+    real(real64) :: correction(2,2)=0.d0
+    real(real64),allocatable,device :: response(:,:),cyclic_response(:,:),coefficient(:,:,:,:)
+    real(real64),allocatable,device :: rhs(:,:),y(:,:),endpoint0(:,:),endpoint1(:,:)
+    real(real64),allocatable,device :: low(:,:),high(:,:),first(:,:),last(:,:)
+  end type
+contains
+  function inverse2(a) result(inverse)
+    real(real64),intent(in) :: a(2,2)
+    real(real64) :: inverse(2,2),det
+    det=a(1,1)*a(2,2)-a(1,2)*a(2,1)
+    if(det==0.d0.or..not.ieee_is_finite(det)) error stop 'singular compact interface block'
+    inverse(1,1)=a(2,2)/det
+    inverse(1,2)=-a(1,2)/det
+    inverse(2,1)=-a(2,1)/det
+    inverse(2,2)=a(1,1)/det
+    if(.not.all(ieee_is_finite(inverse))) error stop 'nonfinite compact interface inverse'
+  end function
+
+  subroutine prepare_distributed_compact_gpu(matrix,edge,partition,comm,nrhs_capacity,plan)
+    type(compact_matrix),intent(in) :: matrix
+    real(real64),intent(in) :: edge(2)
+    type(compact_line_partition),intent(in) :: partition
+    integer,intent(in) :: comm,nrhs_capacity
+    type(compact_distributed_plan),intent(inout) :: plan
+    real(real64),allocatable :: response(:,:),coefficient(:,:,:,:)
+    real(real64) :: base_edge(2),left(2,2),right(2,2),identity(2,2),diagonal(2,2)
+    real(real64) :: send(2,2,2),lo(2,2,2),hi(2,2,2),inv(2,2),wl(2,2),wr(2,2)
+    real(real64) :: first(2,2),last(2,2),h(2,2)
+    integer :: rank,ranks,n,capacity,stride,level,left_rank,right_rank,ierr,cuda_status
+    if(plan%n/=0) call release_distributed_compact_gpu(plan)
+    call prepare_compact_transport(comm,max(2,nrhs_capacity),plan%transport)
+    rank=plan%transport%rank
+    ranks=plan%transport%ranks
+    n=matrix%n
+    if(n<2.or.n/=partition%owned.or.nrhs_capacity<1.or. &
+      rank/=partition%rank.or.ranks/=partition%ranks) &
+      error stop 'invalid distributed compact local core/partition'
+    if(matrix%cyclic.or.matrix%lower(1)/=0.d0.or.matrix%upper(n)/=0.d0) &
+      error stop 'distributed compact core must exclude off-rank corner entries'
+    plan%partition=partition
+    plan%n=n
+    plan%capacity=nrhs_capacity
+    capacity=plan%transport%capacity
+    stride=1
+    do while(stride<ranks)
+      plan%levels=plan%levels+1
+      stride=stride*2
+    enddo
+    allocate(response(n,2),coefficient(2,2,3,plan%levels))
+    base_edge=edge
+    if(rank==0) base_edge(1)=0.d0
+    if(rank==ranks-1) base_edge(2)=0.d0
+    call compact_endpoint_responses(matrix,base_edge,response)
+    identity=0.d0
+    identity(1,1)=1.d0
+    identity(2,2)=1.d0
+    left=0.d0
+    right=0.d0
+    left(:,2)=response([1,n],1)
+    right(:,1)=response([1,n],2)
+    stride=1
+    do level=1,plan%levels
+      left_rank=rank-stride
+      right_rank=rank+stride
+      if(left_rank<0) left_rank=MPI_PROC_NULL
+      if(right_rank>=ranks) right_rank=MPI_PROC_NULL
+      send(:,:,1)=left
+      send(:,:,2)=right
+      lo=0.d0
+      hi=0.d0
+      call MPI_Sendrecv(send,8,MPI_DOUBLE_PRECISION,left_rank,24011,hi,8,MPI_DOUBLE_PRECISION, &
+        right_rank,24011,plan%transport%comm,MPI_STATUS_IGNORE,ierr)
+      call MPI_Sendrecv(send,8,MPI_DOUBLE_PRECISION,right_rank,24012,lo,8,MPI_DOUBLE_PRECISION, &
+        left_rank,24012,plan%transport%comm,MPI_STATUS_IGNORE,ierr)
+      diagonal=identity-matmul(left,lo(:,:,2))-matmul(right,hi(:,:,1))
+      inv=inverse2(diagonal)
+      wl=matmul(inv,left)
+      wr=matmul(inv,right)
+      coefficient(:,:,1,level)=inv
+      coefficient(:,:,2,level)=wl
+      coefficient(:,:,3,level)=wr
+      left=-matmul(wl,lo(:,:,1))
+      right=-matmul(wr,hi(:,:,2))
+      stride=stride*2
+    enddo
+    allocate(plan%response(n,2),plan%cyclic_response(n,2), &
+      plan%rhs(n,capacity),plan%y(n,capacity),plan%endpoint0(2,capacity),plan%endpoint1(2,capacity), &
+      plan%low(2,capacity),plan%high(2,capacity),plan%first(2,capacity),plan%last(2,capacity))
+    plan%response=response
+    ! P=1 has no interface rounds and must not allocate a zero-extent device array.
+    if(plan%levels>0) then
+      allocate(plan%coefficient(2,2,3,plan%levels))
+      plan%coefficient=coefficient
+    endif
+    plan%low=0.d0
+    plan%high=0.d0
+    plan%cyclic_response=0.d0
+    call prepare_compact_gpu(matrix,128,capacity,plan%local)
+    if(partition%periodic) then
+      call cyclic_basis_kernel<<<dim3((n+127)/128,2,1),128>>>(n,capacity,rank,ranks,edge(1),edge(2),plan%rhs)
+      call sync_after_kernel('compact global cyclic basis',force_sync=.true.)
+      call solve_base(plan,2)
+      call copy_columns_kernel<<<dim3((n+127)/128,2,1),128>>>(n,2,plan%y,plan%cyclic_response)
+      call sync_after_kernel('compact cyclic response copy',force_sync=.true.)
+      call global_endpoints(plan,2)
+      cuda_status=cudaMemcpy(first,plan%first,4,cudaMemcpyDeviceToHost)
+      if(cuda_status/=cudaSuccess) error stop 'compact fixed first endpoint download failed'
+      cuda_status=cudaMemcpy(last,plan%last,4,cudaMemcpyDeviceToHost)
+      if(cuda_status/=cudaSuccess) error stop 'compact fixed last endpoint download failed'
+      h=identity
+      h(1,:)=h(1,:)+last(2,:)
+      h(2,:)=h(2,:)+first(1,:)
+      plan%correction=inverse2(h)
+    endif
+    plan%device_bytes=plan%local%device_bytes+ &
+      8_int64*(4_int64*n+12_int64*plan%levels+int(capacity,int64)*(2_int64*n+12_int64))
+    plan%transport%sent_bytes=0_int64
+    plan%transport%host_stage_bytes=0_int64
+  end subroutine
+
+  attributes(global) subroutine copy_columns_kernel(n,columns,source,destination)
+    integer,value :: n,columns
+    real(real64),device,intent(in) :: source(n,columns)
+    real(real64),device,intent(out) :: destination(n,columns)
+    integer :: i,j
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    j=blockIdx%y
+    if(i<=n) destination(i,j)=source(i,j)
+  end subroutine
+
+  attributes(global) subroutine cyclic_basis_kernel(n,capacity,rank,ranks,lower,upper,rhs)
+    integer,value :: n,capacity,rank,ranks
+    real(real64),value :: lower,upper
+    real(real64),device,intent(out) :: rhs(n,capacity)
+    integer :: i,j
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    j=blockIdx%y
+    if(i>n) return
+    rhs(i,j)=0.d0
+    if(rank==0.and.i==1.and.j==1) rhs(i,j)=lower
+    if(rank==ranks-1.and.i==n.and.j==2) rhs(i,j)=upper
+  end subroutine
+
+  attributes(global) subroutine endpoints_kernel(n,capacity,nrhs,values,endpoint)
+    integer,value :: n,capacity,nrhs
+    real(real64),device,intent(in) :: values(n,capacity)
+    real(real64),device,intent(out) :: endpoint(2,capacity)
+    integer :: j
+    j=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    if(j>nrhs) return
+    endpoint(1,j)=values(1,j)
+    endpoint(2,j)=values(n,j)
+  end subroutine
+
+  attributes(global) subroutine interface_pcr_kernel(capacity,nrhs,levels,level,coefficient,old,low,high,next)
+    integer,value :: capacity,nrhs,levels,level
+    real(real64),device,intent(in) :: coefficient(2,2,3,levels),old(2,capacity), &
+      low(2,capacity),high(2,capacity)
+    real(real64),device,intent(out) :: next(2,capacity)
+    integer :: j,k
+    j=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    if(j>nrhs) return
+    do k=1,2
+      next(k,j)=coefficient(k,1,1,level)*old(1,j)+coefficient(k,2,1,level)*old(2,j) &
+        -coefficient(k,1,2,level)*low(1,j)-coefficient(k,2,2,level)*low(2,j) &
+        -coefficient(k,1,3,level)*high(1,j)-coefficient(k,2,3,level)*high(2,j)
+    enddo
+  end subroutine
+
+  attributes(global) subroutine reconstruct_kernel(n,capacity,nrhs,response,low,high,y)
+    integer,value :: n,capacity,nrhs
+    real(real64),device,intent(in) :: response(n,2),low(2,capacity),high(2,capacity)
+    real(real64),device,intent(inout) :: y(n,capacity)
+    integer :: i,j
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    j=blockIdx%y
+    if(i>n) return
+    y(i,j)=y(i,j)-response(i,1)*low(2,j)-response(i,2)*high(1,j)
+  end subroutine
+
+  subroutine solve_base(plan,nrhs)
+    type(compact_distributed_plan),intent(inout) :: plan
+    integer,intent(in) :: nrhs
+    integer :: stride,level,lo,hi,rank,ranks,capacity
+    capacity=plan%transport%capacity
+    rank=plan%transport%rank
+    ranks=plan%transport%ranks
+    call solve_compact_gpu(plan%local,plan%rhs,plan%y,nrhs)
+    call endpoints_kernel<<<(nrhs+127)/128,128>>>(plan%n,capacity,nrhs,plan%y,plan%endpoint0)
+    call sync_after_kernel('compact global endpoints',force_sync=.true.)
+    stride=1
+    do level=1,plan%levels
+      lo=rank-stride
+      hi=rank+stride
+      if(lo<0) lo=MPI_PROC_NULL
+      if(hi>=ranks) hi=MPI_PROC_NULL
+      if(mod(level,2)==1) then
+        call exchange_compact_interfaces(plan%transport,plan%endpoint0,plan%low,plan%high,nrhs,lo,hi)
+        call interface_pcr_kernel<<<(nrhs+127)/128,128>>>(capacity,nrhs,plan%levels,level, &
+          plan%coefficient,plan%endpoint0,plan%low,plan%high,plan%endpoint1)
+      else
+        call exchange_compact_interfaces(plan%transport,plan%endpoint1,plan%low,plan%high,nrhs,lo,hi)
+        call interface_pcr_kernel<<<(nrhs+127)/128,128>>>(capacity,nrhs,plan%levels,level, &
+          plan%coefficient,plan%endpoint1,plan%low,plan%high,plan%endpoint0)
+      endif
+      call sync_after_kernel('compact global interface PCR',force_sync=.true.)
+      stride=stride*2
+    enddo
+    lo=rank-1
+    hi=rank+1
+    if(lo<0) lo=MPI_PROC_NULL
+    if(hi>=ranks) hi=MPI_PROC_NULL
+    if(mod(plan%levels,2)==0) then
+      call exchange_compact_interfaces(plan%transport,plan%endpoint0,plan%low,plan%high,nrhs,lo,hi)
+    else
+      call exchange_compact_interfaces(plan%transport,plan%endpoint1,plan%low,plan%high,nrhs,lo,hi)
+    endif
+    call reconstruct_kernel<<<dim3((plan%n+127)/128,nrhs,1),128>>>(plan%n,capacity,nrhs, &
+      plan%response,plan%low,plan%high,plan%y)
+    call sync_after_kernel('compact global back substitution',force_sync=.true.)
+  end subroutine
+
+  subroutine global_endpoints(plan,nrhs)
+    type(compact_distributed_plan),intent(inout) :: plan
+    integer,intent(in) :: nrhs
+    call endpoints_kernel<<<(nrhs+127)/128,128>>>(plan%n,plan%transport%capacity,nrhs,plan%y,plan%first)
+    call sync_after_kernel('compact cyclic first endpoint',force_sync=.true.)
+    call copy_columns_kernel<<<dim3(1,nrhs,1),128>>>(2,nrhs,plan%first,plan%last)
+    call sync_after_kernel('compact cyclic endpoint copy',force_sync=.true.)
+    call broadcast_compact_interfaces(plan%transport,plan%first,nrhs,0)
+    call broadcast_compact_interfaces(plan%transport,plan%last,nrhs,plan%transport%ranks-1)
+  end subroutine
+
+  attributes(global) subroutine correction_kernel(n,capacity,nrhs,z,first,last,y,h11,h12,h21,h22,solution)
+    integer,value :: n,capacity,nrhs
+    real(real64),value :: h11,h12,h21,h22
+    real(real64),device,intent(in) :: z(n,2),first(2,capacity),last(2,capacity),y(n,capacity)
+    real(real64),device,intent(out) :: solution(n,nrhs)
+    real(real64) :: c1,c2
+    integer :: i,j
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    j=blockIdx%y
+    if(i>n) return
+    c1=h11*last(2,j)+h12*first(1,j)
+    c2=h21*last(2,j)+h22*first(1,j)
+    solution(i,j)=y(i,j)-z(i,1)*c1-z(i,2)*c2
+  end subroutine
+
+  subroutine solve_distributed_compact_gpu(plan,rhs,solution,nrhs)
+    type(compact_distributed_plan),intent(inout) :: plan
+    integer,intent(in) :: nrhs
+    real(real64),device,intent(in) :: rhs(plan%n,nrhs)
+    real(real64),device,intent(out) :: solution(plan%n,nrhs)
+    if(nrhs<1.or.nrhs>plan%capacity) error stop 'distributed compact RHS exceeds plan capacity'
+    call copy_columns_kernel<<<dim3((plan%n+127)/128,nrhs,1),128>>>(plan%n,nrhs,rhs,plan%rhs)
+    call sync_after_kernel('compact global RHS copy',force_sync=.true.)
+    call solve_base(plan,nrhs)
+    if(plan%partition%periodic) then
+      call global_endpoints(plan,nrhs)
+      call correction_kernel<<<dim3((plan%n+127)/128,nrhs,1),128>>>(plan%n,plan%transport%capacity,nrhs, &
+        plan%cyclic_response,plan%first,plan%last,plan%y,plan%correction(1,1),plan%correction(1,2), &
+        plan%correction(2,1),plan%correction(2,2),solution)
+      call sync_after_kernel('compact global cyclic correction',force_sync=.true.)
+    else
+      call copy_columns_kernel<<<dim3((plan%n+127)/128,nrhs,1),128>>>(plan%n,nrhs,plan%y,solution)
+      call sync_after_kernel('compact global solution copy',force_sync=.true.)
+    endif
+  end subroutine
+
+  attributes(global) subroutine restore_kernel(n,nodes,capacity,nrhs,solution,high,values)
+    integer,value :: n,nodes,capacity,nrhs
+    real(real64),device,intent(in) :: solution(n,nrhs),high(2,capacity)
+    real(real64),device,intent(out) :: values(nodes,nrhs)
+    integer :: i,j
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    j=blockIdx%y
+    if(i>nodes) return
+    if(i<=n) then
+      values(i,j)=solution(i,j)
+    else
+      values(i,j)=high(1,j)
+    endif
+  end subroutine
+
+  subroutine restore_compact_line_nodes_gpu(plan,solution,values,nrhs)
+    type(compact_distributed_plan),intent(inout) :: plan
+    integer,intent(in) :: nrhs
+    real(real64),device,intent(in) :: solution(plan%n,nrhs)
+    real(real64),device,intent(out) :: values(plan%partition%local_intervals+1,nrhs)
+    integer :: lo,hi,nodes
+    nodes=plan%partition%local_intervals+1
+    lo=plan%transport%rank-1
+    hi=plan%transport%rank+1
+    if(plan%partition%periodic) then
+      lo=modulo(lo,plan%transport%ranks)
+      hi=modulo(hi,plan%transport%ranks)
+    else
+      if(lo<0) lo=MPI_PROC_NULL
+      if(hi>=plan%transport%ranks) hi=MPI_PROC_NULL
+    endif
+    call copy_columns_kernel<<<dim3((plan%n+127)/128,nrhs,1),128>>>(plan%n,nrhs,solution,plan%y)
+    call sync_after_kernel('compact shared node solution copy',force_sync=.true.)
+    call endpoints_kernel<<<(nrhs+127)/128,128>>>(plan%n,plan%transport%capacity,nrhs,plan%y,plan%endpoint0)
+    call sync_after_kernel('compact shared node endpoints',force_sync=.true.)
+    call exchange_compact_interfaces(plan%transport,plan%endpoint0,plan%low,plan%high,nrhs,lo,hi)
+    call restore_kernel<<<dim3((nodes+127)/128,nrhs,1),128>>>(plan%n,nodes,plan%transport%capacity,nrhs, &
+      solution,plan%high,values)
+    call sync_after_kernel('compact shared node copy',force_sync=.true.)
+  end subroutine
+
+  subroutine release_distributed_compact_gpu(plan)
+    type(compact_distributed_plan),intent(inout) :: plan
+    if(plan%n==0) return
+    call release_compact_gpu(plan%local)
+    if(allocated(plan%coefficient)) deallocate(plan%coefficient)
+    deallocate(plan%response,plan%cyclic_response,plan%rhs,plan%y, &
+      plan%endpoint0,plan%endpoint1,plan%low,plan%high,plan%first,plan%last)
+    call release_compact_transport(plan%transport)
+    plan%n=0
+    plan%levels=0
+    plan%capacity=0
+    plan%device_bytes=0_int64
+  end subroutine
+end module

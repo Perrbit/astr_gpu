@@ -523,6 +523,8 @@ module comsolver
                          alfa_filter,ndims,is,ie,js,je,ks,ke,turbmode, &
                          conschm,difschm
     use commarray,only : q
+    use compact_runtime,only: global_compact_enabled,global_compact_filter_cpu
+    use filter,only: coef10i
     use filter,   only : compact_filter,filter_i,filter_j,filter_k,  &
                         filter_ii,filter_jj,filter_kk,spafilter10exp
     !
@@ -555,6 +557,17 @@ module comsolver
       return
     endif
     !
+    if(global_compact_enabled()) then
+      call global_compact_filter_cpu(q,coef10i)
+      if(present(timerept)) then
+        if(timerept) then
+          subtime=subtime+ptime()-time_beg
+          if(lio.and.lreport.and.ltimrpt) call timereporter(routine='filterq', &
+            timecost=subtime,message='global compact low-pass filter')
+        endif
+      endif
+      return
+    endif
     ! filtering in i direction
     call dataswap(q,direction=1,timerept=ltimrpt)
     !

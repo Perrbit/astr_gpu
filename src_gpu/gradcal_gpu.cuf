@@ -565,6 +565,7 @@ contains
   end subroutine gradcal_dvel_zphysical_sp_kernel
 
   subroutine compute_gradcal_gpu()
+    use compact_operator_gpu, only: compact_global_enabled,compact_gradcal_gpu
     use mpi, only: MPI_PROC_NULL
     use commvar, only: im,jm,km,hm
 #ifdef ASTR_AIR5_CHEMISTRY
@@ -579,6 +580,10 @@ contains
     type(dim3) :: block3,grid3
     logical :: mixed_derivative,xyphysical
 
+    if(compact_global_enabled()) then
+      call compact_gradcal_gpu()
+      return
+    endif
     mixed_derivative=gpu_mixed_derivative_workspace_enabled()
     xyphysical=gpu_s1_flatplate_boundary_case_pending()
 #ifdef ASTR_AIR5_CHEMISTRY

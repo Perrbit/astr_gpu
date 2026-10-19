@@ -169,10 +169,32 @@ runtime and numerical failures still stop downstream work, without silently
 reducing the grid, precision or changing the operator. Do not query resources
 after every kernel or interfere with other processes or remote jobs.
 
-All D1-D22 requirements are resolved. The plan records interface/file boundaries,
-CP0-CP10 implementation dependencies, numerical/restart/topology gates and local
-timing scope. Every implementation step remains unexecuted; the design itself
-does not authorize source changes, test runs or Git writes.
+All D1-D22 requirements were resolved before implementation. The plan records
+interface/file boundaries, CP0-CP10 dependencies, numerical/restart/topology
+gates and local timing scope. Separate implementation goals covered CP0-CP1
+and then CP2 and CP3. Independent components and the explicitly identified local
+derivative/filter development path are verified as recorded in
+`documents/ASTR_GPU_COMPACT_SCHEME_RESULTS.md`. CP2 uses a testing-build-only
+local admission, not the final globally coupled production dispatch. CP3 includes
+the user-approved post-filter primitive refresh correction for non-reacting
+643c/643c, plus scalar/full packed batches that write q only after their inputs
+and right-hand sides are captured. Existing explicit-filter ping-pong remains
+unchanged. A subsequent CP4 goal verified the separate globally coupled line
+component: unique ownership, local endpoint responses, distributed block PCR,
+rank-two cyclic correction and exact shared-node copies. Both explicitly chosen
+interface transports passed independent global-matrix checks. Local UCX IPC
+mapping cleanup remains a separate toolchain issue; the explicit no-IPC
+device-aware configuration passed leak checks without an application host-staged
+fallback. A further CP5 goal connected both main-program backends for fresh,
+periodic perfect-gas 643c/643c TGV. CPU uses interior Thomas elimination and a
+direct solve of the retained endpoints, independently of GPU PCR. The flow
+derivative type is switched after geometry initialization, since periodic flow
+values and nonperiodic coordinate increments are not interchangeable. Both
+backends consume ASTR's actual partition offsets, including its high-rank
+remainder assignment. Supported compact flow inputs now select global coupling
+without a development environment variable; the explicit default is unchanged.
+Physical boundaries, restart identity, performance work and later stages are
+not part of CP5. Git writes remain unauthorized.
 
 Requirements continue in `documents/ASTR_GPU_COMPACT_SCHEME_PLAN.md`. This
 decision authorizes design, not solver implementation or a change to the

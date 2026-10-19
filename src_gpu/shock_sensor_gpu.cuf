@@ -1,7 +1,108 @@
 module shock_sensor_gpu
   use cudafor
   implicit none
+  integer(1),allocatable,device,private :: mask_send_d(:,:),mask_recv_d(:,:)
+  integer(1),allocatable,pinned,private :: mask_send_h(:,:),mask_recv_h(:,:)
+  real(8),allocatable,device,private :: snapshot_sensor_d(:)
+  integer(1),allocatable,device,private :: snapshot_mask_d(:)
 contains
+  attributes(global) subroutine pack_shock_snapshot_kernel(im,jm,km,n)
+    use commarray_gpu, only: shock_sensor_d,shock_mask_d
+    integer,value :: im,jm,km,n
+    integer :: id,i,j,k
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    if(id>n) return
+    i=mod(id-1,im+1); j=mod((id-1)/(im+1),jm+1); k=(id-1)/((im+1)*(jm+1))
+    snapshot_sensor_d(id)=shock_sensor_d(i,j,k,1)
+    snapshot_mask_d(id)=shock_mask_d(i,j,k)
+  end subroutine
+
+  subroutine read_shock_physical_snapshot_gpu(sensor,mask)
+    use commvar, only: im,jm,km
+    use gpu_check, only: sync_after_kernel
+    real(8),intent(out) :: sensor(0:im,0:jm,0:km)
+    integer(1),intent(out) :: mask(0:im,0:jm,0:km)
+    integer :: n,status
+    n=(im+1)*(jm+1)*(km+1)
+    if(.not.allocated(snapshot_sensor_d)) allocate(snapshot_sensor_d(n),snapshot_mask_d(n))
+    ! NVHPC slicing can copy the full parent, including unused halo corners.
+    call pack_shock_snapshot_kernel<<<(n+255)/256,256>>>(im,jm,km,n)
+    call sync_after_kernel('pack_shock_snapshot')
+    status=cudaMemcpy(sensor(0,0,0),snapshot_sensor_d(1),n,cudaMemcpyDeviceToHost)
+    if(status/=cudaSuccess) error stop 'Shock sensor physical snapshot copy failed'
+    status=cudaMemcpy(mask(0,0,0),snapshot_mask_d(1),n,cudaMemcpyDeviceToHost)
+    if(status/=cudaSuccess) error stop 'Shock mask physical snapshot copy failed'
+  end subroutine
+
+  attributes(global) subroutine shock_mask_face_kernel(im,jm,km,n,axis,ntype,unpack)
+    use commarray_gpu, only: shock_mask_d
+    integer,value :: im,jm,km,n,axis,ntype,unpack
+    integer :: id,i,j,k,lo(3),hi(3),a(3),b(3),dims(3)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    if(id>n) return
+    select case(axis)
+    case(1)
+      i=0; j=mod(id-1,jm+1); k=(id-1)/(jm+1)
+    case(2)
+      i=mod(id-1,im+1); j=0; k=(id-1)/(im+1)
+    case(3)
+      i=mod(id-1,im+1); j=(id-1)/(im+1); k=0
+    end select
+    dims=[im,jm,km]
+    lo=[i,j,k]; hi=lo
+    hi(axis)=dims(axis)
+    if(unpack==0) then
+      a=lo; b=hi; a(axis)=1; b(axis)=hi(axis)-1
+      mask_send_d(id,1)=shock_mask_d(a(1),a(2),a(3))
+      mask_send_d(id,2)=shock_mask_d(b(1),b(2),b(3))
+    else
+      a=lo; b=hi; a(axis)=-1; b(axis)=hi(axis)+1
+      shock_mask_d(a(1),a(2),a(3))=shock_mask_d(lo(1),lo(2),lo(3))
+      shock_mask_d(b(1),b(2),b(3))=shock_mask_d(hi(1),hi(2),hi(3))
+      if(ntype==2.or.ntype==3) shock_mask_d(a(1),a(2),a(3))=mask_recv_d(id,1)
+      if(ntype==1.or.ntype==3) shock_mask_d(b(1),b(2),b(3))=mask_recv_d(id,2)
+    endif
+  end subroutine
+
+  subroutine refresh_expanded_shock_mask_gpu()
+    use commvar, only: im,jm,km,npdci,npdcj,npdck
+    use parallel, only: exchange_shock_mask_faces
+    use gpu_check, only: sync_after_kernel
+    integer :: n,axis,ntype,side,status,counts(3),types(3)
+    logical :: pinned_ok
+    counts=[(jm+1)*(km+1),(im+1)*(km+1),(im+1)*(jm+1)]
+    types=[npdci,npdcj,npdck]
+    if(.not.allocated(mask_send_d)) then
+      n=maxval(counts)
+      allocate(mask_send_d(n,2),mask_recv_d(n,2))
+      allocate(mask_send_h(n,2),pinned=pinned_ok)
+      if(.not.pinned_ok) error stop 'Expanded shock-mask send buffer is not pinned'
+      allocate(mask_recv_h(n,2),pinned=pinned_ok)
+      if(.not.pinned_ok) error stop 'Expanded shock-mask receive buffer is not pinned'
+    endif
+    do axis=1,3
+      n=counts(axis); ntype=types(axis)
+      call shock_mask_face_kernel<<<(n+255)/256,256>>>(im,jm,km,n,axis,ntype,0)
+      call sync_after_kernel('pack_expanded_shock_mask')
+      do side=1,2
+        status=cudaMemcpy(mask_send_h(1,side),mask_send_d(1,side),n,cudaMemcpyDeviceToHost)
+        if(status/=cudaSuccess) error stop 'Expanded shock-mask download failed'
+      enddo
+      call exchange_shock_mask_faces(mask_send_h(:n,:),mask_recv_h(:n,:),n,axis)
+      do side=1,2
+        status=cudaMemcpy(mask_recv_d(1,side),mask_recv_h(1,side),n,cudaMemcpyHostToDevice)
+        if(status/=cudaSuccess) error stop 'Expanded shock-mask upload failed'
+      enddo
+      call shock_mask_face_kernel<<<(n+255)/256,256>>>(im,jm,km,n,axis,ntype,1)
+      call sync_after_kernel('unpack_expanded_shock_mask')
+    enddo
+  end subroutine
+
+  subroutine release_shock_mask_buffers_gpu()
+    if(allocated(mask_send_d)) deallocate(mask_send_d,mask_recv_d,mask_send_h,mask_recv_h)
+    if(allocated(snapshot_sensor_d)) deallocate(snapshot_sensor_d,snapshot_mask_d)
+  end subroutine
+
   attributes(global) subroutine raw_shock_sensor_kernel(im,jm,km, &
                                                         apply_left_x,apply_right_x, &
                                                         apply_down_y,apply_up_y, &
@@ -146,8 +247,7 @@ contains
 
     call sync_gpu_boundary('write_shock_sensor_dump')
     allocate(sensor_host(0:im,0:jm,0:km),mask_host(0:im,0:jm,0:km))
-    sensor_host = shock_sensor_d(0:im,0:jm,0:km,1)
-    mask_host = shock_mask_d
+    call read_shock_physical_snapshot_gpu(sensor_host,mask_host)
     output_path=trim(dump_path(1:path_length))
     if(mpisize>1) then
       write(rank_suffix,'(".rank",I0)') mpirank
@@ -172,11 +272,11 @@ contains
 
   subroutine compute_shock_sensor_gpu(stage_index,force_active)
     use commvar, only: im,jm,km,hm,shkcrt,lchardecomp,npdci,npdcj,npdck,nstep
-    use commcal, only: shock_sensor_validation_enabled
+    use commcal, only: shock_sensor_validation_enabled,compact_expanded_mask_enabled
     use gradcal_gpu, only: compute_gradcal_gpu
     use gpu_check, only: sync_after_kernel
     use halo_exchange_gpu, only: exchange_field_halo_gpu
-    use commarray_gpu, only: shock_sensor_d,shock_mask_d,dvel_d,prs_d
+    use commarray_gpu, only: shock_sensor_d,shock_mask_d,dvel_d,prs_d,expanded_shock_halo_d
     use boundary_gpu, only: gpu_axis_is_physical
     use parallel, only: isize,jsize,ksize
     use validation_io, only: rhs_validation_requested,write_sensor_validation_snapshot, &
@@ -244,10 +344,11 @@ contains
                                                         apply_down_y,apply_up_y, &
                                                         apply_back_z,apply_front_z)
     call sync_after_kernel('expand_shock_sensor_kernel')
+    expanded_shock_halo_d=compact_expanded_mask_enabled()
+    if(compact_expanded_mask_enabled()) call refresh_expanded_shock_mask_gpu()
     if(rhs_validation_requested()) then
       allocate(sensor_host(0:im,0:jm,0:km),mask_host(0:im,0:jm,0:km))
-      sensor_host=shock_sensor_d(0:im,0:jm,0:km,1)
-      mask_host=shock_mask_d
+      call read_shock_physical_snapshot_gpu(sensor_host,mask_host)
       call write_sensor_validation_snapshot('sensor',sensor_host,mask_host,nstep,stage_index)
       deallocate(sensor_host,mask_host)
     endif

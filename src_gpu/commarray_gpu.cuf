@@ -28,6 +28,7 @@ module commarray_gpu
   real(4),allocatable,device :: flux_characteristic_work_sp_d(:,:,:,:)
   real(8),allocatable,device :: shock_sensor_d(:,:,:,:)
   integer(1),allocatable,device :: shock_mask_d(:,:,:)
+  logical,device :: expanded_shock_halo_d=.false.
   logical,allocatable,device :: crinod_d(:,:,:)
   logical,device,save :: crashfix_enabled_d=.false.
 contains
@@ -182,7 +183,7 @@ contains
 
   subroutine alloc_gpu_arrays()
     use commvar, only: im,jm,km,hm,numq,num_species,num_modequ,conschm, &
-                       recon_schem,lchardecomp,lfilter,lcomb,diffterm
+                       recon_schem,lchardecomp,lfilter,lcomb,diffterm,difschm
     use commcal, only: shock_sensor_validation_enabled
     use parallel, only: lio
     use precision_mode_gpu, only: configure_gpu_precision_mode,gpu_precision_mode_name
@@ -214,7 +215,10 @@ contains
     active_workspace='none'
     if(lio) write(*,'(A,A)') 'ASTR_GPU_PRECISION_MODE=',trim(gpu_precision_mode_name())
     if(.not.allocated(q_d))      allocate(q_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq))
-    if(lcomb .and. .not.lfilter) then
+    if(lfilter.and.(conschm=='643c'.or.conschm=='743e').and.difschm=='643c') then
+      workspace_bytes=0_8
+      if(lio) write(*,'(A)') ' ** GPU compact filter uses packed RHS storage; no extra q ping-pong array'
+    elseif(lcomb .and. .not.lfilter) then
       workspace_bytes=0_8
       if(lio) write(*,'(A)') ' ** GPU filter workspace storage: disabled for fixed air5'
     elseif(gpu_scalar_filter_workspace_enabled() .and. lfilter) then
@@ -342,7 +346,7 @@ contains
     if(shock_sensor_validation_enabled() .or. lchardecomp .or. air5_shock_active) then
       if(.not.allocated(shock_sensor_d)) &
         allocate(shock_sensor_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:1))
-      if(.not.allocated(shock_mask_d)) allocate(shock_mask_d(0:im,0:jm,0:km))
+      if(.not.allocated(shock_mask_d)) allocate(shock_mask_d(-1:im+1,-1:jm+1,-1:km+1))
     endif
   end subroutine alloc_gpu_arrays
 

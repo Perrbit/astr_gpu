@@ -468,7 +468,7 @@ contains
     if(trim(flowtype)=='bl'.and.bctype(3)==41) call configure_wall_blowing()
     if(extruded_profile_output_case().and.len_trim(options%restore_directory)>0) &
       call check(wall_blowing_legacy_random,'extruded profile restart requires legacy_random checkpoint')
-    if(wall_blowing_legacy_random) then
+    if(wall_blowing_legacy_random.and.(options%checkpoint%enabled.or.len_trim(options%restore_directory)>0)) then
       call check(extruded_profile_output_case(), 'random wall checkpoint requires admitted extruded profile case')
       call check(.not.options%adaptive%enabled, 'random wall checkpoint adaptive scheduling is not admitted')
     endif

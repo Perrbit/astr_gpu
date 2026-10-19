@@ -3040,7 +3040,7 @@ contains
     endif
   end subroutine field_halo_workspace_bytes_gpu
 
-  subroutine exchange_field_halo_gpu(field,nvar,work)
+  subroutine exchange_field_halo_gpu(field,nvar,work,direction)
     use commvar, only: im,jm,km,hm
     use gpu_check, only: sync_after_kernel
     use parallel, only: isize,jsize,ksize
@@ -3048,13 +3048,21 @@ contains
     implicit none
 
     integer,intent(in) :: nvar
+    integer,intent(in),optional :: direction
     procedure(independent_host_pair_work),optional :: work
     real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
     type(dim3) :: block,grid
     integer :: n
+    logical :: active(3)
 
     block = dim3(256,1,1)
+    active=.true.
+    if(present(direction)) then
+      active=.false.
+      active(direction)=.true.
+    endif
 
+    if(active(1)) then
     if(isize>1) then
       call exchange_field_x_halo_gpu(field,nvar,work)
     elseif(.not.gpu_axis_is_physical(1)) then
@@ -3063,7 +3071,9 @@ contains
       call field_qswap_x_kernel<<<grid,block>>>(field,im,jm,km,hm,nvar)
       call sync_after_kernel('field_qswap_x_kernel')
     endif
+    endif
 
+    if(active(2)) then
     if(jsize>1) then
       if(isize==1) then
         call exchange_field_y_halo_gpu(field,nvar,work)
@@ -3076,7 +3086,9 @@ contains
       call field_qswap_y_kernel<<<grid,block>>>(field,im,jm,km,hm,nvar)
       call sync_after_kernel('field_qswap_y_kernel')
     endif
+    endif
 
+    if(active(3)) then
     if(ksize>1) then
       if(isize==1 .and. jsize==1) then
         call exchange_field_z_halo_gpu(field,nvar,work)
@@ -3088,6 +3100,7 @@ contains
       grid = dim3((n + block%x - 1)/block%x,1,1)
       call field_qswap_z_kernel<<<grid,block>>>(field,im,jm,km,hm,nvar)
       call sync_after_kernel('field_qswap_z_kernel')
+    endif
     endif
   end subroutine exchange_field_halo_gpu
 

@@ -1,0 +1,230 @@
+module compact_line_solver_gpu
+  use cudafor
+  use iso_fortran_env, only: real64,int64
+  use compact_line_solver, only: compact_matrix,compact_block_factors,prepare_compact_blocks
+  use gpu_check, only: sync_after_kernel
+  implicit none
+  private
+  integer,parameter :: tile_threads=128
+  public :: compact_line_gpu_plan,prepare_compact_gpu,solve_compact_gpu,release_compact_gpu
+
+  type :: compact_line_gpu_plan
+    integer :: n=0,tiles=0,reduced_n=0,capacity=0,tile_capacity=0,max_levels=0,reduced_levels=0
+    integer(int64) :: device_bytes=0_int64
+    logical :: cyclic=.false.
+    real(real64) :: h11=1.d0,h12=0.d0,h21=0.d0,h22=1.d0
+    integer,allocatable,device :: first(:),last(:),owner(:),levels(:)
+    real(real64),allocatable,device :: initial_inverse(:,:),left(:,:,:),right(:,:,:),inverse(:,:,:)
+    real(real64),allocatable,device :: edge_lower(:),edge_upper(:),response_left(:),response_right(:)
+    real(real64),allocatable,device :: reduced_initial(:),reduced_left(:,:),reduced_right(:,:),reduced_inverse(:,:)
+    real(real64),allocatable,device :: cyclic_response(:,:),local_work(:,:),reduced0(:,:),reduced1(:,:)
+  end type
+contains
+  subroutine prepare_compact_gpu(matrix,tile_capacity,nrhs_capacity,plan)
+    type(compact_matrix),intent(in) :: matrix
+    integer,intent(in) :: tile_capacity,nrhs_capacity
+    type(compact_line_gpu_plan),intent(inout) :: plan
+    type(compact_block_factors) :: blocks
+    integer :: n,t,r,l,rl,istat
+    integer(int64) :: reals,integers
+    if(tile_capacity>tile_threads.or.nrhs_capacity<1) error stop 'invalid compact GPU tile/capacity'
+    if(plan%n/=0) call release_compact_gpu(plan)
+    call prepare_compact_blocks(matrix,tile_capacity,blocks)
+    n=blocks%n
+    t=blocks%tiles
+    r=blocks%reduced_n
+    l=blocks%max_levels
+    rl=blocks%reduced%levels
+    allocate(plan%first(t),plan%last(t),plan%owner(n),plan%levels(t), &
+      plan%initial_inverse(tile_capacity,t),plan%left(tile_capacity,l,t), &
+      plan%right(tile_capacity,l,t),plan%inverse(tile_capacity,l,t), &
+      plan%edge_lower(t),plan%edge_upper(t),plan%response_left(n),plan%response_right(n), &
+      plan%reduced_initial(r),plan%reduced_left(r,rl),plan%reduced_right(r,rl), &
+      plan%reduced_inverse(r,rl),plan%cyclic_response(r,2),plan%local_work(n,nrhs_capacity), &
+      plan%reduced0(r,nrhs_capacity),plan%reduced1(r,nrhs_capacity),stat=istat)
+    if(istat/=0) error stop 'compact GPU workspace allocation failed'
+    plan%first=blocks%first
+    plan%last=blocks%last
+    plan%owner=blocks%owner
+    plan%levels=blocks%levels
+    plan%initial_inverse=blocks%initial_inverse
+    plan%left=blocks%left
+    plan%right=blocks%right
+    plan%inverse=blocks%inverse
+    plan%edge_lower=matrix%lower(blocks%last)
+    plan%edge_upper=matrix%upper(blocks%first)
+    plan%response_left=blocks%response_left
+    plan%response_right=blocks%response_right
+    plan%reduced_initial=blocks%reduced%initial_inverse
+    plan%reduced_left=blocks%reduced%left
+    plan%reduced_right=blocks%reduced%right
+    plan%reduced_inverse=blocks%reduced%inverse
+    plan%cyclic_response=blocks%cyclic_response
+    plan%h11=blocks%correction_inverse(1,1)
+    plan%h12=blocks%correction_inverse(1,2)
+    plan%h21=blocks%correction_inverse(2,1)
+    plan%h22=blocks%correction_inverse(2,2)
+    plan%n=n
+    plan%tiles=t
+    plan%reduced_n=r
+    plan%capacity=nrhs_capacity
+    plan%tile_capacity=tile_capacity
+    plan%max_levels=l
+    plan%reduced_levels=rl
+    plan%cyclic=matrix%cyclic
+    reals=int(tile_capacity,int64)*t*(1_int64+3_int64*l)+ &
+      2_int64*t+2_int64*n+int(r,int64)*(3_int64+3_int64*rl)+ &
+      int(nrhs_capacity,int64)*(n+2_int64*r)
+    integers=3_int64*t+n
+    plan%device_bytes=8_int64*reals+4_int64*integers
+  end subroutine
+
+  attributes(global) subroutine local_pcr_kernel(n,tiles,nrhs,tc,nlevels, &
+      first,last,levels,norm,left,right,inverse,edge_lower,edge_upper,reduced_norm,rhs,local,reduced)
+    integer,value :: n,tiles,nrhs,tc,nlevels
+    integer,device,intent(in) :: first(tiles),last(tiles),levels(tiles)
+    real(real64),device,intent(in) :: norm(tc,tiles),left(tc,nlevels,tiles), &
+      right(tc,nlevels,tiles),inverse(tc,nlevels,tiles),edge_lower(tiles),edge_upper(tiles)
+    real(real64),device,intent(in) :: reduced_norm(2*tiles),rhs(n,nrhs)
+    real(real64),device,intent(out) :: local(n,nrhs),reduced(2*tiles,nrhs)
+    real(real64),shared :: old(tile_threads),next(tile_threads)
+    real(real64) :: value,lo,hi
+    integer :: tid,t,column,m,level,stride,idx
+    tid=threadIdx%x
+    t=blockIdx%x
+    column=blockIdx%y
+    m=last(t)-first(t)-1
+    value=0.d0
+    if(tid<=m) value=rhs(first(t)+tid,column)*norm(tid,t)
+    old(tid)=value
+    call syncthreads()
+    stride=1
+    do level=1,levels(t)
+      value=0.d0
+      if(tid<=m) then
+        value=old(tid)
+        if(tid>stride) value=value-left(tid,level,t)*old(tid-stride)
+        if(tid+stride<=m) value=value-right(tid,level,t)*old(tid+stride)
+        value=value*inverse(tid,level,t)
+      endif
+      next(tid)=value
+      call syncthreads()
+      old(tid)=next(tid)
+      call syncthreads()
+      stride=stride*2
+    enddo
+    if(tid<=m) local(first(t)+tid,column)=old(tid)
+    if(tid==1) then
+      lo=rhs(first(t),column)
+      hi=rhs(last(t),column)
+      if(m>0) then
+        lo=lo-edge_upper(t)*old(1)
+        hi=hi-edge_lower(t)*old(m)
+      endif
+      idx=2*t-1
+      reduced(idx,column)=lo*reduced_norm(idx)
+      reduced(idx+1,column)=hi*reduced_norm(idx+1)
+    endif
+  end subroutine
+
+  attributes(global) subroutine reduced_pcr_kernel(n,nrhs,nlevels,level,stride, &
+      left,right,inverse,old,next)
+    integer,value :: n,nrhs,nlevels,level,stride
+    real(real64),device,intent(in) :: left(n,nlevels),right(n,nlevels),inverse(n,nlevels),old(n,nrhs)
+    real(real64),device,intent(out) :: next(n,nrhs)
+    real(real64) :: value
+    integer :: i,column
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    column=blockIdx%y
+    if(i>n) return
+    value=old(i,column)
+    if(i>stride) value=value-left(i,level)*old(i-stride,column)
+    if(i+stride<=n) value=value-right(i,level)*old(i+stride,column)
+    next(i,column)=value*inverse(i,level)
+  end subroutine
+
+  attributes(global) subroutine compact_reconstruct_kernel(n,tiles,nrhs,cyclic, &
+      h11,h12,h21,h22,first,last,owner,v,w,z,reduced,local,solution)
+    integer,value :: n,tiles,nrhs
+    logical,value :: cyclic
+    real(real64),value :: h11,h12,h21,h22
+    integer,device,intent(in) :: first(tiles),last(tiles),owner(n)
+    real(real64),device,intent(in) :: v(n),w(n),z(2*tiles,2),reduced(2*tiles,nrhs),local(n,nrhs)
+    real(real64),device,intent(out) :: solution(n,nrhs)
+    real(real64) :: lo,hi,d1,d2
+    integer :: i,t,k,column
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    column=blockIdx%y
+    if(i>n) return
+    t=owner(i)
+    k=2*t-1
+    lo=reduced(k,column)
+    hi=reduced(k+1,column)
+    if(cyclic) then
+      d1=h11*reduced(2*tiles,column)+h12*reduced(1,column)
+      d2=h21*reduced(2*tiles,column)+h22*reduced(1,column)
+      lo=lo-z(k,1)*d1-z(k,2)*d2
+      hi=hi-z(k+1,1)*d1-z(k+1,2)*d2
+    endif
+    if(i==first(t)) then
+      solution(i,column)=lo
+    elseif(i==last(t)) then
+      solution(i,column)=hi
+    else
+      solution(i,column)=local(i,column)-v(i)*lo-w(i)*hi
+    endif
+  end subroutine
+
+  subroutine solve_compact_gpu(plan,rhs,solution,nrhs)
+    type(compact_line_gpu_plan),intent(inout) :: plan
+    real(real64),device,intent(in) :: rhs(:,:)
+    real(real64),device,intent(out) :: solution(:,:)
+    integer,intent(in) :: nrhs
+    type(dim3) :: grid
+    integer :: level,stride
+    if(plan%n<2.or.nrhs<1.or.nrhs>plan%capacity) error stop 'invalid compact GPU solve extent'
+    if(size(rhs,1)/=plan%n.or.size(solution,1)/=plan%n.or. &
+       size(rhs,2)<nrhs.or.size(solution,2)<nrhs) error stop 'compact GPU RHS shape mismatch'
+    grid=dim3(plan%tiles,nrhs,1)
+    call local_pcr_kernel<<<grid,tile_threads>>>(plan%n,plan%tiles,nrhs, &
+      plan%tile_capacity,plan%max_levels,plan%first,plan%last,plan%levels, &
+      plan%initial_inverse,plan%left,plan%right,plan%inverse,plan%edge_lower, &
+      plan%edge_upper,plan%reduced_initial,rhs,plan%local_work,plan%reduced0)
+    call sync_after_kernel('compact_local_pcr',force_sync=.true.)
+    grid=dim3((plan%reduced_n+tile_threads-1)/tile_threads,nrhs,1)
+    stride=1
+    do level=1,plan%reduced_levels
+      if(mod(level,2)==1) then
+        call reduced_pcr_kernel<<<grid,tile_threads>>>(plan%reduced_n,nrhs,plan%reduced_levels, &
+          level,stride,plan%reduced_left,plan%reduced_right,plan%reduced_inverse,plan%reduced0,plan%reduced1)
+      else
+        call reduced_pcr_kernel<<<grid,tile_threads>>>(plan%reduced_n,nrhs,plan%reduced_levels, &
+          level,stride,plan%reduced_left,plan%reduced_right,plan%reduced_inverse,plan%reduced1,plan%reduced0)
+      endif
+      call sync_after_kernel('compact_reduced_pcr',force_sync=.true.)
+      stride=stride*2
+    enddo
+    grid=dim3((plan%n+tile_threads-1)/tile_threads,nrhs,1)
+    if(mod(plan%reduced_levels,2)==0) then
+      call compact_reconstruct_kernel<<<grid,tile_threads>>>(plan%n,plan%tiles,nrhs,plan%cyclic, &
+        plan%h11,plan%h12,plan%h21,plan%h22,plan%first,plan%last,plan%owner, &
+        plan%response_left,plan%response_right,plan%cyclic_response,plan%reduced0,plan%local_work,solution)
+    else
+      call compact_reconstruct_kernel<<<grid,tile_threads>>>(plan%n,plan%tiles,nrhs,plan%cyclic, &
+        plan%h11,plan%h12,plan%h21,plan%h22,plan%first,plan%last,plan%owner, &
+        plan%response_left,plan%response_right,plan%cyclic_response,plan%reduced1,plan%local_work,solution)
+    endif
+    call sync_after_kernel('compact_reconstruct',force_sync=.true.)
+  end subroutine
+
+  subroutine release_compact_gpu(plan)
+    type(compact_line_gpu_plan),intent(inout) :: plan
+    if(plan%n==0) return
+    deallocate(plan%first,plan%last,plan%owner,plan%levels,plan%initial_inverse, &
+      plan%left,plan%right,plan%inverse,plan%edge_lower,plan%edge_upper, &
+      plan%response_left,plan%response_right,plan%reduced_initial,plan%reduced_left, &
+      plan%reduced_right,plan%reduced_inverse,plan%cyclic_response,plan%local_work,plan%reduced0,plan%reduced1)
+    plan%n=0
+    plan%device_bytes=0_int64
+  end subroutine
+end module compact_line_solver_gpu

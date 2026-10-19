@@ -334,6 +334,57 @@ module commcal
     close(fh)
   end subroutine dump_shock_sensor_validation
 
+  logical function compact_expanded_mask_enabled()
+    use commvar, only: conschm,difschm,numq,lcomb
+    compact_expanded_mask_enabled=conschm=='743e'.and.difschm=='643c'.and.numq==5.and..not.lcomb
+  end function
+
+  subroutine refresh_expanded_shock_mask()
+    use commvar, only: im,jm,km,npdci,npdcj,npdck
+    use commarray, only: lshock
+    use parallel, only: exchange_shock_mask_faces
+    integer(1),allocatable,save :: sendbuf(:,:),recvbuf(:,:)
+    integer :: n,axis,ntype
+    if(.not.allocated(sendbuf)) then
+      n=max((jm+1)*(km+1),(im+1)*(km+1),(im+1)*(jm+1))
+      allocate(sendbuf(n,2),recvbuf(n,2))
+    endif
+    do axis=1,3
+      select case(axis)
+      case(1)
+        n=(jm+1)*(km+1); ntype=npdci
+        sendbuf(:n,1)=reshape(merge(1_1,0_1,lshock(1,0:jm,0:km)),[n])
+        sendbuf(:n,2)=reshape(merge(1_1,0_1,lshock(im-1,0:jm,0:km)),[n])
+        lshock(-1,0:jm,0:km)=lshock(0,0:jm,0:km)
+        lshock(im+1,0:jm,0:km)=lshock(im,0:jm,0:km)
+      case(2)
+        n=(im+1)*(km+1); ntype=npdcj
+        sendbuf(:n,1)=reshape(merge(1_1,0_1,lshock(0:im,1,0:km)),[n])
+        sendbuf(:n,2)=reshape(merge(1_1,0_1,lshock(0:im,jm-1,0:km)),[n])
+        lshock(0:im,-1,0:km)=lshock(0:im,0,0:km)
+        lshock(0:im,jm+1,0:km)=lshock(0:im,jm,0:km)
+      case(3)
+        n=(im+1)*(jm+1); ntype=npdck
+        sendbuf(:n,1)=reshape(merge(1_1,0_1,lshock(0:im,0:jm,1)),[n])
+        sendbuf(:n,2)=reshape(merge(1_1,0_1,lshock(0:im,0:jm,km-1)),[n])
+        lshock(0:im,0:jm,-1)=lshock(0:im,0:jm,0)
+        lshock(0:im,0:jm,km+1)=lshock(0:im,0:jm,km)
+      end select
+      call exchange_shock_mask_faces(sendbuf(:n,:),recvbuf(:n,:),n,axis)
+      select case(axis)
+      case(1)
+        if(ntype==2.or.ntype==3) lshock(-1,0:jm,0:km)=reshape(recvbuf(:n,1)/=0_1,[jm+1,km+1])
+        if(ntype==1.or.ntype==3) lshock(im+1,0:jm,0:km)=reshape(recvbuf(:n,2)/=0_1,[jm+1,km+1])
+      case(2)
+        if(ntype==2.or.ntype==3) lshock(0:im,-1,0:km)=reshape(recvbuf(:n,1)/=0_1,[im+1,km+1])
+        if(ntype==1.or.ntype==3) lshock(0:im,jm+1,0:km)=reshape(recvbuf(:n,2)/=0_1,[im+1,km+1])
+      case(3)
+        if(ntype==2.or.ntype==3) lshock(0:im,0:jm,-1)=reshape(recvbuf(:n,1)/=0_1,[im+1,jm+1])
+        if(ntype==1.or.ntype==3) lshock(0:im,0:jm,km+1)=reshape(recvbuf(:n,2)/=0_1,[im+1,jm+1])
+      end select
+    enddo
+  end subroutine
+
   subroutine ducrossensor(timerept)
     !
     use commvar,  only : im,jm,km,is,ie,js,je,ks,ke,ia,ja,ka,hm,      &
@@ -362,7 +413,7 @@ module commcal
     if(firstcall) then
       !
       allocate(ssf(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
-      allocate(lshock(0:im,0:jm,0:km))
+      allocate(lshock(-1:im+1,-1:jm+1,-1:km+1))
       !
       firstcall=.false.
       !
@@ -464,8 +515,9 @@ module commcal
     enddo
     enddo
 
+    if(compact_expanded_mask_enabled()) call refresh_expanded_shock_mask()
     call write_sensor_validation_snapshot('sensor',ssf(0:im,0:jm,0:km), &
-                                          merge(1_1,0_1,lshock))
+                                          merge(1_1,0_1,lshock(0:im,0:jm,0:km)))
     call write_sensor_detail_validation_snapshot(dvel,prs)
     if(shock_sensor_validation_enabled() .and. (.not.validation_dumped)) then
       call dump_shock_sensor_validation()

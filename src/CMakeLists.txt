@@ -50,6 +50,9 @@ set(ASTR_SOURCES
   commfunc.F90
   commtype.F90
   commvar.F90
+  compact_line_solver.F90
+  compact_operator.F90
+  compact_runtime.F90
   benchmark_runtime.F90
   constdef.F90
   derivative.F90
@@ -121,6 +124,12 @@ endif()
 
 if(ASTR_WITH_CUDA)
   set(ASTR_GPU_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/compact_line_solver_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/compact_derivative_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/compact_filter_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/compact_operator_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/compact_transport_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/compact_distributed_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/gpu_check.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/gpu_phase_timing.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/device_runtime_gpu.cuf
@@ -771,6 +780,62 @@ set_target_properties(benchmark_runtime_probe PROPERTIES
 target_include_directories(benchmark_runtime_probe PRIVATE
   "${CMAKE_CURRENT_BINARY_DIR}/benchmark_runtime_probe_modules")
 target_link_libraries(benchmark_runtime_probe PRIVATE MPI::MPI_Fortran)
+
+if(BUILD_TESTING)
+  add_executable(compact_line_cpu_probe EXCLUDE_FROM_ALL
+    compact_line_solver.F90 ../tests/gpu_validation/compact_line_solver_probe.F90)
+  set_target_properties(compact_line_cpu_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/compact_line_cpu_modules")
+  target_include_directories(compact_line_cpu_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/compact_line_cpu_modules")
+  if(ASTR_WITH_CUDA)
+    add_executable(compact_line_gpu_probe EXCLUDE_FROM_ALL
+      compact_line_solver.F90 ../src_gpu/gpu_check.cuf
+      ../src_gpu/compact_line_solver_gpu.cuf ../tests/gpu_validation/compact_line_solver_probe.F90)
+    target_compile_definitions(compact_line_gpu_probe PRIVATE TEST_CUDA)
+    target_compile_options(compact_line_gpu_probe PRIVATE -gpu=lineinfo)
+    set_target_properties(compact_line_gpu_probe PROPERTIES
+      Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/compact_line_gpu_modules")
+    target_include_directories(compact_line_gpu_probe PRIVATE
+      "${CMAKE_CURRENT_BINARY_DIR}/compact_line_gpu_modules")
+    target_link_libraries(compact_line_gpu_probe PRIVATE MPI::MPI_Fortran)
+    add_executable(compact_derivative_gpu_probe EXCLUDE_FROM_ALL
+      constdef.F90 compact_line_solver.F90 compact_operator.F90 ../src_gpu/gpu_check.cuf
+      ../src_gpu/compact_transport_gpu.cuf ../src_gpu/compact_distributed_gpu.cuf
+      ../src_gpu/compact_line_solver_gpu.cuf ../src_gpu/compact_derivative_gpu.cuf
+      ../tests/gpu_validation/compact_derivative_probe.F90)
+    target_compile_options(compact_derivative_gpu_probe PRIVATE -gpu=lineinfo)
+    set_target_properties(compact_derivative_gpu_probe PROPERTIES
+      Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/compact_derivative_gpu_modules")
+    target_include_directories(compact_derivative_gpu_probe PRIVATE
+      "${CMAKE_CURRENT_BINARY_DIR}/compact_derivative_gpu_modules")
+    target_link_libraries(compact_derivative_gpu_probe PRIVATE MPI::MPI_Fortran)
+    add_executable(compact_filter_gpu_probe EXCLUDE_FROM_ALL
+      constdef.F90 commtype.F90 commvar.F90 commfunc.F90 filter.F90 compact_line_solver.F90 compact_operator.F90
+      ../src_gpu/compact_transport_gpu.cuf ../src_gpu/compact_distributed_gpu.cuf
+      ../src_gpu/gpu_check.cuf ../src_gpu/compact_line_solver_gpu.cuf ../src_gpu/compact_filter_gpu.cuf
+      ../tests/gpu_validation/compact_filter_probe.F90)
+    target_compile_options(compact_filter_gpu_probe PRIVATE -gpu=lineinfo)
+    set_target_properties(compact_filter_gpu_probe PROPERTIES
+      Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/compact_filter_gpu_modules")
+    target_include_directories(compact_filter_gpu_probe PRIVATE
+      "${CMAKE_CURRENT_BINARY_DIR}/compact_filter_gpu_modules")
+    target_link_libraries(compact_filter_gpu_probe PRIVATE MPI::MPI_Fortran)
+    add_executable(compact_distributed_gpu_probe EXCLUDE_FROM_ALL
+      compact_operator.F90 compact_line_solver.F90 ../src_gpu/gpu_check.cuf
+      ../src_gpu/compact_line_solver_gpu.cuf ../src_gpu/compact_transport_gpu.cuf
+      ../src_gpu/compact_distributed_gpu.cuf ../tests/gpu_validation/compact_distributed_probe.cuf)
+    target_compile_options(compact_distributed_gpu_probe PRIVATE -gpu=lineinfo)
+    if(ASTR_HAS_MPI_CUDA_QUERY)
+      target_compile_definitions(compact_distributed_gpu_probe PRIVATE ASTR_MPI_CUDA_AWARE_QUERY)
+    endif()
+    set_target_properties(compact_distributed_gpu_probe PROPERTIES
+      Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/compact_distributed_gpu_modules")
+    target_include_directories(compact_distributed_gpu_probe PRIVATE
+      "${CMAKE_CURRENT_BINARY_DIR}/compact_distributed_gpu_modules")
+    target_link_libraries(compact_distributed_gpu_probe PRIVATE MPI::MPI_Fortran)
+  endif()
+endif()
 
 if(ASTR_WITH_CUDA)
   add_executable(boundary_faces_gpu_probe EXCLUDE_FROM_ALL

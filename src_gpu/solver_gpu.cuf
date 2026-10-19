@@ -1015,10 +1015,21 @@ contains
   end function reconstruct_mp_ld_stencil
 
   attributes(device) logical function shock_interface_active(i,j,k,idir,im,jm,km)
-    use commarray_gpu, only: shock_mask_d
+    use commarray_gpu, only: shock_mask_d,expanded_shock_halo_d
     implicit none
     integer,value :: i,j,k,idir,im,jm,km
 
+    if(expanded_shock_halo_d) then
+      select case(idir)
+      case(1)
+        shock_interface_active=shock_mask_d(i,j,k)/=0_1.or.shock_mask_d(i+1,j,k)/=0_1
+      case(2)
+        shock_interface_active=shock_mask_d(i,j,k)/=0_1.or.shock_mask_d(i,j+1,k)/=0_1
+      case(3)
+        shock_interface_active=shock_mask_d(i,j,k)/=0_1.or.shock_mask_d(i,j,k+1)/=0_1
+      end select
+      return
+    endif
     select case(idir)
     case(1)
       if(i < 0) then

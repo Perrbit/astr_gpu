@@ -203,6 +203,7 @@ contains
   end subroutine gpu_after_flowinit
 
   subroutine gpu_before_finalize()
+    use compact_operator_gpu, only: release_compact_operator_gpu
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_compensation_gpu, only: release_air5_compensation_gpu
     use chemistry_coupling_gpu, only: release_air5_integration_control_gpu
@@ -212,6 +213,7 @@ contains
     use production_statistics_gpu, only: release_compact_statistics_gpu
     use boundary_gpu, only: release_boundary_gpu
     use sponge_gpu, only: release_sponge_gpu
+    use shock_sensor_gpu, only: release_shock_mask_buffers_gpu
     use conservative_boundary_stage_gpu, only: release_conservative_stage_gpu
     use halo_exchange_gpu, only: release_halo_exchange_buffers_gpu
     use mp_positivity_gpu, only: release_mp_positivity_gpu
@@ -230,11 +232,13 @@ contains
     call release_dynamic_inflow_gpu()
     call release_boundary_gpu()
     call release_sponge_gpu()
+    call release_shock_mask_buffers_gpu()
     call release_conservative_stage_gpu()
     call release_host_buffers()
     call release_halo_exchange_buffers_gpu()
     call release_mp_positivity_gpu()
     call release_crashfix_gpu()
+    call release_compact_operator_gpu()
     call release_gpu_arrays()
 #ifdef ASTR_AIR5_CHEMISTRY
     call release_air5_compensation_gpu()

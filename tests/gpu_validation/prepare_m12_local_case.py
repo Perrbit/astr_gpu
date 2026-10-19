@@ -43,10 +43,15 @@ def selected_nodes(grid, intervals=(64, 32, 24)):
     elif intervals == (450, 130, 96):
         ix = np.arange(0, 2251, 5)
         iy = np.arange(0, 261, 2)
-    elif intervals == (64, 32, 24):
-        targets = np.linspace(x[0], x[-1], 65)
+    elif intervals in ((64, 32, 24), (96, 48, 32)):
+        targets = np.linspace(x[0], x[-1], intervals[0]+1)
         ix = np.abs(x[:, None] - targets[None, :]).argmin(axis=0)
-        iy = np.rint(np.linspace(0, 260, 33)).astype(int)
+        if intervals == (96, 48, 32):
+            # The stretched outlet can map two targets to the same source node.
+            # Keep both domain ends and use distinct original nodes throughout.
+            for i in range(len(ix)-2,-1,-1):
+                ix[i] = min(ix[i],ix[i+1]-1)
+        iy = np.rint(np.linspace(0, 260, intervals[1]+1)).astype(int)
     else:
         raise ValueError('M12 supports the interface, medium, locally refined or original full grid')
     if np.unique(ix).size != intervals[0]+1 or np.unique(iy).size != intervals[1]+1:
@@ -124,10 +129,12 @@ def prepare(source, destination, backend, intervals=(64, 32, 24)):
             'original indices 0..25; five strides each of 2,3,4; stride 5 from 70 to 2250'
             if intervals == REFINED_INTERVALS else
             'every fifth original node' if intervals[0] == 450 else
-            'nearest original nodes to 65 uniformly spaced physical targets'),
+            f'nearest original nodes to {intervals[0]+1} uniformly spaced physical targets; '
+            'strict original-index ordering from the outlet' if intervals == (96,48,32) else
+            f'nearest original nodes to {intervals[0]+1} uniformly spaced physical targets'),
         'y_selection': ('all original nodes, unchanged' if intervals == FULL_INTERVALS else
                         'every second original node' if intervals[1] == 130 else
-                        '33 rounded uniformly spaced original node indices'),
+                        f'{intervals[1]+1} rounded uniformly spaced original node indices'),
         'x_indices': ix.tolist(), 'y_indices': iy.tolist(),
         'nonzero_blowing_x': xline[(xline > 20) & (xline < 60)].tolist(),
         'wall_rng_comparison': 'same algorithm and parameters; spatial draw mapping depends on mesh',

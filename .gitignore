@@ -26,3 +26,9 @@ fort*
 tests/gpu_validation/out/
 /test_results/m12_restart_20261009*/
 /chem/
+/testout/compact_cp01_*/
+/testout/compact_cp2_*/
+/testout/compact_cp3_*/
+/testout/compact_cp4_*/
+/testout/compact_cp5_*/
+/testout/compact_cp6_*/

@@ -1,0 +1,274 @@
+program compact_distributed_probe
+  use mpi
+  use cudafor
+  use iso_fortran_env, only: real64,int32
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  use compact_operator
+  use compact_line_solver
+  use compact_distributed_gpu
+  implicit none
+  integer,parameter :: batches(3)=[1,5,11]
+  integer :: ierr,world_rank,world_size,local_rank,devices,cuda_status,cart,parent,line,rank,ranks,capacity
+  integer :: dims(3),coords(3),axis,plane,kind,periodic_int,length_index,batch,nrhs,n,m,nodes
+  integer :: i,j,g,csv,binary,case_count,header(8),lo_rank,hi_rank
+  integer,allocatable :: lengths(:)
+  logical :: periods(3),periodic
+  character(1024) :: output,arg,path
+  character(32) :: scope
+  real(real64) :: edge(2),constructed_edge(2),alpha,local_error(11),error(11),scale(11),local_scale(11)
+  real(real64) :: rnorm(11),bnorm(11),xnorm(11),norms(33),global_norms(33),anorm,local_anorm
+  real(real64) :: residual,absolute,normalized,restored_error,global_restored,left(2,11),right(2,11),ends(2,11)
+  real(real64),allocatable :: exact(:,:),rhs(:,:),reference(:,:),local_rhs(:,:),solution(:,:),restored(:,:)
+  real(real64),allocatable,device :: rhs_d(:,:),solution_d(:,:),restored_d(:,:)
+  type(compact_matrix) :: global_matrix,local_matrix,constructed
+  type(compact_reference_factor) :: factor
+  type(compact_line_partition) :: part
+  type(compact_distributed_plan) :: plan
+  type(compact_cpu_plan) :: cpu_plan
+  real(real64),allocatable :: cpu_solution(:,:),cpu_nodes(:,:)
+  real(real64) :: cpu_abs,cpu_scaled
+
+  local_rank=0
+  call get_environment_variable('OMPI_COMM_WORLD_LOCAL_RANK',arg,status=ierr)
+  if(ierr==0) read(arg,*) local_rank
+  cuda_status=cudaGetDeviceCount(devices)
+  if(cuda_status/=cudaSuccess.or.devices<1) error stop 'compact distributed probe needs CUDA'
+  cuda_status=cudaSetDevice(mod(local_rank,devices))
+  if(cuda_status/=cudaSuccess) error stop 'compact probe device selection failed'
+  cuda_status=cudaDeviceSynchronize()
+  if(cuda_status/=cudaSuccess) error stop 'compact probe context initialization failed'
+  call MPI_Init(ierr)
+  call MPI_Comm_rank(MPI_COMM_WORLD,world_rank,ierr)
+  call MPI_Comm_size(MPI_COMM_WORLD,world_size,ierr)
+  call get_command_argument(1,output)
+  do i=1,3
+    call get_command_argument(i+1,arg)
+    read(arg,*) dims(i)
+  enddo
+  scope='full'
+  call get_command_argument(5,scope,status=ierr)
+  if(ierr/=0.or.len_trim(scope)==0) scope='full'
+  capacity=11
+  call get_command_argument(6,arg)
+  if(len_trim(arg)>0) read(arg,*) capacity
+  select case(trim(scope))
+  case('full')
+    lengths=[127,128,129,255,256,257,511,512,513]
+  case('smoke')
+    lengths=[17,129]
+  case('tiny')
+    lengths=[7,8,9]
+  case default
+    error stop 'unknown distributed compact probe scope'
+  end select
+  if(product(dims)/=world_size) error stop 'probe topology does not match MPI size'
+  periods=.false.
+  call MPI_Comm_split(MPI_COMM_WORLD,0,world_size-1-world_rank,parent,ierr)
+  call MPI_Cart_create(parent,3,dims,periods,.true.,cart,ierr)
+  call MPI_Comm_free(parent,ierr)
+  call MPI_Comm_rank(cart,rank,ierr)
+  call MPI_Cart_coords(cart,rank,3,coords,ierr)
+  write(path,'(a,"/rank",i4.4,".csv")') trim(output),world_rank
+  open(newunit=csv,file=trim(path),status='replace')
+  write(csv,'(a)') 'axis,plane,kind,periodic,intervals,nrhs,first,owned,line_ranks,abs_error,'// &
+    'normalized_error,residual,restore_error,cpu_abs_error,cpu_normalized_error,'// &
+    'device_bytes,sent_bytes,host_stage_bytes,device_aware'
+  write(path,'(a,"/rank",i4.4,".bin")') trim(output),world_rank
+  open(newunit=binary,file=trim(path),access='stream',form='unformatted',status='replace')
+  case_count=0
+  do axis=1,3
+    call compact_direction_communicator(cart,axis,line)
+    call MPI_Comm_rank(line,rank,ierr)
+    call MPI_Comm_size(line,ranks,ierr)
+    select case(axis)
+    case(1)
+      plane=coords(2)+dims(2)*coords(3)
+    case(2)
+      plane=coords(1)+dims(1)*coords(3)
+    case(3)
+      plane=coords(1)+dims(1)*coords(2)
+    end select
+    do length_index=1,size(lengths)
+      do kind=1,2
+        do periodic_int=0,1
+          periodic=periodic_int==1
+          call partition_compact_line(lengths(length_index),rank,ranks,periodic,part)
+          n=part%global_n
+          m=part%owned
+          nodes=part%local_intervals+1
+          global_matrix%n=n
+          global_matrix%cyclic=periodic
+          allocate(global_matrix%lower(n),global_matrix%diagonal(n),global_matrix%upper(n))
+          alpha=1.d0/3.d0
+          if(kind==2) alpha=.49d0
+          global_matrix%lower=alpha
+          global_matrix%diagonal=1.d0
+          global_matrix%upper=alpha
+          if(.not.periodic) then
+            global_matrix%lower(1)=0.d0
+            global_matrix%upper(n)=0.d0
+            if(kind==1) then
+              global_matrix%upper(1)=2.d0
+              global_matrix%lower(n)=2.d0
+              global_matrix%lower(2)=.25d0
+              global_matrix%upper(2)=.25d0
+              global_matrix%lower(n-1)=.25d0
+              global_matrix%upper(n-1)=.25d0
+            else
+              global_matrix%upper(1)=.98d0
+              global_matrix%lower(n)=.98d0
+            endif
+          endif
+          local_matrix%n=m
+          allocate(local_matrix%lower(m),local_matrix%diagonal(m),local_matrix%upper(m))
+          local_matrix%lower=global_matrix%lower(part%first+1:part%first+m)
+          local_matrix%diagonal=global_matrix%diagonal(part%first+1:part%first+m)
+          local_matrix%upper=global_matrix%upper(part%first+1:part%first+m)
+          edge=[local_matrix%lower(1),local_matrix%upper(m)]
+          local_matrix%lower(1)=0.d0
+          local_matrix%upper(m)=0.d0
+          if(kind==1) then
+            call compact_derivative_core(part,constructed,constructed_edge)
+          else
+            call compact_filter_core(part,alpha,constructed,constructed_edge)
+          endif
+          if(any(constructed_edge/=edge).or.any(constructed%lower/=local_matrix%lower).or. &
+            any(constructed%upper/=local_matrix%upper).or.any(constructed%diagonal/=local_matrix%diagonal)) &
+            call fail('runtime compact core differs from independently sliced global matrix')
+          deallocate(constructed%lower,constructed%diagonal,constructed%upper)
+          call factor_compact_reference(global_matrix,factor)
+          call prepare_compact_cpu(local_matrix,edge,part,line,capacity,cpu_plan)
+          call prepare_distributed_compact_gpu(local_matrix,edge,part,line,capacity,plan)
+          allocate(exact(n,11),rhs(n,11),reference(n,11),local_rhs(m,11),solution(m,11),restored(nodes,11), &
+            rhs_d(m,11),solution_d(m,11),restored_d(nodes,11),cpu_solution(m,11),cpu_nodes(nodes,11))
+          do j=1,11
+            do i=1,n
+              exact(i,j)=(sin(.13d0*i+.19d0*j)+cos(.07d0*i*j)+.01d0*plane)*10.d0**(mod(j,7)-3)
+            enddo
+          enddo
+          call compact_matvec(global_matrix,exact,rhs)
+          call solve_compact_reference(factor,rhs,reference)
+          if(.not.all(ieee_is_finite(reference))) call fail('nonfinite independent reference')
+          if(compact_residual(global_matrix,reference,rhs)>1.d-12) call fail('independent reference residual')
+          local_rhs=rhs(part%first+1:part%first+m,:)
+          rhs_d=local_rhs
+          do batch=1,size(batches)
+            nrhs=batches(batch)
+            if(nrhs>capacity) cycle
+            call solve_compact_cpu(cpu_plan,local_rhs,cpu_solution,cpu_nodes,nrhs)
+            cpu_abs=0.d0
+            cpu_scaled=0.d0
+            do j=1,nrhs
+              cpu_abs=max(cpu_abs,maxval(abs(cpu_solution(:,j)-reference(part%first+1:part%first+m,j))))
+              cpu_scaled=max(cpu_scaled,maxval(abs(cpu_solution(:,j)-reference(part%first+1:part%first+m,j))) &
+                /max(1.d0,maxval(abs(reference(:,j)))))
+            enddo
+            if(.not.all(ieee_is_finite(cpu_solution(:,1:nrhs))).or.cpu_scaled>2.d-10) &
+              call fail('independent distributed CPU solver failed')
+            call solve_distributed_compact_gpu(plan,rhs_d,solution_d,nrhs)
+            call restore_compact_line_nodes_gpu(plan,solution_d,restored_d,nrhs)
+            solution(:,1:nrhs)=solution_d(:,1:nrhs)
+            restored(:,1:nrhs)=restored_d(:,1:nrhs)
+            if(.not.all(ieee_is_finite(solution(:,1:nrhs))).or. &
+              .not.all(ieee_is_finite(restored(:,1:nrhs)))) call fail('nonfinite solution/restored nodes')
+            do j=1,nrhs
+              local_error(j)=maxval(abs(solution(:,j)-reference(part%first+1:part%first+m,j)))
+              local_scale(j)=maxval(abs(reference(:,j)))
+            enddo
+            call MPI_Allreduce(local_error,error,nrhs,MPI_DOUBLE_PRECISION,MPI_MAX,line,ierr)
+            call MPI_Allreduce(local_scale,scale,nrhs,MPI_DOUBLE_PRECISION,MPI_MAX,line,ierr)
+            absolute=maxval(error(1:nrhs))
+            normalized=maxval(error(1:nrhs)/max(1.d0,scale(1:nrhs)))
+            ends(1,1:nrhs)=solution(1,1:nrhs)
+            ends(2,1:nrhs)=solution(m,1:nrhs)
+            lo_rank=rank-1
+            hi_rank=rank+1
+            if(periodic) then
+              lo_rank=modulo(lo_rank,ranks)
+              hi_rank=modulo(hi_rank,ranks)
+            else
+              if(lo_rank<0) lo_rank=MPI_PROC_NULL
+              if(hi_rank>=ranks) hi_rank=MPI_PROC_NULL
+            endif
+            left=0.d0
+            right=0.d0
+            call MPI_Sendrecv(ends,2*nrhs,MPI_DOUBLE_PRECISION,lo_rank,27001,right,2*nrhs, &
+              MPI_DOUBLE_PRECISION,hi_rank,27001,line,MPI_STATUS_IGNORE,ierr)
+            call MPI_Sendrecv(ends,2*nrhs,MPI_DOUBLE_PRECISION,hi_rank,27002,left,2*nrhs, &
+              MPI_DOUBLE_PRECISION,lo_rank,27002,line,MPI_STATUS_IGNORE,ierr)
+            rnorm=0.d0
+            local_anorm=0.d0
+            do i=1,m
+              g=part%first+i
+              local_anorm=max(local_anorm,abs(global_matrix%lower(g))+ &
+                abs(global_matrix%diagonal(g))+abs(global_matrix%upper(g)))
+              do j=1,nrhs
+                restored_error=global_matrix%diagonal(g)*solution(i,j)-local_rhs(i,j)
+                if(i>1) then
+                  restored_error=restored_error+global_matrix%lower(g)*solution(i-1,j)
+                else
+                  restored_error=restored_error+global_matrix%lower(g)*left(2,j)
+                endif
+                if(i<m) then
+                  restored_error=restored_error+global_matrix%upper(g)*solution(i+1,j)
+                else
+                  restored_error=restored_error+global_matrix%upper(g)*right(1,j)
+                endif
+                rnorm(j)=max(rnorm(j),abs(restored_error))
+              enddo
+            enddo
+            do j=1,nrhs
+              bnorm(j)=maxval(abs(local_rhs(:,j)))
+              xnorm(j)=maxval(abs(solution(:,j)))
+            enddo
+            norms(1:nrhs)=rnorm(1:nrhs)
+            norms(nrhs+1:2*nrhs)=bnorm(1:nrhs)
+            norms(2*nrhs+1:3*nrhs)=xnorm(1:nrhs)
+            call MPI_Allreduce(norms,global_norms,3*nrhs,MPI_DOUBLE_PRECISION,MPI_MAX,line,ierr)
+            call MPI_Allreduce(local_anorm,anorm,1,MPI_DOUBLE_PRECISION,MPI_MAX,line,ierr)
+            residual=maxval(global_norms(1:nrhs)/(global_norms(nrhs+1:2*nrhs)+ &
+              anorm*global_norms(2*nrhs+1:3*nrhs)))
+            restored_error=0.d0
+            do i=1,nodes
+              g=part%first+i
+              if(periodic) g=modulo(g-1,n)+1
+              restored_error=max(restored_error,maxval(abs(restored(i,1:nrhs)-reference(g,1:nrhs)) &
+                /max(1.d0,scale(1:nrhs))))
+            enddo
+            call MPI_Allreduce(restored_error,global_restored,1,MPI_DOUBLE_PRECISION,MPI_MAX,line,ierr)
+            if(normalized>2.d-10.or.residual>1.d-12.or.global_restored>2.d-10) then
+              write(*,*) world_rank,axis,kind,periodic_int,part%intervals,nrhs,absolute,normalized,residual,global_restored
+              call fail('distributed compact numerical gate failed')
+            endif
+            write(csv,'(9(i0,","),6(es24.16,","),3(i0,","),l1)') &
+              axis,plane,kind,periodic_int,part%intervals,nrhs,part%first,m,ranks,absolute,normalized, &
+              residual,global_restored,cpu_abs,cpu_scaled,plan%device_bytes,plan%transport%sent_bytes, &
+              plan%transport%host_stage_bytes,plan%transport%device_aware
+            if(plane==0) then
+              header=[axis,kind,periodic_int,part%intervals,nrhs,part%first,m,plane]
+              write(binary) int(header,int32),solution(:,1:nrhs)
+            endif
+            case_count=case_count+1
+          enddo
+          call release_distributed_compact_gpu(plan)
+          call release_compact_cpu(cpu_plan)
+          deallocate(global_matrix%lower,global_matrix%diagonal,global_matrix%upper, &
+            local_matrix%lower,local_matrix%diagonal,local_matrix%upper, &
+            exact,rhs,reference,local_rhs,solution,restored,rhs_d,solution_d,restored_d,cpu_solution,cpu_nodes)
+        enddo
+      enddo
+    enddo
+    call MPI_Comm_free(line,ierr)
+  enddo
+  close(csv)
+  close(binary)
+  write(*,'(a,i0,a,i0)') 'PASS distributed compact rank=',world_rank,' cases=',case_count
+  call MPI_Comm_free(cart,ierr)
+  call MPI_Finalize(ierr)
+contains
+  subroutine fail(message)
+    character(*),intent(in) :: message
+    write(*,*) trim(message)
+    call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+  end subroutine
+end program

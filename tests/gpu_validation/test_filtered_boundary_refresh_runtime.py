@@ -20,13 +20,16 @@ ATOL = 2e-10
 
 
 def test_explicit_filter_refresh_is_boundary_independent():
-    expected = ".not.lcomb.and.numq==5.and.num_species==0.and.conschm(4:4)=='e'.and.difschm(4:4)=='e'"
+    expected = (".not.lcomb.and.numq==5.and.num_species==0.and."
+                "((conschm(4:4)=='e'.and.difschm(4:4)=='e').or."
+                "((conschm=='643c'.or.conschm=='743e').and.difschm=='643c'))")
     for filename, count in (("src/mainloop.F90", 1), ("src_gpu/mainloop_gpu.cuf", 2)):
         source = (ROOT / filename).read_text()
-        expressions = re.findall(r"refresh_filtered_primitives=([^\n]+)&\s*\n([^\n]+)", source)
+        joined = re.sub(r"&\s*\n\s*", "", source)
+        expressions = re.findall(r"refresh_filtered_primitives=([^\n]+)", joined)
         assert len(expressions) == count
-        for lines in expressions:
-            assert re.sub(r"\s+", "", "".join(lines)) == expected
+        for expression in expressions:
+            assert re.sub(r"\s+", "", expression) == expected
 
 
 CASES = [

@@ -44,6 +44,8 @@ module mainloop
     use readwrite,only: readcont,timerept,nxtchkpt,nxtwsequ,           &
                         write_validation_rk_snapshot,writemon
     use commcal,  only: cflcal
+    use compact_runtime, only: configure_global_compact,release_global_compact
+    use bc, only: bctype
 #ifdef _CUDA
     use cfl_gpu, only: collect_cfl_gpu
 #endif
@@ -69,6 +71,7 @@ module mainloop
     real(8) :: time_total,time_dowhile,time_per_loop,time_save
     real(8) :: phase_started,window_started,iteration_started
     !
+    call configure_global_compact(bctype)
     time_start=ptime()
     time_total  =0.d0
     time_save   =0.d0
@@ -277,6 +280,7 @@ module mainloop
     time_total=ptime()-time_start
     phase_started=insitu_clock()
     call finish_insitu()
+    call release_global_compact()
     call report_insitu_timing('insitu_finalize_inclusive',phase_started,nstep)
     !
     ! if(lio .and. lreport .and. ltimrpt) call timereporter(timecost=time_total,mode='final')
@@ -453,7 +457,8 @@ module mainloop
     cpu_rk_timing=benchmark_cpu_rk_timing_enabled()
     conservative_case=conservative_boundary%enabled
     refresh_filtered_primitives=.not.lcomb.and.numq==5.and.num_species==0.and. &
-      conschm(4:4)=='e'.and.difschm(4:4)=='e'
+      ((conschm(4:4)=='e'.and.difschm(4:4)=='e').or. &
+      ((conschm=='643c'.or.conschm=='743e').and.difschm=='643c'))
     dynamic_inflow_output=bctype(1)==11 .and. trim(turbinf)=='intp'
     air5_reacting_case=.false.
     air5_open_x_case=.false.
@@ -689,7 +694,7 @@ module mainloop
 
       if(rhs_validation_requested()) then
         call write_q_validation_snapshot('pre_rhs')
-        if(conservative_case .or. lcomb) &
+        if(conservative_case .or. lcomb .or. difschm=='643c') &
           call write_primitive_validation_snapshot('pre_rhs_primitives')
       endif
 

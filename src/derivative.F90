@@ -96,6 +96,7 @@ module derivative
         asolver%last_node =i_m
         asolver%dimension =dim
         asolver%nbctype   =ntype
+        asolver%direction=dir
 
         call asolver%init()
 

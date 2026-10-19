@@ -1,0 +1,240 @@
+module compact_filter_gpu
+  use cudafor
+  use commtype, only: compact_scheme
+  use compact_line_solver, only: compact_matrix
+  use compact_line_solver_gpu, only: compact_line_gpu_plan,prepare_compact_gpu, &
+    solve_compact_gpu,release_compact_gpu
+  use gpu_check, only: sync_after_kernel
+  use compact_operator, only: compact_line_partition,compact_filter_core
+  use compact_distributed_gpu
+  implicit none
+  private
+  public :: compact_filter_plan,prepare_compact_filter_gpu,apply_compact_filter_gpu,release_compact_filter_gpu
+
+  type :: compact_filter_plan
+    integer :: dim=0,hm=0,ntype=0,first=0,last=0,capacity=0
+    type(compact_line_gpu_plan) :: line
+    type(compact_distributed_plan) :: global_line
+    logical :: global=.false.
+    real(8),allocatable,device :: input(:,:),rhs(:,:),solution(:,:),filtered(:,:)
+    real(8),allocatable,device :: c6(:),c8(:),c10(:),boundary(:,:),interface(:,:)
+  end type
+contains
+  subroutine prepare_compact_filter_gpu(afilter,hm,capacity,plan,partition,comm)
+    use filter, only: coef6i,coef8i,coef10i,coefb,coefh
+    use commvar, only: alfa_filter
+    type(compact_scheme),intent(in) :: afilter
+    integer,intent(in) :: hm,capacity
+    type(compact_filter_plan),intent(inout) :: plan
+    type(compact_line_partition),intent(in),optional :: partition
+    integer,intent(in),optional :: comm
+    type(compact_matrix) :: matrix
+    integer :: n
+    real(8) :: edge(2)
+
+    if(hm<5.or.capacity<1) error stop 'invalid local compact filter halo/batch'
+    if(plan%capacity/=0) call release_compact_filter_gpu(plan)
+    if(present(partition)) then
+      if(.not.present(comm)) error stop 'global filter requires a line communicator'
+      n=partition%owned
+      call compact_filter_core(partition,alfa_filter,matrix,edge)
+      call prepare_distributed_compact_gpu(matrix,edge,partition,comm,capacity,plan%global_line)
+      plan%global=.true.
+    else
+    n=afilter%last_node-afilter%first_node+1
+    matrix%n=n
+    allocate(matrix%lower(n),matrix%diagonal(n),matrix%upper(n))
+    matrix%lower=afilter%a
+    matrix%upper=afilter%c
+    matrix%diagonal=1.d0
+    matrix%lower(1)=0.d0
+    matrix%upper(n)=0.d0
+    call prepare_compact_gpu(matrix,128,capacity,plan%line)
+    endif
+    allocate(plan%input(-hm:afilter%dimension+hm,capacity),plan%rhs(n,capacity), &
+      plan%solution(n,capacity),plan%filtered(0:afilter%dimension,capacity), &
+      plan%c6(0:3),plan%c8(0:4),plan%c10(0:5),plan%boundary(0:2,0:6),plan%interface(0:2,0:10))
+    plan%c6=coef6i
+    plan%c8=coef8i
+    plan%c10=coef10i
+    plan%boundary=coefb(0:2,0:6)
+    plan%interface=coefh(0:2,0:10)
+    plan%dim=afilter%dimension
+    plan%hm=hm
+    plan%ntype=afilter%nbctype
+    plan%first=afilter%first_node
+    plan%last=afilter%last_node
+    if(plan%global) then
+      plan%first=0
+      plan%last=n-1
+    endif
+    plan%capacity=capacity
+  end subroutine
+
+  attributes(global) subroutine global_filter_rhs_kernel(dim,hm,n,nrhs,first,total,periodic,f,c6,c8,c10,boundary,rhs)
+    integer,value :: dim,hm,n,nrhs,first,total
+    logical,value :: periodic
+    real(8),device,intent(in) :: f(-hm:dim+hm,nrhs),c6(0:3),c8(0:4),c10(0:5),boundary(0:2,0:6)
+    real(8),device,intent(out) :: rhs(n,nrhs)
+    real(8) :: value
+    integer :: row,column,j,k,g,distance
+    row=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    column=blockIdx%y
+    if(row>n) return
+    j=row-1
+    g=first+j
+    if(.not.periodic.and.g<=2) then
+      value=0.d0
+      do k=0,6
+        value=value+boundary(g,k)*f(j-g+k,column)
+      enddo
+    elseif(.not.periodic.and.total-g<=2) then
+      distance=total-g
+      value=0.d0
+      do k=0,6
+        value=value+boundary(distance,k)*f(j+distance-k,column)
+      enddo
+    elseif(.not.periodic.and.(g==3.or.total-g==3)) then
+      value=c6(0)*(f(j,column)+f(j,column))
+      do k=1,3
+        value=value+c6(k)*(f(j+k,column)+f(j-k,column))
+      enddo
+    elseif(.not.periodic.and.(g==4.or.total-g==4)) then
+      value=c8(0)*(f(j,column)+f(j,column))
+      do k=1,4
+        value=value+c8(k)*(f(j+k,column)+f(j-k,column))
+      enddo
+    else
+      value=c10(0)*(f(j,column)+f(j,column))
+      do k=1,5
+        value=value+c10(k)*(f(j+k,column)+f(j-k,column))
+      enddo
+    endif
+    rhs(row,column)=value
+  end subroutine
+
+  attributes(global) subroutine preserve_global_filter_endpoints_kernel(dim,hm,first,total,nrhs,f,filtered)
+    integer,value :: dim,hm,first,total,nrhs
+    real(8),device,intent(in) :: f(-hm:dim+hm,nrhs)
+    real(8),device,intent(inout) :: filtered(0:dim,nrhs)
+    integer :: column
+    column=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    if(column>nrhs) return
+    if(first==0) filtered(0,column)=f(0,column)
+    if(first+dim==total) filtered(dim,column)=f(dim,column)
+  end subroutine
+
+  attributes(global) subroutine compact_filter_rhs_kernel(dim,hm,first,last,ntype,nrhs, &
+      f,c6,c8,c10,boundary,interface,rhs)
+    integer,value :: dim,hm,first,last,ntype,nrhs
+    real(8),device,intent(in) :: f(-hm:dim+hm,nrhs),c6(0:3),c8(0:4),c10(0:5), &
+      boundary(0:2,0:6),interface(0:2,0:10)
+    real(8),device,intent(out) :: rhs(last-first+1,nrhs)
+    integer :: row,column,j,k,distance
+    real(8) :: value
+    logical :: left_physical,right_physical
+    row=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    column=blockIdx%y
+    if(row>last-first+1) return
+    j=first+row-1
+    left_physical=ntype==1.or.ntype==4
+    right_physical=ntype==2.or.ntype==4
+    value=0.d0
+    if(j<=first+2) then
+      distance=j-first
+      if(left_physical) then
+        do k=0,6
+          value=value+boundary(distance,k)*f(first+k,column)
+        enddo
+      else
+        do k=0,10
+          value=value+interface(distance,k)*f(first-2+k,column)
+        enddo
+      endif
+    elseif(j>=last-2) then
+      distance=last-j
+      if(right_physical) then
+        do k=0,6
+          value=value+boundary(distance,k)*f(last-k,column)
+        enddo
+      else
+        do k=0,10
+          value=value+interface(distance,k)*f(last+2-k,column)
+        enddo
+      endif
+    elseif((left_physical.and.j==first+3).or.(right_physical.and.j==last-3)) then
+      value=c6(0)*(f(j,column)+f(j,column))
+      do k=1,3
+        value=value+c6(k)*(f(j+k,column)+f(j-k,column))
+      enddo
+    elseif((left_physical.and.j==first+4).or.(right_physical.and.j==last-4)) then
+      value=c8(0)*(f(j,column)+f(j,column))
+      do k=1,4
+        value=value+c8(k)*(f(j+k,column)+f(j-k,column))
+      enddo
+    else
+      value=c10(0)*(f(j,column)+f(j,column))
+      do k=1,5
+        value=value+c10(k)*(f(j+k,column)+f(j-k,column))
+      enddo
+    endif
+    rhs(row,column)=value
+  end subroutine
+
+  attributes(global) subroutine compact_filter_project_kernel(dim,hm,first,n,ntype,nrhs,f,solution,filtered)
+    integer,value :: dim,hm,first,n,ntype,nrhs
+    real(8),device,intent(in) :: f(-hm:dim+hm,nrhs),solution(n,nrhs)
+    real(8),device,intent(out) :: filtered(0:dim,nrhs)
+    integer :: j,column
+    j=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    column=blockIdx%y
+    if(j>dim) return
+    if((j==0.and.(ntype==1.or.ntype==4)).or.(j==dim.and.(ntype==2.or.ntype==4))) then
+      filtered(j,column)=f(j,column)
+    else
+      filtered(j,column)=solution(j-first+1,column)
+    endif
+  end subroutine
+
+  subroutine apply_compact_filter_gpu(plan,nrhs)
+    type(compact_filter_plan),intent(inout) :: plan
+    integer,intent(in) :: nrhs
+    if(nrhs<1.or.nrhs>plan%capacity) error stop 'compact filter batch exceeds prepared capacity'
+    if(plan%global) then
+      call global_filter_rhs_kernel<<<dim3((plan%global_line%n+127)/128,nrhs,1),128>>>( &
+        plan%dim,plan%hm,plan%global_line%n,nrhs,plan%global_line%partition%first, &
+        plan%global_line%partition%intervals,plan%global_line%partition%periodic, &
+        plan%input,plan%c6,plan%c8,plan%c10,plan%boundary,plan%rhs)
+      call sync_after_kernel('global compact filter RHS',force_sync=.true.)
+      call solve_distributed_compact_gpu(plan%global_line,plan%rhs,plan%solution,nrhs)
+      call restore_compact_line_nodes_gpu(plan%global_line,plan%solution,plan%filtered,nrhs)
+      if(.not.plan%global_line%partition%periodic) then
+        call preserve_global_filter_endpoints_kernel<<<(nrhs+127)/128,128>>>( &
+          plan%dim,plan%hm,plan%global_line%partition%first,plan%global_line%partition%intervals, &
+          nrhs,plan%input,plan%filtered)
+        call sync_after_kernel('global compact filter endpoint projection',force_sync=.true.)
+      endif
+      return
+    endif
+    call compact_filter_rhs_kernel<<<dim3((plan%line%n+127)/128,nrhs,1),dim3(128,1,1)>>>( &
+      plan%dim,plan%hm,plan%first,plan%last,plan%ntype,nrhs,plan%input, &
+      plan%c6,plan%c8,plan%c10,plan%boundary,plan%interface,plan%rhs)
+    call sync_after_kernel('compact_filter_rhs_kernel',force_sync=.true.)
+    call solve_compact_gpu(plan%line,plan%rhs,plan%solution,nrhs)
+    call compact_filter_project_kernel<<<dim3((plan%dim+128)/128,nrhs,1),dim3(128,1,1)>>>( &
+      plan%dim,plan%hm,plan%first,plan%line%n,plan%ntype,nrhs,plan%input,plan%solution,plan%filtered)
+    call sync_after_kernel('compact_filter_project_kernel',force_sync=.true.)
+  end subroutine
+
+  subroutine release_compact_filter_gpu(plan)
+    type(compact_filter_plan),intent(inout) :: plan
+    if(allocated(plan%input)) then
+      deallocate(plan%input,plan%rhs,plan%solution,plan%filtered, &
+        plan%c6,plan%c8,plan%c10,plan%boundary,plan%interface)
+    endif
+    call release_compact_gpu(plan%line)
+    if(plan%global) call release_distributed_compact_gpu(plan%global_line)
+    plan%capacity=0
+    plan%global=.false.
+  end subroutine
+end module
