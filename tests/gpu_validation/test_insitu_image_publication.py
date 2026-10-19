@@ -67,6 +67,18 @@ def test_pair_and_no_overwrite(tmp_path):
     assert picture.read_bytes()==b'jpeg'
 
 
+@pytest.mark.parametrize('eps', [None, b'eps'])
+def test_ordinary_images_do_not_force_storage_sync(tmp_path, monkeypatch, eps):
+    def unexpected_sync(descriptor):
+        raise AssertionError('ordinary image publication must not fsync')
+    monkeypatch.setattr(publication.os, 'fsync', unexpected_sync)
+    picture=tmp_path/'frame.jpeg'
+    assert publication.publish_pair(picture,b'jpeg',eps) is None
+    assert picture.read_bytes()==b'jpeg'
+    if eps is not None:
+        assert picture.with_suffix('.eps').read_bytes()==eps
+
+
 def config():
     return configuration(interval=2).replace('statistics_window=0.0005,0.0115',
         'statistics_window=0.0005,0.0035').replace('render=.true.,',

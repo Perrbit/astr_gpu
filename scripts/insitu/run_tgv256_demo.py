@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from image_publication import eps_output_enabled
 
 ROOT = Path(__file__).resolve().parents[2]
 MPI = Path('/opt/nvidia/hpc_sdk/Linux_x86_64/26.1/comm_libs/hpcx/bin/mpiexec')
@@ -72,6 +74,7 @@ def execute(args):
     for key in ('DISPLAY', 'PYTHONPATH', 'CATALYST_IMPLEMENTATION_PREFER_ENV', 'VTK_EGL_DEVICE_INDEX'):
         env.pop(key, None)
     env.update(ASTR_INSITU_CONFIG=str(case/'insitu.nml'), ASTR_FORCE_MPI_TOPOLOGY='2,1,1',
+               ASTR_INSITU_WRITE_EPS='1' if eps_output_enabled() else '0',
                ASTR_GPU_SYNC_MODE='explicit', ASTR_GPU_HALO_TRANSPORT='pinned',
                ASTR_GPU_PRECISION_MODE='fp64', ASTR_GPU_BENCHMARK_NO_FIELD_IO='1',
                ASTR_GPU_RK_TIMING='1')
@@ -87,7 +90,7 @@ def execute(args):
     assert not list(out.rglob('*.h5')) and not list(out.rglob('COMPLETE')) and not list(out.glob('restart*'))
     for product in ('q0_speed', 'streamlines_speed'):
         assert len(list(out.glob(f'{product}.*.jpeg'))) == args.steps
-        assert len(list(out.glob(f'{product}.*.eps'))) == args.steps
+        assert len(list(out.glob(f'{product}.*.eps'))) == (args.steps if eps_output_enabled() else 0)
     resources = []
     for rank in (0, 1):
         with (out/f'resources.rank{rank:08d}.csv').open() as stream:

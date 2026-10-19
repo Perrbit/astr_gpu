@@ -137,6 +137,16 @@ __global__ void inspect_display_indices(astr_insitu::DeviceGeometryView view,Sur
   if(i<3*view.cells && view.display_connectivity[i]!=static_cast<viskores::UInt32>(view.connectivity[i]))
     maximum_error(&result->display_error,1.);
 }
+__global__ void compare_display_views(astr_insitu::DeviceGeometryView a,astr_insitu::DeviceGeometryView b,
+    const astr_insitu::DisplayColor* first,const astr_insitu::DisplayColor* second,int* bad) {
+  const viskores::Id i=blockIdx.x*blockDim.x+threadIdx.x;
+  if(i<a.points) {
+    for(int d=0;d<3;++d)
+      if(__float_as_uint(a.display_coordinates[i][d])!=__float_as_uint(b.display_coordinates[i][d])) atomicAdd(bad,1);
+    for(int d=0;d<4;++d) if(first[i][d]!=second[i][d]) atomicAdd(bad,1);
+  }
+  if(i<3*a.cells && a.display_connectivity[i]!=b.display_connectivity[i]) atomicAdd(bad,1);
+}
 SurfaceAudit inspect_device_view(const astr_insitu::DeviceGeometryView& view,double h,double iso,
     const viskores::Vec3f* computational=nullptr) {
   SurfaceAudit result,*device=nullptr;
@@ -271,7 +281,8 @@ int run(int argc,char** argv,int rank,int ranks) {
   bool empty=selected=="empty" || selected=="curve-empty";
   const std::string mode=argc>3?argv[3]:"";
   const bool device_view=mode.rfind("device-view",0)==0;
-  if(device_view && mode!="device-view" && mode!="device-view-nonfinite" && mode!="device-view-bad-index")
+  if(device_view && mode!="device-view" && mode!="device-view-nonfinite" && mode!="device-view-bad-index" &&
+      mode!="device-view-image-only")
     throw std::invalid_argument("Unknown device-view probe mode");
   if(axis<0 || axis>2) throw std::runtime_error("invalid axis");
   int devices=0;
@@ -304,7 +315,7 @@ int run(int argc,char** argv,int rank,int ranks) {
   double display_error=0.;
   if(device_view) {
     nvtxRangePushA("ASTR_IS8_DEVICE_SURFACE_VIEW");
-    if(mode!="device-view") {
+    if(mode=="device-view-nonfinite" || mode=="device-view-bad-index") {
       auto coordinates=products.surface.GetCoordinateSystem().GetData().AsArrayHandle<
         viskores::cont::ArrayHandle<viskores::Vec3f>>();
       auto cells=products.surface.GetCellSet().AsCellSet<viskores::cont::CellSetSingleType<>>();
@@ -334,6 +345,37 @@ int run(int argc,char** argv,int rank,int ranks) {
       "geometry_host_bytes=0 metadata_audit_bytes=%zu bounds_bytes=%zu fp64=1 display_fp32=1\n",
       rank,view.device,view.step,view.time,static_cast<long long>(view.points),
       static_cast<long long>(view.cells),view.points?sizeof(SurfaceAudit):0,sizeof(view.bounds)+sizeof(view.speed_range));
+    if(mode=="device-view-image-only") {
+      auto thin=astr_insitu::extract_tgv_geometry(a.velocity,a.diagnostics,dims,offset,false,true,iso,nullptr,32,
+        a.coordinates,viskores::Id3(32),14,true);
+      if(thin.surface.HasPointField("u") || (curve && thin.surface.HasPointField("_astr_computational_xyz")))
+        throw std::runtime_error("Image-only surface retained duplicate diagnostic fields");
+      astr_insitu::DeviceGeometryOwner image_owner(thin.surface,12,.012,3,nullptr,true);
+      std::vector<double> palette(4096*3);
+      for(int i=0;i<4096;++i) for(int d=0;d<3;++d) palette[3*i+d]=double(i)/4095.;
+      const auto first=owner.color_display(palette),second=image_owner.color_display(palette);
+      if(image_owner.get().points!=view.points || image_owner.get().cells!=view.cells)
+        throw std::runtime_error("Image-only surface topology changed");
+      for(int d=0;d<6;++d) if(image_owner.get().bounds[d]!=view.bounds[d])
+        throw std::runtime_error("Image-only surface bounds changed");
+      thin={};
+      image_owner.retain_display_only();
+      const auto& display=image_owner.get();
+      if(display.coordinates || display.velocity || display.q || display.u || display.scalar || display.connectivity ||
+          display.display_speed) throw std::runtime_error("Image-only owner still retains quantitative fields");
+      int* mismatch=nullptr;int errors=0;
+      if(cudaMalloc(&mismatch,sizeof(int))!=cudaSuccess || cudaMemset(mismatch,0,sizeof(int))!=cudaSuccess)
+        throw std::runtime_error("Image-only display comparison allocation failed");
+      const auto count=std::max(view.points,3*view.cells);
+      if(count) compare_display_views<<<(count+255)/256,256>>>(view,display,first,second,mismatch);
+      astr_insitu::synchronize_device_stage("CompareImageOnlyDisplay");
+      if(cudaMemcpy(&errors,mismatch,sizeof(int),cudaMemcpyDeviceToHost)!=cudaSuccess)
+        throw std::runtime_error("Image-only comparison scalar download failed");
+      cudaFree(mismatch);
+      if(errors) throw std::runtime_error("Image-only display differs from full fields");
+      std::printf("IM4_IMAGE_ONLY rank=%d exact=1 geometry_host_bytes=0 display_payload_bytes=%llu\n",rank,
+        static_cast<unsigned long long>(view.points)*16+static_cast<unsigned long long>(view.cells)*12);
+    }
     nvtxRangePop();
   } else {
     nvtxRangePushA("ASTR_IS8_COMPACT_GEOMETRY_READ");

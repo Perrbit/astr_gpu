@@ -29,7 +29,8 @@ def arguments(output, axis="x"):
     return SimpleNamespace(output=output, executable=EXE, mpiexec=MPIEXEC,
         case="tgv", mode="steps", restart_step=5, initial_dimension=0,
         legacy_statistics=False, statistics=True, initial_restart=False,
-        filter_workspace="scalar", force="feedback", axis=axis, no_samples=True)
+        filter_workspace="scalar", force="feedback", axis=axis, no_samples=True,
+        insitu_write_eps="1")  # These historical regressions explicitly check paired output.
 
 
 def configuration(render=True, statistics=True, mode="steps", interval=8):

@@ -15,6 +15,9 @@ module insitu_device_velocity
   public :: complete_sample_wall_fields_gpu
   public :: extend_sample_wall_primitives_gpu
   public :: reduce_sample_wall_shear_gpu
+#ifdef ASTR_BUILD_TESTING
+  public :: trace_sample_memory_gpu
+#endif
   real(8),device,allocatable,save :: send_d(:),receive_d(:)
   real(8),allocatable,target,save :: send_h(:),receive_h(:)
   integer,save :: transport_comm=MPI_COMM_NULL,transport_parent=MPI_COMM_NULL
@@ -34,6 +37,23 @@ module insitu_device_velocity
   end interface
 #endif
 contains
+#ifdef ASTR_BUILD_TESTING
+  subroutine trace_sample_memory_gpu(stage,bytes,comm)
+    character(*),intent(in) :: stage
+    integer(int64),intent(in) :: bytes
+    integer,intent(in) :: comm
+    character(8) :: option
+    integer :: status,rank,ierr
+    integer(c_size_t) :: free_bytes,total_bytes
+    call get_environment_variable('ASTR_INSITU_MEMORY_TRACE',option,status=status)
+    if(status/=0.or.trim(option)/='1') return
+    status=cudaMemGetInfo(free_bytes,total_bytes)
+    if(status/=cudaSuccess) call MPI_Abort(comm,71,ierr)
+    call MPI_Comm_rank(comm,rank,ierr)
+    write(*,'(3a,3(a,i0))') 'ASTR_INSITU_MEMORY stage=',stage,' domain=sample', &
+      ' rank=',rank,' payload_bytes=',bytes,' device_used_bytes=',total_bytes-free_bytes
+  end subroutine
+#endif
   subroutine reduce_sample_wall_shear_gpu(coordinates,fields,weights,owned_x,component,profile, &
     comm,budget,reserve,retained)
     use ieee_arithmetic, only: ieee_is_finite
@@ -169,15 +189,22 @@ contains
     enddo
   end subroutine
 
-  subroutine complete_sample_fields_gpu(fields,extent,components,comm)
+  subroutine complete_sample_fields_gpu(fields,extent,components,comm,canonical_axes)
     integer,intent(in) :: extent(3),components,comm
     real(8),device,intent(inout) :: fields(0:extent(1),0:extent(2),0:extent(3),components)
+    logical,intent(in),optional :: canonical_axes(3)
+    logical :: axes(3)
     integer :: axis,face,status
     logical :: received
     integer(int64) :: count64
-    call require_snapshot(transport_comm/=MPI_COMM_NULL.and.all(extent==transport_extent).and. &
+    axes=.true.
+    if(present(canonical_axes)) axes=canonical_axes
+    call require_snapshot(transport_comm/=MPI_COMM_NULL.and.all(extent>=1).and. &
+      all(extent<=transport_extent).and.all(.not.axes.or.extent==transport_extent).and. &
+      all(axes.or.transport_sizes==1).and. &
       components>=1.and.components<=transport_components,comm,'canonical field transport identity/components')
     do axis=1,3
+      if(.not.axes(axis)) cycle
       count64=int(components,int64)*product(int(extent+1,int64))/(extent(axis)+1)
       call require_snapshot(count64<=transport_capacity,comm,'canonical field face capacity')
       face=int(count64)
@@ -609,36 +636,48 @@ contains
     enddo
   end subroutine
 
-  subroutine derive_sample_velocity_gpu(halo,metrics,derived,extent,hm,comm,budget,reserve,wall_sixth)
+  subroutine derive_sample_velocity_gpu(halo,metrics,derived,extent,hm,comm,budget,reserve,wall_sixth,q_only,retained_other)
     integer,intent(in) :: extent(3),hm,comm
     integer(int64),intent(in) :: budget,reserve
     real(8),device,intent(in) :: halo(-3:extent(1)+3,-3:extent(2)+3,-3:extent(3)+3,3)
     real(8),device,intent(in) :: metrics(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3,3)
     real(8),device,allocatable,intent(out) :: derived(:,:)
-    logical,intent(in),optional :: wall_sixth
+    logical,intent(in),optional :: wall_sixth,q_only
+    integer(int64),intent(in),optional :: retained_other
     integer,device,allocatable :: invalid(:)
-    integer :: nodes,status,bad
+    integer :: nodes,status,bad,components
     logical :: sixth
-    integer(int64) :: bytes,free_bytes,total_bytes,retained,required
+    integer(int64) :: bytes,free_bytes,total_bytes,retained,required,extra
     sixth=.false.
     if(present(wall_sixth)) sixth=wall_sixth
+    components=14
+    if(present(q_only)) then
+      if(q_only) components=1
+    endif
     call require_snapshot(transport_comm/=MPI_COMM_NULL.and.all(extent==transport_extent).and.hm>=3, &
       comm,'private diagnostic transport shape')
     call require_snapshot(.not.sixth.or.all(extent>=6),comm,'sixth-order private wall gradient needs seven nodes')
     call require_snapshot(product(int(extent+1,int64))<=huge(nodes)/14,comm,'private diagnostic index overflow')
-    nodes=product(extent+1); bytes=int(nodes,int64)*14*8+4
+    nodes=product(extent+1); bytes=int(nodes,int64)*components*8+4
     retained=transport_device_bytes+int(nodes,int64)*24+product(int(extent+7,int64))*24
+    extra=0
+    if(present(retained_other)) extra=retained_other
+    call require_snapshot(extra>=0.and.extra<=budget.and.retained<=budget-extra,comm,'private diagnostic retained budget')
+    retained=retained+extra
     required=max(reserve,1073741824_int64)
     free_bytes=0; total_bytes=0
     status=cudaMemGetInfo(free_bytes,total_bytes)
     call require_snapshot(status==cudaSuccess.and.budget>=retained.and.free_bytes>=required, &
       comm,'private diagnostic device reserve')
     call require_snapshot(bytes<=budget-retained.and.bytes<=free_bytes-required,comm,'private diagnostic device budget')
-    allocate(derived(14,nodes),invalid(1),stat=status)
+    allocate(derived(components,nodes),invalid(1),stat=status)
     call require_snapshot(status==0,comm,'private diagnostic allocation')
+#ifdef ASTR_BUILD_TESTING
+    call trace_sample_memory_gpu('diagnostic-allocation',8_int64*size(derived,kind=int64),comm)
+#endif
     invalid=0
     call derive_velocity_kernel<<<(nodes+255)/256,256>>>(halo,metrics,derived,invalid, &
-      extent(1),extent(2),extent(3),hm,transport_ntype(1),transport_ntype(2),transport_ntype(3),sixth)
+      extent(1),extent(2),extent(3),hm,transport_ntype(1),transport_ntype(2),transport_ntype(3),sixth,components)
     status=cudaDeviceSynchronize()
     call require_snapshot(status==cudaSuccess,comm,'private diagnostic synchronization')
     bad=invalid(1)
@@ -750,14 +789,14 @@ contains
     value=sign*num1d60*value
   end function
 
-  attributes(global) subroutine derive_velocity_kernel(halo,metrics,derived,invalid,im,jm,km,hm,nti,ntj,ntk,sixth)
+  attributes(global) subroutine derive_velocity_kernel(halo,metrics,derived,invalid,im,jm,km,hm,nti,ntj,ntk,sixth,components)
     use output_derivatives_gpu, only: output_derivative6_gpu
     use ieee_arithmetic, only: ieee_is_finite
-    integer,value :: im,jm,km,hm,nti,ntj,ntk
+    integer,value :: im,jm,km,hm,nti,ntj,ntk,components
     logical,value :: sixth
     real(8),device,intent(in) :: halo(-3:im+3,-3:jm+3,-3:km+3,3)
     real(8),device,intent(in) :: metrics(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3)
-    real(8),device,intent(out) :: derived(14,*)
+    real(8),device,intent(out) :: derived(components,*)
     integer,device,intent(inout) :: invalid(*)
     real(8) :: gradient(3,3),directional(3),fields(14),qvalue
     integer :: node,i,j,k,c,d,ignored
@@ -796,23 +835,25 @@ contains
     fields(14)=gradient(2,1)-gradient(1,2)
     do c=1,14
       if(.not.ieee_is_finite(fields(c))) ignored=atomicExch(invalid(1),1)
-      derived(c,node+1)=fields(c)
+      if(components==14) derived(c,node+1)=fields(c)
     enddo
+    if(components==1) derived(1,node+1)=fields(10)
   end subroutine
 
   ! Independent, read-only snapshot. Call only at a completed step after solver
   ! transport is idle. Shared upper nodes follow host x/y/z canonicalization,
   ! including edges/corners. Physical boundaries are never wrapped or filled.
-  subroutine snapshot_sample_velocity_gpu(q,velocity,extent,hm,nq,sizes,neighbors,comm,budget,reserve)
+  subroutine snapshot_sample_velocity_gpu(q,velocity,extent,hm,nq,sizes,neighbors,comm,budget,reserve,retained_other)
     integer,intent(in) :: extent(3),hm,nq,sizes(3),neighbors(2,3),comm
     integer(int64),intent(in) :: budget,reserve
+    integer(int64),intent(in),optional :: retained_other
     real(8),device,intent(in) :: q(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,nq)
     real(8),device,allocatable,intent(out) :: velocity(:,:)
     real(8),device,allocatable :: state(:,:,:,:)
     integer,device,allocatable :: invalid(:)
     integer :: axis,nodes,status,ierr,bad,ranks,first,node,i,j,k,component,comparison
     real(8) :: failure_state(4)
-    integer(int64) :: nodes64,bytes,free_bytes,total_bytes
+    integer(int64) :: nodes64,bytes,free_bytes,total_bytes,extra
     call require_snapshot(transport_comm/=MPI_COMM_NULL,comm,'snapshot requires initialized transport')
     call MPI_Comm_compare(comm,transport_parent,comparison,ierr)
     call require_snapshot(ierr==MPI_SUCCESS.and.(comparison==MPI_IDENT.or.comparison==MPI_CONGRUENT).and. &
@@ -829,16 +870,24 @@ contains
       nodes64=nodes64*(extent(axis)+1)
     enddo
     bytes=nodes64*7*8+12
+    extra=0
+    if(present(retained_other)) extra=retained_other
+    call require_snapshot(extra>=0.and.extra<=budget.and.transport_device_bytes<=budget-extra, &
+      comm,'snapshot retained budget')
     free_bytes=0; total_bytes=0
     status=cudaMemGetInfo(free_bytes,total_bytes)
     call require_snapshot(status==cudaSuccess.and.budget>=transport_device_bytes.and. &
       free_bytes>=max(reserve,1073741824_int64),comm,'snapshot device memory reserve')
-    call require_snapshot(bytes<=budget-transport_device_bytes.and. &
+    call require_snapshot(bytes<=budget-transport_device_bytes-extra.and. &
       bytes<=free_bytes-max(reserve,1073741824_int64),comm,'snapshot device memory budget')
     nodes=int(nodes64)
     allocate(state(0:extent(1),0:extent(2),0:extent(3),4), &
       velocity(3,nodes),invalid(3),stat=status)
     call require_snapshot(status==0,comm,'snapshot allocation')
+#ifdef ASTR_BUILD_TESTING
+    call trace_sample_memory_gpu('canonical-state-and-velocity', &
+      8_int64*(size(state,kind=int64)+size(velocity,kind=int64)),comm)
+#endif
     call copy_state<<<(nodes*4+255)/256,256>>>(q,state,extent(1),extent(2),extent(3),hm,nq)
     status=cudaDeviceSynchronize()
     call require_snapshot(status==cudaSuccess,comm,'snapshot copy synchronization')

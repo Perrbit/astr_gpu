@@ -65,6 +65,7 @@ def test_periodic_halo_and_q(ranks, axis, mode):
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
     assert 'halo_errors=0 source_errors=0' in output
+    assert 'Q_ONLY exact=1' in output
     match = re.search(r'max_error=\s*(\S+)', output)
     assert match and float(match.group(1)) <= 2e-10, output
 

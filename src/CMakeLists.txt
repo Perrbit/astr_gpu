@@ -569,6 +569,7 @@ if(BUILD_TESTING)
 
   add_executable(checkpoint_state_probe EXCLUDE_FROM_ALL
     checkpoint_state_io.F90 insitu_time_integral.F90 insitu_velocity_statistics.F90
+    ../tests/gpu_validation/checkpoint_probe_mpi_counts.F90
     ../tests/gpu_validation/checkpoint_state_probe.F90)
   set_target_properties(checkpoint_state_probe PROPERTIES
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/checkpoint_state_modules")

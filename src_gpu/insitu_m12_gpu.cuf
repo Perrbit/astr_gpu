@@ -6,13 +6,17 @@ module insitu_m12_gpu
   use checkpoint_state_io, only: checkpoint_state_require
   implicit none
   private
-  public :: begin_m12_completed_gpu,sample_m12_completed_gpu,capture_m12_temperature_gpu,m12_diagnostic_layout_supported
+  public :: begin_m12_completed_gpu,sample_m12_completed_gpu,finish_m12_completed_gpu
+  public :: capture_m12_temperature_gpu,m12_diagnostic_layout_supported
+  public :: capture_m12_plane_inputs_gpu
   integer,parameter :: probes=72
   integer,device,allocatable,save :: indices_d(:,:)
   real(8),device,allocatable,save :: probe_d(:,:),blocks_d(:,:),summary_d(:),wall_d(:,:)
   integer,save :: local_indices(3,probes)=0,owners(probes)=0,last_step=-1
   integer,save :: segment_start_step=0
-  logical,save :: initialized=.false.
+  integer,save :: probe_unit=0
+  real(8),save :: velocity_scale=0.d0
+  logical,save :: initialized=.false.,probe_open=.false.
 contains
   subroutine begin_m12_completed_gpu(completed_step)
     integer,intent(in) :: completed_step
@@ -32,13 +36,20 @@ contains
   end function
 
   subroutine initialize_m12()
-    use commvar, only: im,jm,km,ia,ja,ka
+    use commvar, only: im,jm,km,ia,ja,ka,numq,const2,const5,const6, &
+      roinf,pinf,tinf,reynolds,prandtl,uinf,vinf,winf
     use parallel, only: ig0,jg0,kg0,mpirank,isize,jsize,ksize
     integer :: unit,status,closed,n,ijk(3),total(probes),ierr,nb
     real(8) :: target(3),actual(3)
     character(256) :: header
     call checkpoint_state_require(m12_diagnostic_layout_supported(), &
       MPI_COMM_WORLD,'M12 HD requires an admitted x-slab grid and rank count')
+    call checkpoint_state_require(numq==5.and.all(ieee_is_finite([const2,const5,const6, &
+      roinf,pinf,tinf,reynolds,prandtl])).and.min(const2,const5,const6,roinf,pinf,tinf,reynolds,prandtl)>0.d0, &
+      MPI_COMM_WORLD,'invalid M12 diagnostic reference state')
+    velocity_scale=sqrt(uinf**2+vinf**2+winf**2)
+    call checkpoint_state_require(ieee_is_finite(velocity_scale).and.velocity_scale>0.d0, &
+      MPI_COMM_WORLD,'M12 diagnostics require nonzero free-stream speed')
     open(newunit=unit,file='datin/insitu_probes.dat',status='old',action='read',iostat=status)
     call checkpoint_state_require(status==0,MPI_COMM_WORLD,'missing M12 HD probe map')
     read(unit,'(a)',iostat=status) header
@@ -75,66 +86,63 @@ contains
     character(*),intent(in) :: directory
     integer,intent(in) :: step
     real(8),intent(in) :: t
-    real(8) :: local(6,probes),values(6,probes),summary(3),minimum(3),wall(3,im+1),velocity_scale
+    real(8) :: local(6,probes),values(6,probes),summary(4),minimum(4),wall(3,im+1)
     integer :: status,ierr,n,i,unit,closed,nb
     character(1200) :: path
+    logical :: valid
     if(.not.initialized) call initialize_m12()
-    call checkpoint_state_require(last_step>=0.and.step==last_step+1, &
-      MPI_COMM_WORLD,'M12 HD sample must follow each complete step, without initial/final duplication')
-    call checkpoint_state_require(numq==5.and.all(ieee_is_finite([t,const2,const5,const6, &
-      roinf,pinf,tinf,reynolds,prandtl])).and.min(const2,const5,const6,roinf,pinf,tinf,reynolds,prandtl)>0.d0, &
-      MPI_COMM_WORLD,'invalid M12 diagnostic reference state')
-    velocity_scale=sqrt(uinf**2+vinf**2+winf**2)
-    call checkpoint_state_require(ieee_is_finite(velocity_scale).and.velocity_scale>0.d0, &
-      MPI_COMM_WORLD,'M12 diagnostics require nonzero free-stream speed')
+    valid=last_step>=0.and.step==last_step+1.and.ieee_is_finite(t)
     nb=size(blocks_d,2)
     call state_minima<<<nb,256>>>(q_d,blocks_d,im,jm,km,hm,const2,const6)
     status=cudaDeviceSynchronize()
-    call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'M12 state validation kernel')
+    call diagnostic_require(status==cudaSuccess,'M12 state validation kernel')
     call reduce_minima<<<1,1>>>(blocks_d,summary_d,nb)
     status=cudaDeviceSynchronize()
-    call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'M12 state validation reduction')
-    summary=summary_d
-    call MPI_Allreduce(summary,minimum,3,MPI_DOUBLE_PRECISION,MPI_MIN,MPI_COMM_WORLD,ierr)
-    call checkpoint_state_require(ierr==MPI_SUCCESS.and.all(ieee_is_finite(minimum)).and.all(minimum>0.d0), &
-      MPI_COMM_WORLD,'nonpositive/nonfinite M12 physical density, internal energy or temperature')
+    call diagnostic_require(status==cudaSuccess,'M12 state validation reduction')
+    summary(1:3)=summary_d
     call gather_probes<<<1,128>>>(q_d,indices_d,probe_d,im,jm,km,hm,const2,const6, &
       velocity_scale,roinf,pinf,tinf)
     status=cudaDeviceSynchronize()
-    call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'M12 sparse probe kernel')
+    call diagnostic_require(status==cudaSuccess,'M12 sparse probe kernel')
     local=probe_d
-    call checkpoint_state_require(all(ieee_is_finite(local)),MPI_COMM_WORLD,'nonfinite M12 sparse probe')
+    summary(4)=merge(1.d0,0.d0,valid.and.all(ieee_is_finite(local)).and. &
+      all(ieee_is_finite(summary(1:3))).and.all(summary(1:3)>0.d0))
+    call MPI_Allreduce(summary,minimum,4,MPI_DOUBLE_PRECISION,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call diagnostic_require(ierr==MPI_SUCCESS,'M12 state validation consensus')
+    call diagnostic_require(minimum(4)==1.d0.and.all(ieee_is_finite(minimum)).and.all(minimum>0.d0), &
+      'nonpositive/nonfinite M12 physical state or invalid completed-step/probe sample')
     call MPI_Reduce(local,values,6*probes,MPI_DOUBLE_PRECISION,MPI_SUM,0,MPI_COMM_WORLD,ierr)
-    call checkpoint_state_require(ierr==MPI_SUCCESS,MPI_COMM_WORLD,'M12 sparse probe reduction')
+    call diagnostic_require(ierr==MPI_SUCCESS,'M12 sparse probe reduction')
     status=0; closed=0
     if(mpirank==0) then
-      path=trim(directory)//'/probes.csv'
-      if(segment_start_step>0) write(path,'(a,"/probes.from_step",i12.12,".csv")') trim(directory),segment_start_step
-      if(last_step==segment_start_step) then
-        open(newunit=unit,file=trim(path),status='new',action='write',iostat=status)
-        if(status==0) write(unit,'(a)',iostat=status) 'step,time,probe,u_Uinf,v_Uinf,w_Uinf,rho_rhoinf,p_pinf,T_Tinf'
-      else
-        open(newunit=unit,file=trim(path),status='old',position='append',action='write',iostat=status)
+      if(.not.probe_open) then
+        path=trim(directory)//'/probes.csv'
+        if(segment_start_step>0) write(path,'(a,"/probes.from_step",i12.12,".csv")') trim(directory),segment_start_step
+        open(newunit=probe_unit,file=trim(path),status='new',action='write',iostat=status)
+        if(status==0) then
+          probe_open=.true.
+          write(probe_unit,'(a)',iostat=status) 'step,time,probe,u_Uinf,v_Uinf,w_Uinf,rho_rhoinf,p_pinf,T_Tinf'
+        endif
       endif
       if(status==0) then
         do n=1,probes
-          write(unit,'(i0,a,es24.16,a,i0,6(a,es24.16))',iostat=status) step,',',t,',',n,(',',values(i,n),i=1,6)
+          write(probe_unit,'(i0,a,es24.16,a,i0,6(a,es24.16))',iostat=status) step,',',t,',',n,(',',values(i,n),i=1,6)
           if(status/=0) exit
         enddo
-        close(unit,iostat=closed)
+        if(status==0) flush(probe_unit,iostat=status)
       endif
     endif
-    call checkpoint_state_require(status==0.and.closed==0,MPI_COMM_WORLD,'cannot publish M12 probe time series')
+    call diagnostic_require(status==0,'cannot publish M12 probe time series')
     if(mod(step,50)==0) then
       call wall_curves<<<(im+256)/256,256>>>(q_d,x_d,dxi_d,wall_d,im,jm,km,hm,ig0,ia, &
         const2,const5,const6,tempconst,tempconst1,reynolds,prandtl,roinf,velocity_scale)
       status=cudaDeviceSynchronize()
-      call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'M12 wall diagnostic kernel')
+      call diagnostic_require(status==cudaSuccess,'M12 wall diagnostic kernel')
       wall=wall_d
-      call checkpoint_state_require(all(ieee_is_finite(wall)),MPI_COMM_WORLD,'nonfinite M12 wall curve')
+      call diagnostic_require(all(ieee_is_finite(wall)),'nonfinite M12 wall curve')
       write(path,'(a,"/wall.step",i8.8,".rank",i4.4,".csv")') trim(directory),step,mpirank
       open(newunit=unit,file=trim(path),status='new',action='write',iostat=status)
-      call checkpoint_state_require(status==0,MPI_COMM_WORLD,'cannot open M12 wall curve')
+      call diagnostic_require(status==0,'cannot open M12 wall curve')
       write(unit,'(a)',iostat=status) 'global_i,x,Cf,q_into_wall_rhoinf_Uinf3'
       do i=0,im
         if(i==im.and.ig0+im/=ia) cycle
@@ -142,11 +150,32 @@ contains
         if(status/=0) exit
       enddo
       close(unit,iostat=closed)
-      call checkpoint_state_require(status==0.and.closed==0,MPI_COMM_WORLD,'cannot publish M12 wall curve')
+      call diagnostic_require(status==0.and.closed==0,'cannot publish M12 wall curve')
     endif
     if(mpirank==0) write(*,'(a,i0,a,es24.16,a,3(es24.16,1x),a)') 'ASTR_M12_HD step=',step, &
-      ' time=',t,' rho_internal_T_min=',minimum,' probes=72 volume_download_bytes=0'
+      ' time=',t,' rho_internal_T_min=',minimum(1:3),' probes=72 volume_download_bytes=0'
     last_step=step
+  end subroutine
+
+  subroutine diagnostic_require(condition,label)
+    use iso_fortran_env, only: error_unit
+    logical,intent(in) :: condition
+    character(*),intent(in) :: label
+    integer :: ierr
+    if(condition) return
+    write(error_unit,'(a)') 'M12 diagnostics rejected: '//label
+    call MPI_Abort(MPI_COMM_WORLD,71,ierr)
+    error stop 'M12 diagnostic failure'
+  end subroutine
+
+  subroutine finish_m12_completed_gpu()
+    integer :: status
+    status=0
+    if(probe_open) then
+      close(probe_unit,iostat=status)
+      probe_open=.false.
+    endif
+    call diagnostic_require(status==0,'cannot close M12 probe time series')
   end subroutine
 
   attributes(device) subroutine primitive(q,i,j,k,im,jm,km,hm,c2,c6,rho,v,p,t,e)
@@ -270,6 +299,105 @@ contains
     enddo
     span=wall(1,i+1)
     wall(2:3,i+1)=wall(2:3,i+1)/span
+  end subroutine
+
+  subroutine capture_m12_plane_inputs_gpu(positions,fields,plane_j,budget,reserve,retained)
+    use commvar, only: im,jm,km,hm,const2,const6
+    use commarray_gpu, only: q_d,x_d
+    use commarray, only: x
+    use insitu_device_velocity, only: complete_sample_fields_gpu
+#ifdef ASTR_BUILD_TESTING
+    use insitu_device_velocity, only: trace_sample_memory_gpu
+#endif
+    real(8),device,allocatable,intent(out) :: positions(:,:),fields(:,:)
+    integer,intent(out) :: plane_j
+    integer(int64),intent(in) :: budget,reserve,retained
+    real(8),device,allocatable :: state(:,:,:,:)
+    integer,device :: invalid(1)
+    integer :: extent(3),axis,first,nodes,total_nodes,base,status,bad
+    integer(int64) :: bytes,free,total
+    logical :: axes(3)
+    do plane_j=0,jm-1
+      if(x(0,plane_j+1,0,2)>=1.d0) exit
+    enddo
+    call checkpoint_state_require(plane_j<jm.and.x(0,plane_j,0,2)<=1.d0, &
+      MPI_COMM_WORLD,'M12 y=1 slice is outside the physical grid')
+    total_nodes=2*(im+1)*(jm+1)+2*(im+1)*(km+1)
+    bytes=8_int64*(6_int64*total_nodes+5_int64*2*(im+1)*max(jm+1,km+1))+4
+    status=cudaMemGetInfo(free,total)
+    call checkpoint_state_require(status==cudaSuccess.and.retained<=budget.and.free>=reserve, &
+      MPI_COMM_WORLD,'M12 local plane memory reserve')
+    call checkpoint_state_require(bytes<=budget-retained.and.bytes<=free-reserve, &
+      MPI_COMM_WORLD,'M12 local plane allocation budget')
+    allocate(positions(3,total_nodes),fields(3,total_nodes),stat=status)
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'M12 local plane input allocation')
+    base=0
+    do axis=3,2,-1
+      extent=[im,jm,km];extent(axis)=1
+      first=plane_j
+      if(axis==3) first=km/2-1
+      nodes=product(extent+1)
+      allocate(state(0:extent(1),0:extent(2),0:extent(3),5),stat=status)
+      call checkpoint_state_require(status==0,MPI_COMM_WORLD,'M12 local canonical state allocation')
+      invalid=0
+      call copy_plane_state<<<(nodes+255)/256,256>>>(q_d,x_d,state,positions,invalid, &
+        im,jm,km,hm,extent(1),extent(2),extent(3),axis,first,base,const2,const6)
+      status=cudaDeviceSynchronize()
+      call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'M12 local plane copy')
+      axes=.true.;axes(axis)=.false.
+      call complete_sample_fields_gpu(state,extent,5,MPI_COMM_WORLD,canonical_axes=axes)
+      call plane_fields_from_state<<<(nodes+255)/256,256>>>(state,fields,invalid,extent(1),extent(2),extent(3),base)
+      status=cudaDeviceSynchronize()
+      call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'M12 local plane primitives')
+      bad=invalid(1)
+      call checkpoint_state_require(bad==0,MPI_COMM_WORLD,'nonfinite/nonpositive M12 local plane inputs')
+#ifdef ASTR_BUILD_TESTING
+      call trace_sample_memory_gpu('m12-plane-scratch',8_int64*size(state,kind=int64),MPI_COMM_WORLD)
+#endif
+      deallocate(state)
+      base=base+nodes
+    enddo
+  end subroutine
+
+  attributes(global) subroutine copy_plane_state(q,xyz,state,positions,invalid,im,jm,km,hm, &
+      sx,sy,sz,axis,first,base,c2,c6)
+    integer,value :: im,jm,km,hm,sx,sy,sz,axis,first,base
+    real(8),value :: c2,c6
+    real(8),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5)
+    real(8),device,intent(in) :: xyz(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(8),device,intent(out) :: state(0:sx,0:sy,0:sz,5),positions(3,*)
+    integer,device,intent(inout) :: invalid(*)
+    integer :: node,i,j,k,source(3),ignored
+    real(8) :: rho,v(3),p,t,e
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(sx+1)*(sy+1)*(sz+1)) return
+    i=mod(node,sx+1);j=mod(node/(sx+1),sy+1);k=node/((sx+1)*(sy+1))
+    source=[i,j,k];source(axis)=source(axis)+first
+    state(i,j,k,1:4)=q(source(1),source(2),source(3),1:4)
+    call primitive(q,source(1),source(2),source(3),im,jm,km,hm,c2,c6,rho,v,p,t,e)
+    state(i,j,k,5)=t
+    positions(:,base+node+1)=xyz(source(1),source(2),source(3),:)
+    if(.not.all(ieee_is_finite(positions(:,base+node+1)))) ignored=atomicExch(invalid(1),1)
+  end subroutine
+
+  attributes(global) subroutine plane_fields_from_state(state,fields,invalid,sx,sy,sz,base)
+    integer,value :: sx,sy,sz,base
+    real(8),device,intent(in) :: state(0:sx,0:sy,0:sz,5)
+    real(8),device,intent(out) :: fields(3,*)
+    integer,device,intent(inout) :: invalid(*)
+    real(8) :: rho,v(3)
+    integer :: node,i,j,k,ignored
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(sx+1)*(sy+1)*(sz+1)) return
+    i=mod(node,sx+1);j=mod(node/(sx+1),sy+1);k=node/((sx+1)*(sy+1))
+    rho=state(i,j,k,1)
+    if(.not.ieee_is_finite(rho).or.rho<=0.d0) then
+      ignored=atomicExch(invalid(1),1)
+      return
+    endif
+    v=state(i,j,k,2:4)/rho
+    if(.not.all(ieee_is_finite(v)).or..not.ieee_is_finite(state(i,j,k,5))) ignored=atomicExch(invalid(1),1)
+    fields(:,base+node+1)=[v(1),state(i,j,k,5),v(3)]
   end subroutine
 
   subroutine capture_m12_temperature_gpu(temperature,budget,reserve,retained)

@@ -383,16 +383,23 @@ contains
   end subroutine gpu_write_gradcal_dvel_compare
 
   subroutine gpu_write_tgv_statistics()
+    use commvar, only: nstep,maxstep
     use gradcal_gpu, only: compute_gradcal_gpu
     use statistic_gpu, only: gpu_write_kenergy,gpu_write_enstophy, &
-                             gpu_write_dissipation,gpu_write_flowstate
+                             gpu_write_dissipation,gpu_write_flowstate, &
+                             gpu_kenergy_scalar,gpu_enstophy_scalar,gpu_dissipation_scalar
     implicit none
+    real(8) :: statistics(3)
 
     call compute_gradcal_gpu()
-    call gpu_write_flowstate()
-    call gpu_write_kenergy()
-    call gpu_write_enstophy()
-    call gpu_write_dissipation()
+    if(nstep<=0.or.nstep>maxstep) return
+    call gpu_kenergy_scalar(statistics(1))
+    call gpu_enstophy_scalar(statistics(2))
+    call gpu_dissipation_scalar(statistics(3))
+    call gpu_write_flowstate(statistics)
+    call gpu_write_kenergy(statistics(1))
+    call gpu_write_enstophy(statistics(2))
+    call gpu_write_dissipation(statistics(3))
   end subroutine gpu_write_tgv_statistics
 
   subroutine gpu_write_flow_statistics()

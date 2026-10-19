@@ -55,6 +55,7 @@ def test_private_sixth_order_walls(ranks, axis, mode, fixture, scenario, record_
     assert 'PASS physical endpoints, halos, nine metrics, source and slot lifecycle' in output
     errors = [float(value) for value in re.findall(r'max_error=\s*(\S+)', output)]
     assert len(errors) == ranks and max(errors) <= 2e-10, output
+    assert output.count('BOUNDARY_Q_ONLY rank=')>=ranks,output
     record_property('private_sixth_gradient_q_maxabs', max(errors))
 
 

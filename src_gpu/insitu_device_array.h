@@ -3,14 +3,32 @@
 
 #include <cuda_runtime.h>
 #include <viskores/cont/ArrayHandle.h>
+#include <viskores/cont/ArrayHandleSOA.h>
 #include <viskores/cont/cuda/DeviceAdapterCuda.h>
 #include <viskores/cont/internal/Buffer.h>
 #include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <cstdio>
+#include <cstdlib>
+#include <cstdint>
 
 namespace astr_insitu {
+using SampleVectorComponents=viskores::cont::ArrayHandleSOA<viskores::Vec3f>;
+inline void trace_device_memory(const char* stage,std::uint64_t payload_bytes) {
+#ifdef ASTR_BUILD_TESTING
+  const char* option=std::getenv("ASTR_INSITU_MEMORY_TRACE");
+  if(!option || std::string(option)!="1") return;
+  std::size_t free_bytes=0,total_bytes=0;
+  int device=-1;
+  if(cudaGetDevice(&device)!=cudaSuccess || cudaMemGetInfo(&free_bytes,&total_bytes)!=cudaSuccess)
+    throw std::runtime_error("Cannot observe device product memory");
+  std::printf("ASTR_INSITU_MEMORY stage=%s domain=geometry device=%d payload_bytes=%llu device_used_bytes=%llu\n",
+    stage,device,static_cast<unsigned long long>(payload_bytes),
+    static_cast<unsigned long long>(total_bytes-free_bytes));
+#endif
+}
 inline void synchronize_device_stage(const char* stage) {
   const auto status=cudaDeviceSynchronize();
   if(status!=cudaSuccess) throw std::runtime_error(std::string(stage)+": "+cudaGetErrorString(status));
@@ -43,6 +61,9 @@ void require_device_only(const viskores::cont::ArrayHandle<T>& array) {
     if (buffer.IsAllocatedOnHost() ||
         !buffer.IsAllocatedOnDevice(viskores::cont::DeviceAdapterTagCuda{}))
       throw std::runtime_error("Device input acquired a host mirror or lost CUDA residency");
+}
+inline void require_device_only(const SampleVectorComponents& array) {
+  for(int component=0;component<3;++component) require_device_only(array.GetArray(component));
 }
 } // namespace astr_insitu
 #endif

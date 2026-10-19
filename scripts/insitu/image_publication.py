@@ -10,11 +10,10 @@ RECOVERABLE_ERRNOS = frozenset((errno.EACCES, errno.ENOSPC, errno.EIO))
 def write_payload(stream, payload):
     stream.write(payload)
     stream.flush()
-    os.fsync(stream.fileno())
 
 
 def eps_output_enabled():
-    value = os.environ.get('ASTR_INSITU_WRITE_EPS', '1')
+    value = os.environ.get('ASTR_INSITU_WRITE_EPS', '0')
     if value not in ('0', '1'):
         raise ValueError('ASTR_INSITU_WRITE_EPS must be 0 or 1')
     return value == '1'

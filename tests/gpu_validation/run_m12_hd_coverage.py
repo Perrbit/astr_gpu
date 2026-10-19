@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sys
 import time
 
 import h5py
@@ -19,6 +20,8 @@ from insitu_cfl_gate import CflGate
 from insitu_resource_monitor import run_monitored
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0,str(ROOT/'scripts/insitu'))
+from image_publication import eps_output_enabled
 LIBRARY = Path('/home/dell/workspace/astr_dependencies/build/paraview-6.1.1-astr-device-gcc13/lib/catalyst')
 MPIEXEC = Path('/opt/nvidia/hpc_sdk/Linux_x86_64/26.1/comm_libs/hpcx/bin/mpiexec')
 GIB = 1024**3
@@ -169,7 +172,7 @@ def check_images(case, steps):
         for name, size in images.items():
             path = directory/f'{name}.step{step:08d}.jpeg'
             expected.add(path.name)
-            if not path.with_suffix('.eps').is_file():
+            if eps_output_enabled() and not path.with_suffix('.eps').is_file():
                 raise ValueError('Missing raw RGB EPS counterpart')
             with Image.open(path) as image:
                 if image.size != size or image.info.get('dpi') != (300, 300):
@@ -306,6 +309,7 @@ def run_case(output, source, executable, shape, steps, images, baseline=None, ch
     prepare_case(source, case, shape, steps, images, checkpoint)
     runtime = environment('2,1,1')
     runtime.update(ASTR_GPU_MP_POSITIVITY='flux', ASTR_GPU_RK_TIMING='1',
+                   ASTR_INSITU_WRITE_EPS='1' if eps_output_enabled() else '0',
                    ASTR_INSITU_CONFIG='datin/input.insitu', ASTR_INSITU_TIMING='1',
                    ASTR_INSITU_M12_W_COLOR_MAX=str(W_COLOR_MAX),
                    ASTR_INSITU_TEST_ORACLE_IO='0', OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1', MKL_NUM_THREADS='1')

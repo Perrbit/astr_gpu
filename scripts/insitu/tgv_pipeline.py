@@ -21,10 +21,11 @@ from vtkmodules.util.numpy_support import vtk_to_numpy
 sys.path.insert(0,str(Path(catalyst.get_script_filename()).resolve().parent))
 from egl_identity import EGL
 from tgv_streamlines import make_trace,check_crossing
-from image_publication import publish_pair,RECOVERABLE_ERRNOS
+from image_publication import publish_pair,eps_output_enabled,RECOVERABLE_ERRNOS
 import product_dispatch as dispatch
 
 arguments=catalyst.get_args()
+write_eps=eps_output_enabled()
 if len(arguments) not in (2,3,4):
     raise RuntimeError('Native TGV pipeline requires output directory and CUDA UUID')
 output=Path(arguments[0])
@@ -150,10 +151,13 @@ def encode_image(image,quality,progressive):
     if writer.GetErrorCode() or writer.GetResult() is None:
         raise RuntimeError('JPEG encoding failed')
     jpeg=vtk_to_numpy(writer.GetResult()).tobytes()
-    eps=io.BytesIO()
-    with Image.open(io.BytesIO(jpeg)) as decoded:
-        decoded.convert('RGB').save(eps,format='EPS')
-    return jpeg,eps.getvalue()
+    eps=None
+    if write_eps:
+        stream=io.BytesIO()
+        with Image.open(io.BytesIO(jpeg)) as decoded:
+            decoded.convert('RGB').save(stream,format='EPS')
+        eps=stream.getvalue()
+    return jpeg,eps
 
 
 def publish_image(view,picture,name,step,time):
@@ -378,7 +382,8 @@ def catalyst_execute(info):
             if empty_local_plane(geometry):
                 missing=set()
             collective_error('Missing compact product fields: '+name+':'+','.join(sorted(missing)) if missing else '')
-    record={'rank':rank,'step':step,'time':t,'products':{}}
+    record={'rank':rank,'step':step,'time':t,'products':{},
+            'image_formats':['jpeg','eps'] if write_eps else ['jpeg']}
     if profile!='all' or dispatch.independent():
         record.update(profile=profile,available_fields=sorted(source.PointData.keys()))
     if profile!='air5_walls':
@@ -411,7 +416,8 @@ def catalyst_execute(info):
     for name,geometry in products:
         image_due=dispatch.due(name,'image')
         geometry_due=dispatch.due(name,'geometry') and not demonstration
-        suffixes=(('pvtp',) if geometry_due else ())+(('jpeg','eps') if image_due else ())
+        image_suffixes=('jpeg','eps') if write_eps else ('jpeg',)
+        suffixes=(('pvtp',) if geometry_due else ())+(image_suffixes if image_due else ())
         existing=any((output/f'{name}.step{step:08d}.{suffix}').exists() for suffix in suffixes)
         collective_error('Refusing to overwrite an existing in-situ frame' if existing else '')
         extraction_started=clock()

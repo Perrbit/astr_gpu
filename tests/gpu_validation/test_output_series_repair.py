@@ -134,6 +134,17 @@ def test_dry_run_and_explicit_repair(segment):
     assert sum(p.stat().st_size for p in segment.parent.rglob("*") if p.is_file()) < 4 * 1024**2
 
 
+def test_name_only_archives_remain_readable_offline(segment):
+    for frame in segment.glob('step*'):
+        (frame/'RESOURCES').write_text('ASTR_SHARED_RESOURCES 2\n1\ndata.h5\n')
+        (frame/'MANIFEST').write_text('ASTR_CHECKPOINT_BUNDLE 2\n4\ndata.h5\ndata.xdmf\nFRAME\nRESOURCES\n')
+        (frame/'COMPLETE').write_text('ASTR_COMPLETE_2\n')
+    before=snapshot(segment.parent)
+    report=repair.repair_segment(segment)
+    assert report['frames']==3 and not report['published']
+    assert snapshot(segment.parent)==before
+
+
 @pytest.mark.parametrize("components,planes,selection", [
     (6, [], tuple(range(1, 15))), (6, [("i", 4), ("j", 2), ("k", 1)], tuple(range(1, 10))),
     (6, [], (10, 11)), (6, [("i", 4)], (12, 13, 14)), (12, [("k", 1)], tuple(range(1, 15)))])

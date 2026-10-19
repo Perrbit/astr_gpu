@@ -27,6 +27,7 @@ def test_stratified_tgv_device_streamlines(ranks, axis, record_property):
     assert 'STRATIFIED_SEEDS layout=tgv-stratified seeds=256 unique_direction_starts=512' in result.stdout
     assert 'particles=512 resident=1' in result.stdout
     assert 'input_host_mirror=0 source_errors=0' in result.stdout
+    assert result.stdout.count('SOA_BORROW rank=')==ranks,result.stdout
     error = float(re.search(r'max_error=(\S+)', result.stdout)[1])
     assert math.isfinite(error) and error <= 2e-10
     rounds = int(re.search(r'rounds=(\d+)', result.stdout)[1])
@@ -68,6 +69,7 @@ def test_compact_device_streamlines(ranks,axis,constant,forward,storage):
     assert math.isfinite(float(match[1])) and float(match[1])<=2e-10
     assert int(match[2])>0 and int(match[3])>=(16 if forward else 32)
     assert 'input_host_mirror=0 source_errors=0' in result.stdout
+    assert result.stdout.count('SOA_BORROW rank=')==ranks,result.stdout
     if constant and ranks==2:
         assert int(match[4])>=16,result.stdout
 
@@ -91,6 +93,7 @@ def test_curve_resident_constant_streamlines(ranks, axis, mapping, record_proper
     assert math.isfinite(error) and error <= 2e-10
     assert int(match[2]) > 0 and int(match[3]) >= 16
     assert 'input_host_mirror=0 source_errors=0' in result.stdout
+    assert result.stdout.count('SOA_BORROW rank=')==ranks,result.stdout
     if ranks == 2:
         assert int(match[4]) >= 16, result.stdout
     ledger = re.search(r'rounds=(\d+).*control_read_bytes=(\d+).*owner_query_read_bytes=(\d+)', result.stdout)
@@ -99,3 +102,17 @@ def test_curve_resident_constant_streamlines(ranks, axis, mapping, record_proper
     assert int(ledger[3]) <= (int(ledger[1]) + 1) * 256
     record_property('constant_curve_maxabs', error)
     record_property('curve_component_output', result.stdout)
+
+
+def test_component_views_memory_safety(tmp_path):
+    prefix=os.environ['ASTR_INSITU_DEVICE_MPI_PREFIX']
+    result=subprocess.run([str(Path(prefix)/'bin/mpirun'),'--prefix',prefix,
+        '--mca','pml','ob1','--mca','btl','self,tcp','--mca','osc','pt2pt',
+        '--mca','coll_hcoll_enable','0','--mca','coll_ucc_enable','0','--mca','opal_cuda_support','0',
+        '-np','2','compute-sanitizer','--tool','memcheck','--error-exitcode','99',
+        '--log-file',str(tmp_path/'memcheck.%p.log'),str(BIN),'0','constant','forward','resident','periodic'],
+        cwd=tmp_path,capture_output=True,text=True,timeout=120)
+    assert result.returncode==0,result.stdout+result.stderr
+    assert result.stdout.count('SOA_BORROW rank=')==2,result.stdout
+    reports=list(tmp_path.glob('memcheck.*.log'))
+    assert len(reports)==2 and all('ERROR SUMMARY: 0 errors' in p.read_text() for p in reports)

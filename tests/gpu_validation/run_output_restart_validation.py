@@ -62,7 +62,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
              checkpoint_enabled=None, curve_surface_oracle=False, wall_mean_oracle=False, curve_trace_oracle=False,
              ncu_kernel=None, curve_trace_step_scale=None, curve_wall_temperature=None,
              solver_halo_transport='pinned', flow_type=None, gpu_precision_mode='fp64', gpu_sync_mode='explicit',
-             gpu_mixed_candidate=None, exact_restart=True, checkpoint_statistics=True):
+             gpu_mixed_candidate=None, exact_restart=True, checkpoint_statistics=True, insitu_memory_trace=False):
     if solver_halo_transport not in ('pageable', 'pinned', 'pinned-pipeline', 'device-aware'):
         raise ValueError('unknown solver halo transport')
     if ncu_kernel is not None and (not ncu_kernel or backend != 'gpu' or ranks != 1 or
@@ -288,6 +288,10 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         env['ASTR_GPU_MIXED_CANDIDATE'] = gpu_mixed_candidate
     if insitu_timing:
         env['ASTR_INSITU_TIMING']='1'
+    if insitu_memory_trace:
+        env['ASTR_INSITU_MEMORY_TRACE']='1'
+    if getattr(args,'insitu_write_eps',None) is not None:
+        env['ASTR_INSITU_WRITE_EPS']=args.insitu_write_eps
     if resident_audit:
         env['ASTR_INSITU_RESIDENT_AUDIT']='1'
     if pixel_audit:

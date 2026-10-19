@@ -1,5 +1,10 @@
 # Native In-Situ TGV Preset
 
+Images default to JPEG only. Set `ASTR_INSITU_WRITE_EPS=1` explicitly on all
+ranks to additionally encode and publish EPS, or leave it unset/set it to `0`
+to avoid that work. This applies to compatible and both strict device pipelines;
+historical JPEG/EPS measurements below describe the formats used at the time.
+
 ### Read-Only Streamline Preview
 
 The new `insitu-preview` command is separate from simulation and exact restart.
@@ -49,7 +54,7 @@ For instantaneous streamlines, set both `statistics=f` and
 set both true and specify the saved statistics window exactly. Missing or
 incomplete statistics coverage is fatal, with no instantaneous fallback. The
 first preset also emits the existing constant-velocity crossing diagnostic.
-Preview publishes JPEG/EPS and compact lifecycle/resource receipts, not VTK
+Preview publishes JPEG (plus EPS when explicitly enabled) and compact lifecycle/resource receipts, not VTK
 trajectory geometry, full fields, final statistics arrays or restart files.
 Checkpoint input passes through bounded host buffers and uploads to GPU; this
 is not a zero-I/O operation. During strict rendering, fields and trajectory
@@ -88,11 +93,30 @@ window. Color is `u`, `v`, `w` or `speed`, with an explicit fixed range. The
 integrator and physical velocities are not tuned by this file. Camera,
 display-only clipping, color and line width reuse the current GPU trajectory;
 velocity/seed changes are integrated separately. The cache is scoped to this
-one completed state, topology, statistics window and fixed integrator. Groups
-are processed serially; the renderer may retain the previous borrowed owner
-until the next synchronous execution completes.
+one completed state, topology, statistics window and fixed integrator. Display
+variants reuse that trajectory owner. After capture the matched strict template
+detaches borrowed Conduit/VTK arrays and mapper views before the bridge releases
+its product owners; reusable GL capacities are retained and counted. Surface,
+plane and streamline groups are generated/rendered serially with one final
+completed-step receipt. M12 native checkpoints now retain the first-frame frozen
+color ranges in `insitu_control.bin` (ASTRIR06); same-version exact image
+continuation passed the bounded two-frame check. Older M12 checkpoints without
+that display state require explicit output override to recalibrate, not an
+assertion of pixel-identical continuation. Other cases retain their prior control
+format. Evidence is in `documents/ASTR_INSITU_GPU_MEMORY_OPTIMIZATION_RESULTS_20261018.md`.
 
-Each candidate publishes JPEG/EPS and per-rank JSON. Reports contain source
+The optional IM8 component uses `GeneratedDeviceMapper` to generate final display
+arrays directly into mapped VTK GL buffers. It is selected only by
+`insitu_standard_device_probe CUDA_DEVICE --im8-mapped` (`--im8-staged` is its
+matched reference). It is not a new solver rendering option. The original VTK
+shaders and cameras remain in use. FP64 sources must remain alive until capture;
+the producer uses the supplied CUDA stream, and is cleared after consumption.
+Two-card component images, allocation/transfer traces and memcheck passed, but
+production products, the standard-device entry and non-CUDA backends are not
+admitted by this component result. Real integration must account for the longer
+FP64 source lifetime as well as the removed display staging.
+
+Each candidate publishes JPEG, optional EPS and per-rank JSON. Reports contain source
 checkpoint identity, full-trajectory scalar extrema reduced on GPU, local
 trajectory bounds, projected seed spacing, y-layer/direction termination counts
 and separate trajectory/display identities. Global termination counts are
@@ -365,6 +389,10 @@ before capturing an in-memory screenshot. Only rank zero encodes and publishes
 the JPEG/EPS pair. The pair is staged in exclusive `.partial` files and published
 without replacing existing files. Encoding and collective capture errors are
 fatal, not treated as file errors.
+
+Ordinary images are flushed and closed but are not fsynced individually.
+Successful publication does not guarantee survival of a power loss. Write,
+flush, close and publication errors still use the failure handling below.
 
 Only `EACCES`, `ENOSPC` and `EIO` during image staging/publication are recoverable.
 On these errors the writer removes its own partial pair; all ranks agree on

@@ -262,11 +262,13 @@ Native frames no longer repeat their coordinates. Each product owns one
 `resources/data.h5`, containing only coordinates and geometry metadata, not
 flow fields, Jacobians, metrics or halos. Slice-only resources contain only
 the selected planes, not the global volume. Every frame's RESOURCES record
-binds the coordinate file by byte count/CRC-64; XDMF refers explicitly to it,
+lists the coordinate file by name; XDMF refers explicitly to it,
 without an HDF5 external link. Move the whole product directory, including
 resources, to preserve these relative references. Geometry is frozen per new
-run; it is not reused across separate output roots. Resource verification
-still scans the coordinate file and may itself cost I/O time.
+run; it is not reused across separate output roots. Ordinary frame publication
+does not re-read flow or coordinate payloads for CRCs. File writes and closes,
+required members, publication and relative-resource references remain checked.
+Name-only manifests do not detect arbitrary external byte changes.
 
 `data.xdmf` reads one frame. Open segment00000000/series.xdmf with Xdmf3ReaderS
 for all published times in that segment, including grouped slices. The series
@@ -625,13 +627,17 @@ only `series.frames` and `series.xdmf`, from the sealed frame manifests, native
 HDF5 metadata/layouts and shared-coordinate identities. It does not follow
 arbitrary old XML references, advance the solver, or modify flow/checkpoint
 files, `LATEST`, sampling or restart controls. It does not join different segments.
-Complete frame directories with missing/bad markers, CRC/layout/unit mismatch,
+Complete frame directories with missing/bad markers, layout/unit mismatch,
 nonmonotonic clocks, unsafe links and oversized catalogs are rejected. Partial
 `step############.tmp` directories and original native index temporaries are
 preserved but not indexed. An empty segment is not given an empty time index.
 
-CRC validation **scans complete HDF5 files**, even though no flow arrays are
-loaded: `crc_scan_bytes` and `field_array_read_bytes` are distinct report fields.
+Both name-only and older checksummed frames are supported. For older frames,
+explicit offline CRC validation still scans complete HDF5 files and rejects a
+checksum mismatch. Name-only frames have no saved payload checksum to compare;
+their file, clock, HDF5 layout and unit checks remain active. The offline tool
+also fingerprints shared geometry once. `crc_scan_bytes` and
+`field_array_read_bytes` are distinct report fields.
 `--catalog-bytes` caps frame-name/list/sorting storage, not total Python/HDF5
 RSS. One frame's XML is built at a time; native plane count is limited to 768.
 This is an integrity/layout check, not new physical validation or a low-I/O claim.
@@ -720,9 +726,10 @@ at arbitrary directory order. The companion `lineage.frames` uses
 a geometry-file reference. This is distinct from the offline combined ledger.
 The solver uses native Fortran/C/HDF5 APIs; Python is not a runtime dependency.
 
-Startup validates ancestor seals, CRCs, input/segment fingerprints and typed
-HDF5 inventories. File CRC checks scan payload bytes but do not load field
-arrays. Subsequent frame publication streams cached ancestor references and
+Startup validates ancestor seals, available legacy CRCs, input/segment fingerprints
+and typed HDF5 inventories. New name-only frames do not carry payload CRCs.
+Legacy file CRC checks scan payload bytes but do not load field arrays.
+Subsequent frame publication streams cached ancestor references and
 current clock rows, without repeated ancestor CRC scans. Paths are relative,
 XML-escaped and reject aliases, controls and HDF-reference delimiters.
 The bounded catalog allows 128 segments and 8192 frames per ancestor segment;

@@ -271,8 +271,13 @@ contains
     endif
     read(unit,'(a)',iostat=err) extra
     close(unit,iostat=closed)
-    ok=err==iostat_end.and.closed==0.and.rows(1)=='ASTR_SHARED_RESOURCES 1'.and.rows(2)=='2'.and. &
-      rows(3)(1:8)=='SEGMENT '.and.rows(4)(1:8)=='data.h5 '
+    if(err/=iostat_end.or.closed/=0.or.rows(2)/='2') return
+    select case(trim(rows(1)))
+    case('ASTR_SHARED_RESOURCES 1')
+      ok=rows(3)(1:8)=='SEGMENT '.and.rows(4)(1:8)=='data.h5 '
+    case('ASTR_SHARED_RESOURCES 2')
+      ok=rows(3)=='SEGMENT'.and.rows(4)=='data.h5'
+    end select
   end function
 
   subroutine frame_byte_counts(path,bytes,download,ok)

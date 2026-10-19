@@ -16,9 +16,11 @@ from vtkmodules.vtkCommonCore import vtkIntArray
 sys.path.insert(0, str(Path(catalyst.get_script_filename()).resolve().parent))
 from egl_identity import EGL
 from tgv_streamlines import make_trace
+from image_publication import eps_output_enabled
 
 output_path, expected_uuid = catalyst.get_args()
 output = Path(output_path)
+write_eps = eps_output_enabled()
 options = catalyst.Options()
 options.GlobalTrigger = 'TimeStep'
 options.EnableCatalystLive = 0
@@ -135,7 +137,7 @@ def catalyst_execute(info):
         timings['screenshot_jpeg_seconds'] = perf_counter()-start
         start = perf_counter()
         error = ''
-        if rank == 0:
+        if rank == 0 and write_eps:
             try:
                 with Image.open(picture) as image:
                     image.convert('RGB').save(picture.with_suffix('.eps'))

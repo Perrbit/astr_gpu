@@ -1,5 +1,6 @@
 #include "insitu_device_array.h"
 #include "insitu_device_vtk_mapper.h"
+#include "insitu_device_generated_mapper.h"
 #include <viskores/cont/Initialize.h>
 #include <viskores/cont/RuntimeDeviceTracker.h>
 #include <viskores/cont/cuda/internal/CudaAllocator.h>
@@ -34,6 +35,7 @@
 #include <cstring>
 #include <memory>
 #include <vector>
+#include <chrono>
 
 extern "C" int astr_insitu_map_current_cuda(int*, char*, int, char*, int);
 
@@ -85,6 +87,148 @@ __global__ void fill_large(Point* points,Color* colors,viskores::UInt32* indices
     }
   }
   if(i<index_count) indices[i]=i%point_count;
+}
+
+struct SourceVertex {double xyz[3],rgba[4];};
+__global__ void fill_source(SourceVertex* vertices,unsigned long long* indices,
+                            int count,int frame) {
+  const int i=blockIdx.x*blockDim.x+threadIdx.x;
+  if(i<count) {
+    const double xy[6]={-.75,-.75,.75,-.75,0.,.75};
+    const bool front=i<3;
+    for(int d=0;d<2;++d) vertices[i].xyz[d]=i<6?
+      (front?.5:1.)*xy[2*(i%3)+d]:(d==0?2.+(i%3==1?.001:0.):(i%3==2?.001:0.));
+    vertices[i].xyz[2]=i<6?(front?.5:-.5):0.;
+    vertices[i].rgba[0]=front?0.:255.;
+    vertices[i].rgba[1]=front && frame%2==0?255.:0.;
+    vertices[i].rgba[2]=front && frame%2==1?255.:0.;
+    vertices[i].rgba[3]=255.;
+  }
+  if(i<6*count) indices[i]=i%count;
+}
+__global__ void convert_source(const SourceVertex* vertices,const unsigned long long* source_indices,
+                               float* xyz,unsigned char* rgba,unsigned int* indices,int count) {
+  const int i=blockIdx.x*blockDim.x+threadIdx.x;
+  if(i<count) {
+    for(int d=0;d<3;++d) xyz[3*i+d]=static_cast<float>(vertices[i].xyz[d]);
+    for(int d=0;d<4;++d) rgba[4*i+d]=static_cast<unsigned char>(vertices[i].rgba[d]);
+  }
+  if(i<6*count) indices[i]=static_cast<unsigned int>(source_indices[i]);
+}
+
+void probe_generated_mesh(vtkEGLRenderWindow* window,vtkRenderer* renderer,int device,
+                           bool mapped,bool inject_failure) {
+  constexpr int frames=20,small=270000,large=360000;
+  std::size_t baseline_free=0,baseline_total=0;
+  astr_insitu::require_cuda_graphics(cudaMemGetInfo(&baseline_free,&baseline_total),"IM8 baseline");
+  Allocation<SourceVertex> vertices(large);
+  Allocation<unsigned long long> source_indices(6*large);
+  std::unique_ptr<Allocation<Point>> points;
+  std::unique_ptr<Allocation<Color>> colors;
+  std::unique_ptr<Allocation<unsigned int>> indices;
+  if(!mapped) {
+    points=std::make_unique<Allocation<Point>>(large);
+    colors=std::make_unique<Allocation<Color>>(large);
+    indices=std::make_unique<Allocation<unsigned int>>(6*large);
+  }
+  vtkSmartPointer<astr_insitu::DirectDeviceMapper> mapper;
+  if(mapped) mapper=vtkSmartPointer<astr_insitu::GeneratedDeviceMapper>::Take(
+    astr_insitu::GeneratedDeviceMapper::New());
+  else mapper=vtkSmartPointer<astr_insitu::DirectDeviceMapper>::Take(astr_insitu::DirectDeviceMapper::New());
+  vtkNew<vtkActor> actor;actor->SetMapper(mapper);actor->GetProperty()->LightingOff();
+  renderer->AddActor(actor);
+  auto camera=renderer->GetActiveCamera();
+  camera->SetPosition(0.,0.,3.);camera->SetFocalPoint(0.,0.,0.);
+  camera->ParallelProjectionOn();camera->SetParallelScale(1.);camera->SetClippingRange(1.,5.);
+  vtkNew<vtkUnsignedCharArray> image;
+  std::vector<unsigned char> pixels(64*64*4);
+  image->SetNumberOfComponents(4);image->SetArray(pixels.data(),pixels.size(),1);
+  const char* output=std::getenv("ASTR_INSITU_IM8_PIXELS");
+  using File=std::unique_ptr<FILE,int(*)(FILE*)>;
+  File pixel_file(output?std::fopen(output,"wb"):nullptr,std::fclose);
+  if(output && !pixel_file) throw std::runtime_error("Cannot open IM8 pixel output");
+  using Clock=std::chrono::steady_clock;
+  double generation_seconds=0.,render_seconds=0.;
+  std::size_t free=0,total=0,minimum=std::numeric_limits<std::size_t>::max();
+  bool failure_observed=false;
+  std::size_t copied=0;
+  int completed_frames=0,measured_frames=0;
+  for(int frame=0;frame<frames;++frame) {
+    const int count=frame==5?0:(frame>=2 && frame<=4?large:small);
+    if(count) {
+      fill_source<<<(6*count+255)/256,256>>>(vertices.pointer,source_indices.pointer,count,frame);
+      astr_insitu::synchronize_device_stage("IM8 FP64 source");
+    }
+    astr_insitu::DeviceDrawView extent;
+    extent.points=count;extent.cells=2*count;extent.arity=3;extent.device=device;
+    const double bounds[]={-.75,2.002,-.75,.75,-.5,.5};
+    std::copy(bounds,bounds+6,extent.bounds);
+    auto generate=[&](float* xyz,unsigned char* rgba,unsigned int* connectivity,cudaStream_t stream) {
+      nvtxRangePushA("ASTR_IM8_DISPLAY_GENERATE");
+      convert_source<<<(6*count+255)/256,256,0,stream>>>(vertices.pointer,source_indices.pointer,
+        xyz,rgba,connectivity,count);
+      nvtxRangePop();
+      if(inject_failure && frame==3) throw std::runtime_error("IM8 injected producer failure");
+    };
+    auto start=Clock::now();
+    if(mapped) static_cast<astr_insitu::GeneratedDeviceMapper*>(mapper.GetPointer())->set_source(extent,generate);
+    else {
+      extent.positions=reinterpret_cast<float*>(points->pointer);
+      extent.colors=reinterpret_cast<unsigned char*>(colors->pointer);extent.indices=indices->pointer;
+      if(count) {
+        generate(reinterpret_cast<float*>(points->pointer),reinterpret_cast<unsigned char*>(colors->pointer),
+                 indices->pointer,nullptr);
+        astr_insitu::synchronize_device_stage("IM8 staged display");
+        copied+=std::size_t(count)*40;
+      }
+      mapper->set_view(extent);
+    }
+    auto prepared=Clock::now();
+    nvtxRangePushA("ASTR_IM8_RENDER");
+    try {window->Render();}
+    catch(const std::runtime_error& error) {
+      nvtxRangePop();
+      if(!inject_failure || frame!=3 || std::string(error.what())!="IM8 injected producer failure") throw;
+      failure_observed=true;
+      static_cast<astr_insitu::GeneratedDeviceMapper*>(mapper.GetPointer())->clear_source();
+      break;
+    }
+    if(!window->GetRGBACharPixelData(0,0,63,63,0,image))
+      throw std::runtime_error("IM8 screenshot failed");
+    nvtxRangePop();
+    auto captured=Clock::now();
+    if(frame>=2) {
+      ++measured_frames;
+      generation_seconds+=std::chrono::duration<double>(prepared-start).count();
+      render_seconds+=std::chrono::duration<double>(captured-prepared).count();
+    }
+    if(count) {
+      if(pixels[4*(64*32+32)+(frame%2?2:1)]!=255 || pixels[4*(64*12+16)]!=255)
+        throw std::runtime_error("IM8 front/back color or depth failed");
+    } else {
+      for(std::size_t p=0;p<pixels.size();p+=4)
+        if(pixels[p] || pixels[p+1] || pixels[p+2]) throw std::runtime_error("IM8 empty frame retained geometry");
+    }
+    if(pixel_file && std::fwrite(pixels.data(),1,pixels.size(),pixel_file.get())!=pixels.size())
+      throw std::runtime_error("IM8 pixel output failed");
+    ++completed_frames;
+    // Retirement must not leave the captured source alive in the mapper.
+    if(mapped) static_cast<astr_insitu::GeneratedDeviceMapper*>(mapper.GetPointer())->clear_source();
+    else mapper->clear_view();
+    astr_insitu::require_cuda_graphics(cudaMemGetInfo(&free,&total),"IM8 memory");
+    minimum=std::min(minimum,free);
+    if(free<1024ULL*1024*1024 || baseline_free-minimum>2ULL*1024*1024*1024)
+      throw std::runtime_error("IM8 device budget or reserve exhausted");
+  }
+  if(inject_failure && !failure_observed) throw std::runtime_error("IM8 failure path was not exercised");
+  mapper->ReleaseGraphicsResources(window);renderer->RemoveActor(actor);
+  std::printf("ASTR_IM8_GENERATED {\"device\":%d,\"frames\":%d,\"mapped\":%s,"
+    "\"source_bytes\":%zu,\"display_staging_bytes\":%zu,\"display_copy_bytes\":%zu,"
+    "\"device_peak_used_bytes\":%zu,\"device_additional_peak_bytes\":%zu,\"measured_frames\":%d,\"prepare_seconds\":%.17g,"
+    "\"render_seconds\":%.17g,\"geometry_host_bytes\":0,\"failure_released\":%s,\"pixels_passed\":true}\n",
+    device,completed_frames,mapped?"true":"false",std::size_t(large)*(sizeof(SourceVertex)+6*sizeof(unsigned long long)),
+    mapped?0:std::size_t(large)*40,copied,
+    total-minimum,baseline_free-minimum,measured_frames,generation_seconds,render_seconds,failure_observed?"true":"false");
 }
 
 void probe_large_mesh(vtkEGLRenderWindow* window,vtkRenderer* renderer,int device,
@@ -186,7 +330,9 @@ int main(int argc,char** argv) {
     if((argc!=2 && argc!=3) ||
        (argc==3 && std::strcmp(argv[2],"--conduit") && std::strcmp(argv[2],"--conduit-clipped") && std::strcmp(argv[2],"--direct") &&
         std::strcmp(argv[2],"--large-growth") && std::strcmp(argv[2],"--large-fixed") &&
-        std::strcmp(argv[2],"--direct-large-growth") && std::strcmp(argv[2],"--direct-large-fixed")))
+        std::strcmp(argv[2],"--direct-large-growth") && std::strcmp(argv[2],"--direct-large-fixed") &&
+        std::strcmp(argv[2],"--im8-staged") && std::strcmp(argv[2],"--im8-mapped") &&
+        std::strcmp(argv[2],"--im8-failure")))
       throw std::invalid_argument("Usage: insitu_standard_device_probe CUDA_DEVICE [--conduit|--conduit-clipped|--direct|--large-growth|--large-fixed|--direct-large-growth|--direct-large-fixed]");
     const bool clipped=argc==3 && !std::strcmp(argv[2],"--conduit-clipped");
     const bool conduit=clipped || (argc==3 && !std::strcmp(argv[2],"--conduit"));
@@ -221,6 +367,11 @@ int main(int argc,char** argv) {
     unsigned int count=0;int gl_device=-1;
     if(cudaGLGetDevices(&count,&gl_device,1,cudaGLDeviceListAll)!=cudaSuccess ||
        count!=1 || gl_device!=device) throw std::runtime_error("CUDA/EGL device mismatch");
+    if(argc==3 && std::strstr(argv[2],"--im8-")) {
+      probe_generated_mesh(window,renderer,device,std::strcmp(argv[2],"--im8-staged")!=0,
+                            !std::strcmp(argv[2],"--im8-failure"));
+      window->Finalize();return 0;
+    }
     if(argc==3 && std::strstr(argv[2],"large")) {
       probe_large_mesh(window,renderer,device,std::strstr(argv[2],"direct")!=nullptr,
                        std::strstr(argv[2],"growth")!=nullptr);

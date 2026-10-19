@@ -99,6 +99,7 @@ contains
     use commarray_gpu, only: x_d
     use parallel, only: ig0,jg0,kg0,mpirank
     use insitu_sample_gpu, only: capture_device_sample_gpu
+    use insitu_statistics_gpu, only: statistics_device_bytes
     use insitu_device_velocity, only: snapshot_sample_coordinates_gpu,velocity_transport_usage_gpu
     use benchmark_runtime, only: insitu_clock,report_insitu_timing
 #endif
@@ -131,7 +132,8 @@ contains
     end interface
     started=insitu_clock()
     call range_push(4_c_int)
-    call capture_device_sample_gpu(mode,velocity,halo,derived,host_budget,device_budget,reserve,need_q=.false.)
+    call capture_device_sample_gpu(mode,velocity,halo,derived,host_budget,device_budget,reserve,need_q=.false., &
+      retained_other=statistics_device_bytes())
     deallocate(halo,derived)
     call snapshot_sample_coordinates_gpu(x_d,coordinates,[im,jm,km],hm,MPI_COMM_WORLD,device_budget,reserve, &
       8*size(velocity,kind=int64))
@@ -295,6 +297,80 @@ contains
   end subroutine
 #endif
 
+#ifdef ASTR_INSITU_DEVICE_PRODUCTS
+  subroutine render_m12_local_planes_gpu(mode,pipeline,backend,script,step,t,host_budget,device_budget,reserve)
+    use iso_fortran_env, only: int64
+    use iso_c_binding, only: c_int,c_double,c_char,c_null_char,c_int64_t
+    use mpi
+    use commvar, only: im,jm,km,ia,ja,ka
+    use parallel, only: ig0,mpirank
+    use insitu_sample_gpu, only: prepare_device_m12_planes_gpu
+    use insitu_m12_gpu, only: capture_m12_plane_inputs_gpu
+    use insitu_device_velocity, only: velocity_transport_usage_gpu,velocity_transport_timing_gpu
+#ifdef ASTR_BUILD_TESTING
+    use insitu_device_velocity, only: trace_sample_memory_gpu
+#endif
+    use insitu_statistics_gpu, only: statistics_device_bytes
+    use checkpoint_state_io, only: checkpoint_state_require
+    use benchmark_runtime, only: insitu_clock,report_insitu_timing
+    character(*),intent(in) :: mode,pipeline,backend,script
+    integer,intent(in) :: step
+    real(8),intent(in) :: t
+    integer(int64),intent(in) :: host_budget,device_budget,reserve
+    real(8),device,allocatable :: positions(:,:),fields(:,:)
+    integer(int64) :: host_slots,device_slots,d2h,h2d,exchanges,retained
+    integer :: status,generation,plane_j
+    real(8) :: started,phase_started,face_times(5)
+    interface
+      subroutine range_push(stage) bind(C,name='astr_insitu_device_range_push')
+        import c_int
+        integer(c_int),value :: stage
+      end subroutine
+      subroutine range_pop() bind(C,name='astr_insitu_device_range_pop')
+      end subroutine
+      integer(c_int) function render_planes(pipeline,backend,script,comm,step,t,nx,ny,nz,ox,gy,gz,gx,plane_j, &
+          xyz,fields,budget,reserve,retained) bind(C,name='astr_insitu_device_render_m12_planes')
+        import c_int,c_double,c_char,c_devptr,c_int64_t
+        character(c_char),intent(in) :: pipeline(*),backend(*),script(*)
+        integer(c_int),value :: comm,step,nx,ny,nz,ox,gy,gz,gx,plane_j
+        real(c_double),value :: t
+        type(c_devptr),value :: xyz,fields
+        integer(c_int64_t),value :: budget,reserve,retained
+      end function
+    end interface
+    started=MPI_Wtime();phase_started=insitu_clock()
+    call range_push(1_c_int)
+    call prepare_device_m12_planes_gpu(mode,host_budget,device_budget,reserve)
+    call velocity_transport_usage_gpu(host_slots,device_slots,d2h,h2d,exchanges,generation)
+    retained=device_slots+statistics_device_bytes()
+    call capture_m12_plane_inputs_gpu(positions,fields,plane_j,device_budget,reserve,retained)
+    retained=retained+8*(size(positions,kind=int64)+size(fields,kind=int64))
+#ifdef ASTR_BUILD_TESTING
+    call trace_sample_memory_gpu('m12-plane-inputs',8_int64*(size(positions,kind=int64)+size(fields,kind=int64)), &
+      MPI_COMM_WORLD)
+#endif
+    call range_pop()
+    call report_insitu_timing('device_sample_inclusive',phase_started,step)
+    phase_started=insitu_clock()
+    call range_push(7_c_int)
+    status=render_planes(trim(pipeline)//c_null_char,trim(backend)//c_null_char,trim(script)//c_null_char, &
+      int(MPI_COMM_WORLD,c_int),step,t,im,jm,km,ig0,ja,ka,ia,plane_j,c_devloc(positions),c_devloc(fields), &
+      int(device_budget,c_int64_t),int(reserve,c_int64_t),int(retained,c_int64_t))
+    call range_pop()
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'local M12 plane bridge failed')
+    call report_insitu_timing('device_consumer_inclusive',phase_started,step)
+    call velocity_transport_usage_gpu(host_slots,device_slots,d2h,h2d,exchanges,generation)
+    call velocity_transport_timing_gpu(face_times)
+    write(*,'(a,i0,a,i0,a,i0,a,i0,a,i0,a,5(es24.16,1x))') 'ASTR_INSITU_FACE_USAGE rank=',mpirank, &
+      ' step=',step,' generation=',generation,' host_bytes=',host_slots,' device_bytes=',device_slots, &
+      ' cumulative_seconds_d2h_mpi_h2d_local_sync=',face_times
+    write(*,'(a,i0,a,i0,3a,i0,a,i0,a,i0,a,es16.8)') 'ASTR_INSITU_DEVICE_FRAME rank=',mpirank, &
+      ' step=',step,' transport=',trim(mode),' face_d2h_bytes=',d2h,' face_h2d_bytes=',h2d, &
+      ' face_exchanges=',exchanges,' frame_inclusive=',MPI_Wtime()-started
+    deallocate(positions,fields)
+  end subroutine
+#endif
+
   subroutine render_device_sample_gpu(mode,pipeline,backend,script,profile,step,t,window, &
       statistics,host_budget,device_budget,reserve,mean_requested,seed_layout,require_covered_means,preview_flatplate)
     use iso_fortran_env, only: int64
@@ -308,11 +384,14 @@ contains
     use commarray, only: x
     use insitu_m12_gpu, only: capture_m12_temperature_gpu
     use parallel, only: ig0,jg0,kg0,mpirank
-    use insitu_sample_gpu, only: capture_device_sample_gpu
+    use insitu_sample_gpu, only: capture_device_sample_gpu,static_sample_coordinates_gpu,sampling_geometry_device_bytes
     use insitu_statistics_gpu, only: sample_statistics_gpu_mean_vectors,statistics_device_bytes
     use insitu_device_velocity, only: extend_sample_velocity_gpu,velocity_transport_usage_gpu
     use insitu_device_velocity, only: velocity_transport_timing_gpu
-    use insitu_device_velocity, only: snapshot_sample_coordinates_gpu,extend_sample_coordinates_gpu
+    use insitu_device_velocity, only: extend_sample_coordinates_gpu
+#ifdef ASTR_BUILD_TESTING
+    use insitu_device_velocity, only: trace_sample_memory_gpu
+#endif
     use benchmark_runtime, only: insitu_clock,report_insitu_timing
 #endif
     character(*),intent(in) :: mode,pipeline,backend,script,profile,seed_layout
@@ -325,9 +404,11 @@ contains
 #ifdef ASTR_INSITU_DEVICE_PRODUCTS
     real(8),device,allocatable :: velocity(:,:),halo(:,:,:,:),derived(:,:),reynolds(:,:),favre(:,:)
     real(8),device,allocatable :: reynolds_halo(:,:,:,:),favre_halo(:,:,:,:)
-    real(8),device,allocatable :: coordinates(:,:),coordinate_halo(:,:,:,:),temperature(:,:,:,:)
+    real(8),device,allocatable :: coordinate_halo(:,:,:,:),temperature(:,:,:,:)
+    real(8),device,pointer,contiguous :: coordinates(:,:)
     real(8) :: duration,window_end,window_start,started,phase_started,face_times(5)
-    logical :: covered,lines,want_reynolds,want_favre,physical_coordinates,read_only_bl
+    logical :: covered,lines,want_reynolds,want_favre,physical_coordinates,read_only_bl,compact_q
+    character(8) :: audit_option
     type(c_devptr) :: reynolds_pointer,favre_pointer,coordinates_pointer,coordinate_halo_pointer,temperature_pointer
     integer :: status,generation,plane_j
     integer(int64) :: host_bytes,device_bytes,d2h,h2d,exchanges,retained
@@ -340,19 +421,27 @@ contains
       end subroutine
       integer(c_int) function device_render(pipeline,backend,script,profile,comm,step,t,nx,ny,nz,ox,oy,oz,cells,cellsy,cellsz, &
           velocity,halo,derived,reynolds,favre,covered,duration,wstart,wend,host,curve,xyz,xyz_halo,budget,reserve,retained, &
-          seeds,temperature,plane_j) &
+          seeds,temperature,plane_j,diagnostic_components) &
           bind(C,name='astr_insitu_device_render')
         import c_int,c_double,c_char,c_devptr,c_int64_t
         character(c_char),intent(in) :: pipeline(*),backend(*),script(*),profile(*),seeds(*)
-        integer(c_int),value :: comm,step,nx,ny,nz,ox,oy,oz,cells,cellsy,cellsz,covered,curve,plane_j
+        integer(c_int),value :: comm,step,nx,ny,nz,ox,oy,oz,cells,cellsy,cellsz,covered,curve,plane_j,diagnostic_components
         real(c_double),value :: t,duration,wstart,wend
         type(c_devptr),value :: velocity,halo,derived,reynolds,favre,xyz,xyz_halo,temperature
         integer(c_int64_t),value :: host,budget,reserve,retained
       end function
     end interface
     started=MPI_Wtime()
+    if(profile=='m12_diagnostics'.and.product_scene_due('velocity_slice').and. &
+        .not.product_scene_due('q_surface').and..not.product_scene_due('instantaneous_streamlines')) then
+      call render_m12_local_planes_gpu(mode,pipeline,backend,script,step,t,host_budget,device_budget,reserve)
+      return
+    endif
     read_only_bl=.false.
     if(present(preview_flatplate)) read_only_bl=preview_flatplate
+    compact_q=pipeline/='compatible'
+    call get_environment_variable('ASTR_INSITU_RESIDENT_AUDIT',audit_option,status=status)
+    if(status==0.and.trim(audit_option)=='1') compact_q=.false.
     phase_started=insitu_clock()
     call range_push(1_c_int)
     lines=profile=='all'.or.profile=='streamlines'.or.profile=='q_streamlines'.or. &
@@ -362,13 +451,15 @@ contains
       (profile=='all'.or.profile=='q_surface'.or.profile=='q_streamlines'.or. &
         profile=='tgv256_demo'.or.profile=='curve_demo'.or.profile=='boundary_layer'.or.profile=='m12_diagnostics').and. &
       (.not.product_schedules_active().or.product_scene_due('q_surface')),curve_demonstration=profile=='curve_demo', &
-      m12_diagnostics=profile=='m12_diagnostics',preview_flatplate=read_only_bl)
+      m12_diagnostics=profile=='m12_diagnostics',preview_flatplate=read_only_bl,q_only=compact_q, &
+      retained_other=statistics_device_bytes(),retain_volume_velocity=profile/='streamlines'.or.pipeline=='compatible')
     coordinates_pointer=c_devloc(velocity);coordinate_halo_pointer=c_devloc(halo)
     retained=8*(size(velocity,kind=int64)+size(halo,kind=int64)+size(derived,kind=int64))
     ! The profile case creates its physical grid in userdefine even with lreadgrid=false.
     physical_coordinates=lreadgrid.or.profile=='boundary_layer'.or.profile=='m12_diagnostics'.or.read_only_bl
     if(physical_coordinates) then
-      call snapshot_sample_coordinates_gpu(x_d,coordinates,[im,jm,km],hm,MPI_COMM_WORLD,device_budget,reserve,retained)
+      call static_sample_coordinates_gpu(x_d,coordinates,[im,jm,km],[ig0,jg0,kg0],[ia,ja,ka], &
+        hm,MPI_COMM_WORLD,device_budget,reserve,retained+statistics_device_bytes())
       coordinates_pointer=c_devloc(coordinates)
       retained=retained+8*size(coordinates,kind=int64)
       if(lines) then
@@ -403,7 +494,7 @@ contains
     if(statistics.and.(profile=='all'.or.mean_requested).and.(.not.product_schedules_active().or. &
       product_scene_due('mean_reynolds_streamlines').or.product_scene_due('mean_favre_streamlines'))) then
       call sample_statistics_gpu_mean_vectors(reynolds,favre,covered,duration, &
-        want_reynolds,want_favre,retained-device_bytes)
+        want_reynolds,want_favre,retained-device_bytes-sampling_geometry_device_bytes())
       if(allocated(reynolds)) retained=retained+8*(size(reynolds,kind=int64)+size(favre,kind=int64))
       if(covered) then
         if(want_reynolds) then
@@ -430,6 +521,10 @@ contains
     phase_started=insitu_clock()
     call range_push(7_c_int)
     retained=retained+statistics_device_bytes()
+#ifdef ASTR_BUILD_TESTING
+    call trace_sample_memory_gpu('frame-inputs',retained,MPI_COMM_WORLD)
+    call trace_sample_memory_gpu('diagnostic-supply',8_int64*size(derived,kind=int64),MPI_COMM_WORLD)
+#endif
     status=device_render(trim(pipeline)//c_null_char,trim(backend)//c_null_char,trim(script)//c_null_char, &
       trim(profile)//c_null_char, &
       int(MPI_COMM_WORLD,c_int),step,t,im,jm,km,ig0,jg0,kg0,ia,ja,ka,c_devloc(velocity),c_devloc(halo), &
@@ -437,7 +532,7 @@ contains
       window_start,window_end,int(host_budget,c_int64_t),merge(1_c_int,0_c_int,physical_coordinates), &
       coordinates_pointer,coordinate_halo_pointer, &
       int(device_budget,c_int64_t),int(reserve,c_int64_t),int(retained,c_int64_t),trim(seed_layout)//c_null_char, &
-      temperature_pointer,plane_j)
+      temperature_pointer,plane_j,int(size(derived,1),c_int))
     call range_pop()
     call checkpoint_state_require(status==0,MPI_COMM_WORLD,'device product bridge failed')
     call report_insitu_timing('device_consumer_inclusive',phase_started,step)
@@ -450,7 +545,6 @@ contains
       ' step=',step,' transport=',trim(mode),' face_d2h_bytes=',d2h,' face_h2d_bytes=',h2d, &
       ' face_exchanges=',exchanges,' frame_inclusive=',MPI_Wtime()-started
     deallocate(velocity,halo,derived)
-    if(allocated(coordinates)) deallocate(coordinates)
     if(allocated(coordinate_halo)) deallocate(coordinate_halo)
     if(allocated(temperature)) deallocate(temperature)
     if(allocated(reynolds)) deallocate(reynolds,favre)

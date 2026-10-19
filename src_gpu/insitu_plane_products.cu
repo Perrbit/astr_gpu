@@ -168,6 +168,7 @@ astr_insitu::DeviceMesh astr_insitu::build_device_plane(int fcomm,int step,doubl
   std::printf("ASTR_INSITU_DEVICE_PLANE rank=%d step=%d points=%lld triangles=%lld area=%.17g "
     "plane_maxabs=%.17g invalid_triangles=%.0f field_download_bytes=0 geometry_host_bytes=0 q_requested=0\n",
     rank,step,static_cast<long long>(view.points),static_cast<long long>(view.cells),audit[0],audit[1],audit[2]);
+  if(!retain_quantitative_product_fields()) owner->retain_display_only();
   return mesh;
 #else
   throw std::invalid_argument("Strict physical plane rendering is not built; no fallback");

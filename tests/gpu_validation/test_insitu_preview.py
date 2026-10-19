@@ -182,6 +182,7 @@ def prepare_native_preview(tmp_path, ranks, means, views=None):
     for key in ("DISPLAY", "PYTHONPATH", "CATALYST_IMPLEMENTATION_PREFER_ENV", "VTK_EGL_DEVICE_INDEX"):
         env.pop(key, None)
     env.update(ASTR_FORCE_MPI_TOPOLOGY=f"{ranks},1,1", ASTR_GPU_SYNC_MODE="explicit",
+        ASTR_INSITU_WRITE_EPS="1",  # Historical preview regressions check both formats explicitly.
         ASTR_GPU_HALO_TRANSPORT="pinned", ASTR_GPU_PRECISION_MODE="fp64",
         ASTR_GPU_FILTER_WORKSPACE="scalar", ASTR_INSITU_CONFIG="datin/input.insitu",
         ASTR_INSITU_TEST_PREVIEW_ISOLATION="1",

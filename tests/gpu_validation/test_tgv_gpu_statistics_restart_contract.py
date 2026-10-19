@@ -12,7 +12,7 @@ SOURCE = (ROOT / "src_gpu/statistic_gpu.cuf").read_text(encoding="ascii")
 
 def subroutine_body(name: str) -> str:
     match = re.search(
-        rf"subroutine\s+{name}\(\)(.*?)end\s+subroutine\s+{name}",
+        rf"subroutine\s+{name}\([^)]*\)(.*?)end\s+subroutine\s+{name}",
         SOURCE,
         flags=re.IGNORECASE | re.DOTALL,
     )
@@ -22,6 +22,15 @@ def subroutine_body(name: str) -> str:
 
 
 class TgvGpuStatisticsRestartContractTests(unittest.TestCase):
+    def test_tgv_outputs_share_one_complete_statistic_set(self) -> None:
+        runtime = (ROOT / 'src_gpu/gpu_runtime.cuf').read_text()
+        body = runtime.split('subroutine gpu_write_tgv_statistics()',1)[1].split(
+            'end subroutine gpu_write_tgv_statistics',1)[0]
+        for name in ('kenergy','enstophy','dissipation'):
+            self.assertEqual(body.count(f'call gpu_{name}_scalar('),1)
+            self.assertIn(f'call gpu_write_{name}(statistics(',body)
+        self.assertIn('call gpu_write_flowstate(statistics)',body)
+
     def test_tgv_diagnostic_writers_use_restart_aware_list_initialization(self) -> None:
         expected_files = {
             "gpu_write_flowstate": "flowstate.dat",

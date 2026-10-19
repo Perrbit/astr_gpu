@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT / 'scripts/insitu'))
 import image_publication as publication
 
 
-@pytest.mark.parametrize('value,expected', [(None, True), ('1', True), ('0', False)])
+@pytest.mark.parametrize('value,expected', [(None, False), ('1', True), ('0', False)])
 def test_eps_selection(monkeypatch, value, expected):
     if value is None:
         monkeypatch.delenv('ASTR_INSITU_WRITE_EPS', raising=False)
@@ -119,6 +119,37 @@ def test_m12_render_encodes_only_selected_formats(tmp_path, monkeypatch, write_e
     with Image.open(tmp_path / 'velocity_slice.step00000010.jpeg') as decoded:
         decoded.load()
         assert decoded.size == (8, 6) and decoded.info['dpi'] == (300, 300)
+
+
+@pytest.mark.parametrize('write_eps', [False, True])
+def test_compatible_encoder_skips_eps_work(monkeypatch, write_eps):
+    pipeline = ROOT / 'scripts/insitu/tgv_pipeline.py'
+    function = next(node for node in ast.parse(pipeline.read_text()).body
+                    if isinstance(node, ast.FunctionDef) and node.name == 'encode_image')
+    jpeg = io.BytesIO()
+    Image.new('RGB', (8, 6), (170, 20, 40)).save(jpeg, format='JPEG')
+    payload = jpeg.getvalue()
+    writer = Mock()
+    writer.GetErrorCode.return_value = 0
+    writer.GetResult.return_value = np.frombuffer(payload, dtype=np.uint8)
+    namespace = dict(io=io, Image=Image, write_eps=write_eps, image_size=[8, 6],
+                     vtkJPEGWriter=lambda: writer, vtk_to_numpy=lambda data: data)
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(pipeline), 'exec'), namespace)
+    original_open = Image.open
+    calls = []
+
+    def open_image(*args, **kwargs):
+        calls.append(True)
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(Image, 'open', open_image)
+    encoded, eps = namespace['encode_image'](
+        SimpleNamespace(GetDimensions=lambda: (8, 6, 1)), 95, 0)
+    assert encoded == payload
+    assert bool(calls) is write_eps
+    assert (eps is not None) is write_eps
+    if write_eps:
+        assert eps.startswith(b'%!PS-Adobe')
 
 
 @pytest.mark.skipif(not all(os.environ.get(key) for key in (

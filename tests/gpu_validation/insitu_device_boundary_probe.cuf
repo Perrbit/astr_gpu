@@ -93,14 +93,15 @@ program insitu_device_boundary_probe
   implicit none
   integer :: status,ierr,rank,np,axis,comm,dims(3),coords(3),extent(3),neighbors(2,3), &
     local_rank,devices,nodes,i,j,k,a,c,d,frame,bad,all_bad,generation,last_generation, &
-    global(3),ijk(3),shifted(3),ntype,side,source_errors,halo_errors,slot_errors,degree
+    global(3),ijk(3),shifted(3),ntype,side,source_errors,halo_errors,slot_errors,degree, &
+    plane_extent(3),plane_axis
   integer,device,allocatable :: coords_d(:)
   logical,device,allocatable :: periodic_d(:)
-  logical :: periodic(3),outside
+  logical :: periodic(3),outside,canonical_axes(3)
   real(8),device,allocatable :: q(:,:,:,:),canonical(:,:,:,:),metrics(:,:,:,:,:), &
-    velocity(:,:),halo(:,:,:,:),derived(:,:),coordinates(:,:,:,:),points(:,:)
+    velocity(:,:),halo(:,:,:,:),derived(:,:),coordinates(:,:,:,:),points(:,:),q_only(:,:),plane_state(:,:,:,:)
   real(8),allocatable :: source(:,:,:,:),source_before(:,:,:,:),completed(:,:,:,:),halo_h(:,:,:,:),derived_h(:,:), &
-    points_h(:,:)
+    points_h(:,:),compact(:,:),plane_h(:,:,:,:)
   real(8) :: state(11),samples(-3:3),directional(3),gradient(3,3),reference(14),value, &
     max_error,all_error,position(3),other_values(3),x
   integer(int64) :: hb,db,d2h,h2d,exchanges,expected_send,expected_receive,face,haloface
@@ -177,6 +178,39 @@ program insitu_device_boundary_probe
     allocate(halo_h(-3:extent(1)+3,-3:extent(2)+3,-3:extent(3)+3,3),derived_h(14,product(extent+1)))
     ! Bounded test-only readbacks, not a production product path.
     source=q; completed=canonical; halo_h=halo; derived_h=derived
+    ! Crop an undecomposed normal. Tangential MPI endpoints still use their owner.
+    plane_axis=2
+    if(dims(2)>1) plane_axis=3
+    plane_extent=extent;plane_extent(plane_axis)=1
+    canonical_axes=.true.;canonical_axes(plane_axis)=.false.
+    allocate(plane_state(0:plane_extent(1),0:plane_extent(2),0:plane_extent(3),11))
+    if(plane_axis==2) then
+      plane_state=source(0:extent(1),1:2,0:extent(3),:)
+    else
+      plane_state=source(0:extent(1),0:extent(2),1:2,:)
+    endif
+    call complete_sample_fields_gpu(plane_state,plane_extent,11,comm,canonical_axes=canonical_axes)
+    plane_h=plane_state
+    do k=0,plane_extent(3)
+      do j=0,plane_extent(2)
+        do i=0,plane_extent(1)
+          shifted=[i,j,k];shifted(plane_axis)=shifted(plane_axis)+1
+          do c=1,11
+            if(transfer(plane_h(i,j,k,c),0_int64)/= &
+                transfer(completed(shifted(1),shifted(2),shifted(3),c),0_int64)) bad=1
+          enddo
+        enddo
+      enddo
+    enddo
+    deallocate(plane_state,plane_h)
+    call derive_sample_velocity_gpu(halo,metrics,q_only,extent,3,comm,67108864_int64,1073741824_int64, &
+      wall_sixth=degree/=3,q_only=.true.)
+    compact=q_only
+    if(size(q_only,1)/=1.or.size(q_only,2)/=product(extent+1)) bad=1
+    do i=1,product(extent+1)
+      if(transfer(compact(1,i),0_int64)/=transfer(derived_h(10,i),0_int64)) bad=1
+    enddo
+    write(*,'(a,i0,a,i0)') 'BOUNDARY_Q_ONLY rank=',rank,' payload_bytes=',8_int64*size(q_only,kind=int64)
     if(any(source/=source_before)) source_errors=1
     do k=-3,extent(3)+3
       do j=-3,extent(2)+3
@@ -265,7 +299,8 @@ program insitu_device_boundary_probe
     enddo
     do a=1,3
       if(dims(a)==1.or.mode/='pinned') cycle
-      face=15_int64*product(int(extent+1,int64))/(extent(a)+1)
+      face=15_int64*product(int(extent+1,int64))/(extent(a)+1)+ &
+        11_int64*product(int(plane_extent+1,int64))/(plane_extent(a)+1)
       haloface=9_int64*product(int(extent+7,int64))/(extent(a)+7)
       if(neighbors(1,a)/=MPI_PROC_NULL) expected_send=expected_send+(face+haloface)*8
       if(neighbors(2,a)/=MPI_PROC_NULL) expected_receive=expected_receive+(face+haloface)*8
@@ -274,7 +309,7 @@ program insitu_device_boundary_probe
     enddo
     call velocity_transport_usage_gpu(hb,db,d2h,h2d,exchanges,generation)
     if(d2h/=expected_send.or.h2d/=expected_receive.or.generation/=last_generation) slot_errors=1
-    deallocate(velocity,halo,derived,halo_h,derived_h)
+    deallocate(velocity,halo,derived,halo_h,derived_h,q_only,compact)
   enddo
   if(max_error>2.d-10.or.source_errors/=0.or.halo_errors/=0.or.slot_errors/=0) bad=1
   call MPI_Allreduce(bad,all_bad,1,MPI_INTEGER,MPI_MAX,comm,ierr)

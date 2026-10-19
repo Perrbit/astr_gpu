@@ -13,6 +13,8 @@ import signal
 import statistics
 import shutil
 from time import perf_counter, sleep
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from image_publication import eps_output_enabled
 
 ROOT = Path(__file__).resolve().parents[2]
 MPI = Path('/opt/nvidia/hpc_sdk/Linux_x86_64/26.1/comm_libs/hpcx/bin/mpiexec')
@@ -52,6 +54,7 @@ def environment(case, transport):
     for key in ('DISPLAY', 'PYTHONPATH', 'CATALYST_IMPLEMENTATION_PREFER_ENV', 'VTK_EGL_DEVICE_INDEX'):
         env.pop(key, None)
     env.update(ASTR_INSITU_CONFIG=str(case/'insitu.nml'), ASTR_INSITU_TIMING='1',
+        ASTR_INSITU_WRITE_EPS='1' if eps_output_enabled() else '0',
         ASTR_COMPLETE_STEP_TIMING='1', ASTR_GPU_RK_TIMING='1', ASTR_GPU_RANK_RK_TIMING='1',
         ASTR_FORCE_MPI_TOPOLOGY='2,1,1', ASTR_GPU_SYNC_MODE='explicit',
         ASTR_GPU_HALO_TRANSPORT='pinned', ASTR_GPU_PRECISION_MODE='fp64',
@@ -121,7 +124,7 @@ def verify(case, steps, enabled, pipeline='compatible'):
     downloads = re.findall(r'ASTR_INSITU_GPU_FLOW rank=(\d+) frame_downloads=(\d+)',log)
     assert sorted(downloads)==[('0','0'),('1','0')]
     assert len(list(out.rglob('*.jpeg'))) == 2*steps
-    assert len(list(out.rglob('*.eps'))) == 2*steps
+    assert len(list(out.rglob('*.eps'))) == (2*steps if eps_output_enabled() else 0)
     resources = []
     for rank in range(2):
         render = out/'render'
@@ -149,11 +152,11 @@ def verify(case, steps, enabled, pipeline='compatible'):
     for name in PRODUCTS:
         for step in range(1,steps+1):
             path=out/'render'/f'{name}.step{step:08d}.jpeg'
-            assert path.with_suffix('.eps').is_file()
+            assert path.with_suffix('.eps').is_file() is eps_output_enabled()
             with Image.open(path) as image:
                 pixels = np.asarray(image.convert('RGB'))
                 assert pixels.shape==(960,1280,3) and (pixels<240).any()
-    return dict(resources=resources,images=2*steps,eps=2*steps)
+    return dict(resources=resources,images=2*steps,eps=2*steps if eps_output_enabled() else 0)
 
 
 def directory_bytes(path):

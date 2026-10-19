@@ -20,10 +20,10 @@ original_capture=base['capture_image']
 original_publish=base['publish_pair']
 
 
-def capture(view):
+def capture(view, size=None):
     if fault=='draw':
         raise RuntimeError('ASTR_RESIDENT_DRAW_FAILURE_INJECTED')
-    return original_capture(view)
+    return original_capture(view, size)
 
 
 def publish(path,jpeg,eps):

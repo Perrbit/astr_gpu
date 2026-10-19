@@ -88,8 +88,8 @@ program insitu_device_fields_probe
   use insitu_device_velocity
   use insitu_device_fields_probe_kernels
   implicit none
-  real(8),device,allocatable :: q(:,:,:,:),metrics(:,:,:,:,:),velocity(:,:),halo(:,:,:,:),derived(:,:)
-  real(8),allocatable :: diagnostic(:,:)
+  real(8),device,allocatable :: q(:,:,:,:),metrics(:,:,:,:,:),velocity(:,:),halo(:,:,:,:),derived(:,:),q_only(:,:)
+  real(8),allocatable :: diagnostic(:,:),compact(:,:)
   integer,device,allocatable :: coords_d(:),errors(:)
   integer :: rank,np,ierr,axis,comm,dims(3),coords(3),neighbors(2,3),extent(3), &
     status,local_rank,devices,nodes,bad(2),all_bad(2),node,i,j,k,c,d,location(3),offset(3),s
@@ -139,6 +139,13 @@ program insitu_device_fields_probe
   ! production product supply path. Velocity, q and metrics stay on device.
   nodes=product(extent+1); allocate(diagnostic(14,nodes)); diagnostic=derived
   if(.not.all(ieee_is_finite(diagnostic))) call MPI_Abort(comm,7,ierr)
+  call derive_sample_velocity_gpu(halo,metrics,q_only,extent,3,comm,67108864_int64,1073741824_int64, &
+    q_only=.true.)
+  if(any(shape(q_only)/=[1,nodes])) call MPI_Abort(comm,17,ierr)
+  allocate(compact(1,nodes));compact=q_only
+  if(any(transfer(compact,[0_int64])/=transfer(diagnostic(10,:),[0_int64]))) call MPI_Abort(comm,18,ierr)
+  if(rank==0) write(*,'(a,i0)') 'Q_ONLY exact=1 payload_bytes=',8_int64*size(q_only,kind=int64)
+  deallocate(compact,q_only)
   h=8.d0*atan(1.d0)/32.d0; error=0.d0
   do node=0,nodes-1
     i=mod(node,extent(1)+1); j=mod(node/(extent(1)+1),extent(2)+1); k=node/((extent(1)+1)*(extent(2)+1))

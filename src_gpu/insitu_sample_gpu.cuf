@@ -1,5 +1,8 @@
 module insitu_sample_gpu
   use cudafor
+  ! Avoid NVFORTRAN 26.1 MPI COMMON/subprogram name conflicts with this module.
+  use mpi
+  use iso_fortran_env, only: int64
   implicit none
   private
   public :: download_sample_gpu
@@ -10,12 +13,95 @@ module insitu_sample_gpu
   public :: capture_device_sample_gpu,release_device_sampling_gpu
   public :: capture_device_channel_walls_gpu
   public :: capture_device_air5_walls_gpu
+  public :: prepare_device_m12_planes_gpu
+  public :: static_sample_coordinates_gpu,sampling_geometry_device_bytes
 #ifdef ASTR_BUILD_TESTING
   public :: check_device_wall_fields_gpu
 #endif
   logical,save :: device_sampling_initialized=.false.
   character(16),save :: device_sampling_transport=''
+  real(8),device,allocatable,target,save :: static_coordinates_d(:,:)
+  integer,save :: static_coordinate_key(12)=0
+  integer(int64),save :: static_coordinate_source=0
 contains
+  integer(int64) function sampling_geometry_device_bytes() result(bytes)
+    bytes=0
+    if(allocated(static_coordinates_d)) bytes=8_int64*size(static_coordinates_d,kind=int64)
+  end function
+
+  subroutine release_static_coordinates_gpu()
+#ifdef ASTR_BUILD_TESTING
+    use insitu_device_velocity, only: trace_sample_memory_gpu
+#endif
+    if(allocated(static_coordinates_d)) then
+      deallocate(static_coordinates_d)
+#ifdef ASTR_BUILD_TESTING
+      call trace_sample_memory_gpu('static-coordinate-release',0_int64,MPI_COMM_WORLD)
+#endif
+    endif
+    static_coordinate_key=0;static_coordinate_source=0
+  end subroutine
+
+  subroutine static_sample_coordinates_gpu(source,coordinates,extent,offset,global_extent,hm,comm,budget,reserve,retained)
+    use checkpoint_state_io, only: checkpoint_state_require
+    use insitu_device_velocity, only: snapshot_sample_coordinates_gpu,velocity_transport_usage_gpu
+#ifdef ASTR_BUILD_TESTING
+    use insitu_device_velocity, only: trace_sample_memory_gpu
+#endif
+    integer,intent(in) :: extent(3),offset(3),global_extent(3),hm,comm
+    real(8),device,intent(in) :: source(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3)
+    real(8),device,pointer,contiguous,intent(out) :: coordinates(:,:)
+    integer(int64),intent(in) :: budget,reserve,retained
+    integer :: status,device,generation,key(12)
+    integer(int64) :: host_slots,device_slots,d2h,h2d,exchanges,address
+    status=cudaGetDevice(device)
+    call checkpoint_state_require(status==cudaSuccess.and.device_sampling_initialized,comm,'static coordinate session')
+    call velocity_transport_usage_gpu(host_slots,device_slots,d2h,h2d,exchanges,generation)
+    key=[extent,offset,global_extent,hm,device,generation]
+    address=transfer(c_devloc(source),0_int64)
+    if(allocated(static_coordinates_d)) then
+      call checkpoint_state_require(all(key==static_coordinate_key).and.address==static_coordinate_source, &
+        comm,'static grid changed without releasing the sampling session')
+    else
+      call snapshot_sample_coordinates_gpu(source,static_coordinates_d,extent,hm,comm,budget,reserve,retained)
+      static_coordinate_key=key;static_coordinate_source=address
+#ifdef ASTR_BUILD_TESTING
+      call trace_sample_memory_gpu('static-coordinate-allocation',sampling_geometry_device_bytes(),comm)
+#endif
+    endif
+    coordinates=>static_coordinates_d
+  end subroutine
+
+  subroutine prepare_device_m12_planes_gpu(mode,host_budget,device_budget,reserve)
+    use iso_fortran_env, only: int64
+    use mpi
+    use commvar, only: im,jm,km,hm,numq,use_gpu
+    use parallel, only: isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
+    use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported
+    use insitu_m12_gpu, only: m12_diagnostic_layout_supported
+    use precision_mode_gpu, only: gpu_precision_mode,GPU_PRECISION_FP64
+    use halo_transport_gpu, only: halo_transport_idle
+    use halo_exchange_gpu, only: solution_pipeline_active
+    use checkpoint_state_io, only: checkpoint_state_require
+    use insitu_device_velocity, only: begin_velocity_transport_gpu
+    character(*),intent(in) :: mode
+    integer(int64),intent(in) :: host_budget,device_budget,reserve
+    integer :: neighbors(2,3)
+    call release_static_coordinates_gpu()
+    call checkpoint_state_require(gpu_profile_mp_ld_flatplate_supported().and.m12_diagnostic_layout_supported().and. &
+      use_gpu.and.numq==5.and.hm>=3.and.gpu_precision_mode==GPU_PRECISION_FP64,MPI_COMM_WORLD, &
+      'local M12 planes require the admitted five-variable FP64 MP-LD x-slab case')
+    call checkpoint_state_require(halo_transport_idle().and..not.solution_pipeline_active, &
+      MPI_COMM_WORLD,'local M12 planes require completed solver transport')
+    if(.not.device_sampling_initialized) then
+      neighbors(:,1)=[mpileft,mpiright]; neighbors(:,2)=[mpidown,mpiup]; neighbors(:,3)=[mpiback,mpifront]
+      call begin_velocity_transport_gpu(mode,[im,jm,km],[isize,jsize,ksize],neighbors, &
+        MPI_COMM_WORLD,host_budget,device_budget,reserve,periodic=[.false.,.false.,.true.])
+      device_sampling_transport=mode; device_sampling_initialized=.true.
+    endif
+    call checkpoint_state_require(mode==device_sampling_transport,MPI_COMM_WORLD,'device sample transport changed in session')
+  end subroutine
+
   subroutine capture_device_air5_walls_gpu(mode,coordinates,fields,host_budget,device_budget,reserve)
     use iso_fortran_env, only: int64
     use mpi
@@ -100,7 +186,7 @@ contains
   end subroutine
 
   subroutine capture_device_sample_gpu(mode,velocity,halo,derived,host_budget,device_budget,reserve,demonstration,need_q, &
-      curve_demonstration,m12_diagnostics,preview_flatplate)
+      curve_demonstration,m12_diagnostics,preview_flatplate,q_only,retained_other,retain_volume_velocity)
     use benchmark_runtime, only: insitu_clock,report_insitu_timing
     use iso_fortran_env, only: int64
     use commvar, only: im,jm,km,ia,ja,ka,hm,numq,use_gpu,lreadgrid,difschm,conschm,flowtype, &
@@ -120,9 +206,12 @@ contains
     character(*),intent(in) :: mode
     real(8),device,allocatable,intent(out) :: velocity(:,:),halo(:,:,:,:),derived(:,:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
+    integer(int64),intent(in),optional :: retained_other
+    integer(int64) :: extra
     logical,intent(in),optional :: demonstration,need_q,curve_demonstration,m12_diagnostics
-    logical,intent(in),optional :: preview_flatplate
-    logical :: demo,calculate_q,curve_wall,curve_demo,profile_mp_ld
+    logical,intent(in),optional :: preview_flatplate,q_only
+    logical,intent(in),optional :: retain_volume_velocity
+    logical :: demo,calculate_q,curve_wall,curve_demo,profile_mp_ld,compact_q
     integer :: neighbors(2,3),sizes(3),extent(3),ranks,ierr,status
     real(8) :: phase_started
     extent=[im,jm,km]; sizes=[isize,jsize,ksize]
@@ -132,6 +221,8 @@ contains
     if(present(curve_demonstration)) curve_demo=curve_demonstration.and.lreadgrid
     calculate_q=.true.
     if(present(need_q)) calculate_q=need_q
+    compact_q=.false.
+    if(present(q_only)) compact_q=q_only
     curve_wall=lreadgrid.and.all(bctype==[1,1,41,41,1,1])
     neighbors(:,1)=[mpileft,mpiright]; neighbors(:,2)=[mpidown,mpiup]; neighbors(:,3)=[mpiback,mpifront]
     call MPI_Comm_size(MPI_COMM_WORLD,ranks,ierr)
@@ -166,20 +257,31 @@ contains
     endif
     call checkpoint_state_require(mode==device_sampling_transport,MPI_COMM_WORLD,'device sample transport changed in session')
     phase_started=insitu_clock()
-    call snapshot_sample_velocity_gpu(q_d,velocity,extent,hm,numq,sizes,neighbors,MPI_COMM_WORLD,device_budget,reserve)
+    extra=sampling_geometry_device_bytes()
+    if(present(retained_other)) extra=extra+retained_other
+    call snapshot_sample_velocity_gpu(q_d,velocity,extent,hm,numq,sizes,neighbors,MPI_COMM_WORLD,device_budget,reserve, &
+      retained_other=extra)
     call report_insitu_timing('device_snapshot_inclusive',phase_started,-1)
     phase_started=insitu_clock()
-    call extend_sample_velocity_gpu(velocity,halo,extent,MPI_COMM_WORLD,device_budget,reserve)
+    call extend_sample_velocity_gpu(velocity,halo,extent,MPI_COMM_WORLD,device_budget,reserve,retained_other=extra)
     call report_insitu_timing('device_halo_inclusive',phase_started,-1)
     phase_started=insitu_clock()
     if(calculate_q) then
       call derive_sample_velocity_gpu(halo,dxi_d,derived,extent,hm,MPI_COMM_WORLD,device_budget,reserve, &
-        wall_sixth=curve_wall)
+        wall_sixth=curve_wall,q_only=compact_q,retained_other=extra)
       call report_insitu_timing('device_gradient_q_inclusive',phase_started,-1)
     else
       allocate(derived(1,1),stat=status)
       call checkpoint_state_require(status==0,MPI_COMM_WORLD,'unused Q pointer allocation')
       derived=0.d0
+    endif
+    if(present(retain_volume_velocity)) then
+      if(.not.retain_volume_velocity) then
+        ! Streamline consumers read the completed halo, not this volume vector.
+        deallocate(velocity)
+        allocate(velocity(3,1),stat=status)
+        call checkpoint_state_require(status==0,MPI_COMM_WORLD,'unused volume velocity pointer allocation')
+      endif
     endif
   end subroutine
 
@@ -194,6 +296,7 @@ contains
     call products_release()
 #endif
     if(device_sampling_initialized) call end_velocity_transport_gpu(MPI_COMM_WORLD)
+    call release_static_coordinates_gpu()
     device_sampling_initialized=.false.; device_sampling_transport=''
   end subroutine
 

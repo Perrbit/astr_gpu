@@ -617,12 +617,12 @@ contains
     endif
     call check(err==0.and.closed==0,'cannot write frame identity')
     call write_checkpoint_resource_refs(trim(path),[character(128) :: 'SEGMENT','data.h5'],MPI_COMM_WORLD,ok, &
-      with_checksums=.true.)
+      with_checksums=.false.)
     call check(ok,'cannot record shared archive coordinates')
     call seal_checkpoint_bundle(trim(path),[character(128) :: 'data.h5','data.xdmf','FRAME','RESOURCES'], &
-      MPI_COMM_WORLD,ok,with_checksums=.true.)
+      MPI_COMM_WORLD,ok,with_checksums=.false.)
     call check(ok,'cannot seal frame')
-    call publish_checkpoint_bundle(trim(roots(product)),trim(name),MPI_COMM_WORLD,ok,with_checksums=.true.)
+    call publish_checkpoint_bundle(trim(roots(product)),trim(name),MPI_COMM_WORLD,ok,with_checksums=.false.)
     call check(ok,'cannot publish frame')
     call publish_series(product,identity)
     write(*,'(a,i0,a,a,a,i0,a,i0,a,i0,a,i0)') 'ASTR_OUTPUT_ARCHIVE rank=',mpirank, &

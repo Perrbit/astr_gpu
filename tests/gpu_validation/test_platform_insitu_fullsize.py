@@ -141,7 +141,7 @@ def test_missing_image_is_recorded_not_promoted_to_pass_or_abort(tmp_path):
     (case/'outdat/render/velocity_slice.step00000010.jpeg').unlink()
     record = gate.inspect_products(case, 10)
     assert not record['publication_complete']
-    assert any('Missing image pair' in warning for warning in record['warnings'])
+    assert any('Missing JPEG image' in warning for warning in record['warnings'])
 
 
 def test_product_inspection_respects_jpeg_only(tmp_path, monkeypatch):
@@ -154,11 +154,11 @@ def test_product_inspection_respects_jpeg_only(tmp_path, monkeypatch):
     assert not gate.inspect_products(case, 10)['publication_complete']
 
 
-def test_default_product_inspection_still_requires_eps(tmp_path, monkeypatch):
+def test_default_product_inspection_does_not_require_eps(tmp_path, monkeypatch):
     monkeypatch.delenv('ASTR_INSITU_WRITE_EPS', raising=False)
     case = product_case(tmp_path)
     (case/'outdat/render/velocity_slice.step00000010.eps').unlink()
-    assert not gate.inspect_products(case, 10)['publication_complete']
+    assert gate.inspect_products(case, 10)['publication_complete']
 
 
 def test_host_geometry_still_fails(tmp_path):

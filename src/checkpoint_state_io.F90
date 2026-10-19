@@ -398,6 +398,80 @@ contains
     enddo
   end function
 
+  pure subroutine validate_partitions_local(partitions,g,ncomp,lean,rank,offset,total,reason)
+    integer(int64),intent(in) :: partitions(:),g(3)
+    integer,intent(in) :: ncomp,rank
+    logical,intent(in) :: lean
+    integer(int64),intent(out) :: offset,total
+    character(*),intent(out) :: reason
+    integer(int64) :: lo(3),hi(3),other_lo(3),other_hi(3),count(3),owned,all_nodes,v,full_nodes,points
+    integer :: r,s,a,b
+    offset=0; total=0; owned=0
+    reason='extent overflow'
+    all_nodes=local_volume(g)
+    if(all_nodes==0) return
+    do r=0,size(partitions)/8-1
+      a=8*r
+      lo=partitions(a+1:a+3); count=partitions(a+4:a+6)
+      reason='partition origin'
+      if(any(lo<0).or.any(lo>=g)) return
+      reason='partition cells'
+      if(any(count<=0).or.any(count>g-1-lo)) return
+      reason='halo width'
+      if(partitions(a+7)<0.or.partitions(a+7)>huge(0)) return
+      other_hi=count+2*partitions(a+7)+1
+      where(lo+count==g-1) count=count+1
+      hi=lo+count
+      v=local_volume(count); full_nodes=local_volume(other_hi)
+      reason='extent overflow'
+      if(v==0.or.full_nodes==0) return
+      points=full_nodes-v
+      reason='extras overflow'
+      if(points>huge(points)/ncomp) return
+      reason='extras count'
+      if(lean) then
+        if(partitions(a+8)/=0) return
+      else
+        if(partitions(a+8)/=points*ncomp) return
+      endif
+      reason='ownership overflow'
+      if(owned>huge(v)-v) return
+      owned=owned+v
+      reason='overlapping owners'
+      do s=0,r-1
+        b=8*s
+        other_lo=partitions(b+1:b+3)
+        other_hi=other_lo+partitions(b+4:b+6)
+        where(other_hi==g-1) other_hi=other_hi+1
+        if(all(min(hi,other_hi)>max(lo,other_lo))) return
+      enddo
+      if(r==rank) offset=total
+      reason='extras file overflow'
+      if(total>huge(total)-partitions(a+8)) return
+      total=total+partitions(a+8)
+    enddo
+    reason='incomplete ownership'
+    if(owned/=all_nodes) return
+    reason=''
+  contains
+    pure integer(int64) function local_volume(extents) result(value)
+      integer(int64),intent(in) :: extents(3)
+      integer :: d
+      value=1
+      do d=1,3
+        if(extents(d)<=0) then
+          value=0
+          return
+        endif
+        if(value>huge(value)/extents(d)) then
+          value=0
+          return
+        endif
+        value=value*extents(d)
+      enddo
+    end function
+  end subroutine validate_partitions_local
+
   subroutine dataset(file,name,dims,filetype,writing,comm,dset,space)
     integer(hid_t), intent(in) :: file,filetype
     character(*), intent(in) :: name
@@ -503,11 +577,11 @@ contains
     real(real64), allocatable :: extras(:)
     integer(hid_t) :: file,container,access,xfer,dset,space,mem,native
     integer(hsize_t) :: dims3(3),mdims3(3),start3(3),count3(3),dims1(1),mdims1(1),start1(1),count1(1)
-    integer :: rank,np,err,mpi_i64,ncomp,old_np,r,s,a,b,i,j,k,m,n,allocerr,mode(3),root_mode(3),state_role
+    integer :: rank,np,err,mpi_i64,ncomp,old_np,r,a,i,j,k,m,n,allocerr,mode(3),root_mode(3),state_role
     integer :: axes_mode(3),root_axes(3)
     logical :: permit,restore_exact,matched,lean
-    integer(int64) :: lo(3),hi(3),other_lo(3),other_hi(3),count(3),sum_owned,v
     character(16) :: name
+    character(64) :: partition_error
     character(len(path)) :: root_path
     call MPI_Comm_rank(comm,rank,err)
     call require(err==MPI_SUCCESS,comm,'rank')
@@ -589,25 +663,8 @@ contains
     local=[int(origin,int64),int(cells,int64),int(halo,int64),extras_count]
     call MPI_Allgather(local,8,mpi_i64,current,8,mpi_i64,comm,err)
     call require(err==MPI_SUCCESS,comm,'partition gather')
-    sum_owned=0
-    do r=0,np-1
-      a=8*r
-      lo=current(a+1:a+3)
-      count=current(a+4:a+6)
-      where(lo+count==g-1) count=count+1
-      hi=lo+count
-      v=volume(count,comm)
-      call require(sum_owned<=huge(v)-v,comm,'owned count overflow')
-      sum_owned=sum_owned+v
-      do s=0,r-1
-        b=8*s
-        other_lo=current(b+1:b+3)
-        other_hi=other_lo+current(b+4:b+6)
-        where(other_hi==g-1) other_hi=other_hi+1
-        call require(.not.all(min(hi,other_hi)>max(lo,other_lo)),comm,'overlapping owners')
-      enddo
-    enddo
-    call require(sum_owned==volume(g,comm),comm,'incomplete ownership')
+    call validate_partitions_local(current,g,ncomp,lean,rank,offset,total,partition_error)
+    call require(len_trim(partition_error)==0,comm,trim(partition_error))
     call h5open_f(err)
     call require(err==0,comm,'HDF5 initialize')
     call h5pcreate_f(H5P_FILE_ACCESS_F,access,err)
@@ -665,41 +722,8 @@ contains
     call require(allocerr==0,comm,'saved partition allocation')
     if (writing) partitions=current
     call integers(file,'partitions',partitions,writing,xfer,comm,rank)
-    total=0
-    offset=0
-    sum_owned=0
-    do r=0,old_np-1
-      a=8*r
-      lo=partitions(a+1:a+3)
-      count=partitions(a+4:a+6)
-      call require(all(lo>=0).and.all(lo<g),comm,'saved partition origin')
-      call require(all(count>0).and.all(count<=g-1-lo),comm,'saved partition cells')
-      call require(partitions(a+7)>=0.and.partitions(a+7)<=huge(n),comm,'saved halo width')
-      other_hi=count+2*partitions(a+7)+1
-      where(lo+count==g-1) count=count+1
-      hi=lo+count
-      v=volume(count,comm)
-      points=volume(other_hi,comm)-v
-      call require(points<=huge(points)/ncomp,comm,'saved extras overflow')
-      if(lean) then
-        call require(partitions(a+8)==0,comm,'lean checkpoint contains duplicate state')
-      else
-        call require(partitions(a+8)==points*ncomp,comm,'saved extras count')
-      endif
-      call require(sum_owned<=huge(v)-v,comm,'saved ownership overflow')
-      sum_owned=sum_owned+v
-      do s=0,r-1
-        b=8*s
-        other_lo=partitions(b+1:b+3)
-        other_hi=other_lo+partitions(b+4:b+6)
-        where(other_hi==g-1) other_hi=other_hi+1
-        call require(.not.all(min(hi,other_hi)>max(lo,other_lo)),comm,'saved overlapping owners')
-      enddo
-      if (r==rank) offset=total
-      call require(total<=huge(total)-partitions(a+8),comm,'extras file overflow')
-      total=total+partitions(a+8)
-    enddo
-    call require(sum_owned==volume(g,comm),comm,'saved incomplete ownership')
+    call validate_partitions_local(partitions,g,ncomp,lean,rank,offset,total,partition_error)
+    call require(len_trim(partition_error)==0,comm,'saved '//trim(partition_error))
     matched=old_np==np
     if(matched) matched=all(partitions==current)
     if(.not.writing.and.permit.and..not.matched) then

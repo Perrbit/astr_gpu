@@ -27,17 +27,6 @@
 namespace astr_insitu {
 using TraceVertex=viskores::Vec<double,5>;
 
-struct PackComponentHalo : viskores::worklet::WorkletMapField {
-  using ControlSignature=void(FieldIn,WholeArrayIn,FieldOut);
-  using ExecutionSignature=void(_1,_2,_3);
-  viskores::Id nodes;
-  VISKORES_CONT explicit PackComponentHalo(viskores::Id n):nodes(n) {}
-  template <class Portal>
-  VISKORES_EXEC void operator()(viskores::Id i,const Portal& input,viskores::Vec3f& v) const {
-    for(int d=0;d<3;++d) v[d]=input.Get(i+d*nodes);
-  }
-};
-
 struct ValidTraceVertex : viskores::worklet::WorkletMapField {
   using ControlSignature=void(FieldIn,WholeArrayIn,FieldOut);
   using ExecutionSignature=void(_1,_2,_3);
@@ -100,6 +89,16 @@ struct PackResidentTrace : viskores::worklet::WorkletMapField {
     for(int d=0;d<3;++d) bad+=!viskores::IsFinite(v[d]);
   }
 };
+struct PackResidentImageTrace : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,FieldIn,FieldIn,FieldOut,FieldOut);
+  using ExecutionSignature=void(_1,_2,_3,_4,_5);
+  VISKORES_EXEC void operator()(const TraceVertex& p,const viskores::Vec3f& v,
+      viskores::Int32 status,viskores::Vec3f& xyz,viskores::Id& bad) const {
+    xyz=viskores::Vec3f(p[0],p[1],p[2]);bad=status!=0;
+    for(int d=0;d<5;++d) bad+=!viskores::IsFinite(p[d]);
+    for(int d=0;d<3;++d) bad+=!viskores::IsFinite(v[d]);
+  }
+};
 struct ResidentTraceChunk {
   viskores::cont::ArrayHandle<TraceVertex> accepted;
   viskores::cont::ArrayHandle<viskores::Vec3f> xyz,velocity;
@@ -151,30 +150,27 @@ struct PrivateTraceComm {
   PrivateTraceComm& operator=(const PrivateTraceComm&)=delete;
 };
 
-inline viskores::cont::ArrayHandle<viskores::Vec3f> pack_component_halo(
+inline SampleVectorComponents view_component_halo(
     double* pointer,const viskores::Id3& dimensions) {
   const auto nodes=dimensions[0]*dimensions[1]*dimensions[2];
-  auto input=borrow_cuda_array(pointer,3*nodes);
-  viskores::cont::ArrayHandle<viskores::Vec3f> output;
-  viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});
-  invoke(PackComponentHalo(nodes),viskores::cont::ArrayHandleIndex(nodes),input,output);
-  synchronize_device_stage("PackComponentHalo");
-  require_device_only(input); require_device_only(output);
+  SampleVectorComponents output(std::array<viskores::cont::ArrayHandle<double>,3>{
+    borrow_cuda_array(pointer,nodes),borrow_cuda_array(pointer+nodes,nodes),borrow_cuda_array(pointer+2*nodes,nodes)});
+  require_device_only(output);
+  trace_device_memory("halo-component-view",0);
   return output;
 }
 
 // Device halos include three private layers. Strict mode downloads only bounded
 // particle/ownership controls; compact geometry readback is a separate legacy path.
-template<bool Physical>
+template<bool Physical,class Vectors,class Coordinates>
 inline DeviceStreamlines trace_partition_device(
-    const viskores::cont::ArrayHandle<viskores::Vec3f>& trace_velocity,
-    const viskores::cont::ArrayHandle<viskores::Vec3f>& color_velocity,
+    const Vectors& trace_velocity,const Vectors& color_velocity,
     const viskores::Id3& extent,const viskores::Id3& offset,MPI_Comm comm,
     std::uint64_t host_budget,bool constant=false,int constant_axis=0,bool forward_only=false,
     bool sample_trace_vector=false,int global_cells=32,bool resident=false,
-    const viskores::cont::ArrayHandle<viskores::Vec3f>* physical_coordinates=nullptr,
+    const Coordinates* physical_coordinates=nullptr,
     double physical_step_scale=1.,const std::string& seed_layout="line16",
-    viskores::Id3 global_dimensions=viskores::Id3(0)) {
+    viskores::Id3 global_dimensions=viskores::Id3(0),bool image_only=false) {
   constexpr int chunk=128;
   const auto seeds=tgv_streamline_seeds(seed_layout);
   const int seed_count=static_cast<int>(seeds.size());
@@ -219,7 +215,8 @@ inline DeviceStreamlines trace_partition_device(
   auto grid=viskores::cont::DataSetBuilderUniform().Create(dims,
     viskores::Vec3f((offset[0]-3)*h,(offset[1]-3)*h,(offset[2]-3)*h),viskores::Vec3f(h));
   PhysicalTraceData physical;
-  auto tracing=trace_velocity,coloring=color_velocity;
+  using FieldArray=std::conditional_t<Physical,viskores::cont::ArrayHandle<viskores::Vec3f>,Vectors>;
+  FieldArray tracing,coloring;
   std::unique_ptr<PhysicalTraceOwner> physical_owner;
   if constexpr(Physical) {
     if(!physical_coordinates) throw std::invalid_argument("Missing physical streamline coordinates");
@@ -227,8 +224,10 @@ inline DeviceStreamlines trace_partition_device(
     physical=crop_physical_trace_halo(*physical_coordinates,trace_velocity,color_velocity,extent,offset,global_dimensions);
     grid=physical.grid;tracing=physical.trace;coloring=physical.color;
     physical_owner=std::make_unique<PhysicalTraceOwner>(physical,extent,offset,global_dimensions);
+  } else {
+    tracing=trace_velocity;coloring=color_velocity;
   }
-  using Field=viskores::worklet::flow::VelocityField<viskores::cont::ArrayHandle<viskores::Vec3f>>;
+  using Field=viskores::worklet::flow::VelocityField<FieldArray>;
   using Grid=std::conditional_t<Physical,PhysicalTraceGrid,viskores::worklet::flow::GridEvaluator<Field>>;
   const auto make_grid=[&](const Field& field)->Grid {
     if constexpr(Physical) return Grid(*physical_owner,field);
@@ -337,8 +336,10 @@ inline DeviceStreamlines trace_partition_device(
     synchronize_device_stage("CompactTrace");
     viskores::cont::ArrayHandle<viskores::Vec3f> colors;
     viskores::cont::ArrayHandle<viskores::Int32> sample_status;
-    invoke(SampleTraceVelocity{},compact,color_grid,colors,sample_status);
-    synchronize_device_stage("SampleTraceVelocity");
+    if(!image_only || !sample_trace_vector) {
+      invoke(SampleTraceVelocity{},compact,color_grid,colors,sample_status);
+      synchronize_device_stage("SampleTraceVelocity");
+    }
     viskores::cont::ArrayHandle<viskores::Vec3f> trace_vectors;
     viskores::cont::ArrayHandle<viskores::Int32> trace_status;
     if(sample_trace_vector) {
@@ -358,9 +359,11 @@ inline DeviceStreamlines trace_partition_device(
       const auto total=viskores::cont::Algorithm::ScanExclusive(viskores::cont::DeviceAdapterTagCuda{},counts,offsets);
       if(total!=compact.GetNumberOfValues()) throw std::runtime_error("Resident trajectory compaction mismatch");
       ResidentTraceChunk data;
-      data.accepted=compact;
+      if(!image_only) data.accepted=compact;
       data.velocity=sample_trace_vector?trace_vectors:colors;
-      invoke(PackResidentTrace{},compact,data.velocity,sample_trace_vector?trace_status:sample_status,
+      if(image_only) invoke(PackResidentImageTrace{},compact,data.velocity,sample_trace_vector?trace_status:sample_status,
+        data.xyz,bad);
+      else invoke(PackResidentTrace{},compact,data.velocity,sample_trace_vector?trace_status:sample_status,
         data.xyz,data.u,data.q,bad);
       synchronize_device_stage("PackResidentTrace");
       if(viskores::cont::Algorithm::Reduce(viskores::cont::DeviceAdapterTagCuda{},bad,viskores::Id(0)))
@@ -370,16 +373,21 @@ inline DeviceStreamlines trace_partition_device(
       invoke(ResidentLineIndex(chunk,resident_points),viskores::cont::ArrayHandleIndex(particles*chunk*2),
         counts,offsets,raw_indices,valid_indices);
       synchronize_device_stage("ResidentLineIndex");
-      invoke(TraceParticleId(chunk+1),viskores::cont::ArrayHandleIndex(particles*(chunk+1)),raw_particle);
-      synchronize_device_stage("TraceParticleId");
+      if(!image_only) {
+        invoke(TraceParticleId(chunk+1),viskores::cont::ArrayHandleIndex(particles*(chunk+1)),raw_particle);
+        synchronize_device_stage("TraceParticleId");
+      }
       viskores::cont::Algorithm::CopyIf(viskores::cont::DeviceAdapterTagCuda{},raw_indices,valid_indices,data.indices);
       synchronize_device_stage("CompactResidentLineIndex");
-      viskores::cont::Algorithm::CopyIf(viskores::cont::DeviceAdapterTagCuda{},raw_particle,valid,data.particle);
-      synchronize_device_stage("CompactResidentParticleId");
+      if(!image_only) {
+        viskores::cont::Algorithm::CopyIf(viskores::cont::DeviceAdapterTagCuda{},raw_particle,valid,data.particle);
+        synchronize_device_stage("CompactResidentParticleId");
+      }
       require_device_only(data.xyz);require_device_only(data.velocity);require_device_only(data.indices);
       resident_points+=data.xyz.GetNumberOfValues();resident_indices+=data.indices.GetNumberOfValues();
-      result.geometry_bytes+=data.xyz.GetNumberOfValues()*(sizeof(TraceVertex)+sizeof(viskores::Vec3f)*2+
-        2*sizeof(double)+sizeof(viskores::Id))+data.indices.GetNumberOfValues()*sizeof(viskores::Id);
+      result.geometry_bytes+=data.xyz.GetNumberOfValues()*(sizeof(viskores::Vec3f)*2+
+        (image_only?0:sizeof(TraceVertex)+2*sizeof(double)+sizeof(viskores::Id)))+
+        data.indices.GetNumberOfValues()*sizeof(viskores::Id);
       chunks.push_back(std::move(data));
       nvtxRangePop();
       nvtxRangePushA("ASTR_IS8_TRACE_CONTROL_READ");
@@ -448,13 +456,18 @@ inline DeviceStreamlines trace_partition_device(
     nvtxRangePushA("ASTR_IS8_RESIDENT_TRACE_CONCATENATE");
     ResidentTraceChunk all;
     all.xyz.Allocate(resident_points);all.velocity.Allocate(resident_points);
-    all.accepted.Allocate(resident_points);all.u.Allocate(resident_points);all.q.Allocate(resident_points);
-    all.particle.Allocate(resident_points);all.indices.Allocate(resident_indices);
+    all.indices.Allocate(resident_indices);
+    if(!image_only) {
+      all.accepted.Allocate(resident_points);all.u.Allocate(resident_points);all.q.Allocate(resident_points);
+      all.particle.Allocate(resident_points);
+    }
     viskores::Id point_base=0,index_base=0;
     for(const auto& data:chunks) {
       append_device_chunk(data.xyz,all.xyz,point_base);append_device_chunk(data.velocity,all.velocity,point_base);
-      append_device_chunk(data.accepted,all.accepted,point_base);append_device_chunk(data.u,all.u,point_base);
-      append_device_chunk(data.q,all.q,point_base);append_device_chunk(data.particle,all.particle,point_base);
+      if(!image_only) {
+        append_device_chunk(data.accepted,all.accepted,point_base);append_device_chunk(data.u,all.u,point_base);
+        append_device_chunk(data.q,all.q,point_base);append_device_chunk(data.particle,all.particle,point_base);
+      }
       append_device_chunk(data.indices,all.indices,index_base);
       point_base+=data.xyz.GetNumberOfValues();index_base+=data.indices.GetNumberOfValues();
     }
@@ -464,30 +477,32 @@ inline DeviceStreamlines trace_partition_device(
     result.resident_geometry.SetCellSet(cells);
     result.resident_geometry.AddCoordinateSystem(viskores::cont::CoordinateSystem("coords",all.xyz));
     result.resident_geometry.AddPointField("velocity",all.velocity);
-    result.resident_geometry.AddPointField("u",all.u);result.resident_geometry.AddPointField("Q_rs",all.q);
-    result.resident_geometry.AddPointField("particle",all.particle);
-    result.resident_geometry.AddPointField("accepted",all.accepted);
+    if(!image_only) {
+      result.resident_geometry.AddPointField("u",all.u);result.resident_geometry.AddPointField("Q_rs",all.q);
+      result.resident_geometry.AddPointField("particle",all.particle);
+      result.resident_geometry.AddPointField("accepted",all.accepted);
+    }
     require_device_only(all.xyz);require_device_only(all.velocity);require_device_only(all.indices);
     nvtxRangePop();
   }
   return result;
 }
+template<class Vectors,class Coordinates=Vectors>
 inline DeviceStreamlines trace_tgv_device(
-    const viskores::cont::ArrayHandle<viskores::Vec3f>& trace_velocity,
-    const viskores::cont::ArrayHandle<viskores::Vec3f>& color_velocity,
+    const Vectors& trace_velocity,const Vectors& color_velocity,
     const viskores::Id3& extent,const viskores::Id3& offset,MPI_Comm comm,
     std::uint64_t host_budget,bool constant=false,int constant_axis=0,bool forward_only=false,
     bool sample_trace_vector=false,int global_cells=32,bool resident=false,
-    const viskores::cont::ArrayHandle<viskores::Vec3f>* physical_coordinates=nullptr,
+    const Coordinates* physical_coordinates=nullptr,
     double physical_step_scale=1.,const std::string& seed_layout="line16",
-    viskores::Id3 global_dimensions=viskores::Id3(0)) {
-  if(physical_coordinates) return trace_partition_device<true>(trace_velocity,color_velocity,extent,offset,
+    viskores::Id3 global_dimensions=viskores::Id3(0),bool image_only=false) {
+  if(physical_coordinates) return trace_partition_device<true,Vectors,Coordinates>(trace_velocity,color_velocity,extent,offset,
     comm,host_budget,constant,constant_axis,forward_only,sample_trace_vector,global_cells,resident,physical_coordinates,
-    physical_step_scale,seed_layout,global_dimensions);
+    physical_step_scale,seed_layout,global_dimensions,image_only);
   if(physical_step_scale!=1.) throw std::invalid_argument("Sensitivity scale requires physical coordinates");
-  return trace_partition_device<false>(trace_velocity,color_velocity,extent,offset,
+  return trace_partition_device<false,Vectors,Coordinates>(trace_velocity,color_velocity,extent,offset,
     comm,host_budget,constant,constant_axis,forward_only,sample_trace_vector,global_cells,resident,nullptr,
-    physical_step_scale,seed_layout,global_dimensions);
+    physical_step_scale,seed_layout,global_dimensions,image_only);
 }
 } // namespace astr_insitu
 #endif

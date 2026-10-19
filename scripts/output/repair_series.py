@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 import h5py
 import numpy as np
 
-from export_checkpoint import (AIR5_FIELDS, FIELDS, entries, fingerprint,
+from export_checkpoint import (AIR5_FIELDS, FIELDS, bundle_members, fingerprint,
                                native_dataset, plain_file, small_text, validate_units)
 
 
@@ -195,24 +195,32 @@ def segment_record(segment, *, require_parent=False):
 
 def validate_frame(frame, geometry_path, geometry_fingerprint, segment_fingerprint=None):
     directory(frame)
-    members = entries(frame / "MANIFEST", "ASTR_CHECKPOINT_BUNDLE 1")
+    members = bundle_members(frame / "MANIFEST", "ASTR_CHECKPOINT_BUNDLE")
     if set(members) != {"data.h5", "data.xdmf", "FRAME", "RESOURCES"}:
         raise ValueError("unsupported archive frame members")
-    size, crc = fingerprint(frame / "MANIFEST")
-    scan_bytes = size
-    if small_text(frame / "COMPLETE") != f"ASTR_COMPLETE_1 {size} {crc:016X}\n":
+    scan_bytes = 0
+    marker = 'ASTR_COMPLETE_2\n'
+    if all(value is not None for value in members.values()):
+        size, crc = fingerprint(frame / "MANIFEST")
+        scan_bytes = size
+        marker = f"ASTR_COMPLETE_1 {size} {crc:016X}\n"
+    if small_text(frame / "COMPLETE") != marker:
         raise ValueError("frame completion marker does not bind its manifest")
     for member in frame.iterdir():
         if member.name not in {*members, "MANIFEST", "COMPLETE"}:
             raise ValueError("unexpected files in sealed archive frame")
     for name, expected in members.items():
-        if fingerprint(frame / name) != expected:
-            raise ValueError(f"archive frame checksum mismatch: {name}")
-        scan_bytes += expected[0]
+        plain_file(frame / name)
+        if expected is not None:
+            if fingerprint(frame / name) != expected:
+                raise ValueError(f"archive frame checksum mismatch: {name}")
+            scan_bytes += expected[0]
     resources = {"data.h5": geometry_fingerprint}
     if segment_fingerprint is not None:
         resources["SEGMENT"] = segment_fingerprint
-    if entries(frame / "RESOURCES", "ASTR_SHARED_RESOURCES 1") != resources:
+    declared = bundle_members(frame / "RESOURCES", "ASTR_SHARED_RESOURCES")
+    if set(declared) != set(resources) or any(
+            value is not None and value != resources[name] for name, value in declared.items()):
         raise ValueError("shared archive coordinate fingerprint mismatch")
     rows = small_text(frame / "FRAME").splitlines()
     derived = rows[0] == "ASTR_DERIVED_FRAME_1" if rows else False

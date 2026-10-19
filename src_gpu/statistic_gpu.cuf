@@ -1030,17 +1030,22 @@ contains
     deallocate(partial_d,reduced_d,reduced_h)
   end subroutine gpu_s1_bl_scalars
 
-  subroutine gpu_write_kenergy()
+  subroutine gpu_write_kenergy(value)
     use commvar, only: nstep,time,maxstep
     use parallel, only: lio
     use utility, only: listinit
     implicit none
+    real(8),optional,intent(in) :: value
     real(8) :: kenergy_gpu
     integer,save :: hand = -1
     logical,save :: linit = .true.
 
     if(nstep <= 0 .or. nstep > maxstep) return
-    call gpu_kenergy_scalar(kenergy_gpu)
+    if(present(value)) then
+      kenergy_gpu=value
+    else
+      call gpu_kenergy_scalar(kenergy_gpu)
+    endif
     if(.not.lio) return
 
     if(linit) then
@@ -1053,20 +1058,25 @@ contains
     flush(hand)
   end subroutine gpu_write_kenergy
 
-  subroutine gpu_write_flowstate()
+  subroutine gpu_write_flowstate(values)
     use commvar, only: nstep,time,maxstep
     use parallel, only: lio
     use utility, only: listinit
     implicit none
+    real(8),optional,intent(in) :: values(3)
     real(8) :: kenergy_gpu,enstophy_gpu,dissipation_gpu
     integer,save :: hand = -1
     logical,save :: linit = .true.
 
     if(nstep <= 0 .or. nstep > maxstep) return
 
-    call gpu_kenergy_scalar(kenergy_gpu)
-    call gpu_enstophy_scalar(enstophy_gpu)
-    call gpu_dissipation_scalar(dissipation_gpu)
+    if(present(values)) then
+      kenergy_gpu=values(1); enstophy_gpu=values(2); dissipation_gpu=values(3)
+    else
+      call gpu_kenergy_scalar(kenergy_gpu)
+      call gpu_enstophy_scalar(enstophy_gpu)
+      call gpu_dissipation_scalar(dissipation_gpu)
+    endif
     if(.not.lio) return
 
     if(linit) then
@@ -1159,17 +1169,22 @@ contains
     flush(hand)
   end subroutine gpu_write_channel_flowstate
 
-  subroutine gpu_write_enstophy()
+  subroutine gpu_write_enstophy(value)
     use commvar, only: nstep,time,maxstep
     use parallel, only: lio
     use utility, only: listinit
     implicit none
+    real(8),optional,intent(in) :: value
     real(8) :: enstophy_gpu
     integer,save :: hand = -1
     logical,save :: linit = .true.
 
     if(nstep <= 0 .or. nstep > maxstep) return
-    call gpu_enstophy_scalar(enstophy_gpu)
+    if(present(value)) then
+      enstophy_gpu=value
+    else
+      call gpu_enstophy_scalar(enstophy_gpu)
+    endif
     if(.not.lio) return
 
     if(linit) then
@@ -1182,17 +1197,22 @@ contains
     flush(hand)
   end subroutine gpu_write_enstophy
 
-  subroutine gpu_write_dissipation()
+  subroutine gpu_write_dissipation(value)
     use commvar, only: nstep,time,maxstep
     use parallel, only: lio
     use utility, only: listinit
     implicit none
+    real(8),optional,intent(in) :: value
     real(8) :: dissipation_gpu
     integer,save :: hand = -1
     logical,save :: linit = .true.
 
     if(nstep <= 0 .or. nstep > maxstep) return
-    call gpu_dissipation_scalar(dissipation_gpu)
+    if(present(value)) then
+      dissipation_gpu=value
+    else
+      call gpu_dissipation_scalar(dissipation_gpu)
+    endif
     if(.not.lio) return
 
     if(linit) then

@@ -216,7 +216,14 @@ int run(int argc,char** argv,int rank,int ranks) {
   } else generate_halo<<<(nodes+255)/256,256>>>(source,dims[0],dims[1],dims[2],offset[0],offset[1],offset[2],h,constant,axis);
   if(cudaDeviceSynchronize()!=cudaSuccess) throw std::runtime_error("halo generation failed");
   viskores::cont::GetRuntimeDeviceTracker().ForceDevice(viskores::cont::DeviceAdapterTagCuda{});
-  auto vectors=astr_insitu::pack_component_halo(source,dims);
+  auto vectors=astr_insitu::view_component_halo(source,dims);
+  viskores::cont::Token component_token;
+  for(int d=0;d<3;++d) {
+    const auto component=vectors.GetArray(d);
+    const auto pointer=component.GetBuffers()[0].ReadPointerDevice(viskores::cont::DeviceAdapterTagCuda{},component_token);
+    if(pointer!=source+d*nodes) throw std::runtime_error("Component view copied or offset the source");
+  }
+  std::printf("SOA_BORROW rank=%d exact=1 independent_payload_bytes=0\n",rank);
   auto physical= mapping?astr_insitu::borrow_cuda_array(coordinates,nodes):viskores::cont::ArrayHandle<viskores::Vec3f>{};
   double interpolation_error=0.;
   if(mapping) interpolation_error=check_physical_components(

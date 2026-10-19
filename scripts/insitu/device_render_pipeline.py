@@ -76,6 +76,7 @@ if wall_profile:
     sources.update({('mean_'+name): pv.TrivialProducer(registrationName='mean_'+name) for name in product_names})
 render_objects = {}
 frames = []
+pending_frame = None
 image_size = [1280, 960] if profile in ('tgv256_demo','curve_demo') else [800, 600]
 color_range = [0., 1.] if profile in ('tgv256_demo','curve_demo') else [-1., 1.]
 if profile == 'boundary_layer':
@@ -519,14 +520,23 @@ def capture_image(view, size=None):
 
 
 def catalyst_execute(info):
+    global pending_frame
     started = perf_counter()
     step, time = int(info.timestep), float(info.time)
     sources[product_names[0]].UpdatePipeline(time)
     first = local_piece(sources[product_names[0]].GetClientSideObject().GetOutputDataObject(0))
     if streamline_views:
         render_streamline_candidate(first, step, time)
+        retire_resident_inputs()
         return
-    names = [name for name in product_names if dispatch.scene_due(name)]
+    complete = bool(metadata(first, 'frame_complete'))
+
+    def group_member(name):
+        source = sources[name]
+        source.UpdatePipeline(time)
+        return bool(metadata(local_piece(source.GetClientSideObject().GetOutputDataObject(0)), 'group_member'))
+
+    names = [name for name in product_names if dispatch.scene_due(name) and group_member(name)]
     if profile == 'm12_diagnostics' and 'velocity_slice' in names:
         names += ['temperature_slice', 'spanwise_slice']
         sources['spanwise_slice'].UpdatePipeline(time)
@@ -553,8 +563,9 @@ def catalyst_execute(info):
             if not all(isfinite(value) for value in statistics.values()) or duration<=0. or span<=0. or \
                     abs(span-duration)>64*sys.float_info.epsilon*max(1.,abs(span),abs(duration)):
                 raise RuntimeError('Invalid resident mean streamline coverage')
-        names += [name for name in ('mean_reynolds_streamlines', 'mean_favre_streamlines') if dispatch.scene_due(name)]
-    elif profile in ('all', 'streamlines') and dispatch.independent():
+        names += [name for name in ('mean_reynolds_streamlines', 'mean_favre_streamlines')
+                  if dispatch.scene_due(name) and group_member(name)]
+    elif profile in ('all', 'streamlines') and dispatch.independent() and complete:
         for name in ('mean_reynolds_streamlines', 'mean_favre_streamlines'):
             if dispatch.scene_due(name):
                 dispatch.report_uncovered(name)
@@ -614,11 +625,44 @@ def catalyst_execute(info):
     adaptive=dispatch.adaptive_receipts(names)
     if adaptive:
         record['adaptive_outputs']=adaptive
-    (output / f'mesh_step{step:08d}_rank{rank}.json').write_text(json.dumps(record, indent=2))
-    frames.append((step, time))
+    if pending_frame is None:
+        pending_frame = record
+    else:
+        if (pending_frame['step'], pending_frame['time']) != (step, time):
+            raise RuntimeError('Unfinished product frame before next completed step')
+        pending_frame['products'].update(products)
+        if statistics is not None:
+            pending_frame['statistics'] = statistics
+        if adaptive:
+            pending_frame.setdefault('adaptive_outputs', {}).update(adaptive)
+    if complete:
+        (output / f'mesh_step{step:08d}_rank{rank}.json').write_text(json.dumps(pending_frame, indent=2))
+        frames.append((step, time))
+        pending_frame = None
     if timing:
         print('ASTR_INSITU_PIPELINE_TIMING ' + json.dumps({'rank': rank, 'step': step, 'seconds': {
             'python_execute_inclusive': perf_counter()-started}}, sort_keys=True), flush=True)
+    retire_resident_inputs()
+
+
+def retire_resident_inputs():
+    # Screenshots are complete. Drop array references without freeing GL capacity.
+    for item in render_objects.values():
+        item['mapper'].GetVBOs().ClearAllDataArrays()
+        if pipeline == 'standard-device':
+            item['mapper'].SetInputData(vtkPolyData())
+            item.pop('poly', None)
+    bridge = ctypes.CDLL(None)
+    bridge.astr_insitu_retire_resident_source.argtypes = [ctypes.c_size_t]
+    bridge.astr_insitu_retire_resident_source.restype = None
+    for source in sources.values():
+        producer = source.GetClientSideObject()
+        if producer.IsA('vtkConduitSource'):
+            address = int(producer.GetAddressAsString('').split('=')[1], 16)
+            bridge.astr_insitu_retire_resident_source(address)
+    bridge.astr_insitu_retire_resident_views.argtypes = []
+    bridge.astr_insitu_retire_resident_views.restype = None
+    bridge.astr_insitu_retire_resident_views()
 
 
 def render_streamline_candidate(first, step, time):

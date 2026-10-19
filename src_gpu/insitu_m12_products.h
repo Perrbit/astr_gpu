@@ -3,6 +3,7 @@
 #include "insitu_device_structured.h"
 #include <viskores/cont/ArrayHandleExtractComponent.h>
 #include <cstdlib>
+extern "C" int astr_insitu_m12_color_range(int,int,double*);
 
 namespace astr_insitu {
 // For this orthogonal Cartesian fixture, extract only the two coordinate
@@ -65,23 +66,33 @@ struct M12AuxiliaryColors {
 inline void append_m12_planes(std::vector<DeviceMesh>& meshes,MPI_Comm comm,int step,double time,
     const viskores::Id3& global,const viskores::Id3& extent,const viskores::Id3& offset,
     double* xyz_pointer,double* velocity_pointer,double* temperature_pointer,int plane_j,
-    std::uint64_t budget,std::uint64_t retained) {
+    std::uint64_t budget,std::uint64_t retained,bool packed_planes=false) {
   const auto dims=extent+viskores::Id3(1);
   const auto nodes=dims[0]*dims[1]*dims[2];
-  auto xyz=borrow_cuda_array(reinterpret_cast<viskores::Vec3f*>(xyz_pointer),nodes);
-  auto velocity=borrow_cuda_array(reinterpret_cast<viskores::Vec3f*>(velocity_pointer),nodes);
-  auto temperature=borrow_cuda_array(temperature_pointer,nodes);
+  viskores::cont::ArrayHandle<viskores::Vec3f> xyz,velocity;
+  viskores::cont::ArrayHandle<double> temperature;
+  if(!packed_planes) {
+    xyz=borrow_cuda_array(reinterpret_cast<viskores::Vec3f*>(xyz_pointer),nodes);
+    velocity=borrow_cuda_array(reinterpret_cast<viskores::Vec3f*>(velocity_pointer),nodes);
+    temperature=borrow_cuda_array(temperature_pointer,nodes);
+  }
   viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});
-  static std::map<std::string,M12Range> frozen_ranges;
+  viskores::Id plane_base=0;
   for(int axis:{2,1}) {
     const int first=axis==2?int(extent[2]/2-1):plane_j;
     auto cells=extent,start=offset;cells[axis]=1;start[axis]+=first;
     const auto slab=cells+viskores::Id3(1);
     const auto count=slab[0]*slab[1]*slab[2];
     viskores::cont::ArrayHandle<viskores::Vec3f> positions,fields;
-    invoke(M12Slab{dims,slab,axis,first},viskores::cont::ArrayHandleIndex(count),
-      xyz,velocity,temperature,positions,fields);
-    synchronize_device_stage("M12PlaneSlab");
+    if(packed_planes) {
+      positions=borrow_cuda_array(reinterpret_cast<viskores::Vec3f*>(xyz_pointer)+plane_base,count);
+      fields=borrow_cuda_array(reinterpret_cast<viskores::Vec3f*>(velocity_pointer)+plane_base,count);
+    } else {
+      invoke(M12Slab{dims,slab,axis,first},viskores::cont::ArrayHandleIndex(count),
+        xyz,velocity,temperature,positions,fields);
+      synchronize_device_stage("M12PlaneSlab");
+    }
+    plane_base+=count;
     viskores::cont::Token token;
     const auto px=positions.PrepareForInput(viskores::cont::DeviceAdapterTagCuda{},token);
     const auto pf=fields.PrepareForInput(viskores::cont::DeviceAdapterTagCuda{},token);
@@ -90,7 +101,8 @@ inline void append_m12_planes(std::vector<DeviceMesh>& meshes,MPI_Comm comm,int 
     normal[axis]=1.;
     const structured_geometry::Partition partition(global,cells,start);
     auto product=structured_geometry::extract_plane(const_cast<viskores::Vec3f*>(px.GetIteratorBegin()),
-      const_cast<viskores::Vec3f*>(pf.GetIteratorBegin()),nullptr,partition,origin,normal,budget,retained+count*48,true);
+      const_cast<viskores::Vec3f*>(pf.GetIteratorBegin()),nullptr,partition,origin,normal,budget,
+      retained+(packed_planes?0:count*48),true);
     for(int component:axis==2?std::vector<int>{0,1}:std::vector<int>{2}) {
       const std::string name=component==0?"velocity_slice":(component==1?"temperature_slice":"spanwise_slice");
       const std::string field=component==0?"u_Uinf":(component==1?"T_Tinf":"w_Uinf");
@@ -126,7 +138,10 @@ inline void append_m12_planes(std::vector<DeviceMesh>& meshes,MPI_Comm comm,int 
           throw std::runtime_error("M12 physical slice window has no finite samples");
         windows.push_back(M12Range(low,high));
       }
-      if(!frozen_ranges.count(field)) {
+      double endpoints[2]={};
+      const int cached=astr_insitu_m12_color_range(component,0,endpoints);
+      if(cached<0) throw std::runtime_error("Invalid M12 display range query");
+      if(!cached) {
         const auto range=windows[0];
         if(component==2) {
           double w=std::max(1.e-6,1.1*std::max(std::abs(range[0]),std::abs(range[1])));
@@ -136,13 +151,15 @@ inline void append_m12_planes(std::vector<DeviceMesh>& meshes,MPI_Comm comm,int 
             if(configured[end]!='\0' || !std::isfinite(w) || w<=0.)
               throw std::invalid_argument("ASTR_INSITU_M12_W_COLOR_MAX must be finite and positive");
           }
-          frozen_ranges[field]=M12Range(-w,w);
+          endpoints[0]=-w;endpoints[1]=w;
         } else {
           const double pad=.05*std::max(1.,range[1]-range[0]);
-          frozen_ranges[field]=M12Range(range[0]-pad,range[1]+pad);
+          endpoints[0]=range[0]-pad;endpoints[1]=range[1]+pad;
         }
+        if(astr_insitu_m12_color_range(component,1,endpoints)!=1)
+          throw std::runtime_error("Invalid M12 frozen display range");
       }
-      const auto range=frozen_ranges.at(field);
+      const M12Range range(endpoints[0],endpoints[1]);
       auto owner=std::make_shared<DeviceGeometryOwner>(data,step,time,3,field.c_str());
       const auto colors=owner->color_display(device_display_palette(),false,range[0],range[1]);
       const auto& view=owner->get();
@@ -190,10 +207,11 @@ inline void append_m12_planes(std::vector<DeviceMesh>& meshes,MPI_Comm comm,int 
         }
       }
       meshes.push_back(std::move(mesh));
+      if(!retain_quantitative_product_fields()) owner->retain_display_only();
     }
     require_device_only(positions);require_device_only(fields);
   }
-  require_device_only(xyz);require_device_only(velocity);require_device_only(temperature);
+  if(!packed_planes) {require_device_only(xyz);require_device_only(velocity);require_device_only(temperature);}
 }
 } // namespace astr_insitu
 #endif

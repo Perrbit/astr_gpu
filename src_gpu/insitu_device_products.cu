@@ -202,11 +202,11 @@ struct TraceAuditMaximum {
 };
 
 astr_insitu::ProductAudit audit_physical_trace(const astr_insitu::DeviceGeometryView& view,
-    const viskores::cont::ArrayHandle<viskores::Vec3f>& coordinates,const double* source,
+    const astr_insitu::SampleVectorComponents& coordinates,const double* source,
     const viskores::Id3& extent,const viskores::Id3& offset,const viskores::Id3& global_cells,bool crossing,int axis) {
   astr_insitu::ProductAudit result;
   if(!view.points) return result;
-  const auto fields=astr_insitu::pack_component_halo(const_cast<double*>(source),extent+viskores::Id3(7));
+  const auto fields=astr_insitu::view_component_halo(const_cast<double*>(source),extent+viskores::Id3(7));
   const auto physical=astr_insitu::crop_physical_trace_halo(coordinates,fields,fields,extent,offset,global_cells);
   astr_insitu::PhysicalTraceOwner owner(physical,extent,offset,global_cells);
   astr_insitu::PhysicalTraceGrid grid(owner,astr_insitu::PhysicalTraceField(physical.trace));
@@ -230,10 +230,11 @@ astr_insitu::DeviceMesh resident_mesh(const char* name,const viskores::cont::Dat
     const astr_insitu::DeviceDiagnostics* audit_diagnostics=nullptr,
     viskores::Id3 extent={0,0,0},viskores::Id3 offset={0,0,0},int global_cells=32,int rank=0,
     const viskores::Vec3f* physical_source=nullptr,std::uint64_t host_budget=0,
-    const viskores::cont::ArrayHandle<viskores::Vec3f>* trace_coordinates=nullptr,int trace_axis=0,
+    const astr_insitu::SampleVectorComponents* trace_coordinates=nullptr,int trace_axis=0,
     bool speed_colors=false,double iso=.25,viskores::Id3 global_dimensions=viskores::Id3(0),double speed_max=1.) {
   if(global_dimensions==viskores::Id3(0)) global_dimensions=viskores::Id3(global_cells);
-  auto owner=std::make_shared<astr_insitu::DeviceGeometryOwner>(data,step,time,arity);
+  const bool image_only=!astr_insitu::retain_quantitative_product_fields();
+  auto owner=std::make_shared<astr_insitu::DeviceGeometryOwner>(data,step,time,arity,nullptr,image_only);
   static const auto palette=astr_insitu::device_display_palette();
   const bool speed=speed_colors || global_cells==256;
   const auto colors=owner->color_display(palette,speed,speed?0.:-1.,speed?speed_max:1.);
@@ -269,6 +270,7 @@ astr_insitu::DeviceMesh resident_mesh(const char* name,const viskores::cont::Dat
   mesh.draw.indices=view.display_connectivity;
   mesh.draw.points=view.points;mesh.draw.cells=view.cells;mesh.draw.device=view.device;mesh.draw.arity=view.arity;
   std::copy(view.bounds,view.bounds+6,mesh.draw.bounds);
+  if(image_only) owner->retain_display_only();
   return mesh;
 }
 void report_resident_trace(const astr_insitu::DeviceStreamlines& trace,const char* name,int rank,int axis=0) {
@@ -401,6 +403,7 @@ try {
     std::printf("ASTR_INSITU_DEVICE_WALL_SCALAR rank=%d step=%d product=%s minimum=%.17g maximum=%.17g "
       "display_minimum=%.17g display_maximum=%.17g control_values=2 field_download_bytes=0\n",
       rank,step,name.c_str(),view.speed_range[0],view.speed_range[1],ranges[c][0],ranges[c][1]);
+    if(!astr_insitu::retain_quantitative_product_fields()) owner->retain_display_only();
   }
   return astr_insitu::render_resident_products(pipeline,backend,script,fcomm,step,time,
     air5?"air5_walls":(curve?"curve_walls":"channel_walls"),std::move(products),bool(covered));
@@ -416,12 +419,59 @@ try {
   MPI_Abort(MPI_Comm_f2c(fcomm),1);return 1;
 }
 
+extern "C" int astr_insitu_device_render_m12_planes(const char* pipeline,const char* backend,const char* script,
+    int fcomm,int step,double time,int nx,int ny,int nz,int ox,int gy,int gz,int global_cells,int plane_j,
+    double* positions,double* fields,std::int64_t budget,std::int64_t reserve,std::int64_t retained)
+try {
+#ifdef ASTR_INSITU_DEVICE_RENDERING
+  const auto comm=MPI_Comm_f2c(fcomm);
+  const viskores::Id3 global(global_cells,gy,gz),extent(nx,ny,nz),offset(ox,0,0);
+  if(std::string(pipeline?pipeline:"")!="standard-device" || !astr_insitu::m12_hd_grid(global) ||
+      ny!=gy || nz!=gz || nx<=0 || ox<0 || ox+nx>global_cells || plane_j<0 || plane_j>=ny ||
+      step<0 || !std::isfinite(time) || !positions || !fields)
+    throw std::invalid_argument("Local M12 planes require the admitted standard-device x-slab inputs");
+  if(!initialized) {
+    int argc=1;char program[]="astr-insitu-device";char* args[]={program,nullptr};char** argv=args;
+    viskores::cont::Initialize(argc,argv);initialized=true;
+  }
+  viskores::cont::GetRuntimeDeviceTracker().ForceDevice(viskores::cont::DeviceAdapterTagCuda{});
+  if(viskores::cont::cuda::internal::CudaAllocator::UsingManagedMemory())
+    viskores::cont::cuda::internal::CudaAllocator::ForceManagedMemoryOff();
+#ifdef ASTR_VISKORES_ALLOCATION_PREFLIGHT
+  if(!astr_insitu_allocation_guard_active())
+    throw std::runtime_error("Local M12 plane allocations require an active resource guard");
+  viskores::cont::GetRuntimeDeviceTracker().SetThreadFriendlyMemAlloc(false);
+  viskores::cont::cuda::internal::CudaAllocator::SetAllocationPreflight(astr_insitu_device_allocation_preflight);
+  astr_insitu_device_allocation_preflight(0,"local M12 plane admission");
+#endif
+  if(budget<=0 || reserve<0 || retained<0 || retained>budget)
+    throw std::invalid_argument("Local M12 plane input budget");
+  std::vector<astr_insitu::DeviceMesh> meshes;
+  astr_insitu::append_m12_planes(meshes,comm,step,time,global,extent,offset,positions,fields,nullptr,
+    plane_j,std::uint64_t(budget),std::uint64_t(retained),true);
+  for(const char* name:{"q_surface","instantaneous_streamlines","crossing_streamlines",
+                       "mean_reynolds_streamlines","mean_favre_streamlines"})
+    meshes.push_back(resident_mesh(name,viskores::cont::DataSet{},step,time,
+      std::string(name).find("streamlines")!=std::string::npos?2:3));
+  return astr_insitu::render_resident_products(pipeline,backend,script,fcomm,step,time,
+    "m12_diagnostics",std::move(meshes),false);
+#else
+  throw std::runtime_error("Device M12 plane rendering is not built; no host fallback");
+#endif
+} catch(const std::exception& error) {
+  std::fprintf(stderr,"ASTR local M12 planes: %s\n",error.what());
+  MPI_Abort(MPI_Comm_f2c(fcomm),1);return 1;
+} catch(...) {
+  std::fprintf(stderr,"ASTR local M12 planes: unknown exception\n");
+  MPI_Abort(MPI_Comm_f2c(fcomm),1);return 1;
+}
+
 extern "C" int astr_insitu_device_render(const char* pipeline,const char* backend,const char* script,const char* profile,
     int fcomm,int step,double time,int nx,int ny,int nz,int ox,int oy,int oz,int global_cells,int global_y,int global_z,
     double* velocity,double* halo,double* diagnostic,double* reynolds_halo,double* favre_halo,
     int covered,double duration,double window_start,double window_end,std::int64_t host_budget,
     int curve,double* coordinates,double* coordinate_halo,std::int64_t budget,std::int64_t reserve,std::int64_t retained,
-    const char* seeds,double* temperature,int plane_j)
+    const char* seeds,double* temperature,int plane_j,int diagnostic_components)
 try {
   const auto comm=MPI_Comm_f2c(fcomm);
   const std::string seed_layout=seeds?seeds:"line16";
@@ -531,13 +581,46 @@ try {
       viskores::cont::cuda::internal::CudaAllocator::ForceManagedMemoryOff();
     int rank=0;astr_insitu::trace_mpi(MPI_Comm_rank(comm,&rank));
     std::vector<astr_insitu::DeviceMesh> meshes;
+    const bool plane=(boundary_layer || m12_hd) && astr_insitu_scene_due("velocity_slice");
+    const bool traces=instant || crossing || reynolds || favre;
+    const int group_count=int(slice || surface)+int(plane)+int(traces);
+    int emitted_groups=0;
+    const auto render_group=[&]() {
+      for(auto& mesh:meshes) mesh.controls["group_member"]=1.;
+      for(const char* name:{"q_surface","velocity_slice","instantaneous_streamlines","crossing_streamlines",
+                           "mean_reynolds_streamlines","mean_favre_streamlines",
+                           "temperature_slice","spanwise_slice","spanwise_slice_weak"}) {
+        if(!m12_hd && (std::string(name)=="temperature_slice" || std::string(name).find("spanwise_slice")==0)) continue;
+        if(std::none_of(meshes.begin(),meshes.end(),[&](const astr_insitu::DeviceMesh& mesh){return mesh.name==name;})) {
+          auto empty=resident_mesh(name,viskores::cont::DataSet{},step,time,
+            std::string(name).find("streamlines")!=std::string::npos?2:3);
+          empty.controls["group_member"]=0.;meshes.push_back(std::move(empty));
+        }
+      }
+      if(selected=="streamlines" && covered) {
+        if(!std::isfinite(duration) || !std::isfinite(window_start) || !std::isfinite(window_end) ||
+            duration<=0. || window_end<=window_start)
+          throw std::invalid_argument("Invalid mean streamline coverage metadata");
+        for(auto& mesh:meshes) {
+          mesh.controls["statistics_duration"]=duration;
+          mesh.controls["statistics_window_start"]=window_start;
+          mesh.controls["statistics_window_end"]=window_end;
+        }
+      }
+      const bool complete=++emitted_groups>=group_count;
+      const int status=astr_insitu::render_resident_products(pipeline,backend,script,fcomm,step,time,
+        profile,std::move(meshes),covered,complete);
+      meshes.clear();
+      return status;
+    };
     if(slice || surface) {
     ProductStage extraction("device_geometry_extract_inclusive","ASTR_IS8_DEVICE_GEOMETRY_EXTRACTION",fcomm,step);
     auto extracted=astr_insitu::extract_tgv_geometry(reinterpret_cast<viskores::Vec3f*>(velocity),
-      reinterpret_cast<astr_insitu::DeviceDiagnostics*>(diagnostic),dimensions,offset,slice,surface,
-      iso,nullptr,global_cells,curve?reinterpret_cast<viskores::Vec3f*>(coordinates):nullptr,global_dimensions);
+      diagnostic,dimensions,offset,slice,surface,
+      iso,nullptr,global_cells,curve?reinterpret_cast<viskores::Vec3f*>(coordinates):nullptr,global_dimensions,
+      diagnostic_components,!astr_insitu::retain_quantitative_product_fields());
     if(surface) meshes.push_back(resident_mesh("q_surface",extracted.surface,step,time,3,halo,
-      reinterpret_cast<astr_insitu::DeviceDiagnostics*>(diagnostic),extent,offset,global_cells,rank,
+      diagnostic_components==14?reinterpret_cast<astr_insitu::DeviceDiagnostics*>(diagnostic):nullptr,extent,offset,global_cells,rank,
       curve?reinterpret_cast<viskores::Vec3f*>(coordinates):nullptr,std::uint64_t(host_budget),nullptr,0,demo,iso,
       global_dimensions,(boundary_layer || m12_hd)?1.1:1.));
     if(curve) std::printf("ASTR_INSITU_CURVE_SURFACE_FRAME rank=%d step=%d physical_coordinates=1 "
@@ -545,6 +628,9 @@ try {
     if(slice) meshes.push_back(resident_mesh("velocity_slice",
       astr_insitu::triangulate_device_slice(extracted.slice,dimensions,offset,global_cells),step,time,3,
       halo,nullptr,extent,offset,global_cells,rank));
+    }
+    if(slice || surface) {
+      const int status=render_group();if(status) return status;
     }
     if(boundary_layer && astr_insitu_scene_due("velocity_slice")) {
       const int global[3]={global_cells,global_y,global_z},local[3]={nx,ny,nz},start[3]={ox,oy,oz};
@@ -557,17 +643,20 @@ try {
       astr_insitu::append_m12_planes(meshes,comm,step,time,global_dimensions,extent,offset,coordinates,velocity,
         temperature,plane_j,std::uint64_t(budget),std::uint64_t(retained));
     }
-    if(instant || crossing || reynolds || favre) {
-      auto actual=astr_insitu::pack_component_halo(halo,halo_dimensions);
-      auto physical=curve?astr_insitu::pack_component_halo(coordinate_halo,halo_dimensions):
-        viskores::cont::ArrayHandle<viskores::Vec3f>{};
+    if(plane) {
+      const int status=render_group();if(status) return status;
+    }
+    if(traces) {
+      auto actual=astr_insitu::view_component_halo(halo,halo_dimensions);
+      auto physical=curve?astr_insitu::view_component_halo(coordinate_halo,halo_dimensions):
+        astr_insitu::SampleVectorComponents{};
       const int trace_axis=curve?(ny<global_cells?1:(nz<global_cells?2:0)):0;
-      const auto add_trace=[&](const char* name,const viskores::cont::ArrayHandle<viskores::Vec3f>& field,
+      const auto add_trace=[&](const char* name,const astr_insitu::SampleVectorComponents& field,
           bool constant,bool mean,const double* source,const std::string& trace_seeds) {
         ProductStage phase("resident_streamlines_inclusive","ASTR_IS8_RESIDENT_STREAMLINES",fcomm,step);
         auto trace=astr_insitu::trace_tgv_device(field,actual,extent,offset,comm,host_budget,
           constant,constant?trace_axis:0,constant,mean,global_cells,true,curve?&physical:nullptr,physical_step_scale,
-          constant?"line16":trace_seeds,global_dimensions);
+          constant?"line16":trace_seeds,global_dimensions,!astr_insitu::retain_quantitative_product_fields());
         report_resident_trace(trace,name,rank,constant?trace_axis:0);
 #ifdef ASTR_BUILD_TESTING
         if(test_step_scale && rank==0) for(int i=0;i<trace.particles;++i) {
@@ -580,6 +669,7 @@ try {
         auto mesh=resident_mesh(name,trace.resident_geometry,step,time,2,source,nullptr,
           extent,offset,global_cells,rank,nullptr,std::uint64_t(host_budget),curve?&physical:nullptr,trace_axis,demo,.25,
           global_dimensions,(boundary_layer || m12_hd)?1.1:1.);
+        if(!astr_insitu::retain_quantitative_product_fields()) trace.resident_geometry={};
         mesh.controls["streamline_seed_layout"]=trace.seed_layout=="tgv-stratified"?1.:
           (trace.seed_layout=="bl-layered64"?2.:(trace.seed_layout=="bl-layered256"?3.:0.));
         mesh.controls["streamline_seed_count"]=trace.seed_count;
@@ -624,7 +714,7 @@ try {
             "instantaneous_streamlines";
           double* source=mean?(first.velocity=="reynolds"?reynolds_halo:favre_halo):halo;
           if(mean && (!covered || !source)) throw std::invalid_argument("Preview mean coverage is unavailable");
-          auto field=mean?astr_insitu::pack_component_halo(source,halo_dimensions):actual;
+          auto field=mean?astr_insitu::view_component_halo(source,halo_dimensions):actual;
           auto mesh=add_trace(name,field,false,mean,source,first.seeds);
           auto owner=std::static_pointer_cast<astr_insitu::DeviceGeometryOwner>(mesh.owner);
           for(std::size_t j=i;j<candidates.size();++j) {
@@ -665,7 +755,7 @@ try {
       }
       if(instant) meshes.push_back(add_trace("instantaneous_streamlines",actual,false,false,halo,seed_layout));
       if(crossing) {
-      viskores::cont::ArrayHandle<viskores::Vec3f> constant;
+      astr_insitu::SampleVectorComponents constant;
       viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});
       ConstantVelocity constant_field;constant_field.axis=trace_axis;
       invoke(constant_field,viskores::cont::ArrayHandleIndex(actual.GetNumberOfValues()),constant);
@@ -675,28 +765,14 @@ try {
       if(reynolds || favre) {
         if(!reynolds_halo || !favre_halo || !std::isfinite(duration) || duration<=0.)
           throw std::invalid_argument("Resident mean products require authoritative coverage/halos");
-        if(reynolds) meshes.push_back(add_trace("mean_reynolds_streamlines",astr_insitu::pack_component_halo(reynolds_halo,halo_dimensions),false,true,reynolds_halo,seed_layout));
-        if(favre) meshes.push_back(add_trace("mean_favre_streamlines",astr_insitu::pack_component_halo(favre_halo,halo_dimensions),false,true,favre_halo,seed_layout));
+        if(reynolds) meshes.push_back(add_trace("mean_reynolds_streamlines",astr_insitu::view_component_halo(reynolds_halo,halo_dimensions),false,true,reynolds_halo,seed_layout));
+        if(favre) meshes.push_back(add_trace("mean_favre_streamlines",astr_insitu::view_component_halo(favre_halo,halo_dimensions),false,true,favre_halo,seed_layout));
       }
       if(curve) std::printf("ASTR_INSITU_CURVE_TRACE_FRAME rank=%d step=%d physical_coordinates=1 "
         "physical_hexahedral_interpolation=1 field_download_bytes=0 geometry_host_bytes=0\n",rank,step);
     }
-    for(const char* name:{"q_surface","velocity_slice","instantaneous_streamlines","crossing_streamlines",
-                         "mean_reynolds_streamlines","mean_favre_streamlines"})
-      if(std::none_of(meshes.begin(),meshes.end(),[&](const astr_insitu::DeviceMesh& mesh){return mesh.name==name;}))
-        meshes.push_back(resident_mesh(name,viskores::cont::DataSet{},step,time,
-          std::string(name).find("streamlines")!=std::string::npos?2:3));
-    if(selected=="streamlines" && covered) {
-      if(!std::isfinite(duration) || !std::isfinite(window_start) || !std::isfinite(window_end) ||
-          duration<=0. || window_end<=window_start)
-        throw std::invalid_argument("Invalid mean streamline coverage metadata");
-      for(auto& mesh:meshes) {
-        mesh.controls["statistics_duration"]=duration;
-        mesh.controls["statistics_window_start"]=window_start;
-        mesh.controls["statistics_window_end"]=window_end;
-      }
-    }
-    return astr_insitu::render_resident_products(pipeline,backend,script,fcomm,step,time,profile,std::move(meshes),covered);
+    if(traces || group_count==0) return render_group();
+    return 0;
 #else
     throw std::invalid_argument("Strict device rendering is not built; no host fallback");
 #endif
@@ -713,7 +789,7 @@ try {
     if(slice) meshes.push_back(geometry_mesh(extracted.slice,false,dimensions,offset));
   }
   if(instant || crossing || reynolds || favre) {
-    auto actual=astr_insitu::pack_component_halo(halo,halo_dimensions);
+    auto actual=astr_insitu::view_component_halo(halo,halo_dimensions);
     if(instant) {
     ProductStage instant("device_instant_lines_inclusive","ASTR_IS8_DEVICE_INSTANT_LINES",fcomm,step);
     auto trace=astr_insitu::trace_tgv_device(actual,actual,extent,offset,comm,host_budget,
@@ -723,7 +799,7 @@ try {
     }
     if(crossing) {
     ProductStage crossing("device_crossing_lines_inclusive","ASTR_IS8_DEVICE_CROSSING_LINES",fcomm,step);
-    viskores::cont::ArrayHandle<viskores::Vec3f> constant;
+    astr_insitu::SampleVectorComponents constant;
     viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});
     invoke(ConstantVelocity{},viskores::cont::ArrayHandleIndex(actual.GetNumberOfValues()),constant);
     astr_insitu::synchronize_device_stage("ConstantVelocity");
@@ -736,14 +812,14 @@ try {
         throw std::invalid_argument("Covered device means require authoritative halos/duration");
       if(reynolds) {
       ProductStage reynolds_stage("device_reynolds_lines_inclusive","ASTR_IS8_DEVICE_REYNOLDS_LINES",fcomm,step);
-      auto field=astr_insitu::pack_component_halo(reynolds_halo,halo_dimensions);
+      auto field=astr_insitu::view_component_halo(reynolds_halo,halo_dimensions);
       auto trace=astr_insitu::trace_tgv_device(field,actual,extent,offset,comm,host_budget,false,0,false,true);
       meshes.push_back(streamline_mesh(trace,"mean_reynolds_streamlines"));
       reynolds_stage.finish();
       }
       if(favre) {
       ProductStage favre_stage("device_favre_lines_inclusive","ASTR_IS8_DEVICE_FAVRE_LINES",fcomm,step);
-      auto field=astr_insitu::pack_component_halo(favre_halo,halo_dimensions);
+      auto field=astr_insitu::view_component_halo(favre_halo,halo_dimensions);
       auto trace=astr_insitu::trace_tgv_device(field,actual,extent,offset,comm,host_budget,false,0,false,true);
       meshes.push_back(streamline_mesh(trace,"mean_favre_streamlines"));
       }

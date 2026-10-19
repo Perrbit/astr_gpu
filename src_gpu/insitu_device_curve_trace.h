@@ -47,10 +47,9 @@ struct PhysicalTraceData {
   viskores::Id3 begin,dimensions;
 };
 
+template<class Coordinates,class Trace,class Color>
 inline PhysicalTraceData crop_physical_trace_halo(
-    const viskores::cont::ArrayHandle<viskores::Vec3f>& coordinates,
-    const viskores::cont::ArrayHandle<viskores::Vec3f>& trace,
-    const viskores::cont::ArrayHandle<viskores::Vec3f>& color,
+    const Coordinates& coordinates,const Trace& trace,const Color& color,
     const viskores::Id3& extent,const viskores::Id3& offset,const viskores::Id3& global_cells) {
   PhysicalTraceData data;
   const viskores::Id3 input_dimensions=extent+viskores::Id3(7);
@@ -86,10 +85,9 @@ inline PhysicalTraceData crop_physical_trace_halo(
   return data;
 }
 
+template<class Coordinates,class Trace,class Color>
 inline PhysicalTraceData crop_physical_trace_halo(
-    const viskores::cont::ArrayHandle<viskores::Vec3f>& coordinates,
-    const viskores::cont::ArrayHandle<viskores::Vec3f>& trace,
-    const viskores::cont::ArrayHandle<viskores::Vec3f>& color,
+    const Coordinates& coordinates,const Trace& trace,const Color& color,
     const viskores::Id3& extent,const viskores::Id3& offset,int global_cells) {
   return crop_physical_trace_halo(coordinates,trace,color,extent,offset,viskores::Id3(global_cells));
 }

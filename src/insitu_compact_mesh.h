@@ -37,13 +37,14 @@ struct StreamlineView {
 };
 const std::vector<StreamlineView>& streamline_views();
 bool streamline_preview_active();
+bool retain_quantitative_product_fields();
 std::vector<double> device_display_palette();
 DeviceMesh build_device_plane(int fcomm,int step,double time,const int global[3],
   const int local[3],const int offset[3],double* coordinates,double* velocity,
   const double origin[3],const double normal[3],std::int64_t budget,
   std::int64_t reserve,std::int64_t retained,std::int64_t host_budget,bool speed_colors=false,double speed_max=1.);
 int render_resident_products(const char* pipeline,const char* backend,const char* script,int fcomm,
-  int step,double time,const char* profile,std::vector<DeviceMesh> products,bool covered=false);
+  int step,double time,const char* profile,std::vector<DeviceMesh> products,bool covered=false,bool complete=true);
 int render_compact_products(const char* backend,const char* script,int fcomm,
   int step,double time,const char* profile,bool covered,double duration,
   double window_start,double window_end,std::vector<CompactMesh> products);

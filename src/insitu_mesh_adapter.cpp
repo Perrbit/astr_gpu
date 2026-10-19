@@ -6,12 +6,14 @@
 #include <vector>
 #include <algorithm>
 #include <exception>
+#include <cmath>
 #include "insitu_compact_mesh.h"
 #include "insitu_product_dispatch.h"
 #ifdef ASTR_INSITU_DEVICE_RENDERING
 #include "insitu_device_vtk_mapper.h"
 #include "insitu_streamline_seeds.h"
 #include <vtkColorTransferFunction.h>
+#include <vtkConduitSource.h>
 #include <vtkSMTransferFunctionPresets.h>
 #include <vtk_jsoncpp.h>
 #endif
@@ -34,6 +36,8 @@ extern "C" int astr_insitu_resource_check(const char*);
 #endif
 
 namespace {
+std::int64_t m12_color_mask=0;
+std::array<double,6> m12_color_ranges{};
 bool active = false;
 MPI_Comm render_comm = MPI_COMM_NULL;
 conduit_node* retained = nullptr;
@@ -41,10 +45,14 @@ std::vector<double> coordinates, primitive, gradients, means;
 std::vector<conduit_int64> plane_cells;
 std::vector<astr_insitu::CompactMesh> retained_products;
 #ifdef ASTR_INSITU_DEVICE_RENDERING
-std::vector<astr_insitu::DeviceMesh> retained_device_products;
 std::map<std::string,vtkSmartPointer<vtkActor>> device_actors;
 std::string resident_pipeline;
 Json::Value preview_source;
+conduit_node* detached_device_node=nullptr;
+bool resident_inputs_detached=false;
+bool resident_frame_open=false;
+int resident_frame_step=0,resident_frame_groups=0;
+double resident_frame_time=0.,resident_execute_seconds=0.;
 #endif
 double empty_value = 0.;
 conduit_int64 empty_cell = 0;
@@ -59,6 +67,36 @@ int allocation_failure(const char* stage, const char* detail, MPI_Comm comm)
   MPI_Abort(comm,1);
   return 1;
 }
+}
+
+extern "C" int astr_insitu_m12_color_range(int component,int store,double* range) {
+  if(component<0 || component>=3 || !range || (store!=0 && store!=1)) return -1;
+  const std::int64_t bit=std::int64_t(1)<<component;
+  if(store) {
+    if(!std::isfinite(range[0]) || !std::isfinite(range[1]) || range[0]>=range[1]) return -1;
+    std::copy_n(range,2,m12_color_ranges.begin()+2*component);m12_color_mask|=bit;
+  } else {
+    if(!(m12_color_mask&bit)) return 0;
+    std::copy_n(m12_color_ranges.begin()+2*component,2,range);
+  }
+  return 1;
+}
+
+extern "C" int astr_insitu_m12_color_state(int restore,std::int64_t* mask,double* ranges) {
+  if(!mask || !ranges || (restore!=0 && restore!=1)) return 0;
+  if(restore) {
+    if(*mask<0 || *mask>7) return 0;
+    for(int i=0;i<3;++i) {
+      const double a=ranges[2*i],b=ranges[2*i+1];
+      if(!std::isfinite(a) || !std::isfinite(b) || ((*mask&(std::int64_t(1)<<i))?(a>=b):(a!=0. || b!=0.))) return 0;
+    }
+    m12_color_mask=*mask;std::copy_n(ranges,6,m12_color_ranges.begin());
+  } else {
+    *mask=m12_color_mask;std::copy(m12_color_ranges.begin(),m12_color_ranges.end(),ranges);
+  }
+  return 1;
+}
+namespace {
 void check_mpi(int status, const char* stage, MPI_Comm comm)
 {
   if (status != MPI_SUCCESS) {
@@ -84,6 +122,15 @@ bool astr_insitu::streamline_preview_active() {
 #else
   return false;
 #endif
+}
+bool astr_insitu::retain_quantitative_product_fields() {
+  if(!streamline_candidates.empty() || streamline_preview_active()) return true;
+  if(const char* audit=std::getenv("ASTR_INSITU_RESIDENT_AUDIT"))
+    if(std::string(audit)=="1") return true;
+  for(const char* name:{"ASTR_INSITU_TEST_CURVE_Q_PREFIX","ASTR_INSITU_TEST_CURVE_TRACE_PREFIX",
+                       "ASTR_INSITU_TEST_PLANE_PREFIX"})
+    if(const char* prefix=std::getenv(name)) if(*prefix) return true;
+  return false;
 }
 
 extern "C" int astr_insitu_preview_source_set(const char* path,std::int64_t step,double time,
@@ -410,8 +457,27 @@ extern "C" std::uintptr_t astr_insitu_resident_actor(const char* name) {
   return found==device_actors.end()?0:reinterpret_cast<std::uintptr_t>(found->second.GetPointer());
 }
 
+extern "C" void astr_insitu_retire_resident_source(std::uintptr_t address) {
+  auto source=vtkConduitSource::SafeDownCast(reinterpret_cast<vtkObjectBase*>(address));
+  if(!source || !detached_device_node) {
+    allocation_failure("resident retirement","invalid Conduit producer",render_comm);
+    return;
+  }
+  // SetNode borrows its node; retain a real empty node until Catalyst finalizes.
+  source->SetNode(detached_device_node);
+  source->SetGlobalFieldsNode(nullptr);
+  source->SetAssemblyNode(nullptr);
+  if(auto output=source->GetOutputDataObject(0)) output->Initialize();
+}
+
+extern "C" void astr_insitu_retire_resident_views() {
+  for(auto& item:device_actors)
+    static_cast<astr_insitu::DirectDeviceMapper*>(item.second->GetMapper())->clear_view();
+  resident_inputs_detached=true;
+}
+
 int astr_insitu::render_resident_products(const char* pipeline,const char* backend,const char* script,int fcomm,
-    int step,double time,const char* profile,std::vector<DeviceMesh> products,bool covered)
+    int step,double time,const char* profile,std::vector<DeviceMesh> products,bool covered,bool complete)
 try {
   const auto comm=MPI_Comm_f2c(fcomm);
   const std::string route=pipeline?pipeline:"";
@@ -450,9 +516,18 @@ try {
     }
     conduit_node_set_path_int64(init,"catalyst/mpi_comm",MPI_Comm_c2f(render_comm));
     check(catalyst_initialize(init));conduit_node_destroy(init);
+    detached_device_node=conduit_node_create();
     selected_profile=8;active=true;resident_pipeline=route;
     astr_insitu_resource_check("initialized");
   }
+  if(!resident_frame_open) {
+    resident_frame_open=true;resident_frame_step=step;resident_frame_time=time;
+    resident_frame_groups=0;resident_execute_seconds=0.;
+    astr_insitu_resource_check("frame_before");
+  } else if(resident_frame_step!=step || resident_frame_time!=time) {
+    return allocation_failure("resident products","unfinished product group from another frame",comm);
+  }
+  ++resident_frame_groups;
   auto params=conduit_node_create();
   conduit_node_set_path_int64(params,"catalyst/state/timestep",step);
   conduit_node_set_path_double(params,"catalyst/state/time",time);
@@ -471,6 +546,8 @@ try {
     conduit_node_set_path_int64(mesh,"state/fields/device_cells",view.cells);
     conduit_node_set_path_int64(mesh,"state/fields/device_arity",view.arity);
     conduit_node_set_path_int64(mesh,"state/fields/mean_covered",covered);
+    conduit_node_set_path_int64(mesh,"state/fields/frame_complete",complete);
+    conduit_node_set_path_int64(mesh,"state/fields/group_member",1);
     for(const auto& field:product.controls) {
       if(!std::isfinite(field.second))
         return allocation_failure("resident products","nonfinite scalar control",comm);
@@ -508,16 +585,29 @@ try {
       static_cast<astr_insitu::DirectDeviceMapper*>(actor->GetMapper())->set_view(view);
     }
   }
-  astr_insitu_resource_check("frame_before");
+  resident_inputs_detached=false;
   const double start=MPI_Wtime();
   nvtxRangePushA("ASTR_IS8_RESIDENT_RENDER");
   check(catalyst_execute(params));
   nvtxRangePop();
-  if(retained) conduit_node_destroy(retained);
-  retained=params;retained_device_products=std::move(products);
-  std::printf("ASTR_INSITU_RESIDENT_BRIDGE rank=%d step=%d pipeline=%s geometry_host_bytes=0 execute_inclusive=%.9g\n",
-    rank,step,route.c_str(),MPI_Wtime()-start);
-  astr_insitu_resource_check("frame_after");
+  if(!resident_inputs_detached)
+    return allocation_failure("resident retirement","pipeline did not detach external arrays",comm);
+  nvtxRangePushA("ASTR_IS8_RESIDENT_RETIRE");
+  conduit_node_destroy(params);
+  products.clear();
+  nvtxRangePop();
+  resident_execute_seconds+=MPI_Wtime()-start;
+  if(const char* trace=std::getenv("ASTR_INSITU_MEMORY_TRACE")) if(std::string(trace)=="1") {
+    std::printf("ASTR_INSITU_RESIDENT_GROUP rank=%d step=%d group=%d complete=%d arrays_detached=1 owners_retained=0\n",
+      rank,step,resident_frame_groups,int(complete));
+    if(complete) std::printf("ASTR_INSITU_RESIDENT_RETIRE rank=%d step=%d arrays_detached=1 owners_retained=0\n",rank,step);
+  }
+  if(complete) {
+    std::printf("ASTR_INSITU_RESIDENT_BRIDGE rank=%d step=%d pipeline=%s geometry_host_bytes=0 execute_inclusive=%.9g\n",
+      rank,step,route.c_str(),resident_execute_seconds);
+    astr_insitu_resource_check("frame_after");
+    resident_frame_open=false;
+  }
   return 0;
 } catch(const std::exception& error) {
   return allocation_failure("resident products",error.what(),MPI_Comm_f2c(fcomm));
@@ -633,7 +723,10 @@ try {
 
 extern "C" int astr_insitu_mesh_finish()
 try {
-  if (!active) return 0;
+  if (!active) {m12_color_mask=0;m12_color_ranges.fill(0.);return 0;}
+#ifdef ASTR_INSITU_DEVICE_RENDERING
+  if(resident_frame_open) return allocation_failure("finalize","unfinished resident product frame",render_comm);
+#endif
 #ifdef ASTR_CUDA_RENDERER
   astr_insitu_resource_check("finalize_before");
 #endif
@@ -643,7 +736,7 @@ try {
   astr_insitu_resource_check("finalize_after");
 #endif
   conduit_node_destroy(end);
-  conduit_node_destroy(retained);
+  if(retained) conduit_node_destroy(retained);
   retained = nullptr;
   std::vector<double>().swap(coordinates);
   std::vector<double>().swap(primitive);
@@ -653,12 +746,14 @@ try {
   std::vector<astr_insitu::CompactMesh>().swap(retained_products);
 #ifdef ASTR_INSITU_DEVICE_RENDERING
   device_actors.clear();
-  retained_device_products.clear();
+  if(detached_device_node) conduit_node_destroy(detached_device_node);
+  detached_device_node=nullptr;
   streamline_candidates.clear();
   resident_pipeline.clear();
 #endif
   check_mpi(MPI_Comm_free(&render_comm),"release render communicator",MPI_COMM_WORLD);
   active = false;
+  m12_color_mask=0;m12_color_ranges.fill(0.);
   return 0;
 } catch (const std::exception& error) {
   return allocation_failure("finalize",error.what(),MPI_COMM_WORLD);

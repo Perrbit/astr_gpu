@@ -3,6 +3,7 @@ program checkpoint_state_probe
   use mpi
   use checkpoint_state_io
   use insitu_velocity_statistics
+  use checkpoint_probe_mpi_counts, only: allreduce_calls
   implicit none
   integer :: err,rank,np,axis,ncomp,halo,origin(3),cells(3),owned(3),i,j,k,m,bad,total_bad
   integer, parameter :: global_shape(3)=[9,7,5]
@@ -34,7 +35,7 @@ program checkpoint_state_probe
     call MPI_Finalize(err)
     stop
   endif
-  if ((np/=1.and.np/=2).or.axis<1.or.axis>3.or. &
+  if ((np/=1.and.np/=2.and.np/=4).or.axis<1.or.axis>3.or. &
       (ncomp/=5.and.ncomp/=11.and.ncomp/=34).or.halo<0.or.halo>1) &
     call MPI_Abort(MPI_COMM_WORLD,2,err)
   writing=trim(mode)=='write'.or.trim(mode)=='cache_write'.or.trim(mode)=='air5_write'
@@ -111,6 +112,7 @@ program checkpoint_state_probe
     call MPI_Abort(MPI_COMM_WORLD,4,err)
   endif
   if (rank==0) print *, 'PASS ',trim(mode),' NP=',np,' components=',ncomp,' halo=',halo
+  if (rank==0) print *, 'CHECKPOINT_ALLREDUCE_CALLS ',allreduce_calls
   call MPI_Finalize(err)
 contains
   subroutine inherited_roundtrip()

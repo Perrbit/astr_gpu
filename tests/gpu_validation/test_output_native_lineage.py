@@ -48,12 +48,20 @@ def make_chain(tmp_path, components=6, planes=(), derived=()):
     return parent, head
 
 
+@pytest.mark.parametrize("checksums", [True, False])
 @pytest.mark.parametrize("components,planes,derived", [
     (6, (), ()), (12, (), ()), (6, (("i", 4), ("j", 2), ("k", 1)), ()),
     (12, (("i", 4), ("j", 2), ("k", 1)), ()), (6, (), tuple(range(1, 15))),
     (12, (("i", 4), ("j", 2), ("k", 1)), tuple(range(1, 15)))])
-def test_native_cutoff_and_layout_reference(probe, tmp_path, components, planes, derived):
+def test_native_cutoff_and_layout_reference(probe, tmp_path, components, planes, derived, checksums):
     parent, head = make_chain(tmp_path, components, planes, derived)
+    if not checksums:
+        for segment in (parent, head):
+            for frame in segment.glob("step*"):
+                (frame / "RESOURCES").write_text("ASTR_SHARED_RESOURCES 2\n2\nSEGMENT\ndata.h5\n")
+                (frame / "MANIFEST").write_text(
+                    "ASTR_CHECKPOINT_BUNDLE 2\n4\ndata.h5\ndata.xdmf\nFRAME\nRESOURCES\n")
+                (frame / "COMPLETE").write_text("ASTR_COMPLETE_2\n")
     before = snapshot(parent)
     result = invoke(probe, head, components, planes, derived)
     assert result.returncode == 0 and "OUTPUT_NATIVE_LINEAGE_COMPATIBLE" in result.stdout, result.stdout+result.stderr

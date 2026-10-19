@@ -119,3 +119,30 @@ def test_curve_nodal_threshold_rejects_collapsed_triangles(tmp_path):
     assert result.returncode != 0
     assert 'CURVE contour has nonfinite or zero-area triangles' in result.stdout+result.stderr
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize('selected',['surface','empty','curve'])
+def test_image_only_fields_and_retired_owner(selected,tmp_path):
+    prefix=os.environ['ASTR_INSITU_DEVICE_MPI_PREFIX']
+    for ranks,axis in ((1,0),(2,0),(2,1),(2,2)):
+        result=subprocess.run([str(Path(prefix)/'bin/mpirun'),'--prefix',prefix,
+            '--mca','pml','ob1','--mca','btl','self,tcp','--mca','osc','pt2pt',
+            '--mca','coll_hcoll_enable','0','--mca','coll_ucc_enable','0','--mca','opal_cuda_support','0',
+            '-np',str(ranks),str(BIN),str(axis),selected,'device-view-image-only'],
+            cwd=tmp_path,capture_output=True,text=True,timeout=120)
+        assert result.returncode==0,result.stdout+result.stderr
+        assert result.stdout.count('IM4_IMAGE_ONLY rank=')==ranks,result.stdout
+        assert not list(tmp_path.iterdir())
+
+
+def test_image_only_retirement_memcheck(tmp_path):
+    prefix=os.environ['ASTR_INSITU_DEVICE_MPI_PREFIX']
+    result=subprocess.run([str(Path(prefix)/'bin/mpirun'),'--prefix',prefix,
+        '--mca','pml','ob1','--mca','btl','self,tcp','--mca','osc','pt2pt',
+        '--mca','coll_hcoll_enable','0','--mca','coll_ucc_enable','0','--mca','opal_cuda_support','0',
+        '-np','2','compute-sanitizer','--tool','memcheck','--error-exitcode','99',
+        '--log-file',str(tmp_path/'memcheck.%p.log'),str(BIN),'0','surface','device-view-image-only'],
+        cwd=tmp_path,capture_output=True,text=True,timeout=120)
+    assert result.returncode==0,result.stdout+result.stderr
+    logs=list(tmp_path.glob('memcheck.*.log'))
+    assert len(logs)==2 and all('ERROR SUMMARY: 0 errors' in p.read_text() for p in logs)

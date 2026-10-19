@@ -22,7 +22,8 @@ module insitu_session
   use insitu_config_collective, only: read_insitu_options_collective
   use iso_c_binding, only: c_int,c_double,c_char,c_null_char,c_int64_t
 #ifdef _CUDA
-  use insitu_m12_gpu, only: begin_m12_completed_gpu,sample_m12_completed_gpu,m12_diagnostic_layout_supported
+  use insitu_m12_gpu, only: begin_m12_completed_gpu,sample_m12_completed_gpu,m12_diagnostic_layout_supported, &
+    finish_m12_completed_gpu
 #endif
   use ieee_arithmetic, only: ieee_is_finite
   implicit none
@@ -87,6 +88,12 @@ module insitu_session
 #endif
 #ifdef ASTR_WITH_CATALYST
   interface
+    integer(c_int) function m12_color_state(restoring,mask,ranges) bind(C,name='astr_insitu_m12_color_state')
+      import c_int,c_int64_t,c_double
+      integer(c_int),value :: restoring
+      integer(c_int64_t),intent(inout) :: mask
+      real(c_double),intent(inout) :: ranges(6)
+    end function
     integer(c_int) function mesh_pipeline_available(pipeline) bind(C,name='astr_insitu_mesh_pipeline_available')
       import c_int,c_char
       character(c_char),intent(in) :: pipeline(*)
@@ -258,17 +265,21 @@ contains
     type(checkpoint_state_identity),intent(in) :: identity
     integer(int64),intent(in) :: budget
     integer(int64) :: flags(3),saved_flags(3),signature(4),transport_signature(4),step,interval,origin_step
+    integer(c_int64_t) :: color_mask
+    real(c_double) :: color_ranges(6)
     real(real64) :: clock(3),period,origin_time,saved_plane(6)
     character(8) :: magic
+    character(8) :: color_magic
     character(16) :: mode,saved_processing,saved_transport,saved_pipeline,saved_slice
     type(sample_schedule) :: restored
-    logical :: rendering,same,transport_only,ok,products_same,plane_same
+    logical :: rendering,same,transport_only,ok,products_same,plane_same,product_format
     integer :: unit,status,closed
     call require_sample(native_output,'native render provider needs new output')
     rendering=formal.and.enabled.and.options%render
     flags=0; signature=0; mode=''; interval=0; period=0; origin_step=0; origin_time=0
     magic='ASTRIR01'; saved_processing='host'; saved_transport=''; saved_pipeline='compatible'
     saved_slice='index'; saved_plane=0.d0
+    color_mask=0; color_ranges=0.d0; color_magic='ASTRMC01'
     call require_sample(budget>=512,'native render scalar state budget')
     if(rendering) then
       call require_sample(budget>=1024,'native render control state budget')
@@ -283,6 +294,7 @@ contains
         magic='ASTRIR04'
       endif
       if(options%slice_definition=='plane') magic='ASTRIR05'
+      if(options%products=='m12_diagnostics') magic='ASTRIR06'
     endif
     if(writing) then
       status=0; closed=0
@@ -292,17 +304,26 @@ contains
         if(status==0) then
           write(unit,iostat=status) magic,identity%step,[identity%time,identity%dt_used,identity%dt_next], &
             flags,mode,interval,period,origin_step,origin_time,signature
-          if(status==0.and.(magic=='ASTRIR03'.or.magic=='ASTRIR04'.or.magic=='ASTRIR05')) write(unit,iostat=status) &
+          if(status==0.and.(magic=='ASTRIR03'.or.magic=='ASTRIR04'.or.magic=='ASTRIR05'.or.magic=='ASTRIR06')) &
+            write(unit,iostat=status) &
             options%processing_backend,options%postprocess_transport,options%rendering_pipeline
           if(status==0.and.magic=='ASTRIR05') write(unit,iostat=status) &
             options%slice_definition,options%slice_origin,options%slice_normal
           if(status==0.and.rendering) then
-            if(magic=='ASTRIR04') then
+            if(magic=='ASTRIR04'.or.magic=='ASTRIR06') then
               call product_state_file(unit,.true.,identity%step,identity%time,products_same,ok)
             else
               call write_schedule_state(unit,render_schedule,'native-render',identity%step,identity%time,ok)
             endif
             if(.not.ok) status=1
+          endif
+          if(status==0.and.magic=='ASTRIR06') then
+#ifdef ASTR_WITH_CATALYST
+            if(m12_color_state(0_c_int,color_mask,color_ranges)/=1) status=1
+#else
+            status=1
+#endif
+            if(status==0) write(unit,iostat=status) color_magic,color_mask,color_ranges
           endif
           close(unit,iostat=closed)
         endif
@@ -316,18 +337,18 @@ contains
     read(unit,iostat=status) magic,step,clock,saved_flags,mode,interval,period,origin_step,origin_time,signature
     call require_sample(status==0,'cannot read native render control')
     call require_sample((magic=='ASTRIR01'.or.magic=='ASTRIR02'.or.magic=='ASTRIR03'.or.magic=='ASTRIR04'.or. &
-      magic=='ASTRIR05').and. &
+      magic=='ASTRIR05'.or.magic=='ASTRIR06').and. &
       step==identity%step.and. &
       all(clock==[identity%time,identity%dt_used,identity%dt_next]),'native render clock/version mismatch')
     call require_sample(all(saved_flags>=0).and.all(saved_flags<=1),'invalid native render flags')
-    if(magic=='ASTRIR02'.or.magic=='ASTRIR03'.or.magic=='ASTRIR04'.or.magic=='ASTRIR05') then
+    if(magic=='ASTRIR02'.or.magic=='ASTRIR03'.or.magic=='ASTRIR04'.or.magic=='ASTRIR05'.or.magic=='ASTRIR06') then
       read(unit,iostat=status) saved_processing,saved_transport
       call require_sample(status==0,'cannot read device render identity')
       call require_sample(saved_flags(1)==1.and. &
         ((saved_processing=='device'.and.(saved_transport=='pinned'.or.saved_transport=='device-aware')).or. &
          ((magic=='ASTRIR03'.or.magic=='ASTRIR04').and.saved_processing=='host'.and.saved_transport=='')), &
         'invalid device render identity')
-      if(magic=='ASTRIR03'.or.magic=='ASTRIR04'.or.magic=='ASTRIR05') then
+      if(magic=='ASTRIR03'.or.magic=='ASTRIR04'.or.magic=='ASTRIR05'.or.magic=='ASTRIR06') then
         read(unit,iostat=status) saved_pipeline
         call require_sample(status==0,'cannot read rendering pipeline identity')
         call require_sample(saved_pipeline=='compatible'.or. &
@@ -349,7 +370,8 @@ contains
     output_saved_rendering=saved_flags(1)==1
     call require_sample(ieee_is_finite(period).and.ieee_is_finite(origin_time),'nonfinite native render configuration')
     products_same=options%product_count==0
-    if(magic=='ASTRIR04') then
+    product_format=magic=='ASTRIR04'.or.magic=='ASTRIR06'
+    if(product_format) then
       if(rendering) then
         call configure_render_schedule()
       else
@@ -367,6 +389,11 @@ contains
     else
       call require_sample(all(saved_flags==0).and.mode==''.and.interval==0.and.period==0.and. &
         origin_step==0.and.origin_time==0.and.all(signature==0),'invalid empty native render state')
+    endif
+    if(magic=='ASTRIR06') then
+      read(unit,iostat=status) color_magic,color_mask,color_ranges
+      call require_sample(status==0.and.color_magic=='ASTRMC01'.and.color_mask>=0.and.color_mask<=7.and. &
+        all(ieee_is_finite(color_ranges)),'invalid M12 frozen color state')
     endif
     call require_sample(checkpoint_stream_at_end(unit),'native render control tail')
     close(unit,iostat=closed)
@@ -388,9 +415,22 @@ contains
         saved_pipeline==options%rendering_pipeline
     endif
     call require_sample(same.or.override,'native render configuration differs; select explicit override')
+    if(rendering.and.options%products=='m12_diagnostics') then
+      call require_sample(magic=='ASTRIR06'.or.override, &
+        'M12 checkpoint has no frozen color state; select explicit override to recalibrate')
+      if(magic/='ASTRIR06'.or.override.or..not.(same.or.transport_only)) then
+        color_mask=0; color_ranges=0.d0
+        if(mpirank==0) write(*,*) 'ASTR_INSITU_M12_COLOR_STATE explicit override: recalibrating display ranges'
+      endif
+#ifdef ASTR_WITH_CATALYST
+      call require_sample(m12_color_state(1_c_int,color_mask,color_ranges)==1,'cannot restore M12 frozen color state')
+#else
+      call require_sample(.false.,'M12 display restoration requires Catalyst')
+#endif
+    endif
     if(rendering) then
       if(same.or.(override.and.transport_only)) then
-        if(magic/='ASTRIR04') then
+        if(.not.product_format) then
           render_schedule=restored
           call resume_schedule(render_schedule,ok)
           call require_sample(ok,'cannot resume native render schedule')
@@ -398,7 +438,7 @@ contains
         render_origin_step=origin_step; render_origin_time=origin_time
       else
         render_origin_step=identity%step; render_origin_time=identity%time
-        if(magic/='ASTRIR04'.or.options%product_count==0) then
+        if(.not.product_format.or.options%product_count==0) then
           render_configured=.false.
           call configure_render_schedule()
         endif
@@ -2010,6 +2050,7 @@ contains
     endif
     call release_statistics_gpu()
     call release_device_sampling_gpu()
+    call finish_m12_completed_gpu()
 #endif
     if(.not.preview) call write_final_statistics()
     if(formal.and.enabled.and.statistics_enabled.and.selected_product_profile()>=5) &
