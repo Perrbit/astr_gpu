@@ -3,8 +3,7 @@ module compact_derivative_gpu
   use constdef, only: num1d3,num1d60,num7d9,num1d36
   use compact_line_solver, only: compact_matrix
   use compact_line_solver_gpu, only: compact_line_gpu_plan,prepare_compact_gpu, &
-    solve_compact_gpu,release_compact_gpu
-  use gpu_check, only: sync_after_kernel
+    solve_compact_gpu,release_compact_gpu,compact_after_kernel
   use compact_operator, only: compact_line_partition,compact_derivative_core
   use compact_distributed_gpu
   implicit none
@@ -134,14 +133,14 @@ contains
       call global_derivative_rhs_kernel<<<dim3((plan%global_line%n+127)/128,nrhs,1),128>>>( &
         plan%dim,plan%hm,plan%global_line%n,nrhs,plan%global_line%partition%first, &
         plan%global_line%partition%intervals,plan%global_line%partition%periodic,plan%input,plan%rhs)
-      call sync_after_kernel('global compact derivative RHS',force_sync=.true.)
+      call compact_after_kernel('global compact derivative RHS')
       call solve_distributed_compact_gpu(plan%global_line,plan%rhs,plan%owned_solution,nrhs)
       call restore_compact_line_nodes_gpu(plan%global_line,plan%owned_solution,plan%solution,nrhs)
       return
     endif
     call compact_derivative_rhs_kernel<<<dim3((plan%line%n+127)/128,nrhs,1),dim3(128,1,1)>>>( &
       plan%dim,plan%hm,plan%first,plan%last,plan%ntype,nrhs,plan%input,plan%rhs)
-    call sync_after_kernel('compact_derivative_rhs_kernel',force_sync=.true.)
+    call compact_after_kernel('compact_derivative_rhs_kernel')
     call solve_compact_gpu(plan%line,plan%rhs,plan%solution,nrhs)
   end subroutine
 

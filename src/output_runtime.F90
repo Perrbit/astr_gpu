@@ -17,6 +17,7 @@ module output_runtime
   use wall_blowing_random, only: legacy_random_state_size,get_legacy_random_state, &
     put_legacy_random_state,legacy_random_runtime_signature
   use output_config, only: output_options
+  use compact_runtime, only: global_compact_enabled
   use adaptive_output, only: configure_adaptive,adaptive_monitor_due,observe_adaptive,feed_adaptive_signal, &
     adaptive_shared_config,adaptive_shared_state,adaptive_shared_file
   use output_config_collective, only: read_output_options_collective
@@ -598,6 +599,7 @@ contains
         value=''
         call get_environment_variable('ASTR_GPU_MP_POSITIVITY',value,status=status)
         if(trim(value)=='flux') contract(7)=ibset(contract(7),1)
+        if(global_compact_enabled()) contract(7)=ibclr(contract(7),0)
       end select
     enddo
     endif
@@ -1239,6 +1241,7 @@ contains
           endif
           if(err==0.and.magic=='ASTROC09') write(unit,iostat=err) 'ASTRWR02',mpisize,packet_size, &
             rng_compiler,rng_options,rng_signature,wall_state
+          if(err==0) call compact_control_file(unit,.true.,err)
           close(unit,iostat=closed)
         endif
       endif
@@ -1255,6 +1258,7 @@ contains
       call check(err==0,'read control metadata')
       restored_statistics_saved=.not.btest(saved(8),3)
       saved(8)=ibclr(saved(8),3)
+      if(global_compact_enabled()) saved(7)=ibclr(saved(7),0)
       call check(all(saved(1:7)==contract(1:7)).and.saved(8)==ibclr(contract(8),3), &
         'numerical/controller contract mismatch')
       call check((magic=='ASTROC06'.or.magic=='ASTROC09').eqv.(expected_magic=='ASTROC09'), &
@@ -1294,7 +1298,8 @@ contains
         call put_legacy_random_state(wall_state(7:,mpirank+1),ok)
         call check(ok,'invalid random wall RNG rank state')
       endif
-      call check(ok.and.checkpoint_stream_at_end(unit),'adaptive monitor/control metadata tail')
+      call compact_control_file(unit,.false.,err)
+      call check(err==0.and.ok.and.checkpoint_stream_at_end(unit),'adaptive monitor/control metadata tail')
       close(unit,iostat=closed)
       call check(ok.and.closed==0,'read checkpoint schedule state')
       counter=saved_counter
@@ -1316,6 +1321,65 @@ contains
             options%checkpoint%interval_steps,options%checkpoint%interval_time, &
             schedule_origin_step,schedule_origin_time,options%checkpoint%initial_frame,.false.,ok)
           call check(ok,'invalid overridden checkpoint schedule')
+        endif
+      endif
+    endif
+  end subroutine
+
+  subroutine compact_control_file(unit,writing,status)
+    use commvar, only: alfa_filter,bfacmpld,shkcrt
+    integer,intent(in) :: unit
+    logical,intent(in) :: writing
+    integer,intent(out) :: status
+    character(8) :: tag
+    character(64) :: operator_id,saved_id
+    character(4) :: schemes(2),saved_schemes(2)
+    integer(int64) :: settings(17),saved_settings(17)
+    real(real64) :: parameters(3),saved_parameters(3)
+    logical :: active,present,matched
+    active=global_compact_enabled()
+    operator_id='astr-global-compact-v1'
+    schemes=[conschm,difschm]
+    settings=[1_int64,int(hm,int64),int(ndims,int64),int(numq,int64),int(recon_schem,int64), &
+      int(merge(1,0,diffterm),int64),int(merge(1,0,lfilter),int64), &
+      int(merge(1,0,lchardecomp),int64),int(merge(1,0,lihomo),int64), &
+      int(merge(1,0,ljhomo),int64),int(merge(1,0,lkhomo),int64),int(bctype,int64)]
+    parameters=0.d0
+    if(lfilter) parameters(1)=alfa_filter
+    if(recon_schem==5) parameters(2)=bfacmpld
+    if(lchardecomp) parameters(3)=shkcrt
+    status=0
+    if(writing) then
+      if(active) write(unit,iostat=status) 'ASTRCM01',operator_id,schemes,settings,parameters
+      return
+    endif
+    ! Old new-format batches have no tail; only non-exact compact migration is allowed.
+    present=.not.checkpoint_stream_at_end(unit)
+    matched=.false.
+    if(present) then
+      read(unit,iostat=status) tag
+      if(status/=0.or.tag/='ASTRCM01') then
+        status=1
+        return
+      endif
+      read(unit,iostat=status) saved_id,saved_schemes,saved_settings,saved_parameters
+      call check(status==0,'invalid compact operator identity record')
+      matched=active.and.saved_id==operator_id.and.all(saved_schemes==schemes).and. &
+        all(saved_settings==settings).and.all(saved_parameters==parameters)
+    endif
+    if(.not.active.and..not.present) return
+    if(options%exact_restart) then
+      call check(present,'compact operator identity missing; select exact_restart=f for migration')
+      call check(matched,'compact operator identity mismatch; select exact_restart=f for migration')
+      if(mpirank==0) write(*,'(A)') 'ASTR_COMPACT_RESTART exact operator identity matched'
+    else
+      if(mpirank==0) then
+        if(.not.present) then
+          write(*,'(A)') 'ASTR_COMPACT_RESTART non-exact; source operator identity unknown; derived state rebuilt'
+        else if(.not.matched) then
+          write(*,'(A)') 'ASTR_COMPACT_RESTART non-exact; operator identity changed; derived state rebuilt'
+        else
+          write(*,'(A)') 'ASTR_COMPACT_RESTART non-exact; operator identity matched; derived state rebuilt'
         endif
       endif
     endif

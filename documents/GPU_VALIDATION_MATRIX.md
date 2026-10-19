@@ -1,5 +1,47 @@
 # GPU Validation Matrix
 
+## 2026-10-19 Compact CP8 Execution Variants
+
+V6 passes: 28 execution/restart runtime tests and 39 affected tool tests,
+with root CPU-only/CUDA builds. Compact-private dependency mode preserves
+outer explicit synchronization, launch checks, shared-memory barriers,
+MPI readiness and public completion. Two full-line copies are removed;
+the initialization RHS has two columns. Independent RHS batches default to
+65535 columns (CUDA grid.y), retaining scalar/full filtering and exact state.
+Three-direction bitwise tests, CP7 continuation, TGV NP=3 z,
+NSCBC plate NP=2 x / NP=6 3x2x1, and 128x128x8 grid-limit validation pass.
+Maximum recorded phase normalized error is 1.0130785099704553e-13.
+Representative memcheck/initcheck and 270-case local racecheck/synccheck pass.
+Aware checks use the existing unchanged narrow UCX/Open MPI API-probe
+suppression file; unsuppressed explicit also reproduces those library probes.
+
+Thirty independent small-case NP=2 cost runs (12 steps, first 2 excluded,
+full filter, 3 interleaved rounds) and separate Nsight traces are under
+testout/compact_cp8_20261019/. Dependency+pinned medians are 15.706 / 50.460
+ms per step for TGV/plate versus 18.000 / 52.390 at CP7; aware medians are
+14.251 / 45.584. These are local diagnostic comparisons, not CP9 scaling
+or production performance acceptance. Defaults remain explicit/pinned/scalar.
+Small batches reduce private buffer storage but regress local time; retained
+as a memory option. Cross-direction arena and fused field/RHS remain candidates.
+
+## 2026-10-19 Compact CP7 Restart
+
+32-cubed periodic, nonreacting FP64 TGV, 643c/643c, dt=1e-3.
+CPU/GPU each NP=1/2 x-slab, filtering off/on: eight 12-step versus 5+7-step
+comparisons preserve all state.h5 datasets bitwise, including caches and rank extras.
+Six missing/version/coefficient identity cases reject exact restore and pass explicit
+non-exact restore. GPU NP=2 scalar-to-full exact continuation is also bitwise.
+CPU/GPU NP=2 643e/643e restart regression is unchanged; two full-workspace GPU
+restore memcheck reports show zero errors (not a full leak-check claim).
+Root CPU-only/CUDA builds, 18 runtime tests and 39 affected tool/interface tests pass.
+
+Identity/settings occupy 240 bytes in existing control.bin; no new sidecar,
+checksum, post-write field readback or persisted PCR workspace. Default
+exact_restart=f is unchanged. Evidence: testout/compact_cp7_20261019_v5_final/ and
+testout/compact_cp7_v5_final.xml; details: ASTR_GPU_COMPACT_SCHEME_RESULTS.md section 21.
+This is not flat-plate, wall, CURVE, AIR5, repartition, rendering, time-statistics
+or production compact-restart acceptance. Subsequent CP8 results are recorded above.
+
 ## 2026-10-06 AP0.1-AP3.2 Adaptive Product Clocks
 
 Default off. Internally generated 16/32-cubed periodic Cartesian nonreacting TGV

@@ -63,7 +63,7 @@ contains
       num_species/=0.or.num_modequ/=0.or.trim(turbmode)/='none'.or.trim(rkscheme)/='rk3'.or. &
       .not.nondimen.or.lcomb.or.lcracon) &
       error stop 'Global compact admits periodic 643c/643c TGV or CP6 743e/643c profile plate'
-    if(lrestart) error stop 'Global compact restart identity is pending CP7; use a fresh initial state'
+    if(lrestart) error stop 'Legacy compact restart is disabled; use output restore_directory'
     if(hm<2.or.(lfilter.and.hm<5)) error stop 'Insufficient halo for global compact RHS'
     if(plate) then
       do k=0,km

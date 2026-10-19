@@ -83,6 +83,8 @@ def main():
     parser.add_argument("--filter", choices=("f", "t"), default="f")
     parser.add_argument("--workspace", choices=("scalar", "full"), default="scalar")
     parser.add_argument("--compact-transport", choices=("pinned", "device-aware"), default="pinned")
+    parser.add_argument("--compact-sync", choices=("explicit", "dependency"), default="explicit")
+    parser.add_argument("--batch-rhs", type=int, default=65535)
     parser.add_argument("--baseline", type=Path, help="completed same-grid/filter run for global topology comparison")
     args = parser.parse_args()
     out = args.out.resolve()
@@ -97,6 +99,7 @@ def main():
               "scope": "same globally coupled periodic compact operator" if args.scheme == "643c" else "explicit regression",
               "fields": {}, "cfl": {},
               "compact_transport": args.compact_transport}
+    report.update(compact_sync=args.compact_sync,batch_rhs=args.batch_rhs)
     for backend, exe in (("cpu", args.cpu), ("gpu", args.gpu)):
         case = out / backend
         if not args.check_only:
@@ -110,6 +113,7 @@ def main():
                 "&output\n host_budget_bytes=67108864\n/\n&checkpoint\n/\n&volume\n/\n&slices\n/\n")
             env = dict(os.environ, ASTR_FORCE_MPI_TOPOLOGY=args.topology,
                        ASTR_GPU_COMPACT_COMPARE="1", ASTR_GPU_COMPACT_TRANSPORT=args.compact_transport,
+                       ASTR_GPU_COMPACT_SYNC=args.compact_sync,ASTR_GPU_COMPACT_BATCH_RHS=str(args.batch_rhs),
                        ASTR_GPU_SYNC_MODE="explicit", ASTR_GPU_PRECISION_MODE="fp64",
                        ASTR_GPU_HALO_TRANSPORT="pinned", ASTR_GPU_FILTER_WORKSPACE=args.workspace,
                        ASTR_VALIDATION_RHS_PREFIX=str(case / "state"),
@@ -125,15 +129,17 @@ def main():
             command = ["mpirun", "--oversubscribe", "--bind-to", "none", "-np", str(ranks),
                        str(exe.resolve()), "run", "datin/input.tgv"]
             if args.gpu_sanitizer and backend == "gpu":
-                # This host-staged check does not exercise CUDA-aware MPI.
-                env.update(OMPI_MCA_pml="ob1", OMPI_MCA_btl="self,vader,tcp", OMPI_MCA_osc="pt2pt",
-                           OMPI_MCA_coll="^hcoll,ucc", OMPI_MCA_opal_cuda_support="0")
+                if args.compact_transport == 'pinned':
+                    env.update(OMPI_MCA_pml="ob1", OMPI_MCA_btl="self,vader,tcp", OMPI_MCA_osc="pt2pt",
+                               OMPI_MCA_coll="^hcoll,ucc", OMPI_MCA_opal_cuda_support="0")
                 report["sanitizer_mpi"] = {k: v for k, v in env.items() if k.startswith("OMPI_MCA_")}
                 command = ["mpirun", "--oversubscribe", "--bind-to", "none", "-np", str(ranks),
                            "compute-sanitizer", "--tool", args.gpu_sanitizer,
                            "--error-exitcode", "99", "--log-file", str(case / (args.gpu_sanitizer + ".%p.log"))]
                 if args.gpu_sanitizer == "memcheck":
                     command += ["--leak-check", "full"]
+                if args.compact_transport == 'device-aware':
+                    command += ['--suppressions',str(ROOT/'tests/gpu_validation/compute_sanitizer_ucx_cuda_aware.supp.xml')]
                 command += [str(exe.resolve()), "run", "datin/input.tgv"]
             with (case / "run.log").open("w") as log:
                 subprocess.run(command, cwd=case, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)

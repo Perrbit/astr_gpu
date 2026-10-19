@@ -32,3 +32,5 @@ tests/gpu_validation/out/
 /testout/compact_cp4_*/
 /testout/compact_cp5_*/
 /testout/compact_cp6_*/
+/testout/compact_cp7_*
+/testout/compact_cp8_*

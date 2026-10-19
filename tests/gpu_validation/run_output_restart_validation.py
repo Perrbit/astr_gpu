@@ -62,7 +62,8 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
              checkpoint_enabled=None, curve_surface_oracle=False, wall_mean_oracle=False, curve_trace_oracle=False,
              ncu_kernel=None, curve_trace_step_scale=None, curve_wall_temperature=None,
              solver_halo_transport='pinned', flow_type=None, gpu_precision_mode='fp64', gpu_sync_mode='explicit',
-             gpu_mixed_candidate=None, exact_restart=True, checkpoint_statistics=True, insitu_memory_trace=False):
+             gpu_mixed_candidate=None, exact_restart=True, checkpoint_statistics=True, insitu_memory_trace=False,
+             scheme='643e', compact_sync='explicit', compact_batch_rhs=65535):
     if solver_halo_transport not in ('pageable', 'pinned', 'pinned-pipeline', 'device-aware'):
         raise ValueError('unknown solver halo transport')
     if ncu_kernel is not None and (not ncu_kernel or backend != 'gpu' or ranks != 1 or
@@ -156,7 +157,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         "--use-gpu", "t" if backend == "gpu" else "f", "--grid", grid or "16,16,16",
         "--maxstep", str(steps - 1), "--feqchkpt", "1", "--deltat", str(dt),
         *(["--feqlist", "1"] if scale_dt is not None else []),
-        "--lfilter", "t" if lfilter else "f", "--diffterm", "t", "--scheme", "643e"], check=True)
+        "--lfilter", "t" if lfilter else "f", "--diffterm", "t", "--scheme", scheme], check=True)
     if tgv_reynolds is not None:
         if args.case!='tgv' or args.initial_dimension!=0 or not np.isfinite(tgv_reynolds) or tgv_reynolds<=0:
             raise ValueError('reference Reynolds override requires internally initialized TGV and a finite positive value')
@@ -284,6 +285,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
                ASTR_GPU_SYNC_MODE=gpu_sync_mode, ASTR_GPU_HALO_TRANSPORT=solver_halo_transport,
                ASTR_GPU_PRECISION_MODE=gpu_precision_mode, ASTR_INSITU_SAMPLE_PREFIX="outdat/sample")
     env["ASTR_GPU_FILTER_WORKSPACE"] = args.filter_workspace
+    env.update(ASTR_GPU_COMPACT_SYNC=compact_sync,ASTR_GPU_COMPACT_BATCH_RHS=str(compact_batch_rhs))
     if gpu_mixed_candidate is not None:
         env['ASTR_GPU_MIXED_CANDIDATE'] = gpu_mixed_candidate
     if insitu_timing:

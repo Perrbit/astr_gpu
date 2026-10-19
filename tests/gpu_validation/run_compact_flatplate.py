@@ -158,6 +158,8 @@ def main():
     parser.add_argument('--baseline', type=Path)
     parser.add_argument('--check-only', action='store_true')
     parser.add_argument('--compact-transport', choices=('pinned','device-aware'), default='pinned')
+    parser.add_argument('--compact-sync', choices=('explicit','dependency'), default='explicit')
+    parser.add_argument('--batch-rhs', type=int, default=65535)
     instrumentation = parser.add_mutually_exclusive_group()
     instrumentation.add_argument('--gpu-sanitizer', choices=('memcheck','initcheck'))
     instrumentation.add_argument('--wall-call-check', action='store_true')
@@ -174,6 +176,7 @@ def main():
               'full_steps':STEPS,'boundary':args.boundary,'diffusion':args.diffusion,
               'blowing':args.blowing,'compact_transport':args.compact_transport,
               'filter':args.filter,'workspace':args.workspace}
+    report.update(compact_sync=args.compact_sync,batch_rhs=args.batch_rhs)
     for backend,exe in (('cpu',args.cpu),('gpu',args.gpu)):
         case = out/backend
         if not args.check_only:
@@ -182,6 +185,7 @@ def main():
             env = {k:v for k,v in os.environ.items() if not k.startswith(('ASTR_','OMPI_MCA_','UCX_'))}
             env.update(ASTR_FORCE_MPI_TOPOLOGY=args.topology,ASTR_WALL_BLOWING_MODE='legacy_random',
                        ASTR_GPU_COMPACT_COMPARE='1',ASTR_GPU_COMPACT_TRANSPORT=args.compact_transport,
+                       ASTR_GPU_COMPACT_SYNC=args.compact_sync,ASTR_GPU_COMPACT_BATCH_RHS=str(args.batch_rhs),
                        ASTR_GPU_SYNC_MODE='explicit',ASTR_GPU_PRECISION_MODE='fp64',
                        ASTR_GPU_HALO_TRANSPORT='pinned',ASTR_GPU_FILTER_WORKSPACE=args.workspace,
                        ASTR_NSCBC_FARFIELD_MODE='incoming_only',
@@ -207,6 +211,8 @@ def main():
                             '--log-file',str(case/(args.gpu_sanitizer+'.%p.log'))]
                 if args.gpu_sanitizer=='memcheck':
                     command += ['--leak-check','full']
+                if args.compact_transport=='device-aware':
+                    command += ['--suppressions',str(Path(__file__).with_name('compute_sanitizer_ucx_cuda_aware.supp.xml').resolve())]
             command += [str(exe.resolve()),'run','datin/input.dat']
             with (case/'run.log').open('w') as log:
                 subprocess.run(command,cwd=case,env=env,stdout=log,stderr=subprocess.STDOUT,check=True)

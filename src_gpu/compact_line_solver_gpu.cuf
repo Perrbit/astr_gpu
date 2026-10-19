@@ -1,12 +1,16 @@
 module compact_line_solver_gpu
   use cudafor
+  use mpi
   use iso_fortran_env, only: real64,int64
   use compact_line_solver, only: compact_matrix,compact_block_factors,prepare_compact_blocks
-  use gpu_check, only: sync_after_kernel
+  use gpu_check, only: check_kernel_launch,sync_gpu_boundary
   implicit none
   private
   integer,parameter :: tile_threads=128
   public :: compact_line_gpu_plan,prepare_compact_gpu,solve_compact_gpu,release_compact_gpu
+  public :: compact_after_kernel,compact_batch_rhs
+  logical,save :: execution_configured=.false.,dependency_execution=.false.
+  integer,save :: batch_rhs=65535
 
   type :: compact_line_gpu_plan
     integer :: n=0,tiles=0,reduced_n=0,capacity=0,tile_capacity=0,max_levels=0,reduced_levels=0
@@ -20,6 +24,57 @@ module compact_line_solver_gpu
     real(real64),allocatable,device :: cyclic_response(:,:),local_work(:,:),reduced0(:,:),reduced1(:,:)
   end type
 contains
+  subroutine configure_compact_execution()
+    character(32) :: mode,value
+    integer :: status,ierr,rank,choice(2),lowest(2),highest(2),ios
+    logical :: initialized
+    if(execution_configured) return
+    mode='explicit'
+    call get_environment_variable('ASTR_GPU_COMPACT_SYNC',value,status=status)
+    if(status==0) mode=value
+    if(status/=0.and.status/=1) mode='invalid'
+    choice(1)=-1
+    if(mode=='explicit') choice(1)=0
+    if(mode=='dependency') choice(1)=1
+    choice(2)=65535
+    call get_environment_variable('ASTR_GPU_COMPACT_BATCH_RHS',value,status=status)
+    if(status==0) then
+      read(value,*,iostat=ios) choice(2)
+      if(ios/=0) choice(2)=-1
+    else if(status/=1) then
+      choice(2)=-1
+    endif
+    call MPI_Initialized(initialized,ierr)
+    rank=0
+    lowest=choice; highest=choice
+    if(initialized) then
+      call MPI_Allreduce(choice,lowest,2,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+      call MPI_Allreduce(choice,highest,2,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+      call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
+    endif
+    if(any(lowest/=highest).or.lowest(1)<0.or.lowest(2)<1.or.lowest(2)>65535) &
+      error stop 'compact execution requires consistent explicit/dependency sync and batch RHS in 1:65535'
+    dependency_execution=choice(1)==1
+    batch_rhs=choice(2)
+    execution_configured=.true.
+    if(rank==0) write(*,'(A,A,A,I0)') 'COMPACT_GPU_EXECUTION sync=',trim(mode),' batch_rhs=',batch_rhs
+  end subroutine
+
+  integer function compact_batch_rhs() result(capacity)
+    call configure_compact_execution()
+    capacity=batch_rhs
+  end function
+
+  subroutine compact_after_kernel(label,complete)
+    character(*),intent(in) :: label
+    logical,intent(in),optional :: complete
+    logical :: finish
+    call check_kernel_launch(label)
+    finish=.not.dependency_execution
+    if(present(complete)) finish=finish.or.complete
+    if(finish) call sync_gpu_boundary(label)
+  end subroutine
+
   subroutine prepare_compact_gpu(matrix,tile_capacity,nrhs_capacity,plan)
     type(compact_matrix),intent(in) :: matrix
     integer,intent(in) :: tile_capacity,nrhs_capacity
@@ -27,6 +82,7 @@ contains
     type(compact_block_factors) :: blocks
     integer :: n,t,r,l,rl,istat
     integer(int64) :: reals,integers
+    call configure_compact_execution()
     if(tile_capacity>tile_threads.or.nrhs_capacity<1) error stop 'invalid compact GPU tile/capacity'
     if(plan%n/=0) call release_compact_gpu(plan)
     call prepare_compact_blocks(matrix,tile_capacity,blocks)
@@ -190,7 +246,7 @@ contains
       plan%tile_capacity,plan%max_levels,plan%first,plan%last,plan%levels, &
       plan%initial_inverse,plan%left,plan%right,plan%inverse,plan%edge_lower, &
       plan%edge_upper,plan%reduced_initial,rhs,plan%local_work,plan%reduced0)
-    call sync_after_kernel('compact_local_pcr',force_sync=.true.)
+    call compact_after_kernel('compact_local_pcr')
     grid=dim3((plan%reduced_n+tile_threads-1)/tile_threads,nrhs,1)
     stride=1
     do level=1,plan%reduced_levels
@@ -201,7 +257,7 @@ contains
         call reduced_pcr_kernel<<<grid,tile_threads>>>(plan%reduced_n,nrhs,plan%reduced_levels, &
           level,stride,plan%reduced_left,plan%reduced_right,plan%reduced_inverse,plan%reduced1,plan%reduced0)
       endif
-      call sync_after_kernel('compact_reduced_pcr',force_sync=.true.)
+      call compact_after_kernel('compact_reduced_pcr')
       stride=stride*2
     enddo
     grid=dim3((plan%n+tile_threads-1)/tile_threads,nrhs,1)
@@ -214,7 +270,7 @@ contains
         plan%h11,plan%h12,plan%h21,plan%h22,plan%first,plan%last,plan%owner, &
         plan%response_left,plan%response_right,plan%cyclic_response,plan%reduced1,plan%local_work,solution)
     endif
-    call sync_after_kernel('compact_reconstruct',force_sync=.true.)
+    call compact_after_kernel('compact_reconstruct',complete=.true.)
   end subroutine
 
   subroutine release_compact_gpu(plan)
