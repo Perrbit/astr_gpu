@@ -32,6 +32,30 @@ _Avoid_: Compact difference, tridiagonal derivative solve
 The filter scheme for the first-stage GPU port is the explicit tenth-order central filter. It does not solve compact filter linear systems.
 _Avoid_: Compact filter, tridiagonal filter solve
 
+**Rank-local compact operator**:
+A compact spatial operator whose MPI interfaces are closed using known field values, leaving each rank with an independent local line system. It is not generally the same discrete operator as a globally coupled compact system.
+_Avoid_: Globally coupled compact operator, calling every local array endpoint a physical boundary
+
+**Globally coupled compact operator**:
+A compact spatial operator whose interface unknowns remain coupled across MPI partitions within one global line system. Physical boundary closures and MPI partition interfaces are distinct parts of this operator.
+_Avoid_: Independent rank-local solves, identifying GPU calculation tiles with MPI partitions
+
+**Compact local subsystem solve**:
+A solve within a globally coupled compact operator that expresses local unknowns in terms of the RHS and unresolved interface unknowns. It retains interface coupling rather than replacing it with an independent rank-local closure.
+_Avoid_: Treating a local subsystem response as the final independent rank-local solution
+
+**Two-level compact PCR**:
+The target globally coupled compact solve separates local subsystem PCR from PCR on the reduced interface system across MPI ranks. It is distinct from device-local tiling of the rank-local compact operator.
+_Avoid_: Calling a rank-local tiled solve a globally coupled solve, applying local closures and retained unknown coupling at the same MPI interface
+
+**Compact operator workspace**:
+Private device storage for compact-operator RHS and intermediate states, distinct from the authoritative flow arrays. Directional grouping changes this workspace layout rather than the identity or ownership of the flow state.
+_Avoid_: A second authoritative flow state, interpreting a grouped workspace as a changed physical grid
+
+**Periodic compact unknown set**:
+The unique global nodal unknowns of a cyclic compact line system, with periodic endpoint replicas referring to the same unknown. Solver arrays may retain those replicas without enlarging the linear system.
+_Avoid_: Counting periodic endpoint copies twice, removing endpoint storage to define a unique linear-system unknown
+
 **Directional thread block**:
 A CUDA thread block shape selected by derivative/filter direction: x uses `(512,1,1)`, y uses `(32,16,1)`, and z uses `(64,1,8)`.
 _Avoid_: Universal 3D block, fixed `(8,8,8)` block
