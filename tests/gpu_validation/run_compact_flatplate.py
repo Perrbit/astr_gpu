@@ -22,7 +22,18 @@ DT = 0.005
 STEPS = 10
 
 
-def configure(case, boundary, scheme, blowing, filtering='f'):
+def state_minima(q):
+    rho=q[...,0]
+    if not np.isfinite(q).all() or np.min(rho)<=0:
+        raise ValueError('nonfinite/nonpositive flat-plate density or state')
+    pressure=.4*(q[...,4]-.5*np.sum(q[...,1:4]**2,axis=-1)/rho)
+    temperature=pressure/rho*(1.4*12**2)
+    if not np.isfinite(temperature).all() or min(np.min(pressure),np.min(temperature))<=0:
+        raise ValueError('nonfinite/nonpositive flat-plate pressure or temperature')
+    return dict(rho=float(np.min(rho)),pressure=float(np.min(pressure)),temperature=float(np.min(temperature)))
+
+
+def configure(case, boundary, scheme, blowing, filtering='f', crashfix=False):
     path = case / 'datin/input.dat'
     lines = path.read_text().splitlines()
     replace_value(lines, 'conschm,difschm,rkscheme', f'743e,{scheme},rk3')
@@ -39,6 +50,8 @@ def configure(case, boundary, scheme, blowing, filtering='f'):
     path = case / 'datin/controller'
     lines = path.read_text().splitlines()
     replace_value(lines, 'deltat', '5.d-3')
+    if crashfix:
+        replace_value(lines, 'lwsequ,lwslic', 'f,f,f,t')
     path.write_text('\n'.join(lines)+'\n')
     if not blowing:
         path = case / 'datin/wallbs.dat'
@@ -47,7 +60,12 @@ def configure(case, boundary, scheme, blowing, filtering='f'):
         path.write_text('\n'.join(lines)+'\n')
     metadata = json.loads((case/'fixture.json').read_text())
     metadata.update(deltat=DT, boundary=boundary, diffusion=scheme,
-                    blowing='original legacy_random' if blowing else 'zero amplitude',filter=filtering)
+                    blowing='original legacy_random' if blowing else 'zero amplitude',filter=filtering,
+                    crashfix=crashfix)
+    if crashfix:
+        metadata['changes']=[item for item in metadata['changes']
+                             if item!='crash repair disabled for first-failure gate']
+        metadata['changes'].append('runtime crash repair enabled')
     changed = {'643e diffusion'} if scheme=='643c' else set()
     if boundary=='nscbc':
         changed.add('boundary types')
@@ -153,6 +171,7 @@ def main():
     parser.add_argument('--boundary', choices=('basic','nscbc'), default='basic')
     parser.add_argument('--diffusion', choices=('643c','643e'), default='643c')
     parser.add_argument('--blowing', action='store_true')
+    parser.add_argument('--crashfix', action='store_true')
     parser.add_argument('--filter', choices=('f','t'), default='f')
     parser.add_argument('--workspace', choices=('scalar','full'), default='scalar')
     parser.add_argument('--baseline', type=Path)
@@ -175,13 +194,13 @@ def main():
     report = {'status':'running','grid':GRID,'topology':args.topology,'dt':DT,
               'full_steps':STEPS,'boundary':args.boundary,'diffusion':args.diffusion,
               'blowing':args.blowing,'compact_transport':args.compact_transport,
-              'filter':args.filter,'workspace':args.workspace}
+              'filter':args.filter,'workspace':args.workspace,'crashfix':args.crashfix}
     report.update(compact_sync=args.compact_sync,batch_rhs=args.batch_rhs)
     for backend,exe in (('cpu',args.cpu),('gpu',args.gpu)):
         case = out/backend
         if not args.check_only:
             prepare(args.source,case,backend,GRID)
-            configure(case,args.boundary,args.diffusion,args.blowing,args.filter)
+            configure(case,args.boundary,args.diffusion,args.blowing,args.filter,args.crashfix)
             env = {k:v for k,v in os.environ.items() if not k.startswith(('ASTR_','OMPI_MCA_','UCX_'))}
             env.update(ASTR_FORCE_MPI_TOPOLOGY=args.topology,ASTR_WALL_BLOWING_MODE='legacy_random',
                        ASTR_GPU_COMPACT_COMPARE='1',ASTR_GPU_COMPACT_TRANSPORT=args.compact_transport,
@@ -268,6 +287,7 @@ def main():
                 if len(logs)!=ranks or any('ERROR SUMMARY: 0 errors' not in p.read_text() for p in logs):
                     raise ValueError('missing clean per-rank sanitizer report')
     report['phase_fields'] = {}
+    report['phase_minima'] = {}
     with h5py.File(out/'cpu/diagnostics/geometry.h5') as a,h5py.File(out/'gpu/diagnostics/geometry.h5') as b:
         for key in a:
             if not np.array_equal(a[key][...],b[key][...]):
@@ -281,6 +301,9 @@ def main():
         report['phase_fields'][path.name] = measure(
             comparison_values(a,True).reshape((-1,5),order='F'),
             comparison_values(b,True).reshape((-1,5),order='F'))
+        report['phase_minima'][path.name] = {
+            backend:state_minima(comparison_values(snapshot,True).reshape((-1,5),order='F'))
+            for backend,snapshot in (('cpu',a),('gpu',b))}
     if len(report['phase_fields'])!=12*ranks:
         raise ValueError('incomplete phase field inventory')
     ha,va = read_flowstate(out/'cpu')
@@ -291,7 +314,7 @@ def main():
     report['viscous_scale_global'] = viscous_scale(out/'cpu')
     if args.baseline:
         previous = json.loads((args.baseline/'summary.json').read_text())
-        for key in ('grid','dt','boundary','diffusion','blowing','full_steps','filter'):
+        for key in ('grid','dt','boundary','diffusion','blowing','full_steps','filter','crashfix'):
             if previous[key]!=json.loads(json.dumps(report[key])):
                 raise ValueError(f'partition baseline differs in {key}')
         report['topology_fields'] = {b:measure(assemble(args.baseline/b,STEPS-1),assemble(out/b,STEPS-1))

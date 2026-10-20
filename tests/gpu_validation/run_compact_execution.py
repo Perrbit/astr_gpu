@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CP8 local cost attribution; no rendering, checkpoint or validation field dumps."""
+"""CP8/CP9 local GPU timing; no rendering, checkpoint or field dumps."""
 import argparse
 import hashlib
 import json
@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 
 import numpy as np
 
@@ -15,6 +16,44 @@ from prepare_m12_local_case import prepare
 from run_compact_flatplate import configure, GRID
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def window_times(text, ranks, steps, warmup):
+    rows=re.findall(r'ASTR_GPU_RANK_RK_TIMING\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)',text)
+    records={(int(rank),int(step)):float(total) for rank,step,prepare_time,rk,total in rows}
+    expected={(rank,step) for rank in range(ranks) for step in range(steps)}
+    if len(rows)!=len(expected) or set(records)!=expected:
+        raise ValueError('missing/duplicate rank/complete-step timing records')
+    if not all(np.isfinite(value) and value>=0 for value in records.values()):
+        raise ValueError('invalid RK timing')
+    sums=[sum(records[rank,step] for step in range(warmup,steps)) for rank in range(ranks)]
+    return sums,max(sums)/(steps-warmup)
+
+
+def phase_times(text,ranks,steps,warmup,filtering='t'):
+    rows=re.findall(r'ASTR_GPU_PHASE_TIMING\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)',text)
+    records={}
+    for rank,step,stage,label,seconds in rows:
+        key=(int(rank),int(step),int(stage),label)
+        if key in records:
+            raise ValueError(f'duplicate phase record: {key}')
+        records[key]=float(seconds)
+    required=('convection','diffusion_flux','diffusion_halo','diffusion_rhs','rk_update')
+    if filtering=='t':
+        required=('filter',*required)
+    for label in required:
+        for rank in range(ranks):
+            for step in range(steps):
+                for stage in (1,2,3):
+                    value=records.get((rank,step,stage,label))
+                    if value is None or not np.isfinite(value) or value<0:
+                        raise ValueError(f'missing/invalid phase: {(rank,step,stage,label)}')
+    result={}
+    for label in sorted({key[3] for key in records}):
+        sums=[sum(value for (r,step,stage,name),value in records.items()
+                  if r==rank and warmup<=step<steps and name==label) for rank in range(ranks)]
+        result[label]=dict(rank_window_seconds=sums,seconds_per_step=max(sums)/(steps-warmup))
+    return result
 
 
 def main():
@@ -26,29 +65,49 @@ def main():
     parser.add_argument('--topology', default='2,1,1')
     parser.add_argument('--steps', type=int, default=12)
     parser.add_argument('--warmup', type=int, default=2)
+    parser.add_argument('--grid', help='interval counts; default 32^3 TGV or CP6 plate')
+    parser.add_argument('--scheme', choices=('643e','643c'), default='643c')
+    parser.add_argument('--filter', choices=('f','t'), default='t')
+    parser.add_argument('--deltat', type=float)
+    parser.add_argument('--phase-timing', action='store_true')
+    parser.add_argument('--preflight', action='store_true', help='read-only q admissibility and resource sampling')
+    parser.add_argument('--stage-state-check', action='store_true', help='test-only profile stage localization')
+    parser.add_argument('--filter-window', help='test-only NP1 periodic-z step,stage,i,j,k capture')
+    parser.add_argument('--crashfix', action='store_true', help='enable existing runtime lcracon recovery')
     parser.add_argument('--workspace', choices=('scalar','full'), default='full')
     parser.add_argument('--compact-sync', choices=('explicit','dependency'), default='explicit')
     parser.add_argument('--batch-rhs', type=int, default=65535)
     parser.add_argument('--transport', choices=('pinned','device-aware'), default='pinned')
     parser.add_argument('--nsys', action='store_true')
     args = parser.parse_args()
+    if not 0<=args.warmup<args.steps:
+        parser.error('require 0 <= warmup < steps')
+    if args.crashfix and args.case!='plate':
+        parser.error('--crashfix is scoped to the CP9 profile plate')
     case=args.out.resolve()
     exe=args.exe.resolve(strict=True)
+    grid=args.grid or ('32,32,32' if args.case=='tgv' else ','.join(map(str,GRID)))
+    dt=args.deltat if args.deltat is not None else (1e-3 if args.case=='tgv' else .005)
     if args.case=='tgv':
         subprocess.run([sys.executable,str(ROOT/'tests/gpu_validation/prepare_tgv_case.py'),
             '--src-case',str(ROOT/'examples/Taylor_Green_Vortex'),'--dst-case',str(case),
-            '--grid','32,32,32','--use-gpu','t','--scheme','643c','--lfilter','t',
-            '--diffterm','t','--deltat','1.d-3','--maxstep',str(args.steps-1)],check=True)
+            '--grid',grid,'--use-gpu','t','--scheme',args.scheme,'--lfilter',args.filter,
+            '--diffterm','t','--deltat',str(dt),'--maxstep',str(args.steps-1)],check=True)
         primary='datin/input.tgv'
     else:
-        prepare(args.source,case,'gpu',GRID)
-        configure(case,'nscbc','643c',False,'t')
+        prepare(args.source,case,'gpu',tuple(map(int,grid.split(','))))
+        configure(case,'nscbc',args.scheme,False,args.filter,args.crashfix)
         controller=case/'datin/controller'
         lines=controller.read_text().splitlines()
         index=next(i for i,line in enumerate(lines) if '# maxstep,feqchkpt' in line)+1
         fields=lines[index].split(',');fields[0]=str(args.steps-1)
         lines[index]=','.join(fields)
+        from prepare_m12_local_case import replace_value
+        replace_value(lines,'deltat',str(dt))
         controller.write_text('\n'.join(lines)+'\n')
+        metadata=json.loads((case/'fixture.json').read_text())
+        metadata.update(deltat=dt,crashfix=args.crashfix)
+        (case/'fixture.json').write_text(json.dumps(metadata,indent=2)+'\n')
         primary='datin/input.dat'
     (case/'datin/input.output').write_text(
         '&output\n host_budget_bytes=67108864\n/\n&checkpoint\n/\n&volume\n/\n&slices\n/\n')
@@ -64,6 +123,14 @@ def main():
         OMPI_MCA_coll='^hcoll,ucc,cuda',OMPI_MCA_opal_cuda_support='0')
     if args.case=='plate':
         env['ASTR_WALL_BLOWING_MODE']='legacy_random'
+    if args.phase_timing:
+        env['ASTR_GPU_PHASE_TIMING']='1'
+    if args.preflight:
+        env['ASTR_VALIDATION_RK_STATE']='1'
+    if args.stage_state_check:
+        env['ASTR_VALIDATION_PROFILE_STAGE_STATE']='1'
+    if args.filter_window:
+        env['ASTR_VALIDATION_PROFILE_FILTER_WINDOW']=args.filter_window
     if args.transport=='device-aware':
         env.update(OMPI_MCA_pml='ucx',UCX_TLS='self,sm,cuda_copy',UCX_MEMTYPE_CACHE='n',
             UCX_CUDA_COPY_ENABLE_FABRIC='no',UCX_CUDA_COPY_DMABUF='no',UCX_CUDA_IPC_ENABLE_MNNVL='no',
@@ -77,18 +144,38 @@ def main():
     command += [str(exe),'run',primary]
     (case/'launch.json').write_text(json.dumps(dict(command=command,environment={k:v for k,v in env.items()
         if k.startswith(('ASTR_','OMPI_MCA_','UCX_'))}),indent=2)+'\n')
+    started=time.monotonic()
     with (case/'run.log').open('w') as stream:
-        subprocess.run(command,cwd=case,env=env,stdout=stream,stderr=subprocess.STDOUT,check=True)
+        if args.preflight:
+            from insitu_resource_monitor import run_monitored
+            run_monitored(command,case,env,stream,case/'resources.json',timeout_seconds=3600)
+        else:
+            subprocess.run(command,cwd=case,env=env,stdout=stream,stderr=subprocess.STDOUT,check=True)
+    elapsed=time.monotonic()-started
     text=(case/'run.log').read_text()
-    rows=re.findall(r'ASTR_GPU_RANK_RK_TIMING\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)',text)
-    records={(int(rank),int(step)):float(total) for rank,step,prepare_time,rk,total in rows}
-    if len(records)!=ranks*args.steps:
-        raise ValueError('missing rank/complete-step timing records')
-    sums=[sum(records[rank,step] for step in range(args.warmup,args.steps)) for rank in range(ranks)]
+    sums,cost=window_times(text,ranks,args.steps,args.warmup)
+    cfl=[float(v) for v in re.findall(r'current CFL:\s+(\S+)',text)]
+    if not cfl or not np.isfinite(cfl).all() or max(cfl)>.5:
+        raise ValueError(f'CFL preflight gate failed: {cfl}')
+    if args.preflight:
+        checks=re.findall(r'ASTR_VALIDATION_RK_STATE_PASS\s+(\d+)\s+(\d+)',text)
+        if {(int(r),int(s)) for r,s in checks}!={(r,s) for r in range(ranks) for s in range(args.steps)}:
+            raise ValueError('missing read-only complete-state admission records')
     report=dict(status='pass',case=args.case,topology=args.topology,steps=args.steps,warmup=args.warmup,
         compact_sync=args.compact_sync,batch_rhs=args.batch_rhs,workspace=args.workspace,transport=args.transport,
-        profiled=args.nsys,rank_rk_window_seconds=sums,rk_seconds_per_step=max(sums)/(args.steps-args.warmup),
+        grid_intervals=list(map(int,grid.split(','))),scheme=args.scheme,filter=args.filter,deltat=dt,
+        phase_timing=args.phase_timing,preflight=args.preflight,stage_state_check=args.stage_state_check,
+        crashfix=args.crashfix,
+        cfl=cfl,launch_elapsed_seconds=elapsed,
+        packed_device_bytes={name:int(value) for name,value in re.findall(
+            r'COMPACT_(DERIVATIVE|FILTER)_PACKED_DEVICE_BYTES=(\d+)',text)},
+        profiled=args.nsys,rank_rk_window_seconds=sums,rk_seconds_per_step=cost,
         executable_sha256=hashlib.file_digest(exe.open('rb'),'sha256').hexdigest())
+    repairs=re.findall(r'^ASTR_GPU_CRASHFIX\s+(\d+)\s+(\d+)\s+(\d+)\s+',text,re.MULTILINE)
+    report['crashfix_repaired_node_visits']=sum(int(count) for step,stage,count in repairs)
+    report['crashfix_nonzero_calls']=sum(int(count)>0 for step,stage,count in repairs)
+    if args.phase_timing:
+        report['phases']=phase_times(text,ranks,args.steps,args.warmup,args.filter)
     (case/'summary.json').write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report),flush=True)
 

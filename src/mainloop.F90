@@ -618,7 +618,15 @@ module mainloop
 #endif
         call filterq(timerept=ltimrpt)
         ! Derivatives and fluxes must use the filtered state at every physical node.
-        if(refresh_filtered_primitives) call updatefvar
+        if(refresh_filtered_primitives) then
+          call updatefvar
+          if(lcracon) then
+            call qswap(timerept=ltimrpt)
+            if(lio) write(*,'(A,2(1X,I0))') 'ASTR_FILTER_CRASHFIX',nstep,rkstep
+            call crashfix(ctime(16))
+            call qswap(timerept=ltimrpt)
+          endif
+        endif
 #ifdef ASTR_AIR5_CHEMISTRY
         if(lcomb) then
           call air5_compensation_filter_state(.false.)

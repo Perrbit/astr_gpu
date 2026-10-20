@@ -16,6 +16,91 @@ module mp_positivity_gpu
   integer,device :: failure_point_d(3)=0
   real(8),device :: failure_state_d(5)=0.d0
 contains
+#ifdef ASTR_BUILD_TESTING
+  attributes(global) subroutine profile_filter_window_kernel(sample,im,jm,km,ci,cj,ck)
+    use commarray_gpu, only: q_d
+    implicit none
+    integer,value :: im,jm,km,ci,cj,ck
+    real(8),device,intent(out) :: sample(11,11,11,5)
+    integer :: id,a,b,c,m,i,j,k
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=11**3*5) return
+    a=mod(id,11)+1; b=mod(id/11,11)+1; c=mod(id/121,11)+1; m=id/1331+1
+    i=max(0,min(im,ci+a-6)); j=max(0,min(jm,cj+b-6)); k=modulo(ck+c-6,km)
+    sample(a,b,c,m)=q_d(i,j,k,m)
+  end subroutine profile_filter_window_kernel
+
+  subroutine capture_profile_filter_window_gpu(stage,after_filter)
+    use commvar, only: im,jm,km,nstep,lkhomo
+    use commarray_gpu, only: q_d
+    use parallel, only: mpisize
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    integer,intent(in) :: stage
+    logical,intent(in) :: after_filter
+    integer,save :: selected(5)=0
+    logical,save :: configured_window=.false.,enabled_window=.false.
+    character(128) :: value
+    integer :: status,unit
+    real(8),device,allocatable :: sample_d(:,:,:,:)
+    real(8) :: sample_h(11,11,11,5),point_h(5)
+    if(.not.configured_window) then
+      value=''
+      call get_environment_variable('ASTR_VALIDATION_PROFILE_FILTER_WINDOW',value,status=status)
+      enabled_window=status==0.and.len_trim(value)>0
+      if(enabled_window) then
+        read(value,*,iostat=status) selected
+        if(status/=0) error stop 'profile filter window requires step,stage,i,j,k'
+        if(mpisize/=1.or..not.lkhomo) error stop 'profile window requires NP1 periodic z'
+        if(any(selected(3:5)<0).or.any(selected(3:5)>[im,jm,km-1])) &
+          error stop 'profile filter window point outside unique physical nodes'
+      endif
+      configured_window=.true.
+    endif
+    if(.not.enabled_window) return
+    if(nstep/=selected(1).or.stage/=selected(2)) return
+    if(after_filter) then
+      point_h=q_d(selected(3),selected(4),selected(5),1:5)
+      open(newunit=unit,file='diagnostics/profile_filter_window.bin',access='stream', &
+        form='unformatted',status='old',position='append')
+      write(unit) point_h
+    else
+      allocate(sample_d(11,11,11,5))
+      call profile_filter_window_kernel<<<(11**3*5+255)/256,256>>>(sample_d,im,jm,km, &
+        selected(3),selected(4),selected(5))
+      call sync_after_kernel('profile_filter_window_kernel',.true.)
+      sample_h=sample_d
+      deallocate(sample_d)
+      open(newunit=unit,file='diagnostics/profile_filter_window.bin',access='stream', &
+        form='unformatted',status='new')
+      write(unit) im,jm,km,nstep,stage,selected(3:5)
+      write(unit) sample_h
+    endif
+    close(unit)
+  end subroutine capture_profile_filter_window_gpu
+
+  subroutine check_profile_validation_state_gpu(label,stage)
+    use commvar, only: nstep
+    implicit none
+    character(*),intent(in) :: label
+    integer,intent(in) :: stage
+    logical,save :: configured_check=.false.,enabled_check=.false.
+    character(16) :: value
+    integer :: status
+    if(.not.configured_check) then
+      value=''
+      call get_environment_variable('ASTR_VALIDATION_PROFILE_STAGE_STATE',value,status=status)
+      enabled_check=status==0.and.trim(value)=='1'
+      configured_check=.true.
+    endif
+    if(.not.enabled_check) return
+    if(mp_inputs_need_repair_gpu()) then
+      print *, 'ASTR_PROFILE_STAGE_STATE_FAILURE step/stage=',nstep,stage,' phase=',label
+      call check_mp_failure(label)
+    endif
+  end subroutine check_profile_validation_state_gpu
+#endif
+
   subroutine configure_mp_positivity_gpu()
     use mpi
     use commvar, only: numq,num_species,num_modequ,lcomb,lfilter, &

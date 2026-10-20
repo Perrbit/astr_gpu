@@ -5,6 +5,7 @@ module gpu_runtime
   logical,save :: rk_timing_configured = .false.
   logical,save :: rk_timing_enabled = .false.
   logical,save :: rank_rk_timing_enabled = .false.
+  logical,save :: benchmark_state_check = .false.
   logical,save :: complete_step_timing_configured = .false.
   logical,save :: complete_step_timing_enabled = .false.
   real(8),save :: rk_prepare_start = 0.d0
@@ -83,6 +84,11 @@ contains
         rk_timing_enabled=.true.
       end select
     endif
+#ifdef ASTR_BUILD_TESTING
+    value=''
+    call get_environment_variable('ASTR_VALIDATION_RK_STATE',value,status=status)
+    benchmark_state_check=status==0.and.trim(value)=='1'
+#endif
     rk_timing_configured=.true.
   end subroutine configure_rk_timing
 
@@ -153,6 +159,7 @@ contains
     use gpu_check, only: configure_gpu_sync_mode,gpu_selective_sync_enabled, &
                          gpu_dependency_sync_enabled
     use gpu_phase_timing, only: configure_gpu_phase_timing
+    use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported
     use parallel, only: lio
     use conservative_boundary_runtime, only: conservative_boundary
     use conservative_boundary_stage_gpu, only: initialize_conservative_stage_gpu
@@ -170,6 +177,7 @@ contains
     call configure_gpu_sync_mode(allow_selective)
     allow_phase_timing=allow_selective .and. gpu_periodic_boundary_case() .and. &
                        lfilter .and. diffterm
+    allow_phase_timing=allow_phase_timing.or.gpu_profile_mp_ld_flatplate_supported()
     call configure_gpu_phase_timing(allow_phase_timing, &
          .not.(gpu_selective_sync_enabled() .or. gpu_dependency_sync_enabled()))
     if(lio) then
@@ -351,6 +359,9 @@ contains
     use commvar, only: nstep
     use gpu_check, only: sync_gpu_boundary
     use parallel, only: lio,ptime,mpirank
+#ifdef ASTR_BUILD_TESTING
+    use mp_positivity_gpu, only: mp_inputs_need_repair_gpu,check_mp_failure
+#endif
     implicit none
     logical,intent(in),optional :: first_stage_prepared
     logical,intent(in),optional :: copy_back
@@ -369,6 +380,13 @@ contains
         'ASTR_GPU_RANK_RK_TIMING',mpirank,nstep,rk_prepare_seconds, &
         integration_seconds,total_seconds
     endif
+#ifdef ASTR_BUILD_TESTING
+    ! Read-only complete-state admission, outside the measured RK interval.
+    if(benchmark_state_check) then
+      if(mp_inputs_need_repair_gpu()) call check_mp_failure('benchmark complete RK')
+      write(*,'(A,2(1X,I0))') 'ASTR_VALIDATION_RK_STATE_PASS',mpirank,nstep
+    endif
+#endif
     prepared_halo_ready = .false.
   end subroutine gpu_time_integration_rk
 

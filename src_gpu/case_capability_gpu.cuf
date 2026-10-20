@@ -226,14 +226,17 @@ contains
     boundary_supported=all(bctype==[11,21,41,50,1,1])
     if(all(bctype==[11,22,41,52,1,1])) then
       boundary_supported=nscbc_farfield_policy_id()==NSCBC_FARFIELD_POLICY_COMPATIBILITY
-      if(difschm=='643c') boundary_supported=nscbc_farfield_incoming_only_enabled().and. &
+      if(difschm=='643c'.or.nscbc_farfield_incoming_only_enabled()) &
+        boundary_supported=nscbc_farfield_incoming_only_enabled().and. &
         .not.nscbc_farfield_sbli_shock_enabled()
     endif
 
     gpu_profile_mp_ld_flatplate_supported = trim(flowtype)=='bl'.and.ndims==3.and. &
       numq==5.and.num_species==0.and.num_modequ==0.and.trim(turbmode)=='none'.and. &
       trim(conschm)=='743e'.and.(difschm=='643e'.or.difschm=='643c').and.recon_schem==5.and.lchardecomp.and. &
-      (.not.lfilter.or.difschm=='643c').and.diffterm.and.nondimen.and..not.lihomo.and..not.ljhomo.and.lkhomo.and. &
+      (.not.lfilter.or.difschm=='643c'.or. &
+       (all(bctype==[11,22,41,52,1,1]).and.nscbc_farfield_incoming_only_enabled())).and. &
+      diffterm.and.nondimen.and..not.lihomo.and..not.ljhomo.and.lkhomo.and. &
       trim(turbinf)=='prof'.and.boundary_supported.and. &
       trim(spg_def)=='layer'.and. &
       all([spg_i0,spg_j0,spg_k0,spg_km]==0).and. &

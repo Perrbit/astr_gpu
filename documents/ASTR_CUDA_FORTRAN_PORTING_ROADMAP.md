@@ -1,5 +1,12 @@
 # ASTR CUDA Fortran Porting Roadmap Implementation Plan
 
+Current-scope note (2026-10-20): this document retains the original explicit,
+single-rank first-stage contract. Compact central derivatives and filtering were
+subsequently reopened in the separately approved
+[compact implementation plan](ASTR_GPU_COMPACT_SCHEME_PLAN.md). That bounded
+TGV/profile-plate work does not change this historical first-stage definition
+or imply arbitrary-case compact support.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Move ASTR from CPU Fortran/MPI toward CUDA Fortran by first proving a numerically equivalent single-rank Taylor-Green Vortex GPU path.

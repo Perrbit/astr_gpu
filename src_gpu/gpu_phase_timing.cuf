@@ -91,7 +91,7 @@ contains
 
     enabled=requested==1
     if(enabled .and. (.not.allow_tgv .or. .not.allow_explicit)) then
-      print *, 'ASTR_GPU_PHASE_TIMING requires periodic filtered viscous 3-D TGV with explicit synchronization'
+      print *, 'ASTR_GPU_PHASE_TIMING requires admitted TGV/profile plate with explicit outer synchronization'
       call mpi_abort(MPI_COMM_WORLD,1,ignored)
     endif
     configured=.true.

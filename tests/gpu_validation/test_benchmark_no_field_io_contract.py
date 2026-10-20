@@ -50,7 +50,7 @@ def test_policy_is_configured_after_mpi_and_before_initialization() -> None:
     assert positions[configure] < positions["callflowinit"]
 
 
-def test_benchmark_query_has_exactly_two_production_call_sites() -> None:
+def test_benchmark_policy_controls_startup_and_new_output_products() -> None:
     query = re.compile(r"\bbenchmark_field_io_disabled\s*\(\s*\)", re.IGNORECASE)
     declaration = re.compile(
         r"\bfunction\s+benchmark_field_io_disabled\s*\(\s*\)", re.IGNORECASE
@@ -66,15 +66,21 @@ def test_benchmark_query_has_exactly_two_production_call_sites() -> None:
     assert sites == {
         "src/gridgeneration.F90": 1,
         "src/initialisation.F90": 1,
+        "src/output_runtime.F90": 1,
     }
     assert (
         "if(.not.benchmark_field_io_disabled())callwritegrid(trim(gridfile))"
         in _compact(GRID)
     )
     assert (
-        "if(.not.benchmark_field_io_disabled())callwriteflfed(timerept=.true.)"
+        "if(.not.benchmark_field_io_disabled().and..not.new_output_enabled())"
+        "callwriteflfed(timerept=.true.)"
         in _compact(INIT)
     )
+    output = _compact(_source(SRC / "output_runtime.F90"))
+    policy = output.split("if(benchmark_field_io_disabled())then", 1)[1].split("endif", 1)[0]
+    for product in ("checkpoint", "volume", "slices"):
+        assert f"options%{product}%enabled=.false." in policy
 
 
 def test_read_grid_branch_is_not_guarded_by_benchmark_policy() -> None:
@@ -86,7 +92,7 @@ def test_read_grid_branch_is_not_guarded_by_benchmark_policy() -> None:
 
     assert read_branch is not None
     body = _compact(read_branch.group("body"))
-    assert "callreadgrid(trim(gridfile))" in body
+    assert "callreadgrid(trim(output_resource_path('grid.h5',trim(gridfile))))" in body
     assert "benchmark_field_io_disabled" not in body
 
 
@@ -141,13 +147,14 @@ def test_phase_timing_covers_required_p4_0_intervals() -> None:
 
 
 def test_phase_timing_admission_requires_complete_explicit_tgv_schema() -> None:
-    source = _compact(GPU_RUNTIME)
+    source = _compact(GPU_RUNTIME).split("subroutinegpu_after_flowinit()", 1)[1].split("endsubroutine", 1)[0]
     assert "allow_selective=trim(flowtype)=='tgv'.and.ndims==3" in source
     assert "lihomo.and.ljhomo.and.lkhomo" in source
     assert (
         "allow_phase_timing=allow_selective.and.gpu_periodic_boundary_case()"
         ".and.lfilter.and.diffterm" in source
     )
+    assert "allow_phase_timing=allow_phase_timing.or.gpu_profile_mp_ld_flatplate_supported()" in source
     assert (
         "callconfigure_gpu_phase_timing"
         "(allow_phase_timing,.not.(gpu_selective_sync_enabled().or."
@@ -157,10 +164,11 @@ def test_phase_timing_admission_requires_complete_explicit_tgv_schema() -> None:
 
 def test_phase_timing_policy_is_collective_and_stack_checks_are_bounds_safe() -> None:
     source = _compact(GPU_PHASE)
-    assert "switch_choice('astr_gpu_phase_timing')" in source
-    assert source.count("callmpi_allreduce(requested") == 2
-    assert "if(lowest<0.or.lowest/=highest)then" in source
-    assert "if(enabled.and.(.not.allow_tgv.or..not.allow_explicit))then" in source
+    configure = source.split("subroutineconfigure_gpu_phase_timing(", 1)[1].split("endsubroutine", 1)[0]
+    assert "switch_choice('astr_gpu_phase_timing')" in configure
+    assert configure.count("callmpi_allreduce(requested") == 2
+    assert "if(lowest<0.or.lowest/=highest)then" in configure
+    assert "if(enabled.and.(.not.allow_tgv.or..not.allow_explicit))then" in configure
     assert "if(depth>=max_depth)then" in source
     assert "if(depth<1)then" in source
     assert "if(trim(labels(depth))/=trim(label))then" in source

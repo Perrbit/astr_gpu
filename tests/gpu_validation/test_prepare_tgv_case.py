@@ -13,6 +13,16 @@ import prepare_tgv_case
 
 
 class PrepareTgvCaseTests(unittest.TestCase):
+    def test_default_validation_output_is_explicitly_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "input.output"
+            prepare_tgv_case.write_validation_output_config(path)
+            text = path.read_text(encoding="ascii")
+            self.assertIn("&output", text)
+            self.assertIn("directory='outdat/new'", text)
+            self.assertEqual(text.count("enabled=f"), 3)
+            self.assertNotIn("enabled=t", text)
+
     def test_set_restart_updates_start_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             input_file = Path(tmp) / "input.tgv"

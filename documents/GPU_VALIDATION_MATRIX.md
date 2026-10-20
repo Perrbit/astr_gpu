@@ -1,5 +1,100 @@
 # GPU Validation Matrix
 
+## 2026-10-20 Compact CP9/CP10 Closeout
+
+V7/V8 pass within the approved local scope. The frozen TGV matrix retains its
+24 formal runs; the plate now has 24 complete interleaved formal runs with
+the same executable and lcracon=t for all eight configurations. Each uses
+10 warmup + 30 measured complete RK steps, with maximum rank-window sum.
+Plate dt=.005, 450x130x96 intervals, fixed MP7-LD, NSCBC incoming_only,
+zero blowing, no intermediate field/checkpoint/render output or profiling.
+
+| Plate path | Filter | NP1 median ms/RK | NP2 median ms/RK | E2 |
+| --- | --- | ---: | ---: | ---: |
+| 643e | off | 882.046 | 555.517 | 79.39% |
+| 643e | explicit | 938.395 | 608.526 | 77.10% |
+| 643c | off | 1487.591 | 847.937 | 87.72% |
+| 643c | compact | 1672.230 | 963.807 | 86.75% |
+
+Each explicit filtered run has three nonzero crashfix calls/291 stored-node
+repair visits; other configurations record zero. Recovery is not conservation,
+filter positivity or physical acceptance. Four separate filtered phase runs,
+eight new preflights, and eight independent TGV/plate setup/transport runs
+remain separate from formal RK timing. Transport counters include loopback,
+not physical network traffic. TGV transparency adds 12 bitwise q snapshots.
+
+Root CPU-only/CUDA builds and 55 targeted checks pass: 31 tools/input/contract,
+17 filtered boundary refresh cases, four explicit TGV CPU/GPU same-phase
+state/statistics cases, two explicit exact continuations, and one compact
+execution-choice continuation. Maximum field difference in these regressions
+is 4.547473508864641e-13 against 2e-10; exact continuations remain bitwise.
+Missing input.output is repaired in fixture generators without legacy fallback.
+LDC uses the original moving-lid CPU UDF, not the empty M12 boundary UDF.
+No general CURVE/AIR5 compact, compact-plate restart, or A800 claim is added.
+
+Evidence: testout/compact_cp9_20261020_crashfix/ and compact results sections
+24-25. Earlier failed and crashfix-off results below remain historical and
+are not mixed with the new plate table.
+
+## 2026-10-20 Compact CP9 Historical Partial Performance Gate
+
+256-cubed TGV: eight 3-step positivity/CFL/resource preflights, 24 unprofiled
+timing runs (10 warmup + 30 measured steps, three interleaved repetitions),
+and four independent 12-step phase runs complete. FP64, NP=1/2 x-slab,
+outer explicit sync, compact-private dependency, full filter, pinned field halo,
+device-aware compact endpoints with UCX self,sm,cuda_copy (no IPC).
+TGV dt=2.5e-4; maximum recorded CFL=0.3262201.
+RK medians without/with filter: explicit NP1 381.020/460.986 ms,
+compact NP1 2329.140/2775.877 ms; explicit NP2 457.098/574.087 ms,
+compact NP2 1453.943/1759.352 ms. These compare different operators' costs,
+not same-operator speedups or A800 performance. Raw ranges and phase costs:
+documents/ASTR_GPU_COMPACT_SCHEME_RESULTS.md section 23; evidence root
+testout/compact_cp9_20261019/. Instrumentation off/on preserves 12 small-grid
+physical-q snapshots bitwise.
+
+The first 743e/643e incoming_only plate extension failed the NP1 unfiltered
+CPU/GPU gate (scaled post-update error 2.7825461809667366e-5 vs 2e-10).
+Following explicit user approval, the existing CPU bc22/corner corrections
+were extended only to the selected five-variable explicit profile case.
+GPU boundary preparation and pre_rhs phase were unified with the compact path.
+Four corrected explicit 10-step gates (NP1/2, filter off/on) pass, maximum
+scaled error 3.2333382150419975e-15. Compact NP2 filtered regression passes
+at 4.1485958810228614e-14; saved physical states remain finite and positive.
+All eight 450x130x96 medium-grid preflights pass (CFL <= 0.0462834).
+The unfiltered plate's 12 formal runs and four separate phase diagnostics finish:
+643e NP1/2 medians 862.933/546.521 ms; 643c 1468.708/846.683 ms.
+Two-GPU speedups/efficiencies are 1.579/78.95% and 1.735/86.73%.
+Old failed boundary evidence remains under admission/, corrected boundary
+evidence under admission_corrected/; separate frozen binaries are recorded.
+
+At this earlier stopping point CP9 was NOT complete. The filtered explicit NP1 medium case fails at step31,
+RK stage2, immediately after global filtering. A 53312-byte local template is
+replayed with the native CPU spafilter10exp: positive input internal energy
+minimum 1.8627873478249985e-4 becomes -1.6793346937688837e-4, matching GPU
+to 1.3877787807814457e-17. This is loss of filter admissibility, not a GPU
+porting discrepancy or a passed CFD gate. No remaining filtered timing/phase
+matrix was run or accepted at that historical stopping point. No coefficient/dt/grid
+changes, clipping, or shortened timing acceptance occurred.
+
+The user subsequently approved reuse of the existing optional crashfix rather
+than a new positivity limiter. CPU/GPU refresh filtered state and halos, invoke
+the existing neighbor-average recovery under lcracon=t, then refresh repaired
+halos/caches before boundary and RHS consumers. The GPU recovery stays on device.
+The compact profile-plate route now admits this runtime option; AIR5 and compact
+TGV crashfix are not newly admitted. Four 450x130x96, dt=.005, 40-step recovery
+checks pass (explicit/compact, NP1/2). Explicit NP1/2 each record three nonzero
+calls and 291 node-repair visits; compact NP1/2 record zero. Counts include
+stored replicas, not unique global cells. This is recovery, not conservation,
+filter positivity, or physical acceptance. Small filtered CPU/GPU regressions
+pass (explicit NP1, compact NP2), maximum scaled error 4.1485958810228614e-14;
+the small cases do not exercise an actual repair. Root CPU/CUDA builds and
+15 scoped tool/structural tests pass. Fourteen legacy runtime tests stop at
+initialization because their fixtures lack required input.output; not passed.
+Evidence: testout/compact_cp9_20261019/recovery/ and results section 23.11.
+These resource/state-instrumented one-off timings do not fill CP9's formal
+three-round table. Future plate filter-on/off timings must share the same
+crashfix mode and executable; historical crashfix-off data are not combined.
+
 ## 2026-10-19 Compact CP8 Execution Variants
 
 V6 passes: 28 execution/restart runtime tests and 39 affected tool tests,

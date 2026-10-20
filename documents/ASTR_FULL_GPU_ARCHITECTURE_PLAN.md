@@ -1,5 +1,12 @@
 # ASTR Full-GPU Architecture Plan
 
+2026-10-20 scope update: a separately approved compact track now covers
+non-reacting periodic TGV and separable Cartesian profile plates, using globally
+coupled two-level PCR for central derivatives and filtering. CP0-CP10 have bounded
+local evidence; CP9 timing and CP10 closeout are recorded in
+[the compact plan](ASTR_GPU_COMPACT_SCHEME_PLAN.md). The historical phase notes
+below do not reopen compact upwind, general CURVE or AIR5 compact paths.
+
 ## 1. Purpose
 
 This document defines the scalable architecture plan for migrating ASTR from the current CUDA Fortran Taylor-Green Vortex baseline toward a full-GPU ASTR architecture.
@@ -950,7 +957,7 @@ Tasks:
 - Define shock-region filtering or added-dissipation policy separately from the existing explicit central filter.
 - Add inlet/outlet/sponge/high-speed wall boundary support required by the selected validation case.
 - Select a laminar or DNS-like shock/SBLI validation case with `turbmode='none'`.
-- Keep compact finite-difference and compact filter solvers out of scope unless a separate decision reopens them.
+- Keep compact solvers outside this shock-format phase; their separately approved TGV/profile-plate scope is governed by the compact plan.
 
 Acceptance:
 
@@ -1219,7 +1226,7 @@ The next architecture phase will not:
 - move all directories into `src_backend_cuda/` immediately;
 - require CUDA-aware MPI as the only transport;
 - port HDF5/checkpoint writing to GPU;
-- reopen compact finite differences or compact filters;
+- expand compact differences/filters beyond the separately approved TGV/profile-plate track;
 - add more artificial shock slices before the current OpenSBLI physical goal is closed;
 - broaden the fixed air5 chemistry scope to combustion, ions, or electrons;
 - start with immersed boundary;

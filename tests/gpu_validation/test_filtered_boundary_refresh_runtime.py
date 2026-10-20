@@ -10,13 +10,33 @@ import h5py
 import numpy as np
 import pytest
 
-from compare_flowfield_h5 import read_flowfield, reconstruct_q
+from compare_q_validation_snapshots import read_q_snapshot, comparison_values
+from prepare_tgv_case import next_data_line
 from run_output_restart_validation import run_case
 
 ROOT = Path(__file__).resolve().parents[2]
 CPU = Path(os.environ.get("ASTR_OUTPUT_CPU_EXE", ROOT / "build_release_restart_cpu/bin/astr"))
 GPU = Path(os.environ.get("ASTR_OUTPUT_RUNTIME_EXE", ROOT / "build_gpu_probe/bin/astr"))
 ATOL = 2e-10
+
+
+def snapshot_fields(case, rank, primary):
+    path = case / f"datin/state.post_update.step00000003.rk03.rank{rank:08d}.bin"
+    snapshot = read_q_snapshot(path)
+    q = comparison_values(snapshot, True).reshape((-1, 5), order="F")
+    lines = (case / "datin" / primary).read_text().splitlines()
+    marker = next(i for i, line in enumerate(lines) if "ref_t,reynolds,mach" in line.replace(" ", ""))
+    values = lines[next_data_line(lines, marker)].lower().replace("d", "e").split(",")
+    mach = float(values[2])
+    gamma = 1.4
+    rho = q[:, 0]
+    assert np.min(rho) > 0
+    velocity = q[:, 1:4] / rho[:, None]
+    pressure = (gamma - 1) * (q[:, 4] - .5 * rho * np.sum(velocity**2, axis=1))
+    assert np.min(pressure) > 0
+    return dict(ro=rho, u1=velocity[:, 0], u2=velocity[:, 1], u3=velocity[:, 2],
+                p=pressure, t=gamma * mach**2 * pressure / rho,
+                **{f"q{i+1}": q[:, i] for i in range(5)})
 
 
 def test_explicit_filter_refresh_is_boundary_independent():
@@ -59,14 +79,15 @@ def test_physical_boundary_filtered_state(name, driver, workspace, topology, ext
     env.update(CPU_EXE=str(CPU), GPU_EXE=str(GPU), OUT_DIR=str(tmp_path),
                GRID="16,16,16", MAXSTEP="3", FEQCHKPT="3", DELTAT="1.d-4",
                LFILTER="t", DIFFTERM="t", SCHEME="643e", NP="2", TOPOLOGY=topology,
-               COMPARE_STATS="t", COMPARE_FIELD="t", STATS_ATOL=str(ATOL), STATS_RTOL="0",
+               COMPARE_STATS="t", COMPARE_FIELD="f", STATS_ATOL=str(ATOL), STATS_RTOL="0",
                FIELD_ATOL=str(ATOL), FIELD_RTOL="0", FILTER_WORKSPACE=workspace,
                GPU_SYNC_MODE="explicit", GPU_HALO_TRANSPORT="pinned",
                OMPI_MCA_coll_hcoll_enable="0",
                ASTR_GPU_FILTER_WORKSPACE=workspace, ASTR_GPU_SYNC_MODE="explicit",
                ASTR_GPU_HALO_TRANSPORT="pinned", ASTR_GPU_PRECISION_MODE="fp64",
-               ASTR_VALIDATION_RK_SNAPSHOT="outdat/rk_complete_snapshot.h5")
+               ASTR_VALIDATION_RHS_PREFIX="datin/state", ASTR_VALIDATION_RHS_STEP="3")
     env.update(extra)
+    env["COMPARE_FIELD"] = "f"
     if driver == "run_curvilinear_tgv_compare.sh":
         # The generated 16-cubed grid replaces grid.h5; do not copy the unused
         # large example grid into either bounded test directory.
@@ -80,18 +101,17 @@ def test_physical_boundary_filtered_state(name, driver, workspace, topology, ext
     with (tmp_path / "driver.log").open("wb") as log:
         subprocess.run(["bash", str(ROOT / "tests/gpu_validation" / driver)], cwd=ROOT,
                        env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=180)
-    # RTI's legacy driver compares a different CPU output phase; use the common
-    # complete-RK snapshot explicitly, as the other drivers already do.
-    left = read_flowfield(tmp_path / "cpu/outdat/rk_complete_snapshot.h5")
-    right = read_flowfield(tmp_path / "gpu")
-    left.update(reconstruct_q(left, 2.5))
-    right.update(reconstruct_q(right, 2.5))
+    primary = {"ldc": "input.ldcav2d", "rti": "input.rti"}.get(name, "input.tgv")
     errors = {}
-    for field in left:
-        assert left[field].shape == right[field].shape
-        assert np.isfinite(left[field]).all() and np.isfinite(right[field]).all()
-        errors[field] = float(np.max(np.abs(left[field] - right[field])))
-        assert errors[field] <= ATOL, (name, field, errors[field])
+    for rank in range(2):
+        left = snapshot_fields(tmp_path / "cpu", rank, primary)
+        right = snapshot_fields(tmp_path / "gpu", rank, primary)
+        for field in left:
+            assert left[field].shape == right[field].shape
+            assert np.isfinite(left[field]).all() and np.isfinite(right[field]).all()
+            error = float(np.max(np.abs(left[field] - right[field])))
+            errors[field] = max(errors.get(field, 0.), error)
+            assert error <= ATOL, (name, rank, field, error)
     record_property("field_errors", errors)
     record_property("filter_workspace", workspace)
     total = sum(path.stat().st_size for path in tmp_path.rglob("*") if path.is_file())
@@ -159,7 +179,5 @@ def test_nscbc52_global_filter_rejected(tmp_path):
     assert result.returncode != 0
     assert "GPU S1 flatplate requires an explicit 3D S1-A capability contract" in (
         tmp_path / "gpu.log").read_text()
-    with h5py.File(tmp_path / "outdat/flowfield.h5") as initial:
-        assert np.array_equal(initial["nstep"][:], [0])
-        assert np.array_equal(initial["time"][:], [0.0])
+    assert not list((tmp_path / "outdat").rglob("FRAME"))
     assert sum(path.stat().st_size for path in tmp_path.rglob("*") if path.is_file()) < 64*1024**2

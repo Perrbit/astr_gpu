@@ -1,5 +1,61 @@
 # GPU Validation
 
+## Compact CP9/CP10 Closeout
+
+`run_compact_performance.py` runs the approved local explicit/compact matrix.
+For the profile plate, pass `--crashfix` to every stage so filter-off and
+filter-on both use the original controller's `lcracon=t` recovery mode:
+
+```bash
+python3 tests/gpu_validation/run_compact_performance.py --exe "$GPU_EXE" --out "$OUT_DIR" --case plate --mode preflight --crashfix
+python3 tests/gpu_validation/run_compact_performance.py --exe "$GPU_EXE" --out "$OUT_DIR" --case plate --mode timing --crashfix
+python3 tests/gpu_validation/run_compact_performance.py --exe "$GPU_EXE" --out "$OUT_DIR" --case plate --mode phases --crashfix
+```
+
+The eight configurations use 450x130x96 intervals, dt=.005, FP64, NP1/NP2
+x-slab, full filter storage, pinned field halos and device-aware compact
+endpoints. Each formal configuration has three interleaved 40-step runs,
+excluding the first ten steps. The summarizer requires a complete matrix
+with matching executable, crashfix mode and runtime settings. It never mixes
+resource/state-instrumented preflights into formal samples. TGV uses its
+separate 256-cubed, dt=2.5e-4, crashfix-off contract; frozen unchanged TGV
+evidence may be reused with its own recorded executable identity.
+
+`run_compact_initialization.py --preflight-root "$OUT_DIR/preflight/plate"
+--out "$OUT_DIR/initialization"` independently observes host setup functions
+and existing private-transport byte counters with GDB. These one-step runs
+include startup/statistics and debugger overhead, not unprofiled RK samples.
+The byte counters exclude MPI/UCX internal copies and public field halos.
+They include same-rank periodic messages, so logical bytes are not physical
+network traffic. Use the matching TGV preflight directory for its separate
+frozen binary; do not substitute one case's executable or numerical inputs.
+
+The shared TGV and S1 fixture generators now supply the required
+`datin/input.output`, with field/checkpoint products disabled unless the
+caller supplies a different configuration. This does not restore legacy I/O.
+`test_filtered_boundary_refresh_runtime.py` compares physical nodes from
+matching final-stage `post_update` snapshots, including EOS-derived primitive
+fields, at the unchanged 2e-10 absolute tolerance; it does not compare a CPU
+RK snapshot against an obsolete GPU `outdat/flowfield.h5` phase.
+
+```bash
+ASTR_OUTPUT_CPU_EXE="$CPU_EXE" ASTR_OUTPUT_RUNTIME_EXE="$GPU_EXE" \
+python3 -m pytest -x -q tests/gpu_validation/test_filtered_boundary_refresh_runtime.py
+```
+
+Use a current root-CMake CPU build with the repository default `userdefine`
+for that matrix: its LDC test requires the existing moving-lid `udf_bc`.
+The M12-specific CPU UDF has no moving lid and is not an LDC reference.
+Profile-plate regressions instead use their matching M12 grid UDF. Test
+snapshots are explicit diagnostics, not new production field-output support.
+
+The 2026-10-20 closeout passes 31 tool/fixture/contract checks, the 17-test
+filtered refresh matrix, four explicit TGV CPU/GPU same-phase state/statistics
+checks, two explicit exact-restores and one compact execution-choice exact
+continuation. Evidence is under `testout/compact_cp9_20261020_crashfix/`;
+formal plate results, independent phases, setup diagnostics and resource
+observations remain separate. See compact results sections 24-25.
+
 ## NSCBC Physical Repair Gates
 
 The GPU bc12/bc22/bc52 compatibility repairs are checked against analytic

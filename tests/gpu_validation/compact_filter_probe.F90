@@ -21,6 +21,11 @@ program compact_filter_probe
   character(1024) :: path,argument
 
   call get_command_argument(1,path)
+  if(trim(path)=='--explicit-window') then
+    call get_command_argument(2,path)
+    call explicit_window_reference(trim(path))
+    stop
+  endif
   if(len_trim(path)==0) error stop 'usage: compact_filter_probe OUTPUT.csv [DEVICE [ORDER.csv]]'
   device=0
   call get_command_argument(2,argument)
@@ -170,4 +175,120 @@ contains
     close(handle)
     write(*,'(A)') 'PASS: smooth compact filter convergence, interface and physical closures'
   end subroutine
+  subroutine explicit_window_reference(filename)
+    use filter, only: filter_coefficient_explicit,spafilter10exp,coef8e
+    character(*),intent(in) :: filename
+    integer :: header(8),handle,a,b,c,m,h,ii,jj,kk,phase,location_x(2),location_y(1)
+    real(8) :: window(11,11,11,5),observed(5),expected(5),after_x(11,11),after_y(11)
+    real(8) :: state_x(11,11,5),state_y(11,5),internal_x(11,11),internal_y(11),stage_state(5,4)
+    real(8) :: minimum_internal,internal,error,kinetic,weight
+    character(6),parameter :: stage_name(4)=[character(6) :: 'before','afterX','afterY','afterZ']
+    real(8),allocatable :: line(:),filtered(:)
+    open(newunit=handle,file=filename,access='stream',form='unformatted',status='old')
+    read(handle) header,window,observed
+    close(handle)
+    if(hm/=5) error stop 'explicit window reference requires five halo layers'
+    call filter_coefficient_explicit()
+    minimum_internal=huge(1.d0)
+    do c=1,11
+    do b=1,11
+    do a=1,11
+      if(.not.all(ieee_is_finite(window(a,b,c,:))).or.window(a,b,c,1)<=0.d0) &
+        error stop 'captured input window is not admissible'
+      internal=window(a,b,c,5)-0.5d0*sum(window(a,b,c,2:4)**2)/window(a,b,c,1)
+      if(.not.ieee_is_finite(internal)) error stop 'nonfinite captured internal energy'
+      minimum_internal=min(minimum_internal,internal)
+    enddo
+    enddo
+    enddo
+    if(minimum_internal<=0.d0) error stop 'captured input has nonpositive internal energy'
+    do m=1,5
+      allocate(line(-hm:header(1)+hm),filtered(0:header(1)))
+      do c=1,11
+      do b=1,11
+        line=0.d0
+        do a=1,11
+          ii=max(0,min(header(1),header(6)+a-6))
+          line(ii)=window(a,b,c,m)
+        enddo
+        filtered=spafilter10exp(line,4,header(1))
+        after_x(b,c)=filtered(header(6))
+      enddo
+      enddo
+      state_x(:,:,m)=after_x
+      deallocate(line,filtered)
+      allocate(line(-hm:header(2)+hm),filtered(0:header(2)))
+      do c=1,11
+        line=0.d0
+        do b=1,11
+          jj=max(0,min(header(2),header(7)+b-6))
+          line(jj)=after_x(b,c)
+        enddo
+        filtered=spafilter10exp(line,4,header(2))
+        after_y(c)=filtered(header(7))
+      enddo
+      state_y(:,m)=after_y
+      deallocate(line,filtered)
+      allocate(line(-hm:header(3)+hm),filtered(0:header(3)))
+      line=0.d0
+      do c=1,11
+        kk=modulo(header(8)+c-6,header(3))
+        line(kk)=after_y(c)
+      enddo
+      line(header(3))=line(0)
+      do h=1,hm
+        line(-h)=line(header(3)-h)
+        line(header(3)+h)=line(h)
+      enddo
+      filtered=spafilter10exp(line,3,header(3))
+      expected(m)=filtered(header(8))
+      deallocate(line,filtered)
+    enddo
+    if(.not.all(ieee_is_finite(expected)).or..not.all(ieee_is_finite(observed))) &
+      error stop 'nonfinite CPU/GPU filter point'
+    error=maxval(abs(expected-observed))
+    write(*,'(A,ES24.16)') 'WINDOW_MIN_INPUT_INTERNAL=',minimum_internal
+    if(.not.all(ieee_is_finite(state_x)).or..not.all(ieee_is_finite(state_y)).or. &
+       minval(state_x(:,:,1))<=0.d0.or.minval(state_y(:,1))<=0.d0) &
+      error stop 'directional replay has nonfinite state or nonpositive density'
+    internal_x=state_x(:,:,5)-0.5d0*sum(state_x(:,:,2:4)**2,dim=3)/state_x(:,:,1)
+    internal_y=state_y(:,5)-0.5d0*sum(state_y(:,2:4)**2,dim=2)/state_y(:,1)
+    location_x=minloc(internal_x)
+    location_y=minloc(internal_y)
+    write(*,'(A,ES24.16,A,3(I0,1X))') 'WINDOW_AFTER_X_MIN_INTERNAL=',minval(internal_x), &
+      ' global_ijk=',header(6),max(0,min(header(2),header(7)+location_x(1)-6)), &
+      modulo(header(8)+location_x(2)-6,header(3))
+    write(*,'(A,ES24.16,A,3(I0,1X))') 'WINDOW_AFTER_Y_MIN_INTERNAL=',minval(internal_y), &
+      ' global_ijk=',header(6),header(7),modulo(header(8)+location_y(1)-6,header(3))
+    stage_state(:,1)=window(6,6,6,:)
+    stage_state(:,2)=state_x(6,6,:)
+    stage_state(:,3)=state_y(6,:)
+    stage_state(:,4)=expected
+    do phase=1,4
+      kinetic=0.5d0*sum(stage_state(2:4,phase)**2)/stage_state(1,phase)
+      internal=stage_state(5,phase)-kinetic
+      write(*,'(A,A,A,5(ES24.16,1X))') 'WINDOW_STAGE ',trim(stage_name(phase)),' q=',stage_state(:,phase)
+      write(*,'(A,A,A,3(ES24.16,1X))') 'WINDOW_STAGE ',trim(stage_name(phase)), &
+        ' total/kinetic/internal=',stage_state(5,phase),kinetic,internal
+    enddo
+    if(header(6)==4) then
+      write(*,'(A)') 'WINDOW_X_STENCIL columns=i,weight,rho,total,internal,weighted_total'
+      do ii=0,8
+        a=ii-header(6)+6
+        weight=coef8e(abs(ii-header(6)))
+        if(ii==header(6)) weight=2.d0*weight
+        internal=window(a,6,6,5)-0.5d0*sum(window(a,6,6,2:4)**2)/window(a,6,6,1)
+        write(*,'(A,I0,5(1X,ES24.16))') 'WINDOW_X_STENCIL ',ii,weight,window(a,6,6,1), &
+          window(a,6,6,5),internal,weight*window(a,6,6,5)
+      enddo
+    endif
+    write(*,'(A,5(ES24.16,1X))') 'WINDOW_CPU_FILTERED_Q=',expected
+    write(*,'(A,5(ES24.16,1X))') 'WINDOW_GPU_FILTERED_Q=',observed
+    write(*,'(A,ES24.16)') 'WINDOW_CPU_GPU_ABS=',error
+    internal=expected(5)-0.5d0*sum(expected(2:4)**2)/expected(1)
+    write(*,'(A,ES24.16)') 'WINDOW_CPU_FILTERED_INTERNAL=',internal
+    if(error>2.d-10) error stop 'CPU filter does not reproduce captured GPU point'
+    if(internal>=0.d0) error stop 'CPU filter did not reproduce loss of admissibility'
+    print *, 'PASS: native CPU filter reproduces loss of admissibility, not a CFD acceptance'
+  end subroutine explicit_window_reference
 end program

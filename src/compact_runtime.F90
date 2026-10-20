@@ -61,7 +61,7 @@ contains
     endif
     if((.not.tgv.and..not.plate).or.ndims/=3.or.numq/=5.or. &
       num_species/=0.or.num_modequ/=0.or.trim(turbmode)/='none'.or.trim(rkscheme)/='rk3'.or. &
-      .not.nondimen.or.lcomb.or.lcracon) &
+      .not.nondimen.or.lcomb.or.(lcracon.and..not.plate)) &
       error stop 'Global compact admits periodic 643c/643c TGV or CP6 743e/643c profile plate'
     if(lrestart) error stop 'Legacy compact restart is disabled; use output restore_directory'
     if(hm<2.or.(lfilter.and.hm<5)) error stop 'Insufficient halo for global compact RHS'

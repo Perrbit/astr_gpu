@@ -8,6 +8,16 @@ import shutil
 from pathlib import Path
 
 
+def write_validation_output_config(path: Path) -> None:
+    """Supply the required new-output input without enabling field I/O."""
+    path.write_text(
+        "&output\n directory='outdat/new',host_budget_bytes=67108864,"
+        "device_budget_bytes=67108864,buffer_bytes=1048576\n/\n"
+        "&checkpoint\n enabled=f\n/\n&volume\n enabled=f\n/\n&slices\n enabled=f\n/\n",
+        encoding="ascii",
+    )
+
+
 def next_data_line(lines: list[str], start: int) -> int:
     for idx in range(start + 1, len(lines)):
         stripped = lines[idx].strip()
@@ -389,6 +399,9 @@ def main() -> int:
         shutil.rmtree(args.dst_case)
     args.dst_case.mkdir(parents=True)
     shutil.copytree(args.src_case / "datin", args.dst_case / "datin")
+    output_config = args.dst_case / "datin/input.output"
+    if not output_config.exists():
+        write_validation_output_config(output_config)
 
     input_file = args.dst_case / "datin" / args.input_name
     if args.flowtype:

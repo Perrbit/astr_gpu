@@ -449,6 +449,17 @@ module bc
     nscbc_farfield_incoming_only_enabled=nscbc_farfield_incoming_only
   end function nscbc_farfield_incoming_only_enabled
 
+  logical function explicit_profile_nscbc_corrections_enabled()
+    use commvar, only: conschm,difschm,lcomb,nondimen
+    implicit none
+
+    explicit_profile_nscbc_corrections_enabled=flowtype=='bl'.and.ndims==3.and. &
+      conschm=='743e'.and.difschm=='643e'.and.numq==5.and. &
+      num_species==0.and.num_modequ==0.and..not.lcomb.and.nondimen.and. &
+      turbinf=='prof'.and.all(bctype==[11,22,41,52,1,1]).and. &
+      nscbc_farfield_incoming_only_enabled().and..not.nscbc_farfield_sbli_shock_enabled()
+  end function explicit_profile_nscbc_corrections_enabled
+
   subroutine nscbc_farfield_target_state(rho_target,u_target,v_target, &
                                           w_target,t_target)
     implicit none
@@ -973,6 +984,7 @@ module bc
     compact_stage_wall=conschm=='743e'.and.difschm=='643c'.and. &
       numq==5.and..not.lcomb.and.nondimen.and.ndims==3.and. &
       trim(flowtype)=='bl'.and.bctype(2)==22.and.bctype(3)==41.and.jrk==0
+    compact_stage_wall=compact_stage_wall.or.(explicit_profile_nscbc_corrections_enabled().and.jrk==0)
     !
     do n=1,6
       if(n==2.and.compact_stage_wall) then
@@ -5553,6 +5565,7 @@ module bc
     !
     compact_plate_outlet=ndir==2.and.numq==5.and..not.lcomb.and. &
       conschm=='743e'.and.difschm=='643c'
+    compact_plate_outlet=compact_plate_outlet.or.(ndir==2.and.explicit_profile_nscbc_corrections_enabled())
     gmachmax2=0.d0
     !
     if(ndir==1 .and. irk==0) then

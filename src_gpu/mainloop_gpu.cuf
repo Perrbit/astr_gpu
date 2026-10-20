@@ -3,11 +3,12 @@ module mainloop_gpu
   implicit none
   logical,save,private :: static_configuration_validated=.false.
 contains
-  subroutine prepare_compact_profile_nscbc_gpu()
-    use commvar, only: im,jm,km,hm,const2,const6,lfilter
+  subroutine prepare_profile_nscbc_gpu(stage)
+    use commvar, only: im,jm,km,hm,const2,const6,lfilter,nstep
+    use gpu_phase_timing, only: begin_gpu_phase,end_gpu_phase
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,qrhs_d
-    use solver_gpu, only: q_to_primitive_kernel,zero_rhs_kernel
-    use compact_operator_gpu, only: compact_filter_state_gpu
+    use solver_gpu, only: q_to_primitive_kernel,zero_rhs_kernel,apply_explicit_filter_gpu
+    use compact_operator_gpu, only: compact_filter_state_gpu,compact_global_enabled
     use boundary_gpu, only: apply_s1_flatplate_boundary_conditions_gpu,apply_s1_flatplate_wall_gpu, &
       prepare_compact_outlet_wall_gpu, &
       apply_nscbc_outflow_physical_filter_gpu,apply_nscbc_outflow_x_rhs_gpu, &
@@ -15,12 +16,34 @@ contains
       apply_nscbc_farfield_y_upper_filter_z_gpu,apply_nscbc_farfield_y_upper_rhs_gpu
     use halo_exchange_gpu, only: exchange_solution_halo_gpu
     use gpu_check, only: sync_after_kernel
+#ifdef ASTR_BUILD_TESTING
+    use mp_positivity_gpu, only: check_profile_validation_state_gpu,capture_profile_filter_window_gpu
+#endif
+    integer,intent(in) :: stage
     type(dim3) :: block,grid
     real(8) :: mach2
     integer :: ntot
     block=dim3(32,4,4)
     grid=dim3((im+32)/32,(jm+4)/4,(km+4)/4)
-    if(lfilter) call compact_filter_state_gpu()
+    if(lfilter) then
+#ifdef ASTR_BUILD_TESTING
+      call capture_profile_filter_window_gpu(stage,.false.)
+#endif
+      call begin_gpu_phase('filter')
+      if(compact_global_enabled()) then
+        call compact_filter_state_gpu()
+      else
+        call apply_explicit_filter_gpu(.false.,'')
+      endif
+      call end_gpu_phase('filter',nstep,stage)
+#ifdef ASTR_BUILD_TESTING
+      call capture_profile_filter_window_gpu(stage,.true.)
+#endif
+      call repair_filtered_state_gpu(stage)
+#ifdef ASTR_BUILD_TESTING
+      call check_profile_validation_state_gpu('profile global filter',stage)
+#endif
+    endif
     call q_to_primitive_kernel<<<grid,block>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
     call sync_after_kernel('compact_nscbc_primitives')
     ntot=(im+1)*(jm+1)*(km+1)
@@ -31,6 +54,9 @@ contains
     call apply_s1_flatplate_boundary_conditions_gpu(defer_wall=.true.)
     call prepare_compact_outlet_wall_gpu()
     call apply_nscbc_outflow_physical_filter_gpu()
+#ifdef ASTR_BUILD_TESTING
+    call check_profile_validation_state_gpu('profile outlet filter',stage)
+#endif
     call q_to_primitive_kernel<<<grid,block>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
     call sync_after_kernel('compact_nscbc_outflow_primitives')
     call exchange_solution_halo_gpu()
@@ -44,6 +70,9 @@ contains
     call sync_after_kernel('compact_nscbc_farfield_primitives')
     call apply_nscbc_farfield_y_upper_rhs_gpu(mach2)
     call exchange_solution_halo_gpu()
+#ifdef ASTR_BUILD_TESTING
+    call check_profile_validation_state_gpu('profile boundary complete',stage)
+#endif
   end subroutine
 
   subroutine init_gpu()
@@ -61,7 +90,7 @@ contains
     use compact_operator_gpu, only: compact_global_enabled,compact_filter_state_gpu
     use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,const2,const6,lfilter,lcomb,nstep, &
       numq,num_species,conschm,difschm
-    use bc, only: bctype
+    use bc, only: bctype,explicit_profile_nscbc_corrections_enabled
     use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_flow_solver_gpu, only: air5_prepare_spatial_state_gpu
@@ -92,8 +121,9 @@ contains
     endif
 #endif
     call validate_first_stage_gpu()
-    if(compact_global_enabled().and.gpu_profile_mp_ld_flatplate_supported().and.bctype(2)==22) then
-      call prepare_compact_profile_nscbc_gpu()
+    if(gpu_profile_mp_ld_flatplate_supported().and.bctype(2)==22.and. &
+       (compact_global_enabled().or.explicit_profile_nscbc_corrections_enabled())) then
+      call prepare_profile_nscbc_gpu(1)
       return
     endif
     conservative_case=conservative_boundary%enabled
@@ -123,6 +153,7 @@ contains
         call apply_explicit_filter_gpu(periodic_filter_case,'prepare_')
       endif
       call end_gpu_phase('filter',nstep,1)
+      call repair_filtered_state_gpu(1)
       if(refresh_filtered_primitives) then
         call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
              q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
@@ -170,6 +201,22 @@ contains
       call exchange_solution_halo_gpu()
     endif
   end subroutine prepare_rkfirst_stats_gpu
+
+  subroutine repair_filtered_state_gpu(stage)
+    use commvar, only: lcracon,nstep
+    use parallel, only: lio
+    use halo_exchange_gpu, only: exchange_solution_halo_gpu
+    use crashfix_gpu, only: repair_crashfix_state_gpu
+    implicit none
+    integer,intent(in) :: stage
+
+    if(.not.lcracon) return
+    ! Repair against the filtered state, including its neighbor halo caches.
+    call exchange_solution_halo_gpu()
+    if(lio) write(*,'(A,2(1X,I0))') 'ASTR_FILTER_CRASHFIX',nstep,stage
+    call repair_crashfix_state_gpu(stage)
+    call exchange_solution_halo_gpu()
+  end subroutine repair_filtered_state_gpu
 
   subroutine repair_mp_stage_inputs_gpu(stage,phase,repaired)
     use commvar, only: lcracon,nstep
@@ -231,6 +278,9 @@ contains
     use gpu_check, only: sync_after_kernel,check_kernel_launch,sync_gpu_boundary
     use gpu_phase_timing, only: begin_gpu_phase,end_gpu_phase
     use crashfix_gpu, only: repair_crashfix_state_gpu
+#ifdef ASTR_BUILD_TESTING
+    use mp_positivity_gpu, only: check_profile_validation_state_gpu
+#endif
     use halo_exchange_gpu, only: exchange_solution_halo_gpu, &
          begin_solution_halo_pipeline_gpu,stage_solution_halo_d2h_gpu, &
          finish_solution_halo_pipeline_gpu, &
@@ -363,7 +413,8 @@ contains
          gpu_s2_hbl_selective_roe_s2c5_diffusion_supported, &
          gpu_s2_sbli_nscbc_supported,gpu_s2_sbli_nscbc_sponge_supported
     use shock_sensor_gpu, only: compute_shock_sensor_gpu
-    use bc, only: bctype,twall,nscbc_farfield_nonreflecting_enabled
+    use bc, only: bctype,twall,nscbc_farfield_nonreflecting_enabled, &
+      explicit_profile_nscbc_corrections_enabled
     use conservative_boundary_runtime, only: conservative_boundary
     use conservative_boundary_stage_gpu, only: apply_conservative_stage_gpu
     use validation_io, only: rhs_validation_requested,write_rhs_validation_snapshot, &
@@ -407,7 +458,7 @@ contains
     logical :: characteristic_xyphysical_case
     logical :: profile_mp_ld_case
     logical :: profile_nscbc_case
-    logical :: compact_profile_nscbc_case
+    logical :: staged_profile_nscbc_case
     logical :: repaired_boundary,repaired_filter
     logical :: s2_hbl_selective_roe_case
     logical :: s2_hbl_selective_roe_sponge_case
@@ -514,7 +565,8 @@ contains
          curvilinear_nscbc52_viscous_case
     profile_mp_ld_case = gpu_profile_mp_ld_flatplate_supported()
     profile_nscbc_case = profile_mp_ld_case.and.bctype(2)==22
-    compact_profile_nscbc_case=profile_nscbc_case.and.compact_global_enabled()
+    staged_profile_nscbc_case=profile_nscbc_case.and. &
+      (compact_global_enabled().or.explicit_profile_nscbc_corrections_enabled())
     flatplate_case = profile_mp_ld_case .or. conservative_case .or. &
          gpu_s1_flatplate_s1a_supported() .or. flatplate_mp7_case .or. &
          curvilinear_nscbc52_case .or. &
@@ -601,8 +653,8 @@ contains
     do rkstep=1,3
       solution_pipeline_pending=.false.
       zero_rhs_overlapped=.false.
-      if(compact_profile_nscbc_case) then
-        if(.not.(prepared.and.rkstep==1)) call prepare_compact_profile_nscbc_gpu()
+      if(staged_profile_nscbc_case) then
+        if(.not.(prepared.and.rkstep==1)) call prepare_profile_nscbc_gpu(rkstep)
       elseif(.not.(prepared .and. rkstep == 1)) then
         if(conservative_case) then
           continue
@@ -625,6 +677,7 @@ contains
             call apply_explicit_filter_gpu(periodic_filter_case,'')
           endif
           call end_gpu_phase('filter',nstep,rkstep)
+          call repair_filtered_state_gpu(rkstep)
           if(refresh_filtered_primitives) then
             call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
                  q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
@@ -701,7 +754,7 @@ contains
         endif
       endif
 
-      if(compact_profile_nscbc_case) then
+      if(staged_profile_nscbc_case) then
         continue
       elseif(zero_rhs_overlapped) then
         call sync_after_kernel('pipeline_zero_rhs_kernel')
@@ -716,12 +769,12 @@ contains
         call exchange_solution_halo_gpu()
         call repair_mp_stage_inputs_gpu(rkstep,'NSCBC inlet/lower wall')
       endif
-      if(profile_nscbc_case.and..not.compact_profile_nscbc_case) then
+      if(profile_nscbc_case.and..not.staged_profile_nscbc_case) then
         call apply_nscbc_outflow_physical_filter_gpu()
         call exchange_solution_halo_gpu()
         call repair_mp_stage_inputs_gpu(rkstep,'outflow filter')
       endif
-      if(compact_profile_nscbc_case) then
+      if(staged_profile_nscbc_case) then
         continue
       elseif(flatplate_nscbc_nonreflecting_case) then
         call apply_nscbc_farfield_y_upper_nonreflecting_rhs_gpu()
@@ -746,7 +799,7 @@ contains
         call copy_rhs_from_gpu()
         call write_rhs_validation_snapshot('boundary',nstep,rkstep)
       endif
-      if(profile_nscbc_case.and..not.compact_profile_nscbc_case) call apply_nscbc_outflow_x_rhs_gpu()
+      if(profile_nscbc_case.and..not.staged_profile_nscbc_case) call apply_nscbc_outflow_x_rhs_gpu()
       if(open_shock_nscbc_case) then
         call gpu_nscbc_global_mach2(gmachmax2_in)
         call gpu_nscbc_outflow_mach2(gmachmax2_out)
@@ -1362,6 +1415,9 @@ contains
              q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
         call sync_after_kernel('sponge_q_to_primitive_kernel')
       endif
+#ifdef ASTR_BUILD_TESTING
+      if(staged_profile_nscbc_case) call check_profile_validation_state_gpu('profile RK update',rkstep)
+#endif
       if(rhs_validation_requested()) then
         call copy_flow_from_gpu()
         call write_q_validation_snapshot('post_update',nstep,rkstep)

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import shutil
 from pathlib import Path
+from prepare_tgv_case import write_validation_output_config
 
 import h5py
 import numpy as np
@@ -305,6 +306,7 @@ def main() -> int:
         args.feqlist,
         args.lwsequ,
     )
+    write_validation_output_config(datin / "input.output")
     return 0
 
 
