@@ -1,8 +1,10 @@
 module sponge_layer
+  use astr_precision, only: real_kind
 
   use constdef
   
   implicit none
+  private :: real_kind
 
   logical :: lsponge,lsponge_loc,lspg_i0,lspg_im,lspg_j0,lspg_jm,      &
                                  lspg_k0,lspg_km
@@ -11,7 +13,7 @@ module sponge_layer
              spg_j0_beg,spg_j0_end,spg_jm_beg,spg_jm_end, &
              spg_k0_beg,spg_k0_end,spg_km_beg,spg_km_end
 
-  real(8),allocatable,dimension(:,:,:) :: sponge_damp_coef_i0,sponge_damp_coef_im, &
+  real(real_kind),allocatable,dimension(:,:,:) :: sponge_damp_coef_i0,sponge_damp_coef_im, &
                                           sponge_damp_coef_j0,sponge_damp_coef_jm, &
                                           sponge_damp_coef_k0,sponge_damp_coef_km, &
                                           sponge_damp_coef
@@ -71,8 +73,8 @@ module sponge_layer
     use parallel, only : dataswap,mpirank,kg0
     !
     integer :: i,j,k,n
-    real(8) :: var1
-    real(8),allocatable :: qtemp(:,:,:,:)
+    real(real_kind) :: var1
+    real(real_kind),allocatable :: qtemp(:,:,:,:)
     !
     ! sponger layer attached at the im end.
     if(lspg_i0) then
@@ -93,7 +95,7 @@ module sponge_layer
             var1=sponge_damp_coef_i0(i,j,k)
             !
             do n=1,numq
-              qtemp(i,j,k,n)=(1.d0-var1)*q(i,j,k,n)+        &
+              qtemp(i,j,k,n)=(1.e0_real_kind-var1)*q(i,j,k,n)+        &
                              num1d6*var1*(q(i+1,j,k,n)+     &
                                           q(i-1,j,k,n)+     &
                                           q(i,j+1,k,n)+     &
@@ -146,7 +148,7 @@ module sponge_layer
             var1=sponge_damp_coef_im(i,j,k)
             !
             do n=1,numq
-              qtemp(i,j,k,n)=(1.d0-var1)*q(i,j,k,n)+        &
+              qtemp(i,j,k,n)=(1.e0_real_kind-var1)*q(i,j,k,n)+        &
                              num1d6*var1*(q(i+1,j,k,n)+     &
                                           q(i-1,j,k,n)+     &
                                           q(i,j+1,k,n)+     &
@@ -197,7 +199,7 @@ module sponge_layer
             var1=sponge_damp_coef_jm(i,j,k)
             !
             do n=1,numq
-              qtemp(i,j,k,n)=(1.d0-var1)*q(i,j,k,n)+        &
+              qtemp(i,j,k,n)=(1.e0_real_kind-var1)*q(i,j,k,n)+        &
                              num1d6*var1*(q(i+1,j,k,n)+     &
                                           q(i-1,j,k,n)+     &
                                           q(i,j+1,k,n)+     &
@@ -246,7 +248,7 @@ module sponge_layer
 
           var1=sponge_damp_coef_k0(i,j,k)
           do n=1,numq
-            qtemp(i,j,k,n)=(1.d0-var1)*q(i,j,k,n)+        &
+            qtemp(i,j,k,n)=(1.e0_real_kind-var1)*q(i,j,k,n)+        &
                            num1d6*var1*(q(i+1,j,k,n)+     &
                                         q(i-1,j,k,n)+     &
                                         q(i,j+1,k,n)+     &
@@ -289,7 +291,7 @@ module sponge_layer
           var1=sponge_damp_coef_km(i,j,k)
           
           do n=1,numq
-            qtemp(i,j,k,n)=(1.d0-var1)*q(i,j,k,n)+        &
+            qtemp(i,j,k,n)=(1.e0_real_kind-var1)*q(i,j,k,n)+        &
                            num1d6*var1*(q(i+1,j,k,n)+     &
                                         q(i-1,j,k,n)+     &
                                         q(i,j+1,k,n)+     &
@@ -325,8 +327,8 @@ module sponge_layer
     use parallel, only : dataswap
     !
     integer :: i,j,k,n
-    real(8) :: var1
-    real(8),allocatable :: qtemp(:,:,:,:)
+    real(real_kind) :: var1
+    real(real_kind),allocatable :: qtemp(:,:,:,:)
     !
     ! sponger layer attached at the im end.
 
@@ -342,7 +344,7 @@ module sponge_layer
         var1=sponge_damp_coef(i,j,k)
 
         do n=1,numq
-          qtemp(i,j,k,n)=(1.d0-var1)*q(i,j,k,n)+        &
+          qtemp(i,j,k,n)=(1.e0_real_kind-var1)*q(i,j,k,n)+        &
                          num1d6*var1*(q(i+1,j,k,n)+     &
                                       q(i-1,j,k,n)+     &
                                       q(i,j+1,k,n)+     &
@@ -373,21 +375,21 @@ module sponge_layer
     use parallel, only : pmax,por,mpirank
 
     ! local data
-    real(8),parameter :: dampfac=0.05d0
+    real(real_kind),parameter :: dampfac=0.05e0_real_kind
     integer :: i,j,k
-    real(8) :: var1,var2,xc,yc,zc,range_spange,max_dis
+    real(real_kind) :: var1,var2,xc,yc,zc,range_spange,max_dis
 
     lsponge_loc=.false.
 
     allocate( sponge_damp_coef(is:ie,js:je,ks:ke) )
 
-    xc=0.d0
-    yc=0.d0
-    zc=0.d0
+    xc=0.e0_real_kind
+    yc=0.e0_real_kind
+    zc=0.e0_real_kind
 
-    range_spange=0.06d0 !60mm
+    range_spange=0.06e0_real_kind !60mm
 
-    max_dis=0.d0
+    max_dis=0.e0_real_kind
 
     do k=ks,ke
     do j=js,je
@@ -401,7 +403,7 @@ module sponge_layer
 
         lsponge_loc=.true.
       else
-        var2=0.d0
+        var2=0.e0_real_kind
       endif
 
       sponge_damp_coef(i,j,k)=var2
@@ -449,10 +451,10 @@ module sponge_layer
                         precv,psend,ia,ja,ka,mpirank
     !
     ! local data
-    real(8),parameter :: dampfac=0.05d0
-    real(8),allocatable :: length_sponge(:,:),length_sponge_b(:,:),    &
+    real(real_kind),parameter :: dampfac=0.05e0_real_kind
+    real(real_kind),allocatable :: length_sponge(:,:),length_sponge_b(:,:),    &
                            length_sponge_local(:,:)
-    real(8) :: dis,var1,var2,var3
+    real(real_kind) :: dis,var1,var2,var3
     !
     integer :: i,j,k,iglobal_spg_beg,iglobal_beg,iglobal_end,          &
                      jglobal_spg_beg,jglobal_beg,jglobal_end,          &
@@ -553,14 +555,14 @@ module sponge_layer
 
     character(len=*),intent(in) :: dir
     integer,intent(out) :: spg_beg,spg_end
-    real(8),allocatable,intent(out) :: sponge_damp_coef(:,:,:)
+    real(real_kind),allocatable,intent(out) :: sponge_damp_coef(:,:,:)
 
     integer :: i,j,k,global_spg_beg,global_beg,global_end
-    real(8),allocatable :: length_sponge(:,:),length_sponge_b(:,:),    &
+    real(real_kind),allocatable :: length_sponge(:,:),length_sponge_b(:,:),    &
                            length_sponge_local(:,:)
 
-    real(8),parameter :: dampfac=0.05d0
-    real(8) :: var1,var2,var3,dis
+    real(real_kind),parameter :: dampfac=0.05e0_real_kind
+    real(real_kind) :: var1,var2,var3,dis
 
     if(dir=='i0') then
 
@@ -589,9 +591,9 @@ module sponge_layer
                 length_sponge_local(0:jm,0:km) )
       allocate( sponge_damp_coef(spg_beg:spg_end,0:jm,0:km) )
 
-      length_sponge      =0.d0
-      length_sponge_b    =0.d0
-      length_sponge_local=0.d0
+      length_sponge      =0.e0_real_kind
+      length_sponge_b    =0.e0_real_kind
+      length_sponge_local=0.e0_real_kind
 
       call precv(vario=length_sponge_b,recv_dir=mpiright,tag=21)
 
@@ -631,7 +633,7 @@ module sponge_layer
                         (x(i+1,j,k,2)-x(i,j,k,2))**2 + &
                         (x(i+1,j,k,3)-x(i,j,k,3))**2)
             else
-              var3=0.d0
+              var3=0.e0_real_kind
             endif
             dis=dis + var3
             sponge_damp_coef(i,j,k)=dampfac*dis**2/var2
@@ -675,9 +677,9 @@ module sponge_layer
                 length_sponge_local(0:jm,0:km) )
       allocate( sponge_damp_coef(spg_beg:spg_end,0:jm,0:km) )
 
-      length_sponge      =0.d0
-      length_sponge_b    =0.d0
-      length_sponge_local=0.d0
+      length_sponge      =0.e0_real_kind
+      length_sponge_b    =0.e0_real_kind
+      length_sponge_local=0.e0_real_kind
 
       call precv(vario=length_sponge_b,recv_dir=mpileft,tag=22)
 
@@ -717,7 +719,7 @@ module sponge_layer
                         (x(i,j,k,2)-x(i-1,j,k,2))**2 + &
                         (x(i,j,k,3)-x(i-1,j,k,3))**2)
             else
-              var3=0.d0
+              var3=0.e0_real_kind
             endif
             dis=dis + var3
             sponge_damp_coef(i,j,k)=dampfac*dis**2/var2
@@ -761,9 +763,9 @@ module sponge_layer
                 length_sponge_local(0:im,0:km) )
       allocate( sponge_damp_coef(0:im,spg_beg:spg_end,0:km) )
 
-      length_sponge      =0.d0
-      length_sponge_b    =0.d0
-      length_sponge_local=0.d0
+      length_sponge      =0.e0_real_kind
+      length_sponge_b    =0.e0_real_kind
+      length_sponge_local=0.e0_real_kind
 
       call precv(vario=length_sponge_b,recv_dir=mpidown,tag=23)
       
@@ -803,7 +805,7 @@ module sponge_layer
                         (x(i,j,k,2)-x(i,j-1,k,2))**2 + &
                         (x(i,j,k,3)-x(i,j-1,k,3))**2)
             else
-              var3=0.d0
+              var3=0.e0_real_kind
             endif
             dis=dis + var3
             sponge_damp_coef(i,j,k)=dampfac*dis**2/var2
@@ -847,9 +849,9 @@ module sponge_layer
                 length_sponge_local(0:im,0:jm) )
       allocate( sponge_damp_coef(0:im,0:jm,spg_beg:spg_end) )
 
-      length_sponge      =0.d0
-      length_sponge_b    =0.d0
-      length_sponge_local=0.d0
+      length_sponge      =0.e0_real_kind
+      length_sponge_b    =0.e0_real_kind
+      length_sponge_local=0.e0_real_kind
 
       call precv(vario=length_sponge_b,recv_dir=mpifront,tag=25)
 
@@ -889,7 +891,7 @@ module sponge_layer
                         (x(i,j,k+1,2)-x(i,j,k,2))**2 + &
                         (x(i,j,k+1,3)-x(i,j,k,3))**2)
             else
-              var3=0.d0
+              var3=0.e0_real_kind
             endif
             dis=dis + var3
             sponge_damp_coef(i,j,k)=dampfac*dis**2/var2
@@ -941,9 +943,9 @@ module sponge_layer
                 length_sponge_local(0:im,0:jm) )
       allocate( sponge_damp_coef(0:im,0:jm,spg_beg:spg_end) )
 
-      length_sponge      =0.d0
-      length_sponge_b    =0.d0
-      length_sponge_local=0.d0
+      length_sponge      =0.e0_real_kind
+      length_sponge_b    =0.e0_real_kind
+      length_sponge_local=0.e0_real_kind
 
       call precv(vario=length_sponge_b,recv_dir=mpiback,tag=26)
       
@@ -983,7 +985,7 @@ module sponge_layer
                         (x(i,j,k,2)-x(i,j,k-1,2))**2 + &
                         (x(i,j,k,3)-x(i,j,k-1,3))**2)
             else
-              var3=0.d0
+              var3=0.e0_real_kind
             endif
             dis=dis + var3
             sponge_damp_coef(i,j,k)=dampfac*dis**2/var2

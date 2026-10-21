@@ -1,5 +1,6 @@
 program checkpoint_state_probe
-  use iso_fortran_env, only: int64, real64
+  use iso_fortran_env, only: int64
+  use astr_precision, only: real_kind,real_bytes,real_to_word
   use mpi
   use checkpoint_state_io
   use insitu_velocity_statistics
@@ -8,9 +9,9 @@ program checkpoint_state_probe
   integer :: err,rank,np,axis,ncomp,halo,origin(3),cells(3),owned(3),i,j,k,m,bad,total_bad
   integer, parameter :: global_shape(3)=[9,7,5]
   integer(int64), parameter :: budget=2_int64*1024*1024
-  real(real64), allocatable :: q(:,:,:,:)
-  real(real64), allocatable :: carry(:,:,:,:)
-  real(real64) :: expected
+  real(real_kind), allocatable :: q(:,:,:,:)
+  real(real_kind), allocatable :: carry(:,:,:,:)
+  real(real_kind) :: expected
   character(1024) :: path,arg,mode
   logical :: writing,exact,is_owned,cache
   type(checkpoint_state_identity) :: identity
@@ -49,7 +50,7 @@ program checkpoint_state_probe
   owned=cells
   where (origin+cells==global_shape-1) owned=owned+1
   ! Account for q plus worst-case extras and metadata, not just HDF5 payload.
-  if (24_int64*product(int(cells+2*halo+1,int64))*ncomp+4096>budget) &
+  if (3_int64*real_bytes*product(int(cells+2*halo+1,int64))*ncomp+4096>budget) &
     call MPI_Abort(MPI_COMM_WORLD,3,err)
   allocate(q(cells(1)+2*halo+1,cells(2)+2*halo+1,cells(3)+2*halo+1,ncomp))
   if(index(trim(mode),'statistics_')==1) then
@@ -58,8 +59,8 @@ program checkpoint_state_probe
     stop
   endif
   if(ncomp==34.and.index(trim(mode),'air5_')/=1) call MPI_Abort(MPI_COMM_WORLD,2,err)
-  q=-huge(1.0_real64)
-  identity=checkpoint_state_identity(2147483650_int64,0.375_real64,0.125_real64,0.0625_real64)
+  q=-huge(1.0_real_kind)
+  identity=checkpoint_state_identity(2147483650_int64,0.375_real_kind,0.125_real_kind,0.0625_real_kind)
   if (writing) then
     do m=1,ncomp
       do k=1,size(q,3)
@@ -76,12 +77,12 @@ program checkpoint_state_probe
   if(index(trim(mode),'air5_')==1) then
     if(ncomp/=34) call MPI_Abort(MPI_COMM_WORLD,2,err)
     allocate(carry(cells(1)+1,cells(2)+1,cells(3)+1,11))
-    carry=-huge(1.0_real64)
+    carry=-huge(1.0_real_kind)
     if(writing) carry=q(halo+1:halo+cells(1)+1,halo+1:halo+cells(2)+1,halo+1:halo+cells(3)+1,12:22)
     call checkpoint_air5_state(trim(path),writing,global_shape,origin,cells,halo, &
       q(:,:,:,1:11),carry,trim(mode)/='air5_compensation_off',q(:,:,:,23),q(:,:,:,24:26), &
       q(:,:,:,27),q(:,:,:,28),q(:,:,:,29),q(:,:,:,30:34),identity,budget,MPI_COMM_WORLD)
-    q(:,:,:,12:22)=0.0_real64
+    q(:,:,:,12:22)=0.0_real_kind
     q(halo+1:halo+cells(1)+1,halo+1:halo+cells(2)+1,halo+1:halo+cells(3)+1,12:22)=carry
   else if (cache) then
     call checkpoint_perfect_gas_state(trim(path),writing,global_shape,origin,cells,halo, &
@@ -92,16 +93,16 @@ program checkpoint_state_probe
                                    budget,MPI_COMM_WORLD)
   endif
   bad=0
-  if (identity%step/=2147483650_int64.or.identity%time/=0.375_real64.or. &
-      identity%dt_used/=0.125_real64.or.identity%dt_next/=0.0625_real64) bad=bad+1
+  if (identity%step/=2147483650_int64.or.identity%time/=0.375_real_kind.or. &
+      identity%dt_used/=0.125_real_kind.or.identity%dt_next/=0.0625_real_kind) bad=bad+1
   do m=1,ncomp
     do k=1,size(q,3)
       do j=1,size(q,2)
         do i=1,size(q,1)
           expected=value(i,j,k,m,exact)
           if(index(trim(mode),'air5_')==1.and.m>=12.and.m<=22.and. &
-            (any([i,j,k]<halo+1).or.any([i,j,k]>halo+cells+1))) expected=0.0_real64
-          if (transfer(q(i,j,k,m),0_int64)/=transfer(expected,0_int64)) bad=bad+1
+            (any([i,j,k]<halo+1).or.any([i,j,k]>halo+cells+1))) expected=0.0_real_kind
+          if (real_to_word(q(i,j,k,m))/=real_to_word(expected)) bad=bad+1
         enddo
       enddo
     enddo
@@ -117,18 +118,18 @@ program checkpoint_state_probe
 contains
   subroutine inherited_roundtrip()
     integer(int64) :: metadata(12),header(13)
-    real(real64),allocatable :: values(:,:,:,:)
+    real(real_kind),allocatable :: values(:,:,:,:)
     type(checkpoint_state_identity) :: saved
     allocate(values(9,7,5,17))
     metadata=[2_int64,8_int64,6_int64,4_int64,1_int64,1_int64,1_int64, &
       5_int64,1_int64,4_int64,0_int64,17_int64]
-    saved=checkpoint_state_identity(5_int64,0.5d0,0.1d0,0.1d0)
+    saved=checkpoint_state_identity(5_int64,0.5_real_kind,0.1_real_kind,0.1_real_kind)
     if(trim(mode)=='inherited_write') then
       if(rank==0) then
-        values=1.d0
+        values=1.0_real_kind
         call checkpoint_state_transfer(trim(path),.true.,.true.,global_shape,[0,0,0],global_shape-1, &
           0,values,saved,budget,MPI_COMM_SELF,role=5,metadata=metadata)
-        values=2.d0
+        values=2.0_real_kind
         call checkpoint_state_transfer(trim(path),.true.,.true.,global_shape,[0,0,0],global_shape-1, &
           0,values,saved,budget,MPI_COMM_SELF,role=5,metadata=metadata,group_name='inherited')
       endif
@@ -137,20 +138,20 @@ contains
       call checkpoint_state_header(trim(path),header,metadata,MPI_COMM_SELF)
       call checkpoint_state_require(header(13)==5.and.header(9)==5.and.metadata(8)==5, &
         MPI_COMM_WORLD,'inherited probe header')
-      values=0.d0
+      values=0.0_real_kind
       call checkpoint_state_transfer(trim(path),.false.,.true.,global_shape,[0,0,0],global_shape-1, &
         0,values,saved,budget,MPI_COMM_SELF,role=5,metadata=metadata)
-      call checkpoint_state_require(all(values==1.d0),MPI_COMM_WORLD,'root payload was overwritten')
+      call checkpoint_state_require(all(values==1.0_real_kind),MPI_COMM_WORLD,'root payload was overwritten')
       call checkpoint_state_transfer(trim(path),.false.,.true.,global_shape,[0,0,0],global_shape-1, &
         0,values,saved,budget,MPI_COMM_SELF,role=5,metadata=metadata,group_name='inherited')
-      call checkpoint_state_require(all(values==2.d0),MPI_COMM_WORLD,'inherited payload mismatch')
+      call checkpoint_state_require(all(values==2.0_real_kind),MPI_COMM_WORLD,'inherited payload mismatch')
     endif
     if(rank==0) print *, 'PASS inherited group'
   end subroutine
 
   subroutine statistics_roundtrip()
     type(velocity_statistics) :: original,recovered
-    real(real64) :: values(34),saved(34),continued(34),t
+    real(real_kind) :: values(34),saved(34),continued(34),t
     integer :: role
     integer(int64) :: metadata(4),expected_metadata(4)
     logical :: ok
@@ -168,9 +169,9 @@ contains
         enddo
       enddo
     endif
-    identity=checkpoint_state_identity(1_int64,1.d0,1.d0,1.d0)
+    identity=checkpoint_state_identity(1_int64,1.0_real_kind,1.0_real_kind,1.0_real_kind)
     role=3
-    expected_metadata=[1_int64,transfer(-0.d0,0_int64),transfer(0.5d0,0_int64),2147483650_int64]
+    expected_metadata=[1_int64,real_to_word(-0.0_real_kind),real_to_word(0.5_real_kind),2147483650_int64]
     metadata=expected_metadata
     if(.not.writing) metadata=0
     if(trim(mode)=='statistics_wrong_role') role=1
@@ -185,19 +186,19 @@ contains
           call pack_velocity_state(original,values,ok)
           if(.not.ok) bad=bad+1
           saved=q(i,j,k,:)
-          if(any(transfer(saved,[0_int64],34)/=transfer(values,[0_int64],34))) bad=bad+1
-          call unpack_velocity_state(saved,recovered,1.d0,0.d0,3.d0,ok)
+          if(any(real_to_word(saved)/=real_to_word(values))) bad=bad+1
+          call unpack_velocity_state(saved,recovered,1.0_real_kind,0.0_real_kind,3.0_real_kind,ok)
           if(.not.ok) bad=bad+1
-          t=real(i+j+k+rank,real64)/8
-          call push_velocity_sample(original,2.d0,2.d0+t,[t,-t,2*t],ok)
+          t=real(i+j+k+rank,real_kind)/8
+          call push_velocity_sample(original,2.0_real_kind,2.0_real_kind+t,[t,-t,2*t],ok)
           if(.not.ok) bad=bad+1
-          call push_velocity_sample(recovered,2.d0,2.d0+t,[t,-t,2*t],ok)
+          call push_velocity_sample(recovered,2.0_real_kind,2.0_real_kind+t,[t,-t,2*t],ok)
           if(.not.ok) bad=bad+1
           call pack_velocity_state(original,continued,ok)
           if(.not.ok) bad=bad+1
           call pack_velocity_state(recovered,values,ok)
           if(.not.ok) bad=bad+1
-          if(any(transfer(continued,[0_int64],34)/=transfer(values,[0_int64],34))) bad=bad+1
+          if(any(real_to_word(continued)/=real_to_word(values))) bad=bad+1
         enddo
       enddo
     enddo
@@ -208,31 +209,31 @@ contains
 
   subroutine seed_statistics(state)
     type(velocity_statistics),intent(out) :: state
-    real(real64) :: v
+    real(real_kind) :: v
     logical :: ok
-    v=real(i+2*j+3*k+rank,real64)/8
-    call configure_velocity_statistics(state,0.d0,3.d0,ok)
+    v=real(i+2*j+3*k+rank,real_kind)/8
+    call configure_velocity_statistics(state,0.0_real_kind,3.0_real_kind,ok)
     if(.not.ok) error stop 'configure synthetic statistics'
-    call push_velocity_sample(state,0.d0,1.d0+v,[-0.d0,v,-v],ok)
+    call push_velocity_sample(state,0.0_real_kind,1.0_real_kind+v,[-0.0_real_kind,v,-v],ok)
     if(.not.ok) error stop 'initial synthetic statistics'
-    call push_velocity_sample(state,1.d0,2.d0+v,[v,-v,2*v],ok)
+    call push_velocity_sample(state,1.0_real_kind,2.0_real_kind+v,[v,-v,2*v],ok)
     if(.not.ok) error stop 'second synthetic statistics'
   end subroutine
 
-  real(real64) function value(i,j,k,m,original) result(v)
+  real(real_kind) function value(i,j,k,m,original) result(v)
     integer,intent(in) :: i,j,k,m
     logical,intent(in) :: original
     integer :: xyz(3)
     xyz=[i,j,k]-halo-1
     is_owned=all(xyz>=0).and.all(xyz<owned)
     if (original.and..not.is_owned) then
-      v=-real(1000000*rank+100000*m+10000*k+100*j+i,real64)/8
+      v=-real(1000000*rank+100000*m+10000*k+100*j+i,real_kind)/8
     else if (.not.original.and.(any(xyz<0).or.any(xyz>cells))) then
-      v=-huge(1.0_real64)
+      v=-huge(1.0_real_kind)
     else
       xyz=xyz+origin
-      v=real(10000*m+1000*xyz(3)+100*xyz(2)+xyz(1),real64)/8
-      if (m==1.and.all(xyz==0)) v=-0.0_real64
+      v=real(10000*m+1000*xyz(3)+100*xyz(2)+xyz(1),real_kind)/8
+      if (m==1.and.all(xyz==0)) v=-0.0_real_kind
     endif
   end function
 end program

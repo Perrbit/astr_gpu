@@ -1,4 +1,5 @@
 module insitu_checkpoint_batch
+  use astr_precision, only: real_kind
   use mpi
   use iso_fortran_env, only: int8,int32,int64,iostat_end
   use iso_c_binding, only: c_int,c_char,c_null_char
@@ -143,7 +144,7 @@ contains
     character(*),intent(in) :: path,batch,config
     character(96),intent(in) :: files(:)
     integer(int64),intent(in) :: step
-    real(8),intent(in) :: time
+    real(real_kind),intent(in) :: time
     integer,intent(in) :: topology(3),comm
     integer(int64),intent(out) :: sizes(:),checksums(:)
     logical,intent(out) :: ok
@@ -206,7 +207,7 @@ contains
     character(*),intent(in) :: path,batch,config
     character(96),intent(in) :: files(:)
     integer(int64),intent(in) :: step
-    real(8),intent(in) :: time
+    real(real_kind),intent(in) :: time
     integer,intent(in) :: topology(3),comm
     logical,intent(in) :: ready
     logical,intent(out) :: ok
@@ -242,7 +243,7 @@ contains
     character(*),intent(in) :: path,batch,config
     character(96),intent(in) :: files(:)
     integer(int64),intent(in) :: step
-    real(8),intent(in) :: time
+    real(real_kind),intent(in) :: time
     integer,intent(in) :: topology(3),comm
     logical,intent(out) :: ok
     integer(int64) :: sizes(size(files)),checksums(size(files)),saved_sizes(size(files)),saved_crc(size(files)),saved_step
@@ -250,7 +251,7 @@ contains
     character(8) :: magic
     character(64) :: identity
     character(256) :: configuration
-    real(8) :: clock
+    real(real_kind) :: clock
     integer(int32) :: topo(3),count
     integer(int8) :: extra
     integer :: unit,status,closed

@@ -26,17 +26,20 @@ def read_statistics(path):
     with path.open('rb') as stream:
         assert stream.read(8) == b'ASTRWS01'
         header=np.fromfile(stream,'<i4',11)
-        meta=np.fromfile(stream,'<f8',4)
+        assert header.size == 11 and header[0] in (1,2)
+        real = '<f4' if header[0] == 2 else '<f8'
+        meta=np.fromfile(stream,real,4)
         samples=int(np.fromfile(stream,'<i8',1)[0])
         shape=tuple(header[3:6]); count=int(np.prod(shape)); fields=int(header[9])
-        xyz=np.fromfile(stream,'<f8',3*count).reshape((*shape,3),order='F')
-        values=np.fromfile(stream,'<f8',3*fields*count).reshape((*shape,3*fields),order='F')
+        xyz=np.fromfile(stream,real,3*count).reshape((*shape,3),order='F')
+        values=np.fromfile(stream,real,3*fields*count).reshape((*shape,3*fields),order='F')
         owned=np.fromfile(stream,'<i4',count).reshape(shape,order='F')
         assert not stream.read(1)
     assert np.isfinite(meta).all() and np.isfinite(xyz).all() and np.isfinite(values).all()
     assert np.isin(owned,[0,1]).all()
     assert (values[...,fields:2*fields]>=0).all()
-    np.testing.assert_allclose(values[...,2*fields:]**2,values[...,fields:2*fields],rtol=5e-16,atol=0)
+    np.testing.assert_allclose(values[...,2*fields:]**2,values[...,fields:2*fields],
+        rtol=5e-16 if header[0] == 1 else 4*np.finfo(np.float32).eps,atol=0)
     return header,meta,samples,xyz,values,owned
 
 

@@ -1,4 +1,6 @@
 module compact_runtime
+  use astr_precision, only: real_kind
+  use astr_precision_mpi, only: mpi_real_type
   use mpi
   use commvar, only: hm
   use compact_operator
@@ -112,8 +114,8 @@ contains
     integer,intent(in) :: axis
     logical,intent(in) :: filter
     type(compact_matrix) :: matrix
-    real(8) :: edge(2),alpha
-    alpha=1.d0/3.d0
+    real(real_kind) :: edge(2),alpha
+    alpha=1.e0_real_kind/3.e0_real_kind
     if(filter) alpha=alfa_filter
     if(filter) then
       call compact_filter_core(compact_partitions(axis),alpha,matrix,edge)
@@ -132,26 +134,26 @@ contains
     class(global_compact_central),intent(in) :: this
     type(compact_scheme),intent(in) :: asolver
     integer,intent(in) :: dim
-    real(8),intent(in) :: f(-hm:dim+hm)
-    real(8) :: df(0:dim),values(dim+1,1),input(-hm:dim+hm,1),ends(2),slope
-    real(8),allocatable :: rhs(:,:),solution(:,:)
+    real(real_kind),intent(in) :: f(-hm:dim+hm)
+    real(real_kind) :: df(0:dim),values(dim+1,1),input(-hm:dim+hm,1),ends(2),slope
+    real(real_kind),allocatable :: rhs(:,:),solution(:,:)
     integer :: axis,i,ierr
     axis=asolver%direction
     if(axis<1.or.axis>3) error stop 'global derivative requires an explicit direction descriptor'
     if(derivative_plans(axis)%n==0) call prepare_cpu_direction(axis,.false.)
     allocate(rhs(compact_partitions(axis)%owned,1),solution(compact_partitions(axis)%owned,1))
     input(:,1)=f
-    slope=0.d0
+    slope=0.e0_real_kind
     if(geometry_phase.and.compact_partitions(axis)%periodic) then
       ! Coordinates and metric products can be affine-periodic, not periodic scalars.
       if(compact_partitions(axis)%rank==0) ends(1)=f(0)
       if(compact_partitions(axis)%rank==compact_partitions(axis)%ranks-1) ends(2)=f(dim)
-      call MPI_Bcast(ends(1),1,MPI_DOUBLE_PRECISION,0,compact_line_comms(axis),ierr)
-      call MPI_Bcast(ends(2),1,MPI_DOUBLE_PRECISION,compact_partitions(axis)%ranks-1, &
+      call MPI_Bcast(ends(1),1,mpi_real_type,0,compact_line_comms(axis),ierr)
+      call MPI_Bcast(ends(2),1,mpi_real_type,compact_partitions(axis)%ranks-1, &
         compact_line_comms(axis),ierr)
-      slope=(ends(2)-ends(1))/real(compact_partitions(axis)%intervals,8)
+      slope=(ends(2)-ends(1))/real(compact_partitions(axis)%intervals,kind=real_kind)
       do i=-hm,dim+hm
-        input(i,1)=f(i)-slope*real(compact_partitions(axis)%first+i,8)
+        input(i,1)=f(i)-slope*real(compact_partitions(axis)%first+i,kind=real_kind)
       enddo
     endif
     call compact_derivative_rhs(compact_partitions(axis),dim,hm,input,rhs)
@@ -163,9 +165,9 @@ contains
     use commvar, only: im,jm,km,numq
     use filter, only: coef6i,coef8i,coefb
     use parallel, only: dataswap
-    real(8),intent(inout) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,numq)
-    real(8),intent(in) :: coefficients(0:5)
-    real(8),allocatable :: f(:,:),rhs(:,:),solution(:,:),values(:,:)
+    real(real_kind),intent(inout) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,numq)
+    real(real_kind),intent(in) :: coefficients(0:5)
+    real(real_kind),allocatable :: f(:,:),rhs(:,:),solution(:,:),values(:,:)
     integer :: dims(3),axis,dim,lines,line,i,j,k,p,offset
     dims=[im,jm,km]
     do axis=1,3

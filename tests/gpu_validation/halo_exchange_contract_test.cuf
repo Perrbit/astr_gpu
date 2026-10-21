@@ -1,4 +1,5 @@
 program halo_exchange_contract_test
+  use astr_precision, only: real_kind,real_bytes
   use mpi
   use cudafor
   use commvar, only: im,jm,km,hm,numq,flowtype,ndims,lihomo,ljhomo,lkhomo
@@ -12,8 +13,8 @@ program halo_exchange_contract_test
     exchange_filter_y_work_halo_gpu,exchange_filter_z_halo_gpu, &
     exchange_field_x_halo_gpu,exchange_field_y_halo_gpu,exchange_field_z_halo_gpu
   implicit none
-  real(8),allocatable :: initial(:,:,:,:),expected(:,:,:,:),actual(:,:,:,:)
-  real(8),allocatable,device :: field(:,:,:,:)
+  real(real_kind),allocatable :: initial(:,:,:,:),expected(:,:,:,:),actual(:,:,:,:)
+  real(real_kind),allocatable,device :: field(:,:,:,:)
   integer :: rank,nranks,ierr,devices,axis,axis_last,mode,low,high,v,nvar
   integer,parameter :: components(4)=[1,3,5,6]
   logical :: pipeline_mode
@@ -137,10 +138,16 @@ program halo_exchange_contract_test
   if(rank==0) print *, 'production halo contract passed: axes=',axis_last,', modes=2, ranks=',nranks
   call mpi_finalize(ierr)
 contains
-  real(8) function value(owner,c,m)
+  real(real_kind) function value(owner,c,m)
     integer,intent(in) :: owner,c(3),m
-    value=real(owner+1,8)*100000001.d0+real(m,8)*1000000.d0+ &
-          real(c(1),8)*1024.d0+real(c(2),8)*32.d0+real(c(3),8)
+    if(real_bytes==4) then
+      ! Distinct node/component identifiers stay exactly representable for NP=2.
+      value=real(owner+1,real_kind)*524288.0_real_kind+real(m,real_kind)*32768.0_real_kind+ &
+        real(c(1),real_kind)*1024.0_real_kind+real(c(2),real_kind)*32.0_real_kind+real(c(3),real_kind)
+    else
+      value=real(owner+1,real_kind)*100000001.0_real_kind+real(m,real_kind)*1000000.0_real_kind+ &
+        real(c(1),real_kind)*1024.0_real_kind+real(c(2),real_kind)*32.0_real_kind+real(c(3),real_kind)
+    endif
   end function value
 
   subroutine seed()
@@ -179,7 +186,7 @@ contains
               enddo
               src=c
               src(axis)=extent(axis)
-              if(average) expected(c(1),c(2),c(3),m)=0.5d0*(value(rank,c,m)+value(low,src,m))
+              if(average) expected(c(1),c(2),c(3),m)=0.5_real_kind*(value(rank,c,m)+value(low,src,m))
             endif
             if(high/=MPI_PROC_NULL) then
               do h=1,hm
@@ -191,7 +198,7 @@ contains
               enddo
               dst=c
               dst(axis)=extent(axis)
-              if(average) expected(dst(1),dst(2),dst(3),m)=0.5d0*(value(rank,dst,m)+value(high,c,m))
+              if(average) expected(dst(1),dst(2),dst(3),m)=0.5_real_kind*(value(rank,dst,m)+value(high,c,m))
             endif
           enddo
         enddo

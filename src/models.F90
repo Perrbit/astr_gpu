@@ -7,6 +7,7 @@
 !| 09-Aug-2021  | Created by J. Fang @ STFC Daresbury Laboratory       |
 !+---------------------------------------------------------------------+
 module models
+  use astr_precision, only: real_kind
   !
   use commvar,only : im,jm,km,hm,Reynolds,num_species
   use parallel, only : mpirank,mpistop,irk,jrk,krk
@@ -14,14 +15,15 @@ module models
   use constdef
   !
   implicit none
+  private :: real_kind
   !
   type :: komega_coef
-    real(8) :: sigma_k1,sigma_k2,sigma_omega1,sigma_omega2,beta1,beta2,&
+    real(real_kind) :: sigma_k1,sigma_k2,sigma_omega1,sigma_omega2,beta1,beta2,&
                beta_star,gamma1,gamma2,a1,b1,c1
-    real(8) :: gamma,beta,prt
-    real(8),allocatable,dimension(:,:,:) :: sigma_k,sigma_omega
+    real(real_kind) :: gamma,beta,prt
+    real(real_kind),allocatable,dimension(:,:,:) :: sigma_k,sigma_omega
   end type komega_coef
-  real(8) :: kamma=0.41d0
+  real(real_kind) :: kamma=0.41e0_real_kind
   !
   type(komega_coef) :: komega
   !
@@ -55,21 +57,21 @@ module models
     if(lallo.ne.0) stop ' !! error at allocating sigma_k,sigma_omega'
     !
     !
-    komega%sigma_k1     = 0.85d0
-    komega%sigma_k2     = 1.d0
-    komega%sigma_omega1 = 0.5d0
-    komega%sigma_omega2 = 0.856d0
-    komega%beta1        = 0.075d0
-    komega%beta2        = 0.0828d0
-    komega%beta_star    = 0.09d0
-    komega%a1           = 0.31d0
-    komega%b1           = 1.d0
-    komega%c1           = 10.d0
+    komega%sigma_k1     = 0.85e0_real_kind
+    komega%sigma_k2     = 1.e0_real_kind
+    komega%sigma_omega1 = 0.5e0_real_kind
+    komega%sigma_omega2 = 0.856e0_real_kind
+    komega%beta1        = 0.075e0_real_kind
+    komega%beta2        = 0.0828e0_real_kind
+    komega%beta_star    = 0.09e0_real_kind
+    komega%a1           = 0.31e0_real_kind
+    komega%b1           = 1.e0_real_kind
+    komega%c1           = 10.e0_real_kind
     !
-    komega%prt          = 0.9d0
+    komega%prt          = 0.9e0_real_kind
     !
-    komega%gamma1=5.d0/9.d0
-    komega%gamma2=0.44d0
+    komega%gamma1=5.e0_real_kind/9.e0_real_kind
+    komega%gamma2=0.44e0_real_kind
     !
     ! komega%gamma1=komega%beta1/komega%beta_star - &
     !               komega%sigma_omega1*kamma*kamma/sqrt(komega%beta_star)
@@ -98,83 +100,83 @@ module models
     !
     ! local data
     integer :: i,j,k
-    real(8) :: arg1,arg2,f1,f2,cdkomega,miu,sqrtk,dwall,vorti,ro,dkdomg
-    real(8) :: var1,var2,var3,var4
-    real(8) :: s11,s12,s13,s22,s23,s33,d11,d12,d13,d22,d23,d33,       &
+    real(real_kind) :: arg1,arg2,f1,f2,cdkomega,miu,sqrtk,dwall,vorti,ro,dkdomg
+    real(real_kind) :: var1,var2,var3,var4
+    real(real_kind) :: s11,s12,s13,s22,s23,s33,d11,d12,d13,d22,d23,d33,       &
                div,det,tau11,tau12,tau13,tau22,tau23,tau33,s
-    real(8) :: produ_k,produ_omega,miueddy
+    real(real_kind) :: produ_k,produ_omega,miueddy
     !
     do k=0,km
     do j=0,jm
     do i=0,im
       !
       miu=miucal(tmp(i,j,k))/Reynolds
-      dwall=max(dis2wall(i,j,k),1.d-8)
+      dwall=max(dis2wall(i,j,k),1.e-8_real_kind)
       sqrtk=sqrt(tke(i,j,k))
       ro=rho(i,j,k)
       !
       dkdomg=dtke(i,j,k,1)*domg(i,j,k,1)+dtke(i,j,k,2)*domg(i,j,k,2) + &
              dtke(i,j,k,3)*domg(i,j,k,3)
-      var2=2.d0*ro*komega%sigma_omega2/omg(i,j,k)*dkdomg
-      cdkomega=max(var2,10.d-10)
+      var2=2.e0_real_kind*ro*komega%sigma_omega2/omg(i,j,k)*dkdomg
+      cdkomega=max(var2,10.e-10_real_kind)
       !
       var1=sqrtk/(komega%beta_star*omg(i,j,k)*dwall)
-      var2=500.d0*miu/(ro*dwall*dwall*omg(i,j,k))
-      var3=4.d0*ro*komega%sigma_omega2*tke(i,j,k)/(cdkomega*dwall*dwall)
+      var2=500.e0_real_kind*miu/(ro*dwall*dwall*omg(i,j,k))
+      var3=4.e0_real_kind*ro*komega%sigma_omega2*tke(i,j,k)/(cdkomega*dwall*dwall)
       arg1=min(max(var1,var2),var3)
-      arg2=max(2.d0*var1,var2)
+      arg2=max(2.e0_real_kind*var1,var2)
       !
       f1=tanh(arg1**4)
       f2=tanh(arg2**2)
       !
-      komega%sigma_k(i,j,k)    =komega%sigma_k1*f1+komega%sigma_k2*(1.d0-f1)
-      komega%sigma_omega(i,j,k)=  komega%gamma1*f1+  komega%gamma2*(1.d0-f1)
+      komega%sigma_k(i,j,k)    =komega%sigma_k1*f1+komega%sigma_k2*(1.e0_real_kind-f1)
+      komega%sigma_omega(i,j,k)=  komega%gamma1*f1+  komega%gamma2*(1.e0_real_kind-f1)
       !
-      komega%beta              =   komega%beta1*f1+   komega%beta2*(1.d0-f1)
-      komega%gamma             =  komega%gamma1*f1+  komega%gamma2*(1.d0-f1)
+      komega%beta              =   komega%beta1*f1+   komega%beta2*(1.e0_real_kind-f1)
+      komega%gamma             =  komega%gamma1*f1+  komega%gamma2*(1.e0_real_kind-f1)
       !
       vorti=sqrt(vor(i,j,k,1)**2+vor(i,j,k,2)**2+vor(i,j,k,3)**2)
       !
       s11=dvel(i,j,k,1,1)
-      s12=0.5d0*(dvel(i,j,k,1,2)+dvel(i,j,k,2,1))
-      s13=0.5d0*(dvel(i,j,k,1,3)+dvel(i,j,k,3,1))
+      s12=0.5e0_real_kind*(dvel(i,j,k,1,2)+dvel(i,j,k,2,1))
+      s13=0.5e0_real_kind*(dvel(i,j,k,1,3)+dvel(i,j,k,3,1))
       s22=dvel(i,j,k,2,2)
-      s23=0.5d0*(dvel(i,j,k,2,3)+dvel(i,j,k,3,2))
+      s23=0.5e0_real_kind*(dvel(i,j,k,2,3)+dvel(i,j,k,3,2))
       s33=dvel(i,j,k,3,3)
       !
-      s=2.d0*(s11*s11+s22*s22+s33*s33+2.d0*(s12*s12+s13*s13*s23*s23))
+      s=2.e0_real_kind*(s11*s11+s22*s22+s33*s33+2.e0_real_kind*(s12*s12+s13*s13*s23*s23))
       s=sqrt(s)
       !
       var4=max(komega%a1*omg(i,j,k),s*f2)
       !
       miut(i,j,k)=ro*komega%a1*tke(i,j,k)/var4
-      miut(i,j,k)=min(miut(i,j,k),100.d0*miu)
-      miut(i,j,k)=max(1.d-10,miut(i,j,k))
+      miut(i,j,k)=min(miut(i,j,k),100.e0_real_kind*miu)
+      miut(i,j,k)=max(1.e-10_real_kind,miut(i,j,k))
       !
       div=s11+s22+s33
       !
       det=num2d3*(miut(i,j,k)*div+ro*tke(i,j,k))
-      tau11=2.d0*miut(i,j,k)*s11-det
-      tau12=2.d0*miut(i,j,k)*s12
-      tau13=2.d0*miut(i,j,k)*s13
-      tau22=2.d0*miut(i,j,k)*s22-det
-      tau23=2.d0*miut(i,j,k)*s23
-      tau33=2.d0*miut(i,j,k)*s33-det
+      tau11=2.e0_real_kind*miut(i,j,k)*s11-det
+      tau12=2.e0_real_kind*miut(i,j,k)*s12
+      tau13=2.e0_real_kind*miut(i,j,k)*s13
+      tau22=2.e0_real_kind*miut(i,j,k)*s22-det
+      tau23=2.e0_real_kind*miut(i,j,k)*s23
+      tau33=2.e0_real_kind*miut(i,j,k)*s33-det
       !
       ! production term
       produ_k=      tau11*s11+tau22*s22+tau33*s33  +  &
-              2.d0*(tau12*s12+tau13*s13+tau23*s23)
-      produ_k=min(produ_k,20.d0*komega%beta_star*ro*tke(i,j,k)*omg(i,j,k))
+              2.e0_real_kind*(tau12*s12+tau13*s13+tau23*s23)
+      produ_k=min(produ_k,20.e0_real_kind*komega%beta_star*ro*tke(i,j,k)*omg(i,j,k))
       !
       var1=-komega%beta_star*ro*omg(i,j,k)*tke(i,j,k)
       !
       qrhs(i,j,k,6+num_species)=qrhs(i,j,k,6+num_species) +            &
                                              (produ_k+var1)*jacob(i,j,k)
       !
-      miueddy=max(miut(i,j,k),1.d-10)
+      miueddy=max(miut(i,j,k),1.e-10_real_kind)
       produ_omega=komega%gamma*ro/miueddy*produ_k
       var1=-komega%beta*ro*omg(i,j,k)**2
-      var2=2.d0*(1.d0-f1)*ro*komega%sigma_omega2/omg(i,j,k)*dkdomg
+      var2=2.e0_real_kind*(1.e0_real_kind-f1)*ro*komega%sigma_omega2/omg(i,j,k)*dkdomg
       !
       qrhs(i,j,k,7+num_species)=qrhs(i,j,k,7+num_species) +            &
                                     (produ_omega+var1+var2)*jacob(i,j,k)
@@ -222,19 +224,19 @@ module models
     use fludyna,  only : miucal
     use tecio
 
-    real(8), parameter :: kappa  = 0.4d0
-    real(8), parameter :: Aplus  = 26.d0
-    real(8), parameter :: Ccp    = 1.6d0
-    real(8), parameter :: Cwk    = 0.25d0
-    real(8), parameter :: Ckleb  = 0.30d0
-    real(8), parameter :: Kbl    = 0.0168d0
-    real(8), parameter :: tinyv  = 1.0d-10
+    real(real_kind), parameter :: kappa  = 0.4e0_real_kind
+    real(real_kind), parameter :: Aplus  = 26.e0_real_kind
+    real(real_kind), parameter :: Ccp    = 1.6e0_real_kind
+    real(real_kind), parameter :: Cwk    = 0.25e0_real_kind
+    real(real_kind), parameter :: Ckleb  = 0.30e0_real_kind
+    real(real_kind), parameter :: Kbl    = 0.0168e0_real_kind
+    real(real_kind), parameter :: tinyv  = 1.0e-10_real_kind
 
     integer :: i,j,k,imax
-    real(8) :: miu,utau,nuw, yplus, Lm, fkleb, fwake
-    real(8) :: umin, umax, omega,F
-    real(8) :: miut_inner,miut_outer
-    real(8),allocatable :: utaw(:,:),miuw(:,:),f_max(:,:),f2_max(:,:),y_max(:,:),udiff(:,:)
+    real(real_kind) :: miu,utau,nuw, yplus, Lm, fkleb, fwake
+    real(real_kind) :: umin, umax, omega,F
+    real(real_kind) :: miut_inner,miut_outer
+    real(real_kind),allocatable :: utaw(:,:),miuw(:,:),f_max(:,:),f2_max(:,:),y_max(:,:),udiff(:,:)
 
     logical,save :: lfirstcall=.true.
 
@@ -244,8 +246,8 @@ module models
 
     allocate(utaw(0:ia,0:ka),miuw(0:ia,0:ka))
 
-    utaw=0.d0
-    miuw=0.d0
+    utaw=0.e0_real_kind
+    miuw=0.e0_real_kind
 
     if(jrk==0) then
 
@@ -269,9 +271,9 @@ module models
 
     allocate(f_max(0:ia,0:ka),f2_max(0:ia,0:ka),y_max(0:ia,0:ka),udiff(0:ia,0:ka))
 
-    f_max=0.d0
-    y_max=0.d0
-    udiff=0.d0
+    f_max=0.e0_real_kind
+    y_max=0.e0_real_kind
+    udiff=0.e0_real_kind
     do k=0,km
     do i=0,im
       do j=0,jm
@@ -284,7 +286,7 @@ module models
 
         omega=abs(dvel(i,j,k,1,2)-dvel(i,j,k,2,1))
 
-        F = dis2wall(i,j,k) * omega * (1.0d0 - exp(-yplus / Aplus))
+        F = dis2wall(i,j,k) * omega * (1.0e0_real_kind - exp(-yplus / Aplus))
 
         ! if(F>10.d0) print*,x(i,j,k,2),F
 
@@ -307,7 +309,7 @@ module models
     do i=0,im
       if(f_max(i+ig0,k+kg0)==f2_max(i+ig0,k+kg0)) then
       else
-        y_max(i+ig0,k+kg0)=0.d0
+        y_max(i+ig0,k+kg0)=0.e0_real_kind
       endif
     enddo
     enddo
@@ -339,14 +341,14 @@ module models
         yplus = rho(i,j,k) * dis2wall(i,j,k) * utau / max(nuw, tinyv)
 
         ! Mixing length
-        Lm = kappa * dis2wall(i,j,k) * (1.0d0 - exp(-yplus / Aplus))
+        Lm = kappa * dis2wall(i,j,k) * (1.0e0_real_kind - exp(-yplus / Aplus))
 
         ! Inner layer
         omega=abs(dvel(i,j,k,1,2)-dvel(i,j,k,2,1))
         miut_inner = rho(i,j,k) * Lm*Lm * omega
 
         ! Klebanoff intermittency factor
-        fkleb = 1.0d0 / (1.0d0 + 5.5d0 * (Ckleb * dis2wall(i,j,k) / y_max(i+ig0,k+kg0))**6)
+        fkleb = 1.0e0_real_kind / (1.0e0_real_kind + 5.5e0_real_kind * (Ckleb * dis2wall(i,j,k) / y_max(i+ig0,k+kg0))**6)
 
         ! Outer layer
         miut_outer = rho(i,j,k) * Kbl * Ccp * fwake * fkleb
@@ -372,23 +374,23 @@ module models
 
   function tau_cal(grad_u, normal, mu) result(tau_mag)
 
-    real(8), intent(in)  :: grad_u(3,3)
-    real(8), intent(in)  :: normal(3)
-    real(8), intent(in)  :: mu
-    real(8) :: tau_mag
+    real(real_kind), intent(in)  :: grad_u(3,3)
+    real(real_kind), intent(in)  :: normal(3)
+    real(real_kind), intent(in)  :: mu
+    real(real_kind) :: tau_mag
 
-    real(8) :: n(3), nnorm
-    real(8) :: sigma(3,3)
-    real(8) :: traction(3)
-    real(8) :: divu, tn
-    real(8) :: tau_vec(3)
+    real(real_kind) :: n(3), nnorm
+    real(real_kind) :: sigma(3,3)
+    real(real_kind) :: traction(3)
+    real(real_kind) :: divu, tn
+    real(real_kind) :: tau_vec(3)
     integer :: i, j
 
     ! ---- normalize wall normal ----
     nnorm = sqrt(normal(1)**2 + normal(2)**2 + normal(3)**2)
-    if (nnorm <= 1.0d-30) then
-      tau_vec = 0.0d0
-      tau_mag = 0.0d0
+    if (nnorm <= 1.0e-30_real_kind) then
+      tau_vec = 0.0e0_real_kind
+      tau_mag = 0.0e0_real_kind
       return
     end if
     n = normal / nnorm
@@ -397,19 +399,19 @@ module models
     divu = grad_u(1,1) + grad_u(2,2) + grad_u(3,3)
 
     ! ---- viscous stress tensor sigma ----
-    sigma = 0.0d0
+    sigma = 0.0e0_real_kind
     do i = 1, 3
       do j = 1, 3
         sigma(i,j) = mu * (grad_u(i,j) + grad_u(j,i))
       end do
     end do
 
-    sigma(1,1) = sigma(1,1) - (2.0d0/3.0d0) * mu * divu
-    sigma(2,2) = sigma(2,2) - (2.0d0/3.0d0) * mu * divu
-    sigma(3,3) = sigma(3,3) - (2.0d0/3.0d0) * mu * divu
+    sigma(1,1) = sigma(1,1) - (2.0e0_real_kind/3.0e0_real_kind) * mu * divu
+    sigma(2,2) = sigma(2,2) - (2.0e0_real_kind/3.0e0_real_kind) * mu * divu
+    sigma(3,3) = sigma(3,3) - (2.0e0_real_kind/3.0e0_real_kind) * mu * divu
 
     ! ---- traction = sigma . n ----
-    traction = 0.0d0
+    traction = 0.0e0_real_kind
     do i = 1, 3
       do j = 1, 3
         traction(i) = traction(i) + sigma(i,j) * n(j)

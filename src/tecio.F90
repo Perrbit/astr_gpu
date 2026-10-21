@@ -6,11 +6,13 @@
 !| 07-Feb-2020  | Created by J. Fang @ Warrington                      |
 !+---------------------------------------------------------------------+
 module tecio
+  use astr_precision, only: real_kind
   !
   use constdef
   use stlaio,  only: get_unit
   !
   implicit none
+  private :: real_kind
   !
   real(4) :: eohmarker         = 357.0,                                &
              zonemarker        = 299.0,                                &
@@ -55,7 +57,7 @@ module tecio
   subroutine writetecbin2d2var(filename,var1,var1name,var2,var2name )
     ! 
     character(len=*),intent(in) :: filename
-    real(8),dimension(:,:),intent(in) :: var1,var2
+    real(real_kind),dimension(:,:),intent(in) :: var1,var2
     character(len=*),intent(in) :: var1name,var2name
     !
     ! local data
@@ -267,7 +269,7 @@ module tecio
                                         var3,var3name  )
     ! 
     character(len=*),intent(in) :: filename
-    real(8),dimension(:,:),intent(in) :: var1,var2,var3
+    real(real_kind),dimension(:,:),intent(in) :: var1,var2,var3
     character(len=*),intent(in) :: var1name,var2name,var3name
     !
     ! local data
@@ -481,7 +483,7 @@ module tecio
                                         var3,var3name,var4,var4name )
     ! 
     character(len=*),intent(in) :: filename
-    real(8),dimension(:,:),intent(in) :: var1,var2,var3,var4
+    real(real_kind),dimension(:,:),intent(in) :: var1,var2,var3,var4
     character(len=*),intent(in) :: var1name,var2name,var3name,         &
                                    var4name
     !
@@ -699,7 +701,7 @@ module tecio
                                         var5,var5name  )
     ! 
     character(len=*),intent(in) :: filename
-    real(8),dimension(:,:),intent(in) :: var1,var2,var3,var4,var5
+    real(real_kind),dimension(:,:),intent(in) :: var1,var2,var3,var4,var5
     character(len=*),intent(in) :: var1name,var2name,var3name,         &
                                    var4name,var5name
     !
@@ -919,7 +921,7 @@ module tecio
                                         var5,var5name,var6,var6name)
     ! 
     character(len=*),intent(in) :: filename
-    real(8),dimension(:,:),intent(in) :: var1,var2,var3,var4,var5,   &
+    real(real_kind),dimension(:,:),intent(in) :: var1,var2,var3,var4,var5,   &
                                          var6
     character(len=*),intent(in) :: var1name,var2name,var3name,         &
                                    var4name,var5name,var6name
@@ -999,7 +1001,7 @@ module tecio
                                         var7,var7name  )
     ! 
     character(len=*),intent(in) :: filename
-    real(8),dimension(:,:),intent(in) :: var1,var2,var3,var4,var5,   &
+    real(real_kind),dimension(:,:),intent(in) :: var1,var2,var3,var4,var5,   &
                                          var6,var7
     character(len=*),intent(in) :: var1name,var2name,var3name,         &
                                    var4name,var5name,var6name,         &
@@ -1226,7 +1228,7 @@ module tecio
                                         var7,var7name,var8,var8name )
     ! 
     character(len=*),intent(in) :: filename
-    real(8),dimension(:,:),intent(in) :: var1,var2,var3,var4,var5,   &
+    real(real_kind),dimension(:,:),intent(in) :: var1,var2,var3,var4,var5,   &
                                          var6,var7,var8
     character(len=*),intent(in) :: var1name,var2name,var3name,         &
                                    var4name,var5name,var6name,         &
@@ -1456,7 +1458,7 @@ module tecio
                                         var9,var9name )
     ! 
     character(len=*),intent(in) :: filename
-    real(8),dimension(:,:),intent(in) :: var1,var2,var3,var4,var5,   &
+    real(real_kind),dimension(:,:),intent(in) :: var1,var2,var3,var4,var5,   &
                                          var6,var7,var8,var9
     character(len=*),intent(in) :: var1name,var2name,var3name,         &
                                    var4name,var5name,var6name,         &
@@ -1688,7 +1690,7 @@ module tecio
                                         var9,var9name,var10,var10name )
     ! 
     character(len=*),intent(in) :: filename
-    real(8),dimension(:,:),intent(in) :: var1,var2,var3,var4,var5,   &
+    real(real_kind),dimension(:,:),intent(in) :: var1,var2,var3,var4,var5,   &
                                          var6,var7,var8,var9,var10
     character(len=*),intent(in) :: var1name,var2name,var3name,         &
                                    var4name,var5name,var6name,         &
@@ -1923,7 +1925,7 @@ module tecio
                                         var11,var11name )
     ! 
     character(len=*),intent(in) :: filename
-    real(8),dimension(:,:),intent(in) :: var1,var2,var3,var4,var5,   &
+    real(real_kind),dimension(:,:),intent(in) :: var1,var2,var3,var4,var5,   &
                                          var6,var7,var8,var9,var10,  &
                                          var11
     character(len=*),intent(in) :: var1name,var2name,var3name,         &
@@ -2013,9 +2015,9 @@ module tecio
   subroutine writetecbin3d1var(filename,var1,var1name,x,y,z)
     ! 
     character(len=*),intent(in) :: filename
-    real(8),intent(in) :: var1(:,:,:)
+    real(real_kind),intent(in) :: var1(:,:,:)
     character(len=*),intent(in) :: var1name
-    real(8),intent(in),optional :: x(:,:,:),y(:,:,:),z(:,:,:)
+    real(real_kind),intent(in),optional :: x(:,:,:),y(:,:,:),z(:,:,:)
     !
     ! local data
     !
@@ -2291,7 +2293,7 @@ module tecio
     character(len=*),intent(in) :: filename
     integer,intent(in) :: var1(:,:,:)
     character(len=*),intent(in) :: var1name
-    real(8),intent(in),optional :: x(:,:,:),y(:,:,:),z(:,:,:)
+    real(real_kind),intent(in),optional :: x(:,:,:),y(:,:,:),z(:,:,:)
     !
     ! local data
     !
@@ -2566,7 +2568,7 @@ module tecio
                                                       var3,var3name)
     ! 
     character(len=*),intent(in) :: filename
-    real(8),intent(in) :: var1(:,:,:),var2(:,:,:),var3(:,:,:)
+    real(real_kind),intent(in) :: var1(:,:,:),var2(:,:,:),var3(:,:,:)
     character(len=*),intent(in) :: var1name,var2name,var3name
     !
     ! local data
@@ -2780,7 +2782,7 @@ module tecio
                                         var3,var3name,var4,var4name )
 
     character(len=*),intent(in) :: filename
-    real(8),dimension(:,:,:),intent(in) :: var1,var2,var3
+    real(real_kind),dimension(:,:,:),intent(in) :: var1,var2,var3
     integer,dimension(:,:,:),intent(in) :: var4
     character(len=*),intent(in) :: var1name,var2name,var3name,         &
                                    var4name
@@ -2999,7 +3001,7 @@ module tecio
                                         var3,var3name,var4,var4name )
     ! 
     character(len=*),intent(in) :: filename
-    real(8),dimension(:,:,:),intent(in) :: var1,var2,var3,var4
+    real(real_kind),dimension(:,:,:),intent(in) :: var1,var2,var3,var4
     character(len=*),intent(in) :: var1name,var2name,var3name,         &
                                    var4name
     !
@@ -3218,7 +3220,7 @@ module tecio
                                         var5,var5name  )
     ! 
     character(len=*),intent(in) :: filename
-    real(8),dimension(:,:,:),intent(in) :: var1,var2,var3,var4,var5
+    real(real_kind),dimension(:,:,:),intent(in) :: var1,var2,var3,var4,var5
     character(len=*),intent(in) :: var1name,var2name,var3name,         &
                                    var4name,var5name
     !
@@ -3438,7 +3440,7 @@ module tecio
                                         var5,var5name,var6,var6name )
     ! 
     character(len=*),intent(in) :: filename
-    real(8),dimension(:,:,:),intent(in) :: var1,var2,var3,var4,var5,var6
+    real(real_kind),dimension(:,:,:),intent(in) :: var1,var2,var3,var4,var5,var6
     character(len=*),intent(in) :: var1name,var2name,var3name,         &
                                    var4name,var5name,var6name
     !
@@ -3661,7 +3663,7 @@ module tecio
                                         var7,var7name )
     ! 
     character(len=*),intent(in) :: filename
-    real(8),dimension(:,:,:),intent(in) :: var1,var2,var3,var4,var5,   &
+    real(real_kind),dimension(:,:,:),intent(in) :: var1,var2,var3,var4,var5,   &
                                            var6,var7
     character(len=*),intent(in) :: var1name,var2name,var3name,         &
                                    var4name,var5name,var6name,         &
@@ -3888,7 +3890,7 @@ module tecio
                                         var7,var7name,var8,var8name )
     ! 
     character(len=*),intent(in) :: filename
-    real(8),dimension(:,:,:),intent(in) :: var1,var2,var3,var4,var5,   &
+    real(real_kind),dimension(:,:,:),intent(in) :: var1,var2,var3,var4,var5,   &
                                            var6,var7,var8
     character(len=*),intent(in) :: var1name,var2name,var3name,         &
                                    var4name,var5name,var6name,         &

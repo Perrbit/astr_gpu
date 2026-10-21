@@ -1,4 +1,6 @@
 module compact_operator_gpu
+  use astr_precision, only: real_kind,real_bytes
+  use astr_precision_mpi, only: mpi_real_type
   use cudafor
   use compact_derivative_gpu
   use compact_filter_gpu, only: compact_filter_plan,prepare_compact_filter_gpu, &
@@ -24,7 +26,7 @@ contains
       enabled=global_compact_enabled()
       if(enabled) then
         if(gpu_mixed_workspace_requested().or.gpu_selective_sync_enabled().or.gpu_dependency_sync_enabled()) &
-          error stop 'Global compact requires FP64 and explicit synchronization'
+          error stop 'Global compact requires native precision and explicit synchronization'
         if(lio) write(*,'(A)') 'COMPACT GPU: globally coupled two-level PCR'
       endif
       configured=.true.
@@ -47,7 +49,7 @@ contains
       call prepare_compact_derivative_gpu(dims(axis),hm,ntypes(axis),min(5*lines,compact_batch_rhs()),plans(axis), &
         compact_partitions(axis),compact_line_comms(axis))
       bytes=bytes+plans(axis)%global_line%device_bytes+ &
-        8_8*plans(axis)%capacity*(2_8*dims(axis)+2*hm+2+2_8*plans(axis)%global_line%n)
+        int(real_bytes,8)*plans(axis)%capacity*(2_8*dims(axis)+2*hm+2+2_8*plans(axis)%global_line%n)
     enddo
     if(lio) write(*,'(A,I0)') 'COMPACT_DERIVATIVE_PACKED_DEVICE_BYTES=',bytes
     prepared=.true.
@@ -72,7 +74,7 @@ contains
     bytes=0_8
     do axis=1,3
       bytes=bytes+filters(axis)%global_line%device_bytes+ &
-        8_8*(filters(axis)%capacity*(2_8*filters(axis)%dim+2*hm+2+ &
+        int(real_bytes,8)*(filters(axis)%capacity*(2_8*filters(axis)%dim+2*hm+2+ &
         2_8*filters(axis)%global_line%n)+69_8)
     enddo
     if(lio) write(*,'(A,I0)') 'COMPACT_FILTER_PACKED_DEVICE_BYTES=',bytes
@@ -98,14 +100,14 @@ contains
     integer,value :: axis,kind,im,jm,km,hm,dim,lines,nrhs,start
     integer,value :: first,total
     logical,value :: periodic
-    real(8),device,intent(out) :: f(-hm:dim+hm,nrhs)
+    real(real_kind),device,intent(out) :: f(-hm:dim+hm,nrhs)
     integer :: position,column,line,m,i,j,k,index
-    real(8) :: value,uu,p,metric(3)
+    real(real_kind) :: value,uu,p,metric(3)
     position=(blockIdx%x-1)*blockDim%x+threadIdx%x-1-hm
     column=blockIdx%y
     if(position>dim+hm) return
     if(.not.periodic.and.(first+position<0.or.first+position>total)) then
-      f(position,column)=0.d0
+      f(position,column)=0.e0_real_kind
       return
     endif
     index=start+column-1
@@ -152,9 +154,9 @@ contains
     use commarray_gpu, only: qrhs_d,dvel_d,dtmp_d,dxi_d
     integer,value :: axis,kind,im,jm,km,first,n,dim,lines,nrhs,start
     integer,value :: lo,hi
-    real(8),device,intent(in) :: df(n,nrhs)
+    real(real_kind),device,intent(in) :: df(n,nrhs)
     integer :: position,column,line,m,i,j,k,b,index
-    real(8) :: value,contribution
+    real(real_kind) :: value,contribution
     position=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     column=blockIdx%y
     if(position>dim) return
@@ -168,10 +170,10 @@ contains
       do b=1,3
         contribution=value*dxi_d(i,j,k,axis,b)
         if(m<=3) then
-          if(axis==1) dvel_d(i,j,k,m,b)=0.d0
+          if(axis==1) dvel_d(i,j,k,m,b)=0.e0_real_kind
           dvel_d(i,j,k,m,b)=dvel_d(i,j,k,m,b)+contribution
         else
-          if(axis==1) dtmp_d(i,j,k,b)=0.d0
+          if(axis==1) dtmp_d(i,j,k,b)=0.e0_real_kind
           dtmp_d(i,j,k,b)=dtmp_d(i,j,k,b)+contribution
         endif
       enddo
@@ -188,13 +190,13 @@ contains
     integer,value :: axis,im,jm,km,hm,dim,lines,nrhs,start,offset
     integer,value :: first,total
     logical,value :: periodic
-    real(8),device,intent(out) :: f(-hm:dim+hm,nrhs)
+    real(real_kind),device,intent(out) :: f(-hm:dim+hm,nrhs)
     integer :: position,column,line,m,i,j,k,index
     position=(blockIdx%x-1)*blockDim%x+threadIdx%x-1-hm
     column=blockIdx%y
     if(position>dim+hm) return
     if(.not.periodic.and.(first+position<0.or.first+position>total)) then
-      f(position,column)=0.d0
+      f(position,column)=0.e0_real_kind
       return
     endif
     index=start+column-1
@@ -207,7 +209,7 @@ contains
   attributes(global) subroutine commit_filter_lines_kernel(axis,im,jm,km,dim,lines,nrhs,start,offset,filtered)
     use commarray_gpu, only: q_d
     integer,value :: axis,im,jm,km,dim,lines,nrhs,start,offset
-    real(8),device,intent(in) :: filtered(0:dim,nrhs)
+    real(real_kind),device,intent(in) :: filtered(0:dim,nrhs)
     integer :: position,column,line,m,i,j,k,index
     position=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     column=blockIdx%y
@@ -309,9 +311,10 @@ contains
     type(compact_matrix) :: matrix
     character(8) :: flag
     integer :: status,dim,halo,n,j,k,column,rank,ranks,comm,ierr
-    real(8),allocatable :: f(:,:),actual(:,:),raw(:,:),rhs(:,:),expected(:,:),reference(:,:),physical(:,:)
-    real(8),allocatable :: send(:,:),low(:,:),high(:,:),residual_field(:,:),norms(:,:),global_norms(:,:)
-    real(8) :: alpha,edge(2),abs_error,scaled_error,residual,scale,matrix_norm,global_matrix_norm
+    real(real_kind),allocatable :: f(:,:),actual(:,:),raw(:,:),rhs(:,:),expected(:,:),reference(:,:),physical(:,:)
+    real(real_kind),allocatable :: send(:,:),low(:,:),high(:,:),residual_field(:,:),norms(:,:),global_norms(:,:)
+    real(real_kind) :: alpha,edge(2),abs_error,scaled_error,residual,scale,matrix_norm,global_matrix_norm
+    real(real_kind) :: rhs_abs_error,rhs_scaled_error
     if(kind==0) then
       if(filter_compared(axis,offset)) return
     else
@@ -326,7 +329,7 @@ contains
     if(kind==0) halo=filters(axis)%hm
     allocate(f(-halo:dim+halo,nrhs),actual(dim+1,nrhs),raw(n,nrhs),rhs(n,nrhs), &
       expected(n,nrhs),reference(n,nrhs),physical(dim+1,nrhs))
-    alpha=1.d0/3.d0
+    alpha=1.e0_real_kind/3.e0_real_kind
     if(kind==0) then
       alpha=alfa_filter
       status=cudaMemcpy(f,filters(axis)%input,(dim+2*halo+1)*nrhs,cudaMemcpyDeviceToHost)
@@ -353,10 +356,17 @@ contains
     else
       call compact_derivative_rhs(compact_partitions(axis),dim,halo,f,expected)
     endif
+    if(.not.all(ieee_is_finite(expected))) error stop 'nonfinite compact CPU stencil reference'
+    rhs_abs_error=0.e0_real_kind; rhs_scaled_error=0.e0_real_kind
     do column=1,nrhs
-      if(maxval(abs(rhs(:,column)-expected(:,column)))>2.d-10*max(1.d0,maxval(abs(expected(:,column))))) &
-        error stop 'global compact GPU RHS differs from independent CPU stencil'
+      scale=max(1.e0_real_kind,maxval(abs(expected(:,column))))
+      rhs_abs_error=max(rhs_abs_error,maxval(abs(rhs(:,column)-expected(:,column))))
+      rhs_scaled_error=max(rhs_scaled_error,maxval(abs(rhs(:,column)-expected(:,column)))/scale)
     enddo
+    write(*,'(A,3(I0,1X),2(ES24.16,1X))') 'COMPACT_RHS_SAME_STATE rank/kind/axis abs/scaled: ', &
+      mpirank,kind,axis,rhs_abs_error,rhs_scaled_error
+    if(real_bytes==8.and.rhs_scaled_error>2.e-10_real_kind) &
+      error stop 'global compact GPU RHS differs from independent CPU stencil'
     comm=compact_line_comms(axis)
     rank=compact_partitions(axis)%rank
     ranks=compact_partitions(axis)%ranks
@@ -368,14 +378,16 @@ contains
     call prepare_compact_cpu(matrix,edge,compact_partitions(axis),comm,nrhs,cpu)
     call solve_compact_cpu(cpu,expected,reference,physical,nrhs)
     call release_compact_cpu(cpu)
+    if(.not.all(ieee_is_finite(reference)).or..not.all(ieee_is_finite(physical))) &
+      error stop 'nonfinite same-state compact CPU solution'
     if(kind==0.and..not.compact_partitions(axis)%periodic) then
       if(compact_partitions(axis)%first==0) physical(1,:)=f(0,:)
       if(compact_partitions(axis)%first+dim==compact_partitions(axis)%intervals) physical(dim+1,:)=f(dim,:)
     endif
-    abs_error=0.d0
-    scaled_error=0.d0
+    abs_error=0.e0_real_kind
+    scaled_error=0.e0_real_kind
     do column=1,nrhs
-      scale=max(1.d0,maxval(abs(physical(:,column))))
+      scale=max(1.e0_real_kind,maxval(abs(physical(:,column))))
       abs_error=max(abs_error,maxval(abs(actual(:,column)-physical(:,column))), &
         maxval(abs(raw(:,column)-reference(:,column))))
       scaled_error=max(scaled_error,maxval(abs(actual(:,column)-physical(:,column)))/scale, &
@@ -384,10 +396,10 @@ contains
     allocate(send(2,nrhs),low(2,nrhs),high(2,nrhs),residual_field(n,nrhs),norms(3,nrhs),global_norms(3,nrhs))
     send(1,:)=raw(1,:)
     send(2,:)=raw(n,:)
-    call MPI_Sendrecv(send,2*nrhs,MPI_DOUBLE_PRECISION,modulo(rank-1,ranks),25001, &
-      high,2*nrhs,MPI_DOUBLE_PRECISION,modulo(rank+1,ranks),25001,comm,MPI_STATUS_IGNORE,ierr)
-    call MPI_Sendrecv(send,2*nrhs,MPI_DOUBLE_PRECISION,modulo(rank+1,ranks),25002, &
-      low,2*nrhs,MPI_DOUBLE_PRECISION,modulo(rank-1,ranks),25002,comm,MPI_STATUS_IGNORE,ierr)
+    call MPI_Sendrecv(send,2*nrhs,mpi_real_type,modulo(rank-1,ranks),25001, &
+      high,2*nrhs,mpi_real_type,modulo(rank+1,ranks),25001,comm,MPI_STATUS_IGNORE,ierr)
+    call MPI_Sendrecv(send,2*nrhs,mpi_real_type,modulo(rank+1,ranks),25002, &
+      low,2*nrhs,mpi_real_type,modulo(rank-1,ranks),25002,comm,MPI_STATUS_IGNORE,ierr)
     residual_field=raw-expected
     do j=2,n
       residual_field(j,:)=residual_field(j,:)+matrix%lower(j)*raw(j-1,:)
@@ -398,19 +410,19 @@ contains
     residual_field(1,:)=residual_field(1,:)+edge(1)*low(2,:)
     residual_field(n,:)=residual_field(n,:)+edge(2)*high(1,:)
     matrix_norm=maxval(abs(matrix%diagonal)+abs(matrix%lower)+abs(matrix%upper))
-    matrix_norm=max(matrix_norm,1.d0+abs(matrix%upper(1))+abs(edge(1)), &
-      1.d0+abs(matrix%lower(n))+abs(edge(2)))
-    call MPI_Allreduce(matrix_norm,global_matrix_norm,1,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
+    matrix_norm=max(matrix_norm,1.e0_real_kind+abs(matrix%upper(1))+abs(edge(1)), &
+      1.e0_real_kind+abs(matrix%lower(n))+abs(edge(2)))
+    call MPI_Allreduce(matrix_norm,global_matrix_norm,1,mpi_real_type,MPI_MAX,comm,ierr)
     do column=1,nrhs
       norms(1,column)=maxval(abs(residual_field(:,column)))
       norms(2,column)=maxval(abs(expected(:,column)))
       norms(3,column)=maxval(abs(raw(:,column)))
     enddo
-    call MPI_Allreduce(norms,global_norms,3*nrhs,MPI_DOUBLE_PRECISION,MPI_MAX,comm,ierr)
-    residual=0.d0
+    call MPI_Allreduce(norms,global_norms,3*nrhs,mpi_real_type,MPI_MAX,comm,ierr)
+    residual=0.e0_real_kind
     do column=1,nrhs
       scale=global_norms(2,column)+global_matrix_norm*global_norms(3,column)
-      if(scale>0.d0) residual=max(residual,global_norms(1,column)/scale)
+      if(scale>0.e0_real_kind) residual=max(residual,global_norms(1,column)/scale)
     enddo
     if(kind==0) then
       write(*,'(A,3(I0,1X),3(ES24.16,1X))') 'COMPACT_FILTER_SAME_STATE rank/axis/component abs/scaled/residual: ', &
@@ -421,7 +433,9 @@ contains
         mpirank,kind,axis,abs_error,scaled_error,residual
       compared(axis,kind)=.true.
     endif
-    if(scaled_error>2.d-10.or.residual>1.d-12) error stop 'global compact same-state CPU/GPU gate failed'
+    if(.not.all(ieee_is_finite([scaled_error,residual]))) error stop 'nonfinite same-state compact diagnostics'
+    if(real_bytes==8.and.(scaled_error>2.e-10_real_kind.or.residual>1.e-12_real_kind)) &
+      error stop 'global compact same-state CPU/GPU gate failed'
   end subroutine
 #endif
 
@@ -441,22 +455,22 @@ contains
     use commarray_gpu, only: vel_d,tmp_d,dvel_d,dtmp_d,sigma_d,qflux_d
     use constdef, only: num1d3
     integer,value :: im,jm,km
-    real(8),value :: reynolds,prandtl,const5,tempconst,tempconst1
+    real(real_kind),value :: reynolds,prandtl,const5,tempconst,tempconst1
     integer :: i,j,k
-    real(8) :: miu,miu2,hcc,tloc,s11,s12,s13,s22,s23,s33,skk,t11,t12,t13,t22,t23,t33
+    real(real_kind) :: miu,miu2,hcc,tloc,s11,s12,s13,s22,s23,s33,skk,t11,t12,t13,t22,t23,t33
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     j=(blockIdx%y-1)*blockDim%y+threadIdx%y-1
     k=(blockIdx%z-1)*blockDim%z+threadIdx%z-1
     if(i>im.or.j>jm.or.k>km) return
     tloc=tmp_d(i,j,k)
     miu=tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
-    miu2=2.d0*miu
+    miu2=2.e0_real_kind*miu
     hcc=(miu/prandtl)/const5
     s11=dvel_d(i,j,k,1,1)
-    s12=0.5d0*(dvel_d(i,j,k,1,2)+dvel_d(i,j,k,2,1))
-    s13=0.5d0*(dvel_d(i,j,k,1,3)+dvel_d(i,j,k,3,1))
+    s12=0.5e0_real_kind*(dvel_d(i,j,k,1,2)+dvel_d(i,j,k,2,1))
+    s13=0.5e0_real_kind*(dvel_d(i,j,k,1,3)+dvel_d(i,j,k,3,1))
     s22=dvel_d(i,j,k,2,2)
-    s23=0.5d0*(dvel_d(i,j,k,2,3)+dvel_d(i,j,k,3,2))
+    s23=0.5e0_real_kind*(dvel_d(i,j,k,2,3)+dvel_d(i,j,k,3,2))
     s33=dvel_d(i,j,k,3,3)
     skk=num1d3*(s11+s22+s33)
     t11=miu2*(s11-skk); t12=miu2*s12; t13=miu2*s13

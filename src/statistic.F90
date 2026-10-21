@@ -6,6 +6,7 @@
 !| 12-02-2021  | Created by J. Fang                                    |
 !+---------------------------------------------------------------------+
 module statistic
+  use astr_precision, only: real_kind,clock_kind,real_to_word,word_to_real
   !
   use constdef
   use commvar,  only : im,jm,km,ia,ja,ka,ndims,xmin,xmax,ymin,ymax,    &
@@ -17,34 +18,35 @@ module statistic
   use utility, only: timereporter
   !
   implicit none
+  private :: real_kind,clock_kind,real_to_word,word_to_real
   !
   type :: tsta
-    real(8) :: urms,machrms,macht,kolmoglength,kolmogvelocity,        &
+    real(real_kind) :: urms,machrms,macht,kolmoglength,kolmogvelocity,        &
                kolmogtime,taylorlength,retaylor
-    real(8) :: rhoe
+    real(real_kind) :: rhoe
   end type tsta
   !
   integer :: nsamples,nstep_sbeg
   integer,private,save :: mean_last_sample_step=0
-  real(8),private,save :: mean_last_sample_time=0.d0
+  real(real_kind),private,save :: mean_last_sample_time=0.e0_real_kind
   logical :: lmeanallocated=.false.
   logical :: liosta=.false.
-  real(8) :: time_sbeg
-  real(8) :: enstophy,kenergy,fbcx,massflux,wrms,      &
+  real(real_kind) :: time_sbeg
+  real(real_kind) :: enstophy,kenergy,fbcx,massflux,wrms,      &
              wallheatflux,dissipation,nominal_thickness,xflame,vflame, &
              poutrt
-  real(8) :: massflux_target=0.d0
-  real(8),private,save :: frozen_force=0.d0
+  real(real_kind) :: massflux_target=0.e0_real_kind
+  real(real_kind),private,save :: frozen_force=0.e0_real_kind
   logical,private,save :: frozen_initialised=.false.
-  real(8) :: maxT,overall_qdot,v_H2O,v_HO2
-  real(8) :: vel_incom,prs_incom,rho_incom
-  real(8) :: umax,rhomax,tmpmax,qdotmax
-  real(8),allocatable :: max_q(:),min_q(:)
+  real(real_kind) :: maxT,overall_qdot,v_H2O,v_HO2
+  real(real_kind) :: vel_incom,prs_incom,rho_incom
+  real(real_kind) :: umax,rhomax,tmpmax,qdotmax
+  real(real_kind),allocatable :: max_q(:),min_q(:)
   !
-  real(8),allocatable,dimension(:) :: ro_xzm,u1_xzm,u2_xzm,t_xzm,p_xzm,&
+  real(real_kind),allocatable,dimension(:) :: ro_xzm,u1_xzm,u2_xzm,t_xzm,p_xzm,&
                                       eng_xzm,tke_xzm,ee_xzm
-  real(8),allocatable,dimension(:,:) :: ro_zm,u1_zm,u2_zm,t_zm,p_zm
-  real(8),allocatable,dimension(:,:,:) :: rom,u1m,u2m,u3m,pm,tm,       &
+  real(real_kind),allocatable,dimension(:,:) :: ro_zm,u1_zm,u2_zm,t_zm,p_zm
+  real(real_kind),allocatable,dimension(:,:,:) :: rom,u1m,u2m,u3m,pm,tm,       &
                                           u11,u22,u33,u12,u13,u23,pp,  &
                                           tt,tu1,tu2,tu3,              &
                                           u111,u222,u333,u112,u113,    &
@@ -59,7 +61,7 @@ module statistic
   !
   contains
   subroutine complete_mean_statistics_file(path,writing,identity,budget,allow_repartition,repartition_axes)
-    use iso_fortran_env, only: int64,real64
+    use iso_fortran_env, only: int64
     use ieee_arithmetic, only: ieee_is_finite
     use mpi, only: MPI_COMM_WORLD
     use parallel, only: ig0,jg0,kg0
@@ -70,7 +72,7 @@ module statistic
     logical,optional,intent(in) :: allow_repartition,repartition_axes(3)
     type(checkpoint_state_identity),intent(inout) :: identity
     integer(int64),intent(in) :: budget
-    real(real64),allocatable :: values(:,:,:,:)
+    real(real_kind),allocatable :: values(:,:,:,:)
     integer(int64) :: remaining,metadata(8)
     type(checkpoint_state_identity) :: expected
     call allocate_checkpoint_buffer([im,jm,km],0,44,budget,values,remaining,MPI_COMM_WORLD)
@@ -78,18 +80,18 @@ module statistic
     ! Metadata v2 retains the last sampling time independently of the current dt.
     metadata=[2_int64,int(nsamples,int64),0_int64,0_int64,0_int64,0_int64,0_int64,0_int64]
     if(writing) then
-      values=0.d0
+      values=0.e0_real_kind
       call checkpoint_state_require(nsamples>=0,MPI_COMM_WORLD,'negative mean statistics count')
       if(nsamples>0) then
         call checkpoint_state_require(lmeanallocated.and.liosta.and.mean_last_sample_step<identity%step, &
           MPI_COMM_WORLD,'mean sampling identity')
         call checkpoint_state_require(nstep_sbeg>0.and.nstep_sbeg<=mean_last_sample_step.and. &
           nsamples<=mean_last_sample_step-nstep_sbeg+1.and.ieee_is_finite(time_sbeg).and. &
-          ieee_is_finite(mean_last_sample_time).and.time_sbeg>=0.d0.and. &
+          ieee_is_finite(mean_last_sample_time).and.time_sbeg>=0.e0_real_kind.and. &
           mean_last_sample_time>=time_sbeg.and.mean_last_sample_time<=identity%time, &
           MPI_COMM_WORLD,'mean sampling clock')
         metadata(3:8)=[int(nstep_sbeg,int64),int(mean_last_sample_step,int64), &
-          transfer(time_sbeg,0_int64),1_int64,1_int64,transfer(mean_last_sample_time,0_int64)]
+          real_to_word(time_sbeg),1_int64,1_int64,real_to_word(mean_last_sample_time)]
         values(:,:,:,1)=rom
         values(:,:,:,2)=u1m
         values(:,:,:,3)=u2m
@@ -147,9 +149,9 @@ module statistic
         MPI_COMM_WORLD,'mean checkpoint clock mismatch')
       call checkpoint_state_require(metadata(1)==2.and.metadata(2)>=0.and.metadata(2)<=huge(nsamples).and. &
         metadata(3)>=0.and.metadata(3)<=identity%step.and.metadata(4)>=0.and. &
-        metadata(4)<max(1_int64,identity%step).and.ieee_is_finite(transfer(metadata(5),0.d0)).and. &
-        ieee_is_finite(transfer(metadata(8),0.d0)).and.transfer(metadata(5),0.d0)>=0.d0.and. &
-        transfer(metadata(8),0.d0)>=transfer(metadata(5),0.d0).and.transfer(metadata(8),0.d0)<=identity%time.and. &
+        metadata(4)<max(1_int64,identity%step).and.ieee_is_finite(word_to_real(metadata(5))).and. &
+        ieee_is_finite(word_to_real(metadata(8))).and.word_to_real(metadata(5))>=0.e0_real_kind.and. &
+        word_to_real(metadata(8))>=word_to_real(metadata(5)).and.word_to_real(metadata(8))<=identity%time.and. &
         metadata(6)==merge(1_int64,0_int64,metadata(2)>0).and.metadata(7)==metadata(6), &
         MPI_COMM_WORLD,'mean checkpoint metadata')
       call checkpoint_state_require(all(ieee_is_finite(values)),MPI_COMM_WORLD,'nonfinite mean statistics payload')
@@ -202,30 +204,30 @@ module statistic
         visdif2=values(:,:,:,43)
         visdif3=values(:,:,:,44)
       else
-        call checkpoint_state_require(all(metadata(3:8)==0).and.all(values==0.d0), &
+        call checkpoint_state_require(all(metadata(3:8)==0).and.all(values==0.e0_real_kind), &
           MPI_COMM_WORLD,'nonempty zero-sample mean checkpoint')
       endif
       nsamples=int(metadata(2))
       nstep_sbeg=int(metadata(3))
       mean_last_sample_step=int(metadata(4))
-      time_sbeg=transfer(metadata(5),0.d0)
-      mean_last_sample_time=transfer(metadata(8),0.d0)
+      time_sbeg=word_to_real(metadata(5))
+      mean_last_sample_time=word_to_real(metadata(8))
       liosta=metadata(7)==1
     endif
   end subroutine complete_mean_statistics_file
 
   subroutine channel_driver_state(values,writing,ok)
     use ieee_arithmetic, only: ieee_is_finite
-    real(8),intent(inout) :: values(6)
+    real(real_kind),intent(inout) :: values(6)
     logical,intent(in) :: writing
     logical,intent(out) :: ok
-    if(writing) values=[force,massflux_target,frozen_force,merge(1.d0,0.d0,frozen_initialised)]
-    ok=all(ieee_is_finite(values)).and.(values(6)==0.d0.or.values(6)==1.d0)
+    if(writing) values=[force,massflux_target,frozen_force,merge(1.e0_real_kind,0.e0_real_kind,frozen_initialised)]
+    ok=all(ieee_is_finite(values)).and.(values(6)==0.e0_real_kind.or.values(6)==1.e0_real_kind)
     if(.not.ok.or.writing) return
     force=values(1:3)
     massflux_target=values(4)
     frozen_force=values(5)
-    frozen_initialised=values(6)==1.d0
+    frozen_initialised=values(6)==1.e0_real_kind
   end subroutine
   !
   !+-------------------------------------------------------------------+
@@ -336,16 +338,16 @@ module statistic
     logical,intent(in),optional :: timerept
     !
     ! local data
-    real(8) :: rho_t,prs_t,tmp_t,u,v,w
+    real(real_kind) :: rho_t,prs_t,tmp_t,u,v,w
     integer :: i,j,k
-    real(8) :: d11,d12,d13,d21,d22,d23,d31,d32,d33,s11,s12,s13,s22,    &
+    real(real_kind) :: d11,d12,d13,d21,d22,d23,d31,d32,d33,s11,s12,s13,s22,    &
                s23,s33,skk,miu,div
     !
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.0_clock_kind
 #ifdef ASTR_AIR5_CHEMISTRY
     integer :: transport_status,abort_ierr
-    real(8) :: conductivity_tr,conductivity_v,species_viscosity(air5_num_species), &
+    real(real_kind) :: conductivity_tr,conductivity_v,species_viscosity(air5_num_species), &
       binary_diffusion(air5_num_species,air5_num_species),mixture_diffusion(air5_num_species)
 #endif
     !
@@ -371,58 +373,58 @@ module statistic
       !
       if(.not. lmeanallocated) call allomeanflow
       !
-      rom=0.d0
-      u1m=0.d0
-      u2m=0.d0
-      u3m=0.d0
-      pm =0.d0
-      tm =0.d0
+      rom=0.e0_real_kind
+      u1m=0.e0_real_kind
+      u2m=0.e0_real_kind
+      u3m=0.e0_real_kind
+      pm =0.e0_real_kind
+      tm =0.e0_real_kind
       !
-      u11=0.d0
-      u22=0.d0
-      u33=0.d0
-      u12=0.d0
-      u13=0.d0
-      u23=0.d0
+      u11=0.e0_real_kind
+      u22=0.e0_real_kind
+      u33=0.e0_real_kind
+      u12=0.e0_real_kind
+      u13=0.e0_real_kind
+      u23=0.e0_real_kind
       !
-      pp =0.d0
-      tt =0.d0
-      tu1=0.d0
-      tu2=0.d0
-      tu3=0.d0
+      pp =0.e0_real_kind
+      tt =0.e0_real_kind
+      tu1=0.e0_real_kind
+      tu2=0.e0_real_kind
+      tu3=0.e0_real_kind
       !
-      u111=0.d0
-      u222=0.d0 
-      u333=0.d0
-      u112=0.d0
-      u113=0.d0
-      u122=0.d0
-      u133=0.d0
-      u223=0.d0
-      u233=0.d0
-      u123=0.d0
+      u111=0.e0_real_kind
+      u222=0.e0_real_kind 
+      u333=0.e0_real_kind
+      u112=0.e0_real_kind
+      u113=0.e0_real_kind
+      u122=0.e0_real_kind
+      u133=0.e0_real_kind
+      u223=0.e0_real_kind
+      u233=0.e0_real_kind
+      u123=0.e0_real_kind
       !
-      u1rem=0.d0
-      u2rem=0.d0
-      u3rem=0.d0
+      u1rem=0.e0_real_kind
+      u2rem=0.e0_real_kind
+      u3rem=0.e0_real_kind
       !
-      pu1=0.d0
-      pu2=0.d0
-      pu3=0.d0
+      pu1=0.e0_real_kind
+      pu2=0.e0_real_kind
+      pu3=0.e0_real_kind
       !
-      sgmam11=0.d0
-      sgmam12=0.d0
-      sgmam13=0.d0
-      sgmam22=0.d0
-      sgmam23=0.d0
-      sgmam33=0.d0
+      sgmam11=0.e0_real_kind
+      sgmam12=0.e0_real_kind
+      sgmam13=0.e0_real_kind
+      sgmam22=0.e0_real_kind
+      sgmam23=0.e0_real_kind
+      sgmam33=0.e0_real_kind
       !
-      disspa=0.d0
-      predil=0.d0
+      disspa=0.e0_real_kind
+      predil=0.e0_real_kind
       !
-      visdif1=0.d0
-      visdif2=0.d0
-      visdif3=0.d0
+      visdif1=0.e0_real_kind
+      visdif2=0.e0_real_kind
+      visdif3=0.e0_real_kind
       !
       if(lio) print*,' ** meanflow initilised, nsamples=',nsamples,'nstep=',nstep
       !
@@ -508,9 +510,9 @@ module statistic
       !
       skk=num1d3*(d11+d22+d33)
       !
-      s11=2.d0*miu*(d11-skk)
-      s22=2.d0*miu*(d22-skk)
-      s33=2.d0*miu*(d33-skk)
+      s11=2.e0_real_kind*miu*(d11-skk)
+      s22=2.e0_real_kind*miu*(d22-skk)
+      s33=2.e0_real_kind*miu*(d33-skk)
       !
       s12=miu*(d12+d21)
       s13=miu*(d13+d31)
@@ -582,8 +584,8 @@ module statistic
     integer :: i,j,k
     integer,save :: ks,ke
     logical,save :: linit=.true.
-    real(8),save :: varsamp
-    real(8) :: eng,ro,u1,u2,u3
+    real(real_kind),save :: varsamp
+    real(real_kind) :: eng,ro,u1,u2,u3
     !
     if(linit) then
       allocate(ro_xzm(0:jm),u1_xzm(0:jm),u2_xzm(0:jm),t_xzm(0:jm),     &
@@ -592,26 +594,26 @@ module statistic
       if(ndims==2) then
         ks=0
         ke=0
-        varsamp=dble(ia)
+        varsamp=real(ia,kind=real_kind)
       elseif(ndims==3) then
         ks=1
         ke=km
-        varsamp=dble(ia*ka)
+        varsamp=real(ia*ka,kind=real_kind)
       endif
       !
       linit=.false.
       !
     endif
     !
-    ro_xzm=0.d0
-    u1_xzm=0.d0
-    u2_xzm=0.d0
-     t_xzm=0.d0
-     p_xzm=0.d0
-   eng_xzm=0.d0
+    ro_xzm=0.e0_real_kind
+    u1_xzm=0.e0_real_kind
+    u2_xzm=0.e0_real_kind
+     t_xzm=0.e0_real_kind
+     p_xzm=0.e0_real_kind
+   eng_xzm=0.e0_real_kind
     !
-    tke_xzm=0.d0
-    ee_xzm=0.d0
+    tke_xzm=0.e0_real_kind
+    ee_xzm=0.e0_real_kind
     !
     do k=ks,ke
     do i=1,im
@@ -686,8 +688,8 @@ module statistic
     type(tsta) :: stas
     !
     integer :: i,j,k,ns
-    real(8) :: s11,s12,s13,s22,s23,s33,div,miu,dissa
-    real(8) :: rsamples,miudrho,dudx2,csavg,v2,cs,ufluc
+    real(real_kind) :: s11,s12,s13,s22,s23,s33,div,miu,dissa
+    real(real_kind) :: rsamples,miudrho,dudx2,csavg,v2,cs,ufluc
     !
     logical :: fex
     logical,save :: linit=.true.
@@ -704,15 +706,15 @@ module statistic
       !
     endif
     !
-    rsamples=dble(ia*ja*ka)
+    rsamples=real(ia*ja*ka,kind=real_kind)
     !
-    stas%urms=0.d0
-    stas%machrms=0.d0
+    stas%urms=0.e0_real_kind
+    stas%machrms=0.e0_real_kind
     !
-    miudrho=0.d0
-    dudx2=0.d0
-    csavg=0.d0
-    dissa=0.d0
+    miudrho=0.e0_real_kind
+    dudx2=0.e0_real_kind
+    csavg=0.e0_real_kind
+    dissa=0.e0_real_kind
     do k=1,km
     do j=1,jm
     do i=1,im
@@ -724,10 +726,10 @@ module statistic
       endif
       !
       s11=dvel(i,j,k,1,1)
-      s12=0.5d0*(dvel(i,j,k,1,2)+dvel(i,j,k,2,1))
-      s13=0.5d0*(dvel(i,j,k,1,3)+dvel(i,j,k,3,1))
+      s12=0.5e0_real_kind*(dvel(i,j,k,1,2)+dvel(i,j,k,2,1))
+      s13=0.5e0_real_kind*(dvel(i,j,k,1,3)+dvel(i,j,k,3,1))
       s22=dvel(i,j,k,2,2)
-      s23=0.5d0*(dvel(i,j,k,2,3)+dvel(i,j,k,3,2))
+      s23=0.5e0_real_kind*(dvel(i,j,k,2,3)+dvel(i,j,k,3,2))
       s33=dvel(i,j,k,3,3)
       !
       ! div=s11+s22+s33
@@ -748,7 +750,7 @@ module statistic
       !
       stas%rhoe=stas%rhoe+q(i,j,k,5)
       !
-      dissa=dissa+2.d0*miu*(s11**2+s22**2+s33**2+2.d0*(s12**2+s13**2+s23**2)-num1d3*div**2)
+      dissa=dissa+2.e0_real_kind*miu*(s11**2+s22**2+s33**2+2.e0_real_kind*(s12**2+s13**2+s23**2)-num1d3*div**2)
       !
     enddo
     enddo
@@ -763,7 +765,7 @@ module statistic
     !
     stas%rhoe=psum(stas%rhoe)/rsamples
     !
-    ufluc=stas%urms/sqrt(3.d0)
+    ufluc=stas%urms/sqrt(3.e0_real_kind)
     !
     stas%macht         = stas%urms/csavg
     stas%taylorlength  = ufluc/sqrt(dudx2)
@@ -801,8 +803,9 @@ module statistic
     !
     ! local data
     integer :: i,j,k
-    real(8) :: time_beg,qdot,var1,var2
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg
+    real(real_kind) :: qdot,var1,var2
+    real(clock_kind),save :: subtime=0.0_clock_kind
     !
     if(present(timerept)) then
 
@@ -867,10 +870,10 @@ module statistic
       !
       wrms=wrmscal()
       !
-      if(abs(massflux_target)<1.d-16) then
+      if(abs(massflux_target)<1.e-16_real_kind) then
         !
         massflux_target=massflux
-        force=0.d0
+        force=0.e0_real_kind
         !
         if(lio) print*,' ** target mass flux= ',massflux_target
         !
@@ -882,9 +885,9 @@ module statistic
       
     elseif(trim(flowtype)=='cylinder') then
       !
-      vel_incom=0.d0
-      prs_incom=0.d0
-      rho_incom=0.d0
+      vel_incom=0.e0_real_kind
+      prs_incom=0.e0_real_kind
+      rho_incom=0.e0_real_kind
       !
       if(irk==0 .and. jrk==jrkm) then
         vel_incom=vel(0,jm,0,1)
@@ -909,10 +912,10 @@ module statistic
       !
       enstophy=enstophycal()
       !
-      var1=0.d0
-      var2=0.d0
+      var1=0.e0_real_kind
+      var2=0.e0_real_kind
       !
-      qdotmax=-1.d30
+      qdotmax=-1.e30_real_kind
       !
       do i=0,im
         do j=0,jm
@@ -1004,7 +1007,7 @@ module statistic
     use utility,  only : listinit,listwrite
     !
     ! arguments
-    real(8),intent(in),optional :: time_verybegin
+    real(clock_kind),intent(in),optional :: time_verybegin
     !
     ! local data
     logical,save :: linit=.true.
@@ -1012,7 +1015,7 @@ module statistic
     integer :: nprthead=200
     integer :: i,ferr,ns,walltime
     integer,save :: hand_fs
-    real(8) :: l_0
+    real(real_kind) :: l_0
     character(len=1024) :: fstitle
     ! 
     if(lio) then
@@ -1097,14 +1100,14 @@ module statistic
     use commarray, only : vel,cell,rho,dvel
     use commfunc,  only : volhex
     !
-    real(8) :: vout
+    real(real_kind) :: vout
     !
     ! local data
     integer :: i,j,k
-    real(8) :: omega(3),omegam
-    real(8) :: l_0,u_0
+    real(real_kind) :: omega(3),omegam
+    real(real_kind) :: l_0,u_0
     !
-    vout=0.d0
+    vout=0.e0_real_kind
     !
     if(ndims==2) then
       k=0
@@ -1119,7 +1122,7 @@ module statistic
         !
       enddo
       enddo
-      vout=0.5d0*psum(vout)/real(ia*ja,8)
+      vout=0.5e0_real_kind*psum(vout)/real(ia*ja,kind=real_kind)
     elseif(ndims==3) then
       do k=1,km
       do j=1,jm
@@ -1137,10 +1140,10 @@ module statistic
       enddo
       enddo
       !
-      vout=0.5d0*psum(vout)/real(ia*ja*ka,8)
+      vout=0.5e0_real_kind*psum(vout)/real(ia*ja*ka,kind=real_kind)
     endif
     !
-    l_0=xmax/(2.d0*pi)
+    l_0=xmax/(2.e0_real_kind*pi)
     !
     vout=vout/(roinf*(uinf/l_0)**2)
     !
@@ -1164,13 +1167,13 @@ module statistic
     use commarray, only : vel,cell,rho,dvel
     use commfunc,  only : volhex
     !
-    real(8) :: vout
+    real(real_kind) :: vout
     !
     ! local data
     integer :: i,j,k
-    real(8) :: var1
+    real(real_kind) :: var1
     !
-    vout=0.d0
+    vout=0.e0_real_kind
     if(ndims==2) then
       k=0
       do j=1,jm
@@ -1182,7 +1185,7 @@ module statistic
       enddo
       enddo
       !
-      vout=0.5d0*psum(vout)/real(ia*ja,8)
+      vout=0.5e0_real_kind*psum(vout)/real(ia*ja,kind=real_kind)
     elseif(ndims==3) then
       do k=1,km
       do j=1,jm
@@ -1195,7 +1198,7 @@ module statistic
       enddo
       enddo
       !
-      vout=0.5d0*psum(vout)/real(ia*ja*ka,8)
+      vout=0.5e0_real_kind*psum(vout)/real(ia*ja*ka,kind=real_kind)
     endif
     !
     vout=vout/(roinf*uinf*uinf)
@@ -1220,15 +1223,15 @@ module statistic
     use commarray,only : tmp,dvel
     use fludyna,  only : miucal
     !
-    real(8) :: vout
+    real(real_kind) :: vout
     !
     ! local data
     integer :: i,j,k
-    real(8) :: var1,miu
-    real(8) :: du11,du12,du13,du21,du22,du23,du31,du32,du33,           &
+    real(real_kind) :: var1,miu
+    real(real_kind) :: du11,du12,du13,du21,du22,du23,du31,du32,du33,           &
                s11,s12,s13,s22,s23,s33,div
     !
-    vout=0.d0
+    vout=0.e0_real_kind
     !
     do k=1,km
     do j=1,jm
@@ -1244,13 +1247,13 @@ module statistic
       du21=dvel(i,j,k,2,1); du22=dvel(i,j,k,2,2); du23=dvel(i,j,k,2,3)
       du31=dvel(i,j,k,3,1); du32=dvel(i,j,k,3,2); du33=dvel(i,j,k,3,3)
       !
-      s11=du11; s12=0.5d0*(du12+du21); s13=0.5d0*(du13+du31)
-                s22=du22;              s23=0.5d0*(du23+du32)
+      s11=du11; s12=0.5e0_real_kind*(du12+du21); s13=0.5e0_real_kind*(du13+du31)
+                s22=du22;              s23=0.5e0_real_kind*(du23+du32)
                                        s33=du33
       !
       div=s11+s22+s33
       !
-      var1=2.d0*miu*(s11**2+s22**2+s33**2+2.d0*(s12**2+s13**2+s23**2)- &
+      var1=2.e0_real_kind*miu*(s11**2+s22**2+s33**2+2.e0_real_kind*(s12**2+s13**2+s23**2)- &
                                                           num1d3*div**2)
       !
       vout=vout+var1
@@ -1259,7 +1262,7 @@ module statistic
     enddo
     enddo
     !
-    vout=psum(vout)/dble(ia*ja*ka)
+    vout=psum(vout)/real(ia*ja*ka,kind=real_kind)
     !
     return
     !
@@ -1279,26 +1282,26 @@ module statistic
     use commvar,   only : im,jm,km,ia,ja,ka
     use commarray, only : vel
     !
-    real(8) :: vout
+    real(real_kind) :: vout
     !
     ! local data
     integer :: i,j,k,k1,k2
-    real(8) :: norm
+    real(real_kind) :: norm
     !
     if(ndims==2) then
       k1=0
       k2=0
-      norm=real(ia*ja,8)
+      norm=real(ia*ja,kind=real_kind)
     elseif(ndims==3) then
       k1=1
       k2=km
-      norm=real(ia*ja*ka,8)
+      norm=real(ia*ja*ka,kind=real_kind)
     else
       print*,' !! ndims=',ndims
       stop ' !! error @ fbcxchan !!'
     endif
     !
-    vout=0.d0
+    vout=0.e0_real_kind
     do k=k1,k2
     do j=1,jm
     do i=1,im
@@ -1323,7 +1326,7 @@ module statistic
   !| -------------                                                     |
   !| 29-09-2021  | Created by J. Fang STFC Daresbury Laboratory        |
   !+-------------------------------------------------------------------+
-  real(8) function fbcxbl()
+  real(real_kind) function fbcxbl()
     !
     use commvar,  only : reynolds,nondimen
     use commarray,only : tmp,dvel,x
@@ -1333,11 +1336,11 @@ module statistic
     !
     ! local data
     integer :: i,j,k
-    real(8) :: miu,norm,area
-    real(8) :: tau(0:im,0:km)
+    real(real_kind) :: miu,norm,area
+    real(real_kind) :: tau(0:im,0:km)
     !
-    fbcxbl=0.d0
-    norm=0.d0
+    fbcxbl=0.e0_real_kind
+    norm=0.e0_real_kind
     !
     if(jrk==0) then
       !
@@ -1361,7 +1364,7 @@ module statistic
         k=0
         do i=1,im
           area=abs(x(i,j,k,1)-x(i-1,j,k,1))
-          fbcxbl=fbcxbl+0.5d0*area*(tau(i,k)+tau(i-1,k))
+          fbcxbl=fbcxbl+0.5e0_real_kind*area*(tau(i,k)+tau(i-1,k))
           norm=norm+area
         enddo
         !
@@ -1370,7 +1373,7 @@ module statistic
         do i=1,im
           area=arquad3d(x(i-1,j,k-1,:),x(i,j,k-1,:),                 &
                         x(i,j,k,:),x(i-1,j,k,:))
-          fbcxbl=fbcxbl+0.25d0*area*(tau(i,k)+tau(i-1,k)+tau(i,k-1)+tau(i-1,k-1))
+          fbcxbl=fbcxbl+0.25e0_real_kind*area*(tau(i,k)+tau(i-1,k)+tau(i,k-1)+tau(i-1,k-1))
           norm=norm+area
         enddo
         enddo
@@ -1397,7 +1400,7 @@ module statistic
   !| -------------                                                     |
   !| 29-09-2021  | Created by J. Fang STFC Daresbury Laboratory        |
   !+-------------------------------------------------------------------+
-  real(8) function blthickness(which_thickness) result(thickness)
+  real(real_kind) function blthickness(which_thickness) result(thickness)
     !
     use commvar,  only : reynolds
     use commarray,only : tmp,dvel,x
@@ -1409,17 +1412,17 @@ module statistic
     !
     ! local data
     integer :: i,j,k
-    real(8) :: miu,norm,area
-    real(8) :: tau(0:im,0:km)
+    real(real_kind) :: miu,norm,area
+    real(real_kind) :: tau(0:im,0:km)
     !
     if(which_thickness=='nominal') then
       !
-      thickness=0.d0
+      thickness=0.e0_real_kind
       do j=1,jm
         !
-        if(u1_xzm(j-1)<0.99d0 .and. u1_xzm(j)>=0.99d0) then
+        if(u1_xzm(j-1)<0.99e0_real_kind .and. u1_xzm(j)>=0.99e0_real_kind) then
           thickness=interlinear(u1_xzm(j-1),u1_xzm(j),                 &
-                                x(0,j-1,0,2),x(0,j,0,2),0.99d0)
+                                x(0,j-1,0,2),x(0,j,0,2),0.99e0_real_kind)
         endif
         !
       enddo
@@ -1449,7 +1452,7 @@ module statistic
   !| -------------                                                     |
   !| 29-09-2021  | Created by J. Fang STFC Daresbury Laboratory        |
   !+-------------------------------------------------------------------+
-  real(8) function whfbl()
+  real(real_kind) function whfbl()
     !
     use commvar,  only : reynolds,const5,prandtl,nondimen,cp
     use commarray,only : tmp,dtmp,x
@@ -1459,11 +1462,11 @@ module statistic
     !
     ! local data
     integer :: i,j,k
-    real(8) :: miu,hcc,norm,area
-    real(8) :: qw(0:im,0:km)
+    real(real_kind) :: miu,hcc,norm,area
+    real(real_kind) :: qw(0:im,0:km)
     !
-    whfbl=0.d0
-    norm=0.d0
+    whfbl=0.e0_real_kind
+    norm=0.e0_real_kind
     !
     if(jrk==0) then
       !
@@ -1488,7 +1491,7 @@ module statistic
         k=0
         do i=1,im
           area=abs(x(i,j,k,1)-x(i-1,j,k,1))
-          whfbl=whfbl+0.5d0*area*(qw(i,k)+qw(i-1,k))
+          whfbl=whfbl+0.5e0_real_kind*area*(qw(i,k)+qw(i-1,k))
           norm=norm+area
         enddo
         !
@@ -1497,7 +1500,7 @@ module statistic
         do i=1,im
           area=arquad3d(x(i-1,j,k-1,:),x(i,j,k-1,:),                 &
                         x(i,j,k,:),x(i-1,j,k,:))
-          whfbl=whfbl+0.25d0*area*(qw(i,k)+qw(i-1,k)+qw(i,k-1)+qw(i-1,k-1))
+          whfbl=whfbl+0.25e0_real_kind*area*(qw(i,k)+qw(i-1,k)+qw(i,k-1)+qw(i-1,k-1))
           norm=norm+area
         enddo
         enddo
@@ -1524,7 +1527,7 @@ module statistic
   !| -------------                                                     |
   !| 13-02-2021  | Created by J. Fang STFC Daresbury Laboratory        |
   !+-------------------------------------------------------------------+
-  real(8) function fbcxchan()
+  real(real_kind) function fbcxchan()
     !
     use commvar,  only : reynolds,nondimen
     use commarray,only : tmp,dvel
@@ -1533,18 +1536,18 @@ module statistic
     !
     ! local data
     integer :: i,j,k,k1,k2
-    real(8) :: miu,norm
+    real(real_kind) :: miu,norm
     !
-    fbcxchan=0.d0
+    fbcxchan=0.e0_real_kind
     !
     if(ndims==2) then
       k1=0
       k2=0
-      norm=real(ia,8)
+      norm=real(ia,kind=real_kind)
     elseif(ndims==3) then
       k1=1
       k2=km
-      norm=real(ia*ka,8)
+      norm=real(ia*ka,kind=real_kind)
     else
       print*,' !! ndims=',ndims
       stop ' !! error @ fbcxchan !!'
@@ -1600,23 +1603,23 @@ module statistic
   !| -------------                                                     |
   !| 29-09-2021  | Created by J. Fang STFC Daresbury Laboratory        |
   !+-------------------------------------------------------------------+
-  real(8) function massfluxcal()
+  real(real_kind) function massfluxcal()
     !
     use commvar,  only : voldom
     use commarray,only : x,q,rho,cell
     !
     ! local data
     integer :: i,j,k
-    real(8) :: dy,var1,norm
+    real(real_kind) :: dy,var1,norm
     !
-    massfluxcal=0.d0
+    massfluxcal=0.e0_real_kind
     !
     if(ndims==2) then
       !
       k=0
       do j=1,jm
       do i=1,im
-        var1=0.25d0*(q(i-1,j-1,k,2)+q(i,j-1,k,2)+q(i-1,j,k,2)+q(i,j,k,2))
+        var1=0.25e0_real_kind*(q(i-1,j-1,k,2)+q(i,j-1,k,2)+q(i-1,j,k,2)+q(i,j,k,2))
         !
         massfluxcal=massfluxcal+var1*cell(i,j,k)%vol
         !
@@ -1628,7 +1631,7 @@ module statistic
       do k=1,km
       do j=1,jm
       do i=1,im
-        var1=0.125d0*( q(i-1,j-1,k,2)  +q(i,j-1,k,2)  +q(i-1,j,k,2)  +q(i,j,k,2) + &
+        var1=0.125e0_real_kind*( q(i-1,j-1,k,2)  +q(i,j-1,k,2)  +q(i-1,j,k,2)  +q(i,j,k,2) + &
                        q(i-1,j-1,k-1,2)+q(i,j-1,k-1,2)+q(i-1,j,k-1,2)+q(i,j,k-1,2) )
         !
         massfluxcal=massfluxcal+var1*cell(i,j,k)%vol
@@ -1658,24 +1661,24 @@ module statistic
   !| -------------                                                     |
   !| 13-02-2021  | Created by J. Fang STFC Daresbury Laboratory        |
   !+-------------------------------------------------------------------+
-  real(8) function massfluxchan()
+  real(real_kind) function massfluxchan()
     !
     use commarray,only : x,q,rho
     !
     ! local data
     integer :: i,j,k,k1,k2
-    real(8) :: dy,var1,norm
+    real(real_kind) :: dy,var1,norm
     !
-    massfluxchan=0.d0
+    massfluxchan=0.e0_real_kind
     !
     if(ndims==2) then
       k1=0
       k2=0
-      norm=real(ia,8)
+      norm=real(ia,kind=real_kind)
     elseif(ndims==3) then
       k1=1
       k2=km
-      norm=real(ia*ka,8)
+      norm=real(ia*ka,kind=real_kind)
     else
       print*,' !! ndims=',ndims
       stop ' !! error @ massfluxchan !!'
@@ -1685,7 +1688,7 @@ module statistic
     do j=1,jm
     do i=1,im
       dy=x(i,j,k,2)-x(i,j-1,k,2)
-      var1=0.5d0*(q(i,j,k,2)+q(i,j-1,k,2))
+      var1=0.5e0_real_kind*(q(i,j,k,2)+q(i,j-1,k,2))
       !
       massfluxchan=massfluxchan+var1*dy
       !
@@ -1715,15 +1718,15 @@ module statistic
   !| -------------                                                     |
   !| 22-Mar-2019  | Created by J. Fang STFC Daresbury Laboratory       |
   !+-------------------------------------------------------------------+
-  real(8) function chanfoce(force,massflux,friction,massfluxtarget)
+  real(real_kind) function chanfoce(force,massflux,friction,massfluxtarget)
     !
     use commvar, only: time,roinf,uinf,ref_len,ref_tim,ref_miu,nondimen
     !
     ! arguments
-    real(8),intent(in) :: force,massflux,friction,massfluxtarget
+    real(real_kind),intent(in) :: force,massflux,friction,massfluxtarget
     !
     ! local data
-    real(8) :: gn,qn1,ly,feedback_force,fixed_force
+    real(real_kind) :: gn,qn1,ly,feedback_force,fixed_force
     integer :: env_status,i,ich
     logical :: use_fixed_force
     character(len=32) :: force_mode,force_fixed
@@ -1735,8 +1738,8 @@ module statistic
     else
       gn=(ly*force-friction)
       qn1=massflux+deltat*gn
-      feedback_force=force-(2.d0*(qn1-massfluxtarget)-                 &
-               0.2d0*(massflux-massfluxtarget))/ly*(uinf/ref_len)
+      feedback_force=force-(2.e0_real_kind*(qn1-massfluxtarget)-                 &
+               0.2e0_real_kind*(massflux-massfluxtarget))/ly*(uinf/ref_len)
     endif
     !
     force_mode='feedback'

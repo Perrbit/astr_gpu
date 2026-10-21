@@ -7,6 +7,13 @@ set(AUTHOR "Jian Fang")
 set(AUTHOR_DETAILS "jian.fang@stfc.ac.uk")
 set(DESCRIPTION "Building ASTR using cmake")
 option(ASTR_WITH_CUDA "Build CUDA Fortran GPU support into the ASTR binary" OFF)
+set(ASTR_NUMERICAL_PRECISION "fp64" CACHE STRING "Numerical precision: fp64 or fp32")
+set_property(CACHE ASTR_NUMERICAL_PRECISION PROPERTY STRINGS fp64 fp32)
+if(ASTR_NUMERICAL_PRECISION STREQUAL "fp32")
+  add_definitions(-DASTR_REAL32)
+elseif(NOT ASTR_NUMERICAL_PRECISION STREQUAL "fp64")
+  message(FATAL_ERROR "ASTR_NUMERICAL_PRECISION must be fp64 or fp32")
+endif()
 set(ASTR_CUDA_ARCHITECTURES "" CACHE STRING
     "Explicit CUDA compute capabilities for Fortran and C++ (for example 80 or 80;89); empty keeps automatic selection")
 set(ASTR_CUDA_ARCH_FLAGS "")
@@ -27,6 +34,21 @@ get_filename_component(ASTR_USERDEFINE_SOURCE "${ASTR_USERDEFINE_SOURCE}" ABSOLU
 if(NOT EXISTS "${ASTR_USERDEFINE_SOURCE}" OR IS_DIRECTORY "${ASTR_USERDEFINE_SOURCE}")
   message(FATAL_ERROR "ASTR_USERDEFINE_SOURCE must name an existing Fortran source file")
 endif()
+# Offline segment matching needs the geometry producer identity, not a runtime field checksum.
+set(ASTR_STATISTICS_GEOMETRY_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/gridgeneration.F90"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/geom.F90"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/constdef.F90"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/insitu_geometry.F90"
+    "${ASTR_USERDEFINE_SOURCE}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${ASTR_STATISTICS_GEOMETRY_SOURCES})
+set(ASTR_STATISTICS_GEOMETRY_PARTS "")
+foreach(source IN LISTS ASTR_STATISTICS_GEOMETRY_SOURCES)
+  file(SHA256 "${source}" part)
+  string(APPEND ASTR_STATISTICS_GEOMETRY_PARTS "${part}")
+endforeach()
+string(SHA256 ASTR_STATISTICS_GEOMETRY_ID "${ASTR_STATISTICS_GEOMETRY_PARTS}")
+add_compile_definitions(ASTR_STATISTICS_GEOMETRY_ID="${ASTR_STATISTICS_GEOMETRY_ID}")
 option(ASTR_WITH_CATALYST "Build the optional Catalyst backend admission interface" OFF)
 option(ASTR_BUILD_INSITU_DEVICE_PROBES "Build optional CUDA C++ in-situ dependency probes" OFF)
 option(ASTR_BUILD_INSITU_RENDER_PROBES "Build probes requiring the private CUDA-rendering VTK patch" OFF)
@@ -192,6 +214,9 @@ endif (HDF5_FOUND)
 
 # set chemistry library
 option(CHEMISTRY "Build ASTR with chemistry" OFF)
+if(ASTR_NUMERICAL_PRECISION STREQUAL "fp32" AND (CHEMISTRY OR ASTR_WITH_AIR5_CHEMISTRY))
+  message(FATAL_ERROR "Native fp32 currently covers non-reacting five-variable flow only")
+endif()
 if (ASTR_WITH_AIR5_CHEMISTRY AND CHEMISTRY)
   message(FATAL_ERROR "ASTR_WITH_AIR5_CHEMISTRY cannot be combined with legacy Cantera CHEMISTRY")
 endif()
@@ -225,6 +250,9 @@ set(osub "--oversubscribe")
 
 if (${BUILD_TESTING})
   include(CTest)
+  add_test(NAME native_precision_abi COMMAND $<TARGET_FILE:native_precision_probe>)
+  add_test(NAME native_precision_mpi COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG}
+    2 $<TARGET_FILE:native_precision_mpi_probe>)
   message(STATUS "MPI INCL ALSO FOUND: ${MPI_INCLUDE_PATH}")
   message(STATUS "MPI EXEC: ${MPIEXEC_EXECUTABLE}") 
   add_test(NAME SOD COMMAND ${MPIEXEC_EXECUTABLE} -n 2 ${CMAKE_INSTALL_PREFIX}/bin/astr run ./datin/input.sod WORKING_DIRECTORY ${test_dir}/sod)

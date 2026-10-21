@@ -1,5 +1,6 @@
 module checkpoint_state_io
-  use iso_fortran_env, only: int64, real64, error_unit
+  use iso_fortran_env, only: int64, error_unit
+  use astr_precision, only: real_kind,real_bytes,real_to_word,word_to_real
   use ieee_arithmetic, only: ieee_is_finite
   use mpi
   use hdf5
@@ -15,8 +16,8 @@ module checkpoint_state_io
 
   abstract interface
     subroutine checkpoint_halo_refresh(buffer,cells,halo,budget,comm)
-      import :: real64,int64
-      real(real64),contiguous,intent(inout) :: buffer(:,:,:,:)
+      import :: real_kind,int64
+      real(real_kind),contiguous,intent(inout) :: buffer(:,:,:,:)
       integer,intent(in) :: cells(3),halo,comm
       integer(int64),intent(in) :: budget
     end subroutine
@@ -25,10 +26,10 @@ module checkpoint_state_io
   character(1200),save :: failure_batch='',failure_last_complete=''
 
   ! This is a state-file primitive, not a published restart bundle.
-  integer(int64), parameter :: magic=int(z'4153545251533031',int64), schema=2
+  integer(int64), parameter :: magic=int(z'4153545251533031',int64), schema=3
   type checkpoint_state_identity
     integer(int64) :: step=0
-    real(real64) :: time=0, dt_used=0, dt_next=0
+    real(real_kind) :: time=0, dt_used=0, dt_next=0
   end type
 contains
   subroutine checkpoint_crashfix_words(path,writing,mode,active,nodes,budget,comm,words,restored_exact,allow_inexact)
@@ -175,13 +176,14 @@ contains
     endif
   end subroutine checkpoint_crashfix_state
 
-  subroutine checkpoint_state_header(path,header,metadata,comm)
+  subroutine checkpoint_state_header(path,header,metadata,comm,producer_bytes)
     character(*),intent(in) :: path
     integer(int64),intent(out) :: header(13)
     integer(int64),optional,intent(out) :: metadata(:)
     integer,intent(in) :: comm
+    integer,optional,intent(out) :: producer_bytes
     integer(hid_t) :: file,xfer
-    integer :: err,rank
+    integer :: err,rank,bytes
     call MPI_Comm_rank(comm,rank,err)
     call require(err==MPI_SUCCESS,comm,'header rank')
     call h5open_f(err)
@@ -191,12 +193,33 @@ contains
     call h5pcreate_f(H5P_DATASET_XFER_F,xfer,err)
     call require(err==0,comm,'header transfer property')
     call integers(file,'identity',header,.false.,xfer,comm,rank)
-    call require(header(1)==magic.and.header(2)==schema.and.header(3)==1,comm,'header identity/version/phase')
+    call state_precision(file,header,.false.,xfer,comm,rank,bytes)
+    if(present(producer_bytes)) producer_bytes=bytes
     if(present(metadata)) call integers(file,'metadata',metadata,.false.,xfer,comm,rank)
     call h5pclose_f(xfer,err)
     call require(err==0,comm,'close header transfer property')
     call h5fclose_f(file,err)
     call require(err==0,comm,'close state header')
+  end subroutine
+
+  subroutine state_precision(file,header,writing,xfer,comm,rank,bytes)
+    integer(hid_t),intent(in) :: file,xfer
+    integer(int64),intent(in) :: header(13)
+    logical,intent(in) :: writing
+    integer,intent(in) :: comm,rank
+    integer,intent(out) :: bytes
+    integer(int64) :: precision(1)
+    call require(header(1)==magic.and.(header(2)==2.or.header(2)==schema).and.header(3)==1, &
+      comm,'state identity/version/phase')
+    if(header(2)==2) then
+      ! Published version 2 files predate native FP32 and carry FP64 words/data.
+      bytes=8
+    else
+      precision=real_bytes
+      call integers(file,'numerical_kind_bytes',precision,writing,xfer,comm,rank)
+      call require(precision(1)==4.or.precision(1)==8,comm,'state numerical precision')
+      bytes=int(precision(1))
+    endif
   end subroutine
 
   subroutine checkpoint_state_context(batch,last_complete)
@@ -215,7 +238,7 @@ contains
   subroutine allocate_checkpoint_buffer(cells,halo,components,budget,buffer,remaining,comm)
     integer,intent(in) :: cells(3),halo,components,comm
     integer(int64),intent(in) :: budget
-    real(real64),allocatable,intent(out) :: buffer(:,:,:,:)
+    real(real_kind),allocatable,intent(out) :: buffer(:,:,:,:)
     integer(int64),intent(out) :: remaining
     integer(int64) :: extents(3),nodes,bytes
     integer :: err
@@ -223,8 +246,8 @@ contains
     extents=int(cells,int64)+2_int64*halo+1
     call require(all(extents<=huge(halo)),comm,'packing extent overflow')
     nodes=volume(extents,comm)
-    call require(nodes<=budget/8/components,comm,'packing buffer budget')
-    bytes=nodes*components*8
+    call require(nodes<=budget/real_bytes/components,comm,'packing buffer budget')
+    bytes=nodes*components*real_bytes
     remaining=budget-bytes
     allocate(buffer(extents(1),extents(2),extents(3),components),stat=err)
     call require(err==0,comm,'packing buffer allocation')
@@ -232,24 +255,27 @@ contains
 
   subroutine checkpoint_perfect_gas_state(path,writing,global_shape,origin,cells,halo, &
                                          q,rho,vel,prs,tmp,identity,budget,comm,allow_repartition,restored_exact,refresh_halos, &
-                                         repartition_axes)
+                                         repartition_axes,exact)
     character(*),intent(in) :: path
     logical,intent(in) :: writing
     logical,optional,intent(in) :: allow_repartition
+    logical,optional,intent(in) :: exact
     logical,optional,intent(in) :: repartition_axes(3)
     logical,optional,intent(out) :: restored_exact
     procedure(checkpoint_halo_refresh),optional :: refresh_halos
     integer,intent(in) :: global_shape(3),origin(3),cells(3),halo,comm
-    real(real64),contiguous,intent(inout) :: q(:,:,:,:),rho(:,:,:),vel(:,:,:,:), &
+    real(real_kind),contiguous,intent(inout) :: q(:,:,:,:),rho(:,:,:),vel(:,:,:,:), &
       prs(:,:,:),tmp(:,:,:)
     type(checkpoint_state_identity),intent(inout) :: identity
     integer(int64),intent(in) :: budget
-    real(real64),allocatable :: buffer(:,:,:,:)
+    real(real_kind),allocatable :: buffer(:,:,:,:)
     integer(int64) :: remaining
     integer :: extents(3)
-    logical :: permit,matched
+    logical :: permit,matched,restore_exact
     permit=.false.
     if(present(allow_repartition)) permit=allow_repartition
+    restore_exact=.true.
+    if(present(exact)) restore_exact=exact
     call allocate_checkpoint_buffer(cells,halo,11,budget,buffer,remaining,comm)
     extents=shape(buffer(:,:,:,1))
     call require(all(shape(q)==[extents,5]).and.all(shape(rho)==extents).and. &
@@ -262,10 +288,10 @@ contains
       buffer(:,:,:,10)=prs
       buffer(:,:,:,11)=tmp
     else
-      buffer=0.d0
+      buffer=0.e0_real_kind
     endif
     ! Role 2 preserves q and cached primitives independently, including halos.
-    call checkpoint_state_transfer(path,writing,.true.,global_shape,origin,cells,halo, &
+    call checkpoint_state_transfer(path,writing,restore_exact,global_shape,origin,cells,halo, &
       buffer,identity,remaining,comm,role=2,allow_repartition=permit,restored_exact=matched, &
       repartition_axes=repartition_axes)
     if(present(restored_exact)) restored_exact=matched
@@ -291,13 +317,13 @@ contains
     logical,optional,intent(out) :: restored_exact
     procedure(checkpoint_halo_refresh),optional :: refresh_halos
     integer,intent(in) :: global_shape(3),origin(3),cells(3),halo,comm
-    real(real64),contiguous,intent(inout) :: q(:,:,:,:),rho(:,:,:),vel(:,:,:,:), &
+    real(real_kind),contiguous,intent(inout) :: q(:,:,:,:),rho(:,:,:),vel(:,:,:,:), &
       prs(:,:,:),tmp(:,:,:),tve(:,:,:),spc(:,:,:,:)
-    real(real64),allocatable,intent(inout) :: carry(:,:,:,:)
-    real(real64),allocatable,optional,intent(inout) :: step_history(:,:,:)
+    real(real_kind),allocatable,intent(inout) :: carry(:,:,:,:)
+    real(real_kind),allocatable,optional,intent(inout) :: step_history(:,:,:)
     type(checkpoint_state_identity),intent(inout) :: identity
     integer(int64),intent(in) :: budget
-    real(real64),allocatable :: buffer(:,:,:,:)
+    real(real_kind),allocatable :: buffer(:,:,:,:)
     integer(int64) :: remaining,metadata(2),expected(2)
     integer :: extents(3),h
     logical :: permit,matched,has_history
@@ -321,7 +347,7 @@ contains
     if(writing) then
       buffer(:,:,:,1:11)=q
       ! Carry has physical nodes only; its halo slots are canonical padding.
-      buffer(:,:,:,12:22)=0.0_real64
+      buffer(:,:,:,12:22)=0.0_real_kind
       if(compensated) buffer(h:h+cells(1),h:h+cells(2),h:h+cells(3),12:22)=carry
       buffer(:,:,:,23)=rho
       buffer(:,:,:,24:26)=vel
@@ -330,13 +356,13 @@ contains
       buffer(:,:,:,29)=tve
       buffer(:,:,:,30:34)=spc
       if(has_history) then
-        call require(all(ieee_is_finite(step_history)).and.all(step_history>=0.0_real64), &
+        call require(all(ieee_is_finite(step_history)).and.all(step_history>=0.0_real_kind), &
           comm,'AIR5 invalid step history')
-        buffer(:,:,:,35)=0.0_real64
+        buffer(:,:,:,35)=0.0_real_kind
         buffer(h:h+cells(1),h:h+cells(2),h:h+cells(3),35)=step_history
       endif
     else
-      buffer=0.0_real64
+      buffer=0.0_real_kind
     endif
     call checkpoint_state_transfer(path,writing,.true.,global_shape,origin,cells,halo, &
       buffer,identity,remaining,comm,role=7,metadata=metadata,allow_repartition=permit,restored_exact=matched, &
@@ -358,7 +384,7 @@ contains
       spc=buffer(:,:,:,30:34)
       if(has_history) then
         step_history=buffer(h:h+cells(1),h:h+cells(2),h:h+cells(3),35)
-        call require(all(ieee_is_finite(step_history)).and.all(step_history>=0.0_real64), &
+        call require(all(ieee_is_finite(step_history)).and.all(step_history>=0.0_real_kind), &
           comm,'AIR5 invalid restored step history')
       endif
     endif
@@ -556,7 +582,7 @@ contains
 
   subroutine checkpoint_state_transfer(path,writing,exact,global_shape,origin,cells,halo,q,identity, &
                                        buffer_limit,comm,role,metadata,allow_repartition,restored_exact,repartition_axes,group_name, &
-                                       physical_only)
+                                       physical_only,statistics_segment)
     character(*), intent(in) :: path
     character(*),optional,intent(in) :: group_name
     logical, intent(in) :: writing,exact
@@ -567,19 +593,20 @@ contains
     integer, intent(in) :: global_shape(3),origin(3),cells(3),halo,comm
     integer,optional,intent(in) :: role
     integer(int64),optional,intent(inout) :: metadata(:)
-    real(real64), contiguous, intent(inout) :: q(:,:,:,:)
+    integer(int64),optional,intent(inout) :: statistics_segment(:)
+    real(real_kind), contiguous, intent(inout) :: q(:,:,:,:)
     type(checkpoint_state_identity), intent(inout) :: identity
     integer(int64), intent(in) :: buffer_limit
     integer(int64) :: header(13),agreed(13),local(8),owned(3),full(3),g(3),points,extras_count,offset,total
     integer(int64) :: metadata_root(64)
     integer :: metadata_count,root_metadata_count
     integer(int64), allocatable :: partitions(:),current(:)
-    real(real64), allocatable :: extras(:)
-    integer(hid_t) :: file,container,access,xfer,dset,space,mem,native
+    real(real_kind), allocatable :: extras(:)
+    integer(hid_t) :: file,container,access,xfer,dset,space,mem,native,storage_type
     integer(hsize_t) :: dims3(3),mdims3(3),start3(3),count3(3),dims1(1),mdims1(1),start1(1),count1(1)
-    integer :: rank,np,err,mpi_i64,ncomp,old_np,r,a,i,j,k,m,n,allocerr,mode(3),root_mode(3),state_role
-    integer :: axes_mode(3),root_axes(3)
-    logical :: permit,restore_exact,matched,lean
+    integer :: rank,np,err,mpi_i64,ncomp,old_np,r,a,i,j,k,m,n,allocerr,mode(4),root_mode(4),state_role
+    integer :: axes_mode(3),root_axes(3),producer_bytes
+    logical :: permit,restore_exact,matched,lean,segment_present
     character(16) :: name
     character(64) :: partition_error
     character(len(path)) :: root_path
@@ -594,9 +621,9 @@ contains
     restore_exact=exact
     lean=.false.
     if(present(physical_only)) lean=physical_only
-    mode=[merge(1,0,writing),merge(1,0,exact),merge(1,0,permit)]
+    mode=[merge(1,0,writing),merge(1,0,exact),merge(1,0,permit),merge(1,0,present(statistics_segment))]
     root_mode=mode
-    call MPI_Bcast(root_mode,3,MPI_INTEGER,0,comm,err)
+    call MPI_Bcast(root_mode,4,MPI_INTEGER,0,comm,err)
     call require(err==MPI_SUCCESS.and.all(root_mode==mode),comm,'transfer mode mismatch')
     axes_mode=1
     if(present(repartition_axes)) axes_mode=merge(1,0,repartition_axes)
@@ -636,7 +663,7 @@ contains
       comm,'state component role')
     g=int(global_shape,int64)
     header=[magic,schema,1_int64,g,int(ncomp,int64),int(np,int64),identity%step, &
-      transfer(identity%time,0_int64),transfer(identity%dt_used,0_int64),transfer(identity%dt_next,0_int64), &
+      real_to_word(identity%time),real_to_word(identity%dt_used),real_to_word(identity%dt_next), &
       int(state_role,int64)]
     agreed=header
     call MPI_Bcast(agreed,13,mpi_i64,0,comm,err)
@@ -654,7 +681,7 @@ contains
     call require(points<=huge(points)/ncomp,comm,'extras overflow')
     extras_count=points*ncomp
     if(lean) extras_count=0
-    call require(buffer_limit>=0.and.extras_count<=buffer_limit/8,comm,'extras buffer budget')
+    call require(buffer_limit>=0.and.extras_count<=buffer_limit/real_bytes,comm,'extras buffer budget')
     call require(extras_count<=huge(n)-1,comm,'extras indexing capacity')
     call require(int(np,int64)*8<=huge(n),comm,'partition table capacity')
     call require(int(np,int64)*64<=buffer_limit,comm,'current partition budget')
@@ -699,15 +726,17 @@ contains
     call h5pset_dxpl_mpio_f(xfer,H5FD_MPIO_COLLECTIVE_F,err)
     call require(err==0,comm,'collective transfer property')
     call integers(file,'identity',header,writing,xfer,comm,rank)
-    call require(header(1)==magic.and.header(2)==schema.and.header(3)==1,comm,'state identity/version/phase')
+    call state_precision(file,header,writing,xfer,comm,rank,producer_bytes)
+    call require(writing.or..not.exact.or.producer_bytes==real_bytes,comm, &
+      'exact restore numerical precision mismatch; select exact_restart=f')
     call require(header(13)==state_role,comm,'state role mismatch')
     call require(all(header(4:6)==g).and.header(7)==ncomp,comm,'global state shape')
     call require(header(8)>0.and.header(8)<=huge(n)/8,comm,'original rank count')
     old_np=int(header(8))
     identity%step=header(9)
-    identity%time=transfer(header(10),0.0_real64)
-    identity%dt_used=transfer(header(11),0.0_real64)
-    identity%dt_next=transfer(header(12),0.0_real64)
+    identity%time=word_to_real(header(10),producer_bytes)
+    identity%dt_used=word_to_real(header(11),producer_bytes)
+    identity%dt_next=word_to_real(header(12),producer_bytes)
     call require(identity%step>=0.and.ieee_is_finite(identity%time).and.identity%time>=0.and. &
       ieee_is_finite(identity%dt_used).and.identity%dt_used>=0.and. &
       ieee_is_finite(identity%dt_next).and.identity%dt_next>0,comm,'invalid state clock')
@@ -715,7 +744,7 @@ contains
     call require(int(old_np,int64)*64<=buffer_limit,comm,'partition buffer budget')
     call require((int(old_np,int64)+np)*64<=buffer_limit,comm,'combined partition budget')
     if (writing.or.exact) then
-      call require(max(1_int64,extras_count)<=(buffer_limit-(int(old_np,int64)+np)*64)/8, &
+      call require(max(1_int64,extras_count)<=(buffer_limit-(int(old_np,int64)+np)*64)/real_bytes, &
         comm,'combined state buffer budget')
     endif
     allocate(partitions(8*old_np),stat=allocerr)
@@ -742,6 +771,7 @@ contains
       enddo
     endif
     if(.not.writing.and.permit) restore_exact=matched
+    if(.not.writing.and.producer_bytes/=real_bytes) restore_exact=.false.
     if(lean) then
       call require(writing.or.matched.or.permit,comm,'lean restart topology is not registered')
       restore_exact=.false.
@@ -752,14 +782,30 @@ contains
       call require(all(partitions==current),comm,'exact restore partition mismatch')
     endif
     if(present(metadata)) call integers(file,'metadata',metadata,writing,xfer,comm,rank)
-    native=h5kind_to_type(real64,H5_REAL_KIND)
+    if(present(statistics_segment)) then
+      call require(size(statistics_segment)==21.and.(state_role==3.or.state_role==4),comm, &
+        'velocity statistics segment layout')
+      segment_present=writing
+      if(.not.writing) then
+        call h5lexists_f(file,'statistics_segment',segment_present,err)
+        call require(err==0,comm,'velocity statistics segment presence')
+      endif
+      if(segment_present) then
+        call integers(file,'statistics_segment',statistics_segment,writing,xfer,comm,rank)
+      else
+        statistics_segment=0
+      endif
+    endif
+    native=h5kind_to_type(real_kind,H5_REAL_KIND)
+    storage_type=H5T_IEEE_F64LE
+    if(producer_bytes==4) storage_type=H5T_IEEE_F32LE
     dims3=g
     mdims3=full
     count3=owned
     if (.not.writing.and..not.restore_exact) count3=int(cells,hsize_t)+1
     do m=1,ncomp
       write(name,'("q",i4.4)') m
-      call dataset(file,trim(name),dims3,H5T_IEEE_F64LE,writing,comm,dset,space)
+      call dataset(file,trim(name),dims3,storage_type,writing,comm,dset,space)
       call h5screate_simple_f(3,mdims3,mem,err)
       call require(err==0,comm,'state memory space')
       start3=origin
@@ -786,7 +832,7 @@ contains
       if (writing.and..not.lean) call extra_values(.true.)
       dims1=total
       mdims1=size(extras,kind=hsize_t)
-      call dataset(file,'rank_extras',dims1,H5T_IEEE_F64LE,writing,comm,dset,space)
+      call dataset(file,'rank_extras',dims1,storage_type,writing,comm,dset,space)
       call h5screate_simple_f(1,mdims1,mem,err)
       call require(err==0,comm,'extras memory space')
       if (extras_count>0) then

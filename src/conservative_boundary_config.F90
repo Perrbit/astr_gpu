@@ -1,11 +1,12 @@
 module conservative_boundary_config
+  use astr_precision, only: real_kind
   use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan,ieee_is_finite
   use perfect_gas_boundary, only: valid_state=>admissible
   implicit none
   private
   type,public :: conservative_boundary_settings
     logical :: enabled=.false.
-    real(8) :: split_x=0.d0,q_left(5)=0.d0,q_right(5)=0.d0
+    real(real_kind) :: split_x=0.e0_real_kind,q_left(5)=0.e0_real_kind,q_right(5)=0.e0_real_kind
   end type conservative_boundary_settings
   public :: read_conservative_boundary_config
 contains
@@ -14,7 +15,7 @@ contains
     type(conservative_boundary_settings),intent(out) :: settings
     integer,intent(out) :: status
     integer :: schema,unit,ios
-    real(8) :: split_x,q_left(5),q_right(5)
+    real(real_kind) :: split_x,q_left(5),q_right(5)
     character(len=1024) :: line
     namelist /conservative_boundary/ schema,split_x,q_left,q_right
 
@@ -23,7 +24,7 @@ contains
     if(len_trim(filename)==0) return
     status=1
     schema=0
-    split_x=ieee_value(0.d0,ieee_quiet_nan)
+    split_x=ieee_value(0.e0_real_kind,ieee_quiet_nan)
     q_left=split_x
     q_right=split_x
     open(newunit=unit,file=filename,status='old',action='read',iostat=ios)

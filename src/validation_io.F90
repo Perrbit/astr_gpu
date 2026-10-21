@@ -1,4 +1,5 @@
 module validation_io
+  use astr_precision, only: real_kind,real_bytes
   use commvar, only: nstep
   implicit none
   private
@@ -7,11 +8,13 @@ module validation_io
             write_sensor_validation_snapshot, &
             write_compact_statistics_validation_snapshot,write_scalar_validation_snapshot
   public :: sensor_detail_requested,write_sensor_detail_validation_snapshot
+  public :: gradient_validation_requested,write_gradient_validation_snapshot
   logical,save :: configured=.false.,enabled=.false.
   character(len=1024),save :: prefix=''
   integer,save :: validation_step=0,validation_step_secondary=-1,validation_step_end=-1
   logical,save :: compact_configured=.false.,compact_enabled=.false.
   character(len=1024),save :: compact_prefix=''
+  logical,save :: gradient_configured=.false.,gradient_enabled=.false.
 contains
   subroutine configure_rhs_validation()
     character(len=64) :: step_buffer
@@ -59,6 +62,48 @@ contains
     rhs_validation_requested=validation_snapshot_requested(nstep)
   end function rhs_validation_requested
 
+  logical function gradient_validation_requested()
+    character(16) :: flag
+    integer :: status
+    if(.not.gradient_configured) then
+      call get_environment_variable('ASTR_VALIDATION_GRADIENTS',flag,status=status)
+      gradient_enabled=status==0.and.trim(flag)=='1'
+      if(status/=1.and..not.gradient_enabled) error stop 'ASTR_VALIDATION_GRADIENTS must be 1 when set'
+      gradient_configured=.true.
+    endif
+    gradient_validation_requested=gradient_enabled.and.rhs_validation_requested()
+  end function gradient_validation_requested
+
+  subroutine write_gradient_validation_snapshot(gradient,temperature_gradient,step_index,stage_index, &
+                                                lower_normal,upper_normal,label)
+    use commvar, only: im,jm,km,rkstep
+    use parallel, only: mpirank
+    real(real_kind),intent(in) :: gradient(0:,0:,0:,:,:),temperature_gradient(0:,0:,0:,:)
+    integer,intent(in),optional :: step_index,stage_index
+    real(real_kind),allocatable,intent(in),optional :: lower_normal(:,:,:),upper_normal(:,:,:)
+    character(*),intent(in),optional :: label
+    integer :: step_value,stage_value,unit,has_lower,has_upper
+    character(32) :: tag
+    character(1200) :: filename
+    if(.not.gradient_validation_requested()) return
+    step_value=nstep; stage_value=rkstep
+    if(present(step_index)) step_value=step_index
+    if(present(stage_index)) stage_value=stage_index
+    tag='gradients'
+    if(present(label)) tag=label
+    has_lower=0; has_upper=0
+    if(present(lower_normal)) has_lower=merge(1,0,allocated(lower_normal))
+    if(present(upper_normal)) has_upper=merge(1,0,allocated(upper_normal))
+    write(filename,'(A,".",A,".step",I8.8,".rk",I2.2,".rank",I8.8,".bin")') &
+      trim(prefix),trim(tag),step_value,stage_value,mpirank
+    open(newunit=unit,file=trim(filename),access='stream',form='unformatted',status='new',action='write')
+    write(unit) im,jm,km,has_lower,has_upper
+    write(unit) gradient(0:im,0:jm,0:km,1:3,1:3),temperature_gradient(0:im,0:jm,0:km,1:3)
+    if(has_lower==1) write(unit) lower_normal
+    if(has_upper==1) write(unit) upper_normal
+    close(unit)
+  end subroutine write_gradient_validation_snapshot
+
   logical function sensor_detail_requested(stage_index)
     use commvar, only: ia,ja,ka,rkstep
     integer,intent(in),optional :: stage_index
@@ -77,7 +122,7 @@ contains
   subroutine write_sensor_detail_validation_snapshot(gradient,pressure,stage_index)
     use commvar, only: im,jm,km,hm,rkstep,npdci,npdcj,npdck
     use parallel, only: mpirank
-    real(8),intent(in) :: gradient(0:,0:,0:,:,:),pressure(-hm:,-hm:,-hm:)
+    real(real_kind),intent(in) :: gradient(0:,0:,0:,:,:),pressure(-hm:,-hm:,-hm:)
     integer,intent(in),optional :: stage_index
     character(1200) :: filename
     integer :: unit,stage
@@ -104,7 +149,7 @@ contains
   end subroutine configure_compact_validation
 
   subroutine write_compact_statistics_validation_snapshot()
-    use iso_fortran_env, only: int32,int64,real64
+    use iso_fortran_env, only: int32,int64
     use commvar, only: ia,ja,ka,im,jm,km,hm,nstep,time,lavg,feqavg, &
                        nondimen,reynolds,prandtl,const5,cp,tempconst,tempconst1
     use commarray, only: x,rho,vel,prs,tmp,dvel,dtmp,bnorm_j0
@@ -113,7 +158,7 @@ contains
     character(len=1200) :: filename
     integer(int32) :: fixed_header(22)
     integer(int64) :: step_value
-    real(real64) :: time_value,constants(6)
+    real(real_kind) :: time_value,constants(6)
     integer :: unit
     logical :: has_wall
 
@@ -121,7 +166,7 @@ contains
     if(.not.compact_enabled .or. nstep<=0 .or. (.not.lavg)) return
     if(mod(nstep,feqavg)/=0) return
     has_wall=jrk==0 .and. allocated(bnorm_j0)
-    fixed_header=(/int(1,int32),int(z'01020304',int32),int(8,int32), &
+    fixed_header=(/int(1,int32),int(z'01020304',int32),int(real_bytes,int32), &
       int(merge(1,0,has_wall),int32),int(merge(1,0,nondimen),int32), &
       int(ia+1,int32),int(ja+1,int32),int(ka+1,int32), &
       int(isize,int32),int(jsize,int32),int(ksize,int32),int(mpirank,int32), &
@@ -129,7 +174,7 @@ contains
       int(ig0,int32),int(jg0,int32),int(kg0,int32), &
       int(im+1,int32),int(jm+1,int32),int(km+1,int32),int(hm,int32)/)
     step_value=int(nstep,int64)
-    time_value=real(time,real64)
+    time_value=real(time,real_kind)
     constants=(/reynolds,prandtl,const5,cp,tempconst,tempconst1/)
     write(filename,'(A,".step",I8.8,".rank",I8.8,".bin")') &
       trim(compact_prefix),nstep,mpirank
@@ -177,11 +222,10 @@ contains
   end subroutine write_rhs_validation_snapshot
 
   subroutine write_scalar_validation_snapshot(label,values,stage_index)
-    use iso_fortran_env, only: real64
     use commvar, only: im,jm,km,hm,rkstep
     use parallel, only: mpirank
     character(len=*),intent(in) :: label
-    real(real64),intent(in) :: values(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),intent(in) :: values(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
     integer,intent(in),optional :: stage_index
     character(len=1200) :: filename
     integer :: unit,stage_value
@@ -244,7 +288,7 @@ contains
     use commvar, only: im,jm,km,nstep,rkstep
     use parallel, only: mpirank
     character(len=*),intent(in) :: label
-    real(8),intent(in) :: sensor(:,:,:)
+    real(real_kind),intent(in) :: sensor(:,:,:)
     integer(1),intent(in) :: mask(:,:,:)
     integer,intent(in),optional :: step_index,stage_index
     character(len=1200) :: filename

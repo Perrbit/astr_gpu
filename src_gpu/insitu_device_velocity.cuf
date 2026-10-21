@@ -1,9 +1,12 @@
 module insitu_device_velocity
+  use astr_precision, only: real_kind,real_bytes,clock_kind,real_to_word,word_to_real
+  use astr_precision_mpi, only: mpi_real_type
   use cudafor
   use mpi
   use iso_fortran_env, only: int64
   use iso_c_binding, only: c_int,c_loc,c_size_t
   implicit none
+  private :: real_kind,real_bytes,clock_kind,real_to_word,word_to_real,mpi_real_type
   private
   public :: snapshot_sample_velocity_gpu
   public :: begin_velocity_transport_gpu,end_velocity_transport_gpu,velocity_transport_usage_gpu
@@ -18,8 +21,8 @@ module insitu_device_velocity
 #ifdef ASTR_BUILD_TESTING
   public :: trace_sample_memory_gpu
 #endif
-  real(8),device,allocatable,save :: send_d(:),receive_d(:)
-  real(8),allocatable,target,save :: send_h(:),receive_h(:)
+  real(real_kind),device,allocatable,save :: send_d(:),receive_d(:)
+  real(real_kind),allocatable,target,save :: send_h(:),receive_h(:)
   integer,save :: transport_comm=MPI_COMM_NULL,transport_parent=MPI_COMM_NULL
   integer,save :: transport_extent(3)=0,transport_sizes(3)=0,transport_neighbors(2,3)=0
   integer,save :: transport_capacity=0,transport_generation=0,transport_mode=0
@@ -27,7 +30,7 @@ module insitu_device_velocity
   logical,save :: transport_periodic(3)=.true.
   integer(int64),save :: transport_host_bytes=0,transport_device_bytes=0
   integer(int64),save :: transport_d2h_bytes=0,transport_h2d_bytes=0,transport_exchanges=0
-  real(8),save :: transport_seconds(5)=0.d0
+  real(clock_kind),save :: transport_seconds(5)=0.e0_clock_kind
 #ifdef ASTR_MPI_CUDA_AWARE_QUERY
   interface
     function query_cuda_support() bind(C,name='MPIX_Query_cuda_support') result(supported)
@@ -57,12 +60,12 @@ contains
   subroutine reduce_sample_wall_shear_gpu(coordinates,fields,weights,owned_x,component,profile, &
     comm,budget,reserve,retained)
     use ieee_arithmetic, only: ieee_is_finite
-    real(8),device,contiguous,intent(in) :: coordinates(:,:,:,:),fields(:,:,:,:)
-    real(8),contiguous,intent(in) :: weights(:)
-    real(8),contiguous,intent(out) :: profile(:,:)
+    real(real_kind),device,contiguous,intent(in) :: coordinates(:,:,:,:),fields(:,:,:,:)
+    real(real_kind),contiguous,intent(in) :: weights(:)
+    real(real_kind),contiguous,intent(out) :: profile(:,:)
     integer,intent(in) :: owned_x,component,comm
     integer(int64),intent(in) :: budget,reserve,retained
-    real(8),device,allocatable :: weights_d(:),profile_d(:,:)
+    real(real_kind),device,allocatable :: weights_d(:),profile_d(:,:)
     integer,device,allocatable :: invalid_d(:)
     integer :: nx,nz,nw,nc,status,bad
     integer(int64) :: bytes,free_bytes,total_bytes,demand
@@ -70,16 +73,16 @@ contains
     call require_snapshot(nx>0.and.nz>1.and.nw>=0.and.nw<=1.and.component>=1.and.component<=nc.and. &
       owned_x>=0.and.owned_x<=nx.and.all(shape(coordinates)==[nx,nz,nw,3]).and. &
       size(weights)==nz-1.and.all(shape(profile)==[nx,3]),comm,'wall shear reduction layout')
-    call require_snapshot(all(ieee_is_finite(weights)).and.all(weights>0.d0).and. &
+    call require_snapshot(all(ieee_is_finite(weights)).and.all(weights>0.e0_real_kind).and. &
       retained>=0.and.budget>0.and.reserve>=0,comm,'wall shear reduction weights/budget')
     bytes=0
-    if(nw>0) bytes=8_int64*(nz-1+3_int64*nx)+4
+    if(nw>0) bytes=int(real_bytes,int64)*(nz-1+3_int64*nx)+4
     demand=max(reserve,1073741824_int64); free_bytes=0; total_bytes=0
     status=cudaMemGetInfo(free_bytes,total_bytes)
     call require_snapshot(status==cudaSuccess.and.free_bytes>=demand.and.budget>=retained, &
       comm,'wall shear reduction reserve')
     call require_snapshot(bytes<=budget-retained.and.bytes<=free_bytes-demand,comm,'wall shear reduction allocation budget')
-    profile=0.d0; status=0; bad=0
+    profile=0.e0_real_kind; status=0; bad=0
     if(nw>0) allocate(weights_d(nz-1),profile_d(nx,3),invalid_d(1),stat=status)
     call require_snapshot(status==0,comm,'wall shear reduction allocation')
     status=cudaSuccess
@@ -100,14 +103,14 @@ contains
     owned_x,component)
     use ieee_arithmetic, only: ieee_is_finite
     integer,value :: nx,nz,nw,nc,owned_x,component
-    real(8),device,intent(in) :: coordinates(nx,nz,nw,3),fields(nx,nz,nw,nc),weights(nz-1)
-    real(8),device,intent(out) :: profile(nx,3)
+    real(real_kind),device,intent(in) :: coordinates(nx,nz,nw,3),fields(nx,nz,nw,nc),weights(nz-1)
+    real(real_kind),device,intent(out) :: profile(nx,3)
     integer,device,intent(inout) :: invalid(*)
     integer :: i,k,ignored
-    real(8) :: values(3),entry(3)
+    real(real_kind) :: values(3),entry(3)
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x
     if(i>nx) return
-    values=0.d0
+    values=0.e0_real_kind
     ! One thread owns each streamwise integral, in the original increasing-k order.
     if(i<=owned_x) then
       do k=1,nz-1
@@ -140,8 +143,8 @@ contains
   subroutine snapshot_sample_coordinates_gpu(coordinates,points,extent,hm,comm,budget,reserve,retained)
     integer,intent(in) :: extent(3),hm,comm
     integer(int64),intent(in) :: budget,reserve,retained
-    real(8),device,intent(in) :: coordinates(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3)
-    real(8),device,allocatable,intent(out) :: points(:,:)
+    real(real_kind),device,intent(in) :: coordinates(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3)
+    real(real_kind),device,allocatable,intent(out) :: points(:,:)
     integer,device,allocatable :: invalid(:)
     integer :: nodes,status,bad
     integer(int64) :: count,bytes,free_bytes,total_bytes,demand
@@ -150,7 +153,7 @@ contains
       comm,'coordinate snapshot identity/budget')
     count=product(int(extent+1,int64))
     call require_snapshot(count<=huge(nodes)/3,comm,'coordinate snapshot index overflow')
-    bytes=count*24+4; demand=max(reserve,1073741824_int64)
+    bytes=count*3*real_bytes+4; demand=max(reserve,1073741824_int64)
     call require_snapshot(transport_device_bytes<=budget.and.retained<=budget-transport_device_bytes, &
       comm,'coordinate snapshot retained budget')
     free_bytes=0; total_bytes=0
@@ -174,11 +177,11 @@ contains
   attributes(global) subroutine copy_sample_coordinates(coordinates,points,invalid,im,jm,km,hm)
     use ieee_arithmetic, only: ieee_is_finite
     integer,value :: im,jm,km,hm
-    real(8),device,intent(in) :: coordinates(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
-    real(8),device,intent(out) :: points(3,*)
+    real(real_kind),device,intent(in) :: coordinates(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(real_kind),device,intent(out) :: points(3,*)
     integer,device,intent(inout) :: invalid(*)
     integer :: node,i,j,k,d,ignored
-    real(8) :: value
+    real(real_kind) :: value
     node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(node>=(im+1)*(jm+1)*(km+1)) return
     i=mod(node,im+1); j=mod(node/(im+1),jm+1); k=node/((im+1)*(jm+1))
@@ -191,7 +194,7 @@ contains
 
   subroutine complete_sample_fields_gpu(fields,extent,components,comm,canonical_axes)
     integer,intent(in) :: extent(3),components,comm
-    real(8),device,intent(inout) :: fields(0:extent(1),0:extent(2),0:extent(3),components)
+    real(real_kind),device,intent(inout) :: fields(0:extent(1),0:extent(2),0:extent(3),components)
     logical,intent(in),optional :: canonical_axes(3)
     logical :: axes(3)
     integer :: axis,face,status
@@ -223,7 +226,7 @@ contains
   ! ranks enter the checks/exchanges, including ranks with no physical wall.
   subroutine complete_sample_wall_fields_gpu(fields,extent,nw,components,comm)
     integer,intent(in) :: extent(3),nw,components,comm
-    real(8),device,intent(inout) :: fields(0:extent(1),0:extent(3),nw,components)
+    real(real_kind),device,intent(inout) :: fields(0:extent(1),0:extent(3),nw,components)
     integer :: axis,face,status,ierr,remote_nw
     integer(int64) :: count
     logical :: received
@@ -244,7 +247,7 @@ contains
         call wall_endpoint_kernel<<<(face+255)/256,256>>>( &
           fields,send_d,extent(1),extent(3),nw,components,axis,face,.false.)
       else
-        send_d(1:1)=0.d0
+        send_d(1:1)=0.e0_real_kind
       endif
       status=cudaDeviceSynchronize()
       call require_snapshot(status==cudaSuccess,comm,'wall endpoint pack')
@@ -259,7 +262,7 @@ contains
   attributes(global) subroutine wall_endpoint_kernel(fields,buffer,im,km,nw,nc,axis,count,unpack)
     integer,value :: im,km,nw,nc,axis,count
     logical,value :: unpack
-    real(8),device,intent(inout) :: fields(0:im,0:km,nw,nc),buffer(*)
+    real(real_kind),device,intent(inout) :: fields(0:im,0:km,nw,nc),buffer(*)
     integer :: id,i,k,w,c,length
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(id>=count) return
@@ -279,7 +282,7 @@ contains
 
   subroutine extend_sample_wall_primitives_gpu(primitive,extent,nw,comm)
     integer,intent(in) :: extent(3),nw,comm
-    real(8),device,intent(inout) :: primitive(-3:extent(1)+3,-3:extent(3)+3,nw,4)
+    real(real_kind),device,intent(inout) :: primitive(-3:extent(1)+3,-3:extent(3)+3,nw,4)
     integer :: axis,side,face,status,ierr,remote_nw
     integer(int64) :: count
     logical :: received
@@ -302,7 +305,7 @@ contains
           call wall_primitive_halo_kernel<<<(face+255)/256,256>>>(primitive,send_d, &
             extent(1),extent(3),nw,axis,side,face,.false.)
         else
-          send_d(1:1)=0.d0
+          send_d(1:1)=0.e0_real_kind
         endif
         status=cudaDeviceSynchronize()
         call require_snapshot(status==cudaSuccess,comm,'wall primitive halo pack')
@@ -318,7 +321,7 @@ contains
   attributes(global) subroutine wall_primitive_halo_kernel(primitive,buffer,im,km,nw,axis,side,count,unpack)
     integer,value :: im,km,nw,axis,side,count
     logical,value :: unpack
-    real(8),device,intent(inout) :: primitive(-3:im+3,-3:km+3,nw,4),buffer(*)
+    real(real_kind),device,intent(inout) :: primitive(-3:im+3,-3:km+3,nw,4),buffer(*)
     integer :: id,i,k,w,c,s,length,index
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(id>=count) return
@@ -403,9 +406,9 @@ contains
     face64=max(face64,int(components,int64)*max(int(extent(1)+1,int64)*(extent(2)+1), &
       int(extent(1)+1,int64)*(extent(3)+1),int(extent(2)+1,int64)*(extent(3)+1)))
     call require_snapshot(face64<=huge(status),comm,'transport face index overflow')
-    transport_device_bytes=face64*16
+    transport_device_bytes=face64*2*real_bytes
     transport_host_bytes=0
-    if(choice==2.and.any(sizes>1)) transport_host_bytes=face64*16
+    if(choice==2.and.any(sizes>1)) transport_host_bytes=face64*2*real_bytes
     call require_snapshot(transport_host_bytes<=host_budget.and.transport_device_bytes<=device_budget, &
       comm,'transport face-buffer budget')
     call MPI_Comm_split_type(comm,MPI_COMM_TYPE_SHARED,0,MPI_INFO_NULL,node_comm,ierr)
@@ -435,9 +438,9 @@ contains
     if(transport_host_bytes>0) then
       allocate(send_h(transport_capacity),receive_h(transport_capacity),stat=status)
       call require_snapshot(status==0,comm,'transport host slots allocation')
-      status=cudaHostRegister(c_loc(send_h),int(face64*8,c_size_t),0)
+      status=cudaHostRegister(c_loc(send_h),int(face64*real_bytes,c_size_t),0)
       call require_snapshot(status==cudaSuccess,comm,'transport pinned send registration')
-      status=cudaHostRegister(c_loc(receive_h),int(face64*8,c_size_t),0)
+      status=cudaHostRegister(c_loc(receive_h),int(face64*real_bytes,c_size_t),0)
       call require_snapshot(status==cudaSuccess,comm,'transport pinned receive registration')
     endif
     call MPI_Comm_dup(comm,transport_comm,ierr)
@@ -447,11 +450,11 @@ contains
     transport_periodic=periods; transport_components=components; transport_ntype=ntype
     transport_mode=choice; transport_generation=transport_generation+1
     transport_d2h_bytes=0; transport_h2d_bytes=0; transport_exchanges=0
-    transport_seconds=0.d0
+    transport_seconds=0.e0_real_kind
   end subroutine
 
   subroutine velocity_transport_timing_gpu(seconds)
-    real(8),intent(out) :: seconds(5)
+    real(clock_kind),intent(out) :: seconds(5)
     seconds=transport_seconds
   end subroutine
 
@@ -491,7 +494,7 @@ contains
     logical,intent(out),optional :: received
     integer,intent(in),optional :: neighbor_override(2)
     integer :: ierr,status,requests(2),statuses(MPI_STATUS_SIZE,2),destination,source,tag
-    real(8) :: started
+    real(clock_kind) :: started
     call require_snapshot(face>0.and.face<=transport_capacity.and.axis>=1.and.axis<=3,comm, &
       'transport face capacity')
     if(present(received)) received=.false.
@@ -524,20 +527,20 @@ contains
       if(destination/=MPI_PROC_NULL) status=cudaMemcpy(send_h,send_d,int(face,int64),cudaMemcpyDeviceToHost)
       transport_seconds(1)=transport_seconds(1)+MPI_Wtime()-started
       call require_snapshot(status==cudaSuccess,comm,'snapshot pinned face download')
-      if(destination/=MPI_PROC_NULL) transport_d2h_bytes=transport_d2h_bytes+int(face,int64)*8
+      if(destination/=MPI_PROC_NULL) transport_d2h_bytes=transport_d2h_bytes+int(face,int64)*real_bytes
     endif
     started=MPI_Wtime()
     if(transport_mode==2) then
-      call MPI_Irecv(receive_h,face,MPI_DOUBLE_PRECISION,source,tag, &
+      call MPI_Irecv(receive_h,face,mpi_real_type,source,tag, &
         transport_comm,requests(1),ierr)
       call require_snapshot(ierr==MPI_SUCCESS,comm,'snapshot pinned receive')
-      call MPI_Isend(send_h,face,MPI_DOUBLE_PRECISION,destination,tag, &
+      call MPI_Isend(send_h,face,mpi_real_type,destination,tag, &
         transport_comm,requests(2),ierr)
     else
-      call MPI_Irecv(receive_d,face,MPI_DOUBLE_PRECISION,source,tag, &
+      call MPI_Irecv(receive_d,face,mpi_real_type,source,tag, &
         transport_comm,requests(1),ierr)
       call require_snapshot(ierr==MPI_SUCCESS,comm,'snapshot device receive')
-      call MPI_Isend(send_d,face,MPI_DOUBLE_PRECISION,destination,tag, &
+      call MPI_Isend(send_d,face,mpi_real_type,destination,tag, &
         transport_comm,requests(2),ierr)
     endif
     call require_snapshot(ierr==MPI_SUCCESS,comm,'snapshot face send')
@@ -550,7 +553,7 @@ contains
       if(source/=MPI_PROC_NULL) status=cudaMemcpy(receive_d,receive_h,int(face,int64),cudaMemcpyHostToDevice)
       transport_seconds(3)=transport_seconds(3)+MPI_Wtime()-started
       call require_snapshot(status==cudaSuccess,comm,'snapshot pinned face upload')
-      if(source/=MPI_PROC_NULL) transport_h2d_bytes=transport_h2d_bytes+int(face,int64)*8
+      if(source/=MPI_PROC_NULL) transport_h2d_bytes=transport_h2d_bytes+int(face,int64)*real_bytes
     endif
     started=MPI_Wtime()
     status=cudaDeviceSynchronize()
@@ -562,8 +565,8 @@ contains
   subroutine extend_sample_coordinates_gpu(coordinates,halo,extent,offset,global_extent,comm,budget,reserve,retained)
     integer,intent(in) :: extent(3),offset(3),global_extent(3),comm
     integer(int64),intent(in) :: budget,reserve,retained
-    real(8),device,intent(in) :: coordinates(3,*)
-    real(8),device,allocatable,intent(out) :: halo(:,:,:,:)
+    real(real_kind),device,intent(in) :: coordinates(3,*)
+    real(real_kind),device,allocatable,intent(out) :: halo(:,:,:,:)
     call extend_sample_velocity_gpu(coordinates,halo,extent,comm,budget,reserve, &
       coordinate_partition=[offset,global_extent],retained_other=retained)
   end subroutine
@@ -573,8 +576,8 @@ contains
     integer(int64),intent(in) :: budget,reserve
     integer,intent(in),optional :: coordinate_partition(6)
     integer(int64),intent(in),optional :: retained_other
-    real(8),device,intent(in) :: velocity(3,*)
-    real(8),device,allocatable,intent(out) :: halo(:,:,:,:)
+    real(real_kind),device,intent(in) :: velocity(3,*)
+    real(real_kind),device,allocatable,intent(out) :: halo(:,:,:,:)
     integer :: status,axis,side,face,nodes,neighbors(2),minimum(3),maximum(3),ierr
     logical :: received
     integer(int64) :: bytes,free_bytes,total_bytes,retained,required,extra
@@ -598,8 +601,8 @@ contains
       call require_snapshot(bytes<=int(huge(nodes)/3,int64)/(extent(axis)+7),comm,'private halo index overflow')
       bytes=bytes*(extent(axis)+7)
     enddo
-    nodes=int(bytes); bytes=bytes*24
-    retained=product(int(extent+1,int64))*24+transport_device_bytes
+    nodes=int(bytes); bytes=bytes*3*real_bytes
+    retained=product(int(extent+1,int64))*3*real_bytes+transport_device_bytes
     call require_snapshot(retained<=budget-extra,comm,'private halo retained allocation budget')
     retained=retained+extra
     required=max(reserve,1073741824_int64)
@@ -639,9 +642,9 @@ contains
   subroutine derive_sample_velocity_gpu(halo,metrics,derived,extent,hm,comm,budget,reserve,wall_sixth,q_only,retained_other)
     integer,intent(in) :: extent(3),hm,comm
     integer(int64),intent(in) :: budget,reserve
-    real(8),device,intent(in) :: halo(-3:extent(1)+3,-3:extent(2)+3,-3:extent(3)+3,3)
-    real(8),device,intent(in) :: metrics(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3,3)
-    real(8),device,allocatable,intent(out) :: derived(:,:)
+    real(real_kind),device,intent(in) :: halo(-3:extent(1)+3,-3:extent(2)+3,-3:extent(3)+3,3)
+    real(real_kind),device,intent(in) :: metrics(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3,3)
+    real(real_kind),device,allocatable,intent(out) :: derived(:,:)
     logical,intent(in),optional :: wall_sixth,q_only
     integer(int64),intent(in),optional :: retained_other
     integer,device,allocatable :: invalid(:)
@@ -658,8 +661,8 @@ contains
       comm,'private diagnostic transport shape')
     call require_snapshot(.not.sixth.or.all(extent>=6),comm,'sixth-order private wall gradient needs seven nodes')
     call require_snapshot(product(int(extent+1,int64))<=huge(nodes)/14,comm,'private diagnostic index overflow')
-    nodes=product(extent+1); bytes=int(nodes,int64)*components*8+4
-    retained=transport_device_bytes+int(nodes,int64)*24+product(int(extent+7,int64))*24
+    nodes=product(extent+1); bytes=int(nodes,int64)*components*real_bytes+4
+    retained=transport_device_bytes+(int(nodes,int64)+product(int(extent+7,int64)))*3*real_bytes
     extra=0
     if(present(retained_other)) extra=retained_other
     call require_snapshot(extra>=0.and.extra<=budget.and.retained<=budget-extra,comm,'private diagnostic retained budget')
@@ -673,7 +676,7 @@ contains
     allocate(derived(components,nodes),invalid(1),stat=status)
     call require_snapshot(status==0,comm,'private diagnostic allocation')
 #ifdef ASTR_BUILD_TESTING
-    call trace_sample_memory_gpu('diagnostic-allocation',8_int64*size(derived,kind=int64),comm)
+    call trace_sample_memory_gpu('diagnostic-allocation',int(real_bytes,int64)*size(derived,kind=int64),comm)
 #endif
     invalid=0
     call derive_velocity_kernel<<<(nodes+255)/256,256>>>(halo,metrics,derived,invalid, &
@@ -687,15 +690,15 @@ contains
 
   attributes(global) subroutine copy_velocity_halo(velocity,halo,im,jm,km)
     integer,value :: im,jm,km
-    real(8),device,intent(in) :: velocity(3,*)
-    real(8),device,intent(out) :: halo(-3:im+3,-3:jm+3,-3:km+3,3)
+    real(real_kind),device,intent(in) :: velocity(3,*)
+    real(real_kind),device,intent(out) :: halo(-3:im+3,-3:jm+3,-3:km+3,3)
     integer :: id,node,nodes,i,j,k,c,owned
     nodes=(im+7)*(jm+7)*(km+7)
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(id>=nodes*3) return
     node=mod(id,nodes); c=id/nodes+1
     i=mod(node,im+7)-3; j=mod(node/(im+7),jm+7)-3; k=node/((im+7)*(jm+7))-3
-    halo(i,j,k,c)=0.d0
+    halo(i,j,k,c)=0.e0_real_kind
     if(i>=0.and.i<=im.and.j>=0.and.j<=jm.and.k>=0.and.k<=km) then
       owned=i+(im+1)*(j+(jm+1)*k)+1
       halo(i,j,k,c)=velocity(c,owned)
@@ -719,8 +722,8 @@ contains
 
   attributes(global) subroutine pack_velocity_halo(halo,face,im,jm,km,axis,side,count)
     integer,value :: im,jm,km,axis,side,count
-    real(8),device,intent(in) :: halo(-3:im+3,-3:jm+3,-3:km+3,3)
-    real(8),device,intent(out) :: face(*)
+    real(real_kind),device,intent(in) :: halo(-3:im+3,-3:jm+3,-3:km+3,3)
+    real(real_kind),device,intent(out) :: face(*)
     integer :: id,ijk(3),c,layer,dims(3)
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(id>=count) return
@@ -733,8 +736,8 @@ contains
 
   attributes(global) subroutine unpack_velocity_halo(halo,face,im,jm,km,axis,side,count)
     integer,value :: im,jm,km,axis,side,count
-    real(8),device,intent(inout) :: halo(-3:im+3,-3:jm+3,-3:km+3,3)
-    real(8),device,intent(in) :: face(*)
+    real(real_kind),device,intent(inout) :: halo(-3:im+3,-3:jm+3,-3:km+3,3)
+    real(real_kind),device,intent(in) :: face(*)
     integer :: id,ijk(3),c,layer,dims(3)
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(id>=count) return
@@ -745,11 +748,11 @@ contains
     halo(ijk(1),ijk(2),ijk(3),c)=face(id+1)
   end subroutine
 
-  attributes(device) real(8) function private_wall_derivative6(halo,im,jm,km,i,j,k,c,axis,ntype) result(value)
+  attributes(device) real(real_kind) function private_wall_derivative6(halo,im,jm,km,i,j,k,c,axis,ntype) result(value)
     use constdef, only: num1d60
     integer,value :: im,jm,km,i,j,k,c,axis,ntype
-    real(8),device,intent(in) :: halo(-3:im+3,-3:jm+3,-3:km+3,3)
-    real(8) :: f(0:6),center,weights(0:6),sign,temporary
+    real(real_kind),device,intent(in) :: halo(-3:im+3,-3:jm+3,-3:km+3,3)
+    real(real_kind) :: f(0:6),center,weights(0:6),sign,temporary
     integer :: ijk(3),dims(3),node,start,row,s
     logical :: left,right
     ijk=[i,j,k]; dims=[im,jm,km]; node=ijk(axis)
@@ -766,23 +769,23 @@ contains
       f(s)=halo(ijk(1),ijk(2),ijk(3),c)
     enddo
     if(row==3) then
-      value=0.75d0*(f(4)-f(2))-0.15d0*(f(5)-f(1))+num1d60*(f(6)-f(0))
+      value=0.75e0_real_kind*(f(4)-f(2))-0.15e0_real_kind*(f(5)-f(1))+num1d60*(f(6)-f(0))
       return
     endif
-    sign=1.d0
+    sign=1.e0_real_kind
     if(row>3) then
-      row=6-row; sign=-1.d0
+      row=6-row; sign=-1.e0_real_kind
       do s=0,2
         temporary=f(s); f(s)=f(6-s); f(6-s)=temporary
       enddo
     endif
     select case(row)
-    case(0); weights=[-147.d0,360.d0,-450.d0,400.d0,-225.d0,72.d0,-10.d0]
-    case(1); weights=[-10.d0,-77.d0,150.d0,-100.d0,50.d0,-15.d0,2.d0]
-    case(2); weights=[2.d0,-24.d0,-35.d0,80.d0,-30.d0,8.d0,-1.d0]
+    case(0); weights=[-147.e0_real_kind,360.e0_real_kind,-450.e0_real_kind,400.e0_real_kind,-225.e0_real_kind,72.e0_real_kind,-10.e0_real_kind]
+    case(1); weights=[-10.e0_real_kind,-77.e0_real_kind,150.e0_real_kind,-100.e0_real_kind,50.e0_real_kind,-15.e0_real_kind,2.e0_real_kind]
+    case(2); weights=[2.e0_real_kind,-24.e0_real_kind,-35.e0_real_kind,80.e0_real_kind,-30.e0_real_kind,8.e0_real_kind,-1.e0_real_kind]
     end select
     ! Subtract the target value before summation to annihilate constants exactly.
-    value=0.d0
+    value=0.e0_real_kind
     do s=0,6
       value=value+weights(s)*(f(s)-center)
     enddo
@@ -794,11 +797,11 @@ contains
     use ieee_arithmetic, only: ieee_is_finite
     integer,value :: im,jm,km,hm,nti,ntj,ntk,components
     logical,value :: sixth
-    real(8),device,intent(in) :: halo(-3:im+3,-3:jm+3,-3:km+3,3)
-    real(8),device,intent(in) :: metrics(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3)
-    real(8),device,intent(out) :: derived(components,*)
+    real(real_kind),device,intent(in) :: halo(-3:im+3,-3:jm+3,-3:km+3,3)
+    real(real_kind),device,intent(in) :: metrics(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3)
+    real(real_kind),device,intent(out) :: derived(components,*)
     integer,device,intent(inout) :: invalid(*)
-    real(8) :: gradient(3,3),directional(3),fields(14),qvalue
+    real(real_kind) :: gradient(3,3),directional(3),fields(14),qvalue
     integer :: node,i,j,k,c,d,ignored
     node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(node>=(im+1)*(jm+1)*(km+1)) return
@@ -822,13 +825,13 @@ contains
         fields(c+3*(d-1))=gradient(c,d)
       enddo
     enddo
-    qvalue=0.d0
+    qvalue=0.e0_real_kind
     do d=1,3
       do c=1,3
         qvalue=qvalue+gradient(c,d)*gradient(d,c)
       enddo
     enddo
-    fields(10)=-0.5d0*qvalue
+    fields(10)=-0.5e0_real_kind*qvalue
     fields(11)=gradient(1,1)+gradient(2,2)+gradient(3,3)
     fields(12)=gradient(3,2)-gradient(2,3)
     fields(13)=gradient(1,3)-gradient(3,1)
@@ -847,12 +850,12 @@ contains
     integer,intent(in) :: extent(3),hm,nq,sizes(3),neighbors(2,3),comm
     integer(int64),intent(in) :: budget,reserve
     integer(int64),intent(in),optional :: retained_other
-    real(8),device,intent(in) :: q(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,nq)
-    real(8),device,allocatable,intent(out) :: velocity(:,:)
-    real(8),device,allocatable :: state(:,:,:,:)
+    real(real_kind),device,intent(in) :: q(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,nq)
+    real(real_kind),device,allocatable,intent(out) :: velocity(:,:)
+    real(real_kind),device,allocatable :: state(:,:,:,:)
     integer,device,allocatable :: invalid(:)
     integer :: axis,nodes,status,ierr,bad,ranks,first,node,i,j,k,component,comparison
-    real(8) :: failure_state(4)
+    real(real_kind) :: failure_state(4)
     integer(int64) :: nodes64,bytes,free_bytes,total_bytes,extra
     call require_snapshot(transport_comm/=MPI_COMM_NULL,comm,'snapshot requires initialized transport')
     call MPI_Comm_compare(comm,transport_parent,comparison,ierr)
@@ -869,7 +872,7 @@ contains
       call require_snapshot(nodes64<=int(huge(nodes)/4,int64)/(extent(axis)+1),comm,'snapshot index overflow')
       nodes64=nodes64*(extent(axis)+1)
     enddo
-    bytes=nodes64*7*8+12
+    bytes=nodes64*7*real_bytes+12
     extra=0
     if(present(retained_other)) extra=retained_other
     call require_snapshot(extra>=0.and.extra<=budget.and.transport_device_bytes<=budget-extra, &
@@ -886,7 +889,7 @@ contains
     call require_snapshot(status==0,comm,'snapshot allocation')
 #ifdef ASTR_BUILD_TESTING
     call trace_sample_memory_gpu('canonical-state-and-velocity', &
-      8_int64*(size(state,kind=int64)+size(velocity,kind=int64)),comm)
+      int(real_bytes,int64)*(size(state,kind=int64)+size(velocity,kind=int64)),comm)
 #endif
     call copy_state<<<(nodes*4+255)/256,256>>>(q,state,extent(1),extent(2),extent(3),hm,nq)
     status=cudaDeviceSynchronize()
@@ -913,8 +916,8 @@ contains
 
   attributes(global) subroutine copy_state(q,state,im,jm,km,hm,nq)
     integer,value :: im,jm,km,hm,nq
-    real(8),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,nq)
-    real(8),device,intent(out) :: state(0:im,0:jm,0:km,4)
+    real(real_kind),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,nq)
+    real(real_kind),device,intent(out) :: state(0:im,0:jm,0:km,4)
     integer :: id,node,nodes,i,j,k,c
     nodes=(im+1)*(jm+1)*(km+1)
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
@@ -941,8 +944,8 @@ contains
 
   attributes(global) subroutine pack_face(state,face,im,jm,km,axis,count,components)
     integer,value :: im,jm,km,axis,count,components
-    real(8),device,intent(in) :: state(0:im,0:jm,0:km,components)
-    real(8),device,intent(out) :: face(*)
+    real(real_kind),device,intent(in) :: state(0:im,0:jm,0:km,components)
+    real(real_kind),device,intent(out) :: face(*)
     integer :: id,ijk(3),c
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(id>=count) return
@@ -952,8 +955,8 @@ contains
 
   attributes(global) subroutine unpack_face(state,face,im,jm,km,axis,count,components)
     integer,value :: im,jm,km,axis,count,components
-    real(8),device,intent(inout) :: state(0:im,0:jm,0:km,components)
-    real(8),device,intent(in) :: face(*)
+    real(real_kind),device,intent(inout) :: state(0:im,0:jm,0:km,components)
+    real(real_kind),device,intent(in) :: face(*)
     integer :: id,ijk(3),c,dims(3)
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(id>=count) return
@@ -965,16 +968,16 @@ contains
   attributes(global) subroutine velocity_from_state(state,velocity,invalid,im,jm,km)
     use ieee_arithmetic, only: ieee_is_finite
     integer,value :: im,jm,km
-    real(8),device,intent(in) :: state(0:im,0:jm,0:km,4)
-    real(8),device,intent(out) :: velocity(3,*)
+    real(real_kind),device,intent(in) :: state(0:im,0:jm,0:km,4)
+    real(real_kind),device,intent(out) :: velocity(3,*)
     integer,device,intent(inout) :: invalid(*)
     integer :: node,i,j,k,c,ignored
-    real(8) :: density,value
+    real(real_kind) :: density,value
     node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(node>=(im+1)*(jm+1)*(km+1)) return
     i=mod(node,im+1); j=mod(node/(im+1),jm+1); k=node/((im+1)*(jm+1))
     density=state(i,j,k,1)
-    if(.not.ieee_is_finite(density).or.density<=0.d0) then
+    if(.not.ieee_is_finite(density).or.density<=0.e0_real_kind) then
       ignored=atomicCAS(invalid(1),0,1)
       if(ignored==0) then
         invalid(2)=node+1; invalid(3)=1

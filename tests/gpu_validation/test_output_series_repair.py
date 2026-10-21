@@ -37,7 +37,7 @@ def snapshot(path):
             for p in path.rglob("*") if p.is_file()}
 
 
-def make_segment(root, components, planes, derived=()):
+def make_segment(root, components, planes, derived=(), width=8):
     product = root / ("slices" if planes else "fields")
     segment = product / "segment00000000"
     resources = product / "resources"
@@ -50,16 +50,18 @@ def make_segment(root, components, planes, derived=()):
     (segment / "input.txt").write_text(f"synthetic\n8,6,4\nt,t,t\n{'f' if units == 'si' else 't'},f,f,f,f,f,f,f\n")
     labels = [(axis + f"{index:012d}", "ijk".index(axis) + 1, index) for axis, index in planes] or [("", 0, 0)]
     shape = (5, 7, 9)
-    encoding = np.arange(np.prod(shape), dtype="<f8").reshape(shape)
+    dtype = np.dtype(f'<f{width}')
+    version = 2 if width == 4 else 1
+    encoding = np.arange(np.prod(shape), dtype=dtype).reshape(shape)
     with h5py.File(resources / "data.h5", "w") as geometry:
         geometry.attrs.update(units=np.bytes_(units), center=np.bytes_("Node"), phase=np.bytes_("completed_step"))
         for label, axis, index in labels:
             leaf = geometry.create_group(label) if label else geometry
             selected_shape = tuple(n for d, n in enumerate(shape) if axis == 0 or d != 3 - axis)
-            meta = np.array([1, 0, *np.array([0., 0., 1.], dtype="<f8").view("<i8"),
+            meta = np.array([version, 0, *np.array([0., 0., 1.], dtype=dtype).view(f'<i{width}').astype('<i8'),
                              axis, index, 9, 7, 5, components], dtype="<i8")
             leaf["metadata"] = meta
-            leaf["coordinates"] = np.arange(np.prod(selected_shape) * 3, dtype="<f8").reshape(selected_shape + (3,))
+            leaf["coordinates"] = np.arange(np.prod(selected_shape) * 3, dtype=dtype).reshape(selected_shape + (3,))
     for step in (0, 2, 4):
         frame = segment / f"step{step:012d}"
         frame.mkdir()
@@ -70,7 +72,7 @@ def make_segment(root, components, planes, derived=()):
                 handle.attrs["derived_layout"] = np.bytes_(" ".join(map(str, tuple(derived)+(0,)*(14-len(derived)))))
             for label, axis, index in labels:
                 leaf = handle.create_group(label) if label else handle
-                meta = np.array([1, step, *np.array([step * .001, .001 if step else 0., .001], dtype="<f8").view("<i8"),
+                meta = np.array([version, step, *np.array([step * .001, .001 if step else 0., .001], dtype=dtype).view(f'<i{width}').astype('<i8'),
                                  axis, index, 9, 7, 5, components], dtype="<i8")
                 leaf["metadata"] = meta
                 selected = [slice(None)] * 3
@@ -86,11 +88,11 @@ def make_segment(root, components, planes, derived=()):
                         definition=np.bytes_(repair.DERIVED_DEFINITIONS[n-1]), coordinate_space=np.bytes_("physical"),
                         time_dimension_exponent=np.bytes_("-2" if n == 10 else "-1"))
                 leaf["velocity"] = np.stack([data + m / 16 for m in (1, 2, 3)], axis=-1)
-                total_bytes += data.size * len(fields) * 8
+                total_bytes += data.size * len(fields) * width
             if planes:
                 handle["frame_identity"] = np.array([*meta[:5], *meta[7:11], int(units == "si")], dtype="<i8")
         magic = "ASTR_DERIVED_FRAME_1" if derived else "ASTR_BASIC_FRAME_1"
-        declaration = f"{magic}\n{step} {step * .001:.17g}\n{components} {units}\n{total_bytes} {total_bytes}\n"
+        declaration = f"{magic}\n{step} {float(dtype.type(step * .001)):.17g}\n{components} {units}\n{total_bytes} {total_bytes}\n"
         if derived:
             declaration += " ".join(map(str, tuple(derived)+(0,)*(14-len(derived))))+"\n"
         (frame / "FRAME").write_text(declaration)
@@ -100,6 +102,46 @@ def make_segment(root, components, planes, derived=()):
     (segment / "series.frames").write_text("ASTR_FRAME_SERIES_1\n0 0\n")
     (segment / "series.xdmf").write_text("old truncated index\n")
     return segment
+
+
+@pytest.mark.parametrize('planes,derived', [([], ()), ([('i', 4), ('k', 1)], (10, 11))])
+@pytest.mark.parametrize('width', [4, 8])
+def test_native_precision_indexes(tmp_path, planes, derived, width):
+    segment = make_segment(tmp_path, 6, planes, derived=derived, width=width)
+    before = snapshot(segment.parent)
+    report = repair.repair_segment(segment, publish=True)
+    assert report['frames'] == 3 and report['field_array_read_bytes'] == 0
+    tree = ET.parse(segment / 'series.xdmf')
+    assert [float(g.find('Time').attrib['Value']) for g in tree.findall('./Domain/Grid/Grid')] == [
+        float(np.dtype(f'<f{width}').type(step * .001)) for step in (0, 2, 4)]
+    for item in tree.findall('.//DataItem'):
+        assert item.attrib['Precision'] == str(width)
+        path, name = item.text.split(':', 1)
+        with h5py.File(segment / path) as source:
+            assert source[name].dtype == np.dtype(f'<f{width}')
+    after = snapshot(segment.parent)
+    for name, identity in before.items():
+        if Path(name).name not in repair.INDEX_NAMES:
+            assert after[name] == identity
+
+
+@pytest.mark.parametrize('defect', ['version', 'field_width', 'geometry_width'])
+def test_native_fp32_rejects_inconsistent_identity(tmp_path, defect):
+    segment = make_segment(tmp_path, 6, [], width=4)
+    frame = segment / 'step000000000004'
+    target = segment.parent / 'resources/data.h5' if defect == 'geometry_width' else frame / 'data.h5'
+    with h5py.File(target, 'r+') as handle:
+        if defect == 'version':
+            handle['metadata'][0] = 3
+        else:
+            name = 'coordinates' if defect == 'geometry_width' else 'density'
+            values = handle[name][:].astype('<f8')
+            del handle[name]
+            handle[name] = values
+    if defect != 'geometry_width':
+        reseal(frame)
+    with pytest.raises(ValueError):
+        repair.repair_segment(segment)
 
 
 @pytest.fixture(params=[(6, []), (12, [("i", 4), ("j", 2), ("k", 1)])])

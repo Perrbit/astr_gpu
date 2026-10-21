@@ -60,7 +60,7 @@ def test_air5_cache_carry_provider(tmp_path, ranks, axis):
     with h5py.File(path) as state:
         assert state["identity"][12] == 7
         assert state["metadata"][:].tolist() == [1, 1]
-        assert len(state) == 38
+        assert len(state) == 39
 
 
 @pytest.mark.parametrize("ranks,axis", [(1, 1), (2, 1), (2, 2)])
@@ -71,7 +71,7 @@ def test_statistics_state_continuation(tmp_path, ranks, axis):
     run(path, "statistics_wrong_role", ranks, axis, components=34, success=False)
     with h5py.File(path, "r") as state:
         assert state["identity"][12] == 3
-        assert len(state) == 38
+        assert len(state) == 39
         assert np.all(state["q0034"][:] == 1)
         assert state["metadata"][:].tolist() == [1, -(1 << 63), 4602678819172646912, 2147483650]
 
@@ -123,7 +123,8 @@ def test_exact_and_repartition(tmp_path, components, halo, ranks, axis):
         assert f["q0001"].shape == (5, 7, 9)
         assert np.signbit(f["q0001"][0, 0, 0])
         assert f["identity"][8] == 2147483650
-        assert len(f) == components + 3
+        assert len(f) == components + 4
+        assert f['numerical_kind_bytes'][:].tolist() == [8]
         if ranks == 1 and halo == 0:
             assert f["rank_extras"].shape == (0,)
 
@@ -173,6 +174,6 @@ def test_perfect_gas_cache_provider(tmp_path, ranks, axis):
     # The same component count must not silently alias a different field role.
     run(path, "exact", ranks, axis, components=11, success=False)
     with h5py.File(path, "r") as f:
-        assert f["identity"][1] == 2
+        assert f["identity"][1] == 3
         assert f["identity"][12] == 2
-        assert len(f) == 14
+        assert len(f) == 15

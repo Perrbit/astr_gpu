@@ -7,11 +7,13 @@
 !|  28-05-2021  | Created by J. Fang @ Warrington                      |
 !+---------------------------------------------------------------------+
 module pp
+  use astr_precision, only: real_kind
   !
   use constdef
   use stlaio,  only: get_unit
   !
   implicit none
+  private :: real_kind
   !
   contains
   !
@@ -294,12 +296,12 @@ end subroutine ppentrance
     !
     integer :: fh,isize,jsize,ksize,rankmax,jrank,vai1,irp,jrp,krp,    &
                asizemax,ima,jma,kma,i,j,k,n,nstep
-    real(8) :: time
+    real(real_kind) :: time
     integer,allocatable :: im(:),jm(:),km(:),i0(:),j0(:),k0(:),        &
                            offset(:),asize(:)
     !
-    real(8),allocatable,dimension(:) :: data_1d
-    real(8),allocatable,dimension(:,:,:) :: data_3d
+    real(real_kind),allocatable,dimension(:) :: data_1d
+    real(real_kind),allocatable,dimension(:,:,:) :: data_3d
     !
     fh=get_unit()
     open(fh,file='datin/parallel.info',form='formatted',action='read')
@@ -505,33 +507,33 @@ end subroutine ppentrance
     integer,intent(in) :: im,jm,km
     character(len=*),intent(in) :: folder
     !
-    real(8),allocatable,dimension(:,:,:) :: x,y,z
+    real(real_kind),allocatable,dimension(:,:,:) :: x,y,z
     integer :: npa,n,i,j,k,jmm,fh
-    real(8) :: varc,var1,var2,Retau,dx
+    real(real_kind) :: varc,var1,var2,Retau,dx
     !
     allocate(x(0:im,0:jm,0:km),y(0:im,0:jm,0:km),z(0:im,0:jm,0:km))
     !
-    Retau=185.d0
+    Retau=185.e0_real_kind
     jmm=jm/2
     !
-    varc=1.075d0
+    varc=1.075e0_real_kind
     do j=0,jm
       !
-      var1=argtanh(1.d0/varc)
-      var2=2.d0*(j)/(jm)*1.d0-1.d0
+      var1=argtanh(1.e0_real_kind/varc)
+      var2=2.e0_real_kind*(j)/(jm)*1.e0_real_kind-1.e0_real_kind
       !
-      y(0,j,0)=1.d0*(1.d0+varc*dtanh(var1*var2))
+      y(0,j,0)=1.e0_real_kind*(1.e0_real_kind+varc*tanh(var1*var2))
       !
     end do
     !
     do k=0,km
     do j=0,jm
     do i=0,im
-      x(i,j,k)=4.d0*pi/im*i
+      x(i,j,k)=4.e0_real_kind*pi/im*i
       y(i,j,k)=y(0,j,0)
       !
       if(km==0) then
-        z(i,j,k)=0.d0
+        z(i,j,k)=0.e0_real_kind
       else
         z(i,j,k)=num4d3*pi/km*k
       endif
@@ -547,7 +549,7 @@ end subroutine ppentrance
     !
     fh=get_unit()
     open(fh,file='dy.dat')
-    write(fh,*)(j*1.d0,y(0,j,0),y(0,j,0)-y(0,j-1,0),j=1,jm)
+    write(fh,*)(j*1.e0_real_kind,y(0,j,0),y(0,j,0)-y(0,j-1,0),j=1,jm)
     close(fh)
     print*,' << dy.dat'
     !
@@ -588,8 +590,8 @@ end subroutine ppentrance
     integer :: js
     character(len=64) :: inputfile
     character(len=4) :: cmd
-    real(8) :: resc_fact
-    real(8) :: rot_vec(3),rot_theta,shift_cor(3)
+    real(real_kind) :: resc_fact
+    real(real_kind) :: rot_vec(3),rot_theta,shift_cor(3)
     !
     call readkeyboad(cmd)
     !
@@ -598,7 +600,7 @@ end subroutine ppentrance
     if(cmd=='sgen') then
       call solidgen_circle
       !
-      shift_cor=(/5.d0,2.5d0,0.d0/)
+      shift_cor=(/5.e0_real_kind,2.5e0_real_kind,0.e0_real_kind/)
       !
     elseif(cmd=='proc') then
       call readkeyboad(inputfile)
@@ -606,10 +608,10 @@ end subroutine ppentrance
       call readsolid(trim(inputfile))
       !
       ! resc_fact=0.015d0
-      resc_fact=0.005d0
-      rot_vec=(/1.d0,0.d0,0.d0/)
-      rot_theta=-90.d0
-      shift_cor=(/5.d0,5.d0,5.d0/)
+      resc_fact=0.005e0_real_kind
+      rot_vec=(/1.e0_real_kind,0.e0_real_kind,0.e0_real_kind/)
+      rot_theta=-90.e0_real_kind
+      shift_cor=(/5.e0_real_kind,5.e0_real_kind,5.e0_real_kind/)
     else
       !
       print*,' !! ERROR 1, cmd not defined !!'
@@ -672,16 +674,16 @@ end subroutine ppentrance
     !
     ! local data
     integer :: i,j,k,jf,km,jm,im,nface
-    real(8) :: dthe,dphi,theter1,theter2,phi1,phi2,radi, &
+    real(real_kind) :: dthe,dphi,theter1,theter2,phi1,phi2,radi, &
                x1(3),x2(3),x3(3),x4(3),x5(3),x6(3),norm1(3),var1,var2, &
                xc,yc
-    real(8) :: epsilon,varc,theter
+    real(real_kind) :: epsilon,varc,theter
     integer :: map
     character(len=4) :: nacaname
-    real(8),allocatable :: xap(:),yap(:),xin(:)
+    real(real_kind),allocatable :: xap(:),yap(:),xin(:)
     type(triangle),allocatable :: tempface(:)
     !
-    epsilon=1.d-12
+    epsilon=1.e-12_real_kind
     !
     print*,' ** generating solid'
     !
@@ -689,13 +691,13 @@ end subroutine ppentrance
     nacaname='4412'
     allocate(xin(0:map),xap(0:map),yap(0:map))
     !
-    varc=1.02d0
+    varc=1.02e0_real_kind
     do i=0,map/2
       !
-      var1=argtanh(1.d0/varc)
-      var2=2.d0*(i)/(map)*1.d0-1.d0
+      var1=argtanh(1.e0_real_kind/varc)
+      var2=2.e0_real_kind*(i)/(map)*1.e0_real_kind-1.e0_real_kind
       !
-      xin(i)=1.d0*(1.d0+varc*dtanh(var1*var2))
+      xin(i)=1.e0_real_kind*(1.e0_real_kind+varc*tanh(var1*var2))
       call naca4digit(xin(i),xap(i),yap(i),nacaname,'upper')
       !
     end do
@@ -708,7 +710,7 @@ end subroutine ppentrance
     print*,' ** input angle of attack in degree'
     read(*,*)theter
     !
-    theter=-theter/180.d0*pi
+    theter=-theter/180.e0_real_kind*pi
     !
     do i=0,map
       var1=xap(i)*cos(theter)-yap(i)*sin(theter)
@@ -735,15 +737,15 @@ end subroutine ppentrance
     !
     nface=0
     !
-    xc=0.d0
-    yc=0.d0
+    xc=0.e0_real_kind
+    yc=0.e0_real_kind
     do i=1,map-1
       xc=xc+xap(i)
       yc=yc+yap(i)
     enddo
     !
-    xc=xc/dble(map-1)
-    yc=yc/dble(map-1)
+    xc=xc/real(map-1,real_kind)
+    yc=yc/real(map-1,real_kind)
     !
     nsolid=1
     allocate(immbody(nsolid))
@@ -754,27 +756,27 @@ end subroutine ppentrance
     do i=0,map-1
       x1(1)=xap(i)
       x1(2)=yap(i)
-      x1(3)=0.d0
+      x1(3)=0.e0_real_kind
       !
       x2(1)=xap(i+1)
       x2(2)=yap(i+1)
-      x2(3)=0.d0
+      x2(3)=0.e0_real_kind
       !
       x3(1)=xap(i+1)
       x3(2)=yap(i+1)
-      x3(3)=1.d0
+      x3(3)=1.e0_real_kind
       !
       x4(1)=xap(i)
       x4(2)=yap(i)
-      x4(3)=1.d0
+      x4(3)=1.e0_real_kind
       !
       x5(1)=xc
       x5(2)=yc
-      x5(3)=0.d0
+      x5(3)=0.e0_real_kind
       !
       x6(1)=xc
       x6(2)=yc
-      x6(3)=1.d0
+      x6(3)=1.e0_real_kind
       !
       nface=nface+1
       tempface(nface)%a=x1
@@ -792,13 +794,13 @@ end subroutine ppentrance
       tempface(nface)%a=x1
       tempface(nface)%b=x2
       tempface(nface)%c=x5
-      tempface(nface)%normdir=(/0.d0,0.d0,-1.d0/)
+      tempface(nface)%normdir=(/0.e0_real_kind,0.e0_real_kind,-1.e0_real_kind/)
       !
       nface=nface+1
       tempface(nface)%a=x4
       tempface(nface)%b=x3
       tempface(nface)%c=x6
-      tempface(nface)%normdir=(/0.d0,0.d0,1.d0/)
+      tempface(nface)%normdir=(/0.e0_real_kind,0.e0_real_kind,1.e0_real_kind/)
       !
     enddo
     !
@@ -835,19 +837,19 @@ end subroutine ppentrance
     !
     ! local data
     integer :: i,j,k,jf,km,jm,im,nface
-    real(8) :: dthe,dphi,theter1,theter2,phi1,phi2,radi, &
+    real(real_kind) :: dthe,dphi,theter1,theter2,phi1,phi2,radi, &
                x1(3),x2(3),x3(3),x4(3),norm1(3),var1,var2
-    real(8) :: epsilon,delta,x0,lx,lz,h,sz,chord
+    real(real_kind) :: epsilon,delta,x0,lx,lz,h,sz,chord
     type(triangle),allocatable :: tempface(:)
     !
-    epsilon=1.d-12
-    delta=1.d0
-    x0=10.d0
-    lx=2.523597432d0
-    lz=2.25d0
-    chord=sqrt(lx**2+0.25d0*lz**2)
-    sz=0.25d0
-    h =0.3838d0
+    epsilon=1.e-12_real_kind
+    delta=1.e0_real_kind
+    x0=10.e0_real_kind
+    lx=2.523597432e0_real_kind
+    lz=2.25e0_real_kind
+    chord=sqrt(lx**2+0.25e0_real_kind*lz**2)
+    sz=0.25e0_real_kind
+    h =0.3838e0_real_kind
     nface=0
     !
     print*,' ** generating solid'
@@ -859,42 +861,42 @@ end subroutine ppentrance
     allocate(tempface(12))
     !
     x1(1)=x0
-    x1(2)=0.d0
-    x1(3)=0.5d0*sz
+    x1(2)=0.e0_real_kind
+    x1(3)=0.5e0_real_kind*sz
     !
     x2(1)=x0
-    x2(2)=0.d0
-    x2(3)=0.5d0*sz+lz
+    x2(2)=0.e0_real_kind
+    x2(3)=0.5e0_real_kind*sz+lz
     !
     x3(1)=x0+lx
-    x3(2)=0.d0
-    x3(3)=0.5d0*sz+0.5d0*lz
+    x3(2)=0.e0_real_kind
+    x3(3)=0.5e0_real_kind*sz+0.5e0_real_kind*lz
     !
     x4(1)=x0+lx
-    x4(2)=0.d0+h
-    x4(3)=0.5d0*sz+0.5d0*lz
+    x4(2)=0.e0_real_kind+h
+    x4(3)=0.5e0_real_kind*sz+0.5e0_real_kind*lz
     !
     nface=nface+1
     tempface(nface)%a=x1
     tempface(nface)%b=x2
     tempface(nface)%c=x3
-    tempface(nface)%normdir=(/0.d0,-1.d0,0.d0/)
+    tempface(nface)%normdir=(/0.e0_real_kind,-1.e0_real_kind,0.e0_real_kind/)
     !
-    var1=0.5d0*lz/chord
+    var1=0.5e0_real_kind*lz/chord
     var2=      lx/chord
     nface=nface+1
     tempface(nface)%a=x1
     tempface(nface)%b=x3
     tempface(nface)%c=x4
-    tempface(nface)%normdir=(/var1,0.d0,-var2/)
+    tempface(nface)%normdir=(/var1,0.e0_real_kind,-var2/)
     !
-    var1=0.5d0*lz/chord
+    var1=0.5e0_real_kind*lz/chord
     var2=      lx/chord
     nface=nface+1
     tempface(nface)%a=x2
     tempface(nface)%b=x3
     tempface(nface)%c=x4
-    tempface(nface)%normdir=(/var1,0.d0,var2/)
+    tempface(nface)%normdir=(/var1,0.e0_real_kind,var2/)
     !
     var1=h /sqrt(lx**2+h**2)
     var2=lx/sqrt(lx**2+h**2)
@@ -902,7 +904,7 @@ end subroutine ppentrance
     tempface(nface)%a=x1
     tempface(nface)%b=x2
     tempface(nface)%c=x4
-    tempface(nface)%normdir=(/-var1,var2,0.d0/)
+    tempface(nface)%normdir=(/-var1,var2,0.e0_real_kind/)
     !
     immbody(1)%num_face=nface
     call immbody(1)%alloface()
@@ -919,23 +921,23 @@ end subroutine ppentrance
     tempface(nface)%a=x1
     tempface(nface)%b=x2
     tempface(nface)%c=x3
-    tempface(nface)%normdir=(/0.d0,-1.d0,0.d0/)
+    tempface(nface)%normdir=(/0.e0_real_kind,-1.e0_real_kind,0.e0_real_kind/)
     !
-    var1=0.5d0*lz/chord
+    var1=0.5e0_real_kind*lz/chord
     var2=      lx/chord
     nface=nface+1
     tempface(nface)%a=x1
     tempface(nface)%b=x3
     tempface(nface)%c=x4
-    tempface(nface)%normdir=(/var1,0.d0,-var2/)
+    tempface(nface)%normdir=(/var1,0.e0_real_kind,-var2/)
     !
-    var1=0.5d0*lz/chord
+    var1=0.5e0_real_kind*lz/chord
     var2=      lx/chord
     nface=nface+1
     tempface(nface)%a=x2
     tempface(nface)%b=x3
     tempface(nface)%c=x4
-    tempface(nface)%normdir=(/var1,0.d0, var2/)
+    tempface(nface)%normdir=(/var1,0.e0_real_kind, var2/)
     !
     var1=h /sqrt(lx**2+h**2)
     var2=lx/sqrt(lx**2+h**2)
@@ -943,7 +945,7 @@ end subroutine ppentrance
     tempface(nface)%a=x1
     tempface(nface)%b=x2
     tempface(nface)%c=x4
-    tempface(nface)%normdir=(/-var1,var2,0.d0/)
+    tempface(nface)%normdir=(/-var1,var2,0.e0_real_kind/)
     !
     immbody(2)%num_face=nface
     call immbody(2)%alloface()
@@ -973,12 +975,12 @@ end subroutine ppentrance
     !
     ! local data
     integer :: i,j,k,jf,km,jm,im,nface
-    real(8) :: dthe,dphi,theter1,theter2,phi1,phi2,radi, &
+    real(real_kind) :: dthe,dphi,theter1,theter2,phi1,phi2,radi, &
                x1(3),x2(3),x3(3),x4(3),norm1(3),var1
-    real(8) :: epsilon
+    real(real_kind) :: epsilon
     type(triangle),allocatable :: tempface(:)
     !
-    epsilon=1.d-12
+    epsilon=1.e-12_real_kind
     !
     print*,' ** generating solid'
     !
@@ -990,126 +992,126 @@ end subroutine ppentrance
     !
     nface=0
     !
-    x1(1)=0.d0
-    x1(2)=0.d0
-    x1(3)=0.d0
+    x1(1)=0.e0_real_kind
+    x1(2)=0.e0_real_kind
+    x1(3)=0.e0_real_kind
     !
-    x2(1)=1.d0
-    x2(2)=-0.5d0
-    x2(3)=0.d0
+    x2(1)=1.e0_real_kind
+    x2(2)=-0.5e0_real_kind
+    x2(3)=0.e0_real_kind
     !
-    x3(1)=1.d0
-    x3(2)=0.5d0
-    x3(3)=0.d0
-    !
-    nface=nface+1
-    tempface(nface)%a=x1
-    tempface(nface)%b=x2
-    tempface(nface)%c=x3
-    tempface(nface)%normdir=(/0.d0,0.d0,-1.d0/)
-    !
-    x1(1)=0.d0
-    x1(2)=0.d0
-    x1(3)=1.d0
-    !
-    x2(1)=1.d0
-    x2(2)=-0.5d0
-    x2(3)=1.d0
-    !
-    x3(1)=1.d0
-    x3(2)=0.5d0
-    x3(3)=1.d0
+    x3(1)=1.e0_real_kind
+    x3(2)=0.5e0_real_kind
+    x3(3)=0.e0_real_kind
     !
     nface=nface+1
     tempface(nface)%a=x1
     tempface(nface)%b=x2
     tempface(nface)%c=x3
-    tempface(nface)%normdir=(/0.d0,0.d0, 1.d0/)
+    tempface(nface)%normdir=(/0.e0_real_kind,0.e0_real_kind,-1.e0_real_kind/)
     !
-    x1(1)=1.d0
-    x1(2)=-0.5d0
-    x1(3)=0.d0
+    x1(1)=0.e0_real_kind
+    x1(2)=0.e0_real_kind
+    x1(3)=1.e0_real_kind
     !
-    x2(1)=1.d0
-    x2(2)=-0.5d0
-    x2(3)=1.d0
+    x2(1)=1.e0_real_kind
+    x2(2)=-0.5e0_real_kind
+    x2(3)=1.e0_real_kind
     !
-    x3(1)=1.d0
-    x3(2)=0.5d0
-    x3(3)=1.d0
-    !
-    x4(1)=1.d0
-    x4(2)=0.5d0
-    x4(3)=0.d0
+    x3(1)=1.e0_real_kind
+    x3(2)=0.5e0_real_kind
+    x3(3)=1.e0_real_kind
     !
     nface=nface+1
     tempface(nface)%a=x1
     tempface(nface)%b=x2
     tempface(nface)%c=x3
-    tempface(nface)%normdir=(/1.d0,0.d0,0.d0/)
+    tempface(nface)%normdir=(/0.e0_real_kind,0.e0_real_kind, 1.e0_real_kind/)
+    !
+    x1(1)=1.e0_real_kind
+    x1(2)=-0.5e0_real_kind
+    x1(3)=0.e0_real_kind
+    !
+    x2(1)=1.e0_real_kind
+    x2(2)=-0.5e0_real_kind
+    x2(3)=1.e0_real_kind
+    !
+    x3(1)=1.e0_real_kind
+    x3(2)=0.5e0_real_kind
+    x3(3)=1.e0_real_kind
+    !
+    x4(1)=1.e0_real_kind
+    x4(2)=0.5e0_real_kind
+    x4(3)=0.e0_real_kind
+    !
+    nface=nface+1
+    tempface(nface)%a=x1
+    tempface(nface)%b=x2
+    tempface(nface)%c=x3
+    tempface(nface)%normdir=(/1.e0_real_kind,0.e0_real_kind,0.e0_real_kind/)
     !
     nface=nface+1
     tempface(nface)%a=x3
     tempface(nface)%b=x4
     tempface(nface)%c=x1
-    tempface(nface)%normdir=(/1.d0,0.d0,0.d0/)
+    tempface(nface)%normdir=(/1.e0_real_kind,0.e0_real_kind,0.e0_real_kind/)
     !
-    x1(1)=0.d0
-    x1(2)=0.d0
-    x1(3)=0.d0
+    x1(1)=0.e0_real_kind
+    x1(2)=0.e0_real_kind
+    x1(3)=0.e0_real_kind
     !
-    x2(1)=0.d0
-    x2(2)=0.d0
-    x2(3)=1.d0
+    x2(1)=0.e0_real_kind
+    x2(2)=0.e0_real_kind
+    x2(3)=1.e0_real_kind
     !
-    x3(1)=1.d0
-    x3(2)=0.5d0
-    x3(3)=1.d0
+    x3(1)=1.e0_real_kind
+    x3(2)=0.5e0_real_kind
+    x3(3)=1.e0_real_kind
     !
-    x4(1)=1.d0
-    x4(2)=0.5d0
-    x4(3)=0.d0
-    !
-    nface=nface+1
-    tempface(nface)%a=x1
-    tempface(nface)%b=x2
-    tempface(nface)%c=x3
-    tempface(nface)%normdir=(/-1.d0/sqrt(5.d0),2.d0/sqrt(5.d0),0.d0/)
-    !
-    nface=nface+1
-    tempface(nface)%a=x3
-    tempface(nface)%b=x4
-    tempface(nface)%c=x1
-    tempface(nface)%normdir=(/-1.d0/sqrt(5.d0),2.d0/sqrt(5.d0),0.d0/)
-    !
-    x1(1)=0.d0
-    x1(2)=0.d0
-    x1(3)=0.d0
-    !
-    x2(1)=0.d0
-    x2(2)=0.d0
-    x2(3)=1.d0
-    !
-    x3(1)=1.d0
-    x3(2)=-0.5d0
-    x3(3)=1.d0
-    !
-    x4(1)=1.d0
-    x4(2)=-0.5d0
-    x4(3)=0.d0
-    !
+    x4(1)=1.e0_real_kind
+    x4(2)=0.5e0_real_kind
+    x4(3)=0.e0_real_kind
     !
     nface=nface+1
     tempface(nface)%a=x1
     tempface(nface)%b=x2
     tempface(nface)%c=x3
-    tempface(nface)%normdir=(/-1.d0/sqrt(5.d0),-2.d0/sqrt(5.d0),0.d0/)
+    tempface(nface)%normdir=(/-1.e0_real_kind/sqrt(5.e0_real_kind),2.e0_real_kind/sqrt(5.e0_real_kind),0.e0_real_kind/)
     !
     nface=nface+1
     tempface(nface)%a=x3
     tempface(nface)%b=x4
     tempface(nface)%c=x1
-    tempface(nface)%normdir=(/-1.d0/sqrt(5.d0),-2.d0/sqrt(5.d0),0.d0/)
+    tempface(nface)%normdir=(/-1.e0_real_kind/sqrt(5.e0_real_kind),2.e0_real_kind/sqrt(5.e0_real_kind),0.e0_real_kind/)
+    !
+    x1(1)=0.e0_real_kind
+    x1(2)=0.e0_real_kind
+    x1(3)=0.e0_real_kind
+    !
+    x2(1)=0.e0_real_kind
+    x2(2)=0.e0_real_kind
+    x2(3)=1.e0_real_kind
+    !
+    x3(1)=1.e0_real_kind
+    x3(2)=-0.5e0_real_kind
+    x3(3)=1.e0_real_kind
+    !
+    x4(1)=1.e0_real_kind
+    x4(2)=-0.5e0_real_kind
+    x4(3)=0.e0_real_kind
+    !
+    !
+    nface=nface+1
+    tempface(nface)%a=x1
+    tempface(nface)%b=x2
+    tempface(nface)%c=x3
+    tempface(nface)%normdir=(/-1.e0_real_kind/sqrt(5.e0_real_kind),-2.e0_real_kind/sqrt(5.e0_real_kind),0.e0_real_kind/)
+    !
+    nface=nface+1
+    tempface(nface)%a=x3
+    tempface(nface)%b=x4
+    tempface(nface)%c=x1
+    tempface(nface)%normdir=(/-1.e0_real_kind/sqrt(5.e0_real_kind),-2.e0_real_kind/sqrt(5.e0_real_kind),0.e0_real_kind/)
     !
     !
     immbody(1)%num_face=nface
@@ -1144,12 +1146,12 @@ end subroutine ppentrance
     !
     ! local data
     integer :: i,j,k,jf,km,jm,im,nface
-    real(8) :: dthe,dphi,theter1,theter2,phi1,phi2,radi, &
+    real(real_kind) :: dthe,dphi,theter1,theter2,phi1,phi2,radi, &
                x1(3),x2(3),x3(3),x4(3),norm1(3),var1
-    real(8) :: epsilon
+    real(real_kind) :: epsilon
     type(triangle),allocatable :: tempface(:)
     !
-    epsilon=1.d-12
+    epsilon=1.e-12_real_kind
     !
     print*,' ** generating solid'
     !
@@ -1160,174 +1162,174 @@ end subroutine ppentrance
     allocate(tempface(12))
     nface=0
     !
-    x1(1)=0.d0
-    x1(2)=0.d0
-    x1(3)=0.d0
+    x1(1)=0.e0_real_kind
+    x1(2)=0.e0_real_kind
+    x1(3)=0.e0_real_kind
     !
-    x2(1)=1.d0
-    x2(2)=0.d0
-    x2(3)=0.d0
+    x2(1)=1.e0_real_kind
+    x2(2)=0.e0_real_kind
+    x2(3)=0.e0_real_kind
     !
-    x3(1)=1.d0
-    x3(2)=1.d0
-    x3(3)=0.d0
+    x3(1)=1.e0_real_kind
+    x3(2)=1.e0_real_kind
+    x3(3)=0.e0_real_kind
     !
-    x4(1)=0.d0
-    x4(2)=1.d0
-    x4(3)=0.d0
+    x4(1)=0.e0_real_kind
+    x4(2)=1.e0_real_kind
+    x4(3)=0.e0_real_kind
     !
     nface=nface+1
     tempface(nface)%a=x1
     tempface(nface)%b=x2
     tempface(nface)%c=x3
-    tempface(nface)%normdir=(/0.d0,0.d0,-1.d0/)
+    tempface(nface)%normdir=(/0.e0_real_kind,0.e0_real_kind,-1.e0_real_kind/)
     !
     nface=nface+1
     tempface(nface)%a=x3
     tempface(nface)%b=x4
     tempface(nface)%c=x1
-    tempface(nface)%normdir=(/0.d0,0.d0,-1.d0/)
+    tempface(nface)%normdir=(/0.e0_real_kind,0.e0_real_kind,-1.e0_real_kind/)
     !
-    x1(1)=1.d0
-    x1(2)=0.d0
-    x1(3)=0.d0
+    x1(1)=1.e0_real_kind
+    x1(2)=0.e0_real_kind
+    x1(3)=0.e0_real_kind
     !
-    x2(1)=1.d0
-    x2(2)=0.d0
-    x2(3)=1.d0
+    x2(1)=1.e0_real_kind
+    x2(2)=0.e0_real_kind
+    x2(3)=1.e0_real_kind
     !
-    x3(1)=1.d0
-    x3(2)=1.d0
-    x3(3)=1.d0
+    x3(1)=1.e0_real_kind
+    x3(2)=1.e0_real_kind
+    x3(3)=1.e0_real_kind
     !
-    x4(1)=1.d0
-    x4(2)=1.d0
-    x4(3)=0.d0
+    x4(1)=1.e0_real_kind
+    x4(2)=1.e0_real_kind
+    x4(3)=0.e0_real_kind
     !
     nface=nface+1
     tempface(nface)%a=x1
     tempface(nface)%b=x2
     tempface(nface)%c=x3
-    tempface(nface)%normdir=(/1.d0,0.d0,0.d0/)
+    tempface(nface)%normdir=(/1.e0_real_kind,0.e0_real_kind,0.e0_real_kind/)
     !
     nface=nface+1
     tempface(nface)%a=x3
     tempface(nface)%b=x4
     tempface(nface)%c=x1
-    tempface(nface)%normdir=(/1.d0,0.d0,0.d0/)
+    tempface(nface)%normdir=(/1.e0_real_kind,0.e0_real_kind,0.e0_real_kind/)
     !
-    x1(1)=0.d0
-    x1(2)=0.d0
-    x1(3)=0.d0
+    x1(1)=0.e0_real_kind
+    x1(2)=0.e0_real_kind
+    x1(3)=0.e0_real_kind
     !
-    x2(1)=0.d0
-    x2(2)=0.d0
-    x2(3)=1.d0
+    x2(1)=0.e0_real_kind
+    x2(2)=0.e0_real_kind
+    x2(3)=1.e0_real_kind
     !
-    x3(1)=0.d0
-    x3(2)=1.d0
-    x3(3)=1.d0
+    x3(1)=0.e0_real_kind
+    x3(2)=1.e0_real_kind
+    x3(3)=1.e0_real_kind
     !
-    x4(1)=0.d0
-    x4(2)=1.d0
-    x4(3)=0.d0
+    x4(1)=0.e0_real_kind
+    x4(2)=1.e0_real_kind
+    x4(3)=0.e0_real_kind
     !
     nface=nface+1
     tempface(nface)%a=x1
     tempface(nface)%b=x2
     tempface(nface)%c=x3
-    tempface(nface)%normdir=(/-1.d0,0.d0,0.d0/)
+    tempface(nface)%normdir=(/-1.e0_real_kind,0.e0_real_kind,0.e0_real_kind/)
     !
     nface=nface+1
     tempface(nface)%a=x3
     tempface(nface)%b=x4
     tempface(nface)%c=x1
-    tempface(nface)%normdir=(/-1.d0,0.d0,0.d0/)
+    tempface(nface)%normdir=(/-1.e0_real_kind,0.e0_real_kind,0.e0_real_kind/)
     !
-    x1(1)=0.d0
-    x1(2)=0.d0
-    x1(3)=1.d0
+    x1(1)=0.e0_real_kind
+    x1(2)=0.e0_real_kind
+    x1(3)=1.e0_real_kind
     !
-    x2(1)=1.d0
-    x2(2)=0.d0
-    x2(3)=1.d0
+    x2(1)=1.e0_real_kind
+    x2(2)=0.e0_real_kind
+    x2(3)=1.e0_real_kind
     !
-    x3(1)=1.d0
-    x3(2)=1.d0
-    x3(3)=1.d0
+    x3(1)=1.e0_real_kind
+    x3(2)=1.e0_real_kind
+    x3(3)=1.e0_real_kind
     !
-    x4(1)=0.d0
-    x4(2)=1.d0
-    x4(3)=1.d0
+    x4(1)=0.e0_real_kind
+    x4(2)=1.e0_real_kind
+    x4(3)=1.e0_real_kind
     !
     nface=nface+1
     tempface(nface)%a=x1
     tempface(nface)%b=x2
     tempface(nface)%c=x3
-    tempface(nface)%normdir=(/0.d0,0.d0,1.d0/)
+    tempface(nface)%normdir=(/0.e0_real_kind,0.e0_real_kind,1.e0_real_kind/)
     !
     nface=nface+1
     tempface(nface)%a=x3
     tempface(nface)%b=x4
     tempface(nface)%c=x1
-    tempface(nface)%normdir=(/0.d0,0.d0,1.d0/)
+    tempface(nface)%normdir=(/0.e0_real_kind,0.e0_real_kind,1.e0_real_kind/)
     !
-    x1(1)=0.d0
-    x1(2)=0.d0
-    x1(3)=0.d0
+    x1(1)=0.e0_real_kind
+    x1(2)=0.e0_real_kind
+    x1(3)=0.e0_real_kind
     !
-    x2(1)=1.d0
-    x2(2)=0.d0
-    x2(3)=0.d0
+    x2(1)=1.e0_real_kind
+    x2(2)=0.e0_real_kind
+    x2(3)=0.e0_real_kind
     !
-    x3(1)=1.d0
-    x3(2)=0.d0
-    x3(3)=1.d0
+    x3(1)=1.e0_real_kind
+    x3(2)=0.e0_real_kind
+    x3(3)=1.e0_real_kind
     !
-    x4(1)=0.d0
-    x4(2)=0.d0
-    x4(3)=1.d0
+    x4(1)=0.e0_real_kind
+    x4(2)=0.e0_real_kind
+    x4(3)=1.e0_real_kind
     !
     nface=nface+1
     tempface(nface)%a=x1
     tempface(nface)%b=x2
     tempface(nface)%c=x3
-    tempface(nface)%normdir=(/0.d0,-1.d0,0.d0/)
+    tempface(nface)%normdir=(/0.e0_real_kind,-1.e0_real_kind,0.e0_real_kind/)
     !
     nface=nface+1
     tempface(nface)%a=x3
     tempface(nface)%b=x4
     tempface(nface)%c=x1
-    tempface(nface)%normdir=(/0.d0,-1.d0,0.d0/)
+    tempface(nface)%normdir=(/0.e0_real_kind,-1.e0_real_kind,0.e0_real_kind/)
     !
-    x1(1)=0.d0
-    x1(2)=1.d0
-    x1(3)=0.d0
+    x1(1)=0.e0_real_kind
+    x1(2)=1.e0_real_kind
+    x1(3)=0.e0_real_kind
     !
-    x2(1)=1.d0
-    x2(2)=1.d0
-    x2(3)=0.d0
+    x2(1)=1.e0_real_kind
+    x2(2)=1.e0_real_kind
+    x2(3)=0.e0_real_kind
     !
-    x3(1)=1.d0
-    x3(2)=1.d0
-    x3(3)=1.d0
+    x3(1)=1.e0_real_kind
+    x3(2)=1.e0_real_kind
+    x3(3)=1.e0_real_kind
     !
-    x4(1)=0.d0
-    x4(2)=1.d0
-    x4(3)=1.d0
+    x4(1)=0.e0_real_kind
+    x4(2)=1.e0_real_kind
+    x4(3)=1.e0_real_kind
     !
     nface=nface+1
     tempface(nface)%a=x1
     tempface(nface)%b=x2
     tempface(nface)%c=x3
-    tempface(nface)%normdir=(/0.d0,1.d0,0.d0/)
+    tempface(nface)%normdir=(/0.e0_real_kind,1.e0_real_kind,0.e0_real_kind/)
     !
     nface=nface+1
     tempface(nface)%a=x3
     tempface(nface)%b=x4
     tempface(nface)%c=x1
     
-    tempface(nface)%normdir=(/0.d0,1.d0,0.d0/)
+    tempface(nface)%normdir=(/0.e0_real_kind,1.e0_real_kind,0.e0_real_kind/)
     !
     immbody(1)%num_face=nface
     call immbody(1)%alloface()
@@ -1363,14 +1365,14 @@ end subroutine ppentrance
     !
     ! local data
     integer :: i,j,k,jf,km,jm,im,nface,nface2,jface,ntrimax,m,n,l
-    real(8) :: dthe,dphi,theter1,theter2,phi1,phi2,radi,   &
+    real(real_kind) :: dthe,dphi,theter1,theter2,phi1,phi2,radi,   &
                x1(3),x2(3),x3(3),x4(3),norm1(3),norm2(3),var1,var2, &
                ab(3),ac(3),bc(3),abc(3),xico(12,3),disab,disac,disbc
     integer :: lmnsav(120,3)
-    real(8) :: epsilon
+    real(real_kind) :: epsilon
     type(triangle),allocatable :: tempface(:),tempface2(:)
     !
-    epsilon=1.d-12
+    epsilon=1.e-12_real_kind
     ntrimax=10000
     !
     print*,' ** generating solid'
@@ -1383,27 +1385,27 @@ end subroutine ppentrance
     !
     ! first build a icosahedron
     !
-    var1=0.5d0*(sqrt(5.d0)+1.d0)
+    var1=0.5e0_real_kind*(sqrt(5.e0_real_kind)+1.e0_real_kind)
     !
-    xico(1,1)=0.d0; xico(2,1)= 0.d0; xico(3,1)= 0.d0; xico(4,1)= 0.d0
-    xico(1,2)=1.d0; xico(2,2)= 1.d0; xico(3,2)=-1.d0; xico(4,2)=-1.d0
+    xico(1,1)=0.e0_real_kind; xico(2,1)= 0.e0_real_kind; xico(3,1)= 0.e0_real_kind; xico(4,1)= 0.e0_real_kind
+    xico(1,2)=1.e0_real_kind; xico(2,2)= 1.e0_real_kind; xico(3,2)=-1.e0_real_kind; xico(4,2)=-1.e0_real_kind
     xico(1,3)=var1; xico(2,3)=-var1; xico(3,3)=-var1; xico(4,3)= var1
     !
-    xico(5,1)=1.d0; xico(6,1)= 1.d0; xico(7,1)=-1.d0; xico(8,1)=-1.d0
+    xico(5,1)=1.e0_real_kind; xico(6,1)= 1.e0_real_kind; xico(7,1)=-1.e0_real_kind; xico(8,1)=-1.e0_real_kind
     xico(5,2)=var1; xico(6,2)=-var1; xico(7,2)=-var1; xico(8,2)= var1
-    xico(5,3)=0.d0; xico(6,3)= 0.d0; xico(7,3)= 0.d0; xico(8,3)= 0.d0
+    xico(5,3)=0.e0_real_kind; xico(6,3)= 0.e0_real_kind; xico(7,3)= 0.e0_real_kind; xico(8,3)= 0.e0_real_kind
     !
     xico(9,1)=var1; xico(10,1)=-var1; xico(11,1)=-var1; xico(12,1)= var1
-    xico(9,2)=0.d0; xico(10,2)= 0.d0; xico(11,2)= 0.d0; xico(12,2)= 0.d0
-    xico(9,3)=1.d0; xico(10,3)= 1.d0; xico(11,3)=-1.d0; xico(12,3)=-1.d0
+    xico(9,2)=0.e0_real_kind; xico(10,2)= 0.e0_real_kind; xico(11,2)= 0.e0_real_kind; xico(12,2)= 0.e0_real_kind
+    xico(9,3)=1.e0_real_kind; xico(10,3)= 1.e0_real_kind; xico(11,3)=-1.e0_real_kind; xico(12,3)=-1.e0_real_kind
     !
     radi=sqrt(xico(1,1)**2+xico(1,2)**2+xico(1,3)**2)
     print*,' ** radi= ',radi
     xico=xico/radi
-    var2=2.d0/radi
+    var2=2.e0_real_kind/radi
     !
     nface=0
-    lmnsav=0.d0
+    lmnsav=0.e0_real_kind
     do l=1,12
     do m=1,12
     do n=1,12
@@ -1444,7 +1446,7 @@ end subroutine ppentrance
                               tempface(nface)%c-tempface(nface)%a )
           norm2=tempface(nface)%a
           !
-          if(dot_product(norm1,norm2)<0.d0) then
+          if(dot_product(norm1,norm2)<0.e0_real_kind) then
             !
             tempface(nface)%a=xico(l,:)
             tempface(nface)%b=xico(n,:)
@@ -1471,9 +1473,9 @@ end subroutine ppentrance
       !
       do jface=1,nface
         !
-        ab=0.5d0*(tempface(jface)%a+tempface(jface)%b)
-        ac=0.5d0*(tempface(jface)%a+tempface(jface)%c)
-        bc=0.5d0*(tempface(jface)%b+tempface(jface)%c)
+        ab=0.5e0_real_kind*(tempface(jface)%a+tempface(jface)%b)
+        ac=0.5e0_real_kind*(tempface(jface)%a+tempface(jface)%c)
+        bc=0.5e0_real_kind*(tempface(jface)%b+tempface(jface)%c)
         abc=num1d3*(tempface(jface)%a+tempface(jface)%b+tempface(jface)%c)
         !
         var1=sqrt(ab(1)**2+ab(2)**2+ab(3)**2)
@@ -1529,7 +1531,7 @@ end subroutine ppentrance
                           immbody(1)%face(jf)%c-immbody(1)%face(jf)%b )
       norm2=immbody(1)%face(jf)%a
       !
-      if(dot_product(norm1,norm2)<0.d0) then
+      if(dot_product(norm1,norm2)<0.e0_real_kind) then
         x1=immbody(1)%face(jf)%c
         immbody(1)%face(jf)%c=immbody(1)%face(jf)%a
         immbody(1)%face(jf)%a=x1
@@ -1600,12 +1602,12 @@ end subroutine ppentrance
     !
     ! local data
     integer :: i,j,k,jf,km,jm,im,nface
-    real(8) :: dthe,dphi,theter1,theter2,phi1,phi2,radi, &
+    real(real_kind) :: dthe,dphi,theter1,theter2,phi1,phi2,radi, &
                x1(3),x2(3),x3(3),x4(3),norm1(3),var1
-    real(8) :: epsilon
+    real(real_kind) :: epsilon
     type(triangle),allocatable :: tempface(:)
     !
-    epsilon=1.d-12
+    epsilon=1.e-12_real_kind
     !
     print*,' ** generating solid'
     !
@@ -1618,9 +1620,9 @@ end subroutine ppentrance
     !
     allocate(tempface(km*jm*2))
     !
-    dthe=2.d0*pi/km
+    dthe=2.e0_real_kind*pi/km
     dphi=pi/jm
-    radi=0.5d0
+    radi=0.5e0_real_kind
     !
     nface=0
     !
@@ -1750,12 +1752,12 @@ end subroutine ppentrance
     !
     ! local data
     integer :: i,j,k,jf,km,jm,im,nface
-    real(8) :: dthe,dphi,theter1,theter2,phi1,phi2,radi, &
+    real(real_kind) :: dthe,dphi,theter1,theter2,phi1,phi2,radi, &
                x1(3),x2(3),x3(3),x4(3),x5(3),x6(3),norm1(3),var1,xcent(3)
-    real(8) :: epsilon
+    real(real_kind) :: epsilon
     type(triangle),allocatable :: tempface(:)
     !
-    epsilon=1.d-12
+    epsilon=1.e-12_real_kind
     !
     print*,' ** generating solid'
     !
@@ -1767,8 +1769,8 @@ end subroutine ppentrance
     !
     allocate(tempface(km*4))
     !
-    dthe=2.d0*pi/km
-    radi=0.5d0
+    dthe=2.e0_real_kind*pi/km
+    radi=0.5e0_real_kind
     !
     nface=0
     !
@@ -1779,27 +1781,27 @@ end subroutine ppentrance
       !
       x1(1)=radi*cos(theter1)
       x1(2)=radi*sin(theter1)
-      x1(3)=-0.01d0
+      x1(3)=-0.01e0_real_kind
       !
       x2(1)=radi*cos(theter2)
       x2(2)=radi*sin(theter2)
-      x2(3)=-0.01d0
+      x2(3)=-0.01e0_real_kind
       !
       x3(1)=radi*cos(theter2)
       x3(2)=radi*sin(theter2)
-      x3(3)=0.01d0
+      x3(3)=0.01e0_real_kind
       !
       x4(1)=radi*cos(theter1)
       x4(2)=radi*sin(theter1)
-      x4(3)=0.01d0
+      x4(3)=0.01e0_real_kind
       !
-      x5(1)=0.d0
-      x5(2)=0.d0
-      x5(3)=-0.01d0
+      x5(1)=0.e0_real_kind
+      x5(2)=0.e0_real_kind
+      x5(3)=-0.01e0_real_kind
       !
-      x6(1)=0.d0
-      x6(2)=0.d0
-      x6(3)=0.01d0
+      x6(1)=0.e0_real_kind
+      x6(2)=0.e0_real_kind
+      x6(3)=0.01e0_real_kind
       !
       nface=nface+1
       tempface(nface)%a=x1
@@ -1812,13 +1814,13 @@ end subroutine ppentrance
       tempface(nface)%c=x1
       !
       nface=nface+1
-      xcent=(/0.d0,0.d0,-0.01d0/)
+      xcent=(/0.e0_real_kind,0.e0_real_kind,-0.01e0_real_kind/)
       tempface(nface)%a=x1
       tempface(nface)%b=x2
       tempface(nface)%c=xcent
       ! !
       nface=nface+1
-      xcent=(/0.d0,0.d0,0.01d0/)
+      xcent=(/0.e0_real_kind,0.e0_real_kind,0.01e0_real_kind/)
       tempface(nface)%a=x3
       tempface(nface)%b=x4
       tempface(nface)%c=xcent
@@ -1888,23 +1890,23 @@ end subroutine ppentrance
   subroutine naca4digit(xin,x,y,name,surface)
     !
     ! arguments
-    real(8),intent(in) :: xin
-    real(8),intent(out) :: x,y
+    real(real_kind),intent(in) :: xin
+    real(real_kind),intent(out) :: x,y
     character(len=4),intent(in) :: name
     character(len=5),intent(in) :: surface
     !
     ! local data 
-    real(8) :: yt,t,yc,theter,mr,pr
+    real(real_kind) :: yt,t,yc,theter,mr,pr
     integer :: m,p
     !
     read(name(1:1),*)m
     read(name(2:2),*)p
     read(name(3:4),*)t
     !
-    t=t/100.d0
+    t=t/100.e0_real_kind
     !
-    yt=5.d0*t*(0.2969d0*sqrt(xin)-0.1260d0*xin-0.3516d0*xin*xin+       &
-               0.2843d0*xin**3-0.1036d0*xin**4)
+    yt=5.e0_real_kind*t*(0.2969e0_real_kind*sqrt(xin)-0.1260e0_real_kind*xin-0.3516e0_real_kind*xin*xin+       &
+               0.2843e0_real_kind*xin**3-0.1036e0_real_kind*xin**4)
     !
     if(p==0 .and. m==0) then
       ! NACA-00XX, a symmetrical 4-digit NACA airfoil
@@ -1922,15 +1924,15 @@ end subroutine ppentrance
       !
     else
       !
-      mr=0.01d0*dble(m)
-      pr=0.1d0*dble(p)
+      mr=0.01e0_real_kind*real(m,real_kind)
+      pr=0.1e0_real_kind*real(p,real_kind)
       !
-      if(xin>=0.d0 .and. xin<=pr) then
-        yc=mr/pr/pr*(2.d0*pr*xin-xin*xin)
-        theter=atan(2.d0*mr/pr/pr*(pr-xin))
-      elseif(xin>=pr .and. xin<=1.d0) then
-        yc=mr/(1-pr)**2*(1.d0-2.d0*pr+2.d0*pr*xin-xin**2)
-        theter=atan(2.d0*mr/(1-pr)**2*(pr-xin))
+      if(xin>=0.e0_real_kind .and. xin<=pr) then
+        yc=mr/pr/pr*(2.e0_real_kind*pr*xin-xin*xin)
+        theter=atan(2.e0_real_kind*mr/pr/pr*(pr-xin))
+      elseif(xin>=pr .and. xin<=1.e0_real_kind) then
+        yc=mr/(1-pr)**2*(1.e0_real_kind-2.e0_real_kind*pr+2.e0_real_kind*pr*xin-xin**2)
+        theter=atan(2.e0_real_kind*mr/(1-pr)**2*(pr-xin))
       else
         stop '!! ERROR 2 @ naca4digit'
       endif
@@ -1974,16 +1976,16 @@ end subroutine ppentrance
     ! local data
     integer :: im,jm,km,num_species,jsp,i
     logical :: lihomo,ljhomo,lkhomo
-    real(8) :: ref_tem,reynolds,mach
+    real(real_kind) :: ref_tem,reynolds,mach
     character(len=32) :: gridfile
     !
-    real(8),allocatable,dimension(:) :: x_1d,y_1d,z_1d,ro_1d,u_1d,   &
+    real(real_kind),allocatable,dimension(:) :: x_1d,y_1d,z_1d,ro_1d,u_1d,   &
                                         v_1d,w_1d,p_1d,t_1d
-    real(8),allocatable,dimension(:,:) :: spc_1d
-    real(8),allocatable,dimension(:,:) :: x_2d,y_2d,z_2d,ro_2d,u_2d,   &
+    real(real_kind),allocatable,dimension(:,:) :: spc_1d
+    real(real_kind),allocatable,dimension(:,:) :: x_2d,y_2d,z_2d,ro_2d,u_2d,   &
                                           v_2d,w_2d,p_2d,t_2d
-    real(8),allocatable,dimension(:,:,:) :: x,y,z,ro,u,v,w,p,t
-    real(8),allocatable :: var1d(:)
+    real(real_kind),allocatable,dimension(:,:,:) :: x,y,z,ro,u,v,w,p,t
+    real(real_kind),allocatable :: var1d(:)
     !
     character(len=3) :: spname
     !
@@ -2093,18 +2095,18 @@ end subroutine ppentrance
     integer :: im,jm,km,num_species,jsp,i
     integer :: iflame_in,iflame_out
     logical :: lihomo,ljhomo,lkhomo
-    real(8) :: ref_tem,reynolds,mach
+    real(real_kind) :: ref_tem,reynolds,mach
     character(len=32) :: gridfile
     !
-    real(8),allocatable,dimension(:) :: x_1d,y_1d,z_1d,ro_1d,u_1d,   &
+    real(real_kind),allocatable,dimension(:) :: x_1d,y_1d,z_1d,ro_1d,u_1d,   &
                                         v_1d,w_1d,p_1d,t_1d
-    real(8),allocatable,dimension(:,:) :: spc_1d
-    real(8),allocatable,dimension(:,:) :: x_2d,y_2d,z_2d,ro_2d,u_2d,   &
+    real(real_kind),allocatable,dimension(:,:) :: spc_1d
+    real(real_kind),allocatable,dimension(:,:) :: x_2d,y_2d,z_2d,ro_2d,u_2d,   &
                                           v_2d,w_2d,p_2d,t_2d
-    real(8),allocatable,dimension(:,:,:) :: spc_2d
-    real(8),allocatable,dimension(:,:,:) :: x,y,z,ro,u,v,w,p,t
-    real(8),allocatable,dimension(:,:,:,:) :: spc
-    real(8),allocatable :: var1d(:)
+    real(real_kind),allocatable,dimension(:,:,:) :: spc_2d
+    real(real_kind),allocatable,dimension(:,:,:) :: x,y,z,ro,u,v,w,p,t
+    real(real_kind),allocatable,dimension(:,:,:,:) :: spc
+    real(real_kind),allocatable :: var1d(:)
     !
     character(len=3) :: spname
     !
@@ -2163,8 +2165,8 @@ end subroutine ppentrance
       !
       do i=1,im
         !
-        if((t_1d(i-1)<=400.d0 .and. t_1d(i)>=400.d0) .or. &
-            (t_1d(i-1)>=400.d0 .and. t_1d(i)<=400.d0)) then
+        if((t_1d(i-1)<=400.e0_real_kind .and. t_1d(i)>=400.e0_real_kind) .or. &
+            (t_1d(i-1)>=400.e0_real_kind .and. t_1d(i)<=400.e0_real_kind)) then
           iflame_in=i
           exit
         endif
@@ -2173,8 +2175,8 @@ end subroutine ppentrance
       do i=-im/8,im/8
         ro(i+iflame_out,:,:)=ro_1d(i+iflame_in)
         u(i+iflame_out,:,:) =u_1d(i+iflame_in)
-        v(i+iflame_out,:,:) =0.d0
-        w(i+iflame_out,:,:) =0.d0
+        v(i+iflame_out,:,:) =0.e0_real_kind
+        w(i+iflame_out,:,:) =0.e0_real_kind
         p(i+iflame_out,:,:) =p_1d(i+iflame_in)
         t(i+iflame_out,:,:) =t_1d(i+iflame_in)
         do jsp=1,num_species
@@ -2257,7 +2259,7 @@ end subroutine ppentrance
     use gridgeneration
     use tecio
     !
-    real(8) :: urms,kenergy,ufmx,roav,uav,vav,wav,tav,pav
+    real(real_kind) :: urms,kenergy,ufmx,roav,uav,vav,wav,tav,pav
     integer :: i,j,k
     character(len=4) :: genmethod
     !
@@ -2285,7 +2287,7 @@ end subroutine ppentrance
 #endif
     !
     ! call gridhitflame(mode='cubic')
-    call gridcube(2.d0*pi,2.d0*pi,2.d0*pi)
+    call gridcube(2.e0_real_kind*pi,2.e0_real_kind*pi,2.e0_real_kind*pi)
     ! call readgrid(trim(gridfile))
     !
     call geomcal
@@ -2298,7 +2300,7 @@ end subroutine ppentrance
                                  vel(0:im,0:jm,0:km,2),   &
                                  vel(0:im,0:jm,0:km,3) )
       !
-      urms=1.d0 
+      urms=1.e0_real_kind 
       do k=0,km
       do j=0,jm
       do i=0,im
@@ -2347,12 +2349,12 @@ end subroutine ppentrance
     call h5srite(var=prs,                  varname='p', filename='flowini3d.h5',explicit=.true.)
     call h5srite(var=tmp,                  varname='t', filename='flowini3d.h5',explicit=.true.)
     !
-    roav=0.d0
-    uav=0.d0
-    vav=0.d0
-    wav=0.d0
-    tav=0.d0
-    pav=0.d0
+    roav=0.e0_real_kind
+    uav=0.e0_real_kind
+    vav=0.e0_real_kind
+    wav=0.e0_real_kind
+    tav=0.e0_real_kind
+    pav=0.e0_real_kind
     !
     do k=0,km
     do j=0,jm
@@ -2377,12 +2379,12 @@ end subroutine ppentrance
     enddo
     enddo
     !
-    roav=roav/dble(im*jm*km)
-    uav = uav/dble(im*jm*km)
-    vav = vav/dble(im*jm*km)
-    wav = wav/dble(im*jm*km)
-    tav = tav/dble(im*jm*km)
-    pav = pav/dble(im*jm*km)
+    roav=roav/real(im*jm*km,real_kind)
+    uav = uav/real(im*jm*km,real_kind)
+    vav = vav/real(im*jm*km,real_kind)
+    wav = wav/real(im*jm*km,real_kind)
+    tav = tav/real(im*jm*km,real_kind)
+    pav = pav/real(im*jm*km,real_kind)
     !
     print*, '** mean density    :',roav
     print*, '** mean velocity   :',uav,vav,wav
@@ -2426,27 +2428,27 @@ end subroutine ppentrance
     use commarray, only : vel,dvel,rho,tmp,x
     use fludyna,   only : miucal
     !
-    real(8) :: roav,kenergy,enstrophy,dissp,miuav,urms,kolmlength,ukolm, &
+    real(real_kind) :: roav,kenergy,enstrophy,dissp,miuav,urms,kolmlength,ukolm, &
                timekolm,taylorlength,retaylor,tav,machrms
     !
     integer :: i,j,k
-    real(8) :: var1,vort1,vort2,vort3,vorts,s11,s22,s33,s12,s13,s23, &
+    real(real_kind) :: var1,vort1,vort2,vort3,vorts,s11,s22,s33,s12,s13,s23, &
                div,dudx2,miu,ufmx
     !
-      roav=0.d0
-      tav=0.d0
+      roav=0.e0_real_kind
+      tav=0.e0_real_kind
       !
-      kenergy=0.d0
+      kenergy=0.e0_real_kind
       !
-      enstrophy=0.d0
+      enstrophy=0.e0_real_kind
       !
-      dissp=0.d0
+      dissp=0.e0_real_kind
       !
-      miuav=0.d0
-      urms=0.d0
-      dudx2=0.d0
+      miuav=0.e0_real_kind
+      urms=0.e0_real_kind
+      dudx2=0.e0_real_kind
       !
-      ufmx=0.d0
+      ufmx=0.e0_real_kind
       !
       do k=1,km
       do j=1,jm
@@ -2474,10 +2476,10 @@ end subroutine ppentrance
         s22=dvel(i,j,k,2,2)
         s33=dvel(i,j,k,3,3)
         div=s11+s22+s33
-        s12=0.5d0*(dvel(i,j,k,2,1)+dvel(i,j,k,1,2))
-        s13=0.5d0*(dvel(i,j,k,3,1)+dvel(i,j,k,1,3))
-        s23=0.5d0*(dvel(i,j,k,3,2)+dvel(i,j,k,2,3))
-        dissp=dissp+2.d0*miu*(s11**2+s22**2+s33**2+2.d0*(s12**2+s13**2+s23**2)-num1d3*div**2)
+        s12=0.5e0_real_kind*(dvel(i,j,k,2,1)+dvel(i,j,k,1,2))
+        s13=0.5e0_real_kind*(dvel(i,j,k,3,1)+dvel(i,j,k,1,3))
+        s23=0.5e0_real_kind*(dvel(i,j,k,3,2)+dvel(i,j,k,2,3))
+        dissp=dissp+2.e0_real_kind*miu*(s11**2+s22**2+s33**2+2.e0_real_kind*(s12**2+s13**2+s23**2)-num1d3*div**2)
         
         !
         dudx2=dudx2+dvel(i,j,k,1,1)**2+dvel(i,j,k,2,2)**2+dvel(i,j,k,3,3)**2
@@ -2487,12 +2489,12 @@ end subroutine ppentrance
       end do
       end do
       !
-      var1=dble(im*jm*km)
+      var1=real(im*jm*km,real_kind)
 
       roav      =roav     /var1   
       tav       =tav     /var1     
-      kenergy   =kenergy  /var1*0.5d0
-      enstrophy =enstrophy/var1*0.5d0
+      kenergy   =kenergy  /var1*0.5e0_real_kind
+      enstrophy =enstrophy/var1*0.5e0_real_kind
       dissp     =dissp    /var1
       !
       miuav     =miuav    /var1
@@ -2507,7 +2509,7 @@ end subroutine ppentrance
       timekolm=sqrt(miuav/roav/dissp)
       !
       taylorlength=sqrt(urms/dudx2)
-      retaylor=taylorlength*roav*urms/miuav/1.7320508075688773d0
+      retaylor=taylorlength*roav*urms/miuav/1.7320508075688773e0_real_kind
       !
       machrms=urms/sqrt(tav)*mach
       !
@@ -2542,12 +2544,12 @@ end subroutine ppentrance
     use parallel,  only : dataswap
     use comsolver, only : solvrinit,grad
     !
-    real(8),intent(inout) :: u(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(real_kind),intent(inout) :: u(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
     !
-    real(8),allocatable,intent(out),dimension(:,:,:,:,:) :: du
+    real(real_kind),allocatable,intent(out),dimension(:,:,:,:,:) :: du
     !
     integer :: i,j,k
-    real(8) :: div,div2
+    real(real_kind) :: div,div2
     !
     allocate( du(0:im,0:jm,0:km,1:3,1:3))
     !
@@ -2559,8 +2561,8 @@ end subroutine ppentrance
     du(:,:,:,:,2)=grad(u(:,:,:,2))
     du(:,:,:,:,3)=grad(u(:,:,:,3))
     !
-    div=0.d0
-    div2=0.d0
+    div=0.e0_real_kind
+    div2=0.e0_real_kind
     do k=1,km
     do j=1,jm
     do i=1,im
@@ -2570,8 +2572,8 @@ end subroutine ppentrance
     enddo
     enddo
     !
-    div = div/dble(im*jm*km)
-    div2=div2/dble(im*jm*km)
+    div = div/real(im*jm*km,real_kind)
+    div2=div2/real(im*jm*km,real_kind)
     !
     print*,' ** averaged div is:',div
     print*,' ** variance div is:',div2
@@ -2597,7 +2599,7 @@ end subroutine ppentrance
     use commvar,only : Reynolds
     !
     integer,intent(in) :: idim,jdim,kdim
-    real(8),intent(out),dimension(0:idim,0:jdim,0:kdim) :: u1,u2,u3
+    real(real_kind),intent(out),dimension(0:idim,0:jdim,0:kdim) :: u1,u2,u3
     !
     ! local data
     integer :: kmi,kmj,kmk,kmax
@@ -2607,7 +2609,7 @@ end subroutine ppentrance
     ! kmk: maximal wavenumber in k direction
     ! kmax: maximal wavenumber in all direction
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    real(8) :: wn1,wn2,wn3,wn12,wna
+    real(real_kind) :: wn1,wn2,wn3,wn12,wna
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! wn1: modul of wavenumber in i direction
     ! wn2: modul of wavenumber in j direction
@@ -2618,9 +2620,9 @@ end subroutine ppentrance
     !     spectrum
     ! Ac: the intensity of given spectrum
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    real(8), allocatable, dimension(:,:,:) :: u1tp,u2tp,u3tp
+    real(real_kind), allocatable, dimension(:,:,:) :: u1tp,u2tp,u3tp
     !
-    complex(8), allocatable, dimension(:,:,:) :: u1c,u2c,u3c,u1ct,u2ct,u3ct,u4ct
+    complex(real_kind), allocatable, dimension(:,:,:) :: u1c,u2c,u3c,u1ct,u2ct,u3ct,u4ct
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! Egv: the given initial energy spectrum
     ! u1c: the spectral velocity in k1 direction
@@ -2628,7 +2630,7 @@ end subroutine ppentrance
     ! u3c: the spectral velocity in k3 direction
     ! uct: the spectrl variable in (1~*2km)
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    real(8) :: Kenergy,Enstropy,ITGscale,LETT,KolmLength,urms,ufmx
+    real(real_kind) :: Kenergy,Enstropy,ITGscale,LETT,KolmLength,urms,ufmx
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! Kenergy: initial volume averaged turbulent 
     !          kinetic energy
@@ -2639,14 +2641,14 @@ end subroutine ppentrance
     ! KolmLength: initial Kolmogorov scale
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     integer :: k1,k2,k3,k0,i,j,k
-    real(8) :: ran1,ran2,ran3,rn1,rn2,rn3,var1,var2,var3,ISEA
-    complex(8) :: vac1,vac2,vac3,vac4,crn1,crn2
-    real(8) :: dudi,lambda,ke0,en0,lint,tau,eta0
+    real(real_kind) :: ran1,ran2,ran3,rn1,rn2,rn3,var1,var2,var3,ISEA
+    complex(real_kind) :: vac1,vac2,vac3,vac4,crn1,crn2
+    real(real_kind) :: dudi,lambda,ke0,en0,lint,tau,eta0
     !
     kmi=idim/2
     kmj=jdim/2
     kmk=kdim/2
-    kmax=idnint(sqrt((kmi**2+kmj**2+kmk**2)*1.d0))+1
+    kmax=nint(sqrt((kmi**2+kmj**2+kmk**2)*1.e0_real_kind))+1
     !
     allocate(u1c(-kmi:kmi,-kmj:kmj,-kmk:kmk),                        &
              u2c(-kmi:kmi,-kmj:kmj,-kmk:kmk),                        &
@@ -2657,7 +2659,7 @@ end subroutine ppentrance
              u3tp(1:idim,1:jdim,1:kdim),u4ct(1:idim,1:jdim,1:kdim)               )
     !
     ! Give the inital energy spectrum.
-    ISEA=1.d0/224.7699d0
+    ISEA=1.e0_real_kind/224.7699e0_real_kind
     k0=4
     !
     ! Generate the random velocity field according the given energy 
@@ -2675,42 +2677,42 @@ end subroutine ppentrance
       call random_number(ran3)
       ! ran1,ran2,ran3: random number distributied in (0,1)
       !
-      rn1=ran1*2.d0*pi
-      rn2=ran2*2.d0*pi
-      rn3=ran3*2.d0*pi
+      rn1=ran1*2.e0_real_kind*pi
+      rn2=ran2*2.e0_real_kind*pi
+      rn3=ran3*2.e0_real_kind*pi
       !
       ! Calculate the modul of the wavenumber in each direction
-      wn1=real(k1,8)
-      wn2=real(k2,8)
-      wn3=real(k3,8)
+      wn1=real(k1,real_kind)
+      wn2=real(k2,real_kind)
+      wn3=real(k3,real_kind)
       wn12=sqrt(wn1**2+wn2**2)
       wna=sqrt(wn1**2+wn2**2+wn3**2)
       !
       ! Calculate the initidiml energy spectral
       if(k1==0 .and. k2==0 .and. k3==0) then
-        var1=0.d0
-        var2=0.d0
+        var1=0.e0_real_kind
+        var2=0.e0_real_kind
       else
-        var1=IniEnergDis(ISEA*2.d0,K0*1.d0,wna)
-        var2=sqrt(var1/4.d0/pi/wna**2)
+        var1=IniEnergDis(ISEA*2.e0_real_kind,K0*1.e0_real_kind,wna)
+        var2=sqrt(var1/4.e0_real_kind/pi/wna**2)
         ! var2=1.d0
       end if
       !
       ! Gererate the velocity spectrum in half-wavenumber space.
-      crn1=rn1*(0.d0,1.d0)
-      crn2=rn2*(0.d0,1.d0)
+      crn1=rn1*(0.e0_real_kind,1.e0_real_kind)
+      crn2=rn2*(0.e0_real_kind,1.e0_real_kind)
       !
-      vac1=var2*cdexp(crn1)*dcos(rn3)
-      vac2=var2*cdexp(crn2)*dsin(rn3)
+      vac1=var2*exp(crn1)*cos(rn3)
+      vac2=var2*exp(crn2)*sin(rn3)
       !
       if(k1==0 .and. k2==0 .and. k3==0) then
-        u1c(k1,k2,k3)=0.d0
-        u2c(k1,k2,k3)=0.d0
-        u3c(k1,k2,k3)=0.d0
+        u1c(k1,k2,k3)=0.e0_real_kind
+        u2c(k1,k2,k3)=0.e0_real_kind
+        u3c(k1,k2,k3)=0.e0_real_kind
       elseif(k1==0 .and. k2==0) then
         u1c(k1,k2,k3)=vac1
         u2c(k1,k2,k3)=vac2
-        u3c(k1,k2,k3)=0.d0
+        u3c(k1,k2,k3)=0.e0_real_kind
       else
         u1c(k1,k2,k3)=(vac1*wna*wn2+vac2*wn1*wn3)/(wna*wn12)
         u2c(k1,k2,k3)=(vac2*wn2*wn3-vac1*wna*wn1)/(wna*wn12)
@@ -2774,9 +2776,9 @@ end subroutine ppentrance
     do j=1,jdim
     do i=1,idim
       ! multiply sqrt(NxNyNz) for return standard FFT
-      u1(i,j,k)=real(u1ct(i,j,k),8)*sqrt(real(idim*jdim*kdim,8))
-      u2(i,j,k)=real(u2ct(i,j,k),8)*sqrt(real(idim*jdim*kdim,8))
-      u3(i,j,k)=real(u3ct(i,j,k),8)*sqrt(real(idim*jdim*kdim,8))
+      u1(i,j,k)=real(u1ct(i,j,k),real_kind)*sqrt(real(idim*jdim*kdim,real_kind))
+      u2(i,j,k)=real(u2ct(i,j,k),real_kind)*sqrt(real(idim*jdim*kdim,real_kind))
+      u3(i,j,k)=real(u3ct(i,j,k),real_kind)*sqrt(real(idim*jdim*kdim,real_kind))
       !
     end do
     end do
@@ -2815,11 +2817,11 @@ end subroutine ppentrance
     ! Kenergy=Kenergy/urms/urms
     ! urms=urms/urms
     ! !
-    ke0=3.d0*ISEA/64.d0*sqrt(2.d0*pi)*dble(k0**5)
-    en0=15.d0*ISEA/256.d0*sqrt(2.d0*pi)*dble(k0**7)
-    lint=sqrt(2.d0*pi)/ke0
-    tau =sqrt(32.d0/ISEA*sqrt(2.d0*pi))/sqrt(dble(k0**7))
-    eta0=1.d0/sqrt(sqrt(2.d0*en0*Reynolds**2))
+    ke0=3.e0_real_kind*ISEA/64.e0_real_kind*sqrt(2.e0_real_kind*pi)*real(k0**5,real_kind)
+    en0=15.e0_real_kind*ISEA/256.e0_real_kind*sqrt(2.e0_real_kind*pi)*real(k0**7,real_kind)
+    lint=sqrt(2.e0_real_kind*pi)/ke0
+    tau =sqrt(32.e0_real_kind/ISEA*sqrt(2.e0_real_kind*pi))/sqrt(real(k0**7,real_kind))
+    eta0=1.e0_real_kind/sqrt(sqrt(2.e0_real_kind*en0*Reynolds**2))
     !
     print*,' ---------------------------------------------------------------'
     print*,'        statistics according to the initial energy spectrum     '
@@ -2853,9 +2855,9 @@ end subroutine ppentrance
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   function IniEnergDis(Ac,k0,wnb)
     !
-    real(8) :: k0,Ac,var1,wnb,IniEnergDis
+    real(real_kind) :: k0,Ac,var1,wnb,IniEnergDis
     !
-    var1=-2.d0*(wnb/k0)**2
+    var1=-2.e0_real_kind*(wnb/k0)**2
     IniEnergDis=Ac*wnb**4*exp(var1)
     !IniEnergDis=Ac*wnb**(-5.d0/3.d0)
     !
@@ -2888,15 +2890,15 @@ end subroutine ppentrance
   
     ! Declarations
     integer :: jn, ns1, ns2, j1, j, i, ios
-    real(8) :: dye, den, miu, df2, dt, f210, f211, t00, t01
-    real(8) :: rom, rom2, utaw, lref
-    real(8) :: error1, error2, p0, p1, p2, p3, p4
-    real(8) :: q0, q1, q2, var0, var1, var2, var3, var4, var5, var6
-    real(8) :: xin,dx,thick1,thick2,thick3
+    real(real_kind) :: dye, den, miu, df2, dt, f210, f211, t00, t01
+    real(real_kind) :: rom, rom2, utaw, lref
+    real(real_kind) :: error1, error2, p0, p1, p2, p3, p4
+    real(real_kind) :: q0, q1, q2, var0, var1, var2, var3, var4, var5, var6
+    real(real_kind) :: xin,dx,thick1,thick2,thick3
   
-    real(8), allocatable :: ye(:), y2(:), f(:), f1(:), f2(:), f3(:)
-    real(8), allocatable :: t(:), t1(:), t2(:), u(:), v(:), ro(:)
-    real(8), allocatable :: ys(:), us(:), vs(:), ros(:), ts(:)
+    real(real_kind), allocatable :: ye(:), y2(:), f(:), f1(:), f2(:), f3(:)
+    real(real_kind), allocatable :: t(:), t1(:), t2(:), u(:), v(:), ro(:)
+    real(real_kind), allocatable :: ys(:), us(:), vs(:), ros(:), ts(:)
   
     ! Initialization
     call readinput
@@ -2909,22 +2911,22 @@ end subroutine ppentrance
   
     ! Generate mesh in y-direction
     do j = 0, jn
-      ye(j) = 20.d0 * j / jn
+      ye(j) = 20.e0_real_kind * j / jn
     end do
   
     dye = ye(1) - ye(0)
   
     ! Initial boundary conditions
-    f(0)  = 0.d0
-    f1(0) = 0.d0
-    f2(0) = 0.33206d0
+    f(0)  = 0.e0_real_kind
+    f1(0) = 0.e0_real_kind
+    f2(0) = 0.33206e0_real_kind
     f3(0) = -f(0) * f2(0)
     t(0)  = twall(3)
-    t(jn) = 1.d0
-    t1(0) = 1.588d0
-    t2(0) = 0.08d0
-    df2   = 0.01d0
-    dt    = 0.1d0
+    t(jn) = 1.e0_real_kind
+    t1(0) = 1.588e0_real_kind
+    t2(0) = 0.08e0_real_kind
+    df2   = 0.01e0_real_kind
+    dt    = 0.1e0_real_kind
   
     ! Compute initial thermodynamic states
     den = pinf / t(0) * const2
@@ -2935,21 +2937,21 @@ end subroutine ppentrance
     open(13, file = 'stat_laminar.dat')
     write(13, "(A7,2(1X,A20))") 'n', 'twall', 'error'
   
-    error1 = 1.d0
+    error1 = 1.e0_real_kind
     ns1 = 0
   
-    do while (error1 > 1.d-5)
+    do while (error1 > 1.e-5_real_kind)
       ns1 = ns1 + 1
-      error1 = 0.d0
-      f210 = f1(jn) - 1.d0
-      t00 = t(jn) - 1.d0
+      error1 = 0.e0_real_kind
+      f210 = f1(jn) - 1.e0_real_kind
+      t00 = t(jn) - 1.e0_real_kind
   
-      error2 = 1.d0
+      error2 = 1.e0_real_kind
       ns2 = 0
   
-      do while (error2 > 1.d-6)
+      do while (error2 > 1.e-6_real_kind)
         ns2 = ns2 + 1
-        error2 = 0.d0
+        error2 = 0.e0_real_kind
   
         do j = 1, jn
           ! Predictor step
@@ -2977,17 +2979,17 @@ end subroutine ppentrance
           rom = miu * den
           rom2 = rom / prandtl
   
-          var0 = f(j-1) + 0.5d0 * (f1(j-1) + p1) * dye
-          var1 = f1(j-1) + 0.5d0 * (f2(j-1) + p2) * dye
-          var2 = f2(j-1) + 0.5d0 * (f3(j-1) + p3) / rom * dye
+          var0 = f(j-1) + 0.5e0_real_kind * (f1(j-1) + p1) * dye
+          var1 = f1(j-1) + 0.5e0_real_kind * (f2(j-1) + p2) * dye
+          var2 = f2(j-1) + 0.5e0_real_kind * (f3(j-1) + p3) / rom * dye
           var3 = -f(j) * f2(j)
   
-          var4 = t(j-1) + 0.5d0 * (t1(j-1) + q1) * dye
+          var4 = t(j-1) + 0.5e0_real_kind * (t1(j-1) + q1) * dye
           miu = miucal(var4)
           den = pinf / var4 * const2
           rom = miu * den
           rom2 = rom / prandtl
-          var5 = t1(j-1) + 0.5d0 * (t2(j-1) + q2) / rom2 * dye
+          var5 = t1(j-1) + 0.5e0_real_kind * (t2(j-1) + q2) / rom2 * dye
           var6 = -var0 * var5 - const5 * rom * var2**2
   
           ! Compute max error
@@ -3008,20 +3010,20 @@ end subroutine ppentrance
       end do
   
       ! Shooting adjustment for f2(0)
-      error1 = max(error1, abs(f1(jn) - 1.d0))
-      f211 = f1(jn) - 1.d0
-      if (f210 * f211 <= 0.d0) df2 = df2 * 0.25d0
-      if (f1(jn) < 1.d0) then
+      error1 = max(error1, abs(f1(jn) - 1.e0_real_kind))
+      f211 = f1(jn) - 1.e0_real_kind
+      if (f210 * f211 <= 0.e0_real_kind) df2 = df2 * 0.25e0_real_kind
+      if (f1(jn) < 1.e0_real_kind) then
         f2(0) = f2(0) + df2
       else
         f2(0) = f2(0) - df2
       end if
   
       ! Shooting adjustment for t1(0)
-      error1 = max(error1, abs(t(jn) - 1.d0))
-      t01 = t(jn) - 1.d0
-      if (t00 * t01 <= 0.d0) dt = dt * 0.5d0
-      if (t(jn) < 1.d0) then
+      error1 = max(error1, abs(t(jn) - 1.e0_real_kind))
+      t01 = t(jn) - 1.e0_real_kind
+      if (t00 * t01 <= 0.e0_real_kind) dt = dt * 0.5e0_real_kind
+      if (t(jn) < 1.e0_real_kind) then
         t1(0) = t1(0) + dt
       else
         t1(0) = t1(0) - dt
@@ -3037,45 +3039,45 @@ end subroutine ppentrance
 
     print*,' converged '
 
-    xin=0.1d0
-    dx=0.1d0*xin
+    xin=0.1e0_real_kind
+    dx=0.1e0_real_kind*xin
 
     ! Calculationg of boundary thickness
-    thick1=0.d0
-    thick2=0.d0
-    thick3=0.d0
+    thick1=0.e0_real_kind
+    thick2=0.e0_real_kind
+    thick3=0.e0_real_kind
 
-    error1 = 0.d0
+    error1 = 0.e0_real_kind
     ns1 =0 
 
-    do while(abs(thick1-1.d0)>1.d-5)
+    do while(abs(thick1-1.e0_real_kind)>1.e-5_real_kind)
 
-      var3 = thick1 - 1.d0
+      var3 = thick1 - 1.e0_real_kind
 
       ns1  = ns1 +1
   
-      var0=1.d0/sqrt(2.d0*xin*Reynolds)
+      var0=1.e0_real_kind/sqrt(2.e0_real_kind*xin*Reynolds)
       do j=0,jn
         u(j)=f1(j)
-        v(j)=0.d0
+        v(j)=0.e0_real_kind
         do i=1,j
-          var1=0.5d0*(t(i)+t(i-1))*dye
-          var2=0.5d0*(u(i)+u(i-1))*dye
+          var1=0.5e0_real_kind*(t(i)+t(i-1))*dye
+          var2=0.5e0_real_kind*(u(i)+u(i-1))*dye
           v(j)=v(j)+var0*(u(j)*var1-t(j)*var2)
         end do
       end do
 
-      y2(0)=0.d0
-      var1=sqrt(2.d0*xin/Reynolds)
+      y2(0)=0.e0_real_kind
+      var1=sqrt(2.e0_real_kind*xin/Reynolds)
       do j=1,jn
         !y2(j)=var1*ye(j)
-        y2(j)=0.d0
+        y2(j)=0.e0_real_kind
         do i=1,j
-          y2(j)=y2(j)+var1*0.5d0*(t(i)+t(i-1))*dye
+          y2(j)=y2(j)+var1*0.5e0_real_kind*(t(i)+t(i-1))*dye
         end do
       end do
 
-      var0=u(jn)*0.99d0
+      var0=u(jn)*0.99e0_real_kind
       do j=1,jn
         if(u(j-1)<=var0 .and. u(j)>=var0) then
           thick1=(y2(j)-y2(j-1))/(u(j)-u(j-1))*(var0-u(j-1))+y2(j-1)
@@ -3085,11 +3087,11 @@ end subroutine ppentrance
       end do
 
       ! Shooting adjustment for f2(0)
-      error1 = abs(thick1-1.d0)
+      error1 = abs(thick1-1.e0_real_kind)
 
-      var4 = thick1 - 1.d0
-      if (var3 * var4 <= 0.d0) dx = dx * 0.5d0
-      if (thick1 < 1.d0) then
+      var4 = thick1 - 1.e0_real_kind
+      if (var3 * var4 <= 0.e0_real_kind) dx = dx * 0.5e0_real_kind
+      if (thick1 < 1.e0_real_kind) then
         xin = xin + dx
       else
         xin = xin - dx
@@ -3102,19 +3104,19 @@ end subroutine ppentrance
     enddo
     print*,' x position            =',xin
     !
-    ro=1.d0/t
+    ro=1.e0_real_kind/t
     !
     var0=ro(jn)*u(jn)
     do j=1,jn
-      var1=0.5d0*(ro(j)+ro(j-1))
-      var2=0.5d0*(u(j)+u(j-1))
-      thick2=thick2+(1.d0-var1*var2/var0)*(y2(j)-y2(j-1))
+      var1=0.5e0_real_kind*(ro(j)+ro(j-1))
+      var2=0.5e0_real_kind*(u(j)+u(j-1))
+      thick2=thick2+(1.e0_real_kind-var1*var2/var0)*(y2(j)-y2(j-1))
     end do
     !
     var0=ro(jn)*u(jn)**2
     do j=1,jn
-      var1=0.5d0*(ro(j)+ro(j-1))
-      var2=0.5d0*(u(j)+u(j-1))
+      var1=0.5e0_real_kind*(ro(j)+ro(j-1))
+      var2=0.5e0_real_kind*(u(j)+u(j-1))
       thick3=thick3+(var1*var2*(u(jn)-var2))/var0*(y2(j)-y2(j-1))
     end do
 
@@ -3148,7 +3150,7 @@ end subroutine ppentrance
       us(j)=linear1d_arrayin(y2,u,ys(j),'---')
       vs(j)=linear1d_arrayin(y2,v,ys(j),'---')
       ts(j)=linear1d_arrayin(y2,t,ys(j),'---')
-      ros(j)=1.d0/ts(j)
+      ros(j)=1.e0_real_kind/ts(j)
     enddo
 
     open(18,file='datin/inlet.dat')
@@ -3163,7 +3165,7 @@ end subroutine ppentrance
     open(18,file='datin/inlet.prof')
     write(18,"((1X,A))")'# parameters of inlet flow'
     write(18,"(4(1X,A15))")'delta','delta*','theter','utaw'
-    write(18,"(4(1X,E15.7E3))")thick1,thick2,thick3,1.d0
+    write(18,"(4(1X,E15.7E3))")thick1,thick2,thick3,1.e0_real_kind
     write(18,"(4(1X,A15))")'ro','u','v','t'
     do j=0,ja
       write(18,"(4(1X,E15.7E3))")ros(j),us(j),vs(j),ts(j)

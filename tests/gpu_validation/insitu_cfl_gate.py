@@ -4,10 +4,14 @@ import re
 
 
 class CflGate:
-    def __init__(self, path, limit, dt, first_step, stop_step, step_stride=1):
+    def __init__(self, path, limit, dt, first_step, stop_step, step_stride=1, first_dt=None):
         if not isfinite(limit) or limit <= 0 or not isfinite(dt) or dt <= 0:
             raise ValueError('CFL gate requires a positive finite limit and timestep')
         self.path, self.limit, self.dt = path, limit, dt
+        self.first_step = first_step
+        self.first_dt = dt if first_dt is None else first_dt
+        if not isfinite(self.first_dt) or self.first_dt <= 0:
+            raise ValueError('Restored CFL timestep must be positive and finite')
         if step_stride < 1:
             raise ValueError('CFL report stride must be positive')
         self.step_stride = step_stride
@@ -29,7 +33,8 @@ class CflGate:
                 if not match or self.header is not None:
                     raise ValueError('Malformed or unpaired CFL identity')
                 step, time, dt = int(match[1]), float(match[2]), float(match[3])
-                if step != self.next_step or dt != self.dt or not isfinite(time):
+                expected_dt = self.first_dt if step == self.first_step else self.dt
+                if step != self.next_step or dt != expected_dt or not isfinite(time):
                     raise ValueError('CFL sampling sequence or timestep differs')
                 self.header = step
             elif line.startswith('ASTR_CFL directional/local_sum/upper_bound='):

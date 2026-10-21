@@ -1,0 +1,188 @@
+module native_filter_window_replay
+  use astr_precision, only: real_kind,real_bytes
+  use cudafor
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+  implicit none
+  private
+  public :: check_captured_filter_window
+contains
+  subroutine check_captured_filter_window(rank,nranks,path)
+    use commvar, only: im,jm,km,hm,ia,ja,ka,numq,num_species,num_modequ,ndims, &
+      npdci,npdcj,npdck,is,ie,js,je,ks,ke,nondimen,gamma,mach,const2,const6, &
+      lkhomo,lihomo,ljhomo,lcracon,lreport,lcomb,nstep,ctime
+    use parallel, only: mpirank,lio,ig0,jg0,kg0,isize,jsize,ksize
+    use commarray, only: q,rho,vel,prs,tmp,spc,x,nodestat,crinod
+    use commarray_gpu, only: q_d,qwork_d,filter_work_d,rho_d,vel_d,prs_d,tmp_d, &
+      crinod_d,configure_gpu_filter_workspace,sync_crashfix_mask_to_gpu
+    use solver_gpu, only: filter_x_global_kernel,filter_y_pong_to_q_halo_global_kernel, &
+      filter_z_halo_global_kernel,apply_explicit_filter_gpu
+    use halo_exchange_gpu, only: refresh_filter_z_local_halo_gpu
+    use filter, only: filter_coefficient_explicit,spafilter10exp
+    use fludyna, only: q2fvar
+    use mainloop, only: crashfix,fhand_err
+    use crashfix_gpu, only: repair_crashfix_state_gpu,release_crashfix_gpu
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    integer,intent(in) :: rank,nranks
+    character(*),intent(in) :: path
+    integer :: header(8),unit,a,b,c,ii,jj,kk,m,h,axis,repairs
+    real(real_kind) :: window(11,11,11,5),stored(5),initial_center(5),point(5),eint,difference
+    real(real_kind),allocatable :: reference(:,:,:,:),observed(:,:,:,:)
+    logical,allocatable :: mask(:,:,:)
+    type(dim3) :: bx,by,bz,gx,gy,gz
+
+    if(nranks/=1) error stop 'Captured filter window replay uses NP=1'
+    open(newunit=unit,file=trim(path),access='stream',form='unformatted',status='old')
+    read(unit) header,window,stored
+    close(unit)
+    im=header(1); jm=header(2); km=header(3)
+    ia=im; ja=jm; ka=km; numq=5; num_species=0; num_modequ=0; ndims=3
+    npdci=4; npdcj=4; npdck=3
+    is=1; ie=im-1; js=1; je=jm-1; ks=0; ke=km
+    mpirank=rank; lio=.true.; ig0=0; jg0=0; kg0=0
+    isize=1; jsize=1; ksize=1
+    nondimen=.true.; gamma=1.4e0_real_kind; mach=12.e0_real_kind
+    const2=gamma*mach**2; const6=1.e0_real_kind/(gamma-1.e0_real_kind)
+    lihomo=.false.; ljhomo=.false.; lkhomo=.true.; lcracon=.true.; lreport=.false.
+    lcomb=.false.
+    nstep=0; ctime=0.e0_real_kind
+    call filter_coefficient_explicit()
+    call configure_gpu_filter_workspace()
+    allocate(q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5),reference(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5))
+    allocate(observed,mold=q)
+    initial_center=window(6,6,6,:)
+    do m=1,5
+      q(:,:,:,m)=initial_center(m)
+    enddo
+    do c=1,11
+    do b=1,11
+    do a=1,11
+      ii=max(0,min(im,header(6)+a-6)); jj=max(0,min(jm,header(7)+b-6))
+      kk=modulo(header(8)+c-6,km)
+      q(ii,jj,kk,:)=window(a,b,c,:)
+    enddo
+    enddo
+    enddo
+    q(:,:,km,:)=q(:,:,0,:)
+    do h=1,hm
+      q(:,:,-h,:)=q(:,:,km-h,:); q(:,:,km+h,:)=q(:,:,h,:)
+    enddo
+    reference=q
+    allocate(q_d,mold=q); allocate(qwork_d,mold=q)
+    allocate(filter_work_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+    q_d=q; qwork_d=0.e0_real_kind
+    bx=dim3(512,1,1); gx=dim3((im+512)/512,jm+1,km+1)
+    by=dim3(32,16,1); gy=dim3((im+32)/32,(jm+16)/16,km+1)
+    bz=dim3(64,1,8); gz=dim3((im+64)/64,jm+1,(km+8)/8)
+    do axis=1,3
+      do m=1,5
+        select case(axis)
+        case(1)
+          do kk=0,km
+          do jj=0,jm
+            reference(0:im,jj,kk,m)=spafilter10exp(reference(:,jj,kk,m),4,im)
+          enddo
+          enddo
+        case(2)
+          do kk=0,km
+          do ii=0,im
+            reference(ii,0:jm,kk,m)=spafilter10exp(reference(ii,:,kk,m),4,jm)
+          enddo
+          enddo
+        case(3)
+          do h=1,hm
+            reference(:,:,-h,m)=reference(:,:,km-h,m)
+            reference(:,:,km+h,m)=reference(:,:,h,m)
+          enddo
+          do jj=0,jm
+          do ii=0,im
+            reference(ii,jj,0:km,m)=spafilter10exp(reference(ii,jj,:,m),3,km)
+          enddo
+          enddo
+        end select
+      enddo
+      select case(axis)
+      case(1)
+        call filter_x_global_kernel<<<gx,bx>>>(im,jm,km,4,5,.false.)
+        call sync_after_kernel('captured filter X')
+        observed=qwork_d
+      case(2)
+        call filter_y_pong_to_q_halo_global_kernel<<<gy,by>>>(im,jm,km,4,5,.false.)
+        call sync_after_kernel('captured filter Y')
+        observed=q_d
+      case(3)
+        call refresh_filter_z_local_halo_gpu()
+        call filter_z_halo_global_kernel<<<gz,bz>>>(im,jm,km,3,5,.false.)
+        call sync_after_kernel('captured filter Z')
+        observed=qwork_d
+      end select
+      if(.not.all(ieee_is_finite(observed(0:im,0:jm,0:km,:)))) error stop 'Nonfinite captured filter output'
+      difference=maxval(abs(observed(0:im,0:jm,0:km,:)-reference(0:im,0:jm,0:km,:)))
+      point=observed(header(6),header(7),header(8),:)
+      eint=point(5)-0.5e0_real_kind*sum(point(2:4)**2)/point(1)
+      write(*,'(A,I0,2(1X,ES24.16E3))') 'CAPTURE_FILTER axis/error/internal=',axis,difference,eint
+      if(real_bytes==8.and.difference>2.e-10_real_kind) error stop 'Captured filter FP64 regression'
+    enddo
+    if(eint>=0.e0_real_kind) error stop 'Captured GPU filter did not reproduce negative internal energy'
+    if(real_bytes==8.and.maxval(abs(point-stored))>2.e-10_real_kind) &
+      error stop 'Captured GPU point differs from original FP64 observation'
+    ! Repeat with the selected production workspace and its actual halo sequence.
+    q_d=q
+    call apply_explicit_filter_gpu(.false.,'captured production ')
+    observed=q_d
+    difference=maxval(abs(observed(0:im,0:jm,0:km,:)-reference(0:im,0:jm,0:km,:)))
+    write(*,'(A,ES24.16E3)') 'CAPTURE_PRODUCTION_FILTER_ERROR=',difference
+    if(real_bytes==8.and.difference>2.e-10_real_kind) error stop 'Captured production filter regression'
+    q(0:im,0:jm,0:km,:)=observed(0:im,0:jm,0:km,:)
+    if(any(q(0:im,0:jm,km,:)/=q(0:im,0:jm,0,:))) error stop 'Captured periodic endpoint mismatch'
+    do h=1,hm
+      q(:,:,-h,:)=q(:,:,km-h,:); q(:,:,km+h,:)=q(:,:,h,:)
+    enddo
+    allocate(rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+    allocate(tmp,mold=rho); allocate(prs,mold=rho)
+    allocate(vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3))
+    allocate(spc(-hm:im+hm,-hm:jm+hm,-hm:km+hm,0),x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3))
+    allocate(nodestat(-hm:im+hm,-hm:jm+hm,-hm:km+hm),crinod(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+    call q2fvar(q,rho,vel,prs,tmp,spc)
+    x=0.e0_real_kind; nodestat=0; crinod=.false.
+    allocate(rho_d,mold=rho); allocate(prs_d,mold=prs); allocate(tmp_d,mold=tmp); allocate(vel_d,mold=vel)
+    q_d=q; rho_d=rho; prs_d=prs; tmp_d=tmp; vel_d=vel
+    call sync_crashfix_mask_to_gpu()
+    open(newunit=fhand_err,status='scratch')
+    call crashfix(repaired_nodes=repairs)
+    call repair_crashfix_state_gpu(1)
+    observed=q_d
+    allocate(mask,mold=crinod); mask=crinod_d
+    if(any(mask.neqv.crinod)) error stop 'Captured filter repair history differs'
+    if(.not.all(ieee_is_finite(observed(0:im,0:jm,0:km,:)))) error stop 'Nonfinite captured repair'
+    difference=maxval(abs(q(0:im,0:jm,0:km,:)-observed(0:im,0:jm,0:km,:)))
+    write(*,'(A,I0,1X,ES24.16E3)') 'CAPTURE_REPAIR count/error=',repairs,difference
+    if(repairs<=0) error stop 'Captured repair path was not activated'
+    if(real_bytes==8.and.difference>2.e-10_real_kind) error stop 'Captured repair FP64 regression'
+    close(fhand_err)
+    call release_crashfix_gpu()
+    deallocate(q_d,qwork_d,filter_work_d,rho_d,prs_d,tmp_d,vel_d,crinod_d)
+    deallocate(q,rho,prs,tmp,vel,spc,x,nodestat,crinod)
+    print *, 'PASS: captured native filter and ordered repair; constant extension outside known window'
+  end subroutine check_captured_filter_window
+end module native_filter_window_replay
+
+program native_filter_window_probe
+  use mpi
+  use cudafor, only: cudaSetDevice,cudaSuccess
+  use native_filter_window_replay, only: check_captured_filter_window
+  implicit none
+  integer :: rank,ranks,ierr,device,status
+  character(1024) :: argument,path
+  call MPI_Init(ierr)
+  call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
+  call MPI_Comm_size(MPI_COMM_WORLD,ranks,ierr)
+  call get_command_argument(1,argument)
+  call get_command_argument(2,path)
+  if(len_trim(argument)==0.or.len_trim(path)==0) error stop 'usage: native_filter_window_probe DEVICE WINDOW.bin'
+  read(argument,*) device
+  status=cudaSetDevice(device)
+  if(status/=cudaSuccess) error stop 'Captured filter probe device selection failed'
+  call check_captured_filter_window(rank,ranks,trim(path))
+  call MPI_Finalize(ierr)
+end program native_filter_window_probe

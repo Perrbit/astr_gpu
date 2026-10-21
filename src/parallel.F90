@@ -6,6 +6,8 @@
 !| 06-02-2021  | Created by J. Fang                                    |
 !+---------------------------------------------------------------------+
 module parallel
+  use astr_precision, only: real_kind,clock_kind
+  use astr_precision_mpi, only: mpi_real_type
   !
   use mpi
   use commvar,   only : im,jm,km,hm,ia,ja,ka,lihomo,ljhomo,lkhomo,     &
@@ -14,6 +16,7 @@ module parallel
   use utility,   only : timereporter
   !
   implicit none
+  private :: real_kind,clock_kind,mpi_real_type
   !
   interface bcast
     module procedure bcast_cha
@@ -1433,16 +1436,16 @@ module parallel
   subroutine bcast_r8(vario,comm)
     !
     ! arguments
-    real(8),intent(inout) :: vario
+    real(real_kind),intent(inout) :: vario
     integer,intent(in),optional :: comm
     !
     ! local data
     integer :: ierr
     !
     if(present(comm)) then
-      call mpi_bcast(vario,1,mpi_real8,0,comm,ierr)
+      call mpi_bcast(vario,1,mpi_real_type,0,comm,ierr)
     else
-      call mpi_bcast(vario,1,mpi_real8,0,mpi_comm_world,ierr)
+      call mpi_bcast(vario,1,mpi_real_type,0,mpi_comm_world,ierr)
     endif
     !
     !
@@ -1451,21 +1454,21 @@ module parallel
   subroutine bcast_r8_ary(vario)
     !
     ! arguments
-    real(8),intent(inout) :: vario(:)
+    real(real_kind),intent(inout) :: vario(:)
     !
     ! local data
     integer :: nsize,ierr
     !
     nsize=size(vario)
     !
-    call MPI_BCAST(vario,nsize,mpi_real8,0,mpi_comm_world,ierr)
+    call MPI_BCAST(vario,nsize,mpi_real_type,0,mpi_comm_world,ierr)
     !
   end subroutine bcast_r8_ary
   !
   subroutine bcast_r8_ary_allo(vario,nsize)
     !
     ! arguments
-    real(8),intent(inout),allocatable :: vario(:)
+    real(real_kind),intent(inout),allocatable :: vario(:)
     integer,intent(in) :: nsize
     !
     ! local data
@@ -1473,14 +1476,14 @@ module parallel
     !
     if(.not.allocated(vario)) allocate(vario(nsize))
     !
-    call MPI_BCAST(vario,nsize,mpi_real8,0,mpi_comm_world,ierr)
+    call MPI_BCAST(vario,nsize,mpi_real_type,0,mpi_comm_world,ierr)
     !
   end subroutine bcast_r8_ary_allo
   !
   subroutine bcast_r8_ary2(vario,rank)
     !
     ! arguments
-    real(8),intent(inout) :: vario(:,:)
+    real(real_kind),intent(inout) :: vario(:,:)
     integer,intent(in),optional :: rank
     !
     ! local data
@@ -1494,21 +1497,21 @@ module parallel
       root=0
     endif
     !
-    call MPI_BCAST(vario,nsize,mpi_real8,root,mpi_comm_world,ierr)
+    call MPI_BCAST(vario,nsize,mpi_real_type,root,mpi_comm_world,ierr)
     !
   end subroutine bcast_r8_ary2
   !
   subroutine bcast_r8_ary3(vario)
     !
     ! arguments
-    real(8),intent(inout) :: vario(:,:,:)
+    real(real_kind),intent(inout) :: vario(:,:,:)
     !
     ! local data
     integer :: nsize,ierr
     !
     nsize=size(vario,1)*size(vario,2)*size(vario,3)
     !
-    call MPI_BCAST(vario,nsize,mpi_real8,0,mpi_comm_world,ierr)
+    call MPI_BCAST(vario,nsize,mpi_real_type,0,mpi_comm_world,ierr)
     !
   end subroutine bcast_r8_ary3
   !
@@ -1657,8 +1660,8 @@ module parallel
     integer :: nvar,ierr,incode,jrank,recvsize
     integer,allocatable :: senddispls(:),recvdispls(:)
     !
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.0_clock_kind
     !
     ! start
     !
@@ -1708,8 +1711,8 @@ module parallel
                                  timerept)
     !
     ! arguments
-    real(8),intent(in) :: datasend(:)
-    real(8),allocatable,intent(out) :: datarecv(:)
+    real(real_kind),intent(in) :: datasend(:)
+    real(real_kind),allocatable,intent(out) :: datarecv(:)
     integer,intent(in) :: sendtabl(0:),recvtabl(0:)
     !
     logical,intent(in),optional :: timerept
@@ -1718,8 +1721,8 @@ module parallel
     integer :: nvar,ierr,incode,jrank,recvsize
     integer,allocatable :: senddispls(:),recvdispls(:)
     !
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.0_clock_kind
     !
     ! start
     !
@@ -1742,8 +1745,8 @@ module parallel
     recvsize=recvdispls(mpirankmax)+recvtabl(mpirankmax)
     allocate(datarecv(recvsize))
     !
-    call mpi_alltoallv(datasend, sendtabl, senddispls, mpi_real8, &
-                       datarecv, recvtabl, recvdispls, mpi_real8, &
+    call mpi_alltoallv(datasend, sendtabl, senddispls, mpi_real_type, &
+                       datarecv, recvtabl, recvdispls, mpi_real_type, &
                        mpi_comm_world, ierr)
     !
     deallocate(senddispls,recvdispls)
@@ -1769,8 +1772,8 @@ module parallel
                                    comm,timerept)
     !
     ! arguments
-    real(8),intent(in) :: datasend(:,:)
-    real(8),allocatable,intent(out) :: datarecv(:,:)
+    real(real_kind),intent(in) :: datasend(:,:)
+    real(real_kind),allocatable,intent(out) :: datarecv(:,:)
     integer,intent(in) :: sendtabl(0:),recvtabl(0:)
     !
     integer,optional,intent(in) :: comm
@@ -1781,8 +1784,8 @@ module parallel
     integer :: newtype
     integer,allocatable :: senddispls(:),recvdispls(:)
     !
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.0_clock_kind
     !
     ! start
     !
@@ -1796,7 +1799,7 @@ module parallel
     !
     n2size=size(datasend,1)
     !
-    call mpi_type_contiguous(n2size,mpi_real8,newtype,ierr)
+    call mpi_type_contiguous(n2size,mpi_real_type,newtype,ierr)
     call mpi_type_commit(newtype,ierr)
     !
     if(present(comm)) then
@@ -1886,9 +1889,9 @@ module parallel
   subroutine pgather_rel2d_array_rank(array,data,rank)
     !
     ! arguments
-    real(8),intent(in) :: array(:,:)
+    real(real_kind),intent(in) :: array(:,:)
     integer,intent(in) :: rank
-    real(8),intent(out),allocatable :: data(:,:)
+    real(real_kind),intent(out),allocatable :: data(:,:)
     !
     !
     ! local data
@@ -1919,8 +1922,8 @@ module parallel
       !
     endif
     !
-    call mpi_gatherv(array, nrecv(1), mpi_real8,              &
-                      data, counts, displs, mpi_real8, rank,  &
+    call mpi_gatherv(array, nrecv(1), mpi_real_type,              &
+                      data, counts, displs, mpi_real_type, rank,  &
                       mpi_comm_world, ierr)
     return
     !
@@ -2064,8 +2067,8 @@ module parallel
   subroutine pgather_across_k(array,data,communicator)
     !
     ! arguments
-    real(8),intent(in)  :: array(:,:,:)
-    real(8),intent(out),allocatable :: data(:,:,:)
+    real(real_kind),intent(in)  :: array(:,:,:)
+    real(real_kind),intent(out),allocatable :: data(:,:,:)
     integer,intent(in) :: communicator
     !
     !
@@ -2086,8 +2089,8 @@ module parallel
       displs(jrank)=displs(jrank-1)+counts(jrank-1)
     enddo
 
-    call mpi_gatherv(array, nrecv(1), mpi_real8,              &
-                      data, counts, displs, mpi_real8, 0,  &
+    call mpi_gatherv(array, nrecv(1), mpi_real_type,              &
+                      data, counts, displs, mpi_real_type, 0,  &
                       communicator, ierr)
   
   end subroutine pgather_across_k
@@ -2095,8 +2098,8 @@ module parallel
   subroutine pgather_rel2d_array(array,data)
     !
     ! arguments
-    real(8),intent(in) :: array(:,:)
-    real(8),intent(out),allocatable :: data(:,:)
+    real(real_kind),intent(in) :: array(:,:)
+    real(real_kind),intent(out),allocatable :: data(:,:)
     !
     !
     ! local data
@@ -2123,8 +2126,8 @@ module parallel
     !
     allocate(data(dim1,nsize/dim1))
     !
-    call mpi_allgatherv(array, nrecv(1), mpi_real8,       &
-                        data,  counts, displs, mpi_real8, &
+    call mpi_allgatherv(array, nrecv(1), mpi_real_type,       &
+                        data,  counts, displs, mpi_real_type, &
                         mpi_comm_world, ierr)
     !
   end subroutine pgather_rel2d_array
@@ -2132,8 +2135,8 @@ module parallel
   subroutine pgather_rel1d_array(array,data)
     !
     ! arguments
-    real(8),allocatable,intent(in) :: array(:)
-    real(8),intent(out),allocatable :: data(:)
+    real(real_kind),allocatable,intent(in) :: array(:)
+    real(real_kind),intent(out),allocatable :: data(:)
     !
     !
     ! local data
@@ -2164,8 +2167,8 @@ module parallel
     !
     allocate(data(nsize))
     !
-    call mpi_allgatherv(array, nrecv(1), mpi_real8,       &
-                        data,  counts, displs, mpi_real8, &
+    call mpi_allgatherv(array, nrecv(1), mpi_real_type,       &
+                        data,  counts, displs, mpi_real_type, &
                         mpi_comm_world, ierr)
     !
   end subroutine pgather_rel1d_array
@@ -2254,10 +2257,10 @@ module parallel
   subroutine pscatter_rel2d(array,data,table,offset,rank)
     !
     ! arguments
-    real(8),intent(in) :: array(:,:)
+    real(real_kind),intent(in) :: array(:,:)
     integer,intent(in) :: table(0:),rank
     integer,intent(in),optional :: offset(0:)
-    real(8),intent(out),allocatable :: data(:,:)
+    real(real_kind),intent(out),allocatable :: data(:,:)
     !
     ! local data
     integer :: displs(0:mpirankmax),counts(0:mpirankmax)
@@ -2278,8 +2281,8 @@ module parallel
     !
     allocate(data(dim1,table(mpirank)))
     !
-    call mpi_scatterv(array, counts, displs,  mpi_real8,       &
-                      data,  counts(mpirank), mpi_real8, rank, &
+    call mpi_scatterv(array, counts, displs,  mpi_real_type,       &
+                      data,  counts(mpirank), mpi_real_type, rank, &
                       mpi_comm_world,ierr)
     !
     return
@@ -2308,7 +2311,7 @@ module parallel
     !
     ! local data
     integer :: nsize,ntotle,jb
-    real(8),allocatable :: sb_rea(:,:),sbt_rea(:,:)
+    real(real_kind),allocatable :: sb_rea(:,:),sbt_rea(:,:)
     integer,allocatable :: sb_int(:,:),sbt_int(:,:)
     character(len=1),allocatable :: sb_cha(:),sbt_cha(:)
     !
@@ -2371,7 +2374,7 @@ module parallel
     do jb=1,nsize
       sb_rea(1,jb)=var(jb)%dis2image
       sb_rea(2,jb)=var(jb)%dis2ghost
-      sb_rea(3,jb)=0.d0
+      sb_rea(3,jb)=0.e0_real_kind
     enddo
     !
     call pgather(sb_rea,sbt_rea)
@@ -2566,10 +2569,10 @@ module parallel
     !
   end function psum_int_ary2d
   !
-  real(8) function  psum_r8(var,comm)
+  real(real_kind) function  psum_r8(var,comm)
     !
     ! arguments
-    real(8),intent(in) :: var
+    real(real_kind),intent(in) :: var
     integer,intent(in),optional :: comm
     !
     ! local data
@@ -2581,16 +2584,16 @@ module parallel
       comms=mpi_comm_world
     endif
     !
-    call mpi_allreduce(var,psum_r8,1,mpi_real8,mpi_sum,comms,ierr)
+    call mpi_allreduce(var,psum_r8,1,mpi_real_type,mpi_sum,comms,ierr)
     !
   end function psum_r8
   !
   function psum_r8_ary(var,comm) result(varsum)
     !
     ! arguments
-    real(8),intent(in) :: var(:)
+    real(real_kind),intent(in) :: var(:)
     integer,intent(in),optional :: comm
-    real(8),allocatable :: varsum(:)
+    real(real_kind),allocatable :: varsum(:)
     !
     ! local data
     integer :: ierr,nsize,comms
@@ -2605,7 +2608,7 @@ module parallel
     !
     allocate(varsum(nsize))
     !
-    call mpi_allreduce(var,varsum,nsize,mpi_real8,mpi_sum,comms,ierr)
+    call mpi_allreduce(var,varsum,nsize,mpi_real_type,mpi_sum,comms,ierr)
     !
     return
     !
@@ -2614,9 +2617,9 @@ module parallel
   function psum_r8_ary_2d(var,comm) result(varsum)
     !
     ! arguments
-    real(8),intent(in) :: var(:,:)
+    real(real_kind),intent(in) :: var(:,:)
     integer,intent(in),optional :: comm
-    real(8),allocatable :: varsum(:,:)
+    real(real_kind),allocatable :: varsum(:,:)
     !
     ! local data
     integer :: ierr,nsize1,nsize2,comm_use
@@ -2632,7 +2635,7 @@ module parallel
     !
     allocate(varsum(nsize1,nsize2))
     !
-    call mpi_allreduce(var,varsum,nsize1*nsize2,mpi_real8,mpi_sum,     &
+    call mpi_allreduce(var,varsum,nsize1*nsize2,mpi_real_type,mpi_sum,     &
                                                           comm_use,ierr)
     !
     return
@@ -2642,9 +2645,9 @@ module parallel
   function psum_r8_ary_3d(var,comm) result(varsum)
     !
     ! arguments
-    real(8),intent(in) :: var(:,:,:)
+    real(real_kind),intent(in) :: var(:,:,:)
     integer,intent(in),optional :: comm
-    real(8),allocatable :: varsum(:,:,:)
+    real(real_kind),allocatable :: varsum(:,:,:)
     !
     ! local data
     integer :: ierr,nsize1,nsize2,nsize3,comm_use
@@ -2661,7 +2664,7 @@ module parallel
     !
     allocate(varsum(nsize1,nsize2,nsize3))
     !
-    call mpi_allreduce(var,varsum,nsize1*nsize2*nsize3,mpi_real8,     &
+    call mpi_allreduce(var,varsum,nsize1*nsize2*nsize3,mpi_real_type,     &
                                                  mpi_sum,comm_use,ierr)
     !
     return
@@ -2741,8 +2744,8 @@ module parallel
   function  pmax_r8_array2d(var) result(vout)
     !
     ! arguments
-    real(8),intent(in) :: var(:,:)
-    real(8),allocatable :: vout(:,:)
+    real(real_kind),intent(in) :: var(:,:)
+    real(real_kind),allocatable :: vout(:,:)
     !
     ! local data
     integer :: ierr,nsize1,nsize2
@@ -2752,7 +2755,7 @@ module parallel
     !
     allocate(vout(nsize1,nsize2))
     !
-    call mpi_allreduce(var,vout,nsize1*nsize2,mpi_real8,mpi_max,      &
+    call mpi_allreduce(var,vout,nsize1*nsize2,mpi_real_type,mpi_max,      &
                                                     mpi_comm_world,ierr)
     !
   end function pmax_r8_array2d
@@ -2760,8 +2763,8 @@ module parallel
   function  pmax_r8_array3d(var) result(vout)
     !
     ! arguments
-    real(8),intent(in) :: var(:,:,:)
-    real(8),allocatable :: vout(:,:,:)
+    real(real_kind),intent(in) :: var(:,:,:)
+    real(real_kind),allocatable :: vout(:,:,:)
     !
     ! local data
     integer :: ierr,nsize1,nsize2,nsize3
@@ -2772,20 +2775,20 @@ module parallel
     !
     allocate(vout(nsize1,nsize2,nsize3))
     !
-    call mpi_allreduce(var,vout,nsize1*nsize2*nsize3,mpi_real8,mpi_max,  &
+    call mpi_allreduce(var,vout,nsize1*nsize2*nsize3,mpi_real_type,mpi_max,  &
                                                       mpi_comm_world,ierr)
     !
   end function pmax_r8_array3d
   !
-  real(8) function  pmax_r8(var)
+  real(real_kind) function  pmax_r8(var)
     !
     ! arguments
-    real(8),intent(in) :: var
+    real(real_kind),intent(in) :: var
     !
     ! local data
     integer :: ierr
     !
-    call mpi_allreduce(var,pmax_r8,1,mpi_real8,mpi_max,               &
+    call mpi_allreduce(var,pmax_r8,1,mpi_real_type,mpi_max,               &
                                                     mpi_comm_world,ierr)
     !
   end function pmax_r8
@@ -2813,15 +2816,15 @@ module parallel
     !
   end function pmin_int
   !
-  real(8) function  pmin_r8(var)
+  real(real_kind) function  pmin_r8(var)
     !
     ! arguments
-    real(8),intent(in) :: var
+    real(real_kind),intent(in) :: var
     !
     ! local data
     integer :: ierr
     !
-    call mpi_allreduce(var,pmin_r8,1,mpi_real8,mpi_min,               &
+    call mpi_allreduce(var,pmin_r8,1,mpi_real_type,mpi_min,               &
                                                     mpi_comm_world,ierr)
     !
   end function pmin_r8
@@ -2842,7 +2845,7 @@ module parallel
     integer :: ierr
     integer :: i,j,k,m,n
     integer :: ncou
-    real(8), allocatable, dimension(:,:,:,:) :: sendbuf1,sendbuf2,     &
+    real(real_kind), allocatable, dimension(:,:,:,:) :: sendbuf1,sendbuf2,     &
                                                 recvbuf1,recvbuf2
     !!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! sendbuf1: send buffer
@@ -2872,14 +2875,14 @@ module parallel
       enddo
       !
       ! message passing
-      call mpi_sendrecv(sendbuf1, ncou, mpi_real8, mpileft,  mpitag,     &
-                        recvbuf1, ncou, mpi_real8, mpiright, mpitag,     &
+      call mpi_sendrecv(sendbuf1, ncou, mpi_real_type, mpileft,  mpitag,     &
+                        recvbuf1, ncou, mpi_real_type, mpiright, mpitag,     &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
-      call mpi_sendrecv(sendbuf2, ncou, mpi_real8, mpiright, mpitag,    &
-                        recvbuf2, ncou, mpi_real8, mpileft,  mpitag,     &
+      call mpi_sendrecv(sendbuf2, ncou, mpi_real_type, mpiright, mpitag,    &
+                        recvbuf2, ncou, mpi_real_type, mpileft,  mpitag,     &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
@@ -2888,7 +2891,7 @@ module parallel
       if(mpileft==MPI_PROC_NULL) then
         !
         do n=1,hm
-          x(-n,0:jm,0:km,1:3)=2.d0*x(0,0:jm,0:km,1:3)-x(n,0:jm,0:km,1:3) ! even
+          x(-n,0:jm,0:km,1:3)=2.e0_real_kind*x(0,0:jm,0:km,1:3)-x(n,0:jm,0:km,1:3) ! even
         enddo
         !
       else
@@ -2903,7 +2906,7 @@ module parallel
       if(mpiright==MPI_PROC_NULL) then
         !
         do n=1,hm
-          x(im+n,0:jm,0:km,1:3)=2.d0*x(im,0:jm,0:km,1:3)-x(im-n,0:jm,0:km,1:3)
+          x(im+n,0:jm,0:km,1:3)=2.e0_real_kind*x(im,0:jm,0:km,1:3)-x(im-n,0:jm,0:km,1:3)
         enddo
         !
       else
@@ -2947,13 +2950,13 @@ module parallel
       enddo
       !
       ! Message passing
-      call mpi_sendrecv(sendbuf1,ncou,mpi_real8,mpidown,mpitag,        &
-                        recvbuf1,ncou,mpi_real8,mpiup,mpitag,          &
+      call mpi_sendrecv(sendbuf1,ncou,mpi_real_type,mpidown,mpitag,        &
+                        recvbuf1,ncou,mpi_real_type,mpiup,mpitag,          &
                                              mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
-      call mpi_sendrecv(sendbuf2,ncou,mpi_real8,mpiup,mpitag,          &
-                        recvbuf2,ncou,mpi_real8,mpidown,mpitag,        &
+      call mpi_sendrecv(sendbuf2,ncou,mpi_real_type,mpiup,mpitag,          &
+                        recvbuf2,ncou,mpi_real_type,mpidown,mpitag,        &
                                              mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
@@ -2962,7 +2965,7 @@ module parallel
       if(mpidown==MPI_PROC_NULL) then
         !
         do n=1,hm
-          x(0:im,-n,0:km,1:3)=2.d0*x(0:im,0,0:km,1:3)-x(0:im,n,0:km,1:3)
+          x(0:im,-n,0:km,1:3)=2.e0_real_kind*x(0:im,0,0:km,1:3)-x(0:im,n,0:km,1:3)
         enddo
         !
       else
@@ -2976,7 +2979,7 @@ module parallel
       ! unpack the received down the packet
       if(mpiup==MPI_PROC_NULL) then
         do n=1,hm
-          x(0:im,jm+n,0:km,1:3)=2.d0*x(0:im,jm,0:km,1:3)-x(0:im,jm-n,0:km,1:3)
+          x(0:im,jm+n,0:km,1:3)=2.e0_real_kind*x(0:im,jm,0:km,1:3)-x(0:im,jm-n,0:km,1:3)
         enddo
       else
         !
@@ -2996,7 +2999,7 @@ module parallel
         !
         do j=-hm,hm
           x(0:im,j,0:km,1)=x(0:im,0,0:km,1)
-          x(0:im,j,0:km,2)=x(0:im,0,0:km,2)+real(j,8)
+          x(0:im,j,0:km,2)=x(0:im,0,0:km,2)+real(j,kind=real_kind)
           x(0:im,j,0:km,3)=x(0:im,0,0:km,3)
         enddo
         !
@@ -3028,13 +3031,13 @@ module parallel
       enddo
       !
       ! Message passing
-      call mpi_sendrecv(sendbuf1,ncou,mpi_real8,mpiback,mpitag,        &
-                        recvbuf1,ncou,mpi_real8,mpifront,mpitag,       &
+      call mpi_sendrecv(sendbuf1,ncou,mpi_real_type,mpiback,mpitag,        &
+                        recvbuf1,ncou,mpi_real_type,mpifront,mpitag,       &
                                              mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
-      call mpi_sendrecv(sendbuf2,ncou,mpi_real8,mpifront,mpitag,       &
-                        recvbuf2,ncou,mpi_real8,mpiback,mpitag,        &
+      call mpi_sendrecv(sendbuf2,ncou,mpi_real_type,mpifront,mpitag,       &
+                        recvbuf2,ncou,mpi_real_type,mpiback,mpitag,        &
                                              mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
@@ -3079,7 +3082,7 @@ module parallel
         !
         do k=-hm,hm
           x(0:im,0:jm,k,1:2)=x(0:im,0:jm,0,1:2)
-          x(0:im,0:jm,k,3)=x(0:im,0:jm,0,3)+real(k,8)
+          x(0:im,0:jm,k,3)=x(0:im,0:jm,0,3)+real(k,kind=real_kind)
         enddo
         !
       else
@@ -3117,8 +3120,8 @@ module parallel
     integer :: ncou,j,k
     integer :: ierr
     logical,allocatable,dimension(:,:,:) :: sbuf1,sbuf2,rbuf1,rbuf2
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.0_clock_kind
     !
     if(present(timerept)) then
 
@@ -3355,8 +3358,8 @@ module parallel
     integer :: ncou,j,k
     integer :: ierr
     integer,allocatable,dimension(:,:,:) :: sbuf1,sbuf2,rbuf1,rbuf2
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.0_clock_kind
     !
     if(present(timerept)) then
 
@@ -3586,15 +3589,15 @@ module parallel
   subroutine array3d_sendrecv(var,timerept)
     !
     ! arguments
-    real(8),intent(inout) :: var(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),intent(inout) :: var(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
     logical,intent(in),optional :: timerept
     !
     ! logical data
     integer :: ncou,j,k
     integer :: ierr
-    real(8),allocatable,dimension(:,:,:) :: sbuf1,sbuf2,rbuf1,rbuf2
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(real_kind),allocatable,dimension(:,:,:) :: sbuf1,sbuf2,rbuf1,rbuf2
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.0_clock_kind
     !
     if(present(timerept)) then
 
@@ -3636,13 +3639,13 @@ module parallel
       endif
       !
       ! Message passing
-      call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpileft, mpitag,            &
-                        rbuf1,ncou,mpi_real8,mpiright,mpitag,            &
+      call mpi_sendrecv(sbuf1,ncou,mpi_real_type,mpileft, mpitag,            &
+                        rbuf1,ncou,mpi_real_type,mpiright,mpitag,            &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
-      call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiright,mpitag,            &
-                        rbuf2,ncou,mpi_real8,mpileft, mpitag,            &
+      call mpi_sendrecv(sbuf2,ncou,mpi_real_type,mpiright,mpitag,            &
+                        rbuf2,ncou,mpi_real_type,mpileft, mpitag,            &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
@@ -3701,13 +3704,13 @@ module parallel
       end if
       !
       ! Message passing
-      call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpidown,mpitag,             &
-                        rbuf1,ncou,mpi_real8,mpiup,  mpitag,             &
+      call mpi_sendrecv(sbuf1,ncou,mpi_real_type,mpidown,mpitag,             &
+                        rbuf1,ncou,mpi_real_type,mpiup,  mpitag,             &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
-      call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiup,  mpitag,             &
-                        rbuf2,ncou,mpi_real8,mpidown,mpitag,             &
+      call mpi_sendrecv(sbuf2,ncou,mpi_real_type,mpiup,  mpitag,             &
+                        rbuf2,ncou,mpi_real_type,mpidown,mpitag,             &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
@@ -3764,13 +3767,13 @@ module parallel
       endif
       !
       ! Message passing
-      call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpiback, mpitag,          &
-                        rbuf1,ncou,mpi_real8,mpifront,mpitag,          &
+      call mpi_sendrecv(sbuf1,ncou,mpi_real_type,mpiback, mpitag,          &
+                        rbuf1,ncou,mpi_real_type,mpifront,mpitag,          &
                                              mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
-      call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpifront,mpitag,          &
-                        rbuf2,ncou,mpi_real8,mpiback, mpitag,          &
+      call mpi_sendrecv(sbuf2,ncou,mpi_real_type,mpifront,mpitag,          &
+                        rbuf2,ncou,mpi_real_type,mpiback, mpitag,          &
                                              mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
@@ -3824,15 +3827,15 @@ module parallel
   subroutine array3d_sync(var,timerept)
     !
     ! arguments
-    real(8),intent(inout) :: var(0:im,0:jm,0:km)
+    real(real_kind),intent(inout) :: var(0:im,0:jm,0:km)
     logical,intent(in),optional :: timerept
     !
     ! logical data
     integer :: ncou,j,k
     integer :: ierr
-    real(8),allocatable,dimension(:,:) :: sbuf1,sbuf2,rbuf1,rbuf2
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(real_kind),allocatable,dimension(:,:) :: sbuf1,sbuf2,rbuf1,rbuf2
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.0_clock_kind
     !
     if(present(timerept)) then
 
@@ -3853,7 +3856,7 @@ module parallel
     if(isize==1 .and. lihomo) then
       !
       if(lihomo) then
-        var( 0,0:jm,0:km)=0.5d0*(var(0,0:jm,0:km)+var(im,0:jm,0:km))
+        var( 0,0:jm,0:km)=0.5e0_real_kind*(var(0,0:jm,0:km)+var(im,0:jm,0:km))
        var(im,0:jm,0:km)=var(0,0:jm,0:km)
      endif
       !
@@ -3874,13 +3877,13 @@ module parallel
       endif
       !
       ! Message passing
-      call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpileft, mpitag,            &
-                        rbuf1,ncou,mpi_real8,mpiright,mpitag,            &
+      call mpi_sendrecv(sbuf1,ncou,mpi_real_type,mpileft, mpitag,            &
+                        rbuf1,ncou,mpi_real_type,mpiright,mpitag,            &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
-      call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiright,mpitag,            &
-                        rbuf2,ncou,mpi_real8,mpileft, mpitag,            &
+      call mpi_sendrecv(sbuf2,ncou,mpi_real_type,mpiright,mpitag,            &
+                        rbuf2,ncou,mpi_real_type,mpileft, mpitag,            &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
@@ -3888,14 +3891,14 @@ module parallel
       if(mpiright .ne. MPI_PROC_NULL) then
         !
         ! unpack the received the packet from right
-        var(im,0:jm,0:km)=0.5d0*(var(im,0:jm,0:km)+rbuf1(0:jm,0:km))
+        var(im,0:jm,0:km)=0.5e0_real_kind*(var(im,0:jm,0:km)+rbuf1(0:jm,0:km))
         !
       end if
         !
       if(mpileft .ne. MPI_PROC_NULL) then
         !
         ! unpack the received the packet from left
-        var(0,0:jm,0:km)=0.5d0*(var(0,0:jm,0:km)+rbuf2(0:jm,0:km) )
+        var(0,0:jm,0:km)=0.5e0_real_kind*(var(0,0:jm,0:km)+rbuf2(0:jm,0:km) )
       end if
       !
       deallocate( sbuf1,sbuf2,rbuf1,rbuf2 )
@@ -3907,7 +3910,7 @@ module parallel
     !
     if(jsize==1 .and. ljhomo) then
       !
-      var(0:im,0,0:km)=0.5d0*(var(0:im,0,0:km)+var(0:im,jm,0:km))
+      var(0:im,0,0:km)=0.5e0_real_kind*(var(0:im,0,0:km)+var(0:im,jm,0:km))
       var(0:im,jm,0:km)=var(0:im,0,0:km)
       !
     else
@@ -3929,26 +3932,26 @@ module parallel
       end if
       !
       ! Message passing
-      call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpidown,mpitag,             &
-                        rbuf1,ncou,mpi_real8,mpiup,  mpitag,             &
+      call mpi_sendrecv(sbuf1,ncou,mpi_real_type,mpidown,mpitag,             &
+                        rbuf1,ncou,mpi_real_type,mpiup,  mpitag,             &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
-      call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiup,  mpitag,             &
-                        rbuf2,ncou,mpi_real8,mpidown,mpitag,             &
+      call mpi_sendrecv(sbuf2,ncou,mpi_real_type,mpiup,  mpitag,             &
+                        rbuf2,ncou,mpi_real_type,mpidown,mpitag,             &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpiup .ne. MPI_PROC_NULL) then
         ! unpack the received the packet from up
-        var(0:im,jm,0:km)=0.5d0*(var(0:im,jm,0:km)+rbuf1(0:im,0:km))
+        var(0:im,jm,0:km)=0.5e0_real_kind*(var(0:im,jm,0:km)+rbuf1(0:im,0:km))
         !
       endif
       !
       if(mpidown .ne. MPI_PROC_NULL) then
         ! unpack the received the packet from down
-        var(0:im,0,0:km)=0.5d0*(var(0:im,0,0:km)+rbuf2(0:im,0:km))
+        var(0:im,0,0:km)=0.5e0_real_kind*(var(0:im,0,0:km)+rbuf2(0:im,0:km))
         !
       end if
       !
@@ -3961,7 +3964,7 @@ module parallel
     !
     if(ksize==1 .and. lkhomo) then
       !
-      var(0:im,0:jm,0)    =0.5d0*(var(0:im,0:jm,0)+var(0:im,0:jm,km))
+      var(0:im,0:jm,0)    =0.5e0_real_kind*(var(0:im,0:jm,0)+var(0:im,0:jm,km))
       var(0:im,0:jm,km)   =var(0:im,0:jm,0)
       !             
     else
@@ -3986,13 +3989,13 @@ module parallel
       endif
       !
       ! Message passing
-      call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpiback, mpitag,          &
-                        rbuf1,ncou,mpi_real8,mpifront,mpitag,          &
+      call mpi_sendrecv(sbuf1,ncou,mpi_real_type,mpiback, mpitag,          &
+                        rbuf1,ncou,mpi_real_type,mpifront,mpitag,          &
                                              mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
-      call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpifront,mpitag,          &
-                        rbuf2,ncou,mpi_real8,mpiback, mpitag,          &
+      call mpi_sendrecv(sbuf2,ncou,mpi_real_type,mpifront,mpitag,          &
+                        rbuf2,ncou,mpi_real_type,mpiback, mpitag,          &
                                              mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
@@ -4000,14 +4003,14 @@ module parallel
       if(mpifront .ne. MPI_PROC_NULL) then
         !
         ! unpack the received the packet from front
-        var(0:im,0:jm,km)=0.5d0*(var(0:im,0:jm,km)+rbuf1(0:im,0:jm))
+        var(0:im,0:jm,km)=0.5e0_real_kind*(var(0:im,0:jm,km)+rbuf1(0:im,0:jm))
         !
       end if
       !
       if(mpiback .ne. MPI_PROC_NULL) then
         !
         ! unpack the received the packet back
-        var(0:im,0:jm,0)=0.5d0*(var(0:im,0:jm,0)+rbuf2(0:im,0:jm))
+        var(0:im,0:jm,0)=0.5e0_real_kind*(var(0:im,0:jm,0)+rbuf2(0:im,0:jm))
         !
       end if
       !
@@ -4046,15 +4049,15 @@ module parallel
     !
     ! arguments
     integer,intent(in) ::  nvar
-    real(8),intent(inout) :: var(0:im,0:jm,0:km,1:nvar)
+    real(real_kind),intent(inout) :: var(0:im,0:jm,0:km,1:nvar)
     logical,intent(in),optional :: timerept
     !
     ! logical data
     integer :: ncou,j,k
     integer :: ierr
-    real(8),allocatable,dimension(:,:,:) :: sbuf1,sbuf2,rbuf1,rbuf2
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(real_kind),allocatable,dimension(:,:,:) :: sbuf1,sbuf2,rbuf1,rbuf2
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.0_clock_kind
     !
     if(present(timerept)) then
 
@@ -4073,7 +4076,7 @@ module parallel
     ! Message pass in i direction.
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     if(isize==1 .and. lihomo) then
-      var( 0,0:jm,0:km,:)=0.5d0*(var(0,0:jm,0:km,:)+var(im,0:jm,0:km,:))
+      var( 0,0:jm,0:km,:)=0.5e0_real_kind*(var(0,0:jm,0:km,:)+var(im,0:jm,0:km,:))
       var(im,0:jm,0:km,:)=var(0,0:jm,0:km,:)
 
     else 
@@ -4093,13 +4096,13 @@ module parallel
       endif
       !
       ! Message passing
-      call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpileft, mpitag,            &
-                        rbuf1,ncou,mpi_real8,mpiright,mpitag,            &
+      call mpi_sendrecv(sbuf1,ncou,mpi_real_type,mpileft, mpitag,            &
+                        rbuf1,ncou,mpi_real_type,mpiright,mpitag,            &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
-      call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiright,mpitag,            &
-                        rbuf2,ncou,mpi_real8,mpileft, mpitag,            &
+      call mpi_sendrecv(sbuf2,ncou,mpi_real_type,mpiright,mpitag,            &
+                        rbuf2,ncou,mpi_real_type,mpileft, mpitag,            &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
@@ -4107,14 +4110,14 @@ module parallel
       if(mpiright .ne. MPI_PROC_NULL) then
         !
         ! unpack the received the packet from right
-        var(im,0:jm,0:km,:)=0.5d0*(var(im,0:jm,0:km,:)+rbuf1(0:jm,0:km,:))
+        var(im,0:jm,0:km,:)=0.5e0_real_kind*(var(im,0:jm,0:km,:)+rbuf1(0:jm,0:km,:))
         !
       end if
         !
       if(mpileft .ne. MPI_PROC_NULL) then
         !
         ! unpack the received the packet from left
-        var(0,0:jm,0:km,:)=0.5d0*(var(0,0:jm,0:km,:)+rbuf2(0:jm,0:km,:) )
+        var(0,0:jm,0:km,:)=0.5e0_real_kind*(var(0,0:jm,0:km,:)+rbuf2(0:jm,0:km,:) )
       end if
       !
       deallocate( sbuf1,sbuf2,rbuf1,rbuf2 )
@@ -4126,7 +4129,7 @@ module parallel
     !
     if(jsize==1 .and. ljhomo) then
       !
-      var(0:im,0,0:km,:)=0.5d0*(var(0:im,0,0:km,:)+var(0:im,jm,0:km,:))
+      var(0:im,0,0:km,:)=0.5e0_real_kind*(var(0:im,0,0:km,:)+var(0:im,jm,0:km,:))
       var(0:im,jm,0:km,:)=var(0:im,0,0:km,:)
       !
     else
@@ -4148,26 +4151,26 @@ module parallel
       end if
       !
       ! Message passing
-      call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpidown,mpitag,             &
-                        rbuf1,ncou,mpi_real8,mpiup,  mpitag,             &
+      call mpi_sendrecv(sbuf1,ncou,mpi_real_type,mpidown,mpitag,             &
+                        rbuf1,ncou,mpi_real_type,mpiup,  mpitag,             &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
-      call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiup,  mpitag,             &
-                        rbuf2,ncou,mpi_real8,mpidown,mpitag,             &
+      call mpi_sendrecv(sbuf2,ncou,mpi_real_type,mpiup,  mpitag,             &
+                        rbuf2,ncou,mpi_real_type,mpidown,mpitag,             &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       !
       if(mpiup .ne. MPI_PROC_NULL) then
         ! unpack the received the packet from up
-        var(0:im,jm,0:km,:)=0.5d0*(var(0:im,jm,0:km,:)+rbuf1(0:im,0:km,:))
+        var(0:im,jm,0:km,:)=0.5e0_real_kind*(var(0:im,jm,0:km,:)+rbuf1(0:im,0:km,:))
         !
       endif
       !
       if(mpidown .ne. MPI_PROC_NULL) then
         ! unpack the received the packet from down
-        var(0:im,0,0:km,:)=0.5d0*(var(0:im,0,0:km,:)+rbuf2(0:im,0:km,:))
+        var(0:im,0,0:km,:)=0.5e0_real_kind*(var(0:im,0,0:km,:)+rbuf2(0:im,0:km,:))
         !
       end if
       !
@@ -4180,7 +4183,7 @@ module parallel
     !
     if(ksize==1 .and. lkhomo) then
       !
-      var(0:im,0:jm,0,:)    =0.5d0*(var(0:im,0:jm,0,:)+var(0:im,0:jm,km,:))
+      var(0:im,0:jm,0,:)    =0.5e0_real_kind*(var(0:im,0:jm,0,:)+var(0:im,0:jm,km,:))
       var(0:im,0:jm,km,:)   =var(0:im,0:jm,0,:)
       !             
     else
@@ -4205,13 +4208,13 @@ module parallel
       endif
       !
       ! Message passing
-      call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpiback, mpitag,          &
-                        rbuf1,ncou,mpi_real8,mpifront,mpitag,          &
+      call mpi_sendrecv(sbuf1,ncou,mpi_real_type,mpiback, mpitag,          &
+                        rbuf1,ncou,mpi_real_type,mpifront,mpitag,          &
                                              mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
-      call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpifront,mpitag,          &
-                        rbuf2,ncou,mpi_real8,mpiback, mpitag,          &
+      call mpi_sendrecv(sbuf2,ncou,mpi_real_type,mpifront,mpitag,          &
+                        rbuf2,ncou,mpi_real_type,mpiback, mpitag,          &
                                              mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
@@ -4219,14 +4222,14 @@ module parallel
       if(mpifront .ne. MPI_PROC_NULL) then
         !
         ! unpack the received the packet from front
-        var(0:im,0:jm,km,:)=0.5d0*(var(0:im,0:jm,km,:)+rbuf1(0:im,0:jm,:))
+        var(0:im,0:jm,km,:)=0.5e0_real_kind*(var(0:im,0:jm,km,:)+rbuf1(0:im,0:jm,:))
         !
       end if
       !
       if(mpiback .ne. MPI_PROC_NULL) then
         !
         ! unpack the received the packet back
-        var(0:im,0:jm,0,:)=0.5d0*(var(0:im,0:jm,0,:)+rbuf2(0:im,0:jm,:))
+        var(0:im,0:jm,0,:)=0.5e0_real_kind*(var(0:im,0:jm,0,:)+rbuf2(0:im,0:jm,:))
         !
       end if
       !
@@ -4253,7 +4256,7 @@ module parallel
   subroutine array4d_sendrecv(var,direction,debug,timerept)
     !
     ! arguments
-    real(8),intent(inout) :: var(-hm:,-hm:,-hm:,1:)
+    real(real_kind),intent(inout) :: var(-hm:,-hm:,-hm:,1:)
     integer,intent(in),optional :: direction
     logical,intent(in),optional :: debug
     logical,intent(in),optional :: timerept
@@ -4261,9 +4264,9 @@ module parallel
     ! local data
     integer :: ncou,nx,dir
     integer :: ierr,j,k
-    real(8),allocatable,dimension(:,:,:,:) :: sbuf1,sbuf2,rbuf1,rbuf2
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(real_kind),allocatable,dimension(:,:,:,:) :: sbuf1,sbuf2,rbuf1,rbuf2
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.0_clock_kind
     !
     if(present(timerept)) then
 
@@ -4317,13 +4320,13 @@ module parallel
         endif
         !
         ! Message passing
-        call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpileft, mpitag,            &
-                          rbuf1,ncou,mpi_real8,mpiright,mpitag,            &
+        call mpi_sendrecv(sbuf1,ncou,mpi_real_type,mpileft, mpitag,            &
+                          rbuf1,ncou,mpi_real_type,mpiright,mpitag,            &
                                                  mpi_comm_world,status,ierr)
         if(mpitag>30000) mpitag=100
         mpitag=mpitag+1
-        call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiright,mpitag,            &
-                          rbuf2,ncou,mpi_real8,mpileft, mpitag,            &
+        call mpi_sendrecv(sbuf2,ncou,mpi_real_type,mpiright,mpitag,            &
+                          rbuf2,ncou,mpi_real_type,mpileft, mpitag,            &
                                                  mpi_comm_world,status,ierr)
         if(mpitag>30000) mpitag=100
         mpitag=mpitag+1
@@ -4385,13 +4388,13 @@ module parallel
         end if
         !
         ! Message passing
-        call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpidown,mpitag,             &
-                          rbuf1,ncou,mpi_real8,mpiup,  mpitag,             &
+        call mpi_sendrecv(sbuf1,ncou,mpi_real_type,mpidown,mpitag,             &
+                          rbuf1,ncou,mpi_real_type,mpiup,  mpitag,             &
                                                  mpi_comm_world,status,ierr)
         if(mpitag>30000) mpitag=100
         mpitag=mpitag+1
-        call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiup,  mpitag,             &
-                          rbuf2,ncou,mpi_real8,mpidown,mpitag,             &
+        call mpi_sendrecv(sbuf2,ncou,mpi_real_type,mpiup,  mpitag,             &
+                          rbuf2,ncou,mpi_real_type,mpidown,mpitag,             &
                                                  mpi_comm_world,status,ierr)
         if(mpitag>30000) mpitag=100
         mpitag=mpitag+1
@@ -4453,13 +4456,13 @@ module parallel
         endif
         !
         ! Message passing
-        call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpiback, mpitag,          &
-                          rbuf1,ncou,mpi_real8,mpifront,mpitag,          &
+        call mpi_sendrecv(sbuf1,ncou,mpi_real_type,mpiback, mpitag,          &
+                          rbuf1,ncou,mpi_real_type,mpifront,mpitag,          &
                                                mpi_comm_world,status,ierr)
         if(mpitag>30000) mpitag=100
         mpitag=mpitag+1
-        call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpifront,mpitag,          &
-                          rbuf2,ncou,mpi_real8,mpiback, mpitag,          &
+        call mpi_sendrecv(sbuf2,ncou,mpi_real_type,mpifront,mpitag,          &
+                          rbuf2,ncou,mpi_real_type,mpiback, mpitag,          &
                                                mpi_comm_world,status,ierr)
         if(mpitag>30000) mpitag=100
         mpitag=mpitag+1
@@ -4515,15 +4518,15 @@ module parallel
   subroutine array5d_sendrecv(var,timerept)
     !
     ! arguments
-    real(8),intent(inout) :: var(-hm:,-hm:,-hm:,1:,1:)
+    real(real_kind),intent(inout) :: var(-hm:,-hm:,-hm:,1:,1:)
     logical,intent(in),optional :: timerept
     !
     ! logical data
     integer :: ncou,nx,mx
     integer :: ierr,j,k
-    real(8),allocatable,dimension(:,:,:,:,:) :: sbuf1,sbuf2,rbuf1,rbuf2
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(real_kind),allocatable,dimension(:,:,:,:,:) :: sbuf1,sbuf2,rbuf1,rbuf2
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.0_clock_kind
     !
     if(present(timerept)) then
 
@@ -4570,13 +4573,13 @@ module parallel
       endif
       !
       ! Message passing
-      call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpileft, mpitag,            &
-                        rbuf1,ncou,mpi_real8,mpiright,mpitag,            &
+      call mpi_sendrecv(sbuf1,ncou,mpi_real_type,mpileft, mpitag,            &
+                        rbuf1,ncou,mpi_real_type,mpiright,mpitag,            &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
-      call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiright,mpitag,            &
-                        rbuf2,ncou,mpi_real8,mpileft, mpitag,            &
+      call mpi_sendrecv(sbuf2,ncou,mpi_real_type,mpiright,mpitag,            &
+                        rbuf2,ncou,mpi_real_type,mpileft, mpitag,            &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
@@ -4635,13 +4638,13 @@ module parallel
       end if
       !
       ! Message passing
-      call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpidown,mpitag,             &
-                        rbuf1,ncou,mpi_real8,mpiup,  mpitag,             &
+      call mpi_sendrecv(sbuf1,ncou,mpi_real_type,mpidown,mpitag,             &
+                        rbuf1,ncou,mpi_real_type,mpiup,  mpitag,             &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
-      call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiup,  mpitag,             &
-                        rbuf2,ncou,mpi_real8,mpidown,mpitag,             &
+      call mpi_sendrecv(sbuf2,ncou,mpi_real_type,mpiup,  mpitag,             &
+                        rbuf2,ncou,mpi_real_type,mpidown,mpitag,             &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
@@ -4697,13 +4700,13 @@ module parallel
       endif
       !
       ! Message passing
-      call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpiback, mpitag,          &
-                        rbuf1,ncou,mpi_real8,mpifront,mpitag,          &
+      call mpi_sendrecv(sbuf1,ncou,mpi_real_type,mpiback, mpitag,          &
+                        rbuf1,ncou,mpi_real_type,mpifront,mpitag,          &
                                              mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
-      call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpifront,mpitag,          &
-                        rbuf2,ncou,mpi_real8,mpiback, mpitag,          &
+      call mpi_sendrecv(sbuf2,ncou,mpi_real_type,mpifront,mpitag,          &
+                        rbuf2,ncou,mpi_real_type,mpiback, mpitag,          &
                                              mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
@@ -4748,17 +4751,17 @@ module parallel
   subroutine yflux_sendrecv(var,timerept)
     !
     ! arguments
-    real(8),intent(inout) :: var(-hm:,-hm:,-hm:,1:,1:)
+    real(real_kind),intent(inout) :: var(-hm:,-hm:,-hm:,1:,1:)
     logical,intent(in),optional :: timerept
     !
     ! logical data
     integer,save :: nx,mx
     integer :: ncou,ierr,j,k
-    real(8),allocatable,dimension(:,:,:,:,:),save :: sbufx1,sbufx2,rbufx1,rbufx2, &
+    real(real_kind),allocatable,dimension(:,:,:,:,:),save :: sbufx1,sbufx2,rbufx1,rbufx2, &
                                                      sbufy1,sbufy2,rbufy1,rbufy2, &
                                                      sbufz1,sbufz2,rbufz1,rbufz2
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.0_clock_kind
     logical,save :: firstcall=.true.
     !
     if(present(timerept)) then
@@ -4822,14 +4825,14 @@ module parallel
       !
       if(lio) print*,' ** 3'
       ! Message passing
-      call mpi_sendrecv(sbufx1,ncou,mpi_real8,mpileft, mpitag,            &
-                        rbufx1,ncou,mpi_real8,mpiright,mpitag,            &
+      call mpi_sendrecv(sbufx1,ncou,mpi_real_type,mpileft, mpitag,            &
+                        rbufx1,ncou,mpi_real_type,mpiright,mpitag,            &
                                                mpi_comm_world,status,ierr)
       if(lio) print*,' ** 4'
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
-      call mpi_sendrecv(sbufx2,ncou,mpi_real8,mpiright,mpitag,            &
-                        rbufx2,ncou,mpi_real8,mpileft, mpitag,            &
+      call mpi_sendrecv(sbufx2,ncou,mpi_real_type,mpiright,mpitag,            &
+                        rbufx2,ncou,mpi_real_type,mpileft, mpitag,            &
                                                mpi_comm_world,status,ierr)
       if(lio) print*,' ** 5'
       if(mpitag>30000) mpitag=100
@@ -4885,14 +4888,14 @@ module parallel
       !
       if(lio) print*,' ** 8'
       ! Message passing
-      call mpi_sendrecv(sbufy1,ncou,mpi_real8,mpidown,mpitag,             &
-                        rbufy1,ncou,mpi_real8,mpiup,  mpitag,             &
+      call mpi_sendrecv(sbufy1,ncou,mpi_real_type,mpidown,mpitag,             &
+                        rbufy1,ncou,mpi_real_type,mpiup,  mpitag,             &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       if(lio) print*,' ** 9'
-      call mpi_sendrecv(sbufy2,ncou,mpi_real8,mpiup,  mpitag,             &
-                        rbufy2,ncou,mpi_real8,mpidown,mpitag,             &
+      call mpi_sendrecv(sbufy2,ncou,mpi_real_type,mpiup,  mpitag,             &
+                        rbufy2,ncou,mpi_real_type,mpidown,mpitag,             &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
@@ -4947,14 +4950,14 @@ module parallel
       !
       if(lio) print*,' ** 13'
       ! Message passing
-      call mpi_sendrecv(sbufz1,ncou,mpi_real8,mpiback, mpitag,          &
-                        rbufz1,ncou,mpi_real8,mpifront,mpitag,          &
+      call mpi_sendrecv(sbufz1,ncou,mpi_real_type,mpiback, mpitag,          &
+                        rbufz1,ncou,mpi_real_type,mpifront,mpitag,          &
                                              mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
       if(lio) print*,' ** 14'
-      call mpi_sendrecv(sbufz2,ncou,mpi_real8,mpifront,mpitag,          &
-                        rbufz2,ncou,mpi_real8,mpiback, mpitag,          &
+      call mpi_sendrecv(sbufz2,ncou,mpi_real_type,mpifront,mpitag,          &
+                        rbufz2,ncou,mpi_real_type,mpiback, mpitag,          &
                                              mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
@@ -5045,9 +5048,9 @@ module parallel
 #ifdef ASTR_AIR5_CHEMISTRY
     integer :: air5_status,air5_failed_index(3)
 #endif
-    real(8),allocatable,dimension(:,:,:,:) :: sbuf1,sbuf2,rbuf1,rbuf2
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(real_kind),allocatable,dimension(:,:,:,:) :: sbuf1,sbuf2,rbuf1,rbuf2
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.0_clock_kind
     !
     if(present(timerept)) then
 
@@ -5075,7 +5078,7 @@ module parallel
         q( -hm:-1   ,0:jm,0:km,:)=q(im-hm:im-1,0:jm,0:km,:)
         q(im+1:im+hm,0:jm,0:km,:)=q(    1:hm,  0:jm,0:km,:)
         !
-        q( 0,0:jm,0:km,:)=0.5d0*(q(0,0:jm,0:km,:)+q(im,0:jm,0:km,:))
+        q( 0,0:jm,0:km,:)=0.5e0_real_kind*(q(0,0:jm,0:km,:)+q(im,0:jm,0:km,:))
         q(im,0:jm,0:km,:)=q(0,0:jm,0:km,:)
         !
         if(trim(turbmode)=='k-omega') then
@@ -5131,13 +5134,13 @@ module parallel
       endif
       !
       ! Message passing
-      call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpileft, mpitag,            &
-                        rbuf1,ncou,mpi_real8,mpiright,mpitag,            &
+      call mpi_sendrecv(sbuf1,ncou,mpi_real_type,mpileft, mpitag,            &
+                        rbuf1,ncou,mpi_real_type,mpiright,mpitag,            &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
-      call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiright,mpitag,            &
-                        rbuf2,ncou,mpi_real8,mpileft, mpitag,            &
+      call mpi_sendrecv(sbuf2,ncou,mpi_real_type,mpiright,mpitag,            &
+                        rbuf2,ncou,mpi_real_type,mpileft, mpitag,            &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
@@ -5147,7 +5150,7 @@ module parallel
         ! unpack the received the packet from right
         q(im+1:im+hm,0:jm,0:km,:)=rbuf1(1:hm,0:jm,0:km,:)
         !
-        q(im,0:jm,0:km,:)=0.5d0*( q(im,0:jm,0:km,:) +            &
+        q(im,0:jm,0:km,:)=0.5e0_real_kind*( q(im,0:jm,0:km,:) +            &
                                   rbuf1(0,0:jm,0:km,:) )
         !
         if(trim(turbmode)=='k-omega') then
@@ -5175,7 +5178,7 @@ module parallel
         ! unpack the received the packet from left
         q(-hm:-1,0:jm,0:km,:)=rbuf2(-hm:-1,0:jm,0:km,:)
         !
-        q(0,0:jm,0:km,:)=0.5d0*( q(0,0:jm,0:km,:) +              &
+        q(0,0:jm,0:km,:)=0.5e0_real_kind*( q(0,0:jm,0:km,:) +              &
                                  rbuf2(0,0:jm,0:km,:) )
         !
         if(trim(turbmode)=='k-omega') then
@@ -5220,7 +5223,7 @@ module parallel
         q(0:im, -hm:-1   ,0:km,:)=q(0:im,jm-hm:jm-1,0:km,:)
         q(0:im,jm+1:jm+hm,0:km,:)=q(0:im,    1:hm,  0:km,:)
         !
-        q(0:im, 0,0:km,:)=0.5d0*(q(0:im,0,0:km,:)+q(0:im,jm,0:km,:))
+        q(0:im, 0,0:km,:)=0.5e0_real_kind*(q(0:im,0,0:km,:)+q(0:im,jm,0:km,:))
         q(0:im,jm,0:km,:)=q(0:im,0,0:km,:)
       endif
       !
@@ -5278,13 +5281,13 @@ module parallel
       end if
       !
       ! Message passing
-      call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpidown,mpitag,             &
-                        rbuf1,ncou,mpi_real8,mpiup,  mpitag,             &
+      call mpi_sendrecv(sbuf1,ncou,mpi_real_type,mpidown,mpitag,             &
+                        rbuf1,ncou,mpi_real_type,mpiup,  mpitag,             &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
-      call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpiup,  mpitag,             &
-                        rbuf2,ncou,mpi_real8,mpidown,mpitag,             &
+      call mpi_sendrecv(sbuf2,ncou,mpi_real_type,mpiup,  mpitag,             &
+                        rbuf2,ncou,mpi_real_type,mpidown,mpitag,             &
                                                mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
@@ -5293,7 +5296,7 @@ module parallel
         ! unpack the received the packet from up
         q(0:im,jm+1:jm+hm,0:km,:)=rbuf1(0:im,1:hm,0:km,:)
         !
-        q(0:im,jm,0:km,:)=0.5d0*( q(0:im,jm,0:km,:) +            &
+        q(0:im,jm,0:km,:)=0.5e0_real_kind*( q(0:im,jm,0:km,:) +            &
                                   rbuf1(0:im, 0,0:km,:) )
         !
         if(trim(turbmode)=='k-omega') then
@@ -5319,7 +5322,7 @@ module parallel
         ! unpack the received the packet from down
         q(0:im,-hm:-1,0:km,:)=rbuf2(0:im,-hm:-1,0:km,:) 
         !
-        q(0:im,0,0:km,:)=0.5d0*( q(0:im, 0,0:km,:) +            &
+        q(0:im,0,0:km,:)=0.5e0_real_kind*( q(0:im, 0,0:km,:) +            &
                                  rbuf2(0:im, 0,0:km,:) )
         !
         if(trim(turbmode)=='k-omega') then
@@ -5361,7 +5364,7 @@ module parallel
         q(0:im,0:jm, -hm:-1   ,:)=q(0:im,0:jm,km-hm:km-1,:)
         q(0:im,0:jm,km+1:km+hm,:)=q(0:im,0:jm,    1:hm,  :)
         !
-        q(0:im,0:jm,0,:)=0.5d0*(q(0:im,0:jm,0,:)+q(0:im,0:jm,km,:))
+        q(0:im,0:jm,0,:)=0.5e0_real_kind*(q(0:im,0:jm,0,:)+q(0:im,0:jm,km,:))
         q(0:im,0:jm,km,:)=q(0:im,0:jm,0,:)
       endif
       !
@@ -5419,13 +5422,13 @@ module parallel
       endif
       !
       ! Message passing
-      call mpi_sendrecv(sbuf1,ncou,mpi_real8,mpiback, mpitag,          &
-                        rbuf1,ncou,mpi_real8,mpifront,mpitag,          &
+      call mpi_sendrecv(sbuf1,ncou,mpi_real_type,mpiback, mpitag,          &
+                        rbuf1,ncou,mpi_real_type,mpifront,mpitag,          &
                                              mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
-      call mpi_sendrecv(sbuf2,ncou,mpi_real8,mpifront,mpitag,          &
-                        rbuf2,ncou,mpi_real8,mpiback, mpitag,          &
+      call mpi_sendrecv(sbuf2,ncou,mpi_real_type,mpifront,mpitag,          &
+                        rbuf2,ncou,mpi_real_type,mpiback, mpitag,          &
                                              mpi_comm_world,status,ierr)
       if(mpitag>30000) mpitag=100
       mpitag=mpitag+1
@@ -5435,7 +5438,7 @@ module parallel
         ! unpack the received the packet from front
         q(0:im,0:jm,km+1:km+hm,:)=rbuf1(0:im,0:jm,1:hm,:)
         !
-        q(0:im,0:jm,km,:)=0.5d0*( q(0:im,0:jm,km,:) +              &
+        q(0:im,0:jm,km,:)=0.5e0_real_kind*( q(0:im,0:jm,km,:) +              &
                                   rbuf1(0:im,0:jm, 0,:) )
         !
         if(trim(turbmode)=='k-omega') then
@@ -5463,7 +5466,7 @@ module parallel
         ! unpack the received the packet back
         q(0:im,0:jm,-hm:-1,:)=rbuf2(0:im,0:jm,-hm:-1,:)
         !
-        q(0:im,0:jm,0,:)=0.5d0*( q(0:im,0:jm,0,:) +                &
+        q(0:im,0:jm,0,:)=0.5e0_real_kind*( q(0:im,0:jm,0,:) +                &
                                  rbuf2(0:im,0:jm,0,:)  )
         !
         if(trim(turbmode)=='k-omega') then
@@ -5681,7 +5684,7 @@ module parallel
   !| -------------                                                     |
   !| 28-November-2019: Created by J. Fang @ STFC Daresbury Laboratory  |
   !+-------------------------------------------------------------------+
-  real(8) function ptime()
+  real(clock_kind) function ptime()
     !
     ptime=MPI_Wtime()
     !
@@ -5708,16 +5711,16 @@ module parallel
     !
     ! local data
     integer :: ierr,jrank
-    real(8) :: vta(0:mpirankmax),vtmin
+    real(real_kind) :: vta(0:mpirankmax),vtmin
     integer :: ijk(3,0:mpirankmax)
     !
-    call mpi_allgather(asboun%dis_imga_inmg,1,mpi_real8,              &
-                       vta,1,mpi_real8,mpi_comm_world,ierr)
+    call mpi_allgather(asboun%dis_imga_inmg,1,mpi_real_type,              &
+                       vta,1,mpi_real_type,mpi_comm_world,ierr)
     call mpi_allgather(asboun%inmg,3,mpi_integer,              &
                        ijk,3,mpi_integer,mpi_comm_world,ierr)
     !
     ! print*,asboun%dis_imga_inmg,asboun%inmg
-    vtmin=1.d15
+    vtmin=1.e15_real_kind
     do jrank=0,mpirankmax
       !
       if(vta(jrank)<vtmin) then
@@ -5817,9 +5820,9 @@ module parallel
     !
     ! local data
     integer :: jb,nweig
-    real(8),allocatable :: sb_rea(:)
-    real(8) :: epslion=1.d-16
-    real(8) :: varcon
+    real(real_kind),allocatable :: sb_rea(:)
+    real(real_kind) :: epslion=1.e-16_real_kind
+    real(real_kind) :: varcon
     !
     nweig=size(asboun%weig)
     !
@@ -5829,16 +5832,16 @@ module parallel
     !
     sb_rea=psum(sb_rea)
     !
-    varcon=0.d0
+    varcon=0.e0_real_kind
     do jb=1,nweig
       !
       if(sb_rea(jb)<=epslion) then
-        sb_rea=0.d0
-        sb_rea(jb)=1.d0
-        varcon=1.d0
+        sb_rea=0.e0_real_kind
+        sb_rea(jb)=1.e0_real_kind
+        varcon=1.e0_real_kind
         exit
       else
-        sb_rea(jb)=1.d0/sb_rea(jb)
+        sb_rea(jb)=1.e0_real_kind/sb_rea(jb)
         varcon=varcon+sb_rea(jb)
       endif
       !
@@ -6124,12 +6127,12 @@ module parallel
     ! arguments
     character(len=*),intent(in) :: filename,dir
     integer,intent(in),optional :: skipline
-    real(8),optional,intent(out) ::  var1(0:),var2(0:),var3(0:),       &
+    real(real_kind),optional,intent(out) ::  var1(0:),var2(0:),var3(0:),       &
                                      var4(0:),var5(0:)
     !
     ! local data
     integer :: fh,ios,i,j,n,offset,nsk,nvar
-    real(8),allocatable,dimension(:,:) :: data,scat
+    real(real_kind),allocatable,dimension(:,:) :: data,scat
     integer :: table(0:mpirankmax),displs(0:mpirankmax)
     character(len=32) :: c1
     !
@@ -6290,7 +6293,7 @@ module parallel
   subroutine precv_rel2d_array(vario,recv_dir,tag,communicator)
     !
     ! arguments
-    real(8),intent(inout) :: vario(:,:)
+    real(real_kind),intent(inout) :: vario(:,:)
     integer,intent(in) :: recv_dir,tag 
     integer,intent(in),optional :: communicator
     !
@@ -6306,7 +6309,7 @@ module parallel
     !
     nsize=size(vario,1)*size(vario,2)
     !
-    call mpi_recv(vario,nsize,mpi_real8,recv_dir,tag,comm,status,ierr)
+    call mpi_recv(vario,nsize,mpi_real_type,recv_dir,tag,comm,status,ierr)
     !
     return
     !
@@ -6325,7 +6328,7 @@ module parallel
   subroutine psend_rel2d_array(varin,send_dir,tag,communicator)
     !
     ! arguments
-    real(8),intent(in) :: varin(:,:)
+    real(real_kind),intent(in) :: varin(:,:)
     integer,intent(in) :: send_dir,tag
     integer,intent(in),optional :: communicator
     !
@@ -6341,7 +6344,7 @@ module parallel
     !
     nsize=size(varin,1)*size(varin,2)
     !
-    call mpi_send(varin,nsize,mpi_real8,send_dir,tag,comm,ierr) 
+    call mpi_send(varin,nsize,mpi_real_type,send_dir,tag,comm,ierr) 
     !
     return
     !

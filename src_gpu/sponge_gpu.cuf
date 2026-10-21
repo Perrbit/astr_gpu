@@ -1,9 +1,11 @@
 module sponge_gpu
+  use astr_precision, only: real_kind
   use cudafor
   implicit none
-  real(8),allocatable,device :: sponge_im_coef_d(:,:,:)
-  real(8),allocatable,device :: sponge_jm_coef_d(:,:,:)
-  real(8),allocatable,device :: sponge_work_d(:)
+  private :: real_kind
+  real(real_kind),allocatable,device :: sponge_im_coef_d(:,:,:)
+  real(real_kind),allocatable,device :: sponge_jm_coef_d(:,:,:)
+  real(real_kind),allocatable,device :: sponge_work_d(:)
   logical,save :: private_sponge_workspace=.false.
   integer,save :: sponge_im_beg_gpu=-1,sponge_im_end_gpu=-1
   integer,save :: sponge_jm_beg_gpu=-1,sponge_jm_end_gpu=-1
@@ -80,7 +82,7 @@ contains
     integer,value :: im,jm,km,hm,spg_beg,spg_end,js,je,ks,ke
     logical,value :: private_workspace
     integer :: id,i,j,k,m,ni,nj,nk,n
-    real(8) :: sigma,value
+    real(real_kind) :: sigma,value
 
     id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
     ni = spg_end-spg_beg+1
@@ -93,7 +95,7 @@ contains
     k = ks + mod(id/(ni*nj),nk)
     m = id/(ni*nj*nk) + 1
     sigma = sponge_im_coef_d(i,j,k)
-    value = (1.d0-sigma)*q_d(i,j,k,m) + sigma/6.d0*( &
+    value = (1.e0_real_kind-sigma)*q_d(i,j,k,m) + sigma/6.e0_real_kind*( &
          q_d(i+1,j,k,m)+q_d(i-1,j,k,m)+q_d(i,j+1,k,m)+q_d(i,j-1,k,m)+ &
          q_d(i,j,k+1,m)+q_d(i,j,k-1,m))
     if(private_workspace) then
@@ -134,7 +136,7 @@ contains
     integer,value :: im,jm,km,spg_beg,spg_end,is,ie,ks,ke
     logical,value :: private_workspace
     integer :: id,i,j,k,m,ni,nj,nk,n
-    real(8) :: sigma,value
+    real(real_kind) :: sigma,value
 
     id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
     ni = ie-is+1
@@ -147,7 +149,7 @@ contains
     k = ks + mod(id/(ni*nj),nk)
     m = id/(ni*nj*nk) + 1
     sigma = sponge_jm_coef_d(i,j,k)
-    value = (1.d0-sigma)*q_d(i,j,k,m) + num1d6*sigma*( &
+    value = (1.e0_real_kind-sigma)*q_d(i,j,k,m) + num1d6*sigma*( &
          q_d(i+1,j,k,m)+q_d(i-1,j,k,m)+q_d(i,j+1,k,m)+q_d(i,j-1,k,m)+ &
          q_d(i,j,k+1,m)+q_d(i,j,k-1,m))
     if(private_workspace) then

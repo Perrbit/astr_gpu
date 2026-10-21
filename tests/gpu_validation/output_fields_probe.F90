@@ -1,5 +1,6 @@
 program output_fields_probe
-  use iso_fortran_env, only: int64,real64
+  use iso_fortran_env, only: int64
+  use astr_precision, only: real_kind,real_bytes
   use mpi
   use ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use commvar, only: im,jm,km,hm,numq,num_species,difschm,lihomo,ljhomo,lkhomo,ia,ja,ka
@@ -31,10 +32,10 @@ program output_fields_probe
   integer :: derived(14),derived_count,derived_budget
   integer,parameter :: numeric_cells=10
   integer(int64) :: peak,bytes,download,global_bytes,host_workspace,device_workspace,capacity,provider_budget
-  real(real64) :: encoded,point(3),pi,aa,bb,cc,dd
+  real(real_kind) :: encoded,point(3),pi,aa,bb,cc,dd
   integer :: closure(3)
   logical :: lineage_ok,lineage_compatible
-  real(real64),allocatable :: before_velocity(:,:,:,:),after_velocity(:,:,:,:)
+  real(real_kind),allocatable :: before_velocity(:,:,:,:),after_velocity(:,:,:,:)
   type(checkpoint_state_identity) :: identity
   call MPI_Init(ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
@@ -133,7 +134,7 @@ program output_fields_probe
   do k=-hm,km+hm
     do j=-hm,jm+hm
       do i=-hm,im+hm
-        point=real(origin+[i,j,k],real64)
+        point=real(origin+[i,j,k],real_kind)
         encoded=100*point(1)+10*point(2)+point(3)+rank/1024.d0
         rho(i,j,k)=encoded+1/16.d0
         do m=1,3
@@ -154,7 +155,7 @@ program output_fields_probe
   do k=0,km
     do j=0,jm
       do i=0,im
-        point=real(origin+[i,j,k],real64)
+        point=real(origin+[i,j,k],real_kind)
         x(i,j,k,:)=[point(1)+point(2)/32,point(2)+point(1)/16,point(3)+point(1)*point(2)/64]
       enddo
     enddo
@@ -179,13 +180,13 @@ program output_fields_probe
     allocate(dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3))
     dxi=0.d0
     do m=1,3
-      dxi(:,:,:,m,m)=real(numeric_cells,real64)/((m+1)*pi)
+      dxi(:,:,:,m,m)=real(numeric_cells,real_kind)/((m+1)*pi)
     enddo
     vel=ieee_value(0.d0,ieee_quiet_nan)
     do k=0,km
       do j=0,jm
         do i=0,im
-          point=real(origin+[i,j,k],real64)*(2.d0*pi/numeric_cells)
+          point=real(origin+[i,j,k],real_kind)*(2.d0*pi/numeric_cells)
           vel(i,j,k,:)=[sin(point(1))+0.25d0*cos(point(2))+0.125d0*sin(2*point(3)), &
             0.5d0*cos(point(1))+sin(2*point(2))+0.25d0*cos(point(3)), &
             0.125d0*sin(2*point(1))+0.5d0*cos(2*point(2))+sin(point(3))]
@@ -207,7 +208,7 @@ program output_fields_probe
       do k=0,km
         do j=0,jm
           do i=0,im
-            point=real(origin+[i,j,k],real64)
+            point=real(origin+[i,j,k],real_kind)
             x(i,j,k,:)=[point(1)+0.02d0*point(1)**2, &
               point(2)+0.01d0*point(1)*point(2),point(3)+0.03d0*point(2)**2]
             aa=1.d0+0.04d0*point(1); bb=0.01d0*point(2)
@@ -242,7 +243,7 @@ program output_fields_probe
     case('numeric_scheme','numeric_gpu_scheme')
       difschm='642c'
     end select
-    capacity=2160_int64/8/(components+derived_count+3)*(components+derived_count)
+    capacity=2160_int64/real_bytes/(components+derived_count+3)*(components+derived_count)
 #ifdef TEST_FIELDS_GPU
     status=cudaSetDevice(rank)
     if(status/=cudaSuccess) error stop 'numeric fixture GPU selection'
@@ -294,7 +295,7 @@ program output_fields_probe
             enddo
           enddo
         enddo
-        if(host_workspace+peak>2_int64*1024*1024.or.device_workspace+capacity*8>2_int64*1024*1024) &
+        if(host_workspace+peak>2_int64*1024*1024.or.device_workspace+capacity*real_bytes>2_int64*1024*1024) &
           error stop 'numeric controlled budget'
         if(8_int64*(size(rho,kind=int64)+size(vel,kind=int64)+size(prs,kind=int64)+size(tmp,kind=int64)+ &
           size(x,kind=int64)+size(dxi,kind=int64)+size(before_velocity,kind=int64)+ &
@@ -304,7 +305,7 @@ program output_fields_probe
         write(label,'("/budget_rank",i0,".txt")') rank
         open(newunit=unit,file=trim(path)//trim(label),status='new',iostat=status)
         if(status/=0) error stop 'numeric budget file'
-        write(unit,'(5(i0,1x))') peak,bytes,download,host_workspace,device_workspace+capacity*8
+        write(unit,'(5(i0,1x))') peak,bytes,download,host_workspace,device_workspace+capacity*real_bytes
         close(unit)
       enddo
     enddo
@@ -438,7 +439,7 @@ program output_fields_probe
       write(label,'("/",i0,"_grouped")') backend
       path=trim(prefix)//trim(label)
 #ifdef TEST_FIELDS_GPU
-      if(backend==1) call begin_basic_output_gpu(2160_int64/8/(components+3)*components,2160_int64,MPI_COMM_WORLD)
+      if(backend==1) call begin_basic_output_gpu(2160_int64/real_bytes/(components+3)*components,2160_int64,MPI_COMM_WORLD)
 #endif
       do axis=1,3
         index=(global_shape(axis)-1)/2
@@ -503,7 +504,7 @@ program output_fields_probe
         download=0
       else
 #ifdef TEST_FIELDS_GPU
-        call begin_basic_output_gpu(2160_int64/8/(components+3)*components,2160_int64,MPI_COMM_WORLD)
+        call begin_basic_output_gpu(2160_int64/real_bytes/(components+3)*components,2160_int64,MPI_COMM_WORLD)
         call write_basic_output(trim(path),global_shape,origin,cells,axis,index,components,x, &
           pack_basic_output_gpu,identity,2160_int64,2160_int64,MPI_COMM_WORLD,'si',peak,bytes)
         call end_basic_output_gpu(download)
@@ -525,9 +526,9 @@ program output_fields_probe
 contains
   subroutine pack_derived_fixture(start,extent,total_components,values)
     integer,intent(in) :: start(3),extent(3),total_components
-    real(real64),intent(out) :: values(:)
+    real(real_kind),intent(out) :: values(:)
     integer :: ii,jj,kk,c,node,nodes
-    real(real64) :: value
+    real(real_kind) :: value
     nodes=product(extent)
     if(total_components/=components+derived_count) error stop 'derived packer component contract'
     call pack_basic_output_cpu(start,extent,components,values(:nodes*components))

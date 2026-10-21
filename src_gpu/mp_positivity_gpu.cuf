@@ -1,27 +1,31 @@
 module mp_positivity_gpu
+  use iso_fortran_env, only: int32,int64
+  use astr_precision, only: real_kind
   use cudafor
   implicit none
+  private :: real_kind,int32,int64
+  integer,parameter,private :: state_bits_kind=merge(int32,int64,storage_size(0.0_real_kind)==32)
   logical,save :: mp_positivity_enabled=.false.,configured=.false.
   logical,save :: x_contiguous_faces=.false.,verify_face_layout=.false.
   logical,save :: cache_mp_splits=.false.
-  real(8),allocatable,device :: split_plus_d(:,:,:,:),split_minus_d(:,:,:,:)
-  real(8),allocatable,device :: reference_high_d(:,:,:,:),reference_delta_d(:,:,:,:)
+  real(real_kind),allocatable,device :: split_plus_d(:,:,:,:),split_minus_d(:,:,:,:)
+  real(real_kind),allocatable,device :: reference_high_d(:,:,:,:),reference_delta_d(:,:,:,:)
   integer,device :: layout_mismatch_d=0
-  real(8),allocatable,device :: high_d(:,:,:,:,:),delta_d(:,:,:,:,:),ratio_d(:,:,:,:)
-  real(8),allocatable,device :: send_lo_d(:,:,:,:),send_hi_d(:,:,:,:)
-  real(8),allocatable,device :: recv_lo_d(:,:,:,:),recv_hi_d(:,:,:,:)
-  real(8),allocatable,pinned :: send_lo_h(:,:,:,:),send_hi_h(:,:,:,:)
-  real(8),allocatable,pinned :: recv_lo_h(:,:,:,:),recv_hi_h(:,:,:,:)
+  real(real_kind),allocatable,device :: high_d(:,:,:,:,:),delta_d(:,:,:,:,:),ratio_d(:,:,:,:)
+  real(real_kind),allocatable,device :: send_lo_d(:,:,:,:),send_hi_d(:,:,:,:)
+  real(real_kind),allocatable,device :: recv_lo_d(:,:,:,:),recv_hi_d(:,:,:,:)
+  real(real_kind),allocatable,pinned :: send_lo_h(:,:,:,:),send_hi_h(:,:,:,:)
+  real(real_kind),allocatable,pinned :: recv_lo_h(:,:,:,:),recv_hi_h(:,:,:,:)
   integer,device :: failure_d=0,limited_d=0
   integer,device :: failure_point_d(3)=0
-  real(8),device :: failure_state_d(5)=0.d0
+  real(real_kind),device :: failure_state_d(5)=0.e0_real_kind
 contains
 #ifdef ASTR_BUILD_TESTING
   attributes(global) subroutine profile_filter_window_kernel(sample,im,jm,km,ci,cj,ck)
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,ci,cj,ck
-    real(8),device,intent(out) :: sample(11,11,11,5)
+    real(real_kind),device,intent(out) :: sample(11,11,11,5)
     integer :: id,a,b,c,m,i,j,k
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(id>=11**3*5) return
@@ -42,8 +46,8 @@ contains
     logical,save :: configured_window=.false.,enabled_window=.false.
     character(128) :: value
     integer :: status,unit
-    real(8),device,allocatable :: sample_d(:,:,:,:)
-    real(8) :: sample_h(11,11,11,5),point_h(5)
+    real(real_kind),device,allocatable :: sample_d(:,:,:,:)
+    real(real_kind) :: sample_h(11,11,11,5),point_h(5)
     if(.not.configured_window) then
       value=''
       call get_environment_variable('ASTR_VALIDATION_PROFILE_FILTER_WINDOW',value,status=status)
@@ -225,22 +229,22 @@ contains
 
   attributes(device) logical function admissible_mp_state(q)
     implicit none
-    real(8),intent(in) :: q(5)
-    real(8) :: velocity(3),products(3),kinetic,squared_velocity(3),primitive_kinetic
+    real(real_kind),intent(in) :: q(5)
+    real(real_kind) :: velocity(3),products(3),kinetic,squared_velocity(3),primitive_kinetic
     admissible_mp_state=.false.
-    if(.not.all(abs(q)<=huge(1.d0))) return
-    if(q(1)<=0.d0) return
+    if(.not.all(abs(q)<=huge(1.e0_real_kind))) return
+    if(q(1)<=0.e0_real_kind) return
     velocity=q(2:4)/q(1)
-    if(.not.all(abs(velocity)<=huge(1.d0))) return
-    products=0.5d0*q(2:4)*velocity
-    if(.not.all(abs(products)<=huge(1.d0))) return
+    if(.not.all(abs(velocity)<=huge(1.e0_real_kind))) return
+    products=0.5e0_real_kind*q(2:4)*velocity
+    if(.not.all(abs(products)<=huge(1.e0_real_kind))) return
     kinetic=sum(products)
-    if(.not.(abs(kinetic)<=huge(1.d0))) return
+    if(.not.(abs(kinetic)<=huge(1.e0_real_kind))) return
     ! Also require positivity in the production primitive kernel's ordering.
     squared_velocity=velocity*velocity
-    if(.not.all(abs(squared_velocity)<=huge(1.d0))) return
-    primitive_kinetic=0.5d0*q(1)*sum(squared_velocity)
-    if(.not.(abs(primitive_kinetic)<=huge(1.d0))) return
+    if(.not.all(abs(squared_velocity)<=huge(1.e0_real_kind))) return
+    primitive_kinetic=0.5e0_real_kind*q(1)*sum(squared_velocity)
+    if(.not.(abs(primitive_kinetic)<=huge(1.e0_real_kind))) return
     admissible_mp_state=q(5)>kinetic.and.q(5)>primitive_kinetic
   end function admissible_mp_state
 
@@ -249,7 +253,7 @@ contains
     implicit none
     integer,value :: im,jm,km
     integer :: id,i,j,k
-    real(8) :: state(5)
+    real(real_kind) :: state(5)
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(id>=(im+1)*(jm+1)*(km+1)) return
     i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
@@ -277,7 +281,7 @@ contains
   attributes(device) subroutine record_mp_failure(code,i,j,k,state)
     implicit none
     integer,value :: code,i,j,k
-    real(8),intent(in) :: state(5)
+    real(real_kind),intent(in) :: state(5)
     integer :: previous
     previous=atomiccas(failure_d,0,code)
     if(previous==0) then
@@ -286,21 +290,21 @@ contains
     endif
   end subroutine record_mp_failure
 
-  attributes(device) real(8) function mp_face_budget(base,correction) result(theta)
+  attributes(device) real(real_kind) function mp_face_budget(base,correction) result(theta)
     implicit none
-    real(8),intent(in) :: base(5),correction(5)
-    real(8) :: lo,hi,mid,trial(5)
+    real(real_kind),intent(in) :: base(5),correction(5)
+    real(real_kind) :: lo,hi,mid,trial(5)
     integer :: iteration
-    theta=0.d0
+    theta=0.e0_real_kind
     if(.not.admissible_mp_state(base)) return
     trial=base+correction
     if(admissible_mp_state(trial)) then
-      theta=1.d0
+      theta=1.e0_real_kind
       return
     endif
-    lo=0.d0; hi=1.d0
+    lo=0.e0_real_kind; hi=1.e0_real_kind
     do iteration=1,64
-      mid=0.5d0*(lo+hi)
+      mid=0.5e0_real_kind*(lo+hi)
       if(mid==lo.or.mid==hi) exit
       trial=base+mid*correction
       if(admissible_mp_state(trial)) then
@@ -310,17 +314,17 @@ contains
       endif
     enddo
     ! Retreat in floating-point parameter space, not by clipping physical state.
-    theta=lo*(1.d0-256.d0*epsilon(1.d0))
+    theta=lo*(1.e0_real_kind-256.e0_real_kind*epsilon(1.e0_real_kind))
   end function mp_face_budget
 
   attributes(device) subroutine mp_low_face(i,j,k,axis,im,jm,km,hm,npdc,gamma,flux)
     use commarray_gpu, only: q_d,dxi_d,jacob_d
     implicit none
     integer,value :: i,j,k,axis,im,jm,km,hm,npdc
-    real(8),value :: gamma
-    real(8),intent(out) :: flux(5)
+    real(real_kind),value :: gamma
+    real(real_kind),intent(out) :: flux(5)
     integer :: left(3),right(3),dim,index
-    real(8) :: ql(5),qr(5),metric(3),ul(3),ur(3),pl,pr,cl,cr,vl,vr,alpha
+    real(real_kind) :: ql(5),qr(5),metric(3),ul(3),ur(3),pl,pr,cl,cr,vl,vr,alpha
 
     left=[i,j,k]; right=left
     dim=im
@@ -336,7 +340,7 @@ contains
     endif
     ql=q_d(left(1),left(2),left(3),:)
     qr=q_d(right(1),right(2),right(3),:)
-    flux=0.d0
+    flux=0.e0_real_kind
     if(.not.admissible_mp_state(ql)) then
       call record_mp_failure(1,i,j,k,ql)
       return
@@ -345,27 +349,27 @@ contains
       call record_mp_failure(1,i,j,k,qr)
       return
     endif
-    metric=0.5d0*(jacob_d(left(1),left(2),left(3))*dxi_d(left(1),left(2),left(3),axis,:)+ &
+    metric=0.5e0_real_kind*(jacob_d(left(1),left(2),left(3))*dxi_d(left(1),left(2),left(3),axis,:)+ &
       jacob_d(right(1),right(2),right(3))*dxi_d(right(1),right(2),right(3),axis,:))
     ul=ql(2:4)/ql(1); ur=qr(2:4)/qr(1)
-    pl=(gamma-1.d0)*(ql(5)-0.5d0*sum(ql(2:4)*ul))
-    pr=(gamma-1.d0)*(qr(5)-0.5d0*sum(qr(2:4)*ur))
+    pl=(gamma-1.e0_real_kind)*(ql(5)-0.5e0_real_kind*sum(ql(2:4)*ul))
+    pr=(gamma-1.e0_real_kind)*(qr(5)-0.5e0_real_kind*sum(qr(2:4)*ur))
     cl=sqrt(gamma*pl/ql(1)); cr=sqrt(gamma*pr/qr(1))
     vl=sum(metric*ul); vr=sum(metric*ur)
     alpha=max(abs(vl)+cl*sqrt(sum(metric*metric)),abs(vr)+cr*sqrt(sum(metric*metric)))
-    flux=0.5d0*(vl*ql+vr*qr-alpha*(qr-ql))
-    flux(2:4)=flux(2:4)+0.5d0*(pl+pr)*metric
-    flux(5)=flux(5)+0.5d0*(vl*pl+vr*pr)
-    if(.not.all(abs(flux)<=huge(1.d0))) call record_mp_failure(1,i,j,k,flux)
+    flux=0.5e0_real_kind*(vl*ql+vr*qr-alpha*(qr-ql))
+    flux(2:4)=flux(2:4)+0.5e0_real_kind*(pl+pr)*metric
+    flux(5)=flux(5)+0.5e0_real_kind*(vl*pl+vr*pr)
+    if(.not.all(abs(flux)<=huge(1.e0_real_kind))) call record_mp_failure(1,i,j,k,flux)
   end subroutine mp_low_face
 
   attributes(global) subroutine mp_faces_kernel(axis,im,jm,km,hm,npdc,gamma,weight)
     use solver_gpu, only: mp_ld_interface_flux
     implicit none
     integer,value :: axis,im,jm,km,hm,npdc
-    real(8),value :: gamma,weight
+    real(real_kind),value :: gamma,weight
     integer :: id,i,j,k,dim,ntot,inode
-    real(8) :: high(5),low(5)
+    real(real_kind) :: high(5),low(5)
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     dim=im
     if(axis==2) dim=jm
@@ -389,15 +393,15 @@ contains
     ! Physical boundary nodes have their own RHS; their exterior faces are unused.
     if(((npdc==1.or.npdc==4).and.inode<0).or. &
        ((npdc==2.or.npdc==4).and.inode>=dim)) then
-      high_d(i,j,k,:,axis)=0.d0
-      delta_d(i,j,k,:,axis)=0.d0
+      high_d(i,j,k,:,axis)=0.e0_real_kind
+      delta_d(i,j,k,:,axis)=0.e0_real_kind
       return
     endif
     call mp_low_face(i,j,k,axis,im,jm,km,hm,npdc,gamma,low)
     call mp_ld_interface_flux(i,j,k,axis,im,jm,km,gamma,hm,npdc,axis,weight,high)
     high_d(i,j,k,:,axis)=high
     delta_d(i,j,k,:,axis)=high-low
-    if(.not.all(abs(high)<=huge(1.d0))) call record_mp_failure(1,i,j,k,high)
+    if(.not.all(abs(high)<=huge(1.e0_real_kind))) call record_mp_failure(1,i,j,k,high)
   end subroutine mp_faces_kernel
 
   ! Separate entry point keeps candidate index branches out of the reference kernel.
@@ -405,10 +409,10 @@ contains
     use solver_gpu, only: mp_ld_interface_flux,mp_ld_interface_flux_cached
     implicit none
     integer,value :: axis,im,jm,km,hm,npdc
-    real(8),value :: gamma,weight
+    real(real_kind),value :: gamma,weight
     logical,value :: cached
     integer :: id,i,j,k,dim,ntot,inode
-    real(8) :: high(5),low(5)
+    real(real_kind) :: high(5),low(5)
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     dim=im
     if(axis==2) dim=jm
@@ -431,8 +435,8 @@ contains
     if(axis==3) inode=k
     if(((npdc==1.or.npdc==4).and.inode<0).or. &
        ((npdc==2.or.npdc==4).and.inode>=dim)) then
-      high_d(i,j,k,:,axis)=0.d0
-      delta_d(i,j,k,:,axis)=0.d0
+      high_d(i,j,k,:,axis)=0.e0_real_kind
+      delta_d(i,j,k,:,axis)=0.e0_real_kind
       return
     endif
     call mp_low_face(i,j,k,axis,im,jm,km,hm,npdc,gamma,low)
@@ -444,16 +448,16 @@ contains
     endif
     high_d(i,j,k,:,axis)=high
     delta_d(i,j,k,:,axis)=high-low
-    if(.not.all(abs(high)<=huge(1.d0))) call record_mp_failure(1,i,j,k,high)
+    if(.not.all(abs(high)<=huge(1.e0_real_kind))) call record_mp_failure(1,i,j,k,high)
   end subroutine mp_faces_x_contiguous_kernel
 
   attributes(global) subroutine mp_split_cache_kernel(axis,im,jm,km,hm,npdc,gamma)
     use solver_gpu, only: steger_warming_split_physical_vector_at
     implicit none
     integer,value :: axis,im,jm,km,hm,npdc
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: id,i,j,k,n,inode,dim
-    real(8) :: plus(5),minus(5)
+    real(real_kind) :: plus(5),minus(5)
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     dim=im
     if(axis==2) dim=jm
@@ -501,8 +505,8 @@ contains
     end select
     if(id>=n) return
     do m=1,5
-      if(transfer(high_d(i,j,k,m,axis),0_int64)/=transfer(reference_high_d(i,j,k,m),0_int64).or. &
-         transfer(delta_d(i,j,k,m,axis),0_int64)/=transfer(reference_delta_d(i,j,k,m),0_int64)) &
+      if(transfer(high_d(i,j,k,m,axis),0_state_bits_kind)/=transfer(reference_high_d(i,j,k,m),0_state_bits_kind).or. &
+         transfer(delta_d(i,j,k,m,axis),0_state_bits_kind)/=transfer(reference_delta_d(i,j,k,m),0_state_bits_kind)) &
         ignored=atomiccas(layout_mismatch_d,0,1)
     enddo
   end subroutine compare_mp_face_layout_kernel
@@ -512,7 +516,7 @@ contains
     use gpu_check, only: sync_after_kernel
     implicit none
     integer,intent(in) :: axis,im,jm,km,hm,npdc
-    real(8),intent(in) :: gamma,weight
+    real(real_kind),intent(in) :: gamma,weight
     type(dim3),intent(in) :: grid,block
     integer :: local,global,ierr,rank
     reference_high_d=high_d(:,:,:,:,axis)
@@ -536,7 +540,7 @@ contains
     implicit none
     integer,value :: axis,im,jm,km,mode,has_lo,has_hi
     integer :: id,nplane,dim,lo(3),hi(3),m,offset
-    real(8) :: value
+    real(real_kind) :: value
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     select case(axis)
     case(1)
@@ -692,15 +696,15 @@ contains
   attributes(global) subroutine mp_ratio_kernel(dt,a,b,c,stage,im,jm,km,is,ie,js,je,ks,ke)
     use commarray_gpu, only: q_d,qsave_d,qrhs_d,jacob_d
     implicit none
-    real(8),value :: dt,a,b,c
+    real(real_kind),value :: dt,a,b,c
     integer,value :: stage,im,jm,km,is,ie,js,je,ks,ke
     integer :: id,i,j,k,axis,left(3),ignored
-    real(8) :: base(5),rhs(5),correction(5),scale,theta
+    real(real_kind) :: base(5),rhs(5),correction(5),scale,theta
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(id>=(im+1)*(jm+1)*(km+1)) return
     i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
     if(i<is.or.i>ie.or.j<js.or.j>je.or.k<ks.or.k>ke) return
-    if(.not.(jacob_d(i,j,k)>0.d0.and.jacob_d(i,j,k)<=huge(1.d0))) then
+    if(.not.(jacob_d(i,j,k)>0.e0_real_kind.and.jacob_d(i,j,k)<=huge(1.e0_real_kind))) then
       base=q_d(i,j,k,:)
       call record_mp_failure(2,i,j,k,base)
       return
@@ -720,17 +724,17 @@ contains
       call record_mp_failure(2,i,j,k,base)
       return
     endif
-    theta=1.d0
+    theta=1.e0_real_kind
     ! Six admissible face states average to the complete corrected state.
     do axis=1,3
       left=[i,j,k]; left(axis)=left(axis)-1
-      correction=6.d0*scale*delta_d(left(1),left(2),left(3),:,axis)
+      correction=6.e0_real_kind*scale*delta_d(left(1),left(2),left(3),:,axis)
       theta=min(theta,mp_face_budget(base,correction))
-      correction=-6.d0*scale*delta_d(i,j,k,:,axis)
+      correction=-6.e0_real_kind*scale*delta_d(i,j,k,:,axis)
       theta=min(theta,mp_face_budget(base,correction))
     enddo
     ratio_d(i,j,k,1)=theta
-    if(theta<1.d0) ignored=atomicadd(limited_d,1)
+    if(theta<1.e0_real_kind) ignored=atomicadd(limited_d,1)
   end subroutine mp_ratio_kernel
 
   attributes(global) subroutine mp_correct_rhs_kernel(im,jm,km,is,ie,js,je,ks,ke)
@@ -738,7 +742,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke
     integer :: id,i,j,k,axis,left(3),right(3)
-    real(8) :: tl,tr
+    real(real_kind) :: tl,tr
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(id>=(im+1)*(jm+1)*(km+1)) return
     i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
@@ -748,18 +752,18 @@ contains
       left(axis)=left(axis)-1; right(axis)=right(axis)+1
       tl=min(ratio_d(i,j,k,1),ratio_d(left(1),left(2),left(3),1))
       tr=min(ratio_d(i,j,k,1),ratio_d(right(1),right(2),right(3),1))
-      if(tl<1.d0.or.tr<1.d0) qrhs_d(i,j,k,:)=qrhs_d(i,j,k,:)+ &
-        (1.d0-tr)*delta_d(i,j,k,:,axis)-(1.d0-tl)*delta_d(left(1),left(2),left(3),:,axis)
+      if(tl<1.e0_real_kind.or.tr<1.e0_real_kind) qrhs_d(i,j,k,:)=qrhs_d(i,j,k,:)+ &
+        (1.e0_real_kind-tr)*delta_d(i,j,k,:,axis)-(1.e0_real_kind-tl)*delta_d(left(1),left(2),left(3),:,axis)
     enddo
   end subroutine mp_correct_rhs_kernel
 
   attributes(global) subroutine mp_check_update_kernel(dt,a,b,c,stage,im,jm,km)
     use commarray_gpu, only: q_d,qsave_d,qrhs_d,jacob_d
     implicit none
-    real(8),value :: dt,a,b,c
+    real(real_kind),value :: dt,a,b,c
     integer,value :: stage,im,jm,km
     integer :: id,i,j,k
-    real(8) :: trial(5)
+    real(real_kind) :: trial(5)
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(id>=(im+1)*(jm+1)*(km+1)) return
     i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
@@ -777,7 +781,7 @@ contains
     implicit none
     character(*),intent(in) :: phase
     integer :: local,global,ierr,rank,point(3)
-    real(8) :: state(5)
+    real(real_kind) :: state(5)
     local=failure_d
     call MPI_Allreduce(local,global,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
     if(global==0) return
@@ -799,18 +803,18 @@ contains
     use halo_exchange_gpu, only: exchange_field_halo_gpu
     use gpu_check, only: sync_after_kernel
     implicit none
-    real(8),intent(in) :: dt,a,b,c
+    real(real_kind),intent(in) :: dt,a,b,c
     integer,intent(in) :: stage
     integer :: n,axis,local_count,total_count,ierr,rank
     type(dim3) :: block,grid
-    if(.not.all(ieee_is_finite([dt,a,b,c])).or.dt<=0.d0.or. &
-       min(a,b,c)<0.d0.or.stage<1.or.stage>3) then
+    if(.not.all(ieee_is_finite([dt,a,b,c])).or.dt<=0.e0_real_kind.or. &
+       min(a,b,c)<0.e0_real_kind.or.stage<1.or.stage>3) then
       print *, 'Invalid MP positivity RK parameters'
       call MPI_Abort(MPI_COMM_WORLD,91,ierr)
     endif
     n=(im+1)*(jm+1)*(km+1)
     block=dim3(256,1,1); grid=dim3((n+255)/256,1,1)
-    ratio_d=1.d0; failure_d=0; limited_d=0
+    ratio_d=1.e0_real_kind; failure_d=0; limited_d=0
     call mp_ratio_kernel<<<grid,block>>>(dt,a,b,c,stage,im,jm,km,is,ie,js,je,ks,ke)
     call sync_after_kernel('mp_ratio_kernel',.true.)
     call check_mp_failure('complete low-order baseline')

@@ -6,6 +6,7 @@
 !| 08-02-2021  | Created by J. Fang                                    |
 !+---------------------------------------------------------------------+
 module solver
+  use astr_precision, only: real_kind,clock_kind
   !
   use constdef
   use parallel, only : mpirankname,mpistop,mpirank,lio,dataswap,       &
@@ -15,6 +16,7 @@ module solver
   use utility,  only : timereporter
   !
   implicit none
+  private :: real_kind,clock_kind
   !
   contains
   !
@@ -50,16 +52,16 @@ module solver
     !
     ! local data
     character(len=8) :: mpimaxname
-    real(8) :: sutherland_k
+    real(real_kind) :: sutherland_k
     integer :: transport_status
     logical :: transport_changed
 #ifdef ASTR_AIR5_CHEMISTRY
     integer :: air5_layout_status
     integer :: air5_status,air5_species
-    real(8) :: air5_rho_species(air5_num_species),air5_mu,air5_ktr,air5_kv
-    real(8) :: air5_species_mu(air5_num_species)
-    real(8) :: air5_binary_diff(air5_num_species,air5_num_species)
-    real(8) :: air5_mixture_diff(air5_num_species),air5_sound_speed
+    real(real_kind) :: air5_rho_species(air5_num_species),air5_mu,air5_ktr,air5_kv
+    real(real_kind) :: air5_species_mu(air5_num_species)
+    real(real_kind) :: air5_binary_diff(air5_num_species,air5_num_species)
+    real(real_kind) :: air5_mixture_diff(air5_num_species),air5_sound_speed
 #endif
     !
     if(trim(turbmode)=='k-omega') then
@@ -83,13 +85,13 @@ module solver
       if(ia<hm .or. ja<hm .or. ka<hm) &
         error stop 'fixed air5 C4 grid is smaller than the halo width'
       ndims=3
-      prandtl=0.72d0
+      prandtl=0.72e0_real_kind
       allocate(spcinf(air5_num_species))
-      spcinf=0.d0
-      spcinf(air5_idx_n2)=0.7653d0
-      spcinf(air5_idx_o2)=0.2347d0
-      rgas=0.d0
-      cv=0.d0
+      spcinf=0.e0_real_kind
+      spcinf(air5_idx_n2)=0.7653e0_real_kind
+      spcinf(air5_idx_o2)=0.2347e0_real_kind
+      rgas=0.e0_real_kind
+      cv=0.e0_real_kind
       do air5_species=1,air5_num_species
         rgas=rgas+spcinf(air5_species)*air5_species_gas_constant(air5_species)
         cv=cv+spcinf(air5_species)*air5_species_cv_tr(air5_species)
@@ -97,8 +99,8 @@ module solver
       cp=cv+rgas
       gamma=cp/cv
       uinf=ref_vel
-      vinf=0.d0
-      winf=0.d0
+      vinf=0.e0_real_kind
+      winf=0.e0_real_kind
       tinf=ref_tem
       roinf=ref_den
       air5_rho_species=roinf*spcinf
@@ -114,13 +116,13 @@ module solver
       air5_sound_speed=sqrt(gamma*pinf/roinf)
       mach=ref_vel/air5_sound_speed
       reynolds=ref_den*ref_vel*ref_len/ref_miu
-      const1=1.d0/(gamma*(gamma-1.d0)*mach**2)
+      const1=1.e0_real_kind/(gamma*(gamma-1.e0_real_kind)*mach**2)
       const2=gamma*mach**2
-      const3=(gamma-1.d0)/3.d0*prandtl*mach**2
-      const4=(gamma-1.d0)*mach**2*reynolds*prandtl
-      const5=(gamma-1.d0)*mach**2
-      const6=1.d0/(gamma-1.d0)
-      const7=(gamma-1.d0)*mach**2*reynolds*prandtl
+      const3=(gamma-1.e0_real_kind)/3.e0_real_kind*prandtl*mach**2
+      const4=(gamma-1.e0_real_kind)*mach**2*reynolds*prandtl
+      const5=(gamma-1.e0_real_kind)*mach**2
+      const6=1.e0_real_kind/(gamma-1.e0_real_kind)
+      const7=(gamma-1.e0_real_kind)*mach**2*reynolds*prandtl
       call udf_setflowenv
       if(lio .and. ltimrpt) then
         write(mpimaxname,'(i8.8)')mpisize
@@ -158,7 +160,7 @@ module solver
       stop ' !! ndims error @ refcal'
     endif
     !
-    prandtl=0.72d0
+    prandtl=0.72e0_real_kind
     if(mpirank==0) call read_transport_environment(prandtl,sutherland_k, &
                                                   transport_changed,transport_status)
     call bcast(transport_status)
@@ -179,62 +181,62 @@ module solver
       print*,'Perfect-gas transport: Pr, Sutherland K = ',prandtl,sutherland_k
     !
 #ifdef COMB
-    rgas=287.1d0
-    uinf=1.d0
-    vinf=0.d0
-    winf=0.d0
-    pinf=1.01325d5
-    tinf=300.d0
+    rgas=287.1e0_real_kind
+    uinf=1.e0_real_kind
+    vinf=0.e0_real_kind
+    winf=0.e0_real_kind
+    pinf=1.01325e5_real_kind
+    tinf=300.e0_real_kind
 
     allocate(spcinf(num_species))
     
-    spcinf(:)=0.d0
-    spcinf(spcindex('O2'))=0.233d0
-    spcinf(spcindex('N2'))=1.d0-sum(spcinf(:))
+    spcinf(:)=0.e0_real_kind
+    spcinf(spcindex('O2'))=0.233e0_real_kind
+    spcinf(spcindex('N2'))=1.e0_real_kind-sum(spcinf(:))
 
     roinf=thermal(temperature=tinf,pressure=pinf,species=spcinf)
 
-    ref_tim=1.d0
+    ref_tim=1.e0_real_kind
     
 #else
     !
-    gamma=1.4d0
+    gamma=1.4e0_real_kind
     !
     if(nondimen) then 
       !
-      const1=1.d0/(gamma*(gamma-1.d0)*mach**2)
+      const1=1.e0_real_kind/(gamma*(gamma-1.e0_real_kind)*mach**2)
       const2=gamma*mach**2
-      const3=(gamma-1.d0)/3.d0*prandtl*(mach**2)
-      const4=(gamma-1.d0)*mach**2*reynolds*prandtl
-      const5=(gamma-1.d0)*mach**2
-      const6=1.d0/(gamma-1.d0)
-      const7=(gamma-1.d0)*mach**2*Reynolds*prandtl
+      const3=(gamma-1.e0_real_kind)/3.e0_real_kind*prandtl*(mach**2)
+      const4=(gamma-1.e0_real_kind)*mach**2*reynolds*prandtl
+      const5=(gamma-1.e0_real_kind)*mach**2
+      const6=1.e0_real_kind/(gamma-1.e0_real_kind)
+      const7=(gamma-1.e0_real_kind)*mach**2*Reynolds*prandtl
       !
-      roinf=1.d0
-      uinf=1.d0
-      vinf=0.d0
-      winf=0.d0
-      tinf=1.d0
+      roinf=1.e0_real_kind
+      uinf=1.e0_real_kind
+      vinf=0.e0_real_kind
+      winf=0.e0_real_kind
+      tinf=1.e0_real_kind
       !
       pinf=roinf*tinf/const2
       !
       tempconst=sutherland_k/ref_tem
-      tempconst1=1.d0+tempconst
+      tempconst1=1.e0_real_kind+tempconst
       !
-      ref_vel=1.d0
-      ref_len=1.d0
+      ref_vel=1.e0_real_kind
+      ref_len=1.e0_real_kind
       ref_tim=ref_len/ref_vel
       !
     else 
       !
-      rgas=287.1d0
+      rgas=287.1e0_real_kind
       
-      cp  =gamma/(gamma-1.d0)*rgas
-      cv  = rgas/(gamma-1.d0)
+      cp  =gamma/(gamma-1.e0_real_kind)*rgas
+      cv  = rgas/(gamma-1.e0_real_kind)
       !
       uinf =ref_vel
-      vinf =0.d0
-      winf =0.d0
+      vinf =0.e0_real_kind
+      winf =0.e0_real_kind
       tinf =ref_tem
       roinf=ref_den
       pinf =thermal(temperature=tinf,density=roinf)
@@ -247,16 +249,16 @@ module solver
       !
       if(num_species>1) then
         allocate(spcinf(num_species))
-        spcinf=0.d0
+        spcinf=0.e0_real_kind
       endif
       !
-      const1=1.d0/(gamma*(gamma-1.d0)*mach**2)
+      const1=1.e0_real_kind/(gamma*(gamma-1.e0_real_kind)*mach**2)
       const2=gamma*mach**2
-      const3=(gamma-1.d0)/3.d0*prandtl*(mach**2)
-      const4=(gamma-1.d0)*mach**2*reynolds*prandtl
-      const5=(gamma-1.d0)*mach**2
-      const6=1.d0/(gamma-1.d0)
-      const7=(gamma-1.d0)*mach**2*Reynolds*prandtl
+      const3=(gamma-1.e0_real_kind)/3.e0_real_kind*prandtl*(mach**2)
+      const4=(gamma-1.e0_real_kind)*mach**2*reynolds*prandtl
+      const5=(gamma-1.e0_real_kind)*mach**2
+      const6=1.e0_real_kind/(gamma-1.e0_real_kind)
+      const7=(gamma-1.e0_real_kind)*mach**2*Reynolds*prandtl
       !
     endif 
     !
@@ -310,8 +312,8 @@ module solver
     integer :: nconv
     logical :: air5_shock_path
     !
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.e0_clock_kind
     air5_shock_path=.false.
 #ifdef ASTR_AIR5_CHEMISTRY
     air5_shock_path=lcomb .and. air5_shock_capturing_enabled()
@@ -449,7 +451,7 @@ module solver
     ! local data
     integer :: i,j,k,k1,k2
     !
-    real(8) :: u1bulk,u2bulk,u3bulk,robulk,dy
+    real(real_kind) :: u1bulk,u2bulk,u3bulk,robulk,dy
     !
     if(ndims==2) then
       k1=0
@@ -462,20 +464,20 @@ module solver
       stop ' !! error @ massfluxchan !!'
     endif
     !
-    u1bulk=0.d0
-    u2bulk=0.d0
-    u3bulk=0.d0
-    robulk=0.d0
+    u1bulk=0.e0_real_kind
+    u2bulk=0.e0_real_kind
+    u3bulk=0.e0_real_kind
+    robulk=0.e0_real_kind
     !
     do k=k1,k2
     do j=1,jm
     do i=1,im
       !
       dy=x(i,j,k,2)-x(i,j-1,k,2)
-      robulk=robulk+0.5d0*(q(i,j-1,k,1)+q(i,j,k,1))*dy
-      u1bulk=u1bulk+0.5d0*(q(i,j-1,k,2)+q(i,j,k,2))*dy
-      u2bulk=u2bulk+0.5d0*(q(i,j-1,k,3)+q(i,j,k,3))*dy
-      u3bulk=u3bulk+0.5d0*(q(i,j-1,k,4)+q(i,j,k,4))*dy
+      robulk=robulk+0.5e0_real_kind*(q(i,j-1,k,1)+q(i,j,k,1))*dy
+      u1bulk=u1bulk+0.5e0_real_kind*(q(i,j-1,k,2)+q(i,j,k,2))*dy
+      u2bulk=u2bulk+0.5e0_real_kind*(q(i,j-1,k,3)+q(i,j,k,3))*dy
+      u3bulk=u3bulk+0.5e0_real_kind*(q(i,j-1,k,4)+q(i,j,k,4))*dy
       !
     end do
     end do
@@ -557,13 +559,13 @@ module solver
     !
     ! local data
     integer :: i,j,k
-    real(8) :: arytmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:6)
-    real(8) :: drho(0:im,0:jm,0:km,1:3),du1(0:im,0:jm,0:km,1:3),       &
+    real(real_kind) :: arytmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:6)
+    real(real_kind) :: drho(0:im,0:jm,0:km,1:3),du1(0:im,0:jm,0:km,1:3),       &
                du2(0:im,0:jm,0:km,1:3),deng(0:im,0:jm,0:km,1:3),       &
                dtke(0:im,0:jm,0:km,1:3),dee(0:im,0:jm,0:km,1:3)
-    real(8) :: bl_growth_rate,s_rho,s_u1,s_u2,s_u3,s_eng,uf,vf,wf,ef
+    real(real_kind) :: bl_growth_rate,s_rho,s_u1,s_u2,s_u3,s_eng,uf,vf,wf,ef
     !
-    bl_growth_rate=0.001d0
+    bl_growth_rate=0.001e0_real_kind
     ! bl_growth_rate=0.044672d0
     !
     return
@@ -617,11 +619,11 @@ module solver
       ! s_u3 = 0.d0
       ! s_eng= x(i,j,k,2)*bl_growth_rate* deng(i,j,k,2)
       !
-      if(ieee_is_nan(s_rho)) s_rho=0.d0
-      if(ieee_is_nan(s_u1 )) s_u1 =0.d0
-      if(ieee_is_nan(s_u2 )) s_u2 =0.d0
-      if(ieee_is_nan(s_u3 )) s_u3 =0.d0
-      if(ieee_is_nan(s_eng)) s_eng=0.d0
+      if(ieee_is_nan(s_rho)) s_rho=0.e0_real_kind
+      if(ieee_is_nan(s_u1 )) s_u1 =0.e0_real_kind
+      if(ieee_is_nan(s_u2 )) s_u2 =0.e0_real_kind
+      if(ieee_is_nan(s_u3 )) s_u3 =0.e0_real_kind
+      if(ieee_is_nan(s_eng)) s_eng=0.e0_real_kind
       !
       qrhs(i,j,k,1)=qrhs(i,j,k,1)+s_rho*jacob(i,j,k)
       qrhs(i,j,k,2)=qrhs(i,j,k,2)+rho(i,j,k)*jacob(i,j,k)*(s_u1+vel(i,j,k,1)*s_rho)
@@ -658,8 +660,8 @@ module solver
     !
     ! local data
     integer :: i,j,k
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.e0_clock_kind
     !
     if(present(timerept)) then
 
@@ -728,15 +730,15 @@ module solver
     integer :: i,j,k,iss,iee,jss,jee,kss,kee,nwd
     integer :: is,ie,js,je,ks,ke,npdci,npdcj,npdck
     integer :: m,n,jvar
-    real(8) :: eps,gm2,var1,var2
+    real(real_kind) :: eps,gm2,var1,var2
     !
-    real(8) :: lmda(5),lmdap(5),lmdam(5),gpd(3),REV(5,5),LEV(5,5),     &
+    real(real_kind) :: lmda(5),lmdap(5),lmdam(5),gpd(3),REV(5,5),LEV(5,5),     &
                Pmult(5,5),Flcp(1:numq,1:8),Flcm(1:numq,1:8),Fhc(numq)
     !
-    real(8), allocatable, dimension(:,:) :: fswp,fswm,Fh
+    real(real_kind), allocatable, dimension(:,:) :: fswp,fswm,Fh
     !
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.e0_clock_kind
     !
     logical :: lsh,lso,sson,hdiss,lvar,ldebug,expanded_mask_halo
     !
@@ -762,7 +764,7 @@ module solver
     sson=allocated(lshock)
     expanded_mask_halo=compact_expanded_mask_enabled()
     !
-    eps=0.04d0
+    eps=0.04e0_real_kind
     ! gm2=0.5d0/gamma
     !
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -1481,16 +1483,16 @@ module solver
     ! local data
     integer :: i,j,k,iss,iee,jss,jee,kss,kee,nwd
     integer :: m,n,jvar
-    real(8) :: eps,gm2,var1,var2
+    real(real_kind) :: eps,gm2,var1,var2
     !
-    real(8) :: lmda(5),lmdap(5),lmdam(5),gpd(3),REV(5,5),LEV(5,5),     &
+    real(real_kind) :: lmda(5),lmdap(5),lmdam(5),gpd(3),REV(5,5),LEV(5,5),     &
                Flcp(1:numq,1:5),Flcm(1:numq,1:5),Fhc(1:numq),          &
                fhcpc(1:numq),fhcmc(1:numq)
     !
-    real(8), allocatable, dimension(:,:) :: fswp,fswm,fhcp,fhcm,Fh
+    real(real_kind), allocatable, dimension(:,:) :: fswp,fswm,fhcp,fhcm,Fh
     !
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.e0_clock_kind
     !
     logical :: lsh,sson,hdiss
     !
@@ -1502,8 +1504,8 @@ module solver
     !
     sson=allocated(lshock)
     !
-    eps=0.04d0
-    gm2=0.5d0/gamma
+    eps=0.04e0_real_kind
+    gm2=0.5e0_real_kind/gamma
     !
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! calculating along i direction
@@ -2165,19 +2167,19 @@ module solver
     use thermchem,only:aceval,temperature_calc,gammarmix
 #endif
     !
-    real(8),intent(in) :: tmp_l,ro_l,p_l,E_l,vel_l(3),ddi_l(3),       &
+    real(real_kind),intent(in) :: tmp_l,ro_l,p_l,E_l,vel_l(3),ddi_l(3),       &
                           tmp_r,ro_r,p_r,E_r,vel_r(3),ddi_r(3)
-    real(8),intent(in) :: spc_l(:),spc_r(:)
-    real(8),intent(out) :: REV(5,5),LEV(5,5)
+    real(real_kind),intent(in) :: spc_l(:),spc_r(:)
+    real(real_kind),intent(out) :: REV(5,5),LEV(5,5)
     !
     logical,optional,intent(in) :: debug
     !
     ! local data
-    real(8),parameter :: rero=1.d-12
-    real(8) :: WRoe,WRoe1,u1Roe,u2Roe,u3Roe,HL,HR,HRoe,CssRoe,        &
+    real(real_kind),parameter :: rero=1.e-12_real_kind
+    real(real_kind) :: WRoe,WRoe1,u1Roe,u2Roe,u3Roe,HL,HR,HRoe,CssRoe,        &
                KRoe,ugp,rcs,var1,var2,var3,var4,rgp,gpd(3),           &
                ee_L,ee_R,eeRoe,tmpRoe,roRoe,b1,b2
-    real(8) :: spcRoe(num_species),gamavg,gamL,gamR,CssL,CssR,KL,KR
+    real(real_kind) :: spcRoe(num_species),gamavg,gamL,gamR,CssL,CssR,KL,KR
     logical :: ldebug
     !
     if(present(debug)) then
@@ -2189,43 +2191,43 @@ module solver
     roRoe=sqrt(ro_l*ro_R)
     !
     WRoe=sqrt(ro_l)/(sqrt(ro_l)+sqrt(ro_r))
-    WRoe1=1.d0-WRoe
+    WRoe1=1.e0_real_kind-WRoe
     u1Roe=WRoe*vel_l(1)+WRoe1*vel_r(1)
     u2Roe=WRoe*vel_l(2)+WRoe1*vel_r(2)
     u3Roe=WRoe*vel_l(3)+WRoe1*vel_r(3)
     !
-    KRoe=0.5d0*(u1Roe*u1Roe+u2Roe*u2Roe+u3Roe*u3Roe)
-    KL=0.5d0*(vel_l(1)*vel_l(1)+vel_l(2)*vel_l(2)+vel_l(3)*vel_l(3))
-    KR=0.5d0*(vel_r(1)*vel_r(1)+vel_r(2)*vel_r(2)+vel_r(3)*vel_r(3))
+    KRoe=0.5e0_real_kind*(u1Roe*u1Roe+u2Roe*u2Roe+u3Roe*u3Roe)
+    KL=0.5e0_real_kind*(vel_l(1)*vel_l(1)+vel_l(2)*vel_l(2)+vel_l(3)*vel_l(3))
+    KR=0.5e0_real_kind*(vel_r(1)*vel_r(1)+vel_r(2)*vel_r(2)+vel_r(3)*vel_r(3))
     !
 #ifdef COMB
     gamL = gammarmix(tmp_l,spc_l(:))
     gamR = gammarmix(tmp_r,spc_r(:))
-    gamavg=0.5d0*(gamL+gamR)
+    gamavg=0.5e0_real_kind*(gamL+gamR)
     !
     call aceval(tmp_l,spc_l(:),CssL)
     call aceval(tmp_R,spc_R(:),CssR)
 
-    HL=CssL*CssL/(gamL-1.d0)+KL
-    HR=CssR*CssR/(gamR-1.d0)+KR
+    HL=CssL*CssL/(gamL-1.e0_real_kind)+KL
+    HR=CssR*CssR/(gamR-1.e0_real_kind)+KR
     HRoe=WRoe*HL+WRoe1*HR
 
-    CssRoe=sqrt((gamavg-1.d0)*(HRoe-KRoe))
+    CssRoe=sqrt((gamavg-1.e0_real_kind)*(HRoe-KRoe))
 #else
     HL=(E_l+p_l)/ro_l
     HR=(E_r+p_r)/ro_r
     HRoe=WRoe*HL+WRoe1*HR
-    CssRoe=sqrt((gamma-1.d0)*(HRoe-KRoe))
+    CssRoe=sqrt((gamma-1.e0_real_kind)*(HRoe-KRoe))
 #endif
     !
-    rcs=1.d0/CssRoe
+    rcs=1.e0_real_kind/CssRoe
     !
     ! print*,' ** CssRoe:',CssRoe
     !
-    var1=0.5d0*(ddi_l(1)+ddi_r(1))
-    var2=0.5d0*(ddi_l(2)+ddi_r(2))
-    var3=0.5d0*(ddi_l(3)+ddi_r(3))
-    var4=1.d0/sqrt(var1*var1+var2*var2+var3*var3)
+    var1=0.5e0_real_kind*(ddi_l(1)+ddi_r(1))
+    var2=0.5e0_real_kind*(ddi_l(2)+ddi_r(2))
+    var3=0.5e0_real_kind*(ddi_l(3)+ddi_r(3))
+    var4=1.e0_real_kind/sqrt(var1*var1+var2*var2+var3*var3)
     !
     gpd(1)=var1*var4
     gpd(2)=var2*var4
@@ -2234,111 +2236,111 @@ module solver
     ugp=u1Roe*gpd(1)+u2Roe*gpd(2)+u3Roe*gpd(3)
     !
     ! Calculating Left and Right eigenvectors
-    b1=(gamma-1.d0)/(CssRoe*CssRoe)
+    b1=(gamma-1.e0_real_kind)/(CssRoe*CssRoe)
     ! b2=b1*KRoe
-    b2=1.d0+2.d0*b1*KRoe-b1*HRoe
+    b2=1.e0_real_kind+2.e0_real_kind*b1*KRoe-b1*HRoe
     !
-    LEV(1,1)= 0.5d0*(b2+ugp*rcs)
-    LEV(1,2)=-0.5d0*(b1*u1Roe+gpd(1)*rcs)
-    LEV(1,3)=-0.5d0*(b1*u2Roe+gpd(2)*rcs)
-    LEV(1,4)=-0.5d0*(b1*u3Roe+gpd(3)*rcs)
-    LEV(1,5)= 0.5d0*b1
+    LEV(1,1)= 0.5e0_real_kind*(b2+ugp*rcs)
+    LEV(1,2)=-0.5e0_real_kind*(b1*u1Roe+gpd(1)*rcs)
+    LEV(1,3)=-0.5e0_real_kind*(b1*u2Roe+gpd(2)*rcs)
+    LEV(1,4)=-0.5e0_real_kind*(b1*u3Roe+gpd(3)*rcs)
+    LEV(1,5)= 0.5e0_real_kind*b1
     !
-    REV(1,1)=1.d0
+    REV(1,1)=1.e0_real_kind
     REV(2,1)=u1Roe-CssRoe*gpd(1)
     REV(3,1)=u2Roe-CssRoe*gpd(2)
     REV(4,1)=u3Roe-CssRoe*gpd(3)
     REV(5,1)=HRoe-ugp*CssRoe
     !
-    LEV(2,1)=1.d0-b2
+    LEV(2,1)=1.e0_real_kind-b2
     LEV(2,2)=b1*u1Roe
     LEV(2,3)=b1*u2Roe
     LEV(2,4)=b1*u3Roe
     LEV(2,5)=-b1
     !
-    REV(1,2)=1.d0
+    REV(1,2)=1.e0_real_kind
     REV(2,2)=u1Roe
     REV(3,2)=u2Roe
     REV(4,2)=u3Roe
-    REV(5,2)=HRoe-1.d0/b1
+    REV(5,2)=HRoe-1.e0_real_kind/b1
     !
     if(abs(var1)>rero) then
-      rgp=1.d0/gpd(1)
+      rgp=1.e0_real_kind/gpd(1)
       !
       LEV(3,1)=(ugp*gpd(2)-u2Roe)*rgp
       LEV(3,2)=-gpd(2)
-      LEV(3,3)=(1.d0-gpd(2)*gpd(2))*rgp
+      LEV(3,3)=(1.e0_real_kind-gpd(2)*gpd(2))*rgp
       LEV(3,4)=-gpd(2)*gpd(3)*rgp
-      LEV(3,5)=0.d0
+      LEV(3,5)=0.e0_real_kind
       !
       LEV(4,1)=(ugp*gpd(3)-u3Roe)*rgp
       LEV(4,2)=-gpd(3)
       LEV(4,3)=-gpd(2)*gpd(3)*rgp
-      LEV(4,4)=(1.d0-gpd(3)*gpd(3))*rgp
-      LEV(4,5)=0.d0
+      LEV(4,4)=(1.e0_real_kind-gpd(3)*gpd(3))*rgp
+      LEV(4,5)=0.e0_real_kind
       !
-      REV(1,3)=0.d0
+      REV(1,3)=0.e0_real_kind
       REV(2,3)=-gpd(2)
       REV(3,3)= gpd(1)
-      REV(4,3)=0.d0
+      REV(4,3)=0.e0_real_kind
       REV(5,3)=u2Roe*gpd(1)-u1Roe*gpd(2)
       !
-      REV(1,4)=0.d0
+      REV(1,4)=0.e0_real_kind
       REV(2,4)=-gpd(3)
-      REV(3,4)= 0.d0
+      REV(3,4)= 0.e0_real_kind
       REV(4,4)= gpd(1)
       REV(5,4)=u3Roe*gpd(1)-u1Roe*gpd(3)
       !
     elseif(abs(var2)>rero) then
-      rgp=1.d0/gpd(2)
+      rgp=1.e0_real_kind/gpd(2)
       !
       LEV(3,1)=(ugp*gpd(1)-u1Roe)*rgp
-      LEV(3,2)=(1.d0-gpd(1)*gpd(1))*rgp
+      LEV(3,2)=(1.e0_real_kind-gpd(1)*gpd(1))*rgp
       LEV(3,3)=-gpd(1)
       LEV(3,4)=-gpd(1)*gpd(3)*rgp
-      LEV(3,5)=0.d0
+      LEV(3,5)=0.e0_real_kind
       !
       LEV(4,1)=(ugp*gpd(3)-u3Roe)*rgp
       LEV(4,2)=-gpd(1)*gpd(3)*rgp
       LEV(4,3)=-gpd(3)
-      LEV(4,4)=(1.d0-gpd(3)*gpd(3))*rgp
-      LEV(4,5)=0.d0
+      LEV(4,4)=(1.e0_real_kind-gpd(3)*gpd(3))*rgp
+      LEV(4,5)=0.e0_real_kind
       !
-      REV(1,3)=0.d0
+      REV(1,3)=0.e0_real_kind
       REV(2,3)= gpd(2)
       REV(3,3)=-gpd(1)
-      REV(4,3)=0.d0
+      REV(4,3)=0.e0_real_kind
       REV(5,3)=u1Roe*gpd(2)-u2Roe*gpd(1)
       !
-      REV(1,4)=0.d0
-      REV(2,4)=0.d0
+      REV(1,4)=0.e0_real_kind
+      REV(2,4)=0.e0_real_kind
       REV(3,4)=-gpd(3)
       REV(4,4)= gpd(2)
       REV(5,4)=u3Roe*gpd(2)-u2Roe*gpd(3)
       !
     elseif(abs(var3)>rero) then
-      rgp=1.d0/gpd(3)
+      rgp=1.e0_real_kind/gpd(3)
       !
       LEV(3,1)=(ugp*gpd(1)-u1Roe)*rgp
-      LEV(3,2)=(1.d0-gpd(1)*gpd(1))*rgp
+      LEV(3,2)=(1.e0_real_kind-gpd(1)*gpd(1))*rgp
       LEV(3,3)=-gpd(1)*gpd(2)*rgp
       LEV(3,4)=-gpd(1)
-      LEV(3,5)=0.d0
+      LEV(3,5)=0.e0_real_kind
       !
       LEV(4,1)=(ugp*gpd(2)-u2Roe)*rgp
       LEV(4,2)=-gpd(1)*gpd(2)*rgp
-      LEV(4,3)=(1.d0-gpd(2)*gpd(2))*rgp
+      LEV(4,3)=(1.e0_real_kind-gpd(2)*gpd(2))*rgp
       LEV(4,4)=-gpd(2)
-      LEV(4,5)=0.d0
+      LEV(4,5)=0.e0_real_kind
       !
-      REV(1,3)=0.d0
+      REV(1,3)=0.e0_real_kind
       REV(2,3)= gpd(3)
-      REV(3,3)=0.d0
+      REV(3,3)=0.e0_real_kind
       REV(4,3)=-gpd(1)
       REV(5,3)=u1Roe*gpd(3)-u3Roe*gpd(1)
       !
-      REV(1,4)=0.d0
-      REV(2,4)=0.d0
+      REV(1,4)=0.e0_real_kind
+      REV(2,4)=0.e0_real_kind
       REV(3,4)= gpd(3)
       REV(4,4)=-gpd(2)
       REV(5,4)=u2Roe*gpd(3)-u3Roe*gpd(2)
@@ -2347,13 +2349,13 @@ module solver
       stop ' !! ERROR 1 @ chardecomp'
     endif
     !
-    LEV(5,1)= 0.5d0*(b2-ugp*rcs)           
-    LEV(5,2)=-0.5d0*(b1*u1Roe-gpd(1)*rcs)  
-    LEV(5,3)=-0.5d0*(b1*u2Roe-gpd(2)*rcs)  
-    LEV(5,4)=-0.5d0*(b1*u3Roe-gpd(3)*rcs)  
-    LEV(5,5)= 0.5d0*b1 
+    LEV(5,1)= 0.5e0_real_kind*(b2-ugp*rcs)           
+    LEV(5,2)=-0.5e0_real_kind*(b1*u1Roe-gpd(1)*rcs)  
+    LEV(5,3)=-0.5e0_real_kind*(b1*u2Roe-gpd(2)*rcs)  
+    LEV(5,4)=-0.5e0_real_kind*(b1*u3Roe-gpd(3)*rcs)  
+    LEV(5,5)= 0.5e0_real_kind*b1 
     !
-    REV(1,5)= 1.d0
+    REV(1,5)= 1.e0_real_kind
     REV(2,5)=u1Roe+CssRoe*gpd(1)
     REV(3,5)=u2Roe+CssRoe*gpd(2)
     REV(4,5)=u3Roe+CssRoe*gpd(3)
@@ -2385,10 +2387,10 @@ module solver
     !
     ! local data
     integer :: i,j,k,jspc,jmod,n
-    real(8),allocatable :: fcs(:,:),dfcs(:,:),uu(:)
+    real(real_kind),allocatable :: fcs(:,:),dfcs(:,:),uu(:)
     !
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.e0_clock_kind
     !
     if(present(timerept)) then
 
@@ -2587,21 +2589,21 @@ module solver
     ! local data
     integer :: i,j,k,n,ncolm,jspc,idir
     integer :: is,ie,js,je,ks,ke
-    real(8),allocatable :: df(:,:),ff(:,:)
-    real(8),allocatable,dimension(:,:,:,:),  save :: sigma,qflux,dkflux,doflux
-    real(8),allocatable,dimension(:,:,:,:,:),save :: yflux
-    real(8) :: miu,miu2,miu3,miu4,hcc,s11,s12,s13,s22,s23,s33,skk
-    real(8) :: d11,d12,d13,d21,d22,d23,d31,d32,d33,miueddy,var1,var2
-    real(8) :: tau11,tau12,tau13,tau22,tau23,tau33
-    real(8) :: detk
-    real(8),allocatable :: dispec(:,:)
-    real(8) :: corrdiff,hispec(num_species),xi(num_species),cpe,kama, &
+    real(real_kind),allocatable :: df(:,:),ff(:,:)
+    real(real_kind),allocatable,dimension(:,:,:,:),  save :: sigma,qflux,dkflux,doflux
+    real(real_kind),allocatable,dimension(:,:,:,:,:),save :: yflux
+    real(real_kind) :: miu,miu2,miu3,miu4,hcc,s11,s12,s13,s22,s23,s33,skk
+    real(real_kind) :: d11,d12,d13,d21,d22,d23,d31,d32,d33,miueddy,var1,var2
+    real(real_kind) :: tau11,tau12,tau13,tau22,tau23,tau33
+    real(real_kind) :: detk
+    real(real_kind),allocatable :: dispec(:,:)
+    real(real_kind) :: corrdiff,hispec(num_species),xi(num_species),cpe,kama, &
                gradyi(num_species),sum1,sum2,mw
-    real(8),allocatable :: dfu(:)
+    real(real_kind),allocatable :: dfu(:)
     logical,save :: firstcall=.true.
     !
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.e0_clock_kind
     !
     is=is_base; ie=ie_base; js=js_base; je=je_base; ks=ks_base; ke=ke_base
     if(present(physical_boundary_rhs)) then
@@ -2625,8 +2627,8 @@ module solver
                 qflux(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3) )
     endif
     !
-    sigma =0.d0
-    qflux =0.d0
+    sigma =0.e0_real_kind
+    qflux =0.e0_real_kind
     !
     if(num_species>0) then
       !
@@ -2637,7 +2639,7 @@ module solver
 #ifndef  COMB
       allocate(dfu(1:num_species))
 #endif
-      yflux=0.d0
+      yflux=0.e0_real_kind
       !
     endif
     !
@@ -2648,8 +2650,8 @@ module solver
                   doflux(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3) )
       endif
       !
-      dkflux=0.d0
-      doflux=0.d0
+      dkflux=0.e0_real_kind
+      doflux=0.e0_real_kind
       !
     endif
     !
@@ -2689,10 +2691,10 @@ module solver
 #endif
       !
       s11=dvel(i,j,k,1,1)
-      s12=0.5d0*(dvel(i,j,k,1,2)+dvel(i,j,k,2,1))
-      s13=0.5d0*(dvel(i,j,k,1,3)+dvel(i,j,k,3,1))
+      s12=0.5e0_real_kind*(dvel(i,j,k,1,2)+dvel(i,j,k,2,1))
+      s13=0.5e0_real_kind*(dvel(i,j,k,1,3)+dvel(i,j,k,3,1))
       s22=dvel(i,j,k,2,2)
-      s23=0.5d0*(dvel(i,j,k,2,3)+dvel(i,j,k,3,2))
+      s23=0.5e0_real_kind*(dvel(i,j,k,2,3)+dvel(i,j,k,3,2))
       s33=dvel(i,j,k,3,3)
       !
       skk=num1d3*(s11+s22+s33)
@@ -2701,16 +2703,16 @@ module solver
       vor(i,j,k,2)=dvel(i,j,k,1,3)-dvel(i,j,k,3,1)
       vor(i,j,k,3)=dvel(i,j,k,2,1)-dvel(i,j,k,1,2)
       !
-      tau11=0.d0
-      tau12=0.d0
-      tau13=0.d0
-      tau22=0.d0
-      tau23=0.d0
-      tau33=0.d0
+      tau11=0.e0_real_kind
+      tau12=0.e0_real_kind
+      tau13=0.e0_real_kind
+      tau22=0.e0_real_kind
+      tau23=0.e0_real_kind
+      tau33=0.e0_real_kind
       !
       if(trim(turbmode)=='k-omega') then
         !
-        miu2=2.d0*(miu+miut(i,j,k))
+        miu2=2.e0_real_kind*(miu+miut(i,j,k))
         !
         hcc=(miu/prandtl+miut(i,j,k)/komega%prt)/const5
         !
@@ -2723,29 +2725,29 @@ module solver
         doflux(i,j,k,:)=miu4*domg(i,j,k,:)
       elseif(trim(turbmode)=='B-L') then
 
-        miu2=2.d0*(miu+miut(i,j,k))
+        miu2=2.e0_real_kind*(miu+miut(i,j,k))
         !
-        hcc=(miu/prandtl+miut(i,j,k)/0.9d0)/const5
+        hcc=(miu/prandtl+miut(i,j,k)/0.9e0_real_kind)/const5
 
       elseif(trim(turbmode)=='udf1') then
         !
         ! miu2=2.d0*(miu+miut(i,j,k))
         ! hcc=(miu/prandtl+miut(i,j,k)/0.9d0)/const5
         !
-        miu2=2.d0*miu
+        miu2=2.e0_real_kind*miu
         hcc=(miu/prandtl)/const5
         !
-        tau11=0.d0
+        tau11=0.e0_real_kind
         tau12=-res12(i,j,k)*rho(i,j,k)
-        tau13=0.d0
-        tau22=0.d0
-        tau23=0.d0
-        tau33=0.d0
+        tau13=0.e0_real_kind
+        tau22=0.e0_real_kind
+        tau23=0.e0_real_kind
+        tau33=0.e0_real_kind
         !
-        detk=0.d0
+        detk=0.e0_real_kind
         !
       elseif(trim(turbmode)=='none') then
-        miu2=2.d0*miu
+        miu2=2.e0_real_kind*miu
         !
 #ifdef COMB
         hcc=kama
@@ -2757,7 +2759,7 @@ module solver
         endif 
 #endif
         !
-        detk=0.d0
+        detk=0.e0_real_kind
         !
       endif
       !
@@ -2795,7 +2797,7 @@ module solver
               do jspc=1,num_species
                 sum2=sum(dispec(jspc,:)*(gradyi(:)-spc(i,j,k,:)*sum1))
                 !species diffusive flux
-                yflux(i,j,k,jspc,idir)=-1.d0*wmolar(jspc)/mw*sum2
+                yflux(i,j,k,jspc,idir)=-1.e0_real_kind*wmolar(jspc)/mw*sum2
                 !energy flux due to species diffusion
                 qflux(i,j,k,idir)=qflux(i,j,k,idir)-yflux(i,j,k,jspc,idir)*hispec(jspc)
               enddo
@@ -3113,15 +3115,15 @@ module solver
   !
   subroutine check_LR55_unit(Lvec,Rvec,ii,jj,kk)
     !
-    real(8),intent(in) :: Lvec(5,5),Rvec(5,5)
+    real(real_kind),intent(in) :: Lvec(5,5),Rvec(5,5)
     integer,intent(in) :: ii,jj,kk
     !
-    real(8) :: matrix(5,5)
-    real(8) :: epslion
+    real(real_kind) :: matrix(5,5)
+    real(real_kind) :: epslion
     integer :: i,j
     logical :: normal
     !
-    epslion=1.d-8
+    epslion=1.e-8_real_kind
     !
     normal=.true.
     !
@@ -3130,7 +3132,7 @@ module solver
     do j=1,5
     do i=1,5
      if( i==j ) then
-       if(abs(matrix(i,j)-1.d0)<epslion) then
+       if(abs(matrix(i,j)-1.e0_real_kind)<epslion) then
         continue
        else
          ! print*,' !! WARNING of UNIT MARTIX'

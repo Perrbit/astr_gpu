@@ -7,14 +7,16 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "astr_precision.h"
 
 namespace astr_insitu {
+using Real=astr::numerical_real;
 // Host-owned final geometry only; no solver or three-dimensional field buffer.
 struct CompactMesh {
   std::string name,shape;
-  std::vector<double> coordinates[3];
+  std::vector<Real> coordinates[3];
   std::vector<std::int64_t> connectivity,seed_ids,directions;
-  std::map<std::string,std::vector<double>> point_fields;
+  std::map<std::string,std::vector<Real>> point_fields;
 };
 // A backend-neutral, borrowed device view. No graphics handles cross this API.
 struct DeviceDrawView {
@@ -33,20 +35,20 @@ struct DeviceMesh {
 };
 struct StreamlineView {
   std::string id,velocity,seeds,color;
-  std::array<double,19> values;
+  std::array<Real,19> values;
 };
 const std::vector<StreamlineView>& streamline_views();
 bool streamline_preview_active();
 bool retain_quantitative_product_fields();
 std::vector<double> device_display_palette();
-DeviceMesh build_device_plane(int fcomm,int step,double time,const int global[3],
-  const int local[3],const int offset[3],double* coordinates,double* velocity,
-  const double origin[3],const double normal[3],std::int64_t budget,
-  std::int64_t reserve,std::int64_t retained,std::int64_t host_budget,bool speed_colors=false,double speed_max=1.);
+DeviceMesh build_device_plane(int fcomm,int step,Real time,const int global[3],
+  const int local[3],const int offset[3],Real* coordinates,Real* velocity,
+  const Real origin[3],const Real normal[3],std::int64_t budget,
+  std::int64_t reserve,std::int64_t retained,std::int64_t host_budget,bool speed_colors=false,Real speed_max=1);
 int render_resident_products(const char* pipeline,const char* backend,const char* script,int fcomm,
-  int step,double time,const char* profile,std::vector<DeviceMesh> products,bool covered=false,bool complete=true);
+  int step,Real time,const char* profile,std::vector<DeviceMesh> products,bool covered=false,bool complete=true);
 int render_compact_products(const char* backend,const char* script,int fcomm,
-  int step,double time,const char* profile,bool covered,double duration,
-  double window_start,double window_end,std::vector<CompactMesh> products);
+  int step,Real time,const char* profile,bool covered,Real duration,
+  Real window_start,Real window_end,std::vector<CompactMesh> products);
 }
 #endif

@@ -7,14 +7,16 @@
 !| 02-Jul-2021  | Created by J. Fang STFC                              |
 !+---------------------------------------------------------------------+
 module commtype
+  use astr_precision, only: real_kind
   !
   implicit none
+  private :: real_kind
 
   type :: compact_scheme
     
     integer :: first_node,last_node,dimension,nbctype
     integer :: direction=0
-    real(8),allocatable :: a(:),c(:),ac(:,:)
+    real(real_kind),allocatable :: a(:),c(:),ac(:,:)
     character(len=1) :: wind
 
     contains
@@ -24,7 +26,7 @@ module commtype
   end type compact_scheme
 
   type :: triangle
-    real(8) :: a(3),b(3),c(3),normdir(3),area,cen(3)
+    real(real_kind) :: a(3),b(3),c(3),normdir(3),area,cen(3)
     !+-------------------+---------------------------------------------+
     !|            a,b,c  | coordinates of the 3 vertex of the triangle.|
     !|           normdir | normal direction of the face.               |
@@ -33,7 +35,7 @@ module commtype
   end type triangle
   !
   type :: lsegment
-    real(8) :: a(2),b(2),normdir(2),length,cen(2)
+    real(real_kind) :: a(2),b(2),normdir(2),length,cen(2)
     !+-------------------+---------------------------------------------+
     !|            a,b,c  | coordinates of the 3 vertex of the triangle.|
     !|           normdir | normal direction of the face.               |
@@ -44,7 +46,7 @@ module commtype
   type :: solid
     !
     character(len=32) :: name
-    real(8) :: xmin(3),xmax(3),xref(3),xcen(3)
+    real(real_kind) :: xmin(3),xmax(3),xref(3),xcen(3)
     integer :: num_face,num_edge
     type(triangle),allocatable :: face(:)
     type(lsegment),allocatable :: edge(:)
@@ -60,14 +62,14 @@ module commtype
     !
     character(len=1) :: nodetype
     !
-    real(8) :: x(3),normdir(3),ximag(3)
-    real(8) :: dis_imga_inmg,dis2image,dis2ghost
-    real(8),allocatable :: qimag(:),q(:)
+    real(real_kind) :: x(3),normdir(3),ximag(3)
+    real(real_kind) :: dis_imga_inmg,dis2image,dis2ghost
+    real(real_kind),allocatable :: qimag(:),q(:)
     integer :: igh(3),inmg(3)
     integer :: icell(3),icell_bnode(8),icell_ijk(8,3)
     integer,allocatable :: isup(:,:)
-    real(8),allocatable :: weig(:)
-    real(8),allocatable :: coef_dirichlet(:),coef_neumann(:),invmatrx(:,:)
+    real(real_kind),allocatable :: weig(:)
+    real(real_kind),allocatable :: coef_dirichlet(:),coef_neumann(:),invmatrx(:,:)
     !
     logical :: localin,cellin
     integer :: icell_rank,ighst_rank
@@ -90,9 +92,9 @@ module commtype
   end type sboun
   !
   type :: nodcel
-    real(8),allocatable :: x(:,:)
-    real(8) :: xmax(3),xmin(3)
-    real(8) :: vol
+    real(real_kind),allocatable :: x(:,:)
+    real(real_kind) :: xmax(3),xmin(3)
+    real(real_kind) :: vol
     character(len=1) :: celltype
   end type nodcel
   !!

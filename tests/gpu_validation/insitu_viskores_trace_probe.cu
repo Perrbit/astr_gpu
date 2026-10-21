@@ -1,4 +1,4 @@
-#include "insitu_streamline_worklet.h"
+#include "insitu_device_streamlines.h"
 #include "insitu_device_array.h"
 #include <viskores/cont/ArrayHandle.h>
 #include <viskores/cont/DataSetBuilderUniform.h>
@@ -19,7 +19,8 @@
 
 constexpr int chunk=128;
 using State=astr_insitu::RK45TraceWorklet::State;
-using Vertex=viskores::Vec<double,5>;
+using R=astr_insitu::Real;
+using Vertex=viskores::Vec<R,5>;
 __global__ void constant_field(viskores::Vec3f* velocity,int nodes,int axis) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if (i<nodes) {velocity[i]=viskores::Vec3f(0.); velocity[i][axis]=1.;}
@@ -61,8 +62,32 @@ int run(int argc,char** argv,int rank,int ranks) {
   using Field=viskores::worklet::flow::VelocityField<decltype(velocity)>;
   using Grid=viskores::worklet::flow::GridEvaluator<Field>;
   astr_insitu::LengthGrid<Grid> evaluate(Grid(grid,Field(velocity)));
+  astr_insitu::ParticleMessageType message_type;
+  {
+    const int exact_counter=std::numeric_limits<viskores::Int32>::max()-rank;
+    std::vector<State> sample{State(0,0,0,0,0,0,exact_counter,astr_insitu::TraceLength)};
+    auto input=viskores::cont::make_ArrayHandle(sample,viskores::CopyFlag::On);
+    viskores::cont::ArrayHandle<State> output;
+    viskores::cont::ArrayHandle<viskores::Int32> count;
+    viskores::cont::ArrayHandle<Vertex> geometry;
+    geometry.Allocate(chunk+1);
+    invoke(astr_insitu::RK45TraceWorklet(chunk,.01*h,.5*h,1e-8,pi,100000,0.,2*pi,true),
+      input,evaluate,geometry,output,count);
+    astr_insitu::synchronize_device_stage("NativeIntegerParticleProbe");
+    const auto local=output.ReadPortal().Get(0);
+    if(local.steps!=exact_counter || local.status!=astr_insitu::TraceLength)
+      throw std::runtime_error("Device particle counter lost integer bits");
+    std::vector<State> received(ranks);
+    if(MPI_Allgather(&local,1,message_type.value,received.data(),1,message_type.value,MPI_COMM_WORLD)!=MPI_SUCCESS)
+      throw std::runtime_error("Typed particle integer probe exchange failed");
+    for(int r=0;r<ranks;++r) if(received[r].steps!=std::numeric_limits<viskores::Int32>::max()-r ||
+        received[r].status!=astr_insitu::TraceLength)
+      throw std::runtime_error("Particle MPI counter lost integer bits");
+    if(rank==0) std::printf("Viskores particle numerical_bytes=%zu counter_bytes=%zu integer_max_exact=1\n",
+      sizeof(R),sizeof(local.steps));
+  }
   std::vector<State> state(particles),local(particles);
-  std::vector<double> wire(particles*8),received(particles*8*ranks);
+  std::vector<State> wire(particles),received(particles*ranks);
   std::vector<Vertex> previous(particles);
   std::vector<viskores::Vec3f> seeds(particles);
   std::vector<bool> have_previous(particles,false);
@@ -79,10 +104,10 @@ int run(int argc,char** argv,int rank,int ranks) {
     int active=0;
     for (int i=0;i<particles;++i) {
       local[i]=state[i];
-      const bool running=state[i][7]==astr_insitu::TraceActive || state[i][7]==astr_insitu::TraceTransfer;
+      const bool running=state[i].status==astr_insitu::TraceActive || state[i].status==astr_insitu::TraceTransfer;
       const int owner=ranks==1 ? 0 : (state[i][axis]<pi ? 0 : 1);
       active+=running;
-      local[i][7]=running && owner==rank ? astr_insitu::TraceActive : astr_insitu::TraceTransfer;
+      local[i].status=running && owner==rank ? astr_insitu::TraceActive : astr_insitu::TraceTransfer;
     }
     if (!active) break;
     auto input=viskores::cont::make_ArrayHandle(local,viskores::CopyFlag::On);
@@ -103,7 +128,7 @@ int run(int argc,char** argv,int rank,int ranks) {
     const auto points=geometry.ReadPortal();
     for (int i=0;i<particles;++i) {
       local[i]=result.Get(i);
-      for (int d=0;d<8;++d) wire[i*8+d]=local[i][d];
+      wire[i]=local[i];
       const int count=sizes.Get(i);
       if (count<0 || count>chunk+1) throw std::runtime_error("invalid segment capacity");
       total_vertices+=count;
@@ -117,20 +142,20 @@ int run(int argc,char** argv,int rank,int ranks) {
       }
       if (count) { previous[i]=points.Get(i*(chunk+1)+count-1); have_previous[i]=true; }
     }
-    if (MPI_Allgather(wire.data(),particles*8,MPI_DOUBLE,received.data(),particles*8,
-                      MPI_DOUBLE,MPI_COMM_WORLD)!=MPI_SUCCESS)
+    if (MPI_Allgather(wire.data(),particles,message_type.value,received.data(),particles,
+                      message_type.value,MPI_COMM_WORLD)!=MPI_SUCCESS)
       throw std::runtime_error("small-state exchange failed");
     for (int i=0;i<particles;++i) {
-      const bool running=state[i][7]==astr_insitu::TraceActive || state[i][7]==astr_insitu::TraceTransfer;
+      const bool running=state[i].status==astr_insitu::TraceActive || state[i].status==astr_insitu::TraceTransfer;
       if (!running) continue;
       const int owner=ranks==1 ? 0 : (state[i][axis]<pi ? 0 : 1);
-      for (int d=0;d<8;++d) state[i][d]=received[owner*particles*8+i*8+d];
-      if (state[i][7]==astr_insitu::TraceTransfer) {
+      state[i]=received[owner*particles+i];
+      if (state[i].status==astr_insitu::TraceTransfer) {
         if (rank==owner) ++transfers;
         // Every rank retains only the last extracted vertex as seam metadata.
         for (int d=0;d<4;++d) previous[i][d]=state[i][d==3 ? 4 : d];
         have_previous[i]=true;
-      } else if (state[i][7]!=astr_insitu::TraceActive && state[i][7]!=astr_insitu::TraceLength)
+      } else if (state[i].status!=astr_insitu::TraceActive && state[i].status!=astr_insitu::TraceLength)
         throw std::runtime_error("unexpected trajectory termination");
     }
     astr_insitu::require_device_only(velocity);
@@ -138,7 +163,7 @@ int run(int argc,char** argv,int rank,int ranks) {
   if (rounds==1000) throw std::runtime_error("bounded round limit exceeded");
   for (int i=0;i<particles;++i) {
     const auto& particle=state[i];
-    if (particle[7]!=astr_insitu::TraceLength) throw std::runtime_error("unfinished trajectory");
+    if (particle.status!=astr_insitu::TraceLength) throw std::runtime_error("unfinished trajectory");
     error=std::fmax(error,std::abs(particle[axis]-(i>=16?pi/2.:3.*pi/2.)));
     error=std::fmax(error,std::abs(particle[4]-pi));
   }
@@ -148,8 +173,9 @@ int run(int argc,char** argv,int rank,int ranks) {
   MPI_Allreduce(totals,global,2,MPI_INT,MPI_SUM,MPI_COMM_WORLD);
   if (!rank) std::printf("Viskores CUDA trace NP=%d particles=%d max_error=%.17g seam_error=%.17g transfers=%d vertices=%d rounds=%d input_host_mirror=0 axis=%d bidirectional=%d\n",
                         ranks,particles,maximum[0],maximum[1],global[0],global[1],rounds,axis,bidirectional);
-  return std::isfinite(maximum[0]) && std::isfinite(maximum[1]) && maximum[0]<=2e-10 &&
-         maximum[1]<=2e-10 && global[0]==(ranks==2 ? particles : 0) ? 0 : 2;
+  return std::isfinite(maximum[0]) && std::isfinite(maximum[1]) &&
+         (sizeof(R)==4 || (maximum[0]<=2e-10 && maximum[1]<=2e-10)) &&
+         global[0]==(ranks==2 ? particles : 0) ? 0 : 2;
 }
 int main(int argc,char** argv) {
   int provided=0,rank=0,ranks=0;

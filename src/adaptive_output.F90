@@ -1,5 +1,7 @@
 module adaptive_output
-  use iso_fortran_env, only: int64,real64
+  use astr_precision_io, only: read_source_reals,source_real_matches
+  use iso_fortran_env, only: int64
+  use astr_precision, only: real_kind,real_bytes
   use ieee_arithmetic, only: ieee_is_finite
   use insitu_schedule, only: sample_schedule,configure_schedule,poll_schedule, &
     write_schedule_state,restore_schedule_state,resume_schedule
@@ -19,36 +21,36 @@ module adaptive_output
     character(32) :: indicator='tgv_kinetic_energy'
     character(16) :: monitor_mode='steps'
     integer(int64) :: monitor_steps=0
-    real(real64) :: monitor_time=0.d0
+    real(real_kind) :: monitor_time=0.e0_real_kind
     character(64) :: event_ids(adaptive_capacity)='',window_ids(adaptive_capacity)=''
-    real(real64) :: s_ref(adaptive_capacity)=0,t_ref(adaptive_capacity)=0
-    real(real64) :: r_on(adaptive_capacity)=0,r_off(adaptive_capacity)=0,hold_time(adaptive_capacity)=0
+    real(real_kind) :: s_ref(adaptive_capacity)=0,t_ref(adaptive_capacity)=0
+    real(real_kind) :: r_on(adaptive_capacity)=0,r_off(adaptive_capacity)=0,hold_time(adaptive_capacity)=0
     character(16) :: window_modes(adaptive_capacity)=''
     integer(int64) :: window_steps(2,adaptive_capacity)=0
-    real(real64) :: window_times(2,adaptive_capacity)=0
+    real(real_kind) :: window_times(2,adaptive_capacity)=0
   end type
   type :: adaptive_binding
     logical :: enabled=.false.
     integer(int64) :: dense_steps=0
-    real(real64) :: dense_time=0.d0
+    real(real_kind) :: dense_time=0.e0_real_kind
     character(64) :: events(adaptive_capacity)='',windows(adaptive_capacity)=''
   end type
   type :: adaptive_state
     type(sample_schedule) :: monitor
     logical :: has_previous=.false.,event_previous(adaptive_capacity)=.false.
     logical :: active(adaptive_capacity)=.false.
-    real(real64) :: previous_s=0,previous_time=0,r(adaptive_capacity)=0,entry_time(adaptive_capacity)=0
+    real(real_kind) :: previous_s=0,previous_time=0,r(adaptive_capacity)=0,entry_time(adaptive_capacity)=0
     integer(int64) :: last_step=-1,window_phase(adaptive_capacity)=0
-    real(real64) :: last_time=0
+    real(real_kind) :: last_time=0
     integer(int64) :: origin_step=0
-    real(real64) :: origin_time=0
+    real(real_kind) :: origin_time=0
   end type
   type :: adaptive_clock
     character(16) :: mode='steps'
     integer(int64) :: normal_steps=0,origin_step=0,success=-1,attempt=-1,seen=-1,next_step=-1
-    real(real64) :: normal_time=0,origin_time=0,success_time=-1,attempt_time=-1,seen_time=0,next_time=-1
+    real(real_kind) :: normal_time=0,origin_time=0,success_time=-1,attempt_time=-1,seen_time=0,next_time=-1
     integer(int64) :: dense_steps=0,requested_step=-1
-    real(real64) :: dense_time=0,requested_time=-1
+    real(real_kind) :: dense_time=0,requested_time=-1
     logical :: dense=.false.,initial=.false.,final=.false.,pending=.false.
     integer :: reason=0,code=0,phase=0
   end type
@@ -190,7 +192,7 @@ contains
     type(adaptive_binding),intent(in) :: b
     character(*),intent(in) :: mode
     integer(int64),intent(in) :: steps
-    real(real64),intent(in) :: time
+    real(real_kind),intent(in) :: time
     type(adaptive_config),intent(in),optional :: c
     logical,intent(out) :: ok
     integer :: i,j
@@ -234,7 +236,7 @@ contains
   subroutine configure_adaptive(c,step,time,ok)
     type(adaptive_config),intent(in) :: c
     integer(int64),intent(in) :: step
-    real(real64),intent(in) :: time
+    real(real_kind),intent(in) :: time
     logical,intent(out) :: ok
     character(256) :: message
     call validate_adaptive_config(c,ok,message)
@@ -252,7 +254,7 @@ contains
 
   subroutine adaptive_monitor_due(step,time,due,ok)
     integer(int64),intent(in) :: step
-    real(real64),intent(in) :: time
+    real(real_kind),intent(in) :: time
     logical,intent(out) :: due,ok
     integer(int64) :: crossed
     due=.false.; ok=.true.
@@ -262,7 +264,7 @@ contains
 
   subroutine observe_adaptive(step,time,ok)
     integer(int64),intent(in) :: step
-    real(real64),intent(in) :: time
+    real(real_kind),intent(in) :: time
     logical,intent(out) :: ok
     integer :: i
     logical :: inside,before
@@ -288,9 +290,9 @@ contains
   end subroutine
 
   subroutine feed_adaptive_signal(value,time,ok)
-    real(real64),intent(in) :: value,time
+    real(real_kind),intent(in) :: value,time
     logical,intent(out) :: ok
-    real(real64) :: difference,width,rate,scale,r,elapsed,expiry
+    real(real_kind) :: difference,width,rate,scale,r,elapsed,expiry
     integer :: i
     ok=.false.
     if(.not.all(ieee_is_finite([value,time])).or.value<0.or.time/=adaptive_shared_state%last_time) return
@@ -355,7 +357,7 @@ contains
     type(adaptive_binding),intent(in) :: b
     character(*),intent(in) :: mode
     integer(int64),intent(in) :: steps,origin_step
-    real(real64),intent(in) :: time,origin_time
+    real(real_kind),intent(in) :: time,origin_time
     logical,intent(in) :: initial,final
     logical,intent(out) :: ok
     call validate_adaptive_binding(b,mode,steps,time,adaptive_shared_config,ok)
@@ -372,7 +374,7 @@ contains
     type(adaptive_clock),intent(inout) :: c
     type(adaptive_binding),intent(in) :: b
     integer(int64),intent(in) :: step
-    real(real64),intent(in) :: time
+    real(real_kind),intent(in) :: time
     logical,intent(in) :: final
     logical,intent(out) :: emit,ok
     logical :: dense,entry,due
@@ -406,7 +408,7 @@ contains
     type(adaptive_clock),intent(inout) :: c
     logical,intent(out) :: ok
     integer(int64) :: anchor,interval
-    real(real64) :: anchor_time,period
+    real(real_kind) :: anchor_time,period
     anchor=c%origin_step; anchor_time=c%origin_time
     if(c%success>=0) then
       anchor=c%success; anchor_time=c%success_time
@@ -441,9 +443,11 @@ contains
     call next_adaptive_target(c,ok)
   end subroutine
 
-  logical function adaptive_binding_equal(a,b) result(same)
+  logical function adaptive_binding_equal(a,b,source_bytes) result(same)
     type(adaptive_binding),intent(in) :: a,b
-    same=(a%enabled.eqv.b%enabled).and.a%dense_steps==b%dense_steps.and.a%dense_time==b%dense_time.and. &
+    integer,optional,intent(in) :: source_bytes
+    same=(a%enabled.eqv.b%enabled).and.a%dense_steps==b%dense_steps.and. &
+      source_real_matches(a%dense_time,b%dense_time,source_bytes).and. &
       all(a%events==b%events).and.all(a%windows==b%windows)
   end function
 
@@ -472,19 +476,20 @@ contains
     enddo
   end function
 
-  subroutine adaptive_clock_file(unit,writing,c,b,step,time,same,ok)
+  subroutine adaptive_clock_file(unit,writing,c,b,step,time,same,ok,source_bytes)
     integer,intent(in) :: unit
     logical,intent(in) :: writing
     type(adaptive_clock),intent(inout) :: c
     type(adaptive_binding),intent(in) :: b
     integer(int64),intent(in) :: step
-    real(real64),intent(in) :: time
+    real(real_kind),intent(in) :: time
     logical,intent(out) :: same,ok
+    integer,optional,intent(in) :: source_bytes
     type(adaptive_clock) :: saved,checked
     type(adaptive_binding) :: binding
     character(8) :: magic
     integer :: err
-    logical :: valid
+    logical :: valid,converted_clock
     if(writing) then
       ok=.not.c%pending; same=.true.
       if(.not.ok) return
@@ -494,12 +499,26 @@ contains
         c%reason,c%code,c%phase,c%requested_step,c%requested_time
       ok=err==0; return
     endif
-    read(unit,iostat=err) magic,binding%enabled,binding%dense_steps,binding%dense_time,binding%events,binding%windows, &
-      saved%mode,saved%normal_steps,saved%normal_time,saved%origin_step,saved%origin_time,saved%success,saved%success_time, &
-      saved%attempt,saved%attempt_time,saved%seen,saved%seen_time,saved%next_step,saved%next_time, &
-      saved%dense,saved%initial,saved%final,saved%reason,saved%code,saved%phase,saved%requested_step,saved%requested_time
+    read(unit,iostat=err) magic,binding%enabled,binding%dense_steps
+    if(err==0) call read_source_reals(unit,binding%dense_time,source_bytes,err)
+    if(err==0) read(unit,iostat=err) binding%events,binding%windows,saved%mode,saved%normal_steps
+    if(err==0) call read_source_reals(unit,saved%normal_time,source_bytes,err)
+    if(err==0) read(unit,iostat=err) saved%origin_step
+    if(err==0) call read_source_reals(unit,saved%origin_time,source_bytes,err)
+    if(err==0) read(unit,iostat=err) saved%success
+    if(err==0) call read_source_reals(unit,saved%success_time,source_bytes,err)
+    if(err==0) read(unit,iostat=err) saved%attempt
+    if(err==0) call read_source_reals(unit,saved%attempt_time,source_bytes,err)
+    if(err==0) read(unit,iostat=err) saved%seen
+    if(err==0) call read_source_reals(unit,saved%seen_time,source_bytes,err)
+    if(err==0) read(unit,iostat=err) saved%next_step
+    if(err==0) call read_source_reals(unit,saved%next_time,source_bytes,err)
+    if(err==0) read(unit,iostat=err) saved%dense,saved%initial,saved%final,saved%reason,saved%code,saved%phase,saved%requested_step
+    if(err==0) call read_source_reals(unit,saved%requested_time,source_bytes,err)
     same=.false.; ok=.false.
     if(err/=0.or.magic/='ASTRAC01') return
+    converted_clock=.false.
+    if(present(source_bytes)) converted_clock=source_bytes/=real_bytes
     if(.not.all(ieee_is_finite([saved%normal_time,saved%origin_time,saved%success_time,saved%attempt_time, &
       saved%seen_time,saved%next_time,binding%dense_time,saved%requested_time]))) return
     if(saved%origin_step<0.or.saved%origin_step>step.or.saved%origin_time<0.or.saved%origin_time>time.or. &
@@ -514,35 +533,59 @@ contains
     if((saved%attempt<0).neqv.(saved%attempt_time==-1)) return
     if((saved%code>0).neqv.(saved%phase>0)) return
     checked=saved
+    if(converted_clock) then
+      if(source_real_matches(saved%normal_time,c%normal_time,source_bytes)) checked%normal_time=c%normal_time
+      if(source_real_matches(saved%dense_time,b%dense_time,source_bytes)) checked%dense_time=b%dense_time
+    endif
     call next_adaptive_target(checked,valid)
-    if(.not.valid.or.saved%next_step/=checked%next_step.or.saved%next_time/=checked%next_time) return
-    same=adaptive_binding_equal(b,binding).and.c%mode==saved%mode.and.c%normal_steps==saved%normal_steps.and. &
-      c%normal_time==saved%normal_time.and.(c%final.eqv.saved%final).and. &
+    if(.not.valid) return
+    if(.not.converted_clock) then
+      if(saved%next_step/=checked%next_step.or.saved%next_time/=checked%next_time) return
+    endif
+    same=adaptive_binding_equal(b,binding,source_bytes).and.c%mode==saved%mode.and.c%normal_steps==saved%normal_steps.and. &
+      source_real_matches(saved%normal_time,c%normal_time,source_bytes).and.(c%final.eqv.saved%final).and. &
       .not.adaptive_dependencies_reset(b)
-    if(same) c=saved
+    if(same) then
+      if(converted_clock) then
+        ! These are derived targets, not emitted samples or event histories.
+        saved%normal_time=checked%normal_time; saved%dense_time=checked%dense_time
+        saved%next_step=checked%next_step; saved%next_time=checked%next_time
+      endif
+      c=saved
+    endif
     ok=.true.
   end subroutine
 
-  subroutine config_file(unit,writing,c,err)
+  subroutine config_file(unit,writing,c,err,source_bytes)
     integer,intent(in) :: unit
     logical,intent(in) :: writing
     type(adaptive_config),intent(inout) :: c
     integer,intent(out) :: err
+    integer,optional,intent(in) :: source_bytes
     if(writing) then
       write(unit,iostat=err) c%enabled,c%indicator,c%monitor_mode,c%monitor_steps,c%monitor_time, &
         c%event_ids,c%s_ref,c%t_ref,c%r_on,c%r_off,c%hold_time,c%window_ids,c%window_modes,c%window_steps,c%window_times
     else
-      read(unit,iostat=err) c%enabled,c%indicator,c%monitor_mode,c%monitor_steps,c%monitor_time, &
-        c%event_ids,c%s_ref,c%t_ref,c%r_on,c%r_off,c%hold_time,c%window_ids,c%window_modes,c%window_steps,c%window_times
+      read(unit,iostat=err) c%enabled,c%indicator,c%monitor_mode,c%monitor_steps
+      if(err==0) call read_source_reals(unit,c%monitor_time,source_bytes,err)
+      if(err==0) read(unit,iostat=err) c%event_ids
+      if(err==0) call read_source_reals(unit,c%s_ref,source_bytes,err)
+      if(err==0) call read_source_reals(unit,c%t_ref,source_bytes,err)
+      if(err==0) call read_source_reals(unit,c%r_on,source_bytes,err)
+      if(err==0) call read_source_reals(unit,c%r_off,source_bytes,err)
+      if(err==0) call read_source_reals(unit,c%hold_time,source_bytes,err)
+      if(err==0) read(unit,iostat=err) c%window_ids,c%window_modes,c%window_steps
+      if(err==0) call read_source_reals(unit,c%window_times,source_bytes,err)
     endif
   end subroutine
 
-  subroutine adaptive_shared_file(unit,writing,step,time,override,ok)
+  subroutine adaptive_shared_file(unit,writing,step,time,override,ok,source_bytes)
     integer,intent(in) :: unit
     logical,intent(in) :: writing,override
     integer(int64),intent(in) :: step
-    real(real64),intent(in) :: time
+    real(real_kind),intent(in) :: time
     logical,intent(out) :: ok
+    integer,optional,intent(in) :: source_bytes
     type(adaptive_config) :: old
     type(adaptive_state) :: saved,restored
     character(8) :: magic
@@ -568,12 +611,19 @@ contains
     endif
     read(unit,iostat=err) magic
     if(err/=0.or.magic/='ASTRAP01') return
-    call config_file(unit,.false.,old,err)
+    call config_file(unit,.false.,old,err,source_bytes)
     if(err/=0) return
     call validate_adaptive_config(old,valid,message)
     if(.not.valid) return
-    read(unit,iostat=err) saved%has_previous,saved%event_previous,saved%active,saved%previous_s,saved%previous_time, &
-      saved%r,saved%entry_time,saved%last_step,saved%last_time,saved%window_phase,saved%origin_step,saved%origin_time
+    read(unit,iostat=err) saved%has_previous,saved%event_previous,saved%active
+    if(err==0) call read_source_reals(unit,saved%previous_s,source_bytes,err)
+    if(err==0) call read_source_reals(unit,saved%previous_time,source_bytes,err)
+    if(err==0) call read_source_reals(unit,saved%r,source_bytes,err)
+    if(err==0) call read_source_reals(unit,saved%entry_time,source_bytes,err)
+    if(err==0) read(unit,iostat=err) saved%last_step
+    if(err==0) call read_source_reals(unit,saved%last_time,source_bytes,err)
+    if(err==0) read(unit,iostat=err) saved%window_phase,saved%origin_step
+    if(err==0) call read_source_reals(unit,saved%origin_time,source_bytes,err)
     if(err/=0) return
     if(.not.all(ieee_is_finite([saved%previous_s,saved%previous_time,saved%r,saved%entry_time, &
       saved%last_time,saved%origin_time]))) return
@@ -587,16 +637,19 @@ contains
     if(.not.saved%has_previous.and.any(saved%event_previous.or.saved%active)) return
     if(saved%has_previous.and.saved%previous_time<saved%origin_time) return
     if(old%enabled.and.any(old%event_ids/='')) then
+      if(source_real_matches(old%monitor_time,adaptive_shared_config%monitor_time,source_bytes)) &
+        old%monitor_time=adaptive_shared_config%monitor_time
       call configure_schedule(saved%monitor,old%monitor_mode,old%monitor_steps,old%monitor_time, &
         saved%origin_step,saved%origin_time,.true.,.false.,valid)
-      if(valid) call restore_schedule_state(unit,saved%monitor,'adaptive-monitor',step,time,valid)
+      if(valid) call restore_schedule_state(unit,saved%monitor,'adaptive-monitor',step,time,valid,source_bytes)
       if(.not.valid) return
       call resume_schedule(saved%monitor,valid)
       if(.not.valid) return
     endif
     same_monitor=(old%enabled.eqv.adaptive_shared_config%enabled).and. &
       old%indicator==adaptive_shared_config%indicator.and.old%monitor_mode==adaptive_shared_config%monitor_mode.and. &
-      old%monitor_steps==adaptive_shared_config%monitor_steps.and.old%monitor_time==adaptive_shared_config%monitor_time
+      old%monitor_steps==adaptive_shared_config%monitor_steps.and. &
+      source_real_matches(old%monitor_time,adaptive_shared_config%monitor_time,source_bytes)
     restored=saved
     if(.not.same_monitor) then
       if(.not.override) return
@@ -612,14 +665,16 @@ contains
       if(adaptive_shared_config%event_ids(i)=='') cycle
       j=findloc(old%event_ids,adaptive_shared_config%event_ids(i),dim=1)
       same_event=.false.
-      if(j>0) same_event=same_monitor.and.old%s_ref(j)==adaptive_shared_config%s_ref(i).and. &
-        old%t_ref(j)==adaptive_shared_config%t_ref(i).and.old%r_on(j)==adaptive_shared_config%r_on(i).and. &
-        old%r_off(j)==adaptive_shared_config%r_off(i).and.old%hold_time(j)==adaptive_shared_config%hold_time(i)
+      if(j>0) same_event=same_monitor.and.source_real_matches(old%s_ref(j),adaptive_shared_config%s_ref(i),source_bytes).and. &
+        source_real_matches(old%t_ref(j),adaptive_shared_config%t_ref(i),source_bytes).and. &
+        source_real_matches(old%r_on(j),adaptive_shared_config%r_on(i),source_bytes).and. &
+        source_real_matches(old%r_off(j),adaptive_shared_config%r_off(i),source_bytes).and. &
+        source_real_matches(old%hold_time(j),adaptive_shared_config%hold_time(i),source_bytes)
       if(.not.same_event.and..not.override) return
       reset_events(i)=.not.same_event
       same_scale=.false.
-      if(j>0) same_scale=same_monitor.and.old%s_ref(j)==adaptive_shared_config%s_ref(i).and. &
-        old%t_ref(j)==adaptive_shared_config%t_ref(i)
+      if(j>0) same_scale=same_monitor.and.source_real_matches(old%s_ref(j),adaptive_shared_config%s_ref(i),source_bytes).and. &
+        source_real_matches(old%t_ref(j),adaptive_shared_config%t_ref(i),source_bytes)
       if(same_scale) restored%event_previous(i)=saved%event_previous(j)
       if(same_event) then
         restored%active(i)=saved%active(j); restored%event_previous(i)=saved%event_previous(j)
@@ -639,7 +694,7 @@ contains
       same_window=.false.
       if(j>0) same_window=old%window_modes(j)==adaptive_shared_config%window_modes(i).and. &
         all(old%window_steps(:,j)==adaptive_shared_config%window_steps(:,i)).and. &
-        all(old%window_times(:,j)==adaptive_shared_config%window_times(:,i))
+        all(source_real_matches(old%window_times(:,j),adaptive_shared_config%window_times(:,i),source_bytes))
       if(.not.same_window.and..not.override) return
       reset_windows(i)=.not.same_window
       if(same_window) restored%window_phase(i)=saved%window_phase(j)
@@ -657,7 +712,9 @@ end module
 module adaptive_output_collective
   use mpi
   use adaptive_output
-  use iso_fortran_env, only: int64,real64
+  use iso_fortran_env, only: int64
+  use astr_precision, only: real_kind
+  use astr_precision_mpi, only: mpi_real_type
   implicit none
   private
   public :: agree_adaptive_config,agree_adaptive_bindings
@@ -667,7 +724,7 @@ contains
     integer,intent(in) :: comm
     logical,intent(out) :: ok
     integer(int64) :: integers(1+2*adaptive_capacity)
-    real(real64) :: values(1+7*adaptive_capacity)
+    real(real_kind) :: values(1+7*adaptive_capacity)
     character(64) :: labels(2+3*adaptive_capacity)
     type(adaptive_config) :: root
     logical :: enabled,same
@@ -682,7 +739,7 @@ contains
     call MPI_Bcast(integers,size(integers),MPI_INTEGER8,0,comm,status)
     ok=status==MPI_SUCCESS
     if(.not.ok) return
-    call MPI_Bcast(values,size(values),MPI_DOUBLE_PRECISION,0,comm,status)
+    call MPI_Bcast(values,size(values),mpi_real_type,0,comm,status)
     ok=status==MPI_SUCCESS
     if(.not.ok) return
     call MPI_Bcast(labels,size(labels)*len(labels),MPI_CHARACTER,0,comm,status)
@@ -706,7 +763,7 @@ contains
     logical,intent(out) :: ok
     logical :: enabled(size(bindings)),same
     integer(int64) :: steps(size(bindings))
-    real(real64) :: times(size(bindings))
+    real(real_kind) :: times(size(bindings))
     character(64) :: names(2*adaptive_capacity,size(bindings))
     type(adaptive_binding) :: root
     integer :: i,status,n
@@ -720,7 +777,7 @@ contains
     call MPI_Bcast(steps,size(steps),MPI_INTEGER8,0,comm,status)
     ok=status==MPI_SUCCESS
     if(.not.ok) return
-    call MPI_Bcast(times,size(times),MPI_DOUBLE_PRECISION,0,comm,status)
+    call MPI_Bcast(times,size(times),mpi_real_type,0,comm,status)
     ok=status==MPI_SUCCESS
     if(.not.ok) return
     call MPI_Bcast(names,size(names)*len(names),MPI_CHARACTER,0,comm,status)

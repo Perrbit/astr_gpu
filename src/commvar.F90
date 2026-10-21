@@ -6,6 +6,7 @@
 !| 06-02-2021  | Created by J. Fang                                    |
 !+---------------------------------------------------------------------+
 module commvar
+  use astr_precision, only: real_kind,clock_kind
   !
   use commtype
   !
@@ -14,6 +15,7 @@ module commvar
 #endif
   !
   implicit none
+  private :: real_kind,clock_kind
   !
   integer :: ia,ja,ka,im,jm,km,is,ie,js,je,ks,ke
   integer :: hm
@@ -50,7 +52,7 @@ module commvar
   !|               lfftk | to use fft in the k direction.              |
   !|             limmbou | to use immersed boundary method             |
   !|             lcracon | to activate crash control function.         |
-  !|            rkscheme | which rk method to use.                     |
+  !|            rkscheme | which real_kind method to use.                     |
   !+---------------------+---------------------------------------------+
   !
   logical :: lwsequ,lwslic,lavg
@@ -73,8 +75,8 @@ module commvar
   !+---------------------+---------------------------------------------+
   !|               npdci | to control scheme at boundary.              |
   !+---------------------+---------------------------------------------+
-  real(8) :: xmax,xmin,ymax,ymin,zmax,zmin,voldom,dxyzmax,dxyzmin
-  real(8) :: alfa_filter,bfacmpld,shkcrt
+  real(real_kind) :: xmax,xmin,ymax,ymin,zmax,zmin,voldom,dxyzmax,dxyzmin
+  real(real_kind) :: alfa_filter,bfacmpld,shkcrt
   integer :: kcutoff
   !+---------------------+---------------------------------------------+
   !|                *mix | min coordinates                             |
@@ -89,14 +91,14 @@ module commvar
   integer :: nstep,nsrpt,maxstep,filenumb,nmonitor,fnumslic,rkstep
   integer :: islice,jslice,kslice
   integer,allocatable :: imon(:,:)
-  real(8) :: time,deltat
-  real(8) :: uinf,vinf,winf,roinf,pinf,tinf
-  real(8) :: ref_tem,ref_vel,ref_len,ref_den,ref_miu,ref_tim
-  real(8) :: reynolds,mach,rgas,cp,cv,gamma,prandtl
-  real(8),allocatable :: schmidt(:)
-  real(8) :: const1,const2,const3,const4,const5,const6,const7
-  real(8) :: tempconst,tempconst1
-  real(8),allocatable :: spcinf(:)
+  real(real_kind) :: time,deltat
+  real(real_kind) :: uinf,vinf,winf,roinf,pinf,tinf
+  real(real_kind) :: ref_tem,ref_vel,ref_len,ref_den,ref_miu,ref_tim
+  real(real_kind) :: reynolds,mach,rgas,cp,cv,gamma,prandtl
+  real(real_kind),allocatable :: schmidt(:)
+  real(real_kind) :: const1,const2,const3,const4,const5,const6,const7
+  real(real_kind) :: tempconst,tempconst1
+  real(real_kind),allocatable :: spcinf(:)
   !+---------------------+---------------------------------------------+
   !|               nstep | the total time step number.                 |
   !|             maxstep | the max step to run.                        |
@@ -132,12 +134,12 @@ module commvar
   !+---------------------+---------------------------------------------+
   !|            flowtype | to define the type of flow.                 |
   !+---------------------+---------------------------------------------+
-  real(8) :: preptime=0.d0
-  real(8) :: ctime(33)=0.d0
+  real(clock_kind) :: preptime=0.0_clock_kind
+  real(clock_kind) :: ctime(33)=0.0_clock_kind
   !+---------------------+---------------------------------------------+
   !|             cputime | computational time statistics.              |
   !+---------------------+---------------------------------------------+
-  real(8) :: force(3)
+  real(real_kind) :: force(3)
   !+---------------------+---------------------------------------------+
   !|               force | body force.                                 |
   !+---------------------+---------------------------------------------+

@@ -1,8 +1,10 @@
 module cfl_gpu
+  use astr_precision, only: real_kind
   use cudafor
   use iso_fortran_env, only: int64
   use cfl_spectrum, only: spectral_rates
   implicit none
+  private :: real_kind
   private
   public :: collect_cfl_gpu
 contains
@@ -15,13 +17,13 @@ contains
 #endif
     integer,value :: im,jm,km,hm,ia,ja,i0,j0,k0
     logical,value :: by_plane,reacting,nondimensional
-    real(8),value :: mach,gamma,rgas
-    real(8),device :: partial(4,*)
+    real(real_kind),value :: mach,gamma,rgas
+    real(real_kind),device :: partial(4,*)
     integer(int64),device :: keys(4,*)
-    real(8),shared :: values_s(4,256)
+    real(real_kind),shared :: values_s(4,256)
     integer(int64),shared :: keys_s(4,256)
-    real(8) :: rates(4),best(4),velocity(3),sound,temp,rden,cvden,metric(3,3)
-    real(8) :: momentum(3),partial_density(5)
+    real(real_kind) :: rates(4),best(4),velocity(3),sound,temp,rden,cvden,metric(3,3)
+    real(real_kind) :: momentum(3),partial_density(5)
     integer(int64) :: ids(4),key,id,ncell,stride
     integer :: tid,i,j,k,s,axis,n,slot,status
     logical :: valid
@@ -31,7 +33,7 @@ contains
     stride=int(gridDim%x,int64)*blockDim%x
     ncell=int(im+1,int64)*(km+1)
     if(.not.by_plane) ncell=ncell*(jm+1)
-    best=0.d0
+    best=0.e0_real_kind
     ids=huge(0_int64)
     do while(id<ncell)
       i=int(mod(id,int(im+1,int64)))
@@ -51,16 +53,16 @@ contains
         partial_density=q_d(i,j,k,6:10)
         call air5_temperature_from_q5_gpu(q_d(i,j,k,1),momentum, &
           partial_density,q_d(i,j,k,11),q_d(i,j,k,5),temp,status)
-        sound=-1.d0
+        sound=-1.e0_real_kind
         if(status==0) then
           velocity=q_d(i,j,k,2:4)/q_d(i,j,k,1)
-          rden=0.d0
-          cvden=0.d0
+          rden=0.e0_real_kind
+          cvden=0.e0_real_kind
           do s=1,5
             rden=rden+q_d(i,j,k,5+s)*air5_species_gas_constant_gpu(s)
             cvden=cvden+q_d(i,j,k,5+s)*air5_species_cv_tr_gpu(s)
           enddo
-          sound=sqrt((1.d0+rden/cvden)*rden*temp/q_d(i,j,k,1))
+          sound=sqrt((1.e0_real_kind+rden/cvden)*rden*temp/q_d(i,j,k,1))
         endif
       else
 #endif
@@ -75,7 +77,7 @@ contains
       metric=dxi_d(i,j,k,:,:)
       call spectral_rates(velocity,sound,metric,rates,valid)
       ! A finite sentinel propagates invalid state through every max reduction.
-      if(.not.valid.or.status/=0) rates=huge(1.d0)
+      if(.not.valid.or.status/=0) rates=huge(1.e0_real_kind)
       key=(int(k+k0,int64)*(ja+1)+j+j0)*(ia+1)+i+i0
       do axis=1,4
         if(rates(axis)>best(axis).or. &
@@ -112,14 +114,14 @@ contains
 
   attributes(global) subroutine cfl_finish_kernel(partial,keys,values_out,keys_out,nb)
     integer,value :: nb
-    real(8),device :: partial(4,*),values_out(4,*)
+    real(real_kind),device :: partial(4,*),values_out(4,*)
     integer(int64),device :: keys(4,*),keys_out(4,*)
     integer :: axis,b,slot
-    real(8) :: best
+    real(real_kind) :: best
     integer(int64) :: key
     axis=threadIdx%x
     if(axis>4) return
-    best=0.d0
+    best=0.e0_real_kind
     key=huge(0_int64)
     do b=1,nb
       slot=(blockIdx%x-1)*nb+b
@@ -137,12 +139,12 @@ contains
     use parallel, only: ig0,jg0,kg0
     use gpu_check, only: sync_after_kernel
     integer,intent(in) :: nprofile
-    real(8),intent(out) :: values(4),yvalues(4,0:nprofile-1)
+    real(real_kind),intent(out) :: values(4),yvalues(4,0:nprofile-1)
     integer(int64),intent(out) :: keys(4)
     logical,intent(in) :: by_plane
-    real(8),allocatable,device :: partial_d(:,:),values_d(:,:)
+    real(real_kind),allocatable,device :: partial_d(:,:),values_d(:,:)
     integer(int64),allocatable,device :: keys_d(:,:),out_keys_d(:,:)
-    real(8),allocatable :: host(:,:)
+    real(real_kind),allocatable :: host(:,:)
     integer(int64),allocatable :: host_keys(:,:)
     integer :: nb,ny,j,axis
 
@@ -165,7 +167,7 @@ contains
     do axis=1,4
       keys(axis)=minval(host_keys(axis,:),mask=host(axis,:)==values(axis))
     enddo
-    yvalues=0.d0
+    yvalues=0.e0_real_kind
     if(by_plane) then
       do j=0,jm
         yvalues(:,jg0+j)=host(:,j+1)

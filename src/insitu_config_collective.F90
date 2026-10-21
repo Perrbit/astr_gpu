@@ -1,6 +1,7 @@
 module insitu_config_collective
   use mpi
-  use iso_fortran_env, only: int64,real64
+  use iso_fortran_env, only: int64
+  use astr_precision, only: real_kind
   use insitu_run_config, only: insitu_options,read_insitu_options,insitu_max_products,canonical_slice_plane,insitu_max_views
   use adaptive_output_collective, only: agree_adaptive_bindings
   implicit none
@@ -16,15 +17,15 @@ contains
     type(insitu_options) :: candidate
     logical :: parsed,flags(10),root_flags(10),same,all_same
     integer(int64) :: counts(6),root_counts(6)
-    real(real64) :: times(9),root_times(9),plane(6)
+    real(real_kind) :: times(9),root_times(9),plane(6)
     character(1024) :: paths(14),root_paths(14)
     character(64) :: view_strings(4,insitu_max_views),root_view_strings(4,insitu_max_views)
-    real(real64) :: view_values(19,insitu_max_views),root_view_values(19,insitu_max_views)
+    real(real_kind) :: view_values(19,insitu_max_views),root_view_values(19,insitu_max_views)
     character(16) :: root_mode
     character(64) :: root_ids(insitu_max_products)
     character(16) :: root_product_modes(insitu_max_products)
     integer(int64) :: root_steps(insitu_max_products)
-    real(real64) :: root_times_product(insitu_max_products)
+    real(real_kind) :: root_times_product(insitu_max_products)
     character(1024) :: parse_message
     integer :: rank,first_bad,local_bad,ierr,int_type,real_type,i
 

@@ -16,6 +16,11 @@ if [[ ! -f "$cxx_runtime" ]]; then
   exit 2
 fi
 export LD_LIBRARY_PATH="$(dirname "$(realpath "$cxx_runtime")"):${LD_LIBRARY_PATH:-}"
+case "${PV_DEVICE_NUMERICAL_PRECISION:-fp64}" in
+  fp64) viskores_fp64_mpi=ON ;;
+  fp32) viskores_fp64_mpi=OFF ;;
+  *) printf '%s\n' 'PV_DEVICE_NUMERICAL_PRECISION must be fp32 or fp64' >&2; exit 2 ;;
+esac
 targets=()
 if [[ -n "${PV_DEVICE_TARGETS:-}" ]]; then
   read -r -a targets <<< "$PV_DEVICE_TARGETS"
@@ -69,7 +74,7 @@ cmake -S "$PV_DEVICE_SOURCE" -B "$PV_DEVICE_BUILD" -G "${CMAKE_GENERATOR:-Unix M
   -DPARAVIEW_USE_CUDA=ON \
   -DPARAVIEW_USE_VISKORES="$viskores_filters" \
   -DPARAVIEW_PLUGIN_ENABLE_VTKmFilters="$vtkm_plugin" \
-  -DASTR_VISKORES_FP64_MPI=ON \
+  -DASTR_VISKORES_FP64_MPI="$viskores_fp64_mpi" \
   -DASTR_VTK_DEVICE_RENDERING="${PV_DEVICE_RENDERING:-OFF}" \
   -DVTK_USE_X=OFF \
   -DVTK_OPENGL_HAS_EGL=ON \

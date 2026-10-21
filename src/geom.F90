@@ -7,6 +7,7 @@
 !| 03-07-2021  | Created by J. Fang                                    |
 !+---------------------------------------------------------------------+
 module geom
+  use astr_precision, only: real_kind,clock_kind
   !
   use constdef
   use parallel, only : mpirankname,mpistop,mpirank,lio,dataswap,       &
@@ -20,6 +21,7 @@ module geom
   use utility, only: timereporter
   !
   implicit none
+  private :: real_kind,clock_kind
   !
   interface pointintriangle
     module procedure pointintriangle_tri
@@ -90,7 +92,7 @@ module geom
   subroutine immsgrid
     !
     ! local data
-    real(8) :: time_beg,subtime
+    real(clock_kind) :: time_beg,subtime
     !
     time_beg=ptime() 
     !
@@ -145,13 +147,13 @@ module geom
     character(len=4) :: cscheme
     integer :: nscheme
     integer :: i,j,k,m,i1,j1,k1,i2,j2,k2
-    real(8) :: alfa(3)
-    real(8), allocatable, dimension(:,:) :: gci,gcj,gck
-    real(8), allocatable :: dx(:,:,:,:,:)
-    real(8),allocatable :: phi(:),can(:,:,:,:)
-    real(8) :: can1av,can2av,can3av,can1var,can2var,can3var
-    real(8) :: var1,var2,var3,vec1(3)
-    real(8),allocatable :: xyzwall(:,:,:)
+    real(real_kind) :: alfa(3)
+    real(real_kind), allocatable, dimension(:,:) :: gci,gcj,gck
+    real(real_kind), allocatable :: dx(:,:,:,:,:)
+    real(real_kind),allocatable :: phi(:),can(:,:,:,:)
+    real(real_kind) :: can1av,can2av,can3av,can1var,can2var,can3var
+    real(real_kind) :: var1,var2,var3,vec1(3)
+    real(real_kind),allocatable :: xyzwall(:,:,:)
     !
     allocate( dx(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3,1:3) )
     !
@@ -196,8 +198,8 @@ module geom
     enddo
     enddo
     !
-    dxyzmax=0.d0
-    dxyzmin=1.d10
+    dxyzmax=0.e0_real_kind
+    dxyzmin=1.e10_real_kind
     !
     if(ndims==1) then
       !
@@ -206,7 +208,7 @@ module geom
       j=0
       k=0
       !
-      voldom=0.d0
+      voldom=0.e0_real_kind
       do i=1,im
         allocate(cell(i,j,k)%x(2,3))
         cell(i,j,k)%x(1,:)=x(i-1,j,k,:)
@@ -231,8 +233,8 @@ module geom
         dxyzmin=min(dxyzmin,abs(dx(i,j,k,1,1)))
         !
         dgrid(i,j,k,1)=abs(dx(i,j,k,1,1))
-        dgrid(i,j,k,2)=0.d0
-        dgrid(i,j,k,3)=0.d0
+        dgrid(i,j,k,2)=0.e0_real_kind
+        dgrid(i,j,k,3)=0.e0_real_kind
         !
       enddo
       dxyzmax=pmax(dxyzmax)
@@ -243,7 +245,7 @@ module geom
       allocate( cell(1:im,1:jm,0:0) )
       k=0
       !
-      voldom=0.d0
+      voldom=0.e0_real_kind
       do j=1,jm
       do i=1,im
         allocate(cell(i,j,k)%x(4,3))
@@ -281,7 +283,7 @@ module geom
         !
         dgrid(i,j,k,1)=var1
         dgrid(i,j,k,2)=var2
-        dgrid(i,j,k,3)=0.d0
+        dgrid(i,j,k,3)=0.e0_real_kind
         !
         dxyzmax=max(dxyzmax,var1,var2)
         dxyzmin=min(dxyzmin,var1,var2)
@@ -294,7 +296,7 @@ module geom
       !
       allocate( cell(1:im,1:jm,1:km) )
       !
-      voldom=0.d0
+      voldom=0.e0_real_kind
       do k=1,km
       do j=1,jm
       do i=1,im
@@ -427,7 +429,7 @@ module geom
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     allocate( dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3,1:3) )
     !
-    dxi=0.d0
+    dxi=0.e0_real_kind
     !
     if(ndims==3) then
       !
@@ -435,27 +437,27 @@ module geom
       do k=0,km
       do j=0,jm
         !
-        phi(:)=0.5d0*(dx(-hm:im+hm,j,k,2,3)*x(-hm:im+hm,j,k,3)-           &
+        phi(:)=0.5e0_real_kind*(dx(-hm:im+hm,j,k,2,3)*x(-hm:im+hm,j,k,3)-           &
                       dx(-hm:im+hm,j,k,3,3)*x(-hm:im+hm,j,k,2))
         dxi(0:im,j,k,2,1)=dxi(0:im,j,k,2,1)+fds%central(fds_compact_i,f=phi,dim=im)
         !
-        phi(:)=0.5d0*(dx(-hm:im+hm,j,k,3,3)*x(-hm:im+hm,j,k,1)-           &
+        phi(:)=0.5e0_real_kind*(dx(-hm:im+hm,j,k,3,3)*x(-hm:im+hm,j,k,1)-           &
                       dx(-hm:im+hm,j,k,1,3)*x(-hm:im+hm,j,k,3))
         dxi(0:im,j,k,2,2)=dxi(0:im,j,k,2,2)+fds%central(fds_compact_i,f=phi,dim=im)
         !
-        phi(:)=0.5d0*(dx(-hm:im+hm,j,k,1,3)*x(-hm:im+hm,j,k,2)-           &
+        phi(:)=0.5e0_real_kind*(dx(-hm:im+hm,j,k,1,3)*x(-hm:im+hm,j,k,2)-           &
                       dx(-hm:im+hm,j,k,2,3)*x(-hm:im+hm,j,k,1))
         dxi(0:im,j,k,2,3)=dxi(0:im,j,k,2,3)+fds%central(fds_compact_i,f=phi,dim=im)
         !
-        phi(:)=0.5d0*(dx(-hm:im+hm,j,k,3,2)*x(-hm:im+hm,j,k,2)-           &
+        phi(:)=0.5e0_real_kind*(dx(-hm:im+hm,j,k,3,2)*x(-hm:im+hm,j,k,2)-           &
                       dx(-hm:im+hm,j,k,2,2)*x(-hm:im+hm,j,k,3))
         dxi(0:im,j,k,3,1)=dxi(0:im,j,k,3,1)+fds%central(fds_compact_i,f=phi,dim=im)
         !
-        phi(:)=0.5d0*(dx(-hm:im+hm,j,k,1,2)*x(-hm:im+hm,j,k,3)-           &
+        phi(:)=0.5e0_real_kind*(dx(-hm:im+hm,j,k,1,2)*x(-hm:im+hm,j,k,3)-           &
                       dx(-hm:im+hm,j,k,3,2)*x(-hm:im+hm,j,k,1))
         dxi(0:im,j,k,3,2)=dxi(0:im,j,k,3,2)+fds%central(fds_compact_i,f=phi,dim=im)
         !
-        phi(:)=0.5d0*(dx(-hm:im+hm,j,k,2,2)*x(-hm:im+hm,j,k,1)-           &
+        phi(:)=0.5e0_real_kind*(dx(-hm:im+hm,j,k,2,2)*x(-hm:im+hm,j,k,1)-           &
                       dx(-hm:im+hm,j,k,1,2)*x(-hm:im+hm,j,k,2))
         dxi(0:im,j,k,3,3)=dxi(0:im,j,k,3,3)+fds%central(fds_compact_i,f=phi,dim=im)
         !
@@ -467,27 +469,27 @@ module geom
       do k=0,km
       do i=0,im
         !
-        phi(:)=0.5d0*(dx(i,-hm:jm+hm,k,3,3)*x(i,-hm:jm+hm,k,2)-           &
+        phi(:)=0.5e0_real_kind*(dx(i,-hm:jm+hm,k,3,3)*x(i,-hm:jm+hm,k,2)-           &
                       dx(i,-hm:jm+hm,k,2,3)*x(i,-hm:jm+hm,k,3))
         dxi(i,0:jm,k,1,1)=dxi(i,0:jm,k,1,1)+fds%central(fds_compact_j,f=phi,dim=jm)
         !
-        phi(:)=0.5d0*(dx(i,-hm:jm+hm,k,1,3)*x(i,-hm:jm+hm,k,3)-           &
+        phi(:)=0.5e0_real_kind*(dx(i,-hm:jm+hm,k,1,3)*x(i,-hm:jm+hm,k,3)-           &
                       dx(i,-hm:jm+hm,k,3,3)*x(i,-hm:jm+hm,k,1))
         dxi(i,0:jm,k,1,2)=dxi(i,0:jm,k,1,2)+fds%central(fds_compact_j,f=phi,dim=jm)
         !
-        phi(:)=0.5d0*(dx(i,-hm:jm+hm,k,2,3)*x(i,-hm:jm+hm,k,1)-           &
+        phi(:)=0.5e0_real_kind*(dx(i,-hm:jm+hm,k,2,3)*x(i,-hm:jm+hm,k,1)-           &
                       dx(i,-hm:jm+hm,k,1,3)*x(i,-hm:jm+hm,k,2))
         dxi(i,0:jm,k,1,3)=dxi(i,0:jm,k,1,3)+fds%central(fds_compact_j,f=phi,dim=jm)
         !
-        phi(:)=0.5d0*(dx(i,-hm:jm+hm,k,2,1)*x(i,-hm:jm+hm,k,3)-           &
+        phi(:)=0.5e0_real_kind*(dx(i,-hm:jm+hm,k,2,1)*x(i,-hm:jm+hm,k,3)-           &
                       dx(i,-hm:jm+hm,k,3,1)*x(i,-hm:jm+hm,k,2))
         dxi(i,0:jm,k,3,1)=dxi(i,0:jm,k,3,1)+fds%central(fds_compact_j,f=phi,dim=jm)
         !
-        phi(:)=0.5d0*(dx(i,-hm:jm+hm,k,3,1)*x(i,-hm:jm+hm,k,1)-           &
+        phi(:)=0.5e0_real_kind*(dx(i,-hm:jm+hm,k,3,1)*x(i,-hm:jm+hm,k,1)-           &
                       dx(i,-hm:jm+hm,k,1,1)*x(i,-hm:jm+hm,k,3))
         dxi(i,0:jm,k,3,2)=dxi(i,0:jm,k,3,2)+fds%central(fds_compact_j,f=phi,dim=jm)
         !
-        phi(:)=0.5d0*(dx(i,-hm:jm+hm,k,1,1)*x(i,-hm:jm+hm,k,2)-           &
+        phi(:)=0.5e0_real_kind*(dx(i,-hm:jm+hm,k,1,1)*x(i,-hm:jm+hm,k,2)-           &
                       dx(i,-hm:jm+hm,k,2,1)*x(i,-hm:jm+hm,k,1))
         dxi(i,0:jm,k,3,3)=dxi(i,0:jm,k,3,3)+fds%central(fds_compact_j,f=phi,dim=jm)
       enddo
@@ -498,7 +500,7 @@ module geom
       do j=0,jm
       do i=0,im
         !
-        phi(:)=0.5d0*(dx(i,j,-hm:km+hm,2,2)*x(i,j,-hm:km+hm,3)-           &
+        phi(:)=0.5e0_real_kind*(dx(i,j,-hm:km+hm,2,2)*x(i,j,-hm:km+hm,3)-           &
                       dx(i,j,-hm:km+hm,3,2)*x(i,j,-hm:km+hm,2))
         if(lfftk) then
           dxi(i,j,0:km,1,1)=dxi(i,j,0:km,1,1)+phi(1)-phi(0)
@@ -506,7 +508,7 @@ module geom
           dxi(i,j,0:km,1,1)=dxi(i,j,0:km,1,1)+fds%central(fds_compact_k,f=phi,dim=km)
         endif
         !
-        phi(:)=0.5d0*(dx(i,j,-hm:km+hm,3,2)*x(i,j,-hm:km+hm,1)-           &
+        phi(:)=0.5e0_real_kind*(dx(i,j,-hm:km+hm,3,2)*x(i,j,-hm:km+hm,1)-           &
                       dx(i,j,-hm:km+hm,1,2)*x(i,j,-hm:km+hm,3))
         if(lfftk) then
           dxi(i,j,0:km,1,2)=dxi(i,j,0:km,1,2)+phi(1)-phi(0)
@@ -514,7 +516,7 @@ module geom
           dxi(i,j,0:km,1,2)=dxi(i,j,0:km,1,2)+fds%central(fds_compact_k,f=phi,dim=km)
         endif
         !
-        phi(:)=0.5d0*(dx(i,j,-hm:km+hm,1,2)*x(i,j,-hm:km+hm,2)-           &
+        phi(:)=0.5e0_real_kind*(dx(i,j,-hm:km+hm,1,2)*x(i,j,-hm:km+hm,2)-           &
                       dx(i,j,-hm:km+hm,2,2)*x(i,j,-hm:km+hm,1))
         if(lfftk) then
           dxi(i,j,0:km,1,3)=dxi(i,j,0:km,1,3)+phi(1)-phi(0)
@@ -522,7 +524,7 @@ module geom
           dxi(i,j,0:km,1,3)=dxi(i,j,0:km,1,3)+fds%central(fds_compact_k,f=phi,dim=km)
         endif
         !
-        phi(:)=0.5d0*(dx(i,j,-hm:km+hm,3,1)*x(i,j,-hm:km+hm,2)-           &
+        phi(:)=0.5e0_real_kind*(dx(i,j,-hm:km+hm,3,1)*x(i,j,-hm:km+hm,2)-           &
                       dx(i,j,-hm:km+hm,2,1)*x(i,j,-hm:km+hm,3))
         if(lfftk) then
           dxi(i,j,0:km,2,1)=dxi(i,j,0:km,2,1)+phi(1)-phi(0)
@@ -530,7 +532,7 @@ module geom
           dxi(i,j,0:km,2,1)=dxi(i,j,0:km,2,1)+fds%central(fds_compact_k,f=phi,dim=km)
         endif
         !
-        phi(:)=0.5d0*(dx(i,j,-hm:km+hm,1,1)*x(i,j,-hm:km+hm,3)-           &
+        phi(:)=0.5e0_real_kind*(dx(i,j,-hm:km+hm,1,1)*x(i,j,-hm:km+hm,3)-           &
                       dx(i,j,-hm:km+hm,3,1)*x(i,j,-hm:km+hm,1))
         if(lfftk) then
           dxi(i,j,0:km,2,2)=dxi(i,j,0:km,2,2)+phi(1)-phi(0)
@@ -538,7 +540,7 @@ module geom
           dxi(i,j,0:km,2,2)=dxi(i,j,0:km,2,2)+fds%central(fds_compact_k,f=phi,dim=km)
         endif
         !
-        phi(:)=0.5d0*(dx(i,j,-hm:km+hm,2,1)*x(i,j,-hm:km+hm,1)-           &
+        phi(:)=0.5e0_real_kind*(dx(i,j,-hm:km+hm,2,1)*x(i,j,-hm:km+hm,1)-           &
                       dx(i,j,-hm:km+hm,1,1)*x(i,j,-hm:km+hm,2))
         if(lfftk) then
           dxi(i,j,0:km,2,3)=dxi(i,j,0:km,2,3)+phi(1)-phi(0)
@@ -557,20 +559,20 @@ module geom
       dxi(0:im,0:jm,0:km,2,1)=-dx(0:im,0:jm,0:km,2,1)  
       dxi(0:im,0:jm,0:km,2,2)= dx(0:im,0:jm,0:km,1,1) 
       !
-      dxi(0:im,0:jm,0:km,1,3)=0.d0
-      dxi(0:im,0:jm,0:km,2,3)=0.d0
-      dxi(0:im,0:jm,0:km,3,:)=0.d0
+      dxi(0:im,0:jm,0:km,1,3)=0.e0_real_kind
+      dxi(0:im,0:jm,0:km,2,3)=0.e0_real_kind
+      dxi(0:im,0:jm,0:km,3,:)=0.e0_real_kind
       !
     elseif(ndims==1) then
       !
       dxi(0:im,0:jm,0:km,1,1)= dx(0:im,0:jm,0:km,2,2)    
       dxi(0:im,0:jm,0:km,2,2)= dx(0:im,0:jm,0:km,1,1) 
       !
-      dxi(0:im,0:jm,0:km,1,2)=0.d0
-      dxi(0:im,0:jm,0:km,2,1)=0.d0
-      dxi(0:im,0:jm,0:km,1,3)=0.d0
-      dxi(0:im,0:jm,0:km,2,3)=0.d0
-      dxi(0:im,0:jm,0:km,3,:)=0.d0
+      dxi(0:im,0:jm,0:km,1,2)=0.e0_real_kind
+      dxi(0:im,0:jm,0:km,2,1)=0.e0_real_kind
+      dxi(0:im,0:jm,0:km,1,3)=0.e0_real_kind
+      dxi(0:im,0:jm,0:km,2,3)=0.e0_real_kind
+      dxi(0:im,0:jm,0:km,3,:)=0.e0_real_kind
       !
     endif
     !
@@ -582,7 +584,7 @@ module geom
     !!!!!!!!!!!!!!!!!!!!!!!!!!!
     allocate(can(0:im,0:jm,0:km,1:3))
     !
-    can=0.d0
+    can=0.e0_real_kind
     !
     do k=0,km
     do j=0,jm
@@ -609,9 +611,9 @@ module geom
     enddo
     enddo
     !
-    can1av=0.d0
-    can2av=0.d0
-    can3av=0.d0
+    can1av=0.e0_real_kind
+    can2av=0.e0_real_kind
+    can3av=0.e0_real_kind
     if(ndims==3) then
       do k=1,km
       do j=1,jm
@@ -627,9 +629,9 @@ module geom
       end do
       end do
       end do
-      can1av=psum(can1av)/real(ia*ja*ka,8)
-      can2av=psum(can2av)/real(ia*ja*ka,8)
-      can3av=psum(can3av)/real(ia*ja*ka,8)
+      can1av=psum(can1av)/real(ia*ja*ka,real_kind)
+      can2av=psum(can2av)/real(ia*ja*ka,real_kind)
+      can3av=psum(can3av)/real(ia*ja*ka,real_kind)
     elseif(ndims==2) then
       k=0
       do j=1,jm
@@ -644,14 +646,14 @@ module geom
         !
       end do
       end do
-      can1av=psum(can1av)/real(ia*ja,8)
-      can2av=psum(can2av)/real(ia*ja,8)
-      can3av=psum(can3av)/real(ia*ja,8)
+      can1av=psum(can1av)/real(ia*ja,real_kind)
+      can2av=psum(can2av)/real(ia*ja,real_kind)
+      can3av=psum(can3av)/real(ia*ja,real_kind)
     endif
     !
-    can1var=0.d0
-    can2var=0.d0
-    can3var=0.d0
+    can1var=0.e0_real_kind
+    can2var=0.e0_real_kind
+    can3var=0.e0_real_kind
     !
     if(ndims==3) then
       do k=1,km
@@ -663,9 +665,9 @@ module geom
       end do
       end do
       end do
-      can1var=psum(can1var)/real(ia*ja*ka,8)
-      can2var=psum(can2var)/real(ia*ja*ka,8)
-      can3var=psum(can3var)/real(ia*ja*ka,8)
+      can1var=psum(can1var)/real(ia*ja*ka,real_kind)
+      can2var=psum(can2var)/real(ia*ja*ka,real_kind)
+      can3var=psum(can3var)/real(ia*ja*ka,real_kind)
     elseif(ndims==2) then
       do j=1,jm
       do i=1,im
@@ -674,9 +676,9 @@ module geom
         can3var=can3var+(can(i,j,k,3)-can3av)**2
       end do
       end do
-      can1var=psum(can1var)/real(ia*ja,8)
-      can2var=psum(can2var)/real(ia*ja,8)
-      can3var=psum(can3var)/real(ia*ja,8)
+      can1var=psum(can1var)/real(ia*ja,real_kind)
+      can2var=psum(can2var)/real(ia*ja,real_kind)
+      can3var=psum(can3var)/real(ia*ja,real_kind)
     endif
     !
     !
@@ -748,8 +750,8 @@ module geom
       vec1(:)=x(i+1,j,k,:)-x(i,j,k,:)
       ! vec1 is the vector pointing to the inner domain
       !
-      if(dot_product(vec1,bnorm_i0(j,k,:))<0.d0) then
-        bnorm_i0=-1.d0*bnorm_i0
+      if(dot_product(vec1,bnorm_i0(j,k,:))<0.e0_real_kind) then
+        bnorm_i0=-1.e0_real_kind*bnorm_i0
         ! reverse the vector is the vector is not pointing to the inner domain
       endif
       !
@@ -772,8 +774,8 @@ module geom
       vec1(:)=x(i-1,j,k,:)-x(i,j,k,:)
       ! vec1 is the vector pointing to the inner domain
       !
-      if(dot_product(vec1,bnorm_im(j,k,:))<0.d0) then
-        bnorm_im=-1.d0*bnorm_im
+      if(dot_product(vec1,bnorm_im(j,k,:))<0.e0_real_kind) then
+        bnorm_im=-1.e0_real_kind*bnorm_im
         ! reverse the vector is the vector is not pointing to the inner domain
       endif
       !
@@ -796,8 +798,8 @@ module geom
       vec1(:)=x(i,j+1,k,:)-x(i,j,k,:)
       ! vec1 is the vector pointing to the inner domain
       !
-      if(dot_product(vec1,bnorm_j0(i,k,:))<0.d0) then
-        bnorm_j0=-1.d0*bnorm_j0
+      if(dot_product(vec1,bnorm_j0(i,k,:))<0.e0_real_kind) then
+        bnorm_j0=-1.e0_real_kind*bnorm_j0
         ! reverse the vector is the vector is not pointing to the inner domain
       endif
       !
@@ -820,8 +822,8 @@ module geom
       vec1(:)=x(i,j-1,k,:)-x(i,j,k,:)
       ! vec1 is the vector pointing to the inner domain
       !
-      if(dot_product(vec1,bnorm_jm(i,k,:))<0.d0) then
-        bnorm_jm=-1.d0*bnorm_jm
+      if(dot_product(vec1,bnorm_jm(i,k,:))<0.e0_real_kind) then
+        bnorm_jm=-1.e0_real_kind*bnorm_jm
         ! reverse the vector is the vector is not pointing to the inner domain
       endif
       !
@@ -844,8 +846,8 @@ module geom
       vec1(:)=x(i,j,k+1,:)-x(i,j,k,:)
       ! vec1 is the vector pointing to the inner domain
       !
-      if(dot_product(vec1,bnorm_k0(i,j,:))<0.d0) then
-        bnorm_k0=-1.d0*bnorm_k0
+      if(dot_product(vec1,bnorm_k0(i,j,:))<0.e0_real_kind) then
+        bnorm_k0=-1.e0_real_kind*bnorm_k0
         ! reverse the vector is the vector is not pointing to the inner domain
       endif
       !
@@ -868,8 +870,8 @@ module geom
       vec1(:)=x(i,j,k-1,:)-x(i,j,k,:)
       ! vec1 is the vector pointing to the inner domain
       !
-      if(dot_product(vec1,bnorm_km(i,j,:))<0.d0) then
-        bnorm_km=-1.d0*bnorm_km
+      if(dot_product(vec1,bnorm_km(i,j,:))<0.e0_real_kind) then
+        bnorm_km=-1.e0_real_kind*bnorm_km
         ! reverse the vector is the vector is not pointing to the inner domain
       endif
       !
@@ -932,11 +934,11 @@ module geom
       write(*,"(1X,3(1X,E20.7E3))")can1var,can2var,can3var
       write(*,'(2X,62A)')('-',i=1,62)
       !
-      if(can1av>1d-15 .or. can2av>1d-15 .or. can3av>1d-15) then
+      if(can1av>1e-15_real_kind .or. can2av>1e-15_real_kind .or. can3av>1e-15_real_kind) then
         write(*,*)' !! Warning: Averaged Grids Identity is too large'
         write(*,'(2X,62A)')('-',i=1,62)
       end if
-      if(can1var>1d-15 .or. can2var>1d-15 .or. can3var>1d-15) then
+      if(can1var>1e-15_real_kind .or. can2var>1e-15_real_kind .or. can3var>1e-15_real_kind) then
         write(*,*)' !! Warning: Variance of Grids Identity is too large'
         write(*,'(2X,62A)')('-',i=1,62)
       end if
@@ -1012,7 +1014,7 @@ module geom
     type(solid),pointer :: pso
     logical,allocatable :: marker(:,:,:)
     logical :: linsold
-    real(8) :: xp(3),pcdir(3),dist
+    real(real_kind) :: xp(3),pcdir(3),dist
     !
     if(lio) print*,' ** identifying solid nodes ...'
     !
@@ -1039,8 +1041,8 @@ module geom
           !
           pcdir=pso%xcen(:)-xp
           dist=pcdir(1)**2+pcdir(2)**2+pcdir(3)**2
-          if(dist>1.d-10) then
-            xp=xp+1.d-4*dxyzmin*pcdir/sqrt(dist)
+          if(dist>1.e-10_real_kind) then
+            xp=xp+1.e-4_real_kind*dxyzmin*pcdir/sqrt(dist)
           endif
           !
           if(xp(1)<pso%xmin(1) .or.  xp(1)>pso%xmax(1) .or.    &
@@ -1406,12 +1408,12 @@ module geom
     !
     ! arguments
     type(nodcel),intent(in) :: acell
-    real(8),intent(in) :: p(3)
+    real(real_kind),intent(in) :: p(3)
     logical,intent(out) :: lin
     logical,intent(in),optional :: debug
     !
     type(solid) :: scell
-    real(8) :: norm1(3),norm2(3),var1(3)
+    real(real_kind) :: norm1(3),norm2(3),var1(3)
     integer :: n
     logical :: ldebg
     !
@@ -1463,7 +1465,7 @@ module geom
         !
         call scell%alloface()
         !
-        scell%xcen(:)=0.125d0*( acell%x(1,:)+acell%x(2,:) + & 
+        scell%xcen(:)=0.125e0_real_kind*( acell%x(1,:)+acell%x(2,:) + & 
                                 acell%x(3,:)+acell%x(4,:) + &
                                 acell%x(5,:)+acell%x(6,:) + &
                                 acell%x(7,:)+acell%x(8,:)   )
@@ -1527,7 +1529,7 @@ module geom
                               scell%face(n)%c-scell%face(n)%a  )
           norm2=scell%face(n)%b-scell%xcen
           !
-          if(dot_product(norm1,norm2)<0.d0) then
+          if(dot_product(norm1,norm2)<0.e0_real_kind) then
             var1=scell%face(n)%a
             scell%face(n)%a=scell%face(n)%c
             scell%face(n)%c=var1
@@ -1626,12 +1628,12 @@ module geom
             bnodes(counter)%igh(2)=j+jg0
             bnodes(counter)%igh(3)=k+kg0
             !
-            bnodes(counter)%ximag(:)=2.d0*bnodes(counter)%x(:)-x(i,j,k,:)
+            bnodes(counter)%ximag(:)=2.e0_real_kind*bnodes(counter)%x(:)-x(i,j,k,:)
             !
             bnodes(counter)%dis2image=dis2point(bnodes(counter)%x,bnodes(counter)%ximag)
             bnodes(counter)%dis2ghost=dis2point(bnodes(counter)%x,x(i,j,k,:))
             !
-            if(dis2point(bnodes(counter)%x,x(i,j,k,:))<dxyzmin*0.01d0) then
+            if(dis2point(bnodes(counter)%x,x(i,j,k,:))<dxyzmin*0.01e0_real_kind) then
               ! the distance of node to wall is less thant 1/100 of 
               ! the min grid spacing
               bnodes(counter)%nodetype='b'
@@ -1697,12 +1699,12 @@ module geom
           bnodes(counter)%igh(2)=j+jg0
           bnodes(counter)%igh(3)=k+kg0
           !
-          bnodes(counter)%ximag(:)=2.d0*bnodes(counter)%x(:)-x(i,j,k,:)
+          bnodes(counter)%ximag(:)=2.e0_real_kind*bnodes(counter)%x(:)-x(i,j,k,:)
           !
           bnodes(counter)%dis2image=dis2point(bnodes(counter)%x,bnodes(counter)%ximag)
           bnodes(counter)%dis2ghost=dis2point(bnodes(counter)%x,x(i,j,k,:))
           
-          if(dis2point(bnodes(counter)%x,x(i,j,k,:))<dxyzmin*0.01d0) then
+          if(dis2point(bnodes(counter)%x,x(i,j,k,:))<dxyzmin*0.01e0_real_kind) then
             ! the distance of node to wall is less thant 1/100 of 
             ! the min grid spacing
             bnodes(counter)%nodetype='b'
@@ -1779,8 +1781,8 @@ module geom
     ! local data
     integer(8),allocatable :: i_cell(:)
     integer :: jb,i,j,k,ncou,ijk(3)
-    real(8) :: time_beg,subtime
-    real(8) :: deltamv,xintcell(3)
+    real(clock_kind) :: time_beg,subtime
+    real(real_kind) :: deltamv,xintcell(3)
     logical,allocatable :: icell_marker(:)
     type(sboun),pointer :: pbon
     !
@@ -1855,7 +1857,7 @@ module geom
       !
       do jb=1,size(immbond)
         !
-        deltamv=0.d0
+        deltamv=0.e0_real_kind
         !
         pbon=>immbond(jb)
         !
@@ -1881,7 +1883,7 @@ module geom
           ! extend the ximag
           deltamv=pmax(deltamv)
           !
-          xintcell=pbon%ximag+pbon%normdir*(deltamv+0.01d0*dxyzmin)
+          xintcell=pbon%ximag+pbon%normdir*(deltamv+0.01e0_real_kind*dxyzmin)
           pbon%ximag=xintcell
           !
           pbon%dis2image=dis2point(pbon%x,pbon%ximag)
@@ -2000,7 +2002,7 @@ module geom
     !
     integer :: jb,ncou,k1,i,j,k,ic,jc,kc,ii,jj,kk
     type(sboun),pointer :: pbon
-    real(8) :: epsilon=1.d-12
+    real(real_kind) :: epsilon=1.e-12_real_kind
     !
     if(ndims==2) then
       k1=0
@@ -2087,7 +2089,7 @@ module geom
     !
     integer :: jb,i,j,k,ic,jc,kc,m,ncord
     type(sboun),pointer :: pbon
-    real(8),allocatable :: xcell(:,:),Tm1(:,:),Ti1(:,:),xvec(:)
+    real(real_kind),allocatable :: xcell(:,:),Tm1(:,:),Ti1(:,:),xvec(:)
     !
     ncord=2**ndims
     allocate(Tm1(1:ncord,1:ncord),xcell(1:ncord,1:3),xvec(1:ncord))
@@ -2115,7 +2117,7 @@ module geom
             Tm1(m,1)=xcell(m,1)*xcell(m,2)
             Tm1(m,2)=xcell(m,1)
             Tm1(m,3)=xcell(m,2)
-            Tm1(m,4)=1.d0
+            Tm1(m,4)=1.e0_real_kind
             !
           enddo
           !
@@ -2126,7 +2128,7 @@ module geom
           xvec(1)=pbon%ximag(1)*pbon%ximag(2)
           xvec(2)=pbon%ximag(1)
           xvec(3)=pbon%ximag(2)
-          xvec(4)=1.d0
+          xvec(4)=1.e0_real_kind
           !
           do m=1,4
             pbon%coef_dirichlet(m)=dot_product(xvec,Ti1(:,m))
@@ -2149,7 +2151,7 @@ module geom
             Tm1(m,5)=xcell(m,1)
             Tm1(m,6)=xcell(m,2)
             Tm1(m,7)=xcell(m,3)
-            Tm1(m,8)=1.d0
+            Tm1(m,8)=1.e0_real_kind
             !
           enddo
           !
@@ -2164,7 +2166,7 @@ module geom
           xvec(5)=immbond(jb)%ximag(1)
           xvec(6)=immbond(jb)%ximag(2)
           xvec(7)=immbond(jb)%ximag(3)
-          xvec(8)=1.d0
+          xvec(8)=1.e0_real_kind
           !
           do m=1,8
             pbon%coef_dirichlet(m)=dot_product(xvec,Ti1(:,m))
@@ -2221,7 +2223,7 @@ module geom
     logical :: anytrue,lfex,lnewfile
     integer :: fhand,frecd,total_mpiranks,ncout
     !
-    real(8) :: time_beg,time_cos,time_sav
+    real(clock_kind) :: time_beg,time_cos,time_sav
     !
     time_beg=ptime() 
     !
@@ -2511,11 +2513,11 @@ module geom
     type(nodcel),intent(in) :: acell
     type(sboun),intent(in) :: abond
     logical,intent(in),optional :: debug
-    real(8) :: xincep(3)
+    real(real_kind) :: xincep(3)
     !
     ! local data
     integer :: n
-    real(8) :: x1(4,3),x2(4,3),p(3),dir(3),xint(3),dist,distmax
+    real(real_kind) :: x1(4,3),x2(4,3),p(3),dir(3),xint(3),dist,distmax
     type(triangle) :: atri(12)
     logical :: lintercept
     !
@@ -2530,7 +2532,7 @@ module geom
       x1(3,:)=acell%x(3,:); x2(3,:)=acell%x(4,:)
       x1(4,:)=acell%x(4,:); x2(4,:)=acell%x(1,:)
       !
-      distmax=-1.d10
+      distmax=-1.e10_real_kind
       do n=1,4
         !
         call ray2segment(x1(n,:),x2(n,:),p,dir,xint,lintercept)
@@ -2613,7 +2615,7 @@ module geom
                                       atri(n)%c-atri(n)%a  )
       enddo
       !
-      distmax=-1.d10
+      distmax=-1.e10_real_kind
       do n=1,12
         call ray2triangle(atri(n),p,dir,xint,lintercept)
         !
@@ -2655,7 +2657,7 @@ module geom
     use commarray, only : x,cell
     !
     ! arguments
-    real(8),intent(in) :: p(3)
+    real(real_kind),intent(in) :: p(3)
     integer,intent(out) :: ijk(3)
     logical,intent(in),optional :: debug
     !
@@ -2709,7 +2711,7 @@ module geom
     use commarray, only : x,cell
     !
     ! arguments
-    real(8),intent(in) :: p(3)
+    real(real_kind),intent(in) :: p(3)
     integer :: ijk(3)
     !
     !
@@ -2717,7 +2719,7 @@ module geom
     type :: subdomaim
       integer :: level,i0,j0,k0,im,jm,km
       integer :: next(8)
-      real(8) :: xmin(3),xmax(3)
+      real(real_kind) :: xmin(3),xmax(3)
     end type subdomaim
     !
     type(subdomaim),allocatable,save :: domain(:)
@@ -2837,8 +2839,8 @@ module geom
         ks=domain(id)%k0
         ke=domain(id)%km
         !
-        domain(id)%xmin= 1.d10
-        domain(id)%xmax=-1.d10
+        domain(id)%xmin= 1.e10_real_kind
+        domain(id)%xmax=-1.e10_real_kind
         do k=ks,ke
         do j=js,je
         do i=is,ie
@@ -3015,12 +3017,12 @@ module geom
     !
     ! local data
     integer :: jf,n,counter,largn
-    real(8) :: var1
-    real(8),dimension(3) :: norm1,a,b,c
-    real(8),allocatable ::  psav(:,:)
-    real(8) :: epsilon
+    real(real_kind) :: var1
+    real(real_kind),dimension(3) :: norm1,a,b,c
+    real(real_kind),allocatable ::  psav(:,:)
+    real(real_kind) :: epsilon
     !
-    epsilon=2.5d-6
+    epsilon=2.5e-6_real_kind
     largn=10000
     !
     allocate(psav(3,largn))
@@ -3092,9 +3094,9 @@ module geom
       var1=sqrt(norm1(1)**2+norm1(2)**2+norm1(3)**2)
       norm1=norm1/var1
       !
-      if(dot_product(norm1,asolid%face(jf)%normdir)>0.d0) then
+      if(dot_product(norm1,asolid%face(jf)%normdir)>0.e0_real_kind) then
         asolid%face(jf)%normdir=norm1
-      elseif(dot_product(norm1,asolid%face(jf)%normdir)<0.d0) then
+      elseif(dot_product(norm1,asolid%face(jf)%normdir)<0.e0_real_kind) then
         asolid%face(jf)%normdir=-norm1
       else
         print*,'face number=',jf
@@ -3127,16 +3129,16 @@ module geom
     !
     ! arguments
     type(solid),intent(inout),target :: asolid
-    real(8),intent(in) :: zsec
+    real(real_kind),intent(in) :: zsec
     !
     ! local data
     integer :: i,jf,je,nedge,nemax
     type(lsegment),allocatable :: edge_temp(:)
     type(triangle),pointer :: aface
-    real(8) :: dz2,dz1,epsilon,tange(2),norma(2),n2cen(2)
+    real(real_kind) :: dz2,dz1,epsilon,tange(2),norma(2),n2cen(2)
     logical :: lbpoint
     !
-    epsilon=1.d-12
+    epsilon=1.e-12_real_kind
     !
     nemax=asolid%num_face
     !
@@ -3272,11 +3274,11 @@ module geom
     !
     asolid%edge(1:nedge)=edge_temp(1:nedge)
     !
-    asolid%xcen=0.d0
+    asolid%xcen=0.e0_real_kind
     do je=1,asolid%num_edge
-      asolid%xcen(1:2)=asolid%xcen(1:2)+0.5d0*(asolid%edge(je)%a+asolid%edge(je)%b)
+      asolid%xcen(1:2)=asolid%xcen(1:2)+0.5e0_real_kind*(asolid%edge(je)%a+asolid%edge(je)%b)
     enddo
-    asolid%xcen=asolid%xcen/dble(asolid%num_edge)
+    asolid%xcen=asolid%xcen/real(asolid%num_edge,real_kind)
     asolid%xcen(3)=zsec
     !
     print*,' ** center of the solid: ',asolid%xcen
@@ -3287,14 +3289,14 @@ module geom
       norma(1)=-tange(2)/sqrt(tange(1)**2+tange(2)**2)
       norma(2)= tange(1)/sqrt(tange(1)**2+tange(2)**2)
       !
-      if(sqrt(tange(1)**2+tange(2)**2)<1.d-16) then
+      if(sqrt(tange(1)**2+tange(2)**2)<1.e-16_real_kind) then
         print*,' !! ERROR: the two ends of the edge is two close'
         print*,je,asolid%edge(je)%a,':',asolid%edge(je)%b
       endif
       !
-      n2cen=0.5d0*(asolid%edge(je)%a+asolid%edge(je)%b)-asolid%xcen(1:2)
+      n2cen=0.5e0_real_kind*(asolid%edge(je)%a+asolid%edge(je)%b)-asolid%xcen(1:2)
       !
-      if(dot_product(norma,n2cen)>=0.d0) then
+      if(dot_product(norma,n2cen)>=0.e0_real_kind) then
         !
         asolid%edge(je)%normdir=norma
         !
@@ -3332,10 +3334,10 @@ module geom
     ! local data
     integer :: i,jf,je,nedge,nemax
     type(lsegment),allocatable :: edge_temp(:)
-    real(8) :: dz,epsilon,nz
+    real(real_kind) :: dz,epsilon,nz
     logical :: lbpoint
     !
-    epsilon=1.d-12
+    epsilon=1.e-12_real_kind
     !
     nemax=asolid%num_face*3
     !
@@ -3345,7 +3347,7 @@ module geom
     do jf=1,asolid%num_face
       !
       dz=abs(asolid%face(jf)%a(3)-asolid%xmin(3))
-      nz=abs(abs(asolid%face(jf)%normdir(3))-1.d0)
+      nz=abs(abs(asolid%face(jf)%normdir(3))-1.e0_real_kind)
       !
       if(dz<=epsilon .and. nz>epsilon) then
         nedge=nedge+1
@@ -3356,7 +3358,7 @@ module geom
       endif
       !
       dz=abs(asolid%face(jf)%b(3)-asolid%xmin(3))
-      nz=abs(abs(asolid%face(jf)%normdir(3))-1.d0)
+      nz=abs(abs(asolid%face(jf)%normdir(3))-1.e0_real_kind)
       !
       if(dz<=epsilon .and. nz>epsilon) then
         !
@@ -3376,7 +3378,7 @@ module geom
       if(.not. lbpoint) cycle
       !
       dz=abs(asolid%face(jf)%c(3)-asolid%xmin(3))
-      nz=abs(abs(asolid%face(jf)%normdir(3))-1.d0)
+      nz=abs(abs(asolid%face(jf)%normdir(3))-1.e0_real_kind)
       !
       if(dz<=epsilon .and. nz>epsilon) then
         !
@@ -3434,10 +3436,10 @@ module geom
     !
     ! local data
     integer :: i,jf,jedge
-    real(8) :: var1
+    real(real_kind) :: var1
     !
-    asolid%xmin=1.d10
-    asolid%xmax=-1.d10
+    asolid%xmin=1.e10_real_kind
+    asolid%xmax=-1.e10_real_kind
     do jf=1,asolid%num_face
       do i=1,3
         asolid%xmin(i)=min(asolid%xmin(i),                         &
@@ -3460,7 +3462,7 @@ module geom
       !
       asolid%face(jf)%normdir=asolid%face(jf)%normdir/sqrt(var1)
       !
-      if(asolid%face(jf)%area<1.d-16) then
+      if(asolid%face(jf)%area<1.e-16_real_kind) then
         print*,' !! WARNING @ solidrange'
         print*,jf
         print*,asolid%face(jf)%a,'-',asolid%face(jf)%b,'-',asolid%face(jf)%c
@@ -3473,7 +3475,7 @@ module geom
                                      asolid%face(jf)%c(:) )
     enddo
     !
-    asolid%xcen(:)=0.5d0*(asolid%xmin(:)+asolid%xmax(:))
+    asolid%xcen(:)=0.5e0_real_kind*(asolid%xmin(:)+asolid%xmax(:))
     !
     write(*,'(A,A)')      '  solid: ',asolid%name
     write(*,'(2(A,E15.7E3))')'    x: ',asolid%xmin(1),'~',asolid%xmax(1)
@@ -3524,7 +3526,7 @@ module geom
     elseif(trim(inputcmd)=='edge') then
       !
       do jedge=1,size(asolid%edge)
-        asolid%edge(jedge)%cen=0.5d0*(asolid%edge(jedge)%a+asolid%edge(jedge)%b)
+        asolid%edge(jedge)%cen=0.5e0_real_kind*(asolid%edge(jedge)%a+asolid%edge(jedge)%b)
         asolid%edge(jedge)%length=dis2point(asolid%edge(jedge)%a,asolid%edge(jedge)%b)
       enddo
       !
@@ -3548,7 +3550,7 @@ module geom
     !
     ! arguments
     type(solid),intent(inout) :: asolid
-    real(8),intent(in) :: scale
+    real(real_kind),intent(in) :: scale
     !
     ! local data
     integer :: i,jf
@@ -3587,7 +3589,7 @@ module geom
     !
     ! arguments
     type(solid),intent(inout) :: asolid
-    real(8),intent(in) :: x,y,z
+    real(real_kind),intent(in) :: x,y,z
     !
     ! local data
     integer :: i,jf
@@ -3631,25 +3633,25 @@ module geom
     !
     ! arguments
     type(solid),intent(inout) :: asolid
-    real(8),intent(in) :: theta,vec(3)
+    real(real_kind),intent(in) :: theta,vec(3)
     !
     ! local data
     integer :: i,jf
-    real(8) :: rotmat(3,3),a,vec_xyz(3,3),vec_abc(3,3)
+    real(real_kind) :: rotmat(3,3),a,vec_xyz(3,3),vec_abc(3,3)
     !
-    a=theta/180.d0*pi
+    a=theta/180.e0_real_kind*pi
     !
-    rotmat(1,1)=(1.d0-cos(a))*vec(1)*vec(1)+cos(a)
-    rotmat(1,2)=(1.d0-cos(a))*vec(1)*vec(2)-sin(a)*vec(3)
-    rotmat(1,3)=(1.d0-cos(a))*vec(1)*vec(3)+sin(a)*vec(2)
+    rotmat(1,1)=(1.e0_real_kind-cos(a))*vec(1)*vec(1)+cos(a)
+    rotmat(1,2)=(1.e0_real_kind-cos(a))*vec(1)*vec(2)-sin(a)*vec(3)
+    rotmat(1,3)=(1.e0_real_kind-cos(a))*vec(1)*vec(3)+sin(a)*vec(2)
     !
-    rotmat(2,1)=(1.d0-cos(a))*vec(1)*vec(2)+sin(a)*vec(3)
-    rotmat(2,2)=(1.d0-cos(a))*vec(2)*vec(2)+cos(a)
-    rotmat(2,3)=(1.d0-cos(a))*vec(2)*vec(3)-sin(a)*vec(1)
+    rotmat(2,1)=(1.e0_real_kind-cos(a))*vec(1)*vec(2)+sin(a)*vec(3)
+    rotmat(2,2)=(1.e0_real_kind-cos(a))*vec(2)*vec(2)+cos(a)
+    rotmat(2,3)=(1.e0_real_kind-cos(a))*vec(2)*vec(3)-sin(a)*vec(1)
     !
-    rotmat(3,1)=(1.d0-cos(a))*vec(1)*vec(3)-sin(a)*vec(2)
-    rotmat(3,2)=(1.d0-cos(a))*vec(2)*vec(3)+sin(a)*vec(1)
-    rotmat(3,3)=(1.d0-cos(a))*vec(3)*vec(3)+cos(a)
+    rotmat(3,1)=(1.e0_real_kind-cos(a))*vec(1)*vec(3)-sin(a)*vec(2)
+    rotmat(3,2)=(1.e0_real_kind-cos(a))*vec(2)*vec(3)+sin(a)*vec(1)
+    rotmat(3,3)=(1.e0_real_kind-cos(a))*vec(3)*vec(3)+cos(a)
     !
     ! print*,rotmat(1,:)
     ! print*,rotmat(2,:)
@@ -3703,15 +3705,15 @@ module geom
     !
     ! arguments
     type(solid),intent(in) :: asolid
-    real(kind=8),intent(in) :: p(3)
+    real(real_kind),intent(in) :: p(3)
     character(len=1),intent(in) :: dir
     logical,intent(in),optional :: debug
     type(sboun),intent(out) :: bnode
     !
     ! local data
     integer :: jface,jedge,jfsave
-    real(8) :: dismin,dis,var1
-    real(8) :: nodeb(3),nodesave(3),vec(3),bnx(3)
+    real(real_kind) :: dismin,dis,var1
+    real(real_kind) :: nodeb(3),nodesave(3),vec(3),bnx(3)
     logical :: ldeg
     !
     if(present(debug)) then
@@ -3720,7 +3722,7 @@ module geom
       ldeg=.false.
     endif
     !
-    dismin=1.d10
+    dismin=1.e10_real_kind
     !
     if(ndims==2) then
       !
@@ -3821,15 +3823,15 @@ module geom
     !
     ! arguments
     type(solid),intent(in) :: asolid
-    real(kind=8),intent(in) :: p(3)
+    real(real_kind),intent(in) :: p(3)
     logical :: inside
     !
     ! local data
     integer :: i
-    real(8) :: t,var1,var2,var3,epsilon
-    real(8) :: a(2),b(2)
+    real(real_kind) :: t,var1,var2,var3,epsilon
+    real(real_kind) :: a(2),b(2)
     
-    epsilon=1.d-16
+    epsilon=1.e-16_real_kind
     !
     inside = .false.
 
@@ -3854,7 +3856,7 @@ module geom
             t=(p(1)-b(1))-(p(2)-b(2))*(a(1)-p(1))/(a(2)-p(2))
           endif
           !
-          if ( t < 0.d0 ) then
+          if ( t < 0.e0_real_kind ) then
             inside = .not. inside
           end if
         end if
@@ -3928,32 +3930,32 @@ module geom
     !
     ! arguments
     type(solid),intent(in) :: asolid
-    real(kind=8),intent(in) :: p(3)
+    real(real_kind),intent(in) :: p(3)
     logical,intent(in),optional :: debug
     !
     ! local data
     integer, parameter :: dim_num = 3, face_order_max = 3
     !
-    real(kind=8) area
+    real(real_kind) area
     integer jface
     integer face_order
     logical inside
-    real(kind=8), parameter :: pi = 3.141592653589793d+00
-    real(kind=8), parameter :: epsilon = 1.d-12
-    real(kind=8) solid_angle
-    real(kind=8) v_face(dim_num,face_order_max)
-    real(8) :: p2(3),norm(3),var1
+    real(real_kind), parameter :: pi = 3.141592653589793e+00_real_kind
+    real(real_kind), parameter :: epsilon = 1.e-12_real_kind
+    real(real_kind) solid_angle
+    real(real_kind) v_face(dim_num,face_order_max)
+    real(real_kind) :: p2(3),norm(3),var1
     
     norm=p-asolid%xcen
     var1=sqrt(norm(1)**2+norm(2)**2+norm(3)**2)
-    if(var1>epsilon*10.d0) then
+    if(var1>epsilon*10.e0_real_kind) then
       norm=norm/var1
       p2=p-norm*epsilon
     else
       p2=p
     endif
 
-    area = 0.0d+00
+    area = 0.0e+00_real_kind
     face_order=3
     
     do jface = 1, asolid%num_face
@@ -3975,7 +3977,7 @@ module geom
       print*,'area=',area
     endif
     !
-    if ( area < -2.0d+00 * pi .or. 2.0d+00 * pi < area ) then
+    if ( area < -2.0e+00_real_kind * pi .or. 2.0e+00_real_kind * pi < area ) then
       inside = .true.
     else
       inside = .false.
@@ -4004,17 +4006,17 @@ module geom
     use commfunc, only : dis2point
     !
     type(lsegment),intent(in) :: edge
-    real(8),intent(in) :: p(3)
+    real(real_kind),intent(in) :: p(3)
     character(len=1),intent(in) :: dir
     logical,intent(in),optional :: debug
-    real(8),intent(out) :: distance
-    real(8),intent(out) :: intpoint(3),nodir(3)
+    real(real_kind),intent(out) :: distance
+    real(real_kind),intent(out) :: intpoint(3),nodir(3)
     !
     ! local data
-    real(8) :: unitvect(2),ip(2)
-    real(8) :: var1,var2,var3,d1
+    real(real_kind) :: unitvect(2),ip(2)
+    real(real_kind) :: var1,var2,var3,d1
     logical :: ldeg,linout
-    real(8) :: epsilon=1.d-12
+    real(real_kind) :: epsilon=1.e-12_real_kind
     !
     if(present(debug)) then
       ldeg=debug
@@ -4040,7 +4042,7 @@ module geom
     ip=p(1:2)+d1*unitvect
     !
     nodir(1:2)=unitvect
-    nodir(3)=0.d0
+    nodir(3)=0.e0_real_kind
     !
     var1=sqrt((p(1)-edge%a(1))**2+(p(2)-edge%a(2))**2)
     var2=sqrt((p(1)-edge%b(1))**2+(p(2)-edge%b(2))**2)
@@ -4062,14 +4064,14 @@ module geom
       endif
       !
       nodir(1:2)=p(1:2)-ip
-      nodir(3)=0.d0
+      nodir(3)=0.e0_real_kind
       !
       nodir=nodir/sqrt(nodir(1)**2+nodir(2)**2)
       !
     endif
     !
     intpoint(1:2)=ip(1:2)
-    intpoint(3)  =0.d0
+    intpoint(3)  =0.e0_real_kind
     !
     return
     !
@@ -4093,15 +4095,15 @@ module geom
     use commfunc, only : dis2point
     !
     type(triangle),intent(in) :: tria
-    real(8),intent(in) :: p(3)
+    real(real_kind),intent(in) :: p(3)
     character(len=1),intent(in) :: dir
     logical,intent(in),optional :: debug
-    real(8),intent(out) :: distance
-    real(8),intent(out) :: intpoint(3),nodir(3)
+    real(real_kind),intent(out) :: distance
+    real(real_kind),intent(out) :: intpoint(3),nodir(3)
     !
     ! local data
-    real(8) :: unitvect(3),vectoa(3)
-    real(8) :: var1
+    real(real_kind) :: unitvect(3),vectoa(3)
+    real(real_kind) :: var1
     logical :: ldeg,linout
     !
     if(present(debug)) then
@@ -4182,14 +4184,14 @@ module geom
     !
     ! arguments
     type(triangle),intent(in) :: tria
-    real(8),intent(in) :: p(3)
+    real(real_kind),intent(in) :: p(3)
     logical :: lin
     !
     ! local data
-    real(8) :: pa(3),pb(3),pc(3),t1(3),t2(3),t3(3),v0(3),v1(3),v2(3)
-    real(8) :: a1,a2,a3,error,var1,var2,dot00,dot01,dot02,dot11,dot12, &
+    real(real_kind) :: pa(3),pb(3),pc(3),t1(3),t2(3),t3(3),v0(3),v1(3),v2(3)
+    real(real_kind) :: a1,a2,a3,error,var1,var2,dot00,dot01,dot02,dot11,dot12, &
                inverDeno,u,v
-    real(8) :: epsilon
+    real(real_kind) :: epsilon
     !
     ! epsilon=1.d-12
     ! !
@@ -4241,7 +4243,7 @@ module geom
     dot11 = dot_product(v1,v1)
     dot12 = dot_product(v1,v2)
 
-    inverDeno = 1.d0 / (dot00 * dot11 - dot01 * dot01) 
+    inverDeno = 1.e0_real_kind / (dot00 * dot11 - dot01 * dot01) 
     
     u = (dot11 * dot02 - dot01 * dot12) * inverDeno
 
@@ -4254,7 +4256,7 @@ module geom
     endif
     ! print*,' ** u=',u
     !
-    if (u < 0.d0 .or. u > 1.d0) then
+    if (u < 0.e0_real_kind .or. u > 1.e0_real_kind) then
       ! if u out of range, return directly
       lin=.false.
       return
@@ -4262,13 +4264,13 @@ module geom
     !
     v = (dot00 * dot12 - dot01 * dot02) * inverDeno
     ! print*,' ** v=',v
-    if (v < 0.d0 .or. v > 1.d0) then
+    if (v < 0.e0_real_kind .or. v > 1.e0_real_kind) then
       ! if v out of range, return directly
       lin=.false.
       return 
     endif
     !
-    if(u + v <= 1.d0) then
+    if(u + v <= 1.e0_real_kind) then
       lin=.true.
     else
       lin=.false.
@@ -4284,14 +4286,14 @@ module geom
     use ieee_arithmetic, only: ieee_is_nan
     !
     ! arguments
-    real(8),intent(in) :: a(3),b(3),c(3),p(3)
+    real(real_kind),intent(in) :: a(3),b(3),c(3),p(3)
     logical :: lin
     !
     ! local data
-    real(8) :: pa(3),pb(3),pc(3),t1(3),t2(3),t3(3),v0(3),v1(3),v2(3)
-    real(8) :: a1,a2,a3,error,var1,var2,dot00,dot01,dot02,dot11,dot12, &
+    real(real_kind) :: pa(3),pb(3),pc(3),t1(3),t2(3),t3(3),v0(3),v1(3),v2(3)
+    real(real_kind) :: a1,a2,a3,error,var1,var2,dot00,dot01,dot02,dot11,dot12, &
                inverDeno,u,v
-    real(8) :: epsilon
+    real(real_kind) :: epsilon
     logical :: lab,lac,lbc
     !
     ! add a discrimination if the point is on the line segment
@@ -4314,7 +4316,7 @@ module geom
     dot11 = dot_product(v1,v1)
     dot12 = dot_product(v1,v2)
 
-    inverDeno = 1.d0 / (dot00 * dot11 - dot01 * dot01) 
+    inverDeno = 1.e0_real_kind / (dot00 * dot11 - dot01 * dot01) 
     
     u = (dot11 * dot02 - dot01 * dot12) * inverDeno
 
@@ -4326,7 +4328,7 @@ module geom
     endif
     ! print*,' ** u=',u
     !
-    if (u < 0.d0 .or. u > 1.d0) then
+    if (u < 0.e0_real_kind .or. u > 1.e0_real_kind) then
       ! if u out of range, return directly
       lin=.false.
       return
@@ -4334,13 +4336,13 @@ module geom
     !
     v = (dot00 * dot12 - dot01 * dot02) * inverDeno
     ! print*,' ** v=',v
-    if (v < 0.d0 .or. v > 1.d0) then
+    if (v < 0.e0_real_kind .or. v > 1.e0_real_kind) then
       ! if v out of range, return directly
       lin=.false.
       return 
     endif
     !
-    if(u + v <= 1.d0) then
+    if(u + v <= 1.e0_real_kind) then
       lin=.true.
     else
       lin=.false.
@@ -4358,17 +4360,17 @@ module geom
   !+-------------------------------------------------------------------+
   function pnsegment(a,b,p) result(lint)
     !
-    real(8),intent(in)  :: a(3),b(3),p(3)
+    real(real_kind),intent(in)  :: a(3),b(3),p(3)
     logical :: lint
     !
-    real(8) :: vec1(3),vec2(3),vec3(3),norm,kab,kap
+    real(real_kind) :: vec1(3),vec2(3),vec3(3),norm,kab,kap
     !
     vec1=b-a
     vec2=p-a
     !
     call geo_dvec_cross_3d(vec1,vec2,vec3)
     !
-    if(abs(vec3(1))<1.d-16 .and. abs(vec3(2))<1.d-16 .and. abs(vec3(3))<1.d-16) then
+    if(abs(vec3(1))<1.e-16_real_kind .and. abs(vec3(2))<1.e-16_real_kind .and. abs(vec3(3))<1.e-16_real_kind) then
       kap=dot_product(vec1,vec2)
       kab=dot_product(vec1,vec1)
       !
@@ -4426,39 +4428,39 @@ module geom
     !
     use commfunc, only : dis2point2
     ! arguments
-    real(8),intent(in)  :: x1(3),x2(3),p(3),dir(3)
-    real(8),intent(out) :: xint(3)
+    real(real_kind),intent(in)  :: x1(3),x2(3),p(3),dir(3)
+    real(real_kind),intent(out) :: xint(3)
     logical :: lint
     !
     ! local data
-    real(8) :: t,u,var1,dis12,dis1p,disp2
+    real(real_kind) :: t,u,var1,dis12,dis1p,disp2
     if(ndims==2) then
       !
       var1=-(x1(1)-x2(1))*dir(2)+(x1(2)-x2(2))*dir(1)
       !
-      if(abs(var1)<1.d-16) then
+      if(abs(var1)<1.e-16_real_kind) then
         ! The segment is parallel to the ray, check if p is on x1-x2
         !
         lint=.false.
-        xint(1)=0.d0
-        xint(2)=0.d0
-        xint(3)=0.d0
+        xint(1)=0.e0_real_kind
+        xint(2)=0.e0_real_kind
+        xint(3)=0.e0_real_kind
         !
       else
         t=(-(x1(1)-p(1)) *dir(2)+(x1(2)-p(2))*dir(1))/var1
         u=( (x2(1)-x1(1))*(x1(2)-p(2)) - (x2(2)-x1(2))*(x1(1)-p(1)))/var1
         !
-        if(u>=0.d0 .and. t>=0.d0 .and. t<=1.d0 ) then
+        if(u>=0.e0_real_kind .and. t>=0.e0_real_kind .and. t<=1.e0_real_kind ) then
           lint=.true.
           !
           xint(1)=p(1)+dir(1)*u
           xint(2)=p(2)+dir(2)*u
-          xint(3)=0.d0
+          xint(3)=0.e0_real_kind
         else
           lint=.false.
-          xint(1)=0.d0
-          xint(2)=0.d0
-          xint(3)=0.d0
+          xint(1)=0.e0_real_kind
+          xint(2)=0.e0_real_kind
+          xint(3)=0.e0_real_kind
         endif
         !
       endif
@@ -4491,15 +4493,15 @@ module geom
     !
     ! arguments
     type(triangle),intent(in) :: tria
-    real(8),intent(in) :: p(3),dir(3)
+    real(real_kind),intent(in) :: p(3),dir(3)
     logical,intent(out) :: intertri
-    real(8),intent(out) :: pintersection(3)
+    real(real_kind),intent(out) :: pintersection(3)
     !
     ! local data
     integer :: i,j
-    real(8) :: vec1(3),vec2(3),intpoint(3),d,d2,ldn
-    real(8) :: epsilon=1.d-12
-    real(8) :: trxmin(3),trxmax(3)
+    real(real_kind) :: vec1(3),vec2(3),intpoint(3),d,d2,ldn
+    real(real_kind) :: epsilon=1.e-12_real_kind
+    real(real_kind) :: trxmin(3),trxmax(3)
     !
     !
     ldn=dot_product(dir,tria%normdir)
@@ -4513,7 +4515,7 @@ module geom
       ! the ray line is parallel to the plane
       !
       intertri=.false.
-      pintersection=(/1.d10,1.d10,1.d10/)
+      pintersection=(/1.e10_real_kind,1.e10_real_kind,1.e10_real_kind/)
       !
     else
       !
@@ -4526,7 +4528,7 @@ module geom
       if(intertri) then
         pintersection=intpoint
       else
-        pintersection=(/1.d10,1.d10,1.d10/)
+        pintersection=(/1.e10_real_kind,1.e10_real_kind,1.e10_real_kind/)
       endif
       !
     endif
@@ -4587,27 +4589,27 @@ module geom
     integer, parameter :: dim_num = 3
     integer n
   
-    real(kind=8) a(dim_num)
-    real(kind=8) angle
-    real(kind=8) area
-    real(kind=8) b(dim_num)
+    real(real_kind) a(dim_num)
+    real(real_kind) angle
+    real(real_kind) area
+    real(real_kind) b(dim_num)
     integer i
     integer j
     integer jp1
-    real(kind=8) normal1(dim_num)
-    real(kind=8) normal1_norm
-    real(kind=8) normal2(dim_num)
-    real(kind=8) normal2_norm
-    real(kind=8) p(dim_num)
-    real(kind=8), parameter :: pi = 3.141592653589793D+00
-    real(kind=8) plane(dim_num)
-    real(kind=8) r1(dim_num)
-    real(kind=8) s
-    real(kind=8) solid_angle
-    real(kind=8) v(dim_num,n)
+    real(real_kind) normal1(dim_num)
+    real(real_kind) normal1_norm
+    real(real_kind) normal2(dim_num)
+    real(real_kind) normal2_norm
+    real(real_kind) p(dim_num)
+    real(real_kind), parameter :: pi = 3.141592653589793e+00_real_kind
+    real(real_kind) plane(dim_num)
+    real(real_kind) r1(dim_num)
+    real(real_kind) s
+    real(real_kind) solid_angle
+    real(real_kind) v(dim_num,n)
   
     if ( n < 3 ) then
-      solid_angle = 0.0D+00
+      solid_angle = 0.0e+00_real_kind
       return
     end if
   
@@ -4615,7 +4617,7 @@ module geom
    
     a(1:dim_num) = v(1:dim_num,n) - v(1:dim_num,1)
   
-    area = 0.0D+00
+    area = 0.0e+00_real_kind
   
     do j = 1, n
   
@@ -4640,7 +4642,7 @@ module geom
   
       s = dvec_triple_product ( b, a, plane )
   
-      if ( 0.0D+00 < s ) then
+      if ( 0.0e+00_real_kind < s ) then
         area = area + pi - angle
       else
         area = area + pi + angle
@@ -4650,9 +4652,9 @@ module geom
   
     end do
   
-    area = area - pi * real ( n - 2, kind = 8 )
+    area = area - pi * real ( n - 2,real_kind)
   
-    if ( 0.0D+00 < dot_product ( plane(1:dim_num), r1(1:dim_num) ) ) then
+    if ( 0.0e+00_real_kind < dot_product ( plane(1:dim_num), r1(1:dim_num) ) ) then
       solid_angle = -area
     else
       solid_angle = area
@@ -4678,15 +4680,15 @@ module geom
     use commtype,  only : sboun
     use commvar,   only : nondimen
     !
-    real(8),intent(in) :: xp(3)
+    real(real_kind),intent(in) :: xp(3)
     logical,intent(out),optional :: inside
     type(sboun),intent(out),optional :: bnode
     !
-    real(8) :: dis1,dis2
-    real(8) :: step_upper_y,step_right_x
+    real(real_kind) :: dis1,dis2
+    real(real_kind) :: step_upper_y,step_right_x
     !
-    step_right_x=7.324749976d-02
-    step_upper_y=0.d0
+    step_right_x=7.324749976e-02_real_kind
+    step_upper_y=0.e0_real_kind
     !
     ! if(.not.nondimen)then 
     !   step_right_x=step_right_x*1.d-3
@@ -4707,17 +4709,17 @@ module geom
           bnode%x(2)=xp(2)
           bnode%x(3)=xp(3)
           !
-          bnode%normdir(1)=1.d0
-          bnode%normdir(2)=0.d0
-          bnode%normdir(3)=0.d0
+          bnode%normdir(1)=1.e0_real_kind
+          bnode%normdir(2)=0.e0_real_kind
+          bnode%normdir(3)=0.e0_real_kind
         else
           bnode%x(1)=xp(1)
           bnode%x(2)=step_upper_y
           bnode%x(3)=xp(3)
           !
-          bnode%normdir(1)=0.d0
-          bnode%normdir(2)=1.d0
-          bnode%normdir(3)=0.d0
+          bnode%normdir(1)=0.e0_real_kind
+          bnode%normdir(2)=1.e0_real_kind
+          bnode%normdir(3)=0.e0_real_kind
         endif
         !
       endif
@@ -4745,16 +4747,16 @@ module geom
     !
     use commtype,  only : sboun
     !
-    real(8),intent(in) :: xp(3)
+    real(real_kind),intent(in) :: xp(3)
     logical,intent(out),optional :: inside
     type(sboun),intent(out),optional :: bnode
     !
-    real(8) :: dis1,dis2
-    real(8) :: step_upper_y,step_right_x,step_left_x
+    real(real_kind) :: dis1,dis2
+    real(real_kind) :: step_upper_y,step_right_x,step_left_x
     !
-    step_left_x=10.00000000005d0
-    step_right_x=20.d0
-    step_upper_y=1.d-12
+    step_left_x=10.00000000005e0_real_kind
+    step_right_x=20.e0_real_kind
+    step_upper_y=1.e-12_real_kind
     !
     if(xp(2)<step_upper_y .and. xp(1)<=step_left_x) then
       !
@@ -4770,17 +4772,17 @@ module geom
           bnode%x(2)=xp(2)
           bnode%x(3)=xp(3)
           !
-          bnode%normdir(1)=1.d0
-          bnode%normdir(2)=0.d0
-          bnode%normdir(3)=0.d0
+          bnode%normdir(1)=1.e0_real_kind
+          bnode%normdir(2)=0.e0_real_kind
+          bnode%normdir(3)=0.e0_real_kind
         else
           bnode%x(1)=xp(1)
           bnode%x(2)=step_upper_y
           bnode%x(3)=xp(3)
           !
-          bnode%normdir(1)=0.d0
-          bnode%normdir(2)=1.d0
-          bnode%normdir(3)=0.d0
+          bnode%normdir(1)=0.e0_real_kind
+          bnode%normdir(2)=1.e0_real_kind
+          bnode%normdir(3)=0.e0_real_kind
         endif
         !
       endif
@@ -4799,17 +4801,17 @@ module geom
           bnode%x(2)=xp(2)
           bnode%x(3)=xp(3)
           !
-          bnode%normdir(1)=-1.d0
-          bnode%normdir(2)=0.d0
-          bnode%normdir(3)=0.d0
+          bnode%normdir(1)=-1.e0_real_kind
+          bnode%normdir(2)=0.e0_real_kind
+          bnode%normdir(3)=0.e0_real_kind
         else
           bnode%x(1)=xp(1)
           bnode%x(2)=step_upper_y
           bnode%x(3)=xp(3)
           !
-          bnode%normdir(1)=0.d0
-          bnode%normdir(2)=1.d0
-          bnode%normdir(3)=0.d0
+          bnode%normdir(1)=0.e0_real_kind
+          bnode%normdir(2)=1.e0_real_kind
+          bnode%normdir(3)=0.e0_real_kind
         endif
         !
       endif
@@ -4835,21 +4837,21 @@ module geom
   pure function nodes_in_mvg(x,y,z) result (inside)
     !
     logical :: inside
-    real(8),intent(in) :: x,y,z
+    real(real_kind),intent(in) :: x,y,z
     !
     ! local data
-    real(8) :: xmin,xmax,ymin,ymax,zmin,zmax,zc,yh,gamma,beta
+    real(real_kind) :: xmin,xmax,ymin,ymax,zmin,zmax,zc,yh,gamma,beta
     !
     inside=.false.
     !
-    xmin=10.d0
-    xmax=xmin+2.523597d0
-    zc=1.25d0
+    xmin=10.e0_real_kind
+    xmax=xmin+2.523597e0_real_kind
+    zc=1.25e0_real_kind
     !
-    gamma=0.4193491958d0
-    beta=0.150927957d0
+    gamma=0.4193491958e0_real_kind
+    beta=0.150927957e0_real_kind
     !
-    ymin=0.d0
+    ymin=0.e0_real_kind
     ymax=(x-xmin)*tan(beta)+ymin
     !
     zmin=zc-(xmax-x)*tan(gamma)
@@ -4860,7 +4862,7 @@ module geom
       inside=.true.
     endif
     !
-    zc=3.75d0
+    zc=3.75e0_real_kind
     zmin=zc-(xmax-x)*tan(gamma)
     zmax=zc+(xmax-x)*tan(gamma)
     !
@@ -4977,17 +4979,17 @@ module geom
   !
   !    Output, real(kind=8) ARC_COSINE, an angle whose cosine is C.
   !+-------------------------------------------------------------------+
-  real(kind=8) function arc_cosine ( c )
+  real(real_kind) function arc_cosine ( c )
   
     !
     implicit none
   
-    real(kind=8) c
-    real(kind=8) c2
+    real(real_kind) c
+    real(real_kind) c2
   
     c2 = c
-    c2 = max ( c2, -1.0D+00 )
-    c2 = min ( c2, +1.0D+00 )
+    c2 = max ( c2, -1.0e+00_real_kind )
+    c2 = min ( c2, +1.0e+00_real_kind )
   
     arc_cosine = acos ( c2 )
   
@@ -5036,9 +5038,9 @@ module geom
   
     integer, parameter :: dim_num = 3
   
-    real(kind=8) v1(dim_num)
-    real(kind=8) v2(dim_num)
-    real(kind=8) v3(dim_num)
+    real(real_kind) v1(dim_num)
+    real(real_kind) v2(dim_num)
+    real(real_kind) v3(dim_num)
   
     v3(1) = v1(2) * v2(3) - v1(3) * v2(2)
     v3(2) = v1(3) * v2(1) - v1(1) * v2(3)
@@ -5071,13 +5073,13 @@ module geom
   !
   !    Output, real(kind=8) DVEC_LENGTH, the Euclidean length of the vector.
   !+-------------------------------------------------------------------+
-  real(kind=8) function dvec_length ( dim_num, x )
+  real(real_kind) function dvec_length ( dim_num, x )
   
     implicit none
   
     integer dim_num
      
-    real(kind=8) x(dim_num)
+    real(real_kind) x(dim_num)
   
     dvec_length = sqrt ( sum ( ( x(1:dim_num) )**2 ) )
   
@@ -5123,16 +5125,16 @@ module geom
   !
   !    Output, real(kind=8) DVEC_TRIPLE_PRODUCT, the triple product.
   !+-------------------------------------------------------------------+
-  real(kind=8) function dvec_triple_product ( v1, v2, v3 )
+  real(real_kind) function dvec_triple_product ( v1, v2, v3 )
   
     implicit none
   
     integer, parameter :: dim_num = 3
   
-    real(kind=8) v1(dim_num)
-    real(kind=8) v2(dim_num)
-    real(kind=8) v3(dim_num)
-    real(kind=8) v4(dim_num)
+    real(real_kind) v1(dim_num)
+    real(real_kind) v2(dim_num)
+    real(real_kind) v3(dim_num)
+    real(real_kind) v4(dim_num)
   
     call geo_dvec_cross_3d ( v2, v3, v4 )
   
@@ -5271,14 +5273,14 @@ module geom
   
     integer i
     integer j
-    real(kind=8) normal(dim_num)
-    real(kind=8) normal_norm
-    real(kind=8) p(dim_num)
-    real(kind=8) v(dim_num,n)
-    real(kind=8) v1(dim_num)
-    real(kind=8) v2(dim_num)
+    real(real_kind) normal(dim_num)
+    real(real_kind) normal_norm
+    real(real_kind) p(dim_num)
+    real(real_kind) v(dim_num,n)
+    real(real_kind) v1(dim_num)
+    real(real_kind) v2(dim_num)
   
-    normal(1:dim_num) = 0.0D+00
+    normal(1:dim_num) = 0.0e+00_real_kind
   
     v1(1:dim_num) = v(1:dim_num,2) - v(1:dim_num,1)
   
@@ -5298,7 +5300,7 @@ module geom
   !
     normal_norm = dvec_length ( dim_num, normal )
   
-    if ( normal_norm == 0.0D+00 ) then
+    if ( normal_norm == 0.0e+00_real_kind ) then
       return
     end if
   
@@ -5324,10 +5326,10 @@ module geom
     use commfunc, only: cross_product
     !
     ! arguments
-    real(8),intent(in) :: a(3),b(3),c(3),p(3)
+    real(real_kind),intent(in) :: a(3),b(3),c(3),p(3)
     !
     ! local data
-    real(8) :: ab(3),ac(3),ap(3),v1(3),v2(3),var1
+    real(real_kind) :: ab(3),ac(3),ap(3),v1(3),v2(3),var1
     !
     ab = b - a
     ac = c - a
@@ -5339,7 +5341,7 @@ module geom
     ! v1 and v2 should point to the same direction
     var1=dot_product(v1,v2)
     !
-    if(var1>=0.d0) then
+    if(var1>=0.e0_real_kind) then
       sameside=.true.
     else
       sameside=.false.

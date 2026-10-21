@@ -1,32 +1,34 @@
 module commarray_gpu
+  use astr_precision, only: real_kind,real_bytes
   use cudafor
   implicit none
+  private :: real_kind,real_bytes
   integer,parameter :: GPU_FILTER_WORKSPACE_FULL=0
   integer,parameter :: GPU_FILTER_WORKSPACE_SCALAR=1
   integer,save :: gpu_filter_workspace_mode=GPU_FILTER_WORKSPACE_SCALAR
   logical,save :: gpu_filter_workspace_configured=.false.
-  real(8),allocatable,device :: q_d(:,:,:,:),qrhs_d(:,:,:,:),qsave_d(:,:,:,:),qwork_d(:,:,:,:)
-  real(8),allocatable,device :: filter_work_d(:,:,:)
-  real(8),allocatable,device :: rho_d(:,:,:),prs_d(:,:,:),tmp_d(:,:,:)
-  real(8),allocatable,device :: tve_d(:,:,:),spc_d(:,:,:,:)
-  real(8),allocatable,device :: vel_d(:,:,:,:),jacob_d(:,:,:),x_d(:,:,:,:)
-  real(8),allocatable,device :: dxi_d(:,:,:,:,:)
-  real(8),allocatable,device :: bnorm_i0_d(:,:,:),bnorm_im_d(:,:,:), &
+  real(real_kind),allocatable,device :: q_d(:,:,:,:),qrhs_d(:,:,:,:),qsave_d(:,:,:,:),qwork_d(:,:,:,:)
+  real(real_kind),allocatable,device :: filter_work_d(:,:,:)
+  real(real_kind),allocatable,device :: rho_d(:,:,:),prs_d(:,:,:),tmp_d(:,:,:)
+  real(real_kind),allocatable,device :: tve_d(:,:,:),spc_d(:,:,:,:)
+  real(real_kind),allocatable,device :: vel_d(:,:,:,:),jacob_d(:,:,:),x_d(:,:,:,:)
+  real(real_kind),allocatable,device :: dxi_d(:,:,:,:,:)
+  real(real_kind),allocatable,device :: bnorm_i0_d(:,:,:),bnorm_im_d(:,:,:), &
                                 bnorm_j0_d(:,:,:),bnorm_jm_d(:,:,:), &
                                 bnorm_k0_d(:,:,:),bnorm_km_d(:,:,:)
-  real(8),allocatable,device :: dvel_d(:,:,:,:,:),dtmp_d(:,:,:,:)
-  real(8),allocatable,device :: dspc_d(:,:,:,:,:),dtve_d(:,:,:,:)
-  real(8),allocatable,device :: sigma_d(:,:,:,:),qflux_d(:,:,:,:)
-  real(8),allocatable,device :: species_flux_d(:,:,:,:,:),ev_flux_d(:,:,:,:)
-  real(8),allocatable,device :: diffusion_ratio_d(:,:,:,:)
-  real(8),allocatable,device :: convection_fluid_ratio_d(:,:,:,:)
-  real(8),allocatable,device :: diffusion_energy_ratio_d(:,:,:,:),species_energy_flux_d(:,:,:,:)
+  real(real_kind),allocatable,device :: dvel_d(:,:,:,:,:),dtmp_d(:,:,:,:)
+  real(real_kind),allocatable,device :: dspc_d(:,:,:,:,:),dtve_d(:,:,:,:)
+  real(real_kind),allocatable,device :: sigma_d(:,:,:,:),qflux_d(:,:,:,:)
+  real(real_kind),allocatable,device :: species_flux_d(:,:,:,:,:),ev_flux_d(:,:,:,:)
+  real(real_kind),allocatable,device :: diffusion_ratio_d(:,:,:,:)
+  real(real_kind),allocatable,device :: convection_fluid_ratio_d(:,:,:,:)
+  real(real_kind),allocatable,device :: diffusion_energy_ratio_d(:,:,:,:),species_energy_flux_d(:,:,:,:)
   real(4),allocatable,device :: dvel_sp_d(:,:,:,:,:),dtmp_sp_d(:,:,:,:)
   real(4),allocatable,device :: sigma_sp_d(:,:,:,:),qflux_sp_d(:,:,:,:)
-  real(8),allocatable,device :: flux_work_d(:,:,:),flux_characteristic_work_d(:,:,:,:)
+  real(real_kind),allocatable,device :: flux_work_d(:,:,:),flux_characteristic_work_d(:,:,:,:)
   real(4),allocatable,device :: flux_work_sp_d(:,:,:)
   real(4),allocatable,device :: flux_characteristic_work_sp_d(:,:,:,:)
-  real(8),allocatable,device :: shock_sensor_d(:,:,:,:)
+  real(real_kind),allocatable,device :: shock_sensor_d(:,:,:,:)
   integer(1),allocatable,device :: shock_mask_d(:,:,:)
   logical,device :: expanded_shock_halo_d=.false.
   logical,allocatable,device :: crinod_d(:,:,:)
@@ -224,11 +226,11 @@ contains
     elseif(gpu_scalar_filter_workspace_enabled() .and. lfilter) then
       if(.not.allocated(filter_work_d)) &
         allocate(filter_work_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
-      workspace_bytes=int(im+2*hm+1,8)*int(jm+2*hm+1,8)*int(km+2*hm+1,8)*8_8
+      workspace_bytes=int(im+2*hm+1,8)*int(jm+2*hm+1,8)*int(km+2*hm+1,8)*real_bytes
       if(lio) write(*,'(A)') ' ** GPU filter workspace storage: scalar'
     else
       if(.not.allocated(qwork_d)) allocate(qwork_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq))
-      workspace_bytes=int(im+2*hm+1,8)*int(jm+2*hm+1,8)*int(km+2*hm+1,8)*int(numq,8)*8_8
+      workspace_bytes=int(im+2*hm+1,8)*int(jm+2*hm+1,8)*int(km+2*hm+1,8)*int(numq,8)*real_bytes
       if(lio .and. gpu_scalar_filter_workspace_enabled()) then
         write(*,'(A)') ' ** GPU filter workspace storage: full compatibility (lfilter=f)'
       elseif(lio) then
@@ -276,7 +278,7 @@ contains
           allocate(diffusion_energy_ratio_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1))
         if(.not.allocated(species_energy_flux_d)) &
           allocate(species_energy_flux_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6))
-        species_energy_flux_d=0.d0
+        species_energy_flux_d=0.e0_real_kind
       endif
 #endif
       if(.not.allocated(dspc_d)) allocate(dspc_d(0:im,0:jm,0:km,1:num_species,1:3))
@@ -324,7 +326,7 @@ contains
         if(.not.allocated(flux_work_d)) &
           allocate(flux_work_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
         flux_workspace_bytes=int(im+2*hm+1,8)*int(jm+2*hm+1,8)* &
-          int(km+2*hm+1,8)*8_8
+          int(km+2*hm+1,8)*real_bytes
       endif
       if(lio) write(*,'(A,I0)') 'ASTR_GPU_FLUX_WORKSPACE_BYTES=',flux_workspace_bytes
     endif
@@ -414,12 +416,12 @@ contains
     jacob_d = jacob
     x_d = x
     dxi_d = dxi
-    bnorm_i0_d = 0.d0
-    bnorm_im_d = 0.d0
-    bnorm_j0_d = 0.d0
-    bnorm_jm_d = 0.d0
-    bnorm_k0_d = 0.d0
-    bnorm_km_d = 0.d0
+    bnorm_i0_d = 0.e0_real_kind
+    bnorm_im_d = 0.e0_real_kind
+    bnorm_j0_d = 0.e0_real_kind
+    bnorm_jm_d = 0.e0_real_kind
+    bnorm_k0_d = 0.e0_real_kind
+    bnorm_km_d = 0.e0_real_kind
     if(allocated(bnorm_i0)) bnorm_i0_d = bnorm_i0
     if(allocated(bnorm_im)) bnorm_im_d = bnorm_im
     if(allocated(bnorm_j0)) bnorm_j0_d = bnorm_j0
@@ -455,8 +457,8 @@ contains
   attributes(global) subroutine save_q_stats_snapshot_kernel(q,qsave,im,jm,km,hm,numq)
     implicit none
     integer,value :: im,jm,km,hm,numq
-    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq)
-    real(8),device :: qsave(0:im,0:jm,0:km,1:numq)
+    real(real_kind),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq)
+    real(real_kind),device :: qsave(0:im,0:jm,0:km,1:numq)
     integer :: id,n,i,j,k,m
 
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
@@ -472,8 +474,8 @@ contains
   attributes(global) subroutine restore_q_stats_snapshot_kernel(q,qsave,im,jm,km,hm,numq)
     implicit none
     integer,value :: im,jm,km,hm,numq
-    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq)
-    real(8),device :: qsave(0:im,0:jm,0:km,1:numq)
+    real(real_kind),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq)
+    real(real_kind),device :: qsave(0:im,0:jm,0:km,1:numq)
     integer :: id,n,i,j,k,m
 
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
@@ -555,7 +557,7 @@ contains
     use gpu_check, only: sync_gpu_boundary
     implicit none
     character(len=*),intent(in) :: label
-    real(8),allocatable :: qh(:,:,:,:),rhsh(:,:,:,:),qsaveh(:,:,:,:),jh(:,:,:)
+    real(real_kind),allocatable :: qh(:,:,:,:),rhsh(:,:,:,:),qsaveh(:,:,:,:),jh(:,:,:)
     integer :: nan_q,nan_rhs,nan_j
 
     call sync_gpu_boundary('report_gpu_state')

@@ -6,8 +6,10 @@
 !| 22-Jul-2022  | Created by J. Fang @ Warrington                      |
 !+---------------------------------------------------------------------+
 module interp
+  use astr_precision, only: real_kind
   !
   implicit none
+  private :: real_kind
   !
   interface interlinear
     module procedure linear1d_s
@@ -24,10 +26,10 @@ module interp
   !+-------------------------------------------------------------------+
   function linear1d_s(xx1,xx2,yy1,yy2,xx) result(yy)
     !
-    real(8),intent(in) :: xx1,xx2,yy1,yy2,xx
-    real(8) :: yy
+    real(real_kind),intent(in) :: xx1,xx2,yy1,yy2,xx
+    real(real_kind) :: yy
     !
-    real(8) :: var1
+    real(real_kind) :: var1
     !
     var1=(yy2-yy1)/(xx2-xx1)
     yy=var1*(xx-xx1)+yy1
@@ -38,11 +40,11 @@ module interp
   !
   function linear1d_a1(xx1,xx2,yy1,yy2,xx) result(yy)
     !
-    real(8),intent(in) :: xx1,xx2,xx
-    real(8),intent(in) ::  yy1(:),yy2(:)
-    real(8) :: yy(1:size(yy1))
+    real(real_kind),intent(in) :: xx1,xx2,xx
+    real(real_kind),intent(in) ::  yy1(:),yy2(:)
+    real(real_kind) :: yy(1:size(yy1))
     !
-    real(8) :: var1
+    real(real_kind) :: var1
     !
     var1=(xx-xx1)/(xx2-xx1)
     yy=(yy2-yy1)*var1+yy1
@@ -53,11 +55,11 @@ module interp
   !
   function linear1d_a2(xx1,xx2,yy1,yy2,xx) result(yy)
     !
-    real(8),intent(in) :: xx1,xx2,xx
-    real(8),intent(in) ::  yy1(:,:),yy2(:,:)
-    real(8) :: yy(1:size(yy1,1),1:size(yy1,2))
+    real(real_kind),intent(in) :: xx1,xx2,xx
+    real(real_kind),intent(in) ::  yy1(:,:),yy2(:,:)
+    real(real_kind) :: yy(1:size(yy1,1),1:size(yy1,2))
     !
-    real(8) :: var1
+    real(real_kind) :: var1
     !
     var1=(xx-xx1)/(xx2-xx1)
     yy=(yy2-yy1)*var1+yy1
@@ -68,8 +70,8 @@ module interp
   !
   function linear1d_arrayin(x1,y1,xx,mode) result(yy)
     !
-    real(8),intent(in) :: x1(:),y1(:),xx
-    real(8) :: yy
+    real(real_kind),intent(in) :: x1(:),y1(:),xx
+    real(real_kind) :: yy
     character(len=3),intent(in),optional :: mode
     !
     integer :: dim,i
@@ -80,14 +82,14 @@ module interp
       if(present(mode) .and. mode=='---') then
         yy=y1(1)
       else
-        yy=2.d0*y1(1)-y1(2)
+        yy=2.e0_real_kind*y1(1)-y1(2)
       endif
     elseif(xx>=x1(dim)) then
       ! yy=linear1d_s(x1(dim-1),x1(dim),y1(dim-1),y1(dim),xx)
       if(present(mode) .and. mode=='---') then
         yy=y1(dim)
       else
-        yy=2.d0*y1(dim)-y1(dim-1)
+        yy=2.e0_real_kind*y1(dim)-y1(dim-1)
       endif
     else
       do i=2,dim
@@ -106,8 +108,8 @@ module interp
   !
   function linear1d_array2array(x,y,xx,mode) result(yy)
 
-    real(8),intent(in) :: x(:),y(:),xx(:)
-    real(8) :: yy(size(xx))
+    real(real_kind),intent(in) :: x(:),y(:),xx(:)
+    real(real_kind) :: yy(size(xx))
     character(len=3),intent(in),optional :: mode
 
     integer :: i,m,n,j
@@ -130,9 +132,9 @@ module interp
         elseif(act_mod=='end') then
           yy(j)=y(1)
         elseif(act_mod=='dec') then
-          yy(j)=y(1)*exp(-5.d0*(x(1)-xx(j)))
+          yy(j)=y(1)*exp(-5.e0_real_kind*(x(1)-xx(j)))
         elseif(act_mod=='zer') then
-          yy(j)=0.d0
+          yy(j)=0.e0_real_kind
         else
           print*,'act_mod',act_mod
           stop ' erro 1 @ linear1d_array2array'
@@ -143,9 +145,9 @@ module interp
         elseif(act_mod=='end') then
           yy(j)=y(m)
         elseif(act_mod=='dec') then
-          yy(j)=y(m)*exp(-5.d0*(xx(j)-x(m)))
+          yy(j)=y(m)*exp(-5.e0_real_kind*(xx(j)-x(m)))
         elseif(act_mod=='zer') then
-          yy(j)=0.d0
+          yy(j)=0.e0_real_kind
         else
           stop ' erro 2 @ linear1d_array2array'
         endif
@@ -159,7 +161,7 @@ module interp
         enddo
       endif
 
-      if(abs(yy(j))<1.d-16) yy(j)=0.d0 
+      if(abs(yy(j))<1.e-16_real_kind) yy(j)=0.e0_real_kind 
 
     enddo
 

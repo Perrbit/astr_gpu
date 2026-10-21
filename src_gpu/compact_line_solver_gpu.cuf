@@ -1,7 +1,8 @@
 module compact_line_solver_gpu
   use cudafor
   use mpi
-  use iso_fortran_env, only: real64,int64
+  use iso_fortran_env, only: int64
+  use astr_precision, only: real_kind,real_bytes
   use compact_line_solver, only: compact_matrix,compact_block_factors,prepare_compact_blocks
   use gpu_check, only: check_kernel_launch,sync_gpu_boundary
   implicit none
@@ -16,12 +17,12 @@ module compact_line_solver_gpu
     integer :: n=0,tiles=0,reduced_n=0,capacity=0,tile_capacity=0,max_levels=0,reduced_levels=0
     integer(int64) :: device_bytes=0_int64
     logical :: cyclic=.false.
-    real(real64) :: h11=1.d0,h12=0.d0,h21=0.d0,h22=1.d0
+    real(real_kind) :: h11=1.e0_real_kind,h12=0.e0_real_kind,h21=0.e0_real_kind,h22=1.e0_real_kind
     integer,allocatable,device :: first(:),last(:),owner(:),levels(:)
-    real(real64),allocatable,device :: initial_inverse(:,:),left(:,:,:),right(:,:,:),inverse(:,:,:)
-    real(real64),allocatable,device :: edge_lower(:),edge_upper(:),response_left(:),response_right(:)
-    real(real64),allocatable,device :: reduced_initial(:),reduced_left(:,:),reduced_right(:,:),reduced_inverse(:,:)
-    real(real64),allocatable,device :: cyclic_response(:,:),local_work(:,:),reduced0(:,:),reduced1(:,:)
+    real(real_kind),allocatable,device :: initial_inverse(:,:),left(:,:,:),right(:,:,:),inverse(:,:,:)
+    real(real_kind),allocatable,device :: edge_lower(:),edge_upper(:),response_left(:),response_right(:)
+    real(real_kind),allocatable,device :: reduced_initial(:),reduced_left(:,:),reduced_right(:,:),reduced_inverse(:,:)
+    real(real_kind),allocatable,device :: cyclic_response(:,:),local_work(:,:),reduced0(:,:),reduced1(:,:)
   end type
 contains
   subroutine configure_compact_execution()
@@ -132,31 +133,31 @@ contains
       2_int64*t+2_int64*n+int(r,int64)*(3_int64+3_int64*rl)+ &
       int(nrhs_capacity,int64)*(n+2_int64*r)
     integers=3_int64*t+n
-    plan%device_bytes=8_int64*reals+4_int64*integers
+    plan%device_bytes=int(real_bytes,int64)*reals+4_int64*integers
   end subroutine
 
   attributes(global) subroutine local_pcr_kernel(n,tiles,nrhs,tc,nlevels, &
       first,last,levels,norm,left,right,inverse,edge_lower,edge_upper,reduced_norm,rhs,local,reduced)
     integer,value :: n,tiles,nrhs,tc,nlevels
     integer,device,intent(in) :: first(tiles),last(tiles),levels(tiles)
-    real(real64),device,intent(in) :: norm(tc,tiles),left(tc,nlevels,tiles), &
+    real(real_kind),device,intent(in) :: norm(tc,tiles),left(tc,nlevels,tiles), &
       right(tc,nlevels,tiles),inverse(tc,nlevels,tiles),edge_lower(tiles),edge_upper(tiles)
-    real(real64),device,intent(in) :: reduced_norm(2*tiles),rhs(n,nrhs)
-    real(real64),device,intent(out) :: local(n,nrhs),reduced(2*tiles,nrhs)
-    real(real64),shared :: old(tile_threads),next(tile_threads)
-    real(real64) :: value,lo,hi
+    real(real_kind),device,intent(in) :: reduced_norm(2*tiles),rhs(n,nrhs)
+    real(real_kind),device,intent(out) :: local(n,nrhs),reduced(2*tiles,nrhs)
+    real(real_kind),shared :: old(tile_threads),next(tile_threads)
+    real(real_kind) :: value,lo,hi
     integer :: tid,t,column,m,level,stride,idx
     tid=threadIdx%x
     t=blockIdx%x
     column=blockIdx%y
     m=last(t)-first(t)-1
-    value=0.d0
+    value=0.e0_real_kind
     if(tid<=m) value=rhs(first(t)+tid,column)*norm(tid,t)
     old(tid)=value
     call syncthreads()
     stride=1
     do level=1,levels(t)
-      value=0.d0
+      value=0.e0_real_kind
       if(tid<=m) then
         value=old(tid)
         if(tid>stride) value=value-left(tid,level,t)*old(tid-stride)
@@ -186,9 +187,9 @@ contains
   attributes(global) subroutine reduced_pcr_kernel(n,nrhs,nlevels,level,stride, &
       left,right,inverse,old,next)
     integer,value :: n,nrhs,nlevels,level,stride
-    real(real64),device,intent(in) :: left(n,nlevels),right(n,nlevels),inverse(n,nlevels),old(n,nrhs)
-    real(real64),device,intent(out) :: next(n,nrhs)
-    real(real64) :: value
+    real(real_kind),device,intent(in) :: left(n,nlevels),right(n,nlevels),inverse(n,nlevels),old(n,nrhs)
+    real(real_kind),device,intent(out) :: next(n,nrhs)
+    real(real_kind) :: value
     integer :: i,column
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x
     column=blockIdx%y
@@ -203,11 +204,11 @@ contains
       h11,h12,h21,h22,first,last,owner,v,w,z,reduced,local,solution)
     integer,value :: n,tiles,nrhs
     logical,value :: cyclic
-    real(real64),value :: h11,h12,h21,h22
+    real(real_kind),value :: h11,h12,h21,h22
     integer,device,intent(in) :: first(tiles),last(tiles),owner(n)
-    real(real64),device,intent(in) :: v(n),w(n),z(2*tiles,2),reduced(2*tiles,nrhs),local(n,nrhs)
-    real(real64),device,intent(out) :: solution(n,nrhs)
-    real(real64) :: lo,hi,d1,d2
+    real(real_kind),device,intent(in) :: v(n),w(n),z(2*tiles,2),reduced(2*tiles,nrhs),local(n,nrhs)
+    real(real_kind),device,intent(out) :: solution(n,nrhs)
+    real(real_kind) :: lo,hi,d1,d2
     integer :: i,t,k,column
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x
     column=blockIdx%y
@@ -233,8 +234,8 @@ contains
 
   subroutine solve_compact_gpu(plan,rhs,solution,nrhs)
     type(compact_line_gpu_plan),intent(inout) :: plan
-    real(real64),device,intent(in) :: rhs(:,:)
-    real(real64),device,intent(out) :: solution(:,:)
+    real(real_kind),device,intent(in) :: rhs(:,:)
+    real(real_kind),device,intent(out) :: solution(:,:)
     integer,intent(in) :: nrhs
     type(dim3) :: grid
     integer :: level,stride

@@ -1,5 +1,6 @@
 module output_fields_gpu
-  use iso_fortran_env, only: int64,real64
+  use iso_fortran_env, only: int64
+  use astr_precision, only: real_kind,real_bytes,clock_kind
   use cudafor
   use output_derivatives_gpu, only: output_derivative6_gpu
   use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d
@@ -14,8 +15,8 @@ module output_fields_gpu
   public :: begin_derived_output_gpu,pack_derived_output_gpu,end_derived_output_gpu
   public :: derived_output_workspace_gpu
   public :: pack_diagnostic_output_gpu
-  real(real64),allocatable,device,save :: packed_d(:)
-  real(real64),allocatable,device,save :: private_velocity_d(:,:,:,:)
+  real(real_kind),allocatable,device,save :: packed_d(:)
+  real(real_kind),allocatable,device,save :: private_velocity_d(:,:,:,:)
   integer,device,save :: selected_gpu_d(14)
   integer,save :: selected_gpu_count=0
   integer,save :: private_types_gpu(3)=3
@@ -29,7 +30,7 @@ contains
     integer(int64),intent(out) :: host_bytes,device_bytes
     integer(int64) :: halo_device
     call field_halo_workspace_bytes_gpu(host_bytes,halo_device)
-    device_bytes=product(int([im,jm,km]+2*hm+1,int64))*3*8+halo_device+14*4
+    device_bytes=product(int([im,jm,km]+2*hm+1,int64))*3*real_bytes+halo_device+14*4
   end subroutine
 
   subroutine begin_derived_output_gpu(capacity,host_budget,device_budget,comm,indices,host_bytes,device_bytes, &
@@ -43,7 +44,7 @@ contains
     integer,intent(in) :: comm,indices(:)
     integer(int64),intent(out) :: host_bytes,device_bytes
     integer(int64),intent(in),optional :: device_reserve_bytes
-    real(real64),intent(in),optional :: canonical_velocity(0:im,0:jm,0:km,3)
+    real(real_kind),intent(in),optional :: canonical_velocity(0:im,0:jm,0:km,3)
     integer(int64) :: nodes,reserve
     integer :: status,selection(14)
     call checkpoint_state_require(comm==MPI_COMM_WORLD.and..not.allocated(private_velocity_d).and. &
@@ -59,11 +60,11 @@ contains
     nodes=product(int([im,jm,km]+2*hm+1,int64))
     call checkpoint_state_require(host_budget>=host_bytes.and.capacity>0.and.capacity<=huge(status).and. &
       nodes<=huge(status)/3.and.device_budget>=device_bytes.and. &
-      capacity<=(device_budget-device_bytes)/8,comm,'private GPU derivative budget')
+      capacity<=(device_budget-device_bytes)/real_bytes,comm,'private GPU derivative budget')
     reserve=0
     if(present(device_reserve_bytes)) reserve=device_reserve_bytes
     call checkpoint_state_require(reserve>=0,comm,'private GPU derivative reserve must not be negative')
-    call require_device_reserve(device_bytes+capacity*8,max(reserve,1073741824_int64),comm,'derived_before_allocate')
+    call require_device_reserve(device_bytes+capacity*real_bytes,max(reserve,1073741824_int64),comm,'derived_before_allocate')
     call begin_basic_output_gpu(capacity,device_budget-device_bytes,comm,reserve)
     allocate(private_velocity_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3),stat=status)
     call checkpoint_state_require(status==0,comm,'private GPU velocity allocation')
@@ -88,7 +89,7 @@ contains
     if(id>=nodes*3) return
     node=mod(id,nodes); c=id/nodes+1
     i=mod(node,ni)-hm; j=mod(node/ni,nj)-hm; k=node/(ni*nj)-hm
-    private_velocity_d(i,j,k,c)=0.d0
+    private_velocity_d(i,j,k,c)=0.e0_real_kind
     if(.not.canonical.and.i>=0.and.i<=im.and.j>=0.and.j<=jm.and.k>=0.and.k<=km) &
       private_velocity_d(i,j,k,c)=vel_d(i,j,k,c)
   end subroutine
@@ -96,7 +97,7 @@ contains
   attributes(global) subroutine pack_derived_kernel(i0,j0,k0,ni,nj,nk,basic,nselected,im,jm,km,itype,jtype,ktype)
     use commarray_gpu, only: dxi_d
     integer,value :: i0,j0,k0,ni,nj,nk,basic,nselected,im,jm,km,itype,jtype,ktype
-    real(real64) :: gradient(3,3),directional(3),fields(14),qvalue
+    real(real_kind) :: gradient(3,3),directional(3),fields(14),qvalue
     integer :: node,nodes,i,j,k,c,d,m
     node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     nodes=ni*nj*nk
@@ -118,13 +119,13 @@ contains
         fields(c+3*(d-1))=gradient(c,d)
       enddo
     enddo
-    qvalue=0.d0
+    qvalue=0.e0_real_kind
     do d=1,3
       do c=1,3
         qvalue=qvalue+gradient(c,d)*gradient(d,c)
       enddo
     enddo
-    fields(10)=-0.5d0*qvalue
+    fields(10)=-0.5e0_real_kind*qvalue
     fields(11)=gradient(1,1)+gradient(2,2)+gradient(3,3)
     fields(12)=gradient(3,2)-gradient(2,3)
     fields(13)=gradient(1,3)-gradient(3,1)
@@ -138,10 +139,10 @@ contains
     use commvar, only: im,jm,km
     use benchmark_runtime, only: insitu_clock,report_insitu_timing
     integer,intent(in) :: start(3),extent(3)
-    real(real64),intent(out) :: values(:)
+    real(real_kind),intent(out) :: values(:)
     integer(int64) :: count
     integer :: nodes,status
-    real(real64) :: started
+    real(clock_kind) :: started
     count=product(int(extent,int64))*int(selected_gpu_count,int64)
     call local_require(allocated(private_velocity_d).and.allocated(packed_d), &
       'private GPU diagnostics not initialized')
@@ -160,14 +161,14 @@ contains
     status=cudaMemcpy(values,packed_d,count,cudaMemcpyDeviceToHost)
     call local_require(status==cudaSuccess,'private diagnostic tile download')
     call report_insitu_timing('diagnostic_d2h',started,-1)
-    transferred=transferred+count*8
+    transferred=transferred+count*real_bytes
   end subroutine
 
   subroutine pack_derived_output_gpu(start,extent,components,values)
     use commvar, only: im,jm,km
     use output_fields, only: output_basic_components
     integer,intent(in) :: start(3),extent(3),components
-    real(real64),intent(out) :: values(:)
+    real(real_kind),intent(out) :: values(:)
     integer :: nodes,count,status,basic
     nodes=product(extent); count=nodes*components
     basic=output_basic_components()
@@ -183,7 +184,7 @@ contains
     call sync_after_kernel('private output derived tile',.true.)
     status=cudaMemcpy(values,packed_d,int(count,int64),cudaMemcpyDeviceToHost)
     call local_require(status==cudaSuccess,'private derivative tile download')
-    transferred=transferred+int(count,int64)*8
+    transferred=transferred+int(count,int64)*real_bytes
   end subroutine
 
   subroutine end_derived_output_gpu(bytes)
@@ -201,11 +202,11 @@ contains
     integer(int64) :: reserve
     integer :: status
     call checkpoint_state_require(.not.allocated(packed_d).and.capacity>0.and. &
-      capacity<=budget/8.and.capacity<=huge(status),comm,'basic output GPU packing budget')
+      capacity<=budget/real_bytes.and.capacity<=huge(status),comm,'basic output GPU packing budget')
     reserve=0
     if(present(device_reserve_bytes)) reserve=device_reserve_bytes
     call checkpoint_state_require(reserve>=0,comm,'basic output GPU reserve must not be negative')
-    if(reserve>0) call require_device_reserve(capacity*8,reserve,comm,'before_allocate')
+    if(reserve>0) call require_device_reserve(capacity*real_bytes,reserve,comm,'before_allocate')
     allocate(packed_d(int(capacity)),stat=status)
     call checkpoint_state_require(status==0,comm,'basic output GPU packing allocation')
     frame_device_reserve=reserve; frame_comm=comm
@@ -237,7 +238,7 @@ contains
   attributes(global) subroutine pack_kernel(i0,j0,k0,ni,nj,nk,components)
     integer,value :: i0,j0,k0,ni,nj,nk,components
     integer :: id,node,m,i,j,k,nodes
-    real(real64) :: value
+    real(real_kind) :: value
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     nodes=ni*nj*nk
     if(id>=nodes*components) return
@@ -264,7 +265,7 @@ contains
 
   subroutine pack_basic_output_gpu(start,extent,components,values)
     integer,intent(in) :: start(3),extent(3),components
-    real(real64),intent(out) :: values(:)
+    real(real_kind),intent(out) :: values(:)
     integer :: count,status
     count=product(extent)*components
     ! Empty ranks skip the callback; local failures must abort, not enter a collective.
@@ -279,7 +280,7 @@ contains
     ! Typed CUDA Fortran arrays take an element count; C pointers take bytes.
     status=cudaMemcpy(values,packed_d,int(count,int64),cudaMemcpyDeviceToHost)
     call local_require(status==cudaSuccess,'basic output tile download')
-    transferred=transferred+int(count,int64)*8
+    transferred=transferred+int(count,int64)*real_bytes
   end subroutine
 
   subroutine local_require(condition,message)

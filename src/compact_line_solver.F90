@@ -1,5 +1,5 @@
 module compact_line_solver
-  use iso_fortran_env, only: real64
+  use astr_precision, only: real_kind
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   implicit none
   private
@@ -10,49 +10,49 @@ module compact_line_solver
   type :: compact_matrix
     integer :: n=0
     logical :: cyclic=.false.
-    real(real64),allocatable :: lower(:),diagonal(:),upper(:)
+    real(real_kind),allocatable :: lower(:),diagonal(:),upper(:)
   end type
 
   ! Whole-matrix pivoted LU is an independent small-component reference.
   type :: compact_reference_factor
-    real(real64),allocatable :: lu(:,:)
+    real(real_kind),allocatable :: lu(:,:)
     integer,allocatable :: pivot(:)
   end type
 
   type :: compact_pcr_factors
     integer :: n=0,levels=0
-    real(real64),allocatable :: initial_inverse(:),left(:,:),right(:,:),inverse(:,:)
+    real(real_kind),allocatable :: initial_inverse(:),left(:,:),right(:,:),inverse(:,:)
   end type
 
   type :: compact_block_factors
     integer :: n=0,tiles=0,reduced_n=0,tile_capacity=0,max_levels=0
     integer,allocatable :: first(:),last(:),owner(:),levels(:)
-    real(real64),allocatable :: initial_inverse(:,:),left(:,:,:),right(:,:,:),inverse(:,:,:)
-    real(real64),allocatable :: response_left(:),response_right(:),cyclic_response(:,:)
-    real(real64) :: correction_inverse(2,2)=0.d0
+    real(real_kind),allocatable :: initial_inverse(:,:),left(:,:,:),right(:,:,:),inverse(:,:,:)
+    real(real_kind),allocatable :: response_left(:),response_right(:),cyclic_response(:,:)
+    real(real_kind) :: correction_inverse(2,2)=0.e0_real_kind
     type(compact_pcr_factors) :: reduced
   end type
 contains
   subroutine compact_endpoint_responses(matrix,edge,response)
     type(compact_matrix),intent(in) :: matrix
-    real(real64),intent(in) :: edge(2)
-    real(real64),intent(out) :: response(matrix%n,2)
+    real(real_kind),intent(in) :: edge(2)
+    real(real_kind),intent(out) :: response(matrix%n,2)
     type(compact_pcr_factors) :: factor
-    real(real64) :: rhs(matrix%n)
+    real(real_kind) :: rhs(matrix%n)
     if(matrix%cyclic) error stop 'endpoint response requires a noncyclic local core'
     call prepare_pcr(matrix%lower,matrix%diagonal,matrix%upper,factor)
-    rhs=0.d0
+    rhs=0.e0_real_kind
     rhs(1)=edge(1)
     call apply_preprocessed_pcr(factor,rhs,response(:,1))
-    rhs=0.d0
+    rhs=0.e0_real_kind
     rhs(matrix%n)=edge(2)
     call apply_preprocessed_pcr(factor,rhs,response(:,2))
   end subroutine
 
   subroutine compact_matvec(matrix,x,b)
     type(compact_matrix),intent(in) :: matrix
-    real(real64),intent(in) :: x(:,:)
-    real(real64),intent(out) :: b(:,:)
+    real(real_kind),intent(in) :: x(:,:)
+    real(real_kind),intent(out) :: b(:,:)
     integer :: i,n
     n=matrix%n
     do i=1,n
@@ -68,9 +68,9 @@ contains
 
   function compact_residual(matrix,x,b) result(residual)
     type(compact_matrix),intent(in) :: matrix
-    real(real64),intent(in) :: x(:,:),b(:,:)
-    real(real64) :: residual,anorm,denominator,rnorm
-    real(real64),allocatable :: work(:,:),rowsum(:)
+    real(real_kind),intent(in) :: x(:,:),b(:,:)
+    real(real_kind) :: residual,anorm,denominator,rnorm
+    real(real_kind),allocatable :: work(:,:),rowsum(:)
     integer :: j,n
     n=matrix%n
     allocate(work(n,size(x,2)),rowsum(n))
@@ -88,12 +88,12 @@ contains
       endif
     endif
     anorm=maxval(rowsum)
-    residual=0.d0
+    residual=0.e0_real_kind
     do j=1,size(x,2)
       rnorm=maxval(abs(work(:,j)-b(:,j)))
       denominator=anorm*maxval(abs(x(:,j)))+maxval(abs(b(:,j)))
-      if(denominator==0.d0) then
-        if(rnorm/=0.d0) residual=huge(1.d0)
+      if(denominator==0.e0_real_kind) then
+        if(rnorm/=0.e0_real_kind) residual=huge(1.e0_real_kind)
       else
         residual=max(residual,rnorm/denominator)
       endif
@@ -103,12 +103,12 @@ contains
   subroutine factor_compact_reference(matrix,factor)
     type(compact_matrix),intent(in) :: matrix
     type(compact_reference_factor),intent(out) :: factor
-    real(real64),allocatable :: row(:)
+    real(real_kind),allocatable :: row(:)
     integer :: n,i,j,k,p
     n=matrix%n
     if(n<2) error stop 'compact reference requires at least two unknowns'
     allocate(factor%lu(n,n),factor%pivot(n),row(n))
-    factor%lu=0.d0
+    factor%lu=0.e0_real_kind
     do i=1,n
       factor%lu(i,i)=matrix%diagonal(i)
       if(i>1) factor%lu(i,i-1)=matrix%lower(i)
@@ -121,7 +121,7 @@ contains
     do k=1,n
       p=k-1+maxloc(abs(factor%lu(k:n,k)),dim=1)
       factor%pivot(k)=p
-      if(factor%lu(p,k)==0.d0) error stop 'singular compact reference matrix'
+      if(factor%lu(p,k)==0.e0_real_kind) error stop 'singular compact reference matrix'
       if(p/=k) then
         row=factor%lu(k,:)
         factor%lu(k,:)=factor%lu(p,:)
@@ -139,9 +139,9 @@ contains
 
   subroutine solve_compact_reference(factor,b,x)
     type(compact_reference_factor),intent(in) :: factor
-    real(real64),intent(in) :: b(:,:)
-    real(real64),intent(out) :: x(:,:)
-    real(real64) :: value
+    real(real_kind),intent(in) :: b(:,:)
+    real(real_kind),intent(out) :: x(:,:)
+    real(real_kind) :: value
     integer :: n,i,j,k,p
     n=size(factor%lu,1)
     x=b
@@ -168,10 +168,10 @@ contains
   end subroutine
 
   subroutine prepare_pcr(lower,diagonal,upper,factor)
-    real(real64),intent(in) :: lower(:),diagonal(:),upper(:)
+    real(real_kind),intent(in) :: lower(:),diagonal(:),upper(:)
     type(compact_pcr_factors),intent(out) :: factor
-    real(real64),allocatable :: a(:),c(:),next_a(:),next_c(:)
-    real(real64) :: divisor,al,cu
+    real(real_kind),allocatable :: a(:),c(:),next_a(:),next_c(:)
+    real(real_kind) :: divisor,al,cu
     integer :: n,level,stride,i
     n=size(diagonal)
     factor%n=n
@@ -181,25 +181,25 @@ contains
       factor%levels=factor%levels+1
       stride=stride*2
     enddo
-    if(any(diagonal==0.d0)) error stop 'zero compact PCR initial diagonal'
+    if(any(diagonal==0.e0_real_kind)) error stop 'zero compact PCR initial diagonal'
     allocate(factor%initial_inverse(n),factor%left(n,factor%levels), &
       factor%right(n,factor%levels),factor%inverse(n,factor%levels))
     allocate(a(n),c(n),next_a(n),next_c(n))
-    factor%initial_inverse=1.d0/diagonal
+    factor%initial_inverse=1.e0_real_kind/diagonal
     a=lower*factor%initial_inverse
     c=upper*factor%initial_inverse
-    a(1)=0.d0
-    c(n)=0.d0
+    a(1)=0.e0_real_kind
+    c(n)=0.e0_real_kind
     stride=1
     do level=1,factor%levels
       factor%left(:,level)=a
       factor%right(:,level)=c
-      next_a=0.d0
-      next_c=0.d0
+      next_a=0.e0_real_kind
+      next_c=0.e0_real_kind
       do i=1,n
-        al=0.d0
-        cu=0.d0
-        divisor=1.d0
+        al=0.e0_real_kind
+        cu=0.e0_real_kind
+        divisor=1.e0_real_kind
         if(i>stride) then
           divisor=divisor-a(i)*c(i-stride)
           al=-a(i)*a(i-stride)
@@ -208,9 +208,9 @@ contains
           divisor=divisor-c(i)*a(i+stride)
           cu=-c(i)*c(i+stride)
         endif
-        if(divisor==0.d0.or..not.ieee_is_finite(divisor)) &
+        if(divisor==0.e0_real_kind.or..not.ieee_is_finite(divisor)) &
           error stop 'invalid compact PCR reduction pivot'
-        factor%inverse(i,level)=1.d0/divisor
+        factor%inverse(i,level)=1.e0_real_kind/divisor
         next_a(i)=al*factor%inverse(i,level)
         next_c(i)=cu*factor%inverse(i,level)
       enddo
@@ -222,10 +222,10 @@ contains
 
   subroutine apply_preprocessed_pcr(factor,b,x)
     type(compact_pcr_factors),intent(in) :: factor
-    real(real64),intent(in) :: b(:)
-    real(real64),intent(out) :: x(:)
-    real(real64),allocatable :: next(:)
-    real(real64) :: value
+    real(real_kind),intent(in) :: b(:)
+    real(real_kind),intent(out) :: x(:)
+    real(real_kind),allocatable :: next(:)
+    real(real_kind) :: value
     integer :: i,level,stride,n
     n=factor%n
     allocate(next(n))
@@ -248,16 +248,16 @@ contains
     integer,intent(in) :: tile_capacity
     type(compact_block_factors),intent(out) :: blocks
     type(compact_pcr_factors) :: local
-    real(real64),allocatable :: a(:),b(:),c(:),v(:),w(:),rhs(:)
-    real(real64),allocatable :: ra(:),rb(:),rc(:)
-    real(real64) :: h(2,2),determinant
+    real(real_kind),allocatable :: a(:),b(:),c(:),v(:),w(:),rhs(:)
+    real(real_kind),allocatable :: ra(:),rb(:),rc(:)
+    real(real_kind) :: h(2,2),determinant
     integer :: n,t,first,last,m,length,base,extra,k,stride
     n=matrix%n
     if(n<2.or.tile_capacity<4) error stop 'invalid compact line/tile extent'
     if(.not.all(ieee_is_finite(matrix%lower)).or..not.all(ieee_is_finite(matrix%diagonal)).or. &
        .not.all(ieee_is_finite(matrix%upper))) error stop 'nonfinite compact matrix'
     if(.not.matrix%cyclic) then
-      if(matrix%lower(1)/=0.d0.or.matrix%upper(n)/=0.d0) &
+      if(matrix%lower(1)/=0.e0_real_kind.or.matrix%upper(n)/=0.e0_real_kind) &
         error stop 'noncyclic compact matrix has corner coefficients'
     endif
     blocks%n=n
@@ -276,16 +276,16 @@ contains
       blocks%right(tile_capacity,blocks%max_levels,blocks%tiles), &
       blocks%inverse(tile_capacity,blocks%max_levels,blocks%tiles), &
       blocks%response_left(n),blocks%response_right(n))
-    blocks%initial_inverse=0.d0
-    blocks%left=0.d0
-    blocks%right=0.d0
-    blocks%inverse=0.d0
-    blocks%response_left=0.d0
-    blocks%response_right=0.d0
+    blocks%initial_inverse=0.e0_real_kind
+    blocks%left=0.e0_real_kind
+    blocks%right=0.e0_real_kind
+    blocks%inverse=0.e0_real_kind
+    blocks%response_left=0.e0_real_kind
+    blocks%response_right=0.e0_real_kind
     allocate(ra(blocks%reduced_n),rb(blocks%reduced_n),rc(blocks%reduced_n))
-    ra=0.d0
-    rb=0.d0
-    rc=0.d0
+    ra=0.e0_real_kind
+    rb=0.e0_real_kind
+    rc=0.e0_real_kind
     base=n/blocks%tiles
     extra=mod(n,blocks%tiles)
     first=1
@@ -316,10 +316,10 @@ contains
         blocks%left(1:m,1:local%levels,t)=local%left
         blocks%right(1:m,1:local%levels,t)=local%right
         blocks%inverse(1:m,1:local%levels,t)=local%inverse
-        rhs=0.d0
+        rhs=0.e0_real_kind
         rhs(1)=a(1)
         call apply_preprocessed_pcr(local,rhs,v)
-        rhs=0.d0
+        rhs=0.e0_real_kind
         rhs(m)=c(m)
         call apply_preprocessed_pcr(local,rhs,w)
         blocks%response_left(first+1:last-1)=v
@@ -332,28 +332,28 @@ contains
       endif
       first=last+1
     enddo
-    ra(1)=0.d0
-    rc(blocks%reduced_n)=0.d0
+    ra(1)=0.e0_real_kind
+    rc(blocks%reduced_n)=0.e0_real_kind
     call prepare_pcr(ra,rb,rc,blocks%reduced)
     allocate(blocks%cyclic_response(blocks%reduced_n,2),rhs(blocks%reduced_n))
-    blocks%cyclic_response=0.d0
-    blocks%correction_inverse=0.d0
-    blocks%correction_inverse(1,1)=1.d0
-    blocks%correction_inverse(2,2)=1.d0
+    blocks%cyclic_response=0.e0_real_kind
+    blocks%correction_inverse=0.e0_real_kind
+    blocks%correction_inverse(1,1)=1.e0_real_kind
+    blocks%correction_inverse(2,2)=1.e0_real_kind
     if(matrix%cyclic) then
       ! Restore both real corner entries by a rank-two Woodbury correction.
-      rhs=0.d0
+      rhs=0.e0_real_kind
       rhs(1)=matrix%lower(1)
       call apply_preprocessed_pcr(blocks%reduced,rhs,blocks%cyclic_response(:,1))
-      rhs=0.d0
+      rhs=0.e0_real_kind
       rhs(blocks%reduced_n)=matrix%upper(n)
       call apply_preprocessed_pcr(blocks%reduced,rhs,blocks%cyclic_response(:,2))
-      h(1,1)=1.d0+blocks%cyclic_response(blocks%reduced_n,1)
+      h(1,1)=1.e0_real_kind+blocks%cyclic_response(blocks%reduced_n,1)
       h(1,2)=blocks%cyclic_response(blocks%reduced_n,2)
       h(2,1)=blocks%cyclic_response(1,1)
-      h(2,2)=1.d0+blocks%cyclic_response(1,2)
+      h(2,2)=1.e0_real_kind+blocks%cyclic_response(1,2)
       determinant=h(1,1)*h(2,2)-h(1,2)*h(2,1)
-      if(determinant==0.d0.or..not.ieee_is_finite(determinant)) &
+      if(determinant==0.e0_real_kind.or..not.ieee_is_finite(determinant)) &
         error stop 'invalid compact cyclic correction'
       blocks%correction_inverse(1,1)=h(2,2)/determinant
       blocks%correction_inverse(1,2)=-h(1,2)/determinant

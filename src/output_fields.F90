@@ -1,5 +1,6 @@
 module output_fields
-  use iso_fortran_env, only: int64,real64,iostat_end
+  use iso_fortran_env, only: int32,int64,iostat_end
+  use astr_precision, only: real_kind,real_bytes,real_to_word
   use ieee_arithmetic, only: ieee_is_finite
   use mpi
   use hdf5
@@ -13,7 +14,7 @@ module output_fields
   public :: derived_output_workspace_cpu
   public :: private_derivative_layout_valid
   public :: output_basic_components
-  real(real64),allocatable,save :: private_velocity(:,:,:,:)
+  real(real_kind),allocatable,save :: private_velocity(:,:,:,:)
   integer,save :: selected_cpu(14)=0
   integer,save :: private_types_cpu(3)=3
   integer(int64),save :: derived_capacity_cpu=0
@@ -28,9 +29,9 @@ module output_fields
     'Q_rs','velocity_divergence','vorticity_x','vorticity_y','vorticity_z']
   abstract interface
     subroutine field_packer(start,extent,components,values)
-      import real64
+      import real_kind
       integer,intent(in) :: start(3),extent(3),components
-      real(real64),intent(out) :: values(:)
+      real(real_kind),intent(out) :: values(:)
     end subroutine
   end interface
 contains
@@ -56,23 +57,23 @@ contains
       (lkhomo.eqv.all(bctype(5:6)==1))
   end function
 
-  pure real(real64) function output_derivative6(fm3,fm2,fm1,f0,fp1,fp2,fp3,node,dim,ntype) result(value)
+  pure real(real_kind) function output_derivative6(fm3,fm2,fm1,f0,fp1,fp2,fp3,node,dim,ntype) result(value)
     use constdef, only: num1d60,num2d3,num1d12
-    real(real64),intent(in) :: fm3,fm2,fm1,f0,fp1,fp2,fp3
+    real(real_kind),intent(in) :: fm3,fm2,fm1,f0,fp1,fp2,fp3
     integer,intent(in) :: node,dim,ntype
     logical :: left,right
     ! Same closure as derivative::diff6ec; only the private output field is read.
     left=ntype==1.or.ntype==4; right=ntype==2.or.ntype==4
     if(left.and.node==0) then
-      value=-0.5d0*fp2+2.d0*fp1-1.5d0*f0
+      value=-0.5e0_real_kind*fp2+2.e0_real_kind*fp1-1.5e0_real_kind*f0
     elseif((left.and.node==1).or.(right.and.node==dim-1)) then
-      value=0.5d0*(fp1-fm1)
+      value=0.5e0_real_kind*(fp1-fm1)
     elseif((left.and.node==2).or.(right.and.node==dim-2)) then
       value=num2d3*(fp1-fm1)-num1d12*(fp2-fm2)
     elseif(right.and.node==dim) then
-      value=0.5d0*fm2-2.d0*fm1+1.5d0*f0
+      value=0.5e0_real_kind*fm2-2.e0_real_kind*fm1+1.5e0_real_kind*f0
     else
-      value=0.75d0*(fp1-fm1)-0.15d0*(fp2-fm2)+num1d60*(fp3-fm3)
+      value=0.75e0_real_kind*(fp1-fm1)-0.15e0_real_kind*(fp2-fm2)+num1d60*(fp3-fm3)
     endif
   end function
 
@@ -89,7 +90,7 @@ contains
     use commarray, only: tve,spc
 #endif
     integer,intent(in) :: start(3),extent(3),components
-    real(real64),intent(out) :: values(:)
+    real(real_kind),intent(out) :: values(:)
     integer :: i,j,k,n,nodes,m
     nodes=product(extent); n=0
     do k=start(3),start(3)+extent(3)-1
@@ -124,8 +125,8 @@ contains
     if(isize>1) face=max(face,int(jm+1,int64)*int(km+1,int64))
     if(jsize>1) face=max(face,int(im+1,int64)*int(km+1,int64))
     if(ksize>1) face=max(face,int(im+1,int64)*int(jm+1,int64))
-    halo_bytes=4_int64*hm*face*3*8
-    private_bytes=product(int([im,jm,km]+2*hm+1,int64))*3*8
+    halo_bytes=4_int64*hm*face*3*real_bytes
+    private_bytes=product(int([im,jm,km]+2*hm+1,int64))*3*real_bytes
     workspace_bytes=private_bytes+halo_bytes
   end subroutine
 
@@ -136,7 +137,7 @@ contains
     integer(int64),intent(in) :: capacity,budget
     integer,intent(in) :: comm,indices(:)
     integer(int64),intent(out) :: workspace_bytes
-    real(real64),intent(in),optional :: sample_velocity(0:,0:,0:,:)
+    real(real_kind),intent(in),optional :: sample_velocity(0:,0:,0:,:)
     integer :: status
     call require(comm==MPI_COMM_WORLD.and..not.allocated(private_velocity),comm,'private CPU output lifecycle')
     call agree_derived_selection(indices,selected_cpu,comm)
@@ -145,10 +146,10 @@ contains
     private_types_cpu=[npdci,npdcj,npdck]
     call derived_output_workspace_cpu(workspace_bytes)
     call require(capacity>0.and.capacity<=huge(status).and.budget>=workspace_bytes.and. &
-      capacity<=(budget-workspace_bytes)/8,comm,'private CPU derivative budget')
+      capacity<=(budget-workspace_bytes)/real_bytes,comm,'private CPU derivative budget')
     allocate(private_velocity(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3),stat=status)
     call require(status==0,comm,'private CPU velocity allocation')
-    private_velocity=0.d0
+    private_velocity=0.e0_real_kind
     if(present(sample_velocity)) then
       call require(all(shape(sample_velocity)==[im+1,jm+1,km+1,3]).and. &
         all(ieee_is_finite(sample_velocity)),comm,'private completed-sample velocity shape/state')
@@ -171,8 +172,8 @@ contains
     use commvar, only: im,jm,km
     use commarray, only: dxi
     integer,intent(in) :: start(3),extent(3),components
-    real(real64),intent(out) :: values(:)
-    real(real64) :: gradient(3,3),directional(3),fields(14)
+    real(real_kind),intent(out) :: values(:)
+    real(real_kind) :: gradient(3,3),directional(3),fields(14)
     integer :: i,j,k,n,nodes,c,d,m,nselected,ierr,basic
     logical :: valid
     nselected=count(selected_cpu>0)
@@ -209,7 +210,7 @@ contains
               fields(c+3*(d-1))=gradient(c,d)
             enddo
           enddo
-          fields(10)=-0.5d0*sum(gradient*transpose(gradient))
+          fields(10)=-0.5e0_real_kind*sum(gradient*transpose(gradient))
           fields(11)=gradient(1,1)+gradient(2,2)+gradient(3,3)
           fields(12)=gradient(3,2)-gradient(2,3)
           fields(13)=gradient(1,3)-gradient(3,1)
@@ -233,7 +234,7 @@ contains
                                 derived_indices)
     character(*),intent(in) :: path,units
     integer,intent(in) :: global_shape(3),origin(3),cells(3),axis,index,components,comm
-    real(real64),intent(in) :: coordinates(0:,0:,0:,:)
+    real(real_kind),intent(in) :: coordinates(0:,0:,0:,:)
     procedure(field_packer) :: pack
     type(checkpoint_state_identity),intent(in) :: identity
     integer(int64),intent(in) :: buffer_bytes,host_budget
@@ -244,12 +245,12 @@ contains
     character(*),optional,intent(in) :: geometry_file
     logical,optional,intent(in) :: verify_geometry
     integer,optional,intent(in) :: derived_indices(:)
-    real(real64),allocatable :: values(:),xyz(:,:)
+    real(real_kind),allocatable :: values(:),xyz(:,:)
     integer(int64) :: capacity,local_nodes,local_tiles,max_tiles,tile,ntiles(3),tile_grid(3),header(11),agreed(11)
     integer :: owned(3),first(3),extent(3),block(3),start(3),global_start(3),dim,position,m,i,j,k,n,err,rank
     integer :: selected_dims(3),ndims,d,nodes,status,packed_components,space_rank,verify_flag,agreed_verify
     integer :: selected_derived(14),nfields
-    integer(hid_t) :: file,location,access,xfer,native,sets(28),spaces(28),mem,integer_set,integer_space,dtype
+    integer(hid_t) :: file,location,access,xfer,native,storage_type,sets(28),spaces(28),mem,integer_set,integer_space,dtype
     integer(hsize_t) :: shape3(3),shape4(4),counts(4),offsets(4),memory_shape(1),actual_dims(4),max_dims(4)
     character(32) :: name
     character(16) :: agreed_units
@@ -274,8 +275,8 @@ contains
       ieee_is_finite(identity%dt_used).and.identity%dt_used>=0.and. &
       ieee_is_finite(identity%dt_next).and.identity%dt_next>0,comm,'clock')
     call require(identity%step==0.or.identity%dt_used>0,comm,'missing completed-step dt')
-    header=[1_int64,identity%step,transfer(identity%time,0_int64), &
-      transfer(identity%dt_used,0_int64),transfer(identity%dt_next,0_int64),int(axis,int64),int(index,int64), &
+    header=[merge(2_int64,1_int64,real_bytes==4),identity%step,real_to_word(identity%time), &
+      real_to_word(identity%dt_used),real_to_word(identity%dt_next),int(axis,int64),int(index,int64), &
       int(global_shape,int64),int(components,int64)]
     agreed=header
     call MPI_Bcast(agreed,11,MPI_INTEGER8,0,comm,err)
@@ -329,7 +330,7 @@ contains
       owned(axis)=1
     endif
     local_nodes=product(int(owned,int64))
-    capacity=min(buffer_bytes,host_budget)/8/(packed_components+3)
+    capacity=min(buffer_bytes,host_budget)/real_bytes/(packed_components+3)
     call require(capacity>0,comm,'host budget cannot hold one basic node')
     capacity=min(capacity,local_nodes,int(huge(nodes)/(packed_components+3),int64))
     block=1
@@ -337,7 +338,7 @@ contains
       block(d)=int(min(int(owned(d),int64),capacity/product(int(block,int64))))
     enddo
     capacity=product(int(block,int64))
-    peak_bytes=capacity*8*(packed_components+3)
+    peak_bytes=capacity*real_bytes*(packed_components+3)
     allocate(values(int(capacity)*packed_components),xyz(int(capacity),3),stat=status)
     call require(status==0,comm,'packing allocation')
     ntiles=(int(owned,int64)+block-1)/block
@@ -397,7 +398,9 @@ contains
     call require(err==0,comm,'transfer property')
     call h5pset_dxpl_mpio_f(xfer,H5FD_MPIO_COLLECTIVE_F,err)
     call require(err==0,comm,'collective transfer property')
-    native=h5kind_to_type(real64,H5_REAL_KIND)
+    native=h5kind_to_type(real_kind,H5_REAL_KIND)
+    storage_type=H5T_IEEE_F64LE
+    if(real_bytes==4) storage_type=H5T_IEEE_F32LE
     do m=1,nfields+2
       selected_set=(m<=nfields+1.and..not.only_geometry).or.(m==nfields+2.and.write_coordinates)
       if(.not.selected_set) cycle
@@ -410,8 +413,8 @@ contains
         call require(err==0,comm,'open geometry dataset')
         call h5dget_type_f(sets(m),dtype,err)
         call require(err==0,comm,'geometry datatype')
-        call h5tequal_f(dtype,H5T_IEEE_F64LE,equal_type,err)
-        call require(err==0.and.equal_type,comm,'geometry must be FP64 little-endian')
+        call h5tequal_f(dtype,storage_type,equal_type,err)
+        call require(err==0.and.equal_type,comm,'geometry precision differs from executable')
         call h5tclose_f(dtype,err)
         call require(err==0,comm,'close geometry datatype')
         call h5dget_space_f(sets(m),spaces(m),err)
@@ -427,7 +430,7 @@ contains
         call h5screate_simple_f(ndims+1,shape4(:ndims+1),spaces(m),err)
       endif
       call require(err==0,comm,'create space '//trim(name))
-      call h5dcreate_f(location,trim(name),H5T_IEEE_F64LE,spaces(m),sets(m),err)
+      call h5dcreate_f(location,trim(name),storage_type,spaces(m),sets(m),err)
       call require(err==0,comm,'create dataset '//trim(name))
       if(m>components.and.m<=nfields) &
         call derived_quantity_attributes(sets(m),selected_derived(m-components),units,comm)
@@ -484,7 +487,7 @@ contains
             enddo
           enddo
         enddo
-        if(.not.only_geometry) field_bytes=field_bytes+int(nodes,int64)*nfields*8
+        if(.not.only_geometry) field_bytes=field_bytes+int(nodes,int64)*nfields*real_bytes
       endif
       equal_values=all_finite_xyz(xyz,nodes)
       if(.not.only_geometry) equal_values=equal_values.and.all_finite(values(:nodes*nfields))
@@ -510,7 +513,11 @@ contains
           call transfer_component(sets(nfields+2),spaces(nfields+2),values(:nodes),m)
           equal_values=.true.
           do n=1,nodes
-            if(transfer(values(n),0_int64)/=transfer(xyz(n,m),0_int64)) equal_values=.false.
+            if(real_bytes==4) then
+              if(transfer(values(n),0_int32)/=transfer(xyz(n,m),0_int32)) equal_values=.false.
+            else
+              if(transfer(values(n),0_int64)/=transfer(xyz(n,m),0_int64)) equal_values=.false.
+            endif
           enddo
           call require(equal_values,comm,'shared geometry coordinate mismatch')
         else if(write_coordinates) then
@@ -545,10 +552,10 @@ contains
   contains
     subroutine transfer_component(set,space,data,vector_component)
       integer(hid_t),intent(in) :: set,space
-      real(real64),intent(inout) :: data(:)
+      real(real_kind),intent(inout) :: data(:)
       integer,intent(in) :: vector_component
       integer :: rank_dims,shift
-      real(real64) :: empty(1)
+      real(real_kind) :: empty(1)
       shift=merge(1,0,vector_component>0); rank_dims=ndims+shift
       offsets(shift+1:rank_dims)=int(global_start(selected_dims(:ndims)),hsize_t)
       counts(shift+1:rank_dims)=int(extent(selected_dims(:ndims)),hsize_t)
@@ -670,7 +677,7 @@ contains
   end subroutine
 
   logical function all_finite(values) result(valid)
-    real(real64),intent(in) :: values(:)
+    real(real_kind),intent(in) :: values(:)
     integer :: i
     valid=.false.
     do i=1,size(values)
@@ -680,7 +687,7 @@ contains
   end function
 
   logical function all_finite_xyz(values,nodes) result(valid)
-    real(real64),intent(in) :: values(:,:)
+    real(real_kind),intent(in) :: values(:,:)
     integer,intent(in) :: nodes
     integer :: i,m
     valid=.false.
@@ -842,15 +849,15 @@ contains
     integer,intent(in) :: global_shape(3),axes(:),indices(:),components,comm
     integer,optional,intent(in) :: derived_indices(:)
     integer :: selected_derived(14)
-    integer :: rank,err,unit,source,closed,status,n,d,p,tokens,shape(2)
+    integer :: rank,err,unit,source,closed,status,n,d,p,tokens,shape(2),file_bytes
     integer(int64) :: previous_step,step
-    real(real64) :: previous_time,time
+    real(real_kind) :: previous_time,time
     type(checkpoint_state_identity) :: identity
     character(32) :: name,label
     character(128) :: magic,clock
     character(256) :: row
     character(1201) :: data_reference,geometry_reference
-    logical :: in_token,lineage
+    logical :: in_token,lineage,lineage_typed
     character(1),parameter :: tags(3)=['i','j','k']
     call MPI_Comm_rank(comm,rank,err)
     call require(err==MPI_SUCCESS.and.size(axes)>0.and.size(axes)==size(indices),comm,'series layout')
@@ -867,7 +874,8 @@ contains
       if(err==0) then
         magic=''
         read(source,'(a)',iostat=err) magic
-        lineage=magic=='ASTR_NATIVE_LINEAGE_1'
+        lineage_typed=magic=='ASTR_NATIVE_LINEAGE_2'
+        lineage=magic=='ASTR_NATIVE_LINEAGE_1'.or.lineage_typed
         if(err==0.and.magic/='ASTR_FRAME_SERIES_1'.and..not.lineage) err=1
         if(err==0) then
           open(newunit=unit,file=path,status='new',action='write',iostat=err)
@@ -891,17 +899,30 @@ contains
                   in_token=.true.
                 endif
               enddo
-              if(tokens/=2.or.scan(row,',/''"')/=0) then
+              if(tokens/=merge(3,2,lineage_typed).or.scan(row,',/''"')/=0) then
                 err=1; exit
               endif
-              read(row,*,iostat=status) step,time
+              file_bytes=real_bytes
+              if(lineage) file_bytes=8
+              if(lineage_typed) then
+                read(row,*,iostat=status) step,time,file_bytes
+              else
+                read(row,*,iostat=status) step,time
+              endif
+              if(status/=0) then
+                err=1; exit
+              endif
+              if(file_bytes/=4.and.file_bytes/=8) then
+                err=1; exit
+              endif
+              read(row,*,iostat=status) step,clock
               if(status/=0) then
                 err=1; exit
               endif
               if(step<0.or.step<=previous_step.or..not.ieee_is_finite(time).or.time<0.or.time<=previous_time) then
                 err=1; exit
               endif
-              identity=checkpoint_state_identity(step,time,0.0_real64,1.0_real64)
+              identity=checkpoint_state_identity(step,time,0.0_real_kind,1.0_real_kind)
               write(name,'("step",i12.12)') step
               data_reference=trim(name)//'/data.h5'
               geometry_reference='../resources/data.h5'
@@ -915,9 +936,8 @@ contains
               endif
               if(axes(1)==0) then
                 call write_grid_xml(unit,global_shape,components,identity,units,trim(name),'',err, &
-                  trim(geometry_reference),trim(data_reference),derived_indices)
+                  trim(geometry_reference),trim(data_reference),derived_indices,file_bytes,trim(clock))
               else
-                write(clock,'(es24.16)') time
                 write(unit,'(a)',iostat=err) '<Grid Name="'//trim(name)// &
                   '" GridType="Collection" CollectionType="Spatial">', &
                   '<Time Value="'//trim(adjustl(clock))//'"/>'
@@ -930,7 +950,7 @@ contains
                   enddo
                   write(label,'(a,i12.12)') tags(axes(n)),indices(n)
                   call write_grid_xml(unit,shape,components,identity,units,trim(label),trim(label)//'/',err, &
-                    trim(geometry_reference),trim(data_reference),derived_indices)
+                    trim(geometry_reference),trim(data_reference),derived_indices,file_bytes,trim(clock))
                 enddo
                 if(err==0) write(unit,'(a)',iostat=err) '</Grid>'
               endif
@@ -977,7 +997,8 @@ contains
     enddo
   end function
 
-  subroutine write_grid_xml(unit,shape,components,identity,units,label,prefix,err,geometry_file,data_file,derived_indices)
+  subroutine write_grid_xml(unit,shape,components,identity,units,label,prefix,err,geometry_file,data_file,derived_indices, &
+                            numerical_bytes,clock_text)
     integer,intent(in) :: unit,shape(:),components
     type(checkpoint_state_identity),intent(in) :: identity
     character(*),intent(in) :: units,label,prefix
@@ -985,11 +1006,14 @@ contains
     character(*),optional,intent(in) :: geometry_file
     character(*),optional,intent(in) :: data_file
     integer,optional,intent(in) :: derived_indices(:)
+    integer,optional,intent(in) :: numerical_bytes
+    character(*),optional,intent(in) :: clock_text
     integer :: m,selection(14),nfields
     logical :: valid
     character(32) :: field_name
     character(128) :: dimensions,clock
     character(16) :: topology
+    character(1) :: precision_text
     character(1200) :: geometry_source,data_source
     character(:),allocatable :: geometry_xml,data_xml
     geometry_source='data.h5'
@@ -1005,13 +1029,16 @@ contains
     nfields=components+count(selection>0)
     write(dimensions,'(*(i0,1x))') shape(size(shape):1:-1)
     write(clock,'(es24.16)') identity%time
+    if(present(clock_text)) clock=clock_text
     write(topology,'(i0,"DSMesh")') size(shape)
+    write(precision_text,'(i0)') real_bytes
+    if(present(numerical_bytes)) write(precision_text,'(i0)') numerical_bytes
     write(unit,'(a)',iostat=err) '<Grid Name="'//label//'" GridType="Uniform">', &
       '<Time Value="'//trim(adjustl(clock))//'"/>', &
       '<Information Name="units" Value="'//trim(units)//'"/>', &
       '<Topology TopologyType="'//trim(topology)//'" Dimensions="'//trim(dimensions)//'"/>', &
       '<Geometry GeometryType="XYZ">', &
-      '<DataItem Dimensions="'//trim(dimensions)//' 3" NumberType="Float" Precision="8" Format="HDF">', &
+      '<DataItem Dimensions="'//trim(dimensions)//' 3" NumberType="Float" Precision="'//precision_text//'" Format="HDF">', &
       geometry_xml//':/'//prefix//'coordinates</DataItem></Geometry>'
     do m=1,nfields+1
       if(err/=0) exit
@@ -1019,11 +1046,11 @@ contains
         field_name=output_field_name(m,components,selection)
         write(unit,'(a)',iostat=err) '<Attribute Name="'//trim(field_name)// &
           '" AttributeType="Scalar" Center="Node">', &
-          '<DataItem Dimensions="'//trim(dimensions)//'" NumberType="Float" Precision="8" Format="HDF">', &
+          '<DataItem Dimensions="'//trim(dimensions)//'" NumberType="Float" Precision="'//precision_text//'" Format="HDF">', &
           data_xml//':/'//prefix//trim(field_name)//'</DataItem></Attribute>'
       else
         write(unit,'(a)',iostat=err) '<Attribute Name="velocity" AttributeType="Vector" Center="Node">', &
-          '<DataItem Dimensions="'//trim(dimensions)//' 3" NumberType="Float" Precision="8" Format="HDF">', &
+          '<DataItem Dimensions="'//trim(dimensions)//' 3" NumberType="Float" Precision="'//precision_text//'" Format="HDF">', &
           data_xml//':/'//prefix//'velocity</DataItem></Attribute>'
       endif
     enddo

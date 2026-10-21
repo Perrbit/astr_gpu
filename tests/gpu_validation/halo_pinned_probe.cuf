@@ -1,23 +1,24 @@
 program halo_pinned_probe
+  use astr_precision, only: real_kind,real_bytes
   use cudafor
   use iso_c_binding, only: c_loc,c_size_t
   implicit none
-  real(8),allocatable,target :: a(:),b(:),c(:),d(:)
-  real(8),allocatable,device :: work(:)
+  real(real_kind),allocatable,target :: a(:),b(:),c(:),d(:)
+  real(real_kind),allocatable,device :: work(:)
   integer :: sizes(4)=[1,37,4096,262144],i,n,j,flags
   integer(c_size_t) :: bytes
 
   call check(cudaSetDevice(0),'select device')
   do i=1,size(sizes)
     n=sizes(i)
-    bytes=int(n,c_size_t)*8_c_size_t
+    bytes=int(n,c_size_t)*int(real_bytes,c_size_t)
     allocate(a(n),b(n),c(n),d(n),work(n))
     call check(cudaHostRegister(c_loc(a),bytes,0),'register a')
     call check(cudaHostRegister(c_loc(b),bytes,0),'register b')
     call check(cudaHostRegister(c_loc(c),bytes,0),'register c')
     call check(cudaHostRegister(c_loc(d),bytes,0),'register d')
     call check(cudaHostGetFlags(flags,c_loc(a)),'query registration')
-    a=[(real(j,8),j=1,n)]
+    a=[(real(j,real_kind),j=1,n)]
     work=a
     b=work
     c=-a

@@ -281,9 +281,9 @@ int run(int argc,char** argv,int rank,int ranks) {
   }
   for(int i=0;i<geometry.particles;++i) {
     const auto& s=geometry.final_state[i];
-    for(int d=0;d<8;++d) if(!std::isfinite(s[d])) throw std::runtime_error("nonfinite particle state");
+    for(int d=0;d<6;++d) if(!std::isfinite(s[d])) throw std::runtime_error("nonfinite particle state");
     if(constant && i<16) {
-      if(s[7]!=astr_insitu::TraceLength) throw std::runtime_error("constant forward trace unfinished");
+      if(s.status!=astr_insitu::TraceLength) throw std::runtime_error("constant forward trace unfinished");
       error=std::max(error,std::abs(s[axis]-3*pi/2.));error=std::max(error,std::abs(s[4]-pi));
     }
   }

@@ -1,4 +1,5 @@
 module rectilinear_metric_halo
+  use astr_precision, only: real_kind
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   implicit none
   private
@@ -7,11 +8,11 @@ contains
   subroutine fill_rectilinear_metric_halo(im,jm,km,hm,owned,jacob,dxi,status)
     integer,intent(in) :: im,jm,km,hm
     logical,intent(in) :: owned(6)
-    real(8),intent(inout) :: jacob(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
-    real(8),intent(inout) :: dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3)
+    real(real_kind),intent(inout) :: jacob(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),intent(inout) :: dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3)
     integer,intent(out) :: status
     integer :: i,j,k,d,e,h,idx(3),ref(3)
-    real(8) :: scale,cofactor,reference
+    real(real_kind) :: scale,cofactor,reference
     status=1
     if(min(im,jm,km,hm)<1) return
     ! Validate the physical metric contract before touching any halo.
@@ -20,18 +21,18 @@ contains
     do i=0,im
       if(.not.ieee_is_finite(jacob(i,j,k))) return
       if(.not.all(ieee_is_finite(dxi(i,j,k,:,:)))) return
-      if(jacob(i,j,k)<=0.d0) return
+      if(jacob(i,j,k)<=0.e0_real_kind) return
       do d=1,3
-        if(dxi(i,j,k,d,d)<=0.d0) return
+        if(dxi(i,j,k,d,d)<=0.e0_real_kind) return
         scale=dxi(i,j,k,d,d)
         do e=1,3
-          if(e/=d.and.abs(dxi(i,j,k,d,e))>1.d-10*scale) return
+          if(e/=d.and.abs(dxi(i,j,k,d,e))>1.e-10_real_kind*scale) return
         enddo
         idx=[i,j,k]; ref=idx; ref(d)=0
         cofactor=jacob(i,j,k)*dxi(i,j,k,d,d)
         reference=jacob(ref(1),ref(2),ref(3))*dxi(ref(1),ref(2),ref(3),d,d)
         if(.not.ieee_is_finite(cofactor).or..not.ieee_is_finite(reference)) return
-        if(abs(cofactor-reference)>1.d-10*max(abs(cofactor),abs(reference))) return
+        if(abs(cofactor-reference)>1.e-10_real_kind*max(abs(cofactor),abs(reference))) return
       enddo
     enddo
     enddo

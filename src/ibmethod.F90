@@ -7,6 +7,7 @@
 !| 23-06-2022  | Created by J. Fang                                    |
 !+---------------------------------------------------------------------+
 module ibmethod
+  use astr_precision, only: real_kind
   !
   use parallel, only : mpirankname,mpistop,mpirank,lio,ptime,ig0,jg0,kg0
   use stlaio,  only: get_unit
@@ -14,6 +15,7 @@ module ibmethod
   use stlaio,  only: get_unit
   !
   implicit none
+  private :: real_kind
   !
   contains
   !
@@ -65,7 +67,7 @@ module ibmethod
     character(len=64) :: infile,head
     logical :: lexist,lread
     logical :: lshift=.false.,lscale=.false.,lrotate=.false.
-    real(8) :: xcen(3),scale,theta,rot_vec(3)
+    real(real_kind) :: xcen(3),scale,theta,rot_vec(3)
     !
     if(mpirank==0) then
       !
@@ -136,7 +138,7 @@ module ibmethod
         !
         if(ndims==2) then
           ! call solidreduc(immbody(js))
-          call solidsilce(immbody(js),zsec=0.d0)
+          call solidsilce(immbody(js),zsec=0.e0_real_kind)
           !
           call solidrange(immbody(js),inputcmd='edge')
           !
@@ -182,10 +184,10 @@ module ibmethod
     ! local data
     type(solid),pointer :: pso
     type(lsegment),pointer :: pedge
-    real(8) :: xnode(3) 
+    real(real_kind) :: xnode(3) 
     integer :: jsd,jedge,ijk(3)
-    real(8),allocatable :: qib(:,:),dv(:,:,:),vel(:,:),prs(:),rho(:),tmp(:)
-    real(8) :: drag,lift,pres_drag,fric_drag,pres_lift,fric_lift,aera,     &
+    real(real_kind),allocatable :: qib(:,:),dv(:,:,:),vel(:,:),prs(:),rho(:),tmp(:)
+    real(real_kind) :: drag,lift,pres_drag,fric_drag,pres_lift,fric_lift,aera,     &
                div,s11,s22,s12,miu,fx,fy,px,py
     integer,save :: counter=0,fh
     !
@@ -200,7 +202,7 @@ module ibmethod
         do jedge=1,size(pso%edge)
           !
           xnode(1:2)=pso%edge(jedge)%cen
-          xnode(3)  =0.d0
+          xnode(3)  =0.e0_real_kind
           !
           call pngrid2d(xnode,ijk)
           !
@@ -216,8 +218,8 @@ module ibmethod
             ! only do calculation for a phyiscal cel
             call interp_cell(xnode,ijk,qint=qib(jedge,:),dvint=dv(jedge,:,:))
           else
-            qib(jedge,:) =-1.d10
-            dv(jedge,:,:)=-1.d10
+            qib(jedge,:) =-1.e10_real_kind
+            dv(jedge,:,:)=-1.e10_real_kind
           endif
           !
           ! if(ijk(1)>0 .and. ijk(2)>0) then
@@ -250,13 +252,13 @@ module ibmethod
         enddo
         !
         ! not integrate the force
-        drag=0.d0
-        lift=0.d0
-        pres_drag=0.d0
-        pres_lift=0.d0
-        fric_drag=0.d0
-        fric_lift=0.d0
-        aera=0.d0
+        drag=0.e0_real_kind
+        lift=0.e0_real_kind
+        pres_drag=0.e0_real_kind
+        pres_lift=0.e0_real_kind
+        fric_drag=0.e0_real_kind
+        fric_lift=0.e0_real_kind
+        aera=0.e0_real_kind
         !
         do jedge=1,size(pso%edge)
           !
@@ -265,8 +267,8 @@ module ibmethod
           aera=aera+pedge%length
           !
           div=num1d3*(dv(jedge,1,1)+dv(jedge,2,2))
-          s11=2.d0*dv(jedge,1,1)-div
-          s22=2.d0*dv(jedge,2,2)-div
+          s11=2.e0_real_kind*dv(jedge,1,1)-div
+          s22=2.e0_real_kind*dv(jedge,2,2)-div
           s12=(dv(jedge,1,2)+dv(jedge,2,1))
           !
           miu=miucal(tmp(jedge))/reynolds
@@ -285,10 +287,10 @@ module ibmethod
           !
         enddo
         !
-        pres_drag=pres_drag/(0.5d0*roinf*uinf**2)
-        pres_lift=pres_lift/(0.5d0*roinf*uinf**2)
-        fric_drag=fric_drag/(0.5d0*roinf*uinf**2)
-        fric_lift=fric_lift/(0.5d0*roinf*uinf**2)
+        pres_drag=pres_drag/(0.5e0_real_kind*roinf*uinf**2)
+        pres_lift=pres_lift/(0.5e0_real_kind*roinf*uinf**2)
+        fric_drag=fric_drag/(0.5e0_real_kind*roinf*uinf**2)
+        fric_lift=fric_lift/(0.5e0_real_kind*roinf*uinf**2)
         !
         drag=pres_drag+fric_drag
         lift=pres_lift+fric_lift
@@ -354,12 +356,12 @@ module ibmethod
     use commarray, only : x,q,dvel
     use commfunc,  only : matinv
     !
-    real(8),intent(in) :: xn(3)
+    real(real_kind),intent(in) :: xn(3)
     integer,intent(in) :: ic(3)
-    real(8),intent(out),optional :: qint(numq),dvint(1:ndims,1:ndims)
+    real(real_kind),intent(out),optional :: qint(numq),dvint(1:ndims,1:ndims)
     !
-    real(8) :: qcell(4,numq),dvcell(4,1:ndims,1:ndims)
-    real(8) :: Tm1(4,4),xcell(4,3),coef_dirichlet(4),xvec(4),Ti1(4,4)
+    real(real_kind) :: qcell(4,numq),dvcell(4,1:ndims,1:ndims)
+    real(real_kind) :: Tm1(4,4),xcell(4,3),coef_dirichlet(4),xvec(4),Ti1(4,4)
     integer :: i,j,k,m,jq
     !
     if(ndims==2) then
@@ -375,7 +377,7 @@ module ibmethod
         Tm1(m,1)=xcell(m,1)*xcell(m,2)
         Tm1(m,2)=xcell(m,1)
         Tm1(m,3)=xcell(m,2)
-        Tm1(m,4)=1.d0
+        Tm1(m,4)=1.e0_real_kind
         !
         if(present(qint)) qcell(m,:)=q(i,j,k,:)
         !
@@ -387,7 +389,7 @@ module ibmethod
       xvec(1)=xn(1)*xn(2)
       xvec(2)=xn(1)
       xvec(3)=xn(2)
-      xvec(4)=1.d0
+      xvec(4)=1.e0_real_kind
       !
       do m=1,4
         coef_dirichlet(m)=dot_product(xvec,Ti1(:,m))

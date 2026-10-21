@@ -1,6 +1,7 @@
 #ifndef FACE_PROC
 #define FACE_PROC pure
 #endif
+  use astr_precision, only: real_kind
   implicit none
   private
   public :: apply_conservative_face_column
@@ -11,10 +12,10 @@ contains
   FACE_PROC subroutine apply_conservative_face_column(side,s,k,im,jm,km,hm,q,xline, &
                                                       tw,gamma,mach,split,left,right,status)
     integer,intent(in) :: side,s,k,im,jm,km,hm
-    real(8),intent(inout) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5)
-    real(8),intent(in) :: xline(-hm:im+hm),tw,gamma,mach,split,left(5),right(5)
+    real(real_kind),intent(inout) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5)
+    real(real_kind),intent(in) :: xline(-hm:im+hm),tw,gamma,mach,split,left(5),right(5)
     integer,intent(out) :: status
-    real(8) :: face(5),halo(5,hm),inside(5,hm),target(5)
+    real(real_kind) :: face(5),halo(5,hm),inside(5,hm),target(5)
     integer :: h
     status=1
     if(hm<1.or.im<hm.or.jm<hm.or.k<0.or.k>km) return
@@ -39,7 +40,7 @@ contains
       enddo
     case(2)
       face=q(im,s,k,:)
-      halo=0.d0
+      halo=0.e0_real_kind
       target=q(im-1,s,k,:)
       call constant_conservative_boundary(face,halo,hm,target,status)
       if(status/=0) return
@@ -49,7 +50,7 @@ contains
       enddo
     case(3)
       face=q(s,0,k,:)
-      halo=0.d0
+      halo=0.e0_real_kind
       do h=1,hm
         inside(:,h)=q(s,h,k,:)
       enddo
@@ -61,7 +62,7 @@ contains
       enddo
     case(4)
       face=q(s,jm,k,:)
-      halo=0.d0
+      halo=0.e0_real_kind
       call piecewise_conservative_boundary(face,halo,hm,xline(s),split,left,right,status)
       if(status/=0) return
       q(s,jm,k,:)=face

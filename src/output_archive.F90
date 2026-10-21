@@ -1,5 +1,7 @@
 module output_archive
-  use iso_fortran_env, only: int64,real64,iostat_end
+  use iso_fortran_env, only: int64,iostat_end
+  use astr_precision, only: real_kind,real_bytes,clock_kind
+  use astr_precision_io, only: read_source_reals,source_real_matches
   use iso_c_binding, only: c_int,c_char,c_null_char
   use mpi
   use commvar, only: ia,ja,ka,im,jm,km,numq,use_gpu,nondimen
@@ -39,7 +41,7 @@ module output_archive
   integer(int64),save :: last_steps(2)=-1,origin_steps(2)=0
   integer(int64),save :: segment_ids(2)=-1,segment_bytes(2)=0,segment_crc(2)=0
   integer(int64),save :: parent_ids(2)=-1,parent_bytes(2)=0,parent_crc(2)=0
-  real(real64),save :: origin_times(2)=0
+  real(real_kind),save :: origin_times(2)=0
   logical,save :: effective_initial(2)=.false.
   logical,save :: lineage_compatible(2)=.false.
   character(1200),save :: roots(2)=''
@@ -133,13 +135,14 @@ contains
     enddo
   end subroutine
 
-  subroutine archive_control_file(path,writing,identity)
+  subroutine archive_control_file(path,writing,identity,source_bytes)
     character(*),intent(in) :: path
     logical,intent(in) :: writing
     type(checkpoint_state_identity),intent(in) :: identity
+    integer,optional,intent(in) :: source_bytes
     type(output_product_options) :: saved(2)
     integer(int64) :: indices(256,3),saved_last(2),steps(2),clock_step
-    real(real64) :: times(2),clock_time
+    real(real_kind) :: times(2),clock_time
     logical :: initial(2),checkpoint_enabled,ok,same,same_flags(2),clock_same
     integer :: unit,err,closed,p
     character(8) :: magic
@@ -182,31 +185,41 @@ contains
       open(newunit=unit,file=path,status='old',access='stream',form='unformatted', &
         convert='little_endian',action='read',iostat=err)
       call check(err==0,'missing schedule history')
-      read(unit,iostat=err) magic,clock_step,clock_time,checkpoint_enabled,saved_last,steps,times,initial
+      read(unit,iostat=err) magic,clock_step
+      if(err==0) call read_source_reals(unit,clock_time,source_bytes,err)
+      if(err==0) read(unit,iostat=err) checkpoint_enabled,saved_last,steps
+      if(err==0) call read_source_reals(unit,times,source_bytes,err)
+      if(err==0) read(unit,iostat=err) initial
       call check(err==0.and.(magic=='ASTROA02'.or.magic=='ASTROA03').and. &
         clock_step==identity%step.and.clock_time==identity%time, &
         'schedule history clock/version')
       call check((checkpoint_enabled.eqv.options%checkpoint%enabled).or.options%restart_output=='override', &
         'checkpoint switch changed without override')
       do p=1,2
-        read(unit,iostat=err) saved(p)%enabled,saved(p)%mode,saved(p)%interval_steps,saved(p)%interval_time, &
-          saved(p)%initial_frame,saved(p)%final_frame,saved(p)%fields, &
+        read(unit,iostat=err) saved(p)%enabled,saved(p)%mode,saved(p)%interval_steps
+        if(err==0) call read_source_reals(unit,saved(p)%interval_time,source_bytes,err)
+        if(err==0) read(unit,iostat=err) saved(p)%initial_frame,saved(p)%final_frame,saved(p)%fields, &
           saved(p)%velocity_gradient,saved(p)%vorticity,saved(p)%qcriterion
         call check(err==0,'read product options')
         if(magic=='ASTROA03') then
-          read(unit,iostat=err) saved(p)%adaptive%enabled,saved(p)%adaptive%dense_steps,saved(p)%adaptive%dense_time, &
-            saved(p)%adaptive%events,saved(p)%adaptive%windows
+          read(unit,iostat=err) saved(p)%adaptive%enabled,saved(p)%adaptive%dense_steps
+          if(err==0) call read_source_reals(unit,saved(p)%adaptive%dense_time,source_bytes,err)
+          if(err==0) read(unit,iostat=err) saved(p)%adaptive%events,saved(p)%adaptive%windows
           call check(err==0,'read adaptive product options')
         endif
       enddo
       read(unit,iostat=err) indices(:,1),indices(:,2),indices(:,3)
       call check(err==0,'read slice selections')
       do p=1,2
+        if(source_real_matches(saved(p)%interval_time,products(p)%interval_time,source_bytes)) &
+          saved(p)%interval_time=products(p)%interval_time
+        if(source_real_matches(saved(p)%adaptive%dense_time,products(p)%adaptive%dense_time,source_bytes)) &
+          saved(p)%adaptive%dense_time=products(p)%adaptive%dense_time
         if(saved(p)%enabled) then
           call configure_schedule(schedules(p),trim(saved(p)%mode),saved(p)%interval_steps, &
             saved(p)%interval_time,steps(p),times(p),initial(p),.false.,ok)
           call check(ok,'invalid saved product schedule')
-          call restore_schedule_state(unit,schedules(p),trim(labels(p)),identity%step,identity%time,ok)
+          call restore_schedule_state(unit,schedules(p),trim(labels(p)),identity%step,identity%time,ok,source_bytes)
           call check(ok,'invalid saved product history')
         endif
         same=same_product(saved(p),products(p)).and..not.adaptive_dependencies_reset(products(p)%adaptive)
@@ -234,7 +247,7 @@ contains
         do p=1,2
           if(.not.saved(p)%enabled.or..not.saved(p)%adaptive%enabled) cycle
           call adaptive_clock_file(unit,.false.,adaptive_clocks(p),products(p)%adaptive, &
-            identity%step,identity%time,clock_same,ok)
+            identity%step,identity%time,clock_same,ok,source_bytes)
           call check(ok.and.(clock_same.or.options%restart_output=='override'),'invalid adaptive archive history')
         enddo
       endif
@@ -278,9 +291,11 @@ contains
       (a%qcriterion.eqv.b%qcriterion).and.adaptive_binding_equal(a%adaptive,b%adaptive)
   end function
 
-  subroutine begin_archives(identity,reuse)
+  subroutine begin_archives(identity,reuse,source_bytes,source_time_word)
     type(checkpoint_state_identity),intent(in) :: identity
     logical,intent(in) :: reuse
+    integer,optional,intent(in) :: source_bytes
+    integer(int64),optional,intent(in) :: source_time_word
     logical :: ok
     integer :: p,unit,err,closed,i,axes(768),indices(768),n,components,selected(14),nselected
     integer(int64) :: bytes,crc,input_bytes,input_crc,saved_bytes,saved_crc
@@ -342,9 +357,13 @@ contains
         if(ok) then
           open(newunit=unit,file=trim(roots(p))//'/SEGMENT',status='new',action='write',iostat=err)
           if(err==0) then
+            source='ASTR_OUTPUT_SEGMENT_2'
+            if(present(source_bytes)) source='ASTR_OUTPUT_SEGMENT_3'
             write(unit,'(a,/,i0,1x,es24.16,/,i0,1x,z16.16,/,i0,1x,i0,1x,z16.16,/,i0,1x,z16.16,/,a)',iostat=err) &
-              'ASTR_OUTPUT_SEGMENT_2',identity%step,identity%time,bytes,crc, &
+              trim(source),identity%step,identity%time,bytes,crc, &
               parent_ids(p),parent_bytes(p),parent_crc(p),input_bytes,input_crc,trim(parent_path)
+            if(err==0.and.present(source_bytes).and.present(source_time_word)) &
+              write(unit,'(i0,1x,i0)',iostat=err) source_bytes,source_time_word
             close(unit,iostat=closed)
             ok=err==0.and.closed==0
           else
@@ -448,7 +467,7 @@ contains
     logical :: emit,ok
     integer(int64) :: crossed
     integer :: p
-    real(real64) :: started
+    real(clock_kind) :: started
     do p=1,2
       if(.not.products(p)%enabled) cycle
       ! Restored/overridden identities must not leave an unpublishable pending clock.
@@ -525,13 +544,13 @@ contains
 #endif
       budget=options%device_budget_bytes-resident-device_workspace
       call check(budget>0,'statistics leave no device packing budget')
-      capacity=min(tile_buffer/8/(nfields+3),budget/8/nfields, &
+      capacity=min(tile_buffer/real_bytes/(nfields+3),budget/real_bytes/nfields, &
         product_nodes(product),int(huge(i)/(nfields+3),int64))
       call check(capacity>0,'device budget cannot hold one basic output node')
       ! Use the same node limit for host tiles and the flat device packing buffer.
-      tile_buffer=capacity*8*(nfields+3)
+      tile_buffer=capacity*real_bytes*(nfields+3)
       capacity=capacity*nfields
-      device_peak=device_workspace+capacity*8
+      device_peak=device_workspace+capacity*real_bytes
       if(nselected>0) then
         call begin_derived_output_gpu(capacity,options%host_budget_bytes, &
           options%device_budget_bytes-resident,MPI_COMM_WORLD,selected(:nselected),reported_host,reported_device, &
@@ -544,9 +563,9 @@ contains
     else
 #endif
       if(nselected>0) then
-        capacity=min(tile_buffer/8/(nfields+3),product_nodes(product),int(huge(i)/(nfields+3),int64))
+        capacity=min(tile_buffer/real_bytes/(nfields+3),product_nodes(product),int(huge(i)/(nfields+3),int64))
         call check(capacity>0,'host budget cannot hold one derived output node')
-        tile_buffer=capacity*8*(nfields+3)
+        tile_buffer=capacity*real_bytes*(nfields+3)
         capacity=capacity*nfields
         call begin_derived_output_cpu(capacity,options%host_budget_bytes,MPI_COMM_WORLD, &
           selected(:nselected),reported_host)
@@ -632,9 +651,9 @@ contains
     subroutine transfer(pack)
       interface
         subroutine pack(start,extent,components,values)
-          import real64
+          import real_kind
           integer,intent(in) :: start(3),extent(3),components
-          real(real64),intent(out) :: values(:)
+          real(real_kind),intent(out) :: values(:)
         end subroutine
       end interface
       if(product==1) then

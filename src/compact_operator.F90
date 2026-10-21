@@ -1,6 +1,7 @@
 module compact_operator
   use mpi
-  use iso_fortran_env, only: real64
+  use astr_precision, only: real_kind
+  use astr_precision_mpi, only: mpi_real_type
   use compact_line_solver, only: compact_matrix,compact_reference_factor, &
     factor_compact_reference,solve_compact_reference
   implicit none
@@ -17,47 +18,47 @@ module compact_operator
   type :: compact_cpu_plan
     integer :: comm=MPI_COMM_NULL,n=0,rank=0,ranks=1,capacity=0
     type(compact_reference_factor) :: interface_factor
-    real(real64),allocatable :: inverse(:),multiplier(:),upper(:),response(:,:)
-    real(real64) :: edge_inner(2)=0.d0
-    real(real64),allocatable :: interior(:,:),endpoints(:,:),gathered(:),global_rhs(:,:),global_solution(:,:)
+    real(real_kind),allocatable :: inverse(:),multiplier(:),upper(:),response(:,:)
+    real(real_kind) :: edge_inner(2)=0.e0_real_kind
+    real(real_kind),allocatable :: interior(:,:),endpoints(:,:),gathered(:),global_rhs(:,:),global_solution(:,:)
   end type
 contains
   subroutine compact_filter_core(partition,alpha,matrix,edge)
     type(compact_line_partition),intent(in) :: partition
-    real(real64),intent(in) :: alpha
+    real(real_kind),intent(in) :: alpha
     type(compact_matrix),intent(out) :: matrix
-    real(real64),intent(out) :: edge(2)
+    real(real_kind),intent(out) :: edge(2)
     integer :: n
     n=partition%owned
     call periodic_compact_core(n,alpha,matrix,edge)
     if(partition%periodic) return
     if(partition%first==0) then
-      edge(1)=0.d0
-      matrix%upper(1)=0.98d0
+      edge(1)=0.e0_real_kind
+      matrix%upper(1)=0.98e0_real_kind
     endif
     if(partition%first+n==partition%global_n) then
-      edge(2)=0.d0
-      matrix%lower(n)=0.98d0
+      edge(2)=0.e0_real_kind
+      matrix%lower(n)=0.98e0_real_kind
     endif
   end subroutine
 
   subroutine compact_filter_rhs_global(partition,dim,halo,f,c6,c8,c10,boundary,rhs)
     type(compact_line_partition),intent(in) :: partition
     integer,intent(in) :: dim,halo
-    real(real64),intent(in) :: f(-halo:,:),c6(0:3),c8(0:4),c10(0:5),boundary(0:2,0:6)
-    real(real64),intent(out) :: rhs(:,:)
+    real(real_kind),intent(in) :: f(-halo:,:),c6(0:3),c8(0:4),c10(0:5),boundary(0:2,0:6)
+    real(real_kind),intent(out) :: rhs(:,:)
     integer :: j,g,k,distance,total
     total=partition%intervals
     do j=0,partition%owned-1
       g=partition%first+j
       if(.not.partition%periodic.and.g<=2) then
-        rhs(j+1,:)=0.d0
+        rhs(j+1,:)=0.e0_real_kind
         do k=0,6
           rhs(j+1,:)=rhs(j+1,:)+boundary(g,k)*f(j-g+k,:)
         enddo
       elseif(.not.partition%periodic.and.total-g<=2) then
         distance=total-g
-        rhs(j+1,:)=0.d0
+        rhs(j+1,:)=0.e0_real_kind
         do k=0,6
           rhs(j+1,:)=rhs(j+1,:)+boundary(distance,k)*f(j+distance-k,:)
         enddo
@@ -83,46 +84,46 @@ contains
   subroutine compact_derivative_core(partition,matrix,edge)
     type(compact_line_partition),intent(in) :: partition
     type(compact_matrix),intent(out) :: matrix
-    real(real64),intent(out) :: edge(2)
+    real(real_kind),intent(out) :: edge(2)
     integer :: row,g,n
     n=partition%owned
-    call periodic_compact_core(n,1.d0/3.d0,matrix,edge)
+    call periodic_compact_core(n,1.e0_real_kind/3.e0_real_kind,matrix,edge)
     if(partition%periodic) return
-    matrix%lower(1)=1.d0/3.d0
-    matrix%upper(n)=1.d0/3.d0
+    matrix%lower(1)=1.e0_real_kind/3.e0_real_kind
+    matrix%upper(n)=1.e0_real_kind/3.e0_real_kind
     do row=1,n
       g=partition%first+row-1
-      if(g==0) matrix%upper(row)=2.d0
-      if(g==partition%intervals) matrix%lower(row)=2.d0
+      if(g==0) matrix%upper(row)=2.e0_real_kind
+      if(g==partition%intervals) matrix%lower(row)=2.e0_real_kind
       if(g==1.or.g==partition%intervals-1) then
-        matrix%lower(row)=0.25d0
-        matrix%upper(row)=0.25d0
+        matrix%lower(row)=0.25e0_real_kind
+        matrix%upper(row)=0.25e0_real_kind
       endif
     enddo
     ! Retain every MPI coupling; only the two physical ends terminate a line.
     edge=[matrix%lower(1),matrix%upper(n)]
-    if(partition%first==0) edge(1)=0.d0
-    if(partition%first+n==partition%global_n) edge(2)=0.d0
-    matrix%lower(1)=0.d0
-    matrix%upper(n)=0.d0
+    if(partition%first==0) edge(1)=0.e0_real_kind
+    if(partition%first+n==partition%global_n) edge(2)=0.e0_real_kind
+    matrix%lower(1)=0.e0_real_kind
+    matrix%upper(n)=0.e0_real_kind
   end subroutine
 
   subroutine compact_derivative_rhs(partition,dim,halo,f,rhs)
     type(compact_line_partition),intent(in) :: partition
     integer,intent(in) :: dim,halo
-    real(real64),intent(in) :: f(-halo:,:)
-    real(real64),intent(out) :: rhs(:,:)
+    real(real_kind),intent(in) :: f(-halo:,:)
+    real(real_kind),intent(out) :: rhs(:,:)
     integer :: j,g
-    real(real64),parameter :: num7d9=7.d0/9.d0,num1d36=1.d0/36.d0
+    real(real_kind),parameter :: num7d9=7.e0_real_kind/9.e0_real_kind,num1d36=1.e0_real_kind/36.e0_real_kind
     do j=0,partition%owned-1
       g=partition%first+j
       if(.not.partition%periodic.and.g==0) then
         ! Equivalent endpoint closure without cancelling a large constant state.
-        rhs(j+1,:)=2.d0*(f(j+1,:)-f(j,:))+0.5d0*(f(j+2,:)-f(j,:))
+        rhs(j+1,:)=2.e0_real_kind*(f(j+1,:)-f(j,:))+0.5e0_real_kind*(f(j+2,:)-f(j,:))
       elseif(.not.partition%periodic.and.g==partition%intervals) then
-        rhs(j+1,:)=2.d0*(f(j,:)-f(j-1,:))+0.5d0*(f(j,:)-f(j-2,:))
+        rhs(j+1,:)=2.e0_real_kind*(f(j,:)-f(j-1,:))+0.5e0_real_kind*(f(j,:)-f(j-2,:))
       elseif(.not.partition%periodic.and.(g==1.or.g==partition%intervals-1)) then
-        rhs(j+1,:)=0.75d0*(f(j+1,:)-f(j-1,:))
+        rhs(j+1,:)=0.75e0_real_kind*(f(j+1,:)-f(j-1,:))
       else
         rhs(j+1,:)=num7d9*(f(j+1,:)-f(j-1,:))+num1d36*(f(j+2,:)-f(j-2,:))
       endif
@@ -131,23 +132,23 @@ contains
 
   subroutine periodic_compact_core(n,alpha,matrix,edge)
     integer,intent(in) :: n
-    real(real64),intent(in) :: alpha
+    real(real_kind),intent(in) :: alpha
     type(compact_matrix),intent(out) :: matrix
-    real(real64),intent(out) :: edge(2)
+    real(real_kind),intent(out) :: edge(2)
     matrix%n=n
     allocate(matrix%lower(n),matrix%diagonal(n),matrix%upper(n))
     matrix%lower=alpha
-    matrix%diagonal=1.d0
+    matrix%diagonal=1.e0_real_kind
     matrix%upper=alpha
-    matrix%lower(1)=0.d0
-    matrix%upper(n)=0.d0
+    matrix%lower(1)=0.e0_real_kind
+    matrix%upper(n)=0.e0_real_kind
     edge=alpha
   end subroutine
 
   subroutine interior_direct_solve(plan,values,nrhs)
     type(compact_cpu_plan),intent(in) :: plan
     integer,intent(in) :: nrhs
-    real(real64),intent(inout) :: values(:,:)
+    real(real_kind),intent(inout) :: values(:,:)
     integer :: i,m
     m=plan%n-2
     do i=2,m
@@ -161,13 +162,13 @@ contains
 
   subroutine prepare_compact_cpu(matrix,edge,partition,comm,capacity,plan)
     type(compact_matrix),intent(in) :: matrix
-    real(real64),intent(in) :: edge(2)
+    real(real_kind),intent(in) :: edge(2)
     type(compact_line_partition),intent(in) :: partition
     integer,intent(in) :: comm,capacity
     type(compact_cpu_plan),intent(inout) :: plan
     type(compact_matrix) :: reduced
-    real(real64),allocatable :: coefficients(:,:)
-    real(real64) :: row(6),pivot
+    real(real_kind),allocatable :: coefficients(:,:)
+    real(real_kind) :: row(6),pivot
     integer :: n,m,i,p,k,ierr
     if(plan%n/=0) call release_compact_cpu(plan)
     n=matrix%n
@@ -183,16 +184,16 @@ contains
     allocate(plan%inverse(m),plan%multiplier(m),plan%upper(m),plan%response(m,2), &
       plan%interior(m,capacity),plan%endpoints(2,capacity),plan%gathered(2*capacity*plan%ranks), &
       plan%global_rhs(2*plan%ranks,capacity),plan%global_solution(2*plan%ranks,capacity))
-    plan%response=0.d0
+    plan%response=0.e0_real_kind
     do i=1,m
-      plan%multiplier(i)=0.d0
+      plan%multiplier(i)=0.e0_real_kind
       pivot=matrix%diagonal(i+1)
       if(i>1) then
         plan%multiplier(i)=matrix%lower(i+1)*plan%inverse(i-1)
         pivot=pivot-plan%multiplier(i)*plan%upper(i-1)
       endif
-      if(pivot==0.d0) error stop 'singular compact CPU interior pivot'
-      plan%inverse(i)=1.d0/pivot
+      if(pivot==0.e0_real_kind) error stop 'singular compact CPU interior pivot'
+      plan%inverse(i)=1.e0_real_kind/pivot
       plan%upper(i)=matrix%upper(i+1)
     enddo
     row=[edge(1),matrix%diagonal(1),matrix%upper(1),matrix%lower(n),matrix%diagonal(n),edge(2)]
@@ -207,7 +208,7 @@ contains
       row(5)=row(5)-matrix%lower(n)*plan%response(m,2)
     endif
     allocate(coefficients(6,plan%ranks))
-    call MPI_Allgather(row,6,MPI_DOUBLE_PRECISION,coefficients,6,MPI_DOUBLE_PRECISION,plan%comm,ierr)
+    call MPI_Allgather(row,6,mpi_real_type,coefficients,6,mpi_real_type,plan%comm,ierr)
     reduced%n=2*plan%ranks
     reduced%cyclic=partition%periodic
     allocate(reduced%lower(reduced%n),reduced%diagonal(reduced%n),reduced%upper(reduced%n))
@@ -226,8 +227,8 @@ contains
   subroutine solve_compact_cpu(plan,rhs,solution,values,nrhs)
     type(compact_cpu_plan),intent(inout) :: plan
     integer,intent(in) :: nrhs
-    real(real64),intent(in) :: rhs(:,:)
-    real(real64),intent(out) :: solution(:,:),values(:,:)
+    real(real_kind),intent(in) :: rhs(:,:)
+    real(real_kind),intent(out) :: solution(:,:),values(:,:)
     integer :: m,p,j,k,offset,ierr
     m=plan%n-2
     if(nrhs<1.or.nrhs>plan%capacity) error stop 'compact CPU RHS exceeds capacity'
@@ -240,8 +241,8 @@ contains
       plan%endpoints(2,1:nrhs)=plan%endpoints(2,1:nrhs)-plan%edge_inner(2)*plan%interior(m,1:nrhs)
     endif
     ! Only the two retained endpoint RHS values are gathered, never a whole line.
-    call MPI_Allgather(plan%endpoints,2*nrhs,MPI_DOUBLE_PRECISION,plan%gathered,2*nrhs, &
-      MPI_DOUBLE_PRECISION,plan%comm,ierr)
+    call MPI_Allgather(plan%endpoints,2*nrhs,mpi_real_type,plan%gathered,2*nrhs, &
+      mpi_real_type,plan%comm,ierr)
     do p=1,plan%ranks
       offset=2*nrhs*(p-1)
       do j=1,nrhs

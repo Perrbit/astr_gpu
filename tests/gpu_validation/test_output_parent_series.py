@@ -5,13 +5,14 @@ import shutil
 import xml.etree.ElementTree as ET
 
 import h5py
+import numpy as np
 import pytest
 
 from test_output_series_repair import make_segment, repair, reseal, snapshot
 from combine_series import combine_series
 
 
-def register(segment, parent=None, step=0):
+def register(segment, parent=None, step=0, time=None, source_clock=None):
     input_size, input_crc = repair.fingerprint(segment / "input.txt")
     if parent is None:
         parent_id, parent_size, parent_crc, relative = -1, 0, 0, "none"
@@ -19,9 +20,12 @@ def register(segment, parent=None, step=0):
         parent_id = int(parent.name[7:])
         parent_size, parent_crc = repair.fingerprint(parent / "SEGMENT")
         relative = os.path.relpath(parent, segment)
+    origin = step * .001 if time is None else time
+    version = 2 if source_clock is None else 3
+    clock_row = '' if source_clock is None else f'{source_clock[0]} {source_clock[1]}\n'
     (segment / "SEGMENT").write_text(
-        f"ASTR_OUTPUT_SEGMENT_2\n{step} {step * .001:.17g}\n{1 if parent else 0} 0000000000000000\n"
-        f"{parent_id} {parent_size} {parent_crc:016X}\n{input_size} {input_crc:016X}\n{relative}\n")
+        f"ASTR_OUTPUT_SEGMENT_{version}\n{step} {origin:.17g}\n{1 if parent else 0} 0000000000000000\n"
+        f"{parent_id} {parent_size} {parent_crc:016X}\n{input_size} {input_crc:016X}\n{relative}\n{clock_row}")
     size, crc = repair.fingerprint(segment / "SEGMENT")
     geom_size, geom_crc = repair.fingerprint(segment.parent / "resources/data.h5")
     for frame in segment.glob("step*"):
@@ -66,6 +70,47 @@ def test_exact_parent_cutoff_no_branch_guessing(branch, tmp_path):
     with pytest.raises(FileExistsError):
         combine_series(child, output=out)
     assert sum(p.stat().st_size for p in tmp_path.rglob("*") if p.is_file()) < 4 * 1024**2
+
+
+@pytest.mark.parametrize('parent_width,child_width', [(4, 8), (8, 4)])
+def test_cross_precision_parent_keeps_each_frame_type(tmp_path, parent_width, child_width):
+    parent = make_segment(tmp_path / 'parent', 6, [], width=parent_width)
+    register(parent)
+    child = make_segment(tmp_path / 'child', 6, [], width=child_width)
+    for step in (0, 2):
+        shutil.rmtree(child / f'step{step:012d}')
+    with h5py.File(parent / 'step000000000002/data.h5') as source:
+        origin = float(repair.frame_clock(repair.metadata(source))[0])
+    source_clock = (parent_width, int(np.array([origin], dtype=f'<f{parent_width}').view(f'<i{parent_width}')[0]))
+    register(child, parent, step=2, time=float(np.dtype(f'<f{child_width}').type(origin)), source_clock=source_clock)
+    before = snapshot(tmp_path)
+    out = tmp_path / 'combined'
+    report = combine_series(child, output=out)
+    assert report['frames'] == 3
+    grids = ET.parse(out / 'lineage.xdmf').findall('./Domain/Grid/Grid')
+    for grid, width in zip(grids, [parent_width, parent_width, child_width]):
+        for item in grid.findall('.//DataItem'):
+            assert item.attrib['Precision'] == str(width)
+    after = snapshot(tmp_path)
+    assert all(after[name] == value for name, value in before.items())
+
+
+@pytest.mark.parametrize('source_width', [4, 8])
+def test_segment_precision_switch_preserves_raw_parent_clock(tmp_path, source_width):
+    target = np.dtype('<f8' if source_width == 4 else '<f4')
+    source = np.array([.005], dtype=f'<f{source_width}')
+    word = int(source.view(f'<i{source_width}')[0])
+    segment = make_segment(tmp_path, 6, [], width=target.itemsize)
+    register(segment, step=5, time=float(source.astype(target)[0]), source_clock=(source_width, word))
+    record = repair.segment_record(segment)
+    assert record['parent_time'] == float(source[0])
+    assert record['time'] == float(source.astype(target)[0])
+    assert record['source_clock_word'] == word
+    rows = (segment / 'SEGMENT').read_text().splitlines()
+    rows[6] = f'16 {word}'
+    (segment / 'SEGMENT').write_text('\n'.join(rows) + '\n')
+    with pytest.raises(ValueError, match='clock precision'):
+        repair.segment_record(segment)
 
 
 def test_v2_single_segment_repair_and_metadata_binding(branch):

@@ -6,11 +6,13 @@
 !| 08-02-2021  | Created by J. Fang                                    |
 !+---------------------------------------------------------------------+
 module commfunc
+  use astr_precision, only: real_kind
   !
   use commvar, only : hm,kcutoff,ltimrpt
   use constdef
 
   implicit none
+  private :: real_kind
   !
   interface extrapolate
     module procedure extrapolate_1o
@@ -26,18 +28,18 @@ module commfunc
     module procedure deriv_4o
   end interface
   !
-  complex(8) :: ci=(0.d0,1.d0)
+  complex(real_kind) :: ci=(0.e0_real_kind,1.e0_real_kind)
   !
   contains
   !
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   ! This function is used to calculate the area of a quadrilateral.
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  real(8) function arquad(x1,x2,x3,x4)
+  real(real_kind) function arquad(x1,x2,x3,x4)
     !
-    real(8),intent(in) :: x1(3),x2(3),x3(3),x4(3)
+    real(real_kind),intent(in) :: x1(3),x2(3),x3(3),x4(3)
     !
-    real(8) :: a,b,c,d,e
+    real(real_kind) :: a,b,c,d,e
     !
     a=sqrt((x1(1)-x2(1))*(x1(1)-x2(1))+(x1(2)-x2(2))*(x1(2)-x2(2)))
     b=sqrt((x2(1)-x3(1))*(x2(1)-x3(1))+(x2(2)-x3(2))*(x2(2)-x3(2)))
@@ -52,25 +54,25 @@ module commfunc
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   ! End of the function arquad.
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  pure real(8) function arquad3d(x1,x2,x3,x4)
-    real(8),intent(in) :: x1(3),x2(3),x3(3),x4(3)
-    real(8) :: normal1(3),normal2(3)
+  pure real(real_kind) function arquad3d(x1,x2,x3,x4)
+    real(real_kind),intent(in) :: x1(3),x2(3),x3(3),x4(3)
+    real(real_kind) :: normal1(3),normal2(3)
 
     normal1=cross_product(x2-x1,x3-x1)
     normal2=cross_product(x3-x1,x4-x1)
-    arquad3d=0.5d0*(sqrt(dot_product(normal1,normal1))+              &
+    arquad3d=0.5e0_real_kind*(sqrt(dot_product(normal1,normal1))+              &
                     sqrt(dot_product(normal2,normal2)))
   end function arquad3d
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   ! This function is used to calculate the area of a triangle.
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  real(8) function artria(a,b,c)
+  real(real_kind) function artria(a,b,c)
     !
-    real(8),intent(in) :: a,b,c
+    real(real_kind),intent(in) :: a,b,c
     !
-    real(8) :: s
+    real(real_kind) :: s
     !
-    s=0.5d0*(a+b+c)
+    s=0.5e0_real_kind*(a+b+c)
     artria=sqrt(s*(s-a)*(s-b)*(s-c))
     !
     return
@@ -82,17 +84,17 @@ module commfunc
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   ! This function is used to calculate the volume of a cell.
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  real(8) function volhex(x1,x2,x3,x4,x5,x6,x7,x8 )
+  real(real_kind) function volhex(x1,x2,x3,x4,x5,x6,x7,x8 )
     !
-    real(8),intent(in) :: x1(3),x2(3),x3(3),x4(3),x5(3),x6(3),x7(3),x8(3)
+    real(real_kind),intent(in) :: x1(3),x2(3),x3(3),x4(3),x5(3),x6(3),x7(3),x8(3)
     !
     ! local data
-    real(8) :: martix(3,3),centroid(3),pyramid(6,3,3)
+    real(real_kind) :: martix(3,3),centroid(3),pyramid(6,3,3)
     integer :: ii
     !
-    centroid(1)=0.125d0*(x1(1)+x2(1)+x3(1)+x4(1)+x5(1)+x6(1)+x7(1)+x8(1))
-    centroid(2)=0.125d0*(x1(2)+x2(2)+x3(2)+x4(2)+x5(2)+x6(2)+x7(2)+x8(2))
-    centroid(3)=0.125d0*(x1(3)+x2(3)+x3(3)+x4(3)+x5(3)+x6(3)+x7(3)+x8(3))
+    centroid(1)=0.125e0_real_kind*(x1(1)+x2(1)+x3(1)+x4(1)+x5(1)+x6(1)+x7(1)+x8(1))
+    centroid(2)=0.125e0_real_kind*(x1(2)+x2(2)+x3(2)+x4(2)+x5(2)+x6(2)+x7(2)+x8(2))
+    centroid(3)=0.125e0_real_kind*(x1(3)+x2(3)+x3(3)+x4(3)+x5(3)+x6(3)+x7(3)+x8(3))
     !
     pyramid(1,1,1)=centroid(1)-x1(1)
     pyramid(1,1,2)=centroid(2)-x1(2)
@@ -154,7 +156,7 @@ module commfunc
     pyramid(6,3,2)=x1(2)-x6(2)
     pyramid(6,3,3)=x1(3)-x6(3) 
     !
-    volhex=0.d0
+    volhex=0.e0_real_kind
     do ii=1,6                            
       martix(1,1)=pyramid(ii,1,1)
       martix(1,2)=pyramid(ii,1,2)
@@ -173,8 +175,8 @@ module commfunc
     !
   end function volhex
   !
-  pure real(8) function determinant33(a)
-    real(8),intent(in) :: a(3,3)
+  pure real(real_kind) function determinant33(a)
+    real(real_kind),intent(in) :: a(3,3)
     !
     determinant33=a(1,1)*a(2,2)*a(3,3)+a(1,2)*a(2,3)*a(3,1)+           &
                   a(1,3)*a(2,1)*a(3,2)-a(1,3)*a(2,2)*a(3,1)-           &
@@ -190,11 +192,11 @@ module commfunc
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   function gradextrp(qbou,q1st,dq) result(q)
     !
-    real(8) :: q(4)
-    real(8),intent(in) :: qbou,q1st
-    real(8),intent(in),optional :: dq
+    real(real_kind) :: q(4)
+    real(real_kind),intent(in) :: qbou,q1st
+    real(real_kind),intent(in),optional :: dq
     !
-    real(8) :: dqr
+    real(real_kind) :: dqr
     !
     if(present(dq)) then
       dqr=dq
@@ -202,10 +204,10 @@ module commfunc
       dqr=qbou-q1st
     endif
     !
-    q(1)=q1st+2.d0*dqr
-    q(2)=-2.d0*q1st -3.d0*qbou +6.d0*q(1) -6.d0*dqr
-    q(3)= 3.d0*q1st+10.d0*qbou-18.d0*q(1) +6.d0*q(2)+12.d0*dqr
-    q(4)=-4.d0*q1st-num65d3*qbou+40.d0*q(1)-20.d0*q(2)+num20d3*q(3)-20.d0*dqr
+    q(1)=q1st+2.e0_real_kind*dqr
+    q(2)=-2.e0_real_kind*q1st -3.e0_real_kind*qbou +6.e0_real_kind*q(1) -6.e0_real_kind*dqr
+    q(3)= 3.e0_real_kind*q1st+10.e0_real_kind*qbou-18.e0_real_kind*q(1) +6.e0_real_kind*q(2)+12.e0_real_kind*dqr
+    q(4)=-4.e0_real_kind*q1st-num65d3*qbou+40.e0_real_kind*q(1)-20.e0_real_kind*q(2)+num20d3*q(3)-20.e0_real_kind*dqr
     !
   end function gradextrp
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -221,8 +223,8 @@ module commfunc
   !+-------------------------------------------------------------------+
   function deriv_1o(v0,v1) result(dv)
     !
-    real(8) :: dv
-    real(8),intent(in) :: v0,v1
+    real(real_kind) :: dv
+    real(real_kind),intent(in) :: v0,v1
     !
     dv=-v0+v1
     !
@@ -232,10 +234,10 @@ module commfunc
   !
   function deriv_2o(v0,v1,v2) result(dv)
     !
-    real(8) :: dv
-    real(8),intent(in) :: v0,v1,v2
+    real(real_kind) :: dv
+    real(real_kind),intent(in) :: v0,v1,v2
     !
-    dv=-1.5d0*v0+2.d0*v1-0.5d0*v2
+    dv=-1.5e0_real_kind*v0+2.e0_real_kind*v1-0.5e0_real_kind*v2
     !
     return
     !
@@ -243,10 +245,10 @@ module commfunc
   !
   function deriv_3o(v0,v1,v2,v3) result(dv)
     !
-    real(8) :: dv
-    real(8),intent(in) :: v0,v1,v2,v3
+    real(real_kind) :: dv
+    real(real_kind),intent(in) :: v0,v1,v2,v3
     !
-    dv=-num11d6*v0+3.d0*v1-1.5d0*v2+num1d3*v3
+    dv=-num11d6*v0+3.e0_real_kind*v1-1.5e0_real_kind*v2+num1d3*v3
     !
     return
     !
@@ -254,10 +256,10 @@ module commfunc
   !
   function deriv_4o(v0,v1,v2,v3,v4) result(dv)
     !
-    real(8) :: dv
-    real(8),intent(in) :: v0,v1,v2,v3,v4
+    real(real_kind) :: dv
+    real(real_kind),intent(in) :: v0,v1,v2,v3,v4
     !
-    dv=-num25d12*v0+4.d0*v1-3.d0*v2+num4d3*v3-0.25d0*v4
+    dv=-num25d12*v0+4.e0_real_kind*v1-3.e0_real_kind*v2+num4d3*v3-0.25e0_real_kind*v4
     !
     return
     !
@@ -276,8 +278,8 @@ module commfunc
   function extrapolate_1o(v1,dv) result(v0)
     !
     ! arguments
-    real(8) :: v0
-    real(8),intent(in) :: v1,dv
+    real(real_kind) :: v0
+    real(real_kind),intent(in) :: v1,dv
     !
     v0=v1-dv
     !
@@ -286,30 +288,30 @@ module commfunc
   function extrapolate_2o(v1,v2,dv) result(v0)
     !
     ! arguments
-    real(8) :: v0
-    real(8),intent(in) :: v1,v2,dv
+    real(real_kind) :: v0
+    real(real_kind),intent(in) :: v1,v2,dv
     !
-    v0=num1d3*(4.d0*v1-v2-2.d0*dv)
+    v0=num1d3*(4.e0_real_kind*v1-v2-2.e0_real_kind*dv)
     !
   end function extrapolate_2o
   !
   function extrapolate_3o(v1,v2,v3,dv) result(v0)
     !
     ! arguments
-    real(8) :: v0
-    real(8),intent(in) :: v1,v2,v3,dv
+    real(real_kind) :: v0
+    real(real_kind),intent(in) :: v1,v2,v3,dv
     !
-    v0=num1d11*(18.d0*v1-9.d0*v2+2.d0*v3-6.d0*dv)
+    v0=num1d11*(18.e0_real_kind*v1-9.e0_real_kind*v2+2.e0_real_kind*v3-6.e0_real_kind*dv)
     !
   end function extrapolate_3o
   !
   function extrapolate_4o(v1,v2,v3,v4,dv) result(v0)
     !
     ! arguments
-    real(8) :: v0
-    real(8),intent(in) :: v1,v2,v3,v4,dv
+    real(real_kind) :: v0
+    real(real_kind),intent(in) :: v1,v2,v3,v4,dv
     !
-    v0=0.04d0*(48.d0*v1-36.d0*v2+16.d0*v3-3.d0*v4-12.d0*dv)
+    v0=0.04e0_real_kind*(48.e0_real_kind*v1-36.e0_real_kind*v2+16.e0_real_kind*v3-3.e0_real_kind*v4-12.e0_real_kind*dv)
     !
   end function extrapolate_4o
   !+-------------------------------------------------------------------+
@@ -321,12 +323,12 @@ module commfunc
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   pure function cubic(y1,y2,y3,y4,x1,delta,xx)
     !
-    real(8) :: cubic
-    real(8),intent(in) :: y1,y2,y3,y4,x1,delta,xx
-    real(8) :: a,b,c,d,varx
+    real(real_kind) :: cubic
+    real(real_kind),intent(in) :: y1,y2,y3,y4,x1,delta,xx
+    real(real_kind) :: a,b,c,d,varx
     !
-    a=(y4-3.d0*y3+3.d0*y2-y1)/(6.d0*delta**3)
-    b=((y3-2.d0*y2+y1)-6.d0*a*delta**3)/(2.d0*delta**2)
+    a=(y4-3.e0_real_kind*y3+3.e0_real_kind*y2-y1)/(6.e0_real_kind*delta**3)
+    b=((y3-2.e0_real_kind*y2+y1)-6.e0_real_kind*a*delta**3)/(2.e0_real_kind*delta**2)
     c=(y2-y1-a*delta**3-b*delta**2)/delta
     d=y1
     !
@@ -344,11 +346,11 @@ module commfunc
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   ! This function is the the inverse function of the function tanh(x).
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  pure real(8) function argtanh(var)
+  pure real(real_kind) function argtanh(var)
     !
-    real(8),intent(in) :: var
+    real(real_kind),intent(in) :: var
     !
-    argtanh=0.5d0*dlog((1.d0+var)/(1.d0-var))
+    argtanh=0.5e0_real_kind*log((1.e0_real_kind+var)/(1.e0_real_kind-var))
     !
     return
     !
@@ -366,8 +368,8 @@ module commfunc
   !+-------------------------------------------------------------------+
   pure function cross_product(a,b)
     !
-    real(8) :: cross_product(3)
-    real(8),dimension(3),intent(in) :: a(3), b(3)
+    real(real_kind) :: cross_product(3)
+    real(real_kind),dimension(3),intent(in) :: a(3), b(3)
   
     cross_product(1) = a(2) * b(3) - a(3) * b(2)
     cross_product(2) = a(3) * b(1) - a(1) * b(3)
@@ -387,17 +389,17 @@ module commfunc
   !| -------------                                                     |
   !| 04-07-2021  | Created by J. Fang @ Warrington                     |
   !+-------------------------------------------------------------------+
-  pure real(8) function dis2point(p1,p2)
+  pure real(real_kind) function dis2point(p1,p2)
     !
     ! arguments
-    real(8),intent(in) :: p1(:),p2(:)
+    real(real_kind),intent(in) :: p1(:),p2(:)
     !
     ! local data
     integer :: n,nd
     !
     nd=size(p1)
     !
-    dis2point=0.d0
+    dis2point=0.e0_real_kind
     do n=1,nd
       dis2point=dis2point+(p1(n)-p2(n))**2
     enddo
@@ -408,17 +410,17 @@ module commfunc
     !
   end function dis2point
   !
-  pure real(8) function dis2point2(p1,p2)
+  pure real(real_kind) function dis2point2(p1,p2)
     !
     ! arguments
-    real(8),intent(in) :: p1(:),p2(:)
+    real(real_kind),intent(in) :: p1(:),p2(:)
     !
     ! local data
     integer :: n,nd
     !
     nd=size(p1)
     !
-    dis2point2=0.d0
+    dis2point2=0.e0_real_kind
     do n=1,nd
       dis2point2=dis2point2+(p1(n)-p2(n))**2
     enddo
@@ -438,19 +440,19 @@ module commfunc
   !| -------------                                                     |
   !| 04-07-2021  | Created by J. Fang @ Warrington                     |
   !+-------------------------------------------------------------------+
-  pure real(8) function areatriangle(p1,p2,p3)
+  pure real(real_kind) function areatriangle(p1,p2,p3)
     !
     ! arguments
-    real(8),intent(in) :: p1(3),p2(3),p3(3)
+    real(real_kind),intent(in) :: p1(3),p2(3),p3(3)
     !
     ! local data
-    real(8) :: a,b,c,var1
+    real(real_kind) :: a,b,c,var1
     !
     a=dis2point(p1,p2)
     b=dis2point(p2,p3)
     c=dis2point(p1,p3)
     !
-    var1=0.5d0*(a+b+c)
+    var1=0.5e0_real_kind*(a+b+c)
     !
     areatriangle=sqrt(var1*(var1-a)*(var1-b)*(var1-c))
     !
@@ -471,12 +473,12 @@ module commfunc
   pure logical function samepoint(p1,p2)
     !
     ! arguments
-    real(8),intent(in) :: p1(3),p2(3)
+    real(real_kind),intent(in) :: p1(3),p2(3)
     !
     ! local data
-    real(8) :: epsilon
+    real(real_kind) :: epsilon
     !
-    epsilon=1.d-16
+    epsilon=1.e-16_real_kind
     !
     if(abs(p1(1)-p2(1))<=epsilon .and. abs(p1(2)-p2(2))<=epsilon .and. &
        abs(p1(3)-p2(3))<=epsilon) then
@@ -509,12 +511,12 @@ module commfunc
   !+-------------------------------------------------------------------+
   pure function matinv2(A) result(B)
     !! Performs a direct calculation of the inverse of a 2×2 matrix.
-    real(8), intent(in) :: A(2,2)   !! Matrix
-    real(8)             :: B(2,2)   !! Inverse matrix
-    real(8)             :: detinv
+    real(real_kind), intent(in) :: A(2,2)   !! Matrix
+    real(real_kind)             :: B(2,2)   !! Inverse matrix
+    real(real_kind)             :: detinv
 
     ! Calculate the inverse determinant of the matrix
-    detinv = 1.d0/(A(1,1)*A(2,2) - A(1,2)*A(2,1))
+    detinv = 1.e0_real_kind/(A(1,1)*A(2,2) - A(1,2)*A(2,1))
 
     ! Calculate the inverse of the matrix
     B(1,1) = +detinv * A(2,2)
@@ -528,12 +530,12 @@ module commfunc
   !!
   pure function matinv3(A) result(B)
     !! Performs a direct calculation of the inverse of a 3×3 matrix.
-    real(8), intent(in) :: A(3,3)   !! Matrix
-    real(8)             :: B(3,3)   !! Inverse matrix
-    real(8)             :: detinv
+    real(real_kind), intent(in) :: A(3,3)   !! Matrix
+    real(real_kind)             :: B(3,3)   !! Inverse matrix
+    real(real_kind)             :: detinv
 
     ! Calculate the inverse determinant of the matrix
-    detinv = 1.d0/(A(1,1)*A(2,2)*A(3,3) - A(1,1)*A(2,3)*A(3,2)&
+    detinv = 1.e0_real_kind/(A(1,1)*A(2,2)*A(3,3) - A(1,1)*A(2,3)*A(3,2)&
                  - A(1,2)*A(2,1)*A(3,3) + A(1,2)*A(2,3)*A(3,1)&
                  + A(1,3)*A(2,1)*A(3,2) - A(1,3)*A(2,2)*A(3,1))
 
@@ -554,13 +556,13 @@ module commfunc
   !!
   pure function matinv4(A) result(B)
     !! Performs a direct calculation of the inverse of a 4×4 matrix.
-    real(8), intent(in) :: A(4,4)   !! Matrix
-    real(8)             :: B(4,4)   !! Inverse matrix
-    real(8)             :: detinv
+    real(real_kind), intent(in) :: A(4,4)   !! Matrix
+    real(real_kind)             :: B(4,4)   !! Inverse matrix
+    real(real_kind)             :: detinv
 
     ! Calculate the inverse determinant of the matrix
     detinv = &
-     1.d0/(A(1,1)*(A(2,2)*(A(3,3)*A(4,4)-A(3,4)*A(4,3))+A(2,3)*(A(3,4)*A(4,2)-A(3,2)*A(4,4))+A(2,4)*(A(3,2)*A(4,3)-A(3,3)*A(4,2)))&
+     1.e0_real_kind/(A(1,1)*(A(2,2)*(A(3,3)*A(4,4)-A(3,4)*A(4,3))+A(2,3)*(A(3,4)*A(4,2)-A(3,2)*A(4,4))+A(2,4)*(A(3,2)*A(4,3)-A(3,3)*A(4,2)))&
          - A(1,2)*(A(2,1)*(A(3,3)*A(4,4)-A(3,4)*A(4,3))+A(2,3)*(A(3,4)*A(4,1)-A(3,1)*A(4,4))+A(2,4)*(A(3,1)*A(4,3)-A(3,3)*A(4,1)))&
          + A(1,3)*(A(2,1)*(A(3,2)*A(4,4)-A(3,4)*A(4,2))+A(2,2)*(A(3,4)*A(4,1)-A(3,1)*A(4,4))+A(2,4)*(A(3,1)*A(4,2)-A(3,2)*A(4,1)))&
          - A(1,4)*(A(2,1)*(A(3,2)*A(4,3)-A(3,3)*A(4,2))+A(2,2)*(A(3,3)*A(4,1)-A(3,1)*A(4,3))+A(2,3)*(A(3,1)*A(4,2)-A(3,2)*A(4,1))))
@@ -605,12 +607,12 @@ module commfunc
   !+-------------------------------------------------------------------+
   function matinv (a,n) result(aa)  
     !
-    real(8),intent(in) :: a(n,n)
+    real(real_kind),intent(in) :: a(n,n)
     integer,intent(in) :: n
-    real(8) :: aa(n,n)
+    real(real_kind) :: aa(n,n)
     !
     ! - - - local variables - - -
-    real(8) :: b(n,n), c, d, temp(n)
+    real(real_kind) :: b(n,n), c, d, temp(n)
     integer :: i, j, k, m, imax(1), ipvt(n)
     ! - - - - - - - - - - - - - -
     b = a
@@ -651,8 +653,8 @@ module commfunc
   pure logical function isidenmar(a,epsilon) result(iden)
     !
     ! arguments
-    real(8),intent(in) :: a(:,:)
-    real(8),intent(in) :: epsilon
+    real(real_kind),intent(in) :: a(:,:)
+    real(real_kind),intent(in) :: epsilon
     !
     ! local data
     integer :: n,i,j
@@ -662,7 +664,7 @@ module commfunc
     iden=.true.
     !
     do j=1,n
-      if(abs(a(j,j)-1.d0)>epsilon) then
+      if(abs(a(j,j)-1.e0_real_kind)>epsilon) then
         iden=.false.
         return
       endif
@@ -690,8 +692,8 @@ module commfunc
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     pure function median(var1,var2,var3)
       !
-      real(8),intent(in) :: var1,var2,var3
-      real(8) :: median
+      real(real_kind),intent(in) :: var1,var2,var3
+      real(real_kind) :: median
       !
       median= var1+minmod2(var2-var1,var3-var1)
       !
@@ -707,15 +709,15 @@ module commfunc
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     pure function minmod2(var1,var2)
       
-      real(8),intent(in) :: var1,var2
-      real(8) :: minmod2
+      real(real_kind),intent(in) :: var1,var2
+      real(real_kind) :: minmod2
       !
-      if(var1>0.d0 .and. var2>0.d0) then
-        minmod2=min(dabs(var1),dabs(var2))
-      elseif(var1<0.d0 .and. var2<0.d0) then
-        minmod2=-1.d0*min(dabs(var1),dabs(var2))
+      if(var1>0.e0_real_kind .and. var2>0.e0_real_kind) then
+        minmod2=min(abs(var1),abs(var2))
+      elseif(var1<0.e0_real_kind .and. var2<0.e0_real_kind) then
+        minmod2=-1.e0_real_kind*min(abs(var1),abs(var2))
       else
-        minmod2=0.d0
+        minmod2=0.e0_real_kind
       end if
       !
       return
@@ -730,16 +732,16 @@ module commfunc
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     pure function minmod4(var1,var2,var3,var4)
       !
-      real(8),intent(in) :: var1,var2,var3,var4
-      real(8) :: minmod4
+      real(real_kind),intent(in) :: var1,var2,var3,var4
+      real(real_kind) :: minmod4
       !
-      if(var1>0.d0 .and. var2>0.d0 .and. var3>0.d0 .and. var4>0.d0) then
-        minmod4=min(dabs(var1),dabs(var2),dabs(var3),dabs(var4))
-      elseif(var1<0.d0 .and. var2<0.d0 .and. var3<0.d0 .and. var4<0.d0)&
+      if(var1>0.e0_real_kind .and. var2>0.e0_real_kind .and. var3>0.e0_real_kind .and. var4>0.e0_real_kind) then
+        minmod4=min(abs(var1),abs(var2),abs(var3),abs(var4))
+      elseif(var1<0.e0_real_kind .and. var2<0.e0_real_kind .and. var3<0.e0_real_kind .and. var4<0.e0_real_kind)&
                                                                     then
-        minmod4=-1.d0*min(dabs(var1),dabs(var2),dabs(var3),dabs(var4))
+        minmod4=-1.e0_real_kind*min(abs(var1),abs(var2),abs(var3),abs(var4))
       else
-        minmod4=0.d0
+        minmod4=0.e0_real_kind
       end if
       !
       return
@@ -760,9 +762,9 @@ module commfunc
     !+-------------------------------------------------------------------+
     pure function tridiagonal_thomas_proprocess(a,c) result(ac)
         
-        real(8),intent(in) :: a(:),c(:)
+        real(real_kind),intent(in) :: a(:),c(:)
 
-        real(8) :: ac(3,size(a))
+        real(real_kind) :: ac(3,size(a))
 
         integer :: i
 
@@ -770,11 +772,11 @@ module commfunc
 
         do i=2,size(a)
 
-            ac(1,i)=c(i)/(1.d0-a(i)*ac(1,i-1))
+            ac(1,i)=c(i)/(1.e0_real_kind-a(i)*ac(1,i-1))
 
-            ac(2,i)=1.d0/(1.d0-a(i)*ac(1,i-1))
+            ac(2,i)=1.e0_real_kind/(1.e0_real_kind-a(i)*ac(1,i-1))
 
-            ac(3,i)=a(i)/(1.d0-a(i)*ac(1,i-1))
+            ac(3,i)=a(i)/(1.e0_real_kind-a(i)*ac(1,i-1))
 
         enddo
 
@@ -799,9 +801,9 @@ module commfunc
     function tridiagonal_thomas_solver(ac,d) result(x)
         
         ! arguments
-        real(8),intent(in) :: ac(:,:)
-        real(8) :: d(:)
-        real(8) :: x(size(d))
+        real(real_kind),intent(in) :: ac(:,:)
+        real(real_kind) :: d(:)
+        real(real_kind) :: x(size(d))
 
         ! local data 
         integer :: i,n
@@ -837,12 +839,12 @@ module commfunc
     function tridiagonal_thomas(a,c,d) result(x)
         
         ! arguments
-        real(8),intent(in) :: a(:),c(:),d(:)
-        real(8) :: x(size(d))
+        real(real_kind),intent(in) :: a(:),c(:),d(:)
+        real(real_kind) :: x(size(d))
 
         ! local data 
         integer :: i,n
-        real(8),allocatable :: cc(:),dd(:)
+        real(real_kind),allocatable :: cc(:),dd(:)
 
         n=size(d)
 
@@ -852,9 +854,9 @@ module commfunc
         dd(1)=d(1)
         do i=2,n
 
-            cc(i)=c(i)/(1.d0-a(i)*cc(i-1))
+            cc(i)=c(i)/(1.e0_real_kind-a(i)*cc(i-1))
 
-            dd(i)=(d(i)-a(i)*dd(i-1))/(1.d0-a(i)*cc(i-1))
+            dd(i)=(d(i)-a(i)*dd(i-1))/(1.e0_real_kind-a(i)*cc(i-1))
 
         enddo
 

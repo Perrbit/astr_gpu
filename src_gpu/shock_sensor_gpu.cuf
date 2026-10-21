@@ -1,9 +1,11 @@
 module shock_sensor_gpu
+  use astr_precision, only: real_kind
   use cudafor
   implicit none
+  private :: real_kind
   integer(1),allocatable,device,private :: mask_send_d(:,:),mask_recv_d(:,:)
   integer(1),allocatable,pinned,private :: mask_send_h(:,:),mask_recv_h(:,:)
-  real(8),allocatable,device,private :: snapshot_sensor_d(:)
+  real(real_kind),allocatable,device,private :: snapshot_sensor_d(:)
   integer(1),allocatable,device,private :: snapshot_mask_d(:)
 contains
   attributes(global) subroutine pack_shock_snapshot_kernel(im,jm,km,n)
@@ -20,7 +22,7 @@ contains
   subroutine read_shock_physical_snapshot_gpu(sensor,mask)
     use commvar, only: im,jm,km
     use gpu_check, only: sync_after_kernel
-    real(8),intent(out) :: sensor(0:im,0:jm,0:km)
+    real(real_kind),intent(out) :: sensor(0:im,0:jm,0:km)
     integer(1),intent(out) :: mask(0:im,0:jm,0:km)
     integer :: n,status
     n=(im+1)*(jm+1)*(km+1)
@@ -112,7 +114,7 @@ contains
     integer,value :: im,jm,km,apply_left_x,apply_right_x,apply_down_y,apply_up_y, &
                      apply_back_z,apply_front_z
     integer :: i,j,k,ip1,im1,jp1,jm1,kp1,km1
-    real(8) :: div2,vort,vortx,vorty,vortz,dpdi,dpdj,dpdk
+    real(real_kind) :: div2,vort,vortx,vorty,vortz,dpdi,dpdj,dpdk
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -137,13 +139,13 @@ contains
     if(apply_up_y /= 0 .and. jp1 > jm) jp1 = jm
     if(apply_back_z /= 0 .and. km1 < 0) km1 = 0
     if(apply_front_z /= 0 .and. kp1 > km) kp1 = km
-    dpdi = abs(prs_d(ip1,j,k) - 2.d0*prs_d(i,j,k) + prs_d(im1,j,k)) / &
-           (prs_d(ip1,j,k) + 2.d0*prs_d(i,j,k) + prs_d(im1,j,k))
-    dpdj = abs(prs_d(i,jp1,k) - 2.d0*prs_d(i,j,k) + prs_d(i,jm1,k)) / &
-           (prs_d(i,jp1,k) + 2.d0*prs_d(i,j,k) + prs_d(i,jm1,k))
-    dpdk = abs(prs_d(i,j,kp1) - 2.d0*prs_d(i,j,k) + prs_d(i,j,km1)) / &
-           (prs_d(i,j,kp1) + 2.d0*prs_d(i,j,k) + prs_d(i,j,km1))
-    shock_sensor_d(i,j,k,1) = div2/(div2 + vort + 1.d-30) * max(dpdi,dpdj,dpdk)
+    dpdi = abs(prs_d(ip1,j,k) - 2.e0_real_kind*prs_d(i,j,k) + prs_d(im1,j,k)) / &
+           (prs_d(ip1,j,k) + 2.e0_real_kind*prs_d(i,j,k) + prs_d(im1,j,k))
+    dpdj = abs(prs_d(i,jp1,k) - 2.e0_real_kind*prs_d(i,j,k) + prs_d(i,jm1,k)) / &
+           (prs_d(i,jp1,k) + 2.e0_real_kind*prs_d(i,j,k) + prs_d(i,jm1,k))
+    dpdk = abs(prs_d(i,j,kp1) - 2.e0_real_kind*prs_d(i,j,k) + prs_d(i,j,km1)) / &
+           (prs_d(i,j,kp1) + 2.e0_real_kind*prs_d(i,j,k) + prs_d(i,j,km1))
+    shock_sensor_d(i,j,k,1) = div2/(div2 + vort + 1.e-30_real_kind) * max(dpdi,dpdj,dpdk)
   end subroutine raw_shock_sensor_kernel
 
   attributes(global) subroutine shock_sensor_x_periodic_halo_kernel(im,jm,km,hm)
@@ -196,16 +198,16 @@ contains
     implicit none
     integer,value :: im,jm,km,hm,apply_left_x,apply_right_x,apply_down_y,apply_up_y, &
                      apply_back_z,apply_front_z
-    real(8),value :: threshold
+    real(real_kind),value :: threshold
     integer :: i,j,k,offset,ii,jj,kk
-    real(8) :: local_maximum
+    real(real_kind) :: local_maximum
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
     k = (blockIdx%z - 1) * blockDim%z + threadIdx%z - 1
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
 
-    local_maximum = 0.d0
+    local_maximum = 0.e0_real_kind
     do offset=-hm+1,hm
       ii = i + offset
       if(apply_left_x /= 0 .and. ii < 0) ii = 0
@@ -237,7 +239,7 @@ contains
     character(len=1024) :: dump_path,output_path
     character(len=32) :: rank_suffix
     integer :: status,path_length,fh,i,j,k
-    real(8),allocatable :: sensor_host(:,:,:)
+    real(real_kind),allocatable :: sensor_host(:,:,:)
     integer(1),allocatable :: mask_host(:,:,:)
 
     if(dumped) return
@@ -265,7 +267,7 @@ contains
     enddo
     close(fh)
     if(lio) print *,'GPU shock sensor min/max/avg/nodes=',minval(sensor_host),maxval(sensor_host), &
-         sum(sensor_host)/real(size(sensor_host),8),count(mask_host /= 0_1)
+         sum(sensor_host)/real(size(sensor_host),real_kind),count(mask_host /= 0_1)
     deallocate(sensor_host,mask_host)
     dumped=.true.
   end subroutine dump_shock_sensor_gpu_validation
@@ -286,8 +288,8 @@ contains
     logical,intent(in),optional :: force_active
     type(dim3) :: block3,grid3,block_x,grid_x,block_y,grid_y,block_z,grid_z
     integer :: apply_left_x,apply_right_x,apply_down_y,apply_up_y,apply_back_z,apply_front_z
-    real(8),allocatable :: sensor_host(:,:,:)
-    real(8),allocatable :: gradient_host(:,:,:,:,:),pressure_host(:,:,:)
+    real(real_kind),allocatable :: sensor_host(:,:,:)
+    real(real_kind),allocatable :: gradient_host(:,:,:,:,:),pressure_host(:,:,:)
     integer(1),allocatable :: mask_host(:,:,:)
     logical :: active
 

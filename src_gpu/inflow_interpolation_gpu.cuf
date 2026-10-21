@@ -1,14 +1,16 @@
 module inflow_interpolation_gpu
+  use astr_precision, only: real_kind
   implicit none
+  private :: real_kind
 contains
-  attributes(device) real(8) function cubic_uniform_gpu(y1,y2,y3,y4,x1,delta,xx)
+  attributes(device) real(real_kind) function cubic_uniform_gpu(y1,y2,y3,y4,x1,delta,xx)
     implicit none
-    real(8),value :: y1,y2,y3,y4,x1,delta,xx
-    real(8) :: a,b,c,varx,inv_delta
+    real(real_kind),value :: y1,y2,y3,y4,x1,delta,xx
+    real(real_kind) :: a,b,c,varx,inv_delta
 
-    inv_delta=1.d0/delta
-    a=(y4-3.d0*y3+3.d0*y2-y1)*inv_delta**3/6.d0
-    b=((y3-2.d0*y2+y1)-6.d0*a*delta**3)*inv_delta**2/2.d0
+    inv_delta=1.e0_real_kind/delta
+    a=(y4-3.e0_real_kind*y3+3.e0_real_kind*y2-y1)*inv_delta**3/6.e0_real_kind
+    b=((y3-2.e0_real_kind*y2+y1)-6.e0_real_kind*a*delta**3)*inv_delta**2/2.e0_real_kind
     c=(y2-y1-a*delta**3-b*delta**2)*inv_delta
     varx=xx-x1
     cubic_uniform_gpu=((a*varx+b)*varx+c)*varx+y1

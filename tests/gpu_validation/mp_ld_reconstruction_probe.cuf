@@ -1,11 +1,13 @@
 module mp_ld_probe_kernels
+  use astr_precision, only: real_kind,real_bytes
   use cudafor
   use solver_gpu, only: reconstruct_mp_ld_stencil
+  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   implicit none
 contains
   attributes(global) subroutine evaluate(stencils,result,weight,shock)
-    real(8),device :: stencils(8,12),result(-1:16,4,12)
-    real(8),value :: weight
+    real(real_kind),device :: stencils(8,12),result(-1:16,4,12)
+    real(real_kind),value :: weight
     logical,value :: shock
     integer :: inode,ntype,sample
     inode=threadIdx%x-2
@@ -18,24 +20,89 @@ contains
 
   attributes(global) subroutine evaluate_budget(base,correction,result)
     use mp_positivity_gpu, only: mp_face_budget
-    real(8),device :: base(5,4),correction(5,4),result(4)
+    real(real_kind),device :: base(5,4),correction(5,4),result(4)
     integer :: n
     n=threadIdx%x
     if(n<=4) result(n)=mp_face_budget(base(:,n),correction(:,n))
   end subroutine evaluate_budget
+
+  function face_energy(g,axis) result(value)
+    integer,intent(in) :: g(3),axis
+    real(real_kind) :: value
+    value=2.e0_real_kind*sin((real(modulo(g(axis),24),real_kind)+0.5e0_real_kind)* &
+      2.e0_real_kind*acos(-1.e0_real_kind)/24.e0_real_kind)
+  end function face_energy
+
+  function node_ratio(g,dt,q0) result(theta)
+    integer,intent(in) :: g(3)
+    real(real_kind),intent(in) :: dt,q0(5)
+    integer :: axis,left(3)
+    real(real_kind) :: d(5),theta
+    theta=1.e0_real_kind
+    do axis=1,3
+      left=g; left(axis)=left(axis)-1
+      d=0.e0_real_kind; d(5)=6.e0_real_kind*dt/fixture_jacob(g)*face_energy(left,axis)
+      theta=min(theta,host_budget(q0,d))
+      d(5)=-6.e0_real_kind*dt/fixture_jacob(g)*face_energy(g,axis)
+      theta=min(theta,host_budget(q0,d))
+    enddo
+  end function node_ratio
+
+  function fixture_jacob(g) result(value)
+    integer,intent(in) :: g(3)
+    real(real_kind) :: value
+    value=1.e0_real_kind+0.1e0_real_kind*sin(real(sum(modulo(g,24)),real_kind)* &
+      2.e0_real_kind*acos(-1.e0_real_kind)/24.e0_real_kind)
+  end function fixture_jacob
+
+  logical function host_admissible(q)
+    real(real_kind),intent(in) :: q(5)
+    real(real_kind) :: conservative_kinetic,primitive_kinetic
+    host_admissible=.false.
+    if(.not.all(ieee_is_finite(q)).or.q(1)<=0.e0_real_kind) return
+    conservative_kinetic=0.5e0_real_kind*sum(q(2:4)*(q(2:4)/q(1)))
+    primitive_kinetic=0.5e0_real_kind*q(1)*sum((q(2:4)/q(1))**2)
+    host_admissible=q(5)>conservative_kinetic.and.q(5)>primitive_kinetic
+  end function host_admissible
+
+  function host_budget(base,correction) result(theta)
+    real(real_kind),intent(in) :: base(5),correction(5)
+    real(real_kind) :: lo,hi,mid,theta
+    integer :: iteration
+    if(host_admissible(base+correction)) then
+      theta=1.e0_real_kind
+      return
+    endif
+    lo=0.e0_real_kind; hi=1.e0_real_kind
+    do iteration=1,64
+      mid=0.5e0_real_kind*(lo+hi)
+      if(mid==lo.or.mid==hi) exit
+      if(host_admissible(base+mid*correction)) then
+        lo=mid
+      else
+        hi=mid
+      endif
+    enddo
+    theta=lo*(1.e0_real_kind-256.e0_real_kind*epsilon(1.e0_real_kind))
+  end function host_budget
+
+
 end module mp_ld_probe_kernels
 
 program mp_ld_reconstruction_probe
+  use astr_precision, only: real_kind,real_bytes
+  use astr_precision_mpi, only: mpi_real_type
   use mpi
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite,ieee_value,ieee_quiet_nan
   use cudafor
   use flux, only: recons_exp
   use commvar, only: bfacmpld
-  use mp_ld_probe_kernels
+  use mp_ld_probe_kernels, only: evaluate,evaluate_budget,face_energy,node_ratio, &
+    fixture_jacob,host_admissible,host_budget
   implicit none
-  real(8) :: samples(8,12),expected(-1:16,4,12),actual(-1:16,4,12)
-  real(8),allocatable,device :: samples_d(:,:),result_d(:,:,:)
-  real(8) :: weights(3)=[0.d0,0.5d0,1.d0],error,max_error
+  real(real_kind) :: samples(8,12),expected(-1:16,4,12),actual(-1:16,4,12)
+  real(real_kind),allocatable,device :: samples_d(:,:),result_d(:,:,:)
+  real(real_kind) :: weights(3)=[0.e0_real_kind,0.5e0_real_kind,1.e0_real_kind],error,max_error
   integer :: device,status,i,sample,ntype,inode,w,flag,ierr,nranks,rank,devices
   integer(8) :: free_bytes,total_bytes
   logical :: shock
@@ -67,18 +134,18 @@ program mp_ld_reconstruction_probe
   endif
   allocate(samples_d(8,12),result_d(-1:16,4,12))
   do i=1,8
-    samples(i,1)=2.d0
-    samples(i,2)=0.125d0*dble(i-4)
-    samples(i,3)=sin(0.23d0*dble(i-4))
-    samples(i,4)=merge(-1.d0,2.d0,i<=4)
-    samples(i,5)=merge(3.d0,-2.d0,mod(i,2)==0)
-    samples(i,6)=exp(-0.5d0*dble(i-4)**2)
+    samples(i,1)=2.e0_real_kind
+    samples(i,2)=0.125e0_real_kind*real(i-4,real_kind)
+    samples(i,3)=sin(0.23e0_real_kind*real(i-4,real_kind))
+    samples(i,4)=merge(-1.e0_real_kind,2.e0_real_kind,i<=4)
+    samples(i,5)=merge(3.e0_real_kind,-2.e0_real_kind,mod(i,2)==0)
+    samples(i,6)=exp(-0.5e0_real_kind*real(i-4,real_kind)**2)
   enddo
   do sample=1,6
     samples(:,sample+6)=samples(8:1:-1,sample)
   enddo
   samples_d=samples
-  max_error=0.d0
+  max_error=0.e0_real_kind
   do w=1,3
     bfacmpld=weights(w)
     do flag=0,1
@@ -99,7 +166,7 @@ program mp_ld_reconstruction_probe
       if(.not.all(ieee_is_finite(actual))) error stop 'MP-LD result is not finite'
       error=maxval(abs(actual-expected))
       max_error=max(error,max_error)
-      if(error>2.d-10) error stop 'MP-LD CPU/GPU reconstruction gate failed'
+      if(real_bytes==8.and.error>2.e-10_real_kind) error stop 'MP-LD CPU/GPU reconstruction gate failed'
     enddo
   enddo
   deallocate(samples_d,result_d)
@@ -109,6 +176,7 @@ program mp_ld_reconstruction_probe
   call check_mp_positivity()
   call MPI_Finalize(ierr)
 contains
+
   subroutine check_wall_blowing_repair()
     use commvar, only: im,jm,km,hm,ia,ja,ka,numq,num_species,num_modequ,ndims, &
       flowtype,nondimen,lcomb,lfilter,lcracon,lkhomo,lihomo,ljhomo,lreport,lrestart, &
@@ -135,10 +203,11 @@ contains
     use halo_exchange_gpu, only: init_halo_transport_gpu,release_halo_exchange_buffers_gpu
     use halo_transport_gpu, only: release_host_buffers
     implicit none
-    real(8),parameter :: ratios(4)=[1.d0,3.9d0,4.d0,4.1d0],p1=1.d-3,tw=10.d0
-    real(8),allocatable :: actual(:,:,:,:),field(:,:,:),velocity(:,:,:,:)
+    real(real_kind),parameter :: ratios(4)=[1.e0_real_kind,3.9e0_real_kind,4.e0_real_kind,4.1e0_real_kind], &
+      p1=1.e-3_real_kind,tw=10.e0_real_kind
+    real(real_kind),allocatable :: actual(:,:,:,:),field(:,:,:),velocity(:,:,:,:)
     integer,allocatable :: rng_before(:),rng_cpu(:),rng_gpu(:)
-    real(8) :: error,global_error,wall_min(3),vmin,vmax,global_vmin,global_vmax,pressure_ratio
+    real(real_kind) :: error,global_error,wall_min(3),vmin,vmax,global_vmin,global_vmax,pressure_ratio
     integer :: i,j,k,m,forcing,pressure_case,expected_calls,err,repaired_nodes,scenario
     logical,allocatable :: mask(:,:,:)
     logical :: ok,invalid,repaired,detect_only
@@ -166,13 +235,14 @@ contains
     if(detect_only) lcracon=.false.
     lihomo=.false.; ljhomo=.false.; lkhomo=.true.; lrestart=.false.; lreport=.false.
     conschm='743e'; difschm='643e'; rkscheme='rk3'; recon_schem=5; lchardecomp=.true.
-    turbmode='none'; gamma=1.4d0; mach=12.d0; bfacmpld=0.5d0
-    const2=gamma*mach**2; const6=1.d0/(gamma-1.d0)
-    uinf=1.d0; zmin=0.d0; zmax=16.d0; nstep=0; ctime=0.d0
+    turbmode='none'; gamma=1.4e0_real_kind; mach=12.e0_real_kind; bfacmpld=0.5e0_real_kind
+    const2=gamma*mach**2; const6=1.e0_real_kind/(gamma-1.e0_real_kind)
+    uinf=1.e0_real_kind; zmin=0.e0_real_kind; zmax=16.e0_real_kind; nstep=0; ctime=0.e0_real_kind
     bctype=[11,22,41,52,1,1]
     wall_blowing_configured=.true.; wall_blowing_legacy_random=.true.
-    wall_blowing_beta=0.d0; wall_blowing_xa=20.d0; wall_blowing_xb=40.d0; wall_blowing_xc=60.d0
-    wall_blowing_nmod_t=1; wall_blowing_nmod_z=3; wall_blowing_phase=0.d0
+    wall_blowing_beta=0.e0_real_kind; wall_blowing_xa=20.e0_real_kind
+    wall_blowing_xb=40.e0_real_kind; wall_blowing_xc=60.e0_real_kind
+    wall_blowing_nmod_t=1; wall_blowing_nmod_z=3; wall_blowing_phase=0.e0_real_kind
     call copy_commvar_to_gpu()
     call configure_mp_positivity_gpu()
     call init_halo_transport_gpu()
@@ -195,40 +265,41 @@ contains
     rng_before=0
     call put_legacy_random_state(rng_before,ok)
     if(.not.ok) error stop 'wall fixture RNG reset failed'
-    bnorm_j0=0.d0; bnorm_j0(:,:,2)=1.d0; bnorm_j0_d=bnorm_j0
+    bnorm_j0=0.e0_real_kind; bnorm_j0(:,:,2)=1.e0_real_kind; bnorm_j0_d=bnorm_j0
     do k=-hm,km+hm
     do j=-hm,jm+hm
     do i=-hm,im+hm
-      x(i,j,k,:)=[20.d0+40.d0*dble(ig0+i)/dble(ia),0.01d0*dble(j),dble(k)]
+      x(i,j,k,:)=[20.e0_real_kind+40.e0_real_kind*real(ig0+i,real_kind)/real(ia,real_kind), &
+        0.01e0_real_kind*real(j,real_kind),real(k,real_kind)]
     enddo
     enddo
     enddo
-    x_d=x; jacob_d=1.d0; dxi_d=0.d0; shock_mask_d=0_1
+    x_d=x; jacob_d=1.e0_real_kind; dxi_d=0.e0_real_kind; shock_mask_d=0_1
     do m=1,3
-      dxi_d(:,:,:,m,m)=1.d0
+      dxi_d(:,:,:,m,m)=1.e0_real_kind
     enddo
     if(trim(mode_argument)=='crashfix-order') then
       allocate(mask,mold=crinod)
       do scenario=1,4
-        rho=1.d0; prs=1.d-3; tmp=prs*const2; vel=0.d0; vel(:,:,:,1)=0.2d0
-        q(:,:,:,1)=rho; q(:,:,:,2)=rho*0.2d0; q(:,:,:,3:4)=0.d0
-        q(:,:,:,5)=prs*const6+0.5d0*rho*0.2d0**2
+        rho=1.e0_real_kind; prs=1.e-3_real_kind; tmp=prs*const2; vel=0.e0_real_kind; vel(:,:,:,1)=0.2e0_real_kind
+        q(:,:,:,1)=rho; q(:,:,:,2)=rho*0.2e0_real_kind; q(:,:,:,3:4)=0.e0_real_kind
+        q(:,:,:,5)=prs*const6+0.5e0_real_kind*rho*0.2e0_real_kind**2
         ! Asymmetric neighbors make an accidentally simultaneous average fail.
         do k=-hm,km+hm
         do j=-hm,jm+hm
         do i=-hm,im+hm
-          q(i,j,k,5)=q(i,j,k,5)+1.d-5*dble(i+2*j+3*k+6*hm)
+          q(i,j,k,5)=q(i,j,k,5)+1.e-5_real_kind*real(i+2*j+3*k+6*hm,real_kind)
         enddo
         enddo
         enddo
-        nodestat=0; crinod=.false.; qsave_d=777.d0
-        q(2,2,2,1)=-1.d0; q(3,2,2,1)=-2.d0; q(3,3,2,5)=-1.d0
-        q(0,0,0,1)=-1.d0; q(im,jm,km,1)=-1.d0
-        if(scenario==2) q(2,2,2,5)=ieee_value(0.d0,ieee_quiet_nan)
+        nodestat=0; crinod=.false.; qsave_d=777.e0_real_kind
+        q(2,2,2,1)=-1.e0_real_kind; q(3,2,2,1)=-2.e0_real_kind; q(3,3,2,5)=-1.e0_real_kind
+        q(0,0,0,1)=-1.e0_real_kind; q(im,jm,km,1)=-1.e0_real_kind
+        if(scenario==2) q(2,2,2,5)=ieee_value(0.e0_real_kind,ieee_quiet_nan)
         if(scenario==3) then
-          q(2,2,2,:)=q(1,1,1,:)*1.d-6
-          q(2,2,2,5)=1.d-20
-          q(2,2,2,2:4)=0.d0
+          q(2,2,2,:)=q(1,1,1,:)*1.e-6_real_kind
+          q(2,2,2,5)=1.e-20_real_kind
+          q(2,2,2,2:4)=0.e0_real_kind
         endif
         if(scenario==4) then
           nodestat(3,3,2)=1
@@ -237,9 +308,9 @@ contains
         do k=-hm,km+hm
         do j=-hm,jm+hm
         do i=-hm,im+hm
-          if(.not.all(ieee_is_finite(q(i,j,k,:))).or.q(i,j,k,1)<=0.d0.or.q(i,j,k,5)<=0.d0) then
-            rho(i,j,k)=q(i,j,k,1); vel(i,j,k,:)=0.d0
-            prs(i,j,k)=-1.d0; tmp(i,j,k)=-1.d0
+          if(.not.all(ieee_is_finite(q(i,j,k,:))).or.q(i,j,k,1)<=0.e0_real_kind.or.q(i,j,k,5)<=0.e0_real_kind) then
+            rho(i,j,k)=q(i,j,k,1); vel(i,j,k,:)=0.e0_real_kind
+            prs(i,j,k)=-1.e0_real_kind; tmp(i,j,k)=-1.e0_real_kind
           else
             call q2fvar(q(i,j,k,:),rho(i,j,k),vel(i,j,k,:),prs(i,j,k),tmp(i,j,k),spc(i,j,k,:))
           endif
@@ -253,7 +324,7 @@ contains
         call repair_crashfix_state_gpu(scenario)
         actual=q_d; mask=crinod_d
         if(any(mask.neqv.crinod)) error stop 'GPU critical-node history differs from CPU'
-        error=0.d0
+        error=0.e0_real_kind
         do k=0,km
         do j=0,jm
         do i=0,im
@@ -267,11 +338,11 @@ contains
         field=prs_d; error=max(error,maxval(abs(field-prs)))
         field=tmp_d; error=max(error,maxval(abs(field-tmp)))
         velocity=vel_d; error=max(error,maxval(abs(velocity-vel)))
-        call MPI_Allreduce(error,global_error,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,err)
-        if(global_error>2.d-10) error stop 'GPU ordered repair differs from original CPU crashfix'
+        call MPI_Allreduce(error,global_error,1,mpi_real_type,MPI_MAX,MPI_COMM_WORLD,err)
+        if(real_bytes==8.and.global_error>2.e-10_real_kind) error stop 'GPU ordered repair differs from original CPU crashfix'
         q=actual
         actual(0:im,0:jm,0:km,:)=qsave_d
-        if(any(actual(0:im,0:jm,0:km,:)/=777.d0)) error stop 'GPU repair changed RK origin'
+        if(any(actual(0:im,0:jm,0:km,:)/=777.e0_real_kind)) error stop 'GPU repair changed RK origin'
         if(rank==0) write(*,'(a,2(1x,i0),1x,es15.7)') 'GPU_CRASHFIX_ORDER',scenario,repaired_nodes,global_error
         ! A second call must not lose critical-node history or change healthy q.
         call repair_crashfix_state_gpu(scenario)
@@ -288,19 +359,19 @@ contains
     block=dim3(256,1,1); grid=dim3(((im+1)*(km+1)+255)/256,1,1)
     do forcing=0,1
       forcing_name='off'
-      wall_blowing_amplitude=0.d0
+      wall_blowing_amplitude=0.e0_real_kind
       if(forcing==1) then
-        forcing_name='legacy_random'; wall_blowing_amplitude=0.12d0
+        forcing_name='legacy_random'; wall_blowing_amplitude=0.12e0_real_kind
       endif
       call init_wall_blowing_gpu()
       do pressure_case=1,size(ratios)
-        pressure_ratio=1.d0
+        pressure_ratio=1.e0_real_kind
         if(rank==0) pressure_ratio=ratios(pressure_case)
-        prs=p1; prs(:,2,:)=pressure_ratio*p1; tmp=1.d0; rho=prs*const2
-        vel=0.d0; vel(:,:,:,1)=uinf
-        q(:,:,:,1)=rho; q(:,:,:,2)=rho*uinf; q(:,:,:,3:4)=0.d0
-        q(:,:,:,5)=prs*const6+0.5d0*rho*uinf**2
-        nodestat=0; crinod=.false.; qsave_d=777.d0; qrhs_d=0.d0
+        prs=p1; prs(:,2,:)=pressure_ratio*p1; tmp=1.e0_real_kind; rho=prs*const2
+        vel=0.e0_real_kind; vel(:,:,:,1)=uinf
+        q(:,:,:,1)=rho; q(:,:,:,2)=rho*uinf; q(:,:,:,3:4)=0.e0_real_kind
+        q(:,:,:,5)=prs*const6+0.5e0_real_kind*rho*uinf**2
+        nodestat=0; crinod=.false.; qsave_d=777.e0_real_kind; qrhs_d=0.e0_real_kind
         q_d=q; rho_d=rho; prs_d=prs; tmp_d=tmp; vel_d=vel
         call sync_crashfix_mask_to_gpu()
         call get_legacy_random_state(rng_before)
@@ -309,53 +380,53 @@ contains
         call put_legacy_random_state(rng_before,ok)
         if(.not.ok) error stop 'wall fixture RNG restore failed'
         call prepare_legacy_wall_blowing_gpu(1)
-        call wall_isothermal_noslip_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6,tw,tw,1,0,0,0.d0)
+        call wall_isothermal_noslip_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6,tw,tw,1,0,0,0.e0_real_kind)
         call synchronize('synthetic bc41 wall blowing')
         call get_legacy_random_state(rng_gpu)
         if(any(rng_cpu/=rng_gpu)) error stop 'CPU/GPU wall draw order differs'
         actual=q_d
         error=maxval(abs(actual-q))
-        call MPI_Allreduce(error,global_error,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,err)
-        if(global_error>2.d-10) error stop 'synthetic wall CPU/GPU mismatch'
+        call MPI_Allreduce(error,global_error,1,mpi_real_type,MPI_MAX,MPI_COMM_WORLD,err)
+        if(real_bytes==8.and.global_error>2.e-10_real_kind) error stop 'synthetic wall CPU/GPU mismatch'
         if(trim(repair_option)=='no-neighbor') then
-          q_d=0.d0; q_d(:,:,:,1)=-1.d0; q_d(:,:,:,5)=-1.d0
-          rho_d=-1.d0; prs_d=-1.d0; tmp_d=-1.d0
+          q_d=0.e0_real_kind; q_d(:,:,:,1)=-1.e0_real_kind; q_d(:,:,:,5)=-1.e0_real_kind
+          rho_d=-1.e0_real_kind; prs_d=-1.e0_real_kind; tmp_d=-1.e0_real_kind
           call repair_mp_stage_inputs_gpu(1,'synthetic no valid neighbor')
           error stop 'unrepairable state was accepted'
         endif
         invalid=mp_inputs_need_repair_gpu()
-        if(invalid.neqv.(ratios(pressure_case)>=4.d0)) error stop 'synthetic wall did not reproduce input failure'
+        if(invalid.neqv.(ratios(pressure_case)>=4.e0_real_kind)) error stop 'synthetic wall did not reproduce input failure'
         if(rank==0) write(*,'(a,1x,a,1x,f5.2,2(1x,es15.7))') &
           'MP_WALL_INPUT',trim(forcing_name),ratios(pressure_case),minval(prs(:,0,:)),minval(rho(:,0,:))
         vmin=minval(vel(:,0,:,2)); vmax=maxval(vel(:,0,:,2))
-        call MPI_Allreduce(vmin,global_vmin,1,MPI_DOUBLE_PRECISION,MPI_MIN,MPI_COMM_WORLD,err)
-        call MPI_Allreduce(vmax,global_vmax,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,err)
-        if(forcing==1.and.(global_vmin>=0.d0.or.global_vmax<=0.d0)) &
+        call MPI_Allreduce(vmin,global_vmin,1,mpi_real_type,MPI_MIN,MPI_COMM_WORLD,err)
+        call MPI_Allreduce(vmax,global_vmax,1,mpi_real_type,MPI_MAX,MPI_COMM_WORLD,err)
+        if(forcing==1.and.(global_vmin>=0.e0_real_kind.or.global_vmax<=0.e0_real_kind)) &
           error stop 'fixture must contain both blowing and suction'
-        q=-777.d0
+        q=-777.e0_real_kind
         call repair_mp_stage_inputs_gpu(1,'synthetic bc41',repaired)
-        if(any(q/=-777.d0)) error stop 'GPU repair unexpectedly downloaded or used the host flow field'
+        if(any(q/=-777.e0_real_kind)) error stop 'GPU repair unexpectedly downloaded or used the host flow field'
         if(detect_only.and.invalid) call build_mp_convection_gpu()
-        expected_calls=merge(1,0,ratios(pressure_case)>=4.d0)
+        expected_calls=merge(1,0,ratios(pressure_case)>=4.e0_real_kind)
         if(merge(1,0,repaired)/=expected_calls.or.(repaired.neqv.invalid)) error stop 'MP repair trigger mismatch'
         if(mp_inputs_need_repair_gpu()) error stop 'MP input repair left an invalid physical state'
         actual=q_d; field=rho_d; wall_min(1)=minval(field(0:im,0,0:km))
         if(any(field/=actual(:,:,:,1))) error stop 'repaired density cache mismatch'
         velocity=vel_d
         do m=1,3
-          if(maxval(abs(velocity(:,:,:,m)-actual(:,:,:,m+1)/field))>2.d-10) &
+          if(real_bytes==8.and.maxval(abs(velocity(:,:,:,m)-actual(:,:,:,m+1)/field))>2.e-10_real_kind) &
             error stop 'repaired velocity cache mismatch'
         enddo
         field=prs_d; wall_min(2)=minval(field(0:im,0,0:km))
-        if(maxval(abs(field-(actual(:,:,:,5)-0.5d0*actual(:,:,:,1)* &
-          sum(velocity*velocity,dim=4))/const6))>2.d-10) error stop 'repaired pressure cache mismatch'
+        if(real_bytes==8.and.maxval(abs(field-(actual(:,:,:,5)-0.5e0_real_kind*actual(:,:,:,1)* &
+          sum(velocity*velocity,dim=4))/const6))>2.e-10_real_kind) error stop 'repaired pressure cache mismatch'
         field=tmp_d; wall_min(3)=minval(field(0:im,0,0:km))
-        if(any(wall_min<=0.d0)) error stop 'repaired wall state is not positive'
+        if(any(wall_min<=0.e0_real_kind)) error stop 'repaired wall state is not positive'
         call get_legacy_random_state(rng_before)
         if(any(rng_before/=rng_gpu)) error stop 'repair advanced wall RNG'
         call build_mp_convection_gpu()
         actual(0:im,0:jm,0:km,:)=qsave_d
-        if(any(actual(0:im,0:jm,0:km,:)/=777.d0)) error stop 'input repair changed RK origin'
+        if(any(actual(0:im,0:jm,0:km,:)/=777.e0_real_kind)) error stop 'input repair changed RK origin'
         if(rank==0) write(*,'(a,1x,a,1x,f5.2,1x,i0,6(1x,es15.7))') &
           'MP_WALL_REPAIR',trim(forcing_name),ratios(pressure_case),merge(1,0,repaired), &
           global_error,global_vmin,global_vmax,wall_min
@@ -385,7 +456,7 @@ contains
     implicit none
     character(*),intent(in) :: option
     type(checkpoint_state_identity) :: identity
-    real(8),allocatable :: reference(:,:,:,:),actual(:,:,:,:),rhs(:,:,:,:)
+    real(real_kind),allocatable :: reference(:,:,:,:),actual(:,:,:,:),rhs(:,:,:,:)
     logical,allocatable :: history(:,:,:),actual_history(:,:,:)
     integer :: mode,id,i,j,k,nx,ny
     character(32) :: filename
@@ -407,8 +478,8 @@ contains
       lcracon=mode==1
       filename='history-enabled.h5'
       if(mode==2) filename='history-disabled.h5'
-      identity=checkpoint_state_identity(1_int64,0.02d0,0.02d0,0.02d0)
-      qrhs_d=0.d0
+      identity=checkpoint_state_identity(1_int64,0.02e0_real_kind,0.02e0_real_kind,0.02e0_real_kind)
+      qrhs_d=0.e0_real_kind
       call build_mp_convection_gpu()
       rhs=qrhs_d
       call checkpoint_perfect_gas_gpu(filename,.true.,[im*nranks,jm,km]+1,[ig0,jg0,kg0], &
@@ -424,13 +495,13 @@ contains
       actual_history=.false.
       call checkpoint_crashfix_state(filename,.false.,actual_history,lcracon,67108864_int64,MPI_COMM_WORLD,.true.)
       if(any(actual_history.neqv.history)) error stop 'CPU read of device crashfix history differs'
-      q_d=-777.d0; crinod_d=.false.; crashfix_enabled_d=.false.
+      q_d=-777.e0_real_kind; crinod_d=.false.; crashfix_enabled_d=.false.
       call checkpoint_perfect_gas_gpu(filename,.false.,[im*nranks,jm,km]+1,[ig0,jg0,kg0], &
         [im,jm,km],hm,identity,67108864_int64,MPI_COMM_WORLD,restored_exact=matched)
       call checkpoint_crashfix_gpu(filename,.false.,67108864_int64,67108864_int64,MPI_COMM_WORLD,matched)
       actual=q_d; actual_history=crinod_d
       if(any(actual/=reference).or.any(actual_history.neqv.history)) error stop 'GPU repaired checkpoint differs'
-      qrhs_d=0.d0
+      qrhs_d=0.e0_real_kind
       call build_mp_convection_gpu()
       actual(0:im,0:jm,0:km,:)=qrhs_d
       if(any(actual(0:im,0:jm,0:km,:)/=rhs)) error stop 'history restart changed MP convection'
@@ -448,21 +519,22 @@ contains
     use mp_positivity_gpu, only: high_d,delta_d,ratio_d,allocate_mp_positivity_gpu, &
       release_mp_positivity_gpu,exchange_mp_planes,limit_mp_update_gpu
     implicit none
-    real(8) :: base(5,4),correction(5,4),budgets(4),reference(4),dt
-    real(8) :: q0(5),tl,tr,theta,error,global_error,energy_sum,global_sum,scale
-    real(8),parameter :: a(3)=[1.d0,0.75d0,1.d0/3.d0], &
-      b(3)=[0.d0,0.25d0,2.d0/3.d0],c(3)=[1.d0,0.25d0,2.d0/3.d0]
-    real(8),allocatable,device :: bases_d(:,:),corrections_d(:,:),budgets_d(:)
-    real(8),allocatable :: values(:,:,:,:),expected(:,:,:,:),rhs(:,:,:,:),jac(:,:,:)
-    real(8),allocatable :: high(:,:,:,:,:),delta(:,:,:,:,:)
+    real(real_kind) :: base(5,4),correction(5,4),budgets(4),reference(4),dt
+    real(real_kind) :: q0(5),tl,tr,theta,error,global_error,energy_sum,global_sum,scale
+    real(real_kind),parameter :: a(3)=[1.e0_real_kind,0.75e0_real_kind,1.e0_real_kind/3.e0_real_kind], &
+      b(3)=[0.e0_real_kind,0.25e0_real_kind,2.e0_real_kind/3.e0_real_kind], &
+      c(3)=[1.e0_real_kind,0.25e0_real_kind,2.e0_real_kind/3.e0_real_kind]
+    real(real_kind),allocatable,device :: bases_d(:,:),corrections_d(:,:),budgets_d(:)
+    real(real_kind),allocatable :: values(:,:,:,:),expected(:,:,:,:),rhs(:,:,:,:),jac(:,:,:)
+    real(real_kind),allocatable :: high(:,:,:,:,:),delta(:,:,:,:,:)
     integer :: ir,jr,kr,g(3),neighbor(3),axis,j,k,m,mode,stage,global_dim(3),local_dim(3)
     character(32) :: option
 
-    base(:,1)=[1.d0,2.d0,-0.1d0,0.3d0,2.6d0]
+    base(:,1)=[1.e0_real_kind,2.e0_real_kind,-0.1e0_real_kind,0.3e0_real_kind,2.6e0_real_kind]
     base(:,2)=base(:,1); base(:,3)=base(:,1); base(:,4)=base(:,1)
-    correction=0.d0
-    correction(5,1)=-1.d0; correction(2,2)=2.d0
-    correction(1,3)=-2.d0; correction(5,4)=1.d0
+    correction=0.e0_real_kind
+    correction(5,1)=-1.e0_real_kind; correction(2,2)=2.e0_real_kind
+    correction(1,3)=-2.e0_real_kind; correction(5,4)=1.e0_real_kind
     allocate(bases_d(5,4),corrections_d(5,4),budgets_d(4))
     bases_d=base; corrections_d=correction
     call evaluate_budget<<<dim3(1,1,1),dim3(32,1,1)>>>(bases_d,corrections_d,budgets_d)
@@ -471,8 +543,11 @@ contains
     do m=1,4
       reference(m)=host_budget(base(:,m),correction(:,m))
     enddo
-    if(maxval(abs(budgets-reference))>2.d-10) error stop 'MP density/pressure CPU/GPU budget mismatch'
-    if(any(budgets(1:3)>=1.d0).or.budgets(4)/=1.d0) error stop 'MP budget fixture did not limit'
+    if(.not.all(ieee_is_finite(budgets))) error stop 'nonfinite MP face budgets'
+    print '(A,ES15.7)', 'MP face budget CPU/GPU absolute difference=',maxval(abs(budgets-reference))
+    if(real_bytes==8.and.maxval(abs(budgets-reference))>2.e-10_real_kind) &
+      error stop 'MP density/pressure CPU/GPU budget mismatch'
+    if(any(budgets(1:3)>=1.e0_real_kind).or.budgets(4)/=1.e0_real_kind) error stop 'MP budget fixture did not limit'
     deallocate(bases_d,corrections_d,budgets_d)
 
     global_dim=[24,24,24]
@@ -506,18 +581,18 @@ contains
     enddo
     enddo
     enddo
-    q0=[1.d0,1.d0,0.2d0,-0.1d0,0.625d0]
+    q0=[1.e0_real_kind,1.e0_real_kind,0.2e0_real_kind,-0.1e0_real_kind,0.625e0_real_kind]
     option=''
     call get_command_argument(3,option)
     do mode=1,2
     do stage=1,3
-      dt=0.2d0
-      if(mode==2) dt=1.d-5
+      dt=0.2e0_real_kind
+      if(mode==2) dt=1.e-5_real_kind
       scale=c(stage)*dt
       do m=1,5
         values(:,:,:,m)=q0(m)
       enddo
-      rhs=0.d0; high=0.d0
+      rhs=0.e0_real_kind; high=0.e0_real_kind
       do k=0,km
       do j=0,jm
       do i=0,im
@@ -541,15 +616,15 @@ contains
       enddo
       delta=high
       ! Deliberately corrupt ghost faces; the owning rank must replace them.
-      high(-1,:,:,5,1)=99.d0; delta(-1,:,:,5,1)=99.d0
-      high(:,-1,:,5,2)=99.d0; delta(:,-1,:,5,2)=99.d0
-      high(:,:,-1,5,3)=99.d0; delta(:,:,-1,5,3)=99.d0
+      high(-1,:,:,5,1)=99.e0_real_kind; delta(-1,:,:,5,1)=99.e0_real_kind
+      high(:,-1,:,5,2)=99.e0_real_kind; delta(:,-1,:,5,2)=99.e0_real_kind
+      high(:,:,-1,5,3)=99.e0_real_kind; delta(:,:,-1,5,3)=99.e0_real_kind
       q_d=values; jacob_d=jac
       do m=1,5
         values(:,:,:,m)=q0(m)*jac
       enddo
       qsave_d=values
-      if(trim(option)=='baseline_bad') rhs(:,:,:,5)=rhs(:,:,:,5)-100.d0
+      if(trim(option)=='baseline_bad') rhs(:,:,:,5)=rhs(:,:,:,5)-100.e0_real_kind
       qrhs_d=rhs; high_d=high; delta_d=delta
       do axis=1,3
         call exchange_mp_planes(axis,1)
@@ -567,8 +642,8 @@ contains
           tr=min(theta,node_ratio(neighbor,scale,q0))
           neighbor=g; neighbor(axis)=neighbor(axis)-1
           tl=min(theta,node_ratio(neighbor,scale,q0))
-          expected(i,j,k,5)=expected(i,j,k,5)+(1.d0-tr)*face_energy(g,axis)- &
-            (1.d0-tl)*face_energy(neighbor,axis)
+          expected(i,j,k,5)=expected(i,j,k,5)+(1.e0_real_kind-tr)*face_energy(g,axis)- &
+            (1.e0_real_kind-tl)*face_energy(neighbor,axis)
         enddo
         if(.not.host_admissible(q0+scale*values(i,j,k,:)/jac(i,j,k))) &
           error stop 'MP limited fixture is not positive'
@@ -576,10 +651,12 @@ contains
       enddo
       enddo
       error=maxval(abs(values(0:im,0:jm,0:km,:)-expected(0:im,0:jm,0:km,:)))
-      call MPI_Allreduce(error,global_error,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+      call MPI_Allreduce(error,global_error,1,mpi_real_type,MPI_MAX,MPI_COMM_WORLD,ierr)
       energy_sum=sum(values(0:im-1,0:jm-1,0:km-1,5))
-      call MPI_Allreduce(energy_sum,global_sum,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
-      if(global_error>2.d-10.or.abs(global_sum)>2.d-10) error stop 'MP conservation/reference gate failed'
+      call MPI_Allreduce(energy_sum,global_sum,1,mpi_real_type,MPI_SUM,MPI_COMM_WORLD,ierr)
+      if(.not.ieee_is_finite(global_error).or..not.ieee_is_finite(global_sum)) error stop 'nonfinite MP diagnostics'
+      if(real_bytes==8.and.(global_error>2.e-10_real_kind.or.abs(global_sum)>2.e-10_real_kind)) &
+        error stop 'MP conservation/reference gate failed'
       if(mode==2.and.any(values(0:im,0:jm,0:km,:)/=rhs(0:im,0:jm,0:km,:))) &
         error stop 'Inactive MP limiter changed RHS'
       if(rank==0) print '(A,I0,A,I0,A,ES12.4,A,ES12.4)', &
@@ -591,60 +668,6 @@ contains
     call release_mp_positivity_gpu()
     deallocate(q_d,qsave_d,qrhs_d,jacob_d,values,expected,rhs,high,delta,jac)
   end subroutine check_mp_positivity
-
-  real(8) function face_energy(g,axis) result(value)
-    integer,intent(in) :: g(3),axis
-    value=2.d0*sin((dble(modulo(g(axis),24))+0.5d0)*2.d0*acos(-1.d0)/24.d0)
-  end function face_energy
-
-  real(8) function node_ratio(g,dt,q0) result(theta)
-    integer,intent(in) :: g(3)
-    real(8),intent(in) :: dt,q0(5)
-    integer :: axis,left(3)
-    real(8) :: d(5)
-    theta=1.d0
-    do axis=1,3
-      left=g; left(axis)=left(axis)-1
-      d=0.d0; d(5)=6.d0*dt/fixture_jacob(g)*face_energy(left,axis)
-      theta=min(theta,host_budget(q0,d))
-      d(5)=-6.d0*dt/fixture_jacob(g)*face_energy(g,axis)
-      theta=min(theta,host_budget(q0,d))
-    enddo
-  end function node_ratio
-
-  real(8) function fixture_jacob(g) result(value)
-    integer,intent(in) :: g(3)
-    value=1.d0+0.1d0*sin(dble(sum(modulo(g,24)))*2.d0*acos(-1.d0)/24.d0)
-  end function fixture_jacob
-
-  logical function host_admissible(q)
-    real(8),intent(in) :: q(5)
-    host_admissible=.false.
-    if(.not.all(ieee_is_finite(q)).or.q(1)<=0.d0) return
-    host_admissible=q(5)>0.5d0*sum(q(2:4)*(q(2:4)/q(1))).and. &
-      q(5)>0.5d0*q(1)*sum((q(2:4)/q(1))**2)
-  end function host_admissible
-
-  real(8) function host_budget(base,correction) result(theta)
-    real(8),intent(in) :: base(5),correction(5)
-    real(8) :: lo,hi,mid
-    integer :: iteration
-    if(host_admissible(base+correction)) then
-      theta=1.d0
-      return
-    endif
-    lo=0.d0; hi=1.d0
-    do iteration=1,64
-      mid=0.5d0*(lo+hi)
-      if(mid==lo.or.mid==hi) exit
-      if(host_admissible(base+mid*correction)) then
-        lo=mid
-      else
-        hi=mid
-      endif
-    enddo
-    theta=lo*(1.d0-256.d0*epsilon(1.d0))
-  end function host_budget
 
   subroutine check_full_flux()
     use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,npdcj,npdck, &
@@ -661,18 +684,18 @@ contains
       characteristic_upwind_rhs_x_xyphysical_global_kernel,characteristic_upwind_rhs_y_xyphysical_global_kernel, &
       characteristic_upwind_rhs_z_xyphysical_global_kernel
     implicit none
-    real(8),allocatable :: rhs(:,:,:,:),delta(:,:,:,:),baseline_rhs(:,:,:,:,:)
+    real(real_kind),allocatable :: rhs(:,:,:,:),delta(:,:,:,:),baseline_rhs(:,:,:,:,:)
     integer(1),allocatable :: mask(:,:,:)
     integer :: j,k,mode,layout,unit,header(5),point(3),snapshot_status
     character(1024) :: snapshot_path
     logical :: snapshot_mode
-    real(8) :: captured_rhs(5)
+    real(real_kind) :: captured_rhs(5)
     type(dim3) :: bx,by,bz,gx,gy,gz,gxi,gyi,gzi
 
     im=16; jm=12; km=8
     numq=5; num_species=0; num_modequ=0; ndims=3
-    gamma=1.4d0; mach=12.d0; nondimen=.true.
-    recon_schem=5; lchardecomp=.true.; bfacmpld=0.5d0
+    gamma=1.4e0_real_kind; mach=12.e0_real_kind; nondimen=.true.
+    recon_schem=5; lchardecomp=.true.; bfacmpld=0.5e0_real_kind
     allocate(q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5),vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3))
     allocate(rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm),prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
     allocate(tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm),jacob(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
@@ -689,20 +712,20 @@ contains
     do k=-hm,km+hm
       do j=-hm,jm+hm
         do i=-hm,im+hm
-          rho(i,j,k)=1.d0+0.03d0*sin(0.19d0*i+0.13d0*j-0.11d0*k)
-          tmp(i,j,k)=1.d0+0.07d0*cos(0.21d0*i-0.17d0*j+0.09d0*k)
-          vel(i,j,k,1)=0.8d0+0.05d0*sin(0.2d0*i)
-          vel(i,j,k,2)=0.07d0*sin(0.3d0*j)
-          vel(i,j,k,3)=-0.06d0*cos(0.27d0*k)
+          rho(i,j,k)=1.e0_real_kind+0.03e0_real_kind*sin(0.19e0_real_kind*i+0.13e0_real_kind*j-0.11e0_real_kind*k)
+          tmp(i,j,k)=1.e0_real_kind+0.07e0_real_kind*cos(0.21e0_real_kind*i-0.17e0_real_kind*j+0.09e0_real_kind*k)
+          vel(i,j,k,1)=0.8e0_real_kind+0.05e0_real_kind*sin(0.2e0_real_kind*i)
+          vel(i,j,k,2)=0.07e0_real_kind*sin(0.3e0_real_kind*j)
+          vel(i,j,k,3)=-0.06e0_real_kind*cos(0.27e0_real_kind*k)
           prs(i,j,k)=rho(i,j,k)*tmp(i,j,k)/(gamma*mach*mach)
           q(i,j,k,1)=rho(i,j,k)
           q(i,j,k,2:4)=rho(i,j,k)*vel(i,j,k,:)
-          q(i,j,k,5)=prs(i,j,k)/(gamma-1.d0)+0.5d0*rho(i,j,k)*sum(vel(i,j,k,:)**2)
-          jacob(i,j,k)=1.d0+0.02d0*cos(0.1d0*(i+j+k))
-          dxi(i,j,k,:,:)=0.d0
-          dxi(i,j,k,1,1)=0.7d0+0.01d0*i
-          dxi(i,j,k,2,2)=0.8d0+0.01d0*j
-          dxi(i,j,k,3,3)=0.9d0+0.01d0*k
+          q(i,j,k,5)=prs(i,j,k)/(gamma-1.e0_real_kind)+0.5e0_real_kind*rho(i,j,k)*sum(vel(i,j,k,:)**2)
+          jacob(i,j,k)=1.e0_real_kind+0.02e0_real_kind*cos(0.1e0_real_kind*(i+j+k))
+          dxi(i,j,k,:,:)=0.e0_real_kind
+          dxi(i,j,k,1,1)=0.7e0_real_kind+0.01e0_real_kind*i
+          dxi(i,j,k,2,2)=0.8e0_real_kind+0.01e0_real_kind*j
+          dxi(i,j,k,3,3)=0.9e0_real_kind+0.01e0_real_kind*k
         enddo
       enddo
     enddo
@@ -716,7 +739,7 @@ contains
       if(any(header/=[im,jm,km,hm,5]).or.point(1)<1.or.point(1)>im-5.or. &
          any(point(2:3)/=[6,4])) &
         error stop 'MP-LD snapshot requires the bounded inlet stencil tile'
-      if(.not.all(ieee_is_finite(captured_rhs)).or.bfacmpld/=0.5d0) &
+      if(.not.all(ieee_is_finite(captured_rhs)).or.bfacmpld/=0.5e0_real_kind) &
         error stop 'MP-LD snapshot requires finite RHS and original reconstruction weight'
       read(unit) q,jacob,dxi,mask
       close(unit)
@@ -726,14 +749,14 @@ contains
             rho(i,j,k)=q(i,j,k,1)
             ! Physical x- closures never sample the undefined exterior state.
             if(i<0) then
-              vel(i,j,k,:)=0.d0; prs(i,j,k)=1.d0; tmp(i,j,k)=1.d0
+              vel(i,j,k,:)=0.e0_real_kind; prs(i,j,k)=1.e0_real_kind; tmp(i,j,k)=1.e0_real_kind
               cycle
             endif
-            if(rho(i,j,k)<=0.d0) error stop 'MP-LD snapshot density is not positive'
+            if(rho(i,j,k)<=0.e0_real_kind) error stop 'MP-LD snapshot density is not positive'
             vel(i,j,k,:)=q(i,j,k,2:4)/rho(i,j,k)
-            prs(i,j,k)=(q(i,j,k,5)-0.5d0*rho(i,j,k)*sum(vel(i,j,k,:)**2))*(gamma-1.d0)
+            prs(i,j,k)=(q(i,j,k,5)-0.5e0_real_kind*rho(i,j,k)*sum(vel(i,j,k,:)**2))*(gamma-1.e0_real_kind)
             tmp(i,j,k)=prs(i,j,k)/rho(i,j,k)*gamma*mach*mach
-            if(tmp(i,j,k)<=0.d0) error stop 'MP-LD snapshot temperature is not positive'
+            if(tmp(i,j,k)<=0.e0_real_kind) error stop 'MP-LD snapshot temperature is not positive'
           enddo
         enddo
       enddo
@@ -785,7 +808,7 @@ contains
           crinod(im/2,jm/2,km/2)=.true.
         endif
         call sync_crashfix_mask_to_gpu()
-        qrhs=0.d0; qrhs_d=qrhs
+        qrhs=0.e0_real_kind; qrhs_d=qrhs
         call convrsduwd()
         call characteristic_upwind_flux_x_xyphysical_global_kernel<<<gxi,bx>>>( &
           im,jm,km,hm,is,ie,js,je,ks,ke,npdci,5,gamma)
@@ -805,7 +828,7 @@ contains
         rhs=qrhs_d(0:im,0:jm,0:km,:)
         if(mode<=2) then
           baseline_rhs(:,:,:,:,mode)=rhs
-        elseif(maxval(abs(rhs-baseline_rhs(:,:,:,:,mode-3)))<=1.d-12) then
+        elseif(maxval(abs(rhs-baseline_rhs(:,:,:,:,mode-3)))<=1.e-12_real_kind) then
           error stop 'Critical-node flux fallback was not exercised'
         endif
         delta=rhs+qrhs(0:im,0:jm,0:km,:)
@@ -820,24 +843,24 @@ contains
           print '(a,5(es24.16,1x))', 'MP-LD captured production RHS=',captured_rhs
         endif
         print '(A,2I3,A,ES12.4)', 'MP-LD flux layout/mask:',layout,mode,' error=',error
-        if(error>2.d-10) error stop 'MP-LD full flux CPU/GPU gate failed'
+        if(real_bytes==8.and.error>2.e-10_real_kind) error stop 'MP-LD full flux CPU/GPU gate failed'
         if(mode<=2) then
           ! Undefined physical exterior halos must never enter a used face.
           if(layout==1.or.layout==4) then
-            q_d(-hm:-1,:,:,:)=ieee_value(0.d0,ieee_quiet_nan)
-            q_d(:,-hm:-1,:,:)=ieee_value(0.d0,ieee_quiet_nan)
+            q_d(-hm:-1,:,:,:)=ieee_value(0.e0_real_kind,ieee_quiet_nan)
+            q_d(:,-hm:-1,:,:)=ieee_value(0.e0_real_kind,ieee_quiet_nan)
           endif
           if(layout==2.or.layout==4) then
-            q_d(im+1:im+hm,:,:,:)=ieee_value(0.d0,ieee_quiet_nan)
-            q_d(:,jm+1:jm+hm,:,:)=ieee_value(0.d0,ieee_quiet_nan)
+            q_d(im+1:im+hm,:,:,:)=ieee_value(0.e0_real_kind,ieee_quiet_nan)
+            q_d(:,jm+1:jm+hm,:,:)=ieee_value(0.e0_real_kind,ieee_quiet_nan)
           endif
-          qrhs_d=0.d0
+          qrhs_d=0.e0_real_kind
           call build_mp_convection_gpu()
           rhs=qrhs_d(0:im,0:jm,0:km,:)
           q_d=q
           error=maxval(abs(rhs+qrhs(0:im,0:jm,0:km,:)))
           print '(A,2I3,A,ES12.4)', 'MP stored flux layout/mask:',layout,mode,' error=',error
-          if(.not.all(ieee_is_finite(rhs)).or.error>2.d-10) &
+          if(.not.all(ieee_is_finite(rhs)).or.(real_bytes==8.and.error>2.e-10_real_kind)) &
             error stop 'MP stored high-order flux changed the original operator'
         endif
       enddo
@@ -861,9 +884,9 @@ contains
       spg_im_beg,spg_im_end,spg_jm_beg,spg_jm_end,sponge_damp_coef_im,sponge_damp_coef_jm
     use sponge_gpu, only: init_sponge_gpu,release_sponge_gpu,apply_xmax_sponge_gpu,apply_ymax_sponge_gpu
     implicit none
-    real(8),allocatable :: initial(:,:,:,:),actual_sponge(:,:,:,:)
+    real(real_kind),allocatable :: initial(:,:,:,:),actual_sponge(:,:,:,:)
     integer :: j,k,m,mode,ir,jr,kr,bad,any_bad
-    real(8) :: global_error
+    real(real_kind) :: global_error
     character(32) :: topology
 
     im=16; jm=12; km=8; numq=5
@@ -906,8 +929,8 @@ contains
       do k=-hm,km+hm
         do j=-hm,jm+hm
           do i=-hm,im+hm
-            initial(i,j,k,m)=dble(m)+sin(0.19d0*(i+ir*im)+0.27d0*(j+jr*jm)- &
-              0.32d0*(k+kr*km))+0.01d0*rank
+            initial(i,j,k,m)=real(m,real_kind)+sin(0.19e0_real_kind*(i+ir*im)+0.27e0_real_kind*(j+jr*jm)- &
+              0.32e0_real_kind*(k+kr*km))+0.01e0_real_kind*rank
           enddo
         enddo
       enddo
@@ -916,11 +939,11 @@ contains
       lspg_im=mode/=2; lspg_jm=mode/=1
       if(lspg_im) then
         allocate(sponge_damp_coef_im(spg_im_beg:spg_im_end,0:jm,0:km))
-        sponge_damp_coef_im=0.04d0
+        sponge_damp_coef_im=0.04e0_real_kind
       endif
       if(lspg_jm) then
         allocate(sponge_damp_coef_jm(0:im,spg_jm_beg:spg_jm_end,0:km))
-        sponge_damp_coef_jm=0.03d0
+        sponge_damp_coef_jm=0.03e0_real_kind
       endif
       call init_sponge_gpu()
       q=initial; q_d=initial
@@ -932,10 +955,10 @@ contains
       call MPI_Allreduce(bad,any_bad,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
       if(any_bad/=0) error stop 'Sponge reference/result is not finite'
       error=maxval(abs(actual_sponge-q))
-      call MPI_Allreduce(error,global_error,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+      call MPI_Allreduce(error,global_error,1,mpi_real_type,MPI_MAX,MPI_COMM_WORLD,ierr)
       if(rank==0) print '(A,3I3,A,I0,A,ES12.4)', &
         'MP-LD sponge topology ',isize,jsize,ksize,' mode ',mode,' error=',global_error
-      if(global_error>2.d-10) error stop 'MP-LD sponge CPU/GPU gate failed'
+      if(real_bytes==8.and.global_error>2.e-10_real_kind) error stop 'MP-LD sponge CPU/GPU gate failed'
       call release_sponge_gpu()
       if(allocated(sponge_damp_coef_im)) deallocate(sponge_damp_coef_im)
       if(allocated(sponge_damp_coef_jm)) deallocate(sponge_damp_coef_jm)

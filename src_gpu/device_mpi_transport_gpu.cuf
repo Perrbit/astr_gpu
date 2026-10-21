@@ -1,4 +1,6 @@
 module device_mpi_transport_gpu
+  use astr_precision, only: real_kind
+  use astr_precision_mpi, only: mpi_real_type
   use mpi
   use cudafor
   use halo_transport_gpu, only: independent_host_pair_work,begin_external_pair_work, &
@@ -10,8 +12,8 @@ module device_mpi_transport_gpu
 contains
   subroutine exchange_device_pair(send_low,send_high,recv_high,recv_low, &
                                   count,low,high,tag_first,tag_second,work)
-    real(8),device,contiguous,intent(in) :: send_low(:,:,:,:),send_high(:,:,:,:)
-    real(8),device,contiguous,intent(inout) :: recv_high(:,:,:,:),recv_low(:,:,:,:)
+    real(real_kind),device,contiguous,intent(in) :: send_low(:,:,:,:),send_high(:,:,:,:)
+    real(real_kind),device,contiguous,intent(inout) :: recv_high(:,:,:,:),recv_low(:,:,:,:)
     integer,intent(in) :: count,low,high,tag_first,tag_second
     integer :: ierr,abort_error,requests(4),statuses(MPI_STATUS_SIZE,4)
     procedure(independent_host_pair_work),optional :: work
@@ -31,13 +33,13 @@ contains
 
     device_pair_active=.true.
     requests=MPI_REQUEST_NULL
-    call mpi_irecv(recv_high,count,MPI_REAL8,high,tag_first,MPI_COMM_WORLD,requests(1),ierr)
+    call mpi_irecv(recv_high,count,mpi_real_type,high,tag_first,MPI_COMM_WORLD,requests(1),ierr)
     call check_mpi(ierr)
-    call mpi_irecv(recv_low,count,MPI_REAL8,low,tag_second,MPI_COMM_WORLD,requests(2),ierr)
+    call mpi_irecv(recv_low,count,mpi_real_type,low,tag_second,MPI_COMM_WORLD,requests(2),ierr)
     call check_mpi(ierr)
-    call mpi_isend(send_low,count,MPI_REAL8,low,tag_first,MPI_COMM_WORLD,requests(3),ierr)
+    call mpi_isend(send_low,count,mpi_real_type,low,tag_first,MPI_COMM_WORLD,requests(3),ierr)
     call check_mpi(ierr)
-    call mpi_isend(send_high,count,MPI_REAL8,high,tag_second,MPI_COMM_WORLD,requests(4),ierr)
+    call mpi_isend(send_high,count,mpi_real_type,high,tag_second,MPI_COMM_WORLD,requests(4),ierr)
     call check_mpi(ierr)
     if(present(work)) then
       call begin_external_pair_work()

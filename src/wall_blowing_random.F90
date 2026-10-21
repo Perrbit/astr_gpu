@@ -1,6 +1,7 @@
 module wall_blowing_random
+  use astr_precision, only: real_kind,real_bytes
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-  use iso_fortran_env, only: int64
+  use iso_fortran_env, only: int32,int64
   implicit none
   private
   public :: sample_legacy_wall_velocity
@@ -37,7 +38,7 @@ contains
   subroutine legacy_random_runtime_signature(bits)
     integer(int64),intent(out) :: bits(8)
     integer,allocatable :: saved(:),probe(:)
-    real(8) :: values(8)
+    real(real_kind) :: values(8)
     integer :: count,i
     call random_seed(size=count)
     allocate(saved(count),probe(count))
@@ -47,20 +48,26 @@ contains
     do i=1,8
       call random_number(values(i))
     enddo
-    bits=transfer(values,bits)
+    if(real_bytes==4) then
+      do i=1,8
+        bits(i)=int(transfer(values(i),0_int32),int64)
+      enddo
+    else
+      bits=transfer(values,bits)
+    endif
     call random_seed(put=saved)
   end subroutine
 
   subroutine sample_legacy_wall_velocity(rank,xcoord,zcoord,lz,uinf,amplitude, &
                                         xa,xb,xc,nmod_z,velocity)
     integer,intent(in) :: rank,nmod_z
-    real(8),intent(in) :: xcoord(0:,0:),zcoord(0:,0:)
-    real(8),intent(in) :: lz,uinf,amplitude,xa,xb,xc
-    real(8),intent(out) :: velocity(0:,0:)
+    real(real_kind),intent(in) :: xcoord(0:,0:),zcoord(0:,0:)
+    real(real_kind),intent(in) :: lz,uinf,amplitude,xa,xb,xc
+    real(real_kind),intent(out) :: velocity(0:,0:)
     integer :: i,k,m,seed_size
     integer,allocatable :: seed(:)
-    real(8) :: theta,fx,gz,rfluc,sqrt27,unused_phase(15)
-    real(8),parameter :: pi=3.1415926535897932384626433832795d0
+    real(real_kind) :: theta,fx,gz,rfluc,sqrt27,unused_phase(15)
+    real(real_kind),parameter :: pi=3.1415926535897932384626433832795e0_real_kind
 
     if(any(shape(xcoord)/=shape(zcoord)) .or. &
        any(shape(xcoord)/=shape(velocity))) error stop 'legacy wall array shape mismatch'
@@ -68,7 +75,7 @@ contains
        .not.all(ieee_is_finite(zcoord)) .or. &
        .not.all(ieee_is_finite([lz,uinf,amplitude,xa,xb,xc]))) &
       error stop 'legacy wall inputs must be finite'
-    if(lz<=0.d0 .or. xa>=xb .or. xb>=xc .or. nmod_z<1) &
+    if(lz<=0.e0_real_kind .or. xa>=xb .or. xb>=xc .or. nmod_z<1) &
       error stop 'legacy wall requires Lz>0, xa<xb<xc and nmod_z>=1'
 
     ! NVHPC rejects all-zero seeds; retain the approved rank-local draw order.
@@ -86,24 +93,24 @@ contains
       first_call=.false.
     endif
 
-    sqrt27=1.d0/sqrt(27.d0)
+    sqrt27=1.e0_real_kind/sqrt(27.e0_real_kind)
     do k=0,ubound(velocity,2)
       do i=0,ubound(velocity,1)
         if(xcoord(i,k)<=xb .and. xcoord(i,k)>=xa) then
-          theta=2.d0*pi*(xcoord(i,k)-xa)/(xb-xa)
-          fx=4.d0*sin(theta)*(1.d0-cos(theta))*sqrt27
-          gz=sin(2.d0*nmod_z*pi*(zcoord(i,k)/lz))
+          theta=2.e0_real_kind*pi*(xcoord(i,k)-xa)/(xb-xa)
+          fx=4.e0_real_kind*sin(theta)*(1.e0_real_kind-cos(theta))*sqrt27
+          gz=sin(2.e0_real_kind*nmod_z*pi*(zcoord(i,k)/lz))
         elseif(xcoord(i,k)<=xc .and. xcoord(i,k)>=xb) then
-          theta=2.d0*pi*(xcoord(i,k)-xb)/(xc-xb)
-          fx=4.d0*sin(theta)*(1.d0-cos(theta))*sqrt27
-          gz=sin(2.d0*nmod_z*pi*(zcoord(i,k)/lz)+0.5d0*pi)
+          theta=2.e0_real_kind*pi*(xcoord(i,k)-xb)/(xc-xb)
+          fx=4.e0_real_kind*sin(theta)*(1.e0_real_kind-cos(theta))*sqrt27
+          gz=sin(2.e0_real_kind*nmod_z*pi*(zcoord(i,k)/lz)+0.5e0_real_kind*pi)
         else
-          velocity(i,k)=0.d0
+          velocity(i,k)=0.e0_real_kind
           cycle
         endif
         call random_number(rfluc)
-        rfluc=(rfluc*2.d0-1.d0)*0.1d0
-        velocity(i,k)=amplitude*uinf*fx*gz*1.d0*(1.d0+rfluc)
+        rfluc=(rfluc*2.e0_real_kind-1.e0_real_kind)*0.1e0_real_kind
+        velocity(i,k)=amplitude*uinf*fx*gz*1.e0_real_kind*(1.e0_real_kind+rfluc)
       enddo
     enddo
     if(.not.all(ieee_is_finite(velocity))) &

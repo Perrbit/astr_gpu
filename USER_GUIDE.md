@@ -37,7 +37,7 @@ ASTR GPU 面向 NVIDIA GPU 上的结构化可压缩流动求解，时间推进�
 | 网格 | Cartesian；静态单块三维结构化曲线网格 |
 | 物性 | 单组分理想气体及 Sutherland 黏度；可选固定 AIR5 双温物性与化学模型 |
 | 并行 | MPI 多子域；生产建议一 rank 一 GPU |
-| 精度 | FP64 默认；指定配置可将部分中间量改用 FP32，条件见第 9 节 |
+| 精度 | FP64 默认；原生 FP32 验收状态见第 2.3 节，原有混合工作区选项见第 9 节 |
 
 GPU 不承诺任意工况的紧致格式、RK4、RANS/LES、多块非共形、动网格、通用浸入边界、
 任意 Cantera 机制、任意方向曲面 NSCBC 或 HIP/DCU 后端。
@@ -104,6 +104,7 @@ NVHPC GPU 架构，并检查最终编译命令，不直接复用本地 GPU 目�
 | CMake 选项 | 默认 | 含义 |
 |---|---|---|
 | ASTR_WITH_CUDA | OFF | 编译 CUDA 支持，不是运行时 GPU 开关 |
+| ASTR_NUMERICAL_PRECISION | fp64 | 编译数值精度，取 fp64 或 fp32；不是旧的混合工作区选项 |
 | ASTR_WITH_AIR5_CHEMISTRY | OFF | 固定 AIR5，与遗留 CHEMISTRY 互斥 |
 | CHEMISTRY | OFF | 遗留 Cantera CPU 接口，不等于任意机制 GPU 支持 |
 | BUILD_TESTING | ON | 新增验证命令和 probe；生产包设 OFF |
@@ -128,6 +129,36 @@ user_define_module/userdefine.F90。关闭测试不关闭 CUDA-aware MPI 检测�
 使用不同目录。GPU_Quickstart 启动包仍从源码包的 examples/GPU_Quickstart
 使用，通过 EXE 指向安装后的 bin/astr；不会由旧 examples 安装规则自动安装。
 安装不是运行库打包，目标环境仍需匹配 MPI、HDF5 和 NVHPC 运行库。
+
+### 2.3 原生 FP32 与 FP64 构建
+
+原生 FP32 正在 feature/gpu_dev 分支验收，当前分阶段证据见
+[原生精度验证记录](documents/ASTR_NATIVE_FP32_RESULTS.md)。不能将构建通过视为全部功能已验收。
+两种精度共享源码，使用独立构建目录和可执行程序；不在运行时切换主状态的精度。
+在第2.2节配置命令中加入 `-DASTR_NUMERICAL_PRECISION=fp32`，并将构建目录换为
+`build_fp32`，即可选择FP32。省略该参数或显式设为`fp64`均保留FP64。
+CPU/GPU执行后端仍由输入文件的`usegpu`决定。
+
+FP32构建面向非反应五变量，要求`CHEMISTRY=OFF`、`ASTR_WITH_AIR5_CHEMISTRY=OFF`。
+主状态、几何、物理时间、在线统计和已适配数值工作区使用同一种精度；性能时钟独立保留FP64。
+旧`ASTR_GPU_PRECISION_MODE`不能把原生FP32程序改成FP64，也不会另建混合精度工作区。
+FP32构建通常不设置这个旧选择器。保留旧合法值`fp64`或`mixed_workspace`时，只说明一次并忽略其数值分派；
+启动日志中的`fp32`表示实际构建精度，不是这个旧环境变量的合法输入值。
+自定义Fortran代码应从`astr_precision`导入`real_kind`，C互操作使用`c_real_kind`。
+不要使用旧`mpiio`模块的固定FP64参数`rk`作为新程序的精度选择。
+
+检查点记录源数值精度。同精度、同配置可选择`exact_restart=t`；
+FP32与FP64之间切换必须使用`exact_restart=f`，按目标类型恢复并重建派生量。
+跨精度会开始新的统计段，不把不同精度的在线累计直接拼接为一个精确续算窗口。
+已有统计段可用`scripts/output/merge_statistics_segments.py`显式离线合并，
+该工具使用FP64计算权重和中心矩，保留每段的来源与精度身份。
+
+原位设备分析需要匹配精度的Viskores/ParaView依赖，不能将FP32指针交给FP64接口。
+构建依赖脚本`scripts/insitu/build_device_paraview.sh`的
+`PV_DEVICE_NUMERICAL_PRECISION=fp32`选择独立FP32分析构建，默认仍为`fp64`。
+不要覆盖现有FP64依赖目录，也不要在同一进程混装两套ABI不同的分析库。
+当前已验证的FP32数值产品使用设备处理路径。旧主机兼容入口中的VTK流线积分仍使用FP64，
+不属于已验证的严格FP32能力；该入口的处理范围尚待确认，不能把它当成纯图形精度例外。
 
 ## 3. 算例目录与启动
 
@@ -601,7 +632,8 @@ MPI 共享界面的五个守恒分量使用同一通量和限制系数。低阶�
 
 这些条件还需同时满足算例本身的 GPU 支持检查。未启用 mixed_workspace 时，
 默认 flux 不改变 FP64 计算；显式指定其他三项会报错。
-AIR5 不在这里的混合精度支持范围。滤波保持 FP64，不提供 FP32 滤波选项。
+AIR5 不在这里的混合精度支持范围。FP64构建的这些混合工作区模式仍保持FP64滤波，
+没有单独的低精度滤波候选。原生FP32构建的滤波随构建精度，见第2.3节。
 混合精度改变舍入误差，应先与同工况 FP64 比较，而非直接用于未检查的长时计算。
 
 **滤波存储：`ASTR_GPU_FILTER_WORKSPACE`**
@@ -654,7 +686,7 @@ AIR5 不在这里的混合精度支持范围。滤波保持 FP64，不提供 FP3
 
 ### 9.3 无场输出与计时
 
-已准入的周期三维 TGV benchmark 可设置：
+已准入的周期三维TGV或三维非反应平板benchmark可设置：
 
 ```bash
 export ASTR_GPU_BENCHMARK_NO_FIELD_IO=on
@@ -670,6 +702,23 @@ benchmark 检查器保留 Shu-Osher 的分类，但当前默认新输出入口�
 纯 CPU 对照使用 ASTR_CPU_RK_TIMING=on，同样要求无场输出 benchmark。
 ASTR_COMPLETE_STEP_TIMING=on 记录完整时间推进调用的逐 rank 耗时；
 ASTR_GPU_RANK_RK_TIMING=on 用于 GPU 分 rank RK 诊断。不同标签不混算。
+
+对TGV和平板，可用`ASTR_GPU_STATISTICS_INTERVAL`控制原有GPU标量统计：
+默认`1`保持每步计算和写出；正整数`N`只在步号为`N`倍数时执行；`0`关闭该计算和输出。
+它不控制独立原位统计、场输出或平均流动累计，后者仍需在相应输入中关闭。
+其他算例不接受非默认间隔，不能跳过槽道反馈驱动等含有物理作用的统计调用。
+
+纯RK计时可再设`ASTR_BENCHMARK_BUFFER_OUTPUT=1`，同时启用`ASTR_GPU_RK_TIMING=1`。
+该选项默认关闭，只把主机计时记录暂存到计算结束后输出，并将crashfix逐次日志改为结束时摘要。
+修复检测、状态修复、有限正值检查和必要通信仍执行；不应在这种固定窗口计时中途扩大maxstep。
+正式计时关闭原位模块、场输出和平均累计，设置GPU统计间隔为0。
+初始化和预热不计入结果，显存采样及profiler另行运行。
+
+`ASTR_TGV_CONSERVATION=1`显式启用笛卡尔三重周期TGV的轻量守恒监测，默认关闭。
+它在已有TGV统计相位输出密度域均值及总能量密度域均值，分别除以参考密度和参考密度乘参考速度平方。
+每次仅回读两个归约标量，数值归约使用构建精度，不建立FP64流场镜像。
+输出文件为`tgv_conservation.dat`，并在结束日志给出完整步数、实际物理时间和步长。
+它随GPU统计间隔采样，不改变场输出或checkpoint设置；原生归约的舍入也包含在所报告漂移中。
 
 性能比较固定网格、数值、输出、同步和时间步，排除启动与预热。
 并行一步应考虑最慢 rank，不能平均 rank 时间。
@@ -963,7 +1012,7 @@ TGV准入为内部生成的32³周期笛卡尔TGV、FP64、643e/643e、NP=1或NP
 | `rendering_pipeline` | 设备处理开启渲染时的行为 |
 |---|---|
 | `standard-device`（此时缺省选择） | 经Conduit/VTK设备数组进入标准绘制路径；几何、连接、颜色和已接受流线留在设备，不下载供主机整理。使用`device_render_pipeline.py`。 |
-| `direct-device` | 同一设备几何进入专用VTK Mapper，仍由Catalyst/ParaView出图。使用`device_render_pipeline.py`，准入范围与标准入口相同。 |
+| `direct-device` | 同一设备几何进入专用VTK Mapper，仍由Catalyst/ParaView出图。使用`device_render_pipeline.py`；具体产品仍受其既有准入约束，`boundary_layer`预设及M12只读预览仅允许`standard-device`。 |
 | `compatible` | 显式选择原紧凑几何回读路径，使用`tgv_pipeline.py`；保留VTK几何导出，不具备几何常驻保证。 |
 
 二维截面及平面壁面图默认不使用光照调制标量颜色；三维Q等值面、流线和

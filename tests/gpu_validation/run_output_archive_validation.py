@@ -19,6 +19,13 @@ AIR5_FIELDS = (*FIELD_NAMES, "vibrational_temperature", "mass_fraction_N2", "mas
 PLANES = (("i", 8), ("j", 0), ("k", 16))
 
 
+def archive_clock(identity):
+    values = identity[:]
+    if values[0] not in (1, 2):
+        raise AssertionError('unknown native archive precision/version')
+    return values[2:5].astype('<i4').view('<f4') if values[0] == 2 else values[2:5].view('<f8')
+
+
 def field_names(components):
     if components not in (6, 12):
         raise AssertionError("unknown native field component count")
@@ -86,7 +93,7 @@ def check_series(case, product, segment_name="segment00000000"):
             raise AssertionError("time-series ordering mismatch")
         with h5py.File(path / "data.h5") as data:
             identity = data["metadata"] if product == "fields" else data["frame_identity"]
-            time = identity[2:3].view(np.float64)[0]
+            time = archive_clock(identity)[0]
         if float(tokens[1]) != time or float(grid.find("Time").attrib["Value"]) != time:
             raise AssertionError("series ledger/XML/frame clocks differ")
         if times and time <= times[-1]:
@@ -125,7 +132,7 @@ def check_series_reader(case, product, segment_name="segment00000000", extra_nam
                 references["labels"] = np.array(labels)
             with h5py.File(path / "data.h5") as data:
                 identity = data["metadata"] if product == "fields" else data["frame_identity"]
-                references["time"] = identity[2:3].view(np.float64)[0]
+                references["time"] = archive_clock(identity)[0]
                 names = (*field_names(int(identity[-1] if product == "fields" else identity[-2])), *extra_names)
                 references["field_names"] = np.array(names)
                 for label in labels:
@@ -158,6 +165,7 @@ def check_frame(path, product, checkpoint, geometry, backend, extra_names=()):
             h5py.File(geometry) as grid, h5py.File(shared_path) as shared:
         labels = [None] if product == "fields" else [f"{axis}{index:012d}" for axis, index in PLANES]
         role = int(state["identity"][12])
+        width = state['q0001'].dtype.itemsize
         names, first_cache = (AIR5_FIELDS, 23) if role == 7 else (FIELD_NAMES, 6)
         if product == "slices" and set(data) != set(labels) | {"frame_identity"}:
             raise AssertionError("grouped slice inventory mismatch")
@@ -185,7 +193,7 @@ def check_frame(path, product, checkpoint, geometry, backend, extra_names=()):
             raise AssertionError("XDMF plane inventory mismatch")
         if any(not (path / item.text.strip().split(":")[0]).is_file() for item in xml.findall(".//DataItem")):
             raise AssertionError("XDMF references missing data")
-    counts = (17**3 if product == "fields" else 3 * 17**2) * (len(names)+len(extra_names)) * 8
+    counts = (17**3 if product == "fields" else 3 * 17**2) * (len(names)+len(extra_names)) * width
     record = (path / "FRAME").read_text().splitlines()
     if list(map(int, record[3].split())) != [counts, counts if backend == "gpu" else 0]:
         raise AssertionError("actual download/field payload differs from selected physical nodes")
@@ -225,7 +233,9 @@ def check_reader(path, product, checkpoint, geometry):
         role = int(state["identity"][12])
         names, first_cache = (AIR5_FIELDS, 23) if role == 7 else (FIELD_NAMES, 6)
         references["field_names"] = np.array(names)
-        references["time"] = state["identity"][9:10].view(np.float64)[0]
+        words = state['identity'][9:12]
+        references["time"] = (words.astype('<i4').view('<f4') if state['q0001'].dtype.itemsize == 4
+                               else words.view('<f8'))[0]
         for position, label in enumerate(labels):
             selected = [slice(None)] * 3
             if product == "slices":

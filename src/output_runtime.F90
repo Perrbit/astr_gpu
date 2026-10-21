@@ -1,5 +1,8 @@
 module output_runtime
-  use iso_fortran_env, only: int64,real64,compiler_version,compiler_options
+  use iso_fortran_env, only: int64,compiler_version,compiler_options
+  use astr_precision, only: real_kind,c_real_kind,clock_kind,real_bytes,real_to_word,word_to_real
+  use astr_precision_io, only: read_source_reals,source_real_matches
+  use astr_precision_mpi, only: mpi_real_type
   use iso_c_binding, only: c_int,c_char,c_null_char
   use ieee_arithmetic, only: ieee_is_finite
   use mpi
@@ -68,6 +71,7 @@ module output_runtime
   logical,save :: conservation_statistics=.false.
   logical,save :: repartitioning=.false.
   logical,save :: restored_statistics_saved=.true.
+  logical,save :: precision_changed=.false.
   ! Bounded x/z channel repartition passed the approved frozen-field matrix.
   logical,parameter :: channel_repartition_validated=.true.
   type(output_options),save :: options
@@ -75,8 +79,8 @@ module output_runtime
   type(sample_schedule),save :: checkpoint_schedule
   integer(int64),save :: contract(8),last_step=-1
   integer(int64),save :: schedule_origin_step=0
-  real(real64),save :: schedule_origin_time=0
-  real(real64),save :: initial_dt_used=0
+  real(real_kind),save :: schedule_origin_time=0
+  real(real_kind),save :: initial_dt_used=0
   integer,save :: inflow_count=0
   character(64),parameter :: air5_resources(4)=[character(64) :: &
     'air5_hbl_domain.dat','air5_hbl_profile.dat','air5_hbl_initial_field.dat','air5_incident_shock.dat']
@@ -132,25 +136,25 @@ contains
   end subroutine
 
   subroutine restore_preview_runtime()
-    use iso_c_binding, only: c_int64_t,c_double
+    use iso_c_binding, only: c_int64_t
 #ifdef _CUDA
     use gpu_runtime, only: gpu_prepare_preview_geometry
 #endif
     type(checkpoint_state_identity) :: identity,expected,geometry_identity
     character(8) :: magic
     integer(int64) :: saved(8),remaining,header(13)
-    real(real64),allocatable :: buffer(:,:,:,:)
+    real(real_kind),allocatable :: buffer(:,:,:,:)
     integer :: unit,status,closed,a,b,m
     logical :: ok,matched
-    real(real64) :: restore_started,restore_seconds,restore_max
+    real(clock_kind) :: restore_started,restore_seconds,restore_max
 #ifdef ASTR_WITH_CATALYST
     interface
       integer(c_int) function preview_source_set(path,step,t,fcomm) &
           bind(C,name='astr_insitu_preview_source_set')
-        import c_char,c_int,c_int64_t,c_double
+        import c_char,c_int,c_int64_t,c_real_kind
         character(c_char),intent(in) :: path(*)
         integer(c_int64_t),value :: step
-        real(c_double),value :: t
+        real(c_real_kind),value :: t
         integer(c_int),value :: fcomm
       end function
     end interface
@@ -175,13 +179,13 @@ contains
     call check(saved(6)==1,'preview requires a GPU checkpoint')
     call check(.not.statistics_active.or.btest(saved(8),0),'preview checkpoint lacks native statistics')
     expected=identity
-    geometry_identity=checkpoint_state_identity(0_int64,0.d0,0.d0,1.d0)
+    geometry_identity=checkpoint_state_identity(0_int64,0.e0_real_kind,0.e0_real_kind,1.e0_real_kind)
     call allocate_checkpoint_buffer([im,jm,km],hm,13,state_host_budget(),buffer,remaining,MPI_COMM_WORLD)
     call checkpoint_state_transfer(trim(options%restore_directory)//'/../../resources/geometry.h5',.false.,.true., &
       [ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],hm,buffer,geometry_identity,remaining,MPI_COMM_WORLD, &
       allow_repartition=.false.,restored_exact=matched)
-    call check(matched.and.geometry_identity%step==0.and.geometry_identity%time==0.d0.and. &
-      geometry_identity%dt_used==0.d0.and.geometry_identity%dt_next==1.d0,'preview geometry identity mismatch')
+    call check(matched.and.geometry_identity%step==0.and.geometry_identity%time==0.e0_real_kind.and. &
+      geometry_identity%dt_used==0.e0_real_kind.and.geometry_identity%dt_next==1.e0_real_kind,'preview geometry identity mismatch')
     call check(.not.allocated(jacob).and..not.allocated(dxi),'preview geometry was already initialized')
     allocate(jacob(-hm:im+hm,-hm:jm+hm,-hm:km+hm), &
       dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3),stat=status)
@@ -260,7 +264,7 @@ contains
 
   logical function channel_repartition_case()
     character(128) :: mode,value
-    real(real64) :: forcing
+    real(real_kind) :: forcing
     integer :: status,ios
     channel_repartition_case=.false.
     if(.not.channel_repartition_validated) return
@@ -277,7 +281,7 @@ contains
     read(value,*,iostat=ios) forcing
     if(ios/=0) return
     if(.not.ieee_is_finite(forcing)) return
-    channel_repartition_case=forcing==1.d-4
+    channel_repartition_case=forcing==1.e-4_real_kind
   end function
 
   logical function registered_repartition_case()
@@ -356,8 +360,8 @@ contains
 
   logical function extruded_profile_output_case()
     extruded_profile_output_case=trim(flowtype)=='bl'.and..not.lreadgrid.and.ninit==2.and.nondimen.and. &
-      trim(conschm)=='743e'.and.trim(difschm)=='643e'.and.recon_schem==5.and.lchardecomp.and. &
-      .not.lfilter.and.trim(turbinf)=='prof'.and. &
+      trim(conschm)=='743e'.and.(trim(difschm)=='643e'.or.trim(difschm)=='643c').and. &
+      recon_schem==5.and.lchardecomp.and.trim(turbinf)=='prof'.and. &
       (all(bctype==[11,21,41,50,1,1]).or.all(bctype==[11,22,41,52,1,1]))
   end function
 
@@ -403,7 +407,7 @@ contains
         .not.lreadgrid.and.ninit==0.and.nondimen.and..not.lavg.and. &
         .not.lfilter.and..not.diffterm.and..not.lchardecomp.and. &
         trim(conschm)=='543e'.and.trim(difschm)=='643e'.and.recon_schem==3.and. &
-        maxstep==5.and.deltat==1.d-5.and. &
+        maxstep==5.and.deltat==1.e-5_real_kind.and. &
         .not.options%checkpoint%enabled.and..not.options%volume%enabled.and..not.options%slices%enabled.and. &
         .not.options%adaptive%enabled.and.len_trim(options%restore_directory)==0
     endif
@@ -416,8 +420,8 @@ contains
     call check(.not.lcracon.or.(numq==5.and.num_species==0.and..not.lcomb), &
       'checkpoint crashfix supports only non-reacting five-variable flow')
     if(extruded_profile_output_case().and.bctype(2)==22) then
-      call check(use_gpu.and..not.options%adaptive%enabled.and..not.lavg, &
-        'profile joint NSCBC admits GPU archives and same-topology restart; means/adaptive not validated')
+      call check(.not.options%adaptive%enabled.and..not.lavg, &
+        'profile joint NSCBC admits same-topology restart; means/adaptive not validated')
     endif
     call check(ninit>=0.and.ninit<=3,'new output initialization dimension must be 0:3')
     if(air5_output_case()) call check(ninit==0,'AIR5 external initialization is not registered')
@@ -540,7 +544,7 @@ contains
       end select
       call check(.not.conservation_statistics.or.use_gpu,'AIR5 conservation diagnostic is GPU-only')
     endif
-    call configure_adaptive(options%adaptive,0_int64,0.d0,ok)
+    call configure_adaptive(options%adaptive,0_int64,0.e0_real_kind,ok)
     call check(ok,'invalid adaptive monitor configuration')
     if(options%adaptive%enabled) call check(trim(flowtype)=='tgv'.and.all(bctype==1).and. &
       .not.lreadgrid.and.numq==5.and.num_species==0.and..not.lcomb.and.nondimen.and. &
@@ -558,7 +562,8 @@ contains
     logical,intent(inout) :: rkfirst_pending
     character(1024) :: path,source
     character(256) :: value,root_probe
-    integer :: status,ierr,i
+    integer :: status,ierr,i,source_bytes
+    integer(int64) :: state_header(13)
     logical :: ok
     type(checkpoint_state_identity) :: identity
     integer(c_int) :: reuse,status_reuse
@@ -589,7 +594,12 @@ contains
       select case(i)
       case(1)
         call get_environment_variable('ASTR_GPU_PRECISION_MODE',value,status=status)
+#ifdef ASTR_REAL32
+        call check(status==1.or.trim(value)==''.or.trim(value)=='fp64'.or.trim(value)=='mixed_workspace', &
+          'invalid legacy GPU precision selection for native FP32 restart')
+#else
         call check(status==1.or.trim(value)==''.or.trim(value)=='fp64','new restart requires FP64')
+#endif
       case(2)
         call get_environment_variable('ASTR_GPU_SYNC_MODE',value,status=status)
         call check(status==1.or.trim(value)==''.or.trim(value)=='explicit','new restart first gate requires explicit sync')
@@ -613,10 +623,14 @@ contains
       path=trim(options%restore_directory)
       call validate_checkpoint_bundle(trim(path),MPI_COMM_WORLD,ok)
       call check(ok,'invalid new checkpoint bundle')
-      call control_file(trim(path)//'/control.bin',.false.,counter,rkfirst_pending,identity)
-      call archive_control_file(trim(path)//'/archives.bin',.false.,identity)
+      call checkpoint_state_header(trim(path)//'/state.h5',state_header,comm=MPI_COMM_WORLD,producer_bytes=source_bytes)
+      precision_changed=source_bytes/=real_bytes
+      call check(.not.options%exact_restart.or..not.precision_changed, &
+        'exact restore numerical precision mismatch; select exact_restart=f')
+      call control_file(trim(path)//'/control.bin',.false.,counter,rkfirst_pending,identity,source_bytes)
+      call archive_control_file(trim(path)//'/archives.bin',.false.,identity,source_bytes)
       call output_render_file(trim(path)//'/insitu_control.bin',.false.,identity,state_host_budget(), &
-        options%restart_output=='override')
+        options%restart_output=='override',source_bytes)
 #ifdef ASTR_AIR5_CHEMISTRY
       if(air5_output_case()) call air5_contract_file(trim(path)//'/air5_config.bin',.false.)
 #ifdef _CUDA
@@ -631,13 +645,20 @@ contains
       call MPI_Bcast(root_probe,len(root_probe),MPI_CHARACTER,0,MPI_COMM_WORLD,ierr)
       call check(ierr==MPI_SUCCESS.and.value==root_probe,'restore probe option differs between ranks')
       if(len_trim(value)>0) then
-        call check(trim(value)=='1'.and.air5_repartition_case(),'restore probe requires bounded AIR5 HBL/SBLI')
+        call check(trim(value)=='1'.and.(air5_repartition_case().or. &
+          (trim(flowtype)=='tgv'.and.all([ia,ja,ka]==16).and.all(bctype==1).and. &
+           numq==5.and..not.lcomb.and.mpisize<=2).or. &
+          (trim(flowtype)=='tgv'.and.lreadgrid.and.all([ia,ja,ka]==32).and. &
+           numq==5.and..not.lcomb.and.mpisize<=2).or. &
+          (extruded_profile_output_case().and.all([ia,ja,ka]==[96,48,32]).and.mpisize<=2)), &
+          'restore probe requires bounded AIR5, TGV/CURVE or Ma12')
         ! Test-only reserialization of the actual host/device state before any RK stage.
         call flow_file('outdat/restore_probe.h5',.true.,identity)
+        call control_file('outdat/restore_control_probe.bin',.true.,counter,rkfirst_pending,identity)
       endif
       if(dynamic_output_case()) call inflow_file(trim(path)//'/inflow.h5',.false.,identity)
       call check(identity%step<=huge(nstep),'restored step exceeds solver integer range')
-      if(options%checkpoint_statistics.and.restored_statistics_saved) then
+      if(options%checkpoint_statistics.and.restored_statistics_saved.and..not.precision_changed) then
       if(statistics_active) call output_statistics_file(trim(path)//'/statistics.h5',.false., &
         identity,state_host_budget(),allow_repartition=repartitioning)
       if(mean_statistics) call mean_statistics_file(trim(path)//'/statistics.h5',.false., &
@@ -648,9 +669,14 @@ contains
 #endif
       else
         nsamples=0
-        call restart_output_statistics(int(identity%step),identity%time)
+        call restart_output_statistics(int(identity%step),identity%time,source_bytes,state_header(10))
       endif
+      if(precision_changed.and.mpirank==0) write(*,'(a,i0,a,i0,a,i0,a,es24.16)') &
+        'ASTR_OUTPUT_PRECISION_SWITCH source_bits=',8*source_bytes,' target_bits=',8*real_bytes, &
+        ' non-exact; statistics_new_segment_step=',identity%step,' time=',identity%time
       if(len_trim(root_probe)>0) then
+        if(statistics_active) call output_statistics_file('outdat/restore_statistics_probe.h5',.true., &
+          identity,state_host_budget())
         if(mean_statistics) call mean_statistics_file('outdat/restore_statistics_probe.h5',.true., &
           identity,state_host_budget())
 #if defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
@@ -671,7 +697,13 @@ contains
       call MPI_Bcast(reuse,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
       call check(ierr==MPI_SUCCESS.and.status_reuse==0,'existing output root requires its own validated restore source')
     endif
-    if(archives_enabled()) call begin_archives(identity,reuse==1)
+    if(archives_enabled()) then
+      if(precision_changed) then
+        call begin_archives(identity,reuse==1,source_bytes,state_header(10))
+      else
+        call begin_archives(identity,reuse==1)
+      endif
+    endif
 #if defined(_CUDA) && defined(ASTR_AIR5_CHEMISTRY)
     if(conservation_statistics) then
       write(value,'("air5_conservation_from_step",i12.12,".dat")') identity%step
@@ -806,7 +838,7 @@ contains
     logical,intent(in) :: writing
     type(checkpoint_state_identity),intent(inout) :: identity
     type(checkpoint_state_identity) :: expected
-    real(real64),allocatable :: buffer(:,:,:,:)
+    real(real_kind),allocatable :: buffer(:,:,:,:)
     integer(int64) :: header(13),remaining
     logical :: matched,lean
     expected=identity
@@ -844,7 +876,7 @@ contains
       else
       call checkpoint_perfect_gas_gpu(path,writing,[ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],hm, &
         identity,state_host_budget(),MPI_COMM_WORLD,allow_repartition=registered_repartition_case(),restored_exact=matched, &
-        refresh_halos=refresh_checkpoint_halos,repartition_axes=registered_repartition_axes())
+        refresh_halos=refresh_checkpoint_halos,repartition_axes=registered_repartition_axes(),exact=options%exact_restart)
       if(.not.writing.and..not.options%exact_restart) call rebuild_checkpoint_primitives_gpu()
       endif
       call checkpoint_crashfix_gpu(path,writing,state_host_budget(),options%device_budget_bytes,MPI_COMM_WORLD,matched, &
@@ -853,13 +885,13 @@ contains
 #endif
       if(lean) then
         call allocate_checkpoint_buffer([im,jm,km],0,5,state_host_budget(),buffer,remaining,MPI_COMM_WORLD)
-        buffer=0.d0
+        buffer=0.e0_real_kind
         if(writing) buffer=q(0:im,0:jm,0:km,:)
         call checkpoint_state_transfer(path,writing,.false.,[ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],0, &
           buffer,identity,remaining,MPI_COMM_WORLD,role=11,allow_repartition=registered_repartition_case(), &
           restored_exact=matched,repartition_axes=registered_repartition_axes(),physical_only=.true.)
         if(.not.writing) then
-          q=0.d0
+          q=0.e0_real_kind
           q(0:im,0:jm,0:km,:)=buffer
         endif
         deallocate(buffer)
@@ -867,7 +899,7 @@ contains
         call checkpoint_perfect_gas_state(path,writing,[ia,ja,ka]+1,[ig0,jg0,kg0],[im,jm,km],hm, &
         q,rho,vel,prs,tmp,identity,state_host_budget(),MPI_COMM_WORLD, &
         allow_repartition=registered_repartition_case(),restored_exact=matched,refresh_halos=refresh_checkpoint_halos, &
-        repartition_axes=registered_repartition_axes())
+        repartition_axes=registered_repartition_axes(),exact=options%exact_restart)
       endif
       if(.not.writing.and..not.options%exact_restart) then
         call updatefvar()
@@ -923,7 +955,7 @@ contains
     character(128) :: values(10),root_values(10),saved_values(10)
     character(128) :: source_evaluation,root_source_evaluation,saved_source_evaluation
     character(8) :: magic,expected_magic,filter_magic
-    real(real64) :: top(40)
+    real(real_kind) :: top(40)
     integer(int64) :: bits(40),root_bits(40),saved_bits(40),legacy_crc(4)
     integer(int64) :: integration_control(2),saved_integration_control(2)
     integer(int64) :: filter_control(5),saved_filter_control(5)
@@ -948,7 +980,7 @@ contains
     filter_control=0
     if(air5_conservative_filter) filter_control=int(air5_filter_identity,int64)
     call complete_air5_top_contract(top)
-    bits=transfer(top,bits)
+    bits=real_to_word(top)
     root_values=values; root_bits=bits
     call MPI_Bcast(root_values,1280,MPI_CHARACTER,0,MPI_COMM_WORLD,ierr)
     call check(ierr==MPI_SUCCESS.and.all(root_values==values),'AIR5 runtime modes differ between ranks')
@@ -1013,7 +1045,7 @@ contains
     logical,intent(in) :: writing
     type(checkpoint_state_identity),intent(in) :: identity
     integer(int64) :: metadata(5),root_metadata(5),bits(11),root_bits(11),step,file_bytes
-    real(real64) :: baseline(11),clock(3)
+    real(real_kind) :: baseline(11),clock(3)
     character(8) :: magic
     integer :: unit,err,closed,ierr
     call check(state_host_budget()>=512,'AIR5 conservation scalar state budget')
@@ -1021,7 +1053,7 @@ contains
     call check(metadata(1)==merge(1_int64,0_int64,conservation_statistics), &
       'AIR5 conservation activation differs from output configuration')
     if(writing) then
-      root_metadata=metadata; bits=transfer(baseline,bits); root_bits=bits
+      root_metadata=metadata; bits=real_to_word(baseline); root_bits=bits
       call MPI_Bcast(root_metadata,5,MPI_INTEGER8,0,MPI_COMM_WORLD,ierr)
       call check(ierr==MPI_SUCCESS.and.all(metadata==root_metadata),'AIR5 conservation history differs between ranks')
       call MPI_Bcast(root_bits,11,MPI_INTEGER8,0,MPI_COMM_WORLD,ierr)
@@ -1069,11 +1101,11 @@ contains
 
   subroutine write_geometry_resource(path)
     character(*),intent(in) :: path
-    real(real64),allocatable :: buffer(:,:,:,:)
+    real(real_kind),allocatable :: buffer(:,:,:,:)
     integer(int64) :: remaining
     integer :: a,b,m
     type(checkpoint_state_identity) :: identity
-    identity=checkpoint_state_identity(0_int64,0.0_real64,0.0_real64,1.0_real64)
+    identity=checkpoint_state_identity(0_int64,0.0_real_kind,0.0_real_kind,1.0_real_kind)
     call allocate_checkpoint_buffer([im,jm,km],hm,13,state_host_budget(),buffer,remaining,MPI_COMM_WORLD)
     do m=1,3
       call pack_geometry_field(buffer(:,:,:,m),x(:,:,:,m),.false.)
@@ -1094,7 +1126,7 @@ contains
 
   subroutine refresh_checkpoint_halos(buffer,cells,halo,budget,comm)
     use parallel, only: dataswap
-    real(real64),contiguous,intent(inout) :: buffer(:,:,:,:)
+    real(real_kind),contiguous,intent(inout) :: buffer(:,:,:,:)
     integer,intent(in) :: cells(3),halo,comm
     integer(int64),intent(in) :: budget
     integer(int64) :: face,ncomp
@@ -1104,7 +1136,7 @@ contains
     face=max(int(cells(1)+1,int64)*(cells(2)+1),int(cells(1)+1,int64)*(cells(3)+1), &
       int(cells(2)+1,int64)*(cells(3)+1))
     ! Four MPI face arrays plus conservative room for two assignment temporaries.
-    call checkpoint_state_require(face<=budget/8/6/max(1,halo)/ncomp,comm,'repartition halo scratch budget')
+    call checkpoint_state_require(face<=budget/real_bytes/6/max(1,halo)/ncomp,comm,'repartition halo scratch budget')
     call dataswap(buffer)
   end subroutine
 
@@ -1120,13 +1152,13 @@ contains
   end subroutine
 
   subroutine pack_geometry_field(saved,actual,metric)
-    real(real64),intent(out) :: saved(:,:,:)
-    real(real64),intent(in) :: actual(:,:,:)
+    real(real_kind),intent(out) :: saved(:,:,:)
+    real(real_kind),intent(in) :: actual(:,:,:)
     logical,intent(in) :: metric
     integer :: h,lo(3),hi(3)
     h=hm+1
     call geometry_defined_bounds(metric,lo,hi)
-    saved=0.d0
+    saved=0.e0_real_kind
     saved(lo(1):hi(1),h:h+jm,h:h+km)=actual(lo(1):hi(1),h:h+jm,h:h+km)
     saved(h:h+im,lo(2):hi(2),h:h+km)=actual(h:h+im,lo(2):hi(2),h:h+km)
     saved(h:h+im,h:h+jm,lo(3):hi(3))=actual(h:h+im,h:h+jm,lo(3):hi(3))
@@ -1152,17 +1184,18 @@ contains
     end select
   end subroutine
 
-  subroutine control_file(path,writing,counter,pending,identity)
+  subroutine control_file(path,writing,counter,pending,identity,source_bytes)
     character(*),intent(in) :: path
     logical,intent(in) :: writing
     integer,intent(inout) :: counter
     logical,intent(inout) :: pending
     type(checkpoint_state_identity),intent(inout) :: identity
+    integer,optional,intent(in) :: source_bytes
     integer(int64) :: saved(8),interval,saved_last,origin_step
-    real(real64) :: dt_interval,origin_time
+    real(real_kind) :: dt_interval,origin_time,schedule_period
     integer :: unit,err,closed,saved_counter,status,ierr
     logical :: saved_pending,saved_initial,ok,same_schedule
-    real(real64) :: driver(6),root_driver(6)
+    real(real_kind) :: driver(6),root_driver(6)
     character(128) :: driver_config(3),saved_driver_config(3),root_config(3)
     type(sample_schedule) :: restored_schedule
     character(8) :: magic
@@ -1206,9 +1239,9 @@ contains
         call channel_driver_state(driver,.true.,ok)
         call check(ok,'invalid channel driver state')
         root_driver=driver
-        call MPI_Bcast(root_driver,6,MPI_DOUBLE_PRECISION,0,MPI_COMM_WORLD,ierr)
+        call MPI_Bcast(root_driver,6,mpi_real_type,0,MPI_COMM_WORLD,ierr)
         call check(ierr==MPI_SUCCESS,'channel driver state broadcast')
-        call check(all(transfer(root_driver,[0_int64],6)==transfer(driver,[0_int64],6)), &
+        call check(all(real_to_word(root_driver)==real_to_word(driver)), &
           'channel driver state differs between ranks')
       endif
     endif
@@ -1252,9 +1285,16 @@ contains
       call check(err==0,'open control metadata')
       call read_control_contract(unit,magic,saved,err)
       call check(err==0,'read control contract')
-      read(unit,iostat=err) identity%step,identity%time,identity%dt_used,identity%dt_next, &
-        saved_counter,saved_pending,saved_last,mode,interval,dt_interval,saved_initial,origin_step,origin_time, &
-        saved_driver_config,driver
+      read(unit,iostat=err) identity%step
+      if(err==0) call read_source_reals(unit,identity%time,source_bytes,err)
+      if(err==0) call read_source_reals(unit,identity%dt_used,source_bytes,err)
+      if(err==0) call read_source_reals(unit,identity%dt_next,source_bytes,err)
+      if(err==0) read(unit,iostat=err) saved_counter,saved_pending,saved_last,mode,interval
+      if(err==0) call read_source_reals(unit,dt_interval,source_bytes,err)
+      if(err==0) read(unit,iostat=err) saved_initial,origin_step
+      if(err==0) call read_source_reals(unit,origin_time,source_bytes,err)
+      if(err==0) read(unit,iostat=err) saved_driver_config
+      if(err==0) call read_source_reals(unit,driver,source_bytes,err)
       call check(err==0,'read control metadata')
       restored_statistics_saved=.not.btest(saved(8),3)
       saved(8)=ibclr(saved(8),3)
@@ -1268,13 +1308,18 @@ contains
         call channel_driver_state(driver,.false.,ok)
         call check(ok,'invalid restored channel driver state')
       endif
-      call configure_schedule(restored_schedule,trim(mode),interval,dt_interval, &
+      same_schedule=mode==options%checkpoint%mode.and.interval==options%checkpoint%interval_steps.and. &
+        source_real_matches(dt_interval,options%checkpoint%interval_time,source_bytes).and. &
+        (saved_initial.eqv.options%checkpoint%initial_frame)
+      schedule_period=dt_interval
+      if(precision_changed.and.same_schedule) schedule_period=options%checkpoint%interval_time
+      call configure_schedule(restored_schedule,trim(mode),interval,schedule_period, &
         origin_step,origin_time,saved_initial,.false.,ok)
       call check(ok,'invalid saved checkpoint schedule')
-      call restore_schedule_state(unit,restored_schedule,'checkpoint',identity%step,identity%time,ok)
+      call restore_schedule_state(unit,restored_schedule,'checkpoint',identity%step,identity%time,ok,source_bytes)
       call check(ok,'checkpoint schedule history')
       if(magic=='ASTROC05'.or.magic=='ASTROC08') then
-        call adaptive_shared_file(unit,.false.,identity%step,identity%time,options%restart_output=='override',ok)
+        call adaptive_shared_file(unit,.false.,identity%step,identity%time,options%restart_output=='override',ok,source_bytes)
       else
         call check(.not.options%adaptive%enabled.or.options%restart_output=='override', &
           'adaptive monitoring enabled without explicit override')
@@ -1290,23 +1335,24 @@ contains
         call check((wall_magic=='ASTRWR01'.or.wall_magic=='ASTRWR02').and. &
           saved_ranks==mpisize.and.saved_packet==packet_size, &
           'random wall RNG format/rank count mismatch')
-        call check(saved_compiler==rng_compiler.and.saved_options==rng_options.and.all(saved_signature==rng_signature), &
+        call check(saved_compiler==rng_compiler,'random wall compiler/runtime mismatch')
+        if(.not.precision_changed) call check(saved_options==rng_options.and.all(saved_signature==rng_signature), &
           'random wall compiler/runtime mismatch')
         read(unit,iostat=err) wall_state
         call check(err==0,'missing random wall RNG rank state')
         call check(all(wall_state(:6,mpirank+1)==local_wall_state(:6)), 'random wall topology mismatch')
         call put_legacy_random_state(wall_state(7:,mpirank+1),ok)
         call check(ok,'invalid random wall RNG rank state')
+        if(precision_changed.and.mpirank==0) write(*,'(a)') &
+          'ASTR_WALL_RNG non-exact precision switch: intrinsic seed restored; subsequent draws use target kind'
       endif
-      call compact_control_file(unit,.false.,err)
+      call compact_control_file(unit,.false.,err,source_bytes)
       call check(err==0.and.ok.and.checkpoint_stream_at_end(unit),'adaptive monitor/control metadata tail')
       close(unit,iostat=closed)
       call check(ok.and.closed==0,'read checkpoint schedule state')
       counter=saved_counter
       pending=saved_pending
       last_step=saved_last
-      same_schedule=mode==options%checkpoint%mode.and.interval==options%checkpoint%interval_steps.and. &
-        dt_interval==options%checkpoint%interval_time.and.(saved_initial.eqv.options%checkpoint%initial_frame)
       if (options%restart_output=='saved') &
         call check(same_schedule,'saved output schedule differs; select explicit override')
       if(same_schedule) then
@@ -1326,16 +1372,17 @@ contains
     endif
   end subroutine
 
-  subroutine compact_control_file(unit,writing,status)
+  subroutine compact_control_file(unit,writing,status,source_bytes)
     use commvar, only: alfa_filter,bfacmpld,shkcrt
     integer,intent(in) :: unit
     logical,intent(in) :: writing
     integer,intent(out) :: status
+    integer,optional,intent(in) :: source_bytes
     character(8) :: tag
     character(64) :: operator_id,saved_id
     character(4) :: schemes(2),saved_schemes(2)
     integer(int64) :: settings(17),saved_settings(17)
-    real(real64) :: parameters(3),saved_parameters(3)
+    real(real_kind) :: parameters(3),saved_parameters(3)
     logical :: active,present,matched
     active=global_compact_enabled()
     operator_id='astr-global-compact-v1'
@@ -1344,7 +1391,7 @@ contains
       int(merge(1,0,diffterm),int64),int(merge(1,0,lfilter),int64), &
       int(merge(1,0,lchardecomp),int64),int(merge(1,0,lihomo),int64), &
       int(merge(1,0,ljhomo),int64),int(merge(1,0,lkhomo),int64),int(bctype,int64)]
-    parameters=0.d0
+    parameters=0.e0_real_kind
     if(lfilter) parameters(1)=alfa_filter
     if(recon_schem==5) parameters(2)=bfacmpld
     if(lchardecomp) parameters(3)=shkcrt
@@ -1362,7 +1409,8 @@ contains
         status=1
         return
       endif
-      read(unit,iostat=status) saved_id,saved_schemes,saved_settings,saved_parameters
+      read(unit,iostat=status) saved_id,saved_schemes,saved_settings
+      if(status==0) call read_source_reals(unit,saved_parameters,source_bytes,status)
       call check(status==0,'invalid compact operator identity record')
       matched=active.and.saved_id==operator_id.and.all(saved_schemes==schemes).and. &
         all(saved_settings==settings).and.all(saved_parameters==parameters)
@@ -1389,9 +1437,10 @@ contains
     use commvar, only: roinf,uinf
     use benchmark_runtime, only: insitu_clock,report_insitu_timing
     integer,intent(in) :: step
-    real(real64),intent(in) :: t
+    real(real_kind),intent(in) :: t
     logical :: due,ok
-    real(real64) :: local,global,value,density,reference,start,phase_started
+    real(real_kind) :: local,global,value,density,reference
+    real(clock_kind) :: start,phase_started
     integer :: i,j,k,ierr
     if(.not.adaptive_shared_config%enabled) return
     if(adaptive_shared_state%last_step==int(step,int64).and.adaptive_shared_state%last_time==t) return
@@ -1429,13 +1478,13 @@ contains
     endif
 #endif
     call check(ok.and.ieee_is_finite(local),'invalid adaptive kinetic energy node or local sum')
-    call MPI_Allreduce(local,global,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(local,global,1,mpi_real_type,MPI_SUM,MPI_COMM_WORLD,ierr)
     call check(ierr==MPI_SUCCESS.and.ieee_is_finite(global),'adaptive kinetic energy reduction')
     reference=roinf*uinf
     call check(ieee_is_finite(reference).and.reference>0,'adaptive reference density/velocity product')
     reference=reference*uinf
     call check(ieee_is_finite(reference).and.reference>0,'adaptive reference density/velocity square')
-    value=0.5d0*(global/(real(ia,real64)*real(ja,real64)*real(ka,real64)))/reference
+    value=0.5e0_real_kind*(global/(real(ia,real_kind)*real(ja,real_kind)*real(ka,real_kind)))/reference
     call check(ieee_is_finite(value),'nonfinite normalized adaptive kinetic energy')
     call report_insitu_timing('adaptive_monitor',phase_started,step)
     phase_started=insitu_clock()
@@ -1449,7 +1498,7 @@ contains
   end subroutine
 
   subroutine completed_output_runtime(dt_used,counter,pending,initial)
-    real(real64),intent(in) :: dt_used
+    real(real_kind),intent(in) :: dt_used
     integer,intent(inout) :: counter
     logical,intent(inout) :: pending
     logical,optional,intent(in) :: initial

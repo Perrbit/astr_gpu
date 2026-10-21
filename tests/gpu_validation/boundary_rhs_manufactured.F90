@@ -1,6 +1,33 @@
 module boundary_rhs_manufactured
+  use astr_precision, only: real_kind
   implicit none
+  private :: real_kind
 contains
+  subroutine check_thermal_roundtrip()
+    use commvar, only: nondimen,const2
+    use fludyna, only: thermal,thermal_roundtrip_rtol
+    use astr_precision, only: numerical_precision
+    real(real_kind) :: temperature(5),density(5),pressure(5),recovered(5),scale(5),relative(5),rtol
+    nondimen=.true.
+    const2=1.4_real_kind*12.0_real_kind**2
+    pressure=1.0_real_kind/const2
+    temperature=[0.1_real_kind,1.0_real_kind,10.0_real_kind,11.95569_real_kind,12.2675_real_kind]
+    density=thermal(pressure=pressure,temperature=temperature,dim=5)
+    recovered=thermal(pressure=pressure,density=density,dim=5)
+    scale=max(1.0_real_kind,abs(temperature),abs(recovered))
+    relative=abs(temperature-recovered)/scale
+    rtol=thermal_roundtrip_rtol
+    if(numerical_precision=='fp64'.and.rtol/=1.0e-10_real_kind) &
+      error stop 'FP64 EOS admission threshold changed'
+    write(*,'(a,a,a,es24.16,a,es24.16)') 'THERMAL_ROUNDTRIP precision=',numerical_precision, &
+      ' max_relative=',maxval(relative),' rtol=',rtol
+    if(any(relative>rtol)) error stop 'same-model EOS round trip falsely rejected'
+    if(any(abs(1.01_real_kind*temperature-recovered)<=rtol* &
+      max(1.0_real_kind,abs(1.01_real_kind*temperature),abs(recovered)))) &
+      error stop 'inconsistent inlet temperature admitted'
+    print *, 'THERMAL_ROUNDTRIP_PASS'
+  end subroutine
+
   subroutine check_conservative_admission()
     use commvar
     use bc, only: bctype,twall
@@ -14,9 +41,9 @@ contains
     nondimen=.true.; turbmode='none'; rkscheme='rk3'; conschm='543e'; difschm='643e'
     recon_schem=3; lchardecomp=.true.; lfilter=.false.; diffterm=.true.
     lihomo=.false.; ljhomo=.false.; lkhomo=.true.; lfftk=.false.
-    ninit=3; lrestart=.false.; prandtl=.72d0; gamma=1.4d0; mach=2.d0
-    reynolds=950.d0; ref_tem=288.d0; tempconst=110.4d0/288.d0
-    bctype=[11,21,41,52,1,1]; twall=1.d0; twall(3)=1.676194d0
+    ninit=3; lrestart=.false.; prandtl=.72e0_real_kind; gamma=1.4e0_real_kind; mach=2.e0_real_kind
+    reynolds=950.e0_real_kind; ref_tem=288.e0_real_kind; tempconst=110.4e0_real_kind/288.e0_real_kind
+    bctype=[11,21,41,52,1,1]; twall=1.e0_real_kind; twall(3)=1.676194e0_real_kind
     spg_i0=0; spg_im=0; spg_j0=0; spg_jm=0; spg_k0=0; spg_km=0
     isize=1; jsize=1; ksize=1
     if(mpisize/=1) error stop 'Conservative admission probe requires NP1'
@@ -32,9 +59,9 @@ contains
     case('filter')
       lfilter=.true.
     case('bad_pr')
-      prandtl=.715d0
+      prandtl=.715e0_real_kind
     case('bad_tw')
-      twall(3)=-1.d0
+      twall(3)=-1.e0_real_kind
     case('wrong_ninit')
       ninit=2
     case('restart')
@@ -63,12 +90,12 @@ contains
     im=8; jm=8; km=8
     irk=mpirank; jrk=0; krk=0; jsize=1
     allocate(q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5))
-    q=0.d0
+    q=0.e0_real_kind
     do k=0,km
     do j=0,jm
-      q(:,j,k,1)=1.d0+0.01d0*j
-      q(:,j,k,2)=0.2d0
-      q(:,j,k,5)=2.5d0+0.01d0*j
+      q(:,j,k,1)=1.e0_real_kind+0.01e0_real_kind*j
+      q(:,j,k,2)=0.2e0_real_kind
+      q(:,j,k,5)=2.5e0_real_kind+0.01e0_real_kind*j
     enddo
     enddo
     call get_environment_variable('ASTR_BOUNDARY_STAGE_INITIAL_TEST',mode,status=env_status)
@@ -78,20 +105,20 @@ contains
     case('valid')
       continue
     case('nonuniform')
-      if(mpirank==mpisize-1) q(3,3,3,5)=q(3,3,3,5)+0.01d0
+      if(mpirank==mpisize-1) q(3,3,3,5)=q(3,3,3,5)+0.01e0_real_kind
     case('rank_offset')
-      q(:,0:jm,0:km,5)=q(:,0:jm,0:km,5)+0.01d0*mpirank
+      q(:,0:jm,0:km,5)=q(:,0:jm,0:km,5)+0.01e0_real_kind*mpirank
     case('negative_density')
-      if(mpirank==mpisize-1) q(3,3,3,1)=-1.d0
+      if(mpirank==mpisize-1) q(3,3,3,1)=-1.e0_real_kind
     case('restart_nonuniform')
       restart_mode=.true.
-      if(mpirank==mpisize-1) q(3,3,3,5)=q(3,3,3,5)+0.01d0
+      if(mpirank==mpisize-1) q(3,3,3,5)=q(3,3,3,5)+0.01e0_real_kind
     case('restart_rank_offset')
       restart_mode=.true.
-      q(:,0:jm,0:km,5)=q(:,0:jm,0:km,5)+0.01d0*mpirank
+      q(:,0:jm,0:km,5)=q(:,0:jm,0:km,5)+0.01e0_real_kind*mpirank
     case('restart_negative_density')
       restart_mode=.true.
-      if(mpirank==mpisize-1) q(3,3,3,1)=-1.d0
+      if(mpirank==mpisize-1) q(3,3,3,1)=-1.e0_real_kind
     case default
       error stop 'Unknown initial profile test mode'
     end select
@@ -117,15 +144,15 @@ contains
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     implicit none
     integer :: i,j,k,d
-    real(8) :: energy,error
+    real(real_kind) :: energy,error
     character(len=32) :: initial_test
     integer :: env_status
 #ifdef _CUDA
-    real(8),allocatable :: gpu_q(:,:,:,:),gpu_scalar(:,:,:),gpu_vel(:,:,:,:)
+    real(real_kind),allocatable :: gpu_q(:,:,:,:),gpu_scalar(:,:,:),gpu_vel(:,:,:,:)
 #endif
     if(mpisize/=1) error stop 'Boundary stage probe requires NP1'
     im=8; jm=8; km=8; ndims=3; numq=5; num_species=0; num_modequ=0
-    gamma=1.4d0; mach=2.d0; const2=gamma*mach**2; const6=1.d0/(gamma-1.d0)
+    gamma=1.4e0_real_kind; mach=2.e0_real_kind; const2=gamma*mach**2; const6=1.e0_real_kind/(gamma-1.e0_real_kind)
     nondimen=.true.; turbmode='none'; ltimrpt=.false.; lreport=.false.; lrestart=.false.
     lihomo=.false.; ljhomo=.false.; lkhomo=.true.; lfftk=.false.; ka=km
     npdci=4; npdcj=4; npdck=3; isize=1; jsize=1; ksize=1
@@ -137,61 +164,61 @@ contains
     allocate(tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm),vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3))
     allocate(spc(-hm:im+hm,-hm:jm+hm,-hm:km+hm,0),jacob(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
     allocate(dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3))
-    jacob=1.d0; dxi=0.d0
+    jacob=1.e0_real_kind; dxi=0.e0_real_kind
     do d=1,3
-      dxi(:,:,:,d,d)=1.d0
+      dxi(:,:,:,d,d)=1.e0_real_kind
     enddo
-    energy=const6/const2+0.02d0
+    energy=const6/const2+0.02e0_real_kind
     do k=-hm,km+hm
     do j=-hm,jm+hm
     do i=-hm,im+hm
-      q(i,j,k,:)=[1.d0,0.2d0,0.d0,0.d0,energy]
-      x(i,j,k,:)=real([i,j,k],8)*10.d0
+      q(i,j,k,:)=[1.e0_real_kind,0.2e0_real_kind,0.e0_real_kind,0.e0_real_kind,energy]
+      x(i,j,k,:)=real([i,j,k],8)*10.e0_real_kind
     enddo
     enddo
     enddo
     allocate(rho_prof(0:jm),vel_prof(0:jm,3),tmp_prof(0:jm),prs_prof(0:jm))
-    rho_prof=1.d0
-    vel_prof=0.d0
-    vel_prof(:,1)=0.2d0
-    tmp_prof=1.d0
-    prs_prof=1.d0/const2
+    rho_prof=1.e0_real_kind
+    vel_prof=0.e0_real_kind
+    vel_prof(:,1)=0.2e0_real_kind
+    tmp_prof=1.e0_real_kind
+    prs_prof=1.e0_real_kind/const2
     call load_conservative_boundary_environment()
     call get_environment_variable('ASTR_BOUNDARY_STAGE_INITIAL_TEST',initial_test,status=env_status)
     if(env_status==0) then
       select case(trim(initial_test))
       case('nonuniform')
-        q(3,3,3,5)=q(3,3,3,5)+0.01d0
+        q(3,3,3,5)=q(3,3,3,5)+0.01e0_real_kind
       case('negative_density')
-        q(3,3,3,1)=-1.d0
+        q(3,3,3,1)=-1.e0_real_kind
       case('restart_nonuniform')
         lrestart=.true.
-        q(3,3,3,5)=q(3,3,3,5)+0.01d0
-        q(-hm:-1,:,:,:)=0.d0
-        q(im+1:im+hm,:,:,:)=0.d0
-        q(:,-hm:-1,:,:)=0.d0
-        q(:,jm+1:jm+hm,:,:)=0.d0
-        q(:,:,-hm:-1,:)=0.d0
-        q(:,:,km+1:km+hm,:)=0.d0
+        q(3,3,3,5)=q(3,3,3,5)+0.01e0_real_kind
+        q(-hm:-1,:,:,:)=0.e0_real_kind
+        q(im+1:im+hm,:,:,:)=0.e0_real_kind
+        q(:,-hm:-1,:,:)=0.e0_real_kind
+        q(:,jm+1:jm+hm,:,:)=0.e0_real_kind
+        q(:,:,-hm:-1,:)=0.e0_real_kind
+        q(:,:,km+1:km+hm,:)=0.e0_real_kind
       case default
         error stop 'Unknown boundary initial profile test'
       end select
     endif
-    call initialize_conservative_boundary_state(1.d0)
-    q(3,0,:,1)=1.01d0
-    q(0,3,:,5)=energy+0.001d0
+    call initialize_conservative_boundary_state(1.e0_real_kind)
+    q(3,0,:,1)=1.01e0_real_kind
+    q(0,3,:,5)=energy+0.001e0_real_kind
 #ifdef _CUDA
     allocate(q_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5))
     allocate(rho_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm),prs_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
     allocate(tmp_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm),vel_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3))
     q_d=q
     call initialize_conservative_stage_gpu()
-    call apply_conservative_stage_gpu(1.d0)
+    call apply_conservative_stage_gpu(1.e0_real_kind)
 #endif
-    call apply_conservative_boundary_stage(1.d0)
-    error=maxval(abs(q(3,0,:,1)-1.01d0))
-    error=max(error,maxval(abs(vel(0:im,0,0:km,:))),maxval(abs(tmp(0:im,0,0:km)-1.d0)))
-    error=max(error,maxval(abs(q(-hm:-1,3,0:km,5)-(energy+0.001d0))))
+    call apply_conservative_boundary_stage(1.e0_real_kind)
+    error=maxval(abs(q(3,0,:,1)-1.01e0_real_kind))
+    error=max(error,maxval(abs(vel(0:im,0,0:km,:))),maxval(abs(tmp(0:im,0,0:km)-1.e0_real_kind)))
+    error=max(error,maxval(abs(q(-hm:-1,3,0:km,5)-(energy+0.001e0_real_kind))))
     error=max(error,maxval(abs(prs(-hm:-1,3,0:km)-prs(0,3,0))))
     do k=0,km
     do i=0,im
@@ -203,7 +230,7 @@ contains
     enddo
     enddo
     if(.not.all(ieee_is_finite(q))) error stop 'Nonfinite staged boundary state'
-    if(error>1.d-12) error stop 'Boundary staging or primitive refresh failed'
+    if(error>1.e-12_real_kind) error stop 'Boundary staging or primitive refresh failed'
     print*,'BOUNDARY_STAGE_PASS max_abs=',error
 #ifdef _CUDA
     allocate(gpu_q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5))
@@ -220,7 +247,7 @@ contains
     error=max(error,maxval(abs(gpu_scalar(0:im,-hm:jm+hm,0:km)-tmp(0:im,-hm:jm+hm,0:km))))
     gpu_vel=vel_d
     error=max(error,maxval(abs(gpu_vel(0:im,-hm:jm+hm,0:km,:)-vel(0:im,-hm:jm+hm,0:km,:))))
-    if(error>1.d-12) error stop 'GPU staged boundary mismatch'
+    if(error>1.e-12_real_kind) error stop 'GPU staged boundary mismatch'
     print*,'BOUNDARY_STAGE_GPU_PASS max_abs=',error
 #endif
   end subroutine check_boundary_stage
@@ -229,23 +256,23 @@ contains
     use bc, only: nscbc_farfield_balance_incoming_lodi,              &
                   nscbc_remove_incoming_source
     implicit none
-    real(8) :: metric(3),normal(3),lodi0(5),source(5),pinv(5,5)
+    real(real_kind) :: metric(3),normal(3),lodi0(5),source(5),pinv(5,5)
     integer :: m
 
-    metric=[0.3d0,0.9d0,-0.2d0]
+    metric=[0.3e0_real_kind,0.9e0_real_kind,-0.2e0_real_kind]
     normal=metric/sqrt(sum(metric*metric))
-    lodi0=[1.d0,2.d0,3.d0,4.d0,5.d0]
-    source=[0.25d0,-0.5d0,0.75d0,-1.d0,1.25d0]
-    pinv=0.d0
+    lodi0=[1.e0_real_kind,2.e0_real_kind,3.e0_real_kind,4.e0_real_kind,5.e0_real_kind]
+    source=[0.25e0_real_kind,-0.5e0_real_kind,0.75e0_real_kind,-1.e0_real_kind,1.25e0_real_kind]
+    pinv=0.e0_real_kind
     do m=1,5
-      pinv(m,m)=1.d0
+      pinv(m,m)=1.e0_real_kind
     enddo
-    call run_case('subsonic_outflow',metric, 0.2d0*normal,1.d0,lodi0,source,pinv,[0,0,0,0,1])
-    call run_case('subsonic_inflow', metric,-0.2d0*normal,1.d0,lodi0,source,pinv,[1,1,1,0,1])
-    call run_case('supersonic_outflow',metric,2.d0*normal,1.d0,lodi0,source,pinv,[0,0,0,0,0])
-    call run_case('supersonic_inflow', metric,-2.d0*normal,1.d0,lodi0,source,pinv,[1,1,1,1,1])
-    call run_case('roundoff_outflow',metric,1.d-16*normal,1.d0,lodi0,source,pinv,[0,0,0,0,1])
-    call run_case('roundoff_inflow',metric,-1.d-16*normal,1.d0,lodi0,source,pinv,[0,0,0,0,1])
+    call run_case('subsonic_outflow',metric, 0.2e0_real_kind*normal,1.e0_real_kind,lodi0,source,pinv,[0,0,0,0,1])
+    call run_case('subsonic_inflow', metric,-0.2e0_real_kind*normal,1.e0_real_kind,lodi0,source,pinv,[1,1,1,0,1])
+    call run_case('supersonic_outflow',metric,2.e0_real_kind*normal,1.e0_real_kind,lodi0,source,pinv,[0,0,0,0,0])
+    call run_case('supersonic_inflow', metric,-2.e0_real_kind*normal,1.e0_real_kind,lodi0,source,pinv,[1,1,1,1,1])
+    call run_case('roundoff_outflow',metric,1.e-16_real_kind*normal,1.e0_real_kind,lodi0,source,pinv,[0,0,0,0,1])
+    call run_case('roundoff_inflow',metric,-1.e-16_real_kind*normal,1.e0_real_kind,lodi0,source,pinv,[0,0,0,0,1])
     print*,'NSCBC_CPU_POLICY_PASS'
     call check_viscous_source_projection(metric,normal,source)
 
@@ -253,24 +280,24 @@ contains
 
     subroutine run_case(name,case_metric,case_velocity,css,lodi_initial,source,pinv,expected_mask)
       character(len=*),intent(in) :: name
-      real(8),intent(in) :: case_metric(3),case_velocity(3),css,lodi_initial(5)
-      real(8),intent(in) :: source(5),pinv(5,5)
+      real(real_kind),intent(in) :: case_metric(3),case_velocity(3),css,lodi_initial(5)
+      real(real_kind),intent(in) :: source(5),pinv(5,5)
       integer,intent(in) :: expected_mask(5)
-      real(8) :: lodi(5),lambda(5),source_characteristic(5),total_characteristic(5)
+      real(real_kind) :: lodi(5),lambda(5),source_characteristic(5),total_characteristic(5)
       logical :: incoming(5)
       integer :: mask(5),m
 
       lodi=lodi_initial
-      call nscbc_farfield_balance_incoming_lodi(lodi,source,pinv,2.d0,       &
+      call nscbc_farfield_balance_incoming_lodi(lodi,source,pinv,2.e0_real_kind,       &
                                                 case_metric,case_velocity,   &
                                                 css,lambda,incoming)
       mask=merge(1,0,incoming)
       if(any(mask/=expected_mask)) error stop 'NSCBC CPU incoming mask mismatch'
-      source_characteristic=matmul(pinv,source)/2.d0
+      source_characteristic=matmul(pinv,source)/2.e0_real_kind
       total_characteristic=lodi+source_characteristic
       do m=1,5
         if(incoming(m)) then
-          if(abs(total_characteristic(m))>1.d-15) &
+          if(abs(total_characteristic(m))>1.e-15_real_kind) &
             error stop 'NSCBC CPU total incoming characteristic was not zeroed'
         elseif(lodi(m)/=lodi_initial(m)) then
           error stop 'NSCBC CPU outgoing wave was modified'
@@ -281,39 +308,39 @@ contains
     end subroutine run_case
 
     subroutine check_viscous_source_projection(metric,normal,source)
-      real(8),intent(in) :: metric(3),normal(3),source(5)
-      real(8) :: pnor(5,5),pinv(5,5),rhs0(5),velocity(3)
+      real(real_kind),intent(in) :: metric(3),normal(3),source(5)
+      real(real_kind) :: pnor(5,5),pinv(5,5),rhs0(5),velocity(3)
       integer :: icase,m
       character(len=20) :: labels(6)
 
-      pnor=0.d0
-      pinv=0.d0
+      pnor=0.e0_real_kind
+      pinv=0.e0_real_kind
       do m=1,5
-        pnor(m,m)=1.d0
-        pinv(m,m)=1.d0
+        pnor(m,m)=1.e0_real_kind
+        pinv(m,m)=1.e0_real_kind
       enddo
-      pnor(1,2)=0.2d0
-      pinv(1,2)=-0.2d0
-      pnor(4,5)=0.3d0
-      pinv(4,5)=-0.3d0
-      rhs0=[3.d0,-2.d0,1.d0,0.5d0,-0.25d0]
+      pnor(1,2)=0.2e0_real_kind
+      pinv(1,2)=-0.2e0_real_kind
+      pnor(4,5)=0.3e0_real_kind
+      pinv(4,5)=-0.3e0_real_kind
+      rhs0=[3.e0_real_kind,-2.e0_real_kind,1.e0_real_kind,0.5e0_real_kind,-0.25e0_real_kind]
       labels=[character(len=20) :: 'subsonic_outflow','subsonic_inflow', &
                                    'supersonic_outflow','supersonic_inflow', &
                                    'roundoff_outflow','roundoff_inflow']
       do icase=1,6
         select case(icase)
         case(1)
-          velocity=0.2d0*normal
+          velocity=0.2e0_real_kind*normal
         case(2)
-          velocity=-0.2d0*normal
+          velocity=-0.2e0_real_kind*normal
         case(3)
-          velocity=2.d0*normal
+          velocity=2.e0_real_kind*normal
         case(4)
-          velocity=-2.d0*normal
+          velocity=-2.e0_real_kind*normal
         case(5)
-          velocity=1.d-16*normal
+          velocity=1.e-16_real_kind*normal
         case default
-          velocity=-1.d-16*normal
+          velocity=-1.e-16_real_kind*normal
         end select
         call run_viscous_case(trim(labels(icase)),metric,velocity,source, &
                               pnor,pinv,rhs0)
@@ -323,21 +350,21 @@ contains
 
     subroutine run_viscous_case(name,metric,velocity,source,pnor,pinv,rhs_initial)
       character(len=*),intent(in) :: name
-      real(8),intent(in) :: metric(3),velocity(3),source(5),pnor(5,5), &
+      real(real_kind),intent(in) :: metric(3),velocity(3),source(5),pnor(5,5), &
                             pinv(5,5),rhs_initial(5)
-      real(8) :: rhs(5),expected(5),lambda(5),source_characteristic(5)
+      real(real_kind) :: rhs(5),expected(5),lambda(5),source_characteristic(5)
       logical :: incoming(5)
       integer :: mask(5),m
 
       rhs=rhs_initial
-      call nscbc_remove_incoming_source(rhs,source,pnor,pinv,2.d0,metric, &
-                                        velocity,1.d0,lambda,incoming)
-      source_characteristic=matmul(pinv,source)/2.d0
+      call nscbc_remove_incoming_source(rhs,source,pnor,pinv,2.e0_real_kind,metric, &
+                                        velocity,1.e0_real_kind,lambda,incoming)
+      source_characteristic=matmul(pinv,source)/2.e0_real_kind
       do m=1,5
-        if(.not.incoming(m)) source_characteristic(m)=0.d0
+        if(.not.incoming(m)) source_characteristic(m)=0.e0_real_kind
       enddo
-      expected=rhs_initial-2.d0*matmul(pnor,source_characteristic)
-      if(maxval(abs(rhs-expected))>1.d-15) &
+      expected=rhs_initial-2.e0_real_kind*matmul(pnor,source_characteristic)
+      if(maxval(abs(rhs-expected))>1.e-15_real_kind) &
         error stop 'NSCBC CPU viscous source sign or projection mismatch'
       mask=merge(1,0,incoming)
       write(*,'(A,1X,A,1X,5(ES25.16,1X),5(I1,1X),5(ES25.16,1X))') &
@@ -353,12 +380,12 @@ contains
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     implicit none
     integer :: i,j,k,d,m
-    real(8) :: slope(3),speed(3),pressure_factor,energy_factor,expected(5),flux_factor(5),error
+    real(real_kind) :: slope(3),speed(3),pressure_factor,energy_factor,expected(5),flux_factor(5),error
     if(mpisize/=1) error stop 'Boundary RHS manufactured probe requires NP=1'
     im=8; jm=8; km=8
     numq=5; num_species=0; num_modequ=0; ndims=3
     nondimen=.true.; lchardecomp=.false.; recon_schem=3
-    conschm='543e'; gamma=1.4d0; mach=2.d0; bfacmpld=0.3d0
+    conschm='543e'; gamma=1.4e0_real_kind; mach=2.e0_real_kind; bfacmpld=0.3e0_real_kind
     ltimrpt=.false.; lreport=.false.
     npdci=4; npdcj=4; npdck=3
     is=1; ie=im-1; js=1; je=jm-1; ks=0; ke=km
@@ -367,11 +394,11 @@ contains
     allocate(tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm),vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3))
     allocate(spc(-hm:im+hm,-hm:jm+hm,-hm:km+hm,0),crinod(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
     allocate(dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3),jacob(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
-    slope=[0.001d0,0.002d0,0.003d0]
-    speed=[0.2d0,0.1d0,0.05d0]
-    pressure_factor=1.d0/(gamma*mach**2)
-    energy_factor=pressure_factor/(gamma-1.d0)+0.5d0*sum(speed**2)
-    expected=0.d0
+    slope=[0.001e0_real_kind,0.002e0_real_kind,0.003e0_real_kind]
+    speed=[0.2e0_real_kind,0.1e0_real_kind,0.05e0_real_kind]
+    pressure_factor=1.e0_real_kind/(gamma*mach**2)
+    energy_factor=pressure_factor/(gamma-1.e0_real_kind)+0.5e0_real_kind*sum(speed**2)
+    expected=0.e0_real_kind
     do d=1,3
       flux_factor=[speed(d),speed(d)*speed,speed(d)*(energy_factor+pressure_factor)]
       flux_factor(d+1)=flux_factor(d+1)+pressure_factor
@@ -380,43 +407,43 @@ contains
     do k=-hm,km+hm
     do j=-hm,jm+hm
     do i=-hm,im+hm
-      rho(i,j,k)=1.d0+slope(1)*i+slope(2)*j+slope(3)*k
+      rho(i,j,k)=1.e0_real_kind+slope(1)*i+slope(2)*j+slope(3)*k
       vel(i,j,k,:)=speed
       prs(i,j,k)=pressure_factor*rho(i,j,k)
-      tmp(i,j,k)=1.d0
+      tmp(i,j,k)=1.e0_real_kind
       q(i,j,k,:)=[rho(i,j,k),rho(i,j,k)*speed,rho(i,j,k)*energy_factor]
     enddo
     enddo
     enddo
-    jacob=1.d0; dxi=0.d0; crinod=.false.
+    jacob=1.e0_real_kind; dxi=0.e0_real_kind; crinod=.false.
     do d=1,3
-      dxi(:,:,:,d,d)=1.d0
+      dxi(:,:,:,d,d)=1.e0_real_kind
     enddo
-    qrhs=0.d0
+    qrhs=0.e0_real_kind
     call convrsduwd()
     if(.not.all(ieee_is_finite(qrhs))) error stop 'Nonfinite legacy RHS'
-    if(any(qrhs(0,:,:,:)/=0.d0).or.any(qrhs(:,0,:,:)/=0.d0)) &
+    if(any(qrhs(0,:,:,:)/=0.e0_real_kind).or.any(qrhs(:,0,:,:)/=0.e0_real_kind)) &
       error stop 'Legacy physical boundary RHS changed'
-    qrhs=0.d0
+    qrhs=0.e0_real_kind
     call convrsduwd(physical_halo_rhs=.true.)
     if(.not.all(ieee_is_finite(qrhs))) error stop 'Nonfinite physical-space RHS'
-    error=0.d0
+    error=0.e0_real_kind
     do m=1,5
       error=max(error,maxval(abs(qrhs(:,:,:,m)-expected(m))))
     enddo
-    if(error>1.d-10) error stop 'Full-halo boundary RHS manufactured solution failed'
+    if(error>1.e-10_real_kind) error stop 'Full-halo boundary RHS manufactured solution failed'
     if(is/=1.or.ie/=im-1.or.js/=1.or.je/=jm-1.or.npdci/=4.or.npdcj/=4) &
       error stop 'Boundary RHS changed global range or geometry policy'
     if(mpirank==0) print*,'BOUNDARY_RHS_MANUFACTURED_PASS max_abs=',error
     lchardecomp=.true.
-    qrhs=0.d0
+    qrhs=0.e0_real_kind
     call convrsduwd(physical_halo_rhs=.true.)
     if(.not.all(ieee_is_finite(qrhs))) error stop 'Nonfinite characteristic RHS'
-    error=0.d0
+    error=0.e0_real_kind
     do m=1,5
       error=max(error,maxval(abs(qrhs(:,:,:,m)-expected(m))))
     enddo
-    if(error>1.d-10) error stop 'Characteristic full-halo boundary RHS failed'
+    if(error>1.e-10_real_kind) error stop 'Characteristic full-halo boundary RHS failed'
     print*,'BOUNDARY_RHS_ROE_PASS max_abs=',error
 #ifdef _CUDA
     call check_boundary_rhs_gpu(expected)
@@ -434,27 +461,27 @@ contains
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     implicit none
     integer :: i,j,k,d,status,mode
-    real(8) :: spacing(3),speed(3),pressure,error
-    real(8) :: fixed_rhs(0:im,0:jm,0:km,5),fixed_error(2)
+    real(real_kind) :: spacing(3),speed(3),pressure,error
+    real(real_kind) :: fixed_rhs(0:im,0:jm,0:km,5),fixed_error(2)
     logical :: owned(6),failed
     owned=[.true.,.true.,.true.,.true.,.false.,.false.]
-    speed=[0.2d0,0.1d0,0.05d0]; pressure=1.d0/(gamma*mach**2)
-    rho=1.d0; prs=pressure; tmp=1.d0
+    speed=[0.2e0_real_kind,0.1e0_real_kind,0.05e0_real_kind]; pressure=1.e0_real_kind/(gamma*mach**2)
+    rho=1.e0_real_kind; prs=pressure; tmp=1.e0_real_kind
     do d=1,3
       vel(:,:,:,d)=speed(d)
       q(:,:,:,d+1)=speed(d)
     enddo
-    q(:,:,:,1)=1.d0
-    q(:,:,:,5)=pressure/(gamma-1.d0)+0.5d0*sum(speed**2)
-    jacob=0.d0; dxi=0.d0
+    q(:,:,:,1)=1.e0_real_kind
+    q(:,:,:,5)=pressure/(gamma-1.e0_real_kind)+0.5e0_real_kind*sum(speed**2)
+    jacob=0.e0_real_kind; dxi=0.e0_real_kind
     ! z-periodic halos are initialized here; owned x/y halos are filled below.
     do k=-hm,km+hm
     do j=0,jm
     do i=0,im
-      spacing=[1.d0+0.01d0*i,1.d0+0.02d0*j,1.d0]
+      spacing=[1.e0_real_kind+0.01e0_real_kind*i,1.e0_real_kind+0.02e0_real_kind*j,1.e0_real_kind]
       jacob(i,j,k)=product(spacing)
       do d=1,3
-        dxi(i,j,k,d,d)=1.d0/spacing(d)
+        dxi(i,j,k,d,d)=1.e0_real_kind/spacing(d)
       enddo
     enddo
     enddo
@@ -464,20 +491,20 @@ contains
     failed=.false.
     do mode=0,1
       lchardecomp=mode==1
-      qrhs=0.d0
+      qrhs=0.e0_real_kind
       call convrsduwd(physical_halo_rhs=.true.)
       if(.not.all(ieee_is_finite(qrhs))) error stop 'Nonfinite fixed-epsilon control'
       fixed_rhs=qrhs
       fixed_error(mode+1)=maxval(abs(qrhs))
-      if(fixed_error(mode+1)<1.d-8) error stop 'Fixed-epsilon failing control unexpectedly changed'
-      qrhs=0.d0
+      if(fixed_error(mode+1)<1.e-8_real_kind) error stop 'Fixed-epsilon failing control unexpectedly changed'
+      qrhs=0.e0_real_kind
       call convrsduwd(physical_halo_rhs=.true.,metric_consistent_eps=.false.)
       if(any(qrhs/=fixed_rhs)) error stop 'Explicitly disabled epsilon differs from default'
-      qrhs=0.d0
+      qrhs=0.e0_real_kind
       call convrsduwd(physical_halo_rhs=.true.,metric_consistent_eps=.true.)
       if(.not.all(ieee_is_finite(qrhs))) error stop 'Nonfinite stretched-metric free stream RHS'
       error=maxval(abs(qrhs))
-      if(error>1.d-10) then
+      if(error>1.e-10_real_kind) then
         print*,'STRETCHED_RHS_FAILURE mode/max_abs/location=',mode,error,maxloc(abs(qrhs))
         failed=.true.
       else
@@ -486,17 +513,17 @@ contains
       endif
     enddo
     if(failed) error stop 'Metric halos destroy free-stream preservation'
-    print*,'BOUNDARY_RHS_FIXED_EPS_CONTROL_PASS max_abs=',0.d0
+    print*,'BOUNDARY_RHS_FIXED_EPS_CONTROL_PASS max_abs=',0.e0_real_kind
     print*,'BOUNDARY_RHS_FIXED_EPS_RESIDUALS=',fixed_error
     lchardecomp=.false.; diffterm=.false.; flowtype='bl'; limmbou=.false.
-    qrhs=0.d0
+    qrhs=0.e0_real_kind
     call rhscal(physical_halo_rhs=.true.,metric_consistent_eps=.true.)
     if(.not.all(ieee_is_finite(qrhs))) error stop 'Nonfinite staged rhscal free stream'
     error=maxval(abs(qrhs))
-    if(error>1.d-10) error stop 'rhscal did not forward metric epsilon'
+    if(error>1.e-10_real_kind) error stop 'rhscal did not forward metric epsilon'
     print*,'BOUNDARY_RHSCAL_METRIC_PASS max_abs=',error
 #ifdef _CUDA
-    call check_boundary_rhs_gpu([0.d0,0.d0,0.d0,0.d0,0.d0],stretched=.true.)
+    call check_boundary_rhs_gpu([0.e0_real_kind,0.e0_real_kind,0.e0_real_kind,0.e0_real_kind,0.e0_real_kind],stretched=.true.)
     call check_metric_nonuniform_rhs()
 #endif
   end subroutine check_stretched_metric_rhs
@@ -510,10 +537,10 @@ contains
     use solver, only: diffrsdcal6,convrsduwd,rhscal
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     implicit none
-    real(8) :: a(3),coord(3),du(3),stress(3),expected(5),error,mu,continuous_error,cubic
+    real(real_kind) :: a(3),coord(3),du(3),stress(3),expected(5),error,mu,continuous_error,cubic
     integer :: i,j,k,d,index(3),dims(3)
     integer :: mode
-    real(8) :: combined(0:im,0:jm,0:km,5),default_rhs(0:im,0:jm,0:km,5)
+    real(real_kind) :: combined(0:im,0:jm,0:km,5),default_rhs(0:im,0:jm,0:km,5)
     isize=1; jsize=1; ksize=1
     mpileft=MPI_PROC_NULL; mpiright=MPI_PROC_NULL
     mpidown=MPI_PROC_NULL; mpiup=MPI_PROC_NULL
@@ -521,59 +548,59 @@ contains
     lihomo=.false.; ljhomo=.false.; lkhomo=.false.
     npdci=4; npdcj=4; npdck=4
     is=1; ie=im-1; js=1; je=jm-1; ks=1; ke=km-1
-    difschm='643e'; turbmode='none'; reynolds=950.d0; prandtl=0.72d0
-    const5=(gamma-1.d0)*mach**2
-    tempconst=110.4d0/288.d0; tempconst1=1.d0+tempconst
+    difschm='643e'; turbmode='none'; reynolds=950.e0_real_kind; prandtl=0.72e0_real_kind
+    const5=(gamma-1.e0_real_kind)*mach**2
+    tempconst=110.4e0_real_kind/288.e0_real_kind; tempconst1=1.e0_real_kind+tempconst
     call fd_scheme_initiate(fds_compact_i,difschm,npdci,im,1)
     call fd_scheme_initiate(fds_compact_j,difschm,npdcj,jm,2)
     call fd_scheme_initiate(fds_compact_k,difschm,npdck,km,3)
     allocate(explicit_central :: fds)
     allocate(dvel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3))
     allocate(dtmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3),vor(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3))
-    a=[0.001d0,0.002d0,0.003d0]; mu=1.d0/reynolds
-    tmp=1.d0; dtmp=0.d0; dvel=0.d0
+    a=[0.001e0_real_kind,0.002e0_real_kind,0.003e0_real_kind]; mu=1.e0_real_kind/reynolds
+    tmp=1.e0_real_kind; dtmp=0.e0_real_kind; dvel=0.e0_real_kind
     do k=-hm,km+hm
     do j=-hm,jm+hm
     do i=-hm,im+hm
       coord=real([i,j,k],8)
-      vel(i,j,k,:)=0.1d0+a*coord**2
+      vel(i,j,k,:)=0.1e0_real_kind+a*coord**2
       do d=1,3
-        dvel(i,j,k,d,d)=2.d0*a(d)*coord(d)
+        dvel(i,j,k,d,d)=2.e0_real_kind*a(d)*coord(d)
       enddo
     enddo
     enddo
     enddo
-    qrhs=0.d0
+    qrhs=0.e0_real_kind
     call diffrsdcal6()
     if(.not.all(ieee_is_finite(qrhs))) error stop 'Nonfinite legacy diffusion RHS'
-    if(any(qrhs(0,0,0,:)/=0.d0)) error stop 'Legacy diffusion corner changed'
-    qrhs=0.d0
+    if(any(qrhs(0,0,0,:)/=0.e0_real_kind)) error stop 'Legacy diffusion corner changed'
+    qrhs=0.e0_real_kind
     call diffrsdcal6(physical_boundary_rhs=.true.)
     if(.not.all(ieee_is_finite(qrhs))) error stop 'Nonfinite full-face diffusion RHS'
-    error=0.d0; continuous_error=0.d0
+    error=0.e0_real_kind; continuous_error=0.e0_real_kind
     dims=[im,jm,km]
     do k=0,km
     do j=0,jm
     do i=0,im
       coord=real([i,j,k],8)
-      du=2.d0*a*coord
-      stress=2.d0*mu*(du-sum(du)/3.d0)
-      expected(1)=0.d0
-      expected(2:4)=8.d0*mu*a/3.d0
+      du=2.e0_real_kind*a*coord
+      stress=2.e0_real_kind*mu*(du-sum(du)/3.e0_real_kind)
+      expected(1)=0.e0_real_kind
+      expected(2:4)=8.e0_real_kind*mu*a/3.e0_real_kind
       expected(5)=sum(stress*du+vel(i,j,k,:)*expected(2:4))
       continuous_error=max(continuous_error,maxval(abs(qrhs(i,j,k,:)-expected)))
       ! The second-order end/adjacent stencils have exact cubic errors -2c/+c.
       index=[i,j,k]
       do d=1,3
-        cubic=8.d0*mu*a(d)**2/3.d0
-        if(index(d)==0.or.index(d)==dims(d)) expected(5)=expected(5)-2.d0*cubic
+        cubic=8.e0_real_kind*mu*a(d)**2/3.e0_real_kind
+        if(index(d)==0.or.index(d)==dims(d)) expected(5)=expected(5)-2.e0_real_kind*cubic
         if(index(d)==1.or.index(d)==dims(d)-1) expected(5)=expected(5)+cubic
       enddo
       error=max(error,maxval(abs(qrhs(i,j,k,:)-expected)))
     enddo
     enddo
     enddo
-    if(error>1.d-10) error stop 'Full-face diffusion manufactured solution failed'
+    if(error>1.e-10_real_kind) error stop 'Full-face diffusion manufactured solution failed'
     if(is/=1.or.js/=1.or.ks/=1.or.npdci/=4.or.npdcj/=4.or.npdck/=4) &
       error stop 'Diffusion RHS changed global closure policy'
     print*,'BOUNDARY_RHS_DIFFUSION_PASS max_abs=',error
@@ -581,24 +608,24 @@ contains
     ! This checks orchestration against the same direct operators, not a new
     ! physical manufactured solution (the stored q and primitive probes differ).
     flowtype='bl'; limmbou=.false.; lchardecomp=.false.; diffterm=.true.
-    error=0.d0
+    error=0.e0_real_kind
     do mode=0,1
-      qrhs=0.d0
+      qrhs=0.e0_real_kind
       call convrsduwd(physical_halo_rhs=mode==1,metric_consistent_eps=mode==1)
       qrhs=-qrhs
       call diffrsdcal6(physical_boundary_rhs=mode==1)
       combined=qrhs
-      qrhs=0.d0
+      qrhs=0.e0_real_kind
       call rhscal(physical_halo_rhs=mode==1,metric_consistent_eps=mode==1)
       if(.not.all(ieee_is_finite(qrhs))) error stop 'Nonfinite combined rhscal'
       error=max(error,maxval(abs(qrhs-combined)))
       if(mode==0) default_rhs=qrhs
     enddo
-    qrhs=0.d0
+    qrhs=0.e0_real_kind
     call rhscal()
     if(.not.all(ieee_is_finite(qrhs))) error stop 'Nonfinite default rhscal'
     error=max(error,maxval(abs(qrhs-default_rhs)))
-    if(error>1.d-10) error stop 'rhscal operator composition mismatch'
+    if(error>1.e-10_real_kind) error stop 'rhscal operator composition mismatch'
     print*,'BOUNDARY_RHSCAL_COMPOSITION_PASS max_abs=',error
 #ifdef _CUDA
     call check_boundary_diffusion_gpu()
@@ -612,7 +639,7 @@ contains
     use solver, only: convrsduwd
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     implicit none
-    real(8) :: reference(0:im,0:jm,0:km,5,2),speed(3)
+    real(real_kind) :: reference(0:im,0:jm,0:km,5,2),speed(3)
     integer :: i,j,k,mode,trial
     character(len=6),parameter :: names(3)=[character(len=6)::'SMOOTH','JUMP_X','JUMP_Y']
     do trial=1,3
@@ -620,30 +647,30 @@ contains
       do j=-hm,jm+hm
       do i=-hm,im+hm
         if(trial==1) then
-          rho(i,j,k)=1.d0+0.1d0*sin(0.3d0*i)*cos(0.2d0*j)
-          prs(i,j,k)=0.2d0+0.02d0*cos(0.2d0*i+0.3d0*j)
-          speed=[0.2d0+0.03d0*sin(0.2d0*j),0.1d0+0.01d0*cos(0.3d0*i),0.05d0]
+          rho(i,j,k)=1.e0_real_kind+0.1e0_real_kind*sin(0.3e0_real_kind*i)*cos(0.2e0_real_kind*j)
+          prs(i,j,k)=0.2e0_real_kind+0.02e0_real_kind*cos(0.2e0_real_kind*i+0.3e0_real_kind*j)
+          speed=[0.2e0_real_kind+0.03e0_real_kind*sin(0.2e0_real_kind*j),0.1e0_real_kind+0.01e0_real_kind*cos(0.3e0_real_kind*i),0.05e0_real_kind]
         else
-          rho(i,j,k)=1.d0; prs(i,j,k)=1.d0; speed=0.d0
+          rho(i,j,k)=1.e0_real_kind; prs(i,j,k)=1.e0_real_kind; speed=0.e0_real_kind
           if((trial==2.and.i>=im/2).or.(trial==3.and.j>=jm/2)) then
-            rho(i,j,k)=0.125d0; prs(i,j,k)=0.1d0
+            rho(i,j,k)=0.125e0_real_kind; prs(i,j,k)=0.1e0_real_kind
           endif
         endif
         vel(i,j,k,:)=speed
         tmp(i,j,k)=gamma*mach**2*prs(i,j,k)/rho(i,j,k)
         q(i,j,k,:)=[rho(i,j,k),rho(i,j,k)*speed, &
-          prs(i,j,k)/(gamma-1.d0)+0.5d0*rho(i,j,k)*sum(speed**2)]
+          prs(i,j,k)/(gamma-1.e0_real_kind)+0.5e0_real_kind*rho(i,j,k)*sum(speed**2)]
       enddo
       enddo
       enddo
       do mode=1,2
-        lchardecomp=mode==2; qrhs=0.d0
+        lchardecomp=mode==2; qrhs=0.e0_real_kind
         call convrsduwd(physical_halo_rhs=.true.,metric_consistent_eps=.true.)
         if(.not.all(ieee_is_finite(qrhs))) error stop 'Nonfinite nonuniform CPU RHS'
         reference(:,:,:,:,mode)=qrhs
       enddo
-      if(maxval(abs(reference))<1.d-6) error stop 'Nonuniform RHS probe is vacuous'
-      call check_boundary_rhs_gpu([0.d0,0.d0,0.d0,0.d0,0.d0],stretched=.true., &
+      if(maxval(abs(reference))<1.e-6_real_kind) error stop 'Nonuniform RHS probe is vacuous'
+      call check_boundary_rhs_gpu([0.e0_real_kind,0.e0_real_kind,0.e0_real_kind,0.e0_real_kind,0.e0_real_kind],stretched=.true., &
         field_reference=reference,case_name=names(trial))
     enddo
   end subroutine check_metric_nonuniform_rhs
@@ -659,12 +686,12 @@ contains
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     implicit none
     type(dim3) :: bx,by,bz,gx,gy,gz
-    real(8) :: a(3),coord(3),du(3),stress(3),expected(5),mu,cubic,error
-    real(8),allocatable :: shalo(:,:,:,:),qhalo(:,:,:,:)
+    real(real_kind) :: a(3),coord(3),du(3),stress(3),expected(5),mu,cubic,error
+    real(real_kind),allocatable :: shalo(:,:,:,:),qhalo(:,:,:,:)
     integer :: i,j,k,d,index(3),dims(3)
     ! x/y quadratic velocities, z-uniform state on the periodic thin extrusion.
-    vel(:,:,:,3)=0.1d0
-    vel_d=vel; tmp_d=tmp; qrhs_d=0.d0
+    vel(:,:,:,3)=0.1e0_real_kind
+    vel_d=vel; tmp_d=tmp; qrhs_d=0.e0_real_kind
     bx=dim3(512,1,1); by=dim3(32,16,1); bz=dim3(64,1,8)
     gx=dim3((im+512)/512,jm+1,km+1)
     gy=dim3((im+32)/32,(jm+16)/16,km+1)
@@ -692,24 +719,24 @@ contains
     call checked_sync()
     qrhs=qrhs_d
     if(.not.all(ieee_is_finite(qrhs))) error stop 'Nonfinite GPU viscous RHS'
-    a=[0.001d0,0.002d0,0.d0]; dims=[im,jm,km]; mu=1.d0/reynolds; error=0.d0
+    a=[0.001e0_real_kind,0.002e0_real_kind,0.e0_real_kind]; dims=[im,jm,km]; mu=1.e0_real_kind/reynolds; error=0.e0_real_kind
     do k=0,km
     do j=0,jm
     do i=0,im
-      coord=real([i,j,k],8); index=[i,j,k]; du=2.d0*a*coord
-      stress=2.d0*mu*(du-sum(du)/3.d0)
-      expected(1)=0.d0; expected(2:4)=8.d0*mu*a/3.d0
+      coord=real([i,j,k],8); index=[i,j,k]; du=2.e0_real_kind*a*coord
+      stress=2.e0_real_kind*mu*(du-sum(du)/3.e0_real_kind)
+      expected(1)=0.e0_real_kind; expected(2:4)=8.e0_real_kind*mu*a/3.e0_real_kind
       expected(5)=sum(stress*du+vel(i,j,k,:)*expected(2:4))
       do d=1,2
-        cubic=8.d0*mu*a(d)**2/3.d0
-        if(index(d)==0.or.index(d)==dims(d)) expected(5)=expected(5)-2.d0*cubic
+        cubic=8.e0_real_kind*mu*a(d)**2/3.e0_real_kind
+        if(index(d)==0.or.index(d)==dims(d)) expected(5)=expected(5)-2.e0_real_kind*cubic
         if(index(d)==1.or.index(d)==dims(d)-1) expected(5)=expected(5)+cubic
       enddo
       error=max(error,maxval(abs(qrhs(i,j,k,:)-expected)))
     enddo
     enddo
     enddo
-    if(error>1.d-10) error stop 'GPU full-face diffusion manufactured solution failed'
+    if(error>1.e-10_real_kind) error stop 'GPU full-face diffusion manufactured solution failed'
     print*,'BOUNDARY_RHS_GPU_DIFFUSION_PASS max_abs=',error
   end subroutine check_boundary_diffusion_gpu
 
@@ -722,14 +749,14 @@ contains
     use solver_gpu
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     implicit none
-    real(8),intent(in) :: expected(5)
+    real(real_kind),intent(in) :: expected(5)
     logical,intent(in),optional :: stretched
-    real(8),intent(in),optional :: field_reference(0:im,0:jm,0:km,5,2)
+    real(real_kind),intent(in),optional :: field_reference(0:im,0:jm,0:km,5,2)
     character(len=*),intent(in),optional :: case_name
     logical :: metric_test
     type(dim3) :: bx,by,bz,gx,gy,gz,gxi,gyi,gzi
     integer :: ivar,sgn,m,ierr
-    real(8) :: error
+    real(real_kind) :: error
     metric_test=.false.
     if(present(stretched)) metric_test=stretched
     ierr=cudaSetDevice(0)
@@ -745,7 +772,7 @@ contains
     gxi=dim3((im+513)/512,jm+1,km+1)
     gyi=dim3((im+32)/32,(jm+17)/16,km+1)
     gzi=dim3((im+64)/64,jm+1,(km+9)/8)
-    qrhs_d=0.d0
+    qrhs_d=0.e0_real_kind
     do ivar=1,5
       do sgn=1,-1,-2
         call explicit_upwind_flux_x_xyphysical_global_kernel<<<gxi,bx>>>( &
@@ -771,12 +798,12 @@ contains
     enddo
     qrhs=qrhs_d
     if(.not.all(ieee_is_finite(qrhs))) error stop 'Nonfinite GPU physical-space RHS'
-    error=0.d0
+    error=0.e0_real_kind
     do m=1,5
       error=max(error,maxval(abs(qrhs(:,:,:,m)+expected(m))))
     enddo
     if(present(field_reference)) error=maxval(abs(qrhs+field_reference(:,:,:,:,1)))
-    if(error>1.d-10) error stop 'GPU physical-space full-halo RHS failed'
+    if(error>1.e-10_real_kind) error stop 'GPU physical-space full-halo RHS failed'
     if(present(field_reference)) then
       if(.not.present(case_name)) error stop 'Missing nonuniform probe case name'
       print '(A,ES25.16)','BOUNDARY_RHS_'//trim(case_name)//'_PHYSICAL_PASS max_abs=',error
@@ -785,7 +812,7 @@ contains
     else
       print*,'BOUNDARY_RHS_GPU_PHYSICAL_PASS max_abs=',error
     endif
-    qrhs_d=0.d0
+    qrhs_d=0.e0_real_kind
     shock_mask_d=1_1
     call characteristic_upwind_flux_x_xyphysical_global_kernel<<<gxi,bx>>>( &
          im,jm,km,hm,0,im,0,jm,0,km,3,3,gamma)
@@ -804,12 +831,12 @@ contains
     call checked_sync()
     qrhs=qrhs_d
     if(.not.all(ieee_is_finite(qrhs))) error stop 'Nonfinite GPU characteristic RHS'
-    error=0.d0
+    error=0.e0_real_kind
     do m=1,5
       error=max(error,maxval(abs(qrhs(:,:,:,m)+expected(m))))
     enddo
     if(present(field_reference)) error=maxval(abs(qrhs+field_reference(:,:,:,:,2)))
-    if(error>1.d-10) error stop 'GPU characteristic full-halo RHS failed'
+    if(error>1.e-10_real_kind) error stop 'GPU characteristic full-halo RHS failed'
     if(present(field_reference)) then
       print '(A,ES25.16)','BOUNDARY_RHS_'//trim(case_name)//'_ROE_PASS max_abs=',error
     elseif(metric_test) then

@@ -61,6 +61,20 @@ def test_native_lineage_series_references(probe, kind, components, tmp_path):
     assert sum(p.stat().st_size for p in tmp_path.rglob("*") if p.is_file()) < 4*1024**2
 
 
+def test_typed_lineage_preserves_source_clock_and_width(probe, tmp_path):
+    clocks = ['0.0049999998882412910', '0.0060000000000000001']
+    (tmp_path / 'series.frames').write_text('ASTR_NATIVE_LINEAGE_2\n'
+        f'5 {clocks[0]} 4\nparent/data.h5\nparent/geometry.h5\n'
+        f'6 {clocks[1]} 8\ncurrent/data.h5\ncurrent/geometry.h5\n')
+    result = run_probe([MPIEXEC, '--mca', 'coll_hcoll_enable', '0', '-n', '2', str(probe),
+        str(tmp_path), '6', '1', 'series_lineage_volume'])
+    assert result.returncode == 0, result.stdout + result.stderr
+    grids = ET.parse(tmp_path / 'series.xdmf').findall('./Domain/Grid/Grid')
+    for grid, clock, width in zip(grids, clocks, [4, 8]):
+        assert grid.find('Time').attrib['Value'] == clock
+        assert {item.attrib['Precision'] for item in grid.findall('.//DataItem')} == {str(width)}
+
+
 @pytest.mark.parametrize("tail", ["", "data.h5\n", "/absolute/data.h5\n../resources/data.h5\n",
     "../parent/data.h5:/wrong\n../resources/data.h5\n", "x"*1201+"\n../resources/data.h5\n"])
 def test_native_lineage_invalid_reference_rejected(probe, tail, tmp_path):

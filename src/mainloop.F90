@@ -6,6 +6,7 @@
 !| 09-02-2021  | Created by J. Fang                                    |
 !+---------------------------------------------------------------------+
 module mainloop
+  use astr_precision, only: real_kind,clock_kind
   !
   use constdef
   use parallel, only: lio,mpistop,mpirank,qswap,mpirankname,pmax,      &
@@ -20,12 +21,13 @@ module mainloop
   use output_runtime, only: observe_output_adaptive
   !
   implicit none
+  private :: real_kind,clock_kind
   !
   integer :: loop_counter=0
   integer :: nxtbakup,feqbakup=5
   integer :: fhand_err
   integer :: nstep0
-  real(8) :: time_start
+  real(clock_kind) :: time_start
   logical :: rkfirst_pending=.true.
   !
   contains
@@ -62,20 +64,21 @@ module mainloop
 #endif
     !
     ! local data
-    real(8) :: time_beg,time_next_step,crange,completed_step_dt
+    real(clock_kind) :: time_beg,time_next_step
+    real(real_kind) :: crange,completed_step_dt
     integer :: hours,minus,secod,n,i,ios,j,k
     logical,save :: firstcall = .true.
     logical :: lfex
     integer,dimension(8) :: value
     integer,allocatable :: idata(:,:)
-    real(8) :: time_total,time_dowhile,time_per_loop,time_save
-    real(8) :: phase_started,window_started,iteration_started
+    real(clock_kind) :: time_total,time_dowhile,time_per_loop,time_save
+    real(clock_kind) :: phase_started,window_started,iteration_started
     !
     call configure_global_compact(bctype)
     time_start=ptime()
-    time_total  =0.d0
-    time_save   =0.d0
-    time_dowhile=0.d0
+    time_total  =0.e0_real_kind
+    time_save   =0.e0_real_kind
+    time_dowhile=0.e0_real_kind
     !
     nstep0=nstep
     !
@@ -306,17 +309,17 @@ module mainloop
     use commarray,only: x,vel,rho,prs,spc,tmp,q,acctest_ref
     use parallel, only: psum,pmax,mpirankname
     !
-    real(8) :: l1error,l2error,lineror
+    real(real_kind) :: l1error,l2error,lineror
     !
     integer :: i,j,k,fh
-    real(8) :: xc,yc,zc,rvor,radi2,var1
+    real(real_kind) :: xc,yc,zc,rvor,radi2,var1
     !
     if(trim(flowtype)=='accutest') then
       !
       ! error calculation
-      l1error=0.d0
-      l2error=0.d0
-      lineror=0.d0
+      l1error=0.e0_real_kind
+      l2error=0.e0_real_kind
+      lineror=0.e0_real_kind
       !
       do i=0,im
         !
@@ -331,8 +334,8 @@ module mainloop
       enddo
       !
       ! print*,l1error,dble(ia)
-      l1error=psum(l1error)/dble(ia)
-      l2error=sqrt(psum(l2error)/dble(ia))
+      l1error=psum(l1error)/real(ia,real_kind)
+      l2error=sqrt(psum(l2error)/real(ia,real_kind))
       lineror=pmax(lineror)
       !
       if(lio) then
@@ -377,7 +380,7 @@ module mainloop
                          lavg,feqavg,nstep,limmbou,turbmode,feqslice,  &
                          feqwsequ,lwslic,lreport,flowtype,     &
                          ndims,num_species,maxstep,rkscheme,use_gpu,lcomb,iomode,conschm,difschm
-    use commarray,only : x,q,qrhs,rho,vel,prs,tmp,spc,jacob
+    use commarray,only : x,q,qrhs,rho,vel,prs,tmp,spc,jacob,dvel,dtmp,bnorm_j0,bnorm_jm
     use fludyna,  only : updatefvar
     use comsolver,only : filterq,filter2e,gradcal
     use sponge_layer,only : spongefilter
@@ -388,7 +391,7 @@ module mainloop
                            apply_conservative_boundary_stage
     use validation_io, only: rhs_validation_requested,write_rhs_validation_snapshot, &
                              write_q_validation_snapshot, &
-                             write_primitive_validation_snapshot
+                             write_primitive_validation_snapshot,write_gradient_validation_snapshot
     use benchmark_runtime, only: benchmark_cpu_rk_timing_enabled
 #ifdef ASTR_AIR5_CHEMISTRY
     use iso_fortran_env, only: real64
@@ -432,15 +435,16 @@ module mainloop
     !
     ! local data
     logical,save :: firstcall = .true.
-    real(8),allocatable,save :: rkcoe(:,:)
+    real(real_kind),allocatable,save :: rkcoe(:,:)
     integer :: i,j,k,m
-    real(8) :: time_beg,time_beg_rhs,time_beg_sta,time_beg_io
-    real(8),allocatable,save :: qsave(:,:,:,:)
-    real(8),allocatable :: rhsav(:,:,:,:)
+    real(clock_kind) :: time_beg,time_beg_rhs,time_beg_sta,time_beg_io
+    real(real_kind),allocatable,save :: qsave(:,:,:,:)
+    real(real_kind),allocatable :: rhsav(:,:,:,:)
     integer :: dt_ratio,jdnn,idnn
-    real(8) :: hrr,time_beg_2
-    real(8) :: cpu_rk_seconds
-    real(8),save :: subtime=0.d0
+    real(real_kind) :: hrr
+    real(clock_kind) :: time_beg_2
+    real(clock_kind) :: cpu_rk_seconds
+    real(clock_kind),save :: subtime=0.e0_clock_kind
     integer,save :: n_rk_steps
     logical :: gpu_checkpoint_due
     logical :: gpu_slice_due
@@ -543,13 +547,13 @@ module mainloop
 
         allocate(rkcoe(3,3))
 
-        rkcoe(1,1)=1.d0
-        rkcoe(2,1)=0.d0
-        rkcoe(3,1)=1.d0
+        rkcoe(1,1)=1.e0_real_kind
+        rkcoe(2,1)=0.e0_real_kind
+        rkcoe(3,1)=1.e0_real_kind
         !
-        rkcoe(1,2)=0.75d0
-        rkcoe(2,2)=0.25d0
-        rkcoe(3,2)=0.25d0
+        rkcoe(1,2)=0.75e0_real_kind
+        rkcoe(2,2)=0.25e0_real_kind
+        rkcoe(3,2)=0.25e0_real_kind
         !
         rkcoe(1,3)=num1d3
         rkcoe(2,3)=num2d3
@@ -561,15 +565,15 @@ module mainloop
 
         allocate(rkcoe(2,4))
 
-        rkcoe(1,1)=0.5d0
-        rkcoe(1,2)=0.5d0
-        rkcoe(1,3)=1.d0
+        rkcoe(1,1)=0.5e0_real_kind
+        rkcoe(1,2)=0.5e0_real_kind
+        rkcoe(1,3)=1.e0_real_kind
         rkcoe(1,4)=num1d6
         !
-        rkcoe(2,1)=1.d0
-        rkcoe(2,2)=2.d0
-        rkcoe(2,3)=2.d0
-        rkcoe(2,4)=1.d0
+        rkcoe(2,1)=1.e0_real_kind
+        rkcoe(2,2)=2.e0_real_kind
+        rkcoe(2,3)=2.e0_real_kind
+        rkcoe(2,4)=1.e0_real_kind
 
         n_rk_steps=4
 
@@ -643,7 +647,7 @@ module mainloop
         lreport=.false.
       endif
 
-      qrhs=0.d0
+      qrhs=0.e0_real_kind
       
       if(limmbou) then
         call immbody(timerept=ltimrpt)
@@ -675,7 +679,7 @@ module mainloop
 
       call gradcal()
 
-      if(flowtype(1:2)=='0d') jacob=1.d0
+      if(flowtype(1:2)=='0d') jacob=1.e0_real_kind
 
 
       time_beg_2=ptime()
@@ -692,7 +696,7 @@ module mainloop
         do m=1,numq
           qsave(0:im,0:jm,0:km,m)=q(0:im,0:jm,0:km,m)*jacob(0:im,0:jm,0:km)
 
-          if(rkscheme=='rk4') rhsav(0:im,0:jm,0:km,m)=0.d0
+          if(rkscheme=='rk4') rhsav(0:im,0:jm,0:km,m)=0.e0_real_kind
         enddo
 
         call rkfirst(skip_checkpoint=air5_reacting_case)
@@ -702,8 +706,9 @@ module mainloop
 
       if(rhs_validation_requested()) then
         call write_q_validation_snapshot('pre_rhs')
-        if(conservative_case .or. lcomb .or. difschm=='643c') &
+        if(conservative_case .or. lcomb .or. difschm=='643c' .or. flowtype=='tgv' .or. flowtype=='bl') &
           call write_primitive_validation_snapshot('pre_rhs_primitives')
+        call write_gradient_validation_snapshot(dvel,dtmp,lower_normal=bnorm_j0,upper_normal=bnorm_jm)
       endif
 
       if(conservative_case) then
@@ -817,7 +822,7 @@ module mainloop
             if(odetype=='ime') &
               call imp_euler_ode(rho(i,j,k),tmp(i,j,k),spc(i,j,k,:),deltat)
             !
-            q(i,j,k,6:numq)=max(0.d0,spc(i,j,k,:)*rho(i,j,k))
+            q(i,j,k,6:numq)=max(0.e0_real_kind,spc(i,j,k,:)*rho(i,j,k))
             q(i,j,k,6:numq)=q(i,j,k,1)*q(i,j,k,6:numq)/sum(q(i,j,k,6:numq))
             !
           elseif(odetype=='dnn' .and. mod(nstep,dt_ratio)==0 .and. nstep>0) then
@@ -825,7 +830,7 @@ module mainloop
             ! if(locell(jcell)%tmp<1000.d0 .or. locell(jcell)%tmp>2200.d0) then 
             !
             hrr=heatrate(rho(i,j,k),tmp(i,j,k),spc(i,j,k,:))
-            if(hrr<1.d8) then 
+            if(hrr<1.e8_real_kind) then 
               !
               dnnidx(i,j,k)=0
               !
@@ -869,10 +874,10 @@ module mainloop
             if(dnnidx(i,j,k)/=0) then 
               idnn=idnn+1
               spc(i,j,k,1:num_species-1)=output(3:num_species+1,idnn)
-              spc(i,j,k,num_species)=0.d0
+              spc(i,j,k,num_species)=0.e0_real_kind
             endif 
             !
-            q(i,j,k,6:numq)=max(0.d0,spc(i,j,k,:)*rho(i,j,k))
+            q(i,j,k,6:numq)=max(0.e0_real_kind,spc(i,j,k,:)*rho(i,j,k))
             q(i,j,k,6:numq)=q(i,j,k,1)*q(i,j,k,6:numq)/sum(q(i,j,k,6:numq))
             !
           enddo 
@@ -932,7 +937,7 @@ module mainloop
     if(cpu_rk_timing) then
       cpu_rk_seconds=ptime()-time_beg
       if(lio) write(*,'(A,1X,I0,3(1X,ES24.16E3))') &
-        'ASTR_CPU_RK_TIMING',nstep,0.d0,cpu_rk_seconds,cpu_rk_seconds
+        'ASTR_CPU_RK_TIMING',nstep,0.e0_real_kind,cpu_rk_seconds,cpu_rk_seconds
     endif
     !
     ctime(3)=ctime(3)+ptime()-time_beg
@@ -1087,10 +1092,10 @@ module mainloop
     do j=0,jm
     do i=0,im
       !
-      if(nodestat(i,j,k)<=0.d0) then
+      if(nodestat(i,j,k)<=0.e0_real_kind) then
         !
         ! only check fluid points
-        if(q(i,j,k,1)>=0.d0) then
+        if(q(i,j,k,1)>=0.e0_real_kind) then
           continue
         else
           !
@@ -1198,8 +1203,8 @@ module mainloop
     ! lcoal data
     type :: databack
       integer :: nstep,filenumb,fnumslic,ninflowslice
-      real(8) :: time,massflux,massflux_target,force(3)
-      real(8),allocatable :: q(:,:,:,:)
+      real(real_kind) :: time,massflux,massflux_target,force(3)
+      real(real_kind),allocatable :: q(:,:,:,:)
       integer :: recover_counter
     end type databack
     !
@@ -1413,24 +1418,25 @@ module mainloop
     use fludyna,   only : q2fvar,thermal
     !
     ! arguments
-    real(8),intent(inout),optional :: subtime
+    real(clock_kind),intent(inout),optional :: subtime
     integer,intent(out),optional :: repaired_nodes
-    real(8),intent(out),optional :: max_q_change(5)
+    real(real_kind),intent(out),optional :: max_q_change(5)
     !
     ! local data
     integer :: i,j,k,l,fh,ii,jj,kk
-    real(8) :: qavg(numq)
+    real(real_kind) :: qavg(numq)
     integer :: norm,counter
     !
     logical,save :: firstcall = .true.
-    real(8),save :: eps_rho,eps_prs,eps_tmp,time_beg
+    real(real_kind),save :: eps_rho,eps_prs,eps_tmp
+    real(clock_kind),save :: time_beg
     integer,save :: step_normal = 0
     !
     if(present(subtime)) time_beg=ptime()
     !
     if(firstcall) then
-      eps_rho=1.d-5
-      eps_tmp=1.d-5
+      eps_rho=1.e-5_real_kind
+      eps_tmp=1.e-5_real_kind
       !
       if(nondimen) then 
         eps_prs=thermal(density=eps_rho,temperature=eps_tmp)
@@ -1440,13 +1446,13 @@ module mainloop
     endif
     !
     counter=0
-    if(present(max_q_change)) max_q_change=0.d0
+    if(present(max_q_change)) max_q_change=0.e0_real_kind
     !
     do k=0,km
     do j=0,jm
     do i=0,im
       !
-      if(nodestat(i,j,k)<=0.d0) then
+      if(nodestat(i,j,k)<=0.e0_real_kind) then
         ! only check fluid points
         !
         if(rho(i,j,k)>=eps_rho .and. prs(i,j,k)>=eps_prs .and.         &
@@ -1462,7 +1468,7 @@ module mainloop
           ! write(*,'(A,I0)')'   ** nodestat: ',nodestat(i,j,k)
           ! write(*,'(A,5(1X,E13.6E2))')'   ** q= ',q(i,j,k,1:5)
           ! !
-          qavg=0.d0
+          qavg=0.e0_real_kind
           norm=0
           do kk=-1,1
           do jj=-1,1
@@ -1474,8 +1480,8 @@ module mainloop
                     jg0+j+jj<0 .or. jg0+j+jj>ja ) then
               continue
             else
-              if(rho(i+ii,j+jj,k+kk)>=0.d0 .and. prs(i+ii,j+jj,k+kk)>=0.d0 &
-                  .and. tmp(i+ii,j+jj,k+kk)>=0.d0) then
+              if(rho(i+ii,j+jj,k+kk)>=0.e0_real_kind .and. prs(i+ii,j+jj,k+kk)>=0.e0_real_kind &
+                  .and. tmp(i+ii,j+jj,k+kk)>=0.e0_real_kind) then
                 qavg(:)=qavg(:)+q(i+ii,j+jj,k+kk,:)
                 norm=norm+1
               endif
@@ -1492,11 +1498,11 @@ module mainloop
                                                     ' i,j,k= ',i,j,k,' x,y,z=',x(i,j,k,:)
             write(fhand_err,'(3(A,E13.6E2))')'rho=',rho(i,j,k),' prs=',prs(i,j,k),        &
                                                                ' tmp=',tmp(i,j,k)
-            write(fhand_err,'(2(A,5(1X,E13.6E2)))')'q= ',q(i,j,k,1:5),' -> ',qavg/dble(norm)
+            write(fhand_err,'(2(A,5(1X,E13.6E2)))')'q= ',q(i,j,k,1:5),' -> ',qavg/real(norm,real_kind)
             !
             if(present(max_q_change)) max_q_change=max(max_q_change, &
-              abs(qavg(1:5)/dble(norm)-q(i,j,k,1:5)))
-            q(i,j,k,:)=qavg/dble(norm)
+              abs(qavg(1:5)/real(norm,real_kind)-q(i,j,k,1:5)))
+            q(i,j,k,:)=qavg/real(norm,real_kind)
             !
             call q2fvar(q=q(i,j,k,:),                       &
                                        density=rho(i,j,k),  &

@@ -1,5 +1,6 @@
 module output_config
-  use iso_fortran_env, only: int64,real64,iostat_end
+  use iso_fortran_env, only: int64,iostat_end
+  use astr_precision, only: real_kind
   use ieee_arithmetic, only: ieee_is_finite
   use adaptive_output, only: adaptive_config,adaptive_binding,adaptive_capacity, &
     validate_adaptive_config,validate_adaptive_binding,canonical_adaptive_config,canonical_adaptive_binding
@@ -14,7 +15,7 @@ module output_config
     logical :: velocity_gradient=.false.,vorticity=.false.,qcriterion=.false.
     character(16) :: mode='steps',fields='basic'
     integer(int64) :: interval_steps=0
-    real(real64) :: interval_time=0
+    real(real_kind) :: interval_time=0
     type(adaptive_binding) :: adaptive
   end type
 
@@ -226,12 +227,12 @@ contains
     character(*),intent(out) :: message
     logical :: enabled,initial_frame,final_frame,velocity_gradient,vorticity,qcriterion,adaptive
     integer(int64) :: dense_interval_steps
-    real(real64) :: dense_interval_time
+    real(real_kind) :: dense_interval_time
     character(64) :: event_ids(adaptive_capacity),window_ids(adaptive_capacity)
     character(16) :: mode,fields
     integer(int64) :: interval_steps,i_indices(output_slice_capacity), &
       j_indices(output_slice_capacity),k_indices(output_slice_capacity)
-    real(real64) :: interval_time
+    real(real_kind) :: interval_time
     integer :: status,axis
     namelist /checkpoint/ enabled,mode,interval_steps,interval_time,initial_frame,keep
     namelist /volume/ enabled,mode,interval_steps,interval_time,initial_frame,final_frame, &
@@ -305,7 +306,7 @@ contains
     character(32) :: indicator
     character(16) :: monitor_mode,window_modes(adaptive_capacity)
     integer(int64) :: monitor_steps,window_steps(2,adaptive_capacity)
-    real(real64) :: monitor_time,s_ref(adaptive_capacity),t_ref(adaptive_capacity), &
+    real(real_kind) :: monitor_time,s_ref(adaptive_capacity),t_ref(adaptive_capacity), &
       r_on(adaptive_capacity),r_off(adaptive_capacity),hold_time(adaptive_capacity),window_times(2,adaptive_capacity)
     character(64) :: event_ids(adaptive_capacity),window_ids(adaptive_capacity)
     integer :: status
@@ -357,7 +358,8 @@ end module
 
 module output_config_collective
   use mpi
-  use iso_fortran_env, only: int64,real64
+  use iso_fortran_env, only: int64
+  use astr_precision, only: real_kind
   use output_config
   use adaptive_output, only: adaptive_binding
   use adaptive_output_collective, only: agree_adaptive_config,agree_adaptive_bindings
@@ -384,7 +386,7 @@ contains
     character(1024) :: root_file,wire_message,paths(2)
     character(16) :: labels(7)
     integer(int64) :: integers(9),indices(output_slice_capacity,3)
-    real(real64) :: intervals(3)
+    real(real_kind) :: intervals(3)
     logical :: flags(6,3),restart_flags(2)
     integer :: rank,status,bad,total,integer_type,real_type,i
 

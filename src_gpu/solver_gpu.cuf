@@ -1,8 +1,11 @@
 module solver_gpu
+  use astr_precision, only: real_kind
+  use astr_precision_mpi, only: mpi_real_type
   use cudafor
   use constdef, only: num1d60,num193d256,num105d512,num15d128, &
                       num45d1024,num5d512,num1d1024
   implicit none
+  private :: real_kind,mpi_real_type
 contains
   attributes(device) integer function wrap_periodic(idx,n)
     implicit none
@@ -26,14 +29,14 @@ contains
   attributes(global) subroutine q_to_primitive_kernel(q,rho,vel,prs,tmp,const2,const6,im,jm,km,hm)
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),value :: const2,const6
-    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
-    real(8),device :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
-    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-    real(8),device :: prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
-    real(8),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),value :: const2,const6
+    real(real_kind),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(real_kind),device :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(real_kind),device :: prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
     integer :: i,j,k
-    real(8) :: den,u1,u2,u3,pres,ke
+    real(real_kind) :: den,u1,u2,u3,pres,ke
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -44,7 +47,7 @@ contains
     u1 = q(i,j,k,2) / den
     u2 = q(i,j,k,3) / den
     u3 = q(i,j,k,4) / den
-    ke = 0.5d0 * den * (u1*u1 + u2*u2 + u3*u3)
+    ke = 0.5e0_real_kind * den * (u1*u1 + u2*u2 + u3*u3)
     pres = (q(i,j,k,5) - ke) / const6
     rho(i,j,k) = den
     vel(i,j,k,1) = u1
@@ -57,11 +60,11 @@ contains
   attributes(global) subroutine periodic_copy_kernel(q,rho,vel,prs,tmp,im,jm,km,hm)
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
-    real(8),device :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
-    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-    real(8),device :: prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
-    real(8),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(real_kind),device :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(real_kind),device :: prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
     integer :: id,n,i,j,k,m,ii,jj,kk,ntot
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -94,7 +97,7 @@ contains
   attributes(global) subroutine zero_rhs_kernel(qrhs,im,jm,km)
     implicit none
     integer,value :: im,jm,km
-    real(8),device :: qrhs(0:im,0:jm,0:km,1:5)
+    real(real_kind),device :: qrhs(0:im,0:jm,0:km,1:5)
     integer :: id,i,j,k,m,ntot
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -105,38 +108,38 @@ contains
     j = mod(id/(im+1),jm+1)
     k = id/((im+1)*(jm+1))
     do m=1,5
-      qrhs(i,j,k,m) = 0.d0
+      qrhs(i,j,k,m) = 0.e0_real_kind
     enddo
   end subroutine zero_rhs_kernel
 
   attributes(global) subroutine channel_bulk_partial_kernel(q,x,partial,im,jm,km,hm)
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
-    real(8),device :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-    real(8),device :: partial(:,:)
-    real(8),shared :: scratch_ro(256),scratch_u1(256),scratch_u2(256),scratch_u3(256)
+    real(real_kind),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(real_kind),device :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(real_kind),device :: partial(:,:)
+    real(real_kind),shared :: scratch_ro(256),scratch_u1(256),scratch_u2(256),scratch_u3(256)
     integer :: tid,id,stride,ncell,i,j,k
-    real(8) :: local_ro,local_u1,local_u2,local_u3,dy
+    real(real_kind) :: local_ro,local_u1,local_u2,local_u3,dy
 
     tid = threadIdx%x
     id = (blockIdx%x - 1) * blockDim%x + tid - 1
     stride = gridDim%x * blockDim%x
     ncell = im * jm * km
-    local_ro = 0.d0
-    local_u1 = 0.d0
-    local_u2 = 0.d0
-    local_u3 = 0.d0
+    local_ro = 0.e0_real_kind
+    local_u1 = 0.e0_real_kind
+    local_u2 = 0.e0_real_kind
+    local_u3 = 0.e0_real_kind
 
     do while(id < ncell)
       i = mod(id,im) + 1
       j = mod(id/im,jm) + 1
       k = id/(im*jm) + 1
       dy = x(i,j,k,2) - x(i,j-1,k,2)
-      local_ro = local_ro + 0.5d0 * (q(i,j-1,k,1) + q(i,j,k,1)) * dy
-      local_u1 = local_u1 + 0.5d0 * (q(i,j-1,k,2) + q(i,j,k,2)) * dy
-      local_u2 = local_u2 + 0.5d0 * (q(i,j-1,k,3) + q(i,j,k,3)) * dy
-      local_u3 = local_u3 + 0.5d0 * (q(i,j-1,k,4) + q(i,j,k,4)) * dy
+      local_ro = local_ro + 0.5e0_real_kind * (q(i,j-1,k,1) + q(i,j,k,1)) * dy
+      local_u1 = local_u1 + 0.5e0_real_kind * (q(i,j-1,k,2) + q(i,j,k,2)) * dy
+      local_u2 = local_u2 + 0.5e0_real_kind * (q(i,j-1,k,3) + q(i,j,k,3)) * dy
+      local_u3 = local_u3 + 0.5e0_real_kind * (q(i,j-1,k,4) + q(i,j,k,4)) * dy
       id = id + stride
     enddo
 
@@ -171,10 +174,10 @@ contains
     use commarray_gpu, only: jacob_d
     implicit none
     integer,value :: im,jm,km
-    real(8),value :: force1,force2,force3,u1bulk,u2bulk,u3bulk
-    real(8),device :: qrhs(0:im,0:jm,0:km,1:5)
+    real(real_kind),value :: force1,force2,force3,u1bulk,u2bulk,u3bulk
+    real(real_kind),device :: qrhs(0:im,0:jm,0:km,1:5)
     integer :: id,ntot,i,j,k
-    real(8) :: src_energy,jloc
+    real(real_kind) :: src_energy,jloc
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     ntot = (im + 1) * (jm + 1) * (km + 1)
@@ -194,12 +197,12 @@ contains
   attributes(global) subroutine rti_source_kernel(qrhs,rho,vel,jacob,im,jm,km,hm)
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),device :: qrhs(0:im,0:jm,0:km,1:5)
-    real(8),device :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
-    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-    real(8),device :: jacob(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device :: qrhs(0:im,0:jm,0:km,1:5)
+    real(real_kind),device :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(real_kind),device :: jacob(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
     integer :: idx,i,j,k,nxy
-    real(8) :: source
+    real(real_kind) :: source
 
     idx = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nxy = (im + 1) * (jm + 1)
@@ -218,17 +221,17 @@ contains
                                                                 split_sign,f)
     use commvar_gpu, only: metric_consistent_eps_d
     implicit none
-    real(8),value :: rho,q2,q3,q4,q5,u1,u2,u3,p,jloc,dx1,dx2,dx3,gamma
+    real(real_kind),value :: rho,q2,q3,q4,q5,u1,u2,u3,p,jloc,dx1,dx2,dx3,gamma
     integer,value :: split_sign
-    real(8) :: f(5)
-    real(8) :: uu,var0,gpd1,gpd2,gpd3,css,csa,lmach,gm2,fhi,jro
-    real(8) :: l1,l4,l5,lp1,lp4,lp5,var1,var2,var3,var4,eps
+    real(real_kind) :: f(5)
+    real(real_kind) :: uu,var0,gpd1,gpd2,gpd3,css,csa,lmach,gm2,fhi,jro
+    real(real_kind) :: l1,l4,l5,lp1,lp4,lp5,var1,var2,var3,var4,eps
 
-    eps = 0.04d0
-    gm2 = 0.5d0/gamma
+    eps = 0.04e0_real_kind
+    gm2 = 0.5e0_real_kind/gamma
     uu = dx1*u1 + dx2*u2 + dx3*u3
-    var0 = 1.d0/sqrt(dx1**2 + dx2**2 + dx3**2)
-    if(metric_consistent_eps_d) eps = 0.04d0/var0
+    var0 = 1.e0_real_kind/sqrt(dx1**2 + dx2**2 + dx3**2)
+    if(metric_consistent_eps_d) eps = 0.04e0_real_kind/var0
     gpd1 = dx1*var0
     gpd2 = dx2*var0
     gpd3 = dx3*var0
@@ -236,7 +239,7 @@ contains
     csa = css/var0
     lmach = uu/csa
 
-    if(lmach >= 1.d0) then
+    if(lmach >= 1.e0_real_kind) then
       if(split_sign > 0) then
         f(1) = jloc*rho*uu
         f(2) = jloc*(q2*uu + dx1*p)
@@ -244,12 +247,12 @@ contains
         f(4) = jloc*(q4*uu + dx3*p)
         f(5) = jloc*(q5 + p)*uu
       else
-        f = 0.d0
+        f = 0.e0_real_kind
       endif
       return
-    elseif(lmach <= -1.d0) then
+    elseif(lmach <= -1.e0_real_kind) then
       if(split_sign > 0) then
-        f = 0.d0
+        f = 0.e0_real_kind
       else
         f(1) = jloc*rho*uu
         f(2) = jloc*(q2*uu + dx1*p)
@@ -260,23 +263,23 @@ contains
       return
     endif
 
-    fhi = 0.5d0*(gamma - 1.d0)*(u1**2 + u2**2 + u3**2)
+    fhi = 0.5e0_real_kind*(gamma - 1.e0_real_kind)*(u1**2 + u2**2 + u3**2)
     jro = jloc*rho
     l1 = uu
     l4 = uu + csa
     l5 = uu - csa
-    lp1 = 0.5d0*(l1 + sqrt(l1**2 + eps**2))
-    lp4 = 0.5d0*(l4 + sqrt(l4**2 + eps**2))
-    lp5 = 0.5d0*(l5 + sqrt(l5**2 + eps**2))
+    lp1 = 0.5e0_real_kind*(l1 + sqrt(l1**2 + eps**2))
+    lp4 = 0.5e0_real_kind*(l4 + sqrt(l4**2 + eps**2))
+    lp5 = 0.5e0_real_kind*(l5 + sqrt(l5**2 + eps**2))
 
     if(split_sign > 0) then
       var1 = lp1
       var2 = lp4 - lp5
-      var3 = 2.d0*lp1 - lp4 - lp5
+      var3 = 2.e0_real_kind*lp1 - lp4 - lp5
     else
       var1 = l1 - lp1
       var2 = (l4 - lp4) - (l5 - lp5)
-      var3 = 2.d0*(l1 - lp1) - (l4 - lp4) - (l5 - lp5)
+      var3 = 2.e0_real_kind*(l1 - lp1) - (l4 - lp4) - (l5 - lp5)
     endif
 
     var4 = var1 - var3*gm2
@@ -285,17 +288,17 @@ contains
     f(3) = jro*(var4*u2 + var2*css*gpd2*gm2)
     f(4) = jro*(var4*u3 + var2*css*gpd3*gm2)
     f(5) = jloc*(var1*q5 + rho* &
-                (var2*uu*var0*css*gm2 - var3*(fhi + css**2)*gm2/(gamma - 1.d0)))
+                (var2*uu*var0*css*gm2 - var3*(fhi + css**2)*gm2/(gamma - 1.e0_real_kind)))
   end subroutine steger_warming_split_one_scalar
 
   attributes(global) subroutine upwind_s0a1_rhs_x_global_kernel(im,jm,km,gamma)
     use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d,qrhs_d
     implicit none
     integer,value :: im,jm,km
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k,m
     integer :: ii,jj,kk
-    real(8) :: fp(5),fm(5)
+    real(real_kind) :: fp(5),fm(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -330,10 +333,10 @@ contains
     use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d,qrhs_d
     implicit none
     integer,value :: im,jm,km
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k,m
     integer :: ii,jj,kk
-    real(8) :: fp(5),fm(5)
+    real(real_kind) :: fp(5),fm(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -368,10 +371,10 @@ contains
     use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d,qrhs_d
     implicit none
     integer,value :: im,jm,km
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k,m
     integer :: ii,jj,kk
-    real(8) :: fp(5),fm(5)
+    real(real_kind) :: fp(5),fm(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -402,17 +405,17 @@ contains
     enddo
   end subroutine upwind_s0a1_rhs_z_global_kernel
 
-  attributes(device) real(8) function steger_warming_split_component_at( &
+  attributes(device) real(real_kind) function steger_warming_split_component_at( &
        i,j,k,idir,ivar,split_sign,im,jm,km,gamma) result(f)
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,jacob_d,dxi_d
     use commvar_gpu, only: mach_d,metric_consistent_eps_d
     implicit none
     integer,value :: i,j,k,idir,ivar,split_sign,im,jm,km
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: ii,jj,kk
-    real(8) :: rho,q1,q2,q3,q4,q5,u1,u2,u3,p,jloc,dx1,dx2,dx3
-    real(8) :: uu,var0,gpd1,gpd2,gpd3,css,csa,lmach,gm2,fhi,jro
-    real(8) :: l1,l4,l5,lp1,lp4,lp5,var1,var2,var3,var4,eps
+    real(real_kind) :: rho,q1,q2,q3,q4,q5,u1,u2,u3,p,jloc,dx1,dx2,dx3
+    real(real_kind) :: uu,var0,gpd1,gpd2,gpd3,css,csa,lmach,gm2,fhi,jro
+    real(real_kind) :: l1,l4,l5,lp1,lp4,lp5,var1,var2,var3,var4,eps
 
     ! The explicit stencil may read exchanged geometric halos.  Their metrics
     ! are part of the local geometry field and must not be periodized.
@@ -436,11 +439,11 @@ contains
     dx2 = dxi_d(i,j,k,idir,2)
     dx3 = dxi_d(i,j,k,idir,3)
 
-    eps = 0.04d0
-    gm2 = 0.5d0/gamma
+    eps = 0.04e0_real_kind
+    gm2 = 0.5e0_real_kind/gamma
     uu = dx1*u1 + dx2*u2 + dx3*u3
-    var0 = 1.d0/sqrt(dx1**2 + dx2**2 + dx3**2)
-    if(metric_consistent_eps_d) eps = 0.04d0/var0
+    var0 = 1.e0_real_kind/sqrt(dx1**2 + dx2**2 + dx3**2)
+    if(metric_consistent_eps_d) eps = 0.04e0_real_kind/var0
     gpd1 = dx1*var0
     gpd2 = dx2*var0
     gpd3 = dx3*var0
@@ -448,9 +451,9 @@ contains
     csa = css/var0
     lmach = uu/csa
 
-    if(lmach >= 1.d0) then
+    if(lmach >= 1.e0_real_kind) then
       if(split_sign < 0) then
-        f = 0.d0
+        f = 0.e0_real_kind
       else
         select case(ivar)
         case(1)
@@ -466,9 +469,9 @@ contains
         end select
       endif
       return
-    elseif(lmach <= -1.d0) then
+    elseif(lmach <= -1.e0_real_kind) then
       if(split_sign > 0) then
-        f = 0.d0
+        f = 0.e0_real_kind
       else
         select case(ivar)
         case(1)
@@ -486,23 +489,23 @@ contains
       return
     endif
 
-    fhi = 0.5d0*(gamma - 1.d0)*(u1**2 + u2**2 + u3**2)
+    fhi = 0.5e0_real_kind*(gamma - 1.e0_real_kind)*(u1**2 + u2**2 + u3**2)
     jro = jloc*rho
     l1 = uu
     l4 = uu + csa
     l5 = uu - csa
-    lp1 = 0.5d0*(l1 + sqrt(l1**2 + eps**2))
-    lp4 = 0.5d0*(l4 + sqrt(l4**2 + eps**2))
-    lp5 = 0.5d0*(l5 + sqrt(l5**2 + eps**2))
+    lp1 = 0.5e0_real_kind*(l1 + sqrt(l1**2 + eps**2))
+    lp4 = 0.5e0_real_kind*(l4 + sqrt(l4**2 + eps**2))
+    lp5 = 0.5e0_real_kind*(l5 + sqrt(l5**2 + eps**2))
 
     if(split_sign > 0) then
       var1 = lp1
       var2 = lp4 - lp5
-      var3 = 2.d0*lp1 - lp4 - lp5
+      var3 = 2.e0_real_kind*lp1 - lp4 - lp5
     else
       var1 = l1 - lp1
       var2 = (l4 - lp4) - (l5 - lp5)
-      var3 = 2.d0*(l1 - lp1) - (l4 - lp4) - (l5 - lp5)
+      var3 = 2.e0_real_kind*(l1 - lp1) - (l4 - lp4) - (l5 - lp5)
     endif
     var4 = var1 - var3*gm2
 
@@ -517,7 +520,7 @@ contains
       f = jro*(var4*u3 + var2*css*gpd3*gm2)
     case default
       f = jloc*(var1*q5 + rho* &
-          (var2*uu*var0*css*gm2 - var3*(fhi + css**2)*gm2/(gamma - 1.d0)))
+          (var2*uu*var0*css*gm2 - var3*(fhi + css**2)*gm2/(gamma - 1.e0_real_kind)))
     end select
   end function steger_warming_split_component_at
 
@@ -527,15 +530,15 @@ contains
     use commvar_gpu, only: mach_d,metric_consistent_eps_d
     implicit none
     integer,value :: i,j,k,idir,ivar,im,jm,km
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     logical,value :: need_plus,need_minus
-    real(8) :: f_plus,f_minus
-    real(8) :: rho,q1,q2,q3,q4,q5,u1,u2,u3,p,jloc,dx1,dx2,dx3
-    real(8) :: uu,var0,gpd1,gpd2,gpd3,css,csa,lmach,gm2,fhi,jro
-    real(8) :: l1,l4,l5,lp1,lp4,lp5,var1,var2,var3,var4,eps
+    real(real_kind) :: f_plus,f_minus
+    real(real_kind) :: rho,q1,q2,q3,q4,q5,u1,u2,u3,p,jloc,dx1,dx2,dx3
+    real(real_kind) :: uu,var0,gpd1,gpd2,gpd3,css,csa,lmach,gm2,fhi,jro
+    real(real_kind) :: l1,l4,l5,lp1,lp4,lp5,var1,var2,var3,var4,eps
 
-    f_plus=0.d0
-    f_minus=0.d0
+    f_plus=0.e0_real_kind
+    f_minus=0.e0_real_kind
     rho=rho_d(i,j,k)
     q1=q_d(i,j,k,1)
     q2=q_d(i,j,k,2)
@@ -551,11 +554,11 @@ contains
     dx2=dxi_d(i,j,k,idir,2)
     dx3=dxi_d(i,j,k,idir,3)
 
-    eps=0.04d0
-    gm2=0.5d0/gamma
+    eps=0.04e0_real_kind
+    gm2=0.5e0_real_kind/gamma
     uu=dx1*u1+dx2*u2+dx3*u3
-    var0=1.d0/sqrt(dx1**2+dx2**2+dx3**2)
-    if(metric_consistent_eps_d) eps=0.04d0/var0
+    var0=1.e0_real_kind/sqrt(dx1**2+dx2**2+dx3**2)
+    if(metric_consistent_eps_d) eps=0.04e0_real_kind/var0
     gpd1=dx1*var0
     gpd2=dx2*var0
     gpd3=dx3*var0
@@ -563,7 +566,7 @@ contains
     csa=css/var0
     lmach=uu/csa
 
-    if(lmach>=1.d0) then
+    if(lmach>=1.e0_real_kind) then
       if(need_plus) then
         select case(ivar)
         case(1)
@@ -579,7 +582,7 @@ contains
         end select
       endif
       return
-    elseif(lmach<=-1.d0) then
+    elseif(lmach<=-1.e0_real_kind) then
       if(need_minus) then
         select case(ivar)
         case(1)
@@ -597,19 +600,19 @@ contains
       return
     endif
 
-    fhi=0.5d0*(gamma-1.d0)*(u1**2+u2**2+u3**2)
+    fhi=0.5e0_real_kind*(gamma-1.e0_real_kind)*(u1**2+u2**2+u3**2)
     jro=jloc*rho
     l1=uu
     l4=uu+csa
     l5=uu-csa
-    lp1=0.5d0*(l1+sqrt(l1**2+eps**2))
-    lp4=0.5d0*(l4+sqrt(l4**2+eps**2))
-    lp5=0.5d0*(l5+sqrt(l5**2+eps**2))
+    lp1=0.5e0_real_kind*(l1+sqrt(l1**2+eps**2))
+    lp4=0.5e0_real_kind*(l4+sqrt(l4**2+eps**2))
+    lp5=0.5e0_real_kind*(l5+sqrt(l5**2+eps**2))
 
     if(need_plus) then
       var1=lp1
       var2=lp4-lp5
-      var3=2.d0*lp1-lp4-lp5
+      var3=2.e0_real_kind*lp1-lp4-lp5
       var4=var1-var3*gm2
       select case(ivar)
       case(1)
@@ -622,14 +625,14 @@ contains
         f_plus=jro*(var4*u3+var2*css*gpd3*gm2)
       case default
         f_plus=jloc*(var1*q5+rho* &
-             (var2*uu*var0*css*gm2-var3*(fhi+css**2)*gm2/(gamma-1.d0)))
+             (var2*uu*var0*css*gm2-var3*(fhi+css**2)*gm2/(gamma-1.e0_real_kind)))
       end select
     endif
 
     if(need_minus) then
       var1=l1-lp1
       var2=(l4-lp4)-(l5-lp5)
-      var3=2.d0*(l1-lp1)-(l4-lp4)-(l5-lp5)
+      var3=2.e0_real_kind*(l1-lp1)-(l4-lp4)-(l5-lp5)
       var4=var1-var3*gm2
       select case(ivar)
       case(1)
@@ -642,7 +645,7 @@ contains
         f_minus=jro*(var4*u3+var2*css*gpd3*gm2)
       case default
         f_minus=jloc*(var1*q5+rho* &
-             (var2*uu*var0*css*gm2-var3*(fhi+css**2)*gm2/(gamma-1.d0)))
+             (var2*uu*var0*css*gm2-var3*(fhi+css**2)*gm2/(gamma-1.e0_real_kind)))
       end select
     endif
   end subroutine steger_warming_split_component_pair_at
@@ -653,11 +656,11 @@ contains
     use commvar_gpu, only: mach_d,metric_consistent_eps_d
     implicit none
     integer,value :: i,j,k,idir,split_sign,im,jm,km
-    real(8),value :: gamma
-    real(8) :: f(5)
-    real(8) :: rho,q1,q2,q3,q4,q5,u1,u2,u3,p,jloc,dx1,dx2,dx3
-    real(8) :: uu,var0,gpd1,gpd2,gpd3,css,csa,lmach,gm2,fhi,jro
-    real(8) :: l1,l4,l5,lp1,lp4,lp5,var1,var2,var3,var4,eps
+    real(real_kind),value :: gamma
+    real(real_kind) :: f(5)
+    real(real_kind) :: rho,q1,q2,q3,q4,q5,u1,u2,u3,p,jloc,dx1,dx2,dx3
+    real(real_kind) :: uu,var0,gpd1,gpd2,gpd3,css,csa,lmach,gm2,fhi,jro
+    real(real_kind) :: l1,l4,l5,lp1,lp4,lp5,var1,var2,var3,var4,eps
 
     rho = rho_d(i,j,k)
     q1 = q_d(i,j,k,1)
@@ -674,11 +677,11 @@ contains
     dx2 = dxi_d(i,j,k,idir,2)
     dx3 = dxi_d(i,j,k,idir,3)
 
-    eps = 0.04d0
-    gm2 = 0.5d0/gamma
+    eps = 0.04e0_real_kind
+    gm2 = 0.5e0_real_kind/gamma
     uu = dx1*u1 + dx2*u2 + dx3*u3
-    var0 = 1.d0/sqrt(dx1**2 + dx2**2 + dx3**2)
-    if(metric_consistent_eps_d) eps = 0.04d0/var0
+    var0 = 1.e0_real_kind/sqrt(dx1**2 + dx2**2 + dx3**2)
+    if(metric_consistent_eps_d) eps = 0.04e0_real_kind/var0
     gpd1 = dx1*var0
     gpd2 = dx2*var0
     gpd3 = dx3*var0
@@ -686,9 +689,9 @@ contains
     csa = css/var0
     lmach = uu/csa
 
-    if(lmach >= 1.d0) then
+    if(lmach >= 1.e0_real_kind) then
       if(split_sign < 0) then
-        f = 0.d0
+        f = 0.e0_real_kind
       else
         f(1) = jloc*q1*uu
         f(2) = jloc*(q2*uu + dx1*p)
@@ -697,9 +700,9 @@ contains
         f(5) = jloc*(q5 + p)*uu
       endif
       return
-    elseif(lmach <= -1.d0) then
+    elseif(lmach <= -1.e0_real_kind) then
       if(split_sign > 0) then
-        f = 0.d0
+        f = 0.e0_real_kind
       else
         f(1) = jloc*q1*uu
         f(2) = jloc*(q2*uu + dx1*p)
@@ -710,23 +713,23 @@ contains
       return
     endif
 
-    fhi = 0.5d0*(gamma - 1.d0)*(u1**2 + u2**2 + u3**2)
+    fhi = 0.5e0_real_kind*(gamma - 1.e0_real_kind)*(u1**2 + u2**2 + u3**2)
     jro = jloc*rho
     l1 = uu
     l4 = uu + csa
     l5 = uu - csa
-    lp1 = 0.5d0*(l1 + sqrt(l1**2 + eps**2))
-    lp4 = 0.5d0*(l4 + sqrt(l4**2 + eps**2))
-    lp5 = 0.5d0*(l5 + sqrt(l5**2 + eps**2))
+    lp1 = 0.5e0_real_kind*(l1 + sqrt(l1**2 + eps**2))
+    lp4 = 0.5e0_real_kind*(l4 + sqrt(l4**2 + eps**2))
+    lp5 = 0.5e0_real_kind*(l5 + sqrt(l5**2 + eps**2))
 
     if(split_sign > 0) then
       var1 = lp1
       var2 = lp4 - lp5
-      var3 = 2.d0*lp1 - lp4 - lp5
+      var3 = 2.e0_real_kind*lp1 - lp4 - lp5
     else
       var1 = l1 - lp1
       var2 = (l4 - lp4) - (l5 - lp5)
-      var3 = 2.d0*(l1 - lp1) - (l4 - lp4) - (l5 - lp5)
+      var3 = 2.e0_real_kind*(l1 - lp1) - (l4 - lp4) - (l5 - lp5)
     endif
     var4 = var1 - var3*gm2
 
@@ -735,7 +738,7 @@ contains
     f(3) = jro*(var4*u2 + var2*css*gpd2*gm2)
     f(4) = jro*(var4*u3 + var2*css*gpd3*gm2)
     f(5) = jloc*(var1*q5 + rho* &
-         (var2*uu*var0*css*gm2 - var3*(fhi + css**2)*gm2/(gamma - 1.d0)))
+         (var2*uu*var0*css*gm2 - var3*(fhi + css**2)*gm2/(gamma - 1.e0_real_kind)))
   end subroutine steger_warming_split_physical_vector_at
 
   attributes(device) subroutine steger_warming_split_vector_at( &
@@ -743,8 +746,8 @@ contains
     use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d
     implicit none
     integer,value :: i,j,k,idir,im,jm,km,split_sign
-    real(8),value :: gamma
-    real(8) :: f(5)
+    real(real_kind),value :: gamma
+    real(real_kind) :: f(5)
     integer :: ii,jj,kk
 
     ! Characteristic stencils may cross an MPI or physical face.  Geometry
@@ -759,101 +762,101 @@ contains
          dxi_d(i,j,k,idir,3),gamma,split_sign,f)
   end subroutine steger_warming_split_vector_at
 
-  attributes(device) real(8) function weno7_gpu(u) result(uh)
+  attributes(device) real(real_kind) function weno7_gpu(u) result(uh)
     implicit none
-    real(8) :: u(7)
-    real(8) :: uh1,uh2,uh3,uh4
-    real(8) :: beta1,beta2,beta3,beta4,alpha1,alpha2,alpha3,alpha4
-    real(8) :: df1,df2,df3,alpha_sum
-    real(8),parameter :: eps=1.d-6
+    real(real_kind) :: u(7)
+    real(real_kind) :: uh1,uh2,uh3,uh4
+    real(real_kind) :: beta1,beta2,beta3,beta4,alpha1,alpha2,alpha3,alpha4
+    real(real_kind) :: df1,df2,df3,alpha_sum
+    real(real_kind),parameter :: eps=1.e-6_real_kind
 
-    uh1 = -0.25d0*u(1) + 1.083333333333333d0*u(2) &
-          -1.916666666666667d0*u(3) + 2.083333333333333d0*u(4)
-    uh2 = 8.333333333333333d-2*u(2) - 4.166666666666667d-1*u(3) &
-          +1.083333333333333d0*u(4) + 0.25d0*u(5)
-    uh3 = -8.333333333333333d-2*u(3) + 5.833333333333333d-1*u(4) &
-          +5.833333333333333d-1*u(5) - 8.333333333333333d-2*u(6)
-    uh4 = 0.25d0*u(4) + 1.083333333333333d0*u(5) &
-          -4.166666666666667d-1*u(6) + 8.333333333333333d-2*u(7)
+    uh1 = -0.25e0_real_kind*u(1) + 1.083333333333333e0_real_kind*u(2) &
+          -1.916666666666667e0_real_kind*u(3) + 2.083333333333333e0_real_kind*u(4)
+    uh2 = 8.333333333333333e-2_real_kind*u(2) - 4.166666666666667e-1_real_kind*u(3) &
+          +1.083333333333333e0_real_kind*u(4) + 0.25e0_real_kind*u(5)
+    uh3 = -8.333333333333333e-2_real_kind*u(3) + 5.833333333333333e-1_real_kind*u(4) &
+          +5.833333333333333e-1_real_kind*u(5) - 8.333333333333333e-2_real_kind*u(6)
+    uh4 = 0.25e0_real_kind*u(4) + 1.083333333333333e0_real_kind*u(5) &
+          -4.166666666666667e-1_real_kind*u(6) + 8.333333333333333e-2_real_kind*u(7)
 
-    df1 = 2.777777777777778d-2*(-2.d0*u(1)+9.d0*u(2)-18.d0*u(3)+11.d0*u(4))**2
-    df2 = 1.083333333333333d0*(-u(1)+4.d0*u(2)-5.d0*u(3)+2.d0*u(4))**2
-    df3 = 1.084722222222222d0*(-u(1)+3.d0*u(2)-3.d0*u(3)+u(4))**2
+    df1 = 2.777777777777778e-2_real_kind*(-2.e0_real_kind*u(1)+9.e0_real_kind*u(2)-18.e0_real_kind*u(3)+11.e0_real_kind*u(4))**2
+    df2 = 1.083333333333333e0_real_kind*(-u(1)+4.e0_real_kind*u(2)-5.e0_real_kind*u(3)+2.e0_real_kind*u(4))**2
+    df3 = 1.084722222222222e0_real_kind*(-u(1)+3.e0_real_kind*u(2)-3.e0_real_kind*u(3)+u(4))**2
     beta1 = df1 + df2 + df3
 
-    df1 = 2.777777777777778d-2*(u(2)-6.d0*u(3)+3.d0*u(4)+2.d0*u(5))**2
-    df2 = 1.083333333333333d0*(u(3)-2.d0*u(4)+u(5))**2
-    df3 = 1.084722222222222d0*(-u(2)+3.d0*u(3)-3.d0*u(4)+u(5))**2
+    df1 = 2.777777777777778e-2_real_kind*(u(2)-6.e0_real_kind*u(3)+3.e0_real_kind*u(4)+2.e0_real_kind*u(5))**2
+    df2 = 1.083333333333333e0_real_kind*(u(3)-2.e0_real_kind*u(4)+u(5))**2
+    df3 = 1.084722222222222e0_real_kind*(-u(2)+3.e0_real_kind*u(3)-3.e0_real_kind*u(4)+u(5))**2
     beta2 = df1 + df2 + df3
 
-    df1 = 2.777777777777778d-2*(-2.d0*u(3)-3.d0*u(4)+6.d0*u(5)-u(6))**2
-    df2 = 1.083333333333333d0*(u(3)-2.d0*u(4)+u(5))**2
-    df3 = 1.084722222222222d0*(-u(3)+3.d0*u(4)-3.d0*u(5)+u(6))**2
+    df1 = 2.777777777777778e-2_real_kind*(-2.e0_real_kind*u(3)-3.e0_real_kind*u(4)+6.e0_real_kind*u(5)-u(6))**2
+    df2 = 1.083333333333333e0_real_kind*(u(3)-2.e0_real_kind*u(4)+u(5))**2
+    df3 = 1.084722222222222e0_real_kind*(-u(3)+3.e0_real_kind*u(4)-3.e0_real_kind*u(5)+u(6))**2
     beta3 = df1 + df2 + df3
 
-    df1 = 2.777777777777778d-2*(-11.d0*u(4)+18.d0*u(5)-9.d0*u(6)+2.d0*u(7))**2
-    df2 = 1.083333333333333d0*(2.d0*u(4)-5.d0*u(5)+4.d0*u(6)-u(7))**2
-    df3 = 1.084722222222222d0*(-u(4)+3.d0*u(5)-3.d0*u(6)+u(7))**2
+    df1 = 2.777777777777778e-2_real_kind*(-11.e0_real_kind*u(4)+18.e0_real_kind*u(5)-9.e0_real_kind*u(6)+2.e0_real_kind*u(7))**2
+    df2 = 1.083333333333333e0_real_kind*(2.e0_real_kind*u(4)-5.e0_real_kind*u(5)+4.e0_real_kind*u(6)-u(7))**2
+    df3 = 1.084722222222222e0_real_kind*(-u(4)+3.e0_real_kind*u(5)-3.e0_real_kind*u(6)+u(7))**2
     beta4 = df1 + df2 + df3
 
-    alpha1 = 2.857142857142857d-2/(beta1 + eps)**2
-    alpha2 = 3.428571428571429d-1/(beta2 + eps)**2
-    alpha3 = 5.142857142857143d-1/(beta3 + eps)**2
-    alpha4 = 1.142857142857143d-1/(beta4 + eps)**2
+    alpha1 = 2.857142857142857e-2_real_kind/(beta1 + eps)**2
+    alpha2 = 3.428571428571429e-1_real_kind/(beta2 + eps)**2
+    alpha3 = 5.142857142857143e-1_real_kind/(beta3 + eps)**2
+    alpha4 = 1.142857142857143e-1_real_kind/(beta4 + eps)**2
     alpha_sum = alpha1 + alpha2 + alpha3 + alpha4
     uh = (alpha1*uh1 + alpha2*uh2 + alpha3*uh3 + alpha4*uh4)/alpha_sum
   end function weno7_gpu
 
-  attributes(device) real(8) function minmod2_gpu(var1,var2) result(value)
+  attributes(device) real(real_kind) function minmod2_gpu(var1,var2) result(value)
     implicit none
-    real(8),value :: var1,var2
+    real(real_kind),value :: var1,var2
 
-    if(var1 > 0.d0 .and. var2 > 0.d0) then
+    if(var1 > 0.e0_real_kind .and. var2 > 0.e0_real_kind) then
       value = min(abs(var1),abs(var2))
-    elseif(var1 < 0.d0 .and. var2 < 0.d0) then
+    elseif(var1 < 0.e0_real_kind .and. var2 < 0.e0_real_kind) then
       value = -min(abs(var1),abs(var2))
     else
-      value = 0.d0
+      value = 0.e0_real_kind
     endif
   end function minmod2_gpu
 
-  attributes(device) real(8) function minmod4_gpu(var1,var2,var3,var4) result(value)
+  attributes(device) real(real_kind) function minmod4_gpu(var1,var2,var3,var4) result(value)
     implicit none
-    real(8),value :: var1,var2,var3,var4
+    real(real_kind),value :: var1,var2,var3,var4
 
-    if(var1 > 0.d0 .and. var2 > 0.d0 .and. var3 > 0.d0 .and. var4 > 0.d0) then
+    if(var1 > 0.e0_real_kind .and. var2 > 0.e0_real_kind .and. var3 > 0.e0_real_kind .and. var4 > 0.e0_real_kind) then
       value = min(abs(var1),abs(var2),abs(var3),abs(var4))
-    elseif(var1 < 0.d0 .and. var2 < 0.d0 .and. var3 < 0.d0 .and. var4 < 0.d0) then
+    elseif(var1 < 0.e0_real_kind .and. var2 < 0.e0_real_kind .and. var3 < 0.e0_real_kind .and. var4 < 0.e0_real_kind) then
       value = -min(abs(var1),abs(var2),abs(var3),abs(var4))
     else
-      value = 0.d0
+      value = 0.e0_real_kind
     endif
   end function minmod4_gpu
 
-  attributes(device) real(8) function mp7_gpu(u) result(uh)
+  attributes(device) real(real_kind) function mp7_gpu(u) result(uh)
     implicit none
-    real(8) :: u(7)
-    real(8) :: ulinear,u_mp,u_ul,u_av,u_md,u_lc,u_min,u_max
-    real(8) :: var1,var2,dm1,d0,d1,dhm1,dh0
+    real(real_kind) :: u(7)
+    real(real_kind) :: ulinear,u_mp,u_ul,u_av,u_md,u_lc,u_min,u_max
+    real(real_kind) :: var1,var2,dm1,d0,d1,dhm1,dh0
 
-    ulinear = (-3.d0*u(1) + 25.d0*u(2) - 101.d0*u(3) + 319.d0*u(4) + &
-               214.d0*u(5) - 38.d0*u(6) + 4.d0*u(7))/420.d0
+    ulinear = (-3.e0_real_kind*u(1) + 25.e0_real_kind*u(2) - 101.e0_real_kind*u(3) + 319.e0_real_kind*u(4) + &
+               214.e0_real_kind*u(5) - 38.e0_real_kind*u(6) + 4.e0_real_kind*u(7))/420.e0_real_kind
     var1 = u(5) - u(4)
-    var2 = 4.d0*(u(4) - u(3))
+    var2 = 4.e0_real_kind*(u(4) - u(3))
     u_mp = u(4) + minmod2_gpu(var1,var2)
 
     var1 = (ulinear - u(4))*(ulinear - u_mp)
-    if(var1 >= 1.d-10) then
-      dm1 = u(2) - 2.d0*u(3) + u(4)
-      d0 = u(3) - 2.d0*u(4) + u(5)
-      d1 = u(4) - 2.d0*u(5) + u(6)
-      dhm1 = minmod4_gpu(4.d0*dm1-d0,4.d0*d0-dm1,dm1,d0)
-      dh0 = minmod4_gpu(4.d0*d0-d1,4.d0*d1-d0,d0,d1)
+    if(var1 >= 1.e-10_real_kind) then
+      dm1 = u(2) - 2.e0_real_kind*u(3) + u(4)
+      d0 = u(3) - 2.e0_real_kind*u(4) + u(5)
+      d1 = u(4) - 2.e0_real_kind*u(5) + u(6)
+      dhm1 = minmod4_gpu(4.e0_real_kind*dm1-d0,4.e0_real_kind*d0-dm1,dm1,d0)
+      dh0 = minmod4_gpu(4.e0_real_kind*d0-d1,4.e0_real_kind*d1-d0,d0,d1)
 
-      u_ul = u(4) + 4.d0*(u(4) - u(3))
-      u_av = 0.5d0*(u(4) + u(5))
-      u_md = u_av - 0.5d0*dh0
-      u_lc = u(4) + 0.5d0*(u(4) - u(3)) + 1.333333333333333d0*dhm1
+      u_ul = u(4) + 4.e0_real_kind*(u(4) - u(3))
+      u_av = 0.5e0_real_kind*(u(4) + u(5))
+      u_md = u_av - 0.5e0_real_kind*dh0
+      u_lc = u(4) + 0.5e0_real_kind*(u(4) - u(3)) + 1.333333333333333e0_real_kind*dhm1
 
       var1 = min(u(4),u(5),u_md)
       var2 = min(u(4),u_ul,u_lc)
@@ -867,36 +870,36 @@ contains
     endif
   end function mp7_gpu
 
-  attributes(device) real(8) function suw3_gpu(u) result(uh)
+  attributes(device) real(real_kind) function suw3_gpu(u) result(uh)
     implicit none
-    real(8) :: u(3)
+    real(real_kind) :: u(3)
 
-    uh = (-u(1) + 5.d0*u(2) + 2.d0*u(3))/6.d0
+    uh = (-u(1) + 5.e0_real_kind*u(2) + 2.e0_real_kind*u(3))/6.e0_real_kind
   end function suw3_gpu
 
-  attributes(device) real(8) function mp5_gpu(u) result(uh)
+  attributes(device) real(real_kind) function mp5_gpu(u) result(uh)
     implicit none
-    real(8) :: u(5)
-    real(8) :: ulinear,u_mp,u_ul,u_av,u_md,u_lc,u_min,u_max
-    real(8) :: var1,var2,dm1,d0,d1,dhm1,dh0
+    real(real_kind) :: u(5)
+    real(real_kind) :: ulinear,u_mp,u_ul,u_av,u_md,u_lc,u_min,u_max
+    real(real_kind) :: var1,var2,dm1,d0,d1,dhm1,dh0
 
-    ulinear = (2.d0*u(1) - 13.d0*u(2) + 47.d0*u(3) + 27.d0*u(4) - 3.d0*u(5))/60.d0
+    ulinear = (2.e0_real_kind*u(1) - 13.e0_real_kind*u(2) + 47.e0_real_kind*u(3) + 27.e0_real_kind*u(4) - 3.e0_real_kind*u(5))/60.e0_real_kind
     var1 = u(4) - u(3)
-    var2 = 4.d0*(u(3) - u(2))
+    var2 = 4.e0_real_kind*(u(3) - u(2))
     u_mp = u(3) + minmod2_gpu(var1,var2)
 
     var1 = (ulinear - u(3))*(ulinear - u_mp)
-    if(var1 >= 1.d-10) then
-      dm1 = u(1) - 2.d0*u(2) + u(3)
-      d0 = u(2) - 2.d0*u(3) + u(4)
-      d1 = u(3) - 2.d0*u(4) + u(5)
-      dhm1 = minmod4_gpu(4.d0*dm1-d0,4.d0*d0-dm1,dm1,d0)
-      dh0 = minmod4_gpu(4.d0*d0-d1,4.d0*d1-d0,d0,d1)
+    if(var1 >= 1.e-10_real_kind) then
+      dm1 = u(1) - 2.e0_real_kind*u(2) + u(3)
+      d0 = u(2) - 2.e0_real_kind*u(3) + u(4)
+      d1 = u(3) - 2.e0_real_kind*u(4) + u(5)
+      dhm1 = minmod4_gpu(4.e0_real_kind*dm1-d0,4.e0_real_kind*d0-dm1,dm1,d0)
+      dh0 = minmod4_gpu(4.e0_real_kind*d0-d1,4.e0_real_kind*d1-d0,d0,d1)
 
-      u_ul = u(3) + 4.d0*(u(3) - u(2))
-      u_av = 0.5d0*(u(3) + u(4))
-      u_md = u_av - 0.5d0*dh0
-      u_lc = u(3) + 0.5d0*(u(3) - u(2)) + 1.333333333333333d0*dhm1
+      u_ul = u(3) + 4.e0_real_kind*(u(3) - u(2))
+      u_av = 0.5e0_real_kind*(u(3) + u(4))
+      u_md = u_av - 0.5e0_real_kind*dh0
+      u_lc = u(3) + 0.5e0_real_kind*(u(3) - u(2)) + 1.333333333333333e0_real_kind*dhm1
 
       var1 = min(u(3),u(4),u_md)
       var2 = min(u(3),u_ul,u_lc)
@@ -910,35 +913,35 @@ contains
     endif
   end function mp5_gpu
 
-  attributes(device) real(8) function mp5ld_gpu(u,weight_bw) result(uh)
+  attributes(device) real(real_kind) function mp5ld_gpu(u,weight_bw) result(uh)
     implicit none
-    real(8) :: u(6)
-    real(8),value :: weight_bw
-    real(8) :: b(6),vadp,ulinear,u_mp,u_ul,u_av,u_md,u_lc,u_min,u_max
-    real(8) :: var1,var2,dm1,d0,d1,dhm1,dh0
+    real(real_kind) :: u(6)
+    real(real_kind),value :: weight_bw
+    real(real_kind) :: b(6),vadp,ulinear,u_mp,u_ul,u_av,u_md,u_lc,u_min,u_max
+    real(real_kind) :: var1,var2,dm1,d0,d1,dhm1,dh0
 
-    vadp=1.666666666666667d-2*weight_bw
-    b(1)=-vadp+3.333333333333333d-2
-    b(2)=5.d0*vadp-2.166666666666667d-1
-    b(3)=-10.d0*vadp+7.833333333333333d-1
-    b(4)=10.d0*vadp+0.45d0
-    b(5)=-5.d0*vadp-5.d-2
+    vadp=1.666666666666667e-2_real_kind*weight_bw
+    b(1)=-vadp+3.333333333333333e-2_real_kind
+    b(2)=5.e0_real_kind*vadp-2.166666666666667e-1_real_kind
+    b(3)=-10.e0_real_kind*vadp+7.833333333333333e-1_real_kind
+    b(4)=10.e0_real_kind*vadp+0.45e0_real_kind
+    b(5)=-5.e0_real_kind*vadp-5.e-2_real_kind
     b(6)=vadp
     ulinear=b(1)*u(1)+b(2)*u(2)+b(3)*u(3)+b(4)*u(4)+b(5)*u(5)+b(6)*u(6)
     var1=u(4)-u(3)
-    var2=4.d0*(u(3)-u(2))
+    var2=4.e0_real_kind*(u(3)-u(2))
     u_mp=u(3)+minmod2_gpu(var1,var2)
     var1=(ulinear-u(3))*(ulinear-u_mp)
-    if(var1>=1.d-10) then
-      dm1=u(1)-2.d0*u(2)+u(3)
-      d0=u(2)-2.d0*u(3)+u(4)
-      d1=u(3)-2.d0*u(4)+u(5)
-      dhm1=minmod4_gpu(4.d0*dm1-d0,4.d0*d0-dm1,dm1,d0)
-      dh0=minmod4_gpu(4.d0*d0-d1,4.d0*d1-d0,d0,d1)
-      u_ul=u(3)+4.d0*(u(3)-u(2))
-      u_av=0.5d0*(u(3)+u(4))
-      u_md=u_av-0.5d0*dh0
-      u_lc=u(3)+0.5d0*(u(3)-u(2))+1.333333333333333d0*dhm1
+    if(var1>=1.e-10_real_kind) then
+      dm1=u(1)-2.e0_real_kind*u(2)+u(3)
+      d0=u(2)-2.e0_real_kind*u(3)+u(4)
+      d1=u(3)-2.e0_real_kind*u(4)+u(5)
+      dhm1=minmod4_gpu(4.e0_real_kind*dm1-d0,4.e0_real_kind*d0-dm1,dm1,d0)
+      dh0=minmod4_gpu(4.e0_real_kind*d0-d1,4.e0_real_kind*d1-d0,d0,d1)
+      u_ul=u(3)+4.e0_real_kind*(u(3)-u(2))
+      u_av=0.5e0_real_kind*(u(3)+u(4))
+      u_md=u_av-0.5e0_real_kind*dh0
+      u_lc=u(3)+0.5e0_real_kind*(u(3)-u(2))+1.333333333333333e0_real_kind*dhm1
       var1=min(u(3),u(4),u_md)
       var2=min(u(3),u_ul,u_lc)
       u_min=max(var1,var2)
@@ -951,35 +954,35 @@ contains
     endif
   end function mp5ld_gpu
 
-  attributes(device) real(8) function mp7ld_gpu(u,weight_bw,shock) result(uh)
+  attributes(device) real(real_kind) function mp7ld_gpu(u,weight_bw,shock) result(uh)
     implicit none
-    real(8) :: u(0:7)
-    real(8),value :: weight_bw
+    real(real_kind) :: u(0:7)
+    real(real_kind),value :: weight_bw
     logical,value :: shock
-    real(8) :: b(0:7),vadp,ulinear,u_ul,u_av,u_md,u_lc,u_min,u_max
-    real(8) :: var1,var2,dm1,d0,d1,dhm1,dh0
+    real(real_kind) :: b(0:7),vadp,ulinear,u_ul,u_av,u_md,u_lc,u_min,u_max
+    real(real_kind) :: var1,var2,dm1,d0,d1,dhm1,dh0
 
-    vadp=3.571428571428571d-3*weight_bw
-    b(0)=vadp-7.142857142857143d-3
-    b(1)=-7.d0*vadp+5.952380952380952d-2
-    b(2)=21.d0*vadp-0.240476190476190d0
-    b(3)=-35.d0*vadp+0.759523809523809d0
-    b(4)=35.d0*vadp+0.509523809523809d0
-    b(5)=-21.d0*vadp-9.047619047619047d-2
-    b(6)=7.d0*vadp+9.523809523809525d-3
+    vadp=3.571428571428571e-3_real_kind*weight_bw
+    b(0)=vadp-7.142857142857143e-3_real_kind
+    b(1)=-7.e0_real_kind*vadp+5.952380952380952e-2_real_kind
+    b(2)=21.e0_real_kind*vadp-0.240476190476190e0_real_kind
+    b(3)=-35.e0_real_kind*vadp+0.759523809523809e0_real_kind
+    b(4)=35.e0_real_kind*vadp+0.509523809523809e0_real_kind
+    b(5)=-21.e0_real_kind*vadp-9.047619047619047e-2_real_kind
+    b(6)=7.e0_real_kind*vadp+9.523809523809525e-3_real_kind
     b(7)=-vadp
     ulinear=b(0)*u(0)+b(1)*u(1)+b(2)*u(2)+b(3)*u(3)+b(4)*u(4) &
       +b(5)*u(5)+b(6)*u(6)+b(7)*u(7)
     if(shock) then
-      dm1=u(1)-2.d0*u(2)+u(3)
-      d0=u(2)-2.d0*u(3)+u(4)
-      d1=u(3)-2.d0*u(4)+u(5)
-      dhm1=minmod4_gpu(4.d0*dm1-d0,4.d0*d0-dm1,dm1,d0)
-      dh0=minmod4_gpu(4.d0*d0-d1,4.d0*d1-d0,d0,d1)
-      u_ul=u(3)+4.d0*(u(3)-u(2))
-      u_av=0.5d0*(u(3)+u(4))
-      u_md=u_av-0.5d0*dh0
-      u_lc=u(3)+0.5d0*(u(3)-u(2))+1.333333333333333d0*dhm1
+      dm1=u(1)-2.e0_real_kind*u(2)+u(3)
+      d0=u(2)-2.e0_real_kind*u(3)+u(4)
+      d1=u(3)-2.e0_real_kind*u(4)+u(5)
+      dhm1=minmod4_gpu(4.e0_real_kind*dm1-d0,4.e0_real_kind*d0-dm1,dm1,d0)
+      dh0=minmod4_gpu(4.e0_real_kind*d0-d1,4.e0_real_kind*d1-d0,d0,d1)
+      u_ul=u(3)+4.e0_real_kind*(u(3)-u(2))
+      u_av=0.5e0_real_kind*(u(3)+u(4))
+      u_md=u_av-0.5e0_real_kind*dh0
+      u_lc=u(3)+0.5e0_real_kind*(u(3)-u(2))+1.333333333333333e0_real_kind*dhm1
       var1=min(u(3),u(4),u_md)
       var2=min(u(3),u_ul,u_lc)
       u_min=max(var1,var2)
@@ -992,17 +995,17 @@ contains
     endif
   end function mp7ld_gpu
 
-  attributes(device) real(8) function reconstruct_mp_ld_stencil( &
+  attributes(device) real(real_kind) function reconstruct_mp_ld_stencil( &
        f,inode,dim,ntype,weight_bw,shock) result(fh)
     implicit none
-    real(8) :: f(8)
+    real(real_kind) :: f(8)
     integer,value :: inode,dim,ntype
-    real(8),value :: weight_bw
+    real(real_kind),value :: weight_bw
     logical,value :: shock
 
     if(((ntype==1.or.ntype==4).and.inode==0).or. &
        ((ntype==2.or.ntype==4).and.inode==dim-1)) then
-      fh=0.5d0*(f(4)+f(5))
+      fh=0.5e0_real_kind*(f(4)+f(5))
     elseif(((ntype==1.or.ntype==4).and.inode==1).or. &
            ((ntype==2.or.ntype==4).and.inode==dim-2)) then
       fh=suw3_gpu(f(3:5))
@@ -1087,12 +1090,12 @@ contains
     use commarray_gpu, only: q_d,rho_d,prs_d,vel_d,dxi_d
     implicit none
     integer,value :: i,j,k,idir
-    real(8),value :: gamma
-    real(8) :: lev(5,5),rev(5,5)
+    real(real_kind),value :: gamma
+    real(real_kind) :: lev(5,5),rev(5,5)
     integer :: ir,jr,kr
-    real(8),parameter :: rero=1.d-12
-    real(8) :: wroe,wroe1,u1roe,u2roe,u3roe,hl,hr,hroe,cssroe,kroe
-    real(8) :: kl,krg,ugp,rcs,var1,var2,var3,var4,rgp,gpd(3),b1,b2
+    real(real_kind),parameter :: rero=1.e-12_real_kind
+    real(real_kind) :: wroe,wroe1,u1roe,u2roe,u3roe,hl,hr,hroe,cssroe,kroe
+    real(real_kind) :: kl,krg,ugp,rcs,var1,var2,var3,var4,rgp,gpd(3),b1,b2
 
     ir=i
     jr=j
@@ -1107,126 +1110,126 @@ contains
     end select
 
     wroe=sqrt(rho_d(i,j,k))/(sqrt(rho_d(i,j,k))+sqrt(rho_d(ir,jr,kr)))
-    wroe1=1.d0-wroe
+    wroe1=1.e0_real_kind-wroe
     u1roe=wroe*vel_d(i,j,k,1)+wroe1*vel_d(ir,jr,kr,1)
     u2roe=wroe*vel_d(i,j,k,2)+wroe1*vel_d(ir,jr,kr,2)
     u3roe=wroe*vel_d(i,j,k,3)+wroe1*vel_d(ir,jr,kr,3)
-    kroe=0.5d0*(u1roe*u1roe+u2roe*u2roe+u3roe*u3roe)
-    kl=0.5d0*(vel_d(i,j,k,1)**2+vel_d(i,j,k,2)**2+vel_d(i,j,k,3)**2)
-    krg=0.5d0*(vel_d(ir,jr,kr,1)**2+vel_d(ir,jr,kr,2)**2+vel_d(ir,jr,kr,3)**2)
+    kroe=0.5e0_real_kind*(u1roe*u1roe+u2roe*u2roe+u3roe*u3roe)
+    kl=0.5e0_real_kind*(vel_d(i,j,k,1)**2+vel_d(i,j,k,2)**2+vel_d(i,j,k,3)**2)
+    krg=0.5e0_real_kind*(vel_d(ir,jr,kr,1)**2+vel_d(ir,jr,kr,2)**2+vel_d(ir,jr,kr,3)**2)
     hl=(q_d(i,j,k,5)+prs_d(i,j,k))/rho_d(i,j,k)
     hr=(q_d(ir,jr,kr,5)+prs_d(ir,jr,kr))/rho_d(ir,jr,kr)
     hroe=wroe*hl+wroe1*hr
-    cssroe=sqrt((gamma-1.d0)*(hroe-kroe))
-    rcs=1.d0/cssroe
+    cssroe=sqrt((gamma-1.e0_real_kind)*(hroe-kroe))
+    rcs=1.e0_real_kind/cssroe
 
-    var1=0.5d0*(dxi_d(i,j,k,idir,1)+dxi_d(ir,jr,kr,idir,1))
-    var2=0.5d0*(dxi_d(i,j,k,idir,2)+dxi_d(ir,jr,kr,idir,2))
-    var3=0.5d0*(dxi_d(i,j,k,idir,3)+dxi_d(ir,jr,kr,idir,3))
-    var4=1.d0/sqrt(var1*var1+var2*var2+var3*var3)
+    var1=0.5e0_real_kind*(dxi_d(i,j,k,idir,1)+dxi_d(ir,jr,kr,idir,1))
+    var2=0.5e0_real_kind*(dxi_d(i,j,k,idir,2)+dxi_d(ir,jr,kr,idir,2))
+    var3=0.5e0_real_kind*(dxi_d(i,j,k,idir,3)+dxi_d(ir,jr,kr,idir,3))
+    var4=1.e0_real_kind/sqrt(var1*var1+var2*var2+var3*var3)
     gpd(1)=var1*var4
     gpd(2)=var2*var4
     gpd(3)=var3*var4
     ugp=u1roe*gpd(1)+u2roe*gpd(2)+u3roe*gpd(3)
-    b1=(gamma-1.d0)/(cssroe*cssroe)
-    b2=1.d0+2.d0*b1*kroe-b1*hroe
+    b1=(gamma-1.e0_real_kind)/(cssroe*cssroe)
+    b2=1.e0_real_kind+2.e0_real_kind*b1*kroe-b1*hroe
 
-    lev(1,1)=0.5d0*(b2+ugp*rcs)
-    lev(1,2)=-0.5d0*(b1*u1roe+gpd(1)*rcs)
-    lev(1,3)=-0.5d0*(b1*u2roe+gpd(2)*rcs)
-    lev(1,4)=-0.5d0*(b1*u3roe+gpd(3)*rcs)
-    lev(1,5)=0.5d0*b1
-    rev(1,1)=1.d0
+    lev(1,1)=0.5e0_real_kind*(b2+ugp*rcs)
+    lev(1,2)=-0.5e0_real_kind*(b1*u1roe+gpd(1)*rcs)
+    lev(1,3)=-0.5e0_real_kind*(b1*u2roe+gpd(2)*rcs)
+    lev(1,4)=-0.5e0_real_kind*(b1*u3roe+gpd(3)*rcs)
+    lev(1,5)=0.5e0_real_kind*b1
+    rev(1,1)=1.e0_real_kind
     rev(2,1)=u1roe-cssroe*gpd(1)
     rev(3,1)=u2roe-cssroe*gpd(2)
     rev(4,1)=u3roe-cssroe*gpd(3)
     rev(5,1)=hroe-ugp*cssroe
 
-    lev(2,1)=1.d0-b2
+    lev(2,1)=1.e0_real_kind-b2
     lev(2,2)=b1*u1roe
     lev(2,3)=b1*u2roe
     lev(2,4)=b1*u3roe
     lev(2,5)=-b1
-    rev(1,2)=1.d0
+    rev(1,2)=1.e0_real_kind
     rev(2,2)=u1roe
     rev(3,2)=u2roe
     rev(4,2)=u3roe
-    rev(5,2)=hroe-1.d0/b1
+    rev(5,2)=hroe-1.e0_real_kind/b1
 
     if(abs(var1) > rero) then
-      rgp=1.d0/gpd(1)
+      rgp=1.e0_real_kind/gpd(1)
       lev(3,1)=(ugp*gpd(2)-u2roe)*rgp
       lev(3,2)=-gpd(2)
-      lev(3,3)=(1.d0-gpd(2)*gpd(2))*rgp
+      lev(3,3)=(1.e0_real_kind-gpd(2)*gpd(2))*rgp
       lev(3,4)=-gpd(2)*gpd(3)*rgp
-      lev(3,5)=0.d0
+      lev(3,5)=0.e0_real_kind
       lev(4,1)=(ugp*gpd(3)-u3roe)*rgp
       lev(4,2)=-gpd(3)
       lev(4,3)=-gpd(2)*gpd(3)*rgp
-      lev(4,4)=(1.d0-gpd(3)*gpd(3))*rgp
-      lev(4,5)=0.d0
-      rev(1,3)=0.d0
+      lev(4,4)=(1.e0_real_kind-gpd(3)*gpd(3))*rgp
+      lev(4,5)=0.e0_real_kind
+      rev(1,3)=0.e0_real_kind
       rev(2,3)=-gpd(2)
       rev(3,3)=gpd(1)
-      rev(4,3)=0.d0
+      rev(4,3)=0.e0_real_kind
       rev(5,3)=u2roe*gpd(1)-u1roe*gpd(2)
-      rev(1,4)=0.d0
+      rev(1,4)=0.e0_real_kind
       rev(2,4)=-gpd(3)
-      rev(3,4)=0.d0
+      rev(3,4)=0.e0_real_kind
       rev(4,4)=gpd(1)
       rev(5,4)=u3roe*gpd(1)-u1roe*gpd(3)
     elseif(abs(var2) > rero) then
-      rgp=1.d0/gpd(2)
+      rgp=1.e0_real_kind/gpd(2)
       lev(3,1)=(ugp*gpd(1)-u1roe)*rgp
-      lev(3,2)=(1.d0-gpd(1)*gpd(1))*rgp
+      lev(3,2)=(1.e0_real_kind-gpd(1)*gpd(1))*rgp
       lev(3,3)=-gpd(1)
       lev(3,4)=-gpd(1)*gpd(3)*rgp
-      lev(3,5)=0.d0
+      lev(3,5)=0.e0_real_kind
       lev(4,1)=(ugp*gpd(3)-u3roe)*rgp
       lev(4,2)=-gpd(1)*gpd(3)*rgp
       lev(4,3)=-gpd(3)
-      lev(4,4)=(1.d0-gpd(3)*gpd(3))*rgp
-      lev(4,5)=0.d0
-      rev(1,3)=0.d0
+      lev(4,4)=(1.e0_real_kind-gpd(3)*gpd(3))*rgp
+      lev(4,5)=0.e0_real_kind
+      rev(1,3)=0.e0_real_kind
       rev(2,3)=gpd(2)
       rev(3,3)=-gpd(1)
-      rev(4,3)=0.d0
+      rev(4,3)=0.e0_real_kind
       rev(5,3)=u1roe*gpd(2)-u2roe*gpd(1)
-      rev(1,4)=0.d0
-      rev(2,4)=0.d0
+      rev(1,4)=0.e0_real_kind
+      rev(2,4)=0.e0_real_kind
       rev(3,4)=-gpd(3)
       rev(4,4)=gpd(2)
       rev(5,4)=u3roe*gpd(2)-u2roe*gpd(3)
     else
-      rgp=1.d0/gpd(3)
+      rgp=1.e0_real_kind/gpd(3)
       lev(3,1)=(ugp*gpd(1)-u1roe)*rgp
-      lev(3,2)=(1.d0-gpd(1)*gpd(1))*rgp
+      lev(3,2)=(1.e0_real_kind-gpd(1)*gpd(1))*rgp
       lev(3,3)=-gpd(1)*gpd(2)*rgp
       lev(3,4)=-gpd(1)
-      lev(3,5)=0.d0
+      lev(3,5)=0.e0_real_kind
       lev(4,1)=(ugp*gpd(2)-u2roe)*rgp
       lev(4,2)=-gpd(1)*gpd(2)*rgp
-      lev(4,3)=(1.d0-gpd(2)*gpd(2))*rgp
+      lev(4,3)=(1.e0_real_kind-gpd(2)*gpd(2))*rgp
       lev(4,4)=-gpd(2)
-      lev(4,5)=0.d0
-      rev(1,3)=0.d0
+      lev(4,5)=0.e0_real_kind
+      rev(1,3)=0.e0_real_kind
       rev(2,3)=gpd(3)
-      rev(3,3)=0.d0
+      rev(3,3)=0.e0_real_kind
       rev(4,3)=-gpd(1)
       rev(5,3)=u1roe*gpd(3)-u3roe*gpd(1)
-      rev(1,4)=0.d0
-      rev(2,4)=0.d0
+      rev(1,4)=0.e0_real_kind
+      rev(2,4)=0.e0_real_kind
       rev(3,4)=gpd(3)
       rev(4,4)=-gpd(2)
       rev(5,4)=u2roe*gpd(3)-u3roe*gpd(2)
     endif
 
-    lev(5,1)=0.5d0*(b2-ugp*rcs)
-    lev(5,2)=-0.5d0*(b1*u1roe-gpd(1)*rcs)
-    lev(5,3)=-0.5d0*(b1*u2roe-gpd(2)*rcs)
-    lev(5,4)=-0.5d0*(b1*u3roe-gpd(3)*rcs)
-    lev(5,5)=0.5d0*b1
-    rev(1,5)=1.d0
+    lev(5,1)=0.5e0_real_kind*(b2-ugp*rcs)
+    lev(5,2)=-0.5e0_real_kind*(b1*u1roe-gpd(1)*rcs)
+    lev(5,3)=-0.5e0_real_kind*(b1*u2roe-gpd(2)*rcs)
+    lev(5,4)=-0.5e0_real_kind*(b1*u3roe-gpd(3)*rcs)
+    lev(5,5)=0.5e0_real_kind*b1
+    rev(1,5)=1.e0_real_kind
     rev(2,5)=u1roe+cssroe*gpd(1)
     rev(3,5)=u2roe+cssroe*gpd(2)
     rev(4,5)=u3roe+cssroe*gpd(3)
@@ -1238,10 +1241,10 @@ contains
     use commarray_gpu, only: q_d,rho_d,prs_d,vel_d,dxi_d
     implicit none
     integer,value :: i,j,k,idir
-    real(8),value :: gamma
-    real(8) :: uroe(3),hroe,cssroe,gpd(3),b1,b2,ugp
+    real(real_kind),value :: gamma
+    real(real_kind) :: uroe(3),hroe,cssroe,gpd(3),b1,b2,ugp
     integer :: basis_axis,ir,jr,kr
-    real(8) :: wroe,wroe1,kroe,hl,hr,var1,var2,var3,var4
+    real(real_kind) :: wroe,wroe1,kroe,hl,hr,var1,var2,var3,var4
 
     ir=i
     jr=j
@@ -1255,28 +1258,28 @@ contains
       kr=k+1
     end select
     wroe=sqrt(rho_d(i,j,k))/(sqrt(rho_d(i,j,k))+sqrt(rho_d(ir,jr,kr)))
-    wroe1=1.d0-wroe
+    wroe1=1.e0_real_kind-wroe
     uroe(1)=wroe*vel_d(i,j,k,1)+wroe1*vel_d(ir,jr,kr,1)
     uroe(2)=wroe*vel_d(i,j,k,2)+wroe1*vel_d(ir,jr,kr,2)
     uroe(3)=wroe*vel_d(i,j,k,3)+wroe1*vel_d(ir,jr,kr,3)
-    kroe=0.5d0*(uroe(1)**2+uroe(2)**2+uroe(3)**2)
+    kroe=0.5e0_real_kind*(uroe(1)**2+uroe(2)**2+uroe(3)**2)
     hl=(q_d(i,j,k,5)+prs_d(i,j,k))/rho_d(i,j,k)
     hr=(q_d(ir,jr,kr,5)+prs_d(ir,jr,kr))/rho_d(ir,jr,kr)
     hroe=wroe*hl+wroe1*hr
-    cssroe=sqrt((gamma-1.d0)*(hroe-kroe))
-    var1=0.5d0*(dxi_d(i,j,k,idir,1)+dxi_d(ir,jr,kr,idir,1))
-    var2=0.5d0*(dxi_d(i,j,k,idir,2)+dxi_d(ir,jr,kr,idir,2))
-    var3=0.5d0*(dxi_d(i,j,k,idir,3)+dxi_d(ir,jr,kr,idir,3))
-    var4=1.d0/sqrt(var1*var1+var2*var2+var3*var3)
+    cssroe=sqrt((gamma-1.e0_real_kind)*(hroe-kroe))
+    var1=0.5e0_real_kind*(dxi_d(i,j,k,idir,1)+dxi_d(ir,jr,kr,idir,1))
+    var2=0.5e0_real_kind*(dxi_d(i,j,k,idir,2)+dxi_d(ir,jr,kr,idir,2))
+    var3=0.5e0_real_kind*(dxi_d(i,j,k,idir,3)+dxi_d(ir,jr,kr,idir,3))
+    var4=1.e0_real_kind/sqrt(var1*var1+var2*var2+var3*var3)
     gpd(1)=var1*var4
     gpd(2)=var2*var4
     gpd(3)=var3*var4
     ugp=uroe(1)*gpd(1)+uroe(2)*gpd(2)+uroe(3)*gpd(3)
-    b1=(gamma-1.d0)/(cssroe*cssroe)
-    b2=1.d0+2.d0*b1*kroe-b1*hroe
-    if(abs(var1) > 1.d-12) then
+    b1=(gamma-1.e0_real_kind)/(cssroe*cssroe)
+    b2=1.e0_real_kind+2.e0_real_kind*b1*kroe-b1*hroe
+    if(abs(var1) > 1.e-12_real_kind) then
       basis_axis=1
-    elseif(abs(var2) > 1.d-12) then
+    elseif(abs(var2) > 1.e-12_real_kind) then
       basis_axis=2
     else
       basis_axis=3
@@ -1287,9 +1290,9 @@ contains
        i,j,k,idir,im,jm,km,gamma,hm,npdc,physical_dir,weight_bw,fh)
     implicit none
     integer,value :: i,j,k,idir,im,jm,km,hm,npdc,physical_dir
-    real(8),value :: gamma,weight_bw
-    real(8) :: fh(5)
-    real(8) :: split_plus(5,8),split_minus(5,8),fp(8),fm(8),hc(5),lev(5,5),rev(5,5)
+    real(real_kind),value :: gamma,weight_bw
+    real(real_kind) :: fh(5)
+    real(real_kind) :: split_plus(5,8),split_minus(5,8),fp(8),fm(8),hc(5),lev(5,5),rev(5,5)
     integer :: n,m,ii,jj,kk,offset,inode,dim,ntype,lower,upper,idx
     logical :: shock,hdiss
 
@@ -1369,11 +1372,11 @@ contains
        i,j,k,idir,im,jm,km,gamma,hm,npdc,physical_dir,weight_bw,plus_cache,minus_cache,fh)
     implicit none
     integer,value :: i,j,k,idir,im,jm,km,hm,npdc,physical_dir
-    real(8),value :: gamma,weight_bw
-    real(8),intent(in) :: plus_cache(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5), &
+    real(real_kind),value :: gamma,weight_bw
+    real(real_kind),intent(in) :: plus_cache(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5), &
                           minus_cache(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5)
-    real(8) :: fh(5)
-    real(8) :: split_plus(5,8),split_minus(5,8),fp(8),fm(8),hc(5),lev(5,5),rev(5,5)
+    real(real_kind) :: fh(5)
+    real(real_kind) :: split_plus(5,8),split_minus(5,8),fp(8),fm(8),hc(5),lev(5,5),rev(5,5)
     integer :: n,m,ii,jj,kk,offset,inode,dim,ntype,lower,upper,idx
     logical :: shock,hdiss
 
@@ -1452,12 +1455,12 @@ contains
     use commvar_gpu, only: bfacmpld_d
     implicit none
     integer,value :: i,j,k,idir,im,jm,km,reconstruction_scheme,hm,npdc,physical_dir
-    real(8),value :: gamma
-    real(8) :: fh(5)
+    real(real_kind),value :: gamma
+    real(real_kind) :: fh(5)
     integer :: n,m,c,ii,jj,kk,offset,basis_axis,ibeg,iend,jbeg,jend
-    real(8) :: uroe(3),hroe,cssroe,gpd(3),b1,b2,ugp,rcs,rgp
-    real(8) :: lvec(5),stencil_plus(7),stencil_minus(7),fchar
-    real(8) :: split_plus(5,7),split_minus(5,7)
+    real(real_kind) :: uroe(3),hroe,cssroe,gpd(3),b1,b2,ugp,rcs,rgp
+    real(real_kind) :: lvec(5),stencil_plus(7),stencil_minus(7),fchar
+    real(real_kind) :: split_plus(5,7),split_minus(5,7)
 
     if(reconstruction_scheme==5) then
       call mp_ld_interface_flux(i,j,k,idir,im,jm,km,gamma,hm,npdc,physical_dir,bfacmpld_d,fh)
@@ -1539,14 +1542,14 @@ contains
             fh(m)=reconstruct_x_physical_stencil(stencil_plus,i,im,npdc) + &
                   reconstruct_x_physical_stencil(stencil_minus,i,im,npdc)
           else
-            fh(m)=0.d0
+            fh(m)=0.e0_real_kind
           endif
         elseif(physical_dir == 2) then
           if(reconstruction_scheme == 3) then
             fh(m)=reconstruct_y_physical_stencil(stencil_plus,j,jm,npdc) + &
                   reconstruct_y_physical_stencil(stencil_minus,j,jm,npdc)
           else
-            fh(m)=0.d0
+            fh(m)=0.e0_real_kind
           endif
         else
           select case(reconstruction_scheme)
@@ -1555,7 +1558,7 @@ contains
           case(3)
             fh(m)=mp7_gpu(stencil_plus)+mp7_gpu(stencil_minus)
           case default
-            fh(m)=0.d0
+            fh(m)=0.e0_real_kind
           end select
         endif
       enddo
@@ -1564,8 +1567,8 @@ contains
 
     call roe_characteristic_state(i,j,k,idir,gamma,uroe,hroe,cssroe,gpd, &
          b1,b2,ugp,basis_axis)
-    rcs=1.d0/cssroe
-    fh=0.d0
+    rcs=1.e0_real_kind/cssroe
+    fh=0.e0_real_kind
     ibeg = -hm
     iend = im + hm
     jbeg = -hm
@@ -1634,53 +1637,53 @@ contains
     do c=1,5
       select case(c)
       case(1)
-        lvec(1)=0.5d0*(b2+ugp*rcs)
-        lvec(2)=-0.5d0*(b1*uroe(1)+gpd(1)*rcs)
-        lvec(3)=-0.5d0*(b1*uroe(2)+gpd(2)*rcs)
-        lvec(4)=-0.5d0*(b1*uroe(3)+gpd(3)*rcs)
-        lvec(5)=0.5d0*b1
+        lvec(1)=0.5e0_real_kind*(b2+ugp*rcs)
+        lvec(2)=-0.5e0_real_kind*(b1*uroe(1)+gpd(1)*rcs)
+        lvec(3)=-0.5e0_real_kind*(b1*uroe(2)+gpd(2)*rcs)
+        lvec(4)=-0.5e0_real_kind*(b1*uroe(3)+gpd(3)*rcs)
+        lvec(5)=0.5e0_real_kind*b1
       case(2)
-        lvec(1)=1.d0-b2
+        lvec(1)=1.e0_real_kind-b2
         lvec(2)=b1*uroe(1)
         lvec(3)=b1*uroe(2)
         lvec(4)=b1*uroe(3)
         lvec(5)=-b1
       case(3)
-        rgp=1.d0/gpd(basis_axis)
+        rgp=1.e0_real_kind/gpd(basis_axis)
         select case(basis_axis)
         case(1)
           lvec=(/(ugp*gpd(2)-uroe(2))*rgp,-gpd(2), &
-               (1.d0-gpd(2)**2)*rgp,-gpd(2)*gpd(3)*rgp,0.d0/)
+               (1.e0_real_kind-gpd(2)**2)*rgp,-gpd(2)*gpd(3)*rgp,0.e0_real_kind/)
         case(2)
-          lvec=(/(ugp*gpd(1)-uroe(1))*rgp,(1.d0-gpd(1)**2)*rgp, &
-               -gpd(1),-gpd(1)*gpd(3)*rgp,0.d0/)
+          lvec=(/(ugp*gpd(1)-uroe(1))*rgp,(1.e0_real_kind-gpd(1)**2)*rgp, &
+               -gpd(1),-gpd(1)*gpd(3)*rgp,0.e0_real_kind/)
         case default
-          lvec=(/(ugp*gpd(1)-uroe(1))*rgp,(1.d0-gpd(1)**2)*rgp, &
-               -gpd(1)*gpd(2)*rgp,-gpd(1),0.d0/)
+          lvec=(/(ugp*gpd(1)-uroe(1))*rgp,(1.e0_real_kind-gpd(1)**2)*rgp, &
+               -gpd(1)*gpd(2)*rgp,-gpd(1),0.e0_real_kind/)
         end select
       case(4)
-        rgp=1.d0/gpd(basis_axis)
+        rgp=1.e0_real_kind/gpd(basis_axis)
         select case(basis_axis)
         case(1)
           lvec=(/(ugp*gpd(3)-uroe(3))*rgp,-gpd(3), &
-               -gpd(2)*gpd(3)*rgp,(1.d0-gpd(3)**2)*rgp,0.d0/)
+               -gpd(2)*gpd(3)*rgp,(1.e0_real_kind-gpd(3)**2)*rgp,0.e0_real_kind/)
         case(2)
           lvec=(/(ugp*gpd(3)-uroe(3))*rgp,-gpd(1)*gpd(3)*rgp, &
-               -gpd(3),(1.d0-gpd(3)**2)*rgp,0.d0/)
+               -gpd(3),(1.e0_real_kind-gpd(3)**2)*rgp,0.e0_real_kind/)
         case default
           lvec=(/(ugp*gpd(2)-uroe(2))*rgp,-gpd(1)*gpd(2)*rgp, &
-               (1.d0-gpd(2)**2)*rgp,-gpd(2),0.d0/)
+               (1.e0_real_kind-gpd(2)**2)*rgp,-gpd(2),0.e0_real_kind/)
         end select
       case default
-        lvec(1)=0.5d0*(b2-ugp*rcs)
-        lvec(2)=-0.5d0*(b1*uroe(1)-gpd(1)*rcs)
-        lvec(3)=-0.5d0*(b1*uroe(2)-gpd(2)*rcs)
-        lvec(4)=-0.5d0*(b1*uroe(3)-gpd(3)*rcs)
-        lvec(5)=0.5d0*b1
+        lvec(1)=0.5e0_real_kind*(b2-ugp*rcs)
+        lvec(2)=-0.5e0_real_kind*(b1*uroe(1)-gpd(1)*rcs)
+        lvec(3)=-0.5e0_real_kind*(b1*uroe(2)-gpd(2)*rcs)
+        lvec(4)=-0.5e0_real_kind*(b1*uroe(3)-gpd(3)*rcs)
+        lvec(5)=0.5e0_real_kind*b1
       end select
       do n=1,7
-        stencil_plus(n)=0.d0
-        stencil_minus(n)=0.d0
+        stencil_plus(n)=0.e0_real_kind
+        stencil_minus(n)=0.e0_real_kind
         do m=1,5
           stencil_plus(n)=stencil_plus(n)+lvec(m)*split_plus(m,n)
         enddo
@@ -1702,7 +1705,7 @@ contains
       case(1)
         fchar=weno7_gpu(stencil_plus)+weno7_gpu(stencil_minus)
       case default
-        fchar=0.d0
+        fchar=0.e0_real_kind
       end select
       select case(c)
       case(1)
@@ -1716,7 +1719,7 @@ contains
         fh(2)=fh(2)+uroe(1)*fchar
         fh(3)=fh(3)+uroe(2)*fchar
         fh(4)=fh(4)+uroe(3)*fchar
-        fh(5)=fh(5)+(hroe-1.d0/b1)*fchar
+        fh(5)=fh(5)+(hroe-1.e0_real_kind/b1)*fchar
       case(3)
         select case(basis_axis)
         case(1)
@@ -1751,13 +1754,13 @@ contains
     enddo
   end subroutine characteristic_reconstruction_interface_flux
 
-  attributes(device) real(8) function explicit_reconstruction_interface_flux( &
+  attributes(device) real(real_kind) function explicit_reconstruction_interface_flux( &
        i,j,k,idir,ivar,split_sign,im,jm,km,reconstruction_scheme,gamma) result(fh)
     implicit none
     integer,value :: i,j,k,idir,ivar,split_sign,im,jm,km,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: n,ii,jj,kk,offset
-    real(8) :: f(7)
+    real(real_kind) :: f(7)
 
     do n=1,7
       if(split_sign > 0) then
@@ -1785,7 +1788,7 @@ contains
     case(3)
       fh = mp7_gpu(f)
     case default
-      fh = 0.d0
+      fh = 0.e0_real_kind
     end select
   end function explicit_reconstruction_interface_flux
 
@@ -1793,11 +1796,11 @@ contains
        i,j,k,idir,ivar,im,jm,km,reconstruction_scheme,gamma,fh_plus,fh_minus)
     implicit none
     integer,value :: i,j,k,idir,ivar,im,jm,km,reconstruction_scheme
-    real(8),value :: gamma
-    real(8) :: fh_plus,fh_minus
+    real(real_kind),value :: gamma
+    real(real_kind) :: fh_plus,fh_minus
     integer :: offset,ii,jj,kk,plus_index,minus_index
     logical :: need_plus,need_minus
-    real(8) :: f_plus(7),f_minus(7),value_plus,value_minus
+    real(real_kind) :: f_plus(7),f_minus(7),value_plus,value_minus
 
     do offset=-3,4
       plus_index=offset+4
@@ -1829,18 +1832,18 @@ contains
       fh_plus=mp7_gpu(f_plus)
       fh_minus=mp7_gpu(f_minus)
     case default
-      fh_plus=0.d0
-      fh_minus=0.d0
+      fh_plus=0.e0_real_kind
+      fh_minus=0.e0_real_kind
     end select
   end subroutine explicit_reconstruction_interface_flux_pair
 
-  attributes(device) real(8) function explicit_reconstruction_interface_flux_x_physical( &
+  attributes(device) real(real_kind) function explicit_reconstruction_interface_flux_x_physical( &
        i,j,k,ivar,split_sign,im,jm,km,hm,npdci,reconstruction_scheme,gamma) result(fh)
     implicit none
     integer,value :: i,j,k,ivar,split_sign,im,jm,km,hm,npdci,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: n,offset,ii,ibeg,iend
-    real(8) :: f(7)
+    real(real_kind) :: f(7)
 
     select case(npdci)
     case(1)
@@ -1871,13 +1874,13 @@ contains
     select case(reconstruction_scheme)
     case(3)
       if((npdci == 1 .or. npdci == 4) .and. i == 0) then
-        fh = 0.5d0*(f(4)+f(5))
+        fh = 0.5e0_real_kind*(f(4)+f(5))
       elseif((npdci == 1 .or. npdci == 4) .and. i == 1) then
         fh = suw3_gpu(f(3:5))
       elseif((npdci == 1 .or. npdci == 4) .and. i == 2) then
         fh = mp5_gpu(f(2:6))
       elseif((npdci == 2 .or. npdci == 4) .and. i == im-1) then
-        fh = 0.5d0*(f(4)+f(5))
+        fh = 0.5e0_real_kind*(f(4)+f(5))
       elseif((npdci == 2 .or. npdci == 4) .and. i == im-2) then
         fh = suw3_gpu(f(3:5))
       elseif((npdci == 2 .or. npdci == 4) .and. i == im-3) then
@@ -1886,23 +1889,23 @@ contains
         fh = mp7_gpu(f)
       endif
     case default
-      fh = 0.d0
+      fh = 0.e0_real_kind
     end select
   end function explicit_reconstruction_interface_flux_x_physical
 
-  attributes(device) real(8) function reconstruct_x_physical_stencil(f,i,im,npdci) result(fh)
+  attributes(device) real(real_kind) function reconstruct_x_physical_stencil(f,i,im,npdci) result(fh)
     implicit none
-    real(8) :: f(7)
+    real(real_kind) :: f(7)
     integer,value :: i,im,npdci
 
     if((npdci == 1 .or. npdci == 4) .and. i == 0) then
-      fh = 0.5d0*(f(4)+f(5))
+      fh = 0.5e0_real_kind*(f(4)+f(5))
     elseif((npdci == 1 .or. npdci == 4) .and. i == 1) then
       fh = suw3_gpu(f(3:5))
     elseif((npdci == 1 .or. npdci == 4) .and. i == 2) then
       fh = mp5_gpu(f(2:6))
     elseif((npdci == 2 .or. npdci == 4) .and. i == im-1) then
-      fh = 0.5d0*(f(4)+f(5))
+      fh = 0.5e0_real_kind*(f(4)+f(5))
     elseif((npdci == 2 .or. npdci == 4) .and. i == im-2) then
       fh = suw3_gpu(f(3:5))
     elseif((npdci == 2 .or. npdci == 4) .and. i == im-3) then
@@ -1912,19 +1915,19 @@ contains
     endif
   end function reconstruct_x_physical_stencil
 
-  attributes(device) real(8) function reconstruct_y_physical_stencil(f,j,jm,npdcj) result(fh)
+  attributes(device) real(real_kind) function reconstruct_y_physical_stencil(f,j,jm,npdcj) result(fh)
     implicit none
-    real(8) :: f(7)
+    real(real_kind) :: f(7)
     integer,value :: j,jm,npdcj
 
     if((npdcj == 1 .or. npdcj == 4) .and. j == 0) then
-      fh = 0.5d0*(f(4)+f(5))
+      fh = 0.5e0_real_kind*(f(4)+f(5))
     elseif((npdcj == 1 .or. npdcj == 4) .and. j == 1) then
       fh = suw3_gpu(f(3:5))
     elseif((npdcj == 1 .or. npdcj == 4) .and. j == 2) then
       fh = mp5_gpu(f(2:6))
     elseif((npdcj == 2 .or. npdcj == 4) .and. j == jm-1) then
-      fh = 0.5d0*(f(4)+f(5))
+      fh = 0.5e0_real_kind*(f(4)+f(5))
     elseif((npdcj == 2 .or. npdcj == 4) .and. j == jm-2) then
       fh = suw3_gpu(f(3:5))
     elseif((npdcj == 2 .or. npdcj == 4) .and. j == jm-3) then
@@ -1939,9 +1942,9 @@ contains
     use commarray_gpu, only: flux_work_d
     implicit none
     integer,value :: im,jm,km,ivar,split_sign,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k
-    real(8) :: fh
+    real(real_kind) :: fh
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 2
     j = blockIdx%y - 1
@@ -1961,9 +1964,9 @@ contains
     use commarray_gpu, only: flux_work_d
     implicit none
     integer,value :: im,jm,km,hm,is,ie,npdci,ivar,split_sign,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k
-    real(8) :: fh
+    real(real_kind) :: fh
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 2
     j = blockIdx%y - 1
@@ -1983,9 +1986,9 @@ contains
     use commarray_gpu, only: flux_work_d
     implicit none
     integer,value :: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,ivar,split_sign,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k
-    real(8) :: fh
+    real(real_kind) :: fh
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 2
     j = blockIdx%y - 1
@@ -2000,13 +2003,13 @@ contains
     endif
   end subroutine explicit_upwind_flux_x_xyphysical_global_kernel
 
-  attributes(device) real(8) function explicit_reconstruction_interface_flux_y_physical( &
+  attributes(device) real(real_kind) function explicit_reconstruction_interface_flux_y_physical( &
        i,j,k,ivar,split_sign,im,jm,km,hm,npdcj,reconstruction_scheme,gamma) result(fh)
     implicit none
     integer,value :: i,j,k,ivar,split_sign,im,jm,km,hm,npdcj,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: n,offset,jj,jbeg,jend
-    real(8) :: f(7)
+    real(real_kind) :: f(7)
 
     select case(npdcj)
     case(1)
@@ -2037,13 +2040,13 @@ contains
     select case(reconstruction_scheme)
     case(3)
       if((npdcj == 1 .or. npdcj == 4) .and. j == 0) then
-        fh = 0.5d0*(f(4)+f(5))
+        fh = 0.5e0_real_kind*(f(4)+f(5))
       elseif((npdcj == 1 .or. npdcj == 4) .and. j == 1) then
         fh = suw3_gpu(f(3:5))
       elseif((npdcj == 1 .or. npdcj == 4) .and. j == 2) then
         fh = mp5_gpu(f(2:6))
       elseif((npdcj == 2 .or. npdcj == 4) .and. j == jm-1) then
-        fh = 0.5d0*(f(4)+f(5))
+        fh = 0.5e0_real_kind*(f(4)+f(5))
       elseif((npdcj == 2 .or. npdcj == 4) .and. j == jm-2) then
         fh = suw3_gpu(f(3:5))
       elseif((npdcj == 2 .or. npdcj == 4) .and. j == jm-3) then
@@ -2052,7 +2055,7 @@ contains
         fh = mp7_gpu(f)
       endif
     case default
-      fh = 0.d0
+      fh = 0.e0_real_kind
     end select
   end function explicit_reconstruction_interface_flux_y_physical
 
@@ -2061,9 +2064,9 @@ contains
     use commarray_gpu, only: flux_work_d
     implicit none
     integer,value :: im,jm,km,hm,is,ie,js,je,ks,ke,npdcj,ivar,split_sign,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k
-    real(8) :: fh
+    real(real_kind) :: fh
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 2
@@ -2083,9 +2086,9 @@ contains
     use commarray_gpu, only: flux_work_d
     implicit none
     integer,value :: im,jm,km,ivar,split_sign,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k
-    real(8) :: fh
+    real(real_kind) :: fh
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 2
@@ -2105,9 +2108,9 @@ contains
     use commarray_gpu, only: flux_work_d
     implicit none
     integer,value :: im,jm,km,ivar,split_sign,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k
-    real(8) :: fh
+    real(real_kind) :: fh
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -2127,9 +2130,9 @@ contains
     use commarray_gpu, only: flux_work_d
     implicit none
     integer,value :: im,jm,km,ivar,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k
-    real(8) :: fh_plus,fh_minus
+    real(real_kind) :: fh_plus,fh_minus
 
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-2
     j=blockIdx%y-1
@@ -2145,9 +2148,9 @@ contains
     use commarray_gpu, only: flux_work_d
     implicit none
     integer,value :: im,jm,km,ivar,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k
-    real(8) :: fh_plus,fh_minus
+    real(real_kind) :: fh_plus,fh_minus
 
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     j=(blockIdx%y-1)*blockDim%y+threadIdx%y-2
@@ -2163,9 +2166,9 @@ contains
     use commarray_gpu, only: flux_work_d
     implicit none
     integer,value :: im,jm,km,ivar,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k
-    real(8) :: fh_plus,fh_minus
+    real(real_kind) :: fh_plus,fh_minus
 
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     j=blockIdx%y-1
@@ -2253,9 +2256,9 @@ contains
     use commarray_gpu, only: flux_work_d
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,ivar,split_sign,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k
-    real(8) :: fh
+    real(real_kind) :: fh
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -2304,9 +2307,9 @@ contains
     use commarray_gpu, only: flux_work_sp_d
     implicit none
     integer,value :: im,jm,km,ivar,split_sign,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k
-    real(8) :: fh
+    real(real_kind) :: fh
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 2
     j = blockIdx%y - 1
@@ -2326,9 +2329,9 @@ contains
     use commarray_gpu, only: flux_work_sp_d
     implicit none
     integer,value :: im,jm,km,ivar,split_sign,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k
-    real(8) :: fh
+    real(real_kind) :: fh
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 2
@@ -2348,9 +2351,9 @@ contains
     use commarray_gpu, only: flux_work_sp_d
     implicit none
     integer,value :: im,jm,km,ivar,split_sign,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k
-    real(8) :: fh
+    real(real_kind) :: fh
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -2370,9 +2373,9 @@ contains
     use commarray_gpu, only: flux_work_sp_d
     implicit none
     integer,value :: im,jm,km,ivar,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k
-    real(8) :: fh_plus,fh_minus
+    real(real_kind) :: fh_plus,fh_minus
 
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-2
     j=blockIdx%y-1
@@ -2388,9 +2391,9 @@ contains
     use commarray_gpu, only: flux_work_sp_d
     implicit none
     integer,value :: im,jm,km,ivar,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k
-    real(8) :: fh_plus,fh_minus
+    real(real_kind) :: fh_plus,fh_minus
 
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     j=(blockIdx%y-1)*blockDim%y+threadIdx%y-2
@@ -2406,9 +2409,9 @@ contains
     use commarray_gpu, only: flux_work_sp_d
     implicit none
     integer,value :: im,jm,km,ivar,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k
-    real(8) :: fh_plus,fh_minus
+    real(real_kind) :: fh_plus,fh_minus
 
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     j=blockIdx%y-1
@@ -2430,7 +2433,7 @@ contains
     k = blockIdx%z - 1
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     qrhs_d(i,j,k,ivar) = qrhs_d(i,j,k,ivar) - &
-         (real(flux_work_sp_d(i,j,k),8) - real(flux_work_sp_d(i-1,j,k),8))
+         (real(flux_work_sp_d(i,j,k),real_kind) - real(flux_work_sp_d(i-1,j,k),real_kind))
   end subroutine explicit_upwind_rhs_x_global_sp_kernel
 
   attributes(global) subroutine explicit_upwind_rhs_y_global_sp_kernel(im,jm,km,ivar)
@@ -2444,7 +2447,7 @@ contains
     k = blockIdx%z - 1
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     qrhs_d(i,j,k,ivar) = qrhs_d(i,j,k,ivar) - &
-         (real(flux_work_sp_d(i,j,k),8) - real(flux_work_sp_d(i,j-1,k),8))
+         (real(flux_work_sp_d(i,j,k),real_kind) - real(flux_work_sp_d(i,j-1,k),real_kind))
   end subroutine explicit_upwind_rhs_y_global_sp_kernel
 
   attributes(global) subroutine explicit_upwind_rhs_z_global_sp_kernel(im,jm,km,ivar)
@@ -2458,7 +2461,7 @@ contains
     k = (blockIdx%z - 1) * blockDim%z + threadIdx%z - 1
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     qrhs_d(i,j,k,ivar) = qrhs_d(i,j,k,ivar) - &
-         (real(flux_work_sp_d(i,j,k),8) - real(flux_work_sp_d(i,j,k-1),8))
+         (real(flux_work_sp_d(i,j,k),real_kind) - real(flux_work_sp_d(i,j,k-1),real_kind))
   end subroutine explicit_upwind_rhs_z_global_sp_kernel
 
   attributes(global) subroutine characteristic_upwind_flux_x_global_kernel( &
@@ -2466,9 +2469,9 @@ contains
     use commarray_gpu, only: flux_characteristic_work_d
     implicit none
     integer,value :: im,jm,km,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k,m
-    real(8) :: fh(5)
+    real(real_kind) :: fh(5)
 
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-2
     j=blockIdx%y-1
@@ -2486,9 +2489,9 @@ contains
     use commarray_gpu, only: flux_characteristic_work_d
     implicit none
     integer,value :: im,jm,km,hm,is,ie,npdci,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k,m
-    real(8) :: fh(5)
+    real(real_kind) :: fh(5)
 
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-2
     j=blockIdx%y-1
@@ -2506,9 +2509,9 @@ contains
     use commarray_gpu, only: flux_characteristic_work_d
     implicit none
     integer,value :: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k,m
-    real(8) :: fh(5)
+    real(real_kind) :: fh(5)
 
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-2
     j=blockIdx%y-1
@@ -2526,9 +2529,9 @@ contains
     use commarray_gpu, only: flux_characteristic_work_d
     implicit none
     integer,value :: im,jm,km,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k,m
-    real(8) :: fh(5)
+    real(real_kind) :: fh(5)
 
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     j=(blockIdx%y-1)*blockDim%y+threadIdx%y-2
@@ -2546,9 +2549,9 @@ contains
     use commarray_gpu, only: flux_characteristic_work_d
     implicit none
     integer,value :: im,jm,km,hm,is,ie,js,je,ks,ke,npdcj,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k,m
-    real(8) :: fh(5)
+    real(real_kind) :: fh(5)
 
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     j=(blockIdx%y-1)*blockDim%y+threadIdx%y-2
@@ -2566,9 +2569,9 @@ contains
     use commarray_gpu, only: flux_characteristic_work_d
     implicit none
     integer,value :: im,jm,km,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k,m
-    real(8) :: fh(5)
+    real(real_kind) :: fh(5)
 
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     j=blockIdx%y-1
@@ -2586,9 +2589,9 @@ contains
     use commarray_gpu, only: flux_characteristic_work_d
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k,m
-    real(8) :: fh(5)
+    real(real_kind) :: fh(5)
 
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     j=blockIdx%y-1
@@ -2704,9 +2707,9 @@ contains
     use commarray_gpu, only: flux_characteristic_work_sp_d
     implicit none
     integer,value :: im,jm,km,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k,m
-    real(8) :: fh(5)
+    real(real_kind) :: fh(5)
 
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-2
     j=blockIdx%y-1
@@ -2724,9 +2727,9 @@ contains
     use commarray_gpu, only: flux_characteristic_work_sp_d
     implicit none
     integer,value :: im,jm,km,hm,is,ie,npdci,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k,m
-    real(8) :: fh(5)
+    real(real_kind) :: fh(5)
 
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-2
     j=blockIdx%y-1
@@ -2744,9 +2747,9 @@ contains
     use commarray_gpu, only: flux_characteristic_work_sp_d
     implicit none
     integer,value :: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k,m
-    real(8) :: fh(5)
+    real(real_kind) :: fh(5)
 
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-2
     j=blockIdx%y-1
@@ -2764,9 +2767,9 @@ contains
     use commarray_gpu, only: flux_characteristic_work_sp_d
     implicit none
     integer,value :: im,jm,km,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k,m
-    real(8) :: fh(5)
+    real(real_kind) :: fh(5)
 
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     j=(blockIdx%y-1)*blockDim%y+threadIdx%y-2
@@ -2784,9 +2787,9 @@ contains
     use commarray_gpu, only: flux_characteristic_work_sp_d
     implicit none
     integer,value :: im,jm,km,hm,is,ie,js,je,ks,ke,npdcj,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k,m
-    real(8) :: fh(5)
+    real(real_kind) :: fh(5)
 
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     j=(blockIdx%y-1)*blockDim%y+threadIdx%y-2
@@ -2804,9 +2807,9 @@ contains
     use commarray_gpu, only: flux_characteristic_work_sp_d
     implicit none
     integer,value :: im,jm,km,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k,m
-    real(8) :: fh(5)
+    real(real_kind) :: fh(5)
 
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     j=blockIdx%y-1
@@ -2824,9 +2827,9 @@ contains
     use commarray_gpu, only: flux_characteristic_work_sp_d
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,reconstruction_scheme
-    real(8),value :: gamma
+    real(real_kind),value :: gamma
     integer :: i,j,k,m
-    real(8) :: fh(5)
+    real(real_kind) :: fh(5)
 
     i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     j=blockIdx%y-1
@@ -2851,8 +2854,8 @@ contains
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     do m=1,5
       qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)- &
-           (real(flux_characteristic_work_sp_d(i,j,k,m),8)- &
-            real(flux_characteristic_work_sp_d(i-1,j,k,m),8))
+           (real(flux_characteristic_work_sp_d(i,j,k,m),real_kind)- &
+            real(flux_characteristic_work_sp_d(i-1,j,k,m),real_kind))
     enddo
   end subroutine characteristic_upwind_rhs_x_global_sp_kernel
 
@@ -2869,8 +2872,8 @@ contains
     if(i < is .or. i > ie .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     do m=1,5
       qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)- &
-           (real(flux_characteristic_work_sp_d(i,j,k,m),8)- &
-            real(flux_characteristic_work_sp_d(i-1,j,k,m),8))
+           (real(flux_characteristic_work_sp_d(i,j,k,m),real_kind)- &
+            real(flux_characteristic_work_sp_d(i-1,j,k,m),real_kind))
     enddo
   end subroutine characteristic_upwind_rhs_x_physical_global_sp_kernel
 
@@ -2887,8 +2890,8 @@ contains
     if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
     do m=1,5
       qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)- &
-           (real(flux_characteristic_work_sp_d(i,j,k,m),8)- &
-            real(flux_characteristic_work_sp_d(i-1,j,k,m),8))
+           (real(flux_characteristic_work_sp_d(i,j,k,m),real_kind)- &
+            real(flux_characteristic_work_sp_d(i-1,j,k,m),real_kind))
     enddo
   end subroutine characteristic_upwind_rhs_x_xyphysical_global_sp_kernel
 
@@ -2904,8 +2907,8 @@ contains
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     do m=1,5
       qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)- &
-           (real(flux_characteristic_work_sp_d(i,j,k,m),8)- &
-            real(flux_characteristic_work_sp_d(i,j-1,k,m),8))
+           (real(flux_characteristic_work_sp_d(i,j,k,m),real_kind)- &
+            real(flux_characteristic_work_sp_d(i,j-1,k,m),real_kind))
     enddo
   end subroutine characteristic_upwind_rhs_y_global_sp_kernel
 
@@ -2922,8 +2925,8 @@ contains
     if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
     do m=1,5
       qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)- &
-           (real(flux_characteristic_work_sp_d(i,j,k,m),8)- &
-            real(flux_characteristic_work_sp_d(i,j-1,k,m),8))
+           (real(flux_characteristic_work_sp_d(i,j,k,m),real_kind)- &
+            real(flux_characteristic_work_sp_d(i,j-1,k,m),real_kind))
     enddo
   end subroutine characteristic_upwind_rhs_y_xyphysical_global_sp_kernel
 
@@ -2939,8 +2942,8 @@ contains
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     do m=1,5
       qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)- &
-           (real(flux_characteristic_work_sp_d(i,j,k,m),8)- &
-            real(flux_characteristic_work_sp_d(i,j,k-1,m),8))
+           (real(flux_characteristic_work_sp_d(i,j,k,m),real_kind)- &
+            real(flux_characteristic_work_sp_d(i,j,k-1,m),real_kind))
     enddo
   end subroutine characteristic_upwind_rhs_z_global_sp_kernel
 
@@ -2957,8 +2960,8 @@ contains
     if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
     do m=1,5
       qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)- &
-           (real(flux_characteristic_work_sp_d(i,j,k,m),8)- &
-            real(flux_characteristic_work_sp_d(i,j,k-1,m),8))
+           (real(flux_characteristic_work_sp_d(i,j,k,m),real_kind)- &
+            real(flux_characteristic_work_sp_d(i,j,k-1,m),real_kind))
     enddo
   end subroutine characteristic_upwind_rhs_z_xyphysical_global_sp_kernel
 
@@ -3003,9 +3006,9 @@ contains
     implicit none
     integer,parameter :: block_size = 256
     integer :: ncell,ntot,nblocks,ierr
-    real(8) :: local_sum(4),global_sum(4),robulk,u1bulk,u2bulk,u3bulk
-    real(8),allocatable,device :: partial_d(:,:)
-    real(8),allocatable :: partial_h(:,:)
+    real(real_kind) :: local_sum(4),global_sum(4),robulk,u1bulk,u2bulk,u3bulk
+    real(real_kind),allocatable,device :: partial_d(:,:)
+    real(real_kind),allocatable :: partial_h(:,:)
 
     ncell = im * jm * km
     nblocks = max(1,(ncell + block_size - 1) / block_size)
@@ -3021,13 +3024,13 @@ contains
     local_sum(4) = sum(partial_h(:,4))
 
     if(mpisize > 1) then
-      call mpi_allreduce(local_sum,global_sum,4,mpi_real8,mpi_sum,mpi_comm_world,ierr)
+      call mpi_allreduce(local_sum,global_sum,4,mpi_real_type,mpi_sum,mpi_comm_world,ierr)
     else
       global_sum = local_sum
     endif
 
     robulk = global_sum(1)
-    if(abs(robulk) < 1.d-300) stop 'GPU channel source encountered zero bulk density'
+    if(abs(robulk) < 1.e-300_real_kind) stop 'GPU channel source encountered zero bulk density'
     u1bulk = global_sum(2) / robulk
     u2bulk = global_sum(3) / robulk
     u3bulk = global_sum(4) / robulk
@@ -3057,14 +3060,14 @@ contains
   attributes(device) subroutine flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i,j,k,idir,f)
     implicit none
     integer,value :: im,jm,km,hm,i,j,k,idir
-    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
-    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-    real(8),device :: prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
-    real(8),device :: jacob(0:im,0:jm,0:km)
-    real(8),device :: dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3,1:3)
-    real(8) :: f(5)
+    real(real_kind),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(real_kind),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(real_kind),device :: prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device :: jacob(0:im,0:jm,0:km)
+    real(real_kind),device :: dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3,1:3)
+    real(real_kind) :: f(5)
     integer :: ii,jj,kk
-    real(8) :: uu
+    real(real_kind) :: uu
 
     ii = idx_periodic(i,im)
     jj = idx_periodic(j,jm)
@@ -3082,14 +3085,14 @@ contains
   attributes(global) subroutine convective_rhs_kernel(q,vel,prs,jacob,dxi,qrhs,im,jm,km,hm)
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
-    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-    real(8),device :: prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
-    real(8),device :: jacob(0:im,0:jm,0:km)
-    real(8),device :: dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3,1:3)
-    real(8),device :: qrhs(0:im,0:jm,0:km,1:5)
+    real(real_kind),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(real_kind),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(real_kind),device :: prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device :: jacob(0:im,0:jm,0:km)
+    real(real_kind),device :: dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3,1:3)
+    real(real_kind),device :: qrhs(0:im,0:jm,0:km,1:5)
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -3103,7 +3106,7 @@ contains
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i+3,j,k,1,fp3)
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i-3,j,k,1,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
+      df = 0.75e0_real_kind*(fp1(m)-fm1(m)) - 0.15e0_real_kind*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs(i,j,k,m) = qrhs(i,j,k,m) - df
     enddo
 
@@ -3114,7 +3117,7 @@ contains
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i,j+3,k,2,fp3)
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i,j-3,k,2,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
+      df = 0.75e0_real_kind*(fp1(m)-fm1(m)) - 0.15e0_real_kind*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs(i,j,k,m) = qrhs(i,j,k,m) - df
     enddo
 
@@ -3125,7 +3128,7 @@ contains
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i,j,k+3,3,fp3)
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i,j,k-3,3,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
+      df = 0.75e0_real_kind*(fp1(m)-fm1(m)) - 0.15e0_real_kind*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs(i,j,k,m) = qrhs(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_kernel
@@ -3133,14 +3136,14 @@ contains
   attributes(global) subroutine convective_rhs_x_kernel(q,vel,prs,jacob,dxi,qrhs,im,jm,km,hm)
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
-    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-    real(8),device :: prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
-    real(8),device :: jacob(0:im,0:jm,0:km)
-    real(8),device :: dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3,1:3)
-    real(8),device :: qrhs(0:im,0:jm,0:km,1:5)
+    real(real_kind),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(real_kind),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(real_kind),device :: prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device :: jacob(0:im,0:jm,0:km)
+    real(real_kind),device :: dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3,1:3)
+    real(real_kind),device :: qrhs(0:im,0:jm,0:km,1:5)
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -3154,7 +3157,7 @@ contains
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i+3,j,k,1,fp3)
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i-3,j,k,1,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
+      df = 0.75e0_real_kind*(fp1(m)-fm1(m)) - 0.15e0_real_kind*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs(i,j,k,m) = qrhs(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_x_kernel
@@ -3162,14 +3165,14 @@ contains
   attributes(global) subroutine convective_rhs_y_kernel(q,vel,prs,jacob,dxi,qrhs,im,jm,km,hm)
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
-    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-    real(8),device :: prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
-    real(8),device :: jacob(0:im,0:jm,0:km)
-    real(8),device :: dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3,1:3)
-    real(8),device :: qrhs(0:im,0:jm,0:km,1:5)
+    real(real_kind),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(real_kind),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(real_kind),device :: prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device :: jacob(0:im,0:jm,0:km)
+    real(real_kind),device :: dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3,1:3)
+    real(real_kind),device :: qrhs(0:im,0:jm,0:km,1:5)
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -3183,7 +3186,7 @@ contains
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i,j+3,k,2,fp3)
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i,j-3,k,2,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
+      df = 0.75e0_real_kind*(fp1(m)-fm1(m)) - 0.15e0_real_kind*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs(i,j,k,m) = qrhs(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_y_kernel
@@ -3191,14 +3194,14 @@ contains
   attributes(global) subroutine convective_rhs_z_kernel(q,vel,prs,jacob,dxi,qrhs,im,jm,km,hm)
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
-    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-    real(8),device :: prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
-    real(8),device :: jacob(0:im,0:jm,0:km)
-    real(8),device :: dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3,1:3)
-    real(8),device :: qrhs(0:im,0:jm,0:km,1:5)
+    real(real_kind),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(real_kind),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(real_kind),device :: prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device :: jacob(0:im,0:jm,0:km)
+    real(real_kind),device :: dxi(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3,1:3)
+    real(real_kind),device :: qrhs(0:im,0:jm,0:km,1:5)
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -3212,7 +3215,7 @@ contains
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i,j,k+3,3,fp3)
     call flux_at(q,vel,prs,jacob,dxi,im,jm,km,hm,i,j,k-3,3,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
+      df = 0.75e0_real_kind*(fp1(m)-fm1(m)) - 0.15e0_real_kind*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs(i,j,k,m) = qrhs(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_z_kernel
@@ -3221,8 +3224,8 @@ contains
     use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d
     implicit none
     integer,value :: i,j,k,idir,im,jm,km
-    real(8) :: f(5)
-    real(8) :: uu
+    real(real_kind) :: f(5)
+    real(real_kind) :: uu
 
     uu = dxi_d(i,j,k,idir,1)*vel_d(i,j,k,1) + &
          dxi_d(i,j,k,idir,2)*vel_d(i,j,k,2) + &
@@ -3238,9 +3241,9 @@ contains
     use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d
     implicit none
     integer,value :: i,j,k,idir,im,jm,km
-    real(8) :: f(5)
+    real(real_kind) :: f(5)
     integer :: jj,jk
-    real(8) :: uu
+    real(real_kind) :: uu
 
     jj = idx_periodic(j,jm)
     jk = idx_periodic(k,km)
@@ -3258,9 +3261,9 @@ contains
     use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d
     implicit none
     integer,value :: i,j,k,idir,im,jm,km
-    real(8) :: f(5)
+    real(real_kind) :: f(5)
     integer :: ii,kk
-    real(8) :: uu
+    real(real_kind) :: uu
 
     ii = idx_periodic(i,im)
     kk = idx_periodic(k,km)
@@ -3278,8 +3281,8 @@ contains
     use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d
     implicit none
     integer,value :: i,j,k,idir,im,jm,km
-    real(8) :: f(5)
-    real(8) :: uu
+    real(real_kind) :: f(5)
+    real(real_kind) :: uu
 
     uu = dxi_d(i,j,k,idir,1)*vel_d(i,j,k,1) + &
          dxi_d(i,j,k,idir,2)*vel_d(i,j,k,2) + &
@@ -3295,9 +3298,9 @@ contains
     use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d
     implicit none
     integer,value :: i,j,k,idir,im,jm,km
-    real(8) :: f(5)
+    real(real_kind) :: f(5)
     integer :: ii,jj
-    real(8) :: uu
+    real(real_kind) :: uu
 
     ii = idx_periodic(i,im)
     jj = idx_periodic(j,jm)
@@ -3316,7 +3319,7 @@ contains
     implicit none
     integer,value :: im,jm,km
     integer :: id,ntot,i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     ntot = (im + 1) * (jm + 1) * (km + 1)
@@ -3332,7 +3335,7 @@ contains
     call flux_at_global(i+3,j,k,1,im,jm,km,fp3)
     call flux_at_global(i-3,j,k,1,im,jm,km,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
+      df = 0.75e0_real_kind*(fp1(m)-fm1(m)) - 0.15e0_real_kind*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_x_global_kernel
@@ -3342,7 +3345,7 @@ contains
     implicit none
     integer,value :: im,jm,km
     integer :: id,ntot,i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
 
     id = (blockIdx%x - 1) * blockDim%x * blockDim%y +       &
          (threadIdx%y - 1) * blockDim%x + threadIdx%x - 1
@@ -3359,7 +3362,7 @@ contains
     call flux_at_global(i,j+3,k,2,im,jm,km,fp3)
     call flux_at_global(i,j-3,k,2,im,jm,km,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
+      df = 0.75e0_real_kind*(fp1(m)-fm1(m)) - 0.15e0_real_kind*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_y_global_kernel
@@ -3369,7 +3372,7 @@ contains
     implicit none
     integer,value :: im,jm,km
     integer :: id,ntot,i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
 
     id = (blockIdx%x - 1) * blockDim%x * blockDim%z +       &
          (threadIdx%z - 1) * blockDim%x + threadIdx%x - 1
@@ -3386,7 +3389,7 @@ contains
     call flux_at_global(i,j,k+3,3,im,jm,km,fp3)
     call flux_at_global(i,j,k-3,3,im,jm,km,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
+      df = 0.75e0_real_kind*(fp1(m)-fm1(m)) - 0.15e0_real_kind*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_z_global_kernel
@@ -3395,36 +3398,36 @@ contains
                                                   fp0,fp1,fm1,fp2,fm2,fp3,fm3,df)
     implicit none
     integer,value :: i,im,apply_left,apply_right
-    real(8) :: fp0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    real(real_kind) :: fp0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
     integer :: m
 
     if(apply_left /= 0 .and. i == 0) then
       do m=1,5
-        df(m) = -0.5d0*fp2(m) + 2.d0*fp1(m) - 1.5d0*fp0(m)
+        df(m) = -0.5e0_real_kind*fp2(m) + 2.e0_real_kind*fp1(m) - 1.5e0_real_kind*fp0(m)
       enddo
     elseif(apply_left /= 0 .and. i == 1) then
       do m=1,5
-        df(m) = 0.5d0*(fp1(m)-fm1(m))
+        df(m) = 0.5e0_real_kind*(fp1(m)-fm1(m))
       enddo
     elseif(apply_left /= 0 .and. i == 2) then
       do m=1,5
-        df(m) = (2.d0/3.d0)*(fp1(m)-fm1(m)) - (1.d0/12.d0)*(fp2(m)-fm2(m))
+        df(m) = (2.e0_real_kind/3.e0_real_kind)*(fp1(m)-fm1(m)) - (1.e0_real_kind/12.e0_real_kind)*(fp2(m)-fm2(m))
       enddo
     elseif(apply_right /= 0 .and. i == im-2) then
       do m=1,5
-        df(m) = (2.d0/3.d0)*(fp1(m)-fm1(m)) - (1.d0/12.d0)*(fp2(m)-fm2(m))
+        df(m) = (2.e0_real_kind/3.e0_real_kind)*(fp1(m)-fm1(m)) - (1.e0_real_kind/12.e0_real_kind)*(fp2(m)-fm2(m))
       enddo
     elseif(apply_right /= 0 .and. i == im-1) then
       do m=1,5
-        df(m) = 0.5d0*(fp1(m)-fm1(m))
+        df(m) = 0.5e0_real_kind*(fp1(m)-fm1(m))
       enddo
     elseif(apply_right /= 0 .and. i == im) then
       do m=1,5
-        df(m) = 0.5d0*fm2(m) - 2.d0*fm1(m) + 1.5d0*fp0(m)
+        df(m) = 0.5e0_real_kind*fm2(m) - 2.e0_real_kind*fm1(m) + 1.5e0_real_kind*fp0(m)
       enddo
     else
       do m=1,5
-        df(m) = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
+        df(m) = 0.75e0_real_kind*(fp1(m)-fm1(m)) - 0.15e0_real_kind*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       enddo
     endif
   end subroutine deriv6_x_physical
@@ -3435,7 +3438,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_left,apply_right
     integer :: i,j,k,m
-    real(8) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -3462,7 +3465,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -3477,7 +3480,7 @@ contains
     call flux_at_xphysical_global(i,j+3,k,2,im,jm,km,fp3)
     call flux_at_xphysical_global(i,j-3,k,2,im,jm,km,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
+      df = 0.75e0_real_kind*(fp1(m)-fm1(m)) - 0.15e0_real_kind*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_y_xphysical_global_kernel
@@ -3487,7 +3490,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -3502,7 +3505,7 @@ contains
     call flux_at_xphysical_global(i,j,k+3,3,im,jm,km,fp3)
     call flux_at_xphysical_global(i,j,k-3,3,im,jm,km,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
+      df = 0.75e0_real_kind*(fp1(m)-fm1(m)) - 0.15e0_real_kind*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_z_xphysical_global_kernel
@@ -3512,7 +3515,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -3527,7 +3530,7 @@ contains
     call flux_at_yphysical_global(i+3,j,k,1,im,jm,km,fp3)
     call flux_at_yphysical_global(i-3,j,k,1,im,jm,km,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
+      df = 0.75e0_real_kind*(fp1(m)-fm1(m)) - 0.15e0_real_kind*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_x_yphysical_global_kernel
@@ -3538,7 +3541,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_down,apply_up
     integer :: i,j,k,m
-    real(8) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -3565,7 +3568,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -3580,7 +3583,7 @@ contains
     call flux_at_yphysical_global(i,j,k+3,3,im,jm,km,fp3)
     call flux_at_yphysical_global(i,j,k-3,3,im,jm,km,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
+      df = 0.75e0_real_kind*(fp1(m)-fm1(m)) - 0.15e0_real_kind*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_z_yphysical_global_kernel
@@ -3591,7 +3594,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_left,apply_right
     integer :: i,j,k,m
-    real(8) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -3619,7 +3622,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_down,apply_up
     integer :: i,j,k,m
-    real(8) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -3646,7 +3649,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -3661,7 +3664,7 @@ contains
     call flux_at_xyphysical_global(i,j,k+3,3,im,jm,km,fp3)
     call flux_at_xyphysical_global(i,j,k-3,3,im,jm,km,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
+      df = 0.75e0_real_kind*(fp1(m)-fm1(m)) - 0.15e0_real_kind*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_z_xyphysical_global_kernel
@@ -3671,7 +3674,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -3686,7 +3689,7 @@ contains
     call flux_at_zphysical_global(i+3,j,k,1,im,jm,km,fp3)
     call flux_at_zphysical_global(i-3,j,k,1,im,jm,km,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
+      df = 0.75e0_real_kind*(fp1(m)-fm1(m)) - 0.15e0_real_kind*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_x_zphysical_global_kernel
@@ -3696,7 +3699,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -3711,7 +3714,7 @@ contains
     call flux_at_zphysical_global(i,j+3,k,2,im,jm,km,fp3)
     call flux_at_zphysical_global(i,j-3,k,2,im,jm,km,fm3)
     do m=1,5
-      df = 0.75d0*(fp1(m)-fm1(m)) - 0.15d0*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
+      df = 0.75e0_real_kind*(fp1(m)-fm1(m)) - 0.15e0_real_kind*(fp2(m)-fm2(m)) + num1d60*(fp3(m)-fm3(m))
       qrhs_d(i,j,k,m) = qrhs_d(i,j,k,m) - df
     enddo
   end subroutine convective_rhs_y_zphysical_global_kernel
@@ -3722,7 +3725,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_back,apply_front
     integer :: i,j,k,m
-    real(8) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -3747,9 +3750,9 @@ contains
   attributes(global) subroutine save_q_kernel(q,qsave,jacob,im,jm,km,hm)
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
-    real(8),device :: qsave(0:im,0:jm,0:km,1:5)
-    real(8),device :: jacob(0:im,0:jm,0:km)
+    real(real_kind),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(real_kind),device :: qsave(0:im,0:jm,0:km,1:5)
+    real(real_kind),device :: jacob(0:im,0:jm,0:km)
     integer :: id,i,j,k,m,ntot
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -3767,11 +3770,11 @@ contains
   attributes(global) subroutine rk3_update_kernel(q,qsave,qrhs,jacob,deltat,a,b,c,im,jm,km,hm)
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),value :: deltat,a,b,c
-    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
-    real(8),device :: qsave(0:im,0:jm,0:km,1:5)
-    real(8),device :: qrhs(0:im,0:jm,0:km,1:5)
-    real(8),device :: jacob(0:im,0:jm,0:km)
+    real(real_kind),value :: deltat,a,b,c
+    real(real_kind),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(real_kind),device :: qsave(0:im,0:jm,0:km,1:5)
+    real(real_kind),device :: qrhs(0:im,0:jm,0:km,1:5)
+    real(real_kind),device :: jacob(0:im,0:jm,0:km)
     integer :: id,i,j,k,m,ntot
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -3789,13 +3792,13 @@ contains
   attributes(global) subroutine rk3_first_update_kernel(q,qsave,qrhs,jacob,deltat,im,jm,km,hm)
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),value :: deltat
-    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
-    real(8),device :: qsave(0:im,0:jm,0:km,1:5)
-    real(8),device :: qrhs(0:im,0:jm,0:km,1:5)
-    real(8),device :: jacob(0:im,0:jm,0:km)
+    real(real_kind),value :: deltat
+    real(real_kind),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(real_kind),device :: qsave(0:im,0:jm,0:km,1:5)
+    real(real_kind),device :: qrhs(0:im,0:jm,0:km,1:5)
+    real(real_kind),device :: jacob(0:im,0:jm,0:km)
     integer :: id,i,j,k,m,ntot
-    real(8) :: saved
+    real(real_kind) :: saved
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     ntot = (im + 1) * (jm + 1) * (km + 1)
@@ -3815,9 +3818,9 @@ contains
     use commarray_gpu, only: q_d,qsave_d,qrhs_d,jacob_d
     implicit none
     integer,value :: im,jm,km
-    real(8),value :: deltat
+    real(real_kind),value :: deltat
     integer :: id,i,j,k,m,ntot
-    real(8) :: saved
+    real(real_kind) :: saved
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     ntot = (im + 1) * (jm + 1) * (km + 1)
@@ -3837,7 +3840,7 @@ contains
     use commarray_gpu, only: q_d,qsave_d,qrhs_d,jacob_d
     implicit none
     integer,value :: im,jm,km
-    real(8),value :: deltat,a,b,c
+    real(real_kind),value :: deltat,a,b,c
     integer :: id,i,j,k,m,ntot
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -3853,9 +3856,9 @@ contains
     enddo
   end subroutine rk3_update_global_kernel
 
-  attributes(device) real(8) function filter10_value(v0,vp1,vm1,vp2,vm2,vp3,vm3,vp4,vm4,vp5,vm5)
+  attributes(device) real(real_kind) function filter10_value(v0,vp1,vm1,vp2,vm2,vp3,vm3,vp4,vm4,vp5,vm5)
     implicit none
-    real(8),value :: v0,vp1,vm1,vp2,vm2,vp3,vm3,vp4,vm4,vp5,vm5
+    real(real_kind),value :: v0,vp1,vm1,vp2,vm2,vp3,vm3,vp4,vm4,vp5,vm5
 
     filter10_value = num193d256*v0 + &
                      num105d512*(vp1+vm1) - &
@@ -3865,43 +3868,43 @@ contains
                      num1d1024*(vp5+vm5)
   end function filter10_value
 
-  attributes(device) real(8) function filter6_value(v0,vp1,vm1,vp2,vm2,vp3,vm3)
+  attributes(device) real(real_kind) function filter6_value(v0,vp1,vm1,vp2,vm2,vp3,vm3)
     implicit none
-    real(8),value :: v0,vp1,vm1,vp2,vm2,vp3,vm3
+    real(real_kind),value :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
-    filter6_value = (11.d0/16.d0)*v0 + &
-                    (15.d0/64.d0)*(vp1+vm1) + &
-                    (-3.d0/32.d0)*(vp2+vm2) + &
-                    (1.d0/64.d0)*(vp3+vm3)
+    filter6_value = (11.e0_real_kind/16.e0_real_kind)*v0 + &
+                    (15.e0_real_kind/64.e0_real_kind)*(vp1+vm1) + &
+                    (-3.e0_real_kind/32.e0_real_kind)*(vp2+vm2) + &
+                    (1.e0_real_kind/64.e0_real_kind)*(vp3+vm3)
   end function filter6_value
 
-  attributes(device) real(8) function filter8_value(v0,vp1,vm1,vp2,vm2,vp3,vm3,vp4,vm4)
+  attributes(device) real(real_kind) function filter8_value(v0,vp1,vm1,vp2,vm2,vp3,vm3,vp4,vm4)
     implicit none
-    real(8),value :: v0,vp1,vm1,vp2,vm2,vp3,vm3,vp4,vm4
+    real(real_kind),value :: v0,vp1,vm1,vp2,vm2,vp3,vm3,vp4,vm4
 
-    filter8_value = (93.d0/128.d0)*v0 + &
-                    (7.d0/32.d0)*(vp1+vm1) + &
-                    (-7.d0/64.d0)*(vp2+vm2) + &
-                    (1.d0/32.d0)*(vp3+vm3) + &
-                    (-1.d0/256.d0)*(vp4+vm4)
+    filter8_value = (93.e0_real_kind/128.e0_real_kind)*v0 + &
+                    (7.e0_real_kind/32.e0_real_kind)*(vp1+vm1) + &
+                    (-7.e0_real_kind/64.e0_real_kind)*(vp2+vm2) + &
+                    (1.e0_real_kind/32.e0_real_kind)*(vp3+vm3) + &
+                    (-1.e0_real_kind/256.e0_real_kind)*(vp4+vm4)
   end function filter8_value
 
-  attributes(device) real(8) function filter6_boundary_point1(v0,v1,v2,v3,v4,v5,v6)
+  attributes(device) real(real_kind) function filter6_boundary_point1(v0,v1,v2,v3,v4,v5,v6)
     implicit none
-    real(8),value :: v0,v1,v2,v3,v4,v5,v6
+    real(real_kind),value :: v0,v1,v2,v3,v4,v5,v6
 
-    filter6_boundary_point1 = (1.d0/64.d0)*v0 + (29.d0/32.d0)*v1 + &
-      (15.d0/64.d0)*v2 - (5.d0/16.d0)*v3 + (15.d0/64.d0)*v4 - &
-      (3.d0/32.d0)*v5 + (1.d0/64.d0)*v6
+    filter6_boundary_point1 = (1.e0_real_kind/64.e0_real_kind)*v0 + (29.e0_real_kind/32.e0_real_kind)*v1 + &
+      (15.e0_real_kind/64.e0_real_kind)*v2 - (5.e0_real_kind/16.e0_real_kind)*v3 + (15.e0_real_kind/64.e0_real_kind)*v4 - &
+      (3.e0_real_kind/32.e0_real_kind)*v5 + (1.e0_real_kind/64.e0_real_kind)*v6
   end function filter6_boundary_point1
 
-  attributes(device) real(8) function filter6_boundary_point2(v0,v1,v2,v3,v4,v5,v6)
+  attributes(device) real(real_kind) function filter6_boundary_point2(v0,v1,v2,v3,v4,v5,v6)
     implicit none
-    real(8),value :: v0,v1,v2,v3,v4,v5,v6
+    real(real_kind),value :: v0,v1,v2,v3,v4,v5,v6
 
-    filter6_boundary_point2 = (-1.d0/64.d0)*v0 + (3.d0/32.d0)*v1 + &
-      (49.d0/64.d0)*v2 + (5.d0/16.d0)*v3 - (15.d0/64.d0)*v4 + &
-      (3.d0/32.d0)*v5 - (1.d0/64.d0)*v6
+    filter6_boundary_point2 = (-1.e0_real_kind/64.e0_real_kind)*v0 + (3.e0_real_kind/32.e0_real_kind)*v1 + &
+      (49.e0_real_kind/64.e0_real_kind)*v2 + (5.e0_real_kind/16.e0_real_kind)*v3 - (15.e0_real_kind/64.e0_real_kind)*v4 + &
+      (3.e0_real_kind/32.e0_real_kind)*v5 - (1.e0_real_kind/64.e0_real_kind)*v6
   end function filter6_boundary_point2
 
   attributes(global) subroutine filter_x_periodic_interior_global_kernel(im,jm,km,hm,ncomponents)
@@ -4555,14 +4558,14 @@ contains
     q_d(i,j,k,component) = filter_work_d(i,j,k)
   end subroutine copy_filter_scalar_to_q_global_kernel
 
-  attributes(device) real(8) function deriv6(vp1,vm1,vp2,vm2,vp3,vm3)
+  attributes(device) real(real_kind) function deriv6(vp1,vm1,vp2,vm2,vp3,vm3)
     implicit none
-    real(8),value :: vp1,vm1,vp2,vm2,vp3,vm3
+    real(real_kind),value :: vp1,vm1,vp2,vm2,vp3,vm3
 
-    deriv6 = 0.75d0*(vp1-vm1) - 0.15d0*(vp2-vm2) + num1d60*(vp3-vm3)
+    deriv6 = 0.75e0_real_kind*(vp1-vm1) - 0.15e0_real_kind*(vp2-vm2) + num1d60*(vp3-vm3)
   end function deriv6
 
-  attributes(device) real(8) function vel_at(i,j,k,icomp,im,jm,km)
+  attributes(device) real(real_kind) function vel_at(i,j,k,icomp,im,jm,km)
     use commarray_gpu, only: vel_d
     implicit none
     integer,value :: i,j,k,icomp,im,jm,km
@@ -4570,7 +4573,7 @@ contains
     vel_at = vel_d(i,j,k,icomp)
   end function vel_at
 
-  attributes(device) real(8) function tmp_at(i,j,k,im,jm,km)
+  attributes(device) real(real_kind) function tmp_at(i,j,k,im,jm,km)
     use commarray_gpu, only: tmp_d
     implicit none
     integer,value :: i,j,k,im,jm,km
@@ -4582,9 +4585,9 @@ contains
     use commarray_gpu, only: dxi_d
     implicit none
     integer,value :: i,j,k,im,jm,km
-    real(8) :: dvel(3,3),dtmp(3)
+    real(real_kind) :: dvel(3,3),dtmp(3)
     integer :: a,b
-    real(8) :: du_dxi(3,3),dt_dxi(3)
+    real(real_kind) :: du_dxi(3,3),dt_dxi(3)
 
     do a=1,3
       du_dxi(1,a) = deriv6(vel_at(i+1,j,k,a,im,jm,km),vel_at(i-1,j,k,a,im,jm,km), &
@@ -4619,41 +4622,41 @@ contains
     enddo
   end subroutine gradient_at
 
-  attributes(device) real(8) function deriv6_x_value(i,im,apply_left,apply_right, &
+  attributes(device) real(real_kind) function deriv6_x_value(i,im,apply_left,apply_right, &
                                                      v0,vp1,vm1,vp2,vm2,vp3,vm3)
     implicit none
     integer,value :: i,im,apply_left,apply_right
-    real(8),value :: v0,vp1,vm1,vp2,vm2,vp3,vm3
+    real(real_kind),value :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
     if(apply_left /= 0 .and. i == 0) then
-      deriv6_x_value = -0.5d0*vp2 + 2.d0*vp1 - 1.5d0*v0
+      deriv6_x_value = -0.5e0_real_kind*vp2 + 2.e0_real_kind*vp1 - 1.5e0_real_kind*v0
     elseif(apply_left /= 0 .and. i == 1) then
-      deriv6_x_value = 0.5d0*(vp1-vm1)
+      deriv6_x_value = 0.5e0_real_kind*(vp1-vm1)
     elseif(apply_left /= 0 .and. i == 2) then
-      deriv6_x_value = (2.d0/3.d0)*(vp1-vm1) - (1.d0/12.d0)*(vp2-vm2)
+      deriv6_x_value = (2.e0_real_kind/3.e0_real_kind)*(vp1-vm1) - (1.e0_real_kind/12.e0_real_kind)*(vp2-vm2)
     elseif(apply_right /= 0 .and. i == im-2) then
-      deriv6_x_value = (2.d0/3.d0)*(vp1-vm1) - (1.d0/12.d0)*(vp2-vm2)
+      deriv6_x_value = (2.e0_real_kind/3.e0_real_kind)*(vp1-vm1) - (1.e0_real_kind/12.e0_real_kind)*(vp2-vm2)
     elseif(apply_right /= 0 .and. i == im-1) then
-      deriv6_x_value = 0.5d0*(vp1-vm1)
+      deriv6_x_value = 0.5e0_real_kind*(vp1-vm1)
     elseif(apply_right /= 0 .and. i == im) then
-      deriv6_x_value = 0.5d0*vm2 - 2.d0*vm1 + 1.5d0*v0
+      deriv6_x_value = 0.5e0_real_kind*vm2 - 2.e0_real_kind*vm1 + 1.5e0_real_kind*v0
     else
       deriv6_x_value = deriv6(vp1,vm1,vp2,vm2,vp3,vm3)
     endif
   end function deriv6_x_value
 
-  attributes(device) real(8) function deriv6_x_vel_at(i,j,k,a,im,jm,km,apply_left,apply_right)
+  attributes(device) real(real_kind) function deriv6_x_vel_at(i,j,k,a,im,jm,km,apply_left,apply_right)
     implicit none
     integer,value :: i,j,k,a,im,jm,km,apply_left,apply_right
-    real(8) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
+    real(real_kind) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
     v0 = vel_at(i,j,k,a,im,jm,km)
-    vp1 = 0.d0
-    vm1 = 0.d0
-    vp2 = 0.d0
-    vm2 = 0.d0
-    vp3 = 0.d0
-    vm3 = 0.d0
+    vp1 = 0.e0_real_kind
+    vm1 = 0.e0_real_kind
+    vp2 = 0.e0_real_kind
+    vm2 = 0.e0_real_kind
+    vp3 = 0.e0_real_kind
+    vm3 = 0.e0_real_kind
     if(i < im .or. apply_right == 0) then
       vp1 = vel_at(i+1,j,k,a,im,jm,km)
     endif
@@ -4675,18 +4678,18 @@ contains
     deriv6_x_vel_at = deriv6_x_value(i,im,apply_left,apply_right,v0,vp1,vm1,vp2,vm2,vp3,vm3)
   end function deriv6_x_vel_at
 
-  attributes(device) real(8) function deriv6_x_tmp_at(i,j,k,im,jm,km,apply_left,apply_right)
+  attributes(device) real(real_kind) function deriv6_x_tmp_at(i,j,k,im,jm,km,apply_left,apply_right)
     implicit none
     integer,value :: i,j,k,im,jm,km,apply_left,apply_right
-    real(8) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
+    real(real_kind) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
     v0 = tmp_at(i,j,k,im,jm,km)
-    vp1 = 0.d0
-    vm1 = 0.d0
-    vp2 = 0.d0
-    vm2 = 0.d0
-    vp3 = 0.d0
-    vm3 = 0.d0
+    vp1 = 0.e0_real_kind
+    vm1 = 0.e0_real_kind
+    vp2 = 0.e0_real_kind
+    vm2 = 0.e0_real_kind
+    vp3 = 0.e0_real_kind
+    vm3 = 0.e0_real_kind
     if(i < im .or. apply_right == 0) then
       vp1 = tmp_at(i+1,j,k,im,jm,km)
     endif
@@ -4708,18 +4711,18 @@ contains
     deriv6_x_tmp_at = deriv6_x_value(i,im,apply_left,apply_right,v0,vp1,vm1,vp2,vm2,vp3,vm3)
   end function deriv6_x_tmp_at
 
-  attributes(device) real(8) function deriv6_y_vel_at(i,j,k,a,im,jm,km,apply_down,apply_up)
+  attributes(device) real(real_kind) function deriv6_y_vel_at(i,j,k,a,im,jm,km,apply_down,apply_up)
     implicit none
     integer,value :: i,j,k,a,im,jm,km,apply_down,apply_up
-    real(8) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
+    real(real_kind) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
     v0 = vel_at(i,j,k,a,im,jm,km)
-    vp1 = 0.d0
-    vm1 = 0.d0
-    vp2 = 0.d0
-    vm2 = 0.d0
-    vp3 = 0.d0
-    vm3 = 0.d0
+    vp1 = 0.e0_real_kind
+    vm1 = 0.e0_real_kind
+    vp2 = 0.e0_real_kind
+    vm2 = 0.e0_real_kind
+    vp3 = 0.e0_real_kind
+    vm3 = 0.e0_real_kind
     if(j < jm   .or. apply_up   == 0) vp1 = vel_at(i,j+1,k,a,im,jm,km)
     if(j > 0    .or. apply_down == 0) vm1 = vel_at(i,j-1,k,a,im,jm,km)
     if(j < jm-1 .or. apply_up   == 0) vp2 = vel_at(i,j+2,k,a,im,jm,km)
@@ -4729,18 +4732,18 @@ contains
     deriv6_y_vel_at = deriv6_x_value(j,jm,apply_down,apply_up,v0,vp1,vm1,vp2,vm2,vp3,vm3)
   end function deriv6_y_vel_at
 
-  attributes(device) real(8) function deriv6_y_tmp_at(i,j,k,im,jm,km,apply_down,apply_up)
+  attributes(device) real(real_kind) function deriv6_y_tmp_at(i,j,k,im,jm,km,apply_down,apply_up)
     implicit none
     integer,value :: i,j,k,im,jm,km,apply_down,apply_up
-    real(8) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
+    real(real_kind) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
     v0 = tmp_at(i,j,k,im,jm,km)
-    vp1 = 0.d0
-    vm1 = 0.d0
-    vp2 = 0.d0
-    vm2 = 0.d0
-    vp3 = 0.d0
-    vm3 = 0.d0
+    vp1 = 0.e0_real_kind
+    vm1 = 0.e0_real_kind
+    vp2 = 0.e0_real_kind
+    vm2 = 0.e0_real_kind
+    vp3 = 0.e0_real_kind
+    vm3 = 0.e0_real_kind
     if(j < jm   .or. apply_up   == 0) vp1 = tmp_at(i,j+1,k,im,jm,km)
     if(j > 0    .or. apply_down == 0) vm1 = tmp_at(i,j-1,k,im,jm,km)
     if(j < jm-1 .or. apply_up   == 0) vp2 = tmp_at(i,j+2,k,im,jm,km)
@@ -4750,18 +4753,18 @@ contains
     deriv6_y_tmp_at = deriv6_x_value(j,jm,apply_down,apply_up,v0,vp1,vm1,vp2,vm2,vp3,vm3)
   end function deriv6_y_tmp_at
 
-  attributes(device) real(8) function deriv6_z_vel_at(i,j,k,a,im,jm,km,apply_back,apply_front)
+  attributes(device) real(real_kind) function deriv6_z_vel_at(i,j,k,a,im,jm,km,apply_back,apply_front)
     implicit none
     integer,value :: i,j,k,a,im,jm,km,apply_back,apply_front
-    real(8) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
+    real(real_kind) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
     v0 = vel_at(i,j,k,a,im,jm,km)
-    vp1 = 0.d0
-    vm1 = 0.d0
-    vp2 = 0.d0
-    vm2 = 0.d0
-    vp3 = 0.d0
-    vm3 = 0.d0
+    vp1 = 0.e0_real_kind
+    vm1 = 0.e0_real_kind
+    vp2 = 0.e0_real_kind
+    vm2 = 0.e0_real_kind
+    vp3 = 0.e0_real_kind
+    vm3 = 0.e0_real_kind
     if(k < km   .or. apply_front == 0) vp1 = vel_at(i,j,k+1,a,im,jm,km)
     if(k > 0    .or. apply_back  == 0) vm1 = vel_at(i,j,k-1,a,im,jm,km)
     if(k < km-1 .or. apply_front == 0) vp2 = vel_at(i,j,k+2,a,im,jm,km)
@@ -4771,18 +4774,18 @@ contains
     deriv6_z_vel_at = deriv6_x_value(k,km,apply_back,apply_front,v0,vp1,vm1,vp2,vm2,vp3,vm3)
   end function deriv6_z_vel_at
 
-  attributes(device) real(8) function deriv6_z_tmp_at(i,j,k,im,jm,km,apply_back,apply_front)
+  attributes(device) real(real_kind) function deriv6_z_tmp_at(i,j,k,im,jm,km,apply_back,apply_front)
     implicit none
     integer,value :: i,j,k,im,jm,km,apply_back,apply_front
-    real(8) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
+    real(real_kind) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
     v0 = tmp_at(i,j,k,im,jm,km)
-    vp1 = 0.d0
-    vm1 = 0.d0
-    vp2 = 0.d0
-    vm2 = 0.d0
-    vp3 = 0.d0
-    vm3 = 0.d0
+    vp1 = 0.e0_real_kind
+    vm1 = 0.e0_real_kind
+    vp2 = 0.e0_real_kind
+    vm2 = 0.e0_real_kind
+    vp3 = 0.e0_real_kind
+    vm3 = 0.e0_real_kind
     if(k < km   .or. apply_front == 0) vp1 = tmp_at(i,j,k+1,im,jm,km)
     if(k > 0    .or. apply_back  == 0) vm1 = tmp_at(i,j,k-1,im,jm,km)
     if(k < km-1 .or. apply_front == 0) vp2 = tmp_at(i,j,k+2,im,jm,km)
@@ -4796,9 +4799,9 @@ contains
     use commarray_gpu, only: dxi_d
     implicit none
     integer,value :: i,j,k,im,jm,km,apply_left,apply_right
-    real(8) :: dvel(3,3),dtmp(3)
+    real(real_kind) :: dvel(3,3),dtmp(3)
     integer :: a,b
-    real(8) :: du_dxi(3,3),dt_dxi(3)
+    real(real_kind) :: du_dxi(3,3),dt_dxi(3)
 
     do a=1,3
       du_dxi(1,a) = deriv6_x_vel_at(i,j,k,a,im,jm,km,apply_left,apply_right)
@@ -4833,9 +4836,9 @@ contains
     use commarray_gpu, only: dxi_d
     implicit none
     integer,value :: i,j,k,im,jm,km,apply_down,apply_up
-    real(8) :: dvel(3,3),dtmp(3)
+    real(real_kind) :: dvel(3,3),dtmp(3)
     integer :: a,b
-    real(8) :: du_dxi(3,3),dt_dxi(3)
+    real(real_kind) :: du_dxi(3,3),dt_dxi(3)
 
     do a=1,3
       du_dxi(1,a) = deriv6(vel_at(i+1,j,k,a,im,jm,km),vel_at(i-1,j,k,a,im,jm,km), &
@@ -4870,9 +4873,9 @@ contains
     use commarray_gpu, only: dxi_d
     implicit none
     integer,value :: i,j,k,im,jm,km,apply_back,apply_front
-    real(8) :: dvel(3,3),dtmp(3)
+    real(real_kind) :: dvel(3,3),dtmp(3)
     integer :: a,b
-    real(8) :: du_dxi(3,3),dt_dxi(3)
+    real(real_kind) :: du_dxi(3,3),dt_dxi(3)
 
     do a=1,3
       du_dxi(1,a) = deriv6(vel_at(i+1,j,k,a,im,jm,km),vel_at(i-1,j,k,a,im,jm,km), &
@@ -4908,9 +4911,9 @@ contains
     use commarray_gpu, only: dxi_d
     implicit none
     integer,value :: i,j,k,im,jm,km,apply_left,apply_right,apply_down,apply_up
-    real(8) :: dvel(3,3),dtmp(3)
+    real(real_kind) :: dvel(3,3),dtmp(3)
     integer :: a,b
-    real(8) :: du_dxi(3,3),dt_dxi(3)
+    real(real_kind) :: du_dxi(3,3),dt_dxi(3)
 
     do a=1,3
       du_dxi(1,a) = deriv6_x_vel_at(i,j,k,a,im,jm,km,apply_left,apply_right)
@@ -4942,25 +4945,25 @@ contains
     use commarray_gpu, only: vel_d,tmp_d,dxi_d,jacob_d
     implicit none
     integer,value :: i,j,k,idir,im,jm,km
-    real(8),value :: reynolds,prandtl,const5,tempconst,tempconst1
-    real(8) :: f(5)
-    real(8) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
-    real(8) :: tau11,tau12,tau13,tau22,tau23,tau33,qflux(3),miu,miu2,hcc,tloc
+    real(real_kind),value :: reynolds,prandtl,const5,tempconst,tempconst1
+    real(real_kind) :: f(5)
+    real(real_kind) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
+    real(real_kind) :: tau11,tau12,tau13,tau22,tau23,tau33,qflux(3),miu,miu2,hcc,tloc
 
     call gradient_at(i,j,k,im,jm,km,dvel,dtmp)
 
     tloc = tmp_d(i,j,k)
     miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
-    miu2 = 2.d0*miu
+    miu2 = 2.e0_real_kind*miu
     hcc = (miu/prandtl)/const5
 
     s11 = dvel(1,1)
-    s12 = 0.5d0*(dvel(1,2)+dvel(2,1))
-    s13 = 0.5d0*(dvel(1,3)+dvel(3,1))
+    s12 = 0.5e0_real_kind*(dvel(1,2)+dvel(2,1))
+    s13 = 0.5e0_real_kind*(dvel(1,3)+dvel(3,1))
     s22 = dvel(2,2)
-    s23 = 0.5d0*(dvel(2,3)+dvel(3,2))
+    s23 = 0.5e0_real_kind*(dvel(2,3)+dvel(3,2))
     s33 = dvel(3,3)
-    skk = (s11+s22+s33)/3.d0
+    skk = (s11+s22+s33)/3.e0_real_kind
 
     tau11 = miu2*(s11-skk)
     tau12 = miu2*s12
@@ -4976,7 +4979,7 @@ contains
     qflux(3) = hcc*dtmp(3) + tau13*vel_d(i,j,k,1) + tau23*vel_d(i,j,k,2) + &
                tau33*vel_d(i,j,k,3)
 
-    f(1) = 0.d0
+    f(1) = 0.e0_real_kind
     f(2) = (tau11*dxi_d(i,j,k,idir,1) + tau12*dxi_d(i,j,k,idir,2) + &
             tau13*dxi_d(i,j,k,idir,3))*jacob_d(i,j,k)
     f(3) = (tau12*dxi_d(i,j,k,idir,1) + tau22*dxi_d(i,j,k,idir,2) + &
@@ -4991,9 +4994,9 @@ contains
     use commarray_gpu, only: qrhs_d
     implicit none
     integer,value :: im,jm,km
-    real(8),value :: reynolds,prandtl,const5,tempconst,tempconst1
+    real(real_kind),value :: reynolds,prandtl,const5,tempconst,tempconst1
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -5016,9 +5019,9 @@ contains
     use commarray_gpu, only: qrhs_d
     implicit none
     integer,value :: im,jm,km
-    real(8),value :: reynolds,prandtl,const5,tempconst,tempconst1
+    real(real_kind),value :: reynolds,prandtl,const5,tempconst,tempconst1
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -5041,9 +5044,9 @@ contains
     use commarray_gpu, only: qrhs_d
     implicit none
     integer,value :: im,jm,km
-    real(8),value :: reynolds,prandtl,const5,tempconst,tempconst1
+    real(real_kind),value :: reynolds,prandtl,const5,tempconst,tempconst1
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -5066,10 +5069,10 @@ contains
     use commarray_gpu, only: vel_d,tmp_d,sigma_d,qflux_d
     implicit none
     integer,value :: im,jm,km
-    real(8),value :: reynolds,prandtl,const5,tempconst,tempconst1
+    real(real_kind),value :: reynolds,prandtl,const5,tempconst,tempconst1
     integer :: i,j,k
-    real(8) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
-    real(8) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
+    real(real_kind) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
+    real(real_kind) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -5079,16 +5082,16 @@ contains
     call gradient_at(i,j,k,im,jm,km,dvel,dtmp)
     tloc = tmp_d(i,j,k)
     miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
-    miu2 = 2.d0*miu
+    miu2 = 2.e0_real_kind*miu
     hcc = (miu/prandtl)/const5
 
     s11 = dvel(1,1)
-    s12 = 0.5d0*(dvel(1,2)+dvel(2,1))
-    s13 = 0.5d0*(dvel(1,3)+dvel(3,1))
+    s12 = 0.5e0_real_kind*(dvel(1,2)+dvel(2,1))
+    s13 = 0.5e0_real_kind*(dvel(1,3)+dvel(3,1))
     s22 = dvel(2,2)
-    s23 = 0.5d0*(dvel(2,3)+dvel(3,2))
+    s23 = 0.5e0_real_kind*(dvel(2,3)+dvel(3,2))
     s33 = dvel(3,3)
-    skk = (s11+s22+s33)/3.d0
+    skk = (s11+s22+s33)/3.e0_real_kind
 
     tau11 = miu2*(s11-skk)
     tau12 = miu2*s12
@@ -5114,10 +5117,10 @@ contains
     use commarray_gpu, only: vel_d,tmp_d,sigma_d,qflux_d
     implicit none
     integer,value :: im,jm,km,apply_left,apply_right
-    real(8),value :: reynolds,prandtl,const5,tempconst,tempconst1
+    real(real_kind),value :: reynolds,prandtl,const5,tempconst,tempconst1
     integer :: i,j,k
-    real(8) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
-    real(8) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
+    real(real_kind) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
+    real(real_kind) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -5128,16 +5131,16 @@ contains
 
     tloc = tmp_d(i,j,k)
     miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
-    miu2 = 2.d0*miu
+    miu2 = 2.e0_real_kind*miu
     hcc = (miu/prandtl)/const5
 
     s11=dvel(1,1)
-    s12=0.5d0*(dvel(1,2)+dvel(2,1))
-    s13=0.5d0*(dvel(1,3)+dvel(3,1))
+    s12=0.5e0_real_kind*(dvel(1,2)+dvel(2,1))
+    s13=0.5e0_real_kind*(dvel(1,3)+dvel(3,1))
     s22=dvel(2,2)
-    s23=0.5d0*(dvel(2,3)+dvel(3,2))
+    s23=0.5e0_real_kind*(dvel(2,3)+dvel(3,2))
     s33=dvel(3,3)
-    skk = (s11+s22+s33)/3.d0
+    skk = (s11+s22+s33)/3.e0_real_kind
 
     tau11 = miu2*(s11-skk)
     tau12 = miu2*s12
@@ -5163,10 +5166,10 @@ contains
     use commarray_gpu, only: vel_d,tmp_d,sigma_d,qflux_d
     implicit none
     integer,value :: im,jm,km,apply_down,apply_up
-    real(8),value :: reynolds,prandtl,const5,tempconst,tempconst1
+    real(real_kind),value :: reynolds,prandtl,const5,tempconst,tempconst1
     integer :: i,j,k
-    real(8) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
-    real(8) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
+    real(real_kind) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
+    real(real_kind) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -5177,16 +5180,16 @@ contains
 
     tloc = tmp_d(i,j,k)
     miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
-    miu2 = 2.d0*miu
+    miu2 = 2.e0_real_kind*miu
     hcc = (miu/prandtl)/const5
 
     s11=dvel(1,1)
-    s12=0.5d0*(dvel(1,2)+dvel(2,1))
-    s13=0.5d0*(dvel(1,3)+dvel(3,1))
+    s12=0.5e0_real_kind*(dvel(1,2)+dvel(2,1))
+    s13=0.5e0_real_kind*(dvel(1,3)+dvel(3,1))
     s22=dvel(2,2)
-    s23=0.5d0*(dvel(2,3)+dvel(3,2))
+    s23=0.5e0_real_kind*(dvel(2,3)+dvel(3,2))
     s33=dvel(3,3)
-    skk = (s11+s22+s33)/3.d0
+    skk = (s11+s22+s33)/3.e0_real_kind
 
     tau11 = miu2*(s11-skk)
     tau12 = miu2*s12
@@ -5212,10 +5215,10 @@ contains
     use commarray_gpu, only: vel_d,tmp_d,sigma_d,qflux_d
     implicit none
     integer,value :: im,jm,km,apply_back,apply_front
-    real(8),value :: reynolds,prandtl,const5,tempconst,tempconst1
+    real(real_kind),value :: reynolds,prandtl,const5,tempconst,tempconst1
     integer :: i,j,k
-    real(8) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
-    real(8) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
+    real(real_kind) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
+    real(real_kind) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -5226,16 +5229,16 @@ contains
 
     tloc = tmp_d(i,j,k)
     miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
-    miu2 = 2.d0*miu
+    miu2 = 2.e0_real_kind*miu
     hcc = (miu/prandtl)/const5
 
     s11=dvel(1,1)
-    s12=0.5d0*(dvel(1,2)+dvel(2,1))
-    s13=0.5d0*(dvel(1,3)+dvel(3,1))
+    s12=0.5e0_real_kind*(dvel(1,2)+dvel(2,1))
+    s13=0.5e0_real_kind*(dvel(1,3)+dvel(3,1))
     s22=dvel(2,2)
-    s23=0.5d0*(dvel(2,3)+dvel(3,2))
+    s23=0.5e0_real_kind*(dvel(2,3)+dvel(3,2))
     s33=dvel(3,3)
-    skk = (s11+s22+s33)/3.d0
+    skk = (s11+s22+s33)/3.e0_real_kind
 
     tau11 = miu2*(s11-skk)
     tau12 = miu2*s12
@@ -5262,10 +5265,10 @@ contains
     use commarray_gpu, only: vel_d,tmp_d,sigma_d,qflux_d
     implicit none
     integer,value :: im,jm,km,apply_left,apply_right,apply_down,apply_up
-    real(8),value :: reynolds,prandtl,const5,tempconst,tempconst1
+    real(real_kind),value :: reynolds,prandtl,const5,tempconst,tempconst1
     integer :: i,j,k
-    real(8) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
-    real(8) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
+    real(real_kind) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
+    real(real_kind) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -5276,16 +5279,16 @@ contains
 
     tloc = tmp_d(i,j,k)
     miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
-    miu2 = 2.d0*miu
+    miu2 = 2.e0_real_kind*miu
     hcc = (miu/prandtl)/const5
 
     s11=dvel(1,1)
-    s12=0.5d0*(dvel(1,2)+dvel(2,1))
-    s13=0.5d0*(dvel(1,3)+dvel(3,1))
+    s12=0.5e0_real_kind*(dvel(1,2)+dvel(2,1))
+    s13=0.5e0_real_kind*(dvel(1,3)+dvel(3,1))
     s22=dvel(2,2)
-    s23=0.5d0*(dvel(2,3)+dvel(3,2))
+    s23=0.5e0_real_kind*(dvel(2,3)+dvel(3,2))
     s33=dvel(3,3)
-    skk = (s11+s22+s33)/3.d0
+    skk = (s11+s22+s33)/3.e0_real_kind
 
     tau11 = miu2*(s11-skk)
     tau12 = miu2*s12
@@ -5310,8 +5313,8 @@ contains
     use commarray_gpu, only: sigma_d,qflux_d,dxi_d,jacob_d
     implicit none
     integer,value :: i,j,k,idir,im,jm,km
-    real(8) :: f(5)
-    f(1) = 0.d0
+    real(real_kind) :: f(5)
+    f(1) = 0.e0_real_kind
     f(2) = (sigma_d(i,j,k,1)*dxi_d(i,j,k,idir,1) + &
             sigma_d(i,j,k,2)*dxi_d(i,j,k,idir,2) + &
             sigma_d(i,j,k,3)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,k)
@@ -5330,12 +5333,12 @@ contains
     use commarray_gpu, only: sigma_d,qflux_d,dxi_d,jacob_d
     implicit none
     integer,value :: i,j,k,idir,im,jm,km
-    real(8) :: f(5)
+    real(real_kind) :: f(5)
     integer :: jj,jk
 
     jj = idx_periodic(j,jm)
     jk = idx_periodic(k,km)
-    f(1) = 0.d0
+    f(1) = 0.e0_real_kind
     f(2) = (sigma_d(i,j,k,1)*dxi_d(i,j,k,idir,1) + &
             sigma_d(i,j,k,2)*dxi_d(i,j,k,idir,2) + &
             sigma_d(i,j,k,3)*dxi_d(i,j,k,idir,3))*jacob_d(i,jj,jk)
@@ -5354,12 +5357,12 @@ contains
     use commarray_gpu, only: sigma_d,qflux_d,dxi_d,jacob_d
     implicit none
     integer,value :: i,j,k,idir,im,jm,km
-    real(8) :: f(5)
+    real(real_kind) :: f(5)
     integer :: ii,kk
 
     ii = idx_periodic(i,im)
     kk = idx_periodic(k,km)
-    f(1) = 0.d0
+    f(1) = 0.e0_real_kind
     f(2) = (sigma_d(i,j,k,1)*dxi_d(i,j,k,idir,1) + &
             sigma_d(i,j,k,2)*dxi_d(i,j,k,idir,2) + &
             sigma_d(i,j,k,3)*dxi_d(i,j,k,idir,3))*jacob_d(ii,j,kk)
@@ -5378,12 +5381,12 @@ contains
     use commarray_gpu, only: sigma_d,qflux_d,dxi_d,jacob_d
     implicit none
     integer,value :: i,j,k,idir,im,jm,km
-    real(8) :: f(5)
+    real(real_kind) :: f(5)
     integer :: ii,jj
 
     ii = idx_periodic(i,im)
     jj = idx_periodic(j,jm)
-    f(1) = 0.d0
+    f(1) = 0.e0_real_kind
     f(2) = (sigma_d(i,j,k,1)*dxi_d(i,j,k,idir,1) + &
             sigma_d(i,j,k,2)*dxi_d(i,j,k,idir,2) + &
             sigma_d(i,j,k,3)*dxi_d(i,j,k,idir,3))*jacob_d(ii,jj,k)
@@ -5402,11 +5405,11 @@ contains
     use commarray_gpu, only: sigma_d,qflux_d,dxi_d,jacob_d
     implicit none
     integer,value :: i,j,k,idir,im,jm,km
-    real(8) :: f(5)
+    real(real_kind) :: f(5)
     integer :: kk
 
     kk = idx_periodic(k,km)
-    f(1) = 0.d0
+    f(1) = 0.e0_real_kind
     f(2) = (sigma_d(i,j,k,1)*dxi_d(i,j,k,idir,1) + &
             sigma_d(i,j,k,2)*dxi_d(i,j,k,idir,2) + &
             sigma_d(i,j,k,3)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,kk)
@@ -5427,7 +5430,7 @@ contains
     integer,value :: im,jm,km,region
     integer :: id,ntot,i,j,k,m
     logical :: core
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     ntot = (im + 1) * (jm + 1) * (km + 1)
@@ -5456,7 +5459,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_left,apply_right
     integer :: i,j,k,m
-    real(8) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -5484,7 +5487,7 @@ contains
     integer,value :: im,jm,km,region
     integer :: id,ntot,i,j,k,m
     logical :: core
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
 
     id = (blockIdx%x - 1) * blockDim%x * blockDim%y +       &
          (threadIdx%y - 1) * blockDim%x + threadIdx%x - 1
@@ -5514,7 +5517,7 @@ contains
     integer,value :: im,jm,km,region
     integer :: id,ntot,i,j,k,m
     logical :: core
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
 
     id = (blockIdx%x - 1) * blockDim%x * blockDim%z +       &
          (threadIdx%z - 1) * blockDim%x + threadIdx%x - 1
@@ -5543,7 +5546,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -5567,7 +5570,7 @@ contains
     implicit none
     integer,value :: im,jm,km,js,je,apply_down,apply_up
     integer :: i,j,k,m
-    real(8) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -5594,7 +5597,7 @@ contains
     implicit none
     integer,value :: im,jm,km,ks,ke
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -5617,7 +5620,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -5640,7 +5643,7 @@ contains
     implicit none
     integer,value :: im,jm,km,js,je
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -5664,7 +5667,7 @@ contains
     implicit none
     integer,value :: im,jm,km,ks,ke,apply_back,apply_front
     integer :: i,j,k,m
-    real(8) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -5692,7 +5695,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_left,apply_right
     integer :: i,j,k,m
-    real(8) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -5720,7 +5723,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_down,apply_up
     integer :: i,j,k,m
-    real(8) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -5747,7 +5750,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -5769,10 +5772,10 @@ contains
     use commarray_gpu, only: vel_d,tmp_d,sigma_sp_d,qflux_sp_d
     implicit none
     integer,value :: im,jm,km
-    real(8),value :: reynolds,prandtl,const5,tempconst,tempconst1
+    real(real_kind),value :: reynolds,prandtl,const5,tempconst,tempconst1
     integer :: i,j,k
-    real(8) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
-    real(8) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
+    real(real_kind) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
+    real(real_kind) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -5782,16 +5785,16 @@ contains
     call gradient_at(i,j,k,im,jm,km,dvel,dtmp)
     tloc = tmp_d(i,j,k)
     miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
-    miu2 = 2.d0*miu
+    miu2 = 2.e0_real_kind*miu
     hcc = (miu/prandtl)/const5
 
     s11 = dvel(1,1)
-    s12 = 0.5d0*(dvel(1,2)+dvel(2,1))
-    s13 = 0.5d0*(dvel(1,3)+dvel(3,1))
+    s12 = 0.5e0_real_kind*(dvel(1,2)+dvel(2,1))
+    s13 = 0.5e0_real_kind*(dvel(1,3)+dvel(3,1))
     s22 = dvel(2,2)
-    s23 = 0.5d0*(dvel(2,3)+dvel(3,2))
+    s23 = 0.5e0_real_kind*(dvel(2,3)+dvel(3,2))
     s33 = dvel(3,3)
-    skk = (s11+s22+s33)/3.d0
+    skk = (s11+s22+s33)/3.e0_real_kind
 
     tau11 = miu2*(s11-skk)
     tau12 = miu2*s12
@@ -5817,10 +5820,10 @@ contains
     use commarray_gpu, only: vel_d,tmp_d,sigma_sp_d,qflux_sp_d
     implicit none
     integer,value :: im,jm,km,apply_left,apply_right
-    real(8),value :: reynolds,prandtl,const5,tempconst,tempconst1
+    real(real_kind),value :: reynolds,prandtl,const5,tempconst,tempconst1
     integer :: i,j,k
-    real(8) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
-    real(8) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
+    real(real_kind) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
+    real(real_kind) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -5831,16 +5834,16 @@ contains
 
     tloc = tmp_d(i,j,k)
     miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
-    miu2 = 2.d0*miu
+    miu2 = 2.e0_real_kind*miu
     hcc = (miu/prandtl)/const5
 
     s11=dvel(1,1)
-    s12=0.5d0*(dvel(1,2)+dvel(2,1))
-    s13=0.5d0*(dvel(1,3)+dvel(3,1))
+    s12=0.5e0_real_kind*(dvel(1,2)+dvel(2,1))
+    s13=0.5e0_real_kind*(dvel(1,3)+dvel(3,1))
     s22=dvel(2,2)
-    s23=0.5d0*(dvel(2,3)+dvel(3,2))
+    s23=0.5e0_real_kind*(dvel(2,3)+dvel(3,2))
     s33=dvel(3,3)
-    skk = (s11+s22+s33)/3.d0
+    skk = (s11+s22+s33)/3.e0_real_kind
 
     tau11 = miu2*(s11-skk)
     tau12 = miu2*s12
@@ -5866,10 +5869,10 @@ contains
     use commarray_gpu, only: vel_d,tmp_d,sigma_sp_d,qflux_sp_d
     implicit none
     integer,value :: im,jm,km,apply_down,apply_up
-    real(8),value :: reynolds,prandtl,const5,tempconst,tempconst1
+    real(real_kind),value :: reynolds,prandtl,const5,tempconst,tempconst1
     integer :: i,j,k
-    real(8) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
-    real(8) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
+    real(real_kind) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
+    real(real_kind) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -5880,16 +5883,16 @@ contains
 
     tloc = tmp_d(i,j,k)
     miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
-    miu2 = 2.d0*miu
+    miu2 = 2.e0_real_kind*miu
     hcc = (miu/prandtl)/const5
 
     s11=dvel(1,1)
-    s12=0.5d0*(dvel(1,2)+dvel(2,1))
-    s13=0.5d0*(dvel(1,3)+dvel(3,1))
+    s12=0.5e0_real_kind*(dvel(1,2)+dvel(2,1))
+    s13=0.5e0_real_kind*(dvel(1,3)+dvel(3,1))
     s22=dvel(2,2)
-    s23=0.5d0*(dvel(2,3)+dvel(3,2))
+    s23=0.5e0_real_kind*(dvel(2,3)+dvel(3,2))
     s33=dvel(3,3)
-    skk = (s11+s22+s33)/3.d0
+    skk = (s11+s22+s33)/3.e0_real_kind
 
     tau11 = miu2*(s11-skk)
     tau12 = miu2*s12
@@ -5915,10 +5918,10 @@ contains
     use commarray_gpu, only: vel_d,tmp_d,sigma_sp_d,qflux_sp_d
     implicit none
     integer,value :: im,jm,km,apply_back,apply_front
-    real(8),value :: reynolds,prandtl,const5,tempconst,tempconst1
+    real(real_kind),value :: reynolds,prandtl,const5,tempconst,tempconst1
     integer :: i,j,k
-    real(8) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
-    real(8) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
+    real(real_kind) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
+    real(real_kind) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -5929,16 +5932,16 @@ contains
 
     tloc = tmp_d(i,j,k)
     miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
-    miu2 = 2.d0*miu
+    miu2 = 2.e0_real_kind*miu
     hcc = (miu/prandtl)/const5
 
     s11=dvel(1,1)
-    s12=0.5d0*(dvel(1,2)+dvel(2,1))
-    s13=0.5d0*(dvel(1,3)+dvel(3,1))
+    s12=0.5e0_real_kind*(dvel(1,2)+dvel(2,1))
+    s13=0.5e0_real_kind*(dvel(1,3)+dvel(3,1))
     s22=dvel(2,2)
-    s23=0.5d0*(dvel(2,3)+dvel(3,2))
+    s23=0.5e0_real_kind*(dvel(2,3)+dvel(3,2))
     s33=dvel(3,3)
-    skk = (s11+s22+s33)/3.d0
+    skk = (s11+s22+s33)/3.e0_real_kind
 
     tau11 = miu2*(s11-skk)
     tau12 = miu2*s12
@@ -5965,10 +5968,10 @@ contains
     use commarray_gpu, only: vel_d,tmp_d,sigma_sp_d,qflux_sp_d
     implicit none
     integer,value :: im,jm,km,apply_left,apply_right,apply_down,apply_up
-    real(8),value :: reynolds,prandtl,const5,tempconst,tempconst1
+    real(real_kind),value :: reynolds,prandtl,const5,tempconst,tempconst1
     integer :: i,j,k
-    real(8) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
-    real(8) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
+    real(real_kind) :: dvel(3,3),dtmp(3),s11,s12,s13,s22,s23,s33,skk
+    real(real_kind) :: tau11,tau12,tau13,tau22,tau23,tau33,miu,miu2,hcc,tloc
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -5979,16 +5982,16 @@ contains
 
     tloc = tmp_d(i,j,k)
     miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
-    miu2 = 2.d0*miu
+    miu2 = 2.e0_real_kind*miu
     hcc = (miu/prandtl)/const5
 
     s11=dvel(1,1)
-    s12=0.5d0*(dvel(1,2)+dvel(2,1))
-    s13=0.5d0*(dvel(1,3)+dvel(3,1))
+    s12=0.5e0_real_kind*(dvel(1,2)+dvel(2,1))
+    s13=0.5e0_real_kind*(dvel(1,3)+dvel(3,1))
     s22=dvel(2,2)
-    s23=0.5d0*(dvel(2,3)+dvel(3,2))
+    s23=0.5e0_real_kind*(dvel(2,3)+dvel(3,2))
     s33=dvel(3,3)
-    skk = (s11+s22+s33)/3.d0
+    skk = (s11+s22+s33)/3.e0_real_kind
 
     tau11 = miu2*(s11-skk)
     tau12 = miu2*s12
@@ -6013,115 +6016,115 @@ contains
     use commarray_gpu, only: sigma_sp_d,qflux_sp_d,dxi_d,jacob_d
     implicit none
     integer,value :: i,j,k,idir,im,jm,km
-    real(8) :: f(5)
-    f(1) = 0.d0
-    f(2) = (real(sigma_sp_d(i,j,k,1),8)*dxi_d(i,j,k,idir,1) + &
-            real(sigma_sp_d(i,j,k,2),8)*dxi_d(i,j,k,idir,2) + &
-            real(sigma_sp_d(i,j,k,3),8)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,k)
-    f(3) = (real(sigma_sp_d(i,j,k,2),8)*dxi_d(i,j,k,idir,1) + &
-            real(sigma_sp_d(i,j,k,4),8)*dxi_d(i,j,k,idir,2) + &
-            real(sigma_sp_d(i,j,k,5),8)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,k)
-    f(4) = (real(sigma_sp_d(i,j,k,3),8)*dxi_d(i,j,k,idir,1) + &
-            real(sigma_sp_d(i,j,k,5),8)*dxi_d(i,j,k,idir,2) + &
-            real(sigma_sp_d(i,j,k,6),8)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,k)
-    f(5) = (real(qflux_sp_d(i,j,k,1),8)*dxi_d(i,j,k,idir,1) + &
-            real(qflux_sp_d(i,j,k,2),8)*dxi_d(i,j,k,idir,2) + &
-            real(qflux_sp_d(i,j,k,3),8)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,k)
+    real(real_kind) :: f(5)
+    f(1) = 0.e0_real_kind
+    f(2) = (real(sigma_sp_d(i,j,k,1),real_kind)*dxi_d(i,j,k,idir,1) + &
+            real(sigma_sp_d(i,j,k,2),real_kind)*dxi_d(i,j,k,idir,2) + &
+            real(sigma_sp_d(i,j,k,3),real_kind)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,k)
+    f(3) = (real(sigma_sp_d(i,j,k,2),real_kind)*dxi_d(i,j,k,idir,1) + &
+            real(sigma_sp_d(i,j,k,4),real_kind)*dxi_d(i,j,k,idir,2) + &
+            real(sigma_sp_d(i,j,k,5),real_kind)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,k)
+    f(4) = (real(sigma_sp_d(i,j,k,3),real_kind)*dxi_d(i,j,k,idir,1) + &
+            real(sigma_sp_d(i,j,k,5),real_kind)*dxi_d(i,j,k,idir,2) + &
+            real(sigma_sp_d(i,j,k,6),real_kind)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,k)
+    f(5) = (real(qflux_sp_d(i,j,k,1),real_kind)*dxi_d(i,j,k,idir,1) + &
+            real(qflux_sp_d(i,j,k,2),real_kind)*dxi_d(i,j,k,idir,2) + &
+            real(qflux_sp_d(i,j,k,3),real_kind)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,k)
   end subroutine stored_diff_flux_at_sp
 
   attributes(device) subroutine stored_diff_flux_at_xphysical_sp(i,j,k,idir,im,jm,km,f)
     use commarray_gpu, only: sigma_sp_d,qflux_sp_d,dxi_d,jacob_d
     implicit none
     integer,value :: i,j,k,idir,im,jm,km
-    real(8) :: f(5)
+    real(real_kind) :: f(5)
     integer :: jj,jk
 
     jj = idx_periodic(j,jm)
     jk = idx_periodic(k,km)
-    f(1) = 0.d0
-    f(2) = (real(sigma_sp_d(i,j,k,1),8)*dxi_d(i,j,k,idir,1) + &
-            real(sigma_sp_d(i,j,k,2),8)*dxi_d(i,j,k,idir,2) + &
-            real(sigma_sp_d(i,j,k,3),8)*dxi_d(i,j,k,idir,3))*jacob_d(i,jj,jk)
-    f(3) = (real(sigma_sp_d(i,j,k,2),8)*dxi_d(i,j,k,idir,1) + &
-            real(sigma_sp_d(i,j,k,4),8)*dxi_d(i,j,k,idir,2) + &
-            real(sigma_sp_d(i,j,k,5),8)*dxi_d(i,j,k,idir,3))*jacob_d(i,jj,jk)
-    f(4) = (real(sigma_sp_d(i,j,k,3),8)*dxi_d(i,j,k,idir,1) + &
-            real(sigma_sp_d(i,j,k,5),8)*dxi_d(i,j,k,idir,2) + &
-            real(sigma_sp_d(i,j,k,6),8)*dxi_d(i,j,k,idir,3))*jacob_d(i,jj,jk)
-    f(5) = (real(qflux_sp_d(i,j,k,1),8)*dxi_d(i,j,k,idir,1) + &
-            real(qflux_sp_d(i,j,k,2),8)*dxi_d(i,j,k,idir,2) + &
-            real(qflux_sp_d(i,j,k,3),8)*dxi_d(i,j,k,idir,3))*jacob_d(i,jj,jk)
+    f(1) = 0.e0_real_kind
+    f(2) = (real(sigma_sp_d(i,j,k,1),real_kind)*dxi_d(i,j,k,idir,1) + &
+            real(sigma_sp_d(i,j,k,2),real_kind)*dxi_d(i,j,k,idir,2) + &
+            real(sigma_sp_d(i,j,k,3),real_kind)*dxi_d(i,j,k,idir,3))*jacob_d(i,jj,jk)
+    f(3) = (real(sigma_sp_d(i,j,k,2),real_kind)*dxi_d(i,j,k,idir,1) + &
+            real(sigma_sp_d(i,j,k,4),real_kind)*dxi_d(i,j,k,idir,2) + &
+            real(sigma_sp_d(i,j,k,5),real_kind)*dxi_d(i,j,k,idir,3))*jacob_d(i,jj,jk)
+    f(4) = (real(sigma_sp_d(i,j,k,3),real_kind)*dxi_d(i,j,k,idir,1) + &
+            real(sigma_sp_d(i,j,k,5),real_kind)*dxi_d(i,j,k,idir,2) + &
+            real(sigma_sp_d(i,j,k,6),real_kind)*dxi_d(i,j,k,idir,3))*jacob_d(i,jj,jk)
+    f(5) = (real(qflux_sp_d(i,j,k,1),real_kind)*dxi_d(i,j,k,idir,1) + &
+            real(qflux_sp_d(i,j,k,2),real_kind)*dxi_d(i,j,k,idir,2) + &
+            real(qflux_sp_d(i,j,k,3),real_kind)*dxi_d(i,j,k,idir,3))*jacob_d(i,jj,jk)
   end subroutine stored_diff_flux_at_xphysical_sp
 
   attributes(device) subroutine stored_diff_flux_at_yphysical_sp(i,j,k,idir,im,jm,km,f)
     use commarray_gpu, only: sigma_sp_d,qflux_sp_d,dxi_d,jacob_d
     implicit none
     integer,value :: i,j,k,idir,im,jm,km
-    real(8) :: f(5)
+    real(real_kind) :: f(5)
     integer :: ii,kk
 
     ii = idx_periodic(i,im)
     kk = idx_periodic(k,km)
-    f(1) = 0.d0
-    f(2) = (real(sigma_sp_d(i,j,k,1),8)*dxi_d(i,j,k,idir,1) + &
-            real(sigma_sp_d(i,j,k,2),8)*dxi_d(i,j,k,idir,2) + &
-            real(sigma_sp_d(i,j,k,3),8)*dxi_d(i,j,k,idir,3))*jacob_d(ii,j,kk)
-    f(3) = (real(sigma_sp_d(i,j,k,2),8)*dxi_d(i,j,k,idir,1) + &
-            real(sigma_sp_d(i,j,k,4),8)*dxi_d(i,j,k,idir,2) + &
-            real(sigma_sp_d(i,j,k,5),8)*dxi_d(i,j,k,idir,3))*jacob_d(ii,j,kk)
-    f(4) = (real(sigma_sp_d(i,j,k,3),8)*dxi_d(i,j,k,idir,1) + &
-            real(sigma_sp_d(i,j,k,5),8)*dxi_d(i,j,k,idir,2) + &
-            real(sigma_sp_d(i,j,k,6),8)*dxi_d(i,j,k,idir,3))*jacob_d(ii,j,kk)
-    f(5) = (real(qflux_sp_d(i,j,k,1),8)*dxi_d(i,j,k,idir,1) + &
-            real(qflux_sp_d(i,j,k,2),8)*dxi_d(i,j,k,idir,2) + &
-            real(qflux_sp_d(i,j,k,3),8)*dxi_d(i,j,k,idir,3))*jacob_d(ii,j,kk)
+    f(1) = 0.e0_real_kind
+    f(2) = (real(sigma_sp_d(i,j,k,1),real_kind)*dxi_d(i,j,k,idir,1) + &
+            real(sigma_sp_d(i,j,k,2),real_kind)*dxi_d(i,j,k,idir,2) + &
+            real(sigma_sp_d(i,j,k,3),real_kind)*dxi_d(i,j,k,idir,3))*jacob_d(ii,j,kk)
+    f(3) = (real(sigma_sp_d(i,j,k,2),real_kind)*dxi_d(i,j,k,idir,1) + &
+            real(sigma_sp_d(i,j,k,4),real_kind)*dxi_d(i,j,k,idir,2) + &
+            real(sigma_sp_d(i,j,k,5),real_kind)*dxi_d(i,j,k,idir,3))*jacob_d(ii,j,kk)
+    f(4) = (real(sigma_sp_d(i,j,k,3),real_kind)*dxi_d(i,j,k,idir,1) + &
+            real(sigma_sp_d(i,j,k,5),real_kind)*dxi_d(i,j,k,idir,2) + &
+            real(sigma_sp_d(i,j,k,6),real_kind)*dxi_d(i,j,k,idir,3))*jacob_d(ii,j,kk)
+    f(5) = (real(qflux_sp_d(i,j,k,1),real_kind)*dxi_d(i,j,k,idir,1) + &
+            real(qflux_sp_d(i,j,k,2),real_kind)*dxi_d(i,j,k,idir,2) + &
+            real(qflux_sp_d(i,j,k,3),real_kind)*dxi_d(i,j,k,idir,3))*jacob_d(ii,j,kk)
   end subroutine stored_diff_flux_at_yphysical_sp
 
   attributes(device) subroutine stored_diff_flux_at_zphysical_sp(i,j,k,idir,im,jm,km,f)
     use commarray_gpu, only: sigma_sp_d,qflux_sp_d,dxi_d,jacob_d
     implicit none
     integer,value :: i,j,k,idir,im,jm,km
-    real(8) :: f(5)
+    real(real_kind) :: f(5)
     integer :: ii,jj
 
     ii = idx_periodic(i,im)
     jj = idx_periodic(j,jm)
-    f(1) = 0.d0
-    f(2) = (real(sigma_sp_d(i,j,k,1),8)*dxi_d(i,j,k,idir,1) + &
-            real(sigma_sp_d(i,j,k,2),8)*dxi_d(i,j,k,idir,2) + &
-            real(sigma_sp_d(i,j,k,3),8)*dxi_d(i,j,k,idir,3))*jacob_d(ii,jj,k)
-    f(3) = (real(sigma_sp_d(i,j,k,2),8)*dxi_d(i,j,k,idir,1) + &
-            real(sigma_sp_d(i,j,k,4),8)*dxi_d(i,j,k,idir,2) + &
-            real(sigma_sp_d(i,j,k,5),8)*dxi_d(i,j,k,idir,3))*jacob_d(ii,jj,k)
-    f(4) = (real(sigma_sp_d(i,j,k,3),8)*dxi_d(i,j,k,idir,1) + &
-            real(sigma_sp_d(i,j,k,5),8)*dxi_d(i,j,k,idir,2) + &
-            real(sigma_sp_d(i,j,k,6),8)*dxi_d(i,j,k,idir,3))*jacob_d(ii,jj,k)
-    f(5) = (real(qflux_sp_d(i,j,k,1),8)*dxi_d(i,j,k,idir,1) + &
-            real(qflux_sp_d(i,j,k,2),8)*dxi_d(i,j,k,idir,2) + &
-            real(qflux_sp_d(i,j,k,3),8)*dxi_d(i,j,k,idir,3))*jacob_d(ii,jj,k)
+    f(1) = 0.e0_real_kind
+    f(2) = (real(sigma_sp_d(i,j,k,1),real_kind)*dxi_d(i,j,k,idir,1) + &
+            real(sigma_sp_d(i,j,k,2),real_kind)*dxi_d(i,j,k,idir,2) + &
+            real(sigma_sp_d(i,j,k,3),real_kind)*dxi_d(i,j,k,idir,3))*jacob_d(ii,jj,k)
+    f(3) = (real(sigma_sp_d(i,j,k,2),real_kind)*dxi_d(i,j,k,idir,1) + &
+            real(sigma_sp_d(i,j,k,4),real_kind)*dxi_d(i,j,k,idir,2) + &
+            real(sigma_sp_d(i,j,k,5),real_kind)*dxi_d(i,j,k,idir,3))*jacob_d(ii,jj,k)
+    f(4) = (real(sigma_sp_d(i,j,k,3),real_kind)*dxi_d(i,j,k,idir,1) + &
+            real(sigma_sp_d(i,j,k,5),real_kind)*dxi_d(i,j,k,idir,2) + &
+            real(sigma_sp_d(i,j,k,6),real_kind)*dxi_d(i,j,k,idir,3))*jacob_d(ii,jj,k)
+    f(5) = (real(qflux_sp_d(i,j,k,1),real_kind)*dxi_d(i,j,k,idir,1) + &
+            real(qflux_sp_d(i,j,k,2),real_kind)*dxi_d(i,j,k,idir,2) + &
+            real(qflux_sp_d(i,j,k,3),real_kind)*dxi_d(i,j,k,idir,3))*jacob_d(ii,jj,k)
   end subroutine stored_diff_flux_at_zphysical_sp
 
   attributes(device) subroutine stored_diff_flux_at_xyphysical_sp(i,j,k,idir,im,jm,km,f)
     use commarray_gpu, only: sigma_sp_d,qflux_sp_d,dxi_d,jacob_d
     implicit none
     integer,value :: i,j,k,idir,im,jm,km
-    real(8) :: f(5)
+    real(real_kind) :: f(5)
     integer :: kk
 
     kk = idx_periodic(k,km)
-    f(1) = 0.d0
-    f(2) = (real(sigma_sp_d(i,j,k,1),8)*dxi_d(i,j,k,idir,1) + &
-            real(sigma_sp_d(i,j,k,2),8)*dxi_d(i,j,k,idir,2) + &
-            real(sigma_sp_d(i,j,k,3),8)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,kk)
-    f(3) = (real(sigma_sp_d(i,j,k,2),8)*dxi_d(i,j,k,idir,1) + &
-            real(sigma_sp_d(i,j,k,4),8)*dxi_d(i,j,k,idir,2) + &
-            real(sigma_sp_d(i,j,k,5),8)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,kk)
-    f(4) = (real(sigma_sp_d(i,j,k,3),8)*dxi_d(i,j,k,idir,1) + &
-            real(sigma_sp_d(i,j,k,5),8)*dxi_d(i,j,k,idir,2) + &
-            real(sigma_sp_d(i,j,k,6),8)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,kk)
-    f(5) = (real(qflux_sp_d(i,j,k,1),8)*dxi_d(i,j,k,idir,1) + &
-            real(qflux_sp_d(i,j,k,2),8)*dxi_d(i,j,k,idir,2) + &
-            real(qflux_sp_d(i,j,k,3),8)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,kk)
+    f(1) = 0.e0_real_kind
+    f(2) = (real(sigma_sp_d(i,j,k,1),real_kind)*dxi_d(i,j,k,idir,1) + &
+            real(sigma_sp_d(i,j,k,2),real_kind)*dxi_d(i,j,k,idir,2) + &
+            real(sigma_sp_d(i,j,k,3),real_kind)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,kk)
+    f(3) = (real(sigma_sp_d(i,j,k,2),real_kind)*dxi_d(i,j,k,idir,1) + &
+            real(sigma_sp_d(i,j,k,4),real_kind)*dxi_d(i,j,k,idir,2) + &
+            real(sigma_sp_d(i,j,k,5),real_kind)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,kk)
+    f(4) = (real(sigma_sp_d(i,j,k,3),real_kind)*dxi_d(i,j,k,idir,1) + &
+            real(sigma_sp_d(i,j,k,5),real_kind)*dxi_d(i,j,k,idir,2) + &
+            real(sigma_sp_d(i,j,k,6),real_kind)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,kk)
+    f(5) = (real(qflux_sp_d(i,j,k,1),real_kind)*dxi_d(i,j,k,idir,1) + &
+            real(qflux_sp_d(i,j,k,2),real_kind)*dxi_d(i,j,k,idir,2) + &
+            real(qflux_sp_d(i,j,k,3),real_kind)*dxi_d(i,j,k,idir,3))*jacob_d(i,j,kk)
   end subroutine stored_diff_flux_at_xyphysical_sp
 
   attributes(global) subroutine diffusion_rhs_x_stored_sp_global_kernel(im,jm,km,region)
@@ -6130,7 +6133,7 @@ contains
     integer,value :: im,jm,km,region
     integer :: id,ntot,i,j,k,m
     logical :: core
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     ntot = (im + 1) * (jm + 1) * (km + 1)
@@ -6159,7 +6162,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_left,apply_right
     integer :: i,j,k,m
-    real(8) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -6187,7 +6190,7 @@ contains
     integer,value :: im,jm,km,region
     integer :: id,ntot,i,j,k,m
     logical :: core
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
 
     id = (blockIdx%x - 1) * blockDim%x * blockDim%y +       &
          (threadIdx%y - 1) * blockDim%x + threadIdx%x - 1
@@ -6217,7 +6220,7 @@ contains
     integer,value :: im,jm,km,region
     integer :: id,ntot,i,j,k,m
     logical :: core
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
 
     id = (blockIdx%x - 1) * blockDim%x * blockDim%z +       &
          (threadIdx%z - 1) * blockDim%x + threadIdx%x - 1
@@ -6246,7 +6249,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -6270,7 +6273,7 @@ contains
     implicit none
     integer,value :: im,jm,km,js,je,apply_down,apply_up
     integer :: i,j,k,m
-    real(8) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -6297,7 +6300,7 @@ contains
     implicit none
     integer,value :: im,jm,km,ks,ke
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -6320,7 +6323,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -6343,7 +6346,7 @@ contains
     implicit none
     integer,value :: im,jm,km,js,je
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -6367,7 +6370,7 @@ contains
     implicit none
     integer,value :: im,jm,km,ks,ke,apply_back,apply_front
     integer :: i,j,k,m
-    real(8) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -6395,7 +6398,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_left,apply_right
     integer :: i,j,k,m
-    real(8) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -6423,7 +6426,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_down,apply_up
     integer :: i,j,k,m
-    real(8) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -6450,7 +6453,7 @@ contains
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke
     integer :: i,j,k,m
-    real(8) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
+    real(real_kind) :: fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1

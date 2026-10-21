@@ -10,7 +10,7 @@ struct PackWallField : viskores::worklet::WorkletMapField {
   VISKORES_CONT PackWallField(viskores::Id n,int c):nodes(n),component(c) {}
   template<class Coordinates,class Fields>
   VISKORES_EXEC void operator()(viskores::Id id,const Coordinates& input,const Fields& fields,
-      viskores::Vec3f& xyz,double& scalar) const {
+      astr_insitu::NativeVector& xyz,Real& scalar) const {
     for(int d=0;d<3;++d) xyz[d]=input.Get(id+d*nodes);
     scalar=fields.Get(id+component*nodes);
   }
@@ -27,10 +27,10 @@ struct WallTriangleIndex : viskores::worklet::WorkletMapField {
     const auto base=local%im+(im+1)*(local/im+wall*(km+1));
     const viskores::Id positive[6]={0,im+1,im+2,0,im+2,1};
     const viskores::Id negative[6]={0,1,im+2,0,im+2,im+1};
-    index=base+(fields.Get(base+normal_component*nodes)>0.?positive[corner]:negative[corner]);
+    index=base+(fields.Get(base+normal_component*nodes)>Real(0.)?positive[corner]:negative[corner]);
   }
 };
-using WallAudit=viskores::Vec<double,3>;
+using WallAudit=viskores::Vec<Real,3>;
 struct CheckWallTriangles : viskores::worklet::WorkletMapField {
   using ControlSignature=void(FieldIn,WholeArrayIn,WholeArrayIn,WholeArrayIn,FieldOut);
   using ExecutionSignature=void(_1,_2,_3,_4,_5);
@@ -41,14 +41,14 @@ struct CheckWallTriangles : viskores::worklet::WorkletMapField {
       const Fields& fields,WallAudit& result) const {
     const auto a=indices.Get(3*triangle),b=indices.Get(3*triangle+1),c=indices.Get(3*triangle+2);
     const auto normal=viskores::Cross(xyz.Get(b)-xyz.Get(a),xyz.Get(c)-xyz.Get(a));
-    const double area=.5*viskores::Sqrt(viskores::Dot(normal,normal)),side=fields.Get(a+normal_component*nodes);
-    const bool valid=viskores::IsFinite(area) && area>0. && viskores::IsFinite(side) &&
-      side!=0. && viskores::Abs(side)<=1. && normal[1]*side>0. &&
-      fields.Get(b+normal_component*nodes)*side>0. && fields.Get(c+normal_component*nodes)*side>0.;
-    result=WallAudit(valid?area:0.,valid?0.:1.,side>0.?area:0.);
+    const Real area=Real(.5)*viskores::Sqrt(viskores::Dot(normal,normal)),side=fields.Get(a+normal_component*nodes);
+    const bool valid=viskores::IsFinite(area) && area>Real(0.) && viskores::IsFinite(side) &&
+      side!=Real(0.) && viskores::Abs(side)<=Real(1.) && normal[1]*side>Real(0.) &&
+      fields.Get(b+normal_component*nodes)*side>Real(0.) && fields.Get(c+normal_component*nodes)*side>Real(0.);
+    result=WallAudit(valid?area:Real(0.),valid?Real(0.):Real(1.),side>Real(0.)?area:Real(0.));
   }
 };
-using WallMeasure=viskores::Vec<double,2>;
+using WallMeasure=viskores::Vec<Real,2>;
 struct CheckWallQuads : viskores::worklet::WorkletMapField {
   using ControlSignature=void(FieldIn,WholeArrayIn,FieldOut);
   using ExecutionSignature=void(_1,_2,_3);
@@ -59,27 +59,27 @@ struct CheckWallQuads : viskores::worklet::WorkletMapField {
     const auto wall=cell/(im*km),local=cell%(im*km);
     const auto base=local%im+(im+1)*(local/im+wall*(km+1));
     const auto a=xyz.Get(base),b=xyz.Get(base+1),c=xyz.Get(base+im+1),d=xyz.Get(base+im+2);
-    const double gauss[2]={.5-.5/viskores::Sqrt(3.),.5+.5/viskores::Sqrt(3.)};
-    double area=0.;viskores::Vec3f reference(0.);
+    const Real gauss[2]={Real(.5)-Real(.5)/viskores::Sqrt(Real(3.)),Real(.5)+Real(.5)/viskores::Sqrt(Real(3.))};
+    Real area=Real(0.);astr_insitu::NativeVector reference(Real(0.));
     for(int q=0;q<2;++q) for(int p=0;p<2;++p) {
-      const double s=gauss[p],t=gauss[q];
-      const auto ds=(1.-t)*(b-a)+t*(d-c),dt=(1.-s)*(c-a)+s*(d-b);
+      const Real s=gauss[p],t=gauss[q];
+      const auto ds=(Real(1.)-t)*(b-a)+t*(d-c),dt=(Real(1.)-s)*(c-a)+s*(d-b);
       const auto normal=viskores::Cross(ds,dt);
-      const double measure=viskores::Sqrt(viskores::Dot(normal,normal));
-      if(!viskores::IsFinite(measure) || measure<=0.) {result=WallMeasure(0.,1.);return;}
+      const Real measure=viskores::Sqrt(viskores::Dot(normal,normal));
+      if(!viskores::IsFinite(measure) || measure<=Real(0.)) {result=WallMeasure(Real(0.),Real(1.));return;}
       if(p==0 && q==0) reference=normal;
-      if(viskores::Dot(reference,normal)<=0.) {result=WallMeasure(0.,1.);return;}
-      area+=measure/4.;
+      if(viskores::Dot(reference,normal)<=Real(0.)) {result=WallMeasure(Real(0.),Real(1.));return;}
+      area+=measure/Real(4.);
     }
-    result=WallMeasure(area,viskores::IsFinite(area) && area>0.?0.:1.);
+    result=WallMeasure(area,viskores::IsFinite(area) && area>Real(0.)?Real(0.):Real(1.));
   }
 };
 struct WallProduct {
   viskores::cont::DataSet data;
-  WallAudit audit{0.,0.,0.};
-  WallMeasure measure{0.,0.};
+  WallAudit audit{Real(0.),Real(0.),Real(0.)};
+  WallMeasure measure{Real(0.),Real(0.)};
 };
-inline WallProduct extract_bc41_wall(double* coordinates_pointer,double* fields_pointer,
+inline WallProduct extract_bc41_wall(Real* coordinates_pointer,Real* fields_pointer,
     int im,int km,int nw,int component,const char* name,int field_count=4,int normal_component=3) {
   if(im<1 || km<1 || nw<0 || nw>2 || field_count<2 || field_count>18 || component<0 ||
       component>=field_count || normal_component<0 || normal_component>=field_count ||
@@ -90,8 +90,8 @@ inline WallProduct extract_bc41_wall(double* coordinates_pointer,double* fields_
   if(!nodes) return result;
   auto source=borrow_cuda_array(coordinates_pointer,nodes*3);
   auto fields=borrow_cuda_array(fields_pointer,nodes*field_count);
-  viskores::cont::ArrayHandle<viskores::Vec3f> xyz;
-  viskores::cont::ArrayHandle<double> scalar;
+  viskores::cont::ArrayHandle<astr_insitu::NativeVector> xyz;
+  viskores::cont::ArrayHandle<Real> scalar;
   viskores::cont::ArrayHandle<viskores::Id> indices;
   viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});
   invoke(PackWallField(nodes,component),viskores::cont::ArrayHandleIndex(nodes),source,fields,xyz,scalar);
@@ -101,15 +101,15 @@ inline WallProduct extract_bc41_wall(double* coordinates_pointer,double* fields_
   viskores::cont::ArrayHandle<WallAudit> audit;
   invoke(CheckWallTriangles(nodes,normal_component),viskores::cont::ArrayHandleIndex(cells),xyz,indices,fields,audit);
   synchronize_device_stage("CheckWallTriangles");
-  result.audit=viskores::cont::Algorithm::Reduce(viskores::cont::DeviceAdapterTagCuda{},audit,WallAudit(0.));
+  result.audit=viskores::cont::Algorithm::Reduce(viskores::cont::DeviceAdapterTagCuda{},audit,WallAudit(Real(0.)));
   synchronize_device_stage("WallTriangleReduce");
-  if(result.audit[1]!=0.) throw std::runtime_error("Invalid wall triangle area/winding");
+  if(result.audit[1]!=Real(0.)) throw std::runtime_error("Invalid wall triangle area/winding");
   viskores::cont::ArrayHandle<WallMeasure> measures;
   invoke(CheckWallQuads(im,km),viskores::cont::ArrayHandleIndex(cells/2),xyz,measures);
   synchronize_device_stage("CheckWallQuads");
-  result.measure=viskores::cont::Algorithm::Reduce(viskores::cont::DeviceAdapterTagCuda{},measures,WallMeasure(0.));
+  result.measure=viskores::cont::Algorithm::Reduce(viskores::cont::DeviceAdapterTagCuda{},measures,WallMeasure(Real(0.)));
   synchronize_device_stage("WallQuadReduce");
-  if(result.measure[1]!=0.) throw std::runtime_error("Invalid wall bilinear quadrature");
+  if(result.measure[1]!=Real(0.)) throw std::runtime_error("Invalid wall bilinear quadrature");
   require_device_only(source);require_device_only(fields);require_device_only(xyz);
   require_device_only(scalar);require_device_only(indices);require_device_only(audit);
   require_device_only(measures);

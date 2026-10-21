@@ -56,7 +56,7 @@ def parent_chain(head, budget):
         current = plain_path(current / record["parent"])
     chain.reverse()
     for (_, parent), (_, child) in zip(chain, chain[1:]):
-        if parent["step"] > child["step"] or parent["time"] > child["time"]:
+        if parent["step"] > child["step"] or parent["time"] > child["parent_time"]:
             raise ValueError("restore point predates parent segment origin")
     return chain, retained_bytes(chain) + retained_bytes(seen)
 
@@ -99,20 +99,25 @@ def combine_series(head, *, output=None, catalog_bytes=1048576):
             geometry_fp = fingerprint(geometry)
             scan_bytes += geometry_fp[0]
             cutoff = chain[position + 1][1] if position + 1 < len(chain) else None
+            segment_layout = None
             for frame_name in names:
                 if cutoff is not None and int(frame_name[4:]) > cutoff["step"]:
                     excluded += 1
                     continue
                 step, time, layout, grid, scanned = validate_frame(
                     segment / frame_name, geometry, geometry_fp, record["fingerprint"])
+                if segment_layout is not None and segment_layout != layout:
+                    raise ValueError('field/precision layout changes within a segment')
+                segment_layout = layout
+                physical_layout = (*layout[:2], tuple((label, dimensions) for label, _, dimensions in layout[2]), layout[3])
                 scan_bytes += scanned
                 if step < record["step"] or time < record["time"]:
                     raise ValueError("frame clock predates its segment origin")
-                if cutoff is not None and time > cutoff["time"]:
+                if cutoff is not None and time > cutoff["parent_time"]:
                     raise ValueError("parent frame time exceeds its declared restore point")
                 if step <= previous_step or time <= previous_time:
                     raise ValueError("duplicate or nonmonotonic clocks in explicit parent chain")
-                if signature is not None and signature != layout:
+                if signature is not None and signature != physical_layout:
                     raise ValueError("field/plane layout changes across the parent chain")
                 validate_units(segment / "input.txt", layout[1])
                 if destination is not None:
@@ -121,7 +126,7 @@ def combine_series(head, *, output=None, catalog_bytes=1048576):
                         item.text = os.path.relpath(segment / path, destination) + ":" + dataset
                     ledger.write(f"{step} {time:.17g} {os.path.relpath(segment / frame_name, destination)}\n")
                     xml.write(ET.tostring(grid, encoding="utf-8") + b"\n")
-                previous_step, previous_time, signature = step, time, layout
+                previous_step, previous_time, signature = step, time, physical_layout
                 count += 1
         if count == 0:
             raise ValueError("no sealed frames in explicit parent chain")

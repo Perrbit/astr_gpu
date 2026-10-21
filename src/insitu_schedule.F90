@@ -1,5 +1,7 @@
 module insitu_schedule
-  use iso_fortran_env, only: int64,int32,real64
+  use iso_fortran_env, only: int64,int32
+  use astr_precision, only: real_kind,real_bytes
+  use astr_precision_io, only: read_source_reals,source_real_matches
   use ieee_arithmetic, only: ieee_is_finite
   implicit none
   private
@@ -11,22 +13,22 @@ module insitu_schedule
     private
     character(5) :: mode=''
     integer(int64) :: interval=0,origin_step=0,seen_step=0,index=0,emitted_step=-1
-    real(real64) :: period=0,origin_time=0,seen_time=0
+    real(real_kind) :: period=0,origin_time=0,seen_time=0
     logical :: initial=.false.,final=.false.,ready=.false.,ended=.false.
   end type
 contains
   subroutine schedule_next_target(state,step,time,ok)
     type(sample_schedule),intent(in) :: state
     integer(int64),intent(out) :: step
-    real(real64),intent(out) :: time
+    real(real_kind),intent(out) :: time
     logical,intent(out) :: ok
-    step=-1; time=-1.d0; ok=state%ready
+    step=-1; time=-1.e0_real_kind; ok=state%ready
     if(.not.ok) return
     if(state%mode=='steps') then
       ok=state%index< (huge(step)-state%origin_step)/state%interval
       if(ok) step=state%origin_step+(state%index+1)*state%interval
     else
-      time=state%origin_time+real(state%index+1,real64)*state%period
+      time=state%origin_time+real(state%index+1,real_kind)*state%period
       ok=ieee_is_finite(time).and.time>state%seen_time
     endif
   end subroutine
@@ -42,7 +44,7 @@ contains
     type(sample_schedule),intent(in) :: s
     character(*),intent(in) :: batch
     integer(int64),intent(in) :: step
-    real(real64),intent(in) :: time
+    real(real_kind),intent(in) :: time
     logical,intent(out) :: ok
     character(64) :: identity
     integer(int32) :: flags(3)
@@ -59,31 +61,42 @@ contains
     ok=ios==0
   end subroutine
 
-  subroutine restore_schedule_state(unit,s,batch,step,time,ok)
+  subroutine restore_schedule_state(unit,s,batch,step,time,ok,source_bytes)
     integer,intent(in) :: unit
     type(sample_schedule),intent(inout) :: s
     character(*),intent(in) :: batch
     integer(int64),intent(in) :: step
-    real(real64),intent(in) :: time
+    real(real_kind),intent(in) :: time
     logical,intent(out) :: ok
+    integer,optional,intent(in) :: source_bytes
     type(sample_schedule) :: candidate,check
     character(8) :: magic
     character(64) :: identity
     integer(int32) :: flags(3)
     integer(int64) :: saved_step,crossed
-    real(real64) :: saved_time
-    logical :: valid,emit
+    real(real_kind) :: saved_time
+    logical :: valid,emit,converted_clock
     integer :: ios
     ok=.false.
+    converted_clock=.false.
+    if(present(source_bytes)) converted_clock=source_bytes/=real_bytes
     if(.not.s%ready.or.len_trim(batch)==0.or.len_trim(batch)>64) return
     if(step<0.or..not.ieee_is_finite(time)) return
-    read(unit,iostat=ios) magic,identity,saved_step,saved_time,candidate%mode, &
-      candidate%interval,candidate%period,candidate%origin_step,candidate%origin_time, &
-      candidate%seen_step,candidate%seen_time,candidate%index,candidate%emitted_step,flags
+    read(unit,iostat=ios) magic,identity,saved_step
+    if(ios==0) call read_source_reals(unit,saved_time,source_bytes,ios)
+    if(ios==0) read(unit,iostat=ios) candidate%mode,candidate%interval
+    if(ios==0) call read_source_reals(unit,candidate%period,source_bytes,ios)
+    if(ios==0) read(unit,iostat=ios) candidate%origin_step
+    if(ios==0) call read_source_reals(unit,candidate%origin_time,source_bytes,ios)
+    if(ios==0) read(unit,iostat=ios) candidate%seen_step
+    if(ios==0) call read_source_reals(unit,candidate%seen_time,source_bytes,ios)
+    if(ios==0) read(unit,iostat=ios) candidate%index,candidate%emitted_step,flags
     if(ios/=0) return
     if(magic/='ASTRSC01'.or.identity/=batch.or.saved_step/=step.or.saved_time/=time) return
     if(any(flags<0).or.any(flags>1)) return
-    if(candidate%mode/=s%mode.or.candidate%interval/=s%interval.or.candidate%period/=s%period) return
+    if(candidate%mode/=s%mode.or.candidate%interval/=s%interval.or. &
+      .not.source_real_matches(candidate%period,s%period,source_bytes)) return
+    if(converted_clock) candidate%period=s%period
     if(candidate%origin_step/=s%origin_step.or.candidate%origin_time/=s%origin_time) return
     if((flags(1)==1).neqv.s%initial) return
     if((flags(2)==1).neqv.s%final) return
@@ -97,7 +110,13 @@ contains
       s%initial,s%final,valid)
     if(.not.valid) return
     call poll_schedule(check,candidate%seen_step,candidate%seen_time,.false.,emit,crossed,valid)
-    if(.not.valid.or.check%index/=candidate%index) return
+    if(.not.valid) return
+    if(converted_clock) then
+      ! The target index is a precision-dependent cache, not an emitted sample.
+      candidate%index=check%index
+    else
+      if(check%index/=candidate%index) return
+    endif
     candidate%initial=s%initial
     candidate%final=s%final
     candidate%ready=.true.
@@ -110,7 +129,7 @@ contains
     type(sample_schedule),intent(out) :: s
     character(*),intent(in) :: mode
     integer(int64),intent(in) :: step_interval,origin_step
-    real(real64),intent(in) :: time_interval,origin_time
+    real(real_kind),intent(in) :: time_interval,origin_time
     logical,intent(in) :: initial,final
     logical,intent(out) :: ok
     ok=.false.
@@ -142,12 +161,12 @@ contains
   subroutine poll_schedule(s,step,t,is_final,emit,crossed,ok)
     type(sample_schedule),intent(inout) :: s
     integer(int64),intent(in) :: step
-    real(real64),intent(in) :: t
+    real(real_kind),intent(in) :: t
     logical,intent(in) :: is_final
     logical,intent(out) :: emit,ok
     integer(int64),intent(out) :: crossed
     integer(int64) :: index
-    real(real64) :: ratio,target,next
+    real(real_kind) :: ratio,target,next
     emit=.false.
     ok=.false.
     crossed=0
@@ -160,16 +179,16 @@ contains
       ratio=(t-s%origin_time)/s%period
       if(.not.ieee_is_finite(ratio)) return
       ! Bound the index so integer-to-FP64 conversion remains exact.
-      if(ratio<0.or.ratio>=2.d0**52-2.d0) return
+      if(ratio<0.or.ratio>=2.e0_real_kind**52-2.e0_real_kind) return
       index=floor(ratio,kind=int64)
-      target=s%origin_time+real(index,real64)*s%period
+      target=s%origin_time+real(index,real_kind)*s%period
       if(.not.ieee_is_finite(target)) return
       if(target>t) index=index-1
-      next=s%origin_time+real(index+1,real64)*s%period
+      next=s%origin_time+real(index+1,real_kind)*s%period
       if(.not.ieee_is_finite(next)) return
       if(next<=t) index=index+1
-      target=s%origin_time+real(index,real64)*s%period
-      next=s%origin_time+real(index+1,real64)*s%period
+      target=s%origin_time+real(index,real_kind)*s%period
+      next=s%origin_time+real(index+1,real_kind)*s%period
       ! Compare representable target times strictly; never emit early via epsilon.
       if(.not.ieee_is_finite(next).or.next<=target.or.target>t.or.next<=t) return
     endif

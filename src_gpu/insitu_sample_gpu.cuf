@@ -1,9 +1,12 @@
 module insitu_sample_gpu
+  use astr_precision, only: real_kind,real_bytes,clock_kind,real_to_word,word_to_real
+  use astr_precision_mpi, only: mpi_real_type
   use cudafor
   ! Avoid NVFORTRAN 26.1 MPI COMMON/subprogram name conflicts with this module.
   use mpi
   use iso_fortran_env, only: int64
   implicit none
+  private :: real_kind,real_bytes,clock_kind,real_to_word,word_to_real,mpi_real_type
   private
   public :: download_sample_gpu
   public :: derive_sample_gpu
@@ -20,13 +23,13 @@ module insitu_sample_gpu
 #endif
   logical,save :: device_sampling_initialized=.false.
   character(16),save :: device_sampling_transport=''
-  real(8),device,allocatable,target,save :: static_coordinates_d(:,:)
+  real(real_kind),device,allocatable,target,save :: static_coordinates_d(:,:)
   integer,save :: static_coordinate_key(12)=0
   integer(int64),save :: static_coordinate_source=0
 contains
   integer(int64) function sampling_geometry_device_bytes() result(bytes)
     bytes=0
-    if(allocated(static_coordinates_d)) bytes=8_int64*size(static_coordinates_d,kind=int64)
+    if(allocated(static_coordinates_d)) bytes=int(real_bytes,int64)*size(static_coordinates_d,kind=int64)
   end function
 
   subroutine release_static_coordinates_gpu()
@@ -49,8 +52,8 @@ contains
     use insitu_device_velocity, only: trace_sample_memory_gpu
 #endif
     integer,intent(in) :: extent(3),offset(3),global_extent(3),hm,comm
-    real(8),device,intent(in) :: source(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3)
-    real(8),device,pointer,contiguous,intent(out) :: coordinates(:,:)
+    real(real_kind),device,intent(in) :: source(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3)
+    real(real_kind),device,pointer,contiguous,intent(out) :: coordinates(:,:)
     integer(int64),intent(in) :: budget,reserve,retained
     integer :: status,device,generation,key(12)
     integer(int64) :: host_slots,device_slots,d2h,h2d,exchanges,address
@@ -79,7 +82,7 @@ contains
     use parallel, only: isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
     use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported
     use insitu_m12_gpu, only: m12_diagnostic_layout_supported
-    use precision_mode_gpu, only: gpu_precision_mode,GPU_PRECISION_FP64
+    use precision_mode_gpu, only: gpu_precision_mode,GPU_PRECISION_NATIVE
     use halo_transport_gpu, only: halo_transport_idle
     use halo_exchange_gpu, only: solution_pipeline_active
     use checkpoint_state_io, only: checkpoint_state_require
@@ -89,7 +92,7 @@ contains
     integer :: neighbors(2,3)
     call release_static_coordinates_gpu()
     call checkpoint_state_require(gpu_profile_mp_ld_flatplate_supported().and.m12_diagnostic_layout_supported().and. &
-      use_gpu.and.numq==5.and.hm>=3.and.gpu_precision_mode==GPU_PRECISION_FP64,MPI_COMM_WORLD, &
+      use_gpu.and.numq==5.and.hm>=3.and.gpu_precision_mode==GPU_PRECISION_NATIVE,MPI_COMM_WORLD, &
       'local M12 planes require the admitted five-variable FP64 MP-LD x-slab case')
     call checkpoint_state_require(halo_transport_idle().and..not.solution_pipeline_active, &
       MPI_COMM_WORLD,'local M12 planes require completed solver transport')
@@ -114,12 +117,12 @@ contains
     use parallel, only: jg0,isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront,mpisize
     use halo_transport_gpu, only: halo_transport_idle
     use halo_exchange_gpu, only: solution_pipeline_active
-    use precision_mode_gpu, only: gpu_precision_mode,GPU_PRECISION_FP64
+    use precision_mode_gpu, only: gpu_precision_mode,GPU_PRECISION_NATIVE
     use insitu_device_velocity, only: begin_velocity_transport_gpu
     use insitu_wall_fields_gpu, only: capture_air5_wall_fields_gpu
 #endif
     character(*),intent(in) :: mode
-    real(8),device,allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
+    real(real_kind),device,allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
 #ifdef ASTR_AIR5_CHEMISTRY
     integer :: neighbors(2,3),sizes(3),extent(3)
@@ -129,7 +132,7 @@ contains
       all([ia,ja,ka]==16).and.numq==11.and.num_species==5.and.num_modequ==1.and.lcomb.and. &
       .not.nondimen.and.ndims==3.and.all(bctype==[11,50,41,51,1,1]).and. &
       trim(difschm)=='643e'.and.trim(conschm)=='643e'.and.mpisize<=2.and.hm>=3.and.jm>=2.and. &
-      gpu_precision_mode==GPU_PRECISION_FP64,MPI_COMM_WORLD, &
+      gpu_precision_mode==GPU_PRECISION_NATIVE,MPI_COMM_WORLD, &
       'device AIR5 walls require noncatalytic FP64 643e Cartesian HBL 16^3 NP=1/2')
     call checkpoint_state_require(halo_transport_idle().and..not.solution_pipeline_active, &
       MPI_COMM_WORLD,'device AIR5 walls require completed solver transport')
@@ -156,11 +159,11 @@ contains
     use checkpoint_state_io, only: checkpoint_state_require
     use halo_transport_gpu, only: halo_transport_idle
     use halo_exchange_gpu, only: solution_pipeline_active
-    use precision_mode_gpu, only: gpu_precision_mode,GPU_PRECISION_FP64
+    use precision_mode_gpu, only: gpu_precision_mode,GPU_PRECISION_NATIVE
     use insitu_device_velocity, only: begin_velocity_transport_gpu
     use insitu_wall_fields_gpu, only: capture_channel_wall_fields_gpu
     character(*),intent(in) :: mode
-    real(8),device,allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
+    real(real_kind),device,allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
     integer :: neighbors(2,3),sizes(3),extent(3)
     logical :: candidate
@@ -171,7 +174,7 @@ contains
     call checkpoint_state_require(use_gpu.and.candidate.and.numq==5.and.num_species==0.and. &
       nondimen.and.ndims==3.and.all(bctype==[1,1,41,41,1,1]).and. &
       trim(difschm)=='643e'.and.trim(conschm)=='643e'.and.mpisize<=2.and.hm>=3.and. &
-      gpu_precision_mode==GPU_PRECISION_FP64,MPI_COMM_WORLD, &
+      gpu_precision_mode==GPU_PRECISION_NATIVE,MPI_COMM_WORLD, &
       'device wall fields require bc41 FP64 643e channel 16^3 or CURVE TGV 32^3 NP=1/2')
     call checkpoint_state_require(halo_transport_idle().and..not.solution_pipeline_active, &
       MPI_COMM_WORLD,'device wall fields require completed solver transport')
@@ -198,13 +201,13 @@ contains
     use checkpoint_state_io, only: checkpoint_state_require
     use halo_transport_gpu, only: halo_transport_idle
     use halo_exchange_gpu, only: solution_pipeline_active
-    use precision_mode_gpu, only: gpu_precision_mode,GPU_PRECISION_FP64
+    use precision_mode_gpu, only: gpu_precision_mode,GPU_PRECISION_NATIVE
     use insitu_device_velocity, only: begin_velocity_transport_gpu,snapshot_sample_velocity_gpu, &
       extend_sample_velocity_gpu,derive_sample_velocity_gpu
     use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported
     use insitu_m12_gpu, only: m12_diagnostic_layout_supported
     character(*),intent(in) :: mode
-    real(8),device,allocatable,intent(out) :: velocity(:,:),halo(:,:,:,:),derived(:,:)
+    real(real_kind),device,allocatable,intent(out) :: velocity(:,:),halo(:,:,:,:),derived(:,:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
     integer(int64),intent(in),optional :: retained_other
     integer(int64) :: extra
@@ -213,7 +216,7 @@ contains
     logical,intent(in),optional :: retain_volume_velocity
     logical :: demo,calculate_q,curve_wall,curve_demo,profile_mp_ld,compact_q
     integer :: neighbors(2,3),sizes(3),extent(3),ranks,ierr,status
-    real(8) :: phase_started
+    real(clock_kind) :: phase_started
     extent=[im,jm,km]; sizes=[isize,jsize,ksize]
     demo=.false.
     if(present(demonstration)) demo=demonstration
@@ -243,10 +246,10 @@ contains
       (all(bctype==1).or.curve_wall).and.use_gpu.and.(.not.lreadgrid.or..not.demo).and.numq==5.and.hm>=3.and. &
       trim(difschm)=='643e'.and. &
       trim(conschm)=='643e'.and.trim(flowtype)=='tgv'.and.ndims==3.and.num_species==0.and.nondimen.and. &
-      gpu_precision_mode==GPU_PRECISION_FP64)), &
+      gpu_precision_mode==GPU_PRECISION_NATIVE)), &
       MPI_COMM_WORLD,'device sample requires admitted static FP64 TGV or bounded MP-LD profile case')
     call checkpoint_state_require(use_gpu.and.numq==5.and.hm>=3.and. &
-      gpu_precision_mode==GPU_PRECISION_FP64,MPI_COMM_WORLD,'device sample requires five-variable FP64 CUDA state')
+      gpu_precision_mode==GPU_PRECISION_NATIVE,MPI_COMM_WORLD,'device sample requires five-variable FP64 CUDA state')
     call checkpoint_state_require(halo_transport_idle().and..not.solution_pipeline_active, &
       MPI_COMM_WORLD,'device sample requires completed solver transport')
     if(.not.device_sampling_initialized) then
@@ -273,7 +276,7 @@ contains
     else
       allocate(derived(1,1),stat=status)
       call checkpoint_state_require(status==0,MPI_COMM_WORLD,'unused Q pointer allocation')
-      derived=0.d0
+      derived=0.e0_real_kind
     endif
     if(present(retain_volume_velocity)) then
       if(.not.retain_volume_velocity) then
@@ -308,16 +311,16 @@ contains
     use checkpoint_state_io, only: checkpoint_state_require
     use insitu_device_velocity, only: velocity_transport_usage_gpu
     use ieee_arithmetic, only: ieee_is_finite
-    real(8),intent(in) :: coordinates(:,:,:,:),fields(:,:,:,:)
+    real(real_kind),intent(in) :: coordinates(:,:,:,:),fields(:,:,:,:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
     logical,intent(in),optional :: air5
-    real(8),device,allocatable :: coordinates_d(:,:,:,:),fields_d(:,:,:,:)
-    real(8),allocatable :: check_coordinates(:,:,:,:),check_fields(:,:,:,:)
+    real(real_kind),device,allocatable :: coordinates_d(:,:,:,:),fields_d(:,:,:,:)
+    real(real_kind),allocatable :: check_coordinates(:,:,:,:),check_fields(:,:,:,:)
     character(16) :: mode,root
     integer :: status,ierr,generation,c
     integer(int64) :: bytes,host_slots,device_slots,d2h,h2d,exchanges
-    real(8) :: difference,maximum
-    real(8) :: errors(size(fields,4)),global_errors(size(fields,4))
+    real(real_kind) :: difference,maximum
+    real(real_kind) :: errors(size(fields,4)),global_errors(size(fields,4))
     logical :: reacting
     call get_environment_variable('ASTR_INSITU_TEST_DEVICE_TRANSPORT',mode,status=status)
     call checkpoint_state_require(status==0.or.status==1,MPI_COMM_WORLD,'invalid device wall diagnostic transport')
@@ -334,7 +337,7 @@ contains
     endif
     call checkpoint_state_require(all(shape(coordinates)==shape(coordinates_d)).and. &
       all(shape(fields)==shape(fields_d)),MPI_COMM_WORLD,'device wall diagnostic oracle shape')
-    bytes=8*(size(coordinates,kind=int64)+size(fields,kind=int64))
+    bytes=real_bytes*(size(coordinates,kind=int64)+size(fields,kind=int64))
     call checkpoint_state_require(bytes<=host_budget,MPI_COMM_WORLD,'device wall diagnostic oracle budget')
     allocate(check_coordinates(size(coordinates,1),size(coordinates,2),size(coordinates,3),3), &
       check_fields(size(fields,1),size(fields,2),size(fields,3),size(fields,4)),stat=status)
@@ -343,20 +346,20 @@ contains
     if(size(fields)>0) then
       check_coordinates=coordinates_d; check_fields=fields_d
     endif
-    difference=0.d0
+    difference=0.e0_real_kind
     if(size(fields)>0) difference=maxval(abs(coordinates-check_coordinates))
-    errors=0.d0
+    errors=0.e0_real_kind
     if(size(fields)>0) then
       do c=1,size(fields,4)
         errors(c)=maxval(abs(fields(:,:,:,c)-check_fields(:,:,:,c)))
       enddo
     endif
-    call MPI_Allreduce(errors,global_errors,size(errors),MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(errors,global_errors,size(errors),mpi_real_type,MPI_MAX,MPI_COMM_WORLD,ierr)
     call checkpoint_state_require(ierr==MPI_SUCCESS,MPI_COMM_WORLD,'device wall diagnostic field reduction')
     if(.not.reacting) difference=max(difference,maxval(global_errors))
-    call MPI_Allreduce(difference,maximum,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(difference,maximum,1,mpi_real_type,MPI_MAX,MPI_COMM_WORLD,ierr)
     call checkpoint_state_require(ierr==MPI_SUCCESS.and.all(ieee_is_finite(check_coordinates)).and. &
-      all(ieee_is_finite(check_fields)).and.ieee_is_finite(maximum).and.maximum<=2.d-10, &
+      all(ieee_is_finite(check_fields)).and.ieee_is_finite(maximum).and.maximum<=2.e-10_real_kind, &
       MPI_COMM_WORLD,'actual completed-step device wall fields differ')
     call velocity_transport_usage_gpu(host_slots,device_slots,d2h,h2d,exchanges,generation)
     write(*,'(a,i0,3a,es24.16,3(a,i0))') 'ASTR_INSITU_DEVICE_WALL_CHECK rank=',mpirank,' backend=',trim(mode), &
@@ -373,14 +376,14 @@ contains
     use parallel, only: mpirank
     use checkpoint_state_io, only: checkpoint_state_require
     use ieee_arithmetic, only: ieee_is_finite
-    real(8),intent(in) :: derived(0:,0:,0:,:)
+    real(real_kind),intent(in) :: derived(0:,0:,0:,:)
     integer,intent(in) :: indices(:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
-    real(8),device,allocatable :: velocity_d(:,:),halo_d(:,:,:,:),diagnostic_d(:,:)
-    real(8),allocatable :: diagnostic(:,:)
+    real(real_kind),device,allocatable :: velocity_d(:,:),halo_d(:,:,:,:),diagnostic_d(:,:)
+    real(real_kind),allocatable :: diagnostic(:,:)
     character(16) :: mode,root
     integer :: status,ierr,node,i,j,k,c,nodes
-    real(8) :: difference,maximum
+    real(real_kind) :: difference,maximum
     call get_environment_variable('ASTR_INSITU_TEST_DEVICE_TRANSPORT',mode,status=status)
     call checkpoint_state_require(status==0.or.status==1,MPI_COMM_WORLD,'invalid device diagnostic transport')
     root=mode
@@ -389,21 +392,21 @@ contains
     if(mode=='') return
     call capture_device_sample_gpu(trim(mode),velocity_d,halo_d,diagnostic_d,host_budget,device_budget,reserve)
     nodes=(im+1)*(jm+1)*(km+1)
-    call checkpoint_state_require(int(nodes,int64)*14*8<=host_budget,MPI_COMM_WORLD,'device diagnostic test oracle budget')
+    call checkpoint_state_require(int(nodes,int64)*14*real_bytes<=host_budget,MPI_COMM_WORLD,'device diagnostic test oracle budget')
     allocate(diagnostic(14,nodes),stat=status)
     call checkpoint_state_require(status==0,MPI_COMM_WORLD,'device diagnostic test oracle allocation')
     ! Test-only oracle download, never enabled by a production device config.
     diagnostic=diagnostic_d
-    difference=0.d0
+    difference=0.e0_real_kind
     do node=0,nodes-1
       i=mod(node,im+1); j=mod(node/(im+1),jm+1); k=node/((im+1)*(jm+1))
       do c=1,size(indices)
         difference=max(difference,abs(derived(i,j,k,c)-diagnostic(indices(c),node+1)))
       enddo
     enddo
-    call MPI_Allreduce(difference,maximum,1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(difference,maximum,1,mpi_real_type,MPI_MAX,MPI_COMM_WORLD,ierr)
     call checkpoint_state_require(ierr==MPI_SUCCESS.and.all(ieee_is_finite(diagnostic)).and. &
-      ieee_is_finite(maximum).and.maximum<=2.d-10,MPI_COMM_WORLD,'actual completed-step device sample differs')
+      ieee_is_finite(maximum).and.maximum<=2.e-10_real_kind,MPI_COMM_WORLD,'actual completed-step device sample differs')
     write(*,'(a,i0,3a,es24.16)') 'ASTR_INSITU_DEVICE_SAMPLE_CHECK rank=',mpirank,' backend=',trim(mode), &
       ' maxabs=',maximum
     deallocate(velocity_d,halo_d,diagnostic_d,diagnostic)
@@ -417,9 +420,9 @@ contains
     use checkpoint_state_io, only: checkpoint_state_require
     use gpu_check, only: sync_after_kernel
     integer,intent(in) :: walls(:)
-    real(8),intent(out),contiguous :: fields(0:,0:,:,:)
+    real(real_kind),intent(out),contiguous :: fields(0:,0:,:,:)
     integer(int64),intent(in) :: device_budget,reserve
-    real(8),allocatable,device :: packed(:,:,:,:)
+    real(real_kind),allocatable,device :: packed(:,:,:,:)
     integer(int64) :: count,free_bytes,total_bytes
     integer :: nw,status,first
     nw=size(walls); count=size(fields,kind=int64)
@@ -428,8 +431,8 @@ contains
       all(walls==0.or.walls==jm),MPI_COMM_WORLD,'invalid wall GPU pack shape')
     free_bytes=0; total_bytes=0
     status=cudaMemGetInfo(free_bytes,total_bytes)
-    call checkpoint_state_require(status==cudaSuccess.and.count*8<=device_budget.and. &
-      free_bytes>=count*8+max(reserve,1073741824_int64),MPI_COMM_WORLD,'wall GPU budget')
+    call checkpoint_state_require(status==cudaSuccess.and.count*real_bytes<=device_budget.and. &
+      free_bytes>=count*real_bytes+max(reserve,1073741824_int64),MPI_COMM_WORLD,'wall GPU budget')
     status=0
     if(count>0) allocate(packed(im+1,km+1,nw,3*numq),stat=status)
     call checkpoint_state_require(status==0,MPI_COMM_WORLD,'wall GPU pack allocation')
@@ -447,7 +450,7 @@ contains
   attributes(global) subroutine wall_state_kernel(im,jm,km,nw,first,nq,packed)
     use commarray_gpu, only: q_d
     integer,value :: im,jm,km,nw,first,nq
-    real(8),device :: packed(im+1,km+1,nw,3*nq)
+    real(real_kind),device :: packed(im+1,km+1,nw,3*nq)
     integer :: node,i,k,w,j,side,m,c
     node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(node>=(im+1)*(km+1)*nw) return
@@ -467,17 +470,17 @@ contains
     use checkpoint_state_io, only: checkpoint_state_require
     use gpu_check, only: sync_after_kernel
     integer,intent(in) :: axis,index,tangent(2)
-    real(8),intent(out) :: fields(:,:,:)
+    real(real_kind),intent(out) :: fields(:,:,:)
     integer(int64),intent(in) :: device_budget,reserve
-    real(8),allocatable,device :: packed(:,:,:)
+    real(real_kind),allocatable,device :: packed(:,:,:)
     integer(int64) :: count,free_bytes,total_bytes
     integer :: ni,nj,status
     ni=size(fields,1); nj=size(fields,2)
     count=int(ni,int64)*nj*4
     free_bytes=0; total_bytes=0
     status=cudaMemGetInfo(free_bytes,total_bytes)
-    call checkpoint_state_require(status==cudaSuccess.and.count*8<=device_budget.and. &
-      free_bytes>=count*8+max(reserve,1073741824_int64),MPI_COMM_WORLD,'index-plane GPU budget')
+    call checkpoint_state_require(status==cudaSuccess.and.count*real_bytes<=device_budget.and. &
+      free_bytes>=count*real_bytes+max(reserve,1073741824_int64),MPI_COMM_WORLD,'index-plane GPU budget')
     status=0
     if(count>0) allocate(packed(ni,nj,4),stat=status)
     call checkpoint_state_require(status==0,MPI_COMM_WORLD,'index-plane GPU allocation')
@@ -494,7 +497,7 @@ contains
   attributes(global) subroutine plane_state_kernel(axis,index,t1,t2,ni,nj,packed)
     use commarray_gpu, only: q_d
     integer,value :: axis,index,t1,t2,ni,nj
-    real(8),device :: packed(ni,nj,4)
+    real(real_kind),device :: packed(ni,nj,4)
     integer :: node,a,b,c,ijk(3)
     node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(node>=ni*nj) return
@@ -508,8 +511,8 @@ contains
   subroutine derive_sample_gpu(velocity,derived,host_budget,device_budget,reserve)
     use iso_fortran_env, only: int64
     use commvar, only: im,jm,km
-    real(8),intent(in) :: velocity(0:im,0:jm,0:km,3)
-    real(8),intent(out),target :: derived(0:im,0:jm,0:km,14)
+    real(real_kind),intent(in) :: velocity(0:im,0:jm,0:km,3)
+    real(real_kind),intent(out),target :: derived(0:im,0:jm,0:km,14)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
     integer :: i
     call derive_selected_sample_gpu(velocity,derived,[(i,i=1,14)],host_budget,device_budget,reserve)
@@ -524,14 +527,14 @@ contains
     use parallel, only: mpirank,isize,jsize,ksize
     use checkpoint_state_io, only: checkpoint_state_require
     use output_fields_gpu, only: begin_derived_output_gpu,pack_diagnostic_output_gpu,end_derived_output_gpu
-    real(8),intent(in) :: velocity(0:im,0:jm,0:km,3)
-    real(8),intent(out),target,contiguous :: derived(0:,0:,0:,:)
+    real(real_kind),intent(in) :: velocity(0:im,0:jm,0:km,3)
+    real(real_kind),intent(out),target,contiguous :: derived(0:,0:,0:,:)
     integer,intent(in) :: indices(:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
-    real(8),pointer :: flat(:)
+    real(real_kind),pointer :: flat(:)
     integer(int64) :: capacity,host_bytes,device_bytes,download_bytes
     integer :: nranks,ierr
-    real(8) :: started,prepare_seconds,compute_download_seconds
+    real(clock_kind) :: started,prepare_seconds,compute_download_seconds
     call MPI_Comm_size(MPI_COMM_WORLD,nranks,ierr)
     call checkpoint_state_require(ierr==MPI_SUCCESS.and. &
       (nranks<=2.or.(.not.lreadgrid.and.nranks==4.and.all([isize,jsize,ksize]==[2,2,1]))).and.use_gpu.and. &
@@ -552,7 +555,7 @@ contains
     compute_download_seconds=MPI_Wtime()-started
     nullify(flat)
     call end_derived_output_gpu(download_bytes)
-    call checkpoint_state_require(all(ieee_is_finite(derived)).and.download_bytes==capacity*8, &
+    call checkpoint_state_require(all(ieee_is_finite(derived)).and.download_bytes==capacity*real_bytes, &
       MPI_COMM_WORLD,'invalid GPU diagnostic output')
 #ifdef ASTR_BUILD_TESTING
     call check_device_sample_against_host(derived,indices,host_budget,device_budget,reserve)
@@ -567,7 +570,7 @@ contains
     use commarray_gpu, only: q_d
     use mpi
     use checkpoint_state_io, only: checkpoint_state_require
-    real(8),intent(out) :: fields(0:im,0:jm,0:km,4)
+    real(real_kind),intent(out) :: fields(0:im,0:jm,0:km,4)
     integer :: status
     status=cudaDeviceSynchronize()
     call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'velocity state synchronization')
@@ -581,9 +584,9 @@ contains
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
     use parallel, only: mpirank
     use mpi
-    real(8),intent(out) :: fields(0:im,0:jm,0:km,11)
+    real(real_kind),intent(out) :: fields(0:im,0:jm,0:km,11)
     integer :: status,ignored
-    real(8) :: started,sync_seconds,download_seconds
+    real(clock_kind) :: started,sync_seconds,download_seconds
     ! Own host buffers only; do not refresh or overwrite solver host mirrors.
     started=MPI_Wtime()
     status=cudaDeviceSynchronize()

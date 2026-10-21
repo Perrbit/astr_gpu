@@ -7,10 +7,12 @@
 !| 30-05-2025  | Created by J. Fang @ Liverpool                        |
 !+---------------------------------------------------------------------+
 module derivative
+    use astr_precision, only: real_kind
 
     use commtype,only : compact_scheme
 
     implicit none
+    private :: real_kind
 
     ! Abstract base type
     type, abstract :: finite_difference
@@ -23,13 +25,13 @@ module derivative
         function derivative_interface(this,asolver,f,dim) result(df)
             use commtype,only : compact_scheme
             use commvar, only : hm
-            import :: finite_difference
+            import :: finite_difference,real_kind
             implicit none
             class(finite_difference), intent(in) :: this
             type(compact_scheme),intent(in) :: asolver
-            real(8), intent(in) :: f(-hm:dim+hm)
+            real(real_kind), intent(in) :: f(-hm:dim+hm)
             integer, intent(in) :: dim
-            real(8) :: df(0:dim)
+            real(real_kind) :: df(0:dim)
         end function derivative_interface
     end interface
   
@@ -110,8 +112,8 @@ module derivative
             asolver%c(:)=num1d3
   
             ! default setup, interface
-            asolver%a(i_0)=0.d0;     asolver%c(i_0)=0.d0 ! explicit central scheme at interface
-            asolver%a(i_m)=0.d0;     asolver%c(i_m)=0.d0 ! explicit central scheme at interface
+            asolver%a(i_0)=0.e0_real_kind;     asolver%c(i_0)=0.e0_real_kind ! explicit central scheme at interface
+            asolver%a(i_m)=0.e0_real_kind;     asolver%c(i_m)=0.e0_real_kind ! explicit central scheme at interface
 
             ! if(nscheme==642) then
   
@@ -130,13 +132,13 @@ module derivative
   
               ! set near-boundary/interface schemes
               if(ntype==1 .or. ntype==4) then
-                asolver%a(i_0)  =2.d0;   asolver%c(i_0)  =2.d0   ! 2nd-order compact biased scheme
-                asolver%a(i_0+1)=0.25d0; asolver%c(i_0+1)=0.25d0 ! 4th-order compact central scheme
+                asolver%a(i_0)  =2.e0_real_kind;   asolver%c(i_0)  =2.e0_real_kind   ! 2nd-order compact biased scheme
+                asolver%a(i_0+1)=0.25e0_real_kind; asolver%c(i_0+1)=0.25e0_real_kind ! 4th-order compact central scheme
               endif
       
               if(ntype==2 .or. ntype==4) then
-                asolver%a(i_m)  =2.d0;   asolver%c(i_m)  =2.d0   ! 2nd-order compact biased scheme
-                asolver%a(i_m-1)=0.25d0; asolver%c(i_m-1)=0.25d0 ! 4th-order compact central scheme
+                asolver%a(i_m)  =2.e0_real_kind;   asolver%c(i_m)  =2.e0_real_kind   ! 2nd-order compact biased scheme
+                asolver%a(i_m-1)=0.25e0_real_kind; asolver%c(i_m-1)=0.25e0_real_kind ! 4th-order compact central scheme
               endif
 
 
@@ -178,13 +180,13 @@ module derivative
         class(compact_central), intent(in) :: this
         type(compact_scheme),intent(in) :: asolver
         integer,intent(in) :: dim
-        real(8),intent(in) :: f(-hm:dim+hm)
-        real(8) :: df(0:dim)
+        real(real_kind),intent(in) :: f(-hm:dim+hm)
+        real(real_kind) :: df(0:dim)
 
         ! local data
         integer :: l
-        real(8) :: alpha,var0,var1,var2,var3,var4,var5
-        real(8),allocatable :: d(:),xx(:)
+        real(real_kind) :: alpha,var0,var1,var2,var3,var4,var5
+        real(real_kind),allocatable :: d(:),xx(:)
 
         d=compact_fd_rhs(asolver,f,dim)
 
@@ -215,11 +217,11 @@ module derivative
 
         type(compact_scheme),intent(in) :: asolver
         integer,intent(in) :: dim
-        real(8),intent(in) :: f(-hm:dim+hm)
-        real(8),allocatable :: d(:)
+        real(real_kind),intent(in) :: f(-hm:dim+hm)
+        real(real_kind),allocatable :: d(:)
 
         integer :: i_0,i_m,j,k,i_s,i_e,ntype
-        real(8) :: var1,var2,var3
+        real(real_kind) :: var1,var2,var3
 
         i_0=asolver%first_node
         i_m=asolver%last_node
@@ -237,7 +239,7 @@ module derivative
           ! 4th-order compact
           j=i_0+1
           var1=f(j+1)-f(j-1)
-          d(j)=0.75d0*var1
+          d(j)=0.75e0_real_kind*var1
     
           ! ! 2nd-order biased compact
           ! j=i_0
@@ -246,7 +248,7 @@ module derivative
 
           ! 3rd-order biased compact
           j=i_0
-          d(j)=-2.5d0*f(j)+2.d0*f(j+1)+0.5d0*f(j+2)
+          d(j)=-2.5e0_real_kind*f(j)+2.e0_real_kind*f(j+1)+0.5e0_real_kind*f(j+2)
 
         else
 
@@ -258,7 +260,7 @@ module derivative
           var1=f(j+1)-f(j-1)
           var2=f(j+2)-f(j-2)
           var3=f(j+3)-f(j-3)
-          d(j)=0.75d0*var1 - 0.15d0*var2 + num1d60*var3
+          d(j)=0.75e0_real_kind*var1 - 0.15e0_real_kind*var2 + num1d60*var3
 
         endif
 
@@ -270,7 +272,7 @@ module derivative
           ! 4th-order compact
           j=i_m-1
           var1=f(j+1)-f(j-1)
-          d(j)=0.75d0*var1
+          d(j)=0.75e0_real_kind*var1
     
           ! ! 2nd-order biased compact
           ! j=i_m
@@ -279,7 +281,7 @@ module derivative
 
           ! 3rd-order biased compact
           j=i_m
-          d(j)=2.5d0*f(j)-2.d0*f(j-1)-0.5d0*f(j-2)
+          d(j)=2.5e0_real_kind*f(j)-2.e0_real_kind*f(j-1)-0.5e0_real_kind*f(j-2)
 
         else
           ! interfaces
@@ -290,7 +292,7 @@ module derivative
           var1=f(j+1)-f(j-1)
           var2=f(j+2)-f(j-2)
           var3=f(j+3)-f(j-3)
-          d(j)=0.75d0*var1 - 0.15d0*var2 + num1d60*var3
+          d(j)=0.75e0_real_kind*var1 - 0.15e0_real_kind*var2 + num1d60*var3
 
         endif
 
@@ -325,8 +327,8 @@ module derivative
         class(explicit_central), intent(in) :: this
         type(compact_scheme),intent(in) :: asolver
         integer,intent(in) :: dim
-        real(8),intent(in) :: f(-hm:dim+hm)
-        real(8) :: df(0:dim)
+        real(real_kind),intent(in) :: f(-hm:dim+hm)
+        real(real_kind) :: df(0:dim)
   
         integer :: i
   
@@ -354,8 +356,8 @@ module derivative
       use commvar, only : hm
 
       integer,intent(in) :: dim,ntype
-      real(8),intent(in) :: vin(-hm:dim+hm)
-      real(8) :: vout(0:dim)
+      real(real_kind),intent(in) :: vin(-hm:dim+hm)
+      real(real_kind) :: vout(0:dim)
       
       ! local data
       integer :: i
@@ -363,51 +365,51 @@ module derivative
       select case (ntype)
       case (1)
 
-        vout(0)=-0.5d0*vin(2)+2.d0*vin(1)-1.5d0*vin(0)
-        vout(1)=0.5d0*(vin(2)-vin(0))
+        vout(0)=-0.5e0_real_kind*vin(2)+2.e0_real_kind*vin(1)-1.5e0_real_kind*vin(0)
+        vout(1)=0.5e0_real_kind*(vin(2)-vin(0))
         vout(2)=num2d3*(vin(3)-vin(1))-num1d12*(vin(4)-vin(0))
 
         do i=3,dim
-          vout(i)  =0.75d0 *(vin(i+1)-vin(i-1))-                         &
-                    0.15d0 *(vin(i+2)-vin(i-2))+                         &
+          vout(i)  =0.75e0_real_kind *(vin(i+1)-vin(i-1))-                         &
+                    0.15e0_real_kind *(vin(i+2)-vin(i-2))+                         &
                     num1d60*(vin(i+3)-vin(i-3))
         enddo
 
       case (2)
 
         do i=0,dim-3
-          vout(i)  =0.75d0 *(vin(i+1)-vin(i-1))-                         &
-                    0.15d0 *(vin(i+2)-vin(i-2))+                         &
+          vout(i)  =0.75e0_real_kind *(vin(i+1)-vin(i-1))-                         &
+                    0.15e0_real_kind *(vin(i+2)-vin(i-2))+                         &
                     num1d60*(vin(i+3)-vin(i-3))
         enddo
 
         vout(dim-2) =num2d3*(vin(dim-1)-vin(dim-3))-                   &
                     num1d12*(vin(dim)  -vin(dim-4))
-        vout(dim-1)=0.5d0*(vin(dim)-vin(dim-2))
-        vout(dim)  =0.5d0*vin(dim-2)-2.d0*vin(dim-1)+1.5d0*vin(dim)
+        vout(dim-1)=0.5e0_real_kind*(vin(dim)-vin(dim-2))
+        vout(dim)  =0.5e0_real_kind*vin(dim-2)-2.e0_real_kind*vin(dim-1)+1.5e0_real_kind*vin(dim)
         
       case (3)
 
         do i=0,dim
-          vout(i)  =0.75d0 *(vin(i+1)-vin(i-1))-                         &
-                    0.15d0 *(vin(i+2)-vin(i-2))+                         &
+          vout(i)  =0.75e0_real_kind *(vin(i+1)-vin(i-1))-                         &
+                    0.15e0_real_kind *(vin(i+2)-vin(i-2))+                         &
                     num1d60*(vin(i+3)-vin(i-3))
         enddo
 
       case (4)
 
-        vout(0)=-0.5d0*vin(2)+2.d0*vin(1)-1.5d0*vin(0)
-        vout(1)=0.5d0*(vin(2)-vin(0))
+        vout(0)=-0.5e0_real_kind*vin(2)+2.e0_real_kind*vin(1)-1.5e0_real_kind*vin(0)
+        vout(1)=0.5e0_real_kind*(vin(2)-vin(0))
         vout(2)=num2d3*(vin(3)-vin(1))-num1d12*(vin(4)-vin(0))
         do i=3,dim-3
-          vout(i)  =0.75d0 *(vin(i+1)-vin(i-1))-                         &
-                    0.15d0 *(vin(i+2)-vin(i-2))+                         &
+          vout(i)  =0.75e0_real_kind *(vin(i+1)-vin(i-1))-                         &
+                    0.15e0_real_kind *(vin(i+2)-vin(i-2))+                         &
                     num1d60*(vin(i+3)-vin(i-3))
         enddo
         vout(dim-2) =num2d3*(vin(dim-1)-vin(dim-3))-                   &
                     num1d12*(vin(dim)  -vin(dim-4))
-        vout(dim-1)=0.5d0*(vin(dim)-vin(dim-2))
-        vout(dim)  =0.5d0*vin(dim-2)-2.d0*vin(dim-1)+1.5d0*vin(dim)
+        vout(dim-1)=0.5e0_real_kind*(vin(dim)-vin(dim-2))
+        vout(dim)  =0.5e0_real_kind*vin(dim-2)-2.e0_real_kind*vin(dim-1)+1.5e0_real_kind*vin(dim)
 
       end select
       !
@@ -432,19 +434,19 @@ module derivative
     ! arguments
     character(len=4),intent(in) :: stype
     integer,intent(in) :: ntype,dim
-    real(8),intent(in) :: f(-hm:dim+hm)
-    real(8),intent(in),optional :: af(3),cc(1:2,0:dim)
+    real(real_kind),intent(in) :: f(-hm:dim+hm)
+    real(real_kind),intent(in),optional :: af(3),cc(1:2,0:dim)
     logical,intent(in),optional :: lfft
-    real(8) :: ddfc(0:dim)
+    real(real_kind) :: ddfc(0:dim)
     !
     ! local data
     integer :: nscheme,k
-    real(8) :: b(0:dim)
+    real(real_kind) :: b(0:dim)
     logical :: ffton
     ! integer(8),save :: plan_f,plan_b
     !
-    complex(8),allocatable :: cf(:)
-    real(8),allocatable :: kama(:)
+    complex(real_kind),allocatable :: cf(:)
+    real(real_kind),allocatable :: kama(:)
     !
     if(present(lfft)) then
       ffton=lfft
@@ -491,8 +493,8 @@ module derivative
     use commvar, only: hm
     
     integer,intent(in) :: dim,ns,ntype
-    real(8),intent(in) :: vin(-hm:dim+hm)
-    real(8) :: vout(0:dim)
+    real(real_kind),intent(in) :: vin(-hm:dim+hm)
+    real(real_kind) :: vout(0:dim)
     !
     ! local data
     integer :: i
@@ -501,8 +503,8 @@ module derivative
       !
       if(ns==642) then
         ! ns==642: 2-4-6-6-6-...-6-6-6-4-2
-        vout(0)=-0.5d0*vin(2)+2.d0*vin(1)-1.5d0*vin(0)
-        vout(1)=0.5d0*(vin(2)-vin(0))
+        vout(0)=-0.5e0_real_kind*vin(2)+2.e0_real_kind*vin(1)-1.5e0_real_kind*vin(0)
+        vout(1)=0.5e0_real_kind*(vin(2)-vin(0))
         vout(2)=num2d3*(vin(3)-vin(1))-num1d12*(vin(4)-vin(0))
       else
         print*,' !! ns=',ns
@@ -510,16 +512,16 @@ module derivative
       endif
       !
       do i=3,dim
-        vout(i)  =0.75d0 *(vin(i+1)-vin(i-1))-                         &
-                  0.15d0 *(vin(i+2)-vin(i-2))+                         &
+        vout(i)  =0.75e0_real_kind *(vin(i+1)-vin(i-1))-                         &
+                  0.15e0_real_kind *(vin(i+2)-vin(i-2))+                         &
                   num1d60*(vin(i+3)-vin(i-3))
       enddo
       !
     elseif(ntype==2) then
       !
       do i=0,dim-3
-        vout(i)  =0.75d0 *(vin(i+1)-vin(i-1))-                         &
-                  0.15d0 *(vin(i+2)-vin(i-2))+                         &
+        vout(i)  =0.75e0_real_kind *(vin(i+1)-vin(i-1))-                         &
+                  0.15e0_real_kind *(vin(i+2)-vin(i-2))+                         &
                   num1d60*(vin(i+3)-vin(i-3))
       enddo
       !
@@ -527,8 +529,8 @@ module derivative
         ! ns==642: 2-4-6-6-6-...-6-6-6-4-2
         vout(dim-2) =num2d3*(vin(dim-1)-vin(dim-3))-                   &
                     num1d12*(vin(dim)  -vin(dim-4))
-        vout(dim-1)=0.5d0*(vin(dim)-vin(dim-2))
-        vout(dim)  =0.5d0*vin(dim-2)-2.d0*vin(dim-1)+1.5d0*vin(dim)
+        vout(dim-1)=0.5e0_real_kind*(vin(dim)-vin(dim-2))
+        vout(dim)  =0.5e0_real_kind*vin(dim-2)-2.e0_real_kind*vin(dim-1)+1.5e0_real_kind*vin(dim)
       else
         print*,' !! ns=',ns
         stop ' error 2 @ diff6c'
@@ -536,17 +538,17 @@ module derivative
       !
     elseif(ntype==3) then
       do i=0,dim
-        vout(i)  =(672.d0*(vin(i+1)-vin(i-1))-                         &
-                   168.d0*(vin(i+2)-vin(i-2))+                         &
-                    32.d0*(vin(i+3)-vin(i-3))-                         &
-                     3.d0*(vin(i+4)-vin(i-4)))*num1d840
+        vout(i)  =(672.e0_real_kind*(vin(i+1)-vin(i-1))-                         &
+                   168.e0_real_kind*(vin(i+2)-vin(i-2))+                         &
+                    32.e0_real_kind*(vin(i+3)-vin(i-3))-                         &
+                     3.e0_real_kind*(vin(i+4)-vin(i-4)))*num1d840
       enddo
     elseif(ntype==4) then
       do i=0,dim
-        vout(i)  =(672.d0*(vin(i+1)-vin(i-1))-                         &
-                   168.d0*(vin(i+2)-vin(i-2))+                         &
-                    32.d0*(vin(i+3)-vin(i-3))-                         &
-                     3.d0*(vin(i+4)-vin(i-4)))*num1d840
+        vout(i)  =(672.e0_real_kind*(vin(i+1)-vin(i-1))-                         &
+                   168.e0_real_kind*(vin(i+2)-vin(i-2))+                         &
+                    32.e0_real_kind*(vin(i+3)-vin(i-3))-                         &
+                     3.e0_real_kind*(vin(i+4)-vin(i-4)))*num1d840
       enddo
     else
       print*,' !! ntype=',ntype
@@ -562,8 +564,8 @@ module derivative
     use commvar, only: hm
     
     integer,intent(in) :: dim,ns,ntype
-    real(8),intent(in) :: vin(-hm:dim+hm)
-    real(8) :: vout(0:dim)
+    real(real_kind),intent(in) :: vin(-hm:dim+hm)
+    real(real_kind) :: vout(0:dim)
     !
     ! local data
     integer :: i
@@ -572,8 +574,8 @@ module derivative
       !
       if(ns==422) then
         ! ns==422: 2-4-4-...-4-4-2
-        vout(0)=-0.5d0*vin(2)+2.d0*vin(1)-1.5d0*vin(0)
-        vout(1)=0.5d0*(vin(2)-vin(0))
+        vout(0)=-0.5e0_real_kind*vin(2)+2.e0_real_kind*vin(1)-1.5e0_real_kind*vin(0)
+        vout(1)=0.5e0_real_kind*(vin(2)-vin(0))
       else
         print*,' !! ns=',ns
         stop ' error 1 @ diff6c'
@@ -593,8 +595,8 @@ module derivative
       !
       if(ns==422) then
         ! ns==422: 2-2-4-...-4-2-2
-        vout(dim-1)=0.5d0*(vin(dim)-vin(dim-2))
-        vout(dim)  =0.5d0*vin(dim-2)-2.d0*vin(dim-1)+1.5d0*vin(dim)
+        vout(dim-1)=0.5e0_real_kind*(vin(dim)-vin(dim-2))
+        vout(dim)  =0.5e0_real_kind*vin(dim-2)-2.e0_real_kind*vin(dim-1)+1.5e0_real_kind*vin(dim)
       else
         print*,' !! ns=',ns
         stop ' error 2 @ diff6c'
@@ -607,14 +609,14 @@ module derivative
       enddo
     elseif(ntype==4) then
       if(ns==422) then
-        vout(0)=-0.5d0*vin(2)+2.d0*vin(1)-1.5d0*vin(0)
-        vout(1)=0.5d0*(vin(2)-vin(0))
+        vout(0)=-0.5e0_real_kind*vin(2)+2.e0_real_kind*vin(1)-1.5e0_real_kind*vin(0)
+        vout(1)=0.5e0_real_kind*(vin(2)-vin(0))
         do i=2,dim-2
           vout(i)  =num2d3*(vin(i+1)-vin(i-1))-                       &
                     num1d12*(vin(i+2)-vin(i-2))
         enddo
-        vout(dim-1)=0.5d0*(vin(dim)-vin(dim-2))
-        vout(dim)  =0.5d0*vin(dim-2)-2.d0*vin(dim-1)+1.5d0*vin(dim)
+        vout(dim-1)=0.5e0_real_kind*(vin(dim)-vin(dim-2))
+        vout(dim)  =0.5e0_real_kind*vin(dim-2)-2.e0_real_kind*vin(dim-1)+1.5e0_real_kind*vin(dim)
       else
         print*,' !! ns=',ns
         stop ' error 4 @ diff6c'
@@ -632,8 +634,8 @@ module derivative
     use commvar, only: hm
 
     integer,intent(in) :: dim,ns,ntype
-    real(8),intent(in) :: vin(-hm:dim+hm)
-    real(8) :: vout(0:dim)
+    real(real_kind),intent(in) :: vin(-hm:dim+hm)
+    real(real_kind) :: vout(0:dim)
     !
     ! local data
     integer :: i
@@ -644,13 +646,13 @@ module derivative
       vout(0)=vin(1)-vin(0)
       !
       do i=1,dim
-        vout(i)  =0.5d0*(vin(i+1)-vin(i-1))
+        vout(i)  =0.5e0_real_kind*(vin(i+1)-vin(i-1))
       enddo
       !
     elseif(ntype==2) then
       !
       do i=0,dim-1
-        vout(i)  =0.5d0*(vin(i+1)-vin(i-1))
+        vout(i)  =0.5e0_real_kind*(vin(i+1)-vin(i-1))
       enddo
       !
       ! vout(dim)  =0.5d0*vin(dim-2)-2.d0*vin(dim-1)+1.5d0*vin(dim)
@@ -658,12 +660,12 @@ module derivative
       !
     elseif(ntype==3) then
       do i=0,dim
-        vout(i)  =0.5d0*(vin(i+1)-vin(i-1))
+        vout(i)  =0.5e0_real_kind*(vin(i+1)-vin(i-1))
       enddo
     elseif(ntype==4) then
       vout(0)=vin(1)-vin(0)
       do i=1,dim-1
-        vout(i)  =0.5d0*(vin(i+1)-vin(i-1))
+        vout(i)  =0.5e0_real_kind*(vin(i+1)-vin(i-1))
       enddo
       vout(dim)  =-vin(dim-1)+vin(dim)
     else

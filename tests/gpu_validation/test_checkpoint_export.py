@@ -103,6 +103,43 @@ def test_slice_only_is_bounded_and_independent(bundle, tmp_path):
     export.export_checkpoint(moved / "checkpoints" / bundle.name, tmp_path / "moved_export", volume=False, slices=[("j", 0)])
 
 
+@pytest.mark.parametrize('width', [4, 8])
+def test_native_precision_volume_and_slices(bundle, tmp_path, width):
+    dtype = np.dtype(f'<f{width}')
+    resources = bundle.parent.parent / 'resources'
+    for path in (bundle / 'state.h5', resources / 'geometry.h5'):
+        with h5py.File(path, 'r+') as source:
+            header = source['identity'][:]
+            times = header[9:12].view('<f8').astype(dtype)
+            header[1] = 3
+            header[9:12] = times.view(f'<i{width}').astype('<i8')
+            source['identity'][:] = header
+            source['numerical_kind_bytes'] = np.array([width], dtype='<i8')
+            for name in [key for key in source if key.startswith('q') or key == 'rank_extras']:
+                values = source[name][:].astype(dtype)
+                del source[name]
+                source[name] = values
+    (bundle / 'RESOURCES').write_text(seal(resources, ['geometry.h5', 'input.txt'], 'ASTR_SHARED_RESOURCES 1'))
+    reseal(bundle)
+    output = tmp_path / 'native_export'
+    report = export.export_checkpoint(bundle, output, slices=[('j', 2)], buffer_bytes=37)
+    assert report['numerical_precision'] == f'fp{width * 8}'
+    assert report['time'] == float(np.asarray(0.012, dtype=dtype))
+    assert report['peak_controlled_array_bytes'] <= 37
+    for filename in ('volume', 'slices'):
+        with h5py.File(output / (filename + '.h5')) as target, h5py.File(bundle / 'state.h5') as source:
+            group = target if filename == 'volume' else target['j000000000002']
+            for name in (*export.FIELDS, 'velocity', 'coordinates'):
+                assert group[name].dtype == dtype
+            for name, component in export.FIELDS.items():
+                expected = source[f'q{component:04d}'][:]
+                if filename == 'slices':
+                    expected = expected[:, 2, :]
+                assert group[name][:].tobytes() == expected.tobytes()
+        xml = ET.parse(output / (filename + '.xdmf'))
+        assert all(node.attrib['Precision'] == str(width) for node in xml.findall('.//DataItem'))
+
+
 @pytest.fixture
 def air5_bundle(bundle):
     with h5py.File(bundle / "state.h5", "r+") as handle:
@@ -264,6 +301,7 @@ def test_installed_output_tools_are_self_contained(backend, tmp_path):
     files = [path for path in files if path.is_file()]
     expected = {
         "README.md", "export_checkpoint.py", "repair_series.py", "combine_series.py",
+        "merge_statistics_segments.py",
         "input.output.tgv.example", "input.output.tgv.derived.example",
         "input.output.air5.derived.example",
     }

@@ -1,5 +1,6 @@
 program compact_line_solver_probe
-  use iso_fortran_env, only: real64,int64
+  use iso_fortran_env, only: int64
+  use astr_precision, only: real_kind,real_bytes
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   use compact_line_solver, only: compact_matrix,compact_reference_factor, &
     factor_compact_reference,solve_compact_reference,compact_matvec,compact_residual
@@ -15,14 +16,14 @@ program compact_line_solver_probe
   type(compact_reference_factor) :: reference
 #ifdef TEST_CUDA
   type(compact_line_gpu_plan) :: plan
-  real(real64),allocatable,device :: rhs_d(:,:),solution_d(:,:)
-  real(real64),allocatable :: unchanged(:,:)
+  real(real_kind),allocatable,device :: rhs_d(:,:),solution_d(:,:)
+  real(real_kind),allocatable :: unchanged(:,:)
   integer :: device,istat
 #endif
-  real(real64),allocatable :: exact(:,:),rhs(:,:),cpu(:,:),actual(:,:)
-  real(real64) :: abs_error,scaled_error,residual,ref_error,ref_residual,scale
-  real(real64) :: maximum_abs=0.d0,maximum_scaled=0.d0,maximum_residual=0.d0
-  real(real64) :: maximum_reference_abs=0.d0,maximum_reference_residual=0.d0
+  real(real_kind),allocatable :: exact(:,:),rhs(:,:),cpu(:,:),actual(:,:)
+  real(real_kind) :: abs_error,scaled_error,residual,ref_error,ref_residual,scale
+  real(real_kind) :: maximum_abs=0.e0_real_kind,maximum_scaled=0.e0_real_kind,maximum_residual=0.e0_real_kind
+  real(real_kind) :: maximum_reference_abs=0.e0_real_kind,maximum_reference_residual=0.e0_real_kind
   integer(int64) :: device_bytes,peak_device_bytes=0_int64
   integer :: il,kind,ntype,n,nrhs,ir,i,j,unit,cases=0
   character(1024) :: filename,arg
@@ -49,7 +50,7 @@ program compact_line_solver_probe
     allocate(exact(n,capacity),rhs(n,capacity))
     do j=1,capacity
       do i=1,n
-        exact(i,j)=sin(0.013d0*i*j)+0.15d0*cos(0.021d0*i*(j+1))+0.001d0*j*i/n
+        exact(i,j)=sin(0.013e0_real_kind*i*j)+0.15e0_real_kind*cos(0.021e0_real_kind*i*(j+1))+0.001e0_real_kind*j*i/n
       enddo
     enddo
     do kind=1,2
@@ -61,9 +62,9 @@ program compact_line_solver_probe
 #ifdef TEST_CUDA
         allocate(rhs_d(n,capacity),solution_d(n,capacity),unchanged(n,capacity))
         rhs_d=rhs
-        solution_d=huge(1.d0)
+        solution_d=huge(1.e0_real_kind)
         call prepare_compact_gpu(matrix,128,capacity,plan)
-        device_bytes=plan%device_bytes+2_int64*n*capacity*8_int64
+        device_bytes=plan%device_bytes+2_int64*n*capacity*int(real_bytes,int64)
 #else
         device_bytes=0_int64
 #endif
@@ -75,10 +76,10 @@ program compact_line_solver_probe
           if(.not.all(ieee_is_finite(cpu))) error stop 'nonfinite compact CPU reference'
           ref_error=maxval(abs(cpu-exact(:,1:nrhs)))
           ref_residual=compact_residual(matrix,cpu,rhs(:,1:nrhs))
-          if(ref_residual>1.d-12) error stop 'compact reference residual failed'
+          if(real_bytes==8.and.ref_residual>1.e-12_real_kind) error stop 'compact reference residual failed'
           do j=1,nrhs
-            scale=max(1.d0,maxval(abs(exact(:,j))))
-            if(maxval(abs(cpu(:,j)-exact(:,j)))/scale>2.d-10) &
+            scale=max(1.e0_real_kind,maxval(abs(exact(:,j))))
+            if(real_bytes==8.and.maxval(abs(cpu(:,j)-exact(:,j)))/scale>2.e-10_real_kind) &
               error stop 'compact reference manufactured solution failed'
           enddo
 #ifdef TEST_CUDA
@@ -89,9 +90,9 @@ program compact_line_solver_probe
 #endif
           if(.not.all(ieee_is_finite(actual))) error stop 'nonfinite compact solution'
           abs_error=maxval(abs(actual-cpu))
-          scaled_error=0.d0
+          scaled_error=0.e0_real_kind
           do j=1,nrhs
-            scale=max(1.d0,maxval(abs(cpu(:,j))))
+            scale=max(1.e0_real_kind,maxval(abs(cpu(:,j))))
             scaled_error=max(scaled_error,maxval(abs(actual(:,j)-cpu(:,j)))/scale)
           enddo
           residual=compact_residual(matrix,actual,rhs(:,1:nrhs))
@@ -99,7 +100,9 @@ program compact_line_solver_probe
             ',',n,',',kind,',',ntype,',',cyclic,',',nrhs, &
             ',',abs_error,',',scaled_error,',',residual,',',ref_error,',',ref_residual,',',device_bytes
           flush(unit)
-          if(scaled_error>2.d-10.or.residual>1.d-12) then
+          if(.not.all(ieee_is_finite([scaled_error,residual,ref_residual]))) &
+            error stop 'nonfinite compact solve diagnostics'
+          if(real_bytes==8.and.(scaled_error>2.e-10_real_kind.or.residual>1.e-12_real_kind)) then
             write(*,*) 'compact failure: n,kind,ntype,nrhs=',n,kind,ntype,nrhs
             write(*,*) 'absolute,scaled,residual=',abs_error,scaled_error,residual
             error stop 'compact V0 gate failed'
@@ -133,39 +136,39 @@ contains
   subroutine make_matrix(a,n,kind,ntype)
     type(compact_matrix),intent(out) :: a
     integer,intent(in) :: n,kind,ntype
-    real(real64) :: alpha
+    real(real_kind) :: alpha
     logical :: lower_wall,upper_wall
     a%n=n
     a%cyclic=ntype==5
     allocate(a%lower(n),a%diagonal(n),a%upper(n))
-    alpha=1.d0/3.d0
-    if(kind==2) alpha=0.49d0
+    alpha=1.e0_real_kind/3.e0_real_kind
+    if(kind==2) alpha=0.49e0_real_kind
     a%lower=alpha
-    a%diagonal=1.d0
+    a%diagonal=1.e0_real_kind
     a%upper=alpha
     if(a%cyclic) return
     lower_wall=ntype==1.or.ntype==4
     upper_wall=ntype==2.or.ntype==4
-    a%lower(1)=0.d0
-    a%upper(n)=0.d0
+    a%lower(1)=0.e0_real_kind
+    a%upper(n)=0.e0_real_kind
     if(kind==1) then
-      a%upper(1)=0.d0
-      a%lower(n)=0.d0
+      a%upper(1)=0.e0_real_kind
+      a%lower(n)=0.e0_real_kind
       if(lower_wall) then
-        a%upper(1)=2.d0
-        a%lower(2)=0.25d0
-        a%upper(2)=0.25d0
+        a%upper(1)=2.e0_real_kind
+        a%lower(2)=0.25e0_real_kind
+        a%upper(2)=0.25e0_real_kind
       endif
       if(upper_wall) then
-        a%lower(n)=2.d0
-        a%lower(n-1)=0.25d0
-        a%upper(n-1)=0.25d0
+        a%lower(n)=2.e0_real_kind
+        a%lower(n-1)=0.25e0_real_kind
+        a%upper(n-1)=0.25e0_real_kind
       endif
     else
-      a%upper(1)=1.11d0
-      a%lower(n)=1.11d0
-      if(lower_wall) a%upper(1)=0.98d0
-      if(upper_wall) a%lower(n)=0.98d0
+      a%upper(1)=1.11e0_real_kind
+      a%lower(n)=1.11e0_real_kind
+      if(lower_wall) a%upper(1)=0.98e0_real_kind
+      if(upper_wall) a%lower(n)=0.98e0_real_kind
     endif
   end subroutine make_matrix
 end program compact_line_solver_probe

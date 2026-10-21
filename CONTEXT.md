@@ -92,6 +92,22 @@ _Avoid_: CRLF input files, Windows line endings in runtime inputs
 `use_gpu` is a runtime input-file option that selects CPU or GPU execution inside a CUDA-capable binary. It is not a CMake or compiler option.
 _Avoid_: `-DUSE_GPU`, compile-time `use_gpu`
 
+**Native FP32 advancement**:
+The proposed precision mode in which the authoritative flow state, RHS, Runge-Kutta state and admitted flow arithmetic use FP32. It is distinct from lowering only temporary workspace storage.
+_Avoid_: Calling FP64 advancement with FP32 workspaces native FP32
+
+**Build-selected numerical precision**:
+An ASTR executable has one numerical precision selected when it is built from the shared source; a separately built executable provides the other precision. This choice is independent of selecting CPU or GPU execution at runtime.
+_Avoid_: Changing an allocated array's type at runtime, treating the runtime GPU switch as the precision selector
+
+**Strict FP32 numerical mode**:
+The selected new-mode contract extends native FP32 advancement to numerical geometry, physical time, CFL, statistics and auxiliary numerical solves without FP64 numerical exceptions. FP64 execution-time measurement is outside that numerical contract and must not feed physical time or statistics; the existing FP64 solver remains a separate reference.
+_Avoid_: FP32 storage with FP64 numerical initialization, undisclosed mixed-precision fallback, confusing execution time with simulation time
+
+**Algorithm-consistent precision comparison**:
+For the proposed native FP32 delivery, preserve the governing equations, discrete operators, boundary/filter rules, RK ordering and communication ownership across precision builds. Report numerical differences without a fixed FP32-versus-FP64 deviation ceiling. This does not require identical floating-point trajectories or remove finite/positive state, transfer identity and same-precision exact restart checks.
+_Avoid_: Treating algorithm consistency as physical accuracy, changing a method to hide precision effects, applying this policy to existing FP64 acceptance
+
 **Production chemistry backend**:
 The chemistry implementation called by the ASTR production time loop. The first chemistry stage means the matched CPU and CUDA Fortran implementations of the fixed Kim-Jo/Park five-species two-temperature neutral-air model; it does not depend on the Cantera runtime.
 _Avoid_: Arbitrary Cantera mechanism execution, host-side chemistry inside the GPU loop
@@ -597,6 +613,14 @@ _Avoid_: Assuming a checkpoint directory is self-contained, treating a growing i
 **ASTR exact continuation**:
 Resumption that reproduces the numerical state of an uninterrupted run under the same executable, execution backend, MPI decomposition, numerical configuration, and deterministic execution conditions. It includes the continuation state needed by enabled statistics and stateful boundaries, but does not require identical file-container bytes or imply exact trajectories after changing the backend or decomposition.
 _Avoid_: Tolerance-only restart presented as exact continuation, deleting necessary state to reduce file count, claiming unvalidated configurations are covered
+
+**ASTR cross-precision restoration**:
+The planned non-exact resumption that converts a checkpoint's required state to a different advancement precision and rebuilds derived quantities in that precision. Exact representability at the restore point does not make the subsequent trajectory identical to the source-precision run.
+_Avoid_: Calling a precision change exact continuation, retaining a hidden source-precision flow mirror
+
+**Offline statistical segment merge**:
+The planned explicit combination of preserved averaging segments using their actual time or density weights, means and accumulated central moments, including the correction for different segment means. Its separate FP64 arithmetic preserves precision provenance and does not change online FP32 accumulation or turn a cross-precision window into a pure-precision trajectory.
+_Avoid_: Averaging RMS values directly, silently joining overlapping or missing intervals, calling an offline merge exact continuation
 
 **ASTR repartitioned continuation**:
 Resumption of the same mesh and physical problem after changing the MPI rank count or decomposition within the same execution backend. It requires consistent redistribution of the necessary flow, boundary, and statistical state and separate numerical-equivalence validation, rather than assuming the exact-continuation guarantee survives a different floating-point operation order.

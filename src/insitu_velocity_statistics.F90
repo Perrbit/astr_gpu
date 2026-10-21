@@ -1,5 +1,6 @@
 module insitu_velocity_statistics
-  use iso_fortran_env, only: real64,int64,int32
+  use iso_fortran_env, only: int64,int32
+  use astr_precision, only: real_kind
   use ieee_arithmetic, only: ieee_is_finite
   use insitu_time_integral, only: clipped_trapezoid
   implicit none
@@ -11,39 +12,39 @@ module insitu_velocity_statistics
   integer,parameter :: velocity_state_components=34
   type :: velocity_statistics
     private
-    real(real64) :: window_start=0,window_end=0,last_time=0,last_rho=0,last_u(3)=0
-    real(real64) :: duration=0,mass_duration=0,mean_r(3)=0,mean_f(3)=0
-    real(real64) :: central_r(3,3)=0,central_f(3,3)=0
+    real(real_kind) :: window_start=0,window_end=0,last_time=0,last_rho=0,last_u(3)=0
+    real(real_kind) :: duration=0,mass_duration=0,mean_r(3)=0,mean_f(3)=0
+    real(real_kind) :: central_r(3,3)=0,central_f(3,3)=0
     logical :: configured=.false.,has_previous=.false.
   end type
   type :: velocity_statistics_result
-    real(real64) :: duration=0,mean_density=0
-    real(real64) :: mean_r(3)=0,mean_f(3)=0,rms_r(3)=0,rms_f(3)=0
-    real(real64) :: covariance_r(3,3)=0,covariance_f(3,3)=0,density_stress(3,3)=0
+    real(real_kind) :: duration=0,mean_density=0
+    real(real_kind) :: mean_r(3)=0,mean_f(3)=0,rms_r(3)=0,rms_f(3)=0
+    real(real_kind) :: covariance_r(3,3)=0,covariance_f(3,3)=0,density_stress(3,3)=0
   end type
 contains
   subroutine pack_velocity_state(s,values,ok)
     type(velocity_statistics),intent(in) :: s
-    real(real64),intent(out) :: values(velocity_state_components)
+    real(real_kind),intent(out) :: values(velocity_state_components)
     logical,intent(out) :: ok
-    values=0.d0
+    values=0.e0_real_kind
     ok=s%configured
     if(.not.ok) return
     ! Explicit scalar layout, independent of compiler derived-type padding.
     values=[s%window_start,s%window_end,s%last_time,s%last_rho,s%last_u, &
       s%duration,s%mass_duration,s%mean_r,s%mean_f,reshape(s%central_r,[9]), &
-      reshape(s%central_f,[9]),merge(1.d0,0.d0,s%has_previous)]
+      reshape(s%central_f,[9]),merge(1.e0_real_kind,0.e0_real_kind,s%has_previous)]
   end subroutine
 
   subroutine unpack_velocity_state(values,s,time,window_start,window_end,ok)
-    real(real64),intent(in) :: values(velocity_state_components),time,window_start,window_end
+    real(real_kind),intent(in) :: values(velocity_state_components),time,window_start,window_end
     type(velocity_statistics),intent(inout) :: s
     logical,intent(out) :: ok
     type(velocity_statistics) :: candidate
     ok=.false.
     if(.not.all(ieee_is_finite([values,time,window_start,window_end]))) return
     if(window_end<=window_start.or.values(1)/=window_start.or.values(2)/=window_end) return
-    if(values(34)/=0.d0.and.values(34)/=1.d0) return
+    if(values(34)/=0.e0_real_kind.and.values(34)/=1.e0_real_kind) return
     candidate%window_start=values(1)
     candidate%window_end=values(2)
     candidate%last_time=values(3)
@@ -55,7 +56,7 @@ contains
     candidate%mean_f=values(13:15)
     candidate%central_r=reshape(values(16:24),[3,3])
     candidate%central_f=reshape(values(25:33),[3,3])
-    candidate%has_previous=values(34)==1.d0
+    candidate%has_previous=values(34)==1.e0_real_kind
     if(.not.valid_velocity_state(candidate,time)) return
     candidate%configured=.true.
     s=candidate
@@ -64,7 +65,7 @@ contains
 
   logical function valid_velocity_state(s,time) result(ok)
     type(velocity_statistics),intent(in) :: s
-    real(real64),intent(in) :: time
+    real(real_kind),intent(in) :: time
     integer :: i
     ok=.false.
     if(.not.all(ieee_is_finite([s%last_time,s%last_rho,s%last_u, &
@@ -90,7 +91,7 @@ contains
     type(velocity_statistics),intent(in) :: s
     character(*),intent(in) :: batch
     integer(int64),intent(in) :: step
-    real(real64),intent(in) :: time
+    real(real_kind),intent(in) :: time
     logical,intent(out) :: ok
     character(64) :: identity
     integer :: ios
@@ -111,14 +112,14 @@ contains
     type(velocity_statistics),intent(inout) :: s
     character(*),intent(in) :: batch
     integer(int64),intent(in) :: step
-    real(real64),intent(in) :: time,window_start,window_end
+    real(real_kind),intent(in) :: time,window_start,window_end
     logical,intent(out) :: ok
     type(velocity_statistics) :: candidate
     character(8) :: magic
     character(64) :: identity
     integer(int64) :: saved_step
     integer(int32) :: previous
-    real(real64) :: saved_time
+    real(real_kind) :: saved_time
     integer :: ios
     ok=.false.
     if(len_trim(batch)==0.or.len_trim(batch)>64.or.step<0) return
@@ -141,7 +142,7 @@ contains
   end subroutine
   subroutine configure_velocity_statistics(s,a,b,ok)
     type(velocity_statistics),intent(out) :: s
-    real(real64),intent(in) :: a,b
+    real(real_kind),intent(in) :: a,b
     logical,intent(out) :: ok
     ok=.false.
     if(.not.all(ieee_is_finite([a,b]))) return
@@ -153,10 +154,10 @@ contains
   end subroutine
 
   subroutine add_weighted_state(weight,u,total,mean,central,ok)
-    real(real64),intent(in) :: weight,u(3)
-    real(real64),intent(inout) :: total,mean(3),central(3,3)
+    real(real_kind),intent(in) :: weight,u(3)
+    real(real_kind),intent(inout) :: total,mean(3),central(3,3)
     logical,intent(out) :: ok
-    real(real64) :: new_total,delta(3),ratio,factor
+    real(real_kind) :: new_total,delta(3),ratio,factor
     integer :: i,j
     ok=.false.
     if(weight==0) then
@@ -186,10 +187,10 @@ contains
 
   subroutine push_velocity_sample(s,t,rho,u,ok)
     type(velocity_statistics),intent(inout) :: s
-    real(real64),intent(in) :: t,rho,u(3)
+    real(real_kind),intent(in) :: t,rho,u(3)
     logical,intent(out) :: ok
     type(velocity_statistics) :: next
-    real(real64) :: weights(2),duration,weighted_density,velocity(3),density
+    real(real_kind) :: weights(2),duration,weighted_density,velocity(3),density
     integer :: endpoint
     ok=.false.
     if(.not.s%configured.or..not.all(ieee_is_finite([t,rho,u]))) return
@@ -198,7 +199,7 @@ contains
     if(s%has_previous) then
       if(t<=s%last_time) return
       ! These weights integrate endpoint integrands, not products of interpolated fields.
-      call clipped_trapezoid(s%last_time,t,[1.d0,0.d0],[0.d0,1.d0], &
+      call clipped_trapezoid(s%last_time,t,[1.e0_real_kind,0.e0_real_kind],[0.e0_real_kind,1.e0_real_kind], &
                             s%window_start,s%window_end,weights,duration,ok)
       if(.not.ok) return
       do endpoint=1,2

@@ -6,10 +6,12 @@
 !| 10-02-2022  | Created by J. Fang                                    |
 !+---------------------------------------------------------------------+
 module riemann
+  use astr_precision, only: real_kind
   !
   use parallel, only : mpirank
   !
   implicit none
+  private :: real_kind
   !
   contains
   !
@@ -28,27 +30,27 @@ module riemann
     use thermchem,only:aceval,gammarmix
 #endif
     !
-    real(8),intent(out) :: fplus(:,:),fmius(:,:)
-    real(8),intent(in) ::  rho(:),vel(:,:),prs(:),tmp(:),spc(:,:),   &
+    real(real_kind),intent(out) :: fplus(:,:),fmius(:,:)
+    real(real_kind),intent(in) ::  rho(:),vel(:,:),prs(:),tmp(:),spc(:,:),   &
                            q(:,:),dxi(:,:),jacob(:)
     logical,intent(in),optional :: metric_consistent_eps
     !
     ! local data
-    real(8) :: uu,eps,gm2,css,csa,lmach,fhi,jro
-    real(8) :: gpd(3),lmda(5),lmdap(5),lmdam(5)
-    real(8) :: var0,var1,var2,var3,var4
+    real(real_kind) :: uu,eps,gm2,css,csa,lmach,fhi,jro
+    real(real_kind) :: gpd(3),lmda(5),lmdap(5),lmdam(5)
+    real(real_kind) :: var0,var1,var2,var3,var4
     integer :: nsize,i
     !
-    eps=0.04d0
+    eps=0.04e0_real_kind
     ! gm2=0.5d0/gamma
     nsize=size(rho,1)
     !
     do i=1,nsize
       !
       uu=dxi(i,1)*vel(i,1)+dxi(i,2)*vel(i,2)+dxi(i,3)*vel(i,3)
-      var0=1.d0/sqrt(dxi(i,1)**2+dxi(i,2)**2+dxi(i,3)**2)
+      var0=1.e0_real_kind/sqrt(dxi(i,1)**2+dxi(i,2)**2+dxi(i,3)**2)
       if(present(metric_consistent_eps)) then
-        if(metric_consistent_eps) eps=0.04d0/var0
+        if(metric_consistent_eps) eps=0.04e0_real_kind/var0
       endif
       !
       gpd(1)=dxi(i,1)*var0
@@ -57,10 +59,10 @@ module riemann
       !
 #ifdef COMB
       gamma = gammarmix(tmp(i),spc(i,:))
-      gm2=0.5d0/gamma
+      gm2=0.5e0_real_kind/gamma
       call aceval(tmp(i),spc(i,:),css)
 #else
-      gm2=0.5d0/gamma
+      gm2=0.5e0_real_kind/gamma
       css=sos(tmp(i))
 #endif
       csa=css/var0
@@ -72,11 +74,11 @@ module riemann
       lmda(4)=uu+csa
       lmda(5)=uu-csa
       !
-      lmdap(1)=0.5d0*(lmda(1)+sqrt(lmda(1)**2+eps**2))
-      lmdap(2)=0.5d0*(lmda(2)+sqrt(lmda(2)**2+eps**2))
-      lmdap(3)=0.5d0*(lmda(3)+sqrt(lmda(3)**2+eps**2))
-      lmdap(4)=0.5d0*(lmda(4)+sqrt(lmda(4)**2+eps**2))
-      lmdap(5)=0.5d0*(lmda(5)+sqrt(lmda(5)**2+eps**2))
+      lmdap(1)=0.5e0_real_kind*(lmda(1)+sqrt(lmda(1)**2+eps**2))
+      lmdap(2)=0.5e0_real_kind*(lmda(2)+sqrt(lmda(2)**2+eps**2))
+      lmdap(3)=0.5e0_real_kind*(lmda(3)+sqrt(lmda(3)**2+eps**2))
+      lmdap(4)=0.5e0_real_kind*(lmda(4)+sqrt(lmda(4)**2+eps**2))
+      lmdap(5)=0.5e0_real_kind*(lmda(5)+sqrt(lmda(5)**2+eps**2))
       !
       lmdam(1)=lmda(1)-lmdap(1)
       lmdam(2)=lmda(2)-lmdap(2)
@@ -84,30 +86,30 @@ module riemann
       lmdam(4)=lmda(4)-lmdap(4)
       lmdam(5)=lmda(5)-lmdap(5)
       !
-      if(lmach>=1.d0) then
+      if(lmach>=1.e0_real_kind) then
         fplus(i,1)=jacob(i)*  q(i,1)*uu
         fplus(i,2)=jacob(i)*( q(i,2)*uu+dxi(i,1)*prs(i) )
         fplus(i,3)=jacob(i)*( q(i,3)*uu+dxi(i,2)*prs(i) )
         fplus(i,4)=jacob(i)*( q(i,4)*uu+dxi(i,3)*prs(i) )
         fplus(i,5)=jacob(i)*( q(i,5)+prs(i) )*uu
         !
-        fmius(i,1)=0.d0
-        fmius(i,2)=0.d0
-        fmius(i,3)=0.d0
-        fmius(i,4)=0.d0
-        fmius(i,5)=0.d0  
+        fmius(i,1)=0.e0_real_kind
+        fmius(i,2)=0.e0_real_kind
+        fmius(i,3)=0.e0_real_kind
+        fmius(i,4)=0.e0_real_kind
+        fmius(i,5)=0.e0_real_kind  
         !
         if(numq>5) then
           fplus(i,6:numq)=jacob(i)*q(i,6:numq)*uu
-          fmius(i,6:numq)=0.d0
+          fmius(i,6:numq)=0.e0_real_kind
         endif
         !
-      elseif(lmach<=-1.d0) then
-        fplus(i,1)=0.d0
-        fplus(i,2)=0.d0
-        fplus(i,3)=0.d0
-        fplus(i,4)=0.d0
-        fplus(i,5)=0.d0
+      elseif(lmach<=-1.e0_real_kind) then
+        fplus(i,1)=0.e0_real_kind
+        fplus(i,2)=0.e0_real_kind
+        fplus(i,3)=0.e0_real_kind
+        fplus(i,4)=0.e0_real_kind
+        fplus(i,5)=0.e0_real_kind
         !
         fmius(i,1)=jacob(i)*  q(i,1)*uu
         fmius(i,2)=jacob(i)*( q(i,2)*uu+dxi(i,1)*prs(i) )
@@ -116,17 +118,17 @@ module riemann
         fmius(i,5)=jacob(i)*( q(i,5)+prs(i) )*uu
         !
         if(numq>5) then
-          fplus(i,6:numq)=0.d0
+          fplus(i,6:numq)=0.e0_real_kind
           fmius(i,6:numq)=jacob(i)*q(i,6:numq)*uu
         endif
         !
       else
         !
-        fhi=0.5d0*(gamma-1.d0)*(vel(i,1)**2+vel(i,2)**2+vel(i,3)**2)
+        fhi=0.5e0_real_kind*(gamma-1.e0_real_kind)*(vel(i,1)**2+vel(i,2)**2+vel(i,3)**2)
         !
         var1=lmdap(1)
         var2=lmdap(4)-lmdap(5)
-        var3=2.d0*lmdap(1)-lmdap(4)-lmdap(5)
+        var3=2.e0_real_kind*lmdap(1)-lmdap(4)-lmdap(5)
         var4=var1-var3*gm2
         !
         jro=jacob(i)*rho(i)
@@ -135,7 +137,7 @@ module riemann
         fplus(i,2)=jro*(var4*vel(i,1)+var2*css*gpd(1)*gm2)
         fplus(i,3)=jro*(var4*vel(i,2)+var2*css*gpd(2)*gm2)
         fplus(i,4)=jro*(var4*vel(i,3)+var2*css*gpd(3)*gm2)
-        fplus(i,5)=jacob(i)*(var1*q(i,5)+rho(i)*(var2*uu*var0*css*gm2-var3*(fhi+css**2)*gm2/(gamma-1.d0)))
+        fplus(i,5)=jacob(i)*(var1*q(i,5)+rho(i)*(var2*uu*var0*css*gm2-var3*(fhi+css**2)*gm2/(gamma-1.e0_real_kind)))
         !
         if(numq>5) then
           fplus(i,6:numq)=jacob(i)*q(i,6:numq)*var4
@@ -143,14 +145,14 @@ module riemann
         !
         var1=lmdam(1)
         var2=lmdam(4)-lmdam(5)
-        var3=2.d0*lmdam(1)-lmdam(4)-lmdam(5)
+        var3=2.e0_real_kind*lmdam(1)-lmdam(4)-lmdam(5)
         var4=var1-var3*gm2
         !
         fmius(i,1)=jro*var4                                                         
         fmius(i,2)=jro*(var4*vel(i,1)+var2*css*gpd(1)*gm2)                 
         fmius(i,3)=jro*(var4*vel(i,2)+var2*css*gpd(2)*gm2)                 
         fmius(i,4)=jro*(var4*vel(i,3)+var2*css*gpd(3)*gm2)                 
-        fmius(i,5)=jacob(i)*(var1*q(i,5)+rho(i)*(var2*uu*var0*css*gm2-var3*(fhi+css**2)*gm2/(gamma-1.d0)))
+        fmius(i,5)=jacob(i)*(var1*q(i,5)+rho(i)*(var2*uu*var0*css*gm2-var3*(fhi+css**2)*gm2/(gamma-1.e0_real_kind)))
         !
         if(numq>5) then
           fmius(i,6:numq)=jacob(i)*q(i,6:numq)*var4

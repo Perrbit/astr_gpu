@@ -1,4 +1,6 @@
 module conservative_boundary_runtime
+  use astr_precision, only: real_kind
+  use astr_precision_mpi, only: mpi_real_type
   use conservative_boundary_config, only: conservative_boundary_settings,read_conservative_boundary_config
   use parallel, only: mpirank,bcast
   implicit none
@@ -51,11 +53,11 @@ contains
     use sponge_layer, only: spg_i0,spg_im,spg_j0,spg_jm,spg_k0,spg_km
     use parallel, only: por,mpisize,isize,jsize,ksize
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-    real(8),intent(in) :: tw
-    real(8),parameter :: target_left(5)=[1.00000596004d0,1.00000268202d0, &
-      0.00565001630205d0,0.d0,0.94644428042d0]
-    real(8),parameter :: target_right(5)=[1.129734572d0,1.0921171d0, &
-      -0.058866065d0,0.d0,1.0590824d0]
+    real(real_kind),intent(in) :: tw
+    real(real_kind),parameter :: target_left(5)=[1.00000596004e0_real_kind,1.00000268202e0_real_kind, &
+      0.00565001630205e0_real_kind,0.e0_real_kind,0.94644428042e0_real_kind]
+    real(real_kind),parameter :: target_right(5)=[1.129734572e0_real_kind,1.0921171e0_real_kind, &
+      -0.058866065e0_real_kind,0.e0_real_kind,1.0590824e0_real_kind]
     logical :: topology_ok
     if(.not.conservative_boundary%enabled) return
     if(por(trim(flowtype)/='bl')) error stop 'OpenSBLI conservative mode requires flowtype=bl'
@@ -85,19 +87,19 @@ contains
     if(por(.not.topology_ok)) &
       error stop 'OpenSBLI conservative mode requires a supported NP=1/2/4 topology'
     if(por(.not.ieee_is_finite(prandtl).or. &
-      (abs(prandtl-0.71d0)>1.d-12.and.abs(prandtl-0.72d0)>1.d-12))) &
+      (abs(prandtl-0.71e0_real_kind)>1.e-12_real_kind.and.abs(prandtl-0.72e0_real_kind)>1.e-12_real_kind))) &
       error stop 'OpenSBLI conservative mode Prandtl number must be explicitly 0.71 or 0.72'
-    if(por(.not.ieee_is_finite(tw).or.tw<=0.d0)) &
+    if(por(.not.ieee_is_finite(tw).or.tw<=0.e0_real_kind)) &
       error stop 'OpenSBLI conservative mode wall temperature must be finite and positive'
-    if(por(abs(tw-1.676194d0)>1.d-12)) &
+    if(por(abs(tw-1.676194e0_real_kind)>1.e-12_real_kind)) &
       error stop 'OpenSBLI conservative mode wall temperature must equal 1.676194'
-    if(por(abs(gamma-1.4d0)>1.d-12.or.abs(mach-2.d0)>1.d-12.or. &
-      abs(reynolds-950.d0)>1.d-12.or.abs(ref_tem-288.d0)>1.d-12.or. &
-      abs(tempconst-110.4d0/288.d0)>1.d-12)) &
+    if(por(abs(gamma-1.4e0_real_kind)>1.e-12_real_kind.or.abs(mach-2.e0_real_kind)>1.e-12_real_kind.or. &
+      abs(reynolds-950.e0_real_kind)>1.e-12_real_kind.or.abs(ref_tem-288.e0_real_kind)>1.e-12_real_kind.or. &
+      abs(tempconst-110.4e0_real_kind/288.e0_real_kind)>1.e-12_real_kind)) &
       error stop 'OpenSBLI conservative mode reference normalization mismatch'
-    if(por(abs(conservative_boundary%split_x-40.d0)>1.d-12.or. &
-      any(abs(conservative_boundary%q_left-target_left)>1.d-12).or. &
-      any(abs(conservative_boundary%q_right-target_right)>1.d-12))) &
+    if(por(abs(conservative_boundary%split_x-40.e0_real_kind)>1.e-12_real_kind.or. &
+      any(abs(conservative_boundary%q_left-target_left)>1.e-12_real_kind).or. &
+      any(abs(conservative_boundary%q_right-target_right)>1.e-12_real_kind))) &
       error stop 'OpenSBLI conservative mode top-state contract mismatch'
   end subroutine validate_conservative_sbli_mode
 
@@ -106,7 +108,7 @@ contains
     use commarray, only: q,dxi,jacob
     use parallel, only: por
     use rectilinear_metric_halo, only: fill_rectilinear_metric_halo
-    real(8),intent(in) :: tw
+    real(real_kind),intent(in) :: tw
     logical :: owned(6)
     integer :: h,status
     if(.not.conservative_boundary%enabled) error stop 'Conservative boundary configuration is disabled'
@@ -140,7 +142,7 @@ contains
     use commarray, only: q
     use parallel, only: por,irk,jrk,krk,jsize
     use mpi
-    real(8) :: reference(0:jm,0:km,5)
+    real(real_kind) :: reference(0:jm,0:km,5)
     integer :: i,j,k,line_comm,ierr,count_min,count_max,n
     logical :: bad
     call validate_conservative_restart_state()
@@ -155,11 +157,11 @@ contains
     if(ierr/=MPI_SUCCESS) error stop 'Initial profile size reduction failed'
     if(por(count_min/=count_max)) error stop 'Inconsistent transverse initial profile layout'
     reference=q(0,0:jm,0:km,:)
-    call MPI_Bcast(reference,n,MPI_DOUBLE_PRECISION,0,line_comm,ierr)
+    call MPI_Bcast(reference,n,mpi_real_type,0,line_comm,ierr)
     if(ierr/=MPI_SUCCESS) error stop 'Initial profile broadcast failed'
     bad=.false.
     do i=0,im
-      if(any(abs(q(i,0:jm,0:km,:)-reference)>1.d-12*(1.d0+abs(reference)))) bad=.true.
+      if(any(abs(q(i,0:jm,0:km,:)-reference)>1.e-12_real_kind*(1.e0_real_kind+abs(reference)))) bad=.true.
     enddo
     call MPI_Comm_free(line_comm,ierr)
     if(ierr/=MPI_SUCCESS) error stop 'Initial profile communicator release failed'
@@ -191,7 +193,7 @@ contains
     use parallel, only: por
     use perfect_gas_boundary, only: admissible
     logical,intent(in) :: owns_inlet
-    real(8) :: inlet(5)
+    real(real_kind) :: inlet(5)
     integer :: h,j,k
     logical :: bad
     bad=.false.
@@ -210,7 +212,7 @@ contains
       do j=0,jm
         inlet(1)=rho_prof(j)
         inlet(2:4)=rho_prof(j)*vel_prof(j,1:3)
-        inlet(5)=prs_prof(j)/(gamma-1.d0)+0.5d0*rho_prof(j)*sum(vel_prof(j,1:3)**2)
+        inlet(5)=prs_prof(j)/(gamma-1.e0_real_kind)+0.5e0_real_kind*rho_prof(j)*sum(vel_prof(j,1:3)**2)
         if(.not.admissible(inlet)) bad=.true.
         do h=1,hm
           q(-h,j,k,:)=inlet
@@ -228,8 +230,8 @@ contains
     use fludyna, only: updatefvar,q2fvar
     use conservative_boundary_faces, only: apply_conservative_face_column
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-    real(8),intent(in) :: tw
-    real(8) :: xline(-hm:im+hm)
+    real(real_kind),intent(in) :: tw
+    real(real_kind) :: xline(-hm:im+hm)
     logical :: owned(4),bad
     integer :: side,s,k,lo,hi,status,h
     if(por(.not.state_ready)) error stop 'Conservative boundary state is not initialized'

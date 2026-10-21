@@ -86,15 +86,15 @@ struct WritePlane : viskores::worklet::WorkletMapField {
       }
       if(lo<0 || hi<0) {bad=1;return;}
       const auto a=input_v.Get(local[lo]),b=input_v.Get(local[hi]);
-      const double qa=has_q?input_d.Get(local[lo])[9]:0.,qb=has_q?input_d.Get(local[hi])[9]:0.;
-      viskores::Vec3f position,velocity;
+      const Real qa=has_q?input_d.Get(local[lo])[9]:Real(0.),qb=has_q?input_d.Get(local[hi])[9]:Real(0.);
+      astr_insitu::NativeVector position,velocity;
       for(int d=0;d<3;++d) {
         position[d]=vertex.position[d];
         velocity[d]=a[d]+vertex.fraction*(b[d]-a[d]);
         if(!viskores::IsFinite(position[d]) || !viskores::IsFinite(velocity[d]) ||
            !viskores::IsFinite(a[d]) || !viskores::IsFinite(b[d])) bad=1;
       }
-      const double scalar=qa+vertex.fraction*(qb-qa);
+      const Real scalar=qa+vertex.fraction*(qb-qa);
       if(!viskores::IsFinite(qa) || !viskores::IsFinite(qb) || !viskores::IsFinite(scalar)) bad=1;
       const auto node=start[0]+p;
       points.Set(node,position);vectors.Set(node,velocity);q.Set(node,scalar);u.Set(node,velocity[0]);
@@ -126,7 +126,7 @@ struct SelectUniquePoint : viskores::worklet::WorkletMapField {
   using ExecutionSignature=void(_1,_2,_3,_4,_5,_6,_7,_8,_9);
   template<class I,class X,class V,class Q>
   VISKORES_EXEC void operator()(viskores::Id first,const I& original,const X& xyz,const V& velocity,
-      const Q& scalar,viskores::Vec3f& p,viskores::Vec3f& v,double& q,double& u) const {
+      const Q& scalar,astr_insitu::NativeVector& p,astr_insitu::NativeVector& v,Real& q,Real& u) const {
     const auto source=original.Get(first);
     p=xyz.Get(source);v=velocity.Get(source);q=scalar.Get(source);u=v[0];
   }
@@ -153,18 +153,19 @@ inline void require_no_errors(const viskores::cont::ArrayHandle<viskores::Id>& b
 // No host mirrors of fields, keys, intersections or connectivity. Device scan
 // totals and validation reductions are small control metadata only. The caller
 // retains source arrays and accounts for third-party scratch/resource peaks.
-inline PlaneProduct extract_plane(viskores::Vec3f* coordinates_pointer,viskores::Vec3f* velocity_pointer,
+inline PlaneProduct extract_plane(astr_insitu::NativeVector* coordinates_pointer,astr_insitu::NativeVector* velocity_pointer,
     DeviceDiagnostics* diagnostics_pointer,const Partition& partition,const plane_geometry::Point& origin,
     const plane_geometry::Point& normal,std::uint64_t budget,std::uint64_t retained=0,bool canonical=false) {
   const auto plane=canonical?plane_geometry::Plane{origin,normal}:plane_geometry::make_plane(origin,normal);
   if(canonical) {
-    double squared=0.;
+    Real squared=Real(0.);
     for(int d=0;d<3;++d) {
       if(!std::isfinite(origin[d]) || !std::isfinite(normal[d]))
         throw std::invalid_argument("Nonfinite canonical plane");
       squared+=normal[d]*normal[d];
     }
-    if(std::abs(squared-1.)>8.*DBL_EPSILON || normal[plane_geometry::dominant_axis(plane)]<=0.)
+    if(std::abs(squared-Real(1.))>Real(8.)*std::numeric_limits<Real>::epsilon() ||
+      normal[plane_geometry::dominant_axis(plane)]<=Real(0.))
       throw std::invalid_argument("Invalid canonical plane normal");
   }
   const auto tetrahedra=partition.tetrahedra(),nodes=partition.local_nodes();
@@ -200,8 +201,8 @@ inline PlaneProduct extract_plane(viskores::Vec3f* coordinates_pointer,viskores:
     require_device_only(counts);require_device_only(offsets);require_device_only(bad);
     return result;
   }
-  viskores::cont::ArrayHandle<viskores::Vec3f> raw_xyz,raw_velocity;
-  viskores::cont::ArrayHandle<double> raw_q,raw_u;
+  viskores::cont::ArrayHandle<astr_insitu::NativeVector> raw_xyz,raw_velocity;
+  viskores::cont::ArrayHandle<Real> raw_q,raw_u;
   viskores::cont::ArrayHandle<PlaneKey> raw_keys,sorted_keys;
   viskores::cont::ArrayHandle<viskores::Id> raw_indices,original,first,unique,indices;
   raw_xyz.Allocate(total[0]);raw_velocity.Allocate(total[0]);raw_q.Allocate(total[0]);raw_u.Allocate(total[0]);
@@ -230,8 +231,8 @@ inline PlaneProduct extract_plane(viskores::Vec3f* coordinates_pointer,viskores:
   synchronize_device_stage("SelectUniquePlaneKey");
   viskores::cont::Algorithm::LowerBounds(device,result.keys,raw_keys,unique,KeyLess{});
   synchronize_device_stage("MapPlaneKeys");
-  viskores::cont::ArrayHandle<viskores::Vec3f> product_xyz,product_velocity;
-  viskores::cont::ArrayHandle<double> product_q,product_u;
+  viskores::cont::ArrayHandle<astr_insitu::NativeVector> product_xyz,product_velocity;
+  viskores::cont::ArrayHandle<Real> product_q,product_u;
   invoke(SelectUniquePoint{},first,original,raw_xyz,raw_velocity,raw_q,
     product_xyz,product_velocity,product_q,product_u);
   synchronize_device_stage("PackUniquePlanePoints");

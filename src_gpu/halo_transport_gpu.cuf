@@ -1,4 +1,6 @@
 module halo_transport_gpu
+  use astr_precision, only: real_kind,real_bytes
+  use astr_precision_mpi, only: mpi_real_type
   use mpi
   use cudafor
   use iso_c_binding, only: c_ptr,c_loc,c_size_t,c_int
@@ -180,7 +182,7 @@ contains
   end subroutine configure_pipeline_axes
 
   subroutine register_host_buffer(buffer)
-    real(8),target,contiguous,intent(inout) :: buffer(:,:,:,:)
+    real(real_kind),target,contiguous,intent(inout) :: buffer(:,:,:,:)
     integer :: code,ignored
     integer(c_size_t) :: bytes
 
@@ -189,7 +191,7 @@ contains
       registration_failed=.true.
       return
     endif
-    bytes=size(buffer,kind=c_size_t)*8_c_size_t
+    bytes=size(buffer,kind=c_size_t)*int(real_bytes,c_size_t)
     code=cudaHostRegister(c_loc(buffer),bytes,0)
     if(code/=cudaSuccess) then
       print *, 'GPU halo host registration failed: ',code,trim(cudaGetErrorString(code))
@@ -401,7 +403,7 @@ contains
   end subroutine reset_pipeline_context
 
   subroutine begin_host_pair_pipeline(axis,recv_high,recv_low,count,low,high,tag_first,tag_second)
-    real(8),intent(inout),contiguous,asynchronous :: recv_high(:,:,:,:),recv_low(:,:,:,:)
+    real(real_kind),intent(inout),contiguous,asynchronous :: recv_high(:,:,:,:),recv_low(:,:,:,:)
     integer,intent(in) :: axis,count,low,high,tag_first,tag_second
     integer :: ierr,abort_error
 
@@ -419,10 +421,10 @@ contains
     pipeline_contexts(axis)%tag_first=tag_first
     pipeline_contexts(axis)%tag_second=tag_second
     pipeline_contexts(axis)%requests=MPI_REQUEST_NULL
-    call mpi_irecv(recv_high,count,MPI_REAL8,high,tag_first,MPI_COMM_WORLD, &
+    call mpi_irecv(recv_high,count,mpi_real_type,high,tag_first,MPI_COMM_WORLD, &
                    pipeline_contexts(axis)%requests(1),ierr)
     call check_mpi(ierr)
-    call mpi_irecv(recv_low,count,MPI_REAL8,low,tag_second,MPI_COMM_WORLD, &
+    call mpi_irecv(recv_low,count,mpi_real_type,low,tag_second,MPI_COMM_WORLD, &
                    pipeline_contexts(axis)%requests(2),ierr)
     call check_mpi(ierr)
     pipeline_contexts(axis)%state=pipeline_receive_posted
@@ -504,7 +506,7 @@ contains
 
   subroutine start_host_pair_mpi(axis,send_low,send_high)
     integer,intent(in) :: axis
-    real(8),intent(in),contiguous,asynchronous :: send_low(:,:,:,:),send_high(:,:,:,:)
+    real(real_kind),intent(in),contiguous,asynchronous :: send_low(:,:,:,:),send_high(:,:,:,:)
     integer :: code,ierr
 
     call require_pipeline_state(axis,pipeline_device_packing,'start MPI')
@@ -520,11 +522,11 @@ contains
     pipeline_contexts(axis)%state=pipeline_send_ready
     code=cudaEventSynchronize(pipeline_contexts(axis)%send_ready_event)
     if(code/=cudaSuccess) call abort_cuda('wait for D2H',code)
-    call mpi_isend(send_low,pipeline_contexts(axis)%count,MPI_REAL8, &
+    call mpi_isend(send_low,pipeline_contexts(axis)%count,mpi_real_type, &
                    pipeline_contexts(axis)%low,pipeline_contexts(axis)%tag_first, &
                    MPI_COMM_WORLD,pipeline_contexts(axis)%requests(3),ierr)
     call check_mpi(ierr)
-    call mpi_isend(send_high,pipeline_contexts(axis)%count,MPI_REAL8, &
+    call mpi_isend(send_high,pipeline_contexts(axis)%count,mpi_real_type, &
                    pipeline_contexts(axis)%high,pipeline_contexts(axis)%tag_second, &
                    MPI_COMM_WORLD,pipeline_contexts(axis)%requests(4),ierr)
     call check_mpi(ierr)
@@ -549,7 +551,7 @@ contains
 
   subroutine complete_host_pair_d2h(axis,send_low,send_high,work)
     integer,intent(in) :: axis
-    real(8),intent(in),contiguous,asynchronous :: send_low(:,:,:,:),send_high(:,:,:,:)
+    real(real_kind),intent(in),contiguous,asynchronous :: send_low(:,:,:,:),send_high(:,:,:,:)
     procedure(independent_host_pair_work),optional :: work
 
     call start_host_pair_mpi(axis,send_low,send_high)
@@ -587,8 +589,8 @@ contains
   subroutine exchange_host_pair(send_low,send_high,recv_high,recv_low, &
                                 count,low,high,tag_first,tag_second,work)
     implicit none
-    real(8),intent(in),contiguous,asynchronous :: send_low(:,:,:,:),send_high(:,:,:,:)
-    real(8),intent(inout),contiguous,asynchronous :: recv_high(:,:,:,:),recv_low(:,:,:,:)
+    real(real_kind),intent(in),contiguous,asynchronous :: send_low(:,:,:,:),send_high(:,:,:,:)
+    real(real_kind),intent(inout),contiguous,asynchronous :: recv_high(:,:,:,:),recv_low(:,:,:,:)
     integer,intent(in) :: count,low,high,tag_first,tag_second
     integer :: ierr,abort_error,request_status(MPI_STATUS_SIZE)
     integer :: requests(4),statuses(MPI_STATUS_SIZE,4)
@@ -607,13 +609,13 @@ contains
     endif
     if(present(work)) then
       pair_active=.true.
-      call mpi_irecv(recv_high,count,MPI_REAL8,high,tag_first,MPI_COMM_WORLD,requests(1),ierr)
+      call mpi_irecv(recv_high,count,mpi_real_type,high,tag_first,MPI_COMM_WORLD,requests(1),ierr)
       call check_mpi(ierr)
-      call mpi_irecv(recv_low,count,MPI_REAL8,low,tag_second,MPI_COMM_WORLD,requests(2),ierr)
+      call mpi_irecv(recv_low,count,mpi_real_type,low,tag_second,MPI_COMM_WORLD,requests(2),ierr)
       call check_mpi(ierr)
-      call mpi_isend(send_low,count,MPI_REAL8,low,tag_first,MPI_COMM_WORLD,requests(3),ierr)
+      call mpi_isend(send_low,count,mpi_real_type,low,tag_first,MPI_COMM_WORLD,requests(3),ierr)
       call check_mpi(ierr)
-      call mpi_isend(send_high,count,MPI_REAL8,high,tag_second,MPI_COMM_WORLD,requests(4),ierr)
+      call mpi_isend(send_high,count,mpi_real_type,high,tag_second,MPI_COMM_WORLD,requests(4),ierr)
       call check_mpi(ierr)
       call work(requests,0)
       call mpi_waitall(4,requests,statuses,ierr)
@@ -621,15 +623,15 @@ contains
       pair_active=.false.
       return
     endif
-    call mpi_sendrecv(send_low,count,MPI_REAL8,low,tag_first, &
-                      recv_high,count,MPI_REAL8,high,tag_first, &
+    call mpi_sendrecv(send_low,count,mpi_real_type,low,tag_first, &
+                      recv_high,count,mpi_real_type,high,tag_first, &
                       MPI_COMM_WORLD,request_status,ierr)
     if(ierr/=MPI_SUCCESS) then
       call mpi_abort(MPI_COMM_WORLD,ierr,abort_error)
       return
     endif
-    call mpi_sendrecv(send_high,count,MPI_REAL8,high,tag_second, &
-                      recv_low,count,MPI_REAL8,low,tag_second, &
+    call mpi_sendrecv(send_high,count,mpi_real_type,high,tag_second, &
+                      recv_low,count,mpi_real_type,low,tag_second, &
                       MPI_COMM_WORLD,request_status,ierr)
     if(ierr/=MPI_SUCCESS) call mpi_abort(MPI_COMM_WORLD,ierr,abort_error)
   end subroutine exchange_host_pair

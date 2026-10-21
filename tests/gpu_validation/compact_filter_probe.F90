@@ -1,4 +1,5 @@
 program compact_filter_probe
+  use astr_precision, only: real_kind,real_bytes
   use cudafor
   use ieee_arithmetic, only: ieee_is_finite
   use commvar, only: hm,alfa_filter
@@ -14,10 +15,10 @@ program compact_filter_probe
   type(compact_matrix) :: matrix
   type(compact_reference_factor) :: factor
   integer :: unit,di,bi,dim,ntype,nrhs,first,last,n,i,j,k,device,istat,cases
-  real(8),allocatable :: input(:,:),rhs(:,:),actual_rhs(:,:),actual(:,:),reference(:,:), &
+  real(real_kind),allocatable :: input(:,:),rhs(:,:),actual_rhs(:,:),actual(:,:),reference(:,:), &
     actual_filtered(:,:),cpu_filtered(:,:),scalar_filtered(:,:),expected_rhs(:)
-  real(8) :: x,theta,transfer,abs_error,scaled_error,rhs_error,residual,projected_error,scalar_error
-  real(8) :: constant_error,polynomial_error,fourier_error,value,device_peak
+  real(real_kind) :: x,theta,transfer,abs_error,scaled_error,rhs_error,residual,projected_error,scalar_error
+  real(real_kind) :: constant_error,polynomial_error,fourier_error,value,device_peak
   character(1024) :: path,argument
 
   call get_command_argument(1,path)
@@ -32,14 +33,14 @@ program compact_filter_probe
   if(len_trim(argument)>0) read(argument,*) device
   istat=cudaSetDevice(device)
   if(istat/=cudaSuccess) error stop 'cudaSetDevice failed'
-  alfa_filter=0.49d0
-  call filter_coefficient_cal(alfa_filter,1.11d0,0.98d0)
-  theta=0.5d0*acos(-1.d0)
-  value=2.d0*coef10i(0)
+  alfa_filter=0.49e0_real_kind
+  call filter_coefficient_cal(alfa_filter,1.11e0_real_kind,0.98e0_real_kind)
+  theta=0.5e0_real_kind*acos(-1.e0_real_kind)
+  value=2.e0_real_kind*coef10i(0)
   do k=1,5
-    value=value+2.d0*coef10i(k)*cos(k*theta)
+    value=value+2.e0_real_kind*coef10i(k)*cos(k*theta)
   enddo
-  transfer=value/(1.d0+2.d0*alfa_filter*cos(theta))
+  transfer=value/(1.e0_real_kind+2.e0_real_kind*alfa_filter*cos(theta))
   open(newunit=unit,file=trim(path),status='new',action='write')
   write(unit,'(A)') 'dim,ntype,nrhs,rhs_error,raw_abs,raw_scaled,residual,projected_abs,scalar_full_abs,'// &
     'constant_error,polynomial_error,fourier_interior_error,controlled_device_bytes'
@@ -53,8 +54,8 @@ program compact_filter_probe
       n=last-first+1
       matrix%n=n
       allocate(matrix%lower(n),matrix%diagonal(n),matrix%upper(n))
-      matrix%lower=afilter%a; matrix%upper=afilter%c; matrix%diagonal=1.d0
-      matrix%lower(1)=0.d0; matrix%upper(n)=0.d0
+      matrix%lower=afilter%a; matrix%upper=afilter%c; matrix%diagonal=1.e0_real_kind
+      matrix%lower(1)=0.e0_real_kind; matrix%upper(n)=0.e0_real_kind
       call factor_compact_reference(matrix,factor)
       do bi=1,size(batches)
         nrhs=batches(bi)
@@ -64,9 +65,9 @@ program compact_filter_probe
           actual_filtered(0:dim,nrhs),cpu_filtered(0:dim,nrhs),scalar_filtered(0:dim,nrhs))
         do j=1,nrhs
           do i=-hm,dim+hm
-            x=real(i,8)/dim
+            x=real(i,real_kind)/dim
             select case(mod(j-1,5))
-            case(0); input(i,j)=1.d0
+            case(0); input(i,j)=1.e0_real_kind
             case(1); input(i,j)=x
             case(2); input(i,j)=x**3
             case(3); input(i,j)=cos(theta*i)
@@ -92,31 +93,34 @@ program compact_filter_probe
           error stop 'nonfinite compact filter output'
         rhs_error=maxval(abs(actual_rhs-rhs))
         abs_error=maxval(abs(actual-reference))
-        scaled_error=abs_error/max(1.d0,maxval(abs(reference)))
+        scaled_error=abs_error/max(1.e0_real_kind,maxval(abs(reference)))
         residual=compact_residual(matrix,actual,rhs)
         projected_error=maxval(abs(actual_filtered-cpu_filtered))
         scalar_error=maxval(abs(actual_filtered-scalar_filtered))
-        if(rhs_error>2.d-10.or.scaled_error>2.d-10.or.residual>1.d-12.or. &
-           projected_error>2.d-10.or.scalar_error>2.d-10) error stop 'compact filter comparison failed'
+        if(real_bytes==8.and.(rhs_error>2.e-10_real_kind.or.scaled_error>2.e-10_real_kind.or. &
+           residual>1.e-12_real_kind.or.projected_error>2.e-10_real_kind.or.scalar_error>2.e-10_real_kind)) &
+          error stop 'compact filter comparison failed'
         if(ntype==1.or.ntype==4) then
           if(any(actual_filtered(0,:)/=input(0,:))) error stop 'left physical endpoint changed'
         endif
         if(ntype==2.or.ntype==4) then
           if(any(actual_filtered(dim,:)/=input(dim,:))) error stop 'right physical endpoint changed'
         endif
-        constant_error=maxval(abs(actual_filtered(:,1)-1.d0))
-        polynomial_error=0.d0
+        constant_error=maxval(abs(actual_filtered(:,1)-1.e0_real_kind))
+        polynomial_error=0.e0_real_kind
         if(nrhs>=3) polynomial_error=maxval(abs(actual_filtered(:,2:3)-input(0:dim,2:3)))
-        if(constant_error>2.d-10.or.polynomial_error>2.d-10) error stop 'constant/polynomial filter property failed'
-        fourier_error=0.d0
+        if(real_bytes==8.and.(constant_error>2.e-10_real_kind.or.polynomial_error>2.e-10_real_kind)) &
+          error stop 'constant/polynomial filter property failed'
+        fourier_error=0.e0_real_kind
         if(dim==512.and.nrhs>=4) then
           do i=dim/3,2*dim/3
             fourier_error=max(fourier_error,abs(actual_filtered(i,4)-transfer*cos(theta*i)))
           enddo
-          if(fourier_error>2.d-10) error stop 'interior Fourier filter response failed'
+          if(real_bytes==8.and.fourier_error>2.e-10_real_kind) error stop 'interior Fourier filter response failed'
         endif
-        device_peak=real(plan%line%device_bytes+scalar%line%device_bytes,8)+ &
-          8.d0*(nrhs+1)*(dim+2*hm+1+2*n+dim+1)+8.d0*2*(4+5+6+21+33)
+        device_peak=real(plan%line%device_bytes+scalar%line%device_bytes,real_kind)+ &
+          real(real_bytes,real_kind)*(nrhs+1)*(dim+2*hm+1+2*n+dim+1)+ &
+          real(real_bytes,real_kind)*2*(4+5+6+21+33)
         write(unit,'(3(I0,A),10(ES24.16,:,A))') dim,',',ntype,',',nrhs,',',rhs_error,',',abs_error,',', &
           scaled_error,',',residual,',',projected_error,',',scalar_error,',',constant_error,',', &
           polynomial_error,',',fourier_error,',',device_peak
@@ -138,35 +142,38 @@ contains
     integer,parameter :: refinements(4)=[8,16,32,64],types(2)=[3,4]
     type(compact_filter_plan) :: smooth_plan
     type(compact_scheme) :: smooth_filter
-    real(8),allocatable :: source(:,:),filtered(:,:),cpu(:)
-    real(8) :: error,previous,order,cpu_error
+    real(real_kind),allocatable :: source(:,:),filtered(:,:),cpu(:)
+    real(real_kind) :: error,previous,order,cpu_error
     integer :: handle,t,r,length,point
     open(newunit=handle,file=output_path,status='new',action='write')
     write(handle,'(A)') 'dim,ntype,scaled_smooth_error,observed_order,cpu_gpu_scaled'
     do t=1,size(types)
-      previous=0.d0
+      previous=0.e0_real_kind
       do r=1,size(refinements)
         length=refinements(r)
         call compact_filter_initiate(smooth_filter,types(t),length,note='')
         call prepare_compact_filter_gpu(smooth_filter,hm,1,smooth_plan)
         allocate(source(-hm:length+hm,1),filtered(0:length,1))
         do point=-hm,length+hm
-          source(point,1)=exp(4.d0*point/length)
+          source(point,1)=exp(4.e0_real_kind*point/length)
         enddo
         smooth_plan%input=source
         call apply_compact_filter_gpu(smooth_plan,1)
         filtered=smooth_plan%filtered
         cpu=compact_filter(smooth_filter,source(:,1),length,note='')
-        cpu_error=maxval(abs(filtered(:,1)-cpu))/max(1.d0,maxval(abs(cpu)))
+        cpu_error=maxval(abs(filtered(:,1)-cpu))/max(1.e0_real_kind,maxval(abs(cpu)))
         error=maxval(abs(filtered(:,1)-source(0:length,1)))/maxval(abs(source(0:length,1)))
-        order=0.d0
-        if(r>1) order=log(previous/error)/log(2.d0)
+        order=0.e0_real_kind
+        if(r>1) order=log(previous/error)/log(2.e0_real_kind)
         write(handle,'(2(I0,A),3(ES24.16,:,A))') length,',',types(t),',',error,',',order,',',cpu_error
         flush(handle)
-        if(cpu_error>2.d-10.or..not.ieee_is_finite(error)) error stop 'smooth filter reference failed'
+        if((real_bytes==8.and.cpu_error>2.e-10_real_kind).or..not.ieee_is_finite(error)) &
+          error stop 'smooth filter reference failed'
         ! The highest-resolution interface case approaches the FP64 error floor.
-        if(types(t)==3.and.length==32.and.order<9.d0) error stop 'interface filter tenth-order gate failed'
-        if(types(t)==4.and.length==64.and.order<5.5d0) error stop 'physical filter sixth-order gate failed'
+        if(real_bytes==8.and.types(t)==3.and.length==32.and.order<9.e0_real_kind) &
+          error stop 'interface filter tenth-order gate failed'
+        if(real_bytes==8.and.types(t)==4.and.length==64.and.order<5.5e0_real_kind) &
+          error stop 'physical filter sixth-order gate failed'
         previous=error
         call release_compact_filter_gpu(smooth_plan)
         deallocate(source,filtered,smooth_filter%a,smooth_filter%c,smooth_filter%ac)
@@ -179,34 +186,34 @@ contains
     use filter, only: filter_coefficient_explicit,spafilter10exp,coef8e
     character(*),intent(in) :: filename
     integer :: header(8),handle,a,b,c,m,h,ii,jj,kk,phase,location_x(2),location_y(1)
-    real(8) :: window(11,11,11,5),observed(5),expected(5),after_x(11,11),after_y(11)
-    real(8) :: state_x(11,11,5),state_y(11,5),internal_x(11,11),internal_y(11),stage_state(5,4)
-    real(8) :: minimum_internal,internal,error,kinetic,weight
+    real(real_kind) :: window(11,11,11,5),observed(5),expected(5),after_x(11,11),after_y(11)
+    real(real_kind) :: state_x(11,11,5),state_y(11,5),internal_x(11,11),internal_y(11),stage_state(5,4)
+    real(real_kind) :: minimum_internal,internal,error,kinetic,weight
     character(6),parameter :: stage_name(4)=[character(6) :: 'before','afterX','afterY','afterZ']
-    real(8),allocatable :: line(:),filtered(:)
+    real(real_kind),allocatable :: line(:),filtered(:)
     open(newunit=handle,file=filename,access='stream',form='unformatted',status='old')
     read(handle) header,window,observed
     close(handle)
     if(hm/=5) error stop 'explicit window reference requires five halo layers'
     call filter_coefficient_explicit()
-    minimum_internal=huge(1.d0)
+    minimum_internal=huge(1.e0_real_kind)
     do c=1,11
     do b=1,11
     do a=1,11
-      if(.not.all(ieee_is_finite(window(a,b,c,:))).or.window(a,b,c,1)<=0.d0) &
+      if(.not.all(ieee_is_finite(window(a,b,c,:))).or.window(a,b,c,1)<=0.e0_real_kind) &
         error stop 'captured input window is not admissible'
-      internal=window(a,b,c,5)-0.5d0*sum(window(a,b,c,2:4)**2)/window(a,b,c,1)
+      internal=window(a,b,c,5)-0.5e0_real_kind*sum(window(a,b,c,2:4)**2)/window(a,b,c,1)
       if(.not.ieee_is_finite(internal)) error stop 'nonfinite captured internal energy'
       minimum_internal=min(minimum_internal,internal)
     enddo
     enddo
     enddo
-    if(minimum_internal<=0.d0) error stop 'captured input has nonpositive internal energy'
+    if(minimum_internal<=0.e0_real_kind) error stop 'captured input has nonpositive internal energy'
     do m=1,5
       allocate(line(-hm:header(1)+hm),filtered(0:header(1)))
       do c=1,11
       do b=1,11
-        line=0.d0
+        line=0.e0_real_kind
         do a=1,11
           ii=max(0,min(header(1),header(6)+a-6))
           line(ii)=window(a,b,c,m)
@@ -219,7 +226,7 @@ contains
       deallocate(line,filtered)
       allocate(line(-hm:header(2)+hm),filtered(0:header(2)))
       do c=1,11
-        line=0.d0
+        line=0.e0_real_kind
         do b=1,11
           jj=max(0,min(header(2),header(7)+b-6))
           line(jj)=after_x(b,c)
@@ -230,7 +237,7 @@ contains
       state_y(:,m)=after_y
       deallocate(line,filtered)
       allocate(line(-hm:header(3)+hm),filtered(0:header(3)))
-      line=0.d0
+      line=0.e0_real_kind
       do c=1,11
         kk=modulo(header(8)+c-6,header(3))
         line(kk)=after_y(c)
@@ -249,10 +256,10 @@ contains
     error=maxval(abs(expected-observed))
     write(*,'(A,ES24.16)') 'WINDOW_MIN_INPUT_INTERNAL=',minimum_internal
     if(.not.all(ieee_is_finite(state_x)).or..not.all(ieee_is_finite(state_y)).or. &
-       minval(state_x(:,:,1))<=0.d0.or.minval(state_y(:,1))<=0.d0) &
+       minval(state_x(:,:,1))<=0.e0_real_kind.or.minval(state_y(:,1))<=0.e0_real_kind) &
       error stop 'directional replay has nonfinite state or nonpositive density'
-    internal_x=state_x(:,:,5)-0.5d0*sum(state_x(:,:,2:4)**2,dim=3)/state_x(:,:,1)
-    internal_y=state_y(:,5)-0.5d0*sum(state_y(:,2:4)**2,dim=2)/state_y(:,1)
+    internal_x=state_x(:,:,5)-0.5e0_real_kind*sum(state_x(:,:,2:4)**2,dim=3)/state_x(:,:,1)
+    internal_y=state_y(:,5)-0.5e0_real_kind*sum(state_y(:,2:4)**2,dim=2)/state_y(:,1)
     location_x=minloc(internal_x)
     location_y=minloc(internal_y)
     write(*,'(A,ES24.16,A,3(I0,1X))') 'WINDOW_AFTER_X_MIN_INTERNAL=',minval(internal_x), &
@@ -265,7 +272,7 @@ contains
     stage_state(:,3)=state_y(6,:)
     stage_state(:,4)=expected
     do phase=1,4
-      kinetic=0.5d0*sum(stage_state(2:4,phase)**2)/stage_state(1,phase)
+      kinetic=0.5e0_real_kind*sum(stage_state(2:4,phase)**2)/stage_state(1,phase)
       internal=stage_state(5,phase)-kinetic
       write(*,'(A,A,A,5(ES24.16,1X))') 'WINDOW_STAGE ',trim(stage_name(phase)),' q=',stage_state(:,phase)
       write(*,'(A,A,A,3(ES24.16,1X))') 'WINDOW_STAGE ',trim(stage_name(phase)), &
@@ -276,8 +283,8 @@ contains
       do ii=0,8
         a=ii-header(6)+6
         weight=coef8e(abs(ii-header(6)))
-        if(ii==header(6)) weight=2.d0*weight
-        internal=window(a,6,6,5)-0.5d0*sum(window(a,6,6,2:4)**2)/window(a,6,6,1)
+        if(ii==header(6)) weight=2.e0_real_kind*weight
+        internal=window(a,6,6,5)-0.5e0_real_kind*sum(window(a,6,6,2:4)**2)/window(a,6,6,1)
         write(*,'(A,I0,5(1X,ES24.16))') 'WINDOW_X_STENCIL ',ii,weight,window(a,6,6,1), &
           window(a,6,6,5),internal,weight*window(a,6,6,5)
       enddo
@@ -285,10 +292,10 @@ contains
     write(*,'(A,5(ES24.16,1X))') 'WINDOW_CPU_FILTERED_Q=',expected
     write(*,'(A,5(ES24.16,1X))') 'WINDOW_GPU_FILTERED_Q=',observed
     write(*,'(A,ES24.16)') 'WINDOW_CPU_GPU_ABS=',error
-    internal=expected(5)-0.5d0*sum(expected(2:4)**2)/expected(1)
+    internal=expected(5)-0.5e0_real_kind*sum(expected(2:4)**2)/expected(1)
     write(*,'(A,ES24.16)') 'WINDOW_CPU_FILTERED_INTERNAL=',internal
-    if(error>2.d-10) error stop 'CPU filter does not reproduce captured GPU point'
-    if(internal>=0.d0) error stop 'CPU filter did not reproduce loss of admissibility'
+    if(real_bytes==8.and.error>2.e-10_real_kind) error stop 'CPU filter does not reproduce captured GPU point'
+    if(internal>=0.e0_real_kind) error stop 'CPU filter did not reproduce loss of admissibility'
     print *, 'PASS: native CPU filter reproduces loss of admissibility, not a CFD acceptance'
   end subroutine explicit_window_reference
 end program

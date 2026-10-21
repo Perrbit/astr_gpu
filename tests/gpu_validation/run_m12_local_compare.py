@@ -24,8 +24,8 @@ TOPOLOGIES = ('1,1,1', '2,1,1', '1,2,1', '1,1,2',
               '4,1,1', '2,2,1', '2,1,2', '1,2,2')
 
 
-def positive_state(path):
-    snapshot = read_q_snapshot(path)
+def positive_state(path, precision='fp64'):
+    snapshot = read_q_snapshot(path, precision=precision)
     im, jm, km, _, components = snapshot.header
     if components != 5:
         raise ValueError('M12 requires exactly five conservative components')
@@ -148,7 +148,8 @@ def check_private_diagnostics(cpu, gpu, ranks):
 
 
 def run(args, backend, topology, insitu_config=None, case_label=None, resource_baseline=None,
-        observation=None, steps=10, restore=None, checkpoint_interval=None,product_oracles=False):
+        observation=None, steps=10, restore=None, checkpoint_interval=None,product_oracles=False,
+        exact_restart=None):
     if steps not in (5,10) or (restore is not None and (steps!=10 or checkpoint_interval is None)):
         raise ValueError('M12 restart gate is limited to ten steps or five-plus-five')
     if observation not in (None, 'plain', 'images', 'geometry', 'trace'):
@@ -175,16 +176,26 @@ def run(args, backend, topology, insitu_config=None, case_label=None, resource_b
         raise ValueError('M12 resource budgets and timeout must be positive')
     case = args.output / ((case_label or backend) + '_np' + str(ranks) + '_' + topology.replace(',', 'x'))
     prepare(args.source, case, backend)
+    if getattr(args, 'boundary', None) == 'nscbc':
+        primary=case/'datin/input.dat'
+        lines=primary.read_text().splitlines()
+        start=next(i for i,line in enumerate(lines) if line.startswith('# bctype'))+1
+        lines[start+1]='22,1.d0';lines[start+3]='52'
+        primary.write_text('\n'.join(lines)+'\n')
     first_step=5 if restore is not None else 0
-    if steps!=10:
+    selected_dt=getattr(args,'deltat',.02)
+    if steps!=10 or selected_dt!=.02:
         path=case/'datin/controller'
         lines=path.read_text().splitlines()
         replace_value(lines,'maxstep,feqchkpt',f'{steps-1},1,9999,9999,1,9999')
+        replace_value(lines,'deltat',f'{selected_dt:.17e}')
         path.write_text('\n'.join(lines)+'\n')
     if checkpoint_interval is not None:
         (case/'outdat/new').mkdir()
+        restart_selection = '' if exact_restart is None else f"exact_restart={'.true.' if exact_restart else '.false.'},"
         (case/'datin/input.output').write_text(f"""&output
  directory='outdat/new',restore_directory='{restore or ''}',restart_output='saved',
+ {restart_selection}
  host_budget_bytes=67108864,device_budget_bytes=67108864,buffer_bytes=1048576,
  device_reserve_bytes=1073741824
 /
@@ -221,6 +232,15 @@ def run(args, backend, topology, insitu_config=None, case_label=None, resource_b
                ASTR_VALIDATION_RHS_PREFIX='diagnostics/state',
                ASTR_M12_SENSOR_DETAIL='1',
                ASTR_VALIDATION_RHS_STEP='0', ASTR_VALIDATION_RHS_STEP_END='9')
+    if getattr(args, 'boundary', None) == 'nscbc':
+        env.update(ASTR_NSCBC_FARFIELD_MODE='incoming_only', ASTR_NSCBC_FARFIELD_RHO='1',
+            ASTR_NSCBC_FARFIELD_U='1',ASTR_NSCBC_FARFIELD_V='0',ASTR_NSCBC_FARFIELD_W='0',
+            ASTR_NSCBC_FARFIELD_T='1')
+    precision = getattr(args, 'native_precision', 'fp64')
+    if hasattr(args, 'native_precision'):
+        env['ASTR_GPU_PRECISION_MODE'] = '' if precision == 'fp32' else 'fp64'
+    if getattr(args, 'insitu_write_eps', None) is not None:
+        env['ASTR_INSITU_WRITE_EPS'] = args.insitu_write_eps
     if observation:
         for key in ('ASTR_GEOMETRY_DUMP', 'ASTR_VALIDATION_RHS_PREFIX', 'ASTR_M12_SENSOR_DETAIL',
                     'ASTR_VALIDATION_RHS_STEP', 'ASTR_VALIDATION_RHS_STEP_END'):
@@ -272,7 +292,8 @@ def run(args, backend, topology, insitu_config=None, case_label=None, resource_b
                     '--cuda-um-cpu-page-faults=true', '--cuda-um-gpu-page-faults=true',
                     '--export=sqlite', '--output='+str(case/'trace.rank%q{OMPI_COMM_WORLD_RANK}')]
     command += [str(args.executable), 'run', 'datin/input.dat']
-    cfl = CflGate(case/'run.log', 1., .02, first_step, steps)
+    native_dt = float(np.float32(selected_dt)) if precision == 'fp32' else selected_dt
+    cfl = CflGate(case/'run.log', 1., native_dt, first_step, steps)
     checked = {}
 
     def progress(final=False):
@@ -284,10 +305,10 @@ def run(args, backend, topology, insitu_config=None, case_label=None, resource_b
                 continue
             with path.open('rb') as stream:
                 im, jm, km, hm, nq = np.fromfile(stream, dtype=np.int32, count=5)
-            expected = 20 + 8*(im+2*hm+1)*(jm+2*hm+1)*(km+2*hm+1)*nq
+            expected = 20 + (4 if precision == 'fp32' else 8)*(im+2*hm+1)*(jm+2*hm+1)*(km+2*hm+1)*nq
             if path.stat().st_size < expected:
                 continue
-            checked[path] = positive_state(path)
+            checked[path] = positive_state(path, precision)
         if sum(p.stat().st_size for p in case.rglob('*') if p.is_file()) > directory_budget:
             raise ValueError(f'M12 directory budget exceeded: {directory_budget} bytes')
 

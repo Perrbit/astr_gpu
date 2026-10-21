@@ -5,14 +5,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+using Real=astr::numerical_real;
 
 namespace {
 using namespace astr_insitu;
-using PlaneAudit=viskores::Vec<double,3>;
+using PlaneAudit=viskores::Vec<Real,3>;
 struct PlaneSpeed : viskores::worklet::WorkletMapField {
   using ControlSignature=void(FieldIn,FieldOut);
   using ExecutionSignature=void(_1,_2);
-  VISKORES_EXEC void operator()(const viskores::Vec3f& velocity,double& speed) const {
+  VISKORES_EXEC void operator()(const astr_insitu::NativeVector& velocity,Real& speed) const {
     speed=viskores::Sqrt(viskores::Dot(velocity,velocity));
   }
 };
@@ -25,10 +26,10 @@ struct AuditPlane : viskores::worklet::WorkletMapField {
   VISKORES_EXEC void operator()(viskores::Id cell,const X& xyz,const I& indices,PlaneAudit& result) const {
     const auto a=xyz.Get(indices.Get(3*cell)),b=xyz.Get(indices.Get(3*cell+1)),c=xyz.Get(indices.Get(3*cell+2));
     const auto cross=viskores::Cross(b-a,c-a);
-    const double area=.5*viskores::Sqrt(viskores::Dot(cross,cross));
-    double direction=0.,distance=0.;
+    const Real area=Real(.5)*viskores::Sqrt(viskores::Dot(cross,cross));
+    Real direction=Real(0.),distance=Real(0.);
     for(int d=0;d<3;++d) direction+=cross[d]*plane.normal[d];
-    bool valid=viskores::IsFinite(area) && area>0. && viskores::IsFinite(direction) && direction>0.;
+    bool valid=viskores::IsFinite(area) && area>Real(0.) && viskores::IsFinite(direction) && direction>Real(0.);
     for(const auto& p:{a,b,c}) {
       plane_geometry::Point point{};
       for(int d=0;d<3;++d) point[d]=p[d];
@@ -36,7 +37,7 @@ struct AuditPlane : viskores::worklet::WorkletMapField {
       valid=valid && value.status==plane_geometry::Status::ok;
       distance=viskores::Max(distance,viskores::Abs(value.value));
     }
-    result=PlaneAudit(valid?area:0.,distance,valid?0.:1.);
+    result=PlaneAudit(valid?area:Real(0.),distance,valid?Real(0.):Real(1.));
   }
 };
 struct MergeAudit {
@@ -50,16 +51,16 @@ void test_oracle(const structured_geometry::PlaneProduct& product,const DeviceGe
     int rank,int step,std::uint64_t host_budget) {
   const char* prefix=std::getenv("ASTR_INSITU_TEST_PLANE_PREFIX");
   if(!prefix || !*prefix) return;
-  const std::uint64_t bytes=std::uint64_t(view.points)*(6*sizeof(double)+2*sizeof(viskores::Id))+
+  const std::uint64_t bytes=std::uint64_t(view.points)*(6*sizeof(Real)+2*sizeof(viskores::Id))+
     std::uint64_t(view.cells)*3*sizeof(viskores::Id);
   if(bytes>host_budget || bytes>64*1024*1024)
     throw std::runtime_error("Plane test oracle host budget exceeded");
-  std::vector<viskores::Vec3f> xyz(view.points),velocity(view.points);
+  std::vector<astr_insitu::NativeVector> xyz(view.points),velocity(view.points);
   std::vector<structured_geometry::PlaneKey> keys(view.points);
   std::vector<viskores::Id> indices(view.cells*3);
   viskores::cont::Token token;
   if(view.points) {
-    const auto field=product.data.GetPointField("velocity").GetData().AsArrayHandle<viskores::cont::ArrayHandle<viskores::Vec3f>>();
+    const auto field=product.data.GetPointField("velocity").GetData().AsArrayHandle<viskores::cont::ArrayHandle<astr_insitu::NativeVector>>();
     const auto vectors=field.PrepareForInput(viskores::cont::DeviceAdapterTagCuda{},token);
     const auto point_keys=product.keys.PrepareForInput(viskores::cont::DeviceAdapterTagCuda{},token);
     if(cudaMemcpy(xyz.data(),view.coordinates,xyz.size()*sizeof(xyz[0]),cudaMemcpyDeviceToHost)!=cudaSuccess ||
@@ -84,10 +85,10 @@ void test_oracle(const structured_geometry::PlaneProduct& product,const DeviceGe
 #endif
 }
 
-astr_insitu::DeviceMesh astr_insitu::build_device_plane(int fcomm,int step,double time,const int global[3],
-    const int local[3],const int offset[3],double* coordinates,double* velocity,
-    const double origin[3],const double normal[3],std::int64_t budget,std::int64_t reserve,
-    std::int64_t retained,std::int64_t host_budget,bool speed_colors,double speed_max) {
+astr_insitu::DeviceMesh astr_insitu::build_device_plane(int fcomm,int step,Real time,const int global[3],
+    const int local[3],const int offset[3],Real* coordinates,Real* velocity,
+    const Real origin[3],const Real normal[3],std::int64_t budget,std::int64_t reserve,
+    std::int64_t retained,std::int64_t host_budget,bool speed_colors,Real speed_max) {
 #ifdef ASTR_INSITU_DEVICE_RENDERING
   const auto comm=MPI_Comm_f2c(fcomm);
   if(step<0 || !std::isfinite(time) ||
@@ -121,13 +122,13 @@ astr_insitu::DeviceMesh astr_insitu::build_device_plane(int fcomm,int step,doubl
   const auto required=std::uint64_t(std::max<std::int64_t>(reserve,1073741824));
   if(allocation_bound>free_bytes-required)
     throw std::runtime_error("Physical plane controlled allocation reserve exceeded");
-  auto product=structured_geometry::extract_plane(reinterpret_cast<viskores::Vec3f*>(coordinates),
-    reinterpret_cast<viskores::Vec3f*>(velocity),nullptr,partition,point,direction,std::uint64_t(budget),
+  auto product=structured_geometry::extract_plane(reinterpret_cast<astr_insitu::NativeVector*>(coordinates),
+    reinterpret_cast<astr_insitu::NativeVector*>(velocity),nullptr,partition,point,direction,std::uint64_t(budget),
     std::uint64_t(retained)+display_bound,true);
   if(speed_colors && product.data.GetNumberOfCoordinateSystems()) {
     const auto vectors=product.data.GetPointField("velocity").GetData().AsArrayHandle<
-      viskores::cont::ArrayHandle<viskores::Vec3f>>();
-    viskores::cont::ArrayHandle<double> speed;
+      viskores::cont::ArrayHandle<astr_insitu::NativeVector>>();
+    viskores::cont::ArrayHandle<Real> speed;
     viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});
     invoke(PlaneSpeed{},vectors,speed);
     synchronize_device_stage("PlaneSpeed");
@@ -135,19 +136,20 @@ astr_insitu::DeviceMesh astr_insitu::build_device_plane(int fcomm,int step,doubl
     product.data.AddPointField("speed",speed);
   }
   auto owner=std::make_shared<DeviceGeometryOwner>(product.data,step,time,3,speed_colors?"speed":"u");
-  const auto colors=owner->color_display(device_display_palette(),false,speed_colors?0.:-1.,speed_max);
+  const auto colors=owner->color_display(device_display_palette(),false,speed_colors?Real(0.):-Real(1.),speed_max);
   const auto& view=owner->get();
-  PlaneAudit audit(0.);
+  PlaneAudit audit(Real(0.));
   if(view.cells) {
-    auto xyz=borrow_cuda_array(const_cast<viskores::Vec3f*>(view.coordinates),view.points);
+    auto xyz=borrow_cuda_array(const_cast<astr_insitu::NativeVector*>(view.coordinates),view.points);
     auto indices=borrow_cuda_array(const_cast<viskores::Id*>(view.connectivity),view.cells*3);
     viskores::cont::ArrayHandle<PlaneAudit> values;
     viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});
     invoke(AuditPlane({point,direction}),viskores::cont::ArrayHandleIndex(view.cells),xyz,indices,values);
     synchronize_device_stage("AuditPhysicalPlane");
-    audit=viskores::cont::Algorithm::Reduce(viskores::cont::DeviceAdapterTagCuda{},values,PlaneAudit(0.),MergeAudit{});
+    audit=viskores::cont::Algorithm::Reduce(viskores::cont::DeviceAdapterTagCuda{},values,PlaneAudit(Real(0.)),MergeAudit{});
     synchronize_device_stage("ReducePhysicalPlaneAudit");
-    if(!std::isfinite(audit[0]) || !std::isfinite(audit[1]) || audit[1]>2e-10 || audit[2]!=0.)
+    if(!std::isfinite(audit[0]) || !std::isfinite(audit[1]) ||
+        (sizeof(Real)==8 && audit[1]>Real(2e-10)) || audit[2]!=Real(0.))
       throw std::runtime_error("Physical plane has nonfinite, reversed or zero-area geometry");
     require_device_only(values);require_device_only(xyz);require_device_only(indices);
   }
@@ -176,8 +178,8 @@ astr_insitu::DeviceMesh astr_insitu::build_device_plane(int fcomm,int step,doubl
 }
 
 extern "C" int astr_insitu_device_render_plane(const char* pipeline,const char* backend,const char* script,
-    int fcomm,int step,double time,int nx,int ny,int nz,int ox,int oy,int oz,
-    double* coordinates,double* velocity,const double* origin,const double* normal,
+    int fcomm,int step,Real time,int nx,int ny,int nz,int ox,int oy,int oz,
+    Real* coordinates,Real* velocity,const Real* origin,const Real* normal,
     std::int64_t budget,std::int64_t reserve,std::int64_t retained,std::int64_t host_budget)
 try {
   const std::string route=pipeline?pipeline:"";

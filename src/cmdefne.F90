@@ -7,8 +7,10 @@
 !|  28-05-2021  | Created by J. Fang @ Warrington                      |
 !+---------------------------------------------------------------------+
 module cmdefne
+  use astr_precision, only: real_kind
   !
   implicit none
+  private :: real_kind
   !
   contains
   !

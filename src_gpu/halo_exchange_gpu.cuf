@@ -1,4 +1,5 @@
 module halo_exchange_gpu
+  use astr_precision, only: real_kind,real_bytes
   use cudafor
   use halo_transport_gpu, only: exchange_host_pair,independent_host_pair_work, &
        halo_pipeline_enabled,begin_host_pair_pipeline,begin_host_pair_device_pack, &
@@ -8,6 +9,7 @@ module halo_exchange_gpu
   use halo_transport_gpu, only: device_aware_transport_enabled
   use device_mpi_transport_gpu, only: exchange_device_pair
   implicit none
+  private :: real_kind,real_bytes
 
   integer,parameter :: tag_x_first = 21001
   integer,parameter :: tag_x_second = 21002
@@ -17,42 +19,42 @@ module halo_exchange_gpu
   integer,parameter :: tag_z_second = 21006
   integer,parameter :: max_field_vars = 9
 
-  real(8),allocatable,device :: x_send_left_d(:,:,:,:),x_send_right_d(:,:,:,:)
-  real(8),allocatable,device :: x_recv_right_d(:,:,:,:),x_recv_left_d(:,:,:,:)
-  real(8),allocatable,target :: x_send_left_h(:,:,:,:),x_send_right_h(:,:,:,:)
-  real(8),allocatable,target :: x_recv_right_h(:,:,:,:),x_recv_left_h(:,:,:,:)
-  real(8),allocatable,device :: x_halo_send_left_d(:,:,:,:),x_halo_send_right_d(:,:,:,:)
-  real(8),allocatable,device :: x_halo_recv_right_d(:,:,:,:),x_halo_recv_left_d(:,:,:,:)
-  real(8),allocatable,target :: x_halo_send_left_h(:,:,:,:),x_halo_send_right_h(:,:,:,:)
-  real(8),allocatable,target :: x_halo_recv_right_h(:,:,:,:),x_halo_recv_left_h(:,:,:,:)
-  real(8),allocatable,device :: y_send_down_d(:,:,:,:),y_send_up_d(:,:,:,:)
-  real(8),allocatable,device :: y_recv_up_d(:,:,:,:),y_recv_down_d(:,:,:,:)
-  real(8),allocatable,target :: y_send_down_h(:,:,:,:),y_send_up_h(:,:,:,:)
-  real(8),allocatable,target :: y_recv_up_h(:,:,:,:),y_recv_down_h(:,:,:,:)
-  real(8),allocatable,device :: y_halo_send_down_d(:,:,:,:),y_halo_send_up_d(:,:,:,:)
-  real(8),allocatable,device :: y_halo_recv_up_d(:,:,:,:),y_halo_recv_down_d(:,:,:,:)
-  real(8),allocatable,target :: y_halo_send_down_h(:,:,:,:),y_halo_send_up_h(:,:,:,:)
-  real(8),allocatable,target :: y_halo_recv_up_h(:,:,:,:),y_halo_recv_down_h(:,:,:,:)
-  real(8),allocatable,device :: z_send_back_d(:,:,:,:),z_send_front_d(:,:,:,:)
-  real(8),allocatable,device :: z_recv_front_d(:,:,:,:),z_recv_back_d(:,:,:,:)
-  real(8),allocatable,target :: z_send_back_h(:,:,:,:),z_send_front_h(:,:,:,:)
-  real(8),allocatable,target :: z_recv_front_h(:,:,:,:),z_recv_back_h(:,:,:,:)
-  real(8),allocatable,device :: z_halo_send_back_d(:,:,:,:),z_halo_send_front_d(:,:,:,:)
-  real(8),allocatable,device :: z_halo_recv_front_d(:,:,:,:),z_halo_recv_back_d(:,:,:,:)
-  real(8),allocatable,target :: z_halo_send_back_h(:,:,:,:),z_halo_send_front_h(:,:,:,:)
-  real(8),allocatable,target :: z_halo_recv_front_h(:,:,:,:),z_halo_recv_back_h(:,:,:,:)
-  real(8),allocatable,device :: field_send_left_d(:,:,:,:),field_send_right_d(:,:,:,:)
-  real(8),allocatable,device :: field_recv_right_d(:,:,:,:),field_recv_left_d(:,:,:,:)
-  real(8),allocatable,target :: field_send_left_h(:,:,:,:),field_send_right_h(:,:,:,:)
-  real(8),allocatable,target :: field_recv_right_h(:,:,:,:),field_recv_left_h(:,:,:,:)
-  real(8),allocatable,device :: field_send_down_d(:,:,:,:),field_send_up_d(:,:,:,:)
-  real(8),allocatable,device :: field_recv_up_d(:,:,:,:),field_recv_down_d(:,:,:,:)
-  real(8),allocatable,target :: field_send_down_h(:,:,:,:),field_send_up_h(:,:,:,:)
-  real(8),allocatable,target :: field_recv_up_h(:,:,:,:),field_recv_down_h(:,:,:,:)
-  real(8),allocatable,device :: field_send_back_d(:,:,:,:),field_send_front_d(:,:,:,:)
-  real(8),allocatable,device :: field_recv_front_d(:,:,:,:),field_recv_back_d(:,:,:,:)
-  real(8),allocatable,target :: field_send_back_h(:,:,:,:),field_send_front_h(:,:,:,:)
-  real(8),allocatable,target :: field_recv_front_h(:,:,:,:),field_recv_back_h(:,:,:,:)
+  real(real_kind),allocatable,device :: x_send_left_d(:,:,:,:),x_send_right_d(:,:,:,:)
+  real(real_kind),allocatable,device :: x_recv_right_d(:,:,:,:),x_recv_left_d(:,:,:,:)
+  real(real_kind),allocatable,target :: x_send_left_h(:,:,:,:),x_send_right_h(:,:,:,:)
+  real(real_kind),allocatable,target :: x_recv_right_h(:,:,:,:),x_recv_left_h(:,:,:,:)
+  real(real_kind),allocatable,device :: x_halo_send_left_d(:,:,:,:),x_halo_send_right_d(:,:,:,:)
+  real(real_kind),allocatable,device :: x_halo_recv_right_d(:,:,:,:),x_halo_recv_left_d(:,:,:,:)
+  real(real_kind),allocatable,target :: x_halo_send_left_h(:,:,:,:),x_halo_send_right_h(:,:,:,:)
+  real(real_kind),allocatable,target :: x_halo_recv_right_h(:,:,:,:),x_halo_recv_left_h(:,:,:,:)
+  real(real_kind),allocatable,device :: y_send_down_d(:,:,:,:),y_send_up_d(:,:,:,:)
+  real(real_kind),allocatable,device :: y_recv_up_d(:,:,:,:),y_recv_down_d(:,:,:,:)
+  real(real_kind),allocatable,target :: y_send_down_h(:,:,:,:),y_send_up_h(:,:,:,:)
+  real(real_kind),allocatable,target :: y_recv_up_h(:,:,:,:),y_recv_down_h(:,:,:,:)
+  real(real_kind),allocatable,device :: y_halo_send_down_d(:,:,:,:),y_halo_send_up_d(:,:,:,:)
+  real(real_kind),allocatable,device :: y_halo_recv_up_d(:,:,:,:),y_halo_recv_down_d(:,:,:,:)
+  real(real_kind),allocatable,target :: y_halo_send_down_h(:,:,:,:),y_halo_send_up_h(:,:,:,:)
+  real(real_kind),allocatable,target :: y_halo_recv_up_h(:,:,:,:),y_halo_recv_down_h(:,:,:,:)
+  real(real_kind),allocatable,device :: z_send_back_d(:,:,:,:),z_send_front_d(:,:,:,:)
+  real(real_kind),allocatable,device :: z_recv_front_d(:,:,:,:),z_recv_back_d(:,:,:,:)
+  real(real_kind),allocatable,target :: z_send_back_h(:,:,:,:),z_send_front_h(:,:,:,:)
+  real(real_kind),allocatable,target :: z_recv_front_h(:,:,:,:),z_recv_back_h(:,:,:,:)
+  real(real_kind),allocatable,device :: z_halo_send_back_d(:,:,:,:),z_halo_send_front_d(:,:,:,:)
+  real(real_kind),allocatable,device :: z_halo_recv_front_d(:,:,:,:),z_halo_recv_back_d(:,:,:,:)
+  real(real_kind),allocatable,target :: z_halo_send_back_h(:,:,:,:),z_halo_send_front_h(:,:,:,:)
+  real(real_kind),allocatable,target :: z_halo_recv_front_h(:,:,:,:),z_halo_recv_back_h(:,:,:,:)
+  real(real_kind),allocatable,device :: field_send_left_d(:,:,:,:),field_send_right_d(:,:,:,:)
+  real(real_kind),allocatable,device :: field_recv_right_d(:,:,:,:),field_recv_left_d(:,:,:,:)
+  real(real_kind),allocatable,target :: field_send_left_h(:,:,:,:),field_send_right_h(:,:,:,:)
+  real(real_kind),allocatable,target :: field_recv_right_h(:,:,:,:),field_recv_left_h(:,:,:,:)
+  real(real_kind),allocatable,device :: field_send_down_d(:,:,:,:),field_send_up_d(:,:,:,:)
+  real(real_kind),allocatable,device :: field_recv_up_d(:,:,:,:),field_recv_down_d(:,:,:,:)
+  real(real_kind),allocatable,target :: field_send_down_h(:,:,:,:),field_send_up_h(:,:,:,:)
+  real(real_kind),allocatable,target :: field_recv_up_h(:,:,:,:),field_recv_down_h(:,:,:,:)
+  real(real_kind),allocatable,device :: field_send_back_d(:,:,:,:),field_send_front_d(:,:,:,:)
+  real(real_kind),allocatable,device :: field_recv_front_d(:,:,:,:),field_recv_back_d(:,:,:,:)
+  real(real_kind),allocatable,target :: field_send_back_h(:,:,:,:),field_send_front_h(:,:,:,:)
+  real(real_kind),allocatable,target :: field_recv_front_h(:,:,:,:),field_recv_back_h(:,:,:,:)
   logical,save :: viscous_flux_sp_halo_reported=.false.
   logical,save :: solution_pipeline_active=.false.
   logical,save :: solution_pipeline_preserve_primitives=.false.
@@ -249,7 +251,7 @@ contains
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,numq
-    real(8),device :: sendbuf(0:hm,0:jm,0:km,1:numq)
+    real(real_kind),device :: sendbuf(0:hm,0:jm,0:km,1:numq)
     integer :: id,h,j,k,m,n1,n2,n3
 
     n1 = hm + 1
@@ -269,7 +271,7 @@ contains
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,numq
-    real(8),device :: sendbuf(0:hm,0:jm,0:km,1:numq)
+    real(real_kind),device :: sendbuf(0:hm,0:jm,0:km,1:numq)
     integer :: id,h,j,k,m,n1,n2,n3
 
     n1 = hm + 1
@@ -289,8 +291,8 @@ contains
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,numq,has_right,has_left
-    real(8),device :: recv_right(0:hm,0:jm,0:km,1:numq)
-    real(8),device :: recv_left(0:hm,0:jm,0:km,1:numq)
+    real(real_kind),device :: recv_right(0:hm,0:jm,0:km,1:numq)
+    real(real_kind),device :: recv_left(0:hm,0:jm,0:km,1:numq)
     integer :: id,h,j,k,m,nplane
 
     nplane = (jm + 1) * (km + 1) * numq
@@ -305,14 +307,14 @@ contains
       do h=1,hm
         q_d(im+h,j,k,m) = recv_right(h,j,k,m)
       enddo
-      q_d(im,j,k,m) = 0.5d0 * (q_d(im,j,k,m) + recv_right(0,j,k,m))
+      q_d(im,j,k,m) = 0.5e0_real_kind * (q_d(im,j,k,m) + recv_right(0,j,k,m))
     endif
 
     if(has_left /= 0) then
       do h=0,hm-1
         q_d(-hm+h,j,k,m) = recv_left(h,j,k,m)
       enddo
-      q_d(0,j,k,m) = 0.5d0 * (q_d(0,j,k,m) + recv_left(hm,j,k,m))
+      q_d(0,j,k,m) = 0.5e0_real_kind * (q_d(0,j,k,m) + recv_left(hm,j,k,m))
     endif
   end subroutine unpack_x_kernel
 
@@ -320,7 +322,7 @@ contains
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,numq
-    real(8),device :: sendbuf(0:hm-1,0:jm,0:km,1:numq)
+    real(real_kind),device :: sendbuf(0:hm-1,0:jm,0:km,1:numq)
     integer :: id,h,j,k,m,n1,n2,n3
 
     n1 = hm
@@ -340,7 +342,7 @@ contains
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,numq
-    real(8),device :: sendbuf(0:hm-1,0:jm,0:km,1:numq)
+    real(real_kind),device :: sendbuf(0:hm-1,0:jm,0:km,1:numq)
     integer :: id,h,j,k,m,n1,n2,n3
 
     n1 = hm
@@ -360,8 +362,8 @@ contains
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,numq,has_right,has_left
-    real(8),device :: recv_right(0:hm-1,0:jm,0:km,1:numq)
-    real(8),device :: recv_left(0:hm-1,0:jm,0:km,1:numq)
+    real(real_kind),device :: recv_right(0:hm-1,0:jm,0:km,1:numq)
+    real(real_kind),device :: recv_left(0:hm-1,0:jm,0:km,1:numq)
     integer :: id,h,j,k,m,nplane
 
     nplane = (jm + 1) * (km + 1) * numq
@@ -382,7 +384,7 @@ contains
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,numq
-    real(8),device :: sendbuf(0:im,0:hm,0:km,1:numq)
+    real(real_kind),device :: sendbuf(0:im,0:hm,0:km,1:numq)
     integer :: id,i,h,k,m,n1,n2,n3
 
     n1 = im + 1
@@ -402,7 +404,7 @@ contains
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,numq
-    real(8),device :: sendbuf(0:im,0:hm,0:km,1:numq)
+    real(real_kind),device :: sendbuf(0:im,0:hm,0:km,1:numq)
     integer :: id,i,h,k,m,n1,n2,n3
 
     n1 = im + 1
@@ -422,8 +424,8 @@ contains
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,numq,has_up,has_down
-    real(8),device :: recv_up(0:im,0:hm,0:km,1:numq)
-    real(8),device :: recv_down(0:im,0:hm,0:km,1:numq)
+    real(real_kind),device :: recv_up(0:im,0:hm,0:km,1:numq)
+    real(real_kind),device :: recv_down(0:im,0:hm,0:km,1:numq)
     integer :: id,i,h,k,m,nplane
 
     nplane = (im + 1) * (km + 1) * numq
@@ -437,19 +439,19 @@ contains
     do h=1,hm
       if(has_up /= 0) q_d(i,jm+h,k,m) = recv_up(i,h,k,m)
     enddo
-    if(has_up /= 0) q_d(i,jm,k,m) = 0.5d0 * (q_d(i,jm,k,m) + recv_up(i,0,k,m))
+    if(has_up /= 0) q_d(i,jm,k,m) = 0.5e0_real_kind * (q_d(i,jm,k,m) + recv_up(i,0,k,m))
 
     do h=0,hm-1
       if(has_down /= 0) q_d(i,-hm+h,k,m) = recv_down(i,h,k,m)
     enddo
-    if(has_down /= 0) q_d(i,0,k,m) = 0.5d0 * (q_d(i,0,k,m) + recv_down(i,hm,k,m))
+    if(has_down /= 0) q_d(i,0,k,m) = 0.5e0_real_kind * (q_d(i,0,k,m) + recv_down(i,hm,k,m))
   end subroutine unpack_y_kernel
 
   attributes(global) subroutine pack_y_halo_down_kernel(sendbuf,im,jm,km,hm,numq)
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,numq
-    real(8),device :: sendbuf(0:im,0:hm-1,0:km,1:numq)
+    real(real_kind),device :: sendbuf(0:im,0:hm-1,0:km,1:numq)
     integer :: id,i,h,k,m,n1,n2,n3
 
     n1 = im + 1
@@ -469,7 +471,7 @@ contains
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,numq
-    real(8),device :: sendbuf(0:im,0:hm-1,0:km,1:numq)
+    real(real_kind),device :: sendbuf(0:im,0:hm-1,0:km,1:numq)
     integer :: id,i,h,k,m,n1,n2,n3
 
     n1 = im + 1
@@ -489,8 +491,8 @@ contains
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,numq,has_up,has_down
-    real(8),device :: recv_up(0:im,0:hm-1,0:km,1:numq)
-    real(8),device :: recv_down(0:im,0:hm-1,0:km,1:numq)
+    real(real_kind),device :: recv_up(0:im,0:hm-1,0:km,1:numq)
+    real(real_kind),device :: recv_down(0:im,0:hm-1,0:km,1:numq)
     integer :: id,i,h,k,m,nplane
 
     nplane = (im + 1) * (km + 1) * numq
@@ -511,7 +513,7 @@ contains
     use commarray_gpu, only: qwork_d
     implicit none
     integer,value :: im,jm,km,hm,numq
-    real(8),device :: sendbuf(0:im,0:hm-1,0:km,1:numq)
+    real(real_kind),device :: sendbuf(0:im,0:hm-1,0:km,1:numq)
     integer :: id,i,h,k,m,n1,n2,n3
 
     n1 = im + 1
@@ -531,7 +533,7 @@ contains
     use commarray_gpu, only: qwork_d
     implicit none
     integer,value :: im,jm,km,hm,numq
-    real(8),device :: sendbuf(0:im,0:hm-1,0:km,1:numq)
+    real(real_kind),device :: sendbuf(0:im,0:hm-1,0:km,1:numq)
     integer :: id,i,h,k,m,n1,n2,n3
 
     n1 = im + 1
@@ -551,8 +553,8 @@ contains
     use commarray_gpu, only: qwork_d
     implicit none
     integer,value :: im,jm,km,hm,numq,has_up,has_down
-    real(8),device :: recv_up(0:im,0:hm-1,0:km,1:numq)
-    real(8),device :: recv_down(0:im,0:hm-1,0:km,1:numq)
+    real(real_kind),device :: recv_up(0:im,0:hm-1,0:km,1:numq)
+    real(real_kind),device :: recv_down(0:im,0:hm-1,0:km,1:numq)
     integer :: id,i,h,k,m,nplane
 
     nplane = (im + 1) * (km + 1) * numq
@@ -573,7 +575,7 @@ contains
     use commarray_gpu, only: filter_work_d
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),device :: sendbuf(0:im,0:hm-1,0:km,1:1)
+    real(real_kind),device :: sendbuf(0:im,0:hm-1,0:km,1:1)
     integer :: id,i,h,k,n
 
     n=(im+1)*hm*(km+1)
@@ -589,7 +591,7 @@ contains
     use commarray_gpu, only: filter_work_d
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),device :: sendbuf(0:im,0:hm-1,0:km,1:1)
+    real(real_kind),device :: sendbuf(0:im,0:hm-1,0:km,1:1)
     integer :: id,i,h,k,n
 
     n=(im+1)*hm*(km+1)
@@ -605,8 +607,8 @@ contains
     use commarray_gpu, only: filter_work_d
     implicit none
     integer,value :: im,jm,km,hm,has_up,has_down
-    real(8),device :: recv_up(0:im,0:hm-1,0:km,1:1)
-    real(8),device :: recv_down(0:im,0:hm-1,0:km,1:1)
+    real(real_kind),device :: recv_up(0:im,0:hm-1,0:km,1:1)
+    real(real_kind),device :: recv_down(0:im,0:hm-1,0:km,1:1)
     integer :: id,i,h,k,n
 
     n=(im+1)*hm*(km+1)
@@ -660,7 +662,7 @@ contains
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,component
-    real(8),device :: sendbuf(0:im,0:jm,0:hm-1,1:1)
+    real(real_kind),device :: sendbuf(0:im,0:jm,0:hm-1,1:1)
     integer :: id,i,j,h,n
 
     n=(im+1)*(jm+1)*hm
@@ -676,7 +678,7 @@ contains
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,component
-    real(8),device :: sendbuf(0:im,0:jm,0:hm-1,1:1)
+    real(real_kind),device :: sendbuf(0:im,0:jm,0:hm-1,1:1)
     integer :: id,i,j,h,n
 
     n=(im+1)*(jm+1)*hm
@@ -693,8 +695,8 @@ contains
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,component,has_front,has_back
-    real(8),device :: recv_front(0:im,0:jm,0:hm-1,1:1)
-    real(8),device :: recv_back(0:im,0:jm,0:hm-1,1:1)
+    real(real_kind),device :: recv_front(0:im,0:jm,0:hm-1,1:1)
+    real(real_kind),device :: recv_back(0:im,0:jm,0:hm-1,1:1)
     integer :: id,i,j,h,n
 
     n=(im+1)*(jm+1)*hm
@@ -728,7 +730,7 @@ contains
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,numq
-    real(8),device :: sendbuf(0:im,0:jm,0:hm,1:numq)
+    real(real_kind),device :: sendbuf(0:im,0:jm,0:hm,1:numq)
     integer :: id,i,j,h,m,n1,n2,n3
 
     n1 = im + 1
@@ -748,7 +750,7 @@ contains
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,numq
-    real(8),device :: sendbuf(0:im,0:jm,0:hm,1:numq)
+    real(real_kind),device :: sendbuf(0:im,0:jm,0:hm,1:numq)
     integer :: id,i,j,h,m,n1,n2,n3
 
     n1 = im + 1
@@ -768,8 +770,8 @@ contains
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,numq,has_front,has_back
-    real(8),device :: recv_front(0:im,0:jm,0:hm,1:numq)
-    real(8),device :: recv_back(0:im,0:jm,0:hm,1:numq)
+    real(real_kind),device :: recv_front(0:im,0:jm,0:hm,1:numq)
+    real(real_kind),device :: recv_back(0:im,0:jm,0:hm,1:numq)
     integer :: id,i,j,h,m,nplane
 
     nplane = (im + 1) * (jm + 1) * numq
@@ -783,19 +785,19 @@ contains
     do h=1,hm
       if(has_front /= 0) q_d(i,j,km+h,m) = recv_front(i,j,h,m)
     enddo
-    if(has_front /= 0) q_d(i,j,km,m) = 0.5d0 * (q_d(i,j,km,m) + recv_front(i,j,0,m))
+    if(has_front /= 0) q_d(i,j,km,m) = 0.5e0_real_kind * (q_d(i,j,km,m) + recv_front(i,j,0,m))
 
     do h=0,hm-1
       if(has_back /= 0) q_d(i,j,-hm+h,m) = recv_back(i,j,h,m)
     enddo
-    if(has_back /= 0) q_d(i,j,0,m) = 0.5d0 * (q_d(i,j,0,m) + recv_back(i,j,hm,m))
+    if(has_back /= 0) q_d(i,j,0,m) = 0.5e0_real_kind * (q_d(i,j,0,m) + recv_back(i,j,hm,m))
   end subroutine unpack_z_kernel
 
   attributes(global) subroutine pack_z_halo_back_kernel(sendbuf,im,jm,km,hm,numq)
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,numq
-    real(8),device :: sendbuf(0:im,0:jm,0:hm-1,1:numq)
+    real(real_kind),device :: sendbuf(0:im,0:jm,0:hm-1,1:numq)
     integer :: id,i,j,h,m,n1,n2,n3
 
     n1 = im + 1
@@ -815,7 +817,7 @@ contains
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,numq
-    real(8),device :: sendbuf(0:im,0:jm,0:hm-1,1:numq)
+    real(real_kind),device :: sendbuf(0:im,0:jm,0:hm-1,1:numq)
     integer :: id,i,j,h,m,n1,n2,n3
 
     n1 = im + 1
@@ -835,8 +837,8 @@ contains
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,numq,has_front,has_back
-    real(8),device :: recv_front(0:im,0:jm,0:hm-1,1:numq)
-    real(8),device :: recv_back(0:im,0:jm,0:hm-1,1:numq)
+    real(real_kind),device :: recv_front(0:im,0:jm,0:hm-1,1:numq)
+    real(real_kind),device :: recv_back(0:im,0:jm,0:hm-1,1:numq)
     integer :: id,i,j,h,m,nplane
 
     nplane = (im + 1) * (jm + 1) * numq
@@ -875,8 +877,8 @@ contains
   attributes(global) subroutine pack_field_x_left_kernel(field,sendbuf,im,jm,km,hm,nvar)
     implicit none
     integer,value :: im,jm,km,hm,nvar
-    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
-    real(8),device :: sendbuf(0:hm-1,0:jm,0:km,1:nvar)
+    real(real_kind),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    real(real_kind),device :: sendbuf(0:hm-1,0:jm,0:km,1:nvar)
     integer :: id,h,j,k,m,n1,n2,n3
 
     n1 = hm
@@ -895,8 +897,8 @@ contains
   attributes(global) subroutine pack_field_x_right_kernel(field,sendbuf,im,jm,km,hm,nvar)
     implicit none
     integer,value :: im,jm,km,hm,nvar
-    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
-    real(8),device :: sendbuf(0:hm-1,0:jm,0:km,1:nvar)
+    real(real_kind),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    real(real_kind),device :: sendbuf(0:hm-1,0:jm,0:km,1:nvar)
     integer :: id,h,j,k,m,n1,n2,n3
 
     n1 = hm
@@ -915,9 +917,9 @@ contains
   attributes(global) subroutine unpack_field_x_kernel(field,recv_right,recv_left,im,jm,km,hm,nvar,has_right,has_left)
     implicit none
     integer,value :: im,jm,km,hm,nvar,has_right,has_left
-    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
-    real(8),device :: recv_right(0:hm-1,0:jm,0:km,1:nvar)
-    real(8),device :: recv_left(0:hm-1,0:jm,0:km,1:nvar)
+    real(real_kind),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    real(real_kind),device :: recv_right(0:hm-1,0:jm,0:km,1:nvar)
+    real(real_kind),device :: recv_left(0:hm-1,0:jm,0:km,1:nvar)
     integer :: id,h,j,k,m,nplane
 
     nplane = (jm + 1) * (km + 1) * nvar
@@ -945,8 +947,8 @@ contains
     use commarray_gpu, only: sigma_d,qflux_d
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),device :: send_left(0:hm-1,0:jm,0:km,1:max_field_vars)
-    real(8),device :: send_right(0:hm-1,0:jm,0:km,1:max_field_vars)
+    real(real_kind),device :: send_left(0:hm-1,0:jm,0:km,1:max_field_vars)
+    real(real_kind),device :: send_right(0:hm-1,0:jm,0:km,1:max_field_vars)
     integer :: id,h,j,k,m,n1,n2,n3
 
     n1=hm
@@ -973,8 +975,8 @@ contains
     use commarray_gpu, only: sigma_d,qflux_d
     implicit none
     integer,value :: im,jm,km,hm,has_right,has_left
-    real(8),device :: recv_right(0:hm-1,0:jm,0:km,1:max_field_vars)
-    real(8),device :: recv_left(0:hm-1,0:jm,0:km,1:max_field_vars)
+    real(real_kind),device :: recv_right(0:hm-1,0:jm,0:km,1:max_field_vars)
+    real(real_kind),device :: recv_left(0:hm-1,0:jm,0:km,1:max_field_vars)
     integer :: id,h,j,k,m,nplane
 
     nplane=(jm+1)*(km+1)*max_field_vars
@@ -999,8 +1001,8 @@ contains
     use commarray_gpu, only: sigma_d,qflux_d
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),device :: send_down(0:im,0:hm-1,0:km,1:max_field_vars)
-    real(8),device :: send_up(0:im,0:hm-1,0:km,1:max_field_vars)
+    real(real_kind),device :: send_down(0:im,0:hm-1,0:km,1:max_field_vars)
+    real(real_kind),device :: send_up(0:im,0:hm-1,0:km,1:max_field_vars)
     integer :: id,i,h,k,m,n1,n2,n3
 
     n1=im+1
@@ -1026,8 +1028,8 @@ contains
     use commarray_gpu, only: sigma_d,qflux_d
     implicit none
     integer,value :: im,jm,km,hm,has_up,has_down
-    real(8),device :: recv_up(0:im,0:hm-1,0:km,1:max_field_vars)
-    real(8),device :: recv_down(0:im,0:hm-1,0:km,1:max_field_vars)
+    real(real_kind),device :: recv_up(0:im,0:hm-1,0:km,1:max_field_vars)
+    real(real_kind),device :: recv_down(0:im,0:hm-1,0:km,1:max_field_vars)
     integer :: id,i,h,k,m,nplane
 
     nplane=(im+1)*(km+1)*max_field_vars
@@ -1051,8 +1053,8 @@ contains
     use commarray_gpu, only: sigma_d,qflux_d
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),device :: send_back(0:im,0:jm,0:hm-1,1:max_field_vars)
-    real(8),device :: send_front(0:im,0:jm,0:hm-1,1:max_field_vars)
+    real(real_kind),device :: send_back(0:im,0:jm,0:hm-1,1:max_field_vars)
+    real(real_kind),device :: send_front(0:im,0:jm,0:hm-1,1:max_field_vars)
     integer :: id,i,j,h,m,n1,n2,n3
 
     n1=im+1
@@ -1078,8 +1080,8 @@ contains
     use commarray_gpu, only: sigma_d,qflux_d
     implicit none
     integer,value :: im,jm,km,hm,has_front,has_back
-    real(8),device :: recv_front(0:im,0:jm,0:hm-1,1:max_field_vars)
-    real(8),device :: recv_back(0:im,0:jm,0:hm-1,1:max_field_vars)
+    real(real_kind),device :: recv_front(0:im,0:jm,0:hm-1,1:max_field_vars)
+    real(real_kind),device :: recv_back(0:im,0:jm,0:hm-1,1:max_field_vars)
     integer :: id,i,j,h,m,nplane
 
     nplane=(im+1)*(jm+1)*max_field_vars
@@ -1102,8 +1104,8 @@ contains
   attributes(global) subroutine pack_field_y_down_kernel(field,sendbuf,im,jm,km,hm,nvar)
     implicit none
     integer,value :: im,jm,km,hm,nvar
-    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
-    real(8),device :: sendbuf(0:im,0:hm-1,0:km,1:nvar)
+    real(real_kind),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    real(real_kind),device :: sendbuf(0:im,0:hm-1,0:km,1:nvar)
     integer :: id,i,h,k,m,n1,n2,n3
 
     n1 = im + 1
@@ -1122,8 +1124,8 @@ contains
   attributes(global) subroutine pack_field_y_up_kernel(field,sendbuf,im,jm,km,hm,nvar)
     implicit none
     integer,value :: im,jm,km,hm,nvar
-    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
-    real(8),device :: sendbuf(0:im,0:hm-1,0:km,1:nvar)
+    real(real_kind),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    real(real_kind),device :: sendbuf(0:im,0:hm-1,0:km,1:nvar)
     integer :: id,i,h,k,m,n1,n2,n3
 
     n1 = im + 1
@@ -1142,9 +1144,9 @@ contains
   attributes(global) subroutine unpack_field_y_kernel(field,recv_up,recv_down,im,jm,km,hm,nvar,has_up,has_down)
     implicit none
     integer,value :: im,jm,km,hm,nvar,has_up,has_down
-    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
-    real(8),device :: recv_up(0:im,0:hm-1,0:km,1:nvar)
-    real(8),device :: recv_down(0:im,0:hm-1,0:km,1:nvar)
+    real(real_kind),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    real(real_kind),device :: recv_up(0:im,0:hm-1,0:km,1:nvar)
+    real(real_kind),device :: recv_down(0:im,0:hm-1,0:km,1:nvar)
     integer :: id,i,h,k,m,nplane
 
     nplane = (im + 1) * (km + 1) * nvar
@@ -1164,8 +1166,8 @@ contains
   attributes(global) subroutine pack_field_z_back_kernel(field,sendbuf,im,jm,km,hm,nvar)
     implicit none
     integer,value :: im,jm,km,hm,nvar
-    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
-    real(8),device :: sendbuf(0:im,0:jm,0:hm-1,1:nvar)
+    real(real_kind),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    real(real_kind),device :: sendbuf(0:im,0:jm,0:hm-1,1:nvar)
     integer :: id,i,j,h,m,n1,n2,n3
 
     n1 = im + 1
@@ -1184,8 +1186,8 @@ contains
   attributes(global) subroutine pack_field_z_front_kernel(field,sendbuf,im,jm,km,hm,nvar)
     implicit none
     integer,value :: im,jm,km,hm,nvar
-    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
-    real(8),device :: sendbuf(0:im,0:jm,0:hm-1,1:nvar)
+    real(real_kind),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    real(real_kind),device :: sendbuf(0:im,0:jm,0:hm-1,1:nvar)
     integer :: id,i,j,h,m,n1,n2,n3
 
     n1 = im + 1
@@ -1204,9 +1206,9 @@ contains
   attributes(global) subroutine unpack_field_z_kernel(field,recv_front,recv_back,im,jm,km,hm,nvar,has_front,has_back)
     implicit none
     integer,value :: im,jm,km,hm,nvar,has_front,has_back
-    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
-    real(8),device :: recv_front(0:im,0:jm,0:hm-1,1:nvar)
-    real(8),device :: recv_back(0:im,0:jm,0:hm-1,1:nvar)
+    real(real_kind),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    real(real_kind),device :: recv_front(0:im,0:jm,0:hm-1,1:nvar)
+    real(real_kind),device :: recv_back(0:im,0:jm,0:hm-1,1:nvar)
     integer :: id,i,j,h,m,nplane
 
     nplane = (im + 1) * (jm + 1) * nvar
@@ -1226,7 +1228,7 @@ contains
   attributes(global) subroutine field_qswap_x_kernel(field,im,jm,km,hm,nvar)
     implicit none
     integer,value :: im,jm,km,hm,nvar
-    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    real(real_kind),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
     integer :: id,j,k,m,h,nplane
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -1245,7 +1247,7 @@ contains
   attributes(global) subroutine field_qswap_y_kernel(field,im,jm,km,hm,nvar)
     implicit none
     integer,value :: im,jm,km,hm,nvar
-    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    real(real_kind),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
     integer :: id,i,k,m,h,nplane
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -1264,7 +1266,7 @@ contains
   attributes(global) subroutine field_qswap_z_kernel(field,im,jm,km,hm,nvar)
     implicit none
     integer,value :: im,jm,km,hm,nvar
-    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    real(real_kind),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
     integer :: id,i,j,m,h,nplane
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -1284,7 +1286,7 @@ contains
     implicit none
     integer,value :: im,jm,km,hm,nvar
     real(4),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
-    real(8),device :: sendbuf(0:hm-1,0:jm,0:km,1:nvar)
+    real(real_kind),device :: sendbuf(0:hm-1,0:jm,0:km,1:nvar)
     integer :: id,h,j,k,m,n1,n2,n3
 
     n1=hm
@@ -1297,14 +1299,14 @@ contains
     j=mod(id/n1,n2)
     k=mod(id/(n1*n2),n3)
     m=id/(n1*n2*n3)+1
-    sendbuf(h,j,k,m)=real(field(h+1,j,k,m),8)
+    sendbuf(h,j,k,m)=real(field(h+1,j,k,m),real_kind)
   end subroutine pack_field_sp_x_left_kernel
 
   attributes(global) subroutine pack_field_sp_x_right_kernel(field,sendbuf,im,jm,km,hm,nvar)
     implicit none
     integer,value :: im,jm,km,hm,nvar
     real(4),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
-    real(8),device :: sendbuf(0:hm-1,0:jm,0:km,1:nvar)
+    real(real_kind),device :: sendbuf(0:hm-1,0:jm,0:km,1:nvar)
     integer :: id,h,j,k,m,n1,n2,n3
 
     n1=hm
@@ -1317,7 +1319,7 @@ contains
     j=mod(id/n1,n2)
     k=mod(id/(n1*n2),n3)
     m=id/(n1*n2*n3)+1
-    sendbuf(h,j,k,m)=real(field(im-hm+h,j,k,m),8)
+    sendbuf(h,j,k,m)=real(field(im-hm+h,j,k,m),real_kind)
   end subroutine pack_field_sp_x_right_kernel
 
   attributes(global) subroutine unpack_field_sp_x_kernel(field,recv_right,recv_left, &
@@ -1325,8 +1327,8 @@ contains
     implicit none
     integer,value :: im,jm,km,hm,nvar,has_right,has_left
     real(4),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
-    real(8),device :: recv_right(0:hm-1,0:jm,0:km,1:nvar)
-    real(8),device :: recv_left(0:hm-1,0:jm,0:km,1:nvar)
+    real(real_kind),device :: recv_right(0:hm-1,0:jm,0:km,1:nvar)
+    real(real_kind),device :: recv_left(0:hm-1,0:jm,0:km,1:nvar)
     integer :: id,h,j,k,m,nplane
 
     nplane=(jm+1)*(km+1)*nvar
@@ -1346,7 +1348,7 @@ contains
     implicit none
     integer,value :: im,jm,km,hm,nvar
     real(4),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
-    real(8),device :: sendbuf(0:im,0:hm-1,0:km,1:nvar)
+    real(real_kind),device :: sendbuf(0:im,0:hm-1,0:km,1:nvar)
     integer :: id,i,h,k,m,n1,n2,n3
 
     n1=im+1
@@ -1359,14 +1361,14 @@ contains
     h=mod(id/n1,n2)
     k=mod(id/(n1*n2),n3)
     m=id/(n1*n2*n3)+1
-    sendbuf(i,h,k,m)=real(field(i,h+1,k,m),8)
+    sendbuf(i,h,k,m)=real(field(i,h+1,k,m),real_kind)
   end subroutine pack_field_sp_y_down_kernel
 
   attributes(global) subroutine pack_field_sp_y_up_kernel(field,sendbuf,im,jm,km,hm,nvar)
     implicit none
     integer,value :: im,jm,km,hm,nvar
     real(4),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
-    real(8),device :: sendbuf(0:im,0:hm-1,0:km,1:nvar)
+    real(real_kind),device :: sendbuf(0:im,0:hm-1,0:km,1:nvar)
     integer :: id,i,h,k,m,n1,n2,n3
 
     n1=im+1
@@ -1379,7 +1381,7 @@ contains
     h=mod(id/n1,n2)
     k=mod(id/(n1*n2),n3)
     m=id/(n1*n2*n3)+1
-    sendbuf(i,h,k,m)=real(field(i,jm-hm+h,k,m),8)
+    sendbuf(i,h,k,m)=real(field(i,jm-hm+h,k,m),real_kind)
   end subroutine pack_field_sp_y_up_kernel
 
   attributes(global) subroutine unpack_field_sp_y_kernel(field,recv_up,recv_down, &
@@ -1387,8 +1389,8 @@ contains
     implicit none
     integer,value :: im,jm,km,hm,nvar,has_up,has_down
     real(4),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
-    real(8),device :: recv_up(0:im,0:hm-1,0:km,1:nvar)
-    real(8),device :: recv_down(0:im,0:hm-1,0:km,1:nvar)
+    real(real_kind),device :: recv_up(0:im,0:hm-1,0:km,1:nvar)
+    real(real_kind),device :: recv_down(0:im,0:hm-1,0:km,1:nvar)
     integer :: id,i,h,k,m,nplane
 
     nplane=(im+1)*(km+1)*nvar
@@ -1408,7 +1410,7 @@ contains
     implicit none
     integer,value :: im,jm,km,hm,nvar
     real(4),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
-    real(8),device :: sendbuf(0:im,0:jm,0:hm-1,1:nvar)
+    real(real_kind),device :: sendbuf(0:im,0:jm,0:hm-1,1:nvar)
     integer :: id,i,j,h,m,n1,n2,n3
 
     n1=im+1
@@ -1421,14 +1423,14 @@ contains
     j=mod(id/n1,n2)
     h=mod(id/(n1*n2),n3)
     m=id/(n1*n2*n3)+1
-    sendbuf(i,j,h,m)=real(field(i,j,h+1,m),8)
+    sendbuf(i,j,h,m)=real(field(i,j,h+1,m),real_kind)
   end subroutine pack_field_sp_z_back_kernel
 
   attributes(global) subroutine pack_field_sp_z_front_kernel(field,sendbuf,im,jm,km,hm,nvar)
     implicit none
     integer,value :: im,jm,km,hm,nvar
     real(4),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
-    real(8),device :: sendbuf(0:im,0:jm,0:hm-1,1:nvar)
+    real(real_kind),device :: sendbuf(0:im,0:jm,0:hm-1,1:nvar)
     integer :: id,i,j,h,m,n1,n2,n3
 
     n1=im+1
@@ -1441,7 +1443,7 @@ contains
     j=mod(id/n1,n2)
     h=mod(id/(n1*n2),n3)
     m=id/(n1*n2*n3)+1
-    sendbuf(i,j,h,m)=real(field(i,j,km-hm+h,m),8)
+    sendbuf(i,j,h,m)=real(field(i,j,km-hm+h,m),real_kind)
   end subroutine pack_field_sp_z_front_kernel
 
   attributes(global) subroutine unpack_field_sp_z_kernel(field,recv_front,recv_back, &
@@ -1449,8 +1451,8 @@ contains
     implicit none
     integer,value :: im,jm,km,hm,nvar,has_front,has_back
     real(4),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
-    real(8),device :: recv_front(0:im,0:jm,0:hm-1,1:nvar)
-    real(8),device :: recv_back(0:im,0:jm,0:hm-1,1:nvar)
+    real(real_kind),device :: recv_front(0:im,0:jm,0:hm-1,1:nvar)
+    real(real_kind),device :: recv_back(0:im,0:jm,0:hm-1,1:nvar)
     integer :: id,i,j,h,m,nplane
 
     nplane=(im+1)*(jm+1)*nvar
@@ -3016,25 +3018,25 @@ contains
     integer :: capacity
     capacity=6
     if(halo_pipeline_enabled) capacity=max_field_vars
-    planned=4_int64*hm*capacity*8*[int(jm+1,int64)*int(km+1,int64), &
+    planned=4_int64*hm*capacity*real_bytes*[int(jm+1,int64)*int(km+1,int64), &
       int(im+1,int64)*int(km+1,int64),int(im+1,int64)*int(jm+1,int64)]
     host_bytes=0; device_bytes=0
     ! Charge complete allocated families, including spare components and reused buffers.
     if(allocated(field_send_left_d)) then
-      device_bytes=device_bytes+4_int64*size(field_send_left_d,kind=int64)*8
-      host_bytes=host_bytes+4_int64*size(field_send_left_h,kind=int64)*8
+      device_bytes=device_bytes+4_int64*size(field_send_left_d,kind=int64)*real_bytes
+      host_bytes=host_bytes+4_int64*size(field_send_left_h,kind=int64)*real_bytes
     elseif(isize>1) then
       host_bytes=host_bytes+planned(1); device_bytes=device_bytes+planned(1)
     endif
     if(allocated(field_send_down_d)) then
-      device_bytes=device_bytes+4_int64*size(field_send_down_d,kind=int64)*8
-      host_bytes=host_bytes+4_int64*size(field_send_down_h,kind=int64)*8
+      device_bytes=device_bytes+4_int64*size(field_send_down_d,kind=int64)*real_bytes
+      host_bytes=host_bytes+4_int64*size(field_send_down_h,kind=int64)*real_bytes
     elseif(jsize>1) then
       host_bytes=host_bytes+planned(2); device_bytes=device_bytes+planned(2)
     endif
     if(allocated(field_send_back_d)) then
-      device_bytes=device_bytes+4_int64*size(field_send_back_d,kind=int64)*8
-      host_bytes=host_bytes+4_int64*size(field_send_back_h,kind=int64)*8
+      device_bytes=device_bytes+4_int64*size(field_send_back_d,kind=int64)*real_bytes
+      host_bytes=host_bytes+4_int64*size(field_send_back_h,kind=int64)*real_bytes
     elseif(ksize>1) then
       host_bytes=host_bytes+planned(3); device_bytes=device_bytes+planned(3)
     endif
@@ -3050,7 +3052,7 @@ contains
     integer,intent(in) :: nvar
     integer,intent(in),optional :: direction
     procedure(independent_host_pair_work),optional :: work
-    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    real(real_kind),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
     type(dim3) :: block,grid
     integer :: n
     logical :: active(3)
@@ -3113,7 +3115,7 @@ contains
 
     integer,intent(in) :: nvar
     procedure(independent_host_pair_work),optional :: work
-    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    real(real_kind),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
     type(dim3) :: block,grid
     integer :: ncou,npack,nunpack
 
@@ -3163,7 +3165,7 @@ contains
 
     integer,intent(in) :: nvar
     procedure(independent_host_pair_work),optional :: work
-    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    real(real_kind),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
     type(dim3) :: block,grid
     integer :: ncou,npack,nunpack
 
@@ -3213,7 +3215,7 @@ contains
 
     integer,intent(in) :: nvar
     procedure(independent_host_pair_work),optional :: work
-    real(8),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
+    real(real_kind),device :: field(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:nvar)
     type(dim3) :: block,grid
     integer :: ncou,npack,nunpack
 

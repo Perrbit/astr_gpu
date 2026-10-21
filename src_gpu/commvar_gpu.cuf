@@ -1,9 +1,11 @@
 module commvar_gpu
+  use astr_precision, only: real_kind
   use cudafor
   implicit none
+  private :: real_kind
 
-  real(8),constant :: mach_d
-  real(8),constant :: bfacmpld_d
+  real(real_kind),constant :: mach_d
+  real(real_kind),constant :: bfacmpld_d
   logical,constant :: metric_consistent_eps_d
 contains
   subroutine copy_commvar_to_gpu()

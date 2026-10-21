@@ -1,15 +1,21 @@
 module crashfix_gpu
+  use iso_fortran_env, only: int64
+  use astr_precision, only: real_kind,clock_kind
+  use astr_precision_mpi, only: mpi_real_type
   use cudafor
   implicit none
+  private :: real_kind,clock_kind,mpi_real_type
   private
   public :: repair_crashfix_state_gpu,check_crashfix_state_gpu,release_crashfix_gpu
   integer(1),allocatable,device :: fluid_d(:,:,:)
   integer,allocatable,device :: first_d(:,:),last_d(:,:)
-  real(8),allocatable,device :: partial_d(:,:)
-  real(8),device :: minima_d(5),change_d(5)
+  real(real_kind),allocatable,device :: partial_d(:,:)
+  real(real_kind),device :: minima_d(5),change_d(5)
   integer,device :: candidates_d=0,repaired_d=0,invalid_d=0
-  real(8),save :: eps_prs
+  real(real_kind),save :: eps_prs
   integer,save :: step_normal=0
+  integer(int64),save :: report_visits=0,report_calls=0
+  real(real_kind),save :: report_changes(5)=0.e0_real_kind,report_minima(4)=huge(0.e0_real_kind)
 contains
   subroutine initialize_crashfix_gpu()
     use commvar, only: im,jm,km,nondimen,spcinf
@@ -23,9 +29,9 @@ contains
     fluid_d=int(merge(1,0,nodestat(0:im,0:jm,0:km)<=0),1)
     if(.not.allocated(crinod_d)) call sync_crashfix_mask_to_gpu()
     if(nondimen) then
-      eps_prs=thermal(density=1.d-5,temperature=1.d-5)
+      eps_prs=thermal(density=1.e-5_real_kind,temperature=1.e-5_real_kind)
     else
-      eps_prs=thermal(density=1.d-5,temperature=1.d-5,species=spcinf)
+      eps_prs=thermal(density=1.e-5_real_kind,temperature=1.e-5_real_kind,species=spcinf)
     endif
   end subroutine initialize_crashfix_gpu
 
@@ -35,21 +41,21 @@ contains
     use qswap_gpu, only: q_to_primitive_point
     implicit none
     integer,value :: i,j,k
-    real(8),value :: const2,const6,rgas
+    real(real_kind),value :: const2,const6,rgas
     logical,value :: nondimen
     logical,intent(out) :: valid
-    real(8) :: state(5)
+    real(real_kind) :: state(5)
     state=q_d(i,j,k,:)
     valid=admissible_mp_state(state)
     if(valid) then
       call q_to_primitive_point(i,j,k,const2,const6)
       if(.not.nondimen) tmp_d(i,j,k)=prs_d(i,j,k)/rho_d(i,j,k)/rgas
-      valid=abs(prs_d(i,j,k))<=huge(1.d0).and.abs(tmp_d(i,j,k))<=huge(1.d0).and. &
-        prs_d(i,j,k)>0.d0.and.tmp_d(i,j,k)>0.d0
+      valid=abs(prs_d(i,j,k))<=huge(1.e0_real_kind).and.abs(tmp_d(i,j,k))<=huge(1.e0_real_kind).and. &
+        prs_d(i,j,k)>0.e0_real_kind.and.tmp_d(i,j,k)>0.e0_real_kind
     else
       ! Mark unusable caches without dividing by an invalid density or editing q.
-      rho_d(i,j,k)=state(1); vel_d(i,j,k,:)=0.d0
-      prs_d(i,j,k)=-1.d0; tmp_d(i,j,k)=-1.d0
+      rho_d(i,j,k)=state(1); vel_d(i,j,k,:)=0.e0_real_kind
+      prs_d(i,j,k)=-1.e0_real_kind; tmp_d(i,j,k)=-1.e0_real_kind
     endif
   end subroutine refresh_point
 
@@ -57,32 +63,32 @@ contains
     use commarray_gpu, only: q_d,rho_d,prs_d,tmp_d,crinod_d
     implicit none
     integer,value :: im,jm,km
-    real(8),value :: const2,const6,rgas,epsp
+    real(real_kind),value :: const2,const6,rgas,epsp
     logical,value :: nondimen,collect
-    real(8),shared :: values(5,256)
-    real(8) :: eint
+    real(real_kind),shared :: values(5,256)
+    real(real_kind) :: eint
     integer :: id,i,j,k,t,stride,ignored
     logical :: valid,bad
     t=threadIdx%x
     id=(blockIdx%x-1)*blockDim%x+t-1
-    values(1:4,t)=huge(1.d0); values(5,t)=0.d0
+    values(1:4,t)=huge(1.e0_real_kind); values(5,t)=0.e0_real_kind
     if(id<(im+1)*(jm+1)*(km+1)) then
       i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
       call refresh_point(i,j,k,const2,const6,nondimen,rgas,valid)
       if(fluid_d(i,j,k)/=0) then
         if(valid) then
-          eint=q_d(i,j,k,5)-0.5d0*sum(q_d(i,j,k,2:4)**2)/q_d(i,j,k,1)
-          valid=abs(eint)<=huge(1.d0).and.eint>0.d0
+          eint=q_d(i,j,k,5)-0.5e0_real_kind*sum(q_d(i,j,k,2:4)**2)/q_d(i,j,k,1)
+          valid=abs(eint)<=huge(1.e0_real_kind).and.eint>0.e0_real_kind
           if(valid) values(1:4,t)=[rho_d(i,j,k),prs_d(i,j,k),tmp_d(i,j,k),eint]
         endif
         if(.not.valid) ignored=atomicexch(invalid_d,1)
-        bad=.not.(rho_d(i,j,k)>=1.d-5.and.prs_d(i,j,k)>=epsp.and.tmp_d(i,j,k)>=1.d-5)
+        bad=.not.(rho_d(i,j,k)>=1.e-5_real_kind.and.prs_d(i,j,k)>=epsp.and.tmp_d(i,j,k)>=1.e-5_real_kind)
         if(collect.and.bad) then
           ignored=atomicadd(candidates_d,1)
           ignored=atomicmin(first_d(j,k),i)
           ignored=atomicmax(last_d(j,k),i)
         endif
-        if(crinod_d(i,j,k)) values(5,t)=1.d0
+        if(crinod_d(i,j,k)) values(5,t)=1.e0_real_kind
       endif
     endif
     call syncthreads()
@@ -103,9 +109,9 @@ contains
     use commarray_gpu, only: q_d,rho_d,prs_d,tmp_d,crinod_d
     implicit none
     integer,value :: im,jm,km,ig0,jg0,ia,ja
-    real(8),value :: const2,const6,rgas,epsp
+    real(real_kind),value :: const2,const6,rgas,epsp
     logical,value :: nondimen
-    real(8) :: average(5),previous(5)
+    real(real_kind) :: average(5),previous(5)
     integer :: i,j,k,ii,jj,kk,norm
     logical :: valid
     ! Only exceptional rows are visited. In-place k/j/i and kk/jj/ii order
@@ -114,16 +120,16 @@ contains
     do j=0,jm
     do i=first_d(j,k),last_d(j,k)
       if(fluid_d(i,j,k)==0) cycle
-      if(rho_d(i,j,k)>=1.d-5.and.prs_d(i,j,k)>=epsp.and.tmp_d(i,j,k)>=1.d-5) cycle
+      if(rho_d(i,j,k)>=1.e-5_real_kind.and.prs_d(i,j,k)>=epsp.and.tmp_d(i,j,k)>=1.e-5_real_kind) cycle
       crinod_d(i,j,k)=.true.
-      average=0.d0; norm=0
+      average=0.e0_real_kind; norm=0
       do kk=-1,1
       do jj=-1,1
       do ii=-1,1
         if(ii==0.and.jj==0.and.kk==0) cycle
         if(ig0+i+ii<0.or.ig0+i+ii>ia.or.jg0+j+jj<0.or.jg0+j+jj>ja) cycle
-        if(rho_d(i+ii,j+jj,k+kk)>=0.d0.and.prs_d(i+ii,j+jj,k+kk)>=0.d0.and. &
-           tmp_d(i+ii,j+jj,k+kk)>=0.d0) then
+        if(rho_d(i+ii,j+jj,k+kk)>=0.e0_real_kind.and.prs_d(i+ii,j+jj,k+kk)>=0.e0_real_kind.and. &
+           tmp_d(i+ii,j+jj,k+kk)>=0.e0_real_kind) then
           average=average+q_d(i+ii,j+jj,k+kk,:)
           norm=norm+1
         endif
@@ -144,10 +150,10 @@ contains
   attributes(global) subroutine reduce_kernel(n)
     implicit none
     integer,value :: n
-    real(8),shared :: values(5,256)
+    real(real_kind),shared :: values(5,256)
     integer :: t,b,stride
     t=threadIdx%x
-    values(1:4,t)=huge(1.d0); values(5,t)=0.d0
+    values(1:4,t)=huge(1.e0_real_kind); values(5,t)=0.e0_real_kind
     do b=t,n,256
       values(1:4,t)=min(values(1:4,t),partial_d(1:4,b))
       values(5,t)=values(5,t)+partial_d(5,b)
@@ -193,6 +199,7 @@ contains
   end subroutine check_crashfix_state_gpu
 
   subroutine repair_crashfix_state_gpu(stage)
+    use benchmark_runtime, only: benchmark_buffered_output_enabled
     use mpi
     use commvar, only: im,jm,km,ia,ja,const2,const6,nondimen,rgas,nstep,ctime,lreport
     use parallel, only: ig0,jg0,lio,ptime
@@ -200,11 +207,12 @@ contains
     implicit none
     integer,intent(in) :: stage
     integer :: count,local,global,ierr,counter,critical
-    real(8) :: started,changes(5),lower(5)
+    real(clock_kind) :: started
+    real(real_kind) :: changes(5),lower(5)
     started=ptime()
     call inspect_state(.true.)
     count=candidates_d
-    repaired_d=0; change_d=0.d0
+    repaired_d=0; change_d=0.e0_real_kind
     if(count>0) then
       call ordered_repair_kernel<<<1,1>>>(im,jm,km,ig0,jg0,ia,ja,const2,const6,nondimen,rgas,eps_prs)
       call sync_after_kernel('crashfix_ordered_repair_kernel',.true.)
@@ -217,17 +225,26 @@ contains
     count=repaired_d
     call MPI_Allreduce(count,counter,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
     changes=change_d; lower=minima_d
-    call MPI_Allreduce(MPI_IN_PLACE,changes,5,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(MPI_IN_PLACE,changes,5,mpi_real_type,MPI_MAX,MPI_COMM_WORLD,ierr)
     critical=nint(lower(5))
-    call MPI_Allreduce(MPI_IN_PLACE,lower,4,MPI_DOUBLE_PRECISION,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(MPI_IN_PLACE,lower,4,mpi_real_type,MPI_MIN,MPI_COMM_WORLD,ierr)
     if(counter==0) then
       step_normal=step_normal+1
     else
       step_normal=0
     endif
-    if(lio) write(*,'(A,3(1X,I0),9(1X,ES24.16E3))') &
-      'ASTR_GPU_CRASHFIX',nstep,stage,counter,changes,lower(1:4)
-    if(lreport) then
+    if(lio) then
+      if(benchmark_buffered_output_enabled()) then
+        report_visits=report_visits+int(counter,int64)
+        if(counter>0) report_calls=report_calls+1
+        report_changes=max(report_changes,changes)
+        report_minima=min(report_minima,lower(1:4))
+      else
+        write(*,'(A,3(1X,I0),9(1X,ES24.16E3))') &
+          'ASTR_GPU_CRASHFIX',nstep,stage,counter,changes,lower(1:4)
+      endif
+    endif
+    if(lreport.and..not.benchmark_buffered_output_enabled()) then
       call MPI_Allreduce(MPI_IN_PLACE,critical,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
       if(lio.and.step_normal>0) write(*,'(A,I0,A)') '  ** the comput. been normal for: ',step_normal,' steps'
       if(lio) write(*,'(A,I0,A)') '  ** ',critical,' critical nodes'
@@ -240,8 +257,15 @@ contains
   end subroutine repair_crashfix_state_gpu
 
   subroutine release_crashfix_gpu()
+    use benchmark_runtime, only: benchmark_buffered_output_enabled
+    use parallel, only: lio
     implicit none
+    if(allocated(fluid_d).and.lio.and.benchmark_buffered_output_enabled()) then
+      write(*,'(A,2(1X,I0),9(1X,ES24.16E3))') &
+        'ASTR_GPU_CRASHFIX_TOTAL',report_visits,report_calls,report_changes,report_minima
+    endif
     if(allocated(fluid_d)) deallocate(fluid_d,first_d,last_d,partial_d)
     step_normal=0
+    report_visits=0;report_calls=0;report_changes=0;report_minima=huge(0.e0_real_kind)
   end subroutine release_crashfix_gpu
 end module crashfix_gpu

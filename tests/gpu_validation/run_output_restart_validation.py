@@ -63,7 +63,8 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
              ncu_kernel=None, curve_trace_step_scale=None, curve_wall_temperature=None,
              solver_halo_transport='pinned', flow_type=None, gpu_precision_mode='fp64', gpu_sync_mode='explicit',
              gpu_mixed_candidate=None, exact_restart=True, checkpoint_statistics=True, insitu_memory_trace=False,
-             scheme='643e', compact_sync='explicit', compact_batch_rhs=65535):
+             scheme='643e', compact_sync='explicit', compact_batch_rhs=65535, restore_probe=False,
+             gpu_statistics_interval=None, benchmark_buffer_output=False, tgv_conservation=False):
     if solver_halo_transport not in ('pageable', 'pinned', 'pinned-pipeline', 'device-aware'):
         raise ValueError('unknown solver halo transport')
     if ncu_kernel is not None and (not ncu_kernel or backend != 'gpu' or ranks != 1 or
@@ -181,6 +182,8 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
             '--report', str(case / 'grid_report.txt')], check=True)
         primary = case / 'datin' / input_name
         set_gridfile(primary, 'datin/grid.tgv.h5')
+        # The generated CURVE grid replaces the copied example resource.
+        (case / 'datin/grid.h5').unlink(missing_ok=True)
         set_runtime_flags(primary, 't' if backend == 'gpu' else 'f', None, None, 't')
         if tgv_mapping=='y-wavy':
             set_homogeneous(primary,'t,f,t')
@@ -285,6 +288,16 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
                ASTR_GPU_SYNC_MODE=gpu_sync_mode, ASTR_GPU_HALO_TRANSPORT=solver_halo_transport,
                ASTR_GPU_PRECISION_MODE=gpu_precision_mode, ASTR_INSITU_SAMPLE_PREFIX="outdat/sample")
     env["ASTR_GPU_FILTER_WORKSPACE"] = args.filter_workspace
+    if gpu_statistics_interval is not None:
+        env['ASTR_GPU_STATISTICS_INTERVAL'] = str(gpu_statistics_interval)
+    if benchmark_buffer_output:
+        env.update(ASTR_BENCHMARK_BUFFER_OUTPUT='1', ASTR_GPU_RK_TIMING='1', ASTR_GPU_RANK_RK_TIMING='1')
+    if tgv_conservation:
+        env['ASTR_TGV_CONSERVATION']='1'
+    if restore_probe:
+        if restore is None:
+            raise ValueError('restore probe requires an explicit source checkpoint')
+        env['ASTR_CHECKPOINT_TEST_RESTORE_PROBE'] = '1'
     env.update(ASTR_GPU_COMPACT_SYNC=compact_sync,ASTR_GPU_COMPACT_BATCH_RHS=str(compact_batch_rhs))
     if gpu_mixed_candidate is not None:
         env['ASTR_GPU_MIXED_CANDIDATE'] = gpu_mixed_candidate
@@ -470,7 +483,17 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         if reject or (scale_dt is None and args.case != 'tgv'):
             raise ValueError('CFL gate requires an explicit successful scale test')
         first = int(restore.name.removeprefix('step')) if restore is not None else 0
-        cfl_gate = CflGate(case/'run.log', cfl_limit, dt, first, steps)
+        restored_dt = None
+        target = np.float32 if getattr(args, 'native_precision', 'fp64') == 'fp32' else np.float64
+        native_dt = float(target(dt))
+        if restore is not None:
+            with h5py.File(restore / 'state.h5') as saved:
+                header = saved['identity'][:]
+                width = 8 if header[1] == 2 else int(saved['numerical_kind_bytes'][0])
+                word = np.array([header[11]], dtype='<i8')
+                restored_dt = word.astype('<i4').view('<f4')[0] if width == 4 else word.view('<f8')[0]
+                restored_dt = float(target(restored_dt))
+        cfl_gate = CflGate(case/'run.log', cfl_limit, native_dt, first, steps, first_dt=restored_dt)
     with (case / "run.log").open("wb") as log:
         if monitor_resources:
             if backend != "gpu" or reject or memcheck:
@@ -512,7 +535,8 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
     if cfl_gate is not None and returncode == 0:
         cfl_gate.check(final=True)
         (case/'cfl_gate.json').write_text(json.dumps(dict(maximum=cfl_gate.maximum, limit=cfl_limit,
-            dt=dt, samples=steps-first, scope='per-step log gate; termination after log becomes visible'), indent=2))
+            dt=native_dt, input_dt=dt, first_dt=cfl_gate.first_dt, samples=steps-first,
+            scope='per-step log gate; termination after log becomes visible'), indent=2))
     if insitu_timing:
         (case/'timing.launch.json').write_text(json.dumps(dict(
             seconds=perf_counter()-launch_started,

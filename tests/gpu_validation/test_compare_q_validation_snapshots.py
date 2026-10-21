@@ -19,13 +19,45 @@ def write_snapshot(
     path: Path,
     header: tuple[int, int, int, int, int],
     values: np.ndarray,
+    dtype=np.float64,
 ) -> None:
     with path.open("wb") as stream:
         np.asarray(header, dtype=np.int32).tofile(stream)
-        np.asarray(values, dtype=np.float64).tofile(stream)
+        np.asarray(values, dtype=dtype).tofile(stream)
 
 
 class CompareQValidationSnapshotsTests(unittest.TestCase):
+    def test_reads_explicit_fp32_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "q.bin"
+            header = (1, 0, 0, 1, 5)
+            values = np.arange(180, dtype=np.float32)
+            write_snapshot(path, header, values, dtype=np.float32)
+            snapshot = read_q_snapshot(path, precision="fp32")
+            self.assertEqual(snapshot.header, header)
+            self.assertEqual(snapshot.values.dtype, np.dtype("float32"))
+            np.testing.assert_array_equal(snapshot.values, values)
+            with self.assertRaisesRegex(ValueError, "payload size mismatch"):
+                read_q_snapshot(path)
+
+    def test_report_only_keeps_fp32_difference_without_a_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            suffix = "post_update.step00000000.rk03.rank00000000.bin"
+            header = (0, 0, 0, 0, 5)
+            cpu = np.array([0, 0, 1, 1, 1], dtype=np.float64)
+            gpu = np.array([0, 0, 1, 1, 2], dtype=np.float32)
+            write_snapshot(root / f"cpu.{suffix}", header, cpu)
+            write_snapshot(root / f"gpu.{suffix}", header, gpu, dtype=np.float32)
+            result = compare_snapshot_sets(
+                root / "cpu", root / "gpu", labels=("post_update",),
+                atol=0.0, rtol=0.0, gpu_precision="fp32", report_only=True,
+            )
+            self.assertTrue(result.passed)
+            self.assertEqual(result.max_abs, 1.0)
+            self.assertEqual(result.max_rel, 1.0)
+            self.assertEqual(result.max_scaled, 1.0)
+
     def test_reads_header_and_complete_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "q.bin"

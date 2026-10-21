@@ -1,6 +1,7 @@
 module insitu_fields
   use mpi
-  use iso_fortran_env, only: real64
+  use astr_precision, only: real_kind,clock_kind,real_bytes
+  use astr_precision_mpi, only: mpi_real_type
   use ieee_arithmetic, only: ieee_is_finite
   implicit none
   private
@@ -14,7 +15,7 @@ module insitu_fields
   public :: capture_air5_walls
   public :: insitu_volume_weights,release_insitu_geometry
   public :: nonreacting_wall_candidate
-  real(real64),allocatable,save :: curve_volume_weights(:,:,:)
+  real(real_kind),allocatable,save :: curve_volume_weights(:,:,:)
 contains
   logical function nonreacting_wall_candidate() result(supported)
     use commvar, only: flowtype,lreadgrid
@@ -33,9 +34,9 @@ contains
     use bc, only: bctype
     use parallel, only: ig0,jg0,kg0,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront,mpirank
     use insitu_geometry, only: hex_volume
-    real(real64),intent(out) :: weights(0:im,0:jm,0:km)
-    real(real64) :: points(3,0:1,0:1,0:1),volume,local,total
-    real(real64),allocatable :: send(:),receive(:)
+    real(real_kind),intent(out) :: weights(0:im,0:jm,0:km)
+    real(real_kind) :: points(3,0:1,0:1,0:1),volume,local,total
+    real(real_kind),allocatable :: send(:),receive(:)
     integer :: i,j,k,a,b,c,axis,neighbors(2,3),count,ierr,comm,status,origin(3),cells(3),global(3)
     logical :: ok,valid
     call require_fields(lreadgrid,'CURVE weights require an explicit physical grid')
@@ -44,7 +45,7 @@ contains
         send(max((im+1)*(jm+1),(im+1)*(km+1),(jm+1)*(km+1))), &
         receive(max((im+1)*(jm+1),(im+1)*(km+1),(jm+1)*(km+1))),stat=status)
       call require_fields(status==0,'cannot allocate CURVE geometric weights')
-      curve_volume_weights=0.d0; valid=.true.
+      curve_volume_weights=0.e0_real_kind; valid=.true.
       cells_loop: do k=0,km-1
       do j=0,jm-1
       do i=0,im-1
@@ -59,7 +60,7 @@ contains
         if(.not.ok) then
           valid=.false.; exit cells_loop
         endif
-        curve_volume_weights(i:i+1,j:j+1,k:k+1)=curve_volume_weights(i:i+1,j:j+1,k:k+1)+volume/8.d0
+        curve_volume_weights(i:i+1,j:j+1,k:k+1)=curve_volume_weights(i:i+1,j:j+1,k:k+1)+volume/8.e0_real_kind
       enddo
       enddo
       enddo cells_loop
@@ -82,29 +83,29 @@ contains
         case(3)
           count=(im+1)*(jm+1); send(1:count)=reshape(curve_volume_weights(:,:,km),[count])
         end select
-        receive(1:count)=0.d0
-        call MPI_Sendrecv(send,count,MPI_DOUBLE_PRECISION,neighbors(2,axis),axis, &
-          receive,count,MPI_DOUBLE_PRECISION,neighbors(1,axis),axis,comm,MPI_STATUS_IGNORE,ierr)
+        receive(1:count)=0.e0_real_kind
+        call MPI_Sendrecv(send,count,mpi_real_type,neighbors(2,axis),axis, &
+          receive,count,mpi_real_type,neighbors(1,axis),axis,comm,MPI_STATUS_IGNORE,ierr)
         call require_fields(ierr==MPI_SUCCESS,'geometric weight contribution exchange failed')
         select case(axis)
         case(1)
           curve_volume_weights(0,:,:)=curve_volume_weights(0,:,:)+reshape(receive(1:count),[jm+1,km+1])
-          if(neighbors(2,axis)/=MPI_PROC_NULL) curve_volume_weights(im,:,:)=0.d0
+          if(neighbors(2,axis)/=MPI_PROC_NULL) curve_volume_weights(im,:,:)=0.e0_real_kind
         case(2)
           curve_volume_weights(:,0,:)=curve_volume_weights(:,0,:)+reshape(receive(1:count),[im+1,km+1])
-          if(neighbors(2,axis)/=MPI_PROC_NULL) curve_volume_weights(:,jm,:)=0.d0
+          if(neighbors(2,axis)/=MPI_PROC_NULL) curve_volume_weights(:,jm,:)=0.e0_real_kind
         case(3)
           curve_volume_weights(:,:,0)=curve_volume_weights(:,:,0)+reshape(receive(1:count),[im+1,jm+1])
-          if(neighbors(2,axis)/=MPI_PROC_NULL) curve_volume_weights(:,:,km)=0.d0
+          if(neighbors(2,axis)/=MPI_PROC_NULL) curve_volume_weights(:,:,km)=0.e0_real_kind
         end select
       enddo
       call MPI_Comm_free(comm,ierr)
       call require_fields(ierr==MPI_SUCCESS,'cannot release geometric weight communicator')
-      call require_fields(all(ieee_is_finite(curve_volume_weights)).and.all(curve_volume_weights>=0.d0), &
+      call require_fields(all(ieee_is_finite(curve_volume_weights)).and.all(curve_volume_weights>=0.e0_real_kind), &
         'invalid assembled physical geometric weights')
       local=sum(curve_volume_weights)
-      call MPI_Allreduce(local,total,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
-      call require_fields(ierr==MPI_SUCCESS.and.ieee_is_finite(total).and.total>0.d0,'invalid geometric volume')
+      call MPI_Allreduce(local,total,1,mpi_real_type,MPI_SUM,MPI_COMM_WORLD,ierr)
+      call require_fields(ierr==MPI_SUCCESS.and.ieee_is_finite(total).and.total>0.e0_real_kind,'invalid geometric volume')
       if(mpirank==0) write(*,'(a,es24.16)') 'ASTR_INSITU_CURVE_VOLUME=',total
     endif
     weights=curve_volume_weights
@@ -127,13 +128,13 @@ contains
     use insitu_sample_gpu, only: check_device_wall_fields_gpu
 #endif
 #endif
-    real(real64),allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
+    real(real_kind),allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
     logical,allocatable,intent(out) :: owned(:,:,:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
     integer(int64),intent(out) :: download_bytes
 #ifdef ASTR_AIR5_CHEMISTRY
-    real(real64),allocatable :: state(:,:,:,:),send(:),receive(:)
-    real(real64) :: primitive(12,3),mu,kt,kv,smu(5),binary(5,5),diffusion(5),metric,derivative(3)
+    real(real_kind),allocatable :: state(:,:,:,:),send(:),receive(:)
+    real(real_kind) :: primitive(12,3),mu,kt,kv,smu(5),binary(5,5),diffusion(5),metric,derivative(3)
     integer :: nw,i,k,m,c,status,local_status,ierr,comm,count,axis,sizes(2),neighbors(2,2)
     integer(int64) :: nodes,bytes
     call require_fields(trim(flowtype)=='air5hbl'.and.numq==11.and.num_species==5.and.num_modequ==1.and. &
@@ -142,17 +143,17 @@ contains
       'AIR5 wall candidate requires dimensional Cartesian HBL <=32 NP=1/2 and two interior layers')
     nw=merge(1,0,jg0==0)
     nodes=int(im+1,int64)*(km+1)*nw
-    bytes=nodes*(54*8+storage_size(.false.)/8)+int(max(im+1,km+1),int64)*nw*33*8*4
+    bytes=nodes*(54*real_bytes+storage_size(.false.)/8)+int(max(im+1,km+1),int64)*nw*33*real_bytes*4
     call require_fields(bytes<=host_budget,'AIR5 wall host budget')
     allocate(state(0:im,0:km,nw,33),coordinates(0:im,0:km,nw,3),fields(0:im,0:km,nw,18), &
       owned(0:im,0:km,nw),send(max(1,max(im+1,km+1)*nw*33)), &
       receive(max(1,max(im+1,km+1)*nw*33)),stat=status)
     call require_fields(status==0,'cannot allocate private AIR5 wall buffers')
-    state=0.d0; fields=0.d0; coordinates=0.d0; download_bytes=0
+    state=0.e0_real_kind; fields=0.e0_real_kind; coordinates=0.e0_real_kind; download_bytes=0
 #ifdef _CUDA
     if(use_gpu) then
       call download_wall_state_gpu([(0,m=1,nw)],state,device_budget,reserve)
-      download_bytes=nodes*33*8
+      download_bytes=nodes*33*real_bytes
     else
 #else
     call require_fields(.not.use_gpu,'AIR5 GPU capture requires CUDA build')
@@ -179,8 +180,8 @@ contains
         if(sizes(axis)==1) then
           receive(1:count)=send(1:count)
         else
-          call MPI_Sendrecv(send,count,MPI_DOUBLE_PRECISION,neighbors(1,axis),axis,receive,count, &
-            MPI_DOUBLE_PRECISION,neighbors(2,axis),axis,comm,MPI_STATUS_IGNORE,ierr)
+          call MPI_Sendrecv(send,count,mpi_real_type,neighbors(1,axis),axis,receive,count, &
+            mpi_real_type,neighbors(2,axis),axis,comm,MPI_STATUS_IGNORE,ierr)
         endif
         if(sizes(axis)==1.or.neighbors(2,axis)/=MPI_PROC_NULL) then
           if(axis==1) then
@@ -214,15 +215,15 @@ contains
       local_status=max(local_status,status)
       if(local_status/=0) cycle
       metric=dxi(i,0,k,2,2)
-      if(.not.ieee_is_finite(metric).or.metric<=0.d0) then
+      if(.not.ieee_is_finite(metric).or.metric<=0.e0_real_kind) then
         local_status=1; cycle
       endif
-      derivative=(-0.5d0*primitive([2,5,6],3)+2.d0*primitive([2,5,6],2)- &
-        1.5d0*primitive([2,5,6],1))*metric
+      derivative=(-0.5e0_real_kind*primitive([2,5,6],3)+2.e0_real_kind*primitive([2,5,6],2)- &
+        1.5e0_real_kind*primitive([2,5,6],1))*metric
       coordinates(i,k,1,:)=x(i,0,k,:)
       ! Static noncatalytic wall: J_s dot n=0 and viscous work is zero.
       fields(i,k,1,:)=[primitive(:,1),mu*derivative(1),-kt*derivative(2),-kv*derivative(3), &
-        0.d0,-kt*derivative(2)-kv*derivative(3),1.d0]
+        0.e0_real_kind,-kt*derivative(2)-kv*derivative(3),1.e0_real_kind]
     enddo
     enddo
     call require_fields(local_status==0.and.all(ieee_is_finite(fields)).and. &
@@ -248,8 +249,8 @@ contains
     use commvar, only: im,jm,km,flowtype,ja
     use commarray, only: x
     use parallel, only: jg0,mpidown,mpiup
-    real(real64),intent(out) :: weights(0:jm)
-    real(real64) :: area,left,right,send,receive
+    real(real_kind),intent(out) :: weights(0:jm)
+    real(real_kind) :: area,left,right,send,receive
     integer :: j,ierr,comm
     area=(x(1,0,0,1)-x(0,0,0,1))*(x(0,0,1,3)-x(0,0,0,3))
     weights=area*(x(0,1,0,2)-x(0,0,0,2))
@@ -258,7 +259,7 @@ contains
       send=x(0,jm-1,0,2); receive=x(0,0,0,2)
       call MPI_Comm_dup(MPI_COMM_WORLD,comm,ierr)
       call require_fields(ierr==MPI_SUCCESS,'cannot create statistics coordinate communicator')
-      call MPI_Sendrecv(send,1,MPI_DOUBLE_PRECISION,mpiup,1,receive,1,MPI_DOUBLE_PRECISION, &
+      call MPI_Sendrecv(send,1,mpi_real_type,mpiup,1,receive,1,mpi_real_type, &
         mpidown,1,comm,MPI_STATUS_IGNORE,ierr)
       call require_fields(ierr==MPI_SUCCESS,'statistics coordinate exchange failed')
       call MPI_Comm_free(comm,ierr)
@@ -270,27 +271,27 @@ contains
         if(j<jm) right=x(0,j+1,0,2)
         if(j==jm.and.jg0+jm/=ja) then
           ! This duplicate interface is not owned and has zero integration weight.
-          weights(j)=0.d0
+          weights(j)=0.e0_real_kind
         else
-          weights(j)=area*0.5d0*(right-left)
+          weights(j)=area*0.5e0_real_kind*(right-left)
         endif
       enddo
     endif
-    call require_fields(all(ieee_is_finite(weights)).and.all(weights>=0.d0).and.area>0.d0, &
+    call require_fields(all(ieee_is_finite(weights)).and.all(weights>=0.e0_real_kind).and.area>0.e0_real_kind, &
       'invalid physical statistics node weights')
   end subroutine
 
   subroutine capture_channel_statistics(fields)
     use commvar, only: im,jm,km,use_gpu,numq,num_species,flowtype
     use commarray, only: q
-    real(real64),intent(out) :: fields(0:im,0:jm,0:km,11)
+    real(real_kind),intent(out) :: fields(0:im,0:jm,0:km,11)
     call require_fields(.not.use_gpu.and.nonreacting_wall_candidate().and.numq==5.and.num_species==0, &
       'channel statistics host capture requires the CPU five-variable solver')
-    fields=0.d0
+    fields=0.e0_real_kind
     fields(:,:,:,1:5)=q(0:im,0:jm,0:km,1:5)
     call complete_owned_endpoints(fields(:,:,:,1:5))
     fields(:,:,:,6)=fields(:,:,:,1)
-    call require_fields(all(ieee_is_finite(fields)).and.all(fields(:,:,:,6)>0.d0), &
+    call require_fields(all(ieee_is_finite(fields)).and.all(fields(:,:,:,6)>0.e0_real_kind), &
       'invalid completed channel statistics state')
     fields(:,:,:,7)=fields(:,:,:,2)/fields(:,:,:,6)
     fields(:,:,:,8)=fields(:,:,:,3)/fields(:,:,:,6)
@@ -313,16 +314,16 @@ contains
     use insitu_sample_gpu, only: check_device_wall_fields_gpu
 #endif
 #endif
-    real(real64),allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
+    real(real_kind),allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
     logical,allocatable,intent(out) :: owned(:,:,:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
     integer(int64),intent(out) :: download_bytes
-    real(real64),allocatable :: state(:,:,:,:),send(:),receive(:)
-    real(real64),allocatable :: wall_primitive(:,:,:,:)
-    real(real64) :: velocity(3,3),temperature(3),pressure(3),rho,mu,metric,du,dt
-    real(real64) :: first(3),second(3),inward(3),normal(3),tangent(3),gradient(3,3),stress(3,3),dv(3)
-    real(real64) :: directional(3,3),thermal(3)
-    real(real64),parameter :: coefficients(3)=[0.75d0,-0.15d0,1.d0/60.d0]
+    real(real_kind),allocatable :: state(:,:,:,:),send(:),receive(:)
+    real(real_kind),allocatable :: wall_primitive(:,:,:,:)
+    real(real_kind) :: velocity(3,3),temperature(3),pressure(3),rho,mu,metric,du,dt
+    real(real_kind) :: first(3),second(3),inward(3),normal(3),tangent(3),gradient(3,3),stress(3,3),dv(3)
+    real(real_kind) :: directional(3,3),thermal(3)
+    real(real_kind),parameter :: coefficients(3)=[0.75e0_real_kind,-0.15e0_real_kind,1.e0_real_kind/60.e0_real_kind]
     logical :: frame_ok
     integer :: offset
     integer :: walls(2),nw,i,k,w,m,j,side,d,c,axis,count,status,ierr,comm
@@ -333,7 +334,7 @@ contains
       max(ia,ja,ka)<=32.and.min(im,km)>=1.and.jm>=2.and.mpisize<=2, &
       'wall candidate requires bc41 channel or CURVE TGV <=32, NP=1/2 and two local interior layers')
     call require_fields(all(ieee_is_finite([const2,const5,const6,reynolds,prandtl])).and. &
-      min(const2,const5,const6,reynolds,prandtl)>0.d0,'invalid wall material constants')
+      min(const2,const5,const6,reynolds,prandtl)>0.e0_real_kind,'invalid wall material constants')
     nw=0
     if(jg0==0) then
       nw=nw+1; walls(nw)=0
@@ -343,20 +344,20 @@ contains
     endif
     nodes=int(im+1,int64)*(km+1)*nw
     ! Includes endpoint packing/reshape temporaries as well as retained outputs.
-    bytes=nodes*(22*8+storage_size(.false.)/8)+int(max(im+1,km+1),int64)*nw*15*8*4
-    if(lreadgrid) bytes=bytes+int(im+7,int64)*(km+7)*nw*4*8+ &
-      int(max(im+1,km+1),int64)*nw*4*3*8*4
+    bytes=nodes*(22*real_bytes+storage_size(.false.)/8)+int(max(im+1,km+1),int64)*nw*15*real_bytes*4
+    if(lreadgrid) bytes=bytes+int(im+7,int64)*(km+7)*nw*4*real_bytes+ &
+      int(max(im+1,km+1),int64)*nw*4*3*real_bytes*4
     call require_fields(bytes<=host_budget,'wall host budget')
     allocate(state(0:im,0:km,nw,15),coordinates(0:im,0:km,nw,3),fields(0:im,0:km,nw,4), &
       owned(0:im,0:km,nw),send(max(1,max(im+1,km+1)*nw*15)), &
       receive(max(1,max(im+1,km+1)*nw*15)),stat=status)
     call require_fields(status==0,'cannot allocate private wall buffers')
-    fields=0.d0; coordinates=0.d0
+    fields=0.e0_real_kind; coordinates=0.e0_real_kind
     download_bytes=0
 #ifdef _CUDA
     if(use_gpu) then
       call download_wall_state_gpu(walls(1:nw),state,device_budget,reserve)
-      download_bytes=nodes*15*8
+      download_bytes=nodes*15*real_bytes
     else
 #else
     call require_fields(.not.use_gpu,'wall GPU capture requires CUDA build')
@@ -389,8 +390,8 @@ contains
         if(sizes(axis)==1) then
           receive(1:count)=send(1:count)
         else
-          call MPI_Sendrecv(send,count,MPI_DOUBLE_PRECISION,neighbors(1,axis),axis, &
-            receive,count,MPI_DOUBLE_PRECISION,neighbors(2,axis),axis,comm,MPI_STATUS_IGNORE,ierr)
+          call MPI_Sendrecv(send,count,mpi_real_type,neighbors(1,axis),axis, &
+            receive,count,mpi_real_type,neighbors(2,axis),axis,comm,MPI_STATUS_IGNORE,ierr)
         endif
         if(axis==1) then
           state(im,:,:,:)=reshape(receive(1:count),[km+1,nw,15])
@@ -415,26 +416,26 @@ contains
         do m=1,3
           c=5*(m-1)
           rho=state(i,k,w,c+1)
-          if(rho<=0.d0) then
+          if(rho<=0.e0_real_kind) then
             status=1; cycle
           endif
           velocity(:,m)=state(i,k,w,c+2:c+4)/rho
-          pressure(m)=(state(i,k,w,c+5)-0.5d0*rho*sum(velocity(:,m)**2))/const6
+          pressure(m)=(state(i,k,w,c+5)-0.5e0_real_kind*rho*sum(velocity(:,m)**2))/const6
           temperature(m)=pressure(m)/rho*const2
         enddo
         if(status/=0) cycle
         metric=dxi(i,j,k,2,2)
-        if(.not.all(ieee_is_finite(temperature)).or.minval(temperature)<=0.d0.or. &
-          .not.ieee_is_finite(metric).or.metric<=0.d0) then
+        if(.not.all(ieee_is_finite(temperature)).or.minval(temperature)<=0.e0_real_kind.or. &
+          .not.ieee_is_finite(metric).or.metric<=0.e0_real_kind) then
           status=1; cycle
         endif
         mu=miucal(temperature(1))/reynolds
-        du=(-0.5d0*velocity(1,3)+2.d0*velocity(1,2)-1.5d0*velocity(1,1))*metric
-        dt=(-0.5d0*temperature(3)+2.d0*temperature(2)-1.5d0*temperature(1))*metric
+        du=(-0.5e0_real_kind*velocity(1,3)+2.e0_real_kind*velocity(1,2)-1.5e0_real_kind*velocity(1,1))*metric
+        dt=(-0.5e0_real_kind*temperature(3)+2.e0_real_kind*temperature(2)-1.5e0_real_kind*temperature(1))*metric
         coordinates(i,k,w,:)=x(i,j,k,1:3)
-        fields(i,k,w,:)=[pressure(1),mu*du,-((mu/prandtl)/const5)*dt,real(side,real64)]
+        fields(i,k,w,:)=[pressure(1),mu*du,-((mu/prandtl)/const5)*dt,real(side,real_kind)]
         if(lreadgrid) then
-          first=0.d0; second=0.d0
+          first=0.e0_real_kind; second=0.e0_real_kind
           do offset=1,3
             first=first+coefficients(offset)*(x(i+offset,j,k,1:3)-x(i-offset,j,k,1:3))
             second=second+coefficients(offset)*(x(i,j,k+offset,1:3)-x(i,j,k-offset,1:3))
@@ -444,9 +445,9 @@ contains
           if(.not.frame_ok.or..not.all(ieee_is_finite(dxi(i,j,k,2,:)))) then
             status=1; cycle
           endif
-          dv=real(side,real64)*(-0.5d0*velocity(:,3)+2.d0*velocity(:,2)-1.5d0*velocity(:,1))
-          directional=0.d0; directional(:,2)=dv; thermal=0.d0
-          thermal(2)=real(side,real64)*(-0.5d0*temperature(3)+2.d0*temperature(2)-1.5d0*temperature(1))
+          dv=real(side,real_kind)*(-0.5e0_real_kind*velocity(:,3)+2.e0_real_kind*velocity(:,2)-1.5e0_real_kind*velocity(:,1))
+          directional=0.e0_real_kind; directional(:,2)=dv; thermal=0.e0_real_kind
+          thermal(2)=real(side,real_kind)*(-0.5e0_real_kind*temperature(3)+2.e0_real_kind*temperature(2)-1.5e0_real_kind*temperature(1))
           do offset=1,3
             directional(:,1)=directional(:,1)+coefficients(offset)*( &
               wall_primitive(i+offset,k,w,1:3)-wall_primitive(i-offset,k,w,1:3))
@@ -460,7 +461,7 @@ contains
           enddo
           stress=mu*(gradient+transpose(gradient))
           do d=1,3
-            stress(d,d)=stress(d,d)-(2.d0/3.d0)*mu*(gradient(1,1)+gradient(2,2)+gradient(3,3))
+            stress(d,d)=stress(d,d)-(2.e0_real_kind/3.e0_real_kind)*mu*(gradient(1,1)+gradient(2,2)+gradient(3,3))
           enddo
           fields(i,k,w,2)=dot_product(tangent,matmul(stress,normal))
           fields(i,k,w,3)=-((mu/prandtl)/const5)*dot_product(matmul(thermal,dxi(i,j,k,:,:)),normal)
@@ -482,12 +483,12 @@ contains
     use commvar, only: im,km
     use parallel, only: jg0,mpirank
     use insitu_geometry, only: quad_area
-    real(real64),intent(in) :: coordinates(0:,0:,:,:),fields(0:,0:,:,:)
+    real(real_kind),intent(in) :: coordinates(0:,0:,:,:),fields(0:,0:,:,:)
     integer,intent(in) :: walls(:)
-    real(real64) :: quad(3,0:1,0:1),area,local(4,2),global(4,2)
+    real(real_kind) :: quad(3,0:1,0:1),area,local(4,2),global(4,2)
     integer :: i,k,w,a,b,side,ierr
     logical :: ok,valid
-    local=0.d0; valid=.true.
+    local=0.e0_real_kind; valid=.true.
     do w=1,size(walls)
       side=2; if(jg0+walls(w)==0) side=1
       do k=0,km-1
@@ -505,15 +506,15 @@ contains
         ! Each cell is owned once; its equal corner masses include periodic seam endpoints.
         do b=0,1
         do a=0,1
-          local(2:4,side)=local(2:4,side)+(area/4.d0)*fields(i+a,k+b,w,1:3)
+          local(2:4,side)=local(2:4,side)+(area/4.e0_real_kind)*fields(i+a,k+b,w,1:3)
         enddo
         enddo
       enddo
       enddo
     enddo
     call require_fields(valid.and.all(ieee_is_finite(local)),'invalid CURVE wall area/integral')
-    call MPI_Allreduce(local,global,8,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
-    call require_fields(ierr==MPI_SUCCESS.and.all(ieee_is_finite(global)).and.all(global(1,:)>0.d0), &
+    call MPI_Allreduce(local,global,8,mpi_real_type,MPI_SUM,MPI_COMM_WORLD,ierr)
+    call require_fields(ierr==MPI_SUCCESS.and.all(ieee_is_finite(global)).and.all(global(1,:)>0.e0_real_kind), &
       'invalid global CURVE wall area/integral')
     if(mpirank==0) then
       do side=1,2
@@ -527,33 +528,33 @@ contains
   subroutine prepare_curve_wall_primitive(state,primitive)
     use commvar, only: im,km,const2,const6
     use parallel, only: isize,ksize,mpileft,mpiright,mpiback,mpifront
-    real(real64),intent(in) :: state(0:,0:,:,:)
-    real(real64),allocatable,intent(out) :: primitive(:,:,:,:)
-    real(real64),allocatable :: send(:),receive(:)
-    real(real64) :: rho,velocity(3),pressure
+    real(real_kind),intent(in) :: state(0:,0:,:,:)
+    real(real_kind),allocatable,intent(out) :: primitive(:,:,:,:)
+    real(real_kind),allocatable :: send(:),receive(:)
+    real(real_kind) :: rho,velocity(3),pressure
     integer :: i,k,w,nw,status,axis,count,comm,ierr,s,neighbors(2,2),sizes(2)
     logical :: valid
     nw=size(state,3)
     allocate(primitive(-3:im+3,-3:km+3,nw,4), &
       send(max(1,3*max(im+1,km+1)*nw*4)),receive(max(1,3*max(im+1,km+1)*nw*4)),stat=status)
     call require_fields(status==0,'cannot allocate CURVE tangential wall halo')
-    primitive=0.d0; valid=.true.
+    primitive=0.e0_real_kind; valid=.true.
     do w=1,nw
     do k=0,km
     do i=0,im
       rho=state(i,k,w,1)
-      if(rho<=0.d0) then
+      if(rho<=0.e0_real_kind) then
         valid=.false.; cycle
       endif
       velocity=state(i,k,w,2:4)/rho
-      pressure=(state(i,k,w,5)-0.5d0*rho*sum(velocity**2))/const6
+      pressure=(state(i,k,w,5)-0.5e0_real_kind*rho*sum(velocity**2))/const6
       primitive(i,k,w,1:3)=velocity
       primitive(i,k,w,4)=pressure/rho*const2
     enddo
     enddo
     enddo
     call require_fields(valid.and.all(ieee_is_finite(primitive)).and. &
-      all(primitive(0:im,0:km,:,4)>0.d0),'invalid CURVE wall primitive state')
+      all(primitive(0:im,0:km,:,4)>0.e0_real_kind),'invalid CURVE wall primitive state')
     sizes=[isize,ksize]; neighbors(:,1)=[mpileft,mpiright]; neighbors(:,2)=[mpiback,mpifront]
     call MPI_Comm_dup(MPI_COMM_WORLD,comm,ierr)
     call require_fields(ierr==MPI_SUCCESS,'cannot create wall tangential communicator')
@@ -577,8 +578,8 @@ contains
       else
         send(1:count)=reshape(primitive(0:im,1:3,:,:),[count])
       endif
-      call MPI_Sendrecv(send,count,MPI_DOUBLE_PRECISION,neighbors(1,axis),2*axis, &
-        receive,count,MPI_DOUBLE_PRECISION,neighbors(2,axis),2*axis,comm,MPI_STATUS_IGNORE,ierr)
+      call MPI_Sendrecv(send,count,mpi_real_type,neighbors(1,axis),2*axis, &
+        receive,count,mpi_real_type,neighbors(2,axis),2*axis,comm,MPI_STATUS_IGNORE,ierr)
       call require_fields(ierr==MPI_SUCCESS,'CURVE wall positive tangential halo exchange')
       if(axis==1) then
         primitive(im+1:im+3,0:km,:,:)=reshape(receive(1:count),[3,km+1,nw,4])
@@ -587,8 +588,8 @@ contains
         primitive(0:im,km+1:km+3,:,:)=reshape(receive(1:count),[im+1,3,nw,4])
         send(1:count)=reshape(primitive(0:im,km-3:km-1,:,:),[count])
       endif
-      call MPI_Sendrecv(send,count,MPI_DOUBLE_PRECISION,neighbors(2,axis),2*axis+1, &
-        receive,count,MPI_DOUBLE_PRECISION,neighbors(1,axis),2*axis+1,comm,MPI_STATUS_IGNORE,ierr)
+      call MPI_Sendrecv(send,count,mpi_real_type,neighbors(2,axis),2*axis+1, &
+        receive,count,mpi_real_type,neighbors(1,axis),2*axis+1,comm,MPI_STATUS_IGNORE,ierr)
       call require_fields(ierr==MPI_SUCCESS,'CURVE wall negative tangential halo exchange')
       if(axis==1) then
         primitive(-3:-1,0:km,:,:)=reshape(receive(1:count),[3,km+1,nw,4])
@@ -611,9 +612,9 @@ contains
     use insitu_sample_gpu, only: download_plane_state_gpu
 #endif
     integer,intent(in) :: axis,index
-    real(real64),allocatable,intent(out) :: coordinates(:,:,:),velocity(:,:,:)
+    real(real_kind),allocatable,intent(out) :: coordinates(:,:,:),velocity(:,:,:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
-    real(real64),allocatable :: state(:,:,:),send(:),receive(:)
+    real(real_kind),allocatable :: state(:,:,:),send(:),receive(:)
     integer :: dims(3),origin(3),sizes(3),neighbors(2,3),tangent(2),ni,nj,local_index
     integer :: status,ierr,comm,d,c,a,b,ijk(3),count
     logical :: owns
@@ -630,7 +631,7 @@ contains
     if(owns) then
       ni=dims(tangent(1))+1; nj=dims(tangent(2))+1
     endif
-    call require_fields(int(ni,int64)*nj*10*8+int(max(ni,nj),int64)*8*8<=host_budget, &
+    call require_fields(int(ni,int64)*nj*10*real_bytes+int(max(ni,nj),int64)*8*real_bytes<=host_budget, &
       'index-plane host budget')
     allocate(state(0:ni-1,0:nj-1,4),coordinates(0:ni-1,0:nj-1,3), &
       velocity(0:ni-1,0:nj-1,3),send(max(1,4*max(ni,nj))),receive(max(1,4*max(ni,nj))),stat=status)
@@ -654,8 +655,8 @@ contains
         if(sizes(tangent(d))==1) then
           receive(1:count)=send(1:count)
         else
-          call MPI_Sendrecv(send,count,MPI_DOUBLE_PRECISION,neighbors(1,tangent(d)),d, &
-            receive,count,MPI_DOUBLE_PRECISION,neighbors(2,tangent(d)),d,comm,MPI_STATUS_IGNORE,ierr)
+          call MPI_Sendrecv(send,count,mpi_real_type,neighbors(1,tangent(d)),d, &
+            receive,count,mpi_real_type,neighbors(2,tangent(d)),d,comm,MPI_STATUS_IGNORE,ierr)
         endif
         if(d==1) then
           state(ni-1,:,:)=reshape(receive(1:count),[nj,4])
@@ -667,7 +668,7 @@ contains
     enddo
     call MPI_Comm_free(comm,ierr)
     call require_fields(ierr==MPI_SUCCESS,'cannot release index-plane communicator')
-    call require_fields(all(ieee_is_finite(state)).and.all(state(:,:,1)>0.d0),'invalid index-plane state')
+    call require_fields(all(ieee_is_finite(state)).and.all(state(:,:,1)>0.e0_real_kind),'invalid index-plane state')
     do c=1,3
       velocity(:,:,c)=state(:,:,c+1)/state(:,:,1)
     enddo
@@ -700,7 +701,7 @@ contains
 #ifdef _CUDA
     use insitu_sample_gpu, only: download_sample_gpu
 #endif
-    real(real64),intent(out) :: fields(0:im,0:jm,0:km,11)
+    real(real_kind),intent(out) :: fields(0:im,0:jm,0:km,11)
     call require_fields(numq==5.and.num_species==0,'sampling requires five-variable perfect gas')
 #ifdef _CUDA
     if(use_gpu) then
@@ -725,8 +726,8 @@ contains
 #ifdef _CUDA
     use insitu_sample_gpu, only: download_velocity_state_gpu
 #endif
-    real(real64),intent(out) :: velocity(0:im,0:jm,0:km,3)
-    real(real64),allocatable :: state(:,:,:,:)
+    real(real_kind),intent(out) :: velocity(0:im,0:jm,0:km,3)
+    real(real_kind),allocatable :: state(:,:,:,:)
     integer :: status,c
     call require_fields(use_gpu.and.numq==5.and.num_species==0,'selected sampling requires five-variable GPU solver')
     allocate(state(0:im,0:jm,0:km,4),stat=status)
@@ -737,7 +738,7 @@ contains
     call require_fields(.false.,'selected sampling requires CUDA build')
 #endif
     call complete_periodic_endpoints(state)
-    call require_fields(all(ieee_is_finite(state)).and.all(state(:,:,:,1)>0.d0),'invalid selected velocity state')
+    call require_fields(all(ieee_is_finite(state)).and.all(state(:,:,:,1)>0.e0_real_kind),'invalid selected velocity state')
     do c=1,3
       velocity(:,:,:,c)=state(:,:,:,c+1)/state(:,:,:,1)
     enddo
@@ -746,25 +747,25 @@ contains
 
   subroutine canonicalize_sample(fields)
     use commvar, only: im,jm,km,const2,const6,numq,num_species
-    real(real64),intent(inout) :: fields(0:im,0:jm,0:km,11)
+    real(real_kind),intent(inout) :: fields(0:im,0:jm,0:km,11)
     integer :: axis
     call require_fields(numq==5.and.num_species==0,'ownership requires five-variable perfect gas')
     call complete_periodic_endpoints(fields(:,:,:,1:5))
-    call require_fields(all(fields(:,:,:,1)>0.d0),'nonpositive diagnostic density')
+    call require_fields(all(fields(:,:,:,1)>0.e0_real_kind),'nonpositive diagnostic density')
     fields(:,:,:,6)=fields(:,:,:,1)
     do axis=1,3
       fields(:,:,:,6+axis)=fields(:,:,:,axis+1)/fields(:,:,:,6)
     enddo
-    fields(:,:,:,10)=(fields(:,:,:,5)-0.5d0*fields(:,:,:,6)* &
+    fields(:,:,:,10)=(fields(:,:,:,5)-0.5e0_real_kind*fields(:,:,:,6)* &
                       sum(fields(:,:,:,7:9)**2,dim=4))/const6
     fields(:,:,:,11)=fields(:,:,:,10)/fields(:,:,:,6)*const2
-    call require_fields(all(ieee_is_finite(fields)).and.all(fields(:,:,:,10)>0.d0), &
+    call require_fields(all(ieee_is_finite(fields)).and.all(fields(:,:,:,10)>0.e0_real_kind), &
                         'invalid canonical primitive state')
   end subroutine
 
   subroutine complete_periodic_endpoints(fields)
     use bc, only: bctype
-    real(real64),intent(inout) :: fields(0:,0:,0:,:)
+    real(real_kind),intent(inout) :: fields(0:,0:,0:,:)
     call require_fields(all(bctype==1),'ownership requires periodic boundaries')
     call complete_owned_endpoints(fields)
   end subroutine
@@ -773,8 +774,8 @@ contains
     use commvar, only: im,jm,km,flowtype,conschm,difschm,recon_schem,lchardecomp,lfilter
     use bc, only: bctype
     use parallel, only: isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
-    real(real64),intent(inout) :: fields(0:,0:,0:,:)
-    real(real64),allocatable :: send(:),receive(:)
+    real(real_kind),intent(inout) :: fields(0:,0:,0:,:)
+    real(real_kind),allocatable :: send(:),receive(:)
     integer :: axis,count,status,ierr,comm,neighbors(2,3),sizes(3),extent(3),max_count,nfields
     nfields=size(fields,4)
     call require_fields(all(shape(fields)==[im+1,jm+1,km+1,nfields]).and.nfields>0, &
@@ -810,8 +811,8 @@ contains
       if(sizes(axis)==1) then
         receive(1:count)=send(1:count)
       else
-        call MPI_Sendrecv(send,count,MPI_DOUBLE_PRECISION,neighbors(1,axis),axis, &
-                          receive,count,MPI_DOUBLE_PRECISION,neighbors(2,axis),axis, &
+        call MPI_Sendrecv(send,count,mpi_real_type,neighbors(1,axis),axis, &
+                          receive,count,mpi_real_type,neighbors(2,axis),axis, &
                           comm,MPI_STATUS_IGNORE,ierr)
         call require_fields(ierr==MPI_SUCCESS,'ownership exchange failed')
       endif
@@ -836,18 +837,18 @@ contains
     use commarray, only: dxi
     use parallel, only: dataswap,mpirank
     use derivative, only: diff6ec
-    real(real64),intent(in) :: velocity(0:im,0:jm,0:km,3)
-    real(real64),intent(out) :: derived(0:im,0:jm,0:km,14)
-    real(real64),allocatable :: work(:,:,:,:)
-    real(real64) :: a(3,3)
-    real(real64) :: halo_started,halo_seconds,gradient_started,gradient_seconds,q_started,q_seconds
+    real(real_kind),intent(in) :: velocity(0:im,0:jm,0:km,3)
+    real(real_kind),intent(out) :: derived(0:im,0:jm,0:km,14)
+    real(real_kind),allocatable :: work(:,:,:,:)
+    real(real_kind) :: a(3,3)
+    real(clock_kind) :: halo_started,halo_seconds,gradient_started,gradient_seconds,q_started,q_seconds
     integer :: i,j,k,c,d,status
     call require_fields(all(bctype==1).and.hm>=3.and.trim(difschm)=='643e', &
       'diagnostics require periodic boundaries and explicit sixth-order derivatives')
     call require_fields(min(im,jm,km)>=3,'diagnostic subdomains need at least three cells per axis')
     allocate(work(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3),stat=status)
     call require_fields(status==0,'cannot allocate private diagnostic halo')
-    work=0.d0
+    work=0.e0_real_kind
     work(0:im,0:jm,0:km,:)=velocity
     ! Blocking exchange updates only this private halo, not solver primitive arrays.
     halo_started=MPI_Wtime()
@@ -856,7 +857,7 @@ contains
     write(*,'(a,i0,a,es16.8)') 'ASTR_INSITU_HALO_TIMING rank=',mpirank,' seconds=',halo_seconds
     call require_fields(all(work(0:im,0:jm,0:km,:)==velocity),'diagnostic exchange changed physical values')
     gradient_started=MPI_Wtime()
-    derived=0.d0
+    derived=0.e0_real_kind
     do c=1,3
       do d=1,3
         do k=0,km
@@ -884,7 +885,7 @@ contains
       do j=0,jm
         do i=0,im
           a=reshape(derived(i,j,k,1:9),[3,3])
-          derived(i,j,k,10)=-0.5d0*sum(a*transpose(a))
+          derived(i,j,k,10)=-0.5e0_real_kind*sum(a*transpose(a))
           derived(i,j,k,11)=a(1,1)+a(2,2)+a(3,3)
           derived(i,j,k,12)=a(3,2)-a(2,3)
           derived(i,j,k,13)=a(1,3)-a(3,1)

@@ -17,10 +17,10 @@ __device__ inline void audit_max(double* destination,double value) {
 }
 
 // Read-only oracle: interpolate the source arrays independently of Viskores.
-__global__ void inspect_product(DeviceGeometryView view,const double* halo,
+__global__ void inspect_product(DeviceGeometryView view,const Real* halo,
     const DeviceDiagnostics* diagnostics,int nx,int ny,int nz,int ox,int oy,int oz,
     int global_cells,int surface,int slice,int crossing,ProductAudit* audit,
-    const viskores::Vec3f* computational,const viskores::Vec3f* physical_source,double iso) {
+    const NativeVector* computational,const NativeVector* physical_source,Real iso) {
   const auto i=static_cast<viskores::Id>(blockIdx.x)*blockDim.x+threadIdx.x;
   if(i>=view.points) return;
   const double h=2.*acos(-1.)/global_cells;
@@ -84,10 +84,10 @@ __global__ void inspect_product(DeviceGeometryView view,const double* halo,
   audit_max(&audit->field,error);audit_max(&audit->display,display);
 }
 
-inline ProductAudit audit_device_product(const DeviceGeometryView& view,const double* halo,
+inline ProductAudit audit_device_product(const DeviceGeometryView& view,const Real* halo,
     const DeviceDiagnostics* diagnostics,const viskores::Id3& extent,const viskores::Id3& offset,
     int global_cells,bool surface,bool slice,bool crossing,
-    const viskores::Vec3f* computational=nullptr,const viskores::Vec3f* physical_source=nullptr,double iso=.25) {
+    const NativeVector* computational=nullptr,const NativeVector* physical_source=nullptr,Real iso=Real(.25)) {
   ProductAudit result,*device=nullptr;
   if(!view.points) return result;
   if(cudaMalloc(&device,sizeof(result))!=cudaSuccess)
@@ -103,7 +103,7 @@ inline ProductAudit audit_device_product(const DeviceGeometryView& view,const do
       throw std::runtime_error("Device product audit scalar readback failed");
   } catch(...) {cudaFree(device);throw;}
   cudaFree(device);
-  if(!std::isfinite(result.field) || result.field>2e-10 || result.display!=0.)
+  if(!std::isfinite(result.field) || (sizeof(Real)==8 && result.field>2e-10) || result.display!=0.)
     throw std::runtime_error("Device product numerical/display acceptance failed");
   return result;
 }
@@ -114,14 +114,14 @@ inline void test_curve_trace_oracle(const viskores::cont::DataSet& data,const De
   const char* prefix=std::getenv("ASTR_INSITU_TEST_CURVE_TRACE_PREFIX");
   if(!prefix || !*prefix) return;
   if(view.arity!=2) throw std::runtime_error("CURVE trace oracle requires line geometry");
-  using Accepted=viskores::Vec<double,5>;
-  static_assert(sizeof(viskores::Id)==8 && sizeof(viskores::Vec3f)==24 && sizeof(Accepted)==40,
-    "CURVE trace test oracle requires FP64 vectors and 64-bit connectivity");
-  const std::uint64_t bytes=std::uint64_t(view.points)*12*sizeof(double)+
+  using Accepted=viskores::Vec<Real,5>;
+  static_assert(sizeof(viskores::Id)==8 && sizeof(NativeVector)==3*sizeof(Real) && sizeof(Accepted)==5*sizeof(Real),
+    "CURVE trace oracle requires native vectors and 64-bit connectivity");
+  const std::uint64_t bytes=std::uint64_t(view.points)*(11*sizeof(Real)+sizeof(viskores::Id))+
     std::uint64_t(view.cells)*2*sizeof(viskores::Id);
   if(bytes>host_budget || bytes>64*1024*1024)
     throw std::runtime_error("CURVE trace test oracle host budget exceeded");
-  std::vector<viskores::Vec3f> xyz(view.points),velocity(view.points);
+  std::vector<NativeVector> xyz(view.points),velocity(view.points);
   std::vector<Accepted> accepted(view.points);
   std::vector<viskores::Id> particle(view.points),indices(view.cells*2);
   nvtxRangePushA("ASTR_X4_CURVE_TRACE_TEST_ORACLE");
@@ -161,16 +161,16 @@ inline void test_curve_surface_oracle(const viskores::cont::DataSet& data,const 
     int rank,int step,std::uint64_t host_budget) {
   const char* prefix=std::getenv("ASTR_INSITU_TEST_CURVE_Q_PREFIX");
   if(!prefix || !*prefix) return;
-  const std::uint64_t bytes=std::uint64_t(view.points)*10*sizeof(double)+
+  const std::uint64_t bytes=std::uint64_t(view.points)*10*sizeof(Real)+
     std::uint64_t(view.cells)*3*sizeof(viskores::Id);
   if(bytes>host_budget || bytes>64*1024*1024)
     throw std::runtime_error("CURVE Q test oracle host budget exceeded");
-  std::vector<viskores::Vec3f> xyz(view.points),computational(view.points),velocity(view.points);
-  std::vector<double> q(view.points);
+  std::vector<NativeVector> xyz(view.points),computational(view.points),velocity(view.points);
+  std::vector<Real> q(view.points);
   std::vector<viskores::Id> indices(view.cells*3);
   if(view.points) {
     const auto field=data.GetPointField("_astr_computational_xyz").GetData().AsArrayHandle<
-      viskores::cont::ArrayHandle<viskores::Vec3f>>();
+      viskores::cont::ArrayHandle<NativeVector>>();
     require_device_only(field);
     viskores::cont::Token token;
     const auto pointer=field.GetBuffers()[0].ReadPointerDevice(viskores::cont::DeviceAdapterTagCuda{},token);

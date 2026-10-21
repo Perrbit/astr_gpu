@@ -38,6 +38,8 @@ else()
 endif()
 
 set(ASTR_SOURCES
+  astr_precision.F90
+  astr_precision_mpi.F90
   astr.F90
   bc.F90
   wall_blowing_random.F90
@@ -219,6 +221,30 @@ if(ASTR_WITH_CUDA AND ASTR_CUDA_LINEINFO AND CMAKE_Fortran_COMPILER_ID MATCHES "
   target_compile_options(astr PRIVATE $<$<COMPILE_LANGUAGE:Fortran>:-gpu=lineinfo>)
 endif()
 if(BUILD_TESTING)
+  enable_language(CXX)
+  add_executable(native_precision_probe EXCLUDE_FROM_ALL astr_precision.F90
+    commtype.F90 commvar.F90 commarray.F90 constdef.F90
+    ../tests/gpu_validation/native_precision_probe.F90
+    ../tests/gpu_validation/native_precision_probe.cpp)
+  set_target_properties(native_precision_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/native_precision_modules"
+    CXX_STANDARD 11 CXX_STANDARD_REQUIRED YES LINKER_LANGUAGE Fortran)
+  target_include_directories(native_precision_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_BINARY_DIR}/native_precision_modules")
+  add_executable(native_precision_rk45_probe EXCLUDE_FROM_ALL
+    ../tests/gpu_validation/native_precision_rk45_probe.cpp)
+  set_target_properties(native_precision_rk45_probe PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED YES)
+  target_include_directories(native_precision_rk45_probe PRIVATE . ../src_gpu)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(native_precision_rk45_probe PRIVATE -ffp-contract=off -Wdouble-promotion -Werror=double-promotion)
+  endif()
+  add_executable(native_precision_mpi_probe EXCLUDE_FROM_ALL astr_precision.F90
+    astr_precision_mpi.F90 ../tests/gpu_validation/native_precision_mpi_probe.F90)
+  set_target_properties(native_precision_mpi_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/native_precision_mpi_modules")
+  target_include_directories(native_precision_mpi_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/native_precision_mpi_modules")
+  target_link_libraries(native_precision_mpi_probe PRIVATE MPI::MPI_Fortran)
   add_executable(legacy_wall_random_probe EXCLUDE_FROM_ALL wall_blowing_random.F90
     ../tests/gpu_validation/legacy_wall_random_probe.F90)
   set_target_properties(legacy_wall_random_probe PROPERTIES
@@ -275,6 +301,7 @@ if(ASTR_WITH_CATALYST)
     endif()
   endif()
   add_library(astr_catalyst_adapter STATIC catalyst_adapter.cpp insitu_mesh_adapter.cpp)
+  target_include_directories(astr_catalyst_adapter PRIVATE .)
   if(ASTR_WITH_CUDA)
     find_path(ASTR_EGL_INCLUDE_DIR EGL/eglext.h REQUIRED)
     find_package(Threads REQUIRED)
@@ -290,6 +317,14 @@ if(ASTR_WITH_CATALYST)
   target_compile_definitions(astr_catalyst_adapter INTERFACE ASTR_WITH_CATALYST)
   target_link_libraries(astr_catalyst_adapter PRIVATE catalyst::catalyst MPI::MPI_C ${CMAKE_DL_LIBS})
   target_link_libraries(astr PRIVATE astr_catalyst_adapter)
+  if(BUILD_TESTING)
+    add_executable(native_insitu_abi_probe EXCLUDE_FROM_ALL astr_precision.F90
+      ../tests/gpu_validation/native_insitu_abi_probe.F90)
+    set_target_properties(native_insitu_abi_probe PROPERTIES LINKER_LANGUAGE Fortran
+      Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/native_insitu_abi_modules")
+    target_include_directories(native_insitu_abi_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/native_insitu_abi_modules")
+    target_link_libraries(native_insitu_abi_probe PRIVATE astr_catalyst_adapter)
+  endif()
   if(ASTR_WITH_INSITU_DEVICE_RENDERING)
     find_package(CUDAToolkit REQUIRED)
     find_package(ParaView 6.1 REQUIRED COMPONENTS RemotingViews)
@@ -360,22 +395,25 @@ if(ASTR_WITH_CATALYST)
         ../tests/gpu_validation/insitu_device_compiler_probe.cu)
       add_executable(insitu_device_rk45_probe EXCLUDE_FROM_ALL
         ../tests/gpu_validation/insitu_device_rk45_probe.cu)
+      add_executable(native_precision_rk45_gpu_probe EXCLUDE_FROM_ALL
+        ../tests/gpu_validation/native_precision_rk45_probe.cu)
       add_executable(insitu_device_trace_probe EXCLUDE_FROM_ALL
         ../tests/gpu_validation/insitu_device_trace_probe.cu)
       add_executable(insitu_device_peer_probe EXCLUDE_FROM_ALL
         ../tests/gpu_validation/insitu_device_peer_probe.cu)
       add_executable(insitu_device_plane_probe EXCLUDE_FROM_ALL
         ../tests/gpu_validation/insitu_device_plane_probe.cu)
-      target_include_directories(insitu_device_plane_probe PRIVATE ../src_gpu)
+      target_include_directories(insitu_device_plane_probe PRIVATE . ../src_gpu)
       target_link_libraries(insitu_device_plane_probe PRIVATE MPI::MPI_C)
-      target_include_directories(insitu_device_trace_probe PRIVATE ../src_gpu)
-      foreach(probe insitu_device_compiler_probe insitu_device_rk45_probe
+      target_include_directories(insitu_device_trace_probe PRIVATE . ../src_gpu)
+      foreach(probe insitu_device_compiler_probe insitu_device_rk45_probe native_precision_rk45_gpu_probe
           insitu_device_trace_probe insitu_device_peer_probe insitu_device_plane_probe)
         set_target_properties(${probe} PROPERTIES CUDA_STANDARD 17
           CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
         target_compile_options(${probe} PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
       endforeach()
-      target_include_directories(insitu_device_rk45_probe PRIVATE ../src_gpu)
+      target_include_directories(native_precision_rk45_gpu_probe PRIVATE . ../src_gpu)
+      target_include_directories(insitu_device_rk45_probe PRIVATE . ../src_gpu)
       target_link_libraries(insitu_device_rk45_probe PRIVATE VTK::CommonMath VTK::CommonCore VTK::vtksys)
       add_executable(insitu_vtk_length_audit EXCLUDE_FROM_ALL
         ../tests/gpu_validation/insitu_vtk_length_audit.cpp)
@@ -410,14 +448,14 @@ if(ASTR_WITH_CATALYST)
           ../tests/gpu_validation/insitu_viskores_rk45_probe.cu)
         set_target_properties(insitu_viskores_rk45_probe PROPERTIES CUDA_STANDARD 17
           CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
-        target_include_directories(insitu_viskores_rk45_probe PRIVATE ../src_gpu)
+        target_include_directories(insitu_viskores_rk45_probe PRIVATE . ../src_gpu)
         target_compile_options(insitu_viskores_rk45_probe PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
         target_link_libraries(insitu_viskores_rk45_probe PRIVATE viskores::cont viskores::worklet viskores::cuda)
         add_executable(insitu_viskores_trace_probe EXCLUDE_FROM_ALL
           ../tests/gpu_validation/insitu_viskores_trace_probe.cu)
         set_target_properties(insitu_viskores_trace_probe PROPERTIES CUDA_STANDARD 17
           CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
-        target_include_directories(insitu_viskores_trace_probe PRIVATE ../src_gpu)
+        target_include_directories(insitu_viskores_trace_probe PRIVATE . ../src_gpu)
         target_compile_options(insitu_viskores_trace_probe PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
         target_link_libraries(insitu_viskores_trace_probe PRIVATE
           viskores::cont viskores::worklet viskores::cuda MPI::MPI_C)
@@ -425,7 +463,7 @@ if(ASTR_WITH_CATALYST)
           ../tests/gpu_validation/insitu_device_streamlines_probe.cu)
         set_target_properties(insitu_device_streamlines_probe PROPERTIES CUDA_STANDARD 17
           CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
-        target_include_directories(insitu_device_streamlines_probe PRIVATE ../src_gpu)
+        target_include_directories(insitu_device_streamlines_probe PRIVATE . ../src_gpu)
         # Numerical component probe only; production device products keep their normal optimization.
         target_compile_options(insitu_device_streamlines_probe PRIVATE
           "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>" "$<$<COMPILE_LANGUAGE:CUDA>:-Xptxas=-O1>")
@@ -435,14 +473,14 @@ if(ASTR_WITH_CATALYST)
           ../tests/gpu_validation/insitu_curve_inverse_probe.cu)
         set_target_properties(insitu_curve_inverse_probe PROPERTIES CUDA_STANDARD 17
           CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
-        target_include_directories(insitu_curve_inverse_probe PRIVATE ../src_gpu)
+        target_include_directories(insitu_curve_inverse_probe PRIVATE . ../src_gpu)
         target_compile_options(insitu_curve_inverse_probe PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
         target_link_libraries(insitu_curve_inverse_probe PRIVATE viskores::cont viskores::worklet viskores::cuda)
         add_executable(insitu_device_geometry_probe EXCLUDE_FROM_ALL
           ../tests/gpu_validation/insitu_device_geometry_probe.cu)
         set_target_properties(insitu_device_geometry_probe PROPERTIES CUDA_STANDARD 17
           CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
-        target_include_directories(insitu_device_geometry_probe PRIVATE ../src_gpu)
+        target_include_directories(insitu_device_geometry_probe PRIVATE . ../src_gpu)
         target_compile_options(insitu_device_geometry_probe PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
         if(ASTR_INSITU_FLYING_EDGES_SOURCE)
           target_link_libraries(insitu_device_geometry_probe PRIVATE astr_insitu_flying_edges)
@@ -457,7 +495,7 @@ if(ASTR_WITH_CATALYST)
           ../tests/gpu_validation/insitu_device_structured_probe.cu)
         set_target_properties(insitu_device_structured_probe PROPERTIES CUDA_STANDARD 17
           CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
-        target_include_directories(insitu_device_structured_probe PRIVATE ../src_gpu)
+        target_include_directories(insitu_device_structured_probe PRIVATE . ../src_gpu)
         target_compile_options(insitu_device_structured_probe PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
         target_link_libraries(insitu_device_structured_probe PRIVATE
           viskores::cont viskores::worklet viskores::cuda MPI::MPI_C)
@@ -470,7 +508,7 @@ if(ASTR_WITH_CATALYST)
           ../tests/gpu_validation/insitu_device_wall_probe.cu)
         set_target_properties(insitu_device_wall_probe PROPERTIES CUDA_STANDARD 17
           CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
-        target_include_directories(insitu_device_wall_probe PRIVATE ../src_gpu)
+        target_include_directories(insitu_device_wall_probe PRIVATE . ../src_gpu)
         target_compile_options(insitu_device_wall_probe PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
         find_package(Python3 REQUIRED COMPONENTS Development.Embed)
         target_link_libraries(insitu_device_wall_probe PRIVATE
@@ -1118,6 +1156,10 @@ if(ASTR_WITH_CUDA AND BUILD_TESTING)
   add_executable(mp_ld_reconstruction_probe EXCLUDE_FROM_ALL
     ${ASTR_HALO_CONTRACT_SOURCES} ${ASTR_GPU_SOURCES}
     ../tests/gpu_validation/mp_ld_reconstruction_probe.cuf)
+  # NVHPC 26.1 FMA formation crashes on the probe's FP64 host references.
+  # Apply only to this test driver, not the production modules or kernels.
+  set_source_files_properties(../tests/gpu_validation/mp_ld_reconstruction_probe.cuf
+    PROPERTIES COMPILE_OPTIONS "-Mnofma")
   set_target_properties(mp_ld_reconstruction_probe PROPERTIES
     LINKER_LANGUAGE Fortran
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/mp_ld_probe_modules")
@@ -1125,13 +1167,25 @@ if(ASTR_WITH_CUDA AND BUILD_TESTING)
     "${CMAKE_CURRENT_BINARY_DIR}/mp_ld_probe_modules")
   target_link_libraries(mp_ld_reconstruction_probe PRIVATE ${ASTR_HALO_CONTRACT_LIBRARIES})
   target_compile_definitions(mp_ld_reconstruction_probe PRIVATE ASTR_BUILD_TESTING)
+  add_executable(native_filter_window_probe EXCLUDE_FROM_ALL
+    ${ASTR_HALO_CONTRACT_SOURCES} ${ASTR_GPU_SOURCES}
+    ../tests/gpu_validation/native_filter_window_replay.cuf)
+  set_target_properties(native_filter_window_probe PROPERTIES
+    LINKER_LANGUAGE Fortran
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/native_filter_window_modules")
+  target_include_directories(native_filter_window_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/native_filter_window_modules")
+  target_link_libraries(native_filter_window_probe PRIVATE ${ASTR_HALO_CONTRACT_LIBRARIES})
+  target_compile_definitions(native_filter_window_probe PRIVATE ASTR_BUILD_TESTING)
   if(ASTR_WITH_AIR5_CHEMISTRY)
     target_compile_definitions(halo_exchange_contract_test PRIVATE ASTR_AIR5_CHEMISTRY)
     target_compile_definitions(mp_ld_reconstruction_probe PRIVATE ASTR_AIR5_CHEMISTRY)
+    target_compile_definitions(native_filter_window_probe PRIVATE ASTR_AIR5_CHEMISTRY)
   endif()
   if(ASTR_HAS_MPI_CUDA_QUERY)
     target_compile_definitions(halo_exchange_contract_test PRIVATE ASTR_MPI_CUDA_AWARE_QUERY)
     target_compile_definitions(mp_ld_reconstruction_probe PRIVATE ASTR_MPI_CUDA_AWARE_QUERY)
+    target_compile_definitions(native_filter_window_probe PRIVATE ASTR_MPI_CUDA_AWARE_QUERY)
   endif()
 endif()
 
@@ -1169,6 +1223,7 @@ install(FILES
   ../scripts/output/export_checkpoint.py
   ../scripts/output/repair_series.py
   ../scripts/output/combine_series.py
+  ../scripts/output/merge_statistics_segments.py
   ../scripts/output/input.output.tgv.example
   ../scripts/output/input.output.tgv.derived.example
   ../scripts/output/input.output.air5.derived.example
@@ -1214,3 +1269,34 @@ set_target_properties(centered_diffusion_response_probe PROPERTIES
 target_include_directories(centered_diffusion_response_probe PRIVATE
   "${CMAKE_CURRENT_BINARY_DIR}/diffusion_response_modules")
 endif()
+
+# Standalone Fortran probes need the same kinds as their production sources.
+get_property(ASTR_LOCAL_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(ASTR_TARGET IN LISTS ASTR_LOCAL_TARGETS)
+  get_target_property(ASTR_TARGET_SOURCES ${ASTR_TARGET} SOURCES)
+  set(ASTR_TARGET_FORTRAN FALSE)
+  foreach(ASTR_SOURCE IN LISTS ASTR_TARGET_SOURCES)
+    if(ASTR_SOURCE MATCHES "\\.([Ff]90|[Cc][Uu][Ff])$")
+      set(ASTR_TARGET_FORTRAN TRUE)
+      break()
+    endif()
+  endforeach()
+  if(ASTR_TARGET_FORTRAN)
+    get_target_property(ASTR_TARGET_MODULES ${ASTR_TARGET} Fortran_MODULE_DIRECTORY)
+    if(NOT ASTR_TARGET_MODULES AND NOT ASTR_TARGET STREQUAL "astr")
+      set(ASTR_TARGET_MODULES "${CMAKE_CURRENT_BINARY_DIR}/${ASTR_TARGET}_modules")
+      set_target_properties(${ASTR_TARGET} PROPERTIES Fortran_MODULE_DIRECTORY "${ASTR_TARGET_MODULES}")
+      target_include_directories(${ASTR_TARGET} PRIVATE "${ASTR_TARGET_MODULES}")
+    endif()
+    if(NOT "astr_precision.F90" IN_LIST ASTR_TARGET_SOURCES)
+      target_sources(${ASTR_TARGET} PRIVATE astr_precision.F90)
+    endif()
+    if(NOT "astr_precision_mpi.F90" IN_LIST ASTR_TARGET_SOURCES)
+      target_sources(${ASTR_TARGET} PRIVATE astr_precision_mpi.F90)
+    endif()
+    if(NOT "astr_precision_io.F90" IN_LIST ASTR_TARGET_SOURCES)
+      target_sources(${ASTR_TARGET} PRIVATE astr_precision_io.F90)
+    endif()
+    target_link_libraries(${ASTR_TARGET} PRIVATE MPI::MPI_Fortran)
+  endif()
+endforeach()

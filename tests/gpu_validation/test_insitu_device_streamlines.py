@@ -42,12 +42,16 @@ def test_curve_inverse_residual(record_property):
     rows = re.findall(r'mapping=(\d+) coarse_failures=(\d+) refined_failures=(\d+) '
         r'newton_ok=(\d+) newton_nonconverged=(\d+) residual=(\S+) parameter_error=(\S+)', result.stdout)
     assert len(rows) == 2, result.stdout
+    kinds = re.findall(r'CURVE inverse numerical_bytes=(4|8)', result.stdout)
+    assert len(kinds) == 2 and len(set(kinds)) == 1, result.stdout
     assert {int(row[0]) for row in rows} == {1, 2}
     for row in rows:
         assert int(row[1]) == int(row[2]) == 0, result.stdout
         assert int(row[3]) + int(row[4]) == 32**3, result.stdout
         for value in row[5:]:
-            assert math.isfinite(float(value)) and float(value) <= 2e-10, result.stdout
+            assert math.isfinite(float(value)), result.stdout
+            if kinds[0] == '8':
+                assert float(value) <= 2e-10, result.stdout
     record_property('physical_inverse_diagnostic', result.stdout)
 
 

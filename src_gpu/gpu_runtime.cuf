@@ -1,16 +1,21 @@
 module gpu_runtime
+  use astr_precision, only: real_kind,clock_kind
   implicit none
+  private :: real_kind,clock_kind
   logical,save :: prepared_halo_ready = .false.
   logical,save :: stats_snapshot_ready = .false.
   logical,save :: rk_timing_configured = .false.
   logical,save :: rk_timing_enabled = .false.
   logical,save :: rank_rk_timing_enabled = .false.
   logical,save :: benchmark_state_check = .false.
+  integer,save :: statistics_interval=1,timing_last=-1
+  logical,save :: tgv_conservation=.false.
+  real(clock_kind),allocatable,save :: timing_records(:,:)
   logical,save :: complete_step_timing_configured = .false.
   logical,save :: complete_step_timing_enabled = .false.
-  real(8),save :: rk_prepare_start = 0.d0
-  real(8),save :: rk_prepare_seconds = 0.d0
-  real(8),save :: complete_step_start = 0.d0
+  real(clock_kind),save :: rk_prepare_start = 0.e0_clock_kind
+  real(clock_kind),save :: rk_prepare_seconds = 0.e0_clock_kind
+  real(clock_kind),save :: complete_step_start = 0.e0_clock_kind
 contains
   subroutine gpu_pre_mpi_bind_device()
     use device_runtime_gpu, only: prebind_gpu_device_from_environment
@@ -49,7 +54,7 @@ contains
     use commvar, only: nstep
     use parallel, only: lio,ptime
     implicit none
-    real(8) :: elapsed
+    real(clock_kind) :: elapsed
 
     if(.not.complete_step_timing_enabled) return
     elapsed=ptime()-complete_step_start
@@ -58,9 +63,13 @@ contains
   end subroutine gpu_end_complete_step_timing
 
   subroutine configure_rk_timing()
+    use mpi
+    use commvar, only: flowtype,nstep,maxstep,lreadgrid,lihomo,ljhomo,lkhomo,ndims
+    use bc, only: bctype
+    use benchmark_runtime, only: benchmark_buffered_output_enabled
     implicit none
     character(len=16) :: value
-    integer :: length,status
+    integer :: length,status,lowest,highest,ierr,choice
 
     if(rk_timing_configured) return
     value=''
@@ -89,15 +98,64 @@ contains
     call get_environment_variable('ASTR_VALIDATION_RK_STATE',value,status=status)
     benchmark_state_check=status==0.and.trim(value)=='1'
 #endif
+    value=''
+    call get_environment_variable('ASTR_GPU_STATISTICS_INTERVAL',value,status=status)
+    if(status==0.and.len_trim(value)>0) then
+      read(value,*,iostat=status) statistics_interval
+      if(status/=0) statistics_interval=-1
+    else if(status/=0.and.status/=1) then
+      statistics_interval=-1
+    endif
+    call MPI_Allreduce(statistics_interval,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(statistics_interval,highest,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(lowest<0.or.lowest/=highest) error stop 'Invalid or inconsistent ASTR_GPU_STATISTICS_INTERVAL'
+    if(statistics_interval/=1.and.trim(flowtype)/='tgv'.and.trim(flowtype)/='bl') &
+      error stop 'GPU statistics interval selection currently supports TGV and flat plate only'
+    value=''
+    call get_environment_variable('ASTR_TGV_CONSERVATION',value,status=status)
+    choice=0
+    if(status==0.and.len_trim(value)>0) then
+      select case(trim(value))
+      case('0');choice=0
+      case('1');choice=1
+      case default;choice=-1
+      end select
+    else if(status/=0.and.status/=1) then
+      choice=-1
+    endif
+    call MPI_Allreduce(choice,lowest,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(choice,highest,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(lowest<0.or.lowest/=highest) error stop 'Invalid or inconsistent ASTR_TGV_CONSERVATION'
+    tgv_conservation=choice==1
+    if(tgv_conservation.and.(trim(flowtype)/='tgv'.or.lreadgrid.or.ndims/=3.or. &
+      .not.(lihomo.and.ljhomo.and.lkhomo).or.any(bctype/=1))) &
+      error stop 'TGV conservative means require a Cartesian triply periodic box'
+    if(benchmark_buffered_output_enabled()) then
+      allocate(timing_records(3,nstep:maxstep))
+      timing_last=nstep-1
+    endif
     rk_timing_configured=.true.
   end subroutine configure_rk_timing
+
+  subroutine flush_rk_timing()
+    use parallel, only: mpirank,lio
+    implicit none
+    integer :: step
+    if(.not.allocated(timing_records)) return
+    do step=lbound(timing_records,2),timing_last
+      if(lio) write(*,'(A,1X,I0,3(1X,ES24.16E3))') 'ASTR_GPU_RK_TIMING',step,timing_records(:,step)
+      if(rank_rk_timing_enabled) write(*,'(A,2(1X,I0),3(1X,ES24.16E3))') &
+        'ASTR_GPU_RANK_RK_TIMING',mpirank,step,timing_records(:,step)
+    enddo
+    deallocate(timing_records)
+  end subroutine flush_rk_timing
 
   subroutine begin_rk_prepare_timing()
     use parallel, only: ptime
     implicit none
 
     call configure_rk_timing()
-    rk_prepare_seconds=0.d0
+    rk_prepare_seconds=0.e0_real_kind
     if(rk_timing_enabled) rk_prepare_start=ptime()
   end subroutine begin_rk_prepare_timing
 
@@ -211,6 +269,8 @@ contains
   end subroutine gpu_after_flowinit
 
   subroutine gpu_before_finalize()
+    use commvar, only: nstep,time,deltat
+    use parallel, only: lio
     use compact_operator_gpu, only: release_compact_operator_gpu
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_compensation_gpu, only: release_air5_compensation_gpu
@@ -232,6 +292,8 @@ contains
     use chemistry_mean_statistics_gpu, only: release_air5_mean_statistics_gpu
 #endif
     implicit none
+    if(tgv_conservation.and.lio) write(*,'(A,1X,I0,2(1X,ES24.16))') 'ASTR_TGV_FINAL_CLOCK',nstep,time,deltat
+    call flush_rk_timing()
 #ifdef ASTR_AIR5_CHEMISTRY
     call release_air5_hbl_boundary_gpu()
     call release_air5_mean_statistics_gpu()
@@ -365,7 +427,7 @@ contains
     implicit none
     logical,intent(in),optional :: first_stage_prepared
     logical,intent(in),optional :: copy_back
-    real(8) :: integration_start,integration_seconds,total_seconds
+    real(clock_kind) :: integration_start,integration_seconds,total_seconds
 
     if(rk_timing_enabled) integration_start=ptime()
     call time_integration_rk_gpu(first_stage_prepared,copy_back)
@@ -373,12 +435,19 @@ contains
     if(rk_timing_enabled) then
       integration_seconds=ptime()-integration_start
       total_seconds=rk_prepare_seconds+integration_seconds
-      if(lio) write(*,'(A,1X,I0,3(1X,ES24.16E3))')                  &
-        'ASTR_GPU_RK_TIMING',nstep,rk_prepare_seconds,              &
-        integration_seconds,total_seconds
-      if(rank_rk_timing_enabled) write(*,'(A,2(1X,I0),3(1X,ES24.16E3))') &
-        'ASTR_GPU_RANK_RK_TIMING',mpirank,nstep,rk_prepare_seconds, &
-        integration_seconds,total_seconds
+      if(allocated(timing_records)) then
+        if(nstep<lbound(timing_records,2).or.nstep>ubound(timing_records,2)) &
+          error stop 'Buffered RK timing requires an unchanged step window'
+        timing_records(:,nstep)=[rk_prepare_seconds,integration_seconds,total_seconds]
+        timing_last=nstep
+      else
+        if(lio) write(*,'(A,1X,I0,3(1X,ES24.16E3))')                  &
+          'ASTR_GPU_RK_TIMING',nstep,rk_prepare_seconds,              &
+          integration_seconds,total_seconds
+        if(rank_rk_timing_enabled) write(*,'(A,2(1X,I0),3(1X,ES24.16E3))') &
+          'ASTR_GPU_RANK_RK_TIMING',mpirank,nstep,rk_prepare_seconds, &
+          integration_seconds,total_seconds
+      endif
     endif
 #ifdef ASTR_BUILD_TESTING
     ! Read-only complete-state admission, outside the measured RK interval.
@@ -409,11 +478,12 @@ contains
     use gradcal_gpu, only: compute_gradcal_gpu
     use statistic_gpu, only: gpu_write_kenergy,gpu_write_enstophy, &
                              gpu_write_dissipation,gpu_write_flowstate, &
-                             gpu_kenergy_scalar,gpu_enstophy_scalar,gpu_dissipation_scalar
+                             gpu_kenergy_scalar,gpu_enstophy_scalar,gpu_dissipation_scalar,gpu_write_tgv_conservation
     implicit none
-    real(8) :: statistics(3)
+    real(real_kind) :: statistics(3)
 
     call compute_gradcal_gpu()
+    if(tgv_conservation) call gpu_write_tgv_conservation()
     if(nstep<=0.or.nstep>maxstep) return
     call gpu_kenergy_scalar(statistics(1))
     call gpu_enstophy_scalar(statistics(2))
@@ -425,12 +495,14 @@ contains
   end subroutine gpu_write_tgv_statistics
 
   subroutine gpu_write_flow_statistics()
-    use commvar, only: flowtype
+    use commvar, only: flowtype,nstep
     use gradcal_gpu, only: compute_gradcal_gpu
     use statistic_gpu, only: gpu_write_channel_flowstate,gpu_write_s1_bl_flowstate, &
                              gpu_write_generic_flowstate
     implicit none
 
+    if(statistics_interval==0) return
+    if(mod(nstep,statistics_interval)/=0) return
     if(trim(flowtype) == 'tgv' .or. trim(flowtype) == 'hit') then
       call gpu_write_tgv_statistics()
     elseif(trim(flowtype) == 'channel') then

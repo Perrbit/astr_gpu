@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
+#include <limits>
+#include "astr_precision.h"
 
 #ifdef __CUDACC__
 #define ASTR_PLANE_EXEC __host__ __device__
@@ -13,17 +15,22 @@
 #endif
 
 namespace astr_insitu {
+using Real=astr::numerical_real;
 namespace plane_geometry {
+constexpr Real real_max=std::numeric_limits<Real>::max();
+constexpr Real real_min=std::numeric_limits<Real>::min();
+constexpr Real real_epsilon=std::numeric_limits<Real>::epsilon();
+constexpr int product_min_exponent=std::numeric_limits<Real>::min_exponent+std::numeric_limits<Real>::digits;
 
 struct Point {
-  double values[3];
-  ASTR_PLANE_EXEC double& operator[](int d) {return values[d];}
-  ASTR_PLANE_EXEC double operator[](int d) const {return values[d];}
+  Real values[3];
+  ASTR_PLANE_EXEC Real& operator[](int d) {return values[d];}
+  ASTR_PLANE_EXEC Real operator[](int d) const {return values[d];}
 };
 struct Plane {Point origin,normal;};
 struct Vertex {Point position;std::int64_t id;};
 enum class Status : int {ok=0,invalid=1,range=2};
-struct SignedDistance {double value=0.;int sign=0;Status status=Status::ok;bool exact=false;};
+struct SignedDistance {Real value=0;int sign=0;Status status=Status::ok;bool exact=false;};
 struct Key {
   std::int64_t first=0,second=0;
   ASTR_PLANE_EXEC bool operator==(const Key& other) const {
@@ -33,7 +40,7 @@ struct Key {
     return first<other.first || (first==other.first && second<other.second);
   }
 };
-struct Intersection {Point position{};Key key{};double fraction=0.;};
+struct Intersection {Point position{};Key key{};Real fraction=0;};
 struct Cut {
   Intersection vertices[4]{};
   int indices[6]{},points=0,triangles=0;
@@ -42,79 +49,79 @@ struct Cut {
 };
 
 inline Plane make_plane(const Point& origin,const Point& normal) {
-  double scale=0.;int axis=0;
+  Real scale=0;int axis=0;
   for(int d=0;d<3;++d) {
     if(!std::isfinite(origin[d]) || !std::isfinite(normal[d]))
       throw std::invalid_argument("Nonfinite physical plane");
     if(std::abs(normal[d])>scale) {scale=std::abs(normal[d]);axis=d;}
   }
-  if(scale==0.) throw std::invalid_argument("Zero physical plane normal");
+  if(scale==0) throw std::invalid_argument("Zero physical plane normal");
   Plane result{origin,{}};
-  double squared=0.;
+  Real squared=0;
   for(int d=0;d<3;++d) {
     result.normal[d]=normal[d]/scale;
-    if(normal[d]!=0. && result.normal[d]==0.)
+    if(normal[d]!=0 && result.normal[d]==0)
       throw std::invalid_argument("Physical plane normal component is not representable");
     squared+=result.normal[d]*result.normal[d];
   }
-  const double length=std::sqrt(squared),direction=normal[axis]<0.?-1.:1.;
+  const Real length=std::sqrt(squared),direction=normal[axis]<0?-1:1;
   for(int d=0;d<3;++d) {
     result.normal[d]=(result.normal[d]/length)*direction;
-    if(normal[d]!=0. && result.normal[d]==0.)
+    if(normal[d]!=0 && result.normal[d]==0)
       throw std::invalid_argument("Unit plane normal component is not representable");
-    if(result.normal[d]==0.) result.normal[d]=0.;
+    if(result.normal[d]==0) result.normal[d]=0;
   }
   return result;
 }
 
-ASTR_PLANE_EXEC inline bool finite(double x) {return x==x && ::fabs(x)<=DBL_MAX;}
-ASTR_PLANE_EXEC inline int sign(double x) {return (x>0.)-(x<0.);}
+ASTR_PLANE_EXEC inline bool finite(Real x) {return x==x && std::abs(x)<=real_max;}
+ASTR_PLANE_EXEC inline int sign(Real x) {return (x>0)-(x<0);}
 
 // Error-free transforms require round-to-nearest, no fast-math or implicit FMA.
-ASTR_PLANE_EXEC inline void two_sum(double a,double b,double& sum,double& error) {
+ASTR_PLANE_EXEC inline void two_sum(Real a,Real b,Real& sum,Real& error) {
   sum=a+b;
-  const double bv=sum-a,av=sum-bv,br=b-bv,ar=a-av;
+  const Real bv=sum-a,av=sum-bv,br=b-bv,ar=a-av;
   error=ar+br;
 }
-ASTR_PLANE_EXEC inline void two_diff(double a,double b,double& difference,double& error) {
+ASTR_PLANE_EXEC inline void two_diff(Real a,Real b,Real& difference,Real& error) {
   difference=a-b;
-  const double bv=a-difference,av=difference+bv,br=bv-b,ar=a-av;
+  const Real bv=a-difference,av=difference+bv,br=bv-b,ar=a-av;
   error=ar+br;
 }
 
 struct Expansion {
-  double values[32]{};
+  Real values[32]{};
   int size=0;
   Status status=Status::ok;
-  ASTR_PLANE_EXEC void add(double term) {
+  ASTR_PLANE_EXEC void add(Real term) {
     if(!finite(term)) {status=Status::range;return;}
-    double result[32]{},q=term;
+    Real result[32]{},q=term;
     int count=0;
     for(int i=0;i<size;++i) {
-      double next,error;two_sum(q,values[i],next,error);
+      Real next,error;two_sum(q,values[i],next,error);
       if(!finite(next) || !finite(error)) {status=Status::range;return;}
-      if(error!=0.) {
+      if(error!=0) {
         if(count==32) {status=Status::range;return;}
         result[count++]=error;
       }
       q=next;
     }
-    if(q!=0.) {
+    if(q!=0) {
       if(count==32) {status=Status::range;return;}
       result[count++]=q;
     }
     size=count;for(int i=0;i<count;++i) values[i]=result[i];
   }
-  ASTR_PLANE_EXEC void product(double a,double b,double direction=1.) {
-    if(a==0. || b==0.) return;
-    int ea=0,eb=0;::frexp(a,&ea);::frexp(b,&eb);
-    // The lowest product bit of two 53-bit significands must be representable.
-    if(ea+eb<-968) {status=Status::range;return;}
-    const double rounded=a*b;
-    // A lost underflow residual cannot be certified by an FP64 expansion.
-    if(!finite(rounded) || ::fabs(rounded)<DBL_MIN) {status=Status::range;return;}
-    const double error=::fma(a,b,-rounded);
-    if(!finite(error) || (error!=0. && ::fabs(error)<DBL_MIN)) {status=Status::range;return;}
+  ASTR_PLANE_EXEC void product(Real a,Real b,Real direction=1) {
+    if(a==0 || b==0) return;
+    int ea=0,eb=0;std::frexp(a,&ea);std::frexp(b,&eb);
+    // The lowest product bit of two native significands must be representable.
+    if(ea+eb<product_min_exponent) {status=Status::range;return;}
+    const Real rounded=a*b;
+    // A lost underflow residual cannot be certified by this native expansion.
+    if(!finite(rounded) || std::abs(rounded)<real_min) {status=Status::range;return;}
+    const Real error=std::fma(a,b,-rounded);
+    if(!finite(error) || (error!=0 && std::abs(error)<real_min)) {status=Status::range;return;}
     add(direction*error);add(direction*rounded);
   }
   ASTR_PLANE_EXEC SignedDistance result() const {
@@ -123,32 +130,32 @@ struct Expansion {
     output.sign=sign(values[size-1]);
     for(int i=0;i<size;++i) output.value+=values[i];
     if(!finite(output.value)) {output.status=Status::range;return output;}
-    if(output.value==0.) output.value=values[size-1];
+    if(output.value==0) output.value=values[size-1];
     return output;
   }
 };
 
 ASTR_PLANE_EXEC inline SignedDistance plane_distance(const Plane& plane,const Point& point) {
   SignedDistance result{};
-  double scale=0.,value=0.;bool underflow=false;
+  Real scale=0,value=0;bool underflow=false;
   for(int d=0;d<3;++d) {
     if(!finite(point[d]) || !finite(plane.origin[d]) || !finite(plane.normal[d])) {
       result.status=Status::invalid;return result;
     }
-    const double difference=point[d]-plane.origin[d],term=plane.normal[d]*difference;
+    const Real difference=point[d]-plane.origin[d],term=plane.normal[d]*difference;
     if(!finite(difference) || !finite(term)) {result.status=Status::range;return result;}
-    underflow=underflow || (difference!=0. && plane.normal[d]!=0. && ::fabs(term)<DBL_MIN);
+    underflow=underflow || (difference!=0 && plane.normal[d]!=0 && std::abs(term)<real_min);
     value+=term;
-    scale+=::fabs(plane.normal[d])*::fabs(point[d])+::fabs(plane.normal[d])*::fabs(plane.origin[d]);
+    scale+=std::abs(plane.normal[d])*std::abs(point[d])+std::abs(plane.normal[d])*std::abs(plane.origin[d]);
   }
   if(!finite(value) || !finite(scale)) {result.status=Status::range;return result;}
-  const double bound=16.*DBL_EPSILON*scale+4.*DBL_MIN;
-  if(!underflow && ::fabs(value)>bound) {
+  const Real bound=16*real_epsilon*scale+4*real_min;
+  if(!underflow && std::abs(value)>bound) {
     result.value=value;result.sign=sign(value);return result;
   }
   Expansion exact;
   for(int d=0;d<3;++d) {
-    double difference,error;two_diff(point[d],plane.origin[d],difference,error);
+    Real difference,error;two_diff(point[d],plane.origin[d],difference,error);
     exact.product(plane.normal[d],error);exact.product(plane.normal[d],difference);
   }
   return exact.result();
@@ -156,27 +163,27 @@ ASTR_PLANE_EXEC inline SignedDistance plane_distance(const Plane& plane,const Po
 
 ASTR_PLANE_EXEC inline int dominant_axis(const Plane& plane) {
   int axis=0;
-  for(int d=1;d<3;++d) if(::fabs(plane.normal[d])>::fabs(plane.normal[axis])) axis=d;
+  for(int d=1;d<3;++d) if(std::abs(plane.normal[d])>std::abs(plane.normal[axis])) axis=d;
   return axis;
 }
 
 ASTR_PLANE_EXEC inline SignedDistance orientation(const Plane& plane,const Point& a,
     const Point& b,const Point& c) {
   const int axis=dominant_axis(plane),u=(axis+1)%3,v=(axis+2)%3;
-  double bu[2],bv[2],cu[2],cv[2];
+  Real bu[2],bv[2],cu[2],cv[2];
   two_diff(b[u],a[u],bu[0],bu[1]);two_diff(b[v],a[v],bv[0],bv[1]);
   two_diff(c[u],a[u],cu[0],cu[1]);two_diff(c[v],a[v],cv[0],cv[1]);
   Expansion exact;
   for(int i=0;i<2;++i) for(int j=0;j<2;++j) {
-    exact.product(bu[i],cv[j]);exact.product(bv[i],cu[j],-1.);
+    exact.product(bu[i],cv[j]);exact.product(bv[i],cu[j],-1);
   }
   auto result=exact.result();
-  if(plane.normal[axis]<0.) {result.value=-result.value;result.sign=-result.sign;}
+  if(plane.normal[axis]<0) {result.value=-result.value;result.sign=-result.sign;}
   return result;
 }
 
 ASTR_PLANE_EXEC inline Status tetrahedron_range(const Vertex* vertices,int* orientation=nullptr) {
-  double edge[3][3],scale=0.;
+  Real edge[3][3],scale=0;
   for(int i=0;i<4;++i) {
     if(vertices[i].id<0) return Status::invalid;
     for(int j=0;j<i;++j) if(vertices[i].id==vertices[j].id) return Status::invalid;
@@ -185,17 +192,17 @@ ASTR_PLANE_EXEC inline Status tetrahedron_range(const Vertex* vertices,int* orie
   for(int i=0;i<3;++i) for(int d=0;d<3;++d) {
     edge[i][d]=vertices[i+1].position[d]-vertices[0].position[d];
     if(!finite(edge[i][d])) return Status::range;
-    if(::fabs(edge[i][d])>scale) scale=::fabs(edge[i][d]);
+    if(std::abs(edge[i][d])>scale) scale=std::abs(edge[i][d]);
   }
-  if(scale==0.) return Status::invalid;
+  if(scale==0) return Status::invalid;
   for(int i=0;i<3;++i) for(int d=0;d<3;++d) edge[i][d]/=scale;
-  const double terms[6]={edge[0][0]*edge[1][1]*edge[2][2],edge[0][1]*edge[1][2]*edge[2][0],
+  const Real terms[6]={edge[0][0]*edge[1][1]*edge[2][2],edge[0][1]*edge[1][2]*edge[2][0],
     edge[0][2]*edge[1][0]*edge[2][1],edge[0][2]*edge[1][1]*edge[2][0],
     edge[0][1]*edge[1][0]*edge[2][2],edge[0][0]*edge[1][2]*edge[2][1]};
-  double determinant=0.,permanent=0.;
-  for(int i=0;i<6;++i) {determinant+=(i<3?terms[i]:-terms[i]);permanent+=::fabs(terms[i]);}
+  Real determinant=0,permanent=0;
+  for(int i=0;i<6;++i) {determinant+=(i<3?terms[i]:-terms[i]);permanent+=std::abs(terms[i]);}
   // Unresolved or collapsed cells are rejected, never silently repaired.
-  if(::fabs(determinant)<=64.*DBL_EPSILON*permanent || !finite(determinant)) return Status::range;
+  if(std::abs(determinant)<=64*real_epsilon*permanent || !finite(determinant)) return Status::range;
   if(orientation) *orientation=sign(determinant);
   return Status::ok;
 }
@@ -221,12 +228,12 @@ ASTR_PLANE_EXEC inline Cut cut_tetrahedron(const Plane& plane,const Vertex* vert
   for(int i=0;i<4;++i) for(int j=i+1;j<4;++j) {
     if(distance[i].sign*distance[j].sign>=0) continue;
     const int lo=vertices[i].id<vertices[j].id?i:j,hi=lo==i?j:i;
-    const double a=::fabs(distance[lo].value),b=::fabs(distance[hi].value),scale=a>b?a:b;
-    const double denominator=a/scale+b/scale,t=(a/scale)/denominator;
-    if(!finite(t) || t<=0. || t>=1.) {cut.status=Status::range;return cut;}
+    const Real a=std::abs(distance[lo].value),b=std::abs(distance[hi].value),scale=a>b?a:b;
+    const Real denominator=a/scale+b/scale,t=(a/scale)/denominator;
+    if(!finite(t) || t<=0 || t>=1) {cut.status=Status::range;return cut;}
     Intersection p{};p.key={vertices[lo].id,vertices[hi].id};p.fraction=t;
     for(int d=0;d<3;++d) {
-      const double delta=vertices[hi].position[d]-vertices[lo].position[d];
+      const Real delta=vertices[hi].position[d]-vertices[lo].position[d];
       p.position[d]=vertices[lo].position[d]+t*delta;
       if(!finite(delta) || !finite(p.position[d])) {cut.status=Status::range;return cut;}
     }

@@ -1,13 +1,18 @@
 module insitu_products_gpu
+  use iso_fortran_env, only: int32,int64
+  use astr_precision, only: real_kind,c_real_kind,real_bytes,clock_kind,real_to_word,word_to_real
+  use astr_precision_mpi, only: mpi_real_type
   use cudafor
   implicit none
+  private :: real_kind,c_real_kind,real_bytes,clock_kind,real_to_word,word_to_real,mpi_real_type
   private
+  integer,parameter :: state_bits_kind=merge(int32,int64,real_bytes==4)
   public :: render_device_sample_gpu
   public :: render_device_walls_gpu
   public :: render_device_plane_gpu
 #ifdef ASTR_BUILD_TESTING
   public :: begin_preview_state_check,end_preview_state_check
-  real(8),allocatable,device,save :: preview_flow_d(:,:,:,:)
+  real(real_kind),allocatable,device,save :: preview_flow_d(:,:,:,:)
 #endif
 contains
 #ifdef ASTR_BUILD_TESTING
@@ -23,7 +28,7 @@ contains
     integer(int64) :: required
     integer(c_size_t) :: free_bytes,total_bytes
     integer :: status
-    required=8_int64*int(im+2*hm+1,int64)*int(jm+2*hm+1,int64)*int(km+2*hm+1,int64)*11
+    required=int(real_bytes,int64)*int(im+2*hm+1,int64)*int(jm+2*hm+1,int64)*int(km+2*hm+1,int64)*11
     required=required+statistics_device_bytes()
     status=cudaMemGetInfo(free_bytes,total_bytes)
     call checkpoint_state_require(status==cudaSuccess.and.required+statistics_device_bytes()<=budget.and. &
@@ -44,10 +49,10 @@ contains
   attributes(global) subroutine compare_preview_flow(im,jm,km,hm,saved,q,rho,vel,prs,tmp,bad)
     use iso_fortran_env, only: int64
     integer,value :: im,jm,km,hm
-    real(8),device,intent(in) :: saved(-hm:im+hm,-hm:jm+hm,-hm:km+hm,11)
-    real(8),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5)
-    real(8),device,intent(in) :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm),prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
-    real(8),device,intent(in) :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm),vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(real_kind),device,intent(in) :: saved(-hm:im+hm,-hm:jm+hm,-hm:km+hm,11)
+    real(real_kind),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5)
+    real(real_kind),device,intent(in) :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm),prs(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device,intent(in) :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm),vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
     integer,device :: bad(*)
     integer :: n,n1,n2,n3,i,j,k,c,old
     logical :: mismatch
@@ -56,14 +61,14 @@ contains
     if(n>=n1*n2*n3) return
     i=mod(n,n1)-hm;j=mod(n/n1,n2)-hm;k=n/(n1*n2)-hm
     ! Unused physical halos may contain saved NaNs; compare their storage exactly.
-    mismatch=transfer(rho(i,j,k),0_int64)/=transfer(saved(i,j,k,6),0_int64).or. &
-      transfer(prs(i,j,k),0_int64)/=transfer(saved(i,j,k,10),0_int64).or. &
-      transfer(tmp(i,j,k),0_int64)/=transfer(saved(i,j,k,11),0_int64)
+    mismatch=transfer(rho(i,j,k),0_state_bits_kind)/=transfer(saved(i,j,k,6),0_state_bits_kind).or. &
+      transfer(prs(i,j,k),0_state_bits_kind)/=transfer(saved(i,j,k,10),0_state_bits_kind).or. &
+      transfer(tmp(i,j,k),0_state_bits_kind)/=transfer(saved(i,j,k,11),0_state_bits_kind)
     do c=1,5
-      mismatch=mismatch.or.transfer(q(i,j,k,c),0_int64)/=transfer(saved(i,j,k,c),0_int64)
+      mismatch=mismatch.or.transfer(q(i,j,k,c),0_state_bits_kind)/=transfer(saved(i,j,k,c),0_state_bits_kind)
     enddo
     do c=1,3
-      mismatch=mismatch.or.transfer(vel(i,j,k,c),0_int64)/=transfer(saved(i,j,k,c+6),0_int64)
+      mismatch=mismatch.or.transfer(vel(i,j,k,c),0_state_bits_kind)/=transfer(saved(i,j,k,c+6),0_state_bits_kind)
     enddo
     if(mismatch) old=atomicadd(bad(1),1)
   end subroutine
@@ -94,7 +99,7 @@ contains
     use mpi
     use checkpoint_state_io, only: checkpoint_state_require
 #ifdef ASTR_INSITU_DEVICE_PRODUCTS
-    use iso_c_binding, only: c_int,c_double,c_char,c_null_char,c_int64_t
+    use iso_c_binding, only: c_int,c_char,c_null_char,c_int64_t
     use commvar, only: im,jm,km,hm
     use commarray_gpu, only: x_d
     use parallel, only: ig0,jg0,kg0,mpirank
@@ -105,13 +110,13 @@ contains
 #endif
     character(*),intent(in) :: mode,pipeline,backend,script
     integer,intent(in) :: step
-    real(8),intent(in) :: t,origin(3),normal(3)
+    real(real_kind),intent(in) :: t,origin(3),normal(3)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
 #ifdef ASTR_INSITU_DEVICE_PRODUCTS
-    real(8),device,allocatable :: velocity(:,:),halo(:,:,:,:),derived(:,:),coordinates(:,:)
+    real(real_kind),device,allocatable :: velocity(:,:),halo(:,:,:,:),derived(:,:),coordinates(:,:)
     integer(int64) :: host_slots,device_slots,d2h,h2d,exchanges,retained
     integer :: status,generation
-    real(8) :: started
+    real(clock_kind) :: started
     interface
       subroutine range_push(stage) bind(C,name='astr_insitu_device_range_push')
         import c_int
@@ -121,11 +126,11 @@ contains
       end subroutine
       integer(c_int) function render_plane(pipeline,backend,script,comm,step,t,nx,ny,nz,ox,oy,oz,xyz,velocity, &
           origin,normal,budget,reserve,retained,host) bind(C,name='astr_insitu_device_render_plane')
-        import c_int,c_double,c_char,c_devptr,c_int64_t
+        import c_int,c_real_kind,c_char,c_devptr,c_int64_t
         character(c_char),intent(in) :: pipeline(*),backend(*),script(*)
         integer(c_int),value :: comm,step,nx,ny,nz,ox,oy,oz
-        real(c_double),value :: t
-        real(c_double),intent(in) :: origin(3),normal(3)
+        real(c_real_kind),value :: t
+        real(c_real_kind),intent(in) :: origin(3),normal(3)
         type(c_devptr),value :: xyz,velocity
         integer(c_int64_t),value :: budget,reserve,retained,host
       end function
@@ -136,11 +141,11 @@ contains
       retained_other=statistics_device_bytes())
     deallocate(halo,derived)
     call snapshot_sample_coordinates_gpu(x_d,coordinates,[im,jm,km],hm,MPI_COMM_WORLD,device_budget,reserve, &
-      8*size(velocity,kind=int64))
+      real_bytes*size(velocity,kind=int64))
     call range_pop()
     call report_insitu_timing('device_plane_sample_inclusive',started,step)
     call velocity_transport_usage_gpu(host_slots,device_slots,d2h,h2d,exchanges,generation)
-    retained=device_slots+8*(size(coordinates,kind=int64)+size(velocity,kind=int64))
+    retained=device_slots+real_bytes*(size(coordinates,kind=int64)+size(velocity,kind=int64))
     started=insitu_clock()
     call range_push(6_c_int)
     status=render_plane(trim(pipeline)//c_null_char,trim(backend)//c_null_char,trim(script)//c_null_char, &
@@ -164,7 +169,7 @@ contains
     use mpi
     use checkpoint_state_io, only: checkpoint_state_require
 #ifdef ASTR_INSITU_DEVICE_PRODUCTS
-    use iso_c_binding, only: c_int,c_double,c_char,c_null_char,c_int64_t
+    use iso_c_binding, only: c_int,c_char,c_null_char,c_int64_t
     use commvar, only: im,km,lreadgrid
     use parallel, only: mpirank
     use insitu_sample_gpu, only: capture_device_channel_walls_gpu,capture_device_air5_walls_gpu
@@ -175,14 +180,14 @@ contains
 #endif
     character(*),intent(in) :: profile,mode,pipeline,backend,script
     integer,intent(in) :: step
-    real(8),intent(in) :: t,duration,window(2)
+    real(real_kind),intent(in) :: t,duration,window(2)
     logical,intent(in) :: mean_requested
     integer(int64),intent(in) :: host_budget,device_budget,reserve
 #ifdef ASTR_INSITU_DEVICE_PRODUCTS
-    real(8),device,allocatable :: coordinates(:,:,:,:),fields(:,:,:,:),means(:,:,:,:)
+    real(real_kind),device,allocatable :: coordinates(:,:,:,:),fields(:,:,:,:),means(:,:,:,:)
     integer(int64) :: host_slots,device_slots,d2h,h2d,exchanges,retained
     integer :: status,generation,wall_kind
-    real(8) :: started
+    real(clock_kind) :: started
     type(c_devptr) :: mean_pointer
     logical :: covered
     interface
@@ -195,10 +200,10 @@ contains
       integer(c_int) function render_walls(pipeline,backend,script,comm,step,t,im,km,nw,wall_kind,xyz,fields, &
           mean_requested,covered,duration,window_start,window_end,means,budget,reserve,retained) &
           bind(C,name='astr_insitu_device_render_walls')
-        import c_int,c_double,c_char,c_devptr,c_int64_t
+        import c_int,c_real_kind,c_char,c_devptr,c_int64_t
         character(c_char),intent(in) :: pipeline(*),backend(*),script(*)
         integer(c_int),value :: comm,step,im,km,nw,wall_kind,mean_requested,covered
-        real(c_double),value :: t,duration,window_start,window_end
+        real(c_real_kind),value :: t,duration,window_start,window_end
         type(c_devptr),value :: xyz,fields,means
         integer(c_int64_t),value :: budget,reserve,retained
       end function
@@ -216,8 +221,8 @@ contains
     call range_pop()
     call report_insitu_timing('device_wall_sample_inclusive',started,step)
     call velocity_transport_usage_gpu(host_slots,device_slots,d2h,h2d,exchanges,generation)
-    retained=device_slots+8*(size(coordinates,kind=int64)+size(fields,kind=int64))
-    covered=mean_requested.and.duration>0.d0
+    retained=device_slots+real_bytes*(size(coordinates,kind=int64)+size(fields,kind=int64))
+    covered=mean_requested.and.duration>0.e0_real_kind
     mean_pointer=c_devloc(fields)
     if(mean_requested) then
       started=insitu_clock()
@@ -227,7 +232,7 @@ contains
       call report_insitu_timing('device_wall_mean_supply_inclusive',started,step)
       if(covered) then
         mean_pointer=c_devloc(means)
-        retained=retained+8*size(means,kind=int64)
+        retained=retained+real_bytes*size(means,kind=int64)
         call wall_mean_test_oracle(means,step,t,duration,window,host_budget)
       endif
     endif
@@ -258,14 +263,14 @@ contains
     use mpi
     use parallel, only: mpirank
     use checkpoint_state_io, only: checkpoint_state_require
-    real(8),device,contiguous,intent(in) :: means(:,:,:,:)
+    real(real_kind),device,contiguous,intent(in) :: means(:,:,:,:)
     integer,intent(in) :: step
-    real(8),intent(in) :: time,duration,window(2)
+    real(real_kind),intent(in) :: time,duration,window(2)
     integer(int64),intent(in) :: host_budget
     character(1024) :: prefix
     integer :: status,length
 #ifdef ASTR_BUILD_TESTING
-    real(8),allocatable :: values(:,:,:,:)
+    real(real_kind),allocatable :: values(:,:,:,:)
     character(1200) :: filename
     integer :: unit,closed,nf
     integer(int64) :: bytes
@@ -275,7 +280,7 @@ contains
     if(status==1.or.length==0) return
 #ifdef ASTR_BUILD_TESTING
     nf=3; if(size(means,4)==18) nf=18
-    bytes=8_int64*size(means,1)*size(means,2)*size(means,3)*nf
+    bytes=int(real_bytes,int64)*size(means,1)*size(means,2)*size(means,3)*nf
     call checkpoint_state_require(bytes<=min(host_budget,1048576_int64),MPI_COMM_WORLD,'wall mean oracle budget')
     allocate(values(size(means,1),size(means,2),size(means,3),nf),stat=status)
     call checkpoint_state_require(status==0,MPI_COMM_WORLD,'wall mean oracle allocation')
@@ -300,7 +305,7 @@ contains
 #ifdef ASTR_INSITU_DEVICE_PRODUCTS
   subroutine render_m12_local_planes_gpu(mode,pipeline,backend,script,step,t,host_budget,device_budget,reserve)
     use iso_fortran_env, only: int64
-    use iso_c_binding, only: c_int,c_double,c_char,c_null_char,c_int64_t
+    use iso_c_binding, only: c_int,c_char,c_null_char,c_int64_t
     use mpi
     use commvar, only: im,jm,km,ia,ja,ka
     use parallel, only: ig0,mpirank
@@ -315,12 +320,12 @@ contains
     use benchmark_runtime, only: insitu_clock,report_insitu_timing
     character(*),intent(in) :: mode,pipeline,backend,script
     integer,intent(in) :: step
-    real(8),intent(in) :: t
+    real(real_kind),intent(in) :: t
     integer(int64),intent(in) :: host_budget,device_budget,reserve
-    real(8),device,allocatable :: positions(:,:),fields(:,:)
+    real(real_kind),device,allocatable :: positions(:,:),fields(:,:)
     integer(int64) :: host_slots,device_slots,d2h,h2d,exchanges,retained
     integer :: status,generation,plane_j
-    real(8) :: started,phase_started,face_times(5)
+    real(clock_kind) :: started,phase_started,face_times(5)
     interface
       subroutine range_push(stage) bind(C,name='astr_insitu_device_range_push')
         import c_int
@@ -330,10 +335,10 @@ contains
       end subroutine
       integer(c_int) function render_planes(pipeline,backend,script,comm,step,t,nx,ny,nz,ox,gy,gz,gx,plane_j, &
           xyz,fields,budget,reserve,retained) bind(C,name='astr_insitu_device_render_m12_planes')
-        import c_int,c_double,c_char,c_devptr,c_int64_t
+        import c_int,c_real_kind,c_char,c_devptr,c_int64_t
         character(c_char),intent(in) :: pipeline(*),backend(*),script(*)
         integer(c_int),value :: comm,step,nx,ny,nz,ox,gy,gz,gx,plane_j
-        real(c_double),value :: t
+        real(c_real_kind),value :: t
         type(c_devptr),value :: xyz,fields
         integer(c_int64_t),value :: budget,reserve,retained
       end function
@@ -344,9 +349,9 @@ contains
     call velocity_transport_usage_gpu(host_slots,device_slots,d2h,h2d,exchanges,generation)
     retained=device_slots+statistics_device_bytes()
     call capture_m12_plane_inputs_gpu(positions,fields,plane_j,device_budget,reserve,retained)
-    retained=retained+8*(size(positions,kind=int64)+size(fields,kind=int64))
+    retained=retained+real_bytes*(size(positions,kind=int64)+size(fields,kind=int64))
 #ifdef ASTR_BUILD_TESTING
-    call trace_sample_memory_gpu('m12-plane-inputs',8_int64*(size(positions,kind=int64)+size(fields,kind=int64)), &
+    call trace_sample_memory_gpu('m12-plane-inputs',int(real_bytes,int64)*(size(positions,kind=int64)+size(fields,kind=int64)), &
       MPI_COMM_WORLD)
 #endif
     call range_pop()
@@ -378,7 +383,7 @@ contains
     use checkpoint_state_io, only: checkpoint_state_require
     use insitu_product_schedule, only: product_scene_due,product_schedules_active
 #ifdef ASTR_INSITU_DEVICE_PRODUCTS
-    use iso_c_binding, only: c_int,c_double,c_char,c_null_char,c_int64_t
+    use iso_c_binding, only: c_int,c_char,c_null_char,c_int64_t
     use commvar, only: im,jm,km,ia,ja,ka,hm,lreadgrid
     use commarray_gpu, only: x_d
     use commarray, only: x
@@ -396,17 +401,18 @@ contains
 #endif
     character(*),intent(in) :: mode,pipeline,backend,script,profile,seed_layout
     integer,intent(in) :: step
-    real(8),intent(in) :: t,window(2)
+    real(real_kind),intent(in) :: t,window(2)
     logical,intent(in) :: statistics,mean_requested
     logical,optional,intent(in) :: require_covered_means
     logical,optional,intent(in) :: preview_flatplate
     integer(int64),intent(in) :: host_budget,device_budget,reserve
 #ifdef ASTR_INSITU_DEVICE_PRODUCTS
-    real(8),device,allocatable :: velocity(:,:),halo(:,:,:,:),derived(:,:),reynolds(:,:),favre(:,:)
-    real(8),device,allocatable :: reynolds_halo(:,:,:,:),favre_halo(:,:,:,:)
-    real(8),device,allocatable :: coordinate_halo(:,:,:,:),temperature(:,:,:,:)
-    real(8),device,pointer,contiguous :: coordinates(:,:)
-    real(8) :: duration,window_end,window_start,started,phase_started,face_times(5)
+    real(real_kind),device,allocatable :: velocity(:,:),halo(:,:,:,:),derived(:,:),reynolds(:,:),favre(:,:)
+    real(real_kind),device,allocatable :: reynolds_halo(:,:,:,:),favre_halo(:,:,:,:)
+    real(real_kind),device,allocatable :: coordinate_halo(:,:,:,:),temperature(:,:,:,:)
+    real(real_kind),device,pointer,contiguous :: coordinates(:,:)
+    real(real_kind) :: duration,window_end,window_start
+    real(clock_kind) :: started,phase_started,face_times(5)
     logical :: covered,lines,want_reynolds,want_favre,physical_coordinates,read_only_bl,compact_q
     character(8) :: audit_option
     type(c_devptr) :: reynolds_pointer,favre_pointer,coordinates_pointer,coordinate_halo_pointer,temperature_pointer
@@ -423,10 +429,10 @@ contains
           velocity,halo,derived,reynolds,favre,covered,duration,wstart,wend,host,curve,xyz,xyz_halo,budget,reserve,retained, &
           seeds,temperature,plane_j,diagnostic_components) &
           bind(C,name='astr_insitu_device_render')
-        import c_int,c_double,c_char,c_devptr,c_int64_t
+        import c_int,c_real_kind,c_char,c_devptr,c_int64_t
         character(c_char),intent(in) :: pipeline(*),backend(*),script(*),profile(*),seeds(*)
         integer(c_int),value :: comm,step,nx,ny,nz,ox,oy,oz,cells,cellsy,cellsz,covered,curve,plane_j,diagnostic_components
-        real(c_double),value :: t,duration,wstart,wend
+        real(c_real_kind),value :: t,duration,wstart,wend
         type(c_devptr),value :: velocity,halo,derived,reynolds,favre,xyz,xyz_halo,temperature
         integer(c_int64_t),value :: host,budget,reserve,retained
       end function
@@ -454,19 +460,19 @@ contains
       m12_diagnostics=profile=='m12_diagnostics',preview_flatplate=read_only_bl,q_only=compact_q, &
       retained_other=statistics_device_bytes(),retain_volume_velocity=profile/='streamlines'.or.pipeline=='compatible')
     coordinates_pointer=c_devloc(velocity);coordinate_halo_pointer=c_devloc(halo)
-    retained=8*(size(velocity,kind=int64)+size(halo,kind=int64)+size(derived,kind=int64))
+    retained=real_bytes*(size(velocity,kind=int64)+size(halo,kind=int64)+size(derived,kind=int64))
     ! The profile case creates its physical grid in userdefine even with lreadgrid=false.
     physical_coordinates=lreadgrid.or.profile=='boundary_layer'.or.profile=='m12_diagnostics'.or.read_only_bl
     if(physical_coordinates) then
       call static_sample_coordinates_gpu(x_d,coordinates,[im,jm,km],[ig0,jg0,kg0],[ia,ja,ka], &
         hm,MPI_COMM_WORLD,device_budget,reserve,retained+statistics_device_bytes())
       coordinates_pointer=c_devloc(coordinates)
-      retained=retained+8*size(coordinates,kind=int64)
+      retained=retained+real_bytes*size(coordinates,kind=int64)
       if(lines) then
         call extend_sample_coordinates_gpu(coordinates,coordinate_halo,[im,jm,km],[ig0,jg0,kg0],[ia,ja,ka], &
-          MPI_COMM_WORLD,device_budget,reserve,retained-8*size(coordinates,kind=int64)+statistics_device_bytes())
+          MPI_COMM_WORLD,device_budget,reserve,retained-real_bytes*size(coordinates,kind=int64)+statistics_device_bytes())
         coordinate_halo_pointer=c_devloc(coordinate_halo)
-        retained=retained+8*size(coordinate_halo,kind=int64)
+        retained=retained+real_bytes*size(coordinate_halo,kind=int64)
       endif
     endif
     call velocity_transport_usage_gpu(host_bytes,device_bytes,d2h,h2d,exchanges,generation)
@@ -475,18 +481,18 @@ contains
     if(profile=='m12_diagnostics'.and.product_scene_due('velocity_slice')) then
       call capture_m12_temperature_gpu(temperature,device_budget,reserve,retained)
       temperature_pointer=c_devloc(temperature)
-      retained=retained+8*size(temperature,kind=int64)
+      retained=retained+real_bytes*size(temperature,kind=int64)
       do plane_j=0,jm-1
-        if(x(0,plane_j+1,0,2)>=1.d0) exit
+        if(x(0,plane_j+1,0,2)>=1.e0_real_kind) exit
       enddo
-      call checkpoint_state_require(plane_j<jm.and.x(0,plane_j,0,2)<=1.d0, &
+      call checkpoint_state_require(plane_j<jm.and.x(0,plane_j,0,2)<=1.e0_real_kind, &
         MPI_COMM_WORLD,'M12 y=1 slice is outside the physical grid')
     endif
     call range_pop()
     call report_insitu_timing('device_sample_inclusive',phase_started,step)
     phase_started=insitu_clock()
     call range_push(2_c_int)
-    covered=.false.;duration=0.d0;window_start=0.d0;window_end=0.d0
+    covered=.false.;duration=0.e0_real_kind;window_start=0.e0_real_kind;window_end=0.e0_real_kind
     ! These addresses are not consumed unless the explicit coverage flag is set.
     reynolds_pointer=c_devloc(halo);favre_pointer=c_devloc(halo)
     want_reynolds=product_scene_due('mean_reynolds_streamlines')
@@ -495,19 +501,19 @@ contains
       product_scene_due('mean_reynolds_streamlines').or.product_scene_due('mean_favre_streamlines'))) then
       call sample_statistics_gpu_mean_vectors(reynolds,favre,covered,duration, &
         want_reynolds,want_favre,retained-device_bytes-sampling_geometry_device_bytes())
-      if(allocated(reynolds)) retained=retained+8*(size(reynolds,kind=int64)+size(favre,kind=int64))
+      if(allocated(reynolds)) retained=retained+real_bytes*(size(reynolds,kind=int64)+size(favre,kind=int64))
       if(covered) then
         if(want_reynolds) then
           call extend_sample_velocity_gpu(reynolds,reynolds_halo,[im,jm,km],MPI_COMM_WORLD,device_budget,reserve, &
-            retained_other=retained-device_bytes-8*size(reynolds,kind=int64)+statistics_device_bytes())
+            retained_other=retained-device_bytes-real_bytes*size(reynolds,kind=int64)+statistics_device_bytes())
           reynolds_pointer=c_devloc(reynolds_halo)
-          retained=retained+8*size(reynolds_halo,kind=int64)
+          retained=retained+real_bytes*size(reynolds_halo,kind=int64)
         endif
         if(want_favre) then
           call extend_sample_velocity_gpu(favre,favre_halo,[im,jm,km],MPI_COMM_WORLD,device_budget,reserve, &
-            retained_other=retained-device_bytes-8*size(favre,kind=int64)+statistics_device_bytes())
+            retained_other=retained-device_bytes-real_bytes*size(favre,kind=int64)+statistics_device_bytes())
           favre_pointer=c_devloc(favre_halo)
-          retained=retained+8*size(favre_halo,kind=int64)
+          retained=retained+real_bytes*size(favre_halo,kind=int64)
         endif
         window_end=min(t,window(2));window_start=window_end-duration
       endif
@@ -523,7 +529,7 @@ contains
     retained=retained+statistics_device_bytes()
 #ifdef ASTR_BUILD_TESTING
     call trace_sample_memory_gpu('frame-inputs',retained,MPI_COMM_WORLD)
-    call trace_sample_memory_gpu('diagnostic-supply',8_int64*size(derived,kind=int64),MPI_COMM_WORLD)
+    call trace_sample_memory_gpu('diagnostic-supply',int(real_bytes,int64)*size(derived,kind=int64),MPI_COMM_WORLD)
 #endif
     status=device_render(trim(pipeline)//c_null_char,trim(backend)//c_null_char,trim(script)//c_null_char, &
       trim(profile)//c_null_char, &

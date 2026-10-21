@@ -40,7 +40,7 @@ def reader_check(directory):
                 for name in [*reference["field_names"], "velocity"]:
                     actual = vtk_to_numpy(block.GetPointData().GetArray(name))
                     expected = reference[label + "_" + name]
-                    if actual.dtype != np.float64 or actual.tobytes() != expected.tobytes():
+                    if actual.dtype != expected.dtype or actual.tobytes() != expected.tobytes():
                         raise AssertionError(f"ParaView field mismatch: {label}/{name}")
     print(json.dumps(dict(status="passed", paraview_version=paraview.__version__)))
 
@@ -84,12 +84,12 @@ def native_frame_reader_check(directory, series=False, lineage=False):
                 raise AssertionError("native frame block inventory mismatch")
             for data, prefix in zip(blocks, prefixes):
                 points = vtk_to_numpy(data.GetPoints().GetData())
-                if points.dtype != np.float64 or points.tobytes() != reference[prefix + "coordinates"].tobytes():
+                if points.dtype != reference[prefix + "coordinates"].dtype or points.tobytes() != reference[prefix + "coordinates"].tobytes():
                     raise AssertionError("native frame coordinates mismatch")
                 for name in [*reference["field_names"], "velocity"]:
                     actual = vtk_to_numpy(data.GetPointData().GetArray(name))
                     expected = reference[prefix + name]
-                    if actual.dtype != np.float64 or actual.tobytes() != expected.tobytes():
+                    if actual.dtype != expected.dtype or actual.tobytes() != expected.tobytes():
                         raise AssertionError(f"native frame field mismatch: {prefix}{name}")
     print(json.dumps(dict(status="passed", frames=len(expected_times), paraview_version=paraview.__version__)))
 

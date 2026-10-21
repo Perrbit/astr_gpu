@@ -1,5 +1,6 @@
 module checkpoint_state_gpu
-  use iso_fortran_env, only: int64,real64
+  use iso_fortran_env, only: int64
+  use astr_precision, only: real_kind,real_bytes
   use cudafor
   use mpi
   use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
@@ -23,7 +24,7 @@ module checkpoint_state_gpu
 #endif
 contains
   attributes(global) subroutine checkpoint_component_kernel(stage,im,jm,km,component,packing)
-    real(real64),device :: stage(:,:,:)
+    real(real_kind),device :: stage(:,:,:)
     integer,value :: im,jm,km,component
     logical,value :: packing
     integer :: i,j,k
@@ -60,13 +61,13 @@ contains
     integer,intent(in) :: global_shape(3),origin(3),cells(3),comm
     type(checkpoint_state_identity),intent(inout) :: identity
     integer(int64),intent(in) :: budget,device_budget
-    real(real64),allocatable :: buffer(:,:,:,:)
-    real(real64),allocatable,device :: stage(:,:,:)
+    real(real_kind),allocatable :: buffer(:,:,:,:)
+    real(real_kind),allocatable,device :: stage(:,:,:)
     integer(int64) :: remaining,stage_bytes
     integer :: component,err
     type(dim3) :: block,grid
     call allocate_checkpoint_buffer(cells,0,5,budget,buffer,remaining,comm)
-    stage_bytes=8_int64*product(int(cells,int64)+1)
+    stage_bytes=int(real_bytes,int64)*product(int(cells,int64)+1)
     if(device_budget>0) call checkpoint_state_require(stage_bytes<=device_budget,comm,'lean checkpoint device pack budget')
     allocate(stage(cells(1)+1,cells(2)+1,cells(3)+1),stat=err)
     call checkpoint_state_require(err==0,comm,'lean checkpoint device pack allocation')
@@ -78,13 +79,13 @@ contains
         buffer(:,:,:,component)=stage
       enddo
     else
-      buffer=0.d0
+      buffer=0.e0_real_kind
     endif
     call checkpoint_state_transfer(path,writing,.false.,global_shape,origin,cells,0,buffer,identity,remaining,comm, &
       role=11,allow_repartition=allow_repartition,restored_exact=restored_exact,repartition_axes=repartition_axes, &
       physical_only=.true.)
     if(.not.writing) then
-      q_d=0.d0
+      q_d=0.e0_real_kind
       do component=1,5
         stage=buffer(:,:,:,component)
         call checkpoint_component_kernel<<<grid,block>>>(stage,cells(1),cells(2),cells(3),component,.false.)
@@ -195,8 +196,8 @@ contains
     integer,intent(in) :: global_shape(3),origin(3),cells(3),halo,comm
     type(checkpoint_state_identity),intent(inout) :: identity
     integer(int64),intent(in) :: budget
-    real(real64),allocatable :: buffer(:,:,:,:),carry_stage(:,:,:,:)
-    real(real64),allocatable :: history_stage(:,:,:)
+    real(real_kind),allocatable :: buffer(:,:,:,:),carry_stage(:,:,:,:)
+    real(real_kind),allocatable :: history_stage(:,:,:)
     integer(int64) :: remaining,metadata(2),expected(2),carry_bytes,nodes
     integer :: extents(3),h,err,d,bytes_per_node
     logical :: permit,matched
@@ -242,7 +243,7 @@ contains
     call sync_gpu_boundary('AIR5 complete-state transfer entry')
     if(writing) then
       buffer(:,:,:,1:11)=q_d
-      buffer(:,:,:,12:22)=0.0_real64
+      buffer(:,:,:,12:22)=0.0_real_kind
       if(air5_compensated) then
         ! Download to a contiguous allocation before placing it inside halo storage.
         carry_stage=air5_carry_d
@@ -256,13 +257,13 @@ contains
       buffer(:,:,:,30:34)=spc_d
       if(air5_history_enabled) then
         history_stage=air5_step_history_d
-        call checkpoint_state_require(all(ieee_is_finite(history_stage)).and.all(history_stage>=0.0_real64), &
+        call checkpoint_state_require(all(ieee_is_finite(history_stage)).and.all(history_stage>=0.0_real_kind), &
           comm,'AIR5 invalid device step history')
-        buffer(:,:,:,35)=0.0_real64
+        buffer(:,:,:,35)=0.0_real_kind
         buffer(h:h+cells(1),h:h+cells(2),h:h+cells(3),35)=history_stage
       endif
     else
-      buffer=0.0_real64
+      buffer=0.0_real_kind
     endif
     call checkpoint_state_transfer(path,writing,.true.,global_shape,origin,cells,halo, &
       buffer,identity,remaining,comm,role=7,metadata=metadata,allow_repartition=permit,restored_exact=matched, &
@@ -287,7 +288,7 @@ contains
       spc_d=buffer(:,:,:,30:34)
       if(air5_history_enabled) then
         history_stage=buffer(h:h+cells(1),h:h+cells(2),h:h+cells(3),35)
-        call checkpoint_state_require(all(ieee_is_finite(history_stage)).and.all(history_stage>=0.0_real64), &
+        call checkpoint_state_require(all(ieee_is_finite(history_stage)).and.all(history_stage>=0.0_real_kind), &
           comm,'AIR5 invalid restored step history')
         air5_step_history_d=history_stage
       endif
@@ -296,22 +297,25 @@ contains
   end subroutine
 #endif
   subroutine checkpoint_perfect_gas_gpu(path,writing,global_shape,origin,cells,halo,identity,budget,comm, &
-                                       allow_repartition,restored_exact,refresh_halos,repartition_axes)
+                                       allow_repartition,restored_exact,refresh_halos,repartition_axes,exact)
     character(*),intent(in) :: path
     logical,intent(in) :: writing
     logical,optional,intent(in) :: allow_repartition
+    logical,optional,intent(in) :: exact
     logical,optional,intent(in) :: repartition_axes(3)
     logical,optional,intent(out) :: restored_exact
     procedure(checkpoint_halo_refresh),optional :: refresh_halos
     integer,intent(in) :: global_shape(3),origin(3),cells(3),halo,comm
     type(checkpoint_state_identity),intent(inout) :: identity
     integer(int64),intent(in) :: budget
-    real(real64),allocatable :: buffer(:,:,:,:)
+    real(real_kind),allocatable :: buffer(:,:,:,:)
     integer(int64) :: remaining
     integer :: extents(3)
-    logical :: permit,matched
+    logical :: permit,matched,restore_exact
     permit=.false.
     if(present(allow_repartition)) permit=allow_repartition
+    restore_exact=.true.
+    if(present(exact)) restore_exact=exact
     call checkpoint_state_require(allocated(q_d).and.allocated(rho_d).and.allocated(vel_d).and. &
       allocated(prs_d).and.allocated(tmp_d),comm,'device state not initialized')
     call allocate_checkpoint_buffer(cells,halo,11,budget,buffer,remaining,comm)
@@ -327,9 +331,9 @@ contains
       buffer(:,:,:,10)=prs_d
       buffer(:,:,:,11)=tmp_d
     else
-      buffer=0.d0
+      buffer=0.e0_real_kind
     endif
-    call checkpoint_state_transfer(path,writing,.true.,global_shape,origin,cells,halo, &
+    call checkpoint_state_transfer(path,writing,restore_exact,global_shape,origin,cells,halo, &
       buffer,identity,remaining,comm,role=2,allow_repartition=permit,restored_exact=matched, &
       repartition_axes=repartition_axes)
     if(present(restored_exact)) restored_exact=matched

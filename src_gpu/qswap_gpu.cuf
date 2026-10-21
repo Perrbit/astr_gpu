@@ -1,13 +1,15 @@
 module qswap_gpu
+  use astr_precision, only: real_kind
   use cudafor
   implicit none
+  private :: real_kind
 contains
   attributes(global) subroutine qswap_x_kernel(im,jm,km,hm,numq)
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,numq
     integer :: id,j,k,m,h,nplane
-    real(8) :: avg
+    real(real_kind) :: avg
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (jm + 1) * (km + 1)
@@ -20,7 +22,7 @@ contains
         q_d(-h,j,k,m) = q_d(im-h,j,k,m)
         q_d(im+h,j,k,m) = q_d(h,j,k,m)
       enddo
-      avg = 0.5d0 * (q_d(0,j,k,m) + q_d(im,j,k,m))
+      avg = 0.5e0_real_kind * (q_d(0,j,k,m) + q_d(im,j,k,m))
       q_d(0,j,k,m) = avg
       q_d(im,j,k,m) = avg
     enddo
@@ -31,7 +33,7 @@ contains
     implicit none
     integer,value :: im,jm,km,hm,numq
     integer :: id,i,k,m,h,nplane
-    real(8) :: avg
+    real(real_kind) :: avg
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (im + 1) * (km + 1)
@@ -44,7 +46,7 @@ contains
         q_d(i,-h,k,m) = q_d(i,jm-h,k,m)
         q_d(i,jm+h,k,m) = q_d(i,h,k,m)
       enddo
-      avg = 0.5d0 * (q_d(i,0,k,m) + q_d(i,jm,k,m))
+      avg = 0.5e0_real_kind * (q_d(i,0,k,m) + q_d(i,jm,k,m))
       q_d(i,0,k,m) = avg
       q_d(i,jm,k,m) = avg
     enddo
@@ -55,7 +57,7 @@ contains
     implicit none
     integer,value :: im,jm,km,hm,numq
     integer :: id,i,j,m,h,nplane
-    real(8) :: avg
+    real(real_kind) :: avg
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (im + 1) * (jm + 1)
@@ -68,7 +70,7 @@ contains
         q_d(i,j,-h,m) = q_d(i,j,km-h,m)
         q_d(i,j,km+h,m) = q_d(i,j,h,m)
       enddo
-      avg = 0.5d0 * (q_d(i,j,0,m) + q_d(i,j,km,m))
+      avg = 0.5e0_real_kind * (q_d(i,j,0,m) + q_d(i,j,km,m))
       q_d(i,j,0,m) = avg
       q_d(i,j,km,m) = avg
     enddo
@@ -78,9 +80,9 @@ contains
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),value :: const2,const6
+    real(real_kind),value :: const2,const6
     integer :: id,i,j,k,ni,nj,nk
-    real(8) :: den,u1,u2,u3,pres,ke
+    real(real_kind) :: den,u1,u2,u3,pres,ke
 
     ni = im + 2*hm + 1
     nj = jm + 2*hm + 1
@@ -96,7 +98,7 @@ contains
     u1 = q_d(i,j,k,2) / den
     u2 = q_d(i,j,k,3) / den
     u3 = q_d(i,j,k,4) / den
-    ke = 0.5d0 * den * (u1*u1 + u2*u2 + u3*u3)
+    ke = 0.5e0_real_kind * den * (u1*u1 + u2*u2 + u3*u3)
     pres = (q_d(i,j,k,5) - ke) / const6
     rho_d(i,j,k) = den
     vel_d(i,j,k,1) = u1
@@ -110,14 +112,14 @@ contains
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
     implicit none
     integer,value :: i,j,k
-    real(8),value :: const2,const6
-    real(8) :: den,u1,u2,u3,pres,ke
+    real(real_kind),value :: const2,const6
+    real(real_kind) :: den,u1,u2,u3,pres,ke
 
     den = q_d(i,j,k,1)
     u1 = q_d(i,j,k,2) / den
     u2 = q_d(i,j,k,3) / den
     u3 = q_d(i,j,k,4) / den
-    ke = 0.5d0 * den * (u1*u1 + u2*u2 + u3*u3)
+    ke = 0.5e0_real_kind * den * (u1*u1 + u2*u2 + u3*u3)
     pres = (q_d(i,j,k,5) - ke) / const6
     rho_d(i,j,k) = den
     vel_d(i,j,k,1) = u1
@@ -131,7 +133,7 @@ contains
                                                                          refresh_down,refresh_up)
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),value :: const2,const6
+    real(real_kind),value :: const2,const6
     logical,value :: refresh_down,refresh_up
     integer :: id,i,k,h,side,n1,n2
 
@@ -158,7 +160,7 @@ contains
                                                                          fast_mapping,refresh_left,refresh_right)
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),value :: const2,const6
+    real(real_kind),value :: const2,const6
     logical,value :: fast_mapping,refresh_left,refresh_right
     integer :: id,j,k,h,side,n1,n2,nhalo,halo_id
 
@@ -194,7 +196,7 @@ contains
                                                                          refresh_back,refresh_front)
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),value :: const2,const6
+    real(real_kind),value :: const2,const6
     logical,value :: refresh_back,refresh_front
     integer :: id,i,j,h,side,n1,n2
 

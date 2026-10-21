@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <limits.h>
+#include "astr_precision.h"
 
 static const char *field_names[] = {"density", "velocity_x", "velocity_y", "velocity_z", "pressure", "temperature",
     "vibrational_temperature", "mass_fraction_N2", "mass_fraction_O2", "mass_fraction_N", "mass_fraction_O", "mass_fraction_NO"};
@@ -56,8 +57,9 @@ static int read_integers(hid_t group, const char *name, int64_t *values, hsize_t
     return H5Dclose(set) >= 0 && ok;
 }
 
-static int check_float(hid_t group, const char *name, int rank, const hsize_t *dims, int derivative, const char *units) {
-    hid_t set = checked_dataset(group, name, H5T_IEEE_F64LE, rank, dims);
+static int check_float(hid_t group, const char *name, int rank, const hsize_t *dims, int derivative,
+    const char *units, int width) {
+    hid_t set = checked_dataset(group, name, width == 4 ? H5T_IEEE_F32LE : H5T_IEEE_F64LE, rank, dims);
     if (set < 0) return 0;
     int ok = 1;
     if (derivative) {
@@ -102,10 +104,11 @@ int astr_checkpoint_hdf5_self_contained(const char *path) {
 }
 
 /* Read only small metadata. 0: compatible; 2: valid different layout; 1: invalid. */
-int astr_output_frame_layout(const char *path, const char *geometry_path, int64_t step, double time,
+int astr_output_frame_layout(const char *path, const char *geometry_path, int64_t step, astr_numerical_real time,
     int components, const char *units, const int *selected, int nselected, int64_t expected_bytes,
     const int *global_shape, const int *axes, const int *indices, int nplanes,
-    int current_components, const char *current_units, const int *current_selected, int current_nselected) {
+    int current_components, const char *current_units, const int *current_selected, int current_nselected,
+    int *source_bytes) {
     hid_t file = -1, geometry = -1, source = -1, coordinates = -1;
     int valid = (components == 6 || components == 12) && (!strcmp(units, "si") || !strcmp(units, "dimensionless")) &&
         (components != 12 || !strcmp(units, "si")) && nselected >= 0 && nselected <= 14;
@@ -114,6 +117,7 @@ int astr_output_frame_layout(const char *path, const char *geometry_path, int64_
     H5G_info_t info, group_info;
     int volume, count;
     char layout[64] = "", label[32], wanted[32];
+    *source_bytes = 0;
     for (int i = 0; valid && i < nselected; ++i) {
         valid = selected[i] >= 1 && selected[i] <= 14 && (i == 0 || selected[i] > selected[i-1]);
         if (i < current_nselected) compatible &= selected[i] == current_selected[i];
@@ -149,8 +153,24 @@ int astr_output_frame_layout(const char *path, const char *geometry_path, int64_
         coordinates = volume ? geometry : H5Gopen2(geometry, label, H5P_DEFAULT);
         if (source < 0 || coordinates < 0 || !read_integers(source, "metadata", meta, 11) ||
             !read_integers(coordinates, "metadata", geom, 11)) goto done;
-        double clock[3]; memcpy(clock, meta + 2, sizeof(clock));
-        if (meta[0] != 1 || meta[1] != step || clock[0] != time || !isfinite(clock[0]) ||
+        if (meta[0] != 1 && meta[0] != 2) goto done;
+        int width = meta[0] == 2 ? 4 : 8;
+        if (*source_bytes && *source_bytes != width) goto done;
+        *source_bytes = width;
+        astr_numerical_real clock[3];
+        for (int d = 0; d < 3; ++d) {
+            if (width == 4) {
+                uint32_t word = (uint32_t)meta[2+d];
+                float value;
+                memcpy(&value, &word, sizeof(value));
+                clock[d] = (astr_numerical_real)value;
+            } else {
+                double value;
+                memcpy(&value, meta + 2 + d, sizeof(value));
+                clock[d] = (astr_numerical_real)value;
+            }
+        }
+        if (meta[1] != step || clock[0] != time || !isfinite(clock[0]) ||
             !isfinite(clock[1]) || !isfinite(clock[2]) || clock[0] < 0 || clock[1] < 0 || clock[2] <= 0 ||
             (step > 0 && clock[1] <= 0) || meta[10] != components || meta[5] < 0 || meta[5] > 3) goto done;
         for (int d = 7; d < 10; ++d) {
@@ -181,15 +201,15 @@ int astr_output_frame_layout(const char *path, const char *geometry_path, int64_
             if (nodes > INT64_MAX / meta[7+d]) goto done;
             nodes *= meta[7+d];
         }
-        if (nodes > INT64_MAX / (8 * (components + nselected)) ||
-            bytes > INT64_MAX - nodes * 8 * (components + nselected)) goto done;
-        bytes += nodes * 8 * (components + nselected);
-        for (int i = 0; i < components; ++i) if (!check_float(source, field_names[i], rank, dims, 0, units)) goto done;
+        int64_t bytes_per_node = (int64_t)width * (components + nselected);
+        if (nodes > INT64_MAX / bytes_per_node || bytes > INT64_MAX - nodes * bytes_per_node) goto done;
+        bytes += nodes * bytes_per_node;
+        for (int i = 0; i < components; ++i) if (!check_float(source, field_names[i], rank, dims, 0, units, width)) goto done;
         for (int i = 0; i < nselected; ++i)
-            if (!check_float(source, derived_names[selected[i]-1], rank, dims, selected[i], units)) goto done;
+            if (!check_float(source, derived_names[selected[i]-1], rank, dims, selected[i], units, width)) goto done;
         dims[rank] = 3;
-        if (!check_float(source, "velocity", rank+1, dims, 0, units) ||
-            !check_float(coordinates, "coordinates", rank+1, dims, 0, units)) goto done;
+        if (!check_float(source, "velocity", rank+1, dims, 0, units, width) ||
+            !check_float(coordinates, "coordinates", rank+1, dims, 0, units, width)) goto done;
         if (!volume) {
             if (H5Gclose(source) < 0) { source = -1; goto done; } source = -1;
             if (H5Gclose(coordinates) < 0) { coordinates = -1; goto done; } coordinates = -1;

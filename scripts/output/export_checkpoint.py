@@ -147,20 +147,38 @@ def native_dataset(handle, name, shape, dtype):
     return data
 
 
+def state_dtype(handle, header):
+    if header[1] == 2:
+        return np.dtype('<f8')
+    width = int(native_dataset(handle, 'numerical_kind_bytes', (1,), '<i8')[0])
+    if width not in (4, 8):
+        raise ValueError('unsupported state numerical precision')
+    return np.dtype(f'<f{width}')
+
+
+def state_clock(header, dtype):
+    words = header[9:12]
+    if dtype.itemsize == 4:
+        return words.astype('<i4').view('<f4')
+    return words.view('<f8')
+
+
 def identity(handle, components, role):
     header = native_dataset(handle, "identity", (13,), "<i8")[:]
-    if tuple(header[:3]) != (MAGIC, 2, 1) or header[6] != components or header[12] != role:
+    if (header[0] != MAGIC or header[1] not in (2, 3) or header[2] != 1 or
+            header[6] != components or header[12] != role):
         raise ValueError("unsupported state version, phase or component role")
     if np.any(header[3:6] <= 1) or header[7] <= 0 or header[8] < 0:
         raise ValueError("invalid state dimensions or step")
-    times = header[9:12].view("<f8")
+    dtype = state_dtype(handle, header)
+    times = state_clock(header, dtype)
     if not np.isfinite(times).all() or times[0] < 0 or times[1] < 0 or times[2] <= 0:
         raise ValueError("invalid state clock")
     if header[8] > 0 and times[1] <= 0:
         raise ValueError("missing completed-step dt")
     shape = tuple(int(v) for v in header[3:6][::-1])
     for component in range(1, components + 1):
-        native_dataset(handle, f"q{component:04d}", shape, "<f8")
+        native_dataset(handle, f"q{component:04d}", shape, dtype)
     native_dataset(handle, "partitions", (8 * int(header[7]),), "<i8")
     return header, shape
 
@@ -179,11 +197,11 @@ def field_layout(handle):
     raise ValueError("unsupported state component role")
 
 
-def selections(shape, buffer_bytes):
-    # One FP64 array and its finite mask coexist. HDF5 internals are not included.
-    capacity = buffer_bytes // 9
+def selections(shape, buffer_bytes, element_bytes=8):
+    # One native array and its finite mask coexist. HDF5 internals are not included.
+    capacity = buffer_bytes // (element_bytes + 1)
     if capacity < 1:
-        raise ValueError("buffer must hold one FP64 value and its finite mask")
+        raise ValueError("buffer must hold one native value and its finite mask")
     block = [1] * len(shape)
     for axis in reversed(range(len(shape))):
         block[axis] = min(shape[axis], capacity)
@@ -194,7 +212,7 @@ def selections(shape, buffer_bytes):
 
 def copy_field(source, target, shape, buffer_bytes, fixed=None, vector=None, component=None, target_component=None):
     peak = read_bytes = 0
-    for selected in selections(shape, buffer_bytes):
+    for selected in selections(shape, buffer_bytes, source.dtype.itemsize):
         source_selection = list(selected)
         if fixed is not None:
             source_selection.insert(*fixed)
@@ -211,37 +229,37 @@ def copy_field(source, target, shape, buffer_bytes, fixed=None, vector=None, com
     return peak, read_bytes
 
 
-def xdmf_grid(parent, label, shape, prefix, file_name, time, fields):
+def xdmf_grid(parent, label, shape, prefix, file_name, time, fields, real_bytes=8):
     grid = ET.SubElement(parent, "Grid", Name=label, GridType="Uniform")
     ET.SubElement(grid, "Time", Value=format(time, ".17g"))
     dimensions = " ".join(map(str, shape))
     ET.SubElement(grid, "Topology", TopologyType=f"{len(shape)}DSMesh", Dimensions=dimensions)
     geometry = ET.SubElement(grid, "Geometry", GeometryType="XYZ")
     node = ET.SubElement(geometry, "DataItem", Dimensions=dimensions + " 3",
-                         NumberType="Float", Precision="8", Format="HDF")
+                         NumberType="Float", Precision=str(real_bytes), Format="HDF")
     node.text = f"{file_name}:/{prefix}coordinates"
     for name in fields:
         attribute = ET.SubElement(grid, "Attribute", Name=name, AttributeType="Scalar", Center="Node")
         node = ET.SubElement(attribute, "DataItem", Dimensions=dimensions,
-                             NumberType="Float", Precision="8", Format="HDF")
+                             NumberType="Float", Precision=str(real_bytes), Format="HDF")
         node.text = f"{file_name}:/{prefix}{name}"
     attribute = ET.SubElement(grid, "Attribute", Name="velocity", AttributeType="Vector", Center="Node")
     node = ET.SubElement(attribute, "DataItem", Dimensions=dimensions + " 3",
-                         NumberType="Float", Precision="8", Format="HDF")
+                         NumberType="Float", Precision=str(real_bytes), Format="HDF")
     node.text = f"{file_name}:/{prefix}velocity"
 
 
-def write_xml(path, shape, time, groups=None, fields=FIELDS):
+def write_xml(path, shape, time, groups=None, fields=FIELDS, real_bytes=8):
     root = ET.Element("Xdmf", Version="3.0")
     domain = ET.SubElement(root, "Domain")
     temporal = ET.SubElement(domain, "Grid", Name="series", GridType="Collection", CollectionType="Temporal")
     if groups is None:
-        xdmf_grid(temporal, "volume", shape, "", "volume.h5", time, fields)
+        xdmf_grid(temporal, "volume", shape, "", "volume.h5", time, fields, real_bytes)
     else:
         collection = ET.SubElement(temporal, "Grid", Name="slices", GridType="Collection", CollectionType="Spatial")
         ET.SubElement(collection, "Time", Value=format(time, ".17g"))
         for label, plane_shape in groups:
-            xdmf_grid(collection, label, plane_shape, label + "/", "slices.h5", time, fields)
+            xdmf_grid(collection, label, plane_shape, label + "/", "slices.h5", time, fields, real_bytes)
     ET.indent(root)
     with path.open("xb") as stream:
         ET.ElementTree(root).write(stream, encoding="utf-8", xml_declaration=True)
@@ -249,7 +267,7 @@ def write_xml(path, shape, time, groups=None, fields=FIELDS):
 
 def export_checkpoint(batch, output, *, volume=True, slices=(), buffer_bytes=1048576, units="dimensionless"):
     batch, output = Path(batch).absolute(), Path(output).absolute()
-    if buffer_bytes < 9 or units not in {"dimensionless", "si"}:
+    if buffer_bytes < 1 or units not in {"dimensionless", "si"}:
         raise ValueError("invalid explicit export buffer or unit system")
     if not volume and not slices:
         raise ValueError("select a volume or at least one slice")
@@ -260,16 +278,20 @@ def export_checkpoint(batch, output, *, volume=True, slices=(), buffer_bytes=104
     # No solver imports, state reconstruction, gradient calls or source writes.
     with h5py.File(batch / "state.h5", "r") as state, h5py.File(resources / "geometry.h5", "r") as geometry:
         header, shape, fields = field_layout(state)
+        dtype = state_dtype(state, header)
+        if buffer_bytes < dtype.itemsize + 1:
+            raise ValueError('buffer must hold one native value and its finite mask')
         if int(header[12]) == 7 and units != "si":
             raise ValueError("AIR5 export currently requires dimensional SI input")
         grid_header, grid_shape = identity(geometry, 13, 1)
-        if shape != grid_shape or header[7] != grid_header[7]:
+        if (shape != grid_shape or header[7] != grid_header[7] or
+                dtype != state_dtype(geometry, grid_header)):
             raise ValueError("field/geometry layout mismatch")
         requested = sorted(set(slices))
         for axis, index in requested:
             if axis not in "ijk" or len(axis) != 1 or not 0 <= index < shape[2-"ijk".index(axis)]:
                 raise ValueError("slice index lies outside the global node grid")
-        time, dt_used, dt_next = header[9:12].view("<f8")
+        time, dt_used, dt_next = state_clock(header, dtype)
         output.mkdir(parents=True, exist_ok=False)
         report = dict(format="ASTR_BASIC_EXPORT_1", complete_step=int(header[8]), time=float(time),
                       dt_used=float(dt_used), dt_next=float(dt_next), units=units, center="Node",
@@ -277,7 +299,7 @@ def export_checkpoint(batch, output, *, volume=True, slices=(), buffer_bytes=104
                       source_manifest=(batch / "COMPLETE").read_text().strip(),
                       buffer_bytes=buffer_bytes, peak_controlled_array_bytes=0, field_read_bytes=0,
                       checksum_buffer_bytes=65536, third_party_memory_included=False,
-                      source_role=int(header[12]), fields=list(fields),
+                      source_role=int(header[12]), fields=list(fields), numerical_precision=f'fp{dtype.itemsize * 8}',
                       species_order=list(AIR5_SPECIES) if int(header[12]) == 7 else [],
                       restartable=False, volume=volume, slices=[list(item) for item in requested])
         inputs = [(geometry, name, component) for name, component in COORDINATES.items()]
@@ -300,14 +322,14 @@ def export_checkpoint(batch, output, *, volume=True, slices=(), buffer_bytes=104
                 for label, product_shape, fixed in groups:
                     group = target.create_group(label) if label else target
                     # Materialize the vector for readers whose 2D JOIN path writes scratch data.
-                    vector = group.create_dataset("velocity", shape=product_shape+(3,), dtype="<f8", chunks=True)
-                    coordinates = group.create_dataset("coordinates", shape=product_shape+(3,), dtype="<f8", chunks=True)
+                    vector = group.create_dataset("velocity", shape=product_shape+(3,), dtype=dtype, chunks=True)
+                    coordinates = group.create_dataset("coordinates", shape=product_shape+(3,), dtype=dtype, chunks=True)
                     for source, name, component in inputs:
                         coordinate_index = component - 1 if name in COORDINATES else None
                         if coordinate_index is not None:
                             dataset = coordinates
                         else:
-                            dataset = group.create_dataset(name, shape=product_shape, dtype="<f8", chunks=True)
+                            dataset = group.create_dataset(name, shape=product_shape, dtype=dtype, chunks=True)
                         vector_index = "xyz".index(name[-1]) if name.startswith("velocity_") else None
                         peak, size = copy_field(source[f"q{component:04d}"], dataset,
                                                 product_shape, buffer_bytes, fixed,
@@ -315,9 +337,9 @@ def export_checkpoint(batch, output, *, volume=True, slices=(), buffer_bytes=104
                         report["peak_controlled_array_bytes"] = max(report["peak_controlled_array_bytes"], peak)
                         report["field_read_bytes"] += size
         if volume:
-            write_xml(output / "volume.xdmf", shape, float(time), fields=fields)
+            write_xml(output / "volume.xdmf", shape, float(time), fields=fields, real_bytes=dtype.itemsize)
         if requested:
-            write_xml(output / "slices.xdmf", shape, float(time), plane_groups, fields=fields)
+            write_xml(output / "slices.xdmf", shape, float(time), plane_groups, fields=fields, real_bytes=dtype.itemsize)
         # A failed export leaves no completion record and never replaces an older export.
         report["data_file_bytes"] = sum(p.stat().st_size for p in output.iterdir())
         completion = output / "COMPLETE.json.tmp"

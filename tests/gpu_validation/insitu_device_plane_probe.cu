@@ -12,6 +12,7 @@
 #include <vector>
 
 using namespace astr_insitu::plane_geometry;
+using R=astr_insitu::Real;
 
 struct Fixture {
   Plane plane;
@@ -23,7 +24,7 @@ struct Audit {
   double plane_error=0.,field_error=0.;
 };
 
-double affine(const Point& p) {return 2.*p[0]-3.*p[1]+4.*p[2]+1.;}
+R affine(const Point& p) {return 2*p[0]-3*p[1]+4*p[2]+1;}
 
 std::vector<Fixture> fixtures() {
   const Vertex nodes[4]={{{0.,0.,0.},0},{{1.,0.,0.},1},
@@ -36,7 +37,7 @@ std::vector<Fixture> fixtures() {
     {{0.,0.,0.},{1.,1.,0.},2,0},
     {{0.,0.,0.},{1.,0.,0.},3,1},
     {{2.,0.,0.},{1.,0.,0.},0,0},
-    {{std::nextafter(1.,0.),0.,0.},{1.,0.,0.},3,1},
+    {{std::nextafter(R(1),R(0)),0.,0.},{1.,0.,0.},3,1},
   };
   std::vector<Fixture> result;
   for(const auto& c:cases) {
@@ -73,8 +74,8 @@ void validate(const Fixture& f,const Cut& cut,const Cut& canonical,Audit& a) {
       if(v.id==p.key.second) {hi=v.position;found_hi=true;}
     }
     if(!found_lo || !found_hi) {++a.identity;continue;}
-    const double interpolated=affine(lo)+p.fraction*(affine(hi)-affine(lo));
-    a.field_error=std::max(a.field_error,std::abs(interpolated-affine(p.position)));
+    const R interpolated=affine(lo)+p.fraction*(affine(hi)-affine(lo));
+    a.field_error=std::max(a.field_error,double(std::abs(interpolated-affine(p.position))));
   }
   for(int t=0;t<cut.triangles;++t) {
     Point e1{},e2{};
@@ -101,13 +102,14 @@ __global__ void generate(const Fixture* input,Cut* output,int count) {
 __global__ void classify(Plane plane,Point p,SignedDistance* output) {
   if(threadIdx.x==0 && blockIdx.x==0) *output=plane_distance(plane,p);
 }
-struct MeshTriangle {Intersection vertices[3]{};double field[3]{};};
+struct MeshTriangle {Intersection vertices[3]{};R field[3]{};};
 struct MeshCell {MeshTriangle triangles[2]{};int count=0;Status status=Status::ok;};
 __host__ __device__ Point mesh_position(const Grid& grid,std::int64_t id,bool curve) {
-  const double x=double(id%(grid.cells[0]+1))/grid.cells[0];
-  const double y=double(id/(grid.cells[0]+1)%(grid.cells[1]+1))/grid.cells[1];
-  const double z=double(id/((grid.cells[0]+1)*(grid.cells[1]+1)))/grid.cells[2];
-  return {x,y+(curve?.05*sin(2.*3.14159265358979323846*x)*sin(3.14159265358979323846*y):0.),z};
+  const R x=R(id%(grid.cells[0]+1))/R(grid.cells[0]);
+  const R y=R(id/(grid.cells[0]+1)%(grid.cells[1]+1))/R(grid.cells[1]);
+  const R z=R(id/((grid.cells[0]+1)*(grid.cells[1]+1)))/R(grid.cells[2]);
+  const R pi=R(3.14159265358979323846);
+  return {x,y+(curve?R(.05)*std::sin(R(2)*pi*x)*std::sin(pi*y):R(0)),z};
 }
 __global__ void cut_mesh(Plane plane,Grid grid,int axis,int rank,int ranks,bool curve,MeshCell* output,int count) {
   const int id=blockIdx.x*blockDim.x+threadIdx.x;
@@ -128,9 +130,9 @@ __global__ void cut_mesh(Plane plane,Grid grid,int axis,int rank,int ranks,bool 
   for(int t=0;t<cut.triangles;++t) for(int p=0;p<3;++p) {
     const auto vertex=cut.vertices[cut.indices[3*t+p]];
     result.triangles[t].vertices[p]=vertex;
-    double lo=0.,hi=0.;
+    R lo=0,hi=0;
     for(int c=0;c<8;++c) {
-      const auto& x=hex[c].position;const double value=2.*x[0]-3.*x[1]+4.*x[2]+1.;
+      const auto& x=hex[c].position;const R value=2*x[0]-3*x[1]+4*x[2]+1;
       if(hex[c].id==vertex.key.first) lo=value;
       if(hex[c].id==vertex.key.second) hi=value;
     }
@@ -202,7 +204,7 @@ void mesh_acceptance(int rank,int ranks,int axis,bool curve,bool coincident) {
           e2[d]=tri.vertices[2].position[d]-tri.vertices[0].position[d];
         }
         audit.plane_error=std::max(audit.plane_error,double(std::abs(distance)));
-        audit.field_error=std::max(audit.field_error,std::abs(tri.field[p]-affine(vertex.position)));
+        audit.field_error=std::max(audit.field_error,double(std::abs(tri.field[p]-affine(vertex.position))));
         const auto found=points.find(vertex.key);
         if(found!=points.end()) {
           if(found->second.fraction!=vertex.fraction) ++audit.identity;
@@ -246,13 +248,14 @@ void mesh_acceptance(int rank,int ranks,int axis,bool curve,bool coincident) {
   if(!count || !boundary || int(points.size())-int(edges.size())+int(triangles.size())!=1) ++audit.topology;
   const long double expected=coincident?1.L:std::sqrt(1.L+.25L*.25L+.125L*.125L);
   const double area_error=double(std::abs(area-expected));
-  std::printf("X4_PLANE_MESH ranks=%d axis=%d curve=%d coincident=%d triangles=%d points=%zu "
+  std::printf("X4_PLANE_MESH ranks=%d axis=%d curve=%d coincident=%d triangles=%d points=%zu numerical_bytes=%zu "
     "topology_errors=%d winding_errors=%d zero_area=%d identity_errors=%d invalid=%d "
     "plane_error=%.17g field_error=%.17g area_error=%.17g test_geometry_readback=1 runtime_admission=0\n",
-    ranks,axis,int(curve),int(coincident),count,points.size(),audit.topology,audit.winding,audit.zero_area,
+    ranks,axis,int(curve),int(coincident),count,points.size(),sizeof(R),audit.topology,audit.winding,audit.zero_area,
     audit.identity,audit.invalid,audit.plane_error,audit.field_error,area_error);
-  if(audit.invalid || audit.topology || audit.winding || audit.zero_area || audit.identity ||
-      audit.plane_error>2.e-10 || audit.field_error>2.e-10 || area_error>2.e-10)
+  const bool numeric_failure=sizeof(R)==8 &&
+    (audit.plane_error>2.e-10 || audit.field_error>2.e-10 || area_error>2.e-10);
+  if(audit.invalid || audit.topology || audit.winding || audit.zero_area || audit.identity || numeric_failure)
     throw std::runtime_error("whole test mesh topology/geometry acceptance failed");
 }
 
@@ -270,17 +273,17 @@ int main(int argc,char** argv) {
     for(int d=0;d<3;++d)
       if(plane.normal[d]!=opposite.normal[d] || plane.origin[d]!=opposite.origin[d])
         throw std::runtime_error("collective canonical plane differs");
-    double squared=0.;for(double v:plane.normal.values) squared+=v*v;
-    if(std::abs(squared-1.)>4.*std::numeric_limits<double>::epsilon() || plane.normal[0]<=0.)
+    R squared=0;for(R v:plane.normal.values) squared+=v*v;
+    if(std::abs(squared-1)>4*std::numeric_limits<R>::epsilon() || plane.normal[0]<=0)
       throw std::runtime_error("plane is not unit/canonical");
-    for(const Point normal:{Point{0.,0.,0.},Point{std::numeric_limits<double>::infinity(),0.,0.},
-        Point{std::numeric_limits<double>::max(),std::numeric_limits<double>::denorm_min(),0.}}) {
+    for(const Point normal:{Point{0.,0.,0.},Point{std::numeric_limits<R>::infinity(),0.,0.},
+        Point{std::numeric_limits<R>::max(),std::numeric_limits<R>::denorm_min(),0.}}) {
       bool rejected=false;
       try {make_plane({0.,0.,0.},normal);} catch(const std::invalid_argument&) {rejected=true;}
       if(!rejected) throw std::runtime_error("invalid plane accepted");
     }
-    const auto tiny=make_plane({0.,0.,0.},{0.,std::numeric_limits<double>::denorm_min(),0.});
-    const auto huge=make_plane({0.,0.,0.},{std::numeric_limits<double>::max(),0.,0.});
+    const auto tiny=make_plane({0.,0.,0.},{0.,std::numeric_limits<R>::denorm_min(),0.});
+    const auto huge=make_plane({0.,0.,0.},{std::numeric_limits<R>::max(),0.,0.});
     if(tiny.normal[1]!=1. || huge.normal[0]!=1.) throw std::runtime_error("scaled normalization failed");
     const auto input=fixtures();
     const std::size_t input_bytes=input.size()*sizeof(Fixture),output_bytes=input.size()*sizeof(Cut);
@@ -309,22 +312,24 @@ int main(int argc,char** argv) {
     cuda_require(cudaFree(destination),"output release");cuda_require(cudaFree(source),"input release");
     SignedDistance* sign_d=nullptr;cuda_require(cudaMalloc(&sign_d,sizeof(SignedDistance)),"predicate allocation");
     const auto cancellation=make_plane({0.,0.,0.},{1.,1.,1.});
-    classify<<<1,1>>>(cancellation,{9007199254740992.,1.,-9007199254740992.},sign_d);
+    const R large=std::ldexp(R(1),std::numeric_limits<R>::digits);
+    classify<<<1,1>>>(cancellation,{large,1.,-large},sign_d);
     cuda_require(cudaDeviceSynchronize(),"predicate synchronization");
     SignedDistance sign{};
     cuda_require(cudaMemcpy(&sign,sign_d,sizeof(sign),cudaMemcpyDeviceToHost),"predicate scalar readback");
     if(sign.status!=Status::ok || sign.sign!=1 || !sign.exact) ++audit.invalid;
-    classify<<<1,1>>>(make_plane({0.,0.,0.},{1.,1.e-300,0.}),{0.,1.e-100,0.},sign_d);
+    classify<<<1,1>>>(make_plane({0.,0.,0.},{1.,std::sqrt(std::numeric_limits<R>::min()),0.}),
+      {0.,std::numeric_limits<R>::min(),0.},sign_d);
     cuda_require(cudaDeviceSynchronize(),"underflow synchronization");
     cuda_require(cudaMemcpy(&sign,sign_d,sizeof(sign),cudaMemcpyDeviceToHost),"underflow scalar readback");
     if(sign.status!=Status::range) ++audit.invalid;
     cuda_require(cudaFree(sign_d),"predicate release");
     const int failures=audit.invalid+audit.topology+audit.winding+audit.zero_area+audit.identity+audit.unchanged;
-    std::printf("X4_PLANE_CORE rank=%d cases=%zu invalid=%d topology_errors=%d winding_errors=%d "
+    std::printf("X4_PLANE_CORE rank=%d cases=%zu numerical_bytes=%zu invalid=%d topology_errors=%d winding_errors=%d "
       "zero_area=%d identity_errors=%d source_errors=%d plane_error=%.17g field_error=%.17g "
-      "test_geometry_readback=1 runtime_admission=0\n",rank,input.size(),audit.invalid,audit.topology,
+      "test_geometry_readback=1 runtime_admission=0\n",rank,input.size(),sizeof(R),audit.invalid,audit.topology,
       audit.winding,audit.zero_area,audit.identity,audit.unchanged,audit.plane_error,audit.field_error);
-    if(failures || audit.plane_error>2.e-10 || audit.field_error>2.e-10)
+    if(failures || (sizeof(R)==8 && (audit.plane_error>2.e-10 || audit.field_error>2.e-10)))
       throw std::runtime_error("plane component acceptance failed");
     const int axis=argc>1?std::atoi(argv[1]):0;
     if(axis<0 || axis>2) throw std::invalid_argument("Invalid mesh partition axis");

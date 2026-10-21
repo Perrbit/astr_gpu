@@ -36,12 +36,18 @@ extern "C" int astr_insitu_resource_check(const char*);
 #endif
 
 namespace {
+using Real=astr_insitu::Real;
+#ifdef ASTR_REAL32
+constexpr auto set_external_real=conduit_node_set_path_external_float32_ptr;
+#else
+constexpr auto set_external_real=conduit_node_set_path_external_float64_ptr;
+#endif
 std::int64_t m12_color_mask=0;
-std::array<double,6> m12_color_ranges{};
+std::array<Real,6> m12_color_ranges{};
 bool active = false;
 MPI_Comm render_comm = MPI_COMM_NULL;
 conduit_node* retained = nullptr;
-std::vector<double> coordinates, primitive, gradients, means;
+std::vector<Real> coordinates, primitive, gradients, means;
 std::vector<conduit_int64> plane_cells;
 std::vector<astr_insitu::CompactMesh> retained_products;
 #ifdef ASTR_INSITU_DEVICE_RENDERING
@@ -54,7 +60,7 @@ bool resident_frame_open=false;
 int resident_frame_step=0,resident_frame_groups=0;
 double resident_frame_time=0.,resident_execute_seconds=0.;
 #endif
-double empty_value = 0.;
+Real empty_value = 0;
 conduit_int64 empty_cell = 0;
 int shape[3] = {0,0,0};
 int selected_profile = 0;
@@ -69,7 +75,7 @@ int allocation_failure(const char* stage, const char* detail, MPI_Comm comm)
 }
 }
 
-extern "C" int astr_insitu_m12_color_range(int component,int store,double* range) {
+extern "C" int astr_insitu_m12_color_range(int component,int store,Real* range) {
   if(component<0 || component>=3 || !range || (store!=0 && store!=1)) return -1;
   const std::int64_t bit=std::int64_t(1)<<component;
   if(store) {
@@ -82,12 +88,12 @@ extern "C" int astr_insitu_m12_color_range(int component,int store,double* range
   return 1;
 }
 
-extern "C" int astr_insitu_m12_color_state(int restore,std::int64_t* mask,double* ranges) {
+extern "C" int astr_insitu_m12_color_state(int restore,std::int64_t* mask,Real* ranges) {
   if(!mask || !ranges || (restore!=0 && restore!=1)) return 0;
   if(restore) {
     if(*mask<0 || *mask>7) return 0;
     for(int i=0;i<3;++i) {
-      const double a=ranges[2*i],b=ranges[2*i+1];
+      const Real a=ranges[2*i],b=ranges[2*i+1];
       if(!std::isfinite(a) || !std::isfinite(b) || ((*mask&(std::int64_t(1)<<i))?(a>=b):(a!=0. || b!=0.))) return 0;
     }
     m12_color_mask=*mask;std::copy_n(ranges,6,m12_color_ranges.begin());
@@ -133,7 +139,7 @@ bool astr_insitu::retain_quantitative_product_fields() {
   return false;
 }
 
-extern "C" int astr_insitu_preview_source_set(const char* path,std::int64_t step,double time,
+extern "C" int astr_insitu_preview_source_set(const char* path,std::int64_t step,Real time,
     int fcomm) {
 #ifdef ASTR_INSITU_DEVICE_RENDERING
   if(active || !path || !*path || step<0 || !std::isfinite(time)) return 1;
@@ -149,14 +155,14 @@ extern "C" int astr_insitu_preview_source_set(const char* path,std::int64_t step
 }
 
 extern "C" int astr_insitu_streamline_view_add(int index,const char* id,const char* velocity,
-    const char* seeds,const char* color,const double* values) {
+    const char* seeds,const char* color,const Real* values) {
 #ifdef ASTR_INSITU_DEVICE_RENDERING
   if(active || index!=static_cast<int>(streamline_candidates.size()) || index>=6 ||
       !id || !velocity || !seeds || !color || !values) return 1;
   astr_insitu::StreamlineView view;
   view.id=id;view.velocity=velocity;view.seeds=seeds;view.color=color;
   std::copy(values,values+19,view.values.begin());
-  if(!std::all_of(view.values.begin(),view.values.end(),[](double v){return std::isfinite(v);})) return 1;
+  if(!std::all_of(view.values.begin(),view.values.end(),[](Real v){return std::isfinite(v);})) return 1;
   streamline_candidates.push_back(std::move(view));
   return 0;
 #else
@@ -207,8 +213,8 @@ try {
 
 // Synchronous lifecycle; backend-visible storage survives between frames.
 static int mesh_execute(const char* backend, const char* script,
-    int fcomm, int nx, int ny, int nz, int step, double time,
-    double* xyz, double* fields, double* derived, int has_mean, double* mean_fields, int profile)
+    int fcomm, int nx, int ny, int nz, int step, Real time,
+    Real* xyz, Real* fields, Real* derived, int has_mean, Real* mean_fields, int profile)
 try {
   MPI_Comm comm = MPI_Comm_f2c(fcomm);
   if (profile<0 || profile>6 || (profile && !native) ||
@@ -304,7 +310,7 @@ try {
   const char* axes[] = {"x", "y", "z"};
   for (int d=0; d<3; ++d) {
     const auto key = std::string("coordsets/coords/values/")+axes[d];
-    conduit_node_set_path_external_float64_ptr(mesh, key.c_str(), xyz+d*count, count);
+    set_external_real(mesh, key.c_str(), xyz+d*count, count);
   }
   conduit_node_set_path_char8_str(mesh, "topologies/mesh/coordset", "coords");
   if (profile>=4) {
@@ -318,11 +324,11 @@ try {
     conduit_node_set_path_int64(mesh, "topologies/mesh/elements/dims/j", ny-1);
     conduit_node_set_path_int64(mesh, "topologies/mesh/elements/dims/k", nz-1);
   }
-  auto field = [mesh,count](const char* name, double* data) {
+  auto field = [mesh,count](const char* name, Real* data) {
     const auto base = std::string("fields/")+name;
     conduit_node_set_path_char8_str(mesh, (base+"/association").c_str(), "vertex");
     conduit_node_set_path_char8_str(mesh, (base+"/topology").c_str(), "mesh");
-    conduit_node_set_path_external_float64_ptr(mesh, (base+"/values").c_str(), data, count);
+    set_external_real(mesh, (base+"/values").c_str(), data, count);
   };
   const char* names[] = {"q1","q2","q3","q4","q5","rho","u","v","w","pressure","temperature"};
   if (profile==6) {
@@ -364,7 +370,7 @@ try {
     const int nf=profile==6 ? 18 : 3;
     means.resize((3*nf+3)*count);
     if (!means.empty()) std::copy(mean_fields,mean_fields+means.size(),means.begin());
-    double* mean_data=means.empty() ? &empty_value : means.data();
+    Real* mean_data=means.empty() ? &empty_value : means.data();
     const char* kinds[]={"mean_","variance_","rms_"};
     for (int kind=0;kind<3;++kind) for (int c=0;c<nf;++c) {
       const std::string name=std::string(kinds[kind])+(profile==6 ? air5_names[c] : channel_names[c]);
@@ -375,7 +381,7 @@ try {
     field("statistics_window_end",mean_data+(3*nf+2)*count);
   } else if (has_mean) {
     means.resize(7*count);
-    double* mean_data=means.empty() ? &empty_value : means.data();
+    Real* mean_data=means.empty() ? &empty_value : means.data();
     for (int c=0;c<7;++c) {
       const bool wanted=!astr_insitu_independent_products() || c==6 ||
         astr_insitu_scene_due(c<3 ? "mean_reynolds_streamlines" : "mean_favre_streamlines");
@@ -402,7 +408,7 @@ try {
   const double execute_seconds = MPI_Wtime()-execute_start;
   std::printf("ASTR_INSITU_BRIDGE_TIMING rank=%d step=%d copy=%.9g execute_inclusive=%.9g copy_bytes=%zu\n",
       rank,step,copy_seconds,execute_seconds,
-      copied_values*sizeof(double));
+      copied_values*sizeof(Real));
 #ifdef ASTR_CUDA_RENDERER
   astr_insitu_resource_check("frame_after");
 #endif
@@ -414,22 +420,22 @@ try {
 }
 
 extern "C" int astr_insitu_mesh_probe(const char* backend, const char* script,
-    int fcomm, int nx, int ny, int nz, int step, double time,
-    double* xyz, double* fields, double* derived, int has_mean, double* mean_fields)
+    int fcomm, int nx, int ny, int nz, int step, Real time,
+    Real* xyz, Real* fields, Real* derived, int has_mean, Real* mean_fields)
 {
   return mesh_execute(backend,script,fcomm,nx,ny,nz,step,time,xyz,fields,derived,has_mean,mean_fields,0);
 }
 
 extern "C" int astr_insitu_mesh_selected(const char* backend, const char* script,
-    int fcomm, int nx, int ny, int nz, int step, double time,
-    double* xyz, double* velocity, double* q, int profile)
+    int fcomm, int nx, int ny, int nz, int step, Real time,
+    Real* xyz, Real* velocity, Real* q, int profile)
 {
   return mesh_execute(backend,script,fcomm,nx,ny,nz,step,time,xyz,velocity,q,0,nullptr,profile);
 }
 
 extern "C" int astr_insitu_mesh_wall_statistics(const char* backend, const char* script,
-    int fcomm, int nx, int ny, int nz, int step, double time,
-    double* xyz, double* fields, double* statistics, int profile)
+    int fcomm, int nx, int ny, int nz, int step, Real time,
+    Real* xyz, Real* fields, Real* statistics, int profile)
 {
   return mesh_execute(backend,script,fcomm,nx,ny,nz,step,time,xyz,fields,nullptr,2,statistics,profile);
 }
@@ -477,7 +483,7 @@ extern "C" void astr_insitu_retire_resident_views() {
 }
 
 int astr_insitu::render_resident_products(const char* pipeline,const char* backend,const char* script,int fcomm,
-    int step,double time,const char* profile,std::vector<DeviceMesh> products,bool covered,bool complete)
+    int step,Real time,const char* profile,std::vector<DeviceMesh> products,bool covered,bool complete)
 try {
   const auto comm=MPI_Comm_f2c(fcomm);
   const std::string route=pipeline?pipeline:"";
@@ -563,7 +569,7 @@ try {
       const auto key=std::string("coordsets/coords/values/")+axes[d];
       if(arrays) conduit_node_set_path_external_float32_ptr_detailed(mesh,key.c_str(),
         const_cast<float*>(view.positions),view.points,d*sizeof(float),3*sizeof(float),sizeof(float),0);
-      else conduit_node_set_path_external_float64_ptr(mesh,key.c_str(),&empty_value,0);
+      else set_external_real(mesh,key.c_str(),&empty_value,0);
     }
     if(arrays) {
       conduit_node_set_path_external_uint32_ptr(mesh,"topologies/mesh/elements/connectivity",
@@ -617,8 +623,8 @@ try {
 #endif
 
 int astr_insitu::render_compact_products(const char* backend,const char* script,int fcomm,
-    int step,double time,const char* profile,bool covered,double duration,
-    double window_start,double window_end,std::vector<CompactMesh> products)
+    int step,Real time,const char* profile,bool covered,Real duration,
+    Real window_start,Real window_end,std::vector<CompactMesh> products)
 try {
   const auto comm=MPI_Comm_f2c(fcomm);
   if(!native || !backend || !script || !profile || products.empty() || (active && selected_profile!=7))
@@ -668,7 +674,7 @@ try {
     const char* axes[]={"x","y","z"};
     for(int d=0;d<3;++d) {
       const auto path=std::string("coordsets/coords/values/")+axes[d];
-      conduit_node_set_path_external_float64_ptr(mesh,path.c_str(),
+      set_external_real(mesh,path.c_str(),
         nodes?product.coordinates[d].data():&empty_value,nodes);
     }
     conduit_node_set_path_char8_str(mesh,"topologies/mesh/coordset","coords");
@@ -683,9 +689,9 @@ try {
       const auto path="fields/"+field.first;
       conduit_node_set_path_char8_str(mesh,(path+"/association").c_str(),"vertex");
       conduit_node_set_path_char8_str(mesh,(path+"/topology").c_str(),"mesh");
-      conduit_node_set_path_external_float64_ptr(mesh,(path+"/values").c_str(),
+      set_external_real(mesh,(path+"/values").c_str(),
         nodes?field.second.data():&empty_value,nodes);
-      copy_bytes+=field.second.size()*sizeof(double);
+      copy_bytes+=field.second.size()*sizeof(Real);
     }
     const auto cell_field=[&](const char* name,std::vector<std::int64_t>& values) {
       if(values.size()!=cells) return allocation_failure("device products","final cell field size differs",comm);
@@ -699,7 +705,8 @@ try {
     if(product.shape=="line") {
       cell_field("SeedIds",product.seed_ids);cell_field("IntegrationDirection",product.directions);
     }
-    copy_bytes+=(nodes*3+product.connectivity.size()+product.seed_ids.size()+product.directions.size())*8;
+    copy_bytes+=nodes*3*sizeof(Real)+
+      (product.connectivity.size()+product.seed_ids.size()+product.directions.size())*sizeof(std::int64_t);
   }
 #ifdef ASTR_CUDA_RENDERER
   astr_insitu_resource_check("frame_before");
@@ -738,10 +745,10 @@ try {
   conduit_node_destroy(end);
   if(retained) conduit_node_destroy(retained);
   retained = nullptr;
-  std::vector<double>().swap(coordinates);
-  std::vector<double>().swap(primitive);
-  std::vector<double>().swap(gradients);
-  std::vector<double>().swap(means);
+  std::vector<Real>().swap(coordinates);
+  std::vector<Real>().swap(primitive);
+  std::vector<Real>().swap(gradients);
+  std::vector<Real>().swap(means);
   std::vector<conduit_int64>().swap(plane_cells);
   std::vector<astr_insitu::CompactMesh>().swap(retained_products);
 #ifdef ASTR_INSITU_DEVICE_RENDERING

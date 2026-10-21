@@ -1,6 +1,6 @@
 # Completed-Step Checkpoint Export
 
-This candidate tool reads new ASTR schema-2 checkpoint bundles with role 2
+This tool reads new ASTR schema-2/schema-3 checkpoint bundles with role 2
 (five conservative variables plus six cached primitive fields) or role 7
 (AIR5 q11, carry11 and twelve cached fields), and their shared geometry.
 It does not read legacy checkpoints, advance
@@ -14,9 +14,9 @@ The bounded readback gate passed with ParaView 6.0.1 `Xdmf3ReaderS`; select
 that reader rather than the older XDMF2 reader. The latter failed on the
 two-dimensional vector path and is not certified here.
 
-The root CMake installation includes this README, all three offline scripts,
+The root CMake installation includes this README, all four offline scripts,
 and the basic/derived TGV and SI AIR5 derived configuration examples.
-These seven files form the `OutputTools` component. To install just these files
+These eight files form the `OutputTools` component. To install just these files
 from an already configured build, without installing the solver or examples:
 
 ```bash
@@ -54,7 +54,7 @@ retain their original normalization; no unspecified reference scale is applied.
 The source input remains the normalization reference.
 
 Products are `volume.h5`/`volume.xdmf` and, when requested,
-`slices.h5`/`slices.xdmf`. Each has FP64 nodal density, velocity_x/y/z,
+`slices.h5`/`slices.xdmf`. Each preserves the source FP32/FP64 width for nodal density, velocity_x/y/z,
 pressure and temperature, plus a materialized velocity vector and XYZ
 coordinates. Velocity is also stored as three scalars for direct Python use;
 the vector adds three scalar components on disk but no additional source-field
@@ -87,7 +87,7 @@ independent copies, so subsequent checkpoint retention does not remove them.
 Exports are for postprocessing, not restart.
 
 The report records field-read bytes, file bytes, the configured tile capacity
-and peak controlled FP64-array/finite-mask bytes. Slice-only field extraction reads
+and peak controlled native-array/finite-mask bytes. Slice-only field extraction reads
 only selected planes and the small HDF5/manifest metadata, without a full-file
 checksum pass. This does not bound HDF5 internal I/O or ParaView memory peaks.
 No GPU is used by this offline tool. The native gates
@@ -111,6 +111,72 @@ AIR5 evidence: `tests/gpu_validation/out/or5_air5_export_20261001.xml`
 (four real CPU/GPU HBL/SBLI checkpoints, ParaView 6.0.1). The latter uses
 `run_checkpoint_export_validation.py --units si`; all twelve cached fields,
 coordinates, vectors, slice-only products and time match the source exactly.
+
+## Offline Velocity Statistics Merge
+
+New velocity-statistics checkpoints include `statistics_segment`, a small integer
+record in the existing `statistics.h5`. It identifies the segment's first sample,
+requested window, original source-clock word and width, periodic ownership,
+unit system and statistics/geometry definitions. No extra instantaneous fields,
+coordinate copy or restart sidecar is written. The geometry-producer identifier
+is generated from source files at CMake configuration, not from a runtime field
+checksum, and is not printed at solver startup.
+
+An ordinary same-precision restore retains the statistics segment. A precision
+switch or explicit statistics restart begins a new segment at the restored
+completed step, retaining the physical flow/driver/RNG history. Old checkpoints
+without the record remain readable for numerical continuation; their statistics
+origin is unknown and cannot be inferred safely from accumulated duration.
+
+Merge selected, completed velocity-statistics segments explicitly, in chronological
+order, after the source writers have stopped:
+
+```bash
+python3 scripts/output/merge_statistics_segments.py \
+  /path/to/first/checkpoints/step000000000005/statistics.h5 \
+  /path/to/second/checkpoints/step000000000012/statistics.h5 \
+  --output /path/to/new-merged-statistics --buffer-bytes 1048576
+```
+
+This standalone NumPy/h5py tool uses FP64 arithmetic and writes
+`statistics.h5` plus `COMPLETE.json` in a new directory. It does not enter the
+solver, modify source checkpoints, interpolate a missing interval or perform
+online mixed-precision accumulation. Keep it beside `export_checkpoint.py` when
+installing it. Only role-3/role-4 point velocity sufficient statistics with a
+known segment origin are supported, not legacy plane means or AIR5 wall/scalar
+statistics. Periodic terminal copies are excluded by the recorded ownership
+layout, not by a zero-value heuristic.
+
+Reynolds weights are covered time; Favre weights are density-time integrals.
+Means and unnormalised central moments are combined with the between-segment
+mean-difference term. RMS is reconstructed from the merged covariance, never
+averaged. `density_stress` is the Favre central moment divided by covered time.
+The output contains both weights, both means, both central matrices/covariances,
+RMS, mean density and a `covered` mask. Where `covered=0`, zero values are placeholders,
+not instantaneous or zero-fluctuation estimates. `regional` retains the producer's
+spatial-mean velocity-signal definition with unit density weight. Its Favre-labelled
+bookkeeping equals its Reynolds signal statistics, and its `density_stress` is not
+physical fluid density-weighted stress. It is not a spatial average of pointwise
+covariances. Actual fluid-density Favre statistics are in `point`.
+
+The tool checks global node/layout/definition identities, frozen physical input
+and static resources, windows, completed sample clocks, overlap and the explicit
+source-clock map. Source-code geometry identity and existing frozen grid resources
+establish the grid correspondence; no new field checksum is required. Geometry
+resources used only for exact restart are not compared across precision.
+Disjoint supplied segments can be merged but gaps remain reported. Adjacent step
+intervals with an explicit precision conversion may have a small raw time-coordinate
+jump; its original endpoint and converted endpoint remain in the report, not
+silently replaced by a fabricated sample. The output is labelled cross-precision
+when applicable and is not an exact trajectory or statistical-stationarity claim.
+The report distinguishes contiguous completed-step identities from continuity
+of the stored raw time coordinates, records missing window edges, and counts
+points with positive actual statistical weight.
+
+All numerical arrays are tiled. The byte budget reserves controlled NumPy workspace,
+not total Python/HDF5 RSS. A failed merge has no `COMPLETE.json`; it can leave partial
+diagnostics in the new destination. There is no source deletion, overwrite,
+resolution reduction, automatic retry or checksum scan of solver state fields.
 
 ## Optional Native Archives
 
@@ -681,7 +747,11 @@ directory. It contains `lineage.frames` and `lineage.xdmf`; open the latter
 with Xdmf3ReaderS. The same command handles grouped slices and AIR5 caches.
 Only the registered parent chain is followed. At each edge, parent frames
 after the child's restored step are excluded; retained parent times must not
-exceed the restored time. Other branches are not scanned or included.
+exceed the source checkpoint's restored time. At a precision switch, SEGMENT-3
+preserves the source clock's integer bits and width as well as the converted
+new-segment origin. The former bounds the parent history; the latter bounds
+new frames. No floating-point tolerance is used to equate these two clocks.
+Other branches are not scanned or included.
 Duplicate clocks, changing field/plane layouts or units, cycles, missing or
 changed parents, aliases, incomplete frames and exceeded catalog budgets
 are rejected. Old frames/branches remain independently readable.
@@ -722,9 +792,20 @@ Each enabled native product now publishes a per-segment `series.xdmf` and,
 when layouts match, a `lineage.xdmf` referencing the explicit parent chain and
 current frames. Ancestors are truncated at each declared restore point, not
 at arbitrary directory order. The companion `lineage.frames` uses
-`ASTR_NATIVE_LINEAGE_1`: each frame has a clock row, a data-file reference and
-a geometry-file reference. This is distinct from the offline combined ledger.
+`ASTR_NATIVE_LINEAGE_2`: each frame has a `step time numerical_bytes` row,
+a data-file reference and a geometry-file reference. Each ancestor retains
+its original time text and actual precision; FP32 and FP64 segments can share
+one index without converting the source arrays. Published LINEAGE-1 records
+remain readable as FP64. This is distinct from the offline combined ledger.
 The solver uses native Fortran/C/HDF5 APIs; Python is not a runtime dependency.
+
+Native archive `metadata` remains eleven int64 values. Its leading version is
+1 for the published FP64 format and 2 for native FP32. The clock words use that
+precision, and every floating-point field, velocity vector and shared coordinate
+dataset must match it. XDMF declares Precision 8 or 4 accordingly. Index repair
+and combination inspect this identity without loading field arrays; a change
+of precision within one segment is invalid. A precision switch starts a new
+segment and does not turn an approximate continuation into an exact trajectory.
 
 Startup validates ancestor seals, available legacy CRCs, input/segment fingerprints
 and typed HDF5 inventories. New name-only frames do not carry payload CRCs.

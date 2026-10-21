@@ -1,9 +1,10 @@
 module conservative_boundary_stage_gpu
+  use astr_precision, only: real_kind
   use cudafor
   implicit none
   private
-  real(8),allocatable,device,save :: xline_d(:)
-  real(8),device,save :: left_d(5),right_d(5)
+  real(real_kind),allocatable,device,save :: xline_d(:)
+  real(real_kind),device,save :: left_d(5),right_d(5)
   integer,device,save :: error_d
   public :: initialize_conservative_stage_gpu,apply_conservative_stage_gpu, &
             release_conservative_stage_gpu
@@ -20,7 +21,7 @@ contains
     use conservative_boundary_runtime, only: conservative_boundary
     use parallel, only: por
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-    real(8) :: xline(-hm:im+hm)
+    real(real_kind) :: xline(-hm:im+hm)
     integer :: h
     if(por(.not.conservative_boundary%enabled)) error stop 'GPU conservative configuration disabled'
     if(por(allocated(xline_d))) error stop 'GPU conservative stage already initialized'
@@ -44,7 +45,7 @@ contains
     use halo_exchange_gpu, only: exchange_solution_halo_gpu
     use parallel, only: por
     use gpu_check, only: sync_after_kernel
-    real(8),intent(in) :: tw
+    real(real_kind),intent(in) :: tw
     logical :: owned(4)
     integer :: side,width,error
     if(por(.not.allocated(xline_d))) error stop 'GPU conservative stage not initialized'

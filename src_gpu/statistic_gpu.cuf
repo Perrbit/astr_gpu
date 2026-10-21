@@ -1,25 +1,114 @@
 module statistic_gpu
+  use astr_precision, only: real_kind
+  use astr_precision_mpi, only: mpi_real_type
   use cudafor
   implicit none
-  real(8),allocatable,device,save :: adaptive_partial_d(:),adaptive_reduced_d(:)
+  private :: real_kind,mpi_real_type
+  real(real_kind),allocatable,device,save :: adaptive_partial_d(:),adaptive_reduced_d(:)
 contains
+  attributes(global) subroutine conservative_mean_partial_kernel(im,jm,km,partial)
+    use commarray_gpu, only: q_d
+    integer,value :: im,jm,km
+    real(real_kind),device :: partial(2,*)
+    real(real_kind),shared :: sums(256,2)
+    real(real_kind) :: density,energy
+    integer :: tid,node,stride,i,j,k
+    tid=threadIdx%x;node=(blockIdx%x-1)*blockDim%x+tid-1
+    stride=gridDim%x*blockDim%x;density=0;energy=0
+    do while(node<im*jm*km)
+      i=mod(node,im)+1;j=mod(node/im,jm)+1;k=node/(im*jm)+1
+      density=density+q_d(i,j,k,1);energy=energy+q_d(i,j,k,5)
+      node=node+stride
+    enddo
+    sums(tid,1)=density;sums(tid,2)=energy
+    call syncthreads()
+    stride=blockDim%x/2
+    do while(stride>0)
+      if(tid<=stride) sums(tid,:)=sums(tid,:)+sums(tid+stride,:)
+      call syncthreads();stride=stride/2
+    enddo
+    if(tid==1) partial(:,blockIdx%x)=sums(1,:)
+  end subroutine
+
+  attributes(global) subroutine conservative_mean_reduce_kernel(n,partial,reduced)
+    integer,value :: n
+    real(real_kind),device :: partial(2,n),reduced(2)
+    real(real_kind),shared :: sums(256)
+    real(real_kind) :: total
+    integer :: tid,index,stride,component
+    tid=threadIdx%x;component=blockIdx%x;index=tid;total=0
+    do while(index<=n)
+      total=total+partial(component,index);index=index+blockDim%x
+    enddo
+    sums(tid)=total;call syncthreads()
+    stride=blockDim%x/2
+    do while(stride>0)
+      if(tid<=stride) sums(tid)=sums(tid)+sums(tid+stride)
+      call syncthreads();stride=stride/2
+    enddo
+    if(tid==1) reduced(component)=sums(1)
+  end subroutine
+
+  subroutine gpu_tgv_conservative_means(values)
+    use mpi
+    use commvar, only: im,jm,km,ia,ja,ka,roinf,uinf
+    use gpu_check, only: sync_after_kernel
+    use ieee_arithmetic, only: ieee_is_finite
+    real(real_kind),intent(out) :: values(2)
+    real(real_kind),allocatable,device :: partial(:,:),reduced(:)
+    real(real_kind) :: local(2)
+    integer :: blocks,ierr
+    blocks=min(256,max(1,(im*jm*km+255)/256))
+    allocate(partial(2,blocks),reduced(2))
+    call conservative_mean_partial_kernel<<<blocks,256>>>(im,jm,km,partial)
+    call sync_after_kernel('conservative_mean_partial_kernel',.true.)
+    call conservative_mean_reduce_kernel<<<2,256>>>(blocks,partial,reduced)
+    call sync_after_kernel('conservative_mean_reduce_kernel',.true.)
+    local=reduced
+    call MPI_Allreduce(local,values,2,mpi_real_type,MPI_SUM,MPI_COMM_WORLD,ierr)
+    if(ierr/=MPI_SUCCESS.or..not.all(ieee_is_finite(values))) error stop 'Invalid TGV conservative means'
+    values=values/real(ia*ja*ka,real_kind)
+    values(1)=values(1)/roinf
+    values(2)=values(2)/(roinf*uinf*uinf)
+    deallocate(partial,reduced)
+  end subroutine
+
+  subroutine gpu_write_tgv_conservation()
+    use commvar, only: nstep,time,maxstep
+    use parallel, only: lio
+    use utility, only: listinit
+    real(real_kind) :: values(2)
+    integer,save :: hand=-1
+    logical,save :: first=.true.
+    if(nstep>maxstep) return
+    call gpu_tgv_conservative_means(values)
+    if(.not.lio) return
+    if(first) then
+      call listinit(filename='tgv_conservation.dat',handle=hand, &
+        firstline='nstep time density_mean total_energy_mean')
+      first=.false.
+    endif
+    write(hand,'(I20,3(1X,ES24.16))') nstep,time,values
+    flush(hand)
+  end subroutine
+
   attributes(global) subroutine adaptive_energy_partial_kernel(im,jm,km)
     use commarray_gpu, only: q_d
     integer,value :: im,jm,km
-    real(8),shared :: sums(256)
+    real(real_kind),shared :: sums(256)
     integer,shared :: bad(256)
-    real(8) :: density,value,total
+    real(real_kind) :: density,value,total
     integer :: tid,node,stride,i,j,k,invalid
     tid=threadIdx%x; node=(blockIdx%x-1)*blockDim%x+tid-1
     stride=gridDim%x*blockDim%x; total=0; invalid=0
     do while(node<im*jm*km)
       i=mod(node,im); j=mod(node/im,jm); k=node/(im*jm)
       density=q_d(i,j,k,1)
-      if(.not.(density>0.d0.and.density<=huge(density))) then
+      if(.not.(density>0.e0_real_kind.and.density<=huge(density))) then
         invalid=1
       else
         value=(q_d(i,j,k,2)**2+q_d(i,j,k,3)**2+q_d(i,j,k,4)**2)/density
-        if(.not.(value>=0.d0.and.value<=huge(value))) then
+        if(.not.(value>=0.e0_real_kind.and.value<=huge(value))) then
           invalid=1
         else
           total=total+value
@@ -35,19 +124,19 @@ contains
       endif
       call syncthreads(); stride=stride/2
     enddo
-    if(tid==1) adaptive_partial_d(blockIdx%x)=merge(sums(1),-1.d0,bad(1)==0)
+    if(tid==1) adaptive_partial_d(blockIdx%x)=merge(sums(1),-1.e0_real_kind,bad(1)==0)
   end subroutine
 
   attributes(global) subroutine adaptive_energy_reduce_kernel(n)
     integer,value :: n
-    real(8),shared :: sums(256)
+    real(real_kind),shared :: sums(256)
     integer,shared :: bad(256)
     integer :: tid,i,stride,invalid
-    real(8) :: total,value
+    real(real_kind) :: total,value
     tid=threadIdx%x; i=tid; total=0; invalid=0
     do while(i<=n)
       value=adaptive_partial_d(i)
-      if(.not.(value>=0.d0.and.value<=huge(value))) then
+      if(.not.(value>=0.e0_real_kind.and.value<=huge(value))) then
         invalid=1
       else
         total=total+value
@@ -63,7 +152,7 @@ contains
       call syncthreads(); stride=stride/2
     enddo
     if(tid==1) then
-      adaptive_reduced_d(1)=sums(1); adaptive_reduced_d(2)=real(bad(1),8)
+      adaptive_reduced_d(1)=sums(1); adaptive_reduced_d(2)=real(bad(1),real_kind)
     endif
   end subroutine
 
@@ -73,9 +162,9 @@ contains
     use checkpoint_state_io, only: checkpoint_state_require
     use mpi, only: MPI_COMM_WORLD
     use ieee_arithmetic, only: ieee_is_finite
-    real(8),intent(out) :: local
+    real(real_kind),intent(out) :: local
     logical,intent(out) :: ok
-    real(8) :: reduced(2)
+    real(real_kind) :: reduced(2)
     integer :: blocks,status
     blocks=min(256,max(1,(im*jm*km+255)/256))
     if(.not.allocated(adaptive_partial_d)) then
@@ -91,18 +180,18 @@ contains
     local=reduced(1); ok=reduced(2)==0.and.ieee_is_finite(local).and.local>=0
   end subroutine
 
-  attributes(device) pure real(8) function determinant33_rows(a,b,c)
+  attributes(device) pure real(real_kind) function determinant33_rows(a,b,c)
     implicit none
-    real(8),intent(in) :: a(3),b(3),c(3)
+    real(real_kind),intent(in) :: a(3),b(3),c(3)
 
     determinant33_rows = a(1)*b(2)*c(3) + a(2)*b(3)*c(1) + a(3)*b(1)*c(2) - &
                          a(3)*b(2)*c(1) - a(1)*b(3)*c(2) - a(2)*b(1)*c(3)
   end function determinant33_rows
 
-  attributes(device) pure real(8) function quad_area3d_device(x1,x2,x3,x4)
+  attributes(device) pure real(real_kind) function quad_area3d_device(x1,x2,x3,x4)
     implicit none
-    real(8),intent(in) :: x1(3),x2(3),x3(3),x4(3)
-    real(8) :: a(3),b(3),c(3),normal1(3),normal2(3)
+    real(real_kind),intent(in) :: x1(3),x2(3),x3(3),x4(3)
+    real(real_kind) :: a(3),b(3),c(3),normal1(3),normal2(3)
 
     a=x2-x1
     b=x3-x1
@@ -113,56 +202,56 @@ contains
     normal2(1)=b(2)*c(3)-b(3)*c(2)
     normal2(2)=b(3)*c(1)-b(1)*c(3)
     normal2(3)=b(1)*c(2)-b(2)*c(1)
-    quad_area3d_device=0.5d0*(sqrt(sum(normal1*normal1))+sqrt(sum(normal2*normal2)))
+    quad_area3d_device=0.5e0_real_kind*(sqrt(sum(normal1*normal1))+sqrt(sum(normal2*normal2)))
   end function quad_area3d_device
 
-  attributes(device) pure real(8) function volhex_device(x1,x2,x3,x4,x5,x6,x7,x8)
+  attributes(device) pure real(real_kind) function volhex_device(x1,x2,x3,x4,x5,x6,x7,x8)
     implicit none
-    real(8),intent(in) :: x1(3),x2(3),x3(3),x4(3),x5(3),x6(3),x7(3),x8(3)
-    real(8) :: centroid(3),a(3),b(3),c(3)
+    real(real_kind),intent(in) :: x1(3),x2(3),x3(3),x4(3),x5(3),x6(3),x7(3),x8(3)
+    real(real_kind) :: centroid(3),a(3),b(3),c(3)
 
-    centroid=0.125d0*(x1+x2+x3+x4+x5+x6+x7+x8)
+    centroid=0.125e0_real_kind*(x1+x2+x3+x4+x5+x6+x7+x8)
     a=centroid-x1
     b=x3-x1
     c=x2-x4
-    volhex_device=determinant33_rows(a,b,c)/6.d0
+    volhex_device=determinant33_rows(a,b,c)/6.e0_real_kind
     a=centroid-x5
     b=x7-x5
     c=x8-x6
-    volhex_device=volhex_device+determinant33_rows(a,b,c)/6.d0
+    volhex_device=volhex_device+determinant33_rows(a,b,c)/6.e0_real_kind
     a=centroid-x1
     b=x5-x4
     c=x8-x1
-    volhex_device=volhex_device+determinant33_rows(a,b,c)/6.d0
+    volhex_device=volhex_device+determinant33_rows(a,b,c)/6.e0_real_kind
     a=centroid-x2
     b=x6-x3
     c=x2-x7
-    volhex_device=volhex_device+determinant33_rows(a,b,c)/6.d0
+    volhex_device=volhex_device+determinant33_rows(a,b,c)/6.e0_real_kind
     a=centroid-x3
     b=x8-x3
     c=x7-x4
-    volhex_device=volhex_device+determinant33_rows(a,b,c)/6.d0
+    volhex_device=volhex_device+determinant33_rows(a,b,c)/6.e0_real_kind
     a=centroid-x1
     b=x5-x2
     c=x1-x6
-    volhex_device=volhex_device+determinant33_rows(a,b,c)/6.d0
+    volhex_device=volhex_device+determinant33_rows(a,b,c)/6.e0_real_kind
   end function volhex_device
 
   attributes(global) subroutine kenergy_partial_kernel(rho,vel,partial,im,jm,km,hm)
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),device :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
-    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-    real(8),device :: partial(*)
-    real(8),shared :: scratch(256)
+    real(real_kind),device :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(real_kind),device :: partial(*)
+    real(real_kind),shared :: scratch(256)
     integer :: tid,id,stride,ncell,i,j,k
-    real(8) :: local,usq
+    real(real_kind) :: local,usq
 
     tid = threadIdx%x
     id = (blockIdx%x - 1) * blockDim%x + tid - 1
     stride = gridDim%x * blockDim%x
     ncell = im * jm * km
-    local = 0.d0
+    local = 0.e0_real_kind
 
     do while(id < ncell)
       i = mod(id,im) + 1
@@ -189,18 +278,18 @@ contains
   attributes(global) subroutine enstophy_partial_kernel(rho,dvel,partial,im,jm,km,hm)
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),device :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
-    real(8),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
-    real(8),device :: partial(*)
-    real(8),shared :: scratch(256)
+    real(real_kind),device :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
+    real(real_kind),device :: partial(*)
+    real(real_kind),shared :: scratch(256)
     integer :: tid,id,stride,ncell,i,j,k
-    real(8) :: local,omega1,omega2,omega3,omegam
+    real(real_kind) :: local,omega1,omega2,omega3,omegam
 
     tid = threadIdx%x
     id = (blockIdx%x - 1) * blockDim%x + tid - 1
     stride = gridDim%x * blockDim%x
     ncell = im * jm * km
-    local = 0.d0
+    local = 0.e0_real_kind
 
     do while(id < ncell)
       i = mod(id,im) + 1
@@ -231,21 +320,21 @@ contains
        tempconst,tempconst1,reynolds,nondimen)
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),value :: tempconst,tempconst1,reynolds
+    real(real_kind),value :: tempconst,tempconst1,reynolds
     logical,value :: nondimen
-    real(8),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
-    real(8),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
-    real(8),device :: partial(*)
-    real(8),shared :: scratch(256)
+    real(real_kind),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
+    real(real_kind),device :: partial(*)
+    real(real_kind),shared :: scratch(256)
     integer :: tid,id,stride,ncell,i,j,k
-    real(8) :: local,tloc,miu,du11,du12,du13,du21,du22,du23,du31,du32,du33
-    real(8) :: s11,s12,s13,s22,s23,s33,div
+    real(real_kind) :: local,tloc,miu,du11,du12,du13,du21,du22,du23,du31,du32,du33
+    real(real_kind) :: s11,s12,s13,s22,s23,s33,div
 
     tid = threadIdx%x
     id = (blockIdx%x - 1) * blockDim%x + tid - 1
     stride = gridDim%x * blockDim%x
     ncell = im * jm * km
-    local = 0.d0
+    local = 0.e0_real_kind
 
     do while(id < ncell)
       i = mod(id,im) + 1
@@ -256,17 +345,17 @@ contains
       if(nondimen) then
         miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
       else
-        miu = 1.716d-5*(tloc/273.15d0)*sqrt(tloc/273.15d0)*(273.15d0+110.4d0)/(tloc+110.4d0)
+        miu = 1.716e-5_real_kind*(tloc/273.15e0_real_kind)*sqrt(tloc/273.15e0_real_kind)*(273.15e0_real_kind+110.4e0_real_kind)/(tloc+110.4e0_real_kind)
       endif
 
       du11=dvel(i,j,k,1,1); du12=dvel(i,j,k,1,2); du13=dvel(i,j,k,1,3)
       du21=dvel(i,j,k,2,1); du22=dvel(i,j,k,2,2); du23=dvel(i,j,k,2,3)
       du31=dvel(i,j,k,3,1); du32=dvel(i,j,k,3,2); du33=dvel(i,j,k,3,3)
-      s11=du11; s12=0.5d0*(du12+du21); s13=0.5d0*(du13+du31)
-      s22=du22; s23=0.5d0*(du23+du32); s33=du33
+      s11=du11; s12=0.5e0_real_kind*(du12+du21); s13=0.5e0_real_kind*(du13+du31)
+      s22=du22; s23=0.5e0_real_kind*(du23+du32); s33=du33
       div=s11+s22+s33
-      local = local + 2.d0*miu*(s11**2+s22**2+s33**2+ &
-              2.d0*(s12**2+s13**2+s23**2) - div**2/3.d0)
+      local = local + 2.e0_real_kind*miu*(s11**2+s22**2+s33**2+ &
+              2.e0_real_kind*(s12**2+s13**2+s23**2) - div**2/3.e0_real_kind)
       id = id + stride
     enddo
 
@@ -286,17 +375,17 @@ contains
   attributes(global) subroutine maxq_partial_kernel(q,partial,im,jm,km,hm,numq,ivar)
     implicit none
     integer,value :: im,jm,km,hm,numq,ivar
-    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq)
-    real(8),device :: partial(*)
-    real(8),shared :: scratch(256)
+    real(real_kind),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:numq)
+    real(real_kind),device :: partial(*)
+    real(real_kind),shared :: scratch(256)
     integer :: tid,id,stride,ncell,i,j,k
-    real(8) :: local
+    real(real_kind) :: local
 
     tid = threadIdx%x
     id = (blockIdx%x - 1) * blockDim%x + tid - 1
     stride = gridDim%x * blockDim%x
     ncell = (im + 1) * (jm + 1) * (km + 1)
-    local = -huge(1.d0)
+    local = -huge(1.e0_real_kind)
 
     do while(id < ncell)
       i = mod(id,im + 1)
@@ -323,26 +412,26 @@ contains
        tempconst,tempconst1,reynolds,nondimen,apply_down,apply_up)
     implicit none
     integer,value :: im,jm,km,hm,apply_down,apply_up
-    real(8),value :: tempconst,tempconst1,reynolds
+    real(real_kind),value :: tempconst,tempconst1,reynolds
     logical,value :: nondimen
-    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
-    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-    real(8),device :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-    real(8),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
-    real(8),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
-    real(8),device :: partial(:,:)
-    real(8),shared :: scratch_mass(256),scratch_fbcx(256),scratch_wrms(256)
+    real(real_kind),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(real_kind),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(real_kind),device :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(real_kind),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
+    real(real_kind),device :: partial(:,:)
+    real(real_kind),shared :: scratch_mass(256),scratch_fbcx(256),scratch_wrms(256)
     integer :: tid,id,stride,ncell,nwall,i,j,k
-    real(8) :: local_mass,local_fbcx,local_wrms,dy,var1,tloc,miu
+    real(real_kind) :: local_mass,local_fbcx,local_wrms,dy,var1,tloc,miu
 
     tid = threadIdx%x
     id = (blockIdx%x - 1) * blockDim%x + tid - 1
     stride = gridDim%x * blockDim%x
     ncell = im * jm * km
     nwall = im * km
-    local_mass = 0.d0
-    local_fbcx = 0.d0
-    local_wrms = 0.d0
+    local_mass = 0.e0_real_kind
+    local_fbcx = 0.e0_real_kind
+    local_wrms = 0.e0_real_kind
 
     do while(id < max(ncell,nwall))
       if(id < ncell) then
@@ -350,7 +439,7 @@ contains
         j = mod(id/im,jm) + 1
         k = id/(im*jm) + 1
         dy = x(i,j,k,2) - x(i,j-1,k,2)
-        var1 = 0.5d0 * (q(i,j,k,2) + q(i,j-1,k,2))
+        var1 = 0.5e0_real_kind * (q(i,j,k,2) + q(i,j-1,k,2))
         local_mass = local_mass + var1 * dy
         local_wrms = local_wrms + vel(i,j,k,3) * vel(i,j,k,3)
       endif
@@ -363,7 +452,7 @@ contains
           if(nondimen) then
             miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
           else
-            miu = 1.716d-5*(tloc/273.15d0)*sqrt(tloc/273.15d0)*(273.15d0+110.4d0)/(tloc+110.4d0)
+            miu = 1.716e-5_real_kind*(tloc/273.15e0_real_kind)*sqrt(tloc/273.15e0_real_kind)*(273.15e0_real_kind+110.4e0_real_kind)/(tloc+110.4e0_real_kind)
           endif
           local_fbcx = local_fbcx + miu*dvel(i,0,k,1,2)
         endif
@@ -372,7 +461,7 @@ contains
           if(nondimen) then
             miu = tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
           else
-            miu = 1.716d-5*(tloc/273.15d0)*sqrt(tloc/273.15d0)*(273.15d0+110.4d0)/(tloc+110.4d0)
+            miu = 1.716e-5_real_kind*(tloc/273.15e0_real_kind)*sqrt(tloc/273.15e0_real_kind)*(273.15e0_real_kind+110.4e0_real_kind)/(tloc+110.4e0_real_kind)
           endif
           local_fbcx = local_fbcx - miu*dvel(i,jm,k,1,2)
         endif
@@ -408,31 +497,31 @@ contains
        nblocks,tempconst,tempconst1,reynolds,prandtl,const5,apply_down)
     implicit none
     integer,value :: im,jm,km,hm,nblocks,apply_down
-    real(8),value :: tempconst,tempconst1,reynolds,prandtl,const5
-    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
-    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-    real(8),device :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-    real(8),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
-    real(8),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
-    real(8),device :: dtmp(0:im,0:jm,0:km,1:3)
-    real(8),device :: partial(nblocks,6)
-    real(8),shared :: scratch_mass(256),scratch_fbcx(256),scratch_whf(256),scratch_wrms(256), &
+    real(real_kind),value :: tempconst,tempconst1,reynolds,prandtl,const5
+    real(real_kind),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(real_kind),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(real_kind),device :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(real_kind),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
+    real(real_kind),device :: dtmp(0:im,0:jm,0:km,1:3)
+    real(real_kind),device :: partial(nblocks,6)
+    real(real_kind),shared :: scratch_mass(256),scratch_fbcx(256),scratch_whf(256),scratch_wrms(256), &
                      scratch_vol(256),scratch_area(256)
     integer :: tid,id,stride,ncell,nwall,i,j,k
-    real(8) :: mass,fbcx,whf,wrms,volsum,areasum,vol,area,miu1,miu2,miu3,miu4,hcc1,hcc2,hcc3,hcc4
-    real(8) :: x1(3),x2(3),x3(3),x4(3),x5(3),x6(3),x7(3),x8(3)
+    real(real_kind) :: mass,fbcx,whf,wrms,volsum,areasum,vol,area,miu1,miu2,miu3,miu4,hcc1,hcc2,hcc3,hcc4
+    real(real_kind) :: x1(3),x2(3),x3(3),x4(3),x5(3),x6(3),x7(3),x8(3)
 
     tid = threadIdx%x
     id = (blockIdx%x-1)*blockDim%x + tid - 1
     stride = gridDim%x*blockDim%x
     ncell = im*jm*km
     nwall = im*km
-    mass = 0.d0
-    fbcx = 0.d0
-    whf = 0.d0
-    wrms = 0.d0
-    volsum = 0.d0
-    areasum = 0.d0
+    mass = 0.e0_real_kind
+    fbcx = 0.e0_real_kind
+    whf = 0.e0_real_kind
+    wrms = 0.e0_real_kind
+    volsum = 0.e0_real_kind
+    areasum = 0.e0_real_kind
     do while(id < max(ncell,nwall))
       if(id < ncell) then
         i = mod(id,im) + 1
@@ -447,7 +536,7 @@ contains
         x7=x(i,j,k,:)
         x8=x(i-1,j,k,:)
         vol=volhex_device(x1,x2,x3,x4,x5,x6,x7,x8)
-        mass = mass + 0.125d0*(q(i-1,j-1,k-1,2)+q(i,j-1,k-1,2)+q(i-1,j,k-1,2)+q(i,j,k-1,2)+ &
+        mass = mass + 0.125e0_real_kind*(q(i-1,j-1,k-1,2)+q(i,j-1,k-1,2)+q(i-1,j,k-1,2)+q(i,j,k-1,2)+ &
                                 q(i-1,j-1,k,2)+q(i,j-1,k,2)+q(i-1,j,k,2)+q(i,j,k,2))*vol
         wrms = wrms + vel(i,j,k,3)*vel(i,j,k,3)
         volsum = volsum + vol
@@ -469,9 +558,9 @@ contains
         hcc2 = miu2/prandtl/const5
         hcc3 = miu3/prandtl/const5
         hcc4 = miu4/prandtl/const5
-        fbcx = fbcx + 0.25d0*area*(miu1*dvel(i,0,k,1,2) + miu2*dvel(i-1,0,k,1,2) + &
+        fbcx = fbcx + 0.25e0_real_kind*area*(miu1*dvel(i,0,k,1,2) + miu2*dvel(i-1,0,k,1,2) + &
                                     miu3*dvel(i,0,k-1,1,2) + miu4*dvel(i-1,0,k-1,1,2))
-        whf = whf + 0.25d0*area*(hcc1*dtmp(i,0,k,2) + hcc2*dtmp(i-1,0,k,2) + &
+        whf = whf + 0.25e0_real_kind*area*(hcc1*dtmp(i,0,k,2) + hcc2*dtmp(i-1,0,k,2) + &
                                   hcc3*dtmp(i,0,k-1,2) + hcc4*dtmp(i-1,0,k-1,2))
       endif
       id = id + stride
@@ -509,25 +598,25 @@ contains
   attributes(global) subroutine enstophy_partial_sp_kernel(rho,dvel,partial,im,jm,km,hm)
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),device :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device :: rho(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
     real(4),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
-    real(8),device :: partial(*)
-    real(8),shared :: scratch(256)
+    real(real_kind),device :: partial(*)
+    real(real_kind),shared :: scratch(256)
     integer :: tid,id,stride,ncell,i,j,k
-    real(8) :: local,omega1,omega2,omega3,omegam
+    real(real_kind) :: local,omega1,omega2,omega3,omegam
 
     tid=threadIdx%x
     id=(blockIdx%x-1)*blockDim%x+tid-1
     stride=gridDim%x*blockDim%x
     ncell=im*jm*km
-    local=0.d0
+    local=0.e0_real_kind
     do while(id<ncell)
       i=mod(id,im)+1
       j=mod(id/im,jm)+1
       k=id/(im*jm)+1
-      omega1=real(dvel(i,j,k,3,2),8)-real(dvel(i,j,k,2,3),8)
-      omega2=real(dvel(i,j,k,1,3),8)-real(dvel(i,j,k,3,1),8)
-      omega3=real(dvel(i,j,k,2,1),8)-real(dvel(i,j,k,1,2),8)
+      omega1=real(dvel(i,j,k,3,2),real_kind)-real(dvel(i,j,k,2,3),real_kind)
+      omega2=real(dvel(i,j,k,1,3),real_kind)-real(dvel(i,j,k,3,1),real_kind)
+      omega3=real(dvel(i,j,k,2,1),real_kind)-real(dvel(i,j,k,1,2),real_kind)
       omegam=omega1*omega1+omega2*omega2+omega3*omega3
       local=local+rho(i,j,k)*omegam
       id=id+stride
@@ -547,21 +636,21 @@ contains
        tempconst,tempconst1,reynolds,nondimen)
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),value :: tempconst,tempconst1,reynolds
+    real(real_kind),value :: tempconst,tempconst1,reynolds
     logical,value :: nondimen
-    real(8),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
     real(4),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
-    real(8),device :: partial(*)
-    real(8),shared :: scratch(256)
+    real(real_kind),device :: partial(*)
+    real(real_kind),shared :: scratch(256)
     integer :: tid,id,stride,ncell,i,j,k
-    real(8) :: local,tloc,miu,du11,du12,du13,du21,du22,du23,du31,du32,du33
-    real(8) :: s11,s12,s13,s22,s23,s33,div
+    real(real_kind) :: local,tloc,miu,du11,du12,du13,du21,du22,du23,du31,du32,du33
+    real(real_kind) :: s11,s12,s13,s22,s23,s33,div
 
     tid=threadIdx%x
     id=(blockIdx%x-1)*blockDim%x+tid-1
     stride=gridDim%x*blockDim%x
     ncell=im*jm*km
-    local=0.d0
+    local=0.e0_real_kind
     do while(id<ncell)
       i=mod(id,im)+1
       j=mod(id/im,jm)+1
@@ -570,16 +659,16 @@ contains
       if(nondimen) then
         miu=tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
       else
-        miu=1.716d-5*(tloc/273.15d0)*sqrt(tloc/273.15d0)*(273.15d0+110.4d0)/(tloc+110.4d0)
+        miu=1.716e-5_real_kind*(tloc/273.15e0_real_kind)*sqrt(tloc/273.15e0_real_kind)*(273.15e0_real_kind+110.4e0_real_kind)/(tloc+110.4e0_real_kind)
       endif
-      du11=real(dvel(i,j,k,1,1),8); du12=real(dvel(i,j,k,1,2),8); du13=real(dvel(i,j,k,1,3),8)
-      du21=real(dvel(i,j,k,2,1),8); du22=real(dvel(i,j,k,2,2),8); du23=real(dvel(i,j,k,2,3),8)
-      du31=real(dvel(i,j,k,3,1),8); du32=real(dvel(i,j,k,3,2),8); du33=real(dvel(i,j,k,3,3),8)
-      s11=du11; s12=0.5d0*(du12+du21); s13=0.5d0*(du13+du31)
-      s22=du22; s23=0.5d0*(du23+du32); s33=du33
+      du11=real(dvel(i,j,k,1,1),real_kind); du12=real(dvel(i,j,k,1,2),real_kind); du13=real(dvel(i,j,k,1,3),real_kind)
+      du21=real(dvel(i,j,k,2,1),real_kind); du22=real(dvel(i,j,k,2,2),real_kind); du23=real(dvel(i,j,k,2,3),real_kind)
+      du31=real(dvel(i,j,k,3,1),real_kind); du32=real(dvel(i,j,k,3,2),real_kind); du33=real(dvel(i,j,k,3,3),real_kind)
+      s11=du11; s12=0.5e0_real_kind*(du12+du21); s13=0.5e0_real_kind*(du13+du31)
+      s22=du22; s23=0.5e0_real_kind*(du23+du32); s33=du33
       div=s11+s22+s33
-      local=local+2.d0*miu*(s11**2+s22**2+s33**2+ &
-            2.d0*(s12**2+s13**2+s23**2)-div**2/3.d0)
+      local=local+2.e0_real_kind*miu*(s11**2+s22**2+s33**2+ &
+            2.e0_real_kind*(s12**2+s13**2+s23**2)-div**2/3.e0_real_kind)
       id=id+stride
     enddo
     scratch(tid)=local
@@ -597,33 +686,33 @@ contains
        tempconst,tempconst1,reynolds,nondimen,apply_down,apply_up)
     implicit none
     integer,value :: im,jm,km,hm,apply_down,apply_up
-    real(8),value :: tempconst,tempconst1,reynolds
+    real(real_kind),value :: tempconst,tempconst1,reynolds
     logical,value :: nondimen
-    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
-    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-    real(8),device :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-    real(8),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(real_kind),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(real_kind),device :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(real_kind),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
     real(4),device :: dvel(0:im,0:jm,0:km,1:3,1:3)
-    real(8),device :: partial(:,:)
-    real(8),shared :: scratch_mass(256),scratch_fbcx(256),scratch_wrms(256)
+    real(real_kind),device :: partial(:,:)
+    real(real_kind),shared :: scratch_mass(256),scratch_fbcx(256),scratch_wrms(256)
     integer :: tid,id,stride,ncell,nwall,i,j,k
-    real(8) :: local_mass,local_fbcx,local_wrms,dy,var1,tloc,miu
+    real(real_kind) :: local_mass,local_fbcx,local_wrms,dy,var1,tloc,miu
 
     tid=threadIdx%x
     id=(blockIdx%x-1)*blockDim%x+tid-1
     stride=gridDim%x*blockDim%x
     ncell=im*jm*km
     nwall=im*km
-    local_mass=0.d0
-    local_fbcx=0.d0
-    local_wrms=0.d0
+    local_mass=0.e0_real_kind
+    local_fbcx=0.e0_real_kind
+    local_wrms=0.e0_real_kind
     do while(id<max(ncell,nwall))
       if(id<ncell) then
         i=mod(id,im)+1
         j=mod(id/im,jm)+1
         k=id/(im*jm)+1
         dy=x(i,j,k,2)-x(i,j-1,k,2)
-        var1=0.5d0*(q(i,j,k,2)+q(i,j-1,k,2))
+        var1=0.5e0_real_kind*(q(i,j,k,2)+q(i,j-1,k,2))
         local_mass=local_mass+var1*dy
         local_wrms=local_wrms+vel(i,j,k,3)*vel(i,j,k,3)
       endif
@@ -635,18 +724,18 @@ contains
           if(nondimen) then
             miu=tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
           else
-            miu=1.716d-5*(tloc/273.15d0)*sqrt(tloc/273.15d0)*(273.15d0+110.4d0)/(tloc+110.4d0)
+            miu=1.716e-5_real_kind*(tloc/273.15e0_real_kind)*sqrt(tloc/273.15e0_real_kind)*(273.15e0_real_kind+110.4e0_real_kind)/(tloc+110.4e0_real_kind)
           endif
-          local_fbcx=local_fbcx+miu*real(dvel(i,0,k,1,2),8)
+          local_fbcx=local_fbcx+miu*real(dvel(i,0,k,1,2),real_kind)
         endif
         if(apply_up/=0) then
           tloc=tmp(i,jm,k)
           if(nondimen) then
             miu=tloc*sqrt(tloc)*tempconst1/(tloc+tempconst)/reynolds
           else
-            miu=1.716d-5*(tloc/273.15d0)*sqrt(tloc/273.15d0)*(273.15d0+110.4d0)/(tloc+110.4d0)
+            miu=1.716e-5_real_kind*(tloc/273.15e0_real_kind)*sqrt(tloc/273.15e0_real_kind)*(273.15e0_real_kind+110.4e0_real_kind)/(tloc+110.4e0_real_kind)
           endif
-          local_fbcx=local_fbcx-miu*real(dvel(i,jm,k,1,2),8)
+          local_fbcx=local_fbcx-miu*real(dvel(i,jm,k,1,2),real_kind)
         endif
       endif
       id=id+stride
@@ -676,25 +765,25 @@ contains
        nblocks,tempconst,tempconst1,reynolds,prandtl,const5,apply_down)
     implicit none
     integer,value :: im,jm,km,hm,nblocks,apply_down
-    real(8),value :: tempconst,tempconst1,reynolds,prandtl,const5
-    real(8),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
-    real(8),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-    real(8),device :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-    real(8),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind),value :: tempconst,tempconst1,reynolds,prandtl,const5
+    real(real_kind),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
+    real(real_kind),device :: vel(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(real_kind),device :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
+    real(real_kind),device :: tmp(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
     real(4),device :: dvel(0:im,0:jm,0:km,1:3,1:3),dtmp(0:im,0:jm,0:km,1:3)
-    real(8),device :: partial(nblocks,6)
-    real(8),shared :: scratch_mass(256),scratch_fbcx(256),scratch_whf(256),scratch_wrms(256), &
+    real(real_kind),device :: partial(nblocks,6)
+    real(real_kind),shared :: scratch_mass(256),scratch_fbcx(256),scratch_whf(256),scratch_wrms(256), &
                      scratch_vol(256),scratch_area(256)
     integer :: tid,id,stride,ncell,nwall,i,j,k
-    real(8) :: mass,fbcx,whf,wrms,volsum,areasum,vol,area,miu1,miu2,miu3,miu4,hcc1,hcc2,hcc3,hcc4
-    real(8) :: x1(3),x2(3),x3(3),x4(3),x5(3),x6(3),x7(3),x8(3)
+    real(real_kind) :: mass,fbcx,whf,wrms,volsum,areasum,vol,area,miu1,miu2,miu3,miu4,hcc1,hcc2,hcc3,hcc4
+    real(real_kind) :: x1(3),x2(3),x3(3),x4(3),x5(3),x6(3),x7(3),x8(3)
 
     tid=threadIdx%x
     id=(blockIdx%x-1)*blockDim%x+tid-1
     stride=gridDim%x*blockDim%x
     ncell=im*jm*km
     nwall=im*km
-    mass=0.d0; fbcx=0.d0; whf=0.d0; wrms=0.d0; volsum=0.d0; areasum=0.d0
+    mass=0.e0_real_kind; fbcx=0.e0_real_kind; whf=0.e0_real_kind; wrms=0.e0_real_kind; volsum=0.e0_real_kind; areasum=0.e0_real_kind
     do while(id<max(ncell,nwall))
       if(id<ncell) then
         i=mod(id,im)+1
@@ -703,7 +792,7 @@ contains
         x1=x(i-1,j-1,k-1,:); x2=x(i,j-1,k-1,:); x3=x(i,j-1,k,:); x4=x(i-1,j-1,k,:)
         x5=x(i-1,j,k-1,:); x6=x(i,j,k-1,:); x7=x(i,j,k,:); x8=x(i-1,j,k,:)
         vol=volhex_device(x1,x2,x3,x4,x5,x6,x7,x8)
-        mass=mass+0.125d0*(q(i-1,j-1,k-1,2)+q(i,j-1,k-1,2)+q(i-1,j,k-1,2)+q(i,j,k-1,2)+ &
+        mass=mass+0.125e0_real_kind*(q(i-1,j-1,k-1,2)+q(i,j-1,k-1,2)+q(i-1,j,k-1,2)+q(i,j,k-1,2)+ &
              q(i-1,j-1,k,2)+q(i,j-1,k,2)+q(i-1,j,k,2)+q(i,j,k,2))*vol
         wrms=wrms+vel(i,j,k,3)*vel(i,j,k,3)
         volsum=volsum+vol
@@ -720,10 +809,10 @@ contains
         miu4=tmp(i-1,0,k-1)*sqrt(tmp(i-1,0,k-1))*tempconst1/(tmp(i-1,0,k-1)+tempconst)/reynolds
         hcc1=miu1/prandtl/const5; hcc2=miu2/prandtl/const5
         hcc3=miu3/prandtl/const5; hcc4=miu4/prandtl/const5
-        fbcx=fbcx+0.25d0*area*(miu1*real(dvel(i,0,k,1,2),8)+miu2*real(dvel(i-1,0,k,1,2),8)+ &
-             miu3*real(dvel(i,0,k-1,1,2),8)+miu4*real(dvel(i-1,0,k-1,1,2),8))
-        whf=whf+0.25d0*area*(hcc1*real(dtmp(i,0,k,2),8)+hcc2*real(dtmp(i-1,0,k,2),8)+ &
-             hcc3*real(dtmp(i,0,k-1,2),8)+hcc4*real(dtmp(i-1,0,k-1,2),8))
+        fbcx=fbcx+0.25e0_real_kind*area*(miu1*real(dvel(i,0,k,1,2),real_kind)+miu2*real(dvel(i-1,0,k,1,2),real_kind)+ &
+             miu3*real(dvel(i,0,k-1,1,2),real_kind)+miu4*real(dvel(i-1,0,k-1,1,2),real_kind))
+        whf=whf+0.25e0_real_kind*area*(hcc1*real(dtmp(i,0,k,2),real_kind)+hcc2*real(dtmp(i-1,0,k,2),real_kind)+ &
+             hcc3*real(dtmp(i,0,k-1,2),real_kind)+hcc4*real(dtmp(i-1,0,k-1,2),real_kind))
       endif
       id=id+stride
     enddo
@@ -753,14 +842,14 @@ contains
   attributes(global) subroutine s1_bl_reduce_partial_kernel(partial,reduced,nblocks)
     implicit none
     integer,value :: nblocks
-    real(8),device :: partial(nblocks,6),reduced(6)
-    real(8),shared :: scratch(256)
-    real(8) :: subtotal
+    real(real_kind),device :: partial(nblocks,6),reduced(6)
+    real(real_kind),shared :: scratch(256)
+    real(real_kind) :: subtotal
     integer :: tid,ivar,iblock,stride
 
     tid = threadIdx%x
     ivar = blockIdx%x
-    subtotal = 0.d0
+    subtotal = 0.e0_real_kind
     iblock = tid
     do while(iblock <= nblocks)
       subtotal = subtotal + partial(iblock,ivar)
@@ -785,12 +874,12 @@ contains
     use gpu_check, only: sync_after_kernel
     use parallel, only: mpisize
     implicit none
-    real(8),intent(out) :: kenergy_gpu
+    real(real_kind),intent(out) :: kenergy_gpu
     integer,parameter :: block_size = 256
     integer :: ncell,nblocks,ierr
-    real(8) :: local_sum,global_sum
-    real(8),allocatable,device :: partial_d(:)
-    real(8),allocatable :: partial_h(:)
+    real(real_kind) :: local_sum,global_sum
+    real(real_kind),allocatable,device :: partial_d(:)
+    real(real_kind),allocatable :: partial_h(:)
 
     ncell = im * jm * km
     nblocks = max(1,(ncell + block_size - 1) / block_size)
@@ -803,12 +892,12 @@ contains
 
     local_sum = sum(partial_h)
     if(mpisize>1) then
-      call mpi_allreduce(local_sum,global_sum,1,mpi_real8,mpi_sum,mpi_comm_world,ierr)
+      call mpi_allreduce(local_sum,global_sum,1,mpi_real_type,mpi_sum,mpi_comm_world,ierr)
     else
       global_sum = local_sum
     endif
 
-    kenergy_gpu = 0.5d0 * global_sum / real(ia*ja*ka,8)
+    kenergy_gpu = 0.5e0_real_kind * global_sum / real(ia*ja*ka,real_kind)
     kenergy_gpu = kenergy_gpu / (roinf * uinf * uinf)
 
     deallocate(partial_d,partial_h)
@@ -822,12 +911,12 @@ contains
     use gpu_check, only: sync_after_kernel
     use parallel, only: mpisize
     implicit none
-    real(8),intent(out) :: enstophy_gpu
+    real(real_kind),intent(out) :: enstophy_gpu
     integer,parameter :: block_size = 256
     integer :: ncell,nblocks,ierr
-    real(8) :: l0,local_sum,global_sum
-    real(8),allocatable,device :: partial_d(:)
-    real(8),allocatable :: partial_h(:)
+    real(real_kind) :: l0,local_sum,global_sum
+    real(real_kind),allocatable,device :: partial_d(:)
+    real(real_kind),allocatable :: partial_h(:)
 
     ncell = im * jm * km
     nblocks = max(1,(ncell + block_size - 1) / block_size)
@@ -845,13 +934,13 @@ contains
 
     local_sum = sum(partial_h)
     if(mpisize>1) then
-      call mpi_allreduce(local_sum,global_sum,1,mpi_real8,mpi_sum,mpi_comm_world,ierr)
+      call mpi_allreduce(local_sum,global_sum,1,mpi_real_type,mpi_sum,mpi_comm_world,ierr)
     else
       global_sum = local_sum
     endif
 
-    enstophy_gpu = 0.5d0 * global_sum / real(ia*ja*ka,8)
-    l0 = xmax / (2.d0*pi)
+    enstophy_gpu = 0.5e0_real_kind * global_sum / real(ia*ja*ka,real_kind)
+    l0 = xmax / (2.e0_real_kind*pi)
     enstophy_gpu = enstophy_gpu / (roinf * (uinf/l0)**2)
 
     deallocate(partial_d,partial_h)
@@ -864,12 +953,12 @@ contains
     use gpu_check, only: sync_after_kernel
     use parallel, only: mpisize
     implicit none
-    real(8),intent(out) :: dissipation_gpu
+    real(real_kind),intent(out) :: dissipation_gpu
     integer,parameter :: block_size = 256
     integer :: ncell,nblocks,ierr
-    real(8) :: local_sum,global_sum
-    real(8),allocatable,device :: partial_d(:)
-    real(8),allocatable :: partial_h(:)
+    real(real_kind) :: local_sum,global_sum
+    real(real_kind),allocatable,device :: partial_d(:)
+    real(real_kind),allocatable :: partial_h(:)
 
     ncell = im * jm * km
     nblocks = max(1,(ncell + block_size - 1) / block_size)
@@ -889,12 +978,12 @@ contains
 
     local_sum = sum(partial_h)
     if(mpisize>1) then
-      call mpi_allreduce(local_sum,global_sum,1,mpi_real8,mpi_sum,mpi_comm_world,ierr)
+      call mpi_allreduce(local_sum,global_sum,1,mpi_real_type,mpi_sum,mpi_comm_world,ierr)
     else
       global_sum = local_sum
     endif
 
-    dissipation_gpu = global_sum / real(ia*ja*ka,8)
+    dissipation_gpu = global_sum / real(ia*ja*ka,real_kind)
 
     deallocate(partial_d,partial_h)
   end subroutine gpu_dissipation_scalar
@@ -906,12 +995,12 @@ contains
     use gpu_check, only: sync_after_kernel
     use parallel, only: mpisize
     implicit none
-    real(8),intent(out) :: maxq_gpu(5)
+    real(real_kind),intent(out) :: maxq_gpu(5)
     integer,parameter :: block_size = 256
     integer :: ncell,nblocks,ierr,ivar
-    real(8) :: local_max,global_max
-    real(8),allocatable,device :: partial_d(:)
-    real(8),allocatable :: partial_h(:)
+    real(real_kind) :: local_max,global_max
+    real(real_kind),allocatable,device :: partial_d(:)
+    real(real_kind),allocatable :: partial_h(:)
 
     if(numq < 5) stop 'gpu_maxq_scalars requires numq >= 5'
     ncell = (im + 1) * (jm + 1) * (km + 1)
@@ -925,7 +1014,7 @@ contains
       partial_h = partial_d
       local_max = maxval(partial_h)
       if(mpisize>1) then
-        call mpi_allreduce(local_max,global_max,1,mpi_real8,mpi_max,mpi_comm_world,ierr)
+        call mpi_allreduce(local_max,global_max,1,mpi_real_type,mpi_max,mpi_comm_world,ierr)
       else
         global_max = local_max
       endif
@@ -943,12 +1032,12 @@ contains
     use gpu_check, only: sync_after_kernel
     use parallel, only: mpisize,jrk,jrkm
     implicit none
-    real(8),intent(out) :: massflux_gpu,fbcx_gpu,wrms_gpu
+    real(real_kind),intent(out) :: massflux_gpu,fbcx_gpu,wrms_gpu
     integer,parameter :: block_size = 256
     integer :: nwork,nblocks,ierr
-    real(8) :: local_sum(3),global_sum(3)
-    real(8),allocatable,device :: partial_d(:,:)
-    real(8),allocatable :: partial_h(:,:)
+    real(real_kind) :: local_sum(3),global_sum(3)
+    real(real_kind),allocatable,device :: partial_d(:,:)
+    real(real_kind),allocatable :: partial_h(:,:)
 
     nwork = max(im*jm*km,im*km)
     nblocks = max(1,(nwork + block_size - 1) / block_size)
@@ -972,14 +1061,14 @@ contains
     local_sum(2) = sum(partial_h(:,2))
     local_sum(3) = sum(partial_h(:,3))
     if(mpisize>1) then
-      call mpi_allreduce(local_sum,global_sum,3,mpi_real8,mpi_sum,mpi_comm_world,ierr)
+      call mpi_allreduce(local_sum,global_sum,3,mpi_real_type,mpi_sum,mpi_comm_world,ierr)
     else
       global_sum = local_sum
     endif
 
-    massflux_gpu = global_sum(1) / real(ia*ka,8)
-    fbcx_gpu = global_sum(2) / real(ia*ka,8)
-    wrms_gpu = sqrt(global_sum(3) / real(ia*ja*ka,8))
+    massflux_gpu = global_sum(1) / real(ia*ka,real_kind)
+    fbcx_gpu = global_sum(2) / real(ia*ka,real_kind)
+    wrms_gpu = sqrt(global_sum(3) / real(ia*ja*ka,real_kind))
 
     deallocate(partial_d,partial_h)
   end subroutine gpu_channel_scalars
@@ -993,12 +1082,12 @@ contains
     use parallel, only: mpisize
     use boundary_gpu, only: gpu_physical_boundary_apply_mask
     implicit none
-    real(8),intent(out) :: massflux_gpu,fbcx_gpu,wallheatflux_gpu,wrms_gpu
+    real(real_kind),intent(out) :: massflux_gpu,fbcx_gpu,wallheatflux_gpu,wrms_gpu
     integer,parameter :: block_size=256
     integer :: nwork,nblocks,ierr,apply_down,apply_up
-    real(8) :: local_sum(6),global_sum(6)
-    real(8),allocatable,device :: partial_d(:,:),reduced_d(:)
-    real(8),allocatable :: reduced_h(:)
+    real(real_kind) :: local_sum(6),global_sum(6)
+    real(real_kind),allocatable,device :: partial_d(:,:),reduced_d(:)
+    real(real_kind),allocatable :: reduced_h(:)
 
     nwork = max(im*jm*km,im*km)
     nblocks = max(1,(nwork+block_size-1)/block_size)
@@ -1018,15 +1107,15 @@ contains
     reduced_h = reduced_d
     local_sum = reduced_h
     if(mpisize > 1) then
-      call mpi_allreduce(local_sum,global_sum,6,mpi_real8,mpi_sum,mpi_comm_world,ierr)
+      call mpi_allreduce(local_sum,global_sum,6,mpi_real_type,mpi_sum,mpi_comm_world,ierr)
     else
       global_sum = local_sum
     endif
-    if(global_sum(5) <= 0.d0 .or. global_sum(6) <= 0.d0) stop 'GPU S1 flatplate statistic geometry is invalid'
+    if(global_sum(5) <= 0.e0_real_kind .or. global_sum(6) <= 0.e0_real_kind) stop 'GPU S1 flatplate statistic geometry is invalid'
     massflux_gpu = global_sum(1)/global_sum(5)
     fbcx_gpu = global_sum(2)/global_sum(6)
     wallheatflux_gpu = global_sum(3)/global_sum(6)
-    wrms_gpu = sqrt(global_sum(4)/real(ia*ja*ka,8))
+    wrms_gpu = sqrt(global_sum(4)/real(ia*ja*ka,real_kind))
     deallocate(partial_d,reduced_d,reduced_h)
   end subroutine gpu_s1_bl_scalars
 
@@ -1035,8 +1124,8 @@ contains
     use parallel, only: lio
     use utility, only: listinit
     implicit none
-    real(8),optional,intent(in) :: value
-    real(8) :: kenergy_gpu
+    real(real_kind),optional,intent(in) :: value
+    real(real_kind) :: kenergy_gpu
     integer,save :: hand = -1
     logical,save :: linit = .true.
 
@@ -1063,8 +1152,8 @@ contains
     use parallel, only: lio
     use utility, only: listinit
     implicit none
-    real(8),optional,intent(in) :: values(3)
-    real(8) :: kenergy_gpu,enstophy_gpu,dissipation_gpu
+    real(real_kind),optional,intent(in) :: values(3)
+    real(real_kind) :: kenergy_gpu,enstophy_gpu,dissipation_gpu
     integer,save :: hand = -1
     logical,save :: linit = .true.
 
@@ -1096,7 +1185,7 @@ contains
     implicit none
     integer,save :: hand = 994
     logical,save :: linit = .true.
-    real(8) :: maxq_gpu(5)
+    real(real_kind) :: maxq_gpu(5)
 
     if(nstep == 0) return
 
@@ -1117,7 +1206,7 @@ contains
     use parallel, only: lio
     use utility, only: listinit
     implicit none
-    real(8) :: massflux_gpu,fbcx_gpu,wallheatflux_gpu,wrms_gpu
+    real(real_kind) :: massflux_gpu,fbcx_gpu,wallheatflux_gpu,wrms_gpu
     integer,save :: hand=-1
     logical,save :: linit=.true.
 
@@ -1139,7 +1228,7 @@ contains
     use parallel, only: lio,bcast
     use stlaio, only: get_unit
     implicit none
-    real(8) :: massflux_gpu,fbcx_gpu,wrms_gpu
+    real(real_kind) :: massflux_gpu,fbcx_gpu,wrms_gpu
     integer,save :: hand = -1
     logical,save :: linit = .true.
 
@@ -1149,9 +1238,9 @@ contains
     massflux = massflux_gpu
     fbcx = fbcx_gpu
     wrms = wrms_gpu
-    if(abs(massflux_target)<1.d-16) then
+    if(abs(massflux_target)<1.e-16_real_kind) then
       massflux_target = massflux
-      force = 0.d0
+      force = 0.e0_real_kind
       if(lio) print*,' ** target mass flux= ',massflux_target
     endif
     force(1) = chanfoce(force(1),massflux,fbcx,massflux_target)
@@ -1174,8 +1263,8 @@ contains
     use parallel, only: lio
     use utility, only: listinit
     implicit none
-    real(8),optional,intent(in) :: value
-    real(8) :: enstophy_gpu
+    real(real_kind),optional,intent(in) :: value
+    real(real_kind) :: enstophy_gpu
     integer,save :: hand = -1
     logical,save :: linit = .true.
 
@@ -1202,8 +1291,8 @@ contains
     use parallel, only: lio
     use utility, only: listinit
     implicit none
-    real(8),optional,intent(in) :: value
-    real(8) :: dissipation_gpu
+    real(real_kind),optional,intent(in) :: value
+    real(real_kind) :: dissipation_gpu
     integer,save :: hand = -1
     logical,save :: linit = .true.
 

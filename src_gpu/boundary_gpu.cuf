@@ -1,6 +1,9 @@
 module boundary_gpu
+  use astr_precision, only: real_kind
+  use astr_precision_mpi, only: mpi_real_type
   use cudafor
   implicit none
+  private :: real_kind,mpi_real_type
   integer,parameter :: GPU_BC_NONE=0, GPU_BC_WALL_ISOTHERMAL_NOSLIP=41, &
                        GPU_BC_WALL_ADIABATIC_NOSLIP=42, &
                        GPU_BC_WALL_SLIP_ISOTHERMAL=411, &
@@ -9,26 +12,26 @@ module boundary_gpu
                        GPU_BC_FIXED=31, GPU_BC_INFLOW=11, GPU_BC_OUTFLOW=21, &
                        GPU_BC_NSCBC_INFLOW=12, GPU_BC_NSCBC_OUTFLOW=22, &
                        GPU_BC_FARFIELD=51, GPU_BC_NSCBC_FARFIELD=52
-  real(8),allocatable,device :: s1_bl_rho_prof_d(:),s1_bl_prs_prof_d(:), &
+  real(real_kind),allocatable,device :: s1_bl_rho_prof_d(:),s1_bl_prs_prof_d(:), &
                                       s1_bl_tmp_prof_d(:),s1_bl_vel_prof_d(:,:)
-  real(8),allocatable,device :: nscbc52_prediff_rhs_d(:,:,:)
-  real(8),allocatable,device :: nscbc_outflow_plane_d(:,:,:)
+  real(real_kind),allocatable,device :: nscbc52_prediff_rhs_d(:,:,:)
+  real(real_kind),allocatable,device :: nscbc_outflow_plane_d(:,:,:)
   logical,save :: s1_bl_profile_ready = .false.
   logical,save :: nscbc52_prediff_rhs_ready = .false.
   integer,device :: dynamic_inflow_error_d
   integer,device :: nscbc_outflow_error_d
-  real(8),device :: wall_blowing_amplitude_d,wall_blowing_beta_d,        &
+  real(real_kind),device :: wall_blowing_amplitude_d,wall_blowing_beta_d,        &
                     wall_blowing_xa_d,                                  &
                     wall_blowing_xb_d,wall_blowing_xc_d,wall_uinf_d,    &
                     wall_zmin_d,wall_zmax_d
-  real(8),device :: wall_blowing_phase_d(15)
-  real(8),allocatable,device :: legacy_wall_velocity_d(:,:)
-  real(8),allocatable,pinned :: legacy_wall_velocity_h(:,:)
+  real(real_kind),device :: wall_blowing_phase_d(15)
+  real(real_kind),allocatable,device :: legacy_wall_velocity_d(:,:)
+  real(real_kind),allocatable,pinned :: legacy_wall_velocity_h(:,:)
   logical,save :: legacy_wall_forcing_gpu=.false.
   integer,device :: legacy_wall_forcing_d
   integer,device :: wall_blowing_nmod_t_d,wall_blowing_nmod_z_d,        &
                     wall_ig0_d,wall_kg0_d,wall_ka_d,wall_blowing_enabled_d
-  real(8),parameter :: GPU_PI=3.1415926535897932384626433832795d0
+  real(real_kind),parameter :: GPU_PI=3.1415926535897932384626433832795e0_real_kind
   logical,save :: nscbc52_owner_trace_configured=.false.
   logical,save :: nscbc52_owner_trace_enabled=.false.
   logical,save :: nscbc52_owner_reported=.false.
@@ -61,8 +64,8 @@ contains
 
     call configure_wall_blowing
     enabled=0
-    if(ndims==3 .and. abs(wall_blowing_amplitude)>1.d-10) enabled=1
-    if(wall_blowing_legacy_random .and. wall_blowing_amplitude<=1.d-10) enabled=0
+    if(ndims==3 .and. abs(wall_blowing_amplitude)>1.e-10_real_kind) enabled=1
+    if(wall_blowing_legacy_random .and. wall_blowing_amplitude<=1.e-10_real_kind) enabled=0
     legacy_wall_forcing_gpu=wall_blowing_legacy_random .and. enabled/=0
     legacy_wall_forcing_d=merge(1,0,legacy_wall_forcing_gpu)
     wall_blowing_amplitude_d=wall_blowing_amplitude
@@ -98,16 +101,16 @@ contains
     legacy_wall_velocity_d=legacy_wall_velocity_h
   end subroutine prepare_legacy_wall_blowing_gpu
 
-  attributes(device) real(8) function wall_blowing_velocity_gpu(i,k,xcoord,zcoord,forcing_time)
+  attributes(device) real(real_kind) function wall_blowing_velocity_gpu(i,k,xcoord,zcoord,forcing_time)
     implicit none
     integer,value :: i,k
-    real(8),value :: xcoord,zcoord,forcing_time
+    real(real_kind),value :: xcoord,zcoord,forcing_time
     integer :: l,m
     integer(8) :: gi,gk,hash_value
-    real(8) :: theta,fx,gz,ht,rfluc,zweight,tweight
-    real(8),parameter :: hash_modulus=2147483629.d0
+    real(real_kind) :: theta,fx,gz,ht,rfluc,zweight,tweight
+    real(real_kind),parameter :: hash_modulus=2147483629.e0_real_kind
 
-    wall_blowing_velocity_gpu=0.d0
+    wall_blowing_velocity_gpu=0.e0_real_kind
     if(wall_blowing_enabled_d==0) return
     if(legacy_wall_forcing_d/=0) then
       wall_blowing_velocity_gpu=legacy_wall_velocity_d(i,k)
@@ -115,41 +118,41 @@ contains
     endif
     if(wall_blowing_nmod_t_d>0) then
       if(xcoord<wall_blowing_xa_d .or. xcoord>wall_blowing_xb_d) return
-      theta=2.d0*GPU_PI*(xcoord-wall_blowing_xa_d)/                    &
+      theta=2.e0_real_kind*GPU_PI*(xcoord-wall_blowing_xa_d)/                    &
             (wall_blowing_xb_d-wall_blowing_xa_d)
-      fx=4.d0*sin(theta)*(1.d0-cos(theta))/sqrt(27.d0)
-      gz=0.d0
-      zweight=0.2d0/(1.d0-0.8d0**wall_blowing_nmod_z_d)
+      fx=4.e0_real_kind*sin(theta)*(1.e0_real_kind-cos(theta))/sqrt(27.e0_real_kind)
+      gz=0.e0_real_kind
+      zweight=0.2e0_real_kind/(1.e0_real_kind-0.8e0_real_kind**wall_blowing_nmod_z_d)
       do l=1,wall_blowing_nmod_z_d
-        gz=gz+zweight*sin(2.d0*GPU_PI*l*                              &
+        gz=gz+zweight*sin(2.e0_real_kind*GPU_PI*l*                              &
              ((zcoord-wall_zmin_d)/(wall_zmax_d-wall_zmin_d)+        &
               wall_blowing_phase_d(l)))
-        zweight=zweight*0.8d0
+        zweight=zweight*0.8e0_real_kind
       enddo
-      ht=0.d0
-      tweight=0.2d0/(1.d0-0.8d0**wall_blowing_nmod_t_d)
+      ht=0.e0_real_kind
+      tweight=0.2e0_real_kind/(1.e0_real_kind-0.8e0_real_kind**wall_blowing_nmod_t_d)
       do m=1,wall_blowing_nmod_t_d
-        ht=ht+tweight*sin(2.d0*GPU_PI*m*                              &
+        ht=ht+tweight*sin(2.e0_real_kind*GPU_PI*m*                              &
              (wall_blowing_beta_d*forcing_time+                      &
               wall_blowing_phase_d(m+10)))
-        tweight=tweight*0.8d0
+        tweight=tweight*0.8e0_real_kind
       enddo
       wall_blowing_velocity_gpu=wall_blowing_amplitude_d*wall_uinf_d* &
                                  fx*gz*ht
       return
     endif
     if(xcoord>=wall_blowing_xa_d .and. xcoord<=wall_blowing_xb_d) then
-      theta=2.d0*GPU_PI*(xcoord-wall_blowing_xa_d)/                    &
+      theta=2.e0_real_kind*GPU_PI*(xcoord-wall_blowing_xa_d)/                    &
             (wall_blowing_xb_d-wall_blowing_xa_d)
-      fx=4.d0*sin(theta)*(1.d0-cos(theta))/sqrt(27.d0)
-      gz=sin(2.d0*wall_blowing_nmod_z_d*GPU_PI*                       &
+      fx=4.e0_real_kind*sin(theta)*(1.e0_real_kind-cos(theta))/sqrt(27.e0_real_kind)
+      gz=sin(2.e0_real_kind*wall_blowing_nmod_z_d*GPU_PI*                       &
              (zcoord/(wall_zmax_d-wall_zmin_d)))
     elseif(xcoord>=wall_blowing_xb_d .and. xcoord<=wall_blowing_xc_d) then
-      theta=2.d0*GPU_PI*(xcoord-wall_blowing_xb_d)/                    &
+      theta=2.e0_real_kind*GPU_PI*(xcoord-wall_blowing_xb_d)/                    &
             (wall_blowing_xc_d-wall_blowing_xb_d)
-      fx=4.d0*sin(theta)*(1.d0-cos(theta))/sqrt(27.d0)
-      gz=sin(2.d0*wall_blowing_nmod_z_d*GPU_PI*                       &
-             (zcoord/(wall_zmax_d-wall_zmin_d))+0.5d0*GPU_PI)
+      fx=4.e0_real_kind*sin(theta)*(1.e0_real_kind-cos(theta))/sqrt(27.e0_real_kind)
+      gz=sin(2.e0_real_kind*wall_blowing_nmod_z_d*GPU_PI*                       &
+             (zcoord/(wall_zmax_d-wall_zmin_d))+0.5e0_real_kind*GPU_PI)
     else
       return
     endif
@@ -159,9 +162,9 @@ contains
     if(wall_ka_d>0) gk=gk-(gk/int(wall_ka_d,8))*int(wall_ka_d,8)
     hash_value=104729_8*(gi+1_8)+130363_8*(gk+1_8)+433494437_8
     hash_value=hash_value-(hash_value/2147483629_8)*2147483629_8
-    rfluc=0.1d0*(2.d0*dble(hash_value)/hash_modulus-1.d0)
+    rfluc=0.1e0_real_kind*(2.e0_real_kind*real(hash_value,real_kind)/hash_modulus-1.e0_real_kind)
     wall_blowing_velocity_gpu=wall_blowing_amplitude_d*wall_uinf_d*   &
-                               fx*gz*(1.d0+rfluc)
+                               fx*gz*(1.e0_real_kind+rfluc)
   end function wall_blowing_velocity_gpu
 
   integer function gpu_bc_kind_for_axis(axis)
@@ -420,26 +423,26 @@ contains
          bctype(1) == GPU_BC_NSCBC_INFLOW .and. bctype(2) == GPU_BC_NSCBC_OUTFLOW
   end function gpu_uses_x_nscbc
 
-  attributes(device) real(8) function extrap2(v1,v2)
+  attributes(device) real(real_kind) function extrap2(v1,v2)
     implicit none
-    real(8),value :: v1,v2
+    real(real_kind),value :: v1,v2
 
-    extrap2 = (4.d0*v1 - v2)/3.d0
+    extrap2 = (4.e0_real_kind*v1 - v2)/3.e0_real_kind
   end function extrap2
 
   attributes(device) subroutine set_q_from_primitive(i,j,k,rho,uu,vv,ww,prs,const6)
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
     implicit none
     integer,value :: i,j,k
-    real(8),value :: rho,uu,vv,ww,prs,const6
-    real(8) :: ke
+    real(real_kind),value :: rho,uu,vv,ww,prs,const6
+    real(real_kind) :: ke
 
     rho_d(i,j,k) = rho
     vel_d(i,j,k,1) = uu
     vel_d(i,j,k,2) = vv
     vel_d(i,j,k,3) = ww
     prs_d(i,j,k) = prs
-    ke = 0.5d0*rho*(uu*uu + vv*vv + ww*ww)
+    ke = 0.5e0_real_kind*rho*(uu*uu + vv*vv + ww*ww)
     q_d(i,j,k,1) = rho
     q_d(i,j,k,2) = rho*uu
     q_d(i,j,k,3) = rho*vv
@@ -454,11 +457,12 @@ contains
     integer :: m
 
     do m=1,5
-      qrhs_d(i,j,k,m) = 0.d0
+      qrhs_d(i,j,k,m) = 0.e0_real_kind
     enddo
   end subroutine set_qrhs_zero
 
   subroutine init_s1_flatplate_profile_gpu()
+    use fludyna, only: thermal_roundtrip_rtol
     use bc, only: bctype,rho_prof,vel_prof,tmp_prof,prs_prof,            &
                   configure_profile_inflow,                             &
                   profile_inflow_mach_pressure_enabled
@@ -467,7 +471,7 @@ contains
     use parallel, only: irk
     implicit none
     integer :: j,k
-    real(8) :: profile_error,profile_scale,vnormal
+    real(real_kind) :: profile_error,profile_scale,vnormal
     logical :: mach_pressure
 
     s1_bl_profile_ready = .false.
@@ -478,21 +482,21 @@ contains
     if(.not.allocated(rho_prof) .or. .not.allocated(vel_prof) .or. &
        .not.allocated(tmp_prof) .or. .not.allocated(prs_prof)) &
       stop 'GPU S1 flatplate profile is not initialized'
-    if(any(rho_prof<=0.d0)) stop 'GPU bctype=11 inlet profile has non-positive density'
+    if(any(rho_prof<=0.e0_real_kind)) stop 'GPU bctype=11 inlet profile has non-positive density'
     profile_error=maxval(abs(tmp_prof-prs_prof/rho_prof*const2))
-    profile_scale=max(1.d0,maxval(abs(tmp_prof)),                       &
+    profile_scale=max(1.e0_real_kind,maxval(abs(tmp_prof)),                       &
                       maxval(abs(prs_prof/rho_prof*const2)))
-    if(profile_error>1.d-10*profile_scale) &
+    if(profile_error>thermal_roundtrip_rtol*profile_scale) &
       stop 'GPU bctype=11 inlet temperature is inconsistent with rho and pressure'
     if(mach_pressure .and. irk==0) then
-      if(any(tmp_prof<=0.d0)) &
+      if(any(tmp_prof<=0.e0_real_kind)) &
         stop 'GPU bctype=11 mach_pressure requires positive profile temperature'
       if(.not.allocated(bnorm_i0)) &
         stop 'GPU bctype=11 mach_pressure requires the x-min boundary normal'
       do k=lbound(bnorm_i0,2),ubound(bnorm_i0,2)
       do j=lbound(bnorm_i0,1),ubound(bnorm_i0,1)
         vnormal=dot_product(vel_prof(j,1:3),bnorm_i0(j,k,1:3))
-        if(vnormal<0.d0) &
+        if(vnormal<0.e0_real_kind) &
           stop 'GPU bctype=11 mach_pressure requires non-negative inward normal velocity'
       enddo
       enddo
@@ -513,9 +517,9 @@ contains
     use commarray_gpu, only: qrhs_d,tmp_d,prs_d,bnorm_i0_d
     implicit none
     integer,value :: im,jm,km,mach_pressure,apply_left
-    real(8),value :: const2,const6,mach
+    real(real_kind),value :: const2,const6,mach
     integer :: id,j,k,nplane
-    real(8) :: css,vnormal,rho,prs
+    real(real_kind) :: css,vnormal,rho,prs
 
     if(apply_left == 0) return
     id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
@@ -531,7 +535,7 @@ contains
       vnormal=s1_bl_vel_prof_d(j,1)*bnorm_i0_d(j,k,1)+            &
               s1_bl_vel_prof_d(j,2)*bnorm_i0_d(j,k,2)+            &
               s1_bl_vel_prof_d(j,3)*bnorm_i0_d(j,k,3)
-      if(vnormal/css>=1.d0) then
+      if(vnormal/css>=1.e0_real_kind) then
         prs=s1_bl_prs_prof_d(j)
         rho=s1_bl_rho_prof_d(j)
       else
@@ -543,7 +547,7 @@ contains
     call set_q_from_primitive(0,j,k,rho,s1_bl_vel_prof_d(j,1), &
                               s1_bl_vel_prof_d(j,2),s1_bl_vel_prof_d(j,3), &
                               prs,const6)
-    qrhs_d(0,j,k,:) = 0.d0
+    qrhs_d(0,j,k,:) = 0.e0_real_kind
   end subroutine s1_bl_profile_inflow_x_kernel
 
   attributes(global) subroutine s1_bl_dynamic_inflow_x_kernel(im,jm,km,const2,const6,mach, &
@@ -554,9 +558,9 @@ contains
     implicit none
     integer,value :: im,jm,km,slot0,slot1,slot2,slot3,mach_pressure,apply_left
     integer,device :: error_flag
-    real(8),value :: const2,const6,mach,forcing_time,time0,delta
+    real(real_kind),value :: const2,const6,mach,forcing_time,time0,delta
     integer :: id,j,k,nplane,old_error
-    real(8) :: css,vnormal,rho,uu,vv,ww,tmp,prs,fluct
+    real(real_kind) :: css,vnormal,rho,uu,vv,ww,tmp,prs,fluct
 
     if(apply_left==0) return
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
@@ -573,7 +577,7 @@ contains
          inflow_slices_d(j,k,2,slot2),inflow_slices_d(j,k,2,slot3), &
          time0,delta,forcing_time)
     uu=s1_bl_vel_prof_d(j,1)+fluct
-    if(uu<0.d0) uu=s1_bl_vel_prof_d(j,1)
+    if(uu<0.e0_real_kind) uu=s1_bl_vel_prof_d(j,1)
     vv=s1_bl_vel_prof_d(j,2)+cubic_uniform_gpu( &
          inflow_slices_d(j,k,3,slot0),inflow_slices_d(j,k,3,slot1), &
          inflow_slices_d(j,k,3,slot2),inflow_slices_d(j,k,3,slot3), &
@@ -586,7 +590,7 @@ contains
          inflow_slices_d(j,k,5,slot0),inflow_slices_d(j,k,5,slot1), &
          inflow_slices_d(j,k,5,slot2),inflow_slices_d(j,k,5,slot3), &
          time0,delta,forcing_time)
-    if(rho<=0.d0 .or. tmp<=0.d0) then
+    if(rho<=0.e0_real_kind .or. tmp<=0.e0_real_kind) then
       old_error=atomicMax(error_flag,1)
       return
     endif
@@ -594,13 +598,13 @@ contains
     if(mach_pressure/=0) then
       css=sqrt(tmp)/mach
       vnormal=uu*bnorm_i0_d(j,k,1)+vv*bnorm_i0_d(j,k,2)+ww*bnorm_i0_d(j,k,3)
-      if(vnormal<0.d0) then
+      if(vnormal<0.e0_real_kind) then
         old_error=atomicMax(error_flag,2)
         return
       endif
-      if(vnormal/css<1.d0) then
+      if(vnormal/css<1.e0_real_kind) then
         prs=extrap2(prs_d(1,j,k),prs_d(2,j,k))
-        if(prs<=0.d0) then
+        if(prs<=0.e0_real_kind) then
           old_error=atomicMax(error_flag,3)
           return
         endif
@@ -609,16 +613,16 @@ contains
     endif
     tmp_d(0,j,k)=tmp
     call set_q_from_primitive(0,j,k,rho,uu,vv,ww,prs,const6)
-    qrhs_d(0,j,k,:)=0.d0
+    qrhs_d(0,j,k,:)=0.e0_real_kind
   end subroutine s1_bl_dynamic_inflow_x_kernel
 
   attributes(global) subroutine s1_bl_farfield_y_upper_kernel(im,jm,km,const2,const6,apply_up)
     use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d
     implicit none
     integer,value :: im,jm,km,apply_up
-    real(8),value :: const2,const6
+    real(real_kind),value :: const2,const6
     integer :: id,i,k,nplane
-    real(8) :: rho,uu,vv,ww,prs,tmp
+    real(real_kind) :: rho,uu,vv,ww,prs,tmp
 
     if(apply_up == 0) return
     id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
@@ -641,9 +645,9 @@ contains
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d
     implicit none
     integer,value :: im,jm,km,hm,apply_left,apply_right
-    real(8),value :: const2,const6
+    real(real_kind),value :: const2,const6
     integer :: id,j,k,nplane
-    real(8) :: rho,uu,vv,ww,prs,tmp
+    real(real_kind) :: rho,uu,vv,ww,prs,tmp
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (jm + 1) * (km + 1)
@@ -682,9 +686,9 @@ contains
     use commarray_gpu, only: q_d,qrhs_d,rho_d,vel_d,prs_d,tmp_d
     implicit none
     integer,value :: im,jm,km,hm,apply_left
-    real(8),value :: const2,const6,uinf,vinf,winf,pinf
+    real(real_kind),value :: const2,const6,uinf,vinf,winf,pinf
     integer :: id,j,k,nplane,m
-    real(8) :: rho,tmp,ke
+    real(real_kind) :: rho,tmp,ke
 
     if(apply_left == 0) return
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -700,14 +704,14 @@ contains
     prs_d(0,j,k) = pinf
     tmp = pinf/rho*const2
     tmp_d(0,j,k) = tmp
-    ke = 0.5d0*rho*(uinf*uinf + vinf*vinf + winf*winf)
+    ke = 0.5e0_real_kind*rho*(uinf*uinf + vinf*vinf + winf*winf)
     q_d(0,j,k,1) = rho
     q_d(0,j,k,2) = rho*uinf
     q_d(0,j,k,3) = rho*vinf
     q_d(0,j,k,4) = rho*winf
     q_d(0,j,k,5) = pinf*const6 + ke
     do m=1,5
-      qrhs_d(0,j,k,m) = 0.d0
+      qrhs_d(0,j,k,m) = 0.e0_real_kind
     enddo
   end subroutine inflow_x_kernel
 
@@ -716,9 +720,9 @@ contains
     use commarray_gpu, only: q_d,qrhs_d,rho_d,vel_d,prs_d,tmp_d
     implicit none
     integer,value :: im,jm,km,hm,apply_right
-    real(8),value :: const2,const6,gamma,mach,pinf,pout
+    real(real_kind),value :: const2,const6,gamma,mach,pinf,pout
     integer :: id,j,k,nplane,m
-    real(8) :: css,ub,ue,ve,we,pe,te,roe,csse,rho,prs,tmp,ke
+    real(real_kind) :: css,ub,ue,ve,we,pe,te,roe,csse,rho,prs,tmp,ke
 
     if(apply_right == 0) return
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -753,14 +757,14 @@ contains
     prs_d(im,j,k) = prs
     rho_d(im,j,k) = rho
     tmp_d(im,j,k) = tmp
-    ke = 0.5d0*rho*(vel_d(im,j,k,1)**2 + ve*ve + we*we)
+    ke = 0.5e0_real_kind*rho*(vel_d(im,j,k,1)**2 + ve*ve + we*we)
     q_d(im,j,k,1) = rho
     q_d(im,j,k,2) = rho*vel_d(im,j,k,1)
     q_d(im,j,k,3) = rho*ve
     q_d(im,j,k,4) = rho*we
     q_d(im,j,k,5) = prs*const6 + ke
     do m=1,5
-      qrhs_d(im,j,k,m) = 0.d0
+      qrhs_d(im,j,k,m) = 0.e0_real_kind
     enddo
   end subroutine outflow_x_kernel
 
@@ -768,9 +772,9 @@ contains
     use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d
     implicit none
     integer,value :: im,jm,km,hm,apply_down,apply_up
-    real(8),value :: const2,const6
+    real(real_kind),value :: const2,const6
     integer :: id,i,k,nplane
-    real(8) :: rho,uu,vv,ww,prs,tmp
+    real(real_kind) :: rho,uu,vv,ww,prs,tmp
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (im + 1) * (km + 1)
@@ -807,9 +811,9 @@ contains
     use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d
     implicit none
     integer,value :: im,jm,km,hm,apply_back,apply_front
-    real(8),value :: const2,const6
+    real(real_kind),value :: const2,const6
     integer :: id,i,j,nplane
-    real(8) :: rho,uu,vv,ww,prs,tmp
+    real(real_kind) :: rho,uu,vv,ww,prs,tmp
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (im + 1) * (jm + 1)
@@ -846,9 +850,9 @@ contains
     use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d,bnorm_i0_d,bnorm_im_d
     implicit none
     integer,value :: im,jm,km,hm,apply_left,apply_right
-    real(8),value :: const2,const6
+    real(real_kind),value :: const2,const6
     integer :: id,j,k,nplane
-    real(8) :: rho,uu,vv,ww,prs,tmp,vnormal
+    real(real_kind) :: rho,uu,vv,ww,prs,tmp,vnormal
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (jm + 1) * (km + 1)
@@ -893,9 +897,9 @@ contains
     use commarray_gpu, only: vel_d,prs_d,tmp_d,bnorm_j0_d,bnorm_jm_d
     implicit none
     integer,value :: im,jm,km,hm,apply_down,apply_up
-    real(8),value :: const2,const6
+    real(real_kind),value :: const2,const6
     integer :: id,i,k,nplane
-    real(8) :: rho,uu,vv,ww,prs,tmp,vnormal
+    real(real_kind) :: rho,uu,vv,ww,prs,tmp,vnormal
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (im + 1) * (km + 1)
@@ -942,9 +946,9 @@ contains
     use commarray_gpu, only: prs_d,tmp_d
     implicit none
     integer,value :: im,jm,km,hm,apply_left,apply_right
-    real(8),value :: const2,const6,twall_left,twall_right
+    real(real_kind),value :: const2,const6,twall_left,twall_right
     integer :: id,j,k,nplane
-    real(8) :: rho,prs
+    real(real_kind) :: rho,prs
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (jm + 1) * (km + 1)
@@ -956,7 +960,7 @@ contains
       prs = extrap2(prs_d(1,j,k),prs_d(2,j,k))
       rho = prs/twall_left*const2
       tmp_d(0,j,k) = twall_left
-      call set_q_from_primitive(0,j,k,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_q_from_primitive(0,j,k,rho,0.e0_real_kind,0.e0_real_kind,0.e0_real_kind,prs,const6)
       call set_qrhs_zero(0,j,k)
     endif
 
@@ -964,7 +968,7 @@ contains
       prs = extrap2(prs_d(im-1,j,k),prs_d(im-2,j,k))
       rho = prs/twall_right*const2
       tmp_d(im,j,k) = twall_right
-      call set_q_from_primitive(im,j,k,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_q_from_primitive(im,j,k,rho,0.e0_real_kind,0.e0_real_kind,0.e0_real_kind,prs,const6)
       call set_qrhs_zero(im,j,k)
     endif
   end subroutine wall_isothermal_noslip_x_kernel
@@ -976,9 +980,9 @@ contains
     use commarray_gpu, only: prs_d,tmp_d,x_d,bnorm_j0_d
     implicit none
     integer,value :: im,jm,km,hm,apply_down,apply_up,preserve_inflow_rhs
-    real(8),value :: const2,const6,twall_down,twall_up,forcing_time
+    real(real_kind),value :: const2,const6,twall_down,twall_up,forcing_time
     integer :: id,i,k,nplane
-    real(8) :: rho,prs,vwall
+    real(real_kind) :: rho,prs,vwall
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (im + 1) * (km + 1)
@@ -1004,7 +1008,7 @@ contains
       prs = extrap2(prs_d(i,jm-1,k),prs_d(i,jm-2,k))
       rho = prs/twall_up*const2
       tmp_d(i,jm,k) = twall_up
-      call set_q_from_primitive(i,jm,k,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_q_from_primitive(i,jm,k,rho,0.e0_real_kind,0.e0_real_kind,0.e0_real_kind,prs,const6)
       call set_qrhs_zero(i,jm,k)
     endif
   end subroutine wall_isothermal_noslip_y_kernel
@@ -1013,9 +1017,9 @@ contains
     use commarray_gpu, only: prs_d,tmp_d
     implicit none
     integer,value :: im,jm,km,hm,apply_up
-    real(8),value :: const2,const6
+    real(real_kind),value :: const2,const6
     integer :: id,i,k,nplane
-    real(8) :: rho,prs
+    real(real_kind) :: rho,prs
 
     if(apply_up == 0) return
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -1026,8 +1030,8 @@ contains
 
     prs = extrap2(prs_d(i,jm-1,k),prs_d(i,jm-2,k))
     rho = prs*const2
-    tmp_d(i,jm,k) = 1.d0
-    call set_q_from_primitive(i,jm,k,rho,1.d0,0.d0,0.d0,prs,const6)
+    tmp_d(i,jm,k) = 1.e0_real_kind
+    call set_q_from_primitive(i,jm,k,rho,1.e0_real_kind,0.e0_real_kind,0.e0_real_kind,prs,const6)
     call set_qrhs_zero(i,jm,k)
   end subroutine ldc_top_lid_y_kernel
 
@@ -1036,9 +1040,9 @@ contains
     use commarray_gpu, only: prs_d,tmp_d
     implicit none
     integer,value :: im,jm,km,hm,apply_left,apply_right
-    real(8),value :: const2,const6
+    real(real_kind),value :: const2,const6
     integer :: id,j,k,nplane
-    real(8) :: rho,prs,tmp
+    real(real_kind) :: rho,prs,tmp
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (jm + 1) * (km + 1)
@@ -1051,7 +1055,7 @@ contains
       tmp = extrap2(tmp_d(1,j,k),tmp_d(2,j,k))
       rho = prs/tmp*const2
       tmp_d(0,j,k) = tmp
-      call set_q_from_primitive(0,j,k,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_q_from_primitive(0,j,k,rho,0.e0_real_kind,0.e0_real_kind,0.e0_real_kind,prs,const6)
       call set_qrhs_zero(0,j,k)
     endif
 
@@ -1060,7 +1064,7 @@ contains
       tmp = extrap2(tmp_d(im-1,j,k),tmp_d(im-2,j,k))
       rho = prs/tmp*const2
       tmp_d(im,j,k) = tmp
-      call set_q_from_primitive(im,j,k,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_q_from_primitive(im,j,k,rho,0.e0_real_kind,0.e0_real_kind,0.e0_real_kind,prs,const6)
       call set_qrhs_zero(im,j,k)
     endif
   end subroutine wall_adiabatic_noslip_x_kernel
@@ -1070,9 +1074,9 @@ contains
     use commarray_gpu, only: prs_d,tmp_d,x_d,bnorm_j0_d
     implicit none
     integer,value :: im,jm,km,hm,apply_down,apply_up
-    real(8),value :: const2,const6,forcing_time
+    real(real_kind),value :: const2,const6,forcing_time
     integer :: id,i,k,nplane
-    real(8) :: rho,prs,tmp,vwall
+    real(real_kind) :: rho,prs,tmp,vwall
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (im + 1) * (km + 1)
@@ -1097,7 +1101,7 @@ contains
       tmp = extrap2(tmp_d(i,jm-1,k),tmp_d(i,jm-2,k))
       rho = prs/tmp*const2
       tmp_d(i,jm,k) = tmp
-      call set_q_from_primitive(i,jm,k,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_q_from_primitive(i,jm,k,rho,0.e0_real_kind,0.e0_real_kind,0.e0_real_kind,prs,const6)
       call set_qrhs_zero(i,jm,k)
     endif
   end subroutine wall_adiabatic_noslip_y_kernel
@@ -1108,9 +1112,9 @@ contains
     use commarray_gpu, only: vel_d,prs_d,tmp_d,x_d,bnorm_j0_d
     implicit none
     integer,value :: im,jm,km,hm,apply_down,apply_up
-    real(8),value :: const2,const6,xslip,twall_down,twall_up,forcing_time
+    real(real_kind),value :: const2,const6,xslip,twall_down,twall_up,forcing_time
     integer :: id,i,k,nplane
-    real(8) :: rho,uu,vv,ww,prs,tmp,vnormal,vwall
+    real(real_kind) :: rho,uu,vv,ww,prs,tmp,vnormal,vwall
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (im + 1) * (km + 1)
@@ -1147,7 +1151,7 @@ contains
       prs = extrap2(prs_d(i,jm-1,k),prs_d(i,jm-2,k))
       rho = prs/twall_up*const2
       tmp_d(i,jm,k) = twall_up
-      call set_q_from_primitive(i,jm,k,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_q_from_primitive(i,jm,k,rho,0.e0_real_kind,0.e0_real_kind,0.e0_real_kind,prs,const6)
       call set_qrhs_zero(i,jm,k)
     endif
   end subroutine wall_slip_isothermal_y_kernel
@@ -1157,9 +1161,9 @@ contains
     use commarray_gpu, only: vel_d,prs_d,tmp_d,x_d,bnorm_j0_d,bnorm_jm_d
     implicit none
     integer,value :: im,jm,km,hm,apply_down,apply_up
-    real(8),value :: const2,const6,forcing_time
+    real(real_kind),value :: const2,const6,forcing_time
     integer :: id,i,k,nplane
-    real(8) :: rho,uu,vv,ww,prs,tmp,vnormal,vwall
+    real(real_kind) :: rho,uu,vv,ww,prs,tmp,vnormal,vwall
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (im + 1) * (km + 1)
@@ -1207,9 +1211,9 @@ contains
     use commarray_gpu, only: tmp_d
     implicit none
     integer,value :: im,jm,km,hm,apply_down,apply_up
-    real(8),value :: const2,const6
+    real(real_kind),value :: const2,const6
     integer :: id,i,k,nplane
-    real(8) :: rho,prs,tmp
+    real(real_kind) :: rho,prs,tmp
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (im + 1) * (km + 1)
@@ -1218,20 +1222,20 @@ contains
     k = id/(im+1)
 
     if(apply_down /= 0) then
-      rho = 2.d0
-      prs = 1.d0
+      rho = 2.e0_real_kind
+      prs = 1.e0_real_kind
       tmp = prs/rho*const2
       tmp_d(i,0,k) = tmp
-      call set_q_from_primitive(i,0,k,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_q_from_primitive(i,0,k,rho,0.e0_real_kind,0.e0_real_kind,0.e0_real_kind,prs,const6)
       call set_qrhs_zero(i,0,k)
     endif
 
     if(apply_up /= 0) then
-      rho = 1.d0
-      prs = 2.5d0
+      rho = 1.e0_real_kind
+      prs = 2.5e0_real_kind
       tmp = prs/rho*const2
       tmp_d(i,jm,k) = tmp
-      call set_q_from_primitive(i,jm,k,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_q_from_primitive(i,jm,k,rho,0.e0_real_kind,0.e0_real_kind,0.e0_real_kind,prs,const6)
       call set_qrhs_zero(i,jm,k)
     endif
   end subroutine fixed_rti_y_kernel
@@ -1242,9 +1246,9 @@ contains
     use commarray_gpu, only: prs_d,tmp_d
     implicit none
     integer,value :: im,jm,km,hm,apply_back,apply_front
-    real(8),value :: const2,const6,twall_back,twall_front
+    real(real_kind),value :: const2,const6,twall_back,twall_front
     integer :: id,i,j,nplane
-    real(8) :: rho,prs
+    real(real_kind) :: rho,prs
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (im + 1) * (jm + 1)
@@ -1256,7 +1260,7 @@ contains
       prs = extrap2(prs_d(i,j,1),prs_d(i,j,2))
       rho = prs/twall_back*const2
       tmp_d(i,j,0) = twall_back
-      call set_q_from_primitive(i,j,0,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_q_from_primitive(i,j,0,rho,0.e0_real_kind,0.e0_real_kind,0.e0_real_kind,prs,const6)
       call set_qrhs_zero(i,j,0)
     endif
 
@@ -1264,7 +1268,7 @@ contains
       prs = extrap2(prs_d(i,j,km-1),prs_d(i,j,km-2))
       rho = prs/twall_front*const2
       tmp_d(i,j,km) = twall_front
-      call set_q_from_primitive(i,j,km,rho,0.d0,0.d0,0.d0,prs,const6)
+      call set_q_from_primitive(i,j,km,rho,0.e0_real_kind,0.e0_real_kind,0.e0_real_kind,prs,const6)
       call set_qrhs_zero(i,j,km)
     endif
   end subroutine wall_isothermal_noslip_z_kernel
@@ -1273,9 +1277,9 @@ contains
     use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d,bnorm_k0_d,bnorm_km_d
     implicit none
     integer,value :: im,jm,km,hm,apply_back,apply_front
-    real(8),value :: const2,const6
+    real(real_kind),value :: const2,const6
     integer :: id,i,j,nplane
-    real(8) :: rho,uu,vv,ww,prs,tmp,vnormal
+    real(real_kind) :: rho,uu,vv,ww,prs,tmp,vnormal
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (im + 1) * (jm + 1)
@@ -1318,25 +1322,25 @@ contains
 
   attributes(device) subroutine nscbc_pmatrix(rho,uu,vv,ww,tmp,ddi,gamma,mach,inv,pmat)
     implicit none
-    real(8),value :: rho,uu,vv,ww,tmp,gamma,mach
-    real(8),intent(in) :: ddi(3)
+    real(real_kind),value :: rho,uu,vv,ww,tmp,gamma,mach
+    real(real_kind),intent(in) :: ddi(3)
     logical,value :: inv
-    real(8) :: pmat(5,5)
-    real(8) :: var1,nx,ny,nz,a1,a2,a3,a4,a5,a6,css,vn,phi
+    real(real_kind) :: pmat(5,5)
+    real(real_kind) :: var1,nx,ny,nz,a1,a2,a3,a4,a5,a6,css,vn,phi
 
     css = sqrt(tmp)/mach
-    var1 = 1.d0/sqrt(ddi(1)*ddi(1)+ddi(2)*ddi(2)+ddi(3)*ddi(3))
+    var1 = 1.e0_real_kind/sqrt(ddi(1)*ddi(1)+ddi(2)*ddi(2)+ddi(3)*ddi(3))
     nx = ddi(1)*var1
     ny = ddi(2)*var1
     nz = ddi(3)*var1
-    phi = 0.5d0*(gamma-1.d0)*(uu*uu+vv*vv+ww*ww)
+    phi = 0.5e0_real_kind*(gamma-1.e0_real_kind)*(uu*uu+vv*vv+ww*ww)
     vn = nx*uu+ny*vv+nz*ww
-    a1 = gamma-1.d0
-    a2 = 1.d0/(sqrt(2.d0)*rho*css)
-    a3 = rho/(css*sqrt(2.d0))
-    a4 = (phi+css*css)/(gamma-1.d0)
-    a5 = 1.d0-phi/(css*css)
-    a6 = phi/(gamma-1.d0)
+    a1 = gamma-1.e0_real_kind
+    a2 = 1.e0_real_kind/(sqrt(2.e0_real_kind)*rho*css)
+    a3 = rho/(css*sqrt(2.e0_real_kind))
+    a4 = (phi+css*css)/(gamma-1.e0_real_kind)
+    a5 = 1.e0_real_kind-phi/(css*css)
+    a6 = phi/(gamma-1.e0_real_kind)
 
     if(inv) then
       pmat(1,1)= nx*a5-(nz*vv-ny*ww)/rho
@@ -1384,8 +1388,8 @@ contains
     use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d
     implicit none
     integer,value :: i,j,k,idir
-    real(8) :: flux(5)
-    real(8) :: un
+    real(real_kind) :: flux(5)
+    real(real_kind) :: un
 
     un = dxi_d(i,j,k,idir,1)*vel_d(i,j,k,1) + &
          dxi_d(i,j,k,idir,2)*vel_d(i,j,k,2) + &
@@ -1401,8 +1405,8 @@ contains
     use commarray_gpu, only: q_d,vel_d,prs_d
     implicit none
     integer,value :: i,j,k,idir
-    real(8) :: flux(5)
-    real(8) :: un
+    real(real_kind) :: flux(5)
+    real(real_kind) :: un
 
     un = vel_d(i,j,k,idir)
     flux(1) = q_d(i,j,k,idir+1)
@@ -1416,20 +1420,20 @@ contains
   attributes(device) subroutine nscbc_tangential_x_rhs(i,j,k,jm,km,npdcj,npdck,dq)
     implicit none
     integer,value :: i,j,k,jm,km,npdcj,npdck
-    real(8) :: dq(5),fm(5),fp(5),gm(5),gp(5)
+    real(real_kind) :: dq(5),fm(5),fp(5),gm(5),gp(5)
 
     if(.not.(((npdcj == 1 .or. npdcj == 4) .and. j == 0) .or. &
              ((npdcj == 2 .or. npdcj == 4) .and. j == jm))) then
       call nscbc_flux(i,j-1,k,2,fm)
       call nscbc_flux(i,j+1,k,2,fp)
-      dq(:) = dq(:) + 0.5d0*(fp(:)-fm(:))
+      dq(:) = dq(:) + 0.5e0_real_kind*(fp(:)-fm(:))
     endif
 
     if(.not.(((npdck == 1 .or. npdck == 4) .and. k == 0) .or. &
              ((npdck == 2 .or. npdck == 4) .and. k == km))) then
       call nscbc_flux(i,j,k-1,3,gm)
       call nscbc_flux(i,j,k+1,3,gp)
-      dq(:) = dq(:) + 0.5d0*(gp(:)-gm(:))
+      dq(:) = dq(:) + 0.5e0_real_kind*(gp(:)-gm(:))
     endif
   end subroutine nscbc_tangential_x_rhs
 
@@ -1437,17 +1441,17 @@ contains
     use commarray_gpu, only: vel_d,tmp_d,dxi_d
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),value :: mach
-    real(8),device :: partial(:)
-    real(8),shared :: scratch(256)
+    real(real_kind),value :: mach
+    real(real_kind),device :: partial(:)
+    real(real_kind),shared :: scratch(256)
     integer :: tid,id,stride,ncell,i,j,k
-    real(8) :: local,css
+    real(real_kind) :: local,css
 
     tid = threadIdx%x
     id = (blockIdx%x-1)*blockDim%x + tid - 1
     stride = gridDim%x*blockDim%x
     ncell = (im+1)*(jm+1)*(km+1)
-    local = -huge(1.d0)
+    local = -huge(1.e0_real_kind)
     do while(id < ncell)
       i = mod(id,im+1)
       j = mod(id/(im+1),jm+1)
@@ -1473,12 +1477,12 @@ contains
     use gpu_check, only: sync_after_kernel
     use parallel, only: mpisize
     implicit none
-    real(8),intent(out) :: gmachmax2
+    real(real_kind),intent(out) :: gmachmax2
     integer,parameter :: block_size=256
     integer :: ncell,nblocks,ierr
-    real(8) :: local_max
-    real(8),allocatable,device :: partial_d(:)
-    real(8),allocatable :: partial_h(:)
+    real(real_kind) :: local_max
+    real(real_kind),allocatable,device :: partial_d(:)
+    real(real_kind),allocatable :: partial_h(:)
 
     ncell = (im+1)*(jm+1)*(km+1)
     nblocks = max(1,(ncell+block_size-1)/block_size)
@@ -1488,7 +1492,7 @@ contains
     partial_h = partial_d
     local_max = maxval(partial_h)
     if(mpisize > 1) then
-      call mpi_allreduce(local_max,gmachmax2,1,mpi_real8,mpi_max,mpi_comm_world,ierr)
+      call mpi_allreduce(local_max,gmachmax2,1,mpi_real_type,mpi_max,mpi_comm_world,ierr)
     else
       gmachmax2 = local_max
     endif
@@ -1499,17 +1503,17 @@ contains
     use commarray_gpu, only: vel_d,tmp_d,dxi_d
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),value :: mach
-    real(8),device :: partial(:)
-    real(8),shared :: scratch(256)
+    real(real_kind),value :: mach
+    real(real_kind),device :: partial(:)
+    real(real_kind),shared :: scratch(256)
     integer :: tid,id,stride,ncell,j,k
-    real(8) :: local,css,norm2,un
+    real(real_kind) :: local,css,norm2,un
 
     tid = threadIdx%x
     id = (blockIdx%x-1)*blockDim%x + tid - 1
     stride = gridDim%x*blockDim%x
     ncell = (jm+1)*(km+1)
-    local = -huge(1.d0)
+    local = -huge(1.e0_real_kind)
     do while(id < ncell)
       j = mod(id,jm+1)
       k = id/(jm+1)
@@ -1537,18 +1541,18 @@ contains
     use gpu_check, only: sync_after_kernel
     use parallel, only: mpisize
     implicit none
-    real(8),intent(out) :: gmachmax2
+    real(real_kind),intent(out) :: gmachmax2
     integer,parameter :: block_size=256
     integer :: ncell,nblocks,ierr,apply_left,apply_right
-    real(8) :: local_max
-    real(8),allocatable,device :: partial_d(:)
-    real(8),allocatable :: partial_h(:)
+    real(real_kind) :: local_max
+    real(real_kind),allocatable,device :: partial_d(:)
+    real(real_kind),allocatable :: partial_h(:)
 
     ncell = (jm+1)*(km+1)
     nblocks = max(1,(ncell+block_size-1)/block_size)
     allocate(partial_d(nblocks),partial_h(nblocks))
     call gpu_physical_boundary_apply_mask(1,apply_left,apply_right)
-    local_max = -huge(1.d0)
+    local_max = -huge(1.e0_real_kind)
     if(apply_right /= 0) then
       call nscbc_outflow_mach2_partial_kernel<<<nblocks,block_size>>>(partial_d,im,jm,km,hm,mach)
       call sync_after_kernel('nscbc_outflow_mach2_partial_kernel',.true.)
@@ -1556,7 +1560,7 @@ contains
       local_max = maxval(partial_h)
     endif
     if(mpisize > 1) then
-      call mpi_allreduce(local_max,gmachmax2,1,mpi_real8,mpi_max,mpi_comm_world,ierr)
+      call mpi_allreduce(local_max,gmachmax2,1,mpi_real_type,mpi_max,mpi_comm_world,ierr)
     else
       gmachmax2 = local_max
     endif
@@ -1568,7 +1572,7 @@ contains
     implicit none
     integer,value :: im,jm,km,hm,apply_right
     integer :: id,j,k,m,n
-    real(8) :: ff
+    real(real_kind) :: ff
 
     if(apply_right == 0) return
     id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
@@ -1577,9 +1581,9 @@ contains
     j = mod(id,jm+1)
     k = mod(id/(jm+1),km+1)
     m = id/((jm+1)*(km+1)) + 1
-    ff = 11.d0/16.d0*q_d(im,j,k,m) + 15.d0/64.d0*(q_d(im,j-1,k,m)+q_d(im,j+1,k,m)) - &
-         3.d0/32.d0*(q_d(im,j-2,k,m)+q_d(im,j+2,k,m)) + &
-         1.d0/64.d0*(q_d(im,j-3,k,m)+q_d(im,j+3,k,m))
+    ff = 11.e0_real_kind/16.e0_real_kind*q_d(im,j,k,m) + 15.e0_real_kind/64.e0_real_kind*(q_d(im,j-1,k,m)+q_d(im,j+1,k,m)) - &
+         3.e0_real_kind/32.e0_real_kind*(q_d(im,j-2,k,m)+q_d(im,j+2,k,m)) + &
+         1.e0_real_kind/64.e0_real_kind*(q_d(im,j-3,k,m)+q_d(im,j+3,k,m))
     qwork_d(im,j,k,m) = ff
   end subroutine nscbc_outflow_filter_y_kernel
 
@@ -1621,9 +1625,9 @@ contains
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,qrhs_d,jacob_d,dxi_d
     implicit none
     integer,value :: im,jm,km,hm,npdcj,npdck,apply_left
-    real(8),value :: gamma,mach,xmin,xmax,roinf,uinf,vinf,winf,pinf,gmachmax2
+    real(real_kind),value :: gamma,mach,xmin,xmax,roinf,uinf,vinf,winf,pinf,gmachmax2
     integer :: id,j,k,ii,m,n
-    real(8) :: pnor(5,5),pinv(5,5),ecs(0:2,5),decs(5),rest(5),lodi(5),lodi1(5), &
+    real(real_kind) :: pnor(5,5),pinv(5,5),ecs(0:2,5),decs(5),rest(5),lodi(5),lodi1(5), &
                ddi(3),flux(5),metric0,metric1,metric2,css,kin,var1, &
                normal_speed,lambda(5),wave_tolerance,qtarget(5),dq(5)
 
@@ -1646,7 +1650,7 @@ contains
     metric0 = dxi_d(0,j,k,1,1)*jacob_d(0,j,k)
     metric1 = dxi_d(1,j,k,1,1)*jacob_d(1,j,k)
     metric2 = dxi_d(2,j,k,1,1)*jacob_d(2,j,k)
-    rest(:) = 0.d0
+    rest(:) = 0.e0_real_kind
     call nscbc_cartesian_flux(0,j,k,1,flux); rest(:) = rest(:) + flux(:)*(metric1-metric0)
     call nscbc_cartesian_flux(0,j,k,2,flux); rest(:) = rest(:) + flux(:)*(dxi_d(1,j,k,1,2)*jacob_d(1,j,k) - &
                                                                    dxi_d(0,j,k,1,2)*jacob_d(0,j,k))
@@ -1657,15 +1661,15 @@ contains
       lodi(m) = sum(pinv(m,:)*lodi1(:))/jacob_d(0,j,k)
     enddo
     css = sqrt(tmp_d(0,j,k))/mach
-    kin = 0.25d0*css/(xmax-xmin)
-    var1 = 1.d0/sqrt(sum(ddi(:)*ddi(:)))
+    kin = 0.25e0_real_kind*css/(xmax-xmin)
+    var1 = 1.e0_real_kind/sqrt(sum(ddi(:)*ddi(:)))
     normal_speed=sum(ddi(:)*vel_d(0,j,k,:))*var1
     lambda(1:3)=normal_speed
     lambda(4)=normal_speed+css
     lambda(5)=normal_speed-css
-    wave_tolerance=64.d0*epsilon(1.d0)*max(css,abs(normal_speed))
+    wave_tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(normal_speed))
     qtarget=[roinf,roinf*uinf,roinf*vinf,roinf*winf, &
-             pinf/(gamma-1.d0)+0.5d0*roinf*(uinf*uinf+vinf*vinf+winf*winf)]
+             pinf/(gamma-1.e0_real_kind)+0.5e0_real_kind*roinf*(uinf*uinf+vinf*vinf+winf*winf)]
     dq(:)=q_d(0,j,k,1:5)-qtarget(:)
     ! The metric points into the domain on x-: positive waves enter.
     do m=1,5
@@ -1685,9 +1689,9 @@ contains
     use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d,qrhs_d,jacob_d,dxi_d
     implicit none
     integer,value :: im,jm,km,hm,npdcj,npdck,apply_right
-    real(8),value :: gamma,mach,xmin,xmax,pinf,pout,gmachmax2
+    real(real_kind),value :: gamma,mach,xmin,xmax,pinf,pout,gmachmax2
     integer :: id,j,k,ii,m,n,ignored
-    real(8) :: pnor(5,5),pinv(5,5),ecs(0:2,5),decs(5),rest(5),lodi(5),lodi1(5), &
+    real(real_kind) :: pnor(5,5),pinv(5,5),ecs(0:2,5),decs(5),rest(5),lodi(5),lodi1(5), &
                ddi(3),flux(5),css,kinout,normal_speed,norm,wave_tolerance
 
     if(apply_right == 0) return
@@ -1705,14 +1709,14 @@ contains
       call nscbc_flux(im-ii,j,k,1,flux)
       ecs(ii,:) = flux(:)
     enddo
-    decs(:) = 1.5d0*ecs(0,:) - 2.d0*ecs(1,:) + 0.5d0*ecs(2,:)
-    rest(:) = 0.d0
-    call nscbc_cartesian_flux(im,j,k,1,flux); rest(:) = rest(:) + flux(:)*(1.5d0*dxi_d(im,j,k,1,1)*jacob_d(im,j,k) - &
-         2.d0*dxi_d(im-1,j,k,1,1)*jacob_d(im-1,j,k) + 0.5d0*dxi_d(im-2,j,k,1,1)*jacob_d(im-2,j,k))
-    call nscbc_cartesian_flux(im,j,k,2,flux); rest(:) = rest(:) + flux(:)*(1.5d0*dxi_d(im,j,k,1,2)*jacob_d(im,j,k) - &
-         2.d0*dxi_d(im-1,j,k,1,2)*jacob_d(im-1,j,k) + 0.5d0*dxi_d(im-2,j,k,1,2)*jacob_d(im-2,j,k))
-    call nscbc_cartesian_flux(im,j,k,3,flux); rest(:) = rest(:) + flux(:)*(1.5d0*dxi_d(im,j,k,1,3)*jacob_d(im,j,k) - &
-         2.d0*dxi_d(im-1,j,k,1,3)*jacob_d(im-1,j,k) + 0.5d0*dxi_d(im-2,j,k,1,3)*jacob_d(im-2,j,k))
+    decs(:) = 1.5e0_real_kind*ecs(0,:) - 2.e0_real_kind*ecs(1,:) + 0.5e0_real_kind*ecs(2,:)
+    rest(:) = 0.e0_real_kind
+    call nscbc_cartesian_flux(im,j,k,1,flux); rest(:) = rest(:) + flux(:)*(1.5e0_real_kind*dxi_d(im,j,k,1,1)*jacob_d(im,j,k) - &
+         2.e0_real_kind*dxi_d(im-1,j,k,1,1)*jacob_d(im-1,j,k) + 0.5e0_real_kind*dxi_d(im-2,j,k,1,1)*jacob_d(im-2,j,k))
+    call nscbc_cartesian_flux(im,j,k,2,flux); rest(:) = rest(:) + flux(:)*(1.5e0_real_kind*dxi_d(im,j,k,1,2)*jacob_d(im,j,k) - &
+         2.e0_real_kind*dxi_d(im-1,j,k,1,2)*jacob_d(im-1,j,k) + 0.5e0_real_kind*dxi_d(im-2,j,k,1,2)*jacob_d(im-2,j,k))
+    call nscbc_cartesian_flux(im,j,k,3,flux); rest(:) = rest(:) + flux(:)*(1.5e0_real_kind*dxi_d(im,j,k,1,3)*jacob_d(im,j,k) - &
+         2.e0_real_kind*dxi_d(im-1,j,k,1,3)*jacob_d(im-1,j,k) + 0.5e0_real_kind*dxi_d(im-2,j,k,1,3)*jacob_d(im-2,j,k))
     lodi1(:) = decs(:)-rest(:)
     do m=1,5
       lodi(m) = sum(pinv(m,:)*lodi1(:))/jacob_d(im,j,k)
@@ -1720,15 +1724,15 @@ contains
     css = sqrt(tmp_d(im,j,k))/mach
     norm=sqrt(sum(ddi(:)*ddi(:)))
     normal_speed=sum(ddi(:)*vel_d(im,j,k,:))/norm
-    wave_tolerance=64.d0*epsilon(1.d0)*max(css,abs(normal_speed))
+    wave_tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(normal_speed))
     if(normal_speed < -wave_tolerance) then
       ignored=atomicmax(nscbc_outflow_error_d,1)
       return
     endif
     if(normal_speed-css < -wave_tolerance) then
-      kinout=3.75d0*max(0.d0,1.d0-(normal_speed/css)**2)*css/(xmax-xmin)
+      kinout=3.75e0_real_kind*max(0.e0_real_kind,1.e0_real_kind-(normal_speed/css)**2)*css/(xmax-xmin)
       ! R5 has pressure amplitude rho*a/sqrt(2): dp/dt=-K*(p-p_target).
-      lodi(5)=kinout*((prs_d(im,j,k)-pinf*pout)/rho_d(im,j,k)/css)*sqrt(2.d0)
+      lodi(5)=kinout*((prs_d(im,j,k)-pinf*pout)/rho_d(im,j,k)/css)*sqrt(2.e0_real_kind)
     endif
     do m=1,5
       lodi1(m) = sum(pnor(m,:)*lodi(:))*jacob_d(im,j,k)
@@ -1743,7 +1747,7 @@ contains
     use bc, only: pout
     use gpu_check, only: sync_after_kernel
     implicit none
-    real(8),intent(in) :: gmachmax2_in,gmachmax2_out
+    real(real_kind),intent(in) :: gmachmax2_in,gmachmax2_out
     type(dim3) :: block,grid
     integer :: apply_left,apply_right,n
 
@@ -1775,7 +1779,7 @@ contains
     grid=dim3((n+block%x-1)/block%x,1,1)
     nscbc_outflow_error_d=0
     call nscbc_outflow_x_rhs_kernel<<<grid,block>>>(im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax, &
-         pinf,pout,0.d0,apply_right)
+         pinf,pout,0.e0_real_kind,apply_right)
     call sync_after_kernel('nscbc_outflow_x_rhs_kernel_profile')
     call check_nscbc_outflow_error_gpu()
   end subroutine apply_nscbc_outflow_x_rhs_gpu
@@ -1799,7 +1803,7 @@ contains
     use commvar, only: im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax,roinf,uinf,vinf,winf,pinf
     use gpu_check, only: sync_after_kernel
     implicit none
-    real(8),intent(in) :: gmachmax2_in
+    real(real_kind),intent(in) :: gmachmax2_in
     type(dim3) :: block,grid
     integer :: apply_left,apply_right,n
 
@@ -1812,77 +1816,77 @@ contains
     call sync_after_kernel('nscbc_inflow_x_rhs_kernel')
   end subroutine apply_nscbc_inflow_x_rhs_gpu
 
-  attributes(device) real(8) function nscbc_filter6_value_axis(value_m5,value_m4,value_m3, &
+  attributes(device) real(real_kind) function nscbc_filter6_value_axis(value_m5,value_m4,value_m3, &
                                                                value_m2,value_m1,value_0, &
                                                                value_p1,value_p2,value_p3, &
                                                                value_p4,value_p5,idx,dim,ntype)
     implicit none
     integer,value :: idx,dim,ntype
-    real(8),value :: value_m5,value_m4,value_m3,value_m2,value_m1,value_0
-    real(8),value :: value_p1,value_p2,value_p3,value_p4,value_p5
+    real(real_kind),value :: value_m5,value_m4,value_m3,value_m2,value_m1,value_0
+    real(real_kind),value :: value_p1,value_p2,value_p3,value_p4,value_p5
 
     select case(ntype)
     case(1)
       if(idx == 0) then
-        nscbc_filter6_value_axis = 15.d0/16.d0*value_0 + 0.25d0*value_p1 - &
-             3.d0/8.d0*value_p2 + 0.25d0*value_p3 - 1.d0/16.d0*value_p4
+        nscbc_filter6_value_axis = 15.e0_real_kind/16.e0_real_kind*value_0 + 0.25e0_real_kind*value_p1 - &
+             3.e0_real_kind/8.e0_real_kind*value_p2 + 0.25e0_real_kind*value_p3 - 1.e0_real_kind/16.e0_real_kind*value_p4
       elseif(idx == 1) then
-        nscbc_filter6_value_axis = 1.d0/16.d0*value_m1 + 0.75d0*value_0 + &
-             3.d0/8.d0*value_p1 - 0.25d0*value_p2 + 1.d0/16.d0*value_p3
+        nscbc_filter6_value_axis = 1.e0_real_kind/16.e0_real_kind*value_m1 + 0.75e0_real_kind*value_0 + &
+             3.e0_real_kind/8.e0_real_kind*value_p1 - 0.25e0_real_kind*value_p2 + 1.e0_real_kind/16.e0_real_kind*value_p3
       elseif(idx == 2) then
-        nscbc_filter6_value_axis = 5.d0/8.d0*value_0 + 0.25d0*(value_m1+value_p1) - &
-             1.d0/16.d0*(value_m2+value_p2)
+        nscbc_filter6_value_axis = 5.e0_real_kind/8.e0_real_kind*value_0 + 0.25e0_real_kind*(value_m1+value_p1) - &
+             1.e0_real_kind/16.e0_real_kind*(value_m2+value_p2)
       else
-        nscbc_filter6_value_axis = 11.d0/16.d0*value_0 + &
-             15.d0/64.d0*(value_m1+value_p1) - &
-              3.d0/32.d0*(value_m2+value_p2) + &
-              1.d0/64.d0*(value_m3+value_p3)
+        nscbc_filter6_value_axis = 11.e0_real_kind/16.e0_real_kind*value_0 + &
+             15.e0_real_kind/64.e0_real_kind*(value_m1+value_p1) - &
+              3.e0_real_kind/32.e0_real_kind*(value_m2+value_p2) + &
+              1.e0_real_kind/64.e0_real_kind*(value_m3+value_p3)
       endif
     case(2)
       if(idx == dim-2) then
-        nscbc_filter6_value_axis = 5.d0/8.d0*value_0 + 0.25d0*(value_m1+value_p1) - &
-             1.d0/16.d0*(value_m2+value_p2)
+        nscbc_filter6_value_axis = 5.e0_real_kind/8.e0_real_kind*value_0 + 0.25e0_real_kind*(value_m1+value_p1) - &
+             1.e0_real_kind/16.e0_real_kind*(value_m2+value_p2)
       elseif(idx == dim-1) then
-        nscbc_filter6_value_axis = 1.d0/16.d0*value_p1 + 0.75d0*value_0 + &
-             3.d0/8.d0*value_m1 - 0.25d0*value_m2 + 1.d0/16.d0*value_m3
+        nscbc_filter6_value_axis = 1.e0_real_kind/16.e0_real_kind*value_p1 + 0.75e0_real_kind*value_0 + &
+             3.e0_real_kind/8.e0_real_kind*value_m1 - 0.25e0_real_kind*value_m2 + 1.e0_real_kind/16.e0_real_kind*value_m3
       elseif(idx == dim) then
-        nscbc_filter6_value_axis = 15.d0/16.d0*value_0 + 0.25d0*value_m1 - &
-             3.d0/8.d0*value_m2 + 0.25d0*value_m3 - 1.d0/16.d0*value_m4
+        nscbc_filter6_value_axis = 15.e0_real_kind/16.e0_real_kind*value_0 + 0.25e0_real_kind*value_m1 - &
+             3.e0_real_kind/8.e0_real_kind*value_m2 + 0.25e0_real_kind*value_m3 - 1.e0_real_kind/16.e0_real_kind*value_m4
       else
-        nscbc_filter6_value_axis = 11.d0/16.d0*value_0 + &
-             15.d0/64.d0*(value_m1+value_p1) - &
-              3.d0/32.d0*(value_m2+value_p2) + &
-              1.d0/64.d0*(value_m3+value_p3)
+        nscbc_filter6_value_axis = 11.e0_real_kind/16.e0_real_kind*value_0 + &
+             15.e0_real_kind/64.e0_real_kind*(value_m1+value_p1) - &
+              3.e0_real_kind/32.e0_real_kind*(value_m2+value_p2) + &
+              1.e0_real_kind/64.e0_real_kind*(value_m3+value_p3)
       endif
     case(3)
-      nscbc_filter6_value_axis = 11.d0/16.d0*value_0 + &
-           15.d0/64.d0*(value_m1+value_p1) - &
-            3.d0/32.d0*(value_m2+value_p2) + &
-            1.d0/64.d0*(value_m3+value_p3)
+      nscbc_filter6_value_axis = 11.e0_real_kind/16.e0_real_kind*value_0 + &
+           15.e0_real_kind/64.e0_real_kind*(value_m1+value_p1) - &
+            3.e0_real_kind/32.e0_real_kind*(value_m2+value_p2) + &
+            1.e0_real_kind/64.e0_real_kind*(value_m3+value_p3)
     case(4)
       if(idx == 0) then
-        nscbc_filter6_value_axis = 15.d0/16.d0*value_0 + 0.25d0*value_p1 - &
-             3.d0/8.d0*value_p2 + 0.25d0*value_p3 - 1.d0/16.d0*value_p4
+        nscbc_filter6_value_axis = 15.e0_real_kind/16.e0_real_kind*value_0 + 0.25e0_real_kind*value_p1 - &
+             3.e0_real_kind/8.e0_real_kind*value_p2 + 0.25e0_real_kind*value_p3 - 1.e0_real_kind/16.e0_real_kind*value_p4
       elseif(idx == 1) then
-        nscbc_filter6_value_axis = 1.d0/16.d0*value_m1 + 0.75d0*value_0 + &
-             3.d0/8.d0*value_p1 - 0.25d0*value_p2 + 1.d0/16.d0*value_p3
+        nscbc_filter6_value_axis = 1.e0_real_kind/16.e0_real_kind*value_m1 + 0.75e0_real_kind*value_0 + &
+             3.e0_real_kind/8.e0_real_kind*value_p1 - 0.25e0_real_kind*value_p2 + 1.e0_real_kind/16.e0_real_kind*value_p3
       elseif(idx == 2) then
-        nscbc_filter6_value_axis = 5.d0/8.d0*value_0 + 0.25d0*(value_m1+value_p1) - &
-             1.d0/16.d0*(value_m2+value_p2)
+        nscbc_filter6_value_axis = 5.e0_real_kind/8.e0_real_kind*value_0 + 0.25e0_real_kind*(value_m1+value_p1) - &
+             1.e0_real_kind/16.e0_real_kind*(value_m2+value_p2)
       elseif(idx == dim-2) then
-        nscbc_filter6_value_axis = 5.d0/8.d0*value_0 + 0.25d0*(value_m1+value_p1) - &
-             1.d0/16.d0*(value_m2+value_p2)
+        nscbc_filter6_value_axis = 5.e0_real_kind/8.e0_real_kind*value_0 + 0.25e0_real_kind*(value_m1+value_p1) - &
+             1.e0_real_kind/16.e0_real_kind*(value_m2+value_p2)
       elseif(idx == dim-1) then
-        nscbc_filter6_value_axis = 1.d0/16.d0*value_p1 + 0.75d0*value_0 + &
-             3.d0/8.d0*value_m1 - 0.25d0*value_m2 + 1.d0/16.d0*value_m3
+        nscbc_filter6_value_axis = 1.e0_real_kind/16.e0_real_kind*value_p1 + 0.75e0_real_kind*value_0 + &
+             3.e0_real_kind/8.e0_real_kind*value_m1 - 0.25e0_real_kind*value_m2 + 1.e0_real_kind/16.e0_real_kind*value_m3
       elseif(idx == dim) then
-        nscbc_filter6_value_axis = 15.d0/16.d0*value_0 + 0.25d0*value_m1 - &
-             3.d0/8.d0*value_m2 + 0.25d0*value_m3 - 1.d0/16.d0*value_m4
+        nscbc_filter6_value_axis = 15.e0_real_kind/16.e0_real_kind*value_0 + 0.25e0_real_kind*value_m1 - &
+             3.e0_real_kind/8.e0_real_kind*value_m2 + 0.25e0_real_kind*value_m3 - 1.e0_real_kind/16.e0_real_kind*value_m4
       else
-        nscbc_filter6_value_axis = 11.d0/16.d0*value_0 + &
-             15.d0/64.d0*(value_m1+value_p1) - &
-              3.d0/32.d0*(value_m2+value_p2) + &
-              1.d0/64.d0*(value_m3+value_p3)
+        nscbc_filter6_value_axis = 11.e0_real_kind/16.e0_real_kind*value_0 + &
+             15.e0_real_kind/64.e0_real_kind*(value_m1+value_p1) - &
+              3.e0_real_kind/32.e0_real_kind*(value_m2+value_p2) + &
+              1.e0_real_kind/64.e0_real_kind*(value_m3+value_p3)
       endif
     case default
       nscbc_filter6_value_axis = value_0
@@ -2033,17 +2037,17 @@ contains
     use commarray_gpu, only: vel_d,tmp_d,dxi_d
     implicit none
     integer,value :: im,jm,km,hm
-    real(8),value :: mach
-    real(8),device :: partial(*)
-    real(8),shared :: scratch(256)
+    real(real_kind),value :: mach
+    real(real_kind),device :: partial(*)
+    real(real_kind),shared :: scratch(256)
     integer :: tid,id,stride,ncell,i,k
-    real(8) :: local,css,norm2,un
+    real(real_kind) :: local,css,norm2,un
 
     tid = threadIdx%x
     id = (blockIdx%x-1)*blockDim%x + tid - 1
     stride = gridDim%x*blockDim%x
     ncell = (im+1)*(km+1)
-    local = -huge(1.d0)
+    local = -huge(1.e0_real_kind)
     do while(id < ncell)
       i = mod(id,im+1)
       k = id/(im+1)
@@ -2071,12 +2075,12 @@ contains
     use gpu_check, only: sync_after_kernel
     use parallel, only: mpisize
     implicit none
-    real(8),intent(out) :: gmachmax2
+    real(real_kind),intent(out) :: gmachmax2
     integer,parameter :: block_size=256
     integer :: ncell,nblocks,ierr,apply_down,apply_up
-    real(8) :: local_max
-    real(8),allocatable,device :: partial_d(:)
-    real(8),allocatable :: partial_h(:)
+    real(real_kind) :: local_max
+    real(real_kind),allocatable,device :: partial_d(:)
+    real(real_kind),allocatable :: partial_h(:)
 
     ncell = (im+1)*(km+1)
     nblocks = max(1,(ncell+block_size-1)/block_size)
@@ -2089,10 +2093,10 @@ contains
       local_max = maxval(partial_h)
     else
       ! CPU farfield_nscbc contributes only from the true upper-y face.
-      local_max = -huge(1.d0)
+      local_max = -huge(1.e0_real_kind)
     endif
     if(mpisize > 1) then
-      call mpi_allreduce(local_max,gmachmax2,1,mpi_real8,mpi_max,mpi_comm_world,ierr)
+      call mpi_allreduce(local_max,gmachmax2,1,mpi_real_type,mpi_max,mpi_comm_world,ierr)
     else
       gmachmax2 = local_max
     endif
@@ -2107,12 +2111,12 @@ contains
     use nscbc_characteristic_policy_gpu, only: NSCBC_GPU_POLICY_TARGET_RELAXATION
     implicit none
     integer,value :: im,jm,km,hm,npdci,npdck,shock_target,farfield_policy,apply_up
-    real(8),value :: gamma,mach,ymin,ymax,pinf,rho_target,u_target,v_target,w_target,e_target
-    real(8),value :: rho_post,u_post,v_post,w_post,e_post,shock_x,gmachmax2
+    real(real_kind),value :: gamma,mach,ymin,ymax,pinf,rho_target,u_target,v_target,w_target,e_target
+    real(real_kind),value :: rho_post,u_post,v_post,w_post,e_post,shock_x,gmachmax2
     integer :: id,i,k,ii,m,n
-    real(8) :: pnor(5,5),pinv(5,5),ecs(0:2,5),decs(5),rest(5),lodi(5),lodi1(5), &
+    real(real_kind) :: pnor(5,5),pinv(5,5),ecs(0:2,5),decs(5),rest(5),lodi(5),lodi1(5), &
                ddi(3),flux(5),css,kinout,metric
-    real(8) :: flux_m(5),flux_p(5),qtarget(5),dq(5),char_delta(5),    &
+    real(real_kind) :: flux_m(5),flux_p(5),qtarget(5),dq(5),char_delta(5),    &
                normal_speed,norm,lambda(5),sigma_in,sigma_out,wave_tolerance
 
     if(apply_up == 0) return
@@ -2131,23 +2135,23 @@ contains
       call nscbc_flux(i,jm-ii,k,2,flux)
       ecs(ii,:) = flux(:)
     enddo
-    decs(:) = 1.5d0*ecs(0,:) - 2.d0*ecs(1,:) + 0.5d0*ecs(2,:)
+    decs(:) = 1.5e0_real_kind*ecs(0,:) - 2.e0_real_kind*ecs(1,:) + 0.5e0_real_kind*ecs(2,:)
 
-    rest(:) = 0.d0
+    rest(:) = 0.e0_real_kind
     call nscbc_cartesian_flux(i,jm,k,1,flux)
-    metric = 1.5d0*dxi_d(i,jm,k,2,1)*jacob_d(i,jm,k) - &
-             2.d0*dxi_d(i,jm-1,k,2,1)*jacob_d(i,jm-1,k) + &
-             0.5d0*dxi_d(i,jm-2,k,2,1)*jacob_d(i,jm-2,k)
+    metric = 1.5e0_real_kind*dxi_d(i,jm,k,2,1)*jacob_d(i,jm,k) - &
+             2.e0_real_kind*dxi_d(i,jm-1,k,2,1)*jacob_d(i,jm-1,k) + &
+             0.5e0_real_kind*dxi_d(i,jm-2,k,2,1)*jacob_d(i,jm-2,k)
     rest(:) = rest(:) + flux(:)*metric
     call nscbc_cartesian_flux(i,jm,k,2,flux)
-    metric = 1.5d0*dxi_d(i,jm,k,2,2)*jacob_d(i,jm,k) - &
-             2.d0*dxi_d(i,jm-1,k,2,2)*jacob_d(i,jm-1,k) + &
-             0.5d0*dxi_d(i,jm-2,k,2,2)*jacob_d(i,jm-2,k)
+    metric = 1.5e0_real_kind*dxi_d(i,jm,k,2,2)*jacob_d(i,jm,k) - &
+             2.e0_real_kind*dxi_d(i,jm-1,k,2,2)*jacob_d(i,jm-1,k) + &
+             0.5e0_real_kind*dxi_d(i,jm-2,k,2,2)*jacob_d(i,jm-2,k)
     rest(:) = rest(:) + flux(:)*metric
     call nscbc_cartesian_flux(i,jm,k,3,flux)
-    metric = 1.5d0*dxi_d(i,jm,k,2,3)*jacob_d(i,jm,k) - &
-             2.d0*dxi_d(i,jm-1,k,2,3)*jacob_d(i,jm-1,k) + &
-             0.5d0*dxi_d(i,jm-2,k,2,3)*jacob_d(i,jm-2,k)
+    metric = 1.5e0_real_kind*dxi_d(i,jm,k,2,3)*jacob_d(i,jm,k) - &
+             2.e0_real_kind*dxi_d(i,jm-1,k,2,3)*jacob_d(i,jm-1,k) + &
+             0.5e0_real_kind*dxi_d(i,jm-2,k,2,3)*jacob_d(i,jm-2,k)
     rest(:) = rest(:) + flux(:)*metric
 
     lodi1(:) = decs(:)-rest(:)
@@ -2178,16 +2182,16 @@ contains
       endif
       dq(:)=q_d(i,jm,k,1:5)-qtarget(:)
       do m=1,5
-        char_delta(m)=0.d0
+        char_delta(m)=0.e0_real_kind
         do ii=1,5
           char_delta(m)=char_delta(m)+pinv(m,ii)*dq(ii)
         enddo
       enddo
-      sigma_in=0.25d0*css/(ymax-ymin)
-      sigma_out=max(0.d0,0.25d0*(1.d0-gmachmax2)*css/(ymax-ymin))
+      sigma_in=0.25e0_real_kind*css/(ymax-ymin)
+      sigma_out=max(0.e0_real_kind,0.25e0_real_kind*(1.e0_real_kind-gmachmax2)*css/(ymax-ymin))
       do m=1,5
-        if(lambda(m)<0.d0) then
-          if(normal_speed>=0.d0) then
+        if(lambda(m)<0.e0_real_kind) then
+          if(normal_speed>=0.e0_real_kind) then
             lodi(m)=sigma_out*char_delta(m)
           else
             lodi(m)=sigma_in*char_delta(m)
@@ -2200,17 +2204,17 @@ contains
       lambda(1:3)=normal_speed
       lambda(4)=normal_speed+css
       lambda(5)=normal_speed-css
-      wave_tolerance=64.d0*epsilon(1.d0)*max(css,abs(normal_speed))
-      if(normal_speed<0.d0) then
+      wave_tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(normal_speed))
+      if(normal_speed<0.e0_real_kind) then
         qtarget=[rho_target,rho_target*u_target,rho_target*v_target,rho_target*w_target,e_target]
         dq(:)=q_d(i,jm,k,1:5)-qtarget(:)
-        sigma_in=.25d0*css/(ymax-ymin)
+        sigma_in=.25e0_real_kind*css/(ymax-ymin)
         do m=1,5
           if(lambda(m)<-wave_tolerance) lodi(m)=sigma_in*sum(pinv(m,:)*dq(:))
         enddo
       elseif(lambda(5)<-wave_tolerance) then
-        kinout=.25d0*max(0.d0,1.d0-(normal_speed/css)**2)*css/(ymax-ymin)
-        lodi(5)=kinout*((prs_d(i,jm,k)-pinf)/rho_d(i,jm,k)/css)*sqrt(2.d0)
+        kinout=.25e0_real_kind*max(0.e0_real_kind,1.e0_real_kind-(normal_speed/css)**2)*css/(ymax-ymin)
+        lodi(5)=kinout*((prs_d(i,jm,k)-pinf)/rho_d(i,jm,k)/css)*sqrt(2.e0_real_kind)
       endif
     endif
     do m=1,5
@@ -2223,7 +2227,7 @@ contains
       call nscbc_flux(i-1,jm,k,1,flux_m)
       call nscbc_flux(i+1,jm,k,1,flux_p)
       do m=1,5
-        decs(m) = decs(m) + 0.5d0*(flux_p(m)-flux_m(m))
+        decs(m) = decs(m) + 0.5e0_real_kind*(flux_p(m)-flux_m(m))
       enddo
     endif
 
@@ -2233,7 +2237,7 @@ contains
              ((npdck == 2 .or. npdck == 4) .and. k == km))) then
       call nscbc_flux(i,jm,k-1,3,flux_m)
       call nscbc_flux(i,jm,k+1,3,flux_p)
-      decs(:) = decs(:) + 0.5d0*(flux_p(:)-flux_m(:))
+      decs(:) = decs(:) + 0.5e0_real_kind*(flux_p(:)-flux_m(:))
     endif
     ! CPU forms this boundary flux derivative before rhscal negates qrhs.
     qrhs_d(i,jm,k,:) = qrhs_d(i,jm,k,:) - decs(:)
@@ -2245,11 +2249,11 @@ contains
     use nscbc_characteristic_policy_gpu, only: nscbc_balance_incoming_lodi_gpu
     implicit none
     integer,value :: im,jm,km,hm,npdci,npdck,apply_up
-    real(8),value :: gamma,mach
+    real(real_kind),value :: gamma,mach
     integer :: id,i,k,ii,m,n
-    real(8) :: pnor(5,5),pinv(5,5),ecs(0:2,5),decs(5),rest(5),lodi(5), &
+    real(real_kind) :: pnor(5,5),pinv(5,5),ecs(0:2,5),decs(5),rest(5),lodi(5), &
                lodi1(5),ddi(3),velocity(3),flux(5),css,metric,lambda(5)
-    real(8) :: flux_m(5),flux_p(5),transverse(5),source(5)
+    real(real_kind) :: flux_m(5),flux_p(5),transverse(5),source(5)
     logical :: incoming(5)
 
     if(apply_up == 0) return
@@ -2273,23 +2277,23 @@ contains
       call nscbc_flux(i,jm-ii,k,2,flux)
       ecs(ii,:) = flux(:)
     enddo
-    decs(:) = 1.5d0*ecs(0,:) - 2.d0*ecs(1,:) + 0.5d0*ecs(2,:)
+    decs(:) = 1.5e0_real_kind*ecs(0,:) - 2.e0_real_kind*ecs(1,:) + 0.5e0_real_kind*ecs(2,:)
 
-    rest(:) = 0.d0
+    rest(:) = 0.e0_real_kind
     call nscbc_cartesian_flux(i,jm,k,1,flux)
-    metric = 1.5d0*dxi_d(i,jm,k,2,1)*jacob_d(i,jm,k) -               &
-             2.d0*dxi_d(i,jm-1,k,2,1)*jacob_d(i,jm-1,k) +           &
-             0.5d0*dxi_d(i,jm-2,k,2,1)*jacob_d(i,jm-2,k)
+    metric = 1.5e0_real_kind*dxi_d(i,jm,k,2,1)*jacob_d(i,jm,k) -               &
+             2.e0_real_kind*dxi_d(i,jm-1,k,2,1)*jacob_d(i,jm-1,k) +           &
+             0.5e0_real_kind*dxi_d(i,jm-2,k,2,1)*jacob_d(i,jm-2,k)
     rest(:) = rest(:) + flux(:)*metric
     call nscbc_cartesian_flux(i,jm,k,2,flux)
-    metric = 1.5d0*dxi_d(i,jm,k,2,2)*jacob_d(i,jm,k) -               &
-             2.d0*dxi_d(i,jm-1,k,2,2)*jacob_d(i,jm-1,k) +           &
-             0.5d0*dxi_d(i,jm-2,k,2,2)*jacob_d(i,jm-2,k)
+    metric = 1.5e0_real_kind*dxi_d(i,jm,k,2,2)*jacob_d(i,jm,k) -               &
+             2.e0_real_kind*dxi_d(i,jm-1,k,2,2)*jacob_d(i,jm-1,k) +           &
+             0.5e0_real_kind*dxi_d(i,jm-2,k,2,2)*jacob_d(i,jm-2,k)
     rest(:) = rest(:) + flux(:)*metric
     call nscbc_cartesian_flux(i,jm,k,3,flux)
-    metric = 1.5d0*dxi_d(i,jm,k,2,3)*jacob_d(i,jm,k) -               &
-             2.d0*dxi_d(i,jm-1,k,2,3)*jacob_d(i,jm-1,k) +           &
-             0.5d0*dxi_d(i,jm-2,k,2,3)*jacob_d(i,jm-2,k)
+    metric = 1.5e0_real_kind*dxi_d(i,jm,k,2,3)*jacob_d(i,jm,k) -               &
+             2.e0_real_kind*dxi_d(i,jm-1,k,2,3)*jacob_d(i,jm-1,k) +           &
+             0.5e0_real_kind*dxi_d(i,jm-2,k,2,3)*jacob_d(i,jm-2,k)
     rest(:) = rest(:) + flux(:)*metric
 
     lodi1(:) = decs(:)-rest(:)
@@ -2298,7 +2302,7 @@ contains
     enddo
     css = sqrt(tmp_d(i,jm,k))/mach
 
-    transverse(:)=0.d0
+    transverse(:)=0.e0_real_kind
     if(i == 0 .and. (npdci == 1 .or. npdci == 4)) then
       call nscbc_flux(i,jm,k,1,flux_m)
       call nscbc_flux(i+1,jm,k,1,flux_p)
@@ -2310,13 +2314,13 @@ contains
     else
       call nscbc_flux(i-1,jm,k,1,flux_m)
       call nscbc_flux(i+1,jm,k,1,flux_p)
-      transverse(:)=transverse(:)+0.5d0*(flux_p(:)-flux_m(:))
+      transverse(:)=transverse(:)+0.5e0_real_kind*(flux_p(:)-flux_m(:))
     endif
     if(.not.(((npdck == 1 .or. npdck == 4) .and. k == 0) .or.       &
              ((npdck == 2 .or. npdck == 4) .and. k == km))) then
       call nscbc_flux(i,jm,k-1,3,flux_m)
       call nscbc_flux(i,jm,k+1,3,flux_p)
-      transverse(:)=transverse(:)+0.5d0*(flux_p(:)-flux_m(:))
+      transverse(:)=transverse(:)+0.5e0_real_kind*(flux_p(:)-flux_m(:))
     endif
     source(:)=rest(:)+transverse(:)
     call nscbc_balance_incoming_lodi_gpu(lodi,source,pinv,             &
@@ -2333,7 +2337,7 @@ contains
     use commarray_gpu, only: qrhs_d
     implicit none
     integer,value :: im,jm,km,apply_up
-    real(8),device :: prediff_rhs(0:im,0:km,1:5)
+    real(real_kind),device :: prediff_rhs(0:im,0:km,1:5)
     integer :: id,i,k,n
 
     if(apply_up == 0) return
@@ -2351,11 +2355,11 @@ contains
     use nscbc_characteristic_policy_gpu, only: nscbc_remove_incoming_source_gpu
     implicit none
     integer,value :: im,jm,km,apply_up
-    real(8),value :: gamma,mach
-    real(8),device :: prediff_rhs(0:im,0:km,1:5)
+    real(real_kind),value :: gamma,mach
+    real(real_kind),device :: prediff_rhs(0:im,0:km,1:5)
     integer :: id,i,k,n
-    real(8) :: rhs(5),source(5),pnor(5,5),pinv(5,5),ddi(3),velocity(3)
-    real(8) :: css,lambda(5)
+    real(real_kind) :: rhs(5),source(5),pnor(5,5),pinv(5,5),ddi(3),velocity(3)
+    real(real_kind) :: css,lambda(5)
     logical :: incoming(5)
 
     if(apply_up == 0) return
@@ -2387,27 +2391,27 @@ contains
     use gpu_check, only: sync_after_kernel
     use nscbc_characteristic_policy_gpu, only: NSCBC_GPU_POLICY_COMPATIBILITY
     implicit none
-    real(8),intent(in) :: gmachmax2
+    real(real_kind),intent(in) :: gmachmax2
     type(dim3) :: block,grid
     integer :: apply_down,apply_up,n,farfield_policy,shock_target
-    real(8) :: rho_target,u_target,v_target,w_target,t_target,e_target
-    real(8) :: rho_post,u_post,v_post,w_post,t_post,e_post,shock_x
+    real(real_kind) :: rho_target,u_target,v_target,w_target,t_target,e_target
+    real(real_kind) :: rho_post,u_post,v_post,w_post,t_post,e_post,shock_x
     logical :: use_shock
 
     call gpu_physical_boundary_apply_mask(2,apply_down,apply_up)
     farfield_policy=nscbc_farfield_policy_id()
     call nscbc_farfield_target_state(rho_target,u_target,v_target,     &
                                      w_target,t_target)
-    call nscbc_farfield_target_states(huge(1.d0),rho_post,u_post,      &
+    call nscbc_farfield_target_states(huge(1.e0_real_kind),rho_post,u_post,      &
          v_post,w_post,t_post,shock_x,use_shock)
     shock_target=merge(1,0,use_shock)
-    e_target=(rho_target*t_target/const2)*const6+0.5d0*rho_target*     &
+    e_target=(rho_target*t_target/const2)*const6+0.5e0_real_kind*rho_target*     &
              (u_target*u_target+v_target*v_target+w_target*w_target)
-    e_post=(rho_post*t_post/const2)*const6+0.5d0*rho_post*             &
+    e_post=(rho_post*t_post/const2)*const6+0.5e0_real_kind*rho_post*             &
              (u_post*u_post+v_post*v_post+w_post*w_post)
     if(farfield_policy==NSCBC_GPU_POLICY_COMPATIBILITY) then
       rho_target=roinf; u_target=uinf; v_target=vinf; w_target=winf
-      e_target=pinf/(gamma-1.d0)+.5d0*roinf*(uinf*uinf+vinf*vinf+winf*winf)
+      e_target=pinf/(gamma-1.e0_real_kind)+.5e0_real_kind*roinf*(uinf*uinf+vinf*vinf+winf*winf)
     endif
     block = dim3(256,1,1)
     n = (im+1)*(km+1)
@@ -2515,7 +2519,7 @@ contains
     type(dim3) :: block,grid_x,grid_y
     integer :: apply_left,apply_right,apply_down,apply_up,nx,ny,preserve_rhs, &
                mach_pressure,slot0,slot1,slot2,slot3,dynamic_error
-    real(8) :: time0,delta
+    real(real_kind) :: time0,delta
 
     if(bctype(1) == GPU_BC_INFLOW .and. (.not.s1_bl_profile_ready)) &
       stop 'GPU S1 flatplate profile has not been uploaded'
@@ -2579,9 +2583,9 @@ contains
   attributes(global) subroutine compact_outlet_wall_state_kernel(im,km,const2,const6,tw,apply_corner,forcing_time)
     use commarray_gpu, only: prs_d,tmp_d,x_d,bnorm_j0_d
     integer,value :: im,km,apply_corner
-    real(8),value :: const2,const6,tw,forcing_time
+    real(real_kind),value :: const2,const6,tw,forcing_time
     integer :: k
-    real(8) :: rho,prs,vwall
+    real(real_kind) :: rho,prs,vwall
     k=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(k>km.or.apply_corner==0) return
     prs=extrap2(prs_d(im,1,k),prs_d(im,2,k))

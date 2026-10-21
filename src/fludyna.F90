@@ -7,12 +7,18 @@
 !| 09-Jnu-2020  | Created by J. Fang @ STFC Daresbury Laboratory       |
 !+---------------------------------------------------------------------+
 module fludyna
+  use astr_precision, only: real_kind
   !
   ! use parallel, only: mpirank,mpistop
   use commvar, only: nondimen
   use thermchem, only: rgcmix,cpeval,temperature_calc
   !
   implicit none
+  private :: real_kind
+  real(real_kind),parameter,private :: thermal_unit_roundoff=0.5_real_kind*epsilon(1.0_real_kind)
+  ! A perfect-gas pressure/temperature round trip contains four rounded operations.
+  real(real_kind),parameter :: thermal_roundtrip_rtol=max(1.0e-10_real_kind, &
+    nearest(4.0_real_kind*thermal_unit_roundoff/(1.0_real_kind-4.0_real_kind*thermal_unit_roundoff),1.0_real_kind))
   !
   interface thermal
      module procedure thermal_scar
@@ -47,10 +53,10 @@ module fludyna
     use commvar,only : const2,rgas
     !
     ! arguments
-    real(8) :: vout
-    real(8),intent(in) ,optional :: density,pressure,temperature,species(:)
+    real(real_kind) :: vout
+    real(real_kind),intent(in) ,optional :: density,pressure,temperature,species(:)
     !
-    real(8) :: rloc
+    real(real_kind) :: rloc
 
     
     if(nondimen) then
@@ -93,11 +99,11 @@ module fludyna
     !
     ! arguments
     integer,intent(in) :: dim
-    real(8) :: vout(dim)
-    real(8),intent(in),optional :: density(:),pressure(:),        &
+    real(real_kind) :: vout(dim)
+    real(real_kind),intent(in),optional :: density(:),pressure(:),        &
                                    temperature(:),species(:,:)
     !
-    real(8) :: rloc(dim)
+    real(real_kind) :: rloc(dim)
     !
     if(nondimen) then
       !
@@ -139,11 +145,11 @@ module fludyna
     !
     ! arguments
     integer,intent(in) :: dim(3)
-    real(8) :: vout(dim(1),dim(2),dim(3))
-    real(8),intent(in),optional :: density(:,:,:),pressure(:,:,:),    &
+    real(real_kind) :: vout(dim(1),dim(2),dim(3))
+    real(real_kind),intent(in),optional :: density(:,:,:),pressure(:,:,:),    &
                                    temperature(:,:,:),species(:,:,:,:)
     !
-    real(8) :: rloc(dim(1),dim(2),dim(3))
+    real(real_kind) :: rloc(dim(1),dim(2),dim(3))
     !
     if(nondimen) then
       !
@@ -231,13 +237,13 @@ module fludyna
       do j=0,jm
       do i=0,im
         !
-        if(tke(i,j,k)<0.d0) then
-          tke(i,j,k)=0.d0
+        if(tke(i,j,k)<0.e0_real_kind) then
+          tke(i,j,k)=0.e0_real_kind
           q(i,j,k,6+num_species)=rho(i,j,k)*tke(i,j,k)
         endif
         !
-        if(omg(i,j,k)<0.01d0) then
-          omg(i,j,k)=0.01d0
+        if(omg(i,j,k)<0.01e0_real_kind) then
+          omg(i,j,k)=0.01e0_real_kind
           q(i,j,k,7+num_species)=rho(i,j,k)*omg(i,j,k)
         endif
         !
@@ -348,13 +354,13 @@ module fludyna
     !
     use commvar, only: numq,ndims,num_species,const1,const6,cv
     !
-    real(8),intent(in) :: density,velocity(:)
-    real(8),intent(in),optional :: pressure,temperature,species(:),tke,omega
-    real(8),intent(out) :: q(:)
+    real(real_kind),intent(in) :: density,velocity(:)
+    real(real_kind),intent(in),optional :: pressure,temperature,species(:),tke,omega
+    real(real_kind),intent(out) :: q(:)
     !
     ! local data
     integer :: jspec,j
-    real(8) :: var1,var2,cotem
+    real(real_kind) :: var1,var2,cotem
     !
     q(1)=density
     q(2)=density*velocity(1)
@@ -366,7 +372,7 @@ module fludyna
       stop ' !! error @ fvar2q_sca - species not set for energy calculation !!'
       !
     if(present(temperature)) then
-      var1=0.5d0*sum(velocity(:)*velocity(:))
+      var1=0.5e0_real_kind*sum(velocity(:)*velocity(:))
       call cpeval(tmp=temperature,spc=species,ke=var1,eng=var2)
       q(5)=var2*density
     else
@@ -381,7 +387,7 @@ module fludyna
       cotem=cv
     endif
     !
-    var1=0.5d0*sum(velocity(:)*velocity(:))
+    var1=0.5e0_real_kind*sum(velocity(:)*velocity(:))
     if(present(temperature)) then
       q(5)=density*(temperature*cotem+var1)
     elseif(present(pressure)) then
@@ -413,14 +419,14 @@ module fludyna
     !
     use commvar, only: numq,ndims,num_species,const1,const6,cv
     !
-    real(8),intent(in) :: density(:),velocity(:,:)
-    real(8),intent(in),optional :: pressure(:),temperature(:), &
+    real(real_kind),intent(in) :: density(:),velocity(:,:)
+    real(real_kind),intent(in),optional :: pressure(:),temperature(:), &
                                    species(:,:)
-    real(8),intent(out) :: q(:,:)
+    real(real_kind),intent(out) :: q(:,:)
     !
     ! local data
     integer :: jspec,j
-    real(8) :: var1,var2,cotem
+    real(real_kind) :: var1,var2,cotem
     !
     q(:,1)=density(:)
     q(:,2)=density(:)*velocity(:,1)
@@ -435,7 +441,7 @@ module fludyna
     if(present(temperature)) then
       !
       do j=1,size(density)
-        var1=0.5d0*sum(velocity(j,:)*velocity(j,:))
+        var1=0.5e0_real_kind*sum(velocity(j,:)*velocity(j,:))
         call cpeval(tmp=temperature(j),spc=species(j,:),ke=var1,eng=var2)
         q(j,5)=var2*density(j)
       enddo   
@@ -455,11 +461,11 @@ module fludyna
     !
     if(present(temperature)) then
       q(:,5)=density(:)*( temperature(:)*cotem +         &
-                          0.5d0*(velocity(:,1)**2 +      &
+                          0.5e0_real_kind*(velocity(:,1)**2 +      &
                                  velocity(:,2)**2 +      &
                                  velocity(:,3)**2) )
     elseif(present(pressure)) then
-      q(:,5)=pressure(:)*const6+0.5d0*density(:)*(       &
+      q(:,5)=pressure(:)*const6+0.5e0_real_kind*density(:)*(       &
                                     velocity(:,1)**2 +   &
                                     velocity(:,2)**2 +   &
                                     velocity(:,3)**2 )
@@ -484,15 +490,15 @@ module fludyna
     !
     use commvar, only: numq,ndims,num_species,const1,const6,cv
     !
-    real(8),intent(in) :: density(:,:,:),velocity(:,:,:,:)
-    real(8),intent(in),optional :: pressure(:,:,:),temperature(:,:,:), &
+    real(real_kind),intent(in) :: density(:,:,:),velocity(:,:,:,:)
+    real(real_kind),intent(in),optional :: pressure(:,:,:),temperature(:,:,:), &
                                    species(:,:,:,:),tke(:,:,:),        &
                                    omega(:,:,:)
-    real(8),intent(out) :: q(:,:,:,:)
+    real(real_kind),intent(out) :: q(:,:,:,:)
     !
     ! local data
     integer :: jspec,i,j,k
-    real(8) :: var1,var2,cotem
+    real(real_kind) :: var1,var2,cotem
     !
     q(:,:,:,1)=density(:,:,:)
     q(:,:,:,2)=density(:,:,:)*velocity(:,:,:,1)
@@ -510,7 +516,7 @@ module fludyna
         do j=1,size(density,2)
           do k=1,size(density,3)
             !
-            var1=0.5d0*sum(velocity(i,j,k,:)*velocity(i,j,k,:))
+            var1=0.5e0_real_kind*sum(velocity(i,j,k,:)*velocity(i,j,k,:))
             call cpeval(tmp=temperature(i,j,k),spc=species(i,j,k,:), &
                         ke=var1,eng=var2)
             q(i,j,k,5)=var2*density(i,j,k)
@@ -534,11 +540,11 @@ module fludyna
     !
     if(present(temperature)) then
       q(:,:,:,5)=density(:,:,:)*( temperature(:,:,:)*cotem +     &
-                           0.5d0*(velocity(:,:,:,1)**2 +         &
+                           0.5e0_real_kind*(velocity(:,:,:,1)**2 +         &
                                   velocity(:,:,:,2)**2 +         &
                                   velocity(:,:,:,3)**2) )
     elseif(present(pressure)) then
-        q(:,:,:,5)=pressure(:,:,:)*const6+0.5d0*density(:,:,:)*(       &
+        q(:,:,:,5)=pressure(:,:,:)*const6+0.5e0_real_kind*density(:,:,:)*(       &
                                     velocity(:,:,:,1)**2 +             &
                                     velocity(:,:,:,2)**2 +             &
                                     velocity(:,:,:,3)**2 )
@@ -580,16 +586,16 @@ module fludyna
     !
     use commvar, only: numq,ndims,num_species,const1,const6,tinf
     !
-    real(8),intent(inout) :: q(:,:,:,:)
-    real(8),intent(out) :: density(:,:,:)
-    real(8),intent(out),optional :: temperature(:,:,:),pressure(:,:,:),&
+    real(real_kind),intent(inout) :: q(:,:,:,:)
+    real(real_kind),intent(out) :: density(:,:,:)
+    real(real_kind),intent(out),optional :: temperature(:,:,:),pressure(:,:,:),&
                                     species(:,:,:,:),velocity(:,:,:,:),&
                                     tke(:,:,:),omega(:,:,:)
     !
     ! local data
     integer :: jspec,i,j,k
     integer :: dim(3)
-    real(8) :: var1
+    real(real_kind) :: var1
     !
     density(:,:,:)   =q(:,:,:,1)
     !
@@ -619,7 +625,7 @@ module fludyna
           do k=1,size(q,3)
             !
             var1=q(i,j,k,5)/density(i,j,k) &
-                 -0.5d0*sum(velocity(i,j,k,:)*velocity(i,j,k,:))
+                 -0.5e0_real_kind*sum(velocity(i,j,k,:)*velocity(i,j,k,:))
             ! temperature(i,j,k)=tinf
             call temperature_calc(tmp=temperature(i,j,k),den=density(i,j,k), &
                                   spc=species(i,j,k,:),eint=var1)
@@ -641,7 +647,7 @@ module fludyna
 #else
 
     if(present(pressure) .or. present(temperature)) then
-      pressure(:,:,:)  =( q(:,:,:,5)-0.5d0*density(:,:,:)*(              &
+      pressure(:,:,:)  =( q(:,:,:,5)-0.5e0_real_kind*density(:,:,:)*(              &
                                           velocity(:,:,:,1)**2+         &
                                           velocity(:,:,:,2)**2+         &
                                           velocity(:,:,:,3)**2) )/const6
@@ -671,16 +677,16 @@ module fludyna
     !
     use commvar, only: numq,ndims,num_species,const1,const6
     !
-    real(8),intent(in) :: q(:,:)
-    real(8),intent(out) :: density(:)
-    real(8),intent(out),optional :: velocity(:,:),pressure(:),         &
+    real(real_kind),intent(in) :: q(:,:)
+    real(real_kind),intent(out) :: density(:)
+    real(real_kind),intent(out),optional :: velocity(:,:),pressure(:),         &
                                     temperature(:),species(:,:),       &
                                     tke(:),omega(:)
     !
     ! local data
     integer :: jspec,j
     integer :: dim
-    real(8) :: var1
+    real(real_kind) :: var1
     !
     density(:)   =q(:,1)
     !
@@ -707,7 +713,7 @@ module fludyna
       !
       do j=1,size(density)
         !
-        var1=q(j,5)/density(j)-0.5d0*sum(velocity(j,:)*velocity(j,:))
+        var1=q(j,5)/density(j)-0.5e0_real_kind*sum(velocity(j,:)*velocity(j,:))
         call temperature_calc(tmp=temperature(j),den=density(j), &
                                   spc=species(j,:),eint=var1)
       enddo          
@@ -724,7 +730,7 @@ module fludyna
 #else
 
     if(present(pressure) .or. present(temperature)) then
-      pressure(:)  =( q(:,5)-0.5d0*density(:)*(                   &
+      pressure(:)  =( q(:,5)-0.5e0_real_kind*density(:)*(                   &
                                           velocity(:,1)**2+      &
                                           velocity(:,2)**2+      &
                                           velocity(:,3)**2) )/const6
@@ -752,14 +758,14 @@ module fludyna
     !
     use commvar, only: numq,ndims,num_species,const1,const6
     !
-    real(8),intent(in) :: q(:)
-    real(8),intent(out) :: density
-    real(8),intent(out),optional :: velocity(:),pressure,temperature,  &
+    real(real_kind),intent(in) :: q(:)
+    real(real_kind),intent(out) :: density
+    real(real_kind),intent(out),optional :: velocity(:),pressure,temperature,  &
                                     species(:),tke,omega
     !
     ! local data
     integer :: jspec
-    real(8) :: var1
+    real(real_kind) :: var1
     !
     density   =q(1)
     !
@@ -783,7 +789,7 @@ module fludyna
       !
     if(present(pressure) .or. present(temperature)) then
       !
-      var1=q(5)/density-0.5d0*sum(velocity(:)*velocity(:))
+      var1=q(5)/density-0.5e0_real_kind*sum(velocity(:)*velocity(:))
       call temperature_calc(tmp=temperature,den=density, &
                             spc=species(:),eint=var1)
     endif 
@@ -795,7 +801,7 @@ module fludyna
 #else
 
     if(present(pressure) .or. present(temperature)) then
-      pressure  =( q(5)-0.5d0*density*(velocity(1)**2+velocity(2)**2+    &
+      pressure  =( q(5)-0.5e0_real_kind*density*(velocity(1)**2+velocity(2)**2+    &
                                        velocity(3)**2) )/const6
     endif
     !
@@ -822,25 +828,25 @@ module fludyna
   ! calculate dynamic viscosity coefficient at different temperature.
   ! ref: https://www.cfd-online.com/Wiki/Sutherland%27s_law
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  real(8) function miucal(temper)
+  real(real_kind) function miucal(temper)
     !
     use commvar, only :  tempconst,tempconst1
     !
-    real(8),intent(in) :: temper
+    real(real_kind),intent(in) :: temper
     ! temper represent temperature, dimensionless
     ! below calculate miucal using sutherland's law
     ! tempconst=110.4d0/ref_t
     ! tempconst1=1.d0+tempconst
     !
-    real(8) :: s,tmpers,tmper0,miu0,tnondim
+    real(real_kind) :: s,tmpers,tmper0,miu0,tnondim
     !
     if(nondimen) then
       miucal=temper*sqrt(temper)*tempconst1/(temper+tempconst)
     else
       ! for air, kg/(m s)
-      tnondim=temper/273.15d0
+      tnondim=temper/273.15e0_real_kind
       !
-      miucal=1.716d-5*tnondim*sqrt(tnondim)*(273.15d0+110.4d0)/(temper+110.4d0)
+      miucal=1.716e-5_real_kind*tnondim*sqrt(tnondim)*(273.15e0_real_kind+110.4e0_real_kind)/(temper+110.4e0_real_kind)
       !
       ! tmpers=110.d0
       ! tmper0=273.125d0
@@ -863,16 +869,16 @@ module fludyna
   !| -------------                                                     |
   !| 24-Feb-2021: Created by J. Fang @ STFC Daresbury Laboratory       |
   !+-------------------------------------------------------------------+
-  real(8) function sos(tmp,spc)
+  real(real_kind) function sos(tmp,spc)
     !
     use commvar,   only: nondimen,mach,num_species,gamma,rgas
     use thermchem, only: aceval
     !
-    real(8),intent(in) :: tmp
-    real(8),intent(in),optional :: spc(:)
+    real(real_kind),intent(in) :: tmp
+    real(real_kind),intent(in),optional :: spc(:)
     !
     ! local data
-    real(8) :: cpcmix,gamrgc
+    real(real_kind) :: cpcmix,gamrgc
     !
 #ifdef COMB
     if(.not. present(spc)) then
@@ -914,12 +920,12 @@ module fludyna
     use commvar, only: uinf,ymin,ymax
     !
     ! arguments
-    real(8) :: u(3)
-    real(8),intent(in) :: r
-    real(8),intent(in),optional :: time
+    real(real_kind) :: u(3)
+    real(real_kind),intent(in) :: r
+    real(real_kind),intent(in),optional :: time
     !
     ! local data
-    real(8) :: r0,uc,delta,ujet,alfa,theter,Tperi,var1
+    real(real_kind) :: r0,uc,delta,ujet,alfa,theter,Tperi,var1
     !+-----------------------------+
     !| delta: the initial momentum |
     !| thickness of the shear layer|
@@ -927,12 +933,12 @@ module fludyna
     !+-----------------------------+
     !
     !
-    r0=1.d0
-    uc=1.67d0*uinf    ! ref: Reichert & Biringen, Mechanics Research
+    r0=1.e0_real_kind
+    uc=1.67e0_real_kind*uinf    ! ref: Reichert & Biringen, Mechanics Research
                       !      Communications 34 (2007) 249–259
-    delta=0.05d0*r0   ! ref: Bogey
+    delta=0.05e0_real_kind*r0   ! ref: Bogey
     !
-    var1=0.5d0+0.5d0*tanh((r0-abs(r))/(2.d0*delta)) ! profile 0~1
+    var1=0.5e0_real_kind+0.5e0_real_kind*tanh((r0-abs(r))/(2.e0_real_kind*delta)) ! profile 0~1
     ! ujet=var1*(uc-uinf)+uinf
     ujet=var1
     !
@@ -946,8 +952,8 @@ module fludyna
       !
     else
       u(1)=ujet !+uinf
-      u(2)=0.d0
-      u(3)=0.d0
+      u(2)=0.e0_real_kind
+      u(3)=0.e0_real_kind
     endif
     !
     return
@@ -973,31 +979,31 @@ module fludyna
     use commvar, only: ymin,ymax,gamma,mach
     !
     ! arguments
-    real(8),intent(in) :: y
-    real(8),intent(out) :: u(3),t,ro
+    real(real_kind),intent(in) :: y
+    real(real_kind),intent(out) :: u(3),t,ro
     logical,intent(in) :: info
     !
     ! local data
-    real(8) :: uref,u1,u2,delta,mc,ustar
+    real(real_kind) :: uref,u1,u2,delta,mc,ustar
     logical,save :: firstcall=.true.
     !+-----------------------------------+
     !| delta: inflow vorticity thickness |
     !+-----------------------------------+
-    u1=1.5d0
-    u2=0.5d0
-    uref = 0.5d0*(u1-u2)
+    u1=1.5e0_real_kind
+    u2=0.5e0_real_kind
+    uref = 0.5e0_real_kind*(u1-u2)
     !
-    delta=1.d0
-    mc=(u1-u2)/2.d0*mach
+    delta=1.e0_real_kind
+    mc=(u1-u2)/2.e0_real_kind*mach
     !
-    u(1)=0.5d0*(u1+u2)+uref*tanh(2.d0*y/delta)
-    u(2)=0.d0
-    u(3)=0.d0
+    u(1)=0.5e0_real_kind*(u1+u2)+uref*tanh(2.e0_real_kind*y/delta)
+    u(2)=0.e0_real_kind
+    u(3)=0.e0_real_kind
     !
-    ustar=u(1)-0.5d0*(u1+u2)
-    t=1.d0*(1.d0+mc**2*0.5d0*(gamma-1.d0)*(1.d0-(ustar/uref)**2))
+    ustar=u(1)-0.5e0_real_kind*(u1+u2)
+    t=1.e0_real_kind*(1.e0_real_kind+mc**2*0.5e0_real_kind*(gamma-1.e0_real_kind)*(1.e0_real_kind-(ustar/uref)**2))
     !
-    ro=1.d0/t
+    ro=1.e0_real_kind/t
     !
     if(info .and. firstcall) then
       print*,' ** High-speed Mach number=',u1*mach
@@ -1027,32 +1033,32 @@ module fludyna
     use commvar, only: const2,gamma,mach
     use constdef,only: pi
     !
-    real(8),intent(in)  :: ropre,upre,vpre,ppre,tpre,ang
-    real(8),intent(out) :: ropos,upos,vpos,ppos,tpos
+    real(real_kind),intent(in)  :: ropre,upre,vpre,ppre,tpre,ang
+    real(real_kind),intent(out) :: ropos,upos,vpos,ppos,tpos
     !
-    real(8) :: csspre,unpre,utpre,machnpre,unpos,utpos,sratio,ang2
+    real(real_kind) :: csspre,unpre,utpre,machnpre,unpos,utpos,sratio,ang2
     !
-    ang2=ang/180.d0*pi
+    ang2=ang/180.e0_real_kind*pi
     !
-    csspre=dsqrt(tpre)/mach
+    csspre=sqrt(tpre)/mach
     !
-    unpre=upre*dsin(ang2)-vpre*dcos(ang2)
-    utpre=upre*dcos(ang2)+vpre*dsin(ang2)
+    unpre=upre*sin(ang2)-vpre*cos(ang2)
+    utpre=upre*cos(ang2)+vpre*sin(ang2)
     machnpre=unpre/csspre
     ! print*,'machnpre=',machnpre
     ! print*,'unpre=',unpre
     ! print*,'csspre=',csspre
-    sratio=2.d0*gamma/(gamma+1.d0)*machnpre**2-(gamma-1.d0)/(gamma+1.d0)
+    sratio=2.e0_real_kind*gamma/(gamma+1.e0_real_kind)*machnpre**2-(gamma-1.e0_real_kind)/(gamma+1.e0_real_kind)
     !
     ppos=ppre*sratio
-    ropos=(sratio*(gamma+1.d0)+gamma-1.d0)/                            &
-                                  (gamma+1.d0+sratio*(gamma-1.d0))*ropre
+    ropos=(sratio*(gamma+1.e0_real_kind)+gamma-1.e0_real_kind)/                            &
+                                  (gamma+1.e0_real_kind+sratio*(gamma-1.e0_real_kind))*ropre
     tpos=ppos/ropos*const2
     !
     unpos=ropre*unpre/ropos
     utpos=utpre
-    upos=unpos*dsin(ang2)+utpos*dcos(ang2)
-    vpos=-unpos*dcos(ang2)+utpos*dsin(ang2)
+    upos=unpos*sin(ang2)+utpos*cos(ang2)
+    vpos=-unpos*cos(ang2)+utpos*sin(ang2)
     !
   end subroutine postshock
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -1080,43 +1086,43 @@ module fludyna
     !
     ! arguments
     character(len=*),intent(in) :: stream
-    real(8),intent(in),optional :: rovd
-    real(8),intent(out),optional :: &
+    real(real_kind),intent(in),optional :: rovd
+    real(real_kind),intent(out),optional :: &
       rho,prs,tmp,spc(num_species),vel(ndims),ubulk
     !
 #ifdef COMB
     !local
-    real(8) :: vel_ref(ndims),vel0(ndims),ub,spcx(num_species),h,delta &
+    real(real_kind) :: vel_ref(ndims),vel0(ndims),ub,spcx(num_species),h,delta &
               ,spc_ref(num_species),tmp_ref
     !
-    vel_ref(:)=0.d0
-    spc_ref(:)=0.d0
-    spcx(:)=0.d0
+    vel_ref(:)=0.e0_real_kind
+    spc_ref(:)=0.e0_real_kind
+    spcx(:)=0.e0_real_kind
     tmp=tinf
     !
     if(trim(stream)=='fuel') then
       !
-      tmp_ref=545.d0
-      spcx(spcindex('H2'))=1.d0
+      tmp_ref=545.e0_real_kind
+      spcx(spcindex('H2'))=1.e0_real_kind
       ! spcx(spcindex('N2'))=1.d0-sum(spcx(:))
       call convertxiyi(spcx(:),spc_ref(:),'X2Y')
       spc(:)=spc_ref(:)
       ! tmp=tmp_ref
       !
-      ub=1.78d2
+      ub=1.78e2_real_kind
       ! ub=680.d0!14.1d0
       if(.true. .and. present(rovd)) then 
         ! vel_ref(1)=ub*1.128d0*((1.d0-2.d0*rovd)**(1.d0/7.d0))
-        h=0.5d0
-        delta=0.05d0
-        vel_ref(1)=100.d0+0.5d0*(ub-100.d0)*(1.d0-tanh(2.d0*(rovd-h)/delta))
+        h=0.5e0_real_kind
+        delta=0.05e0_real_kind
+        vel_ref(1)=100.e0_real_kind+0.5e0_real_kind*(ub-100.e0_real_kind)*(1.e0_real_kind-tanh(2.e0_real_kind*(rovd-h)/delta))
         ! spc(spcindex('H2'))=spcinf(spcindex('H2'))+0.5d0*(spc_ref(spcindex('H2')) &
         !                 -spcinf(spcindex('H2')))*(1.d0-tanh(2.d0*(rovd-h)/delta))
         ! spc(spcindex('N2'))=1.d0-sum(spc(:))
         ! vel_ref(1)=vel_ref(1)*1.27767d0*((1.d0-2.d0*rovd)**(1.d0/3.d0))
         ! vel_ref(2:ndims)=0.d0*vel_ref(1)
         !
-        tmp=tinf+0.5d0*(tmp_ref-tinf)*(1.d0-tanh(2.d0*(rovd-h)/delta))               
+        tmp=tinf+0.5e0_real_kind*(tmp_ref-tinf)*(1.e0_real_kind-tanh(2.e0_real_kind*(rovd-h)/delta))
         vel(:)=vel_ref(:)
         ! if(nstep==0) vel(:)=whitenoise(vel_ref(:),vel(:),0.1d0)
       else 
@@ -1125,29 +1131,29 @@ module fludyna
       !
     elseif(trim(stream)=='hotcoflow') then
       !
-      tmp_ref=1250.d0
-      spc_ref(spcindex('O2'))=0.24488d0
-      spc_ref(spcindex('H2O'))=0.17491d0
-      spc_ref(spcindex('N2'))=1.d0-sum(spc_ref(:))
+      tmp_ref=1250.e0_real_kind
+      spc_ref(spcindex('O2'))=0.24488e0_real_kind
+      spc_ref(spcindex('H2O'))=0.17491e0_real_kind
+      spc_ref(spcindex('N2'))=1.e0_real_kind-sum(spc_ref(:))
       ! call convertxiyi(spcx(:),spc_ref(:),'X2Y')
       spc(:)=spc_ref(:)
       ! tmp=tmp_ref
       ! spc(spcindex('O2'))=0.233d0
       ! spc(spcindex('N2'))=1.d0-sum(spc(:))
       !
-      ub=1.42d2
+      ub=1.42e2_real_kind
       ! ub=1.d0
       if(.true. .and. present(rovd)) then 
-        h=0.5d0
-        delta=0.05d0
-        vel_ref(1)=100.d0+0.5d0*(ub-100.d0)*(1.d0-tanh(2.d0*(rovd-h)/delta))
+        h=0.5e0_real_kind
+        delta=0.05e0_real_kind
+        vel_ref(1)=100.e0_real_kind+0.5e0_real_kind*(ub-100.e0_real_kind)*(1.e0_real_kind-tanh(2.e0_real_kind*(rovd-h)/delta))
         ! spc(spcindex('O2'))=spcinf(spcindex('O2'))+0.5d0*(spc_ref(spcindex('H2')) &
         !                 -spcinf(spcindex('H2')))*(1.d0-tanh(2.d0*(rovd-h)/delta))
         ! vel_ref(1)=ub*1.128d0*((1.d0-2.d0*rovd)**(1.d0/7.d0))
         ! vel_ref(1)=vel_ref(1)*1.27767d0*((1.d0-2.d0*rovd)**(1.d0/3.d0))
         ! vel_ref(2:ndims)=0.d0*vel_ref(1)
         !
-        tmp=tinf+0.5d0*(tmp_ref-tinf)*(1.d0-tanh(2.d0*(rovd-h)/delta))
+        tmp=tinf+0.5e0_real_kind*(tmp_ref-tinf)*(1.e0_real_kind-tanh(2.e0_real_kind*(rovd-h)/delta))
         vel(:)=vel_ref(:)
         ! if(nstep==0) vel(:)=whitenoise(vel_ref(:),vel(:),0.1d0)
       else 
@@ -1159,8 +1165,8 @@ module fludyna
       tmp=tinf
       spc(:)=spcinf(:)
       !
-      ub=100.d0
-      vel(:)=0.d0
+      ub=100.e0_real_kind
+      vel(:)=0.e0_real_kind
       vel(1)=ub
       !
     else

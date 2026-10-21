@@ -1,5 +1,6 @@
 !----------------------------------------------------------------------!
 module singleton
+  use astr_precision, only: real_kind
   !-----------------------------------------------------------------------------
   ! Multivariate Fast Fourier Transform
   !
@@ -136,11 +137,11 @@ module singleton
   ! Michael Steffens, 09.12.96, <Michael.Steffens@mbox.muk.uni-hannover.de>
   !-----------------------------------------------------------------------------
 !  IMPLICIT NONE
-  IMPLICIT REAL*8(A-H,O-Z)
+  IMPLICIT REAL(real_kind)(A-H,O-Z)
   PRIVATE
   PUBLIC:: fft, fftn, fftkind
 
-  INTEGER, PARAMETER:: fftkind = KIND(0.d0) !--- adjust here for other precisions
+  INTEGER, PARAMETER:: fftkind = real_kind
 
   REAL(fftkind), PARAMETER:: sin60 = 0.86602540378443865_fftkind
   REAL(fftkind), PARAMETER:: cos72 = 0.30901699437494742_fftkind

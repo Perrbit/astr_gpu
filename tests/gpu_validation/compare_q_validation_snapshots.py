@@ -36,13 +36,13 @@ class SnapshotSetComparison:
     comparisons: tuple[FileComparison, ...]
 
 
-def read_q_snapshot(path: Path) -> QSnapshot:
+def read_q_snapshot(path: Path, *, precision: str = "fp64") -> QSnapshot:
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(path)
     with path.open("rb") as stream:
         header_array = np.fromfile(stream, dtype=np.int32, count=5)
-        values = np.fromfile(stream, dtype=np.float64)
+        values = np.fromfile(stream, dtype={"fp32": np.float32, "fp64": np.float64}[precision])
     if header_array.size != 5:
         raise ValueError(f"{path}: incomplete q snapshot header")
     header = tuple(int(value) for value in header_array)
@@ -92,10 +92,13 @@ def compare_snapshot_sets(
     rtol: float,
     active_only: bool = False,
     scaled_tol: float | None = None,
+    cpu_precision: str = "fp64",
+    gpu_precision: str = "fp64",
+    report_only: bool = False,
 ) -> SnapshotSetComparison:
-    if atol < 0.0 or rtol < 0.0:
+    if not report_only and (atol < 0.0 or rtol < 0.0):
         raise ValueError("atol and rtol must be non-negative")
-    if scaled_tol is not None and scaled_tol < 0.0:
+    if not report_only and scaled_tol is not None and scaled_tol < 0.0:
         raise ValueError("scaled_tol must be non-negative")
     cpu_files = snapshot_files(cpu_prefix, labels)
     gpu_files = snapshot_files(gpu_prefix, labels)
@@ -111,23 +114,26 @@ def compare_snapshot_sets(
 
     comparisons: list[FileComparison] = []
     for suffix in sorted(cpu_files):
-        cpu = read_q_snapshot(cpu_files[suffix])
-        gpu = read_q_snapshot(gpu_files[suffix])
+        cpu = read_q_snapshot(cpu_files[suffix], precision=cpu_precision)
+        gpu = read_q_snapshot(gpu_files[suffix], precision=gpu_precision)
         if cpu.header != gpu.header:
             raise ValueError(
                 f"{suffix}: header mismatch: cpu={cpu.header} gpu={gpu.header}"
             )
         cpu_values = comparison_values(cpu, active_only)
         gpu_values = comparison_values(gpu, active_only)
-        difference = np.abs(gpu_values - cpu_values)
+        difference = np.abs(np.subtract(gpu_values, cpu_values, dtype=np.float64))
         max_index = int(np.argmax(difference))
         max_abs = float(difference[max_index])
-        scale = np.maximum(np.abs(cpu_values), max(atol, 1.0e-300))
+        reference = np.asarray(cpu_values, dtype=np.float64)
+        scale = np.maximum(np.abs(reference), max(atol, 1.0e-300))
         max_rel = float(np.max(difference / scale))
-        physical_scale = np.maximum(np.abs(cpu_values), 1.0)
+        physical_scale = np.maximum(np.abs(reference), 1.0)
         scaled_difference = difference / physical_scale
         max_scaled = float(np.max(scaled_difference))
-        if scaled_tol is None:
+        if report_only:
+            passed = True
+        elif scaled_tol is None:
             passed = bool(np.all(difference <= atol + rtol * np.abs(cpu_values)))
         else:
             passed = bool(np.all(scaled_difference <= scaled_tol))
@@ -161,6 +167,9 @@ def main() -> int:
     parser.add_argument("--atol", type=float, default=1.0e-10)
     parser.add_argument("--rtol", type=float, default=0.0)
     parser.add_argument("--scaled-tol", type=float)
+    parser.add_argument("--cpu-precision", choices=("fp32", "fp64"), default="fp64")
+    parser.add_argument("--gpu-precision", choices=("fp32", "fp64"), default="fp64")
+    parser.add_argument("--report-only", action="store_true", help="report differences without a deviation limit")
     parser.add_argument("--active-only", action="store_true")
     args = parser.parse_args()
 
@@ -175,12 +184,20 @@ def main() -> int:
         rtol=args.rtol,
         active_only=args.active_only,
         scaled_tol=args.scaled_tol,
+        cpu_precision=args.cpu_precision,
+        gpu_precision=args.gpu_precision,
+        report_only=args.report_only,
     )
     acceptance = "physical-scaled" if args.scaled_tol is not None else "elementwise"
+    if args.report_only:
+        acceptance = "report-only"
+    status = "reported" if args.report_only else ("pass" if result.passed else "fail")
     lines = [
-        f"status: {'pass' if result.passed else 'fail'}",
+        f"status: {status}",
         f"files: {result.file_count}",
         f"acceptance: {acceptance}",
+        f"cpu_precision: {args.cpu_precision}",
+        f"gpu_precision: {args.gpu_precision}",
         f"atol: {args.atol:.16e}",
         f"rtol: {args.rtol:.16e}",
         f"max_abs: {result.max_abs:.16e}",
@@ -192,8 +209,9 @@ def main() -> int:
     if args.scaled_tol is not None:
         lines.insert(5, f"scaled_tol: {args.scaled_tol:.16e}")
     for item in result.comparisons:
+        item_status = "reported" if args.report_only else ("pass" if item.passed else "fail")
         lines.append(
-            f"{item.suffix} {'pass' if item.passed else 'fail'} "
+            f"{item.suffix} {item_status} "
             f"{item.max_abs:.16e} {item.max_rel:.16e} "
             f"{item.max_scaled:.16e} {item.max_index}"
         )

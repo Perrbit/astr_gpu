@@ -6,25 +6,27 @@
 !| 06-02-2021  | Created by J. Fang                                    |
 !+---------------------------------------------------------------------+
 module commarray
+  use astr_precision, only: real_kind
   
   use commtype, only : nodcel
   !
   implicit none
+  private :: real_kind
   !
-  real(8),allocatable,dimension(:,:,:,:) :: x,q,qrhs,vel,spc,dtmp,     &
+  real(real_kind),allocatable,dimension(:,:,:,:) :: x,q,qrhs,vel,spc,dtmp,     &
                                             dgrid,vor
-  real(8),allocatable,dimension(:,:,:) :: jacob,rho,prs,tmp,tve
-  real(8),allocatable,dimension(:,:,:,:,:) :: dxi,dvel,dspc
-  real(8),allocatable,dimension(:,:,:,:) :: dtve
-  real(8),allocatable,dimension(:,:,:) :: bnorm_i0,bnorm_im,bnorm_j0,  &
+  real(real_kind),allocatable,dimension(:,:,:) :: jacob,rho,prs,tmp,tve
+  real(real_kind),allocatable,dimension(:,:,:,:,:) :: dxi,dvel,dspc
+  real(real_kind),allocatable,dimension(:,:,:,:) :: dtve
+  real(real_kind),allocatable,dimension(:,:,:) :: bnorm_i0,bnorm_im,bnorm_j0,  &
                                           bnorm_jm,bnorm_k0,bnorm_km
-  real(8),allocatable,dimension(:,:,:) :: dis2wall
+  real(real_kind),allocatable,dimension(:,:,:) :: dis2wall
   integer,allocatable,dimension(:,:,:) :: nodestat
   logical,allocatable,dimension(:,:,:) :: lsolid,lshock,crinod
   type(nodcel),allocatable,dimension(:,:,:) :: cell
   !
-  real(8),allocatable,dimension(:,:,:) :: tke,omg,miut,res12,ssf
-  real(8),allocatable,dimension(:,:,:,:) :: dtke,domg
+  real(real_kind),allocatable,dimension(:,:,:) :: tke,omg,miut,res12,ssf
+  real(real_kind),allocatable,dimension(:,:,:,:) :: dtke,domg
   !
   !+---------------------+---------------------------------------------+
   !|                   x | coordinates.                                |
@@ -43,7 +45,7 @@ module commarray
   !|             bnorm_* | the vector of boundary normal direction,    |
   !|                     | towards the inside of the domain            |
   !+---------------------+---------------------------------------------+
-  real(8),allocatable :: acctest_ref(:)
+  real(real_kind),allocatable :: acctest_ref(:)
   !
   contains
   !

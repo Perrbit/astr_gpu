@@ -1,4 +1,5 @@
 module compact_derivative_gpu
+  use astr_precision, only: real_kind
   use cudafor
   use constdef, only: num1d3,num1d60,num7d9,num1d36
   use compact_line_solver, only: compact_matrix
@@ -16,8 +17,8 @@ module compact_derivative_gpu
     type(compact_line_gpu_plan) :: line
     type(compact_distributed_plan) :: global_line
     logical :: global=.false.
-    real(8),allocatable,device :: input(:,:),rhs(:,:),solution(:,:)
-    real(8),allocatable,device :: owned_solution(:,:)
+    real(real_kind),allocatable,device :: input(:,:),rhs(:,:),solution(:,:)
+    real(real_kind),allocatable,device :: owned_solution(:,:)
   end type
 contains
   subroutine prepare_compact_derivative_gpu(dim,hm,ntype,capacity,plan,partition,comm)
@@ -27,7 +28,7 @@ contains
     integer,intent(in),optional :: comm
     type(compact_matrix) :: matrix
     integer :: first,last,n
-    real(8) :: edge(2)
+    real(real_kind) :: edge(2)
 
     if(dim<4.or.hm<4.or.ntype<1.or.ntype>4) error stop 'invalid local compact derivative domain'
     if(plan%capacity/=0) call release_compact_derivative_gpu(plan)
@@ -50,23 +51,23 @@ contains
     n=last-first+1
     matrix%n=n
     allocate(matrix%lower(n),matrix%diagonal(n),matrix%upper(n))
-    matrix%diagonal=1.d0
+    matrix%diagonal=1.e0_real_kind
     matrix%lower=num1d3
     matrix%upper=num1d3
-    matrix%upper(1)=0.d0
-    matrix%lower(n)=0.d0
+    matrix%upper(1)=0.e0_real_kind
+    matrix%lower(n)=0.e0_real_kind
     if(ntype==1.or.ntype==4) then
-      matrix%upper(1)=2.d0
-      matrix%lower(2)=0.25d0
-      matrix%upper(2)=0.25d0
+      matrix%upper(1)=2.e0_real_kind
+      matrix%lower(2)=0.25e0_real_kind
+      matrix%upper(2)=0.25e0_real_kind
     endif
     if(ntype==2.or.ntype==4) then
-      matrix%lower(n)=2.d0
-      matrix%lower(n-1)=0.25d0
-      matrix%upper(n-1)=0.25d0
+      matrix%lower(n)=2.e0_real_kind
+      matrix%lower(n-1)=0.25e0_real_kind
+      matrix%upper(n-1)=0.25e0_real_kind
     endif
-    matrix%lower(1)=0.d0
-    matrix%upper(n)=0.d0
+    matrix%lower(1)=0.e0_real_kind
+    matrix%upper(n)=0.e0_real_kind
     call prepare_compact_gpu(matrix,128,capacity,plan%line)
     allocate(plan%input(-hm:dim+hm,capacity),plan%rhs(n,capacity),plan%solution(n,capacity))
     plan%dim=dim
@@ -80,8 +81,8 @@ contains
   attributes(global) subroutine global_derivative_rhs_kernel(dim,hm,n,nrhs,first,total,periodic,f,rhs)
     integer,value :: dim,hm,n,nrhs,first,total
     logical,value :: periodic
-    real(8),device,intent(in) :: f(-hm:dim+hm,nrhs)
-    real(8),device,intent(out) :: rhs(n,nrhs)
+    real(real_kind),device,intent(in) :: f(-hm:dim+hm,nrhs)
+    real(real_kind),device,intent(out) :: rhs(n,nrhs)
     integer :: row,column,j,g
     row=(blockIdx%x-1)*blockDim%x+threadIdx%x
     column=blockIdx%y
@@ -89,11 +90,11 @@ contains
     j=row-1
     g=first+j
     if(.not.periodic.and.g==0) then
-      rhs(row,column)=2.d0*(f(j+1,column)-f(j,column))+0.5d0*(f(j+2,column)-f(j,column))
+      rhs(row,column)=2.e0_real_kind*(f(j+1,column)-f(j,column))+0.5e0_real_kind*(f(j+2,column)-f(j,column))
     elseif(.not.periodic.and.g==total) then
-      rhs(row,column)=2.d0*(f(j,column)-f(j-1,column))+0.5d0*(f(j,column)-f(j-2,column))
+      rhs(row,column)=2.e0_real_kind*(f(j,column)-f(j-1,column))+0.5e0_real_kind*(f(j,column)-f(j-2,column))
     elseif(.not.periodic.and.(g==1.or.g==total-1)) then
-      rhs(row,column)=0.75d0*(f(j+1,column)-f(j-1,column))
+      rhs(row,column)=0.75e0_real_kind*(f(j+1,column)-f(j-1,column))
     else
       rhs(row,column)=num7d9*(f(j+1,column)-f(j-1,column))+num1d36*(f(j+2,column)-f(j-2,column))
     endif
@@ -101,24 +102,24 @@ contains
 
   attributes(global) subroutine compact_derivative_rhs_kernel(dim,hm,first,last,ntype,nrhs,f,rhs)
     integer,value :: dim,hm,first,last,ntype,nrhs
-    real(8),device,intent(in) :: f(-hm:dim+hm,nrhs)
-    real(8),device,intent(out) :: rhs(last-first+1,nrhs)
+    real(real_kind),device,intent(in) :: f(-hm:dim+hm,nrhs)
+    real(real_kind),device,intent(out) :: rhs(last-first+1,nrhs)
     integer :: row,column,j
-    real(8) :: value
+    real(real_kind) :: value
     row=(blockIdx%x-1)*blockDim%x+threadIdx%x
     column=blockIdx%y
     if(row>last-first+1) return
     j=first+row-1
     if((ntype==1.or.ntype==4).and.j==first) then
-      value=-2.5d0*f(j,column)+2.d0*f(j+1,column)+0.5d0*f(j+2,column)
+      value=-2.5e0_real_kind*f(j,column)+2.e0_real_kind*f(j+1,column)+0.5e0_real_kind*f(j+2,column)
     elseif((ntype==2.or.ntype==4).and.j==last) then
-      value=2.5d0*f(j,column)-2.d0*f(j-1,column)-0.5d0*f(j-2,column)
+      value=2.5e0_real_kind*f(j,column)-2.e0_real_kind*f(j-1,column)-0.5e0_real_kind*f(j-2,column)
     elseif(((ntype==1.or.ntype==4).and.j==first+1).or. &
            ((ntype==2.or.ntype==4).and.j==last-1)) then
-      value=0.75d0*(f(j+1,column)-f(j-1,column))
+      value=0.75e0_real_kind*(f(j+1,column)-f(j-1,column))
     elseif(j==first.or.j==last) then
-      value=0.75d0*(f(j+1,column)-f(j-1,column))- &
-        0.15d0*(f(j+2,column)-f(j-2,column))+num1d60*(f(j+3,column)-f(j-3,column))
+      value=0.75e0_real_kind*(f(j+1,column)-f(j-1,column))- &
+        0.15e0_real_kind*(f(j+2,column)-f(j-2,column))+num1d60*(f(j+3,column)-f(j-3,column))
     else
       value=num7d9*(f(j+1,column)-f(j-1,column))+num1d36*(f(j+2,column)-f(j-2,column))
     endif

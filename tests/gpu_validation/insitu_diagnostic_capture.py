@@ -25,7 +25,7 @@ if profile!='all':
 
 def catalyst_execute(info):
     step, time = int(info.timestep), float(info.time)
-    if step not in (0, 2, 3, 4) or abs(time-step*1e-3) > 1e-15 or (frames and step <= frames[-1][0]):
+    if step not in (0, 2, 3, 4) or (frames and step <= frames[-1][0]):
         raise RuntimeError('Unexpected diagnostic capture phase')
     source.UpdatePipeline(time)
     data = source.GetClientSideObject().GetOutputDataObject(0)
@@ -42,6 +42,12 @@ def catalyst_execute(info):
             raise RuntimeError('Expected one local diagnostic block')
         data = leaves[0]
     values = dict(xyz=vtk_to_numpy(data.GetPoints().GetData()))
+    real = values['xyz'].dtype.type
+    expected_time = real(0)
+    for _ in range(step):
+        expected_time = real(expected_time+real(1e-3))
+    if abs(time-float(expected_time)) > 1e-15:
+        raise RuntimeError('Unexpected native diagnostic capture time')
     if profile!='all':
         available={data.GetPointData().GetArrayName(i) for i in range(data.GetPointData().GetNumberOfArrays())}
         if available!=set(names) and not (profile=='velocity_slice' and data.GetNumberOfPoints()==0 and not available):

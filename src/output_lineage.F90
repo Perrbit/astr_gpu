@@ -1,6 +1,7 @@
 module output_lineage
-  use iso_fortran_env, only: int64,real64,iostat_end
-  use iso_c_binding, only: c_char,c_int,c_int64_t,c_double,c_null_char
+  use iso_fortran_env, only: int64,iostat_end
+  use astr_precision, only: real_kind,c_real_kind,real_bytes,word_to_real
+  use iso_c_binding, only: c_char,c_int,c_int64_t,c_null_char,c_float
   use ieee_arithmetic, only: ieee_is_finite
   use mpi, only: MPI_COMM_SELF
   use insitu_checkpoint_batch, only: file_fingerprint
@@ -31,14 +32,15 @@ module output_lineage
       integer(c_int) :: status
     end function
     function frame_layout(path,geometry,step,time,components,units,selected,nselected,bytes, &
-      shape,axes,indices,nplanes,current_components,current_units,current_selected,current_nselected) &
+      shape,axes,indices,nplanes,current_components,current_units,current_selected,current_nselected,source_bytes) &
       bind(C,name='astr_output_frame_layout') result(status)
-      import c_char,c_int,c_int64_t,c_double
+      import c_char,c_int,c_int64_t,c_real_kind
       character(c_char),intent(in) :: path(*),geometry(*),units(*),current_units(*)
       integer(c_int64_t),value :: step,bytes
-      real(c_double),value :: time
+      real(c_real_kind),value :: time
       integer(c_int),value :: components,nselected,nplanes,current_components,current_nselected
       integer(c_int),intent(in) :: selected(*),shape(*),axes(*),indices(*),current_selected(*)
+      integer(c_int),intent(out) :: source_bytes
       integer(c_int) :: status
     end function
   end interface
@@ -51,9 +53,10 @@ contains
     character(1200) :: paths(max_segments),parent,source,geometry,frame
     character(c_char) :: relative(1200)
     integer(int64) :: origins(max_segments),sizes(max_segments),crcs(max_segments),steps(max_frames)
-    real(real64) :: times(max_segments),time,previous_time
+    real(real_kind) :: times(max_segments),time,previous_time
     integer(int64) :: parent_id,parent_size,parent_crc,step,previous_step
-    integer :: depth,d,i,n,unit,err,closed,status,components_saved,selection(14),nselection
+    integer :: depth,d,i,n,unit,err,closed,status,components_saved,selection(14),nselection,source_bytes
+    character(64) :: clock_text
     character(16) :: saved_units
     character(16) :: name
     logical :: valid
@@ -89,7 +92,7 @@ contains
     enddo
     open(newunit=unit,file=trim(root)//'/lineage.parent',status='new',action='write',iostat=err)
     if(err/=0) return
-    write(unit,'(a)',iostat=err) 'ASTR_NATIVE_LINEAGE_1'
+    write(unit,'(a)',iostat=err) 'ASTR_NATIVE_LINEAGE_2'
     previous_step=-1; previous_time=-1
     do d=depth,2,-1
       if(err/=0) exit
@@ -106,7 +109,7 @@ contains
         if(steps(i)>origins(d-1)) cycle
         write(name,'("step",i12.12)') steps(i)
         frame=trim(source)//'/'//name
-        call read_frame(trim(frame),steps(i),step,time,components_saved,saved_units,selection,nselection,valid)
+        call read_frame(trim(frame),steps(i),step,time,components_saved,saved_units,selection,nselection,clock_text,valid)
         if(.not.valid) then
           err=1; exit
         endif
@@ -122,7 +125,7 @@ contains
           else
             status=frame_layout(trim(frame)//'/data.h5'//c_null_char,trim(geometry)//c_null_char,step,time, &
               components_saved,trim(saved_units)//c_null_char,selection,nselection,bytes,shape,axes,indices,size(axes), &
-              components,trim(units)//c_null_char,selected,size(selected))
+              components,trim(units)//c_null_char,selected,size(selected),source_bytes)
             if(status==1) err=1
             if(status==2) compatible=.false.
           endif
@@ -131,7 +134,7 @@ contains
         if(len_trim(paths(d))+len_trim(name)+10>1200.or.len_trim(paths(d))+25>1200) then
           err=1; exit
         endif
-        write(unit,'(i0,1x,es24.16,/,a,/,a)',iostat=err) step,time, &
+        write(unit,'(i0,1x,a,1x,i0,/,a,/,a)',iostat=err) step,trim(clock_text),source_bytes, &
           trim(paths(d))//'/'//name//'/data.h5',trim(paths(d))//'/../resources/data.h5'
         previous_step=step; previous_time=time
       enddo
@@ -143,12 +146,12 @@ contains
   subroutine read_segment(path,step,time,bytes,crc,parent_id,parent_bytes,parent_crc,parent,ok)
     character(*),intent(in) :: path
     integer(int64),intent(out) :: step,bytes,crc,parent_id,parent_bytes,parent_crc
-    real(real64),intent(out) :: time
+    real(real_kind),intent(out) :: time
     character(*),intent(out) :: parent
     logical,intent(out) :: ok
-    integer :: unit,err,closed
-    integer(int64) :: restore_bytes,restore_crc,input_bytes,input_crc,actual_bytes,actual_crc
-    character(1201) :: rows(6),extra
+    integer :: unit,err,closed,source_bytes
+    integer(int64) :: restore_bytes,restore_crc,input_bytes,input_crc,actual_bytes,actual_crc,source_time_word
+    character(1201) :: rows(7),extra
     character(16) :: hex
     logical :: valid
     ok=.false.
@@ -164,13 +167,30 @@ contains
       close(unit)
       return
     endif
+    if(rows(1)=='ASTR_OUTPUT_SEGMENT_3') then
+      read(unit,'(a)',iostat=err) rows(7)
+      if(err/=0) then
+        close(unit)
+        return
+      endif
+    endif
     read(unit,'(a)',iostat=err) extra
     close(unit,iostat=closed)
-    if(err/=iostat_end.or.closed/=0.or.trim(rows(1))/='ASTR_OUTPUT_SEGMENT_2') return
+    if(err/=iostat_end.or.closed/=0.or.(rows(1)/='ASTR_OUTPUT_SEGMENT_2'.and.rows(1)/='ASTR_OUTPUT_SEGMENT_3')) return
     if(words(rows(2))/=2.or.words(rows(3))/=2.or.words(rows(4))/=3.or.words(rows(5))/=2) return
     read(rows(2),*,iostat=err) step,time
     if(err/=0) return
     if(step<0.or.step>=1000000000000_int64.or..not.ieee_is_finite(time).or.time<0) return
+    if(rows(1)=='ASTR_OUTPUT_SEGMENT_3') then
+      if(words(rows(7))/=2) return
+      read(rows(7),*,iostat=err) source_bytes,source_time_word
+      if(err/=0.or.(source_bytes/=4.and.source_bytes/=8)) return
+      if(source_bytes==8) then
+        if(real(real(word_to_real(source_time_word,source_bytes),c_float),real_kind)/=time) return
+      else
+        if(word_to_real(source_time_word,source_bytes)/=time) return
+      endif
+    endif
     read(rows(3),*,iostat=err) restore_bytes,hex
     if(err==0) read(hex,'(z16)',iostat=err) restore_crc
     if(err/=0.or.restore_bytes<0) return
@@ -193,13 +213,14 @@ contains
     endif
   end subroutine
 
-  subroutine read_frame(path,expected_step,step,time,components,units,selected,nselected,ok)
+  subroutine read_frame(path,expected_step,step,time,components,units,selected,nselected,clock_text,ok)
     character(*),intent(in) :: path
     integer(int64),intent(in) :: expected_step
     integer(int64),intent(out) :: step
-    real(real64),intent(out) :: time
+    real(real_kind),intent(out) :: time
     integer,intent(out) :: components,selected(14),nselected
     character(*),intent(out) :: units
+    character(*),intent(out) :: clock_text
     logical,intent(out) :: ok
     character(256) :: rows(5),extra
     character(128) :: files(64)
@@ -233,6 +254,8 @@ contains
     if(.not.derived.and.rows(1)/='ASTR_BASIC_FRAME_1') return
     if(words(rows(2))/=2.or.words(rows(3))/=2.or.words(rows(4))/=2) return
     read(rows(2),*,iostat=err) step,time
+    if(err/=0) return
+    read(rows(2),*,iostat=err) step,clock_text
     if(err/=0) return
     if(step/=expected_step.or..not.ieee_is_finite(time).or.time<0) return
     read(rows(3),*,iostat=err) components,units
@@ -319,7 +342,7 @@ contains
     integer :: source,target,err,closed,status,i
     character(1201) :: line
     integer(int64) :: step
-    real(real64) :: time
+    real(real_kind) :: time
     character(16) :: name
     ok=.false.
     open(newunit=target,file=root//'/lineage.frames.tmp',status='new',action='write',iostat=err)
@@ -345,7 +368,7 @@ contains
           read(line,*,iostat=err) step,time
           if(err/=0) exit
           write(name,'("step",i12.12)') step
-          write(target,'(a,/,a,/,a)',iostat=err) trim(line),name//'/data.h5','../resources/data.h5'
+          write(target,'(a,1x,i0,/,a,/,a)',iostat=err) trim(line),real_bytes,name//'/data.h5','../resources/data.h5'
         endif
         if(err/=0) exit
       enddo

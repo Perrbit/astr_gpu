@@ -1,14 +1,17 @@
 module inflow_timeseries_gpu
+  use astr_precision, only: real_kind,real_bytes,clock_kind,real_to_word,word_to_real
+  use astr_precision_mpi, only: mpi_real_type
   use cudafor
   implicit none
-  real(8),allocatable,device :: inflow_slices_d(:,:,:,:)
-  real(8),allocatable,save :: inflow_slice_h(:,:,:)
-  real(8),save :: inflow_times_h(0:3)=0.d0
+  private :: real_kind,real_bytes,clock_kind,real_to_word,word_to_real,mpi_real_type
+  real(real_kind),allocatable,device :: inflow_slices_d(:,:,:,:)
+  real(real_kind),allocatable,save :: inflow_slice_h(:,:,:)
+  real(real_kind),save :: inflow_times_h(0:3)=0.e0_real_kind
   integer,save :: inflow_order_h(0:3)=(/0,1,2,3/)
   logical,save :: inflow_timeseries_ready=.false.
 contains
   subroutine complete_inflow_gpu_file(path,writing,identity,budget,allow_repartition)
-    use iso_fortran_env, only: int64,real64
+    use iso_fortran_env, only: int64
     use ieee_arithmetic, only: ieee_is_finite
     use bc, only: ninflowslice
     use commvar, only: ja,ka,jm,km
@@ -20,7 +23,7 @@ contains
     logical,optional,intent(in) :: allow_repartition
     type(checkpoint_state_identity),intent(inout) :: identity
     integer(int64),intent(in) :: budget
-    real(real64),allocatable :: buffer(:,:,:,:)
+    real(real_kind),allocatable :: buffer(:,:,:,:)
     integer(int64) :: metadata(15),remaining
     integer :: slot,m
     if(irk/=0) return
@@ -30,9 +33,9 @@ contains
     metadata=0
     if(writing) then
       metadata(1:6)=[1_int64,1_int64,int(ninflowslice,int64),-1_int64,0_int64,1_int64]
-      metadata(7:10)=transfer(inflow_times_h,metadata(7:10))
+      metadata(7:10)=real_to_word(inflow_times_h)
       metadata(11:14)=int(inflow_order_h,int64)
-      buffer=0.0_real64
+      buffer=0.0_real_kind
       call sync_gpu_boundary('complete inflow device download')
       do slot=0,3
         do m=1,5
@@ -54,7 +57,7 @@ contains
     if(.not.writing) then
       call checkpoint_state_require(all(ieee_is_finite(buffer)),mpi_imin,'restored device inflow cache nonfinite')
       ninflowslice=int(metadata(3))
-      inflow_times_h=transfer(metadata(7:10),inflow_times_h)
+      inflow_times_h=word_to_real(metadata(7:10))
       inflow_order_h=int(metadata(11:14))
       call validate_dynamic_inflow_times()
       do slot=0,3
@@ -103,7 +106,7 @@ contains
     use bc, only: ninflowslice
     use parallel, only: irk
     implicit none
-    real(8),intent(in) :: forcing_time
+    real(real_kind),intent(in) :: forcing_time
     integer :: slot
 
     if(.not.dynamic_inflow_requested()) return
@@ -122,7 +125,7 @@ contains
 
   subroutine dynamic_inflow_window(time0,delta,slot0,slot1,slot2,slot3)
     implicit none
-    real(8),intent(out) :: time0,delta
+    real(real_kind),intent(out) :: time0,delta
     integer,intent(out) :: slot0,slot1,slot2,slot3
 
     if(.not.inflow_timeseries_ready) &
@@ -145,7 +148,7 @@ contains
     if(allocated(inflow_slice_h)) deallocate(inflow_slice_h)
     if(allocated(inflow_slices_d)) deallocate(inflow_slices_d)
     inflow_timeseries_ready=.false.
-    inflow_times_h=0.d0
+    inflow_times_h=0.e0_real_kind
     inflow_order_h=(/0,1,2,3/)
   end subroutine release_dynamic_inflow_gpu
 
@@ -203,15 +206,15 @@ contains
   subroutine validate_dynamic_inflow_times()
     implicit none
     integer :: n
-    real(8) :: delta,other_delta,scale
+    real(real_kind) :: delta,other_delta,scale
 
     delta=inflow_times_h(inflow_order_h(1))-inflow_times_h(inflow_order_h(0))
-    if(delta<=0.d0) stop 'GPU dynamic inflow times must be strictly increasing'
-    scale=max(1.d0,maxval(abs(inflow_times_h)))
+    if(delta<=0.e0_real_kind) stop 'GPU dynamic inflow times must be strictly increasing'
+    scale=max(1.e0_real_kind,maxval(abs(inflow_times_h)))
     do n=1,2
       other_delta=inflow_times_h(inflow_order_h(n+1))-inflow_times_h(inflow_order_h(n))
-      if(other_delta<=0.d0) stop 'GPU dynamic inflow times must be strictly increasing'
-      if(abs(other_delta-delta)>1.d-12*scale) &
+      if(other_delta<=0.e0_real_kind) stop 'GPU dynamic inflow times must be strictly increasing'
+      if(abs(other_delta-delta)>1.e-12_real_kind*scale) &
         stop 'GPU dynamic inflow requires a uniform slice interval'
     enddo
   end subroutine validate_dynamic_inflow_times

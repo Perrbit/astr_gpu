@@ -1,8 +1,10 @@
 module precision_mode_gpu
+  use astr_precision, only: numerical_precision
   implicit none
-  integer,parameter :: GPU_PRECISION_FP64=0
+  private :: numerical_precision
+  integer,parameter :: GPU_PRECISION_NATIVE=0
   integer,parameter :: GPU_PRECISION_MIXED_WORKSPACE=1
-  integer,save :: gpu_precision_mode=GPU_PRECISION_FP64
+  integer,save :: gpu_precision_mode=GPU_PRECISION_NATIVE
   logical,save :: gpu_precision_mode_configured=.false.
 contains
   subroutine configure_gpu_precision_mode()
@@ -15,13 +17,17 @@ contains
     value=''
     call get_environment_variable('ASTR_GPU_PRECISION_MODE',value,status=status)
     choice=-1
-    if(status==1 .or. (status==0 .and. len_trim(value)==0)) choice=GPU_PRECISION_FP64
+    if(status==1 .or. (status==0 .and. len_trim(value)==0)) choice=GPU_PRECISION_NATIVE
     if(status==0) then
       select case(trim(adjustl(value)))
       case('fp64')
-        choice=GPU_PRECISION_FP64
+        choice=GPU_PRECISION_NATIVE
       case('mixed_workspace')
+#ifdef ASTR_REAL32
+        choice=GPU_PRECISION_NATIVE
+#else
         choice=GPU_PRECISION_MIXED_WORKSPACE
+#endif
       end select
     endif
 
@@ -35,6 +41,12 @@ contains
         'Invalid or inconsistent ASTR_GPU_PRECISION_MODE: expected fp64 or mixed_workspace'
       call mpi_abort(MPI_COMM_WORLD,1,ierr)
     endif
+#ifdef ASTR_REAL32
+    if(len_trim(value)>0) then
+      call mpi_comm_rank(MPI_COMM_WORLD,rank,ierr)
+      if(rank==0) write(*,'(a)') 'ASTR_GPU_PRECISION_MODE is ignored by this native FP32 build; no mixed workspace is allocated'
+    endif
+#endif
 
     gpu_precision_mode=choice
     gpu_precision_mode_configured=.true.
@@ -52,8 +64,8 @@ contains
 
     call configure_gpu_precision_mode()
     select case(gpu_precision_mode)
-    case(GPU_PRECISION_FP64)
-      gpu_precision_mode_name='fp64'
+    case(GPU_PRECISION_NATIVE)
+      gpu_precision_mode_name=numerical_precision
     case(GPU_PRECISION_MIXED_WORKSPACE)
       gpu_precision_mode_name='mixed_workspace'
     case default

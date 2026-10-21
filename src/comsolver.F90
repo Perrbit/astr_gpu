@@ -6,6 +6,7 @@
 !| 15-08-2023: Created by J. Fang @ STFC Daresbury Laboratory          |
 !+---------------------------------------------------------------------+
 module comsolver
+  use astr_precision, only: real_kind,clock_kind
   !
   use constdef
   use commvar,  only : im,jm,km,hm,deltat,nstep,ndims,lreport,ctime,  &
@@ -15,9 +16,10 @@ module comsolver
   use utility,  only : timereporter
   !
   implicit none
+  private :: real_kind,clock_kind
   !
-  real(8),allocatable :: alfa_con(:),alfa_dif(:)
-  real(8), allocatable, dimension(:,:) :: cci,ccj,cck,dci,dcj,dck,     &
+  real(real_kind),allocatable :: alfa_con(:),alfa_dif(:)
+  real(real_kind), allocatable, dimension(:,:) :: cci,ccj,cck,dci,dcj,dck,     &
                                           fci,fcj,fck,uci,ucj,uck,     &
                                           bci,bcj,bck
   contains
@@ -118,7 +120,7 @@ module comsolver
     ! Optional: Initialize compact filters
     !-------------------------------------------------------------------
     if (lfilter .and. (conschm(4:4) == 'c' .or. difschm(4:4) == 'c')) then
-      call filter_coefficient_cal(alfa=alfa_filter, beter_halo=1.11d0, beter_bouond=0.98d0)
+      call filter_coefficient_cal(alfa=alfa_filter, beter_halo=1.11e0_real_kind, beter_bouond=0.98e0_real_kind)
   
       call compact_filter_initiate(filter_i, npdci, im)
       call compact_filter_initiate(filter_j, npdcj, jm)
@@ -164,16 +166,16 @@ module comsolver
     use derivative, only : fds,fds_compact_i,fds_compact_j,fds_compact_k
     !
     ! arguments
-    real(8),intent(in) :: var(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
-    real(8) :: dvar(0:im,0:jm,0:km,1:3)
+    real(real_kind),intent(in) :: var(-hm:im+hm,-hm:jm+hm,-hm:km+hm)
+    real(real_kind) :: dvar(0:im,0:jm,0:km,1:3)
     !
     ! local data
     integer :: i,j,k
-    real(8),allocatable :: df(:),ff(:)
+    real(real_kind),allocatable :: df(:),ff(:)
     !
     allocate(ff(-hm:im+hm),df(0:im))
     !
-    dvar=0.d0
+    dvar=0.e0_real_kind
     !
     do k=0,km
     do j=0,jm
@@ -255,10 +257,10 @@ module comsolver
     !
     ! local data
     integer :: i,j,k,n,ncolm
-    real(8),allocatable :: df(:,:),ff(:,:)
+    real(real_kind),allocatable :: df(:,:),ff(:,:)
     !
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.e0_clock_kind
     !
     if(present(timerept)) then
 
@@ -266,13 +268,13 @@ module comsolver
 
     endif 
     !
-    dvel=0.d0
-    dtmp=0.d0
-    dspc=0.d0
+    dvel=0.e0_real_kind
+    dtmp=0.e0_real_kind
+    dspc=0.e0_real_kind
     !
     if(trim(turbmode)=='k-omega') then
-      dtke=0.d0
-      domg=0.d0
+      dtke=0.e0_real_kind
+      domg=0.e0_real_kind
     endif
     !
     ncolm=4+num_species+num_modequ
@@ -533,10 +535,10 @@ module comsolver
     !
     ! local data
     integer :: i,j,k,n,m
-    real(8),allocatable :: phi(:,:),fph(:,:)
+    real(real_kind),allocatable :: phi(:,:),fph(:,:)
     !
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.e0_clock_kind
     !
     if(present(timerept)) then
 
@@ -680,7 +682,7 @@ module comsolver
     use filter,   only : spafilter10exp
     !
     integer :: i,j,k,n
-    real(8),allocatable :: phi(:,:),fph(:,:)
+    real(real_kind),allocatable :: phi(:,:),fph(:,:)
     !
     call dataswap(q,direction=1,timerept=ltimrpt)
     allocate(phi(-hm:im+hm,1:numq),fph(0:im,1:numq))
@@ -731,10 +733,10 @@ module comsolver
     !
     use commvar,  only : is,ie,je,js,je,ks,ke,im,jm,km
     !
-    real(8),intent(inout) :: phi(-hm:im+hm,-hm:jm+hm,-hm:km+hm) 
+    real(real_kind),intent(inout) :: phi(-hm:im+hm,-hm:jm+hm,-hm:km+hm) 
     !
     integer :: i,j,k
-    real(8),allocatable :: phtemp(:,:,:)
+    real(real_kind),allocatable :: phtemp(:,:,:)
     !
     call dataswap(phi,timerept=ltimrpt)
     !
@@ -743,8 +745,8 @@ module comsolver
     do i=is,ie
       !
       do j=js,je
-        phtemp(i,j,k)=0.01d0*(0.25d0*(phi(i,j-1,k)+phi(i,j+1,k))+0.5d0*phi(i,j,k))  + &
-                      0.99d0*phi(i,j,k)
+        phtemp(i,j,k)=0.01e0_real_kind*(0.25e0_real_kind*(phi(i,j-1,k)+phi(i,j+1,k))+0.5e0_real_kind*phi(i,j,k))  + &
+                      0.99e0_real_kind*phi(i,j,k)
       enddo
       !
     enddo
@@ -760,10 +762,10 @@ module comsolver
     !
     use commvar,  only : is,ie,je,js,je,ks,ke,im,jm,km
     !
-    real(8),intent(inout) :: phi(-hm:im+hm,-hm:jm+hm,-hm:km+hm) 
+    real(real_kind),intent(inout) :: phi(-hm:im+hm,-hm:jm+hm,-hm:km+hm) 
     !
     integer :: i,j,k
-    real(8),allocatable :: phtemp(:,:,:)
+    real(real_kind),allocatable :: phtemp(:,:,:)
     !
     call dataswap(phi,timerept=ltimrpt)
     !
@@ -772,10 +774,10 @@ module comsolver
     do i=is,ie
       !
       do j=js+1,je-1
-        phtemp(i,j,k)= 0.0001d0*(0.625d0*phi(i,j,k)               + &
-                               0.25d0*(phi(i,j-1,k)+phi(i,j+1,k)) - &
+        phtemp(i,j,k)= 0.0001e0_real_kind*(0.625e0_real_kind*phi(i,j,k)               + &
+                               0.25e0_real_kind*(phi(i,j-1,k)+phi(i,j+1,k)) - &
                               0.06250*(phi(i,j-2,k)+phi(i,j+3,k)))+ &
-                       0.9999d0*phi(i,j,k)
+                       0.9999e0_real_kind*phi(i,j,k)
   
       enddo
       !
@@ -790,20 +792,20 @@ module comsolver
   !
   subroutine check_mat55_unit(matrix,normal)
     !
-    real(8),intent(in) :: matrix(5,5)
+    real(real_kind),intent(in) :: matrix(5,5)
     logical,intent(out) :: normal
     !
-    real(8) :: epslion
+    real(real_kind) :: epslion
     integer :: i,j
     !
-    epslion=1.d-8
+    epslion=1.e-8_real_kind
     !
     normal=.true.
     !
     do j=1,5
     do i=1,5
      if( i==j ) then
-       if(abs(matrix(i,j)-1.d0)<epslion) then
+       if(abs(matrix(i,j)-1.e0_real_kind)<epslion) then
         continue
        else
          print*,' !! WARNING of UNIT MARTIX'

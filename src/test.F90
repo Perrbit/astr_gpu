@@ -6,11 +6,13 @@
 !| 05-04-2023  | Created by J. Fang                                    |
 !+---------------------------------------------------------------------+
 module test
+  use astr_precision, only: real_kind,clock_kind
   !
   use constdef
   use parallel, only: mpistop,mpirank
   !
   implicit none
+  private :: real_kind,clock_kind
   !
   contains
   !!+-------------------------------------------------------------------+
@@ -24,7 +26,7 @@ module test
 #ifdef ASTR_BUILD_TESTING
     use boundary_rhs_manufactured, only: check_boundary_rhs,check_boundary_stage, &
       check_initial_profile_mpi,check_conservative_admission,                     &
-      check_nscbc_characteristic_policy
+      check_nscbc_characteristic_policy,check_thermal_roundtrip
 #endif
     use conservative_boundary_runtime, only: load_conservative_boundary_environment,conservative_boundary
 #if defined(ASTR_BUILD_TESTING) && defined(_CUDA)
@@ -43,6 +45,8 @@ module test
     !-------------------------------------------------------------------
     select case (trim(testmode))
 #ifdef ASTR_BUILD_TESTING
+    case ('eosr')
+      call check_thermal_roundtrip()
     case ('bcad')
       call check_conservative_admission()
     case ('bciv')
@@ -65,7 +69,7 @@ module test
       call check_nscbc_physics_gpu()
 #endif
 #else
-    case ('bcad','bciv','bcst','bcrh','bcgc')
+    case ('bcad','bciv','bcst','bcrh','bcgc','eosr')
       error stop 'Boundary validation commands require BUILD_TESTING=ON'
 #endif
 #if !defined(ASTR_BUILD_TESTING) || !defined(_CUDA)
@@ -149,7 +153,7 @@ module test
     use parallel,  only : qswap,psum,irk,jrk,krk,mpirank
 
     integer :: i,j,k
-    real(8) :: enstrophy,omega(3),omegam
+    real(real_kind) :: enstrophy,omega(3),omegam
 
     
     call qswap
@@ -205,9 +209,9 @@ module test
     !
     ! local data
     integer :: i,j,k,n
-    real(8) :: dx,error1,error2,errorinf
-    real(8),allocatable :: vtest(:,:,:)
-    real(8),allocatable :: dq(:),qhp(:),qhm(:),dqref(:)
+    real(real_kind) :: dx,error1,error2,errorinf
+    real(real_kind),allocatable :: vtest(:,:,:)
+    real(real_kind),allocatable :: dq(:),qhp(:),qhm(:),dqref(:)
     !
     ! print*,x(:,0,0,1)
     !
@@ -216,7 +220,7 @@ module test
     do j=0,jm
     do i=0,im
       !
-      q(i,j,k,1)=sin(4.d0*x(i,j,k,1))
+      q(i,j,k,1)=sin(4.e0_real_kind*x(i,j,k,1))
       !
     enddo
     enddo
@@ -224,7 +228,7 @@ module test
     !
     allocate(dqref(0:im))
     do i=0,im
-      dqref(i)=4.d0*cos(4.d0*x(i,0,0,1))
+      dqref(i)=4.e0_real_kind*cos(4.e0_real_kind*x(i,0,0,1))
     enddo
     !
     call dataswap(q)
@@ -233,17 +237,17 @@ module test
     !
     dq(:)=fds%central(fds_compact_i,f=q(:,0,0,1),dim=im)*dxi(:,0,0,1,1)
     !
-    error1=0.d0
-    error2=0.d0
-    errorinf=0.d0
+    error1=0.e0_real_kind
+    error2=0.e0_real_kind
+    errorinf=0.e0_real_kind
     do i=1,im
       error1=error1+abs(dq(i)-dqref(i))
       error2=error2+(dq(i)-dqref(i))**2
       errorinf=max(errorinf,abs(dq(i)-dqref(i)))
     enddo
     !
-    error1=psum(error1)/dble(ia)
-    error2=sqrt(psum(error1)/dble(ia))
+    error1=psum(error1)/real(ia,real_kind)
+    error2=sqrt(psum(error1)/real(ia,real_kind))
     errorinf=pmax(errorinf)
     !
     print*,' ** total number of nodes:',ia
@@ -266,7 +270,7 @@ module test
     do j=0,jm
     do i=0,im
       !
-      q(i,j,k,1)=sin(10.d0*x(i,j,k,1))
+      q(i,j,k,1)=sin(10.e0_real_kind*x(i,j,k,1))
       !
     enddo
     enddo
@@ -278,7 +282,7 @@ module test
     k=jm/2
     open(18,file='testout/filterqx'//mpirankname//'.dat')
     write(18,'(3(1X,A15))')'x','q','q~'
-    write(18,'(3(1X,E15.7E3))')(x(i,j,k,1),sin(10.d0*x(i,j,k,1)),q(i,j,k,1),i=0,im)
+    write(18,'(3(1X,E15.7E3))')(x(i,j,k,1),sin(10.e0_real_kind*x(i,j,k,1)),q(i,j,k,1),i=0,im)
     close(18)
     print*,' << testout/filterqx.dat'
     !
@@ -331,9 +335,10 @@ module test
   
     ! Local variables
     integer :: i, j, k, n
-    real(8) :: dx, error, time_beg, subtime
-    real(8), allocatable :: fv(:,:,:)
-    real(8), allocatable :: ffv(:)
+    real(real_kind) :: dx, error
+    real(clock_kind) :: time_beg, subtime
+    real(real_kind), allocatable :: fv(:,:,:)
+    real(real_kind), allocatable :: ffv(:)
   
     !---------------------------------------------------------------
     ! Initialization
@@ -346,20 +351,20 @@ module test
     ljhomo = .false.
     lkhomo = .true.
   
-    alfa_filter = 0.49d0
+    alfa_filter = 0.49e0_real_kind
   
     call mpisizedis
     call parapp
     call parallelini
     call refcal
   
-    call filter_coefficient_cal(alfa=alfa_filter, beter_halo=1.11d0, beter_bouond=0.98d0)
+    call filter_coefficient_cal(alfa=alfa_filter, beter_halo=1.11e0_real_kind, beter_bouond=0.98e0_real_kind)
     call compact_filter_initiate(afilter=filter_i, ntype=npdci, dim=im)
     call compact_filter_initiate(afilter=filter_j, ntype=npdcj, dim=jm)
     call compact_filter_initiate(afilter=filter_k, ntype=npdck, dim=km)
   
     allocate(x(-hm:im+hm, -hm:jm+hm, -hm:km+hm, 1:3))
-    call gridcube(2.d0*pi, 2.d0, 2.d0*pi)
+    call gridcube(2.e0_real_kind*pi, 2.e0_real_kind, 2.e0_real_kind*pi)
     allocate(fv(-hm:im+hm, -hm:jm+hm, -hm:km+hm))
   
     !---------------------------------------------------------------
@@ -368,7 +373,7 @@ module test
     do k = 0, km
       do j = 0, jm
         do i = 0, im
-          fv(i,j,k) = sin(10.d0 * x(i,j,k,1))
+          fv(i,j,k) = sin(10.e0_real_kind * x(i,j,k,1))
         end do
       end do
     end do
@@ -380,7 +385,7 @@ module test
     allocate(ffv(0:im))
     ffv(:) = compact_filter(afilter=filter_i, f=fv(:,0,0), dim=im)
   
-    error = 0.d0
+    error = 0.e0_real_kind
     do i = 1, im
       error = error + (ffv(i) - fv(i,0,0))**2
     end do
@@ -400,20 +405,20 @@ module test
     !---------------------------------------------------------------
     do k = 0, km
       do j = 0, jm
-        fv(0,j,k) = sin(0.5d0 * pi * x(0,j,k,2)) + 0.1d0 * sin((dble(j)+0.5d0)*pi)
-        fv(1,j,k) = sin(0.5d0 * pi * x(1,j,k,2))
+        fv(0,j,k) = sin(0.5e0_real_kind * pi * x(0,j,k,2)) + 0.1e0_real_kind * sin((real(j,real_kind)+0.5e0_real_kind)*pi)
+        fv(1,j,k) = sin(0.5e0_real_kind * pi * x(1,j,k,2))
       end do
     end do
   
-    if (jrk == 0)    fv(:, 0, :) = 0.d0
-    if (jrk == jrkm) fv(:, jm, :) = 0.d0
+    if (jrk == 0)    fv(:, 0, :) = 0.e0_real_kind
+    if (jrk == jrkm) fv(:, jm, :) = 0.e0_real_kind
   
     call dataswap(fv)
   
     allocate(ffv(0:jm))
     ffv(:) = compact_filter(afilter=filter_j, f=fv(0,:,0), dim=jm)
   
-    error = 0.d0
+    error = 0.e0_real_kind
     do j = 1, jm
       error = error + (ffv(j) - fv(1,j,0))**2
     end do
@@ -431,7 +436,7 @@ module test
     do k = 0, km
       do j = 0, jm
         do i = 0, im
-          fv(i,j,k) = sin(10.d0 * x(i,j,k,3))
+          fv(i,j,k) = sin(10.e0_real_kind * x(i,j,k,3))
         end do
       end do
     end do
@@ -441,7 +446,7 @@ module test
     allocate(ffv(0:km))
     ffv(:) = compact_filter(afilter=filter_k, f=fv(0,0,:), dim=km)
   
-    error = 0.d0
+    error = 0.e0_real_kind
     do k = 1, km
       error = error + (ffv(k) - fv(0,0,k))**2
     end do
@@ -503,13 +508,13 @@ module test
     ! Local variables
     !-------------------------------------------------------------------
     integer :: i, j, k, n, s, asize, ncolm, counter
-    real(8) :: dx, dy, dz, var1
-    real(8), allocatable :: vtest(:,:,:,:), dvtes(:,:,:,:,:), dvref(:,:,:,:,:)
-    real(8), allocatable :: f1(:,:), df1(:,:)
-    real(8), allocatable :: ff(:,:,:,:), dff(:,:,:,:)
-    real(8), allocatable :: error(:,:)
-    real(8) :: time_beg
-    real(8), save :: subtime = 0.d0
+    real(real_kind) :: dx, dy, dz, var1
+    real(real_kind), allocatable :: vtest(:,:,:,:), dvtes(:,:,:,:,:), dvref(:,:,:,:,:)
+    real(real_kind), allocatable :: f1(:,:), df1(:,:)
+    real(real_kind), allocatable :: ff(:,:,:,:), dff(:,:,:,:)
+    real(real_kind), allocatable :: error(:,:)
+    real(clock_kind) :: time_beg
+    real(clock_kind), save :: subtime = 0.e0_clock_kind
   
     !-------------------------------------------------------------------
     ! Initialization
@@ -532,7 +537,7 @@ module test
     call solvrinit
   
     allocate(x(-hm:im+hm, -hm:jm+hm, -hm:km+hm, 1:3))
-    call gridcube(2.d0*pi, 2.d0, 2.d0*pi)
+    call gridcube(2.e0_real_kind*pi, 2.e0_real_kind, 2.e0_real_kind*pi)
   
     dx = x(1,0,0,1) - x(0,0,0,1)
     dy = x(0,1,0,2) - x(0,0,0,2)
@@ -542,7 +547,7 @@ module test
     allocate(vtest(-hm:im+hm, -hm:jm+hm, -hm:km+hm, ncolm))
     allocate(dvtes(0:im,0:jm,0:km,ncolm,3), dvref(0:im,0:jm,0:km,ncolm,3))
     allocate(error(ncolm, 3))
-    dvtes = 0.d0
+    dvtes = 0.e0_real_kind
   
     !-------------------------------------------------------------------
     ! Construct test field and reference derivatives
@@ -553,10 +558,10 @@ module test
     do k = 0, km
       do j = 0, jm
         do i = 0, im
-          vtest(i,j,k,1)   = sin(x(i,j,k,1)) * sin(0.5d0*pi*x(i,j,k,2)) * sin(x(i,j,k,3))
-          dvref(i,j,k,1,1) = cos(x(i,j,k,1)) * sin(0.5d0*pi*x(i,j,k,2)) * sin(x(i,j,k,3))
-          dvref(i,j,k,1,2) = 0.5d0*pi*sin(x(i,j,k,1)) * cos(0.5d0*pi*x(i,j,k,2)) * sin(x(i,j,k,3))
-          dvref(i,j,k,1,3) = sin(x(i,j,k,1)) * sin(0.5d0*pi*x(i,j,k,2)) * cos(x(i,j,k,3))
+          vtest(i,j,k,1)   = sin(x(i,j,k,1)) * sin(0.5e0_real_kind*pi*x(i,j,k,2)) * sin(x(i,j,k,3))
+          dvref(i,j,k,1,1) = cos(x(i,j,k,1)) * sin(0.5e0_real_kind*pi*x(i,j,k,2)) * sin(x(i,j,k,3))
+          dvref(i,j,k,1,2) = 0.5e0_real_kind*pi*sin(x(i,j,k,1)) * cos(0.5e0_real_kind*pi*x(i,j,k,2)) * sin(x(i,j,k,3))
+          dvref(i,j,k,1,3) = sin(x(i,j,k,1)) * sin(0.5e0_real_kind*pi*x(i,j,k,2)) * cos(x(i,j,k,3))
         end do
       end do
     end do
@@ -653,7 +658,7 @@ module test
     !-------------------------------------------------------------------
     ! Compute L2 error
     !-------------------------------------------------------------------
-    error = 0.d0
+    error = 0.e0_real_kind
     do k = 1, km
       do j = 1, jm
         do i = 1, im
@@ -732,11 +737,12 @@ module test
   
     ! Local variables
     integer :: i, j, k, n, ncolm, counter
-    real(8) :: dx, dy, dz, time_beg
-    real(8), save :: subtime = 0.d0
-    real(8), allocatable :: vtest(:,:,:,:), dvtes(:,:,:,:,:), dvref(:,:,:,:,:)
-    real(8), allocatable :: ff(:,:,:,:), dff(:,:,:,:), fh(:,:,:,:)
-    real(8), allocatable :: error(:,:)
+    real(real_kind) :: dx, dy, dz
+    real(clock_kind) :: time_beg
+    real(clock_kind), save :: subtime = 0.e0_clock_kind
+    real(real_kind), allocatable :: vtest(:,:,:,:), dvtes(:,:,:,:,:), dvref(:,:,:,:,:)
+    real(real_kind), allocatable :: ff(:,:,:,:), dff(:,:,:,:), fh(:,:,:,:)
+    real(real_kind), allocatable :: error(:,:)
   
     !---------------------------------------------------------------
     ! Initialization
@@ -752,7 +758,7 @@ module test
     ljhomo = .false.
     lkhomo = .true.
 
-    bfacmpld=1.d0
+    bfacmpld=1.e0_real_kind
   
     call mpisizedis
     call parapp
@@ -761,7 +767,7 @@ module test
     call solvrinit
   
     allocate(x(-hm:im+hm, -hm:jm+hm, -hm:km+hm, 1:3))
-    call gridcube(2.d0*pi, 2.d0, 2.d0*pi)
+    call gridcube(2.e0_real_kind*pi, 2.e0_real_kind, 2.e0_real_kind*pi)
   
     dx = x(1,0,0,1) - x(0,0,0,1)
     dy = x(0,1,0,2) - x(0,0,0,2)
@@ -771,7 +777,7 @@ module test
     allocate(vtest(-hm:im+hm,-hm:jm+hm,-hm:km+hm,ncolm))
     allocate(dvtes(0:im,0:jm,0:km,ncolm,3), dvref(0:im,0:jm,0:km,ncolm,3))
     allocate(error(ncolm,3))
-    dvtes = 0.d0
+    dvtes = 0.e0_real_kind
   
     time_beg = ptime()
     counter = 0
@@ -782,10 +788,10 @@ module test
     do k = 0, km
       do j = 0, jm
         do i = 0, im
-          vtest(i,j,k,1)   = sin(x(i,j,k,1)) * sin(0.5d0*pi*x(i,j,k,2)) * sin(x(i,j,k,3))
-          dvref(i,j,k,1,1) = cos(x(i,j,k,1)) * sin(0.5d0*pi*x(i,j,k,2)) * sin(x(i,j,k,3))
-          dvref(i,j,k,1,2) = 0.5d0*pi*sin(x(i,j,k,1)) * cos(0.5d0*pi*x(i,j,k,2)) * sin(x(i,j,k,3))
-          dvref(i,j,k,1,3) = sin(x(i,j,k,1)) * sin(0.5d0*pi*x(i,j,k,2)) * cos(x(i,j,k,3))
+          vtest(i,j,k,1)   = sin(x(i,j,k,1)) * sin(0.5e0_real_kind*pi*x(i,j,k,2)) * sin(x(i,j,k,3))
+          dvref(i,j,k,1,1) = cos(x(i,j,k,1)) * sin(0.5e0_real_kind*pi*x(i,j,k,2)) * sin(x(i,j,k,3))
+          dvref(i,j,k,1,2) = 0.5e0_real_kind*pi*sin(x(i,j,k,1)) * cos(0.5e0_real_kind*pi*x(i,j,k,2)) * sin(x(i,j,k,3))
+          dvref(i,j,k,1,3) = sin(x(i,j,k,1)) * sin(0.5e0_real_kind*pi*x(i,j,k,2)) * cos(x(i,j,k,3))
         end do
       end do
     end do
@@ -882,7 +888,7 @@ module test
     !---------------------------------------------------------------
     ! Compute L2 error against analytical gradient
     !---------------------------------------------------------------
-    error = 0.d0
+    error = 0.e0_real_kind
     do k = 1, km
       do j = 1, jm
         do i = 1, im

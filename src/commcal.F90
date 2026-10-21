@@ -6,11 +6,14 @@
 !| 19-03-2021  | Created by J. Fang                                    |
 !+---------------------------------------------------------------------+
 module commcal
+  use astr_precision, only: real_kind,clock_kind
+  use astr_precision_mpi, only: mpi_real_type
   !
   use parallel, only: mpirank,mpistop,mpirankname
   use utility,  only: timereporter
   !
   implicit none
+  private :: real_kind,clock_kind,mpi_real_type
   !
   contains
   !
@@ -41,12 +44,13 @@ module commcal
 #endif
     !
     ! arguments
-    real(8),intent(in) :: deltat
+    real(real_kind),intent(in) :: deltat
     abstract interface
       subroutine cfl_provider(values,keys,yvalues,by_plane,ny)
         use iso_fortran_env, only: int64
+        import :: real_kind
         integer,intent(in) :: ny
-        real(8),intent(out) :: values(4),yvalues(4,0:ny-1)
+        real(real_kind),intent(out) :: values(4),yvalues(4,0:ny-1)
         integer(int64),intent(out) :: keys(4)
         logical,intent(in) :: by_plane
       end subroutine cfl_provider
@@ -54,8 +58,8 @@ module commcal
     procedure(cfl_provider),optional :: device_collector
     !
     ! local data
-    real(8) :: cfl,css,temp,rden,cvden,velocity(3),metric(3,3),rates(4),local(4),global(4)
-    real(8),allocatable :: ylocal(:,:),yglobal(:,:)
+    real(real_kind) :: cfl,css,temp,rden,cvden,velocity(3),metric(3,3),rates(4),local(4),global(4)
+    real(real_kind),allocatable :: ylocal(:,:),yglobal(:,:)
     integer :: i,j,k,s,axis,status,ierr,invalid,invalid_global,opts(2),omin(2),omax(2),env_status
     integer(int64) :: key,keys(4),global_keys(4),gi,gj,gk
     logical :: valid,enabled,profile
@@ -81,7 +85,7 @@ module commcal
     if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,90,status)
     if(any(omin/=omax)) invalid=1
     if(.not.ieee_is_finite(deltat)) invalid=1
-    if(deltat<=0.d0) invalid=1
+    if(deltat<=0.e0_real_kind) invalid=1
     call MPI_Allreduce(invalid,invalid_global,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
     if(ierr/=MPI_SUCCESS.or.invalid_global/=0) then
       if(mpirank==0) write(*,*) 'Invalid or inconsistent CFL options/time step'
@@ -89,8 +93,8 @@ module commcal
     endif
     if(.not.enabled) return
     allocate(ylocal(4,0:merge(ja,0,profile)),yglobal(4,0:merge(ja,0,profile)))
-    ylocal=0.d0
-    local=0.d0
+    ylocal=0.e0_real_kind
+    local=0.e0_real_kind
     keys=huge(0_int64)
     if(present(device_collector)) then
       call device_collector(local,keys,ylocal,profile,size(ylocal,2))
@@ -104,16 +108,16 @@ module commcal
         if(lcomb) then
           call air5_temperature_from_q5(q(i,j,k,1),q(i,j,k,2:4), &
             q(i,j,k,6:10),q(i,j,k,11),q(i,j,k,5),temp,status)
-          css=-1.d0
+          css=-1.e0_real_kind
           if(status==0) then
             velocity=q(i,j,k,2:4)/q(i,j,k,1)
-            rden=0.d0
-            cvden=0.d0
+            rden=0.e0_real_kind
+            cvden=0.e0_real_kind
             do s=1,5
               rden=rden+q(i,j,k,5+s)*air5_species_gas_constant(s)
               cvden=cvden+q(i,j,k,5+s)*air5_species_cv_tr(s)
             enddo
-            css=sqrt((1.d0+rden/cvden)*rden*temp/q(i,j,k,1))
+            css=sqrt((1.e0_real_kind+rden/cvden)*rden*temp/q(i,j,k,1))
           endif
         else
 #endif
@@ -127,7 +131,7 @@ module commcal
 #endif
         metric=dxi(i,j,k,:,:)
         call spectral_rates(velocity,css,metric,rates,valid)
-        if(.not.valid.or.status/=0) rates=huge(1.d0)
+        if(.not.valid.or.status/=0) rates=huge(1.e0_real_kind)
         key=(int(k+kg0,int64)*(ja+1)+j+jg0)*(ia+1)+i+ig0
         do axis=1,4
           if(rates(axis)>local(axis).or.(rates(axis)==local(axis).and.key<keys(axis))) then
@@ -140,9 +144,9 @@ module commcal
       enddo
       enddo
     endif
-    call MPI_Allreduce(local,global,4,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(local,global,4,mpi_real_type,MPI_MAX,MPI_COMM_WORLD,ierr)
     if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,90,status)
-    if(any(global==huge(1.d0)).or..not.all(ieee_is_finite(global))) then
+    if(any(global==huge(1.e0_real_kind)).or..not.all(ieee_is_finite(global))) then
       if(mpirank==0) write(*,*) 'Invalid state or metric in complete-step CFL diagnostic'
       call MPI_Abort(MPI_COMM_WORLD,90,status)
     endif
@@ -159,7 +163,7 @@ module commcal
       write(*,"(A38)")'  =========== CFL Condition==========='
       write(*,"(A24,1x,E13.5)")'     current time step: ',deltat
       write(*,"(A24,1x,F13.7)")'           current CFL: ',cfl
-      if(cfl>0.d0) write(*,"(A24,1x,E13.5)")'   time step for CFL=1: ',deltat/cfl
+      if(cfl>0.e0_real_kind) write(*,"(A24,1x,E13.5)")'   time step for CFL=1: ',deltat/cfl
       write(*,'(A,I0,A,ES24.16E3,A,ES24.16E3)') &
         'ASTR_CFL complete_step=',nstep,' state_time=',time+deltat,' dt=',deltat
       write(*,'(A,5(1X,ES24.16E3))') 'ASTR_CFL directional/local_sum/upper_bound=', &
@@ -174,7 +178,7 @@ module commcal
       write(*,"(A38)")'  ===================================='
     end if
     if(profile) then
-      call MPI_Allreduce(ylocal,yglobal,4*(ja+1),MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,ierr)
+      call MPI_Allreduce(ylocal,yglobal,4*(ja+1),mpi_real_type,MPI_MAX,MPI_COMM_WORLD,ierr)
       if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,90,status)
       if(mpirank==0) then
         do j=0,ja
@@ -205,7 +209,7 @@ module commcal
     !
     ! arguments 
     integer,intent(in) :: ijk(:,:)
-    real(8),intent(in) :: xyz(:,:)
+    real(real_kind),intent(in) :: xyz(:,:)
     integer,allocatable,intent(out) :: ijkmon(:,:)
     integer,intent(out) :: nmon
     !
@@ -397,12 +401,12 @@ module commcal
     !
     ! local data
     logical,save :: firstcall=.true.,validation_dumped=.false.
-    real(8) :: div2,vort,vortx,vorty,vortz,dpdi,dpdj,dpdk
-    real(8) :: ssfmin,ssfmax,ssfavg,norm,ssfmax_local
+    real(real_kind) :: div2,vort,vortx,vorty,vortz,dpdi,dpdj,dpdk
+    real(real_kind) :: ssfmin,ssfmax,ssfavg,norm,ssfmax_local
     integer :: i,j,k,i1,j1,k1,ii,jj,kk,ip1,jp1,kp1,im1,jm1,km1,nshknod,nijka
     !
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.0_clock_kind
     !
     if(present(timerept)) then
 
@@ -419,10 +423,10 @@ module commcal
       !
     endif
     !
-    ssfmin= 1.d10
-    ssfmax=-1.d10
-    ssfavg=0.d0
-    norm=0.d0
+    ssfmin= 1.e10_real_kind
+    ssfmax=-1.e10_real_kind
+    ssfavg=0.e0_real_kind
+    norm=0.e0_real_kind
     do k=0,km
     do j=0,jm
     do i=0,im
@@ -445,20 +449,20 @@ module commcal
       if((npdcj==2 .or. npdcj==4) .and. jp1>jm) jp1=jm
       if((npdck==2 .or. npdck==4) .and. kp1>km) kp1=km
       !
-      dpdi= abs(prs(ip1,j,k)-2.d0*prs(i,j,k)+prs(im1,j,k)) /  &
-               (prs(ip1,j,k)+2.d0*prs(i,j,k)+prs(im1,j,k))
-      dpdj= abs(prs(i,jp1,k)-2.d0*prs(i,j,k)+prs(i,jm1,k)) /  &
-               (prs(i,jp1,k)+2.d0*prs(i,j,k)+prs(i,jm1,k))
-      dpdk= abs(prs(i,j,kp1)-2.d0*prs(i,j,k)+prs(i,j,km1)) /  &
-               (prs(i,j,kp1)+2.d0*prs(i,j,k)+prs(i,j,km1))
+      dpdi= abs(prs(ip1,j,k)-2.e0_real_kind*prs(i,j,k)+prs(im1,j,k)) /  &
+               (prs(ip1,j,k)+2.e0_real_kind*prs(i,j,k)+prs(im1,j,k))
+      dpdj= abs(prs(i,jp1,k)-2.e0_real_kind*prs(i,j,k)+prs(i,jm1,k)) /  &
+               (prs(i,jp1,k)+2.e0_real_kind*prs(i,j,k)+prs(i,jm1,k))
+      dpdk= abs(prs(i,j,kp1)-2.e0_real_kind*prs(i,j,k)+prs(i,j,km1)) /  &
+               (prs(i,j,kp1)+2.e0_real_kind*prs(i,j,k)+prs(i,j,km1))
       !
-      ssf(i,j,k)=div2/(div2+vort+1.d-30) * max(dpdi,dpdj,dpdk)
+      ssf(i,j,k)=div2/(div2+vort+1.e-30_real_kind) * max(dpdi,dpdj,dpdk)
       !
       ssfmin=min(ssfmin,ssf(i,j,k))
       ssfmax=max(ssfmax,ssf(i,j,k))
       !
       ssfavg=ssfavg+ssf(i,j,k)
-      norm=norm+1.d0
+      norm=norm+1.e0_real_kind
       !
     enddo
     enddo
@@ -472,7 +476,7 @@ module commcal
     do j=0,jm
     do i=0,im
       !
-      ssfmax_local=0.d0
+      ssfmax_local=0.e0_real_kind
       do i1=-hm+1,hm
         !
         ii=i+i1
@@ -581,7 +585,7 @@ module commcal
     ! local data
     integer :: i,j,k,m,i1,j1,k1
     logical,allocatable :: lss(:,:,:)
-    real(8),allocatable :: rss(:,:,:)
+    real(real_kind),allocatable :: rss(:,:,:)
     !
     ! set the shock area 
     allocate(lss(-hm:im+hm,-hm:jm+hm,-hm:km+hm))

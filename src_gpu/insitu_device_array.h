@@ -13,9 +13,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <type_traits>
+#include "astr_precision.h"
 
 namespace astr_insitu {
-using SampleVectorComponents=viskores::cont::ArrayHandleSOA<viskores::Vec3f>;
+using Real=astr::numerical_real;
+using NativeVector=viskores::Vec<Real,3>;
+static_assert(std::is_same<viskores::FloatDefault,Real>::value,
+              "Viskores analysis precision must match the ASTR numerical build");
+using SampleVectorComponents=viskores::cont::ArrayHandleSOA<NativeVector>;
 inline void trace_device_memory(const char* stage,std::uint64_t payload_bytes) {
 #ifdef ASTR_BUILD_TESTING
   const char* option=std::getenv("ASTR_INSITU_MEMORY_TRACE");

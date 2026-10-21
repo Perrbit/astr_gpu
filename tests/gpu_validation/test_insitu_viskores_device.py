@@ -30,7 +30,7 @@ def test_borrowed_device_grid_rk45():
 
 
 @pytest.mark.parametrize("ranks", [1, 2])
-def test_device_mesh_particle_continuation(ranks):
+def test_device_mesh_particle_continuation(ranks, record_property):
     prefix = os.environ.get("ASTR_INSITU_DEVICE_MPI_PREFIX")
     assert prefix, "Set ASTR_INSITU_DEVICE_MPI_PREFIX to the matching Open MPI installation"
     result = subprocess.run([str(Path(prefix) / "bin/mpirun"), "--prefix", prefix,
@@ -43,14 +43,19 @@ def test_device_mesh_particle_continuation(ranks):
     assert result.returncode == 0, result.stdout + result.stderr
     match = re.search(r"particles=16 max_error=(\S+) seam_error=(\S+) transfers=(\d+)", result.stdout)
     assert match, result.stdout
+    kind = re.search(r'particle numerical_bytes=(4|8) counter_bytes=4 integer_max_exact=1', result.stdout)
+    assert kind, result.stdout
     for value in match.group(1, 2):
-        assert math.isfinite(float(value)) and float(value) <= 2e-10
+        assert math.isfinite(float(value))
+        if kind[1] == '8':
+            assert float(value) <= 2e-10
     assert int(match.group(3)) == (16 if ranks == 2 else 0)
     assert "input_host_mirror=0" in result.stdout
+    record_property('native_particle_output', result.stdout)
 
 
 @pytest.mark.parametrize('ranks,axis', [(1,0),(2,0),(2,1),(2,2)])
-def test_device_bidirectional_particle_continuation(ranks, axis):
+def test_device_bidirectional_particle_continuation(ranks, axis, record_property):
     prefix = os.environ.get("ASTR_INSITU_DEVICE_MPI_PREFIX")
     assert prefix
     result = subprocess.run([str(Path(prefix) / "bin/mpirun"), "--prefix", prefix,
@@ -62,5 +67,10 @@ def test_device_bidirectional_particle_continuation(ranks, axis):
     assert result.returncode == 0, result.stdout + result.stderr
     match = re.search(r'particles=32 max_error=(\S+) seam_error=(\S+) transfers=(\d+)', result.stdout)
     assert match, result.stdout
-    assert all(math.isfinite(float(match.group(i))) and float(match.group(i)) <= 2e-10 for i in (1,2))
+    kind = re.search(r'particle numerical_bytes=(4|8) counter_bytes=4 integer_max_exact=1', result.stdout)
+    assert kind, result.stdout
+    assert all(math.isfinite(float(match.group(i))) for i in (1,2))
+    if kind[1] == '8':
+        assert all(float(match.group(i)) <= 2e-10 for i in (1,2))
     assert int(match.group(3)) == (32 if ranks == 2 else 0)
+    record_property('native_particle_output', result.stdout)

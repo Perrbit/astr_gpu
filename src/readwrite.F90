@@ -7,6 +7,7 @@
 !+---------------------------------------------------------------------+
 module readwrite
   use iso_fortran_env, only: int64
+  use astr_precision, only: real_kind,clock_kind,real_bytes
   ! This marker is optional in legacy auxiliary files.
   !
   use constdef
@@ -18,6 +19,7 @@ module readwrite
   use utility, only: timereporter
   !
   implicit none
+  private :: real_kind,clock_kind,real_bytes
   !
   integer :: nxtchkpt,nxtwsequ
   integer :: exact_gpu_restart_version=0
@@ -617,7 +619,7 @@ module readwrite
           strings=line_2_strings(lineread)
           read(strings(1),*)bctype(n)
           if(size(strings)==1) then
-            pout=1.d0
+            pout=1.e0_real_kind
           else
             read(strings(2),*)pout
           endif
@@ -897,7 +899,7 @@ module readwrite
     logical :: lexist
     integer :: ios,bignum,ncou,i,n,fh
     integer,allocatable :: ijk(:,:)
-    real(8),allocatable :: xyz(:,:)
+    real(real_kind),allocatable :: xyz(:,:)
     !
     bignum=1024
     allocate(ijk(1:bignum,4),xyz(1:bignum,4))
@@ -944,7 +946,7 @@ module readwrite
               read(c1,*)xyz(ncou,1)
               read(c2,*)xyz(ncou,2)
               read(c3,*)xyz(ncou,3)
-              xyz(ncou,4)=dble(ncou)
+              xyz(ncou,4)=real(ncou,real_kind)
               !
               write(*,'(24X,I3,A,3(F12.6))')ncou,':',xyz(ncou,:)
             else
@@ -1035,7 +1037,7 @@ module readwrite
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_monitor, only: write_air5_flow_monitor
 #endif
-    real(8),intent(in),optional :: completed_time
+    real(real_kind),intent(in),optional :: completed_time
     !
     ! local data
     integer :: n,i,j,k,ios,ns
@@ -1045,7 +1047,7 @@ module readwrite
     character(len=4) :: moname
     character(len=64) :: filename
     character(len=32) :: c1
-    real(8) :: rtime
+    real(real_kind) :: rtime
     !
 #ifdef ASTR_AIR5_CHEMISTRY
     if(trim(flowtype)=='air5hbl'.or.trim(flowtype)=='air5sbli') then
@@ -1329,8 +1331,8 @@ module readwrite
     ! local data
     !
     integer :: jsp,i,j,k
-    real(8) :: time_ini,nstep_ini
-    real(8),allocatable :: temp(:,:)
+    real(real_kind) :: time_ini,nstep_ini
+    real(real_kind),allocatable :: temp(:,:)
     character(len=3) :: spname
     
     allocate(temp(0:ia,0:ja))
@@ -1373,14 +1375,14 @@ module readwrite
       rho(i,j,k)  =rho(i,j,0)
       vel(i,j,k,1)=vel(i,j,0,1)
       vel(i,j,k,2)=vel(i,j,0,2)
-      vel(i,j,k,3)=0.d0
+      vel(i,j,k,3)=0.e0_real_kind
       tmp(i,j,k)  =tmp(i,j,0)
       !
       if(nondimen) then
         prs(i,j,k)  =thermal(temperature=tmp(i,j,k),density=rho(i,j,k)) 
         !
         do jsp=1,num_species
-          spc(i,j,k,jsp)=0.d0 !spc(i,j,0,jsp)
+          spc(i,j,k,jsp)=0.e0_real_kind !spc(i,j,0,jsp)
         enddo
         !
       else
@@ -1429,7 +1431,7 @@ module readwrite
     ! local data
     !
     integer :: jsp,i,j,k
-    real(8) :: time_ini,nstep_ini
+    real(real_kind) :: time_ini,nstep_ini
     character(len=3) :: spname
     !
     call h5io_init(filename=trim(initial_source_path(1)),mode='read')
@@ -1452,8 +1454,8 @@ module readwrite
       !
       rho(i,j,k)  =rho(i,0,0)
       vel(i,j,k,1)=vel(i,0,0,1)
-      vel(i,j,k,2)=0.d0
-      vel(i,j,k,3)=0.d0
+      vel(i,j,k,2)=0.e0_real_kind
+      vel(i,j,k,3)=0.e0_real_kind
       tmp(i,j,k)  =tmp(i,0,0)
       !
       do jsp=1,num_species
@@ -1856,12 +1858,12 @@ module readwrite
     character(len=64) :: outfilename,outauxiname
     character(len=64),save :: savfilenmae='first'
     character(len=3) :: spname
-    real(8),allocatable :: rshock(:,:,:),rcrinod(:,:,:),hrr(:)
+    real(real_kind),allocatable :: rshock(:,:,:),rcrinod(:,:,:),hrr(:)
     !
-    real(8) :: ypos
+    real(real_kind) :: ypos
     logical :: lwprofile
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.e0_clock_kind
     NAMELIST /restart/ nstep, filenumb,fnumslic,ninflowslice,nsamples, &
       exact_gpu_restart_version,exact_gpu_restart_generation
     !
@@ -2080,14 +2082,14 @@ module readwrite
     
     ! local data
     type :: dacoll
-      real(8),allocatable,dimension(:,:,:) :: data
+      real(real_kind),allocatable,dimension(:,:,:) :: data
     end type dacoll
 
     integer :: numvar,basevar
     character(len=5) :: compensation_name
     
     type(dacoll),allocatable :: data_gather(:)
-    real(8),allocatable,dimension(:,:,:) :: data2write
+    real(real_kind),allocatable,dimension(:,:,:) :: data2write
     integer(8) :: offset(3)
     integer :: jsp
     character(len=3) :: spname
@@ -2264,7 +2266,7 @@ module readwrite
     choice=0
     if(any(.not.ieee_is_finite(q(0:im,0:jm,0:km,:))) .or. &
        any(.not.ieee_is_finite(air5_carry))) choice=1
-    if(any(abs(air5_carry)>4.0d0*spacing(q(0:im,0:jm,0:km,:)))) choice=1
+    if(any(abs(air5_carry)>4.0e0_real_kind*spacing(q(0:im,0:jm,0:km,:)))) choice=1
     call MPI_Allreduce(choice,high,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
     if(high/=0) error stop 'nonfinite or invalid low-part compensated checkpoint'
     call updatefvar
@@ -2286,8 +2288,8 @@ module readwrite
     character(len=1024) :: snapshot_path
     integer :: env_status,path_length
     logical :: dynamic_inflow_snapshot
-    real(8),allocatable :: q_save(:,:,:,:),rho_save(:,:,:),prs_save(:,:,:),tmp_save(:,:,:)
-    real(8),allocatable :: vel_save(:,:,:,:)
+    real(real_kind),allocatable :: q_save(:,:,:,:),rho_save(:,:,:),prs_save(:,:,:),tmp_save(:,:,:)
+    real(real_kind),allocatable :: vel_save(:,:,:,:)
 
     snapshot_path=''
     call get_environment_variable('ASTR_VALIDATION_RK_SNAPSHOT',snapshot_path, &
@@ -2328,8 +2330,8 @@ module readwrite
 
     use commvar, only: ka
     
-    real(8),intent(in) :: data_face(0:im,0:jm),data_vol(0:im,0:jm,1:ka)
-    real(8) :: data(0:im,0:jm,0:ka)
+    real(real_kind),intent(in) :: data_face(0:im,0:jm),data_vol(0:im,0:jm,1:ka)
+    real(real_kind) :: data(0:im,0:jm,0:ka)
     
     data(0:im,0:jm,0)=data_face(0:im,0:jm)
     data(0:im,0:jm,1:ka)=data_vol(0:im,0:jm,1:ka)
@@ -2355,10 +2357,10 @@ module readwrite
     character(len=64) :: outfilename,outauxiname
     character(len=64),save :: savfilenmae='first'
     character(len=3) :: spname
-    real(8),allocatable :: rshock(:,:,:),rcrinod(:,:,:)
+    real(real_kind),allocatable :: rshock(:,:,:),rcrinod(:,:,:)
     !
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.e0_clock_kind
     !
     if(present(timerept)) then
 
@@ -2530,7 +2532,7 @@ module readwrite
     !
     ! arguments
     character(len=*),intent(in),optional :: gridh5file,flowh5file,dataname
-    real(8),intent(in),optional :: timesec
+    real(real_kind),intent(in),optional :: timesec
     character(*),intent(in) :: mode
     !
     ! local data
@@ -2742,13 +2744,13 @@ module readwrite
     logical,intent(in),optional :: timerept
     !
     ! local data
-    real(8),allocatable :: rshock(:,:,:),rcrinod(:,:,:)
+    real(real_kind),allocatable :: rshock(:,:,:),rcrinod(:,:,:)
     character(len=2) :: qname
     character(len=3) :: spname
     integer :: jsp,i,fh,ios,j,k
     logical :: lfopen
-    real(8) :: time_beg
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg
+    real(clock_kind),save :: subtime=0.e0_clock_kind
     integer,save :: nstep_save=0
     
     if(nstep<=nstep_save) return
@@ -2823,7 +2825,7 @@ module readwrite
     use hdf5io
     !
     ! arguments
-    real(8),intent(inout),optional :: subtime
+    real(clock_kind),intent(inout),optional :: subtime
     logical,intent(in),optional :: include_derivatives
     !
     ! local data
@@ -2831,7 +2833,7 @@ module readwrite
     character(len=14) :: filename
     integer :: i,j,k
     integer,save :: nstep_save=0
-    real(8) :: time_beg
+    real(clock_kind) :: time_beg
     logical :: write_derivatives
     !
     if(present(subtime)) time_beg=ptime() 
@@ -2999,9 +3001,9 @@ module readwrite
     !
     ! local data
     integer :: fh,jb,kb,nb
-    real(8) :: xc,yc,radi,varmin
-    real(8) :: vel_bou(3),prs_bou,rho_bou,tmp_bou,spc_bou(num_species)
-    real(8),allocatable,save :: alfa(:)
+    real(real_kind) :: xc,yc,radi,varmin
+    real(real_kind) :: vel_bou(3),prs_bou,rho_bou,tmp_bou,spc_bou(num_species)
+    real(real_kind),allocatable,save :: alfa(:)
     integer,allocatable,save :: ialf(:)
     type(sboun),pointer :: pb
     !
@@ -3011,8 +3013,8 @@ module readwrite
     !
     if(firstcall) then
       !
-      xc=5.d0
-      yc=5.d0
+      xc=5.e0_real_kind
+      yc=5.e0_real_kind
       ! radi=0.5d0
       !
       allocate(alfa(nb),ialf(nb))
@@ -3023,7 +3025,7 @@ module readwrite
         !
         radi=sqrt((pb%x(1)-xc)**2+(pb%x(2)-yc)**2)
         !
-        if(pb%x(2)-yc>=0.d0) then
+        if(pb%x(2)-yc>=0.e0_real_kind) then
           alfa(jb)=pi-acos((pb%x(1)-xc)/radi)
         else
           alfa(jb)=pi+acos((pb%x(1)-xc)/radi)
@@ -3035,7 +3037,7 @@ module readwrite
       ialf=0
       do kb=1,nb
         !
-        varmin=1.d10
+        varmin=1.e10_real_kind
         do jb=1,nb
           !
           if(any(ialf(1:kb)==jb)) cycle
@@ -3075,7 +3077,7 @@ module readwrite
                 temperature=tmp_bou,                  &
                     species=spc_bou                   )
       !
-      write(fh,'(2(1X,E20.13E2))')alfa(kb),2.d0*(prs_bou-pinf)
+      write(fh,'(2(1X,E20.13E2))')alfa(kb),2.e0_real_kind*(prs_bou-pinf)
       !
     enddo
     !
@@ -3162,44 +3164,44 @@ module readwrite
                                                 ' to nstep : ',nstep
       write(hand_rp,'(2X,62A)')('-',i=1,62)
       write(hand_rp,'(2X,A,E13.6E2,A,F6.2,A)')'total time cost : ',    &
-                            ctime(2),' - ',100.d0*ctime(2)/ctime(2),' %'
+                            ctime(2),' - ',100.e0_real_kind*ctime(2)/ctime(2),' %'
       !
       write(hand_rp,'(2X,A,E13.6E2,A,F6.2,A)')'  - rk          : ',    &
-                            ctime(3),' - ',100.d0*ctime(3)/ctime(2),' %'
+                            ctime(3),' - ',100.e0_real_kind*ctime(3)/ctime(2),' %'
       write(hand_rp,'(2X,A,E13.6E2,A,F6.2,A)')'    - rhs       : ',    &
-                            ctime(4),' - ',100.d0*ctime(4)/ctime(2),' %'
+                            ctime(4),' - ',100.e0_real_kind*ctime(4)/ctime(2),' %'
       write(hand_rp,'(2X,A,E13.6E2,A,F6.2,A)')'      - Convc   : ',    &
-                            ctime(9),' - ',100.d0*ctime(9)/ctime(2),' %'
+                            ctime(9),' - ',100.e0_real_kind*ctime(9)/ctime(2),' %'
       write(hand_rp,'(2X,A,E13.6E2,A,F6.2,A)')'        - ssf   : ',    &
-                          ctime(12),' - ',100.d0*ctime(12)/ctime(2),' %'
+                          ctime(12),' - ',100.e0_real_kind*ctime(12)/ctime(2),' %'
       write(hand_rp,'(2X,A,E13.6E2,A,F6.2,A)')'      - Diffu   : ',    &
-                          ctime(10),' - ',100.d0*ctime(10)/ctime(2),' %'
+                          ctime(10),' - ',100.e0_real_kind*ctime(10)/ctime(2),' %'
       write(hand_rp,'(2X,A,E13.6E2,A,F6.2,A)')'      - React   : ',    &
-                          ctime(13),' - ',100.d0*ctime(13)/ctime(2),' %'
+                          ctime(13),' - ',100.e0_real_kind*ctime(13)/ctime(2),' %'
       write(hand_rp,'(2X,A,E13.6E2,A,F6.2,A)')'    - filter    : ',    &
-                            ctime(8),' - ',100.d0*ctime(8)/ctime(2),' %'
+                            ctime(8),' - ',100.e0_real_kind*ctime(8)/ctime(2),' %'
       write(hand_rp,'(2X,A,E13.6E2,A,F6.2,A)')'    - io        : ',    &
-                            ctime(6),' - ',100.d0*ctime(6)/ctime(2),' %'
+                            ctime(6),' - ',100.e0_real_kind*ctime(6)/ctime(2),' %'
       write(hand_rp,'(2X,A,E13.6E2,A,F6.2,A)')'    - io_slices : ',    &
-                          ctime(23),' - ',100.d0*ctime(23)/ctime(2),' %'
+                          ctime(23),' - ',100.e0_real_kind*ctime(23)/ctime(2),' %'
       write(hand_rp,'(2X,A,E13.6E2,A,F6.2,A)')'    - sta       : ',    &
-                            ctime(5),' - ',100.d0*ctime(5)/ctime(2),' %'
+                            ctime(5),' - ',100.e0_real_kind*ctime(5)/ctime(2),' %'
       write(hand_rp,'(2X,A,E13.6E2,A,F6.2,A)')'    - ib        : ',    &
-                          ctime(11),' - ',100.d0*ctime(11)/ctime(2),' %'
+                          ctime(11),' - ',100.e0_real_kind*ctime(11)/ctime(2),' %'
       write(hand_rp,'(2X,A,E13.6E2,A,F6.2,A)')'      - image   : ',    &
-                          ctime(24),' - ',100.d0*ctime(24)/ctime(2),' %'
+                          ctime(24),' - ',100.e0_real_kind*ctime(24)/ctime(2),' %'
       write(hand_rp,'(2X,A,E13.6E2,A,F6.2,A)')'      - sync    : ',    &
-                          ctime(25),' - ',100.d0*ctime(25)/ctime(2),' %'
+                          ctime(25),' - ',100.e0_real_kind*ctime(25)/ctime(2),' %'
       write(hand_rp,'(2X,A,E13.6E2,A,F6.2,A)')'      - ghost   : ',    &
-                          ctime(26),' - ',100.d0*ctime(26)/ctime(2),' %'
+                          ctime(26),' - ',100.e0_real_kind*ctime(26)/ctime(2),' %'
       write(hand_rp,'(2X,A,E13.6E2,A,F6.2,A)')'    - com         : ',    &
-                           ctime(7), ' - ',100.d0*ctime(7)/ctime(2),' %'
+                           ctime(7), ' - ',100.e0_real_kind*ctime(7)/ctime(2),' %'
       write(hand_rp,'(2X,A,E13.6E2,A,F6.2,A)')'    - q_sum       : ',    &
-                         ctime(14), ' - ',100.d0*ctime(14)/ctime(2),' %'
+                         ctime(14), ' - ',100.e0_real_kind*ctime(14)/ctime(2),' %'
       write(hand_rp,'(2X,A,E13.6E2,A,F6.2,A)')'    - q2var       : ',    &
-                         ctime(15), ' - ',100.d0*ctime(15)/ctime(2),' %'
+                         ctime(15), ' - ',100.e0_real_kind*ctime(15)/ctime(2),' %'
       write(hand_rp,'(2X,A,E13.6E2,A,F6.2,A)')'    - crfix       : ',    &
-                         ctime(16), ' - ',100.d0*ctime(16)/ctime(2),' %'
+                         ctime(16), ' - ',100.e0_real_kind*ctime(16)/ctime(2),' %'
       !
       flush(hand_rp)
       !
@@ -3210,7 +3212,7 @@ module readwrite
     endif
     !
     repsp=nstep
-    ctime=0.d0
+    ctime=0.e0_real_kind
     !
   end subroutine timerept
   !+-------------------------------------------------------------------+
@@ -3237,7 +3239,7 @@ module readwrite
     !
     ! local data
     integer :: counter,n,n1,m,i,j,k,fh
-    real(8),allocatable :: xcell(:,:)
+    real(real_kind),allocatable :: xcell(:,:)
     !
     select case(item2w)
     case('bound')

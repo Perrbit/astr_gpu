@@ -66,7 +66,8 @@ def test_native_cutoff_and_layout_reference(probe, tmp_path, components, planes,
     result = invoke(probe, head, components, planes, derived)
     assert result.returncode == 0 and "OUTPUT_NATIVE_LINEAGE_COMPATIBLE" in result.stdout, result.stdout+result.stderr
     rows = (head / "lineage.frames.tmp").read_text().splitlines()
-    assert rows[0] == "ASTR_NATIVE_LINEAGE_1" and [int(row.split()[0]) for row in rows[1::3]] == [0, 2, 4]
+    assert rows[0] == "ASTR_NATIVE_LINEAGE_2" and [int(row.split()[0]) for row in rows[1::3]] == [0, 2, 4]
+    assert all(int(row.split()[2]) == 8 for row in rows[1::3])
     for item in ET.parse(head / "lineage.xdmf.tmp").findall(".//DataItem"):
         path, dataset = item.text.strip().split(":", 1)
         with h5py.File(head / path) as handle:
@@ -86,6 +87,34 @@ def test_valid_native_layout_override_does_not_abort(probe, tmp_path, override):
     assert result.returncode == 0 and "OUTPUT_NATIVE_LINEAGE_INCOMPATIBLE" in result.stdout, result.stdout+result.stderr
     assert not (head / "lineage.frames.tmp").exists() and not (head / "lineage.xdmf.tmp").exists()
     assert snapshot(parent) == before
+
+
+def test_native_two_precision_switches_keep_raw_history(probe, tmp_path):
+    parent = make_segment(tmp_path / 'parent64', 6, [], width=8)
+    register(parent)
+    middle = make_segment(tmp_path / 'middle32', 6, [], width=4)
+    for step in (0, 2):
+        shutil.rmtree(middle / f'step{step:012d}')
+    source64 = np.array([.002], dtype='<f8')
+    register(middle, parent, step=2, time=float(source64.astype('<f4')[0]),
+             source_clock=(8, int(source64.view('<i8')[0])))
+    head = make_segment(tmp_path / 'head64', 6, [], width=8)
+    for frame in head.glob('step*'):
+        shutil.rmtree(frame)
+    (head / 'series.frames').write_text('ASTR_FRAME_SERIES_1\n')
+    source32 = np.array([.004], dtype='<f4')
+    register(head, middle, step=4, time=float(source32[0]),
+             source_clock=(4, int(source32.view('<i4')[0])))
+    before = (snapshot(parent.parent), snapshot(middle.parent))
+    result = invoke(probe, head, 6, ())
+    assert result.returncode == 0 and 'OUTPUT_NATIVE_LINEAGE_COMPATIBLE' in result.stdout, result.stdout + result.stderr
+    rows = (head / 'lineage.frames.tmp').read_text().splitlines()
+    assert [int(row.split()[0]) for row in rows[1::3]] == [0, 2, 4]
+    assert [int(row.split()[2]) for row in rows[1::3]] == [8, 8, 4]
+    for grid, width in zip(ET.parse(head / 'lineage.xdmf.tmp').findall('./Domain/Grid/Grid'), [8, 8, 4]):
+        assert {item.attrib['Precision'] for item in grid.findall('.//DataItem')} == {str(width)}
+    assert combine_series(head)['frames'] == 3
+    assert (snapshot(parent.parent), snapshot(middle.parent)) == before
 
 
 def test_native_unsorted_plane_selection_is_same_layout(probe, tmp_path):

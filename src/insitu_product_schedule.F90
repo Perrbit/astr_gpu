@@ -1,5 +1,7 @@
 module insitu_product_schedule
-  use iso_fortran_env, only: int64,real64
+  use astr_precision_io, only: read_source_reals
+  use iso_fortran_env, only: int64
+  use astr_precision, only: real_kind
   use iso_c_binding, only: c_int,c_char,c_null_char,c_int64_t,c_double
   use ieee_arithmetic, only: ieee_is_finite
   use insitu_run_config, only: insitu_options,insitu_max_products
@@ -16,9 +18,9 @@ module insitu_product_schedule
     type(sample_schedule) :: clock
     type(adaptive_clock) :: adaptive
     integer(int64) :: origin_step=0
-    real(real64) :: origin_time=0.d0
+    real(real_kind) :: origin_time=0.e0_real_kind
     integer(int64) :: attempt=-1,success=-1,missing=-1
-    real(real64) :: attempt_time=-1.d0,success_time=-1.d0,missing_time=-1.d0
+    real(real_kind) :: attempt_time=-1.e0_real_kind,success_time=-1.e0_real_kind,missing_time=-1.e0_real_kind
     integer :: code=0,phase=0,missing_code=0,missing_phase=0
     logical :: due=.false.,reported=.true.
   end type
@@ -33,7 +35,7 @@ contains
   subroutine configure_product_schedules(options,origin_step,origin_time,ok)
     type(insitu_options),intent(in) :: options
     integer(int64),intent(in) :: origin_step
-    real(real64),intent(in) :: origin_time
+    real(real_kind),intent(in) :: origin_time
     logical,intent(out) :: ok
     integer :: i
     configuration=options; states=product_state(); configured=.false.; ok=.true.
@@ -54,7 +56,7 @@ contains
 
   subroutine poll_product_schedules(step,time,final,emit,ok)
     integer(int64),intent(in) :: step
-    real(real64),intent(in) :: time
+    real(real_kind),intent(in) :: time
     logical,intent(in) :: final
     logical,intent(out) :: emit,ok
     integer(int64) :: crossed
@@ -188,17 +190,18 @@ contains
     enddo
   end function
 
-  subroutine product_state_file(unit,writing,step,time,same,ok,override)
+  subroutine product_state_file(unit,writing,step,time,same,ok,override,source_bytes)
     integer,intent(in) :: unit
     logical,intent(in) :: writing
     integer(int64),intent(in) :: step
-    real(real64),intent(in) :: time
+    real(real_kind),intent(in) :: time
     logical,intent(out) :: same,ok
     logical,optional,intent(in) :: override
+    integer,optional,intent(in) :: source_bytes
     type(insitu_options) :: saved
     type(product_state) :: restored(insitu_max_products)
     integer(int64) :: next_step,expected_step,history(7),count_saved,flags(2)
-    real(real64) :: next_time,expected_time,times(3)
+    real(real_kind) :: next_time,expected_time,times(3)
     character(8) :: magic
     logical :: initial,final,allow,entry_same(insitu_max_products),clock_same,compatible
     integer :: i,j,status
@@ -244,8 +247,12 @@ contains
     initial=flags(1)==1; final=flags(2)==1
     saved%product_count=int(count_saved); saved%initial_frame=initial; saved%final_frame=final
     do i=1,saved%product_count
-      read(unit,iostat=status) saved%product_ids(i),saved%product_modes(i),saved%product_steps(i), &
-        saved%product_times(i),history,times,next_step,next_time
+      read(unit,iostat=status) saved%product_ids(i),saved%product_modes(i),saved%product_steps(i)
+      if(status==0) call read_source_reals(unit,saved%product_times(i),source_bytes,status)
+      if(status==0) read(unit,iostat=status) history
+      if(status==0) call read_source_reals(unit,times,source_bytes,status)
+      if(status==0) read(unit,iostat=status) next_step
+      if(status==0) call read_source_reals(unit,next_time,source_bytes,status)
       if(status/=0) return
       if(i>1) then
         if(saved%product_ids(i)<=saved%product_ids(i-1)) return
@@ -260,12 +267,12 @@ contains
       if((history(3)>=0).neqv.(history(6)>0)) return
       if(history(4)==0.and.history(1)/=history(2)) return
       if(history(4)>0.and.history(1)/=history(3)) return
-      if(.not.all(ieee_is_finite(times)).or.any(times< -1.d0).or.any(times>time)) return
+      if(.not.all(ieee_is_finite(times)).or.any(times< -1.e0_real_kind).or.any(times>time)) return
       do status=1,3
-        if((history(status)==-1).neqv.(times(status)==-1.d0)) return
+        if((history(status)==-1).neqv.(times(status)==-1.e0_real_kind)) return
       enddo
       ! The saved schedule carries its origin and independently validates history.
-      call restore_product_clock(unit,restored(i),saved,i,step,time,ok)
+      call restore_product_clock(unit,restored(i),saved,i,step,time,ok,source_bytes)
       if(.not.ok) return
       call schedule_next_target(restored(i)%clock,expected_step,expected_time,ok)
       if(.not.ok.or.next_step/=expected_step.or.next_time/=expected_time) return
@@ -286,7 +293,7 @@ contains
           if(j>0) restored(i)%adaptive=states(j)%adaptive
           if(j==0) j=insitu_max_products
           call adaptive_clock_file(unit,.false.,restored(i)%adaptive,configuration%product_adaptive(j), &
-            step,time,clock_same,ok)
+            step,time,clock_same,ok,source_bytes)
           if(.not.ok) return
           entry_same(i)=clock_same
           ! Detailed binding identity is validated by ASTRAC01, not the legacy PF header.
@@ -335,23 +342,25 @@ contains
     ok=.true.
   end subroutine
 
-  subroutine restore_product_clock(unit,state,saved,i,step,time,ok)
+  subroutine restore_product_clock(unit,state,saved,i,step,time,ok,source_bytes)
     integer,intent(in) :: unit,i
     type(product_state),intent(out) :: state
     type(insitu_options),intent(in) :: saved
     integer(int64),intent(in) :: step
-    real(real64),intent(in) :: time
+    real(real_kind),intent(in) :: time
     logical,intent(out) :: ok
+    integer,optional,intent(in) :: source_bytes
     integer(int64) :: origin_step
-    real(real64) :: origin_time
+    real(real_kind) :: origin_time
     integer :: status
     ! Origin is stored alongside the normal schedule; never infer it from restart time.
-    read(unit,iostat=status) origin_step,origin_time
+    read(unit,iostat=status) origin_step
+    if(status==0) call read_source_reals(unit,origin_time,source_bytes,status)
     ok=status==0
     if(.not.ok) return
     state%origin_step=origin_step; state%origin_time=origin_time
     call configure_schedule(state%clock,trim(saved%product_modes(i)),saved%product_steps(i),saved%product_times(i), &
       origin_step,origin_time,saved%initial_frame,saved%final_frame,ok)
-    if(ok) call restore_schedule_state(unit,state%clock,saved%product_ids(i),step,time,ok)
+    if(ok) call restore_schedule_state(unit,state%clock,saved%product_ids(i),step,time,ok,source_bytes)
   end subroutine
 end module

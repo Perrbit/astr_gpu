@@ -7,6 +7,7 @@
 !| 01-02-2021: Created by J. Fang @ STFC Daresbury Laboratory          |
 !+---------------------------------------------------------------------+
 module initialisation
+  use astr_precision, only: real_kind
   !
   use constdef
   use parallel,only: lio,mpistop,mpirank,mpirankname,bcast,jrk
@@ -15,8 +16,9 @@ module initialisation
   use tecio
   !
   implicit none
+  private :: real_kind
   !
-  real(8) :: nomi_thick,disp_thick,mome_thick,fric_velocity
+  real(real_kind) :: nomi_thick,disp_thick,mome_thick,fric_velocity
   !
   contains
   !
@@ -88,8 +90,8 @@ module initialisation
         ! vel(:,:,:,2)=0.d0
         !
         if(trim(turbmode)=='k-omega') then
-          tke=0.d0
-          omg=0.d0
+          tke=0.e0_real_kind
+          omg=0.e0_real_kind
         endif
         !
       elseif(ninit==2) then
@@ -204,7 +206,7 @@ module initialisation
       !
       nstep=0
       ninflowslice=3
-      time=0.d0
+      time=0.e0_real_kind
       !
       filenumb=0
       fnumslic=0
@@ -259,21 +261,21 @@ module initialisation
     !
     ! local data
     integer :: i,j,k,l
-    real(8) :: xc,yc,zc,radi2,rvor,cvor,var1
-    real(8) :: A,slow_wl,fast_wl,damper,randomv(32),gz,zl
+    real(real_kind) :: xc,yc,zc,radi2,rvor,cvor,var1
+    real(real_kind) :: A,slow_wl,fast_wl,damper,randomv(32),gz,zl
     !
     ! if(ndims==1) then
       !
-      xc=0.5d0*(xmax-xmin)
-      yc=0.5d0*(ymax-ymin)
-      zc=0.5d0*(zmax-zmin)
+      xc=0.5e0_real_kind*(xmax-xmin)
+      yc=0.5e0_real_kind*(ymax-ymin)
+      zc=0.5e0_real_kind*(zmax-zmin)
       !
-      rvor=0.5d0 
-      cvor=0.1d0*rvor
+      rvor=0.5e0_real_kind 
+      cvor=0.1e0_real_kind*rvor
       !
-      A = 1.d0
-      slow_wl = 4.d0
-      fast_wl = 48.d0
+      A = 1.e0_real_kind
+      slow_wl = 4.e0_real_kind
+      fast_wl = 48.e0_real_kind
       !
       allocate(acctest_ref(0:im))
       !
@@ -292,12 +294,12 @@ module initialisation
         ! radi2=((x(i,j,k,1)-xc)**2+(x(i,j,k,2)-yc)**2)/rvor/rvor
         ! var1=cvor/rvor/rvor*exp(-0.5d0*radi2)
         radi2=(x(i,j,k,1)-xc)**2
-        var1=exp(-5.d0*radi2)
+        var1=exp(-5.e0_real_kind*radi2)
         !
         rho(i,j,k)  =roinf
-        vel(i,j,k,1)=1.d0
-        vel(i,j,k,2)=0.d0
-        vel(i,j,k,3)=0.d0
+        vel(i,j,k,1)=1.e0_real_kind
+        vel(i,j,k,2)=0.e0_real_kind
+        vel(i,j,k,3)=0.e0_real_kind
         prs(i,j,k)  =pinf
         !
         tmp(i,j,k)=thermal(density=rho(i,j,k),pressure=prs(i,j,k))
@@ -305,18 +307,18 @@ module initialisation
         ! spc(i,j,k,1)=exp(-0.5d0*radi2)
         ! spc(i,j,k,1)=cos(1.6d0*pi*(x(i,j,k,1)-xc))*var1
         ! spc(i,j,k,1)=cos(1.6d0*pi*(x(i,j,k,1)-xc))*var1
-        damper=exp(-0.5d0*(x(i,j,k,1)-xc)**2)
+        damper=exp(-0.5e0_real_kind*(x(i,j,k,1)-xc)**2)
         !
-        gz=0.d0
+        gz=0.e0_real_kind
         do l=1,32
           !
           if(l==1) then
-            zl=0.2d0/(1.d0-0.95d0**32)
+            zl=0.2e0_real_kind/(1.e0_real_kind-0.95e0_real_kind**32)
           else
-            zl=zl*0.95d0
+            zl=zl*0.95e0_real_kind
           end if
           !
-          gz=gz+zl*dsin(2.d0*pi*l*(x(i,j,k,1)/(xmax-xmin)+randomv(l)))
+          gz=gz+zl*sin(2.e0_real_kind*pi*l*(x(i,j,k,1)/(xmax-xmin)+randomv(l)))
           !
         end do
         !
@@ -368,10 +370,10 @@ module initialisation
     !
     ! local data
     integer :: i,j,k,status,path_length,ios
-    real(8) :: xc,shock_x,phase_x
+    real(real_kind) :: xc,shock_x,phase_x
     character(len=1024) :: shock_x_text
 
-    shock_x=-4.d0
+    shock_x=-4.e0_real_kind
     call get_environment_variable('ASTR_SHUOSHER_SHOCK_X',shock_x_text, &
                                   length=path_length,status=status)
     if(status==0 .and. path_length>0) then
@@ -386,19 +388,19 @@ module initialisation
       xc=x(i,j,k,1)
       !
       if(xc<shock_x) then
-        rho(i,j,k)  =3.857143d0
-        vel(i,j,k,1)=2.629369d0
-        prs(i,j,k)  =10.33333d0
+        rho(i,j,k)  =3.857143e0_real_kind
+        vel(i,j,k,1)=2.629369e0_real_kind
+        prs(i,j,k)  =10.33333e0_real_kind
         !
         !
       else
-        phase_x=xc-shock_x-4.d0
-        rho(i,j,k)  =1.d0+0.2d0*sin(5.d0*phase_x)
-        vel(i,j,k,1)=0.d0
-        prs(i,j,k)  =1.d0
+        phase_x=xc-shock_x-4.e0_real_kind
+        rho(i,j,k)  =1.e0_real_kind+0.2e0_real_kind*sin(5.e0_real_kind*phase_x)
+        vel(i,j,k,1)=0.e0_real_kind
+        prs(i,j,k)  =1.e0_real_kind
       endif
-      vel(i,j,k,2)=0.d0
-      vel(i,j,k,3)=0.d0
+      vel(i,j,k,2)=0.e0_real_kind
+      vel(i,j,k,3)=0.e0_real_kind
       !
       tmp(i,j,k)=thermal(density=rho(i,j,k),pressure=prs(i,j,k))
       !
@@ -428,12 +430,12 @@ module initialisation
     use parallel, only: lio
     implicit none
     integer :: i,j,k
-    real(8) :: shock_x,mach2,rho_ratio,prs_ratio
+    real(real_kind) :: shock_x,mach2,rho_ratio,prs_ratio
 
-    shock_x = 0.d0
+    shock_x = 0.e0_real_kind
     mach2 = mach*mach
-    rho_ratio = (gamma+1.d0)*mach2/((gamma-1.d0)*mach2+2.d0)
-    prs_ratio = 1.d0 + 2.d0*gamma/(gamma+1.d0)*(mach2-1.d0)
+    rho_ratio = (gamma+1.e0_real_kind)*mach2/((gamma-1.e0_real_kind)*mach2+2.e0_real_kind)
+    prs_ratio = 1.e0_real_kind + 2.e0_real_kind*gamma/(gamma+1.e0_real_kind)*(mach2-1.e0_real_kind)
 
     do k=0,km
     do j=0,jm
@@ -487,7 +489,7 @@ module initialisation
   
     ! Local variables
     integer :: i, j, k
-    real(8) :: xc
+    real(real_kind) :: xc
   
     !---------------------------------------------------------------
     ! Set initial conditions: Sod-type shock tube in x-direction
@@ -497,18 +499,18 @@ module initialisation
         do i = 0, im
           xc = x(i,j,k,1)
   
-          if (xc < 0.d0) then
-            rho(i,j,k)   = 1.d0
-            prs(i,j,k)   = 1.d0
-            vel(i,j,k,1) = 0.d0
+          if (xc < 0.e0_real_kind) then
+            rho(i,j,k)   = 1.e0_real_kind
+            prs(i,j,k)   = 1.e0_real_kind
+            vel(i,j,k,1) = 0.e0_real_kind
           else
-            rho(i,j,k)   = 0.125d0
-            prs(i,j,k)   = 0.1d0
-            vel(i,j,k,1) = 0.d0
+            rho(i,j,k)   = 0.125e0_real_kind
+            prs(i,j,k)   = 0.1e0_real_kind
+            vel(i,j,k,1) = 0.e0_real_kind
           end if
   
-          vel(i,j,k,2) = 0.d0
-          vel(i,j,k,3) = 0.d0
+          vel(i,j,k,2) = 0.e0_real_kind
+          vel(i,j,k,3) = 0.e0_real_kind
   
           tmp(i,j,k) = thermal(density=rho(i,j,k), pressure=prs(i,j,k))
         end do
@@ -548,7 +550,7 @@ module initialisation
   
     ! Local variables
     integer :: i, j, k
-    real(8) :: xc, yc
+    real(real_kind) :: xc, yc
   
     !---------------------------------------------------------------
     ! Set initial conditions for the double Mach reflection problem
@@ -559,29 +561,29 @@ module initialisation
           xc = x(i,j,k,1)
           yc = x(i,j,k,2)
   
-          if (xc>=0.8d0 .and. yc>=0.8d0 ) then
-            rho(i,j,k)   = 1.5d0
-            vel(i,j,k,1) = 0.d0
-            vel(i,j,k,2) = 0.d0
-            prs(i,j,k)   = 1.5d0
-          elseif (xc<0.8d0 .and. yc>=0.8d0 ) then
-            rho(i,j,k)   = 0.5323d0
-            vel(i,j,k,1) = 1.206d0
-            vel(i,j,k,2) = 0.d0
+          if (xc>=0.8e0_real_kind .and. yc>=0.8e0_real_kind ) then
+            rho(i,j,k)   = 1.5e0_real_kind
+            vel(i,j,k,1) = 0.e0_real_kind
+            vel(i,j,k,2) = 0.e0_real_kind
+            prs(i,j,k)   = 1.5e0_real_kind
+          elseif (xc<0.8e0_real_kind .and. yc>=0.8e0_real_kind ) then
+            rho(i,j,k)   = 0.5323e0_real_kind
+            vel(i,j,k,1) = 1.206e0_real_kind
+            vel(i,j,k,2) = 0.e0_real_kind
             prs(i,j,k)   = 0.30
-          elseif ( xc<0.8d0 .and. yc<0.8d0) then
-            rho(i,j,k)   = 0.138d0
-            vel(i,j,k,1) = 1.206d0
-            vel(i,j,k,2) = 1.206d0
-            prs(i,j,k)   = 0.029d0
-          elseif ( xc>=0.8d0 .and. yc<0.8d0) then
-            rho(i,j,k)   = 0.5323d0
-            vel(i,j,k,1) = 0.d0
-            vel(i,j,k,2) = 1.206d0
-            prs(i,j,k)   = 0.3d0
+          elseif ( xc<0.8e0_real_kind .and. yc<0.8e0_real_kind) then
+            rho(i,j,k)   = 0.138e0_real_kind
+            vel(i,j,k,1) = 1.206e0_real_kind
+            vel(i,j,k,2) = 1.206e0_real_kind
+            prs(i,j,k)   = 0.029e0_real_kind
+          elseif ( xc>=0.8e0_real_kind .and. yc<0.8e0_real_kind) then
+            rho(i,j,k)   = 0.5323e0_real_kind
+            vel(i,j,k,1) = 0.e0_real_kind
+            vel(i,j,k,2) = 1.206e0_real_kind
+            prs(i,j,k)   = 0.3e0_real_kind
           end if
   
-          vel(i,j,k,3) = 0.d0
+          vel(i,j,k,3) = 0.e0_real_kind
           tmp(i,j,k) = thermal(density=rho(i,j,k), pressure=prs(i,j,k))
         end do
       end do
@@ -614,32 +616,32 @@ module initialisation
     !
     ! local data
     integer :: i,j,k,jspc
-    real(8) :: xc,yc,radi2,rvor,cvor,var1
+    real(real_kind) :: xc,yc,radi2,rvor,cvor,var1
     !
-    xc=10.d0
-    yc=5.d0
-    rvor=0.7d0 
-    cvor=0.1d0*rvor
+    xc=10.e0_real_kind
+    yc=5.e0_real_kind
+    rvor=0.7e0_real_kind 
+    cvor=0.1e0_real_kind*rvor
     !
     do k=0,km
     do j=0,jm
     do i=0,im
       radi2=((x(i,j,k,1)-xc)**2+(x(i,j,k,2)-yc)**2)/rvor/rvor
-      var1=cvor/rvor/rvor*exp(-0.5d0*radi2)
+      var1=cvor/rvor/rvor*exp(-0.5e0_real_kind*radi2)
       !
       rho(i,j,k)  =roinf !*(1.d0+0.1d0*cos(dble(i)*pi))*(1.d0+0.1d0*cos(dble(j)*pi))
       vel(i,j,k,1)=uinf-var1*(x(i,j,k,2)-yc) !*(0.1d0*cos(dble(i)*pi))
       if(ndims>=2) vel(i,j,k,2)=vinf+var1*(x(i,j,k,1)-xc) !*(0.1d0*cos(dble(j)*pi))
-      if(ndims==3) vel(i,j,k,3)=0.d0
-      prs(i,j,k)  =pinf-0.5d0*rho(i,j,k)*cvor**2/rvor**2*exp(-radi2)
+      if(ndims==3) vel(i,j,k,3)=0.e0_real_kind
+      prs(i,j,k)  =pinf-0.5e0_real_kind*rho(i,j,k)*cvor**2/rvor**2*exp(-radi2)
       !
       tmp(i,j,k)=thermal(density=rho(i,j,k),pressure=prs(i,j,k))
       !
       if(num_species>=1) then
         !
-        spc(i,j,k,1)=exp(-0.5d0*radi2)
+        spc(i,j,k,1)=exp(-0.5e0_real_kind*radi2)
         do jspc=2,num_species
-          spc(i,j,k,jspc)=1.d0-spc(i,j,k,1)
+          spc(i,j,k,jspc)=1.e0_real_kind-spc(i,j,k,1)
         enddo
         !
       endif
@@ -684,7 +686,7 @@ module initialisation
     !
     ! local data
     integer :: i,j,k,jspc
-    real(8) :: div,div_min,div_max,div_avg
+    real(real_kind) :: div,div_min,div_max,div_avg
     !
     call h5io_init(filename='datin/velocity.h5',mode='read')
     ! 
@@ -700,10 +702,10 @@ module initialisation
     dvel(0:im,0:jm,0:km,2,:)=grad(vel(:,:,:,2))
     dvel(0:im,0:jm,0:km,3,:)=grad(vel(:,:,:,3))
     !
-    div=0.d0
-    div_min= 1.d10
-    div_max=-1.d10
-    div_avg=0.d0
+    div=0.e0_real_kind
+    div_min= 1.e10_real_kind
+    div_max=-1.e10_real_kind
+    div_avg=0.e0_real_kind
     !
     do k=1,km
     do j=1,jm
@@ -717,7 +719,7 @@ module initialisation
     enddo
     enddo
     !
-    div_avg=psum(div_avg)/dble(ia*ja*ka)
+    div_avg=psum(div_avg)/real(ia*ja*ka,real_kind)
     div_min=pmin(div_min)
     div_max=pmax(div_max)
     !
@@ -761,17 +763,17 @@ module initialisation
     !
     ! local data
     integer :: i,j,k,jspc
-    real(8) :: l_0,miu
+    real(real_kind) :: l_0,miu
     !
 #ifdef COMB
-    tinf=347.d0
+    tinf=347.e0_real_kind
     roinf=thermal(temperature=tinf,pressure=pinf,species=spcinf)
-    l_0=xmax/(2.d0*pi)
-    uinf=40.d0
+    l_0=xmax/(2.e0_real_kind*pi)
+    uinf=40.e0_real_kind
 #endif
 
     if(nondimen) then
-      l_0=1.d0
+      l_0=1.e0_real_kind
     else
       l_0=ref_len
     endif
@@ -783,16 +785,16 @@ module initialisation
 
       vel(i,j,k,1)= uinf*sin(x(i,j,k,1)/l_0)*cos(x(i,j,k,2)/l_0)*cos(x(i,j,k,3)/l_0)
       vel(i,j,k,2)=-uinf*cos(x(i,j,k,1)/l_0)*sin(x(i,j,k,2)/l_0)*cos(x(i,j,k,3)/l_0)
-      vel(i,j,k,3)=0.d0
-      prs(i,j,k)  =pinf+rho(i,j,k)/16.d0*(uinf**2) &
-                        *(cos(2.d0*x(i,j,k,1)/l_0)+cos(2.d0*x(i,j,k,2)/l_0)) &
-                        *(cos(2.d0*x(i,j,k,3)/l_0)+2.d0)
+      vel(i,j,k,3)=0.e0_real_kind
+      prs(i,j,k)  =pinf+rho(i,j,k)/16.e0_real_kind*(uinf**2) &
+                        *(cos(2.e0_real_kind*x(i,j,k,1)/l_0)+cos(2.e0_real_kind*x(i,j,k,2)/l_0)) &
+                        *(cos(2.e0_real_kind*x(i,j,k,3)/l_0)+2.e0_real_kind)
       !
       if(nondimen) then
         tmp(i,j,k)=thermal(density=rho(i,j,k),pressure=prs(i,j,k))
         if(num_species>1) then
-          spc(i,j,k,1)=0.5d0+0.499d0*sin(x(i,j,k,1)/l_0)*cos(x(i,j,k,2)/l_0)*cos(x(i,j,k,3)/l_0)
-          spc(i,j,k,2)=1.d0-spc(i,j,k,1)
+          spc(i,j,k,1)=0.5e0_real_kind+0.499e0_real_kind*sin(x(i,j,k,1)/l_0)*cos(x(i,j,k,2)/l_0)*cos(x(i,j,k,3)/l_0)
+          spc(i,j,k,2)=1.e0_real_kind-spc(i,j,k,1)
         endif
       else 
         if(num_species>1) then
@@ -1410,19 +1412,19 @@ module initialisation
     do j=0,jm
     do i=0,im
       !
-      if(x(i,j,k,2)<0.5d0) then
-        rho(i,j,k)=2.d0
-        prs(i,j,k)=2.d0*x(i,j,k,2)+1.d0
+      if(x(i,j,k,2)<0.5e0_real_kind) then
+        rho(i,j,k)=2.e0_real_kind
+        prs(i,j,k)=2.e0_real_kind*x(i,j,k,2)+1.e0_real_kind
       else
-        rho(i,j,k)=1.d0
-        prs(i,j,k)=x(i,j,k,2)+1.5d0
+        rho(i,j,k)=1.e0_real_kind
+        prs(i,j,k)=x(i,j,k,2)+1.5e0_real_kind
       endif
       !
       tmp(i,j,k)=thermal(density=rho(i,j,k),pressure=prs(i,j,k))
       !
-      vel(i,j,k,1)=  0.d0
-      vel(i,j,k,2)= -0.025*sos(tmp(i,j,k))*cos(8.d0*pi*x(i,j,k,1))
-      vel(i,j,k,3)=  0.d0
+      vel(i,j,k,1)=  0.e0_real_kind
+      vel(i,j,k,2)= -0.025*sos(tmp(i,j,k))*cos(8.e0_real_kind*pi*x(i,j,k,1))
+      vel(i,j,k,3)=  0.e0_real_kind
       !
     enddo
     enddo
@@ -1456,19 +1458,19 @@ module initialisation
     ! local data
     integer :: i,j,k,l,ii,jj,nseed,iseed
     integer,allocatable :: seed(:)
-    real(8) :: theta,theter,fx,gz,zl,randomv(15),ran
-    real(8) :: delta,beta1,miu
-    real(8) :: yh(0:jm),nth(0:jm),r12(0:jm)
+    real(real_kind) :: theta,theter,fx,gz,zl,randomv(15),ran
+    real(real_kind) :: delta,beta1,miu
+    real(real_kind) :: yh(0:jm),nth(0:jm),r12(0:jm)
     integer :: seed1,seed2,seed3,seed11,seed22,seed33
     integer, parameter :: nsemini = 1000
-    real(8), dimension(3,nsemini) :: eddy, posvor
-    real(8), dimension(3) :: dim_min, dim_max
-    real(8) :: volsemini,rrand,ddx,ddy,ddz,lsem,upr,vpr,wpr,rrand1,   &
+    real(real_kind), dimension(3,nsemini) :: eddy, posvor
+    real(real_kind), dimension(3) :: dim_min, dim_max
+    real(real_kind) :: volsemini,rrand,ddx,ddy,ddz,lsem,upr,vpr,wpr,rrand1,   &
                init_noise,um,ftent
     !
-    theta=0.1d0
+    theta=0.1e0_real_kind
     !
-    beta1=0.075d0
+    beta1=0.075e0_real_kind
     call random_seed(size=nseed)
     allocate(seed(nseed))
     do iseed=1,nseed
@@ -1497,25 +1499,25 @@ module initialisation
         do j=0,jm
         do i=0,im
           rho(i,j,k)  =roinf
-          vel(i,j,k,1)=1.5d0*(1.d0-(x(i,j,k,2)/ref_len-1.d0)**2)*uinf
-          vel(i,j,k,2)=0.d0
-          vel(i,j,k,3)=0.d0
-          tmp(i,j,k)=tinf+tinf*(gamma-1.d0)*prandtl*mach**2/3.d0*             &
-                                       1.5d0*(1.d0-((x(i,j,k,2)/ref_len-1.d0)**4))
+          vel(i,j,k,1)=1.5e0_real_kind*(1.e0_real_kind-(x(i,j,k,2)/ref_len-1.e0_real_kind)**2)*uinf
+          vel(i,j,k,2)=0.e0_real_kind
+          vel(i,j,k,3)=0.e0_real_kind
+          tmp(i,j,k)=tinf+tinf*(gamma-1.e0_real_kind)*prandtl*mach**2/3.e0_real_kind*             &
+                                       1.5e0_real_kind*(1.e0_real_kind-((x(i,j,k,2)/ref_len-1.e0_real_kind)**4))
           !
           prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
           !
           if(num_species>0) then
-            spc(i,j,k,1)=(tanh((x(i,j,k,2)/ref_len-1.d0)/theta)+1.d0)*0.5d0
+            spc(i,j,k,1)=(tanh((x(i,j,k,2)/ref_len-1.e0_real_kind)/theta)+1.e0_real_kind)*0.5e0_real_kind
           endif
           !
           if(trim(turbmode)=='k-omega') then
-            tke(i,j,k)=1.5d0*0.0001d0*10.d0
+            tke(i,j,k)=1.5e0_real_kind*0.0001e0_real_kind*10.e0_real_kind
             !
             ! omg(i,j,k)=sqrt(tke(i,j,k))/(0.09d0)**0.25d0
             delta=dis2point2(x(i,j,k,:),x(i,j+1,k,:))
             miu=miucal(tmp(i,j,k))/Reynolds
-            omg(i,j,k)=60.d0*miu/rho(i,j,k)/beta1/delta
+            omg(i,j,k)=60.e0_real_kind*miu/rho(i,j,k)/beta1/delta
             !
           elseif(trim(turbmode)=='udf1') then
             miut(i,j,k)=nth(j)
@@ -1533,8 +1535,8 @@ module initialisation
         do i=0,im
           rho(i,j,k)  =roinf
           vel(i,j,k,1)=vel_prof(j,1)
-          vel(i,j,k,2)=0.d0
-          vel(i,j,k,3)=0.d0
+          vel(i,j,k,2)=0.e0_real_kind
+          vel(i,j,k,3)=0.e0_real_kind
           tmp(i,j,k)  =tinf
           !
           prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
@@ -1560,35 +1562,35 @@ module initialisation
       do i=0,im
         !
         call random_number(ran)
-        ran=ran*2.d0-1.d0
+        ran=ran*2.e0_real_kind-1.e0_real_kind
         !
-        theter=x(i,0,k,1)/(xmax-xmin)*2.d0*pi
-        fx=4.d0*dsin(theter)*(1.d0-dcos(theter))*0.192450089729875d0
+        theter=x(i,0,k,1)/(xmax-xmin)*2.e0_real_kind*pi
+        fx=4.e0_real_kind*sin(theter)*(1.e0_real_kind-cos(theter))*0.192450089729875e0_real_kind
         !
-        gz=0.d0
+        gz=0.e0_real_kind
         do l=1,10
           !
           if(l==1) then
-            zl=0.2d0/(1.d0-0.8d0**10)
+            zl=0.2e0_real_kind/(1.e0_real_kind-0.8e0_real_kind**10)
           else
-            zl=zl*0.8d0
+            zl=zl*0.8e0_real_kind
           end if
           !
-          gz=gz+zl*dsin(2.d0*pi*l*(x(i,0,k,3)/(zmax-zmin)+randomv(l)))
+          gz=gz+zl*sin(2.e0_real_kind*pi*l*(x(i,0,k,3)/(zmax-zmin)+randomv(l)))
           !
         end do
         !
         rho(i,j,k)  =roinf
-        vel(i,j,k,1)=1.5d0*uinf*(1.d0-(x(i,j,k,2)/ref_len-1.d0)**2)*(1.d0+0.3d0*fx*gz+0.1d0*ran)
-        vel(i,j,k,2)=0.d0
-        vel(i,j,k,3)=0.d0
-        tmp(i,j,k)  =tinf+tinf*(gamma-1.d0)*prandtl*mach**2/3.d0*             &
-                                     1.5d0*(1.d0-((x(i,j,k,2)/ref_len-1.d0)**4))
+        vel(i,j,k,1)=1.5e0_real_kind*uinf*(1.e0_real_kind-(x(i,j,k,2)/ref_len-1.e0_real_kind)**2)*(1.e0_real_kind+0.3e0_real_kind*fx*gz+0.1e0_real_kind*ran)
+        vel(i,j,k,2)=0.e0_real_kind
+        vel(i,j,k,3)=0.e0_real_kind
+        tmp(i,j,k)  =tinf+tinf*(gamma-1.e0_real_kind)*prandtl*mach**2/3.e0_real_kind*             &
+                                     1.5e0_real_kind*(1.e0_real_kind-((x(i,j,k,2)/ref_len-1.e0_real_kind)**4))
         !
         prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
         !
         if(num_species>0) then
-          spc(i,j,k,1)=(tanh((x(i,j,k,2)-1.d0)/theta)+1.d0)*0.5d0
+          spc(i,j,k,1)=(tanh((x(i,j,k,2)-1.e0_real_kind)/theta)+1.e0_real_kind)*0.5e0_real_kind
         endif
         !
       enddo
@@ -1722,7 +1724,7 @@ module initialisation
     !
     ! local data
     integer :: i,j,k
-    real(8) :: radi
+    real(real_kind) :: radi
     !
     do k=0,km
     do j=0,jm
@@ -1733,17 +1735,17 @@ module initialisation
       ! radi=abs(x(i,j,k,2))
       vel(i,j,k,:)= jetvel(radi)
       ! vel(i,j,k,1)= 0.d0
-      vel(i,j,k,2)= 0.d0
-      vel(i,j,k,3)= 0.d0
+      vel(i,j,k,2)= 0.e0_real_kind
+      vel(i,j,k,3)= 0.e0_real_kind
       !
       tmp(i,j,k)  = tinf
       !
       prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
       !
       if(num_species>1) then
-        spc(i,j,k,1)=0.d0
+        spc(i,j,k,1)=0.e0_real_kind
         !
-        spc(i,j,k,num_species)=1.d0-sum(spc(i,j,k,1:num_species-1))
+        spc(i,j,k,num_species)=1.e0_real_kind-sum(spc(i,j,k,1:num_species-1))
         !
       endif
       !
@@ -1787,7 +1789,7 @@ module initialisation
     !
     ! local data
     integer :: i,j,k
-    real(8) :: radi
+    real(real_kind) :: radi
     !
     do k=0,km
     do j=0,jm
@@ -1804,9 +1806,9 @@ module initialisation
       prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
       !
       if(num_species>1) then
-        spc(i,j,k,1)=0.d0
+        spc(i,j,k,1)=0.e0_real_kind
         !
-        spc(i,j,k,num_species)=1.d0-sum(spc(i,j,k,1:num_species-1))
+        spc(i,j,k,num_species)=1.e0_real_kind-sum(spc(i,j,k,1:num_species-1))
         !
       endif
       !
@@ -1852,7 +1854,7 @@ module initialisation
     do j=0,jm
     do i=0,im
       !
-      if(x(i,j,k,2)>=5.d0*nomi_thick) then
+      if(x(i,j,k,2)>=5.e0_real_kind*nomi_thick) then
         !
         rho(i,j,k)  = rho_prof(j)
         !
@@ -1894,9 +1896,9 @@ module initialisation
     !
     ! local data
     integer :: i,j,k
-    real(8) :: radi,miu,delta,beta1
+    real(real_kind) :: radi,miu,delta,beta1
     !
-    beta1=0.075d0
+    beta1=0.075e0_real_kind
     !
     do k=0,km
     do j=0,jm
@@ -1906,7 +1908,7 @@ module initialisation
       !
       vel(i,j,k,1)= vel_prof(j,1)
       vel(i,j,k,2)= vel_prof(j,2)
-      vel(i,j,k,3)= 0.d0
+      vel(i,j,k,3)= 0.e0_real_kind
       !
       tmp(i,j,k)  = tmp_prof(j)
       !
@@ -1915,9 +1917,9 @@ module initialisation
         prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
         !
         if(num_species>1) then
-          spc(i,j,k,1)=0.d0
+          spc(i,j,k,1)=0.e0_real_kind
           !
-          spc(i,j,k,num_species)=1.d0-sum(spc(i,j,k,1:num_species-1))
+          spc(i,j,k,num_species)=1.e0_real_kind-sum(spc(i,j,k,1:num_species-1))
           !
         endif
       else
@@ -1964,19 +1966,19 @@ module initialisation
     !
     ! local data
     integer :: i,j,k,l,ii,jj
-    real(8) :: theta,theter,fx,gz,zl,randomv(15),ran,radi
-    real(8) :: delta,beta1,miu
-    real(8) :: yh(0:jm),nth(0:jm),r12(0:jm)
+    real(real_kind) :: theta,theter,fx,gz,zl,randomv(15),ran,radi
+    real(real_kind) :: delta,beta1,miu
+    real(real_kind) :: yh(0:jm),nth(0:jm),r12(0:jm)
     integer :: seed1,seed2,seed3,seed11,seed22,seed33
     integer, parameter :: nsemini = 1000
-    real(8), dimension(3,nsemini) :: eddy, posvor
-    real(8), dimension(3) :: dim_min, dim_max
-    real(8) :: volsemini,rrand,ddx,ddy,ddz,lsem,upr,vpr,wpr,rrand1,   &
+    real(real_kind), dimension(3,nsemini) :: eddy, posvor
+    real(real_kind), dimension(3) :: dim_min, dim_max
+    real(real_kind) :: volsemini,rrand,ddx,ddy,ddz,lsem,upr,vpr,wpr,rrand1,   &
                init_noise,um,ftent
     !
-    theta=0.1d0
+    theta=0.1e0_real_kind
     !
-    beta1=0.075d0
+    beta1=0.075e0_real_kind
     !
     do k=0,km
     do j=0,jm
@@ -1992,27 +1994,27 @@ module initialisation
       prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
       !
       if(num_species>1) then
-        spc(i,j,k,1)=0.d0
+        spc(i,j,k,1)=0.e0_real_kind
         !
-        spc(i,j,k,num_species)=1.d0-sum(spc(i,j,k,1:num_species-1))
+        spc(i,j,k,num_species)=1.e0_real_kind-sum(spc(i,j,k,1:num_species-1))
         !
       endif
       !
       if(trim(turbmode)=='k-omega') then
         ! tke(i,j,k)=1.5d0*0.0001d0
         !
-        tke(i,j,k)=1.5d0
+        tke(i,j,k)=1.5e0_real_kind
         !
         ! omg(i,j,k)=sqrt(tke(i,j,k))/(0.09d0)**0.25d0
         delta=dis2point2(x(i,j,k,:),x(i,j+1,k,:))
         miu=miucal(tmp(i,j,k))/Reynolds
-        omg(i,j,k)=60.d0*miu/rho(i,j,k)/beta1/delta
+        omg(i,j,k)=60.e0_real_kind*miu/rho(i,j,k)/beta1/delta
         !
         if(x(i,j,k,2)>nomi_thick) then
           ! add a damper for outer part of bl
           radi=(x(i,j,k,2)-nomi_thick)**2
-          tke(i,j,k)=tke(i,j,k)*exp(-5.d0*radi)
-          omg(i,j,k)=omg(i,j,k)*exp(-5.d0*radi)
+          tke(i,j,k)=tke(i,j,k)*exp(-5.e0_real_kind*radi)
+          omg(i,j,k)=omg(i,j,k)*exp(-5.e0_real_kind*radi)
         endif
         !
       endif
@@ -2025,13 +2027,13 @@ module initialisation
       !
       ! copied from xcompact 
       !! Simplified version of SEM 
-      init_noise=0.03d0
+      init_noise=0.03e0_real_kind
       !
-      dim_min(1) = 0.d0
-      dim_min(2) = 0.d0
-      dim_min(3) = 0.d0
+      dim_min(1) = 0.e0_real_kind
+      dim_min(2) = 0.e0_real_kind
+      dim_min(3) = 0.e0_real_kind
       dim_max(1) = xmax
-      dim_max(2) = 0.25d0
+      dim_max(2) = 0.25e0_real_kind
       dim_max(3) = zmax
       volsemini = xmax * ymax * zmax
       !
@@ -2046,7 +2048,7 @@ module initialisation
           seed11 = return_30k(seed1+jj*2+ii*379)
           seed22 = return_30k(seed2+jj*5+ii*5250)
           seed33 = return_30k(seed3+jj*3+ii*8170)
-          rrand1  = real(r8_random(seed11, seed22, seed33),8)
+          rrand1  = real(r8_random(seed11, seed22, seed33),real_kind)
           call random_number(rrand)
           !write(*,*) ' rr r1 ', rrand, rrand1
           posvor(ii,jj) = dim_min(ii)+(dim_max(ii)-dim_min(ii))*rrand
@@ -2057,13 +2059,13 @@ module initialisation
            seed11 = return_30k(seed1+jj*7+ii*7924)
            seed22 = return_30k(seed2+jj*11+ii*999)
            seed33 = return_30k(seed3+jj*5+ii*5054)
-           rrand1  = real(r8_random(seed11, seed22, seed33),8)
+           rrand1  = real(r8_random(seed11, seed22, seed33),real_kind)
            call random_number(rrand)
            !write(*,*) ' rr r1 ', rrand, rrand1
-           if (rrand <= 0.5d0) then
-              eddy(ii,jj) = -1.d0
+           if (rrand <= 0.5e0_real_kind) then
+              eddy(ii,jj) = -1.e0_real_kind
            else
-              eddy(ii,jj) =  1.d0
+              eddy(ii,jj) =  1.e0_real_kind
            endif 
         enddo
         !
@@ -2074,10 +2076,10 @@ module initialisation
       do j=0,jm
       do i=0,im
         !
-        lsem = 0.15d0 ! For the moment we keep it constant
-        upr = 0.d0
-        vpr = 0.d0
-        wpr = 0.d0
+        lsem = 0.15e0_real_kind ! For the moment we keep it constant
+        upr = 0.e0_real_kind
+        vpr = 0.e0_real_kind
+        wpr = 0.e0_real_kind
         do jj=1,nsemini
           !
           ddx = abs(x(i,j,k,1)-posvor(1,jj))
@@ -2085,7 +2087,7 @@ module initialisation
           ddz = abs(x(i,j,k,3)-posvor(3,jj))
           if (ddx < lsem .and. ddy < lsem .and. ddz < lsem) then
             ! coefficients for the intensity of the fluctuation
-            ftent = (1.d0-ddx/lsem)*(1.d0-ddy/lsem)*(1.d0-ddz/lsem)
+            ftent = (1.e0_real_kind-ddx/lsem)*(1.e0_real_kind-ddy/lsem)*(1.e0_real_kind-ddz/lsem)
             ftent = ftent / (sqrt(num2d3*lsem))**3
             upr = upr + eddy(1,jj) * ftent
             vpr = vpr + eddy(2,jj) * ftent
@@ -2100,9 +2102,9 @@ module initialisation
         !
         um=vel(i,j,k,1) 
         !
-        vel(i,j,k,1)=0.1d0*upr*sqrt(num2d3*init_noise*um) + vel(i,j,k,1)
-        vel(i,j,k,2)=0.1d0*vpr*sqrt(num2d3*init_noise*um) + vel(i,j,k,2)
-        vel(i,j,k,3)=0.1d0*wpr*sqrt(num2d3*init_noise*um)
+        vel(i,j,k,1)=0.1e0_real_kind*upr*sqrt(num2d3*init_noise*um) + vel(i,j,k,1)
+        vel(i,j,k,2)=0.1e0_real_kind*vpr*sqrt(num2d3*init_noise*um) + vel(i,j,k,2)
+        vel(i,j,k,3)=0.1e0_real_kind*wpr*sqrt(num2d3*init_noise*um)
         !
       enddo
       enddo
@@ -2148,7 +2150,7 @@ module initialisation
     ! local data
     integer :: fh,i,j
     logical :: lfex,lprofile_density_provided,lprofile_pressure_provided
-    real(8) :: prs_prof_eos(0:jm),prs_prof_error,prs_prof_scale
+    real(real_kind) :: prs_prof_eos(0:jm),prs_prof_error,prs_prof_scale
     character(len=255) :: profile_header
     character(len=1200) :: profile_path
     !
@@ -2199,7 +2201,7 @@ module initialisation
                                   var3=vel_prof(:,2),var4=tmp_prof,skipline=4)
       endif
       !
-      vel_prof(:,3)=0.d0
+      vel_prof(:,3)=0.e0_real_kind
       ! vel_prof(:,1)=vel_prof(:,1) + 1.d0
       !
       if(nondimen) then
@@ -2207,8 +2209,8 @@ module initialisation
           if(lprofile_density_provided) then
             prs_prof_eos=thermal(density=rho_prof,temperature=tmp_prof,dim=jm+1)
             prs_prof_error=maxval(abs(prs_prof_eos-prs_prof))
-            prs_prof_scale=max(1.d0,maxval(abs(prs_prof)))
-            if(prs_prof_error > 1.d-10*prs_prof_scale) then
+            prs_prof_scale=max(1.e0_real_kind,maxval(abs(prs_prof)))
+            if(prs_prof_error > 1.e-10_real_kind*prs_prof_scale) then
               stop 'nondimensional profile pressure=provided is inconsistent with rho*T'
             endif
           else
@@ -2217,7 +2219,7 @@ module initialisation
         else
           if(lprofile_density_provided) then
             prs_prof=thermal(density=rho_prof,temperature=tmp_prof,dim=jm+1)
-            if(maxval(abs(prs_prof-pinf)) > 1.d-10*max(1.d0,abs(pinf))) then
+            if(maxval(abs(prs_prof-pinf)) > 1.e-10_real_kind*max(1.e0_real_kind,abs(pinf))) then
               stop 'nondimensional profile density=provided is inconsistent with p_inf'
             endif
           else
@@ -2271,16 +2273,16 @@ module initialisation
     else
       ! set uniform inlet profile
       !
-      nomi_thick=0.d0
-      disp_thick=0.d0
-      mome_thick=0.d0
-      fric_velocity=1.d5
+      nomi_thick=0.e0_real_kind
+      disp_thick=0.e0_real_kind
+      mome_thick=0.e0_real_kind
+      fric_velocity=1.e5_real_kind
       !
       if(flowtype=='channel') then
         !
         rho_prof(:)  =roinf
         do j=0,jm
-          vel_prof(j,1)=uinf*cos(0.5d0*pi*(x(0,j,0,2)-1.d0))**2
+          vel_prof(j,1)=uinf*cos(0.5e0_real_kind*pi*(x(0,j,0,2)-1.e0_real_kind))**2
         enddo
         vel_prof(:,2)=vinf
         vel_prof(:,3)=winf
@@ -2331,7 +2333,7 @@ module initialisation
     !
     ! local data
     integer :: i,j,k
-    real(8) :: radi
+    real(real_kind) :: radi
     !
     do k=0,km
     do j=0,jm
@@ -2347,9 +2349,9 @@ module initialisation
       prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
       !
       if(num_species>1) then
-        spc(i,j,k,1)=0.d0
+        spc(i,j,k,1)=0.e0_real_kind
         !
-        spc(i,j,k,num_species)=1.d0-sum(spc(i,j,k,1:num_species-1))
+        spc(i,j,k,num_species)=1.e0_real_kind-sum(spc(i,j,k,1:num_species-1))
         !
       endif
       !
@@ -2396,15 +2398,15 @@ module initialisation
     do i=0,im
       rho(i,j,k)  = roinf
       vel(i,j,k,1)= uinf
-      vel(i,j,k,2)= 0.d0
-      vel(i,j,k,3)= 0.d0
+      vel(i,j,k,2)= 0.e0_real_kind
+      vel(i,j,k,3)= 0.e0_real_kind
       !
       tmp(i,j,k)  = tinf
       !
       prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
       !
       if(num_species>=1) then
-        spc(i,j,k,1)=0.d0
+        spc(i,j,k,1)=0.e0_real_kind
       endif
       !
     enddo
@@ -2447,21 +2449,21 @@ module initialisation
 #ifdef COMB
     ! local data
     integer :: i,j,k
-    real(8) :: tmpr,specr(num_species),specx(num_species)
+    real(real_kind) :: tmpr,specr(num_species),specx(num_species)
     !
     ! tmpr=1000.d0/0.8d0
-    tmpr=1000.d0
+    tmpr=1000.e0_real_kind
     ! prin=13.5d5
     !reactants
-    specx(:)=0.d0
-    specx(spcindex('H2'))=0.2d0
-    specx(spcindex('O2'))=0.1d0
+    specx(:)=0.e0_real_kind
+    specx(spcindex('H2'))=0.2e0_real_kind
+    specx(spcindex('O2'))=0.1e0_real_kind
     !
     ! specx(spcindex('H2'))=0.2867d0
     ! specx(spcindex('O2'))=0.1434d0
     ! specx(spcindex('H2O'))=0.1819d0
     !
-    specx(spcindex('N2'))=1.d0-sum(specx)
+    specx(spcindex('N2'))=1.e0_real_kind-sum(specx)
     call convertxiyi(specx(:),specr(:),'X2Y')
     !
     !!
@@ -2488,7 +2490,7 @@ module initialisation
     do j=0,jm
     do i=0,im
       !
-      vel(i,j,k,:)= 0.d0
+      vel(i,j,k,:)= 0.e0_real_kind
       !
       tmp(i,j,k)  = tmpr
       !
@@ -2532,12 +2534,12 @@ module initialisation
 #ifdef COMB
     ! local data
     integer :: i,j,k
-    real(8) :: tmpr,specr(num_species)
+    real(real_kind) :: tmpr,specr(num_species)
     !
 
-    specr(spcindex('N2'))=75.52d0/100.d0
-    specr(spcindex('O2'))=23.14d0/100.d0
-    specr(spcindex('Ar'))=1.d0-sum(specr)
+    specr(spcindex('N2'))=75.52e0_real_kind/100.e0_real_kind
+    specr(spcindex('O2'))=23.14e0_real_kind/100.e0_real_kind
+    specr(spcindex('Ar'))=1.e0_real_kind-sum(specr)
 
     do k=0,km
     do j=0,jm
@@ -2545,7 +2547,7 @@ module initialisation
       !
       rho(i,j,k)=ref_den
 
-      vel(i,j,k,:)= 0.d0
+      vel(i,j,k,:)= 0.e0_real_kind
 
       tmp(i,j,k)  =ref_tem
 
@@ -2591,10 +2593,10 @@ module initialisation
     !
     ! local data
     integer :: i,j,k
-    real(8) ::  xc,yc,zc,tmpr,tmpp,xloc,xwid,specp(num_species),arg,prgvar,masflx,specx(num_species)
-    real(8) :: pthick,flamethickness
-    real(8) :: cpe,miu,kama,cs,lref
-    real(8) :: specr(num_species),dispec(num_species)
+    real(real_kind) ::  xc,yc,zc,tmpr,tmpp,xloc,xwid,specp(num_species),arg,prgvar,masflx,specx(num_species)
+    real(real_kind) :: pthick,flamethickness
+    real(real_kind) :: cpe,miu,kama,cs,lref
+    real(real_kind) :: specr(num_species),dispec(num_species)
     ! 
     !
     if(lio) then
@@ -2607,16 +2609,16 @@ module initialisation
     call bcast(flamethickness)
     !
     !reactants
-    specr(:)=0.d0
+    specr(:)=0.e0_real_kind
     specr(spcindex('H2'))=0.0173
     specr(spcindex('O2'))=0.2289
-    specr(spcindex('N2'))=1.d0-sum(specr)
+    specr(spcindex('N2'))=1.e0_real_kind-sum(specr)
     !
     ! pinf=5.d0*pinf
-    uinf=0.d0
-    vinf=0.d0
-    winf=0.d0
-    tinf=300.d0
+    uinf=0.e0_real_kind
+    vinf=0.e0_real_kind
+    winf=0.e0_real_kind
+    tinf=300.e0_real_kind
     spcinf(:)=specr(:)
     roinf=thermal(pressure=pinf,temperature=tinf,species=spcinf(:))
     !
@@ -2645,13 +2647,13 @@ module initialisation
 
     endif
     !
-    tmpr=300.d0
+    tmpr=300.e0_real_kind
     ! xloc=4.d0*xmax/5.d0
-    xloc=0.d0
-    xwid=xmax/(12.d0*5.3d0*2.d0)
+    xloc=0.e0_real_kind
+    xwid=xmax/(12.e0_real_kind*5.3e0_real_kind*2.e0_real_kind)
     !
     !products
-    tmpp=2814.32d0
+    tmpp=2814.32e0_real_kind
     !
     ! pthick=1.d-4
     !
@@ -2661,14 +2663,14 @@ module initialisation
       !
       xc=x(i,j,k,1)
       !
-      prgvar=1.d0*exp(-0.5d0*((xc-xloc)/xwid)**2)
+      prgvar=1.e0_real_kind*exp(-0.5e0_real_kind*((xc-xloc)/xwid)**2)
       !
       spc(i,j,k,:)=specr(:)
       !
       vel(i,j,k,1)=uinf
       !
-      vel(i,j,k,2)=0.d0
-      vel(i,j,k,3)=0.d0
+      vel(i,j,k,2)=0.e0_real_kind
+      vel(i,j,k,3)=0.e0_real_kind
       !
       tmp(i,j,k)=tmpr+prgvar*(tmpp-tmpr)
       !
@@ -2710,10 +2712,10 @@ module initialisation
     !
     ! local data
     integer :: i,j,k
-    real(8) :: rb,ctr,xc,yb,zb,arg,val,xloc,xwid
-    real(8) :: vel0(ndims),prs0,rho0,tmp0,spc0(num_species)
+    real(real_kind) :: rb,ctr,xc,yb,zb,arg,val,xloc,xwid
+    real(real_kind) :: vel0(ndims),prs0,rho0,tmp0,spc0(num_species)
     !
-    ctr=0.5d0*ymax
+    ctr=0.5e0_real_kind*ymax
     !
     do k=0,km
     do j=0,jm
@@ -2729,16 +2731,16 @@ module initialisation
         rb=sqrt((yb-ctr)**2+(zb-ctr)**2)
       endif
       !
-      if(.true. .and. rb<=0.5d0*dj_i) then
+      if(.true. .and. rb<=0.5e0_real_kind*dj_i) then
         call multistream_inflow(stream='fuel',rho=rho0,vel=vel0, &
           prs=prs0,tmp=tmp0,spc=spc0,rovd=rb/dj_i)
           !
-      elseif(.true. .and. rb>0.5d0*dj_o .and. rb<=0.5d0*dco_i) then
+      elseif(.true. .and. rb>0.5e0_real_kind*dj_o .and. rb<=0.5e0_real_kind*dco_i) then
         call multistream_inflow(stream='hotcoflow',rho=rho0,vel=vel0, &
           prs=prs0,tmp=tmp0,spc=spc0, &
-          rovd=abs(rb-0.25d0*(dco_i+dj_o))/(0.5d0*(dco_i-dj_o)))
+          rovd=abs(rb-0.25e0_real_kind*(dco_i+dj_o))/(0.5e0_real_kind*(dco_i-dj_o)))
         !
-      elseif(.true. .and. rb>0.5d0*dco_i) then
+      elseif(.true. .and. rb>0.5e0_real_kind*dco_i) then
         call multistream_inflow(stream='air',rho=rho0,vel=vel0, &
           prs=prs0,tmp=tmp0,spc=spc0)
         !
@@ -2748,16 +2750,16 @@ module initialisation
         tmp0=tinf
         spc0(:)=spcinf(:)
         rho0=roinf
-        vel0(1)=uinf*100.d0
-        vel0(2:ndims)=0.d0
+        vel0(1)=uinf*100.e0_real_kind
+        vel0(2:ndims)=0.e0_real_kind
         !
       endif 
       !
       ! erf profile in the axial diretion
-      xloc=2.d0*dj_i
-      xwid=2.d0*dj_i
-      arg=-1.d0*(xc-xloc)/xwid
-      val=0.5d0*(1.0d0+erf(arg))
+      xloc=2.e0_real_kind*dj_i
+      xwid=2.e0_real_kind*dj_i
+      arg=-1.e0_real_kind*(xc-xloc)/xwid
+      val=0.5e0_real_kind*(1.0e0_real_kind+erf(arg))
       !
       !0.92135039647485750
       ! vel(i,j,k,1)=uinf+val*(vel0(1)-uinf)
@@ -2766,7 +2768,7 @@ module initialisation
       ! tmp(i,j,k)=tinf+val*(tmp0-tinf)
       ! spc(i,j,k,:)=spcinf(:)+val*(spc0(:)-spcinf(:))
       vel(i,j,k,1)=uinf+0.92135039647485750*(vel0(1)-uinf)
-      vel(i,j,k,2:ndims)=0.d0
+      vel(i,j,k,2:ndims)=0.e0_real_kind
       prs(i,j,k)=pinf
       tmp(i,j,k)=tinf+0.92135039647485750*(tmp0-tinf)
       spc(i,j,k,:)=spcinf(:)+0.92135039647485750*(spc0(:)-spcinf(:))
@@ -2826,22 +2828,22 @@ module initialisation
     !
     ! local data
     integer :: i,j,k,jspc
-    real(8) :: miu,xc,yc,zc,xloc,l_0,xwid,specr(num_species), &
+    real(real_kind) :: miu,xc,yc,zc,xloc,l_0,xwid,specr(num_species), &
       specp(num_species),prgvar
     !
-    tinf=300.d0
-    xloc=xmax/2.d0
-    xwid=xmax/8.d0
+    tinf=300.e0_real_kind
+    xloc=xmax/2.e0_real_kind
+    xwid=xmax/8.e0_real_kind
     !
-    l_0=xmax/(2.d0*pi)
-    uinf=6.25*4.d0
+    l_0=xmax/(2.e0_real_kind*pi)
+    uinf=6.25*4.e0_real_kind
     roinf=thermal(temperature=tinf,pressure=pinf,species=spcinf)
     !
     ! nonpremixed reactants include fuel and oxidizer
-    specr(:)=0.d0
+    specr(:)=0.e0_real_kind
     specr(spcindex('H2'))=0.0556 
     specr(spcindex('O2'))=0.233  
-    specr(spcindex('N2'))=1.d0-sum(specr)
+    specr(spcindex('N2'))=1.e0_real_kind-sum(specr)
     !
     !specr(spcindex('C7H8'))=0.004180329
     !specr(spcindex('MCYC6'))=0.016037004
@@ -2863,11 +2865,11 @@ module initialisation
       yc=x(i,j,k,2)
       zc=x(i,j,k,3)
       !
-      prgvar=0.5d0*(1.d0+tanh(3.d0*(abs(xc-xloc)-xwid)/xwid))
-      specp(:)=0.d0
-      specp(spcindex('H2'))=specr(spcindex('H2'))*(1.d0-prgvar)
+      prgvar=0.5e0_real_kind*(1.e0_real_kind+tanh(3.e0_real_kind*(abs(xc-xloc)-xwid)/xwid))
+      specp(:)=0.e0_real_kind
+      specp(spcindex('H2'))=specr(spcindex('H2'))*(1.e0_real_kind-prgvar)
       specp(spcindex('O2'))=specr(spcindex('O2'))*prgvar
-      specp(spcindex('N2'))=1.d0-sum(specp)
+      specp(spcindex('N2'))=1.e0_real_kind-sum(specp)
       !
       !specp(spcindex('C7H8'))=specr(spcindex('C7H8'))*(1.d0-prgvar)
       !specp(spcindex('MCYC6'))=specr(spcindex('MCYC6'))*(1.d0-prgvar)
@@ -2879,7 +2881,7 @@ module initialisation
       !
       spc(i,j,k,:)=specp(:)
       !
-      spc(i,j,k,spcindex('N2'))=1.d0-(sum(spc(i,j,k,:))-spc(i,j,k,spcindex('N2')))
+      spc(i,j,k,spcindex('N2'))=1.e0_real_kind-(sum(spc(i,j,k,:))-spc(i,j,k,spcindex('N2')))
       !
       prs(i,j,k)=pinf
       tmp(i,j,k)=tinf
@@ -2898,11 +2900,11 @@ module initialisation
       ! set velocity and scale vx 
       vel(i,j,k,1)= uinf*sin(xc/l_0)*cos(yc/l_0)*cos(zc/l_0)!*roinf/rho(i,j,k)
       vel(i,j,k,2)=-uinf*cos(xc/l_0)*sin(yc/l_0)*cos(zc/l_0)
-      vel(i,j,k,3)= 0.d0
+      vel(i,j,k,3)= 0.e0_real_kind
       !
-      prs(i,j,k)  =pinf+roinf/16.d0*(uinf**2) &
-                        *(cos(2.d0*x(i,j,k,1)/l_0)+cos(2.d0*x(i,j,k,2)/l_0)) &
-                        *(cos(2.d0*x(i,j,k,3)/l_0)+2.d0)
+      prs(i,j,k)  =pinf+roinf/16.e0_real_kind*(uinf**2) &
+                        *(cos(2.e0_real_kind*x(i,j,k,1)/l_0)+cos(2.e0_real_kind*x(i,j,k,2)/l_0)) &
+                        *(cos(2.e0_real_kind*x(i,j,k,3)/l_0)+2.e0_real_kind)
       !
     enddo
     enddo
@@ -2937,13 +2939,13 @@ module initialisation
     do j=0,jm
     do i=0,im
       !
-      rho(i,j,k)=1.d0
-      tmp(i,j,k)=1.d0
+      rho(i,j,k)=1.e0_real_kind
+      tmp(i,j,k)=1.e0_real_kind
       prs(i,j,k)=thermal(density=rho(i,j,k),temperature=tmp(i,j,k))
       !
-      vel(i,j,k,1)=  0.d0
-      vel(i,j,k,2)=  0.d0
-      vel(i,j,k,3)=  0.d0
+      vel(i,j,k,1)=  0.e0_real_kind
+      vel(i,j,k,2)=  0.e0_real_kind
+      vel(i,j,k,3)=  0.e0_real_kind
       !
     enddo
     enddo
@@ -3014,15 +3016,15 @@ module initialisation
     integer ( kind = 4 ) s1
     integer ( kind = 4 ) s2
     integer ( kind = 4 ) s3
-    real ( kind = 8 ) r8_random
+    real(real_kind) r8_random
 
     s1 = mod ( 171 * s1, 30269 )
     s2 = mod ( 172 * s2, 30307 )
     s3 = mod ( 170 * s3, 30323 )
 
-    r8_random = mod ( real ( s1, kind = 8 ) / 30269.0D+00 &
-                    + real ( s2, kind = 8 ) / 30307.0D+00 &
-                    + real ( s3, kind = 8 ) / 30323.0D+00, 1.0D+00 )
+    r8_random = mod ( real ( s1,real_kind) / 30269.0e+00_real_kind &
+                    + real ( s2,real_kind) / 30307.0e+00_real_kind &
+                    + real ( s3,real_kind) / 30323.0e+00_real_kind, 1.0e+00_real_kind )
 
     return
   end function r8_random

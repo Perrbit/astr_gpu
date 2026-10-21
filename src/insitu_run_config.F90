@@ -1,5 +1,6 @@
 module insitu_run_config
-  use iso_fortran_env, only: int64,real64
+  use iso_fortran_env, only: int64
+  use astr_precision, only: real_kind
   use ieee_arithmetic, only: ieee_is_finite
   use adaptive_output, only: adaptive_binding,adaptive_capacity,validate_adaptive_binding,canonical_adaptive_binding
   implicit none
@@ -11,8 +12,8 @@ module insitu_run_config
   type :: streamline_view
     character(64) :: id=''
     character(16) :: velocity='',seeds='',color=''
-    real(real64) :: camera(3)=0.d0,focal(3)=0.d0,up(3)=0.d0,scale=0.d0
-    real(real64) :: bounds(6)=0.d0,range(2)=0.d0,width=0.d0
+    real(real_kind) :: camera(3)=0.e0_real_kind,focal(3)=0.e0_real_kind,up(3)=0.e0_real_kind,scale=0.e0_real_kind
+    real(real_kind) :: bounds(6)=0.e0_real_kind,range(2)=0.e0_real_kind,width=0.e0_real_kind
   end type
   type :: insitu_options
     logical :: enabled=.false.,statistics=.false.,render=.false.
@@ -31,10 +32,10 @@ module insitu_run_config
     character(16) :: streamline_seeds='line16'
     character(16) :: slice_axis='z'
     character(16) :: slice_definition='index'
-    real(real64) :: slice_origin(3)=0.d0,slice_normal(3)=0.d0
+    real(real_kind) :: slice_origin(3)=0.e0_real_kind,slice_normal(3)=0.e0_real_kind
     integer :: slice_index=4
     integer(int64) :: step_interval=0,host_budget_bytes=0,device_budget_bytes=0,device_reserve_bytes=0
-    real(real64) :: time_interval=0,statistics_window(2)=0
+    real(real_kind) :: time_interval=0,statistics_window(2)=0
     character(1024) :: implementation_path='',pipeline_file='',output_directory=''
     character(1024) :: batch_prefix='',restore_batch=''
     character(1024) :: streamline_views_file=''
@@ -44,7 +45,7 @@ module insitu_run_config
     character(64) :: product_ids(insitu_max_products)=''
     character(16) :: product_modes(insitu_max_products)=''
     integer(int64) :: product_steps(insitu_max_products)=0
-    real(real64) :: product_times(insitu_max_products)=0.d0
+    real(real_kind) :: product_times(insitu_max_products)=0.e0_real_kind
     type(adaptive_binding) :: product_adaptive(insitu_max_products)
   end type
 contains
@@ -57,20 +58,20 @@ contains
     logical :: wall_separation,mean_streamline_render
     character(16) :: schedule_mode,derivative_backend,products,slice_axis,processing_backend,postprocess_transport
     character(16) :: rendering_pipeline,slice_definition,streamline_seeds
-    real(real64) :: slice_origin(3),slice_normal(3)
+    real(real_kind) :: slice_origin(3),slice_normal(3)
     character(64) :: product_ids(insitu_max_products),temporary_id
     character(16) :: product_modes(insitu_max_products),temporary_mode
     integer(int64) :: product_steps(insitu_max_products),temporary_steps
-    real(real64) :: product_times(insitu_max_products),temporary_time
+    real(real_kind) :: product_times(insitu_max_products),temporary_time
     logical :: product_adaptive(insitu_max_products)
     integer(int64) :: product_dense_steps(insitu_max_products)
-    real(real64) :: product_dense_times(insitu_max_products)
+    real(real_kind) :: product_dense_times(insitu_max_products)
     character(64) :: product_events(adaptive_capacity,insitu_max_products), &
       product_windows(adaptive_capacity,insitu_max_products),temporary_associations(adaptive_capacity)
     type(adaptive_binding) :: binding
     logical :: temporary_adaptive,valid_binding
     integer(int64) :: step_interval,host_budget_bytes,device_budget_bytes,device_reserve_bytes
-    real(real64) :: time_interval,statistics_window(2)
+    real(real_kind) :: time_interval,statistics_window(2)
     character(1024) :: implementation_path,pipeline_file,output_directory,batch_prefix,restore_batch,streamline_views_file
     type(streamline_view) :: views(insitu_max_views)
     integer :: view_count
@@ -100,14 +101,14 @@ contains
     products='all'
     streamline_seeds='line16'
     slice_axis='z'; slice_index=4
-    slice_definition='index'; slice_origin=0.d0; slice_normal=0.d0
+    slice_definition='index'; slice_origin=0.e0_real_kind; slice_normal=0.e0_real_kind
     step_interval=0; time_interval=0; statistics_window=0
     host_budget_bytes=0; device_budget_bytes=0; device_reserve_bytes=0
     implementation_path=''; pipeline_file=''; output_directory=''
     batch_prefix=''; restore_batch=''
     streamline_views_file=''; view_count=0
     call clear_streamline_views(views)
-    product_ids=''; product_modes=''; product_steps=0; product_times=0.d0
+    product_ids=''; product_modes=''; product_steps=0; product_times=0.e0_real_kind
     product_adaptive=.false.; product_dense_steps=0; product_dense_times=0; product_events=''; product_windows=''
     open(newunit=unit,file=filename,status='old',action='read',iostat=status,iomsg=message)
     if(status/=0) return
@@ -173,8 +174,8 @@ contains
       if(.not.enabled.or..not.render.or.statistics.or.processing_backend/='device'.or. &
         rendering_pipeline/='standard-device'.or.derivative_backend/='gpu'.or. &
         postprocess_transport/='pinned'.or.streamline_seeds/='bl-layered64'.or. &
-        slice_definition/='plane'.or.any(slice_origin/=[0.d0,0.d0,45.d0]).or. &
-        any(slice_normal/=[0.d0,0.d0,1.d0]).or.any(product_ids/='').or. &
+        slice_definition/='plane'.or.any(slice_origin/=[0.e0_real_kind,0.e0_real_kind,45.e0_real_kind]).or. &
+        any(slice_normal/=[0.e0_real_kind,0.e0_real_kind,1.e0_real_kind]).or.any(product_ids/='').or. &
         schedule_mode/='steps'.or.step_interval/=5.or.initial_frame.or.final_frame) return
     endif
     message='bl-layered64 seeds require the bounded boundary_layer profile'
@@ -215,10 +216,10 @@ contains
         .not.enabled.or..not.render.or.slice_axis/='z'.or.slice_index/=4.or.statistics.or. &
         any(product_ids/='').or.len_trim(batch_prefix)>0.or.len_trim(restore_batch)>0) return
       message='physical plane normal must be nonzero'
-      if(maxval(abs(slice_normal))==0.d0) return
+      if(maxval(abs(slice_normal))==0.e0_real_kind) return
     else
       message='physical plane values require slice_definition=plane'
-      if(any(slice_origin/=0.d0).or.any(slice_normal/=0.d0)) return
+      if(any(slice_origin/=0.e0_real_kind).or.any(slice_normal/=0.e0_real_kind)) return
     endif
     message='selected products require derivative_backend=gpu'
     if(enabled.and.render.and.products/='all'.and.products/='channel_walls'.and. &
@@ -253,7 +254,7 @@ contains
       if(.not.enabled.or..not.render.or.any(product_ids(1:n)=='').or. &
         len_trim(batch_prefix)>0.or.len_trim(restore_batch)>0) return
     endif
-    if(any(product_modes(n+1:)/='').or.any(product_steps(n+1:)/=0).or.any(product_times(n+1:)/=0.d0)) return
+    if(any(product_modes(n+1:)/='').or.any(product_steps(n+1:)/=0).or.any(product_times(n+1:)/=0.e0_real_kind)) return
     if(any(product_adaptive(n+1:)).or.any(product_dense_steps(n+1:)/=0).or.any(product_dense_times(n+1:)/=0).or. &
       any(product_events(:,n+1:)/='').or.any(product_windows(:,n+1:)/='')) return
     do i=1,n
@@ -278,9 +279,9 @@ contains
       if(.not.ieee_is_finite(product_times(i))) return
       select case(product_modes(i))
       case('steps')
-        if(product_steps(i)<=0.or.product_times(i)/=0.d0) return
+        if(product_steps(i)<=0.or.product_times(i)/=0.e0_real_kind) return
       case('time')
-        if(product_steps(i)/=0.or.product_times(i)<=0.d0) return
+        if(product_steps(i)/=0.or.product_times(i)<=0.e0_real_kind) return
       case default
         return
       end select
@@ -326,7 +327,7 @@ contains
       end select
       else
         message='independent product clocks cannot be combined with a common interval'
-        if(step_interval/=0.or.time_interval/=0.d0) return
+        if(step_interval/=0.or.time_interval/=0.e0_real_kind) return
       endif
     endif
     if(len_trim(streamline_views_file)>0) then
@@ -388,17 +389,17 @@ contains
     character(*),intent(out) :: message
     character(64) :: candidate_ids(insitu_max_views)
     character(16) :: velocity(insitu_max_views),seeds(insitu_max_views),color_field(insitu_max_views)
-    real(real64) :: camera_position(3,insitu_max_views),focal_point(3,insitu_max_views),view_up(3,insitu_max_views)
-    real(real64) :: parallel_scale(insitu_max_views),display_bounds(6,insitu_max_views)
-    real(real64) :: color_range(2,insitu_max_views),line_width(insitu_max_views),direction(3),up(3),cross(3),delta
+    real(real_kind) :: camera_position(3,insitu_max_views),focal_point(3,insitu_max_views),view_up(3,insitu_max_views)
+    real(real_kind) :: parallel_scale(insitu_max_views),display_bounds(6,insitu_max_views)
+    real(real_kind) :: color_range(2,insitu_max_views),line_width(insitu_max_views),direction(3),up(3),cross(3),delta
     integer :: image_size(2),unit,status,closed,i,j
     namelist /streamline_views/ candidate_ids,velocity,seeds,camera_position,focal_point,view_up, &
       parallel_scale,display_bounds,color_field,color_range,line_width,image_size
     call clear_streamline_views(views)
     count=0; ok=.false.
     candidate_ids='';velocity='';seeds='';color_field=''
-    camera_position=0.d0;focal_point=0.d0;view_up=0.d0;parallel_scale=0.d0
-    display_bounds=0.d0;color_range=0.d0;line_width=0.d0;image_size=[800,600]
+    camera_position=0.e0_real_kind;focal_point=0.e0_real_kind;view_up=0.e0_real_kind;parallel_scale=0.e0_real_kind
+    display_bounds=0.e0_real_kind;color_range=0.e0_real_kind;line_width=0.e0_real_kind;image_size=[800,600]
     open(newunit=unit,file=filename,status='old',action='read',iostat=status,iomsg=message)
     if(status/=0) return
     read(unit,nml=streamline_views,iostat=status,iomsg=message)
@@ -411,10 +412,10 @@ contains
     if(count<1.or.any(candidate_ids(1:count)=='').or.any(image_size/=[800,600])) return
     message='unexpected values beyond the declared streamline candidates'
     if(any(velocity(count+1:)/='').or.any(seeds(count+1:)/='').or.any(color_field(count+1:)/='').or. &
-      any(camera_position(:,count+1:)/=0.d0).or.any(focal_point(:,count+1:)/=0.d0).or. &
-      any(view_up(:,count+1:)/=0.d0).or.any(parallel_scale(count+1:)/=0.d0).or. &
-      any(display_bounds(:,count+1:)/=0.d0).or.any(color_range(:,count+1:)/=0.d0).or. &
-      any(line_width(count+1:)/=0.d0)) return
+      any(camera_position(:,count+1:)/=0.e0_real_kind).or.any(focal_point(:,count+1:)/=0.e0_real_kind).or. &
+      any(view_up(:,count+1:)/=0.e0_real_kind).or.any(parallel_scale(count+1:)/=0.e0_real_kind).or. &
+      any(display_bounds(:,count+1:)/=0.e0_real_kind).or.any(color_range(:,count+1:)/=0.e0_real_kind).or. &
+      any(line_width(count+1:)/=0.e0_real_kind)) return
     do i=1,count
       message='candidate ids must be unique ASCII names, not paths'
       if(len_trim(candidate_ids(i))>=len(candidate_ids(i)).or. &
@@ -433,13 +434,13 @@ contains
       direction=camera_position(:,i)-focal_point(:,i);up=view_up(:,i)
       message='streamline camera must have a finite nonzero direction and nonparallel up vector'
       if(.not.all(ieee_is_finite(direction))) return
-      if(maxval(abs(direction))==0.d0.or.maxval(abs(up))==0.d0) return
+      if(maxval(abs(direction))==0.e0_real_kind.or.maxval(abs(up))==0.e0_real_kind) return
       direction=direction/maxval(abs(direction));up=up/maxval(abs(up))
       cross=[direction(2)*up(3)-direction(3)*up(2),direction(3)*up(1)-direction(1)*up(3), &
         direction(1)*up(2)-direction(2)*up(1)]
-      if(maxval(abs(cross))==0.d0) return
+      if(maxval(abs(cross))==0.e0_real_kind) return
       message='streamline scale, line width, bounds and color range must be positive and ordered'
-      if(parallel_scale(i)<=0.d0.or.line_width(i)<=0.d0) return
+      if(parallel_scale(i)<=0.e0_real_kind.or.line_width(i)<=0.e0_real_kind) return
       do j=1,3
         if(display_bounds(2*j,i)<=display_bounds(2*j-1,i)) return
       enddo
@@ -461,8 +462,8 @@ contains
     ! Explicit assignments avoid indeterminate unused fields with NVHPC derived constructors.
     do i=1,size(views)
       views(i)%id='';views(i)%velocity='';views(i)%seeds='';views(i)%color=''
-      views(i)%camera=0.d0;views(i)%focal=0.d0;views(i)%up=0.d0;views(i)%scale=0.d0
-      views(i)%bounds=0.d0;views(i)%range=0.d0;views(i)%width=0.d0
+      views(i)%camera=0.e0_real_kind;views(i)%focal=0.e0_real_kind;views(i)%up=0.e0_real_kind;views(i)%scale=0.e0_real_kind
+      views(i)%bounds=0.e0_real_kind;views(i)%range=0.e0_real_kind;views(i)%width=0.e0_real_kind
     enddo
   end subroutine
 
@@ -486,24 +487,24 @@ contains
   end function
 
   subroutine canonical_slice_plane(normal,ok)
-    real(real64),intent(inout) :: normal(3)
+    real(real_kind),intent(inout) :: normal(3)
     logical,intent(out) :: ok
-    real(real64) :: original(3),scaled(3),scale,length,direction
+    real(real_kind) :: original(3),scaled(3),scale,length,direction
     integer :: axis,d
     ok=.false.
     original=normal
     if(.not.all(ieee_is_finite(original))) return
     axis=maxloc(abs(original),dim=1); scale=abs(original(axis))
-    if(scale==0.d0) return
+    if(scale==0.e0_real_kind) return
     scaled=original/scale
-    if(any(original/=0.d0.and.scaled==0.d0)) return
+    if(any(original/=0.e0_real_kind.and.scaled==0.e0_real_kind)) return
     length=sqrt((scaled(1)*scaled(1)+scaled(2)*scaled(2))+scaled(3)*scaled(3))
-    direction=1.d0
-    if(original(axis)<0.d0) direction=-1.d0
+    direction=1.e0_real_kind
+    if(original(axis)<0.e0_real_kind) direction=-1.e0_real_kind
     do d=1,3
       scaled(d)=(scaled(d)/length)*direction
-      if(original(d)/=0.d0.and.scaled(d)==0.d0) return
-      if(scaled(d)==0.d0) scaled(d)=0.d0
+      if(original(d)/=0.e0_real_kind.and.scaled(d)==0.e0_real_kind) return
+      if(scaled(d)==0.e0_real_kind) scaled(d)=0.e0_real_kind
     enddo
     normal=scaled; ok=.true.
   end subroutine

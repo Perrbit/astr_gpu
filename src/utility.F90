@@ -6,10 +6,12 @@
 !| 10-08-2022  | Created by J. Fang                                    |
 !+---------------------------------------------------------------------+
 module utility
+  use astr_precision, only: real_kind,clock_kind
   !
   use stlaio,  only: get_unit
   !
   implicit none
+  private :: real_kind,clock_kind
   !
   contains
   !
@@ -30,7 +32,7 @@ module utility
                         difschm,rkscheme,ia,ja,ka,preptime,nsrpt
     ! arguments
     character(len=*),intent(in),optional :: routine,message,mode
-    real(8),intent(inout),optional :: timecost
+    real(clock_kind),intent(inout),optional :: timecost
     !
     ! local data
     !
@@ -377,7 +379,7 @@ module utility
     use commvar, only: nstep,time,ref_tim
     !
     integer,intent(in) :: handle
-    real(8),intent(in),optional :: var1,var2,var3,var4,var5,var6,      &
+    real(real_kind),intent(in),optional :: var1,var2,var3,var4,var5,var6,      &
                                    var7,var8,var9,var10,var11,var12,   &
                                    var13,var14,var15
 
@@ -597,8 +599,8 @@ module utility
     integer :: rantime(8)
     !
     integer :: n
-    real(8) :: variates(2)
-    real(8) :: u(2), factor, arg
+    real(real_kind) :: variates(2)
+    real(real_kind) :: u(2), factor, arg
     !
     logical,save :: firstcall=.true.
     !
@@ -630,10 +632,10 @@ module utility
     !
     do
        call random_number(u)
-       if (u(1) > 0.d0) exit
+       if (u(1) > 0.e0_real_kind) exit
     end do
     factor = sqrt(-2 * log(u(1)))
-    arg = 2.d0*pi*u(2)
+    arg = 2.e0_real_kind*pi*u(2)
     variates = factor * [cos(arg),sin(arg)]
     !
   end function rnorm_box_muller

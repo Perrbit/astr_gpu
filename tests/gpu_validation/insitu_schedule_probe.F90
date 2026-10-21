@@ -1,5 +1,6 @@
 program schedule_probe
-  use iso_fortran_env, only: int64,real64
+  use iso_fortran_env, only: int32,int64,real64
+  use iso_c_binding, only: c_float
   use ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use insitu_schedule
   implicit none
@@ -42,9 +43,42 @@ program schedule_probe
   call require(.not.ok)
   call checkpoint_test('steps',2_int64,0.d0)
   call checkpoint_test('time',0_int64,0.125d0)
+  call cross_precision_schedule_test()
   print *, 'PASS: schedule modes, crossings, endpoints, deduplication, invalid clocks'
   print *, 'PASS: schedule file continuation, mismatch rejection, final-state preservation'
 contains
+  subroutine cross_precision_schedule_test()
+    character(64) :: batch
+    real(real64) :: saved_time,next_time
+    integer(int64) :: next_step
+    batch='batch-cross'
+    saved_time=real(0.005_c_float,real64)
+    open(newunit=unit,status='scratch',access='stream',form='unformatted',convert='little_endian')
+    write(unit) 'ASTRSC01',batch,5_int64,0.005_c_float,'time ',0_int64,0.004_c_float, &
+      0_int64,0.0_c_float,5_int64,0.005_c_float,1_int64,4_int64,[0_int32,0_int32,0_int32]
+    rewind(unit)
+    call configure_schedule(restored,'time',0_int64,0.004d0,0_int64,0.d0,.false.,.false.,ok)
+    call require(ok)
+    call restore_schedule_state(unit,restored,batch,5_int64,saved_time,ok,source_bytes=4)
+    call require(ok)
+    call schedule_next_target(restored,next_step,next_time,ok)
+    call require(ok.and.next_step==-1.and.next_time==0.008d0)
+    rewind(unit)
+    call write_schedule_state(unit,restored,batch,5_int64,saved_time,ok)
+    call require(ok)
+    call configure_schedule(s,'time',0_int64,0.004d0,0_int64,0.d0,.false.,.false.,ok)
+    call require(ok)
+    rewind(unit)
+    call restore_schedule_state(unit,s,batch,5_int64,saved_time,ok)
+    call require(ok)
+    call poll_schedule(s,5_int64,saved_time,.false.,emit,crossed,ok)
+    call require(ok.and..not.emit.and.crossed==0)
+    call poll_schedule(s,8_int64,0.008d0,.false.,emit,crossed,ok)
+    call require(ok.and.emit.and.crossed==1)
+    close(unit)
+    print *, 'PASS: source FP32 clock, target period/index, native exact continuation'
+  end subroutine
+
   subroutine checkpoint_test(mode,interval,period)
     character(*),intent(in) :: mode
     integer(int64),intent(in) :: interval

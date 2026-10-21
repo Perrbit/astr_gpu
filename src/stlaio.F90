@@ -9,8 +9,10 @@
 !| 01-07-2021  | Added by J. Fang                                      |
 !+---------------------------------------------------------------------+
 module stlaio
+use astr_precision, only: real_kind
 !
 implicit none
+private :: real_kind
 !
 contains
   !
@@ -192,7 +194,7 @@ contains
     integer :: num_solid,num_face,num_vertex
     character(len=255) word1,word2,word3,text
     logical :: done
-    real(8) :: dval
+    real(real_kind) :: dval
     !
     !
     solidstate=0
@@ -326,7 +328,7 @@ contains
     integer :: num_solid,nsolid,nface
     character(len=255) word1,word2,word3,text
     logical :: done
-    real(8) :: dval
+    real(real_kind) :: dval
     !
     num_solid=size(asolid)
     !
@@ -954,7 +956,7 @@ contains
     implicit none
 
     character c
-    real ( kind = 8 ) dval
+    real(real_kind) dval
     integer ( kind = 4 ) ierror
     integer ( kind = 4 ) ihave
     integer ( kind = 4 ) isgn
@@ -965,15 +967,15 @@ contains
     integer ( kind = 4 ) length
     integer ( kind = 4 ) nchar
     integer ( kind = 4 ) ndig
-    real ( kind = 8 ) rbot
-    real ( kind = 8 ) rexp
-    real ( kind = 8 ) rtop
+    real(real_kind) rbot
+    real(real_kind) rexp
+    real(real_kind) rtop
     character ( len = * ) s
 
     nchar = len_trim ( s )
 
     ierror = 0
-    dval = 0.0D+00
+    dval = 0.0e+00_real_kind
     length = -1
     isgn = 1
     rtop = 0
@@ -1081,10 +1083,10 @@ contains
         call ch_to_digit ( c, ndig )
 
         if ( ihave == 3 ) then
-          rtop = 10.0D+00 * rtop + real ( ndig, kind = 8 )
+          rtop = 10.0e+00_real_kind * rtop + real ( ndig,real_kind)
         else if ( ihave == 5 ) then
-          rtop = 10.0D+00 * rtop + real ( ndig, kind = 8 )
-          rbot = 10.0D+00 * rbot
+          rtop = 10.0e+00_real_kind * rtop + real ( ndig,real_kind)
+          rbot = 10.0e+00_real_kind * rbot
         else if ( ihave == 8 ) then
           jtop = 10 * jtop + ndig
         else if ( ihave == 10 ) then
@@ -1129,17 +1131,17 @@ contains
   !  Number seems OK.  Form it.
   !
     if ( jtop == 0 ) then
-      rexp = 1.0D+00
+      rexp = 1.0e+00_real_kind
     else
       if ( jbot == 1 ) then
-        rexp = 10.0D+00 ** ( jsgn * jtop )
+        rexp = 10.0e+00_real_kind ** ( jsgn * jtop )
       else
-        rexp = 10.0D+00 ** ( real ( jsgn * jtop, kind = 8 ) &
-          / real ( jbot, kind = 8 ) )
+        rexp = 10.0e+00_real_kind ** ( real ( jsgn * jtop,real_kind) &
+          / real ( jbot,real_kind) )
       end if
     end if
 
-    dval = real ( isgn, kind = 8 ) * rexp * rtop / rbot
+    dval = real ( isgn,real_kind) * rexp * rtop / rbot
 
     return
   end
@@ -1196,7 +1198,7 @@ contains
     implicit none
 
     logical done
-    real ( kind = 8 ) dval
+    real(real_kind) dval
     integer ( kind = 4 ) face_num
     integer ( kind = 4 ) i
     integer ( kind = 4 ) ierror

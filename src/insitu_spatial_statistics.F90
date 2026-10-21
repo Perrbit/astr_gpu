@@ -1,6 +1,7 @@
 module insitu_spatial_statistics
   use mpi
-  use iso_fortran_env, only: real64
+  use astr_precision, only: real_kind
+  use astr_precision_mpi, only: mpi_real_type
   use ieee_arithmetic, only: ieee_is_finite
   implicit none
   private
@@ -8,15 +9,15 @@ module insitu_spatial_statistics
 contains
   ! Values are component x local node. Caller supplies physical measure and unique ownership.
   subroutine spatial_mean(weights,values,comm,volume,mean,ok)
-    real(real64),intent(in) :: weights(:),values(:,:)
+    real(real_kind),intent(in) :: weights(:),values(:,:)
     integer,intent(in) :: comm
-    real(real64),intent(out) :: volume,mean(size(values,1))
+    real(real_kind),intent(out) :: volume,mean(size(values,1))
     logical,intent(out) :: ok
-    real(real64) :: local(size(values,1)+1),global(size(values,1)+1)
+    real(real_kind) :: local(size(values,1)+1),global(size(values,1)+1)
     integer :: bad,any_bad,i,j,ierr,nmin,nmax,n
     ok=.false.
-    volume=0.d0
-    mean=0.d0
+    volume=0.e0_real_kind
+    mean=0.e0_real_kind
     n=size(values,1)
     call MPI_Allreduce(n,nmin,1,MPI_INTEGER,MPI_MIN,comm,ierr)
     if(ierr/=MPI_SUCCESS) call MPI_Abort(comm,1,ierr)
@@ -29,7 +30,7 @@ contains
     call MPI_Allreduce(bad,any_bad,1,MPI_INTEGER,MPI_MAX,comm,ierr)
     if(ierr/=MPI_SUCCESS) call MPI_Abort(comm,1,ierr)
     if(any_bad/=0) return
-    local=0.d0
+    local=0.e0_real_kind
     local(1)=sum(weights)
     do j=1,size(weights)
       do i=1,n
@@ -40,7 +41,7 @@ contains
     call MPI_Allreduce(bad,any_bad,1,MPI_INTEGER,MPI_MAX,comm,ierr)
     if(ierr/=MPI_SUCCESS) call MPI_Abort(comm,1,ierr)
     if(any_bad/=0) return
-    call MPI_Allreduce(local,global,n+1,MPI_DOUBLE_PRECISION,MPI_SUM,comm,ierr)
+    call MPI_Allreduce(local,global,n+1,mpi_real_type,MPI_SUM,comm,ierr)
     if(ierr/=MPI_SUCCESS) call MPI_Abort(comm,1,ierr)
     if(.not.all(ieee_is_finite(global)).or.global(1)<=0) return
     volume=global(1)

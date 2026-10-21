@@ -1,5 +1,7 @@
 module case_capability_gpu
+  use astr_precision, only: real_kind
   implicit none
+  private :: real_kind
   integer,parameter :: GPU_SOURCE_NONE=0
   integer,parameter :: GPU_SOURCE_CHANNEL=1
   integer,parameter :: GPU_SOURCE_RTI=2

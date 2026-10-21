@@ -6,8 +6,10 @@
 !| 18-08-2023  | Created by J. Fang                                    |
 !+---------------------------------------------------------------------+
 module userdefine
+  use astr_precision, only: real_kind
   !
   implicit none
+  private :: real_kind
   !
   contains
   !
@@ -61,8 +63,8 @@ module userdefine
     !
     use commvar, only : jm,km
     !
-    real(8),intent(in) ::  umean(0:jm,1:3)  ! inflow mean velocity
-    real(8),intent(out) :: uinst(0:jm,0:km,1:3)  ! velocity with fluctuations
+    real(real_kind),intent(in) ::  umean(0:jm,1:3)  ! inflow mean velocity
+    real(real_kind),intent(out) :: uinst(0:jm,0:km,1:3)  ! velocity with fluctuations
     !
   end subroutine udf_inflow_fluc
   !+-------------------------------------------------------------------+
@@ -296,10 +298,10 @@ module userdefine
     use fludyna,  only: thermal
     !
     ! local data
-    real(8),intent(in) :: xc,yc,radius,amp
+    real(real_kind),intent(in) :: xc,yc,radius,amp
     !
     integer :: i,j,k
-    real(8) :: var1,radi2,cvor
+    real(real_kind) :: var1,radi2,cvor
     !
     cvor=amp*uinf*radius
     !
@@ -307,12 +309,12 @@ module userdefine
     do j=0,jm
     do i=0,im
       radi2=((x(i,j,k,1)-xc)**2+(x(i,j,k,2)-yc)**2)/radius/radius
-      var1=cvor/radius/radius*exp(-0.5d0*radi2)
+      var1=cvor/radius/radius*exp(-0.5e0_real_kind*radi2)
       !
       vel(i,j,k,1)=vel(i,j,k,1)-var1*(x(i,j,k,2)-yc)
       if(ndims>=2) vel(i,j,k,2)=vel(i,j,k,2)+var1*(x(i,j,k,1)-xc)
-      if(ndims==3) vel(i,j,k,3)=0.d0
-      prs(i,j,k)  =prs(i,j,k)-0.5d0*roinf*cvor*cvor/radi2/radi2*exp(-radi2)
+      if(ndims==3) vel(i,j,k,3)=0.e0_real_kind
+      prs(i,j,k)  =prs(i,j,k)-0.5e0_real_kind*roinf*cvor*cvor/radi2/radi2*exp(-radi2)
       !
       tmp(i,j,k)=thermal(density=rho(i,j,k),pressure=prs(i,j,k),species=spc(i,j,k,:))
       !
@@ -438,7 +440,7 @@ module userdefine
 
     ! local data
     integer :: i,j,k
-    real(8) :: pe
+    real(real_kind) :: pe
     !
 
     if(ndir==4 .and. jrk==jrkm) then
@@ -446,16 +448,16 @@ module userdefine
         j=jm
         do k=0,km
         do i=0,im
-          pe=num1d3*(4.d0*prs(i,j-1,k)-prs(i,j-2,k))
+          pe=num1d3*(4.e0_real_kind*prs(i,j-1,k)-prs(i,j-2,k))
           !
-          vel(i,j,k,1)=1.d0
-          vel(i,j,k,2)=0.d0
-          vel(i,j,k,3)=0.d0
+          vel(i,j,k,1)=1.e0_real_kind
+          vel(i,j,k,2)=0.e0_real_kind
+          vel(i,j,k,3)=0.e0_real_kind
           prs(i,j,k)  =pe
-          tmp(i,j,k)  =1.d0
+          tmp(i,j,k)  =1.e0_real_kind
           !
           if(num_species>0) then
-            spc(i,j,k,1)=num1d3*(4.d0*spc(i,j-1,k,1)-spc(i,j-2,k,1))
+            spc(i,j,k,1)=num1d3*(4.e0_real_kind*spc(i,j-1,k,1)-spc(i,j-2,k,1))
           endif
           !
           if(nondimen) then

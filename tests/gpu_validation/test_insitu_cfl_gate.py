@@ -41,3 +41,13 @@ def test_report_cadence_does_not_accept_missing_report(tmp_path):
     path.write_text(record(0)+record(200))
     with pytest.raises(ValueError):
         CflGate(path, .5, 2e-5, 0, 300, step_stride=100).check(final=True)
+
+
+def test_first_restored_dt_is_explicit(tmp_path):
+    path = tmp_path / 'run.log'
+    source_dt = 1.9999999494757503e-5
+    path.write_text(record(5, dt=str(source_dt)) + record(6))
+    CflGate(path, .5, 2e-5, 5, 7, first_dt=source_dt).check(final=True)
+    path.write_text(record(5, dt=str(source_dt)) + record(6, dt=str(source_dt)))
+    with pytest.raises(ValueError, match='timestep'):
+        CflGate(path, .5, 2e-5, 5, 7, first_dt=source_dt).check(final=True)

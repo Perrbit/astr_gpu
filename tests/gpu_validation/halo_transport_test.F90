@@ -1,11 +1,12 @@
 program halo_transport_test
+  use astr_precision, only: real_kind,real_bytes
   use mpi
   use cudafor
   use iso_c_binding, only: c_loc,c_size_t
   use halo_transport_gpu, only: exchange_host_pair,begin_transport_setup,end_transport_setup
   implicit none
-  real(8),allocatable,target :: send_low(:,:,:,:),send_high(:,:,:,:)
-  real(8),allocatable,target :: recv_low(:,:,:,:),recv_high(:,:,:,:)
+  real(real_kind),allocatable,target :: send_low(:,:,:,:),send_high(:,:,:,:)
+  real(real_kind),allocatable,target :: recv_low(:,:,:,:),recv_high(:,:,:,:)
   integer :: rank,nranks,ierr,low,high,width,nvar,n,mode,v,j
   integer,parameter :: variables(3)=[1,3,6]
   integer :: devices,work_calls
@@ -47,16 +48,16 @@ program halo_transport_test
                  recv_low(width,3,2,nvar),recv_high(width,3,2,nvar))
         n=size(send_low)
         if(pinned) then
-          bytes=int(n,c_size_t)*8_c_size_t
+          bytes=int(n,c_size_t)*int(real_bytes,c_size_t)
           call require(cudaHostRegister(c_loc(send_low),bytes,0)==cudaSuccess)
           call require(cudaHostRegister(c_loc(send_high),bytes,0)==cudaSuccess)
           call require(cudaHostRegister(c_loc(recv_low),bytes,0)==cudaSuccess)
           call require(cudaHostRegister(c_loc(recv_high),bytes,0)==cudaSuccess)
         endif
-        send_low=reshape([(real(10000*rank+1000+j,8),j=1,n)],shape(send_low))
-        send_high=reshape([(real(10000*rank+2000+j,8),j=1,n)],shape(send_high))
-        recv_low=-999.d0
-        recv_high=-999.d0
+        send_low=reshape([(real(10000*rank+1000+j,real_kind),j=1,n)],shape(send_low))
+        send_high=reshape([(real(10000*rank+2000+j,real_kind),j=1,n)],shape(send_high))
+        recv_low=-999.e0_real_kind
+        recv_high=-999.e0_real_kind
         if(trim(work_mode)=='work') then
           call exchange_host_pair(send_low,send_high,recv_high,recv_low, &
                                   n,low,high,21001,21002,independent_work)
@@ -65,16 +66,16 @@ program halo_transport_test
                                   n,low,high,21001,21002)
         endif
         if(low==MPI_PROC_NULL) then
-          call require(all(recv_low==-999.d0))
+          call require(all(recv_low==-999.e0_real_kind))
         else
           call require(all(recv_low== &
-            reshape([(real(10000*low+2000+j,8),j=1,n)],shape(recv_low))))
+            reshape([(real(10000*low+2000+j,real_kind),j=1,n)],shape(recv_low))))
         endif
         if(high==MPI_PROC_NULL) then
-          call require(all(recv_high==-999.d0))
+          call require(all(recv_high==-999.e0_real_kind))
         else
           call require(all(recv_high== &
-            reshape([(real(10000*high+1000+j,8),j=1,n)],shape(recv_high))))
+            reshape([(real(10000*high+1000+j,real_kind),j=1,n)],shape(recv_high))))
         endif
         if(pinned) then
           call require(cudaHostUnregister(c_loc(send_low))==cudaSuccess)

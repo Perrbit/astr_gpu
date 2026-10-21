@@ -109,14 +109,24 @@ def validate_derived_dataset(dataset, index, units):
 
 def metadata(group):
     values = native_dataset(group, "metadata", (11,), "<i8")[:]
-    time, dt_used, dt_next = values[2:5].view("<f8")
-    if (values[0] != 1 or not 0 <= values[1] < 10**12 or
+    if values[0] not in (1, 2):
+        raise ValueError("unsupported native archive precision/version")
+    time, dt_used, dt_next = frame_clock(values)
+    if (not 0 <= values[1] < 10**12 or
             not np.isfinite([time, dt_used, dt_next]).all() or
             time < 0 or dt_used < 0 or dt_next <= 0 or
             (values[1] > 0 and dt_used <= 0) or
             np.any(values[7:10] <= 1) or values[10] not in (6, 12)):
         raise ValueError("invalid native archive clock/layout metadata")
     return values
+
+
+def frame_dtype(meta):
+    return np.dtype('<f4' if meta[0] == 2 else '<f8')
+
+
+def frame_clock(meta):
+    return meta[2:5].astype('<i4').view('<f4') if meta[0] == 2 else meta[2:5].view('<f8')
 
 
 def child_group(handle, name):
@@ -131,27 +141,27 @@ def grid_xml(parent, label, meta, fields, frame_name, prefix, units):
         shape = tuple(n for axis, n in enumerate(shape) if axis != 3 - meta[5])
     dimensions = " ".join(map(str, shape))
     grid = ET.SubElement(parent, "Grid", Name=label, GridType="Uniform")
-    ET.SubElement(grid, "Time", Value=format(meta[2:3].view("<f8")[0], ".17g"))
+    ET.SubElement(grid, "Time", Value=format(frame_clock(meta)[0], ".17g"))
     ET.SubElement(grid, "Information", Name="units", Value=units)
     ET.SubElement(grid, "Topology", TopologyType=f"{len(shape)}DSMesh", Dimensions=dimensions)
     geometry = ET.SubElement(grid, "Geometry", GeometryType="XYZ")
     item = ET.SubElement(geometry, "DataItem", Dimensions=dimensions + " 3",
-                         NumberType="Float", Precision="8", Format="HDF")
+                         NumberType="Float", Precision=str(frame_dtype(meta).itemsize), Format="HDF")
     item.text = f"../resources/data.h5:/{prefix}coordinates"
     for name in (*fields, "velocity"):
         vector = name == "velocity"
         attribute = ET.SubElement(grid, "Attribute", Name=name, Center="Node",
                                   AttributeType="Vector" if vector else "Scalar")
         item = ET.SubElement(attribute, "DataItem", Dimensions=dimensions + (" 3" if vector else ""),
-                             NumberType="Float", Precision="8", Format="HDF")
+                             NumberType="Float", Precision=str(frame_dtype(meta).itemsize), Format="HDF")
         item.text = f"{frame_name}/data.h5:/{prefix}{name}"
 
 
 def segment_record(segment, *, require_parent=False):
     rows = small_text(segment / "SEGMENT").splitlines()
     version = rows[0] if rows else ""
-    if (version not in ("ASTR_OUTPUT_SEGMENT_1", "ASTR_OUTPUT_SEGMENT_2") or
-            len(rows) != (3 if version.endswith("_1") else 6) or
+    if (version not in ("ASTR_OUTPUT_SEGMENT_1", "ASTR_OUTPUT_SEGMENT_2", 'ASTR_OUTPUT_SEGMENT_3') or
+            len(rows) != (3 if version.endswith("_1") else 7 if version.endswith('_3') else 6) or
             any(len(row.split()) != 2 for row in rows[1:3])):
         raise ValueError("invalid segment provenance declaration")
     step, time = int(rows[1].split()[0]), float(rows[1].split()[1])
@@ -161,6 +171,19 @@ def segment_record(segment, *, require_parent=False):
         raise ValueError("invalid segment origin/checkpoint identity")
     result = dict(version=version, step=step, time=time, parent=None,
                   fingerprint=fingerprint(segment / "SEGMENT"))
+    result['parent_time'] = time
+    if version.endswith('_3'):
+        if len(rows[6].split()) != 2:
+            raise ValueError('invalid segment source clock record')
+        width, word = map(int, rows[6].split())
+        if width not in (4, 8):
+            raise ValueError('invalid segment source clock precision')
+        raw = np.array([word], dtype='<i8')
+        parent_time = float(raw.astype('<i4').view('<f4')[0] if width == 4 else raw.view('<f8')[0])
+        converted = parent_time if width == 4 else float(np.float32(parent_time))
+        if not math.isfinite(parent_time) or parent_time < 0 or converted != time:
+            raise ValueError('segment source/target clock conversion differs')
+        result.update(parent_time=parent_time, source_clock_bytes=width, source_clock_word=word)
     result["crc_scan_bytes"] = result["fingerprint"][0]
     plain_file(segment / "input.txt")
     if version.endswith("_1"):
@@ -261,7 +284,8 @@ def validate_frame(frame, geometry_path, geometry_fingerprint, segment_fingerpri
             source = data if volume else child_group(data, label)
             coordinates = geometry if volume else child_group(geometry, label)
             meta, geom = metadata(source), metadata(coordinates)
-            if meta[1] != step or meta[2:3].view("<f8")[0] != time or meta[10] != components:
+            dtype = frame_dtype(meta)
+            if meta[1] != step or frame_clock(meta)[0] != time or meta[10] != components:
                 raise ValueError("FRAME/HDF5 clock or components disagree")
             if not np.array_equal(meta[[0, 5, 6, 7, 8, 9, 10]], geom[[0, 5, 6, 7, 8, 9, 10]]):
                 raise ValueError("frame/shared geometry layouts disagree")
@@ -281,14 +305,14 @@ def validate_frame(frame, geometry_path, geometry_fingerprint, segment_fingerpri
             if (len(source) != len(fields) + 2 or len(coordinates) != 2 or
                     set(source) != {"metadata", "velocity", *fields} or set(coordinates) != {"metadata", "coordinates"}):
                 raise ValueError("unsupported native field/coordinate inventory")
-            native_dataset(coordinates, "coordinates", shape + (3,), "<f8")
+            native_dataset(coordinates, "coordinates", shape + (3,), dtype)
             for name in fields:
-                native_dataset(source, name, shape, "<f8")
+                native_dataset(source, name, shape, dtype)
             for n in selection:
                 validate_derived_dataset(source[DERIVED_NAMES[n-1]], n, units)
-            native_dataset(source, "velocity", shape + (3,), "<f8")
-            expected_bytes += math.prod(shape) * len(fields) * 8
-            signature.append((label, tuple(int(n) for n in meta[5:])))
+            native_dataset(source, "velocity", shape + (3,), dtype)
+            expected_bytes += math.prod(shape) * len(fields) * dtype.itemsize
+            signature.append((label, int(meta[0]), tuple(int(n) for n in meta[5:])))
             grid_xml(parent, frame.name if volume else label, meta, fields, frame.name,
                      label + "/" if label else "", units)
         if byte_counts[0] != expected_bytes or byte_counts[1] not in (0, expected_bytes):
@@ -305,7 +329,7 @@ def repair_segment(segment, *, publish=False, catalog_bytes=1048576):
         directory(path)
     record = segment_record(segment)
     origin_step, origin_time = record["step"], record["time"]
-    segment_fp = record["fingerprint"] if record["version"].endswith("_2") else None
+    segment_fp = record["fingerprint"] if not record["version"].endswith("_1") else None
     for name in INDEX_NAMES:
         optional_plain(segment / name)
     for name in STAGED_NAMES:

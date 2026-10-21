@@ -6,6 +6,7 @@
 !| 13-02-2021: Created by J. Fang @ Warrington                         |
 !+---------------------------------------------------------------------+
 module bc
+  use astr_precision, only: real_kind,clock_kind
   !
   use constdef
   use parallel,only: lio,mpistop,mpirank,mpirankname,irk,jrk,krk,      &
@@ -22,12 +23,13 @@ module bc
   use stlaio,  only: get_unit
   !
   implicit none
+  private :: real_kind,clock_kind
   !
   integer :: ninflowslice
-  real(8) :: pout
-  real(8) :: uinf_j0,uinf_jm
+  real(real_kind) :: pout
+  real(real_kind) :: uinf_j0,uinf_jm
   integer :: bctype(6)
-  real(8) :: twall(6),xrhjump,angshk,xslip
+  real(real_kind) :: twall(6),xrhjump,angshk,xslip
   character(len=4) :: turbinf='none'
   integer,parameter :: NSCBC_FARFIELD_POLICY_COMPATIBILITY=0
   integer,parameter :: NSCBC_FARFIELD_POLICY_TARGET_RELAXATION=1
@@ -37,37 +39,37 @@ module bc
   logical,save :: nscbc_farfield_incoming_only=.false.
   logical,save :: nscbc_farfield_sbli_shock=.false.
   logical,save :: nscbc52_prediff_rhs_ready=.false.
-  real(8),save :: nscbc_farfield_rho_target,nscbc_farfield_u_target,   &
+  real(real_kind),save :: nscbc_farfield_rho_target,nscbc_farfield_u_target,   &
                   nscbc_farfield_v_target,nscbc_farfield_w_target,     &
                   nscbc_farfield_t_target
-  real(8),save :: nscbc_farfield_shock_x=0.d0,                         &
-                  nscbc_farfield_shock_angle=0.d0
+  real(real_kind),save :: nscbc_farfield_shock_x=0.e0_real_kind,                         &
+                  nscbc_farfield_shock_angle=0.e0_real_kind
   logical,save :: wall_blowing_configured=.false.
   logical,save :: wall_blowing_legacy_random=.false.
   logical,save :: profile_inflow_configured=.false.
   logical,save :: profile_inflow_mach_pressure=.false.
-  real(8),save :: wall_blowing_amplitude=0.d0,wall_blowing_beta=1.d0,  &
-                  wall_blowing_xa=0.d0,wall_blowing_xb=0.d0,           &
-                  wall_blowing_xc=0.d0
-  real(8),save :: wall_blowing_phase(15)=0.d0
+  real(real_kind),save :: wall_blowing_amplitude=0.e0_real_kind,wall_blowing_beta=1.e0_real_kind,  &
+                  wall_blowing_xa=0.e0_real_kind,wall_blowing_xb=0.e0_real_kind,           &
+                  wall_blowing_xc=0.e0_real_kind
+  real(real_kind),save :: wall_blowing_phase(15)=0.e0_real_kind
   integer,save :: wall_blowing_nmod_t=0,wall_blowing_nmod_z=0
-  real(8),allocatable,private :: compact_stage_wall_velocity(:,:)
+  real(real_kind),allocatable,private :: compact_stage_wall_velocity(:,:)
   !+---------------------+---------------------------------------------+
   !|              bctype | define type of boundary condition.          |
   !|               twall | wall temperature.                           |
   !|             turbinf | method of generating inflow turbulence.     |
   !+---------------------+---------------------------------------------+
-  real(8),allocatable :: rho_in(:,:),vel_in(:,:,:),tmp_in(:,:),        &
+  real(real_kind),allocatable :: rho_in(:,:),vel_in(:,:,:),tmp_in(:,:),        &
                          prs_in(:,:),spc_in(:,:,:)
-  real(8),allocatable :: nscbc52_prediff_rhs(:,:,:)
-  real(8),allocatable :: rho_prof(:),vel_prof(:,:),tmp_prof(:),        &
+  real(real_kind),allocatable :: nscbc52_prediff_rhs(:,:,:)
+  real(real_kind),allocatable :: rho_prof(:),vel_prof(:,:),tmp_prof(:),        &
                          prs_prof(:),spc_prof(:,:)
-  real(8),allocatable :: rho_far(:),vel_far(:,:),tmp_far(:),           & 
+  real(real_kind),allocatable :: rho_far(:),vel_far(:,:),tmp_far(:),           & 
                          prs_far(:),spc_far(:,:)
-  real(8),allocatable,dimension(:,:,:) :: bvec_i0,bvec_im,             &
+  real(real_kind),allocatable,dimension(:,:,:) :: bvec_i0,bvec_im,             &
                                           bvec_j0,bvec_jm,             &
                                           bvec_k0,bvec_km
-  real(8),allocatable,target :: flowvarins(:,:,:,:),timeins(:)
+  real(real_kind),allocatable,target :: flowvarins(:,:,:,:),timeins(:)
   integer,private,save :: inflow_last_step=-1
   logical,private,save :: inflow_load_initial=.true.
   logical,private,save :: inflow_first_call=.true.
@@ -175,8 +177,8 @@ module bc
           open(fh,file=trim(filephase),action='read')
           read(fh,*)wall_blowing_phase
           close(fh)
-          if(any(wall_blowing_phase<0.d0) .or.                         &
-             any(wall_blowing_phase>1.d0)) then
+          if(any(wall_blowing_phase<0.e0_real_kind) .or.                         &
+             any(wall_blowing_phase>1.e0_real_kind)) then
             stop 'wallbs_phase.dat values must lie in [0,1]'
           endif
         endif
@@ -214,7 +216,7 @@ module bc
          wall_blowing_xb>=wall_blowing_xc .or. wall_blowing_nmod_z<1) &
         stop 'legacy_random requires xa < xb < xc and nmod_z >= 1'
     endif
-    if(abs(wall_blowing_amplitude)>1.d-10) then
+    if(abs(wall_blowing_amplitude)>1.e-10_real_kind) then
       if(wall_blowing_nmod_t>0 .and. .not.wall_blowing_legacy_random) then
         if(wall_blowing_nmod_t>5 .or. wall_blowing_nmod_z<1 .or.      &
            wall_blowing_nmod_z>10) then
@@ -286,8 +288,8 @@ module bc
                                       nscbc_farfield_w_target)
         call read_nscbc_farfield_real('ASTR_NSCBC_FARFIELD_T',          &
                                       nscbc_farfield_t_target)
-        if(nscbc_farfield_rho_target<=0.d0 .or.                          &
-           nscbc_farfield_t_target<=0.d0) then
+        if(nscbc_farfield_rho_target<=0.e0_real_kind .or.                          &
+           nscbc_farfield_t_target<=0.e0_real_kind) then
           stop 'NSCBC farfield target rho and T must be positive'
         endif
         if(nscbc_farfield_sbli_shock) then
@@ -296,8 +298,8 @@ module bc
           call read_nscbc_farfield_real(                               &
                'ASTR_NSCBC_FARFIELD_SHOCK_ANGLE_DEG',                  &
                nscbc_farfield_shock_angle)
-          if(nscbc_farfield_shock_angle<=0.d0 .or.                     &
-             nscbc_farfield_shock_angle>=90.d0) then
+          if(nscbc_farfield_shock_angle<=0.e0_real_kind .or.                     &
+             nscbc_farfield_shock_angle>=90.e0_real_kind) then
             stop 'SBLI NSCBC shock angle must lie between 0 and 90 degrees'
           endif
         endif
@@ -333,7 +335,7 @@ module bc
   subroutine read_nscbc_farfield_real(name,value)
     implicit none
     character(len=*),intent(in) :: name
-    real(8),intent(inout) :: value
+    real(real_kind),intent(inout) :: value
     character(len=64) :: text
     integer :: env_status,env_length,ios
 
@@ -412,7 +414,7 @@ module bc
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     implicit none
     integer :: i,k
-    real(8) :: viscous_rhs(5),rhs_face(5),pnor(5,5),pinv(5,5),        &
+    real(real_kind) :: viscous_rhs(5),rhs_face(5),pnor(5,5),pinv(5,5),        &
                lambda(5),css
     logical :: incoming(5)
 
@@ -463,7 +465,7 @@ module bc
   subroutine nscbc_farfield_target_state(rho_target,u_target,v_target, &
                                           w_target,t_target)
     implicit none
-    real(8),intent(out) :: rho_target,u_target,v_target,w_target,t_target
+    real(real_kind),intent(out) :: rho_target,u_target,v_target,w_target,t_target
 
     call configure_nscbc_farfield
     rho_target=nscbc_farfield_rho_target
@@ -485,11 +487,11 @@ module bc
                                            shock_x,use_shock)
     use fludyna, only: postshock
     implicit none
-    real(8),intent(in) :: xcoord
-    real(8),intent(out) :: rho_target,u_target,v_target,w_target,t_target
-    real(8),intent(out) :: shock_x
+    real(real_kind),intent(in) :: xcoord
+    real(real_kind),intent(out) :: rho_target,u_target,v_target,w_target,t_target
+    real(real_kind),intent(out) :: shock_x
     logical,intent(out) :: use_shock
-    real(8) :: p_target,p_post
+    real(real_kind) :: p_target,p_post
 
     call configure_nscbc_farfield
     rho_target=nscbc_farfield_rho_target
@@ -514,23 +516,23 @@ module bc
   subroutine nscbc_farfield_zero_incoming_lodi(lodi,metric,velocity,css,&
                                                 lambda,incoming)
     implicit none
-    real(8),intent(inout) :: lodi(5)
-    real(8),intent(in) :: metric(3),velocity(3),css
-    real(8),intent(out) :: lambda(5)
+    real(real_kind),intent(inout) :: lodi(5)
+    real(real_kind),intent(in) :: metric(3),velocity(3),css
+    real(real_kind),intent(out) :: lambda(5)
     logical,intent(out) :: incoming(5)
-    real(8) :: norm,normal_speed,wave_tolerance
+    real(real_kind) :: norm,normal_speed,wave_tolerance
     integer :: m
 
     norm=sqrt(sum(metric*metric))
-    if(norm<=0.d0) error stop 'invalid upper-y NSCBC metric norm'
-    if(css<=0.d0) error stop 'invalid upper-y NSCBC sound speed'
+    if(norm<=0.e0_real_kind) error stop 'invalid upper-y NSCBC metric norm'
+    if(css<=0.e0_real_kind) error stop 'invalid upper-y NSCBC sound speed'
     normal_speed=sum(metric*velocity)/norm
     lambda=[normal_speed,normal_speed,normal_speed,                  &
             normal_speed+css,normal_speed-css]
-    wave_tolerance=64.d0*epsilon(1.d0)*max(css,abs(normal_speed))
+    wave_tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(normal_speed))
     incoming=lambda<-wave_tolerance
     do m=1,5
-      if(incoming(m)) lodi(m)=0.d0
+      if(incoming(m)) lodi(m)=0.e0_real_kind
     enddo
   end subroutine nscbc_farfield_zero_incoming_lodi
 
@@ -539,22 +541,22 @@ module bc
                                                    velocity,css,lambda, &
                                                    incoming)
     implicit none
-    real(8),intent(inout) :: lodi(5)
-    real(8),intent(in) :: source(5),pinv(5,5),jacobian,metric(3),       &
+    real(real_kind),intent(inout) :: lodi(5)
+    real(real_kind),intent(in) :: source(5),pinv(5,5),jacobian,metric(3),       &
                           velocity(3),css
-    real(8),intent(out) :: lambda(5)
+    real(real_kind),intent(out) :: lambda(5)
     logical,intent(out) :: incoming(5)
-    real(8) :: norm,normal_speed,wave_tolerance,source_characteristic(5)
+    real(real_kind) :: norm,normal_speed,wave_tolerance,source_characteristic(5)
     integer :: m
 
     norm=sqrt(sum(metric*metric))
-    if(norm<=0.d0) error stop 'invalid upper-y NSCBC metric norm'
-    if(css<=0.d0) error stop 'invalid upper-y NSCBC sound speed'
-    if(jacobian<=0.d0) error stop 'invalid upper-y NSCBC Jacobian'
+    if(norm<=0.e0_real_kind) error stop 'invalid upper-y NSCBC metric norm'
+    if(css<=0.e0_real_kind) error stop 'invalid upper-y NSCBC sound speed'
+    if(jacobian<=0.e0_real_kind) error stop 'invalid upper-y NSCBC Jacobian'
     normal_speed=sum(metric*velocity)/norm
     lambda=[normal_speed,normal_speed,normal_speed,                    &
             normal_speed+css,normal_speed-css]
-    wave_tolerance=64.d0*epsilon(1.d0)*max(css,abs(normal_speed))
+    wave_tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(normal_speed))
     incoming=lambda<-wave_tolerance
     source_characteristic=matmul(pinv,source)/jacobian
     do m=1,5
@@ -566,26 +568,26 @@ module bc
                                            jacobian,metric,velocity,   &
                                            css,lambda,incoming)
     implicit none
-    real(8),intent(inout) :: rhs(5)
-    real(8),intent(in) :: source(5),pnor(5,5),pinv(5,5),jacobian,      &
+    real(real_kind),intent(inout) :: rhs(5)
+    real(real_kind),intent(in) :: source(5),pnor(5,5),pinv(5,5),jacobian,      &
                           metric(3),velocity(3),css
-    real(8),intent(out) :: lambda(5)
+    real(real_kind),intent(out) :: lambda(5)
     logical,intent(out) :: incoming(5)
-    real(8) :: norm,normal_speed,wave_tolerance,source_characteristic(5)
+    real(real_kind) :: norm,normal_speed,wave_tolerance,source_characteristic(5)
     integer :: m
 
     norm=sqrt(sum(metric*metric))
-    if(norm<=0.d0) error stop 'invalid upper-y NSCBC metric norm'
-    if(css<=0.d0) error stop 'invalid upper-y NSCBC sound speed'
-    if(jacobian<=0.d0) error stop 'invalid upper-y NSCBC Jacobian'
+    if(norm<=0.e0_real_kind) error stop 'invalid upper-y NSCBC metric norm'
+    if(css<=0.e0_real_kind) error stop 'invalid upper-y NSCBC sound speed'
+    if(jacobian<=0.e0_real_kind) error stop 'invalid upper-y NSCBC Jacobian'
     normal_speed=sum(metric*velocity)/norm
     lambda=[normal_speed,normal_speed,normal_speed,                    &
             normal_speed+css,normal_speed-css]
-    wave_tolerance=64.d0*epsilon(1.d0)*max(css,abs(normal_speed))
+    wave_tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(normal_speed))
     incoming=lambda<-wave_tolerance
     source_characteristic=matmul(pinv,source)/jacobian
     do m=1,5
-      if(.not.incoming(m)) source_characteristic(m)=0.d0
+      if(.not.incoming(m)) source_characteristic(m)=0.e0_real_kind
     enddo
     rhs=rhs-jacobian*matmul(pnor,source_characteristic)
   end subroutine nscbc_remove_incoming_source
@@ -593,8 +595,8 @@ module bc
   subroutine nscbc_farfield_transformed_flux_5(i,j,k,axis,flux)
     implicit none
     integer,intent(in) :: i,j,k,axis
-    real(8),intent(out) :: flux(5)
-    real(8) :: contravariant_velocity
+    real(real_kind),intent(out) :: flux(5)
+    real(real_kind) :: contravariant_velocity
 
     contravariant_velocity=sum(dxi(i,j,k,axis,:)*vel(i,j,k,:))
     flux(1)=jacob(i,j,k)*q(i,j,k,1)*contravariant_velocity
@@ -611,9 +613,9 @@ module bc
   subroutine nscbc_farfield_y_upper_source(i,j,k,rest,source)
     implicit none
     integer,intent(in) :: i,j,k
-    real(8),intent(in) :: rest(5)
-    real(8),intent(out) :: source(5)
-    real(8) :: flux_m(5),flux_p(5)
+    real(real_kind),intent(in) :: rest(5)
+    real(real_kind),intent(out) :: source(5)
+    real(real_kind) :: flux_m(5),flux_p(5)
 
     source=rest
     if(k<ks .or. k>ke) return
@@ -629,24 +631,24 @@ module bc
     elseif(i>=is .and. i<=ie) then
       call nscbc_farfield_transformed_flux_5(i-1,j,k,1,flux_m)
       call nscbc_farfield_transformed_flux_5(i+1,j,k,1,flux_p)
-      source=source+0.5d0*(flux_p-flux_m)
+      source=source+0.5e0_real_kind*(flux_p-flux_m)
     else
       return
     endif
     if(ndims==3) then
       call nscbc_farfield_transformed_flux_5(i,j,k-1,3,flux_m)
       call nscbc_farfield_transformed_flux_5(i,j,k+1,3,flux_p)
-      source=source+0.5d0*(flux_p-flux_m)
+      source=source+0.5e0_real_kind*(flux_p-flux_m)
     endif
   end subroutine nscbc_farfield_y_upper_source
 
   subroutine nscbc_farfield_y_upper_incoming_lodi(lodi,pinv,i,j,k,css, &
                                                     gmachmax2)
     implicit none
-    real(8),intent(inout) :: lodi(5)
-    real(8),intent(in) :: pinv(5,5),css,gmachmax2
+    real(real_kind),intent(inout) :: lodi(5)
+    real(real_kind),intent(in) :: pinv(5,5),css,gmachmax2
     integer,intent(in) :: i,j,k
-    real(8) :: qtarget(5),dq(5),char_delta(5),normal(3),normal_speed,  &
+    real(real_kind) :: qtarget(5),dq(5),char_delta(5),normal(3),normal_speed,  &
                lambda(5),sigma_in,sigma_out,p_target,norm,shock_x,   &
                rho_target,u_target,v_target,w_target,t_target
     logical :: use_shock
@@ -657,7 +659,7 @@ module bc
     endif
 
     norm=sqrt(sum(dxi(i,j,k,2,:)*dxi(i,j,k,2,:)))
-    if(norm<=0.d0) stop 'invalid upper-y NSCBC metric norm'
+    if(norm<=0.e0_real_kind) stop 'invalid upper-y NSCBC metric norm'
     normal(:)=dxi(i,j,k,2,:)/norm
     normal_speed=sum(normal(:)*vel(i,j,k,:))
     lambda=(/normal_speed,normal_speed,normal_speed,                   &
@@ -670,16 +672,16 @@ module bc
     qtarget(2)=rho_target*u_target
     qtarget(3)=rho_target*v_target
     qtarget(4)=rho_target*w_target
-    qtarget(5)=p_target*const6+0.5d0*rho_target*                       &
+    qtarget(5)=p_target*const6+0.5e0_real_kind*rho_target*                       &
                (u_target**2+v_target**2+w_target**2)
     dq(:)=q(i,j,k,1:5)-qtarget(:)
     char_delta=matmul(pinv,dq)
 
-    sigma_in=0.25d0*css/(ymax-ymin)
-    sigma_out=max(0.d0,0.25d0*(1.d0-gmachmax2)*css/(ymax-ymin))
+    sigma_in=0.25e0_real_kind*css/(ymax-ymin)
+    sigma_out=max(0.e0_real_kind,0.25e0_real_kind*(1.e0_real_kind-gmachmax2)*css/(ymax-ymin))
     do m=1,5
-      if(lambda(m)<0.d0) then
-        if(normal_speed>=0.d0) then
+      if(lambda(m)<0.e0_real_kind) then
+        if(normal_speed>=0.e0_real_kind) then
           lodi(m)=sigma_out*char_delta(m)
         else
           lodi(m)=sigma_in*char_delta(m)
@@ -741,7 +743,7 @@ module bc
     !
     ! local data
     integer :: i,j,k,l
-    real(8) :: fex(4,10)
+    real(real_kind) :: fex(4,10)
     !
     if(jrk==0) then
       !
@@ -815,7 +817,7 @@ module bc
     !
     ! local data
     integer :: i,j,k,l
-    real(8) :: fex(4,3)
+    real(real_kind) :: fex(4,3)
     !
     if(npdci==1) then
       do k=0,km
@@ -972,12 +974,12 @@ module bc
     use userdefine, only : udf_bc
     !
     ! arguments
-    real(8),intent(inout),optional :: subtime
+    real(clock_kind),intent(inout),optional :: subtime
     !
     ! local data
     integer :: n
     logical :: compact_stage_wall
-    real(8) :: time_beg
+    real(clock_kind) :: time_beg
     !
     if(bctype(3)==41 .or. bctype(3)==42 .or. bctype(3)==411 .or.       &
        bctype(3)==421) call configure_wall_blowing
@@ -990,8 +992,8 @@ module bc
       if(n==2.and.compact_stage_wall) then
         if(.not.allocated(compact_stage_wall_velocity)) &
           allocate(compact_stage_wall_velocity(0:im,0:km))
-        compact_stage_wall_velocity=0.d0
-        if(abs(wall_blowing_amplitude)>1.d-10) &
+        compact_stage_wall_velocity=0.e0_real_kind
+        if(abs(wall_blowing_amplitude)>1.e-10_real_kind) &
           compact_stage_wall_velocity=wall_blowing_velocity()
         call noslip(3,twall(3),supplied_velocity=compact_stage_wall_velocity,outlet_only=.true.)
       endif
@@ -1100,19 +1102,19 @@ module bc
     !
     ! local data
     integer :: i,j,k,m,kb,iss,jss,kss,n,jspec,jq,jb,jc,jsup,ncube,counter
-    real(8) :: var_ro,var_u(3),var_t,var_p,var_spc(num_species)
-    real(8) :: vel_bou(3),prs_bou,rho_bou,tmp_bou,spc_bou(num_species)
-    real(8),allocatable :: vel_icell(:,:),tmp_icell(:),prs_icell(:),spc_icell(:,:),c_dir(:),c_neu(:)
-    real(8) :: vel_image(3),tmp_image,prs_image,rho_image,spc_image(num_species)
-    real(8),allocatable :: qimag(:,:)
-    real(8) :: prslmin,prslmax
+    real(real_kind) :: var_ro,var_u(3),var_t,var_p,var_spc(num_species)
+    real(real_kind) :: vel_bou(3),prs_bou,rho_bou,tmp_bou,spc_bou(num_species)
+    real(real_kind),allocatable :: vel_icell(:,:),tmp_icell(:),prs_icell(:),spc_icell(:,:),c_dir(:),c_neu(:)
+    real(real_kind) :: vel_image(3),tmp_image,prs_image,rho_image,spc_image(num_species)
+    real(real_kind),allocatable :: qimag(:,:)
+    real(real_kind) :: prslmin,prslmax
     type(sboun),pointer :: pb
     !
     logical,save :: lfirstcal=.true.
     integer,allocatable,save :: nbnode(:),ngnode(:),ijkcub(:,:,:),ijkgho(:,:)
     !
-    real(8) :: time_beg,time_tmp
-    real(8),save :: subtime1=0.d0,subtime2=0.d0,subtime3=0.d0,subtime4=0.d0
+    real(clock_kind) :: time_beg,time_tmp
+    real(clock_kind),save :: subtime1=0.0_clock_kind,subtime2=0.0_clock_kind,subtime3=0.0_clock_kind,subtime4=0.0_clock_kind
     !
     if(present(timerept)) then
 
@@ -1149,7 +1151,7 @@ module bc
         !
         if(.not. allocated(pb%qimag)) allocate(pb%qimag(numq))
         !
-        pb%qimag=0.d0
+        pb%qimag=0.e0_real_kind
         !
         i=pb%icell(1)-ig0
         j=pb%icell(2)-jg0
@@ -1255,8 +1257,8 @@ module bc
       !
       pb=>immbond(jb)
       !
-      prslmin= 1.d10
-      prslmax=-1.d10
+      prslmin= 1.e10_real_kind
+      prslmax=-1.e10_real_kind
       do m=1,ncube
         !
         i=ijkcub(1,m,jc)
@@ -1289,7 +1291,7 @@ module bc
       if(nondimen) then 
         !
         rho_image=thermal(pressure=prs_image,temperature=tmp_image)
-        spc_image=1.d0
+        spc_image=1.e0_real_kind
         !
       else
         !
@@ -1362,9 +1364,9 @@ module bc
       if(pb%nodetype=='g') then
         ! for ghost nodes
         !
-        vel(i,j,k,1)= -1.d0*var_u(1)*pb%dis2ghost/pb%dis2image
-        vel(i,j,k,2)= -1.d0*var_u(2)*pb%dis2ghost/pb%dis2image
-        vel(i,j,k,3)= -1.d0*var_u(3)*pb%dis2ghost/pb%dis2image
+        vel(i,j,k,1)= -1.e0_real_kind*var_u(1)*pb%dis2ghost/pb%dis2image
+        vel(i,j,k,2)= -1.e0_real_kind*var_u(2)*pb%dis2ghost/pb%dis2image
+        vel(i,j,k,3)= -1.e0_real_kind*var_u(3)*pb%dis2ghost/pb%dis2image
           ! tmp(i,j,k)=tinf-(var_t-tinf)*pb%dis2ghost/pb%dis2image
         ! adiabatic
         ! tmp(i,j,k)=var_t
@@ -1373,7 +1375,7 @@ module bc
         prs(i,j,k)=var_p
         if(nondimen) then 
           rho(i,j,k)=thermal(pressure=prs(i,j,k),temperature=tmp(i,j,k))
-          spc(i,j,k,:)=1.d0
+          spc(i,j,k,:)=1.e0_real_kind
         else
           spc(i,j,k,:)=var_spc(:)
           rho(i,j,k)=thermal(pressure=prs(i,j,k),temperature=tmp(i,j,k),species=spc(i,j,k,:))
@@ -1386,9 +1388,9 @@ module bc
         
         ! print*,pb%x
 
-        vel(i,j,k,1)=0.d0
-        vel(i,j,k,2)=0.d0
-        vel(i,j,k,3)=0.d0
+        vel(i,j,k,1)=0.e0_real_kind
+        vel(i,j,k,2)=0.e0_real_kind
+        vel(i,j,k,3)=0.e0_real_kind
         ! aidabatic
         ! tmp(i,j,k)=var_t
         tmp(i,j,k)=twall(3)
@@ -1396,7 +1398,7 @@ module bc
         !
         if(nondimen) then 
           rho(i,j,k)=thermal(pressure=prs(i,j,k),temperature=tmp(i,j,k))
-          spc(i,j,k,:)=1.d0
+          spc(i,j,k,:)=1.e0_real_kind
         else
           spc(i,j,k,:)=var_spc(:)
           rho(i,j,k)=thermal(pressure=prs(i,j,k),temperature=tmp(i,j,k),species=spc(i,j,k,:))
@@ -1440,9 +1442,9 @@ module bc
       ! if(nodestat(i,j,k)>0) then
         ! all solid nodes
         !
-        vel(i,j,k,1)=0.d0
-        vel(i,j,k,2)=0.d0
-        vel(i,j,k,3)=0.d0
+        vel(i,j,k,1)=0.e0_real_kind
+        vel(i,j,k,2)=0.e0_real_kind
+        vel(i,j,k,3)=0.e0_real_kind
         ! tmp(i,j,k)  =twall(3)
         tmp(i,j,k)  =tinf
         prs(i,j,k)  =pinf
@@ -1523,11 +1525,11 @@ module bc
     integer,allocatable,save :: isendtable(:),irecvtable(:), &
                                 isend(:),irecv(:), &
                                 num_bound_elemt_send(:),num_bound_elemt_recv(:)
-    real(8),allocatable :: q2send(:,:),q2recv(:,:)
+    real(real_kind),allocatable :: q2send(:,:),q2recv(:,:)
     type(sboun),pointer :: pbon
     !
-    real(8) :: time_beg,time_tmp
-    real(8),save :: subtime=0.d0
+    real(clock_kind) :: time_beg,time_tmp
+    real(clock_kind),save :: subtime=0.0_clock_kind
     !
     integer,save :: nsend,nrecv,rank2coll,ibcom_rank,ibcom_size
     integer,allocatable :: mpirank_glob(:)
@@ -1778,14 +1780,14 @@ module bc
                          num_ighost_rank,numq,imbroot
     !
     ! arguments
-    real(8),intent(in) :: qin(:,:)
+    real(real_kind),intent(in) :: qin(:,:)
     !
     ! local data
     integer :: nsize,nsend,jb,kb,qsize,jrank,qzmax,offset
     integer :: qztable(0:mpirankmax)
-    real(8),allocatable :: buf(:,:),qimmb(:,:),q2send(:,:),qboud(:,:)
+    real(real_kind),allocatable :: buf(:,:),qimmb(:,:),q2send(:,:),qboud(:,:)
     integer,allocatable :: icell_order(:)
-    real(8) :: epslion=1.d-10
+    real(real_kind) :: epslion=1.e-10_real_kind
     !
     logical,save :: lfirstcal=.true.
     !
@@ -1911,7 +1913,7 @@ module bc
     use commfunc,  only : extrapolate
     !
     integer :: i,j,k,n,jspec
-    real(8) :: css,ue,pe,roe
+    real(real_kind) :: css,ue,pe,roe
     !
     ! 
     !
@@ -1924,18 +1926,18 @@ module bc
       !
       do k=ks,ke
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
         css=sos(tmp(i,j,k))
-        ue  =extrapolate(vel(i+1,j,k,1),vel(i+2,j,k,1),dv=0.d0)
-        pe  =extrapolate(prs(i+1,j,k),  prs(i+2,j,k),  dv=0.d0)
-        roe =extrapolate(rho(i+1,j,k),  rho(i+2,j,k),  dv=0.d0)
+        ue  =extrapolate(vel(i+1,j,k,1),vel(i+2,j,k,1),dv=0.e0_real_kind)
+        pe  =extrapolate(prs(i+1,j,k),  prs(i+2,j,k),  dv=0.e0_real_kind)
+        roe =extrapolate(rho(i+1,j,k),  rho(i+2,j,k),  dv=0.e0_real_kind)
         !
-        vel(i,j,k,1)=0.5d0*(prs_in(j,k)-pe)/(rho(i,j,k)*css)+0.5d0*(vel_in(j,k,1)+ue)
+        vel(i,j,k,1)=0.5e0_real_kind*(prs_in(j,k)-pe)/(rho(i,j,k)*css)+0.5e0_real_kind*(vel_in(j,k,1)+ue)
         vel(i,j,k,2)=vel_in(j,k,2)
         vel(i,j,k,3)=vel_in(j,k,3)
-        prs(i,j,k)  =0.5d0*(prs_in(j,k)+pe)+0.5d0*rho(i,j,k)*css*(vel_in(j,k,1)-ue)
-        rho(i,j,k)  =rho_in(j,k)*(prs(i,j,k)/prs_in(j,k))**(1.d0/gamma)
+        prs(i,j,k)  =0.5e0_real_kind*(prs_in(j,k)+pe)+0.5e0_real_kind*rho(i,j,k)*css*(vel_in(j,k,1)-ue)
+        rho(i,j,k)  =rho_in(j,k)*(prs(i,j,k)/prs_in(j,k))**(1.e0_real_kind/gamma)
         !
         tmp(i,j,k)  =thermal(pressure=prs(i,j,k),density=rho(i,j,k))
         !
@@ -1957,18 +1959,18 @@ module bc
       !
       do k=ks,ke
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
         css=sos(tmp(i,j,k))
-        ue  =extrapolate(vel(i+1,j,k,1),vel(i+2,j,k,1),dv=0.d0)
-        pe  =extrapolate(prs(i+1,j,k),  prs(i+2,j,k),  dv=0.d0)
-        roe =extrapolate(rho(i+1,j,k),  rho(i+2,j,k),  dv=0.d0)
+        ue  =extrapolate(vel(i+1,j,k,1),vel(i+2,j,k,1),dv=0.e0_real_kind)
+        pe  =extrapolate(prs(i+1,j,k),  prs(i+2,j,k),  dv=0.e0_real_kind)
+        roe =extrapolate(rho(i+1,j,k),  rho(i+2,j,k),  dv=0.e0_real_kind)
         !
-        vel(i,j,k,1)=0.5d0*(prs_in(j,k)-pe)/(rho(i,j,k)*css)+0.5d0*(vel_in(j,k,1)+ue)
+        vel(i,j,k,1)=0.5e0_real_kind*(prs_in(j,k)-pe)/(rho(i,j,k)*css)+0.5e0_real_kind*(vel_in(j,k,1)+ue)
         vel(i,j,k,2)=vel_in(j,k,2)
         vel(i,j,k,3)=vel_in(j,k,3)
-        prs(i,j,k)  =0.5d0*(prs_in(j,k)+pe)+0.5d0*rho(i,j,k)*css*(vel_in(j,k,1)-ue)
-        rho(i,j,k)  =rho_in(j,k)*(prs(i,j,k)/prs_in(j,k))**(1.d0/gamma)
+        prs(i,j,k)  =0.5e0_real_kind*(prs_in(j,k)+pe)+0.5e0_real_kind*rho(i,j,k)*css*(vel_in(j,k,1)-ue)
+        rho(i,j,k)  =rho_in(j,k)*(prs(i,j,k)/prs_in(j,k))**(1.e0_real_kind/gamma)
         !
         tmp(i,j,k)  =thermal(pressure=prs(i,j,k),density=rho(i,j,k))
         !
@@ -1990,11 +1992,11 @@ module bc
       !
       do k=ks,ke
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
         do n=1,numq
-          q(i,j,k,n)=0.5d0*(extrapolate(q(i,j-1,k,n),q(i,j-2,k,n),0.d0)+ &
-                            extrapolate(q(i,j+1,k,n),q(i,j+2,k,n),0.d0))
+          q(i,j,k,n)=0.5e0_real_kind*(extrapolate(q(i,j-1,k,n),q(i,j-2,k,n),0.e0_real_kind)+ &
+                            extrapolate(q(i,j+1,k,n),q(i,j+2,k,n),0.e0_real_kind))
         enddo
         call fvar2q(          q=  q(i,j,k,:),                          &
                         density=rho(i,j,k),                            &
@@ -2014,11 +2016,11 @@ module bc
       !
       do k=ks,ke
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
         do n=1,numq
-          q(i,j,k,n)=0.5d0*(extrapolate(q(i,j-1,k,n),q(i,j-2,k,n),0.d0)+  &
-                            extrapolate(q(i,j-1,k,n),q(i,j-2,k,n),0.d0))
+          q(i,j,k,n)=0.5e0_real_kind*(extrapolate(q(i,j-1,k,n),q(i,j-2,k,n),0.e0_real_kind)+  &
+                            extrapolate(q(i,j-1,k,n),q(i,j-2,k,n),0.e0_real_kind))
         enddo
         call fvar2q(          q=  q(i,j,k,:),                          &
                         density=rho(i,j,k),                            &
@@ -2044,7 +2046,7 @@ module bc
   subroutine inflow(ndir)
     !
     use commvar,   only : turbmode,nondimen,spcinf,rkstep
-    use fludyna,   only : thermal,fvar2q,q2fvar,sos
+    use fludyna,   only : thermal,fvar2q,q2fvar,sos,thermal_roundtrip_rtol
     use commfunc,  only : extrapolate
     use commarray, only : tke,omg
     use userdefine,only : udf_inflow_fluc
@@ -2057,9 +2059,9 @@ module bc
     !
     ! local data
     integer :: i,j,k,l,jspc
-    real(8) :: css,csse,ub,pe,roe,ue,pwave_out,pwave_in,malo,rho_ref,cs_ref,blend,rp,rm,te
-    real(8) :: ce,ri_plus,ri_mins,cb,sb,gmr,tmp_target,tmp_scale,vnormal
-    real(8) :: spce(1:num_species)
+    real(real_kind) :: css,csse,ub,pe,roe,ue,pwave_out,pwave_in,malo,rho_ref,cs_ref,blend,rp,rm,te
+    real(real_kind) :: ce,ri_plus,ri_mins,cb,sb,gmr,tmp_target,tmp_scale,vnormal
+    real(real_kind) :: spce(1:num_species)
     !
     !
     call configure_profile_inflow
@@ -2147,25 +2149,25 @@ module bc
 
           tmp_target=thermal(pressure=prs_in(j,k),density=rho_in(j,k), &
                              species=spc_in(j,k,:))
-          tmp_scale=max(1.d0,abs(tmp_in(j,k)),abs(tmp_target))
-          if(abs(tmp_in(j,k)-tmp_target)>1.d-10*tmp_scale) then
+          tmp_scale=max(1.e0_real_kind,abs(tmp_in(j,k)),abs(tmp_target))
+          if(abs(tmp_in(j,k)-tmp_target)>thermal_roundtrip_rtol*tmp_scale) then
             stop 'bctype=11 inlet temperature is inconsistent with rho, pressure, and species'
           endif
 
-          malo=huge(1.d0)
+          malo=huge(1.e0_real_kind)
           if(profile_inflow_mach_pressure) then
-            if(tmp_in(j,k)<=0.d0) then
+            if(tmp_in(j,k)<=0.e0_real_kind) then
               stop 'bctype=11 mach_pressure requires positive profile temperature'
             endif
             css=sos(tmp_in(j,k),spc_in(j,k,:))
             vnormal=dot_product(vel_in(j,k,:),bnorm_i0(j,k,:))
             malo=vnormal/css
-            if(malo<0.d0) then
+            if(malo<0.e0_real_kind) then
               stop 'bctype=11 mach_pressure requires non-negative inward normal velocity'
             endif
           endif
 
-          if((.not.profile_inflow_mach_pressure) .or. malo>=1.d0) then
+          if((.not.profile_inflow_mach_pressure) .or. malo>=1.e0_real_kind) then
             ! Complete-state mode and locally supersonic inflow.
             rho(i,j,k)  =rho_in(j,k)
             vel(i,j,k,:)=vel_in(j,k,:)
@@ -2178,8 +2180,8 @@ module bc
             vel(i,j,k,:)=vel_in(j,k,:)
             spc(i,j,k,:)=spc_in(j,k,:)
             tmp(i,j,k)=tmp_in(j,k)
-            prs(i,j,k)=extrapolate(prs(i+1,j,k),prs(i+2,j,k),dv=0.d0)
-            if(prs(i,j,k)<=0.d0) then
+            prs(i,j,k)=extrapolate(prs(i+1,j,k),prs(i+2,j,k),dv=0.e0_real_kind)
+            if(prs(i,j,k)<=0.e0_real_kind) then
               stop 'bctype=11 mach_pressure extrapolated non-positive pressure'
             endif
             rho(i,j,k)=thermal(pressure=prs(i,j,k),temperature=tmp(i,j,k), &
@@ -2232,7 +2234,7 @@ module bc
                     velocity=vel(i,j,k,:), temperature=tmp(i,j,k),        &
                      species=spc(i,j,k,:)                                 )
         
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         
       enddo
       enddo
@@ -2336,11 +2338,11 @@ module bc
     integer :: i,j,k,jsp
     integer :: indim(3)
     integer,save :: idim
-    real(8),allocatable,save :: xi(:),rhoi(:,:,:),veli(:,:,:,:),       &
+    real(real_kind),allocatable,save :: xi(:),rhoi(:,:,:),veli(:,:,:,:),       &
                                 prsi(:,:,:),tmpi(:,:,:)
-    real(8) :: xintsec,umax,umin
-    real(8),save :: x0,xm
-    real(8),allocatable :: xx(:,:,:),yy(:,:,:),zz(:,:,:)
+    real(real_kind) :: xintsec,umax,umin
+    real(real_kind),save :: x0,xm
+    real(real_kind),allocatable :: xx(:,:,:),yy(:,:,:),zz(:,:,:)
     logical,save :: loadiniflow=.true.
     !
     if(loadiniflow) then
@@ -2362,9 +2364,9 @@ module bc
       call h5read_istrip_r8(varname='u3', var=veli(:,:,:,3))
       call h5read_istrip_r8(varname='t',  var=tmpi(:,:,:))
       !
-      rhoi=1.d0*rhoi
-      veli=1.d0*veli
-      tmpi=1.d0*tmpi
+      rhoi=1.e0_real_kind*rhoi
+      veli=1.e0_real_kind*veli
+      tmpi=1.e0_real_kind*tmpi
       ! call h5read(varname='u1', var=flowvarins(0:jm,0:km,2,n),dir='i',display=.false.)
       ! call h5read(varname='u2', var=flowvarins(0:jm,0:km,3,n),dir='i',display=.false.)
       ! call h5read(varname='u3', var=flowvarins(0:jm,0:km,4,n),dir='i',display=.false.)
@@ -2422,15 +2424,15 @@ module bc
       !
     enddo
     !
-    umax=-2.d0
-    umin=2.d0
+    umax=-2.e0_real_kind
+    umin=2.e0_real_kind
     do k=0,km
     do j=0,jm
       !
       rho_in(j,k)  =  rho_in(j,k) + roinf
       !
       ! to enforce no back flow
-      if(vel_in(j,k,1)+uinf<0.d0) then
+      if(vel_in(j,k,1)+uinf<0.e0_real_kind) then
         vel_in(j,k,1)=uinf
       else
         vel_in(j,k,1)=vel_in(j,k,1) + uinf
@@ -2480,7 +2482,8 @@ module bc
   !| 20-10-2021: Created by J. Fang @ Warrington                       |
   !+-------------------------------------------------------------------+
   subroutine complete_inflow_cpu_file(path,writing,identity,budget,allow_repartition)
-    use iso_fortran_env, only: int64,real64
+    use iso_fortran_env, only: int64
+    use astr_precision, only: real_to_word,word_to_real
     use ieee_arithmetic, only: ieee_is_finite
     use mpi
     use commvar, only: ja,ka
@@ -2491,7 +2494,7 @@ module bc
     logical,optional,intent(in) :: allow_repartition
     type(checkpoint_state_identity),intent(inout) :: identity
     integer(int64),intent(in) :: budget
-    real(real64),allocatable :: buffer(:,:,:,:)
+    real(real_kind),allocatable :: buffer(:,:,:,:)
     integer(int64) :: metadata(15),remaining
     integer :: slot,m,c,err
     logical :: ready
@@ -2504,11 +2507,11 @@ module bc
         int(merge(1,0,inflow_load_initial),int64),int(merge(1,0,ready),int64)]
       metadata(11:14)=[0_int64,1_int64,2_int64,3_int64]
       metadata(15)=int(merge(1,0,inflow_first_call),int64)
-      buffer=0.0_real64
+      buffer=0.0_real_kind
       if(ready) then
         call checkpoint_state_require(all(shape(flowvarins)==[jm+1,km+1,5,4]).and.size(timeins)==4, &
           mpi_imin,'CPU inflow cache shape')
-        metadata(7:10)=transfer(timeins,metadata(7:10))
+        metadata(7:10)=real_to_word(timeins)
         do slot=0,3
           do m=1,5
             c=slot*5+m
@@ -2548,7 +2551,7 @@ module bc
           mpi_imin,'restored CPU inflow target shape or bounds')
         allocate(flowvarins(0:jm,0:km,5,0:3),timeins(0:3),stat=err)
         call checkpoint_state_require(err==0,mpi_imin,'CPU inflow cache restore allocation')
-        timeins=transfer(metadata(7:10),timeins)
+        timeins=word_to_real(metadata(7:10))
         call checkpoint_state_require(all(ieee_is_finite(timeins)),mpi_imin,'CPU inflow times nonfinite')
         do slot=0,3
           do m=1,5
@@ -2575,13 +2578,13 @@ module bc
 #endif
     !
     ! local data
-    real(8),pointer,dimension(:,:,:) :: vp1,vp2,vp3,vp4
+    real(real_kind),pointer,dimension(:,:,:) :: vp1,vp2,vp3,vp4
     integer :: n,n2,n0,i,j,k,jsp
     integer :: turn
     character(len=5) :: isname
     integer :: nvp(0:3)
-    real(8) :: vartime(0:3),time_final
-    real(8) :: time0,deltime,var0,new_deltime,time_scale
+    real(real_kind) :: vartime(0:3),time_final
+    real(real_kind) :: time0,deltime,var0,new_deltime,time_scale
     character(len=10) :: varname
     !
     ! call h5io_init(filename='inflow/islice00100.h5',mode='read',comm=mpi_imin)
@@ -2659,7 +2662,7 @@ module bc
                                 vp3(j+1,k+1,2),vp4(j+1,k+1,2),           &
                                           time0,deltime,time)
             !
-            if(vel_in(j,k,1)+vel_prof(j,1)<0.d0) then
+            if(vel_in(j,k,1)+vel_prof(j,1)<0.e0_real_kind) then
               vel_in(j,k,1)=vel_prof(j,1)
             else
               vel_in(j,k,1)=vel_prof(j,1)+vel_in(j,k,1)
@@ -2684,7 +2687,7 @@ module bc
                                 vp3(j+1,k+1,2),vp4(j+1,k+1,2),           &
                                           time0,deltime,time)
             !
-            if(vel_in(j,k,1)+vel_prof(j,1)<0.d0) then
+            if(vel_in(j,k,1)+vel_prof(j,1)<0.e0_real_kind) then
               vel_in(j,k,1)=vel_prof(j,1)
             else
               vel_in(j,k,1)=vel_prof(j,1)+vel_in(j,k,1)
@@ -2814,9 +2817,9 @@ module bc
           ! endif
           ! 
           new_deltime=timeins(nvp(0))-timeins(nvp(3))
-          time_scale=max(1.d0,maxval(abs(timeins)))
-          if(new_deltime<=0.d0 .or. &
-             abs(new_deltime-deltime)>1.d-12*time_scale) &
+          time_scale=max(1.e0_real_kind,maxval(abs(timeins)))
+          if(new_deltime<=0.e0_real_kind .or. &
+             abs(new_deltime-deltime)>1.e-12_real_kind*time_scale) &
             stop 'CPU dynamic inflow slice interval changed'
           n0=nvp(0)
           nvp(0)=nvp(1)
@@ -2849,7 +2852,7 @@ module bc
                                 vp3(j+1,k+1,2),vp4(j+1,k+1,2),           &
                                           time0,deltime,time)
             !
-            if(vel_in(j,k,1)+vel_prof(j,1)<0.d0) then
+            if(vel_in(j,k,1)+vel_prof(j,1)<0.e0_real_kind) then
               vel_in(j,k,1)=vel_prof(j,1)
             else
               vel_in(j,k,1)=vel_prof(j,1)+vel_in(j,k,1)
@@ -2874,7 +2877,7 @@ module bc
                                 vp3(j+1,k+1,2),vp4(j+1,k+1,2),           &
                                           time0,deltime,time)
             !
-            if(vel_in(j,k,1)+vel_prof(j,1)<0.d0) then
+            if(vel_in(j,k,1)+vel_prof(j,1)<0.e0_real_kind) then
               vel_in(j,k,1)=vel_prof(j,1)
             else
               vel_in(j,k,1)=vel_prof(j,1)+vel_in(j,k,1)
@@ -2963,14 +2966,14 @@ module bc
     !
     ! local data
     integer :: i,j,k,l,jspc,ii,n,m
-    real(8) :: pinv(5,5),pnor(5,5),Pmult(5,5),E(5),F(5),G(5),Rest(5),  &
+    real(real_kind) :: pinv(5,5),pnor(5,5),Pmult(5,5),E(5),F(5),G(5),Rest(5),  &
                jcbi(3),LODi1(5),LODi(5)
-    real(8),allocatable :: Ecs(:,:),dEcs(:),fcs(:,:),dfcs(:,:)
-    real(8) :: uu,css,gmachmax2,kin,var1
+    real(real_kind),allocatable :: Ecs(:,:),dEcs(:),fcs(:,:),dfcs(:,:)
+    real(real_kind) :: uu,css,gmachmax2,kin,var1
     !
     logical,save :: lfirstcal=.true.
     !
-    gmachmax2=0.d0
+    gmachmax2=0.e0_real_kind
     do k=0,km
     do j=0,jm
     do i=0,im
@@ -3081,16 +3084,16 @@ module bc
         !
         css=sos(tmp(i,j,k))
         !
-        kin=0.25d0*(1.d0-gmachmax2)*css/(xmax-xmin)
+        kin=0.25e0_real_kind*(1.e0_real_kind-gmachmax2)*css/(xmax-xmin)
         !
-        var1=1.d0/sqrt( dxi(i,j,k,1,1)**2+dxi(i,j,k,1,2)**2+           &
+        var1=1.e0_real_kind/sqrt( dxi(i,j,k,1,1)**2+dxi(i,j,k,1,2)**2+           &
                         dxi(i,j,k,1,3)**2 )
         !
-        LODi(1)=0.d0
-        LODi(2)=kin*0.5d0*                                             &
+        LODi(1)=0.e0_real_kind
+        LODi(2)=kin*0.5e0_real_kind*                                             &
                    ( dxi(i,j,k,1,1)*var1*(vel(i,j,k,3)-vel_in(j,k,3))- &
                      dxi(i,j,k,1,3)*var1*(vel(i,j,k,1)-vel_in(j,k,1)) )
-        LODi(3)=kin*0.5d0*                                             &
+        LODi(3)=kin*0.5e0_real_kind*                                             &
                    (-dxi(i,j,k,1,1)*var1*(vel(i,j,k,2)-vel_in(j,k,2))+ &
                      dxi(i,j,k,1,2)*var1*(vel(i,j,k,1)-vel_in(j,k,1)) )
         LODi(4)=kin*(dxi(i,j,k,1,1)*var1*(vel(i,j,k,1)-vel_in(j,k,1))+ &
@@ -3110,7 +3113,7 @@ module bc
            dxi(i,j,k,1,2)*vel(i,j,k,2) +                               &
            dxi(i,j,k,1,3)*vel(i,j,k,3)
         do jspc=1,num_species
-          var1=kin*0.5d0*(spc(i,j,k,jspc)-spc_in(j,k,jspc))
+          var1=kin*0.5e0_real_kind*(spc(i,j,k,jspc)-spc_in(j,k,jspc))
           !
           dEcs(5+jspc)=jacob(i,j,k)*uu*var1
         enddo
@@ -3205,9 +3208,9 @@ module bc
     !
     ! local data
     integer :: i,j,k,l,jspec
-    real(8) :: css,csse,ub,pe,roe,ue,ve,we,spce(1:num_species),        &
+    real(real_kind) :: css,csse,ub,pe,roe,ue,ve,we,spce(1:num_species),        &
                vnb,vtb,vne,vte,te
-    real(8) :: var1
+    real(real_kind) :: var1
     !
     logical,save :: lfirstcal=.true.
     !
@@ -3218,17 +3221,17 @@ module bc
       do k=0,km
       do j=0,jm
         !
-        ue  =extrapolate(vel(i+1,j,k,1),vel(i+2,j,k,1),dv=0.d0)
-        ve  =extrapolate(vel(i+1,j,k,2),vel(i+2,j,k,2),dv=0.d0)
-        we  =extrapolate(vel(i+1,j,k,3),vel(i+2,j,k,3),dv=0.d0)
-        pe  =extrapolate(prs(i+1,j,k),  prs(i+2,j,k),dv=0.d0)
-        roe =extrapolate(rho(i+1,j,k),  rho(i+2,j,k),dv=0.d0)
-        te  =extrapolate(tmp(i+1,j,k),  tmp(i+2,j,k),dv=0.d0)
+        ue  =extrapolate(vel(i+1,j,k,1),vel(i+2,j,k,1),dv=0.e0_real_kind)
+        ve  =extrapolate(vel(i+1,j,k,2),vel(i+2,j,k,2),dv=0.e0_real_kind)
+        we  =extrapolate(vel(i+1,j,k,3),vel(i+2,j,k,3),dv=0.e0_real_kind)
+        pe  =extrapolate(prs(i+1,j,k),  prs(i+2,j,k),dv=0.e0_real_kind)
+        roe =extrapolate(rho(i+1,j,k),  rho(i+2,j,k),dv=0.e0_real_kind)
+        te  =extrapolate(tmp(i+1,j,k),  tmp(i+2,j,k),dv=0.e0_real_kind)
         ! csse=extrapolate(sos(tmp(i+1,j,k)),sos(tmp(i+2,j,k)),dv=0.d0)
         !
         do jspec=1,num_species
           spce(jspec)=extrapolate(spc(i+1,j,k,jspec),                  &
-                                  spc(i+2,j,k,jspec),dv=0.d0)
+                                  spc(i+2,j,k,jspec),dv=0.e0_real_kind)
         enddo
         !
         prs(i,j,k)=pe
@@ -3255,7 +3258,7 @@ module bc
                       species=spc(i,j,k,:)                               )
         endif
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
       enddo
       enddo
@@ -3269,16 +3272,16 @@ module bc
       do k=0,km
       do j=0,jm
         !
-        ue  =extrapolate(vel(i-1,j,k,1),vel(i-2,j,k,1),dv=0.d0)
-        ve  =extrapolate(vel(i-1,j,k,2),vel(i-2,j,k,2),dv=0.d0)
-        we  =extrapolate(vel(i-1,j,k,3),vel(i-2,j,k,3),dv=0.d0)
-        pe  =extrapolate(prs(i-1,j,k),  prs(i-2,j,k),dv=0.d0)
-        te  =extrapolate(tmp(i-1,j,k),  tmp(i-2,j,k),dv=0.d0)
+        ue  =extrapolate(vel(i-1,j,k,1),vel(i-2,j,k,1),dv=0.e0_real_kind)
+        ve  =extrapolate(vel(i-1,j,k,2),vel(i-2,j,k,2),dv=0.e0_real_kind)
+        we  =extrapolate(vel(i-1,j,k,3),vel(i-2,j,k,3),dv=0.e0_real_kind)
+        pe  =extrapolate(prs(i-1,j,k),  prs(i-2,j,k),dv=0.e0_real_kind)
+        te  =extrapolate(tmp(i-1,j,k),  tmp(i-2,j,k),dv=0.e0_real_kind)
         ! csse=extrapolate(sos(tmp(i-1,j,k)),sos(tmp(i-2,j,k)),dv=0.d0)
         !
         do jspec=1,num_species
           spce(jspec)=extrapolate(spc(i-1,j,k,jspec),                  &
-                                  spc(i-2,j,k,jspec),dv=0.d0)
+                                  spc(i-2,j,k,jspec),dv=0.e0_real_kind)
         enddo
         !
         prs(i,j,k)=pe
@@ -3305,7 +3308,7 @@ module bc
                       species=spc(i,j,k,:)                               )
         endif
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
       enddo
       enddo
@@ -3323,16 +3326,16 @@ module bc
         ! ub =vel(i,j,k,1)*bvec_jm(i,k,1)+vel(i,j,k,2)*bvec_jm(i,k,2)+   &
         !     vel(i,j,k,3)*bvec_jm(i,k,3)
         !
-        ue  =extrapolate(vel(i,j+1,k,1),vel(i,j+2,k,1),dv=0.d0)
-        ve  =extrapolate(vel(i,j+1,k,2),vel(i,j+2,k,2),dv=0.d0)
-        we  =extrapolate(vel(i,j+1,k,3),vel(i,j+2,k,3),dv=0.d0)
-        pe  =extrapolate(prs(i,j+1,k),  prs(i,j+2,k),dv=0.d0)
-        roe =extrapolate(rho(i,j+1,k),  rho(i,j+2,k),dv=0.d0)
+        ue  =extrapolate(vel(i,j+1,k,1),vel(i,j+2,k,1),dv=0.e0_real_kind)
+        ve  =extrapolate(vel(i,j+1,k,2),vel(i,j+2,k,2),dv=0.e0_real_kind)
+        we  =extrapolate(vel(i,j+1,k,3),vel(i,j+2,k,3),dv=0.e0_real_kind)
+        pe  =extrapolate(prs(i,j+1,k),  prs(i,j+2,k),dv=0.e0_real_kind)
+        roe =extrapolate(rho(i,j+1,k),  rho(i,j+2,k),dv=0.e0_real_kind)
         ! csse=extrapolate(sos(tmp(i,j+1,k)),sos(tmp(i,j+2,k)),dv=0.d0)
         !
         do jspec=1,num_species
           spce(jspec)=extrapolate(spc(i,j+1,k,jspec),                  &
-                                  spc(i,j+2,k,jspec),dv=0.d0)
+                                  spc(i,j+2,k,jspec),dv=0.e0_real_kind)
         enddo
         !
         prs(i,j,k)=pe
@@ -3354,7 +3357,7 @@ module bc
                       species=spc(i,j,k,:)                               )
         endif
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
       enddo
       enddo
@@ -3372,16 +3375,16 @@ module bc
         ! ub =vel(i,j,k,1)*bvec_jm(i,k,1)+vel(i,j,k,2)*bvec_jm(i,k,2)+   &
         !     vel(i,j,k,3)*bvec_jm(i,k,3)
         !
-        ue  =extrapolate(vel(i,j-1,k,1),vel(i,j-2,k,1),dv=0.d0)
-        ve  =extrapolate(vel(i,j-1,k,2),vel(i,j-2,k,2),dv=0.d0)
-        we  =extrapolate(vel(i,j-1,k,3),vel(i,j-2,k,3),dv=0.d0)
-        pe  =extrapolate(prs(i,j-1,k),  prs(i,j-2,k),dv=0.d0)
-        roe =extrapolate(rho(i,j-1,k),  rho(i,j-2,k),dv=0.d0)
+        ue  =extrapolate(vel(i,j-1,k,1),vel(i,j-2,k,1),dv=0.e0_real_kind)
+        ve  =extrapolate(vel(i,j-1,k,2),vel(i,j-2,k,2),dv=0.e0_real_kind)
+        we  =extrapolate(vel(i,j-1,k,3),vel(i,j-2,k,3),dv=0.e0_real_kind)
+        pe  =extrapolate(prs(i,j-1,k),  prs(i,j-2,k),dv=0.e0_real_kind)
+        roe =extrapolate(rho(i,j-1,k),  rho(i,j-2,k),dv=0.e0_real_kind)
         ! csse=extrapolate(sos(tmp(i,j-1,k)),sos(tmp(i,j-2,k)),dv=0.d0)
         !
         do jspec=1,num_species
           spce(jspec)=extrapolate(spc(i,j-1,k,jspec),                  &
-                                  spc(i,j-2,k,jspec),dv=0.d0)
+                                  spc(i,j-2,k,jspec),dv=0.e0_real_kind)
         enddo
         !
         prs(i,j,k)=pe
@@ -3397,7 +3400,7 @@ module bc
                    velocity=vel(i,j,k,:),  temperature=tmp(i,j,k),        &
                     species=spc(i,j,k,:)                               )
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
       enddo
       enddo
@@ -3415,16 +3418,16 @@ module bc
         ! ub =vel(i,j,k,1)*bvec_jm(i,k,1)+vel(i,j,k,2)*bvec_jm(i,k,2)+   &
         !     vel(i,j,k,3)*bvec_jm(i,k,3)
         !
-        ue  =extrapolate(vel(i,j,k+1,1),vel(i,j,k+2,1),dv=0.d0)
-        ve  =extrapolate(vel(i,j,k+1,2),vel(i,j,k+2,2),dv=0.d0)
-        we  =extrapolate(vel(i,j,k+1,3),vel(i,j,k+2,3),dv=0.d0)
-        pe  =extrapolate(prs(i,j,k+1),  prs(i,j,k+2),dv=0.d0)
-        roe =extrapolate(rho(i,j,k+1),  rho(i,j,k+2),dv=0.d0)
+        ue  =extrapolate(vel(i,j,k+1,1),vel(i,j,k+2,1),dv=0.e0_real_kind)
+        ve  =extrapolate(vel(i,j,k+1,2),vel(i,j,k+2,2),dv=0.e0_real_kind)
+        we  =extrapolate(vel(i,j,k+1,3),vel(i,j,k+2,3),dv=0.e0_real_kind)
+        pe  =extrapolate(prs(i,j,k+1),  prs(i,j,k+2),dv=0.e0_real_kind)
+        roe =extrapolate(rho(i,j,k+1),  rho(i,j,k+2),dv=0.e0_real_kind)
         ! csse=extrapolate(sos(tmp(i,j,k+1)),sos(tmp(i,j,k+2)),dv=0.d0)
         !
         do jspec=1,num_species
           spce(jspec)=extrapolate(spc(i,j,k+1,jspec),                  &
-                                  spc(i,j,k+2,jspec),dv=0.d0)
+                                  spc(i,j,k+2,jspec),dv=0.e0_real_kind)
         enddo
         !
         prs(i,j,k)=pe
@@ -3440,7 +3443,7 @@ module bc
                    velocity=vel(i,j,k,:),  pressure=prs(i,j,k),        &
                     species=spc(i,j,k,:)                               )
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
       enddo
       enddo
@@ -3458,16 +3461,16 @@ module bc
         ! ub =vel(i,j,k,1)*bvec_jm(i,k,1)+vel(i,j,k,2)*bvec_jm(i,k,2)+   &
         !     vel(i,j,k,3)*bvec_jm(i,k,3)
         !
-        ue  =extrapolate(vel(i,j,k-1,1),vel(i,j,k-2,1),dv=0.d0)
-        ve  =extrapolate(vel(i,j,k-1,2),vel(i,j,k-2,2),dv=0.d0)
-        we  =extrapolate(vel(i,j,k-1,3),vel(i,j,k-2,3),dv=0.d0)
-        pe  =extrapolate(prs(i,j,k-1),  prs(i,j,k-2),dv=0.d0)
-        roe =extrapolate(rho(i,j,k-1),  rho(i,j,k-2),dv=0.d0)
+        ue  =extrapolate(vel(i,j,k-1,1),vel(i,j,k-2,1),dv=0.e0_real_kind)
+        ve  =extrapolate(vel(i,j,k-1,2),vel(i,j,k-2,2),dv=0.e0_real_kind)
+        we  =extrapolate(vel(i,j,k-1,3),vel(i,j,k-2,3),dv=0.e0_real_kind)
+        pe  =extrapolate(prs(i,j,k-1),  prs(i,j,k-2),dv=0.e0_real_kind)
+        roe =extrapolate(rho(i,j,k-1),  rho(i,j,k-2),dv=0.e0_real_kind)
         ! csse=extrapolate(sos(tmp(i,j,k-1)),sos(tmp(i,j,k-2)),dv=0.d0)
         !
         do jspec=1,num_species
           spce(jspec)=extrapolate(spc(i,j,k-1,jspec),                  &
-                                  spc(i,j,k-2,jspec),dv=0.d0)
+                                  spc(i,j,k-2,jspec),dv=0.e0_real_kind)
         enddo
         !
         prs(i,j,k)=pe
@@ -3483,7 +3486,7 @@ module bc
                    velocity=vel(i,j,k,:),  pressure=prs(i,j,k),        &
                     species=spc(i,j,k,:)                               )
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
       enddo
       enddo
@@ -3513,9 +3516,9 @@ module bc
     !
     ! local data
     integer :: i,j,k,l,jspec
-    real(8) :: css,csse,ub,pe,roe,ue,ve,we,spce(1:num_species),        &
+    real(real_kind) :: css,csse,ub,pe,roe,ue,ve,we,spce(1:num_species),        &
                vnb,vtb,vne,vte,te
-    real(8) :: var1,vec1(3)
+    real(real_kind) :: var1,vec1(3)
     !
     logical,save :: lfirstcal=.true.
     !
@@ -3526,17 +3529,17 @@ module bc
       do k=0,km
       do j=0,jm
         !
-        ue  =extrapolate(vel(i+1,j,k,1),vel(i+2,j,k,1),dv=0.d0)
-        ve  =extrapolate(vel(i+1,j,k,2),vel(i+2,j,k,2),dv=0.d0)
-        we  =extrapolate(vel(i+1,j,k,3),vel(i+2,j,k,3),dv=0.d0)
-        pe  =extrapolate(prs(i+1,j,k),  prs(i+2,j,k),dv=0.d0)
-        roe =extrapolate(rho(i+1,j,k),  rho(i+2,j,k),dv=0.d0)
-        te  =extrapolate(tmp(i+1,j,k),  tmp(i+2,j,k),dv=0.d0)
+        ue  =extrapolate(vel(i+1,j,k,1),vel(i+2,j,k,1),dv=0.e0_real_kind)
+        ve  =extrapolate(vel(i+1,j,k,2),vel(i+2,j,k,2),dv=0.e0_real_kind)
+        we  =extrapolate(vel(i+1,j,k,3),vel(i+2,j,k,3),dv=0.e0_real_kind)
+        pe  =extrapolate(prs(i+1,j,k),  prs(i+2,j,k),dv=0.e0_real_kind)
+        roe =extrapolate(rho(i+1,j,k),  rho(i+2,j,k),dv=0.e0_real_kind)
+        te  =extrapolate(tmp(i+1,j,k),  tmp(i+2,j,k),dv=0.e0_real_kind)
         ! csse=extrapolate(sos(tmp(i+1,j,k)),sos(tmp(i+2,j,k)),dv=0.d0)
         !
         do jspec=1,num_species
           spce(jspec)=extrapolate(spc(i+1,j,k,jspec),                  &
-                                  spc(i+2,j,k,jspec),dv=0.d0)
+                                  spc(i+2,j,k,jspec),dv=0.e0_real_kind)
         enddo
         !
         vec1(1)=ue
@@ -3563,7 +3566,7 @@ module bc
                     velocity=vel(i,j,k,:),  temperature=tmp(i,j,k),    &
                     species=spc(i,j,k,:)                               )
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
       enddo
       enddo
@@ -3577,16 +3580,16 @@ module bc
       do k=0,km
       do j=0,jm
         !
-        ue  =extrapolate(vel(i-1,j,k,1),vel(i-2,j,k,1),dv=0.d0)
-        ve  =extrapolate(vel(i-1,j,k,2),vel(i-2,j,k,2),dv=0.d0)
-        we  =extrapolate(vel(i-1,j,k,3),vel(i-2,j,k,3),dv=0.d0)
-        pe  =extrapolate(prs(i-1,j,k),  prs(i-2,j,k),dv=0.d0)
-        te  =extrapolate(tmp(i-1,j,k),  tmp(i-2,j,k),dv=0.d0)
+        ue  =extrapolate(vel(i-1,j,k,1),vel(i-2,j,k,1),dv=0.e0_real_kind)
+        ve  =extrapolate(vel(i-1,j,k,2),vel(i-2,j,k,2),dv=0.e0_real_kind)
+        we  =extrapolate(vel(i-1,j,k,3),vel(i-2,j,k,3),dv=0.e0_real_kind)
+        pe  =extrapolate(prs(i-1,j,k),  prs(i-2,j,k),dv=0.e0_real_kind)
+        te  =extrapolate(tmp(i-1,j,k),  tmp(i-2,j,k),dv=0.e0_real_kind)
         ! csse=extrapolate(sos(tmp(i-1,j,k)),sos(tmp(i-2,j,k)),dv=0.d0)
         !
         do jspec=1,num_species
           spce(jspec)=extrapolate(spc(i-1,j,k,jspec),                  &
-                                  spc(i-2,j,k,jspec),dv=0.d0)
+                                  spc(i-2,j,k,jspec),dv=0.e0_real_kind)
         enddo
         !
         prs(i,j,k)=pe
@@ -3615,7 +3618,7 @@ module bc
                     velocity=vel(i,j,k,:),  temperature=tmp(i,j,k),    &
                     species=spc(i,j,k,:)                               )
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
       enddo
       enddo
@@ -3629,15 +3632,15 @@ module bc
       do k=0,km
       do i=0,im
         !
-        ue  =extrapolate(vel(i,j+1,k,1),vel(i,j+2,k,1),dv=0.d0)
-        ve  =extrapolate(vel(i,j+1,k,2),vel(i,j+2,k,2),dv=0.d0)
-        we  =extrapolate(vel(i,j+1,k,3),vel(i,j+2,k,3),dv=0.d0)
-        pe  =extrapolate(prs(i,j+1,k),  prs(i,j+2,k),dv=0.d0)
-        te  =extrapolate(tmp(i,j+1,k),  tmp(i,j+2,k),dv=0.d0)
+        ue  =extrapolate(vel(i,j+1,k,1),vel(i,j+2,k,1),dv=0.e0_real_kind)
+        ve  =extrapolate(vel(i,j+1,k,2),vel(i,j+2,k,2),dv=0.e0_real_kind)
+        we  =extrapolate(vel(i,j+1,k,3),vel(i,j+2,k,3),dv=0.e0_real_kind)
+        pe  =extrapolate(prs(i,j+1,k),  prs(i,j+2,k),dv=0.e0_real_kind)
+        te  =extrapolate(tmp(i,j+1,k),  tmp(i,j+2,k),dv=0.e0_real_kind)
         !
         do jspec=1,num_species
           spce(jspec)=extrapolate(spc(i,j+1,k,jspec),                  &
-                                  spc(i,j+2,k,jspec),dv=0.d0)
+                                  spc(i,j+2,k,jspec),dv=0.e0_real_kind)
         enddo
         !
         vec1(1)=ue
@@ -3670,7 +3673,7 @@ module bc
                       species=spc(i,j,k,:)                                )
         endif
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
       enddo
       enddo
@@ -3688,16 +3691,16 @@ module bc
         ! ub =vel(i,j,k,1)*bvec_jm(i,k,1)+vel(i,j,k,2)*bvec_jm(i,k,2)+   &
         !     vel(i,j,k,3)*bvec_jm(i,k,3)
         !
-        ue  =extrapolate(vel(i,j-1,k,1),vel(i,j-2,k,1),dv=0.d0)
-        ve  =extrapolate(vel(i,j-1,k,2),vel(i,j-2,k,2),dv=0.d0)
-        we  =extrapolate(vel(i,j-1,k,3),vel(i,j-2,k,3),dv=0.d0)
-        pe  =extrapolate(prs(i,j-1,k),  prs(i,j-2,k),dv=0.d0)
-        te  =extrapolate(tmp(i,j-1,k),  tmp(i,j-2,k),dv=0.d0)
+        ue  =extrapolate(vel(i,j-1,k,1),vel(i,j-2,k,1),dv=0.e0_real_kind)
+        ve  =extrapolate(vel(i,j-1,k,2),vel(i,j-2,k,2),dv=0.e0_real_kind)
+        we  =extrapolate(vel(i,j-1,k,3),vel(i,j-2,k,3),dv=0.e0_real_kind)
+        pe  =extrapolate(prs(i,j-1,k),  prs(i,j-2,k),dv=0.e0_real_kind)
+        te  =extrapolate(tmp(i,j-1,k),  tmp(i,j-2,k),dv=0.e0_real_kind)
         ! csse=extrapolate(sos(tmp(i,j-1,k)),sos(tmp(i,j-2,k)),dv=0.d0)
         !
         do jspec=1,num_species
           spce(jspec)=extrapolate(spc(i,j-1,k,jspec),                  &
-                                  spc(i,j-2,k,jspec),dv=0.d0)
+                                  spc(i,j-2,k,jspec),dv=0.e0_real_kind)
         enddo
         !
         vec1(1)=ue
@@ -3725,7 +3728,7 @@ module bc
                     velocity=vel(i,j,k,:),  temperature=tmp(i,j,k),    &
                     species=spc(i,j,k,:)                               )
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
       enddo
       enddo
@@ -3739,16 +3742,16 @@ module bc
       do j=0,jm
       do i=0,im
         !
-        ue  =extrapolate(vel(i,j,k+1,1),vel(i,j,k+2,1),dv=0.d0)
-        ve  =extrapolate(vel(i,j,k+1,2),vel(i,j,k+2,2),dv=0.d0)
-        we  =extrapolate(vel(i,j,k+1,3),vel(i,j,k+2,3),dv=0.d0)
-        pe  =extrapolate(prs(i,j,k+1),  prs(i,j,k+2),dv=0.d0)
-        roe =extrapolate(rho(i,j,k+1),  rho(i,j,k+2),dv=0.d0)
-        te  =extrapolate(tmp(i,j,k+1),  tmp(i,j,k+2),dv=0.d0)
+        ue  =extrapolate(vel(i,j,k+1,1),vel(i,j,k+2,1),dv=0.e0_real_kind)
+        ve  =extrapolate(vel(i,j,k+1,2),vel(i,j,k+2,2),dv=0.e0_real_kind)
+        we  =extrapolate(vel(i,j,k+1,3),vel(i,j,k+2,3),dv=0.e0_real_kind)
+        pe  =extrapolate(prs(i,j,k+1),  prs(i,j,k+2),dv=0.e0_real_kind)
+        roe =extrapolate(rho(i,j,k+1),  rho(i,j,k+2),dv=0.e0_real_kind)
+        te  =extrapolate(tmp(i,j,k+1),  tmp(i,j,k+2),dv=0.e0_real_kind)
         !
         do jspec=1,num_species
           spce(jspec)=extrapolate(spc(i,j,k+1,jspec),                  &
-                                  spc(i,j,k+2,jspec),dv=0.d0)
+                                  spc(i,j,k+2,jspec),dv=0.e0_real_kind)
         enddo
         !
         vec1(1)=ue
@@ -3782,7 +3785,7 @@ module bc
                       species=spc(i,j,k,:)                                )
         endif
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
       enddo
       enddo
@@ -3800,16 +3803,16 @@ module bc
         ! ub =vel(i,j,k,1)*bvec_jm(i,k,1)+vel(i,j,k,2)*bvec_jm(i,k,2)+   &
         !     vel(i,j,k,3)*bvec_jm(i,k,3)
         !
-        ue  =extrapolate(vel(i,j,k-1,1),vel(i,j,k-2,1),dv=0.d0)
-        ve  =extrapolate(vel(i,j,k-1,2),vel(i,j,k-2,2),dv=0.d0)
-        we  =extrapolate(vel(i,j,k-1,3),vel(i,j,k-2,3),dv=0.d0)
-        pe  =extrapolate(prs(i,j,k-1),  prs(i,j,k-2),dv=0.d0)
-        roe =extrapolate(rho(i,j,k-1),  rho(i,j,k-2),dv=0.d0)
+        ue  =extrapolate(vel(i,j,k-1,1),vel(i,j,k-2,1),dv=0.e0_real_kind)
+        ve  =extrapolate(vel(i,j,k-1,2),vel(i,j,k-2,2),dv=0.e0_real_kind)
+        we  =extrapolate(vel(i,j,k-1,3),vel(i,j,k-2,3),dv=0.e0_real_kind)
+        pe  =extrapolate(prs(i,j,k-1),  prs(i,j,k-2),dv=0.e0_real_kind)
+        roe =extrapolate(rho(i,j,k-1),  rho(i,j,k-2),dv=0.e0_real_kind)
         ! csse=extrapolate(sos(tmp(i,j,k-1)),sos(tmp(i,j,k-2)),dv=0.d0)
         !
         do jspec=1,num_species
           spce(jspec)=extrapolate(spc(i,j,k-1,jspec),                  &
-                                  spc(i,j,k-2,jspec),dv=0.d0)
+                                  spc(i,j,k-2,jspec),dv=0.e0_real_kind)
         enddo
         !
         prs(i,j,k)=pe
@@ -3833,7 +3836,7 @@ module bc
                     velocity=vel(i,j,k,:),  temperature=tmp(i,j,k),    &
                     species=spc(i,j,k,:)                               )
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
       enddo
       enddo
@@ -3862,9 +3865,9 @@ module bc
     !
     ! local data
     integer :: i,j,k,l,jspec
-    real(8) :: css,csse,ub,pe,roe,ue,ve,we,spce(1:num_species),        &
+    real(real_kind) :: css,csse,ub,pe,roe,ue,ve,we,spce(1:num_species),        &
                vnb,vtb,vne,vte
-    real(8) :: var1
+    real(real_kind) :: var1
     !
     logical,save :: lfirstcal=.true.
     !
@@ -3900,30 +3903,30 @@ module bc
         ! ub =vel(i,j,k,1)*bvec_jm(i,k,1)+vel(i,j,k,2)*bvec_jm(i,k,2)+   &
         !     vel(i,j,k,3)*bvec_jm(i,k,3)
         !
-        ue  =extrapolate(vel(i,j+1,k,1),vel(i,j+2,k,1),dv=0.d0)
-        ve  =extrapolate(vel(i,j+1,k,2),vel(i,j+2,k,2),dv=0.d0)
-        we  =extrapolate(vel(i,j+1,k,3),vel(i,j+2,k,3),dv=0.d0)
-        pe  =extrapolate(prs(i,j+1,k),  prs(i,j+2,k),dv=0.d0)
-        roe =extrapolate(rho(i,j+1,k),  rho(i,j+2,k),dv=0.d0)
+        ue  =extrapolate(vel(i,j+1,k,1),vel(i,j+2,k,1),dv=0.e0_real_kind)
+        ve  =extrapolate(vel(i,j+1,k,2),vel(i,j+2,k,2),dv=0.e0_real_kind)
+        we  =extrapolate(vel(i,j+1,k,3),vel(i,j+2,k,3),dv=0.e0_real_kind)
+        pe  =extrapolate(prs(i,j+1,k),  prs(i,j+2,k),dv=0.e0_real_kind)
+        roe =extrapolate(rho(i,j+1,k),  rho(i,j+2,k),dv=0.e0_real_kind)
         csse=extrapolate(sos(tmp(i,j+1,k),spc(i,j+1,k,:)), &
-                         sos(tmp(i,j+2,k),spc(i,j+2,k,:)),dv=0.d0)
+                         sos(tmp(i,j+2,k),spc(i,j+2,k,:)),dv=0.e0_real_kind)
         !
         do jspec=1,num_species
           spce(jspec)=extrapolate(spc(i,j+1,k,jspec),                  &
-                                  spc(i,j+2,k,jspec),dv=0.d0)
+                                  spc(i,j+2,k,jspec),dv=0.e0_real_kind)
         enddo
         !
-        if(vel(i,j,k,2)>=0.d0) then
+        if(vel(i,j,k,2)>=0.e0_real_kind) then
           ! subsonic inflow
           vel(i,j,k,1)=uinf
-          vel(i,j,k,2)=0.5d0*(pinf-pe)/(rho(i,j,k)*css)+0.5d0*(vinf+ve)
+          vel(i,j,k,2)=0.5e0_real_kind*(pinf-pe)/(rho(i,j,k)*css)+0.5e0_real_kind*(vinf+ve)
           vel(i,j,k,3)=winf
-          prs(i,j,k)  =0.5d0*(pinf+pe)+0.5d0*rho(i,j,k)*css*(vinf-ve)
-          rho(i,j,k)  =roinf*(prs(i,j,k)/pinf)**(1.d0/gamma)
+          prs(i,j,k)  =0.5e0_real_kind*(pinf+pe)+0.5e0_real_kind*rho(i,j,k)*css*(vinf-ve)
+          rho(i,j,k)  =roinf*(prs(i,j,k)/pinf)**(1.e0_real_kind/gamma)
           !
           tmp(i,j,k)  =thermal(pressure=prs(i,j,k),density=rho(i,j,k))
           !
-          spc(i,j,k,:)=0.d0
+          spc(i,j,k,:)=0.e0_real_kind
           !
         else
           ! subsonic outflow
@@ -3943,7 +3946,7 @@ module bc
                    velocity=vel(i,j,k,:),  pressure=prs(i,j,k),        &
                     species=spc(i,j,k,:)                               )
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
       enddo
       enddo
@@ -4007,17 +4010,17 @@ module bc
         ! ub =vel(i,j,k,1)*bvec_jm(i,k,1)+vel(i,j,k,2)*bvec_jm(i,k,2)+   &
         !     vel(i,j,k,3)*bvec_jm(i,k,3)
         !
-        ue  =extrapolate(vel(i,j-1,k,1),vel(i,j-2,k,1),dv=0.d0)
-        ve  =extrapolate(vel(i,j-1,k,2),vel(i,j-2,k,2),dv=0.d0)
-        we  =extrapolate(vel(i,j-1,k,3),vel(i,j-2,k,3),dv=0.d0)
-        pe  =extrapolate(prs(i,j-1,k),  prs(i,j-2,k),dv=0.d0)
-        roe =extrapolate(rho(i,j-1,k),  rho(i,j-2,k),dv=0.d0)
+        ue  =extrapolate(vel(i,j-1,k,1),vel(i,j-2,k,1),dv=0.e0_real_kind)
+        ve  =extrapolate(vel(i,j-1,k,2),vel(i,j-2,k,2),dv=0.e0_real_kind)
+        we  =extrapolate(vel(i,j-1,k,3),vel(i,j-2,k,3),dv=0.e0_real_kind)
+        pe  =extrapolate(prs(i,j-1,k),  prs(i,j-2,k),dv=0.e0_real_kind)
+        roe =extrapolate(rho(i,j-1,k),  rho(i,j-2,k),dv=0.e0_real_kind)
         csse=extrapolate(sos(tmp(i,j-1,k),spc(i,j-1,k,:)),  &
-                         sos(tmp(i,j-2,k),spc(i,j-2,k,:)),dv=0.d0)
+                         sos(tmp(i,j-2,k),spc(i,j-2,k,:)),dv=0.e0_real_kind)
         !
         do jspec=1,num_species
           spce(jspec)=extrapolate(spc(i,j-1,k,jspec),                  &
-                                  spc(i,j-2,k,jspec),dv=0.d0)
+                                  spc(i,j-2,k,jspec),dv=0.e0_real_kind)
         enddo
         !
         ! if(vel(i,j,k,2)<=0.d0) then
@@ -4073,7 +4076,7 @@ module bc
                     velocity=vel(i,j,k,:),  temperature=tmp(i,j,k),    &
                     species=spc(i,j,k,:)                               )
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
       enddo
       enddo
@@ -4112,29 +4115,29 @@ module bc
         ! ub =vel(i,j,k,1)*bvec_jm(i,k,1)+vel(i,j,k,2)*bvec_jm(i,k,2)+   &
         !     vel(i,j,k,3)*bvec_jm(i,k,3)
         !
-        ue  =extrapolate(vel(i,j,k+1,1),vel(i,j,k+2,1),dv=0.d0)
-        ve  =extrapolate(vel(i,j,k+1,2),vel(i,j,k+2,2),dv=0.d0)
-        we  =extrapolate(vel(i,j,k+1,3),vel(i,j,k+2,3),dv=0.d0)
-        pe  =extrapolate(prs(i,j,k+1),  prs(i,j,k+2),dv=0.d0)
-        roe =extrapolate(rho(i,j,k+1),  rho(i,j,k+2),dv=0.d0)
-        csse=extrapolate(sos(tmp(i,j,k+1)),sos(tmp(i,j,k+2)),dv=0.d0)
+        ue  =extrapolate(vel(i,j,k+1,1),vel(i,j,k+2,1),dv=0.e0_real_kind)
+        ve  =extrapolate(vel(i,j,k+1,2),vel(i,j,k+2,2),dv=0.e0_real_kind)
+        we  =extrapolate(vel(i,j,k+1,3),vel(i,j,k+2,3),dv=0.e0_real_kind)
+        pe  =extrapolate(prs(i,j,k+1),  prs(i,j,k+2),dv=0.e0_real_kind)
+        roe =extrapolate(rho(i,j,k+1),  rho(i,j,k+2),dv=0.e0_real_kind)
+        csse=extrapolate(sos(tmp(i,j,k+1)),sos(tmp(i,j,k+2)),dv=0.e0_real_kind)
         !
         do jspec=1,num_species
           spce(jspec)=extrapolate(spc(i,j,k+1,jspec),                  &
-                                  spc(i,j,k+2,jspec),dv=0.d0)
+                                  spc(i,j,k+2,jspec),dv=0.e0_real_kind)
         enddo
         !
-        if(vel(i,j,k,3)>=0.d0) then
+        if(vel(i,j,k,3)>=0.e0_real_kind) then
           ! subsonic inflow
           vel(i,j,k,1)=uinf
           vel(i,j,k,2)=vinf
-          vel(i,j,k,3)=0.5d0*(pinf-pe)/(rho(i,j,k)*css)+0.5d0*(winf+we)
-          prs(i,j,k)  =0.5d0*(pinf+pe)+0.5d0*rho(i,j,k)*css*(winf-we)
-          rho(i,j,k)  =roinf*(prs(i,j,k)/pinf)**(1.d0/gamma)
+          vel(i,j,k,3)=0.5e0_real_kind*(pinf-pe)/(rho(i,j,k)*css)+0.5e0_real_kind*(winf+we)
+          prs(i,j,k)  =0.5e0_real_kind*(pinf+pe)+0.5e0_real_kind*rho(i,j,k)*css*(winf-we)
+          rho(i,j,k)  =roinf*(prs(i,j,k)/pinf)**(1.e0_real_kind/gamma)
           !
           tmp(i,j,k)  =thermal(pressure=prs(i,j,k),density=rho(i,j,k))
           !
-          spc(i,j,k,:)=0.d0
+          spc(i,j,k,:)=0.e0_real_kind
           !
         else
           ! subsonic outflow
@@ -4191,29 +4194,29 @@ module bc
         ! ub =vel(i,j,k,1)*bvec_jm(i,k,1)+vel(i,j,k,2)*bvec_jm(i,k,2)+   &
         !     vel(i,j,k,3)*bvec_jm(i,k,3)
         !
-        ue  =extrapolate(vel(i,j,k-1,1),vel(i,j,k-2,1),dv=0.d0)
-        ve  =extrapolate(vel(i,j,k-1,2),vel(i,j,k-2,2),dv=0.d0)
-        we  =extrapolate(vel(i,j,k-1,3),vel(i,j,k-2,3),dv=0.d0)
-        pe  =extrapolate(prs(i,j,k-1),  prs(i,j,k-2),dv=0.d0)
-        roe =extrapolate(rho(i,j,k-1),  rho(i,j,k-2),dv=0.d0)
-        csse=extrapolate(sos(tmp(i,j,k-1)),sos(tmp(i,j,k-2)),dv=0.d0)
+        ue  =extrapolate(vel(i,j,k-1,1),vel(i,j,k-2,1),dv=0.e0_real_kind)
+        ve  =extrapolate(vel(i,j,k-1,2),vel(i,j,k-2,2),dv=0.e0_real_kind)
+        we  =extrapolate(vel(i,j,k-1,3),vel(i,j,k-2,3),dv=0.e0_real_kind)
+        pe  =extrapolate(prs(i,j,k-1),  prs(i,j,k-2),dv=0.e0_real_kind)
+        roe =extrapolate(rho(i,j,k-1),  rho(i,j,k-2),dv=0.e0_real_kind)
+        csse=extrapolate(sos(tmp(i,j,k-1)),sos(tmp(i,j,k-2)),dv=0.e0_real_kind)
         !
         do jspec=1,num_species
           spce(jspec)=extrapolate(spc(i,j,k-1,jspec),                  &
-                                  spc(i,j,k-2,jspec),dv=0.d0)
+                                  spc(i,j,k-2,jspec),dv=0.e0_real_kind)
         enddo
         !
-        if(vel(i,j,k,3)<=0.d0) then
+        if(vel(i,j,k,3)<=0.e0_real_kind) then
           ! subsonic inflow
           vel(i,j,k,1)=uinf
           vel(i,j,k,2)=vinf
-          vel(i,j,k,3)=-0.5d0*(pinf-pe)/(rho(i,j,k)*css)+0.5d0*(winf+we)
-          prs(i,j,k)  = 0.5d0*(pinf+pe)-0.5d0*rho(i,j,k)*css*(winf-we)
-          rho(i,j,k)  =roinf*(prs(i,j,k)/pinf)**(1.d0/gamma)
+          vel(i,j,k,3)=-0.5e0_real_kind*(pinf-pe)/(rho(i,j,k)*css)+0.5e0_real_kind*(winf+we)
+          prs(i,j,k)  = 0.5e0_real_kind*(pinf+pe)-0.5e0_real_kind*rho(i,j,k)*css*(winf-we)
+          rho(i,j,k)  =roinf*(prs(i,j,k)/pinf)**(1.e0_real_kind/gamma)
           !
           tmp(i,j,k)  =thermal(pressure=prs(i,j,k),density=rho(i,j,k))
           !
-          spc(i,j,k,:)=0.d0
+          spc(i,j,k,:)=0.e0_real_kind
           !
         else
           ! subsonic outflow
@@ -4264,13 +4267,13 @@ module bc
     !
     ! local data
     integer :: i,j,k,l,jspec
-    real(8) :: css,csse,ub,pe,roe,ue,ve,we,spce(1:num_species),        &
+    real(real_kind) :: css,csse,ub,pe,roe,ue,ve,we,spce(1:num_species),        &
                vnb,vtb,vne,vte,te,alpha,pwave_in,pwave_out
-    real(8) :: var1,css1,css2
+    real(real_kind) :: var1,css1,css2
     !
     logical,save :: lfirstcal=.true.
     !
-    alpha=0.25d0
+    alpha=0.25e0_real_kind
     !
     if(ndir==2 .and. irk==irkm) then
       !
@@ -4305,18 +4308,18 @@ module bc
         ub =vel(i,j,k,1)*bvec_im(j,k,1)+vel(i,j,k,2)*bvec_im(j,k,2)+   &
             vel(i,j,k,3)*bvec_im(j,k,3)
         !
-        ue  =extrapolate(vel(i-1,j,k,1),vel(i-2,j,k,1),dv=0.d0)
-        ve  =extrapolate(vel(i-1,j,k,2),vel(i-2,j,k,2),dv=0.d0)
-        we  =extrapolate(vel(i-1,j,k,3),vel(i-2,j,k,3),dv=0.d0)
-        pe  =extrapolate(prs(i-1,j,k),  prs(i-2,j,k),dv=0.d0)
-        te  =extrapolate(tmp(i-1,j,k),  tmp(i-2,j,k),dv=0.d0)
-        roe =extrapolate(rho(i-1,j,k),  rho(i-2,j,k),dv=0.d0)
+        ue  =extrapolate(vel(i-1,j,k,1),vel(i-2,j,k,1),dv=0.e0_real_kind)
+        ve  =extrapolate(vel(i-1,j,k,2),vel(i-2,j,k,2),dv=0.e0_real_kind)
+        we  =extrapolate(vel(i-1,j,k,3),vel(i-2,j,k,3),dv=0.e0_real_kind)
+        pe  =extrapolate(prs(i-1,j,k),  prs(i-2,j,k),dv=0.e0_real_kind)
+        te  =extrapolate(tmp(i-1,j,k),  tmp(i-2,j,k),dv=0.e0_real_kind)
+        roe =extrapolate(rho(i-1,j,k),  rho(i-2,j,k),dv=0.e0_real_kind)
         csse=extrapolate(sos(tmp(i-1,j,k),spc(i-1,j,k,:)),&
-                         sos(tmp(i-2,j,k),spc(i-2,j,k,:)),dv=0.d0)
+                         sos(tmp(i-2,j,k),spc(i-2,j,k,:)),dv=0.e0_real_kind)
         !
         do jspec=1,num_species
           spce(jspec)=extrapolate(spc(i-1,j,k,jspec),                  &
-                                  spc(i-2,j,k,jspec),dv=0.d0)
+                                  spc(i-2,j,k,jspec),dv=0.e0_real_kind)
         enddo
         !
         vne=ue*bvec_im(j,k,1)+ve*bvec_im(j,k,2)
@@ -4367,7 +4370,7 @@ module bc
                       velocity=vel(i,j,k,:),  temperature=tmp(i,j,k),   &
                       species=spc(i,j,k,:)                              )
         
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
         if(trim(turbmode)=='k-omega') then
           tke(i,j,k)=tke(i-1,j,k)
@@ -4394,18 +4397,18 @@ module bc
          ! 
         ub  =vel(i,j,k,2)
         !
-        ue  =extrapolate(vel(i,j-1,k,1),vel(i,j-2,k,1),dv=0.d0)
-        ve  =extrapolate(vel(i,j-1,k,2),vel(i,j-2,k,2),dv=0.d0)
-        we  =extrapolate(vel(i,j-1,k,3),vel(i,j-2,k,3),dv=0.d0)
-        pe  =extrapolate(prs(i,j-1,k),  prs(i,j-2,k),dv=0.d0)
-        te  =extrapolate(tmp(i,j-1,k),  tmp(i,j-2,k),dv=0.d0)
-        roe =extrapolate(rho(i,j-1,k),  rho(i,j-2,k),dv=0.d0)
+        ue  =extrapolate(vel(i,j-1,k,1),vel(i,j-2,k,1),dv=0.e0_real_kind)
+        ve  =extrapolate(vel(i,j-1,k,2),vel(i,j-2,k,2),dv=0.e0_real_kind)
+        we  =extrapolate(vel(i,j-1,k,3),vel(i,j-2,k,3),dv=0.e0_real_kind)
+        pe  =extrapolate(prs(i,j-1,k),  prs(i,j-2,k),dv=0.e0_real_kind)
+        te  =extrapolate(tmp(i,j-1,k),  tmp(i,j-2,k),dv=0.e0_real_kind)
+        roe =extrapolate(rho(i,j-1,k),  rho(i,j-2,k),dv=0.e0_real_kind)
         csse=extrapolate(sos(tmp(i,j-1,k),spc(i,j-1,k,:)),&
-                         sos(tmp(i,j-2,k),spc(i,j-2,k,:)),dv=0.d0)
+                         sos(tmp(i,j-2,k),spc(i,j-2,k,:)),dv=0.e0_real_kind)
         !
         do jspec=1,num_species
           spce(jspec)=extrapolate(spc(i,j-1,k,jspec),                  &
-                                  spc(i,j-2,k,jspec),dv=0.d0)
+                                  spc(i,j-2,k,jspec),dv=0.e0_real_kind)
         enddo
         !
         ! if(.false.) then
@@ -4422,7 +4425,7 @@ module bc
         else !if(ub<css .and. ub>=0.d0) then
           ! subsonic outlet
           !
-          pwave_in=(prs(i,j,k)+alpha*deltat*pinf+rho(i,j,k)*css*(ve-vel(i,j,k,2)))/(1.d0+alpha*deltat)
+          pwave_in=(prs(i,j,k)+alpha*deltat*pinf+rho(i,j,k)*css*(ve-vel(i,j,k,2)))/(1.e0_real_kind+alpha*deltat)
           !
           prs(i,j,k)=  pwave_in
           tmp(i,j,k)=te
@@ -4455,7 +4458,7 @@ module bc
         endif
         !
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
       enddo
       enddo
@@ -4490,10 +4493,10 @@ module bc
     !
     ! local data
     integer :: i,j,k,l,jspc,jmod,ii,n,m,jq
-    real(8) :: pinv(5,5),pnor(5,5),Pmult(5,5),E(5),F(5),G(5),Rest(5),  &
+    real(real_kind) :: pinv(5,5),pnor(5,5),Pmult(5,5),E(5),F(5),G(5),Rest(5),  &
                jcbi(3),LODi1(5),LODi(5)
-    real(8),allocatable :: Ecs(:,:),dEcs(:),fcs(:,:),dfcs(:,:),qfilt(:,:)
-    real(8) :: uu,css,gmachmax2,kinout,kin,var1,var2,lambda(5),source(5)
+    real(real_kind),allocatable :: Ecs(:,:),dEcs(:),fcs(:,:),dfcs(:,:),qfilt(:,:)
+    real(real_kind) :: uu,css,gmachmax2,kinout,kin,var1,var2,lambda(5),source(5)
     logical :: incoming(5)
     !
     logical,save :: lfirstcal=.true.
@@ -4513,13 +4516,13 @@ module bc
       !
     endif
     !
-    gmachmax2=0.d0
+    gmachmax2=0.e0_real_kind
     if(nscbc_farfield_policy/=NSCBC_FARFIELD_POLICY_NONREFLECTING) then
     if(ndir==3 .and. jrk==0) then
       j=0
       do k=0,km
       do i=0,im
-        var1=1.d0/( dxi(i,j,k,2,1)**2+dxi(i,j,k,2,2)**2+               &
+        var1=1.e0_real_kind/( dxi(i,j,k,2,1)**2+dxi(i,j,k,2,2)**2+               &
                     dxi(i,j,k,2,3)**2 )
         var2=vel(i,j,k,1)*dxi(i,j,k,2,1)+vel(i,j,k,2)*dxi(i,j,k,2,2)+  &
              vel(i,j,k,3)*dxi(i,j,k,2,3)
@@ -4532,7 +4535,7 @@ module bc
       j=jm
       do k=0,km
       do i=0,im
-        var1=1.d0/( dxi(i,j,k,2,1)**2+dxi(i,j,k,2,2)**2+               &
+        var1=1.e0_real_kind/( dxi(i,j,k,2,1)**2+dxi(i,j,k,2,2)**2+               &
                     dxi(i,j,k,2,3)**2 )
         var2=vel(i,j,k,1)*dxi(i,j,k,2,1)+vel(i,j,k,2)*dxi(i,j,k,2,2)+  &
              vel(i,j,k,3)*dxi(i,j,k,2,3)
@@ -4545,7 +4548,7 @@ module bc
       k=0
       do j=0,jm
       do i=0,im
-        var1=1.d0/( dxi(i,j,k,3,1)**2+dxi(i,j,k,3,2)**2+               &
+        var1=1.e0_real_kind/( dxi(i,j,k,3,1)**2+dxi(i,j,k,3,2)**2+               &
                     dxi(i,j,k,3,3)**2 )
         var2=vel(i,j,k,1)*dxi(i,j,k,3,1)+vel(i,j,k,2)*dxi(i,j,k,3,2)+  &
              vel(i,j,k,3)*dxi(i,j,k,3,3)
@@ -4558,7 +4561,7 @@ module bc
       k=km
       do j=0,jm
       do i=0,im
-        var1=1.d0/( dxi(i,j,k,3,1)**2+dxi(i,j,k,3,2)**2+               &
+        var1=1.e0_real_kind/( dxi(i,j,k,3,1)**2+dxi(i,j,k,3,2)**2+               &
                     dxi(i,j,k,3,3)**2 )
         var2=vel(i,j,k,1)*dxi(i,j,k,3,1)+vel(i,j,k,2)*dxi(i,j,k,3,2)+  &
              vel(i,j,k,3)*dxi(i,j,k,3,3)
@@ -4708,7 +4711,7 @@ module bc
              dxi(i,j,k,2,2)*vel(i,j,k,2) +                            &
              dxi(i,j,k,2,3)*vel(i,j,k,3))
         ! if(uu>=0.d0) then
-          kinout=0.25d0*(1.d0-gmachmax2)*css/(ymax-ymin)
+          kinout=0.25e0_real_kind*(1.e0_real_kind-gmachmax2)*css/(ymax-ymin)
           ! LODi(4)=kinout*(pinf-prs(i,j,k))/rho(i,j,k)/css
           ! LODi(4)=kinout*(prs(i,j,k)-pinf)/rho(i,j,k)/css
           LODi(4)=kinout*(prs(i,j,k)-pinf)
@@ -4968,7 +4971,7 @@ module bc
           call nscbc_farfield_y_upper_incoming_lodi(LODi,pinv,i,j,k,css,&
                                                      gmachmax2)
         case default
-          kinout=0.25d0*(1.d0-gmachmax2)*css/(ymax-ymin)
+          kinout=0.25e0_real_kind*(1.e0_real_kind-gmachmax2)*css/(ymax-ymin)
             ! LODi(5)=kinout*(prs(i,j,k)-pinf)/rho(i,j,k)/css
             ! LODi(5)=kinout*(prs(i,j,k)-prs_prof(jm))/rho(i,j,k)/css
           LODi(5)=kinout*(prs(i,j,k)-pinf)
@@ -5215,7 +5218,7 @@ module bc
         !      dxi(i,j,k,3,2)*vel(i,j,k,2) +                            &
         !      dxi(i,j,k,3,3)*vel(i,j,k,3))
         ! if(uu>=0.d0) then
-          kinout=0.25d0*(1.d0-gmachmax2)*css/(zmax-zmin)
+          kinout=0.25e0_real_kind*(1.e0_real_kind-gmachmax2)*css/(zmax-zmin)
           LODi(4)=kinout*(prs(i,j,k)-pinf) !/rho(i,j,k)/css
         ! else
         !   var1=1.d0/sqrt( dxi(i,j,k,3,1)**2+dxi(i,j,k,3,2)**2+         &
@@ -5433,7 +5436,7 @@ module bc
         !      dxi(i,j,k,3,2)*vel(i,j,k,2) +                            &
         !      dxi(i,j,k,3,3)*vel(i,j,k,3))
         ! if(uu>=0.d0) then
-          kinout=0.25d0*(1.d0-gmachmax2)*css/(zmax-zmin)
+          kinout=0.25e0_real_kind*(1.e0_real_kind-gmachmax2)*css/(zmax-zmin)
           LODi(5)=kinout*(prs(i,j,k)-pinf) !/rho(i,j,k)/css
         ! else
         !   var1=1.d0/sqrt( dxi(i,j,k,3,1)**2+dxi(i,j,k,3,2)**2+         &
@@ -5556,17 +5559,17 @@ module bc
     !
     ! local data
     integer :: i,j,k,l,jspc,jq,ii,n,m
-    real(8) :: pinv(5,5),pnor(5,5),Pmult(5,5),E(5),F(5),G(5),Rest(5),  &
+    real(real_kind) :: pinv(5,5),pnor(5,5),Pmult(5,5),E(5),F(5),G(5),Rest(5),  &
                jcbi(3),LODi1(5),LODi(5)
-    real(8),allocatable :: Ecs(:,:),dEcs(:),fcs(:,:),dfcs(:,:),qfilt(:,:)
-    real(8) :: uu,css,gmachmax2,kinout,kin,var1,var2,psonic,rncout,fdamp
-    real(8) :: normal_speed,wave_tolerance,metric_norm
+    real(real_kind),allocatable :: Ecs(:,:),dEcs(:),fcs(:,:),dfcs(:,:),qfilt(:,:)
+    real(real_kind) :: uu,css,gmachmax2,kinout,kin,var1,var2,psonic,rncout,fdamp
+    real(real_kind) :: normal_speed,wave_tolerance,metric_norm
     logical :: compact_plate_outlet
     !
     compact_plate_outlet=ndir==2.and.numq==5.and..not.lcomb.and. &
       conschm=='743e'.and.difschm=='643c'
     compact_plate_outlet=compact_plate_outlet.or.(ndir==2.and.explicit_profile_nscbc_corrections_enabled())
-    gmachmax2=0.d0
+    gmachmax2=0.e0_real_kind
     !
     if(ndir==1 .and. irk==0) then
       i=0
@@ -5575,7 +5578,7 @@ module bc
         !
         css=sos(tmp(i,j,k),spc(i,j,k,:))
         !
-        var1=1.d0/( dxi(i,j,k,1,1)**2+dxi(i,j,k,1,2)**2+               &
+        var1=1.e0_real_kind/( dxi(i,j,k,1,1)**2+dxi(i,j,k,1,2)**2+               &
                     dxi(i,j,k,1,3)**2 )
         var2=vel(i,j,k,1)*dxi(i,j,k,1,1)+vel(i,j,k,2)*dxi(i,j,k,1,2)+  &
              vel(i,j,k,3)*dxi(i,j,k,1,3)
@@ -5591,7 +5594,7 @@ module bc
         !
         css=sos(tmp(i,j,k),spc(i,j,k,:))
         !
-        var1=1.d0/( dxi(i,j,k,1,1)**2+dxi(i,j,k,1,2)**2+               &
+        var1=1.e0_real_kind/( dxi(i,j,k,1,1)**2+dxi(i,j,k,1,2)**2+               &
                     dxi(i,j,k,1,3)**2 )
         var2=vel(i,j,k,1)*dxi(i,j,k,1,1)+vel(i,j,k,2)*dxi(i,j,k,1,2)+  &
              vel(i,j,k,3)*dxi(i,j,k,1,3)
@@ -5684,7 +5687,7 @@ module bc
         !
         css=sos(tmp(i,j,k),spc(i,j,k,:))
         !
-        kinout=20.d0*(1.d0-gmachmax2)*css/(xmax-xmin)
+        kinout=20.e0_real_kind*(1.e0_real_kind-gmachmax2)*css/(xmax-xmin)
         LODi(4)=kinout*(prs(i,j,k)-pinf)
         !
         LODi1=MatMul(pnor,LODi)*jacob(i,j,k)
@@ -5917,17 +5920,17 @@ module bc
         if(compact_plate_outlet) then
           metric_norm=sqrt(sum(dxi(i,j,k,1,:)**2))
           normal_speed=sum(dxi(i,j,k,1,:)*vel(i,j,k,:))/metric_norm
-          wave_tolerance=64.d0*epsilon(1.d0)*max(css,abs(normal_speed))
+          wave_tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(normal_speed))
           if(normal_speed < -wave_tolerance) then
             print *,'bc22 right-x outlet does not support backflow',i,j,k,normal_speed
             error stop 'bc22 right-x outlet backflow'
           endif
           if(normal_speed-css < -wave_tolerance) then
-            kinout=3.75d0*max(0.d0,1.d0-(normal_speed/css)**2)*css/(xmax-xmin)
-            LODi(5)=kinout*((prs(i,j,k)-pinf*pout)/rho(i,j,k)/css)*sqrt(2.d0)
+            kinout=3.75e0_real_kind*max(0.e0_real_kind,1.e0_real_kind-(normal_speed/css)**2)*css/(xmax-xmin)
+            LODi(5)=kinout*((prs(i,j,k)-pinf*pout)/rho(i,j,k)/css)*sqrt(2.e0_real_kind)
           endif
         else
-          kinout=3.75d0*(1.d0-gmachmax2)*css/(xmax-xmin)
+          kinout=3.75e0_real_kind*(1.e0_real_kind-gmachmax2)*css/(xmax-xmin)
           LODi(5)=kinout*(prs(i,j,k)-pinf*pout)
         endif
 
@@ -6013,7 +6016,7 @@ module bc
       !
     endif
     !
-    gmachmax2=0.d0
+    gmachmax2=0.e0_real_kind
     !
     if(ndir==4 .and. jrk==jrkm) then
       !
@@ -6023,7 +6026,7 @@ module bc
         !
         css=sos(tmp(i,j,k),spc(i,j,k,:))
         !
-        var1=1.d0/( dxi(i,j,k,2,1)**2+dxi(i,j,k,2,2)**2+               &
+        var1=1.e0_real_kind/( dxi(i,j,k,2,1)**2+dxi(i,j,k,2,2)**2+               &
                     dxi(i,j,k,2,3)**2 )
         var2=vel(i,j,k,1)*dxi(i,j,k,2,1)+vel(i,j,k,2)*dxi(i,j,k,2,2)+  &
              vel(i,j,k,3)*dxi(i,j,k,2,3)
@@ -6132,7 +6135,7 @@ module bc
         !    dxi(i,j,k,2,2)*vel(i,j,k,2) +                       &
         !    dxi(i,j,k,2,3)*vel(i,j,k,3)
         ! if(uu>=0.d0) then
-        kinout=0.5d0*(1.d0-gmachmax2)*css/(ymax-ymin)
+        kinout=0.5e0_real_kind*(1.e0_real_kind-gmachmax2)*css/(ymax-ymin)
         ! LODi(5)=kinout*(prs(i,j,k)-pinf)/rho(i,j,k)/css
         LODi(5)=kinout*(prs(i,j,k)-pinf)
         !
@@ -6218,7 +6221,7 @@ module bc
     endif
     !
 
-    gmachmax2=0.d0
+    gmachmax2=0.e0_real_kind
     !
     if(ndir==6 .and. krk==krkm) then
       !
@@ -6228,7 +6231,7 @@ module bc
         !
         css=sos(tmp(i,j,k),spc(i,j,k,:))
         !
-        var1=1.d0/( dxi(i,j,k,3,1)**2+dxi(i,j,k,3,2)**2+               &
+        var1=1.e0_real_kind/( dxi(i,j,k,3,1)**2+dxi(i,j,k,3,2)**2+               &
                     dxi(i,j,k,3,3)**2 )
         var2=vel(i,j,k,1)*dxi(i,j,k,3,1)+vel(i,j,k,2)*dxi(i,j,k,3,2)+  &
              vel(i,j,k,3)*dxi(i,j,k,3,3)
@@ -6335,7 +6338,7 @@ module bc
         !    dxi(i,j,k,3,2)*vel(i,j,k,2) +                       &
         !    dxi(i,j,k,3,3)*vel(i,j,k,3)
         ! if(uu>=0.d0) then
-        kinout=0.5d0*(1.d0-gmachmax2)*css/(zmax-zmin)
+        kinout=0.5e0_real_kind*(1.e0_real_kind-gmachmax2)*css/(zmax-zmin)
         ! LODi(5)=kinout*(prs(i,j,k)-pinf)/rho(i,j,k)/css
         LODi(5)=kinout*(prs(i,j,k)-pinf)
         !
@@ -6420,26 +6423,26 @@ module bc
     use fludyna, only : sos
     !
     ! arguments
-    real(8) :: pmatrix(5,5)
+    real(real_kind) :: pmatrix(5,5)
     logical,intent(in) :: inv
-    real(8),intent(in) :: rho,u,v,w,t,sp(:),ddi(3)
+    real(real_kind),intent(in) :: rho,u,v,w,t,sp(:),ddi(3)
     !
     ! local data
-    real(8) :: var1,nx,ny,nz,a1,a2,a3,a4,a5,a6,c,VV,phi
+    real(real_kind) :: var1,nx,ny,nz,a1,a2,a3,a4,a5,a6,c,VV,phi
     !
     c=sos(t,sp)
-    var1=1.d0/sqrt(ddi(1)*ddi(1)+ddi(2)*ddi(2)+ddi(3)*ddi(3))
+    var1=1.e0_real_kind/sqrt(ddi(1)*ddi(1)+ddi(2)*ddi(2)+ddi(3)*ddi(3))
     nx=ddi(1)*var1
     ny=ddi(2)*var1
     nz=ddi(3)*var1
-    phi=0.5d0*(gamma-1.d0)*(u*u+v*v+w*w)
+    phi=0.5e0_real_kind*(gamma-1.e0_real_kind)*(u*u+v*v+w*w)
     VV=nx*u+ny*v+nz*w
-    a1=gamma-1.d0
-    a2=1.d0/(sqrt(2.d0)*rho*c)
-    a3=rho/(c*sqrt(2.d0))
-    a4=(phi+c*c)/(gamma-1.d0)
-    a5=1.d0-phi/(c*c)
-    a6=phi/(gamma-1.d0)
+    a1=gamma-1.e0_real_kind
+    a2=1.e0_real_kind/(sqrt(2.e0_real_kind)*rho*c)
+    a3=rho/(c*sqrt(2.e0_real_kind))
+    a4=(phi+c*c)/(gamma-1.e0_real_kind)
+    a5=1.e0_real_kind-phi/(c*c)
+    a6=phi/(gamma-1.e0_real_kind)
     !
     ! pmatrix=0.d0
     !
@@ -7214,17 +7217,17 @@ module bc
     !
     ! arguments
     integer,intent(in) :: ndir
-    real(8),intent(in) :: tw
-    real(8),intent(in),optional :: supplied_velocity(0:im,0:km)
+    real(real_kind),intent(in) :: tw
+    real(real_kind),intent(in),optional :: supplied_velocity(0:im,0:km)
     logical,intent(in),optional :: outlet_only
     !
     ! local data
     integer :: i,j,k,jspec,first_i
-    real(8) :: pe,te,ue,delta_d1,miu,beta1
-    real(8) :: vwall(0:im,0:km)
-    real(8) :: xtran
+    real(real_kind) :: pe,te,ue,delta_d1,miu,beta1
+    real(real_kind) :: vwall(0:im,0:km)
+    real(real_kind) :: xtran
     !
-    beta1=0.075d0
+    beta1=0.075e0_real_kind
     !
     if(ndir==1) then
 
@@ -7233,16 +7236,16 @@ module bc
         i=0
         do k=0,km
         do j=0,jm
-          pe=num1d3*(4.d0*prs(i+1,j,k)-prs(i+2,j,k))
+          pe=num1d3*(4.e0_real_kind*prs(i+1,j,k)-prs(i+2,j,k))
           !
-          vel(i,j,k,1)=0.d0
-          vel(i,j,k,2)=0.d0
-          vel(i,j,k,3)=0.d0
+          vel(i,j,k,1)=0.e0_real_kind
+          vel(i,j,k,2)=0.e0_real_kind
+          vel(i,j,k,3)=0.e0_real_kind
           prs(i,j,k)  =pe
           tmp(i,j,k)  =tw
           !
           if(num_species>0) then
-            spc(i,j,k,1)=num1d3*(4.d0*spc(i+1,j,k,1)-spc(i+2,j,k,1))
+            spc(i,j,k,1)=num1d3*(4.e0_real_kind*spc(i+1,j,k,1)-spc(i+2,j,k,1))
           endif
           !
           if(nondimen) then
@@ -7279,16 +7282,16 @@ module bc
         i=im
         do k=0,km
         do j=0,jm
-          pe=num1d3*(4.d0*prs(i-1,j,k)-prs(i-2,j,k))
+          pe=num1d3*(4.e0_real_kind*prs(i-1,j,k)-prs(i-2,j,k))
           !
-          vel(i,j,k,1)=0.d0
-          vel(i,j,k,2)=0.d0
-          vel(i,j,k,3)=0.d0
+          vel(i,j,k,1)=0.e0_real_kind
+          vel(i,j,k,2)=0.e0_real_kind
+          vel(i,j,k,3)=0.e0_real_kind
           prs(i,j,k)  =pe
           tmp(i,j,k)  =tw
           !
           if(num_species>0) then
-            spc(i,j,k,1)=num1d3*(4.d0*spc(i-1,j,k,1)-spc(i,j-2,k,1))
+            spc(i,j,k,1)=num1d3*(4.e0_real_kind*spc(i-1,j,k,1)-spc(i,j-2,k,1))
           endif
           !
           if(nondimen) then
@@ -7332,20 +7335,20 @@ module bc
         call configure_wall_blowing
         if(present(supplied_velocity)) then
           vwall=supplied_velocity
-        elseif(ndims==3 .and. abs(wall_blowing_amplitude)>1.d-10) then
+        elseif(ndims==3 .and. abs(wall_blowing_amplitude)>1.e-10_real_kind) then
           vwall=wall_blowing_velocity()
         else
-          vwall=0.d0
+          vwall=0.e0_real_kind
         endif
 
         j=0
         
-        xtran=1.d0
+        xtran=1.e0_real_kind
 
         do k=0,km
         do i=first_i,im
           !
-          pe=num1d3*(4.d0*prs(i,1,k)-prs(i,2,k))
+          pe=num1d3*(4.e0_real_kind*prs(i,1,k)-prs(i,2,k))
           !
           ! if(x(i,j,k,1)<=0.d0) then
           !   vel(i,j,k,1)=num1d3*(4.d0*vel(i,1,k,1)-vel(i,2,k,1))
@@ -7367,7 +7370,7 @@ module bc
           prs(i,j,k)  =pe
 
           do jspec=1,num_species
-            spc(i,j,k,jspec)=num1d3*(4.d0*spc(i,1,k,jspec)-spc(i,2,k,jspec))
+            spc(i,j,k,jspec)=num1d3*(4.e0_real_kind*spc(i,1,k,jspec)-spc(i,2,k,jspec))
           enddo
           !
           if(nondimen) then
@@ -7393,11 +7396,11 @@ module bc
           endif
           !
           if(trim(turbmode)=='k-omega') then
-            tke(i,j,k)=0.d0
+            tke(i,j,k)=0.e0_real_kind
             !
             delta_d1=dis2point2(x(i,j,k,:),x(i,j+1,k,:))
             miu=miucal(tmp(i,j,k))/Reynolds
-            omg(i,j,k)=50.d0*miu/rho(i,j,k)/beta1/delta_d1
+            omg(i,j,k)=50.e0_real_kind*miu/rho(i,j,k)/beta1/delta_d1
             !
             q(i,j,k,5+num_species+1)=tke(i,j,k)*rho(i,j,k)
             q(i,j,k,5+num_species+2)=omg(i,j,k)*rho(i,j,k)
@@ -7416,16 +7419,16 @@ module bc
         j=jm
         do k=0,km
         do i=0,im
-          pe=num1d3*(4.d0*prs(i,j-1,k)-prs(i,j-2,k))
+          pe=num1d3*(4.e0_real_kind*prs(i,j-1,k)-prs(i,j-2,k))
           !
-          vel(i,j,k,1)=0.d0
-          vel(i,j,k,2)=0.d0
-          vel(i,j,k,3)=0.d0
+          vel(i,j,k,1)=0.e0_real_kind
+          vel(i,j,k,2)=0.e0_real_kind
+          vel(i,j,k,3)=0.e0_real_kind
           prs(i,j,k)  =pe
           tmp(i,j,k)  =tw
           !
           if(num_species>0) then
-            spc(i,j,k,1)=num1d3*(4.d0*spc(i,j-1,k,1)-spc(i,j-2,k,1))
+            spc(i,j,k,1)=num1d3*(4.e0_real_kind*spc(i,j-1,k,1)-spc(i,j-2,k,1))
           endif
           !
           if(nondimen) then
@@ -7451,11 +7454,11 @@ module bc
           endif
           !
           if(trim(turbmode)=='k-omega') then
-            tke(i,j,k)=0.d0
+            tke(i,j,k)=0.e0_real_kind
             !
             delta_d1=dis2point2(x(i,j,k,:),x(i,j-1,k,:))
             miu=miucal(tmp(i,j,k))/Reynolds
-            omg(i,j,k)=50.d0*miu/rho(i,j,k)/beta1/delta_d1
+            omg(i,j,k)=50.e0_real_kind*miu/rho(i,j,k)/beta1/delta_d1
             !
             q(i,j,k,5+num_species+1)=tke(i,j,k)*rho(i,j,k)
             q(i,j,k,5+num_species+2)=omg(i,j,k)*rho(i,j,k)
@@ -7473,19 +7476,19 @@ module bc
 
         k=0
         
-        xtran=1.d0
+        xtran=1.e0_real_kind
 
         do j=0,jm
         do i=0,im
           !
-          pe=num1d3*(4.d0*prs(i,j,k+1)-prs(i,j,k+2))
+          pe=num1d3*(4.e0_real_kind*prs(i,j,k+1)-prs(i,j,k+2))
 
-          vel(i,j,k,:)=0.d0
+          vel(i,j,k,:)=0.e0_real_kind
           tmp(i,j,k)  =tw
           prs(i,j,k)  =pe
 
           do jspec=1,num_species
-            spc(i,j,k,jspec)=num1d3*(4.d0*spc(i,j,k+1,jspec)-spc(i,j,k+2,jspec))
+            spc(i,j,k,jspec)=num1d3*(4.e0_real_kind*spc(i,j,k+1,jspec)-spc(i,j,k+2,jspec))
           enddo
           !
           if(nondimen) then
@@ -7522,14 +7525,14 @@ module bc
         k=km
         do j=0,jm
         do i=0,im
-          pe=num1d3*(4.d0*prs(i,j,k-1)-prs(i,j,k-2))
+          pe=num1d3*(4.e0_real_kind*prs(i,j,k-1)-prs(i,j,k-2))
           !
-          vel(i,j,k,:)=0.d0
+          vel(i,j,k,:)=0.e0_real_kind
           prs(i,j,k)  =pe
           tmp(i,j,k)  =tw
           !
           if(num_species>0) then
-            spc(i,j,k,1)=num1d3*(4.d0*spc(i,j,k-1,1)-spc(i,j,k-2,1))
+            spc(i,j,k,1)=num1d3*(4.e0_real_kind*spc(i,j,k-1,1)-spc(i,j,k-2,1))
           endif
           !
           if(nondimen) then
@@ -7592,16 +7595,16 @@ module bc
     !
     ! local data
     integer :: i,j,k,jspec
-    real(8) :: pe,te,delta_d1,miu,beta1
-    real(8) :: vwall(0:im,0:km)
+    real(real_kind) :: pe,te,delta_d1,miu,beta1
+    real(real_kind) :: vwall(0:im,0:km)
     !
-    beta1=0.075d0
+    beta1=0.075e0_real_kind
 
     call configure_wall_blowing
-    if(ndims==3 .and. abs(wall_blowing_amplitude)>1.d-10) then
+    if(ndims==3 .and. abs(wall_blowing_amplitude)>1.e-10_real_kind) then
       vwall=wall_blowing_velocity()
     else
-      vwall=0.d0
+      vwall=0.e0_real_kind
     endif
 
     !---------------------------------------------------------------
@@ -7615,17 +7618,17 @@ module bc
         i=0
         do k=0,km
         do j=0,jm
-          pe=num1d3*(4.d0*prs(i+1,j,k)-prs(i+2,j,k))
-          te=num1d3*(4.d0*tmp(i+1,j,k)-tmp(i+2,j,k))
+          pe=num1d3*(4.e0_real_kind*prs(i+1,j,k)-prs(i+2,j,k))
+          te=num1d3*(4.e0_real_kind*tmp(i+1,j,k)-tmp(i+2,j,k))
           !
-          vel(i,j,k,1)=0.d0
-          vel(i,j,k,2)=0.d0
-          vel(i,j,k,3)=0.d0
+          vel(i,j,k,1)=0.e0_real_kind
+          vel(i,j,k,2)=0.e0_real_kind
+          vel(i,j,k,3)=0.e0_real_kind
           prs(i,j,k)  =pe
           tmp(i,j,k)  =te
           !
           if(num_species>0) then
-            spc(i,j,k,1)=num1d3*(4.d0*spc(i+1,j,k,1)-spc(i+2,j,k,1))
+            spc(i,j,k,1)=num1d3*(4.e0_real_kind*spc(i+1,j,k,1)-spc(i+2,j,k,1))
           endif
           !
           if(nondimen) then 
@@ -7662,17 +7665,17 @@ module bc
 
         do k=0,km
         do j=0,jm
-          pe=num1d3*(4.d0*prs(i-1,j,k)-prs(i-2,j,k))
-          te=num1d3*(4.d0*tmp(i-1,j,k)-tmp(i-2,j,k))
+          pe=num1d3*(4.e0_real_kind*prs(i-1,j,k)-prs(i-2,j,k))
+          te=num1d3*(4.e0_real_kind*tmp(i-1,j,k)-tmp(i-2,j,k))
           !
-          vel(i,j,k,1)=0.d0
-          vel(i,j,k,2)=0.d0
-          vel(i,j,k,3)=0.d0
+          vel(i,j,k,1)=0.e0_real_kind
+          vel(i,j,k,2)=0.e0_real_kind
+          vel(i,j,k,3)=0.e0_real_kind
           prs(i,j,k)  =pe
           tmp(i,j,k)  =te
           !
           if(num_species>0) then
-            spc(i,j,k,1)=num1d3*(4.d0*spc(i-1,j,k,1)-spc(i,j-2,k,1))
+            spc(i,j,k,1)=num1d3*(4.e0_real_kind*spc(i-1,j,k,1)-spc(i,j-2,k,1))
           endif
           !
           if(nondimen) then 
@@ -7712,8 +7715,8 @@ module bc
         do k=0,km
         do i=0,im
           !
-          pe=num1d3*(4.d0*prs(i,1,k)-prs(i,2,k))
-          te=num1d3*(4.d0*tmp(i,1,k)-tmp(i,2,k))
+          pe=num1d3*(4.e0_real_kind*prs(i,1,k)-prs(i,2,k))
+          te=num1d3*(4.e0_real_kind*tmp(i,1,k)-tmp(i,2,k))
           !
           vel(i,j,k,1)=vwall(i,k)*bnorm_j0(i,k,1)
           vel(i,j,k,2)=vwall(i,k)*bnorm_j0(i,k,2)
@@ -7722,7 +7725,7 @@ module bc
           tmp(i,j,k)  =te
           !
           do jspec=1,num_species
-            spc(i,j,k,jspec)=num1d3*(4.d0*spc(i,1,k,jspec)-spc(i,2,k,jspec))
+            spc(i,j,k,jspec)=num1d3*(4.e0_real_kind*spc(i,1,k,jspec)-spc(i,2,k,jspec))
           enddo
           !
           if(nondimen) then 
@@ -7748,11 +7751,11 @@ module bc
           endif
           !
           if(trim(turbmode)=='k-omega') then
-            tke(i,j,k)=0.d0
+            tke(i,j,k)=0.e0_real_kind
             !
             delta_d1=dis2point2(x(i,j,k,:),x(i,j+1,k,:))
             miu=miucal(tmp(i,j,k))/Reynolds
-            omg(i,j,k)=50.d0*miu/rho(i,j,k)/beta1/delta_d1
+            omg(i,j,k)=50.e0_real_kind*miu/rho(i,j,k)/beta1/delta_d1
             !
             q(i,j,k,5+num_species+1)=tke(i,j,k)*rho(i,j,k)
             q(i,j,k,5+num_species+2)=omg(i,j,k)*rho(i,j,k)
@@ -7771,17 +7774,17 @@ module bc
         j=jm
         do k=0,km
         do i=0,im
-          pe=num1d3*(4.d0*prs(i,j-1,k)-prs(i,j-2,k))
-          te=num1d3*(4.d0*tmp(i,j-1,k)-tmp(i,j-2,k))
+          pe=num1d3*(4.e0_real_kind*prs(i,j-1,k)-prs(i,j-2,k))
+          te=num1d3*(4.e0_real_kind*tmp(i,j-1,k)-tmp(i,j-2,k))
           !
-          vel(i,j,k,1)=0.d0
-          vel(i,j,k,2)=0.d0
-          vel(i,j,k,3)=0.d0
+          vel(i,j,k,1)=0.e0_real_kind
+          vel(i,j,k,2)=0.e0_real_kind
+          vel(i,j,k,3)=0.e0_real_kind
           prs(i,j,k)  =pe
           tmp(i,j,k)  =te
           !
           if(num_species>0) then
-            spc(i,j,k,1)=num1d3*(4.d0*spc(i,j-1,k,1)-spc(i,j-2,k,1))
+            spc(i,j,k,1)=num1d3*(4.e0_real_kind*spc(i,j-1,k,1)-spc(i,j-2,k,1))
           endif
           !
           if(nondimen) then 
@@ -7806,11 +7809,11 @@ module bc
           endif
           !
           if(trim(turbmode)=='k-omega') then
-            tke(i,j,k)=0.d0
+            tke(i,j,k)=0.e0_real_kind
             !
             delta_d1=dis2point2(x(i,j,k,:),x(i,j-1,k,:))
             miu=miucal(tmp(i,j,k))/Reynolds
-            omg(i,j,k)=50.d0*miu/rho(i,j,k)/beta1/delta_d1
+            omg(i,j,k)=50.e0_real_kind*miu/rho(i,j,k)/beta1/delta_d1
             !
             q(i,j,k,5+num_species+1)=tke(i,j,k)*rho(i,j,k)
             q(i,j,k,5+num_species+2)=omg(i,j,k)*rho(i,j,k)
@@ -7837,24 +7840,24 @@ module bc
     !
     ! arguments
     integer,intent(in) :: ndir
-    real(8),intent(in) :: tw
+    real(real_kind),intent(in) :: tw
     !
     ! local data
     integer :: i,j,k,jspec
-    real(8) :: pe,ue,ve,we,vnormal,te,delta_d1,miu,beta1
-    real(8) :: vwall(0:im,0:km)
+    real(real_kind) :: pe,ue,ve,we,vnormal,te,delta_d1,miu,beta1
+    real(real_kind) :: vwall(0:im,0:km)
     !
-    beta1=0.075d0
+    beta1=0.075e0_real_kind
     !
     if(ndir==3) then
       !
       if(jrk==0) then
         !
         call configure_wall_blowing
-        if(ndims==3 .and. abs(wall_blowing_amplitude)>1.d-10) then
+        if(ndims==3 .and. abs(wall_blowing_amplitude)>1.e-10_real_kind) then
           vwall=wall_blowing_velocity()
         else
-          vwall=0.d0
+          vwall=0.e0_real_kind
         endif
         !
         j=0
@@ -7862,13 +7865,13 @@ module bc
         do k=0,km
         do i=0,im
           !
-          pe=num1d3*(4.d0*prs(i,1,k)-prs(i,2,k))
+          pe=num1d3*(4.e0_real_kind*prs(i,1,k)-prs(i,2,k))
           !
           if(x(i,j,k,1)<=xslip) then
-            ue=num1d3*(4.d0*vel(i,1,k,1)-vel(i,2,k,1))
-            ve=num1d3*(4.d0*vel(i,1,k,2)-vel(i,2,k,2))
-            we=num1d3*(4.d0*vel(i,1,k,3)-vel(i,2,k,3))
-            te=num1d3*(4.d0*tmp(i,1,k)-tmp(i,2,k))
+            ue=num1d3*(4.e0_real_kind*vel(i,1,k,1)-vel(i,2,k,1))
+            ve=num1d3*(4.e0_real_kind*vel(i,1,k,2)-vel(i,2,k,2))
+            we=num1d3*(4.e0_real_kind*vel(i,1,k,3)-vel(i,2,k,3))
+            te=num1d3*(4.e0_real_kind*tmp(i,1,k)-tmp(i,2,k))
             vnormal=ue*bnorm_j0(i,k,1)+ve*bnorm_j0(i,k,2)+            &
                     we*bnorm_j0(i,k,3)
             !
@@ -7890,7 +7893,7 @@ module bc
           prs(i,j,k)  =pe
           !
           do jspec=1,num_species
-            spc(i,j,k,jspec)=num1d3*(4.d0*spc(i,1,k,jspec)-spc(i,2,k,jspec))
+            spc(i,j,k,jspec)=num1d3*(4.e0_real_kind*spc(i,1,k,jspec)-spc(i,2,k,jspec))
           enddo
           !
           rho(i,j,k)  =thermal(pressure=prs(i,j,k),temperature=tmp(i,j,k))
@@ -7902,11 +7905,11 @@ module bc
                       species=spc(i,j,k,:)                             )
           !
           if(trim(turbmode)=='k-omega') then
-            tke(i,j,k)=0.d0
+            tke(i,j,k)=0.e0_real_kind
             !
             delta_d1=dis2point2(x(i,j,k,:),x(i,j+1,k,:))
             miu=miucal(tmp(i,j,k))/Reynolds
-            omg(i,j,k)=50.d0*miu/rho(i,j,k)/beta1/delta_d1
+            omg(i,j,k)=50.e0_real_kind*miu/rho(i,j,k)/beta1/delta_d1
             !
             q(i,j,k,5+num_species+1)=tke(i,j,k)*rho(i,j,k)
             q(i,j,k,5+num_species+2)=omg(i,j,k)*rho(i,j,k)
@@ -7925,16 +7928,16 @@ module bc
         j=jm
         do k=0,km
         do i=0,im
-          pe=num1d3*(4.d0*prs(i,j-1,k)-prs(i,j-2,k))
+          pe=num1d3*(4.e0_real_kind*prs(i,j-1,k)-prs(i,j-2,k))
           !
-          vel(i,j,k,1)=0.d0
-          vel(i,j,k,2)=0.d0
-          vel(i,j,k,3)=0.d0
+          vel(i,j,k,1)=0.e0_real_kind
+          vel(i,j,k,2)=0.e0_real_kind
+          vel(i,j,k,3)=0.e0_real_kind
           prs(i,j,k)  =pe
           tmp(i,j,k)  =tw
           !
           if(num_species>0) then
-            spc(i,j,k,1)=num1d3*(4.d0*spc(i,j-1,k,1)-spc(i,j-2,k,1))
+            spc(i,j,k,1)=num1d3*(4.e0_real_kind*spc(i,j-1,k,1)-spc(i,j-2,k,1))
           endif
           !
           rho(i,j,k)  =thermal(pressure=prs(i,j,k),temperature=tmp(i,j,k))
@@ -7946,11 +7949,11 @@ module bc
                       species=spc(i,j,k,:)                             )
           !
           if(trim(turbmode)=='k-omega') then
-            tke(i,j,k)=0.d0
+            tke(i,j,k)=0.e0_real_kind
             !
             delta_d1=dis2point2(x(i,j,k,:),x(i,j-1,k,:))
             miu=miucal(tmp(i,j,k))/Reynolds
-            omg(i,j,k)=50.d0*miu/rho(i,j,k)/beta1/delta_d1
+            omg(i,j,k)=50.e0_real_kind*miu/rho(i,j,k)/beta1/delta_d1
             !
             q(i,j,k,5+num_species+1)=tke(i,j,k)*rho(i,j,k)
             q(i,j,k,5+num_species+2)=omg(i,j,k)*rho(i,j,k)
@@ -7980,20 +7983,20 @@ module bc
     !
     ! local data
     integer :: i,j,k,jspec
-    real(8) :: pe,ue,ve,we,vnormal,te,delta_d1,miu,beta1
-    real(8) :: vwall(0:im,0:km)
+    real(real_kind) :: pe,ue,ve,we,vnormal,te,delta_d1,miu,beta1
+    real(real_kind) :: vwall(0:im,0:km)
     !
-    beta1=0.075d0
+    beta1=0.075e0_real_kind
     !
     if(ndir==3) then
       !
       if(jrk==0) then
         !
         call configure_wall_blowing
-        if(ndims==3 .and. abs(wall_blowing_amplitude)>1.d-10) then
+        if(ndims==3 .and. abs(wall_blowing_amplitude)>1.e-10_real_kind) then
           vwall=wall_blowing_velocity()
         else
-          vwall=0.d0
+          vwall=0.e0_real_kind
         endif
         !
         j=0
@@ -8001,8 +8004,8 @@ module bc
         do k=0,km
         do i=0,im
           !
-          pe=num1d3*(4.d0*prs(i,1,k)-prs(i,2,k))
-          te=num1d3*(4.d0*tmp(i,1,k)-tmp(i,2,k))
+          pe=num1d3*(4.e0_real_kind*prs(i,1,k)-prs(i,2,k))
+          te=num1d3*(4.e0_real_kind*tmp(i,1,k)-tmp(i,2,k))
           !
           ! if(x(i,j,k,1)<=xslip) then
           !   ue=num1d3*(4.d0*vel(i,1,k,1)-vel(i,2,k,1))
@@ -8017,9 +8020,9 @@ module bc
           !   !
           ! endif
           !
-          ue=num1d3*(4.d0*vel(i,1,k,1)-vel(i,2,k,1))
-          ve=num1d3*(4.d0*vel(i,1,k,2)-vel(i,2,k,2))
-          we=num1d3*(4.d0*vel(i,1,k,3)-vel(i,2,k,3))
+          ue=num1d3*(4.e0_real_kind*vel(i,1,k,1)-vel(i,2,k,1))
+          ve=num1d3*(4.e0_real_kind*vel(i,1,k,2)-vel(i,2,k,2))
+          we=num1d3*(4.e0_real_kind*vel(i,1,k,3)-vel(i,2,k,3))
           vnormal=ue*bnorm_j0(i,k,1)+ve*bnorm_j0(i,k,2)+              &
                   we*bnorm_j0(i,k,3)
           vel(i,j,k,1)=ue-vnormal*bnorm_j0(i,k,1)+                    &
@@ -8032,7 +8035,7 @@ module bc
           prs(i,j,k)  =pe
           !
           do jspec=1,num_species
-            spc(i,j,k,jspec)=num1d3*(4.d0*spc(i,1,k,jspec)-spc(i,2,k,jspec))
+            spc(i,j,k,jspec)=num1d3*(4.e0_real_kind*spc(i,1,k,jspec)-spc(i,2,k,jspec))
           enddo
           !
           rho(i,j,k)  =thermal(pressure=prs(i,j,k),temperature=tmp(i,j,k))
@@ -8044,11 +8047,11 @@ module bc
                       species=spc(i,j,k,:)                             )
           !
           if(trim(turbmode)=='k-omega') then
-            tke(i,j,k)=0.d0
+            tke(i,j,k)=0.e0_real_kind
             !
             delta_d1=dis2point2(x(i,j,k,:),x(i,j+1,k,:))
             miu=miucal(tmp(i,j,k))/Reynolds
-            omg(i,j,k)=50.d0*miu/rho(i,j,k)/beta1/delta_d1
+            omg(i,j,k)=50.e0_real_kind*miu/rho(i,j,k)/beta1/delta_d1
             !
             q(i,j,k,5+num_species+1)=tke(i,j,k)*rho(i,j,k)
             q(i,j,k,5+num_species+2)=omg(i,j,k)*rho(i,j,k)
@@ -8068,12 +8071,12 @@ module bc
         !
         do k=0,km
         do i=0,im
-          pe=num1d3*(4.d0*prs(i,j-1,k)-prs(i,j-2,k))
-          te=num1d3*(4.d0*tmp(i,j-1,k)-tmp(i,j-2,k))
+          pe=num1d3*(4.e0_real_kind*prs(i,j-1,k)-prs(i,j-2,k))
+          te=num1d3*(4.e0_real_kind*tmp(i,j-1,k)-tmp(i,j-2,k))
           !
-          ue=num1d3*(4.d0*vel(i,j-1,k,1)-vel(i,j-2,k,1))
-          ve=num1d3*(4.d0*vel(i,j-1,k,2)-vel(i,j-2,k,2))
-          we=num1d3*(4.d0*vel(i,j-1,k,3)-vel(i,j-2,k,3))
+          ue=num1d3*(4.e0_real_kind*vel(i,j-1,k,1)-vel(i,j-2,k,1))
+          ve=num1d3*(4.e0_real_kind*vel(i,j-1,k,2)-vel(i,j-2,k,2))
+          we=num1d3*(4.e0_real_kind*vel(i,j-1,k,3)-vel(i,j-2,k,3))
           vnormal=ue*bnorm_jm(i,k,1)+ve*bnorm_jm(i,k,2)+              &
                   we*bnorm_jm(i,k,3)
           !
@@ -8084,7 +8087,7 @@ module bc
           tmp(i,j,k)  =te
           !
           if(num_species>0) then
-            spc(i,j,k,1)=num1d3*(4.d0*spc(i,j-1,k,1)-spc(i,j-2,k,1))
+            spc(i,j,k,1)=num1d3*(4.e0_real_kind*spc(i,j-1,k,1)-spc(i,j-2,k,1))
           endif
           !
           rho(i,j,k)  =thermal(pressure=prs(i,j,k),temperature=tmp(i,j,k))
@@ -8096,11 +8099,11 @@ module bc
                       species=spc(i,j,k,:)                             )
           !
           if(trim(turbmode)=='k-omega') then
-            tke(i,j,k)=0.d0
+            tke(i,j,k)=0.e0_real_kind
             !
             delta_d1=dis2point2(x(i,j,k,:),x(i,j-1,k,:))
             miu=miucal(tmp(i,j,k))/Reynolds
-            omg(i,j,k)=50.d0*miu/rho(i,j,k)/beta1/delta_d1
+            omg(i,j,k)=50.e0_real_kind*miu/rho(i,j,k)/beta1/delta_d1
             !
             q(i,j,k,5+num_species+1)=tke(i,j,k)*rho(i,j,k)
             q(i,j,k,5+num_species+2)=omg(i,j,k)*rho(i,j,k)
@@ -8131,11 +8134,11 @@ module bc
   function wall_blowing_velocity() result(vwall)
     use wall_blowing_random, only: sample_legacy_wall_velocity
     implicit none
-    real(8) :: vwall(0:im,0:km)
+    real(real_kind) :: vwall(0:im,0:km)
 
     if(wall_blowing_legacy_random) then
-      vwall=0.d0
-      if(ndims==3 .and. wall_blowing_amplitude>1.d-10) &
+      vwall=0.e0_real_kind
+      if(ndims==3 .and. wall_blowing_amplitude>1.e-10_real_kind) &
         call sample_legacy_wall_velocity(mpirank,x(0:im,0,0:km,1),x(0:im,0,0:km,3), &
           zmax-zmin,uinf,wall_blowing_amplitude,wall_blowing_xa, &
           wall_blowing_xb,wall_blowing_xc,wall_blowing_nmod_z,vwall)
@@ -8156,60 +8159,60 @@ module bc
   function wallbs(beter,wallamplit,xa,xb,nmod_t,nmod_z) result(vwall)
     !
     ! arguments
-    real(8),intent(in) :: beter,wallamplit,xa,xb
+    real(real_kind),intent(in) :: beter,wallamplit,xa,xb
     integer,intent(in) :: nmod_t,nmod_z
-    real(8) :: vwall(0:im,0:km)
+    real(real_kind) :: vwall(0:im,0:km)
     !
     ! local data
     integer :: i,k,l,m
-    real(8) :: theter,fx,gz,ht,zl,tm
+    real(real_kind) :: theter,fx,gz,ht,zl,tm
     !
-    real(8) :: sqrt27,z0,t0,lz
+    real(real_kind) :: sqrt27,z0,t0,lz
     !
     lz=zmax-zmin
-    sqrt27=1.d0/sqrt(27.d0)
-    z0=0.2d0/(1.d0-0.8d0**nmod_z)
-    t0=0.2d0/(1.d0-0.8d0**nmod_t)
+    sqrt27=1.e0_real_kind/sqrt(27.e0_real_kind)
+    z0=0.2e0_real_kind/(1.e0_real_kind-0.8e0_real_kind**nmod_z)
+    t0=0.2e0_real_kind/(1.e0_real_kind-0.8e0_real_kind**nmod_t)
     !
     do k=0,km
     do i=0,im
       !
       if(x(i,0,k,1)<=xb .and. x(i,0,k,1)>=xa) then
         !
-        theter=2.d0*pi*(x(i,0,k,1)-xa)/(xb-xa)
-        fx=4.d0*dsin(theter)*(1.d0-dcos(theter))*sqrt27
+        theter=2.e0_real_kind*pi*(x(i,0,k,1)-xa)/(xb-xa)
+        fx=4.e0_real_kind*sin(theter)*(1.e0_real_kind-cos(theter))*sqrt27
         !
         if(km==0) then
-          gz=1.d0
+          gz=1.e0_real_kind
         else
-          gz=0.d0
+          gz=0.e0_real_kind
           do l=1,nmod_z
             !
             if(l==1) then
               zl=z0
             else
-              zl=zl*0.8d0
+              zl=zl*0.8e0_real_kind
             end if
             !
-            gz=gz+zl*dsin(2.d0*pi*l*                             &
+            gz=gz+zl*sin(2.e0_real_kind*pi*l*                             &
                  ((x(i,0,k,3)-zmin)/lz+wall_blowing_phase(l)))
             !
           end do
         endif
         !
         if(nmod_t==0) then
-          ht=1.d0
+          ht=1.e0_real_kind
         else
-          ht=0.d0
+          ht=0.e0_real_kind
           do m=1,nmod_t
             !
             if(m==1) then
               tm=t0
             else
-              tm=tm*0.8d0
+              tm=tm*0.8e0_real_kind
             end if
             !
-            ht=ht+tm*dsin(2.d0*pi*m*                              &
+            ht=ht+tm*sin(2.e0_real_kind*pi*m*                              &
                  (beter*time+wall_blowing_phase(m+10)))
             !
           end do
@@ -8218,7 +8221,7 @@ module bc
         vwall(i,k)=wallamplit*uinf*fx*gz*ht
         !
       else
-        vwall(i,k)=0.d0
+        vwall(i,k)=0.e0_real_kind
       end if
       !
     end do
@@ -8231,15 +8234,15 @@ module bc
   function wallbs_rand(beter,wallamplit,xa,xb,xc,nmod_t,nmod_z) result(vwall)
 
     ! arguments
-    real(8),intent(in) :: beter,wallamplit,xa,xb,xc
+    real(real_kind),intent(in) :: beter,wallamplit,xa,xb,xc
     integer,intent(in) :: nmod_t,nmod_z
-    real(8) :: vwall(0:im,0:km)
+    real(real_kind) :: vwall(0:im,0:km)
     !
     ! local data
     integer :: i,k
     integer(8) :: gi,gk,hash_value
-    real(8) :: theter,fx,gz,lz,rfluc
-    real(8),parameter :: hash_modulus=2147483629.d0
+    real(real_kind) :: theter,fx,gz,lz,rfluc
+    real(real_kind),parameter :: hash_modulus=2147483629.e0_real_kind
     !
     lz=zmax-zmin
     !
@@ -8248,38 +8251,38 @@ module bc
       !
       if(x(i,0,k,1)<=xb .and. x(i,0,k,1)>=xa) then
         !
-        theter=2.d0*pi*(x(i,0,k,1)-xa)/(xb-xa)
-        fx=4.d0*dsin(theter)*(1.d0-dcos(theter))/sqrt(27.d0)
+        theter=2.e0_real_kind*pi*(x(i,0,k,1)-xa)/(xb-xa)
+        fx=4.e0_real_kind*sin(theter)*(1.e0_real_kind-cos(theter))/sqrt(27.e0_real_kind)
         !
-        gz=dsin(2.d0*nmod_z*pi*(x(i,0,k,3)/lz))
+        gz=sin(2.e0_real_kind*nmod_z*pi*(x(i,0,k,3)/lz))
         !
         gi=int(ig0+i,8)
         gk=int(kg0+k,8)
         if(ka>0) gk=modulo(gk,int(ka,8))
         hash_value=104729_8*(gi+1_8)+130363_8*(gk+1_8)+433494437_8
         hash_value=hash_value-(hash_value/2147483629_8)*2147483629_8
-        rfluc=0.1d0*(2.d0*dble(hash_value)/hash_modulus-1.d0)
+        rfluc=0.1e0_real_kind*(2.e0_real_kind*real(hash_value,kind=real_kind)/hash_modulus-1.e0_real_kind)
         !
-        vwall(i,k)=wallamplit*uinf*fx*gz*(1.d0+rfluc)
+        vwall(i,k)=wallamplit*uinf*fx*gz*(1.e0_real_kind+rfluc)
         !
       elseif(x(i,0,k,1)<=xc .and. x(i,0,k,1)>=xb) then
         !
-        theter=2.d0*pi*(x(i,0,k,1)-xb)/(xc-xb)
-        fx=4.d0*dsin(theter)*(1.d0-dcos(theter))/sqrt(27.d0)
+        theter=2.e0_real_kind*pi*(x(i,0,k,1)-xb)/(xc-xb)
+        fx=4.e0_real_kind*sin(theter)*(1.e0_real_kind-cos(theter))/sqrt(27.e0_real_kind)
         !
-        gz=dsin(2.d0*nmod_z*pi*(x(i,0,k,3)/lz)+0.5d0*pi)
+        gz=sin(2.e0_real_kind*nmod_z*pi*(x(i,0,k,3)/lz)+0.5e0_real_kind*pi)
         !
         gi=int(ig0+i,8)
         gk=int(kg0+k,8)
         if(ka>0) gk=modulo(gk,int(ka,8))
         hash_value=104729_8*(gi+1_8)+130363_8*(gk+1_8)+433494437_8
         hash_value=hash_value-(hash_value/2147483629_8)*2147483629_8
-        rfluc=0.1d0*(2.d0*dble(hash_value)/hash_modulus-1.d0)
+        rfluc=0.1e0_real_kind*(2.e0_real_kind*real(hash_value,kind=real_kind)/hash_modulus-1.e0_real_kind)
         !
-        vwall(i,k)=wallamplit*uinf*fx*gz*(1.d0+rfluc)
+        vwall(i,k)=wallamplit*uinf*fx*gz*(1.e0_real_kind+rfluc)
         !
       else
-        vwall(i,k)=0.d0
+        vwall(i,k)=0.e0_real_kind
       end if
       !
     end do
@@ -8334,9 +8337,9 @@ module bc
       do k=0,km
       do i=0,im
         !
-        rho(i,j,k)  =2.d0
-        vel(i,j,k,:)=0.d0
-        prs(i,j,k)  =1.d0
+        rho(i,j,k)  =2.e0_real_kind
+        vel(i,j,k,:)=0.e0_real_kind
+        prs(i,j,k)  =1.e0_real_kind
         !
         tmp(i,j,k)  =thermal(density=rho(i,j,k),pressure=prs(i,j,k))
         !
@@ -8353,9 +8356,9 @@ module bc
       do k=0,km
       do i=0,im
         !
-        rho(i,j,k)  =1.d0
-        vel(i,j,k,:)=0.d0
-        prs(i,j,k)  =2.5d0
+        rho(i,j,k)  =1.e0_real_kind
+        vel(i,j,k,:)=0.e0_real_kind
+        prs(i,j,k)  =2.5e0_real_kind
         !
         tmp(i,j,k)  =thermal(density=rho(i,j,k),pressure=prs(i,j,k))
         !
@@ -8403,7 +8406,7 @@ module bc
     !
     ! local data
     integer :: i,j,k
-    real(8) :: radi
+    real(real_kind) :: radi
     !
     i=0
     do k=0,km
@@ -8419,13 +8422,13 @@ module bc
       prs_in(j,k)  =thermal(density=rho_in(j,k),temperature=tmp_in(j,k))
       !
       if(num_species>0) then
-        if(vel_in(j,k,1)>(1.d0+1.d-10)*uinf) then
-          spc_in(j,k,1)=1.d0
+        if(vel_in(j,k,1)>(1.e0_real_kind+1.e-10_real_kind)*uinf) then
+          spc_in(j,k,1)=1.e0_real_kind
         else
-          spc_in(j,k,1)=0.d0
+          spc_in(j,k,1)=0.e0_real_kind
         endif
         !
-        spc_in(j,k,2)=1.d0-spc_in(j,k,1)
+        spc_in(j,k,2)=1.e0_real_kind-spc_in(j,k,1)
       endif
       !
     enddo
@@ -8449,7 +8452,7 @@ module bc
     !
     ! local data
     integer :: i,j,k
-    real(8) :: radi
+    real(real_kind) :: radi
     !
     i=0
     do k=0,km
@@ -8466,13 +8469,13 @@ module bc
       prs_in(j,k)   = thermal(density=rho_in(j,k),temperature=tmp_in(j,k))
       !
       if(num_species>0) then
-        if(vel_in(j,k,1)>(1.d0+1.d-10)*uinf) then
-          spc_in(j,k,1)=1.d0
+        if(vel_in(j,k,1)>(1.e0_real_kind+1.e-10_real_kind)*uinf) then
+          spc_in(j,k,1)=1.e0_real_kind
         else
-          spc_in(j,k,1)=0.d0
+          spc_in(j,k,1)=0.e0_real_kind
         endif
         !
-        spc_in(j,k,2)=1.d0-spc_in(j,k,1)
+        spc_in(j,k,2)=1.e0_real_kind-spc_in(j,k,1)
       endif
       !
     enddo
@@ -8497,7 +8500,7 @@ module bc
     !
     ! local data
     integer :: i,j,k
-    real(8) :: radi
+    real(real_kind) :: radi
     !
     i=0
     do k=0,km
@@ -8532,7 +8535,7 @@ module bc
     !
     ! local data
     integer :: i,j,k
-    real(8) :: radi
+    real(real_kind) :: radi
     ! real(8),allocatable
     !
     i=0
@@ -8542,13 +8545,13 @@ module bc
       rho_in(j,k)  =rho_prof(j)
       vel_in(j,k,1)=vel_prof(j,1)
       vel_in(j,k,2)=vel_prof(j,2)
-      vel_in(j,k,3)=0.d0
+      vel_in(j,k,3)=0.e0_real_kind
       tmp_in(j,k)  =tmp_prof(j)
       if(nondimen) then
         prs_in(j,k)  =thermal(density=rho_in(j,k),temperature=tmp_in(j,k))
         !
         if(num_species>0) then
-          spc_in(j,k,:)=1.d0
+          spc_in(j,k,:)=1.e0_real_kind
         endif
         !
       else
@@ -8651,15 +8654,15 @@ module bc
     !
     ! arguments
     integer,intent(in) :: ndir
-    real(8),intent(in) :: prs_t
+    real(real_kind),intent(in) :: prs_t
     !
     ! local data
-    real(8),parameter :: eps=1.d-10
+    real(real_kind),parameter :: eps=1.e-10_real_kind
     integer :: vnorm,css,css2,i,j,k,jspc
-    real(8) :: mavg,lambda(numq)
-    real(8) :: dvel(3),dprs,drho,dtmp,dspc(num_species),              &
+    real(real_kind) :: mavg,lambda(numq)
+    real(real_kind) :: dvel(3),dprs,drho,dtmp,dspc(num_species),              &
                lodi(5+num_species),tran(5)
-    real(8) :: dx,sigma,beter,kamma,dpdy,dudy,dvdy,dy,eta
+    real(real_kind) :: dx,sigma,beter,kamma,dpdy,dudy,dvdy,dy,eta
     !
     if(ndir==2 .and. irk==irkm) then
       !
@@ -8727,9 +8730,9 @@ module bc
         endif
         !
         ! soft outflow condition
-        sigma=0.25d0
-        beter=0.5d0
-        kamma=sigma*css*(1.d0-mavg**2)/(xmax-xmin)
+        sigma=0.25e0_real_kind
+        beter=0.5e0_real_kind
+        kamma=sigma*css*(1.e0_real_kind-mavg**2)/(xmax-xmin)
         !
         ! tran(1)=vel(i-1,j,k,2)*(dpdy-rho(i-1,j,k)*css*dudy)+           &
         !                                          gamma*prs(i-1,j,k)*dvdy
@@ -8743,19 +8746,19 @@ module bc
         !
         lodi(:) = lodi(:)/lambda(:)
         !
-        drho = 1.d0/css**2*(lodi(2)+0.5d0*(lodi(1)+lodi(5)))
-        dtmp = tmp(i-1,j,k)/rho(i-1,j,k)/css*(-lodi(2)+0.5d0*(gamma-1.d0)*(lodi(1)+lodi(5)))
-        dprs = 0.5d0*(lodi(1)+lodi(5))
-        dvel(1) = 1.d0/(2.d0*rho(i-1,j,k)*css)*(lodi(5)-lodi(1))
+        drho = 1.e0_real_kind/css**2*(lodi(2)+0.5e0_real_kind*(lodi(1)+lodi(5)))
+        dtmp = tmp(i-1,j,k)/rho(i-1,j,k)/css*(-lodi(2)+0.5e0_real_kind*(gamma-1.e0_real_kind)*(lodi(1)+lodi(5)))
+        dprs = 0.5e0_real_kind*(lodi(1)+lodi(5))
+        dvel(1) = 1.e0_real_kind/(2.e0_real_kind*rho(i-1,j,k)*css)*(lodi(5)-lodi(1))
         dvel(2) = lodi(3)
         dvel(3) = lodi(4)
         dspc(:) = lodi(5:5+num_species)
         !
-        tmp(i,j,k)  =tmp(i-1,j,k)  +2.d0*dx*dtmp
-        rho(i,j,k)  =rho(i-1,j,k)  +2.d0*dx*drho
-        prs(i,j,k)  =prs(i-1,j,k)  +2.d0*dx*dprs
-        vel(i,j,k,:)=vel(i-1,j,k,:)+2.d0*dx*dvel(:)
-        spc(i,j,k,:)=spc(i-1,j,k,:)+2.d0*dx*dspc(:)
+        tmp(i,j,k)  =tmp(i-1,j,k)  +2.e0_real_kind*dx*dtmp
+        rho(i,j,k)  =rho(i-1,j,k)  +2.e0_real_kind*dx*drho
+        prs(i,j,k)  =prs(i-1,j,k)  +2.e0_real_kind*dx*dprs
+        vel(i,j,k,:)=vel(i-1,j,k,:)+2.e0_real_kind*dx*dvel(:)
+        spc(i,j,k,:)=spc(i-1,j,k,:)+2.e0_real_kind*dx*dspc(:)
         !
         rho(i,j,k)  =thermal(pressure=prs(i,j,k),temperature=tmp(i,j,k))
         !
@@ -8763,7 +8766,7 @@ module bc
                    velocity=vel(i,j,k,:),  pressure=prs(i,j,k),        &
                     species=spc(i,j,k,:)                               )
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
       enddo
       enddo
@@ -8822,21 +8825,21 @@ module bc
         ! tran(1)=vel(i-1,j,k,2)*(dpdy-rho(i-1,j,k)*css*dudy)+           &
         !                                          gamma*prs(i-1,j,k)*dvdy
         !
-        if(vnorm>=0.d0) then
-          sigma=0.25d0
-          beter=0.5d0
-          kamma=sigma*css*(1.d0-mavg**2)/(ymax-ymin)
+        if(vnorm>=0.e0_real_kind) then
+          sigma=0.25e0_real_kind
+          beter=0.5e0_real_kind
+          kamma=sigma*css*(1.e0_real_kind-mavg**2)/(ymax-ymin)
           !
           lodi(1)=kamma*(prs(i,j-1,k)-prs_t) !-(1.d0-beter)*tran(1)
         else
-          eta=0.25d0
+          eta=0.25e0_real_kind
           !
-          lodi(1)=eta*rho(i,j-1,k)*css2*(1.d0-mavg**2)/(ymax-ymin)*(vel(i,j-1,k,2)-vinf)
+          lodi(1)=eta*rho(i,j-1,k)*css2*(1.e0_real_kind-mavg**2)/(ymax-ymin)*(vel(i,j-1,k,2)-vinf)
           lodi(2)=eta*rho(i,j-1,k)*css2/gamma/(ymax-ymin)*(tmp(i,j-1,k)-tinf)
           lodi(3)=eta*css/(ymax-ymin)*(vel(i,j-1,k,1)-uinf)
           lodi(4)=eta*css/(ymax-ymin)*(vel(i,j-1,k,3)-winf)
           do jspc=1,num_species
-            lodi(5+jspc)=eta*css/(ymax-ymin)*(spc(i,j-1,k,jspc)-0.d0)
+            lodi(5+jspc)=eta*css/(ymax-ymin)*(spc(i,j-1,k,jspc)-0.e0_real_kind)
           enddo
         endif
         !
@@ -8847,19 +8850,19 @@ module bc
         !
         lodi(:) = lodi(:)/lambda(:)
         !
-        drho = 1.d0/css**2*(lodi(2)+0.5d0*(lodi(1)+lodi(5)))
-        dtmp = tmp(i,j-1,k)/rho(i,j-1,k)/css*(-lodi(2)+0.5d0*(gamma-1.d0)*(lodi(1)+lodi(5)))
-        dprs = 0.5d0*(lodi(1)+lodi(5))
-        dvel(2) = 1.d0/(2.d0*rho(i,j-1,k)*css)*(lodi(5)-lodi(1))
+        drho = 1.e0_real_kind/css**2*(lodi(2)+0.5e0_real_kind*(lodi(1)+lodi(5)))
+        dtmp = tmp(i,j-1,k)/rho(i,j-1,k)/css*(-lodi(2)+0.5e0_real_kind*(gamma-1.e0_real_kind)*(lodi(1)+lodi(5)))
+        dprs = 0.5e0_real_kind*(lodi(1)+lodi(5))
+        dvel(2) = 1.e0_real_kind/(2.e0_real_kind*rho(i,j-1,k)*css)*(lodi(5)-lodi(1))
         dvel(1) = lodi(3)
         dvel(3) = lodi(4)
         dspc(:) = lodi(5:5+num_species)
         !
-        tmp(i,j,k)  =tmp(i,j-1,k)  +2.d0*dy*dtmp
-        rho(i,j,k)  =rho(i,j-1,k)  +2.d0*dy*drho
-        prs(i,j,k)  =prs(i,j-1,k)  +2.d0*dy*dprs
-        vel(i,j,k,:)=vel(i,j-1,k,:)+2.d0*dy*dvel(:)
-        spc(i,j,k,:)=spc(i,j-1,k,:)+2.d0*dy*dspc(:)
+        tmp(i,j,k)  =tmp(i,j-1,k)  +2.e0_real_kind*dy*dtmp
+        rho(i,j,k)  =rho(i,j-1,k)  +2.e0_real_kind*dy*drho
+        prs(i,j,k)  =prs(i,j-1,k)  +2.e0_real_kind*dy*dprs
+        vel(i,j,k,:)=vel(i,j-1,k,:)+2.e0_real_kind*dy*dvel(:)
+        spc(i,j,k,:)=spc(i,j-1,k,:)+2.e0_real_kind*dy*dspc(:)
         !
         rho(i,j,k)  =thermal(pressure=prs(i,j,k),temperature=tmp(i,j,k))
         !
@@ -8867,7 +8870,7 @@ module bc
                    velocity=vel(i,j,k,:),  pressure=prs(i,j,k),        &
                     species=spc(i,j,k,:)                               )
         !
-        qrhs(i,j,k,:)=0.d0
+        qrhs(i,j,k,:)=0.e0_real_kind
         !
       enddo
       enddo

@@ -18,6 +18,43 @@ from run_compact_flatplate import configure, GRID
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def read_rank_output(case, ranks):
+    files=sorted((case/'rank_output/1').glob('rank.*/stdout'),
+                 key=lambda path:int(path.parent.name.split('.')[1]))
+    if [int(path.parent.name.split('.')[1]) for path in files]!=list(range(ranks)):
+        raise ValueError('missing rank-local MPI output files')
+    return '\n'.join(path.read_text()+'\n'+path.with_name('stderr').read_text() for path in files)
+
+
+def crashfix_summary(text):
+    rows = re.findall(r'^ASTR_GPU_CRASHFIX\s+(\d+)\s+(\d+)\s+(\d+)\s+([^\n]+)', text, re.MULTILINE)
+    totals = re.findall(r'^ASTR_GPU_CRASHFIX_TOTAL\s+(\d+)\s+(\d+)\s+([^\n]+)', text, re.MULTILINE)
+    if totals:
+        if len(totals) != 1 or rows:
+            raise ValueError('mixed/duplicate buffered crashfix report')
+        visits, calls, payload = totals[0]
+        values = np.array([float(value) for value in payload.split()])
+        if values.shape != (9,) or not np.isfinite(values).all():
+            raise ValueError('invalid buffered crashfix report')
+        return dict(crashfix_repaired_node_visits=int(visits), crashfix_nonzero_calls=int(calls),
+            crashfix_max_pointwise_conservative_change=values[:5].tolist(),
+            crashfix_reported_state_minima=values[5:].tolist(),
+            crashfix_change_scope='per-component pointwise maxima, not summed conservation defects')
+    maximum = np.zeros(5)
+    minima = None
+    for _, _, _, payload in rows:
+        values = np.array([float(value) for value in payload.split()])
+        if values.shape != (9,) or not np.isfinite(values).all():
+            raise ValueError('invalid crashfix component-change report')
+        maximum = np.maximum(maximum, values[:5])
+        minima = values[5:] if minima is None else np.minimum(minima, values[5:])
+    return dict(crashfix_repaired_node_visits=sum(int(count) for _, _, count, _ in rows),
+        crashfix_nonzero_calls=sum(int(count) > 0 for _, _, count, _ in rows),
+        crashfix_max_pointwise_conservative_change=maximum.tolist(),
+        crashfix_reported_state_minima=None if minima is None else minima.tolist(),
+        crashfix_change_scope='per-component pointwise maxima, not summed conservation defects')
+
+
 def window_times(text, ranks, steps, warmup):
     rows=re.findall(r'ASTR_GPU_RANK_RK_TIMING\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)',text)
     records={(int(rank),int(step)):float(total) for rank,step,prepare_time,rk,total in rows}
@@ -71,6 +108,7 @@ def main():
     parser.add_argument('--deltat', type=float)
     parser.add_argument('--phase-timing', action='store_true')
     parser.add_argument('--preflight', action='store_true', help='read-only q admissibility and resource sampling')
+    parser.add_argument('--state-check', action='store_true', help='read-only complete-state check without resource sampling')
     parser.add_argument('--stage-state-check', action='store_true', help='test-only profile stage localization')
     parser.add_argument('--filter-window', help='test-only NP1 periodic-z step,stage,i,j,k capture')
     parser.add_argument('--crashfix', action='store_true', help='enable existing runtime lcracon recovery')
@@ -79,20 +117,34 @@ def main():
     parser.add_argument('--batch-rhs', type=int, default=65535)
     parser.add_argument('--transport', choices=('pinned','device-aware'), default='pinned')
     parser.add_argument('--nsys', action='store_true')
+    parser.add_argument('--native-precision', choices=('fp64','fp32'), default='fp64')
+    parser.add_argument('--statistics-interval', type=int, default=1)
+    parser.add_argument('--buffer-output', action='store_true')
+    parser.add_argument('--tgv-conservation', action='store_true')
+    parser.add_argument('--listing-interval', type=int, help='lightweight progress/CFL interval')
     args = parser.parse_args()
     if not 0<=args.warmup<args.steps:
         parser.error('require 0 <= warmup < steps')
     if args.crashfix and args.case!='plate':
         parser.error('--crashfix is scoped to the CP9 profile plate')
+    if args.statistics_interval<0:
+        parser.error('--statistics-interval must be nonnegative')
+    if args.tgv_conservation and (args.case!='tgv' or args.statistics_interval==0):
+        parser.error('--tgv-conservation requires TGV statistics')
+    if args.listing_interval is not None and args.listing_interval<1:
+        parser.error('--listing-interval must be positive')
     case=args.out.resolve()
     exe=args.exe.resolve(strict=True)
     grid=args.grid or ('32,32,32' if args.case=='tgv' else ','.join(map(str,GRID)))
     dt=args.deltat if args.deltat is not None else (1e-3 if args.case=='tgv' else .005)
     if args.case=='tgv':
-        subprocess.run([sys.executable,str(ROOT/'tests/gpu_validation/prepare_tgv_case.py'),
+        prepare_command=[sys.executable,str(ROOT/'tests/gpu_validation/prepare_tgv_case.py'),
             '--src-case',str(ROOT/'examples/Taylor_Green_Vortex'),'--dst-case',str(case),
             '--grid',grid,'--use-gpu','t','--scheme',args.scheme,'--lfilter',args.filter,
-            '--diffterm','t','--deltat',str(dt),'--maxstep',str(args.steps-1)],check=True)
+            '--diffterm','t','--deltat',str(dt),'--maxstep',str(args.steps-1)]
+        if args.buffer_output:
+            prepare_command+=['--omit-grid-resource','--lreadgrid','f','--restart','f']
+        subprocess.run(prepare_command,check=True)
         primary='datin/input.tgv'
     else:
         prepare(args.source,case,'gpu',tuple(map(int,grid.split(','))))
@@ -111,21 +163,37 @@ def main():
         primary='datin/input.dat'
     (case/'datin/input.output').write_text(
         '&output\n host_budget_bytes=67108864\n/\n&checkpoint\n/\n&volume\n/\n&slices\n/\n')
+    if args.buffer_output:
+        controller=case/'datin/controller'
+        lines=controller.read_text().splitlines()
+        index=next(i for i,line in enumerate(lines) if '# maxstep,feqchkpt' in line)+1
+        fields=lines[index].split(',')
+        fields[1]=str(args.steps+1)
+        fields[4]=str(args.listing_interval or args.steps+1)
+        lines[index]=','.join(fields)
+        controller.write_text('\n'.join(lines)+'\n')
     env={k:v for k,v in os.environ.items() if not k.startswith(('ASTR_','OMPI_MCA_','UCX_'))}
     env.update(ASTR_FORCE_MPI_TOPOLOGY=args.topology,ASTR_GPU_COMPACT_SYNC=args.compact_sync,
         ASTR_GPU_COMPACT_BATCH_RHS=str(args.batch_rhs),ASTR_GPU_COMPACT_TRANSPORT=args.transport,
-        ASTR_GPU_SYNC_MODE='explicit',ASTR_GPU_PRECISION_MODE='fp64',ASTR_GPU_HALO_TRANSPORT='pinned',
+        ASTR_GPU_SYNC_MODE='explicit',ASTR_GPU_PRECISION_MODE='fp64' if args.native_precision=='fp64' else '',
+        ASTR_GPU_HALO_TRANSPORT='pinned',
         ASTR_GPU_FILTER_WORKSPACE=args.workspace,ASTR_GPU_RK_TIMING='1',ASTR_GPU_RANK_RK_TIMING='1',
-        ASTR_COMPLETE_STEP_TIMING='1',
+        ASTR_COMPLETE_STEP_TIMING='0' if args.buffer_output else '1',
+        ASTR_GPU_STATISTICS_INTERVAL=str(args.statistics_interval),
+        ASTR_BENCHMARK_BUFFER_OUTPUT='1' if args.buffer_output else '0',
         ASTR_NSCBC_FARFIELD_MODE='incoming_only',ASTR_NSCBC_FARFIELD_RHO='1',ASTR_NSCBC_FARFIELD_U='1',
         ASTR_NSCBC_FARFIELD_V='0',ASTR_NSCBC_FARFIELD_W='0',ASTR_NSCBC_FARFIELD_T='1',
         OMPI_MCA_pml='ob1',OMPI_MCA_btl='self,vader,tcp',OMPI_MCA_osc='pt2pt',
         OMPI_MCA_coll='^hcoll,ucc,cuda',OMPI_MCA_opal_cuda_support='0')
     if args.case=='plate':
         env['ASTR_WALL_BLOWING_MODE']='legacy_random'
+    if args.buffer_output:
+        env['ASTR_GPU_BENCHMARK_NO_FIELD_IO']='1'
+    if args.tgv_conservation:
+        env['ASTR_TGV_CONSERVATION']='1'
     if args.phase_timing:
         env['ASTR_GPU_PHASE_TIMING']='1'
-    if args.preflight:
+    if args.preflight or args.state_check:
         env['ASTR_VALIDATION_RK_STATE']='1'
     if args.stage_state_check:
         env['ASTR_VALIDATION_PROFILE_STAGE_STATE']='1'
@@ -138,6 +206,8 @@ def main():
         env.pop('OMPI_MCA_opal_cuda_support')
     ranks=int(np.prod(tuple(map(int,args.topology.split(',')))))
     command=['mpirun','--oversubscribe','--bind-to','none','-np',str(ranks)]
+    if args.buffer_output:
+        command+=['--output-filename',str(case/'rank_output')]
     if args.nsys:
         command+=['nsys','profile','--trace=cuda,nvtx,mpi','--mpi-impl=openmpi','--sample=none',
             '--cpuctxsw=none','--export=sqlite','--output',str(case/'trace.rank%q{OMPI_COMM_WORLD_RANK}')]
@@ -152,12 +222,14 @@ def main():
         else:
             subprocess.run(command,cwd=case,env=env,stdout=stream,stderr=subprocess.STDOUT,check=True)
     elapsed=time.monotonic()-started
-    text=(case/'run.log').read_text()
+    text=read_rank_output(case,ranks) if args.buffer_output else (case/'run.log').read_text()
+    if f'ASTR_GPU_PRECISION_MODE={args.native_precision}' not in text:
+        raise ValueError('reported solver precision differs from the benchmark selection')
     sums,cost=window_times(text,ranks,args.steps,args.warmup)
     cfl=[float(v) for v in re.findall(r'current CFL:\s+(\S+)',text)]
     if not cfl or not np.isfinite(cfl).all() or max(cfl)>.5:
         raise ValueError(f'CFL preflight gate failed: {cfl}')
-    if args.preflight:
+    if args.preflight or args.state_check:
         checks=re.findall(r'ASTR_VALIDATION_RK_STATE_PASS\s+(\d+)\s+(\d+)',text)
         if {(int(r),int(s)) for r,s in checks}!={(r,s) for r in range(ranks) for s in range(args.steps)}:
             raise ValueError('missing read-only complete-state admission records')
@@ -165,15 +237,18 @@ def main():
         compact_sync=args.compact_sync,batch_rhs=args.batch_rhs,workspace=args.workspace,transport=args.transport,
         grid_intervals=list(map(int,grid.split(','))),scheme=args.scheme,filter=args.filter,deltat=dt,
         phase_timing=args.phase_timing,preflight=args.preflight,stage_state_check=args.stage_state_check,
-        crashfix=args.crashfix,
+        state_check=args.preflight or args.state_check,
+        crashfix=args.crashfix,numerical_precision=args.native_precision,
+        statistics_interval=args.statistics_interval,buffered_output=args.buffer_output,
+        tgv_conservation=args.tgv_conservation,listing_interval=args.listing_interval,
         cfl=cfl,launch_elapsed_seconds=elapsed,
         packed_device_bytes={name:int(value) for name,value in re.findall(
             r'COMPACT_(DERIVATIVE|FILTER)_PACKED_DEVICE_BYTES=(\d+)',text)},
         profiled=args.nsys,rank_rk_window_seconds=sums,rk_seconds_per_step=cost,
         executable_sha256=hashlib.file_digest(exe.open('rb'),'sha256').hexdigest())
-    repairs=re.findall(r'^ASTR_GPU_CRASHFIX\s+(\d+)\s+(\d+)\s+(\d+)\s+',text,re.MULTILINE)
-    report['crashfix_repaired_node_visits']=sum(int(count) for step,stage,count in repairs)
-    report['crashfix_nonzero_calls']=sum(int(count)>0 for step,stage,count in repairs)
+    report.update(crashfix_summary(text))
+    if args.preflight:
+        report['sampled_preflight_resources'] = json.loads((case/'resources.json').read_text())
     if args.phase_timing:
         report['phases']=phase_times(text,ranks,args.steps,args.warmup,args.filter)
     (case/'summary.json').write_text(json.dumps(report,indent=2)+'\n')

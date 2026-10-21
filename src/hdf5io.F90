@@ -6,6 +6,7 @@
 !| 02-Jun-2020  | Created by J. Fang STFC Daresbury Laboratory         |
 !+---------------------------------------------------------------------+
 module hdf5io
+  use astr_precision, only: real_kind
   !
 #ifdef HDF5
   use hdf5
@@ -16,6 +17,7 @@ module hdf5io
                        mpi_comm_world,mpi_info_null,mpistop
   !
   implicit none
+  private :: real_kind
   !
   Interface h5read
     !
@@ -121,7 +123,7 @@ module hdf5io
                                             h5error,access_prp=plist_id)
       if(h5error.ne.0)  stop ' !! error in h5io_init call h5fcreate_f'
     elseif(mode=='read') then
-      call h5fopen_f(trim(wall_source_path(filename)),h5f_acc_rdwr_f,h5file_id, &
+      call h5fopen_f(trim(wall_source_path(filename)),h5f_acc_rdonly_f,h5file_id, &
                                             h5error,access_prp=plist_id)
       if(h5error.ne.0)  stop ' !! error in h5io_init call h5fopen_f'
     else
@@ -179,7 +181,7 @@ module hdf5io
     !
     ! arguments
     character(LEN=*),intent(in) :: varname
-    real(8),intent(inout) :: var(:,:,:)
+    real(real_kind),intent(inout) :: var(:,:,:)
     character(len=1),intent(in) :: mode
     !
     if(mode=='h') then
@@ -209,7 +211,7 @@ module hdf5io
     !
     ! arguments
     character(LEN=*),intent(in) :: varname
-    real(8),intent(inout) :: var(:,:,:)
+    real(real_kind),intent(inout) :: var(:,:,:)
     !
 #ifdef HDF5
     ! local data
@@ -240,7 +242,7 @@ module hdf5io
     call h5pset_dxpl_mpio_f(plist_id,h5fd_mpio_collective_f,h5error)
     !
     ! Read 3D array
-    call h5dread_f(dset_id,h5t_native_double,var,dimt,h5error,         &
+    call h5dread_f(dset_id,h5kind_to_type(real_kind,H5_REAL_KIND),var,dimt,h5error,         &
                    mem_space_id=memspace,file_space_id=filespace,      &
                                                       xfer_prp=plist_id)
     !Close dataspace
@@ -264,11 +266,11 @@ module hdf5io
     !
     ! arguments
     character(LEN=*),intent(in) :: varname
-    real(8),intent(inout) :: var(:,:,:)
+    real(real_kind),intent(inout) :: var(:,:,:)
     !
 #ifdef HDF5
     ! local data
-    real(8),allocatable :: var_1d(:)
+    real(real_kind),allocatable :: var_1d(:)
     integer :: dima,jrank,i,j,k,n
     integer :: data_size(0:mpirankmax)
     integer :: h5error
@@ -320,7 +322,7 @@ module hdf5io
     call h5pset_dxpl_mpio_f(plist_id,h5fd_mpio_collective_f,h5error)
     !
     ! Read 1-d array
-    call h5dread_f(dset_id,h5t_native_double,var_1d,dimt,h5error,      &
+    call h5dread_f(dset_id,h5kind_to_type(real_kind,H5_REAL_KIND),var_1d,dimt,h5error,      &
                    mem_space_id=memspace,file_space_id=filespace,      &
                                                       xfer_prp=plist_id)
     !Close dataspace
@@ -433,17 +435,17 @@ module hdf5io
     !
     ! arguments
     character(LEN=*),intent(in) :: varname
-    real(8),intent(out) :: var
+    real(real_kind),intent(out) :: var
     !
 #ifdef HDF5
     ! local data
-    real(8) :: rvar(1)
+    real(real_kind) :: rvar(1)
     integer :: h5error
     integer(hsize_t) :: dimt(1)=(/1/)
     !
     ! read the data
     !
-    call h5ltread_dataset_f(h5file_id,varname,h5t_native_double,rvar,  &
+    call h5ltread_dataset_f(h5file_id,varname,h5kind_to_type(real_kind,H5_REAL_KIND),rvar,  &
                                                            dimt,h5error)
     var=rvar(1)
     if(h5error.ne.0)  stop ' !! error in h5r_int4 call h5ltread_dataset_f'
@@ -458,19 +460,19 @@ module hdf5io
     !
     ! arguments
     character(LEN=*),intent(in) :: varname
-    real(8),intent(out) :: var(:)
+    real(real_kind),intent(out) :: var(:)
     integer,intent(in) :: dim
     !
 #ifdef HDF5
     ! local data
-    real(8) :: rvar(dim)
+    real(real_kind) :: rvar(dim)
     integer :: h5error
     integer(hsize_t) :: dimt(1)
     !
     ! read the data
     dimt(1) =dim
     !
-    call h5ltread_dataset_f(h5file_id,varname,h5t_native_double,rvar,  &
+    call h5ltread_dataset_f(h5file_id,varname,h5kind_to_type(real_kind,H5_REAL_KIND),rvar,  &
                                                            dimt,h5error)
     var=rvar
     if(h5error.ne.0)  stop ' !! error in h5r_int4 call h5ltread_dataset_f'
@@ -486,7 +488,7 @@ module hdf5io
     !
     ! arguments
     character(LEN=*),intent(in) :: varname
-    real(8),intent(inout) :: var(:,:)
+    real(real_kind),intent(inout) :: var(:,:)
     character(len=1),intent(in) :: dir
     logical,intent(in),optional :: display
     !
@@ -534,7 +536,7 @@ module hdf5io
     call h5pset_dxpl_mpio_f(plist_id,h5fd_mpio_collective_f,h5error)
     !
     ! Read 2D array
-    call h5dread_f(dset_id,h5t_native_double,var,dimt,h5error,         &
+    call h5dread_f(dset_id,h5kind_to_type(real_kind,H5_REAL_KIND),var,dimt,h5error,         &
                    mem_space_id=memspace,file_space_id=filespace,      &
                                                       xfer_prp=plist_id)
     !Close dataspace
@@ -556,7 +558,7 @@ module hdf5io
     !
     ! arguments
     character(LEN=*),intent(in) :: varname
-    real(8),intent(inout) :: var(:)
+    real(real_kind),intent(inout) :: var(:)
     character(len=1),intent(in) :: dir
     logical,intent(in),optional :: display
     !
@@ -603,7 +605,7 @@ module hdf5io
     call h5pset_dxpl_mpio_f(plist_id,h5fd_mpio_collective_f,h5error)
     !
     ! Read 2D array
-    call h5dread_f(dset_id,h5t_native_double,var,dimt,h5error,         &
+    call h5dread_f(dset_id,h5kind_to_type(real_kind,H5_REAL_KIND),var,dimt,h5error,         &
                    mem_space_id=memspace,file_space_id=filespace,      &
                                                       xfer_prp=plist_id)
     !Close dataspace
@@ -625,7 +627,7 @@ module hdf5io
     !
     ! arguments
     character(LEN=*),intent(in) :: varname
-    real(8),intent(inout) :: var(:,:,:)
+    real(real_kind),intent(inout) :: var(:,:,:)
     !
 #ifdef HDF5
     ! local data
@@ -656,7 +658,7 @@ module hdf5io
     call h5pset_dxpl_mpio_f(plist_id,h5fd_mpio_collective_f,h5error)
     !
     ! Read 3D array
-    call h5dread_f(dset_id,h5t_native_double,var,dimt,h5error,         &
+    call h5dread_f(dset_id,h5kind_to_type(real_kind,H5_REAL_KIND),var,dimt,h5error,         &
                    mem_space_id=memspace,file_space_id=filespace,      &
                                                       xfer_prp=plist_id)
     !Close dataspace
@@ -713,17 +715,17 @@ module hdf5io
     !
     ! arguments
     character(LEN=*),intent(in) :: varname
-    real(8),intent(in) :: var
+    real(real_kind),intent(in) :: var
     !
 #ifdef HDF5
     ! local data
-    real(8) :: rvar(1)
+    real(real_kind) :: rvar(1)
     integer :: h5error
     integer(hsize_t) :: dimt(1)=(/1/)
     !
     rvar=var
     call h5ltmake_dataset_f(h5file_id,varname,1,dimt,                  &
-                                        h5t_native_double,rvar,h5error)
+                                        h5kind_to_type(real_kind,H5_REAL_KIND),rvar,h5error)
     if(h5error.ne.0)  stop ' !! error in h5w_real8 call h5ltmake_dataset_f'
     !
     if(mpirank==0) print*,' << ',varname
@@ -736,7 +738,7 @@ module hdf5io
     !
     ! arguments
     character(LEN=*),intent(in) :: varname
-    real(8),intent(in) :: var(:,:,:)
+    real(real_kind),intent(in) :: var(:,:,:)
     character(len=1),intent(in) :: mode
     !
 #ifdef HDF5
@@ -759,7 +761,7 @@ module hdf5io
     !
     ! arguments
     character(LEN=*),intent(in) :: varname
-    real(8),intent(in) :: var(:,:,:)
+    real(real_kind),intent(in) :: var(:,:,:)
     integer(hsize_t),intent(in),optional :: offset(3)
     !
 #ifdef HDF5
@@ -786,7 +788,7 @@ module hdf5io
     endif
     !
     call h5screate_simple_f(3,dimat,filespace,h5error)
-    call h5dcreate_f(h5file_id,varname,H5T_NATIVE_DOUBLE,filespace,    &
+    call h5dcreate_f(h5file_id,varname,h5kind_to_type(real_kind,H5_REAL_KIND),filespace,    &
                                                        dset_id,h5error)
     call h5screate_simple_f(3,dimt,memspace,h5error)
     call h5sclose_f(filespace,h5error)
@@ -796,7 +798,7 @@ module hdf5io
     call h5pcreate_f(H5P_DATASET_XFER_F,plist_id,h5error) 
     !
     call h5pset_dxpl_mpio_f(plist_id,H5FD_MPIO_COLLECTIVE_F,h5error)
-    call h5dwrite_f(dset_id,H5T_NATIVE_DOUBLE,var,dimt,h5error,       &
+    call h5dwrite_f(dset_id,h5kind_to_type(real_kind,H5_REAL_KIND),var,dimt,h5error,       &
                     file_space_id=filespace,mem_space_id=memspace,    &
                                                      xfer_prp=plist_id)
     call h5sclose_f(filespace,h5error)
@@ -816,11 +818,11 @@ module hdf5io
     !
     ! arguments
     character(LEN=*),intent(in) :: varname
-    real(8),intent(in) :: var(:,:,:)
+    real(real_kind),intent(in) :: var(:,:,:)
     !
 #ifdef HDF5
     ! local data
-    real(8),allocatable :: var_1d(:)
+    real(real_kind),allocatable :: var_1d(:)
     integer :: dima,jrank,i,j,k,n
     integer :: data_size(0:mpirankmax)
     integer :: h5error
@@ -871,7 +873,7 @@ module hdf5io
     enddo
     !
     call h5screate_simple_f(1,dimat,filespace,h5error)
-    call h5dcreate_f(h5file_id,varname,H5T_NATIVE_DOUBLE,filespace,    &
+    call h5dcreate_f(h5file_id,varname,h5kind_to_type(real_kind,H5_REAL_KIND),filespace,    &
                                                        dset_id,h5error)
     call h5screate_simple_f(1,dimt,memspace,h5error)
     call h5sclose_f(filespace,h5error)
@@ -881,7 +883,7 @@ module hdf5io
     call h5pcreate_f(H5P_DATASET_XFER_F,plist_id,h5error) 
     !
     call h5pset_dxpl_mpio_f(plist_id,H5FD_MPIO_COLLECTIVE_F,h5error)
-    call h5dwrite_f(dset_id,H5T_NATIVE_DOUBLE,var_1d,dimt,h5error,    &
+    call h5dwrite_f(dset_id,h5kind_to_type(real_kind,H5_REAL_KIND),var_1d,dimt,h5error,    &
                     file_space_id=filespace,mem_space_id=memspace,    &
                                                      xfer_prp=plist_id)
     call h5sclose_f(filespace,h5error)
@@ -904,7 +906,7 @@ module hdf5io
     !
     ! arguments
     character(LEN=*),intent(in) :: varname
-    real(8),intent(in) :: var(:,:)
+    real(real_kind),intent(in) :: var(:,:)
     character(len=1),intent(in) :: dir
     !
 #ifdef HDF5
@@ -938,7 +940,7 @@ module hdf5io
     dimt=dim
     !
     call h5screate_simple_f(2,dimat,filespace,h5error)
-    call h5dcreate_f(h5file_id,varname,H5T_NATIVE_DOUBLE,filespace,    &
+    call h5dcreate_f(h5file_id,varname,h5kind_to_type(real_kind,H5_REAL_KIND),filespace,    &
                                                        dset_id,h5error)
     call h5screate_simple_f(2,dimt,memspace,h5error)
     call h5sclose_f(filespace,h5error)
@@ -948,7 +950,7 @@ module hdf5io
     call h5pcreate_f(H5P_DATASET_XFER_F,plist_id,h5error) 
     !
     call h5pset_dxpl_mpio_f(plist_id,H5FD_MPIO_COLLECTIVE_F,h5error)
-    call h5dwrite_f(dset_id,H5T_NATIVE_DOUBLE,var,dimt,h5error,       &
+    call h5dwrite_f(dset_id,h5kind_to_type(real_kind,H5_REAL_KIND),var,dimt,h5error,       &
                     file_space_id=filespace,mem_space_id=memspace,    &
                                                      xfer_prp=plist_id)
     call h5sclose_f(filespace,h5error)
@@ -1134,13 +1136,13 @@ module hdf5io
   !
   subroutine h5_write1rl8(var,varname,filename,explicit,newfile)
     !
-    real(8),intent(in) :: var
+    real(real_kind),intent(in) :: var
     character(len=*),intent(in) :: varname,filename
     logical,intent(in), optional:: explicit,newfile
     logical :: lexplicit,lnew
     logical :: lfilalive
     !
-    real(8) :: v(1)
+    real(real_kind) :: v(1)
     !
 #ifdef HDF5
     !
@@ -1177,7 +1179,7 @@ module hdf5io
     dimt=(/1/)
     !
     ! write the dataset.
-    call h5ltmake_dataset_f(file_id,varname,1,dimt,h5t_native_double,v,h5error)
+    call h5ltmake_dataset_f(file_id,varname,1,dimt,h5kind_to_type(real_kind,H5_REAL_KIND),v,h5error)
     if(h5error .ne. 0) stop 'h5 write error h5_write1rl8'
     if(lexplicit) print*,' << ',varname,' to ',filename
     !
@@ -1194,7 +1196,7 @@ module hdf5io
   !
   subroutine h5_writearray1d(var,varname,filename,explicit,newfile)
     !
-    real(8),intent(in) :: var(:)
+    real(real_kind),intent(in) :: var(:)
     character(len=*),intent(in) :: varname,filename
     logical,intent(in), optional:: explicit,newfile
     logical :: lexplicit,lnew
@@ -1235,7 +1237,7 @@ module hdf5io
     dimt=(/dim1/)
     !
     ! write the dataset.
-    call h5ltmake_dataset_f(file_id,varname,1,dimt,h5t_native_double,var,h5error)
+    call h5ltmake_dataset_f(file_id,varname,1,dimt,h5kind_to_type(real_kind,H5_REAL_KIND),var,h5error)
     if(h5error .ne. 0) stop 'h5 write error h5_writearray1d'
     if(lexplicit) print*,' << ',varname,' to ',filename
     !
@@ -1252,7 +1254,7 @@ module hdf5io
   
   subroutine h5_writearray2d(var,varname,filename,explicit,newfile)
     !
-    real(8),intent(in) :: var(:,:)
+    real(real_kind),intent(in) :: var(:,:)
     character(len=*),intent(in) :: varname,filename
     logical,intent(in), optional:: explicit,newfile
     !
@@ -1296,7 +1298,7 @@ module hdf5io
     dimt=(/dim1,dim2/)
     !
     ! write the dataset.
-    call h5ltmake_dataset_f(file_id,varname,2,dimt,h5t_native_double,var,h5error)
+    call h5ltmake_dataset_f(file_id,varname,2,dimt,h5kind_to_type(real_kind,H5_REAL_KIND),var,h5error)
     if(h5error .ne. 0) stop 'h5 write error h5_writearray3d'
     if(lexplicit) print*,' << ',varname,' to ',filename
     if(h5error.ne.0)  stop ' !! error in h5_writearray3d 2'
@@ -1314,7 +1316,7 @@ module hdf5io
 
   subroutine h5_writearray3d(var,varname,filename,explicit,newfile)
     !
-    real(8),intent(in) :: var(:,:,:)
+    real(real_kind),intent(in) :: var(:,:,:)
     character(len=*),intent(in) :: varname,filename
     logical,intent(in), optional:: explicit,newfile
     !
@@ -1359,7 +1361,7 @@ module hdf5io
     dimt=(/dim1,dim2,dim3/)
     !
     ! write the dataset.
-    call h5ltmake_dataset_f(file_id,varname,3,dimt,h5t_native_double,var,h5error)
+    call h5ltmake_dataset_f(file_id,varname,3,dimt,h5kind_to_type(real_kind,H5_REAL_KIND),var,h5error)
     if(h5error .ne. 0) stop 'h5 write error h5_writearray3d'
     if(lexplicit) print*,' << ',varname,' to ',filename
     if(h5error.ne.0)  stop ' !! error in h5_writearray3d 2'
@@ -1413,7 +1415,7 @@ module hdf5io
   !+-------------------------------------------------------------------+
   subroutine h5_readarray1d(varname,var,dim,filename,explicit)
     !
-    real(8),intent(out) :: var(:)
+    real(real_kind),intent(out) :: var(:)
     integer,intent(in) :: dim
     character(len=*),intent(in) :: varname,filename
     logical,intent(in), optional:: explicit
@@ -1436,7 +1438,7 @@ module hdf5io
     !
     call h5open_f(h5error)
     !
-    call h5fopen_f(filename,h5f_acc_rdwr_f,file_id,h5error)
+    call h5fopen_f(filename,h5f_acc_rdonly_f,file_id,h5error)
 
     ! open an existing dataset.
     call h5dopen_f(file_id,varname,dset_id1,h5error)
@@ -1444,7 +1446,7 @@ module hdf5io
     dimt=(/dim/)
     !
     ! read the dataset.
-    call h5dread_f(dset_id1,h5t_native_double,var,dimt,h5error)
+    call h5dread_f(dset_id1,h5kind_to_type(real_kind,H5_REAL_KIND),var,dimt,h5error)
 
     if(h5error.ne.0)  stop ' !! error in h5_readarray1d 1'
     !
@@ -1493,7 +1495,7 @@ module hdf5io
     call h5open_f(h5error)
     print*,' ** open hdf5 interface'
     !
-    call h5fopen_f(filename,h5f_acc_rdwr_f,file_id,h5error)
+    call h5fopen_f(filename,h5f_acc_rdonly_f,file_id,h5error)
     !
     call h5ltread_dataset_f(file_id,varname,h5t_native_integer,v,dimt,h5error)
     !
@@ -1515,7 +1517,7 @@ module hdf5io
   !
   subroutine h5_read1rl8(var,varname,filename,explicit)
     !
-    real(8),intent(out) :: var
+    real(real_kind),intent(out) :: var
     character(len=*),intent(in) :: varname,filename
     logical,intent(in), optional:: explicit
     logical :: lexplicit
@@ -1526,7 +1528,7 @@ module hdf5io
     ! file identifier
     integer(hid_t) :: dset_id1
     ! dataset identifier
-    real(8) :: v(1)
+    real(real_kind) :: v(1)
     integer :: h5error ! error flag
     integer(hsize_t) :: dimt(1)
     !
@@ -1541,9 +1543,9 @@ module hdf5io
     call h5open_f(h5error)
     if(lexplicit)  print*,' ** open hdf5 interface'
     !
-    call h5fopen_f(filename,h5f_acc_rdwr_f,file_id,h5error)
+    call h5fopen_f(filename,h5f_acc_rdonly_f,file_id,h5error)
     !
-    call h5ltread_dataset_f(file_id,varname,h5t_native_double,v,dimt,h5error)
+    call h5ltread_dataset_f(file_id,varname,h5kind_to_type(real_kind,H5_REAL_KIND),v,dimt,h5error)
     !
     call h5fclose_f(file_id,h5error)
     !
@@ -1568,7 +1570,7 @@ module hdf5io
   subroutine h5_readarray2d(varin,vname,dim1,dim2,fname,explicit)
     !
     integer :: dim1,dim2
-    real(8) :: varin(0:dim1,0:dim2)
+    real(real_kind) :: varin(0:dim1,0:dim2)
     character(len=*),intent(in) :: vname,fname
     logical,intent(in), optional:: explicit
     logical :: lexplicit
@@ -1591,7 +1593,7 @@ module hdf5io
     call h5open_f(h5error)
     if(h5error.ne.0)  stop ' !! error in h5_readarray3d 1'
     !
-    call h5fopen_f(fname,h5f_acc_rdwr_f,file_id,h5error)
+    call h5fopen_f(fname,h5f_acc_rdonly_f,file_id,h5error)
     if(h5error.ne.0)  stop ' !! error in h5_readarray3d 2'
 
     ! open an existing dataset.
@@ -1601,7 +1603,7 @@ module hdf5io
     dimt=(/dim1+1,dim2+1/)
     !
     ! read the dataset.
-    call h5dread_f(dset_id1,h5t_native_double,varin,dimt,h5error)
+    call h5dread_f(dset_id1,h5kind_to_type(real_kind,H5_REAL_KIND),varin,dimt,h5error)
     if(h5error.ne.0)  stop ' !! error in h5_readarray3d 4'
     !
     ! close the dataset
@@ -1624,7 +1626,7 @@ module hdf5io
   subroutine h5_readarray3d(varin,vname,dim1,dim2,dim3,fname,explicit)
     !
     integer :: dim1,dim2,dim3
-    real(8) :: varin(0:dim1,0:dim2,0:dim3)
+    real(real_kind) :: varin(0:dim1,0:dim2,0:dim3)
     character(len=*),intent(in) :: vname,fname
     logical,intent(in), optional:: explicit
     logical :: lexplicit
@@ -1647,7 +1649,7 @@ module hdf5io
     call h5open_f(h5error)
     if(h5error.ne.0)  stop ' !! error in h5_readarray3d 1'
     !
-    call h5fopen_f(fname,h5f_acc_rdwr_f,file_id,h5error)
+    call h5fopen_f(fname,h5f_acc_rdonly_f,file_id,h5error)
     if(h5error.ne.0)  stop ' !! error in h5_readarray3d 2'
 
     ! open an existing dataset.
@@ -1657,7 +1659,7 @@ module hdf5io
     dimt=(/dim1+1,dim2+1,dim3+1/)
     !
     ! read the dataset.
-    call h5dread_f(dset_id1,h5t_native_double,varin,dimt,h5error)
+    call h5dread_f(dset_id1,h5kind_to_type(real_kind,H5_REAL_KIND),varin,dimt,h5error)
     if(h5error.ne.0)  stop ' !! error in h5_readarray3d 4'
     !
     ! close the dataset
@@ -1685,7 +1687,7 @@ module hdf5io
     !
     ! argument2
     integer,intent(in) :: dim1,dim2,dim3
-    real(8),allocatable,intent(out) :: vread(:,:)
+    real(real_kind),allocatable,intent(out) :: vread(:,:)
     character(len=*),intent(in) :: vname,fname
     integer,intent(in),optional :: islice,jslice,kslice
     !
@@ -1705,7 +1707,7 @@ module hdf5io
     call h5open_f(error) 
     !
     ! Open the file.
-    call h5fopen_f(fname,h5f_acc_rdwr_f,file_id,error)
+    call h5fopen_f(fname,h5f_acc_rdonly_f,file_id,error)
     !
     ! Open the dataset.
     call h5dopen_f(file_id,vname,dset_id,error)
@@ -1737,7 +1739,7 @@ module hdf5io
     call h5dget_space_f(dset_id,dataspace,error)
     call h5sselect_hyperslab_f(dataspace,h5s_select_set_f,offset,dimsm,error) 
     !
-    call h5dread_f(dset_id,h5t_native_double,vread,dimsm,error,        &
+    call h5dread_f(dset_id,h5kind_to_type(real_kind,H5_REAL_KIND),vread,dimsm,error,        &
                    mem_space_id=memspace,file_space_id=dataspace)
     !
     call h5sclose_f(dataspace, error)
@@ -1764,7 +1766,7 @@ module hdf5io
     !
     ! argument2
     integer,intent(in) :: dim1,dim2,dim3
-    real(8),allocatable,intent(out) :: vread(:)
+    real(real_kind),allocatable,intent(out) :: vread(:)
     character(len=*),intent(in) :: vname,fname
     integer,intent(in),optional :: islice,jslice,kslice
     !
@@ -1783,7 +1785,7 @@ module hdf5io
     call h5open_f(error) 
     !
     ! Open the file.
-    call h5fopen_f(fname,h5f_acc_rdwr_f,file_id,error)
+    call h5fopen_f(fname,h5f_acc_rdonly_f,file_id,error)
     !
     ! Open the dataset.
     call h5dopen_f(file_id,vname,dset_id,error)
@@ -1815,7 +1817,7 @@ module hdf5io
     call h5dget_space_f(dset_id,dataspace,error)
     call h5sselect_hyperslab_f(dataspace,h5s_select_set_f,offset,dimsm,error) 
     !
-    call h5dread_f(dset_id,h5t_native_double,vread,dimsm,error,        &
+    call h5dread_f(dset_id,h5kind_to_type(real_kind,H5_REAL_KIND),vread,dimsm,error,        &
                    mem_space_id=memspace,file_space_id=dataspace)
     !
     call h5sclose_f(dataspace, error)
@@ -1841,7 +1843,7 @@ module hdf5io
     !
     ! argument2
     integer,intent(in) :: dim1,dim2
-    real(8),allocatable,intent(out) :: vread(:)
+    real(real_kind),allocatable,intent(out) :: vread(:)
     character(len=*),intent(in) :: vname,fname
     integer,intent(in),optional :: islice,jslice
     !
@@ -1860,7 +1862,7 @@ module hdf5io
     call h5open_f(error) 
     !
     ! Open the file.
-    call h5fopen_f(fname,h5f_acc_rdwr_f,file_id,error)
+    call h5fopen_f(fname,h5f_acc_rdonly_f,file_id,error)
     !
     ! Open the dataset.
     call h5dopen_f(file_id,vname,dset_id,error)
@@ -1887,7 +1889,7 @@ module hdf5io
     call h5dget_space_f(dset_id,dataspace,error)
     call h5sselect_hyperslab_f(dataspace,h5s_select_set_f,offset,dimsm,error) 
     !
-    call h5dread_f(dset_id,h5t_native_double,vread,dimsm,error,        &
+    call h5dread_f(dset_id,h5kind_to_type(real_kind,H5_REAL_KIND),vread,dimsm,error,        &
                    mem_space_id=memspace,file_space_id=dataspace)
     !
     call h5sclose_f(dataspace, error)

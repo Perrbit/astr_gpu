@@ -1,21 +1,24 @@
 module insitu_wall_statistics_gpu
+  use astr_precision, only: real_kind,real_bytes,clock_kind,real_to_word,word_to_real
+  use astr_precision_mpi, only: mpi_real_type
   use cudafor
   use iso_fortran_env, only: int64
   use insitu_statistics_gpu, only: admit_statistics_device_allocation
   implicit none
+  private :: real_kind,real_bytes,clock_kind,real_to_word,word_to_real,mpi_real_type
   private
   public :: push_wall_statistics_gpu,pack_wall_statistics_gpu,restore_wall_statistics_gpu,release_wall_statistics_gpu
   public :: capture_and_push_wall_statistics_gpu,wall_statistics_device_bytes
   public :: sample_wall_statistics_gpu_means
-  real(8),allocatable,device,save :: state_d(:,:,:,:),frame_d(:,:,:,:)
+  real(real_kind),allocatable,device,save :: state_d(:,:,:,:),frame_d(:,:,:,:)
   integer,allocatable,device,save :: invalid_d(:)
   integer,save :: layout(4)=0
   logical,save :: initialized=.false.
 contains
   integer(int64) function wall_statistics_device_bytes() result(bytes)
     bytes=0
-    if(allocated(state_d)) bytes=bytes+8*size(state_d,kind=int64)
-    if(allocated(frame_d)) bytes=bytes+8*size(frame_d,kind=int64)
+    if(allocated(state_d)) bytes=bytes+real_bytes*size(state_d,kind=int64)
+    if(allocated(frame_d)) bytes=bytes+real_bytes*size(frame_d,kind=int64)
     if(allocated(invalid_d)) bytes=bytes+4*size(invalid_d,kind=int64)
   end function
 
@@ -38,24 +41,24 @@ contains
       return
     endif
     layout=shape4
-    bytes=int(shape4(1),int64)*shape4(2)*shape4(3)*10_int64*shape4(4)*8+4
+    bytes=int(shape4(1),int64)*shape4(2)*shape4(3)*10_int64*shape4(4)*real_bytes+4
     call admit_statistics_device_allocation(bytes)
     initialized=.true.
     if(shape4(3)==0) return
     allocate(state_d(shape4(1),shape4(2),shape4(3),10*shape4(4)),invalid_d(1),stat=status)
     call check(merge(cudaSuccess,cudaErrorMemoryAllocation,status==0),'allocate wall statistics')
-    state_d=0.d0
+    state_d=0.e0_real_kind
     call check(cudaGetLastError(),'zero wall statistics')
   end subroutine
 
   subroutine push_wall_statistics_gpu(fields,weights,previous)
-    real(8),contiguous,intent(in) :: fields(:,:,:,:)
-    real(8),intent(in) :: weights(2)
+    real(real_kind),contiguous,intent(in) :: fields(:,:,:,:)
+    real(real_kind),intent(in) :: weights(2)
     logical,intent(in) :: previous
     integer :: status
     call allocate_state(shape(fields))
     ! Budget admission is collective even when this rank owns no wall.
-    call admit_statistics_device_allocation(88_int64*size(fields,kind=int64)+4)
+    call admit_statistics_device_allocation(11_int64*real_bytes*size(fields,kind=int64)+4)
     if(layout(3)==0) return
     if(.not.allocated(frame_d)) then
       allocate(frame_d(layout(1),layout(2),layout(3),layout(4)),stat=status)
@@ -78,12 +81,12 @@ contains
     use insitu_device_velocity, only: velocity_transport_usage_gpu,reduce_sample_wall_shear_gpu
     integer,intent(in) :: profile
     character(*),intent(in) :: mode
-    real(8),intent(in) :: weights(2)
+    real(real_kind),intent(in) :: weights(2)
     logical,intent(in) :: previous
     integer(int64),intent(in) :: host_budget,device_budget,reserve
-    real(8),contiguous,optional,intent(in) :: span_weights(:)
-    real(8),contiguous,optional,intent(out) :: span_profile(:,:)
-    real(8),device,allocatable :: coordinates(:,:,:,:),fields(:,:,:,:)
+    real(real_kind),contiguous,optional,intent(in) :: span_weights(:)
+    real(real_kind),contiguous,optional,intent(out) :: span_profile(:,:)
+    real(real_kind),device,allocatable :: coordinates(:,:,:,:),fields(:,:,:,:)
     integer(int64) :: host_slots,device_slots,d2h,h2d,exchanges,retained,extra
     integer :: generation,nf,owned_x
 #ifdef ASTR_INSITU_DEVICE_PRODUCTS
@@ -107,17 +110,17 @@ contains
     endif
     call velocity_transport_usage_gpu(host_slots,device_slots,d2h,h2d,exchanges,generation)
     call admit_statistics_device_allocation( &
-      8_int64*(size(coordinates,kind=int64)+size(fields,kind=int64)+ &
+      int(real_bytes,int64)*(size(coordinates,kind=int64)+size(fields,kind=int64)+ &
       int(size(fields,1),int64)*size(fields,2)*size(fields,3)*10*nf)+device_slots+4)
     call push_device_wall_statistics_gpu(fields,weights,previous,nf)
     call check(merge(cudaSuccess,cudaErrorInvalidValue,present(span_weights).eqv.present(span_profile)), &
       'paired wall shear reduction arguments')
     if(present(span_weights).and.present(span_profile)) then
       call check(merge(cudaSuccess,cudaErrorInvalidValue,profile==6),'Cartesian AIR5 separation profile')
-      retained=8_int64*(size(coordinates,kind=int64)+size(fields,kind=int64))+ &
+      retained=int(real_bytes,int64)*(size(coordinates,kind=int64)+size(fields,kind=int64))+ &
         wall_statistics_device_bytes()+device_slots
       extra=0
-      if(size(fields,3)>0) extra=8_int64*(size(span_weights)+3_int64*size(fields,1))+4
+      if(size(fields,3)>0) extra=int(real_bytes,int64)*(size(span_weights)+3_int64*size(fields,1))+4
       call admit_statistics_device_allocation(retained+extra)
 #ifdef ASTR_INSITU_DEVICE_PRODUCTS
       call range_push(11_c_int)
@@ -143,8 +146,8 @@ contains
   end subroutine
 
   subroutine push_device_wall_statistics_gpu(fields,weights,previous,nfields)
-    real(8),device,contiguous,intent(in) :: fields(:,:,:,:)
-    real(8),intent(in) :: weights(2)
+    real(real_kind),device,contiguous,intent(in) :: fields(:,:,:,:)
+    real(real_kind),intent(in) :: weights(2)
     logical,intent(in) :: previous
     integer,intent(in) :: nfields
     integer :: invalid
@@ -167,9 +170,9 @@ contains
     use commvar, only: im,jm,km
     use parallel, only: mpirank
     use insitu_device_velocity, only: complete_sample_wall_fields_gpu,velocity_transport_usage_gpu
-    real(8),device,contiguous,intent(in) :: fields(:,:,:,:)
-    real(8),intent(in) :: duration
-    real(8),device,allocatable,intent(out) :: means(:,:,:,:)
+    real(real_kind),device,contiguous,intent(in) :: fields(:,:,:,:)
+    real(real_kind),intent(in) :: duration
+    real(real_kind),device,allocatable,intent(out) :: means(:,:,:,:)
     integer(int64),intent(in) :: retained
     integer(int64) :: host_slots,device_slots,d2h0,h2d0,exchanges0,d2h,h2d,exchanges
     integer :: status,invalid,generation
@@ -177,11 +180,11 @@ contains
       all(layout(1:3)==shape(fields(:,:,:,1)))),'device wall mean shape')
     call check(merge(cudaSuccess,cudaErrorInvalidValue,(layout(4)==3.and.size(fields,4)==4).or. &
       (layout(4)==18.and.size(fields,4)==18)),'device wall mean field layout')
-    call check(merge(cudaSuccess,cudaErrorInvalidValue,duration>=0.d0.and.duration<=huge(duration)), &
+    call check(merge(cudaSuccess,cudaErrorInvalidValue,duration>=0.e0_real_kind.and.duration<=huge(duration)), &
       'device wall mean coverage')
-    if(duration==0.d0) return
+    if(duration==0.e0_real_kind) return
     ! Admission includes empty-wall ranks, before any allocation or endpoint exchange.
-    call admit_statistics_device_allocation(retained+wall_statistics_device_bytes()+8*size(fields,kind=int64)+4)
+    call admit_statistics_device_allocation(retained+wall_statistics_device_bytes()+real_bytes*size(fields,kind=int64)+4)
     allocate(means(size(fields,1),size(fields,2),size(fields,3),size(fields,4)),stat=status)
     call check(merge(cudaSuccess,cudaErrorMemoryAllocation,status==0),'allocate device wall mean')
     if(layout(3)>0) then
@@ -205,10 +208,10 @@ contains
 
   attributes(global) subroutine wall_mean_kernel(fields,means,nx,nz,nwalls,nc,nf,duration)
     integer,value :: nx,nz,nwalls,nc,nf
-    real(8),device,intent(in) :: fields(nx,nz,nwalls,nc)
-    real(8),device,intent(out) :: means(nx,nz,nwalls,nc)
-    real(8),value :: duration
-    real(8) :: value
+    real(real_kind),device,intent(in) :: fields(nx,nz,nwalls,nc)
+    real(real_kind),device,intent(out) :: means(nx,nz,nwalls,nc)
+    real(real_kind),value :: duration
+    real(real_kind) :: value
     integer :: i,k,wall,c,g,base,ignored
     i=(blockidx%x-1)*blockdim%x+threadidx%x
     k=blockidx%y; wall=blockidx%z
@@ -228,17 +231,17 @@ contains
   attributes(global) subroutine wall_statistics_kernel(fields,nx,nz,nwalls,nfields,groups,w0,w1,previous)
     integer,value :: nx,nz,nwalls,nfields,groups
     ! An explicit shape avoids a per-launch device descriptor for this compact field.
-    real(8),device,intent(in) :: fields(nx,nz,nwalls,nfields)
-    real(8),value :: w0,w1
+    real(real_kind),device,intent(in) :: fields(nx,nz,nwalls,nfields)
+    real(real_kind),value :: w0,w1
     logical,value :: previous
     integer :: i,k,wall,g,e,a,b,base,m,offset,ignored
-    real(8) :: s(30),u(3),delta(3),w,total,new_total,ratio,factor,entry
+    real(real_kind) :: s(30),u(3),delta(3),w,total,new_total,ratio,factor,entry
     i=(blockidx%x-1)*blockdim%x+threadidx%x
     k=blockidx%y; wall=blockidx%z
     if(i>nx) return
     do g=1,groups
       base=30*(g-1)
-      s=0.d0
+      s=0.e0_real_kind
       if(previous) s=state_d(i,k,wall,base+1:base+30)
       do e=1,2
         w=w0
@@ -247,12 +250,12 @@ contains
           w=w1
           u=fields(i,k,wall,3*g-2:3*g)
         endif
-        if(w==0.d0) cycle
+        if(w==0.e0_real_kind) cycle
         total=s(5); new_total=total+w
-        if(.not.(w>0.d0.and.new_total>0.d0.and.new_total<=huge(w))) then
+        if(.not.(w>0.e0_real_kind.and.new_total>0.e0_real_kind.and.new_total<=huge(w))) then
           ignored=atomicExch(invalid_d(1),1); return
         endif
-        if(total==0.d0) then
+        if(total==0.e0_real_kind) then
           s(7:9)=u
         else
           delta=u-s(7:9)
@@ -268,7 +271,7 @@ contains
         endif
         s(5)=new_total
       enddo
-      s(1)=1.d0; s(2:4)=fields(i,k,wall,3*g-2:3*g)
+      s(1)=1.e0_real_kind; s(2:4)=fields(i,k,wall,3*g-2:3*g)
       ! Unit density makes the two existing weighted states identical for Reynolds scalars.
       s(6)=s(5); s(10:12)=s(7:9); s(22:30)=s(13:21)
       do m=1,30
@@ -276,7 +279,7 @@ contains
           ignored=atomicExch(invalid_d(1),1); return
         endif
       enddo
-      if(any(s([13,17,21])<0.d0)) then
+      if(any(s([13,17,21])<0.e0_real_kind)) then
         ignored=atomicExch(invalid_d(1),1); return
       endif
       state_d(i,k,wall,base+1:base+30)=s
@@ -284,13 +287,13 @@ contains
   end subroutine
 
   subroutine pack_wall_statistics_gpu(values,window,time)
-    real(8),contiguous,intent(out) :: values(:,:,:,:)
-    real(8),intent(in) :: window(2),time
+    real(real_kind),contiguous,intent(out) :: values(:,:,:,:)
+    real(real_kind),intent(in) :: window(2),time
     integer :: g,base
     call check(merge(cudaSuccess,cudaErrorInvalidValue,initialized),'wall statistics initialized')
     call check(merge(cudaSuccess,cudaErrorInvalidValue, &
       all(shape(values)==[layout(1:3),34*(layout(4)/3)])),'wall statistics pack shape')
-    values=0.d0
+    values=0.e0_real_kind
     if(layout(3)==0) return
     call check(cudaDeviceSynchronize(),'wall statistics pack completion')
     do g=1,layout(4)/3
@@ -298,13 +301,13 @@ contains
       values(:,:,:,base+1)=window(1); values(:,:,:,base+2)=window(2)
       values(:,:,:,base+3)=time
       values(:,:,:,base+4:base+33)=state_d(:,:,:,30*g-29:30*g)
-      values(:,:,:,base+34)=1.d0
+      values(:,:,:,base+34)=1.e0_real_kind
     enddo
     call check(cudaGetLastError(),'wall statistics state download')
   end subroutine
 
   subroutine restore_wall_statistics_gpu(values)
-    real(8),contiguous,intent(in) :: values(:,:,:,:)
+    real(real_kind),contiguous,intent(in) :: values(:,:,:,:)
     integer :: g
     call allocate_state([size(values,1),size(values,2),size(values,3),3*(size(values,4)/34)])
     if(layout(3)==0) return

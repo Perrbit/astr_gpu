@@ -38,13 +38,14 @@ def check_parent_reader(head, output, extra_names=()):
     report = combine_series(head, output=output)
     # Check the runtime index against an independent stopped-source catalog.
     native_rows = (head / "lineage.frames").read_text().splitlines()
-    assert native_rows[0] == "ASTR_NATIVE_LINEAGE_1"
+    assert native_rows[0] in ('ASTR_NATIVE_LINEAGE_1', 'ASTR_NATIVE_LINEAGE_2')
     expected_rows = (output / "lineage.frames").read_text().splitlines()[1:]
     assert len(native_rows) == 1 + 3*len(expected_rows)
     for position, expected in enumerate(expected_rows):
         step, time, path = expected.split(maxsplit=2)
         actual = native_rows[1+3*position:4+3*position]
-        assert len(actual[0].split()) == 2 and int(actual[0].split()[0]) == int(step)
+        assert len(actual[0].split()) == (3 if native_rows[0].endswith('_2') else 2)
+        assert int(actual[0].split()[0]) == int(step)
         assert float(actual[0].split()[1]) == float(time)
         assert (head / actual[1]).resolve() == (output / path / "data.h5").resolve()
         assert (head / actual[2]).resolve() == (output / path / "../../resources/data.h5").resolve()

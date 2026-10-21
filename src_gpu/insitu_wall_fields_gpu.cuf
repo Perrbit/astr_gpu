@@ -1,10 +1,13 @@
 module insitu_wall_fields_gpu
+  use astr_precision, only: real_kind,real_bytes,clock_kind,real_to_word,word_to_real
+  use astr_precision_mpi, only: mpi_real_type
   use cudafor
   use mpi
   use iso_fortran_env, only: int64
   use insitu_device_velocity, only: complete_sample_wall_fields_gpu,velocity_transport_usage_gpu, &
     extend_sample_wall_primitives_gpu
   implicit none
+  private :: real_kind,real_bytes,clock_kind,real_to_word,word_to_real,mpi_real_type
   private
   public :: capture_channel_wall_fields_gpu
 #ifdef ASTR_AIR5_CHEMISTRY
@@ -28,11 +31,11 @@ contains
   subroutine capture_air5_wall_fields_gpu(q,xyz,metrics,coordinates,fields,extent,hm,offset_y,comm,budget,reserve)
     integer,intent(in) :: extent(3),hm,offset_y,comm
     integer(int64),intent(in) :: budget,reserve
-    real(8),device,intent(in) :: q(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,11)
-    real(8),device,intent(in) :: xyz(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3)
-    real(8),device,intent(in) :: metrics(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3,3)
-    real(8),device,allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
-    real(8),device,allocatable :: state(:,:,:,:)
+    real(real_kind),device,intent(in) :: q(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,11)
+    real(real_kind),device,intent(in) :: xyz(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3)
+    real(real_kind),device,intent(in) :: metrics(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3,3)
+    real(real_kind),device,allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
+    real(real_kind),device,allocatable :: state(:,:,:,:)
     integer,device,allocatable :: invalid(:)
     integer :: nw,nodes,status,bad,generation
     integer(int64) :: bytes,free_bytes,total_bytes,required,host_slots,device_slots,d2h,h2d,exchanges
@@ -42,7 +45,7 @@ contains
     call require_wall(int(extent(1)+1,int64)*(extent(3)+1)*nw<=huge(nodes)/54, &
       comm,'AIR5 wall snapshot index overflow')
     nodes=(extent(1)+1)*(extent(3)+1)*nw
-    bytes=int(nodes,int64)*54*8+4
+    bytes=int(nodes,int64)*54*real_bytes+4
     call velocity_transport_usage_gpu(host_slots,device_slots,d2h,h2d,exchanges,generation)
     required=max(reserve,1073741824_int64)
     free_bytes=0; total_bytes=0
@@ -70,8 +73,8 @@ contains
 
   attributes(global) subroutine pack_air5_wall_state(q,state,im,jm,km,hm,nw)
     integer,value :: im,jm,km,hm,nw
-    real(8),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,11)
-    real(8),device,intent(out) :: state(0:im,0:km,nw,33)
+    real(real_kind),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,11)
+    real(real_kind),device,intent(out) :: state(0:im,0:km,nw,33)
     integer :: node,i,k,m
     node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(node>=(im+1)*(km+1)*nw) return
@@ -86,13 +89,13 @@ contains
     use chemistry_flow_state_gpu, only: air5_conservative_to_primitive_gpu
     use chemistry_transport_gpu, only: air5_transport_properties_gpu
     integer,value :: im,jm,km,hm,nw
-    real(8),device,intent(in) :: state(0:im,0:km,nw,33)
-    real(8),device,intent(in) :: xyz(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
-    real(8),device,intent(in) :: metrics(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3)
-    real(8),device,intent(out) :: coordinates(0:im,0:km,nw,3),fields(0:im,0:km,nw,18)
+    real(real_kind),device,intent(in) :: state(0:im,0:km,nw,33)
+    real(real_kind),device,intent(in) :: xyz(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(real_kind),device,intent(in) :: metrics(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3)
+    real(real_kind),device,intent(out) :: coordinates(0:im,0:km,nw,3),fields(0:im,0:km,nw,18)
     integer,device,intent(inout) :: invalid(*)
     integer :: node,i,k,m,c,d,status,ignored
-    real(8) :: primitive(12,3),local_q(11),mu,kt,kv,smu(5),binary(5,5),diffusion(5),metric,derivative(3)
+    real(real_kind) :: primitive(12,3),local_q(11),mu,kt,kv,smu(5),binary(5,5),diffusion(5),metric,derivative(3)
     node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(node>=(im+1)*(km+1)*nw) return
     i=mod(node,im+1); k=node/(im+1)
@@ -110,15 +113,15 @@ contains
     call air5_transport_properties_gpu(primitive(5,1),primitive(6,1),primitive(7,1),primitive(8:12,1), &
       mu,kt,kv,smu,binary,diffusion,status)
     metric=metrics(i,0,k,2,2)
-    if(status/=0.or..not.ieee_is_finite(metric).or.metric<=0.d0) then
+    if(status/=0.or..not.ieee_is_finite(metric).or.metric<=0.e0_real_kind) then
       ignored=atomicExch(invalid(1),1); return
     endif
-    derivative=(-0.5d0*primitive([2,5,6],3)+2.d0*primitive([2,5,6],2)- &
-      1.5d0*primitive([2,5,6],1))*metric
+    derivative=(-0.5e0_real_kind*primitive([2,5,6],3)+2.e0_real_kind*primitive([2,5,6],2)- &
+      1.5e0_real_kind*primitive([2,5,6],1))*metric
     coordinates(i,k,1,:)=xyz(i,0,k,:)
     ! Static noncatalytic wall: zero species enthalpy flux and viscous work.
     fields(i,k,1,:)=[primitive(:,1),mu*derivative(1),-kt*derivative(2),-kv*derivative(3), &
-      0.d0,-kt*derivative(2)-kv*derivative(3),1.d0]
+      0.e0_real_kind,-kt*derivative(2)-kv*derivative(3),1.e0_real_kind]
     if(.not.all(ieee_is_finite(fields(i,k,1,:))).or..not.all(ieee_is_finite(coordinates(i,k,1,:)))) &
       ignored=atomicExch(invalid(1),1)
   end subroutine
@@ -129,19 +132,19 @@ contains
     use ieee_arithmetic, only: ieee_is_finite
     integer,intent(in) :: extent(3),hm,global_y,offset_y,comm
     logical,intent(in) :: curve
-    real(8),intent(in) :: material(7)
+    real(real_kind),intent(in) :: material(7)
     integer(int64),intent(in) :: budget,reserve
-    real(8),device,intent(in) :: q(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,5)
-    real(8),device,intent(in) :: xyz(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3)
-    real(8),device,intent(in) :: metrics(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3,3)
-    real(8),device,allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
-    real(8),device,allocatable :: state(:,:,:,:)
-    real(8),device,allocatable :: primitive(:,:,:,:)
+    real(real_kind),device,intent(in) :: q(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,5)
+    real(real_kind),device,intent(in) :: xyz(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3)
+    real(real_kind),device,intent(in) :: metrics(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3,3)
+    real(real_kind),device,allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
+    real(real_kind),device,allocatable :: state(:,:,:,:)
+    real(real_kind),device,allocatable :: primitive(:,:,:,:)
     integer,device,allocatable :: invalid(:)
     integer :: nw,first,nodes,status,bad,generation
     integer(int64) :: bytes,free_bytes,total_bytes,required,host_slots,device_slots,d2h,h2d,exchanges
     call require_wall(all(extent>=2).and.hm>=0.and.global_y>=extent(2).and.offset_y>=0.and. &
-      offset_y<=global_y-extent(2).and.all(ieee_is_finite(material)).and.minval(material)>0.d0.and. &
+      offset_y<=global_y-extent(2).and.all(ieee_is_finite(material)).and.minval(material)>0.e0_real_kind.and. &
       budget>0.and.reserve>=0.and.(.not.curve.or.(hm>=3.and.minval(extent)>=3)), &
       comm,'bc41 wall shape/material/budget')
     nw=0; first=extent(2)
@@ -152,8 +155,8 @@ contains
     call require_wall(int(extent(1)+1,int64)*(extent(3)+1)*nw<=huge(nodes)/22, &
       comm,'wall snapshot index overflow')
     nodes=(extent(1)+1)*(extent(3)+1)*nw
-    bytes=int(nodes,int64)*22*8+4
-    if(curve) bytes=bytes+int(extent(1)+7,int64)*(extent(3)+7)*nw*4*8
+    bytes=int(nodes,int64)*22*real_bytes+4
+    if(curve) bytes=bytes+int(extent(1)+7,int64)*(extent(3)+7)*nw*4*real_bytes
     call velocity_transport_usage_gpu(host_slots,device_slots,d2h,h2d,exchanges,generation)
     required=max(reserve,1073741824_int64); free_bytes=0; total_bytes=0
     status=cudaMemGetInfo(free_bytes,total_bytes)
@@ -172,7 +175,7 @@ contains
     if(curve) then
       allocate(primitive(-3:extent(1)+3,-3:extent(3)+3,nw,4),stat=status)
       call require_wall(status==0,comm,'wall primitive halo allocation')
-      primitive=0.d0
+      primitive=0.e0_real_kind
       if(nodes>0) call pack_curve_wall_primitive<<<(nodes+255)/256,256>>>(state,primitive,invalid, &
         extent(1),extent(3),nw,material(1),material(3))
       status=cudaDeviceSynchronize()
@@ -199,23 +202,23 @@ contains
   attributes(global) subroutine pack_curve_wall_primitive(state,primitive,invalid,im,km,nw,const2,const6)
     use ieee_arithmetic, only: ieee_is_finite
     integer,value :: im,km,nw
-    real(8),value :: const2,const6
-    real(8),device,intent(in) :: state(0:im,0:km,nw,15)
-    real(8),device,intent(inout) :: primitive(-3:im+3,-3:km+3,nw,4)
+    real(real_kind),value :: const2,const6
+    real(real_kind),device,intent(in) :: state(0:im,0:km,nw,15)
+    real(real_kind),device,intent(inout) :: primitive(-3:im+3,-3:km+3,nw,4)
     integer,device,intent(inout) :: invalid(*)
     integer :: node,i,k,w,ignored
-    real(8) :: rho,velocity(3),pressure,temperature
+    real(real_kind) :: rho,velocity(3),pressure,temperature
     node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(node>=(im+1)*(km+1)*nw) return
     i=mod(node,im+1); k=mod(node/(im+1),km+1); w=node/((im+1)*(km+1))+1
     rho=state(i,k,w,1)
-    if(.not.ieee_is_finite(rho).or.rho<=0.d0.or..not.all(ieee_is_finite(state(i,k,w,2:5)))) then
+    if(.not.ieee_is_finite(rho).or.rho<=0.e0_real_kind.or..not.all(ieee_is_finite(state(i,k,w,2:5)))) then
       ignored=atomicExch(invalid(1),1); return
     endif
     velocity=state(i,k,w,2:4)/rho
-    pressure=(state(i,k,w,5)-0.5d0*rho*sum(velocity**2))/const6
+    pressure=(state(i,k,w,5)-0.5e0_real_kind*rho*sum(velocity**2))/const6
     temperature=pressure/rho*const2
-    if(.not.all(ieee_is_finite(velocity)).or..not.ieee_is_finite(temperature).or.temperature<=0.d0) then
+    if(.not.all(ieee_is_finite(velocity)).or..not.ieee_is_finite(temperature).or.temperature<=0.e0_real_kind) then
       ignored=atomicExch(invalid(1),1); return
     endif
     primitive(i,k,w,1:3)=velocity; primitive(i,k,w,4)=temperature
@@ -225,17 +228,17 @@ contains
     im,jm,km,hm,nw,first_wall,const2,const5,const6,reynolds,prandtl,tempconst,tempconst1)
     use ieee_arithmetic, only: ieee_is_finite
     integer,value :: im,jm,km,hm,nw,first_wall
-    real(8),value :: const2,const5,const6,reynolds,prandtl,tempconst,tempconst1
-    real(8),device,intent(in) :: state(0:im,0:km,nw,15),primitive(-3:im+3,-3:km+3,nw,4)
-    real(8),device,intent(in) :: xyz(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
-    real(8),device,intent(in) :: metrics(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3)
-    real(8),device,intent(out) :: coordinates(0:im,0:km,nw,3),fields(0:im,0:km,nw,4)
+    real(real_kind),value :: const2,const5,const6,reynolds,prandtl,tempconst,tempconst1
+    real(real_kind),device,intent(in) :: state(0:im,0:km,nw,15),primitive(-3:im+3,-3:km+3,nw,4)
+    real(real_kind),device,intent(in) :: xyz(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(real_kind),device,intent(in) :: metrics(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3)
+    real(real_kind),device,intent(out) :: coordinates(0:im,0:km,nw,3),fields(0:im,0:km,nw,4)
     integer,device,intent(inout) :: invalid(*)
-    real(8),parameter :: coefficients(3)=[0.75d0,-0.15d0,1.d0/60.d0]
+    real(real_kind),parameter :: coefficients(3)=[0.75e0_real_kind,-0.15e0_real_kind,1.e0_real_kind/60.e0_real_kind]
     integer :: node,i,k,w,j,side,m,c,d,s,ignored
-    real(8) :: velocity(3,3),temperature(3),pressure(3),rho,mu,metric
-    real(8) :: first(3),second(3),inward(3),normal(3),tangent(3),length,orientation
-    real(8) :: directional(3,3),thermal(3),gradient(3,3),stress(3,3)
+    real(real_kind) :: velocity(3,3),temperature(3),pressure(3),rho,mu,metric
+    real(real_kind) :: first(3),second(3),inward(3),normal(3),tangent(3),length,orientation
+    real(real_kind) :: directional(3,3),thermal(3),gradient(3,3),stress(3,3)
     node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(node>=(im+1)*(km+1)*nw) return
     i=mod(node,im+1); k=mod(node/(im+1),km+1); w=node/((im+1)*(km+1))+1
@@ -243,19 +246,19 @@ contains
     side=1; if(j==jm) side=-1
     do m=1,3
       c=5*(m-1); rho=state(i,k,w,c+1)
-      if(.not.ieee_is_finite(rho).or.rho<=0.d0.or..not.all(ieee_is_finite(state(i,k,w,c+2:c+5)))) then
+      if(.not.ieee_is_finite(rho).or.rho<=0.e0_real_kind.or..not.all(ieee_is_finite(state(i,k,w,c+2:c+5)))) then
         ignored=atomicExch(invalid(1),1); return
       endif
       velocity(:,m)=state(i,k,w,c+2:c+4)/rho
-      pressure(m)=(state(i,k,w,c+5)-0.5d0*rho*sum(velocity(:,m)**2))/const6
+      pressure(m)=(state(i,k,w,c+5)-0.5e0_real_kind*rho*sum(velocity(:,m)**2))/const6
       temperature(m)=pressure(m)/rho*const2
     enddo
     metric=metrics(i,j,k,2,2)
-    if(.not.all(ieee_is_finite(temperature)).or.minval(temperature)<=0.d0.or. &
-      .not.all(ieee_is_finite(metrics(i,j,k,:,:))).or.metric<=0.d0) then
+    if(.not.all(ieee_is_finite(temperature)).or.minval(temperature)<=0.e0_real_kind.or. &
+      .not.all(ieee_is_finite(metrics(i,j,k,:,:))).or.metric<=0.e0_real_kind) then
       ignored=atomicExch(invalid(1),1); return
     endif
-    first=0.d0; second=0.d0
+    first=0.e0_real_kind; second=0.e0_real_kind
     do s=1,3
       first=first+coefficients(s)*(xyz(i+s,j,k,:)-xyz(i-s,j,k,:))
       second=second+coefficients(s)*(xyz(i,j,k+s,:)-xyz(i,j,k-s,:))
@@ -267,23 +270,23 @@ contains
     normal=[first(2)*second(3)-first(3)*second(2),first(3)*second(1)-first(1)*second(3), &
       first(1)*second(2)-first(2)*second(1)]
     length=sqrt(dot_product(normal,normal))
-    if(.not.ieee_is_finite(length).or.length<=0.d0) then
+    if(.not.ieee_is_finite(length).or.length<=0.e0_real_kind) then
       ignored=atomicExch(invalid(1),1); return
     endif
     normal=normal/length; orientation=dot_product(normal,inward)
-    if(.not.ieee_is_finite(orientation).or.orientation==0.d0) then
+    if(.not.ieee_is_finite(orientation).or.orientation==0.e0_real_kind) then
       ignored=atomicExch(invalid(1),1); return
     endif
-    if(orientation<0.d0) normal=-normal
-    tangent=[1.d0,0.d0,0.d0]-normal(1)*normal
+    if(orientation<0.e0_real_kind) normal=-normal
+    tangent=[1.e0_real_kind,0.e0_real_kind,0.e0_real_kind]-normal(1)*normal
     length=sqrt(dot_product(tangent,tangent))
-    if(.not.ieee_is_finite(length).or.length<=0.d0) then
+    if(.not.ieee_is_finite(length).or.length<=0.e0_real_kind) then
       ignored=atomicExch(invalid(1),1); return
     endif
     tangent=tangent/length
-    directional=0.d0; thermal=0.d0
-    directional(:,2)=real(side,8)*(-0.5d0*velocity(:,3)+2.d0*velocity(:,2)-1.5d0*velocity(:,1))
-    thermal(2)=real(side,8)*(-0.5d0*temperature(3)+2.d0*temperature(2)-1.5d0*temperature(1))
+    directional=0.e0_real_kind; thermal=0.e0_real_kind
+    directional(:,2)=real(side,8)*(-0.5e0_real_kind*velocity(:,3)+2.e0_real_kind*velocity(:,2)-1.5e0_real_kind*velocity(:,1))
+    thermal(2)=real(side,8)*(-0.5e0_real_kind*temperature(3)+2.e0_real_kind*temperature(2)-1.5e0_real_kind*temperature(1))
     do s=1,3
       directional(:,1)=directional(:,1)+coefficients(s)*(primitive(i+s,k,w,1:3)-primitive(i-s,k,w,1:3))
       directional(:,3)=directional(:,3)+coefficients(s)*(primitive(i,k+s,w,1:3)-primitive(i,k-s,w,1:3))
@@ -296,7 +299,7 @@ contains
     mu=temperature(1)*sqrt(temperature(1))*tempconst1/(temperature(1)+tempconst)/reynolds
     stress=mu*(gradient+transpose(gradient))
     do d=1,3
-      stress(d,d)=stress(d,d)-(2.d0/3.d0)*mu*(gradient(1,1)+gradient(2,2)+gradient(3,3))
+      stress(d,d)=stress(d,d)-(2.e0_real_kind/3.e0_real_kind)*mu*(gradient(1,1)+gradient(2,2)+gradient(3,3))
     enddo
     fields(i,k,w,:)=[pressure(1),dot_product(tangent,matmul(stress,normal)), &
       -((mu/prandtl)/const5)*dot_product(matmul(thermal,metrics(i,j,k,:,:)),normal),normal(2)]
@@ -307,8 +310,8 @@ contains
 
   attributes(global) subroutine pack_channel_wall_state(q,state,im,jm,km,hm,nw,first)
     integer,value :: im,jm,km,hm,nw,first
-    real(8),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5)
-    real(8),device,intent(out) :: state(0:im,0:km,nw,15)
+    real(real_kind),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5)
+    real(real_kind),device,intent(out) :: state(0:im,0:km,nw,15)
     integer :: node,i,k,w,j,side,m,c
     node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(node>=(im+1)*(km+1)*nw) return
@@ -326,14 +329,14 @@ contains
     im,jm,km,hm,nw,first,const2,const5,const6,reynolds,prandtl,tempconst,tempconst1)
     use ieee_arithmetic, only: ieee_is_finite
     integer,value :: im,jm,km,hm,nw,first
-    real(8),value :: const2,const5,const6,reynolds,prandtl,tempconst,tempconst1
-    real(8),device,intent(in) :: state(0:im,0:km,nw,15)
-    real(8),device,intent(in) :: xyz(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
-    real(8),device,intent(in) :: metrics(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3)
-    real(8),device,intent(out) :: coordinates(0:im,0:km,nw,3),fields(0:im,0:km,nw,4)
+    real(real_kind),value :: const2,const5,const6,reynolds,prandtl,tempconst,tempconst1
+    real(real_kind),device,intent(in) :: state(0:im,0:km,nw,15)
+    real(real_kind),device,intent(in) :: xyz(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(real_kind),device,intent(in) :: metrics(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3)
+    real(real_kind),device,intent(out) :: coordinates(0:im,0:km,nw,3),fields(0:im,0:km,nw,4)
     integer,device,intent(inout) :: invalid(*)
     integer :: node,i,k,w,j,side,m,c,d,ignored
-    real(8) :: velocity(3,3),temperature(3),pressure(3),rho,mu,metric,du,dt,kinetic
+    real(real_kind) :: velocity(3,3),temperature(3),pressure(3),rho,mu,metric,du,dt,kinetic
     node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(node>=(im+1)*(km+1)*nw) return
     i=mod(node,im+1); k=mod(node/(im+1),km+1); w=node/((im+1)*(km+1))+1
@@ -341,22 +344,22 @@ contains
     side=1; if(j==jm) side=-1
     do m=1,3
       c=5*(m-1); rho=state(i,k,w,c+1)
-      if(.not.ieee_is_finite(rho).or.rho<=0.d0.or..not.all(ieee_is_finite(state(i,k,w,c+2:c+5)))) then
+      if(.not.ieee_is_finite(rho).or.rho<=0.e0_real_kind.or..not.all(ieee_is_finite(state(i,k,w,c+2:c+5)))) then
         ignored=atomicExch(invalid(1),1); return
       endif
       velocity(:,m)=state(i,k,w,c+2:c+4)/rho
       kinetic=sum(velocity(:,m)**2)
-      pressure(m)=(state(i,k,w,c+5)-0.5d0*rho*kinetic)/const6
+      pressure(m)=(state(i,k,w,c+5)-0.5e0_real_kind*rho*kinetic)/const6
       temperature(m)=pressure(m)/rho*const2
     enddo
     metric=metrics(i,j,k,2,2)
-    if(.not.all(ieee_is_finite(temperature)).or.minval(temperature)<=0.d0.or. &
-      .not.ieee_is_finite(metric).or.metric<=0.d0) then
+    if(.not.all(ieee_is_finite(temperature)).or.minval(temperature)<=0.e0_real_kind.or. &
+      .not.ieee_is_finite(metric).or.metric<=0.e0_real_kind) then
       ignored=atomicExch(invalid(1),1); return
     endif
     mu=temperature(1)*sqrt(temperature(1))*tempconst1/(temperature(1)+tempconst)/reynolds
-    du=(-0.5d0*velocity(1,3)+2.d0*velocity(1,2)-1.5d0*velocity(1,1))*metric
-    dt=(-0.5d0*temperature(3)+2.d0*temperature(2)-1.5d0*temperature(1))*metric
+    du=(-0.5e0_real_kind*velocity(1,3)+2.e0_real_kind*velocity(1,2)-1.5e0_real_kind*velocity(1,1))*metric
+    dt=(-0.5e0_real_kind*temperature(3)+2.e0_real_kind*temperature(2)-1.5e0_real_kind*temperature(1))*metric
     fields(i,k,w,:)=[pressure(1),mu*du,-((mu/prandtl)/const5)*dt,real(side,8)]
     do d=1,3
       coordinates(i,k,w,d)=xyz(i,j,k,d)

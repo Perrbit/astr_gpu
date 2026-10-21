@@ -1,4 +1,5 @@
 module compact_filter_gpu
+  use astr_precision, only: real_kind
   use cudafor
   use commtype, only: compact_scheme
   use compact_line_solver, only: compact_matrix
@@ -15,8 +16,8 @@ module compact_filter_gpu
     type(compact_line_gpu_plan) :: line
     type(compact_distributed_plan) :: global_line
     logical :: global=.false.
-    real(8),allocatable,device :: input(:,:),rhs(:,:),solution(:,:),filtered(:,:)
-    real(8),allocatable,device :: c6(:),c8(:),c10(:),boundary(:,:),interface(:,:)
+    real(real_kind),allocatable,device :: input(:,:),rhs(:,:),solution(:,:),filtered(:,:)
+    real(real_kind),allocatable,device :: c6(:),c8(:),c10(:),boundary(:,:),interface(:,:)
   end type
 contains
   subroutine prepare_compact_filter_gpu(afilter,hm,capacity,plan,partition,comm)
@@ -29,7 +30,7 @@ contains
     integer,intent(in),optional :: comm
     type(compact_matrix) :: matrix
     integer :: n
-    real(8) :: edge(2)
+    real(real_kind) :: edge(2)
 
     if(hm<5.or.capacity<1) error stop 'invalid local compact filter halo/batch'
     if(plan%capacity/=0) call release_compact_filter_gpu(plan)
@@ -45,9 +46,9 @@ contains
     allocate(matrix%lower(n),matrix%diagonal(n),matrix%upper(n))
     matrix%lower=afilter%a
     matrix%upper=afilter%c
-    matrix%diagonal=1.d0
-    matrix%lower(1)=0.d0
-    matrix%upper(n)=0.d0
+    matrix%diagonal=1.e0_real_kind
+    matrix%lower(1)=0.e0_real_kind
+    matrix%upper(n)=0.e0_real_kind
     call prepare_compact_gpu(matrix,128,capacity,plan%line)
     endif
     allocate(plan%input(-hm:afilter%dimension+hm,capacity),plan%rhs(n,capacity), &
@@ -73,9 +74,9 @@ contains
   attributes(global) subroutine global_filter_rhs_kernel(dim,hm,n,nrhs,first,total,periodic,f,c6,c8,c10,boundary,rhs)
     integer,value :: dim,hm,n,nrhs,first,total
     logical,value :: periodic
-    real(8),device,intent(in) :: f(-hm:dim+hm,nrhs),c6(0:3),c8(0:4),c10(0:5),boundary(0:2,0:6)
-    real(8),device,intent(out) :: rhs(n,nrhs)
-    real(8) :: value
+    real(real_kind),device,intent(in) :: f(-hm:dim+hm,nrhs),c6(0:3),c8(0:4),c10(0:5),boundary(0:2,0:6)
+    real(real_kind),device,intent(out) :: rhs(n,nrhs)
+    real(real_kind) :: value
     integer :: row,column,j,k,g,distance
     row=(blockIdx%x-1)*blockDim%x+threadIdx%x
     column=blockIdx%y
@@ -83,13 +84,13 @@ contains
     j=row-1
     g=first+j
     if(.not.periodic.and.g<=2) then
-      value=0.d0
+      value=0.e0_real_kind
       do k=0,6
         value=value+boundary(g,k)*f(j-g+k,column)
       enddo
     elseif(.not.periodic.and.total-g<=2) then
       distance=total-g
-      value=0.d0
+      value=0.e0_real_kind
       do k=0,6
         value=value+boundary(distance,k)*f(j+distance-k,column)
       enddo
@@ -114,8 +115,8 @@ contains
 
   attributes(global) subroutine preserve_global_filter_endpoints_kernel(dim,hm,first,total,nrhs,f,filtered)
     integer,value :: dim,hm,first,total,nrhs
-    real(8),device,intent(in) :: f(-hm:dim+hm,nrhs)
-    real(8),device,intent(inout) :: filtered(0:dim,nrhs)
+    real(real_kind),device,intent(in) :: f(-hm:dim+hm,nrhs)
+    real(real_kind),device,intent(inout) :: filtered(0:dim,nrhs)
     integer :: column
     column=(blockIdx%x-1)*blockDim%x+threadIdx%x
     if(column>nrhs) return
@@ -126,11 +127,11 @@ contains
   attributes(global) subroutine compact_filter_rhs_kernel(dim,hm,first,last,ntype,nrhs, &
       f,c6,c8,c10,boundary,interface,rhs)
     integer,value :: dim,hm,first,last,ntype,nrhs
-    real(8),device,intent(in) :: f(-hm:dim+hm,nrhs),c6(0:3),c8(0:4),c10(0:5), &
+    real(real_kind),device,intent(in) :: f(-hm:dim+hm,nrhs),c6(0:3),c8(0:4),c10(0:5), &
       boundary(0:2,0:6),interface(0:2,0:10)
-    real(8),device,intent(out) :: rhs(last-first+1,nrhs)
+    real(real_kind),device,intent(out) :: rhs(last-first+1,nrhs)
     integer :: row,column,j,k,distance
-    real(8) :: value
+    real(real_kind) :: value
     logical :: left_physical,right_physical
     row=(blockIdx%x-1)*blockDim%x+threadIdx%x
     column=blockIdx%y
@@ -138,7 +139,7 @@ contains
     j=first+row-1
     left_physical=ntype==1.or.ntype==4
     right_physical=ntype==2.or.ntype==4
-    value=0.d0
+    value=0.e0_real_kind
     if(j<=first+2) then
       distance=j-first
       if(left_physical) then
@@ -182,8 +183,8 @@ contains
 
   attributes(global) subroutine compact_filter_project_kernel(dim,hm,first,n,ntype,nrhs,f,solution,filtered)
     integer,value :: dim,hm,first,n,ntype,nrhs
-    real(8),device,intent(in) :: f(-hm:dim+hm,nrhs),solution(n,nrhs)
-    real(8),device,intent(out) :: filtered(0:dim,nrhs)
+    real(real_kind),device,intent(in) :: f(-hm:dim+hm,nrhs),solution(n,nrhs)
+    real(real_kind),device,intent(out) :: filtered(0:dim,nrhs)
     integer :: j,column
     j=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     column=blockIdx%y
