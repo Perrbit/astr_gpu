@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ASTR GPU 综合软件发展选题</title>
+  <style>
+    :root { color-scheme: light; --ink:#20262b; --muted:#505b63; --line:#cbd3d8; --blue:#155c92; --green:#17664e; --soft:#f1f5f7; --red:#9d3434; }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; color:var(--ink); background:#fff; font-family:system-ui,sans-serif; font-size:16px; line-height:1.8; letter-spacing:0; }
+    main { max-width:960px; padding:36px 28px 48px; margin:auto; }
+    header { border-bottom:2px solid var(--ink); padding-bottom:20px; }
+    h1 { margin:0 0 14px; font-size:30px; line-height:1.45; }
+    h2 { font-size:23px; margin:0 0 16px; line-height:1.5; }
+    h3 { font-size:20px; margin:0 0 12px; line-height:1.6; }
+    p { margin:10px 0; max-width:70ch; }
+    strong { color:inherit; }
+    a { color:var(--blue); text-underline-offset:3px; overflow-wrap:anywhere; }
+    code { font-family:ui-monospace,monospace; font-size:.91em; overflow-wrap:anywhere; }
+    section { padding-top:30px; }
+    nav { display:flex; flex-wrap:wrap; gap:8px 22px; margin:20px 0 0; }
+    dl.meta { display:grid; grid-template-columns:6em 1fr; gap:5px 14px; margin:0; font-size:14px; }
+    dt { font-weight:650; }
+    dd { margin:0; min-width:0; }
+    .muted, .caption { color:var(--muted); }
+    .callout { background:var(--soft); border:1px solid var(--line); border-radius:4px; padding:14px 18px; margin:18px 0; }
+    .callout p { margin:0; }
+    .table-wrap { overflow-x:auto; margin:16px 0; }
+    table { border-collapse:collapse; width:100%; font-size:14px; line-height:1.65; }
+    th,td { text-align:left; vertical-align:top; padding:10px 12px; border-bottom:1px solid var(--line); }
+    th { background:var(--soft); font-weight:650; }
+    .wide { min-width:700px; }
+    .idea { margin-top:28px; padding-top:24px; border-top:1px solid var(--line); scroll-margin-top:16px; }
+    .idea:first-of-type { margin-top:20px; }
+    .idea-meta { display:flex; flex-wrap:wrap; gap:8px 20px; color:var(--muted); font-size:14px; margin:8px 0 16px; }
+    .basis { padding:12px 16px; background:#f2f7f4; border:1px solid #c5d8cc; border-radius:4px; margin:16px 0; }
+    .basis p { margin:5px 0; }
+    .label { font-weight:650; }
+    ul,ol { margin:10px 0; padding-left:1.5em; }
+    li { margin:7px 0; }
+    .jump-list { columns:2; column-gap:28px; }
+    .jump-list li { break-inside:avoid; }
+    figure { margin:18px 0; max-width:100%; }
+    svg { display:block; width:100%; height:auto; background:#fafbfc; border:1px solid var(--line); }
+    svg text { font-family:system-ui,sans-serif; fill:var(--ink); letter-spacing:0; }
+    figcaption { font-size:14px; margin-top:7px; color:var(--muted); }
+    .references li { font-size:14px; }
+    footer { margin-top:36px; padding-top:18px; border-top:1px solid var(--line); font-size:13px; color:var(--muted); }
+    @media (max-width:640px) {
+      main { padding:24px 18px 36px; }
+      h1 { font-size:26px; }
+      .jump-list { columns:1; }
+      dl.meta { grid-template-columns:5em 1fr; }
+    }
+    @media print {
+      main { max-width:none; padding:0; }
+      body { font-size:11pt; }
+      h1 { font-size:21pt; } h2 { font-size:17pt; } h3 { font-size:14pt; }
+      nav { display:none; }
+      .table-wrap { overflow:visible; }
+      .wide { min-width:0; }
+      tr,figure,h3 { break-inside:avoid; }
+      a { color:inherit; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>ASTR GPU 综合软件发展选题</h1>
+    <dl class="meta">
+      <dt>日期</dt><dd><time datetime="2026-10-09">2026-10-09</time></dd>
+      <dt>主题</dt><dd>astr-gpu-software-directions</dd>
+      <dt>聚焦</dt><dd>基于已有移植与验证，筛选下一步值得投入的软件方向</dd>
+      <dt>模式</dt><dd>repo-grounded</dd>
+      <dt>代码基点</dt><dd><code>feature/gpu_dev @ b2162e8d51ae82a181bb123966b0df7ad68e8f17</code></dd>
+    </dl>
+    <p><strong>建议从继续增加功能，转向三个问题：复杂工况算得是否高效、在线统计是否足够可信、换硬件与部署环境是否仍可复现。</strong>近期最明确的效率切入口是静态曲线网格流线定位器的跨帧复用。反应流阶段负载均衡与流式统计诊断更适合作为后续研究主线。</p>
+    <p class="muted">本文件是选题比较，不是执行计划。保留原原位后处理选题文档，不改变数值格式、物理模型或平台任务，也不授权实现任何候选。</p>
+  </header>
+
+  <nav aria-label="文档目录">
+    <a href="#context">代码库依据</a>
+    <a href="#axes">选题维度</a>
+    <a href="#ideas">六个候选</a>
+    <a href="#selection">如何选择</a>
+    <a href="#rejections">未入选方向</a>
+    <a href="#sources">依据与文献</a>
+  </nav>
+
+  <section id="context">
+    <h2>代码库依据</h2>
+    <p>当前项目已超过单个 CUDA 算例移植阶段。已有能力包括 GPU 常驻的主要流体时间推进、显式中心及受限激波格式、固定 AIR5 双温反应路径、静态单块曲线网格、多 rank halo 通信、新输出与精确续算，以及在已验证组合中的设备常驻原位产品。各项能力的组合准入仍有明确边界，不能由一项通过推导任意组合均可用。</p>
+    <div class="table-wrap">
+      <table class="wide">
+        <thead><tr><th>已有基础</th><th>当前证据及限制</th><th>对选题的影响</th></tr></thead>
+        <tbody>
+          <tr><td>多 GPU 推进与设备缓冲通信</td><td>历史 A800 单节点 512³、FP64 周期 TGV：1/2/4 卡约 1.7558/0.90395/0.46482 s/RK，四卡强扩展效率 94.43%。该结果不是 CPU 加速比，也不代表反应流或跨节点效率。</td><td>不能将“引入 CUDA-aware MPI”再次作为新增功能。新增价值应是复杂阶段的扩展能力与实际瓶颈归因。</td></tr>
+          <tr><td>反应流物性与保正约束</td><td>AIR5 固定五组分、双温、局部 FP64 ROS-2 与 6×6 线性求解；已有同状态物性复用、补偿与组分一致性处理。长时物理门槛与适用模型仍需分别判断。</td><td>优先优化已有受验证算子，不把换机制、改容差或换低精度当作免费加速。</td></tr>
+          <tr><td>原位设备产品与渲染</td><td>已具有标准设备数组和设备几何直连两条管线。严格图片模式的已测窗口没有整场或最终几何 D2H；像素、控制及选定通信暂存仍存在。</td><td>重点转向定位、积分与分析成本，不再把“GPU Q”“几何不回读”列为尚未实现。</td></tr>
+          <tr><td>静态 CURVE 规模验证</td><td>本地双卡 256³、NP=2 x，周期与 Tw=1 曲壁夹具均完成默认 16 个双向种子的百步窗口。256 个分层种子只完成 32³ 短测。</td><td>跨帧索引复用及较密种子的规模成本仍是实际缺口；不能将小网格种子测试当成生产规模结论。</td></tr>
+          <tr><td>独立输出时钟与可变频率</td><td>产品独立 step/time 时钟、重要时间窗及基于动能的频率切换已在小型笛卡尔周期 TGV 中验证。</td><td>新增方向应是统计估计与新的物理观测量，而不是重复开发频率开关。</td></tr>
+          <tr><td>M12 接入与平台部署</td><td>原数值方法、原随机吹吸及本地精确续算已有有界验证。平台构建与实际 GPU/EGL/MPI 运行验收是不同环节。</td><td>环境预检与能力说明值得系统化；本次没有重新查询平台任务，不据历史队列信息宣称平台验收完成。</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>反应流性能分析采用已有诊断记录作为线索，不视为最新源码的重新测量。记录中双卡暴露 MPI 占周期约 7.68%–8.02%，而界面限制和物性恢复阶段存在 rank 耗时差异。该等待包含到达时序，不等于纯网络传输成本。化学核样本分支效率约 99.91%，也不支持先把拒绝步线程发散认定为第一瓶颈。</p>
+    <p>排序综合考虑直接依据、预期价值、相对已有能力的增量、工作范围和后续复用价值。文中的置信度是对方向合理性的判断，不是加速成功率或论文录用概率。</p>
+  </section>
+
+  <section id="axes">
+    <h2>选题维度</h2>
+    <ul>
+      <li><strong>A · 计算与数据移动效率：</strong>完整时间步和完整后处理产品的成本，而非只比较一个 kernel。</li>
+      <li><strong>B · 反应流数值可靠性：</strong>保正、组分闭合、双温能量一致性与刚性积分约束。</li>
+      <li><strong>C · 在线科学观测：</strong>从出图与均值累计扩展到有定义的动态诊断和统计误差。</li>
+      <li><strong>D · 异构硬件可移植性：</strong>保留 Fortran 求解器主体，明确设备计算、通信与渲染的不同后端边界。</li>
+      <li><strong>E · 生产部署与可复现性：</strong>使可支持的组合、环境依赖和性能口径可查询、可复验。</li>
+    </ul>
+  </section>
+
+  <section id="ideas">
+    <h2>六个排序后的选题</h2>
+    <ol class="jump-list">
+      <li><a href="#i1">静态曲线网格流线的跨帧加速</a></li>
+      <li><a href="#i2">反应流阶段感知通信与负载均衡</a></li>
+      <li><a href="#i3">流式频谱、相关尺度与统计可信度</a></li>
+      <li><a href="#i4">FP64 刚性化学核的资源与批处理优化</a></li>
+      <li><a href="#i5">可验证的 CUDA/HIP 双后端</a></li>
+      <li><a href="#i6">可执行能力说明与可复现部署</a></li>
+    </ol>
+
+    <article class="idea" id="i1">
+      <h3>I1 · 静态曲线网格 GPU 流线的跨帧加速</h3>
+      <div class="idea-meta"><span>维度 A、C</span><span>置信度 90%</span><span>复杂度 Medium</span><span>定位：近期可量化改进</span></div>
+      <p><span class="label">选题内容：</span>让依赖静态坐标与单元拓扑的空间定位结构跨输出帧复用，每帧只更新速度等变化字段。将定位结构建立、轨迹定位与积分、跨 rank 接续以及最终绘图的成本分开，研究较密分层种子下的覆盖程度与耗时关系。</p>
+      <div class="basis">
+        <p><strong>direct:</strong>最新规模记录明确写道：“定位器尚未跨帧缓存，仍是未来候选。”独立 256³ 一帧分析中，L1/L2 定位核累计约 0.835 s，RK45 核累计约 1.040 s。这些是插桩区间，不能相加或直接当成可消除的开销。</p>
+        <p><strong>direct:</strong>源码 <code>PhysicalTraceOwner</code> 构造时配置定位器并调用 <code>Update()</code>；<code>CachedPhysicalTraceGrid</code> 已有轨迹内最近单元缓存。新增点是对象与几何的跨帧生命周期，不是首次增加单元缓存。</p>
+        <p><strong>external:</strong>Viskores 的定位器支持在结构未改变时保留已建立索引。<a href="https://viskores.readthedocs.io/en/v1.0.0/locators.html">官方定位器文档</a>支持这一方向，但不证明 ASTR 当前调用方式已经实现复用。</p>
+      </div>
+      <figure>
+        <svg viewBox="0 0 840 236" role="img" aria-labelledby="locator-diagram-title">
+          <title id="locator-diagram-title">静态定位结构与每帧速度字段的生命周期分离</title>
+          <rect x="24" y="28" width="230" height="66" rx="4" fill="#edf4fa" stroke="#155c92"/>
+          <text x="139" y="55" text-anchor="middle" font-size="18">静态网格与拓扑</text>
+          <text x="139" y="79" text-anchor="middle" font-size="14">坐标、单元、分区身份</text>
+          <path d="M254 61 H294" stroke="#505b63" stroke-width="2" fill="none"/>
+          <path d="M287 56 L295 61 L287 66" stroke="#505b63" stroke-width="2" fill="none"/>
+          <rect x="300" y="28" width="242" height="66" rx="4" fill="#edf7f1" stroke="#17664e"/>
+          <text x="421" y="55" text-anchor="middle" font-size="18">持久空间定位结构</text>
+          <text x="421" y="79" text-anchor="middle" font-size="14">几何或分区改变才失效</text>
+          <rect x="24" y="140" width="230" height="66" rx="4" fill="#fff" stroke="#505b63"/>
+          <text x="139" y="167" text-anchor="middle" font-size="18">第 n 帧速度</text>
+          <text x="139" y="191" text-anchor="middle" font-size="14">每帧更新，不缓存旧状态</text>
+          <path d="M254 173 H574" stroke="#505b63" stroke-width="2" fill="none"/>
+          <path d="M567 168 L575 173 L567 178" stroke="#505b63" stroke-width="2" fill="none"/>
+          <path d="M542 61 H684 V134" stroke="#505b63" stroke-width="2" fill="none"/>
+          <path d="M679 127 L684 135 L689 127" stroke="#505b63" stroke-width="2" fill="none"/>
+          <rect x="580" y="140" width="236" height="66" rx="4" fill="#fff" stroke="#505b63"/>
+          <text x="698" y="167" text-anchor="middle" font-size="18">同一定义的 RK45 流线</text>
+          <text x="698" y="191" text-anchor="middle" font-size="14">当前帧场值 + 可复用索引</text>
+        </svg>
+        <figcaption>方向示意：复用静态结构，不复用上一帧流场。并不意味着所有定位与积分成本都能消失。</figcaption>
+      </figure>
+      <p><span class="label">为什么值得做：</span>现有周期 CURVE 百步每步双图窗口约为关闭后处理的 4.61 倍，Tw=1 曲壁约为 3.82 倍。窗口含资源观测，不能作为纯渲染性能基线，但足以说明“几何不回读”尚未解决后处理计算成本。该方向能直接降低高频出图的附加负担。</p>
+      <p><span class="label">代价与风险：</span>索引会长期占用显存；重启、重新分区、坐标或数组所有权改变时必须正确失效。库的 <code>Update()</code> 本身具有有效性检查，简单删除调用不是可靠修复。增加种子通常增加工作量，即使提高并行利用率，也不保证总时间下降。</p>
+      <p><span class="label">可形成的证据：</span>相同流场与种子下，轨迹及跨分区接续不变，索引建立次数减少，完整产品时间和附加显存可复查；再给出种子密度与覆盖程度的关系。本地已有两卡与曲线夹具足以开展讨论中的主要验证。</p>
+      <p><span class="label">作为课题的边界：</span>单独“加一个缓存”的研究贡献有限。更完整的题目是<strong>静态曲线网格上设备常驻流线分析的成本分解与可扩展实现</strong>，重点是生命周期、曲线定位、分区接续与端到端成本，而非改写现有渲染器。</p>
+    </article>
+
+    <article class="idea" id="i2">
+      <h3>I2 · 反应流阶段感知通信与负载均衡</h3>
+      <div class="idea-meta"><span>维度 A、B</span><span>置信度 82%</span><span>复杂度 High</span><span>定位：HPC 研究主线候选</span></div>
+      <p><span class="label">选题内容：</span>以反应半步、输运 RK、物性恢复、保正限制和边界更新的状态依赖为约束，研究各 rank 到达通信点的时间差。区分网络搬运、计算负载不均和必须保留的全局判定，寻找能与 halo 传输重叠的内点工作，并评估域分解对复杂边界和化学负载的影响。</p>
+      <div class="basis">
+        <p><strong>direct:</strong>性能记录写明：“Allreduce 时间包含等待另一 rank 的到达偏差，不等同网络传输成本。”其中界面限制阶段两 rank 约为 0.282/0.229 s，内点物性恢复约为 0.0448/0.0812 s，化学核约为 0.174/0.176 s。它们支持研究阶段差异，不证明化学负载就是唯一根因。</p>
+        <p><strong>direct:</strong>CUDA-aware MPI、固定 pinned 缓冲、方向流与事件管线已经存在；历史依赖式同步模式减少了同步次数，但没有稳定的本地完整步收益。新增工作不能等同于重复这些已有选项。</p>
+        <p><strong>reasoned:</strong>较快 rank 提前进入集合通信，会把另一个 rank 的计算延迟表现为 MPI 等待。若只优化传输而不处理到达偏差，扩展效率的改善可能很有限。</p>
+      </div>
+      <p><span class="label">为什么值得做：</span>TGV 四卡效率已较高，未来差异更可能出现在反应、壁面和非周期边界的组合。该选题能连接软件实现与实际复杂流动，而不仅复述 GPU 替代 CPU 的加速比。</p>
+      <p><span class="label">代价与风险：</span>现有性能线索来自历史版本和特定 Ada 工况，需要用当前版本刷新归因。通信调整不能改变共享节点平均与 halo 刷新顺序，不能跨越保正判定、错误归约或边界依赖盲目异步化。动态重分区还会涉及精确续算和状态迁移，不能默认纳入首轮。</p>
+      <p><span class="label">可形成的证据：</span>在数值路径不变时，展示每阶段 rank 差异、暴露通信时间、完整步强弱扩展、通信量和资源成本；通过到达时序对照区分“网络更快”和“负载更均匀”。本地可做两卡归因和有界拓扑检查，跨节点及平台结论必须依赖目标设备实测。</p>
+      <p><span class="label">作为课题的边界：</span>推荐题目为<strong>受数值状态依赖约束的多 GPU 双温反应流并行优化</strong>。贡献应落在可复用的阶段依赖处理与复杂工况扩展能力，不宜把换 MPI 参数或删除同步本身写成新方法。</p>
+    </article>
+
+    <article class="idea" id="i3">
+      <h3>I3 · GPU 流式频谱、相关尺度与统计可信度</h3>
+      <div class="idea-meta"><span>维度 C、B、E</span><span>置信度 80%</span><span>复杂度 Medium</span><span>定位：新增科学分析能力</span></div>
+      <p><span class="label">选题内容：</span>在已有 Reynolds/Favre 时间统计、RMS、协方差和壁面监测之上，增加预选探针或适用截面的分窗频谱、自相关、积分时间尺度与统计采样误差。输出的是有明确采样定义的紧凑诊断，而非额外保存全部三维历史场。</p>
+      <div class="basis">
+        <p><strong>direct:</strong>现有产品时钟与动能驱动可变频率已经落地；它们解决何时出图，不自动回答均值是否收敛、有效独立样本有多少。对当前 <code>src/</code>、<code>src_gpu/</code>、原位脚本及计划的定向检索未发现完整的在线时间频谱与采样误差通道；CFL 谱半径和 HIT 初场能谱不属于此能力。</p>
+        <p><strong>external:</strong>Oliver 等的 DNS 不确定性研究明确区分有限采样误差与离散误差，并处理样本相关性。<a href="https://turbulence.oden.utexas.edu/bayes.html">作者提供的论文与配套数据</a>支持采用相关性修正的统计判断，而不是仅看均值曲线变平。</p>
+        <p><strong>reasoned:</strong>图像频率随事件变密时，直接对这些帧等权求平均会改变时间权重。科学采样时钟与可视化输出时钟应分离，才能同时控制存储和估计偏差。</p>
+      </div>
+      <p><span class="label">为什么值得做：</span>它直接服务于当前前驱入口、壁压低频波动及 SBLI 分离区统计问题。用户能获得“还需积累多长时间”“主要低频是否被采到”的依据，而不仅是更多流场图片。</p>
+      <p><span class="label">代价与风险：</span>自相关与采样误差解释依赖平稳性及足够观测长度。频谱要明确采样间隔、窗函数、归一化和混叠控制；空间谱只能沿满足几何与统计条件的方向解释。有限内存窗口会限制最低可分辨频率，不能以短窗证明低频统计已经充分。</p>
+      <p><span class="label">可形成的证据：</span>与离线同一时间序列的结果匹配，明确额外显存、紧凑传输量和完整步开销；给出采样长度增加时误差估计及相关时间的变化。合成信号可检查实现，真实流动才能支撑物理解释。初版可在本地推进，长时统计结论仍取决于计算覆盖时长。</p>
+      <p><span class="label">作为课题的边界：</span>推荐题目为<strong>面向可压缩反应流 DNS 的 GPU 流式统计与低开销科学观测</strong>。FFT 和相关函数本身不是新算法，研究价值在于有限资源下的可靠估计、在线数据约减及与多 GPU 求解器的结合。统计量也可成为未来频率策略的输入，但不自动改变求解步长或宣告统计定常。</p>
+    </article>
+
+    <article class="idea" id="i4">
+      <h3>I4 · FP64 刚性化学核的线程资源与批处理优化</h3>
+      <div class="idea-meta"><span>维度 A、B</span><span>置信度 76%</span><span>复杂度 High</span><span>定位：专项性能研究候选</span></div>
+      <p><span class="label">选题内容：</span>保留 AIR5 的 ROS-2、6×6 求解、误差控制和补偿语义，研究每单元线程的临时量生命周期、反应与 Jacobian 复用以及线程组织。只有当前工况的迭代分布显示长尾或稀疏活跃区时，再讨论步长分桶或活跃单元批处理。</p>
+      <div class="basis">
+        <p><strong>direct:</strong>既有完整场样本中，化学核约占单卡 kernel 时间 25.26%，每线程 242 个寄存器，理论 occupancy 16.67%，该次没有 spilling。高寄存器用量支持资源分析，但低 occupancy 单独不能证明降寄存器必然加速。</p>
+        <p><strong>direct:</strong>同一记录的分支效率约 99.91%。这反对“先做 warp 同步拒绝就会更快”的推断，不排除其他工况出现工作量长尾。</p>
+        <p><strong>external:</strong>Stone、Alferman 与 Niemeyer 比较了有限速率化学在不同加速器上的向量化组织。<a href="https://arxiv.org/abs/1608.05794">原论文</a>说明线程映射与刚性、工作量分布有关，不能照搬单一映射结论。</p>
+      </div>
+      <p><span class="label">为什么值得做：</span>反应模型是未来高焓算例的高成本组成，优化结果能复用于平板、正常激波和反应 SBLI，而不必先引入更大的新机理。</p>
+      <p><span class="label">代价与风险：</span>过度限制寄存器可能转化为 local-memory 访问；分桶会引入索引、重排和额外通信，活跃状态也会不断变化。统一 warp 拒绝可能让原本已接受的单元重复计算，改变积分控制语义。任何算法或容差改变都应另行决策，不能混入实现优化。</p>
+      <p><span class="label">可形成的证据：</span>按真实状态分布报告接受/拒绝次数、RHS/Jacobian 调用、寄存器与溢出，再同时比较化学子步和完整耦合步。局部状态库可帮助诊断，但不能替代输运、边界和重启后的长窗验证。Ada 与 A800 的 FP64 能力差异要求分别评价。</p>
+      <p><span class="label">作为课题的边界：</span>可讨论<strong>小规模刚性双温化学系统的 GPU 资源组织与数值可靠性</strong>。仅将除法改乘法或调线程块不足以单独构成研究贡献；若没有稳定完整步收益，应保留为工程经验，而非扩大性能结论。</p>
+    </article>
+
+    <article class="idea" id="i5">
+      <h3>I5 · 可验证的 CUDA/HIP 双后端架构</h3>
+      <div class="idea-meta"><span>维度 D、A</span><span>置信度 72%</span><span>复杂度 High</span><span>定位：长期战略方向</span></div>
+      <p><span class="label">选题内容：</span>保留 Fortran 主程序、CPU 参考与共同数值定义，以清楚的设备数据和调用边界承接 CUDA 与 HIP 实现。用空间导数、滤波或 halo 打包等小范围算子探索边界，而不是把全部 CUDA Fortran 源码一次性改写。</p>
+      <div class="basis">
+        <p><strong>external:</strong><a href="https://rocm.docs.amd.com/projects/hipfort/en/latest/">hipFORT</a>提供 HIP 及相关库的 Fortran 接口，并不是 CUDA Fortran 设备编译器。<a href="https://docs.open-mpi.org/en/v5.0.x/tuning-apps/networking/rocm.html">Open MPI 的 ROCm 文档</a>说明设备缓冲通信还依赖具有对应支持的通信栈。</p>
+        <p><strong>reasoned:</strong>当前 <code>.cuf</code> 的设备属性、启动语法和运行时接口不能由“支持 CUDA 兼容”直接推导为 DCU 可编译。<code>ISO_C_BINDING</code> 接 HIP C++ 启动器是可讨论路径，实际 ABI、FP64 和 MPI 行为仍需目标设备验证。</p>
+        <p><strong>external:</strong><a href="https://impact.ornl.gov/en/publications/the-pele-simulation-suite-for-reacting-flows-at-exascale/">Pele 软件体系</a>已有分离物理模块与异构运行机制的先例。它支持可移植架构的研究价值，不意味着 ASTR 应改成 AMR，或能继承该项目的性能结果。</p>
+      </div>
+      <figure>
+        <svg viewBox="0 0 840 250" role="img" aria-labelledby="backend-diagram-title">
+          <title id="backend-diagram-title">求解器、设备计算和可视化后端分开验证</title>
+          <rect x="24" y="26" width="792" height="52" rx="4" fill="#edf4fa" stroke="#155c92"/>
+          <text x="420" y="59" text-anchor="middle" font-size="19">共同的 Fortran 主程序、状态语义与 CPU 参考</text>
+          <path d="M420 78 V105" stroke="#505b63" stroke-width="2"/>
+          <path d="M415 98 L420 106 L425 98" stroke="#505b63" stroke-width="2" fill="none"/>
+          <rect x="24" y="112" width="792" height="42" rx="4" fill="#edf7f1" stroke="#17664e"/>
+          <text x="420" y="139" text-anchor="middle" font-size="17">明确设备数组、调用与通信边界</text>
+          <path d="M220 154 V181 M620 154 V181" stroke="#505b63" stroke-width="2"/>
+          <path d="M215 174 L220 182 L225 174 M615 174 L620 182 L625 174" stroke="#505b63" stroke-width="2" fill="none"/>
+          <rect x="24" y="188" width="382" height="42" rx="4" fill="#fff" stroke="#505b63"/>
+          <text x="215" y="215" text-anchor="middle" font-size="16">CUDA 计算与对应设备通信</text>
+          <rect x="434" y="188" width="382" height="42" rx="4" fill="#fff" stroke="#505b63"/>
+          <text x="625" y="215" text-anchor="middle" font-size="16">HIP 计算与对应设备通信</text>
+        </svg>
+        <figcaption>方向示意：共同求解语义不等于共同设备实现。ParaView 的设备数组、图形互操作和渲染支持应另行验证，不能由求解器后端推出。</figcaption>
+      </figure>
+      <p><span class="label">为什么值得做：</span>能响应未来 AMD/DCU 部署需求，避免所有数值模块继续与单一运行时绑定。清楚的边界也能改善 NVIDIA 路径的维护与独立测试。</p>
+      <p><span class="label">代价与风险：</span>没有目标硬件时，只能完成接口与构建探索，不能声称实现可移植性能。转换会涉及内存所有权、错误处理、通信和工具链；计算后端可用也不保证设备常驻渲染可用。现有 CUDA Fortran 实现不应为了形式统一而被仓促弃用。</p>
+      <p><span class="label">可形成的证据：</span>同一有界算子和数值定义在两后端通过 CPU 对照，设备通信与错误行为可复查，并报告移植代码量和各后端完整路径性能。把完整流体求解器、AIR5 化学和设备可视化视为不同覆盖层级，而非一次宣布全平台支持。</p>
+      <p><span class="label">作为课题的边界：</span>可讨论<strong>面向异构加速器的高阶可压缩流动 Fortran 求解器可移植架构</strong>。长期价值较高，但硬件、编译器和维护成本都高于前三项，不适合在没有目标设备时承诺近期完成。</p>
+    </article>
+
+    <article class="idea" id="i6">
+      <h3>I6 · 可执行能力说明与可复现部署</h3>
+      <div class="idea-meta"><span>维度 E、D</span><span>置信度 90%</span><span>复杂度 Medium</span><span>定位：生产工程支撑</span></div>
+      <p><span class="label">选题内容：</span>把分散的能力边界、已验证组合、环境预检与性能记录组织为可查询的共同描述：某一网格、方程、边界、通信和后处理组合能否运行，依据是什么，平台还缺什么条件。用户在排队前即可区分输入不支持、库依赖不满足和尚待计算节点验证。</p>
+      <div class="basis">
+        <p><strong>direct:</strong>仓库已有构建解耦检查、发布能力说明、平台预检、验证矩阵和新格式续算标识，不是空白起点。发布快照与持续演进的开发文档有不同日期，必须保留各自适用版本。</p>
+        <p><strong>reasoned:</strong>登录节点编译成功不证明计算节点的 MPI、HDF5、数学库或 EGL 环境可用。将这几类检查混成一次“通过”会把错误推迟到昂贵的排队之后。</p>
+        <p><strong>reasoned:</strong>性能记录只有同时限定二进制、输入、拓扑、通信、计时窗口和输出负载，才足以支撑速度比较。已有预检片段的共同描述能减少文档与运行行为不一致。</p>
+      </div>
+      <p><span class="label">为什么值得做：</span>它最直接降低平台试错成本，并为其他候选提供可信的实验底座。此处所说“可执行能力说明”是机器能查询并据此明确拒绝不支持的组合，不是增加更多模糊环境变量或自动降级。</p>
+      <p><span class="label">代价与风险：</span>人工维护另一份支持表容易再次过期，应复用实际配置检查和已有证据。不宜引入与根 CMake 并行的构建体系，也不应将特定平台路径固化为通用默认值。源码版本和编译器变化后，历史证据只能作为限定版本记录。</p>
+      <p><span class="label">可形成的证据：</span>同一配置在说明、预检和实际拒绝行为之间一致；登录节点能完成的检查与分配 GPU 后才能完成的检查分层；同一计时口径可从保存记录重建。大部分整理可本地推进，计算节点特有条件仍需平台短测。</p>
+      <p><span class="label">作为课题的边界：</span>这是高价值的工程方向，但独立数值方法论文贡献较弱。更适合作为反应流扩展、可移植架构或科学软件论文中的关键支撑，而不是把整理脚本本身包装成新求解算法。</p>
+    </article>
+  </section>
+
+  <section id="selection">
+    <h2>如何选择</h2>
+    <div class="table-wrap">
+      <table class="wide">
+        <thead><tr><th>目标</th><th>更合适的方向</th><th>理由</th><th>不应承诺什么</th></tr></thead>
+        <tbody>
+          <tr><td>近期在本地获得可测收益</td><td>I1</td><td>明确存在重复建立静态索引的候选成本，已有实际场、曲线网格和双卡证据。</td><td>不能承诺消除全部流线耗时，也不能由增加种子推导提速。</td></tr>
+          <tr><td>高性能计算研究主线</td><td>I2，必要时与 I4 结合</td><td>反应流状态依赖、阶段不均和通信交织，研究问题比周期 TGV 更完整。</td><td>先归因后选机制，不预定根因是网络或 warp 发散。</td></tr>
+          <tr><td>新增直接服务 CFD 的能力</td><td>I3</td><td>能回答前驱与 SBLI 统计长度、低频观测和采样误差问题，避免大规模历史场输出。</td><td>不能由短窗、均值变平或在线出图宣告统计收敛。</td></tr>
+          <tr><td>未来 AMD/DCU 适配</td><td>I5</td><td>先建立数值与后端边界，避免将 CUDA 兼容宣传理解成 CUDA Fortran 支持。</td><td>没有目标设备时不宣布完整后端或设备渲染可用。</td></tr>
+          <tr><td>减少生产部署失败</td><td>I6</td><td>已有预检和证据可整合，能减少排队后才暴露的依赖问题。</td><td>不能只凭登录节点测试替代分配节点上的验收。</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout"><p><strong>总体建议：</strong>如果只选择一个近期工程方向，选 I1；如果选择一个可持续研究方向，优先讨论 I2 或 I3。I6 适合作为共同支撑。I4 应由当前版本诊断决定是否投入，I5 则取决于真实目标硬件。不要同时展开六条主线。</p></div>
+    <p>这些题目均有相关先例。研究贡献需要通过 ASTR 的高阶有限差分、曲线几何、双温保正及完整多 GPU 路径体现，而不能仅凭“用了 GPU”“用了原位分析”或“支持 HIP”宣称方法新颖。</p>
+  </section>
+
+  <section id="rejections">
+    <h2>未入选与暂缓方向</h2>
+    <p>共形成 36 个原始想法，合并为 24 个候选，保留上述 6 个。下面给出其余 18 项未作为独立近期方向的原因。“暂缓”不等于证明无效；新增算例的物理验证也仍有必要，只是不单独构成软件机制选题。</p>
+    <div class="table-wrap">
+      <table class="wide">
+        <thead><tr><th>候选</th><th>方向</th><th>未入选理由</th></tr></thead>
+        <tbody>
+          <tr><td>C07</td><td>继续融合组分限制器与临时量</td><td>属于 I2 的条件性实现候选，且已有同状态与通量复用工作；没有新归因前不单独扩成课题。</td></tr>
+          <tr><td>C08</td><td>首次引入 pinned 池与持久 MPI 请求</td><td>固定缓冲已经循环复用，历史分析未见逐步 pinned 分配；请求建立不是当前已证实的大头。</td></tr>
+          <tr><td>C09</td><td>全局取消显式同步</td><td>既有依赖模式尚无稳定完整步收益，且错误判定与状态依赖不能一概删除。</td></tr>
+          <tr><td>C10</td><td>把可变输出频率作为新功能</td><td>小型 TGV 的 PF/AP 已完成；新科学观测与适用工况扩展归入 I3，不重复包装。</td></tr>
+          <tr><td>C11</td><td>新增 GPU Q 与几何不回读渲染</td><td>相应设备管线已有有界实现和规模证据；剩余成本归入 I1。</td></tr>
+          <tr><td>C12</td><td>立即替换为任意 Cantera/KinetiX 机制</td><td>反应速率内核不能覆盖双温 EOS、输运、边界与状态生命周期；缺少新的具体机制需求。</td></tr>
+          <tr><td>C13</td><td>转向紧致差分或紧致滤波</td><td>与已批准的显式主线相反，不作为本轮推荐。</td></tr>
+          <tr><td>C14</td><td>立即用异步 I/O 重写 checkpoint</td><td>新精确续算与输出语义刚完成，严格图片窗口的首要问题不是整场归档；先不引入第二套存储语义。</td></tr>
+          <tr><td>C15</td><td>NCCL 全面替代 MPI</td><td>没有证据表明替换通信接口能解决阶段等待，且 halo、错误归约、CPU 和多后端支持成本增加。</td></tr>
+          <tr><td>C16</td><td>FP16/TF32 Tensor Core 化学求解</td><td>小型刚性系统的条件数、转换与批处理成本尚无收益证据，不符合当前可靠性优先级。</td></tr>
+          <tr><td>C17</td><td>整个时间步使用 CUDA Graphs</td><td>当前线索不支持启动开销主导，MPI 与主机判定增加捕获复杂度；可保留为将来的测量驱动工具。</td></tr>
+          <tr><td>C18</td><td>扩大化学与滤波的低精度范围</td><td>已有混合临时存储模式未获稳定完整步提速；FP32 滤波已取消，不恢复为默认候选。</td></tr>
+          <tr><td>C19</td><td>同时增加 AMR、多块、动网格或浸入边界</td><td>会改变当前静态单块的数据与接口体系，成本过大，不能与后端适配混为一项。</td></tr>
+          <tr><td>C20</td><td>同时增加电离、催化壁和通用燃烧</td><td>缺少具体已批准工况与模型验证，会分散现有 AIR5 主线。</td></tr>
+          <tr><td>C21</td><td>优先 RANS/LES</td><td>用户已明确暂缓，不作为本次主线。</td></tr>
+          <tr><td>C22</td><td>神经网络替代物性或积分器</td><td>尚无合格数据、域外误差与失败处理依据，不能仅因热门就推荐。</td></tr>
+          <tr><td>C23</td><td>仅扩充更多物理算例</td><td>是必要的应用验证与研究证据，但单独增加案例数量不构成新的软件能力机制。</td></tr>
+          <tr><td>C24</td><td>在线交互或网页可视化平台</td><td>与当前预设视角、离线图片/视频的需求不符，增加服务与权限维护而未解决主要成本。</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>五个选题维度均有保留方向。对研究新颖性和可实施性的筛选由同一会话完成，未使用独立评审，选题仍应经过团队讨论。</p>
+  </section>
+
+  <section id="sources">
+    <h2>依据与文献</h2>
+    <p>以下代码与计划链接固定到本次 HEAD，方便区分历史记录和将来更新。性能数字均来自各文档明确限定的历史窗口，本次没有重新运行 CFD、性能分析或平台任务。</p>
+    <ol class="references">
+      <li><a href="https://github.com/Perrbit/astr_gpu/blob/b2162e8d51ae82a181bb123966b0df7ad68e8f17/documents/ASTR_GPU_CURRENT_STATUS_AND_NEXT_TARGETS.md">ASTR GPU 当前状态与后续目标</a>：优先采用 2026-10-08 CURVE 更新、PF/AP/X4 更新；旧章节仅按其日期和范围解释。</li>
+      <li><a href="https://github.com/Perrbit/astr_gpu/blob/b2162e8d51ae82a181bb123966b0df7ad68e8f17/documents/ASTR_GPU_PERFORMANCE_OPTIMIZATION_PLAN.md">性能优化计划</a>：同状态复用、反应流 Nsight 记录、同步与通信的限定结论。</li>
+      <li><a href="https://github.com/Perrbit/astr_gpu/blob/b2162e8d51ae82a181bb123966b0df7ad68e8f17/src_gpu/insitu_device_curve_trace.h#L223-L263">CURVE 流线定位实现</a>：<code>PhysicalTraceOwner</code>、<code>CachedPhysicalTraceGrid</code> 的对象与缓存边界。</li>
+      <li><a href="https://github.com/Perrbit/astr_gpu/blob/b2162e8d51ae82a181bb123966b0df7ad68e8f17/src_gpu/chemistry_coupling_gpu.cuf">GPU 化学耦合实现</a>：已有性能选项、诊断与逐单元半步组织。</li>
+      <li><a href="https://github.com/Perrbit/astr_gpu/blob/b2162e8d51ae82a181bb123966b0df7ad68e8f17/documents/ASTR_GPU_CHEMISTRY_PORTING_PLAN.md">AIR5 化学移植计划</a>：固定模型、积分与状态约束；历史小节不代表最新功能列表。</li>
+      <li><a href="https://github.com/Perrbit/astr_gpu/blob/b2162e8d51ae82a181bb123966b0df7ad68e8f17/documents/ASTR_INSITU_POSTPROCESSING_PLAN.md">原位后处理计划</a>：已实现管线、工况覆盖、产品调度及规模边界。</li>
+      <li><a href="https://github.com/Perrbit/astr_gpu/blob/b2162e8d51ae82a181bb123966b0df7ad68e8f17/documents/ASTR_M12_C13_GPU_INSITU_INTEGRATION_PLAN.md">M12 接入计划</a>：原方法与随机吹吸、本地对照及平台待验范围。</li>
+      <li><a href="https://github.com/Perrbit/astr_gpu/blob/b2162e8d51ae82a181bb123966b0df7ad68e8f17/documents/ASTR_RELEASE_PROD_CAPABILITY_SCOPE.md">发布能力范围快照</a>：按其发布日期解读，不以旧原位章节否认开发分支的新能力。</li>
+      <li><a href="https://viskores.readthedocs.io/en/v1.0.0/locators.html">Viskores 1.0 Locators</a>：空间定位、索引更新与查询缓存的官方语义。</li>
+      <li><a href="https://arxiv.org/abs/1608.05794">Stone, Alferman &amp; Niemeyer (2016), Accelerating finite-rate chemical kinetics with coprocessors</a>：化学工作量与向量化映射的原始研究。</li>
+      <li><a href="https://turbulence.oden.utexas.edu/bayes.html">Oliver et al. (2014), Estimating uncertainties in statistics computed from direct numerical simulation</a>：作者配套页面，DOI <a href="https://doi.org/10.1063/1.4866813">10.1063/1.4866813</a>。</li>
+      <li><a href="https://rocm.docs.amd.com/projects/hipfort/en/latest/">hipFORT 官方文档</a>：Fortran 与 HIP/库接口范围。</li>
+      <li><a href="https://docs.open-mpi.org/en/v5.0.x/tuning-apps/networking/rocm.html">Open MPI 5.0.x ROCm 文档</a>：版本特定的设备通信支持条件，不表示当前 ASTR 平台已采用此版本。</li>
+      <li><a href="https://impact.ornl.gov/en/publications/the-pele-simulation-suite-for-reacting-flows-at-exascale/">Henry de Frahan et al. (2024), The Pele Simulation Suite for Reacting Flows at Exascale</a>：异构反应流软件分层的相关先例，不作为 ASTR 性能外推依据。</li>
+    </ol>
+  </section>
+
+  <footer class="composition-signal">生成于 2026-10-09T14:58:04+08:00 · ce-ideate · 来源：ASTR 当前仓库、用户关于后续软件选题的请求及所列一手资料。新建综合选题文档，未修改原专题文档。</footer>
+</main>
+</body>
+</html>

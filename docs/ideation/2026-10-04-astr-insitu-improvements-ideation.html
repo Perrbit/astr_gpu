@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ASTR 原位后处理改进候选</title>
+<style>
+:root{color-scheme:light;--ink:#212b30;--muted:#505c63;--line:#d9e0e3;--blue:#12619c;--green:#14674c;--red:#984039}
+*{box-sizing:border-box}body{margin:0;background:#fff;color:var(--ink);font-family:system-ui,sans-serif;font-size:16px;line-height:1.75;letter-spacing:0}
+main{max-width:960px;margin:auto;padding:36px 28px}header{padding-bottom:24px;border-bottom:1px solid var(--line)}h1{font-size:28px;line-height:1.35;margin:0 0 14px}h2{font-size:22px;line-height:1.4;margin:34px 0 16px}h3{font-size:19px;line-height:1.5;margin:0 0 12px}p{max-width:72ch;margin:12px 0}a{color:var(--blue);overflow-wrap:anywhere}code{font-size:.9em;overflow-wrap:anywhere}nav ul{padding-left:22px}nav li{margin:5px 0}.meta{color:var(--muted);font-size:14px}.note{padding:16px 20px;background:#eef6f3;border-radius:6px}.note strong{color:inherit}article{padding:22px 0;border-top:1px solid var(--line)}dl{margin:0;display:grid;grid-template-columns:116px minmax(0,1fr);gap:8px 16px}dt{font-weight:650}dd{margin:0;max-width:72ch;overflow-wrap:anywhere}.table-wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:15px}th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--line)}th{background:#eef3f6;font-weight:650}.diagram{margin:18px 0}.diagram svg{width:100%;height:auto;display:block}.diagram figcaption{font-size:14px;color:var(--muted)}footer{border-top:1px solid var(--line);padding-top:18px;margin-top:30px;color:var(--muted);font-size:14px}strong{color:inherit}
+@media(max-width:600px){main{padding:24px 16px}h1{font-size:24px}dl{grid-template-columns:1fr;gap:3px}dd{margin-bottom:10px}th,td{padding:8px;font-size:14px}}
+@media print{main{max-width:none;padding:0}article{break-inside:avoid}a{color:inherit}}
+</style>
+</head>
+<body><main>
+<header>
+<h1>ASTR 原位后处理：值得探索的六个改进方向</h1>
+<p>优先从固定整场供给转向按产品供给，再扩展可解释的科学诊断。现有连续渲染的资源问题仍须先解决，不能靠减少平均出图频率掩盖。</p>
+<p class="meta">日期：2026-10-04 · Topic：astr-insitu-improvements · Focus：ASTR_INSITU_POSTPROCESSING_PLAN.md 的改进与新增功能</p>
+<p class="meta">对象：当前 ASTR 代码库 · 依据：feature/gpu_dev，HEAD c43b828 及当前未提交修改 · 39 个候选，保留 6 个，合并、排除或暂缓 33 个</p>
+<nav aria-label="文档目录"><a href="#context">Grounding Context</a> · <a href="#axes">Topic Axes</a> · <a href="#ideas">Ranked Ideas</a> · <a href="#rejections">Rejection Summary</a> · <a href="#sources">Sources &amp; References</a></nav>
+</header>
+
+<section id="context">
+<h2>Grounding Context · 当前依据</h2>
+<p><strong>已验证与未完成必须分开。</strong>IS0–IS3 的小型 TGV 统计、GPU 渲染和几何读回已有证据；IS4–IS7 的完整扩围尚未通过。256³ 展示的历史记录只完成 48/100 帧，节点附加主机内存超出 16 GiB。该失败仍要求先做 R1 生命周期、R2 分段计时和 R5 长序列验收。</p>
+<p>历史记录显示，每帧双 rank 合计 D2H 约 1.397 GiB，桥接复制约 3.555 GiB，计算约 0.6–0.7 秒、计算加后处理约 28 秒。这些是 2026-09-30 的诊断记录，本次没有重测，也不足以证明 PCIe 是主要瓶颈。</p>
+<p>当前正式渲染入口固定分配 11 个场分量和 14 个派生分量；C++ 桥接再复制坐标、场和派生量。与此同时，原生文件输出已有可选分量 GPU 打包及私有诊断 halo。因此，可复用的基础并非从零开始，但不能将文件输出的准入直接转成 Catalyst 的准入。</p>
+<p>自适应输出 AP0–AP3 已有批准设计：独立监测、预设窗口和事件、两档输出、固定正式统计与 checkpoint 频率、精确续接。这是已有待实施项，不重复包装成新增建议。新完整步输出已经默认启用，旧 checkpoint 不再作为恢复接口。</p>
+<div class="note"><strong>当前必要工作：</strong>先处理 R1/R2 的资源与耗时归因，并完成既定输出接口衔接。下列候选不是替代主计划的新承诺；没有改变资源超限停止、完整步采样、精确续接或不追求在线交互的约束。</div>
+<p class="meta">本次以当前单会话完成源码核对与筛选，未使用独立子代理审阅。未运行 GPU 验收、远程任务或性能测试。Confidence 为适用性判断，不是测得的加速概率。</p>
+</section>
+
+<section id="axes"><h2>Topic Axes · 四个考察面</h2>
+<ul><li>可靠运行与诊断：减少重复长计算，解释资源增长和阶段耗时。</li><li>数据供给与搬运：字段、区域和派生量按产品需要提供。</li><li>科学信息提取：低存储成本保留统计发展、壁面运动和反应流分布信息。</li><li>可追溯使用：让稀疏图片和几何能按真实时间、触发原因和物理定义检索。</li></ul>
+</section>
+
+<section id="ideas"><h2>Ranked Ideas · 排序后的候选</h2>
+<nav aria-label="候选索引"><ol><li><a href="#i1">按产品声明字段与派生量依赖</a></li><li><a href="#i2">切片与壁面的轻量渲染通道</a></li><li><a href="#i3">不推进流场的后处理回放入口</a></li><li><a href="#i4">分块统计发展报告</a></li><li><a href="#i5">壁面与反应流时间演变图册</a></li><li><a href="#i6">图片、几何与事件的离线目录</a></li></ol></nav>
+
+<article id="i1"><h3>1. 按产品声明字段与派生量依赖</h3><dl>
+<dt>Description</dt><dd>每个预设明确需要哪些字段、空间范围和派生量，在同一完整步合并需求。只有流线的产品不需要 q1–q5 或全部速度导数；只绘制 Q 和速度着色时，可考虑设备端形成 Q 后仅提供速度与 Q，而不是将所有梯度传入渲染器。静态坐标可按几何身份复用。</dd>
+<dt>Axis</dt><dd>数据供给与搬运。</dd>
+<dt>Basis</dt><dd><code>direct:</code> <code>src/insitu_session.F90:1105–1111</code> 固定准备 11+14 分量；<code>src/insitu_mesh_adapter.cpp:98–106</code> 再分配并复制；<code>src_gpu/output_fields_gpu.cuf:33–71</code> 已有分量选择和私有诊断 halo。将 R4 的局部优化发展为明确产品契约是新增的架构价值。</dd>
+<dt>Rationale</dt><dd>减少每帧无用计算与复制，也使未来 AIR5 字段增加时不必默认复制全部组分。多个视角或产品可共享同相位数据准备，但不能由此承诺整步加速。</dd>
+<dt>Downsides</dt><dd>必须核对算子、完整步身份、halo 和缓存失效。原生 GPU 派生输出的网格/格式限制仍有效，不能直接推广到 CURVE。减少分量不等于消除整个管线的主机拷贝。</dd>
+<dt>Confidence</dt><dd>90%，需求依据强，性能收益尚未测量。</dd><dt>Complexity</dt><dd>Medium。</dd>
+</dl>
+<figure class="diagram"><svg viewBox="0 0 800 162" role="img" aria-label="从固定整场供给到按产品合并需求的概念对比">
+<rect x="12" y="14" width="236" height="54" rx="5" fill="#eef3f6"/><text x="130" y="36" text-anchor="middle" font-size="16">当前：固定 11 场 + 14 派生量</text><text x="130" y="56" text-anchor="middle" font-size="14">无论当前产品是否需要</text>
+<path d="M258 41H298" fill="none" stroke="#505c63" stroke-width="2"/><path d="M290 35L298 41L290 47" fill="none" stroke="#505c63" stroke-width="2"/>
+<rect x="310" y="14" width="478" height="54" rx="5" fill="#eef3f6"/><text x="549" y="45" text-anchor="middle" font-size="16">整域下载 + 主机派生 + 桥接复制</text>
+<rect x="12" y="90" width="236" height="54" rx="5" fill="#eef6f3"/><text x="130" y="112" text-anchor="middle" font-size="16">候选：产品声明字段与区域</text><text x="130" y="132" text-anchor="middle" font-size="14">同相位合并共同依赖</text>
+<path d="M258 117H298" fill="none" stroke="#14674c" stroke-width="2"/><path d="M290 111L298 117L290 123" fill="none" stroke="#14674c" stroke-width="2"/>
+<rect x="310" y="90" width="478" height="54" rx="5" fill="#eef6f3"/><text x="549" y="121" text-anchor="middle" font-size="16">仅准备所需数据；可共享，但须验证身份</text>
+</svg><figcaption>概念对比，不是已实施的接口或性能结果。</figcaption></figure>
+</article>
+
+<article id="i2"><h3>2. 切片与壁面的轻量渲染通道</h3><dl>
+<dt>Description</dt><dd>为预设平面、剖面和壁面图提供小维度数据通道。只看一个切片时，不先下载三维域再让 ParaView 切片；GPU 或已有选区打包提供实际需要的节点、坐标与字段。后续壁面 Cf、热流图可沿用这一数据供给方式。</dd>
+<dt>Axis</dt><dd>数据供给与搬运。</dd>
+<dt>Basis</dt><dd><code>direct:</code> <code>src/output_archive.F90:439–522</code> 已有预算化 GPU 选区打包与传输；正式渲染仍在 <code>src/insitu_session.F90:1105–1111</code> 处理整个局部域。<code>external:</code> <a href="https://docs.paraview.org/en/v6.0.0/Catalyst/blueprints.html">ParaView Catalyst Blueprint</a> 支持命名 mesh channels，而不是只能接受当前单一整域通道。</dd>
+<dt>Rationale</dt><dd>固定平面节点数通常随二维尺度增长，整场节点数随三维尺度增长。对平板/SBLI 观察尤其有价值，也有机会复用已验证的切片文件输出基础。</dd>
+<dt>Downsides</dt><dd>网格对齐切片与任意物理平面不同，后者需要插值；CURVE 的索引平面也不必是物理平面。法向导数仍可能需要三维邻域。不能用平面速度取代三维流线的积分场。</dd>
+<dt>Confidence</dt><dd>85%，规模优势来自数据维度，具体开销未测。</dd><dt>Complexity</dt><dd>Medium。</dd>
+</dl></article>
+
+<article id="i3"><h3>3. 不推进流场的后处理回放入口</h3><dl>
+<dt>Description</dt><dd>将一个已封存的新 checkpoint 用于明确的只读后处理回放，在冻结场上重复运行同一个预设或比较不同预设，不执行流体/化学推进，不将重复帧计入正式时间统计。优先整理现有恢复与初始帧能力，而非另写流体推进器。</dd>
+<dt>Axis</dt><dd>可靠运行与诊断。</dd>
+<dt>Basis</dt><dd><code>direct:</code> R1 已要求冻结场排除物理演变；<code>src/insitu_session.F90:188–203,1135–1139</code> 已有 native 恢复、显式渲染覆盖及恢复点出图基础，但并不等于已有完整的独立回放产品。</dd>
+<dt>Rationale</dt><dd>能将 256³ 重复诊断中的求解成本移除，区分场演变导致的几何变化与固定输入仍增长的资源问题。相同封存状态也便于比较 CPU/GPU 派生量和显示脚本变更。</dd>
+<dt>Downsides</dt><dd>读取 checkpoint 本身仍有 I/O 和内存成本；该 checkpoint 不自动包含任意时刻的历史场。只读回放、零步结束、统计禁累积和恢复点重绘都需要明确核对，不能假定当前 maxstep 配置已满足这些条件。</dd>
+<dt>Confidence</dt><dd>85%，可复用基础明确，独立入口尚需设计。</dd><dt>Complexity</dt><dd>Medium。</dd>
+</dl></article>
+
+<article id="i4"><h3>4. 分块统计发展报告</h3><dl>
+<dt>Description</dt><dd>在既有时间加权均值、RMS 和应力之上，提供按模拟时间分块的可读报告：列出每块实际覆盖时长、块均值、脉动量和与前块的差异。进一步可选加入少量探针相关时间诊断，以显示哪些块仍高度相关，而不是仅看累计均值趋于平坦。</dd>
+<dt>Axis</dt><dd>科学信息提取。</dd>
+<dt>Basis</dt><dd><code>direct:</code> 计划 <code>1.1</code> 已要求连续块漂移，但明确不自动判定统计定常；<code>src/insitu_velocity_statistics.F90:12–35</code> 当前状态围绕窗口累计量与上一份样本。新增价值是块级可解释报告和后续相关性信息，不是重复实现已有累计均值。</dd>
+<dt>Rationale</dt><dd>服务前驱是否充分发展、是否值得继续计算的判断。块平均漂移与瞬时脉动必须分开，两个量一起呈现比单一累计均值更有用。</dd>
+<dt>Downsides</dt><dd>分块稳定不证明平稳性。相关时间和置信区间需要明确假设、足够记录长度及非均匀采样处理；不能对自适应图片时间直接做普通等间隔 FFT，也不能在没有依据时自动停止生产任务。</dd>
+<dt>Confidence</dt><dd>85%，已有需求明确，统计判据须另行批准。</dd><dt>Complexity</dt><dd>Medium；相关性扩展成本更高。</dd>
+</dl></article>
+
+<article id="i5"><h3>5. 壁面与反应流时间演变图册</h3><dl>
+<dt>Description</dt><dd>补充 IS5 的最终分布和位置序列，用壁面摩擦/热流的流向位置—时间图观察移动与间歇变化；对 AIR5 在选定近壁区域输出 T、Tv、组分的分布或联合分布，揭示均值和 RMS 隐藏的尾部与相关变化。</dd>
+<dt>Axis</dt><dd>科学信息提取。</dd>
+<dt>Basis</dt><dd><code>direct:</code> 计划 <code>1.1, IS5</code> 已要求壁面分布、分离/再附序列和 T/Tv/五组分；<code>1.2.1</code> 明确几何与密度权重不能混用。<code>reasoned:</code> 小区域归约后的图谱和直方图可以保留演变信息，而不常规保存完整三维场。</dd>
+<dt>Rationale</dt><dd>对真实 SBLI 和反应流，比继续增加 Q 图种类更直接回答“分离区如何运动、热流在哪里集中、非平衡状态是否局部化”。</dd>
+<dt>Downsides</dt><dd>要先通过 IS4/IS5 相位、几何与物理定义门槛。三维局部反流不能不加定义压成单一分离长度；AIR5 热流组成不能用单组分公式代替。直方图的权重、范围、越界计数与固定分箱会影响解释。</dd>
+<dt>Confidence</dt><dd>80%，科学用途强，但依赖后续壁面/AIR5 原位准入。</dd><dt>Complexity</dt><dd>High，相比纯 TGV 模板扩展需要更多物理检查。</dd>
+</dl></article>
+
+<article id="i6"><h3>6. 图片、几何与事件的离线目录</h3><dl>
+<dt>Description</dt><dd>建立本地可浏览的产品索引，将实际时间、完整步、触发事件或窗口、视角、字段、Q 阈值、色标、平均窗口覆盖与对应文件关联。目录只是图片/几何的派生索引，不是新的重启附属件，也不是在线控制台。</dd>
+<dt>Axis</dt><dd>可追溯使用。</dd>
+<dt>Basis</dt><dd><code>direct:</code> <code>scripts/insitu/tgv256_demo.py:113–118</code> 目前记录帧身份与结束标志，自动加密后时间间隔不再恒定；计划开头指出已保存几何不能任意重选 Q 阈值或流线种子。<code>external:</code> <a href="https://ascent.readthedocs.io/en/latest/Tutorial_Intro.html">Ascent 官方教程</a>已有 Cinema 图像数据库与事件触发的先例。</dd>
+<dt>Rationale</dt><dd>回答“为什么这一段密集、图上是什么时刻与定义”，同时便于预设多视角离线比较。避免把稀疏或不等间隔帧直接拼接后误认为视频等间隔代表物理时间。</dd>
+<dt>Downsides</dt><dd>需要正确拼接重启段和失败段，避免将未完成帧列为成功。索引不能恢复没保存的场或重做任意 Q 阈值；多视角还会增加渲染开销。事件履历的存储预算必须明确。</dd>
+<dt>Confidence</dt><dd>90%，小型数据即可提高解释性，不依赖全 GPU 重构。</dd><dt>Complexity</dt><dd>Low–Medium。</dd>
+</dl></article>
+</section>
+
+<section id="rejections"><h2>Rejection Summary · 合并、排除与暂缓</h2>
+<p>以下保留每个未独立入选候选的理由。“已有计划”不表示无需完成，“暂缓”也不表示理论上没有收益。39 个原始候选先生成后筛选；6 个入选原始编号分别为 37、3、29、20、39、38。</p>
+<div class="table-wrap"><table><thead><tr><th>原始编号</th><th>候选</th><th>未独立入选原因</th></tr></thead><tbody>
+<tr><td>1</td><td>生命周期与逐阶段耗时报告</td><td>R1/R2 已规定，是必要前置工作，不是新增方向。</td></tr>
+<tr><td>2</td><td>产品字段依赖声明</td><td>并入候选 1 的完整字段/派生量契约。</td></tr>
+<tr><td>4</td><td>渲染派生量转 GPU</td><td>R4 已提出，作为候选 1 的按需供给组成部分，而非另立全 GPU 目标。</td></tr>
+<tr><td>5</td><td>提前估算全部几何资源</td><td>尚无可保证的复杂度上界，不能承诺预先避免任意第三方 OOM。</td></tr>
+<tr><td>6</td><td>依赖/ABI 启动检查</td><td>IS0 已有依赖、UUID 与渲染器准入。</td></tr>
+<tr><td>7</td><td>静态坐标复用</td><td>并入候选 1；单独重列也与 R4 重叠。</td></tr>
+<tr><td>8</td><td>不传 q1–q5</td><td>并入候选 1，由产品要求决定，不能全面删去所有产品需要的数据。</td></tr>
+<tr><td>9</td><td>预设管线/视图初始化一次</td><td>R1 已要求优先复用，不能冒充新可靠性方案。</td></tr>
+<tr><td>10</td><td>JPEG/EPS 共用一次截图</td><td>当前脚本已用截图与 Pillow 转换，不是缺失功能。</td></tr>
+<tr><td>11</td><td>render-only 不写大场</td><td>新输出已分离产品；展示脚本衔接属于 R3，仍需核对但不是新增设计。</td></tr>
+<tr><td>12</td><td>立即删除桥接复制并借用指针</td><td>生命周期和下游引用尚需诊断；过早借用可能损害同相位安全。</td></tr>
+<tr><td>13</td><td>图片/几何独立频率</td><td>已在 AP0–AP3 的产品独立调度设计中批准。</td></tr>
+<tr><td>14</td><td>只提供稀疏平面</td><td>并入候选 2 的小维度渲染通道。</td></tr>
+<tr><td>15</td><td>正式统计也跟事件加密</td><td>违背本轮已确认的固定正式采样频率。</td></tr>
+<tr><td>16</td><td>批量 Q 阈值图库</td><td>是可选模板变化，当前相较数据通道与物理诊断的增益较小。</td></tr>
+<tr><td>17</td><td>自动低分辨率预览</td><td>会引入插值与显示尺度变化；显式预览可另议，不能自动降级掩盖 R1。</td></tr>
+<tr><td>18</td><td>平均速度流线</td><td>已在既定预设与均值字段范围中，不再列新功能。</td></tr>
+<tr><td>19</td><td>区域直方图与联合分布</td><td>并入候选 5 的壁面/反应流图册。</td></tr>
+<tr><td>21</td><td>逐帧物理与配置溯源</td><td>并入候选 6 的离线目录。</td></tr>
+<tr><td>22</td><td>壁面 x-time 图</td><td>并入候选 5。</td></tr>
+<tr><td>23</td><td>守恒残差统计</td><td>已有 AIR5 守恒诊断入口；不能作为全新原位能力重新立项。</td></tr>
+<tr><td>24</td><td>声明式图像配方</td><td>需求声明归候选 1，图像/字段定义索引归候选 6。</td></tr>
+<tr><td>25</td><td>有界标量事件履历</td><td>并入候选 6，不引入过去整场缓存或新恢复文件。</td></tr>
+<tr><td>26</td><td>Cinema 式多视角目录</td><td>并入候选 6，借鉴组织方式，不要求更换后端。</td></tr>
+<tr><td>27</td><td>同状态派生量缓存</td><td>并入候选 1，完整步/几何/算子身份是安全复用前提。</td></tr>
+<tr><td>28</td><td>直接打开异步 Catalyst</td><td>IS8 暂缓；<a href="https://catalyst-in-situ.readthedocs.io/en/latest/async_execution.html">官方实现</a>包含深复制及队满同步跳帧，必须先另定资源、丢帧和续接契约。</td></tr>
+<tr><td>30</td><td>覆盖时长/无效区域提示</td><td>并入候选 5/6 的科学解释与目录信息，已有 duration 不能当作缺失基础量。</td></tr>
+<tr><td>31</td><td>GPU 上只提取几何再下载</td><td>留作 IS8；Q=0 几何未必小，FP64 与跨 MPI 行为还需独立证据。</td></tr>
+<tr><td>32</td><td>立即全 GPU 零拷贝</td><td>EGL 只证明渲染设备，不能据此保证数据处理和 MPI 都接受设备指针。</td></tr>
+<tr><td>33</td><td>长期 pinned 缓冲优化</td><td>可能有价值，但应先用 R2 判断传输占比，并控制生命周期，不能先宣称加速。</td></tr>
+<tr><td>34</td><td>AIR5 不存整场而存分布</td><td>并入候选 5；只是可选分析，不取消已批准的场归档能力。</td></tr>
+<tr><td>35</td><td>每步保存所有三维场</td><td>高 I/O 成本，且新接口已有独立场序列选项，不符合当前低存储后处理目标。</td></tr>
+<tr><td>36</td><td>完整湍流预算与三维谱</td><td>首版明确不包括，导数、项平衡和存储成本高于当前门槛。</td></tr>
+</tbody></table></div>
+<p>外部参考没有证明当前本地依赖已经具备异步或设备直接管线；不据此安装新库、改变同步策略或默许跳帧。</p>
+</section>
+
+<section id="sources"><h2>Sources &amp; References</h2>
+<ul>
+<li><a href="../../documents/ASTR_INSITU_POSTPROCESSING_PLAN.md">原位计划</a>：1.1、1.2.1、1.5.2–1.5.3、5.1 与 IS4–IS8。</li>
+<li><a href="../../documents/ASTR_OUTPUT_RESTART_REDESIGN_PLAN.md">输出与重启计划</a>：10.78–10.79，当前默认与有界准入。</li>
+<li><a href="../../src/insitu_session.F90">insitu_session.F90</a>：188–203、1090–1111、1135–1139，恢复/完整步渲染。</li>
+<li><a href="../../src/insitu_mesh_adapter.cpp">insitu_mesh_adapter.cpp</a>：98–143，持久桥接存储与字段。</li>
+<li><a href="../../src_gpu/output_fields_gpu.cuf">output_fields_gpu.cuf</a>：12–71，可选分量与私有诊断工作区。</li>
+<li><a href="../../src/output_archive.F90">output_archive.F90</a>：439–522，预算化 GPU 输出打包。</li>
+<li><a href="../../src/insitu_velocity_statistics.F90">insitu_velocity_statistics.F90</a>：12–35，窗口累计状态。</li>
+<li><a href="../../scripts/insitu/tgv256_demo.py">tgv256_demo.py</a>：40–118，逐帧管线/视图创建、截图转换和帧目录。</li>
+<li><a href="https://ascent.readthedocs.io/en/latest/Tutorial_Intro.html">Ascent 官方教程</a>：选字段提取、事件触发和 Cinema 图像数据库，作为相邻设计参考。</li>
+<li><a href="https://docs.paraview.org/en/v6.0.0/Catalyst/blueprints.html">ParaView Catalyst Blueprint 6.0</a>：命名 channels 与时间/字段描述。</li>
+<li><a href="https://catalyst-in-situ.readthedocs.io/en/latest/async_execution.html">Catalyst 异步执行</a>：深复制、MPI 同步队列与跳帧，说明异步不是零拷贝。</li>
+</ul></section>
+<footer>Composed 2026-10-04T17:18:09+08:00 by ce-ideate from 当前 ASTR_INSITU_POSTPROCESSING_PLAN.md 与本地源码。仅为候选评估，未修改原位实施计划或求解器。</footer>
+</main></body></html>
