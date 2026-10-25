@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CP8/CP9 local GPU timing; no rendering, checkpoint or field dumps."""
+"""CP8/CP9 local GPU runs; optional complete checkpoints for accuracy studies."""
 import argparse
 import hashlib
 import json
@@ -16,6 +16,44 @@ from prepare_m12_local_case import prepare
 from run_compact_flatplate import configure, GRID
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def output_configuration(checkpoint_interval=0):
+    if not checkpoint_interval:
+        return '&output\n host_budget_bytes=67108864\n/\n&checkpoint\n/\n&volume\n/\n&slices\n/\n'
+    return f"""&output
+ directory='outdat/output', exact_restart=t,
+ host_budget_bytes=68719476736, device_budget_bytes=68719476736,
+ buffer_bytes=67108864
+/
+&checkpoint
+ enabled=t, mode='steps', interval_steps={checkpoint_interval}, keep=2, initial_frame=f
+/
+&volume
+ enabled=f
+/
+&slices
+ enabled=f
+/
+"""
+
+
+def retained_checkpoints(case, steps, interval):
+    scheduled = list(range(interval, steps+1, interval))
+    if not scheduled or scheduled[-1]!=steps:
+        scheduled.append(steps)
+    expected = [f'step{step:012d}' for step in scheduled[-2:]]
+    root = case/'outdat/output/checkpoints'
+    batches = sorted(path.name for path in root.iterdir() if path.is_dir())
+    if batches!=expected:
+        raise ValueError(f'checkpoint retention differs: {batches}, expected {expected}')
+    # Publication markers follow successful file closes; do not rescan field payloads.
+    for name in batches:
+        if not all((root/name/filename).is_file() for filename in ('state.h5','COMPLETE')):
+            raise ValueError(f'checkpoint publication incomplete: {name}')
+    if not (case/'outdat/output/resources/geometry.h5').is_file():
+        raise ValueError('complete checkpoint geometry resource missing')
+    return [str(root/name) for name in batches]
 
 
 def read_rank_output(case, ranks):
@@ -122,6 +160,8 @@ def main():
     parser.add_argument('--buffer-output', action='store_true')
     parser.add_argument('--tgv-conservation', action='store_true')
     parser.add_argument('--listing-interval', type=int, help='lightweight progress/CFL interval')
+    parser.add_argument('--checkpoint-interval', type=int, default=0,
+                        help='complete-step checkpoint interval; retain two, default off')
     args = parser.parse_args()
     if not 0<=args.warmup<args.steps:
         parser.error('require 0 <= warmup < steps')
@@ -129,6 +169,8 @@ def main():
         parser.error('--crashfix is scoped to the CP9 profile plate')
     if args.statistics_interval<0:
         parser.error('--statistics-interval must be nonnegative')
+    if args.checkpoint_interval<0:
+        parser.error('--checkpoint-interval must be nonnegative')
     if args.tgv_conservation and (args.case!='tgv' or args.statistics_interval==0):
         parser.error('--tgv-conservation requires TGV statistics')
     if args.listing_interval is not None and args.listing_interval<1:
@@ -161,8 +203,9 @@ def main():
         metadata.update(deltat=dt,crashfix=args.crashfix)
         (case/'fixture.json').write_text(json.dumps(metadata,indent=2)+'\n')
         primary='datin/input.dat'
-    (case/'datin/input.output').write_text(
-        '&output\n host_budget_bytes=67108864\n/\n&checkpoint\n/\n&volume\n/\n&slices\n/\n')
+    (case/'datin/input.output').write_text(output_configuration(args.checkpoint_interval))
+    if args.checkpoint_interval:
+        (case/'outdat/output').mkdir(parents=True)
     if args.buffer_output:
         controller=case/'datin/controller'
         lines=controller.read_text().splitlines()
@@ -187,7 +230,7 @@ def main():
         OMPI_MCA_coll='^hcoll,ucc,cuda',OMPI_MCA_opal_cuda_support='0')
     if args.case=='plate':
         env['ASTR_WALL_BLOWING_MODE']='legacy_random'
-    if args.buffer_output:
+    if args.buffer_output and not args.checkpoint_interval:
         env['ASTR_GPU_BENCHMARK_NO_FIELD_IO']='1'
     if args.tgv_conservation:
         env['ASTR_TGV_CONSERVATION']='1'
@@ -246,6 +289,9 @@ def main():
             r'COMPACT_(DERIVATIVE|FILTER)_PACKED_DEVICE_BYTES=(\d+)',text)},
         profiled=args.nsys,rank_rk_window_seconds=sums,rk_seconds_per_step=cost,
         executable_sha256=hashlib.file_digest(exe.open('rb'),'sha256').hexdigest())
+    report['checkpoint_interval']=args.checkpoint_interval
+    if args.checkpoint_interval:
+        report['retained_checkpoints']=retained_checkpoints(case,args.steps,args.checkpoint_interval)
     report.update(crashfix_summary(text))
     if args.preflight:
         report['sampled_preflight_resources'] = json.loads((case/'resources.json').read_text())

@@ -7,6 +7,9 @@ import numpy as np
 
 from plot_tgv_diagnostics import save_figure  # Also applies the shared scientific plotting style.
 
+# MathText keeps the scientific style without an external TeX font dependency.
+plt.rcParams['text.usetex'] = False
+
 
 ROOT = Path(__file__).resolve().parents[2]
 INPUT_DIR = ROOT/'tests/gpu_validation/out/native_fp32_tgv_long_20261021'

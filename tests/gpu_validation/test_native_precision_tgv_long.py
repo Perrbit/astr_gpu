@@ -4,6 +4,29 @@ import numpy as np
 import pytest
 
 from run_native_precision_tgv_long import clock_at_steps, compare_curves
+from run_compact_execution import output_configuration,retained_checkpoints
+
+
+def test_complete_checkpoints_are_opt_in_and_not_limited_by_old_timing_budget():
+    disabled=output_configuration()
+    assert 'enabled=t' not in disabled
+    enabled=output_configuration(5000)
+    assert 'exact_restart=t' in enabled and 'keep=2' in enabled
+    assert 'interval_steps=5000' in enabled and 'initial_frame=f' in enabled
+    assert 'host_budget_bytes=68719476736' in enabled
+
+
+def test_retention_checks_only_the_last_two_complete_batches(tmp_path):
+    root=tmp_path/'outdat/output'
+    (root/'resources').mkdir(parents=True)
+    (root/'resources/geometry.h5').touch()
+    for step in (35000,40000):
+        batch=root/'checkpoints'/f'step{step:012d}'
+        batch.mkdir(parents=True)
+        for name in ('state.h5','COMPLETE'):
+            (batch/name).touch()
+    result=retained_checkpoints(tmp_path,40000,5000)
+    assert [p.rsplit('/',1)[-1] for p in result]==['step000000035000','step000000040000']
 
 
 def test_native_time_is_repeated_source_kind_addition():

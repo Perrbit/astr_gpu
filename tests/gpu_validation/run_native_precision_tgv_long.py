@@ -10,7 +10,7 @@ import sys
 import numpy as np
 
 from compare_tgv_flowstate import read_flowstate
-from run_compact_execution import read_rank_output
+from run_compact_execution import read_rank_output,retained_checkpoints
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -61,7 +61,9 @@ def read_case(case, precision, steps, interval):
     final_clock, native_dt = map(float, clocks[0][1:])
     if final_clock != clock_at_steps([steps], DT, precision)[0]:
         raise ValueError('Final native clock is inconsistent')
-    if list(case.rglob('*.h5')) or list(case.rglob('*.jpeg')) or list(case.rglob('*.bin')):
+    checkpoint_interval=summary.get('checkpoint_interval',0)
+    checkpoints=retained_checkpoints(case,steps,checkpoint_interval) if checkpoint_interval else []
+    if not checkpoint_interval and (list(case.rglob('*.h5')) or list(case.rglob('*.jpeg')) or list(case.rglob('*.bin'))):
         raise ValueError('Statistics-only long TGV emitted a field or render file')
     nominal = sample_steps*DT
     report = dict(precision=precision, steps=steps, native_dt=native_dt,
@@ -70,6 +72,7 @@ def read_case(case, precision, steps, interval):
         final_native_dt_accumulation_drift=final_clock-steps*native_dt,
         diagnostic_window_nominal=[float(nominal[0]), float(nominal[-1])],
         diagnostic_phase='prepared/filter-before-RK, existing flowstate phase',
+        checkpoint_interval=checkpoint_interval,retained_checkpoints=checkpoints,
         sampled_peaks={name: dict(value=float(flow[:, column+2].max()),
             step=int(sample_steps[flow[:, column+2].argmax()]),
             nominal_time=float(nominal[flow[:, column+2].argmax()]),
@@ -161,9 +164,12 @@ def main():
     parser.add_argument('--steps', type=int, default=40000)
     parser.add_argument('--grid', default='256,256,256')
     parser.add_argument('--interval', type=int, default=40)
+    parser.add_argument('--checkpoint-interval', type=int, default=0)
     args = parser.parse_args()
     if args.steps <= args.interval or args.interval <= 0:
         parser.error('require steps > statistics interval > 0')
+    if args.checkpoint_interval<0:
+        parser.error('--checkpoint-interval must be nonnegative')
     root = args.out.resolve()
     if args.mode == 'analyze':
         analyze(root, args.steps, args.interval)
@@ -174,6 +180,8 @@ def main():
     spec = dict(steps=args.steps, interval=args.interval, grid_intervals=list(map(int, args.grid.split(','))),
                 topology=[2, 1, 1], deltat=DT, filter='t',
                 production_matrix=args.steps==40000 and args.grid=='256,256,256' and args.interval==40)
+    if args.checkpoint_interval:
+        spec.update(checkpoint_interval=args.checkpoint_interval,checkpoint_keep=2,exact_restart=True)
     path = root/'specification.json'
     if path.exists() and json.loads(path.read_text()) != spec:
         raise ValueError('Existing long TGV group has a different specification')
@@ -190,6 +198,7 @@ def main():
                 '--grid', args.grid, '--deltat', str(DT), '--topology', '2,1,1',
                 '--steps', str(args.steps), '--warmup', '0', '--statistics-interval', str(args.interval),
                 '--listing-interval', str(max(args.interval, 1000)), '--buffer-output', '--tgv-conservation', '--state-check',
+                '--checkpoint-interval', str(args.checkpoint_interval),
                 '--compact-sync', 'explicit', '--transport', 'pinned', '--workspace', 'scalar'], check=True)
             _, _, record = read_case(root/name, precision, args.steps, args.interval)
             (root/(name+'_diagnostics.json')).write_text(json.dumps(record, indent=2)+'\n')

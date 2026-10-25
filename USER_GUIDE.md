@@ -134,6 +134,9 @@ user_define_module/userdefine.F90。关闭测试不关闭 CUDA-aware MPI 检测�
 
 原生 FP32 正在 feature/gpu_dev 分支验收，当前分阶段证据见
 [原生精度验证记录](documents/ASTR_NATIVE_FP32_RESULTS.md)。不能将构建通过视为全部功能已验收。
+本地40000步TGV已完成[性能与精度评估](documents/ASTR_NATIVE_FP32_VALIDATION_REPORT.md)：
+显式FP32拟涡能峰值相对FP64偏差约0.176%，紧致FP32则约31.049%，且后者质量/总能量漂移约22%。
+当前严格FP32紧致路径不推荐用于长时生产；这些结果不改变默认FP64或现有FP64验收。
 两种精度共享源码，使用独立构建目录和可执行程序；不在运行时切换主状态的精度。
 在第2.2节配置命令中加入 `-DASTR_NUMERICAL_PRECISION=fp32`，并将构建目录换为
 `build_fp32`，即可选择FP32。省略该参数或显式设为`fp64`均保留FP64。
