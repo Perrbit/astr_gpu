@@ -36,6 +36,10 @@ _Avoid_: Compact filter, tridiagonal filter solve
 A compact spatial operator whose MPI interfaces are closed using known field values, leaving each rank with an independent local line system. It is not generally the same discrete operator as a globally coupled compact system.
 _Avoid_: Globally coupled compact operator, calling every local array endpoint a physical boundary
 
+**Eighth-order tridiagonal compact derivative**:
+A centered first-derivative approximation with eighth-order Taylor accuracy on a uniform computational mesh, coupling three adjacent derivative unknowns with a radius-three function-value stencil. This order describes the spatial relation, not the accuracy of physical boundary closures, filtering, or time integration.
+_Avoid_: Eighth-order time integration, assuming eighth-order physical boundary accuracy from the interior relation
+
 **Globally coupled compact operator**:
 A compact spatial operator whose interface unknowns remain coupled across MPI partitions within one global line system. Physical boundary closures and MPI partition interfaces are distinct parts of this operator.
 _Avoid_: Independent rank-local solves, identifying GPU calculation tiles with MPI partitions
