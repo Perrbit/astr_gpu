@@ -21,10 +21,11 @@ contains
     implicit none
     real(real_kind),allocatable :: state(:,:,:,:),density(:,:,:),velocity(:,:,:,:), &
                           pressure(:,:,:),temperature(:,:,:),metric(:,:,:,:,:), &
-                          jacobian(:,:,:),rhs(:,:,:,:),flux(:,:,:)
+                          jacobian(:,:,:),rhs(:,:,:,:),flux(:,:,:),checked_state(:,:,:,:)
     real(real_kind) :: error,global_error,expected(5),u,v,w,r,p,reported,target_p,css,rate,enthalpy
+    real(real_kind) :: qtarget(5),delta(5),plus(5),minus(5),normal_derivative(5),back_rate,plus_rate,local_p
     integer :: i,j,k,m,istat,nblocks,ierr,device_count,axis,apply_right
-    logical :: inlet_mode,top_mode,outlet_mode
+    logical :: inlet_mode,top_mode,outlet_mode,backflow_mode
     character(len=32) :: mode
     type(dim3) :: block,grid
 
@@ -67,6 +68,7 @@ contains
     inlet_mode=index(trim(mode),'inlet_')==1
     top_mode=index(trim(mode),'top_')==1
     outlet_mode=index(trim(mode),'out_')==1
+    backflow_mode=index(trim(mode),'out_backflow')==1
     if(inlet_mode .or. outlet_mode .or. top_mode) target_p=p-.01e0_real_kind
     if(index(trim(mode),'_uniform')>0) target_p=p
     select case(trim(mode))
@@ -80,8 +82,18 @@ contains
       u=0.e0_real_kind
     case('inlet_out','inlet_out_gradient')
       u=-2.e0_real_kind
-    case('out_backflow')
-      u=-.2e0_real_kind
+    case('out_backflow','out_backflow_uniform','out_backflow_gradient','out_backflow_pout')
+      u=-.2e0_real_kind; v=.1e0_real_kind; w=-.05e0_real_kind
+    case('out_backflow_sup')
+      u=-2.e0_real_kind
+    case('out_backflow_nearzero')
+      u=-1.e-9_real_kind
+    case('out_backflow_sonic')
+      u=-1.e0_real_kind
+    case('out_backflow_sonic_in')
+      u=-1.e0_real_kind-1.e-9_real_kind
+    case('out_backflow_sonic_out')
+      u=-1.e0_real_kind+1.e-9_real_kind
     case('out_tangent')
       u=.2e0_real_kind; v=10.e0_real_kind
     case('top_sub','top_uniform')
@@ -99,6 +111,11 @@ contains
     end select
     npdcj=3; npdck=3; xmin=0.e0_real_kind; xmax=8.e0_real_kind
     roinf=1.e0_real_kind; uinf=u; vinf=v; winf=w; pinf=target_p; pout=1.e0_real_kind
+    if(backflow_mode.and.trim(mode)/='out_backflow_uniform') then
+      uinf=.4e0_real_kind; vinf=.03e0_real_kind; winf=.02e0_real_kind
+    endif
+    if(trim(mode)=='out_backflow_pout') pout=.8e0_real_kind
+    target_p=pinf*pout
     if(trim(mode)=='owner') then
       u=.5e0_real_kind
       if(mpirank<mpisize-1) u=10.e0_real_kind
@@ -119,7 +136,8 @@ contains
       if(axis==3) r=r+.01e0_real_kind*k
       if(trim(mode)=='joint') r=r+.001e0_real_kind*(i+im*mpirank)+.002e0_real_kind*j+.003e0_real_kind*k
       density(i,j,k)=r; pressure(i,j,k)=p
-      if(trim(mode)=='out_sup_gradient' .or. trim(mode)=='inlet_out_gradient') &
+      if(trim(mode)=='out_sup_gradient' .or. trim(mode)=='inlet_out_gradient' .or. &
+         trim(mode)=='out_backflow_gradient') &
         pressure(i,j,k)=p+.001e0_real_kind*(i+im*mpirank)
       if(trim(mode)=='top_sup_gradient') pressure(i,j,k)=p+.001e0_real_kind*j
       temperature(i,j,k)=gamma*pressure(i,j,k)/r
@@ -161,16 +179,44 @@ contains
         if(mpirank==0) error=maxval(abs(rhs(0,jm/2,km/2,:)-expected))
       elseif(outlet_mode) then
         call apply_nscbc_x_rhs_gpu(100.e0_real_kind,100.e0_real_kind)
-        if(trim(mode)=='out_backflow') error stop 'Expected bc22 backflow rejection did not occur'
+        local_p=pressure(im,jm/2,km/2)
+        r=density(im,jm/2,km/2)
+        css=sqrt(gamma*local_p/r)
+        enthalpy=css*css/(gamma-1.e0_real_kind)+.5e0_real_kind*(u*u+v*v+w*w)
         if(u<css) then
-          rate=3.75e0_real_kind*(1.e0_real_kind-(u/css)**2)*css/8.e0_real_kind
-          expected=-rate*(p-target_p)/css**2*[1.e0_real_kind,u-css,v,w,enthalpy-css*u]
+          rate=3.75e0_real_kind*max(0.e0_real_kind,1.e0_real_kind-(u/css)**2)*css/8.e0_real_kind
+          expected=-rate*(local_p-target_p)/css**2*[1.e0_real_kind,u-css,v,w,enthalpy-css*u]
+        endif
+        if(backflow_mode) then
+          qtarget=[roinf*pout,roinf*pout*uinf,roinf*pout*vinf,roinf*pout*winf, &
+            target_p/(gamma-1.e0_real_kind)+.5e0_real_kind*roinf*pout*(uinf*uinf+vinf*vinf+winf*winf)]
+          delta=state(im,jm/2,km/2,:)-qtarget
+          call acoustic_projections(delta,r,u,v,w,css,gamma,plus,minus)
+          back_rate=.25e0_real_kind*max(-u,0.e0_real_kind)/8.e0_real_kind
+          plus_rate=.25e0_real_kind*max(-u-css,0.e0_real_kind)/8.e0_real_kind
+          expected=expected-back_rate*(delta-plus)-plus_rate*plus
+          if(trim(mode)=='out_backflow_gradient') then
+            normal_derivative=.001e0_real_kind*[0.e0_real_kind,1.e0_real_kind,0.e0_real_kind, &
+              0.e0_real_kind,gamma*u/(gamma-1.e0_real_kind)]
+            call acoustic_projections(normal_derivative,r,u,v,w,css,gamma,plus,minus)
+            expected=expected-plus
+          endif
         endif
         if(trim(mode)=='out_sup_gradient') &
           expected=-.001e0_real_kind*[0.e0_real_kind,1.e0_real_kind,0.e0_real_kind,0.e0_real_kind,gamma*u/(gamma-1.e0_real_kind)]
         rhs=qrhs_d
         error=0.e0_real_kind
-        if(mpirank==mpisize-1) error=maxval(abs(rhs(im,jm/2,km/2,:)-expected))
+        if(mpirank==mpisize-1) then
+          do m=1,5
+            error=max(error,maxval(abs(rhs(im,:,:,m)-expected(m))))
+          enddo
+        else
+          error=maxval(abs(rhs(im,:,:,:)))
+        endif
+        allocate(checked_state,mold=state)
+        checked_state=q_d
+        if(any(checked_state/=state)) error=huge(1.e0_real_kind)
+        deallocate(checked_state)
       else
         nblocks=((im+1)*(km+1)+255)/256
         r=1.e0_real_kind
@@ -202,7 +248,7 @@ contains
       apply_right=merge(1,0,mpirank==mpisize-1)
       nblocks=((jm+1)*(km+1)+255)/256
       call nscbc_outflow_x_rhs_kernel<<<nblocks,256>>>(im,jm,km,hm,npdcj,3,gamma,mach, &
-        0.e0_real_kind,8.e0_real_kind,p,1.e0_real_kind,0.e0_real_kind,apply_right)
+        0.e0_real_kind,8.e0_real_kind,roinf,uinf,vinf,winf,p,1.e0_real_kind,0.e0_real_kind,apply_right)
       call sync_after_kernel('NSCBC joint x face')
       rate=p/(gamma-1.e0_real_kind)+.5e0_real_kind*(u*u+v*v+w*w)
       nblocks=((im+1)*(km+1)+255)/256
@@ -220,7 +266,7 @@ contains
     elseif(trim(mode)=='sign' .or. axis/=0) then
       nblocks=((jm+1)*(km+1)+255)/256
       call nscbc_outflow_x_rhs_kernel<<<nblocks,256>>>(im,jm,km,hm,3,3,gamma,mach, &
-                                                       0.e0_real_kind,8.e0_real_kind,p,1.e0_real_kind,4.e0_real_kind,1)
+        0.e0_real_kind,8.e0_real_kind,roinf,uinf,vinf,winf,p,1.e0_real_kind,4.e0_real_kind,1)
       call sync_after_kernel('NSCBC physics outflow')
       rhs=qrhs_d
       if(axis==0) then
@@ -266,4 +312,17 @@ contains
     if(mpirank==0) print*,'NSCBC_PHYSICS_PASS ',trim(mode)
     deallocate(q_d,rho_d,vel_d,prs_d,tmp_d,qrhs_d,jacob_d,dxi_d,flux_work_d,x_d)
   end subroutine check_nscbc_physics_gpu
+
+  subroutine acoustic_projections(delta,r,u,v,w,a,gamma,plus,minus)
+    real(real_kind),intent(in) :: delta(5),r,u,v,w,a,gamma
+    real(real_kind),intent(out) :: plus(5),minus(5)
+    real(real_kind) :: dp,du,h
+    ! Independent primitive-variable projectors, not the production eigenmatrix.
+    du=(delta(2)-u*delta(1))/r
+    dp=(gamma-1.e0_real_kind)*(delta(5)-u*delta(2)-v*delta(3)-w*delta(4)+ &
+      .5e0_real_kind*(u*u+v*v+w*w)*delta(1))
+    h=a*a/(gamma-1.e0_real_kind)+.5e0_real_kind*(u*u+v*v+w*w)
+    plus=(dp+r*a*du)/(2.e0_real_kind*a*a)*[1.e0_real_kind,u+a,v,w,h+a*u]
+    minus=(dp-r*a*du)/(2.e0_real_kind*a*a)*[1.e0_real_kind,u-a,v,w,h-a*u]
+  end subroutine acoustic_projections
 end module nscbc_physics_probe

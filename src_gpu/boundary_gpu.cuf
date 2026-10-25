@@ -19,7 +19,6 @@ module boundary_gpu
   logical,save :: s1_bl_profile_ready = .false.
   logical,save :: nscbc52_prediff_rhs_ready = .false.
   integer,device :: dynamic_inflow_error_d
-  integer,device :: nscbc_outflow_error_d
   real(real_kind),device :: wall_blowing_amplitude_d,wall_blowing_beta_d,        &
                     wall_blowing_xa_d,                                  &
                     wall_blowing_xb_d,wall_blowing_xc_d,wall_uinf_d,    &
@@ -1684,15 +1683,15 @@ contains
     qrhs_d(0,j,k,:) = qrhs_d(0,j,k,:) - decs(:)
   end subroutine nscbc_inflow_x_rhs_kernel
 
-  attributes(global) subroutine nscbc_outflow_x_rhs_kernel(im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax,pinf,pout, &
-                                                            gmachmax2,apply_right)
-    use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d,qrhs_d,jacob_d,dxi_d
+  attributes(global) subroutine nscbc_outflow_x_rhs_kernel(im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax, &
+                                                            roinf,uinf,vinf,winf,pinf,pout,gmachmax2,apply_right)
+    use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,qrhs_d,jacob_d,dxi_d
     implicit none
     integer,value :: im,jm,km,hm,npdcj,npdck,apply_right
-    real(real_kind),value :: gamma,mach,xmin,xmax,pinf,pout,gmachmax2
-    integer :: id,j,k,ii,m,n,ignored
+    real(real_kind),value :: gamma,mach,xmin,xmax,roinf,uinf,vinf,winf,pinf,pout,gmachmax2
+    integer :: id,j,k,ii,m,n
     real(real_kind) :: pnor(5,5),pinv(5,5),ecs(0:2,5),decs(5),rest(5),lodi(5),lodi1(5), &
-               ddi(3),flux(5),css,kinout,normal_speed,norm,wave_tolerance
+               ddi(3),flux(5),css,kinout,normal_speed,norm,wave_tolerance,back_rate,plus_rate,qtarget(5),dq(5)
 
     if(apply_right == 0) return
     id = (blockIdx%x-1)*blockDim%x + threadIdx%x - 1
@@ -1725,14 +1724,26 @@ contains
     norm=sqrt(sum(ddi(:)*ddi(:)))
     normal_speed=sum(ddi(:)*vel_d(im,j,k,:))/norm
     wave_tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(normal_speed))
-    if(normal_speed < -wave_tolerance) then
-      ignored=atomicmax(nscbc_outflow_error_d,1)
-      return
-    endif
     if(normal_speed-css < -wave_tolerance) then
       kinout=3.75e0_real_kind*max(0.e0_real_kind,1.e0_real_kind-(normal_speed/css)**2)*css/(xmax-xmin)
       ! R5 has pressure amplitude rho*a/sqrt(2): dp/dt=-K*(p-p_target).
       lodi(5)=kinout*((prs_d(im,j,k)-pinf*pout)/rho_d(im,j,k)/css)*sqrt(2.e0_real_kind)
+    endif
+    if(normal_speed < -wave_tolerance) then
+      ! Keep T_inf at the outlet pressure: rho_b = rho_inf*pout.
+      qtarget=[roinf*pout,roinf*pout*uinf,roinf*pout*vinf,roinf*pout*winf, &
+        pinf*pout/(gamma-1.e0_real_kind)+0.5e0_real_kind*roinf*pout*(uinf*uinf+vinf*vinf+winf*winf)]
+      dq(:)=q_d(im,j,k,1:5)-qtarget(:)
+      ! Incoming convective recovery vanishes continuously at zero mass inflow.
+      back_rate=0.25e0_real_kind*(-normal_speed)/(xmax-xmin)
+      do m=1,3
+        lodi(m)=back_rate*sum(pinv(m,:)*dq(:))
+      enddo
+      lodi(5)=lodi(5)+back_rate*sum(pinv(5,:)*dq(:))
+      if(normal_speed+css < -wave_tolerance) then
+        plus_rate=0.25e0_real_kind*(-normal_speed-css)/(xmax-xmin)
+        lodi(4)=plus_rate*sum(pinv(4,:)*dq(:))
+      endif
     endif
     do m=1,5
       lodi1(m) = sum(pnor(m,:)*lodi(:))*jacob_d(im,j,k)
@@ -1758,15 +1769,13 @@ contains
     call nscbc_inflow_x_rhs_kernel<<<grid,block>>>(im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax, &
          roinf,uinf,vinf,winf,pinf,gmachmax2_in,apply_left)
     call sync_after_kernel('nscbc_inflow_x_rhs_kernel')
-    nscbc_outflow_error_d=0
     call nscbc_outflow_x_rhs_kernel<<<grid,block>>>(im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax, &
-         pinf,pout,gmachmax2_out,apply_right)
+         roinf,uinf,vinf,winf,pinf,pout,gmachmax2_out,apply_right)
     call sync_after_kernel('nscbc_outflow_x_rhs_kernel')
-    call check_nscbc_outflow_error_gpu()
   end subroutine apply_nscbc_x_rhs_gpu
 
   subroutine apply_nscbc_outflow_x_rhs_gpu()
-    use commvar, only: im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax,pinf
+    use commvar, only: im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax,roinf,uinf,vinf,winf,pinf
     use bc, only: pout
     use gpu_check, only: sync_after_kernel
     implicit none
@@ -1777,27 +1786,10 @@ contains
     block=dim3(256,1,1)
     n=(jm+1)*(km+1)
     grid=dim3((n+block%x-1)/block%x,1,1)
-    nscbc_outflow_error_d=0
     call nscbc_outflow_x_rhs_kernel<<<grid,block>>>(im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax, &
-         pinf,pout,0.e0_real_kind,apply_right)
+         roinf,uinf,vinf,winf,pinf,pout,0.e0_real_kind,apply_right)
     call sync_after_kernel('nscbc_outflow_x_rhs_kernel_profile')
-    call check_nscbc_outflow_error_gpu()
   end subroutine apply_nscbc_outflow_x_rhs_gpu
-
-  subroutine check_nscbc_outflow_error_gpu()
-    use mpi
-    use parallel, only: mpirank
-    implicit none
-    integer :: local_error,global_error,ierr,ignored
-
-    local_error=nscbc_outflow_error_d
-    call MPI_Allreduce(local_error,global_error,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
-    if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,ignored)
-    if(global_error/=0) then
-      if(mpirank==0) print*,'NSCBC bc22 backflow requires a full target state; pressure-only exit rejected'
-      call MPI_Abort(MPI_COMM_WORLD,1,ignored)
-    endif
-  end subroutine check_nscbc_outflow_error_gpu
 
   subroutine apply_nscbc_inflow_x_rhs_gpu(gmachmax2_in)
     use commvar, only: im,jm,km,hm,npdcj,npdck,gamma,mach,xmin,xmax,roinf,uinf,vinf,winf,pinf

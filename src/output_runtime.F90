@@ -1194,8 +1194,8 @@ contains
     integer(int64) :: saved(8),interval,saved_last,origin_step
     real(real_kind) :: dt_interval,origin_time,schedule_period
     integer :: unit,err,closed,saved_counter,status,ierr
-    logical :: saved_pending,saved_initial,ok,same_schedule
-    real(real_kind) :: driver(6),root_driver(6)
+    logical :: saved_pending,saved_initial,ok,same_schedule,backflow_outlet
+    real(real_kind) :: driver(6),root_driver(6),outlet_reference(6)
     character(128) :: driver_config(3),saved_driver_config(3),root_config(3)
     type(sample_schedule) :: restored_schedule
     character(8) :: magic
@@ -1248,6 +1248,22 @@ contains
     if(trim(flowtype)=='bl') then
       call get_environment_variable('ASTR_PROFILE_INFLOW_MODE',driver_config(3),status=status)
       call check(status==0.or.status==1,'profile inflow mode is truncated')
+    endif
+    backflow_outlet=use_gpu.and.numq==5.and.bctype(2)==22.and.trim(flowtype)/='channel'
+    if(backflow_outlet) then
+      block
+        use commvar, only: roinf,uinf,vinf,winf,pinf,gamma,xmin,xmax
+        use bc, only: pout
+        ! These slots otherwise hold only channel driver history. No new sidecar.
+        outlet_reference=[roinf*pout,roinf*pout*uinf,roinf*pout*vinf,roinf*pout*winf, &
+          pinf*pout/(gamma-1.e0_real_kind)+0.5e0_real_kind*roinf*pout*(uinf*uinf+vinf*vinf+winf*winf),xmax-xmin]
+      end block
+      driver_config(1)='bc22-backflow-v1'
+      driver=outlet_reference
+      root_driver=driver
+      call MPI_Bcast(root_driver,6,mpi_real_type,0,MPI_COMM_WORLD,ierr)
+      call check(ierr==MPI_SUCCESS.and.all(real_to_word(root_driver)==real_to_word(driver)), &
+        'bc22 reference differs between ranks')
     endif
     root_config=driver_config
     call MPI_Bcast(root_config,384,MPI_CHARACTER,0,MPI_COMM_WORLD,ierr)
@@ -1303,7 +1319,16 @@ contains
         'numerical/controller contract mismatch')
       call check((magic=='ASTROC06'.or.magic=='ASTROC09').eqv.(expected_magic=='ASTROC09'), &
         'random wall checkpoint RNG mode/version mismatch')
-      call check(all(saved_driver_config==driver_config),'boundary/driver configuration mismatch')
+      if(backflow_outlet.and..not.options%exact_restart) then
+        call check(all(saved_driver_config(2:)==driver_config(2:)),'boundary/driver configuration mismatch')
+        if(mpirank==0.and.(saved_driver_config(1)/=driver_config(1).or. &
+           any(real_to_word(driver)/=real_to_word(outlet_reference)))) write(*,'(a)') &
+          'ASTR_OUTPUT non-exact bc22 restart uses current constant reference and backflow algorithm'
+      else
+        call check(all(saved_driver_config==driver_config),'boundary/driver configuration mismatch')
+        if(backflow_outlet) call check(all(real_to_word(driver)==real_to_word(outlet_reference)), &
+          'exact bc22 reference mismatch; select exact_restart=f for a changed background')
+      endif
       if(trim(flowtype)=='channel') then
         call channel_driver_state(driver,.false.,ok)
         call check(ok,'invalid restored channel driver state')

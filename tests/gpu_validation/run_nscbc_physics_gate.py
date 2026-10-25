@@ -18,7 +18,10 @@ MODES = ('sign', 'owner', 'transverse_y', 'transverse_z', 'inlet_entropy',
          'inlet_sup', 'inlet_sub', 'inlet_out', 'out_sub', 'out_sup',
          'out_tangent', 'top_sub', 'top_sup', 'top_in', 'out_sup_gradient',
          'inlet_out_gradient', 'top_sup_gradient', 'inlet_reverse', 'inlet_grazing',
-         'out_grazing', 'top_subin', 'top_grazing', 'inlet_uniform', 'out_uniform', 'top_uniform', 'joint')
+         'out_grazing', 'top_subin', 'top_grazing', 'inlet_uniform', 'out_uniform', 'top_uniform', 'joint',
+         'out_backflow', 'out_backflow_uniform', 'out_backflow_sup', 'out_backflow_gradient',
+         'out_backflow_pout', 'out_backflow_nearzero', 'out_backflow_sonic',
+         'out_backflow_sonic_in', 'out_backflow_sonic_out')
 
 
 def short_case_gate(args, out, env, report):
@@ -83,20 +86,19 @@ def main():
     parser.add_argument('--modes', nargs='+', choices=MODES, default=MODES)
     parser.add_argument('--np', nargs='+', type=int, choices=(1, 2), default=(1, 2))
     parser.add_argument('--memcheck', action='store_true')
-    parser.add_argument('--backflow-rejection', action='store_true')
     parser.add_argument('--short-case', action='store_true')
     args = parser.parse_args()
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=False)
     report = {'scope': 'production CUDA kernels; analytic states; no CPU oracle',
               'status': 'running', 'checks': []}
-    env = dict(os.environ, OMPI_MCA_pml='ob1', OMPI_MCA_btl='self,vader,tcp',
+    env = {k: v for k, v in os.environ.items() if not k.startswith(('ASTR_', 'OMPI_MCA_', 'UCX_'))}
+    env.update(OMPI_MCA_pml='ob1', OMPI_MCA_btl='self,vader,tcp',
+               ASTR_GPU_MP_POSITIVITY='off',
                OMPI_MCA_osc='pt2pt', OMPI_MCA_opal_cuda_support='false',
                OMPI_MCA_coll='^hcoll,ucc,cuda', OMPI_MCA_coll_hcoll_enable='0',
                OMPI_MCA_coll_ucc_enable='0')
     checks = [(np, mode) for np in args.np for mode in args.modes]
-    if args.backflow_rejection:
-        checks.extend((np, 'out_backflow') for np in args.np)
     for np, mode in checks:
         command = [args.mpirun, '-np', str(np)]
         if args.memcheck:
@@ -110,10 +112,7 @@ def main():
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
             log = result.stdout
             entry['returncode'] = result.returncode
-            if mode == 'out_backflow':
-                entry['pass'] = result.returncode != 0 and 'bc22 backflow requires a full target state' in log
-            else:
-                entry['pass'] = result.returncode == 0 and f'NSCBC_PHYSICS_PASS {mode}' in log
+            entry['pass'] = result.returncode == 0 and f'NSCBC_PHYSICS_PASS {mode}' in log
             if args.memcheck:
                 entry['pass'] &= log.count('ERROR SUMMARY: 0 errors') == np
             (out / f'np{np}_{mode}.log').write_text(log)
