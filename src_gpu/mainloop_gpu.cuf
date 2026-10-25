@@ -221,9 +221,9 @@ contains
   end subroutine repair_filtered_state_gpu
 
   subroutine repair_mp_stage_inputs_gpu(stage,phase,repaired)
-    use commvar, only: lcracon,nstep
+    use commvar, only: lcracon,nstep,conschm,recon_schem
     use parallel, only: mpirank
-    use mp_positivity_gpu, only: mp_positivity_enabled,mp_inputs_need_repair_gpu,check_mp_failure
+    use mp_positivity_gpu, only: mp_inputs_need_repair_gpu,check_mp_failure
     use halo_exchange_gpu, only: exchange_solution_halo_gpu
     use crashfix_gpu, only: repair_crashfix_state_gpu
     use commarray_gpu, only: copy_flow_from_gpu
@@ -234,7 +234,8 @@ contains
     logical,optional,intent(out) :: repaired
 
     if(present(repaired)) repaired=.false.
-    if(.not.(mp_positivity_enabled.and.lcracon)) return
+    ! Input recovery also applies when the optional MP flux limiter is off.
+    if(.not.lcracon.or.conschm/='743e'.or.recon_schem/=5) return
     if(.not.mp_inputs_need_repair_gpu()) return
     if(mpirank==0) write(*,'(a,2(1x,i0),2a)') 'ASTR_MP_INPUT_CRASHFIX',nstep,stage,' phase=',phase
     call repair_crashfix_state_gpu(stage)

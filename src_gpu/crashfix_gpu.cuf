@@ -12,6 +12,7 @@ module crashfix_gpu
   real(real_kind),allocatable,device :: partial_d(:,:)
   real(real_kind),device :: minima_d(5),change_d(5)
   integer,device :: candidates_d=0,repaired_d=0,invalid_d=0
+  integer,device :: donor_present_d=0,expanded_round_d=0,expanded_radius_d=0,single_donor_d=0
   real(real_kind),save :: eps_prs
   integer,save :: step_normal=0
   integer(int64),save :: report_visits=0,report_calls=0
@@ -77,7 +78,7 @@ contains
       call refresh_point(i,j,k,const2,const6,nondimen,rgas,valid)
       if(fluid_d(i,j,k)/=0) then
         if(valid) then
-          eint=q_d(i,j,k,5)-0.5e0_real_kind*sum(q_d(i,j,k,2:4)**2)/q_d(i,j,k,1)
+          eint=q_d(i,j,k,5)-sum(0.5e0_real_kind*q_d(i,j,k,2:4)*(q_d(i,j,k,2:4)/q_d(i,j,k,1)))
           valid=abs(eint)<=huge(1.e0_real_kind).and.eint>0.e0_real_kind
           if(valid) values(1:4,t)=[rho_d(i,j,k),prs_d(i,j,k),tmp_d(i,j,k),eint]
         endif
@@ -139,13 +140,205 @@ contains
       if(norm<1) cycle
       previous=q_d(i,j,k,:)
       q_d(i,j,k,:)=average/dble(norm)
-      change_d=max(change_d,abs(q_d(i,j,k,:)-previous))
       call refresh_point(i,j,k,const2,const6,nondimen,rgas,valid)
-      repaired_d=repaired_d+1
+      if(valid) then
+        average=q_d(i,j,k,:)
+        call record_repair_change(previous,average)
+        repaired_d=repaired_d+1
+      endif
     enddo
     enddo
     enddo
   end subroutine ordered_repair_kernel
+
+  attributes(device) subroutine record_repair_change(previous,current)
+    real(real_kind),intent(in) :: previous(5),current(5)
+    real(real_kind) :: baseline(5),difference(5)
+    ! A difference from NaN/Inf is undefined; report the replacement magnitude.
+    baseline=previous
+    where(.not.(abs(baseline)<=huge(1.e0_real_kind))) baseline=0.e0_real_kind
+    difference=abs(current-baseline)
+    where(.not.(difference<=huge(1.e0_real_kind))) difference=huge(1.e0_real_kind)
+    change_d=max(change_d,difference)
+  end subroutine record_repair_change
+
+  attributes(device) logical function recovery_state_valid(state,const2,const6,nondimen,rgas)
+    use mp_positivity_gpu, only: admissible_mp_state
+    real(real_kind),intent(in) :: state(5)
+    real(real_kind),value :: const2,const6,rgas
+    logical,value :: nondimen
+    real(real_kind) :: u1,u2,u3,pressure,temperature
+    recovery_state_valid=.false.
+    if(.not.admissible_mp_state(state)) return
+    u1=state(2)/state(1); u2=state(3)/state(1); u3=state(4)/state(1)
+    pressure=(state(5)-0.5e0_real_kind*state(1)*(u1*u1+u2*u2+u3*u3))/const6
+    temperature=pressure/state(1)*const2
+    if(.not.nondimen) temperature=pressure/state(1)/rgas
+    recovery_state_valid=pressure>0.e0_real_kind.and.temperature>0.e0_real_kind.and. &
+      abs(pressure)<=huge(1.e0_real_kind).and.abs(temperature)<=huge(1.e0_real_kind)
+  end function recovery_state_valid
+
+  attributes(device) logical function usable_recovery_donor(i,j,k,im,jm,km,const2,const6,nondimen,rgas)
+    use commarray_gpu, only: q_d
+    integer,value :: i,j,k,im,jm,km
+    real(real_kind),value :: const2,const6,rgas
+    logical,value :: nondimen
+    real(real_kind) :: state(5)
+    usable_recovery_donor=.false.
+    if(i>=0.and.i<=im.and.j>=0.and.j<=jm.and.k>=0.and.k<=km) then
+      if(fluid_d(i,j,k)==0) return
+    endif
+    ! Halo-only exchanges supply faces, not arbitrary diagonal halo corners.
+    if(count([i<0.or.i>im,j<0.or.j>jm,k<0.or.k>km])>1) return
+    state=q_d(i,j,k,:)
+    usable_recovery_donor=recovery_state_valid(state,const2,const6,nondimen,rgas)
+  end function usable_recovery_donor
+
+  attributes(global) subroutine find_recovery_donor_kernel(im,jm,km,ilo,ihi,jlo,jhi,klo,khi, &
+                                                           const2,const6,nondimen,rgas)
+    integer,value :: im,jm,km,ilo,ihi,jlo,jhi,klo,khi
+    real(real_kind),value :: const2,const6,rgas
+    logical,value :: nondimen
+    integer :: id,i,j,k,ni,nj,nk,ignored
+    ni=ihi-ilo+1; nj=jhi-jlo+1; nk=khi-klo+1
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=ni*nj*nk) return
+    i=ilo+mod(id,ni); j=jlo+mod(id/ni,nj); k=klo+id/(ni*nj)
+    if(usable_recovery_donor(i,j,k,im,jm,km,const2,const6,nondimen,rgas)) &
+      ignored=atomicexch(donor_present_d,1)
+  end subroutine find_recovery_donor_kernel
+
+  attributes(device) subroutine add_recovery_donor(i,j,k,im,jm,km,const2,const6,nondimen,rgas,average,first,n)
+    use commarray_gpu, only: q_d
+    integer,value :: i,j,k,im,jm,km
+    real(real_kind),value :: const2,const6,rgas
+    logical,value :: nondimen
+    real(real_kind),intent(inout) :: average(5),first(5)
+    integer,intent(inout) :: n
+    real(real_kind) :: weight
+    if(.not.usable_recovery_donor(i,j,k,im,jm,km,const2,const6,nondimen,rgas)) return
+    n=n+1
+    if(n==1) first=q_d(i,j,k,:)
+    weight=1.e0_real_kind/real(n,real_kind)
+    average=(1.e0_real_kind-weight)*average+weight*q_d(i,j,k,:)
+  end subroutine add_recovery_donor
+
+  attributes(global) subroutine expanded_repair_kernel(im,jm,km,ilo,ihi,jlo,jhi,klo,khi, &
+                                                       const2,const6,nondimen,rgas)
+    use commarray_gpu, only: q_d,crinod_d
+    integer,value :: im,jm,km,ilo,ihi,jlo,jhi,klo,khi
+    real(real_kind),value :: const2,const6,rgas
+    logical,value :: nondimen
+    real(real_kind) :: average(5),first(5),previous(5)
+    integer :: i,j,k,ii,jj,kk,n,radius,max_radius,used_radius
+    logical :: valid
+    if(donor_present_d==0) return
+    do k=0,km
+    do j=0,jm
+    do i=first_d(j,k),last_d(j,k)
+      if(fluid_d(i,j,k)==0) cycle
+      previous=q_d(i,j,k,:)
+      if(recovery_state_valid(previous,const2,const6,nondimen,rgas)) cycle
+      average=0.e0_real_kind; first=0.e0_real_kind; n=0; valid=.false.
+      max_radius=max(i-ilo,ihi-i,j-jlo,jhi-j,k-klo,khi-k)
+      used_radius=0
+      do radius=1,max_radius
+        used_radius=radius
+        ! Visit each new cube shell once; do not rescan its interior.
+        do kk=max(klo,k-radius),min(khi,k+radius)
+        do jj=max(jlo,j-radius),min(jhi,j+radius)
+          if(abs(kk-k)==radius.or.abs(jj-j)==radius) then
+            do ii=max(ilo,i-radius),min(ihi,i+radius)
+              call add_recovery_donor(ii,jj,kk,im,jm,km,const2,const6,nondimen,rgas,average,first,n)
+            enddo
+          else
+            ii=i-radius
+            if(ii>=ilo) call add_recovery_donor(ii,jj,kk,im,jm,km,const2,const6,nondimen,rgas,average,first,n)
+            ii=i+radius
+            if(ii<=ihi) call add_recovery_donor(ii,jj,kk,im,jm,km,const2,const6,nondimen,rgas,average,first,n)
+          endif
+        enddo
+        enddo
+        if(n==0) cycle
+        if(.not.recovery_state_valid(average,const2,const6,nondimen,rgas)) cycle
+        q_d(i,j,k,:)=average
+        call refresh_point(i,j,k,const2,const6,nondimen,rgas,valid)
+        if(valid) exit
+        q_d(i,j,k,:)=previous
+      enddo
+      if(.not.valid.and.n>0) then
+        ! Last resort: the one-point mean of the nearest admissible shell.
+        q_d(i,j,k,:)=first
+        call refresh_point(i,j,k,const2,const6,nondimen,rgas,valid)
+        if(valid) single_donor_d=single_donor_d+1
+      endif
+      if(valid) then
+        crinod_d(i,j,k)=.true.
+        average=q_d(i,j,k,:)
+        call record_repair_change(previous,average)
+        repaired_d=repaired_d+1
+        expanded_round_d=expanded_round_d+1
+        expanded_radius_d=max(expanded_radius_d,used_radius)
+      else
+        q_d(i,j,k,:)=previous
+        call refresh_point(i,j,k,const2,const6,nondimen,rgas,valid)
+      endif
+    enddo
+    enddo
+    enddo
+  end subroutine expanded_repair_kernel
+
+  subroutine expand_crashfix_gpu(stage,global_invalid)
+    use mpi
+    use commvar, only: im,jm,km,hm,ia,ja,ka,lihomo,ljhomo,lkhomo,const2,const6,nondimen,rgas,nstep
+    use parallel, only: ig0,jg0,kg0,lio
+    use commarray_gpu, only: q_d
+    use halo_exchange_gpu, only: exchange_field_halo_gpu
+    use gpu_check, only: sync_after_kernel
+    use benchmark_runtime, only: benchmark_buffered_output_enabled
+    integer,intent(in) :: stage
+    integer,intent(inout) :: global_invalid
+    integer :: lo(3),hi(3),n,local,progress,ierr,rounds,total,diagnostics(2)
+    lo=max([-hm,-hm,-hm],-[ig0,jg0,kg0])
+    hi=min([im+hm,jm+hm,km+hm],[ia,ja,ka]-[ig0,jg0,kg0])
+    if(lihomo) then
+      lo(1)=-hm; hi(1)=im+hm
+    endif
+    if(ljhomo) then
+      lo(2)=-hm; hi(2)=jm+hm
+    endif
+    if(lkhomo) then
+      lo(3)=-hm; hi(3)=km+hm
+    endif
+    rounds=0; total=0; expanded_radius_d=0; single_donor_d=0
+    do while(global_invalid/=0)
+      rounds=rounds+1
+      ! Do not average shared nodes while a replica may still contain NaN.
+      call exchange_field_halo_gpu(q_d,5)
+      call inspect_state(.true.)
+      donor_present_d=0; expanded_round_d=0
+      n=product(hi-lo+1)
+      call find_recovery_donor_kernel<<<(n+255)/256,256>>>(im,jm,km,lo(1),hi(1),lo(2),hi(2),lo(3),hi(3), &
+        const2,const6,nondimen,rgas)
+      call sync_after_kernel('crashfix_find_expanded_donor',.true.)
+      call expanded_repair_kernel<<<1,1>>>(im,jm,km,lo(1),hi(1),lo(2),hi(2),lo(3),hi(3), &
+        const2,const6,nondimen,rgas)
+      call sync_after_kernel('crashfix_expanded_repair_kernel',.true.)
+      call inspect_state(.false.)
+      local=invalid_d
+      call MPI_Allreduce(local,global_invalid,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+      local=expanded_round_d
+      call MPI_Allreduce(local,progress,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+      total=total+progress
+      ! Each successful round repairs at least one node; no arbitrary retry cap.
+      if(progress==0) exit
+    enddo
+    diagnostics=[expanded_radius_d,single_donor_d]
+    call MPI_Allreduce(MPI_IN_PLACE,diagnostics,2,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(lio.and..not.benchmark_buffered_output_enabled()) write(*,'(a,6(1x,i0))') &
+      'ASTR_GPU_CRASHFIX_EXPANDED',nstep,stage,rounds,total,diagnostics
+    if(global_invalid/=0.and.lio) print *, 'Expanded GPU crashfix cannot find further admissible donor averages'
+  end subroutine expand_crashfix_gpu
 
   attributes(global) subroutine reduce_kernel(n)
     implicit none
@@ -218,10 +411,11 @@ contains
       call sync_after_kernel('crashfix_ordered_repair_kernel',.true.)
       call inspect_state(.false.)
     endif
-    call reduce_kernel<<<1,256>>>(size(partial_d,2))
-    call sync_after_kernel('crashfix_reduce_kernel',.true.)
     local=invalid_d
     call MPI_Allreduce(local,global,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    if(global/=0) call expand_crashfix_gpu(stage,global)
+    call reduce_kernel<<<1,256>>>(size(partial_d,2))
+    call sync_after_kernel('crashfix_reduce_kernel',.true.)
     count=repaired_d
     call MPI_Allreduce(count,counter,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
     changes=change_d; lower=minima_d

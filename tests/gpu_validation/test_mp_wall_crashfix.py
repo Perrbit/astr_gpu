@@ -21,9 +21,10 @@ MPIEXEC = os.environ.get("ASTR_TEST_MPIEXEC", "/opt/nvidia/hpc_sdk/Linux_x86_64/
 pytestmark = pytest.mark.skipif(not PROBE, reason="set ASTR_MP_WALL_PROBE to the built production-module probe")
 
 
-def run_probe(ranks, binding, *extra, transport="pinned", cwd=None):
+def run_probe(ranks, binding, *extra, transport="pinned", cwd=None, positivity="flux"):
     env = runtime(f"{ranks},1,1",transport)
-    env.update(ASTR_GPU_MP_FACE_LAYOUT="x-contiguous", ASTR_GPU_MP_SPLIT_CACHE="on")
+    env.update(ASTR_GPU_MP_FACE_LAYOUT="x-contiguous", ASTR_GPU_MP_SPLIT_CACHE="on",
+               ASTR_GPU_MP_POSITIVITY=positivity)
     command = mpi_command(MPIEXEC, ranks, transport)
     return subprocess.run([*command, str(Path(PROBE).resolve()), binding, "wall-blowing", *extra], env=env,cwd=cwd,
                           text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
@@ -55,12 +56,42 @@ def test_disabled_crashfix_still_reports_the_invalid_mp_input():
     assert "MP wall blowing input repair: PASS" not in result.stdout
 
 
+@pytest.mark.parametrize("ranks,binding", [(1,"0"),(2,"rank")])
+def test_boundary_repair_remains_active_without_the_mp_flux_limiter(ranks,binding):
+    result = run_probe(ranks,binding,positivity="off")
+    assert result.returncode == 0,result.stdout
+    assert "ASTR_GPU_MP_POSITIVITY=off" in result.stdout,result.stdout
+    assert "MP wall blowing input repair: PASS" in result.stdout,result.stdout
+    rows = [line.split() for line in result.stdout.splitlines() if line.startswith("MP_WALL_REPAIR ")]
+    assert len(rows) == 8,result.stdout
+    assert all(int(row[3]) == int(float(row[2]) >= 4.0) for row in rows),result.stdout
+    assert "ieee_invalid is signaling" not in result.stdout,result.stdout
+
+
 @pytest.mark.parametrize("ranks,binding",[(1,"0"),(2,"rank")])
 def test_no_valid_neighbor_still_fails_with_a_nonzero_exit(ranks,binding):
     result = run_probe(ranks,binding,"no-neighbor")
     assert result.returncode != 0,result.stdout
     assert "GPU crashfix left a nonfinite or non-positive physical state" in result.stdout,result.stdout
     assert "MP wall blowing input repair: PASS" not in result.stdout
+
+
+@pytest.mark.parametrize("ranks", [1, 2, 4])
+def test_expanding_repair_reaches_distant_and_remote_valid_states(ranks,tmp_path):
+    env = runtime(f"{ranks},1,1")
+    env['ASTR_GPU_MP_POSITIVITY'] = 'off'
+    command = [*mpi_command(MPIEXEC,ranks,'pinned'),str(Path(PROBE).resolve()),'rank','crashfix-expand']
+    result = subprocess.run(command,env=env,cwd=tmp_path,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=120)
+    (tmp_path/'expanded.log').write_text(result.stdout)
+    assert result.returncode == 0,result.stdout
+    assert 'GPU expanding crashfix: PASS' in result.stdout,result.stdout
+    assert 'ASTR_GPU_CRASHFIX_EXPANDED' in result.stdout,result.stdout
+    rows = [line.split() for line in result.stdout.splitlines() if line.startswith('GPU_CRASHFIX_EXPAND ')]
+    assert {int(row[1]) for row in rows} == ({1,3} if ranks == 1 else {1,2,3}),result.stdout
+    expanded = [line.split() for line in result.stdout.splitlines() if line.startswith('ASTR_GPU_CRASHFIX_EXPANDED ')]
+    assert max(int(row[5]) for row in expanded) > 1,result.stdout
+    if ranks > 1:
+        assert next(int(row[3]) for row in expanded if int(row[2]) == 2) == ranks-1,result.stdout
 
 
 @pytest.mark.parametrize("ranks", [1, 2, 4])

@@ -69,7 +69,8 @@ class M12IntegrationContractTests(unittest.TestCase):
         begin = source.index('subroutine repair_mp_stage_inputs_gpu(')
         end = source.index('end subroutine repair_mp_stage_inputs_gpu',begin)
         repair = source[begin:end]
-        self.assertIn('if(.not.(mp_positivity_enabled.and.lcracon)) return',repair)
+        self.assertIn("if(.not.lcracon.or.conschm/='743e'.or.recon_schem/=5) return",repair)
+        self.assertNotIn('mp_positivity_enabled',repair)
         self.assertIn('if(.not.mp_inputs_need_repair_gpu()) return',repair)
         self.assertLess(repair.index('call repair_crashfix_state_gpu('),
                         repair.index('call exchange_solution_halo_gpu()'))

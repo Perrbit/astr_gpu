@@ -1156,10 +1156,10 @@ if(ASTR_WITH_CUDA AND BUILD_TESTING)
   add_executable(mp_ld_reconstruction_probe EXCLUDE_FROM_ALL
     ${ASTR_HALO_CONTRACT_SOURCES} ${ASTR_GPU_SOURCES}
     ../tests/gpu_validation/mp_ld_reconstruction_probe.cuf)
-  # NVHPC 26.1 FMA formation crashes on the probe's FP64 host references.
+  # NVHPC 26.1 optimization crashes on the probe's FP64 host references.
   # Apply only to this test driver, not the production modules or kernels.
   set_source_files_properties(../tests/gpu_validation/mp_ld_reconstruction_probe.cuf
-    PROPERTIES COMPILE_OPTIONS "-Mnofma")
+    PROPERTIES COMPILE_OPTIONS "-Mnofma;-Mnovect;-O0")
   set_target_properties(mp_ld_reconstruction_probe PROPERTIES
     LINKER_LANGUAGE Fortran
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/mp_ld_probe_modules")
