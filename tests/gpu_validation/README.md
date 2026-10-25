@@ -65,7 +65,7 @@ CMake project with `ASTR_WITH_CUDA=ON` and `BUILD_TESTING=ON`, then run:
 ```bash
 python3 tests/gpu_validation/run_nscbc_physics_gate.py \
   --exe <absolute-build>/bin/astr --mpirun <matching-mpirun> \
-  --out <new-test-directory> --backflow-rejection --short-case
+  --out <new-test-directory> --short-case
 python3 tests/gpu_validation/run_nscbc_physics_gate.py \
   --exe <absolute-build>/bin/astr --mpirun <matching-mpirun> \
   --out <another-new-directory> --np 1 --memcheck \
@@ -76,8 +76,10 @@ python3 -m unittest discover -s tests/gpu_validation -p test_nscbc_physics_contr
 `astr test bcns` uses `ASTR_NSCBC_PROBE` to select a bounded manufacturing
 probe. It calls production CUDA kernels. The gate checks FP64 absolute errors
 at most `2e-10`, physical outlet ownership, positive relaxation, incoming-only
-prescription, supersonic outgoing-wave preservation, and collective backflow
-rejection. The six-advance OpenShock check uses `maxstep=5` under ASTR's
+prescription, supersonic outgoing-wave preservation, and sub/supersonic outlet
+backflow with the approved constant background. It includes `pout != 1`,
+uniform compatibility and the zero/sonic transitions; the outlet kernel must not
+modify the conservative state directly. The six-advance OpenShock check uses `maxstep=5` under ASTR's
 inclusive loop, compares NP1/NP2 x-slab physical nodes at the last RK update,
 and requires positive density/internal energy. It is not a long-time physical
 or boundary-reflection validation. It sets the BUILD_TESTING-only
@@ -86,6 +88,40 @@ field/checkpoint products disabled and no restore directory. This does not
 register NSCBC production output or restart. Existing CPU/GPU NSCBC compare scripts are
 historical evidence, not a correctness oracle for the intentionally changed
 GPU branches. See `documents/ASTR_GPU_NSCBC_PHYSICS_REPAIR_PLAN.md`.
+
+`run_nscbc22_backflow_validation.py` adds ten-step M12 outflow/manufactured
+backflow runs and a two-rank five-plus-five exact restart with nonzero random
+wall forcing. It checks changed-reference rejection in exact mode and permitted
+continuation in non-exact mode. The default matrix attempts NP1 and NP2 x/y/z
+and stops on the first failed numerical gate. As of 2026-10-25, the M12 y-slab
+comparison has an existing shared-node difference `4.5542847271207165e-10`,
+identically reproduced with ordinary `21/50` boundaries. It is not waived.
+`--topologies 111 211 112` explicitly selects the independently passing x/z
+subset; it does not establish the full matrix. Evidence and limits are in
+`documents/ASTR_NSCBC22_BACKFLOW_ADAPTATION_PLAN.md`.
+
+For real subsonic/supersonic outlet-backflow integration, use
+`--regimes-only --steps 100 --topologies 111 211 112`. This constructs smooth
+downstream velocity patches with centerline normal Mach targets -0.5 and -1.5,
+without changing initial thermodynamics or the wall/top states. Both regimes
+completed 100 RK steps on NP1 and NP2 x/z in the 2026-10-25 matrix. First/last
+step RK samples verify the reverse-flow regimes; all-step CFL records and final
+partition fields are also checked. The existing outlet transverse filter is
+still active even with `lfilter=f`: a separate, steeper four-node transition
+produced negative internal energy before the characteristic RHS. That failed
+stress case remains open; the smooth runs do not establish general positivity.
+
+GPU crashfix now retries failed 26-neighbor repairs with expanding index-space
+shells and MPI halo-only propagation. `mp_ld_reconstruction_probe rank
+crashfix-expand` checks a distant donor, entire invalid ranks with a valid
+state only on the last rank, and overflow in the original neighbor sum. The
+NP1/2/4 pytest checks also require healthy-state byte stability, unchanged RK
+origin, preserved critical-node history, and no full-field host download. An
+all-invalid/no-donor state must still terminate rather than loop indefinitely.
+The ordinary one-ring CPU/GPU comparison remains a separate regression test.
+See `documents/ASTR_GPU_CRASHFIX_EXPANSION.md` for the implementation scope and
+evidence. This is recovery, not a conservative positivity guarantee or an AIR5
+algorithm.
 
 ### M12 Matched Boundary Comparison
 
@@ -116,8 +152,9 @@ unless `--checkpoint-interval` is selected; then the latest two completed-step
 bundles are retained. The checkpoint packing budget is 1 GiB per rank, including
 the medium-grid primitive and geometry packs. Basic slices and a final volume
 are retained. CFL must remain <=1; final density,
-pressure, and temperature must be finite and positive. bc22 still rejects
-undefined backflow. The comparison changes the boundary treatment, including
+pressure, and temperature must be finite and positive. GPU bc22 now uses the
+approved constant reference for local backflow; old rejection results remain
+historical evidence only. The comparison changes the boundary treatment, including
 its transverse filters; it does not isolate only the characteristic RHS,
 or establish steady turbulence. The `restart` stage separately checks continuous
 ten-step versus five-plus-five continuation with the original nonzero random
