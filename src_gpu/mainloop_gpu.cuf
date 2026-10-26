@@ -115,7 +115,7 @@ contains
     use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,const2,const6,lfilter,lcomb,nstep, &
       numq,num_species,conschm,difschm
     use bc, only: bctype,explicit_profile_nscbc_corrections_enabled
-    use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported
+    use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported,gpu_s2_sbli_nscbc_supported
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_flow_solver_gpu, only: air5_prepare_spatial_state_gpu
 #endif
@@ -145,7 +145,7 @@ contains
     endif
 #endif
     call validate_first_stage_gpu()
-    if(gpu_profile_mp_ld_flatplate_supported().and.bctype(2)==22.and. &
+    if((gpu_profile_mp_ld_flatplate_supported().or.gpu_s2_sbli_nscbc_supported()).and.bctype(2)==22.and. &
        (compact_global_enabled().or.explicit_profile_nscbc_corrections_enabled())) then
       call prepare_profile_nscbc_gpu(1)
       return
@@ -593,7 +593,7 @@ contains
     curvilinear_nscbc52_case = gpu_curvilinear_nscbc52_nonreflecting_supported() .or. &
          curvilinear_nscbc52_viscous_case
     profile_mp_ld_case = gpu_profile_mp_ld_flatplate_supported()
-    profile_nscbc_case = profile_mp_ld_case.and.bctype(2)==22
+    profile_nscbc_case = (profile_mp_ld_case.or.s2_sbli_nscbc_case).and.bctype(2)==22
     staged_profile_nscbc_case=profile_nscbc_case.and. &
       (compact_global_enabled().or.explicit_profile_nscbc_corrections_enabled())
     flatplate_case = profile_mp_ld_case .or. conservative_case .or. &
@@ -1652,7 +1652,7 @@ contains
     geometry_error=pmax(geometry_error)
     if(any(bctype==22) .and. geometry_error>1.e-10_real_kind) then
       rectilinear_coordinates=.false.
-      if(gpu_profile_mp_ld_flatplate_supported()) then
+      if(gpu_profile_mp_ld_flatplate_supported().or.gpu_s2_sbli_nscbc_supported()) then
         ! A separable stretched grid can acquire off-axis roundoff in geomcal.
         ! Certify its coordinates exactly rather than widening the metric gate.
         local_error=0.e0_real_kind

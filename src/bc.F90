@@ -452,14 +452,19 @@ module bc
   end function nscbc_farfield_incoming_only_enabled
 
   logical function explicit_profile_nscbc_corrections_enabled()
-    use commvar, only: conschm,difschm,lcomb,nondimen
+    use commvar, only: conschm,difschm,lcomb,nondimen,recon_schem,lchardecomp
     implicit none
+    logical :: scheme_supported
+
+    scheme_supported=conschm=='743e'
+    if(nscbc_farfield_sbli_shock_enabled()) scheme_supported= &
+      ((conschm=='743e'.and.recon_schem==5).or.(conschm=='543e'.and.recon_schem==3)).and.lchardecomp
 
     explicit_profile_nscbc_corrections_enabled=flowtype=='bl'.and.ndims==3.and. &
-      conschm=='743e'.and.difschm=='643e'.and.numq==5.and. &
+      scheme_supported.and.difschm=='643e'.and.numq==5.and. &
       num_species==0.and.num_modequ==0.and..not.lcomb.and.nondimen.and. &
       turbinf=='prof'.and.all(bctype==[11,22,41,52,1,1]).and. &
-      nscbc_farfield_incoming_only_enabled().and..not.nscbc_farfield_sbli_shock_enabled()
+      nscbc_farfield_incoming_only_enabled()
   end function explicit_profile_nscbc_corrections_enabled
 
   subroutine nscbc_farfield_target_state(rho_target,u_target,v_target, &
@@ -5564,6 +5569,7 @@ module bc
     real(real_kind),allocatable :: Ecs(:,:),dEcs(:),fcs(:,:),dfcs(:,:),qfilt(:,:)
     real(real_kind) :: uu,css,gmachmax2,kinout,kin,var1,var2,psonic,rncout,fdamp
     real(real_kind) :: normal_speed,wave_tolerance,metric_norm
+    real(real_kind) :: back_rate,plus_rate,qtarget(5),dq(5)
     logical :: compact_plate_outlet
     !
     compact_plate_outlet=ndir==2.and.numq==5.and..not.lcomb.and. &
@@ -5921,13 +5927,27 @@ module bc
           metric_norm=sqrt(sum(dxi(i,j,k,1,:)**2))
           normal_speed=sum(dxi(i,j,k,1,:)*vel(i,j,k,:))/metric_norm
           wave_tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(normal_speed))
-          if(normal_speed < -wave_tolerance) then
+          if(normal_speed < -wave_tolerance.and..not.nscbc_farfield_sbli_shock_enabled()) then
             print *,'bc22 right-x outlet does not support backflow',i,j,k,normal_speed
             error stop 'bc22 right-x outlet backflow'
           endif
           if(normal_speed-css < -wave_tolerance) then
             kinout=3.75e0_real_kind*max(0.e0_real_kind,1.e0_real_kind-(normal_speed/css)**2)*css/(xmax-xmin)
             LODi(5)=kinout*((prs(i,j,k)-pinf*pout)/rho(i,j,k)/css)*sqrt(2.e0_real_kind)
+          endif
+          if(normal_speed < -wave_tolerance.and.nscbc_farfield_sbli_shock_enabled()) then
+            qtarget=[roinf*pout,roinf*pout*uinf,roinf*pout*vinf,roinf*pout*winf, &
+              pinf*pout/(gamma-1.e0_real_kind)+0.5e0_real_kind*roinf*pout*(uinf*uinf+vinf*vinf+winf*winf)]
+            dq=q(i,j,k,1:5)-qtarget
+            back_rate=0.25e0_real_kind*(-normal_speed)/(xmax-xmin)
+            do m=1,3
+              LODi(m)=back_rate*sum(pinv(m,:)*dq)
+            enddo
+            LODi(5)=LODi(5)+back_rate*sum(pinv(5,:)*dq)
+            if(normal_speed+css < -wave_tolerance) then
+              plus_rate=0.25e0_real_kind*(-normal_speed-css)/(xmax-xmin)
+              LODi(4)=plus_rate*sum(pinv(4,:)*dq)
+            endif
           endif
         else
           kinout=3.75e0_real_kind*(1.e0_real_kind-gmachmax2)*css/(xmax-xmin)

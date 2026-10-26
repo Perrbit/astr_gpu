@@ -442,10 +442,10 @@ GPU 的 12 入口使用已有 `roinf/uinf/vinf/winf/pinf` 构造完整守恒目�
 `K=0.25(1-Mn^2)a/Ly`；`Mn` 是该点的几何法向 Mach 数，不是全域流向 Mach 数。
 声波松弛按当前特征矩阵归一化，单独压力松弛项满足 `dp/dt=-K(p-p_target)`。
 52 compatibility 法向流入采用 `0.25 a/Ly` 的完整远场目标松弛。
-22 若检测到超过特征分类舍入尺度的法向倒流，全体 MPI rank 报错退出，
-因为压力目标不足以给出倒流所需的全部外部信息。
+22 的局部法向倒流采用第 6.1 节给出的完整常数背景，不再仅因速度为负而退出。
 这些是目标松弛边界，不等同于包含完整多维源项平衡的无反射边界。
-CPU 原有 12/22/52 compatibility 算法未随本轮 GPU 修复改写，不能再用其逐值结果验收这些 GPU 分支。
+CPU 原有 12/22/52 compatibility 算法未整体随 GPU 修复改写，不能用其逐值结果验收这些 GPU 分支。
+下面单独登记的联合入射激波路径已同步 CPU/GPU 出口算法与边界执行阶段，不属于旧 compatibility 参考。
 新输出/重启系统尚未注册一般 12/22/52 工况，编号和核函数支持不等于
 完整生产输出流程已可用。当前完整 OpenShock 短步仅通过测试构建的
 有界入口验收，不能将该入口用于生产计算。
@@ -453,6 +453,22 @@ CPU 原有 12/22/52 compatibility 算法未随本轮 GPU 修复改写，不能�
 剖面平板路径 `11/22/41/52/1/1`，使用 compatibility 远场策略。
 该 GPU 组合已通过基本切片/整场输出与同拓扑精确检查点续算；
 续算保留原随机吹吸状态，不能改变拓扑，平均量和自适应输出仍未准入。
+
+另支持无量纲非反应三维 `bl` 的联合入射激波组合：
+`11,prof / 22,pout / 41,Twall / 52 / 1 / 1`，
+`ASTR_NSCBC_FARFIELD_MODE=sbli_shock`，
+`543e/643e,recon_schem=3` 或 `743e/643e,recon_schem=5`，均要求
+`lchardecomp=t,diffterm=t,lfilter=f`、无海绵层、z 周期、笛卡尔可分离拉伸网格。
+这条路径不再把出口限定为 21，也不再因选择入射激波目标而排除 MP7-LD。
+局部 CPU/GPU 对照覆盖 NP=1、NP=2 x/y/z、NP=4 的
+`4×1×1/2×2×1/2×1×2/1×2×2` 及 NP=8 `2×2×2`；
+多 rank 在本地两张 GPU 上共享运行，验证的是正确性，不是这些规模的硬件扩展效率。
+两种格式还通过同后端同拓扑的完整步检查点精确续算及 NP=2 x 的 CUDA-aware MPI 短测。
+精确续算记录顶面目标状态、激波分界位置和角度，不能改变这些参数。
+`lfilter=f` 不会关闭 NSCBC 边界自身的横向滤波。
+该组合的长期激波位置、壁面统计、反射率、原位渲染及生产规模仍需另行验证，
+不扩展至紧致黏性、AIR5 或非正交出口。详见
+[联合入射激波验证记录](documents/ASTR_GPU_NSCBC_PHYSICS_REPAIR_PLAN.md#联合入射激波顶面与特征出口)。
 
 incoming_only 和 sbli_shock 读取 `ASTR_NSCBC_FARFIELD_RHO`、
 `ASTR_NSCBC_FARFIELD_U`、`ASTR_NSCBC_FARFIELD_V`、

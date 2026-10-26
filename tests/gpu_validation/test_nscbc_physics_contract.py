@@ -48,7 +48,7 @@ class NscbcPhysicsContract(unittest.TestCase):
         source = (ROOT / 'src_gpu/mainloop_gpu.cuf').read_text()
         block = source.split('if(any(bctype==22) .and. geometry_error>1.e-10_real_kind) then', 1)[1].split(
             'if(bctype(2)==21)', 1)[0]
-        self.assertIn('if(gpu_profile_mp_ld_flatplate_supported()) then', block)
+        self.assertIn('gpu_profile_mp_ld_flatplate_supported().or.gpu_s2_sbli_nscbc_supported()', block)
         self.assertIn('x(i,j,k,:)/=[x(i,0,0,1),x(0,j,0,2),x(0,0,k,3)]', block)
         self.assertIn('rectilinear_coordinates=pmax(local_error)==0.e0_real_kind', block)
         self.assertIn('if(.not.rectilinear_coordinates)', block)

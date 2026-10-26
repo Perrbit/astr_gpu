@@ -101,7 +101,12 @@ def write_input(
     sponge_im: int,
     turbinf: str,
     z_bctype: int,
+    x_max_bctype: int = 21,
+    outlet_pressure: float = 1.0,
 ) -> None:
+    outlet = str(x_max_bctype)
+    if x_max_bctype == 22:
+        outlet += f",{outlet_pressure:.16e}"
     path.write_text(
         f"""########################################################################
 # Controlled S1 explicit three-dimensional flat-plate boundary layer
@@ -132,7 +137,7 @@ f
 {conschm},643e,rk3
 
 # recon_schem,lchardecomp,bfacmpld,shkcrt
-3,{lchardecomp},0.1d0,{shock_threshold:.16e}
+{5 if conschm == '743e' else 3},{lchardecomp},0.1d0,{shock_threshold:.16e}
 
 # num_species
 0
@@ -142,7 +147,7 @@ none,h
 
 # bctype
 {x_min_bctype},{turbinf}
-21
+{outlet}
 41,{wall_temperature:.16e}
 {upper_bctype}
 {z_bctype}
@@ -196,7 +201,7 @@ def main() -> int:
     parser.add_argument("--im", type=positive_int, default=64)
     parser.add_argument("--jm", type=positive_int, default=64)
     parser.add_argument("--km", type=positive_int, default=8)
-    parser.add_argument("--conschm", choices=("643e", "543e"), default="643e")
+    parser.add_argument("--conschm", choices=("643e", "543e", "743e"), default="643e")
     parser.add_argument("--lchardecomp", choices=("t", "f"), default="f")
     parser.add_argument("--shock-threshold", type=float, default=1.0e-3)
     parser.add_argument("--reynolds", type=float, default=1000.0)
@@ -204,6 +209,8 @@ def main() -> int:
     parser.add_argument("--reference-temperature", type=float, default=1.0)
     parser.add_argument("--wall-temperature", type=float, default=1.0)
     parser.add_argument("--x-min-bctype", choices=(11, 12), type=int, default=11)
+    parser.add_argument("--x-max-bctype", choices=(21, 22), type=int, default=21)
+    parser.add_argument("--outlet-pressure", type=positive_float, default=1.0)
     parser.add_argument("--upper-bctype", choices=(51, 52), type=int, default=51)
     parser.add_argument("--ninit", choices=(0, 3), type=int, default=0)
     parser.add_argument("--sponge-im", type=int, default=0)
@@ -297,6 +304,8 @@ def main() -> int:
         args.sponge_im,
         args.turbinf,
         args.z_bctype,
+        args.x_max_bctype,
+        args.outlet_pressure,
     )
     write_controller(
         datin / "controller",

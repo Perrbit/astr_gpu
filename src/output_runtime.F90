@@ -13,7 +13,8 @@ module output_runtime
   use commarray, only: q,rho,vel,prs,tmp,x,jacob,dxi,crinod
   use parallel, only: ig0,jg0,kg0,mpirank,irk,mpisize
   use bc, only: bctype,turbinf,ninflowslice,complete_inflow_cpu_file, &
-    configure_wall_blowing,wall_blowing_legacy_random
+    configure_wall_blowing,wall_blowing_legacy_random, &
+    explicit_profile_nscbc_corrections_enabled,nscbc_farfield_sbli_shock_enabled
   use output_input_resources, only: set_inflow_resource_root,inflow_source_path, &
     inflow_source_name,discover_inflow_sources,set_initial_resource_root,initial_source_path,initial_source_name, &
     set_wall_resource_root
@@ -365,6 +366,13 @@ contains
       (all(bctype==[11,21,41,50,1,1]).or.all(bctype==[11,22,41,52,1,1]))
   end function
 
+  logical function joint_sbli_output_case()
+    joint_sbli_output_case=.false.
+    if(trim(flowtype)/='bl') return
+    joint_sbli_output_case=explicit_profile_nscbc_corrections_enabled().and. &
+      nscbc_farfield_sbli_shock_enabled().and.diffterm.and..not.lfilter
+  end function
+
   function profile_grid_resource_name() result(name)
     character(128) :: name
     name='grid.h5'
@@ -397,7 +405,8 @@ contains
       all(bctype==[1,1,41,41,1,1]).and.trim(conschm)=='643e'.and.trim(difschm)=='643e').or. &
       (trim(flowtype)=='channel'.and.all(bctype==[1,1,41,41,1,1])).or. &
       (trim(flowtype)=='bl'.and.lreadgrid.and.(trim(turbinf)=='prof'.or.trim(turbinf)=='intp').and. &
-      all(bctype==[11,21,41,51,1,1])).or.extruded_profile_output_case()
+      all(bctype==[11,21,41,51,1,1])).or.extruded_profile_output_case().or. &
+      (joint_sbli_output_case().and.lreadgrid)
 #ifdef ASTR_BUILD_TESTING
     ! This bounded RK probe has no output/restart contract to publish.
     call get_environment_variable('ASTR_VALIDATION_NSCBC_RK',validation_mode,status=validation_status)
@@ -1249,7 +1258,7 @@ contains
       call get_environment_variable('ASTR_PROFILE_INFLOW_MODE',driver_config(3),status=status)
       call check(status==0.or.status==1,'profile inflow mode is truncated')
     endif
-    backflow_outlet=use_gpu.and.numq==5.and.bctype(2)==22.and.trim(flowtype)/='channel'
+    backflow_outlet=(use_gpu.or.joint_sbli_output_case()).and.numq==5.and.bctype(2)==22.and.trim(flowtype)/='channel'
     if(backflow_outlet) then
       block
         use commvar, only: roinf,uinf,vinf,winf,pinf,gamma,xmin,xmax
@@ -1264,6 +1273,16 @@ contains
       call MPI_Bcast(root_driver,6,mpi_real_type,0,MPI_COMM_WORLD,ierr)
       call check(ierr==MPI_SUCCESS.and.all(real_to_word(root_driver)==real_to_word(driver)), &
         'bc22 reference differs between ranks')
+    endif
+    if(joint_sbli_output_case()) then
+      block
+        use bc, only: nscbc_farfield_target_state,nscbc_farfield_shock_x,nscbc_farfield_shock_angle
+        real(real_kind) :: target(7)
+        call nscbc_farfield_target_state(target(1),target(2),target(3),target(4),target(5))
+        target(6:7)=[nscbc_farfield_shock_x,nscbc_farfield_shock_angle]
+        ! Exact target bits fit the existing driver string; no additional sidecar.
+        write(driver_config(2),'(a,7(z16.16))') 'sbli-top-v1',real_to_word(target)
+      end block
     endif
     root_config=driver_config
     call MPI_Bcast(root_config,384,MPI_CHARACTER,0,MPI_COMM_WORLD,ierr)

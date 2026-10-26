@@ -100,6 +100,38 @@ identically reproduced with ordinary `21/50` boundaries. It is not waived.
 subset; it does not establish the full matrix. Evidence and limits are in
 `documents/ASTR_NSCBC22_BACKFLOW_ADAPTATION_PLAN.md`.
 
+### Incident-Shock Top With NSCBC Outlet
+
+`test_sbli_joint_nscbc.py` runs the actual CPU/GPU RK3 integrator with
+`bl`, `11/22/41/52/1/1`, `prof` inflow and `sbli_shock` upper-y targets.
+It covers `543e/643e` with reconstruction 3 and `743e/643e` with
+reconstruction 5, both characteristic, viscous, no global filter or sponge.
+The independently generated initial field is an unshocked compressible
+similarity boundary layer; the incident shock is driven by the top target.
+
+```bash
+ASTR_SBLI_JOINT_EXE=<absolute-build>/bin/astr python -m pytest -q -x \
+  tests/gpu_validation/test_sbli_joint_nscbc.py
+```
+
+The 64×48×16 interval fixture uses Mach 2, Re=296000, dt=2.5e-4 and
+12 complete steps. CPU/GPU physical q, derived primitives and stored primitive
+caches must have maximum `abs(GPU-CPU)/(1+abs(CPU)) <= 2e-10`.
+`flowstate.dat` is compared at the same sample steps, with absolute error
+at most 2e-10; CPU and GPU text precision differs, so parsed times are not
+required to have identical floating-point bits.
+The same-state matrix covers NP1, NP2 x/y/z, NP4 x/mixed and NP8 2×2×2.
+Further checks include local sub/supersonic outlet backflow, top-target and
+outlet-pressure response, NP2 x CUDA-aware MPI, exact 12 versus 5+7 continuation
+with bitwise state/control comparison, changed-shock exact-restart rejection,
+and two-rank Compute Sanitizer memcheck.
+
+Evidence: `out/sbli_joint_nscbc_20261026/{matrix,extended,outlet_response,backflow}.xml`,
+`field_statistics_summary.json` and `analytic/summary.json` in the same root.
+This is bounded integration and restart validation, not a developed SBLI,
+reflection-coefficient, compact/AIR5, sponge or visualization acceptance.
+NP4/8 share two local GPUs and are not scaling benchmarks.
+
 For real subsonic/supersonic outlet-backflow integration, use
 `--regimes-only --steps 100 --topologies 111 211 112`. This constructs smooth
 downstream velocity patches with centerline normal Mach targets -0.5 and -1.5,
