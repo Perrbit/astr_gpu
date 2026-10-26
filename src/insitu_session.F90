@@ -20,7 +20,7 @@ module insitu_session
   use insitu_fields, only: nonreacting_wall_candidate
   use insitu_run_config, only: insitu_options
   use insitu_product_schedule, only: configure_product_schedules,poll_product_schedules,product_schedules_active, &
-    product_scene_due,product_state_file,product_results_complete
+    product_scene_due,product_state_file,product_results_complete,product_failures_present
   use insitu_config_collective, only: read_insitu_options_collective
   use iso_c_binding, only: c_int,c_char,c_null_char,c_int64_t
 #ifdef _CUDA
@@ -333,6 +333,11 @@ contains
 #endif
             if(status==0) write(unit,iostat=status) color_magic,color_mask,color_ranges
           endif
+          if(status==0.and.rendering.and.options%product_count==0.and.magic/='ASTRIR06'.and. &
+            product_failures_present()) then
+            call product_state_file(unit,.true.,identity%step,identity%time,products_same,ok)
+            if(.not.ok) status=1
+          endif
           close(unit,iostat=closed)
         endif
       endif
@@ -410,6 +415,10 @@ contains
       if(status==0) call read_source_reals(unit,color_ranges,source_bytes,status)
       call require_sample(status==0.and.color_magic=='ASTRMC01'.and.color_mask>=0.and.color_mask<=7.and. &
         all(ieee_is_finite(color_ranges)),'invalid M12 frozen color state')
+    endif
+    if(.not.product_format.and..not.checkpoint_stream_at_end(unit)) then
+      call product_state_file(unit,.false.,identity%step,identity%time,products_same,ok,override,source_bytes)
+      call require_sample(ok,'invalid disabled legacy product history')
     endif
     call require_sample(checkpoint_stream_at_end(unit),'native render control tail')
     close(unit,iostat=closed)
@@ -2027,9 +2036,9 @@ contains
     if(render_configured) return
     if(formal) then
       render_final=options%final_frame
+      call configure_product_schedules(options,render_origin_step,render_origin_time,ok)
+      call require_sample(ok,'invalid native product schedules')
       if(options%product_count>0) then
-        call configure_product_schedules(options,render_origin_step,render_origin_time,ok)
-        call require_sample(ok,'invalid native product schedules')
         render_configured=.true.
         return
       endif

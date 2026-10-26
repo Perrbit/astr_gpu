@@ -177,6 +177,7 @@ astr_insitu::DeviceMesh astr_insitu::build_device_plane(int fcomm,int step,Real 
 #endif
 }
 
+#include "insitu_product_failure.h"
 extern "C" int astr_insitu_device_render_plane(const char* pipeline,const char* backend,const char* script,
     int fcomm,int step,Real time,int nx,int ny,int nz,int ox,int oy,int oz,
     Real* coordinates,Real* velocity,const Real* origin,const Real* normal,
@@ -186,8 +187,11 @@ try {
   if(route!="standard-device" && route!="direct-device")
     throw std::invalid_argument("Physical plane requires a strict device pipeline; no fallback");
   const int global[3]={32,32,32},local[3]={nx,ny,nz},offset[3]={ox,oy,oz};
-  auto mesh=astr_insitu::build_device_plane(fcomm,step,time,global,local,offset,coordinates,velocity,
-    origin,normal,budget,reserve,retained,host_budget);
+  astr_insitu::DeviceMesh mesh;
+  if(!astr_insitu::local_product(MPI_Comm_f2c(fcomm),"velocity_slice",step,time,[&] {
+    mesh=astr_insitu::build_device_plane(fcomm,step,time,global,local,offset,coordinates,velocity,
+      origin,normal,budget,reserve,retained,host_budget);
+  })) return 0;
   return astr_insitu::render_resident_products(pipeline,backend,script,fcomm,step,time,"physical_plane",{std::move(mesh)});
 } catch(const std::exception& error) {
   std::fprintf(stderr,"Physical plane product failed: %s\n",error.what());

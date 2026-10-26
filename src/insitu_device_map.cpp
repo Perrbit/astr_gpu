@@ -21,6 +21,14 @@ bool has_extension(const char* extensions, const char* name)
 }
 }
 
+// Called only on the error path, before deciding whether the solver can resume.
+extern "C" int astr_insitu_product_device_health()
+{
+  static Libraries libraries;
+  auto synchronize = reinterpret_cast<int (*)()>(dlsym(libraries.cuda, "cuCtxSynchronize"));
+  return synchronize ? synchronize() : 1;
+}
+
 // Linux NVIDIA/EGL mapping only. Never creates, changes, or guesses a CUDA context.
 extern "C" int astr_insitu_map_current_cuda(int* index, char* uuid, int uuid_size,
                                             char* message, int message_size)

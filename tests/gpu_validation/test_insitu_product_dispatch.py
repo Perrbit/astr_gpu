@@ -203,7 +203,9 @@ def test_missing_image_pair_history_survives_restart(tmp_path,pipeline):
     final='outdat/new/checkpoints/step000000000012/insitu_control.bin'
     payload=(continuous/final).read_bytes()
     assert payload==(resumed/final).read_bytes()
-    assert struct.unpack_from('<7q',payload,224+96)==(12,12,2,0,0,5,2)
+    assert struct.unpack_from('<7q',payload,224+96)==(2,-1,-1,-1,0,0,0)
+    assert b'ASTRPF03' in payload
+    assert not list((resumed/'outdat/render').glob('q_surface*.jpeg'))
     for case in (continuous,first):
         output=case/'outdat/render'
         assert not list(output.glob('*step00000002.jpeg')) and not list(output.glob('*step00000002.eps'))

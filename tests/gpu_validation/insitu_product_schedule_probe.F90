@@ -14,6 +14,10 @@ program insitu_product_schedule_probe
       character(c_char),intent(in) :: id(*)
       integer(c_int),value :: code,phase
     end function
+    integer(c_int) function disable(id) bind(C,name='astr_insitu_product_disable')
+      import c_int,c_char
+      character(c_char),intent(in) :: id(*)
+    end function
   end interface
   call get_command_argument(1,file)
   call get_command_argument(2,mode)
@@ -23,10 +27,13 @@ program insitu_product_schedule_probe
     print *,trim(message)
     stop 1
   endif
+  if(index(mode,'family')>0) then
+    options%products='m12_diagnostics'; options%rendering_pipeline='standard-device'
+  endif
   call configure_product_schedules(options,0_int64,0.d0,ok)
   call require(ok,'configure')
   start_step=0
-  if(mode=='resumed') then
+  if(mode=='resumed'.or.index(mode,'disabled_resumed')==1) then
     open(newunit=unit,file=trim(state_file),access='stream',form='unformatted',status='old')
     call product_state_file(unit,.false.,5_int64,0.005d0,same,ok)
     close(unit)
@@ -40,13 +47,21 @@ program insitu_product_schedule_probe
       if(.not.product_due(options%product_ids(i))) cycle
       print '(i0,1x,a)',step,trim(options%product_ids(i))
       status=0
+      if(step==4.and.index(mode,'disabled')==1.and.trim(options%product_ids(i))=='q_surface.image') then
+        call require(disable('q_surface.image'//c_null_char)==0,'disable')
+        cycle
+      endif
       if(step==4.and.index(options%product_ids(i),'.image')>0) status=28
       status=report(trim(options%product_ids(i))//c_null_char,int(status,c_int), &
         merge(1_c_int,0_c_int,status>0))
       call require(status==0,'report')
     enddo
     call require(product_results_complete(),'publication results')
-    if(step==5.and.mode=='continuous') then
+    if(index(mode,'family')>0.and.step>4) then
+      call require(.not.product_due('q_surface.image'),'failed main image')
+      if(mod(step,2)==0) call require(product_scene_due('q_surface'),'healthy local view still supplied')
+    endif
+    if(step==5.and.(mode=='continuous'.or.mode=='disabled'.or.mode=='disabled_family')) then
       open(newunit=unit,file=trim(state_file),access='stream',form='unformatted',status='replace')
       call product_state_file(unit,.true.,5_int64,0.005d0,same,ok)
       close(unit)

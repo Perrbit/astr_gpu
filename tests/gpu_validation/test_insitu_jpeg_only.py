@@ -101,7 +101,9 @@ def test_m12_render_encodes_only_selected_formats(tmp_path, monkeypatch, write_e
         vtk_to_numpy=lambda data: pixels, rank=0, profile='m12_diagnostics', output=tmp_path,
         write_eps=write_eps, image_size=[8, 6], publish_pair=publication.publish_pair, timing=False,
         vtkIntArray=IntegerArray, vtkCommunicator=SimpleNamespace(MAX_OP=0, SUM_OP=1),
-        controller=SimpleNamespace(AllReduce=reduce))
+        controller=SimpleNamespace(AllReduce=reduce),
+        dispatch=SimpleNamespace(isolate_image=lambda operation: operation,
+            collective_call=lambda controller, operation: operation()))
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(pipeline), 'exec'), namespace)
     view = SimpleNamespace(CameraPosition=[0., 0., 1.], CameraFocalPoint=[0., 0., 0.],
                            CameraViewUp=[0., 1., 0.], CameraParallelScale=1.)

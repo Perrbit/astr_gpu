@@ -59,3 +59,29 @@ def test_clock_identity_and_next_target_corruption_rejected(tmp_path):
     state.write_bytes(payload)
     result = run(CONFIG, 'resumed', state, tmp_path)
     assert result.returncode != 0 and 'FAIL restore' in result.stdout
+
+
+@pytest.mark.skipif(not PROBE, reason='Set ASTR_INSITU_PRODUCT_SCHEDULE_PROBE')
+def test_disabled_image_is_not_retried_and_survives_restart(tmp_path):
+    state=tmp_path/'state.bin'
+    continuous=run(CONFIG,'disabled',state,tmp_path)
+    assert continuous.returncode==0,continuous.stdout+continuous.stderr
+    events=continuous.stdout.splitlines()
+    assert '4 q_surface.image' in events
+    assert not any(int(line.split()[0])>4 and line.endswith('q_surface.image') for line in events)
+    assert '12 q_surface.geometry' in events and '12 velocity_slice.image' in events
+    resumed=run(CONFIG,'disabled_resumed',state,tmp_path)
+    assert resumed.returncode==0,resumed.stdout+resumed.stderr
+    assert resumed.stdout.splitlines()==[line for line in events if int(line.split()[0])>5]
+    assert state.read_bytes()[:8]==b'ASTRPF03'
+    assert Path(str(state)+'.disabled').read_bytes()==Path(str(state)+'.disabled_resumed').read_bytes()
+
+
+@pytest.mark.skipif(not PROBE, reason='Set ASTR_INSITU_PRODUCT_SCHEDULE_PROBE')
+def test_failed_m12_main_image_keeps_derived_view_supply(tmp_path):
+    state=tmp_path/'state.bin'
+    full=run(CONFIG,'disabled_family',state,tmp_path)
+    assert full.returncode==0,full.stdout+full.stderr
+    tail=run(CONFIG,'disabled_resumed_family',state,tmp_path)
+    assert tail.returncode==0,tail.stdout+tail.stderr
+    assert Path(str(state)+'.disabled_family').read_bytes()==Path(str(state)+'.disabled_resumed_family').read_bytes()

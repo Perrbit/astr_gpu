@@ -4,6 +4,7 @@
 #include "insitu_device_product_audit.h"
 #include "insitu_device_wall.h"
 #include "insitu_product_dispatch.h"
+#include "insitu_product_failure.h"
 #include "insitu_m12_products.h"
 #include <viskores/cont/ArrayCopy.h>
 #include <viskores/cont/Algorithm.h>
@@ -616,19 +617,26 @@ try {
     };
     if(slice || surface) {
     ProductStage extraction("device_geometry_extract_inclusive","ASTR_IS8_DEVICE_GEOMETRY_EXTRACTION",fcomm,step);
-    auto extracted=astr_insitu::extract_tgv_geometry(reinterpret_cast<astr_insitu::NativeVector*>(velocity),
-      diagnostic,dimensions,offset,slice,surface,
-      iso,nullptr,global_cells,curve?reinterpret_cast<astr_insitu::NativeVector*>(coordinates):nullptr,global_dimensions,
-      diagnostic_components,!astr_insitu::retain_quantitative_product_fields());
-    if(surface) meshes.push_back(resident_mesh("q_surface",extracted.surface,step,time,3,halo,
-      diagnostic_components==14?reinterpret_cast<astr_insitu::DeviceDiagnostics*>(diagnostic):nullptr,extent,offset,global_cells,rank,
-      curve?reinterpret_cast<astr_insitu::NativeVector*>(coordinates):nullptr,std::uint64_t(host_budget),nullptr,0,demo,iso,
-      global_dimensions,(boundary_layer || m12_hd)?Real(1.1):Real(1.)));
+    for(const bool is_surface:{true,false}) {
+      if(is_surface?!surface:!slice) continue;
+      const auto before=meshes.size();
+      const bool ok=astr_insitu::local_product(comm,is_surface?"q_surface":"velocity_slice",step,time,[&] {
+        auto extracted=astr_insitu::extract_tgv_geometry(reinterpret_cast<astr_insitu::NativeVector*>(velocity),
+          diagnostic,dimensions,offset,!is_surface,is_surface,iso,nullptr,global_cells,
+          curve?reinterpret_cast<astr_insitu::NativeVector*>(coordinates):nullptr,global_dimensions,
+          diagnostic_components,!astr_insitu::retain_quantitative_product_fields());
+        if(is_surface) meshes.push_back(resident_mesh("q_surface",extracted.surface,step,time,3,halo,
+          diagnostic_components==14?reinterpret_cast<astr_insitu::DeviceDiagnostics*>(diagnostic):nullptr,extent,offset,global_cells,rank,
+          curve?reinterpret_cast<astr_insitu::NativeVector*>(coordinates):nullptr,std::uint64_t(host_budget),nullptr,0,demo,iso,
+          global_dimensions,(boundary_layer || m12_hd)?Real(1.1):Real(1.)));
+        else meshes.push_back(resident_mesh("velocity_slice",
+          astr_insitu::triangulate_device_slice(extracted.slice,dimensions,offset,global_cells),step,time,3,
+          halo,nullptr,extent,offset,global_cells,rank));
+      });
+      if(!ok) meshes.resize(before);
+    }
     if(curve) std::printf("ASTR_INSITU_CURVE_SURFACE_FRAME rank=%d step=%d physical_coordinates=1 "
       "field_download_bytes=0 geometry_host_bytes=0\n",rank,step);
-    if(slice) meshes.push_back(resident_mesh("velocity_slice",
-      astr_insitu::triangulate_device_slice(extracted.slice,dimensions,offset,global_cells),step,time,3,
-      halo,nullptr,extent,offset,global_cells,rank));
     }
     if(slice || surface) {
       const int status=render_group();if(status) return status;
@@ -636,8 +644,11 @@ try {
     if(boundary_layer && astr_insitu_scene_due("velocity_slice")) {
       const int global[3]={global_cells,global_y,global_z},local[3]={nx,ny,nz},start[3]={ox,oy,oz};
       const Real origin[3]={Real(0.),Real(0.),Real(45.)},normal[3]={Real(0.),Real(0.),Real(1.)};
-      meshes.push_back(astr_insitu::build_device_plane(fcomm,step,time,global,local,start,coordinates,velocity,
-        origin,normal,budget,reserve,retained,host_budget,true,Real(1.1)));
+      const auto before=meshes.size();
+      if(!astr_insitu::local_product(comm,"velocity_slice",step,time,[&] {
+        meshes.push_back(astr_insitu::build_device_plane(fcomm,step,time,global,local,start,coordinates,velocity,
+          origin,normal,budget,reserve,retained,host_budget,true,Real(1.1)));
+      })) meshes.resize(before);
     }
     if(m12_hd && astr_insitu_scene_due("velocity_slice")) {
       if(!temperature) throw std::invalid_argument("M12 independent temperature is missing");

@@ -46,7 +46,7 @@ def publish(path,jpeg,eps):
     return original_publish(path,jpeg,eps)
 
 
-base['render_product'].__globals__['capture_image']=capture
-base['render_product'].__globals__['publish_pair']=publish
+base['catalyst_execute'].__globals__['capture_image']=capture
+base['catalyst_execute'].__globals__['publish_pair']=publish
 catalyst_execute=base['catalyst_execute']
 catalyst_finalize=base['catalyst_finalize']

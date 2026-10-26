@@ -112,7 +112,7 @@ def test_adaptive_missing_wait_exact_restart(tmp_path,pipeline,record_property):
         missing=list((root/'outdat/render').glob('missing.q_surface.step00000005.rank*.json'))
         assert len(missing)==2
         assert not (root/'outdat/render/q_surface.step00000005.jpeg').exists()
-    assert sorted(int(p.name.split('step')[1][:8]) for p in (tail/'outdat/render').glob('q_surface*.jpeg'))==[11]
+    assert not list((tail/'outdat/render').glob('q_surface*.jpeg'))
     assert sorted(int(p.name.split('step')[1][:8]) for p in (tail/'outdat/render').glob('instantaneous_streamlines*.jpeg'))==[]
     record_property('directory_bytes',[a,b,c])
 

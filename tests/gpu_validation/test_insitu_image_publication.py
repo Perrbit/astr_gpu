@@ -133,7 +133,7 @@ def test_collective_missing_image_and_exact_restart(reference,tmp_path,fault,cod
         assert journal['status']=='missing' and journal['errno']==code
         assert journal['step']==2 and journal['time']==.002 and journal['phase']=='stage_eps'
         receipt=json.loads((output/f'mesh_step00000002_rank{rank}.json').read_text())
-        assert receipt['products']['q_surface']['image']==journal
+        assert receipt['products']['q_surface']['image']['status']=='disabled'
         name=f'sample.statistics.step00000004.rank{rank:08d}.bin'
         assert (output/name).read_bytes()==(healthy/'outdat/render'/name).read_bytes()
     assert all(journal==journals[0] for journal in journals)
@@ -142,16 +142,13 @@ def test_collective_missing_image_and_exact_restart(reference,tmp_path,fault,cod
     for step in (2,4):
         name=f'q_surface.step{step:08d}.pvtp'
         compare_geometry(healthy/'outdat/render'/name,output/name,['u','v','w','Q_rs'])
-    with Image.open(output/'q_surface.step00000004.jpeg') as picture:
-        assert np.asarray(picture).shape==(600,800,3)
-        assert np.any(np.asarray(picture)<245)
     for extension in ('jpeg','eps'):
         name='q_surface.step00000004.'+extension
-        assert (output/name).read_bytes()==(healthy/'outdat/render'/name).read_bytes()
+        assert not (output/name).exists()
     assert 'ASTR_INSITU_IMAGE_MISSING' in (failed/'run.log').read_text()
     for name in ('state.h5','statistics.h5'):
         compare_fields(healthy/FINAL/name,failed/FINAL/name)
-    for name in ('control.bin','insitu_control.bin'):
+    for name in ('control.bin',):
         assert (healthy/FINAL/name).read_bytes()==(failed/FINAL/name).read_bytes()
     resumed,_=run_case(args,ROOT,'gpu',ranks,'resumed',4,grid='32,32,32',topology=topology,
                       restore=failed/'outdat/new/checkpoints/step000000000003',
@@ -169,8 +166,9 @@ def test_collective_missing_image_and_exact_restart(reference,tmp_path,fault,cod
 
 @pytest.mark.parametrize('fault,message',(('unknown','injected unknown image failure'),
     ('journal','Cannot record missing in-situ image'),('geometry','injected geometry failure')))
-def test_nonrecoverable_collective_stop(tmp_path,fault,message):
+def test_optional_failure_continues(tmp_path,fault,message):
     case,_=run_case(params(tmp_path),ROOT,'gpu',2,'fault_'+fault,4,grid='32,32,32',
-                    checkpoint_interval=99,insitu_config=config(),reject=message)
-    assert not list((case/'outdat/render').glob('mesh_step00000004*'))
+                    checkpoint_interval=99,insitu_config=config())
+    assert list((case/'outdat/render').glob('mesh_step00000004*'))
+    assert message in (case/'run.log').read_text()
     assert not (case/'outdat/render'/'q_surface.step00000004.jpeg').exists()

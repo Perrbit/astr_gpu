@@ -23,6 +23,7 @@ from egl_identity import EGL
 from tgv_streamlines import make_trace,check_crossing
 from image_publication import publish_pair,eps_output_enabled,RECOVERABLE_ERRNOS
 import product_dispatch as dispatch
+from textwrap import dedent
 
 arguments=catalyst.get_args()
 write_eps=eps_output_enabled()
@@ -100,7 +101,7 @@ def collective_error(message):
     total.SetNumberOfTuples(1)
     controller.AllReduce(local,total,vtkCommunicator.MAX_OP)
     if total.GetValue(0):
-        raise RuntimeError(message or 'Native in-situ failure on another rank')
+        dispatch.collective_failure(controller, message or 'Native in-situ failure on another rank')
 
 
 def global_surface_bounds():
@@ -208,10 +209,11 @@ def publish_image(view,picture,name,step,time):
             os.fsync(stream.fileno())
     except Exception as exc:
         error='Cannot record missing in-situ image: '+str(exc)
-    collective_error(error)
+    if error:
+        print('ASTR_INSITU_DIAGNOSTIC_WRITE_FAILED '+error,flush=True)
     if rank==0:
         print('ASTR_INSITU_IMAGE_MISSING '+json.dumps(receipt),flush=True)
-    return receipt
+    return dispatch.disable(name,'image',step,time,receipt)
 
 
 def empty_local_plane(proxy=None):
@@ -414,193 +416,205 @@ def catalyst_execute(info):
             record['statistics']['average']='Reynolds'
     record_time('pipeline_setup',setup_started)
     for name,geometry in products:
-        image_due=dispatch.due(name,'image')
-        geometry_due=dispatch.due(name,'geometry') and not demonstration
-        image_suffixes=('jpeg','eps') if write_eps else ('jpeg',)
-        suffixes=(('pvtp',) if geometry_due else ())+(image_suffixes if image_due else ())
-        existing=any((output/f'{name}.step{step:08d}.{suffix}').exists() for suffix in suffixes)
-        collective_error('Refusing to overwrite an existing in-situ frame' if existing else '')
-        extraction_started=clock()
-        geometry.UpdatePipeline(t)
-        if geometry_due:
-            if name not in extraction_objects:
-                merged=pv.MergeBlocks(Input=geometry)
-                surface=pv.ExtractSurface(Input=merged)
-                tagged=pv.ProgrammableFilter(Input=surface)
-                extraction_objects[name]=(tagged,surface,merged)
-            tagged,surface,merged=extraction_objects[name]
-            tagged.Script=f'''
-from vtkmodules.vtkCommonCore import vtkDoubleArray,vtkTypeInt64Array,vtkStringArray
-result=self.GetOutputDataObject(0)
-result.ShallowCopy(self.GetInputDataObject(0,0))
-for name,value,kind in [('simulation_time',{t!r},vtkDoubleArray),('complete_step',{step},vtkTypeInt64Array)]:
-    item=kind()
-    item.SetName(name)
-    item.InsertNextValue(value)
-    result.GetFieldData().AddArray(item)
-for name,value in {statistics_clocks!r}.items():
-    item=vtkDoubleArray()
-    item.SetName(name)
-    item.InsertNextValue(value)
-    result.GetFieldData().AddArray(item)
-space=vtkStringArray()
-space.SetName('coordinate_space')
-space.InsertNextValue('physical')
-result.GetFieldData().AddArray(space)
-units=vtkStringArray()
-units.SetName('field_units')
-for name,unit in {record.get('units',{})!r}.items():
-    units.InsertNextValue(name+'='+unit)
-result.GetFieldData().AddArray(units)
-'''
-            destination=output/f'{name}.step{step:08d}.pvtp'
-            # Materialize before writing so extraction is not attributed to writer I/O.
-            tagged.UpdatePipeline(t)
-        record_time('extraction',extraction_started)
-        if geometry_due:
-            save_geometry(destination,tagged)
-            dispatch.report(name,'geometry')
-        elif demonstration:
-            details=geometry.GetDataInformation()
-            record.setdefault('geometry',{})[name]={'points':details.GetNumberOfPoints(),
-                'cells':details.GetNumberOfCells(),'bounds':list(details.GetBounds())}
-            if name=='q_surface' and not empty_local_plane(geometry):
-                limits=geometry.PointData['Q_rs'].GetRange(0)
-                collective_error('Q=0 surface field differs' if not np.isfinite(limits).all() or
-                    max(abs(value) for value in limits)>2e-10 else '')
-            elif name=='q_surface':
-                collective_error('')
-            if name not in demo_colors:
-                speed=pv.Calculator(Input=geometry)
-                speed.ResultArrayName='speed'
-                speed.Function='sqrt(u*u+v*v+w*w)'
-                demo_colors[name]=speed
-                pipeline_objects.append(speed)
-            geometry=demo_colors[name]
-        validation_started=clock()
-        controller.Barrier()
-        error=''
-        if rank==0 and name=='crossing_streamlines' and geometry_due:
+        failure_kind='scene'
+        try:
+            image_due=dispatch.due(name,'image')
+            geometry_due=dispatch.due(name,'geometry') and not demonstration
+            image_suffixes=('jpeg','eps') if write_eps else ('jpeg',)
+            suffixes=(('pvtp',) if geometry_due else ())+(image_suffixes if image_due else ())
+            existing=any((output/f'{name}.step{step:08d}.{suffix}').exists() for suffix in suffixes)
+            collective_error('Refusing to overwrite an existing in-situ frame' if existing else '')
+            extraction_started=clock()
+            dispatch.collective_call(controller,lambda: geometry.UpdatePipeline(t))
+            if geometry_due:
+                if name not in extraction_objects:
+                    merged=pv.MergeBlocks(Input=geometry)
+                    surface=pv.ExtractSurface(Input=merged)
+                    tagged=pv.ProgrammableFilter(Input=surface)
+                    extraction_objects[name]=(tagged,surface,merged)
+                tagged,surface,merged=extraction_objects[name]
+                tagged.Script=dedent(f'''
+    from vtkmodules.vtkCommonCore import vtkDoubleArray,vtkTypeInt64Array,vtkStringArray
+    result=self.GetOutputDataObject(0)
+    result.ShallowCopy(self.GetInputDataObject(0,0))
+    for name,value,kind in [('simulation_time',{t!r},vtkDoubleArray),('complete_step',{step},vtkTypeInt64Array)]:
+        item=kind()
+        item.SetName(name)
+        item.InsertNextValue(value)
+        result.GetFieldData().AddArray(item)
+    for name,value in {statistics_clocks!r}.items():
+        item=vtkDoubleArray()
+        item.SetName(name)
+        item.InsertNextValue(value)
+        result.GetFieldData().AddArray(item)
+    space=vtkStringArray()
+    space.SetName('coordinate_space')
+    space.InsertNextValue('physical')
+    result.GetFieldData().AddArray(space)
+    units=vtkStringArray()
+    units.SetName('field_units')
+    for name,unit in {record.get('units',{})!r}.items():
+        units.InsertNextValue(name+'='+unit)
+    result.GetFieldData().AddArray(units)
+    ''')
+                destination=output/f'{name}.step{step:08d}.pvtp'
+                # Materialize before writing so extraction is not attributed to writer I/O.
+                dispatch.collective_call(controller,lambda: tagged.UpdatePipeline(t))
+            record_time('extraction',extraction_started)
+            if geometry_due:
+                try:
+                    save_geometry(destination,tagged)
+                    dispatch.report(name,'geometry')
+                except dispatch.ProductFailure as exc:
+                    record['products'].setdefault(name,{})['geometry']=dispatch.disable(name,'geometry',step,t,exc)
+            elif demonstration:
+                details=geometry.GetDataInformation()
+                record.setdefault('geometry',{})[name]={'points':details.GetNumberOfPoints(),
+                    'cells':details.GetNumberOfCells(),'bounds':list(details.GetBounds())}
+                if name=='q_surface' and not empty_local_plane(geometry):
+                    limits=geometry.PointData['Q_rs'].GetRange(0)
+                    collective_error('Q=0 surface field differs' if not np.isfinite(limits).all() or
+                        max(abs(value) for value in limits)>2e-10 else '')
+                elif name=='q_surface':
+                    collective_error('')
+                if name not in demo_colors:
+                    speed=pv.Calculator(Input=geometry)
+                    speed.ResultArrayName='speed'
+                    speed.Function='sqrt(u*u+v*v+w*w)'
+                    demo_colors[name]=speed
+                    pipeline_objects.append(speed)
+                geometry=demo_colors[name]
+            failure_kind='image'
+            validation_started=clock()
+            controller.Barrier()
+            error=''
+            if rank==0 and name=='crossing_streamlines' and geometry_due:
+                try:
+                    reader=vtkXMLPPolyDataReader()
+                    reader.SetFileName(str(destination))
+                    reader.Update()
+                    record['crossing_maxabs']=check_crossing(reader.GetOutput())
+                except Exception as exc:
+                    error=str(exc)
+            collective_error(error)
+            record_time('geometry_validation_inclusive',validation_started)
+            if not image_due:
+                record['products'].setdefault(name,{}).setdefault('geometry','written')
+                continue
+            setup_started=clock()
+            if name not in render_objects:
+                manager=servermanager.ProxyManager()
+                initial_colors={group:set(manager.GetProxiesInGroup(group)) for group in
+                                ('lookup_tables','piecewise_functions','scalar_bars')}
+                view=pv.CreateView('RenderView')
+                view.ViewSize=image_size
+                view.UseColorPaletteForBackground=0
+                view.Background=[1.,1.,1.]
+                view.OrientationAxesVisibility=0
+                view.RemoteRenderThreshold=0.
+                view.CameraPosition=[13.,11.,12.]
+                view.CameraFocalPoint=[np.pi]*3
+                view.CameraViewUp=[0.,0.,1.]
+                view.CameraParallelProjection=1
+                view.CameraParallelScale=5.
+                planar_bounds=None
+                if profile in ('channel_walls','air5_walls'):
+                    bounds=global_surface_bounds()
+                    planar_bounds=bounds.ravel().tolist()
+                    center=bounds.mean(axis=1)
+                    length=bounds[:,1]-bounds[:,0]
+                    view.CameraPosition=(center+length*np.array([1.2,1.7,1.7])).tolist()
+                    if profile=='air5_walls':
+                        view.CameraPosition=(center+float(length.max())*np.array([.3,1.7,.5])).tolist()
+                    view.CameraFocalPoint=center.tolist()
+                    view.CameraViewUp=[0.,1.,0.]
+                    view.CameraParallelScale=.6*float(length.max())
+                    # Keep the pose; enlarge only if the physical box would be clipped.
+                    forward=center-np.asarray(view.CameraPosition)
+                    forward/=np.linalg.norm(forward)
+                    right=np.cross(forward,np.asarray(view.CameraViewUp))
+                    right/=np.linalg.norm(right)
+                    up=np.cross(right,forward)
+                    half_height=.5*np.dot(np.abs(up),length)
+                    half_width=.5*np.dot(np.abs(right),length)
+                    view.CameraParallelScale=max(view.CameraParallelScale,1.05*half_height,
+                                                 1.05*half_width/(800/600))
+                display=pv.Show(geometry,view)
+                planar = is_two_dimensional_product(name,profile,planar_bounds)
+                if planar:
+                    # ParaView representations expose material coefficients, not LightingOff.
+                    display.Ambient=1.
+                    display.Diffuse=0.
+                    display.Specular=0.
+                if 'streamlines' in name:
+                    display.LineWidth=2.
+                color=name if profile in ('channel_walls','air5_walls') else ('mean_u_'+name.split('_')[1] if name.startswith('mean_') else 'u')
+                if demonstration:
+                    color='speed'
+                display.SetScalarColoring(color,0)
+                lut=pv.GetColorTransferFunction(color)
+                display.ColorArrayName=['POINTS',color]
+                display.LookupTable=lut
+                lut.AutomaticRescaleRangeMode='Never'
+                lut.ApplyPreset('Cool to Warm (Extended)',False)
+                physical_name=name.removeprefix('mean_')
+                color_range={'wall_pressure':(0.,12.),'wall_shear_x':(-.02,.02),
+                             'wall_heat_into_gas':(-.2,.2)}.get(physical_name,(-1.,1.))
+                if demonstration:
+                    color_range=(0.,1.)
+                if profile=='air5_walls':
+                    color_range=({'pressure':(0.,60000.),'temperature':(1500.,3500.),
+                        'vibrational_temperature':(1500.,3500.),'wall_shear_x':(-1.,1.),
+                        'wall_heat_into_gas':(-60000.,60000.)}.get(physical_name,(0.,1.)))
+                lut.RescaleTransferFunction(*color_range)
+                display.SetScalarBarVisibility(view,True)
+                legend=pv.GetScalarBar(lut,view)
+                legend.Title={'mean_u_reynolds':'Reynolds u','mean_u_favre':'Favre u','speed':'Speed'}.get(color,color)
+                legend.ComponentTitle=''
+                legend.WindowLocation='Upper Right Corner'
+                legend.ScalarBarLength=.45
+                legend.ScalarBarThickness=16
+                legend.TitleFontSize=16
+                legend.LabelFontSize=14
+                legend.TitleColor=[0.,0.,0.]
+                legend.LabelColor=[0.,0.,0.]
+                render_objects[name]=(view,display,color,color_range)
+                for group,initial in initial_colors.items():
+                    owned_colors.extend(proxy for key,proxy in manager.GetProxiesInGroup(group).items()
+                                        if key not in initial)
+            view,display,color,color_range=render_objects[name]
+            record_time('view_setup',setup_started)
+            render_started=clock()
+            dispatch.collective_call(controller,lambda: pv.Render(view))
+            error=''
+            actual=''
             try:
-                reader=vtkXMLPPolyDataReader()
-                reader.SetFileName(str(destination))
-                reader.Update()
-                record['crossing_maxabs']=check_crossing(reader.GetOutput())
+                window=vtkPVProcessWindow.GetRenderWindow()
+                window.MakeCurrent()
+                actual=EGL().current_uuid()
+                if window.GetClassName()!='vtkEGLRenderWindow' or actual!=expected_uuid:
+                    raise RuntimeError('Actual EGL context differs from solver CUDA device')
             except Exception as exc:
                 error=str(exc)
-        collective_error(error)
-        record_time('geometry_validation_inclusive',validation_started)
-        if not image_due:
-            record['products'][name]={'geometry':'written'}
-            continue
-        setup_started=clock()
-        if name not in render_objects:
-            manager=servermanager.ProxyManager()
-            initial_colors={group:set(manager.GetProxiesInGroup(group)) for group in
-                            ('lookup_tables','piecewise_functions','scalar_bars')}
-            view=pv.CreateView('RenderView')
-            view.ViewSize=image_size
-            view.UseColorPaletteForBackground=0
-            view.Background=[1.,1.,1.]
-            view.OrientationAxesVisibility=0
-            view.RemoteRenderThreshold=0.
-            view.CameraPosition=[13.,11.,12.]
-            view.CameraFocalPoint=[np.pi]*3
-            view.CameraViewUp=[0.,0.,1.]
-            view.CameraParallelProjection=1
-            view.CameraParallelScale=5.
-            planar_bounds=None
-            if profile in ('channel_walls','air5_walls'):
-                bounds=global_surface_bounds()
-                planar_bounds=bounds.ravel().tolist()
-                center=bounds.mean(axis=1)
-                length=bounds[:,1]-bounds[:,0]
-                view.CameraPosition=(center+length*np.array([1.2,1.7,1.7])).tolist()
-                if profile=='air5_walls':
-                    view.CameraPosition=(center+float(length.max())*np.array([.3,1.7,.5])).tolist()
-                view.CameraFocalPoint=center.tolist()
-                view.CameraViewUp=[0.,1.,0.]
-                view.CameraParallelScale=.6*float(length.max())
-                # Keep the pose; enlarge only if the physical box would be clipped.
-                forward=center-np.asarray(view.CameraPosition)
-                forward/=np.linalg.norm(forward)
-                right=np.cross(forward,np.asarray(view.CameraViewUp))
-                right/=np.linalg.norm(right)
-                up=np.cross(right,forward)
-                half_height=.5*np.dot(np.abs(up),length)
-                half_width=.5*np.dot(np.abs(right),length)
-                view.CameraParallelScale=max(view.CameraParallelScale,1.05*half_height,
-                                             1.05*half_width/(800/600))
-            display=pv.Show(geometry,view)
-            planar = is_two_dimensional_product(name,profile,planar_bounds)
-            if planar:
-                # ParaView representations expose material coefficients, not LightingOff.
-                display.Ambient=1.
-                display.Diffuse=0.
-                display.Specular=0.
-            if 'streamlines' in name:
-                display.LineWidth=2.
-            color=name if profile in ('channel_walls','air5_walls') else ('mean_u_'+name.split('_')[1] if name.startswith('mean_') else 'u')
-            if demonstration:
-                color='speed'
-            display.SetScalarColoring(color,0)
-            lut=pv.GetColorTransferFunction(color)
-            display.ColorArrayName=['POINTS',color]
-            display.LookupTable=lut
-            lut.AutomaticRescaleRangeMode='Never'
-            lut.ApplyPreset('Cool to Warm (Extended)',False)
-            physical_name=name.removeprefix('mean_')
-            color_range={'wall_pressure':(0.,12.),'wall_shear_x':(-.02,.02),
-                         'wall_heat_into_gas':(-.2,.2)}.get(physical_name,(-1.,1.))
-            if demonstration:
-                color_range=(0.,1.)
-            if profile=='air5_walls':
-                color_range=({'pressure':(0.,60000.),'temperature':(1500.,3500.),
-                    'vibrational_temperature':(1500.,3500.),'wall_shear_x':(-1.,1.),
-                    'wall_heat_into_gas':(-60000.,60000.)}.get(physical_name,(0.,1.)))
-            lut.RescaleTransferFunction(*color_range)
-            display.SetScalarBarVisibility(view,True)
-            legend=pv.GetScalarBar(lut,view)
-            legend.Title={'mean_u_reynolds':'Reynolds u','mean_u_favre':'Favre u','speed':'Speed'}.get(color,color)
-            legend.ComponentTitle=''
-            legend.WindowLocation='Upper Right Corner'
-            legend.ScalarBarLength=.45
-            legend.ScalarBarThickness=16
-            legend.TitleFontSize=16
-            legend.LabelFontSize=14
-            legend.TitleColor=[0.,0.,0.]
-            legend.LabelColor=[0.,0.,0.]
-            render_objects[name]=(view,display,color,color_range)
-            for group,initial in initial_colors.items():
-                owned_colors.extend(proxy for key,proxy in manager.GetProxiesInGroup(group).items()
-                                    if key not in initial)
-        view,display,color,color_range=render_objects[name]
-        record_time('view_setup',setup_started)
-        render_started=clock()
-        pv.Render(view)
-        error=''
-        actual=''
-        try:
-            window=vtkPVProcessWindow.GetRenderWindow()
-            window.MakeCurrent()
-            actual=EGL().current_uuid()
-            if window.GetClassName()!='vtkEGLRenderWindow' or actual!=expected_uuid:
-                raise RuntimeError('Actual EGL context differs from solver CUDA device')
-        except Exception as exc:
-            error=str(exc)
-        collective_error(error)
-        record_time('render_inclusive',render_started)
-        picture=output/f'{name}.step{step:08d}.jpeg'
-        status=publish_image(view,picture,name,step,t)
-        dispatch.report(name,'image',status)
-        record['products'][name]={'egl_uuid':actual,'image':status}
-        record['products'][name]['color_field']=color
-        record['products'][name]['color_range']=list(color_range)
-        record['products'][name]['scalar_bar_visible']=bool(display.IsScalarBarVisible(view))
-        record['products'][name]['scalar_bar_label_color']=list(pv.GetScalarBar(display.LookupTable,view).LabelColor)
-        record['products'][name]['flat_color_lighting']=bool(display.Ambient==1. and display.Diffuse==0. and display.Specular==0.)
-        if name.startswith('mean_'):
-            record['products'][name]['velocity_average']='Favre' if name.startswith('mean_favre_') else 'Reynolds'
+            collective_error(error)
+            record_time('render_inclusive',render_started)
+            picture=output/f'{name}.step{step:08d}.jpeg'
+            status=publish_image(view,picture,name,step,t)
+            dispatch.report(name,'image',status)
+            record['products'].setdefault(name,{}).update(egl_uuid=actual,image=status)
+            record['products'][name]['color_field']=color
+            record['products'][name]['color_range']=list(color_range)
+            record['products'][name]['scalar_bar_visible']=bool(display.IsScalarBarVisible(view))
+            record['products'][name]['scalar_bar_label_color']=list(pv.GetScalarBar(display.LookupTable,view).LabelColor)
+            record['products'][name]['flat_color_lighting']=bool(display.Ambient==1. and display.Diffuse==0. and display.Specular==0.)
+            if name.startswith('mean_'):
+                record['products'][name]['velocity_average']='Favre' if name.startswith('mean_favre_') else 'Reynolds'
+        except dispatch.ProductFailure as exc:
+            kinds=('image','geometry') if failure_kind=='scene' else ('image',)
+            for kind in kinds:
+                if dispatch.due(name,kind):
+                    receipt=dispatch.disable(name,kind,step,t,exc)
+                    record['products'].setdefault(name,{})[kind]=receipt
     adaptive=dispatch.adaptive_receipts(name for name,geometry in products)
     if adaptive:
         record['adaptive_outputs']=adaptive
@@ -610,9 +624,15 @@ result.GetFieldData().AddArray(units)
         (output/f'mesh_step{step:08d}_rank{rank}.json').write_text(json.dumps(record,indent=2))
     except Exception as exc:
         error='Cannot record in-situ frame: '+str(exc)
-    collective_error(error)
+    if error:
+        print('ASTR_INSITU_DIAGNOSTIC_WRITE_FAILED '+error,flush=True)
     record_time('metadata_write_inclusive',metadata_started)
     frames.append((step,t))
+    for name in list(render_objects):
+        if not dispatch.enabled(name,'image'):
+            view,display,_,_=render_objects.pop(name)
+            pv.Delete(display)
+            pv.Delete(view)
     record_time('python_execute_inclusive',execute_started)
     if timing_enabled:
         print('ASTR_INSITU_PIPELINE_TIMING '+json.dumps(
@@ -635,4 +655,7 @@ def catalyst_finalize():
     for proxy in owned_colors:
         pv.Delete(proxy)
     owned_colors.clear()
-    (output/f'lifecycle_rank{rank}.json').write_text(json.dumps({'frames':frames,'finalized':True}))
+    try:
+        (output/f'lifecycle_rank{rank}.json').write_text(json.dumps({'frames':frames,'finalized':True}))
+    except OSError as exc:
+        print('ASTR_INSITU_DIAGNOSTIC_WRITE_FAILED '+str(exc),flush=True)

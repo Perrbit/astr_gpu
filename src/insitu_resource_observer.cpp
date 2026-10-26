@@ -27,6 +27,7 @@ void* library=nullptr;
 nvmlDevice_t device=nullptr;
 std::vector<int> pids;
 std::string report_path;
+bool report_enabled=true;
 Bytes host_base=0,device_base=0,host_peak=0,device_peak=0;
 Bytes host_limit=0,device_limit=0,reserve=0;
 bool active=false;
@@ -112,12 +113,16 @@ void record(const char* stage,Bytes host,Bytes gpu,Bytes free)
   device_peak=std::max(device_peak,gpu);
   const Bytes dh=host>host_base?host-host_base:0;
   const Bytes dg=gpu>device_base?gpu-device_base:0;
-  std::ofstream output(report_path,std::ios::app);
-  require(bool(output),"cannot open resource observation report");
-  output<<stage<<','<<host<<','<<gpu<<','<<free<<','<<dh<<','<<dg<<','
-        <<host_peak<<','<<device_peak<<'\n';
-  output.close();
-  require(bool(output),"cannot write resource observation report");
+  if(report_enabled) {
+    std::ofstream output(report_path,std::ios::app);
+    output<<stage<<','<<host<<','<<gpu<<','<<free<<','<<dh<<','<<dg<<','
+          <<host_peak<<','<<device_peak<<'\n';
+    output.close();
+    if(!output) {
+      std::fprintf(stderr,"ASTR_INSITU_DIAGNOSTIC_WRITE_FAILED resource report %s; logging disabled\n",report_path.c_str());
+      report_enabled=false;
+    }
+  }
   require(dh<=host_limit,"observed node host increment exceeds budget");
   require(dg<=device_limit,"observed physical GPU increment exceeds budget");
   require(free>=reserve,"observed device free memory below reserve");
@@ -148,7 +153,9 @@ try {
   char suffix[80];
   std::snprintf(suffix,sizeof(suffix),"/resources.rank%08d.csv",rank);
   report_path=std::string(output_directory)+suffix;
-  require(!std::ifstream(report_path).good(),"resource report already exists");
+  report_enabled=!std::ifstream(report_path).good();
+  if(!report_enabled)
+    std::fprintf(stderr,"ASTR_INSITU_DIAGNOSTIC_WRITE_FAILED resource report exists: %s; logging disabled\n",report_path.c_str());
   library=dlopen("libnvidia-ml.so.1",RTLD_NOW|RTLD_LOCAL);
   require(library!=nullptr,"NVML runtime unavailable");
   auto initialize=symbol<nvmlReturn_t (*)()>("nvmlInit_v2");
@@ -221,13 +228,18 @@ try {
   allocation_calls=0;largest_allocation=0;
   temporary_calls=0;graphics_allocation_calls=0;
 #endif
-  std::ofstream output(report_path);
-  output<<"# device="<<identity<<" host_limit="<<host_limit<<" device_limit="<<device_limit
+  if(report_enabled) {
+    std::ofstream output(report_path);
+    output<<"# device="<<identity<<" host_limit="<<host_limit<<" device_limit="<<device_limit
         <<" reserve="<<reserve<<"\n"
         <<"stage,node_rss_bytes,job_device_bytes,device_free_bytes,host_increment_bytes,device_increment_bytes,"
         <<"node_rss_peak_bytes,job_device_peak_bytes\n";
-  output.close();
-  require(bool(output),"cannot initialize resource observation report");
+    output.close();
+    if(!output) {
+      std::fprintf(stderr,"ASTR_INSITU_DIAGNOSTIC_WRITE_FAILED resource report %s; logging disabled\n",report_path.c_str());
+      report_enabled=false;
+    }
+  }
   active=true;
   record("baseline",host_base,device_base,free);
   return 0;

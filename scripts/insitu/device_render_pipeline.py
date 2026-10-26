@@ -90,7 +90,8 @@ def collective_error(message):
     total.SetNumberOfTuples(1)
     controller.AllReduce(local, total, vtkCommunicator.MAX_OP)
     if total.GetValue(0):
-        raise RuntimeError(message or 'Strict device rendering failed on another rank')
+        # Check CUDA health and classify only after every rank has left the stage.
+        dispatch.collective_failure(controller, message or 'Strict device rendering failed on another rank')
 
 
 def local_piece(data):
@@ -158,7 +159,7 @@ def update_geometry(name, piece):
             raise RuntimeError('Missing registered direct device actor')
         actor = vtkActor(f'_{address:016x}_p_vtkActor')
         item.update(actor=actor, mapper=actor.GetMapper())
-    if 'view' not in item:
+    if 'view' not in item and dispatch.enabled(name, 'image'):
         setup_view(name, item, piece)
     if profile == 'boundary_layer':
         item['local_bounds'] = [metadata(piece, 'bound'+str(d)) for d in range(6)] if points else None
@@ -206,6 +207,7 @@ def setup_view(name, item, piece):
     if 'streamlines' in name:
         item['actor'].GetProperty().SetLineWidth(2.)
     view = pv.CreateView('RenderView')
+    item['view'] = view
     view.ViewSize = image_size
     view.UseColorPaletteForBackground = 0
     view.Background = [1., 1., 1.]
@@ -378,6 +380,7 @@ def setup_m12_view(name, item, piece, local_window=None):
     length = [bounds[2*d+1]-bounds[2*d] for d in range(3)]
     view = pv.CreateView('RenderView')
     view.ViewSize = size
+    item['view'] = view
     view.UseColorPaletteForBackground = 0
     view.Background = [1., 1., 1.]
     view.OrientationAxesVisibility = int(not planar)
@@ -538,10 +541,10 @@ def catalyst_execute(info):
 
     names = [name for name in product_names if dispatch.scene_due(name) and group_member(name)]
     if profile == 'm12_diagnostics' and 'velocity_slice' in names:
-        names += ['temperature_slice', 'spanwise_slice']
+        names += [name for name in ('temperature_slice', 'spanwise_slice') if dispatch.enabled(name, 'image')]
         sources['spanwise_slice'].UpdatePipeline(time)
         spanwise = local_piece(sources['spanwise_slice'].GetClientSideObject().GetOutputDataObject(0))
-        if metadata(spanwise, 'weak_half_range') > 0.:
+        if metadata(spanwise, 'weak_half_range') > 0. and dispatch.enabled('spanwise_slice_weak', 'image'):
             names.append('spanwise_slice_weak')
     statistics = None
     if wall_profile and first.GetFieldData().GetArray('mean_requested') is not None:
@@ -553,7 +556,7 @@ def catalyst_execute(info):
                 statistics['statistics_window_end'] <= statistics['statistics_window_start'] or bool(covered) != (duration > 0.):
             raise RuntimeError('Invalid device wall mean window/coverage')
         if covered:
-            names += ['mean_'+name for name in product_names]
+            names += ['mean_'+name for name in product_names if dispatch.enabled('mean_'+name, 'image')]
     if profile in ('all', 'streamlines') and metadata(first, 'mean_covered'):
         if profile=='streamlines':
             statistics = {key: metadata(first, key) for key in (
@@ -574,21 +577,33 @@ def catalyst_execute(info):
         source = sources[name]
         source.UpdatePipeline(time)
         piece = local_piece(source.GetClientSideObject().GetOutputDataObject(0))
-        points, cells = update_geometry(name, piece)
+        try:
+            points, cells = dispatch.collective_call(controller, lambda: update_geometry(name, piece))
+        except dispatch.ProductFailure as exc:
+            products[name] = dict(image=dispatch.disable(name, 'image', step, time, exc),
+                                  local_points=0, local_cells=0)
+            continue
         item = render_objects[name]
         products[name] = render_product(name, item, step, time, points, cells)
         if profile == 'm12_diagnostics' and name in ('q_surface', 'velocity_slice', 'temperature_slice'):
             windows = range(3) if name != 'q_surface' else (0,)
             for window in windows:
                 key = name + ('.local' if name == 'q_surface' else f'.x{window*100}_{(window+1)*100}')
+                if not dispatch.enabled(key, 'image'):
+                    continue
                 clone = render_objects.get(key)
                 if clone is None:
                     mapper, actor = vtkOpenGLPolyDataMapper(), vtkActor()
                     mapper.ScalarVisibilityOff()
                     actor.SetMapper(mapper)
                     clone = {'mapper': mapper, 'actor': actor}
-                    setup_m12_view(key, clone, piece, local_window=window)
                     render_objects[key] = clone
+                    try:
+                        dispatch.collective_call(controller,
+                            lambda: setup_m12_view(key, clone, piece, local_window=window))
+                    except dispatch.ProductFailure as exc:
+                        dispatch.disable(key, 'image', step, time, exc)
+                        continue
                 clone['mapper'].SetInputData(item['poly'])
                 clone['local_bounds'] = item['local_bounds']
                 if 'actual_ranges' in item:
@@ -606,15 +621,13 @@ def catalyst_execute(info):
                 products[name]['integration_step_limit'] = int(metadata(piece, 'streamline_step_limit'))
         if profile == 'm12_diagnostics':
             if name in product_names:
-                group = [p['image'] for key, p in products.items() if key == name or key.startswith(name+'.')]
                 if name == 'velocity_slice':
                     continue
-                dispatch.report(name, 'image', next((r for r in group if isinstance(r, dict)), None))
+                dispatch.report(name, 'image', products[name]['image'])
         else:
             dispatch.report(name, 'image', products[name]['image'])
     if profile == 'm12_diagnostics' and 'velocity_slice' in names:
-        group = [p['image'] for key, p in products.items() if 'slice' in key]
-        dispatch.report('velocity_slice', 'image', next((r for r in group if isinstance(r, dict)), None))
+        dispatch.report('velocity_slice', 'image', products['velocity_slice']['image'])
     record = {'step': step, 'time': time, 'processing_backend': 'device',
         'rendering_pipeline': pipeline, 'profile':profile, 'geometry_host_bytes': 0,
         'local_points': products[names[0]]['local_points'] if names else 0,
@@ -636,18 +649,26 @@ def catalyst_execute(info):
         if adaptive:
             pending_frame.setdefault('adaptive_outputs', {}).update(adaptive)
     if complete:
-        (output / f'mesh_step{step:08d}_rank{rank}.json').write_text(json.dumps(pending_frame, indent=2))
+        try:
+            (output / f'mesh_step{step:08d}_rank{rank}.json').write_text(json.dumps(pending_frame, indent=2))
+        except OSError as exc:
+            print('ASTR_INSITU_DIAGNOSTIC_WRITE_FAILED ' + str(exc), flush=True)
         frames.append((step, time))
         pending_frame = None
     if timing:
         print('ASTR_INSITU_PIPELINE_TIMING ' + json.dumps({'rank': rank, 'step': step, 'seconds': {
             'python_execute_inclusive': perf_counter()-started}}, sort_keys=True), flush=True)
     retire_resident_inputs()
+    for name in list(render_objects):
+        if not dispatch.enabled(name, 'image'):
+            release_render_product(name)
 
 
 def retire_resident_inputs():
     # Screenshots are complete. Drop array references without freeing GL capacity.
     for item in render_objects.values():
+        if 'mapper' not in item:
+            continue
         item['mapper'].GetVBOs().ClearAllDataArrays()
         if pipeline == 'standard-device':
             item['mapper'].SetInputData(vtkPolyData())
@@ -745,12 +766,16 @@ def render_streamline_candidate(first, step, time):
         budget_note='step_budget is not a physical domain exit')
     if statistics is not None:
         record['statistics']=statistics
-    (output / f'{key}.step{step:08d}.rank{rank:08d}.json').write_text(json.dumps(record,indent=2))
+    try:
+        (output / f'{key}.step{step:08d}.rank{rank:08d}.json').write_text(json.dumps(record,indent=2))
+    except OSError as exc:
+        print('ASTR_INSITU_DIAGNOSTIC_WRITE_FAILED ' + str(exc), flush=True)
     frames.append((step,time))
     if dispatch.independent():
         dispatch.report(name,'image',rendered['image'])
 
 
+@dispatch.isolate_image
 def render_product(name, item, step, time, points, cells):
     os.environ['ASTR_INSITU_PIXEL_PRODUCT']=name
     os.environ['ASTR_INSITU_PIXEL_STEP']=str(step)
@@ -762,7 +787,7 @@ def render_product(name, item, step, time, points, cells):
             f'range=[{low:.3e}, {high:.3e}]\nActual=[{actual[0]:.3e}, {actual[1]:.3e}]; '
             'independent scale; compare structure, not color amplitude')
     render_start = perf_counter()
-    pv.Render(view)
+    dispatch.collective_call(controller, lambda: pv.Render(view))
     window = vtkPVProcessWindow.GetRenderWindow()
     window.MakeCurrent()
     actual = EGL().current_uuid()
@@ -839,9 +864,11 @@ def render_product(name, item, step, time, points, cells):
                 os.fsync(stream.fileno())
         except Exception as exc:
             error = 'Cannot record missing in-situ image: ' + str(exc)
-        collective_error(error)
+        if error:
+            print('ASTR_INSITU_DIAGNOSTIC_WRITE_FAILED ' + error, flush=True)
         if rank == 0:
             print('ASTR_INSITU_IMAGE_MISSING ' + json.dumps(receipt), flush=True)
+        receipt = dispatch.disable(name, 'image', step, time, receipt)
     if timing:
         print('ASTR_INSITU_PIPELINE_TIMING ' + json.dumps({'rank': rank, 'step': step, 'product': name, 'seconds': {
             'render_inclusive': render_seconds,
@@ -895,21 +922,39 @@ def render_product(name, item, step, time, points, cells):
     return result
 
 
-def catalyst_finalize():
-    for item in render_objects.values():
-        view = item['view']
-        window = vtkPVProcessWindow.GetRenderWindow()
-        window.MakeCurrent()
+def release_render_product(name, final=False):
+    item = render_objects.pop(name)
+    view = item.get('view')
+    if view is None:
+        return  # A failed setup has never attached this mapper to a render window.
+    window = vtkPVProcessWindow.GetRenderWindow()
+    window.MakeCurrent()
+    if 'mapper' in item:
         item['mapper'].ReleaseGraphicsResources(window)
+    if view is not None and 'actor' in item:
         view.GetClientSideObject().GetRenderer().RemoveActor(item['actor'])
         for actor in item.get('context_actors', ()):
             actor.GetMapper().ReleaseGraphicsResources(window)
             view.GetClientSideObject().GetRenderer().RemoveActor(actor)
+    # Transfer functions can be shared by sibling views. ParaView owns their
+    # session lifetime; retire only this product's view and scalar bar here.
+    if final and 'legend' in item and 'lut' in item:
         for resource in retain_display_resources(item).values():
             pv.Delete(resource)
+    elif 'legend' in item:
+        pv.Delete(item['legend'])
+    if view is not None:
         pv.Delete(view)
-        if 'label' in item:
-            pv.Delete(item['label'])
+    if 'label' in item:
+        pv.Delete(item['label'])
+
+
+def catalyst_finalize():
+    for name in list(render_objects):
+        release_render_product(name, final=True)
     for source in sources.values():
         pv.Delete(source)
-    (output / f'lifecycle_rank{rank}.json').write_text(json.dumps({'frames': frames, 'finalized': True}))
+    try:
+        (output / f'lifecycle_rank{rank}.json').write_text(json.dumps({'frames': frames, 'finalized': True}))
+    except OSError as exc:
+        print('ASTR_INSITU_DIAGNOSTIC_WRITE_FAILED ' + str(exc), flush=True)

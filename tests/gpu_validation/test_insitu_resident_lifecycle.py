@@ -29,8 +29,7 @@ def params(path):
 
 @pytest.mark.parametrize('pipeline',['standard-device','direct-device'])
 @pytest.mark.parametrize('phase,message',[
-    ('initialize','ASTR_RESIDENT_INITIALIZATION_FAILURE_INJECTED'),
-    ('draw','ASTR_RESIDENT_DRAW_FAILURE_INJECTED')])
+    ('initialize','ASTR_RESIDENT_INITIALIZATION_FAILURE_INJECTED')])
 def test_resident_failure_is_fatal(tmp_path,pipeline,phase,message):
     case,_=run_case(params(tmp_path),ROOT,'gpu',2,'fault_'+phase,4,grid='32,32,32',
         insitu_config=config(pipeline),checkpoint_interval=2,reject=message,failure_after_start=True)
@@ -51,14 +50,14 @@ def test_resident_image_publication_is_recorded(tmp_path,pipeline):
     for rank in (0,1):
         receipt=json.loads((output/f'missing.q_surface.step00000002.rank{rank:08d}.json').read_text())
         assert receipt['status']=='missing' and receipt['phase']=='stage_eps' and receipt['errno']==5
-        assert json.loads((output/f'mesh_step00000002_rank{rank}.json').read_text())['products']['q_surface']['image']==receipt
+        assert json.loads((output/f'mesh_step00000002_rank{rank}.json').read_text())['products']['q_surface']['image']['status']=='disabled'
         journals.append(receipt)
         assert json.loads((output/f'lifecycle_rank{rank}.json').read_text())['finalized']
     assert journals[0]==journals[1]
     assert not list(output.glob('*step00000002.jpeg')) and not list(output.glob('*.partial'))
     for suffix in ('jpeg','eps'):
         name=f'q_surface.step00000004.{suffix}'
-        assert (output/name).read_bytes()==(healthy/'outdat/render'/name).read_bytes()
+        assert not (output/name).exists()
     final='outdat/new/checkpoints/step000000000004'
     for name in ('state.h5','statistics.h5'):
         field_difference(failed/final/name,healthy/final/name)

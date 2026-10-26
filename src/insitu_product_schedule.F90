@@ -13,7 +13,7 @@ module insitu_product_schedule
   private
   public :: configure_product_schedules,poll_product_schedules,product_scene_due,product_due
   public :: product_results_complete,product_state_file,product_schedules_active
-  public :: product_schedule_equal
+  public :: product_schedule_equal,product_failures_present
   type :: product_state
     type(sample_schedule) :: clock
     type(adaptive_clock) :: adaptive
@@ -27,9 +27,49 @@ module insitu_product_schedule
   type(insitu_options),save :: configuration
   type(product_state),save :: states(insitu_max_products)
   logical,save :: configured=.false.
+  character(64),save :: disabled_products(128)=''
+  integer,save :: disabled_count=0
 contains
+  logical function product_failures_present()
+    product_failures_present=disabled_count>0
+  end function
+
   logical function product_schedules_active()
     product_schedules_active=configured.and.configuration%product_count>0
+  end function
+
+  logical function m12_family_active(scene) result(active)
+    character(*),intent(in) :: scene
+    character(64) :: names(10)
+    integer :: i,n
+    active=.false.
+    if(configuration%products/='m12_diagnostics') return
+    if(disabled_count==0) return
+    names=''
+    select case(scene)
+    case('q_surface')
+      n=2; names(1)='q_surface.image'; names(2)='q_surface.local.image'
+    case('velocity_slice')
+      n=10
+      names(1)='velocity_slice.image'; names(2)='temperature_slice.image'
+      names(3)='spanwise_slice.image'; names(4)='spanwise_slice_weak.image'
+      names(5)='velocity_slice.x0_100.image'; names(6)='velocity_slice.x100_200.image'
+      names(7)='velocity_slice.x200_300.image'; names(8)='temperature_slice.x0_100.image'
+      names(9)='temperature_slice.x100_200.image'; names(10)='temperature_slice.x200_300.image'
+    case default
+      return
+    end select
+    do i=1,n
+      if(.not.any(disabled_products(1:disabled_count)==names(i))) active=.true.
+    enddo
+  end function
+
+  logical function active_family_clock(id) result(active)
+    character(*),intent(in) :: id
+    integer :: suffix
+    suffix=index(id,'.image')
+    active=.false.
+    if(suffix>1) active=m12_family_active(id(:suffix-1))
   end function
 
   subroutine configure_product_schedules(options,origin_step,origin_time,ok)
@@ -39,6 +79,7 @@ contains
     logical,intent(out) :: ok
     integer :: i
     configuration=options; states=product_state(); configured=.false.; ok=.true.
+    disabled_products=''; disabled_count=0
     do i=1,options%product_count
       states(i)%origin_step=origin_step; states(i)%origin_time=origin_time
       call configure_schedule(states(i)%clock,trim(options%product_modes(i)),options%product_steps(i), &
@@ -67,6 +108,10 @@ contains
       if(.not.states(i)%reported) then
         ok=.false.; return
       endif
+      if(any(disabled_products(1:disabled_count)==configuration%product_ids(i)).and. &
+        .not.active_family_clock(configuration%product_ids(i))) then
+        states(i)%due=.false.; cycle
+      endif
       if(configuration%product_adaptive(i)%enabled) then
         call poll_adaptive_clock(states(i)%adaptive,configuration%product_adaptive(i),step,time,final,states(i)%due,ok)
       else
@@ -76,6 +121,14 @@ contains
       if(states(i)%due) then
         states(i)%attempt=step; states(i)%attempt_time=time
         states(i)%reported=.false.
+        if(any(disabled_products(1:disabled_count)==configuration%product_ids(i))) then
+          ! A failed main image can still supply healthy derived views on its clock.
+          states(i)%reported=.true.; states(i)%code=-1; states(i)%phase=0
+          if(configuration%product_adaptive(i)%enabled) then
+            call report_adaptive_clock(states(i)%adaptive,-1,0,ok)
+            if(.not.ok) return
+          endif
+        endif
         emit=.true.
       endif
     enddo
@@ -84,6 +137,8 @@ contains
   logical function product_due(id) result(due)
     character(*),intent(in) :: id
     integer :: i
+    due=.false.
+    if(any(disabled_products(1:disabled_count)==id)) return
     due=.not.product_schedules_active()
     if(due) return
     do i=1,configuration%product_count
@@ -95,7 +150,18 @@ contains
 
   logical function product_scene_due(scene) result(due)
     character(*),intent(in) :: scene
-    due=product_due(trim(scene)//'.image').or.product_due(trim(scene)//'.geometry')
+    integer :: i
+    if(m12_family_active(scene)) then
+      due=.not.product_schedules_active()
+      if(due) return
+      do i=1,configuration%product_count
+        if(configuration%product_ids(i)/=trim(scene)//'.image') cycle
+        due=states(i)%due; return
+      enddo
+      return
+    endif
+    due=product_due(trim(scene)//'.image')
+    if(configuration%rendering_pipeline=='compatible') due=due.or.product_due(trim(scene)//'.geometry')
   end function
 
   integer(c_int) function product_clock_active_c() bind(C,name='astr_insitu_product_clocks_active') result(active)
@@ -116,6 +182,37 @@ contains
   integer(c_int) function product_due_c(id) bind(C,name='astr_insitu_product_due') result(due)
     character(c_char),intent(in) :: id(*)
     due=merge(1_c_int,0_c_int,product_due(trim(c_string(id))))
+  end function
+
+  integer(c_int) function product_disable_c(id) bind(C,name='astr_insitu_product_disable') result(status)
+    character(c_char),intent(in) :: id(*)
+    character(64) :: name
+    integer :: i
+    logical :: ok
+    status=1; name=c_string(id)
+    if(len_trim(name)==0) return
+    if(any(disabled_products(1:disabled_count)==name)) then
+      status=0; return
+    endif
+    if(disabled_count==size(disabled_products)) return
+    do i=1,configuration%product_count
+      if(configuration%product_ids(i)/=name) cycle
+      if(.not.states(i)%reported) then
+        if(configuration%product_adaptive(i)%enabled) then
+          call report_adaptive_clock(states(i)%adaptive,-1,0,ok)
+          if(.not.ok) return
+        endif
+        states(i)%reported=.true.; states(i)%code=-1; states(i)%phase=0
+      endif
+      if(.not.active_family_clock(name)) states(i)%due=.false.
+    enddo
+    disabled_count=disabled_count+1; disabled_products(disabled_count)=name
+    status=0
+  end function
+
+  integer(c_int) function product_enabled_c(id) bind(C,name='astr_insitu_product_enabled') result(enabled)
+    character(c_char),intent(in) :: id(*)
+    enabled=merge(0_c_int,1_c_int,any(disabled_products(1:disabled_count)==c_string(id)))
   end function
 
   integer(c_int) function product_scene_due_c(id) bind(C,name='astr_insitu_product_scene_due') result(due)
@@ -204,7 +301,8 @@ contains
     real(real_kind) :: next_time,expected_time,times(3)
     character(8) :: magic
     logical :: initial,final,allow,entry_same(insitu_max_products),clock_same,compatible
-    integer :: i,j,status
+    integer :: i,j,status,saved_disabled_count
+    character(64) :: saved_disabled(128)
     ok=.false.; same=.false.
     allow=.false.
     if(present(override)) allow=override
@@ -213,6 +311,10 @@ contains
       flags=[merge(1_int64,0_int64,configuration%initial_frame),merge(1_int64,0_int64,configuration%final_frame)]
       magic='ASTRPF01'
       if(any(configuration%product_adaptive%enabled)) magic='ASTRPF02'
+      if(disabled_count>0) then
+        magic='ASTRPF03'
+        if(any(configuration%product_adaptive%enabled)) magic='ASTRPF04'
+      endif
       write(unit,iostat=status) magic,int(configuration%product_count,int64),flags
       if(status/=0) return
       do i=1,configuration%product_count
@@ -229,7 +331,7 @@ contains
         call write_schedule_state(unit,states(i)%clock,configuration%product_ids(i),step,time,ok)
         if(.not.ok) return
       enddo
-      if(magic=='ASTRPF02') then
+      if(magic=='ASTRPF02'.or.magic=='ASTRPF04') then
         do i=1,configuration%product_count
           write(unit,iostat=status) configuration%product_adaptive(i)%enabled
           if(status/=0) return
@@ -239,10 +341,15 @@ contains
           if(.not.ok) return
         enddo
       endif
+      if(disabled_count>0) then
+        write(unit,iostat=status) disabled_count,disabled_products(1:disabled_count)
+        if(status/=0) return
+      endif
       same=.true.; ok=.true.; return
     endif
     read(unit,iostat=status) magic,count_saved,flags
-    if(status/=0.or.(magic/='ASTRPF01'.and.magic/='ASTRPF02').or.count_saved<0.or.count_saved>insitu_max_products) return
+    if(status/=0.or.all(magic/=['ASTRPF01','ASTRPF02','ASTRPF03','ASTRPF04']).or. &
+      count_saved<0.or.count_saved>insitu_max_products) return
     if(any(flags<0).or.any(flags>1)) return
     initial=flags(1)==1; final=flags(2)==1
     saved%product_count=int(count_saved); saved%initial_frame=initial; saved%final_frame=final
@@ -284,7 +391,7 @@ contains
       if(.not.ok) return
     enddo
     entry_same=.true.
-    if(magic=='ASTRPF02') then
+    if(magic=='ASTRPF02'.or.magic=='ASTRPF04') then
       do i=1,saved%product_count
         read(unit,iostat=status) saved%product_adaptive(i)%enabled
         if(status/=0) return
@@ -303,6 +410,13 @@ contains
         endif
       enddo
     endif
+    saved_disabled=''; saved_disabled_count=0
+    if(magic=='ASTRPF03'.or.magic=='ASTRPF04') then
+      read(unit,iostat=status) saved_disabled_count
+      if(status/=0.or.saved_disabled_count<1.or.saved_disabled_count>size(saved_disabled)) return
+      read(unit,iostat=status) saved_disabled(1:saved_disabled_count)
+      if(status/=0.or.any(saved_disabled(1:saved_disabled_count)=='')) return
+    endif
     same=product_schedule_equal(configuration,saved).and.(initial.eqv.configuration%initial_frame).and. &
       (final.eqv.configuration%final_frame).and.all(entry_same)
     if(same) then
@@ -313,6 +427,10 @@ contains
     if(.not.same.and..not.allow) then
       ok=.true.; return
     endif
+    disabled_products=''; disabled_count=0
+    if(same) then
+      disabled_products=saved_disabled; disabled_count=saved_disabled_count
+    endif
     do j=1,configuration%product_count
       i=findloc(saved%product_ids,configuration%product_ids(j),dim=1)
       compatible=.false.
@@ -322,9 +440,14 @@ contains
         (saved%product_adaptive(i)%enabled.eqv.configuration%product_adaptive(j)%enabled).and. &
         .not.adaptive_dependencies_reset(configuration%product_adaptive(j))
       ! Fixed-only overrides retain their pre-AP whole-registry reset contract.
-      if(.not.same.and..not.adaptive_shared_config%enabled.and.magic=='ASTRPF01') compatible=.false.
+      if(.not.same.and..not.adaptive_shared_config%enabled.and. &
+        (magic=='ASTRPF01'.or.magic=='ASTRPF03')) compatible=.false.
       if(compatible) then
         states(j)=restored(i)
+        if(.not.same.and.any(saved_disabled==configuration%product_ids(j))) then
+          disabled_count=disabled_count+1
+          disabled_products(disabled_count)=configuration%product_ids(j)
+        endif
       else
         states(j)=product_state(); states(j)%origin_step=step; states(j)%origin_time=time
         if(adaptive_shared_config%enabled) write(*,'(3a)') 'ASTR_AP_RESET product ',trim(configuration%product_ids(j)), &

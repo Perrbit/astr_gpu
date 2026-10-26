@@ -7,5 +7,5 @@ inline bool astr_insitu_independent_products() {
   return astr_insitu_product_clocks_active && astr_insitu_product_clocks_active();
 }
 inline bool astr_insitu_scene_due(const char* name) {
-  return !astr_insitu_independent_products() || astr_insitu_product_scene_due(name);
+  return !astr_insitu_product_scene_due || astr_insitu_product_scene_due(name);
 }
