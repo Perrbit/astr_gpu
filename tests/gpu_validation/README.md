@@ -123,6 +123,19 @@ See `documents/ASTR_GPU_CRASHFIX_EXPANSION.md` for the implementation scope and
 evidence. This is recovery, not a conservative positivity guarantee or an AIR5
 algorithm.
 
+The 2026-10-26 lifecycle extension is checked by
+`test_recovery_lifecycle.py` with `ASTR_MP_WALL_PROBE` and
+`ASTR_M12_CRASHFIX_EXECUTABLE` set to the root-CMake-built executables.
+It covers recovery at step entry, keeping a sole valid shared replica before
+averaging, finite large-state synchronization, and repairs before staged NSCBC
+RHS evaluation. Late repairs must trigger boundary-RHS rebuilding without
+rerunning filters or wall forcing. The checks require finite assembled RHS and
+strictly positive post-recovery physical states, not just a zero exit code.
+Multiple input-recovery snapshots in one stage use event suffixes; use
+`state.post_input_crashfix*.bin` to collect them all. `post_crashfix` snapshots
+now download the actual repaired device state. Production runs with validation
+output disabled do not perform these full-field downloads.
+
 ### M12 Matched Boundary Comparison
 
 `run_m12_boundary_compare.py` prepares read-only M12 subsets and compares
@@ -9470,3 +9483,32 @@ step980 to990 at the original dt=0.02 with NP=2 x-slab and crashfix off. All
 hashes remain unchanged. No new field/checkpoint output is written. This is a
 ten-step changed-algorithm positivity gate, not long-time physical acceptance,
 full-case memcheck, exact continuation or a performance result.
+
+### Optional Postprocessing Product Failure Isolation
+
+`test_insitu_product_failure_control.py` and
+`test_insitu_product_schedule.py` cover collective error classification,
+disable-once behavior, native clocks, M12 derived-view supply and checkpoint
+continuation. `test_insitu_product_failure_isolation.py` exercises the actual
+compatible, standard-device and direct-device pipelines with injected image,
+screenshot, local device extraction and diagnostic-file failures. A failed
+image does not disable its geometry or sibling images, and no failed output is
+reported as successful. Native disabled IDs are restored from the existing
+render-control file.
+
+Select `ASTR_OUTPUT_INSITU_EXE`, `ASTR_OUTPUT_INSITU_BACKEND` and
+`ASTR_INSITU_PRODUCT_SCHEDULE_PROBE` explicitly. The M12 test requires the HBL
+user module and the existing read-only M12 source fixture. It advances a
+64x32x24 two-rank fixture, compares healthy/fault checkpoint bytes and resumes
+the failed-image run; it is not a production flow-validation test. Physical
+q/cache datasets must be finite. Opaque `rank_extras` cache halo payloads are
+compared bitwise, including their existing NaN patterns, rather than passed to
+the all-finite field-difference helper.
+
+Evidence: `out/insitu_product_isolation_20261026/`; `unit.xml` has 26 passing
+tests, `final_runtime.xml` has 22 passing tests and `m12_final.xml` has one
+passing integration test. These are not new sanitizer or performance results.
+CUDA context loss, MPI failure, unsafe distributed extraction, actual resource
+budget violations and authoritative statistics/checkpoint persistence errors
+remain fatal. Shared Catalyst initialization failure is checked separately and
+must not be converted to a product success.
