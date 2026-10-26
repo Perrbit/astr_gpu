@@ -56,7 +56,7 @@ class M12IntegrationContractTests(unittest.TestCase):
         self.assertNotIn('qsave_d=', repair)
         self.assertNotIn('copy_flow_to_gpu', repair)
         stage_boundary = source.index('call apply_conservative_stage_gpu(twall(3))')
-        self.assertLess(stage_boundary,source.index('call repair_crashfix_state_gpu(rkstep)',stage_boundary))
+        self.assertLess(stage_boundary,source.index('call repair_crashfix_state_gpu(rkstep,',stage_boundary))
         runtime = (ROOT/'src_gpu/gpu_runtime.cuf').read_text()
         self.assertIn('call time_integration_rk_gpu(first_stage_prepared,copy_back)', runtime)
         main = (ROOT/'src/mainloop.F90').read_text()
@@ -69,12 +69,17 @@ class M12IntegrationContractTests(unittest.TestCase):
         begin = source.index('subroutine repair_mp_stage_inputs_gpu(')
         end = source.index('end subroutine repair_mp_stage_inputs_gpu',begin)
         repair = source[begin:end]
-        self.assertIn("if(.not.lcracon.or.conschm/='743e'.or.recon_schem/=5) return",repair)
+        self.assertIn('if(.not.lcracon) return',repair)
         self.assertNotIn('mp_positivity_enabled',repair)
         self.assertIn('if(.not.mp_inputs_need_repair_gpu()) return',repair)
-        self.assertLess(repair.index('call repair_crashfix_state_gpu('),
-                        repair.index('call exchange_solution_halo_gpu()'))
-        self.assertIn("check_mp_failure('input after crashfix/halo refresh')",repair)
+        self.assertIn('call repair_reconciled_state_gpu(stage)',repair)
+        recovery = (ROOT/'src_gpu/crashfix_gpu.cuf').read_text().split(
+            'subroutine repair_reconciled_state_gpu(stage,already_repaired)',1)[1].split('end subroutine',1)[0]
+        self.assertLess(recovery.index('call exchange_field_halo_gpu(q_d,5)'),
+                        recovery.index('call repair_crashfix_state_gpu(stage)'))
+        self.assertLess(recovery.index('call repair_crashfix_state_gpu(stage)'),
+                        recovery.index('call exchange_solution_halo_gpu()'))
+        self.assertIn('if(.not.mp_inputs_need_repair_gpu()) exit',recovery)
         self.assertNotIn('call apply_',repair)
         start = source.index('do rkstep=1,3')
         self.assertLess(source.index("rkstep,'physical boundary'",start),
@@ -92,6 +97,19 @@ class M12IntegrationContractTests(unittest.TestCase):
         self.assertIn("'ASTR_GPU_CRASHFIX'", repair)
         self.assertIn('call MPI_Abort(MPI_COMM_WORLD,92,ierr)', repair)
         self.assertIn('if(lcracon.and..not.allocated(crinod_d)) call sync_crashfix_mask_to_gpu()',gpu)
+
+    def test_staged_recovery_rebuilds_only_boundary_rhs(self):
+        source = (ROOT/'src_gpu/mainloop_gpu.cuf').read_text()
+        preparation = source.split('subroutine prepare_profile_nscbc_gpu(stage)',1)[1].split('end subroutine',1)[0]
+        self.assertLess(preparation.index("stage,'profile outlet filter'"),
+                        preparation.index('call apply_nscbc_outflow_x_rhs_gpu()'))
+        rebuild = preparation.split('if(rebuild_rhs) then',1)[1].split('endif',1)[0]
+        self.assertIn('call zero_rhs_kernel',rebuild)
+        self.assertIn('call apply_nscbc_outflow_x_rhs_gpu()',rebuild)
+        self.assertIn('call apply_nscbc_farfield_y_upper_rhs_gpu(mach2)',rebuild)
+        self.assertNotIn('call apply_s1_flatplate_wall_gpu',rebuild)
+        self.assertNotIn('filter_gpu()',rebuild)
+        self.assertIn("'post_input_crashfix_',snapshot_event",source)
 
     def test_gpu_crashfix_preserves_cpu_critical_node_flux_fallback(self):
         gpu = (ROOT/'src_gpu/solver_gpu.cuf').read_text()

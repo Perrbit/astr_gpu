@@ -91,8 +91,11 @@ def test_filtered_recovery_is_runtime_optional_and_precedes_the_stage_check():
     source=(root/'src_gpu/mainloop_gpu.cuf').read_text()
     helper=source.split('subroutine repair_filtered_state_gpu(stage)',1)[1].split('end subroutine',1)[0]
     assert 'if(.not.lcracon) return' in helper
-    assert helper.count('call exchange_solution_halo_gpu()')==2
-    assert helper.index('call exchange_solution_halo_gpu()')<helper.index('call repair_crashfix_state_gpu(stage)')
+    assert 'call repair_reconciled_state_gpu(stage)' in helper
+    recovery=(root/'src_gpu/crashfix_gpu.cuf').read_text().split(
+        'subroutine repair_reconciled_state_gpu(stage,already_repaired)',1)[1].split('end subroutine',1)[0]
+    assert recovery.index('call exchange_field_halo_gpu(q_d,5)')<recovery.index('call repair_crashfix_state_gpu(stage)')
+    assert recovery.index('call repair_crashfix_state_gpu(stage)')<recovery.index('call exchange_solution_halo_gpu()')
     preparation=source.split('subroutine prepare_profile_nscbc_gpu(stage)',1)[1].split('end subroutine',1)[0]
     assert preparation.index('call repair_filtered_state_gpu(stage)')<preparation.index('call check_profile_validation_state_gpu')
     cpu=(root/'src/mainloop.F90').read_text()

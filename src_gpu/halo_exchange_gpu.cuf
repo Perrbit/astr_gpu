@@ -307,14 +307,14 @@ contains
       do h=1,hm
         q_d(im+h,j,k,m) = recv_right(h,j,k,m)
       enddo
-      q_d(im,j,k,m) = 0.5e0_real_kind * (q_d(im,j,k,m) + recv_right(0,j,k,m))
+      q_d(im,j,k,m) = 0.5e0_real_kind*q_d(im,j,k,m) + 0.5e0_real_kind*recv_right(0,j,k,m)
     endif
 
     if(has_left /= 0) then
       do h=0,hm-1
         q_d(-hm+h,j,k,m) = recv_left(h,j,k,m)
       enddo
-      q_d(0,j,k,m) = 0.5e0_real_kind * (q_d(0,j,k,m) + recv_left(hm,j,k,m))
+      q_d(0,j,k,m) = 0.5e0_real_kind*q_d(0,j,k,m) + 0.5e0_real_kind*recv_left(hm,j,k,m)
     endif
   end subroutine unpack_x_kernel
 
@@ -439,12 +439,12 @@ contains
     do h=1,hm
       if(has_up /= 0) q_d(i,jm+h,k,m) = recv_up(i,h,k,m)
     enddo
-    if(has_up /= 0) q_d(i,jm,k,m) = 0.5e0_real_kind * (q_d(i,jm,k,m) + recv_up(i,0,k,m))
+    if(has_up /= 0) q_d(i,jm,k,m) = 0.5e0_real_kind*q_d(i,jm,k,m) + 0.5e0_real_kind*recv_up(i,0,k,m)
 
     do h=0,hm-1
       if(has_down /= 0) q_d(i,-hm+h,k,m) = recv_down(i,h,k,m)
     enddo
-    if(has_down /= 0) q_d(i,0,k,m) = 0.5e0_real_kind * (q_d(i,0,k,m) + recv_down(i,hm,k,m))
+    if(has_down /= 0) q_d(i,0,k,m) = 0.5e0_real_kind*q_d(i,0,k,m) + 0.5e0_real_kind*recv_down(i,hm,k,m)
   end subroutine unpack_y_kernel
 
   attributes(global) subroutine pack_y_halo_down_kernel(sendbuf,im,jm,km,hm,numq)
@@ -785,12 +785,12 @@ contains
     do h=1,hm
       if(has_front /= 0) q_d(i,j,km+h,m) = recv_front(i,j,h,m)
     enddo
-    if(has_front /= 0) q_d(i,j,km,m) = 0.5e0_real_kind * (q_d(i,j,km,m) + recv_front(i,j,0,m))
+    if(has_front /= 0) q_d(i,j,km,m) = 0.5e0_real_kind*q_d(i,j,km,m) + 0.5e0_real_kind*recv_front(i,j,0,m)
 
     do h=0,hm-1
       if(has_back /= 0) q_d(i,j,-hm+h,m) = recv_back(i,j,h,m)
     enddo
-    if(has_back /= 0) q_d(i,j,0,m) = 0.5e0_real_kind * (q_d(i,j,0,m) + recv_back(i,j,hm,m))
+    if(has_back /= 0) q_d(i,j,0,m) = 0.5e0_real_kind*q_d(i,j,0,m) + 0.5e0_real_kind*recv_back(i,j,hm,m)
   end subroutine unpack_z_kernel
 
   attributes(global) subroutine pack_z_halo_back_kernel(sendbuf,im,jm,km,hm,numq)

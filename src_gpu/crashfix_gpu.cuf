@@ -7,6 +7,7 @@ module crashfix_gpu
   private :: real_kind,clock_kind,mpi_real_type
   private
   public :: repair_crashfix_state_gpu,check_crashfix_state_gpu,release_crashfix_gpu
+  public :: repair_reconciled_state_gpu
   integer(1),allocatable,device :: fluid_d(:,:,:)
   integer,allocatable,device :: first_d(:,:),last_d(:,:)
   real(real_kind),allocatable,device :: partial_d(:,:)
@@ -378,20 +379,70 @@ contains
     call sync_after_kernel('crashfix_inspect_kernel',.true.)
   end subroutine inspect_state
 
+  attributes(global) subroutine refresh_recovery_halos_kernel(im,jm,km,hm,const2,const6,nondimen,rgas)
+    use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d
+    integer,value :: im,jm,km,hm
+    real(real_kind),value :: const2,const6,rgas
+    logical,value :: nondimen
+    integer :: id,i,j,k,ni,nj,nk,outside
+    logical :: valid
+    ni=im+2*hm+1; nj=jm+2*hm+1; nk=km+2*hm+1
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=ni*nj*nk) return
+    i=mod(id,ni)-hm; j=mod(id/ni,nj)-hm; k=id/(ni*nj)-hm
+    outside=count([i<0.or.i>im,j<0.or.j>jm,k<0.or.k>km])
+    if(outside==0) return
+    if(outside>1) then
+      ! Face exchanges do not establish diagonal halo donors.
+      rho_d(i,j,k)=-1.e0_real_kind; vel_d(i,j,k,:)=0.e0_real_kind
+      prs_d(i,j,k)=-1.e0_real_kind; tmp_d(i,j,k)=-1.e0_real_kind
+    else
+      call refresh_point(i,j,k,const2,const6,nondimen,rgas,valid)
+    endif
+  end subroutine refresh_recovery_halos_kernel
+
+  subroutine repair_reconciled_state_gpu(stage,already_repaired)
+    use commvar, only: im,jm,km,hm,const2,const6,nondimen,rgas
+    use commarray_gpu, only: q_d
+    use halo_exchange_gpu, only: exchange_field_halo_gpu,exchange_solution_halo_gpu
+    use mp_positivity_gpu, only: mp_inputs_need_repair_gpu
+    use gpu_check, only: sync_after_kernel
+    integer,intent(in) :: stage
+    logical,intent(in),optional :: already_repaired
+    logical :: repair_required
+    integer :: n
+    n=(im+2*hm+1)*(jm+2*hm+1)*(km+2*hm+1)
+    repair_required=.true.
+    if(present(already_repaired)) repair_required=.not.already_repaired
+    do
+      ! Preserve valid shared replicas until all physical states are repaired.
+      if(repair_required) then
+        call exchange_field_halo_gpu(q_d,5)
+        call refresh_recovery_halos_kernel<<<(n+255)/256,256>>>(im,jm,km,hm,const2,const6,nondimen,rgas)
+        call sync_after_kernel('crashfix_refresh_recovery_halos',.true.)
+        call repair_crashfix_state_gpu(stage)
+      endif
+      call exchange_solution_halo_gpu()
+      if(.not.mp_inputs_need_repair_gpu()) exit
+      repair_required=.true.
+    enddo
+  end subroutine repair_reconciled_state_gpu
+
   subroutine check_crashfix_state_gpu()
     use mpi
+    use commvar, only: numq,num_species,lcomb
     implicit none
     integer :: local,global,ierr
+    if(lcomb.or.numq/=5.or.num_species/=0) error stop 'GPU crashfix supports only non-reacting five-variable flow'
     call inspect_state(.false.)
     local=invalid_d
     call MPI_Allreduce(local,global,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
     if(global/=0) then
-      print *, 'GPU crashfix left a nonfinite or non-positive physical state'
-      call MPI_Abort(MPI_COMM_WORLD,92,ierr)
+      call repair_reconciled_state_gpu(0)
     endif
   end subroutine check_crashfix_state_gpu
 
-  subroutine repair_crashfix_state_gpu(stage)
+  subroutine repair_crashfix_state_gpu(stage,repaired)
     use benchmark_runtime, only: benchmark_buffered_output_enabled
     use mpi
     use commvar, only: im,jm,km,ia,ja,const2,const6,nondimen,rgas,nstep,ctime,lreport
@@ -399,6 +450,7 @@ contains
     use gpu_check, only: sync_after_kernel
     implicit none
     integer,intent(in) :: stage
+    logical,intent(out),optional :: repaired
     integer :: count,local,global,ierr,counter,critical
     real(clock_kind) :: started
     real(real_kind) :: changes(5),lower(5)
@@ -418,6 +470,7 @@ contains
     call sync_after_kernel('crashfix_reduce_kernel',.true.)
     count=repaired_d
     call MPI_Allreduce(count,counter,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,ierr)
+    if(present(repaired)) repaired=counter>0
     changes=change_d; lower=minima_d
     call MPI_Allreduce(MPI_IN_PLACE,changes,5,mpi_real_type,MPI_MAX,MPI_COMM_WORLD,ierr)
     critical=nint(lower(5))

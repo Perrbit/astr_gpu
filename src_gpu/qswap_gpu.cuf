@@ -22,7 +22,7 @@ contains
         q_d(-h,j,k,m) = q_d(im-h,j,k,m)
         q_d(im+h,j,k,m) = q_d(h,j,k,m)
       enddo
-      avg = 0.5e0_real_kind * (q_d(0,j,k,m) + q_d(im,j,k,m))
+      avg = 0.5e0_real_kind*q_d(0,j,k,m) + 0.5e0_real_kind*q_d(im,j,k,m)
       q_d(0,j,k,m) = avg
       q_d(im,j,k,m) = avg
     enddo
@@ -46,7 +46,7 @@ contains
         q_d(i,-h,k,m) = q_d(i,jm-h,k,m)
         q_d(i,jm+h,k,m) = q_d(i,h,k,m)
       enddo
-      avg = 0.5e0_real_kind * (q_d(i,0,k,m) + q_d(i,jm,k,m))
+      avg = 0.5e0_real_kind*q_d(i,0,k,m) + 0.5e0_real_kind*q_d(i,jm,k,m)
       q_d(i,0,k,m) = avg
       q_d(i,jm,k,m) = avg
     enddo
@@ -70,7 +70,7 @@ contains
         q_d(i,j,-h,m) = q_d(i,j,km-h,m)
         q_d(i,j,km+h,m) = q_d(i,j,h,m)
       enddo
-      avg = 0.5e0_real_kind * (q_d(i,j,0,m) + q_d(i,j,km,m))
+      avg = 0.5e0_real_kind*q_d(i,j,0,m) + 0.5e0_real_kind*q_d(i,j,km,m)
       q_d(i,j,0,m) = avg
       q_d(i,j,km,m) = avg
     enddo

@@ -7,6 +7,7 @@ module mainloop_gpu
 contains
   subroutine prepare_profile_nscbc_gpu(stage)
     use commvar, only: im,jm,km,hm,const2,const6,lfilter,nstep
+    use parallel, only: lio
     use gpu_phase_timing, only: begin_gpu_phase,end_gpu_phase
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,qrhs_d
     use solver_gpu, only: q_to_primitive_kernel,zero_rhs_kernel,apply_explicit_filter_gpu
@@ -25,6 +26,8 @@ contains
     type(dim3) :: block,grid
     real(real_kind) :: mach2
     integer :: ntot
+    logical :: repaired,rebuild_rhs
+    rebuild_rhs=.false.
     block=dim3(32,4,4)
     grid=dim3((im+32)/32,(jm+4)/4,(km+4)/4)
     if(lfilter) then
@@ -55,7 +58,9 @@ contains
     ! Prepare the outlet/wall intersection once before outlet classification.
     call apply_s1_flatplate_boundary_conditions_gpu(defer_wall=.true.)
     call prepare_compact_outlet_wall_gpu()
+    call repair_mp_stage_inputs_gpu(stage,'profile wall/intersection')
     call apply_nscbc_outflow_physical_filter_gpu()
+    call repair_mp_stage_inputs_gpu(stage,'profile outlet filter')
 #ifdef ASTR_BUILD_TESTING
     call check_profile_validation_state_gpu('profile outlet filter',stage)
 #endif
@@ -64,14 +69,31 @@ contains
     call exchange_solution_halo_gpu()
     call apply_nscbc_outflow_x_rhs_gpu()
     call apply_s1_flatplate_wall_gpu(2,reuse_forcing=.true.)
+    call repair_mp_stage_inputs_gpu(stage,'profile lower wall',repaired)
+    rebuild_rhs=rebuild_rhs.or.repaired
     call gpu_nscbc_farfield_y_upper_mach2(mach2)
     call apply_nscbc_farfield_y_upper_filter_x_gpu()
+    call repair_mp_stage_inputs_gpu(stage,'profile farfield x filter',repaired)
+    rebuild_rhs=rebuild_rhs.or.repaired
     if(.not.lfilter) call exchange_solution_halo_gpu()
     call apply_nscbc_farfield_y_upper_filter_z_gpu()
+    call repair_mp_stage_inputs_gpu(stage,'profile farfield z filter',repaired)
+    rebuild_rhs=rebuild_rhs.or.repaired
     call q_to_primitive_kernel<<<grid,block>>>(q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
     call sync_after_kernel('compact_nscbc_farfield_primitives')
     call apply_nscbc_farfield_y_upper_rhs_gpu(mach2)
     call exchange_solution_halo_gpu()
+    call repair_mp_stage_inputs_gpu(stage,'profile final halo',repaired)
+    rebuild_rhs=rebuild_rhs.or.repaired
+    if(rebuild_rhs) then
+      ! Only boundary RHS exists here. Rebuild it without repeating filters or RNG.
+      call zero_rhs_kernel<<<(ntot+255)/256,256>>>(qrhs_d,im,jm,km)
+      call sync_after_kernel('recovered_nscbc_zero_rhs')
+      call gpu_nscbc_farfield_y_upper_mach2(mach2)
+      call apply_nscbc_outflow_x_rhs_gpu()
+      call apply_nscbc_farfield_y_upper_rhs_gpu(mach2)
+      if(lio) write(*,'(a,2(1x,i0))') 'ASTR_NSCBC_RHS_REBUILT',nstep,stage
+    endif
 #ifdef ASTR_BUILD_TESTING
     call check_profile_validation_state_gpu('profile boundary complete',stage)
 #endif
@@ -173,6 +195,7 @@ contains
       else
         call apply_boundary_conditions_gpu()
       endif
+      call repair_mp_stage_inputs_gpu(1,'physical boundary prepare')
       call exchange_solution_halo_gpu(.true.)
     elseif(lfilter .and. periodic_filter_case) then
       call apply_boundary_conditions_gpu()
@@ -190,13 +213,16 @@ contains
       else
         call apply_boundary_conditions_gpu()
       endif
+      call repair_mp_stage_inputs_gpu(1,'physical boundary prepare')
       call exchange_solution_halo_gpu()
     endif
 
     if(flatplate_nscbc_farfield_case) then
       call apply_nscbc_farfield_y_upper_filter_x_gpu()
+      call repair_mp_stage_inputs_gpu(1,'prepare farfield x filter')
       call exchange_solution_halo_gpu()
       call apply_nscbc_farfield_y_upper_filter_z_gpu()
+      call repair_mp_stage_inputs_gpu(1,'prepare farfield z filter')
       call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
            q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
       call sync_after_kernel('prepare_nscbc_farfield_q_to_primitive_kernel_postfilter')
@@ -207,45 +233,44 @@ contains
   subroutine repair_filtered_state_gpu(stage)
     use commvar, only: lcracon,nstep
     use parallel, only: lio
-    use halo_exchange_gpu, only: exchange_solution_halo_gpu
-    use crashfix_gpu, only: repair_crashfix_state_gpu
+    use crashfix_gpu, only: repair_reconciled_state_gpu
     implicit none
     integer,intent(in) :: stage
 
     if(.not.lcracon) return
-    ! Repair against the filtered state, including its neighbor halo caches.
-    call exchange_solution_halo_gpu()
     if(lio) write(*,'(A,2(1X,I0))') 'ASTR_FILTER_CRASHFIX',nstep,stage
-    call repair_crashfix_state_gpu(stage)
-    call exchange_solution_halo_gpu()
+    call repair_reconciled_state_gpu(stage)
   end subroutine repair_filtered_state_gpu
 
   subroutine repair_mp_stage_inputs_gpu(stage,phase,repaired)
-    use commvar, only: lcracon,nstep,conschm,recon_schem
+    use commvar, only: lcracon,nstep
     use parallel, only: mpirank
-    use mp_positivity_gpu, only: mp_inputs_need_repair_gpu,check_mp_failure
-    use halo_exchange_gpu, only: exchange_solution_halo_gpu
-    use crashfix_gpu, only: repair_crashfix_state_gpu
+    use mp_positivity_gpu, only: mp_inputs_need_repair_gpu
+    use crashfix_gpu, only: repair_reconciled_state_gpu
     use commarray_gpu, only: copy_flow_from_gpu
     use validation_io, only: rhs_validation_requested,write_q_validation_snapshot
     implicit none
     integer,intent(in) :: stage
     character(*),intent(in) :: phase
     logical,optional,intent(out) :: repaired
+    integer,save :: snapshot_step=-1,snapshot_stage=-1,snapshot_event=0
+    character(48) :: snapshot_label
 
     if(present(repaired)) repaired=.false.
-    ! Input recovery also applies when the optional MP flux limiter is off.
-    if(.not.lcracon.or.conschm/='743e'.or.recon_schem/=5) return
+    ! The historical name also serves the supported central-convection path.
+    if(.not.lcracon) return
     if(.not.mp_inputs_need_repair_gpu()) return
     if(mpirank==0) write(*,'(a,2(1x,i0),2a)') 'ASTR_MP_INPUT_CRASHFIX',nstep,stage,' phase=',phase
-    call repair_crashfix_state_gpu(stage)
-    ! Reconcile repaired shared nodes, refill halos, and rebuild their caches.
-    ! Do not reapply the boundary that produced the invalid input.
-    call exchange_solution_halo_gpu()
-    if(mp_inputs_need_repair_gpu()) call check_mp_failure('input after crashfix/halo refresh')
+    call repair_reconciled_state_gpu(stage)
     if(rhs_validation_requested()) then
       call copy_flow_from_gpu()
-      call write_q_validation_snapshot('post_input_crashfix',nstep,stage)
+      if(snapshot_step/=nstep.or.snapshot_stage/=stage) then
+        snapshot_step=nstep; snapshot_stage=stage; snapshot_event=0
+      endif
+      snapshot_event=snapshot_event+1
+      snapshot_label='post_input_crashfix'
+      if(snapshot_event>1) write(snapshot_label,'(a,i0)') 'post_input_crashfix_',snapshot_event
+      call write_q_validation_snapshot(trim(snapshot_label),nstep,stage)
     endif
     if(present(repaired)) repaired=.true.
   end subroutine repair_mp_stage_inputs_gpu
@@ -280,7 +305,7 @@ contains
     use upwind_flux_mode_gpu, only: resolve_gpu_fused_flux_pair
     use gpu_check, only: sync_after_kernel,check_kernel_launch,sync_gpu_boundary
     use gpu_phase_timing, only: begin_gpu_phase,end_gpu_phase
-    use crashfix_gpu, only: repair_crashfix_state_gpu
+    use crashfix_gpu, only: repair_crashfix_state_gpu,repair_reconciled_state_gpu
 #ifdef ASTR_BUILD_TESTING
     use mp_positivity_gpu, only: check_profile_validation_state_gpu
 #endif
@@ -463,7 +488,7 @@ contains
     logical :: profile_mp_ld_case
     logical :: profile_nscbc_case
     logical :: staged_profile_nscbc_case
-    logical :: repaired_boundary,repaired_filter
+    logical :: repaired_boundary,repaired_filter,repaired_update
     logical :: s2_hbl_selective_roe_case
     logical :: s2_hbl_selective_roe_sponge_case
     logical :: s2_hbl_selective_roe_c4_case
@@ -701,6 +726,7 @@ contains
           else
             call apply_boundary_conditions_gpu()
           endif
+          call repair_mp_stage_inputs_gpu(rkstep,'physical boundary')
           call exchange_solution_halo_gpu(.true.)
         elseif(lfilter .and. periodic_filter_case) then
           call apply_boundary_conditions_gpu()
@@ -730,6 +756,7 @@ contains
           else
             call apply_boundary_conditions_gpu()
           endif
+          call repair_mp_stage_inputs_gpu(rkstep,'physical boundary')
           call exchange_solution_halo_gpu()
         endif
       endif
@@ -749,7 +776,7 @@ contains
         solution_pipeline_pending=.false.
       endif
 
-      call repair_mp_stage_inputs_gpu(rkstep,'physical boundary')
+      if(conservative_case) call repair_mp_stage_inputs_gpu(rkstep,'physical boundary')
       if(rhs_validation_requested()) then
         call copy_flow_from_gpu()
         call write_q_validation_snapshot('pre_rhs',nstep,rkstep)
@@ -771,13 +798,13 @@ contains
         call gpu_nscbc_global_mach2(gmachmax2_in)
         call apply_nscbc_inflow_x_rhs_gpu(gmachmax2_in)
         call apply_s1_flatplate_boundary_conditions_gpu(.true.)
-        call exchange_solution_halo_gpu()
         call repair_mp_stage_inputs_gpu(rkstep,'NSCBC inlet/lower wall')
+        call exchange_solution_halo_gpu()
       endif
       if(profile_nscbc_case.and..not.staged_profile_nscbc_case) then
         call apply_nscbc_outflow_physical_filter_gpu()
-        call exchange_solution_halo_gpu()
         call repair_mp_stage_inputs_gpu(rkstep,'outflow filter')
+        call exchange_solution_halo_gpu()
       endif
       if(staged_profile_nscbc_case) then
         continue
@@ -1441,9 +1468,12 @@ contains
         endif
       endif
       if(lcracon) then
-        call repair_crashfix_state_gpu(rkstep)
-        if(rhs_validation_requested()) &
+        call repair_crashfix_state_gpu(rkstep,repaired_update)
+        if(repaired_update) call repair_reconciled_state_gpu(rkstep,already_repaired=.true.)
+        if(rhs_validation_requested()) then
+          call copy_flow_from_gpu()
           call write_q_validation_snapshot('post_crashfix',nstep,rkstep)
+        endif
       endif
     enddo
 
