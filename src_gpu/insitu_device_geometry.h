@@ -7,6 +7,7 @@
 #include <viskores/cont/ArrayHandleConstant.h>
 #include <viskores/cont/ArrayHandleTransform.h>
 #include <viskores/cont/ArrayHandleZip.h>
+#include <viskores/cont/ArrayHandlePermutation.h>
 #include <viskores/cont/CellSetSingleType.h>
 #include <viskores/cont/DataSetBuilderUniform.h>
 #include <viskores/cont/Invoker.h>
@@ -14,6 +15,7 @@
 #include <viskores/filter/contour/ContourFlyingEdges.h>
 #include <viskores/worklet/WorkletMapField.h>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <vector>
 #include <mpi.h>
@@ -96,9 +98,48 @@ struct CheckSurfaceArea : viskores::worklet::WorkletMapField {
     const auto a=xyz.Get(indices.Get(3*cell)),b=xyz.Get(indices.Get(3*cell+1)),c=xyz.Get(indices.Get(3*cell+2));
     const auto cross=viskores::Cross(b-a,c-a);
     const auto area2=viskores::Dot(cross,cross);
-    invalid=viskores::IsFinite(area2) && area2>Real(0.)?0:1;
+    invalid=!viskores::IsFinite(area2)?2:(area2>Real(0.)?0:1);
   }
 };
+
+struct SurfaceTriangleNumber {
+  VISKORES_EXEC_CONT viskores::Id operator()(viskores::Id index) const {return index/3;}
+};
+struct ValidSurfaceTriangle {
+  VISKORES_EXEC_CONT bool operator()(viskores::Id status) const {return status==0;}
+};
+struct MaximumSurfaceStatus {
+  VISKORES_EXEC_CONT viskores::Id operator()(viskores::Id a,viskores::Id b) const {return a>b?a:b;}
+};
+
+inline void remove_zero_area_surface_cells(viskores::cont::DataSet& surface) {
+  const auto device=viskores::cont::DeviceAdapterTagCuda{};
+  const auto cells=surface.GetCellSet().AsCellSet<viskores::cont::CellSetSingleType<>>();
+  const auto xyz=surface.GetCoordinateSystem().GetData().AsArrayHandle<viskores::cont::ArrayHandle<NativeVector>>();
+  const auto indices=cells.GetConnectivityArray(viskores::TopologyElementTagCell{},viskores::TopologyElementTagPoint{});
+  viskores::cont::ArrayHandle<viskores::Id> status,kept;
+  viskores::cont::Invoker invoke(device);
+  invoke(CheckSurfaceArea{},viskores::cont::ArrayHandleIndex(cells.GetNumberOfCells()),xyz,indices,status);
+  synchronize_device_stage("ClassifyPhysicalSurfaceCells");
+  if(viskores::cont::Algorithm::Reduce(device,status,viskores::Id(0),MaximumSurfaceStatus{})==2)
+    throw std::runtime_error("Physical contour has nonfinite triangles");
+  const auto removed=viskores::cont::Algorithm::Reduce(device,status,viskores::Id(0));
+  if(!removed) return;
+  const auto triangle=viskores::cont::make_ArrayHandleTransform(
+    viskores::cont::ArrayHandleIndex(indices.GetNumberOfValues()),SurfaceTriangleNumber{});
+  const auto mask=viskores::cont::make_ArrayHandlePermutation(triangle,status);
+  viskores::cont::Algorithm::CopyIf(device,indices,mask,kept,ValidSurfaceTriangle{});
+  synchronize_device_stage("RemoveZeroAreaPhysicalSurfaceCells");
+  if(kept.GetNumberOfValues()==0) surface=viskores::cont::DataSet{};
+  else {
+    viskores::cont::CellSetSingleType<> clean;
+    clean.Fill(xyz.GetNumberOfValues(),viskores::CELL_SHAPE_TRIANGLE,3,kept);
+    surface.SetCellSet(clean);
+  }
+  std::printf("ASTR_INSITU_ZERO_AREA_REMOVED cells=%lld retained=%lld nonfinite=0 tolerance=0 geometry_host_bytes=0\n",
+    static_cast<long long>(removed),static_cast<long long>(kept.GetNumberOfValues()/3));
+  require_device_only(xyz);require_device_only(status);require_device_only(kept);
+}
 
 // Both rendering bridges borrow this immutable view. The owner retains every
 // array and its execution token until the graphics consumer has completed.
@@ -454,18 +495,16 @@ inline DeviceGeometry extract_tgv_geometry(astr_insitu::NativeVector* velocity_p
     void* diagnostics_pointer,const viskores::Id3& dimensions,
     const viskores::Id3& offset,bool slice_enabled,bool surface_enabled,Real iso=Real(.25),
     DeviceGeometryAudit* audit=nullptr,int global_cells=32,astr_insitu::NativeVector* physical_pointer=nullptr,
-    viskores::Id3 global_dimensions=viskores::Id3(0),int diagnostic_components=14,bool image_only=false) {
+    viskores::Id3 global_dimensions=viskores::Id3(0),int diagnostic_components=14,bool image_only=false,
+    bool remove_zero_area=false) {
   if(global_dimensions==viskores::Id3(0)) global_dimensions=viskores::Id3(global_cells);
-  const bool m12_grid=physical_pointer && m12_hd_grid(global_dimensions) && global_cells==global_dimensions[0];
-  if(global_cells!=32 && global_cells!=256 && !m12_grid &&
-      !(physical_pointer && (global_cells==64 || global_cells==128)))
+  if(!physical_pointer && global_cells!=32 && global_cells!=256)
     throw std::invalid_argument("Unsupported bounded device geometry resolution");
   for(int d=0;d<3;++d)
     if(dimensions[d]<2 || offset[d]<0 || offset[d]+dimensions[d]>global_dimensions[d]+1)
       throw std::invalid_argument("Device geometry partition exceeds the admitted global grid");
   if(!std::isfinite(iso)) throw std::invalid_argument("Nonfinite contour threshold");
-  if(physical_pointer && ((!m12_grid && global_cells!=32 && global_cells!=64 && global_cells!=128 && global_cells!=256) ||
-      slice_enabled || !surface_enabled))
+  if(physical_pointer && (slice_enabled || !surface_enabled))
     throw std::invalid_argument("Physical contour coordinates require bounded CURVE Q-only extraction");
   const auto nodes=dimensions[0]*dimensions[1]*dimensions[2];
   const Real h=Real(2.)*std::acos(-Real(1.))/global_cells;
@@ -538,6 +577,8 @@ inline DeviceGeometry extract_tgv_geometry(astr_insitu::NativeVector* velocity_p
         mapped.AddPointField("_astr_computational_xyz",computational);
       }
       products.surface=std::move(mapped);
+      if(remove_zero_area) remove_zero_area_surface_cells(products.surface);
+      else {
       const auto cells=products.surface.GetCellSet().AsCellSet<viskores::cont::CellSetSingleType<>>();
       const auto indices=cells.GetConnectivityArray(viskores::TopologyElementTagCell{},viskores::TopologyElementTagPoint{});
       viskores::cont::ArrayHandle<viskores::Id> invalid;
@@ -547,6 +588,7 @@ inline DeviceGeometry extract_tgv_geometry(astr_insitu::NativeVector* velocity_p
         throw std::runtime_error("CURVE contour has nonfinite or zero-area triangles");
       synchronize_device_stage("ReducePhysicalContourArea");
       require_device_only(physical);require_device_only(computational);require_device_only(invalid);
+      }
     }
     require_device_only(q); require_device_only(u);
     if(audit) {

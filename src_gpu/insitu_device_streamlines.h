@@ -196,13 +196,17 @@ inline DeviceStreamlines trace_partition_device(
     bool sample_trace_vector=false,int global_cells=32,bool resident=false,
     const Coordinates* physical_coordinates=nullptr,
     Real physical_step_scale=Real(1.),const std::string& seed_layout="line16",
-    viskores::Id3 global_dimensions=viskores::Id3(0),bool image_only=false) {
+    viskores::Id3 global_dimensions=viskores::Id3(0),bool image_only=false,
+    const std::array<Real,6>* physical_bounds=nullptr) {
   constexpr int chunk=128;
-  const auto seeds=tgv_streamline_seeds(seed_layout);
+  const auto seeds=tgv_streamline_seeds(seed_layout,physical_bounds);
   const int seed_count=static_cast<int>(seeds.size());
   const int particles=seed_count*(forward_only?1:2);
   const bool hd=seed_layout=="bl-layered256";
   const bool boundary_layer=seed_layout=="bl-layered64" || hd;
+  const bool sbli=seed_layout=="sbli-layered16";
+  if(sbli && (!Physical || !resident || !physical_bounds))
+    throw std::invalid_argument("SBLI streamlines require resident physical-coordinate inputs");
   if(global_dimensions==viskores::Id3(0)) global_dimensions=viskores::Id3(global_cells);
   if(boundary_layer && (!Physical || !resident || constant || sample_trace_vector ||
       (global_dimensions!=viskores::Id3(64,32,24) && global_dimensions!=viskores::Id3(450,130,96) &&
@@ -210,25 +214,26 @@ inline DeviceStreamlines trace_partition_device(
     throw std::invalid_argument("Layered boundary-layer seeds require the approved physical short fixture");
   using State=RK45TraceWorklet::State;
   if(global_cells!=32 && global_cells!=256 && !(Physical && (global_cells==64 || global_cells==128 ||
-      (boundary_layer && global_cells==450) || (hd && m12_hd_grid(global_dimensions)))))
+      (boundary_layer && global_cells==450) || (hd && m12_hd_grid(global_dimensions)) || sbli)))
     throw std::invalid_argument("Unsupported bounded TGV streamline resolution");
   const Real pi=std::acos(-Real(1.)),h=Real(2.)*pi/global_cells;
   // Physical RK45 limits are fixed by the approved 32-cell reference scale.
   // Refining the mesh must not silently change the trajectory experiment.
   if((physical_step_scale!=Real(1.) && physical_step_scale!=Real(.5)) || (!Physical && physical_step_scale!=Real(1.)))
     throw std::invalid_argument("Unsupported physical streamline sensitivity scale");
-  const Real integration_h=Physical?physical_step_scale*(Real(2.)*pi/Real(32.)):h;
+  const Real integration_h=sbli?((*physical_bounds)[1]-(*physical_bounds)[0])/global_cells:
+    (Physical?physical_step_scale*(Real(2.)*pi/Real(32.)):h);
   const Real minimum_step=boundary_layer?Real(.01):Real(.01)*integration_h;
   const Real maximum_step=boundary_layer?Real(5.):Real(.5)*integration_h;
   const Real initial_step=boundary_layer?Real(.5):Real(.1)*integration_h;
-  const Real maximum_length=boundary_layer?Real(1200.):pi;
+  const Real maximum_length=sbli?Real(2.)*((*physical_bounds)[1]-(*physical_bounds)[0]):(boundary_layer?Real(1200.):pi);
   const int maximum_steps=boundary_layer?4096:100000;
   PrivateTraceComm private_comm(comm);
   ParticleMessageType particle_type;
   comm=private_comm.value;
   int rank=0,ranks=0;
   trace_mpi(MPI_Comm_rank(comm,&rank)); trace_mpi(MPI_Comm_size(comm,&ranks));
-  if(ranks<1 || ranks>(boundary_layer?4:2) || constant_axis<0 || constant_axis>2 || host_budget<1024*1024)
+  if(ranks<1 || ranks>((boundary_layer || sbli)?4:2) || constant_axis<0 || constant_axis>2 || host_budget<1024*1024)
     throw std::invalid_argument("Invalid bounded device streamline configuration");
   const viskores::Id3 dims(extent[0]+7,extent[1]+7,extent[2]+7);
   for(int d=0;d<3;++d)
@@ -522,14 +527,15 @@ inline DeviceStreamlines trace_tgv_device(
     bool sample_trace_vector=false,int global_cells=32,bool resident=false,
     const Coordinates* physical_coordinates=nullptr,
     Real physical_step_scale=Real(1.),const std::string& seed_layout="line16",
-    viskores::Id3 global_dimensions=viskores::Id3(0),bool image_only=false) {
+    viskores::Id3 global_dimensions=viskores::Id3(0),bool image_only=false,
+    const std::array<Real,6>* physical_bounds=nullptr) {
   if(physical_coordinates) return trace_partition_device<true,Vectors,Coordinates>(trace_velocity,color_velocity,extent,offset,
     comm,host_budget,constant,constant_axis,forward_only,sample_trace_vector,global_cells,resident,physical_coordinates,
-    physical_step_scale,seed_layout,global_dimensions,image_only);
+    physical_step_scale,seed_layout,global_dimensions,image_only,physical_bounds);
   if(physical_step_scale!=Real(1.)) throw std::invalid_argument("Sensitivity scale requires physical coordinates");
   return trace_partition_device<false,Vectors,Coordinates>(trace_velocity,color_velocity,extent,offset,
     comm,host_budget,constant,constant_axis,forward_only,sample_trace_vector,global_cells,resident,nullptr,
-    physical_step_scale,seed_layout,global_dimensions,image_only);
+    physical_step_scale,seed_layout,global_dimensions,image_only,physical_bounds);
 }
 } // namespace astr_insitu
 #endif

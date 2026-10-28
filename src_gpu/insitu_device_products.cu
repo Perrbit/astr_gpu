@@ -477,7 +477,7 @@ extern "C" int astr_insitu_device_render(const char* pipeline,const char* backen
 try {
   const auto comm=MPI_Comm_f2c(fcomm);
   const std::string seed_layout=seeds?seeds:"line16";
-  astr_insitu::tgv_streamline_seeds(seed_layout);
+  if(seed_layout!="sbli-layered16") astr_insitu::tgv_streamline_seeds(seed_layout);
   Real physical_step_scale=Real(1.);
   const char* test_step_scale=std::getenv("ASTR_INSITU_TEST_CURVE_STEP_SCALE");
   if(test_step_scale) {
@@ -515,18 +515,22 @@ try {
   const bool curve_demo=selected=="curve_demo";
   const bool boundary_layer=selected=="boundary_layer";
   const bool m12_hd=selected=="m12_diagnostics";
+  const bool sbli=selected=="sbli_diagnostics";
   const viskores::Id3 global_dimensions(global_cells,global_y,global_z);
   const bool preview_bl=selected=="streamlines" && astr_insitu::streamline_preview_active() &&
     !astr_insitu::streamline_views().empty() && global_dimensions==viskores::Id3(450,130,96);
-  const bool demo=selected=="tgv256_demo" || curve_demo || boundary_layer || m12_hd;
+  const bool demo=selected=="tgv256_demo" || curve_demo || boundary_layer || m12_hd || sbli;
   if(selected!="all" && selected!="q_surface" && selected!="q_streamlines" &&
      selected!="streamlines" && selected!="velocity_slice" && !demo) throw std::invalid_argument("Unsupported device product profile");
-  if((boundary_layer || m12_hd || preview_bl)?((global_dimensions!=viskores::Id3(64,32,24) &&
+  if(sbli && (!curve || covered || seed_layout!="sbli-layered16" || std::string(pipeline?pipeline:"")!="standard-device" ||
+      global_cells<6 || global_y<6 || global_z<5 || oy!=0 || oz!=0 || ny!=global_y || nz!=global_z))
+    throw std::invalid_argument("SBLI products require physical x-slab inputs without mean fields");
+  if(!sbli && ((boundary_layer || m12_hd || preview_bl)?((global_dimensions!=viskores::Id3(64,32,24) &&
       !(m12_hd && astr_insitu::m12_hd_grid(global_dimensions)) && !preview_bl) || !curve || covered ||
       (!preview_bl && seed_layout!=(m12_hd?"bl-layered256":"bl-layered64")) || std::string(pipeline?pipeline:"")!="standard-device"):
       (global_dimensions!=viskores::Id3(global_cells) ||
        (curve_demo?(global_cells!=32 && global_cells!=64 && global_cells!=128 && global_cells!=256):
-        global_cells!=(demo?256:32))))
+       global_cells!=(demo?256:32)))))
     throw std::invalid_argument("Device product profile/resolution differs");
   if(curve_demo && global_cells==256) {
     int ranks=0;
@@ -538,10 +542,10 @@ try {
   if(host_budget<=0 || !std::isfinite(time) || step<0) throw std::invalid_argument("Invalid device frame identity/budget");
   if(curve!=0 && curve!=1) throw std::invalid_argument("Invalid device coordinate mode");
   if(curve) {
-    if((selected!="q_surface" && selected!="streamlines" && !curve_demo && !boundary_layer && !m12_hd) || !coordinates ||
-        (global_cells!=32 && !curve_demo && !boundary_layer && !m12_hd && !preview_bl) ||
-        ((selected=="q_surface" || curve_demo || boundary_layer || m12_hd) && covered) ||
-        ((selected=="streamlines" || curve_demo || boundary_layer || m12_hd) && !coordinate_halo) ||
+    if((selected!="q_surface" && selected!="streamlines" && !curve_demo && !boundary_layer && !m12_hd && !sbli) || !coordinates ||
+        (global_cells!=32 && !curve_demo && !boundary_layer && !m12_hd && !preview_bl && !sbli) ||
+        ((selected=="q_surface" || curve_demo || boundary_layer || m12_hd || sbli) && covered) ||
+        ((selected=="streamlines" || curve_demo || boundary_layer || m12_hd || sbli) && !coordinate_halo) ||
         std::string(pipeline?pipeline:"")=="compatible")
       throw std::invalid_argument("CURVE requires an admitted strict bounded surface or streamline product");
 #ifdef ASTR_VISKORES_ALLOCATION_PREFLIGHT
@@ -565,6 +569,19 @@ try {
 #endif
   }
   const viskores::Id3 extent(nx,ny,nz),dimensions(nx+1,ny+1,nz+1),offset(ox,oy,oz),halo_dimensions(nx+7,ny+7,nz+7);
+  std::array<Real,6> sbli_bounds{};
+  if(sbli) {
+    // Separable monotone grid: only two coordinate metadata tuples leave the GPU.
+    std::array<Real,3> first{},last{},lower{},upper{};
+    if(cudaMemcpy(first.data(),coordinates,3*sizeof(Real),cudaMemcpyDeviceToHost)!=cudaSuccess ||
+       cudaMemcpy(last.data(),coordinates+3*(dimensions[0]*dimensions[1]*dimensions[2]-1),
+         3*sizeof(Real),cudaMemcpyDeviceToHost)!=cudaSuccess)
+      throw std::runtime_error("Cannot obtain SBLI domain metadata");
+    astr_insitu::trace_mpi(MPI_Allreduce(first.data(),lower.data(),3,astr_insitu::numerical_mpi_type(),MPI_MIN,comm));
+    astr_insitu::trace_mpi(MPI_Allreduce(last.data(),upper.data(),3,astr_insitu::numerical_mpi_type(),MPI_MAX,comm));
+    for(int d=0;d<3;++d) {sbli_bounds[2*d]=lower[d];sbli_bounds[2*d+1]=upper[d];}
+    astr_insitu::tgv_streamline_seeds(seed_layout,&sbli_bounds);
+  }
   const bool slice=(selected=="all" || selected=="velocity_slice") && astr_insitu_scene_due("velocity_slice");
   const bool surface=(selected=="all" || selected=="q_surface" || selected=="q_streamlines" || demo) &&
     astr_insitu_scene_due("q_surface");
@@ -583,12 +600,15 @@ try {
       viskores::cont::cuda::internal::CudaAllocator::ForceManagedMemoryOff();
     int rank=0;astr_insitu::trace_mpi(MPI_Comm_rank(comm,&rank));
     std::vector<astr_insitu::DeviceMesh> meshes;
-    const bool plane=(boundary_layer || m12_hd) && astr_insitu_scene_due("velocity_slice");
+    const bool plane=(boundary_layer || m12_hd || sbli) && astr_insitu_scene_due("velocity_slice");
     const bool traces=instant || crossing || reynolds || favre;
     const int group_count=int(slice || surface)+int(plane)+int(traces);
     int emitted_groups=0;
     const auto render_group=[&]() {
-      for(auto& mesh:meshes) mesh.controls["group_member"]=Real(1.);
+      for(auto& mesh:meshes) {
+        mesh.controls["group_member"]=Real(1.);
+        if(sbli) for(int d=0;d<6;++d) mesh.controls["domain_bound"+std::to_string(d)]=sbli_bounds[d];
+      }
       for(const char* name:{"q_surface","velocity_slice","instantaneous_streamlines","crossing_streamlines",
                            "mean_reynolds_streamlines","mean_favre_streamlines",
                            "temperature_slice","spanwise_slice","spanwise_slice_weak"}) {
@@ -624,11 +644,11 @@ try {
         auto extracted=astr_insitu::extract_tgv_geometry(reinterpret_cast<astr_insitu::NativeVector*>(velocity),
           diagnostic,dimensions,offset,!is_surface,is_surface,iso,nullptr,global_cells,
           curve?reinterpret_cast<astr_insitu::NativeVector*>(coordinates):nullptr,global_dimensions,
-          diagnostic_components,!astr_insitu::retain_quantitative_product_fields());
+          diagnostic_components,!astr_insitu::retain_quantitative_product_fields(),sbli);
         if(is_surface) meshes.push_back(resident_mesh("q_surface",extracted.surface,step,time,3,halo,
           diagnostic_components==14?reinterpret_cast<astr_insitu::DeviceDiagnostics*>(diagnostic):nullptr,extent,offset,global_cells,rank,
           curve?reinterpret_cast<astr_insitu::NativeVector*>(coordinates):nullptr,std::uint64_t(host_budget),nullptr,0,demo,iso,
-          global_dimensions,(boundary_layer || m12_hd)?Real(1.1):Real(1.)));
+          global_dimensions,(boundary_layer || m12_hd || sbli)?Real(1.1):Real(1.)));
         else meshes.push_back(resident_mesh("velocity_slice",
           astr_insitu::triangulate_device_slice(extracted.slice,dimensions,offset,global_cells),step,time,3,
           halo,nullptr,extent,offset,global_cells,rank));
@@ -641,9 +661,10 @@ try {
     if(slice || surface) {
       const int status=render_group();if(status) return status;
     }
-    if(boundary_layer && astr_insitu_scene_due("velocity_slice")) {
+    if((boundary_layer || sbli) && astr_insitu_scene_due("velocity_slice")) {
       const int global[3]={global_cells,global_y,global_z},local[3]={nx,ny,nz},start[3]={ox,oy,oz};
-      const Real origin[3]={Real(0.),Real(0.),Real(45.)},normal[3]={Real(0.),Real(0.),Real(1.)};
+      const Real origin[3]={Real(0.),Real(0.),sbli?(sbli_bounds[4]+sbli_bounds[5])/Real(2.):Real(45.)};
+      const Real normal[3]={Real(0.),Real(0.),Real(1.)};
       const auto before=meshes.size();
       if(!astr_insitu::local_product(comm,"velocity_slice",step,time,[&] {
         meshes.push_back(astr_insitu::build_device_plane(fcomm,step,time,global,local,start,coordinates,velocity,
@@ -668,7 +689,8 @@ try {
         ProductStage phase("resident_streamlines_inclusive","ASTR_IS8_RESIDENT_STREAMLINES",fcomm,step);
         auto trace=astr_insitu::trace_tgv_device(field,actual,extent,offset,comm,host_budget,
           constant,constant?trace_axis:0,constant,mean,global_cells,true,curve?&physical:nullptr,physical_step_scale,
-          constant?"line16":trace_seeds,global_dimensions,!astr_insitu::retain_quantitative_product_fields());
+          constant?"line16":trace_seeds,global_dimensions,!astr_insitu::retain_quantitative_product_fields(),
+          sbli?&sbli_bounds:nullptr);
         report_resident_trace(trace,name,rank,constant?trace_axis:0);
 #ifdef ASTR_BUILD_TESTING
         if(test_step_scale && rank==0) for(int i=0;i<trace.particles;++i) {
@@ -680,10 +702,11 @@ try {
 #endif
         auto mesh=resident_mesh(name,trace.resident_geometry,step,time,2,source,nullptr,
           extent,offset,global_cells,rank,nullptr,std::uint64_t(host_budget),curve?&physical:nullptr,trace_axis,demo,Real(.25),
-          global_dimensions,(boundary_layer || m12_hd)?Real(1.1):Real(1.));
+          global_dimensions,(boundary_layer || m12_hd || sbli)?Real(1.1):Real(1.));
         if(!astr_insitu::retain_quantitative_product_fields()) trace.resident_geometry={};
         mesh.controls["streamline_seed_layout"]=trace.seed_layout=="tgv-stratified"?Real(1.):
-          (trace.seed_layout=="bl-layered64"?Real(2.):(trace.seed_layout=="bl-layered256"?Real(3.):Real(0.)));
+          (trace.seed_layout=="bl-layered64"?Real(2.):(trace.seed_layout=="bl-layered256"?Real(3.):
+            (trace.seed_layout=="sbli-layered16"?Real(4.):Real(0.))));
         mesh.controls["streamline_seed_count"]=trace.seed_count;
         mesh.controls["streamline_particle_count"]=trace.particles;
         if(m12_hd || !astr_insitu::streamline_views().empty()) {

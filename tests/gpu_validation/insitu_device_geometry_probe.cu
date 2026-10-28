@@ -289,6 +289,47 @@ int run(int argc,char** argv,int rank,int ranks) {
   if(cudaGetDeviceCount(&devices)!=cudaSuccess || devices<ranks || cudaSetDevice(rank)!=cudaSuccess)
     throw std::runtime_error("one GPU per rank required");
   viskores::cont::Initialize(argc,argv);
+  if(selected=="surface-cleanup") {
+    using Vector=astr_insitu::NativeVector;
+    std::vector<std::shared_ptr<void>> storage;
+    const std::vector<Vector> points={Vector(0.,0.,0.),Vector(1.,0.,0.),Vector(0.,1.,0.),Vector(0.,0.,0.)};
+    const auto make=[&](const std::vector<Vector>& xyz,const std::vector<viskores::Id>& ids) {
+      viskores::cont::DataSet data;
+      Vector* coordinates_pointer=nullptr;viskores::Id* indices_pointer=nullptr;
+      if(cudaMalloc(&coordinates_pointer,xyz.size()*sizeof(Vector))!=cudaSuccess ||
+         cudaMalloc(&indices_pointer,ids.size()*sizeof(viskores::Id))!=cudaSuccess)
+        throw std::runtime_error("Surface cleanup test allocation failed");
+      storage.emplace_back(coordinates_pointer,[](void* p){cudaFree(p);});
+      storage.emplace_back(indices_pointer,[](void* p){cudaFree(p);});
+      if(cudaMemcpy(coordinates_pointer,xyz.data(),xyz.size()*sizeof(Vector),cudaMemcpyHostToDevice)!=cudaSuccess ||
+         cudaMemcpy(indices_pointer,ids.data(),ids.size()*sizeof(viskores::Id),cudaMemcpyHostToDevice)!=cudaSuccess)
+        throw std::runtime_error("Surface cleanup test upload failed");
+      auto coordinates=astr_insitu::borrow_cuda_array(coordinates_pointer,xyz.size());
+      auto indices=astr_insitu::borrow_cuda_array(indices_pointer,ids.size());
+      viskores::cont::CellSetSingleType<> cells;
+      cells.Fill(xyz.size(),viskores::CELL_SHAPE_TRIANGLE,3,indices);
+      data.SetCellSet(cells);
+      data.AddCoordinateSystem(viskores::cont::CoordinateSystem("coords",coordinates));
+      return data;
+    };
+    auto mixed=make(points,{0,1,2,0,3,1});
+    astr_insitu::remove_zero_area_surface_cells(mixed);
+    if(mixed.GetCellSet().GetNumberOfCells()!=1) throw std::runtime_error("Positive-area triangle was not preserved");
+    const auto cells=mixed.GetCellSet().AsCellSet<viskores::cont::CellSetSingleType<>>();
+    const auto ids=cells.GetConnectivityArray(viskores::TopologyElementTagCell{},viskores::TopologyElementTagPoint{}).ReadPortal();
+    for(int i=0;i<3;++i) if(ids.Get(i)!=i) throw std::runtime_error("Positive triangle winding/indices changed");
+    auto empty=make(points,{0,3,1});
+    astr_insitu::remove_zero_area_surface_cells(empty);
+    if(empty.GetNumberOfCoordinateSystems()!=0) throw std::runtime_error("All-degenerate surface is not empty");
+    auto bad_points=points;bad_points[1][0]=std::numeric_limits<double>::quiet_NaN();
+    auto bad=make(bad_points,{0,1,2});bool rejected=false;
+    try {astr_insitu::remove_zero_area_surface_cells(bad);} catch(const std::runtime_error& e) {
+      rejected=std::string(e.what())=="Physical contour has nonfinite triangles";
+    }
+    if(!rejected) throw std::runtime_error("Nonfinite surface was not rejected");
+    std::printf("SURFACE_CLEANUP_PASS positive=1 empty=1 nonfinite_rejected=1 tolerance=0\n");
+    return 0;
+  }
   viskores::Id3 dims(33,33,33),offset(0,0,0);
   dims[axis]=32/ranks+1; offset[axis]=rank*32/ranks;
   int nodes=dims[0]*dims[1]*dims[2];

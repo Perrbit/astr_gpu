@@ -1,5 +1,6 @@
 #include "insitu_device_structured.h"
 #include "insitu_compact_mesh.h"
+#include "insitu_product_dispatch.h"
 #include <viskores/cont/Initialize.h>
 #include <mpi.h>
 #include <cstdio>
@@ -10,6 +11,28 @@ using Real=astr::numerical_real;
 namespace {
 using namespace astr_insitu;
 using PlaneAudit=viskores::Vec<Real,3>;
+using SbliFields=viskores::Vec<Real,5>;
+std::vector<Real> sbli_wall_values;
+struct SbliTriangles : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,FieldOut);
+  using ExecutionSignature=void(_1,_2);
+  viskores::Id nx;
+  VISKORES_CONT explicit SbliTriangles(viskores::Id x):nx(x) {}
+  VISKORES_EXEC void operator()(viskores::Id id,viskores::Id& index) const {
+    const auto cell=id/6,base=cell%nx+(nx+1)*(cell/nx);
+    const int corner[6]={0,1,3,0,3,2};
+    const auto p=corner[id%6];index=base+(p&1)+(nx+1)*(p>>1);
+  }
+};
+struct SbliScalar : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,FieldOut);
+  using ExecutionSignature=void(_1,_2);
+  int component;
+  VISKORES_CONT explicit SbliScalar(int c):component(c) {}
+  VISKORES_EXEC void operator()(const SbliFields& fields,Real& scalar) const {
+    scalar=component==4?viskores::Log10(Real(1.)+fields[4]):fields[component];
+  }
+};
 struct PlaneSpeed : viskores::worklet::WorkletMapField {
   using ControlSignature=void(FieldIn,FieldOut);
   using ExecutionSignature=void(_1,_2);
@@ -114,17 +137,9 @@ astr_insitu::DeviceMesh astr_insitu::build_device_plane(int fcomm,int step,Real 
   if(cudaMemGetInfo(&free_bytes,&total_bytes)!=cudaSuccess ||
       free_bytes<std::uint64_t(std::max<std::int64_t>(reserve,1073741824)))
     throw std::runtime_error("Physical plane device reserve exceeded");
-  // Leave controlled space for the shared display owner, in addition to extraction.
-  const std::uint64_t display_bound=std::uint64_t(partition.tetrahedra())*512;
-  if(std::uint64_t(retained)>std::uint64_t(budget) || display_bound>std::uint64_t(budget-retained))
-    throw std::runtime_error("Physical plane display budget exceeded");
-  const std::uint64_t allocation_bound=display_bound+std::uint64_t(partition.tetrahedra())*1024;
-  const auto required=std::uint64_t(std::max<std::int64_t>(reserve,1073741824));
-  if(allocation_bound>free_bytes-required)
-    throw std::runtime_error("Physical plane controlled allocation reserve exceeded");
   auto product=structured_geometry::extract_plane(reinterpret_cast<astr_insitu::NativeVector*>(coordinates),
     reinterpret_cast<astr_insitu::NativeVector*>(velocity),nullptr,partition,point,direction,std::uint64_t(budget),
-    std::uint64_t(retained)+display_bound,true);
+    std::uint64_t(retained),true,true);
   if(speed_colors && product.data.GetNumberOfCoordinateSystems()) {
     const auto vectors=product.data.GetPointField("velocity").GetData().AsArrayHandle<
       viskores::cont::ArrayHandle<astr_insitu::NativeVector>>();
@@ -195,5 +210,95 @@ try {
   return astr_insitu::render_resident_products(pipeline,backend,script,fcomm,step,time,"physical_plane",{std::move(mesh)});
 } catch(const std::exception& error) {
   std::fprintf(stderr,"Physical plane product failed: %s\n",error.what());
+  MPI_Abort(MPI_Comm_f2c(fcomm),1);return 1;
+}
+
+// Only the compact O(Nx) wall profile crosses this host interface. Plane fields
+// and their coordinates/connectivity remain borrowed CUDA arrays.
+extern "C" const Real* astr_insitu_sbli_wall_data(int* count,int* real_bytes) {
+  *count=int(sbli_wall_values.size()/4);
+  *real_bytes=int(sizeof(Real));
+  return sbli_wall_values.data();
+}
+
+extern "C" int astr_insitu_device_render_sbli_2d(const char* pipeline,const char* backend,const char* script,
+    int fcomm,int step,Real time,int nx,int ny,Real* coordinates_pointer,Real* fields_pointer,
+    const Real* wall,int nwall,const Real* bounds,std::int64_t budget,std::int64_t reserve,std::int64_t retained)
+try {
+#ifdef ASTR_INSITU_DEVICE_RENDERING
+  using namespace astr_insitu;
+  const auto comm=MPI_Comm_f2c(fcomm);
+  if(nx<6 || ny<6 || budget<=0 || reserve<0 || retained<0 || retained>budget || nwall<0)
+    throw std::invalid_argument("Invalid compact SBLI plane shape/budget");
+  static bool initialized=false;
+  if(!initialized) {
+    int argc=1;char program[]="astr-insitu-sbli";char* args[]={program,nullptr};char** argv=args;
+    viskores::cont::Initialize(argc,argv);initialized=true;
+  }
+  viskores::cont::GetRuntimeDeviceTracker().ForceDevice(viskores::cont::DeviceAdapterTagCuda{});
+  if(viskores::cont::cuda::internal::CudaAllocator::UsingManagedMemory())
+    viskores::cont::cuda::internal::CudaAllocator::ForceManagedMemoryOff();
+  const auto count=viskores::Id(nx+1)*(ny+1);
+  auto coordinates=borrow_cuda_array(reinterpret_cast<NativeVector*>(coordinates_pointer),count);
+  auto fields=borrow_cuda_array(reinterpret_cast<SbliFields*>(fields_pointer),count);
+  const std::uint64_t display_bound=std::uint64_t(count)*256+std::uint64_t(nx)*ny*6*32;
+  std::size_t free=0,total=0;
+  if(cudaMemGetInfo(&free,&total)!=cudaSuccess || free<std::uint64_t(reserve) ||
+      display_bound>std::uint64_t(budget-retained) || display_bound>free-std::uint64_t(reserve))
+    throw std::runtime_error("Compact SBLI plane display budget exceeded");
+  viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});
+  viskores::cont::ArrayHandle<viskores::Id> indices;
+  invoke(SbliTriangles{nx},viskores::cont::ArrayHandleIndex(viskores::Id(6)*nx*ny),indices);
+  synchronize_device_stage("SbliPlaneTriangles");
+  viskores::cont::CellSetSingleType<> cells;
+  cells.Fill(count,viskores::CELL_SHAPE_TRIANGLE,3,indices);
+  const char* names[]={"velocity_slice","streamwise_velocity_slice","pressure_ratio_slice", "temperature_slice",
+                       "density_gradient_slice","wall_pressure_curve","skin_friction_curve","wall_heat_flux_curve"};
+  const Real ranges[5][2]={{0,Real(1.1)},{-Real(1.1),Real(1.1)},{0,8},{0,11},{0,4}};
+  std::vector<DeviceMesh> meshes;
+  int rank=0;
+  if(MPI_Comm_rank(comm,&rank)!=MPI_SUCCESS) throw std::runtime_error("Cannot identify SBLI plane rank");
+  sbli_wall_values.clear();
+  if(rank==0 && nwall) sbli_wall_values.assign(wall,wall+4*nwall);
+  for(int c=0;c<8;++c) {
+    DeviceMesh mesh;mesh.name=names[c];
+    viskores::cont::DataSet data;
+    if(c<5 && astr_insitu_scene_due(names[c])) {
+      const bool ok=local_product(comm,names[c],step,time,[&] {
+        viskores::cont::ArrayHandle<Real> scalar;
+        invoke(SbliScalar{c},fields,scalar);
+        synchronize_device_stage("SbliPlaneScalar");
+        data.AddCoordinateSystem(viskores::cont::CoordinateSystem("coordinates",coordinates));
+        data.SetCellSet(cells);data.AddPointField("value",scalar);
+      });
+      if(!ok) data=viskores::cont::DataSet{};
+    }
+    auto owner=std::make_shared<DeviceGeometryOwner>(data,step,time,3,"value");
+    mesh.owner=owner;
+    const auto colors=owner->color_display(device_display_palette(),false,c<5?ranges[c][0]:Real(0.),
+      c<5?ranges[c][1]:Real(1.));
+    const auto& view=owner->get();
+    mesh.draw.positions=reinterpret_cast<const float*>(view.display_coordinates);
+    mesh.draw.colors=reinterpret_cast<const unsigned char*>(colors);mesh.draw.indices=view.display_connectivity;
+    mesh.draw.points=view.points;mesh.draw.cells=view.cells;mesh.draw.device=view.device;mesh.draw.arity=3;
+    std::copy(view.bounds,view.bounds+6,mesh.draw.bounds);
+    for(int d=0;d<6;++d) mesh.controls["domain_bound"+std::to_string(d)]=bounds[d];
+    mesh.controls["group_member"]=Real(1.);
+    mesh.controls["curve_points"]=Real(nwall);
+    if(c<5) {
+      mesh.controls["color_min"]=ranges[c][0];mesh.controls["color_max"]=ranges[c][1];
+      mesh.controls["actual_min"]=view.speed_range[0];mesh.controls["actual_max"]=view.speed_range[1];
+    }
+    meshes.push_back(std::move(mesh));
+    if(!retain_quantitative_product_fields()) owner->retain_display_only();
+  }
+  require_device_only(coordinates);require_device_only(fields);require_device_only(indices);
+  const auto status=render_resident_products(pipeline,backend,script,fcomm,step,time,"sbli_2d",std::move(meshes));
+  sbli_wall_values.clear();return status;
+#else
+  throw std::runtime_error("SBLI device rendering is not built; no host fallback");
+#endif
+} catch(const std::exception& error) {
+  std::fprintf(stderr,"SBLI plane products failed: %s\n",error.what());
   MPI_Abort(MPI_Comm_f2c(fcomm),1);return 1;
 }

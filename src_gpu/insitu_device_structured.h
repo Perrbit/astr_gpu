@@ -155,7 +155,8 @@ inline void require_no_errors(const viskores::cont::ArrayHandle<viskores::Id>& b
 // retains source arrays and accounts for third-party scratch/resource peaks.
 inline PlaneProduct extract_plane(astr_insitu::NativeVector* coordinates_pointer,astr_insitu::NativeVector* velocity_pointer,
     DeviceDiagnostics* diagnostics_pointer,const Partition& partition,const plane_geometry::Point& origin,
-    const plane_geometry::Point& normal,std::uint64_t budget,std::uint64_t retained=0,bool canonical=false) {
+    const plane_geometry::Point& normal,std::uint64_t budget,std::uint64_t retained=0,bool canonical=false,
+    bool reserve_display=false) {
   const auto plane=canonical?plane_geometry::Plane{origin,normal}:plane_geometry::make_plane(origin,normal);
   if(canonical) {
     Real squared=Real(0.);
@@ -170,10 +171,12 @@ inline PlaneProduct extract_plane(astr_insitu::NativeVector* coordinates_pointer
   }
   const auto tetrahedra=partition.tetrahedra(),nodes=partition.local_nodes();
   if(tetrahedra>std::numeric_limits<viskores::Id>::max()/6 ||
-     static_cast<std::uint64_t>(tetrahedra)>std::numeric_limits<std::uint64_t>::max()/1024)
+     static_cast<std::uint64_t>(tetrahedra)>std::numeric_limits<std::uint64_t>::max()/2048)
     throw std::overflow_error("Structured plane array extent overflow");
   PlaneProduct result;
-  result.controlled_bound=static_cast<std::uint64_t>(tetrahedra)*1024;
+  // Count/scan storage scales with volume; output and display storage scale with the cut.
+  const auto count_bound=static_cast<std::uint64_t>(tetrahedra)*(3*sizeof(PlaneCounts)+2*sizeof(viskores::Id));
+  result.controlled_bound=count_bound;
   if(retained>budget || result.controlled_bound>budget-retained)
     throw std::runtime_error("Structured plane controlled-array budget exceeded");
   std::size_t free_bytes=0,total_bytes=0;
@@ -195,6 +198,16 @@ inline PlaneProduct extract_plane(astr_insitu::NativeVector* coordinates_pointer
   require_no_errors(bad,"Invalid structured plane geometry/range");
   const auto total=viskores::cont::Algorithm::ScanExclusive(device,counts,offsets);
   synchronize_device_stage("ScanStructuredPlane");
+  const auto points=static_cast<std::uint64_t>(total[0]),indices_count=static_cast<std::uint64_t>(total[1]);
+  result.controlled_bound=count_bound+points*(4*sizeof(astr_insitu::NativeVector)+4*sizeof(Real)+
+    4*sizeof(PlaneKey)+8*sizeof(viskores::Id))+indices_count*4*sizeof(viskores::Id);
+  if(reserve_display) result.controlled_bound+=points*(2*sizeof(astr_insitu::NativeVector)+4*sizeof(float))+
+    indices_count*sizeof(viskores::Id);
+  if(result.controlled_bound>budget-retained)
+    throw std::runtime_error("Structured plane output/display budget exceeded");
+  if(cudaMemGetInfo(&free_bytes,&total_bytes)!=cudaSuccess || free_bytes<1073741824ULL ||
+      result.controlled_bound-count_bound>free_bytes-1073741824ULL)
+    throw std::runtime_error("Structured plane output/display reserve exceeded");
   if(!total[1]) {
     require_device_only(xyz);require_device_only(velocity);
     if(diagnostics_pointer) require_device_only(diagnostics);
