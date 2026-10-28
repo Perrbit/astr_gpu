@@ -28,6 +28,7 @@ from egl_identity import EGL
 from image_publication import publish_pair, eps_output_enabled, RECOVERABLE_ERRNOS
 import product_dispatch as dispatch
 from streamline_preview import seed_projection, retain_display_resources
+from sbli_products import PLANE_TITLES, WALL_COLUMNS
 
 arguments = catalyst.get_args()
 if len(arguments) not in (4, 5) or arguments[3] not in (
@@ -48,6 +49,8 @@ product_names = {
     'tgv256_demo': ('q_surface', 'instantaneous_streamlines'),
     'curve_demo': ('q_surface', 'instantaneous_streamlines'),
     'boundary_layer': ('q_surface', 'velocity_slice', 'instantaneous_streamlines'),
+    'sbli_diagnostics': ('q_surface', 'velocity_slice', 'instantaneous_streamlines'),
+    'sbli_2d': tuple(PLANE_TITLES)+tuple(WALL_COLUMNS),
     'm12_diagnostics': ('q_surface', 'velocity_slice', 'instantaneous_streamlines'),
     'channel_walls': ('wall_pressure', 'wall_shear_x', 'wall_heat_into_gas'),
     'curve_walls': ('wall_pressure', 'wall_shear_x', 'wall_heat_into_gas'),
@@ -71,6 +74,8 @@ sources = {name: pv.TrivialProducer(registrationName=name) for name in (
     'wall_pressure', 'wall_shear_x', 'wall_heat_into_gas', 'pressure', 'temperature',
     'vibrational_temperature', 'Y_N2', 'Y_O2', 'Y_N', 'Y_O', 'Y_NO', 'temperature_slice',
     'spanwise_slice', 'spanwise_slice_weak')}
+if profile=='sbli_2d':
+    sources.update({name:pv.TrivialProducer(registrationName=name) for name in product_names if name not in sources})
 wall_profile = profile in ('channel_walls', 'curve_walls', 'air5_walls')
 if wall_profile:
     sources.update({('mean_'+name): pv.TrivialProducer(registrationName='mean_'+name) for name in product_names})
@@ -81,6 +86,10 @@ image_size = [1280, 960] if profile in ('tgv256_demo','curve_demo') else [800, 6
 color_range = [0., 1.] if profile in ('tgv256_demo','curve_demo') else [-1., 1.]
 if profile == 'boundary_layer':
     image_size, color_range = [1536, 384], [0., 1.1]
+if profile in ('sbli_diagnostics','sbli_2d'):
+    image_size, color_range = [2560, 640], [0., 1.1]
+if profile=='sbli_2d':
+    image_size=[3840,960]
 timing = os.environ.get('ASTR_INSITU_TIMING', '') in ('1', 't', 'T', 'true', 'TRUE', 'on', 'ON')
 
 
@@ -161,8 +170,10 @@ def update_geometry(name, piece):
         item.update(actor=actor, mapper=actor.GetMapper())
     if 'view' not in item and dispatch.enabled(name, 'image'):
         setup_view(name, item, piece)
-    if profile == 'boundary_layer':
+    if profile in ('boundary_layer','sbli_diagnostics','sbli_2d'):
         item['local_bounds'] = [metadata(piece, 'bound'+str(d)) for d in range(6)] if points else None
+    if profile=='sbli_2d':
+        item['actual_range']=[metadata(piece,'actual_min'),metadata(piece,'actual_max')]
     if profile == 'm12_diagnostics':
         item['local_bounds'] = [metadata(piece, 'bound'+str(d)) for d in range(6)] if points else None
         if name in ('velocity_slice', 'temperature_slice', 'spanwise_slice', 'spanwise_slice_weak'):
@@ -259,6 +270,17 @@ def setup_view(name, item, piece):
         view.CameraParallelScale=max(.6*max(length),1.05*half_height,
             1.05*half_width/(image_size[0]/image_size[1]))
         item['physical_bounds']=bounds
+    elif profile in ('sbli_diagnostics','sbli_2d'):
+        bounds=[metadata(piece,'domain_bound'+str(d)) for d in range(6)]
+        center=[.5*(bounds[2*d]+bounds[2*d+1]) for d in range(3)]
+        length=[bounds[2*d+1]-bounds[2*d] for d in range(3)]
+        view.CameraPosition=[center[0],center[1],center[2]+2.*max(length)]
+        view.CameraFocalPoint=center
+        view.CameraViewUp=[0.,1.,0.]
+        view.CameraParallelScale=.65*max(length[1],length[0]/(image_size[0]/image_size[1]))
+        item['physical_bounds']=bounds
+        if name in PLANE_TITLES:
+            item['plane']={'origin':[0.,0.,center[2]],'normal':[0.,0.,1.]}
     elif profile=='boundary_layer':
         view.CameraPosition = [550., 375. if name == 'q_surface' else 75., 900.]
         view.CameraFocalPoint = [550., 75., 45.]
@@ -307,7 +329,10 @@ def setup_view(name, item, piece):
         selected_range=({'pressure':[0.,60000.], 'temperature':[1500.,3500.],
             'vibrational_temperature':[1500.,3500.], 'wall_shear_x':[-1.,1.],
             'wall_heat_into_gas':[-60000.,60000.]}).get(field,[0.,1.])
-    elif profile in ('tgv256_demo','curve_demo','boundary_layer'):
+    elif profile=='sbli_2d':
+        color=name
+        selected_range=[metadata(piece,'color_min'),metadata(piece,'color_max')]
+    elif profile in ('tgv256_demo','curve_demo','boundary_layer','sbli_diagnostics'):
         color = 'speed'
     elif name.startswith('mean_'):
         color = 'mean_u_' + ('reynolds' if name=='mean_reynolds_streamlines' else 'favre')
@@ -320,12 +345,20 @@ def setup_view(name, item, piece):
     legend = pv.GetScalarBar(lut, view)
     legend.Visibility = 1
     legend.Title = {'mean_u_reynolds': 'Reynolds u', 'mean_u_favre': 'Favre u', 'speed': 'Speed'}.get(color, color)
+    if profile=='sbli_diagnostics':
+        legend.Title='Speed / U_inf'
+    elif profile=='sbli_2d':
+        legend.Title=PLANE_TITLES[name]
     legend.ComponentTitle = ''
     legend.WindowLocation = 'Upper Right Corner'
     legend.ScalarBarLength = .45
     legend.ScalarBarThickness = 16
     legend.TitleFontSize = 16
     legend.LabelFontSize = 14
+    if profile=='sbli_2d':
+        legend.TitleFontSize=24
+        legend.LabelFontSize=21
+        legend.ScalarBarThickness=24
     legend.TitleColor = [0., 0., 0.]
     legend.LabelColor = [0., 0., 0.]
     if profile in ('curve_walls','physical_plane','air5_walls'):
@@ -577,6 +610,11 @@ def catalyst_execute(info):
         source = sources[name]
         source.UpdatePipeline(time)
         piece = local_piece(source.GetClientSideObject().GetOutputDataObject(0))
+        if profile=='sbli_2d' and name in WALL_COLUMNS:
+            points=int(metadata(piece,'curve_points'))
+            products[name]=render_sbli_wall_curve(name,{},step,time,points,0)
+            dispatch.report(name,'image',products[name]['image'])
+            continue
         try:
             points, cells = dispatch.collective_call(controller, lambda: update_geometry(name, piece))
         except dispatch.ProductFailure as exc:
@@ -611,7 +649,7 @@ def catalyst_execute(info):
                 products[key] = render_product(key, clone, step, time, points, cells)
         if piece.GetFieldData().GetArray('streamline_seed_count') is not None:
             products[name]['seeding'] = {
-                'layout': {0: 'line16', 1: 'tgv-stratified', 2: 'bl-layered64', 3: 'bl-layered256'}[
+                'layout': {0: 'line16', 1: 'tgv-stratified', 2: 'bl-layered64', 3: 'bl-layered256',4:'sbli-layered16'}[
                     int(metadata(piece, 'streamline_seed_layout'))],
                 'seeds': int(metadata(piece, 'streamline_seed_count')),
                 'direction_trajectories': int(metadata(piece, 'streamline_particle_count'))}
@@ -633,6 +671,8 @@ def catalyst_execute(info):
         'local_points': products[names[0]]['local_points'] if names else 0,
         'local_cells': products[names[0]]['local_cells'] if names else 0,
         'products': products}
+    if profile=='sbli_2d':
+        record['wall_curve_host_bytes']=int(metadata(first,'curve_points'))*4*8
     if statistics is not None:
         record['statistics'] = statistics
     adaptive=dispatch.adaptive_receipts(names)
@@ -776,6 +816,20 @@ def render_streamline_candidate(first, step, time):
 
 
 @dispatch.isolate_image
+def render_sbli_wall_curve(name,item,step,time,points,cells):
+    def encode():
+        if rank==0:
+            from sbli_products import wall_values,encode_wall_curve
+            data=wall_values()
+            encode_wall_curve(name,data,step,time,output,write_eps)
+    dispatch.collective_call(controller,encode)
+    return dict(image='published',local_points=points,local_cells=0,
+                image_formats=['jpeg','eps'] if write_eps else ['jpeg'],
+                curve_data=f'{name}.step{step:08d}.csv',
+                normalization=WALL_COLUMNS[name][2])
+
+
+@dispatch.isolate_image
 def render_product(name, item, step, time, points, cells):
     os.environ['ASTR_INSITU_PIXEL_PRODUCT']=name
     os.environ['ASTR_INSITU_PIXEL_STEP']=str(step)
@@ -812,12 +866,13 @@ def render_product(name, item, step, time, points, cells):
             if image is None or tuple(image.GetDimensions()) != (*size, 1):
                 raise RuntimeError('Missing collective image')
             eps = io.BytesIO() if write_eps else None
-            if profile == 'm12_diagnostics':
+            if profile in ('m12_diagnostics','sbli_2d'):
                 scalars = image.GetPointData().GetScalars()
                 rgb = vtk_to_numpy(scalars).reshape(size[1], size[0], scalars.GetNumberOfComponents())[::-1, :, :3]
                 raw = Image.fromarray(rgb.copy(), 'RGB')
                 encoded = io.BytesIO()
-                raw.save(encoded, format='JPEG', quality=95, dpi=(300, 300))
+                dpi=384 if profile=='sbli_2d' else 300
+                raw.save(encoded, format='JPEG', quality=95, dpi=(dpi,dpi))
                 jpeg = encoded.getvalue()
                 if write_eps:
                     raw.save(eps, format='EPS')
@@ -882,7 +937,11 @@ def render_product(name, item, step, time, points, cells):
         'image_formats': ['jpeg', 'eps'] if write_eps else ['jpeg']}
     if 'plane' in item:
         result['plane']=item['plane']
-    if profile in ('boundary_layer', 'm12_diagnostics'):
+    if 'actual_range' in item:
+        low,high=item['actual_range']
+        result['actual_range']=[low,high]
+        result['outside_fixed_color_range']=low<item['color_range'][0] or high>item['color_range'][1]
+    if profile in ('boundary_layer', 'm12_diagnostics','sbli_diagnostics','sbli_2d'):
         result['physical_bounds']=item['physical_bounds']
         result['local_geometry_bounds']=item['local_bounds']
         result['camera'] = dict(position=list(view.CameraPosition), focal_point=list(view.CameraFocalPoint),

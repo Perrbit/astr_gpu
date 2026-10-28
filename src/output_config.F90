@@ -9,6 +9,7 @@ module output_config
   integer,parameter,public :: output_format_version=1,output_slice_capacity=256
   public :: output_product_options,output_options,read_output_options,validate_output_grid
   public :: output_product_derived_indices
+  integer(int64),parameter :: unlimited_budget_bytes=huge(0_int64)/4096_int64
 
   type :: output_product_options
     logical :: enabled=.false.,initial_frame=.false.,final_frame=.false.
@@ -137,6 +138,8 @@ contains
     if(.not.ok) goto 900
     call check_group_end(unit,ok,message)
     if(.not.ok) goto 900
+    if(host_budget_bytes==-1_int64) host_budget_bytes=unlimited_budget_bytes
+    if(device_budget_bytes==-1_int64) device_budget_bytes=unlimited_budget_bytes
     candidate%format_version=format_version
     candidate%directory=directory; candidate%restore_directory=restore_directory
     candidate%restart_output=restart_output

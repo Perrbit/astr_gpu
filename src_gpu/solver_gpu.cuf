@@ -2,11 +2,34 @@ module solver_gpu
   use astr_precision, only: real_kind
   use astr_precision_mpi, only: mpi_real_type
   use cudafor
+  use boundary_high_order_gpu, only: high_order_boundary_enabled_d,boundary_derivative6, &
+    boundary_mp_flux6,boundary_interface_position
   use constdef, only: num1d60,num193d256,num105d512,num15d128, &
                       num45d1024,num5d512,num1d1024
   implicit none
   private :: real_kind,mpi_real_type
 contains
+  attributes(device) real(real_kind) function high_order_primitive_derivative(i,j,k,c,axis,dim,lower,upper) result(df)
+    use commarray_gpu, only: vel_d,tmp_d
+    integer,value :: i,j,k,c,axis,dim,lower,upper
+    integer :: point(3),node,row,s
+    real(real_kind) :: line(0:7),orientation
+    point=[i,j,k]; node=point(axis); row=node; orientation=1.e0_real_kind
+    if(.not.(lower/=0.and.node<3)) then
+      row=dim-node; orientation=-1.e0_real_kind
+    endif
+    do s=0,7
+      point(axis)=s
+      if(orientation<0.e0_real_kind) point(axis)=dim-s
+      if(c==0) then
+        line(s)=tmp_d(point(1),point(2),point(3))
+      else
+        line(s)=vel_d(point(1),point(2),point(3),c)
+      endif
+    enddo
+    df=orientation*boundary_derivative6(line,row)
+  end function high_order_primitive_derivative
+
   attributes(device) integer function wrap_periodic(idx,n)
     implicit none
     integer,value :: idx,n
@@ -1293,7 +1316,7 @@ contains
     real(real_kind),value :: gamma,weight_bw
     real(real_kind) :: fh(5)
     real(real_kind) :: split_plus(5,8),split_minus(5,8),fp(8),fm(8),hc(5),lev(5,5),rev(5,5)
-    integer :: n,m,ii,jj,kk,offset,inode,dim,ntype,lower,upper,idx
+    integer :: n,m,ii,jj,kk,offset,inode,dim,ntype,lower,upper,idx,row,side
     logical :: shock,hdiss
 
     select case(idir)
@@ -1314,6 +1337,26 @@ contains
     endif
     shock=shock_interface_active(i,j,k,idir,im,jm,km)
     hdiss=critical_interface_active(i,j,k,idir,im,jm,km)
+    call boundary_interface_position(inode,dim,ntype,row,side)
+    if(high_order_boundary_enabled_d.and.row>=0.and..not.shock.and..not.hdiss) then
+      do n=1,8
+        idx=n-1
+        if(side==-1) idx=dim-n+1
+        ii=i; jj=j; kk=k
+        select case(idir)
+        case(1); ii=idx
+        case(2); jj=idx
+        case(3); kk=idx
+        end select
+        call steger_warming_split_physical_vector_at(ii,jj,kk,idir,1,im,jm,km,gamma,split_plus(:,n))
+        call steger_warming_split_physical_vector_at(ii,jj,kk,idir,-1,im,jm,km,gamma,split_minus(:,n))
+      enddo
+      do m=1,5
+        fp=split_plus(m,:); fm=split_minus(m,:)
+        fh(m)=boundary_mp_flux6(fp,row,side==1)+boundary_mp_flux6(fm,row,side==-1)
+      enddo
+      return
+    endif
     if(shock) call roe_characteristic_matrices(i,j,k,idir,gamma,lev,rev)
     do n=1,8
       do m=1,2
@@ -1377,7 +1420,7 @@ contains
                           minus_cache(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5)
     real(real_kind) :: fh(5)
     real(real_kind) :: split_plus(5,8),split_minus(5,8),fp(8),fm(8),hc(5),lev(5,5),rev(5,5)
-    integer :: n,m,ii,jj,kk,offset,inode,dim,ntype,lower,upper,idx
+    integer :: n,m,ii,jj,kk,offset,inode,dim,ntype,lower,upper,idx,row,side
     logical :: shock,hdiss
 
     select case(idir)
@@ -1398,6 +1441,11 @@ contains
     endif
     shock=shock_interface_active(i,j,k,idir,im,jm,km)
     hdiss=critical_interface_active(i,j,k,idir,im,jm,km)
+    call boundary_interface_position(inode,dim,ntype,row,side)
+    if(high_order_boundary_enabled_d.and.row>=0.and..not.shock.and..not.hdiss) then
+      call mp_ld_interface_flux(i,j,k,idir,im,jm,km,gamma,hm,npdc,physical_dir,weight_bw,fh)
+      return
+    endif
     if(shock) call roe_characteristic_matrices(i,j,k,idir,gamma,lev,rev)
     do n=1,8
       do m=1,2
@@ -4650,6 +4698,12 @@ contains
     integer,value :: i,j,k,a,im,jm,km,apply_left,apply_right
     real(real_kind) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
+    if(high_order_boundary_enabled_d.and.((apply_left/=0.and.i<3).or. &
+        (apply_right/=0.and.i>im-3))) then
+      deriv6_x_vel_at=high_order_primitive_derivative(i,j,k,a,1,im,apply_left,apply_right)
+      return
+    endif
+
     v0 = vel_at(i,j,k,a,im,jm,km)
     vp1 = 0.e0_real_kind
     vm1 = 0.e0_real_kind
@@ -4682,6 +4736,12 @@ contains
     implicit none
     integer,value :: i,j,k,im,jm,km,apply_left,apply_right
     real(real_kind) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
+
+    if(high_order_boundary_enabled_d.and.((apply_left/=0.and.i<3).or. &
+        (apply_right/=0.and.i>im-3))) then
+      deriv6_x_tmp_at=high_order_primitive_derivative(i,j,k,0,1,im,apply_left,apply_right)
+      return
+    endif
 
     v0 = tmp_at(i,j,k,im,jm,km)
     vp1 = 0.e0_real_kind
@@ -4716,6 +4776,12 @@ contains
     integer,value :: i,j,k,a,im,jm,km,apply_down,apply_up
     real(real_kind) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
+    if(high_order_boundary_enabled_d.and.((apply_down/=0.and.j<3).or. &
+        (apply_up/=0.and.j>jm-3))) then
+      deriv6_y_vel_at=high_order_primitive_derivative(i,j,k,a,2,jm,apply_down,apply_up)
+      return
+    endif
+
     v0 = vel_at(i,j,k,a,im,jm,km)
     vp1 = 0.e0_real_kind
     vm1 = 0.e0_real_kind
@@ -4736,6 +4802,12 @@ contains
     implicit none
     integer,value :: i,j,k,im,jm,km,apply_down,apply_up
     real(real_kind) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
+
+    if(high_order_boundary_enabled_d.and.((apply_down/=0.and.j<3).or. &
+        (apply_up/=0.and.j>jm-3))) then
+      deriv6_y_tmp_at=high_order_primitive_derivative(i,j,k,0,2,jm,apply_down,apply_up)
+      return
+    endif
 
     v0 = tmp_at(i,j,k,im,jm,km)
     vp1 = 0.e0_real_kind
@@ -5694,8 +5766,8 @@ contains
     use commarray_gpu, only: qrhs_d
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_left,apply_right
-    integer :: i,j,k,m
-    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    integer :: i,j,k,m,s,target(3),row
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5),line(5,0:7),values(0:7),sgn
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = blockIdx%y - 1
@@ -5703,6 +5775,23 @@ contains
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     if(i < is .or. i > ie) return
 
+    if(high_order_boundary_enabled_d.and.((apply_left/=0.and.i<3).or. &
+        (apply_right/=0.and.i>im-3))) then
+      row=i; sgn=1.e0_real_kind
+      if(.not.(apply_left/=0.and.i<3)) then
+        row=im-i; sgn=-1.e0_real_kind
+      endif
+      do s=0,7
+        target=[i,j,k]; target(1)=s
+        if(sgn<0.e0_real_kind) target(1)=im-s
+        call stored_diff_flux_at_xyphysical(target(1),target(2),target(3),1,im,jm,km,line(:,s))
+      enddo
+      do m=2,5
+        values=line(m,:)
+        qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)+sgn*boundary_derivative6(values,row)
+      enddo
+      return
+    endif
     call stored_diff_flux_at_xyphysical(i,j,k,1,im,jm,km,f0)
     if(i < im   .or. apply_right == 0) call stored_diff_flux_at_xyphysical(i+1,j,k,1,im,jm,km,fp1)
     if(i > 0    .or. apply_left  == 0) call stored_diff_flux_at_xyphysical(i-1,j,k,1,im,jm,km,fm1)
@@ -5722,8 +5811,8 @@ contains
     use commarray_gpu, only: qrhs_d
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_down,apply_up
-    integer :: i,j,k,m
-    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    integer :: i,j,k,m,s,target(3),row
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5),line(5,0:7),values(0:7),sgn
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
@@ -5731,6 +5820,23 @@ contains
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     if(j < js .or. j > je) return
 
+    if(high_order_boundary_enabled_d.and.((apply_down/=0.and.j<3).or. &
+        (apply_up/=0.and.j>jm-3))) then
+      row=j; sgn=1.e0_real_kind
+      if(.not.(apply_down/=0.and.j<3)) then
+        row=jm-j; sgn=-1.e0_real_kind
+      endif
+      do s=0,7
+        target=[i,j,k]; target(2)=s
+        if(sgn<0.e0_real_kind) target(2)=jm-s
+        call stored_diff_flux_at_xyphysical(target(1),target(2),target(3),2,im,jm,km,line(:,s))
+      enddo
+      do m=2,5
+        values=line(m,:)
+        qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)+sgn*boundary_derivative6(values,row)
+      enddo
+      return
+    endif
     call stored_diff_flux_at_xyphysical(i,j,k,2,im,jm,km,f0)
     if(j < jm   .or. apply_up   == 0) call stored_diff_flux_at_xyphysical(i,j+1,k,2,im,jm,km,fp1)
     if(j > 0    .or. apply_down == 0) call stored_diff_flux_at_xyphysical(i,j-1,k,2,im,jm,km,fm1)
@@ -6649,5 +6755,6 @@ contains
     call copy_qwork_global_kernel<<<grid1,block1>>>(im,jm,km,numq)
     call sync_after_kernel(trim(label_prefix)//'copy_qwork_global_kernel')
   end subroutine apply_explicit_filter_gpu
+
 
 end module solver_gpu

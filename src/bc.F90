@@ -7,6 +7,8 @@
 !+---------------------------------------------------------------------+
 module bc
   use astr_precision, only: real_kind,clock_kind
+  use boundary_high_order, only: high_order_boundary_enabled,boundary_derivative6, &
+    boundary_neumann7,boundary_incoming_rate7,boundary_normal_terms6
   !
   use constdef
   use parallel,only: lio,mpistop,mpirank,mpirankname,irk,jrk,krk,      &
@@ -24,6 +26,7 @@ module bc
   !
   implicit none
   private :: real_kind,clock_kind
+  private :: high_order_boundary_enabled,boundary_derivative6,boundary_neumann7,boundary_incoming_rate7
   !
   integer :: ninflowslice
   real(real_kind) :: pout
@@ -34,6 +37,7 @@ module bc
   integer,parameter :: NSCBC_FARFIELD_POLICY_COMPATIBILITY=0
   integer,parameter :: NSCBC_FARFIELD_POLICY_TARGET_RELAXATION=1
   integer,parameter :: NSCBC_FARFIELD_POLICY_NONREFLECTING=2
+  integer,parameter :: NSCBC_FARFIELD_POLICY_GRCBC=3
   integer,save :: nscbc_farfield_policy=NSCBC_FARFIELD_POLICY_COMPATIBILITY
   logical,save :: nscbc_farfield_configured=.false.
   logical,save :: nscbc_farfield_incoming_only=.false.
@@ -76,6 +80,22 @@ module bc
   !
   contains
   !
+  subroutine configure_high_order_boundary()
+    use astr_precision, only: numerical_precision
+    use boundary_high_order, only: high_order_boundary_enabled
+    use commvar, only: conschm,difschm,recon_schem,bfacmpld,lcomb,nondimen,lfilter,diffterm,ia,ja
+    implicit none
+    high_order_boundary_enabled=.false.
+    if(bctype(1)/=11.or.bctype(2)/=22.or.bctype(4)/=52) return
+    if(.not.nscbc_farfield_grcbc_enabled()) return
+    high_order_boundary_enabled=numerical_precision=='fp64'.and.flowtype=='bl'.and.ndims==3.and. &
+      numq==5.and..not.lcomb.and.nondimen.and..not.lfilter.and.ia>=7.and.ja>=7.and. &
+      conschm=='743e'.and.difschm=='643e'.and.recon_schem==5.and. &
+      abs(bfacmpld-0.1e0_real_kind)<=8.e0_real_kind*epsilon(1.e0_real_kind).and. &
+      (all(bctype==[11,22,41,52,1,1]).or.(all(bctype==[11,22,421,52,1,1]).and..not.diffterm))
+    if(lio.and.high_order_boundary_enabled) write(*,'(a)') ' ** sbli-grcbc-h1 high-order boundary chain'
+  end subroutine configure_high_order_boundary
+
   subroutine configure_profile_inflow
     implicit none
     character(len=32) :: mode
@@ -264,12 +284,16 @@ module bc
         nscbc_farfield_policy=NSCBC_FARFIELD_POLICY_TARGET_RELAXATION
         nscbc_farfield_incoming_only=.true.
         nscbc_farfield_sbli_shock=.true.
+      case('sbli_grcbc')
+        nscbc_farfield_policy=NSCBC_FARFIELD_POLICY_GRCBC
+        nscbc_farfield_incoming_only=.true.
+        nscbc_farfield_sbli_shock=.true.
       case('nonreflecting')
         nscbc_farfield_policy=NSCBC_FARFIELD_POLICY_NONREFLECTING
         nscbc_farfield_incoming_only=.false.
         nscbc_farfield_sbli_shock=.false.
       case default
-        stop 'ASTR_NSCBC_FARFIELD_MODE must be compatibility, incoming_only, sbli_shock, or nonreflecting'
+        stop 'ASTR_NSCBC_FARFIELD_MODE must be compatibility, incoming_only, sbli_shock, sbli_grcbc, or nonreflecting'
       end select
 
       nscbc_farfield_rho_target=roinf
@@ -277,7 +301,8 @@ module bc
       nscbc_farfield_v_target=vinf
       nscbc_farfield_w_target=winf
       nscbc_farfield_t_target=tinf
-      if(nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_TARGET_RELAXATION) then
+      if(nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_TARGET_RELAXATION.or. &
+         nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_GRCBC) then
         call read_nscbc_farfield_real('ASTR_NSCBC_FARFIELD_RHO',        &
                                       nscbc_farfield_rho_target)
         call read_nscbc_farfield_real('ASTR_NSCBC_FARFIELD_U',          &
@@ -331,6 +356,231 @@ module bc
 
     nscbc_farfield_configured=.true.
   end subroutine configure_nscbc_farfield
+
+  logical function nscbc_farfield_grcbc_enabled()
+    implicit none
+    call configure_nscbc_farfield
+    nscbc_farfield_grcbc_enabled=nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_GRCBC
+  end function nscbc_farfield_grcbc_enabled
+
+  logical function nscbc_inviscid_incident_enabled()
+    use commvar, only: diffterm
+    implicit none
+    nscbc_inviscid_incident_enabled=nscbc_farfield_grcbc_enabled().and. &
+      .not.diffterm.and.all(bctype==[11,22,421,52,1,1])
+  end function nscbc_inviscid_incident_enabled
+
+  subroutine nscbc_incident_parameters(pre,post,entry_x,beta)
+    use nscbc_incident, only: incident_shock_states
+    use commvar, only: lfilter
+    implicit none
+    real(real_kind),intent(out) :: pre(5),post(5),entry_x,beta
+    real(real_kind),save :: saved_pre(5),saved_post(5),saved_x,saved_beta
+    logical,save :: ready=.false.
+    integer :: status
+    call configure_nscbc_farfield
+    if(.not.ready) then
+      if(.not.explicit_profile_nscbc_corrections_enabled().or.lfilter) &
+        stop 'sbli_grcbc requires an explicit five-variable profile flow with bc41 or inviscid bc421 and no main filter'
+      saved_pre=[nscbc_farfield_rho_target, &
+        nscbc_farfield_rho_target*nscbc_farfield_u_target, &
+        nscbc_farfield_rho_target*nscbc_farfield_v_target, &
+        nscbc_farfield_rho_target*nscbc_farfield_w_target, &
+        nscbc_farfield_rho_target*nscbc_farfield_t_target/const2*const6+ &
+        0.5e0_real_kind*nscbc_farfield_rho_target*(nscbc_farfield_u_target**2+ &
+        nscbc_farfield_v_target**2+nscbc_farfield_w_target**2)]
+      saved_x=nscbc_farfield_shock_x
+      saved_beta=nscbc_farfield_shock_angle*acos(-1.e0_real_kind)/180.e0_real_kind
+      saved_post=0.e0_real_kind
+      call incident_shock_states(saved_pre,gamma,saved_beta,saved_post,status)
+      if(status/=0) stop 'sbli_grcbc reference does not define a compressive incident shock'
+      ready=.true.
+      if(lio) write(*,'(a)') ' ** sbli_grcbc: exterior reference, complete-RHS closure, top transverse filter off'
+    endif
+    pre=saved_pre; post=saved_post; entry_x=saved_x; beta=saved_beta
+  end subroutine nscbc_incident_parameters
+
+  subroutine apply_nscbc_incident_complete_rhs()
+    use nscbc_incident, only: incident_reference,grcbc_incoming_rate,apply_incident_characteristic_rhs, &
+      incident_normal_characteristics,incident_convective_compatibility
+    use fludyna, only: sos
+    implicit none
+    real(real_kind) :: pre(5),post(5),entry_x,beta,external(5),position(3),normal(3),hn, &
+      pnor(5,5),pinv(5,5),rate(5),lambda(5),reference_rate(5),rhs(5),error,css
+    real(real_kind) :: states(5,3),velocity_line(3,3),pressure_line(3),jacobian_line(3), &
+      metric_line(3,3),normal_lodi(5)
+    logical :: incoming(5)
+    integer :: i,k,status,l,j
+    if(.not.nscbc_farfield_grcbc_enabled()) return
+    if(high_order_boundary_enabled) then
+      call apply_high_order_boundary_complete_rhs()
+      return
+    endif
+    call nscbc_incident_parameters(pre,post,entry_x,beta)
+    error=0.e0_real_kind
+    reference_rate=0.e0_real_kind
+    if(jrk==jrkm) then
+      do k=0,km
+      do i=0,im
+        ! The prescribed supersonic profile owns the inlet/top intersection.
+        if(i==0.and.(npdci==1.or.npdci==4)) then
+          qrhs(i,jm,k,1:5)=0.e0_real_kind
+          cycle
+        endif
+        normal=dxi(i,jm,k,2,:)/sqrt(sum(dxi(i,jm,k,2,:)**2))
+        hn=sum((x(i,jm,k,:)-x(i,jm-1,k,:))*normal)
+        position=x(i,jm,k,:)+hn*normal
+        call incident_reference(position,entry_x,ymax,beta,pre,post,external)
+        pnor=pmatrix(rho(i,jm,k),vel(i,jm,k,1),vel(i,jm,k,2),vel(i,jm,k,3), &
+                     tmp(i,jm,k),spc(i,jm,k,:),dxi(i,jm,k,2,:),inv=.false.)
+        pinv=pmatrix(rho(i,jm,k),vel(i,jm,k,1),vel(i,jm,k,2),vel(i,jm,k,3), &
+                     tmp(i,jm,k),spc(i,jm,k,:),dxi(i,jm,k,2,:),inv=.true.)
+        if(i==im.and.(npdci==2.or.npdci==4)) then
+          css=sos(tmp(i,jm,k),spc(i,jm,k,:))
+          if(vel(i,jm,k,1)<css) then
+            error=max(error,4.e0_real_kind)
+            cycle
+          endif
+        endif
+        call grcbc_incoming_rate(q(i,jm,k,1:5),external,gamma,dxi(i,jm,k,2,:),hn,pinv, &
+                                  reference_rate,rate,lambda,incoming,status)
+        if(status==0) then
+          rhs=qrhs(i,jm,k,1:5)
+          if(any(incoming(1:3))) then
+            do l=1,3
+              j=jm-l+1
+              states(:,l)=q(i,j,k,1:5)
+              velocity_line(:,l)=vel(i,j,k,:)
+              pressure_line(l)=prs(i,j,k)
+              jacobian_line(l)=jacob(i,j,k)
+              metric_line(:,l)=dxi(i,j,k,2,:)
+            enddo
+            call incident_normal_characteristics(states,velocity_line,pressure_line,jacobian_line, &
+              metric_line,pinv,normal_lodi,status)
+            if(status==0) call incident_convective_compatibility(rhs,jacob(i,jm,k),pinv,normal_lodi,incoming,rate)
+          endif
+          if(status==0) call apply_incident_characteristic_rhs(rhs,jacob(i,jm,k),pnor,pinv,incoming,rate,status)
+          if(status==0) qrhs(i,jm,k,1:5)=rhs
+        endif
+        error=max(error,real(status,real_kind))
+      enddo
+      enddo
+    endif
+    error=pmax(error)
+    if(error/=0.e0_real_kind) then
+      if(lio) write(*,'(a,i0)') 'GRCBC boundary status (4=subsonic outlet/top corner): ',nint(error)
+      error stop 'sbli_grcbc complete boundary RHS failed'
+    endif
+  end subroutine apply_nscbc_incident_complete_rhs
+
+  subroutine high_order_normal_terms(point,axis,derivative,rest)
+    implicit none
+    integer,intent(in) :: point(3),axis
+    real(real_kind),intent(out) :: derivative(5),rest(5)
+    real(real_kind) :: states(5,0:7),velocity(3,0:7),pressure(0:7),jacobian(0:7),metric(3,0:7)
+    integer :: s,target(3)
+    do s=0,7
+      target=point; target(axis)=point(axis)-s
+      states(:,s)=q(target(1),target(2),target(3),1:5)
+      velocity(:,s)=vel(target(1),target(2),target(3),:)
+      pressure(s)=prs(target(1),target(2),target(3))
+      jacobian(s)=jacob(target(1),target(2),target(3))
+      metric(:,s)=dxi(target(1),target(2),target(3),axis,:)
+    enddo
+    call boundary_normal_terms6(states,velocity,pressure,jacobian,metric,derivative,rest)
+  end subroutine high_order_normal_terms
+
+  subroutine apply_high_order_boundary_complete_rhs()
+    use commvar, only: mach,roinf,vinf,winf
+    use nscbc_incident, only: incident_reference,grcbc_incoming_rate,apply_incident_characteristic_rhs
+    implicit none
+    real(real_kind) :: pre(5),post(5),entry_x,beta,external(5),face_reference(5),primitive(5,0:7), &
+      position(3),normal(3),hn,pnor(5,5),pinv(5,5),rate(5),lambda(5),zero(5), &
+      derivative(5),rest(5),lodi(5),corrected(5),rhs(5),css,un,scale,tolerance, &
+      recovery,target(5),dq(5),error
+    logical :: incoming(5),crosses_front
+    integer :: i,j,k,s,m,status
+    call nscbc_incident_parameters(pre,post,entry_x,beta)
+    zero=0.e0_real_kind; error=0.e0_real_kind
+    if(npdci==2.or.npdci==4) then
+      i=im
+      do k=0,km
+      do j=0,jm
+        if(j==0.and.(npdcj==1.or.npdcj==4)) cycle
+        pinv=pmatrix(rho(i,j,k),vel(i,j,k,1),vel(i,j,k,2),vel(i,j,k,3), &
+          tmp(i,j,k),spc(i,j,k,:),dxi(i,j,k,1,:),inv=.true.)
+        pnor=pmatrix(rho(i,j,k),vel(i,j,k,1),vel(i,j,k,2),vel(i,j,k,3), &
+          tmp(i,j,k),spc(i,j,k,:),dxi(i,j,k,1,:),inv=.false.)
+        call high_order_normal_terms([i,j,k],1,derivative,rest)
+        lodi=matmul(pinv,derivative-rest)/jacob(i,j,k)
+        corrected=lodi
+        css=sqrt(tmp(i,j,k))/mach
+        un=sum(dxi(i,j,k,1,:)*vel(i,j,k,:))/sqrt(sum(dxi(i,j,k,1,:)**2))
+        tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(un))
+        if(un-css < -tolerance) then
+          scale=3.75e0_real_kind*max(0.e0_real_kind,1.e0_real_kind-(un/css)**2)*css/(xmax-xmin)
+          corrected(5)=scale*(prs(i,j,k)-pinf*pout)/rho(i,j,k)/css*sqrt(2.e0_real_kind)
+        endif
+        if(un < -tolerance) then
+          target=[roinf*pout,roinf*pout*uinf,roinf*pout*vinf,roinf*pout*winf, &
+            pinf*pout/(gamma-1.e0_real_kind)+.5e0_real_kind*roinf*pout*(uinf**2+vinf**2+winf**2)]
+          dq=matmul(pinv,q(i,j,k,1:5)-target)
+          recovery=.25e0_real_kind*(-un)/(xmax-xmin)
+          corrected(1:3)=recovery*dq(1:3)
+          corrected(5)=corrected(5)+recovery*dq(5)
+          if(un+css < -tolerance) corrected(4)=.25e0_real_kind*(-un-css)/(xmax-xmin)*dq(4)
+        endif
+        qrhs(i,j,k,1:5)=qrhs(i,j,k,1:5)+jacob(i,j,k)*matmul(pnor,lodi-corrected)
+      enddo
+      enddo
+    endif
+    if(npdcj==2.or.npdcj==4) then
+      j=jm
+      do k=0,km
+      do i=0,im
+        if(i==0.and.(npdci==1.or.npdci==4)) cycle
+        css=sqrt(tmp(i,j,k))/mach
+        if(i==im.and.(npdci==2.or.npdci==4).and.vel(i,j,k,1)<css) then
+          error=max(error,4.e0_real_kind)
+          cycle
+        endif
+        normal=dxi(i,j,k,2,:)/sqrt(sum(dxi(i,j,k,2,:)**2))
+        hn=sum((x(i,j,k,:)-x(i,j-1,k,:))*normal)
+        pinv=pmatrix(rho(i,j,k),vel(i,j,k,1),vel(i,j,k,2),vel(i,j,k,3), &
+          tmp(i,j,k),spc(i,j,k,:),dxi(i,j,k,2,:),inv=.true.)
+        pnor=pmatrix(rho(i,j,k),vel(i,j,k,1),vel(i,j,k,2),vel(i,j,k,3), &
+          tmp(i,j,k),spc(i,j,k,:),dxi(i,j,k,2,:),inv=.false.)
+        call incident_reference(x(i,j,k,:),entry_x,ymax,beta,pre,post,face_reference)
+        primitive(:,0)=[rho(i,j,k),vel(i,j,k,:),prs(i,j,k)]
+        crosses_front=.false.
+        do s=1,7
+          position=x(i,j,k,:)+real(s,real_kind)*hn*normal
+          call incident_reference(position,entry_x,ymax,beta,pre,post,external)
+          crosses_front=crosses_front.or.any(external/=face_reference)
+          primitive(1,s)=external(1)
+          primitive(2:4,s)=external(2:4)/external(1)
+          primitive(5,s)=(gamma-1.e0_real_kind)*(external(5)-.5e0_real_kind*sum(external(2:4)**2)/external(1))
+        enddo
+        call grcbc_incoming_rate(q(i,j,k,1:5),external,gamma,dxi(i,j,k,2,:),hn,pinv, &
+          zero,rate,lambda,incoming,status)
+        if(status==0) then
+          call high_order_normal_terms([i,j,k],2,derivative,rest)
+          lodi=matmul(pinv,derivative-rest)/jacob(i,j,k)
+          rhs=qrhs(i,j,k,1:5)
+          call boundary_incoming_rate7(primitive,gamma,hn,pinv,lambda,incoming,rhs,jacob(i,j,k), &
+            lodi,crosses_front,rate)
+          call apply_incident_characteristic_rhs(rhs,jacob(i,j,k),pnor,pinv,incoming,rate,status)
+          if(status==0) qrhs(i,j,k,1:5)=rhs
+        endif
+        error=max(error,real(status,real_kind))
+      enddo
+      enddo
+    endif
+    if(npdci==1.or.npdci==4) qrhs(0,0:jm,0:km,1:5)=0.e0_real_kind
+    if(npdcj==1.or.npdcj==4) qrhs(0:im,0,0:km,1:5)=0.e0_real_kind
+    error=pmax(error)
+    if(error/=0.e0_real_kind) error stop 'sbli-grcbc-h1 complete RHS failed'
+  end subroutine apply_high_order_boundary_complete_rhs
 
   subroutine read_nscbc_farfield_real(name,value)
     implicit none
@@ -454,16 +704,17 @@ module bc
   logical function explicit_profile_nscbc_corrections_enabled()
     use commvar, only: conschm,difschm,lcomb,nondimen,recon_schem,lchardecomp
     implicit none
-    logical :: scheme_supported
+    logical :: scheme_supported,boundary_supported
 
     scheme_supported=conschm=='743e'
     if(nscbc_farfield_sbli_shock_enabled()) scheme_supported= &
       ((conschm=='743e'.and.recon_schem==5).or.(conschm=='543e'.and.recon_schem==3)).and.lchardecomp
 
+    boundary_supported=all(bctype==[11,22,41,52,1,1]).or.nscbc_inviscid_incident_enabled()
     explicit_profile_nscbc_corrections_enabled=flowtype=='bl'.and.ndims==3.and. &
       scheme_supported.and.difschm=='643e'.and.numq==5.and. &
       num_species==0.and.num_modequ==0.and..not.lcomb.and.nondimen.and. &
-      turbinf=='prof'.and.all(bctype==[11,22,41,52,1,1]).and. &
+      turbinf=='prof'.and.boundary_supported.and. &
       nscbc_farfield_incoming_only_enabled()
   end function explicit_profile_nscbc_corrections_enabled
 
@@ -991,7 +1242,8 @@ module bc
     compact_stage_wall=conschm=='743e'.and.difschm=='643c'.and. &
       numq==5.and..not.lcomb.and.nondimen.and.ndims==3.and. &
       trim(flowtype)=='bl'.and.bctype(2)==22.and.bctype(3)==41.and.jrk==0
-    compact_stage_wall=compact_stage_wall.or.(explicit_profile_nscbc_corrections_enabled().and.jrk==0)
+    compact_stage_wall=compact_stage_wall.or.(explicit_profile_nscbc_corrections_enabled().and. &
+      bctype(3)==41.and.jrk==0)
     !
     do n=1,6
       if(n==2.and.compact_stage_wall) then
@@ -4506,6 +4758,7 @@ module bc
     !
     logical,save :: lfirstcal=.true.
     !
+    if(high_order_boundary_enabled.and.ndir==4) return
     call configure_nscbc_farfield
     if(nscbc_farfield_policy/=NSCBC_FARFIELD_POLICY_COMPATIBILITY .and. &
        ndir/=4) then
@@ -4818,7 +5071,8 @@ module bc
       j=jm
       
       if(.not.lfilter .and. nscbc_farfield_policy/=                    &
-         NSCBC_FARFIELD_POLICY_NONREFLECTING) then
+         NSCBC_FARFIELD_POLICY_NONREFLECTING.and. &
+         nscbc_farfield_policy/=NSCBC_FARFIELD_POLICY_GRCBC) then
         allocate(qfilt(0:im,1:numq))
         do k=0,km
           !
@@ -4843,12 +5097,14 @@ module bc
     ! All ranks must refresh the updated upper-face x-filter values before
     ! upper-y ranks use z-direction halos in the second transverse filter.
     if(ndir==4 .and. .not.lfilter .and. nscbc_farfield_policy/=        &
-       NSCBC_FARFIELD_POLICY_NONREFLECTING) call qswap()
+       NSCBC_FARFIELD_POLICY_NONREFLECTING.and. &
+       nscbc_farfield_policy/=NSCBC_FARFIELD_POLICY_GRCBC) call qswap()
 
     if(ndir==4 .and. jrk==jrkm) then
       j=jm
       if(.not.lfilter .and. ndims==3 .and. nscbc_farfield_policy/=     &
-         NSCBC_FARFIELD_POLICY_NONREFLECTING) then
+         NSCBC_FARFIELD_POLICY_NONREFLECTING.and. &
+         nscbc_farfield_policy/=NSCBC_FARFIELD_POLICY_GRCBC) then
         allocate(qfilt(0:km,1:numq))
         do i=0,im
           do jq=1,numq
@@ -4975,6 +5231,9 @@ module bc
         case(NSCBC_FARFIELD_POLICY_TARGET_RELAXATION)
           call nscbc_farfield_y_upper_incoming_lodi(LODi,pinv,i,j,k,css,&
                                                      gmachmax2)
+        case(NSCBC_FARFIELD_POLICY_GRCBC)
+          ! Preserve raw normal waves; impose the new closure after diffusion.
+          continue
         case default
           kinout=0.25e0_real_kind*(1.e0_real_kind-gmachmax2)*css/(ymax-ymin)
             ! LODi(5)=kinout*(prs(i,j,k)-pinf)/rho(i,j,k)/css
@@ -5801,6 +6060,7 @@ module bc
     endif
     ! All ranks participate: transverse derivatives must see the filtered face.
     if(compact_plate_outlet) call qswap()
+    if(high_order_boundary_enabled.and.ndir==2) return
     if(ndir==2 .and. irk==irkm) then
       i=im
 
@@ -7368,7 +7628,11 @@ module bc
         do k=0,km
         do i=first_i,im
           !
-          pe=num1d3*(4.e0_real_kind*prs(i,1,k)-prs(i,2,k))
+          if(high_order_boundary_enabled) then
+            pe=boundary_neumann7(prs(i,1:7,k),0.e0_real_kind)
+          else
+            pe=num1d3*(4.e0_real_kind*prs(i,1,k)-prs(i,2,k))
+          endif
           !
           ! if(x(i,j,k,1)<=0.d0) then
           !   vel(i,j,k,1)=num1d3*(4.d0*vel(i,1,k,1)-vel(i,2,k,1))
@@ -8043,6 +8307,13 @@ module bc
           ue=num1d3*(4.e0_real_kind*vel(i,1,k,1)-vel(i,2,k,1))
           ve=num1d3*(4.e0_real_kind*vel(i,1,k,2)-vel(i,2,k,2))
           we=num1d3*(4.e0_real_kind*vel(i,1,k,3)-vel(i,2,k,3))
+          if(high_order_boundary_enabled) then
+            pe=boundary_neumann7(prs(i,1:7,k),0.e0_real_kind)
+            te=boundary_neumann7(tmp(i,1:7,k),0.e0_real_kind)
+            ue=boundary_neumann7(vel(i,1:7,k,1),0.e0_real_kind)
+            ve=boundary_neumann7(vel(i,1:7,k,2),0.e0_real_kind)
+            we=boundary_neumann7(vel(i,1:7,k,3),0.e0_real_kind)
+          endif
           vnormal=ue*bnorm_j0(i,k,1)+ve*bnorm_j0(i,k,2)+              &
                   we*bnorm_j0(i,k,3)
           vel(i,j,k,1)=ue-vnormal*bnorm_j0(i,k,1)+                    &

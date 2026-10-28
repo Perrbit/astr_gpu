@@ -103,10 +103,17 @@ def write_input(
     z_bctype: int,
     x_max_bctype: int = 21,
     outlet_pressure: float = 1.0,
+    lower_bctype: int = 41,
+    xslip: float = 0.0,
 ) -> None:
     outlet = str(x_max_bctype)
     if x_max_bctype == 22:
         outlet += f",{outlet_pressure:.16e}"
+    lower = str(lower_bctype)
+    if lower_bctype == 41:
+        lower += f",{wall_temperature:.16e}"
+    elif lower_bctype == 421:
+        lower += f",{xslip:.16e}"
     path.write_text(
         f"""########################################################################
 # Controlled S1 explicit three-dimensional flat-plate boundary layer
@@ -148,7 +155,7 @@ none,h
 # bctype
 {x_min_bctype},{turbinf}
 {outlet}
-41,{wall_temperature:.16e}
+{lower}
 {upper_bctype}
 {z_bctype}
 {z_bctype}

@@ -1,6 +1,7 @@
 module mainloop_gpu
   use astr_precision, only: real_kind
   use cudafor
+  use boundary_high_order, only: high_order_boundary_enabled
   implicit none
   private :: real_kind
   logical,save,private :: static_configuration_validated=.false.
@@ -326,7 +327,7 @@ contains
          gpu_nscbc_farfield_y_upper_mach2,apply_nscbc_farfield_y_upper_rhs_gpu, &
          apply_nscbc_farfield_y_upper_nonreflecting_rhs_gpu, &
          capture_nscbc_farfield_y_upper_prediff_rhs_gpu, &
-         apply_nscbc_farfield_y_upper_viscous_source_gpu
+         apply_nscbc_farfield_y_upper_viscous_source_gpu,apply_nscbc_incident_complete_rhs_gpu
     use sponge_gpu, only: apply_xmax_sponge_gpu,apply_ymax_sponge_gpu
     use sponge_layer, only: lspg_im,lspg_jm
     use solver_gpu, only: apply_explicit_filter_gpu,q_to_primitive_kernel,zero_rhs_kernel, &
@@ -562,6 +563,9 @@ contains
       ((conschm=='643c'.or.conschm=='743e').and.difschm=='643c'))
     rhs_is=is; rhs_ie=ie; rhs_js=js; rhs_je=je; rhs_ks=ks; rhs_ke=ke
     rhs_npdci=npdci; rhs_npdcj=npdcj
+    if(high_order_boundary_enabled) then
+      rhs_is=0; rhs_ie=im; rhs_js=0; rhs_je=jm; rhs_ks=0; rhs_ke=km
+    endif
     if(conservative_case) then
       rhs_is=0; rhs_ie=im; rhs_js=0; rhs_je=jm; rhs_ks=0; rhs_ke=km
       rhs_npdci=3; rhs_npdcj=3
@@ -1185,6 +1189,7 @@ contains
         call sync_after_kernel('convective_rhs_z_global_kernel')
         end select
       endif
+      call apply_high_order_face_convection_gpu()
       call end_gpu_phase('convection',nstep,rkstep)
 
       if(rhs_validation_requested()) then
@@ -1419,6 +1424,7 @@ contains
         call apply_nscbc_farfield_y_upper_viscous_source_gpu()
 
       call apply_case_sources_gpu()
+      call apply_nscbc_incident_complete_rhs_gpu()
       if(mp_positivity_enabled) &
         call limit_mp_update_gpu(deltat,rk_a(rkstep),rk_b(rkstep),rk_c(rkstep),rkstep)
       if(rhs_validation_requested()) then
@@ -1755,4 +1761,59 @@ contains
     static_configuration_validated=.true.
     if(lio) write(*,'(a)') 'ASTR_GPU static configuration validated'
   end subroutine validate_first_stage_gpu
+  attributes(global) subroutine high_order_face_convection_kernel(im,jm,km,hm,npdci,npdcj,npdck, &
+      left,right,down,up,gamma,weight)
+    use commarray_gpu, only: qrhs_d
+    use solver_gpu, only: mp_ld_interface_flux
+    use boundary_gpu, only: high_order_normal_terms_gpu
+    integer,value :: im,jm,km,hm,npdci,npdcj,npdck,left,right,down,up
+    real(real_kind),value :: gamma,weight
+    integer :: id,nright,i,j,k,axis,target(3),types(3)
+    real(real_kind) :: total(5),fp(5),fm(5),derivative(5),rest(5)
+    logical :: normal_face
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    nright=right*(jm+1)*(km+1)
+    if(id<nright) then
+      i=im; j=mod(id,jm+1); k=id/(jm+1)
+    else
+      id=id-nright
+      if(up==0.or.id>=(im+1)*(km+1)) return
+      i=mod(id,im+1); j=jm; k=id/(im+1)
+      if(right/=0.and.i==im) return
+    endif
+    if(left/=0.and.i==0) return
+    if(down/=0.and.j==0) return
+    total=0.e0_real_kind; types=[npdci,npdcj,npdck]
+    do axis=1,3
+      normal_face=(axis==1.and.right/=0.and.i==im).or.(axis==2.and.up/=0.and.j==jm)
+      if(normal_face) then
+        call high_order_normal_terms_gpu(i,j,k,axis,derivative,rest)
+        total=total+derivative
+      else
+        call mp_ld_interface_flux(i,j,k,axis,im,jm,km,gamma,hm,types(axis),axis,weight,fp)
+        target=[i,j,k]; target(axis)=target(axis)-1
+        call mp_ld_interface_flux(target(1),target(2),target(3),axis,im,jm,km, &
+          gamma,hm,types(axis),axis,weight,fm)
+        total=total+fp-fm
+      endif
+    enddo
+    qrhs_d(i,j,k,1:5)=-total
+  end subroutine high_order_face_convection_kernel
+
+  subroutine apply_high_order_face_convection_gpu()
+    use boundary_high_order, only: high_order_boundary_enabled
+    use boundary_gpu, only: gpu_physical_boundary_apply_mask
+    use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,gamma,bfacmpld
+    use gpu_check, only: sync_after_kernel
+    integer :: left,right,down,up,n
+    if(.not.high_order_boundary_enabled) return
+    call gpu_physical_boundary_apply_mask(1,left,right)
+    call gpu_physical_boundary_apply_mask(2,down,up)
+    n=right*(jm+1)*(km+1)+up*(im+1)*(km+1)
+    if(n==0) return
+    call high_order_face_convection_kernel<<<(n+127)/128,128>>>(im,jm,km,hm,npdci,npdcj,npdck, &
+      left,right,down,up,gamma,bfacmpld)
+    call sync_after_kernel('high_order_face_convection_kernel')
+  end subroutine apply_high_order_face_convection_gpu
+
 end module mainloop_gpu

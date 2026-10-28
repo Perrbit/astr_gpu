@@ -22,10 +22,11 @@ DT=2.5e-4
 pytestmark=pytest.mark.skipif(not EXE,reason='Set ASTR_SBLI_JOINT_EXE to the root-CMake GPU/CPU executable')
 
 
-def prepare(case,backend,scheme,steps,restore=None,checkpoint=True,outlet_pressure=PRESSURE_RATIO,backflow_mach=None):
+def prepare(case,backend,scheme,steps,restore=None,checkpoint=True,outlet_pressure=PRESSURE_RATIO,backflow_mach=None,
+            km=16):
     subprocess.run([sys.executable,str(ROOT/'tests/gpu_validation/prepare_s1_flatplate_case.py'),
         '--dst-case',str(case),'--use-gpu','t' if backend=='gpu' else 'f',
-        '--im','64','--jm','48','--km','16','--conschm',scheme,
+        '--im','64','--jm','48','--km',str(km),'--conschm',scheme,
         '--lchardecomp','t','--diffterm','t','--lfilter','f',
         '--x-min-bctype','11','--x-max-bctype','22','--upper-bctype','52',
         '--outlet-pressure',str(outlet_pressure),'--ninit','3',
@@ -69,8 +70,8 @@ def prepare(case,backend,scheme,steps,restore=None,checkpoint=True,outlet_pressu
 
 
 def launch(case,backend,scheme,steps,topology,restore=None,checkpoint=True,memcheck=False,shock_x='1',reject=None,
-           transport='pinned',outlet_pressure=PRESSURE_RATIO,backflow_mach=None):
-    prepare(case,backend,scheme,steps,restore,checkpoint,outlet_pressure,backflow_mach)
+           transport='pinned',outlet_pressure=PRESSURE_RATIO,backflow_mach=None,km=16):
+    prepare(case,backend,scheme,steps,restore,checkpoint,outlet_pressure,backflow_mach,km=km)
     ranks=int(np.prod(topology))
     env=runtime(','.join(map(str,topology)),transport=transport)
     env.pop('ASTR_WALL_BLOWING_MODE',None)

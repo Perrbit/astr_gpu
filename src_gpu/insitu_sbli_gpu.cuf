@@ -1,0 +1,248 @@
+module insitu_sbli_gpu
+  use astr_precision, only: real_kind,c_real_kind,real_bytes,clock_kind
+  use astr_precision_mpi, only: mpi_real_type
+  use iso_fortran_env, only: int64
+  use cudafor
+  use mpi
+  use checkpoint_state_io, only: checkpoint_state_require
+  implicit none
+  private
+#ifdef ASTR_INSITU_DEVICE_PRODUCTS
+  public :: render_sbli_2d_gpu
+contains
+  subroutine render_sbli_2d_gpu(mode,pipeline,backend,script,step,t,host_budget,budget,reserve)
+    use iso_c_binding, only: c_int,c_char,c_null_char,c_int64_t
+    use commvar, only: im,jm,km,ia,hm,const2,const5,const6,reynolds,prandtl,tempconst,tempconst1,roinf,uinf,pinf,tinf
+    use commarray_gpu, only: q_d,x_d,dxi_d
+    use commarray, only: x
+    use parallel, only: ig0,mpirank
+    use insitu_sample_gpu, only: prepare_device_planar_samples_gpu
+    use insitu_device_velocity, only: complete_sample_fields_gpu,extend_sample_velocity_gpu,velocity_transport_usage_gpu
+    use insitu_product_schedule, only: product_scene_due
+    use benchmark_runtime, only: insitu_clock,report_insitu_timing
+    character(*),intent(in) :: mode,pipeline,backend,script
+    integer,intent(in) :: step
+    real(real_kind),intent(in) :: t
+    integer(int64),intent(in) :: host_budget,budget,reserve
+    real(real_kind),device,allocatable :: state(:,:,:,:),primitive(:,:),halo(:,:,:,:),positions(:,:),fields(:,:),wall_d(:,:)
+    real(real_kind),allocatable :: wall(:,:),local_wall(:,:),global_wall(:,:)
+    integer,device :: invalid(1)
+    integer :: nodes,first,nti,status,bad,i,ierr,generation,count
+    integer(int64) :: bytes,free,total,host_slots,device_slots,d2h,h2d,exchanges,retained
+    real(real_kind) :: bounds(6),fraction,mid_z
+    real(clock_kind) :: started
+    logical :: gradient,walls
+    interface
+      integer(c_int) function render(pipeline,backend,script,comm,step,t,nx,ny,xyz,fields,wall,nwall,bounds, &
+          budget,reserve,retained) bind(C,name='astr_insitu_device_render_sbli_2d')
+        import c_int,c_char,c_real_kind,c_devptr,c_int64_t
+        character(c_char),intent(in) :: pipeline(*),backend(*),script(*)
+        integer(c_int),value :: comm,step,nx,ny,nwall
+        real(c_real_kind),value :: t
+        type(c_devptr),value :: xyz,fields
+        real(c_real_kind),intent(in) :: wall(*),bounds(6)
+        integer(c_int64_t),value :: budget,reserve,retained
+      end function
+    end interface
+    started=insitu_clock()
+    call prepare_device_planar_samples_gpu(mode,host_budget,budget,reserve)
+    call velocity_transport_usage_gpu(host_slots,device_slots,d2h,h2d,exchanges,generation)
+    nodes=(im+1)*(jm+1)
+    bytes=int(real_bytes,int64)*(24_int64*nodes+4_int64*(im+1)+3_int64*(im+7)*(jm+7)*8)+4
+    status=cudaMemGetInfo(free,total)
+    call checkpoint_state_require(status==cudaSuccess.and.budget>=device_slots.and.free>=reserve, &
+      MPI_COMM_WORLD,'SBLI plane reserve')
+    call checkpoint_state_require(bytes<=budget-device_slots.and.bytes<=free-reserve, &
+      MPI_COMM_WORLD,'SBLI compact plane budget')
+    gradient=product_scene_due('density_gradient_slice')
+    walls=product_scene_due('wall_pressure_curve').or.product_scene_due('skin_friction_curve').or. &
+      product_scene_due('wall_heat_flux_curve')
+    bounds=[x(0,0,0,1),x(im,0,0,1),x(0,0,0,2),x(0,jm,0,2),x(0,0,0,3),x(0,0,km,3)]
+    call MPI_Allreduce(MPI_IN_PLACE,bounds(1),1,mpi_real_type,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call checkpoint_state_require(ierr==MPI_SUCCESS,MPI_COMM_WORLD,'SBLI lower x bound')
+    call MPI_Allreduce(MPI_IN_PLACE,bounds(2),1,mpi_real_type,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call checkpoint_state_require(ierr==MPI_SUCCESS,MPI_COMM_WORLD,'SBLI upper x bound')
+    mid_z=0.5_real_kind*(bounds(5)+bounds(6))
+    do first=0,km-1
+      if(x(0,0,first+1,3)>=mid_z) exit
+    enddo
+    fraction=(mid_z-x(0,0,first,3))/(x(0,0,first+1,3)-x(0,0,first,3))
+    allocate(state(0:im,0:jm,0:1,5),primitive(3,2*nodes),positions(3,nodes),fields(5,nodes), &
+      wall_d(4,im+1),stat=status)
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'SBLI compact plane allocation')
+    invalid=0
+    call pack_state<<<(2*nodes+255)/256,256>>>(q_d,state,im,jm,km,hm,first)
+    status=cudaDeviceSynchronize()
+    call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'SBLI plane state snapshot')
+    ! Complete the two physical layers before reconstructing any primitive.
+    call complete_sample_fields_gpu(state,[im,jm,1],5,MPI_COMM_WORLD,canonical_axes=[.true.,.true.,.false.])
+    call pack_primitive<<<(2*nodes+255)/256,256>>>(state,primitive,invalid,im,jm,const2,const6)
+    status=cudaDeviceSynchronize()
+    call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'SBLI plane primitive snapshot')
+    bad=invalid(1)
+    call checkpoint_state_require(bad==0,MPI_COMM_WORLD,'invalid SBLI plane primitive')
+    retained=device_slots+int(real_bytes,int64)*(size(state,kind=int64)+size(positions,kind=int64)+ &
+      size(fields,kind=int64)+size(wall_d,kind=int64))
+    call extend_sample_velocity_gpu(primitive,halo,[im,jm,1],MPI_COMM_WORLD,budget,reserve, &
+      retained_other=retained-device_slots,active_axes=[.true.,.true.,.false.])
+    nti=3
+    if(ig0==0) nti=1
+    if(ig0+im==ia) nti=2
+    if(im==ia) nti=4
+    call derive_plane<<<(nodes+255)/256,256>>>(state,halo,x_d,dxi_d,positions,fields,wall_d,invalid, &
+      im,jm,km,hm,first,nti,fraction,bounds(2)-bounds(1),gradient,walls, &
+      const5,const6,reynolds,prandtl,tempconst,tempconst1,roinf,uinf,pinf,tinf)
+    status=cudaDeviceSynchronize()
+    call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'SBLI plane diagnostics')
+    bad=invalid(1)
+    call checkpoint_state_require(bad==0,MPI_COMM_WORLD,'nonfinite SBLI plane diagnostics')
+#ifdef ASTR_BUILD_TESTING
+    call write_oracle(step,positions,fields,im,jm,host_budget)
+#endif
+    count=0
+    allocate(global_wall(4,ia+1),stat=status)
+    call checkpoint_state_require(status==0.and.int(real_bytes,int64)*12*(ia+1)<=host_budget, &
+      MPI_COMM_WORLD,'SBLI one-dimensional host curve budget')
+    global_wall=0._real_kind
+    if(walls) then
+      allocate(wall(4,im+1),local_wall(4,ia+1))
+      wall=wall_d;local_wall=0._real_kind
+      do i=0,im
+        if(i==im.and.ig0+im<ia) cycle
+        local_wall(:,ig0+i+1)=wall(:,i+1)
+      enddo
+      call MPI_Reduce(local_wall,global_wall,4*(ia+1),mpi_real_type,MPI_SUM,0,MPI_COMM_WORLD,ierr)
+      call checkpoint_state_require(ierr==MPI_SUCCESS,MPI_COMM_WORLD,'SBLI wall curve reduction')
+      count=ia+1
+      deallocate(wall,local_wall)
+    endif
+    deallocate(state,primitive,halo,wall_d)
+    retained=device_slots+int(real_bytes,int64)*(size(positions,kind=int64)+size(fields,kind=int64))
+    call report_insitu_timing('device_sample_inclusive',started,step)
+    started=insitu_clock()
+    status=render(trim(pipeline)//c_null_char,trim(backend)//c_null_char,trim(script)//c_null_char, &
+      int(MPI_COMM_WORLD,c_int),step,t,im,jm,c_devloc(positions),c_devloc(fields),global_wall,count,bounds, &
+      int(budget,c_int64_t),int(reserve,c_int64_t),int(retained,c_int64_t))
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'SBLI two-dimensional rendering bridge')
+    call report_insitu_timing('device_consumer_inclusive',started,step)
+    call velocity_transport_usage_gpu(host_slots,device_slots,d2h,h2d,exchanges,generation)
+    write(*,'(a,i0,2a,3(a,i0))') 'ASTR_INSITU_SBLI_TRANSPORT rank=',mpirank,' transport=',trim(mode), &
+      ' host_slots=',host_slots,' face_d2h_bytes=',d2h,' face_h2d_bytes=',h2d
+    write(*,'(a,i0,a,i0,a,i0,a)') 'ASTR_INSITU_SBLI_2D rank=',mpirank,' step=',step, &
+      ' wall_curve_values=',4*count,' volume_download_bytes=0 plane_download_bytes=0 geometry_host_bytes=0'
+    deallocate(positions,fields,global_wall)
+  end subroutine
+
+  attributes(global) subroutine pack_state(q,state,im,jm,km,hm,first)
+    integer,value :: im,jm,km,hm,first
+    real(real_kind),device,intent(in) :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5)
+    real(real_kind),device,intent(out) :: state(0:im,0:jm,0:1,5)
+    integer :: n,i,j,k
+    n=(blockidx%x-1)*blockdim%x+threadidx%x-1
+    if(n>=2*(im+1)*(jm+1)) return
+    i=mod(n,im+1);j=mod(n/(im+1),jm+1);k=n/((im+1)*(jm+1))
+    state(i,j,k,:)=q(i,j,first+k,:)
+  end subroutine
+
+  attributes(global) subroutine pack_primitive(state,primitive,invalid,im,jm,c2,c6)
+    use ieee_arithmetic, only: ieee_is_finite
+    integer,value :: im,jm
+    real(real_kind),value :: c2,c6
+    real(real_kind),device,intent(in) :: state(0:im,0:jm,0:1,5)
+    real(real_kind),device,intent(out) :: primitive(3,*)
+    integer,device,intent(inout) :: invalid(*)
+    integer :: n,i,j,k,ignored
+    real(real_kind) :: rho,v(3),p,temp
+    n=(blockidx%x-1)*blockdim%x+threadidx%x-1
+    if(n>=2*(im+1)*(jm+1)) return
+    i=mod(n,im+1);j=mod(n/(im+1),jm+1);k=n/((im+1)*(jm+1))
+    rho=state(i,j,k,1)
+    if(.not.ieee_is_finite(rho).or.rho<=0._real_kind) then
+      ignored=atomicexch(invalid(1),1);return
+    endif
+    v=state(i,j,k,2:4)/rho
+    p=(state(i,j,k,5)-0.5_real_kind*rho*sum(v*v))/c6
+    temp=c2*p/rho
+    primitive(:,n+1)=[rho,v(1),temp]
+    if(.not.all(ieee_is_finite([v,p,temp])).or.p<=0._real_kind.or.temp<=0._real_kind) &
+      ignored=atomicexch(invalid(1),1)
+  end subroutine
+
+  attributes(global) subroutine derive_plane(state,halo,xyz,metrics,positions,fields,wall,invalid, &
+      im,jm,km,hm,first,nti,fraction,length,need_gradient,need_wall,c5,c6,re,pr,sc,sc1,rinf,uinf,pinf,tinf)
+    use ieee_arithmetic, only: ieee_is_finite
+    use insitu_device_velocity, only: private_wall_derivative6
+    integer,value :: im,jm,km,hm,first,nti
+    logical,value :: need_gradient,need_wall
+    real(real_kind),value :: fraction,length,c5,c6,re,pr,sc,sc1,rinf,uinf,pinf,tinf
+    real(real_kind),device,intent(in) :: state(0:im,0:jm,0:1,5),halo(-3:im+3,-3:jm+3,-3:4,3)
+    real(real_kind),device,intent(in) :: xyz(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3), &
+      metrics(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3,3)
+    real(real_kind),device,intent(out) :: positions(3,*),fields(5,*),wall(4,im+1)
+    integer,device,intent(inout) :: invalid(*)
+    integer :: n,i,j,k,d,ignored
+    real(real_kind) :: value(5),velocity(3),rho,p,temp,weight,dx,dy,gx,gy,mu,du,dt,cf,qw
+    n=(blockidx%x-1)*blockdim%x+threadidx%x-1
+    if(n>=(im+1)*(jm+1)) return
+    i=mod(n,im+1);j=n/(im+1)
+    fields(:,n+1)=0._real_kind;positions(:,n+1)=0._real_kind
+    if(j==0) wall(:,i+1)=0._real_kind
+    do k=0,1
+      weight=1._real_kind-fraction
+      if(k==1) weight=fraction
+      rho=state(i,j,k,1);velocity=state(i,j,k,2:4)/rho
+      p=(state(i,j,k,5)-0.5_real_kind*rho*sum(velocity*velocity))/c6
+      temp=halo(i,j,k,3)
+      value=[sqrt(sum(velocity*velocity))/uinf,velocity(1)/uinf,p/pinf,temp/tinf,0._real_kind]
+      if(need_gradient) then
+        dx=private_wall_derivative6(halo,im,jm,1,i,j,k,1,1,nti)
+        dy=private_wall_derivative6(halo,im,jm,1,i,j,k,1,2,4)
+        gx=dx*metrics(i,j,first+k,1,1)+dy*metrics(i,j,first+k,2,1)
+        gy=dx*metrics(i,j,first+k,1,2)+dy*metrics(i,j,first+k,2,2)
+        value(5)=length*sqrt(gx*gx+gy*gy)/rinf
+      endif
+      positions(:,n+1)=positions(:,n+1)+weight*xyz(i,j,first+k,:)
+      fields(:,n+1)=fields(:,n+1)+weight*value
+      if(j==0.and.need_wall) then
+        ! Stationary impermeable Cartesian wall: tangential d(v_wall)/dx=0.
+        du=private_wall_derivative6(halo,im,jm,1,i,0,k,2,2,4)*metrics(i,0,first+k,2,2)
+        dt=private_wall_derivative6(halo,im,jm,1,i,0,k,3,2,4)*metrics(i,0,first+k,2,2)
+        mu=(temp*sqrt(temp))*sc1/((temp+sc)*re)
+        cf=(mu*du)/(0.5_real_kind*rinf*uinf*uinf)
+        ! Positive into the lower solid wall; normalize by rho_inf U_inf^3.
+        qw=((mu/pr)/c5)*dt/((rinf*uinf)*(uinf*uinf))
+        wall(:,i+1)=wall(:,i+1)+weight*[xyz(i,0,first+k,1),p/pinf,cf,qw]
+      endif
+    enddo
+    if(.not.all(ieee_is_finite(fields(:,n+1))).or..not.all(ieee_is_finite(positions(:,n+1)))) &
+      ignored=atomicexch(invalid(1),1)
+    if(j==0.and.need_wall) then
+      if(.not.all(ieee_is_finite(wall(:,i+1)))) ignored=atomicexch(invalid(1),1)
+    endif
+  end subroutine
+
+#ifdef ASTR_BUILD_TESTING
+  subroutine write_oracle(step,positions,fields,im,jm,budget)
+    use parallel, only: mpirank,ig0
+    integer,intent(in) :: step,im,jm
+    integer(int64),intent(in) :: budget
+    real(real_kind),device,intent(in) :: positions(:,:),fields(:,:)
+    real(real_kind),allocatable :: host_xyz(:,:),host_fields(:,:)
+    character(1024) :: prefix,path
+    integer :: status,unit,closed
+    call get_environment_variable('ASTR_INSITU_TEST_SBLI_PREFIX',prefix,status=status)
+    if(status/=0.or.prefix=='') return
+    call checkpoint_state_require(int(real_bytes,int64)*(size(positions,kind=int64)+size(fields,kind=int64))<=budget, &
+      MPI_COMM_WORLD,'SBLI test-only oracle budget')
+    allocate(host_xyz(3,size(positions,2)),host_fields(5,size(fields,2)))
+    host_xyz=positions;host_fields=fields
+    write(path,'(a,".step",i8.8,".rank",i0,".bin")') trim(prefix),step,mpirank
+    open(newunit=unit,file=trim(path),access='stream',form='unformatted',status='new',iostat=status)
+    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'SBLI test oracle open')
+    write(unit,iostat=status) int([im,jm,ig0],int64),host_xyz,host_fields
+    close(unit,iostat=closed)
+    call checkpoint_state_require(status==0.and.closed==0,MPI_COMM_WORLD,'SBLI test oracle write')
+  end subroutine
+#endif
+#endif
+end module

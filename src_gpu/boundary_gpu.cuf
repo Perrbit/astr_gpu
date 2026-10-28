@@ -2,6 +2,9 @@ module boundary_gpu
   use astr_precision, only: real_kind
   use astr_precision_mpi, only: mpi_real_type
   use cudafor
+  use boundary_high_order, only: host_high_order_boundary=>high_order_boundary_enabled
+  use boundary_high_order_gpu, only: high_order_boundary_enabled_d,boundary_neumann7, &
+    boundary_filter6,boundary_normal_terms6,boundary_incoming_rate7
   implicit none
   private :: real_kind,mpi_real_type
   integer,parameter :: GPU_BC_NONE=0, GPU_BC_WALL_ISOTHERMAL_NOSLIP=41, &
@@ -18,6 +21,9 @@ module boundary_gpu
   real(real_kind),allocatable,device :: nscbc_outflow_plane_d(:,:,:)
   logical,save :: s1_bl_profile_ready = .false.
   logical,save :: nscbc52_prediff_rhs_ready = .false.
+  logical,save :: nscbc_incident_reference_ready=.false.
+  real(real_kind),device :: nscbc_incident_pre_d(5),nscbc_incident_post_d(5)
+  integer,device :: nscbc_incident_status_d
   integer,device :: dynamic_inflow_error_d
   real(real_kind),device :: wall_blowing_amplitude_d,wall_blowing_beta_d,        &
                     wall_blowing_xa_d,                                  &
@@ -49,6 +55,7 @@ contains
     legacy_wall_forcing_gpu=.false.
     s1_bl_profile_ready=.false.
     nscbc52_prediff_rhs_ready=.false.
+    nscbc_incident_reference_ready=.false.
   end subroutine release_boundary_gpu
 
   subroutine init_wall_blowing_gpu()
@@ -275,7 +282,7 @@ contains
   end function gpu_ldc_boundary_case_pending
 
   logical function gpu_s1_flatplate_boundary_case_pending()
-    use bc, only: bctype,turbinf
+    use bc, only: bctype,turbinf,nscbc_inviscid_incident_enabled
     use commvar, only: flowtype,lihomo,ljhomo,lkhomo
     implicit none
 
@@ -285,7 +292,7 @@ contains
            (trim(turbinf) == 'prof' .or. trim(turbinf) == 'intp')) .or. &
           bctype(1) == GPU_BC_NSCBC_INFLOW) .and. &
          (bctype(2) == GPU_BC_OUTFLOW .or. bctype(2) == GPU_BC_NSCBC_OUTFLOW) .and. &
-         bctype(3) == GPU_BC_WALL_ISOTHERMAL_NOSLIP .and. &
+         (bctype(3) == GPU_BC_WALL_ISOTHERMAL_NOSLIP.or.nscbc_inviscid_incident_enabled()).and. &
          (bctype(4) == GPU_BC_ZEROEXTRAP .or. bctype(4) == GPU_BC_FARFIELD .or. &
           bctype(4) == GPU_BC_NSCBC_FARFIELD) .and. &
          all(bctype(5:6) == 1)
@@ -980,8 +987,8 @@ contains
     implicit none
     integer,value :: im,jm,km,hm,apply_down,apply_up,preserve_inflow_rhs
     real(real_kind),value :: const2,const6,twall_down,twall_up,forcing_time
-    integer :: id,i,k,nplane
-    real(real_kind) :: rho,prs,vwall
+    integer :: id,i,k,nplane,s
+    real(real_kind) :: rho,prs,vwall,line(7)
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (im + 1) * (km + 1)
@@ -990,7 +997,14 @@ contains
     k = id/(im+1)
 
     if(apply_down /= 0) then
-      prs = extrap2(prs_d(i,1,k),prs_d(i,2,k))
+      if(high_order_boundary_enabled_d) then
+        do s=1,7
+          line(s)=prs_d(i,s,k)
+        enddo
+        prs=boundary_neumann7(line,0.e0_real_kind)
+      else
+        prs = extrap2(prs_d(i,1,k),prs_d(i,2,k))
+      endif
       rho = prs/twall_down*const2
       vwall=wall_blowing_velocity_gpu(i,k,x_d(i,0,k,1),x_d(i,0,k,3),forcing_time)
       tmp_d(i,0,k) = twall_down
@@ -1161,8 +1175,8 @@ contains
     implicit none
     integer,value :: im,jm,km,hm,apply_down,apply_up
     real(real_kind),value :: const2,const6,forcing_time
-    integer :: id,i,k,nplane
-    real(real_kind) :: rho,uu,vv,ww,prs,tmp,vnormal,vwall
+    integer :: id,i,k,nplane,s
+    real(real_kind) :: rho,uu,vv,ww,prs,tmp,vnormal,vwall,line(7,5)
 
     id = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     nplane = (im + 1) * (km + 1)
@@ -1176,6 +1190,18 @@ contains
       uu = extrap2(vel_d(i,1,k,1),vel_d(i,2,k,1))
       vv = extrap2(vel_d(i,1,k,2),vel_d(i,2,k,2))
       ww = extrap2(vel_d(i,1,k,3),vel_d(i,2,k,3))
+      if(high_order_boundary_enabled_d) then
+        do s=1,7
+          line(s,1:3)=vel_d(i,s,k,:)
+          line(s,4)=tmp_d(i,s,k)
+          line(s,5)=prs_d(i,s,k)
+        enddo
+        uu=boundary_neumann7(line(:,1),0.e0_real_kind)
+        vv=boundary_neumann7(line(:,2),0.e0_real_kind)
+        ww=boundary_neumann7(line(:,3),0.e0_real_kind)
+        tmp=boundary_neumann7(line(:,4),0.e0_real_kind)
+        prs=boundary_neumann7(line(:,5),0.e0_real_kind)
+      endif
       vnormal=uu*bnorm_j0_d(i,k,1)+vv*bnorm_j0_d(i,k,2)+              &
               ww*bnorm_j0_d(i,k,3)
       vwall=wall_blowing_velocity_gpu(i,k,x_d(i,0,k,1),x_d(i,0,k,3),forcing_time)
@@ -1782,6 +1808,7 @@ contains
     type(dim3) :: block,grid
     integer :: apply_left,apply_right,n
 
+    if(host_high_order_boundary) return
     call gpu_physical_boundary_apply_mask(1,apply_left,apply_right)
     block=dim3(256,1,1)
     n=(jm+1)*(km+1)
@@ -1889,13 +1916,37 @@ contains
     use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm,npdcj,apply_right
-    integer :: id,j,k,m,n
+    integer :: id,j,k,m,n,s,row
+    real(real_kind) :: line(0:6)
 
     if(apply_right==0) return
     id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     n=(jm+1)*(km+1)*5
     if(id>=n) return
     j=mod(id,jm+1); k=mod(id/(jm+1),km+1); m=id/((jm+1)*(km+1))+1
+    if(high_order_boundary_enabled_d) then
+      row=-1
+      if((npdcj==1.or.npdcj==4).and.j<3) then
+        row=j
+        do s=0,6
+          line(s)=q_d(im,s,k,m)
+        enddo
+      elseif((npdcj==2.or.npdcj==4).and.j>jm-3) then
+        row=jm-j
+        do s=0,6
+          line(s)=q_d(im,jm-s,k,m)
+        enddo
+      endif
+      if(row>=0) then
+        nscbc_outflow_plane_d(j,k,m)=boundary_filter6(line,row)
+      else
+        nscbc_outflow_plane_d(j,k,m)=11.e0_real_kind/16.e0_real_kind*q_d(im,j,k,m)+ &
+          15.e0_real_kind/64.e0_real_kind*(q_d(im,j-1,k,m)+q_d(im,j+1,k,m))- &
+          3.e0_real_kind/32.e0_real_kind*(q_d(im,j-2,k,m)+q_d(im,j+2,k,m))+ &
+          1.e0_real_kind/64.e0_real_kind*(q_d(im,j-3,k,m)+q_d(im,j+3,k,m))
+      endif
+      return
+    endif
     ! The bottom-wall value is imposed, not a transverse filter unknown.
     if(j==0.and.(npdcj==1.or.npdcj==4)) then
       nscbc_outflow_plane_d(j,k,m)=q_d(im,j,k,m)
@@ -1991,12 +2042,14 @@ contains
 
   subroutine apply_nscbc_farfield_y_upper_filter_x_gpu()
     use commvar, only: im,jm,km,lfilter,npdci
+    use bc, only: nscbc_farfield_grcbc_enabled
     use gpu_check, only: sync_after_kernel
     implicit none
     type(dim3) :: block,grid
     integer :: apply_down,apply_up,n
 
     if(lfilter) return
+    if(nscbc_farfield_grcbc_enabled()) return
     call gpu_physical_boundary_apply_mask(2,apply_down,apply_up)
     block = dim3(256,1,1)
     n = (im+1)*(km+1)*5
@@ -2009,12 +2062,14 @@ contains
 
   subroutine apply_nscbc_farfield_y_upper_filter_z_gpu()
     use commvar, only: im,jm,km,lfilter,npdck
+    use bc, only: nscbc_farfield_grcbc_enabled
     use gpu_check, only: sync_after_kernel
     implicit none
     type(dim3) :: block,grid
     integer :: apply_down,apply_up,n
 
     if(lfilter) return
+    if(nscbc_farfield_grcbc_enabled()) return
     call gpu_physical_boundary_apply_mask(2,apply_down,apply_up)
     block = dim3(256,1,1)
     n = (im+1)*(km+1)*5
@@ -2100,7 +2155,7 @@ contains
                                                                   rho_post,u_post,v_post,w_post,e_post,shock_x,         &
                                                                   shock_target,farfield_policy,gmachmax2,apply_up)
     use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,qrhs_d,jacob_d,dxi_d,x_d
-    use nscbc_characteristic_policy_gpu, only: NSCBC_GPU_POLICY_TARGET_RELAXATION
+    use nscbc_characteristic_policy_gpu, only: NSCBC_GPU_POLICY_TARGET_RELAXATION,NSCBC_GPU_POLICY_GRCBC
     implicit none
     integer,value :: im,jm,km,hm,npdci,npdck,shock_target,farfield_policy,apply_up
     real(real_kind),value :: gamma,mach,ymin,ymax,pinf,rho_target,u_target,v_target,w_target,e_target
@@ -2190,6 +2245,9 @@ contains
           endif
         endif
       enddo
+    elseif(farfield_policy==NSCBC_GPU_POLICY_GRCBC) then
+      ! Keep the interior normal waves until the complete-RHS closure.
+      continue
     else
       norm=sqrt(sum(ddi(:)*ddi(:)))
       normal_speed=sum(ddi(:)*vel_d(i,jm,k,:))/norm
@@ -2390,6 +2448,7 @@ contains
     real(real_kind) :: rho_post,u_post,v_post,w_post,t_post,e_post,shock_x
     logical :: use_shock
 
+    if(host_high_order_boundary) return
     call gpu_physical_boundary_apply_mask(2,apply_down,apply_up)
     farfield_policy=nscbc_farfield_policy_id()
     call nscbc_farfield_target_state(rho_target,u_target,v_target,     &
@@ -2414,6 +2473,239 @@ contains
          farfield_policy,gmachmax2,apply_up)
     call sync_after_kernel('nscbc_farfield_y_upper_rhs_kernel')
   end subroutine apply_nscbc_farfield_y_upper_rhs_gpu
+
+  attributes(device) subroutine high_order_normal_terms_gpu(i,j,k,axis,derivative,rest)
+    use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d
+    integer,value :: i,j,k,axis
+    real(real_kind) :: derivative(5),rest(5),states(5,0:7),velocity(3,0:7), &
+      pressure(0:7),jacobian(0:7),metric(3,0:7)
+    integer :: target(3),s
+    do s=0,7
+      target=[i,j,k]; target(axis)=target(axis)-s
+      states(:,s)=q_d(target(1),target(2),target(3),1:5)
+      velocity(:,s)=vel_d(target(1),target(2),target(3),:)
+      pressure(s)=prs_d(target(1),target(2),target(3))
+      jacobian(s)=jacob_d(target(1),target(2),target(3))
+      metric(:,s)=dxi_d(target(1),target(2),target(3),axis,:)
+    enddo
+    call boundary_normal_terms6(states,velocity,pressure,jacobian,metric,derivative,rest)
+  end subroutine high_order_normal_terms_gpu
+
+
+  attributes(global) subroutine high_order_complete_rhs_kernel(im,jm,km,left,right,down,up,gamma,mach, &
+      xmin,xmax,pinf,pout,roinf,uinf,vinf,winf,entry_x,beta,top_y)
+    use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,qrhs_d,jacob_d,dxi_d,x_d
+    use nscbc_incident_gpu, only: incident_reference,grcbc_incoming_rate,apply_incident_characteristic_rhs
+    integer,value :: im,jm,km,left,right,down,up
+    real(real_kind),value :: gamma,mach,xmin,xmax,pinf,pout,roinf,uinf,vinf,winf,entry_x,beta,top_y
+    integer :: id,nright,i,j,k,s,status,old_error
+    real(real_kind) :: pinv(5,5),pnor(5,5),derivative(5),rest(5),lodi(5),corrected(5),rhs(5), &
+      metric(3),velocity(3),normal(3),hn,position(3),primitive(5,0:7),external(5),face_reference(5), &
+      rate(5),lambda(5),zero(5),css,un,tolerance,scale,recovery,target(5),dq(5),face(5),residual(5)
+    logical :: incoming(5),crosses_front
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    nright=right*(jm+1)*(km+1)
+    if(id<nright) then
+      i=im; j=mod(id,jm+1); k=id/(jm+1)
+    else
+      id=id-nright
+      if(up==0.or.id>=(im+1)*(km+1)) return
+      i=mod(id,im+1); j=jm; k=id/(im+1)
+      if(right/=0.and.i==im) return
+    endif
+    if(left/=0.and.i==0) return
+    if(down/=0.and.j==0) return
+    velocity=vel_d(i,j,k,:); css=sqrt(tmp_d(i,j,k))/mach
+    if(right/=0.and.i==im) then
+      metric=dxi_d(i,j,k,1,:)
+      call nscbc_pmatrix(rho_d(i,j,k),velocity(1),velocity(2),velocity(3), &
+        tmp_d(i,j,k),metric,gamma,mach,.true.,pinv)
+      call nscbc_pmatrix(rho_d(i,j,k),velocity(1),velocity(2),velocity(3), &
+        tmp_d(i,j,k),metric,gamma,mach,.false.,pnor)
+      call high_order_normal_terms_gpu(i,j,k,1,derivative,rest)
+      residual=derivative-rest
+      lodi=matmul(pinv,residual)/jacob_d(i,j,k)
+      corrected=lodi
+      un=sum(metric*velocity)/sqrt(sum(metric**2))
+      tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(un))
+      if(un-css < -tolerance) then
+        scale=3.75e0_real_kind*max(0.e0_real_kind,1.e0_real_kind-(un/css)**2)*css/(xmax-xmin)
+        corrected(5)=scale*(prs_d(i,j,k)-pinf*pout)/rho_d(i,j,k)/css*sqrt(2.e0_real_kind)
+      endif
+      if(un < -tolerance) then
+        target=[roinf*pout,roinf*pout*uinf,roinf*pout*vinf,roinf*pout*winf, &
+          pinf*pout/(gamma-1.e0_real_kind)+.5e0_real_kind*roinf*pout*(uinf**2+vinf**2+winf**2)]
+        face=q_d(i,j,k,1:5)
+        residual=face-target
+        dq=matmul(pinv,residual)
+        recovery=.25e0_real_kind*(-un)/(xmax-xmin)
+        corrected(1:3)=recovery*dq(1:3)
+        corrected(5)=corrected(5)+recovery*dq(5)
+        if(un+css < -tolerance) corrected(4)=.25e0_real_kind*(-un-css)/(xmax-xmin)*dq(4)
+      endif
+      residual=lodi-corrected
+      face=matmul(pnor,residual)
+      qrhs_d(i,j,k,1:5)=qrhs_d(i,j,k,1:5)+jacob_d(i,j,k)*face
+    endif
+    if(up==0.or.j/=jm) return
+    if(right/=0.and.i==im.and.velocity(1)<css) then
+      old_error=atomicMax(nscbc_incident_status_d,4)
+      return
+    endif
+    metric=dxi_d(i,j,k,2,:); normal=metric/sqrt(sum(metric**2))
+    hn=sum((x_d(i,j,k,:)-x_d(i,j-1,k,:))*normal)
+    call nscbc_pmatrix(rho_d(i,j,k),velocity(1),velocity(2),velocity(3), &
+      tmp_d(i,j,k),metric,gamma,mach,.true.,pinv)
+    call nscbc_pmatrix(rho_d(i,j,k),velocity(1),velocity(2),velocity(3), &
+      tmp_d(i,j,k),metric,gamma,mach,.false.,pnor)
+    position=x_d(i,j,k,:)
+    call incident_reference(position,entry_x,top_y,beta,nscbc_incident_pre_d,nscbc_incident_post_d,face_reference)
+    primitive(:,0)=[rho_d(i,j,k),velocity,prs_d(i,j,k)]
+    crosses_front=.false.
+    do s=1,7
+      position=x_d(i,j,k,:)+real(s,real_kind)*hn*normal
+      call incident_reference(position,entry_x,top_y,beta,nscbc_incident_pre_d,nscbc_incident_post_d,external)
+      crosses_front=crosses_front.or.any(external/=face_reference)
+      primitive(1,s)=external(1)
+      primitive(2:4,s)=external(2:4)/external(1)
+      primitive(5,s)=(gamma-1.e0_real_kind)*(external(5)-.5e0_real_kind*sum(external(2:4)**2)/external(1))
+    enddo
+    zero=0.e0_real_kind; face=q_d(i,j,k,1:5)
+    call grcbc_incoming_rate(face,external,gamma,metric,hn,pinv,zero,rate,lambda,incoming,status)
+    if(status==0) then
+      call high_order_normal_terms_gpu(i,j,k,2,derivative,rest)
+      residual=derivative-rest
+      lodi=matmul(pinv,residual)/jacob_d(i,j,k)
+      rhs=qrhs_d(i,j,k,1:5)
+      call boundary_incoming_rate7(primitive,gamma,hn,pinv,lambda,incoming,rhs,jacob_d(i,j,k), &
+        lodi,crosses_front,rate)
+      call apply_incident_characteristic_rhs(rhs,jacob_d(i,j,k),pnor,pinv,incoming,rate,status)
+      if(status==0) qrhs_d(i,j,k,1:5)=rhs
+    endif
+    if(status/=0) old_error=atomicMax(nscbc_incident_status_d,status)
+  end subroutine high_order_complete_rhs_kernel
+
+  attributes(global) subroutine high_order_zero_prescribed_rhs_kernel(im,jm,km,left,down)
+    integer,value :: im,jm,km,left,down
+    integer :: id,s,k,stride
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    stride=max(im+1,jm+1); s=mod(id,stride); k=id/stride
+    if(k>km) return
+    if(left/=0.and.s<=jm) call set_qrhs_zero(0,s,k)
+    if(down/=0.and.s<=im.and..not.(left/=0.and.s==0)) call set_qrhs_zero(s,0,k)
+  end subroutine high_order_zero_prescribed_rhs_kernel
+
+  attributes(global) subroutine nscbc_incident_complete_rhs_kernel(im,jm,km,npdci,gamma,mach,entry_x,beta,top_y)
+    use commarray_gpu, only: q_d,rho_d,vel_d,prs_d,tmp_d,qrhs_d,jacob_d,dxi_d,x_d
+    use nscbc_incident_gpu, only: incident_reference,grcbc_incoming_rate,apply_incident_characteristic_rhs, &
+      incident_normal_characteristics,incident_convective_compatibility
+    implicit none
+    integer,value :: im,jm,km,npdci
+    real(real_kind),value :: gamma,mach,entry_x,beta,top_y
+    real(real_kind) :: pre(5),post(5),external(5),face(5),position(3),normal(3),metric(3),hn, &
+      pnor(5,5),pinv(5,5),rate(5),lambda(5),reference_rate(5),rhs(5),velocity(3),css
+    real(real_kind) :: states(5,3),velocity_line(3,3),pressure_line(3),jacobian_line(3), &
+      metric_line(3,3),normal_lodi(5)
+    logical :: incoming(5)
+    integer :: id,i,k,status,old_error,l,j
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=(im+1)*(km+1)) return
+    i=mod(id,im+1); k=id/(im+1)
+    if(i==0.and.(npdci==1.or.npdci==4)) then
+      qrhs_d(i,jm,k,1:5)=0.e0_real_kind
+      return
+    endif
+    metric=dxi_d(i,jm,k,2,:)
+    normal=metric/sqrt(sum(metric*metric))
+    hn=sum((x_d(i,jm,k,:)-x_d(i,jm-1,k,:))*normal)
+    position=x_d(i,jm,k,:)+hn*normal
+    pre=nscbc_incident_pre_d
+    post=nscbc_incident_post_d
+    call incident_reference(position,entry_x,top_y,beta,pre,post,external)
+    velocity=vel_d(i,jm,k,:)
+    css=sqrt(tmp_d(i,jm,k))/mach
+    if(i==im.and.(npdci==2.or.npdci==4)) then
+      if(velocity(1)<css) then
+        old_error=atomicMax(nscbc_incident_status_d,4)
+        return
+      endif
+    endif
+    call nscbc_pmatrix(rho_d(i,jm,k),velocity(1),velocity(2),velocity(3), &
+                      tmp_d(i,jm,k),metric,gamma,mach,.false.,pnor)
+    call nscbc_pmatrix(rho_d(i,jm,k),velocity(1),velocity(2),velocity(3), &
+                      tmp_d(i,jm,k),metric,gamma,mach,.true.,pinv)
+    reference_rate=0.e0_real_kind
+    face=q_d(i,jm,k,1:5)
+    call grcbc_incoming_rate(face,external,gamma,metric,hn,pinv, &
+                              reference_rate,rate,lambda,incoming,status)
+    if(status==0) then
+      rhs=qrhs_d(i,jm,k,1:5)
+      if(any(incoming(1:3))) then
+        do l=1,3
+          j=jm-l+1
+          states(:,l)=q_d(i,j,k,1:5)
+          velocity_line(:,l)=vel_d(i,j,k,:)
+          pressure_line(l)=prs_d(i,j,k)
+          jacobian_line(l)=jacob_d(i,j,k)
+          metric_line(:,l)=dxi_d(i,j,k,2,:)
+        enddo
+        call incident_normal_characteristics(states,velocity_line,pressure_line,jacobian_line, &
+          metric_line,pinv,normal_lodi,status)
+        if(status==0) call incident_convective_compatibility(rhs,jacob_d(i,jm,k),pinv,normal_lodi,incoming,rate)
+      endif
+      if(status==0) call apply_incident_characteristic_rhs(rhs,jacob_d(i,jm,k),pnor,pinv,incoming,rate,status)
+      if(status==0) qrhs_d(i,jm,k,1:5)=rhs
+    endif
+    if(status/=0) old_error=atomicMax(nscbc_incident_status_d,status)
+  end subroutine nscbc_incident_complete_rhs_kernel
+
+  subroutine apply_nscbc_incident_complete_rhs_gpu()
+    use bc, only: nscbc_farfield_grcbc_enabled,nscbc_incident_parameters
+    use commvar, only: im,jm,km,npdci,gamma,mach,ymax,xmin,xmax,pinf,roinf,uinf,vinf,winf
+    use bc, only: pout
+    use parallel, only: pmax,lio
+    use gpu_check, only: sync_after_kernel
+    implicit none
+    real(real_kind) :: pre(5),post(5),entry_x,beta,error
+    integer :: apply_down,apply_up,apply_left,apply_right,status,n,nzero
+    if(.not.nscbc_farfield_grcbc_enabled()) return
+    call nscbc_incident_parameters(pre,post,entry_x,beta)
+    call gpu_physical_boundary_apply_mask(2,apply_down,apply_up)
+    call gpu_physical_boundary_apply_mask(1,apply_left,apply_right)
+    status=0
+    if(apply_up/=0.or.(host_high_order_boundary.and.apply_right/=0)) then
+      if(.not.nscbc_incident_reference_ready) then
+        nscbc_incident_pre_d=pre
+        nscbc_incident_post_d=post
+        nscbc_incident_reference_ready=.true.
+      endif
+      nscbc_incident_status_d=0
+      if(host_high_order_boundary) then
+        n=apply_right*(jm+1)*(km+1)+apply_up*(im+1)*(km+1)
+        call high_order_complete_rhs_kernel<<<(n+127)/128,128>>>(im,jm,km, &
+          apply_left,apply_right,apply_down,apply_up,gamma,mach,xmin,xmax,pinf,pout, &
+          roinf,uinf,vinf,winf,entry_x,beta,ymax)
+        call sync_after_kernel('high_order_complete_rhs_kernel')
+      else
+        n=(im+1)*(km+1)
+        call nscbc_incident_complete_rhs_kernel<<<(n+127)/128,128>>>( &
+             im,jm,km,npdci,gamma,mach,entry_x,beta,ymax)
+        call sync_after_kernel('nscbc_incident_complete_rhs_kernel')
+      endif
+      status=nscbc_incident_status_d
+    endif
+    if(host_high_order_boundary.and.(apply_left/=0.or.apply_down/=0)) then
+      nzero=max(im+1,jm+1)*(km+1)
+      call high_order_zero_prescribed_rhs_kernel<<<(nzero+255)/256,256>>>( &
+        im,jm,km,apply_left,apply_down)
+      call sync_after_kernel('high_order_zero_prescribed_rhs_kernel')
+    endif
+    error=pmax(real(status,real_kind))
+    if(error/=0.e0_real_kind) then
+      if(lio) write(*,'(a,i0)') 'GRCBC boundary status (4=subsonic outlet/top corner): ',nint(error)
+      error stop 'sbli_grcbc complete boundary RHS failed'
+    endif
+  end subroutine apply_nscbc_incident_complete_rhs_gpu
 
   subroutine report_nscbc52_nonreflecting_owner(apply_up)
     use parallel, only: mpirank,irk,jrk,krk
@@ -2576,11 +2868,18 @@ contains
     use commarray_gpu, only: prs_d,tmp_d,x_d,bnorm_j0_d
     integer,value :: im,km,apply_corner
     real(real_kind),value :: const2,const6,tw,forcing_time
-    integer :: k
-    real(real_kind) :: rho,prs,vwall
+    integer :: k,s
+    real(real_kind) :: rho,prs,vwall,line(7)
     k=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(k>km.or.apply_corner==0) return
-    prs=extrap2(prs_d(im,1,k),prs_d(im,2,k))
+    if(high_order_boundary_enabled_d) then
+      do s=1,7
+        line(s)=prs_d(im,s,k)
+      enddo
+      prs=boundary_neumann7(line,0.e0_real_kind)
+    else
+      prs=extrap2(prs_d(im,1,k),prs_d(im,2,k))
+    endif
     rho=prs/tw*const2
     vwall=wall_blowing_velocity_gpu(im,k,x_d(im,0,k,1),x_d(im,0,k,3),forcing_time)
     tmp_d(im,0,k)=tw
@@ -2590,9 +2889,10 @@ contains
 
   subroutine prepare_compact_outlet_wall_gpu()
     use commvar, only: im,km,const2,const6,time
-    use bc, only: twall
+    use bc, only: twall,bctype
     use gpu_check, only: sync_after_kernel
     integer :: apply_left,apply_right,apply_down,apply_up
+    if(bctype(3)/=GPU_BC_WALL_ISOTHERMAL_NOSLIP) return
     call gpu_physical_boundary_apply_mask(1,apply_left,apply_right)
     call gpu_physical_boundary_apply_mask(2,apply_down,apply_up)
     call prepare_legacy_wall_blowing_gpu(apply_down)
@@ -2603,7 +2903,7 @@ contains
 
   subroutine apply_s1_flatplate_wall_gpu(preserve_rhs,reuse_forcing)
     use commvar, only: im,jm,km,hm,const2,const6,time
-    use bc, only: twall
+    use bc, only: twall,bctype
     use gpu_check, only: sync_after_kernel
     integer,intent(in) :: preserve_rhs
     logical,intent(in),optional :: reuse_forcing
@@ -2618,9 +2918,14 @@ contains
     block=dim3(256,1,1)
     n=(im+1)*(km+1)
     grid=dim3((n+block%x-1)/block%x,1,1)
-    call wall_isothermal_noslip_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
-      twall(3),twall(3),apply_down,0,preserve_rhs,time)
-    call sync_after_kernel('s1_bl_wall_isothermal_noslip_y_kernel')
+    if(bctype(3)==GPU_BC_WALL_SLIP_ADIABATIC) then
+      call wall_slip_adiabatic_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6,apply_down,0,time)
+      call sync_after_kernel('s1_bl_wall_slip_adiabatic_y_kernel')
+    else
+      call wall_isothermal_noslip_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+        twall(3),twall(3),apply_down,0,preserve_rhs,time)
+      call sync_after_kernel('s1_bl_wall_isothermal_noslip_y_kernel')
+    endif
   end subroutine
 
   subroutine apply_boundary_conditions_gpu()

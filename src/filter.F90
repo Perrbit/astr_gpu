@@ -630,6 +630,7 @@ module filter
     !| 30-05-2025  | Moved to this module by J. Fang @ Liverpool.        |
     !+-------------------------------------------------------------------+
     function spafilter6exp(f,ntype,dim) result(ff)
+      use boundary_high_order, only: high_order_boundary_enabled,boundary_filter6
       !
       use commvar, only: hm
       
@@ -640,6 +641,26 @@ module filter
       !
       ! local data
       integer :: ii,m
+      real(real_kind) :: line(0:6)
+
+      if(high_order_boundary_enabled) then
+        do ii=0,dim
+          if((ntype==1.or.ntype==4).and.ii<3) then
+            ff(ii)=boundary_filter6(f(0:6),ii)
+          elseif((ntype==2.or.ntype==4).and.ii>dim-3) then
+            do m=0,6
+              line(m)=f(dim-m)
+            enddo
+            ff(ii)=boundary_filter6(line,dim-ii)
+          else
+            ff(ii)=11.e0_real_kind/16.e0_real_kind*f(ii)+ &
+              15.e0_real_kind/64.e0_real_kind*(f(ii-1)+f(ii+1))- &
+              3.e0_real_kind/32.e0_real_kind*(f(ii-2)+f(ii+2))+ &
+              1.e0_real_kind/64.e0_real_kind*(f(ii-3)+f(ii+3))
+          endif
+        enddo
+        return
+      endif
       !
       ff=0.e0_real_kind
       !

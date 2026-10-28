@@ -1,6 +1,8 @@
 module gradcal_gpu
   use astr_precision, only: real_kind
   use cudafor
+  use boundary_high_order_gpu, only: high_order_boundary_enabled_d
+  use solver_gpu, only: high_order_primitive_derivative
   use constdef, only: num1d60
   implicit none
   private :: real_kind
@@ -17,6 +19,11 @@ contains
     implicit none
     integer,value :: i,j,k,a,im,apply_left,apply_right
 
+    if(high_order_boundary_enabled_d.and.((apply_left/=0.and.i<3).or. &
+        (apply_right/=0.and.i>im-3))) then
+      deriv6_x_vel=high_order_primitive_derivative(i,j,k,a,1,im,apply_left,apply_right)
+      return
+    endif
     if(apply_left /= 0 .and. i == 0) then
       deriv6_x_vel = -0.5e0_real_kind*vel_d(2,j,k,a) + 2.e0_real_kind*vel_d(1,j,k,a) - 1.5e0_real_kind*vel_d(0,j,k,a)
     elseif(apply_left /= 0 .and. i == 1) then
@@ -43,6 +50,11 @@ contains
     implicit none
     integer,value :: i,j,k,im,apply_left,apply_right
 
+    if(high_order_boundary_enabled_d.and.((apply_left/=0.and.i<3).or. &
+        (apply_right/=0.and.i>im-3))) then
+      deriv6_x_tmp=high_order_primitive_derivative(i,j,k,0,1,im,apply_left,apply_right)
+      return
+    endif
     if(apply_left /= 0 .and. i == 0) then
       deriv6_x_tmp = -0.5e0_real_kind*tmp_d(2,j,k) + 2.e0_real_kind*tmp_d(1,j,k) - 1.5e0_real_kind*tmp_d(0,j,k)
     elseif(apply_left /= 0 .and. i == 1) then
@@ -69,6 +81,11 @@ contains
     implicit none
     integer,value :: i,j,k,a,jm,apply_down,apply_up
 
+    if(high_order_boundary_enabled_d.and.((apply_down/=0.and.j<3).or. &
+        (apply_up/=0.and.j>jm-3))) then
+      deriv6_y_vel=high_order_primitive_derivative(i,j,k,a,2,jm,apply_down,apply_up)
+      return
+    endif
     if(apply_down /= 0 .and. j == 0) then
       deriv6_y_vel = -0.5e0_real_kind*vel_d(i,2,k,a) + 2.e0_real_kind*vel_d(i,1,k,a) - 1.5e0_real_kind*vel_d(i,0,k,a)
     elseif(apply_down /= 0 .and. j == 1) then
@@ -95,6 +112,11 @@ contains
     implicit none
     integer,value :: i,j,k,jm,apply_down,apply_up
 
+    if(high_order_boundary_enabled_d.and.((apply_down/=0.and.j<3).or. &
+        (apply_up/=0.and.j>jm-3))) then
+      deriv6_y_tmp=high_order_primitive_derivative(i,j,k,0,2,jm,apply_down,apply_up)
+      return
+    endif
     if(apply_down /= 0 .and. j == 0) then
       deriv6_y_tmp = -0.5e0_real_kind*tmp_d(i,2,k) + 2.e0_real_kind*tmp_d(i,1,k) - 1.5e0_real_kind*tmp_d(i,0,k)
     elseif(apply_down /= 0 .and. j == 1) then

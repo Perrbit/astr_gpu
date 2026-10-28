@@ -9,6 +9,8 @@ module solver
   use astr_precision, only: real_kind,clock_kind
   !
   use constdef
+  use boundary_high_order, only: high_order_boundary_enabled, &
+    boundary_mp_flux6,boundary_interface_position
   use parallel, only : mpirankname,mpistop,mpirank,lio,dataswap,       &
                        datasync,ptime,irk,jrk,krk,irkm,jrkm,krkm
   use commvar,  only : ndims,ks,ke,hm,lfftk,ctime,nondimen,lreport,    &
@@ -300,7 +302,7 @@ module solver
     use validation_io, only: write_rhs_validation_snapshot
     use bc, only: nscbc_farfield_viscous_source_enabled,              &
                   capture_nscbc_farfield_y_upper_prediff_rhs,         &
-                  apply_nscbc_farfield_y_upper_viscous_source
+                  apply_nscbc_farfield_y_upper_viscous_source,apply_nscbc_incident_complete_rhs
     !
     ! arguments
     logical,intent(in),optional :: timerept
@@ -366,6 +368,7 @@ module solver
     endif !flowtype
     !
     !
+    if(high_order_boundary_enabled) call high_order_boundary_face_convection()
     qrhs=-qrhs
 #ifdef ASTR_AIR5_CHEMISTRY
     if(lcomb .and. flowtype(1:2)/='0d') call write_rhs_validation_snapshot('conv_raw')
@@ -382,14 +385,18 @@ module solver
         call air5_diffusion_rhs()
       else
 #endif
-        call diffrsdcal6(timerept=ltimrpt,physical_boundary_rhs=physical_halo_rhs)
+        if(high_order_boundary_enabled) then
+          call diffrsdcal6(timerept=ltimrpt,physical_boundary_rhs=.true.)
+        else
+          call diffrsdcal6(timerept=ltimrpt,physical_boundary_rhs=physical_halo_rhs)
+        endif
 #ifdef ASTR_AIR5_CHEMISTRY
       endif
 #endif
     endif
     if(nscbc_farfield_viscous_source_enabled())                       &
       call apply_nscbc_farfield_y_upper_viscous_source()
-    call write_rhs_validation_snapshot('full')
+    if(.not.high_order_boundary_enabled) call write_rhs_validation_snapshot('full')
     !
     if(trim(flowtype)=='channel') then 
       if(lihomo) call src_chan
@@ -400,6 +407,8 @@ module solver
     endif
     !
     call udf_src
+    call apply_nscbc_incident_complete_rhs()
+    if(high_order_boundary_enabled) call write_rhs_validation_snapshot('full')
     !
 #ifdef COMB
     call srccomb(timerept=ltimrpt)
@@ -729,8 +738,8 @@ module solver
     ! local data
     integer :: i,j,k,iss,iee,jss,jee,kss,kee,nwd
     integer :: is,ie,js,je,ks,ke,npdci,npdcj,npdck
-    integer :: m,n,jvar
-    real(real_kind) :: eps,gm2,var1,var2
+    integer :: m,n,jvar,boundary_row,boundary_side
+    real(real_kind) :: eps,gm2,var1,var2,boundary_plus(0:7),boundary_minus(0:7)
     !
     real(real_kind) :: lmda(5),lmdap(5),lmdam(5),gpd(3),REV(5,5),LEV(5,5),     &
                Pmult(5,5),Flcp(1:numq,1:8),Flcm(1:numq,1:8),Fhc(numq)
@@ -851,6 +860,20 @@ module solver
         !
         ! hdiss=.true.
         !
+        call boundary_interface_position(i,im,npdci,boundary_row,boundary_side)
+        if(high_order_boundary_enabled.and.boundary_row>=0.and..not.lsh.and..not.hdiss) then
+          do m=1,5
+            do n=0,7
+              nwd=n
+              if(boundary_side==-1) nwd=im-n
+              boundary_plus(n)=fswp(nwd,m)
+              boundary_minus(n)=fswm(nwd,m)
+            enddo
+            Fh(i,m)=boundary_mp_flux6(boundary_plus,boundary_row,boundary_side==1)+ &
+              boundary_mp_flux6(boundary_minus,boundary_row,boundary_side==-1)
+          enddo
+          cycle
+        endif
         if(lchardecomp .and. lsh) then
         ! if(lchardecomp) then
           !
@@ -1059,6 +1082,20 @@ module solver
         ! hdiss=.true.
         !
         ! lchardecomp=.false.
+        call boundary_interface_position(j,jm,npdcj,boundary_row,boundary_side)
+        if(high_order_boundary_enabled.and.boundary_row>=0.and..not.lsh.and..not.hdiss) then
+          do m=1,5
+            do n=0,7
+              nwd=n
+              if(boundary_side==-1) nwd=jm-n
+              boundary_plus(n)=fswp(nwd,m)
+              boundary_minus(n)=fswm(nwd,m)
+            enddo
+            Fh(j,m)=boundary_mp_flux6(boundary_plus,boundary_row,boundary_side==1)+ &
+              boundary_mp_flux6(boundary_minus,boundary_row,boundary_side==-1)
+          enddo
+          cycle
+        endif
         if(lchardecomp .and. lsh) then
         ! if(lchardecomp) then
           !
@@ -1397,6 +1434,136 @@ module solver
     return
     !
   end subroutine convrsduwd
+
+  function high_order_interface_flux_cpu(point,axis) result(value)
+    use commvar, only: im,jm,km,npdci,npdcj,npdck,gamma,num_species
+    use commarray, only: rho,vel,prs,tmp,spc,q,dxi,jacob,lshock,crinod
+    use riemann, only: flux_steger_warming
+    use flux, only: recons_exp
+    use commcal, only: compact_expanded_mask_enabled
+    implicit none
+    integer,intent(in) :: point(3),axis
+    real(real_kind) :: value(5),r(16),v(16,3),p(16),t(16),state(16,5),metric(16,3),jac(16), &
+      species(16,num_species),plus(16,5),minus(16,5),fp(8),fm(8),char_flux(5),left(5,5),right(5,5)
+    integer :: dims(3),types(3),target(3),neighbor(3),node,dim,ntype,row,side,s,wind,index,m
+    logical :: shock,critical,biased
+    dims=[im,jm,km]; types=[npdci,npdcj,npdck]
+    node=point(axis); dim=dims(axis); ntype=types(axis)
+    neighbor=point; neighbor(axis)=neighbor(axis)+1
+    if(compact_expanded_mask_enabled()) then
+      shock=lshock(point(1),point(2),point(3)).or.lshock(neighbor(1),neighbor(2),neighbor(3))
+    elseif(node<0) then
+      shock=lshock(neighbor(1),neighbor(2),neighbor(3))
+    elseif(node+1>dim) then
+      shock=lshock(point(1),point(2),point(3))
+    else
+      shock=lshock(point(1),point(2),point(3)).or.lshock(neighbor(1),neighbor(2),neighbor(3))
+    endif
+    target=point; target(axis)=max(0,min(dim,node))
+    critical=crinod(target(1),target(2),target(3))
+    target=neighbor; target(axis)=max(0,min(dim,node+1))
+    critical=critical.or.crinod(target(1),target(2),target(3))
+    call boundary_interface_position(node,dim,ntype,row,side)
+    biased=row>=0.and..not.shock.and..not.critical
+    do wind=0,1
+      do s=1,8
+        index=node+s-4
+        if(wind==1) index=node+5-s
+        if(ntype==1.or.ntype==4) index=max(0,index)
+        if(ntype==2.or.ntype==4) index=min(dim,index)
+        if(biased) then
+          index=s-1
+          if(side==-1) index=dim-s+1
+        endif
+        target=point; target(axis)=index
+        m=s+8*wind
+        r(m)=rho(target(1),target(2),target(3))
+        v(m,:)=vel(target(1),target(2),target(3),:)
+        p(m)=prs(target(1),target(2),target(3))
+        t(m)=tmp(target(1),target(2),target(3))
+        state(m,:)=q(target(1),target(2),target(3),1:5)
+        metric(m,:)=dxi(target(1),target(2),target(3),axis,:)
+        jac(m)=jacob(target(1),target(2),target(3))
+        species(m,:)=spc(target(1),target(2),target(3),:)
+      enddo
+    enddo
+    call flux_steger_warming(plus,minus,r,v,p,t,species,state,metric,jac)
+    if(shock) call chardecomp(tmp(point(1),point(2),point(3)),rho(point(1),point(2),point(3)), &
+      prs(point(1),point(2),point(3)),q(point(1),point(2),point(3),5),vel(point(1),point(2),point(3),:), &
+      spc(point(1),point(2),point(3),:),dxi(point(1),point(2),point(3),axis,:), &
+      tmp(neighbor(1),neighbor(2),neighbor(3)),rho(neighbor(1),neighbor(2),neighbor(3)), &
+      prs(neighbor(1),neighbor(2),neighbor(3)),q(neighbor(1),neighbor(2),neighbor(3),5), &
+      vel(neighbor(1),neighbor(2),neighbor(3),:),spc(neighbor(1),neighbor(2),neighbor(3),:), &
+      dxi(neighbor(1),neighbor(2),neighbor(3),axis,:),right,left)
+    do m=1,5
+      fp=plus(1:8,m); fm=minus(9:16,m)
+      if(shock) then
+        do s=1,8
+          fp(s)=sum(left(m,:)*plus(s,:))
+          fm(s)=sum(left(m,:)*minus(s+8,:))
+        enddo
+      endif
+      if(critical) then
+        char_flux(m)=fp(4)+fm(4)
+      elseif(biased) then
+        char_flux(m)=boundary_mp_flux6(fp,row,side==1)+boundary_mp_flux6(fm,row,side==-1)
+      else
+        char_flux(m)=recons_exp(fp,node,dim,ntype,5,shock,.false.)+ &
+                     recons_exp(fm,node,dim,ntype,5,shock,.false.)
+      endif
+    enddo
+    value=char_flux
+    if(shock) value=matmul(right,char_flux)
+  end function high_order_interface_flux_cpu
+
+  subroutine high_order_boundary_face_convection()
+    use commvar, only: im,jm,km,npdci,npdcj
+    implicit none
+    integer :: i,j,k
+    if(npdci==2.or.npdci==4) then
+      do k=0,km
+        do j=0,jm
+          if((npdcj==1.or.npdcj==4).and.j==0) cycle
+          call high_order_boundary_face_node([im,j,k])
+        enddo
+      enddo
+    endif
+    if(npdcj==2.or.npdcj==4) then
+      do k=0,km
+        do i=0,im
+          if((npdci==1.or.npdci==4).and.i==0) cycle
+          if((npdci==2.or.npdci==4).and.i==im) cycle
+          call high_order_boundary_face_node([i,jm,k])
+        enddo
+      enddo
+    endif
+  end subroutine high_order_boundary_face_convection
+
+  subroutine high_order_boundary_face_node(point)
+    use commvar, only: im,jm,km,npdci,npdcj
+    use commarray, only: qrhs
+    use bc, only: high_order_normal_terms
+    implicit none
+    integer,intent(in) :: point(3)
+    integer :: axis,target(3)
+    real(real_kind) :: total(5),fp(5),fm(5),normal_derivative(5),rest(5)
+    logical :: normal_face
+    total=0.e0_real_kind
+    do axis=1,3
+      normal_face=(axis==1.and.point(1)==im.and.(npdci==2.or.npdci==4)).or. &
+                  (axis==2.and.point(2)==jm.and.(npdcj==2.or.npdcj==4))
+      if(normal_face) then
+        call high_order_normal_terms(point,axis,normal_derivative,rest)
+        total=total+normal_derivative
+      else
+        fp=high_order_interface_flux_cpu(point,axis)
+        target=point; target(axis)=target(axis)-1
+        fm=high_order_interface_flux_cpu(target,axis)
+        total=total+fp-fm
+      endif
+    enddo
+    qrhs(point(1),point(2),point(3),1:5)=total
+  end subroutine high_order_boundary_face_node
   !+-------------------------------------------------------------------+
   !| The end of the subroutine convrsduwd.                             |
   !+-------------------------------------------------------------------+

@@ -13,6 +13,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 # Explicitly approved production addition, pending the next authorized commit.
 PENDING_PRODUCTION_INPUTS = (
+    "src/nscbc_incident.F90", "src/nscbc_incident_body.inc", "src_gpu/nscbc_incident_gpu.cuf",
     "src_gpu/checkpoint_gpu.cuf", "src/insitu_runtime.F90", "src/catalyst_adapter.cpp",
     "src/insitu_resource_budget.F90",
     "src/insitu_run_config.F90", "src/insitu_config_collective.F90",
@@ -29,6 +30,7 @@ PENDING_PRODUCTION_INPUTS = (
     "src/adaptive_output.F90", "src/insitu_product_schedule.F90",
     "src/insitu_product_dispatch.h", "scripts/insitu/product_dispatch.py", "scripts/insitu/streamline_preview.py",
     "src_gpu/insitu_wall_fields_gpu.cuf", "src_gpu/insitu_device_wall.h",
+    "src_gpu/insitu_sbli_gpu.cuf",
     "src_gpu/insitu_device_plane.h", "src_gpu/insitu_device_structured.h",
     "src_gpu/insitu_device_curve_trace.h",
     "src_gpu/insitu_plane_products.cu",

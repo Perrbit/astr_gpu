@@ -9,6 +9,8 @@ module insitu_run_config
   public :: streamline_view,insitu_max_views,read_streamline_views,streamline_trajectory_key,streamline_display_key
   integer,parameter :: insitu_max_products=64
   integer,parameter :: insitu_max_views=6
+  ! An explicit -1 quota resolves to a nonallocating, overflow-safe sentinel.
+  integer(int64),parameter,public :: unlimited_budget_bytes=huge(0_int64)/4096_int64
   type :: streamline_view
     character(64) :: id=''
     character(16) :: velocity='',seeds='',color=''
@@ -117,6 +119,10 @@ contains
     if(status/=0) return
     message='cannot close in-situ configuration'
     if(closed/=0) return
+    if(products=='sbli_2d') then
+      if(host_budget_bytes==-1_int64) host_budget_bytes=unlimited_budget_bytes
+      if(device_budget_bytes==-1_int64) device_budget_bytes=unlimited_budget_bytes
+    endif
     message='nonfinite statistics window or render interval'
     if(.not.all(ieee_is_finite([time_interval,statistics_window]))) return
     message='resource budgets and device reserve must not be negative'
@@ -154,10 +160,10 @@ contains
     if(products/='all'.and.products/='q_surface'.and.products/='streamlines'.and. &
       products/='q_streamlines'.and.products/='velocity_slice'.and.products/='channel_walls'.and. &
       products/='air5_walls'.and.products/='tgv256_demo'.and.products/='curve_demo'.and.products/='boundary_layer'.and. &
-      products/='m12_diagnostics') return
+      products/='m12_diagnostics'.and.products/='sbli_diagnostics'.and.products/='sbli_2d') return
     message='unsupported streamline seed layout'
     if(streamline_seeds/='line16'.and.streamline_seeds/='tgv-stratified'.and.streamline_seeds/='bl-layered64'.and. &
-      streamline_seeds/='bl-layered256') return
+      streamline_seeds/='bl-layered256'.and.streamline_seeds/='sbli-layered16') return
     if(streamline_seeds=='tgv-stratified') then
       message='tgv-stratified seeds require enabled strict device streamline rendering'
       if(.not.enabled.or..not.render.or.processing_backend/='device'.or.rendering_pipeline=='compatible'.or. &
@@ -189,6 +195,14 @@ contains
     endif
     message='bl-layered256 seeds require m12_diagnostics'
     if(streamline_seeds=='bl-layered256'.and.products/='m12_diagnostics') return
+    message='sbli_diagnostics requires strict device rendering without cumulative statistics'
+    if(products=='sbli_diagnostics'.or.products=='sbli_2d') then
+      if(.not.enabled.or..not.render.or.statistics.or.processing_backend/='device'.or. &
+        rendering_pipeline/='standard-device'.or.derivative_backend/='gpu'.or. &
+        (products=='sbli_diagnostics'.and.streamline_seeds/='sbli-layered16').or.slice_definition/='index') return
+    endif
+    message='sbli-layered16 seeds require sbli_diagnostics'
+    if(streamline_seeds=='sbli-layered16'.and.products/='sbli_diagnostics') return
     message='air5_volume_statistics requires enabled statistics and products=air5_walls'
     if(air5_volume_statistics.and.(.not.enabled.or..not.statistics.or.products/='air5_walls')) return
     message='air5_volume_reduction requires air5_volume_statistics'
@@ -516,16 +530,27 @@ contains
     mean_requested=.false.
     if(present(mean_streamline_render)) mean_requested=mean_streamline_render
     allowed=.false.
+    if(profile=='sbli_2d') then
+      select case(scene)
+      case('velocity_slice','density_gradient_slice','streamwise_velocity_slice','pressure_ratio_slice', &
+           'temperature_slice','wall_pressure_curve','skin_friction_curve','wall_heat_flux_curve')
+        allowed=.true.
+      end select
+      return
+    endif
     ! PF keeps the approved periodic TGV product boundary. Wall presets retain their common clock.
     select case(scene)
     case('q_surface')
       allowed=profile=='all'.or.profile=='q_surface'.or.profile=='q_streamlines'.or. &
-        profile=='tgv256_demo'.or.profile=='curve_demo'.or.profile=='boundary_layer'.or.profile=='m12_diagnostics'
+        profile=='tgv256_demo'.or.profile=='curve_demo'.or.profile=='boundary_layer'.or.profile=='m12_diagnostics'.or. &
+        profile=='sbli_diagnostics'
     case('velocity_slice')
-      allowed=profile=='all'.or.profile=='velocity_slice'.or.profile=='boundary_layer'.or.profile=='m12_diagnostics'
+      allowed=profile=='all'.or.profile=='velocity_slice'.or.profile=='boundary_layer'.or.profile=='m12_diagnostics'.or. &
+        profile=='sbli_diagnostics'
     case('instantaneous_streamlines')
       allowed=profile=='all'.or.profile=='streamlines'.or.profile=='q_streamlines'.or. &
-        profile=='tgv256_demo'.or.profile=='curve_demo'.or.profile=='boundary_layer'.or.profile=='m12_diagnostics'
+        profile=='tgv256_demo'.or.profile=='curve_demo'.or.profile=='boundary_layer'.or.profile=='m12_diagnostics'.or. &
+        profile=='sbli_diagnostics'
     case('crossing_streamlines')
       allowed=profile=='all'.or.profile=='streamlines'.or.profile=='q_streamlines'
     case('mean_reynolds_streamlines','mean_favre_streamlines')

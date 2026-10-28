@@ -1,0 +1,72 @@
+"""Small host-side wall curves; no volume or plane-field download."""
+import ctypes
+import io
+from pathlib import Path
+
+import numpy as np
+
+PLANE_TITLES={
+    'velocity_slice':'Speed / U_inf',
+    'streamwise_velocity_slice':'u / U_inf',
+    'pressure_ratio_slice':'p / p_inf',
+    'temperature_slice':'T / T_inf',
+    'density_gradient_slice':'log10(1 + Lx |grad_xy rho| / rho_inf)',
+}
+WALL_COLUMNS={
+    'wall_pressure_curve':(1,r'$p_w/p_\infty$','p_wall_over_p_inf'),
+    'skin_friction_curve':(2,r'$C_f$','Cf'),
+    'wall_heat_flux_curve':(3,r'$q_{w,\mathrm{into\ wall}}/(\rho_\infty U_\infty^3)$','q_wall_over_rho_inf_U_inf_cubed'),
+}
+
+
+def wall_values():
+    function=ctypes.CDLL(None).astr_insitu_sbli_wall_data
+    function.argtypes=[ctypes.POINTER(ctypes.c_int),ctypes.POINTER(ctypes.c_int)]
+    function.restype=ctypes.c_void_p
+    count,real_bytes=ctypes.c_int(),ctypes.c_int()
+    address=function(ctypes.byref(count),ctypes.byref(real_bytes))
+    if count.value<2:
+        raise ValueError('Missing SBLI wall curve')
+    scalar={4:ctypes.c_float,8:ctypes.c_double}[real_bytes.value]
+    pointer=ctypes.cast(address,ctypes.POINTER(scalar))
+    data=np.ctypeslib.as_array(pointer,shape=(4*count.value,)).reshape(-1,4)
+    if not np.isfinite(data).all() or np.any(np.diff(data[:,0])<=0.):
+        raise ValueError('Nonfinite or unordered SBLI wall curve')
+    return data
+
+
+def encode_wall_curve(name,data,step,time,output,write_eps):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import scienceplots
+    from image_publication import publish_pair
+    plt.style.use(['science','ieee','std-colors'])
+    plt.rcParams['axes.grid']=False
+    plt.rcParams['grid.alpha']=0.0
+    plt.rcParams.update({'axes.labelsize':16,'xtick.labelsize':14,'ytick.labelsize':14,'legend.fontsize':14,
+                        'savefig.bbox':None})
+    column,label,header=WALL_COLUMNS[name]
+    fig,axis=plt.subplots(figsize=(10.,3.75))
+    try:
+        axis.plot(data[:,0],data[:,column],color='tab:blue')
+        if name=='skin_friction_curve':
+            axis.axhline(0.,color='0.5',linewidth=.7)
+        axis.set_xlabel(r'$x/L_\mathrm{ref}$')
+        axis.set_ylabel(label)
+        axis.set_xlim(data[0,0],data[-1,0])
+        fig.tight_layout()
+        jpeg=io.BytesIO()
+        fig.savefig(jpeg,format='jpeg',dpi=384,pil_kwargs={'quality':95})
+        eps=io.BytesIO() if write_eps else None
+        if write_eps:
+            fig.savefig(eps,format='eps')
+        base=Path(output)/f'{name}.step{step:08d}'
+        with base.with_suffix(base.suffix+'.csv').open('x') as stream:
+            np.savetxt(stream,data[:,[0,column]],delimiter=',',fmt='%.17e',
+                header=f'step={step},time={time:.17e}\nx_over_Lref,{header}')
+        failure=publish_pair(base.with_suffix(base.suffix+'.jpeg'),jpeg.getvalue(),eps.getvalue() if eps else None)
+        if failure:
+            raise OSError(failure['errno'],failure['reason'])
+    finally:
+        plt.close(fig)

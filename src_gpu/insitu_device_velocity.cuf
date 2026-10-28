@@ -8,6 +8,7 @@ module insitu_device_velocity
   implicit none
   private :: real_kind,real_bytes,clock_kind,real_to_word,word_to_real,mpi_real_type
   private
+  integer(int64),parameter :: unlimited_budget_bytes=huge(0_int64)/4096_int64
   public :: snapshot_sample_velocity_gpu
   public :: begin_velocity_transport_gpu,end_velocity_transport_gpu,velocity_transport_usage_gpu
   public :: extend_sample_velocity_gpu,derive_sample_velocity_gpu
@@ -18,6 +19,7 @@ module insitu_device_velocity
   public :: complete_sample_wall_fields_gpu
   public :: extend_sample_wall_primitives_gpu
   public :: reduce_sample_wall_shear_gpu
+  public :: private_wall_derivative6
 #ifdef ASTR_BUILD_TESTING
   public :: trace_sample_memory_gpu
 #endif
@@ -419,6 +421,7 @@ contains
     call MPI_Comm_free(node_comm,ierr)
     call require_snapshot(ierr==MPI_SUCCESS,comm,'transport node communicator release')
     demand=max(reserve,1073741824_int64)
+    if(device_budget==unlimited_budget_bytes) demand=reserve
     free_bytes=0; total_bytes=0
     status=cudaMemGetInfo(free_bytes,total_bytes)
     call require_snapshot(status==cudaSuccess.and.free_bytes>=demand,comm,'transport device reserve')
@@ -571,17 +574,21 @@ contains
       coordinate_partition=[offset,global_extent],retained_other=retained)
   end subroutine
 
-  subroutine extend_sample_velocity_gpu(velocity,halo,extent,comm,budget,reserve,coordinate_partition,retained_other)
+  subroutine extend_sample_velocity_gpu(velocity,halo,extent,comm,budget,reserve,coordinate_partition,retained_other,active_axes)
     integer,intent(in) :: extent(3),comm
     integer(int64),intent(in) :: budget,reserve
     integer,intent(in),optional :: coordinate_partition(6)
     integer(int64),intent(in),optional :: retained_other
+    logical,intent(in),optional :: active_axes(3)
     real(real_kind),device,intent(in) :: velocity(3,*)
     real(real_kind),device,allocatable,intent(out) :: halo(:,:,:,:)
     integer :: status,axis,side,face,nodes,neighbors(2),minimum(3),maximum(3),ierr
-    logical :: received
+    logical :: received,axes(3)
     integer(int64) :: bytes,free_bytes,total_bytes,retained,required,extra
-    call require_snapshot(transport_comm/=MPI_COMM_NULL.and.all(extent==transport_extent), &
+    axes=.true.
+    if(present(active_axes)) axes=active_axes
+    call require_snapshot(transport_comm/=MPI_COMM_NULL.and.all(extent>=1).and.all(extent<=transport_extent).and. &
+      all(.not.axes.or.extent==transport_extent).and.all(axes.or.transport_sizes==1), &
       comm,'private velocity halo transport shape')
     extra=0
     if(present(retained_other)) extra=retained_other
@@ -606,6 +613,7 @@ contains
     call require_snapshot(retained<=budget-extra,comm,'private halo retained allocation budget')
     retained=retained+extra
     required=max(reserve,1073741824_int64)
+    if(budget==unlimited_budget_bytes) required=reserve
     free_bytes=0; total_bytes=0
     status=cudaMemGetInfo(free_bytes,total_bytes)
     call require_snapshot(status==cudaSuccess.and.budget>=retained.and.free_bytes>=required, &
@@ -618,6 +626,7 @@ contains
     call require_snapshot(status==cudaSuccess,comm,'private velocity halo initialization')
     ! Ordered full tangential faces carry completed earlier-axis halos onward.
     do axis=1,3
+      if(.not.axes(axis)) cycle
       face=int(9_int64*nodes/(extent(axis)+7))
       do side=1,2
         call pack_velocity_halo<<<(face+255)/256,256>>>(halo,send_d,extent(1),extent(2),extent(3),axis,side,face)
@@ -659,7 +668,8 @@ contains
     endif
     call require_snapshot(transport_comm/=MPI_COMM_NULL.and.all(extent==transport_extent).and.hm>=3, &
       comm,'private diagnostic transport shape')
-    call require_snapshot(.not.sixth.or.all(extent>=6),comm,'sixth-order private wall gradient needs seven nodes')
+    call require_snapshot(.not.sixth.or.all(extent>=6.or.transport_ntype==3),comm, &
+      'sixth-order private physical-boundary gradient needs seven nodes')
     call require_snapshot(product(int(extent+1,int64))<=huge(nodes)/14,comm,'private diagnostic index overflow')
     nodes=product(extent+1); bytes=int(nodes,int64)*components*real_bytes+4
     retained=transport_device_bytes+(int(nodes,int64)+product(int(extent+7,int64)))*3*real_bytes

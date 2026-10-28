@@ -40,8 +40,10 @@ endif()
 set(ASTR_SOURCES
   astr_precision.F90
   astr_precision_mpi.F90
+  boundary_high_order.F90
   astr.F90
   bc.F90
+  nscbc_incident.F90
   wall_blowing_random.F90
   CMakeLists.txt
   cmdefne.F90
@@ -151,6 +153,8 @@ if(ASTR_WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/device_mpi_transport_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/halo_exchange_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/nscbc_characteristic_policy_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/nscbc_incident_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/boundary_high_order_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/boundary_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/perfect_gas_boundary_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/conservative_boundary_faces_gpu.cuf
@@ -168,6 +172,7 @@ if(ASTR_WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/gpu_runtime.cuf)
   list(APPEND ASTR_GPU_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_sample_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_m12_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_sbli_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_products_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/output_derivatives_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/insitu_device_velocity.cuf
@@ -796,6 +801,33 @@ set_target_properties(boundary_contract_cpu_probe PROPERTIES
 target_include_directories(boundary_contract_cpu_probe PRIVATE
   "${CMAKE_CURRENT_BINARY_DIR}/boundary_contract_cpu_modules")
 
+add_executable(nscbc_incident_cpu_probe EXCLUDE_FROM_ALL
+  nscbc_incident.F90 ../tests/gpu_validation/nscbc_incident_probe.F90)
+set_target_properties(nscbc_incident_cpu_probe PROPERTIES
+  Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/nscbc_incident_cpu_modules")
+target_include_directories(nscbc_incident_cpu_probe PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/nscbc_incident_cpu_modules")
+
+if(BUILD_TESTING)
+  # Isolate probe modules from the production boundary modules.
+  add_executable(high_order_boundary_cpu_probe EXCLUDE_FROM_ALL
+    boundary_high_order.F90 ../tests/gpu_validation/high_order_boundary_probe.F90)
+  set_target_properties(high_order_boundary_cpu_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/high_order_boundary_cpu_modules")
+  target_include_directories(high_order_boundary_cpu_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/high_order_boundary_cpu_modules")
+  if(ASTR_WITH_CUDA)
+    add_executable(high_order_boundary_gpu_probe EXCLUDE_FROM_ALL
+      boundary_high_order.F90 ../src_gpu/boundary_high_order_gpu.cuf
+      ../tests/gpu_validation/high_order_boundary_probe.F90)
+    target_compile_definitions(high_order_boundary_gpu_probe PRIVATE TEST_CUDA)
+    set_target_properties(high_order_boundary_gpu_probe PROPERTIES
+      Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/high_order_boundary_gpu_modules")
+    target_include_directories(high_order_boundary_gpu_probe PRIVATE
+      "${CMAKE_CURRENT_BINARY_DIR}/high_order_boundary_gpu_modules")
+  endif()
+endif()
+
 add_executable(conservative_boundary_config_probe EXCLUDE_FROM_ALL
   perfect_gas_boundary.F90 conservative_boundary_config.F90
   ../tests/gpu_validation/conservative_boundary_config_probe.F90)
@@ -919,6 +951,14 @@ if(ASTR_WITH_CUDA)
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/nscbc_policy_probe_modules")
   target_include_directories(nscbc_characteristic_policy_probe PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/nscbc_policy_probe_modules")
+  add_executable(nscbc_incident_gpu_probe EXCLUDE_FROM_ALL
+    nscbc_incident.F90 ../src_gpu/nscbc_incident_gpu.cuf
+    ../tests/gpu_validation/nscbc_incident_probe.F90)
+  target_compile_definitions(nscbc_incident_gpu_probe PRIVATE TEST_CUDA)
+  set_target_properties(nscbc_incident_gpu_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/nscbc_incident_gpu_modules")
+  target_include_directories(nscbc_incident_gpu_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/nscbc_incident_gpu_modules")
   add_executable(precision_mode_setup_test EXCLUDE_FROM_ALL
     ../src_gpu/precision_mode_gpu.cuf
     ../tests/gpu_validation/precision_mode_setup_test.cuf)

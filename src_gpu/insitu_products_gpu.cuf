@@ -309,7 +309,7 @@ contains
     use mpi
     use commvar, only: im,jm,km,ia,ja,ka
     use parallel, only: ig0,mpirank
-    use insitu_sample_gpu, only: prepare_device_m12_planes_gpu
+    use insitu_sample_gpu, only: prepare_device_planar_samples_gpu
     use insitu_m12_gpu, only: capture_m12_plane_inputs_gpu
     use insitu_device_velocity, only: velocity_transport_usage_gpu,velocity_transport_timing_gpu
 #ifdef ASTR_BUILD_TESTING
@@ -345,7 +345,7 @@ contains
     end interface
     started=MPI_Wtime();phase_started=insitu_clock()
     call range_push(1_c_int)
-    call prepare_device_m12_planes_gpu(mode,host_budget,device_budget,reserve)
+    call prepare_device_planar_samples_gpu(mode,host_budget,device_budget,reserve)
     call velocity_transport_usage_gpu(host_slots,device_slots,d2h,h2d,exchanges,generation)
     retained=device_slots+statistics_device_bytes()
     call capture_m12_plane_inputs_gpu(positions,fields,plane_j,device_budget,reserve,retained)
@@ -378,6 +378,9 @@ contains
 
   subroutine render_device_sample_gpu(mode,pipeline,backend,script,profile,step,t,window, &
       statistics,host_budget,device_budget,reserve,mean_requested,seed_layout,require_covered_means,preview_flatplate)
+#ifdef ASTR_INSITU_DEVICE_PRODUCTS
+    use insitu_sbli_gpu, only: render_sbli_2d_gpu
+#endif
     use iso_fortran_env, only: int64
     use mpi
     use checkpoint_state_io, only: checkpoint_state_require
@@ -438,6 +441,10 @@ contains
       end function
     end interface
     started=MPI_Wtime()
+    if(profile=='sbli_2d') then
+      call render_sbli_2d_gpu(mode,pipeline,backend,script,step,t,host_budget,device_budget,reserve)
+      return
+    endif
     if(profile=='m12_diagnostics'.and.product_scene_due('velocity_slice').and. &
         .not.product_scene_due('q_surface').and..not.product_scene_due('instantaneous_streamlines')) then
       call render_m12_local_planes_gpu(mode,pipeline,backend,script,step,t,host_budget,device_budget,reserve)
@@ -451,11 +458,12 @@ contains
     phase_started=insitu_clock()
     call range_push(1_c_int)
     lines=profile=='all'.or.profile=='streamlines'.or.profile=='q_streamlines'.or. &
-      profile=='tgv256_demo'.or.profile=='curve_demo'.or.profile=='boundary_layer'
+      profile=='tgv256_demo'.or.profile=='curve_demo'.or.profile=='boundary_layer'.or.profile=='sbli_diagnostics'
     if(profile=='m12_diagnostics') lines=product_scene_due('instantaneous_streamlines')
     call capture_device_sample_gpu(mode,velocity,halo,derived,host_budget,device_budget,reserve,profile=='tgv256_demo', &
       (profile=='all'.or.profile=='q_surface'.or.profile=='q_streamlines'.or. &
-        profile=='tgv256_demo'.or.profile=='curve_demo'.or.profile=='boundary_layer'.or.profile=='m12_diagnostics').and. &
+        profile=='tgv256_demo'.or.profile=='curve_demo'.or.profile=='boundary_layer'.or.profile=='m12_diagnostics'.or. &
+        profile=='sbli_diagnostics').and. &
       (.not.product_schedules_active().or.product_scene_due('q_surface')),curve_demonstration=profile=='curve_demo', &
       m12_diagnostics=profile=='m12_diagnostics',preview_flatplate=read_only_bl,q_only=compact_q, &
       retained_other=statistics_device_bytes(),retain_volume_velocity=profile/='streamlines'.or.pipeline=='compatible')

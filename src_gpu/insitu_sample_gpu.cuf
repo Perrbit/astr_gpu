@@ -16,7 +16,7 @@ module insitu_sample_gpu
   public :: capture_device_sample_gpu,release_device_sampling_gpu
   public :: capture_device_channel_walls_gpu
   public :: capture_device_air5_walls_gpu
-  public :: prepare_device_m12_planes_gpu
+  public :: prepare_device_planar_samples_gpu
   public :: static_sample_coordinates_gpu,sampling_geometry_device_bytes
 #ifdef ASTR_BUILD_TESTING
   public :: check_device_wall_fields_gpu
@@ -75,12 +75,12 @@ contains
     coordinates=>static_coordinates_d
   end subroutine
 
-  subroutine prepare_device_m12_planes_gpu(mode,host_budget,device_budget,reserve)
+  subroutine prepare_device_planar_samples_gpu(mode,host_budget,device_budget,reserve)
     use iso_fortran_env, only: int64
     use mpi
     use commvar, only: im,jm,km,hm,numq,use_gpu
     use parallel, only: isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
-    use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported
+    use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported,gpu_sbli_insitu_supported
     use insitu_m12_gpu, only: m12_diagnostic_layout_supported
     use precision_mode_gpu, only: gpu_precision_mode,GPU_PRECISION_NATIVE
     use halo_transport_gpu, only: halo_transport_idle
@@ -91,9 +91,10 @@ contains
     integer(int64),intent(in) :: host_budget,device_budget,reserve
     integer :: neighbors(2,3)
     call release_static_coordinates_gpu()
-    call checkpoint_state_require(gpu_profile_mp_ld_flatplate_supported().and.m12_diagnostic_layout_supported().and. &
+    call checkpoint_state_require((gpu_sbli_insitu_supported().or. &
+      (gpu_profile_mp_ld_flatplate_supported().and.m12_diagnostic_layout_supported())).and. &
       use_gpu.and.numq==5.and.hm>=3.and.gpu_precision_mode==GPU_PRECISION_NATIVE,MPI_COMM_WORLD, &
-      'local M12 planes require the admitted five-variable FP64 MP-LD x-slab case')
+      'local plane samples require an admitted five-variable FP64 MP-LD x-slab case')
     call checkpoint_state_require(halo_transport_idle().and..not.solution_pipeline_active, &
       MPI_COMM_WORLD,'local M12 planes require completed solver transport')
     if(.not.device_sampling_initialized) then
@@ -204,7 +205,7 @@ contains
     use precision_mode_gpu, only: gpu_precision_mode,GPU_PRECISION_NATIVE
     use insitu_device_velocity, only: begin_velocity_transport_gpu,snapshot_sample_velocity_gpu, &
       extend_sample_velocity_gpu,derive_sample_velocity_gpu
-    use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported
+    use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported,gpu_sbli_insitu_supported
     use insitu_m12_gpu, only: m12_diagnostic_layout_supported
     character(*),intent(in) :: mode
     real(real_kind),device,allocatable,intent(out) :: velocity(:,:),halo(:,:,:,:),derived(:,:)
@@ -214,7 +215,7 @@ contains
     logical,intent(in),optional :: demonstration,need_q,curve_demonstration,m12_diagnostics
     logical,intent(in),optional :: preview_flatplate,q_only
     logical,intent(in),optional :: retain_volume_velocity
-    logical :: demo,calculate_q,curve_wall,curve_demo,profile_mp_ld,compact_q
+    logical :: demo,calculate_q,curve_wall,curve_demo,profile_mp_ld,compact_q,sbli
     integer :: neighbors(2,3),sizes(3),extent(3),ranks,ierr,status
     real(clock_kind) :: phase_started
     extent=[im,jm,km]; sizes=[isize,jsize,ksize]
@@ -229,7 +230,8 @@ contains
     curve_wall=lreadgrid.and.all(bctype==[1,1,41,41,1,1])
     neighbors(:,1)=[mpileft,mpiright]; neighbors(:,2)=[mpidown,mpiup]; neighbors(:,3)=[mpiback,mpifront]
     call MPI_Comm_size(MPI_COMM_WORLD,ranks,ierr)
-    profile_mp_ld=gpu_profile_mp_ld_flatplate_supported().and.all([ia,ja,ka]==[64,32,24])
+    sbli=gpu_sbli_insitu_supported()
+    profile_mp_ld=sbli.or.(gpu_profile_mp_ld_flatplate_supported().and.all([ia,ja,ka]==[64,32,24]))
     if(present(m12_diagnostics)) then
       if(m12_diagnostics) profile_mp_ld=gpu_profile_mp_ld_flatplate_supported().and. &
         m12_diagnostic_layout_supported()
@@ -271,7 +273,7 @@ contains
     phase_started=insitu_clock()
     if(calculate_q) then
       call derive_sample_velocity_gpu(halo,dxi_d,derived,extent,hm,MPI_COMM_WORLD,device_budget,reserve, &
-        wall_sixth=curve_wall,q_only=compact_q,retained_other=extra)
+      wall_sixth=curve_wall.or.sbli,q_only=compact_q,retained_other=extra)
       call report_insitu_timing('device_gradient_q_inclusive',phase_started,-1)
     else
       allocate(derived(1,1),stat=status)

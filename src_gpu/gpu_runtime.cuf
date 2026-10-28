@@ -179,9 +179,12 @@ contains
 
   subroutine gpu_after_refcal()
     use commvar_gpu, only: copy_commvar_to_gpu
+    use boundary_high_order, only: high_order_boundary_enabled
+    use boundary_high_order_gpu, only: high_order_boundary_enabled_d
     implicit none
 
     call copy_commvar_to_gpu()
+    high_order_boundary_enabled_d=high_order_boundary_enabled
   end subroutine gpu_after_refcal
 
   subroutine gpu_after_alloc()

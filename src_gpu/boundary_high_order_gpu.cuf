@@ -1,0 +1,5 @@
+#define BOUNDARY_HIGH_ORDER_PROC attributes(device)
+#define BOUNDARY_HIGH_ORDER_DEVICE
+module boundary_high_order_gpu
+#include "../src/boundary_high_order_body.inc"
+end module boundary_high_order_gpu

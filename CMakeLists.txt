@@ -38,6 +38,8 @@ endif()
 set(ASTR_STATISTICS_GEOMETRY_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/gridgeneration.F90"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/geom.F90"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/derivative.F90"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/boundary_high_order_body.inc"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/constdef.F90"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/insitu_geometry.F90"
     "${ASTR_USERDEFINE_SOURCE}")

@@ -5,6 +5,7 @@ module nscbc_characteristic_policy_gpu
   integer,parameter :: NSCBC_GPU_POLICY_COMPATIBILITY=0
   integer,parameter :: NSCBC_GPU_POLICY_TARGET_RELAXATION=1
   integer,parameter :: NSCBC_GPU_POLICY_NONREFLECTING=2
+  integer,parameter :: NSCBC_GPU_POLICY_GRCBC=3
 contains
   attributes(device) subroutine nscbc_zero_incoming_lodi_gpu(lodi,metric, &
                                                                velocity,css, &

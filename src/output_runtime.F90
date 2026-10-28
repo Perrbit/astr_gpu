@@ -367,10 +367,11 @@ contains
   end function
 
   logical function joint_sbli_output_case()
+    use bc, only: nscbc_inviscid_incident_enabled
     joint_sbli_output_case=.false.
     if(trim(flowtype)/='bl') return
     joint_sbli_output_case=explicit_profile_nscbc_corrections_enabled().and. &
-      nscbc_farfield_sbli_shock_enabled().and.diffterm.and..not.lfilter
+      nscbc_farfield_sbli_shock_enabled().and.(diffterm.or.nscbc_inviscid_incident_enabled()).and..not.lfilter
   end function
 
   function profile_grid_resource_name() result(name)
@@ -1276,12 +1277,20 @@ contains
     endif
     if(joint_sbli_output_case()) then
       block
-        use bc, only: nscbc_farfield_target_state,nscbc_farfield_shock_x,nscbc_farfield_shock_angle
+        use boundary_high_order, only: high_order_boundary_enabled
+        use bc, only: nscbc_farfield_target_state,nscbc_farfield_shock_x,nscbc_farfield_shock_angle, &
+          nscbc_farfield_grcbc_enabled
         real(real_kind) :: target(7)
         call nscbc_farfield_target_state(target(1),target(2),target(3),target(4),target(5))
         target(6:7)=[nscbc_farfield_shock_x,nscbc_farfield_shock_angle]
         ! Exact target bits fit the existing driver string; no additional sidecar.
-        write(driver_config(2),'(a,7(z16.16))') 'sbli-top-v1',real_to_word(target)
+        if(high_order_boundary_enabled) then
+          write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-h1',real_to_word(target)
+        elseif(nscbc_farfield_grcbc_enabled()) then
+          write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-v2',real_to_word(target)
+        else
+          write(driver_config(2),'(a,7(z16.16))') 'sbli-top-v1',real_to_word(target)
+        endif
       end block
     endif
     root_config=driver_config

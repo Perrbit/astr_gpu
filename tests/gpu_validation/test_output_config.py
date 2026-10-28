@@ -61,6 +61,13 @@ def test_device_reserve_int64(tmp_path, reserve):
     assert f'device_reserve_bytes={reserve}' in result.stdout
 
 
+def test_explicit_unlimited_budgets(tmp_path):
+    config=VALID.replace('host_budget_bytes=134217728','host_budget_bytes=-1').replace(
+        'device_budget_bytes=67108864','device_budget_bytes=-1')
+    result=run(tmp_path,config)
+    assert result.returncode==0,result.stdout+result.stderr
+
+
 @pytest.mark.parametrize('flags,exact,statistics', [
     ('', 'F', 'T'),
     ('exact_restart=t', 'T', 'T'),
@@ -104,7 +111,7 @@ def test_documented_output_examples(tmp_path, name, selected):
     VALID.replace('interval_time=0.01', 'interval_time=-1'),
     VALID.replace('interval_time=0.01', 'interval_time=NaN'),
     VALID.replace('host_budget_bytes=134217728', 'host_budget_bytes=1'),
-    VALID.replace('device_budget_bytes=67108864', 'device_budget_bytes=-1'),
+    VALID.replace('device_budget_bytes=67108864', 'device_budget_bytes=-2'),
     VALID.replace('device_budget_bytes=67108864', 'device_reserve_bytes=-1'),
     VALID.replace('device_budget_bytes=67108864', 'buffer_bytes=0'),
     VALID.replace('device_budget_bytes=67108864', "directory=''"),

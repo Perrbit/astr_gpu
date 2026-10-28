@@ -208,6 +208,10 @@ contains
       profile=5
     case('air5_walls')
       profile=6
+    case('sbli_diagnostics')
+      profile=7
+    case('sbli_2d')
+      profile=8
     end select
   end function
 
@@ -256,8 +260,9 @@ contains
     if(options%products=='m12_diagnostics') then
       device_limit=12884901888_int64; host_limit=17179869184_int64
     endif
-    if((options%products=='boundary_layer'.or.options%products=='m12_diagnostics').and. &
-       all([ia,ja,ka]==[64,32,24]).and.mpisize==4.and. &
+    if((((options%products=='boundary_layer'.or.options%products=='m12_diagnostics').and. &
+       all([ia,ja,ka]==[64,32,24])).or.options%products=='sbli_diagnostics'.or. &
+       options%products=='sbli_2d').and.mpisize==4.and. &
        options%processing_backend=='device'.and.options%rendering_pipeline=='standard-device'.and. &
        options%postprocess_transport=='pinned'.and.options%device_budget_bytes<=device_limit.and. &
        options%host_budget_bytes<=host_limit.and.options%device_reserve_bytes>=1073741824_int64) allow=1_c_int
@@ -675,7 +680,7 @@ contains
     use parallel, only: mpirank,mpisize,isize,jsize,ksize
 #ifdef _CUDA
     use insitu_statistics_gpu, only: configure_statistics_device_budget
-    use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported
+    use case_capability_gpu, only: gpu_profile_mp_ld_flatplate_supported,gpu_sbli_insitu_supported
 #endif
     character(1024) :: filename,message
     character(16) :: entry_command
@@ -683,7 +688,7 @@ contains
     integer(int64) :: view_signature(2)
     real(c_real_kind) :: view_values(19)
     logical :: ok,channel_wall,air5_wall,curve_tgv,device_demo,device_wall,device_plane,device_curve_q,device_air5_wall
-    logical :: device_curve_trace,device_curve_demo,device_boundary_layer,device_m12_hd,device_preview_bl
+    logical :: device_curve_trace,device_curve_demo,device_boundary_layer,device_m12_hd,device_preview_bl,device_sbli
 #ifdef ASTR_WITH_CATALYST
     interface
       integer(c_int) function add_streamline_view(index,id,velocity,seeds,color,values) &
@@ -741,8 +746,10 @@ contains
         device_demo=options%processing_backend=='device'.and.options%products=='tgv256_demo'
         device_curve_demo=options%processing_backend=='device'.and.options%products=='curve_demo'
         device_m12_hd=options%processing_backend=='device'.and.options%products=='m12_diagnostics'
+        device_sbli=options%processing_backend=='device'.and. &
+          (options%products=='sbli_diagnostics'.or.options%products=='sbli_2d')
         device_boundary_layer=options%processing_backend=='device'.and. &
-          (options%products=='boundary_layer'.or.device_m12_hd.or.device_preview_bl)
+          (options%products=='boundary_layer'.or.device_m12_hd.or.device_preview_bl.or.device_sbli)
         device_wall=options%processing_backend=='device'.and.options%products=='channel_walls'
         device_air5_wall=options%processing_backend=='device'.and.options%products=='air5_walls'
         device_plane=options%processing_backend=='device'.and.options%slice_definition=='plane'
@@ -775,7 +782,10 @@ contains
               'device AIR5 wall products require noncatalytic Cartesian HBL 16^3 NP=1/2')
           elseif(device_boundary_layer) then
 #ifdef _CUDA
-            if(device_preview_bl) then
+            if(device_sbli) then
+              call require_sample(gpu_sbli_insitu_supported().and..not.options%statistics, &
+                'SBLI device products require explicit MP7-LD joint NSCBC and NP=1/2/4 x-slab')
+            elseif(device_preview_bl) then
               call require_sample(gpu_profile_mp_ld_flatplate_supported().and. &
                 all(bctype==[11,21,41,50,1,1]).and.mpisize==2.and.all([isize,jsize,ksize]==[2,1,1]).and. &
                 options%rendering_pipeline=='standard-device'.and.options%postprocess_transport=='pinned'.and. &
@@ -838,7 +848,7 @@ contains
           max(ia,ja,ka)<=32.and.jm>=2.and.mpisize<=2.and.trim(difschm)=='643e', &
           'AIR5 wall candidate requires noncatalytic Cartesian HBL <=32 NP=1/2')
         if(options%render) then
-          if(options%product_count>0) call require_sample(device_m12_hd.or.(.not.lreadgrid.and.all(bctype==1).and. &
+          if(options%product_count>0) call require_sample(device_m12_hd.or.device_sbli.or.(.not.lreadgrid.and.all(bctype==1).and. &
             trim(flowtype)=='tgv'.and.numq==5.and.num_species==0.and.nondimen), &
             'independent product clocks require the admitted periodic Cartesian TGV products')
 #ifdef ASTR_WITH_CATALYST
@@ -2438,7 +2448,8 @@ contains
       call require_sample(.false.,'M12 diagnostics require CUDA')
 #endif
     endif
-    if(formal.and.options%products=='boundary_layer') then
+    if(formal.and.(options%products=='boundary_layer'.or.options%products=='sbli_diagnostics'.or. &
+      options%products=='sbli_2d')) then
       call require_sample(.not.statistics_enabled,'bounded boundary-layer rendering does not accumulate statistics')
       call require_sample(step>=0.and.ieee_is_finite(time_end).and.ieee_is_finite(step_dt), &
         'nonfinite boundary-layer completed-step metadata')

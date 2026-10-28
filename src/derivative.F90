@@ -354,13 +354,32 @@ module derivative
       
       use constdef
       use commvar, only : hm
+      use boundary_high_order, only: high_order_boundary_enabled,boundary_derivative6
 
       integer,intent(in) :: dim,ntype
       real(real_kind),intent(in) :: vin(-hm:dim+hm)
       real(real_kind) :: vout(0:dim)
       
       ! local data
-      integer :: i
+      integer :: i,j
+      real(real_kind) :: line(0:7)
+
+      if(high_order_boundary_enabled) then
+        do i=0,dim
+          if((ntype==1.or.ntype==4).and.i<3) then
+            vout(i)=boundary_derivative6(vin(0:7),i)
+          elseif((ntype==2.or.ntype==4).and.i>dim-3) then
+            do j=0,7
+              line(j)=vin(dim-j)
+            enddo
+            vout(i)=-boundary_derivative6(line,dim-i)
+          else
+            vout(i)=0.75e0_real_kind*(vin(i+1)-vin(i-1))- &
+              0.15e0_real_kind*(vin(i+2)-vin(i-2))+num1d60*(vin(i+3)-vin(i-3))
+          endif
+        enddo
+        return
+      endif
 
       select case (ntype)
       case (1)

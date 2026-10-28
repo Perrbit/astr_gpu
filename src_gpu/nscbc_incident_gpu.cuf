@@ -1,0 +1,4 @@
+#define INCIDENT_PROC attributes(device)
+module nscbc_incident_gpu
+#include "../src/nscbc_incident_body.inc"
+end module nscbc_incident_gpu
