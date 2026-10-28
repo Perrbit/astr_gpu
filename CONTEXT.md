@@ -214,8 +214,24 @@ The first multi-rank GPU halo exchange matches CPU `parallel:qswap`. Each exchan
 _Avoid_: Exchanging only `hm` layers for `qswap`, skipping interface-plane averaging, treating halo exchange as plain endpoint copy
 
 **Physical-face stencil gating**:
-When a non-periodic direction is decomposed across MPI ranks, a local array boundary is not automatically a physical boundary. GPU physical-direction stencils must use one-sided/low-order physical templates only when the corresponding neighbor is `MPI_PROC_NULL`; internal MPI interfaces use halo-backed explicit sixth-order central stencils. The current validated instances cover x/y/z zeroextrap with MPI decomposition in the corresponding physical direction.
-_Avoid_: Treating every local `i=0/im`, `j=0/jm`, or `k=0/km` as a physical face, using physical templates on MPI internal interfaces, validating only statistics when field output exposes interface errors
+Selection of a physical boundary closure based on actual domain ownership rather than the end of a rank-local array. Physical endpoint stencils or explicitly constructed physical ghost states are distinct from interior stencils supplied by MPI halo data.
+_Avoid_: Treating every local array endpoint as a physical face, requiring a physical closure to be low order, applying physical closures at internal MPI interfaces
+
+**ASTR smooth-boundary accuracy target**:
+The accepted redesign target requires at least sixth-order spatial accuracy of boundary and adjacent interior derivatives and the final spatial RHS for smooth solutions with inactive nonlinear limiting. Shock- or admissibility-limiter activation may reduce order locally and must be recorded separately; stability remains an independent acceptance requirement.
+_Avoid_: Inferring RHS order from interface reconstruction order alone, requiring sixth-order accuracy across a shock, equating a spatial accuracy target with achieved stability or RK time accuracy
+
+**ASTR boundary closure strip**:
+The physical boundary nodes and adjacent interior nodes whose discrete updates depend on a boundary-specific closure or transition. Its extent follows the combined operator, not the number of allocated ghost layers or the GPU execution tile.
+_Avoid_: Checking only the boundary row, equating the closure strip with MPI halo width, excluding smooth transition nodes from the maximum error
+
+**ASTR physical ghost state**:
+A numerical state extension outside the physical domain consumed by an identified boundary operator. It differs from MPI halo data representing a neighboring subdomain and from an analytic exterior reference that need not be stored in the flow array.
+_Avoid_: Treating allocated ghost space as initialized physical data, identifying a GRCBC reference point with a populated ghost cell
+
+**ASTR boundary filter accuracy target**:
+The accepted redesign target of at least sixth-order smooth accuracy for one application of the boundary filter map. It does not by itself guarantee sixth-order spatial convergence of time advancement with repeated filtering.
+_Avoid_: Interpreting an unchanged boundary node as a zeroth-order error, replacing the single-map target with an unapproved full-time-integration requirement
 
 **Dataswap-compatible filter halo**:
 The explicit filter path uses `dataswap` semantics rather than `qswap` semantics. It exchanges or locally refreshes exactly `hm` halo layers and does not average duplicate endpoint planes. In single-rank homogeneous y/z directions, GPU refreshes local halos for the ping-pong filter arrays before launching the same halo stencil kernels used after MPI filter exchange. In single-rank y/z zeroextrap slices, GPU preserves the physical-direction exterior halo values required by CPU `filterq` rather than inventing one-sided filter stencils.

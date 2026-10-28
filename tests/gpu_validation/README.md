@@ -132,6 +132,142 @@ This is bounded integration and restart validation, not a developed SBLI,
 reflection-coefficient, compact/AIR5, sponge or visualization acceptance.
 NP4/8 share two local GPUs and are not scaling benchmarks.
 
+The opt-in `sbli_grcbc` mode is covered separately by `test_sbli_grcbc.py`:
+
+```bash
+cmake --build <test-build> --target nscbc_incident_cpu_probe nscbc_incident_gpu_probe -j 4
+<test-build>/bin/nscbc_incident_cpu_probe
+compute-sanitizer --tool memcheck --error-exitcode 99 <test-build>/bin/nscbc_incident_gpu_probe
+ASTR_SBLI_GRCBC_EXE=<absolute-build>/bin/astr python -m pytest -q -x \
+  tests/gpu_validation/test_sbli_grcbc.py
+```
+
+This uses the same 64×48×16, Mach-2, 743e/643e fixture, with the new top
+transverse filter disabled and complete-RHS incoming closure after diffusion.
+NP1/NP2 x/y same-phase fields/statistics, CPU/GPU exact continuation,
+old/new mode identity rejection, real CUDA-aware MPI and two-rank memcheck
+passed locally. An additional 2000-step GPU window saves only its final
+checkpoint and reports top-state response; it is not an angle/jump/reflection
+or developed-SBLI gate. The inlet/top intersection belongs to the prescribed
+profile; the outlet/top intersection currently requires streamwise supersonic
+outflow, otherwise status=4 reports the missing joint subsonic closure.
+Evidence and equations: `documents/ASTR_NSCBC_INCIDENT_SHOCK_TOP_DESIGN.md`,
+with logs under `out/nscbc_incident_components_20261027/` and sibling
+`out/sbli_grcbc_20261027_{first,extended,driving}/` directories.
+
+`test_grcbc_oblique_shock.py` adds a Mach-2, beta=40-degree Euler fixture:
+64/128/192 squared by 8 intervals, MP7-LD, slip/adiabatic bc421, no viscosity,
+no main/top filter, dt=2.5e-4. It reuses the profile input infrastructure,
+not a viscous boundary-layer initial condition. With the same executable:
+
+```bash
+ASTR_SBLI_GRCBC_EXE=<absolute-build>/bin/astr python -m pytest -q -x \
+  tests/gpu_validation/test_grcbc_oblique_shock.py
+```
+
+The fast checks precede the physical windows: CPU/GPU grazing-entropy
+transport, NP1/NP2 x/y same-phase fields, two-rank memcheck and 12 versus
+5+7 exact state continuation. Seeded shocks run 4000 steps on all three
+grids; uniform-start shock generation runs 8000 steps on the finest grid.
+The finest-grid physical gate is angle error <=1 degree and maximum
+off-shock plateau error <=1%, over all spanwise nodes. Whole-field spanwise
+differences are reported separately, not hidden by the angle fit.
+The v1 grazing-entropy failure is retained as evidence; v2 preserves
+same-stage tangential/viscous terms on the three incoming convective modes.
+Exact continuation uses identity `sbli-grcbc-v2`, not a v1 checkpoint.
+Fresh v2 evidence is under `out/grcbc_oblique_v2_20261027_*`; equations,
+sampling/scaling, convergence and the limits of physical acceptance are
+in section 10 of the incident-shock design document.
+Current result: seeded finest-grid angle/plateau gates pass, but uniform
+start at t=2 fails the unchanged 1% plateau gate (density 1.38072%,
+temperature 1.31595%). Its normal solver exit is not physical acceptance.
+The top tangential flux still uses 222e, not the interior MP7-LD scheme;
+same-state boundary diagnostics and acoustic-reflection tests remain open.
+
+The preceding v1/v2 results are historical. The approved HB1-A Cartesian
+743e/643e, MP7-LD weight-0.1 chain now selects identity `sbli-grcbc-h1` for
+the 11/22/41/52 subset (421 is used only by the inviscid analytic fixture).
+It pairs matched-leading-error D6 gradients/divergence, physical-node MP7
+endpoint fluxes, seventh-order Neumann wall reconstruction, sixth-order
+outlet filtering, and a seven-exterior-sample incoming closure preserving
+same-stage transverse/viscous sources on all incoming modes. Main/top
+filtering remain off. Shock/critical-node reconstruction remains unchanged.
+
+`test_high_order_boundary_runtime.py` checks the actual first-stage full
+Navier-Stokes RHS against an analytic manufactured reference, refining x
+32/64/128 with fixed y=16,z=8. Boundary-strip orders are 5.63 and 5.82;
+component errors and raw/physical RHS backend differences are both reported.
+The y-refinement test reports orders 5.90 and 5.91 on both boundary strips at
+the fixed middle x plane. The same file provides a native 12-step HCW-target
+window, with no rendering.
+Use `ASTR_SBLI_GRCBC_EXE` for this file as for the GRCBC tests above.
+Fresh h1 evidence is under `out/hcw_high_order_h1_20261027/`.
+NP1, NP2 x/y/z and NP4 2x2x1 parity, CPU/GPU exact continuation, grazing
+entropy transport and representative memcheck have passed. The unchanged
+Mach-2 seeded/uniform angle/plateau gates and HCW short window also pass.
+Full-field checks nevertheless find spanwise amplification near the top at
+192 squared resolution, so production acceptance is withheld. Same-state
+CPU/GPU replay and initcheck pass; a nonuniform-background perturbation replay
+retains the unresolved robustness problem. `diagnose_spanwise_replay` reuses
+saved fields and advances only through ASTR, never a Python flow integrator.
+Results and remaining scope are in section 29 of the high-order boundary plan. This is
+not CURVE, compact, native FP32, AIR5, reflection-rate or production-SBLI
+acceptance. No old v2 checkpoint is an exact h1 restart.
+
+`test_hcw_insitu.py` adds the Mach-7 HCW-inspired planar case and the
+`sbli_diagnostics` device preset. For the diagnostic matrix, set
+`ASTR_HCW_INSITU_EXE` to a `BUILD_TESTING=ON` Catalyst executable and build
+its `insitu_device_geometry_probe` target. The local
+matrix covers NP1/2/4 x, four-step output isolation, full 1024×256×5 NP2
+first-frame output, exact state/pixel continuation, and two-rank memcheck.
+The reviewed example keeps two exact checkpoints every 3000 complete steps
+and now explicitly sets checkpoint and `sbli_2d` host/device quotas to -1
+(unlimited application quota), with zero postprocessing device reserve.
+Exact restart and checkpoint statistics remain enabled. Its current `sbli_2d` preset
+requests speed, signed u, density-gradient schlieren, p/p_inf, T/T_inf,
+and wall pressure/Cf/heat-flux curves every 100 steps, without streamlines
+or Q isosurfaces. The two-rank four-step slice-only test still checks
+independent product selection and field isolation. New 2D checks use an
+independent CPU seven-node polynomial differentiation oracle on the saved
+same-phase state; the optional test-only plane download is not part of
+the production path. Wall CSV heat flux is positive into the solid and
+normalized by rho_inf U_inf^3, not W/m^2.
+`test_hcw_production_settings_aware_hd` uses the actual case environment,
+CUDA-aware solver and postprocessing halos, full 1024×256×5 NP2 inputs,
+3840×960 field images and 3840×1440 wall curves. It checks all checkpoint
+components, zero explicit postprocessing host-halo slots/copies, same-state
+CPU diagnostic range/wall-CSV agreement and rendering isolation. This is a two-step local
+check, not the 30000-step production run or a GPUDirect performance claim.
+Q=0 is a diagnostic threshold, not
+proof of a three-dimensional vortex in this spanwise-uniform startup.
+Evidence and physical limitations are in
+`documents/ASTR_HCW_SBLI_CASE_AND_INSITU_REVIEW.md`.
+
+The native h1 production build (`BUILD_TESTING=OFF`) has a separate verified
+entry set, with no test-only plane dump required:
+
+```bash
+ASTR_HCW_INSITU_EXE="$PWD/build_m12_device_render_no_tests/bin/astr" \
+python -m pytest -q -x \
+  tests/gpu_validation/test_hcw_insitu.py::test_hcw_h1_production_smoke \
+  tests/gpu_validation/test_hcw_insitu.py::test_hcw_production_settings_aware_hd \
+  tests/gpu_validation/test_hcw_insitu.py::test_hcw_two_dimensional_exact_restart \
+  tests/gpu_validation/test_hcw_insitu.py::test_hcw_h1_production_first_frame
+```
+
+These four checks passed under `out/hcw_h1_catalyst_20261027/`. They verify
+the h1 startup/control identity, field isolation, complete-grid device-aware
+transport, 2+2 exact continuation, and the actual first frame at step 100.
+The 100-step test retains the original 100-step image / 3000-step checkpoint
+cadence and saves its final checkpoint, without starting the 30000-step run.
+Production checks explicitly compare published FP64 local field ranges and
+nodewise wall CSVs to saved-state references. Diagnostic-mode tests retain
+their full nodewise plane-oracle requirement; a missing oracle is never
+silently treated as a passed diagnostic test. No production plane download
+was enabled to satisfy the test harness. Eight JPEG products, no EPS and no
+geometry/volume postprocessing downloads were observed; checkpoint I/O is
+separate. The user-deferred Euler spanwise disturbance remains unresolved.
+
 For real subsonic/supersonic outlet-backflow integration, use
 `--regimes-only --steps 100 --topologies 111 211 112`. This constructs smooth
 downstream velocity patches with centerline normal Mach targets -0.5 and -1.5,

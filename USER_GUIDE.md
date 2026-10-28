@@ -430,9 +430,10 @@ AIR5 入射激波使用独立状态文件格式。CPU intx 和 udef 入口也不
 | `compatibility`（默认） | GPU 按局部几何法向识别传入波：亚声速流出只对传入声波作压力松弛，超声速流出保留内场特征，法向流入向全局自由来流状态松弛。不采用下面的五个目标状态环境变量。名称为输入接口保留，不再表示与旧 CPU 边界算法一致。 |
 | `incoming_only` | 按局部外法向速度与声速识别传入的特征波，只将这些波向指定远场状态松弛，传出波保留内部计算值。 |
 | `sbli_shock` | 使用与 incoming_only 相同的传入波处理，但目标状态在指定流向位置前后分别取激波上游和由斜激波关系计算的下游状态。 |
+| `sbli_grcbc` | 新增可选入射激波策略。在边界外部参考点按激波几何选择守恒跳跃两态，以网格尺度原始变量差驱动传入特征，并在黏性和相关源项完成后统一闭合RHS。新模式首轮关闭顶面横向滤波，旧模式不变。 |
 | `nonreflecting` | 不向给定远场状态松弛；按传入/传出特征分解，并平衡已实现的横向及黏性源项，以减少边界反射。不表示离散反射严格为零。 |
 
-后三种模式只用于上侧逻辑 j 面（y-max）的 52 边界，且为非反应五方程系统。
+除 compatibility 外的模式只用于上侧逻辑 j 面（y-max）的 52 边界，且为非反应五方程系统。
 曲线网格另有几何、格式和拓扑检查，不能直接用于 AIR5。
 
 GPU 的 12 入口使用已有 `roinf/uinf/vinf/winf/pinf` 构造完整守恒目标，
@@ -466,16 +467,48 @@ CPU 原有 12/22/52 compatibility 算法未整体随 GPU 修复改写，不能�
 两种格式还通过同后端同拓扑的完整步检查点精确续算及 NP=2 x 的 CUDA-aware MPI 短测。
 精确续算记录顶面目标状态、激波分界位置和角度，不能改变这些参数。
 `lfilter=f` 不会关闭 NSCBC 边界自身的横向滤波。
-该组合的长期激波位置、壁面统计、反射率、原位渲染及生产规模仍需另行验证，
+该组合的长期激波位置、壁面统计、反射率及生产规模仍需另行验证，
 不扩展至紧致黏性、AIR5 或非正交出口。详见
 [联合入射激波验证记录](documents/ASTR_GPU_NSCBC_PHYSICS_REPAIR_PLAN.md#联合入射激波顶面与特征出口)。
 
-incoming_only 和 sbli_shock 读取 `ASTR_NSCBC_FARFIELD_RHO`、
+`sbli_grcbc`复用上述显式非反应联合边界，保持主滤波关闭。
+当前版本在三个传入对流特征上保留同阶段切向/黏性贡献，避免法向速度过零时丢失切向输运。
+已验证743e/643e的NP=1、NP=2 x/y短步同态、NP=2 x精确续算、CUDA-aware MPI和memcheck。
+另外支持`diffterm=f`、下壁421全滑移的无黏斜激波基准，其余边界仍为11/22/52/1/1；
+该基准不是有黏边界层，未扩展原位产品准入。具体网格、时间窗与物理误差见
+[入射激波专项记录](documents/ASTR_NSCBC_INCIDENT_SHOCK_TOP_DESIGN.md#10-无黏斜激波与v2修订)。
+上入口交线由完整剖面状态负责；上出口交线当前要求流向超声速出流，
+流向亚声速交线的双面兼容条件尚未实现，会报告status=4而非静默覆盖。
+精确续算登记`sbli-grcbc-v2`身份，不能把旧sbli_shock或sbli-grcbc-v1检查点当成当前模式精确恢复。
+无黏解析初场的最细192²×8网格已通过角误差≤1°、远场平台状态误差≤1%的门槛；
+均匀起算至t=2的平台最大误差为1.381%，未通过1%门槛，尚未放行完整斜激波物理验证。
+顶面横向对流仍为二阶中心离散，不等同于体内MP7-LD。
+声学反射率、真实HCW长窗及一般亚声速出口/顶面交线仍待验证或实现。
+原位产品与新模式组合本轮未复核，不能引用旧模式的隔离证据作为新模式验收。
+详见[新顶面设计与本地检查](documents/ASTR_NSCBC_INCIDENT_SHOCK_TOP_DESIGN.md#9-首轮实现与本地证据)。
+
+其中 `743e/643e` 的笛卡尔可分离网格另可选设备原位预设 `sbli_diagnostics`：
+中展向速度截面、瞬时流线和Q=0面；限NP=1/2/4 x分解，不累计平均场。
+HCW局部二维算例已通过小网格及1024×256×5、NP=2首帧、精确续算和memcheck检查。
+Q=0不等于三维涡核，零值附近的碎片不能作为转捩依据。实际配置和边界见
+[HCW原位审阅记录](documents/ASTR_HCW_SBLI_CASE_AND_INSITU_REVIEW.md)。
+同一物理范围另有`products='sbli_2d'`：中展向速度模长、二维密度梯度数值纹影、
+有符号流向速度、压力比、温度比，以及底壁压力比、带符号摩擦系数和热流曲线。
+HCW示例选择此预设，每100步写JPEG，流线与Q关闭；检查点独立每3000步写出。
+当前场图3840×960、壁面曲线3840×1440，JPEG质量95，EPS关闭。
+该示例的求解器与后处理均选择CUDA-aware MPI；检查点和`sbli_2d`可显式用
+`host_budget_bytes=-1,device_budget_bytes=-1`关闭容量配额，显存保留量单独设为0。
+不省略真实分配失败检查，不自动改回主机中转，也不改变其他原位预设的预算默认值。
+二维场和几何留在设备，仅回读O(Nx)壁面曲线，曲线同时保存CSV。
+热流为流体传向底壁为正，按`rho_inf U_inf^3`归一化，不能直接当作W/m²。
+曲线绘制额外需要Catalyst Python环境中的Matplotlib、SciencePlots及其TeX依赖。
+
+incoming_only、sbli_shock 和 sbli_grcbc 读取 `ASTR_NSCBC_FARFIELD_RHO`、
 `ASTR_NSCBC_FARFIELD_U`、`ASTR_NSCBC_FARFIELD_V`、
 `ASTR_NSCBC_FARFIELD_W`、`ASTR_NSCBC_FARFIELD_T`。
 分别指定目标密度、三个速度分量和温度；未设置项沿用算例自由来流值，
 单位与算例一致，密度和温度必须为正。压力由当前理想气体状态方程计算。
-sbli_shock 还读取 `ASTR_NSCBC_FARFIELD_SHOCK_X`（流向分界位置）和
+sbli_shock 和 sbli_grcbc 还读取 `ASTR_NSCBC_FARFIELD_SHOCK_X`（流向分界位置）和
 `ASTR_NSCBC_FARFIELD_SHOCK_ANGLE_DEG`（激波角，度，严格介于 0 和 90 之间）。
 角度不是壁面转角，位置和角度应在运行配置中明确记录。
 
