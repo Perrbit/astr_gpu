@@ -6,14 +6,26 @@
   private
 #ifdef BOUNDARY_HIGH_ORDER_DEVICE
   logical,device,public :: high_order_boundary_enabled_d=.false.
+  logical,device,public :: high_order_wall_enabled_d=.false.
+  logical,device,public :: high_order_adiabatic_wall_enabled_d=.false.
+  logical,device,public :: high_order_slip_wall_enabled_d=.false.
+  integer,device,public :: high_order_wall_axis_d=2
 #else
   logical,save,public :: high_order_boundary_enabled=.false.
+  logical,save,public :: high_order_wall_enabled=.false.
+  logical,save,public :: high_order_adiabatic_wall_enabled=.false.
+  logical,save,public :: high_order_slip_wall_enabled=.false.
+  integer,save,public :: high_order_wall_axis=2
 #endif
   public :: boundary_derivative6, boundary_neumann7
   public :: boundary_derivative6_weights, boundary_neumann7_weights
   public :: boundary_mp_flux6, boundary_filter6, boundary_incoming_rate7
   public :: boundary_interface_position
   public :: boundary_normal_terms6
+  public :: boundary_hermite_pressure7,boundary_pressure_gradient7
+  public :: boundary_pressure_neumann6
+  public :: boundary_temperature5,boundary_temperature_rhs5
+  public :: boundary_wall_temperature7,boundary_noslip_rhs7
 
   ! FD numerical-flux moments, not interpolation of physical flux at a midpoint.
   real(real_kind),parameter :: boundary_flux6_weights(0:7,0:2)=reshape([ &
@@ -42,7 +54,124 @@
   real(real_kind),parameter :: boundary_neumann7_weights(0:7)=[ &
     -1089.e0_real_kind,2940.e0_real_kind,-4410.e0_real_kind,4900.e0_real_kind, &
     -3675.e0_real_kind,1764.e0_real_kind,-490.e0_real_kind,60.e0_real_kind]/420.e0_real_kind
+  real(real_kind),parameter :: pressure_ghost7_weights(1:6,1:3)=reshape([ &
+    21.e0_real_kind,-35.e0_real_kind/2,35.e0_real_kind/3,-21.e0_real_kind/4, &
+    7.e0_real_kind/5,-1.e0_real_kind/6, &
+    224.e0_real_kind,-210.e0_real_kind,448.e0_real_kind/3,-70.e0_real_kind, &
+    96.e0_real_kind/5,-7.e0_real_kind/3, &
+    1134.e0_real_kind,-1134.e0_real_kind,840.e0_real_kind,-405.e0_real_kind, &
+    567.e0_real_kind/5,-14.e0_real_kind],[6,3])
+  real(real_kind),parameter :: pressure_ghost7_slope(3)=[-7.e0_real_kind,-56.e0_real_kind,-252.e0_real_kind]
+  real(real_kind),parameter :: pressure_neumann6_weights(1:5,1:2)=reshape([ &
+    -1.e0_real_kind/12,1.e0_real_kind,-1.e0_real_kind/3,1.e0_real_kind/12,-1.e0_real_kind/100, &
+    -1.e0_real_kind,1.e0_real_kind/6,2.e0_real_kind/3,-1.e0_real_kind/8,1.e0_real_kind/75],[5,2])
+  real(real_kind),parameter :: pressure_neumann6_slope(2)=[-1.e0_real_kind/5,1.e0_real_kind/10]
 contains
+  BOUNDARY_HIGH_ORDER_PROC function boundary_wall_temperature7(state,fixed_temperature,const2,const6,adiabatic) result(t)
+    real(real_kind),intent(in) :: state(5,0:7),fixed_temperature,const2,const6
+    logical,intent(in) :: adiabatic
+    real(real_kind) :: t,line(7)
+    integer :: s
+    t=fixed_temperature
+    if(adiabatic) then
+      do s=1,7
+        line(s)=boundary_temperature5(state(:,s),const2,const6)
+      enddo
+      t=boundary_neumann7(line,0.e0_real_kind)
+    endif
+  end function boundary_wall_temperature7
+
+  BOUNDARY_HIGH_ORDER_PROC subroutine boundary_noslip_rhs7(state,rhs,jacobian,metric,axis,orientation, &
+      fixed_temperature,const2,const6,adiabatic,density_source,result)
+    real(real_kind),intent(in) :: state(5,0:7),rhs(5,1:7),jacobian(0:7),metric(0:7), &
+      fixed_temperature,const2,const6,density_source
+    integer,intent(in) :: axis,orientation
+    logical,intent(in) :: adiabatic
+    real(real_kind),intent(out) :: result(5)
+    real(real_kind) :: flux(0:7),rate(7),t,tdot
+    integer :: s
+    do s=0,7
+      flux(s)=jacobian(s)*state(axis+1,s)*metric(s)
+    enddo
+    result=0.e0_real_kind
+    result(1)=density_source-real(orientation,real_kind)*boundary_derivative6(flux,0)
+    t=fixed_temperature
+    result(5)=result(1)*t/const2*const6
+    if(adiabatic) then
+      t=boundary_temperature5(state(:,0),const2,const6)
+      do s=1,7
+        rate(s)=boundary_temperature_rhs5(state(:,s),rhs(:,s),const2,const6)
+      enddo
+      tdot=boundary_neumann7(rate,0.e0_real_kind)
+      result(5)=(t*result(1)+state(1,0)*tdot*jacobian(0))*const6/const2
+    endif
+  end subroutine boundary_noslip_rhs7
+
+  BOUNDARY_HIGH_ORDER_PROC function boundary_temperature5(state,const2,const6) result(temperature)
+    real(real_kind),intent(in) :: state(5),const2,const6
+    real(real_kind) :: temperature,velocity(3)
+    velocity=state(2:4)/state(1)
+    temperature=(state(5)/state(1)-0.5e0_real_kind*sum(velocity**2))*const2/const6
+  end function boundary_temperature5
+
+  BOUNDARY_HIGH_ORDER_PROC function boundary_temperature_rhs5(state,rhs,const2,const6) result(rate)
+    real(real_kind),intent(in) :: state(5),rhs(5),const2,const6
+    real(real_kind) :: rate,velocity(3)
+    velocity=state(2:4)/state(1)
+    rate=(rhs(5)-sum(velocity*rhs(2:4))+(sum(velocity**2)-state(5)/state(1))*rhs(1))* &
+      const2/(const6*state(1))
+  end function boundary_temperature_rhs5
+
+  BOUNDARY_HIGH_ORDER_PROC function pressure_ghost7_delta(f,layer,inward_slope) result(delta)
+    real(real_kind),intent(in) :: f(0:6),inward_slope
+    integer,intent(in) :: layer
+    real(real_kind) :: delta
+    integer :: j
+    delta=pressure_ghost7_slope(layer)*inward_slope
+    do j=1,6
+      delta=delta+pressure_ghost7_weights(j,layer)*(f(j)-f(0))
+    enddo
+  end function pressure_ghost7_delta
+
+  BOUNDARY_HIGH_ORDER_PROC function boundary_hermite_pressure7(f,layer,inward_slope) result(value)
+    real(real_kind),intent(in) :: f(0:6),inward_slope
+    integer,intent(in) :: layer
+    real(real_kind) :: value
+    value=f(0)+pressure_ghost7_delta(f,layer,inward_slope)
+  end function boundary_hermite_pressure7
+
+  BOUNDARY_HIGH_ORDER_PROC function boundary_pressure_gradient7(f,row,inward_slope) result(value)
+    real(real_kind),intent(in) :: f(0:6),inward_slope
+    integer,intent(in) :: row
+    real(real_kind) :: value,delta
+    real(real_kind),parameter :: weights(-3:3)=[-1.e0_real_kind,9.e0_real_kind,-45.e0_real_kind, &
+      0.e0_real_kind,45.e0_real_kind,-9.e0_real_kind,1.e0_real_kind]/60.e0_real_kind
+    integer :: offset,j
+    value=0.e0_real_kind
+    do offset=-3,3
+      j=row+offset
+      if(j<0) then
+        delta=(f(0)-f(row))+pressure_ghost7_delta(f,-j,inward_slope)
+      else
+        delta=f(j)-f(row)
+      endif
+      value=value+weights(offset)*delta
+    enddo
+  end function boundary_pressure_gradient7
+
+  BOUNDARY_HIGH_ORDER_PROC function boundary_pressure_neumann6(f,row,inward_slope) result(value)
+    real(real_kind),intent(in) :: f(0:5),inward_slope
+    integer,intent(in) :: row
+    real(real_kind) :: value
+    integer :: j
+    value=inward_slope
+    if(row==0) return
+    value=pressure_neumann6_slope(row)*inward_slope
+    do j=1,5
+      value=value+pressure_neumann6_weights(j,row)*(f(j)-f(0))
+    enddo
+  end function boundary_pressure_neumann6
+
   BOUNDARY_HIGH_ORDER_PROC subroutine boundary_normal_terms6(state,velocity,pressure,jacobian,metric, &
       derivative,rest)
     real(real_kind),intent(in) :: state(5,0:7),velocity(3,0:7),pressure(0:7), &

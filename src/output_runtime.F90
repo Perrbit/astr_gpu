@@ -387,6 +387,7 @@ contains
   end function
 
   subroutine check_capability()
+    use boundary_high_order, only: high_order_adiabatic_wall_enabled,high_order_wall_enabled
     logical :: supported_case
 #ifdef ASTR_BUILD_TESTING
     character(16) :: validation_mode
@@ -400,11 +401,13 @@ contains
     if(.not.options%checkpoint%enabled.and.len_trim(options%restore_directory)==0) return
     call check(.not.air5_output_case().or.options%exact_restart, &
       'AIR5 checkpoint currently requires exact_restart=t to preserve chemical continuation state')
-    supported_case=(trim(flowtype)=='tgv'.and.all(bctype==1)).or. &
+    supported_case=(trim(flowtype)=='tgv'.and.(all(bctype==1).or.high_order_wall_enabled)).or. &
       (trim(flowtype)=='tgv'.and.lreadgrid.and. &
       (all([ia,ja,ka]==32).or.all([ia,ja,ka]==64).or.all([ia,ja,ka]==128).or.all([ia,ja,ka]==256)).and. &
       all(bctype==[1,1,41,41,1,1]).and.trim(conschm)=='643e'.and.trim(difschm)=='643e').or. &
-      (trim(flowtype)=='channel'.and.all(bctype==[1,1,41,41,1,1])).or. &
+      (trim(flowtype)=='channel'.and.(all(bctype==[1,1,41,41,1,1]).or. &
+        (high_order_adiabatic_wall_enabled.and.(all(bctype==[1,1,42,42,1,1]).or. &
+          all(bctype==[1,1,421,421,1,1]))))).or. &
       (trim(flowtype)=='bl'.and.lreadgrid.and.(trim(turbinf)=='prof'.or.trim(turbinf)=='intp').and. &
       all(bctype==[11,21,41,51,1,1])).or.extruded_profile_output_case().or. &
       (joint_sbli_output_case().and.lreadgrid)
@@ -426,7 +429,7 @@ contains
       .not.lcomb.and.(.not.lavg.or..not.use_gpu.or.trim(flowtype)=='bl')
     call check((supported_case.or.air5_output_case()).and..not.limmbou.and. &
       .not.lrestart.and.trim(rkscheme)=='rk3', &
-      'new output admits TGV, bc41 channel, profile/dynamic flatplate or fixed AIR5 HBL/SBLI RK3')
+      'new output admits TGV, bc41 or hermite7 channel, profile/dynamic flatplate or fixed AIR5 HBL/SBLI RK3')
     call check(.not.lcracon.or.(numq==5.and.num_species==0.and..not.lcomb), &
       'checkpoint crashfix supports only non-reacting five-variable flow')
     if(extruded_profile_output_case().and.bctype(2)==22) then
@@ -1240,11 +1243,27 @@ contains
     endif
     driver=0
     driver_config=''
+    block
+      use boundary_high_order, only: high_order_wall_enabled,high_order_wall_axis,high_order_adiabatic_wall_enabled
+      if(trim(flowtype)=='tgv'.and.high_order_wall_enabled) then
+        if(high_order_adiabatic_wall_enabled) then
+          write(driver_config(3),'(a,i0,a)') 'cartesian-axis',high_order_wall_axis,'-adiabatic-p6t7-v1'
+        else
+          write(driver_config(3),'(a,i0,a)') 'cartesian-axis',high_order_wall_axis,'-isothermal-h7-v1'
+        endif
+      endif
+    end block
     if(trim(flowtype)=='channel') then
       call get_environment_variable('ASTR_CHANNEL_FORCE_MODE',driver_config(1),status=status)
       call check(status==0.or.status==1,'channel force mode is truncated')
       call get_environment_variable('ASTR_CHANNEL_FORCE_FIXED',driver_config(2),status=status)
       call check(status==0.or.status==1,'channel fixed force is truncated')
+      block
+        use boundary_high_order, only: high_order_wall_enabled,high_order_adiabatic_wall_enabled,high_order_slip_wall_enabled
+        if(high_order_wall_enabled) driver_config(3)='channel-wall-h7-v1'
+        if(high_order_adiabatic_wall_enabled) driver_config(3)='channel-adiabatic-p6t7-v1'
+        if(high_order_slip_wall_enabled) driver_config(3)='channel-slip-p6t7-v1'
+      end block
       if(writing) then
         call channel_driver_state(driver,.true.,ok)
         call check(ok,'invalid channel driver state')

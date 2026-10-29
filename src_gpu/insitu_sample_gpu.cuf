@@ -150,6 +150,7 @@ contains
   end subroutine
 
   subroutine capture_device_channel_walls_gpu(mode,coordinates,fields,host_budget,device_budget,reserve)
+    use boundary_high_order, only: high_order_wall_enabled,high_order_adiabatic_wall_enabled
     use iso_fortran_env, only: int64
     use commvar, only: im,jm,km,ia,ja,ka,hm,numq,use_gpu,lreadgrid,difschm,conschm,flowtype, &
       ndims,num_species,nondimen,const2,const5,const6,reynolds,prandtl,tempconst,tempconst1
@@ -166,27 +167,33 @@ contains
     character(*),intent(in) :: mode
     real(real_kind),device,allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
-    integer :: neighbors(2,3),sizes(3),extent(3)
+    integer :: neighbors(2,3),sizes(3),extent(3),components
     logical :: candidate
     extent=[im,jm,km]; sizes=[isize,jsize,ksize]
     neighbors(:,1)=[mpileft,mpiright]; neighbors(:,2)=[mpidown,mpiup]; neighbors(:,3)=[mpiback,mpifront]
     candidate=(.not.lreadgrid.and.trim(flowtype)=='channel'.and.all([ia,ja,ka]==16)).or. &
       (lreadgrid.and.trim(flowtype)=='tgv'.and.all([ia,ja,ka]==32))
+    if(high_order_wall_enabled) candidate=trim(flowtype)=='channel'.and.max(ia,ja,ka)<=128
     call checkpoint_state_require(use_gpu.and.candidate.and.numq==5.and.num_species==0.and. &
-      nondimen.and.ndims==3.and.all(bctype==[1,1,41,41,1,1]).and. &
+      nondimen.and.ndims==3.and.(all(bctype==[1,1,41,41,1,1]).or. &
+        (high_order_adiabatic_wall_enabled.and.(all(bctype==[1,1,42,42,1,1]).or. &
+          all(bctype==[1,1,421,421,1,1])))).and. &
       trim(difschm)=='643e'.and.trim(conschm)=='643e'.and.mpisize<=2.and.hm>=3.and. &
       gpu_precision_mode==GPU_PRECISION_NATIVE,MPI_COMM_WORLD, &
-      'device wall fields require bc41 FP64 643e channel 16^3 or CURVE TGV 32^3 NP=1/2')
+      'device wall fields require bc41 channel 16^3, CURVE TGV 32^3 or H7 channel <=128, FP64 NP=1/2')
     call checkpoint_state_require(halo_transport_idle().and..not.solution_pipeline_active, &
       MPI_COMM_WORLD,'device wall fields require completed solver transport')
     if(.not.device_sampling_initialized) then
+      components=33
+      if(high_order_wall_enabled) components=40
       call begin_velocity_transport_gpu(mode,extent,sizes,neighbors,MPI_COMM_WORLD,host_budget,device_budget,reserve, &
-        periodic=[.true.,.false.,.true.],max_components=33)
+        periodic=[.true.,.false.,.true.],max_components=components)
       device_sampling_transport=mode; device_sampling_initialized=.true.
     endif
     call checkpoint_state_require(mode==device_sampling_transport,MPI_COMM_WORLD,'wall transport changed in session')
     call capture_channel_wall_fields_gpu(q_d,x_d,dxi_d,coordinates,fields,extent,hm,ja,jg0, &
-      [const2,const5,const6,reynolds,prandtl,tempconst,tempconst1],MPI_COMM_WORLD,device_budget,reserve,lreadgrid)
+      [const2,const5,const6,reynolds,prandtl,tempconst,tempconst1],MPI_COMM_WORLD,device_budget,reserve, &
+      lreadgrid.and..not.high_order_wall_enabled)
   end subroutine
 
   subroutine capture_device_sample_gpu(mode,velocity,halo,derived,host_budget,device_budget,reserve,demonstration,need_q, &
@@ -426,22 +433,24 @@ contains
     integer(int64),intent(in) :: device_budget,reserve
     real(real_kind),allocatable,device :: packed(:,:,:,:)
     integer(int64) :: count,free_bytes,total_bytes
-    integer :: nw,status,first
+    integer :: nw,status,first,nlayers
     nw=size(walls); count=size(fields,kind=int64)
+    nlayers=size(fields,4)/numq
     call checkpoint_state_require((numq==5.or.numq==11).and.nw<=2.and. &
-      all(shape(fields)==[im+1,km+1,nw,3*numq]).and. &
+      (nlayers==3.or.(nlayers==8.and.numq==5.and.jm>=7)).and. &
+      all(shape(fields)==[im+1,km+1,nw,nlayers*numq]).and. &
       all(walls==0.or.walls==jm),MPI_COMM_WORLD,'invalid wall GPU pack shape')
     free_bytes=0; total_bytes=0
     status=cudaMemGetInfo(free_bytes,total_bytes)
     call checkpoint_state_require(status==cudaSuccess.and.count*real_bytes<=device_budget.and. &
       free_bytes>=count*real_bytes+max(reserve,1073741824_int64),MPI_COMM_WORLD,'wall GPU budget')
     status=0
-    if(count>0) allocate(packed(im+1,km+1,nw,3*numq),stat=status)
+    if(count>0) allocate(packed(im+1,km+1,nw,nlayers*numq),stat=status)
     call checkpoint_state_require(status==0,MPI_COMM_WORLD,'wall GPU pack allocation')
     status=cudaSuccess
     if(count>0) then
       first=walls(1)
-      call wall_state_kernel<<<((im+1)*(km+1)*nw+255)/256,256>>>(im,jm,km,nw,first,numq,packed)
+      call wall_state_kernel<<<((im+1)*(km+1)*nw+255)/256,256>>>(im,jm,km,nw,first,numq,nlayers,packed)
       call sync_after_kernel('private completed wall pack',.true.)
       status=cudaMemcpy(fields,packed,count,cudaMemcpyDeviceToHost)
     endif
@@ -449,17 +458,17 @@ contains
     if(allocated(packed)) deallocate(packed)
   end subroutine
 
-  attributes(global) subroutine wall_state_kernel(im,jm,km,nw,first,nq,packed)
+  attributes(global) subroutine wall_state_kernel(im,jm,km,nw,first,nq,nlayers,packed)
     use commarray_gpu, only: q_d
-    integer,value :: im,jm,km,nw,first,nq
-    real(real_kind),device :: packed(im+1,km+1,nw,3*nq)
+    integer,value :: im,jm,km,nw,first,nq,nlayers
+    real(real_kind),device :: packed(im+1,km+1,nw,nlayers*nq)
     integer :: node,i,k,w,j,side,m,c
     node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
     if(node>=(im+1)*(km+1)*nw) return
     i=mod(node,im+1); k=mod(node/(im+1),km+1); w=node/((im+1)*(km+1))+1
     j=first; if(w==2) j=jm
     side=1; if(j==jm) side=-1
-    do m=0,2
+    do m=0,nlayers-1
       do c=1,nq
         packed(i+1,k+1,w,nq*m+c)=q_d(i,j+side*m,k,c)
       enddo

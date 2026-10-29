@@ -8,7 +8,9 @@
 module bc
   use astr_precision, only: real_kind,clock_kind
   use boundary_high_order, only: high_order_boundary_enabled,boundary_derivative6, &
-    boundary_neumann7,boundary_incoming_rate7,boundary_normal_terms6
+    boundary_neumann7,boundary_incoming_rate7,boundary_normal_terms6,high_order_wall_enabled, &
+    high_order_adiabatic_wall_enabled,high_order_slip_wall_enabled,high_order_wall_axis, &
+    boundary_temperature5,boundary_temperature_rhs5,boundary_wall_temperature7,boundary_noslip_rhs7
   !
   use constdef
   use parallel,only: lio,mpistop,mpirank,mpirankname,irk,jrk,krk,      &
@@ -85,6 +87,7 @@ module bc
     use boundary_high_order, only: high_order_boundary_enabled
     use commvar, only: conschm,difschm,recon_schem,bfacmpld,lcomb,nondimen,lfilter,diffterm,ia,ja
     implicit none
+    call configure_high_order_wall()
     high_order_boundary_enabled=.false.
     if(bctype(1)/=11.or.bctype(2)/=22.or.bctype(4)/=52) return
     if(.not.nscbc_farfield_grcbc_enabled()) return
@@ -95,6 +98,264 @@ module bc
       (all(bctype==[11,22,41,52,1,1]).or.(all(bctype==[11,22,421,52,1,1]).and..not.diffterm))
     if(lio.and.high_order_boundary_enabled) write(*,'(a)') ' ** sbli-grcbc-h1 high-order boundary chain'
   end subroutine configure_high_order_boundary
+
+  subroutine configure_high_order_wall()
+    use astr_precision, only: numerical_precision
+    use commvar, only: conschm,difschm,rkscheme,lcomb,nondimen,lfilter,diffterm, &
+      lihomo,ljhomo,lkhomo,turbmode
+    implicit none
+    character(32) :: mode
+    integer :: status,axis,kind,expected(6)
+    logical :: homogeneous(3)
+    high_order_wall_enabled=.false.
+    high_order_adiabatic_wall_enabled=.false.
+    high_order_slip_wall_enabled=.false.
+    high_order_wall_axis=2
+    call get_environment_variable('ASTR_HIGH_ORDER_WALL_MODE',mode,status=status)
+    if(status==1.or.trim(mode)=='off'.or.trim(mode)=='') return
+    if(status/=0.or.trim(mode)/='hermite7') error stop 'Unknown ASTR_HIGH_ORDER_WALL_MODE'
+    homogeneous=[lihomo,ljhomo,lkhomo]
+    if(count(.not.homogeneous)/=1) error stop 'Hermite7 wall requires one physical axis'
+    axis=maxloc(merge(0,1,homogeneous),dim=1)
+    kind=bctype(2*axis-1);expected=1;expected(2*axis-1:2*axis)=kind
+    if(numerical_precision/='fp64'.or.ndims/=3.or. &
+       numq/=5.or.num_species/=0.or.num_modequ/=0.or.lcomb.or..not.nondimen.or. &
+       conschm/='643e'.or.difschm/='643e'.or.rkscheme/='rk3'.or.lfilter.or..not.diffterm.or. &
+       turbmode/='none'.or.any(bctype/=expected).or. &
+       .not.(kind==41.or.(kind==42.and.axis<=2).or.(kind==421.and.axis==2)).or. &
+       .not.((flowtype=='channel'.and.axis==2).or.(flowtype=='tgv'.and.kind/=421))) &
+      error stop 'Hermite7 wall requires FP64 643e/RK3, one supported wall axis, no main filter'
+    high_order_wall_enabled=.true.
+    high_order_wall_axis=axis
+    high_order_adiabatic_wall_enabled=kind==42.or.kind==421
+    high_order_slip_wall_enabled=kind==421
+    if(lio) then
+      if(flowtype=='tgv') then
+        write(*,'(a,i0,a,i0)') ' ** Cartesian Hermite7 wall axis=',axis,' bctype=',kind
+      elseif(high_order_slip_wall_enabled) then
+        write(*,'(a)') ' ** channel-slip-p6t7-v1: dynamic density, Neumann velocity and temperature projection'
+      elseif(high_order_adiabatic_wall_enabled) then
+        write(*,'(a)') ' ** channel-adiabatic-p6t7-v1: dynamic density, Neumann temperature projection'
+      else
+        write(*,'(a)') ' ** channel-wall-h7-v1: dynamic density, Hermite pressure gradient'
+      endif
+    endif
+  end subroutine configure_high_order_wall
+
+  subroutine validate_high_order_wall_geometry()
+    implicit none
+    real(real_kind) :: reference(3),tolerance,off_diagonal
+    integer :: a,b,extent(3),rank_position(3),last_rank(3),axis
+    if(.not.high_order_wall_enabled) return
+    axis=high_order_wall_axis;extent=[im,jm,km];rank_position=[irk,jrk,krk];last_rank=[irkm,jrkm,krkm]
+    if((rank_position(axis)==0.or.rank_position(axis)==last_rank(axis)).and.extent(axis)<7) &
+      error stop 'Hermite7 wall needs eight physical normal nodes'
+    if(high_order_adiabatic_wall_enabled.and. &
+       (rank_position(axis)==0.or.rank_position(axis)==last_rank(axis)).and.extent(axis)<8) &
+      error stop 'Adiabatic Hermite7 wall requires seven strictly interior normal nodes'
+    reference=[dxi(0,0,0,1,1),dxi(0,0,0,2,2),dxi(0,0,0,3,3)]
+    tolerance=256.e0_real_kind*epsilon(1.e0_real_kind)*max(1.e0_real_kind,maxval(abs(reference)))*max(im,jm,km)
+    off_diagonal=0.e0_real_kind
+    do a=1,3
+      if(maxval(abs(dxi(0:im,0:jm,0:km,a,a)-reference(a)))>tolerance) &
+        error stop 'Hermite7 wall first gate requires uniform Cartesian metrics'
+      do b=1,3
+        if(a/=b) off_diagonal=max(off_diagonal,maxval(abs(dxi(0:im,0:jm,0:km,a,b))))
+      enddo
+    enddo
+    if(off_diagonal>tolerance.or.minval(reference)<=0.e0_real_kind) &
+      error stop 'Hermite7 wall first gate requires positive Cartesian axes'
+    call configure_wall_blowing()
+    if(abs(wall_blowing_amplitude)>1.e-10_real_kind) &
+      error stop 'Hermite7 wall first gate excludes blowing'
+  end subroutine validate_high_order_wall_geometry
+
+  subroutine apply_high_order_wall_state(ndir)
+    implicit none
+    integer,intent(in),optional :: ndir
+    integer :: side,j,i,k,s,target,orientation
+    real(real_kind) :: temperature,pressure,line(7),velocity_line(7,2),wall_velocity(3)
+    if(.not.high_order_wall_enabled) return
+    if(high_order_wall_axis/=2) then
+      call apply_high_order_other_wall(.false.,ndir)
+      return
+    endif
+    do side=1,2
+      if(present(ndir)) then
+        if(ndir/=side+2) cycle
+      endif
+      if(side==1.and.jrk/=0) cycle
+      if(side==2.and.jrk/=jrkm) cycle
+      j=0;orientation=1
+      if(side==2) then
+        j=jm;orientation=-1
+      endif
+      if(.not.high_order_adiabatic_wall_enabled) temperature=twall(side+2)
+      do k=0,km
+        do i=0,im
+          wall_velocity=0.e0_real_kind
+          if(high_order_adiabatic_wall_enabled) then
+            do s=1,7
+              target=j+orientation*s
+              line(s)=boundary_temperature5(q(i,target,k,1:5),const2,const6)
+              if(high_order_slip_wall_enabled) then
+                velocity_line(s,1)=q(i,target,k,2)/q(i,target,k,1)
+                velocity_line(s,2)=q(i,target,k,4)/q(i,target,k,1)
+              endif
+            enddo
+            temperature=boundary_neumann7(line,0.e0_real_kind)
+            if(high_order_slip_wall_enabled) then
+              wall_velocity(1)=boundary_neumann7(velocity_line(:,1),0.e0_real_kind)
+              wall_velocity(3)=boundary_neumann7(velocity_line(:,2),0.e0_real_kind)
+            endif
+          endif
+          rho(i,j,k)=q(i,j,k,1)
+          pressure=rho(i,j,k)*temperature/const2
+          prs(i,j,k)=pressure;tmp(i,j,k)=temperature;vel(i,j,k,:)=wall_velocity
+          q(i,j,k,2:4)=rho(i,j,k)*wall_velocity
+          q(i,j,k,5)=pressure*const6+0.5e0_real_kind*rho(i,j,k)*sum(wall_velocity**2)
+        enddo
+      enddo
+    enddo
+  end subroutine apply_high_order_wall_state
+
+  subroutine apply_high_order_wall_rhs()
+    implicit none
+    integer :: side,j,i,k,s,target,axis,offset,point(3),component
+    real(real_kind) :: flux(0:7),orientation,temperature,density_rhs,thermal_rate(7),wall_rate
+    real(real_kind) :: velocity_rate(7,2),wall_velocity(3),wall_velocity_rate(3),momentum_divergence
+    real(real_kind) :: weights(3),forward,backward,local_density_rhs,local_momentum_rhs
+    if(.not.high_order_wall_enabled) return
+    if(high_order_wall_axis/=2) then
+      call apply_high_order_other_wall(.true.)
+      return
+    endif
+    do side=1,2
+      if(side==1.and.jrk/=0) cycle
+      if(side==2.and.jrk/=jrkm) cycle
+      j=0;orientation=1.e0_real_kind
+      if(side==2) then
+        j=jm;orientation=-1.e0_real_kind
+      endif
+      if(.not.high_order_adiabatic_wall_enabled) temperature=twall(side+2)
+      do k=0,km
+        do i=0,im
+          do s=0,7
+            target=s
+            if(side==2) target=jm-s
+            flux(s)=jacob(i,target,k)*q(i,target,k,3)*dxi(i,target,k,2,2)
+          enddo
+          density_rhs=qrhs(i,j,k,1)-orientation*boundary_derivative6(flux,0)
+          if(high_order_slip_wall_enabled) then
+            weights=[0.75e0_real_kind,-0.15e0_real_kind,num1d60]
+            do axis=1,3,2
+              momentum_divergence=0.e0_real_kind
+              do offset=1,3
+                point=[i,j,k];point(axis)=point(axis)+offset
+                forward=jacob(point(1),point(2),point(3))*q(point(1),point(2),point(3),axis+1)* &
+                  dxi(point(1),point(2),point(3),axis,axis)
+                point(axis)=point(axis)-2*offset
+                backward=jacob(point(1),point(2),point(3))*q(point(1),point(2),point(3),axis+1)* &
+                  dxi(point(1),point(2),point(3),axis,axis)
+                momentum_divergence=momentum_divergence+weights(offset)*(forward-backward)
+              enddo
+              density_rhs=density_rhs-momentum_divergence
+            enddo
+          endif
+          wall_rate=0.e0_real_kind
+          wall_velocity=0.e0_real_kind;wall_velocity_rate=0.e0_real_kind
+          if(high_order_adiabatic_wall_enabled) then
+            temperature=boundary_temperature5(q(i,j,k,1:5),const2,const6)
+            do s=1,7
+              target=j+int(orientation)*s
+              thermal_rate(s)=boundary_temperature_rhs5(q(i,target,k,1:5), &
+                qrhs(i,target,k,1:5)/jacob(i,target,k),const2,const6)
+              if(high_order_slip_wall_enabled) then
+                local_density_rhs=qrhs(i,target,k,1)/jacob(i,target,k)
+                do component=1,2
+                  axis=2*component
+                  local_momentum_rhs=qrhs(i,target,k,axis)/jacob(i,target,k)
+                  velocity_rate(s,component)=(local_momentum_rhs- &
+                    q(i,target,k,axis)/q(i,target,k,1)*local_density_rhs)/q(i,target,k,1)
+                enddo
+              endif
+            enddo
+            wall_rate=boundary_neumann7(thermal_rate,0.e0_real_kind)
+            if(high_order_slip_wall_enabled) then
+              wall_velocity=q(i,j,k,2:4)/q(i,j,k,1)
+              wall_velocity_rate(1)=boundary_neumann7(velocity_rate(:,1),0.e0_real_kind)
+              wall_velocity_rate(3)=boundary_neumann7(velocity_rate(:,2),0.e0_real_kind)
+            endif
+          endif
+          qrhs(i,j,k,1)=density_rhs
+          qrhs(i,j,k,2:4)=0.e0_real_kind
+          qrhs(i,j,k,5)=density_rhs*temperature/const2*const6
+          if(high_order_adiabatic_wall_enabled) qrhs(i,j,k,5)= &
+            (temperature*density_rhs+q(i,j,k,1)*wall_rate*jacob(i,j,k))*const6/const2
+          if(high_order_slip_wall_enabled) then
+            qrhs(i,j,k,2:4)=wall_velocity*density_rhs+q(i,j,k,1)*wall_velocity_rate*jacob(i,j,k)
+            qrhs(i,j,k,3)=0.e0_real_kind
+            qrhs(i,j,k,5)=qrhs(i,j,k,5)+0.5e0_real_kind*sum(wall_velocity**2)*density_rhs+ &
+              q(i,j,k,1)*sum(wall_velocity*wall_velocity_rate)*jacob(i,j,k)
+          endif
+        enddo
+      enddo
+    enddo
+  end subroutine apply_high_order_wall_rhs
+
+  subroutine apply_high_order_other_wall(rhs_mode,ndir)
+    logical,intent(in) :: rhs_mode
+    integer,intent(in),optional :: ndir
+    integer :: axis,side,face,node,orientation,a,b,s,point(3),base(3),extent(3),plane(2), &
+      rank_position(3),last_rank(3)
+    real(real_kind) :: state(5,0:7),rates(5,1:7),jacobian(0:7),metric(0:7),result(5),fixed_t,t,p
+    axis=high_order_wall_axis;extent=[im,jm,km]
+    rank_position=[irk,jrk,krk];last_rank=[irkm,jrkm,krkm]
+    plane=[jm,km]
+    if(axis==3) plane=[im,jm]
+    do side=1,2
+      face=2*axis+side-2
+      if(present(ndir)) then
+        if(ndir/=face) cycle
+      endif
+      if(side==1.and.rank_position(axis)/=0) cycle
+      if(side==2.and.rank_position(axis)/=last_rank(axis)) cycle
+      node=0;orientation=1
+      if(side==2) then
+        node=extent(axis);orientation=-1
+      endif
+      fixed_t=0.e0_real_kind
+      if(.not.high_order_adiabatic_wall_enabled) fixed_t=twall(face)
+      do b=0,plane(2)
+      do a=0,plane(1)
+        base=[node,a,b]
+        if(axis==3) base=[a,b,node]
+        rates=0.e0_real_kind
+        do s=0,7
+          point=base;point(axis)=node+orientation*s
+          state(:,s)=q(point(1),point(2),point(3),1:5)
+          jacobian(s)=jacob(point(1),point(2),point(3))
+          metric(s)=dxi(point(1),point(2),point(3),axis,axis)
+          if(rhs_mode.and.s>0.and.high_order_adiabatic_wall_enabled) &
+            rates(:,s)=qrhs(point(1),point(2),point(3),1:5)/jacobian(s)
+        enddo
+        if(rhs_mode) then
+          call boundary_noslip_rhs7(state,rates,jacobian,metric,axis,orientation,fixed_t,const2,const6, &
+            high_order_adiabatic_wall_enabled,qrhs(base(1),base(2),base(3),1),result)
+          qrhs(base(1),base(2),base(3),1:5)=result
+        else
+          t=boundary_wall_temperature7(state,fixed_t,const2,const6,high_order_adiabatic_wall_enabled)
+          p=state(1,0)*t/const2
+          rho(base(1),base(2),base(3))=state(1,0)
+          prs(base(1),base(2),base(3))=p;tmp(base(1),base(2),base(3))=t
+          vel(base(1),base(2),base(3),:)=0.e0_real_kind
+          q(base(1),base(2),base(3),2:4)=0.e0_real_kind
+          q(base(1),base(2),base(3),5)=p*const6
+        endif
+      enddo
+      enddo
+    enddo
+  end subroutine apply_high_order_other_wall
 
   subroutine configure_profile_inflow
     implicit none
@@ -1056,7 +1317,7 @@ module bc
           dxi(i,jm+1:jm+4,k,3,1)=gradextrp(qbou=dxi(i,jm,k,3,1),q1st=dxi(i,jm-1,k,3,1))
           dxi(i,jm+1:jm+4,k,3,2)=gradextrp(qbou=dxi(i,jm,k,3,2),q1st=dxi(i,jm-1,k,3,2))
           dxi(i,jm+1:jm+4,k,3,3)=gradextrp(qbou=dxi(i,jm,k,3,3),q1st=dxi(i,jm-1,k,3,3))
-          jacob(1,jm+1:jm+4,k)  =gradextrp(qbou=jacob(i,jm,k),  q1st=jacob(i,jm-1,k))
+          jacob(i,jm+1:jm+4,k)  =gradextrp(qbou=jacob(i,jm,k),  q1st=jacob(i,jm-1,k))
           !
         enddo
         enddo
@@ -7508,6 +7769,10 @@ module bc
     real(real_kind) :: xtran
     !
     beta1=0.075e0_real_kind
+    if(high_order_wall_enabled.and.(ndir==2*high_order_wall_axis-1.or.ndir==2*high_order_wall_axis)) then
+      call apply_high_order_wall_state(ndir)
+      return
+    endif
     !
     if(ndir==1) then
 
@@ -7883,6 +8148,11 @@ module bc
     real(real_kind) :: vwall(0:im,0:km)
     !
     beta1=0.075e0_real_kind
+
+    if(high_order_wall_enabled.and.(ndir==2*high_order_wall_axis-1.or.ndir==2*high_order_wall_axis)) then
+      call apply_high_order_wall_state(ndir)
+      return
+    endif
 
     call configure_wall_blowing
     if(ndims==3 .and. abs(wall_blowing_amplitude)>1.e-10_real_kind) then
@@ -8271,6 +8541,10 @@ module bc
     real(real_kind) :: vwall(0:im,0:km)
     !
     beta1=0.075e0_real_kind
+    if(high_order_slip_wall_enabled.and.(ndir==3.or.ndir==4)) then
+      call apply_high_order_wall_state(ndir)
+      return
+    endif
     !
     if(ndir==3) then
       !

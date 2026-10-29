@@ -354,7 +354,7 @@ module derivative
       
       use constdef
       use commvar, only : hm
-      use boundary_high_order, only: high_order_boundary_enabled,boundary_derivative6
+      use boundary_high_order, only: high_order_boundary_enabled,high_order_wall_enabled,boundary_derivative6
 
       integer,intent(in) :: dim,ntype
       real(real_kind),intent(in) :: vin(-hm:dim+hm)
@@ -364,7 +364,7 @@ module derivative
       integer :: i,j
       real(real_kind) :: line(0:7)
 
-      if(high_order_boundary_enabled) then
+      if(high_order_boundary_enabled.or.high_order_wall_enabled) then
         do i=0,dim
           if((ntype==1.or.ntype==4).and.i<3) then
             vout(i)=boundary_derivative6(vin(0:7),i)

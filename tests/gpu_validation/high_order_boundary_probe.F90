@@ -2,10 +2,42 @@
 module high_order_boundary_probe_launch
   use astr_precision, only: real_kind
   use boundary_high_order_gpu, only: boundary_derivative6,boundary_neumann7, &
-    boundary_mp_flux6,boundary_filter6,boundary_incoming_rate7
+    boundary_mp_flux6,boundary_filter6,boundary_incoming_rate7, &
+    boundary_hermite_pressure7,boundary_pressure_gradient7,boundary_temperature5,boundary_temperature_rhs5, &
+    boundary_pressure_neumann6
   use cudafor
   implicit none
 contains
+  attributes(global) subroutine evaluate_wall_temperature(state,rhs,result)
+    real(real_kind),device :: state(5,8),rhs(5,8),result(2,8)
+    integer :: p
+    p=threadIdx%x
+    if(p>8) return
+    result(1,p)=boundary_temperature5(state(:,p),0.126e0_real_kind,2.5e0_real_kind)
+    result(2,p)=boundary_temperature_rhs5(state(:,p),rhs(:,p),0.126e0_real_kind,2.5e0_real_kind)
+  end subroutine evaluate_wall_temperature
+
+  attributes(global) subroutine evaluate_wall_pressure(f,slope,ghost,gradient)
+    real(real_kind),device :: f(0:6,0:7),slope(0:7),ghost(3,0:7),gradient(0:2,0:7)
+    integer :: p,j
+    p=threadIdx%x-1
+    if(p>7) return
+    do j=1,3
+      ghost(j,p)=boundary_hermite_pressure7(f(:,p),j,slope(p))
+      gradient(j-1,p)=boundary_pressure_gradient7(f(:,p),j-1,slope(p))
+    enddo
+  end subroutine evaluate_wall_pressure
+
+  attributes(global) subroutine evaluate_wall_pressure6(f,slope,gradient)
+    real(real_kind),device :: f(0:6,0:7),slope(0:7),gradient(0:2,0:7)
+    integer :: p,row
+    p=threadIdx%x-1
+    if(p>7) return
+    do row=0,2
+      gradient(row,p)=boundary_pressure_neumann6(f(0:5,p),row,slope(p))
+    enddo
+  end subroutine evaluate_wall_pressure6
+
   attributes(global) subroutine differentiate(f,df,n,h)
     integer,value :: n
     real(real_kind),value :: h
@@ -65,9 +97,11 @@ program high_order_boundary_probe
   use astr_precision, only: real_kind
   use boundary_high_order, only: boundary_derivative6,boundary_neumann7, &
     boundary_derivative6_weights,boundary_neumann7_weights,boundary_mp_flux6, &
-    boundary_filter6,boundary_incoming_rate7
+    boundary_filter6,boundary_incoming_rate7,boundary_hermite_pressure7,boundary_pressure_gradient7, &
+    boundary_temperature5,boundary_temperature_rhs5,boundary_pressure_neumann6
 #ifdef TEST_CUDA
-  use high_order_boundary_probe_launch, only: differentiate,reconstruct_neumann,evaluate_candidates
+  use high_order_boundary_probe_launch, only: differentiate,reconstruct_neumann,evaluate_candidates,evaluate_wall_pressure
+  use high_order_boundary_probe_launch, only: evaluate_wall_temperature,evaluate_wall_pressure6
   use cudafor
 #endif
   implicit none
@@ -79,10 +113,14 @@ program high_order_boundary_probe
     wall_slopes(0:7),wall_values(0:7),slope,orders(2),errors(3),backend_error
   real(real_kind),allocatable :: f(:),df(:),metric(:),mu(:),flux(:),result(:),reference(:),actual(:)
   integer :: row,p,j,n,k
+  real(real_kind) :: pressure_data(0:6,0:7),pressure_slope(0:7),pressure_ghost(3,0:7), &
+    pressure_gradient(0:2,0:7),pressure_actual_ghost(3,0:7),pressure_actual_gradient(0:2,0:7)
   real(real_kind) :: samples(0:7,10),primitive(5,0:7,10),test_lambda(5,10),rhs(5,10), &
     lodi(5,10),candidate_flux(0:2,0:1,10),filtered(0:2,10),rates(5,10),expected_rates(5,10), &
     pinv(5,5),linear(5),quadratic(5),gradient(5),dq(5),source(5),un(10),css
   integer :: icase,wind,m
+  real(real_kind) :: thermal_state(5,8),thermal_rhs(5,8),thermal_result(2,8),thermal_expected(2,8), &
+    thermal_rho,thermal_vel(3),thermal_dvel(3),thermal_t,thermal_cv
 #ifdef TEST_CUDA
   real(real_kind),allocatable,device :: f_d(:),df_d(:)
   real(real_kind),device :: wall_data_d(1:7,0:7),wall_slopes_d(0:7),wall_values_d(0:7)
@@ -90,9 +128,90 @@ program high_order_boundary_probe
   real(real_kind),device :: samples_d(0:7,10),primitive_d(5,0:7,10),lambda_d(5,10),rhs_d(5,10), &
     lodi_d(5,10),candidate_flux_d(0:2,0:1,10),filtered_d(0:2,10),rates_d(5,10)
   real(real_kind) :: flux_actual(0:2,0:1,10),filter_actual(0:2,10),rates_actual(5,10)
+  real(real_kind),device :: pressure_data_d(0:6,0:7),pressure_slope_d(0:7), &
+    pressure_ghost_d(3,0:7),pressure_gradient_d(0:2,0:7)
+  real(real_kind),device :: thermal_state_d(5,8),thermal_rhs_d(5,8),thermal_result_d(2,8)
 #endif
   if(precision(1.e0_real_kind)<15) error stop 'HB probe requires FP64'
   backend_error=0.e0_real_kind
+  thermal_cv=2.5e0_real_kind/0.126e0_real_kind
+  thermal_dvel=[0.07e0_real_kind,-0.03e0_real_kind,0.02e0_real_kind]
+  do p=1,8
+    z=real(p-1,real_kind)/10
+    thermal_rho=1.2e0_real_kind+0.3e0_real_kind*z
+    thermal_vel=[0.2e0_real_kind,0.1e0_real_kind,-0.15e0_real_kind]+thermal_dvel*z
+    thermal_t=1.4e0_real_kind-0.04e0_real_kind*z
+    thermal_state(1,p)=thermal_rho
+    thermal_state(2:4,p)=thermal_rho*thermal_vel
+    thermal_state(5,p)=thermal_rho*(thermal_cv*thermal_t+0.5e0_real_kind*sum(thermal_vel**2))
+    thermal_rhs(1,p)=0.3e0_real_kind
+    thermal_rhs(2:4,p)=0.3e0_real_kind*thermal_vel+thermal_rho*thermal_dvel
+    thermal_rhs(5,p)=0.3e0_real_kind*thermal_state(5,p)/thermal_rho+ &
+      thermal_rho*(-0.04e0_real_kind*thermal_cv+sum(thermal_vel*thermal_dvel))
+    thermal_result(1,p)=boundary_temperature5(thermal_state(:,p),0.126e0_real_kind,2.5e0_real_kind)
+    thermal_result(2,p)=boundary_temperature_rhs5(thermal_state(:,p),thermal_rhs(:,p), &
+      0.126e0_real_kind,2.5e0_real_kind)
+    thermal_expected(:,p)=[thermal_t,-0.04e0_real_kind]
+  enddo
+  error=maxval(abs(thermal_result-thermal_expected))
+  if(error>2.e-13_real_kind) error stop 'HB wall temperature chain rule failed'
+#ifdef TEST_CUDA
+  thermal_state_d=thermal_state;thermal_rhs_d=thermal_rhs
+  call evaluate_wall_temperature<<<1,8>>>(thermal_state_d,thermal_rhs_d,thermal_result_d)
+  status=cudaDeviceSynchronize()
+  if(status/=0) error stop 'HB wall temperature chain rule CUDA launch failed'
+  thermal_result=thermal_result_d
+  backend_error=max(backend_error,maxval(abs(thermal_result-thermal_expected)))
+#endif
+  write(*,'(a,es25.17)') 'HB_TEMPERATURE_RATE_ERROR ',error
+  error=0.e0_real_kind
+  do p=0,7
+    do j=0,6
+      pressure_data(j,p)=(real(j,real_kind)/7.e0_real_kind)**p
+    enddo
+    pressure_slope(p)=0.e0_real_kind
+    if(p==1) pressure_slope(p)=1.e0_real_kind/7
+    do j=1,3
+      pressure_ghost(j,p)=boundary_hermite_pressure7(pressure_data(:,p),j,pressure_slope(p))
+      error=max(error,abs(pressure_ghost(j,p)-(real(-j,real_kind)/7)**p))
+    enddo
+    do row=0,2
+      pressure_gradient(row,p)=boundary_pressure_gradient7(pressure_data(:,p),row,pressure_slope(p))
+      expected=0.e0_real_kind
+      if(p>0) expected=real(p,real_kind)*(real(row,real_kind)/7)**(p-1)/7
+      if(p==7) expected=expected+36.e0_real_kind/(7.e0_real_kind**7)
+      error=max(error,abs(pressure_gradient(row,p)-expected))
+    enddo
+  enddo
+  if(error>2.e-12_real_kind) error stop 'HB Hermite pressure polynomial failed'
+#ifdef TEST_CUDA
+  pressure_data_d=pressure_data;pressure_slope_d=pressure_slope
+  call evaluate_wall_pressure<<<1,8>>>(pressure_data_d,pressure_slope_d,pressure_ghost_d,pressure_gradient_d)
+  status=cudaDeviceSynchronize()
+  if(status/=0) error stop 'HB Hermite pressure CUDA launch failed'
+  pressure_actual_ghost=pressure_ghost_d;pressure_actual_gradient=pressure_gradient_d
+  backend_error=max(backend_error,maxval(abs(pressure_actual_ghost-pressure_ghost)), &
+    maxval(abs(pressure_actual_gradient-pressure_gradient)))
+#endif
+  write(*,'(a,es25.17)') 'HB_HERMITE_PRESSURE_ERROR ',error
+  error=0.e0_real_kind
+  do p=0,7
+    do row=0,2
+      pressure_gradient(row,p)=boundary_pressure_neumann6(pressure_data(0:5,p),row,pressure_slope(p))
+      expected=0.e0_real_kind
+      if(p>0) expected=real(p,real_kind)*(real(row,real_kind)/7)**(p-1)/7
+      if(p<=6) error=max(error,abs(pressure_gradient(row,p)-expected))
+    enddo
+  enddo
+#ifdef TEST_CUDA
+  call evaluate_wall_pressure6<<<1,8>>>(pressure_data_d,pressure_slope_d,pressure_gradient_d)
+  status=cudaDeviceSynchronize()
+  if(status/=0) error stop 'HB P6 pressure CUDA launch failed'
+  pressure_actual_gradient=pressure_gradient_d
+  error=max(error,maxval(abs(pressure_actual_gradient-pressure_gradient)))
+#endif
+  if(error>2.e-12_real_kind) error stop 'HB P6 pressure polynomial or backend check failed'
+  write(*,'(a,es25.17)') 'HB_PRESSURE6_ERROR ',error
   do row=0,2
     write(*,'(a,i0,8(1x,es25.17))') 'HB_WEIGHTS ',row,boundary_derivative6_weights(:,row)
     do p=0,7

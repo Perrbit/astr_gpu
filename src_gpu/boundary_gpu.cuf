@@ -3,8 +3,10 @@ module boundary_gpu
   use astr_precision_mpi, only: mpi_real_type
   use cudafor
   use boundary_high_order, only: host_high_order_boundary=>high_order_boundary_enabled
-  use boundary_high_order_gpu, only: high_order_boundary_enabled_d,boundary_neumann7, &
-    boundary_filter6,boundary_normal_terms6,boundary_incoming_rate7
+  use boundary_high_order_gpu, only: high_order_boundary_enabled_d,high_order_wall_enabled_d,boundary_neumann7, &
+    boundary_filter6,boundary_normal_terms6,boundary_incoming_rate7,boundary_derivative6, &
+    high_order_adiabatic_wall_enabled_d,high_order_slip_wall_enabled_d,high_order_wall_axis_d, &
+    boundary_temperature5,boundary_temperature_rhs5,boundary_wall_temperature7,boundary_noslip_rhs7
   implicit none
   private :: real_kind,mpi_real_type
   integer,parameter :: GPU_BC_NONE=0, GPU_BC_WALL_ISOTHERMAL_NOSLIP=41, &
@@ -983,7 +985,7 @@ contains
                                                                 twall_down,twall_up, &
                                                                 apply_down,apply_up,preserve_inflow_rhs, &
                                                                 forcing_time)
-    use commarray_gpu, only: prs_d,tmp_d,x_d,bnorm_j0_d
+    use commarray_gpu, only: prs_d,tmp_d,x_d,bnorm_j0_d,q_d
     implicit none
     integer,value :: im,jm,km,hm,apply_down,apply_up,preserve_inflow_rhs
     real(real_kind),value :: const2,const6,twall_down,twall_up,forcing_time
@@ -995,6 +997,20 @@ contains
     if(id >= nplane) return
     i = mod(id,im+1)
     k = id/(im+1)
+
+    if(high_order_wall_enabled_d) then
+      if(apply_down/=0) then
+        rho=q_d(i,0,k,1);prs=rho*twall_down/const2
+        tmp_d(i,0,k)=twall_down
+        call set_q_from_primitive(i,0,k,rho,0.e0_real_kind,0.e0_real_kind,0.e0_real_kind,prs,const6)
+      endif
+      if(apply_up/=0) then
+        rho=q_d(i,jm,k,1);prs=rho*twall_up/const2
+        tmp_d(i,jm,k)=twall_up
+        call set_q_from_primitive(i,jm,k,rho,0.e0_real_kind,0.e0_real_kind,0.e0_real_kind,prs,const6)
+      endif
+      return
+    endif
 
     if(apply_down /= 0) then
       if(high_order_boundary_enabled_d) then
@@ -1025,6 +1041,212 @@ contains
       call set_qrhs_zero(i,jm,k)
     endif
   end subroutine wall_isothermal_noslip_y_kernel
+
+  attributes(global) subroutine high_order_wall_rhs_kernel(im,jm,km,const2,const6,tw_down,tw_up,lower,upper)
+    use commarray_gpu, only: q_d,qrhs_d,jacob_d,dxi_d
+    use constdef, only: num1d60
+    integer,value :: im,jm,km,lower,upper
+    real(real_kind),value :: const2,const6,tw_down,tw_up
+    integer :: id,i,k,side,j,s,target,n,offset,component
+    real(real_kind) :: line(0:7),orientation,temperature,density_rhs,thermal_rate(7),wall_rate
+    real(real_kind) :: local_q(5),local_rhs(5)
+    real(real_kind) :: velocity_rate(7,2),wall_velocity(3),wall_velocity_rate(3),weights(3),forward,backward
+    real(real_kind) :: divergence_x,divergence_z
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=(im+1)*(km+1)) return
+    i=mod(id,im+1);k=id/(im+1)
+    do side=1,2
+      if(side==1.and.lower==0) cycle
+      if(side==2.and.upper==0) cycle
+      j=0;orientation=1.e0_real_kind;temperature=tw_down
+      if(side==2) then
+        j=jm;orientation=-1.e0_real_kind;temperature=tw_up
+      endif
+      do s=0,7
+        target=s
+        if(side==2) target=jm-s
+        line(s)=jacob_d(i,target,k)*q_d(i,target,k,3)*dxi_d(i,target,k,2,2)
+      enddo
+      density_rhs=qrhs_d(i,j,k,1)-orientation*boundary_derivative6(line,0)
+      if(high_order_slip_wall_enabled_d) then
+        weights=[0.75e0_real_kind,-0.15e0_real_kind,num1d60]
+        divergence_x=0.e0_real_kind;divergence_z=0.e0_real_kind
+        do offset=1,3
+          forward=jacob_d(i+offset,j,k)*q_d(i+offset,j,k,2)*dxi_d(i+offset,j,k,1,1)
+          backward=jacob_d(i-offset,j,k)*q_d(i-offset,j,k,2)*dxi_d(i-offset,j,k,1,1)
+          divergence_x=divergence_x+weights(offset)*(forward-backward)
+          forward=jacob_d(i,j,k+offset)*q_d(i,j,k+offset,4)*dxi_d(i,j,k+offset,3,3)
+          backward=jacob_d(i,j,k-offset)*q_d(i,j,k-offset,4)*dxi_d(i,j,k-offset,3,3)
+          divergence_z=divergence_z+weights(offset)*(forward-backward)
+        enddo
+        density_rhs=density_rhs-divergence_x-divergence_z
+      endif
+      wall_rate=0.e0_real_kind
+      wall_velocity=0.e0_real_kind;wall_velocity_rate=0.e0_real_kind
+      if(high_order_adiabatic_wall_enabled_d) then
+        do n=1,5
+          local_q(n)=q_d(i,j,k,n)
+        enddo
+        temperature=boundary_temperature5(local_q,const2,const6)
+        if(high_order_slip_wall_enabled_d) wall_velocity=local_q(2:4)/local_q(1)
+        do s=1,7
+          target=j+int(orientation)*s
+          do n=1,5
+            local_q(n)=q_d(i,target,k,n)
+            local_rhs(n)=qrhs_d(i,target,k,n)/jacob_d(i,target,k)
+          enddo
+          thermal_rate(s)=boundary_temperature_rhs5(local_q,local_rhs,const2,const6)
+          if(high_order_slip_wall_enabled_d) then
+            do component=1,2
+              n=2*component
+              velocity_rate(s,component)=(local_rhs(n)-local_q(n)/local_q(1)*local_rhs(1))/local_q(1)
+            enddo
+          endif
+        enddo
+        wall_rate=boundary_neumann7(thermal_rate,0.e0_real_kind)
+        if(high_order_slip_wall_enabled_d) then
+          do s=1,7
+            line(s-1)=velocity_rate(s,1)
+          enddo
+          wall_velocity_rate(1)=boundary_neumann7(line(0:6),0.e0_real_kind)
+          do s=1,7
+            line(s-1)=velocity_rate(s,2)
+          enddo
+          wall_velocity_rate(3)=boundary_neumann7(line(0:6),0.e0_real_kind)
+        endif
+      endif
+      qrhs_d(i,j,k,1)=density_rhs
+      qrhs_d(i,j,k,2:4)=0.e0_real_kind
+      qrhs_d(i,j,k,5)=density_rhs*temperature/const2*const6
+      if(high_order_adiabatic_wall_enabled_d) qrhs_d(i,j,k,5)= &
+        (temperature*density_rhs+q_d(i,j,k,1)*wall_rate*jacob_d(i,j,k))*const6/const2
+      if(high_order_slip_wall_enabled_d) then
+        qrhs_d(i,j,k,2:4)=wall_velocity*density_rhs+q_d(i,j,k,1)*wall_velocity_rate*jacob_d(i,j,k)
+        qrhs_d(i,j,k,3)=0.e0_real_kind
+        qrhs_d(i,j,k,5)=qrhs_d(i,j,k,5)+0.5e0_real_kind*sum(wall_velocity**2)*density_rhs+ &
+          q_d(i,j,k,1)*sum(wall_velocity*wall_velocity_rate)*jacob_d(i,j,k)
+      endif
+    enddo
+  end subroutine high_order_wall_rhs_kernel
+
+  subroutine apply_high_order_wall_rhs_gpu()
+    use boundary_high_order, only: high_order_wall_enabled,high_order_adiabatic_wall_enabled,high_order_wall_axis
+    use commvar, only: im,jm,km,const2,const6
+    use bc, only: twall
+    use gpu_check, only: sync_after_kernel
+    type(dim3) :: block,grid
+    integer :: lower,upper,axis,nodes
+    real(real_kind) :: wall_temperature(2)
+    if(.not.high_order_wall_enabled) return
+    wall_temperature=0.e0_real_kind
+    axis=high_order_wall_axis
+    if(.not.high_order_adiabatic_wall_enabled) wall_temperature=twall(2*axis-1:2*axis)
+    if(axis/=2) then
+      call gpu_physical_boundary_apply_mask(axis,lower,upper)
+      nodes=(jm+1)*(km+1)
+      if(axis==3) nodes=(im+1)*(jm+1)
+      call high_order_other_wall_kernel<<<(nodes+255)/256,256>>>(im,jm,km,axis,const2,const6, &
+        wall_temperature(1),wall_temperature(2),lower,upper,.true.)
+      call sync_after_kernel('high_order_other_wall_rhs')
+      return
+    endif
+    call gpu_physical_boundary_apply_mask(2,lower,upper)
+    block=dim3(256,1,1);grid=dim3(((im+1)*(km+1)+255)/256,1,1)
+    call high_order_wall_rhs_kernel<<<grid,block>>>(im,jm,km,const2,const6, &
+      wall_temperature(1),wall_temperature(2),lower,upper)
+    call sync_after_kernel('high_order_wall_rhs_kernel')
+  end subroutine apply_high_order_wall_rhs_gpu
+
+  subroutine apply_high_order_wall_state_gpu()
+    use boundary_high_order, only: high_order_wall_enabled,high_order_adiabatic_wall_enabled,high_order_wall_axis
+    use commvar, only: im,jm,km,hm,const2,const6,time
+    use bc, only: twall
+    use gpu_check, only: sync_after_kernel
+    type(dim3) :: block,grid
+    integer :: lower,upper,axis,nodes
+    real(real_kind) :: wall_temperature(2)
+    if(.not.high_order_wall_enabled) return
+    axis=high_order_wall_axis
+    if(axis/=2) then
+      wall_temperature=0.e0_real_kind
+      if(.not.high_order_adiabatic_wall_enabled) wall_temperature=twall(2*axis-1:2*axis)
+      call gpu_physical_boundary_apply_mask(axis,lower,upper)
+      nodes=(jm+1)*(km+1)
+      if(axis==3) nodes=(im+1)*(jm+1)
+      call high_order_other_wall_kernel<<<(nodes+255)/256,256>>>(im,jm,km,axis,const2,const6, &
+        wall_temperature(1),wall_temperature(2),lower,upper,.false.)
+      call sync_after_kernel('high_order_other_wall_state')
+      return
+    endif
+    call gpu_physical_boundary_apply_mask(2,lower,upper)
+    block=dim3(256,1,1);grid=dim3(((im+1)*(km+1)+255)/256,1,1)
+    if(high_order_adiabatic_wall_enabled) then
+      call high_order_projected_wall_y_kernel<<<grid,block>>>(im,jm,km,const2,const6,lower,upper)
+    else
+      call wall_isothermal_noslip_y_kernel<<<grid,block>>>(im,jm,km,hm,const2,const6, &
+        twall(3),twall(4),lower,upper,0,time)
+    endif
+    call sync_after_kernel('high_order_wall_state_kernel')
+  end subroutine apply_high_order_wall_state_gpu
+
+  attributes(global) subroutine high_order_other_wall_kernel(im,jm,km,axis,const2,const6,t_down,t_up,lower,upper,rhs_mode)
+    use commarray_gpu, only: q_d,qrhs_d,jacob_d,dxi_d,tmp_d
+    integer,value :: im,jm,km,axis,lower,upper
+    logical,value :: rhs_mode
+    real(real_kind),value :: const2,const6,t_down,t_up
+    integer :: node,nodes,side,wall,orientation,i,j,k,s,m,target
+    real(real_kind) :: state(5,0:7),rates(5,1:7),jacobian(0:7),metric(0:7),result(5),fixed_t,t,source
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    nodes=(jm+1)*(km+1)
+    if(axis==3) nodes=(im+1)*(jm+1)
+    if(node>=nodes) return
+    do side=1,2
+      if(side==1.and.lower==0) cycle
+      if(side==2.and.upper==0) cycle
+      wall=0;orientation=1;fixed_t=t_down
+      if(side==2) then
+        wall=im;orientation=-1;fixed_t=t_up
+        if(axis==3) wall=km
+      endif
+      if(axis==1) then
+        i=wall;j=mod(node,jm+1);k=node/(jm+1)
+      else
+        i=mod(node,im+1);j=node/(im+1);k=wall
+      endif
+      rates=0.e0_real_kind
+      do s=0,7
+        target=wall+orientation*s
+        if(axis==1) then
+          jacobian(s)=jacob_d(target,j,k);metric(s)=dxi_d(target,j,k,1,1)
+          do m=1,5
+            state(m,s)=q_d(target,j,k,m)
+            if(rhs_mode.and.s>0.and.high_order_adiabatic_wall_enabled_d) &
+              rates(m,s)=qrhs_d(target,j,k,m)/jacobian(s)
+          enddo
+        else
+          jacobian(s)=jacob_d(i,j,target);metric(s)=dxi_d(i,j,target,3,3)
+          do m=1,5
+            state(m,s)=q_d(i,j,target,m)
+            if(rhs_mode.and.s>0.and.high_order_adiabatic_wall_enabled_d) &
+              rates(m,s)=qrhs_d(i,j,target,m)/jacobian(s)
+          enddo
+        endif
+      enddo
+      if(rhs_mode) then
+        source=qrhs_d(i,j,k,1)
+        call boundary_noslip_rhs7(state,rates,jacobian,metric,axis,orientation,fixed_t,const2,const6, &
+          high_order_adiabatic_wall_enabled_d,source,result)
+        do m=1,5
+          qrhs_d(i,j,k,m)=result(m)
+        enddo
+      else
+        t=boundary_wall_temperature7(state,fixed_t,const2,const6,high_order_adiabatic_wall_enabled_d)
+        tmp_d(i,j,k)=t
+        call set_q_from_primitive(i,j,k,state(1,0),0.e0_real_kind,0.e0_real_kind,0.e0_real_kind, &
+          state(1,0)*t/const2,const6)
+      endif
+    enddo
+  end subroutine high_order_other_wall_kernel
 
   attributes(global) subroutine ldc_top_lid_y_kernel(im,jm,km,hm,const2,const6,apply_up)
     use commarray_gpu, only: prs_d,tmp_d
@@ -1097,6 +1319,12 @@ contains
     i = mod(id,im+1)
     k = id/(im+1)
 
+    if(high_order_adiabatic_wall_enabled_d) then
+      if(apply_down/=0) call set_high_order_projected_wall_state(i,0,k,1,const2,const6)
+      if(apply_up/=0) call set_high_order_projected_wall_state(i,jm,k,-1,const2,const6)
+      return
+    endif
+
     if(apply_down /= 0) then
       prs = extrap2(prs_d(i,1,k),prs_d(i,2,k))
       tmp = extrap2(tmp_d(i,1,k),tmp_d(i,2,k))
@@ -1118,6 +1346,51 @@ contains
       call set_qrhs_zero(i,jm,k)
     endif
   end subroutine wall_adiabatic_noslip_y_kernel
+
+  attributes(global) subroutine high_order_projected_wall_y_kernel(im,jm,km,const2,const6,lower,upper)
+    integer,value :: im,jm,km,lower,upper
+    real(real_kind),value :: const2,const6
+    integer :: node,i,k
+    node=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(node>=(im+1)*(km+1)) return
+    i=mod(node,im+1);k=node/(im+1)
+    if(lower/=0) call set_high_order_projected_wall_state(i,0,k,1,const2,const6)
+    if(upper/=0) call set_high_order_projected_wall_state(i,jm,k,-1,const2,const6)
+  end subroutine high_order_projected_wall_y_kernel
+
+  attributes(device) subroutine set_high_order_projected_wall_state(i,j,k,side,const2,const6)
+    use commarray_gpu, only: q_d,tmp_d
+    integer,value :: i,j,k,side
+    real(real_kind),value :: const2,const6
+    real(real_kind) :: line(7),local_q(5),temperature,rho,velocity_line(7,2),wall_velocity(3)
+    integer :: s,n
+    do s=1,7
+      do n=1,5
+        local_q(n)=q_d(i,j+side*s,k,n)
+      enddo
+      line(s)=boundary_temperature5(local_q,const2,const6)
+      if(high_order_slip_wall_enabled_d) then
+        velocity_line(s,1)=local_q(2)/local_q(1)
+        velocity_line(s,2)=local_q(4)/local_q(1)
+      endif
+    enddo
+    temperature=boundary_neumann7(line,0.e0_real_kind)
+    rho=q_d(i,j,k,1)
+    wall_velocity=0.e0_real_kind
+    if(high_order_slip_wall_enabled_d) then
+      do s=1,7
+        line(s)=velocity_line(s,1)
+      enddo
+      wall_velocity(1)=boundary_neumann7(line,0.e0_real_kind)
+      do s=1,7
+        line(s)=velocity_line(s,2)
+      enddo
+      wall_velocity(3)=boundary_neumann7(line,0.e0_real_kind)
+    endif
+    tmp_d(i,j,k)=temperature
+    call set_q_from_primitive(i,j,k,rho,wall_velocity(1),0.e0_real_kind,wall_velocity(3), &
+      rho*temperature/const2,const6)
+  end subroutine set_high_order_projected_wall_state
 
   attributes(global) subroutine wall_slip_isothermal_y_kernel(im,jm,km,hm,const2,const6, &
                                                               xslip,twall_down,twall_up, &
@@ -1183,6 +1456,12 @@ contains
     if(id >= nplane) return
     i = mod(id,im+1)
     k = id/(im+1)
+
+    if(high_order_slip_wall_enabled_d) then
+      if(apply_down/=0) call set_high_order_projected_wall_state(i,0,k,1,const2,const6)
+      if(apply_up/=0) call set_high_order_projected_wall_state(i,jm,k,-1,const2,const6)
+      return
+    endif
 
     if(apply_down /= 0) then
       prs = extrap2(prs_d(i,1,k),prs_d(i,2,k))
@@ -2929,12 +3208,18 @@ contains
   end subroutine
 
   subroutine apply_boundary_conditions_gpu()
+    use boundary_high_order, only: high_order_wall_enabled,high_order_wall_axis
     use commvar, only: im,jm,km,hm,const2,const6,uinf,vinf,winf,pinf,gamma,mach,time
     use bc, only: twall,xslip,pout
     use gpu_check, only: sync_after_kernel
     implicit none
     type(dim3) :: block,grid
     integer :: n,axis,kind,lower_kind,upper_kind,apply_lower,apply_upper
+
+    if(high_order_wall_enabled.and.high_order_wall_axis/=2) then
+      call apply_high_order_wall_state_gpu()
+      return
+    endif
 
     axis = gpu_physical_boundary_axis()
     kind = gpu_physical_boundary_kind()

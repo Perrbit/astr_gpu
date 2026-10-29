@@ -9,8 +9,9 @@ module solver
   use astr_precision, only: real_kind,clock_kind
   !
   use constdef
-  use boundary_high_order, only: high_order_boundary_enabled, &
-    boundary_mp_flux6,boundary_interface_position
+  use boundary_high_order, only: high_order_boundary_enabled,high_order_wall_enabled,high_order_wall_axis, &
+    boundary_mp_flux6,boundary_interface_position,boundary_derivative6,boundary_pressure_gradient7, &
+    boundary_pressure_neumann6,high_order_adiabatic_wall_enabled
   use parallel, only : mpirankname,mpistop,mpirank,lio,dataswap,       &
                        datasync,ptime,irk,jrk,krk,irkm,jrkm,krkm
   use commvar,  only : ndims,ks,ke,hm,lfftk,ctime,nondimen,lreport,    &
@@ -302,7 +303,8 @@ module solver
     use validation_io, only: write_rhs_validation_snapshot
     use bc, only: nscbc_farfield_viscous_source_enabled,              &
                   capture_nscbc_farfield_y_upper_prediff_rhs,         &
-                  apply_nscbc_farfield_y_upper_viscous_source,apply_nscbc_incident_complete_rhs
+                  apply_nscbc_farfield_y_upper_viscous_source,apply_nscbc_incident_complete_rhs, &
+                  apply_high_order_wall_rhs
     !
     ! arguments
     logical,intent(in),optional :: timerept
@@ -396,7 +398,7 @@ module solver
     endif
     if(nscbc_farfield_viscous_source_enabled())                       &
       call apply_nscbc_farfield_y_upper_viscous_source()
-    if(.not.high_order_boundary_enabled) call write_rhs_validation_snapshot('full')
+    if(.not.(high_order_boundary_enabled.or.high_order_wall_enabled)) call write_rhs_validation_snapshot('full')
     !
     if(trim(flowtype)=='channel') then 
       if(lihomo) call src_chan
@@ -407,8 +409,9 @@ module solver
     endif
     !
     call udf_src
+    call apply_high_order_wall_rhs()
     call apply_nscbc_incident_complete_rhs()
-    if(high_order_boundary_enabled) call write_rhs_validation_snapshot('full')
+    if(high_order_boundary_enabled.or.high_order_wall_enabled) call write_rhs_validation_snapshot('full')
     !
 #ifdef COMB
     call srccomb(timerept=ltimrpt)
@@ -2554,6 +2557,8 @@ module solver
     !
     ! local data
     integer :: i,j,k,jspc,jmod,n
+    integer :: side,row,s,target
+    real(real_kind) :: pressure_line(0:7),orientation,pressure_gradient
     real(real_kind),allocatable :: fcs(:,:),dfcs(:,:),uu(:)
     !
     real(clock_kind) :: time_beg
@@ -2601,6 +2606,29 @@ module solver
       do n=1,numq
         dfcs(:,n)=fds%central(fds_compact_i,fcs(:,n),dim=im)
       enddo
+      if(high_order_wall_enabled.and.high_order_wall_axis==1) then
+        do side=1,2
+          if(side==1.and..not.(npdci==1.or.npdci==4)) cycle
+          if(side==2.and..not.(npdci==2.or.npdci==4)) cycle
+          orientation=1.e0_real_kind
+          if(side==2) orientation=-1.e0_real_kind
+          do s=0,7
+            target=s
+            if(side==2) target=im-s
+            pressure_line(s)=jacob(target,j,k)*(dxi(target,j,k,1,1)*prs(target,j,k))
+          enddo
+          do row=1,2
+            target=row
+            if(side==2) target=im-row
+            if(high_order_adiabatic_wall_enabled) then
+              pressure_gradient=boundary_pressure_neumann6(pressure_line(0:5),row,0.e0_real_kind)
+            else
+              pressure_gradient=boundary_pressure_gradient7(pressure_line(0:6),row,0.e0_real_kind)
+            endif
+            dfcs(target,2)=dfcs(target,2)+orientation*(pressure_gradient-boundary_derivative6(pressure_line,row))
+          enddo
+        enddo
+      endif
       !
       qrhs(is:ie,j,k,:)=qrhs(is:ie,j,k,:)+dfcs(is:ie,:) 
       !
@@ -2644,6 +2672,29 @@ module solver
         do n=1,numq
           dfcs(:,n)=fds%central(fds_compact_j,fcs(:,n),dim=jm)
         enddo
+        if(high_order_wall_enabled.and.high_order_wall_axis==2) then
+          do side=1,2
+            if(side==1.and..not.(npdcj==1.or.npdcj==4)) cycle
+            if(side==2.and..not.(npdcj==2.or.npdcj==4)) cycle
+            orientation=1.e0_real_kind
+            if(side==2) orientation=-1.e0_real_kind
+            do s=0,7
+              target=s
+              if(side==2) target=jm-s
+              pressure_line(s)=jacob(i,target,k)*(dxi(i,target,k,2,2)*prs(i,target,k))
+            enddo
+            do row=1,2
+              target=row
+              if(side==2) target=jm-row
+              if(high_order_adiabatic_wall_enabled) then
+                pressure_gradient=boundary_pressure_neumann6(pressure_line(0:5),row,0.e0_real_kind)
+              else
+                pressure_gradient=boundary_pressure_gradient7(pressure_line(0:6),row,0.e0_real_kind)
+              endif
+              dfcs(target,3)=dfcs(target,3)+orientation*(pressure_gradient-boundary_derivative6(pressure_line,row))
+            enddo
+          enddo
+        endif
         !
         qrhs(i,js:je,k,:)=qrhs(i,js:je,k,:)+dfcs(js:je,:)
         !
@@ -2690,6 +2741,29 @@ module solver
         do n=1,numq
           dfcs(:,n)=fds%central(fds_compact_k,fcs(:,n),dim=km)
         enddo
+        if(high_order_wall_enabled.and.high_order_wall_axis==3) then
+          do side=1,2
+            if(side==1.and..not.(npdck==1.or.npdck==4)) cycle
+            if(side==2.and..not.(npdck==2.or.npdck==4)) cycle
+            orientation=1.e0_real_kind
+            if(side==2) orientation=-1.e0_real_kind
+            do s=0,7
+              target=s
+              if(side==2) target=km-s
+              pressure_line(s)=jacob(i,j,target)*(dxi(i,j,target,3,3)*prs(i,j,target))
+            enddo
+            do row=1,2
+              target=row
+              if(side==2) target=km-row
+              if(high_order_adiabatic_wall_enabled) then
+                pressure_gradient=boundary_pressure_neumann6(pressure_line(0:5),row,0.e0_real_kind)
+              else
+                pressure_gradient=boundary_pressure_gradient7(pressure_line(0:6),row,0.e0_real_kind)
+              endif
+              dfcs(target,4)=dfcs(target,4)+orientation*(pressure_gradient-boundary_derivative6(pressure_line,row))
+            enddo
+          enddo
+        endif
         !
         qrhs(i,j,ks:ke,:)=qrhs(i,j,ks:ke,:)+dfcs(ks:ke,:)
         !

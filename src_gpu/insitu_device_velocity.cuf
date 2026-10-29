@@ -382,7 +382,7 @@ contains
     call MPI_Allreduce(configuration,minimum,2,MPI_INTEGER,MPI_MIN,comm,ierr)
     call require_snapshot(ierr==MPI_SUCCESS,comm,'transport configuration minimum')
     call MPI_Allreduce(configuration,maximum,2,MPI_INTEGER,MPI_MAX,comm,ierr)
-    call require_snapshot(ierr==MPI_SUCCESS.and.all(minimum==maximum).and.components>=4.and.components<=33, &
+    call require_snapshot(ierr==MPI_SUCCESS.and.all(minimum==maximum).and.components>=4.and.components<=40, &
       comm,'transport periodicity/components agreement')
     call MPI_Comm_size(comm,ranks,ierr)
     valid_neighbors=all(((neighbors>=0).and.(neighbors<ranks)).or. &

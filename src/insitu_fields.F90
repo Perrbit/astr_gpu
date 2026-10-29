@@ -300,6 +300,7 @@ contains
   end subroutine
 
   subroutine capture_channel_walls(coordinates,fields,owned,host_budget,device_budget,reserve,download_bytes)
+    use boundary_high_order, only: high_order_wall_enabled,high_order_adiabatic_wall_enabled,boundary_derivative6
     use iso_fortran_env, only: int64
     use commvar, only: im,jm,km,ia,ja,ka,numq,num_species,use_gpu,flowtype,lreadgrid,nondimen, &
       difschm,const2,const5,const6,reynolds,prandtl
@@ -320,21 +321,28 @@ contains
     integer(int64),intent(out) :: download_bytes
     real(real_kind),allocatable :: state(:,:,:,:),send(:),receive(:)
     real(real_kind),allocatable :: wall_primitive(:,:,:,:)
-    real(real_kind) :: velocity(3,3),temperature(3),pressure(3),rho,mu,metric,du,dt
+    real(real_kind) :: velocity(3,8),temperature(8),pressure(8),rho,mu,metric,du,dt
     real(real_kind) :: first(3),second(3),inward(3),normal(3),tangent(3),gradient(3,3),stress(3,3),dv(3)
     real(real_kind) :: directional(3,3),thermal(3)
     real(real_kind),parameter :: coefficients(3)=[0.75e0_real_kind,-0.15e0_real_kind,1.e0_real_kind/60.e0_real_kind]
-    logical :: frame_ok
+    logical :: frame_ok,curve
     integer :: offset
-    integer :: walls(2),nw,i,k,w,m,j,side,d,c,axis,count,status,ierr,comm
+    integer :: walls(2),nw,i,k,w,m,j,side,d,c,axis,count,status,ierr,comm,nlayers,nc
     integer :: neighbors(2,2),sizes(2)
     integer(int64) :: nodes,bytes
     call require_fields(nonreacting_wall_candidate().and.numq==5.and.num_species==0.and.nondimen.and. &
-      all(bctype==[1,1,41,41,1,1]).and.trim(difschm)=='643e'.and. &
-      max(ia,ja,ka)<=32.and.min(im,km)>=1.and.jm>=2.and.mpisize<=2, &
-      'wall candidate requires bc41 channel or CURVE TGV <=32, NP=1/2 and two local interior layers')
+      (all(bctype==[1,1,41,41,1,1]).or. &
+       (high_order_adiabatic_wall_enabled.and.(all(bctype==[1,1,42,42,1,1]).or. &
+        all(bctype==[1,1,421,421,1,1])))).and.trim(difschm)=='643e'.and. &
+      max(ia,ja,ka)<=merge(128,32,high_order_wall_enabled).and.min(im,km)>=1.and.jm>=2.and.mpisize<=2, &
+      'wall candidate requires admitted channel/CURVE TGV <=32 or H7 channel <=128, NP=1/2')
     call require_fields(all(ieee_is_finite([const2,const5,const6,reynolds,prandtl])).and. &
       min(const2,const5,const6,reynolds,prandtl)>0.e0_real_kind,'invalid wall material constants')
+    nlayers=3
+    if(high_order_wall_enabled) nlayers=8
+    nc=5*nlayers
+    curve=lreadgrid.and..not.high_order_wall_enabled
+    if(high_order_wall_enabled) call require_fields(jm>=7,'high-order wall diagnostics need eight physical nodes')
     nw=0
     if(jg0==0) then
       nw=nw+1; walls(nw)=0
@@ -344,27 +352,27 @@ contains
     endif
     nodes=int(im+1,int64)*(km+1)*nw
     ! Includes endpoint packing/reshape temporaries as well as retained outputs.
-    bytes=nodes*(22*real_bytes+storage_size(.false.)/8)+int(max(im+1,km+1),int64)*nw*15*real_bytes*4
-    if(lreadgrid) bytes=bytes+int(im+7,int64)*(km+7)*nw*4*real_bytes+ &
+    bytes=nodes*((nc+7)*real_bytes+storage_size(.false.)/8)+int(max(im+1,km+1),int64)*nw*nc*real_bytes*4
+    if(curve) bytes=bytes+int(im+7,int64)*(km+7)*nw*4*real_bytes+ &
       int(max(im+1,km+1),int64)*nw*4*3*real_bytes*4
     call require_fields(bytes<=host_budget,'wall host budget')
-    allocate(state(0:im,0:km,nw,15),coordinates(0:im,0:km,nw,3),fields(0:im,0:km,nw,4), &
-      owned(0:im,0:km,nw),send(max(1,max(im+1,km+1)*nw*15)), &
-      receive(max(1,max(im+1,km+1)*nw*15)),stat=status)
+    allocate(state(0:im,0:km,nw,nc),coordinates(0:im,0:km,nw,3),fields(0:im,0:km,nw,4), &
+      owned(0:im,0:km,nw),send(max(1,max(im+1,km+1)*nw*nc)), &
+      receive(max(1,max(im+1,km+1)*nw*nc)),stat=status)
     call require_fields(status==0,'cannot allocate private wall buffers')
     fields=0.e0_real_kind; coordinates=0.e0_real_kind
     download_bytes=0
 #ifdef _CUDA
     if(use_gpu) then
       call download_wall_state_gpu(walls(1:nw),state,device_budget,reserve)
-      download_bytes=nodes*15*real_bytes
+      download_bytes=nodes*nc*real_bytes
     else
 #else
     call require_fields(.not.use_gpu,'wall GPU capture requires CUDA build')
 #endif
       do w=1,nw
         side=1; if(walls(w)==jm) side=-1
-        do m=0,2
+        do m=0,nlayers-1
           j=walls(w)+side*m
           state(:,:,w,5*m+1:5*m+5)=q(0:im,j,0:km,1:5)
         enddo
@@ -380,9 +388,9 @@ contains
       count=0
       if(nw>0) then
         if(axis==1) then
-          count=(km+1)*nw*15; send(1:count)=reshape(state(0,:,:,:),[count])
+          count=(km+1)*nw*nc; send(1:count)=reshape(state(0,:,:,:),[count])
         else
-          count=(im+1)*nw*15; send(1:count)=reshape(state(:,0,:,:),[count])
+          count=(im+1)*nw*nc; send(1:count)=reshape(state(:,0,:,:),[count])
         endif
       endif
       ierr=MPI_SUCCESS
@@ -394,9 +402,9 @@ contains
             receive,count,mpi_real_type,neighbors(2,axis),axis,comm,MPI_STATUS_IGNORE,ierr)
         endif
         if(axis==1) then
-          state(im,:,:,:)=reshape(receive(1:count),[km+1,nw,15])
+          state(im,:,:,:)=reshape(receive(1:count),[km+1,nw,nc])
         else
-          state(:,km,:,:)=reshape(receive(1:count),[im+1,nw,15])
+          state(:,km,:,:)=reshape(receive(1:count),[im+1,nw,nc])
         endif
       endif
       call require_fields(ierr==MPI_SUCCESS,'wall periodic endpoint exchange failed')
@@ -404,7 +412,7 @@ contains
     call MPI_Comm_free(comm,ierr)
     call require_fields(ierr==MPI_SUCCESS,'cannot release wall endpoint communicator')
     call require_fields(all(ieee_is_finite(state)),'nonfinite wall state')
-    if(lreadgrid) call prepare_curve_wall_primitive(state,wall_primitive)
+    if(curve) call prepare_curve_wall_primitive(state,wall_primitive)
     owned=.false.
     owned(0:im-1,0:km-1,:)=.true.
     status=0
@@ -413,7 +421,7 @@ contains
       j=walls(w)
       do k=0,km
       do i=0,im
-        do m=1,3
+        do m=1,nlayers
           c=5*(m-1)
           rho=state(i,k,w,c+1)
           if(rho<=0.e0_real_kind) then
@@ -425,16 +433,20 @@ contains
         enddo
         if(status/=0) cycle
         metric=dxi(i,j,k,2,2)
-        if(.not.all(ieee_is_finite(temperature)).or.minval(temperature)<=0.e0_real_kind.or. &
+        if(.not.all(ieee_is_finite(temperature(1:nlayers))).or.minval(temperature(1:nlayers))<=0.e0_real_kind.or. &
           .not.ieee_is_finite(metric).or.metric<=0.e0_real_kind) then
           status=1; cycle
         endif
         mu=miucal(temperature(1))/reynolds
         du=(-0.5e0_real_kind*velocity(1,3)+2.e0_real_kind*velocity(1,2)-1.5e0_real_kind*velocity(1,1))*metric
         dt=(-0.5e0_real_kind*temperature(3)+2.e0_real_kind*temperature(2)-1.5e0_real_kind*temperature(1))*metric
+        if(high_order_wall_enabled) then
+          du=boundary_derivative6(velocity(1,:),0)*metric
+          dt=boundary_derivative6(temperature,0)*metric
+        endif
         coordinates(i,k,w,:)=x(i,j,k,1:3)
         fields(i,k,w,:)=[pressure(1),mu*du,-((mu/prandtl)/const5)*dt,real(side,real_kind)]
-        if(lreadgrid) then
+        if(curve) then
           first=0.e0_real_kind; second=0.e0_real_kind
           do offset=1,3
             first=first+coefficients(offset)*(x(i+offset,j,k,1:3)-x(i-offset,j,k,1:3))
@@ -476,7 +488,7 @@ contains
     if(use_gpu) call check_device_wall_fields_gpu( &
       coordinates,fields,host_budget,device_budget,reserve)
 #endif
-    if(lreadgrid) call record_curve_wall_integrals(coordinates,fields,walls(1:nw))
+    if(curve) call record_curve_wall_integrals(coordinates,fields,walls(1:nw))
   end subroutine
 
   subroutine record_curve_wall_integrals(coordinates,fields,walls)

@@ -327,7 +327,8 @@ contains
          gpu_nscbc_farfield_y_upper_mach2,apply_nscbc_farfield_y_upper_rhs_gpu, &
          apply_nscbc_farfield_y_upper_nonreflecting_rhs_gpu, &
          capture_nscbc_farfield_y_upper_prediff_rhs_gpu, &
-         apply_nscbc_farfield_y_upper_viscous_source_gpu,apply_nscbc_incident_complete_rhs_gpu
+         apply_nscbc_farfield_y_upper_viscous_source_gpu,apply_nscbc_incident_complete_rhs_gpu, &
+         apply_high_order_wall_rhs_gpu,apply_high_order_wall_state_gpu
     use sponge_gpu, only: apply_xmax_sponge_gpu,apply_ymax_sponge_gpu
     use sponge_layer, only: lspg_im,lspg_jm
     use solver_gpu, only: apply_explicit_filter_gpu,q_to_primitive_kernel,zero_rhs_kernel, &
@@ -1424,6 +1425,7 @@ contains
         call apply_nscbc_farfield_y_upper_viscous_source_gpu()
 
       call apply_case_sources_gpu()
+      call apply_high_order_wall_rhs_gpu()
       call apply_nscbc_incident_complete_rhs_gpu()
       if(mp_positivity_enabled) &
         call limit_mp_update_gpu(deltat,rk_a(rkstep),rk_b(rkstep),rk_c(rkstep),rkstep)
@@ -1441,6 +1443,7 @@ contains
         call sync_after_kernel('rk3_update_global_kernel')
       endif
       call end_gpu_phase('rk_update',nstep,rkstep)
+      call apply_high_order_wall_state_gpu()
       if(open_shock_sponge_case .or. s2_hbl_selective_roe_sponge_case .or. &
          s2_hbl_selective_roe_c4_sponge_case .or. s2_sbli_nscbc_sponge_case .or. profile_mp_ld_case) then
         if(profile_mp_ld_case) then

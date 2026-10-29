@@ -385,7 +385,7 @@ module mainloop
     use comsolver,only : filterq,filter2e,gradcal
     use sponge_layer,only : spongefilter
     use solver,   only : rhscal
-    use bc,       only : boucon,immbody,bctype,twall,turbinf
+    use bc,       only : boucon,immbody,bctype,twall,turbinf,apply_high_order_wall_state
     use parallel, only : qswap
     use conservative_boundary_runtime, only: conservative_boundary, &
                            apply_conservative_boundary_stage
@@ -792,6 +792,7 @@ module mainloop
       if(lcomb .and. rhs_validation_requested()) &
         call write_q_validation_snapshot('pre_updatefvar')
 #endif
+      call apply_high_order_wall_state()
       call updatefvar
 
       if(rhs_validation_requested()) call write_q_validation_snapshot('post_update')

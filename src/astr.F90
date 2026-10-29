@@ -33,7 +33,7 @@ program astr
   use ibmethod,      only: ibprocess
   use test,          only: codetest
   use comsolver,     only: solvrinit
-  use bc,            only: twall,bctype,configure_high_order_boundary
+  use bc,            only: twall,bctype,configure_high_order_boundary,validate_high_order_wall_geometry
   use conservative_boundary_runtime, only: conservative_boundary, &
                            load_conservative_boundary_environment, &
                            validate_conservative_sbli_mode,        &
@@ -140,6 +140,7 @@ program astr
     call solvrinit
 
     call geomcal
+    call validate_high_order_wall_geometry()
 
     call spongelayerini
 

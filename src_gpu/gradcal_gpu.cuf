@@ -1,7 +1,7 @@
 module gradcal_gpu
   use astr_precision, only: real_kind
   use cudafor
-  use boundary_high_order_gpu, only: high_order_boundary_enabled_d
+  use boundary_high_order_gpu, only: high_order_boundary_enabled_d,high_order_wall_enabled_d
   use solver_gpu, only: high_order_primitive_derivative
   use constdef, only: num1d60
   implicit none
@@ -19,7 +19,7 @@ contains
     implicit none
     integer,value :: i,j,k,a,im,apply_left,apply_right
 
-    if(high_order_boundary_enabled_d.and.((apply_left/=0.and.i<3).or. &
+    if((high_order_boundary_enabled_d.or.high_order_wall_enabled_d).and.((apply_left/=0.and.i<3).or. &
         (apply_right/=0.and.i>im-3))) then
       deriv6_x_vel=high_order_primitive_derivative(i,j,k,a,1,im,apply_left,apply_right)
       return
@@ -50,7 +50,7 @@ contains
     implicit none
     integer,value :: i,j,k,im,apply_left,apply_right
 
-    if(high_order_boundary_enabled_d.and.((apply_left/=0.and.i<3).or. &
+    if((high_order_boundary_enabled_d.or.high_order_wall_enabled_d).and.((apply_left/=0.and.i<3).or. &
         (apply_right/=0.and.i>im-3))) then
       deriv6_x_tmp=high_order_primitive_derivative(i,j,k,0,1,im,apply_left,apply_right)
       return
@@ -81,7 +81,7 @@ contains
     implicit none
     integer,value :: i,j,k,a,jm,apply_down,apply_up
 
-    if(high_order_boundary_enabled_d.and.((apply_down/=0.and.j<3).or. &
+    if((high_order_boundary_enabled_d.or.high_order_wall_enabled_d).and.((apply_down/=0.and.j<3).or. &
         (apply_up/=0.and.j>jm-3))) then
       deriv6_y_vel=high_order_primitive_derivative(i,j,k,a,2,jm,apply_down,apply_up)
       return
@@ -112,7 +112,7 @@ contains
     implicit none
     integer,value :: i,j,k,jm,apply_down,apply_up
 
-    if(high_order_boundary_enabled_d.and.((apply_down/=0.and.j<3).or. &
+    if((high_order_boundary_enabled_d.or.high_order_wall_enabled_d).and.((apply_down/=0.and.j<3).or. &
         (apply_up/=0.and.j>jm-3))) then
       deriv6_y_tmp=high_order_primitive_derivative(i,j,k,0,2,jm,apply_down,apply_up)
       return
@@ -143,6 +143,11 @@ contains
     implicit none
     integer,value :: i,j,k,a,km,apply_back,apply_front
 
+    if(high_order_wall_enabled_d.and.((apply_back/=0.and.k<3).or.(apply_front/=0.and.k>km-3))) then
+      deriv6_z_vel=high_order_primitive_derivative(i,j,k,a,3,km,apply_back,apply_front)
+      return
+    endif
+
     if(apply_back /= 0 .and. k == 0) then
       deriv6_z_vel = -0.5e0_real_kind*vel_d(i,j,2,a) + 2.e0_real_kind*vel_d(i,j,1,a) - 1.5e0_real_kind*vel_d(i,j,0,a)
     elseif(apply_back /= 0 .and. k == 1) then
@@ -168,6 +173,11 @@ contains
     use commarray_gpu, only: tmp_d
     implicit none
     integer,value :: i,j,k,km,apply_back,apply_front
+
+    if(high_order_wall_enabled_d.and.((apply_back/=0.and.k<3).or.(apply_front/=0.and.k>km-3))) then
+      deriv6_z_tmp=high_order_primitive_derivative(i,j,k,0,3,km,apply_back,apply_front)
+      return
+    endif
 
     if(apply_back /= 0 .and. k == 0) then
       deriv6_z_tmp = -0.5e0_real_kind*tmp_d(i,j,2) + 2.e0_real_kind*tmp_d(i,j,1) - 1.5e0_real_kind*tmp_d(i,j,0)

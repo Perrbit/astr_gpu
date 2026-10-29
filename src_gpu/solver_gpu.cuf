@@ -2,13 +2,69 @@ module solver_gpu
   use astr_precision, only: real_kind
   use astr_precision_mpi, only: mpi_real_type
   use cudafor
-  use boundary_high_order_gpu, only: high_order_boundary_enabled_d,boundary_derivative6, &
-    boundary_mp_flux6,boundary_interface_position
+  use boundary_high_order_gpu, only: high_order_boundary_enabled_d,high_order_wall_enabled_d,boundary_derivative6, &
+    boundary_mp_flux6,boundary_interface_position,boundary_pressure_gradient7,high_order_wall_axis_d, &
+    boundary_pressure_neumann6,high_order_adiabatic_wall_enabled_d
   use constdef, only: num1d60,num193d256,num105d512,num15d128, &
                       num45d1024,num5d512,num1d1024
   implicit none
   private :: real_kind,mpi_real_type
 contains
+  attributes(device) subroutine high_order_wall_conv_derivative(i,j,k,axis,dim,row,orientation,im,jm,km,df)
+    use commarray_gpu, only: prs_d,jacob_d,dxi_d
+    integer,value :: i,j,k,axis,dim,row,orientation,im,jm,km
+    real(real_kind),intent(out) :: df(5)
+    real(real_kind) :: flux(5,0:7),pressure(0:7),line(0:7),pressure_gradient
+    integer :: s,target,m
+    do s=0,7
+      target=s
+      if(orientation<0) target=dim-s
+      if(axis==1) then
+        call flux_at_xphysical_global(target,j,k,1,im,jm,km,flux(:,s))
+        pressure(s)=jacob_d(target,j,k)*(dxi_d(target,j,k,1,1)*prs_d(target,j,k))
+      else
+        call flux_at_zphysical_global(i,j,target,3,im,jm,km,flux(:,s))
+        pressure(s)=jacob_d(i,j,target)*(dxi_d(i,j,target,3,3)*prs_d(i,j,target))
+      endif
+    enddo
+    do m=1,5
+      do s=0,7
+        line(s)=flux(m,s)
+      enddo
+      df(m)=real(orientation,real_kind)*boundary_derivative6(line,row)
+    enddo
+    ! P6 replaces interior rows only; retain the existing wall-row constraint.
+    if(high_order_adiabatic_wall_enabled_d.and.row>0) then
+      pressure_gradient=boundary_pressure_neumann6(pressure(0:5),row,0.e0_real_kind)
+    else
+      pressure_gradient=boundary_pressure_gradient7(pressure(0:6),row,0.e0_real_kind)
+    endif
+    df(axis+1)=df(axis+1)+real(orientation,real_kind)*(pressure_gradient-boundary_derivative6(pressure,row))
+  end subroutine high_order_wall_conv_derivative
+
+  attributes(device) subroutine high_order_wall_viscous_derivative(i,j,k,axis,dim,row,orientation,im,jm,km,df)
+    integer,value :: i,j,k,axis,dim,row,orientation,im,jm,km
+    real(real_kind),intent(out) :: df(5)
+    real(real_kind) :: flux(5,0:7),line(0:7)
+    integer :: s,target,m
+    do s=0,7
+      target=s
+      if(orientation<0) target=dim-s
+      if(axis==1) then
+        call stored_diff_flux_at_xphysical(target,j,k,1,im,jm,km,flux(:,s))
+      else
+        call stored_diff_flux_at_zphysical(i,j,target,3,im,jm,km,flux(:,s))
+      endif
+    enddo
+    df=0.e0_real_kind
+    do m=2,5
+      do s=0,7
+        line(s)=flux(m,s)
+      enddo
+      df(m)=real(orientation,real_kind)*boundary_derivative6(line,row)
+    enddo
+  end subroutine high_order_wall_viscous_derivative
+
   attributes(device) real(real_kind) function high_order_primitive_derivative(i,j,k,c,axis,dim,lower,upper) result(df)
     use commarray_gpu, only: vel_d,tmp_d
     integer,value :: i,j,k,c,axis,dim,lower,upper
@@ -3485,7 +3541,7 @@ contains
     use commarray_gpu, only: qrhs_d
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_left,apply_right
-    integer :: i,j,k,m
+    integer :: i,j,k,m,row,orientation
     real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -3493,6 +3549,19 @@ contains
     k = blockIdx%z - 1
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
+
+    if(high_order_wall_enabled_d.and.high_order_wall_axis_d==1.and. &
+      ((apply_left/=0.and.i<3).or.(apply_right/=0.and.i>im-3))) then
+      row=i;orientation=1
+      if(.not.(apply_left/=0.and.i<3)) then
+        row=im-i;orientation=-1
+      endif
+      call high_order_wall_conv_derivative(i,j,k,1,im,row,orientation,im,jm,km,df)
+      do m=1,5
+        qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)-df(m)
+      enddo
+      return
+    endif
 
     call flux_at_xphysical_global(i,j,k,1,im,jm,km,f0)
     if(i < im   .or. apply_right == 0) call flux_at_xphysical_global(i+1,j,k,1,im,jm,km,fp1)
@@ -3585,17 +3654,45 @@ contains
 
   attributes(global) subroutine convective_rhs_y_yphysical_global_kernel(im,jm,km,is,ie,js,je,ks,ke, &
                                                                         apply_down,apply_up)
-    use commarray_gpu, only: qrhs_d
+    use commarray_gpu, only: qrhs_d,prs_d,jacob_d,dxi_d
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_down,apply_up
-    integer :: i,j,k,m
-    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    integer :: i,j,k,m,s,target,row
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5), &
+      flux_line(5,0:7),values(0:7),pressure_line(0:7),orientation,pressure_gradient
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
     k = blockIdx%z - 1
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
+
+    if(high_order_wall_enabled_d.and.((apply_down/=0.and.j<3).or.(apply_up/=0.and.j>jm-3))) then
+      row=j;orientation=1.e0_real_kind
+      if(.not.(apply_down/=0.and.j<3)) then
+        row=jm-j;orientation=-1.e0_real_kind
+      endif
+      do s=0,7
+        target=s
+        if(orientation<0.e0_real_kind) target=jm-s
+        call flux_at_yphysical_global(i,target,k,2,im,jm,km,flux_line(:,s))
+        pressure_line(s)=jacob_d(i,target,k)*(dxi_d(i,target,k,2,2)*prs_d(i,target,k))
+      enddo
+      do m=1,5
+        values=flux_line(m,:)
+        df(m)=orientation*boundary_derivative6(values,row)
+      enddo
+      if(high_order_adiabatic_wall_enabled_d.and.row>0) then
+        pressure_gradient=boundary_pressure_neumann6(pressure_line(0:5),row,0.e0_real_kind)
+      else
+        pressure_gradient=boundary_pressure_gradient7(pressure_line(0:6),row,0.e0_real_kind)
+      endif
+      df(3)=df(3)+orientation*(pressure_gradient-boundary_derivative6(pressure_line,row))
+      do m=1,5
+        qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)-df(m)
+      enddo
+      return
+    endif
 
     call flux_at_yphysical_global(i,j,k,2,im,jm,km,f0)
     if(j < jm   .or. apply_up   == 0) call flux_at_yphysical_global(i,j+1,k,2,im,jm,km,fp1)
@@ -3772,7 +3869,7 @@ contains
     use commarray_gpu, only: qrhs_d
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_back,apply_front
-    integer :: i,j,k,m
+    integer :: i,j,k,m,row,orientation
     real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -3780,6 +3877,19 @@ contains
     k = (blockIdx%z - 1) * blockDim%z + threadIdx%z - 1
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     if(i < is .or. i > ie .or. j < js .or. j > je .or. k < ks .or. k > ke) return
+
+    if(high_order_wall_enabled_d.and.high_order_wall_axis_d==3.and. &
+      ((apply_back/=0.and.k<3).or.(apply_front/=0.and.k>km-3))) then
+      row=k;orientation=1
+      if(.not.(apply_back/=0.and.k<3)) then
+        row=km-k;orientation=-1
+      endif
+      call high_order_wall_conv_derivative(i,j,k,3,km,row,orientation,im,jm,km,df)
+      do m=1,5
+        qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)-df(m)
+      enddo
+      return
+    endif
 
     call flux_at_zphysical_global(i,j,k,3,im,jm,km,f0)
     if(k < km   .or. apply_front == 0) call flux_at_zphysical_global(i,j,k+1,3,im,jm,km,fp1)
@@ -4698,7 +4808,7 @@ contains
     integer,value :: i,j,k,a,im,jm,km,apply_left,apply_right
     real(real_kind) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
-    if(high_order_boundary_enabled_d.and.((apply_left/=0.and.i<3).or. &
+    if((high_order_boundary_enabled_d.or.high_order_wall_enabled_d).and.((apply_left/=0.and.i<3).or. &
         (apply_right/=0.and.i>im-3))) then
       deriv6_x_vel_at=high_order_primitive_derivative(i,j,k,a,1,im,apply_left,apply_right)
       return
@@ -4737,7 +4847,7 @@ contains
     integer,value :: i,j,k,im,jm,km,apply_left,apply_right
     real(real_kind) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
-    if(high_order_boundary_enabled_d.and.((apply_left/=0.and.i<3).or. &
+    if((high_order_boundary_enabled_d.or.high_order_wall_enabled_d).and.((apply_left/=0.and.i<3).or. &
         (apply_right/=0.and.i>im-3))) then
       deriv6_x_tmp_at=high_order_primitive_derivative(i,j,k,0,1,im,apply_left,apply_right)
       return
@@ -4776,7 +4886,7 @@ contains
     integer,value :: i,j,k,a,im,jm,km,apply_down,apply_up
     real(real_kind) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
-    if(high_order_boundary_enabled_d.and.((apply_down/=0.and.j<3).or. &
+    if((high_order_boundary_enabled_d.or.high_order_wall_enabled_d).and.((apply_down/=0.and.j<3).or. &
         (apply_up/=0.and.j>jm-3))) then
       deriv6_y_vel_at=high_order_primitive_derivative(i,j,k,a,2,jm,apply_down,apply_up)
       return
@@ -4803,7 +4913,7 @@ contains
     integer,value :: i,j,k,im,jm,km,apply_down,apply_up
     real(real_kind) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
-    if(high_order_boundary_enabled_d.and.((apply_down/=0.and.j<3).or. &
+    if((high_order_boundary_enabled_d.or.high_order_wall_enabled_d).and.((apply_down/=0.and.j<3).or. &
         (apply_up/=0.and.j>jm-3))) then
       deriv6_y_tmp_at=high_order_primitive_derivative(i,j,k,0,2,jm,apply_down,apply_up)
       return
@@ -4830,6 +4940,11 @@ contains
     integer,value :: i,j,k,a,im,jm,km,apply_back,apply_front
     real(real_kind) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
 
+    if(high_order_wall_enabled_d.and.((apply_back/=0.and.k<3).or.(apply_front/=0.and.k>km-3))) then
+      deriv6_z_vel_at=high_order_primitive_derivative(i,j,k,a,3,km,apply_back,apply_front)
+      return
+    endif
+
     v0 = vel_at(i,j,k,a,im,jm,km)
     vp1 = 0.e0_real_kind
     vm1 = 0.e0_real_kind
@@ -4850,6 +4965,11 @@ contains
     implicit none
     integer,value :: i,j,k,im,jm,km,apply_back,apply_front
     real(real_kind) :: v0,vp1,vm1,vp2,vm2,vp3,vm3
+
+    if(high_order_wall_enabled_d.and.((apply_back/=0.and.k<3).or.(apply_front/=0.and.k>km-3))) then
+      deriv6_z_tmp_at=high_order_primitive_derivative(i,j,k,0,3,km,apply_back,apply_front)
+      return
+    endif
 
     v0 = tmp_at(i,j,k,im,jm,km)
     vp1 = 0.e0_real_kind
@@ -5530,7 +5650,7 @@ contains
     use commarray_gpu, only: qrhs_d
     implicit none
     integer,value :: im,jm,km,is,ie,js,je,ks,ke,apply_left,apply_right
-    integer :: i,j,k,m
+    integer :: i,j,k,m,row,orientation
     real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -5538,6 +5658,19 @@ contains
     k = blockIdx%z - 1
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     if(i < is .or. i > ie) return
+
+    if(high_order_wall_enabled_d.and.high_order_wall_axis_d==1.and. &
+      ((apply_left/=0.and.i<3).or.(apply_right/=0.and.i>im-3))) then
+      row=i;orientation=1
+      if(.not.(apply_left/=0.and.i<3)) then
+        row=im-i;orientation=-1
+      endif
+      call high_order_wall_viscous_derivative(i,j,k,1,im,row,orientation,im,jm,km,df)
+      do m=2,5
+        qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)+df(m)
+      enddo
+      return
+    endif
 
     call stored_diff_flux_at_xphysical(i,j,k,1,im,jm,km,f0)
     if(i < im   .or. apply_right == 0) call stored_diff_flux_at_xphysical(i+1,j,k,1,im,jm,km,fp1)
@@ -5641,14 +5774,32 @@ contains
     use commarray_gpu, only: qrhs_d
     implicit none
     integer,value :: im,jm,km,js,je,apply_down,apply_up
-    integer :: i,j,k,m
-    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
+    integer :: i,j,k,m,s,target,row
+    real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5), &
+      flux_line(5,0:7),values(0:7),orientation
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
     j = (blockIdx%y - 1) * blockDim%y + threadIdx%y - 1
     k = blockIdx%z - 1
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     if(j < js .or. j > je) return
+
+    if(high_order_wall_enabled_d.and.((apply_down/=0.and.j<3).or.(apply_up/=0.and.j>jm-3))) then
+      row=j;orientation=1.e0_real_kind
+      if(.not.(apply_down/=0.and.j<3)) then
+        row=jm-j;orientation=-1.e0_real_kind
+      endif
+      do s=0,7
+        target=s
+        if(orientation<0.e0_real_kind) target=jm-s
+        call stored_diff_flux_at_yphysical(i,target,k,2,im,jm,km,flux_line(:,s))
+      enddo
+      do m=2,5
+        values=flux_line(m,:)
+        qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)+orientation*boundary_derivative6(values,row)
+      enddo
+      return
+    endif
 
     call stored_diff_flux_at_yphysical(i,j,k,2,im,jm,km,f0)
     if(j < jm   .or. apply_up   == 0) call stored_diff_flux_at_yphysical(i,j+1,k,2,im,jm,km,fp1)
@@ -5738,7 +5889,7 @@ contains
     use commarray_gpu, only: qrhs_d
     implicit none
     integer,value :: im,jm,km,ks,ke,apply_back,apply_front
-    integer :: i,j,k,m
+    integer :: i,j,k,m,row,orientation
     real(real_kind) :: f0(5),fp1(5),fm1(5),fp2(5),fm2(5),fp3(5),fm3(5),df(5)
 
     i = (blockIdx%x - 1) * blockDim%x + threadIdx%x - 1
@@ -5746,6 +5897,19 @@ contains
     k = (blockIdx%z - 1) * blockDim%z + threadIdx%z - 1
     if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     if(k < ks .or. k > ke) return
+
+    if(high_order_wall_enabled_d.and.high_order_wall_axis_d==3.and. &
+      ((apply_back/=0.and.k<3).or.(apply_front/=0.and.k>km-3))) then
+      row=k;orientation=1
+      if(.not.(apply_back/=0.and.k<3)) then
+        row=km-k;orientation=-1
+      endif
+      call high_order_wall_viscous_derivative(i,j,k,3,km,row,orientation,im,jm,km,df)
+      do m=2,5
+        qrhs_d(i,j,k,m)=qrhs_d(i,j,k,m)+df(m)
+      enddo
+      return
+    endif
 
     call stored_diff_flux_at_zphysical(i,j,k,3,im,jm,km,f0)
     if(k < km   .or. apply_front == 0) call stored_diff_flux_at_zphysical(i,j,k+1,3,im,jm,km,fp1)
