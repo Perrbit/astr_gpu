@@ -7,6 +7,7 @@ module insitu_velocity_statistics
   private
   public :: velocity_statistics,velocity_statistics_result
   public :: configure_velocity_statistics,push_velocity_sample,read_velocity_statistics
+  public :: velocity_statistics_duration,velocity_statistics_mean_value
   public :: write_velocity_state,restore_velocity_state
   public :: pack_velocity_state,unpack_velocity_state,velocity_state_components
   integer,parameter :: velocity_state_components=34
@@ -23,6 +24,24 @@ module insitu_velocity_statistics
     real(real_kind) :: covariance_r(3,3)=0,covariance_f(3,3)=0,density_stress(3,3)=0
   end type
 contains
+  pure real(real_kind) function velocity_statistics_duration(s) result(duration)
+    type(velocity_statistics),intent(in) :: s
+    duration=s%duration
+  end function
+
+  pure real(real_kind) function velocity_statistics_mean_value(s,field,favre) result(value)
+    type(velocity_statistics),intent(in) :: s
+    integer,intent(in) :: field
+    logical,intent(in) :: favre
+    if(field==1) then
+      value=s%mass_duration/s%duration
+    elseif(favre) then
+      value=s%mean_f(field-1)
+    else
+      value=s%mean_r(field-1)
+    endif
+  end function
+
   subroutine pack_velocity_state(s,values,ok)
     type(velocity_statistics),intent(in) :: s
     real(real_kind),intent(out) :: values(velocity_state_components)

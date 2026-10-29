@@ -2,7 +2,7 @@ module insitu_session
   use astr_precision_io, only: read_source_reals
   use mpi
   use benchmark_runtime, only: insitu_clock,report_insitu_timing
-  use iso_fortran_env, only: int32,int64
+  use iso_fortran_env, only: int32,int64,real64
   use astr_precision, only: real_kind,c_real_kind,clock_kind,real_bytes,real_to_word,word_to_real
   use insitu_schedule, only: sample_schedule,configure_schedule,poll_schedule,write_schedule_state,restore_schedule_state, &
     resume_schedule
@@ -19,6 +19,7 @@ module insitu_session
   use insitu_fields, only: insitu_volume_weights,release_insitu_geometry
   use insitu_fields, only: nonreacting_wall_candidate
   use insitu_run_config, only: insitu_options
+  use insitu_catalog, only: catalog_watch_state_file
   use insitu_product_schedule, only: configure_product_schedules,poll_product_schedules,product_schedules_active, &
     product_scene_due,product_state_file,product_results_complete,product_failures_present
   use insitu_config_collective, only: read_insitu_options_collective
@@ -37,6 +38,7 @@ module insitu_session
   public :: output_render_file,begin_output_insitu,complete_output_insitu
   public :: output_render_repartition_allowed
   public :: configure_preview_insitu,render_preview_insitu
+  public :: slice_velocity_statistics_info,slice_velocity_statistics_value
   logical,save :: output_statistics_restored=.false.
   logical,save :: native_output=.false.,output_render_restored=.false.,output_render_finalized=.false.
   logical,save :: output_saved_rendering=.false.
@@ -140,6 +142,22 @@ module insitu_session
   end interface
 #endif
 contains
+  subroutine slice_velocity_statistics_info(active,covered,window,duration)
+    logical,intent(out) :: active,covered
+    real(real_kind),intent(out) :: window(2),duration
+    active=formal.and.enabled.and.statistics_enabled.and.options%products/='air5_walls'.and. &
+      options%products/='m12_diagnostics'
+    covered=allocated(point_statistics);window=statistics_window;duration=0
+    if(covered) duration=velocity_statistics_duration(point_statistics(0,0,0))
+    covered=covered.and.duration>0
+  end subroutine
+
+  real(real_kind) function slice_velocity_statistics_value(i,j,k,field,favre) result(value)
+    integer,intent(in) :: i,j,k,field
+    logical,intent(in) :: favre
+    value=velocity_statistics_mean_value(point_statistics(i,j,k),field,favre)
+  end function
+
   subroutine configure_preview_insitu(directory)
     character(*),intent(out) :: directory
     call require_sample(formal.and.enabled.and.options%render.and.options%processing_backend=='device'.and. &
@@ -278,10 +296,12 @@ contains
     type(checkpoint_state_identity),intent(in) :: identity
     integer(int64),intent(in) :: budget
     integer(int64) :: flags(3),saved_flags(3),signature(4),transport_signature(4),step,interval,origin_step
+    integer(int64) :: payload_start,payload_end,payload_bytes,position
     integer(c_int64_t) :: color_mask
     real(c_real_kind) :: color_ranges(6)
     real(real_kind) :: clock(3),period,origin_time,saved_plane(6)
     character(8) :: magic
+    character(8) :: envelope
     character(8) :: color_magic
     character(16) :: mode,saved_processing,saved_transport,saved_pipeline,saved_slice
     type(sample_schedule) :: restored
@@ -315,7 +335,9 @@ contains
         open(newunit=unit,file=path,status='new',access='stream',form='unformatted', &
           convert='little_endian',action='write',iostat=status)
         if(status==0) then
-          write(unit,iostat=status) magic,identity%step,[identity%time,identity%dt_used,identity%dt_next], &
+          write(unit,iostat=status) 'ASTRIR07',0_int64
+          if(status==0) inquire(unit=unit,pos=payload_start,iostat=status)
+          if(status==0) write(unit,iostat=status) magic,identity%step,[identity%time,identity%dt_used,identity%dt_next], &
             flags,mode,interval,period,origin_step,origin_time,signature
           if(status==0.and.(magic=='ASTRIR03'.or.magic=='ASTRIR04'.or.magic=='ASTRIR05'.or.magic=='ASTRIR06')) &
             write(unit,iostat=status) &
@@ -343,6 +365,12 @@ contains
             call product_state_file(unit,.true.,identity%step,identity%time,products_same,ok)
             if(.not.ok) status=1
           endif
+          if(status==0) inquire(unit=unit,pos=payload_end,iostat=status)
+          if(status==0) then
+            call catalog_watch_state_file(unit,.true.,identity%step,real(identity%time,real64),MPI_COMM_WORLD,ok)
+            if(.not.ok) status=1
+          endif
+          if(status==0) write(unit,pos=9,iostat=status) payload_end-payload_start
           close(unit,iostat=closed)
         endif
       endif
@@ -352,6 +380,12 @@ contains
     open(newunit=unit,file=path,status='old',access='stream',form='unformatted', &
       convert='little_endian',action='read',iostat=status)
     call require_sample(status==0,'missing native render control')
+    read(unit,iostat=status) envelope,payload_bytes
+    call require_sample(status==0.and.envelope=='ASTRIR07'.and.payload_bytes>0, &
+      'native control requires the dynamic-product checkpoint format ASTRIR07')
+    inquire(unit=unit,pos=payload_start,size=position,iostat=status)
+    call require_sample(status==0.and.payload_bytes<=position-payload_start+1,'invalid native control section length')
+    payload_end=payload_start+payload_bytes
     read(unit,iostat=status) magic,step
     if(status==0) call read_source_reals(unit,clock,source_bytes,status)
     if(status==0) read(unit,iostat=status) saved_flags,mode,interval
@@ -421,11 +455,16 @@ contains
       call require_sample(status==0.and.color_magic=='ASTRMC01'.and.color_mask>=0.and.color_mask<=7.and. &
         all(ieee_is_finite(color_ranges)),'invalid M12 frozen color state')
     endif
-    if(.not.product_format.and..not.checkpoint_stream_at_end(unit)) then
+    inquire(unit=unit,pos=position,iostat=status)
+    call require_sample(status==0,'native render section position')
+    if(.not.product_format.and.position<payload_end) then
       call product_state_file(unit,.false.,identity%step,identity%time,products_same,ok,override,source_bytes)
       call require_sample(ok,'invalid disabled legacy product history')
     endif
-    call require_sample(checkpoint_stream_at_end(unit),'native render control tail')
+    inquire(unit=unit,pos=position,iostat=status)
+    call require_sample(status==0.and.position==payload_end,'native render section tail')
+    call catalog_watch_state_file(unit,.false.,identity%step,real(identity%time,real64),MPI_COMM_WORLD,ok)
+    call require_sample(ok.and.checkpoint_stream_at_end(unit),'native dynamic-product control tail')
     close(unit,iostat=closed)
     call require_sample(closed==0,'cannot close native render control')
     same=all(saved_flags==flags).and.products_same.and.plane_same

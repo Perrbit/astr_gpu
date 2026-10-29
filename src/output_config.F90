@@ -24,6 +24,8 @@ module output_config
     logical :: exact_restart=.false.,checkpoint_statistics=.true.
     integer :: format_version=output_format_version,keep=2
     character(1024) :: directory='outdat/output',restore_directory=''
+    character(1024) :: product_catalog='input.products.jsonl'
+    integer(int64) :: product_poll_steps=10
     character(16) :: restart_output='saved'
     integer(int64) :: buffer_bytes=67108864_int64,host_budget_bytes=0,device_budget_bytes=0
     integer(int64) :: device_reserve_bytes=0
@@ -109,8 +111,8 @@ contains
     character(*),intent(out) :: message
     type(output_options) :: candidate
     integer :: format_version,unit,status,closed,kind,keep
-    integer(int64) :: buffer_bytes,host_budget_bytes,device_budget_bytes,device_reserve_bytes
-    character(1024) :: directory,restore_directory
+    integer(int64) :: buffer_bytes,host_budget_bytes,device_budget_bytes,device_reserve_bytes,product_poll_steps
+    character(1024) :: directory,restore_directory,product_catalog
     character(16) :: restart_output
     character(4096) :: line
     character(10),parameter :: groups(3)=[character(10)::'checkpoint','volume','slices']
@@ -118,7 +120,8 @@ contains
     integer(int64) :: indices(output_slice_capacity,3)
     logical :: opened,active,exact_restart,checkpoint_statistics
     namelist /output/ format_version,directory,restore_directory,restart_output, &
-      buffer_bytes,host_budget_bytes,device_budget_bytes,device_reserve_bytes,exact_restart,checkpoint_statistics
+      buffer_bytes,host_budget_bytes,device_budget_bytes,device_reserve_bytes,exact_restart,checkpoint_statistics, &
+      product_catalog,product_poll_steps
 
     ok=.false.; opened=.false.; message=''
     format_version=candidate%format_version
@@ -128,6 +131,7 @@ contains
     host_budget_bytes=candidate%host_budget_bytes; device_budget_bytes=candidate%device_budget_bytes
     device_reserve_bytes=candidate%device_reserve_bytes
     exact_restart=candidate%exact_restart; checkpoint_statistics=candidate%checkpoint_statistics
+    product_catalog=candidate%product_catalog;product_poll_steps=candidate%product_poll_steps
     open(newunit=unit,file=filename,status='old',action='read',iostat=status,iomsg=message)
     if(status/=0) return
     opened=.true.
@@ -147,7 +151,8 @@ contains
     candidate%host_budget_bytes=host_budget_bytes; candidate%device_budget_bytes=device_budget_bytes
     candidate%device_reserve_bytes=device_reserve_bytes
     candidate%exact_restart=exact_restart; candidate%checkpoint_statistics=checkpoint_statistics
-    do kind=1,3
+    candidate%product_catalog=product_catalog;candidate%product_poll_steps=product_poll_steps
+    do kind=1,2
       call read_product(unit,trim(groups(kind)),product_options,keep,indices,ok,message)
       if(.not.ok) goto 900
       select case(kind)
@@ -155,9 +160,6 @@ contains
         candidate%checkpoint=product_options; candidate%keep=keep
       case(2)
         candidate%volume=product_options
-      case(3)
-        candidate%slices=product_options
-        candidate%i_indices=indices(:,1); candidate%j_indices=indices(:,2); candidate%k_indices=indices(:,3)
       end select
     enddo
     do
@@ -169,6 +171,15 @@ contains
       if(len_trim(syntax_line(line))==0) cycle
       backspace(unit,iostat=status)
       if(status/=0) goto 900
+      if(trim(syntax_line(line))=='&slices') then
+        call read_product(unit,'slices',product_options,keep,indices,ok,message)
+        if(.not.ok) goto 900
+        ok=.not.product_options%enabled.and.all(indices==-1).and..not.product_options%velocity_gradient.and. &
+          .not.product_options%qcriterion.and..not.product_options%vorticity
+        message='&slices definitions are retired; use the JSONL product_catalog'
+        if(.not.ok) goto 900
+        cycle
+      endif
       call read_adaptive(unit,candidate%adaptive,ok,message)
       if(.not.ok) goto 900
       do
@@ -193,6 +204,8 @@ contains
     ok=.false.
     message='unsupported output format_version'
     if(format_version/=output_format_version) goto 900
+    message='product_catalog must name a file and product_poll_steps must be positive'
+    if(len_trim(product_catalog)==0.or.len_trim(product_catalog)==len(product_catalog).or.product_poll_steps<1) goto 900
     message='output paths exceed character capacity'
     if(len_trim(directory)>=len(directory).or.len_trim(restore_directory)>=len(restore_directory)) goto 900
     message='restart_output must be saved or override'
@@ -386,9 +399,9 @@ contains
     character(*),intent(out) :: message
     type(output_options) :: candidate
     type(output_product_options) :: products(3)
-    character(1024) :: root_file,wire_message,paths(2)
+    character(1024) :: root_file,wire_message,paths(3)
     character(16) :: labels(7)
-    integer(int64) :: integers(9),indices(output_slice_capacity,3)
+    integer(int64) :: integers(10),indices(output_slice_capacity,3)
     real(real_kind) :: intervals(3)
     logical :: flags(6,3),restart_flags(2)
     integer :: rank,status,bad,total,integer_type,real_type,i
@@ -426,10 +439,11 @@ contains
     if(rank==0) then
       products=[candidate%checkpoint,candidate%volume,candidate%slices]
       integers=[int(candidate%format_version,int64),int(candidate%keep,int64),candidate%buffer_bytes, &
-        candidate%host_budget_bytes,candidate%device_budget_bytes,products%interval_steps,candidate%device_reserve_bytes]
+        candidate%host_budget_bytes,candidate%device_budget_bytes,products%interval_steps,candidate%device_reserve_bytes, &
+        candidate%product_poll_steps]
       intervals=products%interval_time
       labels(1)=candidate%restart_output
-      paths=[candidate%directory,candidate%restore_directory]
+      paths=[candidate%directory,candidate%restore_directory,candidate%product_catalog]
       restart_flags=[candidate%exact_restart,candidate%checkpoint_statistics]
       indices(:,1)=candidate%i_indices; indices(:,2)=candidate%j_indices; indices(:,3)=candidate%k_indices
       do i=1,3
@@ -462,6 +476,7 @@ contains
     candidate%buffer_bytes=integers(3); candidate%host_budget_bytes=integers(4)
     candidate%device_budget_bytes=integers(5)
     candidate%device_reserve_bytes=integers(9)
+    candidate%product_poll_steps=integers(10);candidate%product_catalog=paths(3)
     candidate%restart_output=labels(1)
     candidate%exact_restart=restart_flags(1); candidate%checkpoint_statistics=restart_flags(2)
     candidate%directory=paths(1); candidate%restore_directory=paths(2)

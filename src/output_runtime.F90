@@ -26,6 +26,7 @@ module output_runtime
     adaptive_shared_config,adaptive_shared_state,adaptive_shared_file
   use output_config_collective, only: read_output_options_collective
   use output_archive, only: configure_archives,begin_archives,observe_archives,archive_control_file,archives_enabled
+  use index_slice_archive, only: configure_index_slices,observe_index_slices
   use checkpoint_state_io
   use checkpoint_bundle
   use insitu_checkpoint_batch, only: create_batch,copy_batch_file
@@ -568,6 +569,8 @@ contains
     mean_statistics=lavg.and.(.not.use_gpu.or.air5_output_case())
     call check(.not.(statistics_active.and.mean_statistics),'formal and CPU legacy statistics need separate transactions')
     call configure_archives(options)
+    call configure_index_slices(trim(options%directory),trim(options%product_catalog),options%product_poll_steps, &
+      len_trim(options%restore_directory)>0,benchmark_field_io_disabled())
   end subroutine
 
   subroutine begin_output_runtime(counter,rkfirst_pending)
@@ -1589,6 +1592,7 @@ contains
     call observe_output_adaptive(nstep,time)
     call complete_output_insitu(nstep,time,nstep>maxstep)
     if(archives_enabled()) call observe_archives(identity,nstep>maxstep)
+    call observe_index_slices(identity)
     if (.not.options%checkpoint%enabled) return
     due=nstep>maxstep
     if (present(initial)) due=due.or.(initial.and.options%checkpoint%initial_frame.and.last_step==-1)

@@ -15,6 +15,16 @@ import numpy as np
 from prepare_tgv_case import next_data_line, set_controller_deltat, set_flowtype, set_ninit, set_restart
 
 
+def native_render_payload(control):
+    """Decode only the render section, not the appended dynamic product state."""
+    if control[:8] != b'ASTRIR07':
+        raise AssertionError('expected dynamic native control ASTRIR07')
+    length = int.from_bytes(control[8:16], 'little', signed=True)
+    if length <= 0 or control[16+length:24+length] != b'ASTRCW01':
+        raise AssertionError('invalid dynamic native control section boundary')
+    return control[16:16+length]
+
+
 def archive_schedule_payload(path):
     """Compare schedules exactly, not the intentionally different segment receipts."""
     payload = path.read_bytes()
@@ -64,7 +74,8 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
              solver_halo_transport='pinned', flow_type=None, gpu_precision_mode='fp64', gpu_sync_mode='explicit',
              gpu_mixed_candidate=None, exact_restart=True, checkpoint_statistics=True, insitu_memory_trace=False,
              scheme='643e', compact_sync='explicit', compact_batch_rhs=65535, restore_probe=False,
-             gpu_statistics_interval=None, benchmark_buffer_output=False, tgv_conservation=False):
+             gpu_statistics_interval=None, benchmark_buffer_output=False, tgv_conservation=False,
+             product_catalog_records=None):
     if solver_halo_transport not in ('pageable', 'pinned', 'pinned-pipeline', 'device-aware'):
         raise ValueError('unknown solver halo transport')
     if ncu_kernel is not None and (not ncu_kernel or backend != 'gpu' or ranks != 1 or
@@ -236,6 +247,9 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
     if interval is None:
         interval = (args.restart_step if enabled else 1000000000) if args.mode == "steps" else (4*dt if enabled else 1.0)
     config = case / "datin/input.output"
+    if product_catalog_records is not None:
+        (case / 'input.products.jsonl').write_text('\n'.join(json.dumps(record) for record in
+            [{'catalog_schema': 'astr-insitu-products-v1'}, *product_catalog_records]) + '\n')
     write_checkpoint = (enabled or args.statistics or args.legacy_statistics or args.case != 'tgv' or args.initial_dimension)
     if checkpoint_enabled is not None:
         write_checkpoint = checkpoint_enabled

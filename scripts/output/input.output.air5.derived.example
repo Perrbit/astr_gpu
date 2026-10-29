@@ -16,9 +16,4 @@
  initial_frame=.true., final_frame=.true., fields='basic',
  velocity_gradient=.true., vorticity=.true., qcriterion=.true.
 /
-&slices
- enabled=.true., mode='steps', interval_steps=5,
- initial_frame=.true., final_frame=.true., fields='basic',
- velocity_gradient=.true., vorticity=.true., qcriterion=.true.,
- i_indices=8, j_indices=0, k_indices=16
-/
+! Numerical slice definitions now belong only to input.products.jsonl.

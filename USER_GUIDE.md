@@ -900,8 +900,8 @@ AIR5 补偿余量、已登记边界历史和累计统计由同一批次负责恢
 
 ### 10.6 默认完整步输出与重启模式
 
-启动时自动读取必需的 `datin/input.output`，可分别配置 checkpoint、三维场
-和切片。不需要设置环境变量；可选的 `ASTR_OUTPUT_CONFIG` 仅覆盖配置路径，
+启动时自动读取必需的 `datin/input.output`，配置 checkpoint、三维场及共享设置。
+固定索引数值截面由独立 JSONL 产品清单定义。不需要设置环境变量；可选的 `ASTR_OUTPUT_CONFIG` 仅覆盖配置路径，
 未设置或为空时均使用默认文件。缺失、损坏、各rank路径不一致时明确终止，
 不回退旧输出，也不自动把旧controller频率转换成新产品调度。
 保存相位位于完整时间步之后，不在 RK stage 之间。checkpoint 保存
@@ -929,7 +929,8 @@ AIR5 补偿余量、已登记边界历史和累计统计由同一批次负责恢
 若恢复源没有保存累计统计，即使新运行设为 `checkpoint_statistics=t`，
 也只能从恢复时刻开始新累计。统计积分仍受配置的物理时间窗口限制。
 `exact_restart=t, checkpoint_statistics=f` 只承诺流场状态续接，不承诺累计统计续接。
-精确模式不能从轻量检查点恢复；非精确模式可读取已有完整检查点并重建物性。
+精确模式不能从轻量检查点恢复；非精确模式可读取含 `ASTRIR07` 控制的完整检查点并重建物性。
+新版本检查点始终保存动态产品控制，包括空清单；不再兼容此前的控制格式。
 随机吹吸 RNG、驱动和调度状态及已有的压缩修复历史仍保存，不能删去。
 此轮轻量实现限非反应五变量；AIR5 检查点仍须显式 `exact_restart=t`，
 保留化学补偿及必要历史。仅字段归档而不保存/恢复检查点不受此限制。
@@ -940,8 +941,40 @@ AIR5 补偿余量、已登记边界历史和累计统计由同一批次负责恢
 首期交付范围按用户确认的方案A冻结，见输出重设计计划第10.77–10.78节；
 旧controller的 `lwsequ/lwslic` 被忽略并提示；`feqchkpt` 仍控制既有的
 controller重读与CFL检查，不控制新checkpoint频率。`lavg/feqavg` 的
-统计定义和采样相位不变。关闭三类文件输出须在配置中分别设 `enabled=f`，
+统计定义和采样相位不变。关闭 checkpoint/三维场分别设 `enabled=f`，关闭数值截面则发布仅含格式头的空清单，
 仍需提供合法配置和当前接口要求的预算，不能靠删除文件关闭输出。
+
+**固定索引数值截面**
+
+`&output` 可设 `product_catalog='input.products.jsonl', product_poll_steps=10`，
+这也是默认值。每个条目独立给出字段、全局 i/j/k 索引、另两轴的整数范围及步数/物理时间频率。
+同一类型可定义多个产品。只有 rank 0 在完整步边界观察清单；运行中修改后须原子发布，
+未改变的产品不重置时钟。坏条目只停用对应产品，文件级错误保留先前有效清单。
+缺省文件尚未发布时不创建数值截面，不替代必需的 `input.output`。
+
+```bash
+python scripts/insitu/product_catalog.py publish candidate.jsonl input.products.jsonl
+python scripts/insitu/slice_archive.py list /path/to/slice/segmentXXXXXX
+```
+
+用 `scripts/output/input.products.tgv.example.jsonl` 或 AIR5 示例准备清单，
+按实际网格修改索引。仅保存明确选择的二维原生精度字段，不额外保存速度向量，
+不需要 Catalyst。新增私有诊断使用内点及 MPI 接口六阶中心差分，物理边界七节点六阶闭合，
+CURVE 使用现有网格度量；不调用求解器梯度或为每个截面建立整场诊断副本。
+原有 Reynolds/Favre 均值仅按现有累计器提供，不自动启动统计或补造缺失字段。
+
+每个产品版本及续算新段自带二维坐标、独立时刻 HDF5 与 `series.xdmf`。
+重启恢复已生效清单、版本、时钟和启用请求，但建立自包含新段，不自动引用旧段。
+检查点恢复后，磁盘清单不会直接覆盖已恢复定义，需重新发布。
+可隔离的分配或写盘错误只停用该产品；再次尝试需显式提高 `enable_request`，不自动重试。
+本通道不新增任意显存/磁盘围栏，也不修改以下三维场资源配置。
+完整字段、来源、发布、恢复和离线工具说明见
+[固定索引截面说明](scripts/output/INDEX_SLICE_ARCHIVES.md)，验证状态见
+[执行记录](documents/ASTR_INDEX_SLICE_ARCHIVE_PROGRESS.md)。
+
+**既有三维场归档**
+
+以下整组字段、资源选项及父链说明针对原生 volume 路径，不代表新截面仍使用旧组级配置。
 基础字段已覆盖周期 TGV、bc41 槽道、已登记静态/动态 CURVE 平板、固定
 AIR5 HBL/SBLI 的代表性短测。文件梯度、涡量、Q_rs 和散度目前准入
 16³、五变量、无量纲、FP64、黏性开启、643e 求导、NP=1/2 的以下路径：
@@ -987,7 +1020,7 @@ AIR5 登记短测可用 `scripts/output/input.output.air5.derived.example`，
 捕获阶段内部所有瞬时峰值。此资源配置不改变文件格式、数值路径或
 输出调度，可以按当前启动环境设置，不需要 `restart_output='override'`。
 
-`&checkpoint`、`&volume`、`&slices` 各自支持 `mode='steps'` 或 `mode='time'`。
+`&checkpoint`、`&volume` 各自支持 `mode='steps'` 或 `mode='time'`。
 前者只设 `interval_steps`，后者只设 `interval_time`。文件记录实际完成步
 时间，跨越调度阈值不会插值为阈值时刻。初末帧可独立选择；启用
 checkpoint 时正常结束必须保存末步。`keep=1|2` 只轮换 checkpoint，
@@ -999,7 +1032,8 @@ checkpoint 时正常结束必须保存末步。`keep=1|2` 只轮换 checkpoint�
 和其引用的历史段，不只复制 `state.h5`。新目标根须按配置新建；已验证的
 同根续算会创建新段，不覆盖已有帧。`maxstep` 是恢复后的绝对终止步号。
 `restart_output='saved'` 继承已保存调度。改变输出间隔、字段选择等须显式
-选择 `restart_output='override'`，不能用它绕过物理/数值配置不匹配。
+选择 `restart_output='override'`，不能用它绕过物理/数值配置不匹配。JSONL 截面不使用此覆盖入口，
+按其已保存的有效状态恢复，再通过重新发布清单调整。
 
 每段的 `series.xdmf` 只索引本段。布局兼容时，另自动生成
 `lineage.xdmf`，按显式父链索引祖先保留帧和当前帧；祖先在各次恢复点
@@ -1372,7 +1406,8 @@ TGV。CPU 可使用原生场/切片和监测，实际图片仍要求既有 GPU/C
 
 | 产品配置 | 新字段 |
 |---|---|
-| 原生 `&volume` / `&slices` | `adaptive=t`，`dense_interval_steps` 或 `dense_interval_time`，`event_ids` / `window_ids`。 |
+| 原生 `&volume` | `adaptive=t`，`dense_interval_steps` 或 `dense_interval_time`，`event_ids` / `window_ids`。 |
+| JSONL 数值截面 | `schedule.events` / `schedule.windows` 关联已登记标识，显式设置较小的 `dense_interval`。 |
 | 原位 `&insitu_run` | 对应 `product_ids(i)` 的 `product_adaptive(i)=t`，`product_dense_steps(i)` 或 `product_dense_times(i)`，`product_events(:,i)` / `product_windows(:,i)`。 |
 
 常规和加密间隔必须同一种口径，加密间隔严格较小。至少关联一个已登记

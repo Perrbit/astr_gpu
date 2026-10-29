@@ -1,0 +1,314 @@
+module index_slice_gpu
+  use astr_precision, only: real_kind,real_bytes
+  use iso_fortran_env, only: int64
+  use iso_c_binding, only: c_f_pointer
+  use cudafor
+  use gpu_check, only: sync_after_kernel
+  implicit none
+  private
+  public :: allocate_index_slice_gpu,release_index_slice_gpu,fill_index_slice_gpu
+  public :: sample_remote_slice_gpu,receive_index_slice_gpu,evaluate_index_slice_gpu,download_index_slice_gpu
+  real(real_kind),pointer,contiguous,device,save :: neighborhood(:,:)=>null(),result_d(:,:)=>null()
+  integer,device,save :: raw_ids_d(12),fields_d(27)
+  real(real_kind),device,save :: weights_d(7,0:6)
+  integer,save :: raw_count=0,field_count=0
+contains
+  attributes(device) function source_value(i,j,k,field,source,count) result(value)
+    use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d
+    use insitu_statistics_gpu, only: slice_statistics_gpu_value
+#ifdef ASTR_AIR5_CHEMISTRY
+    use commarray_gpu, only: tve_d,spc_d
+    use chemistry_mean_statistics_gpu, only: slice_air5_mean_value_gpu
+#endif
+    integer,value :: i,j,k,field,source
+    integer(int64),value :: count
+    real(real_kind) :: value
+    if(source==1.or.source==2) then
+      value=slice_statistics_gpu_value(i,j,k,field,source==2);return
+    endif
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(source==3.or.source==4) then
+      value=slice_air5_mean_value_gpu(i,j,k,field,source==4,count);return
+    endif
+#endif
+    select case(field)
+    case(1)
+      value=rho_d(i,j,k)
+    case(2:4)
+      value=vel_d(i,j,k,field-1)
+    case(5)
+      value=prs_d(i,j,k)
+    case(6)
+      value=tmp_d(i,j,k)
+#ifdef ASTR_AIR5_CHEMISTRY
+    case(7)
+      value=tve_d(i,j,k)
+    case(8:12)
+      value=spc_d(i,j,k,field-7)
+#endif
+    end select
+  end function
+
+  subroutine allocate_index_slice_gpu(nodes,output_nodes,raw_ids,fields,weights,ok)
+    integer,intent(in) :: nodes,output_nodes,raw_ids(:),fields(:)
+    real(real_kind),intent(in) :: weights(7,0:6)
+    logical,intent(out) :: ok
+    call release_index_slice_gpu()
+    raw_count=size(raw_ids);field_count=size(fields)
+    ok=allocate_real2(neighborhood,max(1,nodes),max(1,raw_count))
+    if(ok) ok=allocate_real2(result_d,max(1,output_nodes),field_count)
+    if(.not.ok) then
+      call release_index_slice_gpu();return
+    endif
+    raw_ids_d(:raw_count)=raw_ids;fields_d(:field_count)=fields;weights_d=weights
+  end subroutine
+
+  subroutine release_index_slice_gpu()
+    call free_real2(neighborhood)
+    call free_real2(result_d)
+    raw_count=0;field_count=0
+  end subroutine
+
+  attributes(global) subroutine fill_kernel(indices,positions,n,nraw,source,count,neighborhood)
+    integer,value :: n,nraw,source
+    integer(int64),value :: count
+    integer,device,intent(in) :: indices(3,n),positions(n)
+    real(real_kind),device,intent(out) :: neighborhood(:,:)
+    integer :: node,m
+    node=(blockidx%x-1)*blockdim%x+threadidx%x
+    if(node>n) return
+    do m=1,nraw
+      neighborhood(positions(node),m)=source_value(indices(1,node),indices(2,node),indices(3,node), &
+        raw_ids_d(m),source,count)
+    enddo
+  end subroutine
+
+  subroutine fill_index_slice_gpu(indices,positions,source,count,ok)
+    integer,intent(in) :: indices(:,:),positions(:),source
+    integer(int64),intent(in) :: count
+    logical,intent(out) :: ok
+    integer,pointer,contiguous,device :: idx(:,:)=>null()
+    integer,allocatable,device :: pos(:)
+    integer :: status,n
+    n=size(positions);ok=.true.
+    if(n==0) return
+    ok=allocate_int2(idx,3,n)
+    if(ok) ok=allocation_succeeded(cudaMalloc(pos,n))
+    if(ok) then
+      idx=indices;pos=positions
+      call fill_kernel<<<(n+255)/256,256>>>(idx,pos,n,raw_count,source,count,neighborhood)
+      call sync_after_kernel('index slice local neighborhood',.true.)
+    endif
+    call free_int2(idx)
+    if(allocated(pos)) call require_slice_transfer(cudaFree(pos))
+  end subroutine
+
+  attributes(global) subroutine sample_kernel(indices,values,n,nraw,source,count)
+    integer,value :: n,nraw,source
+    integer(int64),value :: count
+    integer,device,intent(in) :: indices(3,n)
+    real(real_kind),device,intent(out) :: values(n,nraw)
+    integer :: node,m
+    node=(blockidx%x-1)*blockdim%x+threadidx%x
+    if(node>n) return
+    do m=1,nraw
+      values(node,m)=source_value(indices(1,node),indices(2,node),indices(3,node),raw_ids_d(m),source,count)
+    enddo
+  end subroutine
+
+  subroutine sample_remote_slice_gpu(indices,source,count,values,ok)
+    integer,intent(in) :: indices(:,:),source
+    integer(int64),intent(in) :: count
+    real(real_kind),intent(out) :: values(:,:)
+    logical,intent(out) :: ok
+    integer,pointer,contiguous,device :: idx(:,:)=>null()
+    real(real_kind),pointer,contiguous,device :: data(:,:)=>null()
+    integer :: status,n
+    n=size(indices,2);ok=.true.
+    if(n==0) return
+    ok=allocate_int2(idx,3,n)
+    if(ok) ok=allocate_real2(data,n,raw_count)
+    if(ok) then
+      idx=indices
+      call sample_kernel<<<(n+255)/256,256>>>(idx,data,n,raw_count,source,count)
+      call sync_after_kernel('index slice private remote strip',.true.)
+      status=cudaMemcpy(values,data,size(values,kind=int64),cudaMemcpyDeviceToHost)
+      call require_slice_transfer(status)
+    endif
+    call free_int2(idx)
+    call free_real2(data)
+  end subroutine
+
+  attributes(global) subroutine scatter_kernel(positions,values,n,nraw,neighborhood)
+    integer,value :: n,nraw
+    integer,device,intent(in) :: positions(n)
+    real(real_kind),device,intent(in) :: values(n,nraw)
+    real(real_kind),device,intent(inout) :: neighborhood(:,:)
+    integer :: node,m
+    node=(blockidx%x-1)*blockdim%x+threadidx%x
+    if(node>n) return
+    do m=1,nraw
+      neighborhood(positions(node),m)=values(node,m)
+    enddo
+  end subroutine
+
+  subroutine receive_index_slice_gpu(positions,values,ok)
+    integer,intent(in) :: positions(:)
+    real(real_kind),intent(in) :: values(:,:)
+    logical,intent(out) :: ok
+    integer,allocatable,device :: pos(:)
+    real(real_kind),pointer,contiguous,device :: data(:,:)=>null()
+    integer :: status,n
+    n=size(positions);ok=.true.
+    if(n==0) return
+    ok=allocation_succeeded(cudaMalloc(pos,n))
+    if(ok) ok=allocate_real2(data,n,raw_count)
+    if(ok) then
+      pos=positions;data=values
+      call scatter_kernel<<<(n+255)/256,256>>>(pos,data,n,raw_count,neighborhood)
+      call sync_after_kernel('index slice received neighborhood',.true.)
+    endif
+    if(allocated(pos)) call require_slice_transfer(cudaFree(pos))
+    call free_real2(data)
+  end subroutine
+
+  attributes(global) subroutine evaluate_kernel(first,extent,lower,shape,origin,intervals,periodic,n,nraw,nfields, &
+                                               source,count,neighborhood,result_d)
+    use commarray_gpu, only: dxi_d
+    integer,value :: n,nraw,nfields,source
+    integer(int64),value :: count
+    integer,device,intent(in) :: first(3),extent(3),lower(3),shape(3),origin(3),intervals(3)
+    logical,device,intent(in) :: periodic(3)
+    real(real_kind),device,intent(in) :: neighborhood(:,:)
+    real(real_kind),device,intent(out) :: result_d(:,:)
+    integer :: node,point(3),local(3),stencil(3),offset(3),sample(3),center,d,c,s,m,slot,field,pos
+    real(real_kind) :: directional(4,3),gradient(3,3),density_gradient(3),diagnostic(15),v
+    node=(blockidx%x-1)*blockdim%x+threadidx%x-1
+    if(node>=n) return
+    point=first+[mod(node,extent(1)),mod(node/extent(1),extent(2)),node/(extent(1)*extent(2))]
+    local=point-origin
+    directional=0;gradient=0;density_gradient=0
+    if(any(fields_d(:nfields)>=13)) then
+      stencil=point-3
+      do d=1,3
+        if(.not.periodic(d)) stencil(d)=min(max(stencil(d),0),intervals(d)-6)
+      enddo
+      offset=point-stencil
+      do d=1,3
+        do s=0,6
+          sample=point-lower;sample(d)=stencil(d)+s-lower(d)
+          pos=1+sample(1)+shape(1)*(sample(2)+shape(2)*sample(3))
+          do m=1,nraw
+            field=raw_ids_d(m)
+            if(field>4) cycle
+            directional(field,d)=directional(field,d)+weights_d(s+1,offset(d))*neighborhood(pos,m)
+          enddo
+        enddo
+      enddo
+      do d=1,3
+        do c=1,3
+          gradient(c,d)=sum(directional(c+1,:)*dxi_d(local(1),local(2),local(3),:,d))
+        enddo
+        density_gradient(d)=sum(directional(1,:)*dxi_d(local(1),local(2),local(3),:,d))
+      enddo
+    endif
+    diagnostic(:9)=reshape(gradient,[9])
+    diagnostic(10)=-0.5_real_kind*sum(gradient*transpose(gradient))
+    diagnostic(11)=gradient(1,1)+gradient(2,2)+gradient(3,3)
+    diagnostic(12)=gradient(3,2)-gradient(2,3)
+    diagnostic(13)=gradient(1,3)-gradient(3,1)
+    diagnostic(14)=gradient(2,1)-gradient(1,2)
+    diagnostic(15)=sqrt(sum(density_gradient*density_gradient))
+    sample=point-lower;center=1+sample(1)+shape(1)*(sample(2)+shape(2)*sample(3))
+    do m=1,nfields
+      field=fields_d(m)
+      if(field>=13) then
+        v=diagnostic(field-12)
+      elseif(source==0) then
+        v=source_value(local(1),local(2),local(3),field,source,count)
+      else
+        slot=1
+        do c=1,nraw
+          if(raw_ids_d(c)==field) slot=c
+        enddo
+        v=neighborhood(center,slot)
+      endif
+      result_d(node+1,m)=v
+    enddo
+  end subroutine
+
+  subroutine evaluate_index_slice_gpu(first,extent,lower,shape,origin,intervals,periodic,source,count)
+    integer,intent(in) :: first(3),extent(3),lower(3),shape(3),origin(3),intervals(3),source
+    logical,intent(in) :: periodic(3)
+    integer(int64),intent(in) :: count
+    integer,device :: first_d(3),extent_d(3),lower_d(3),shape_d(3),origin_d(3),intervals_d(3)
+    logical,device :: periodic_d(3)
+    integer :: n
+    n=product(extent)
+    if(n==0) return
+    first_d=first;extent_d=extent;lower_d=lower;shape_d=shape;origin_d=origin;intervals_d=intervals
+    periodic_d=periodic
+    call evaluate_kernel<<<(n+255)/256,256>>>(first_d,extent_d,lower_d,shape_d,origin_d,intervals_d,periodic_d, &
+      n,raw_count,field_count,source,count,neighborhood,result_d)
+    call sync_after_kernel('index slice physical diagnostics',.true.)
+  end subroutine
+
+  subroutine download_index_slice_gpu(values,ok)
+    real(real_kind),intent(out) :: values(:,:)
+    logical,intent(out) :: ok
+    integer :: status
+    ok=.true.
+    if(size(values)==0) return
+    status=cudaMemcpy(values,result_d,size(values,kind=int64),cudaMemcpyDeviceToHost)
+    call require_slice_transfer(status)
+  end subroutine
+
+  subroutine require_slice_transfer(status)
+    use mpi, only: MPI_COMM_WORLD,MPI_Abort
+    integer,intent(in) :: status
+    integer :: ignored
+    if(status/=cudaSuccess) then
+      print *, 'index slice CUDA transfer failed; device context is not assumed recoverable: ',status
+      call MPI_Abort(MPI_COMM_WORLD,status,ignored)
+    endif
+  end subroutine
+
+  logical function allocation_succeeded(status) result(ok)
+    integer,intent(in) :: status
+    integer :: code
+    ok=status==0
+    if(ok) return
+    if(status/=cudaErrorMemoryAllocation) call require_slice_transfer(status)
+    ! Consume only a recoverable allocation error, not an earlier invalid context.
+    code=cudaGetLastError()
+    if(code/=cudaSuccess.and.code/=cudaErrorMemoryAllocation) call require_slice_transfer(code)
+  end function
+
+  logical function allocate_real2(array,n1,n2) result(ok)
+    real(real_kind),pointer,contiguous,device,intent(inout) :: array(:,:)
+    integer,intent(in) :: n1,n2
+    type(c_devptr) :: address
+    ok=allocation_succeeded(cudaMalloc(address,int(n1,int64)*n2*real_bytes))
+    if(ok) call c_f_pointer(address,array,[n1,n2])
+  end function
+
+  logical function allocate_int2(array,n1,n2) result(ok)
+    integer,pointer,contiguous,device,intent(inout) :: array(:,:)
+    integer,intent(in) :: n1,n2
+    type(c_devptr) :: address
+    ok=allocation_succeeded(cudaMalloc(address,int(n1,int64)*n2*(storage_size(0)/8)))
+    if(ok) call c_f_pointer(address,array,[n1,n2])
+  end function
+
+  subroutine free_real2(array)
+    real(real_kind),pointer,contiguous,device,intent(inout) :: array(:,:)
+    if(associated(array)) call require_slice_transfer(cudaFree(c_devloc(array)))
+    nullify(array)
+  end subroutine
+
+  subroutine free_int2(array)
+    integer,pointer,contiguous,device,intent(inout) :: array(:,:)
+    if(associated(array)) call require_slice_transfer(cudaFree(c_devloc(array)))
+    nullify(array)
+  end subroutine
+end module

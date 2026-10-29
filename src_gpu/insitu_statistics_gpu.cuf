@@ -19,6 +19,7 @@ module insitu_statistics_gpu
   public :: statistics_transfer_counts
   public :: download_statistics_gpu_means
   public :: sample_statistics_gpu_mean_vectors
+  public :: slice_statistics_gpu_info,slice_statistics_gpu_value
 #ifdef ASTR_BUILD_TESTING
   public :: check_device_statistics_gpu_means
   public :: begin_preview_statistics_check,end_preview_statistics_check
@@ -50,6 +51,25 @@ module insitu_statistics_gpu
   real(real_kind),save :: previous_time=0.e0_real_kind,saved_window(2)=0.e0_real_kind
   logical,save :: has_previous=.false.
 contains
+  subroutine slice_statistics_gpu_info(active,covered,window,duration)
+    logical,intent(out) :: active,covered
+    real(real_kind),intent(out) :: window(2),duration
+    active=has_previous;covered=allocated(state_d);window=saved_window;duration=0
+    if(covered) duration=state_d(0,0,0,5)
+    covered=covered.and.duration>0
+  end subroutine
+
+  attributes(device) function slice_statistics_gpu_value(i,j,k,field,favre) result(value)
+    integer,value :: i,j,k,field
+    logical,value :: favre
+    real(real_kind) :: value
+    if(field==1) then
+      value=state_d(i,j,k,6)/state_d(i,j,k,5)
+    else
+      value=state_d(i,j,k,field+5+merge(3,0,favre))
+    endif
+  end function
+
 #ifdef ASTR_BUILD_TESTING
   subroutine begin_preview_statistics_check()
     integer :: status

@@ -69,6 +69,9 @@ def assert_render_control(actual,reference):
     from test_checkpoint_export import export
     normalized=[]
     for raw in (actual,reference):
+        if raw[:8]==b'ASTRIR07':
+            from run_output_restart_validation import native_render_payload
+            raw=native_render_payload(raw)
         assert raw[:8] in (b'ASTRIR04',b'ASTRIR06')
         if raw[:8]==b'ASTRIR06':
             assert raw[-64:-56]==b'ASTRMC01'
@@ -194,7 +197,8 @@ def test_local_plane_same_version_exact_continuation(tmp_path):
     first=tmp_path/'first'
     launch(first,CURRENT,'slice_only',steps=2)
     source=first/'outdat/new/checkpoints/step000000000002'
-    raw=(source/'insitu_control.bin').read_bytes()
+    from run_output_restart_validation import native_render_payload
+    raw=native_render_payload((source/'insitu_control.bin').read_bytes())
     assert raw[:8]==b'ASTRIR06' and raw[-64:-56]==b'ASTRMC01'
     mask,*ranges=struct.unpack('<q6d',raw[-56:])
     record=json.loads((first/'outdat/render/mesh_step00000002_rank0.json').read_text())
@@ -215,16 +219,15 @@ def test_local_plane_same_version_exact_continuation(tmp_path):
     assert before=={p:p.read_bytes() for p in source.iterdir() if p.is_file()}
 
 
-def test_legacy_plane_checkpoint_requires_explicit_recalibration(tmp_path):
+def test_pre_catalog_plane_checkpoint_is_not_restart_compatible(tmp_path):
     source=CAMPAIGN/'im7_group_remaining/test_local_plane_supply_matche0/current/outdat/new/checkpoints/step000000000002'
     before={p:p.read_bytes() for p in source.iterdir() if p.is_file()}
     with pytest.raises(subprocess.CalledProcessError):
         launch(tmp_path/'rejected',CURRENT,'slice_only',steps=4,restore=source)
     log=(tmp_path/'rejected/run.log').read_text()
-    assert 'M12 checkpoint has no frozen color state; select explicit override to recalibrate' in log
+    assert 'ASTRIR07' in log
     assert not list((tmp_path/'rejected/outdat/new').rglob('COMPLETE'))
-    launch(tmp_path/'override',CURRENT,'slice_only',steps=4,restore=source,override=True)
-    assert 'explicit override: recalibrating display ranges' in (tmp_path/'override/run.log').read_text()
-    raw=(tmp_path/'override/outdat/new/checkpoints/step000000000004/insitu_control.bin').read_bytes()
-    assert raw[:8]==b'ASTRIR06' and struct.unpack_from('<q',raw,len(raw)-56)[0]==7
+    with pytest.raises(subprocess.CalledProcessError):
+        launch(tmp_path/'override',CURRENT,'slice_only',steps=4,restore=source,override=True)
+    assert 'ASTRIR07' in (tmp_path/'override/run.log').read_text()
     assert before=={p:p.read_bytes() for p in source.iterdir() if p.is_file()}

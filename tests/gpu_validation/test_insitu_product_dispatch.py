@@ -12,7 +12,7 @@ import pytest
 
 from test_output_insitu_restart import ROOT, arguments, configuration
 from test_insitu_device_products import device_configuration, resident_configuration, field_difference, cross_backend_statistics_difference
-from run_output_restart_validation import run_case
+from run_output_restart_validation import run_case,native_render_payload
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get('ASTR_OUTPUT_INSITU_EXE') or not os.environ.get('ASTR_OUTPUT_INSITU_BACKEND'),
@@ -75,7 +75,7 @@ def test_fixed_product_routing(tmp_path, pipeline, transport, ranks, record_prop
     assert 'device_reynolds_lines_inclusive' not in log and 'device_favre_lines_inclusive' not in log
     assert 'device_crossing_lines_inclusive' not in log
     control = case / 'outdat/new/checkpoints/step000000000012/insitu_control.bin'
-    assert control.read_bytes()[:8] == b'ASTRIR04'
+    assert native_render_payload(control.read_bytes())[:8] == b'ASTRIR04'
     record_property('directory_bytes', size)
 
 

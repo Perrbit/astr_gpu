@@ -10,7 +10,7 @@ COLLECTIVE = os.environ.get('ASTR_OUTPUT_COLLECTIVE_PROBE')
 MPIEXEC = os.environ.get('ASTR_OUTPUT_MPIEXEC')
 pytestmark = pytest.mark.skipif(not PROBE, reason='Set ASTR_OUTPUT_CONFIG_PROBE from the root CMake build')
 
-DISABLED = '&output\n/\n&checkpoint\n/\n&volume\n/\n&slices\n/\n'
+DISABLED = '&output\n/\n&checkpoint\n/\n&volume\n/\n'
 VALID = '''&output
   host_budget_bytes=134217728, device_budget_bytes=67108864
 /
@@ -19,9 +19,6 @@ VALID = '''&output
 /
 &volume
   enabled=t, mode='time', interval_time=0.01, vorticity=t
-/
-&slices
-  enabled=t, interval_steps=5, i_indices=0,8,16, j_indices=12,24, k_indices=32
 /
 '''
 
@@ -90,10 +87,9 @@ def test_documented_output_examples(tmp_path, name, selected):
     root = Path(__file__).resolve().parents[2]
     result = run(tmp_path, (root / 'scripts/output' / name).read_text())
     assert result.returncode == 0, result.stdout + result.stderr
-    assert 'slice_counts=1 1 1' in result.stdout
-    for product in ('volume', 'slices'):
-        line = next(line for line in result.stdout.splitlines() if line.startswith(product+'_derived_indices='))
-        assert list(map(int, line.split('=', 1)[1].split())) == selected
+    assert 'slice_counts=0 0 0' in result.stdout
+    line = next(line for line in result.stdout.splitlines() if line.startswith('volume_derived_indices='))
+    assert list(map(int, line.split('=', 1)[1].split())) == selected
 
 
 @pytest.mark.parametrize('content', [
@@ -118,10 +114,10 @@ def test_documented_output_examples(tmp_path, name, selected):
     VALID.replace('device_budget_bytes=67108864', "directory='" + 'x' * 1100 + "'"),
     VALID.replace('device_budget_bytes=67108864', "restart_output='override'"),
     VALID.replace('vorticity=t', "fields='all'"),
-    VALID.replace('i_indices=0,8,16, j_indices=12,24, k_indices=32', ''),
-    VALID.replace('i_indices=0,8,16', 'i_indices=-2,8,16'),
+    VALID + '&slices\n enabled=t,interval_steps=5,i_indices=0\n/\n',
+    VALID + '&slices\n enabled=f,i_indices=0\n/\n',
     VALID.replace('interval_steps=100', 'misspelled_interval=100'),
-    VALID.replace('i_indices=0,8,16', 'i_indices(257)=1'),
+    VALID.replace('&output\n', '&output\n product_poll_steps=0,\n'),
     VALID.replace('/\n&volume', '/ garbage\n&volume'),
 ])
 def test_rejected_without_changing_active_options(tmp_path, content):
@@ -130,10 +126,10 @@ def test_rejected_without_changing_active_options(tmp_path, content):
     assert 'REJECT unchanged:' in result.stdout, result.stdout + result.stderr
 
 
-def test_slices_deduplicated(tmp_path):
-    result = run(tmp_path, VALID.replace('i_indices=0,8,16', 'i_indices=0,8,0,8,16'))
+def test_empty_retired_slices_placeholder_has_no_definitions(tmp_path):
+    result = run(tmp_path, VALID + '&slices\n enabled=f\n/\n')
     assert result.returncode == 0, result.stdout + result.stderr
-    assert 'slice_counts=3 2 1' in result.stdout
+    assert 'slice_counts=0 0 0' in result.stdout
 
 
 @pytest.mark.parametrize('flags', range(8))
@@ -141,7 +137,7 @@ def test_slices_deduplicated(tmp_path):
 def test_derived_switches_have_canonical_layout(tmp_path, flags, enabled):
     controls = ','.join(f'{name}={"t" if flags & (1 << bit) else "f"}'
                         for bit, name in enumerate(('velocity_gradient', 'qcriterion', 'vorticity')))
-    content = VALID.replace('vorticity=t', controls).replace('&slices\n', '&slices\n  ' + controls + ',\n')
+    content = VALID.replace('vorticity=t', controls)
     if not enabled:
         content = content.replace('enabled=t', 'enabled=f')
     result = run(tmp_path, content)
@@ -155,16 +151,18 @@ def test_derived_switches_have_canonical_layout(tmp_path, flags, enabled):
         if flags & 4:
             expected.extend((12, 13, 14))
     expected += [0]*(14-len(expected))
-    for product in ('volume', 'slices'):
-        line = next(line for line in result.stdout.splitlines() if line.startswith(product+'_derived_indices='))
-        assert list(map(int, line.split('=', 1)[1].split())) == expected
+    line = next(line for line in result.stdout.splitlines() if line.startswith('volume_derived_indices='))
+    assert list(map(int, line.split('=', 1)[1].split())) == expected
+    line = next(line for line in result.stdout.splitlines() if line.startswith('slices_derived_indices='))
+    assert list(map(int, line.split('=', 1)[1].split())) == [0]*14
 
 
-@pytest.mark.parametrize('before,after', [('0,8,16', '0,8,17'), ('12,24', '12,25'), ('k_indices=32', 'k_indices=33')])
-def test_global_grid_bounds(tmp_path, before, after):
-    result = run(tmp_path, VALID.replace(before, after))
+@pytest.mark.parametrize('definition', ['enabled=t,interval_steps=1,k_indices=8', 'enabled=f,k_indices=8',
+                                       'enabled=f,qcriterion=t'])
+def test_retired_static_definitions_rejected(tmp_path, definition):
+    result = run(tmp_path, VALID + '&slices\n ' + definition + '\n/\n')
     assert result.returncode != 0
-    assert 'REJECT grid:' in result.stdout, result.stdout + result.stderr
+    assert 'REJECT unchanged:' in result.stdout, result.stdout + result.stderr
 
 
 @pytest.mark.skipif(not COLLECTIVE or not MPIEXEC, reason='Set output collective probe and MPI launcher')

@@ -149,7 +149,7 @@ def check_private_diagnostics(cpu, gpu, ranks):
 
 def run(args, backend, topology, insitu_config=None, case_label=None, resource_baseline=None,
         observation=None, steps=10, restore=None, checkpoint_interval=None,product_oracles=False,
-        exact_restart=None):
+        exact_restart=None,product_catalog_records=None):
     if steps not in (5,10) or (restore is not None and (steps!=10 or checkpoint_interval is None)):
         raise ValueError('M12 restart gate is limited to ten steps or five-plus-five')
     if observation not in (None, 'plain', 'images', 'geometry', 'trace'):
@@ -175,7 +175,10 @@ def run(args, backend, topology, insitu_config=None, case_label=None, resource_b
     if min(external_host_budget, device_budget, device_reserve, directory_budget, timeout) <= 0:
         raise ValueError('M12 resource budgets and timeout must be positive')
     case = args.output / ((case_label or backend) + '_np' + str(ranks) + '_' + topology.replace(',', 'x'))
-    prepare(args.source, case, backend)
+    prepare(args.source, case, backend, intervals=getattr(args,'intervals',(64,32,24)))
+    if product_catalog_records is not None:
+        (case/'input.products.jsonl').write_text('\n'.join(json.dumps(record) for record in
+            [{'catalog_schema':'astr-insitu-products-v1'},*product_catalog_records])+'\n')
     if getattr(args, 'boundary', None) == 'nscbc':
         primary=case/'datin/input.dat'
         lines=primary.read_text().splitlines()
@@ -241,12 +244,14 @@ def run(args, backend, topology, insitu_config=None, case_label=None, resource_b
         env['ASTR_GPU_PRECISION_MODE'] = '' if precision == 'fp32' else 'fp64'
     if getattr(args, 'insitu_write_eps', None) is not None:
         env['ASTR_INSITU_WRITE_EPS'] = args.insitu_write_eps
-    if observation:
+    if observation or not getattr(args,'capture_rhs',True):
         for key in ('ASTR_GEOMETRY_DUMP', 'ASTR_VALIDATION_RHS_PREFIX', 'ASTR_M12_SENSOR_DETAIL',
                     'ASTR_VALIDATION_RHS_STEP', 'ASTR_VALIDATION_RHS_STEP_END'):
             env.pop(key, None)
     if args.diagnostics:
         env['ASTR_M12_DIAGNOSTIC_CHECK'] = '1'
+    if getattr(args,'slice_timing',False):
+        env['ASTR_INSITU_TIMING']='1'
     if insitu_config is not None:
         if backend != 'gpu':
             raise ValueError('approved M12 render preset requires the GPU solver')
@@ -345,7 +350,8 @@ def run(args, backend, topology, insitu_config=None, case_label=None, resource_b
                         process.wait()
                 raise
     progress(final=True)
-    if (not observation and len(checked) != (1+3*(steps-first_step))*ranks) or 'The job is done!' not in (case/'run.log').read_text():
+    if (not observation and getattr(args,'capture_rhs',True) and len(checked) != (1+3*(steps-first_step))*ranks) or \
+            'The job is done!' not in (case/'run.log').read_text():
         raise ValueError('missing successful ten-step/three-stage state checks')
     if args.memcheck and backend == 'gpu':
         logs = list(case.glob('memcheck.*.log'))

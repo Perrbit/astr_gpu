@@ -2,6 +2,9 @@ message(STATUS "CMAKE_SOURCE_DIR: ${CMAKE_SOURCE_DIR}")
 message(STATUS "PROJECT_BINARY_DIR: ${PROJECT_BINARY_DIR}")
 
 enable_language(C)
+add_library(astr_catalog_json STATIC insitu_catalog_json.c vendor/yyjson/yyjson.c)
+set_target_properties(astr_catalog_json PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED YES)
+target_compile_definitions(astr_catalog_json PRIVATE YYJSON_DISABLE_FILE=1)
 # Parallel HDF5 headers include mpi.h; use the selected Fortran MPI installation.
 if(NOT MPI_C_COMPILER)
   get_filename_component(ASTR_MPI_BINDIR "${MPI_Fortran_COMPILER}" DIRECTORY)
@@ -10,7 +13,7 @@ if(NOT MPI_C_COMPILER)
   endif()
 endif()
 find_package(MPI REQUIRED COMPONENTS C)
-add_library(astr_checkpoint_filesystem STATIC checkpoint_filesystem.c checkpoint_hdf5_resources.c)
+add_library(astr_checkpoint_filesystem STATIC checkpoint_filesystem.c checkpoint_hdf5_resources.c index_slice_hdf5.c)
 target_include_directories(astr_checkpoint_filesystem PRIVATE ${HDF5_INCLUDE_DIRS})
 target_link_libraries(astr_checkpoint_filesystem PRIVATE ${HDF5_LIBRARIES} MPI::MPI_C)
 set_target_properties(astr_checkpoint_filesystem PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED YES)
@@ -72,6 +75,7 @@ set(ASTR_SOURCES
   insitu_runtime.F90
   insitu_resource_budget.F90
   insitu_run_config.F90
+  insitu_catalog.F90
   insitu_config_collective.F90
   insitu_fields.F90
   insitu_geometry.F90
@@ -91,6 +95,10 @@ set(ASTR_SOURCES
   output_config.F90
   output_input_resources.F90
   output_fields.F90
+  index_slice_stencil.F90
+  index_slice_source.F90
+  index_slice_provider.F90
+  index_slice_archive.F90
   output_lineage.F90
   output_archive.F90
   output_runtime.F90
@@ -146,6 +154,7 @@ if(ASTR_WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/checkpoint_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/checkpoint_state_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/output_fields_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/index_slice_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/production_statistics_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/commvar_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/qswap_gpu.cuf
@@ -227,6 +236,27 @@ if(ASTR_WITH_CUDA AND ASTR_CUDA_LINEINFO AND CMAKE_Fortran_COMPILER_ID MATCHES "
 endif()
 if(BUILD_TESTING)
   enable_language(CXX)
+  add_executable(insitu_catalog_probe EXCLUDE_FROM_ALL astr_precision.F90
+    insitu_schedule.F90 adaptive_output.F90 insitu_run_config.F90 insitu_catalog.F90 insitu_product_schedule.F90
+    ../tests/gpu_validation/insitu_catalog_probe.F90)
+  set_target_properties(insitu_catalog_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_catalog_modules")
+  target_include_directories(insitu_catalog_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/insitu_catalog_modules")
+  target_link_libraries(insitu_catalog_probe PRIVATE astr_catalog_json)
+  add_executable(insitu_catalog_state_probe EXCLUDE_FROM_ALL astr_precision.F90
+    insitu_schedule.F90 adaptive_output.F90 insitu_run_config.F90 insitu_catalog.F90 insitu_product_schedule.F90
+    ../tests/gpu_validation/insitu_catalog_state_probe.F90)
+  set_target_properties(insitu_catalog_state_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_catalog_state_modules")
+  target_include_directories(insitu_catalog_state_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/insitu_catalog_state_modules")
+  target_link_libraries(insitu_catalog_state_probe PRIVATE astr_catalog_json)
+  add_executable(insitu_catalog_mpi_probe EXCLUDE_FROM_ALL astr_precision.F90
+    insitu_schedule.F90 adaptive_output.F90 insitu_run_config.F90 insitu_catalog.F90 insitu_product_schedule.F90
+    ../tests/gpu_validation/insitu_catalog_mpi_probe.F90)
+  set_target_properties(insitu_catalog_mpi_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/insitu_catalog_mpi_modules")
+  target_include_directories(insitu_catalog_mpi_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/insitu_catalog_mpi_modules")
+  target_link_libraries(insitu_catalog_mpi_probe PRIVATE astr_catalog_json)
   add_executable(native_precision_probe EXCLUDE_FROM_ALL astr_precision.F90
     commtype.F90 commvar.F90 commarray.F90 constdef.F90
     ../tests/gpu_validation/native_precision_probe.F90
@@ -274,7 +304,7 @@ if(BUILD_TESTING)
       "${CMAKE_CURRENT_BINARY_DIR}/wall_upload_probe_modules")
   endif()
 endif()
-target_link_libraries(astr PRIVATE astr_checkpoint_filesystem)
+target_link_libraries(astr PRIVATE astr_checkpoint_filesystem astr_catalog_json)
 set_target_properties(astr PROPERTIES LINKER_LANGUAGE Fortran)
 
 if(ASTR_WITH_CATALYST)
@@ -1267,6 +1297,11 @@ install(FILES
   ../scripts/output/input.output.tgv.example
   ../scripts/output/input.output.tgv.derived.example
   ../scripts/output/input.output.air5.derived.example
+  ../scripts/output/input.products.tgv.example.jsonl
+  ../scripts/output/input.products.air5.example.jsonl
+  ../scripts/output/INDEX_SLICE_ARCHIVES.md
+  ../scripts/insitu/product_catalog.py
+  ../scripts/insitu/slice_archive.py
   ../scripts/output/README.md
   DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/output
   COMPONENT OutputTools)

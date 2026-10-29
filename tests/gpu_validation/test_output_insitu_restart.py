@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image
 import pytest
 
-from run_output_restart_validation import run_case, compare_fields, archive_schedule_payload
+from run_output_restart_validation import run_case, compare_fields, archive_schedule_payload,native_render_payload
 from test_checkpoint_bundle import fault_library
 from test_output_series_repair import seal_file_records, repair
 
@@ -127,7 +127,7 @@ def reference(request, tmp_path_factory, fault_library):
     check_render(continuous, ranks, [8, 12])
     source = continuous / "outdat/new/checkpoints/step000000000005"
     assert (source / "PROTECT").is_file()
-    control = (source / "insitu_control.bin").read_bytes()
+    control = native_render_payload((source / "insitu_control.bin").read_bytes())
     assert len(control) == 361 and control[:8] == b'ASTRIR03'
     assert control[176:192] == b'compatible      '
     return args, ranks, mode, continuous, source, size

@@ -570,6 +570,27 @@ _Avoid_: Online interaction, treating a rendered image as the underlying quantit
 A predefined selection of input fields, extraction operations, views, and display settings used to generate visualization products. It is distinct from the solver's authoritative field definitions, statistical accumulation, and postprocessing cadence.
 _Avoid_: Redefining quantitative statistics in a display recipe, silently adding another output schedule, equating offline scene preparation with live simulation control
 
+**ASTR runtime product instance**:
+A separately identified request for an implemented postprocessing product type with selected fields, spatial region and, where applicable, presentation parameters. Multiple instances may use the same product type; adding an instance does not introduce a new diagnostic algorithm or extend that type to unsupported flow configurations.
+_Avoid_: Runtime loading of arbitrary numerical code, equating one product type with one fixed view, treating a new display region as a change to the simulated flow
+
+**ASTR product definition version**:
+A revision of a runtime product instance that groups outputs with fixed field, spatial-extraction and presentation definitions. Changing those definitions starts a new version under the retained product name, without rewriting the earlier output sequence.
+Cadence-only changes retain the definition version and have their own recorded activation step and time.
+_Avoid_: Mixing changed planes or Q thresholds into one unchanged definition, deleting earlier images when revising a view, treating a display revision as a solver algorithm change
+
+**ASTR runtime product catalog**:
+The complete intended set of runtime product instances, rather than an incremental command list. An instance absent from a new identifiable catalog is stopped without deleting its historical output; invalid records are handled individually.
+_Avoid_: Assuming an omitted product stays active, treating unreadable input as an intentionally empty catalog, deleting old images when changing catalog membership
+
+**ASTR product enable request**:
+An explicitly increased user request number that re-enables a product suspended by a recoverable resource failure without changing its observation definition. The consumed request is retained so publishing unrelated edits does not reactivate the product again.
+_Avoid_: Product definition version, interpreting a cadence edit as a retry request, retrying a resource-suspended product every output period
+
+**ASTR product catalog publication**:
+A user's explicit submission of a completed candidate runtime product catalog to a running simulation. Publication is distinct from accepting each product and from observing or emitting a completed-step state.
+_Avoid_: Treating an intermediate editing save as a submitted update, assuming every published entry was activated, equating a changed file with an emitted image
+
 **ASTR extracted spatial product**:
 A saved slice, streamline, or isosurface together with its selected attached fields. It supports offline inspection of the extracted object, not arbitrary reanalysis of the unsaved full flow field, and is not a restart checkpoint.
 _Avoid_: Full-field archive, assuming saved geometry permits new thresholds or seed integration
@@ -580,7 +601,11 @@ _Avoid_: Rolling recovery points used as a permanent archive, confusing full-dom
 
 **ASTR slice series**:
 A sequence of fields on selected sampling surfaces at recorded completed-step times, with its own output cadence. When enabled, all emitted frames are retained by default independently of volume-field and checkpoint output, but cannot reconstruct the unsaved three-dimensional domain.
-_Avoid_: A complete three-dimensional field, a restart checkpoint, deleting slice history during checkpoint rotation
+_Avoid_: A rendered screenshot sequence, a complete three-dimensional field, a restart checkpoint, deleting slice history during checkpoint rotation
+
+**ASTR slice archive segment**:
+A self-contained sequence of actual slice observations produced during one run or continuation for a product definition version. Starting a continuation segment preserves the restored definition and scheduling history without creating observations for unsaved times or implicitly including another run's frames.
+_Avoid_: Product definition revision, checkpoint generation, assuming continuation requires copying historical flow files
 
 **ASTR grid-index slice**:
 A sampling surface formed by fixing one global computational-grid index and retaining the physical coordinates and nodal fields on that surface. It can be curved on a curvilinear mesh and is distinct from an interpolated plane specified in physical space.

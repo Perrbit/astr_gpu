@@ -5,6 +5,7 @@ module output_fields
   use mpi
   use hdf5
   use checkpoint_state_io, only: checkpoint_state_identity,checkpoint_state_require
+  use insitu_run_config, only: catalog_field_names
   implicit none
   private
   public :: write_basic_output,pack_basic_output_cpu,basic_output_names,write_slice_output_xdmf
@@ -14,6 +15,9 @@ module output_fields
   public :: derived_output_workspace_cpu
   public :: private_derivative_layout_valid
   public :: output_basic_components
+  public :: select_output_fields_cpu,pack_selected_output_cpu
+  public :: write_grid_xml,catalog_quantity_units
+  integer,allocatable,save :: catalog_ids_cpu(:)
   real(real_kind),allocatable,save :: private_velocity(:,:,:,:)
   integer,save :: selected_cpu(14)=0
   integer,save :: private_types_cpu(3)=3
@@ -111,6 +115,61 @@ contains
             enddo
           endif
 #endif
+        enddo
+      enddo
+    enddo
+  end subroutine
+
+  logical function select_output_fields_cpu(fields) result(ok)
+    use commvar, only: numq
+    integer,intent(in) :: fields(:)
+    integer :: limit
+    limit=6
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(numq==11) limit=12
+#endif
+    ok=size(fields)>0.and.size(fields)<=size(catalog_field_names).and.all(fields>=1).and.all(fields<=limit)
+    if(ok) then
+      catalog_ids_cpu=fields
+    elseif(allocated(catalog_ids_cpu)) then
+      deallocate(catalog_ids_cpu)
+    endif
+  end function
+
+  subroutine pack_selected_output_cpu(start,extent,components,values)
+    use commarray, only: rho,vel,prs,tmp
+#ifdef ASTR_AIR5_CHEMISTRY
+    use commarray, only: tve,spc
+#endif
+    integer,intent(in) :: start(3),extent(3),components
+    real(real_kind),intent(out) :: values(:)
+    integer :: i,j,k,n,nodes,m,field
+    if(.not.allocated(catalog_ids_cpu)) error stop 'select numerical fields before CPU packing'
+    if(components/=size(catalog_ids_cpu)) error stop 'selected CPU output component count mismatch'
+    nodes=product(extent);n=0
+    do k=start(3),start(3)+extent(3)-1
+      do j=start(2),start(2)+extent(2)-1
+        do i=start(1),start(1)+extent(1)-1
+          n=n+1
+          do m=1,components
+            field=catalog_ids_cpu(m)
+            select case(field)
+            case(1)
+              values((m-1)*nodes+n)=rho(i,j,k)
+            case(2:4)
+              values((m-1)*nodes+n)=vel(i,j,k,field-1)
+            case(5)
+              values((m-1)*nodes+n)=prs(i,j,k)
+            case(6)
+              values((m-1)*nodes+n)=tmp(i,j,k)
+#ifdef ASTR_AIR5_CHEMISTRY
+            case(7)
+              values((m-1)*nodes+n)=tve(i,j,k)
+            case(8:12)
+              values((m-1)*nodes+n)=spc(i,j,k,field-7)
+#endif
+            end select
+          enddo
         enddo
       enddo
     enddo
@@ -231,7 +290,7 @@ contains
   subroutine write_basic_output(path,global_shape,origin,cells,axis,index,components, &
                                 coordinates,pack,identity,buffer_bytes,host_budget,comm,units, &
                                 peak_bytes,field_bytes,group_name,append,geometry_only,geometry_file,verify_geometry, &
-                                derived_indices)
+                                derived_indices,field_selection,index_ranges,file_name,write_xml)
     character(*),intent(in) :: path,units
     integer,intent(in) :: global_shape(3),origin(3),cells(3),axis,index,components,comm
     real(real_kind),intent(in) :: coordinates(0:,0:,0:,:)
@@ -245,18 +304,25 @@ contains
     character(*),optional,intent(in) :: geometry_file
     logical,optional,intent(in) :: verify_geometry
     integer,optional,intent(in) :: derived_indices(:)
+    integer,optional,intent(in) :: field_selection(:),index_ranges(2,3)
+    character(*),optional,intent(in) :: file_name
+    logical,optional,intent(in) :: write_xml
     real(real_kind),allocatable :: values(:),xyz(:,:)
     integer(int64) :: capacity,local_nodes,local_tiles,max_tiles,tile,ntiles(3),tile_grid(3),header(11),agreed(11)
     integer :: owned(3),first(3),extent(3),block(3),start(3),global_start(3),dim,position,m,i,j,k,n,err,rank
     integer :: selected_dims(3),ndims,d,nodes,status,packed_components,space_rank,verify_flag,agreed_verify
+    integer :: bounds(2,3),lower(3),upper(3),coordinate_components
     integer :: selected_derived(14),nfields
-    integer(hid_t) :: file,location,access,xfer,native,storage_type,sets(28),spaces(28),mem,integer_set,integer_space,dtype
+    integer(hid_t) :: file,location,access,xfer,native,storage_type,sets(size(catalog_field_names)+2), &
+      spaces(size(catalog_field_names)+2),mem,integer_set,integer_space,dtype
     integer(hsize_t) :: shape3(3),shape4(4),counts(4),offsets(4),memory_shape(1),actual_dims(4),max_dims(4)
     character(32) :: name
     character(16) :: agreed_units
     character(64) :: group,agreed_group
     integer :: append_flag,agreed_append
     logical :: participates,adding,valid_group,only_geometry,write_coordinates,selected_set,verifying,equal_type,equal_values
+    logical :: catalog_mode,make_velocity,need_coordinates,emit_xml
+    character(:),allocatable :: basename,hdf_path,xml_path
     character(1024) :: geometry_source,agreed_geometry
     integer :: geometry_flag,agreed_geometry_flag
     call MPI_Comm_rank(comm,rank,err)
@@ -267,8 +333,17 @@ contains
 #ifndef ASTR_AIR5_CHEMISTRY
     call require(components==6,comm,'AIR5 output is not built')
 #endif
-    call agree_derived_selection(derived_indices,selected_derived,comm)
-    nfields=components+count(selected_derived>0)
+    catalog_mode=present(field_selection);make_velocity=.not.catalog_mode
+    selected_derived=0
+    if(catalog_mode) then
+      call require(axis>=1.and.axis<=3.and.size(field_selection)<=size(catalog_field_names),comm,'index-slice layout')
+      call require(size(field_selection)>0.and.all(field_selection>=1).and. &
+        all(field_selection<=size(catalog_field_names)),comm,'selected fields')
+      nfields=size(field_selection)
+    else
+      call agree_derived_selection(derived_indices,selected_derived,comm)
+      nfields=components+count(selected_derived>0)
+    endif
     call require(units=='si'.or.units=='dimensionless',comm,'unit declaration')
     call require(all(shape(coordinates)==[cells+1,3]),comm,'coordinate shape')
     call require(identity%step>=0.and.ieee_is_finite(identity%time).and.identity%time>=0.and. &
@@ -284,15 +359,24 @@ contains
     agreed_units=units
     call MPI_Bcast(agreed_units,16,MPI_CHARACTER,0,comm,err)
     call require(err==MPI_SUCCESS.and.trim(agreed_units)==units,comm,'units differ between ranks')
-    only_geometry=.false.; geometry_source='data.h5'
+    basename='data.h5'
+    if(present(file_name)) basename=file_name
+    hdf_path=trim(path)//'/'//basename
+    xml_path=trim(path)//'/data.xdmf'
+    if(basename/='data.h5') xml_path=hdf_path//'.xdmf'
+    emit_xml=.true.
+    if(present(write_xml)) emit_xml=write_xml
+    only_geometry=.false.; geometry_source=basename
     verifying=.false.
     if(present(verify_geometry)) verifying=verify_geometry
     if(present(geometry_only)) only_geometry=geometry_only
     if(present(geometry_file)) geometry_source=geometry_file
-    write_coordinates=geometry_source=='data.h5'
+    write_coordinates=geometry_source==basename
     call require(.not.only_geometry.or.write_coordinates,comm,'geometry writer cannot reference other geometry')
     call require(.not.verifying.or.only_geometry,comm,'verification requires geometry-only mode')
-    call require(.not.only_geometry.or.nfields==components,comm,'geometry cannot contain derived fields')
+    call require(.not.only_geometry.or.catalog_mode.or.nfields==components,comm,'geometry cannot contain derived fields')
+    need_coordinates=.not.catalog_mode.or.only_geometry.or.write_coordinates.or.verifying
+    coordinate_components=merge(3,0,need_coordinates)
     verify_flag=merge(1,0,verifying); agreed_verify=verify_flag
     call MPI_Bcast(agreed_verify,1,MPI_INTEGER,0,comm,err)
     call require(err==MPI_SUCCESS.and.verify_flag==agreed_verify,comm,'geometry verification differs between ranks')
@@ -320,26 +404,31 @@ contains
     call MPI_Bcast(agreed_append,1,MPI_INTEGER,0,comm,err)
     call require(err==MPI_SUCCESS.and.agreed_append==append_flag,comm,'append mode differs between ranks')
     if(axis>0) call require(index>=0.and.index<global_shape(max(1,axis)),comm,'slice index')
+    bounds(1,:)=0;bounds(2,:)=global_shape-1
+    if(present(index_ranges)) bounds=index_ranges
+    if(axis>0) bounds(:,axis)=index
+    if(present(index_ranges)) call require(all(bounds(1,:)>=0).and.all(bounds(2,:)<global_shape).and. &
+      all(bounds(1,:)<=bounds(2,:)),comm,'global index range')
     owned=cells
     where(origin+cells==global_shape-1) owned=owned+1
-    first=0
-    participates=.true.
-    if(axis>0) then
-      participates=index>=origin(axis).and.index<origin(axis)+owned(axis)
-      first(axis)=index-origin(axis)
-      owned(axis)=1
+    lower=max(origin,bounds(1,:));upper=min(origin+owned-1,bounds(2,:))
+    participates=all(lower<=upper)
+    first=lower-origin
+    owned=max(1,upper-lower+1)
+    if(.not.participates) then
+      first=0;owned=1
     endif
     local_nodes=product(int(owned,int64))
-    capacity=min(buffer_bytes,host_budget)/real_bytes/(packed_components+3)
+    capacity=min(buffer_bytes,host_budget)/real_bytes/(packed_components+coordinate_components)
     call require(capacity>0,comm,'host budget cannot hold one basic node')
-    capacity=min(capacity,local_nodes,int(huge(nodes)/(packed_components+3),int64))
+    capacity=min(capacity,local_nodes,int(huge(nodes)/(packed_components+coordinate_components),int64))
     block=1
     do d=1,3
       block(d)=int(min(int(owned(d),int64),capacity/product(int(block,int64))))
     enddo
     capacity=product(int(block,int64))
-    peak_bytes=capacity*real_bytes*(packed_components+3)
-    allocate(values(int(capacity)*packed_components),xyz(int(capacity),3),stat=status)
+    peak_bytes=capacity*real_bytes*(packed_components+coordinate_components)
+    allocate(values(int(capacity)*packed_components),xyz(merge(int(capacity),0,need_coordinates),3),stat=status)
     call require(status==0,comm,'packing allocation')
     ntiles=(int(owned,int64)+block-1)/block
     local_tiles=0
@@ -355,7 +444,7 @@ contains
         position=position+1; selected_dims(position)=d
       enddo
     endif
-    shape3(:ndims)=int(global_shape(selected_dims(:ndims)),hsize_t)
+    shape3(:ndims)=int(bounds(2,selected_dims(:ndims))-bounds(1,selected_dims(:ndims))+1,hsize_t)
     shape4(1)=3; shape4(2:ndims+1)=shape3(:ndims)
     call h5open_f(err)
     call require(err==0,comm,'HDF5 initialize')
@@ -364,11 +453,11 @@ contains
     call h5pset_fapl_mpio_f(access,comm,MPI_INFO_NULL,err)
     call require(err==0,comm,'parallel file access')
     if(verifying) then
-      call h5fopen_f(trim(path)//'/data.h5',H5F_ACC_RDONLY_F,file,err,access_prp=access)
+      call h5fopen_f(hdf_path,H5F_ACC_RDONLY_F,file,err,access_prp=access)
     else if(adding) then
-      call h5fopen_f(trim(path)//'/data.h5',H5F_ACC_RDWR_F,file,err,access_prp=access)
+      call h5fopen_f(hdf_path,H5F_ACC_RDWR_F,file,err,access_prp=access)
     else
-      call h5fcreate_f(trim(path)//'/data.h5',H5F_ACC_EXCL_F,file,err,access_prp=access)
+      call h5fcreate_f(hdf_path,H5F_ACC_EXCL_F,file,err,access_prp=access)
     endif
     call require(err==0,comm,'exclusive create or grouped append')
     if(verifying) then
@@ -380,7 +469,13 @@ contains
       call text_attribute(file,'center','Node',comm)
       call text_attribute(file,'phase','completed_step',comm)
     endif
-    if(.not.only_geometry) call derived_layout_attribute(file,adding,selected_derived,comm)
+    if(.not.only_geometry) then
+      if(catalog_mode) then
+        call text_attribute(file,'field_layout','selected-index-slice-v1',comm)
+      else
+        call derived_layout_attribute(file,adding,selected_derived,comm)
+      endif
+    endif
     if(len_trim(group)>0.and..not.verifying) call grouped_frame_identity(file,adding,[header(1:5),header(8:11), &
       int(merge(1,0,units=='si'),int64)],comm)
     location=file
@@ -402,10 +497,17 @@ contains
     storage_type=H5T_IEEE_F64LE
     if(real_bytes==4) storage_type=H5T_IEEE_F32LE
     do m=1,nfields+2
-      selected_set=(m<=nfields+1.and..not.only_geometry).or.(m==nfields+2.and.write_coordinates)
+      selected_set=(m<=nfields.and..not.only_geometry).or. &
+        (m==nfields+1.and.make_velocity.and..not.only_geometry).or.(m==nfields+2.and.write_coordinates)
       if(.not.selected_set) cycle
       name=''
-      if(m<=nfields) name=output_field_name(m,components,selected_derived)
+      if(m<=nfields) then
+        if(catalog_mode) then
+          name=catalog_field_names(field_selection(m))
+        else
+          name=output_field_name(m,components,selected_derived)
+        endif
+      endif
       if(m==nfields+1) name='velocity'
       if(m==nfields+2) name='coordinates'
       if(verifying) then
@@ -432,8 +534,13 @@ contains
       call require(err==0,comm,'create space '//trim(name))
       call h5dcreate_f(location,trim(name),storage_type,spaces(m),sets(m),err)
       call require(err==0,comm,'create dataset '//trim(name))
-      if(m>components.and.m<=nfields) &
-        call derived_quantity_attributes(sets(m),selected_derived(m-components),units,comm)
+      if(m<=nfields) then
+        if(catalog_mode) then
+          call text_attribute(sets(m),'units',catalog_quantity_units(field_selection(m),units),comm)
+        elseif(m>components) then
+          call derived_quantity_attributes(sets(m),selected_derived(m-components),units,comm)
+        endif
+      endif
     enddo
     memory_shape=11
     if(verifying) then
@@ -470,6 +577,11 @@ contains
     call require(err==0,comm,'close metadata dataset')
     call h5sclose_f(integer_space,err)
     call require(err==0,comm,'close metadata space')
+    if(catalog_mode.and..not.verifying) then
+      call catalog_integer_vector(location,'field_ids',int(field_selection,int64),comm)
+      call catalog_integer_vector(location,'index_ranges',int(reshape(bounds,[6]),int64),comm)
+      call text_attribute(file,'index_range_order','i_min i_max j_min j_max k_min k_max',comm)
+    endif
     field_bytes=0
     do tile=0,max_tiles-1
       nodes=0; start=0; extent=1
@@ -479,20 +591,23 @@ contains
         extent=min(block,owned-int(tile_grid)*block)
         nodes=product(extent)
         if(.not.only_geometry) call pack(start,extent,nfields,values(:nodes*nfields))
-        n=0
-        do k=start(3),start(3)+extent(3)-1
-          do j=start(2),start(2)+extent(2)-1
-            do i=start(1),start(1)+extent(1)-1
-              n=n+1; xyz(n,:)=coordinates(i,j,k,:)
+        if(need_coordinates) then
+          n=0
+          do k=start(3),start(3)+extent(3)-1
+            do j=start(2),start(2)+extent(2)-1
+              do i=start(1),start(1)+extent(1)-1
+                n=n+1; xyz(n,:)=coordinates(i,j,k,:)
+              enddo
             enddo
           enddo
-        enddo
+        endif
         if(.not.only_geometry) field_bytes=field_bytes+int(nodes,int64)*nfields*real_bytes
       endif
-      equal_values=all_finite_xyz(xyz,nodes)
+      equal_values=.true.
+      if(need_coordinates) equal_values=all_finite_xyz(xyz,nodes)
       if(.not.only_geometry) equal_values=equal_values.and.all_finite(values(:nodes*nfields))
       call require(equal_values,comm,'nonfinite basic fields')
-      global_start=origin+start
+      global_start=origin+start-bounds(1,:)
       memory_shape=max(1,nodes)
       call h5screate_simple_f(1,memory_shape,mem,err)
       call require(err==0,comm,'tile memory space')
@@ -507,7 +622,7 @@ contains
         call transfer_component(sets(m),spaces(m),values((m-1)*nodes+1:m*nodes),0)
       enddo
       do m=1,3
-        if(.not.only_geometry) &
+        if(.not.only_geometry.and.make_velocity) &
           call transfer_component(sets(nfields+1),spaces(nfields+1),values(m*nodes+1:(m+1)*nodes),m)
         if(verifying) then
           call transfer_component(sets(nfields+2),spaces(nfields+2),values(:nodes),m)
@@ -528,7 +643,8 @@ contains
       call require(err==0,comm,'close tile memory space')
     enddo
     do m=1,nfields+2
-      selected_set=(m<=nfields+1.and..not.only_geometry).or.(m==nfields+2.and.write_coordinates)
+      selected_set=(m<=nfields.and..not.only_geometry).or. &
+        (m==nfields+1.and.make_velocity.and..not.only_geometry).or.(m==nfields+2.and.write_coordinates)
       if(.not.selected_set) cycle
       call h5dclose_f(sets(m),err)
       call require(err==0,comm,'close field dataset')
@@ -544,9 +660,9 @@ contains
     call h5fclose_f(file,err)
     call require(err==0,comm,'close field file')
     err=0
-    if(rank==0.and.len_trim(group)==0.and..not.only_geometry) &
-      call write_xdmf(trim(path)//'/data.xdmf',int(shape3(:ndims)),components,identity,units,err, &
-        trim(geometry_source),derived_indices)
+    if(rank==0.and.len_trim(group)==0.and..not.only_geometry.and.emit_xml) &
+      call write_xdmf(xml_path,int(shape3(:ndims)),components,identity,units,err, &
+        trim(geometry_source),derived_indices,field_selection,basename)
     if(rank/=0) err=0
     call require(err==0,comm,'write XDMF')
   contains
@@ -781,20 +897,22 @@ contains
     endif
   end subroutine
 
-  subroutine write_xdmf(path,shape,components,identity,units,err,geometry_file,derived_indices)
+  subroutine write_xdmf(path,shape,components,identity,units,err,geometry_file,derived_indices,field_selection,data_file)
     character(*),intent(in) :: path,units
     integer,intent(in) :: shape(:),components
     type(checkpoint_state_identity),intent(in) :: identity
     integer,intent(out) :: err
     character(*),optional,intent(in) :: geometry_file
     integer,optional,intent(in) :: derived_indices(:)
+    integer,optional,intent(in) :: field_selection(:)
+    character(*),optional,intent(in) :: data_file
     integer :: unit,closed
     open(newunit=unit,file=path,status='new',action='write',iostat=err)
     if(err/=0) return
     write(unit,'(a)',iostat=err) '<?xml version="1.0"?>', &
       '<Xdmf Version="3.0"><Domain><Grid Name="series" GridType="Collection" CollectionType="Temporal">'
     if(err==0) call write_grid_xml(unit,shape,components,identity,units,'frame','',err, &
-      geometry_file,derived_indices=derived_indices)
+      geometry_file,data_file=data_file,derived_indices=derived_indices,field_selection=field_selection)
     if(err==0) write(unit,'(a)',iostat=err) '</Grid></Domain></Xdmf>'
     close(unit,iostat=closed)
     if(closed/=0) err=closed
@@ -998,7 +1116,7 @@ contains
   end function
 
   subroutine write_grid_xml(unit,shape,components,identity,units,label,prefix,err,geometry_file,data_file,derived_indices, &
-                            numerical_bytes,clock_text)
+                            numerical_bytes,clock_text,field_selection)
     integer,intent(in) :: unit,shape(:),components
     type(checkpoint_state_identity),intent(in) :: identity
     character(*),intent(in) :: units,label,prefix
@@ -1008,6 +1126,7 @@ contains
     integer,optional,intent(in) :: derived_indices(:)
     integer,optional,intent(in) :: numerical_bytes
     character(*),optional,intent(in) :: clock_text
+    integer,optional,intent(in) :: field_selection(:)
     integer :: m,selection(14),nfields
     logical :: valid
     character(32) :: field_name
@@ -1027,6 +1146,7 @@ contains
       err=1; return
     endif
     nfields=components+count(selection>0)
+    if(present(field_selection)) nfields=size(field_selection)
     write(dimensions,'(*(i0,1x))') shape(size(shape):1:-1)
     write(clock,'(es24.16)') identity%time
     if(present(clock_text)) clock=clock_text
@@ -1043,17 +1163,64 @@ contains
     do m=1,nfields+1
       if(err/=0) exit
       if(m<=nfields) then
-        field_name=output_field_name(m,components,selection)
+        if(present(field_selection)) then
+          field_name=catalog_field_names(field_selection(m))
+        else
+          field_name=output_field_name(m,components,selection)
+        endif
         write(unit,'(a)',iostat=err) '<Attribute Name="'//trim(field_name)// &
           '" AttributeType="Scalar" Center="Node">', &
           '<DataItem Dimensions="'//trim(dimensions)//'" NumberType="Float" Precision="'//precision_text//'" Format="HDF">', &
           data_xml//':/'//prefix//trim(field_name)//'</DataItem></Attribute>'
       else
+        if(present(field_selection)) exit
         write(unit,'(a)',iostat=err) '<Attribute Name="velocity" AttributeType="Vector" Center="Node">', &
           '<DataItem Dimensions="'//trim(dimensions)//' 3" NumberType="Float" Precision="'//precision_text//'" Format="HDF">', &
           data_xml//':/'//prefix//'velocity</DataItem></Attribute>'
       endif
     enddo
     if(err==0) write(unit,'(a)',iostat=err) '</Grid>'
+  end subroutine
+
+  function catalog_quantity_units(field,system) result(units)
+    integer,intent(in) :: field
+    character(*),intent(in) :: system
+    character(:),allocatable :: units
+    character(16),parameter :: basic_units(12)=[character(16) :: &
+      'kg m^-3','m s^-1','m s^-1','m s^-1','Pa','K','K','1','1','1','1','1']
+    if(system=='dimensionless') then
+      units='solver-dimensionless'
+    elseif(field<=12) then
+      units=trim(basic_units(field))
+    elseif(field==22) then
+      units='s^-2'
+    elseif(field==27) then
+      units='kg m^-4'
+    else
+      units='s^-1'
+    endif
+  end function
+
+  subroutine catalog_integer_vector(file,name,values,comm)
+    integer(hid_t),intent(in) :: file
+    character(*),intent(in) :: name
+    integer(int64),intent(in) :: values(:)
+    integer,intent(in) :: comm
+    integer(hid_t) :: space,set
+    integer(hsize_t) :: dims(1)
+    integer :: status,rank
+    call MPI_Comm_rank(comm,rank,status)
+    call require(status==MPI_SUCCESS,comm,'metadata rank')
+    dims=size(values,kind=hsize_t)
+    call h5screate_simple_f(1,dims,space,status)
+    call require(status==0,comm,'selected metadata space')
+    call h5dcreate_f(file,name,H5T_STD_I64LE,space,set,status)
+    call require(status==0,comm,'selected metadata dataset')
+    if(rank==0) call h5dwrite_f(set,h5kind_to_type(int64,H5_INTEGER_KIND),values,dims,status)
+    call require(status==0,comm,'selected metadata write')
+    call h5dclose_f(set,status)
+    call require(status==0,comm,'close selected metadata dataset')
+    call h5sclose_f(space,status)
+    call require(status==0,comm,'close selected metadata space')
   end subroutine
 end module

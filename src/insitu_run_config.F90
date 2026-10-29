@@ -1,5 +1,5 @@
 module insitu_run_config
-  use iso_fortran_env, only: int64
+  use iso_fortran_env, only: int64,real64
   use astr_precision, only: real_kind
   use ieee_arithmetic, only: ieee_is_finite
   use adaptive_output, only: adaptive_binding,adaptive_capacity,validate_adaptive_binding,canonical_adaptive_binding
@@ -7,6 +7,24 @@ module insitu_run_config
   private
   public :: insitu_options,read_insitu_options,insitu_max_products,product_scene_allowed,canonical_slice_plane
   public :: streamline_view,insitu_max_views,read_streamline_views,streamline_trajectory_key,streamline_display_key
+  public :: catalog_product,catalog_field_names,catalog_field_id,catalog_definition_equal
+  character(32),parameter :: catalog_field_names(27)=[character(32) :: &
+    'density','velocity_x','velocity_y','velocity_z','pressure','temperature', &
+    'vibrational_temperature','mass_fraction_N2','mass_fraction_O2','mass_fraction_N', &
+    'mass_fraction_O','mass_fraction_NO', &
+    'velocity_gradient_xx','velocity_gradient_yx','velocity_gradient_zx', &
+    'velocity_gradient_xy','velocity_gradient_yy','velocity_gradient_zy', &
+    'velocity_gradient_xz','velocity_gradient_yz','velocity_gradient_zz', &
+    'Q_rs','velocity_divergence','vorticity_x','vorticity_y','vorticity_z','density_gradient_magnitude']
+  type :: catalog_product
+    character(:),allocatable :: id,source,statistics_source,record,error
+    character(:),allocatable :: event_ids(:),window_ids(:)
+    integer,allocatable :: fields(:)
+    integer :: line=0,axis=0
+    integer(int64) :: index=0,ranges(2,3)=0,enable_request=0,interval_steps=0,dense_interval_steps=0
+    real(real64) :: interval_time=0,dense_interval_time=0
+    logical :: valid=.false.
+  end type
   integer,parameter :: insitu_max_products=64
   integer,parameter :: insitu_max_views=6
   ! An explicit -1 quota resolves to a nonallocating, overflow-safe sentinel.
@@ -51,6 +69,26 @@ module insitu_run_config
     type(adaptive_binding) :: product_adaptive(insitu_max_products)
   end type
 contains
+  logical function catalog_definition_equal(a,b) result(same)
+    type(catalog_product),intent(in) :: a,b
+    same=.false.
+    if(a%id/=b%id.or.a%source/=b%source.or.a%statistics_source/=b%statistics_source.or. &
+      a%axis/=b%axis.or.a%index/=b%index.or.any(a%ranges/=b%ranges)) return
+    if(size(a%fields)/=size(b%fields)) return
+    same=all(a%fields==b%fields)
+  end function
+
+  integer function catalog_field_id(name) result(id)
+    character(*),intent(in) :: name
+    integer :: i
+    id=0
+    do i=1,size(catalog_field_names)
+      if(name/=trim(catalog_field_names(i))) cycle
+      id=i
+      return
+    enddo
+  end function
+
   subroutine read_insitu_options(filename,options,ok,message)
     character(*),intent(in) :: filename
     type(insitu_options),intent(inout) :: options

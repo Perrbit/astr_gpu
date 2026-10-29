@@ -9,12 +9,16 @@ module output_fields_gpu
 #endif
   use gpu_check, only: sync_gpu_boundary,sync_after_kernel
   use checkpoint_state_io, only: checkpoint_state_require
+  use insitu_run_config, only: catalog_field_names
   implicit none
   private
   public :: begin_basic_output_gpu,pack_basic_output_gpu,end_basic_output_gpu
   public :: begin_derived_output_gpu,pack_derived_output_gpu,end_derived_output_gpu
   public :: derived_output_workspace_gpu
   public :: pack_diagnostic_output_gpu
+  public :: select_output_fields_gpu,pack_selected_output_gpu
+  integer,device,save :: catalog_ids_gpu_d(size(catalog_field_names))
+  integer,save :: catalog_ids_gpu(size(catalog_field_names))=0,catalog_count_gpu=0
   real(real_kind),allocatable,device,save :: packed_d(:)
   real(real_kind),allocatable,device,save :: private_velocity_d(:,:,:,:)
   integer,device,save :: selected_gpu_d(14)
@@ -261,6 +265,71 @@ contains
 #endif
     end select
     packed_d(id+1)=value
+  end subroutine
+
+  logical function select_output_fields_gpu(fields) result(ok)
+    use commvar, only: numq
+    integer,intent(in) :: fields(:)
+    integer :: limit
+    limit=6
+#ifdef ASTR_AIR5_CHEMISTRY
+    if(numq==11) limit=12
+#endif
+    ok=size(fields)>0.and.size(fields)<=size(catalog_field_names).and.all(fields>=1).and.all(fields<=limit)
+    if(.not.ok) then
+      catalog_count_gpu=0
+      return
+    endif
+    if(size(fields)==catalog_count_gpu) then
+      if(all(fields==catalog_ids_gpu(:catalog_count_gpu))) return
+    endif
+    catalog_count_gpu=size(fields)
+    catalog_ids_gpu(:catalog_count_gpu)=fields
+    catalog_ids_gpu_d(:catalog_count_gpu)=fields
+    call sync_gpu_boundary('selected output field identifiers upload')
+  end function
+
+  attributes(global) subroutine pack_selected_kernel(i0,j0,k0,ni,nj,nk,components)
+    integer,value :: i0,j0,k0,ni,nj,nk,components
+    integer :: id,node,slot,field,i,j,k,nodes
+    real(real_kind) :: value
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    nodes=ni*nj*nk
+    if(id>=nodes*components) return
+    node=mod(id,nodes);slot=id/nodes+1;field=catalog_ids_gpu_d(slot)
+    i=i0+mod(node,ni);j=j0+mod(node/ni,nj);k=k0+node/(ni*nj)
+    ! The host selection validates this primitive-field set before any launch.
+    select case(field)
+    case(1)
+      value=rho_d(i,j,k)
+    case(2:4)
+      value=vel_d(i,j,k,field-1)
+    case(5)
+      value=prs_d(i,j,k)
+    case(6)
+      value=tmp_d(i,j,k)
+#ifdef ASTR_AIR5_CHEMISTRY
+    case(7)
+      value=tve_d(i,j,k)
+    case(8:12)
+      value=spc_d(i,j,k,field-7)
+#endif
+    end select
+    packed_d(id+1)=value
+  end subroutine
+
+  subroutine pack_selected_output_gpu(start,extent,components,values)
+    integer,intent(in) :: start(3),extent(3),components
+    real(real_kind),intent(out) :: values(:)
+    integer :: count,status
+    count=product(extent)*components
+    call local_require(allocated(packed_d).and.components==catalog_count_gpu,'selected GPU output not prepared')
+    call local_require(count>0.and.count<=size(packed_d).and.size(values)==count,'selected GPU output tile shape')
+    call pack_selected_kernel<<<(count+255)/256,256>>>(start(1),start(2),start(3),extent(1),extent(2),extent(3),components)
+    call sync_after_kernel('selected output field packing',.true.)
+    status=cudaMemcpy(values,packed_d,int(count,int64),cudaMemcpyDeviceToHost)
+    call local_require(status==cudaSuccess,'selected output field download')
+    transferred=transferred+int(count,int64)*real_bytes
   end subroutine
 
   subroutine pack_basic_output_gpu(start,extent,components,values)

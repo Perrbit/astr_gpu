@@ -60,6 +60,9 @@ module statistic
   type(tsta) :: hitsta
   !
   contains
+  real(real_kind) function mean_last_sample_identity() result(t)
+    t=mean_last_sample_time
+  end function
   subroutine complete_mean_statistics_file(path,writing,identity,budget,allow_repartition,repartition_axes)
     use iso_fortran_env, only: int64
     use ieee_arithmetic, only: ieee_is_finite

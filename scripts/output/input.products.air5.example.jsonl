@@ -1,0 +1,2 @@
+{"catalog_schema":"astr-insitu-products-v1"}
+{"id":"hot-gas-plane","kind":"slice","enable_request":1,"source":"instantaneous","fields":["density","velocity_x","pressure","temperature","vibrational_temperature","mass_fraction_N2","mass_fraction_O2","mass_fraction_N","mass_fraction_O","mass_fraction_NO","Q_rs","density_gradient_magnitude"],"sampling":{"mode":"grid_index","axis":"k","index":8,"index_ranges":{"i":[0,16],"j":[0,16]}},"output":{"channel":"data","format":"hdf5-xdmf"},"schedule":{"mode":"steps","interval":4}}

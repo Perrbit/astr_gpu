@@ -1,19 +1,36 @@
 module insitu_product_schedule
   use astr_precision_io, only: read_source_reals
-  use iso_fortran_env, only: int64
+  use iso_fortran_env, only: int64,real64
   use astr_precision, only: real_kind
   use iso_c_binding, only: c_int,c_char,c_null_char,c_int64_t,c_double
   use ieee_arithmetic, only: ieee_is_finite
-  use insitu_run_config, only: insitu_options,insitu_max_products
+  use insitu_run_config, only: insitu_options,insitu_max_products,catalog_product,catalog_definition_equal,catalog_field_names
   use insitu_schedule, only: sample_schedule,configure_schedule,poll_schedule,write_schedule_state, &
     restore_schedule_state,resume_schedule,schedule_next_target
   use adaptive_output, only: adaptive_clock,adaptive_binding_equal,adaptive_dependencies_reset, &
-    configure_adaptive_clock,poll_adaptive_clock,report_adaptive_clock,adaptive_clock_file,adaptive_shared_config
+    configure_adaptive_clock,poll_adaptive_clock,report_adaptive_clock,adaptive_clock_file,adaptive_shared_config, &
+    adaptive_binding,adaptive_level,validate_adaptive_binding
   implicit none
   private
   public :: configure_product_schedules,poll_product_schedules,product_scene_due,product_due
   public :: product_results_complete,product_state_file,product_schedules_active
   public :: product_schedule_equal,product_failures_present
+  public :: runtime_product_state,runtime_catalog_apply,runtime_catalog_count,runtime_catalog_state
+  public :: runtime_catalog_due,runtime_catalog_success,runtime_catalog_disable,runtime_catalog_wait
+  public :: runtime_catalog_state_file
+  public :: runtime_catalog_reject
+  integer,parameter,public :: runtime_active=1,runtime_bad_config=2,runtime_waiting=3, &
+    runtime_resource_disabled=4,runtime_absent=5
+  type :: runtime_product_state
+    type(catalog_product) :: definition
+    type(adaptive_binding) :: binding
+    integer(int64) :: version=0,consumed_request=0,last_step=-1,attempt_step=-1,applied_step=0
+    real(real64) :: last_time=0,attempt_time=0,applied_time=0
+    integer :: status=runtime_absent
+    logical :: pending_first=.false.,dense=.false.
+    character(:),allocatable :: reason
+  end type
+  type(runtime_product_state),allocatable,save :: runtime_states(:)
   type :: product_state
     type(sample_schedule) :: clock
     type(adaptive_clock) :: adaptive
@@ -30,6 +47,433 @@ module insitu_product_schedule
   character(64),save :: disabled_products(128)=''
   integer,save :: disabled_count=0
 contains
+  subroutine runtime_catalog_state_file(unit,writing,step,time,ok)
+    integer,intent(in) :: unit
+    logical,intent(in) :: writing
+    integer(int64),intent(in) :: step
+    real(real64),intent(in) :: time
+    logical,intent(out) :: ok
+    type(runtime_product_state),allocatable :: restored(:)
+    character(8) :: magic
+    integer(int64) :: n,bytes,position
+    integer :: i,status
+    ok=.false.;status=0;magic='ASTRRC01'
+    if(writing) then
+      n=runtime_catalog_count()
+      write(unit,iostat=status) magic,n
+    else
+      read(unit,iostat=status) magic,n
+      if(status/=0) return
+      if(magic/='ASTRRC01'.or.n<0.or.n>huge(i)) return
+      inquire(unit=unit,size=bytes,pos=position,iostat=status)
+      if(status/=0) return
+      ! Bound allocations by the actual remaining control bytes, not an arbitrary product cap.
+      if(n>(bytes-position+1)/92_int64) return
+      allocate(restored(int(n)))
+    endif
+    if(status/=0) return
+    do i=1,int(n)
+      if(writing) then
+        call runtime_record_file(unit,.true.,runtime_states(i),status)
+      else
+        call runtime_record_file(unit,.false.,restored(i),status)
+      endif
+      if(status/=0) return
+      if(.not.writing) then
+        if(.not.runtime_record_valid(restored(i),step,time)) return
+      endif
+    enddo
+    if(.not.writing) call move_alloc(restored,runtime_states)
+    ok=.true.
+  end subroutine
+
+  subroutine runtime_record_file(unit,writing,state,status)
+    integer,intent(in) :: unit
+    logical,intent(in) :: writing
+    type(runtime_product_state),intent(inout) :: state
+    integer,intent(out) :: status
+    integer :: flags(3)
+    integer(int64) :: words(5)
+    real(real64) :: times(3)
+    status=0
+    call runtime_text_file(unit,writing,state%definition%id,status)
+    if(status/=0) return
+    if(writing) then
+      flags=[state%status,merge(1,0,state%pending_first),merge(1,0,state%dense)]
+      words=[state%version,state%consumed_request,state%last_step,state%attempt_step,state%applied_step]
+      times=[state%last_time,state%attempt_time,state%applied_time]
+      write(unit,iostat=status) flags,words,times
+    else
+      read(unit,iostat=status) flags,words,times
+      if(status/=0) return
+      if(flags(1)<runtime_active.or.flags(1)>runtime_absent.or.any(flags(2:3)<0).or.any(flags(2:3)>1)) then
+        status=1;return
+      endif
+      state%status=flags(1);state%pending_first=flags(2)==1;state%dense=flags(3)==1
+      state%version=words(1);state%consumed_request=words(2);state%last_step=words(3)
+      state%attempt_step=words(4);state%applied_step=words(5)
+      state%last_time=times(1);state%attempt_time=times(2);state%applied_time=times(3)
+    endif
+    if(status/=0) return
+    call runtime_text_file(unit,writing,state%reason,status)
+    if(status/=0) return
+    if(state%version>0) call runtime_definition_file(unit,writing,state%definition,status)
+  end subroutine
+
+  subroutine runtime_definition_file(unit,writing,entry,status)
+    integer,intent(in) :: unit
+    logical,intent(in) :: writing
+    type(catalog_product),intent(inout) :: entry
+    integer,intent(out) :: status
+    integer :: header(3)
+    integer(int64) :: words(10)
+    real(real64) :: periods(2)
+    call runtime_text_file(unit,writing,entry%source,status)
+    if(status/=0) return
+    call runtime_text_file(unit,writing,entry%statistics_source,status)
+    if(status/=0) return
+    call runtime_text_file(unit,writing,entry%record,status)
+    if(status/=0) return
+    if(writing) then
+      header=[entry%axis,entry%line,size(entry%fields)]
+      words=[entry%index,reshape(entry%ranges,[6]),entry%enable_request,entry%interval_steps,entry%dense_interval_steps]
+      periods=[entry%interval_time,entry%dense_interval_time]
+      write(unit,iostat=status) header,words,periods
+    else
+      read(unit,iostat=status) header,words,periods
+      if(status/=0) return
+      if(header(1)<1.or.header(1)>3.or.header(3)<1.or.header(3)>size(catalog_field_names)) then
+        status=1;return
+      endif
+      entry%axis=header(1);entry%line=header(2);allocate(entry%fields(header(3)))
+      entry%index=words(1);entry%ranges=reshape(words(2:7),[2,3]);entry%enable_request=words(8)
+      entry%interval_steps=words(9);entry%dense_interval_steps=words(10)
+      entry%interval_time=periods(1);entry%dense_interval_time=periods(2)
+      entry%valid=.true.;entry%error=''
+    endif
+    if(status/=0) return
+    if(writing) then
+      write(unit,iostat=status) entry%fields
+    else
+      read(unit,iostat=status) entry%fields
+    endif
+    if(status/=0) return
+    call runtime_names_file(unit,writing,entry%event_ids,status)
+    if(status/=0) return
+    call runtime_names_file(unit,writing,entry%window_ids,status)
+  end subroutine
+
+  subroutine runtime_text_file(unit,writing,text,status)
+    integer,intent(in) :: unit
+    logical,intent(in) :: writing
+    character(:),allocatable,intent(inout) :: text
+    integer,intent(out) :: status
+    integer(int64) :: n,bytes,position
+    if(writing) then
+      n=0
+      if(allocated(text)) n=len(text,kind=int64)
+      write(unit,iostat=status) n
+    else
+      read(unit,iostat=status) n
+      if(status/=0) return
+      inquire(unit=unit,size=bytes,pos=position,iostat=status)
+      if(status/=0) return
+      if(n<0.or.n>bytes-position+1.or.n>huge(1)) then
+        status=1;return
+      endif
+      text=repeat(' ',int(n))
+    endif
+    if(status/=0.or.n==0) return
+    if(writing) then
+      write(unit,iostat=status) text
+    else
+      read(unit,iostat=status) text
+    endif
+  end subroutine
+
+  subroutine runtime_names_file(unit,writing,names,status)
+    integer,intent(in) :: unit
+    logical,intent(in) :: writing
+    character(:),allocatable,intent(inout) :: names(:)
+    integer,intent(out) :: status
+    integer(int64) :: dims(2),bytes,position
+    dims=[0_int64,1_int64]
+    if(writing) then
+      if(allocated(names)) dims=[size(names,kind=int64),len(names,kind=int64)]
+      write(unit,iostat=status) dims
+    else
+      read(unit,iostat=status) dims
+      if(status/=0) return
+      inquire(unit=unit,size=bytes,pos=position,iostat=status)
+      if(status/=0) return
+      if(any(dims<0).or.any(dims>huge(1))) then
+        status=1;return
+      endif
+      if(dims(1)>0) then
+        if(dims(2)==0) then
+          status=1;return
+        endif
+        if(dims(1)>(bytes-position+1)/dims(2)) then
+          status=1;return
+        endif
+      endif
+      allocate(character(int(dims(2)))::names(int(dims(1))))
+    endif
+    if(status/=0.or.dims(1)==0) return
+    if(writing) then
+      write(unit,iostat=status) names
+    else
+      read(unit,iostat=status) names
+    endif
+  end subroutine
+
+  logical function runtime_record_valid(state,step,time) result(ok)
+    type(runtime_product_state),intent(inout) :: state
+    integer(int64),intent(in) :: step
+    real(real64),intent(in) :: time
+    integer :: i
+    ok=.false.
+    if(len(state%definition%id)==0.or.state%version<0.or.state%consumed_request<0) return
+    if(min(state%last_step,state%attempt_step)<-1.or.state%applied_step<0) return
+    if(max(state%last_step,state%attempt_step,state%applied_step)>step) return
+    if(.not.all(ieee_is_finite([state%last_time,state%attempt_time,state%applied_time]))) return
+    if(min(state%last_time,state%attempt_time,state%applied_time)<0) return
+    if(max(state%last_time,state%attempt_time,state%applied_time)>time) return
+    if(state%version==0) then
+      ok=state%status==runtime_bad_config.or.state%status==runtime_absent
+      return
+    endif
+    if(state%definition%enable_request<1.or.state%definition%enable_request>state%consumed_request) return
+    if(state%definition%index<0.or.any(state%definition%ranges<0)) return
+    if(any(state%definition%ranges(1,:)>state%definition%ranges(2,:))) return
+    if(any(state%definition%ranges(:,state%definition%axis)/=state%definition%index)) return
+    if(any(state%definition%fields<1).or.any(state%definition%fields>size(catalog_field_names))) return
+    do i=2,size(state%definition%fields)
+      if(state%definition%fields(i)<=state%definition%fields(i-1)) return
+    enddo
+    if(state%definition%interval_steps<0.or.state%definition%interval_time<0) return
+    if(.not.ieee_is_finite(state%definition%interval_time)) return
+    if((state%definition%interval_steps>0).eqv.(state%definition%interval_time>0)) return
+    call runtime_binding(state%definition,state%binding,ok)
+  end function
+
+  subroutine runtime_catalog_apply(entries,step,time)
+    type(catalog_product),intent(in) :: entries(:)
+    integer(int64),intent(in) :: step
+    real(real64),intent(in) :: time
+    type(runtime_product_state),allocatable :: expanded(:)
+    type(catalog_product) :: entry
+    type(adaptive_binding) :: binding
+    logical,allocatable :: seen(:)
+    logical :: fresh,changed,new_request,valid
+    integer :: i,j,index,old_status
+    if(.not.allocated(runtime_states)) allocate(runtime_states(0))
+    allocate(seen(size(runtime_states)+size(entries)))
+    seen=.false.
+    do i=1,size(entries)
+      entry=entries(i)
+      if(len(entry%id)==0) cycle
+      index=0
+      do j=1,size(runtime_states)
+        if(runtime_states(j)%definition%id==entry%id) then
+          index=j
+          exit
+        endif
+      enddo
+      if(index==0) then
+        index=size(runtime_states)+1
+        allocate(expanded(index))
+        expanded(:index-1)=runtime_states
+        expanded(index)%definition=entry
+        expanded(index)%reason=''
+        call move_alloc(expanded,runtime_states)
+      endif
+      seen(index)=.true.
+      if(entry%valid) then
+        call runtime_binding(entry,binding,valid)
+        if(.not.valid) then
+          entry%valid=.false.
+          entry%error='adaptive references or interval are not available in the shared configuration'
+        endif
+      endif
+      if(.not.entry%valid) then
+        runtime_states(index)%status=runtime_bad_config
+        runtime_states(index)%reason=entry%error
+        runtime_states(index)%applied_step=step
+        runtime_states(index)%applied_time=time
+        cycle
+      endif
+      old_status=runtime_states(index)%status
+      fresh=runtime_states(index)%version==0
+      if(.not.fresh) fresh=.not.catalog_definition_equal(runtime_states(index)%definition,entry)
+      changed=fresh
+      if(.not.fresh) changed=.not.runtime_cadence_equal(runtime_states(index)%definition,entry)
+      new_request=entry%enable_request>runtime_states(index)%consumed_request
+      if(fresh) then
+        runtime_states(index)%version=runtime_states(index)%version+1
+        runtime_states(index)%last_step=-1
+        runtime_states(index)%last_time=0
+        runtime_states(index)%pending_first=.true.
+      endif
+      runtime_states(index)%definition=entry
+      runtime_states(index)%binding=binding
+      runtime_states(index)%consumed_request=max(runtime_states(index)%consumed_request,entry%enable_request)
+      if(old_status==runtime_bad_config.or.old_status==runtime_absent.or.new_request) then
+        if(old_status/=runtime_active.and.old_status/=runtime_waiting) runtime_states(index)%pending_first=.true.
+        if(old_status/=runtime_waiting) runtime_states(index)%status=runtime_active
+      endif
+      if(fresh.and.old_status/=runtime_resource_disabled) runtime_states(index)%status=runtime_active
+      if(runtime_states(index)%status==runtime_active) runtime_states(index)%reason=''
+      if(changed.or.new_request.or.old_status==runtime_bad_config.or.old_status==runtime_absent) then
+        runtime_states(index)%applied_step=step
+        runtime_states(index)%applied_time=time
+      endif
+    enddo
+    ! Retain inactive IDs and version counters so removing/re-adding cannot rewind them.
+    do i=1,size(runtime_states)
+      if(seen(i).or.runtime_states(i)%status==runtime_absent) cycle
+      runtime_states(i)%status=runtime_absent
+      runtime_states(i)%reason='not present in the current catalog'
+      runtime_states(i)%applied_step=step
+      runtime_states(i)%applied_time=time
+    enddo
+  end subroutine
+
+  logical function runtime_cadence_equal(a,b) result(same)
+    type(catalog_product),intent(in) :: a,b
+    same=.false.
+    if(a%interval_steps/=b%interval_steps.or.a%interval_time/=b%interval_time.or. &
+      a%dense_interval_steps/=b%dense_interval_steps.or.a%dense_interval_time/=b%dense_interval_time) return
+    if(size(a%event_ids)/=size(b%event_ids).or.size(a%window_ids)/=size(b%window_ids)) return
+    same=all(a%event_ids==b%event_ids).and.all(a%window_ids==b%window_ids)
+  end function
+
+  subroutine runtime_binding(entry,binding,ok)
+    type(catalog_product),intent(in) :: entry
+    type(adaptive_binding),intent(out) :: binding
+    logical,intent(out) :: ok
+    character(5) :: mode
+    integer :: i,j
+    binding=adaptive_binding()
+    ok=.true.
+    binding%enabled=size(entry%event_ids)+size(entry%window_ids)>0
+    if(.not.binding%enabled) return
+    do i=1,size(entry%event_ids)
+      j=adaptive_name_index(adaptive_shared_config%event_ids,entry%event_ids(i))
+      if(j==0) then
+        ok=.false.; return
+      endif
+      binding%events(j)=entry%event_ids(i)
+    enddo
+    do i=1,size(entry%window_ids)
+      j=adaptive_name_index(adaptive_shared_config%window_ids,entry%window_ids(i))
+      if(j==0) then
+        ok=.false.; return
+      endif
+      binding%windows(j)=entry%window_ids(i)
+    enddo
+    binding%dense_steps=entry%dense_interval_steps
+    binding%dense_time=real(entry%dense_interval_time,real_kind)
+    mode='time'
+    if(entry%interval_steps>0) mode='steps'
+    call validate_adaptive_binding(binding,trim(mode),entry%interval_steps, &
+      real(entry%interval_time,real_kind),adaptive_shared_config,ok)
+  end subroutine
+
+  integer function adaptive_name_index(names,name) result(index)
+    character(*),intent(in) :: names(:),name
+    integer :: i
+    ! NVHPC's FINDLOC does not handle the JSON/fixed-width character pair reliably.
+    index=0
+    do i=1,size(names)
+      if(names(i)/=name) cycle
+      index=i;return
+    enddo
+  end function
+
+  integer function runtime_catalog_count() result(n)
+    n=0
+    if(allocated(runtime_states)) n=size(runtime_states)
+  end function
+
+  subroutine runtime_catalog_state(index,state)
+    integer,intent(in) :: index
+    type(runtime_product_state),intent(out) :: state
+    state=runtime_states(index)
+  end subroutine
+
+  logical function runtime_catalog_due(index,step,time) result(due)
+    integer,intent(in) :: index
+    integer(int64),intent(in) :: step
+    real(real64),intent(in) :: time
+    logical :: dense,ok,entry
+    integer(int64) :: interval
+    real(real64) :: period
+    due=.false.
+    if(runtime_states(index)%status/=runtime_active) return
+    if(runtime_states(index)%last_step==step.or.runtime_states(index)%attempt_step==step) return
+    call adaptive_level(runtime_states(index)%binding,dense,ok)
+    if(.not.ok) then
+      runtime_states(index)%status=runtime_bad_config
+      runtime_states(index)%reason='shared adaptive dependency is unavailable'
+      return
+    endif
+    entry=dense.and..not.runtime_states(index)%dense
+    runtime_states(index)%dense=dense
+    if(runtime_states(index)%pending_first) then
+      due=.true.
+    elseif(runtime_states(index)%definition%interval_steps>0) then
+      interval=runtime_states(index)%definition%interval_steps
+      if(dense) interval=runtime_states(index)%definition%dense_interval_steps
+      due=step-runtime_states(index)%last_step>=interval.or.entry
+    else
+      period=runtime_states(index)%definition%interval_time
+      if(dense) period=runtime_states(index)%definition%dense_interval_time
+      due=time-runtime_states(index)%last_time>=period.or.entry
+    endif
+  end function
+
+  subroutine runtime_catalog_success(index,step,time)
+    integer,intent(in) :: index
+    integer(int64),intent(in) :: step
+    real(real64),intent(in) :: time
+    runtime_states(index)%last_step=step
+    runtime_states(index)%last_time=time
+    runtime_states(index)%attempt_step=step
+    runtime_states(index)%attempt_time=time
+    runtime_states(index)%pending_first=.false.
+  end subroutine
+
+  subroutine runtime_catalog_disable(index,step,time,reason)
+    integer,intent(in) :: index
+    integer(int64),intent(in) :: step
+    real(real64),intent(in) :: time
+    character(*),intent(in) :: reason
+    runtime_states(index)%status=runtime_resource_disabled
+    runtime_states(index)%reason=reason
+    runtime_states(index)%attempt_step=step
+    runtime_states(index)%attempt_time=time
+  end subroutine
+
+  subroutine runtime_catalog_reject(index,reason)
+    integer,intent(in) :: index
+    character(*),intent(in) :: reason
+    runtime_states(index)%status=runtime_bad_config
+    runtime_states(index)%reason=reason
+  end subroutine
+
+  subroutine runtime_catalog_wait(index,waiting)
+    integer,intent(in) :: index
+    logical,intent(in) :: waiting
+    if(waiting.and.runtime_states(index)%status==runtime_active) then
+      runtime_states(index)%status=runtime_waiting
+      runtime_states(index)%reason='waiting for existing statistics coverage'
+    elseif(.not.waiting.and.runtime_states(index)%status==runtime_waiting) then
+      runtime_states(index)%status=runtime_active
+      runtime_states(index)%reason=''
+    endif
+  end subroutine
+
   logical function product_failures_present()
     product_failures_present=disabled_count>0
   end function

@@ -16,7 +16,9 @@ two-dimensional vector path and is not certified here.
 
 The root CMake installation includes this README, all four offline scripts,
 and the basic/derived TGV and SI AIR5 derived configuration examples.
-These eight files form the `OutputTools` component. To install just these files
+The `OutputTools` component also includes the dynamic numerical-slice tools and
+JSONL examples described in [INDEX_SLICE_ARCHIVES.md](INDEX_SLICE_ARCHIVES.md).
+To install just these files
 from an already configured build, without installing the solver or examples:
 
 ```bash
@@ -178,7 +180,15 @@ not total Python/HDF5 RSS. A failed merge has no `COMPLETE.json`; it can leave p
 diagnostics in the new destination. There is no source deletion, overwrite,
 resolution reduction, automatic retry or checksum scan of solver state fields.
 
-## Optional Native Archives
+## Native Volume And Historical Slice Archives
+
+Current fixed-index numerical slices use the JSONL interface in
+[INDEX_SLICE_ARCHIVES.md](INDEX_SLICE_ARCHIVES.md). The old enabled `&slices`
+definition is retired. Descriptions of grouped `slices/` files below document
+historical archives and their offline readers, not a second active slice entry.
+The new channel uses selected native-precision fields, seventh-node sixth-order
+boundary diagnostics and self-contained per-product continuation segments.
+The following volume and offline-export mechanisms remain separate.
 
 The new runtime admits basic live volume/slice output for registered RK3
 checkpoint cases: periodic TGV, bc41 channel, static/dynamic CURVE flatplate,
@@ -237,7 +247,7 @@ independent admission rules.
 
 Within this gate, select `velocity_gradient=t` (nine components),
 `vorticity=t` (three components), or `qcriterion=t` (Q_rs and divergence)
-independently in `&volume` and `&slices`. Selection appends fields to `fields='basic'`;
+in `&volume` (the former `&slices` equivalent is historical). Selection appends fields to `fields='basic'`;
 all three together produce twenty nonreacting or twenty-six AIR5 scalar fields.
 See `input.output.tgv.derived.example` and `input.output.air5.derived.example`;
 the basic example stays unchanged.
@@ -284,12 +294,12 @@ configuration file is mandatory; `ASTR_OUTPUT_CONFIG` is an optional path
 override, not an activation switch. Missing/invalid files fail without fallback.
 Legacy controller `lwsequ/lwslic` flags are ignored with a notice. `feqchkpt`
 still controls controller reload/CFL checks, not the new checkpoint schedule.
-Set all three product `enabled` values false to run without these files;
+Set checkpoint/volume `enabled` false and publish an empty JSONL catalog to run without these files;
 provide the required valid configuration/budgets even for that choice.
 Legacy checkpoints, q sidecars and old paired restart batches are not accepted.
 Keep `lrestart=f` and select the new complete directory via `restore_directory`.
 
-Volume and slices have independent `mode='steps'|'time'` schedules. Set only
+Volume has a `mode='steps'|'time'` schedule; new numerical slices have independent JSONL schedules. For volume set only
 the corresponding `interval_steps` or `interval_time`, not both. Initial/final
 frames are independently selectable for each; the final checkpoint is mandatory
 when checkpointing is enabled. Actual complete-step time is stored, not the
@@ -300,7 +310,8 @@ not duplicate the restored point. Changed schedules require
 `restart_output='override'`; only changed products reset their schedule origin
 to the restored clock. This does not alter numerical or statistics settings.
 
-Native products have the layout:
+Volume and the historical grouped-slice products have the following layout;
+current numerical slices instead use `slice_products/<id>/version.../segment...`:
 
 ```text
 outdat/new/
@@ -314,8 +325,8 @@ outdat/new/
   slices/segment00000000/step.../data.h5, data.xdmf, FRAME, ...
 ```
 
-Each frame is sealed and published after HDF5/XML/metadata close. All selected
-planes at that clock share one HDF5 file with named plane groups. Fields and
+Each legacy frame is sealed and published after HDF5/XML/metadata close. The former selected
+planes at that clock shared one HDF5 file with named plane groups. Fields and
 slices are retained independently of checkpoint `keep=1|2`. With checkpointing
 disabled, slice-only output creates no volume, checkpoint or shared checkpoint
 geometry. On GPU
@@ -631,7 +642,10 @@ Plan 10.74 additionally checks simultaneous checkpoint, basic volume, three
 index slices and formal velocity statistics, with GPU rendering enabled.
 CPU-only and GPU NP=1/2 complete 12 versus 5+7 steps exactly; disabling archives
 and rendering leaves flow/statistics unchanged. Use the existing output examples
-and independent `&volume` / `&slices` schedules alongside `input.insitu`.
+and the historical independent `&volume` / `&slices` schedules alongside `input.insitu`.
+Current builds use JSONL numerical slices and `ASTRIR07` control; the old grouped-slice
+campaigns are not current launch recipes. Current slice tests are
+`test_index_slice_fields.py`, `test_index_slice_runtime.py`, and `test_index_slice_offline.py`.
 Keep the renderer output directory distinct from the native output root.
 The joint gate retains the same topology and does not expand renderer admission.
 Scope A closes the first delivery with GPU Cartesian TGV rendering only.

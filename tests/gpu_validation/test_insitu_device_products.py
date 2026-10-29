@@ -551,8 +551,10 @@ def test_exact_restart_and_transport_override(tmp_path, mode, axis):
     check_device_render(continuous, 2, [3, 4])
     source = continuous / 'outdat/new/checkpoints/step000000000002'
     before = {p.name: p.read_bytes() for p in source.iterdir() if p.is_file()}
-    assert before['insitu_control.bin'][:8] == b'ASTRIR03'
-    assert before['insitu_control.bin'][176:192] == b'compatible      '
+    from run_output_restart_validation import native_render_payload
+    payload=native_render_payload(before['insitu_control.bin'])
+    assert payload[:8] == b'ASTRIR03'
+    assert payload[176:192] == b'compatible      '
     resumed, _ = run_case(args, ROOT, 'gpu', 2, 'resumed', 4, grid='32,32,32',
         restore=source, checkpoint_interval=2, insitu_config=config, postprocess_transport=mode)
     pictures = check_device_render(resumed, 2, [3, 4])

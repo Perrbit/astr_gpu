@@ -43,12 +43,36 @@ module chemistry_mean_statistics_gpu
   public :: set_air5_mean_sampling_gpu,accumulate_air5_mean_statistics_gpu
   public :: complete_air5_mean_statistics_file
   public :: air5_mean_statistics_device_bytes
+  public :: slice_air5_mean_info_gpu,slice_air5_mean_value_gpu
   logical,save :: active=.false.,sampling_enabled=.false.
   real(real64),allocatable,device,save :: accumulated_d(:,:,:,:)
   integer,allocatable,device,save :: failure_d(:)
   integer(int64),save :: sample_count=0,first_step=0,last_step=0
   real(real64),save :: first_time=0,last_time=0
 contains
+  subroutine slice_air5_mean_info_gpu(enabled,covered,count,window)
+    logical,intent(out) :: enabled,covered
+    integer(int64),intent(out) :: count
+    real(real64),intent(out) :: window(2)
+    enabled=active;covered=active.and.sample_count>0
+    count=sample_count;window=[first_time,last_time]
+  end subroutine
+
+  attributes(device) function slice_air5_mean_value_gpu(i,j,k,field,favre,count) result(value)
+    integer,value :: i,j,k,field
+    integer(int64),value :: count
+    logical,value :: favre
+    real(real64) :: value
+    integer :: slot
+    slot=field
+    if(field>=2.and.field<=4.and..not.favre) slot=field+26
+    if(favre.and.((field>=2.and.field<=4).or.field==6)) then
+      value=accumulated_d(i,j,k,slot)/accumulated_d(i,j,k,1)
+    else
+      value=accumulated_d(i,j,k,slot)/real(count,real64)
+    endif
+  end function
+
   integer(int64) function air5_mean_statistics_device_bytes() result(bytes)
     bytes=0
     if(allocated(accumulated_d)) bytes=bytes+8*size(accumulated_d,kind=int64)

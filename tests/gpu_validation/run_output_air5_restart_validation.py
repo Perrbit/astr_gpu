@@ -147,12 +147,16 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
            wall_mean_oracle=False, complete_step_timing=False, air5_phase_timing=False,
            chemistry_diagnostics=None, chemistry_reductions=None, chemistry_failure_hook=None,
            explicit_contract_defaults=False, host_budget_bytes=67108864,filter_failure_rank=None,
-           exact_restart=True,checkpoint_statistics=True,primitive_reuse=None,symmetric_face_probe=False):
+           exact_restart=True,checkpoint_statistics=True,primitive_reuse=None,symmetric_face_probe=False,
+           product_catalog_records=None):
     case = args.output / f"{backend}_np{ranks}_{name}"
     tau = prepare(case, backend, steps, incident=args.case == "sbli", reconstruction=args.reconstruction,
                   mean_statistics=args.mean_statistics if statistics is None else statistics,
                   sample_interval=args.sample_interval, report_interval=getattr(args, 'report_interval', 1),
                   grid=getattr(args, 'grid', (16, 16, 16)))
+    if product_catalog_records is not None:
+        (case/'input.products.jsonl').write_text('\n'.join(json.dumps(record) for record in
+            [{'catalog_schema':'astr-insitu-products-v1'},*product_catalog_records])+'\n')
     if fault == "statistics_activation":
         set_value(case / "datin/controller", "lwsequ,lwslic,lavg,lcracon",
                   f"f,f,{'f' if args.mean_statistics else 't'},f")

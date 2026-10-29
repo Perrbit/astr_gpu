@@ -483,9 +483,12 @@ def test_m12_display_checkpoint_change_leaves_tgv_format_unchanged(tmp_path):
     compare_fields(case/final/'state.h5',reference/final/'state.h5')
     for name in ('control.bin','insitu_control.bin'):
         actual=(case/final/name).read_bytes()
-        assert actual==(reference/final/name).read_bytes(),name
         if name=='insitu_control.bin':
-            assert actual[:8]==b'ASTRIR03'
+            from run_output_restart_validation import native_render_payload
+            assert native_render_payload(actual)==(reference/final/name).read_bytes(),name
+            assert native_render_payload(actual)[:8]==b'ASTRIR03'
+        else:
+            assert actual==(reference/final/name).read_bytes(),name
 
 
 def test_generated_mapper_hook_keeps_production_direct_path_unchanged(tmp_path):

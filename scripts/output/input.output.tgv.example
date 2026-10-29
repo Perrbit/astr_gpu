@@ -4,6 +4,7 @@
 &output
  directory='outdat/new', restore_directory='', restart_output='saved',
  buffer_bytes=4096, host_budget_bytes=67108864, device_budget_bytes=67108864
+ product_catalog='input.products.jsonl', product_poll_steps=10
 /
 &checkpoint
  enabled=.true., mode='steps', interval_steps=5, keep=2, initial_frame=.false.
@@ -12,8 +13,4 @@
  enabled=.true., mode='steps', interval_steps=2,
  initial_frame=.true., final_frame=.true., fields='basic'
 /
-&slices
- enabled=.true., mode='steps', interval_steps=3,
- initial_frame=.true., final_frame=.true., fields='basic',
- i_indices=8, j_indices=0, k_indices=16
-/
+! Copy input.products.tgv.example.jsonl to input.products.jsonl in the run directory.

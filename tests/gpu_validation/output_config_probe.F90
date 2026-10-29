@@ -25,6 +25,8 @@ program output_config_probe
   print '(A,L1)', 'checkpoint_final=',options%checkpoint%final_frame
   print '(A,L1)', 'exact_restart=',options%exact_restart
   print '(A,L1)', 'checkpoint_statistics=',options%checkpoint_statistics
+  print '(A,L1)', 'adaptive_enabled=',options%adaptive%enabled
+  print '(A,8(A,1X))', 'adaptive_windows=',options%adaptive%window_ids
   print '(A,3(I0,1X))', 'slice_counts=',count(options%i_indices>=0), &
     count(options%j_indices>=0),count(options%k_indices>=0)
   print '(A,I0)', 'checkpoint_interval_steps=',options%checkpoint%interval_steps

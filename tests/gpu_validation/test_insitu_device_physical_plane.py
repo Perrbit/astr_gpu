@@ -167,7 +167,8 @@ def test_completed_plane_products(tmp_path, mapping, ranks, axis, mode, pipeline
     compare_fields(diagnostic / FINAL / 'state.h5', resumed / FINAL / 'state.h5')
     for name in ('control.bin', 'insitu_control.bin'):
         assert (diagnostic / FINAL / name).read_bytes() == (resumed / FINAL / name).read_bytes()
-    assert (source / 'insitu_control.bin').read_bytes()[:8] == b'ASTRIR05'
+    from run_output_restart_validation import native_render_payload
+    assert native_render_payload((source / 'insitu_control.bin').read_bytes())[:8] == b'ASTRIR05'
     assert before == {p.name: p.read_bytes() for p in source.iterdir() if p.is_file()}
     for rank in range(ranks):
         name = f'plane_oracle.step4.rank{rank}.bin'
