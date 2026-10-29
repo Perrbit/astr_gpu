@@ -601,6 +601,7 @@ module filter
         enddo
 
         ii=dim-4
+        ff(ii)=0.e0_real_kind
         do m=0,4
           ff(ii)=ff(ii)+coef8e(m)*(f(ii-m)+f(ii+m))
         enddo
