@@ -1,8 +1,60 @@
 # Native In-Situ TGV Preset
 
-Images default to JPEG only. Set `ASTR_INSITU_WRITE_EPS=1` explicitly on all
-ranks to additionally encode and publish EPS, or leave it unset/set it to `0`
-to avoid that work. This applies to compatible and both strict device pipelines;
+## Runtime Product Catalog
+
+Native production output now takes product definitions exclusively from the
+`&output product_catalog` file (default `input.products.jsonl` in the case working
+directory). The base in-situ configuration selects the
+admitted source, statistics, dependencies, budgets and transport; a legacy
+profile does not implicitly request its old pictures. Use the complete examples
+and interface in [RUNTIME_PRODUCTS.md](../output/RUNTIME_PRODUCTS.md).
+Both resident bridges retain zero geometry readback. Explicit compatible image
+and native VTK geometry consumers download only final extracted geometry, not a
+3D flow snapshot. The separate explicit host-processing route now has bounded
+TGV/mean/wall checks; it can download selected three-dimensional fields and must
+not be described as device-resident. See the interface document for its scope.
+
+The fixed-profile examples and launch campaigns below record earlier acceptance
+work. They are not current native-output launch recipes unless they also supply
+an explicit runtime product catalog. Independent read-only preview remains a
+separate, supported use of its existing configuration.
+
+Current repository launch tools are `start_tgv_acceptance.py`,
+`benchmark_tgv256_visualization.py` and `run_tgv256_demo.py`. They now prepare
+complete JSONL definitions, use the runtime consumer for all three explicit
+rendering routes, and disable large archives/checkpoints through `input.output`
+when requested. They do not set `ASTR_GPU_BENCHMARK_NO_FIELD_IO`, which would
+also suppress runtime products. The 32-cubed entry and its presets are installed
+with `InsituTools`; install `OutputTools` as well for the complete example
+definitions. The two 256-cubed development tools still use repository case
+preparation utilities and are not standalone deployment tools.
+
+Native products emit the accepted initial state at step 0, then follow their own
+JSONL clocks. A 100-complete-step two-product demonstration therefore retains
+101 JPEGs per product. Its optional 20-fps movies use steps 1 through 100 only,
+for five seconds each, without copying or deleting the initial JPEG. Supply an
+explicit `--library` implementation directory; video encoding also needs
+`imageio_ffmpeg` in the calling Python environment. Default product formats are
+JPEG only. No 256-cubed production rerun is implied by the bounded 32-cubed
+entry checks.
+
+The current bounded M12 entry (`tests/gpu_validation/run_m12_insitu_acceptance.py`)
+and the platform acceptance tool now write the explicit six-instance short-fixture
+catalog and inspect native per-instance files. They do not expect the old bundled
+`mesh_step` receipts, implicit probes, or automatic EPS counterparts.
+`run_platform_insitu_fullsize.py` uses that known catalog only for its small
+interface pair. Its full-grid pair requires a separately reviewed
+`--product-catalog`; the batch wrapper forwards `ASTR_PLATFORM_PRODUCT_CATALOG`.
+It never rescales fixture indices or inherits products from a profile. Images-off
+keeps only explicitly listed numerical monitors, and `slices-wall` is a filter
+that removes Q/streamlines, not an instruction to invent wall products.
+These are local script changes, not a new platform submission or qualification.
+
+Images default to JPEG only. Native JSONL records explicitly select their formats;
+the offline 256-cubed preparer honors `ASTR_INSITU_WRITE_EPS=1` by writing EPS
+into those records. Changing that environment variable after publication does
+not override a native product definition. Legacy read-only presets retain their
+existing explicit environment switch. This applies to compatible and both strict device pipelines;
 historical JPEG/EPS measurements below describe the formats used at the time.
 
 ### Read-Only Streamline Preview

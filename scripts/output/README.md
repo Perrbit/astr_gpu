@@ -602,6 +602,27 @@ The reserved restore probe described above also accepts this bounded SBLI gate.
 
 ### Optional Native TGV Rendering And Continuation
 
+Current native rendering uses the single runtime product catalog. Configure the
+backend/statistics in `input.insitu`, and put every requested image, numerical
+slice, probe, wall curve or compatible geometry record in the `&output product_catalog`
+file (default `input.products.jsonl` in the case working directory).
+See [RUNTIME_PRODUCTS.md](RUNTIME_PRODUCTS.md) for
+complete definitions, publication/retry commands and current source/backend
+coverage. OutputTools includes explicit TGV image and geometry examples, channel
+wall CSV/charts, SBLI midspan curves and the bounded M12 fixture.
+
+Only the effective catalog schedules products; the base `products` preset still
+selects an admitted source/backend combination, but no longer implicitly creates
+its fixed set of images. Each instance owns its version and step/time clock.
+Checkpoints store effective definitions, consumed requests and clocks in the
+existing `ASTRIR07`/`ASTRRC04` control member, including an explicit empty catalog.
+Restart does not replace this state with an unconsumed disk edit. No geometry,
+image or second flow snapshot is added to the control member.
+
+The following records describe earlier fixed-profile acceptance evidence, not
+current launch recipes. Their file sizes, clocks and transfer counts must not be
+used as the current dynamic interface contract.
+
 Provide `datin/input.output` and set
 `ASTR_INSITU_CONFIG=datin/input.insitu` to use the existing GPU EGL TGV preset
 with completed-step native checkpoints. See `../insitu/README.md` for the
