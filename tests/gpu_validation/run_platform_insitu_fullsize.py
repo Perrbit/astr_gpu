@@ -17,7 +17,6 @@ import numpy as np
 from PIL import Image
 
 from prepare_m12_local_case import FULL_INTERVALS, prepare, replace_value
-from run_m12_hd_coverage import prepare_probe_map
 from insitu_cfl_gate import CflGate
 from insitu_resource_monitor import run_monitored
 
@@ -25,6 +24,8 @@ ROOT = Path(__file__).resolve().parents[2]
 GIB = 1024**3
 sys.path.insert(0, str(ROOT/'scripts/insitu'))
 from image_publication import publish_pair, eps_output_enabled
+from catalog_examples import m12_short_products,tgv32_products,write_catalog
+from catalog_image_inspection import inspect_images
 
 
 def save(path, record):
@@ -69,23 +70,32 @@ def publication_preflight(directory):
 
 
 def render_configuration(args, images=True):
-    interval = 10 if images else 10**9
-    products = ['velocity_slice.image'] if getattr(args, 'm12_products', 'all') == 'slices-wall' else [
-        'q_surface.image', 'velocity_slice.image', 'instantaneous_streamlines.image']
-    product_ids = ','.join(repr(name) for name in products)
-    product_modes = ','.join("'steps'" for _ in products)
-    product_steps = ','.join(str(interval) for _ in products)
     return f"""&insitu_run
- enabled=t, statistics=f, render=t, initial_frame=f, final_frame=f,
+ enabled=t, statistics=f, render=t,
  products='m12_diagnostics',streamline_seeds='bl-layered256',
  processing_backend='device',derivative_backend='gpu',rendering_pipeline='standard-device',
  postprocess_transport='pinned',output_directory='outdat/render',
  host_budget_bytes={args.host_budget},device_budget_bytes={args.device_budget},device_reserve_bytes={args.reserve},
- implementation_path='{args.library}',pipeline_file='{ROOT}/scripts/insitu/device_render_pipeline.py',
- product_ids={product_ids},
- product_modes={product_modes},product_steps={product_steps}
+ implementation_path='{args.library}',pipeline_file='{ROOT}/scripts/insitu/device_render_pipeline.py'
 /
 """
+
+
+def render_catalog(args,shape,images=True):
+    if tuple(shape)==(64,32,24):
+        records=m12_short_products(interval=5)
+    else:
+        path=getattr(args,'product_catalog',None)
+        if path is None:
+            raise ValueError('Full-grid M12 requires an explicitly reviewed --product-catalog; the short-fixture catalog is not rescaled')
+        rows=[json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
+        if not rows or rows[0]!={'catalog_schema':'astr-insitu-products-v1'}:
+            raise ValueError('Product catalog header differs')
+        records=rows[1:]
+    if getattr(args,'m12_products','all')=='slices-wall':
+        records=[row for row in records if row['kind'] not in ('q_surface','streamlines')]
+    # The paired control retains explicitly selected numerical monitors, never hidden profile diagnostics.
+    return records if images else [row for row in records if row['output']['channel']!='image']
 
 
 def prepare_case(args, case, shape, steps, images, checkpoint=False):
@@ -111,7 +121,7 @@ def prepare_case(args, case, shape, steps, images, checkpoint=False):
     save(case/'fixture.json', fixture)
     (case/'outdat/render').mkdir()
     (case/'datin/input.insitu').write_text(render_configuration(args, images))
-    prepare_probe_map(case, shape)
+    write_catalog(case/'input.products.jsonl',render_catalog(args,shape,images))
     if checkpoint:
         # The checkpoint writer owns exclusive children, not its caller's root.
         (case/'outdat/new').mkdir(mode=0o700)
@@ -127,7 +137,6 @@ def runtime_environment(solver_halo, boundary='original'):
         ASTR_GPU_MP_POSITIVITY='off', ASTR_GPU_UPWIND_FLUX_MODE='split',
         ASTR_GPU_RK_TIMING='1', ASTR_GPU_RANK_RK_TIMING='1', ASTR_COMPLETE_STEP_TIMING='1',
         ASTR_INSITU_TIMING='1', ASTR_INSITU_CONFIG='datin/input.insitu',
-        ASTR_INSITU_M12_W_COLOR_MAX='0.01', ASTR_INSITU_RESIDENT_AUDIT='1',
         OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1', MKL_NUM_THREADS='1')
     if boundary == 'nscbc':
         env['ASTR_NSCBC_FARFIELD_MODE'] = 'compatibility'
@@ -183,72 +192,20 @@ def timing_summary(log, steps, warmup=5):
 
 
 def compact_diagnostics(case, shape, steps):
-    path = case/'outdat/render/probes.csv'
-    probes = np.atleast_1d(np.genfromtxt(path, delimiter=',', names=True))
-    if len(probes) != 72*steps or not np.isfinite(np.column_stack([probes[k] for k in probes.dtype.names])).all():
-        raise ValueError('Missing/nonfinite sparse samples')
-    if not np.array_equal(probes['step'], np.repeat(np.arange(1, steps+1), 72)):
-        raise ValueError('Sparse sample phase differs')
-    if not np.array_equal(probes['probe'], np.tile(np.arange(1, 73), steps)):
-        raise ValueError('Sparse sample identity differs')
-    if any(np.any(probes[k] <= 0) for k in ('rho_rhoinf', 'p_pinf', 'T_Tinf')):
-        raise ValueError('Nonpositive sparse thermodynamic state')
-    for step in range(50, steps+1, 50):
-        pieces = [np.atleast_1d(np.genfromtxt(case/'outdat/render'/f'wall.step{step:08d}.rank{rank:04d}.csv',
-                    delimiter=',', names=True)) for rank in range(4)]
-        wall = np.sort(np.concatenate(pieces), order='global_i')
-        if not np.array_equal(wall['global_i'], np.arange(shape[0]+1)) or not np.isfinite(
-                np.column_stack([wall[k] for k in wall.dtype.names])).all():
-            raise ValueError('Wall ownership/finite check failed')
-    return dict(probe_rows=len(probes), wall_steps=list(range(50, steps+1, 50)))
+    files=sorted((case/'outdat/new').glob('monitor_products/*/version*/segment*/*.csv'))
+    files+=sorted((case/'outdat/new').glob('wall_products/*/version*/segment*/*.csv'))
+    rows=0
+    for path in files:
+        text='\n'.join(line for line in path.read_text().splitlines() if not line.startswith('#'))
+        values=np.atleast_1d(np.genfromtxt(io.StringIO(text),delimiter=',',names=True))
+        if not np.isfinite(np.column_stack([values[key] for key in values.dtype.names])).all():
+            raise ValueError('Nonfinite explicitly requested monitor: '+str(path))
+        rows+=len(values)
+    return dict(csv_files=len(files),rows=rows,scope='only explicit catalog monitors; no implicit 72-probe or wall profile')
 
 
 def inspect_products(case, steps, profile='all'):
-    directory = case/'outdat/render'
-    write_eps = eps_output_enabled()
-    required = {'q_surface', 'q_surface.local', 'instantaneous_streamlines', 'velocity_slice',
-        'temperature_slice', 'spanwise_slice'} | {f'{field}.x{100*n}_{100*(n+1)}'
-            for field in ('velocity_slice', 'temperature_slice') for n in range(3)}
-    if profile == 'slices-wall':
-        required -= {'q_surface', 'q_surface.local', 'instantaneous_streamlines'}
-    warnings, frames = [], []
-    for step in range(10, steps+1, 10):
-        for rank in range(4):
-            path = directory/f'mesh_step{step:08d}_rank{rank}.json'
-            if not path.is_file():
-                warnings.append(f'Missing product receipt: {path.name}')
-                continue
-            receipt = json.loads(path.read_text())
-            if receipt['geometry_host_bytes'] != 0 or receipt['processing_backend'] != 'device':
-                raise ValueError('Product pipeline used host geometry or non-device processing')
-            missing = required-set(receipt['products'])
-            if missing:
-                warnings.append(f'step={step} rank={rank}: absent products {sorted(missing)}')
-            for name, item in receipt['products'].items():
-                status = item['image']
-                if (status.get('status') if isinstance(status, dict) else status) != 'published':
-                    warnings.append(f'step={step} rank={rank} {name}: image not published: {status}')
-                if item.get('empty'):
-                    warnings.append(f'step={step} rank={rank} {name}: empty geometry (valid diagnostic outcome)')
-            frames.append(dict(step=step, rank=rank, products=sorted(receipt['products'])))
-        for name in required:
-            path = directory/f'{name}.step{step:08d}.jpeg'
-            if not path.is_file() or (write_eps and not path.with_suffix('.eps').is_file()):
-                label = 'image pair' if write_eps else 'JPEG image'
-                warnings.append(f'Missing {label}: {path.name}')
-                continue
-            try:
-                with Image.open(path) as image:
-                    image.load()
-                    if image.width < 2 or image.height < 2:
-                        raise ValueError('Invalid image dimensions')
-            except (OSError, ValueError) as error:
-                warnings.append(f'Image decode failed {path.name}: {error}')
-    if list(directory.glob('*.vtp')) or list(directory.glob('sample*.bin')):
-        raise ValueError('Unexpected host geometry/volume dump')
-    return dict(frames=frames, warnings=warnings,
-        publication_complete=not any('Missing' in w or 'absent products' in w or
-            'not published' in w or 'decode failed' in w for w in warnings))
+    return inspect_images(case,4,steps)
 
 
 def run_m12(args, label, shape, steps, images, baseline=None, checkpoint=False):
@@ -259,8 +216,6 @@ def run_m12(args, label, shape, steps, images, baseline=None, checkpoint=False):
     if args.component_only:
         # Shared allocation accounting uses MPI_Win_allocate_shared locally.
         env['OMPI_MCA_osc'] = 'sm'
-    if checkpoint:
-        env['ASTR_M12_RENDER_ISOLATION'] = '1'
     command = [str(args.mpiexec), '--bind-to', 'none', '-np', '4', str(executable), 'run', 'datin/input.dat']
     receipt = dict(status='running', intervals=shape, topology=[4,1,1], steps=steps, dt=.02,
         images=images, checkpoint=checkpoint, command=command,
@@ -292,12 +247,8 @@ def run_m12(args, label, shape, steps, images, baseline=None, checkpoint=False):
         if len(downloads) != 4 or {int(rank) for rank, _ in downloads} != set(range(4)) or any(
                 int(count) != 0 for _, count in downloads):
             raise ValueError('Missing or nonzero full-frame download counters')
-        if checkpoint:
-            isolated = re.findall(r'ASTR_M12_RENDER_ISOLATION rank=(\d+) step=(\d+) q_bits_rng_unchanged=1', log)
-            if len(isolated) != 8 or {(int(rank),int(step)) for rank,step in isolated} != {
-                    (rank,step) for rank in range(4) for step in (5,10)}:
-                raise ValueError('Missing small-grid q/RNG isolation checks')
-        if not checkpoint and list((case/'outdat/new').rglob('*.h5')):
+        if not checkpoint and (list((case/'outdat/new/checkpoints').rglob('*.h5')) or
+                               list((case/'outdat/new/volume').rglob('*.h5'))):
             raise ValueError('Full-size coverage unexpectedly wrote field/checkpoint HDF5')
         receipt.update(status='completed', max_cfl=gate.maximum, resources=resources,
             compact=compact_diagnostics(case, shape, steps), timing=timing_summary(log, steps),
@@ -307,7 +258,7 @@ def run_m12(args, label, shape, steps, images, baseline=None, checkpoint=False):
             receipt['products'] = inspect_products(case, steps, getattr(args, 'm12_products', 'all'))
             if not receipt['products']['publication_complete']:
                 receipt['status'] = 'completed-with-missing-products'
-        elif list((case/'outdat/render').glob('*.jpeg')):
+        elif list((case/'outdat/new/render_products').rglob('*.jpeg')):
             raise ValueError('Images-off control produced pictures')
     except BaseException as error:
         receipt.update(status='failed', error=str(error), max_cfl=gate.maximum)
@@ -322,11 +273,17 @@ def compare_pair(off, on, shape, steps, checkpoint=False):
         from run_output_restart_validation import compare_fields
         relative = f'outdat/new/checkpoints/step{steps:012d}/state.h5'
         compare_fields(off/relative, on/relative)
-    files = ['probes.csv']+[f'wall.step{s:08d}.rank{r:04d}.csv'
-        for s in range(50, steps+1, 50) for r in range(4)]
-    for name in files:
-        if (off/'outdat/render'/name).read_bytes() != (on/'outdat/render'/name).read_bytes():
-            raise ValueError('Images changed paired compact diagnostics: '+name)
+    for subdir in ('monitor_products','wall_products','slice_products'):
+        a=off/'outdat/new'/subdir;b=on/'outdat/new'/subdir
+        files={path.relative_to(a) for path in a.rglob('*') if path.suffix in ('.csv','.h5')}
+        if files!={path.relative_to(b) for path in b.rglob('*') if path.suffix in ('.csv','.h5')}:
+            raise ValueError('Paired catalog monitor inventory differs: '+subdir)
+        for name in files:
+            if name.suffix=='.h5':
+                from run_output_restart_validation import compare_fields
+                compare_fields(a/name,b/name)
+            elif (a/name).read_bytes()!=(b/name).read_bytes():
+                raise ValueError('Images changed paired compact diagnostics: '+str(name))
     return dict(authoritative_q='bitwise equal' if checkpoint else 'not downloaded at full scale',
         compact_files='byte-identical', intervals=shape, steps=steps)
 
@@ -343,27 +300,19 @@ def tgv_means(args):
  enabled=t, statistics=t, render=t, initial_frame=f, final_frame=f,
  statistics_window=0.0005,0.0115, products='all',
  processing_backend='device',derivative_backend='gpu',rendering_pipeline='standard-device',
- postprocess_transport='device-aware',output_directory='outdat/render',step_interval=5,
+ postprocess_transport='device-aware',output_directory='outdat/render',
  host_budget_bytes={args.host_budget},device_budget_bytes={args.device_budget},device_reserve_bytes={args.reserve},
  implementation_path='{args.library}',pipeline_file='{ROOT}/scripts/insitu/device_render_pipeline.py'
 /
 """
     case, _ = run_case(local, ROOT, 'gpu', 2, 'tgv_means', 10, enabled=False, grid='32,32,32',
-        insitu_config=config, no_field_io=True, checkpoint_enabled=False, monitor_resources=True,
+        insitu_config=config, checkpoint_enabled=False, monitor_resources=True,
+        product_catalog_records=tgv32_products(5,statistics=True),
         postprocess_transport='device-aware', solver_halo_transport='device-aware', insitu_timing=True)
-    required = {'q_surface','velocity_slice','instantaneous_streamlines','crossing_streamlines',
-        'mean_reynolds_streamlines','mean_favre_streamlines'}
-    warnings = []
-    for step in (5,10):
-        for rank in (0,1):
-            receipt = json.loads((case/'outdat/render'/f'mesh_step{step:08d}_rank{rank}.json').read_text())
-            if receipt['geometry_host_bytes'] != 0 or not required <= set(receipt['products']):
-                raise ValueError('TGV mean-product coverage or residency failed')
-        for name in required:
-            if not (case/'outdat/render'/f'{name}.step{step:08d}.jpeg').is_file():
-                warnings.append(f'TGV image missing: step={step} {name}')
-    return dict(status='completed' if not warnings else 'completed-with-missing-products', warnings=warnings,
-        scope='saved short-window means and rendering, not statistical stationarity')
+    result=inspect_images(case,2,10)
+    result.update(status='completed' if result['publication_complete'] else 'completed-with-missing-products',
+        scope='existing short-window means and explicit rendering, not statistical stationarity')
+    return result
 
 
 def main():
@@ -378,7 +327,10 @@ def main():
     parser.add_argument('--preflight-only', action='store_true')
     parser.add_argument('--component-only', action='store_true', help='local four-rank correctness; not four-GPU qualification')
     parser.add_argument('--solver-halo', choices=('device-aware','pinned'), default='device-aware')
-    parser.add_argument('--m12-products', choices=('all','slices-wall'), default='all')
+    parser.add_argument('--m12-products', choices=('all','slices-wall'), default='all',
+        help='Filter the explicit catalog: slices-wall omits Q and streamlines; it adds no products')
+    parser.add_argument('--product-catalog',type=Path,
+        help='Reviewed native JSONL for the full grid; no short-fixture index rescaling or implicit products')
     parser.add_argument('--m12-boundary', choices=('original','nscbc'), default='original')
     parser.add_argument('--timeout', type=float, default=7*3600)
     parser.add_argument('--host-budget', type=int)
@@ -417,6 +369,8 @@ def main():
                     path = path.resolve(strict=True)
                 setattr(args, name, path)
             if not args.component_only:
+                if args.product_catalog is None:
+                    parser.error('--product-catalog is required for full-grid images/monitors')
                 if args.probe_directory is None:
                     parser.error('--probe-directory is required for four-GPU qualification')
                 args.probe_directory = args.probe_directory.resolve(strict=True)

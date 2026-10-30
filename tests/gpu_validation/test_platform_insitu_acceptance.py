@@ -182,7 +182,7 @@ def test_m12_debug_and_native_cover_requested_topologies(tmp_path, monkeypatch, 
     monkeypatch.setattr(gate, 'run_case', run_case)
     monkeypatch.setattr(gate, 'check_pair', lambda *a, **kw: dict(q=dict(max_abs=0.), statistics_max_abs={}))
     monkeypatch.setattr(gate, 'check_images', lambda case, ranks, **kw: dict(ranks=ranks))
-    monkeypatch.setattr(gate, 'check_device_render', lambda *a, **kw: True)
+    monkeypatch.setattr(gate, 'inspect_images', lambda *a, **kw: dict(publication_complete=True))
     monkeypatch.setattr(gate, 'compare_fields', lambda *a, **kw: None)
     args = SimpleNamespace(output=tmp_path, source=Path('/inputs'), executable=Path('/astr'),
         native_executable=Path('/astr-native'), mpiexec=Path('/mpi'), library=Path('/catalyst'),
@@ -211,7 +211,8 @@ def test_tgv_uses_explicit_resident_rendering_and_aware_postprocessing():
     config = gate.tgv_configuration(Path('/dependency/catalyst'))
     assert "rendering_pipeline='standard-device'" in config
     assert "postprocess_transport='device-aware'" in config
-    assert 'statistics=f' in config and 'step_interval=5' in config
+    assert 'statistics=f' in config and 'step_interval' not in config
+    assert all(row['schedule']['interval']==5 for row in gate.tgv32_products(5,statistics=False))
     assert 'device_render_pipeline.py' in config
 
 

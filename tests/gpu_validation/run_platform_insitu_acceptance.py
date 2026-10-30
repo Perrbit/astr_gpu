@@ -14,12 +14,15 @@ import numpy as np
 
 from compare_flowstate import read_flowstate
 from insitu_cfl_gate import CflGate
-from run_m12_insitu_acceptance import configuration as m12_configuration, check_images
+from run_m12_insitu_acceptance import configuration as m12_configuration, check_images, m12_short_products
 from run_m12_local_compare import run as run_m12, check_pair
 from run_output_restart_validation import run_case, compare_fields
-from test_insitu_device_products import field_difference, check_device_render
+from test_insitu_device_products import field_difference,check_device_render
+from catalog_image_inspection import inspect_images
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0,str(ROOT/'scripts/insitu'))
+from catalog_examples import tgv32_products
 FINAL = 'outdat/new/checkpoints/step000000000010/state.h5'
 M12_TOPOLOGIES = ('2,1,1', '4,1,1')
 
@@ -41,10 +44,10 @@ def render_configuration(factory, args):
 def tgv_configuration(library, host_budget_bytes=4*1024**3, device_budget_bytes=2*1024**3,
                       device_reserve_bytes=1024**3):
     return f"""&insitu_run
- enabled=t, statistics=f, render=t, initial_frame=f, final_frame=f,
+ enabled=t, statistics=f, render=t,
  processing_backend='device', derivative_backend='gpu', products='all',
  rendering_pipeline='standard-device', postprocess_transport='device-aware',
- output_directory='outdat/render', schedule_mode='steps', step_interval=5,
+ output_directory='outdat/render',
  host_budget_bytes={host_budget_bytes}, device_budget_bytes={device_budget_bytes}, device_reserve_bytes={device_reserve_bytes},
  implementation_path='{library}', pipeline_file='{ROOT / 'scripts/insitu/device_render_pipeline.py'}'
 /
@@ -143,6 +146,7 @@ def tgv_gate(args):
             case, _ = run_case(local, ROOT, backend, ranks, label, 10, grid='32,32,32',
                 checkpoint_interval=10, checkpoint_enabled=True,
                 insitu_config=render_configuration(tgv_configuration, args) if render else None,
+                product_catalog_records=tgv32_products(5,statistics=False) if render else [],
                 postprocess_transport='device-aware' if render else None,
                 solver_halo_transport='device-aware' if backend == 'gpu' and ranks == 2 else 'pinned',
                 resident_audit=render, monitor_resources=backend == 'gpu', resource_baseline=baseline,
@@ -153,17 +157,8 @@ def tgv_gate(args):
             if label == 'off':
                 baseline = json.loads((case / 'resources.sampled.json').read_text())
             if render:
-                check_device_render(case, ranks, [5, 10], statistics=False)
-                log = (case / 'run.log').read_text()
-                audits = re.findall(r'ASTR_INSITU_RESIDENT_AUDIT .*?field_maxabs=(\S+) display_maxabs=(\S+)', log)
-                if len(audits) != ranks*2*4 or any(not np.isfinite(float(a)) or float(a)>2e-10 or float(b)!=0.
-                                                           for a, b in audits):
-                    raise ValueError('TGV resident numerical/display audit failed')
-                for step in (5, 10):
-                    for rank in range(ranks):
-                        record = json.loads((case / f'outdat/render/mesh_step{step:08d}_rank{rank}.json').read_text())
-                        if record['geometry_host_bytes'] != 0 or record['rendering_pipeline'] != 'standard-device':
-                            raise ValueError('Host geometry readback or unexpected rendering route')
+                products=inspect_images(case,ranks,10)
+                if not products['publication_complete']: raise ValueError(products['warnings'])
         compare_fields(cases['off'] / FINAL, cases['on'] / FINAL)
         maximum = field_difference(cases['reference'] / FINAL, cases['on'] / FINAL, 2e-10)
         headers, values = zip(*(read_flowstate(cases[label]) for label in ('reference', 'off', 'on')))
@@ -192,7 +187,8 @@ def m12_gate(args):
         off = run_m12(local, 'gpu', topology, case_label='gpu_off')
         baseline = json.loads((off / 'resources.sampled.json').read_text())
         on = run_m12(local, 'gpu', topology, case_label='gpu_on',
-                     insitu_config=render_configuration(m12_configuration, args), resource_baseline=baseline)
+                     insitu_config=render_configuration(m12_configuration, args), resource_baseline=baseline,
+                     product_catalog_records=m12_short_products())
         receipt = check_pair(cpu, on, ranks)
         isolation = check_pair(off, on, ranks, reference_backend='gpu')
         if isolation['q']['max_abs'] != 0. or any(isolation['statistics_max_abs'].values()):
@@ -218,12 +214,14 @@ def native_gate(args):
         case, _ = run_case(local, ROOT, 'gpu', 2, label, 10, grid='32,32,32',
             checkpoint_interval=10, checkpoint_enabled=True,
             insitu_config=render_configuration(tgv_configuration, args) if render else None,
+            product_catalog_records=tgv32_products(5,statistics=False) if render else [],
             postprocess_transport='device-aware' if render else None,
             solver_halo_transport='device-aware', monitor_resources=True,
             resource_baseline=baseline, insitu_timing=render)
         cases[label] = case
         if render:
-            check_device_render(case, 2, [5, 10], statistics=False)
+            products=inspect_images(case,2,10)
+            if not products['publication_complete']: raise ValueError(products['warnings'])
         else:
             baseline = json.loads((case / 'resources.sampled.json').read_text())
     compare_fields(cases['off'] / FINAL, cases['on'] / FINAL)
@@ -239,7 +237,7 @@ def native_gate(args):
         baseline = json.loads((off / 'resources.sampled.json').read_text())
         on = run_m12(local, 'gpu', topology, case_label='m12_on', observation='images',
                     checkpoint_interval=10, insitu_config=render_configuration(m12_configuration, args),
-                    resource_baseline=baseline)
+                    resource_baseline=baseline,product_catalog_records=m12_short_products())
         compare_fields(off / FINAL, on / FINAL)
         receipts.append(dict(topology=topology, ranks=ranks, state_isolation='exact',
                              graphics=check_images(on, ranks, audit=False)))

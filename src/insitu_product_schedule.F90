@@ -4,7 +4,8 @@ module insitu_product_schedule
   use astr_precision, only: real_kind
   use iso_c_binding, only: c_int,c_char,c_null_char,c_int64_t,c_double
   use ieee_arithmetic, only: ieee_is_finite
-  use insitu_run_config, only: insitu_options,insitu_max_products,catalog_product,catalog_definition_equal,catalog_field_names
+  use insitu_run_config, only: insitu_options,insitu_max_products,catalog_product,catalog_definition_equal,catalog_field_names, &
+    pack_catalog_render,unpack_catalog_render
   use insitu_schedule, only: sample_schedule,configure_schedule,poll_schedule,write_schedule_state, &
     restore_schedule_state,resume_schedule,schedule_next_target
   use adaptive_output, only: adaptive_clock,adaptive_binding_equal,adaptive_dependencies_reset, &
@@ -19,6 +20,7 @@ module insitu_product_schedule
   public :: runtime_catalog_due,runtime_catalog_success,runtime_catalog_disable,runtime_catalog_wait
   public :: runtime_catalog_state_file
   public :: runtime_catalog_reject
+  public :: runtime_catalog_image_work
   integer,parameter,public :: runtime_active=1,runtime_bad_config=2,runtime_waiting=3, &
     runtime_resource_disabled=4,runtime_absent=5
   type :: runtime_product_state
@@ -47,6 +49,60 @@ module insitu_product_schedule
   character(64),save :: disabled_products(128)=''
   integer,save :: disabled_count=0
 contains
+  logical function runtime_catalog_image_work() result(active)
+    integer :: i
+    active=.false.
+    do i=1,runtime_catalog_count()
+      if(runtime_states(i)%definition%view%channel/='image'.and.runtime_states(i)%definition%view%channel/='geometry') cycle
+      if(runtime_states(i)%status/=runtime_active.and.runtime_states(i)%status/=runtime_waiting) cycle
+      active=.true.;return
+    enddo
+  end function
+
+  integer(c_int) function runtime_count_c() bind(C,name='astr_insitu_runtime_product_count') result(n)
+    n=runtime_catalog_count()
+  end function
+
+  integer(c_int) function runtime_identity_c(index,id,capacity,metadata,clock) &
+      bind(C,name='astr_insitu_runtime_product_identity') result(length)
+    integer(c_int),value :: index,capacity
+    character(c_char),intent(out) :: id(*)
+    integer(c_int64_t),intent(out) :: metadata(5)
+    real(c_double),intent(out) :: clock
+    integer :: i,n
+    length=0;metadata=0;clock=0
+    if(index<1.or.index>runtime_catalog_count()) return
+    n=len(runtime_states(index)%definition%id);length=n+1
+    metadata=[runtime_states(index)%version,int(runtime_states(index)%status,c_int64_t), &
+      int(merge(1,0,runtime_states(index)%definition%view%channel=='image'.or. &
+        runtime_states(index)%definition%view%channel=='geometry'),c_int64_t), &
+      runtime_states(index)%consumed_request,runtime_states(index)%applied_step]
+    clock=runtime_states(index)%applied_time
+    if(capacity<n+1) return
+    do i=1,n
+      id(i)=runtime_states(index)%definition%id(i:i)
+    enddo
+    id(n+1)=c_null_char
+  end function
+
+  integer(c_int) function runtime_fields_c(index,ids,names,capacity) &
+      bind(C,name='astr_insitu_runtime_product_fields') result(n)
+    integer(c_int),value :: index,capacity
+    integer(c_int),intent(out) :: ids(*)
+    character(c_char),intent(out) :: names(*)
+    integer :: field,j,id
+    n=0
+    if(index<1.or.index>runtime_catalog_count()) return
+    n=size(runtime_states(index)%definition%fields)
+    if(capacity<n) return
+    do field=1,n
+      id=runtime_states(index)%definition%fields(field);ids(field)=id
+      do j=1,len(catalog_field_names)
+        names((field-1)*len(catalog_field_names)+j)=catalog_field_names(id)(j:j)
+      enddo
+    enddo
+  end function
+
   subroutine runtime_catalog_state_file(unit,writing,step,time,ok)
     integer,intent(in) :: unit
     logical,intent(in) :: writing
@@ -57,14 +113,14 @@ contains
     character(8) :: magic
     integer(int64) :: n,bytes,position
     integer :: i,status
-    ok=.false.;status=0;magic='ASTRRC01'
+    ok=.false.;status=0;magic='ASTRRC04'
     if(writing) then
       n=runtime_catalog_count()
       write(unit,iostat=status) magic,n
     else
       read(unit,iostat=status) magic,n
       if(status/=0) return
-      if(magic/='ASTRRC01'.or.n<0.or.n>huge(i)) return
+      if(magic/='ASTRRC04'.or.n<0.or.n>huge(i)) return
       inquire(unit=unit,size=bytes,pos=position,iostat=status)
       if(status/=0) return
       ! Bound allocations by the actual remaining control bytes, not an arbitrary product cap.
@@ -126,6 +182,9 @@ contains
     type(catalog_product),intent(inout) :: entry
     integer,intent(out) :: status
     integer :: header(3)
+    character(32) :: labels(11)
+    integer :: view_words(7)
+    real(real64) :: view_reals(31)
     integer(int64) :: words(10)
     real(real64) :: periods(2)
     call runtime_text_file(unit,writing,entry%source,status)
@@ -142,7 +201,7 @@ contains
     else
       read(unit,iostat=status) header,words,periods
       if(status/=0) return
-      if(header(1)<1.or.header(1)>3.or.header(3)<1.or.header(3)>size(catalog_field_names)) then
+      if(header(1)<0.or.header(1)>3.or.header(3)<0.or.header(3)>size(catalog_field_names)) then
         status=1;return
       endif
       entry%axis=header(1);entry%line=header(2);allocate(entry%fields(header(3)))
@@ -156,6 +215,18 @@ contains
       write(unit,iostat=status) entry%fields
     else
       read(unit,iostat=status) entry%fields
+    endif
+    if(status/=0) return
+    if(writing) then
+      call pack_catalog_render(entry%view,labels,view_words,view_reals)
+      write(unit,iostat=status) labels,view_words,view_reals
+    else
+      read(unit,iostat=status) labels,view_words,view_reals
+      if(status/=0) return
+      if(view_words(6)<0.or.view_words(6)>1.or.view_words(7)<0.or..not.all(ieee_is_finite(view_reals))) then
+        status=1;return
+      endif
+      call unpack_catalog_render(entry%view,labels,view_words,view_reals)
     endif
     if(status/=0) return
     call runtime_names_file(unit,writing,entry%event_ids,status)
@@ -246,7 +317,20 @@ contains
     if(state%definition%enable_request<1.or.state%definition%enable_request>state%consumed_request) return
     if(state%definition%index<0.or.any(state%definition%ranges<0)) return
     if(any(state%definition%ranges(1,:)>state%definition%ranges(2,:))) return
-    if(any(state%definition%ranges(:,state%definition%axis)/=state%definition%index)) return
+    select case(trim(state%definition%view%sampling))
+    case('grid_index')
+      if(state%definition%axis<1.or.state%definition%axis>3) return
+      if(any(state%definition%ranges(:,state%definition%axis)/=state%definition%index)) return
+    case('grid_node')
+      if(any(state%definition%ranges(1,:)/=state%definition%ranges(2,:))) return
+    case('physical_plane','volume')
+      if(state%definition%axis/=0) return
+    case('wall','wall_midspan')
+      if(state%definition%axis<1.or.state%definition%axis>3) return
+    case default
+      return
+    end select
+    if(size(state%definition%fields)==0.and.state%definition%view%kind/='wall_curve') return
     if(any(state%definition%fields<1).or.any(state%definition%fields>size(catalog_field_names))) return
     do i=2,size(state%definition%fields)
       if(state%definition%fields(i)<=state%definition%fields(i-1)) return

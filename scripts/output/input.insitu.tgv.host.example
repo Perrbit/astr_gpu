@@ -1,0 +1,12 @@
+! Bounded FP64 32^3 TGV on a GPU solver, with CPU diagnostics and VTK extraction.
+! Replace both @...@ paths. Products come only from input.products.jsonl.
+&insitu_run
+ enabled=t, statistics=f, render=t,
+ processing_backend='host', derivative_backend='cpu',
+ rendering_pipeline='compatible', products='all',
+ output_directory='outdat/render',
+ host_budget_bytes=4294967296, device_budget_bytes=2147483648,
+ device_reserve_bytes=1073741824,
+ implementation_path='@CATALYST_IMPLEMENTATION_PATH@',
+ pipeline_file='@ASTR_INSITU_TOOLS@/device_render_pipeline.py'
+/

@@ -19,7 +19,7 @@ module insitu_statistics_gpu
   public :: statistics_transfer_counts
   public :: download_statistics_gpu_means
   public :: sample_statistics_gpu_mean_vectors
-  public :: slice_statistics_gpu_info,slice_statistics_gpu_value
+  public :: slice_statistics_gpu_info,slice_statistics_gpu_value,slice_statistics_gpu_active
 #ifdef ASTR_BUILD_TESTING
   public :: check_device_statistics_gpu_means
   public :: begin_preview_statistics_check,end_preview_statistics_check
@@ -51,6 +51,10 @@ module insitu_statistics_gpu
   real(real_kind),save :: previous_time=0.e0_real_kind,saved_window(2)=0.e0_real_kind
   logical,save :: has_previous=.false.
 contains
+  logical function slice_statistics_gpu_active() result(active)
+    active=has_previous
+  end function
+
   subroutine slice_statistics_gpu_info(active,covered,window,duration)
     logical,intent(out) :: active,covered
     real(real_kind),intent(out) :: window(2),duration
@@ -208,7 +212,7 @@ contains
     ok=.true.
   end subroutine
 
-  subroutine admit_statistics_device_allocation(extra_bytes)
+  subroutine admit_statistics_device_allocation(extra_bytes,success)
     use mpi
     use commvar, only: im,jm,km,lreadgrid
     use insitu_sample_gpu, only: sampling_geometry_device_bytes
@@ -221,6 +225,8 @@ contains
     type(resource_budget) :: budget
     logical :: ok
     integer(int64),optional,intent(in) :: extra_bytes
+    logical,optional,intent(out) :: success
+    if(present(success)) success=.true.
     if(device_budget==0) return
     call checked_bytes(int([im,owned_ny(),km],int64), &
       int((30+merge(1,0,lreadgrid))*storage_size(0.e0_real_kind)/8+storage_size(0)/8,int64),request,ok)
@@ -244,7 +250,11 @@ contains
     call MPI_Comm_size(node,nrank,ierr)
     call guard(ierr==MPI_SUCCESS,'budget node size')
     allocate(identities(nrank),requests(nrank),free_values(nrank),stat=status)
-    call guard(status==0,'budget metadata allocation')
+    if(.not.admit(status==0,'budget metadata allocation')) then
+      call MPI_Comm_free(node,ierr)
+      call guard(ierr==MPI_SUCCESS,'budget node communicator release')
+      return
+    endif
     call MPI_Allgather(pci,32,MPI_CHARACTER,identities,32,MPI_CHARACTER,node,ierr)
     call guard(ierr==MPI_SUCCESS,'budget identity gather')
     call MPI_Allgather(request,1,MPI_INTEGER8,requests,1,MPI_INTEGER8,node,ierr)
@@ -264,8 +274,22 @@ contains
     call configure_budget(budget,device_budget,device_headroom,ok)
     call guard(ok,'statistics budget configuration')
     call reserve_bytes(budget,1,total_request,available,ok)
-    call guard(ok,'statistics device allocation exceeds budget or free-memory headroom')
+    if(.not.admit(ok,'statistics device allocation exceeds budget or free-memory headroom')) return
   contains
+    logical function admit(valid,message) result(allowed)
+      logical,intent(in) :: valid
+      character(*),intent(in) :: message
+      integer :: bad,total,err
+      allowed=.true.
+      if(.not.present(success)) then
+        call guard(valid,message)
+        return
+      endif
+      bad=merge(0,1,valid)
+      call MPI_Allreduce(bad,total,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,err)
+      call guard(err==MPI_SUCCESS,'optional statistics allocation agreement')
+      allowed=total==0;success=allowed
+    end function
     subroutine guard(condition,message)
       logical,intent(in) :: condition
       character(*),intent(in) :: message

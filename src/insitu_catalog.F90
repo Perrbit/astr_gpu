@@ -2,7 +2,7 @@ module insitu_catalog
   use mpi
   use iso_fortran_env, only: int64,real64
   use iso_c_binding, only: c_ptr,c_int,c_int64_t,c_double,c_size_t,c_char,c_null_char,c_associated,c_f_pointer
-  use insitu_run_config, only: catalog_product,catalog_field_id,catalog_field_names
+  use insitu_run_config, only: catalog_product,catalog_field_id,catalog_field_names,pack_catalog_render,unpack_catalog_render
   use insitu_product_schedule, only: runtime_catalog_apply,runtime_catalog_count,runtime_catalog_state, &
     runtime_product_state,runtime_catalog_state_file,runtime_active,runtime_bad_config,runtime_waiting, &
     runtime_resource_disabled,runtime_absent
@@ -73,6 +73,10 @@ module insitu_catalog
       import c_ptr,c_int,c_double
       type(c_ptr),value :: value
       real(c_double),intent(out) :: n
+    end function
+    integer(c_int) function json_boolean(value) bind(C,name='astr_catalog_json_boolean')
+      import c_ptr,c_int
+      type(c_ptr),value :: value
     end function
     function catalog_file_read(path,n,identity,error,capacity) bind(C,name='astr_catalog_file_read') result(data)
       import c_ptr,c_char,c_size_t,c_int64_t
@@ -379,6 +383,9 @@ contains
     integer :: header(4),err
     integer(int64) :: words(10)
     real(real64) :: periods(2)
+    character(32) :: labels(11)
+    integer :: view_words(7)
+    real(real64) :: view_reals(31)
     if(rank==0) then
       header=[merge(1,0,entry%valid),entry%line,entry%axis,size(entry%fields)]
       words=[entry%index,reshape(entry%ranges,[6]),entry%enable_request,entry%interval_steps,entry%dense_interval_steps]
@@ -406,6 +413,14 @@ contains
     call broadcast_catalog_text(entry%error,rank,comm)
     call broadcast_catalog_names(entry%event_ids,rank,comm)
     call broadcast_catalog_names(entry%window_ids,rank,comm)
+    if(rank==0) call pack_catalog_render(entry%view,labels,view_words,view_reals)
+    call MPI_Bcast(labels,size(labels)*len(labels),MPI_CHARACTER,0,comm,err)
+    call require_catalog_mpi(err,comm)
+    call MPI_Bcast(view_words,size(view_words),MPI_INTEGER,0,comm,err)
+    call require_catalog_mpi(err,comm)
+    call MPI_Bcast(view_reals,size(view_reals),MPI_DOUBLE_PRECISION,0,comm,err)
+    call require_catalog_mpi(err,comm)
+    if(rank/=0) call unpack_catalog_render(entry%view,labels,view_words,view_reals)
   end subroutine
 
   subroutine catalog_watch_counts(reads,checks)
@@ -519,16 +534,420 @@ contains
     ok=.true.; error=''
   end function
 
+  logical function read_choice(obj,key,choices,text,error) result(ok)
+    type(c_ptr),intent(in) :: obj
+    character(*),intent(in) :: key,choices(:)
+    character(*),intent(out) :: text
+    character(:),allocatable,intent(out) :: error
+    character(:),allocatable :: parsed
+    ok=.false.;text=''
+    if(.not.read_text(obj,key,parsed,error)) return
+    if(.not.any(choices==parsed)) then
+      error='unsupported '//key//': '//parsed;return
+    endif
+    text=parsed;ok=.true.
+  end function
+
+  logical function read_vector(obj,key,values,error) result(ok)
+    type(c_ptr),intent(in) :: obj
+    character(*),intent(in) :: key
+    real(real64),intent(out) :: values(:)
+    character(:),allocatable,intent(out) :: error
+    type(c_ptr) :: array
+    integer :: i
+    ok=.false.;error=key//' must be a finite numeric vector'
+    array=json_get(obj,key//c_null_char)
+    if(json_type(array)/=2) return
+    if(json_size(array)/=size(values)) return
+    do i=1,size(values)
+      if(json_real(json_at(array,int(i-1,c_size_t)),values(i))==0) return
+    enddo
+    ok=.true.;error=''
+  end function
+
+  logical function read_integer_vector(obj,key,values,error) result(ok)
+    type(c_ptr),intent(in) :: obj
+    character(*),intent(in) :: key
+    integer(int64),intent(out) :: values(:)
+    character(:),allocatable,intent(out) :: error
+    type(c_ptr) :: array
+    integer :: i
+    ok=.false.;error=key//' must be an integer vector'
+    array=json_get(obj,key//c_null_char)
+    if(json_type(array)/=2) return
+    if(json_size(array)/=size(values)) return
+    do i=1,size(values)
+      if(json_integer(json_at(array,int(i-1,c_size_t)),values(i))==0) return
+    enddo
+    ok=.true.;error=''
+  end function
+
+  logical function read_catalog_fields(root,entry,error) result(ok)
+    type(c_ptr),intent(in) :: root
+    type(catalog_product),intent(inout) :: entry
+    character(:),allocatable,intent(out) :: error
+    type(c_ptr) :: array,item
+    logical :: selected(size(catalog_field_names))
+    character(:),allocatable :: value
+    integer :: i,id
+    ok=.false.;error='fields must be a nonempty array of registered names'
+    array=json_get(root,'fields'//c_null_char)
+    if(json_type(array)/=2) return
+    if(json_size(array)==0) return
+    selected=.false.
+    do i=1,int(json_size(array))
+      item=json_at(array,int(i-1,c_size_t))
+      if(json_type(item)/=3) return
+      value=text_value(item);id=catalog_field_id(value)
+      if(id==0) then
+        error='unknown field: '//value;return
+      endif
+      selected(id)=.true.
+    enddo
+    entry%fields=pack([(i,i=1,size(selected))],selected)
+    ok=.true.;error=''
+  end function
+
+  logical function read_index_sampling(sampling,entry,error) result(ok)
+    type(c_ptr),intent(in) :: sampling
+    type(catalog_product),intent(inout) :: entry
+    character(:),allocatable,intent(out) :: error
+    character(1),parameter :: axes(3)=['i','j','k']
+    character(:),allocatable :: value
+    type(c_ptr) :: ranges
+    integer(int64) :: endpoints(2)
+    integer :: i
+    ok=.false.
+    if(.not.keys_allowed(sampling,[character(16)::'mode','axis','index','index_ranges'],error)) return
+    if(.not.read_text(sampling,'axis',value,error)) return
+    entry%axis=0
+    do i=1,3
+      if(value==axes(i)) entry%axis=i
+    enddo
+    if(entry%axis==0) then
+      error='axis must be i, j or k';return
+    endif
+    if(.not.read_integer(sampling,'index',entry%index,error,0_int64)) return
+    ranges=json_get(sampling,'index_ranges'//c_null_char)
+    if(.not.keys_allowed(ranges,axes,error)) return
+    error='index_ranges must contain exactly the two varying global axes'
+    if(json_size(ranges)/=2) return
+    do i=1,3
+      if(i==entry%axis) then
+        if(c_associated(json_get(ranges,axes(i)//c_null_char))) return
+        entry%ranges(:,i)=entry%index;cycle
+      endif
+      if(.not.read_integer_vector(ranges,axes(i),endpoints,error)) return
+      if(endpoints(1)<0.or.endpoints(2)<endpoints(1)) then
+        error='index_ranges must be ordered nonnegative node indices';return
+      endif
+      entry%ranges(:,i)=endpoints
+    enddo
+    ok=.true.;error=''
+  end function
+
+  logical function read_visual_sampling(sampling,entry,error) result(ok)
+    type(c_ptr),intent(in) :: sampling
+    type(catalog_product),intent(inout) :: entry
+    character(:),allocatable,intent(out) :: error
+    integer(int64) :: nodes(3)
+    real(real64) :: scale
+    character(:),allocatable :: axis
+    integer :: d
+    ok=.false.
+    if(.not.read_choice(sampling,'mode',[character(16)::'grid_index','physical_plane','volume','grid_node','wall','wall_midspan'], &
+      entry%view%sampling,error)) return
+    select case(trim(entry%view%sampling))
+    case('grid_index')
+      if(entry%view%kind/='slice') then
+        error='grid_index sampling requires a slice';return
+      endif
+      ok=read_index_sampling(sampling,entry,error);return
+    case('grid_node')
+      if(entry%view%kind/='probe') then
+        error='grid_node sampling requires a probe';return
+      endif
+      if(.not.keys_allowed(sampling,[character(16)::'mode','indices'],error)) return
+      if(.not.read_integer_vector(sampling,'indices',nodes,error)) return
+      if(any(nodes<0)) then
+        error='probe indices must be nonnegative';return
+      endif
+      entry%ranges(1,:)=nodes;entry%ranges(2,:)=nodes
+    case('physical_plane')
+      if(entry%view%kind/='slice') then
+        error='physical_plane sampling requires a slice';return
+      endif
+      if(.not.keys_allowed(sampling,[character(16)::'mode','origin','normal','bounds'],error)) return
+      if(.not.read_vector(sampling,'origin',entry%view%origin,error)) return
+      if(.not.read_vector(sampling,'normal',entry%view%normal,error)) return
+      scale=maxval(abs(entry%view%normal))
+      if(scale==0) then
+        error='physical plane normal must be nonzero';return
+      endif
+      entry%view%normal=entry%view%normal/scale
+      entry%view%normal=entry%view%normal/sqrt(sum(entry%view%normal**2))
+      d=maxloc(abs(entry%view%normal),dim=1)
+      if(entry%view%normal(d)<0) entry%view%normal=-entry%view%normal
+    case('volume')
+      if(entry%view%kind/='q_surface'.and.entry%view%kind/='streamlines') then
+        error='volume sampling requires Q or streamlines';return
+      endif
+      if(.not.keys_allowed(sampling,[character(16)::'mode','bounds'],error)) return
+    case('wall','wall_midspan')
+      if(entry%view%kind/='wall_curve') then
+        error='wall sampling requires a wall curve';return
+      endif
+      if(entry%view%sampling=='wall') then
+        if(.not.keys_allowed(sampling,[character(16)::'mode','axis','side','bounds','spanwise_index'],error)) return
+      else
+        if(.not.keys_allowed(sampling,[character(16)::'mode','axis','side','bounds'],error)) return
+      endif
+      if(.not.read_text(sampling,'axis',axis,error)) return
+      entry%axis=0
+      do d=1,3
+        if(axis==achar(iachar('i')+d-1)) entry%axis=d
+      enddo
+      if(entry%axis==0) then
+        error='wall axis must be i, j or k';return
+      endif
+      if(.not.read_choice(sampling,'side',[character(8)::'lower','upper'],entry%view%side,error)) return
+      if(entry%view%sampling=='wall') then
+        if(.not.read_integer(sampling,'spanwise_index',entry%index,error,0_int64)) return
+      endif
+    end select
+    if(entry%view%sampling/='grid_node') then
+      if(.not.read_vector(sampling,'bounds',entry%view%bounds,error)) return
+      if(any(entry%view%bounds(2:6:2)<entry%view%bounds(1:5:2))) then
+        error='sampling bounds must be ordered';return
+      endif
+      if(entry%view%kind=='wall_curve'.and.entry%view%channel=='image'.and. &
+          entry%view%bounds(1)>=entry%view%bounds(2)) then
+        error='wall chart x bounds must be strictly increasing';return
+      endif
+    endif
+    ok=.true.;error=''
+  end function
+
+  logical function read_catalog_display(root,entry,error) result(ok)
+    type(c_ptr),intent(in) :: root
+    type(catalog_product),intent(inout) :: entry
+    character(:),allocatable,intent(out) :: error
+    type(c_ptr) :: display,output
+    character(:),allocatable :: formats(:)
+    integer(int64) :: pixels(2),number
+    integer :: i,boolean
+    ok=.false.;display=json_get(root,'display'//c_null_char);output=json_get(root,'output'//c_null_char)
+    if(entry%view%kind=='wall_curve') then
+      if(.not.keys_allowed(display,[character(16)::'y_range','line_width'],error)) return
+      if(.not.read_vector(display,'y_range',entry%view%color_range,error)) return
+      if(entry%view%color_range(1)>=entry%view%color_range(2)) then
+        error='wall chart y_range must be strictly increasing';return
+      endif
+      if(.not.read_positive_real(display,'line_width',entry%view%line_width,error)) return
+    else
+    if(.not.keys_allowed(display,[character(16)::'projection','camera','focal_point','view_up','parallel_scale', &
+      'color_map','color_range','lighting','line_width'],error)) return
+    if(.not.read_choice(display,'projection',[character(16)::'parallel','perspective'],entry%view%projection,error)) return
+    if(.not.read_vector(display,'camera',entry%view%camera,error)) return
+    if(.not.read_vector(display,'focal_point',entry%view%focal,error)) return
+    if(.not.read_vector(display,'view_up',entry%view%up,error)) return
+    if(all(entry%view%camera==entry%view%focal).or.maxval(abs(entry%view%up))==0) then
+      error='camera needs a distinct focal point and nonzero view_up';return
+    endif
+    if(entry%view%projection=='parallel'.or.c_associated(json_get(display,'parallel_scale'//c_null_char))) then
+      if(.not.read_positive_real(display,'parallel_scale',entry%view%scale,error)) return
+    endif
+    if(.not.read_choice(display,'color_map',[character(24)::'diverging_blue_red','grayscale'], &
+      entry%view%color_map,error)) return
+    if(.not.read_vector(display,'color_range',entry%view%color_range,error)) return
+    if(entry%view%color_range(1)>=entry%view%color_range(2)) then
+      error='color_range must be strictly increasing';return
+    endif
+    boolean=json_boolean(json_get(display,'lighting'//c_null_char))
+    if(boolean<0) then
+      error='lighting must be a boolean';return
+    endif
+    entry%view%lighting=boolean==1
+    if(entry%view%kind=='streamlines'.or.entry%view%kind=='wall_curve'.or. &
+      c_associated(json_get(display,'line_width'//c_null_char))) then
+      if(.not.read_positive_real(display,'line_width',entry%view%line_width,error)) return
+    endif
+    endif
+    if(.not.keys_allowed(output,[character(16)::'channel','formats','image_size','jpeg_quality','dpi'],error)) return
+    if(.not.read_names(output,'formats',formats,error)) return
+    if(size(formats)==0) then
+      error='image output requires explicit formats';return
+    endif
+    do i=1,size(formats)
+      select case(formats(i))
+      case('jpeg');entry%view%formats=ibset(entry%view%formats,0)
+      case('eps');entry%view%formats=ibset(entry%view%formats,1)
+      case default
+        error='unsupported image format: '//formats(i);return
+      end select
+    enddo
+    if(.not.btest(entry%view%formats,0)) then
+      error='image output requires jpeg, optionally with eps';return
+    endif
+    if(.not.read_integer_vector(output,'image_size',pixels,error)) return
+    if(any(pixels<1).or.any(pixels>huge(1))) then
+      error='image_size must contain positive representable dimensions';return
+    endif
+    entry%view%image_size=int(pixels)
+    if(.not.read_integer(output,'jpeg_quality',number,error,1_int64)) return
+    if(number>100) then
+      error='jpeg_quality must be between 1 and 100';return
+    endif
+    entry%view%jpeg_quality=int(number)
+    if(.not.read_integer(output,'dpi',number,error,1_int64)) return
+    if(number>huge(1)) then
+      error='dpi exceeds the image writer integer range';return
+    endif
+    entry%view%dpi=int(number);entry%view%format='image'
+    ok=.true.;error=''
+  end function
+
+  logical function read_visual_extraction(root,entry,error) result(ok)
+    type(c_ptr),intent(in) :: root
+    type(catalog_product),intent(inout) :: entry
+    character(:),allocatable,intent(out) :: error
+    type(c_ptr) :: extraction
+    character(16),parameter :: step_keys(5)=[character(16)::'initial_step','minimum_step','maximum_step', &
+      'maximum_error','maximum_length']
+    integer :: d
+    integer(int64) :: maximum_steps
+    extraction=json_get(root,'extraction'//c_null_char);ok=.false.
+    select case(trim(entry%view%kind))
+    case('q_surface')
+      if(.not.keys_allowed(extraction,[character(16)::'isovalue'],error)) return
+      if(json_real(json_get(extraction,'isovalue'//c_null_char),entry%view%isovalue)==0) then
+        error='isovalue must be a finite number';return
+      endif
+    case('streamlines')
+      if(.not.keys_allowed(extraction,[character(16)::'seed_layout','integrator','direction','maximum_steps',step_keys],error)) return
+      if(.not.read_choice(extraction,'seed_layout',[character(16)::'line16','tgv-stratified','bl-layered64', &
+        'bl-layered256','sbli-layered16'],entry%view%seed_layout,error)) return
+      if(.not.read_choice(extraction,'integrator',[character(4)::'rk45'],entry%view%integrator,error)) return
+      if(.not.read_choice(extraction,'direction',[character(8)::'forward','backward','both'],entry%view%direction,error)) return
+      do d=1,5
+        if(.not.read_positive_real(extraction,trim(step_keys(d)),entry%view%integration(d),error)) return
+      enddo
+      if(entry%view%integration(2)>entry%view%integration(1).or. &
+        entry%view%integration(1)>entry%view%integration(3)) then
+        error='integration steps must satisfy minimum <= initial <= maximum';return
+      endif
+      if(.not.read_integer(extraction,'maximum_steps',maximum_steps,error,1_int64)) return
+      if(maximum_steps>huge(1)) then
+        error='maximum_steps exceeds the integrator counter range';return
+      endif
+      entry%view%maximum_steps=int(maximum_steps)
+    case default
+      if(c_associated(extraction)) then
+        error='this product does not use extraction parameters';return
+      endif
+    end select
+    ok=.true.;error=''
+  end function
+
+  logical function read_catalog_body(root,entry,error) result(ok)
+    type(c_ptr),intent(in) :: root
+    type(catalog_product),intent(inout) :: entry
+    character(:),allocatable,intent(out) :: error
+    type(c_ptr) :: output,sampling
+    character(:),allocatable :: field
+    logical :: selected(size(catalog_field_names))
+    integer :: id,i
+    ok=.false.;output=json_get(root,'output'//c_null_char);sampling=json_get(root,'sampling'//c_null_char)
+    if(.not.read_choice(root,'kind',[character(16)::'slice','probe','wall_curve','q_surface','streamlines'], &
+      entry%view%kind,error)) return
+    if(.not.read_choice(output,'channel',[character(8)::'data','image','geometry'],entry%view%channel,error)) return
+    if(entry%view%channel=='data') then
+      if(.not.keys_allowed(output,[character(8)::'channel','format'],error)) return
+      if(.not.read_choice(output,'format',[character(16)::'hdf5-xdmf','csv'],entry%view%format,error)) return
+      if(c_associated(json_get(root,'display'//c_null_char))) then
+        error='data products do not use display parameters';return
+      endif
+    elseif(entry%view%channel=='geometry') then
+      if(entry%view%kind=='probe'.or.entry%view%kind=='wall_curve') then
+        error='existing geometry export applies to slices, Q surfaces and streamlines';return
+      endif
+      if(.not.keys_allowed(output,[character(8)::'channel','format'],error)) return
+      if(.not.read_choice(output,'format',[character(8)::'vtk-xml'],entry%view%format,error)) return
+      if(c_associated(json_get(root,'display'//c_null_char)).or.c_associated(json_get(root,'field'//c_null_char))) then
+        error='geometry export requires fields and no display or color field';return
+      endif
+      if(.not.read_catalog_fields(root,entry,error)) return
+    else
+      if(entry%view%kind=='probe') then
+        error='probe output requires the data channel';return
+      endif
+      if(.not.read_catalog_display(root,entry,error)) return
+    endif
+    if(.not.read_visual_sampling(sampling,entry,error)) return
+    if(entry%view%channel=='geometry') then
+      ok=read_visual_extraction(root,entry,error);return
+    endif
+    if(entry%view%channel=='data'.and.entry%view%kind=='slice') then
+      if(entry%view%format/='hdf5-xdmf'.or.entry%view%sampling/='grid_index') then
+        error='data slices require hdf5-xdmf and grid_index';return
+      endif
+      if(c_associated(json_get(root,'field'//c_null_char))) then
+        error='data slices require fields, not a display field';return
+      endif
+      if(.not.read_catalog_fields(root,entry,error)) return
+    elseif(entry%view%kind=='probe') then
+      if(entry%view%format/='csv') then
+        error='probe output requires csv';return
+      endif
+      if(c_associated(json_get(root,'field'//c_null_char))) then
+        error='probe output requires fields';return
+      endif
+      if(.not.read_catalog_fields(root,entry,error)) return
+    else
+      if(entry%view%channel=='data') then
+        if(entry%view%kind/='wall_curve'.or.entry%view%format/='csv') then
+          error='this product has no implemented data output format';return
+        endif
+      endif
+      if(c_associated(json_get(root,'fields'//c_null_char))) then
+        error='this product requires one explicit field';return
+      endif
+      if(.not.read_text(root,'field',field,error)) return
+      id=catalog_field_id(field);selected=.false.
+      if(id>0) then
+        selected(id)=.true.
+      else
+        select case(field)
+        case('velocity_magnitude');selected(2:4)=.true.
+        case('u_Uinf');selected(2)=.true.
+        case('w_Uinf');selected(4)=.true.
+        case('T_Tinf');selected(6)=.true.
+        case('p_pinf');selected(5)=.true.
+        case('wall_pressure','wall_shear_x','wall_heat_into_gas','skin_friction','wall_heat_into_wall_normalized')
+          if(entry%view%kind/='wall_curve') then
+            error='wall quantities require a wall_curve';return
+          endif
+        case default
+          error='unknown display field: '//field;return
+        end select
+      endif
+      entry%view%field=field
+      if(entry%view%kind=='q_surface') selected(22)=.true.
+      if(entry%view%kind=='streamlines') selected(2:4)=.true.
+      entry%fields=pack([(i,i=1,size(selected))],selected)
+    endif
+    if(.not.read_visual_extraction(root,entry,error)) return
+    ok=.true.;error=''
+  end function
+
   subroutine parse_catalog_product(line,entry)
     character(*),intent(in) :: line
     type(catalog_product),intent(out) :: entry
-    type(c_ptr) :: doc,root,sampling,ranges,array,item,output,schedule
+    type(c_ptr) :: doc,root,schedule
     character(c_char) :: errors(512)
     character(:),allocatable :: value,error
-    character(1),parameter :: axes(3)=['i','j','k']
-    logical :: selected(size(catalog_field_names)),good
-    integer :: i,j,id
-    integer(c_int64_t) :: endpoints(2)
+    logical :: good
+    integer :: i
     entry%id=''; entry%source=''; entry%statistics_source=''; entry%error=''; entry%record=line
     allocate(entry%fields(0))
     doc=json_read(line,len(line,kind=c_size_t),errors,size(errors,kind=c_size_t))
@@ -541,7 +960,7 @@ contains
     entry%id=text_value(json_get(root,'id'//c_null_char))
     validation: block
       if(.not.keys_allowed(root,[character(24)::'id','kind','enable_request','source', &
-          'statistics_source','fields','sampling','output','schedule'],error)) exit validation
+          'statistics_source','fields','field','sampling','display','extraction','output','schedule'],error)) exit validation
       if(.not.read_text(root,'id',entry%id,error)) exit validation
       if(entry%id=='.'.or.entry%id=='..'.or.index(entry%id,'/')>0.or.index(entry%id,achar(92))>0) then
         error='id must be a single product name, not a path'
@@ -552,11 +971,6 @@ contains
         error='id must not contain control characters'
         exit validation
       enddo
-      if(.not.read_text(root,'kind',value,error)) exit validation
-      if(value/='slice') then
-        error='unsupported product kind: '//value
-        exit validation
-      endif
       if(.not.read_integer(root,'enable_request',entry%enable_request,error,1_int64)) exit validation
       if(.not.read_text(root,'source',entry%source,error)) exit validation
       select case(entry%source)
@@ -572,70 +986,7 @@ contains
           exit validation
         endif
       endif
-      array=json_get(root,'fields'//c_null_char)
-      error='fields must be a nonempty array of registered names'
-      if(json_type(array)/=2) exit validation
-      if(json_size(array)==0) exit validation
-      selected=.false.
-      do i=1,int(json_size(array))
-        item=json_at(array,int(i-1,c_size_t))
-        if(json_type(item)/=3) exit validation
-        value=text_value(item); id=catalog_field_id(value)
-        if(id==0) then
-          error='unknown field: '//value
-          exit validation
-        endif
-        selected(id)=.true.
-      enddo
-      entry%fields=pack([(i,i=1,size(selected))],selected)
-      sampling=json_get(root,'sampling'//c_null_char)
-      if(.not.keys_allowed(sampling,[character(16)::'mode','axis','index','index_ranges'],error)) exit validation
-      if(.not.read_text(sampling,'mode',value,error)) exit validation
-      if(value/='grid_index') then
-        error='data slices require sampling mode grid_index'
-        exit validation
-      endif
-      if(.not.read_text(sampling,'axis',value,error)) exit validation
-      entry%axis=0
-      do i=1,3
-        if(value==axes(i)) entry%axis=i
-      enddo
-      if(entry%axis==0) then
-        error='axis must be i, j or k'
-        exit validation
-      endif
-      if(.not.read_integer(sampling,'index',entry%index,error,0_int64)) exit validation
-      ranges=json_get(sampling,'index_ranges'//c_null_char)
-      if(.not.keys_allowed(ranges,axes,error)) exit validation
-      error='index_ranges must contain exactly the two varying global axes'
-      if(json_size(ranges)/=2) exit validation
-      do i=1,3
-        array=json_get(ranges,axes(i)//c_null_char)
-        if(i==entry%axis) then
-          if(c_associated(array)) exit validation
-          entry%ranges(:,i)=entry%index
-          cycle
-        endif
-        if(json_type(array)/=2) exit validation
-        if(json_size(array)/=2) exit validation
-        do j=1,2
-          if(json_integer(json_at(array,int(j-1,c_size_t)),endpoints(j))==0) exit validation
-        enddo
-        if(endpoints(1)<0.or.endpoints(2)<endpoints(1)) exit validation
-        entry%ranges(:,i)=endpoints
-      enddo
-      output=json_get(root,'output'//c_null_char)
-      if(.not.keys_allowed(output,[character(8)::'channel','format'],error)) exit validation
-      if(.not.read_text(output,'channel',value,error)) exit validation
-      if(value/='data') then
-        error='unsupported slice channel in numerical archive: '//value
-        exit validation
-      endif
-      if(.not.read_text(output,'format',value,error)) exit validation
-      if(value/='hdf5-xdmf') then
-        error='data format must be hdf5-xdmf'
-        exit validation
-      endif
+      if(.not.read_catalog_body(root,entry,error)) exit validation
       schedule=json_get(root,'schedule'//c_null_char)
       if(.not.keys_allowed(schedule,[character(16)::'mode','interval','events','windows','dense_interval'],error)) &
         exit validation
@@ -691,7 +1042,9 @@ contains
     type(catalog_product),intent(inout) :: entry
     integer,intent(in) :: global_extent(3),numq
     if(.not.entry%valid) return
-    if(any(entry%ranges(2,:)>int(global_extent,int64))) then
+    if(entry%view%sampling=='wall'.and.entry%index>global_extent(3)) then
+      entry%error='wall spanwise_index exceeds the global k extent'
+    elseif(any(entry%ranges(2,:)>int(global_extent,int64))) then
       entry%error='slice indices exceed the global grid'
     elseif(numq/=5.and.numq/=11) then
       entry%error='numerical slice fields require an available five-variable or AIR5 layout'

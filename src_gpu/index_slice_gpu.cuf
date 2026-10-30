@@ -1,18 +1,168 @@
 module index_slice_gpu
   use astr_precision, only: real_kind,real_bytes
   use iso_fortran_env, only: int64
-  use iso_c_binding, only: c_f_pointer
+  use iso_c_binding, only: c_f_pointer,c_loc,c_size_t,c_int
   use cudafor
   use gpu_check, only: sync_after_kernel
   implicit none
   private
   public :: allocate_index_slice_gpu,release_index_slice_gpu,fill_index_slice_gpu
   public :: sample_remote_slice_gpu,receive_index_slice_gpu,evaluate_index_slice_gpu,download_index_slice_gpu
+  public :: index_slice_device_view
+  public :: download_index_neighborhood_gpu
+  public :: begin_index_slice_exchange_gpu,exchange_index_slice_gpu,end_index_slice_exchange_gpu,index_slice_exchange_usage
+  public :: validate_index_slice_transport
   real(real_kind),pointer,contiguous,device,save :: neighborhood(:,:)=>null(),result_d(:,:)=>null()
+  real(real_kind),pointer,contiguous,device,save :: coordinates_d(:,:)=>null()
   integer,device,save :: raw_ids_d(12),fields_d(27)
   real(real_kind),device,save :: weights_d(7,0:6)
   integer,save :: raw_count=0,field_count=0
+  real(real_kind),pointer,contiguous,device,save :: send_slot(:,:)=>null(),receive_slot(:,:)=>null()
+  integer,pointer,contiguous,device,save :: exchange_indices(:,:)=>null(),exchange_positions(:,:)=>null()
+  real(real_kind),allocatable,target,save :: send_host(:),receive_host(:)
+  logical,save :: send_registered=.false.,receive_registered=.false.
+  integer,save :: exchange_mode=0
+  integer(int64),save :: exchange_download=0,exchange_upload=0
+#ifdef ASTR_MPI_CUDA_AWARE_QUERY
+  interface
+    integer(c_int) function query_cuda_support() bind(C,name='MPIX_Query_cuda_support')
+      import c_int
+    end function
+  end interface
+#endif
 contains
+  subroutine validate_index_slice_transport(mode,ok,message)
+    character(*),intent(in) :: mode
+    logical,intent(out) :: ok
+    character(*),intent(out) :: message
+    integer :: status,i,environment_status
+    character(32) :: runtime_cuda
+    ok=.false.;message=''
+    if(mode/='pinned'.and.mode/='device-aware') then
+      message='private image strips require explicit pinned or device-aware transport';return
+    endif
+    if(mode=='device-aware') then
+      status=0
+#ifdef ASTR_MPI_CUDA_AWARE_QUERY
+      status=int(query_cuda_support())
+#endif
+      ! The extension can report build capability even when the launcher disables CUDA buffers.
+      call get_environment_variable('OMPI_MCA_opal_cuda_support',runtime_cuda,status=environment_status)
+      if(environment_status==0) then
+        do i=1,len_trim(runtime_cuda)
+          if(runtime_cuda(i:i)>='A'.and.runtime_cuda(i:i)<='Z') runtime_cuda(i:i)=achar(iachar(runtime_cuda(i:i))+32)
+        enddo
+        select case(trim(runtime_cuda))
+        case('0','false','f','no','off')
+          status=0
+        end select
+      endif
+      if(status/=1) then
+        message='CUDA-aware MPI is unavailable for the requested private image transport';return
+      endif
+    endif
+    ok=.true.
+  end subroutine
+
+  subroutine begin_index_slice_exchange_gpu(capacity,mode,ok,message)
+    integer,intent(in) :: capacity
+    character(*),intent(in) :: mode
+    logical,intent(out) :: ok
+    character(*),intent(out) :: message
+    integer :: words,status,ignored
+    call end_index_slice_exchange_gpu()
+    exchange_download=0;exchange_upload=0
+    call validate_index_slice_transport(mode,ok,message)
+    if(.not.ok) return
+    words=max(1,capacity*raw_count)
+    ok=allocate_real2(send_slot,words,1)
+    if(ok) ok=allocate_real2(receive_slot,words,1)
+    if(ok) ok=allocate_int2(exchange_indices,3,max(1,capacity))
+    if(ok) ok=allocate_int2(exchange_positions,max(1,capacity),1)
+    if(.not.ok) then
+      message='cannot allocate private image MPI device slots';return
+    endif
+    exchange_mode=1
+    if(mode=='device-aware') return
+    exchange_mode=2
+    allocate(send_host(words),receive_host(words),stat=status)
+    ok=status==0
+    if(.not.ok) then
+      message='cannot allocate private image pinned host slots';return
+    endif
+    status=cudaHostRegister(c_loc(send_host),int(words,int64)*real_bytes,0)
+    ok=registered(status);send_registered=ok
+    if(ok) then
+      status=cudaHostRegister(c_loc(receive_host),int(words,int64)*real_bytes,0)
+      ok=registered(status);receive_registered=ok
+    endif
+    if(.not.ok) message='cannot register private image pinned host slots; no pageable fallback'
+  contains
+    logical function registered(code) result(valid)
+      integer,intent(in) :: code
+      if(code==cudaErrorNotSupported) then
+        ignored=cudaGetLastError();valid=.false.
+      else
+        valid=allocation_succeeded(code)
+      endif
+    end function
+  end subroutine
+
+  subroutine end_index_slice_exchange_gpu()
+    if(send_registered) call require_slice_transfer(cudaHostUnregister(c_loc(send_host)))
+    if(receive_registered) call require_slice_transfer(cudaHostUnregister(c_loc(receive_host)))
+    send_registered=.false.;receive_registered=.false.
+    if(allocated(send_host)) deallocate(send_host)
+    if(allocated(receive_host)) deallocate(receive_host)
+    call free_real2(send_slot);call free_real2(receive_slot)
+    call free_int2(exchange_indices);call free_int2(exchange_positions)
+    exchange_mode=0
+  end subroutine
+
+  subroutine index_slice_exchange_usage(download,upload)
+    integer(int64),intent(out) :: download,upload
+    download=exchange_download;upload=exchange_upload
+  end subroutine
+
+  subroutine exchange_index_slice_gpu(indices,positions,source,count,destination,sender,comm)
+    use mpi
+    use astr_precision_mpi, only: mpi_real_type
+    integer,intent(in) :: indices(:,:),positions(:),source,destination,sender,comm
+    integer(int64),intent(in) :: count
+    real(real_kind),pointer,contiguous,device :: send_data(:,:),receive_data(:,:)
+    real(real_kind),pointer,contiguous :: send_buffer(:,:),receive_buffer(:,:)
+    integer,pointer,contiguous,device :: scatter_positions(:)
+    integer :: ns,nr,err,ignored
+    ns=size(indices,2);nr=size(positions)
+    call c_f_pointer(c_devloc(send_slot),send_data,[ns,raw_count])
+    call c_f_pointer(c_devloc(receive_slot),receive_data,[nr,raw_count])
+    call c_f_pointer(c_devloc(exchange_positions),scatter_positions,[nr])
+    if(ns>0) then
+      exchange_indices(:,:ns)=indices
+      call sample_kernel<<<(ns+255)/256,256>>>(exchange_indices(:,:ns),send_data,ns,raw_count,source,count)
+      call sync_after_kernel('private image MPI send strip',.true.)
+    endif
+    if(exchange_mode==1) then
+      call MPI_Sendrecv(send_data,ns*raw_count,mpi_real_type,destination,1, &
+        receive_data,nr*raw_count,mpi_real_type,sender,1,comm,MPI_STATUS_IGNORE,err)
+      if(err/=MPI_SUCCESS) call MPI_Abort(comm,err,ignored)
+    else
+      call c_f_pointer(c_loc(send_host),send_buffer,[ns,raw_count])
+      call c_f_pointer(c_loc(receive_host),receive_buffer,[nr,raw_count])
+      if(ns>0) call require_slice_transfer(cudaMemcpy(send_buffer,send_data,int(ns,int64)*raw_count,cudaMemcpyDeviceToHost))
+      call MPI_Sendrecv(send_buffer,ns*raw_count,mpi_real_type,destination,1, &
+        receive_buffer,nr*raw_count,mpi_real_type,sender,1,comm,MPI_STATUS_IGNORE,err)
+      if(err/=MPI_SUCCESS) call MPI_Abort(comm,err,ignored)
+      if(nr>0) call require_slice_transfer(cudaMemcpy(receive_data,receive_buffer,int(nr,int64)*raw_count,cudaMemcpyHostToDevice))
+      exchange_download=exchange_download+int(ns,int64)*raw_count*real_bytes
+      exchange_upload=exchange_upload+int(nr,int64)*raw_count*real_bytes
+    endif
+    if(nr>0) then
+      scatter_positions=positions
+      call scatter_kernel<<<(nr+255)/256,256>>>(scatter_positions,receive_data,nr,raw_count,neighborhood)
+      call sync_after_kernel('private image MPI received strip',.true.)
+    endif
+  end subroutine
   attributes(device) function source_value(i,j,k,field,source,count) result(value)
     use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d
     use insitu_statistics_gpu, only: slice_statistics_gpu_value
@@ -49,14 +199,19 @@ contains
     end select
   end function
 
-  subroutine allocate_index_slice_gpu(nodes,output_nodes,raw_ids,fields,weights,ok)
+  subroutine allocate_index_slice_gpu(nodes,output_nodes,raw_ids,fields,weights,ok,device_geometry)
     integer,intent(in) :: nodes,output_nodes,raw_ids(:),fields(:)
     real(real_kind),intent(in) :: weights(7,0:6)
     logical,intent(out) :: ok
+    logical,optional,intent(in) :: device_geometry
     call release_index_slice_gpu()
+    exchange_download=0;exchange_upload=0
     raw_count=size(raw_ids);field_count=size(fields)
     ok=allocate_real2(neighborhood,max(1,nodes),max(1,raw_count))
     if(ok) ok=allocate_real2(result_d,max(1,output_nodes),field_count)
+    if(present(device_geometry)) then
+      if(ok.and.device_geometry) ok=allocate_real2(coordinates_d,3,max(1,output_nodes))
+    endif
     if(.not.ok) then
       call release_index_slice_gpu();return
     endif
@@ -64,9 +219,16 @@ contains
   end subroutine
 
   subroutine release_index_slice_gpu()
+    call end_index_slice_exchange_gpu()
     call free_real2(neighborhood)
     call free_real2(result_d)
+    call free_real2(coordinates_d)
     raw_count=0;field_count=0
+  end subroutine
+
+  subroutine index_slice_device_view(values,coordinates)
+    type(c_devptr),intent(out) :: values,coordinates
+    values=c_devloc(result_d);coordinates=c_devloc(coordinates_d)
   end subroutine
 
   attributes(global) subroutine fill_kernel(indices,positions,n,nraw,source,count,neighborhood)
@@ -237,6 +399,18 @@ contains
     enddo
   end subroutine
 
+  attributes(global) subroutine coordinate_kernel(first,extent,origin,n,coordinates)
+    use commarray_gpu, only: x_d
+    integer,value :: n
+    integer,device,intent(in) :: first(3),extent(3),origin(3)
+    real(real_kind),device,intent(out) :: coordinates(:,:)
+    integer :: node,local(3)
+    node=(blockidx%x-1)*blockdim%x+threadidx%x-1
+    if(node>=n) return
+    local=first-origin+[mod(node,extent(1)),mod(node/extent(1),extent(2)),node/(extent(1)*extent(2))]
+    coordinates(:,node+1)=x_d(local(1),local(2),local(3),:)
+  end subroutine
+
   subroutine evaluate_index_slice_gpu(first,extent,lower,shape,origin,intervals,periodic,source,count)
     integer,intent(in) :: first(3),extent(3),lower(3),shape(3),origin(3),intervals(3),source
     logical,intent(in) :: periodic(3)
@@ -251,6 +425,10 @@ contains
     call evaluate_kernel<<<(n+255)/256,256>>>(first_d,extent_d,lower_d,shape_d,origin_d,intervals_d,periodic_d, &
       n,raw_count,field_count,source,count,neighborhood,result_d)
     call sync_after_kernel('index slice physical diagnostics',.true.)
+    if(associated(coordinates_d)) then
+      call coordinate_kernel<<<(n+255)/256,256>>>(first_d,extent_d,origin_d,n,coordinates_d)
+      call sync_after_kernel('index slice retained geometry',.true.)
+    endif
   end subroutine
 
   subroutine download_index_slice_gpu(values,ok)
@@ -260,6 +438,16 @@ contains
     ok=.true.
     if(size(values)==0) return
     status=cudaMemcpy(values,result_d,size(values,kind=int64),cudaMemcpyDeviceToHost)
+    call require_slice_transfer(status)
+  end subroutine
+
+  subroutine download_index_neighborhood_gpu(values,ok)
+    real(real_kind),intent(out) :: values(:,:)
+    logical,intent(out) :: ok
+    integer :: status
+    ok=.true.
+    if(size(values)==0) return
+    status=cudaMemcpy(values,neighborhood,size(values,kind=int64),cudaMemcpyDeviceToHost)
     call require_slice_transfer(status)
   end subroutine
 

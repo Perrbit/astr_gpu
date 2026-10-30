@@ -8,6 +8,7 @@ module insitu_run_config
   public :: insitu_options,read_insitu_options,insitu_max_products,product_scene_allowed,canonical_slice_plane
   public :: streamline_view,insitu_max_views,read_streamline_views,streamline_trajectory_key,streamline_display_key
   public :: catalog_product,catalog_field_names,catalog_field_id,catalog_definition_equal
+  public :: catalog_render,pack_catalog_render,unpack_catalog_render
   character(32),parameter :: catalog_field_names(27)=[character(32) :: &
     'density','velocity_x','velocity_y','velocity_z','pressure','temperature', &
     'vibrational_temperature','mass_fraction_N2','mass_fraction_O2','mass_fraction_N', &
@@ -16,6 +17,15 @@ module insitu_run_config
     'velocity_gradient_xy','velocity_gradient_yy','velocity_gradient_zy', &
     'velocity_gradient_xz','velocity_gradient_yz','velocity_gradient_zz', &
     'Q_rs','velocity_divergence','vorticity_x','vorticity_y','vorticity_z','density_gradient_magnitude']
+  type :: catalog_render
+    character(32) :: kind='slice',channel='data',format='hdf5-xdmf',sampling='grid_index',field=''
+    character(32) :: projection='',color_map='',seed_layout='',integrator='',direction='',side=''
+    integer :: image_size(2)=0,jpeg_quality=0,dpi=0,formats=0,maximum_steps=0
+    logical :: lighting=.false.
+    real(real64) :: origin(3)=0,normal(3)=0,bounds(6)=0,camera(3)=0,focal(3)=0,up(3)=0
+    ! The selected-quantity range is a color range for geometry, a y range for wall charts.
+    real(real64) :: scale=0,color_range(2)=0,line_width=0,isovalue=0,integration(5)=0
+  end type
   type :: catalog_product
     character(:),allocatable :: id,source,statistics_source,record,error
     character(:),allocatable :: event_ids(:),window_ids(:)
@@ -24,6 +34,7 @@ module insitu_run_config
     integer(int64) :: index=0,ranges(2,3)=0,enable_request=0,interval_steps=0,dense_interval_steps=0
     real(real64) :: interval_time=0,dense_interval_time=0
     logical :: valid=.false.
+    type(catalog_render) :: view
   end type
   integer,parameter :: insitu_max_products=64
   integer,parameter :: insitu_max_views=6
@@ -69,13 +80,46 @@ module insitu_run_config
     type(adaptive_binding) :: product_adaptive(insitu_max_products)
   end type
 contains
+  subroutine pack_catalog_render(view,labels,integers,reals)
+    type(catalog_render),intent(in) :: view
+    character(32),intent(out) :: labels(11)
+    integer,intent(out) :: integers(7)
+    real(real64),intent(out) :: reals(31)
+    labels=[view%kind,view%channel,view%format,view%sampling,view%field,view%projection,view%color_map, &
+      view%seed_layout,view%integrator,view%direction,view%side]
+    integers=[view%image_size,view%jpeg_quality,view%dpi,view%formats,merge(1,0,view%lighting),view%maximum_steps]
+    reals=[view%origin,view%normal,view%bounds,view%camera,view%focal,view%up,view%scale, &
+      view%color_range,view%line_width,view%isovalue,view%integration]
+  end subroutine
+
+  subroutine unpack_catalog_render(view,labels,integers,reals)
+    type(catalog_render),intent(out) :: view
+    character(32),intent(in) :: labels(11)
+    integer,intent(in) :: integers(7)
+    real(real64),intent(in) :: reals(31)
+    view%kind=labels(1);view%channel=labels(2);view%format=labels(3);view%sampling=labels(4);view%field=labels(5)
+    view%projection=labels(6);view%color_map=labels(7);view%seed_layout=labels(8)
+    view%integrator=labels(9);view%direction=labels(10);view%side=labels(11)
+    view%image_size=integers(1:2);view%jpeg_quality=integers(3);view%dpi=integers(4)
+    view%formats=integers(5);view%lighting=integers(6)==1;view%maximum_steps=integers(7)
+    view%origin=reals(1:3);view%normal=reals(4:6);view%bounds=reals(7:12)
+    view%camera=reals(13:15);view%focal=reals(16:18);view%up=reals(19:21);view%scale=reals(22)
+    view%color_range=reals(23:24);view%line_width=reals(25);view%isovalue=reals(26);view%integration=reals(27:31)
+  end subroutine
+
   logical function catalog_definition_equal(a,b) result(same)
     type(catalog_product),intent(in) :: a,b
+    character(32) :: labels_a(11),labels_b(11)
+    integer :: integers_a(7),integers_b(7)
+    real(real64) :: reals_a(31),reals_b(31)
     same=.false.
     if(a%id/=b%id.or.a%source/=b%source.or.a%statistics_source/=b%statistics_source.or. &
       a%axis/=b%axis.or.a%index/=b%index.or.any(a%ranges/=b%ranges)) return
     if(size(a%fields)/=size(b%fields)) return
-    same=all(a%fields==b%fields)
+    if(any(a%fields/=b%fields)) return
+    call pack_catalog_render(a%view,labels_a,integers_a,reals_a)
+    call pack_catalog_render(b%view,labels_b,integers_b,reals_b)
+    same=all(labels_a==labels_b).and.all(integers_a==integers_b).and.all(reals_a==reals_b)
   end function
 
   integer function catalog_field_id(name) result(id)
@@ -89,11 +133,13 @@ contains
     enddo
   end function
 
-  subroutine read_insitu_options(filename,options,ok,message)
+  subroutine read_insitu_options(filename,options,ok,message,native_products)
     character(*),intent(in) :: filename
     type(insitu_options),intent(inout) :: options
     logical,intent(out) :: ok
     character(*),intent(out) :: message
+    logical,optional,intent(in) :: native_products
+    logical :: catalog
     logical :: enabled,statistics,render,initial_frame,final_frame,air5_volume_statistics,air5_volume_reduction,wall_mean_render
     logical :: wall_separation,mean_streamline_render
     character(16) :: schedule_mode,derivative_backend,products,slice_axis,processing_backend,postprocess_transport
@@ -128,6 +174,8 @@ contains
     ok=.false.
     message=''
     enabled=.false.; statistics=.false.; render=.false.
+    catalog=.false.
+    if(present(native_products)) catalog=native_products
     initial_frame=.false.; final_frame=.false.
     air5_volume_statistics=.false.
     air5_volume_reduction=.false.
@@ -157,6 +205,27 @@ contains
     if(status/=0) return
     message='cannot close in-situ configuration'
     if(closed/=0) return
+    if(catalog) then
+      ! Inert legacy control-envelope values; only the runtime catalog schedules products.
+      schedule_mode='steps';step_interval=1;time_interval=0.e0_real_kind
+      initial_frame=.false.;final_frame=.false.
+      product_ids='';product_modes='';product_steps=0;product_times=0.e0_real_kind
+      product_adaptive=.false.;product_dense_steps=0;product_dense_times=0.e0_real_kind
+      product_events='';product_windows=''
+      slice_axis='z';slice_index=4
+      slice_definition='index';slice_origin=0.e0_real_kind;slice_normal=0.e0_real_kind
+      streamline_seeds='line16';streamline_views_file=''
+      wall_mean_render=.false.;mean_streamline_render=.false.
+      ! These fields only identify the legacy provider envelope, never product geometry.
+      select case(trim(products))
+      case('boundary_layer')
+        streamline_seeds='bl-layered64';slice_definition='plane'
+        slice_origin=[0.e0_real_kind,0.e0_real_kind,45.e0_real_kind]
+        slice_normal=[0.e0_real_kind,0.e0_real_kind,1.e0_real_kind]
+      case('m12_diagnostics');streamline_seeds='bl-layered256'
+      case('sbli_diagnostics');streamline_seeds='sbli-layered16'
+      end select
+    endif
     if(products=='sbli_2d') then
       if(host_budget_bytes==-1_int64) host_budget_bytes=unlimited_budget_bytes
       if(device_budget_bytes==-1_int64) device_budget_bytes=unlimited_budget_bytes
@@ -185,7 +254,7 @@ contains
       message='device processing requires enabled GPU rendering and positive device budget'
       if(.not.enabled.or..not.render.or.derivative_backend/='gpu'.or.device_budget_bytes<=0) return
       message='device walls require standard-device or direct-device, without a compatible fallback'
-      if((products=='channel_walls'.or.products=='air5_walls').and.rendering_pipeline=='compatible') return
+      if((products=='channel_walls'.or.products=='air5_walls').and.rendering_pipeline=='compatible'.and..not.catalog) return
       message='resident wall separation reduction is not yet admitted'
       if(products=='channel_walls'.and.wall_separation) return
       message='resident AIR5 volume statistics are not yet admitted'
@@ -220,23 +289,25 @@ contains
         postprocess_transport/='pinned'.or.streamline_seeds/='bl-layered64'.or. &
         slice_definition/='plane'.or.any(slice_origin/=[0.e0_real_kind,0.e0_real_kind,45.e0_real_kind]).or. &
         any(slice_normal/=[0.e0_real_kind,0.e0_real_kind,1.e0_real_kind]).or.any(product_ids/='').or. &
-        schedule_mode/='steps'.or.step_interval/=5.or.initial_frame.or.final_frame) return
+        schedule_mode/='steps'.or.(.not.catalog.and.step_interval/=5).or.initial_frame.or.final_frame) return
     endif
     message='bl-layered64 seeds require the bounded boundary_layer profile'
     if(streamline_seeds=='bl-layered64'.and.products/='boundary_layer') return
     message='m12_diagnostics requires strict device rendering, independent clocks and bl-layered256 seeds'
     if(products=='m12_diagnostics') then
       if(.not.enabled.or..not.render.or.statistics.or.processing_backend/='device'.or. &
-        rendering_pipeline/='standard-device'.or.derivative_backend/='gpu'.or. &
-        postprocess_transport/='pinned'.or.streamline_seeds/='bl-layered256'.or. &
-        slice_definition/='index'.or.initial_frame.or.final_frame.or.count(product_ids/='')==0) return
+        rendering_pipeline=='compatible'.or.(.not.catalog.and.rendering_pipeline/='standard-device').or. &
+        derivative_backend/='gpu'.or.(.not.catalog.and.postprocess_transport/='pinned').or. &
+        streamline_seeds/='bl-layered256'.or.slice_definition/='index'.or.initial_frame.or.final_frame.or. &
+        (.not.catalog.and.count(product_ids/='')==0)) return
     endif
     message='bl-layered256 seeds require m12_diagnostics'
     if(streamline_seeds=='bl-layered256'.and.products/='m12_diagnostics') return
     message='sbli_diagnostics requires strict device rendering without cumulative statistics'
     if(products=='sbli_diagnostics'.or.products=='sbli_2d') then
       if(.not.enabled.or..not.render.or.statistics.or.processing_backend/='device'.or. &
-        rendering_pipeline/='standard-device'.or.derivative_backend/='gpu'.or. &
+        rendering_pipeline=='compatible'.or.(products=='sbli_diagnostics'.and.rendering_pipeline/='standard-device').or. &
+        derivative_backend/='gpu'.or. &
         (products=='sbli_diagnostics'.and.streamline_seeds/='sbli-layered16').or.slice_definition/='index') return
     endif
     message='sbli-layered16 seeds require sbli_diagnostics'
@@ -291,8 +362,7 @@ contains
       if(.not.enabled.or..not.statistics) return
     endif
     if(enabled) then
-      message='enabled in-situ configuration requires statistics or rendering'
-      if(.not.statistics.and..not.render) return
+      ! Dynamic data products need neither a statistical accumulator nor a renderer.
       message='enabled in-situ configuration requires output_directory and positive host budget'
       if(len_trim(output_directory)==0.or.host_budget_bytes<=0) return
     endif

@@ -1,5 +1,5 @@
 # script-version: 2.1
-"""Strict device products in ParaView views, without host geometry filters."""
+"""Resident geometry and explicit small-host wall charts in ParaView sessions."""
 import ctypes
 import io
 import json
@@ -31,11 +31,15 @@ from streamline_preview import seed_projection, retain_display_resources
 from sbli_products import PLANE_TITLES, WALL_COLUMNS
 
 arguments = catalyst.get_args()
-if len(arguments) not in (4, 5) or arguments[3] not in (
-        'standard-device', 'direct-device'):
+if len(arguments) not in (4, 5) or (arguments[3] not in (
+        'standard-device', 'direct-device') and not (arguments[2]=='runtime_catalog' and arguments[3]=='compatible')):
     raise RuntimeError('Strict rendering requires an explicit resident pipeline')
 output = Path(arguments[0])
 expected_uuid, profile, pipeline = arguments[1:4]
+runtime_handler = None
+if profile == 'runtime_catalog':
+    from runtime_products import RuntimeProducts
+    runtime_handler = RuntimeProducts()
 write_eps = eps_output_enabled()
 preview_payload = json.loads(arguments[4]) if len(arguments) == 5 else {}
 streamline_views = preview_payload.get('candidates', [])
@@ -57,10 +61,11 @@ product_names = {
     'air5_walls': ('pressure', 'temperature', 'vibrational_temperature', 'Y_N2', 'Y_O2',
                    'Y_N', 'Y_O', 'Y_NO', 'wall_shear_x', 'wall_heat_into_gas'),
     'physical_plane': ('velocity_slice',),
+    'runtime_catalog': ('runtime_product',),
 }.get(profile)
 if product_names is None:
     raise RuntimeError('Unsupported bounded resident product profile')
-if not output.is_dir() or os.environ.get('ASTR_VTK_STRICT_DEVICE_ACCESS') != '1':
+if not output.is_dir() or (pipeline!='compatible' and os.environ.get('ASTR_VTK_STRICT_DEVICE_ACCESS') != '1'):
     raise RuntimeError('Missing output directory or strict device access guard')
 options = catalyst.Options()
 options.GlobalTrigger = 'TimeStep'
@@ -68,12 +73,12 @@ options.EnableCatalystLive = 0
 pv._DisableFirstRenderCameraReset()
 controller = vtkMultiProcessController.GetGlobalController()
 rank = controller.GetLocalProcessId()
-sources = {name: pv.TrivialProducer(registrationName=name) for name in (
+sources = {name: pv.TrivialProducer(registrationName=name) for name in (('runtime_product',) if runtime_handler else (
     'q_surface', 'velocity_slice', 'instantaneous_streamlines', 'crossing_streamlines',
     'mean_reynolds_streamlines', 'mean_favre_streamlines',
     'wall_pressure', 'wall_shear_x', 'wall_heat_into_gas', 'pressure', 'temperature',
     'vibrational_temperature', 'Y_N2', 'Y_O2', 'Y_N', 'Y_O', 'Y_NO', 'temperature_slice',
-    'spanwise_slice', 'spanwise_slice_weak')}
+    'spanwise_slice', 'spanwise_slice_weak'))}
 if profile=='sbli_2d':
     sources.update({name:pv.TrivialProducer(registrationName=name) for name in product_names if name not in sources})
 wall_profile = profile in ('channel_walls', 'curve_walls', 'air5_walls')
@@ -139,7 +144,7 @@ def update_geometry(name, piece):
     arity = int(metadata(piece, 'device_arity'))
     if arity not in (2, 3):
         raise RuntimeError('Unsupported resident product cell arity')
-    if pipeline == 'standard-device':
+    if pipeline in ('standard-device','compatible'):
         poly = vtkPolyData()
         poly.SetPoints(piece.GetPoints())
         if arity == 3:
@@ -153,7 +158,14 @@ def update_geometry(name, piece):
             raise RuntimeError('Device array extent differs from bounded metadata')
         if not item:
             mapper = vtkOpenGLPolyDataMapper()
-            mapper.ScalarVisibilityOff()
+            if pipeline=='compatible':
+                mapper.ScalarVisibilityOn()
+                mapper.SetScalarModeToUsePointFieldData()
+                mapper.SelectColorArray('quantity')
+                mapper.SetColorModeToMapScalars()
+                mapper.UseLookupTableScalarRangeOn()
+            else:
+                mapper.ScalarVisibilityOff()
             actor = vtkActor()
             actor.SetMapper(mapper)
             item.update(actor=actor, mapper=mapper)
@@ -168,12 +180,20 @@ def update_geometry(name, piece):
             raise RuntimeError('Missing registered direct device actor')
         actor = vtkActor(f'_{address:016x}_p_vtkActor')
         item.update(actor=actor, mapper=actor.GetMapper())
-    if 'view' not in item and dispatch.enabled(name, 'image'):
-        setup_view(name, item, piece)
+    if 'view' not in item:
+        if runtime_handler is not None:
+            runtime_handler.setup_view(name, item, piece, globals())
+        elif dispatch.enabled(name, 'image'):
+            setup_view(name, item, piece)
     if profile in ('boundary_layer','sbli_diagnostics','sbli_2d'):
         item['local_bounds'] = [metadata(piece, 'bound'+str(d)) for d in range(6)] if points else None
     if profile=='sbli_2d':
         item['actual_range']=[metadata(piece,'actual_min'),metadata(piece,'actual_max')]
+    if runtime_handler is not None:
+        if points:
+            item['actual_range']=[metadata(piece,'actual_min'),metadata(piece,'actual_max')]
+        else:
+            item.pop('actual_range',None)
     if profile == 'm12_diagnostics':
         item['local_bounds'] = [metadata(piece, 'bound'+str(d)) for d in range(6)] if points else None
         if name in ('velocity_slice', 'temperature_slice', 'spanwise_slice', 'spanwise_slice_weak'):
@@ -557,6 +577,9 @@ def capture_image(view, size=None):
 
 def catalyst_execute(info):
     global pending_frame
+    if runtime_handler is not None:
+        runtime_handler.execute(info, globals())
+        return
     started = perf_counter()
     step, time = int(info.timestep), float(info.time)
     sources[product_names[0]].UpdatePipeline(time)
@@ -710,7 +733,7 @@ def retire_resident_inputs():
         if 'mapper' not in item:
             continue
         item['mapper'].GetVBOs().ClearAllDataArrays()
-        if pipeline == 'standard-device':
+        if pipeline in ('standard-device','compatible'):
             item['mapper'].SetInputData(vtkPolyData())
             item.pop('poly', None)
     bridge = ctypes.CDLL(None)
@@ -834,6 +857,9 @@ def render_product(name, item, step, time, points, cells):
     os.environ['ASTR_INSITU_PIXEL_PRODUCT']=name
     os.environ['ASTR_INSITU_PIXEL_STEP']=str(step)
     view = item['view']
+    output_directory = item.get('directory', output)
+    frame_name = f'frame.step{step:012d}' if runtime_handler is not None else f'{name}.step{step:08d}'
+    frame_eps = item.get('write_eps', write_eps)
     if item.get('enhanced'):
         low, high = item['color_range']
         actual = item['actual_ranges'][0]
@@ -865,16 +891,16 @@ def render_product(name, item, step, time, points, cells):
             encoding_start = perf_counter()
             if image is None or tuple(image.GetDimensions()) != (*size, 1):
                 raise RuntimeError('Missing collective image')
-            eps = io.BytesIO() if write_eps else None
-            if profile in ('m12_diagnostics','sbli_2d'):
+            eps = io.BytesIO() if frame_eps else None
+            if profile in ('m12_diagnostics','sbli_2d','runtime_catalog'):
                 scalars = image.GetPointData().GetScalars()
                 rgb = vtk_to_numpy(scalars).reshape(size[1], size[0], scalars.GetNumberOfComponents())[::-1, :, :3]
                 raw = Image.fromarray(rgb.copy(), 'RGB')
                 encoded = io.BytesIO()
-                dpi=384 if profile=='sbli_2d' else 300
-                raw.save(encoded, format='JPEG', quality=95, dpi=(dpi,dpi))
+                dpi=item.get('dpi',384 if profile=='sbli_2d' else 300)
+                raw.save(encoded, format='JPEG', quality=item.get('jpeg_quality',95), dpi=(dpi,dpi))
                 jpeg = encoded.getvalue()
-                if write_eps:
+                if frame_eps:
                     raw.save(eps, format='EPS')
             else:
                 writer = vtkJPEGWriter()
@@ -886,13 +912,13 @@ def render_product(name, item, step, time, points, cells):
                 if writer.GetErrorCode() or writer.GetResult() is None:
                     raise RuntimeError('Image encoding failed')
                 jpeg = vtk_to_numpy(writer.GetResult()).tobytes()
-                if write_eps:
+                if frame_eps:
                     with Image.open(io.BytesIO(jpeg)) as decoded:
                         decoded.convert('RGB').save(eps, format='EPS')
             encoding_seconds = perf_counter() - encoding_start
             publication_start = perf_counter()
-            failure = publish_pair(output / f'{name}.step{step:08d}.jpeg', jpeg,
-                                   eps.getvalue() if write_eps else None)
+            failure = publish_pair(output_directory / f'{frame_name}.jpeg', jpeg,
+                                   eps.getvalue() if frame_eps else None)
             publication_seconds = perf_counter() - publication_start
         except Exception as exc:
             error = str(exc)
@@ -913,7 +939,7 @@ def render_product(name, item, step, time, points, cells):
             'geometry': 'device-resident; no geometry file'}
         error = ''
         try:
-            with (output / f'missing.{name}.step{step:08d}.rank{rank:08d}.json').open('x') as stream:
+            with (output_directory / f'missing.{frame_name}.rank{rank:08d}.json').open('x') as stream:
                 json.dump(receipt, stream, indent=2)
                 stream.flush()
                 os.fsync(stream.fileno())
@@ -923,7 +949,8 @@ def render_product(name, item, step, time, points, cells):
             print('ASTR_INSITU_DIAGNOSTIC_WRITE_FAILED ' + error, flush=True)
         if rank == 0:
             print('ASTR_INSITU_IMAGE_MISSING ' + json.dumps(receipt), flush=True)
-        receipt = dispatch.disable(name, 'image', step, time, receipt)
+        if runtime_handler is None:
+            receipt = dispatch.disable(name, 'image', step, time, receipt)
     if timing:
         print('ASTR_INSITU_PIPELINE_TIMING ' + json.dumps({'rank': rank, 'step': step, 'product': name, 'seconds': {
             'render_inclusive': render_seconds,
@@ -934,7 +961,7 @@ def render_product(name, item, step, time, points, cells):
         'scalar_bar_visible': bool(item['legend'].Visibility), 'scalar_bar_label_color': [0., 0., 0.],
         'local_points': points, 'local_cells': cells, 'image': 'published' if code == 0 else receipt,
         'lighting_enabled': bool(item['actor'].GetProperty().GetLighting()),
-        'image_formats': ['jpeg', 'eps'] if write_eps else ['jpeg']}
+        'image_formats': ['jpeg', 'eps'] if frame_eps else ['jpeg']}
     if 'plane' in item:
         result['plane']=item['plane']
     if 'actual_range' in item:
@@ -985,6 +1012,9 @@ def release_render_product(name, final=False):
     item = render_objects.pop(name)
     view = item.get('view')
     if view is None:
+        if pipeline in ('standard-device','compatible') and 'mapper' in item:
+            item['mapper'].SetInputData(vtkPolyData())
+            item.pop('poly',None)
         return  # A failed setup has never attached this mapper to a render window.
     window = vtkPVProcessWindow.GetRenderWindow()
     window.MakeCurrent()
@@ -997,7 +1027,7 @@ def release_render_product(name, final=False):
             view.GetClientSideObject().GetRenderer().RemoveActor(actor)
     # Transfer functions can be shared by sibling views. ParaView owns their
     # session lifetime; retire only this product's view and scalar bar here.
-    if final and 'legend' in item and 'lut' in item:
+    if (final or item.get('exclusive_lut')) and 'legend' in item and 'lut' in item:
         for resource in retain_display_resources(item).values():
             pv.Delete(resource)
     elif 'legend' in item:

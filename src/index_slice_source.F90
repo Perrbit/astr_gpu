@@ -6,7 +6,7 @@ module index_slice_source
   use insitu_session, only: slice_velocity_statistics_info,slice_velocity_statistics_value
   implicit none
   private
-  public :: slice_source_info,slice_source_value_cpu
+  public :: slice_source_info,slice_source_value_cpu,slice_source_on_gpu
 contains
   subroutine slice_source_info(definition,source,ready,ok,window,measure,count,message)
     type(catalog_product),intent(in) :: definition
@@ -80,15 +80,32 @@ contains
 #endif
     logical,intent(out) :: active,covered
     real(real_kind),intent(out) :: window(2),duration
-    logical :: device_active
+    logical :: device_active,device_covered
+    real(real_kind) :: device_window(2),device_duration
     call slice_velocity_statistics_info(active,covered,window,duration)
 #ifdef _CUDA
     if(use_gpu) then
-      call slice_statistics_gpu_info(device_active,covered,window,duration)
+      call slice_statistics_gpu_info(device_active,device_covered,device_window,device_duration)
+      if(device_active) then
+        covered=device_covered;window=device_window;duration=device_duration
+      endif
       return
     endif
 #endif
   end subroutine
+
+  logical function slice_source_on_gpu(source) result(on_device)
+#ifdef _CUDA
+    use insitu_statistics_gpu, only: slice_statistics_gpu_active
+#endif
+    integer,intent(in) :: source
+    on_device=use_gpu
+#ifdef _CUDA
+    if(use_gpu.and.(source==1.or.source==2)) then
+      on_device=slice_statistics_gpu_active()
+    endif
+#endif
+  end function
 
   subroutine legacy_info(active,covered,window,count)
     use statistic, only: nsamples,lmeanallocated,liosta,time_sbeg,mean_last_sample_identity

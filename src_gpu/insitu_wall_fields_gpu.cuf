@@ -27,14 +27,32 @@ contains
     endif
   end subroutine
 
+  logical function admit_wall_allocation(valid,comm,message,success) result(admitted)
+    logical,intent(in) :: valid
+    integer,intent(in) :: comm
+    character(*),intent(in) :: message
+    logical,optional,intent(out) :: success
+    integer :: bad,total,err
+    admitted=.true.
+    if(.not.present(success)) then
+      call require_wall(valid,comm,message)
+      return
+    endif
+    bad=merge(0,1,valid)
+    call MPI_Allreduce(bad,total,1,MPI_INTEGER,MPI_MAX,comm,err)
+    if(err/=MPI_SUCCESS) call MPI_Abort(comm,err,bad)
+    admitted=total==0;success=admitted
+  end function
+
 #ifdef ASTR_AIR5_CHEMISTRY
-  subroutine capture_air5_wall_fields_gpu(q,xyz,metrics,coordinates,fields,extent,hm,offset_y,comm,budget,reserve)
+  subroutine capture_air5_wall_fields_gpu(q,xyz,metrics,coordinates,fields,extent,hm,offset_y,comm,budget,reserve,success)
     integer,intent(in) :: extent(3),hm,offset_y,comm
     integer(int64),intent(in) :: budget,reserve
     real(real_kind),device,intent(in) :: q(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,11)
     real(real_kind),device,intent(in) :: xyz(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3)
     real(real_kind),device,intent(in) :: metrics(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,3,3)
     real(real_kind),device,allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
+    logical,optional,intent(out) :: success
     real(real_kind),device,allocatable :: state(:,:,:,:)
     integer,device,allocatable :: invalid(:)
     integer :: nw,nodes,status,bad,generation
@@ -50,12 +68,14 @@ contains
     required=max(reserve,1073741824_int64)
     free_bytes=0; total_bytes=0
     status=cudaMemGetInfo(free_bytes,total_bytes)
-    call require_wall(status==cudaSuccess.and.free_bytes>=required.and.budget>=device_slots, &
-      comm,'AIR5 wall snapshot device reserve')
-    call require_wall(bytes<=budget-device_slots.and.bytes<=free_bytes-required,comm,'AIR5 wall snapshot allocation budget')
+    call require_wall(status==cudaSuccess,comm,'AIR5 wall device query')
+    if(.not.admit_wall_allocation(free_bytes>=required.and.budget>=device_slots, &
+      comm,'AIR5 wall snapshot device reserve',success)) return
+    if(.not.admit_wall_allocation(bytes<=budget-device_slots.and.bytes<=free_bytes-required, &
+      comm,'AIR5 wall snapshot allocation budget',success)) return
     allocate(state(0:extent(1),0:extent(3),nw,33),coordinates(0:extent(1),0:extent(3),nw,3), &
       fields(0:extent(1),0:extent(3),nw,18),invalid(1),stat=status)
-    call require_wall(status==0,comm,'AIR5 wall snapshot allocation')
+    if(.not.admit_wall_allocation(status==0,comm,'AIR5 wall snapshot allocation',success)) return
     invalid=0
     if(nodes>0) call pack_air5_wall_state<<<(nodes+255)/256,256>>>( &
       q,state,extent(1),extent(2),extent(3),hm,nw)
@@ -128,11 +148,12 @@ contains
 #endif
 
   subroutine capture_channel_wall_fields_gpu(q,xyz,metrics,coordinates,fields,extent,hm,global_y,offset_y, &
-    material,comm,budget,reserve,curve)
+    material,comm,budget,reserve,curve,success)
     use ieee_arithmetic, only: ieee_is_finite
     use boundary_high_order, only: high_order_wall_enabled
     integer,intent(in) :: extent(3),hm,global_y,offset_y,comm
     logical,intent(in) :: curve
+    logical,optional,intent(out) :: success
     real(real_kind),intent(in) :: material(7)
     integer(int64),intent(in) :: budget,reserve
     real(real_kind),device,intent(in) :: q(-hm:extent(1)+hm,-hm:extent(2)+hm,-hm:extent(3)+hm,5)
@@ -165,12 +186,14 @@ contains
     call velocity_transport_usage_gpu(host_slots,device_slots,d2h,h2d,exchanges,generation)
     required=max(reserve,1073741824_int64); free_bytes=0; total_bytes=0
     status=cudaMemGetInfo(free_bytes,total_bytes)
-    call require_wall(status==cudaSuccess.and.free_bytes>=required.and.budget>=device_slots, &
-      comm,'wall snapshot device reserve')
-    call require_wall(bytes<=budget-device_slots.and.bytes<=free_bytes-required,comm,'wall snapshot allocation budget')
+    call require_wall(status==cudaSuccess,comm,'wall device query')
+    if(.not.admit_wall_allocation(free_bytes>=required.and.budget>=device_slots, &
+      comm,'wall snapshot device reserve',success)) return
+    if(.not.admit_wall_allocation(bytes<=budget-device_slots.and.bytes<=free_bytes-required, &
+      comm,'wall snapshot allocation budget',success)) return
     allocate(state(0:extent(1),0:extent(3),nw,nc),coordinates(0:extent(1),0:extent(3),nw,3), &
       fields(0:extent(1),0:extent(3),nw,4),invalid(1),stat=status)
-    call require_wall(status==0,comm,'wall snapshot allocation')
+    if(.not.admit_wall_allocation(status==0,comm,'wall snapshot allocation',success)) return
     invalid=0
     if(nodes>0) call pack_channel_wall_state<<<(nodes+255)/256,256>>>( &
       q,state,extent(1),extent(2),extent(3),hm,nw,first,nlayers)
@@ -179,7 +202,7 @@ contains
     call complete_sample_wall_fields_gpu(state,extent,nw,nc,comm)
     if(curve) then
       allocate(primitive(-3:extent(1)+3,-3:extent(3)+3,nw,4),stat=status)
-      call require_wall(status==0,comm,'wall primitive halo allocation')
+      if(.not.admit_wall_allocation(status==0,comm,'wall primitive halo allocation',success)) return
       primitive=0.e0_real_kind
       if(nodes>0) call pack_curve_wall_primitive<<<(nodes+255)/256,256>>>(state,primitive,invalid, &
         extent(1),extent(3),nw,material(1),material(3))

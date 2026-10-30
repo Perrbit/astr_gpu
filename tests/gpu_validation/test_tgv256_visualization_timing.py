@@ -1,5 +1,6 @@
 """Window aggregation must not add ranks or double-count nested stages."""
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -50,7 +51,11 @@ def test_preflight_explicit_pipeline_and_no_field_io(tmp_path,monkeypatch,pipeli
     BENCHMARK.prepare(case,2,True,tmp_path/'lib','device-aware',pipeline)
     content=(case/'insitu.nml').read_text()
     assert f"rendering_pipeline='{pipeline}'" in content
-    script='tgv_pipeline.py' if pipeline=='compatible' else 'device_render_pipeline.py'
+    script='device_render_pipeline.py'
     assert f"pipeline_file='{BENCHMARK.ROOT/'scripts/insitu'/script}'" in content
-    assert 'statistics=f' in content and 'initial_frame=f, final_frame=f' in content
+    assert 'statistics=f' in content and 'step_interval=' not in content
     assert (case/'datin/input.output').read_text().count('enabled=f')==3
+    definitions=[json.loads(line) for line in (case/'input.products.jsonl').read_text().splitlines()][1:]
+    assert {row['id'] for row in definitions}==set(BENCHMARK.PRODUCTS)
+    assert all(row['schedule']==dict(mode='steps',interval=1) for row in definitions)
+    assert 'ASTR_GPU_BENCHMARK_NO_FIELD_IO' not in BENCHMARK.environment(case,'device-aware')

@@ -1,18 +1,31 @@
 program insitu_catalog_state_probe
   use iso_fortran_env, only: int64,real64
+  use iso_c_binding, only: c_int,c_char
   use insitu_catalog, only: read_product_catalog
-  use insitu_run_config, only: catalog_product
+  use insitu_run_config, only: catalog_product,catalog_definition_equal,catalog_field_names
   use insitu_product_schedule
   use adaptive_output, only: adaptive_config,adaptive_shared_config,configure_adaptive,observe_adaptive
   use astr_precision, only: real_kind
   implicit none
   type(catalog_product),allocatable :: definitions(:),empty(:),expanded(:)
-  type(runtime_product_state) :: state
+  type(runtime_product_state) :: state,saved
   type(adaptive_config) :: adaptive
   character(:),allocatable :: path,message
   character(64) :: scenario
   logical :: ok
-  integer :: n,unit
+  integer :: n,unit,i,j
+  integer(c_int),allocatable :: field_ids(:)
+  character(c_char),allocatable :: field_names(:)
+  integer(c_int) :: fields,queried,dummy_id(1)
+  character(c_char) :: dummy_name(1)
+  interface
+    integer(c_int) function native_fields(index,ids,names,capacity) bind(C,name='astr_insitu_runtime_product_fields')
+      import c_int,c_char
+      integer(c_int),value :: index,capacity
+      integer(c_int),intent(out) :: ids(*)
+      character(c_char),intent(out) :: names(*)
+    end function
+  end interface
   call get_command_argument(1,length=n)
   allocate(character(n)::path)
   call get_command_argument(1,path)
@@ -44,6 +57,41 @@ program insitu_catalog_state_probe
   call require(runtime_catalog_due(1,10_int64,.01_real64),'first frame must be due')
   call runtime_catalog_success(1,10_int64,.01_real64)
   select case(trim(scenario))
+  case('typed-fields')
+    fields=native_fields(1_c_int,dummy_id,dummy_name,0_c_int)
+    call require(fields==size(definitions(1)%fields),'field query count differs')
+    allocate(field_ids(fields),field_names(len(catalog_field_names)*fields))
+    queried=native_fields(1_c_int,field_ids,field_names,fields)
+    call require(queried==fields.and.all(field_ids==definitions(1)%fields),'typed field IDs differ')
+    do i=1,fields
+      do j=1,len(catalog_field_names)
+        call require(field_names((i-1)*len(catalog_field_names)+j)==catalog_field_names(field_ids(i))(j:j), &
+          'typed field name differs')
+      enddo
+    enddo
+  case('visual-checkpoint')
+    call runtime_catalog_state(1,saved)
+    open(newunit=unit,status='scratch',access='stream',form='unformatted')
+    call runtime_catalog_state_file(unit,.true.,10_int64,.01_real64,ok)
+    call require(ok,'cannot save visual definition')
+    if(definitions(1)%view%channel=='geometry') then
+      definitions(1)%fields(1)=1
+    else
+      definitions(1)%view%camera(1)=definitions(1)%view%camera(1)+17
+    endif
+    call runtime_catalog_apply(definitions,11_int64,.011_real64)
+    call runtime_catalog_state(1,state)
+    call require(state%version==2,'display change must create a new definition version')
+    rewind(unit)
+    call runtime_catalog_state_file(unit,.false.,10_int64,.01_real64,ok)
+    close(unit)
+    call require(ok,'cannot restore visual definition')
+    call runtime_catalog_state(1,state)
+    call require(catalog_definition_equal(state%definition,saved%definition),'visual parameters lost in checkpoint')
+    call require(state%version==1.and.state%last_step==10,'visual clock/version changed on restore')
+    definitions(1)=saved%definition
+    call runtime_catalog_apply(definitions,11_int64,.011_real64)
+    call require(.not.runtime_catalog_due(1,11_int64,.011_real64),'unchanged restored view repeated its first frame')
   case('adaptive')
     call observe_adaptive(12_int64,.012_real_kind,ok)
     call require(ok.and.runtime_catalog_due(1,12_int64,.012_real64),'adaptive entry must emit')

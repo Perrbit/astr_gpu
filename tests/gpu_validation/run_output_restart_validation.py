@@ -75,7 +75,10 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
              gpu_mixed_candidate=None, exact_restart=True, checkpoint_statistics=True, insitu_memory_trace=False,
              scheme='643e', compact_sync='explicit', compact_batch_rhs=65535, restore_probe=False,
              gpu_statistics_interval=None, benchmark_buffer_output=False, tgv_conservation=False,
-             product_catalog_records=None):
+             product_catalog_records=None,product_poll_steps=10,catalog_replay=None,image_publication_failure=None,
+             runtime_line_oracle=False,trace_collective_fault=False,runtime_allocation_refusal=None,wall_publication_failure=None,
+             runtime_compatible_oracle=False,geometry_publication_failure=None,trace_allocation_refusal=None,
+             wall_capture_refusal=None):
     if solver_halo_transport not in ('pageable', 'pinned', 'pinned-pipeline', 'device-aware'):
         raise ValueError('unknown solver halo transport')
     if ncu_kernel is not None and (not ncu_kernel or backend != 'gpu' or ranks != 1 or
@@ -258,6 +261,7 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
  restart_output='{'override' if override else 'saved'}',
  exact_restart={'.true.' if exact_restart else '.false.'},
  checkpoint_statistics={'.true.' if checkpoint_statistics else '.false.'},
+ product_poll_steps={product_poll_steps},
  host_budget_bytes={output_host_budget},device_budget_bytes={device_budget_bytes},buffer_bytes={buffer_bytes}
  device_reserve_bytes={device_reserve_bytes}
 /
@@ -354,6 +358,22 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
         if insitu_config is None or "slice_definition='plane'" not in insitu_config:
             raise ValueError('plane oracle requires the explicit physical-plane configuration')
         env['ASTR_INSITU_TEST_PLANE_PREFIX']='outdat/render/plane_oracle'
+    if runtime_line_oracle:
+        env['ASTR_INSITU_TEST_RUNTIME_LINE_PREFIX']='outdat/runtime_line_oracle'
+    if runtime_compatible_oracle:
+        env['ASTR_INSITU_TEST_RUNTIME_COMPATIBLE_PREFIX']='outdat/runtime_compatible_oracle'
+    if geometry_publication_failure is not None:
+        product_id,step,kind,rank=geometry_publication_failure
+        env.update(ASTR_TEST_GEOMETRY_FAIL_ID=product_id,ASTR_TEST_GEOMETRY_FAIL_STEP=str(step),
+            ASTR_TEST_GEOMETRY_FAIL_KIND=kind,ASTR_TEST_GEOMETRY_FAIL_RANK=str(rank))
+    if trace_collective_fault:
+        env['ASTR_INSITU_TEST_TRACE_COLLECTIVE_FAIL']='1'
+    if runtime_allocation_refusal is not None:
+        env['ASTR_INSITU_TEST_RUNTIME_ALLOCATION_REFUSAL']=':'.join(map(str,runtime_allocation_refusal))
+    if trace_allocation_refusal is not None:
+        env['ASTR_INSITU_TEST_TRACE_ALLOCATION_REFUSAL']=':'.join(map(str,trace_allocation_refusal))
+    if wall_capture_refusal is not None:
+        env['ASTR_INSITU_TEST_WALL_CAPTURE_REFUSAL']=' '.join(map(str,wall_capture_refusal))
     if device_sample_transport is not None:
         if device_sample_transport not in ('device-aware','pinned'):
             raise ValueError('device sample diagnostic requires an explicit supported transport')
@@ -445,6 +465,21 @@ def run_case(args, root, backend, ranks, name, steps, restore=None, enabled=True
                    ASTR_CONTROLLER_TEST_FILE=str(controller.resolve(strict=True)),
                    ASTR_CONTROLLER_TEST_REPLAY=str(replay.resolve()),
                    ASTR_CONTROLLER_TEST_START_STEP=str(start_step))
+    if catalog_replay is not None:
+        library, publications = catalog_replay
+        replay = case / 'catalog_replay'
+        replay.mkdir()
+        for poll, records in publications.items():
+            (replay / f'catalog{poll:06d}.jsonl').write_text('\n'.join(json.dumps(record) for record in
+                [{'catalog_schema':'astr-insitu-products-v1'},*records])+'\n')
+        env.update(LD_PRELOAD=str(Path(library).resolve(strict=True)),
+                   ASTR_TEST_CATALOG_FILE='input.products.jsonl', ASTR_TEST_CATALOG_REPLAY=str(replay.resolve()))
+    if image_publication_failure is not None:
+        product_id,step=image_publication_failure
+        env.update(ASTR_TEST_IMAGE_FAIL_ID=product_id,ASTR_TEST_IMAGE_FAIL_STEP=str(step))
+    if wall_publication_failure is not None:
+        product_id,step=wall_publication_failure
+        env.update(ASTR_TEST_WALL_FAIL_ID=product_id,ASTR_TEST_WALL_FAIL_STEP=str(step))
     solver_command = [str(args.executable), "run", "datin/" + input_name]
     if ncu_kernel is not None:
         profiler = shutil.which('ncu')

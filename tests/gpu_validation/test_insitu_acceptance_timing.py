@@ -57,7 +57,10 @@ def test_standalone_preset_has_no_validation_imports_or_private_defaults(tmp_pat
     module.prepare(output,library,enabled)
     config=(output/'insitu.nml').read_text()
     assert '${' not in config and f'enabled={"t" if enabled else "f"}' in config
-    assert 'statistics_window=0.003,0.004' in config and 'step_interval=2' in config
+    assert 'statistics_window=0.003,0.004' in config and 'step_interval=' not in config
+    products=[json.loads(line) for line in (output/'input.products.jsonl').read_text().splitlines()][1:]
+    assert len(products)==(6 if enabled else 0)
+    assert all(row['schedule']==dict(mode='steps',interval=2) for row in products)
     assert str(library.resolve()) in config
     assert {p.name for p in (output/'datin').iterdir()}=={'input.tgv','controller','input.output'}
     assert (output/'outdat/render').is_dir()
@@ -101,7 +104,7 @@ def test_standalone_rendering_entry_selection(tmp_path,route):
     content=(tmp_path/'case/insitu.nml').read_text()
     expected=route or 'standard-device'
     assert f"rendering_pipeline='{expected}'" in content
-    script='tgv_pipeline.py' if expected=='compatible' else 'device_render_pipeline.py'
+    script='device_render_pipeline.py'
     assert f"pipeline_file='{ROOT/'scripts/insitu'/script}'" in content
 
 

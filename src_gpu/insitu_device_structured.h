@@ -10,6 +10,10 @@ namespace structured_geometry {
 
 using PlaneKey=viskores::Vec<viskores::Id,2>;
 using PlaneCounts=viskores::Vec<viskores::Id,2>;
+struct PlaneInterpolation {
+  viskores::Id lower=0,upper=0;
+  Real fraction=Real(0.);
+};
 struct KeyLess {
   VISKORES_EXEC_CONT bool operator()(const PlaneKey& a,const PlaneKey& b) const {
     return a[0]<b[0] || (a[0]==b[0] && a[1]<b[1]);
@@ -62,16 +66,17 @@ struct CountPlane : viskores::worklet::WorkletMapField {
 
 struct WritePlane : viskores::worklet::WorkletMapField {
   using ControlSignature=void(FieldIn,WholeArrayIn,WholeArrayIn,WholeArrayIn,WholeArrayIn,
-    WholeArrayOut,WholeArrayOut,WholeArrayOut,WholeArrayOut,WholeArrayOut,WholeArrayOut,FieldOut);
-  using ExecutionSignature=void(_1,_2,_3,_4,_5,_6,_7,_8,_9,_10,_11,_12);
+    WholeArrayOut,WholeArrayOut,WholeArrayOut,WholeArrayOut,WholeArrayOut,WholeArrayOut,FieldOut,WholeArrayOut);
+  using ExecutionSignature=void(_1,_2,_3,_4,_5,_6,_7,_8,_9,_10,_11,_12,_13);
   Partition partition;
   plane_geometry::Plane plane;
-  bool has_q;
-  VISKORES_CONT WritePlane(Partition p,plane_geometry::Plane s,bool q=true):partition(p),plane(s),has_q(q) {}
-  template<class XYZ,class V,class D,class O,class PX,class PV,class PQ,class PU,class PK,class PI>
+  bool has_q,retain_interpolation;
+  VISKORES_CONT WritePlane(Partition p,plane_geometry::Plane s,bool q=true,bool retain=false)
+    :partition(p),plane(s),has_q(q),retain_interpolation(retain) {}
+  template<class XYZ,class V,class D,class O,class PX,class PV,class PQ,class PU,class PK,class PI,class S>
   VISKORES_EXEC void operator()(viskores::Id id,const XYZ& xyz,const V& input_v,const D& input_d,
       const O& offsets,const PX& points,const PV& vectors,const PQ& q,const PU& u,const PK& keys,
-      const PI& indices,viskores::Id& bad) const {
+      const PI& indices,viskores::Id& bad,const S& samples) const {
     plane_geometry::Vertex hex[8];viskores::Id local[8];
     const auto cut=partition.cut(plane,id,xyz,hex,local);
     bad=cut.status!=plane_geometry::Status::ok?1:0;
@@ -99,6 +104,7 @@ struct WritePlane : viskores::worklet::WorkletMapField {
       const auto node=start[0]+p;
       points.Set(node,position);vectors.Set(node,velocity);q.Set(node,scalar);u.Set(node,velocity[0]);
       keys.Set(node,PlaneKey(vertex.key.first,vertex.key.second));
+      if(retain_interpolation) samples.Set(node,PlaneInterpolation{local[lo],local[hi],vertex.fraction});
     }
     for(int i=0;i<3*cut.triangles;++i) indices.Set(start[1]+i,start[0]+cut.indices[i]);
   }
@@ -122,13 +128,16 @@ struct CheckSharedPoint : viskores::worklet::WorkletMapField {
 };
 struct SelectUniquePoint : viskores::worklet::WorkletMapField {
   using ControlSignature=void(FieldIn,WholeArrayIn,WholeArrayIn,WholeArrayIn,WholeArrayIn,
-    FieldOut,FieldOut,FieldOut,FieldOut);
-  using ExecutionSignature=void(_1,_2,_3,_4,_5,_6,_7,_8,_9);
-  template<class I,class X,class V,class Q>
+    FieldOut,FieldOut,FieldOut,FieldOut,WholeArrayIn,WholeArrayOut);
+  using ExecutionSignature=void(_1,_2,_3,_4,_5,_6,_7,_8,_9,_10,_11,WorkIndex);
+  bool retain_interpolation=false;
+  template<class I,class X,class V,class Q,class S,class T>
   VISKORES_EXEC void operator()(viskores::Id first,const I& original,const X& xyz,const V& velocity,
-      const Q& scalar,astr_insitu::NativeVector& p,astr_insitu::NativeVector& v,Real& q,Real& u) const {
+      const Q& scalar,astr_insitu::NativeVector& p,astr_insitu::NativeVector& v,Real& q,Real& u,
+      const S& samples,const T& selected,viskores::Id output) const {
     const auto source=original.Get(first);
     p=xyz.Get(source);v=velocity.Get(source);q=scalar.Get(source);u=v[0];
+    if(retain_interpolation) selected.Set(output,samples.Get(source));
   }
 };
 struct RemapPlaneIndex : viskores::worklet::WorkletMapField {
@@ -142,6 +151,7 @@ struct RemapPlaneIndex : viskores::worklet::WorkletMapField {
 struct PlaneProduct {
   viskores::cont::DataSet data;
   viskores::cont::ArrayHandle<PlaneKey> keys;
+  viskores::cont::ArrayHandle<PlaneInterpolation> interpolation;
   std::uint64_t controlled_bound=0;
 };
 inline void require_no_errors(const viskores::cont::ArrayHandle<viskores::Id>& bad,const char* message) {
@@ -156,7 +166,7 @@ inline void require_no_errors(const viskores::cont::ArrayHandle<viskores::Id>& b
 inline PlaneProduct extract_plane(astr_insitu::NativeVector* coordinates_pointer,astr_insitu::NativeVector* velocity_pointer,
     DeviceDiagnostics* diagnostics_pointer,const Partition& partition,const plane_geometry::Point& origin,
     const plane_geometry::Point& normal,std::uint64_t budget,std::uint64_t retained=0,bool canonical=false,
-    bool reserve_display=false) {
+    bool reserve_display=false,bool retain_interpolation=false) {
   const auto plane=canonical?plane_geometry::Plane{origin,normal}:plane_geometry::make_plane(origin,normal);
   if(canonical) {
     Real squared=Real(0.);
@@ -203,6 +213,7 @@ inline PlaneProduct extract_plane(astr_insitu::NativeVector* coordinates_pointer
     4*sizeof(PlaneKey)+8*sizeof(viskores::Id))+indices_count*4*sizeof(viskores::Id);
   if(reserve_display) result.controlled_bound+=points*(2*sizeof(astr_insitu::NativeVector)+4*sizeof(float))+
     indices_count*sizeof(viskores::Id);
+  if(retain_interpolation) result.controlled_bound+=points*2*sizeof(PlaneInterpolation);
   if(result.controlled_bound>budget-retained)
     throw std::runtime_error("Structured plane output/display budget exceeded");
   if(cudaMemGetInfo(&free_bytes,&total_bytes)!=cudaSuccess || free_bytes<1073741824ULL ||
@@ -218,10 +229,12 @@ inline PlaneProduct extract_plane(astr_insitu::NativeVector* coordinates_pointer
   viskores::cont::ArrayHandle<Real> raw_q,raw_u;
   viskores::cont::ArrayHandle<PlaneKey> raw_keys,sorted_keys;
   viskores::cont::ArrayHandle<viskores::Id> raw_indices,original,first,unique,indices;
+  viskores::cont::ArrayHandle<PlaneInterpolation> raw_samples;
   raw_xyz.Allocate(total[0]);raw_velocity.Allocate(total[0]);raw_q.Allocate(total[0]);raw_u.Allocate(total[0]);
   raw_keys.Allocate(total[0]);raw_indices.Allocate(total[1]);
-  invoke(WritePlane(partition,plane,diagnostics_pointer!=nullptr),cells,xyz,velocity,diagnostics,offsets,
-    raw_xyz,raw_velocity,raw_q,raw_u,raw_keys,raw_indices,bad);
+  if(retain_interpolation) raw_samples.Allocate(total[0]);
+  invoke(WritePlane(partition,plane,diagnostics_pointer!=nullptr,retain_interpolation),cells,xyz,velocity,diagnostics,offsets,
+    raw_xyz,raw_velocity,raw_q,raw_u,raw_keys,raw_indices,bad,raw_samples);
   synchronize_device_stage("WriteStructuredPlane");
   require_no_errors(bad,"Nonfinite structured plane field/intersection");
   if(!viskores::cont::Algorithm::Copy(device,raw_keys,sorted_keys))
@@ -246,8 +259,10 @@ inline PlaneProduct extract_plane(astr_insitu::NativeVector* coordinates_pointer
   synchronize_device_stage("MapPlaneKeys");
   viskores::cont::ArrayHandle<astr_insitu::NativeVector> product_xyz,product_velocity;
   viskores::cont::ArrayHandle<Real> product_q,product_u;
-  invoke(SelectUniquePoint{},first,original,raw_xyz,raw_velocity,raw_q,
-    product_xyz,product_velocity,product_q,product_u);
+  if(retain_interpolation) result.interpolation.Allocate(result.keys.GetNumberOfValues());
+  SelectUniquePoint select;select.retain_interpolation=retain_interpolation;
+  invoke(select,first,original,raw_xyz,raw_velocity,raw_q,
+    product_xyz,product_velocity,product_q,product_u,raw_samples,result.interpolation);
   synchronize_device_stage("PackUniquePlanePoints");
   invoke(RemapPlaneIndex{},raw_indices,unique,indices);
   synchronize_device_stage("PackUniquePlaneProduct");
@@ -266,6 +281,7 @@ inline PlaneProduct extract_plane(astr_insitu::NativeVector* coordinates_pointer
   require_device_only(original);require_device_only(first);require_device_only(unique);require_device_only(result.keys);
   require_device_only(product_xyz);require_device_only(product_velocity);
   require_device_only(product_q);require_device_only(product_u);require_device_only(indices);
+  require_device_only(raw_samples);require_device_only(result.interpolation);
   return result;
 }
 

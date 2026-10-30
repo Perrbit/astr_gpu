@@ -35,38 +35,52 @@ def wall_values():
     return data
 
 
-def encode_wall_curve(name,data,step,time,output,write_eps):
+def curve_image_bytes(x,value,label,*,image_size,dpi,jpeg_quality,x_range,y_range=None,
+                      line_width=None,write_eps=False,zero_line=False,x_label=r'$x/L_\mathrm{ref}$',break_before=None):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     import scienceplots
-    from image_publication import publish_pair
     plt.style.use(['science','ieee','std-colors'])
     plt.rcParams['axes.grid']=False
     plt.rcParams['grid.alpha']=0.0
     plt.rcParams.update({'axes.labelsize':16,'xtick.labelsize':14,'ytick.labelsize':14,'legend.fontsize':14,
                         'savefig.bbox':None})
-    column,label,header=WALL_COLUMNS[name]
-    fig,axis=plt.subplots(figsize=(10.,3.75))
+    fig,axis=plt.subplots(figsize=(image_size[0]/dpi,image_size[1]/dpi))
     try:
-        axis.plot(data[:,0],data[:,column],color='tab:blue')
-        if name=='skin_friction_curve':
+        if break_before is not None:
+            gaps=np.flatnonzero(break_before)
+            x=np.insert(np.asarray(x,dtype=float),gaps,np.nan)
+            value=np.insert(np.asarray(value,dtype=float),gaps,np.nan)
+        axis.plot(x,value,color='tab:blue',linewidth=line_width)
+        if zero_line:
             axis.axhline(0.,color='0.5',linewidth=.7)
-        axis.set_xlabel(r'$x/L_\mathrm{ref}$')
+        axis.set_xlabel(x_label)
         axis.set_ylabel(label)
-        axis.set_xlim(data[0,0],data[-1,0])
+        axis.set_xlim(*x_range)
+        if y_range is not None:
+            axis.set_ylim(*y_range)
         fig.tight_layout()
         jpeg=io.BytesIO()
-        fig.savefig(jpeg,format='jpeg',dpi=384,pil_kwargs={'quality':95})
+        fig.savefig(jpeg,format='jpeg',dpi=dpi,pil_kwargs={'quality':jpeg_quality})
         eps=io.BytesIO() if write_eps else None
         if write_eps:
             fig.savefig(eps,format='eps')
-        base=Path(output)/f'{name}.step{step:08d}'
-        with base.with_suffix(base.suffix+'.csv').open('x') as stream:
-            np.savetxt(stream,data[:,[0,column]],delimiter=',',fmt='%.17e',
-                header=f'step={step},time={time:.17e}\nx_over_Lref,{header}')
-        failure=publish_pair(base.with_suffix(base.suffix+'.jpeg'),jpeg.getvalue(),eps.getvalue() if eps else None)
-        if failure:
-            raise OSError(failure['errno'],failure['reason'])
+        return jpeg.getvalue(),eps.getvalue() if eps else None
     finally:
         plt.close(fig)
+
+
+def encode_wall_curve(name,data,step,time,output,write_eps):
+    from image_publication import publish_pair
+    column,label,header=WALL_COLUMNS[name]
+    jpeg,eps=curve_image_bytes(data[:,0],data[:,column],label,image_size=(3840,1440),dpi=384,
+        jpeg_quality=95,x_range=(data[0,0],data[-1,0]),write_eps=write_eps,
+        zero_line=name=='skin_friction_curve')
+    base=Path(output)/f'{name}.step{step:08d}'
+    with base.with_suffix(base.suffix+'.csv').open('x') as stream:
+        np.savetxt(stream,data[:,[0,column]],delimiter=',',fmt='%.17e',
+            header=f'step={step},time={time:.17e}\nx_over_Lref,{header}')
+    failure=publish_pair(base.with_suffix(base.suffix+'.jpeg'),jpeg,eps)
+    if failure:
+        raise OSError(failure['errno'],failure['reason'])

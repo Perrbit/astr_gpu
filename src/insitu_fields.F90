@@ -15,8 +15,35 @@ module insitu_fields
   public :: capture_air5_walls
   public :: insitu_volume_weights,release_insitu_geometry
   public :: nonreacting_wall_candidate
+  public :: catalog_wall_fields_supported
+  public :: admit_optional_fields
   real(real_kind),allocatable,save :: curve_volume_weights(:,:,:)
 contains
+  logical function catalog_wall_fields_supported() result(supported)
+    use boundary_high_order, only: high_order_wall_enabled,high_order_adiabatic_wall_enabled
+    use commvar, only: flowtype,lreadgrid,ia,ja,ka,im,jm,km,numq,num_species,num_modequ,lcomb,nondimen, &
+      difschm,const2,const5,const6,reynolds,prandtl
+    use bc, only: bctype
+    use parallel, only: mpisize
+    supported=.false.
+    if(numq==5) then
+      supported=nonreacting_wall_candidate().and.num_species==0.and.nondimen.and. &
+        (all(bctype==[1,1,41,41,1,1]).or. &
+         (high_order_adiabatic_wall_enabled.and.(all(bctype==[1,1,42,42,1,1]).or. &
+          all(bctype==[1,1,421,421,1,1])))).and.trim(difschm)=='643e'.and. &
+        max(ia,ja,ka)<=merge(128,32,high_order_wall_enabled).and.min(im,km)>=1.and.jm>=2.and.mpisize<=2
+      supported=supported.and.all(ieee_is_finite([const2,const5,const6,reynolds,prandtl])).and. &
+        min(const2,const5,const6,reynolds,prandtl)>0
+      if(high_order_wall_enabled) supported=supported.and.jm>=7
+#ifdef ASTR_AIR5_CHEMISTRY
+    elseif(numq==11) then
+      supported=trim(flowtype)=='air5hbl'.and.num_species==5.and.num_modequ==1.and. &
+        .not.nondimen.and.lcomb.and..not.lreadgrid.and.all(bctype==[11,50,41,51,1,1]).and. &
+        trim(difschm)=='643e'.and.max(ia,ja,ka)<=32.and.mpisize<=2.and.jm>=2
+#endif
+    endif
+  end function
+
   logical function nonreacting_wall_candidate() result(supported)
     use commvar, only: flowtype,lreadgrid
     use bc, only: bctype
@@ -111,7 +138,7 @@ contains
     weights=curve_volume_weights
   end subroutine
 
-  subroutine capture_air5_walls(coordinates,fields,owned,host_budget,device_budget,reserve,download_bytes)
+  subroutine capture_air5_walls(coordinates,fields,owned,host_budget,device_budget,reserve,download_bytes,success)
     use iso_fortran_env, only: int64
     use commvar, only: im,jm,km,ia,ja,ka,numq,num_species,num_modequ,use_gpu,flowtype,lreadgrid, &
       nondimen,difschm,lcomb
@@ -132,11 +159,14 @@ contains
     logical,allocatable,intent(out) :: owned(:,:,:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
     integer(int64),intent(out) :: download_bytes
+    logical,optional,intent(out) :: success
 #ifdef ASTR_AIR5_CHEMISTRY
     real(real_kind),allocatable :: state(:,:,:,:),send(:),receive(:)
     real(real_kind) :: primitive(12,3),mu,kt,kv,smu(5),binary(5,5),diffusion(5),metric,derivative(3)
     integer :: nw,i,k,m,c,status,local_status,ierr,comm,count,axis,sizes(2),neighbors(2,2)
     integer(int64) :: nodes,bytes
+    download_bytes=0
+    if(present(success)) success=.true.
     call require_fields(trim(flowtype)=='air5hbl'.and.numq==11.and.num_species==5.and.num_modequ==1.and. &
       .not.nondimen.and.lcomb.and..not.lreadgrid.and.all(bctype==[11,50,41,51,1,1]).and. &
       trim(difschm)=='643e'.and.max(ia,ja,ka)<=32.and.mpisize<=2.and.jm>=2, &
@@ -144,15 +174,18 @@ contains
     nw=merge(1,0,jg0==0)
     nodes=int(im+1,int64)*(km+1)*nw
     bytes=nodes*(54*real_bytes+storage_size(.false.)/8)+int(max(im+1,km+1),int64)*nw*33*real_bytes*4
-    call require_fields(bytes<=host_budget,'AIR5 wall host budget')
+    if(.not.admit_optional_fields(bytes<=host_budget,'AIR5 wall host budget',success)) return
     allocate(state(0:im,0:km,nw,33),coordinates(0:im,0:km,nw,3),fields(0:im,0:km,nw,18), &
       owned(0:im,0:km,nw),send(max(1,max(im+1,km+1)*nw*33)), &
       receive(max(1,max(im+1,km+1)*nw*33)),stat=status)
-    call require_fields(status==0,'cannot allocate private AIR5 wall buffers')
+    if(.not.admit_optional_fields(status==0,'cannot allocate private AIR5 wall buffers',success)) return
     state=0.e0_real_kind; fields=0.e0_real_kind; coordinates=0.e0_real_kind; download_bytes=0
 #ifdef _CUDA
     if(use_gpu) then
-      call download_wall_state_gpu([(0,m=1,nw)],state,device_budget,reserve)
+      call download_wall_state_gpu([(0,m=1,nw)],state,device_budget,reserve,success)
+      if(present(success)) then
+        if(.not.success) return
+      endif
       download_bytes=nodes*33*real_bytes
     else
 #else
@@ -299,7 +332,7 @@ contains
     call require_fields(all(ieee_is_finite(fields)),'invalid channel statistics velocity')
   end subroutine
 
-  subroutine capture_channel_walls(coordinates,fields,owned,host_budget,device_budget,reserve,download_bytes)
+  subroutine capture_channel_walls(coordinates,fields,owned,host_budget,device_budget,reserve,download_bytes,success)
     use boundary_high_order, only: high_order_wall_enabled,high_order_adiabatic_wall_enabled,boundary_derivative6
     use iso_fortran_env, only: int64
     use commvar, only: im,jm,km,ia,ja,ka,numq,num_species,use_gpu,flowtype,lreadgrid,nondimen, &
@@ -319,6 +352,7 @@ contains
     logical,allocatable,intent(out) :: owned(:,:,:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
     integer(int64),intent(out) :: download_bytes
+    logical,optional,intent(out) :: success
     real(real_kind),allocatable :: state(:,:,:,:),send(:),receive(:)
     real(real_kind),allocatable :: wall_primitive(:,:,:,:)
     real(real_kind) :: velocity(3,8),temperature(8),pressure(8),rho,mu,metric,du,dt
@@ -330,6 +364,8 @@ contains
     integer :: walls(2),nw,i,k,w,m,j,side,d,c,axis,count,status,ierr,comm,nlayers,nc
     integer :: neighbors(2,2),sizes(2)
     integer(int64) :: nodes,bytes
+    download_bytes=0
+    if(present(success)) success=.true.
     call require_fields(nonreacting_wall_candidate().and.numq==5.and.num_species==0.and.nondimen.and. &
       (all(bctype==[1,1,41,41,1,1]).or. &
        (high_order_adiabatic_wall_enabled.and.(all(bctype==[1,1,42,42,1,1]).or. &
@@ -355,16 +391,19 @@ contains
     bytes=nodes*((nc+7)*real_bytes+storage_size(.false.)/8)+int(max(im+1,km+1),int64)*nw*nc*real_bytes*4
     if(curve) bytes=bytes+int(im+7,int64)*(km+7)*nw*4*real_bytes+ &
       int(max(im+1,km+1),int64)*nw*4*3*real_bytes*4
-    call require_fields(bytes<=host_budget,'wall host budget')
+    if(.not.admit_optional_fields(bytes<=host_budget,'wall host budget',success)) return
     allocate(state(0:im,0:km,nw,nc),coordinates(0:im,0:km,nw,3),fields(0:im,0:km,nw,4), &
       owned(0:im,0:km,nw),send(max(1,max(im+1,km+1)*nw*nc)), &
       receive(max(1,max(im+1,km+1)*nw*nc)),stat=status)
-    call require_fields(status==0,'cannot allocate private wall buffers')
+    if(.not.admit_optional_fields(status==0,'cannot allocate private wall buffers',success)) return
     fields=0.e0_real_kind; coordinates=0.e0_real_kind
     download_bytes=0
 #ifdef _CUDA
     if(use_gpu) then
-      call download_wall_state_gpu(walls(1:nw),state,device_budget,reserve)
+      call download_wall_state_gpu(walls(1:nw),state,device_budget,reserve,success)
+      if(present(success)) then
+        if(.not.success) return
+      endif
       download_bytes=nodes*nc*real_bytes
     else
 #else
@@ -412,7 +451,12 @@ contains
     call MPI_Comm_free(comm,ierr)
     call require_fields(ierr==MPI_SUCCESS,'cannot release wall endpoint communicator')
     call require_fields(all(ieee_is_finite(state)),'nonfinite wall state')
-    if(curve) call prepare_curve_wall_primitive(state,wall_primitive)
+    if(curve) then
+      call prepare_curve_wall_primitive(state,wall_primitive,success)
+      if(present(success)) then
+        if(.not.success) return
+      endif
+    endif
     owned=.false.
     owned(0:im-1,0:km-1,:)=.true.
     status=0
@@ -537,11 +581,12 @@ contains
     endif
   end subroutine
 
-  subroutine prepare_curve_wall_primitive(state,primitive)
+  subroutine prepare_curve_wall_primitive(state,primitive,success)
     use commvar, only: im,km,const2,const6
     use parallel, only: isize,ksize,mpileft,mpiright,mpiback,mpifront
     real(real_kind),intent(in) :: state(0:,0:,:,:)
     real(real_kind),allocatable,intent(out) :: primitive(:,:,:,:)
+    logical,optional,intent(out) :: success
     real(real_kind),allocatable :: send(:),receive(:)
     real(real_kind) :: rho,velocity(3),pressure
     integer :: i,k,w,nw,status,axis,count,comm,ierr,s,neighbors(2,2),sizes(2)
@@ -549,7 +594,7 @@ contains
     nw=size(state,3)
     allocate(primitive(-3:im+3,-3:km+3,nw,4), &
       send(max(1,3*max(im+1,km+1)*nw*4)),receive(max(1,3*max(im+1,km+1)*nw*4)),stat=status)
-    call require_fields(status==0,'cannot allocate CURVE tangential wall halo')
+    if(.not.admit_optional_fields(status==0,'cannot allocate CURVE tangential wall halo',success)) return
     primitive=0.e0_real_kind; valid=.true.
     do w=1,nw
     do k=0,km
@@ -693,6 +738,47 @@ contains
     call require_fields(all(ieee_is_finite(velocity)).and.all(ieee_is_finite(coordinates)), &
       'nonfinite index-plane payload')
   end subroutine
+
+  logical function admit_optional_fields(valid,message,success) result(allowed)
+    logical,intent(in) :: valid
+    character(*),intent(in) :: message
+    logical,optional,intent(out) :: success
+    integer :: bad,total,err,ignored
+#ifdef ASTR_BUILD_TESTING
+    block
+      use commvar, only: nstep
+      use parallel, only: mpirank
+      character(64) :: text
+      character(16) :: phase
+      integer :: status,step,rank
+      allowed=valid
+      if(present(success)) then
+        call get_environment_variable('ASTR_INSITU_TEST_WALL_CAPTURE_REFUSAL',text,status=status)
+        if(status==0) then
+          read(text,*,iostat=status) step,rank
+          if(status==0.and.step==nstep.and.rank==mpirank) then
+            phase='capture'
+            read(text,*,iostat=status) step,rank,phase
+            if(status/=0) phase='capture'
+            if((phase=='capture'.and.index(message,'wall host budget')>0).or. &
+              (phase=='mean'.and.message=='wall scalar output allocation')) allowed=.false.
+          endif
+        endif
+      endif
+    end block
+#else
+    allowed=valid
+#endif
+    if(.not.present(success)) then
+      call require_fields(valid,message)
+      allowed=.true.
+      return
+    endif
+    bad=merge(0,1,allowed)
+    call MPI_Allreduce(bad,total,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,err)
+    if(err/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,err,ignored)
+    allowed=total==0;success=allowed
+  end function
 
   subroutine require_fields(ok,message)
     logical,intent(in) :: ok

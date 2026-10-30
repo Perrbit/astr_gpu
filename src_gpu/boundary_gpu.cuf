@@ -35,6 +35,7 @@ module boundary_gpu
   real(real_kind),allocatable,device :: legacy_wall_velocity_d(:,:)
   real(real_kind),allocatable,pinned :: legacy_wall_velocity_h(:,:)
   logical,save :: legacy_wall_forcing_gpu=.false.
+  logical,save :: wall_blowing_enabled_gpu=.false.
   integer,device :: legacy_wall_forcing_d
   integer,device :: wall_blowing_nmod_t_d,wall_blowing_nmod_z_d,        &
                     wall_ig0_d,wall_kg0_d,wall_ka_d,wall_blowing_enabled_d
@@ -55,6 +56,7 @@ contains
     if(allocated(legacy_wall_velocity_d)) deallocate(legacy_wall_velocity_d)
     if(allocated(legacy_wall_velocity_h)) deallocate(legacy_wall_velocity_h)
     legacy_wall_forcing_gpu=.false.
+    wall_blowing_enabled_gpu=.false.
     s1_bl_profile_ready=.false.
     nscbc52_prediff_rhs_ready=.false.
     nscbc_incident_reference_ready=.false.
@@ -74,6 +76,7 @@ contains
     enabled=0
     if(ndims==3 .and. abs(wall_blowing_amplitude)>1.e-10_real_kind) enabled=1
     if(wall_blowing_legacy_random .and. wall_blowing_amplitude<=1.e-10_real_kind) enabled=0
+    wall_blowing_enabled_gpu=enabled/=0
     legacy_wall_forcing_gpu=wall_blowing_legacy_random .and. enabled/=0
     legacy_wall_forcing_d=merge(1,0,legacy_wall_forcing_gpu)
     wall_blowing_amplitude_d=wall_blowing_amplitude

@@ -5,12 +5,13 @@ module insitu_wall_statistics
   use astr_precision_mpi, only: mpi_real_type
   use insitu_velocity_statistics
   use insitu_time_integral, only: clipped_trapezoid
-  use insitu_fields, only: nonreacting_wall_candidate
+  use insitu_fields, only: nonreacting_wall_candidate,admit_optional_fields
   use ieee_arithmetic, only: ieee_is_finite
   implicit none
   private
   public :: accumulate_wall_statistics,wall_statistics_file,finish_wall_statistics,wall_statistics_host_bytes
   public :: wall_statistics_render_values,wall_statistics_render_clock
+  public :: wall_statistics_catalog_info
   type(velocity_statistics),allocatable,save :: states(:,:,:,:)
   real(real_kind),allocatable,save :: xyz(:,:,:,:)
   logical,allocatable,save :: owned(:,:,:)
@@ -340,8 +341,11 @@ contains
     samples=metadata(9); previous_time=identity%time; last_step=int(identity%step)
   end subroutine
 
-  subroutine read_wall_moments(moments)
+  subroutine read_wall_moments(moments,download,success)
+    use commvar, only: use_gpu
     real(real_kind),allocatable,intent(out) :: moments(:,:,:,:)
+    integer(int64),optional,intent(out) :: download
+    logical,optional,intent(out) :: success
     real(real_kind),allocatable :: values(:,:,:,:)
     type(velocity_statistics) :: candidate
     type(velocity_statistics_result) :: result
@@ -350,8 +354,9 @@ contains
     call require(samples>0,'wall moments require a sample')
     allocate(values(size(owned,1),size(owned,2),size(owned,3),34*(nfields/3)), &
       moments(size(owned,1),size(owned,2),size(owned,3),3*nfields),stat=status)
-    call require(status==0,'wall scalar output allocation')
+    if(.not.admit_optional_fields(status==0,'wall scalar output allocation',success)) return
     call packed_state(values,.true.,previous_time)
+    if(present(download)) download=merge(real_bytes*size(values,kind=int64),0_int64,use_gpu)
     moments=0.e0_real_kind; all_ok=.true.
     do g=1,nfields/3
     do w=1,size(owned,3)
@@ -519,6 +524,16 @@ contains
     call require(status==0.and.closed==0,'cannot publish wall separation diagnostic')
   end subroutine
 
+  subroutine wall_statistics_catalog_info(step,time,ready,duration,window,count)
+    integer,intent(in) :: step
+    real(real_kind),intent(in) :: time
+    logical,intent(out) :: ready
+    real(real_kind),intent(out) :: duration,window(2)
+    integer(int64),intent(out) :: count
+    duration=covered_duration;window=window_saved;count=samples
+    ready=samples>0.and.last_step==step.and.previous_time==time.and.covered_duration>0
+  end subroutine
+
   subroutine wall_statistics_render_clock(step,time,duration,window)
     integer,intent(in) :: step
     real(real_kind),intent(in) :: time
@@ -529,18 +544,26 @@ contains
     duration=covered_duration; window=window_saved
   end subroutine
 
-  subroutine wall_statistics_render_values(step,time,fields)
+  subroutine wall_statistics_render_values(step,time,fields,download,success)
     use commvar, only: im,km,ia,ka,flowtype
     use parallel, only: mpileft,mpiright,mpiback,mpifront
     integer,intent(in) :: step
     real(real_kind),intent(in) :: time
     real(real_kind),allocatable,intent(out) :: fields(:,:,:,:)
+    integer(int64),optional,intent(out) :: download
+    logical,optional,intent(out) :: success
     real(real_kind),allocatable :: moments(:,:,:,:),send(:),receive(:)
-    integer :: comm,ierr,axis,n,negative(2),positive(2),status
+    integer :: comm,ierr,axis,n,max_n,negative(2),positive(2),status
+    if(present(download)) download=0
     call require(last_step==step.and.previous_time==time,'wall mean render phase mismatch')
-    call read_wall_moments(moments)
-    allocate(fields(size(owned,1),size(owned,2),size(owned,3),3*nfields+3),stat=status)
-    call require(status==0,'cannot allocate wall mean render fields')
+    call read_wall_moments(moments,download,success)
+    if(present(success)) then
+      if(.not.success) return
+    endif
+    max_n=max(size(owned,1),size(owned,2))*size(owned,3)*(3*nfields+3)
+    allocate(fields(size(owned,1),size(owned,2),size(owned,3),3*nfields+3), &
+      send(max_n),receive(max_n),stat=status)
+    if(.not.admit_optional_fields(status==0,'cannot allocate wall mean render fields/seams',success)) return
     fields(:,:,:,1:3*nfields)=moments
     fields(:,:,:,3*nfields+1)=covered_duration
     fields(:,:,:,3*nfields+2)=window_saved(1)
@@ -554,15 +577,13 @@ contains
       else
         n=size(fields,1)*size(fields,3)*size(fields,4)
       endif
-      allocate(send(n),receive(n),stat=status)
-      call require(status==0,'cannot allocate wall mean seam buffers')
       if(axis==1) then
-        send=reshape(fields(1,:,:,:),[n])
+        send(1:n)=reshape(fields(1,:,:,:),[n])
       else
-        send=reshape(fields(:,1,:,:),[n])
+        send(1:n)=reshape(fields(:,1,:,:),[n])
       endif
       if((axis==1.and.im==ia.and.profile==5).or.(axis==2.and.km==ka)) then
-        receive=send
+        receive(1:n)=send(1:n)
       else
         call MPI_Sendrecv(send,n,mpi_real_type,negative(axis),axis,receive,n,mpi_real_type, &
           positive(axis),axis,comm,MPI_STATUS_IGNORE,ierr)
@@ -570,11 +591,10 @@ contains
       call require(ierr==MPI_SUCCESS,'wall mean endpoint exchange')
       if(axis==1) then
         if(positive(axis)/=MPI_PROC_NULL.or.(im==ia.and.profile==5)) &
-          fields(im+1,:,:,:)=reshape(receive,[size(fields,2),size(fields,3),size(fields,4)])
+          fields(im+1,:,:,:)=reshape(receive(1:n),[size(fields,2),size(fields,3),size(fields,4)])
       else
-        fields(:,km+1,:,:)=reshape(receive,[size(fields,1),size(fields,3),size(fields,4)])
+        fields(:,km+1,:,:)=reshape(receive(1:n),[size(fields,1),size(fields,3),size(fields,4)])
       endif
-      deallocate(send,receive)
     enddo
     call MPI_Comm_free(comm,ierr)
     call require(ierr==MPI_SUCCESS,'wall mean communicator release')

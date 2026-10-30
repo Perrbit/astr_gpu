@@ -16,6 +16,7 @@ module insitu_sample_gpu
   public :: capture_device_sample_gpu,release_device_sampling_gpu
   public :: capture_device_channel_walls_gpu
   public :: capture_device_air5_walls_gpu
+  public :: optional_wall_capture_budget
   public :: prepare_device_planar_samples_gpu
   public :: static_sample_coordinates_gpu,sampling_geometry_device_bytes
 #ifdef ASTR_BUILD_TESTING
@@ -106,7 +107,7 @@ contains
     call checkpoint_state_require(mode==device_sampling_transport,MPI_COMM_WORLD,'device sample transport changed in session')
   end subroutine
 
-  subroutine capture_device_air5_walls_gpu(mode,coordinates,fields,host_budget,device_budget,reserve)
+  subroutine capture_device_air5_walls_gpu(mode,coordinates,fields,host_budget,device_budget,reserve,success)
     use iso_fortran_env, only: int64
     use mpi
     use checkpoint_state_io, only: checkpoint_state_require
@@ -125,6 +126,7 @@ contains
     character(*),intent(in) :: mode
     real(real_kind),device,allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
+    logical,optional,intent(out) :: success
 #ifdef ASTR_AIR5_CHEMISTRY
     integer :: neighbors(2,3),sizes(3),extent(3)
     extent=[im,jm,km]; sizes=[isize,jsize,ksize]
@@ -143,13 +145,14 @@ contains
       device_sampling_transport=mode; device_sampling_initialized=.true.
     endif
     call checkpoint_state_require(mode==device_sampling_transport,MPI_COMM_WORLD,'wall transport changed in session')
-    call capture_air5_wall_fields_gpu(q_d,x_d,dxi_d,coordinates,fields,extent,hm,jg0,MPI_COMM_WORLD,device_budget,reserve)
+    call capture_air5_wall_fields_gpu(q_d,x_d,dxi_d,coordinates,fields,extent,hm,jg0,MPI_COMM_WORLD, &
+      optional_wall_capture_budget(device_budget,present(success)),reserve,success)
 #else
     call checkpoint_state_require(.false.,MPI_COMM_WORLD,'device AIR5 walls require AIR5 chemistry build')
 #endif
   end subroutine
 
-  subroutine capture_device_channel_walls_gpu(mode,coordinates,fields,host_budget,device_budget,reserve)
+  subroutine capture_device_channel_walls_gpu(mode,coordinates,fields,host_budget,device_budget,reserve,success)
     use boundary_high_order, only: high_order_wall_enabled,high_order_adiabatic_wall_enabled
     use iso_fortran_env, only: int64
     use commvar, only: im,jm,km,ia,ja,ka,hm,numq,use_gpu,lreadgrid,difschm,conschm,flowtype, &
@@ -167,6 +170,7 @@ contains
     character(*),intent(in) :: mode
     real(real_kind),device,allocatable,intent(out) :: coordinates(:,:,:,:),fields(:,:,:,:)
     integer(int64),intent(in) :: host_budget,device_budget,reserve
+    logical,optional,intent(out) :: success
     integer :: neighbors(2,3),sizes(3),extent(3),components
     logical :: candidate
     extent=[im,jm,km]; sizes=[isize,jsize,ksize]
@@ -192,9 +196,39 @@ contains
     endif
     call checkpoint_state_require(mode==device_sampling_transport,MPI_COMM_WORLD,'wall transport changed in session')
     call capture_channel_wall_fields_gpu(q_d,x_d,dxi_d,coordinates,fields,extent,hm,ja,jg0, &
-      [const2,const5,const6,reynolds,prandtl,tempconst,tempconst1],MPI_COMM_WORLD,device_budget,reserve, &
-      lreadgrid.and..not.high_order_wall_enabled)
+      [const2,const5,const6,reynolds,prandtl,tempconst,tempconst1],MPI_COMM_WORLD, &
+      optional_wall_capture_budget(device_budget,present(success)),reserve,lreadgrid.and..not.high_order_wall_enabled,success)
   end subroutine
+
+  integer(int64) function optional_wall_capture_budget(budget,optional_source,phase) result(selected)
+#ifdef ASTR_BUILD_TESTING
+    use commvar, only: nstep
+    use parallel, only: mpirank
+    character(64) :: text
+    character(16) :: requested_phase
+    integer :: status,step,rank
+#endif
+    integer(int64),intent(in) :: budget
+    logical,intent(in) :: optional_source
+    character(*),optional,intent(in) :: phase
+    selected=budget
+#ifdef ASTR_BUILD_TESTING
+    if(.not.optional_source) return
+    call get_environment_variable('ASTR_INSITU_TEST_WALL_CAPTURE_REFUSAL',text,status=status)
+    if(status/=0) return
+    read(text,*,iostat=status) step,rank
+    if(status/=0) return
+    requested_phase='capture'
+    read(text,*,iostat=status) step,rank,requested_phase
+    if(status/=0) requested_phase='capture'
+    if(present(phase)) then
+      if(phase/=trim(requested_phase)) return
+    else
+      if(requested_phase/='capture') return
+    endif
+    if(step==nstep.and.rank==mpirank) selected=1_int64
+#endif
+  end function
 
   subroutine capture_device_sample_gpu(mode,velocity,halo,derived,host_budget,device_budget,reserve,demonstration,need_q, &
       curve_demonstration,m12_diagnostics,preview_flatplate,q_only,retained_other,retain_volume_velocity)
@@ -422,7 +456,7 @@ contains
   end subroutine
 #endif
 
-  subroutine download_wall_state_gpu(walls,fields,device_budget,reserve)
+  subroutine download_wall_state_gpu(walls,fields,device_budget,reserve,success)
     use iso_fortran_env, only: int64
     use commvar, only: im,jm,km,numq
     use mpi
@@ -431,6 +465,7 @@ contains
     integer,intent(in) :: walls(:)
     real(real_kind),intent(out),contiguous :: fields(0:,0:,:,:)
     integer(int64),intent(in) :: device_budget,reserve
+    logical,optional,intent(out) :: success
     real(real_kind),allocatable,device :: packed(:,:,:,:)
     integer(int64) :: count,free_bytes,total_bytes
     integer :: nw,status,first,nlayers
@@ -442,11 +477,12 @@ contains
       all(walls==0.or.walls==jm),MPI_COMM_WORLD,'invalid wall GPU pack shape')
     free_bytes=0; total_bytes=0
     status=cudaMemGetInfo(free_bytes,total_bytes)
-    call checkpoint_state_require(status==cudaSuccess.and.count*real_bytes<=device_budget.and. &
-      free_bytes>=count*real_bytes+max(reserve,1073741824_int64),MPI_COMM_WORLD,'wall GPU budget')
+    call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'wall GPU free-memory query')
+    if(.not.admit(count*real_bytes<=device_budget.and. &
+      free_bytes>=count*real_bytes+max(reserve,1073741824_int64),'wall GPU budget')) return
     status=0
     if(count>0) allocate(packed(im+1,km+1,nw,nlayers*numq),stat=status)
-    call checkpoint_state_require(status==0,MPI_COMM_WORLD,'wall GPU pack allocation')
+    if(.not.admit(status==0,'wall GPU pack allocation')) return
     status=cudaSuccess
     if(count>0) then
       first=walls(1)
@@ -456,6 +492,21 @@ contains
     endif
     call checkpoint_state_require(status==cudaSuccess,MPI_COMM_WORLD,'wall GPU download')
     if(allocated(packed)) deallocate(packed)
+  contains
+    logical function admit(valid,message) result(allowed)
+      logical,intent(in) :: valid
+      character(*),intent(in) :: message
+      integer :: bad,total,err
+      allowed=.true.
+      if(.not.present(success)) then
+        call checkpoint_state_require(valid,MPI_COMM_WORLD,message)
+        return
+      endif
+      bad=merge(0,1,valid)
+      call MPI_Allreduce(bad,total,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,err)
+      if(err/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,err,bad)
+      allowed=total==0;success=allowed
+    end function
   end subroutine
 
   attributes(global) subroutine wall_state_kernel(im,jm,km,nw,first,nq,nlayers,packed)

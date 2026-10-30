@@ -15,17 +15,17 @@ import shutil
 from time import perf_counter, sleep
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from image_publication import eps_output_enabled
+from catalog_examples import tgv256_products,write_catalog
 
 ROOT = Path(__file__).resolve().parents[2]
 MPI = Path('/opt/nvidia/hpc_sdk/Linux_x86_64/26.1/comm_libs/hpcx/bin/mpiexec')
-LIBRARY = Path('/home/dell/workspace/astr_dependencies/install/paraview-6.1.1-hpcx-gcc13/lib/catalyst')
 PRODUCTS = ('q_surface', 'instantaneous_streamlines')
 
 
-def prepare(case, steps, enabled, library, transport, pipeline='compatible'):
+def prepare(case, steps, enabled, library, transport, pipeline='compatible', cells=256):
     subprocess.run([sys.executable, str(ROOT/'tests/gpu_validation/prepare_tgv_case.py'),
         '--src-case', str(ROOT/'examples/Taylor_Green_Vortex'), '--dst-case', str(case),
-        '--use-gpu', 't', '--grid', '256,256,256', '--maxstep', str(steps-1),
+        '--use-gpu', 't', '--grid', ','.join([str(cells)]*3), '--maxstep', str(steps-1),
         '--feqchkpt', '1000', '--feqlist', '1' if steps==2 else '10', '--deltat', '1.d-4',
         '--lfilter', 't', '--diffterm', 't', '--scheme', '643e'], check=True)
     (case/'outdat/render').mkdir(parents=True)
@@ -37,16 +37,16 @@ def prepare(case, steps, enabled, library, transport, pipeline='compatible'):
     if enabled:
         configuration = f"""&insitu_run
  enabled=t, statistics=f, render=t, output_directory='outdat/render',
- derivative_backend='gpu', processing_backend='device', products='tgv256_demo',
+ derivative_backend='gpu', processing_backend='device', products='{'tgv256_demo' if cells==256 else 'all'}',
  postprocess_transport='{transport}',
  rendering_pipeline='{pipeline}',
- schedule_mode='steps', step_interval=1, initial_frame=f, final_frame=f,
  host_budget_bytes=17179869184, device_budget_bytes=6442450944,
  device_reserve_bytes=2147483648,
- implementation_path='{library}', pipeline_file='{ROOT/'scripts/insitu'/('tgv_pipeline.py' if pipeline=='compatible' else 'device_render_pipeline.py')}'
+ implementation_path='{library}', pipeline_file='{ROOT/'scripts/insitu/device_render_pipeline.py'}'
 /
 """
     (case/'insitu.nml').write_text(configuration)
+    write_catalog(case/'input.products.jsonl',tgv256_products(write_eps=eps_output_enabled()) if enabled else [])
 
 
 def environment(case, transport):
@@ -58,7 +58,7 @@ def environment(case, transport):
         ASTR_COMPLETE_STEP_TIMING='1', ASTR_GPU_RK_TIMING='1', ASTR_GPU_RANK_RK_TIMING='1',
         ASTR_FORCE_MPI_TOPOLOGY='2,1,1', ASTR_GPU_SYNC_MODE='explicit',
         ASTR_GPU_HALO_TRANSPORT='pinned', ASTR_GPU_PRECISION_MODE='fp64',
-        ASTR_GPU_FILTER_WORKSPACE='scalar', ASTR_GPU_BENCHMARK_NO_FIELD_IO='1')
+        ASTR_GPU_FILTER_WORKSPACE='scalar')
     if transport == 'device-aware':
         env.update(OMPI_MCA_pml='ucx', OMPI_MCA_coll='^hcoll,ucc,cuda',
             OMPI_MCA_coll_hcoll_enable='0', OMPI_MCA_osc='pt2pt', UCX_MEMTYPE_CACHE='n',
@@ -118,22 +118,26 @@ def verify(case, steps, enabled, pipeline='compatible'):
         assert not list(out.rglob('*.jpeg')) and not list(out.rglob('*.eps'))
         assert 'ASTR_INSITU_DEVICE_FRAME ' not in log
         return {}
-    frames = re.findall(r'ASTR_INSITU_DEVICE_FRAME rank=(\d+) step=(\d+) transport=(\S+)', log)
-    assert sorted((int(rank),int(step)) for rank,step,_ in frames) == [
-        (rank,step) for rank in range(2) for step in range(1,steps+1)]
     downloads = re.findall(r'ASTR_INSITU_GPU_FLOW rank=(\d+) frame_downloads=(\d+)',log)
     assert sorted(downloads)==[('0','0'),('1','0')]
-    assert len(list(out.rglob('*.jpeg'))) == 2*steps
-    assert len(list(out.rglob('*.eps'))) == (2*steps if eps_output_enabled() else 0)
+    definitions=[json.loads(line) for line in (case/'input.products.jsonl').read_text().splitlines()][1:]
+    assert {item['id'] for item in definitions}==set(PRODUCTS)
+    expected_steps=list(range(steps+1))
+    status=json.loads((out/'output/products.status.json').read_text())
+    assert all(row['state']=='active' for row in status['products']),status
+    assert len(list(out.rglob('*.jpeg'))) == 2*len(expected_steps)
+    eps=sum('eps' in item['output']['formats'] for item in definitions)*len(expected_steps)
+    assert len(list(out.rglob('*.eps'))) == eps
     resources = []
     for rank in range(2):
         render = out/'render'
         lifecycle = json.loads((render/f'lifecycle_rank{rank}.json').read_text())
-        assert lifecycle['finalized'] and [item[0] for item in lifecycle['frames']] == list(range(1,steps+1))
+        assert lifecycle['finalized']
+        assert sorted(item[0] for item in lifecycle['frames'])==sorted(expected_steps*2)
         with (render/f'resources.rank{rank:08d}.csv').open() as stream:
             identity = stream.readline().strip()
             rows = list(csv.DictReader(stream))
-        assert sum(row['stage']=='frame_after' for row in rows)==steps
+        assert sum(row['stage']=='frame_after' for row in rows)==2*len(expected_steps)
         resource = dict(rank=rank,identity=identity,
             host_increment_peak=max(int(row['host_increment_bytes']) for row in rows),
             device_increment_peak=max(int(row['device_increment_bytes']) for row in rows),
@@ -142,21 +146,29 @@ def verify(case, steps, enabled, pipeline='compatible'):
         assert resource['device_increment_peak']<=6*1024**3
         assert resource['device_free_min']>=2*1024**3
         resources.append(resource)
-        for step in range(1,steps+1):
-            record = json.loads((render/f'mesh_step{step:08d}_rank{rank}.json').read_text())
-            assert record['processing_backend']=='device' and set(record['products'])==set(PRODUCTS)
-            for product in record['products'].values():
-                status=product['image'] if isinstance(product['image'],str) else product['image']['status']
-                assert status=='published' and product['color_field']=='speed'
-                assert product['color_range']==[0.,1.]
-    for name in PRODUCTS:
-        for step in range(1,steps+1):
-            path=out/'render'/f'{name}.step{step:08d}.jpeg'
-            assert path.with_suffix('.eps').is_file() is eps_output_enabled()
+    geometry_download=0
+    for definition in definitions:
+        name=definition['id']
+        segments=list((out/'output/render_products'/name).glob('version*/segment*'))
+        assert len(segments)==1
+        segment=segments[0]
+        files=sorted(segment.glob('*.jpeg'))
+        assert [int(path.name[10:22]) for path in files]==expected_steps
+        for step in expected_steps:
+            for rank in range(2):
+                record=json.loads((segment/f'frame.step{step:012d}.rank{rank:08d}.json').read_text())
+                assert record['processing_backend']=='device' and record['product']['image']=='published'
+                assert record['definition']==definition and record['field_d2h_bytes']==0
+                geometry_download+=record['geometry_d2h_bytes']
+                if pipeline!='compatible': assert record['geometry_host_bytes']==0
+        for path in (files[0],files[-1]):
+            assert path.with_suffix('.eps').is_file()==('eps' in definition['output']['formats'])
             with Image.open(path) as image:
-                pixels = np.asarray(image.convert('RGB'))
+                pixels=np.asarray(image.convert('RGB'))
                 assert pixels.shape==(960,1280,3) and (pixels<240).any()
-    return dict(resources=resources,images=2*steps,eps=2*steps if eps_output_enabled() else 0)
+    if pipeline!='compatible': assert geometry_download==0
+    return dict(resources=resources,images=2*len(expected_steps),eps=eps,initial_state_frame=True,
+        completed_step_frames=steps,geometry_download_bytes=geometry_download)
 
 
 def directory_bytes(path):
@@ -245,9 +257,9 @@ def main():
     signal.signal(signal.SIGTERM,interrupted)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output',type=Path,required=True)
-    parser.add_argument('--executable',type=Path,default=ROOT/'build_insitu_gpu/bin/astr')
+    parser.add_argument('--executable',type=Path,default=ROOT/'build_insitu_device_render/bin/astr')
     parser.add_argument('--mpiexec',type=Path,default=MPI)
-    parser.add_argument('--library',type=Path,default=LIBRARY)
+    parser.add_argument('--library',type=Path,required=True,help='Explicit Catalyst ParaView implementation directory')
     parser.add_argument('--transport',choices=('device-aware','pinned'),default='device-aware')
     parser.add_argument('--pipelines',nargs='+',choices=('off','compatible','standard-device','direct-device'),
         help='Explicit comparison matrix; each selected entry gets a two-step preflight')

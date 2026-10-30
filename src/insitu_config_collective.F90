@@ -8,12 +8,13 @@ module insitu_config_collective
   private
   public :: read_insitu_options_collective
 contains
-  subroutine read_insitu_options_collective(filename,comm,options,ok,message)
+  subroutine read_insitu_options_collective(filename,comm,options,ok,message,native_products)
     character(*),intent(in) :: filename
     integer,intent(in) :: comm
     type(insitu_options),intent(inout) :: options
     logical,intent(out) :: ok
     character(*),intent(out) :: message
+    logical,optional,intent(in) :: native_products
     type(insitu_options) :: candidate
     logical :: parsed,flags(10),root_flags(10),same,all_same
     integer(int64) :: counts(6),root_counts(6)
@@ -32,7 +33,7 @@ contains
     ok=.false.
     call MPI_Comm_rank(comm,rank,ierr)
     call check_mpi(ierr,comm)
-    call read_insitu_options(filename,candidate,parsed,parse_message)
+    call read_insitu_options(filename,candidate,parsed,parse_message,native_products)
     local_bad=huge(local_bad)
     if(.not.parsed) local_bad=rank
     call MPI_Allreduce(local_bad,first_bad,1,MPI_INTEGER,MPI_MIN,comm,ierr)

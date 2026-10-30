@@ -82,6 +82,79 @@ def test_curved_polynomial_sixth_order_convergence(diagnostic_probe):
     assert np.all(orders > 5.8), (errors, orders.tolist())
 
 
+@pytest.mark.parametrize('ranks,split,plane,index', [(1,1,3,8),(2,1,3,8),(2,2,3,8),
+                                                   (2,3,3,8),(2,1,1,8),(4,2,1,0)])
+def test_image_mesh_keeps_all_cells_across_partitions(diagnostic_probe,ranks,split,plane,index):
+    result=subprocess.run([MPIEXEC,'--oversubscribe','--mca','coll_hcoll_enable','0','-n',str(ranks),
+        str(diagnostic_probe),str(split),'mesh',str(plane),str(index)],capture_output=True,text=True)
+    assert result.returncode==0,result.stdout+result.stderr
+    assert 'IMAGE_MESH_CELLS=256' in result.stdout
+    assert float(result.stdout.split('SLICE_DIAGNOSTIC_ERROR=')[1].split()[0])<=2e-10
+
+
+@pytest.mark.skipif(not GPU,reason='Retained device image workspace')
+@pytest.mark.parametrize('split,plane,index',[(1,3,8),(2,3,8),(3,3,8)])
+def test_image_mesh_can_be_consumed_without_field_download(diagnostic_probe,split,plane,index):
+    mpi_options=['--mca','coll_hcoll_enable','0']
+    wrapper=[]
+    if os.environ.get('ASTR_SLICE_MEMCHECK')=='1':
+        mpi_options+=['--mca','pml','ob1','--mca','btl','self,vader,tcp','--mca','osc','pt2pt',
+                      '--mca','coll','^cuda,hcoll,ucc','--mca','opal_cuda_support','0']
+        wrapper=['compute-sanitizer','--tool','memcheck','--error-exitcode','99']
+    result=subprocess.run([MPIEXEC,'--oversubscribe',*mpi_options,'-n','2',*wrapper,
+        str(diagnostic_probe),str(split),'retained-mesh',str(plane),str(index)],capture_output=True,text=True)
+    assert result.returncode==0,result.stdout+result.stderr
+    assert 'IMAGE_MESH_CELLS=256' in result.stdout
+    assert 'field_d2h_bytes=0 geometry_host_bytes=0 oracle_readback_separate=1' in result.stdout
+    assert float(result.stdout.split('SLICE_DIAGNOSTIC_ERROR=')[1].split()[0])<=2e-10
+    if wrapper:
+        assert (result.stdout+result.stderr).count('ERROR SUMMARY: 0 errors')==2
+
+
+@pytest.mark.skipif(not GPU,reason='Private image MPI device workspace')
+@pytest.mark.parametrize('transport',['pinned','device-aware'])
+def test_image_private_transport_matches_native_affine_source(diagnostic_probe,transport):
+    env=dict(os.environ)
+    options=['--mca','coll','^cuda,hcoll,ucc','--mca','osc','pt2pt']
+    if transport=='device-aware':
+        env.update(OMPI_MCA_pml='ucx',OMPI_MCA_opal_cuda_support='true',UCX_MEMTYPE_CACHE='n',
+            UCX_CUDA_COPY_ENABLE_FABRIC='no',UCX_CUDA_COPY_DMABUF='no',UCX_CUDA_IPC_ENABLE_MNNVL='no',
+            UCX_TLS='self,sm,cuda_copy,cuda_ipc')
+    else:
+        options+=['--mca','pml','ob1','--mca','btl','self,vader,tcp','--mca','opal_cuda_support','0']
+    wrapper=[]
+    if os.environ.get('ASTR_SLICE_MEMCHECK')=='1':
+        wrapper=['compute-sanitizer','--tool','memcheck','--error-exitcode','99']
+        if transport=='device-aware':
+            wrapper+=['--suppressions',str(ROOT/'tests/gpu_validation/compute_sanitizer_ucx_cuda_aware.supp.xml')]
+    result=subprocess.run([MPIEXEC,'--oversubscribe',*options,'-n','2',*wrapper,
+        str(diagnostic_probe),'3','retained-mesh','3','8',transport],env=env,capture_output=True,text=True,timeout=300)
+    assert result.returncode==0,result.stdout+result.stderr
+    assert float(result.stdout.split('SLICE_DIAGNOSTIC_ERROR=')[1].split()[0])<=2e-10
+    rows=[line for line in result.stdout.splitlines() if line.startswith('PRIVATE_MPI ')]
+    assert len(rows)==2
+    counts=[int(line.split('download=')[1].split()[0])+int(line.split('upload=')[1].split()[0]) for line in rows]
+    assert (sum(counts)>0) if transport=='pinned' else sum(counts)==0
+    if wrapper:
+        assert (result.stdout+result.stderr).count('ERROR SUMMARY: 0 errors')==2
+
+
+@pytest.mark.skipif(not GPU,reason='Private streamline device input')
+@pytest.mark.parametrize('axis',[1,2,3])
+def test_frozen_streamline_inputs_and_private_coordinate_halos(diagnostic_probe,axis):
+    wrapper=[]
+    if os.environ.get('ASTR_SLICE_MEMCHECK')=='1':
+        wrapper=['compute-sanitizer','--tool','memcheck','--error-exitcode','99']
+    result=subprocess.run([MPIEXEC,'--oversubscribe','--mca','pml','ob1','--mca','btl','self,vader,tcp',
+        '--mca','osc','pt2pt','--mca','coll','^cuda,hcoll,ucc','--mca','opal_cuda_support','0','-n','2',
+        *wrapper,str(diagnostic_probe),str(axis),'trace-input'],capture_output=True,text=True,timeout=300)
+    assert result.returncode==0,result.stdout+result.stderr
+    assert float(result.stdout.split('TRACE_INPUT_MAXABS=')[1].split()[0])<=2e-10
+    assert result.stdout.count('ASTR_RUNTIME_LINE_HALO ')==2
+    if wrapper:
+        assert (result.stdout+result.stderr).count('ERROR SUMMARY: 0 errors')==2
+
+
 @pytest.mark.skipif(not GPU,reason='Explicit GPU allocation-recovery check')
 def test_recoverable_device_allocation_allows_next_product_kernel(diagnostic_probe):
     result=subprocess.run([MPIEXEC,'--oversubscribe','--mca','coll_hcoll_enable','0','-n','2',

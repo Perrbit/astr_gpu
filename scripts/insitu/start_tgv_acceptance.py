@@ -5,6 +5,9 @@ from pathlib import Path
 import shutil
 from string import Template
 import subprocess
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+from catalog_examples import tgv32_products,write_catalog
 
 
 def prepare(output,library,enabled=True,processing_backend='host',postprocess_transport=None,
@@ -19,7 +22,7 @@ def prepare(output,library,enabled=True,processing_backend='host',postprocess_tr
     if route not in ('compatible','standard-device','direct-device') or (
             route!='compatible' and (not enabled or processing_backend!='device')):
         raise ValueError('Resident rendering requires enabled device processing')
-    pipeline=Path(__file__).resolve().parent/('tgv_pipeline.py' if route=='compatible' else 'device_render_pipeline.py')
+    pipeline=Path(__file__).resolve().parent/'device_render_pipeline.py'
     library=library.resolve(strict=True)
     if "'" in str(library) or "'" in str(pipeline):
         raise ValueError('Namelist paths cannot contain apostrophes')
@@ -35,7 +38,10 @@ def prepare(output,library,enabled=True,processing_backend='host',postprocess_tr
         content=content.replace("derivative_backend='gpu',",
             f"derivative_backend='gpu',processing_backend='device',postprocess_transport='{postprocess_transport}',"
             f"rendering_pipeline='{route}',")
+    elif enabled:
+        content=content.replace("derivative_backend='gpu',","derivative_backend='cpu',")
     (output/'insitu.nml').write_text(content)
+    write_catalog(output/'input.products.jsonl',tgv32_products() if enabled else [])
 
 
 def main():
@@ -66,7 +72,7 @@ def main():
         env.update(OMPI_MCA_pml='ucx',OMPI_MCA_coll='^hcoll,ucc,cuda',OMPI_MCA_osc='pt2pt',
             UCX_MEMTYPE_CACHE='n',UCX_CUDA_COPY_ENABLE_FABRIC='no',UCX_CUDA_COPY_DMABUF='no',
             UCX_CUDA_IPC_ENABLE_MNNVL='no',UCX_TLS='self,sm,cuda_copy,cuda_ipc')
-    elif args.postprocess_transport=='pinned':
+    elif args.postprocess_transport=='pinned' or args.processing_backend=='host':
         env.update(OMPI_MCA_pml='ob1',OMPI_MCA_btl='self,tcp',OMPI_MCA_osc='pt2pt',
             OMPI_MCA_opal_cuda_support='0',OMPI_MCA_coll_ucc_enable='0')
     launcher=args.mpiexec.absolute()

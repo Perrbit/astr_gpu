@@ -5,6 +5,7 @@
 #include "insitu_device_wall.h"
 #include "insitu_product_dispatch.h"
 #include "insitu_product_failure.h"
+#include "insitu_allocation_budget.h"
 #include "insitu_m12_products.h"
 #include <viskores/cont/ArrayCopy.h>
 #include <viskores/cont/Algorithm.h>
@@ -14,12 +15,45 @@
 #include <nvtx3/nvToolsExt.h>
 #include <cstdio>
 #include <cstdlib>
+#include <tuple>
+#include <fstream>
+#include <set>
+#include <optional>
 
 extern "C" void astr_insitu_device_allocation_preflight(std::size_t,const char*);
 extern "C" int astr_insitu_allocation_guard_active();
+extern "C" void astr_insitu_runtime_failure(const char*);
 using Real=astr::numerical_real;
 
 namespace {
+// Every operation is rank-local; the following agreement precedes any next
+// distributed tracer call. A damaged device context is never recovered here.
+struct RuntimeTraceStages {
+  MPI_Comm comm;
+  const char* id;
+  int step;
+  template<class Operation>
+  auto operator()(const char* stage,Operation operation) const -> decltype(operation()) {
+    using Result=decltype(operation());
+    std::optional<std::conditional_t<std::is_void_v<Result>,bool,Result>> result;
+    std::string error;
+    try {
+      astr_insitu::LocalAllocationRecovery local_allocations;
+#ifdef ASTR_BUILD_TESTING
+      if(const char* fault=std::getenv("ASTR_INSITU_TEST_TRACE_ALLOCATION_REFUSAL")) {
+        int rank=0;astr_insitu::trace_mpi(MPI_Comm_rank(comm,&rank));
+        if(std::string(fault)==std::string(id)+":"+std::to_string(step)+":"+std::to_string(rank)+":"+stage)
+          astr_insitu_device_allocation_preflight(std::numeric_limits<std::size_t>::max(),"runtime distributed trace test");
+      }
+#endif
+      if constexpr(std::is_void_v<Result>) {operation();result.emplace(true);}
+      else result.emplace(operation());
+    } catch(const std::exception& caught) {error=caught.what();}
+    if(astr_insitu::consensus_product_failure(comm,error)) throw astr_insitu::CollectiveTraceError(error);
+    if constexpr(!std::is_void_v<Result>) return std::move(*result);
+  }
+};
+
 struct SliceCache {
   viskores::Id3 dimensions{0,0,0},offset{0,0,0};
   int device=-1;
@@ -886,3 +920,360 @@ try {
 extern "C" void astr_insitu_device_products_release() {
   slice_cache=SliceCache{};initialized=false;
 }
+
+#ifdef ASTR_INSITU_DEVICE_RENDERING
+namespace {
+struct RuntimeTrajectoryKey {
+  std::string source,seeds;
+  std::array<double,5> integration;
+  int steps,direction;
+  bool operator<(const RuntimeTrajectoryKey& other) const {
+    return std::tie(source,seeds,integration,steps,direction)<
+      std::tie(other.source,other.seeds,other.integration,other.steps,other.direction);
+  }
+};
+struct RuntimeLineQuantity {
+  int component=0;
+  bool magnitude=false;
+  Real factor=Real(1.);
+  std::vector<int> fields;
+  bool operator<(const RuntimeLineQuantity& other) const {
+    return std::tie(component,magnitude,factor,fields)<std::tie(other.component,other.magnitude,other.factor,other.fields);
+  }
+};
+struct RuntimeLineRegion {
+  viskores::cont::DataSet data;
+  std::map<RuntimeLineQuantity,std::shared_ptr<astr_insitu::DeviceGeometryOwner>> owners;
+};
+struct RuntimeTrajectory {
+  astr_insitu::DeviceStreamlines trace;
+  std::map<std::array<double,6>,RuntimeLineRegion> regions;
+};
+struct RuntimeLines {
+  bool active=false,frozen=false;
+  Real* halo=nullptr;
+  Real* coordinates=nullptr;
+  Real* coordinate_halo=nullptr;
+  std::array<int,9> partition{};
+  int physical=0;
+  std::array<Real,6> bounds{},local_bounds{};
+  std::map<RuntimeTrajectoryKey,RuntimeTrajectory> trajectories;
+  std::set<RuntimeTrajectoryKey> metadata;
+  int integrations=0,clipped=0,scalar_builds=0,owner_reuse=0;
+} runtime_lines;
+
+struct RuntimeLineScalar : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,FieldOut);
+  using ExecutionSignature=void(_1,_2);
+  int component;bool magnitude;Real factor;
+  VISKORES_CONT explicit RuntimeLineScalar(const RuntimeLineQuantity& q):component(q.component),magnitude(q.magnitude),factor(q.factor) {}
+  VISKORES_EXEC void operator()(const astr_insitu::NativeVector& v,Real& result) const {
+    result=(magnitude?viskores::Sqrt(viskores::Dot(v,v)):v[component])*factor;
+  }
+};
+
+struct RuntimeFinalTraceMetadata : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,WholeArrayIn,FieldOut,FieldOut);
+  using ExecutionSignature=void(_1,_2,_3,_4);
+  template<class Final>
+  VISKORES_EXEC void operator()(viskores::Id particle,const Final& final,Real& status,Real& remaining) const {
+    const auto value=final.Get(particle);status=value[0];remaining=value[1];
+  }
+};
+struct RuntimeTraceCellIdentity : viskores::worklet::WorkletMapField {
+  using ControlSignature=void(FieldIn,WholeArrayIn,WholeArrayIn,FieldOut,FieldOut);
+  using ExecutionSignature=void(_1,_2,_3,_4,_5);
+  int seeds,direction;
+  VISKORES_CONT RuntimeTraceCellIdentity(int count,int mode):seeds(count),direction(mode) {}
+  template<class Indices,class Particles>
+  VISKORES_EXEC void operator()(viskores::Id cell,const Indices& indices,const Particles& particles,
+      viskores::Id& seed,viskores::Id& way) const {
+    const auto particle=particles.Get(indices.Get(2*cell));seed=particle%seeds;
+    way=direction?direction:(particle<seeds?1:-1);
+  }
+};
+
+RuntimeLineQuantity line_quantity(const astr_insitu::RuntimeProductView& view,const Real* references) {
+  RuntimeLineQuantity result;
+  for(const auto& field:view.fields) result.fields.push_back(field.first);
+  const auto& field=view.labels[1]=="geometry"?view.fields.front().second:view.labels[4];
+  if(field=="velocity_magnitude") result.magnitude=true;
+  else if(field=="velocity_y") result.component=1;
+  else if(field=="velocity_z" || field=="w_Uinf") result.component=2;
+  else if(field!="velocity_x" && field!="u_Uinf")
+    throw std::invalid_argument("Existing streamlines support velocity components or magnitude only");
+  if(field=="u_Uinf" || field=="w_Uinf") {
+    if(!std::isfinite(references[0]) || references[0]==Real(0.))
+      throw std::invalid_argument("Normalized streamline color needs a finite nonzero velocity reference");
+    result.factor=Real(1.)/references[0];
+    if(!std::isfinite(result.factor)) throw std::invalid_argument("Streamline color reference reciprocal is not representable");
+  }
+  return result;
+}
+
+RuntimeTrajectoryKey trajectory_key(const std::string& source,const std::string& seeds,const std::string& direction,
+    const int* words,const double* settings) {
+  RuntimeTrajectoryKey key;
+  key.source=source;key.seeds=seeds;std::copy_n(settings+26,5,key.integration.begin());key.steps=words[6];
+  if(direction!="forward" && direction!="backward" && direction!="both")
+    throw std::invalid_argument("Unknown explicit streamline direction");
+  key.direction=direction=="forward"?1:(direction=="backward"?-1:0);
+  return key;
+}
+
+void runtime_line_oracle(const astr_insitu::RuntimeProductView& context,const astr_insitu::DeviceGeometryView& view,
+    int fcomm,int step,std::int64_t host_budget) {
+  const char* prefix=std::getenv("ASTR_INSITU_TEST_RUNTIME_LINE_PREFIX");
+  if(!prefix || !*prefix) return;
+#ifdef ASTR_BUILD_TESTING
+  const std::uint64_t bytes=std::uint64_t(view.points)*4*sizeof(Real)+std::uint64_t(view.cells)*2*sizeof(viskores::Id);
+  if(bytes>std::uint64_t(host_budget) || bytes>64*1024*1024)
+    throw std::runtime_error("Runtime streamline validation oracle exceeds its bounded host allocation");
+  std::vector<astr_insitu::NativeVector> xyz(view.points);
+  std::vector<Real> values(view.points);
+  std::vector<viskores::Id> indices(2*view.cells);
+  if(view.points) {
+    if(cudaMemcpy(xyz.data(),view.coordinates,xyz.size()*sizeof(xyz[0]),cudaMemcpyDeviceToHost)!=cudaSuccess ||
+       cudaMemcpy(values.data(),view.scalar,values.size()*sizeof(Real),cudaMemcpyDeviceToHost)!=cudaSuccess ||
+       cudaMemcpy(indices.data(),view.connectivity,indices.size()*sizeof(viskores::Id),cudaMemcpyDeviceToHost)!=cudaSuccess)
+      throw std::runtime_error("Cannot download the explicitly requested streamline validation oracle");
+  }
+  int rank=0;astr_insitu::trace_mpi(MPI_Comm_rank(MPI_Comm_f2c(fcomm),&rank));
+  const auto path=std::string(prefix)+"."+context.id+".step"+std::to_string(step)+".rank"+std::to_string(rank)+".bin";
+  std::ofstream file(path,std::ios::binary|std::ios::out);
+  const std::uint64_t header[]={sizeof(Real),std::uint64_t(view.points),std::uint64_t(view.cells)};
+  file.write("ASTRLI01",8);file.write(reinterpret_cast<const char*>(header),sizeof(header));
+  if(!xyz.empty()) file.write(reinterpret_cast<const char*>(xyz.data()),xyz.size()*sizeof(xyz[0]));
+  if(!values.empty()) file.write(reinterpret_cast<const char*>(values.data()),values.size()*sizeof(Real));
+  if(!indices.empty()) file.write(reinterpret_cast<const char*>(indices.data()),indices.size()*sizeof(viskores::Id));
+  file.close();if(!file) throw std::runtime_error("Cannot publish the streamline validation oracle");
+  std::printf("ASTR_RUNTIME_LINE_ORACLE rank=%d id=%s step=%d oracle_download_bytes=%llu runtime_zero_readback_evidence=0\n",
+    rank,context.id.c_str(),step,static_cast<unsigned long long>(bytes));
+#else
+  throw std::invalid_argument("Runtime streamline validation oracle is unavailable in this production build");
+#endif
+}
+
+void prepare_runtime_line_bounds(const int* global,const int* extent,const int* offset,int physical,
+    Real* halo,Real* coordinate_halo,Real* coordinates) {
+  std::array<int,9> partition{};
+  std::copy_n(global,3,partition.begin());std::copy_n(extent,3,partition.begin()+3);std::copy_n(offset,3,partition.begin()+6);
+  if(runtime_lines.frozen) {
+    if(runtime_lines.halo!=halo || runtime_lines.coordinates!=coordinates || runtime_lines.coordinate_halo!=coordinate_halo ||
+        runtime_lines.partition!=partition || runtime_lines.physical!=physical)
+      throw std::logic_error("A streamline group received another frozen velocity/geometry");
+    return;
+  }
+  const viskores::Id nodes=viskores::Id(extent[0]+1)*(extent[1]+1)*(extent[2]+1);
+  auto xyz=astr_insitu::borrow_cuda_array(reinterpret_cast<astr_insitu::NativeVector*>(coordinates),nodes);
+  const auto metadata=viskores::cont::make_ArrayHandleTransform(viskores::cont::make_ArrayHandleZip(xyz,
+    viskores::cont::ArrayHandleConstant<Real>(Real(0.),nodes)),astr_insitu::ScalarDisplayMetadata{});
+  astr_insitu::DisplayMetadata initial;
+  for(int d=0;d<4;++d) {initial[2*d]=INFINITY;initial[2*d+1]=-INFINITY;}initial[8]=Real(0.);
+  const auto bounds=viskores::cont::Algorithm::Reduce(viskores::cont::DeviceAdapterTagCuda{},metadata,initial,
+    astr_insitu::MergeDisplayMetadata{});
+  astr_insitu::synchronize_device_stage("RuntimeStreamlineDomainMetadata");astr_insitu::require_device_only(xyz);
+  if(bounds[8]!=Real(0.)) throw std::runtime_error("Nonfinite streamline physical geometry");
+  for(int d=0;d<6;++d) runtime_lines.local_bounds[d]=bounds[d];
+  runtime_lines.halo=halo;runtime_lines.coordinates=coordinates;runtime_lines.coordinate_halo=coordinate_halo;
+  runtime_lines.partition=partition;runtime_lines.physical=physical;
+}
+}
+
+extern "C" void astr_insitu_runtime_line_group(int begin) {
+  astr_insitu::clear_runtime_compatible_geometry();
+  if(begin) {
+    if(runtime_lines.active) throw std::logic_error("Runtime streamline group already open");
+    runtime_lines=RuntimeLines{};runtime_lines.active=true;
+  } else {
+    int rank=0;MPI_Comm_rank(MPI_COMM_WORLD,&rank);
+    std::printf("ASTR_RUNTIME_LINE_GROUP rank=%d integrations=%d clipped_geometries=%d scalar_builds=%d owner_reuse=%d retained_after=0\n",
+      rank,runtime_lines.integrations,runtime_lines.clipped,runtime_lines.scalar_builds,runtime_lines.owner_reuse);
+    runtime_lines=RuntimeLines{};
+  }
+}
+
+extern "C" int astr_insitu_runtime_line_metadata(const char* source,const char* labels,const int* words,
+    const double* settings,int fcomm) {
+  std::string error;
+  try {
+    auto text=[&](int index) {
+      std::string result(labels+32*index,32);
+      while(!result.empty() && result.back()==' ') result.pop_back();
+      return result;
+    };
+    runtime_lines.metadata.insert(trajectory_key(source,text(7),text(9),words,settings));
+  } catch(const std::exception& caught) {error=caught.what();}
+  if(astr_insitu::consensus_product_failure(MPI_Comm_f2c(fcomm),error)) {
+    astr_insitu_runtime_failure(error.c_str());return 1;
+  }
+  return 0;
+}
+
+extern "C" int astr_insitu_render_line_product(const char* pipeline,const char* backend,const char* script,
+    int fcomm,int step,Real time,const char* id,const char* source,const char* definition,const char* directory,
+    std::int64_t version,const char* labels,const int* words,const double* settings,const int* global,const int* local,
+    const int* start,int physical,Real* halo,Real* coordinate_halo,Real* coordinates,const Real* references,
+    int provider,const Real* statistics,std::int64_t samples,std::int64_t host_budget) {
+  const auto comm=MPI_Comm_f2c(fcomm);
+  const auto started=astr_insitu::runtime_product_clock();
+  astr_insitu::RuntimeProductView context;
+  astr_insitu::DeviceMesh mesh;
+  std::string error;
+  RuntimeTrajectoryKey key{};
+  RuntimeLineQuantity quantity;
+  astr_insitu::TraceConfiguration parameters{};
+  try {
+    astr_insitu::LocalAllocationRecovery local_allocations;
+    if(!runtime_lines.active) throw std::logic_error("Runtime streamline producer needs a frozen group");
+    context=astr_insitu::runtime_product_view(id,source,definition,directory,version,labels,words,settings);
+    context.host_budget=host_budget;
+    context.statistics_provider=provider;context.samples=samples;std::copy_n(statistics,3,context.statistics.begin());
+    quantity=line_quantity(context,references);
+    key=trajectory_key(context.source,context.labels[7],context.labels[9],context.integers.data(),context.reals.data());
+    parameters={Real(key.integration[0]),Real(key.integration[1]),Real(key.integration[2]),Real(key.integration[3]),
+      Real(key.integration[4]),key.steps,key.direction};parameters.validate();
+    if(!initialized) {int argc=1;char program[]="astr-runtime-streamlines";char* args[]={program,nullptr};
+      char** argv=args;viskores::cont::Initialize(argc,argv);initialized=true;}
+    viskores::cont::GetRuntimeDeviceTracker().ForceDevice(viskores::cont::DeviceAdapterTagCuda{});
+    if(viskores::cont::cuda::internal::CudaAllocator::UsingManagedMemory())
+      viskores::cont::cuda::internal::CudaAllocator::ForceManagedMemoryOff();
+    astr_insitu::prepare_runtime_product_allocations(context,fcomm,step);
+    prepare_runtime_line_bounds(global,local,start,physical,halo,coordinate_halo,coordinates);
+  } catch(const std::exception& caught) {error=caught.what();}
+  if(astr_insitu::consensus_product_failure(comm,error)) {
+    astr_insitu_runtime_failure(error.c_str());return 1;
+  }
+  if(!runtime_lines.frozen) {
+    Real low[3],high[3],lower[3],upper[3];
+    for(int d=0;d<3;++d) {low[d]=runtime_lines.local_bounds[2*d];high[d]=runtime_lines.local_bounds[2*d+1];}
+    astr_insitu::trace_mpi(MPI_Allreduce(low,lower,3,astr_insitu::numerical_mpi_type(),MPI_MIN,comm));
+    astr_insitu::trace_mpi(MPI_Allreduce(high,upper,3,astr_insitu::numerical_mpi_type(),MPI_MAX,comm));
+    for(int d=0;d<3;++d) {runtime_lines.bounds[2*d]=lower[d];runtime_lines.bounds[2*d+1]=upper[d];}
+    runtime_lines.frozen=true;
+  }
+  try {
+    const auto seeds=astr_insitu::tgv_streamline_seeds(key.seeds,key.seeds=="sbli-layered16"?&runtime_lines.bounds:nullptr);
+    for(const auto& site:seeds) for(int d=0;d<3;++d)
+      if(site[d]<runtime_lines.bounds[2*d] || site[d]>runtime_lines.bounds[2*d+1])
+        throw std::invalid_argument("The selected existing seed layout lies outside this physical domain");
+  } catch(const std::exception& caught) {error=caught.what();}
+  if(astr_insitu::consensus_product_failure(comm,error)) {
+    astr_insitu_runtime_failure(error.c_str());return 1;
+  }
+  const viskores::Id3 extent(local[0],local[1],local[2]),offset(start[0],start[1],start[2]),all(global[0],global[1],global[2]);
+  auto found=runtime_lines.trajectories.find(key);
+  const bool integrated=found==runtime_lines.trajectories.end();
+  if(integrated) {
+    try {
+      const RuntimeTraceStages stages{comm,id,step};
+      const auto dimensions=extent+viskores::Id3(7);
+      const auto views=stages("views",[&] {
+        return std::make_pair(astr_insitu::view_component_halo(halo,dimensions),
+          physical?astr_insitu::view_component_halo(coordinate_halo,dimensions):astr_insitu::SampleVectorComponents{});
+      });
+      const auto& velocity=views.first;
+      const auto& xyz=views.second;
+      RuntimeTrajectory result;
+      result.trace=astr_insitu::trace_tgv_device(velocity,velocity,extent,offset,comm,std::uint64_t(host_budget),
+        false,0,false,false,global[0],true,physical?&xyz:nullptr,Real(1.),key.seeds,all,true,
+        key.seeds=="sbli-layered16"?&runtime_lines.bounds:nullptr,&parameters,runtime_lines.metadata.count(key)!=0,stages);
+      stages("cache",[&] {found=runtime_lines.trajectories.emplace(key,std::move(result)).first;});
+      ++runtime_lines.integrations;
+    } catch(const astr_insitu::CollectiveTraceError& caught) {
+      error=caught.what();
+    } catch(const std::exception& caught) {
+      // MPI failures or failures outside the matched local phases remain fatal.
+      std::fprintf(stderr,"Runtime distributed streamline stage failed: %s\n",caught.what());MPI_Abort(comm,1);return 1;
+    }
+  }
+  if(!error.empty()) return astr_insitu::publish_runtime_product(
+    pipeline,backend,script,fcomm,step,time,context,std::move(mesh),error,started);
+  try {
+    astr_insitu::LocalAllocationRecovery local_allocations;
+    auto& trajectory=found->second;
+    std::array<double,6> bounds{};std::copy_n(context.reals.begin()+6,6,bounds.begin());
+    auto region=trajectory.regions.find(bounds);
+    if(region==trajectory.regions.end()) {
+      RuntimeLineRegion value;
+      value.data=astr_insitu::clip_runtime_device_mesh(trajectory.trace.resident_geometry,context,2);
+      region=trajectory.regions.emplace(bounds,std::move(value)).first;++runtime_lines.clipped;
+    }
+    auto& product=region->second;
+    const bool geometry=context.labels[1]=="geometry";
+    std::vector<std::string> point_names,cell_names;
+    for(const auto& field:context.fields) point_names.push_back(field.second);
+    if(geometry) {
+      for(const char* name:{"accepted_length","termination_status","untravelled_arc_length"}) point_names.emplace_back(name);
+      cell_names={"SeedIds","IntegrationDirection"};
+    }
+    auto owner=product.owners.find(quantity);
+    if(owner==product.owners.end()) {
+      viskores::cont::DataSet data;
+      if(product.data.GetNumberOfCoordinateSystems()) {
+        data.SetCellSet(product.data.GetCellSet());data.AddCoordinateSystem(product.data.GetCoordinateSystem());
+        const auto velocity=product.data.GetPointField("velocity").GetData().AsArrayHandle<
+          viskores::cont::ArrayHandle<astr_insitu::NativeVector>>();
+        viskores::cont::ArrayHandle<Real> scalar;
+        viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});
+        invoke(RuntimeLineScalar(quantity),velocity,scalar);astr_insitu::synchronize_device_stage("RuntimeStreamlineColorScalar");
+        astr_insitu::require_device_only(velocity);astr_insitu::require_device_only(scalar);data.AddPointField("quantity",scalar);
+        if(geometry) {
+          for(const auto& field:context.fields) {
+            RuntimeLineQuantity component;component.component=field.first-2;
+            viskores::cont::ArrayHandle<Real> values;
+            if(component.component==quantity.component) values=scalar;
+            else {invoke(RuntimeLineScalar(component),velocity,values);astr_insitu::synchronize_device_stage("RuntimeTraceExportComponent");}
+            astr_insitu::require_device_only(values);data.AddPointField(field.second,values);
+          }
+          const auto particles=product.data.GetPointField("particle").GetData().AsArrayHandle<viskores::cont::ArrayHandle<viskores::Id>>();
+          const auto arc=product.data.GetPointField("accepted_length").GetData().AsArrayHandle<viskores::cont::ArrayHandle<Real>>();
+          std::vector<viskores::Vec<Real,2>> final(trajectory.trace.final_state.size());
+          for(std::size_t i=0;i<final.size();++i) final[i]={Real(trajectory.trace.final_state[i].status),
+            std::max(Real(0.),parameters.maximum_length-trajectory.trace.final_state[i][4])};
+          const auto state=viskores::cont::make_ArrayHandle(final,viskores::CopyFlag::On);
+          viskores::cont::ArrayHandle<Real> status,remaining;
+          invoke(RuntimeFinalTraceMetadata{},particles,state,status,remaining);
+          astr_insitu::synchronize_device_stage("RuntimeTraceExportTermination");
+          data.AddPointField("accepted_length",arc);data.AddPointField("termination_status",status);
+          data.AddPointField("untravelled_arc_length",remaining);
+          const auto cells=data.GetCellSet().AsCellSet<viskores::cont::CellSetSingleType<>>();
+          const auto indices=cells.GetConnectivityArray(viskores::TopologyElementTagCell{},viskores::TopologyElementTagPoint{});
+          viskores::cont::ArrayHandle<viskores::Id> seeds,directions;
+          invoke(RuntimeTraceCellIdentity(trajectory.trace.seed_count,key.direction),
+            viskores::cont::ArrayHandleIndex(cells.GetNumberOfCells()),indices,particles,seeds,directions);
+          astr_insitu::synchronize_device_stage("RuntimeTraceExportIdentity");
+          data.AddCellField("SeedIds",seeds);data.AddCellField("IntegrationDirection",directions);
+          astr_insitu::require_device_only(particles);astr_insitu::require_device_only(arc);
+          astr_insitu::require_device_only(status);astr_insitu::require_device_only(remaining);
+          astr_insitu::require_device_only(seeds);astr_insitu::require_device_only(directions);
+        }
+      }
+      auto value=std::make_shared<astr_insitu::DeviceGeometryOwner>(data,step,time,2,"quantity",false,point_names,cell_names,geometry);
+      owner=product.owners.emplace(quantity,std::move(value)).first;++runtime_lines.scalar_builds;
+    } else ++runtime_lines.owner_reuse;
+    const auto colors=geometry?nullptr:owner->second->color_display(astr_insitu::device_display_palette(context.labels[6]),false,
+      Real(context.reals[22]),Real(context.reals[23]));
+    const auto& view=owner->second->get();
+    runtime_line_oracle(context,view,fcomm,step,host_budget);
+    mesh.name="runtime_product";mesh.actor_key=context.id;mesh.owner=owner->second;
+    mesh.draw.positions=reinterpret_cast<const float*>(view.display_coordinates);
+    mesh.draw.colors=reinterpret_cast<const unsigned char*>(colors);mesh.draw.indices=view.display_connectivity;
+    mesh.draw.points=view.points;mesh.draw.cells=view.cells;mesh.draw.arity=2;mesh.draw.device=view.device;
+    std::copy(view.bounds,view.bounds+6,mesh.draw.bounds);
+    mesh.controls["actual_min"]=view.speed_range[0];mesh.controls["actual_max"]=view.speed_range[1];
+    mesh.controls["trajectory_integration_performed"]=integrated;
+    mesh.controls["trajectory_seed_count"]=trajectory.trace.seed_count;mesh.controls["trajectory_particles"]=trajectory.trace.particles;
+    mesh.controls["trajectory_control_read_bytes"]=trajectory.trace.control_read_bytes;
+    mesh.controls["trajectory_owner_query_read_bytes"]=trajectory.trace.owner_query_read_bytes;
+    for(const char* name:{"length","step_budget","domain_exit","subminimum"}) mesh.controls[std::string("termination_")+name]=0.;
+    for(std::size_t i=0;i<trajectory.trace.final_state.size();++i) {
+      const auto status=trajectory.trace.final_state[i].status;
+      const char* reason=status==astr_insitu::TraceLength?"length":(status==astr_insitu::TraceSteps?"step_budget":
+        (status==astr_insitu::Outside?"domain_exit":"subminimum"));
+      mesh.controls[std::string("termination_")+reason]+=1.;
+    }
+  } catch(const std::exception& caught) {error=caught.what();}
+  return astr_insitu::publish_runtime_product(pipeline,backend,script,fcomm,step,time,context,std::move(mesh),error,started);
+}
+#endif

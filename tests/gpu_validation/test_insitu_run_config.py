@@ -34,6 +34,86 @@ PREVIEW_VIEWS = """&streamline_views
 """
 
 
+@pytest.mark.skipif(not PROBE,reason='Set ASTR_INSITU_CONFIG_PROBE')
+def test_native_catalog_does_not_require_a_second_common_clock(tmp_path):
+    text=VALID.replace("schedule_mode='steps', step_interval=2,",'')
+    path=tmp_path/'native.nml';path.write_text(text)
+    native=subprocess.run([PROBE,str(path),'catalog'],capture_output=True,text=True,timeout=10)
+    assert native.returncode==0,native.stdout+native.stderr
+    assert 'legacy_product_count=0' in native.stdout
+    assert 'legacy_clock=1 initial=F final=F' in native.stdout
+    preview=subprocess.run([PROBE,str(path)],capture_output=True,text=True,timeout=10)
+    assert preview.returncode!=0
+
+
+@pytest.mark.skipif(not PROBE,reason='Set ASTR_INSITU_CONFIG_PROBE')
+def test_native_catalog_ignores_the_old_clock_and_second_product_list(tmp_path):
+    text=VALID.replace("schedule_mode='steps', step_interval=2,",
+        "schedule_mode='time',time_interval=0.75,initial_frame=t,final_frame=t,"
+        "product_ids='not-a-current-scene.image',product_modes='steps',product_steps=3,")
+    path=tmp_path/'native.nml';path.write_text(text)
+    native=subprocess.run([PROBE,str(path),'catalog'],capture_output=True,text=True,timeout=10)
+    assert native.returncode==0,native.stdout+native.stderr
+    assert 'legacy_product_count=0' in native.stdout
+    assert 'legacy_clock=1 initial=F final=F' in native.stdout
+
+
+@pytest.mark.skipif(not PROBE,reason='Set ASTR_INSITU_CONFIG_PROBE')
+@pytest.mark.parametrize('profile',['all','boundary_layer','m12_diagnostics'])
+def test_native_catalog_geometry_and_views_have_no_second_definition(tmp_path,profile):
+    text=VALID.replace('statistics=t','statistics=f').replace("schedule_mode='steps', step_interval=2,",
+        f"products='{profile}',processing_backend='device',derivative_backend='gpu',"
+        "rendering_pipeline='standard-device',postprocess_transport='pinned',"
+        "slice_axis='unused',slice_index=-1,slice_definition='unused',slice_origin=1,2,3,"
+        "streamline_seeds='unused',streamline_views_file='absent-preview-views.nml',"
+        "wall_mean_render=t,mean_streamline_render=t,")
+    path=tmp_path/'catalog.nml';path.write_text(text)
+    result=subprocess.run([PROBE,str(path),'catalog'],capture_output=True,text=True,timeout=10)
+    assert result.returncode==0,result.stdout+result.stderr
+    legacy=subprocess.run([PROBE,str(path)],capture_output=True,text=True,timeout=10)
+    assert legacy.returncode!=0
+
+
+@pytest.mark.skipif(not (COLLECTIVE and MPIEXEC),reason='Select the collective probe and MPI launcher')
+@pytest.mark.parametrize('ranks',[1,2,4])
+def test_native_base_configuration_is_canonical_on_every_rank(tmp_path,ranks):
+    prefix=tmp_path/'rank'
+    (tmp_path/'rank0.nml').write_text(VALID.replace("schedule_mode='steps', step_interval=2,",''))
+    for rank in range(1,ranks):
+        (tmp_path/f'rank{rank}.nml').write_text(VALID.replace("schedule_mode='steps', step_interval=2,",
+            f"schedule_mode='time',time_interval={rank},initial_frame=t,final_frame=t,"))
+    result=subprocess.run([MPIEXEC,'--mca','coll_hcoll_enable','0','--oversubscribe','-n',str(ranks),COLLECTIVE,str(prefix),'catalog'],
+        capture_output=True,text=True,timeout=20)
+    assert result.returncode==0,result.stdout+result.stderr
+    for rank in range(ranks): assert f'PASS native clock rank {rank}' in result.stdout
+
+
+@pytest.mark.skipif(not PROBE,reason='Set ASTR_INSITU_CONFIG_PROBE')
+@pytest.mark.parametrize('pipeline,transport',[('standard-device','pinned'),('direct-device','device-aware')])
+def test_native_m12_catalog_does_not_require_legacy_product_ids(tmp_path,pipeline,transport):
+    text=VALID.replace('statistics=t','statistics=f').replace('step_interval=2',
+        f"step_interval=2,products='m12_diagnostics',streamline_seeds='bl-layered256',"
+        f"processing_backend='device',derivative_backend='gpu',rendering_pipeline='{pipeline}',"
+        f"postprocess_transport='{transport}'")
+    path=tmp_path/'native.nml';path.write_text(text)
+    native=subprocess.run([PROBE,str(path),'catalog'],capture_output=True,text=True,timeout=10)
+    assert native.returncode==0,native.stdout+native.stderr
+    legacy=subprocess.run([PROBE,str(path)],capture_output=True,text=True,timeout=10)
+    assert legacy.returncode!=0
+
+
+@pytest.mark.skipif(not PROBE,reason='Set ASTR_INSITU_CONFIG_PROBE')
+def test_native_wall_chart_has_an_explicit_compatible_consumer_not_a_device_fallback(tmp_path):
+    text=VALID.replace('step_interval=2',
+        "step_interval=2,products='channel_walls',processing_backend='device',derivative_backend='gpu',"
+        "rendering_pipeline='compatible',postprocess_transport='pinned'")
+    path=tmp_path/'chart.nml';path.write_text(text)
+    native=subprocess.run([PROBE,str(path),'catalog'],capture_output=True,text=True,timeout=10)
+    assert native.returncode==0,native.stdout+native.stderr
+    legacy=subprocess.run([PROBE,str(path)],capture_output=True,text=True,timeout=10)
+    assert legacy.returncode!=0
+
+
 @pytest.mark.skipif(not PROBE, reason='Set ASTR_INSITU_CONFIG_PROBE')
 @pytest.mark.parametrize('fault', [None, 'duplicate', 'unknown', 'camera', 'up',
                                   'bounds', 'range', 'width', 'nonfinite', 'budget', 'mean'])
@@ -486,6 +566,7 @@ def test_collective_product_clocks(tmp_path,other,accepted):
     ("&insitu_run rendering_pipeline='standard-device' /", False, None),
     ("&insitu_run /", True, 'compatible'),
     (VALID.replace('render=t','render=f'), True, 'compatible'),
+    (VALID.replace('render=t','render=f').replace('statistics=t','statistics=f'), True, 'compatible'),
 ])
 def test_rendering_pipeline_options(tmp_path, content, accepted, pipeline):
     path = tmp_path / 'insitu.nml'

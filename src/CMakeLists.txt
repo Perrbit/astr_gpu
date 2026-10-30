@@ -99,6 +99,8 @@ set(ASTR_SOURCES
   index_slice_source.F90
   index_slice_provider.F90
   index_slice_archive.F90
+  insitu_catalog_render.F90
+  insitu_catalog_wall.F90
   output_lineage.F90
   output_archive.F90
   output_runtime.F90
@@ -332,6 +334,26 @@ if(ASTR_WITH_CATALYST)
         target_compile_options(astr_insitu_flying_edges PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
         target_link_libraries(astr_insitu_flying_edges PRIVATE viskores::cont viskores::worklet
           viskores::cuda viskores::filter_core viskores::filter_vector_analysis)
+        if(ASTR_WITH_INSITU_DEVICE_RENDERING)
+          # The selected minimal Viskores source build also needs native surface clipping.
+          get_filename_component(ASTR_CONTOUR_SOURCE_DIR "${ASTR_INSITU_FLYING_EDGES_SOURCE}" DIRECTORY)
+          set(ASTR_SURFACE_FILTER_SOURCES "${ASTR_CONTOUR_SOURCE_DIR}/ClipWithField.cxx"
+            "${ASTR_CONTOUR_SOURCE_DIR}/../geometry_refinement/Triangulate.cxx")
+          foreach(source IN LISTS ASTR_SURFACE_FILTER_SOURCES)
+            if(NOT EXISTS "${source}")
+              message(FATAL_ERROR "Selected Viskores source build is missing ${source}")
+            endif()
+          endforeach()
+          add_library(astr_insitu_surface_filters STATIC ${ASTR_SURFACE_FILTER_SOURCES})
+          set_source_files_properties(${ASTR_SURFACE_FILTER_SOURCES} PROPERTIES LANGUAGE CUDA)
+          set_target_properties(astr_insitu_surface_filters PROPERTIES CUDA_STANDARD 17
+            CUDA_STANDARD_REQUIRED YES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+          target_compile_definitions(astr_insitu_surface_filters PRIVATE
+            viskores_filter_contour_EXPORTS viskores_filter_geometry_refinement_EXPORTS)
+          target_compile_options(astr_insitu_surface_filters PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
+          target_link_libraries(astr_insitu_surface_filters PRIVATE viskores::cont viskores::worklet
+            viskores::cuda viskores::filter_core)
+        endif()
       endif()
     endif()
   endif()
@@ -361,14 +383,21 @@ if(ASTR_WITH_CATALYST)
     target_link_libraries(native_insitu_abi_probe PRIVATE astr_catalyst_adapter)
   endif()
   if(ASTR_WITH_INSITU_DEVICE_RENDERING)
+    target_compile_definitions(astr PRIVATE ASTR_INSITU_DEVICE_RENDERING)
     find_package(CUDAToolkit REQUIRED)
     find_package(ParaView 6.1 REQUIRED COMPONENTS RemotingViews)
-    find_package(VTK REQUIRED COMPONENTS RenderingOpenGL2 AcceleratorsVTKmCore IOCatalystConduit)
+    find_package(VTK REQUIRED COMPONENTS RenderingOpenGL2 AcceleratorsVTKmCore IOCatalystConduit
+      FiltersCore FiltersGeneral FiltersFlowPaths FiltersParallelFlowPaths)
+    target_sources(astr_catalyst_adapter PRIVATE insitu_host_products.cpp)
+    if(BUILD_TESTING)
+      set_source_files_properties(insitu_host_products.cpp PROPERTIES COMPILE_DEFINITIONS ASTR_BUILD_TESTING)
+    endif()
     set_target_properties(astr_catalyst_adapter PROPERTIES CXX_STANDARD 17)
     target_compile_definitions(astr_catalyst_adapter PRIVATE ASTR_INSITU_DEVICE_RENDERING)
     target_include_directories(astr_catalyst_adapter PRIVATE ../src_gpu ${CUDAToolkit_INCLUDE_DIRS})
     target_link_libraries(astr_catalyst_adapter PRIVATE VTK::RenderingOpenGL2
-      VTK::AcceleratorsVTKmCore VTK::IOCatalystConduit ParaView::RemotingViews CUDA::cudart)
+      VTK::AcceleratorsVTKmCore VTK::IOCatalystConduit ParaView::RemotingViews CUDA::cudart
+      VTK::FiltersCore VTK::FiltersGeneral VTK::FiltersFlowPaths VTK::FiltersParallelFlowPaths)
     vtk_module_autoinit(TARGETS astr_catalyst_adapter MODULES VTK::RenderingOpenGL2)
     # Python's narrow control bridge resolves only these exported local entry points.
     set_target_properties(astr PROPERTIES ENABLE_EXPORTS YES)
@@ -388,6 +417,14 @@ if(ASTR_WITH_CATALYST)
     target_compile_options(astr_insitu_device_products PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
     target_link_libraries(astr_insitu_device_products PRIVATE astr_catalyst_adapter
       viskores::cont viskores::worklet viskores::cuda viskores::filter_core MPI::MPI_C)
+    if(ASTR_WITH_INSITU_DEVICE_RENDERING)
+      if(TARGET astr_insitu_surface_filters)
+        target_link_libraries(astr_insitu_device_products PRIVATE astr_insitu_surface_filters)
+      else()
+        target_link_libraries(astr_insitu_device_products PRIVATE
+          viskores::filter_contour viskores::filter_geometry_refinement)
+      endif()
+    endif()
     if(TARGET astr_insitu_flying_edges)
       target_link_libraries(astr_insitu_device_products PRIVATE astr_insitu_flying_edges)
     else()
@@ -398,6 +435,20 @@ if(ASTR_WITH_CATALYST)
       target_compile_definitions(astr_insitu_device_products PRIVATE ASTR_INSITU_DEVICE_RENDERING)
     endif()
     target_link_libraries(astr PRIVATE astr_insitu_device_products)
+    if(BUILD_TESTING AND ASTR_WITH_INSITU_DEVICE_RENDERING)
+      find_package(Python3 REQUIRED COMPONENTS Development.Embed)
+      add_executable(insitu_runtime_plane_probe EXCLUDE_FROM_ALL ../tests/gpu_validation/insitu_runtime_plane_probe.cu)
+      set_target_properties(insitu_runtime_plane_probe PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED YES
+        CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+      target_include_directories(insitu_runtime_plane_probe PRIVATE . ../src_gpu)
+      target_compile_options(insitu_runtime_plane_probe PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
+      target_link_libraries(insitu_runtime_plane_probe PRIVATE astr_insitu_device_products
+        viskores::cont viskores::worklet viskores::cuda MPI::MPI_C Python3::Python)
+      if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # Match the existing wall probe: retain Python for ParaView's module DSOs.
+        target_link_options(insitu_runtime_plane_probe PRIVATE "LINKER:--no-as-needed")
+      endif()
+    endif()
   endif()
   if(BUILD_TESTING)
     if(ASTR_BUILD_INSITU_DEVICE_PROBES)
@@ -501,7 +552,10 @@ if(ASTR_WITH_CATALYST)
         target_include_directories(insitu_device_streamlines_probe PRIVATE . ../src_gpu)
         # Numerical component probe only; production device products keep their normal optimization.
         target_compile_options(insitu_device_streamlines_probe PRIVATE
-          "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>" "$<$<COMPILE_LANGUAGE:CUDA>:-Xptxas=-O1>")
+          "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
+        if(NOT CMAKE_CUDA_FLAGS MATCHES "--Ofast-compile=max")
+          target_compile_options(insitu_device_streamlines_probe PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:-Xptxas=-O1>")
+        endif()
         target_link_libraries(insitu_device_streamlines_probe PRIVATE
           viskores::cont viskores::worklet viskores::cuda MPI::MPI_C)
         add_executable(insitu_curve_inverse_probe EXCLUDE_FROM_ALL
@@ -1299,6 +1353,14 @@ install(FILES
   ../scripts/output/input.output.air5.derived.example
   ../scripts/output/input.products.tgv.example.jsonl
   ../scripts/output/input.products.air5.example.jsonl
+  ../scripts/output/input.products.tgv.images.example.jsonl
+  ../scripts/output/input.products.tgv.geometry.example.jsonl
+  ../scripts/output/input.insitu.tgv.host.example
+  ../scripts/output/input.products.channel.walls.example.jsonl
+  ../scripts/output/input.products.channel.wall-charts.example.jsonl
+  ../scripts/output/input.products.sbli.midspan.example.jsonl
+  ../scripts/output/input.products.m12.short.example.jsonl
+  ../scripts/output/RUNTIME_PRODUCTS.md
   ../scripts/output/INDEX_SLICE_ARCHIVES.md
   ../scripts/insitu/product_catalog.py
   ../scripts/insitu/slice_archive.py
@@ -1312,10 +1374,16 @@ if(ASTR_WITH_CATALYST)
     ../scripts/insitu/egl_identity.py
     ../scripts/insitu/image_publication.py
     ../scripts/insitu/product_dispatch.py
+    ../scripts/insitu/catalog_examples.py
+    ../scripts/insitu/start_tgv_acceptance.py
     DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/insitu
     COMPONENT InsituTools)
+  install(FILES ../scripts/insitu/presets/tgv32/controller ../scripts/insitu/presets/tgv32/input.tgv
+    ../scripts/insitu/presets/tgv32/input.output ../scripts/insitu/presets/tgv32/insitu.nml.in
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/insitu/presets/tgv32 COMPONENT InsituTools)
   if(ASTR_WITH_INSITU_DEVICE_RENDERING)
     install(FILES ../scripts/insitu/device_render_pipeline.py ../scripts/insitu/streamline_preview.py
+      ../scripts/insitu/runtime_products.py ../scripts/insitu/runtime_geometry.py ../scripts/insitu/sbli_products.py
       DESTINATION ${CMAKE_INSTALL_DATADIR}/astr/insitu
       COMPONENT InsituTools)
   endif()

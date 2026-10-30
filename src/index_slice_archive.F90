@@ -3,6 +3,7 @@ module index_slice_archive
   use iso_fortran_env, only: int64,real64
   use iso_c_binding, only: c_int,c_char,c_int64_t,c_double,c_size_t,c_null_char
   use astr_precision, only: real_kind,real_bytes
+  use astr_precision_mpi, only: mpi_real_type
   use commvar, only: ia,ja,ka,numq,nondimen,roinf,uinf,vinf,winf,pinf,tinf,ref_den,ref_vel,ref_tem,ref_len,ref_tim,ref_miu
   use insitu_catalog, only: configure_catalog_watch,poll_catalog_watch,write_catalog_status
   use insitu_product_schedule, only: runtime_product_state,runtime_catalog_count,runtime_catalog_state, &
@@ -17,6 +18,7 @@ module index_slice_archive
   implicit none
   private
   public :: configure_index_slices,observe_index_slices
+  public :: runtime_product_segment,refresh_runtime_product_status,runtime_catalog_changed
   type :: saved_frame
     character(40) :: file=''
     type(checkpoint_state_identity) :: identity
@@ -25,11 +27,12 @@ module index_slice_archive
     integer(int64) :: version=-1,request=-1
     character(:),allocatable :: path
     type(saved_frame),allocatable :: frames(:)
-    logical :: geometry=.false.
+    logical :: geometry=.false.,csv_started=.false.
   end type
   type(archive_segment),allocatable,save :: segments(:)
   character(:),allocatable,save :: archive_root,status_path,status_root
   logical,save :: configured=.false.,suppressed=.false.,status_root_ready=.false.
+  logical,save :: control_changed=.false.
   interface
     integer(c_int) function ensure_directory(path) bind(C,name='astr_index_slice_directory')
       import c_char,c_int
@@ -65,6 +68,27 @@ module index_slice_archive
     end function
   end interface
 contains
+  subroutine geometry_source_c(ids,count,references,system,units) bind(C,name='astr_insitu_runtime_geometry_source')
+    integer(c_int),intent(in) :: ids(*)
+    integer(c_int),value :: count
+    real(c_double),intent(out) :: references(12)
+    character(c_char),intent(out) :: system(*),units(*)
+    character(16) :: unit_system
+    character(32) :: unit
+    integer :: i,j
+    unit_system='dimensionless'
+    if(.not.nondimen) unit_system='si'
+    references=real([roinf,uinf,vinf,winf,pinf,tinf,ref_den,ref_vel,ref_tem,ref_len,ref_tim,ref_miu],real64)
+    do j=1,len(unit_system)
+      system(j)=unit_system(j:j)
+    enddo
+    do i=1,count
+      unit=catalog_quantity_units(ids(i),unit_system)
+      do j=1,len(unit)
+        units((i-1)*len(unit)+j)=unit(j:j)
+      enddo
+    enddo
+  end subroutine
   subroutine configure_index_slices(root,catalog,interval,restoring,no_field_io)
     character(*),intent(in) :: root,catalog
     integer(int64),intent(in) :: interval
@@ -81,6 +105,7 @@ contains
     type(checkpoint_state_identity),intent(in) :: identity
     type(runtime_product_state) :: state
     type(catalog_product) :: cached_definition
+    type(catalog_product) :: selection
     type(archive_segment),allocatable :: expanded(:)
     real(real_kind),allocatable :: values(:,:),xyz(:,:)
     real(real_kind) :: window(2),measure,compute_seconds
@@ -93,10 +118,12 @@ contains
     call MPI_Comm_rank(MPI_COMM_WORLD,rank,err);call mpi_ok(err)
     if(.not.configured.or.suppressed) return
     cached=.false.;cached_source=-1
+    control_changed=.false.
     phase_started=insitu_clock()
     call poll_catalog_watch(identity%step,real(identity%time,real64),[ia,ja,ka],numq,MPI_COMM_WORLD,changed,update_message)
     call report_insitu_timing('index_slice_catalog',phase_started,int(identity%step))
     dirty=changed.or.len(update_message)>0
+    control_changed=changed
     if(rank==0.and.len(update_message)>0) print '(a)','ASTR_CATALOG '//update_message
     n=runtime_catalog_count()
     if(n>size(segments)) then
@@ -106,6 +133,8 @@ contains
     do p=1,n
       call runtime_catalog_state(p,state)
       if(state%status/=runtime_active.and.state%status/=runtime_waiting) cycle
+      if(state%definition%view%channel/='data') cycle
+      if(state%definition%view%kind/='slice'.and.state%definition%view%kind/='probe') cycle
       call slice_source_info(state%definition,source,ready,ok,window,measure,count,message)
       if(.not.ok) then
         call runtime_catalog_reject(p,trim(message));dirty=.true.;cycle
@@ -127,14 +156,24 @@ contains
       else
         if(allocated(values)) deallocate(values)
         if(allocated(xyz)) deallocate(xyz)
-        call prepare_index_slice(state%definition,source,count,values,xyz,first,extent,ok,message, &
+        selection=state%definition
+        if(selection%view%kind=='probe') then
+          selection%axis=1;selection%index=selection%ranges(1,1)
+        endif
+        call prepare_index_slice(selection,source,count,values,xyz,first,extent,ok,message, &
           workspace,download,exchange,compute_seconds)
         cached=ok
         if(cached) then
           cached_definition=state%definition;cached_source=source
         endif
       endif
-      if(ok) call write_product(p,state,identity,values,xyz,first,extent,window,measure,count,ok,message)
+      if(ok) then
+        if(state%definition%view%kind=='probe') then
+          call write_probe(p,state,identity,values,xyz,window,measure,count,ok,message)
+        else
+          call write_product(p,state,identity,values,xyz,first,extent,window,measure,count,ok,message)
+        endif
+      endif
       if(ok) then
         call runtime_catalog_success(p,identity%step,real(identity%time,real64))
         write(*,'(a,i0,a,a,a,i0,a,i0,a,i0,a,i0,a,es16.8,a,l1)') &
@@ -158,26 +197,44 @@ contains
     endif
   end subroutine
 
-  subroutine write_product(index,state,identity,values,xyz,first,extent,window,measure,count,ok,message)
-    integer,intent(in) :: index,first(3),extent(3)
-    type(runtime_product_state),intent(in) :: state
+  logical function runtime_catalog_changed() result(changed)
+    changed=control_changed
+  end function
+
+  subroutine refresh_runtime_product_status(identity)
     type(checkpoint_state_identity),intent(in) :: identity
-    real(real_kind),intent(in) :: values(:,:),xyz(:,:),window(2),measure
-    integer(int64),intent(in) :: count
+    logical :: ok
+    call write_catalog_status(status_path,identity%step,real(identity%time,real64),MPI_COMM_WORLD,'',ok)
+  end subroutine
+
+  subroutine runtime_product_segment(index,state,path,ok,message)
+    integer,intent(in) :: index
+    type(runtime_product_state),intent(in) :: state
+    character(:),allocatable,intent(out) :: path
     logical,intent(out) :: ok
     character(*),intent(out) :: message
-    type(saved_frame),allocatable :: frames(:)
+    path=''
+    call begin_product_segment(index,state,ok,message)
+    if(ok) path=segments(index)%path
+  end subroutine
+
+  subroutine begin_product_segment(index,state,ok,message)
+    integer,intent(in) :: index
+    type(runtime_product_state),intent(in) :: state
+    logical,intent(out) :: ok
+    character(*),intent(out) :: message
     character(c_char) :: path_buffer(4096),errors(256)
-    character(:),allocatable :: root,names,units,temporary,target,provenance,system,provider
-    character(64) :: version,frame
-    character(256) :: description
-    integer :: status,rank,err,i,n,axes(2),dimensions(2),offset(2),local_extent(2),bounds(2,3),d
-    real(real64) :: clock(3),references(12)
-    real(8) :: phase_started
+    character(:),allocatable :: root
+    character(64) :: version
+    integer :: status,rank,err,i,n
     call MPI_Comm_rank(MPI_COMM_WORLD,rank,err);call mpi_ok(err)
     ok=.false.;message=''
     write(version,'("version",i12.12)') state%version
     root=archive_root//'/'//state%definition%id//'/'//trim(version)
+    if(state%definition%view%kind=='probe') root=status_root//'/monitor_products/'//state%definition%id//'/'//trim(version)
+    if(state%definition%view%kind=='wall_curve') root=status_root//'/wall_products/'//state%definition%id//'/'//trim(version)
+    if(state%definition%view%channel=='image') root=status_root//'/render_products/'//state%definition%id//'/'//trim(version)
+    if(state%definition%view%channel=='geometry') root=status_root//'/geometry_products/'//state%definition%id//'/'//trim(version)
     if(segments(index)%version/=state%version.or.segments(index)%request/=state%consumed_request) then
       path_buffer=c_null_char;status=0
       if(rank==0) status=new_segment(root//c_null_char,path_buffer,size(path_buffer,kind=c_size_t))
@@ -196,6 +253,7 @@ contains
         segments(index)%path(i:i)=path_buffer(i)
       enddo
       segments(index)%version=state%version;segments(index)%geometry=.false.
+      segments(index)%csv_started=.false.
       segments(index)%request=state%consumed_request
       if(allocated(segments(index)%frames)) deallocate(segments(index)%frames)
       allocate(segments(index)%frames(0))
@@ -207,6 +265,128 @@ contains
         message='cannot save the effective product definition';return
       endif
     endif
+    ok=.true.
+  end subroutine
+
+  subroutine write_probe(index,state,identity,values,xyz,window,measure,count,ok,message)
+    integer,intent(in) :: index
+    type(runtime_product_state),intent(in) :: state
+    type(checkpoint_state_identity),intent(in) :: identity
+    real(real_kind),intent(in) :: values(:,:),xyz(:,:),window(2),measure
+    integer(int64),intent(in) :: count
+    logical,intent(out) :: ok
+    character(*),intent(out) :: message
+    real(real_kind) :: local(size(values,2)+3),global(size(values,2)+3)
+    real(real64) :: recorded(6)
+    character(:),allocatable :: header,line,filename,system,provider
+    character(32) :: field_unit
+    character(32) :: number
+    real(real64) :: references(12)
+    integer :: rank,err,status,closed,unit,i,owned,total
+    real(8) :: started
+    call MPI_Comm_rank(MPI_COMM_WORLD,rank,err);call mpi_ok(err)
+    ok=.false.;message='';local=0;owned=size(values,1)
+    call MPI_Allreduce(owned,total,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,err);call mpi_ok(err)
+    if(total/=1) then
+      message='a grid-node probe requires exactly one output owner';return
+    endif
+    if(owned==1) local=[xyz(:,1),values(1,:)]
+    call MPI_Reduce(local,global,size(local),mpi_real_type,MPI_SUM,0,MPI_COMM_WORLD,err);call mpi_ok(err)
+    call begin_product_segment(index,state,ok,message)
+    if(.not.ok) return
+    started=insitu_clock();status=0
+    if(rank==0) then
+      filename=segments(index)%path//'/samples.csv'
+      if(segments(index)%csv_started) then
+        open(newunit=unit,file=filename,status='old',position='append',action='write',iostat=status)
+      else
+        open(newunit=unit,file=filename,status='new',action='write',iostat=status)
+      endif
+      if(status==0) then
+        if(.not.segments(index)%csv_started) then
+          write(number,'(i0)') real_bytes
+          line='# phase=completed_step; source='//state%definition%source//'; source_bytes='//trim(number)
+          if(len(state%definition%statistics_source)>0) &
+            line=line//'; statistics_source='//state%definition%statistics_source
+          write(unit,'(a)',iostat=status) line
+          system='dimensionless'
+          if(.not.nondimen) system='si'
+          line='# unit_system='//system
+          do i=1,size(state%definition%fields)
+            block
+              use insitu_run_config, only: catalog_field_names
+              field_unit=catalog_quantity_units(state%definition%fields(i),system)
+              line=line//'; '//trim(catalog_field_names(state%definition%fields(i)))//'='//trim(field_unit)
+            end block
+          enddo
+          if(status==0) write(unit,'(a)',iostat=status) line
+          provider='not_applicable'
+          if(state%definition%source/='instantaneous') then
+            provider='velocity-time'
+            if(count>0) provider='solver-samples'
+          endif
+          if(status==0) write(unit,'(a)',iostat=status) '# statistics_provider='//provider
+          references=real([roinf,uinf,vinf,winf,pinf,tinf,ref_den,ref_vel,ref_tem,ref_len,ref_tim,ref_miu],real64)
+          line='# reference_state[rhoinf,uinf,vinf,winf,pinf,tinf,ref_den,ref_vel,ref_tem,ref_len,ref_tim,ref_miu]='
+          do i=1,size(references)
+            write(number,'(es26.17e3)') references(i)
+            if(i>1) line=line//','
+            line=line//trim(adjustl(number))
+          enddo
+          if(status==0) write(unit,'(a)',iostat=status) line
+          header='step,time,x,y,z,window_start,window_end,covered_duration,sample_count'
+          do i=1,size(state%definition%fields)
+            block
+              use insitu_run_config, only: catalog_field_names
+              header=header//','//trim(catalog_field_names(state%definition%fields(i)))
+            end block
+          enddo
+          if(status==0) write(unit,'(a)',iostat=status) header
+        endif
+        write(number,'(i0)') identity%step;line=trim(number)
+        recorded=[real(identity%time,real64),real(global(1:3),real64),real(window,real64)]
+        do i=1,size(recorded)
+          write(number,'(es26.17e3)') recorded(i)
+          line=line//','//trim(adjustl(number))
+        enddo
+        write(number,'(es26.17e3)') real(measure,real64);line=line//','//trim(adjustl(number))
+        write(number,'(i0)') count;line=line//','//trim(number)
+        do i=4,size(global)
+          write(number,'(es26.17e3)') real(global(i),real64);line=line//','//trim(adjustl(number))
+        enddo
+        if(status==0) write(unit,'(a)',iostat=status) line
+        close(unit,iostat=closed)
+        if(closed/=0) status=closed
+      endif
+    endif
+    call MPI_Bcast(status,1,MPI_INTEGER,0,MPI_COMM_WORLD,err);call mpi_ok(err)
+    ok=status==0
+    if(ok) then
+      segments(index)%csv_started=.true.
+    else
+      message='probe CSV write/close failed'
+    endif
+    call report_insitu_timing('runtime_probe_csv',started,int(identity%step))
+  end subroutine
+
+  subroutine write_product(index,state,identity,values,xyz,first,extent,window,measure,count,ok,message)
+    integer,intent(in) :: index,first(3),extent(3)
+    type(runtime_product_state),intent(in) :: state
+    type(checkpoint_state_identity),intent(in) :: identity
+    real(real_kind),intent(in) :: values(:,:),xyz(:,:),window(2),measure
+    integer(int64),intent(in) :: count
+    logical,intent(out) :: ok
+    character(*),intent(out) :: message
+    type(saved_frame),allocatable :: frames(:)
+    character(:),allocatable :: names,units,temporary,target,provenance,system,provider
+    character(64) :: frame
+    character(256) :: description
+    integer :: status,i,n,axes(2),dimensions(2),offset(2),local_extent(2),bounds(2,3),d
+    real(real64) :: clock(3),references(12)
+    real(8) :: phase_started
+    call begin_product_segment(index,state,ok,message)
+    if(.not.ok) return
+    ok=.false.
     bounds=int(state%definition%ranges);bounds(:,state%definition%axis)=int(state%definition%index)
     n=0
     do d=1,3

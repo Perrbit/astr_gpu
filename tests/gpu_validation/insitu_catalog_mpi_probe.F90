@@ -29,6 +29,28 @@ program insitu_catalog_mpi_probe
   call poll_catalog_watch(1_int64,.001_real64,[2250,260,480],5,MPI_COMM_WORLD,updated,message)
   call require(updated,'initial file was not applied')
   call runtime_catalog_state(1,state)
+  if(mode=='geometry') then
+    call require(state%version==1.and.state%definition%view%channel=='geometry','geometry channel differs')
+    call require(state%definition%view%format=='vtk-xml'.and.state%definition%view%formats==0,'geometry format differs')
+    call require(all(state%definition%fields==[2,3,4,22]),'geometry fields differ')
+    call require(state%definition%view%isovalue==.25_real64.and.all(state%definition%view%camera==0), &
+      'geometry extraction or absent display differs')
+    call catalog_watch_counts(reads,checks)
+    if(rank/=0) call require(reads==0.and.checks==0,'nonroot reparsed geometry')
+    print '(a,i0,a)','RANK ',rank,' GEOMETRY_OK'
+    call MPI_Finalize(err)
+    stop
+  endif
+  if(mode=='visual') then
+    call require(state%version==1.and.state%definition%view%kind=='q_surface','visual kind differs')
+    call require(state%definition%view%camera(1)==150.and.state%definition%view%bounds(2)==300,'visual vectors differ')
+    call require(state%definition%view%formats==1.and.state%definition%view%isovalue==.25_real64,'extraction differs')
+    call catalog_watch_counts(reads,checks)
+    if(rank/=0) call require(reads==0.and.checks==0,'nonroot reparsed the visual record')
+    print '(a,i0,a)','RANK ',rank,' VISUAL_OK'
+    call MPI_Finalize(err)
+    stop
+  endif
   call require(state%version==1.and.state%definition%index==20,'initial normalized metadata differs')
   call runtime_catalog_success(1,1_int64,.001_real64)
   if(mode=='feedback') then

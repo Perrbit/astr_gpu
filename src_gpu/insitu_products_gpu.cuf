@@ -10,11 +10,280 @@ module insitu_products_gpu
   public :: render_device_sample_gpu
   public :: render_device_walls_gpu
   public :: render_device_plane_gpu
+  public :: begin_catalog_streamlines_gpu,end_catalog_streamlines_gpu,catalog_streamline_pointers_gpu
+  public :: catalog_wall_gpu_supported,begin_catalog_wall_gpu,end_catalog_wall_gpu,catalog_wall_line_gpu
+  public :: catalog_sbli_wall_gpu_supported,capture_catalog_sbli_wall_gpu
+  real(real_kind),device,allocatable,save :: catalog_velocity(:,:),catalog_velocity_halo(:,:,:,:),catalog_coordinate_halo(:,:,:,:)
+  real(real_kind),device,allocatable,save :: catalog_wall_coordinates(:,:,:,:),catalog_wall_fields(:,:,:,:),catalog_wall_means(:,:,:,:)
+  logical,save :: catalog_transport_open=.false.
+  logical,save :: sbli_wall_grid_checked=.false.,sbli_wall_grid_rectilinear=.false.
 #ifdef ASTR_BUILD_TESTING
   public :: begin_preview_state_check,end_preview_state_check
   real(real_kind),allocatable,device,save :: preview_flow_d(:,:,:,:)
 #endif
 contains
+  logical function catalog_sbli_wall_gpu_supported() result(supported)
+    use case_capability_gpu, only: gpu_sbli_insitu_supported
+    use precision_mode_gpu, only: gpu_precision_mode,GPU_PRECISION_NATIVE
+    use halo_transport_gpu, only: halo_transport_idle
+    use halo_exchange_gpu, only: solution_pipeline_active
+    use boundary_gpu, only: wall_blowing_enabled_gpu
+#ifdef ASTR_INSITU_DEVICE_PRODUCTS
+    use commvar, only: im,jm,km,hm
+    use commarray, only: x
+    use ieee_arithmetic, only: ieee_is_finite
+    integer :: i,j,k
+#endif
+    supported=.false.
+#ifdef ASTR_INSITU_DEVICE_PRODUCTS
+    if(.not.gpu_sbli_insitu_supported().or.hm<3.or.gpu_precision_mode/=GPU_PRECISION_NATIVE.or. &
+        .not.halo_transport_idle().or.solution_pipeline_active.or.wall_blowing_enabled_gpu) return
+    if(.not.sbli_wall_grid_checked) then
+      ! The unchanged legacy kernel assumes increasing, separable Cartesian axes.
+      sbli_wall_grid_rectilinear=all(x(1:im,0,0,1)>x(0:im-1,0,0,1)).and. &
+        all(x(0,1:jm,0,2)>x(0,0:jm-1,0,2)).and.all(x(0,0,1:km,3)>x(0,0,0:km-1,3))
+      do k=0,km
+      do j=0,jm
+      do i=0,im
+        sbli_wall_grid_rectilinear=sbli_wall_grid_rectilinear.and.all(ieee_is_finite(x(i,j,k,:))).and. &
+          x(i,j,k,1)==x(i,0,0,1).and.x(i,j,k,2)==x(0,j,0,2).and.x(i,j,k,3)==x(0,0,k,3)
+      enddo
+      enddo
+      enddo
+      sbli_wall_grid_checked=.true.
+    endif
+    supported=sbli_wall_grid_rectilinear
+#endif
+  end function
+
+  subroutine capture_catalog_sbli_wall_gpu(mode,step,t,host_budget,device_budget,reserve,values,download,ok)
+    use commvar, only: im
+    use insitu_fields, only: admit_optional_fields
+#ifdef ASTR_INSITU_DEVICE_PRODUCTS
+    use insitu_sbli_gpu, only: capture_sbli_wall_curves_gpu
+#endif
+    character(*),intent(in) :: mode
+    integer,intent(in) :: step
+    real(real_kind),intent(in) :: t
+    integer(int64),intent(in) :: host_budget,device_budget,reserve
+    real(real_kind),allocatable,intent(out) :: values(:,:)
+    integer(int64),intent(out) :: download
+    logical,intent(out) :: ok
+#ifdef ASTR_INSITU_DEVICE_PRODUCTS
+    real(real_kind),allocatable :: wall(:,:)
+    real(real_kind) :: bounds(6)
+    integer :: status
+    download=0
+    call capture_sbli_wall_curves_gpu(mode,step,t,host_budget,device_budget,reserve,wall,bounds,ok)
+    if(.not.ok) then
+      call end_catalog_wall_gpu()
+      return
+    endif
+    allocate(values(6,size(wall,2)),stat=status)
+    if(.not.admit_optional_fields(status==0,'SBLI final curve allocation',ok)) then
+      call end_catalog_wall_gpu()
+      return
+    endif
+    values(1,:)=wall(1,:);values(2,:)=bounds(3);values(3,:)=.5_real_kind*(bounds(5)+bounds(6))
+    values(4:6,:)=wall(2:4,:)
+    download=int(real_bytes,int64)*4*(im+1)
+#else
+    allocate(values(6,0));download=0;ok=.false.
+#endif
+  end subroutine
+
+  logical function catalog_wall_gpu_supported() result(supported)
+    use commvar, only: ia,ja,ka,im,jm,km,hm,numq,ndims,flowtype,lreadgrid,conschm
+    use insitu_fields, only: catalog_wall_fields_supported
+    use boundary_high_order, only: high_order_wall_enabled
+    use precision_mode_gpu, only: gpu_precision_mode,GPU_PRECISION_NATIVE
+    use halo_transport_gpu, only: halo_transport_idle
+    use halo_exchange_gpu, only: solution_pipeline_active
+    logical :: candidate
+    supported=catalog_wall_fields_supported().and.hm>=3.and.trim(conschm)=='643e'.and. &
+      ndims==3.and.gpu_precision_mode==GPU_PRECISION_NATIVE.and.halo_transport_idle().and..not.solution_pipeline_active
+    if(numq==11) then
+      supported=supported.and.all([ia,ja,ka]==16)
+    else
+      candidate=(.not.lreadgrid.and.trim(flowtype)=='channel'.and.all([ia,ja,ka]==16)).or. &
+        (lreadgrid.and.trim(flowtype)=='tgv'.and.all([ia,ja,ka]==32))
+      if(high_order_wall_enabled) candidate=trim(flowtype)=='channel'.and.max(ia,ja,ka)<=128
+      supported=supported.and.candidate
+    endif
+  end function
+
+  subroutine begin_catalog_wall_gpu(mode,mean,duration,host_budget,device_budget,reserve,ok)
+    use commvar, only: numq
+    use insitu_sample_gpu, only: capture_device_channel_walls_gpu,capture_device_air5_walls_gpu
+    use insitu_wall_statistics_gpu, only: sample_wall_statistics_gpu_means
+    character(*),intent(in) :: mode
+    logical,intent(in) :: mean
+    real(real_kind),intent(in) :: duration
+    integer(int64),intent(in) :: host_budget,device_budget,reserve
+    logical,intent(out) :: ok
+    integer(int64) :: retained
+    if(numq==11) then
+      call capture_device_air5_walls_gpu(mode,catalog_wall_coordinates,catalog_wall_fields,host_budget,device_budget,reserve,ok)
+    else
+      call capture_device_channel_walls_gpu(mode,catalog_wall_coordinates,catalog_wall_fields,host_budget,device_budget,reserve,ok)
+    endif
+    if(.not.ok) then
+      call end_catalog_wall_gpu()
+      return
+    endif
+    if(mean) then
+      retained=real_bytes*(size(catalog_wall_coordinates,kind=int64)+size(catalog_wall_fields,kind=int64))
+      call sample_wall_statistics_gpu_means(catalog_wall_fields,duration,catalog_wall_means,retained,ok)
+      if(.not.ok) then
+        call end_catalog_wall_gpu()
+        return
+      endif
+      deallocate(catalog_wall_fields)
+    endif
+  end subroutine
+
+  subroutine catalog_wall_line_gpu(k,wall,line,download,ok)
+    use commvar, only: im,numq
+    use gpu_check, only: sync_after_kernel
+    integer,intent(in) :: k,wall
+    real(real_kind),intent(out) :: line(6,im+1)
+    integer(int64),intent(out) :: download
+    logical,intent(out) :: ok
+    real(real_kind),device,allocatable :: packed(:,:)
+    integer :: columns(3),status
+    line=0;download=0;ok=.true.
+    if(wall<1.or.k<0) return
+    columns=[1,2,3]
+    if(numq==11) columns=[7,13,17]
+    allocate(packed(6,im+1),stat=status)
+    ok=status==0
+    if(.not.ok) return
+    if(allocated(catalog_wall_means)) then
+      call pack_catalog_wall_line<<<(im+256)/256,256>>>(catalog_wall_coordinates,catalog_wall_means, &
+        packed,im,k,wall,columns(1),columns(2),columns(3))
+    else
+      call pack_catalog_wall_line<<<(im+256)/256,256>>>(catalog_wall_coordinates,catalog_wall_fields, &
+        packed,im,k,wall,columns(1),columns(2),columns(3))
+    endif
+    call sync_after_kernel('catalog wall line selection',.true.)
+    line=packed;download=real_bytes*size(packed,kind=int64)
+    deallocate(packed)
+  end subroutine
+
+  attributes(global) subroutine pack_catalog_wall_line(xyz,fields,line,im,k,w,a,b,c)
+    integer,value :: im,k,w,a,b,c
+    real(real_kind),device,intent(in) :: xyz(0:,0:,:,:),fields(0:,0:,:,:)
+    real(real_kind),device,intent(out) :: line(6,im+1)
+    integer :: i
+    i=(blockidx%x-1)*blockdim%x+threadidx%x-1
+    if(i>im) return
+    line(1:3,i+1)=xyz(i,k,w,:)
+    line(4:6,i+1)=[fields(i,k,w,a),fields(i,k,w,b),fields(i,k,w,c)]
+  end subroutine
+
+  subroutine end_catalog_wall_gpu()
+    use insitu_sample_gpu, only: release_device_sampling_gpu
+    if(allocated(catalog_wall_coordinates)) deallocate(catalog_wall_coordinates)
+    if(allocated(catalog_wall_fields)) deallocate(catalog_wall_fields)
+    if(allocated(catalog_wall_means)) deallocate(catalog_wall_means)
+    call release_device_sampling_gpu()
+  end subroutine
+
+  subroutine begin_catalog_streamlines_gpu(mode,values_pointer,coordinates_pointer,fields,physical, &
+      host_budget,device_budget,reserve,retained,ok,message)
+    use mpi
+    use iso_c_binding, only: c_f_pointer
+    use commvar, only: im,jm,km,ia,ja,ka,lihomo,ljhomo,lkhomo
+    use parallel, only: ig0,jg0,kg0,isize,jsize,ksize,mpileft,mpiright,mpidown,mpiup,mpiback,mpifront
+    use insitu_device_velocity, only: begin_velocity_transport_gpu,extend_sample_velocity_gpu,extend_sample_coordinates_gpu
+    use gpu_check, only: sync_after_kernel
+    use index_slice_gpu, only: validate_index_slice_transport
+    type(c_devptr),intent(in) :: values_pointer,coordinates_pointer
+    character(*),intent(in) :: mode
+    integer,intent(in) :: fields(:)
+    logical,intent(in) :: physical
+    integer(int64),intent(in) :: host_budget,device_budget,reserve,retained
+    logical,intent(out) :: ok
+    character(*),intent(out) :: message
+    real(real_kind),pointer,contiguous,device :: values(:,:),coordinates(:,:)
+    integer :: nodes,slots(3),d,status,neighbors(2,3),bad,total,err
+    integer(int64) :: bytes
+    ok=.false.;message=''
+    nodes=(im+1)*(jm+1)*(km+1)
+    do d=1,3
+      slots(d)=findloc(fields,d+1,dim=1)
+    enddo
+    if(any(slots==0)) then
+      message='streamline source does not contain all three velocity components'
+    elseif(any([im,jm,km]<3)) then
+      message='existing streamline halo requires at least three local intervals per direction'
+    elseif(any(([im,jm,km]<5).and.(.not.[lihomo,ljhomo,lkhomo]).and.([isize,jsize,ksize]==1))) then
+      message='existing two-sided physical halo closure requires five local intervals'
+    endif
+    bytes=3_int64*nodes*real_bytes
+    if(retained>device_budget.or.bytes>device_budget-retained) then
+      message='streamline vector packing exceeds the device budget'
+    endif
+    if(len_trim(message)==0.and.any([isize,jsize,ksize]>1)) call validate_index_slice_transport(mode,ok,message)
+    if(len_trim(message)==0) then
+      allocate(catalog_velocity(3,nodes),stat=status)
+      if(status/=0) message='cannot allocate the streamline velocity view'
+    endif
+    bad=merge(0,1,len_trim(message)==0)
+    call MPI_Allreduce(bad,total,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,err)
+    if(err/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,err,status)
+    if(total/=0) then
+      if(len_trim(message)==0) message='streamline input preparation failed on another rank'
+      return
+    endif
+    call c_f_pointer(values_pointer,values,[nodes,size(fields)])
+    call c_f_pointer(coordinates_pointer,coordinates,[3,nodes])
+    call pack_catalog_velocity<<<(nodes+255)/256,256>>>(values,slots(1),slots(2),slots(3),nodes,catalog_velocity)
+    call sync_after_kernel('catalog streamline velocity layout',.true.)
+    neighbors(:,1)=[mpileft,mpiright];neighbors(:,2)=[mpidown,mpiup];neighbors(:,3)=[mpiback,mpifront]
+    call begin_velocity_transport_gpu(mode,[im,jm,km],[isize,jsize,ksize],neighbors,MPI_COMM_WORLD, &
+      host_budget,device_budget,reserve,periodic=[lihomo,ljhomo,lkhomo])
+    catalog_transport_open=.true.
+    call extend_sample_velocity_gpu(catalog_velocity,catalog_velocity_halo,[im,jm,km],MPI_COMM_WORLD,device_budget,reserve, &
+      retained_other=retained)
+    if(physical) call extend_sample_coordinates_gpu(coordinates,catalog_coordinate_halo,[im,jm,km],[ig0,jg0,kg0],[ia,ja,ka], &
+      MPI_COMM_WORLD,device_budget,reserve,retained+bytes+real_bytes*size(catalog_velocity_halo,kind=int64))
+    ok=.true.
+  end subroutine
+
+  attributes(global) subroutine pack_catalog_velocity(values,a,b,c,n,vectors)
+    integer,value :: a,b,c,n
+    real(real_kind),device,intent(in) :: values(:,:)
+    real(real_kind),device,intent(out) :: vectors(3,n)
+    integer :: i
+    i=(blockidx%x-1)*blockdim%x+threadidx%x
+    if(i<=n) vectors(:,i)=[values(i,a),values(i,b),values(i,c)]
+  end subroutine
+
+  subroutine catalog_streamline_pointers_gpu(velocity,coordinates)
+    type(c_devptr),intent(out) :: velocity,coordinates
+    velocity=c_devloc(catalog_velocity_halo);coordinates=velocity
+    if(allocated(catalog_coordinate_halo)) coordinates=c_devloc(catalog_coordinate_halo)
+  end subroutine
+
+  subroutine end_catalog_streamlines_gpu(step)
+    use mpi
+    use parallel, only: mpirank
+    use insitu_device_velocity, only: end_velocity_transport_gpu,velocity_transport_usage_gpu
+    integer,intent(in) :: step
+    integer(int64) :: host_bytes,device_bytes,download,upload,exchanges
+    integer :: generation
+    if(catalog_transport_open) then
+      call velocity_transport_usage_gpu(host_bytes,device_bytes,download,upload,exchanges,generation)
+      write(*,'(a,i0,a,i0,a,i0,a,i0,a,i0)') 'ASTR_RUNTIME_LINE_HALO rank=',mpirank,' step=',step, &
+        ' private_d2h_bytes=',download,' private_h2d_bytes=',upload,' exchanges=',exchanges
+      call end_velocity_transport_gpu(MPI_COMM_WORLD)
+      catalog_transport_open=.false.
+    endif
+    if(allocated(catalog_velocity)) deallocate(catalog_velocity)
+    if(allocated(catalog_velocity_halo)) deallocate(catalog_velocity_halo)
+    if(allocated(catalog_coordinate_halo)) deallocate(catalog_coordinate_halo)
+  end subroutine
 #ifdef ASTR_BUILD_TESTING
   subroutine begin_preview_state_check(budget,reserve)
     use iso_fortran_env, only: int64

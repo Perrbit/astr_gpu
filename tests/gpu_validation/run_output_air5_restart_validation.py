@@ -148,7 +148,7 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
            chemistry_diagnostics=None, chemistry_reductions=None, chemistry_failure_hook=None,
            explicit_contract_defaults=False, host_budget_bytes=67108864,filter_failure_rank=None,
            exact_restart=True,checkpoint_statistics=True,primitive_reuse=None,symmetric_face_probe=False,
-           product_catalog_records=None):
+           product_catalog_records=None,wall_capture_refusal=None):
     case = args.output / f"{backend}_np{ranks}_{name}"
     tau = prepare(case, backend, steps, incident=args.case == "sbli", reconstruction=args.reconstruction,
                   mean_statistics=args.mean_statistics if statistics is None else statistics,
@@ -205,6 +205,8 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
     halo_transport = getattr(args, 'halo_transport', 'pinned')
     if halo_transport not in ('pageable','pinned','device-aware'):
         raise ValueError('unknown GPU halo transport')
+    if wall_capture_refusal is not None:
+        env['ASTR_INSITU_TEST_WALL_CAPTURE_REFUSAL']=' '.join(map(str,wall_capture_refusal))
     env.update(ASTR_OUTPUT_CONFIG="datin/input.output", ASTR_GPU_SYNC_MODE="explicit",
                ASTR_GPU_PRECISION_MODE="fp64", ASTR_GPU_FILTER_WORKSPACE=args.filter_workspace,
                ASTR_GPU_HALO_TRANSPORT=halo_transport, ASTR_FORCE_MPI_TOPOLOGY=",".join(map(str, topology)),

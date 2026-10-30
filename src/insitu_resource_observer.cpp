@@ -31,6 +31,7 @@ bool report_enabled=true;
 Bytes host_base=0,device_base=0,host_peak=0,device_peak=0;
 Bytes host_limit=0,device_limit=0,reserve=0;
 bool active=false;
+thread_local unsigned int local_allocation_recovery=0;
 bool allocation_single_rank_device=false;
 MPI_Win allocation_window=MPI_WIN_NULL;
 astr_insitu::SharedAllocationBudget* allocation_pool=nullptr;
@@ -260,6 +261,11 @@ extern "C" int astr_insitu_allocation_guard_active() {
   return active && (allocation_single_rank_device || shared_allocation) ? 1 : 0;
 }
 
+extern "C" void astr_insitu_local_allocation_recovery(int enter) {
+  if(enter) ++local_allocation_recovery;
+  else --local_allocation_recovery;
+}
+
 extern "C" void astr_insitu_device_allocation_preflight(std::size_t bytes,const char* source)
 try {
 #ifdef ASTR_INSITU_DEVICE_RENDERING
@@ -274,14 +280,13 @@ try {
   Bytes job_bytes=0;
   for(const auto& item:usage) job_bytes=checked_sum(job_bytes,item.second);
   const auto job_increment=job_bytes>device_base?job_bytes-device_base:0;
-  if(cudaMemGetInfo(&free,&total)!=cudaSuccess ||
-      !astr_insitu::admit_device_allocation(bytes,free,allocation_baseline_free,device_limit,reserve) ||
+  require(cudaMemGetInfo(&free,&total)==cudaSuccess,"cannot query allocation headroom");
+  if(!astr_insitu::admit_device_allocation(bytes,free,allocation_baseline_free,device_limit,reserve) ||
       job_increment>device_limit || bytes>device_limit-job_increment) {
     std::fprintf(stderr,"ASTR INSITU ALLOCATION REFUSED source=%s requested=%zu free=%zu "
       "baseline_free=%llu budget=%llu reserve=%llu\n",source?source:"unknown",bytes,free,
       allocation_baseline_free,device_limit,reserve);
-    fail("device allocation would exceed budget/reserve");
-    return;
+    throw astr_insitu::AllocationBudgetExceeded("device allocation would exceed budget/reserve");
   }
   if(shared_allocation && bytes) {
     const auto used=allocation_baseline_free>free?allocation_baseline_free-free:0;
@@ -292,7 +297,7 @@ try {
     if(!astr_insitu::reserve_shared_allocation(*shared_allocation,bytes,available)) {
       std::fprintf(stderr,"ASTR INSITU SHARED ALLOCATION REFUSED requested=%zu held=%llu available=%llu\n",
         bytes,static_cast<Bytes>(shared_allocation->held),available);
-      throw std::runtime_error("shared device allocation would exceed budget/reserve");
+      throw astr_insitu::AllocationBudgetExceeded("shared device allocation would exceed budget/reserve");
     }
   }
   ++allocation_calls;largest_allocation=std::max(largest_allocation,Bytes(bytes));
@@ -300,6 +305,11 @@ try {
   if(source && std::strstr(source,"OpenGL")) ++graphics_allocation_calls;
 #else
   (void)bytes;(void)source;
+#endif
+#ifdef ASTR_INSITU_DEVICE_RENDERING
+} catch(const astr_insitu::AllocationBudgetExceeded& error) {
+  if(local_allocation_recovery) throw;
+  fail(error.what());
 #endif
 } catch(const std::exception& error) { fail(error.what()); }
   catch(...) { fail("unknown allocation preflight exception"); }

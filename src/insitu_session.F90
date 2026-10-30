@@ -39,6 +39,8 @@ module insitu_session
   public :: output_render_repartition_allowed
   public :: configure_preview_insitu,render_preview_insitu
   public :: slice_velocity_statistics_info,slice_velocity_statistics_value
+  public :: catalog_render_options,begin_catalog_renderer
+  public :: catalog_product_options,catalog_wall_statistics_info
   logical,save :: output_statistics_restored=.false.
   logical,save :: native_output=.false.,output_render_restored=.false.,output_render_finalized=.false.
   logical,save :: output_saved_rendering=.false.
@@ -142,6 +144,50 @@ module insitu_session
   end interface
 #endif
 contains
+  subroutine catalog_product_options(candidate,available)
+    type(insitu_options),intent(out) :: candidate
+    logical,intent(out) :: available
+    candidate=options
+    available=native_output.and.formal.and.enabled
+  end subroutine
+
+  subroutine catalog_wall_statistics_info(step,time,active,ready,window,duration,count)
+    use insitu_wall_statistics, only: wall_statistics_catalog_info
+    integer,intent(in) :: step
+    real(real_kind),intent(in) :: time
+    logical,intent(out) :: active,ready
+    real(real_kind),intent(out) :: window(2),duration
+    integer(int64),intent(out) :: count
+    active=native_output.and.formal.and.enabled.and.statistics_enabled.and. &
+      (options%products=='channel_walls'.or.options%products=='air5_walls')
+    call wall_statistics_catalog_info(step,time,ready,duration,window,count)
+    ready=active.and.ready
+  end subroutine
+
+  subroutine catalog_render_options(candidate,available)
+    type(insitu_options),intent(out) :: candidate
+    logical,intent(out) :: available
+    candidate=options
+    available=native_output.and.formal.and.enabled.and.options%render
+  end subroutine
+
+  subroutine begin_catalog_renderer(ok,message)
+    logical,intent(out) :: ok
+    character(*),intent(out) :: message
+    integer :: status
+    ok=.false.;message='Catalyst renderer is not built'
+#ifdef ASTR_WITH_CATALYST
+    if(.not.native_bridge_configured) then
+      status=mesh_configure(trim(options%output_directory)//c_null_char,int(MPI_COMM_WORLD,c_int))
+      if(status/=0) then
+        message='cannot configure the runtime renderer';return
+      endif
+      native_bridge_configured=.true.
+    endif
+    ok=.true.;message=''
+#endif
+  end subroutine
+
   subroutine slice_velocity_statistics_info(active,covered,window,duration)
     logical,intent(out) :: active,covered
     real(real_kind),intent(out) :: window(2),duration
@@ -743,7 +789,9 @@ contains
     native_output=.true.
     call read_consistent_env('ASTR_INSITU_CONFIG',filename)
     if(len_trim(filename)>0) then
-      call read_insitu_options_collective(trim(filename),MPI_COMM_WORLD,options,ok,message)
+      call get_command_argument(1,entry_command)
+      call read_insitu_options_collective(trim(filename),MPI_COMM_WORLD,options,ok,message, &
+        native_products=trim(entry_command)/='insitu-preview')
       call require_sample(ok,trim(message))
       formal=.true.
       enabled=options%enabled
@@ -751,7 +799,6 @@ contains
       statistics_configured=.true.
       oracle_io=.false.
       if(enabled) then
-        call get_command_argument(1,entry_command)
         device_preview_bl=trim(entry_command)=='insitu-preview'.and.trim(flowtype)=='bl'.and. &
           all([ia,ja,ka]==[450,130,96]).and.options%products=='streamlines'.and.options%view_count>0
         if(options%view_count>0) then
@@ -792,6 +839,9 @@ contains
         device_wall=options%processing_backend=='device'.and.options%products=='channel_walls'
         device_air5_wall=options%processing_backend=='device'.and.options%products=='air5_walls'
         device_plane=options%processing_backend=='device'.and.options%slice_definition=='plane'
+        ! Preserve the old periodic CURVE slice provider without a second geometry definition.
+        if(trim(entry_command)/='insitu-preview'.and.lreadgrid.and.options%products=='velocity_slice'.and. &
+          .not.options%statistics.and.options%processing_backend=='device') device_plane=.true.
         device_curve_q=options%processing_backend=='device'.and.lreadgrid.and. &
           (options%products=='q_surface'.or.device_curve_demo)
         device_curve_trace=options%processing_backend=='device'.and.lreadgrid.and. &
@@ -1716,6 +1766,9 @@ contains
     integer(int64) :: crossed
     real(clock_kind) :: started,capture_seconds,canonical_seconds,derived_seconds,render_seconds
     real(real_kind) :: wall_duration,wall_window(2)
+    ! Production products now come only from the completed-step runtime catalog.
+    ! The separate read-only preview entry calls its renderer directly.
+    if(native_output) return
     if(.not.options%render) return
     call configure_render_schedule()
     started=insitu_clock()
@@ -2036,7 +2089,7 @@ contains
     call configure_session()
     if(formal.and..not.enabled) return
 #ifdef _CUDA
-    if(formal.and.options%products=='m12_diagnostics') call begin_m12_completed_gpu(step)
+    if(formal.and.options%products=='m12_diagnostics'.and..not.native_output) call begin_m12_completed_gpu(step)
 #endif
 #if defined(ASTR_WITH_CATALYST) && defined(_CUDA)
     if(formal.and.enabled.and.options%render) then
@@ -2480,7 +2533,7 @@ contains
     endif
     if(formal.and.options%products=='m12_diagnostics') then
 #ifdef _CUDA
-      call sample_m12_completed_gpu(trim(options%output_directory),step,time_end)
+      if(.not.native_output) call sample_m12_completed_gpu(trim(options%output_directory),step,time_end)
       call render_native_if_due(step,time_end,.false.)
       return
 #else

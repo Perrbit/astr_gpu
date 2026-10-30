@@ -18,6 +18,8 @@
 #include <cstdio>
 #include <cstdint>
 #include <vector>
+#include <map>
+#include <string>
 #include <mpi.h>
 
 namespace astr_insitu {
@@ -286,6 +288,10 @@ class DeviceGeometryOwner {
   viskores::cont::Token color_token;
   DeviceGeometryView view;
   ColorRange selected_color_range;
+  std::map<std::string,viskores::cont::ArrayHandle<Real>> native_point_arrays;
+  std::map<std::string,viskores::cont::ArrayHandle<viskores::Id>> native_cell_arrays;
+  std::map<std::string,const Real*> native_point_views;
+  std::map<std::string,const viskores::Id*> native_cell_views;
 
   template<class T> const T* pin(const viskores::cont::ArrayHandle<T>& array) {
     require_device_only(array);
@@ -295,7 +301,8 @@ class DeviceGeometryOwner {
   }
 public:
   DeviceGeometryOwner(const viskores::cont::DataSet& data,int step,Real time,int empty_arity=3,
-      const char* scalar_field=nullptr,bool image_only=false) {
+      const char* scalar_field=nullptr,bool image_only=false,
+      const std::vector<std::string>& point_fields={},const std::vector<std::string>& cell_fields={},bool native_only=false) {
     if(empty_arity!=2 && empty_arity!=3) throw std::invalid_argument("Invalid device product arity");
     view.arity=empty_arity;
     if(step<0 || !std::isfinite(time) || cudaGetDevice(&view.device)!=cudaSuccess)
@@ -308,7 +315,7 @@ public:
       if(view.cells) throw std::runtime_error("Empty product has nonempty connectivity");
       return;
     }
-    if(static_cast<viskores::UInt64>(view.points)>0xffffffffu ||
+    if((!native_only && static_cast<viskores::UInt64>(view.points)>0xffffffffu) ||
        view.cells>std::numeric_limits<viskores::Id>::max()/3)
       throw std::overflow_error("Display surface extent exceeds index capacity");
     coordinates=data.GetCoordinateSystem().GetData().AsArrayHandle<decltype(coordinates)>();
@@ -333,9 +340,11 @@ public:
     if(scalar_field) require_device_only(scalar);
     else {require_device_only(velocity);require_device_only(q);require_device_only(u);}
     viskores::cont::Invoker invoke(viskores::cont::DeviceAdapterTagCuda{});
-    if(scalar_field || image_only) invoke(PackScalarDisplay{},coordinates,display_coordinates);
-    else invoke(PackSurfaceDisplay{},coordinates,velocity,display_coordinates,display_speed);
-    synchronize_device_stage("PackSurfaceDisplay");
+    if(!native_only) {
+      if(scalar_field || image_only) invoke(PackScalarDisplay{},coordinates,display_coordinates);
+      else invoke(PackSurfaceDisplay{},coordinates,velocity,display_coordinates,display_speed);
+      synchronize_device_stage("PackSurfaceDisplay");
+    }
     DisplayMetadata initial;
     for(int d=0;d<4;++d) {
       initial[2*d]=std::numeric_limits<Real>::infinity();
@@ -371,8 +380,10 @@ public:
     for(int d=0;d<6;++d) view.bounds[d]=summary[d];
     view.speed_range[0]=summary[6];view.speed_range[1]=summary[7];
     const auto bad_indices=viskores::cont::make_ArrayHandleTransform(connectivity,InvalidSurfaceIndex{view.points});
-    invoke(PackSurfaceIndex(view.points),connectivity,display_connectivity);
-    synchronize_device_stage("PackSurfaceIndex");
+    if(!native_only) {
+      invoke(PackSurfaceIndex(view.points),connectivity,display_connectivity);
+      synchronize_device_stage("PackSurfaceIndex");
+    }
     if(viskores::cont::Algorithm::Reduce(viskores::cont::DeviceAdapterTagCuda{},bad_indices,viskores::Id(0))!=0)
       throw std::runtime_error("Out-of-range device surface connectivity");
     view.coordinates=pin(coordinates);view.connectivity=pin(connectivity);
@@ -382,18 +393,33 @@ public:
       if(q.GetNumberOfValues()) view.q=pin(q);
       if(!image_only) {view.u=pin(u);view.display_speed=pin(display_speed);}
     }
-    view.display_coordinates=pin(display_coordinates);
-    view.display_connectivity=pin(display_connectivity);
+    if(!native_only) {
+      view.display_coordinates=pin(display_coordinates);
+      view.display_connectivity=pin(display_connectivity);
+    }
+    for(const auto& name:point_fields) {
+      auto field=data.GetPointField(name).GetData().AsArrayHandle<viskores::cont::ArrayHandle<Real>>();
+      if(field.GetNumberOfValues()!=view.points) throw std::runtime_error("Native point field extent differs");
+      native_point_arrays.emplace(name,field);native_point_views[name]=pin(field);
+    }
+    for(const auto& name:cell_fields) {
+      auto field=data.GetCellField(name).GetData().AsArrayHandle<viskores::cont::ArrayHandle<viskores::Id>>();
+      if(field.GetNumberOfValues()!=view.cells) throw std::runtime_error("Native cell field extent differs");
+      native_cell_arrays.emplace(name,field);native_cell_views[name]=pin(field);
+    }
   }
   DeviceGeometryOwner(const DeviceGeometryOwner&)=delete;
   DeviceGeometryOwner& operator=(const DeviceGeometryOwner&)=delete;
   const DeviceGeometryView& get() const {return view;}
+  const std::map<std::string,const Real*>& point_fields() const {return native_point_views;}
+  const std::map<std::string,const viskores::Id*>& cell_fields() const {return native_cell_views;}
   void retain_display_only() {
     // Final color/audit kernels have completed. Other datasets keep their own
     // references; do not ReleaseResources() on buffers shared with those datasets.
     if(!view.points) return;
     token.DetachFromAll();
     coordinates={};velocity={};q={};u={};scalar={};connectivity={};display_speed={};
+    native_point_arrays.clear();native_cell_arrays.clear();native_point_views.clear();native_cell_views.clear();
     view.coordinates=nullptr;view.velocity=nullptr;view.q=nullptr;view.u=nullptr;
     view.scalar=nullptr;view.connectivity=nullptr;view.display_speed=nullptr;
     view.display_coordinates=pin(display_coordinates);view.display_connectivity=pin(display_connectivity);

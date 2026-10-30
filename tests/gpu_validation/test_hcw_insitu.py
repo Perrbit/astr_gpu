@@ -117,7 +117,9 @@ int main() {
 
 def launch(case,ranks,render,full=False,steps=2,restore=None,memcheck=False,host_budget_bytes=1073741824,
            insitu_config=None,sbli_oracle=False,transport='pinned',output_device_budget_bytes=1073741824,
-           case_runtime=False,checkpoint_interval=1):
+           case_runtime=False,checkpoint_interval=1,product_catalog_records=None,product_poll_steps=10,
+           catalog_replay=None,wall_publication_failure=None,image_publication_failure=None,wall_blowing=False,
+           wall_capture_refusal=None):
     if full:
         shutil.copytree(SOURCE/'datin',case/'datin')
         manifest=json.loads((SOURCE/'case_manifest.json').read_text())
@@ -127,10 +129,13 @@ def launch(case,ranks,render,full=False,steps=2,restore=None,memcheck=False,host
     else:
         manifest=prepare_case(case,im=64,jm=48,km=5)
     dt=manifest['run_plan']['dt_nondimensional']
+    if wall_blowing:
+        (case/'datin/wallbs.dat').write_text('wall blowing\nparameters\n0.001 1.0 0.78 0.82 0.86\nmodes\n0 1\n')
     write_controller(case/'datin/controller',steps-1,1,dt)
     (case/'datin/input.output').write_text(f"""&output
  directory='outdat/new',restore_directory='{restore or ''}',exact_restart=t,
- host_budget_bytes={host_budget_bytes},device_budget_bytes={output_device_budget_bytes},buffer_bytes=4194304
+ host_budget_bytes={host_budget_bytes},device_budget_bytes={output_device_budget_bytes},buffer_bytes=4194304,
+ product_poll_steps={product_poll_steps}
 /
 &checkpoint
  enabled=t,interval_steps={checkpoint_interval},keep=2,initial_frame=f
@@ -142,6 +147,9 @@ def launch(case,ranks,render,full=False,steps=2,restore=None,memcheck=False,host
  enabled=f
 /
 """)
+    if product_catalog_records is not None:
+        (case/'input.products.jsonl').write_text('\n'.join(json.dumps(record) for record in
+            [{'catalog_schema':'astr-insitu-products-v1'},*product_catalog_records])+'\n')
     env=runtime(f'{ranks},1,1',transport)
     for key in tuple(env):
         if key.startswith('ASTR_INSITU_') or key in ('DISPLAY','PYTHONPATH','ASTR_WALL_BLOWING_MODE',
@@ -156,7 +164,23 @@ def launch(case,ranks,render,full=False,steps=2,restore=None,memcheck=False,host
             env[key]=value
         env.pop('ASTR_INSITU_CONFIG',None)
     env['ASTR_INSITU_WRITE_EPS']='0'
+    if wall_capture_refusal is not None:
+        env['ASTR_INSITU_TEST_WALL_CAPTURE_REFUSAL']=' '.join(map(str,wall_capture_refusal))
     env['OMPI_MCA_osc']='sm,pt2pt'
+    if catalog_replay is not None:
+        library,publications=catalog_replay
+        replay=case/'catalog_replay';replay.mkdir()
+        for poll,records in publications.items():
+            (replay/f'catalog{poll:06d}.jsonl').write_text('\n'.join(json.dumps(record) for record in
+                [{'catalog_schema':'astr-insitu-products-v1'},*records])+'\n')
+        env.update(LD_PRELOAD=str(Path(library).resolve()),ASTR_TEST_CATALOG_FILE='input.products.jsonl',
+                   ASTR_TEST_CATALOG_REPLAY=str(replay.resolve()))
+    if wall_publication_failure is not None:
+        name,step=wall_publication_failure
+        env.update(ASTR_TEST_WALL_FAIL_ID=name,ASTR_TEST_WALL_FAIL_STEP=str(step))
+    if image_publication_failure is not None:
+        name,step=image_publication_failure
+        env.update(ASTR_TEST_IMAGE_FAIL_ID=name,ASTR_TEST_IMAGE_FAIL_STEP=str(step))
     if render:
         (case/'outdat/render').mkdir()
         (case/'datin/input.insitu').write_text(configuration() if insitu_config is None else insitu_config)

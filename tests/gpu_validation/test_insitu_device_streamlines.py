@@ -14,6 +14,25 @@ INVERSE_BIN=Path(os.environ.get('ASTR_INSITU_CURVE_INVERSE_PROBE',
     ROOT/'build_insitu_device_probes/bin/insitu_curve_inverse_probe'))
 
 
+@pytest.mark.parametrize('ranks,mapping',[(1,''),(2,''),(2,'periodic'),(2,'y-wavy')])
+def test_explicit_rk45_parameters_preserve_the_existing_method(ranks,mapping):
+    prefix=os.environ['ASTR_INSITU_DEVICE_MPI_PREFIX']
+    wrapper=[]
+    if os.environ.get('ASTR_INSITU_EXPLICIT_TRACE_MEMCHECK')=='1':
+        wrapper=['compute-sanitizer','--tool','memcheck','--error-exitcode','99']
+    result=subprocess.run([str(Path(prefix)/'bin/mpirun'),'--prefix',prefix,
+        '--mca','pml','ob1','--mca','btl','self,tcp','--mca','osc','pt2pt',
+        '--mca','coll','^cuda,hcoll,ucc','--mca','opal_cuda_support','0','-np',str(ranks),*wrapper,
+        str(BIN),'0','constant','both','resident',mapping,'line16','explicit'],
+        capture_output=True,text=True,timeout=300)
+    assert result.returncode==0,result.stdout+result.stderr
+    assert 'EXPLICIT_RK45 cases=6 legacy_exact=1 directions=3 step_stop=1' in result.stdout
+    assert float(re.search(r'EXPLICIT_RK45 .*maxabs=(\S+)',result.stdout)[1])<=2e-10
+    assert 'source_errors=0' in result.stdout
+    if wrapper:
+        assert (result.stdout+result.stderr).count('ERROR SUMMARY: 0 errors')==ranks
+
+
 @pytest.mark.parametrize('ranks,axis', [(1, 0), (2, 0), (2, 1), (2, 2)])
 def test_stratified_tgv_device_streamlines(ranks, axis, record_property):
     prefix = os.environ.get('ASTR_INSITU_DEVICE_MPI_PREFIX')

@@ -1,18 +1,14 @@
 """Prepare/run the approved two-GPU render-only demonstration and encode movies."""
 import argparse
-import csv
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from image_publication import eps_output_enabled
+import benchmark_tgv256_visualization as benchmark
 
 ROOT = Path(__file__).resolve().parents[2]
 MPI = Path('/opt/nvidia/hpc_sdk/Linux_x86_64/26.1/comm_libs/hpcx/bin/mpiexec')
-PV = Path('/home/dell/workspace/astr_dependencies/install/paraview-6.1.1-hpcx-gcc13')
-VIDEO_MODULES = '/home/dell/workspace/astr_dependencies/python-video'
 
 
 def validate_video_stream(reader, steps):
@@ -39,7 +35,7 @@ def inspect_video(imageio_ffmpeg, path, out, product, steps):
     metadata, endpoints = validate_video_stream(imageio_ffmpeg.read_frames(str(path)), steps)
     differences = []
     for step, payload in zip((1, steps), endpoints):
-        original = np.asarray(Image.open(out/f'{product}.step{step:08d}.jpeg').convert('RGB'))
+        original = np.asarray(Image.open(out/f'frame.step{step:012d}.jpeg').convert('RGB'))
         decoded = np.frombuffer(payload, dtype=np.uint8).reshape(metadata['size'][1], metadata['size'][0], 3)
         assert original.shape == decoded.shape, 'Video changed image dimensions'
         assert decoded.min() != decoded.max(), 'Blank video endpoint'
@@ -54,70 +50,34 @@ def execute(args):
     case = args.output.resolve()
     if case.exists():
         raise FileExistsError(case)
-    subprocess.run([sys.executable, str(ROOT/'tests/gpu_validation/prepare_tgv_case.py'),
-                    '--src-case', str(ROOT/'examples/Taylor_Green_Vortex'), '--dst-case', str(case),
-                    '--use-gpu', 't', '--grid', '256,256,256', '--maxstep', str(args.steps-1),
-                    '--feqchkpt', '1000', '--deltat', '1.d-4', '--lfilter', 't',
-                    '--diffterm', 't', '--scheme', '643e'], check=True)
-    (case/'datin/input.output').write_text(
-        "&output\n directory='outdat/output', buffer_bytes=4096,\n"
-        'host_budget_bytes=67108864, device_budget_bytes=67108864\n/\n'
-        '&checkpoint\n enabled=f\n/\n&volume\n enabled=f\n/\n&slices\n enabled=f\n/\n')
-    (case/'insitu.nml').write_text(
-        "&insitu_run enabled=t, statistics=f, render=t, output_directory='outdat',\n"
-        "schedule_mode='steps', step_interval=1, initial_frame=f, final_frame=f,\n"
-        'host_budget_bytes=17179869184, device_budget_bytes=6442450944,\n'
-        'device_reserve_bytes=2147483648,\n'
-        f"implementation_path='{PV/'lib/catalyst'}',\n"
-        f"pipeline_file='{ROOT/'scripts/insitu/tgv256_demo.py'}'\n/\n")
-    env = {k: v for k, v in os.environ.items() if not k.startswith('ASTR_')}
-    for key in ('DISPLAY', 'PYTHONPATH', 'CATALYST_IMPLEMENTATION_PREFER_ENV', 'VTK_EGL_DEVICE_INDEX'):
-        env.pop(key, None)
-    env.update(ASTR_INSITU_CONFIG=str(case/'insitu.nml'), ASTR_FORCE_MPI_TOPOLOGY='2,1,1',
-               ASTR_INSITU_WRITE_EPS='1' if eps_output_enabled() else '0',
-               ASTR_GPU_SYNC_MODE='explicit', ASTR_GPU_HALO_TRANSPORT='pinned',
-               ASTR_GPU_PRECISION_MODE='fp64', ASTR_GPU_BENCHMARK_NO_FIELD_IO='1',
-               ASTR_GPU_RK_TIMING='1')
-    command = [str(MPI), '--mca', 'coll_hcoll_enable', '0', '-np', '2',
-               str(ROOT/'build_insitu_native_gpu/bin/astr'), 'run', 'datin/input.tgv']
+    if args.library is None:
+        raise ValueError('Launching requires an explicit --library Catalyst implementation directory')
+    benchmark.prepare(case,args.steps,True,args.library,args.transport,args.rendering_pipeline)
+    command = [str(args.mpiexec), '--mca', 'coll_hcoll_enable', '0', '-np', '2',
+               str(args.executable.resolve(strict=True)), 'run', 'datin/input.tgv']
     with (case/'run.log').open('w') as log:
-        subprocess.run(command, cwd=case, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
-    out = case/'outdat'
-    for rank in (0, 1):
-        record = json.loads((out/f'demo_rank{rank}.json').read_text())
-        assert record['finalized']
-        assert [frame[0] for frame in record['frames']] == list(range(1, args.steps+1))
-    assert not list(out.rglob('*.h5')) and not list(out.rglob('COMPLETE')) and not list(out.glob('restart*'))
-    for product in ('q0_speed', 'streamlines_speed'):
-        assert len(list(out.glob(f'{product}.*.jpeg'))) == args.steps
-        assert len(list(out.glob(f'{product}.*.eps'))) == (args.steps if eps_output_enabled() else 0)
-    resources = []
-    for rank in (0, 1):
-        with (out/f'resources.rank{rank:08d}.csv').open() as stream:
-            identity = stream.readline().strip()
-            rows = list(csv.DictReader(stream))
-        assert sum(row['stage'] == 'frame_after' for row in rows) == args.steps
-        assert max(int(row['host_increment_bytes']) for row in rows) <= 16*1024**3
-        assert max(int(row['device_increment_bytes']) for row in rows) <= 6*1024**3
-        assert min(int(row['device_free_bytes']) for row in rows) >= 2*1024**3
-        resources.append(dict(rank=rank, identity=identity,
-                              host_increment_peak=max(int(row['host_increment_bytes']) for row in rows),
-                              device_increment_peak=max(int(row['device_increment_bytes']) for row in rows)))
+        subprocess.run(command, cwd=case, env=benchmark.environment(case,args.transport),
+            stdout=log, stderr=subprocess.STDOUT, check=True)
+    checks=benchmark.verify(case,args.steps,True,args.rendering_pipeline)
+    sequences={name:next((case/'outdat/output/render_products'/name).glob('version*/segment*'))
+        for name in benchmark.PRODUCTS}
     videos = {}
     if args.encode:
-        sys.path.insert(0, VIDEO_MODULES)
         import imageio_ffmpeg
-        for product in ('q0_speed', 'streamlines_speed'):
+        for product,source in (('q0_speed','q_surface'),('streamlines_speed','instantaneous_streamlines')):
             subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), '-nostdin', '-n', '-framerate', '20',
-                            '-start_number', '1', '-i', str(out/f'{product}.step%08d.jpeg'),
+                            '-start_number', '1', '-i', str(sequences[source]/'frame.step%012d.jpeg'),
                             '-frames:v', str(args.steps), '-c:v', 'libx264', '-crf', '18',
                             '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
                             str(case/f'{product}.mp4')], check=True)
-            videos[product] = inspect_video(imageio_ffmpeg, case/f'{product}.mp4', out, product, args.steps)
+            videos[product] = inspect_video(imageio_ffmpeg, case/f'{product}.mp4', sequences[source], product, args.steps)
     (case/'summary.json').write_text(json.dumps(dict(status='passed-render-only-demo',
         steps=args.steps, grid=[256]*3, topology=[2, 1, 1], dt=1.e-4,
         physical_end=args.steps*1.e-4, q_threshold=0., color='speed',
-        fps=20, videos_encoded=args.encode, video_checks=videos, resources=resources), indent=2)+'\n')
+        fps=20, videos_encoded=args.encode, video_checks=videos, resources=checks['resources'],
+        initial_state_frame=True,video_step_range=[1,args.steps],
+        image_sequences={name:str(path.relative_to(case)) for name,path in sequences.items()},
+        timing=benchmark.timing(case,args.steps)), indent=2)+'\n')
     print(f'PASS: {args.steps} complete steps; both frame sequences verified: {case}', flush=True)
 
 
@@ -126,6 +86,11 @@ def main():
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--steps', type=int, choices=(2, 100), required=True)
     p.add_argument('--encode', action='store_true')
+    p.add_argument('--executable',type=Path,default=ROOT/'build_insitu_device_render/bin/astr')
+    p.add_argument('--mpiexec',type=Path,default=MPI)
+    p.add_argument('--library',type=Path,help='Explicit Catalyst ParaView implementation directory')
+    p.add_argument('--transport',choices=('pinned','device-aware'),default='pinned')
+    p.add_argument('--rendering-pipeline',choices=('standard-device','direct-device','compatible'),default='standard-device')
     args = p.parse_args()
     case = args.output.resolve()
     if case.exists():
@@ -137,9 +102,17 @@ def main():
             completed = {}
             receipt_errors = {}
             for rank in (0, 1):
-                path = case/'outdat'/f'demo_rank{rank}.json'
                 try:
-                    completed[str(rank)] = len(json.loads(path.read_text())['frames']) if path.exists() else 0
+                    frames=[]
+                    for product in benchmark.PRODUCTS:
+                        successful=set()
+                        for path in (case/'outdat/output/render_products'/product).glob(
+                                f'version*/segment*/frame.*.rank{rank:08d}.json'):
+                            record=json.loads(path.read_text())
+                            if record['product']['image']=='published' and 1<=record['step']<=args.steps:
+                                successful.add(record['step'])
+                        frames.append(successful)
+                    completed[str(rank)] = len(set.intersection(*frames))
                 except (OSError, ValueError, KeyError, TypeError) as receipt_error:
                     completed[str(rank)] = None
                     receipt_errors[str(rank)] = str(receipt_error)

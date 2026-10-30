@@ -197,3 +197,8 @@ int astr_catalog_json_real(const void *value, double *result) {
     *result = yyjson_get_num(value);
     return isfinite(*result);
 }
+
+int astr_catalog_json_boolean(const void *value) {
+    if (!yyjson_is_bool(value)) return -1;
+    return yyjson_get_bool(value) ? 1 : 0;
+}

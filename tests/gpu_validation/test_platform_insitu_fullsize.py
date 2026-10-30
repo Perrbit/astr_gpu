@@ -72,7 +72,8 @@ def test_mpi_launcher_preserves_dispatch_symlink_name(tmp_path, monkeypatch):
     monkeypatch.setattr(gate.sys, 'argv', [__file__, '--source', str(tmp_path),
         '--output', str(tmp_path/'run'), '--executable', str(target),
         '--diagnostic-executable', str(target), '--mpiexec', str(launcher),
-        '--library', str(tmp_path), '--probe-directory', str(tmp_path)])
+        '--library', str(tmp_path), '--probe-directory', str(tmp_path),
+        '--product-catalog',str(tmp_path/'approved.jsonl')])
     with pytest.raises(RuntimeError, match='stop before GPU probes'):
         gate.main()
     assert captured == [launcher.absolute()]
@@ -86,7 +87,6 @@ def test_checkpoint_preparation_creates_private_empty_root(tmp_path, monkeypatch
         (case/'datin/controller').write_text('# maxstep,feqchkpt\n9,1,9999,9999,1,9999\n')
         (case/'datin/input.output').write_text('&checkpoint\n enabled=f\n/\n')
     monkeypatch.setattr(gate, 'prepare', prepare)
-    monkeypatch.setattr(gate, 'prepare_probe_map', lambda *args: None)
     args = SimpleNamespace(source=tmp_path, host_budget=1, device_budget=1, reserve=1, library='/lib')
     case = tmp_path/'small'
     gate.prepare_case(args, case, (64,32,24), 10, False, checkpoint=True)
@@ -114,19 +114,23 @@ def test_complete_iteration_excludes_warmup_not_rendering():
 
 def product_case(tmp_path):
     case = tmp_path/'case'
-    out = case/'outdat/render'
-    out.mkdir(parents=True)
-    names = {'q_surface', 'q_surface.local', 'instantaneous_streamlines', 'velocity_slice',
-             'temperature_slice', 'spanwise_slice'} | {
-        f'{field}.x{100*n}_{100*(n+1)}' for field in ('velocity_slice', 'temperature_slice') for n in range(3)}
-    receipt = dict(geometry_host_bytes=0, processing_backend='device',
-        products={name: dict(image='published', empty=name.startswith('q_surface')) for name in names})
-    for rank in range(4):
-        (out/f'mesh_step00000010_rank{rank}.json').write_text(json.dumps(receipt))
-    for name in names:
-        image = Image.new('RGB', (8, 8), 'white')
-        image.save(out/f'{name}.step00000010.jpeg')
-        image.save(out/f'{name}.step00000010.eps')
+    case.mkdir()
+    definitions=gate.m12_short_products(interval=10)
+    gate.write_catalog(case/'input.products.jsonl',definitions)
+    out=case/'outdat/new';out.mkdir(parents=True)
+    (out/'products.status.json').write_text(json.dumps(dict(products=[dict(id=row['id'],state='active') for row in definitions])))
+    for row in definitions:
+        if row['output']['channel']!='image': continue
+        directory=out/'render_products'/row['id']/'version000000000001/segment000000000001'
+        directory.mkdir(parents=True)
+        for step in (0,10):
+            path=directory/f'frame.step{step:012d}.jpeg'
+            Image.new('RGB',tuple(row['output']['image_size']),'white').save(path)
+            receipt=dict(id=row['id'],definition=row,phase='completed_step',geometry_host_bytes=0,
+                field_d2h_bytes=0,processing_backend='device',product=dict(image='published'),
+                geometry_empty=row['kind']=='q_surface')
+            for rank in range(4):
+                path.with_name(f'{path.stem}.rank{rank:08d}.json').write_text(json.dumps(receipt))
     return case
 
 
@@ -138,7 +142,7 @@ def test_empty_q_and_pale_main_image_are_not_scientific_failures(tmp_path):
 
 def test_missing_image_is_recorded_not_promoted_to_pass_or_abort(tmp_path):
     case = product_case(tmp_path)
-    (case/'outdat/render/velocity_slice.step00000010.jpeg').unlink()
+    next((case/'outdat/new/render_products/section').rglob('*000000000010.jpeg')).unlink()
     record = gate.inspect_products(case, 10)
     assert not record['publication_complete']
     assert any('Missing JPEG image' in warning for warning in record['warnings'])
@@ -146,24 +150,23 @@ def test_missing_image_is_recorded_not_promoted_to_pass_or_abort(tmp_path):
 
 def test_product_inspection_respects_jpeg_only(tmp_path, monkeypatch):
     case = product_case(tmp_path)
-    for path in (case/'outdat/render').glob('*.eps'):
+    for path in case.rglob('*.eps'):
         path.unlink()
     monkeypatch.setenv('ASTR_INSITU_WRITE_EPS', '0')
     assert gate.inspect_products(case, 10)['publication_complete']
-    (case/'outdat/render/velocity_slice.step00000010.jpeg').unlink()
+    next((case/'outdat/new/render_products/section').rglob('*000000000010.jpeg')).unlink()
     assert not gate.inspect_products(case, 10)['publication_complete']
 
 
 def test_default_product_inspection_does_not_require_eps(tmp_path, monkeypatch):
     monkeypatch.delenv('ASTR_INSITU_WRITE_EPS', raising=False)
     case = product_case(tmp_path)
-    (case/'outdat/render/velocity_slice.step00000010.eps').unlink()
     assert gate.inspect_products(case, 10)['publication_complete']
 
 
 def test_host_geometry_still_fails(tmp_path):
     case = product_case(tmp_path)
-    path = case/'outdat/render/mesh_step00000010_rank0.json'
+    path=next((case/'outdat/new/render_products/section').rglob('*.rank00000000.json'))
     record = json.loads(path.read_text())
     record['geometry_host_bytes'] = 8
     path.write_text(json.dumps(record))
@@ -174,34 +177,45 @@ def test_host_geometry_still_fails(tmp_path):
 def test_fullsize_configuration_keeps_optional_images_optional():
     args = SimpleNamespace(host_budget=32*gate.GIB, device_budget=32*gate.GIB,
                            reserve=8*gate.GIB, library='/catalyst')
-    assert 'product_steps=10,10,10' in gate.render_configuration(args)
-    assert 'product_steps=1000000000,1000000000,1000000000' in gate.render_configuration(args, False)
+    assert 'product_steps' not in gate.render_configuration(args)
+    on=gate.render_catalog(args,(64,32,24),True);off=gate.render_catalog(args,(64,32,24),False)
+    assert len(on)==6 and len(off)==2 and all(row['output']['channel']=='data' for row in off)
     assert 'statistics=f' in gate.render_configuration(args)
+
+
+def test_full_grid_requires_its_own_reviewed_catalog(tmp_path):
+    args=SimpleNamespace(m12_products='all')
+    with pytest.raises(ValueError,match='explicitly reviewed --product-catalog'):
+        gate.render_catalog(args,FULL_INTERVALS)
+    records=gate.m12_short_products()[:1]
+    records[0]['sampling']['index']=192
+    records[0]['sampling']['index_ranges']=dict(i=[0,2250],j=[0,260])
+    path=tmp_path/'reviewed.jsonl';gate.write_catalog(path,records);args.product_catalog=path
+    assert gate.render_catalog(args,FULL_INTERVALS)==records
+    assert gate.render_catalog(args,FULL_INTERVALS,False)==[]
+    empty=tmp_path/'off.jsonl';gate.write_catalog(empty,gate.render_catalog(args,FULL_INTERVALS,False))
+    assert empty.read_text().splitlines()==['{"catalog_schema": "astr-insitu-products-v1"}']
 
 
 def test_slices_wall_configuration_excludes_volume_geometry():
     args = SimpleNamespace(host_budget=32*gate.GIB, device_budget=80*gate.GIB,
         reserve=0, library='/catalyst', m12_products='slices-wall')
     config = gate.render_configuration(args)
-    assert "product_ids='velocity_slice.image'" in config
-    assert 'q_surface.image' not in config and 'instantaneous_streamlines.image' not in config
-    assert "product_modes='steps',product_steps=10" in config
-    assert 'product_steps=1000000000' in gate.render_configuration(args, False)
+    assert 'product_ids' not in config
+    assert all(row['kind'] not in ('q_surface','streamlines') for row in gate.render_catalog(args,(64,32,24)))
 
 
 def test_slices_wall_publication_does_not_require_disabled_products(tmp_path):
     case = product_case(tmp_path)
-    directory = case/'outdat/render'
-    for name in ('q_surface', 'q_surface.local', 'instantaneous_streamlines'):
-        for path in directory.glob(name+'.step*'):
+    directory=case/'outdat/new/render_products'
+    for name in ('vortices','trajectories'):
+        for path in (directory/name).rglob('frame.*'):
             path.unlink()
-    for path in directory.glob('mesh_step*.json'):
-        receipt = json.loads(path.read_text())
-        for name in ('q_surface', 'q_surface.local', 'instantaneous_streamlines'):
-            del receipt['products'][name]
-        path.write_text(json.dumps(receipt))
-    assert gate.inspect_products(case, 10, 'slices-wall')['publication_complete']
     assert not gate.inspect_products(case, 10)['publication_complete']
+    definitions=gate.render_catalog(SimpleNamespace(m12_products='slices-wall'),(64,32,24))
+    for row in definitions: row['schedule']['interval']=10
+    gate.write_catalog(case/'input.products.jsonl',definitions)
+    assert gate.inspect_products(case,10,'slices-wall')['publication_complete']
 
 
 def test_nscbc_preparation_changes_only_outlet_and_top(tmp_path, monkeypatch):
@@ -213,7 +227,6 @@ def test_nscbc_preparation_changes_only_outlet_and_top(tmp_path, monkeypatch):
         (case/'datin/input.dat').write_text(original)
         (case/'datin/controller').write_text('# maxstep,feqchkpt\n9,1,9999,9999,1,9999\n')
     monkeypatch.setattr(gate, 'prepare', prepare)
-    monkeypatch.setattr(gate, 'prepare_probe_map', lambda *args: None)
     args = SimpleNamespace(source=tmp_path, host_budget=1, device_budget=1, reserve=0,
         library='/lib', m12_boundary='nscbc', m12_products='slices-wall')
     case = tmp_path/'nscbc'

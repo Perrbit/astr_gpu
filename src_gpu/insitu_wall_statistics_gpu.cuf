@@ -165,17 +165,22 @@ contains
     call check(merge(cudaSuccess,cudaErrorInvalidValue,invalid==0),'finite wall statistics update')
   end subroutine
 
-  subroutine sample_wall_statistics_gpu_means(fields,duration,means,retained)
+  subroutine sample_wall_statistics_gpu_means(fields,duration,means,retained,success)
     use mpi
     use commvar, only: im,jm,km
     use parallel, only: mpirank
     use insitu_device_velocity, only: complete_sample_wall_fields_gpu,velocity_transport_usage_gpu
+#ifdef ASTR_BUILD_TESTING
+    use insitu_sample_gpu, only: optional_wall_capture_budget
+#endif
     real(real_kind),device,contiguous,intent(in) :: fields(:,:,:,:)
     real(real_kind),intent(in) :: duration
     real(real_kind),device,allocatable,intent(out) :: means(:,:,:,:)
     integer(int64),intent(in) :: retained
+    logical,optional,intent(out) :: success
     integer(int64) :: host_slots,device_slots,d2h0,h2d0,exchanges0,d2h,h2d,exchanges
-    integer :: status,invalid,generation
+    integer :: status,invalid,generation,bad,total,ierr
+    if(present(success)) success=.true.
     call check(merge(cudaSuccess,cudaErrorInvalidValue,initialized.and. &
       all(layout(1:3)==shape(fields(:,:,:,1)))),'device wall mean shape')
     call check(merge(cudaSuccess,cudaErrorInvalidValue,(layout(4)==3.and.size(fields,4)==4).or. &
@@ -184,9 +189,24 @@ contains
       'device wall mean coverage')
     if(duration==0.e0_real_kind) return
     ! Admission includes empty-wall ranks, before any allocation or endpoint exchange.
-    call admit_statistics_device_allocation(retained+wall_statistics_device_bytes()+real_bytes*size(fields,kind=int64)+4)
+    call admit_statistics_device_allocation( &
+      retained+wall_statistics_device_bytes()+real_bytes*size(fields,kind=int64)+4,success)
+    if(present(success)) then
+      if(.not.success) return
+    endif
     allocate(means(size(fields,1),size(fields,2),size(fields,3),size(fields,4)),stat=status)
-    call check(merge(cudaSuccess,cudaErrorMemoryAllocation,status==0),'allocate device wall mean')
+#ifdef ASTR_BUILD_TESTING
+    if(optional_wall_capture_budget(huge(1_int64),present(success),'mean')==1) status=1
+#endif
+    if(present(success)) then
+      bad=merge(0,1,status==0)
+      call MPI_Allreduce(bad,total,1,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,bad)
+      success=total==0
+      if(.not.success) return
+    else
+      call check(merge(cudaSuccess,cudaErrorMemoryAllocation,status==0),'allocate device wall mean')
+    endif
     if(layout(3)>0) then
       invalid_d=0
       call wall_mean_kernel<<<dim3((layout(1)+511)/512,layout(2),layout(3)),dim3(512,1,1)>>>( &

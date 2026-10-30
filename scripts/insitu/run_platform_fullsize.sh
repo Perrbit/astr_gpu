@@ -44,11 +44,13 @@ python3 -c 'import numpy,h5py,PIL,psutil,pytest,pynvml; print("PYTHON_RUNTIME_IM
 python3 "$ROOT/src/astr/tests/gpu_validation/run_checkpoint_publication_preflight.py" \
   --probe "$ROOT/build/astr-debug/bin/checkpoint_bundle_probe" --mpiexec "$MPI_ROOT/bin/mpiexec" \
   --directory "$OUT"
+: "${ASTR_PLATFORM_PRODUCT_CATALOG:?Set the reviewed full-grid native JSONL path}"
 python3 -u "$ROOT/src/astr/tests/gpu_validation/run_platform_insitu_fullsize.py" \
   --source "$ROOT/inputs/M12" --output "$OUT/coverage" \
   --executable "$ROOT/build/astr-native/bin/astr" --diagnostic-executable "$ROOT/build/astr-debug/bin/astr" \
   --mpiexec "$MPI_ROOT/bin/mpiexec" --library "$PV/lib/catalyst" \
   --probe-directory "$ROOT/build/astr-debug/bin" \
+  --product-catalog "$ASTR_PLATFORM_PRODUCT_CATALOG" \
   --m12-products "${ASTR_PLATFORM_M12_PRODUCTS:-all}" \
   --m12-boundary "${ASTR_PLATFORM_M12_BOUNDARY:-original}" \
   --device-budget "${ASTR_PLATFORM_INSITU_DEVICE_BUDGET_BYTES:-34359738368}" \

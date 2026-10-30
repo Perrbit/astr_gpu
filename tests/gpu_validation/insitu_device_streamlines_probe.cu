@@ -180,6 +180,50 @@ __global__ void inspect_resident(const astr_insitu::TraceVertex* points,const vi
   if(!isfinite(worst)) worst=INFINITY;
   atomicMax(error,static_cast<unsigned long long>(__double_as_longlong(worst)));
 }
+template<class V,class C>
+void explicit_traces(const V& vectors,const C* coordinates,const viskores::Id3& extent,
+    const viskores::Id3& offset,int axis,int rank) {
+  const double pi=std::acos(-1.),h=2.*pi/32.;
+  astr_insitu::TraceConfiguration settings{.1*h,.01*h,.5*h,1e-8,pi,100000,0};
+  auto execute=[&](const astr_insitu::TraceConfiguration* parameters) {
+    return astr_insitu::trace_tgv_device(vectors,vectors,extent,offset,MPI_COMM_WORLD,
+      64*1024*1024,true,axis,false,false,32,true,coordinates,1.,"line16",viskores::Id3(32),true,nullptr,parameters);
+  };
+  const auto legacy=execute(nullptr),equivalent=execute(&settings);
+  if(legacy.final_state.size()!=equivalent.final_state.size())
+    throw std::runtime_error("Explicit parameters changed the legacy particle count");
+  for(std::size_t i=0;i<legacy.final_state.size();++i) {
+    const auto& a=legacy.final_state[i];const auto& b=equivalent.final_state[i];
+    if(a.steps!=b.steps || a.status!=b.status)
+      throw std::runtime_error("Equivalent explicit RK45 termination differs");
+    for(int d=0;d<6;++d) if(a[d]!=b[d])
+      throw std::runtime_error("Equivalent explicit RK45 state is not exact");
+  }
+  double error=0.;int cases=0;
+  const auto seeds=astr_insitu::tgv_streamline_seeds("line16");
+  for(int direction:{-1,0,1}) for(bool limited:{false,true}) {
+    settings={.2*h,.02*h,.4*h,1e-9,2.3*h,limited?2:1000,direction};
+    const auto result=execute(&settings);
+    if(result.particles!=int(seeds.size())*(direction?1:2))
+      throw std::runtime_error("Explicit direction particle count differs");
+    for(int i=0;i<result.particles;++i) {
+      const auto& state=result.final_state[i];
+      const int sign=direction?direction:(i<int(seeds.size())?1:-1);
+      if(result.directions[i]!=sign || (limited && (state.steps!=2 || state.status!=astr_insitu::TraceSteps)))
+        throw std::runtime_error("Explicit direction or requested step stop differs");
+      const auto seed=seeds[i%seeds.size()];
+      for(int d=0;d<3;++d) error=std::max(error,std::abs(state[d]-seed[(d-axis+3)%3]-
+        (d==axis?sign*state[4]:0.)));
+      if(!limited && settings.maximum_length-state[4]>settings.minimum_step)
+        throw std::runtime_error("Explicit accepted arc length is outside the existing subminimum stop contract");
+    }
+    ++cases;
+  }
+  double global=0.;MPI_Allreduce(&error,&global,1,MPI_DOUBLE,MPI_MAX,MPI_COMM_WORLD);
+  if(!std::isfinite(global) || global>2e-10) throw std::runtime_error("Explicit RK45 straight trajectory differs");
+  if(!rank) std::printf("EXPLICIT_RK45 cases=%d legacy_exact=1 directions=3 step_stop=1 maxabs=%.17g\n",cases,global);
+}
+
 int run(int argc,char** argv,int rank,int ranks) {
   if(ranks!=1 && ranks!=2) throw std::runtime_error("NP=1/2 only");
   const int axis=argc>1?std::atoi(argv[1]):0;
@@ -231,6 +275,11 @@ int run(int argc,char** argv,int rank,int ranks) {
   if(!std::isfinite(interpolation_error) || interpolation_error>2e-10) {
     std::fprintf(stderr,"rank %d physical noncentral affine interpolation error=%.17g\n",rank,interpolation_error);
     throw std::runtime_error("Physical interpolation gate failed before trajectory integration");
+  }
+  if(argc>7 && std::string(argv[7])=="explicit") {
+    if(!constant || !resident || seed_layout!="line16")
+      throw std::runtime_error("Explicit RK45 diagnostic requires constant resident line16 inputs");
+    explicit_traces(vectors,mapping?&physical:nullptr,extent,offset,axis,rank);
   }
   auto geometry=astr_insitu::trace_tgv_device(vectors,vectors,extent,offset,MPI_COMM_WORLD,
     64*1024*1024,constant,axis,forward_only,false,32,resident,mapping?&physical:nullptr,1.,seed_layout);
