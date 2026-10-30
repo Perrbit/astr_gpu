@@ -9680,3 +9680,39 @@ CUDA context loss, MPI failure, unsafe distributed extraction, actual resource
 budget violations and authoritative statistics/checkpoint persistence errors
 remain fatal. Shared Catalyst initialization failure is checked separately and
 must not be converted to a product success.
+
+## HB6 Local Wall Filter (Validation Builds Only)
+
+The approved local FP64 filter is selected only by the existing `hermite7`
+wall mode with main filtering enabled in a root-CMake `BUILD_TESTING=ON`
+CUDA build. Non-testing builds reject this combination. Ordinary boundaries
+and periodic directions keep their original filter formulas. The scope is
+the existing uniform Cartesian five-variable 643e/RK3 wall subset, not
+general wall, CURVE, compact, FP32 or AIR5 admission.
+
+Run against an already configured root build:
+
+```bash
+cmake --build "$BUILD_DIR" --target astr -j 8
+ASTR_HB1B_EXE="$BUILD_DIR/bin/astr" python -m pytest -xq \
+  tests/gpu_validation/test_high_order_wall_filter_runtime.py
+ASTR_HB6_FILTER_KERNEL_PROBE=1 python -m pytest -xq \
+  tests/gpu_validation/test_high_order_filter_kernel.py \
+  tests/gpu_validation/test_high_order_filter_matrix_gpu.py
+python -m pytest -xq tests/gpu_validation/test_high_order_wall_filter_native.py
+```
+
+The runtime tests cover actual single-mapping order, same-topology CPU/GPU
+fields/caches/RHS/statistics, workspaces, existing wall axes, short domains,
+exact restart, read-only diagnostics and representative memcheck runs.
+The snapshot-based budget is a physical quadrature diagnostic, not an exact
+FD conservation norm. Additional `pre_filter`/`post_filter` GPU readbacks
+require the explicit validation prefix and the test-only wall path; normal
+runs do not enable them. Time averages are off in this matrix.
+
+Evidence: `out/hb6_limited_integration_20261030/summary.json`. The full
+80-test matrix and the final 15-test startup-domain supplement have 82 unique
+test IDs; repeated cases and expected rejections are not separate physical
+experiments. The GPU probes check 960 configurations and 825 compiled-matrix
+spectral records. This is limited integration evidence, not production,
+long-window stability, device-aware transport or performance qualification.
