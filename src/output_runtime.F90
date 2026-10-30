@@ -1256,6 +1256,7 @@ contains
         else
           write(driver_config(3),'(a,i0,a)') 'cartesian-axis',high_order_wall_axis,'-isothermal-h7-v1'
         endif
+        if(lfilter) driver_config(3)=trim(driver_config(3))//'-f6loc1'
       endif
     end block
     if(trim(flowtype)=='channel') then
@@ -1268,6 +1269,7 @@ contains
         if(high_order_wall_enabled) driver_config(3)='channel-wall-h7-v1'
         if(high_order_adiabatic_wall_enabled) driver_config(3)='channel-adiabatic-p6t7-v1'
         if(high_order_slip_wall_enabled) driver_config(3)='channel-slip-p6t7-v1'
+        if(high_order_wall_enabled.and.lfilter) driver_config(3)=trim(driver_config(3))//'-f6loc1'
       end block
       if(writing) then
         call channel_driver_state(driver,.true.,ok)

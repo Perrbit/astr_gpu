@@ -4,11 +4,12 @@ module solver_gpu
   use cudafor
   use boundary_high_order_gpu, only: high_order_boundary_enabled_d,high_order_wall_enabled_d,boundary_derivative6, &
     boundary_mp_flux6,boundary_interface_position,boundary_pressure_gradient7,high_order_wall_axis_d, &
-    boundary_pressure_neumann6,high_order_adiabatic_wall_enabled_d
+    boundary_pressure_neumann6,high_order_adiabatic_wall_enabled_d,boundary_wall_filter6
   use constdef, only: num1d60,num193d256,num105d512,num15d128, &
                       num45d1024,num5d512,num1d1024
   implicit none
   private :: real_kind,mpi_real_type
+  private :: wall_filter6_active,wall_filter6_global_value
 contains
   attributes(device) subroutine high_order_wall_conv_derivative(i,j,k,axis,dim,row,orientation,im,jm,km,df)
     use commarray_gpu, only: prs_d,jacob_d,dxi_d
@@ -4014,6 +4015,51 @@ contains
     enddo
   end subroutine rk3_update_global_kernel
 
+  attributes(device) function wall_filter6_active(axis,ntype,index,dim) result(active)
+    integer,value :: axis,ntype,index,dim
+    logical :: active
+    active=high_order_wall_enabled_d.and.axis==high_order_wall_axis_d.and. &
+      (((ntype==1.or.ntype==4).and.index>=1.and.index<=4).or. &
+       ((ntype==2.or.ntype==4).and.index>=dim-4.and.index<dim))
+  end function wall_filter6_active
+
+  attributes(device) function wall_filter6_global_value(i,j,k,axis,ntype,component,im,jm,km,scalar) result(value)
+    use commarray_gpu,only: q_d,qwork_d,filter_work_d
+    integer,value :: i,j,k,axis,ntype,component,im,jm,km
+    logical,value :: scalar
+    real(real_kind) :: value,line(0:8)
+    integer :: coordinate,dim,row,origin,orientation,s,point
+    select case(axis)
+    case(1)
+      coordinate=i;dim=im
+    case(2)
+      coordinate=j;dim=jm
+    case(3)
+      coordinate=k;dim=km
+    end select
+    if((ntype==1.or.ntype==4).and.coordinate<=4) then
+      row=coordinate;origin=0;orientation=1
+    else
+      row=dim-coordinate;origin=dim;orientation=-1
+    endif
+    do s=0,8
+      point=origin+orientation*s
+      select case(axis)
+      case(1)
+        line(s)=q_d(point,j,k,component)
+      case(2)
+        if(scalar) then
+          line(s)=filter_work_d(i,point,k)
+        else
+          line(s)=qwork_d(i,point,k,component)
+        endif
+      case(3)
+        line(s)=q_d(i,j,point,component)
+      end select
+    enddo
+    value=boundary_wall_filter6(line,row,high_order_adiabatic_wall_enabled_d)
+  end function wall_filter6_global_value
+
   attributes(device) real(real_kind) function filter10_value(v0,vp1,vm1,vp2,vm2,vp3,vm3,vp4,vm4,vp5,vm5)
     implicit none
     real(real_kind),value :: v0,vp1,vm1,vp2,vm2,vp3,vm3,vp4,vm4,vp5,vm5
@@ -4236,7 +4282,9 @@ contains
     endif
 
     do m=1,ncomponents
-      if((npdci == 1 .or. npdci == 4) .and. i == 0) then
+      if(wall_filter6_active(1,npdci,i,im)) then
+        qwork_d(i,j,k,m)=wall_filter6_global_value(i,j,k,1,npdci,m,im,jm,km,.false.)
+      elseif((npdci == 1 .or. npdci == 4) .and. i == 0) then
         qwork_d(i,j,k,m) = q_d(i,j,k,m)
       elseif((npdci == 1 .or. npdci == 4) .and. i == 1) then
         qwork_d(i,j,k,m) = filter6_boundary_point1(q_d(0,j,k,m),q_d(1,j,k,m), &
@@ -4299,7 +4347,9 @@ contains
       if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     endif
 
-    if((npdci == 1 .or. npdci == 4) .and. i == 0) then
+    if(wall_filter6_active(1,npdci,i,im)) then
+      filter_work_d(i,j,k)=wall_filter6_global_value(i,j,k,1,npdci,component,im,jm,km,.true.)
+    elseif((npdci == 1 .or. npdci == 4) .and. i == 0) then
       filter_work_d(i,j,k) = q_d(i,j,k,component)
     elseif((npdci == 1 .or. npdci == 4) .and. i == 1) then
       filter_work_d(i,j,k) = filter6_boundary_point1(q_d(0,j,k,component),q_d(1,j,k,component), &
@@ -4412,7 +4462,9 @@ contains
     endif
 
     do m=1,ncomponents
-      if((npdcj == 1 .or. npdcj == 4) .and. j == 0) then
+      if(wall_filter6_active(2,npdcj,j,jm)) then
+        q_d(i,j,k,m)=wall_filter6_global_value(i,j,k,2,npdcj,m,im,jm,km,.false.)
+      elseif((npdcj == 1 .or. npdcj == 4) .and. j == 0) then
         q_d(i,j,k,m) = qwork_d(i,j,k,m)
       elseif((npdcj == 1 .or. npdcj == 4) .and. j == 1) then
         q_d(i,j,k,m) = filter6_boundary_point1(qwork_d(i,0,k,m),qwork_d(i,1,k,m), &
@@ -4478,7 +4530,9 @@ contains
       if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     endif
 
-    if((npdcj == 1 .or. npdcj == 4) .and. j == 0) then
+    if(wall_filter6_active(2,npdcj,j,jm)) then
+      q_d(i,j,k,component)=wall_filter6_global_value(i,j,k,2,npdcj,component,im,jm,km,.true.)
+    elseif((npdcj == 1 .or. npdcj == 4) .and. j == 0) then
       q_d(i,j,k,component) = filter_work_d(i,j,k)
     elseif((npdcj == 1 .or. npdcj == 4) .and. j == 1) then
       q_d(i,j,k,component) = filter6_boundary_point1(filter_work_d(i,0,k),filter_work_d(i,1,k), &
@@ -4570,7 +4624,9 @@ contains
     endif
 
     do m=1,ncomponents
-      if((npdck == 1 .or. npdck == 4) .and. k == 0) then
+      if(wall_filter6_active(3,npdck,k,km)) then
+        qwork_d(i,j,k,m)=wall_filter6_global_value(i,j,k,3,npdck,m,im,jm,km,.false.)
+      elseif((npdck == 1 .or. npdck == 4) .and. k == 0) then
         qwork_d(i,j,k,m) = q_d(i,j,k,m)
       elseif((npdck == 1 .or. npdck == 4) .and. k == 1) then
         qwork_d(i,j,k,m) = filter6_boundary_point1(q_d(i,j,0,m),q_d(i,j,1,m), &
@@ -4634,7 +4690,9 @@ contains
       if(i < 0 .or. i > im .or. j < 0 .or. j > jm .or. k < 0 .or. k > km) return
     endif
 
-    if((npdck == 1 .or. npdck == 4) .and. k == 0) then
+    if(wall_filter6_active(3,npdck,k,km)) then
+      filter_work_d(i,j,k)=wall_filter6_global_value(i,j,k,3,npdck,component,im,jm,km,.true.)
+    elseif((npdck == 1 .or. npdck == 4) .and. k == 0) then
       filter_work_d(i,j,k) = q_d(i,j,k,component)
     elseif((npdck == 1 .or. npdck == 4) .and. k == 1) then
       filter_work_d(i,j,k) = filter6_boundary_point1(q_d(i,j,0,component),q_d(i,j,1,component), &

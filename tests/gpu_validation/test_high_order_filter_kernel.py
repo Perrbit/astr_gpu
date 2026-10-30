@@ -6,11 +6,12 @@ import pytest
 from test_high_order_boundary_geometry import procedure,ROOT
 
 
-def filter_probe_source():
+def filter_probe_modules():
     host='\n'.join(procedure(ROOT/'src/filter.F90',kind,name) for kind,name in (
         ('subroutine','filter_coefficient_explicit'),('function','spafilter10exp')))
     device='\n'.join(procedure(ROOT/'src_gpu/solver_gpu.cuf','function',name) for name in (
-        'filter10_value','filter6_value','filter8_value','filter6_boundary_point1','filter6_boundary_point2'))
+        'filter10_value','filter6_value','filter8_value','filter6_boundary_point1','filter6_boundary_point2',
+        'wall_filter6_active','wall_filter6_global_value'))
     kernels='\n'.join(procedure(ROOT/'src_gpu/solver_gpu.cuf','subroutine',name) for name in (
         'filter_x_global_kernel','filter_y_pong_to_q_halo_global_kernel','filter_z_halo_global_kernel',
         'filter_x_scalar_global_kernel','filter_y_scalar_to_q_halo_global_kernel','filter_z_scalar_global_kernel'))
@@ -33,18 +34,23 @@ module device_filter_probe
   use astr_precision
   use cudafor
   use constdef
+  use boundary_high_order_gpu
   implicit none
 contains
 '''+device+kernels+'''end module
-program probe
+'''
+
+
+def filter_probe_source():
+    return filter_probe_modules()+'''program probe
   use astr_precision
   use commvar
   use commarray_gpu
   use host_filter_probe
   use device_filter_probe
   implicit none
-  integer :: n,ni,i,j,k,m,nt,axis,field,layout,status,checks
-  integer,parameter :: sizes(4)=[8,12,16,32]
+  integer :: n,ni,i,j,k,m,nt,axis,field,layout,status,checks,kind,kind_index
+  integer,parameter :: sizes(5)=[8,9,12,16,32],kinds(4)=[0,41,42,421]
   logical :: flat
   real(real_kind),allocatable :: q(:,:,:,:),reference(:,:,:,:),full(:,:,:,:),scalar(:,:,:,:)
   real(real_kind) :: error,max_error,storage_error,max_storage_error
@@ -57,6 +63,10 @@ program probe
     allocate(full,mold=q);allocate(scalar,mold=q)
     allocate(q_d,mold=q);allocate(qwork_d,mold=q)
     allocate(filter_work_d(-hm:n+hm,-hm:n+hm,-hm:n+hm))
+    do kind_index=1,size(kinds)
+    kind=kinds(kind_index)
+    high_order_wall_enabled_d=kind/=0
+    high_order_adiabatic_wall_enabled_d=kind==42.or.kind==421
     do field=1,2
       do m=1,5
       do k=-hm,n+hm
@@ -72,25 +82,26 @@ program probe
       enddo
       do nt=1,4
       do axis=1,3
+        high_order_wall_axis_d=axis
         reference=q
         do m=1,5
           select case(axis)
           case(1)
             do k=0,n
             do j=0,n
-              reference(0:n,j,k,m)=spafilter10exp(q(:,j,k,m),nt,n)
+              reference(0:n,j,k,m)=spafilter10exp(q(:,j,k,m),nt,n,kind)
             enddo
             enddo
           case(2)
             do k=0,n
             do i=0,n
-              reference(i,0:n,k,m)=spafilter10exp(q(i,:,k,m),nt,n)
+              reference(i,0:n,k,m)=spafilter10exp(q(i,:,k,m),nt,n,kind)
             enddo
             enddo
           case(3)
             do j=0,n
             do i=0,n
-              reference(i,j,0:n,m)=spafilter10exp(q(i,j,:,m),nt,n)
+              reference(i,j,0:n,m)=spafilter10exp(q(i,j,:,m),nt,n,kind)
             enddo
             enddo
           end select
@@ -150,13 +161,14 @@ program probe
           storage_error=maxval(abs(full(0:n,0:n,0:n,:)-scalar(0:n,0:n,0:n,:)))
           max_error=max(max_error,error);max_storage_error=max(max_storage_error,storage_error)
           if(error>2.e-10_real_kind.or.storage_error>2.e-10_real_kind) then
-            print *, 'FILTER_FAILURE',n,nt,axis,field,layout,error,storage_error
+            print *, 'FILTER_FAILURE',kind,n,nt,axis,field,layout,error,storage_error
             error stop 'CPU/GPU or storage mismatch'
           endif
           checks=checks+1
         enddo
       enddo
       enddo
+    enddo
     enddo
     deallocate(q,reference,full,scalar,q_d,qwork_d,filter_work_d)
   enddo
@@ -173,10 +185,11 @@ def test_cpu_gpu_physical_filter_and_both_workspaces(tmp_path,record_property):
     compiler='/opt/nvidia/hpc_sdk/Linux_x86_64/26.1/compilers/bin/nvfortran'
     result=subprocess.run([compiler,'-Mpreprocess','-Mextend','-Mnostack_arrays','-O2','-cuda',
         '-gpu=rdc,maxregcount:128',str(ROOT/'src/astr_precision.F90'),str(ROOT/'src/constdef.F90'),
+        str(ROOT/'src/boundary_high_order.F90'),str(ROOT/'src_gpu/boundary_high_order_gpu.cuf'),
         str(source),'-o','filter_probe'],cwd=tmp_path,text=True,capture_output=True,timeout=120)
     (tmp_path/'build.log').write_text(result.stdout+result.stderr)
     assert result.returncode==0,result.stdout+result.stderr
-    result=subprocess.run([str(tmp_path/'filter_probe')],cwd=tmp_path,text=True,capture_output=True,timeout=120)
+    result=subprocess.run([str(tmp_path/'filter_probe')],cwd=tmp_path,text=True,capture_output=True,timeout=240)
     (tmp_path/'run.log').write_text(result.stdout+result.stderr)
     record_property('probe_directory',str(tmp_path))
     assert result.returncode==0,result.stdout+result.stderr

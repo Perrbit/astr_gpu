@@ -120,15 +120,19 @@ module bc
     kind=bctype(2*axis-1);expected=1;expected(2*axis-1:2*axis)=kind
     if(numerical_precision/='fp64'.or.ndims/=3.or. &
        numq/=5.or.num_species/=0.or.num_modequ/=0.or.lcomb.or..not.nondimen.or. &
-       conschm/='643e'.or.difschm/='643e'.or.rkscheme/='rk3'.or.lfilter.or..not.diffterm.or. &
+       conschm/='643e'.or.difschm/='643e'.or.rkscheme/='rk3'.or..not.diffterm.or. &
        turbmode/='none'.or.any(bctype/=expected).or. &
        .not.(kind==41.or.(kind==42.and.axis<=2).or.(kind==421.and.axis==2)).or. &
        .not.((flowtype=='channel'.and.axis==2).or.(flowtype=='tgv'.and.kind/=421))) &
-      error stop 'Hermite7 wall requires FP64 643e/RK3, one supported wall axis, no main filter'
+      error stop 'Hermite7 wall requires FP64 643e/RK3 and one supported wall axis'
+#ifndef ASTR_BUILD_TESTING
+    if(lfilter) error stop 'Hermite7 wall main filter is validation-only (BUILD_TESTING=ON)'
+#endif
     high_order_wall_enabled=.true.
     high_order_wall_axis=axis
     high_order_adiabatic_wall_enabled=kind==42.or.kind==421
     high_order_slip_wall_enabled=kind==421
+    if(lio.and.lfilter) write(*,'(a)') ' ** high-order wall filter: local-f6-v1 (validation only)'
     if(lio) then
       if(flowtype=='tgv') then
         write(*,'(a,i0,a,i0)') ' ** Cartesian Hermite7 wall axis=',axis,' bctype=',kind
@@ -143,6 +147,7 @@ module bc
   end subroutine configure_high_order_wall
 
   subroutine validate_high_order_wall_geometry()
+    use commvar, only: lfilter
     implicit none
     real(real_kind) :: reference(3),tolerance,off_diagonal
     integer :: a,b,extent(3),rank_position(3),last_rank(3),axis
@@ -153,6 +158,8 @@ module bc
     if(high_order_adiabatic_wall_enabled.and. &
        (rank_position(axis)==0.or.rank_position(axis)==last_rank(axis)).and.extent(axis)<8) &
       error stop 'Adiabatic Hermite7 wall requires seven strictly interior normal nodes'
+    if(lfilter.and.last_rank(axis)==0.and.extent(axis)<8) &
+      error stop 'High-order wall filter requires nine global normal nodes'
     reference=[dxi(0,0,0,1,1),dxi(0,0,0,2,2),dxi(0,0,0,3,3)]
     tolerance=256.e0_real_kind*epsilon(1.e0_real_kind)*max(1.e0_real_kind,maxval(abs(reference)))*max(im,jm,km)
     off_diagonal=0.e0_real_kind

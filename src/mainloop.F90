@@ -386,6 +386,9 @@ module mainloop
     use sponge_layer,only : spongefilter
     use solver,   only : rhscal
     use bc,       only : boucon,immbody,bctype,twall,turbinf,apply_high_order_wall_state
+#ifdef ASTR_BUILD_TESTING
+    use boundary_high_order, only: high_order_wall_enabled
+#endif
     use parallel, only : qswap
     use conservative_boundary_runtime, only: conservative_boundary, &
                            apply_conservative_boundary_stage
@@ -607,6 +610,10 @@ module mainloop
     do rkstep=1,n_rk_steps
       
       if(lfilter) then
+#ifdef ASTR_BUILD_TESTING
+        if(high_order_wall_enabled.and.rhs_validation_requested()) &
+          call write_q_validation_snapshot('pre_filter')
+#endif
 #ifdef ASTR_AIR5_CHEMISTRY
         if(lcomb.and.air5_conservative_filter) then
           call air5_filter_conservative()
@@ -621,6 +628,10 @@ module mainloop
         if(lcomb) call air5_save_filter_species_base()
 #endif
         call filterq(timerept=ltimrpt)
+#ifdef ASTR_BUILD_TESTING
+        if(high_order_wall_enabled.and.rhs_validation_requested()) &
+          call write_q_validation_snapshot('post_filter')
+#endif
         ! Derivatives and fluxes must use the filtered state at every physical node.
         if(refresh_filtered_primitives) then
           call updatefvar

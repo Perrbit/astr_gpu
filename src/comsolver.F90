@@ -680,17 +680,21 @@ module comsolver
     use commvar,  only : im,jm,km,numq,ndims,npdci,npdcj,npdck
     use commarray,only : q
     use filter,   only : spafilter10exp
+    use boundary_high_order,only : high_order_wall_enabled,high_order_wall_axis,high_order_adiabatic_wall_enabled
     !
     integer :: i,j,k,n
+    integer :: wall_kind(3)
     real(real_kind),allocatable :: phi(:,:),fph(:,:)
     !
+    wall_kind=0
+    if(high_order_wall_enabled) wall_kind(high_order_wall_axis)=merge(42,41,high_order_adiabatic_wall_enabled)
     call dataswap(q,direction=1,timerept=ltimrpt)
     allocate(phi(-hm:im+hm,1:numq),fph(0:im,1:numq))
     do k=0,km
     do j=0,jm
       phi(:,:)=q(:,j,k,:)
       do n=1,numq
-        fph(:,n)=spafilter10exp(f=phi(:,n),ntype=npdci,dim=im)
+        fph(:,n)=spafilter10exp(f=phi(:,n),ntype=npdci,dim=im,wall_kind=wall_kind(1))
       enddo
       q(0:im,j,k,:)=fph(0:im,:)
     enddo
@@ -704,7 +708,7 @@ module comsolver
       do i=0,im
         phi(:,:)=q(i,:,k,:)
         do n=1,numq
-          fph(:,n)=spafilter10exp(f=phi(:,n),ntype=npdcj,dim=jm)
+          fph(:,n)=spafilter10exp(f=phi(:,n),ntype=npdcj,dim=jm,wall_kind=wall_kind(2))
         enddo
         q(i,0:jm,k,:)=fph(0:jm,:)
       enddo
@@ -719,7 +723,7 @@ module comsolver
       do i=0,im
         phi(:,:)=q(i,j,:,:)
         do n=1,numq
-          fph(:,n)=spafilter10exp(f=phi(:,n),ntype=npdck,dim=km)
+          fph(:,n)=spafilter10exp(f=phi(:,n),ntype=npdck,dim=km,wall_kind=wall_kind(3))
         enddo
         q(i,j,0:km,:)=fph(0:km,:)
       enddo

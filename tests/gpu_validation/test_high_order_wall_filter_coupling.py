@@ -16,7 +16,7 @@ from test_high_order_adiabatic_wall_candidate import adiabatic_cns_matrix
 from test_high_order_boundary_closures import derivative_matrix
 
 
-def native_filter_matrices(directory,intervals=(32,64,128)):
+def native_filter_matrices(directory,intervals=(32,64,128),wall_kind=0):
     directory=directory.resolve()
     directory.mkdir(parents=True,exist_ok=False)
     initialization=procedure(ROOT/'src/filter.F90','subroutine','filter_coefficient_explicit')
@@ -36,24 +36,25 @@ program probe
   use filter_probe
   use commvar
   implicit none
-  integer :: n,column,unit
+  integer :: n,column,unit,wall_kind
   character(1200) :: arg,filename
   real(real_kind),allocatable :: f(:),matrix(:,:),a(:),b(:)
   call get_command_argument(1,arg);read(arg,*) n
   call get_command_argument(2,filename)
+  call get_command_argument(3,arg);read(arg,*) wall_kind
   call filter_coefficient_explicit()
   allocate(f(-hm:n+hm),matrix(0:n,0:n))
   do column=0,n
     f=0.e0_real_kind;f(column)=1.e0_real_kind
-    matrix(:,column)=spafilter10exp(f,4,n)
+    matrix(:,column)=spafilter10exp(f,4,n,wall_kind)
   enddo
   f=0.e0_real_kind
   do column=0,n
     f(column)=exp(4.e0_real_kind*real(column,real_kind)/n)
   enddo
-  a=spafilter10exp(f,4,n)
+  a=spafilter10exp(f,4,n,wall_kind)
   f(-hm:-1)=123.e0_real_kind;f(n+1:n+hm)=-456.e0_real_kind
-  b=spafilter10exp(f,4,n)
+  b=spafilter10exp(f,4,n,wall_kind)
   if(any(a/=b)) error stop 'physical filter consumes exterior ghosts'
   open(newunit=unit,file=trim(filename),status='new',access='stream',form='unformatted')
   write(unit) matrix
@@ -62,12 +63,12 @@ end program
 ''')
     executable=directory/'filter_probe'
     result=subprocess.run(['gfortran','-cpp','-ffree-line-length-none',str(ROOT/'src/astr_precision.F90'),
-        str(source),'-o',str(executable)],cwd=directory,text=True,capture_output=True,timeout=60)
+        str(ROOT/'src/boundary_high_order.F90'),str(source),'-o',str(executable)],cwd=directory,text=True,capture_output=True,timeout=60)
     assert result.returncode==0,result.stdout+result.stderr
     matrices={}
     for n in intervals:
         path=directory/f'filter_{n}.bin'
-        result=subprocess.run([str(executable),str(n),str(path)],cwd=directory,text=True,capture_output=True,timeout=30)
+        result=subprocess.run([str(executable),str(n),str(path),str(wall_kind)],cwd=directory,text=True,capture_output=True,timeout=30)
         assert result.returncode==0,result.stdout+result.stderr
         matrices[n]=np.fromfile(path,'<f8').reshape(n+1,n+1,order='F')
     return matrices

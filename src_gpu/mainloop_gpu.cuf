@@ -4,8 +4,27 @@ module mainloop_gpu
   use boundary_high_order, only: high_order_boundary_enabled
   implicit none
   private :: real_kind
+  private :: snapshot_wall_filter_gpu
   logical,save,private :: static_configuration_validated=.false.
 contains
+  subroutine snapshot_wall_filter_gpu(label,stage)
+#ifdef ASTR_BUILD_TESTING
+    use boundary_high_order, only: high_order_wall_enabled
+    use commvar, only: nstep
+    use commarray_gpu, only: copy_flow_from_gpu
+    use validation_io, only: rhs_validation_requested,write_q_validation_snapshot
+#endif
+    implicit none
+    character(*),intent(in) :: label
+    integer,intent(in) :: stage
+#ifdef ASTR_BUILD_TESTING
+    if(.not.high_order_wall_enabled) return
+    if(.not.rhs_validation_requested()) return
+    call copy_flow_from_gpu()
+    call write_q_validation_snapshot(label,nstep,stage)
+#endif
+  end subroutine snapshot_wall_filter_gpu
+
   subroutine prepare_profile_nscbc_gpu(stage)
     use commvar, only: im,jm,km,hm,const2,const6,lfilter,nstep
     use parallel, only: lio
@@ -171,6 +190,9 @@ contains
              q_d,rho_d,vel_d,prs_d,tmp_d,const2,const6,im,jm,km,hm)
         call sync_after_kernel('prepare_q_to_primitive_kernel_prefilter')
       endif
+#ifdef ASTR_BUILD_TESTING
+      call snapshot_wall_filter_gpu('pre_filter',1)
+#endif
       call begin_gpu_phase('filter')
       if(compact_global_enabled()) then
         call compact_filter_state_gpu()
@@ -178,6 +200,9 @@ contains
         call apply_explicit_filter_gpu(periodic_filter_case,'prepare_')
       endif
       call end_gpu_phase('filter',nstep,1)
+#ifdef ASTR_BUILD_TESTING
+      call snapshot_wall_filter_gpu('post_filter',1)
+#endif
       call repair_filtered_state_gpu(1)
       if(refresh_filtered_primitives) then
         call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &
@@ -704,6 +729,9 @@ contains
         endif
 
         if(lfilter) then
+#ifdef ASTR_BUILD_TESTING
+          call snapshot_wall_filter_gpu('pre_filter',rkstep)
+#endif
           call begin_gpu_phase('filter')
           if(compact_global_enabled()) then
             call compact_filter_state_gpu()
@@ -711,6 +739,9 @@ contains
             call apply_explicit_filter_gpu(periodic_filter_case,'')
           endif
           call end_gpu_phase('filter',nstep,rkstep)
+#ifdef ASTR_BUILD_TESTING
+          call snapshot_wall_filter_gpu('post_filter',rkstep)
+#endif
           call repair_filtered_state_gpu(rkstep)
           if(refresh_filtered_primitives) then
             call q_to_primitive_kernel<<<grid_primitive,block_primitive>>>( &

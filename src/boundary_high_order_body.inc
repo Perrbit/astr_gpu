@@ -26,6 +26,7 @@
   public :: boundary_pressure_neumann6
   public :: boundary_temperature5,boundary_temperature_rhs5
   public :: boundary_wall_temperature7,boundary_noslip_rhs7
+  public :: boundary_wall_filter6
 
   ! FD numerical-flux moments, not interpolation of physical flux at a midpoint.
   real(real_kind),parameter :: boundary_flux6_weights(0:7,0:2)=reshape([ &
@@ -66,7 +67,42 @@
     -1.e0_real_kind/12,1.e0_real_kind,-1.e0_real_kind/3,1.e0_real_kind/12,-1.e0_real_kind/100, &
     -1.e0_real_kind,1.e0_real_kind/6,2.e0_real_kind/3,-1.e0_real_kind/8,1.e0_real_kind/75],[5,2])
   real(real_kind),parameter :: pressure_neumann6_slope(2)=[-1.e0_real_kind/5,1.e0_real_kind/10]
+  real(real_kind),parameter :: wall_filter6_a0(4,2)=reshape([ &
+    323.e0_real_kind/2898,701.e0_real_kind/2490,827.e0_real_kind/2383,2413.e0_real_kind/3032, &
+    544.e0_real_kind/3743,-152.e0_real_kind/2883,1582.e0_real_kind/2067,1083.e0_real_kind/580],[4,2])
+  real(real_kind),parameter :: wall_filter6_a2(4,2)=reshape([ &
+    -72.e0_real_kind/1639,1461.e0_real_kind/3958,174.e0_real_kind/3949,2413.e0_real_kind/3032, &
+    -1093.e0_real_kind/2657,822.e0_real_kind/1711,121.e0_real_kind/3956,1083.e0_real_kind/580],[4,2])
+  real(real_kind),parameter :: wall_difference6(0:6)=[1.e0_real_kind,-6.e0_real_kind,15.e0_real_kind, &
+    -20.e0_real_kind,15.e0_real_kind,-6.e0_real_kind,1.e0_real_kind]/64.e0_real_kind
+  real(real_kind),parameter :: wall_filter6_b0(0:8)=[wall_difference6,0.e0_real_kind,0.e0_real_kind]
+  real(real_kind),parameter :: wall_filter6_b1(0:8)=[0.e0_real_kind,wall_difference6,0.e0_real_kind]
+  real(real_kind),parameter :: wall_filter6_b2(0:8)=[0.e0_real_kind,0.e0_real_kind,wall_difference6]
+  real(real_kind),parameter :: wall_filter6_delta(0:8,4,2)=reshape([ &
+    wall_filter6_a0(1,1)*(wall_filter6_b0+wall_filter6_b1)+wall_filter6_a2(1,1)*(wall_filter6_b1+wall_filter6_b2)-wall_filter6_b1, &
+    wall_filter6_a0(2,1)*(wall_filter6_b0+wall_filter6_b1)+wall_filter6_a2(2,1)*(wall_filter6_b1+wall_filter6_b2)+wall_filter6_b1, &
+    wall_filter6_a0(3,1)*(wall_filter6_b0+wall_filter6_b1)+wall_filter6_a2(3,1)*(wall_filter6_b1+wall_filter6_b2)-wall_filter6_b1, &
+    wall_filter6_a0(4,1)*(wall_filter6_b0+wall_filter6_b1)+wall_filter6_a2(4,1)*(wall_filter6_b1+wall_filter6_b2)+wall_filter6_b1, &
+    wall_filter6_a0(1,2)*(wall_filter6_b0+wall_filter6_b1)+wall_filter6_a2(1,2)*(wall_filter6_b1+wall_filter6_b2)-wall_filter6_b1, &
+    wall_filter6_a0(2,2)*(wall_filter6_b0+wall_filter6_b1)+wall_filter6_a2(2,2)*(wall_filter6_b1+wall_filter6_b2)+wall_filter6_b1, &
+    wall_filter6_a0(3,2)*(wall_filter6_b0+wall_filter6_b1)+wall_filter6_a2(3,2)*(wall_filter6_b1+wall_filter6_b2)-wall_filter6_b1, &
+    wall_filter6_a0(4,2)*(wall_filter6_b0+wall_filter6_b1)+wall_filter6_a2(4,2)*(wall_filter6_b1+wall_filter6_b2)+wall_filter6_b1], &
+    [9,4,2])
 contains
+  BOUNDARY_HIGH_ORDER_PROC function boundary_wall_filter6(f,row,adiabatic) result(value)
+    real(real_kind),intent(in) :: f(0:8)
+    integer,intent(in) :: row
+    logical,intent(in) :: adiabatic
+    real(real_kind) :: value
+    integer :: j,family
+    family=1
+    if(adiabatic) family=2
+    value=f(row)
+    do j=0,8
+      if(j/=row) value=value+wall_filter6_delta(j,row,family)*(f(j)-f(row))
+    enddo
+  end function boundary_wall_filter6
+
   BOUNDARY_HIGH_ORDER_PROC function boundary_wall_temperature7(state,fixed_temperature,const2,const6,adiabatic) result(t)
     real(real_kind),intent(in) :: state(5,0:7),fixed_temperature,const2,const6
     logical,intent(in) :: adiabatic

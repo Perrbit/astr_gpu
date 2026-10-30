@@ -548,27 +548,36 @@ module filter
     !| The end of the function filter8exp.                               |
     !+-------------------------------------------------------------------+
     !
-    function spafilter10exp(f,ntype,dim) result(ff)
+    function spafilter10exp(f,ntype,dim,wall_kind) result(ff)
       !
       use commvar, only: hm
+      use boundary_high_order, only: boundary_wall_filter6
 
       ! arguments
       integer,intent(in) :: ntype,dim
+      integer,intent(in),optional :: wall_kind
       real(real_kind),intent(in) :: f(-hm:dim+hm)
       real(real_kind) :: ff(0:dim)
       !
       ! local data
       integer :: ii,m,i_s,i_e
+      logical :: wall_filter
       !
       ff=0.e0_real_kind
       i_s=0
       i_e=dim
+      wall_filter=.false.
+      if(present(wall_kind)) wall_filter=wall_kind==41.or.wall_kind==42.or.wall_kind==421
       !
       ! A physical face has no valid halo. Preserve the boundary node and
       ! use the documented 0-6-6-6-8-10 explicit closure toward the interior.
       if(ntype==1 .or. ntype==4) then
         ff(0)=f(0)
-
+        if(wall_filter) then
+          do ii=1,4
+            ff(ii)=boundary_wall_filter6(f(0:8),ii,wall_kind/=41)
+          enddo
+        else
         do m=0,6
           ff(1)=ff(1)+coef6be(1,m)*f(m)
           ff(2)=ff(2)+coef6be(2,m)*f(m)
@@ -583,13 +592,19 @@ module filter
         do m=0,4
           ff(ii)=ff(ii)+coef8e(m)*(f(ii-m)+f(ii+m))
         enddo
+        endif
 
         i_s=5
       endif
 
       if(ntype==2 .or. ntype==4) then
         ff(dim)=f(dim)
-
+        if(wall_filter) then
+          do ii=1,4
+            if(ntype==4.and.dim-ii<=4) cycle
+            ff(dim-ii)=boundary_wall_filter6(f(dim:dim-8:-1),ii,wall_kind/=41)
+          enddo
+        else
         do m=0,6
           ff(dim-1)=ff(dim-1)+coef6be(1,m)*f(dim-m)
           ff(dim-2)=ff(dim-2)+coef6be(2,m)*f(dim-m)
@@ -605,6 +620,7 @@ module filter
         do m=0,4
           ff(ii)=ff(ii)+coef8e(m)*(f(ii-m)+f(ii+m))
         enddo
+        endif
 
         i_e=dim-5
       endif

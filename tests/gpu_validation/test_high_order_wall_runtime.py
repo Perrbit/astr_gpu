@@ -65,7 +65,7 @@ def defined_extras(state,normal_axis=2):
     assert offset==state['rank_extras'].size
 
 
-def prepare(case,backend,steps,restore,grid=GRID,manufactured=False,dt=DT,checkpoint_interval=1,wall_type=41,normal_axis=2,flow_type=None,initial_condition=None):
+def prepare(case,backend,steps,restore,grid=GRID,manufactured=False,dt=DT,checkpoint_interval=1,wall_type=41,normal_axis=2,flow_type=None,initial_condition=None,filtering=False):
     datin=case/'datin';datin.mkdir(parents=True)
     (case/'outdat/new').mkdir(parents=True)
     (case/'diagnostics').mkdir()
@@ -75,7 +75,7 @@ def prepare(case,backend,steps,restore,grid=GRID,manufactured=False,dt=DT,checkp
     target_grid=tuple(grid[p] for p in permutation)
     flags=['t']*3;flags[normal_axis-1]='f'
     set_grid(primary,','.join(map(str,target_grid)));set_homogeneous(primary,','.join(flags))
-    set_runtime_flags(primary,'t' if backend=='gpu' else 'f','f','t','t')
+    set_runtime_flags(primary,'t' if backend=='gpu' else 'f','t' if filtering else 'f','t','t')
     set_scheme(primary,'643e');set_ninit(primary,3)
     if wall_type==421:
         set_bctype(primary,'1;1;421,0.d0;421,0.d0;1;1')
@@ -125,15 +125,17 @@ def launch(tmp_path_factory):
     completed={}
     def run(backend,topology=(1,1,1),steps=12,restore=None,mode='hermite7',transport='pinned',
             grid=GRID,manufactured=False,wall_samples=False,sanitizer=False,reject=None,dt=DT,checkpoint_interval=1,wall_type=41,
-            normal_axis=2,gradients=False,flow_type=None,initial_condition=None):
-        key=(backend,topology,steps,str(restore),mode,transport,grid,manufactured,wall_samples,sanitizer,reject,dt,checkpoint_interval,wall_type,normal_axis,gradients,flow_type,initial_condition)
+            normal_axis=2,gradients=False,flow_type=None,initial_condition=None,filtering=False,workspace='scalar',dump_validation=True):
+        key=(backend,topology,steps,str(restore),mode,transport,grid,manufactured,wall_samples,sanitizer,reject,dt,checkpoint_interval,wall_type,normal_axis,gradients,flow_type,initial_condition,filtering,workspace,dump_validation)
         if key in completed:
             return completed[key]
         wall_label='' if wall_type==41 else f'_bc{wall_type}'
         if normal_axis!=2:wall_label+=f'_axis{normal_axis}'
         if flow_type is not None:wall_label+='_'+flow_type
+        if filtering:wall_label+='_f6loc1_'+workspace
+        if not dump_validation:wall_label+='_no_validation'
         case=root/f'{backend}_{"x".join(map(str,topology))}_{steps}_{mode}{wall_label}_{len(completed)}'
-        prepare(case,backend,steps,restore,grid,manufactured,dt,checkpoint_interval,wall_type,normal_axis,flow_type,initial_condition)
+        prepare(case,backend,steps,restore,grid,manufactured,dt,checkpoint_interval,wall_type,normal_axis,flow_type,initial_condition,filtering)
         env=runtime(','.join(map(str,topology)),transport)
         for name in tuple(env):
             if name.startswith('ASTR_INSITU_') or name.startswith('ASTR_WALL_BLOWING_'):
@@ -141,7 +143,8 @@ def launch(tmp_path_factory):
         env.update(ASTR_HIGH_ORDER_WALL_MODE=mode,ASTR_GPU_MP_POSITIVITY='off',
             ASTR_CHANNEL_FORCE_MODE='fixed',ASTR_CHANNEL_FORCE_FIXED='0',
             ASTR_VALIDATION_RHS_PREFIX='diagnostics/state',ASTR_VALIDATION_RHS_STEP='0',
-            ASTR_PERFECT_GAS_PRANDTL='0.72',ASTR_GPU_FILTER_WORKSPACE='scalar')
+            ASTR_PERFECT_GAS_PRANDTL='0.72',ASTR_GPU_FILTER_WORKSPACE=workspace)
+        if not dump_validation:env.pop('ASTR_VALIDATION_RHS_PREFIX',None)
         if gradients:env['ASTR_VALIDATION_GRADIENTS']='1'
         if wall_samples:
             env['ASTR_INSITU_SAMPLE_PREFIX']='diagnostics/wall'
@@ -165,6 +168,7 @@ def launch(tmp_path_factory):
             for report in reports:
                 assert 'ERROR SUMMARY: 0 errors' in report.read_text(),report.read_text()
         if mode=='hermite7':
+            if filtering:assert 'local-f6-v1 (validation only)' in text
             identity={41:'channel-wall-h7-v1',42:'channel-adiabatic-p6t7-v1',421:'channel-slip-p6t7-v1'}[wall_type]
             if normal_axis==2 and flow_type!='tgv':assert identity in text
             else:assert f'Cartesian Hermite7 wall axis={normal_axis}' in text
