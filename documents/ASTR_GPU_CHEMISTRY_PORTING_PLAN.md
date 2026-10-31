@@ -1,14 +1,21 @@
 # ASTR 五组分双温化学 GPU 移植计划
 
 状态：C0-C4、C5基础耦合和A0/B1/B2短时接入已完成；补偿、对称组分通量、分层能量约束及新保守滤波已有本地证据。最新G1/G2误差、工程消融和2026-10-17本地交付收口完成，含两组24000步/6 us发展窗一致性；A1/B1/B2长时物理门槛未关闭，U8/A800延期，不标记为完成。
-日期：2026-10-17
+日期：2026-10-17；状态同步：2026-10-31
 适用分支：`feature/gpu_dev`
+
+后续AP0–AP7的本地实现、误差／续算及五轮组合已关闭，扩大网格覆盖也已
+完成115轮正式计时、CPU/GPU对照和128³双卡四步检查。低活性筛选仍默认
+关闭，AIR5非精确策略迁移未扩展；这不关闭下文长时物理或U8/A800门槛。
+跨专项当前待办见[统一状态入口](ASTR_GPU_CURRENT_STATUS_AND_NEXT_TARGETS.md)。
 
 ## 0. 当前交付与证据范围
 
-最新数值与性能状态以
+原C5／阶段协同交付的数值与性能状态见
 [阶段协同主计划](../docs/plans/2026-10-09-2156-feat-dual-temperature-chemistry-stage-coordination-plan.md)
-和[实施记录第38至53节](ASTR_AIR5_STAGE_COORDINATION_LOCAL_RESULTS_20261013.md)为准。
+和[阶段实施记录](ASTR_AIR5_STAGE_COORDINATION_LOCAL_RESULTS_20261013.md)。
+更新的AP工程及筛选证据见[AP记录](ASTR_AIR5_AP_IMPLEMENTATION_STATUS.md)与
+[扩大覆盖结果](ASTR_AIR5_AP_EXPANDED_COVERAGE_RESULTS.md)，不同基线的收益不相加。
 下文早期阶段记录保留原实现顺序；其中C4禁止滤波、反应流重启尚未实现等
 描述已被后续限定接入覆盖，不作为当前统一能力限制。
 

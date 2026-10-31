@@ -1,5 +1,14 @@
 # ASTR Full-GPU Architecture Plan
 
+Current status (2026-10-31): use the
+[unified status and backlog](ASTR_GPU_CURRENT_STATUS_AND_NEXT_TARGETS.md)
+as the cross-plan entry point. Resident nonreacting and fixed-AIR5 coupled
+paths, admitted CUDA-aware transport, redesigned output/restart, and bounded
+device in-situ pipelines are implemented. High-order boundaries, long-time
+physics, native compact FP32, and target-platform qualification remain scoped
+open work. The dated baseline notes below are historical evidence, not a
+claim that only TGV or uncoupled C4 is implemented today.
+
 2026-10-20 scope update: a separately approved compact track now covers
 non-reacting periodic TGV and separable Cartesian profile plates, using globally
 coupled two-level PCR for central derivatives and filtering. CP0-CP10 have bounded
@@ -7,15 +16,21 @@ local evidence; CP9 timing and CP10 closeout are recorded in
 [the compact plan](ASTR_GPU_COMPACT_SCHEME_PLAN.md). The historical phase notes
 below do not reopen compact upwind, general CURVE or AIR5 compact paths.
 
+Native FP32 was separately implemented for bounded nonreacting paths; its
+remaining compatibility and long-time compact-accuracy issues are recorded in
+[the native-precision results](ASTR_NATIVE_FP32_RESULTS.md). The original
+mixed-workspace constraints below are not a rejection of that separate track.
+
 ## 1. Purpose
 
 This document defines the scalable architecture plan for migrating ASTR from the current CUDA Fortran Taylor-Green Vortex baseline toward a full-GPU ASTR architecture.
 
 The goal is not to turn the existing TGV implementation into a one-off CUDA path. The goal is to preserve the validated CUDA Fortran work while organizing it into backend-neutral boundaries that can later support HIP/DCU backends, larger multi-rank runs, and broader ASTR physics.
 
-## 2. Current Baseline
+## 2. Baseline And Historical Capability Notes
 
-The current GPU port has reached a validated non-reacting TGV baseline:
+The original architecture baseline was the validated non-reacting TGV path;
+later additions are retained below in their recorded scope:
 
 - The current `256^3`, NP=1, FP64, explicit-sync TGV median is
   `0.580044424 s/RK`, reduced by `23.964%` from the original
@@ -689,7 +704,7 @@ Tasks:
 - Keep the GPU runtime gate rejecting generic `num_species > 0` combinations;
   admit only the explicit fixed-air5 C4 contract.
 - Preserve the completed fixed-air5 device layout, halo exchange, mixture
-  properties, and species-diffusion oracle while C5 adds chemistry coupling.
+  properties, species-diffusion oracle, and validated C5 chemistry coupling.
 - Reopen a generic layout only for a concrete need such as passive scalar
   transport, a different multicomponent gas, or later fuel chemistry.
 - For any generic reopening, define an independent layout, transport model,
@@ -723,17 +738,19 @@ Acceptance:
 
 Goal:
 
-The fixed five-species, two-temperature air chemistry track has passed its
-isolated source and GPU integrator gates. C4 now owns the species-bearing
-conservative state and nonreacting CFD transport. Chemical half-step coupling
-remains closed until Phase C5 passes its independent gates.
+The fixed five-species, two-temperature air track has completed C0-C4 and
+bounded C5 Strang/RK3 coupling, including transport, compensation, limiters,
+optional conservative filtering, and registered exact-restart lifecycles.
+Long-time plate, normal-shock and reacting-SBLI physical gates remain open.
+See [the chemistry plan](ASTR_GPU_CHEMISTRY_PORTING_PLAN.md) and the newer
+[AP implementation record](ASTR_AIR5_AP_IMPLEMENTATION_STATUS.md).
 
 Subphases:
 
 - **Phase 5A: 0D/PSR chemistry source-only gate**
   - First chemistry acceptance target.
   - Use `examples/Perfectly_Stirred_Reactor` or `examples/air_reactor` style cases to isolate chemistry source evaluation from species convection, species diffusion, wall boundaries, and multi-dimensional halo effects.
-  - Validate thermochemistry state update, reaction-rate evaluation, mass-fraction normalization, positivity, and CPU/GPU source-term oracle before opening transport coupling.
+  - Validate thermochemistry state update, reaction-rate evaluation, species closure, positivity, and CPU/GPU source-term oracle before opening transport coupling.
   - Current status: C0 and C1 are complete for the fixed five-species,
     two-temperature CPU FP64 baseline. C2 adds a one-thread-per-state CUDA
     batch kernel for thermodynamic recovery, coupled chemical/V-T sources,
@@ -744,8 +761,9 @@ Subphases:
     states and adaptive diagnostics match, sanitizer passes, and Nsight Compute
     identifies register and local-memory pressure. C4 adds resident `numq=11`
     state conversion, nonreacting convection/diffusion, and multi-rank halo;
-    its CPU/GPU and independent species-variance gates pass. C5 Strang coupling
-    is the active next target. Cantera is optional and is not the complete
+    its CPU/GPU and independent species-variance gates pass. Bounded C5
+    Strang coupling is also implemented; physical qualification is separate.
+    Cantera is optional and is not the complete
     two-temperature oracle.
 - **Phase 5B: quasi-one-dimensional transport and relaxation gate**
   - Validate an extruded species wave, binary diffusion layer, vibrational-energy
@@ -759,12 +777,13 @@ Subphases:
 
 Tasks:
 
-- Keep generic chemistry/species combinations rejected while admitting only the
-  validated fixed-air5, `lfilter=f`, `numq=11` contract.
+- Keep generic chemistry/species combinations separate from the validated
+  fixed-air5 `numq=11` contract. Filtering is admitted only through its
+  separately validated legacy/conservative-flux combinations.
 - Preserve the completed C4 device ownership, state conversion, convection,
   diffusion, and halo semantics as the transport baseline.
-- In C5, insert the two chemistry half steps around the existing full transport
-  step without communication inside the cell-local adaptive solve.
+- Preserve the implemented two chemistry half steps around the full transport
+  step, with no MPI communication inside the cell-local adaptive solve.
 - Preserve the fixed JSON/generated-Fortran backend and table ownership closed
   in C0.
 - Keep the completed C2 batch source/Jacobian interface independent of CFD state.
@@ -989,11 +1008,17 @@ Goal:
 
 Replace or augment L0 host-staged blocking MPI with faster HaloTransport backends.
 
-Current status on 2026-09-07: the local two-GPU P3 campaign is complete. Pageable
-blocking remains the default; pinned blocking and periodic stored-diffusion overlap
-are optional. Standalone nonblocking was rejected below the end-to-end gain threshold,
-and CUDA-aware MPI is deferred after current-stack admission failures. Extending overlap
-to physical-boundary, shock-sensor, or SBLI paths is future work, not completed P3 scope.
+Historical status on 2026-09-07: the local two-GPU P3 campaign was complete.
+Pageable blocking was the default; pinned blocking and periodic stored-diffusion
+overlap were optional. Standalone nonblocking was rejected under the then-current
+gain threshold, and CUDA-aware MPI was deferred after stack-admission failures.
+Physical-boundary, shock-sensor and SBLI overlap were outside that P3 closure.
+
+That CUDA-aware deferral is superseded: host-staged and device-aware transports
+now have admitted nonreacting and fixed-AIR5 matrices. AP5 additionally provides
+private packed flux slots and next-axis prepacking; neither establishes arbitrary
+network overlap or HIP/DCU support. Current scopes and retained negative results
+are recorded in [the performance plan](ASTR_GPU_PERFORMANCE_OPTIMIZATION_PLAN.md).
 
 Tasks:
 
@@ -1205,18 +1230,18 @@ A800 performance, or production promotion.
 
 ## 8. Immediate Next Work
 
-Recommended immediate work after this plan:
+The active ordering is maintained only in the
+[unified backlog](ASTR_GPU_CURRENT_STATUS_AND_NEXT_TARGETS.md), rather than
+duplicated here. HB6's approved uniform-Cartesian FP64 wall-filter subset has
+completed joint validation and optional non-testing-build delivery; H1
+spanwise growth remains unresolved. Subsequent scope follows that backlog;
+this status synchronization does not authorize additional solver changes or runs.
 
-1. Implement C5 Strang coupling using the completed C3 cell-local integrator and
-   C4 resident `numq=11` transport. First require a periodic uniform embedded
-   reactor to reproduce the zero-dimensional trajectory with zero spatial RHS.
-2. Treat CURVE-C21 as the frozen static single-block curvilinear baseline and keep `run_curvilinear_c21_aggregate.sh` as the release-level regression gate.
-3. Establish the A800 FP64 NP=1/2/4 baseline with TGV and a sufficiently three-dimensional curvilinear HBL/SBLI workload. Use it to freeze timing variation, memory, and kernel evidence for mixed-precision MP0.
-4. Complete the OpenSBLI Katzer laminar-SBLI goal: `t=13000/26000` time convergence, three grids, two time steps, and external wall-pressure, skin-friction, heat-flux, shock-location, and separation-length comparisons.
-5. Repeat the locally closed MP2 candidates on A800 NP=1/2/4, then continue MP3-MP5 only after each affected FP64 physical oracle is closed. Evaluate shock-sensitive and filter workspaces independently.
-6. Use the A800 profile to decide whether to extend overlap to nonperiodic/SBLI paths or evaluate the existing selective-synchronization option. Keep explicit synchronization as the correctness baseline.
-7. Prototype one backend-neutral CUDA/HIP boundary through the existing facade, preferably with `ISO_C_BINDING` around representative derivative, filter, and halo pack/unpack kernels, before considering a broad AMD/DCU port.
-8. Freeze CURVE-C22 as the inviscid curved upper-y source-balanced `bctype=52` gate and CURVE-C23 as its first sixth-order explicit viscous-source-coupled slice. Extend to other open faces or more general viscous boundary terms only for a concrete case and a physical-normal contract; do not generalize `12/22/51/52` branches by analogy.
+Preserve CURVE-C21/C22/C23 and the registered numerical/restart evidence while
+closing remaining physical gates. A800 reactive-flow U8 remains deferred;
+native compact FP32, publication scope, and future CUDA/HIP interfaces retain
+their independent decisions. C5 insertion, initial CUDA-aware admission,
+and the completed in-situ phases are not new implementation tasks.
 
 ## 9. Explicit Non-Goals
 

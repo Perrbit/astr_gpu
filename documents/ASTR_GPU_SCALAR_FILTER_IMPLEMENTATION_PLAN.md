@@ -1,14 +1,19 @@
 # GPU Single-Component Filter Workspace Implementation Plan
 
+Status update (2026-10-31): the implementation is complete within its
+validated scope. Scalar storage is now the default; the earlier full-default
+design is historical. Current cross-plan work is listed in the
+[unified backlog](ASTR_GPU_CURRENT_STATUS_AND_NEXT_TARGETS.md).
+
 ## Objective
 
-Add an optional single-component workspace for the explicit tenth-order GPU
-filter while retaining the existing full-state `qwork_d` implementation as the
-default and reference path.
+Provide a single-component workspace for the explicit tenth-order GPU filter
+while retaining the full-state `qwork_d` implementation as an explicit
+alternative and reference path. Neither choice changes filter coefficients.
 
 ## Runtime contract
 
-- `ASTR_GPU_FILTER_WORKSPACE=full` remains the default.
+- `ASTR_GPU_FILTER_WORKSPACE=scalar` is the current default; `full` remains selectable.
 - `ASTR_GPU_FILTER_WORKSPACE=scalar` allocates one haloed three-dimensional
   device workspace and filters conservative variables sequentially.
 - Every kernel launch remains followed by the existing explicit synchronization
@@ -36,7 +41,7 @@ default and reference path.
 
 ## Acceptance criteria
 
-- Default `full` results and tests remain unchanged.
+- Explicit `full` results and tests remain unchanged; the default selects `scalar`.
 - `scalar` matches the CPU and full GPU paths within the existing field and
   statistics tolerances.
 - NP=2 x-, y-, and z-slab scalar runs complete with correct halo behavior.
