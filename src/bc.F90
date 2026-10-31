@@ -125,14 +125,11 @@ module bc
        .not.(kind==41.or.(kind==42.and.axis<=2).or.(kind==421.and.axis==2)).or. &
        .not.((flowtype=='channel'.and.axis==2).or.(flowtype=='tgv'.and.kind/=421))) &
       error stop 'Hermite7 wall requires FP64 643e/RK3 and one supported wall axis'
-#ifndef ASTR_BUILD_TESTING
-    if(lfilter) error stop 'Hermite7 wall main filter is validation-only (BUILD_TESTING=ON)'
-#endif
     high_order_wall_enabled=.true.
     high_order_wall_axis=axis
     high_order_adiabatic_wall_enabled=kind==42.or.kind==421
     high_order_slip_wall_enabled=kind==421
-    if(lio.and.lfilter) write(*,'(a)') ' ** high-order wall filter: local-f6-v1 (validation only)'
+    if(lio.and.lfilter) write(*,'(a)') ' ** high-order wall filter: local-f6-v1 (FP64 Cartesian subset)'
     if(lio) then
       if(flowtype=='tgv') then
         write(*,'(a,i0,a,i0)') ' ** Cartesian Hermite7 wall axis=',axis,' bctype=',kind

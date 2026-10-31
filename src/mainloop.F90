@@ -42,7 +42,8 @@ module mainloop
   subroutine steploop
     !
     use commvar,  only: maxstep,time,deltat,feqchkpt,feqwsequ,feqlist, &
-                        nsrpt,flowtype,limmbou,use_gpu
+                        nsrpt,flowtype,limmbou,use_gpu,lrestart
+    use statistic, only: initialize_channel_driver
     use readwrite,only: readcont,timerept,nxtchkpt,nxtwsequ,           &
                         write_validation_rk_snapshot,writemon
     use commcal,  only: cflcal
@@ -106,6 +107,7 @@ module mainloop
     
     call udf_setup_before_comp()
 
+    if(trim(flowtype)=='channel'.and..not.lrestart) call initialize_channel_driver()
     call begin_output_runtime(loop_counter,rkfirst_pending)
 
     nxtchkpt=nstep+feqchkpt

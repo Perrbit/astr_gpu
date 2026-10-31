@@ -1296,6 +1296,7 @@ contains
         if(high_order_slip_wall_enabled) driver_config(3)='channel-slip-p6t7-v1'
         if(high_order_wall_enabled.and.lfilter) driver_config(3)=trim(driver_config(3))//'-f6loc1'
       end block
+      driver_config(3)=trim(driver_config(3))//'-localwork-v1'
       if(writing) then
         call channel_driver_state(driver,.true.,ok)
         call check(ok,'invalid channel driver state')

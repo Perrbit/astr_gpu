@@ -54,13 +54,14 @@ def test_actual_cpu_coefficients_keep_original_joint_spectral_gate(native, kind)
                 assert report['passes'], (kind, n, report)
 
 
-@pytest.mark.parametrize('testing,mode,accepted,enabled',
-                         [(True,'hermite7',True,True), (False,'hermite7',False,False),
-                          (False,'off',True,False)])
-def test_actual_admission_keeps_production_filter_closed(tmp_path, testing, mode, accepted, enabled):
+@pytest.mark.parametrize('testing,mode,enabled',
+                         [(True,'hermite7',True), (False,'hermite7',True),
+                          (False,'off',False), (False,None,False)])
+@pytest.mark.parametrize('kind',[41,42,421])
+def test_actual_admission_requires_explicit_supported_subset(tmp_path, testing, mode, enabled, kind):
     configure = procedure(ROOT/'src/bc.F90', 'subroutine', 'configure_high_order_wall')
     source = tmp_path/'admission.F90'
-    source.write_text('''module commvar
+    source.write_text(('''module commvar
   character(4) :: conschm='643e',difschm='643e',rkscheme='rk3'
   character(8) :: turbmode='none'
   logical :: lcomb=.false.,nondimen=.true.,lfilter=.true.,diffterm=.true.
@@ -70,7 +71,7 @@ module admission_probe
   use boundary_high_order
   implicit none
   integer :: ndims=3,numq=5,num_species=0,num_modequ=0
-  integer :: bctype(6)=[1,1,42,42,1,1]
+  integer :: bctype(6)=[1,1,WALL_KIND,WALL_KIND,1,1]
   logical :: lio=.true.
   character(16) :: flowtype='channel'
 contains
@@ -80,7 +81,7 @@ program probe
   call configure_high_order_wall()
   print *, 'WALL_FILTER_ADMISSION_ENABLED',high_order_wall_enabled
 end program
-''')
+''').replace('WALL_KIND',str(kind)))
     command = ['gfortran', '-cpp', '-ffree-line-length-none']
     if testing:
         command.append('-DASTR_BUILD_TESTING')
@@ -88,16 +89,14 @@ end program
                 str(source), '-o', 'probe']
     build = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=60)
     assert build.returncode == 0, build.stdout+build.stderr
-    env = dict(os.environ, ASTR_HIGH_ORDER_WALL_MODE=mode)
+    env = dict(os.environ)
+    env.pop('ASTR_HIGH_ORDER_WALL_MODE',None)
+    if mode is not None: env['ASTR_HIGH_ORDER_WALL_MODE']=mode
     result = subprocess.run([str(tmp_path/'probe')], cwd=tmp_path, env=env,
                             capture_output=True, text=True, timeout=30)
     (tmp_path/'run.log').write_text(result.stdout+result.stderr)
-    if accepted:
-        assert result.returncode == 0, result.stdout+result.stderr
-        assert 'WALL_FILTER_ADMISSION_ENABLED '+('T' if enabled else 'F') in ' '.join(result.stdout.split())
-    else:
-        assert result.returncode != 0
-        assert 'main filter is validation-only' in result.stdout+result.stderr
+    assert result.returncode == 0, result.stdout+result.stderr
+    assert 'WALL_FILTER_ADMISSION_ENABLED '+('T' if enabled else 'F') in ' '.join(result.stdout.split())
 
 
 @pytest.mark.parametrize('kind', [0,41])

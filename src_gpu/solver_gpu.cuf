@@ -192,69 +192,12 @@ contains
     enddo
   end subroutine zero_rhs_kernel
 
-  attributes(global) subroutine channel_bulk_partial_kernel(q,x,partial,im,jm,km,hm)
+  attributes(global) subroutine channel_source_kernel(qrhs,im,jm,km,hm,force1,force2,force3)
+    use commarray_gpu, only: jacob_d
+    use commarray_gpu, only: q_d
     implicit none
     integer,value :: im,jm,km,hm
-    real(real_kind),device :: q(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:5)
-    real(real_kind),device :: x(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1:3)
-    real(real_kind),device :: partial(:,:)
-    real(real_kind),shared :: scratch_ro(256),scratch_u1(256),scratch_u2(256),scratch_u3(256)
-    integer :: tid,id,stride,ncell,i,j,k
-    real(real_kind) :: local_ro,local_u1,local_u2,local_u3,dy
-
-    tid = threadIdx%x
-    id = (blockIdx%x - 1) * blockDim%x + tid - 1
-    stride = gridDim%x * blockDim%x
-    ncell = im * jm * km
-    local_ro = 0.e0_real_kind
-    local_u1 = 0.e0_real_kind
-    local_u2 = 0.e0_real_kind
-    local_u3 = 0.e0_real_kind
-
-    do while(id < ncell)
-      i = mod(id,im) + 1
-      j = mod(id/im,jm) + 1
-      k = id/(im*jm) + 1
-      dy = x(i,j,k,2) - x(i,j-1,k,2)
-      local_ro = local_ro + 0.5e0_real_kind * (q(i,j-1,k,1) + q(i,j,k,1)) * dy
-      local_u1 = local_u1 + 0.5e0_real_kind * (q(i,j-1,k,2) + q(i,j,k,2)) * dy
-      local_u2 = local_u2 + 0.5e0_real_kind * (q(i,j-1,k,3) + q(i,j,k,3)) * dy
-      local_u3 = local_u3 + 0.5e0_real_kind * (q(i,j-1,k,4) + q(i,j,k,4)) * dy
-      id = id + stride
-    enddo
-
-    scratch_ro(tid) = local_ro
-    scratch_u1(tid) = local_u1
-    scratch_u2(tid) = local_u2
-    scratch_u3(tid) = local_u3
-    call syncthreads()
-
-    stride = blockDim%x / 2
-    do while(stride > 0)
-      if(tid <= stride) then
-        scratch_ro(tid) = scratch_ro(tid) + scratch_ro(tid + stride)
-        scratch_u1(tid) = scratch_u1(tid) + scratch_u1(tid + stride)
-        scratch_u2(tid) = scratch_u2(tid) + scratch_u2(tid + stride)
-        scratch_u3(tid) = scratch_u3(tid) + scratch_u3(tid + stride)
-      endif
-      call syncthreads()
-      stride = stride / 2
-    enddo
-
-    if(tid == 1) then
-      partial(blockIdx%x,1) = scratch_ro(1)
-      partial(blockIdx%x,2) = scratch_u1(1)
-      partial(blockIdx%x,3) = scratch_u2(1)
-      partial(blockIdx%x,4) = scratch_u3(1)
-    endif
-  end subroutine channel_bulk_partial_kernel
-
-  attributes(global) subroutine channel_source_kernel(qrhs,im,jm,km,force1,force2,force3, &
-                                                      u1bulk,u2bulk,u3bulk)
-    use commarray_gpu, only: jacob_d
-    implicit none
-    integer,value :: im,jm,km
-    real(real_kind),value :: force1,force2,force3,u1bulk,u2bulk,u3bulk
+    real(real_kind),value :: force1,force2,force3
     real(real_kind),device :: qrhs(0:im,0:jm,0:km,1:5)
     integer :: id,ntot,i,j,k
     real(real_kind) :: src_energy,jloc
@@ -267,7 +210,8 @@ contains
     j = mod(id/(im+1),jm+1)
     k = id/((im+1)*(jm+1))
     jloc = jacob_d(i,j,k)
-    src_energy = force1*u1bulk + force2*u2bulk + force3*u3bulk
+    src_energy = force1*(q_d(i,j,k,2)/q_d(i,j,k,1)) + &
+         force2*(q_d(i,j,k,3)/q_d(i,j,k,1)) + force3*(q_d(i,j,k,4)/q_d(i,j,k,1))
     qrhs(i,j,k,2) = qrhs(i,j,k,2) + force1*jloc
     qrhs(i,j,k,3) = qrhs(i,j,k,3) + force2*jloc
     qrhs(i,j,k,4) = qrhs(i,j,k,4) + force3*jloc
@@ -3103,50 +3047,18 @@ contains
   end subroutine apply_rti_source_gpu
 
   subroutine apply_channel_source_gpu()
-    use mpi
     use commvar, only: im,jm,km,hm,force
-    use commarray_gpu, only: q_d,x_d,qrhs_d
+    use commarray_gpu, only: qrhs_d
     use gpu_check, only: sync_after_kernel
-    use parallel, only: mpisize
     implicit none
     integer,parameter :: block_size = 256
-    integer :: ncell,ntot,nblocks,ierr
-    real(real_kind) :: local_sum(4),global_sum(4),robulk,u1bulk,u2bulk,u3bulk
-    real(real_kind),allocatable,device :: partial_d(:,:)
-    real(real_kind),allocatable :: partial_h(:,:)
-
-    ncell = im * jm * km
-    nblocks = max(1,(ncell + block_size - 1) / block_size)
-    allocate(partial_d(nblocks,4))
-    allocate(partial_h(nblocks,4))
-
-    call channel_bulk_partial_kernel<<<nblocks,block_size>>>(q_d,x_d,partial_d,im,jm,km,hm)
-    call sync_after_kernel('channel_bulk_partial_kernel',.true.)
-    partial_h = partial_d
-    local_sum(1) = sum(partial_h(:,1))
-    local_sum(2) = sum(partial_h(:,2))
-    local_sum(3) = sum(partial_h(:,3))
-    local_sum(4) = sum(partial_h(:,4))
-
-    if(mpisize > 1) then
-      call mpi_allreduce(local_sum,global_sum,4,mpi_real_type,mpi_sum,mpi_comm_world,ierr)
-    else
-      global_sum = local_sum
-    endif
-
-    robulk = global_sum(1)
-    if(abs(robulk) < 1.e-300_real_kind) stop 'GPU channel source encountered zero bulk density'
-    u1bulk = global_sum(2) / robulk
-    u2bulk = global_sum(3) / robulk
-    u3bulk = global_sum(4) / robulk
+    integer :: ntot,nblocks
 
     ntot = (im + 1) * (jm + 1) * (km + 1)
     nblocks = max(1,(ntot + block_size - 1) / block_size)
-    call channel_source_kernel<<<nblocks,block_size>>>(qrhs_d,im,jm,km, &
-         force(1),force(2),force(3),u1bulk,u2bulk,u3bulk)
+    call channel_source_kernel<<<nblocks,block_size>>>(qrhs_d,im,jm,km,hm, &
+         force(1),force(2),force(3))
     call sync_after_kernel('channel_source_kernel')
-
-    deallocate(partial_d,partial_h)
   end subroutine apply_channel_source_gpu
 
   subroutine apply_case_sources_gpu()

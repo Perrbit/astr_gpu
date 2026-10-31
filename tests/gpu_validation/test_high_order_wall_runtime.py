@@ -125,8 +125,8 @@ def launch(tmp_path_factory):
     completed={}
     def run(backend,topology=(1,1,1),steps=12,restore=None,mode='hermite7',transport='pinned',
             grid=GRID,manufactured=False,wall_samples=False,sanitizer=False,reject=None,dt=DT,checkpoint_interval=1,wall_type=41,
-            normal_axis=2,gradients=False,flow_type=None,initial_condition=None,filtering=False,workspace='scalar',dump_validation=True):
-        key=(backend,topology,steps,str(restore),mode,transport,grid,manufactured,wall_samples,sanitizer,reject,dt,checkpoint_interval,wall_type,normal_axis,gradients,flow_type,initial_condition,filtering,workspace,dump_validation)
+            normal_axis=2,gradients=False,flow_type=None,initial_condition=None,filtering=False,workspace='scalar',dump_validation=True,force=0.):
+        key=(backend,topology,steps,str(restore),mode,transport,grid,manufactured,wall_samples,sanitizer,reject,dt,checkpoint_interval,wall_type,normal_axis,gradients,flow_type,initial_condition,filtering,workspace,dump_validation,force)
         if key in completed:
             return completed[key]
         wall_label='' if wall_type==41 else f'_bc{wall_type}'
@@ -141,7 +141,7 @@ def launch(tmp_path_factory):
             if name.startswith('ASTR_INSITU_') or name.startswith('ASTR_WALL_BLOWING_'):
                 env.pop(name,None)
         env.update(ASTR_HIGH_ORDER_WALL_MODE=mode,ASTR_GPU_MP_POSITIVITY='off',
-            ASTR_CHANNEL_FORCE_MODE='fixed',ASTR_CHANNEL_FORCE_FIXED='0',
+            ASTR_CHANNEL_FORCE_MODE='fixed',ASTR_CHANNEL_FORCE_FIXED=str(force),
             ASTR_VALIDATION_RHS_PREFIX='diagnostics/state',ASTR_VALIDATION_RHS_STEP='0',
             ASTR_PERFECT_GAS_PRANDTL='0.72',ASTR_GPU_FILTER_WORKSPACE=workspace)
         if not dump_validation:env.pop('ASTR_VALIDATION_RHS_PREFIX',None)
@@ -168,7 +168,7 @@ def launch(tmp_path_factory):
             for report in reports:
                 assert 'ERROR SUMMARY: 0 errors' in report.read_text(),report.read_text()
         if mode=='hermite7':
-            if filtering:assert 'local-f6-v1 (validation only)' in text
+            if filtering:assert 'high-order wall filter: local-f6-v1' in text
             identity={41:'channel-wall-h7-v1',42:'channel-adiabatic-p6t7-v1',421:'channel-slip-p6t7-v1'}[wall_type]
             if normal_axis==2 and flow_type!='tgv':assert identity in text
             else:assert f'Cartesian Hermite7 wall axis={normal_axis}' in text
@@ -188,6 +188,52 @@ def launch(tmp_path_factory):
         completed[key]=(case,final)
         return case,final
     return run
+
+
+@pytest.mark.parametrize('backend',['cpu','gpu'])
+@pytest.mark.parametrize('mode',['off','hermite7'])
+def test_channel_first_stage_local_mechanical_work(launch,backend,mode,record_property):
+    """Use actual first-stage RHS snapshots; the zero-force run is the spatial baseline."""
+    plain,_=launch(backend,steps=1,force=0.,mode=mode)
+    driven,_=launch(backend,steps=1,force=.003,mode=mode)
+    suffix='step00000000.rk01.rank00000000.bin'
+    state=physical_state(driven/'diagnostics'/f'state.pre_rhs.{suffix}','fp64')
+    with h5py.File(driven/'outdat/new/resources/geometry.h5') as f:
+        jacobian=f['q0004'][:].transpose(2,1,0)
+    if mode=='off':
+        # Legacy CPU "full" precedes sources; compare the actual first Euler stage instead.
+        delta=(physical_state(driven/'diagnostics'/f'state.post_update.{suffix}','fp64')-
+               physical_state(plain/'diagnostics'/f'state.post_update.{suffix}','fp64'))*jacobian[...,None]/DT
+    else:
+        delta=rhs_state(driven/'diagnostics'/f'state.full.{suffix}','fp64')-rhs_state(
+            plain/'diagnostics'/f'state.full.{suffix}','fp64')
+    expected=np.zeros_like(delta)
+    expected[...,1]=.003*jacobian
+    expected[...,4]=.003*(state[...,1]/state[...,0])*jacobian
+    # Wall momentum is constrained separately by boucon; use strict physical interior.
+    error=float(np.max(np.abs((delta-expected)[:,1:-1,:,:])))
+    record_property('source_maximum_absolute_error',error)
+    assert error<=2e-10,(backend,error)
+
+
+def test_local_work_device_memory_safety(launch):
+    launch('gpu',steps=4,force=.003,filtering=True,sanitizer=True)
+
+
+def test_channel_restart_rejects_previous_bulk_work_model(launch):
+    _,part=launch('cpu',steps=1,force=.003)
+    old=part.parent/'previous_bulk_work'
+    shutil.copytree(part,old)
+    control=old/'control.bin'
+    payload=control.read_bytes()
+    marker=b'-localwork-v1'
+    assert payload.count(marker)==1
+    # Preserve the fixed-width control record, changing only the source identity.
+    identity=b'channel-wall-h7-v1-localwork-v1'
+    old_identity=b'channel-wall-h7-v1'
+    assert identity in payload
+    control.write_bytes(payload.replace(identity,old_identity.ljust(len(identity),b' ')))
+    launch('cpu',steps=2,restore=old,force=.003,reject='boundary/driver configuration mismatch')
 
 
 def analytic_normal_rhs(y,wall_type=41):

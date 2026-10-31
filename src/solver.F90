@@ -457,48 +457,10 @@ module solver
   subroutine src_chan
     !
     use commvar,  only : force,im,jm,km
-    use parallel, only : psum 
-    use commarray,only : q,qrhs,x,jacob
+    use commarray,only : q,qrhs,jacob
     !
     ! local data
-    integer :: i,j,k,k1,k2
-    !
-    real(real_kind) :: u1bulk,u2bulk,u3bulk,robulk,dy
-    !
-    if(ndims==2) then
-      k1=0
-      k2=0
-    elseif(ndims==3) then
-      k1=1
-      k2=km
-    else
-      print*,' !! ndims=',ndims
-      stop ' !! error @ massfluxchan !!'
-    endif
-    !
-    u1bulk=0.e0_real_kind
-    u2bulk=0.e0_real_kind
-    u3bulk=0.e0_real_kind
-    robulk=0.e0_real_kind
-    !
-    do k=k1,k2
-    do j=1,jm
-    do i=1,im
-      !
-      dy=x(i,j,k,2)-x(i,j-1,k,2)
-      robulk=robulk+0.5e0_real_kind*(q(i,j-1,k,1)+q(i,j,k,1))*dy
-      u1bulk=u1bulk+0.5e0_real_kind*(q(i,j-1,k,2)+q(i,j,k,2))*dy
-      u2bulk=u2bulk+0.5e0_real_kind*(q(i,j-1,k,3)+q(i,j,k,3))*dy
-      u3bulk=u3bulk+0.5e0_real_kind*(q(i,j-1,k,4)+q(i,j,k,4))*dy
-      !
-    end do
-    end do
-    end do
-    !
-    robulk=psum(robulk)
-    u1bulk=psum(u1bulk)/robulk
-    u2bulk=psum(u2bulk)/robulk
-    u3bulk=psum(u3bulk)/robulk
+    integer :: i,j,k
     !
     do k=0,km
     do j=0,jm
@@ -506,8 +468,8 @@ module solver
       qrhs(i,j,k,2)=qrhs(i,j,k,2)+force(1)*jacob(i,j,k)
       qrhs(i,j,k,3)=qrhs(i,j,k,3)+force(2)*jacob(i,j,k)
       qrhs(i,j,k,4)=qrhs(i,j,k,4)+force(3)*jacob(i,j,k)
-      qrhs(i,j,k,5)=qrhs(i,j,k,5)+( force(1)*u1bulk+force(2)*u2bulk+   &
-                                    force(3)*u3bulk )*jacob(i,j,k)
+      qrhs(i,j,k,5)=qrhs(i,j,k,5)+( force(1)*(q(i,j,k,2)/q(i,j,k,1))+ &
+           force(2)*(q(i,j,k,3)/q(i,j,k,1))+force(3)*(q(i,j,k,4)/q(i,j,k,1)) )*jacob(i,j,k)
     end do
     end do
     end do

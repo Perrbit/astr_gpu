@@ -60,6 +60,15 @@ module statistic
   type(tsta) :: hitsta
   !
   contains
+  subroutine initialize_channel_driver()
+    character(32) :: fixed
+    integer :: status
+
+    force=0.e0_real_kind
+    call get_environment_variable('ASTR_CHANNEL_FORCE_FIXED',fixed,status=status)
+    if(status==0.and.len_trim(fixed)>0) read(fixed,*) force(1)
+  end subroutine initialize_channel_driver
+
   real(real_kind) function mean_last_sample_identity() result(t)
     t=mean_last_sample_time
   end function
