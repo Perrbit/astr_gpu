@@ -1,4 +1,5 @@
 import os
+import json
 from pathlib import Path
 import subprocess
 import unittest
@@ -17,13 +18,17 @@ class ChemistryFlowGpuTests(unittest.TestCase):
         if not cls.exe.is_file():
             raise RuntimeError(f"GPU chemistry flow probe does not exist: {cls.exe}")
 
-    def test_fp64_state_and_transport_match_cpu_oracle(self):
+    def probe_metrics(self):
         result = subprocess.run([str(self.exe)], check=True, capture_output=True, text=True)
         metrics = {}
         for line in result.stdout.splitlines():
             fields = line.split()
-            if len(fields) == 2:
+            if len(fields) == 2 and fields[0].startswith("CHEMISTRY_FLOW_GPU_"):
                 metrics[fields[0]] = float(fields[1])
+        return metrics
+
+    def test_fp64_state_and_transport_match_cpu_oracle(self):
+        metrics = self.probe_metrics()
         for name in (
             "CHEMISTRY_FLOW_GPU_STATE_MAX_RATIO",
             "CHEMISTRY_FLOW_GPU_TRANSPORT_MAX_RATIO",
@@ -34,8 +39,23 @@ class ChemistryFlowGpuTests(unittest.TestCase):
         self.assertEqual(metrics["CHEMISTRY_FLOW_GPU_STATUS_MISMATCHES"], 0.0)
         self.assertEqual(metrics["CHEMISTRY_FLOW_GPU_CLOSURE_STATUS"], 0.0)
 
+    def test_local_transport_reuse_matches_existing_math(self):
+        metrics = self.probe_metrics()
+        for name in ("CHEMISTRY_FLOW_GPU_VIBRATIONAL_PAIR_ERROR",
+                     "CHEMISTRY_FLOW_GPU_ENTHALPY_REUSE_ERROR"):
+            self.assertIn(name, metrics)
+            self.assertLessEqual(metrics[name], 1.0e-12)
+        self.assertEqual(metrics["CHEMISTRY_FLOW_GPU_DIFFUSION_SYMMETRY_ERROR"], 0.0)
+
 
 class ChemistryFlowGpuContractTests(unittest.TestCase):
+    def test_fixed_binary_diffusion_table_is_symmetric(self):
+        data = json.loads((ROOT / "chemMech/air5_kimjo12.json").read_text())
+        coefficients = data["binary_diffusion_coefficients"]
+        for species in range(5):
+            for partner in range(species + 1, 5):
+                self.assertEqual(coefficients[species][partner], coefficients[partner][species])
+
     def test_production_and_probe_sources_are_registered(self):
         source = (ROOT / "src/CMakeLists.txt").read_text(encoding="utf-8")
         for name in (

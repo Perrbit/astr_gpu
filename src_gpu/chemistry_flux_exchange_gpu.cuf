@@ -1,0 +1,358 @@
+module chemistry_flux_exchange_gpu
+  use astr_precision, only: real_kind,real_bytes
+  use iso_fortran_env, only: int64
+  use iso_c_binding, only: c_ptr,c_null_ptr,c_f_pointer,c_size_t
+  use cudafor
+  use mpi
+  use gpu_check, only: sync_after_kernel,check_kernel_launch
+  use halo_transport_gpu, only: exchange_host_pair,device_aware_transport_enabled, &
+    host_staging_pinned,progress_host_pair_during_kernel
+  use device_mpi_transport_gpu, only: exchange_device_pair
+  implicit none
+  private
+  integer, parameter :: tag_first=22101
+  integer, save :: mode=0
+  logical, save :: configured=.false.
+  logical, save :: pack_stream_created=.false.
+  integer(kind=cuda_stream_kind), save :: pack_stream=0_cuda_stream_kind
+  type :: flux_slot
+    real(real_kind), allocatable, device :: send_low(:,:,:,:),send_high(:,:,:,:)
+    real(real_kind), allocatable, device :: recv_high(:,:,:,:),recv_low(:,:,:,:)
+    real(real_kind), pointer, contiguous :: host_send_low(:,:,:,:)=>null(),host_send_high(:,:,:,:)=>null()
+    real(real_kind), pointer, contiguous :: host_recv_high(:,:,:,:)=>null(),host_recv_low(:,:,:,:)=>null()
+    type(c_ptr) :: host_address(4)=c_null_ptr
+    logical :: pinned=.false.
+    integer :: count=0
+  end type flux_slot
+  type(flux_slot), target, save :: slots(3)
+  public :: packed_air5_flux_halo,exchange_air5_flux_halo,release_air5_flux_halo
+
+contains
+
+  subroutine require_cuda(code,label)
+    integer, intent(in) :: code
+    character(*), intent(in) :: label
+    integer :: ignored
+    if(code==cudaSuccess) return
+    write(*,'(3a,i0)') 'AIR5 flux halo: ',label,' CUDA status=',code
+    call MPI_Abort(MPI_COMM_WORLD,code,ignored)
+  end subroutine require_cuda
+
+  logical function packed_air5_flux_halo() result(packed)
+    character(len=32) :: value
+    integer :: length,status,local(2),global(2),ierr,ignored
+    if(.not.configured) then
+      call get_environment_variable('ASTR_AIR5_FLUX_HALO',value,length,status)
+      if(status/=1) then
+        mode=-1
+        if(status==0) then
+          select case(trim(value))
+          case('separate'); mode=0
+          case('packed'); mode=1
+          case('packed-overlap'); mode=2
+          end select
+        endif
+      endif
+      local=[mode,-mode]
+      call MPI_Allreduce(local,global,2,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,ignored)
+      if(global(1)/=-global(2).or.global(1)<0) then
+        write(*,'(a)') 'ASTR_AIR5_FLUX_HALO must be rank-consistent separate, packed or packed-overlap'
+        call MPI_Abort(MPI_COMM_WORLD,1,ignored)
+      endif
+      configured=.true.
+    endif
+    packed=mode/=0
+  end function packed_air5_flux_halo
+
+  subroutine allocate_slot(axis,count)
+    integer, intent(in) :: axis,count
+    integer :: status,ignored,code,rank
+    integer(c_size_t) :: bytes
+    if(slots(axis)%count/=0) return
+    allocate(slots(axis)%send_low(count,1,1,1),slots(axis)%send_high(count,1,1,1), &
+      slots(axis)%recv_high(count,1,1,1),slots(axis)%recv_low(count,1,1,1),stat=status)
+    if(status/=0) then
+      write(*,'(a,i0)') 'AIR5 flux halo device allocation status=',status
+      call MPI_Abort(MPI_COMM_WORLD,status,ignored)
+    endif
+    if(.not.device_aware_transport_enabled) then
+      if(host_staging_pinned) then
+        bytes=int(count,c_size_t)*int(real_bytes,c_size_t)
+        code=cudaHostAlloc(slots(axis)%host_address(1),bytes,cudaHostAllocDefault)
+        call require_cuda(code,'allocate pinned send-low')
+        code=cudaHostAlloc(slots(axis)%host_address(2),bytes,cudaHostAllocDefault)
+        call require_cuda(code,'allocate pinned send-high')
+        code=cudaHostAlloc(slots(axis)%host_address(3),bytes,cudaHostAllocDefault)
+        call require_cuda(code,'allocate pinned recv-high')
+        code=cudaHostAlloc(slots(axis)%host_address(4),bytes,cudaHostAllocDefault)
+        call require_cuda(code,'allocate pinned recv-low')
+        call c_f_pointer(slots(axis)%host_address(1),slots(axis)%host_send_low,[count,1,1,1])
+        call c_f_pointer(slots(axis)%host_address(2),slots(axis)%host_send_high,[count,1,1,1])
+        call c_f_pointer(slots(axis)%host_address(3),slots(axis)%host_recv_high,[count,1,1,1])
+        call c_f_pointer(slots(axis)%host_address(4),slots(axis)%host_recv_low,[count,1,1,1])
+        slots(axis)%pinned=.true.
+      else
+        allocate(slots(axis)%host_send_low(count,1,1,1),slots(axis)%host_send_high(count,1,1,1), &
+          slots(axis)%host_recv_high(count,1,1,1),slots(axis)%host_recv_low(count,1,1,1),stat=status)
+        if(status/=0) then
+          write(*,'(a,i0)') 'AIR5 flux halo host allocation status=',status
+          call MPI_Abort(MPI_COMM_WORLD,status,ignored)
+        endif
+      endif
+    endif
+    slots(axis)%count=count
+    call MPI_Comm_rank(MPI_COMM_WORLD,rank,status)
+    write(*,'(a,i0,a,i0,a,i0,a,l1)') 'AIR5_FLUX_HALO_BUFFER rank=',rank,' axis=',axis, &
+      ' device_bytes=',4_int64*count*real_bytes,' pinned=',slots(axis)%pinned
+  end subroutine allocate_slot
+
+  attributes(device) subroutine face_index(id,axis,im,jm,km,hm,i,j,k,m)
+    integer, value :: id,axis,im,jm,km,hm
+    integer, intent(out) :: i,j,k,m
+    integer :: n1,n2,n3
+    n1=im+1; n2=jm+1; n3=km+1
+    if(axis==1) n1=hm
+    if(axis==2) n2=hm
+    if(axis==3) n3=hm
+    i=mod(id,n1); j=mod(id/n1,n2); k=mod(id/(n1*n2),n3)
+    m=id/(n1*n2*n3)+1
+  end subroutine face_index
+
+  attributes(device) real(real_kind) function flux_value(i,j,k,m,im,jm,km,hm,sigma,qflux,species,ev,energy) result(value)
+    integer, value :: i,j,k,m,im,jm,km,hm
+    real(real_kind), device, intent(in) :: sigma(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6)
+    real(real_kind), device, intent(in) :: qflux(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(real_kind), device, intent(in) :: species(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5,3)
+    real(real_kind), device, intent(in) :: ev(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(real_kind), device, optional, intent(in) :: energy(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6)
+    select case(m)
+    case(1:6); value=sigma(i,j,k,m)
+    case(7:9); value=qflux(i,j,k,m-6)
+    case(10:24); value=species(i,j,k,mod(m-10,5)+1,(m-10)/5+1)
+    case(25:27); value=ev(i,j,k,m-24)
+    case(28:33); value=energy(i,j,k,m-27)
+    end select
+  end function flux_value
+
+  attributes(device) subroutine store_flux(value,i,j,k,m,im,jm,km,hm,sigma,qflux,species,ev,energy)
+    real(real_kind), value :: value
+    integer, value :: i,j,k,m,im,jm,km,hm
+    real(real_kind), device, intent(inout) :: sigma(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6)
+    real(real_kind), device, intent(inout) :: qflux(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(real_kind), device, intent(inout) :: species(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5,3)
+    real(real_kind), device, intent(inout) :: ev(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(real_kind), device, optional, intent(inout) :: energy(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6)
+    select case(m)
+    case(1:6); sigma(i,j,k,m)=value
+    case(7:9); qflux(i,j,k,m-6)=value
+    case(10:24); species(i,j,k,mod(m-10,5)+1,(m-10)/5+1)=value
+    case(25:27); ev(i,j,k,m-24)=value
+    case(28:33); energy(i,j,k,m-27)=value
+    end select
+  end subroutine store_flux
+
+  attributes(global) subroutine pack_flux(axis,count,im,jm,km,hm,sigma,qflux,species,ev,energy,send_low,send_high)
+    integer, value :: axis,count,im,jm,km,hm
+    real(real_kind), device, intent(in) :: sigma(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6)
+    real(real_kind), device, intent(in) :: qflux(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(real_kind), device, intent(in) :: species(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5,3)
+    real(real_kind), device, intent(in) :: ev(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(real_kind), device, optional, intent(in) :: energy(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6)
+    real(real_kind), device, intent(out) :: send_low(count),send_high(count)
+    integer :: id,i,j,k,m,il,jl,kl,ih,jh,kh
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=count) return
+    call face_index(id,axis,im,jm,km,hm,i,j,k,m)
+    il=i; jl=j; kl=k; ih=i; jh=j; kh=k
+    select case(axis)
+    case(1); il=i+1; ih=im-hm+i
+    case(2); jl=j+1; jh=jm-hm+j
+    case(3); kl=k+1; kh=km-hm+k
+    end select
+    send_low(id+1)=flux_value(il,jl,kl,m,im,jm,km,hm,sigma,qflux,species,ev,energy)
+    send_high(id+1)=flux_value(ih,jh,kh,m,im,jm,km,hm,sigma,qflux,species,ev,energy)
+  end subroutine pack_flux
+
+  attributes(global) subroutine unpack_flux(axis,count,im,jm,km,hm,has_low,has_high, &
+      sigma,qflux,species,ev,energy,recv_high,recv_low)
+    integer, value :: axis,count,im,jm,km,hm
+    logical, value :: has_low,has_high
+    real(real_kind), device, intent(inout) :: sigma(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6)
+    real(real_kind), device, intent(inout) :: qflux(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(real_kind), device, intent(inout) :: species(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5,3)
+    real(real_kind), device, intent(inout) :: ev(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(real_kind), device, optional, intent(inout) :: energy(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6)
+    real(real_kind), device, intent(in) :: recv_high(count),recv_low(count)
+    integer :: id,i,j,k,m,il,jl,kl,ih,jh,kh
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=count) return
+    call face_index(id,axis,im,jm,km,hm,i,j,k,m)
+    il=i; jl=j; kl=k; ih=i; jh=j; kh=k
+    select case(axis)
+    case(1); il=-hm+i; ih=im+1+i
+    case(2); jl=-hm+j; jh=jm+1+j
+    case(3); kl=-hm+k; kh=km+1+k
+    end select
+    if(has_low) call store_flux(recv_low(id+1),il,jl,kl,m,im,jm,km,hm,sigma,qflux,species,ev,energy)
+    if(has_high) call store_flux(recv_high(id+1),ih,jh,kh,m,im,jm,km,hm,sigma,qflux,species,ev,energy)
+  end subroutine unpack_flux
+
+  attributes(global) subroutine periodic_flux(axis,count,im,jm,km,hm,sigma,qflux,species,ev,energy)
+    integer, value :: axis,count,im,jm,km,hm
+    real(real_kind), device, intent(inout) :: sigma(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6)
+    real(real_kind), device, intent(inout) :: qflux(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(real_kind), device, intent(inout) :: species(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5,3)
+    real(real_kind), device, intent(inout) :: ev(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(real_kind), device, optional, intent(inout) :: energy(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6)
+    real(real_kind) :: low_value,high_value
+    integer :: id,i,j,k,m,il,jl,kl,ih,jh,kh
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=count) return
+    call face_index(id,axis,im,jm,km,hm,i,j,k,m)
+    il=i; jl=j; kl=k; ih=i; jh=j; kh=k
+    select case(axis)
+    case(1); il=i+1; ih=im-hm+i
+    case(2); jl=j+1; jh=jm-hm+j
+    case(3); kl=k+1; kh=km-hm+k
+    end select
+    low_value=flux_value(ih,jh,kh,m,im,jm,km,hm,sigma,qflux,species,ev,energy)
+    high_value=flux_value(il,jl,kl,m,im,jm,km,hm,sigma,qflux,species,ev,energy)
+    select case(axis)
+    case(1); il=-hm+i; ih=im+1+i
+    case(2); jl=-hm+j; jh=jm+1+j
+    case(3); kl=-hm+k; kh=km+1+k
+    end select
+    call store_flux(low_value,il,jl,kl,m,im,jm,km,hm,sigma,qflux,species,ev,energy)
+    call store_flux(high_value,ih,jh,kh,m,im,jm,km,hm,sigma,qflux,species,ev,energy)
+  end subroutine periodic_flux
+
+  subroutine exchange_air5_flux_halo(sigma,qflux,species,ev,energy,im,jm,km,hm, &
+      sizes,low,high,periodic,layered)
+    integer, intent(in) :: im,jm,km,hm,sizes(3),low(3),high(3)
+    logical, intent(in) :: periodic(3),layered
+    real(real_kind), device, intent(inout) :: sigma(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6)
+    real(real_kind), device, intent(inout) :: qflux(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(real_kind), device, intent(inout) :: species(-hm:im+hm,-hm:jm+hm,-hm:km+hm,5,3)
+    real(real_kind), device, intent(inout) :: ev(-hm:im+hm,-hm:jm+hm,-hm:km+hm,3)
+    real(real_kind), device, optional, intent(inout) :: energy(-hm:im+hm,-hm:jm+hm,-hm:km+hm,6)
+    integer :: axis,next_axis,components,count(3),shape(3),tag,ignored,mpi_axes,code
+    integer(int64) :: count64
+    logical :: prepared(3)
+    components=27
+    if(layered) components=33
+    prepared=.false.
+    mpi_axes=0
+    do axis=1,3
+      shape=[im+1,jm+1,km+1]
+      shape(axis)=hm
+      count64=int(shape(1),int64)*shape(2)*shape(3)*components
+      if(count64>huge(0)) then
+        write(*,'(a)') 'AIR5 flux halo exceeds the MPI integer count range'
+        call MPI_Abort(MPI_COMM_WORLD,1,ignored)
+      endif
+      count(axis)=int(count64)
+      if(sizes(axis)>1) then
+        call allocate_slot(axis,count(axis))
+        mpi_axes=mpi_axes+1
+      endif
+    enddo
+    if(mode==2.and.mpi_axes>1.and..not.pack_stream_created) then
+      code=cudaStreamCreateWithFlags(pack_stream,cudaStreamNonBlocking)
+      call require_cuda(code,'create prepack stream')
+      pack_stream_created=.true.
+    endif
+    do axis=1,3
+      if(sizes(axis)==1) then
+        if(periodic(axis)) then
+          call periodic_flux<<<(count(axis)-1)/256+1,256>>>(axis,count(axis),im,jm,km,hm,sigma,qflux,species,ev,energy)
+          call sync_after_kernel('air5_periodic_flux_halo',.true.)
+        endif
+        cycle
+      endif
+      if(.not.prepared(axis)) then
+        call pack_flux<<<(count(axis)-1)/256+1,256>>>(axis,count(axis),im,jm,km,hm,sigma,qflux,species,ev,energy, &
+          slots(axis)%send_low,slots(axis)%send_high)
+        call sync_after_kernel('air5_pack_flux_halo',.true.)
+      endif
+      next_axis=0
+      if(mode==2) then
+        do tag=axis+1,3
+          if(sizes(tag)<=1) cycle
+          next_axis=tag
+          exit
+        enddo
+      endif
+      tag=tag_first+2*(axis-1)
+      if(device_aware_transport_enabled) then
+        if(next_axis/=0) then
+          call exchange_device_pair(slots(axis)%send_low,slots(axis)%send_high, &
+            slots(axis)%recv_high,slots(axis)%recv_low,count(axis),low(axis),high(axis),tag,tag+1,prepack_next)
+        else
+          call exchange_device_pair(slots(axis)%send_low,slots(axis)%send_high, &
+            slots(axis)%recv_high,slots(axis)%recv_low,count(axis),low(axis),high(axis),tag,tag+1)
+        endif
+      else
+        if(low(axis)/=MPI_PROC_NULL) slots(axis)%host_send_low=slots(axis)%send_low
+        if(high(axis)/=MPI_PROC_NULL) slots(axis)%host_send_high=slots(axis)%send_high
+        if(next_axis/=0) then
+          call exchange_host_pair(slots(axis)%host_send_low,slots(axis)%host_send_high, &
+            slots(axis)%host_recv_high,slots(axis)%host_recv_low,count(axis),low(axis),high(axis),tag,tag+1,prepack_next)
+        else
+          call exchange_host_pair(slots(axis)%host_send_low,slots(axis)%host_send_high, &
+            slots(axis)%host_recv_high,slots(axis)%host_recv_low,count(axis),low(axis),high(axis),tag,tag+1)
+        endif
+        if(high(axis)/=MPI_PROC_NULL) slots(axis)%recv_high=slots(axis)%host_recv_high
+        if(low(axis)/=MPI_PROC_NULL) slots(axis)%recv_low=slots(axis)%host_recv_low
+      endif
+      call unpack_flux<<<(count(axis)-1)/256+1,256>>>(axis,count(axis),im,jm,km,hm, &
+        low(axis)/=MPI_PROC_NULL,high(axis)/=MPI_PROC_NULL,sigma,qflux,species,ev,energy, &
+        slots(axis)%recv_high,slots(axis)%recv_low)
+      call sync_after_kernel('air5_unpack_flux_halo',.true.)
+    enddo
+  contains
+    subroutine prepack_next(requests,unused_axis)
+      integer, intent(inout) :: requests(4)
+      integer, intent(in) :: unused_axis
+      integer :: code
+      call pack_flux<<<(count(next_axis)-1)/256+1,256,0,pack_stream>>>(next_axis,count(next_axis),im,jm,km,hm, &
+        sigma,qflux,species,ev,energy,slots(next_axis)%send_low,slots(next_axis)%send_high)
+      call check_kernel_launch('air5_prepack_next_flux_axis')
+      call progress_host_pair_during_kernel(requests,pack_stream)
+      code=cudaStreamSynchronize(pack_stream)
+      call require_cuda(code,'complete next-axis prepack')
+      prepared(next_axis)=.true.
+    end subroutine prepack_next
+  end subroutine exchange_air5_flux_halo
+
+  subroutine release_air5_flux_halo()
+    integer :: axis,code,item
+    if(pack_stream_created) then
+      code=cudaStreamDestroy(pack_stream)
+      call require_cuda(code,'destroy prepack stream')
+      pack_stream_created=.false.
+      pack_stream=0_cuda_stream_kind
+    endif
+    do axis=1,3
+      if(slots(axis)%count==0) cycle
+      if(slots(axis)%pinned) then
+        do item=1,4
+          code=cudaFreeHost(slots(axis)%host_address(item))
+          call require_cuda(code,'free pinned slot')
+        enddo
+        slots(axis)%host_address=c_null_ptr
+        nullify(slots(axis)%host_send_low,slots(axis)%host_send_high, &
+          slots(axis)%host_recv_high,slots(axis)%host_recv_low)
+      elseif(associated(slots(axis)%host_send_low)) then
+        deallocate(slots(axis)%host_send_low,slots(axis)%host_send_high, &
+          slots(axis)%host_recv_high,slots(axis)%host_recv_low)
+      endif
+      deallocate(slots(axis)%send_low,slots(axis)%send_high,slots(axis)%recv_high,slots(axis)%recv_low)
+      slots(axis)%count=0
+      slots(axis)%pinned=.false.
+    enddo
+    configured=.false.
+    mode=0
+  end subroutine release_air5_flux_halo
+
+end module chemistry_flux_exchange_gpu

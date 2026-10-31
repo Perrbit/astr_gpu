@@ -3,19 +3,58 @@ module compensation_probe_kernel
   use cudafor
   use chemistry_ros2_gpu, only: air5_ros2_advance_gpu
   use chemistry_source, only: air5_source_mode_coupled
+  use chemistry_source_gpu, only: air5_activity_source_gpu,air5_activity_index_gpu
   implicit none
 contains
+  attributes(global) subroutine activity_cost_kernel(input,output,status,count,duration,mode,threshold,operation)
+    integer,value :: count,mode,operation
+    real(real64),value :: duration,threshold
+    real(real64),device,intent(in) :: input(17)
+    real(real64),device,intent(out) :: output(8,count)
+    integer,device,intent(out) :: status(count)
+    real(real64) :: source(6),production(5),loss(5),energies(2),temperatures(2),components(9),activity
+    real(real64) :: atol(6),carry(6),history,final_state(6),suggested,eta
+    integer :: index,accepted,rejected,rhs,jac
+    logical :: skipped
+    index=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    if(index>count) return
+    output(:,index)=0.0_real64
+    if(operation==0) then
+      call air5_activity_source_gpu(input(1),input(2:4),input(5),input(6:11),source,status(index),mode, &
+        production,loss,energies,temperatures)
+      if(status(index)/=0) return
+      call air5_activity_index_gpu(input(1),input(6:11),duration,production,loss,energies,temperatures, &
+        activity,components)
+      output(1:6,index)=source
+      output(7,index)=activity
+      output(8,index)=merge(1.0_real64,0.0_real64,activity<huge(activity).and.activity<=threshold)
+    else
+      carry=input(12:17); history=0.0_real64
+      atol(1:5)=1.0e-13_real64*input(1)
+      atol(6)=1.0e-13_real64*max(abs(input(11)),1.0_real64)
+      eta=0.0_real64
+      if(operation==2) eta=threshold
+      call air5_ros2_advance_gpu(input(1),input(2:4),input(5),input(6:11),duration,duration, &
+        1.0e-9_real64,atol,200000,final_state,suggested,accepted,rejected,rhs,jac,status(index),mode, &
+        carry,history,eta,skipped)
+      output(1:6,index)=final_state
+      output(7,index)=suggested
+      output(8,index)=merge(1.0_real64,0.0_real64,skipped)
+    endif
+  end subroutine
+
   attributes(global) subroutine advance_state_batch(input,output,counts,count,duration,source_mode, &
-      rtol,atol_factor,segments,use_history,vector_atol,use_vector_atol)
+      rtol,atol_factor,segments,use_history,vector_atol,use_vector_atol,activity_threshold)
     integer, value :: count,source_mode,segments
     logical, value :: use_history,use_vector_atol
-    real(real64), value :: duration,rtol,atol_factor
+    real(real64), value :: duration,rtol,atol_factor,activity_threshold
     real(real64), device, intent(in) :: input(18,count)
     real(real64), device, intent(in) :: vector_atol(6,count)
-    real(real64), device, intent(out) :: output(13,count)
+    real(real64), device, intent(out) :: output(14,count)
     integer, device, intent(out) :: counts(5,count)
     real(real64) :: atol(6),correction(6),current(6),candidate(6),interval,history,suggested
-    integer :: index,iteration,local_counts(5)
+    integer :: index,iteration,local_counts(5),skipped_calls
+    logical :: skipped
 
     index=(blockIdx%x-1)*blockDim%x+threadIdx%x
     if(index>count) return
@@ -24,6 +63,7 @@ contains
     interval=duration/real(segments,real64)
     history=input(18,index)
     counts(:,index)=0
+    skipped_calls=0
     do iteration=1,segments
       if(use_vector_atol) then
         atol=vector_atol(:,index)
@@ -35,21 +75,23 @@ contains
         call air5_ros2_advance_gpu(input(1,index),input(2:4,index),input(5,index), &
           current,interval,interval,rtol,atol,200000,candidate,suggested, &
           local_counts(2),local_counts(3),local_counts(4),local_counts(5),local_counts(1), &
-          source_mode,correction,history)
+          source_mode,correction,history,activity_threshold=activity_threshold,skipped=skipped)
       else
         call air5_ros2_advance_gpu(input(1,index),input(2:4,index),input(5,index), &
           current,interval,interval,rtol,atol,200000,candidate,suggested, &
           local_counts(2),local_counts(3),local_counts(4),local_counts(5),local_counts(1), &
-          source_mode,correction)
+          source_mode,correction,activity_threshold=activity_threshold,skipped=skipped)
       endif
       counts(1,index)=local_counts(1)
       counts(2:5,index)=counts(2:5,index)+local_counts(2:5)
       current=candidate
+      if(skipped) skipped_calls=skipped_calls+1
       if(local_counts(1)/=0) exit
     enddo
     output(1:6,index)=current
     output(7:12,index)=correction
     output(13,index)=suggested
+    output(14,index)=real(skipped_calls,real64)
   end subroutine advance_state_batch
 
   attributes(global) subroutine advance_probe(rho,momentum,q5,initial,seed,atol, &
@@ -101,7 +143,7 @@ contains
 end module compensation_probe_kernel
 
 program chemistry_ros2_compensation_gpu_probe
-  use iso_fortran_env, only: real64,int64
+  use iso_fortran_env, only: real64,int64,real32
   use ieee_arithmetic, only: ieee_value,ieee_quiet_nan,ieee_positive_inf,ieee_is_finite
   use cudafor
   use chemistry_air5_data, only: air5_ru,air5_molar_mass,air5_atom_count
@@ -149,6 +191,10 @@ program chemistry_ros2_compensation_gpu_probe
     endif
     if(trim(argument)=='history-contract') then
       call run_history_contract
+      stop
+    endif
+    if(trim(argument)=='activity-cost') then
+      call run_activity_cost()
       stop
     endif
     read(argument,*) repeats
@@ -252,6 +298,62 @@ program chemistry_ros2_compensation_gpu_probe
     end do
   end do
 contains
+
+  subroutine run_activity_cost()
+    integer,parameter :: batch_count=8192
+    real(real64),device :: input_d(17),output_d(8,batch_count)
+    integer,device :: statuses_d(batch_count)
+    real(real64) :: input(17),output(8,batch_count),span,threshold
+    integer :: statuses(batch_count),unit,result_unit,count,mode,operation,repeat,code
+    real(real32) :: milliseconds
+    type(cudaEvent) :: first,last
+    character(4096) :: source_path,result_path
+    if(command_argument_count()/=4) error stop 'activity-cost requires input, output, threshold'
+    call get_command_argument(2,source_path)
+    call get_command_argument(3,result_path)
+    call get_command_argument(4,argument)
+    read(argument,*) threshold
+    open(newunit=unit,file=trim(source_path),status='old',action='read')
+    read(unit,*) count,span,mode
+    if(count/=1) error stop 'activity-cost requires one declared calibration state'
+    read(unit,*) input
+    close(unit)
+    span=span/4.0_real64
+    input_d=input
+    code=cudaEventCreate(first)
+    if(code/=cudaSuccess) error stop 'activity cost start event'
+    code=cudaEventCreate(last)
+    if(code/=cudaSuccess) error stop 'activity cost stop event'
+    open(newunit=result_unit,file=trim(result_path),status='new',action='write')
+    write(result_unit,'(A,I0,A,ES24.16,A,ES24.16)') '# batch_cells=',batch_count, &
+      ' duration=',span,' threshold=',threshold
+    write(result_unit,'(A)') '# operation repeat gpu_seconds skipped_or_eligible_cells total_cells'
+    do operation=0,2
+      call activity_cost_kernel<<<batch_count/32,32>>>(input_d,output_d,statuses_d,batch_count, &
+        span,mode,threshold,operation)
+      call sync_after_kernel('air5_activity_cost_warmup',.true.)
+      do repeat=1,5
+        code=cudaEventRecord(first,0_cuda_stream_kind)
+        if(code/=cudaSuccess) error stop 'activity cost record start'
+        call activity_cost_kernel<<<batch_count/32,32>>>(input_d,output_d,statuses_d,batch_count, &
+          span,mode,threshold,operation)
+        code=cudaEventRecord(last,0_cuda_stream_kind)
+        if(code/=cudaSuccess) error stop 'activity cost record stop'
+        call sync_after_kernel('air5_activity_cost_kernel',.true.)
+        code=cudaEventElapsedTime(milliseconds,first,last)
+        if(code/=cudaSuccess) error stop 'activity cost elapsed time'
+        statuses=statuses_d; output=output_d
+        if(any(statuses/=0).or..not.all(ieee_is_finite(output))) error stop 'activity cost invalid result'
+        write(result_unit,'(2(I0,1X),ES25.17,1X,2(I0,1X))') operation,repeat, &
+          real(milliseconds,real64)*1.0e-3_real64,int(sum(output(8,:))),batch_count
+      enddo
+    enddo
+    close(result_unit)
+    code=cudaEventDestroy(first)
+    if(code/=cudaSuccess) error stop 'activity cost destroy start'
+    code=cudaEventDestroy(last)
+    if(code/=cudaSuccess) error stop 'activity cost destroy stop'
+  end subroutine
   subroutine run_history_contract
     real(real64) :: expected_cpu(6),expected_gpu(6),expected_cc(6),expected_cg(6)
     real(real64) :: expected_hc,expected_hg,current(6),candidate(6),history,continuation_seed
@@ -332,10 +434,10 @@ contains
     integer, allocatable :: counts(:,:)
     integer, allocatable, device :: counts_d(:,:)
     character(4096) :: input_path,output_path,atol_path
-    integer :: count,source_mode,unit,index,ios,segments,iteration,local_counts(5),base_arguments,atol_count
-    real(real64) :: duration,rtol,atol_factor
+    integer :: count,source_mode,unit,index,ios,segments,iteration,local_counts(5),base_arguments,atol_count,skipped_calls
+    real(real64) :: duration,rtol,atol_factor,activity_threshold
     real(real64) :: current(6),candidate(6),correction(6),local_atol(6),interval,history,suggested
-    logical :: use_history,history_from_input,use_vector_atol
+    logical :: use_history,history_from_input,use_vector_atol,skipped
 
     use_vector_atol=mod(command_argument_count(),2)==0
     base_arguments=command_argument_count()
@@ -347,6 +449,17 @@ contains
     segments=1
     use_history=.false.
     history_from_input=.false.
+    activity_threshold=0.0_real64
+    call get_environment_variable('ASTR_AIR5_LOW_ACTIVITY',argument,status=option_status)
+    if(option_status/=1) then
+      if(option_status/=0) error stop 'invalid activity threshold option'
+      if(trim(argument)/='off') then
+        read(argument,*,iostat=ios) activity_threshold
+        if(ios/=0) error stop 'invalid activity threshold option'
+      endif
+    endif
+    if(.not.ieee_is_finite(activity_threshold)) error stop 'nonfinite activity threshold option'
+    if(activity_threshold<0.0_real64) error stop 'negative activity threshold option'
     if(base_arguments>=5) then
       call get_command_argument(4,argument)
       read(argument,*) rtol
@@ -370,7 +483,7 @@ contains
     open(newunit=unit,file=trim(input_path),status='old',action='read')
     read(unit,*) count,duration,source_mode
     if(count<1.or.count>10000.or.duration<=0.0_real64) error stop 'invalid bounded state batch'
-    allocate(input(18,count),output(13,count),counts(5,count),vector_atol(6,count))
+    allocate(input(18,count),output(14,count),counts(5,count),vector_atol(6,count))
     vector_atol=0.0_real64
     input=0.0_real64
     if(history_from_input) then
@@ -400,6 +513,7 @@ contains
         current=input(6:11,index)
         correction=input(12:17,index)
         history=input(18,index)
+        skipped_calls=0
         do iteration=1,segments
           if(use_vector_atol) then
             local_atol=vector_atol(:,index)
@@ -411,35 +525,39 @@ contains
             call air5_ros2_advance(input(1,index),input(2:4,index),input(5,index), &
               current,interval,interval,rtol,local_atol,200000,candidate,suggested, &
               local_counts(2),local_counts(3),local_counts(4),local_counts(5),local_counts(1), &
-              source_mode,correction,history)
+              source_mode,correction,history,activity_threshold=activity_threshold,skipped=skipped)
           else
             call air5_ros2_advance(input(1,index),input(2:4,index),input(5,index), &
               current,interval,interval,rtol,local_atol,200000,candidate,suggested, &
               local_counts(2),local_counts(3),local_counts(4),local_counts(5),local_counts(1), &
-              source_mode,correction)
+              source_mode,correction,activity_threshold=activity_threshold,skipped=skipped)
           endif
           counts(1,index)=local_counts(1)
           counts(2:5,index)=counts(2:5,index)+local_counts(2:5)
           current=candidate
+          if(skipped) skipped_calls=skipped_calls+1
           if(local_counts(1)/=0) exit
         enddo
         output(1:6,index)=current
         output(7:12,index)=correction
         output(13,index)=suggested
+        output(14,index)=real(skipped_calls,real64)
       enddo
     else
-      allocate(input_d(18,count),output_d(13,count),counts_d(5,count),vector_atol_d(6,count))
+      allocate(input_d(18,count),output_d(14,count),counts_d(5,count),vector_atol_d(6,count))
       input_d=input
       vector_atol_d=vector_atol
       call advance_state_batch<<<(count+127)/128,128>>>(input_d,output_d,counts_d,count,duration,source_mode, &
-        rtol,atol_factor,segments,use_history,vector_atol_d,use_vector_atol)
+        rtol,atol_factor,segments,use_history,vector_atol_d,use_vector_atol,activity_threshold)
       call sync_after_kernel('air5_compensated_state_batch',force_sync=.true.)
       output=output_d
       counts=counts_d
     endif
     open(newunit=unit,file=trim(output_path),status='new',action='write')
     do index=1,count
-      write(unit,'(6(I0,1X),13(ES25.17,1X))') index,counts(:,index),output(:,index)
+      write(unit,'(6(I0,1X),13(ES25.17,1X))') index,counts(:,index),output(1:13,index)
+      write(unit,'(A,I0,A,I0,A,I0)') '# AIR5_ACTIVITY index=',index, &
+        ' skipped_calls=',int(output(14,index)),' total_calls=',segments
     enddo
     close(unit)
     if(any(counts(1,:)/=0)) error stop 'state batch chemistry failed; inspect output statuses'

@@ -1,5 +1,5 @@
 module chemistry_flow_solver
-  use iso_fortran_env, only: real64
+  use iso_fortran_env, only: real64,int64
   use constdef, only: num1d60,num1d12,num2d3
   use chemistry_air5_data, only: air5_num_species,air5_species_name, &
     air5_temperature_min_k,air5_formation_energy
@@ -2006,7 +2006,7 @@ contains
   subroutine air5_chemistry_half_step(duration,half_index)
     use chemistry_compensation, only: air5_compensated,air5_carry
     use chemistry_flow_runtime, only: air5_chemistry_rtol,air5_chemistry_atol_factor, &
-      air5_history_enabled,air5_step_history
+      air5_history_enabled,air5_step_history,air5_activity_threshold
     use mpi
     use commvar, only: is,ie,js,je,ks,ke,nstep,feqchkpt,im,jm,km
     use commarray, only: q
@@ -2025,6 +2025,8 @@ contains
     integer :: accepted,rejected,rhs_evaluations,jacobian_evaluations
     integer :: jlast,ifirst,ilast
     integer :: local_counts(4),global_counts(4),failed_index(3)
+    integer(int64) :: local_activity(2),global_activity(2)
+    logical :: skipped,report_step
 
     if(duration<=0.0_real64) error stop 'air5 chemistry half-step requires positive duration'
     if(half_index<1 .or. half_index>2) &
@@ -2036,6 +2038,9 @@ contains
     local_minimums=huge(1.0_real64)
     local_maximums=-huge(1.0_real64)
     local_counts=0
+    local_activity=0
+    report_step=nstep==0
+    if(feqchkpt>0) report_step=report_step.or.mod(nstep,feqchkpt)==0
 
     jlast=je
     if(air5_dynamic_top().and.mpiup==MPI_PROC_NULL) jlast=jm
@@ -2061,13 +2066,15 @@ contains
                 q(i,j,k,air5_idx_momentum_first:air5_idx_momentum_first+2), &
                 q(i,j,k,air5_idx_total_energy),state,duration,duration,air5_chemistry_rtol,atol, &
                 max_attempts,final_state,suggested_step,accepted,rejected, &
-                rhs_evaluations,jacobian_evaluations,status,source_mode,trial_carry,trial_history)
+                rhs_evaluations,jacobian_evaluations,status,source_mode,trial_carry,trial_history, &
+                air5_activity_threshold,skipped)
             else
             call air5_ros2_advance(density, &
               q(i,j,k,air5_idx_momentum_first:air5_idx_momentum_first+2), &
               q(i,j,k,air5_idx_total_energy),state,duration,duration,air5_chemistry_rtol,atol, &
               max_attempts,final_state,suggested_step,accepted,rejected, &
-              rhs_evaluations,jacobian_evaluations,status,source_mode,trial_carry)
+              rhs_evaluations,jacobian_evaluations,status,source_mode,trial_carry, &
+              activity_threshold=air5_activity_threshold,skipped=skipped)
             endif
           else
           if(air5_history_enabled) then
@@ -2075,13 +2082,15 @@ contains
               q(i,j,k,air5_idx_momentum_first:air5_idx_momentum_first+2), &
               q(i,j,k,air5_idx_total_energy),state,duration,duration,air5_chemistry_rtol,atol, &
               max_attempts,final_state,suggested_step,accepted,rejected, &
-              rhs_evaluations,jacobian_evaluations,status,source_mode,step_history=trial_history)
+              rhs_evaluations,jacobian_evaluations,status,source_mode,step_history=trial_history, &
+              activity_threshold=air5_activity_threshold,skipped=skipped)
           else
           call air5_ros2_advance(density, &
             q(i,j,k,air5_idx_momentum_first:air5_idx_momentum_first+2), &
             q(i,j,k,air5_idx_total_energy),state,duration,duration,air5_chemistry_rtol,atol, &
             max_attempts,final_state,suggested_step,accepted,rejected, &
-            rhs_evaluations,jacobian_evaluations,status,source_mode)
+            rhs_evaluations,jacobian_evaluations,status,source_mode, &
+            activity_threshold=air5_activity_threshold,skipped=skipped)
           endif
           endif
           if(status/=chemistry_status_ok) then
@@ -2099,6 +2108,8 @@ contains
           q(i,j,k,air5_idx_species_first:air5_idx_ev)=final_state
           if(air5_compensated) air5_carry(i,j,k,air5_idx_species_first:air5_idx_ev)=trial_carry
           if(air5_history_enabled) air5_step_history(i,j,k)=trial_history
+          local_activity(2)=local_activity(2)+1
+          if(skipped) local_activity(1)=local_activity(1)+1
           local_minimums=min(local_minimums, &
             [minval(final_state(1:air5_num_species)),temperature,tv])
           local_maximums=max(local_maximums,[temperature,tv])
@@ -2126,6 +2137,12 @@ contains
     call MPI_Allreduce(local_counts,global_counts,4,MPI_INTEGER,MPI_MAX, &
       MPI_COMM_WORLD,ierr)
     if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,status)
+    if(air5_activity_threshold>0.0_real64.and.report_step) then
+      call MPI_Allreduce(local_activity,global_activity,2,MPI_INTEGER8,MPI_SUM,MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,status)
+      if(lio) write(*,'(A,I0,A,I0,A,I0)') 'AIR5_ACTIVITY half=',half_index, &
+        ' skipped_calls=',global_activity(1),' total_calls=',global_activity(2)
+    endif
     if(lio .and. (nstep==0 .or. (feqchkpt>0 .and. mod(nstep,feqchkpt)==0))) then
       write(*,'(A,I0,A,5(ES12.4,1X),A,4(I0,1X))') 'AIR5_CHEMISTRY half=', &
         half_index,' min_rhos/min_T/max_T/min_Tv/max_Tv=',global_minimums(1), &

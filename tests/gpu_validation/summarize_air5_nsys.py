@@ -7,6 +7,11 @@ from pathlib import Path
 import sqlite3
 
 
+def is_chemistry_kernel(name):
+    return any(marker in name for marker in ('air5_chemistry_half_step_kernel',
+        'air5_chemistry_report_kernel','air5_chemistry_quiet_kernel'))
+
+
 def merged(intervals):
     result = []
     for start, end in sorted(intervals):
@@ -21,6 +26,23 @@ def merged(intervals):
 
 def duration(intervals):
     return sum(b-a for a, b in merged(intervals))
+
+
+def overlap_duration(left,right):
+    return duration([(max(a,c),min(b,d)) for a,b in left for c,d in right])
+
+
+def posted_request_scopes(posts,waits):
+    scopes=[]
+    missing=0
+    for post in posts:
+        following=[row for row in waits if row['requestHandle']==post['requestHandle']
+                   and row['start']>=post['end']]
+        if not following:
+            missing+=1
+            continue
+        scopes.append((post['end'],min(following,key=lambda row:row['start'])['end']))
+    return scopes,missing
 
 
 def chemistry_cycle_window(entries, dynamic_top=False):
@@ -52,7 +74,7 @@ def analyze(filename, dynamic_top=False):
         # Nsight encodes process identity above the low 24 thread-id bits.
         pid = (tid >> 24) << 24
         own = [r for r in kernels if r['globalPid'] == pid]
-        chemical = [r for r in own if 'air5_chemistry_half_step_kernel' in names[r['shortName']]]
+        chemical = [r for r in own if is_chemistry_kernel(names[r['shortName']])]
         start, end = chemistry_cycle_window(chemical, dynamic_top)
         inside = [r for r in own if start <= r['start'] < end]
         if any(r['end'] > end for r in inside):
@@ -80,6 +102,7 @@ def analyze(filename, dynamic_top=False):
                 'SELECT * FROM CUPTI_ACTIVITY_KIND_MEMSET WHERE globalPid=? AND start>=? AND start<?',
                 (pid, start, end)))
         api, mpi, mpi_intervals = defaultdict(lambda: [0, 0.]), defaultdict(lambda: [0, 0.]), []
+        progress_intervals=[]
         for table, key, target in [('CUPTI_ACTIVITY_KIND_RUNTIME', 'nameId', api)]+[
                 (t, 'textId', mpi) for t in sorted(tables) if t.startswith('MPI_') and t.endswith('_EVENTS')]:
             for r in db.execute(f'SELECT * FROM {table} WHERE globalTid=? AND start<? AND end>?',
@@ -90,14 +113,36 @@ def analyze(filename, dynamic_top=False):
                 row[1] += (b-a)*1e-9
                 if target is mpi:
                     mpi_intervals.append((a, b))
+                    if 'testall' in names[r[key]].lower():
+                        progress_intervals.append((a,b))
         busy_ns = duration(busy)
         mpi_exposed_ns = duration(busy+mpi_intervals)-busy_ns
+        packs=[(r['start'],r['end']) for r in inside
+               if 'chemistry_flux_exchange_gpu_pack_flux_' in names[r['shortName']]]
+        posts=[dict(r) for r in db.execute('SELECT * FROM MPI_P2P_EVENTS WHERE globalTid=? AND start>=? AND end<=? '
+                'AND tag BETWEEN 22101 AND 22106',(tid,start,end))
+                if names[r['textId']] in ('MPI_Isend','MPI_Irecv')] if 'MPI_P2P_EVENTS' in tables else []
+        waits=[dict(r) for r in db.execute('SELECT * FROM MPI_START_WAIT_EVENTS WHERE globalTid=? AND start>=? AND end<=?',
+                (tid,start,end))] if 'MPI_START_WAIT_EVENTS' in tables else []
+        scopes,missing=posted_request_scopes(posts,waits)
         result['ranks'][str(rank)] = dict(window_seconds=(end-start)*1e-9,
             kernel_seconds=duration(kernel_intervals)*1e-9, device_busy_seconds=busy_ns*1e-9,
             exposed_mpi_seconds=mpi_exposed_ns*1e-9,
             other_device_idle_seconds=(end-start-busy_ns-mpi_exposed_ns)*1e-9,
             kernels=dict(sorted(by_kernel.items(), key=lambda x: -x[1]['seconds'])),
-            copies=dict(memory), cuda_api=dict(api), mpi=dict(mpi))
+            copies=dict(memory), cuda_api=dict(api), mpi=dict(mpi),
+            flux_pack_calls=len(packs),flux_pack_seconds=duration(packs)*1e-9,
+            flux_pack_mpi_progress_trace_available=bool(progress_intervals),
+            flux_pack_mpi_progress_overlap_calls=(sum(overlap_duration([p],progress_intervals)>0 for p in packs)
+                if progress_intervals else None),
+            flux_pack_mpi_progress_overlap_seconds=(overlap_duration(packs,progress_intervals)*1e-9
+                if progress_intervals else None),
+            flux_pack_posted_request_trace_available=bool(scopes),
+            flux_pack_posted_request_overlap_calls=(sum(overlap_duration([p],scopes)>0 for p in packs)
+                if scopes else None),
+            flux_pack_posted_request_overlap_seconds=overlap_duration(packs,scopes)*1e-9 if scopes else None,
+            flux_requests_without_wait_trace=missing,
+            overlap_scope='posted request API return to associated MPI wait completion; not network payload overlap or speedup')
     db.close()
     return result
 

@@ -32,12 +32,17 @@ class ChemistrySourceGpuTests(unittest.TestCase):
             "CHEMISTRY_GPU_JACOBIAN_MAX_RATIO",
             "CHEMISTRY_GPU_TOTAL_ENERGY_MAX_RATIO",
             "CHEMISTRY_GPU_NUMERIC_JACOBIAN_MAX_RATIO",
+            "CHEMISTRY_ACTIVITY_SOURCE_MAX_RATIO",
+            "CHEMISTRY_ACTIVITY_CPU_GPU_MAX_RATIO",
+            "CHEMISTRY_ACTIVITY_RECONSTRUCTION_MAX_RATIO",
         ):
             self.assertIn(name, metrics)
             self.assertLessEqual(metrics[name], 1.0)
         self.assertEqual(metrics["CHEMISTRY_GPU_STATUS_MISMATCHES"], 0.0)
         self.assertEqual(metrics["CHEMISTRY_GPU_Q5_MAX_CHANGE"], 0.0)
         self.assertEqual(metrics["CHEMISTRY_GPU_TRACE_CASES"], 7.0)
+        self.assertEqual(metrics["CHEMISTRY_ACTIVITY_STATUS_MISMATCHES"], 0.0)
+        self.assertGreaterEqual(metrics["CHEMISTRY_ACTIVITY_GROSS_EXCHANGE_CASES"], 1.0)
 
 
 class ChemistrySourceGpuContractTests(unittest.TestCase):

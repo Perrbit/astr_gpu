@@ -3,39 +3,77 @@ module chemistry_ros2_gpu_probe_kernels
   use cudafor
   use chemistry_model, only: chemistry_status_ok
   use chemistry_linear6_gpu, only: air5_lu_factor_6_gpu, air5_lu_solve_6_gpu
+  use chemistry_ros2_gpu, only: air5_ros2_advance_gpu
   use gpu_check, only: sync_after_kernel
   implicit none
   private
 
   public :: launch_linear6_probe_gpu
+  public :: activity_ros2_probe_kernel
 
 contains
 
-  attributes(global) subroutine linear6_probe_kernel(matrix,rhs,solution,status,count)
+  attributes(global) subroutine activity_ros2_probe_kernel(rho,momentum,q5,state,observed,count, &
+      duration,threshold,explicit_threshold)
+    integer,value :: count
+    real(real64),value :: duration,threshold
+    logical,value :: explicit_threshold
+    real(real64),device,intent(in) :: rho(count),momentum(3,count),q5(count),state(6,count)
+    real(real64),device,intent(out) :: observed(20,count)
+    real(real64) :: carry(6),history,atol(6),final_state(6),suggested
+    integer :: index,accepted,rejected,rhs,jac,status
+    logical :: skipped
+    index=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    if(index>count) return
+    carry=state(:,index)*1.0e-24_real64
+    history=2.0e-11_real64
+    atol(1:5)=rho(index)*1.0e-13_real64
+    atol(6)=max(abs(state(6,index)),1.0_real64)*1.0e-13_real64
+    if(explicit_threshold) then
+      call air5_ros2_advance_gpu(rho(index),momentum(:,index),q5(index),state(:,index),duration,duration, &
+        1.0e-8_real64,atol,200000,final_state,suggested,accepted,rejected,rhs,jac,status,0, &
+        carry,history,threshold,skipped)
+    else
+      call air5_ros2_advance_gpu(rho(index),momentum(:,index),q5(index),state(:,index),duration,duration, &
+        1.0e-8_real64,atol,200000,final_state,suggested,accepted,rejected,rhs,jac,status,0, &
+        carry,history,skipped=skipped)
+    endif
+    observed(1:6,index)=final_state
+    observed(7:12,index)=carry
+    observed(13:14,index)=[history,suggested]
+    observed(15:19,index)=real([accepted,rejected,rhs,jac,status],real64)
+    observed(20,index)=merge(1.0_real64,0.0_real64,skipped)
+  end subroutine
+
+  attributes(global) subroutine linear6_probe_kernel(matrix,rhs,solution,status,pivot_output,count)
     integer, value :: count
     real(real64), device, intent(in) :: matrix(6,6,count), rhs(6,count)
     real(real64), device, intent(out) :: solution(6,count)
     integer, device, intent(out) :: status(count)
+    integer, device, intent(out) :: pivot_output(6,count)
     real(real64) :: lu(6,6)
     integer :: pivots(6), index
 
     index = (blockIdx%x-1)*blockDim%x+threadIdx%x
     if (index > count) return
     call air5_lu_factor_6_gpu(matrix(:,:,index),lu,pivots,status(index))
+    pivot_output(:,index)=0
     if (status(index) == chemistry_status_ok) then
+      pivot_output(:,index)=pivots
       call air5_lu_solve_6_gpu(lu,pivots,rhs(:,index),solution(:,index),status(index))
     else
       solution(:,index) = 0.0_real64
     end if
   end subroutine linear6_probe_kernel
 
-  subroutine launch_linear6_probe_gpu(matrix,rhs,solution,status,count)
+  subroutine launch_linear6_probe_gpu(matrix,rhs,solution,status,pivot_output,count)
     integer, intent(in) :: count
     real(real64), device, intent(in) :: matrix(6,6,count), rhs(6,count)
     real(real64), device, intent(out) :: solution(6,count)
     integer, device, intent(out) :: status(count)
+    integer, device, intent(out) :: pivot_output(6,count)
 
-    call linear6_probe_kernel<<<1,32>>>(matrix,rhs,solution,status,count)
+    call linear6_probe_kernel<<<(count+31)/32,32>>>(matrix,rhs,solution,status,pivot_output,count)
     call sync_after_kernel('linear6_probe_kernel',force_sync=.true.)
   end subroutine launch_linear6_probe_gpu
 
@@ -43,6 +81,7 @@ end module chemistry_ros2_gpu_probe_kernels
 
 program chemistry_ros2_gpu_probe
   use iso_fortran_env, only: real64
+  use ieee_arithmetic, only: ieee_value,ieee_quiet_nan
   use cudafor
   use chemistry_air5_data, only: air5_num_species, air5_atom_count, &
     air5_molar_mass
@@ -54,10 +93,10 @@ program chemistry_ros2_gpu_probe
   use chemistry_ros2, only: air5_ros2_advance
   use chemistry_ros2_gpu, only: launch_air5_ros2_batch_gpu
   use chemistry_linear6, only: air5_lu_factor_6, air5_lu_solve_6
-  use chemistry_ros2_gpu_probe_kernels, only: launch_linear6_probe_gpu
+  use chemistry_ros2_gpu_probe_kernels, only: launch_linear6_probe_gpu,activity_ros2_probe_kernel
   implicit none
 
-  integer, parameter :: case_count = 4, mode_count = 3
+  integer, parameter :: case_count = 4, mode_count = 3,linear_case_count=96
   integer, parameter :: modes(mode_count) = [air5_source_mode_coupled, &
     air5_source_mode_chemical, air5_source_mode_vt]
   real(real64), parameter :: duration = 1.0e-10_real64
@@ -181,6 +220,7 @@ program chemistry_ros2_gpu_probe
     diagnostic_mismatches
   write(*,'(a,1x,i0)') 'CHEMISTRY_GPU_ROS2_LINEAR_STATUS_MISMATCHES', &
     linear_status_mismatches
+  write(*,'(a,1x,i0)') 'CHEMISTRY_GPU_ROS2_LINEAR_CASES',linear_case_count
   write(*,'(a,1x,es24.16)') 'CHEMISTRY_GPU_ROS2_Q5_MAX_CHANGE',q5_change
   write(*,'(a,1x,es24.16)') 'CHEMISTRY_GPU_ROS2_INPUT_STATE_MAX_CHANGE', &
     input_state_change
@@ -192,8 +232,87 @@ program chemistry_ros2_gpu_probe
       input_state_change /= 0.0_real64) then
     error stop 'GPU ROS-2 trajectory comparison failed'
   end if
+  call check_activity_lifecycle()
 
 contains
+
+  subroutine check_activity_lifecycle()
+    real(real64),device :: observed_d(20,case_count)
+    real(real64) :: plain(20,case_count),zero(20,case_count),frozen(20,case_count),full(20,case_count)
+    real(real64) :: cpu_plain(20),cpu_zero(20),expected(20)
+    integer :: item,default_mismatches,skip_mismatches,full_mismatches
+    default_mismatches=0; skip_mismatches=0; full_mismatches=0
+    call activity_ros2_probe_kernel<<<1,32>>>(rho_d,momentum_d,q5_d,state_d,observed_d,case_count, &
+      duration,0.0_real64,.false.)
+    call sync_after_kernel('activity_ros2_default_probe',.true.)
+    plain=observed_d
+    call activity_ros2_probe_kernel<<<1,32>>>(rho_d,momentum_d,q5_d,state_d,observed_d,case_count, &
+      duration,0.0_real64,.true.)
+    call sync_after_kernel('activity_ros2_off_probe',.true.)
+    zero=observed_d
+    default_mismatches=count(plain/=zero)
+    call activity_ros2_probe_kernel<<<1,32>>>(rho_d,momentum_d,q5_d,state_d,observed_d,case_count, &
+      1.0e-100_real64,1.0_real64,.true.)
+    call sync_after_kernel('activity_ros2_skip_probe',.true.)
+    frozen=observed_d
+    do item=1,case_count
+      call host_activity_result(item,duration,0.0_real64,.false.,cpu_plain)
+      call host_activity_result(item,duration,0.0_real64,.true.,cpu_zero)
+      default_mismatches=default_mismatches+count(cpu_plain/=cpu_zero)
+      expected=0.0_real64
+      expected(1:6)=state(:,item)
+      expected(7:12)=state(:,item)*1.0e-24_real64
+      expected(13)=2.0e-11_real64
+      expected(14)=1.0e-100_real64
+      expected(17)=1.0_real64
+      expected(20)=1.0_real64
+      call host_activity_result(item,1.0e-100_real64,1.0_real64,.true.,cpu_zero)
+      skip_mismatches=skip_mismatches+count(cpu_zero/=expected)+count(frozen(:,item)/=expected)
+    enddo
+    call activity_ros2_probe_kernel<<<1,32>>>(rho_d,momentum_d,q5_d,state_d,observed_d,case_count, &
+      duration,1.0e-4_real64,.true.)
+    call sync_after_kernel('activity_ros2_full_probe',.true.)
+    full=observed_d
+    expected=plain(:,2)
+    expected(17)=expected(17)+1.0_real64
+    full_mismatches=count(full(:,2)/=expected)
+    call host_activity_result(2,duration,0.0_real64,.false.,cpu_plain)
+    call host_activity_result(2,duration,1.0e-4_real64,.true.,cpu_zero)
+    cpu_plain(17)=cpu_plain(17)+1.0_real64
+    full_mismatches=full_mismatches+count(cpu_plain/=cpu_zero)
+    write(*,'(a,1x,i0)') 'CHEMISTRY_ACTIVITY_ROS2_DEFAULT_MISMATCHES',default_mismatches
+    write(*,'(a,1x,i0)') 'CHEMISTRY_ACTIVITY_ROS2_SKIP_MISMATCHES',skip_mismatches
+    write(*,'(a,1x,i0)') 'CHEMISTRY_ACTIVITY_ROS2_FULL_MISMATCHES',full_mismatches
+    if(default_mismatches+skip_mismatches+full_mismatches/=0) error stop 'activity lifecycle mismatch'
+  end subroutine
+
+  subroutine host_activity_result(item,span,threshold,explicit_threshold,observed)
+    integer,intent(in) :: item
+    real(real64),intent(in) :: span,threshold
+    logical,intent(in) :: explicit_threshold
+    real(real64),intent(out) :: observed(20)
+    real(real64) :: carry(6),history,tolerances(6),final_state(6),suggested
+    integer :: accepted,rejected,rhs,jac,status
+    logical :: skipped
+    carry=state(:,item)*1.0e-24_real64
+    history=2.0e-11_real64
+    tolerances(1:5)=rho(item)*1.0e-13_real64
+    tolerances(6)=max(abs(state(6,item)),1.0_real64)*1.0e-13_real64
+    if(explicit_threshold) then
+      call air5_ros2_advance(rho(item),momentum(:,item),q5(item),state(:,item),span,span, &
+        1.0e-8_real64,tolerances,200000,final_state,suggested,accepted,rejected,rhs,jac,status,0, &
+        carry,history,threshold,skipped)
+    else
+      call air5_ros2_advance(rho(item),momentum(:,item),q5(item),state(:,item),span,span, &
+        1.0e-8_real64,tolerances,200000,final_state,suggested,accepted,rejected,rhs,jac,status,0, &
+        carry,history,skipped=skipped)
+    endif
+    observed(1:6)=final_state
+    observed(7:12)=carry
+    observed(13:14)=[history,suggested]
+    observed(15:19)=real([accepted,rejected,rhs,jac,status],real64)
+    observed(20)=merge(1.0_real64,0.0_real64,skipped)
+  end subroutine
 
   subroutine profile_batch
     integer, parameter :: profile_count = 8192
@@ -274,17 +393,18 @@ contains
   end subroutine profile_batch
 
   subroutine check_linear_solver(maximum_ratio,status_errors)
-    integer, parameter :: matrix_count = 3
+    integer, parameter :: matrix_count = linear_case_count
     real(real64), intent(inout) :: maximum_ratio
     integer, intent(inout) :: status_errors
     real(real64) :: matrix(6,6,matrix_count), rhs(6,matrix_count)
     real(real64) :: solution_ref(6,matrix_count), solution_gpu(6,matrix_count)
-    real(real64) :: expected(6), lu(6,6)
+    real(real64) :: expected(6), lu(6,6),buffer(6)
     real(real64), device :: matrix_d(6,6,matrix_count), rhs_d(6,matrix_count)
     real(real64), device :: solution_d(6,matrix_count)
     integer :: status_ref(matrix_count), status_gpu(matrix_count), pivots(6)
-    integer, device :: status_d(matrix_count)
-    integer :: item, row
+    integer :: pivot_ref(6,matrix_count),pivot_gpu(6,matrix_count),pivot_errors
+    integer, device :: status_d(matrix_count),pivot_d(6,matrix_count)
+    integer :: item,row,column,pivot
 
     matrix = 0.0_real64
     do row = 1, 6
@@ -299,12 +419,36 @@ contains
     matrix(5,4,1) = 1.25_real64
     matrix(6,5,1) = -1.5_real64
     matrix(1,1,2) = 1.0e20_real64
+    do item=4,matrix_count
+      do column=1,6
+        do row=1,6
+          matrix(row,column,item)=0.125_real64*sin(real(13*row+7*column+item,real64))
+          if(row==column) matrix(row,column,item)=matrix(row,column,item)+8.0_real64
+        enddo
+      enddo
+      pivot=modulo(item,6)+1
+      buffer=matrix(1,:,item)
+      matrix(1,:,item)=matrix(pivot,:,item)
+      matrix(pivot,:,item)=buffer
+      select case(modulo(item,12))
+      case(0)
+        matrix(:,:,item)=matrix(:,:,item)*1.0e-200_real64
+      case(1)
+        matrix(:,:,item)=matrix(:,:,item)*1.0e200_real64
+      case(2)
+        matrix(6,:,item)=matrix(2,:,item)
+      case(3)
+        matrix(3,4,item)=ieee_value(0.0_real64,ieee_quiet_nan)
+      end select
+    enddo
     expected = [1.0_real64,-2.0_real64,3.0_real64,-4.0_real64, &
       5.0_real64,-6.0_real64]
+    pivot_ref=0
     do item = 1, matrix_count
       rhs(:,item) = matmul(matrix(:,:,item),expected)
       call air5_lu_factor_6(matrix(:,:,item),lu,pivots,status_ref(item))
       if (status_ref(item) == chemistry_status_ok) then
+        pivot_ref(:,item)=pivots
         call air5_lu_solve_6(lu,pivots,rhs(:,item),solution_ref(:,item), &
           status_ref(item))
       else
@@ -313,14 +457,19 @@ contains
     end do
     matrix_d = matrix
     rhs_d = rhs
-    call launch_linear6_probe_gpu(matrix_d,rhs_d,solution_d,status_d,matrix_count)
+    call launch_linear6_probe_gpu(matrix_d,rhs_d,solution_d,status_d,pivot_d,matrix_count)
     solution_gpu = solution_d
     status_gpu = status_d
+    pivot_gpu=pivot_d
+    pivot_errors=0
     do item = 1, matrix_count
       if (status_gpu(item) /= status_ref(item)) status_errors = status_errors+1
-      if (status_ref(item) == chemistry_status_ok) &
+      if (status_ref(item) == chemistry_status_ok) then
+        pivot_errors=pivot_errors+count(pivot_gpu(:,item)/=pivot_ref(:,item))
         call update_ratio(solution_gpu(:,item),solution_ref(:,item),maximum_ratio)
+      endif
     end do
+    write(*,'(a,1x,i0)') 'CHEMISTRY_GPU_ROS2_LINEAR_PIVOT_MISMATCHES',pivot_errors
   end subroutine check_linear_solver
 
   subroutine make_case(pressure,temperature,tv,composition_id,rho_value, &

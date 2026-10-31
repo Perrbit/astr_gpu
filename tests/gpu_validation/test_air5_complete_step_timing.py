@@ -1,6 +1,6 @@
 import pytest
 
-from run_air5_performance_diagnosis import step_samples, window_summary, phase_summary, batch_identity, check_no_field_output
+from run_air5_performance_diagnosis import step_samples, window_summary, phase_summary, batch_identity, check_no_field_output, run_log_text, startup_cost_summary
 from summarize_air5_nsys import merged, duration, chemistry_cycle_window
 
 
@@ -48,6 +48,32 @@ def test_four_rank_window_and_invalid_warmup():
             window_summary(text, 4, 8, 2, warmup)
     with pytest.raises(ValueError, match='incomplete'):
         window_summary(text.rsplit('\n', 1)[0], 4, 8, 2, 1)
+
+
+def test_rank_stdout_replaces_interleaved_launcher_output(tmp_path):
+    (tmp_path/'run.log').write_text('truncated launcher record')
+    assert run_log_text(tmp_path, 2) == 'truncated launcher record'
+    for rank in range(2):
+        path=tmp_path/f'mpi_output/1/rank.{rank}'
+        path.mkdir(parents=True)
+        (path/'stdout').write_text(f'ASTR_COMPLETE_STEP_TIMING 0 {rank} 1\n')
+    assert len(run_log_text(tmp_path, 2).splitlines()) == 3
+    with pytest.raises(ValueError, match='incomplete per-rank'):
+        run_log_text(tmp_path, 3)
+
+
+def test_startup_cost_includes_warmup_and_separates_post_deadline():
+    text='\n'.join(f'ASTR_COMPLETE_STEP_TIMING {100+step} {rank} {rank+1}'
+                   for step in range(80) for rank in range(2))
+    rows=startup_cost_summary(text, 2, 100, 80)
+    assert rows['all_updates']['complete_steps'] == 80
+    assert rows['all_updates']['rank_window_seconds'] == [80,160]
+    assert rows['first_five']['startup_steps'] == [1,5]
+    assert rows['through_deadline_after_warmup']['complete_steps'] == 59
+    assert rows['post_deadline']['startup_steps'] == [65,80]
+    assert rows['post_deadline']['seconds_per_step'] == 2
+    short='ASTR_COMPLETE_STEP_TIMING 0 0 1'
+    assert set(startup_cost_summary(short,1,0,1)) == {'all_updates','first_five'}
 
 
 def test_reject_legacy_or_incomplete_batch(tmp_path):

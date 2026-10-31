@@ -1,0 +1,240 @@
+module chemistry_launch_tuning_gpu
+  use iso_fortran_env, only: real64,real32
+  use cudafor
+  use chemistry_launch_policy
+  implicit none
+  private
+  type :: launch_context
+    type(air5_launch_learning) :: policy
+    integer :: shapes(3,air5_launch_max_candidates)=0
+    integer :: sample_steps(air5_launch_rounds,air5_launch_max_candidates)=0,current_candidate=1
+    logical :: registered=.false.,events_created=.false.,sampling=.false.,reported=.false.
+    type(cudaEvent) :: started,finished
+  end type launch_context
+  type(launch_context), save :: contexts(5)
+  character(len=24), parameter :: labels(5)=[character(len=24) :: &
+    'chemistry_h1_interior','chemistry_h1_top','chemistry_h2_interior','chemistry_h2_top','diffusion_flux']
+  logical, save :: configured=.false.
+  integer, save :: startup_step=0
+  logical, save, public :: air5_auto_launch=.false.
+  public :: begin_air5_launch_step,end_air5_launch_step,release_air5_launch_tuning
+  public :: register_air5_launch_context,choose_air5_launch_block
+  public :: begin_air5_launch_sample,end_air5_launch_sample,collect_air5_launch_sample
+
+contains
+
+  subroutine check_cuda(code,label)
+    use mpi
+    use parallel, only: mpirank
+    integer, intent(in) :: code
+    character(*), intent(in) :: label
+    integer :: ignored
+    if(code==cudaSuccess) return
+    write(*,'(a,i0,2a,i0)') 'AIR5_TUNING_CUDA_ERROR rank=',mpirank,' operation=',label,code
+    call MPI_Abort(MPI_COMM_WORLD,code,ignored)
+  end subroutine check_cuda
+
+  subroutine begin_air5_launch_step()
+    use mpi
+    use parallel, only: mpirank
+    character(len=32) :: value
+    integer :: status,length,bad,ignored
+    if(.not.configured) then
+      bad=0
+      call get_environment_variable('ASTR_AIR5_LAUNCH_TUNING',value,length,status)
+      if(status/=1) then
+        if(status/=0) bad=1
+        select case(trim(value))
+        case('fixed'); air5_auto_launch=.false.
+        case('auto'); air5_auto_launch=.true.
+        case default; bad=1
+        end select
+      endif
+      if(bad/=0) then
+        write(*,'(a,i0,a)') 'AIR5_TUNING_CONFIG rank=',mpirank,' expected ASTR_AIR5_LAUNCH_TUNING=fixed or auto'
+        call MPI_Abort(MPI_COMM_WORLD,1,ignored)
+      endif
+      configured=.true.
+    endif
+    if(air5_auto_launch) startup_step=min(startup_step+1,air5_launch_deadline+1)
+  end subroutine begin_air5_launch_step
+
+  subroutine register_air5_launch_context(context,shapes,original,kernel,alternate)
+    use parallel, only: mpirank
+    integer, intent(in) :: context,shapes(:,:),original
+    external :: kernel
+    external :: alternate
+    optional :: alternate
+    type(cudaFuncAttributes) :: attributes,alternate_attributes
+    type(cudaDeviceProp) :: properties
+    integer :: device,code,candidate,threads,blocks
+    logical :: legal(size(shapes,2))
+
+    if(contexts(context)%registered) return
+    code=cudaGetDevice(device)
+    call check_cuda(code,'get-device')
+    code=cudaGetDeviceProperties(properties,device)
+    call check_cuda(code,'device-properties')
+    code=cudaFuncGetAttributes(attributes,kernel)
+    call check_cuda(code,'kernel-attributes')
+    if(present(alternate)) then
+      code=cudaFuncGetAttributes(alternate_attributes,alternate)
+      call check_cuda(code,'alternate-kernel-attributes')
+    endif
+    legal=.false.
+    do candidate=1,size(shapes,2)
+      threads=product(shapes(:,candidate))
+      if(threads>attributes%maxThreadsPerBlock.or.threads>properties%maxThreadsPerBlock) cycle
+      if(any(shapes(:,candidate)>properties%maxThreadsDim)) cycle
+      code=cudaOccupancyMaxActiveBlocksPerMultiprocessor(blocks,kernel,threads,0)
+      call check_cuda(code,'candidate-resources')
+      legal(candidate)=blocks>0
+      if(present(alternate).and.legal(candidate)) then
+        if(threads>alternate_attributes%maxThreadsPerBlock) then
+          legal(candidate)=.false.
+        else
+          code=cudaOccupancyMaxActiveBlocksPerMultiprocessor(blocks,alternate,threads,0)
+          call check_cuda(code,'alternate-candidate-resources')
+          legal(candidate)=blocks>0
+        endif
+      endif
+    enddo
+    call initialize_air5_launch_learning(contexts(context)%policy,legal,original)
+    contexts(context)%shapes(:,1:size(shapes,2))=shapes
+    contexts(context)%registered=.true.
+    write(*,'(a,i0,2a,a,i0,a,5(l1,1x))') 'AIR5_TUNING_REGISTER rank=',mpirank, &
+      ' context=',trim(labels(context)),' original=',original,' legal=',legal
+  end subroutine register_air5_launch_context
+
+  subroutine choose_air5_launch_block(context,block)
+    integer, intent(in) :: context
+    type(dim3), intent(out) :: block
+    integer :: candidate
+    call select_air5_launch_candidate(contexts(context)%policy,startup_step,candidate, &
+      contexts(context)%sampling)
+    contexts(context)%current_candidate=candidate
+    block=dim3(contexts(context)%shapes(1,candidate),contexts(context)%shapes(2,candidate), &
+      contexts(context)%shapes(3,candidate))
+  end subroutine choose_air5_launch_block
+
+  subroutine begin_air5_launch_sample(context)
+    integer, intent(in) :: context
+    integer :: code
+    if(.not.contexts(context)%sampling) return
+    if(.not.contexts(context)%events_created) then
+      code=cudaEventCreate(contexts(context)%started)
+      call check_cuda(code,'create-start-event')
+      code=cudaEventCreate(contexts(context)%finished)
+      call check_cuda(code,'create-stop-event')
+      contexts(context)%events_created=.true.
+    endif
+    code=cudaEventRecord(contexts(context)%started,0_cuda_stream_kind)
+    call check_cuda(code,'record-start-event')
+  end subroutine begin_air5_launch_sample
+
+  subroutine end_air5_launch_sample(context)
+    integer, intent(in) :: context
+    integer :: code
+    if(.not.contexts(context)%sampling) return
+    code=cudaEventRecord(contexts(context)%finished,0_cuda_stream_kind)
+    call check_cuda(code,'record-stop-event')
+  end subroutine end_air5_launch_sample
+
+  subroutine collect_air5_launch_sample(context)
+    integer, intent(in) :: context
+    integer :: code,candidate,round
+    real(real32) :: milliseconds
+    if(.not.contexts(context)%sampling) return
+    code=cudaEventSynchronize(contexts(context)%finished)
+    call check_cuda(code,'wait-stop-event')
+    code=cudaEventElapsedTime(milliseconds,contexts(context)%started,contexts(context)%finished)
+    call check_cuda(code,'event-elapsed-time')
+    candidate=contexts(context)%current_candidate
+    round=contexts(context)%policy%counts(candidate)+1
+    contexts(context)%sample_steps(round,candidate)=startup_step
+    call record_air5_launch_sample(contexts(context)%policy,real(milliseconds,real64))
+    contexts(context)%sampling=.false.
+    if(contexts(context)%policy%frozen) call report_context(context)
+  end subroutine collect_air5_launch_sample
+
+  subroutine report_context(context,unfinished)
+    use parallel, only: mpirank
+    integer, intent(in) :: context
+    logical, intent(in), optional :: unfinished
+    integer :: candidate,sample,count,rounds,selected
+    real(real64) :: mean,median
+    character(len=32) :: reason
+    if(contexts(context)%reported) return
+    if(.not.contexts(context)%registered) then
+      write(*,'(a,i0,2a)') 'AIR5_TUNING_UNUSED rank=',mpirank,' context=',trim(labels(context))
+      contexts(context)%reported=.true.
+      return
+    endif
+    reason=contexts(context)%policy%reason
+    if(present(unfinished)) then
+      if(unfinished) reason='run-ended-while-learning'
+    endif
+    rounds=contexts(context)%policy%complete_rounds
+    selected=contexts(context)%policy%selected
+    write(*,'(a,i0,2a,a,i0,a,3(i0,1x),a,i0,2a)') 'AIR5_TUNING_CHOICE rank=',mpirank, &
+      ' context=',trim(labels(context)),' candidate=',selected,' block=',contexts(context)%shapes(:,selected), &
+      ' complete_rounds=',rounds,' reason=',trim(reason)
+    do candidate=1,air5_launch_max_candidates
+      count=contexts(context)%policy%counts(candidate)
+      if(count==0) cycle
+      do sample=1,count
+        write(*,'(a,i0,2a,a,i0,a,i0,a,i0,a,l1,a,es24.16)') 'AIR5_TUNING_SAMPLE rank=',mpirank, &
+          ' context=',trim(labels(context)),' candidate=',candidate,' round=',sample, &
+          ' startup_step=',contexts(context)%sample_steps(sample,candidate), &
+          ' used=',sample<=rounds,' ms=',contexts(context)%policy%milliseconds(sample,candidate)
+      enddo
+      mean=sum(contexts(context)%policy%milliseconds(1:count,candidate))/real(count,real64)
+      median=0.0_real64
+      if(rounds>0) median=air5_launch_median(contexts(context)%policy%milliseconds(1:rounds,candidate))
+      write(*,'(a,i0,2a,a,i0,a,4(es24.16,1x))') 'AIR5_TUNING_SUMMARY rank=',mpirank, &
+        ' context=',trim(labels(context)),' candidate=',candidate,' selected_median/all_mean/min/max_ms=', &
+        median,mean,minval(contexts(context)%policy%milliseconds(1:count,candidate)), &
+        maxval(contexts(context)%policy%milliseconds(1:count,candidate))
+    enddo
+    contexts(context)%reported=.true.
+  end subroutine report_context
+
+  subroutine end_air5_launch_step()
+    integer :: context
+    if(.not.air5_auto_launch.or.startup_step/=air5_launch_deadline) return
+    do context=1,size(contexts)
+      if(contexts(context)%registered) &
+        call finish_air5_launch_learning(contexts(context)%policy,'deadline')
+      call report_context(context)
+    enddo
+  end subroutine end_air5_launch_step
+
+  subroutine release_air5_launch_tuning()
+    integer :: context,code
+    if(.not.air5_auto_launch) then
+      configured=.false.
+      return
+    endif
+    do context=1,size(contexts)
+      call report_context(context,.not.contexts(context)%policy%frozen)
+      if(contexts(context)%events_created) then
+        code=cudaEventDestroy(contexts(context)%started)
+        call check_cuda(code,'destroy-start-event')
+        code=cudaEventDestroy(contexts(context)%finished)
+        call check_cuda(code,'destroy-stop-event')
+      endif
+      contexts(context)%policy=air5_launch_learning()
+      contexts(context)%shapes=0
+      contexts(context)%sample_steps=0
+      contexts(context)%current_candidate=1
+      contexts(context)%registered=.false.
+      contexts(context)%events_created=.false.
+      contexts(context)%sampling=.false.
+      contexts(context)%reported=.false.
+    enddo
+    configured=.false.
+    air5_auto_launch=.false.
+    startup_step=0
+  end subroutine release_air5_launch_tuning
+
+end module chemistry_launch_tuning_gpu

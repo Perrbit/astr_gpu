@@ -107,6 +107,8 @@ def require_g1(result):
 
 
 def run(args):
+    if getattr(args,'backend','gpu')=='cpu' and args.source_evaluation!='joint':
+        raise ValueError('CPU probe supports joint source evaluation only')
     reference = json.loads(args.reference.read_text())
     if reference['status'] != 'reference-convergence-collected-awaiting-G1':
         raise ValueError('require successful independent reference preparation')
@@ -116,6 +118,14 @@ def run(args):
             digest(reference_code) != reference['reference_code_sha256']):
         raise ValueError('reference mechanism or implementation changed')
     model = Air5RadauReference(mechanism)
+    selection=getattr(args,'case_names',None)
+    if selection is not None and (not selection or set(selection)-{case['name'] for case in reference['cases']}):
+        raise ValueError('unknown or empty G1 case selection')
+    cases=[case for case in reference['cases'] if selection is None or case['name'] in selection]
+    low_activity=getattr(args,'low_activity','off')
+    threshold=0.0 if low_activity=='off' else float(low_activity)
+    if not np.isfinite(threshold) or threshold<0:
+        raise ValueError('invalid activity threshold')
     args.output.mkdir(parents=True, exist_ok=False)
     rtol, atol_factor = TOLERANCES[args.tolerance]
     report = dict(status='running', scope='approved 11-state zero-dimensional G1 gate; not full-flow acceptance',
@@ -125,20 +135,24 @@ def run(args):
         probe_source_sha256=digest(ROOT / 'tests/gpu_validation/chemistry_ros2_compensation_gpu_probe.cuf'),
         cpu_integrator_sha256=digest(ROOT / 'src/chemistry_kinetics.F90'),
         gpu_integrator_sha256=digest(ROOT / 'src_gpu/chemistry_kinetics_gpu.cuf'),
-        tolerance=args.tolerance, rtol=rtol, atol_factor=atol_factor, source_evaluation='joint',
+        tolerance=args.tolerance, rtol=rtol, atol_factor=atol_factor, source_evaluation=args.source_evaluation,
         chemistry_calls=args.segments, step_history=args.step_history,
+        case_selection=[case['name'] for case in cases],complete_11_state_gate=len(cases)==len(reference['cases']),
+        activity_threshold=threshold,backend=getattr(args,'backend','gpu'),
         carry_convention='reference starts from rounded q; check q and q-carry separately. '
             'State error uses fsum; recovered thermodynamics remains FP64.', cases=[])
     try:
-        for case in reference['cases']:
+        for case in cases:
             stem = args.output / case['name']
             row = np.r_[case['rho'], case['momentum'], case['q5'], case['initial'], case['carry']]
             input_path, output_path = stem.with_suffix('.in'), stem.with_suffix('.out')
             with input_path.open('w') as stream:
                 stream.write(f"1 {case['duration']:.17e} {MODES[case['mode']]}\n")
                 np.savetxt(stream, row[None, :], fmt='%.17e')
-            env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(args.gpu), ASTR_AIR5_SOURCE_EVALUATION='joint')
-            command = [str(args.probe.resolve()), 'batch', str(input_path.resolve()), str(output_path.resolve()),
+            env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(args.gpu),
+                       ASTR_AIR5_SOURCE_EVALUATION=args.source_evaluation,ASTR_AIR5_LOW_ACTIVITY=str(low_activity))
+            command = [str(args.probe.resolve()), 'batch-cpu' if getattr(args,'backend','gpu')=='cpu' else 'batch',
+                       str(input_path.resolve()), str(output_path.resolve()),
                        f'{rtol:.17e}', f'{atol_factor:.17e}', str(args.segments),
                        'history' if args.step_history else 'reset']
             with stem.with_suffix('.log').open('w') as log:
@@ -150,6 +164,10 @@ def run(args):
             diagnostics.update(work_counts=result[2:6].astype(int).tolist(),
                 suggested_step=float(result[18]), command=command,
                 input_sha256=digest(input_path), output_sha256=digest(output_path))
+            activity_rows=[line for line in output_path.read_text().splitlines() if line.startswith('# AIR5_ACTIVITY ')]
+            if activity_rows:
+                activity=dict(word.split('=',1) for word in activity_rows[0].split()[2:])
+                diagnostics['activity_calls']={key:int(activity[key]) for key in ('skipped_calls','total_calls')}
             report['cases'].append(diagnostics)
             require_g1(diagnostics)
             print(case['name'], max(diagnostics['comparisons']['q']['normalized_error']), flush=True)
@@ -168,6 +186,10 @@ if __name__ == '__main__':
     parser.add_argument('--probe', type=Path, default=ROOT / 'build_gpu_probe/bin/chemistry_ros2_compensation_gpu_probe')
     parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--tolerance', choices=tuple(TOLERANCES), default='baseline')
+    parser.add_argument('--source-evaluation', choices=('joint', 'source-only'), default='joint')
+    parser.add_argument('--low-activity',default='off',help='off or a fixed positive screening threshold')
+    parser.add_argument('--backend',choices=('cpu','gpu'),default='gpu')
+    parser.add_argument('--case-names',nargs='+',help='explicit calibration or holdout subset; default is all 11')
     parser.add_argument('--segments', type=int, choices=(1, 4), default=1,
                         help='equal chemistry calls over the same total reference duration')
     parser.add_argument('--step-history', action='store_true')

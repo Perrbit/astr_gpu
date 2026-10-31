@@ -25,6 +25,9 @@ CPU_LAYOUT = {
         "chemistry_ros2",
     },
     "chemistry_boundary_state.F90": {
+        "chemistry_hbl_geometry",
+        "chemistry_incident_shock_state",
+        "chemistry_pressure_outlet_state",
         "chemistry_hbl_initial_field",
         "chemistry_hbl_profile",
         "chemistry_hbl_boundary_state",
@@ -35,9 +38,19 @@ CPU_LAYOUT = {
     },
     "chemistry_runtime.F90": {"chemistry_flow_runtime"},
     "chemistry_solver.F90": {"chemistry_flow_solver"},
+    "chemistry_compensation.F90": {"chemistry_compensation"},
+    "chemistry_monitor.F90": {"chemistry_monitor"},
+    "chemistry_characteristic.F90": {"chemistry_characteristic"},
+    "chemistry_filter_math.F90": {"chemistry_filter_math"},
+    "chemistry_filter_operator.F90": {"chemistry_filter_operator"},
 }
 
 GPU_LAYOUT = {
+    "chemistry_launch_policy.F90": {"chemistry_launch_policy"},
+    "chemistry_launch_tuning_gpu.cuf": {"chemistry_launch_tuning_gpu"},
+    "chemistry_flux_exchange_gpu.cuf": {"chemistry_flux_exchange_gpu"},
+    "chemistry_compensation_gpu.cuf": {"chemistry_compensation_gpu"},
+    "chemistry_monitor_gpu.cuf": {"chemistry_monitor_gpu","chemistry_mean_statistics_gpu"},
     "chemistry_core_gpu.cuf": {
         "chemistry_model_gpu",
         "chemistry_thermo_gpu",

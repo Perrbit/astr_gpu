@@ -2734,7 +2734,7 @@ contains
     use commarray_gpu, only: rho_d,vel_d,tmp_d,tve_d,prs_d,spc_d,dvel_d, &
       dtmp_d,dspc_d,dtve_d,sigma_d,qflux_d,species_flux_d,ev_flux_d,species_energy_flux_d
     integer, value :: im,jm,km
-    integer :: i,j,k,status,species,direction
+    integer :: i,j,k,status,direction
     real(real64) :: velocity(3),mass_fraction(air5_num_species)
     real(real64) :: grad_velocity(3,3),grad_temperature(3),grad_tv(3)
     real(real64) :: grad_mass_fraction(air5_num_species,3)
@@ -2755,7 +2755,7 @@ contains
     call air5_diffusive_flux_gpu(rho_d(i,j,k),velocity,tmp_d(i,j,k), &
       tve_d(i,j,k),prs_d(i,j,k),mass_fraction,grad_velocity, &
       grad_temperature,grad_tv,grad_mass_fraction,momentum_flux, &
-      species_flux,energy_flux,ev_flux,status)
+      species_flux,energy_flux,ev_flux,status,enthalpy,ev_species)
     if(status/=chemistry_status_ok) then
       call record_air5_status(status)
       return
@@ -2770,12 +2770,6 @@ contains
     species_flux_d(i,j,k,:,:)=species_flux
     ev_flux_d(i,j,k,:)=ev_flux
     if(air5_diffusion_layered_d/=0) then
-      do species=1,air5_num_species
-        ev_species(species)=air5_species_vibrational_energy_gpu(species,tve_d(i,j,k))
-        enthalpy(species)=air5_species_cv_tr_gpu(species)*tmp_d(i,j,k)+ &
-          ev_species(species)+air5_formation_energy(species)+ &
-          air5_species_gas_constant_gpu(species)*tmp_d(i,j,k)
-      enddo
       do direction=1,3
         species_energy_flux_d(i,j,k,direction)=-dot_product(enthalpy,species_flux(:,direction))
         species_energy_flux_d(i,j,k,direction+3)=-dot_product(ev_species,species_flux(:,direction))
@@ -3776,6 +3770,9 @@ contains
   end subroutine validate_air5_transport_gpu
 
   subroutine air5_transport_rk3_step_gpu(first_stage_prepared,copy_back)
+    use chemistry_flux_exchange_gpu, only: packed_air5_flux_halo,exchange_air5_flux_halo
+    use chemistry_launch_tuning_gpu, only: air5_auto_launch,register_air5_launch_context, &
+      choose_air5_launch_block,begin_air5_launch_sample,end_air5_launch_sample,collect_air5_launch_sample
     use gpu_phase_timing, only: begin_air5_phase,mark_air5_phase
     use mpi, only: MPI_PROC_NULL
     use commvar, only: im,jm,km,hm,is,ie,js,je,ks,ke,npdci,npdcj,npdck, &
@@ -3786,7 +3783,8 @@ contains
     use gradcal_gpu, only: gradcal_dvel_kernel,gradcal_dvel_xphysical_kernel, &
       gradcal_dvel_yphysical_kernel,gradcal_dvel_xyphysical_kernel
     use halo_exchange_gpu, only: exchange_field_halo_gpu
-    use parallel, only: mpidown,mpiup,mpileft
+    use parallel, only: mpidown,mpiup,mpileft,mpiright,mpiback,mpifront,isize,jsize,ksize
+    use boundary_gpu, only: gpu_axis_is_physical
     use chemistry_hbl_boundary, only: air5_dynamic_top
     use chemistry_flow_runtime, only: air5_hbl_flowtype,air5_shock_capturing_enabled, &
       air5_convection_species_budget,air5_layered_diffusion,air5_consistent_species_convection, &
@@ -3808,6 +3806,7 @@ contains
     integer :: apply_down_y,apply_up_y,zero_species_flux_lower_y
     integer :: collect_limiter_diagnostics,shock_mode,species_budget
     integer :: phase,first_phase,last_phase,top_first_i
+    integer, parameter :: candidates(3,5)=reshape([8,8,8,32,2,1,32,4,1,32,4,2,32,8,2],[3,5])
     logical :: shock_capturing,layered,consistent_species,symmetric_species
     real(real64), allocatable :: validation_ratio(:,:,:)
     real(real64) :: phase_started
@@ -3815,8 +3814,10 @@ contains
     real(real64), parameter :: rk_b(3)=[0.0_real64,0.25_real64,2.0_real64/3.0_real64]
     real(real64), parameter :: rk_c(3)=[1.0_real64,0.25_real64,2.0_real64/3.0_real64]
     type(dim3) :: block1,grid1,block3,grid3,block_x,grid_x,block_y,grid_y,block_z,grid_z
+    type(dim3) :: flux_block,flux_grid
 
     call validate_air5_transport_gpu()
+    if(air5_auto_launch) call register_air5_launch_context(5,candidates,1,air5_diffusion_flux_kernel)
     shock_capturing=air5_shock_capturing_enabled()
     shock_mode=merge(1,0,shock_capturing)
     species_budget=merge(1,0,air5_convection_species_budget())
@@ -3998,10 +3999,25 @@ contains
           npdci,npdcj,npdck,zero_species_flux_lower_y)
         call sync_after_kernel('air5_species_tv_gradient_kernel',.true.)
         call reset_air5_status()
-        call air5_diffusion_flux_kernel<<<grid3,block3>>>(im,jm,km)
+        flux_block=block3
+        flux_grid=grid3
+        if(air5_auto_launch) then
+          call choose_air5_launch_block(5,flux_block)
+          flux_grid=dim3((im+flux_block%x)/flux_block%x,(jm+flux_block%y)/flux_block%y, &
+            (km+flux_block%z)/flux_block%z)
+          call begin_air5_launch_sample(5)
+        endif
+        call air5_diffusion_flux_kernel<<<flux_grid,flux_block>>>(im,jm,km)
+        if(air5_auto_launch) call end_air5_launch_sample(5)
         call sync_after_kernel('air5_diffusion_flux_kernel',.true.)
+        if(air5_auto_launch) call collect_air5_launch_sample(5)
         call check_air5_status('diffusion flux',rkstep)
         call mark_air5_phase('transport_viscous_flux',phase_started,rkstep)
+        if(packed_air5_flux_halo()) then
+          call exchange_air5_flux_halo(sigma_d,qflux_d,species_flux_d,ev_flux_d,species_energy_flux_d, &
+            im,jm,km,hm,[isize,jsize,ksize],[mpileft,mpidown,mpiback],[mpiright,mpiup,mpifront], &
+            [.not.gpu_axis_is_physical(1),.not.gpu_axis_is_physical(2),.not.gpu_axis_is_physical(3)],layered)
+        else
         call exchange_field_halo_gpu(sigma_d,6)
         call exchange_field_halo_gpu(qflux_d,3)
         do direction=1,3
@@ -4009,6 +4025,7 @@ contains
         enddo
         call exchange_field_halo_gpu(ev_flux_d,3)
         if(layered) call exchange_field_halo_gpu(species_energy_flux_d,6)
+        endif
         call mark_air5_phase('transport_viscous_halo',phase_started,rkstep)
         grid1=dim3((ratio_ntot+block1%x-1)/block1%x,1,1)
         call air5_reset_diffusion_ratio_kernel<<<grid1,block1>>>(im,jm,km,hm)

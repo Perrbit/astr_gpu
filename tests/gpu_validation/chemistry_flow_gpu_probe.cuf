@@ -1,7 +1,11 @@
 module chemistry_flow_gpu_probe_kernels
   use iso_fortran_env, only: real64
   use cudafor
-  use chemistry_air5_data, only: air5_num_species
+  use chemistry_air5_data, only: air5_num_species,air5_formation_energy
+  use chemistry_thermo_gpu, only: air5_species_vibrational_pair_gpu, &
+    air5_species_vibrational_energy_gpu,air5_species_vibrational_cv_gpu, &
+    air5_species_cv_tr_gpu,air5_species_gas_constant_gpu
+  use chemistry_model_gpu, only: air5_finite_gpu
   use chemistry_flow_state_gpu, only: air5_primitive_to_conservative_gpu, &
     air5_conservative_to_primitive_gpu
   use chemistry_transport_gpu, only: air5_transport_properties_gpu, &
@@ -13,8 +17,70 @@ module chemistry_flow_gpu_probe_kernels
   public :: launch_chemistry_flow_probe_gpu
   public :: launch_chemistry_transport_status_probe_gpu
   public :: launch_species_cache_probe_gpu
+  public :: launch_transport_reuse_probe_gpu
 
 contains
+
+  attributes(global) subroutine transport_reuse_probe_kernel(errors)
+    real(real64), device, intent(out) :: errors(3)
+    real(real64), parameter :: temperatures(5)=[300.0_real64,800.0_real64, &
+      1500.0_real64,3100.0_real64,8000.0_real64]
+    real(real64) :: energy,cv,reference_energy,reference_cv,temperature
+    real(real64) :: fractions(5),mu,ktr,kv,viscosity(5),binary(5,5),diffusion(5)
+    real(real64) :: velocity(3),gradient(3,3),gt(3),gv(3),gy(5,3)
+    real(real64) :: momentum_flux(3,3),species_flux(5,3),heat(3),vheat(3),enthalpy(5),ev(5),expected
+    integer :: t,s,status
+
+    if(threadIdx%x/=1 .or. blockIdx%x/=1) return
+    errors=0.0_real64
+    fractions=[0.62_real64,0.18_real64,0.07_real64,0.05_real64,0.08_real64]
+    velocity=[1.0_real64,2.0_real64,3.0_real64]
+    gradient=0.0_real64;gt=1.0_real64;gv=-2.0_real64;gy=0.0_real64
+    do t=1,size(temperatures)
+      temperature=temperatures(t)
+      do s=1,5
+        call air5_species_vibrational_pair_gpu(s,temperature,energy,cv)
+        reference_energy=air5_species_vibrational_energy_gpu(s,temperature)
+        reference_cv=air5_species_vibrational_cv_gpu(s,temperature)
+        if(.not.air5_finite_gpu(energy).or..not.air5_finite_gpu(cv)) then
+          errors(1)=huge(energy)
+          return
+        endif
+        errors(1)=max(errors(1),abs(energy-reference_energy)/max(1.0_real64,abs(reference_energy)), &
+          abs(cv-reference_cv)/max(1.0_real64,abs(reference_cv)))
+      enddo
+      call air5_transport_properties_gpu(temperature,temperature,2.0e5_real64,fractions, &
+        mu,ktr,kv,viscosity,binary,diffusion,status)
+      if(status/=0) then
+        errors(3)=huge(mu)
+        return
+      endif
+      errors(3)=max(errors(3),maxval(abs(binary-transpose(binary))))
+      call air5_diffusive_flux_gpu(0.42_real64,velocity,temperature,temperature,2.0e5_real64, &
+        fractions,gradient,gt,gv,gy,momentum_flux,species_flux,heat,vheat,status,enthalpy,ev)
+      if(status/=0) then
+        errors(2)=huge(mu)
+        return
+      endif
+      do s=1,5
+        reference_energy=air5_species_vibrational_energy_gpu(s,temperature)
+        expected=air5_species_cv_tr_gpu(s)*temperature+reference_energy+ &
+          air5_formation_energy(s)+air5_species_gas_constant_gpu(s)*temperature
+        if(.not.air5_finite_gpu(enthalpy(s)).or..not.air5_finite_gpu(ev(s))) then
+          errors(2)=huge(mu)
+          return
+        endif
+        errors(2)=max(errors(2),abs(ev(s)-reference_energy)/max(1.0_real64,abs(reference_energy)), &
+          abs(enthalpy(s)-expected)/max(1.0_real64,abs(expected)))
+      enddo
+    enddo
+  end subroutine transport_reuse_probe_kernel
+
+  subroutine launch_transport_reuse_probe_gpu(errors)
+    real(real64), device, intent(out) :: errors(3)
+    call transport_reuse_probe_kernel<<<1,32>>>(errors)
+    call sync_after_kernel('transport_reuse_probe_kernel',.true.)
+  end subroutine launch_transport_reuse_probe_gpu
 
   attributes(global) subroutine species_cache_probe_kernel(q,y,status)
     real(real64), device, intent(in) :: q(11)
@@ -125,7 +191,8 @@ program chemistry_flow_gpu_probe
   use chemistry_flow_state_gpu, only: configure_air5_species_cache_gpu
   use chemistry_transport, only: air5_transport_properties,air5_diffusive_flux
   use chemistry_flow_gpu_probe_kernels, only: launch_chemistry_flow_probe_gpu, &
-    launch_chemistry_transport_status_probe_gpu,launch_species_cache_probe_gpu
+    launch_chemistry_transport_status_probe_gpu,launch_species_cache_probe_gpu, &
+    launch_transport_reuse_probe_gpu
   implicit none
 
   real(real64), parameter :: rho=0.42_real64,temperature=4200.0_real64, &
@@ -151,6 +218,16 @@ program chemistry_flow_gpu_probe
   real(real64) :: cache_cpu(5),cache_gpu(5),expected_cache(5),snapshot(11),amplitude
   real(real64), parameter :: trace_values(4)=[0.0_real64,1.0e-30_real64,1.0e-16_real64,1.0e-12_real64]
   integer :: trace_species,trace_index
+  real(real64), device :: reuse_errors_d(3)
+  real(real64) :: reuse_errors(3)
+
+  call launch_transport_reuse_probe_gpu(reuse_errors_d)
+  reuse_errors=reuse_errors_d
+  write(*,'(A,1X,ES24.16)') 'CHEMISTRY_FLOW_GPU_VIBRATIONAL_PAIR_ERROR',reuse_errors(1)
+  write(*,'(A,1X,ES24.16)') 'CHEMISTRY_FLOW_GPU_ENTHALPY_REUSE_ERROR',reuse_errors(2)
+  write(*,'(A,1X,ES24.16)') 'CHEMISTRY_FLOW_GPU_DIFFUSION_SYMMETRY_ERROR',reuse_errors(3)
+  if(any(reuse_errors(1:2)>1.0e-12_real64).or.reuse_errors(3)/=0.0_real64) &
+    error stop 'local transport reuse probe failed'
 
   velocity=[1200.0_real64,-37.0_real64,84.0_real64]
   mass_fraction=[0.62_real64,0.18_real64,0.07_real64,0.05_real64,0.08_real64]

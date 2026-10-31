@@ -6,8 +6,8 @@ module chemistry_transport_gpu
     chemistry_status_nonfinite,chemistry_status_out_of_domain
   use chemistry_model_gpu, only: air5_finite_gpu,air5_pressure_is_in_domain_gpu
   use chemistry_thermo_gpu, only: air5_species_gas_constant_gpu, &
-    air5_species_cv_tr_gpu,air5_species_vibrational_energy_gpu, &
-    air5_species_vibrational_cv_gpu
+    air5_species_cv_tr_gpu, &
+    air5_species_vibrational_cv_gpu,air5_species_vibrational_pair_gpu
   implicit none
   private
 
@@ -18,7 +18,7 @@ contains
 
   attributes(device) subroutine air5_transport_properties_gpu(temperature,tv, &
       pressure,mass_fraction,viscosity,conductivity_tr,conductivity_v, &
-      species_viscosity,binary_diffusion,mixture_diffusion,status)
+      species_viscosity,binary_diffusion,mixture_diffusion,status,species_ev)
     real(real64), intent(in) :: temperature,tv,pressure
     real(real64), intent(in) :: mass_fraction(air5_num_species)
     real(real64), intent(out) :: viscosity,conductivity_tr,conductivity_v
@@ -26,10 +26,11 @@ contains
     real(real64), intent(out) :: binary_diffusion(air5_num_species,air5_num_species)
     real(real64), intent(out) :: mixture_diffusion(air5_num_species)
     integer, intent(out) :: status
+    real(real64), optional, intent(out) :: species_ev(air5_num_species)
     real(real64) :: mole_fraction(air5_num_species),phi(air5_num_species,air5_num_species)
     real(real64) :: species_conductivity(air5_num_species), &
       species_vibrational_conductivity(air5_num_species)
-    real(real64) :: log_temperature,mole_sum,fraction_sum,denominator,numerator
+    real(real64) :: log_temperature,mole_sum,fraction_sum,denominator,numerator,vibrational_cv
     integer :: species,partner
 
     viscosity=0.0_real64
@@ -83,8 +84,12 @@ contains
         species_conductivity(species)=4.75_real64*species_viscosity(species)* &
           air5_species_gas_constant_gpu(species)
       endif
-      species_vibrational_conductivity(species)=species_viscosity(species)* &
-        air5_species_vibrational_cv_gpu(species,tv)
+      if(present(species_ev)) then
+        call air5_species_vibrational_pair_gpu(species,tv,species_ev(species),vibrational_cv)
+      else
+        vibrational_cv=air5_species_vibrational_cv_gpu(species,tv)
+      endif
+      species_vibrational_conductivity(species)=species_viscosity(species)*vibrational_cv
     enddo
     do species=1,air5_num_species
       do partner=1,air5_num_species
@@ -106,12 +111,13 @@ contains
     enddo
 
     do species=1,air5_num_species
-      do partner=1,air5_num_species
+      do partner=species,air5_num_species
         binary_diffusion(species,partner)=10.1325_real64/pressure* &
           exp(air5_binary_diffusion(4,species,partner))* &
           temperature**(air5_binary_diffusion(1,species,partner)* &
           log_temperature*log_temperature+air5_binary_diffusion(2,species,partner)* &
           log_temperature+air5_binary_diffusion(3,species,partner))
+        binary_diffusion(partner,species)=binary_diffusion(species,partner)
       enddo
     enddo
     do species=1,air5_num_species
@@ -155,7 +161,7 @@ contains
 
   attributes(device) subroutine air5_diffusive_flux_gpu(rho,velocity,temperature, &
       tv,pressure,mass_fraction,grad_velocity,grad_temperature,grad_tv, &
-      grad_mass_fraction,momentum_flux,species_flux,energy_flux,ev_flux,status)
+      grad_mass_fraction,momentum_flux,species_flux,energy_flux,ev_flux,status,enthalpy_out,ev_out)
     real(real64), intent(in) :: rho,velocity(3),temperature,tv,pressure
     real(real64), intent(in) :: mass_fraction(air5_num_species)
     real(real64), intent(in) :: grad_velocity(3,3),grad_temperature(3),grad_tv(3)
@@ -164,6 +170,7 @@ contains
     real(real64), intent(out) :: species_flux(air5_num_species,3)
     real(real64), intent(out) :: energy_flux(3),ev_flux(3)
     integer, intent(out) :: status
+    real(real64), optional, intent(out) :: enthalpy_out(air5_num_species),ev_out(air5_num_species)
     real(real64) :: viscosity,conductivity_tr,conductivity_v, &
       species_viscosity(air5_num_species),binary_diffusion(air5_num_species,air5_num_species), &
       mixture_diffusion(air5_num_species),raw_flux(air5_num_species)
@@ -203,7 +210,7 @@ contains
     enddo
     call air5_transport_properties_gpu(temperature,tv,pressure,mass_fraction, &
       viscosity,conductivity_tr,conductivity_v,species_viscosity,binary_diffusion, &
-      mixture_diffusion,status)
+      mixture_diffusion,status,vibrational_energy)
     if(status/=chemistry_status_ok) return
 
     divergence=grad_velocity(1,1)+grad_velocity(2,2)+grad_velocity(3,3)
@@ -215,7 +222,6 @@ contains
       enddo
     enddo
     do species=1,air5_num_species
-      vibrational_energy(species)=air5_species_vibrational_energy_gpu(species,tv)
       enthalpy(species)=air5_species_cv_tr_gpu(species)*temperature+ &
         vibrational_energy(species)+air5_formation_energy(species)+ &
         air5_species_gas_constant_gpu(species)*temperature
@@ -243,6 +249,8 @@ contains
         conductivity_v*grad_tv(direction)-species_energy
       ev_flux(direction)=conductivity_v*grad_tv(direction)-species_ev
     enddo
+    if(present(enthalpy_out)) enthalpy_out=enthalpy
+    if(present(ev_out)) ev_out=vibrational_energy
     status=chemistry_status_ok
   end subroutine air5_diffusive_flux_gpu
 

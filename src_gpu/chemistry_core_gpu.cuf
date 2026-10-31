@@ -304,6 +304,7 @@ module chemistry_thermo_gpu
   public :: air5_species_cv_tr_gpu
   public :: air5_species_vibrational_energy_gpu
   public :: air5_species_vibrational_cv_gpu
+  public :: air5_species_vibrational_pair_gpu
   public :: air5_tv_from_ev_gpu
   public :: air5_ev_from_tv_gpu
   public :: air5_q5_from_state_gpu
@@ -356,6 +357,24 @@ contains
       air5_species_vibrational_cv_gpu = 0.0_real64
     end if
   end function air5_species_vibrational_cv_gpu
+
+  attributes(device) subroutine air5_species_vibrational_pair_gpu(species,tv,energy,heat_capacity)
+    integer, intent(in) :: species
+    real(real64), intent(in) :: tv
+    real(real64), intent(out) :: energy,heat_capacity
+    real(real64) :: theta,x,exponential,denominator,gas_constant
+
+    theta=air5_theta_v(species)
+    energy=0.0_real64
+    heat_capacity=0.0_real64
+    if(theta<=0.0_real64) return
+    x=theta/tv
+    exponential=exp(x)
+    denominator=exponential-1.0_real64
+    gas_constant=air5_species_gas_constant_gpu(species)
+    energy=gas_constant*theta/denominator
+    heat_capacity=gas_constant*x*x*exponential/(denominator*denominator)
+  end subroutine air5_species_vibrational_pair_gpu
 
   attributes(device) subroutine air5_ev_from_tv_gpu(rho_species,tv,ev,status)
     real(real64), intent(in) :: rho_species(air5_num_species), tv

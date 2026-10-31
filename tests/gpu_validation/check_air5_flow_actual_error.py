@@ -100,13 +100,15 @@ def compare_checkpoints(model, initial, reference, preceding, candidate, freestr
         for name, header in headers.items():
             clock = header[9:12].view(np.float64)
             if (header.shape != (13,) or header[0] != int('4153545251533031', 16) or
-                    header[1] != 2 or header[2] != 1 or header[12] != 7 or header[6] not in (34, 35) or
+                    header[1] not in (2, 3) or header[2] != 1 or header[12] != 7 or header[6] not in (34, 35) or
                     not np.isfinite(clock).all() or np.any(clock < 0) or clock[2] <= 0 or
                     (header[8] > 0 and clock[1] <= 0) or
                     files[name]['metadata'][:].tolist() != [1, 1]):
                 raise ValueError(f'{name}: require a completed-step compensated AIR5 state')
+            if header[1] == 3 and files[name]['numerical_kind_bytes'][:].tolist() != [8]:
+                raise ValueError(f'{name}: G2 reference comparison requires FP64 state')
         target_header = headers['reference']
-        same_phase = [0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12]
+        same_phase = [0, 2, 3, 4, 5, 8, 9, 10, 11, 12]
         for name in ('preceding', 'candidate'):
             if not np.array_equal(headers[name][same_phase], target_header[same_phase]):
                 raise ValueError(f'{name}: full-flow phase/grid/dt mismatch')

@@ -5,7 +5,7 @@ module chemistry_source
     air5_molar_mass, air5_atom_count, air5_nu_reactant, air5_nu_product, &
     air5_third_body_efficiency, air5_has_third_body, air5_rate_uses_tv, &
     air5_arrhenius_a, air5_arrhenius_b, air5_activation_temperature, &
-    air5_ln_kc_coefficient, air5_psi_coefficient, air5_psi_bounds
+    air5_ln_kc_coefficient, air5_psi_coefficient, air5_psi_bounds,air5_formation_energy
   use chemistry_model, only: chemistry_status_ok, chemistry_status_invalid_composition, &
     chemistry_status_out_of_domain, chemistry_status_nonfinite, &
     chemistry_status_invalid_source_mode, air5_validate_partial_densities, &
@@ -13,8 +13,8 @@ module chemistry_source
   use chemistry_thermo, only: air5_temperature_from_q5, air5_tv_from_ev, &
     air5_temperature_derivatives, air5_tv_derivatives, air5_pressure, &
     air5_species_gas_constant, air5_species_vibrational_energy, &
-    air5_species_vibrational_cv
-  use chemistry_relaxation, only: air5_vt_relaxation_source_derivatives
+    air5_species_vibrational_cv,air5_species_cv_tr
+  use chemistry_relaxation, only: air5_vt_relaxation_source_derivatives,air5_vt_relaxation_source
   implicit none
   private
 
@@ -28,8 +28,23 @@ module chemistry_source
   public :: air5_centered_difference_jacobian
   public :: air5_admissible_difference_jacobian
   public :: air5_source_conservation_residuals
+  public :: air5_activity_source,air5_activity_index
 
 contains
+
+  pure subroutine air5_activity_source(rho,momentum,q5,state,source,status,source_mode, &
+      production,loss,energy_parts,temperatures)
+    use ieee_arithmetic, only: air5_is_finite=>ieee_is_finite
+#define AIR5_ACTIVITY_DIAGNOSTICS 1
+#include "chemistry_pure_source_body.inc"
+#undef AIR5_ACTIVITY_DIAGNOSTICS
+  end subroutine air5_activity_source
+
+  pure subroutine air5_activity_index(rho,state,duration,production,loss,energy_parts, &
+      temperatures,activity,components)
+    use ieee_arithmetic, only: air5_is_finite=>ieee_is_finite
+#include "chemistry_activity_index_body.inc"
+  end subroutine air5_activity_index
 
   pure subroutine air5_instantaneous_source(rho, momentum, q5, state, source, status, &
       source_mode, reaction_progress)
@@ -591,7 +606,8 @@ module chemistry_ros2
     air5_validate_physical_species_state, air5_pressure_is_in_domain
   use chemistry_thermo, only: air5_temperature_from_q5, air5_tv_from_ev, air5_pressure
   use chemistry_source, only: air5_instantaneous_source, &
-    air5_instantaneous_source_jacobian, air5_source_mode_coupled, air5_source_mode_frozen
+    air5_instantaneous_source_jacobian, air5_source_mode_coupled, air5_source_mode_frozen, &
+    air5_activity_source,air5_activity_index
   use chemistry_linear6, only: air5_lu_factor_6, air5_lu_solve_6
   implicit none
   private
@@ -714,7 +730,7 @@ contains
   pure subroutine air5_ros2_advance(rho, momentum, q5, state, duration, &
       initial_step, rtol, atol, max_attempts, final_state, suggested_step, &
       accepted_steps, rejected_steps, rhs_evaluations, jacobian_evaluations, status, &
-      source_mode, compensation, step_history)
+      source_mode, compensation, step_history, activity_threshold, skipped)
     real(real64), intent(in) :: rho, momentum(3), q5, state(6), duration
     real(real64), intent(in) :: initial_step, rtol, atol(6)
     integer, intent(in) :: max_attempts
@@ -724,6 +740,10 @@ contains
     integer, intent(in), optional :: source_mode
     real(real64), intent(inout), optional :: compensation(6)
     real(real64), intent(inout), optional :: step_history
+    real(real64), intent(in), optional :: activity_threshold
+    logical, intent(out), optional :: skipped
+    real(real64) :: screen_source(6),production(5),loss(5),energy_parts(2),temperatures(2)
+    real(real64) :: activity,activity_components(9)
     real(real64) :: current_carry(6), trial_carry(6)
     real(real64), parameter :: safety = 0.9_real64
     real(real64), parameter :: minimum_factor = 0.2_real64
@@ -734,6 +754,7 @@ contains
     logical :: retryable, previous_rejected
 
     final_state = state
+    if(present(skipped)) skipped=.false.
     suggested_step = 0.0_real64
     accepted_steps = 0
     rejected_steps = 0
@@ -789,6 +810,12 @@ contains
     end if
     call air5_validate_ros2_candidate(rho,momentum,q5,state,status)
     if (status /= chemistry_status_ok) return
+
+#define AIR5_SCREEN_MODE active_mode
+#define air5_is_finite ieee_is_finite
+#include "chemistry_activity_gate_body.inc"
+#undef air5_is_finite
+#undef AIR5_SCREEN_MODE
 
     ! A zero RHS through compensated additions can still consume saved carry.
     if (active_mode == air5_source_mode_frozen) then

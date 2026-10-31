@@ -1,4 +1,6 @@
 from pathlib import Path
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -6,6 +8,16 @@ import pytest
 from air5_radau_reference import Air5RadauReference
 from check_air5_actual_error import compare_case, error_values, g1_scales, require_g1
 from run_air5_reference_convergence import synthetic_states
+
+
+def test_cpu_does_not_mislabel_a_source_only_run(tmp_path):
+    script=Path(__file__).with_name('check_air5_actual_error.py')
+    result=subprocess.run([sys.executable,str(script),'--reference',str(tmp_path/'missing.json'),
+        '--output',str(tmp_path/'out'),'--backend','cpu','--source-evaluation','source-only'],
+        capture_output=True,text=True)
+    assert result.returncode!=0
+    assert 'CPU probe supports joint source evaluation only' in result.stderr
+    assert not (tmp_path/'out').exists()
 
 
 @pytest.fixture

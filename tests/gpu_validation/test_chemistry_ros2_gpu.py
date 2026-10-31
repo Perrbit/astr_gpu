@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import subprocess
+import sys
 import unittest
 
 
@@ -41,11 +42,20 @@ class ChemistryRos2GpuTests(unittest.TestCase):
         self.assertEqual(metrics["CHEMISTRY_GPU_ROS2_INVALID_MISMATCHES"], 0.0)
         self.assertEqual(metrics["CHEMISTRY_GPU_ROS2_DIAGNOSTIC_MISMATCHES"], 0.0)
         self.assertEqual(metrics["CHEMISTRY_GPU_ROS2_LINEAR_STATUS_MISMATCHES"], 0.0)
+        self.assertEqual(metrics["CHEMISTRY_GPU_ROS2_LINEAR_CASES"], 96.0)
+        self.assertEqual(metrics["CHEMISTRY_GPU_ROS2_LINEAR_PIVOT_MISMATCHES"], 0.0)
         self.assertEqual(metrics["CHEMISTRY_GPU_ROS2_Q5_MAX_CHANGE"], 0.0)
         self.assertEqual(metrics["CHEMISTRY_GPU_ROS2_INPUT_STATE_MAX_CHANGE"], 0.0)
+        for name in ('CHEMISTRY_ACTIVITY_ROS2_DEFAULT_MISMATCHES',
+                     'CHEMISTRY_ACTIVITY_ROS2_SKIP_MISMATCHES',
+                     'CHEMISTRY_ACTIVITY_ROS2_FULL_MISMATCHES'):
+            self.assertEqual(metrics[name], 0.0)
 
 
 class ChemistryRos2GpuContractTests(unittest.TestCase):
+    def test_fixed_lu_source_matches_generator(self):
+        subprocess.run([sys.executable, str(ROOT / "scripts/gpu_validation/generate_air5_lu6.py")], check=True)
+
     def ros2_source(self):
         path = ROOT / "src_gpu/chemistry_kinetics_gpu.cuf"
         self.assertTrue(path.is_file(), f"missing GPU ROS-2 implementation: {path}")

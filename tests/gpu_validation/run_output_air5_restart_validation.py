@@ -210,12 +210,16 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
     env.update(ASTR_OUTPUT_CONFIG="datin/input.output", ASTR_GPU_SYNC_MODE="explicit",
                ASTR_GPU_PRECISION_MODE="fp64", ASTR_GPU_FILTER_WORKSPACE=args.filter_workspace,
                ASTR_GPU_HALO_TRANSPORT=halo_transport, ASTR_FORCE_MPI_TOPOLOGY=",".join(map(str, topology)),
-               ASTR_AIR5_SOURCE_MODE="coupled", ASTR_AIR5_COMPENSATION="on",
-               ASTR_AIR5_CONVECTION_LIMITER="symmetric_species", ASTR_AIR5_DIFFUSION_LIMITER="layered",
+               ASTR_AIR5_SOURCE_MODE=getattr(args,'source_mode','coupled'), ASTR_AIR5_COMPENSATION="on",
+               ASTR_AIR5_CONVECTION_LIMITER="symmetric_species", ASTR_AIR5_DIFFUSION_LIMITER=getattr(args,'diffusion_limiter','layered'),
                ASTR_AIR5_TOP_MODE=args.top_mode, ASTR_AIR5_TOP_TAU=f"{tau:.17e}",
                ASTR_AIR5_TOP_GPU_VALIDATION="on", ASTR_AIR5_FILTER_VALIDATION="on")
     env['ASTR_AIR5_SOURCE_EVALUATION'] = getattr(args, 'source_evaluation', 'joint')
     env['ASTR_AIR5_CHEMISTRY_BLOCK_SIZE'] = str(getattr(args, 'chemistry_block_size', 128))
+    env['ASTR_AIR5_CHEMISTRY_DISPATCH'] = getattr(args, 'chemistry_dispatch', 'general')
+    env['ASTR_AIR5_FLUX_HALO'] = getattr(args, 'flux_halo', 'separate')
+    env['ASTR_AIR5_LAUNCH_TUNING'] = getattr(args, 'launch_tuning', 'fixed')
+    env['ASTR_AIR5_LOW_ACTIVITY'] = str(getattr(args, 'low_activity', 'off'))
     env['ASTR_AIR5_CHEMISTRY_TOLERANCE'] = getattr(args, 'chemistry_tolerance', 'baseline')
     env['ASTR_AIR5_STEP_HISTORY'] = getattr(args, 'step_history', 'off')
     if getattr(args, 'air5_filter_mode', 'legacy') is not None:
@@ -339,6 +343,7 @@ def launch(args, backend, ranks, name, steps, restore=None, interval=5, fault=No
                             if aware else []),
                           *solver_command]
     command = [str(args.mpiexec), "--mca", "coll_hcoll_enable", "0",
+               *(['--output-filename',str(case/'mpi_output')] if getattr(args,'rank_output',False) else []),
                *(['--oversubscribe'] if getattr(args,'share_gpus',False) else []),
                "-np", str(ranks), *solver_command]
     if complete_step_timing:

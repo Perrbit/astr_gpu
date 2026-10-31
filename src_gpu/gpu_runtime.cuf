@@ -284,6 +284,8 @@ contains
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_compensation_gpu, only: release_air5_compensation_gpu
     use chemistry_coupling_gpu, only: release_air5_integration_control_gpu
+    use chemistry_launch_tuning_gpu, only: release_air5_launch_tuning
+    use chemistry_flux_exchange_gpu, only: release_air5_flux_halo
 #endif
     use halo_transport_gpu, only: release_host_buffers
     use inflow_timeseries_gpu, only: release_dynamic_inflow_gpu
@@ -308,6 +310,9 @@ contains
     call release_air5_mean_statistics_gpu()
 #endif
     call release_compact_statistics_gpu()
+#ifdef ASTR_AIR5_CHEMISTRY
+    call release_air5_flux_halo()
+#endif
     call release_dynamic_inflow_gpu()
     call release_boundary_gpu()
     call release_sponge_gpu()
@@ -322,6 +327,7 @@ contains
 #ifdef ASTR_AIR5_CHEMISTRY
     call release_air5_compensation_gpu()
     call release_air5_integration_control_gpu()
+    call release_air5_launch_tuning()
 #endif
   end subroutine gpu_before_finalize
 

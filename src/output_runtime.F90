@@ -1,5 +1,5 @@
 module output_runtime
-  use iso_fortran_env, only: int64,compiler_version,compiler_options
+  use iso_fortran_env, only: int64,real64,compiler_version,compiler_options
   use astr_precision, only: real_kind,c_real_kind,clock_kind,real_bytes,real_to_word,word_to_real
   use astr_precision_io, only: read_source_reals,source_real_matches
   use astr_precision_mpi, only: mpi_real_type
@@ -43,7 +43,7 @@ module output_runtime
   use commarray, only: tve,spc
   use chemistry_compensation, only: air5_carry,air5_compensated
   use chemistry_flow_runtime, only: air5_step_history,air5_history_enabled,air5_tolerance_choice, &
-    air5_conservative_filter,air5_filter_identity
+    air5_conservative_filter,air5_filter_identity,air5_activity_threshold,air5_activity_algorithm_version
   use chemistry_hbl_boundary, only: complete_air5_top_contract
 #endif
 #ifdef _CUDA
@@ -977,6 +977,9 @@ contains
     integer(int64) :: bits(40),root_bits(40),saved_bits(40),legacy_crc(4)
     integer(int64) :: integration_control(2),saved_integration_control(2)
     integer(int64) :: filter_control(5),saved_filter_control(5)
+    integer(int64) :: saved_activity_version
+    real(real64) :: saved_activity_threshold
+    logical :: filter_seen,activity_seen
     integer :: i,status,unit,err,closed,ierr,count
     count=air5_resource_count()
     expected_magic='ASTRA503'
@@ -1015,9 +1018,11 @@ contains
           convert='little_endian',action='write',iostat=err)
         if(err==0) then
           write(unit,iostat=err) expected_magic,values,bits,source_evaluation
-          if(err==0.and.(any(integration_control/=0).or.air5_conservative_filter)) &
+          if(err==0.and.(any(integration_control/=0).or.air5_conservative_filter.or.air5_activity_threshold>0.0_real64)) &
             write(unit,iostat=err) integration_control
           if(err==0.and.air5_conservative_filter) write(unit,iostat=err) 'ASTRF001',filter_control
+          if(err==0.and.air5_activity_threshold>0.0_real64) write(unit,iostat=err) &
+            'ASTRACT1',int(air5_activity_algorithm_version,int64),air5_activity_threshold
           close(unit,iostat=closed)
         endif
       endif
@@ -1038,11 +1043,28 @@ contains
       if(.not.checkpoint_stream_at_end(unit)) read(unit,iostat=err) saved_integration_control
       call check(err==0,'AIR5 configuration size/tail')
       saved_filter_control=0
-      if(.not.checkpoint_stream_at_end(unit)) then
-        read(unit,iostat=err) filter_magic,saved_filter_control
-        call check(err==0.and.filter_magic=='ASTRF001','AIR5 filter control version/size')
-        call check(all(saved_filter_control==int(air5_filter_identity,int64)),'AIR5 filter control contract mismatch')
-      endif
+      saved_activity_version=air5_activity_algorithm_version
+      saved_activity_threshold=0.0_real64
+      filter_seen=.false.; activity_seen=.false.
+      do while(.not.checkpoint_stream_at_end(unit))
+        read(unit,iostat=err) filter_magic
+        call check(err==0,'AIR5 configuration size/tail')
+        select case(filter_magic)
+        case('ASTRF001')
+          call check(.not.filter_seen,'duplicate AIR5 filter control')
+          read(unit,iostat=err) saved_filter_control
+          call check(err==0,'AIR5 filter control version/size')
+          call check(all(saved_filter_control==int(air5_filter_identity,int64)),'AIR5 filter control contract mismatch')
+          filter_seen=.true.
+        case('ASTRACT1')
+          call check(.not.activity_seen,'duplicate AIR5 activity control')
+          read(unit,iostat=err) saved_activity_version,saved_activity_threshold
+          call check(err==0,'AIR5 activity control version/size')
+          activity_seen=.true.
+        case default
+          call check(.false.,'AIR5 configuration unknown numerical tail')
+        end select
+      enddo
       call check(err==0.and.checkpoint_stream_at_end(unit),'AIR5 configuration size/tail')
       close(unit,iostat=closed)
       call check(err==0.and.closed==0,'read AIR5 configuration')
@@ -1050,6 +1072,9 @@ contains
       call check(saved_source_evaluation==source_evaluation,'AIR5 source evaluation contract mismatch')
       call check(all(saved_integration_control==integration_control),'AIR5 integration control contract mismatch')
       call check(all(saved_filter_control==filter_control),'AIR5 filter control contract mismatch')
+      call check(saved_activity_version==air5_activity_algorithm_version,'AIR5 activity algorithm version mismatch')
+      call check(ieee_is_finite(saved_activity_threshold),'AIR5 activity threshold is nonfinite')
+      call check(saved_activity_threshold==air5_activity_threshold,'AIR5 activity control contract mismatch')
       call check((magic==expected_magic.or.(count==3.and.magic=='ASTRA501').or. &
         (count==4.and.magic=='ASTRA502')).and.all(saved_values==values).and.all(saved_bits==bits), &
         'AIR5 source/limiter/compensation/top contract mismatch')

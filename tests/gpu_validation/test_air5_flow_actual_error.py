@@ -93,13 +93,15 @@ def test_invalid_physics_is_not_hidden_by_error_norm(state, kind):
         compare_node(model, actual, carry, q, np.zeros(11), initial_ev, free)
 
 
-def write_checkpoint(path, q, step=24, ranks=1, history=False):
+def write_checkpoint(path, q, step=24, ranks=1, history=False, schema=2):
     shape = (2, 3, 4)
     with h5py.File(path, 'w') as file:
-        identity = np.array([int('4153545251533031', 16), 2, 1, 4, 3, 2,
+        identity = np.array([int('4153545251533031', 16), schema, 1, 4, 3, 2,
                              35 if history else 34, ranks, step, 0, 0, 0, 7], dtype=np.int64)
         identity[9:12] = np.array([step*1e-10, 1e-10, 1e-10]).view(np.int64)
         file['identity'], file['metadata'] = identity, [1, 1]
+        if schema == 3:
+            file['numerical_kind_bytes'] = [8]
         for component in range(1, 35):
             file[f'q{component:04}'] = np.full(shape, q[component-1] if component <= 11 else 0.)
         if history:
@@ -122,6 +124,25 @@ def test_streamed_checkpoints_allow_different_rank_count_and_history(state, tmp_
     assert result['physical_nodes'] == 24
     assert result['within_reference_margin'] and result['within_candidate_error']
     assert max(result['candidate']['q']['max_normalized_error']) == 0.
+
+
+def test_current_fp64_schema_can_use_historical_fp64_reference(state, tmp_path):
+    model, q, _, free = state
+    paths = checkpoints(tmp_path, q)
+    write_checkpoint(paths['candidate'], q, schema=3)
+    result = compare_checkpoints(model, **paths, freestream=free)
+    require_flow_error(result)
+    assert max(result['candidate']['q']['max_normalized_error']) == 0.
+
+
+def test_current_fp32_schema_is_not_accepted_as_fp64_g2(state, tmp_path):
+    model, q, _, free = state
+    paths = checkpoints(tmp_path, q)
+    write_checkpoint(paths['candidate'], q, schema=3)
+    with h5py.File(paths['candidate'], 'r+') as file:
+        file['numerical_kind_bytes'][:] = [4]
+    with pytest.raises(ValueError, match='requires FP64'):
+        compare_checkpoints(model, **paths, freestream=free)
 
 
 @pytest.mark.parametrize('dataset,index', [('identity', 8), ('identity', 9), ('identity', 10), ('identity', 11),

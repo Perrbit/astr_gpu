@@ -695,15 +695,8 @@ module chemistry_relaxation
 contains
 
   pure subroutine air5_vt_relaxation_source(rho_species, temperature, tv, source, status)
-    real(real64), intent(in) :: rho_species(air5_num_species), temperature, tv
-    real(real64), intent(out) :: source
-    integer, intent(out) :: status
-    real(real64) :: dtemperature(6), dtv(6), derivatives(6)
-
-    dtemperature = 0.0_real64
-    dtv = 0.0_real64
-    call air5_vt_relaxation_source_derivatives(rho_species, temperature, tv, &
-      dtemperature, dtv, source, derivatives, status)
+    use ieee_arithmetic, only: air5_is_finite=>ieee_is_finite
+#include "chemistry_pure_vt_body.inc"
   end subroutine air5_vt_relaxation_source
 
   pure subroutine air5_vt_relaxation_source_derivatives(rho_species, temperature, tv, &

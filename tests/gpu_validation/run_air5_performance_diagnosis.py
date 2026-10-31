@@ -55,6 +55,31 @@ def window_summary(text, ranks, start, updates, warmup):
                     for step in measured])
 
 
+def run_log_text(case, ranks):
+    sources = sorted((case/'mpi_output').rglob('stdout'))
+    if not sources:
+        return (case/'run.log').read_text()
+    if len(sources) != ranks:
+        raise ValueError('incomplete per-rank stdout files')
+    return '\n'.join(path.read_text() for path in sources)
+
+
+def startup_cost_summary(text, ranks, start, updates):
+    records = timing_records(text, ranks, start, updates)
+    result = {}
+    # The post-deadline window is fixed even if some contexts finish learning earlier.
+    for name, first, last in (('all_updates', 0, updates), ('first_five', 0, min(5, updates)),
+                             ('through_deadline_after_warmup', 5, min(64, updates)),
+                             ('post_deadline', 64, updates)):
+        if first >= last:
+            continue
+        totals = [math.fsum(records[start+step, rank] for step in range(first, last))
+                  for rank in range(ranks)]
+        result[name] = dict(startup_steps=[first+1, last], complete_steps=last-first,
+                           rank_window_seconds=totals, seconds_per_step=max(totals)/(last-first))
+    return result
+
+
 def phase_summary(text, ranks, start, updates, warmup):
     chemistry = ('setup', 'kernels', 'failure_reduce', 'report_reduce', 'boundary',
                  'interior_primitives', 'solution_halo', 'face_primitives')
@@ -153,7 +178,9 @@ def qualified_flow_case(args, label, binary_hash):
     if (contract['source_evaluation'] != args.source_evaluation or
             contract['integration_control'] != control or contract['filter_identity'] != filter_control or
             contract['primitive_reuse'] != getattr(args,'primitive_reuse','off') or
-            contract['chemistry_reductions'] != getattr(args,'chemistry_reductions','baseline')):
+            contract['chemistry_reductions'] != getattr(args,'chemistry_reductions','baseline') or
+            contract['activity_threshold'] != (0.0 if getattr(args,'low_activity','off')=='off'
+                                               else float(args.low_activity))):
         raise ValueError('qualified flow numerical configuration mismatch')
     return row
 
@@ -194,6 +221,7 @@ def run(args):
     args.mpiexec = args.mpiexec.resolve(strict=True)
     args.reconstruction = 3 if args.case == 'sbli' else 5
     args.mean_statistics, args.sample_interval = False, 2
+    args.rank_output = True
     args.mode, args.initial_restart = 'steps', args.start_from_initial
     binary_hash = digest(args.executable)
     source_diff = subprocess.check_output(['git', 'diff', '--', 'src', 'src_gpu',
@@ -223,6 +251,10 @@ def run(args):
         halo_transport=args.halo_transport,
         chemistry_tolerance=args.chemistry_tolerance, step_history=args.step_history,
         chemistry_block_size=args.chemistry_block_size, axis=args.axis,
+        launch_tuning=getattr(args,'launch_tuning','fixed'),
+        chemistry_dispatch=getattr(args,'chemistry_dispatch','general'),
+        flux_halo=getattr(args,'flux_halo','separate'),
+        low_activity=getattr(args,'low_activity','off'),
         topology=list(args.topology) if args.topology else None,
         top_mode=args.top_mode, filter_workspace=args.filter_workspace,
         air5_filter_mode=args.air5_filter_mode,
@@ -271,7 +303,7 @@ def run(args):
             if reused is not None:
                 compared = compare_fields(final, Path(reused['state']))
                 compare_scalar_statistics(verification, seed_case)
-                window_summary((verification/'run.log').read_text(), ranks, start, updates, args.warmup)
+                window_summary(run_log_text(verification, ranks), ranks, start, updates, args.warmup)
             rounds = []
             summary['cases'][label] = dict(rounds=rounds, seed=str(seed), seed_files_sha256=identity,
                 seed_sanity=sanity, timing_activation_equal_datasets=compared,
@@ -295,7 +327,7 @@ def run(args):
                 if start > 0:
                     phases.insert(0, ('seed', seed_case, Path(reference['seed']).parents[3]))
                 for phase, actual, expected in phases:
-                    reports = lambda case: [line for line in (case/'run.log').read_text().splitlines()
+                    reports = lambda case: [line for line in run_log_text(case, ranks).splitlines()
                                            if line.startswith('AIR5_CHEMISTRY half=')]
                     if not reports(expected) or reports(actual) != reports(expected):
                         raise ValueError('chemistry report identity/values differ')
@@ -312,8 +344,9 @@ def run(args):
                     complete_step_timing=True, nsys_trace=args.nsys, air5_phase_timing=args.phase_timing,
                     chemistry_diagnostics=args.chemistry_diagnostics, **timing_budgets)
                 check_no_field_output(case)
-                log = (case/'run.log').read_text()
+                log = run_log_text(case, ranks)
                 record = window_summary(log, ranks, start, updates, args.warmup)
+                record['startup_cost'] = startup_cost_summary(log, ranks, start, updates)
                 if args.phase_timing:
                     record['phase_seconds_per_step'] = phase_summary(log, ranks, start, updates, args.warmup)
                 record.update(directory=str(case), directory_bytes=disk)
@@ -371,6 +404,10 @@ if __name__ == '__main__':
     parser.add_argument('--chemistry-reductions', choices=('baseline','packed'), default='baseline')
     parser.add_argument('--halo-transport', choices=('pageable','pinned','device-aware'), default='pinned')
     parser.add_argument('--chemistry-block-size', type=int, choices=(32, 128), default=128)
+    parser.add_argument('--launch-tuning', choices=('fixed', 'auto'), default='fixed')
+    parser.add_argument('--chemistry-dispatch', choices=('general', 'specialized'), default='general')
+    parser.add_argument('--flux-halo', choices=('separate', 'packed', 'packed-overlap'), default='separate')
+    parser.add_argument('--low-activity', default='off',help='off (default) or a fixed positive screening threshold')
     parser.add_argument('--chemistry-tolerance', choices=('baseline', 'loose', 'tight'), default='baseline')
     parser.add_argument('--step-history', choices=('off', 'previous'), default='off')
     parser.add_argument('--repeats', type=int, default=3)

@@ -1656,6 +1656,10 @@ air5reactor、air5postshock、air5normalshock、air5tgv、air5hbl、air5sbli
 | ASTR_AIR5_CHEMISTRY_REDUCTIONS | baseline / packed | 默认 baseline；有诊断的半步用4次归约，packed 合并为2次。report-steps 的非报告半步只作1次失败状态归约，两种模式都不跳过失败检查 |
 | ASTR_AIR5_SOURCE_EVALUATION | joint / source-only | 默认 joint；source-only 仅供 GPU，将 ROS-2 第二阶段改为只计算实际使用的源项，不计算未使用的 Jacobian |
 | ASTR_AIR5_CHEMISTRY_BLOCK_SIZE | 128 / 32 | 默认 128；GPU 化学核的每块线程数，不改变节点对应关系或单元内运算顺序 |
+| ASTR_AIR5_CHEMISTRY_DISPATCH | general / specialized | 默认 general，GPU 在通用入口内判断是否收集诊断；specialized 由主机按同一标志选择报告或非报告入口，共享同一数值计算体，保留失败检查，不改变诊断频率或检查点格式；本地未测得稳定完整步收益 |
+| ASTR_AIR5_FLUX_HALO | separate / packed / packed-overlap | 默认 separate，分别交换扩散通量字段；packed 合并为每方向一组 27/33 分量；packed-overlap 还在当前 MPI 请求期间预打包下一 MPI 方向。复用原传输后端，不改变物理节点、hm 层数或数值格式；增加按面面积增长的私有缓冲。已有本地短窗正确性及五轮完整步成本记录，不代表生产规模或 A800 性能验收 |
+| ASTR_AIR5_LOW_ACTIVITY | off / 非负数值阈值 | 默认 off，0 同样关闭。正阈值按每化学半步的组分生成/消耗、化学和振动松弛能量、温度影响联合指标，决定是否保持该单元整个热化学半步不变。本地研究阈值 1e-4 已通过 G1/G2 留出、CPU/GPU 及同策略精确续算；强活性短窗未触发跳过且没有整步收益，不推荐直接用于生产。恢复要求同阈值和算法版本，当前 AIR5 不支持 exact_restart=f；不支持恢复时切换筛选策略 |
+| ASTR_AIR5_LAUNCH_TUNING | fixed / auto | 默认 fixed，沿用原线程块；auto 在每次启动前期按 rank、化学半步及体内/顶面分别学习，扩散通量核单独学习，收齐样本后固定，不改变数值公式；已通过本地 NP1/NP2 功能及数值检查，平台和总体性能待测 |
 | ASTR_AIR5_CHEMISTRY_DIAGNOSTICS | every-step / report-steps | 默认 every-step；report-steps 只在报告步计算工作计数和极值，化学失败检查仍在每个半步执行 |
 | ASTR_AIR5_CHEMISTRY_TOLERANCE | baseline / loose / tight | 默认 baseline；三档 ROS-2 局部误差参数，具体数值见下文，不是完整 CFD 误差保证 |
 | ASTR_AIR5_STEP_HISTORY | off / previous | 默认 off；previous 用上一化学调用的建议子步作为下一次试探初值，仍执行接受、拒绝和物理检查 |
@@ -1694,6 +1698,43 @@ dt=0.25 ns的两组24000步/6 us发展窗：工程配置的初末状态及监测
 逐值一致，但尚未定常，不是独立物理参考验证。模式、积分容差、历史开关及源项求值
 模式记录在现有 `air5_config.bin`；精确续算必须保持这些数值身份一致。
 GPU 线程块和报告频率不因此成为新的物理模型。
+
+`ASTR_AIR5_LAUNCH_TUNING=auto` 的化学候选为每块 32、64、128、256 个线程，
+扩散候选为 `(8,8,8)`、`(32,2,1)`、`(32,4,1)`、`(32,4,2)`、`(32,8,2)`。
+先排除设备或核资源不允许的配置，不以最低占用率淘汰合法候选。
+本次启动的前 5 个完整步使用原配置，之后每候选轮换采样 6 次，按同 stream
+GPU 事件的中位数选择。第 64 个完整步结束时只采用已完成的平衡轮次，
+没有完整轮次则保留原配置，不中止求解。未调用的顶面上下文也不导致失败。
+化学原配置由 `ASTR_AIR5_CHEMISTRY_BLOCK_SIZE` 决定，扩散原配置为 `(8,8,8)`。
+
+重启后重新预热和学习，不保存跨运行调优缓存，不为此增加检查点数据。
+`AIR5_TUNING_*` 输出包含候选合法性、全部样本、启动内步号、均值、范围和
+最终选择。多 rank 验证或需要完整保存这些记录时，使用 MPI 的逐 rank 日志，
+例如 Open MPI 的 `--output-filename mpi_output`，避免合并 stdout 的切块交错。
+核事件时间不包含 MPI 等待，也不代表完整步加速；总体收益须包含学习成本另测。
+
+诊断入口特化可与 `auto` 组合，仍使用原四个化学逻辑上下文，不按入口符号
+增加学习状态。该上下文的候选线程块必须同时满足报告和非报告入口的资源
+要求，并按正常调用得到的事件样本选择。`specialized` 不是跳过化学计算或
+关闭错误检查；报告/非报告步仍由 `ASTR_AIR5_CHEMISTRY_DIAGNOSTICS` 决定。
+
+通量合包仅适用于 AIR5 扩散通量：应力 6、能量 3、物种 15、振动能 3，
+共 27 分量；分层扩散限制另有 6 个能量分量，共 33。有效 halo 数据量不因
+合包而减少，减少的是消息组、打包和散包调用；不平均通量物理共享节点。
+传输仍由 `ASTR_GPU_HALO_TRANSPORT` 选择。host-staged 模式复用固定主机
+发送/接收槽，pinned 模式使用一次分配、循环复用的页锁定内存；device-aware
+模式直接传设备缓冲，不分配这些主机槽。
+
+每个发生跨 rank 交换方向的额外设备缓冲约为
+`4 * hm * 横向节点数A * 横向节点数B * 分量数 * sizeof(real_kind)` 字节，主机暂存
+模式另有同量级主机缓冲。这里只包含面 halo，不是全场缓存，但长条子域的
+横向大面仍可能需要较多内存。合包不会扩大原通用缓冲，也不会减少有效网络
+负载。空邻居 `MPI_PROC_NULL` 侧不作无用 D2H。
+
+只有至少两个 MPI 分解方向时才有下一方向可预打包；单方向 slab 的
+`packed-overlap` 仍执行合包，没有该重叠机会。调用返回前完成所需接收和散包，
+不在未到位的 halo 上计算 RHS。私有缓冲不进入检查点，切换这些通信选项不
+改变数值配置；已通过本地同拓扑精确续算检查，不代表目标平台的性能准入。
 
 GPU AIR5 的保守滤波和对称组分通量消息沿用
 `ASTR_GPU_HALO_TRANSPORT`。`device-aware` 直接向支持CUDA的MPI传入

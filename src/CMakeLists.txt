@@ -219,6 +219,9 @@ endif()
 
 if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
   list(APPEND ASTR_GPU_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_launch_policy.F90
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_launch_tuning_gpu.cuf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_flux_exchange_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_compensation_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_monitor_gpu.cuf
     ${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu/chemistry_core_gpu.cuf
@@ -232,6 +235,9 @@ if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
 endif()
 
 add_executable(astr ${ASTR_SOURCES} ${ASTR_GPU_SOURCES})
+if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
+  target_include_directories(astr PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src_gpu")
+endif()
 option(ASTR_CUDA_LINEINFO "Add CUDA Fortran source line information without disabling optimization" OFF)
 if(ASTR_WITH_CUDA AND ASTR_CUDA_LINEINFO AND CMAKE_Fortran_COMPILER_ID MATCHES "NVHPC|PGI")
   target_compile_options(astr PRIVATE $<$<COMPILE_LANGUAGE:Fortran>:-gpu=lineinfo>)
@@ -1091,6 +1097,25 @@ if(ASTR_WITH_CUDA)
 endif()
 
 if(ASTR_WITH_CUDA AND ASTR_WITH_AIR5_CHEMISTRY)
+  add_executable(air5_flux_halo_probe EXCLUDE_FROM_ALL
+    ../src_gpu/gpu_check.cuf ../src_gpu/halo_transport_gpu.cuf
+    ../src_gpu/device_mpi_transport_gpu.cuf ../src_gpu/chemistry_flux_exchange_gpu.cuf
+    ../tests/gpu_validation/air5_flux_halo_probe.cuf)
+  set_target_properties(air5_flux_halo_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/air5_flux_halo_probe_modules")
+  target_include_directories(air5_flux_halo_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/air5_flux_halo_probe_modules")
+  target_link_libraries(air5_flux_halo_probe PRIVATE MPI::MPI_Fortran)
+  if(ASTR_HAS_MPI_CUDA_QUERY)
+    target_compile_definitions(air5_flux_halo_probe PRIVATE ASTR_MPI_CUDA_AWARE_QUERY)
+  endif()
+  add_executable(chemistry_launch_policy_probe EXCLUDE_FROM_ALL
+    ../src_gpu/chemistry_launch_policy.F90
+    ../tests/gpu_validation/chemistry_launch_policy_probe.F90)
+  set_target_properties(chemistry_launch_policy_probe PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/chemistry_launch_policy_probe_modules")
+  target_include_directories(chemistry_launch_policy_probe PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/chemistry_launch_policy_probe_modules")
   add_library(air5_packed_failure_inject SHARED EXCLUDE_FROM_ALL
     ../tests/gpu_validation/air5_packed_failure_inject.c)
   target_link_libraries(air5_packed_failure_inject PRIVATE MPI::MPI_C ${CMAKE_DL_LIBS})

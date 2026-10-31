@@ -5,6 +5,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def compact(text: str) -> str:
+    text=text.replace('#include "chemistry_half_step_body.inc"',
+                      (ROOT/'src_gpu/chemistry_half_step_body.inc').read_text())
     return "".join(text.lower().split())
 
 
@@ -16,7 +18,7 @@ def test_reacting_flowtype_policy_is_shared_by_cpu_and_gpu() -> None:
     gpu = compact((ROOT / "src_gpu/mainloop_gpu.cuf").read_text(encoding="utf-8"))
 
     assert "purelogicalfunctionair5_reacting_flowtype(flowtype)" in runtime
-    assert "case('air5reactor','air5postshock','air5tgv','air5hbl')" in runtime
+    assert "case('air5reactor','air5postshock','air5normalshock','air5tgv','air5hbl','air5sbli')" in runtime
     assert "air5_reacting_case=lcomb.and.air5_reacting_flowtype(flowtype)" in cpu
     assert "if(air5_reacting_flowtype(flowtype))then" in gpu
 
@@ -51,7 +53,7 @@ def test_cpu_strang_sequence_wraps_transport_once() -> None:
     second = source.index("callair5_chemistry_half_step(0.5_real64*deltat,2)", transport)
     assert first < transport < second
     assert "callqswap(timerept=ltimrpt)" in source[first:transport]
-    assert "callqswap(timerept=ltimrpt)" not in source[second : second + 300]
+    assert "if(air5_compensated)callqswap(timerept=ltimrpt)" in source[second : second + 300]
 
 
 def test_cpu_chemistry_integrates_only_active_nodes() -> None:

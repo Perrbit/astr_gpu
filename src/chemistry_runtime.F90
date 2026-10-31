@@ -24,6 +24,8 @@ module chemistry_flow_runtime
   logical, protected, save, public :: air5_history_enabled=.false.
   real(real64), protected, save, public :: air5_chemistry_rtol=1.0e-9_real64
   real(real64), protected, save, public :: air5_chemistry_atol_factor=1.0e-13_real64
+  real(real64), protected, save, public :: air5_activity_threshold=0.0_real64
+  integer, parameter, public :: air5_activity_algorithm_version=1
   real(real64), allocatable, save, public :: air5_step_history(:,:,:)
 
   public :: air5_field_primitive_to_conservative
@@ -46,9 +48,11 @@ contains
 
   subroutine configure_air5_integration_control(im,jm,km)
     use mpi
+    use ieee_arithmetic, only: ieee_is_finite
     integer, intent(in) :: im,jm,km
     character(32) :: value
-    integer :: status,ierr,local(4),lowest(4),highest(4),rank
+    integer :: status,ierr,local(5),lowest(5),highest(5),rank
+    real(real64) :: root_threshold
 
     if(integration_control_configured) return
     local=0
@@ -80,17 +84,40 @@ contains
       case default; local(3)=1
       end select
     endif
+    call get_environment_variable('ASTR_AIR5_LOW_ACTIVITY',value,status=status)
+    if(status/=1) then
+      if(status/=0) local(3)=1
+      if(trim(value)/='off') then
+        read(value,*,iostat=status) air5_activity_threshold
+        if(status/=0) local(3)=1
+      endif
+    endif
+    if(.not.ieee_is_finite(air5_activity_threshold)) then
+      local(3)=1
+    else if(air5_activity_threshold<0.0_real64) then
+      local(3)=1
+    else
+      local(5)=merge(1,0,air5_activity_threshold>0.0_real64)
+    endif
 #ifdef ASTR_AIR5_REFERENCE_LEVEL
-    if(any(local(1:2)/=0)) local(3)=1
+    if(any(local(1:2)/=0).or.local(5)/=0) local(3)=1
 #endif
-    call MPI_Allreduce(local,lowest,4,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(local,lowest,5,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,ierr)
     if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,status)
-    call MPI_Allreduce(local,highest,4,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
+    call MPI_Allreduce(local,highest,5,MPI_INTEGER,MPI_MAX,MPI_COMM_WORLD,ierr)
     if(ierr/=MPI_SUCCESS) call MPI_Abort(MPI_COMM_WORLD,ierr,status)
     call MPI_Comm_rank(MPI_COMM_WORLD,rank,ierr)
     if(highest(3)/=0.or.any(lowest/=highest)) then
       if(rank==0) write(*,'(A)') 'invalid or rank-inconsistent AIR5 integration control options'
       call MPI_Abort(MPI_COMM_WORLD,1,ierr)
+    endif
+    if(local(5)/=0) then
+      root_threshold=air5_activity_threshold
+      call MPI_Bcast(root_threshold,1,MPI_DOUBLE_PRECISION,0,MPI_COMM_WORLD,ierr)
+      if(ierr/=MPI_SUCCESS.or.root_threshold/=air5_activity_threshold) then
+        if(rank==0) write(*,'(A)') 'rank-inconsistent AIR5 activity threshold'
+        call MPI_Abort(MPI_COMM_WORLD,1,status)
+      endif
     endif
     air5_tolerance_choice=local(1)
     air5_conservative_filter=local(4)==1
@@ -123,6 +150,8 @@ contains
     integration_control_configured=.true.
     if(rank==0) write(*,'(A,I0,A,L1)') 'AIR5_INTEGRATION_CONTROL tolerance=', &
       air5_tolerance_choice,' history=',air5_history_enabled
+    if(rank==0.and.air5_activity_threshold>0.0_real64) write(*,'(A,ES24.16,A,I0)') &
+      'AIR5_LOW_ACTIVITY threshold=',air5_activity_threshold,' algorithm=',air5_activity_algorithm_version
   end subroutine configure_air5_integration_control
 
   pure logical function air5_reacting_flowtype(flowtype)

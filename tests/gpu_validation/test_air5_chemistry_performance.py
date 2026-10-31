@@ -89,22 +89,30 @@ def test_source_only_is_opt_in_and_first_ros2_stage_retains_jacobian():
     assert 'source_only_d=.false.' in kinetics and 'source_only=.false.' in coupling
     assert 'ASTR_AIR5_SOURCE_EVALUATION' in coupling
     assert fixed.index('call air5_instantaneous_source_jacobian_gpu') < fixed.index('call air5_lu_factor_6_gpu')
-    assert fixed.index('call air5_lu_factor_6_gpu') < fixed.index('call air5_instantaneous_source_gpu')
+    assert fixed.index('call air5_lu_factor_6_gpu') < fixed.index('if(air5_pure_source_selected_gpu())')
+    assert 'call air5_pure_source_gpu' in fixed
+    assert 'jacobian,reaction_progress,status,source_mode)' in fixed
     pure = kinetics.split('  attributes(device) subroutine air5_pure_source_gpu(')[1]
     pure = pure.split('  end subroutine air5_pure_source_gpu')[0]
-    assert 'call air5_vt_relaxation_source_gpu' in pure
-    assert 'call air5_temperature_from_q5_gpu' in pure and 'call air5_tv_from_ev_gpu' in pure
-    assert 'jacobian' not in pure and 'temperature_derivatives' not in pure
+    assert '#define AIR5_ACTIVITY_DIAGNOSTICS 0' in pure
+    shared=(ROOT/'src/chemistry_pure_source_body.inc').read_text()
+    assert 'call air5_vt_relaxation_source' in shared
+    assert 'call air5_temperature_from_q5' in shared and 'call air5_tv_from_ev' in shared
+    assert 'jacobian' not in shared and 'temperature_derivatives' not in shared
 
 
 def test_report_schedule_keeps_failure_collective_and_dynamic_top_coverage():
     coupling = (ROOT/'src_gpu/chemistry_coupling_gpu.cuf').read_text()
+    coupling = coupling.replace('#include "chemistry_half_step_body.inc"',
+                                (ROOT/'src_gpu/chemistry_half_step_body.inc').read_text())
     kernel = coupling.split('  attributes(global) subroutine air5_chemistry_half_step_kernel(')[1]
     kernel = kernel.split('  end subroutine air5_chemistry_half_step_kernel')[0]
-    assert 'if(collect_diagnostics) call record_air5_chemistry_diagnostics' in kernel
+    diagnostics=kernel.split('if(collect_diagnostics) then')[-1].split('endif')[0]
+    assert 'call record_air5_chemistry_diagnostics' in diagnostics
+    assert 'if(skipped) ignored=atomicAdd' in diagnostics
     half = coupling.split('  subroutine air5_chemistry_half_step_gpu(')[1]
-    assert 'is,ie,js,je,ks,ke,collect_diagnostics)' in half
-    assert 'first_i,im,jm,jm,ks,ke,collect_diagnostics)' in half
+    assert 'is,ie,js,je,ks,ke,collect_diagnostics,grid,block)' in half
+    assert 'first_i,im,jm,jm,ks,ke,collect_diagnostics,grid,block)' in half
     status = half.index('local_status=air5_chemistry_status_d')
     report = half.index('if(collect_diagnostics) then', status)
     assert status < half.index('if(global_status/=chemistry_status_ok)') < report
@@ -114,6 +122,8 @@ def test_report_schedule_keeps_failure_collective_and_dynamic_top_coverage():
 
 def test_chemistry_block_option_changes_launch_only():
     coupling = (ROOT/'src_gpu/chemistry_coupling_gpu.cuf').read_text()
+    coupling = coupling.replace('#include "chemistry_half_step_body.inc"',
+                                (ROOT/'src_gpu/chemistry_half_step_body.inc').read_text())
     assert 'chemistry_block_size=128' in coupling
     assert "'ASTR_AIR5_CHEMISTRY_BLOCK_SIZE'" in coupling
     assert 'block=dim3(chemistry_block_size,1,1)' in coupling
@@ -121,6 +131,33 @@ def test_chemistry_block_option_changes_launch_only():
     kernel = kernel.split('  end subroutine air5_chemistry_half_step_kernel')[0]
     assert 'chemistry_block_size' not in kernel
     assert 'if(id>=ntot) return' in kernel
+
+
+def test_chemistry_dispatch_has_one_body_and_all_profile_names():
+    from summarize_air5_nsys import is_chemistry_kernel
+    coupling=(ROOT/'src_gpu/chemistry_coupling_gpu.cuf').read_text()
+    assert 'specialized_dispatch=.false.' in coupling
+    assert coupling.count('#include "chemistry_half_step_body.inc"')==3
+    assert 'logical, parameter :: collect_diagnostics=.true.' in coupling
+    assert 'logical, parameter :: collect_diagnostics=.false.' in coupling
+    for suffix in ('half_step','report','quiet'):
+        assert is_chemistry_kernel(f'chemistry_coupling_gpu_air5_chemistry_{suffix}_kernel_')
+    assert not is_chemistry_kernel('air5_diffusion_flux_kernel')
+
+
+def test_flux_pack_overlap_uses_union_not_nested_call_sum():
+    from summarize_air5_nsys import overlap_duration
+    assert overlap_duration([(0,10),(8,15)],[(5,12),(6,9)])==7
+    assert overlap_duration([(0,1)],[(1,2)])==0
+    assert overlap_duration([],[(0,10)])==0
+
+
+def test_flux_request_scope_matches_handle_and_next_wait():
+    from summarize_air5_nsys import posted_request_scopes
+    posts=[dict(requestHandle=7,end=10),dict(requestHandle=7,end=40),dict(requestHandle=8,end=20)]
+    waits=[dict(requestHandle=7,start=12,end=15),dict(requestHandle=7,start=45,end=50)]
+    scopes,missing=posted_request_scopes(posts,waits)
+    assert scopes==[(10,15),(40,50)] and missing==1
 
 
 def test_prescribed_zero_is_allowed_but_negative_or_invalid_state_is_not():

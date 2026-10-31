@@ -1,3 +1,29 @@
+module chemistry_activity_probe_gpu
+  use iso_fortran_env, only: real64
+  use cudafor
+  use chemistry_model, only: chemistry_status_ok
+  use chemistry_source_gpu, only: air5_activity_source_gpu,air5_activity_index_gpu
+  use gpu_check, only: sync_after_kernel
+  implicit none
+contains
+  attributes(global) subroutine activity_probe_kernel(rho,momentum,q5,state,observed,status,count,mode)
+    integer,value :: count,mode
+    real(real64),device,intent(in) :: rho(count),momentum(3,count),q5(count),state(6,count)
+    real(real64),device,intent(out) :: observed(30,count)
+    integer,device,intent(out) :: status(count)
+    integer :: index
+    index=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    if(index>count) return
+    observed(:,index)=0.0_real64
+    call air5_activity_source_gpu(rho(index),momentum(:,index),q5(index),state(:,index), &
+      observed(1:6,index),status(index),mode,observed(7:11,index),observed(12:16,index), &
+      observed(17:18,index),observed(19:20,index))
+    if(status(index)/=chemistry_status_ok) return
+    call air5_activity_index_gpu(rho(index),state(:,index),1.0e-10_real64,observed(7:11,index), &
+      observed(12:16,index),observed(17:18,index),observed(19:20,index),observed(30,index),observed(21:29,index))
+  end subroutine
+end module chemistry_activity_probe_gpu
+
 program chemistry_source_gpu_probe
   use iso_fortran_env, only: real64, int64
   use ieee_arithmetic, only: ieee_value, ieee_quiet_nan, ieee_is_finite
@@ -7,8 +33,11 @@ program chemistry_source_gpu_probe
   use chemistry_thermo, only: air5_ev_from_tv, air5_q5_from_state, &
     air5_species_gas_constant, air5_species_cv_tr
   use chemistry_source, only: air5_instantaneous_source_jacobian, air5_centered_difference_jacobian, &
-    air5_source_mode_coupled, air5_source_mode_chemical, air5_source_mode_vt, air5_source_mode_frozen
+    air5_source_mode_coupled, air5_source_mode_chemical, air5_source_mode_vt, air5_source_mode_frozen, &
+    air5_activity_source,air5_activity_index
   use chemistry_source_gpu, only: launch_air5_source_batch_gpu,set_air5_source_only_gpu
+  use chemistry_activity_probe_gpu, only: activity_probe_kernel
+  use gpu_check, only: sync_after_kernel
   implicit none
 
   integer, parameter :: base_cases = 6, valid_cases = 8, case_count = 21
@@ -49,6 +78,10 @@ program chemistry_source_gpu_probe
   integer :: pure_status(case_count)
   real(real64) :: numeric_jacobian(6,6), numeric_ratio
   integer :: case_index, mode_index, status_mismatches, setup_status
+  real(real64) :: activity_ref(30),activity_gpu(30,case_count),activity_source_ratio,activity_ratio,reconstruction_ratio
+  real(real64),device :: activity_d(30,case_count)
+  real(real64) :: gross(5),scale
+  integer :: activity_status,activity_status_gpu(case_count),activity_mismatches,gross_cases
 
   do case_index = 1, base_cases
     call make_state(case_index, rho(case_index), momentum(:,case_index), &
@@ -105,6 +138,8 @@ program chemistry_source_gpu_probe
   status_mismatches = 0
   numeric_ratio=0.0_real64
   pure_ratio=0.0_real64
+  activity_source_ratio=0.0_real64; activity_ratio=0.0_real64; reconstruction_ratio=0.0_real64
+  activity_mismatches=0; gross_cases=0
 
   do mode_index = 1, mode_count
     do case_index = 1, case_count
@@ -158,6 +193,40 @@ program chemistry_source_gpu_probe
       call update_ratio(pure_source(:,case_index),source_gpu(:,case_index),pure_ratio)
     enddo
     call set_air5_source_only_gpu(.false.)
+    call activity_probe_kernel<<<1,32>>>(rho_d,momentum_d,q5_d,state_d,activity_d,status_d, &
+      case_count,modes(mode_index))
+    call sync_after_kernel('activity_probe_kernel',.true.)
+    activity_gpu=activity_d
+    activity_status_gpu=status_d
+    do case_index=1,case_count
+      activity_ref=0.0_real64
+      call air5_activity_source(rho(case_index),momentum(:,case_index),q5(case_index),state(:,case_index), &
+        activity_ref(1:6),activity_status,modes(mode_index),activity_ref(7:11),activity_ref(12:16), &
+        activity_ref(17:18),activity_ref(19:20))
+      if(activity_status_gpu(case_index)/=activity_status.or.activity_status/=status_ref(case_index)) &
+        activity_mismatches=activity_mismatches+1
+      if(activity_status/=chemistry_status_ok) cycle
+      call air5_activity_index(rho(case_index),state(:,case_index),1.0e-10_real64,activity_ref(7:11), &
+        activity_ref(12:16),activity_ref(17:18),activity_ref(19:20),activity_ref(30),activity_ref(21:29))
+      call update_ratio(activity_ref(1:5),source_ref(1:5,case_index),activity_source_ratio)
+      call update_ratio(activity_ref(6:6),source_ref(6:6,case_index),activity_source_ratio)
+      call update_ratio(activity_gpu(1:5,case_index),activity_ref(1:5),activity_ratio)
+      call update_ratio(activity_gpu(6:6,case_index),activity_ref(6:6),activity_ratio)
+      call update_ratio(activity_gpu(7:11,case_index),activity_ref(7:11),activity_ratio)
+      call update_ratio(activity_gpu(12:16,case_index),activity_ref(12:16),activity_ratio)
+      call update_ratio(activity_gpu(17:18,case_index),activity_ref(17:18),activity_ratio)
+      call update_ratio(activity_gpu(19:20,case_index),activity_ref(19:20),activity_ratio)
+      call update_ratio(activity_gpu(21:29,case_index),activity_ref(21:29),activity_ratio)
+      call update_ratio(activity_gpu(30:30,case_index),activity_ref(30:30),activity_ratio)
+      if(any(activity_ref(7:16)<0.0_real64)) error stop 'negative gross activity rate'
+      gross=activity_ref(7:11)+activity_ref(12:16)
+      reconstruction_ratio=max(reconstruction_ratio,maxval(abs( &
+        activity_ref(7:11)-activity_ref(12:16)-activity_ref(1:5))/ &
+        max(128.0_real64*epsilon(1.0_real64)*gross,tiny(1.0_real64))))
+      scale=max(128.0_real64*epsilon(1.0_real64)*sum(abs(activity_ref(17:18))),tiny(1.0_real64))
+      reconstruction_ratio=max(reconstruction_ratio,abs(sum(activity_ref(17:18))-activity_ref(6))/scale)
+      if(maxval(gross)>10.0_real64*maxval(abs(activity_ref(1:5)))) gross_cases=gross_cases+1
+    enddo
   end do
   write(*,'(A,ES25.17)') 'SOURCE_ONLY_SOURCE_RATIO ',pure_ratio
   if(pure_ratio>1.0_real64) error stop 'pure source exceeds existing source tolerance'
@@ -196,6 +265,15 @@ program chemistry_source_gpu_probe
   write(*,'(a,1x,es24.16)') 'CHEMISTRY_GPU_Q5_MAX_CHANGE',q5_change
   write(*,'(a,1x,es24.16)') 'CHEMISTRY_GPU_NUMERIC_JACOBIAN_MAX_RATIO',numeric_ratio
   write(*,'(a,1x,i0)') 'CHEMISTRY_GPU_TRACE_CASES',case_count-14
+  call check_activity_cancellation()
+  write(*,'(a,1x,es24.16)') 'CHEMISTRY_ACTIVITY_SOURCE_MAX_RATIO',activity_source_ratio
+  write(*,'(a,1x,es24.16)') 'CHEMISTRY_ACTIVITY_CPU_GPU_MAX_RATIO',activity_ratio
+  write(*,'(a,1x,es24.16)') 'CHEMISTRY_ACTIVITY_RECONSTRUCTION_MAX_RATIO',reconstruction_ratio
+  write(*,'(a,1x,i0)') 'CHEMISTRY_ACTIVITY_STATUS_MISMATCHES',activity_mismatches
+  write(*,'(a,1x,i0)') 'CHEMISTRY_ACTIVITY_GROSS_EXCHANGE_CASES',gross_cases
+  if(activity_source_ratio>1.0_real64.or.activity_ratio>1.0_real64.or. &
+     reconstruction_ratio>1.0_real64.or.activity_mismatches/=0.or.gross_cases==0) &
+    error stop 'activity source or metric comparison failed'
   if (source_ratio > 1.0_real64 .or. rate_ratio > 1.0_real64 .or. &
       jacobian_ratio > 1.0_real64 .or. energy_ratio > 1.0_real64 .or. &
       status_mismatches /= 0 .or. q5_change /= 0.0_real64 .or. numeric_ratio>1.0_real64) then
@@ -203,6 +281,26 @@ program chemistry_source_gpu_probe
   end if
 
 contains
+
+  subroutine check_activity_cancellation()
+    real(real64) :: production(5),loss(5),energies(2),temperatures(2),components(9),indicator
+    real(real64) :: energy_scale
+    production=rho(2)*(1.0e-12_real64+1.0e-6_real64*abs(state(1:5,2)/rho(2)))*2.0_real64/1.0e-10_real64
+    loss=production
+    energy_scale=1.0e-10_real64*max(abs(state(6,2)/rho(2)),1.0_real64)+ &
+      1.0e-7_real64*abs(state(6,2)/rho(2))
+    energies=[1.0_real64,-1.0_real64]*rho(2)*energy_scale*2.0_real64/1.0e-10_real64
+    temperatures=[4000.0_real64,4000.0_real64]
+    call air5_activity_index(rho(2),state(:,2),1.0e-10_real64,production,loss,energies, &
+      temperatures,indicator,components)
+    if(maxval(abs(components(1:7)-2.0_real64))>128.0_real64*epsilon(1.0_real64)) &
+      error stop 'gross or split energy cancellation in activity metric'
+    if(indicator<=1.0_real64) error stop 'net-zero activity incorrectly classified as weak'
+    production=huge(1.0_real64)
+    call air5_activity_index(rho(2),state(:,2),1.0e-10_real64,production,loss,energies, &
+      temperatures,indicator,components)
+    if(indicator/=huge(1.0_real64)) error stop 'overflowing activity estimate must not skip'
+  end subroutine
 
   subroutine update_ratio(actual, reference, maximum_ratio)
     real(real64), intent(in) :: actual(:), reference(:)

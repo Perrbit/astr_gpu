@@ -997,6 +997,130 @@ executable hashes. Current gains apply to the small local fixture, not A800
 or production scaling, and the three engineering candidates exhaust this
 round's approved mechanism budget.
 
+AP3 (2026-10-31) adds opt-in `ASTR_AIR5_LAUNCH_TUNING=auto`; the default
+remains `fixed`. The pure Fortran `chemistry_launch_policy_probe` checks
+balanced rotating rounds, five warmup steps, six samples per legal candidate,
+median selection, original-config ties, deadline partial rounds and reset.
+The CUDA wrapper queries device/kernel limits and occupancy legality only;
+it does not impose an occupancy floor or replay solver states for timing.
+`test_air5_launch_learning.py` checks 66 complete steps against fixed launches,
+33+33 exact continuation, relearning after restart, inactive lower-rank top
+contexts and raw-event selection for NP1/NP2 x/y/z. Open MPI per-rank stdout
+is captured because merged stdout can split interleaved records. Test logs
+are not a persistent tuning cache or checkpoint members.
+The performance driver accepts `--launch-tuning auto`; its run costs include
+normal sampling calls, and five-round full-step qualification is separate.
+The same test module includes an explicit NP2 y memcheck over ten complete
+steps, including all legal candidate shapes after warmup. Saved 64-cubed
+AP2 fields can be supplied through `ASTR_AIR5_AP_BASELINE_STATES` (a JSON
+mapping of rank count to state path) to
+`test_air5_ap_integration.py::test_auto_keeps_saved_g2_fields`. Exact field
+identity permits reusing the separately qualified actual-error evidence;
+that identity check alone is not a new independent CFD reference.
+
+AP4 adds optional `ASTR_AIR5_CHEMISTRY_DISPATCH=specialized`, with `general`
+remaining the default. Three kernel entries include the single
+`src_gpu/chemistry_half_step_body.inc` numerical body. The two specialized
+entries fix diagnostic collection at compile time, retain failure handling,
+and share the existing four chemical learning contexts. Candidate legality
+is the intersection of both entries, not an occupancy threshold.
+`test_air5_chemistry_dispatch.py` covers state/report equality, general-to-
+specialized exact restart, auto composition and NP2 memcheck.
+`inspect_air5_dispatch_cost.py` records linked resources and the quiet entry's
+absence of diagnostic atomics while checking retained failure recording.
+General non-report calls already skip those atomics; compiled deletion is
+not a claim that these atomic operations were previously executed.
+The performance driver accepts `--chemistry-dispatch specialized` for
+same-binary comparisons. Local five-round full-step samples overlap and
+do not establish a speedup; the candidate remains opt-in.
+
+AP5 adds `ASTR_AIR5_FLUX_HALO=packed|packed-overlap`; `separate` remains
+the default. `chemistry_flux_exchange_gpu.cuf` fuses the 27/33 flux channels
+without a full-field cache or changes to physical shared nodes. Private tags
+22101--22106 and direction-specific slots reuse the existing host/device
+pair transports. Host staging follows the actual selected backend; pinned
+slots use cudaHostAlloc once and cudaFreeHost at release. PROC_NULL send
+sides are not copied D2H. The overlap callback packs only the next independent
+physical face into another slot and never nests an MPI exchange.
+The callback uses a private nonblocking stream, polls that stream while
+progressing the posted MPI pair, and explicitly joins it before the slot is
+used. Flux production and global failure release precede this work; physical
+face inputs do not change during exchange. The generic one-argument progress
+helper retains its default-stream behavior for existing callers.
+
+Build `air5_flux_halo_probe` through root CMake and set
+`ASTR_AIR5_FLUX_HALO_PROBE_EXE` for `test_air5_flux_halo_probe.py`.
+Its bit oracle includes signed zero, subnormal values, absent optional energy,
+periodic/physical faces, untouched edges/corners, NP1/NP2 slabs, NP4 two-axis
+and NP8 three-axis layouts sharing the two local GPUs. This is a copy-only
+test, not CFD or hardware scalability evidence. The integration module checks
+full-state/layered diffusion, both transports, general-to-packed exact restart,
+and NP4 memcheck. Existing G2 saved fields are compared separately before
+claiming inherited actual-error qualification.
+
+Nsight summaries distinguish missing MPI_Testall traces from zero overlap.
+Posted-request scopes match private-tag request handles to their following
+waits. GPU pack overlap with that scope is not proof of network payload overlap
+or net speedup; profiling traces never supply timing denominators.
+
+The complete-step performance driver captures per-rank stdout to avoid merged
+MPI log interleaving. Each unprofiled round retains all step samples and adds
+startup windows: all updates including the first five, steps 6--64, and steps
+65 onward. The latter is after the learning deadline; individual contexts may
+have fixed earlier. Use matched runs spanning that deadline to compare total
+learning-inclusive cost and fixed-phase cost, not only selected kernel events.
+The AP5 integration module also checks the final auto + specialized + packed-
+overlap combination on a two-axis NP4 layout sharing two GPUs: 66 updates
+versus 33+33 exact continuation, finite cumulative statistics, and fresh
+six-round learning after restart. This is not four-GPU scaling evidence.
+
+AP6 adds optional `ASTR_AIR5_LOW_ACTIVITY=off|NONNEGATIVE_THRESHOLD`.
+The default and zero both disable screening. Positive values evaluate one
+pure source per external chemical half step, with separate gross production,
+loss, chemical/V-T energy and temperature-impact estimates. The CPU/GPU
+implementations share the numerical include bodies in `src/`. They do not
+build a Jacobian just to screen, cache activity across steps, or skip only
+one part of the coupled source. A skipped call retains state, compensation
+and step history; it reports one RHS, zero Jacobians and zero accepted steps.
+A non-skipped call pays the extra screening RHS before original ROS-2.
+Physical-state failures retain their original handling.
+
+`test_air5_low_activity.py` checks the optional `ASTRACT1` version/threshold
+tail in the existing `air5_config.bin`; off retains the old tail format.
+`test_air5_low_activity_restart.py` checks same-policy exact continuation,
+inconsistent-threshold rejection, CPU/GPU fields, compensation/history
+lifecycles and NP2 candidate memcheck. AIR5 inexact policy migration is not
+implemented by this work. The combined NP4 test accepts
+`ASTR_AIR5_AP_ACTIVITY_THRESHOLD=1e-4`; omission preserves its off behavior.
+
+`check_air5_actual_error.py` accepts `--low-activity`, `--backend cpu|gpu`
+and explicit `--case-names` calibration/holdout subsets. A subset is recorded
+as such, not as all eleven G1 states. CPU currently uses joint source
+evaluation; CPU plus `--source-evaluation source-only` is rejected instead
+of silently ignored. The G1 reference scales and actual-error gates are
+unchanged. `test_air5_ap_integration.py` also checks independent G2 holdout
+with the frozen threshold; qualified saved fields can be reused only after
+checking their actual identity and reference provenance.
+
+The existing `chemistry_ros2_compensation_gpu_probe` accepts the test-only
+`activity-cost INPUT OUTPUT ETA` mode for one declared calibration state.
+It repeats that state over 8192 cells, with one warmup and five CUDA-event
+samples for screening, original ROS-2 and screened ROS-2. It operates on
+private outputs and is not a full-step timing or mixed-warp benchmark.
+Existing batch modes accept the screening threshold and append activity
+counts as comments without changing their nineteen numeric output columns.
+
+The performance driver accepts `--low-activity 1e-4`. Its `--compare-to`
+option still requires identical numerical policies: do not use that exact
+comparison as the error gate between screening off and on. AP6 calibration
+froze `1e-4` before rank1/G2 holdout; this is a bounded research value, not
+a general recommendation. Local strong-activity full-step windows skipped
+no reported calls and became slower; default remains off. Cold-state batch
+savings do not establish application speedup. Five-round single/combined
+costs, learning-inclusive and post-deadline windows, resource increases,
+all retained tails and numerical scope are recorded in
+`documents/ASTR_AIR5_AP_IMPLEMENTATION_STATUS.md`.
+
 `test_air5_stage_coordination_holdout.py` adds five 24-step / 17+7-step
 engineering checks with cumulative statistics, scalar/full filtering and
 characteristic/prescribed top boundaries. It compares joint/every-step/128

@@ -314,6 +314,7 @@ contains
     use chemistry_flow_runtime, only: air5_reacting_flowtype
     use chemistry_flow_solver_gpu, only: air5_transport_rk3_step_gpu
     use chemistry_coupling_gpu, only: air5_chemistry_half_step_gpu
+    use chemistry_launch_tuning_gpu, only: begin_air5_launch_step,end_air5_launch_step
 #endif
     use parallel, only: isize,jsize,ksize
     use halo_transport_gpu, only: halo_overlap_enabled,halo_pipeline_enabled, &
@@ -549,6 +550,7 @@ contains
 
 #ifdef ASTR_AIR5_CHEMISTRY
     if(lcomb) then
+      call begin_air5_launch_step()
       if(air5_reacting_flowtype(flowtype)) then
         if(rhs_validation_requested()) then
           call copy_flow_from_gpu()
@@ -575,6 +577,7 @@ contains
       else
         call air5_transport_rk3_step_gpu(first_stage_prepared,copy_back)
       endif
+      call end_air5_launch_step()
       return
     endif
 #endif
