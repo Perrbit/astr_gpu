@@ -127,7 +127,7 @@ def test_cpu_rk_timing_is_benchmark_only_and_matches_gpu_output_schema() -> None
     output = mainloop.index("'astr_cpu_rk_timing'", advance)
     assert start < advance < output
     assert "3(1x,es24.16e3)" in mainloop[output - 160 : output]
-    assert "0.d0,cpu_rk_seconds,cpu_rk_seconds" in mainloop[output : output + 200]
+    assert "0.e0_real_kind,cpu_rk_seconds,cpu_rk_seconds" in mainloop[output : output + 200]
 
 
 def test_phase_timing_covers_required_p4_0_intervals() -> None:

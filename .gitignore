@@ -35,3 +35,4 @@ tests/gpu_validation/out/
 /testout/compact_cp7_*
 /testout/compact_cp8_*
 /testout/compact_cp9_*
+/testout/a800_compact_local_preflight_*/

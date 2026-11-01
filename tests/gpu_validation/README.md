@@ -10052,3 +10052,34 @@ test IDs; repeated cases and expected rejections are not separate physical
 experiments. The GPU probes check 960 configurations and 825 compiled-matrix
 spectral records. This is limited integration evidence, not production,
 long-window stability, device-aware transport or performance qualification.
+
+## A800 Compact TGV Preflight And Timing
+
+`compact_benchmark.py` supplies one topology/MPI configuration definition for
+the local preflight and the A800 campaign. Public halo and compact-interface
+transports are independent. `--ucx-tls` is explicit: the local default does not
+use IPC; the campaign default includes `cuda_ipc` for the recorded A800 stack.
+
+```bash
+python tests/gpu_validation/run_compact_a800_preflight.py \
+  --cpu "$CPU_EXE" --gpu "$GPU_EXE" \
+  --out testout/a800_compact_local_preflight_NEW
+python tests/gpu_validation/run_compact_a800_campaign.py \
+  --mode manifest --out testout/not_started_a800
+```
+
+The local matrix uses 32-cubed strong and 16-cubed per-rank weak fixtures,
+but retains GPU NP=1/2/4 and CPU NP=1/2/4/8/16/32. Four local GPU ranks share
+two devices for correctness only. Physical CPU affinity is recorded per rank.
+CPU/GPU fields, statistics and CPU topology comparisons retain the 2e-10
+gate. See `documents/ASTR_A800_COMPACT_TGV_LOCAL_PREFLIGHT_RESULTS.md`.
+
+The campaign's `timing` mode uses 512-cubed strong scaling, 256-cubed per-rank
+weak scaling, five independent rounds, and same-operator CPU1--32 baselines.
+It does not submit Slurm jobs. Each step takes the slowest rank; the run median
+then feeds the five-run median. CPU algorithm RK timing excludes independent
+`rkfirst` statistics/output; the new per-rank label is
+`ASTR_CPU_RANK_RK_TIMING`. Historical CPU root-only records are not silently
+reinterpreted. Failed configurations are retained and skipped; independent
+configurations continue, and incomplete repetitions are not summarized as
+complete. No platform performance evidence is claimed by local short tests.

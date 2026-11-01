@@ -11,6 +11,7 @@ import sys
 import time
 
 import numpy as np
+from compact_benchmark import mpi_environment
 
 from prepare_m12_local_case import prepare
 from run_compact_flatplate import configure, GRID
@@ -154,6 +155,8 @@ def main():
     parser.add_argument('--compact-sync', choices=('explicit','dependency'), default='explicit')
     parser.add_argument('--batch-rhs', type=int, default=65535)
     parser.add_argument('--transport', choices=('pinned','device-aware'), default='pinned')
+    parser.add_argument('--halo-transport', choices=('pinned','device-aware'), default='pinned')
+    parser.add_argument('--ucx-tls', default='self,sm,cuda_copy',help='UCX transports; A800 may include cuda_ipc')
     parser.add_argument('--nsys', action='store_true')
     parser.add_argument('--native-precision', choices=('fp64','fp32'), default='fp64')
     parser.add_argument('--statistics-interval', type=int, default=1)
@@ -215,19 +218,17 @@ def main():
         fields[4]=str(args.listing_interval or args.steps+1)
         lines[index]=','.join(fields)
         controller.write_text('\n'.join(lines)+'\n')
-    env={k:v for k,v in os.environ.items() if not k.startswith(('ASTR_','OMPI_MCA_','UCX_'))}
+    env=mpi_environment('gpu',args.halo_transport,args.transport,args.ucx_tls)
     env.update(ASTR_FORCE_MPI_TOPOLOGY=args.topology,ASTR_GPU_COMPACT_SYNC=args.compact_sync,
         ASTR_GPU_COMPACT_BATCH_RHS=str(args.batch_rhs),ASTR_GPU_COMPACT_TRANSPORT=args.transport,
         ASTR_GPU_SYNC_MODE='explicit',ASTR_GPU_PRECISION_MODE='fp64' if args.native_precision=='fp64' else '',
-        ASTR_GPU_HALO_TRANSPORT='pinned',
+        ASTR_GPU_HALO_TRANSPORT=args.halo_transport,
         ASTR_GPU_FILTER_WORKSPACE=args.workspace,ASTR_GPU_RK_TIMING='1',ASTR_GPU_RANK_RK_TIMING='1',
         ASTR_COMPLETE_STEP_TIMING='0' if args.buffer_output else '1',
         ASTR_GPU_STATISTICS_INTERVAL=str(args.statistics_interval),
         ASTR_BENCHMARK_BUFFER_OUTPUT='1' if args.buffer_output else '0',
         ASTR_NSCBC_FARFIELD_MODE='incoming_only',ASTR_NSCBC_FARFIELD_RHO='1',ASTR_NSCBC_FARFIELD_U='1',
-        ASTR_NSCBC_FARFIELD_V='0',ASTR_NSCBC_FARFIELD_W='0',ASTR_NSCBC_FARFIELD_T='1',
-        OMPI_MCA_pml='ob1',OMPI_MCA_btl='self,vader,tcp',OMPI_MCA_osc='pt2pt',
-        OMPI_MCA_coll='^hcoll,ucc,cuda',OMPI_MCA_opal_cuda_support='0')
+        ASTR_NSCBC_FARFIELD_V='0',ASTR_NSCBC_FARFIELD_W='0',ASTR_NSCBC_FARFIELD_T='1')
     if args.case=='plate':
         env['ASTR_WALL_BLOWING_MODE']='legacy_random'
     if args.buffer_output and not args.checkpoint_interval:
@@ -242,11 +243,6 @@ def main():
         env['ASTR_VALIDATION_PROFILE_STAGE_STATE']='1'
     if args.filter_window:
         env['ASTR_VALIDATION_PROFILE_FILTER_WINDOW']=args.filter_window
-    if args.transport=='device-aware':
-        env.update(OMPI_MCA_pml='ucx',UCX_TLS='self,sm,cuda_copy',UCX_MEMTYPE_CACHE='n',
-            UCX_CUDA_COPY_ENABLE_FABRIC='no',UCX_CUDA_COPY_DMABUF='no',UCX_CUDA_IPC_ENABLE_MNNVL='no',
-            OMPI_MCA_coll_hcoll_enable='0')
-        env.pop('OMPI_MCA_opal_cuda_support')
     ranks=int(np.prod(tuple(map(int,args.topology.split(',')))))
     command=['mpirun','--oversubscribe','--bind-to','none','-np',str(ranks)]
     if args.buffer_output:
@@ -278,6 +274,7 @@ def main():
             raise ValueError('missing read-only complete-state admission records')
     report=dict(status='pass',case=args.case,topology=args.topology,steps=args.steps,warmup=args.warmup,
         compact_sync=args.compact_sync,batch_rhs=args.batch_rhs,workspace=args.workspace,transport=args.transport,
+        halo_transport=args.halo_transport,ucx_tls=args.ucx_tls,
         grid_intervals=list(map(int,grid.split(','))),scheme=args.scheme,filter=args.filter,deltat=dt,
         phase_timing=args.phase_timing,preflight=args.preflight,stage_state_check=args.stage_state_check,
         state_check=args.preflight or args.state_check,

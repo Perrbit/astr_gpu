@@ -14,6 +14,13 @@ ROOT=Path(__file__).resolve().parents[2]
 CASES={'tgv':('256,256,256',2.5e-4),'plate':('450,130,96',.005)}
 
 
+def preflight_matches(record,digest,args):
+    return (record['executable_sha256']==digest and record['status']=='pass' and
+            record['crashfix']==args.crashfix and record['transport']==args.compact_transport and
+            record.get('halo_transport','pinned')==args.halo_transport and
+            record.get('ucx_tls','self,sm,cuda_copy')==args.ucx_tls)
+
+
 def summarize(root,case):
     rows=[]
     reports={}
@@ -22,7 +29,8 @@ def summarize(root,case):
         record=json.loads(path.read_text())
         identities.add(tuple(record[name] for name in (
             'executable_sha256','crashfix','deltat','steps','warmup','workspace',
-            'compact_sync','transport','batch_rhs'))+(tuple(record['grid_intervals']),))
+            'compact_sync','transport','batch_rhs'))+(tuple(record['grid_intervals']),
+            record.get('halo_transport','pinned'),record.get('ucx_tls','self,sm,cuda_copy')))
         key=(record['scheme'],record['filter'],record['topology'])
         reports.setdefault(key,[]).append(record)
     expected={(scheme,filtering,f'{ranks},1,1') for scheme,filtering,ranks in
@@ -59,6 +67,9 @@ def main():
     parser.add_argument('--case',choices=CASES,required=True)
     parser.add_argument('--mode',choices=('preflight','timing','phases','summarize'),required=True)
     parser.add_argument('--crashfix',action='store_true',help='use lcracon=t in every plate configuration')
+    parser.add_argument('--halo-transport',choices=('pinned','device-aware'),default='pinned')
+    parser.add_argument('--compact-transport',choices=('pinned','device-aware'),default='device-aware')
+    parser.add_argument('--ucx-tls',default='self,sm,cuda_copy')
     args=parser.parse_args()
     if args.crashfix and args.case!='plate':
         parser.error('--crashfix is scoped to the profile plate')
@@ -85,15 +96,15 @@ def main():
             destination=root/args.mode/args.case/f'{name}_r{repeat+1}'
             if args.mode!='preflight':
                 preflight=json.loads((root/'preflight'/args.case/f'{name}_r1/summary.json').read_text())
-                if (preflight['executable_sha256']!=digest or preflight['status']!='pass' or
-                    preflight['crashfix']!=args.crashfix):
-                    raise ValueError('preflight does not match the frozen executable/crashfix mode')
+                if not preflight_matches(preflight,digest,args):
+                    raise ValueError('preflight does not match the frozen executable/crashfix/transports')
             steps,warmup=(3,0) if args.mode=='preflight' else ((40,10) if args.mode=='timing' else (12,2))
             command=[sys.executable,str(ROOT/'tests/gpu_validation/run_compact_execution.py'),
                      '--exe',str(exe),'--out',str(destination),'--case',args.case,
                      '--grid',grid,'--deltat',str(dt),'--scheme',scheme,'--filter',filtering,
                      '--topology',f'{ranks},1,1','--steps',str(steps),'--warmup',str(warmup),
-                     '--compact-sync','dependency','--transport','device-aware','--workspace','full']
+                     '--compact-sync','dependency','--transport',args.compact_transport,'--workspace','full']
+            command+=['--halo-transport',args.halo_transport,'--ucx-tls',args.ucx_tls]
             if args.crashfix:
                 command+=['--crashfix']
             if args.mode=='preflight':

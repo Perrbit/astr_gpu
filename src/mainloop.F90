@@ -452,7 +452,7 @@ module mainloop
     integer :: dt_ratio,jdnn,idnn
     real(real_kind) :: hrr
     real(clock_kind) :: time_beg_2
-    real(clock_kind) :: cpu_rk_seconds
+    real(clock_kind) :: cpu_rk_seconds,cpu_statistics_start,cpu_statistics_seconds
     real(clock_kind),save :: subtime=0.e0_clock_kind
     integer,save :: n_rk_steps
     logical :: gpu_checkpoint_due
@@ -468,6 +468,7 @@ module mainloop
     !
     time_beg=ptime()
     cpu_rk_timing=benchmark_cpu_rk_timing_enabled()
+    cpu_statistics_seconds=0.e0_clock_kind
     conservative_case=conservative_boundary%enabled
     refresh_filtered_primitives=.not.lcomb.and.numq==5.and.num_species==0.and. &
       ((conschm(4:4)=='e'.and.difschm(4:4)=='e').or. &
@@ -720,7 +721,9 @@ module mainloop
           if(rkscheme=='rk4') rhsav(0:im,0:jm,0:km,m)=0.e0_real_kind
         enddo
 
+        if(cpu_rk_timing) cpu_statistics_start=ptime()
         call rkfirst(skip_checkpoint=air5_reacting_case)
+        if(cpu_rk_timing) cpu_statistics_seconds=cpu_statistics_seconds+ptime()-cpu_statistics_start
         if(nstep>0.and.loop_counter>0.and.mod(nstep,feqchkpt)==0) call save_insitu_pair()
 
       endif
@@ -989,9 +992,11 @@ module mainloop
     if(rkscheme=='rk4') deallocate(rhsav)
     !
     if(cpu_rk_timing) then
-      cpu_rk_seconds=ptime()-time_beg
+      cpu_rk_seconds=ptime()-time_beg-cpu_statistics_seconds
       if(lio) write(*,'(A,1X,I0,3(1X,ES24.16E3))') &
         'ASTR_CPU_RK_TIMING',nstep,0.e0_real_kind,cpu_rk_seconds,cpu_rk_seconds
+      write(*,'(A,2(1X,I0),3(1X,ES24.16E3))') &
+        'ASTR_CPU_RANK_RK_TIMING',mpirank,nstep,0.e0_clock_kind,cpu_rk_seconds,cpu_rk_seconds
     endif
     !
     ctime(3)=ctime(3)+ptime()-time_beg
