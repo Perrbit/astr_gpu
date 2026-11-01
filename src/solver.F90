@@ -10,7 +10,8 @@ module solver
   !
   use constdef
   use boundary_high_order, only: high_order_boundary_enabled,high_order_wall_enabled,high_order_wall_axis, &
-    boundary_mp_flux6,boundary_interface_position,boundary_derivative6,boundary_pressure_gradient7, &
+    boundary_mp_flux6,boundary_mp_flux6_limited,boundary_interface_position,boundary_derivative6,boundary_pressure_gradient7, &
+    h1_internal_candidate,h1_near_candidate,h1_blend_candidate, &
     boundary_pressure_neumann6,high_order_adiabatic_wall_enabled
   use parallel, only : mpirankname,mpistop,mpirank,lio,dataswap,       &
                        datasync,ptime,irk,jrk,krk,irkm,jrkm,krkm
@@ -286,11 +287,11 @@ module solver
   !| -------------                                                     |
   !| 09-02-2021  | Created by J. Fang @ Warrington                     |
   !+-------------------------------------------------------------------+
-  subroutine rhscal(timerept,physical_halo_rhs,metric_consistent_eps)
+  subroutine rhscal(timerept,physical_halo_rhs,metric_consistent_eps,common_source)
     !
     use commarray, only : qrhs,x,q
     use commvar,   only : flowtype,conschm,diffterm,im,jm,             &
-                          recon_schem,limmbou,lchardecomp,lihomo,lcomb
+                          recon_schem,limmbou,lchardecomp,lihomo,lcomb,km,npdci,npdcj
 #ifdef ASTR_AIR5_CHEMISTRY
     use chemistry_flow_solver, only: air5_convection_rhs,air5_diffusion_rhs, &
       air5_limit_full_state_convection,air5_characteristic_top_rhs
@@ -309,10 +310,11 @@ module solver
     ! arguments
     logical,intent(in),optional :: timerept
     logical,intent(in),optional :: physical_halo_rhs,metric_consistent_eps
+    real(real_kind),intent(out),optional :: common_source(0:,0:,0:,:)
     logical,save :: firstcall=.true.
     !
     ! local data
-    integer :: j
+    integer :: j,common_i0,common_j0
     integer :: nconv
     logical :: air5_shock_path
     !
@@ -378,6 +380,13 @@ module solver
     if(lcomb) call air5_characteristic_top_rhs()
 #endif
     call write_rhs_validation_snapshot('conv')
+    if(present(common_source)) then
+      common_i0=0; common_j0=0
+      if(npdci==1.or.npdci==4) common_i0=1
+      if(npdcj==1.or.npdcj==4) common_j0=1
+      common_source=0.e0_real_kind
+      common_source(common_i0:im,common_j0:jm,0:km,:)=-qrhs(common_i0:im,common_j0:jm,0:km,:)
+    endif
     !
     if(nscbc_farfield_viscous_source_enabled())                       &
       call capture_nscbc_farfield_y_upper_prediff_rhs()
@@ -410,8 +419,13 @@ module solver
     !
     call udf_src
     call apply_high_order_wall_rhs()
+    if(present(common_source)) common_source(common_i0:im,common_j0:jm,0:km,:)= &
+      common_source(common_i0:im,common_j0:jm,0:km,:)+qrhs(common_i0:im,common_j0:jm,0:km,:)
     call apply_nscbc_incident_complete_rhs()
     if(high_order_boundary_enabled.or.high_order_wall_enabled) call write_rhs_validation_snapshot('full')
+#ifdef ASTR_BUILD_TESTING
+    if(high_order_boundary_enabled) call audit_h1_low_order_cpu()
+#endif
     !
 #ifdef COMB
     call srccomb(timerept=ltimrpt)
@@ -826,6 +840,17 @@ module solver
         ! hdiss=.true.
         !
         call boundary_interface_position(i,im,npdci,boundary_row,boundary_side)
+#ifdef ASTR_BUILD_TESTING
+        if(h1_blend_candidate) then
+          Fh(i,1:5)=high_order_interface_flux_cpu([i,j,k],1)
+          cycle
+        endif
+#endif
+        if(h1_near_candidate.and.boundary_row>=0.and..not.hdiss) then
+          Fh(i,1:5)=high_order_interface_flux_cpu([i,j,k],1)
+          cycle
+        endif
+        if(h1_internal_candidate.and.boundary_row<0) lsh=.true.
         if(high_order_boundary_enabled.and.boundary_row>=0.and..not.lsh.and..not.hdiss) then
           do m=1,5
             do n=0,7
@@ -1048,6 +1073,17 @@ module solver
         !
         ! lchardecomp=.false.
         call boundary_interface_position(j,jm,npdcj,boundary_row,boundary_side)
+#ifdef ASTR_BUILD_TESTING
+        if(h1_blend_candidate) then
+          Fh(j,1:5)=high_order_interface_flux_cpu([i,j,k],2)
+          cycle
+        endif
+#endif
+        if(h1_near_candidate.and.boundary_row>=0.and..not.hdiss) then
+          Fh(j,1:5)=high_order_interface_flux_cpu([i,j,k],2)
+          cycle
+        endif
+        if(h1_internal_candidate.and.boundary_row<0) lsh=.true.
         if(high_order_boundary_enabled.and.boundary_row>=0.and..not.lsh.and..not.hdiss) then
           do m=1,5
             do n=0,7
@@ -1267,6 +1303,13 @@ module solver
         !
         ! hdiss=.true.
         !
+#ifdef ASTR_BUILD_TESTING
+        if(h1_blend_candidate) then
+          Fh(k,1:5)=high_order_interface_flux_cpu([i,j,k],3)
+          cycle
+        endif
+#endif
+        if(h1_internal_candidate) lsh=.true.
         if(lchardecomp .and. lsh) then
         ! if(lchardecomp) then
         ! if(.false.) then
@@ -1395,26 +1438,96 @@ module solver
                                               message='convection term using explicit upwind scheme')
       endif
     endif
+#ifdef ASTR_BUILD_TESTING
+    call write_h1_inlet_flux_endpoints()
+#endif
     !  
     return
     !
   end subroutine convrsduwd
 
+#ifdef ASTR_BUILD_TESTING
+  subroutine write_h1_inlet_flux_endpoints()
+    use commvar, only: im,jm,km,npdci
+    use boundary_high_order, only: h1_strength
+    use validation_io, only: rhs_validation_requested,write_rhs_validation_snapshot
+    real(real_kind),allocatable :: sample(:,:,:,:)
+    character(16) :: value
+    integer :: i,j,k,status
+    if(.not.h1_blend_candidate.or..not.rhs_validation_requested()) return
+    call get_environment_variable('ASTR_VALIDATION_H1_INLET_FLUX',value,status=status)
+    if(status/=0.or.trim(value)/='1') return
+    if(npdci/=1.and.npdci/=4) return
+    allocate(sample(0:im,0:jm,0:km,11))
+    sample=0.e0_real_kind
+    ! Only interfaces 0..3 feed the first three inlet-adjacent physical nodes.
+    do k=0,km
+    do j=1,jm-1
+    do i=0,3
+      sample(i,j,k,1:5)=high_order_interface_flux_cpu([i,j,k],1,1)
+      sample(i,j,k,6:10)=high_order_interface_flux_cpu([i,j,k],1,2)
+      sample(i,j,k,11)=max(h1_strength(i,j,k),h1_strength(i+1,j,k))
+    enddo
+    enddo
+    enddo
+    call write_rhs_validation_snapshot('h1_inlet_flux_endpoints',values=sample)
+  end subroutine write_h1_inlet_flux_endpoints
+
+  recursive function high_order_interface_flux_cpu(point,axis,reconstruction_mode) result(value)
+#else
   function high_order_interface_flux_cpu(point,axis) result(value)
+#endif
     use commvar, only: im,jm,km,npdci,npdcj,npdck,gamma,num_species
     use commarray, only: rho,vel,prs,tmp,spc,q,dxi,jacob,lshock,crinod
     use riemann, only: flux_steger_warming
     use flux, only: recons_exp
     use commcal, only: compact_expanded_mask_enabled
+#ifdef ASTR_BUILD_TESTING
+    use boundary_high_order, only: h1_strength,h1_inlet_limited_candidate
+#endif
     implicit none
     integer,intent(in) :: point(3),axis
+#ifdef ASTR_BUILD_TESTING
+    integer,intent(in),optional :: reconstruction_mode
+#endif
     real(real_kind) :: value(5),r(16),v(16,3),p(16),t(16),state(16,5),metric(16,3),jac(16), &
       species(16,num_species),plus(16,5),minus(16,5),fp(8),fm(8),char_flux(5),left(5,5),right(5,5)
     integer :: dims(3),types(3),target(3),neighbor(3),node,dim,ntype,row,side,s,wind,index,m
+#ifdef ASTR_BUILD_TESTING
+    integer :: mode
+#else
+    integer,parameter :: mode=0
+#endif
+    real(real_kind) :: theta,high_flux(5),low_flux(5)
     logical :: shock,critical,biased
     dims=[im,jm,km]; types=[npdci,npdcj,npdck]
     node=point(axis); dim=dims(axis); ntype=types(axis)
     neighbor=point; neighbor(axis)=neighbor(axis)+1
+#ifdef ASTR_BUILD_TESTING
+    mode=0
+    if(present(reconstruction_mode)) mode=reconstruction_mode
+    if(h1_blend_candidate.and.mode==0) then
+      if(h1_inlet_limited_candidate.and.axis==1.and.(ntype==1.or.ntype==4).and.node>=0.and.node<=3) then
+        value=high_order_interface_flux_cpu(point,axis,2)
+        return
+      endif
+      target=point
+      if(ntype==1.or.ntype==4) target(axis)=max(0,target(axis))
+      if(ntype==2.or.ntype==4) neighbor(axis)=min(dim,neighbor(axis))
+      theta=max(h1_strength(target(1),target(2),target(3)), &
+        h1_strength(neighbor(1),neighbor(2),neighbor(3)))
+      if(theta==0.e0_real_kind) then
+        value=high_order_interface_flux_cpu(point,axis,1)
+      elseif(theta==1.e0_real_kind) then
+        value=high_order_interface_flux_cpu(point,axis,2)
+      else
+        high_flux=high_order_interface_flux_cpu(point,axis,1)
+        low_flux=high_order_interface_flux_cpu(point,axis,2)
+        value=high_flux+theta*(low_flux-high_flux)
+      endif
+      return
+    endif
+#endif
     if(compact_expanded_mask_enabled()) then
       shock=lshock(point(1),point(2),point(3)).or.lshock(neighbor(1),neighbor(2),neighbor(3))
     elseif(node<0) then
@@ -1429,7 +1542,11 @@ module solver
     target=neighbor; target(axis)=max(0,min(dim,node+1))
     critical=critical.or.crinod(target(1),target(2),target(3))
     call boundary_interface_position(node,dim,ntype,row,side)
-    biased=row>=0.and..not.shock.and..not.critical
+    if(h1_internal_candidate.and.row<0) shock=.true.
+    if(h1_near_candidate.and.row>=0) shock=.true.
+    if(mode==1) shock=.false.
+    if(mode==2) shock=.true.
+    biased=row>=0.and.(h1_near_candidate.or..not.shock).and..not.critical
     do wind=0,1
       do s=1,8
         index=node+s-4
@@ -1471,7 +1588,11 @@ module solver
       if(critical) then
         char_flux(m)=fp(4)+fm(4)
       elseif(biased) then
-        char_flux(m)=boundary_mp_flux6(fp,row,side==1)+boundary_mp_flux6(fm,row,side==-1)
+        if(h1_near_candidate.and.mode==0) then
+          char_flux(m)=boundary_mp_flux6_limited(fp,row,side==1)+boundary_mp_flux6_limited(fm,row,side==-1)
+        else
+          char_flux(m)=boundary_mp_flux6(fp,row,side==1)+boundary_mp_flux6(fm,row,side==-1)
+        endif
       else
         char_flux(m)=recons_exp(fp,node,dim,ntype,5,shock,.false.)+ &
                      recons_exp(fm,node,dim,ntype,5,shock,.false.)
@@ -1480,6 +1601,63 @@ module solver
     value=char_flux
     if(shock) value=matmul(right,char_flux)
   end function high_order_interface_flux_cpu
+
+#ifdef ASTR_BUILD_TESTING
+#include "h1_stage_budget_cpu.inc"
+
+  subroutine audit_h1_low_order_cpu()
+    use commvar, only: im,jm,km,npdci,npdcj,npdck,gamma
+    use validation_io, only: h1_low_order_validation_requested,write_rhs_validation_snapshot
+    use bc, only: audit_h1_low_boundary_cpu
+    real(real_kind),allocatable :: low(:,:,:,:)
+    real(real_kind) :: fp(5),fm(5)
+    integer :: i,j,k,axis,point(3),left(3),types(3)
+    if(.not.h1_low_order_validation_requested()) return
+    types=[npdci,npdcj,npdck]
+    allocate(low(0:im,0:jm,0:km,5)); low=0.e0_real_kind
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      point=[i,j,k]
+      do axis=1,3
+        left=point; left(axis)=left(axis)-1
+        call audit_h1_low_face_cpu(point,axis,types(axis),fp)
+        call audit_h1_low_face_cpu(left,axis,types(axis),fm)
+        low(i,j,k,:)=low(i,j,k,:)+fm-fp
+      enddo
+    enddo
+    enddo
+    enddo
+    call write_rhs_validation_snapshot('lf_raw',values=low)
+    call audit_h1_low_boundary_cpu(low)
+    call write_rhs_validation_snapshot('lf_complete',values=low)
+  end subroutine audit_h1_low_order_cpu
+
+  subroutine audit_h1_low_face_cpu(point,axis,ntype,flux)
+    use commvar, only: im,jm,km,gamma
+    use commarray, only: q,jacob,dxi
+    use boundary_high_order, only: boundary_audit_llf5
+    integer,intent(in) :: point(3),axis,ntype
+    real(real_kind),intent(out) :: flux(5)
+    integer :: left(3),right(3),dims(3)
+    real(real_kind) :: metric(3)
+    dims=[im,jm,km]; left=point; right=point; right(axis)=right(axis)+1
+    if(ntype==1.or.ntype==4) then
+      left(axis)=max(0,left(axis)); right(axis)=max(0,right(axis))
+    endif
+    if(ntype==2.or.ntype==4) then
+      left(axis)=min(dims(axis),left(axis)); right(axis)=min(dims(axis),right(axis))
+    endif
+    metric=.5e0_real_kind*(jacob(left(1),left(2),left(3))*dxi(left(1),left(2),left(3),axis,:)+ &
+      jacob(right(1),right(2),right(3))*dxi(right(1),right(2),right(3),axis,:))
+    call boundary_audit_llf5(q(left(1),left(2),left(3),1:5),q(right(1),right(2),right(3),1:5),metric,gamma,flux)
+    if(.not.all(abs(flux)<=huge(1.e0_real_kind))) then
+      print *, 'H1_LOW_FLUX_FAILURE CPU ',mpirank,point,axis,left,right
+      print *, q(left(1),left(2),left(3),1:5),q(right(1),right(2),right(3),1:5)
+      error stop 'H1 low reference flux is not finite'
+    endif
+  end subroutine audit_h1_low_face_cpu
+#endif
 
   subroutine high_order_boundary_face_convection()
     use commvar, only: im,jm,km,npdci,npdcj

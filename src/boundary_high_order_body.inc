@@ -5,21 +5,45 @@
   implicit none
   private
 #ifdef BOUNDARY_HIGH_ORDER_DEVICE
+#ifdef ASTR_BUILD_TESTING
+  logical,device,public :: h1_internal_candidate_d=.false.,h1_near_candidate_d=.false.
+  logical,device,public :: h1_blend_candidate_d=.false.
+  logical,device,public :: h1_inlet_limited_candidate_d=.false.
+#else
+  logical,parameter,public :: h1_internal_candidate_d=.false.,h1_near_candidate_d=.false.
+  logical,parameter,public :: h1_blend_candidate_d=.false.
+  logical,parameter,public :: h1_inlet_limited_candidate_d=.false.
+#endif
   logical,device,public :: high_order_boundary_enabled_d=.false.
   logical,device,public :: high_order_wall_enabled_d=.false.
   logical,device,public :: high_order_adiabatic_wall_enabled_d=.false.
   logical,device,public :: high_order_slip_wall_enabled_d=.false.
   integer,device,public :: high_order_wall_axis_d=2
+  real(real_kind),allocatable,device,public :: h1_strength_d(:,:,:,:)
 #else
+#ifdef ASTR_BUILD_TESTING
+  logical,save,public :: h1_internal_candidate=.false.,h1_near_candidate=.false.
+  logical,save,public :: h1_blend_candidate=.false.
+  logical,save,public :: h1_stage_budget_candidate=.false.
+  logical,save,public :: h1_outlet_filter_candidate=.false.
+  logical,save,public :: h1_inlet_limited_candidate=.false.
+#else
+  logical,parameter,public :: h1_internal_candidate=.false.,h1_near_candidate=.false.
+  logical,parameter,public :: h1_blend_candidate=.false.
+  logical,parameter,public :: h1_stage_budget_candidate=.false.
+  logical,parameter,public :: h1_outlet_filter_candidate=.false.
+  logical,parameter,public :: h1_inlet_limited_candidate=.false.
+#endif
   logical,save,public :: high_order_boundary_enabled=.false.
   logical,save,public :: high_order_wall_enabled=.false.
   logical,save,public :: high_order_adiabatic_wall_enabled=.false.
   logical,save,public :: high_order_slip_wall_enabled=.false.
   integer,save,public :: high_order_wall_axis=2
+  real(real_kind),allocatable,public :: h1_strength(:,:,:)
 #endif
   public :: boundary_derivative6, boundary_neumann7
   public :: boundary_derivative6_weights, boundary_neumann7_weights
-  public :: boundary_mp_flux6, boundary_filter6, boundary_incoming_rate7
+  public :: boundary_mp_flux6, boundary_mp_flux6_limited, boundary_filter6, boundary_incoming_rate7
   public :: boundary_interface_position
   public :: boundary_normal_terms6
   public :: boundary_hermite_pressure7,boundary_pressure_gradient7
@@ -27,6 +51,12 @@
   public :: boundary_temperature5,boundary_temperature_rhs5
   public :: boundary_wall_temperature7,boundary_noslip_rhs7
   public :: boundary_wall_filter6
+  public :: boundary_sensor_blend_weight
+#ifdef ASTR_BUILD_TESTING
+  public :: boundary_audit_llf5,boundary_budget_admissible5,boundary_budget_fraction5
+  public :: boundary_positive_filter5
+  public :: boundary_budget_margin5,boundary_budget_roundoff_fraction5
+#endif
 
   ! FD numerical-flux moments, not interpolation of physical flux at a midpoint.
   real(real_kind),parameter :: boundary_flux6_weights(0:7,0:2)=reshape([ &
@@ -89,6 +119,137 @@
     wall_filter6_a0(4,2)*(wall_filter6_b0+wall_filter6_b1)+wall_filter6_a2(4,2)*(wall_filter6_b1+wall_filter6_b2)+wall_filter6_b1], &
     [9,4,2])
 contains
+#ifdef ASTR_BUILD_TESTING
+  BOUNDARY_HIGH_ORDER_PROC subroutine boundary_positive_filter5(base,candidate,theta,status)
+    real(real_kind),intent(in) :: base(5)
+    real(real_kind),intent(inout) :: candidate(5)
+    real(real_kind),intent(out) :: theta
+    integer,intent(out) :: status
+    real(real_kind) :: delta(5),trial(5)
+    theta=0.e0_real_kind; status=1
+    if(.not.boundary_budget_margin5(base,64)) return
+    status=2
+    if(.not.all(abs(candidate)<=huge(1.e0_real_kind))) return
+    if(boundary_budget_margin5(candidate,64)) then
+      theta=1.e0_real_kind; status=0
+      return
+    endif
+    delta=candidate-base
+    if(.not.all(abs(delta)<=huge(1.e0_real_kind))) return
+    theta=boundary_budget_roundoff_fraction5(base,delta)
+    trial=base+theta*delta
+    status=3
+    if(.not.boundary_budget_margin5(trial,32)) return
+    candidate=trial; status=0
+  end subroutine boundary_positive_filter5
+
+  BOUNDARY_HIGH_ORDER_PROC logical function boundary_budget_admissible5(state) result(valid)
+    real(real_kind),intent(in) :: state(5)
+    real(real_kind) :: u(3),products(3),squares(3),kinetic,primitive_kinetic
+    valid=.false.
+    if(.not.all(abs(state)<=huge(1.e0_real_kind)).or.state(1)<=0.e0_real_kind) return
+    u=state(2:4)/state(1)
+    if(.not.all(abs(u)<=huge(1.e0_real_kind))) return
+    products=.5e0_real_kind*state(2:4)*u; squares=u*u
+    if(.not.all(abs(products)<=huge(1.e0_real_kind)).or..not.all(abs(squares)<=huge(1.e0_real_kind))) return
+    kinetic=sum(products); primitive_kinetic=.5e0_real_kind*state(1)*sum(squares)
+    if(.not.all(abs([kinetic,primitive_kinetic])<=huge(1.e0_real_kind))) return
+    valid=state(5)>kinetic.and.state(5)>primitive_kinetic
+  end function boundary_budget_admissible5
+
+  BOUNDARY_HIGH_ORDER_PROC logical function boundary_budget_margin5(state,operations) result(valid)
+    real(real_kind),intent(in) :: state(5)
+    integer,intent(in) :: operations
+    real(real_kind) :: velocity(3),kinetic,primitive_kinetic,unit_roundoff,error_factor,margin
+    valid=.false.
+    if(.not.boundary_budget_admissible5(state)) return
+    velocity=state(2:4)/state(1)
+    kinetic=sum(.5e0_real_kind*state(2:4)*velocity)
+    primitive_kinetic=.5e0_real_kind*state(1)*sum(velocity*velocity)
+    unit_roundoff=.5e0_real_kind*epsilon(1.e0_real_kind)
+    error_factor=real(operations,real_kind)*unit_roundoff
+    error_factor=error_factor/(1.e0_real_kind-error_factor)
+    ! Balance state retreat O(r) with near-coalescent characteristic error O(u/r).
+    error_factor=max(error_factor,(real(operations,real_kind)/32.e0_real_kind)*sqrt(unit_roundoff))
+    ! Separate products avoid forming E+K near the largest finite magnitude.
+    margin=error_factor*abs(state(5))+error_factor*max(kinetic,primitive_kinetic)
+    valid=state(5)-kinetic>margin.and.state(5)-primitive_kinetic>margin
+  end function boundary_budget_margin5
+
+  BOUNDARY_HIGH_ORDER_PROC real(real_kind) function boundary_budget_roundoff_fraction5(base,delta) result(theta)
+    real(real_kind),intent(in) :: base(5),delta(5)
+    real(real_kind) :: lo,hi,mid,trial(5)
+    integer :: iteration
+    theta=0.e0_real_kind
+    if(.not.boundary_budget_margin5(base,64)) return
+    trial=base+delta
+    if(boundary_budget_margin5(trial,64)) then
+      theta=1.e0_real_kind
+      return
+    endif
+    lo=0.e0_real_kind; hi=1.e0_real_kind
+    do iteration=1,64
+      mid=.5e0_real_kind*(lo+hi)
+      if(mid==lo.or.mid==hi) exit
+      trial=base+mid*delta
+      if(boundary_budget_margin5(trial,64)) then
+        lo=mid
+      else
+        hi=mid
+      endif
+    enddo
+    theta=lo*(1.e0_real_kind-256.e0_real_kind*epsilon(1.e0_real_kind))
+  end function boundary_budget_roundoff_fraction5
+
+  BOUNDARY_HIGH_ORDER_PROC real(real_kind) function boundary_budget_fraction5(base,delta) result(theta)
+    real(real_kind),intent(in) :: base(5),delta(5)
+    real(real_kind) :: lo,hi,mid,trial(5)
+    integer :: iteration
+    theta=0.e0_real_kind
+    if(.not.boundary_budget_admissible5(base)) return
+    trial=base+delta
+    if(boundary_budget_admissible5(trial)) then
+      theta=1.e0_real_kind
+      return
+    endif
+    lo=0.e0_real_kind; hi=1.e0_real_kind
+    do iteration=1,64
+      mid=.5e0_real_kind*(lo+hi)
+      if(mid==lo.or.mid==hi) exit
+      trial=base+mid*delta
+      if(boundary_budget_admissible5(trial)) then
+        lo=mid
+      else
+        hi=mid
+      endif
+    enddo
+    theta=lo*(1.e0_real_kind-256.e0_real_kind*epsilon(1.e0_real_kind))
+  end function boundary_budget_fraction5
+
+  BOUNDARY_HIGH_ORDER_PROC subroutine boundary_audit_llf5(ql,qr,metric,gamma,flux)
+    real(real_kind),intent(in) :: ql(5),qr(5),metric(3),gamma
+    real(real_kind),intent(out) :: flux(5)
+    real(real_kind) :: ul(3),ur(3),pl,pr,cl,cr,vl,vr,alpha
+    ! Independent host/device reference for the existing mp_low_face algebra.
+    ul=ql(2:4)/ql(1); ur=qr(2:4)/qr(1)
+    pl=(gamma-1.e0_real_kind)*(ql(5)-.5e0_real_kind*sum(ql(2:4)*ul))
+    pr=(gamma-1.e0_real_kind)*(qr(5)-.5e0_real_kind*sum(qr(2:4)*ur))
+    cl=sqrt(gamma*pl/ql(1)); cr=sqrt(gamma*pr/qr(1))
+    vl=sum(metric*ul); vr=sum(metric*ur)
+    alpha=max(abs(vl)+cl*sqrt(sum(metric*metric)),abs(vr)+cr*sqrt(sum(metric*metric)))
+    flux=.5e0_real_kind*(vl*ql+vr*qr-alpha*(qr-ql))
+    flux(2:4)=flux(2:4)+.5e0_real_kind*(pl+pr)*metric
+    flux(5)=flux(5)+.5e0_real_kind*(vl*pl+vr*pr)
+  end subroutine boundary_audit_llf5
+#endif
+  BOUNDARY_HIGH_ORDER_PROC function boundary_sensor_blend_weight(sensor,threshold) result(value)
+    real(real_kind),intent(in) :: sensor,threshold
+    real(real_kind) :: value,t
+    t=max(0.e0_real_kind,min(1.e0_real_kind,sensor/threshold))
+    value=(t*t)*(t*t)*t*(6.e0_real_kind-5.e0_real_kind*t)
+    value=max(0.e0_real_kind,min(1.e0_real_kind,value))
+  end function boundary_sensor_blend_weight
+
   BOUNDARY_HIGH_ORDER_PROC function boundary_wall_filter6(f,row,adiabatic) result(value)
     real(real_kind),intent(in) :: f(0:8)
     integer,intent(in) :: row
@@ -290,6 +451,53 @@ contains
     enddo
     if(incoming) flux=flux-incoming_flux_strength(row)*correction
   end function boundary_mp_flux6
+
+  BOUNDARY_HIGH_ORDER_PROC function boundary_mp_flux6_limited(f,row,incoming) result(value)
+    real(real_kind),intent(in) :: f(0:7)
+    integer,intent(in) :: row
+    logical,intent(in) :: incoming
+    real(real_kind) :: value,u(-2:2),curvature(-1:1),dhm,dhp,terms(4), &
+      upper,average,median,large_curvature,lower_bound,upper_bound
+    integer :: s,node
+    value=boundary_mp_flux6(f,row,incoming)
+    do s=-2,2
+      node=row+s
+      if(.not.incoming) node=row+1-s
+      ! Quadratic continuation defines limiter bounds only, never physical ghosts.
+      select case(node)
+      case(-2)
+        u(s)=f(0)-8.e0_real_kind*(f(1)-f(0))+3.e0_real_kind*(f(2)-f(0))
+      case(-1)
+        u(s)=f(0)-3.e0_real_kind*(f(1)-f(0))+(f(2)-f(0))
+      case default
+        u(s)=f(node)
+      end select
+    enddo
+    do s=-1,1
+      curvature(s)=(u(s-1)-u(s))+(u(s+1)-u(s))
+    enddo
+    terms=[4.e0_real_kind*curvature(-1)-curvature(0), &
+      4.e0_real_kind*curvature(0)-curvature(-1),curvature(-1),curvature(0)]
+    dhm=boundary_minmod4(terms)
+    terms=[4.e0_real_kind*curvature(0)-curvature(1), &
+      4.e0_real_kind*curvature(1)-curvature(0),curvature(0),curvature(1)]
+    dhp=boundary_minmod4(terms)
+    upper=u(0)+4.e0_real_kind*(u(0)-u(-1))
+    average=.5e0_real_kind*(u(0)+u(1))
+    median=average-.5e0_real_kind*dhp
+    large_curvature=u(0)+.5e0_real_kind*(u(0)-u(-1))+(4.e0_real_kind/3.e0_real_kind)*dhm
+    lower_bound=max(min(u(0),u(1),median),min(u(0),upper,large_curvature))
+    upper_bound=min(max(u(0),u(1),median),max(u(0),upper,large_curvature))
+    value=max(lower_bound,min(upper_bound,value))
+  end function boundary_mp_flux6_limited
+
+  BOUNDARY_HIGH_ORDER_PROC function boundary_minmod4(values) result(value)
+    real(real_kind),intent(in) :: values(4)
+    real(real_kind) :: value
+    value=0.e0_real_kind
+    if(all(values>0.e0_real_kind)) value=minval(values)
+    if(all(values<0.e0_real_kind)) value=maxval(values)
+  end function boundary_minmod4
 
   BOUNDARY_HIGH_ORDER_PROC function boundary_filter6(f,row) result(value)
     real(real_kind),intent(in) :: f(0:6)

@@ -390,6 +390,10 @@ module commcal
   end subroutine
 
   subroutine ducrossensor(timerept)
+#ifdef ASTR_BUILD_TESTING
+    use boundary_high_order, only: h1_blend_candidate,h1_strength,boundary_sensor_blend_weight
+    use validation_io, only: write_physical_scalar_validation_snapshot
+#endif
     !
     use commvar,  only : im,jm,km,is,ie,js,je,ks,ke,ia,ja,ka,hm,      &
                          npdci,npdcj,npdck,shkcrt,lreport,ltimrpt
@@ -424,6 +428,10 @@ module commcal
     endif
     !
     ssfmin= 1.e10_real_kind
+#ifdef ASTR_BUILD_TESTING
+    if(h1_blend_candidate.and..not.allocated(h1_strength)) &
+      allocate(h1_strength(-hm:im+hm,-hm:jm+hm,-hm:km+hm))
+#endif
     ssfmax=-1.e10_real_kind
     ssfavg=0.e0_real_kind
     norm=0.e0_real_kind
@@ -514,12 +522,21 @@ module commcal
       else
         lshock(i,j,k)=.false.
       endif
+#ifdef ASTR_BUILD_TESTING
+      if(h1_blend_candidate) h1_strength(i,j,k)=boundary_sensor_blend_weight(ssfmax_local,shkcrt)
+#endif
       !
     enddo
     enddo
     enddo
 
     if(compact_expanded_mask_enabled()) call refresh_expanded_shock_mask()
+#ifdef ASTR_BUILD_TESTING
+    if(h1_blend_candidate) then
+      call synchronize_h1_strength()
+      call write_physical_scalar_validation_snapshot('h1_strength',h1_strength(0:im,0:jm,0:km))
+    endif
+#endif
     call write_sensor_validation_snapshot('sensor',ssf(0:im,0:jm,0:km), &
                                           merge(1_1,0_1,lshock(0:im,0:jm,0:km)))
     call write_sensor_detail_validation_snapshot(dvel,prs)
@@ -563,6 +580,47 @@ module commcal
     return
     !
   end subroutine ducrossensor
+
+#ifdef ASTR_BUILD_TESTING
+  subroutine synchronize_h1_strength()
+    use commvar, only: im,jm,km,npdci,npdcj,npdck
+    use boundary_high_order, only: h1_strength
+    use parallel, only: exchange_h1_candidate_faces,dataswap
+    real(real_kind),allocatable,save :: sendbuf(:,:),recvbuf(:,:)
+    integer :: counts(3),types(3),dims(3),axis,n,id,lo(3),hi(3)
+    counts=[(jm+1)*(km+1),(im+1)*(km+1),(im+1)*(jm+1)]
+    types=[npdci,npdcj,npdck];dims=[im,jm,km]
+    if(.not.allocated(sendbuf)) allocate(sendbuf(maxval(counts),2),recvbuf(maxval(counts),2))
+    do axis=1,3
+      n=counts(axis)
+      do id=1,n
+        select case(axis)
+        case(1);lo=[0,mod(id-1,jm+1),(id-1)/(jm+1)]
+        case(2);lo=[mod(id-1,im+1),0,(id-1)/(im+1)]
+        case(3);lo=[mod(id-1,im+1),(id-1)/(im+1),0]
+        end select
+        hi=lo;hi(axis)=dims(axis)
+        sendbuf(id,1)=h1_strength(lo(1),lo(2),lo(3))
+        sendbuf(id,2)=h1_strength(hi(1),hi(2),hi(3))
+      enddo
+      call exchange_h1_candidate_faces(sendbuf,recvbuf,n,axis)
+      do id=1,n
+        select case(axis)
+        case(1);lo=[0,mod(id-1,jm+1),(id-1)/(jm+1)]
+        case(2);lo=[mod(id-1,im+1),0,(id-1)/(im+1)]
+        case(3);lo=[mod(id-1,im+1),(id-1)/(im+1),0]
+        end select
+        hi=lo;hi(axis)=dims(axis)
+        if(types(axis)==2.or.types(axis)==3) &
+          h1_strength(lo(1),lo(2),lo(3))=max(h1_strength(lo(1),lo(2),lo(3)),recvbuf(id,1))
+        if(types(axis)==1.or.types(axis)==3) &
+          h1_strength(hi(1),hi(2),hi(3))=max(h1_strength(hi(1),hi(2),hi(3)),recvbuf(id,2))
+      enddo
+    enddo
+    ! Shared-node maxima precede a halo-only refresh; never re-average q.
+    call dataswap(h1_strength)
+  end subroutine synchronize_h1_strength
+#endif
   !+-------------------------------------------------------------------+
   !| The end of the subroutine ducrossensor.                           |
   !+-------------------------------------------------------------------+

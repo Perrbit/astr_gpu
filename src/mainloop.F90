@@ -381,7 +381,7 @@ module mainloop
     use commvar,  only : im,jm,km,numq,deltat,lfilter,feqchkpt,hm,     &
                          lavg,feqavg,nstep,limmbou,turbmode,feqslice,  &
                          feqwsequ,lwslic,lreport,flowtype,     &
-                         ndims,num_species,maxstep,rkscheme,use_gpu,lcomb,iomode,conschm,difschm
+                         ndims,num_species,maxstep,rkscheme,use_gpu,lcomb,iomode,conschm,difschm,diffterm
     use commarray,only : x,q,qrhs,rho,vel,prs,tmp,spc,jacob,dvel,dtmp,bnorm_j0,bnorm_jm
     use fludyna,  only : updatefvar
     use comsolver,only : filterq,filter2e,gradcal
@@ -389,7 +389,8 @@ module mainloop
     use solver,   only : rhscal
     use bc,       only : boucon,immbody,bctype,twall,turbinf,apply_high_order_wall_state
 #ifdef ASTR_BUILD_TESTING
-    use boundary_high_order, only: high_order_wall_enabled
+    use boundary_high_order, only: high_order_wall_enabled,high_order_boundary_enabled,h1_stage_budget_candidate
+    use validation_io, only: check_h1_cpu_stage_state,check_h1_cpu_properties
 #endif
     use parallel, only : qswap
     use conservative_boundary_runtime, only: conservative_boundary, &
@@ -444,6 +445,9 @@ module mainloop
     integer :: i,j,k,m
     real(clock_kind) :: time_beg,time_beg_rhs,time_beg_sta,time_beg_io
     real(real_kind),allocatable,save :: qsave(:,:,:,:)
+#ifdef ASTR_BUILD_TESTING
+    real(real_kind),allocatable,save :: h1_common_source(:,:,:,:)
+#endif
     real(real_kind),allocatable :: rhsav(:,:,:,:)
     integer :: dt_ratio,jdnn,idnn
     real(real_kind) :: hrr
@@ -692,6 +696,10 @@ module mainloop
 
       call gradcal()
 
+#ifdef ASTR_BUILD_TESTING
+      if(high_order_boundary_enabled) call check_h1_cpu_properties()
+#endif
+
       if(flowtype(1:2)=='0d') jacob=1.e0_real_kind
 
 
@@ -719,18 +727,47 @@ module mainloop
 
       if(rhs_validation_requested()) then
         call write_q_validation_snapshot('pre_rhs')
+#ifdef ASTR_BUILD_TESTING
+        block
+          use bc, only: write_h1_outlet_filter_validation
+          call write_h1_outlet_filter_validation()
+        end block
+#endif
         if(conservative_case .or. lcomb .or. difschm=='643c' .or. flowtype=='tgv' .or. flowtype=='bl') &
           call write_primitive_validation_snapshot('pre_rhs_primitives')
         call write_gradient_validation_snapshot(dvel,dtmp,lower_normal=bnorm_j0,upper_normal=bnorm_jm)
       endif
 
+#ifdef ASTR_BUILD_TESTING
+      if(h1_stage_budget_candidate.and.diffterm) then
+        if(.not.allocated(h1_common_source)) allocate(h1_common_source(0:im,0:jm,0:km,numq))
+        call rhscal(timerept=ltimrpt,common_source=h1_common_source)
+      else
+#endif
       if(conservative_case) then
         call rhscal(timerept=ltimrpt,physical_halo_rhs=.true., &
                     metric_consistent_eps=.true.)
       else
         call rhscal(timerept=ltimrpt)
       endif
+#ifdef ASTR_BUILD_TESTING
+      endif
+#endif
 
+#ifdef ASTR_BUILD_TESTING
+      block
+        use boundary_high_order, only: h1_stage_budget_candidate
+        use solver, only: limit_h1_stage_cpu
+        if(h1_stage_budget_candidate) then
+          if(rkscheme/='rk3') error stop 'H1 stage budget candidate requires RK3'
+          if(diffterm) then
+            call limit_h1_stage_cpu(deltat,rkcoe(1,rkstep),rkcoe(2,rkstep),rkcoe(3,rkstep),rkstep,qsave,h1_common_source)
+          else
+            call limit_h1_stage_cpu(deltat,rkcoe(1,rkstep),rkcoe(2,rkstep),rkcoe(3,rkstep),rkstep,qsave)
+          endif
+        endif
+      end block
+#endif
       if(rkscheme=='rk3') then
 #ifdef ASTR_AIR5_CHEMISTRY
         if(air5_compensated) then
@@ -806,6 +843,9 @@ module mainloop
         call write_q_validation_snapshot('pre_updatefvar')
 #endif
       call apply_high_order_wall_state()
+#ifdef ASTR_BUILD_TESTING
+      if(high_order_boundary_enabled) call check_h1_cpu_stage_state()
+#endif
       call updatefvar
 
       if(rhs_validation_requested()) call write_q_validation_snapshot('post_update')

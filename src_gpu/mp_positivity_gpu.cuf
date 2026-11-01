@@ -19,8 +19,97 @@ module mp_positivity_gpu
   integer,device :: failure_d=0,limited_d=0
   integer,device :: failure_point_d(3)=0
   real(real_kind),device :: failure_state_d(5)=0.e0_real_kind
+#ifdef ASTR_BUILD_TESTING
+  real(real_kind),allocatable,device :: h1_low_d(:,:,:,:),h1_residual_d(:,:,:,:),h1_caps_d(:,:,:,:),h1_theta_d(:,:,:,:)
+  real(real_kind),allocatable,device :: h1_common_d(:,:,:,:)
+#endif
 contains
 #ifdef ASTR_BUILD_TESTING
+#include "h1_stage_budget_gpu.inc"
+
+  attributes(global) subroutine h1_low_rhs_audit_kernel(low,im,jm,km,hm,types,gamma)
+    integer,value :: im,jm,km,hm
+    integer,device,intent(in) :: types(3)
+    real(real_kind),value :: gamma
+    real(real_kind),device,intent(out) :: low(0:im,0:jm,0:km,5)
+    real(real_kind) :: fp(5),fm(5),rhs(5)
+    integer :: id,i,j,k,axis,left(3)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=(im+1)*(jm+1)*(km+1)) return
+    i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
+    rhs=0.e0_real_kind
+    do axis=1,3
+      left=[i,j,k]; left(axis)=left(axis)-1
+      call mp_low_face(i,j,k,axis,im,jm,km,hm,types(axis),gamma,fp)
+      call mp_low_face(left(1),left(2),left(3),axis,im,jm,km,hm,types(axis),gamma,fm)
+      rhs=rhs+fm-fp
+    enddo
+    low(i,j,k,:)=rhs
+  end subroutine h1_low_rhs_audit_kernel
+
+  subroutine audit_h1_low_order_gpu(stage)
+    use commvar, only: im,jm,km,hm,npdci,npdcj,npdck,gamma
+    use gpu_check, only: sync_after_kernel
+    use boundary_gpu, only: audit_h1_low_boundary_gpu
+    use validation_io, only: h1_low_order_validation_requested,write_rhs_validation_snapshot
+    real(real_kind),allocatable,device :: low_d(:,:,:,:)
+    real(real_kind),allocatable :: low(:,:,:,:)
+    integer,device :: types(3)
+    integer,intent(in) :: stage
+    if(.not.h1_low_order_validation_requested(stage)) return
+    allocate(low_d(0:im,0:jm,0:km,5),low(0:im,0:jm,0:km,5))
+    types=[npdci,npdcj,npdck]; failure_d=0
+    call h1_low_rhs_audit_kernel<<<((im+1)*(jm+1)*(km+1)+127)/128,128>>>(low_d,im,jm,km,hm,types,gamma)
+    call sync_after_kernel('h1_low_rhs_audit_kernel',.true.)
+    call check_mp_failure('H1 low RHS read-only audit')
+    low=low_d
+    call write_rhs_validation_snapshot('lf_raw',stage_index=stage,values=low)
+    call audit_h1_low_boundary_gpu(low_d)
+    low=low_d
+    call write_rhs_validation_snapshot('lf_complete',stage_index=stage,values=low)
+  end subroutine audit_h1_low_order_gpu
+
+  subroutine check_h1_validation_state_gpu(stage)
+    use commvar, only: nstep
+    use parallel, only: lio
+    use validation_io, only: h1_stage_validation_requested
+    integer,intent(in) :: stage
+    if(.not.h1_stage_validation_requested()) return
+    if(mp_inputs_need_repair_gpu()) then
+      print *, 'H1_STAGE_STATE_FAILURE GPU ',nstep,stage
+      call check_mp_failure('H1 RK state check')
+    endif
+    if(lio) write(*,'(a,2(1x,i0))') 'H1_STAGE_STATE_PASS GPU',nstep,stage
+  end subroutine check_h1_validation_state_gpu
+
+  attributes(global) subroutine h1_property_check_kernel(im,jm,km)
+    use commarray_gpu, only: rho_d,vel_d,prs_d,tmp_d
+    integer,value :: im,jm,km
+    integer :: id,i,j,k
+    real(real_kind) :: values(6)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=(im+1)*(jm+1)*(km+1)) return
+    i=mod(id,im+1); j=mod(id/(im+1),jm+1); k=id/((im+1)*(jm+1))
+    values=[rho_d(i,j,k),vel_d(i,j,k,:),prs_d(i,j,k),tmp_d(i,j,k)]
+    if(all(abs(values)<=huge(1.e0_real_kind)).and. &
+       values(1)>0.e0_real_kind.and.values(5)>0.e0_real_kind.and.values(6)>0.e0_real_kind) return
+    call record_mp_failure(1,i,j,k,[values(1),values(2),values(3),values(5),values(6)])
+  end subroutine h1_property_check_kernel
+
+  subroutine check_h1_validation_properties_gpu(stage)
+    use commvar, only: im,jm,km,nstep
+    use parallel, only: lio
+    use validation_io, only: h1_stage_validation_requested
+    use gpu_check, only: sync_after_kernel
+    integer,intent(in) :: stage
+    if(.not.h1_stage_validation_requested()) return
+    failure_d=0
+    call h1_property_check_kernel<<<((im+1)*(jm+1)*(km+1)+255)/256,256>>>(im,jm,km)
+    call sync_after_kernel('h1_property_check_kernel',.true.)
+    call check_mp_failure('H1 stage primitive property check')
+    if(lio) write(*,'(a,2(1x,i0))') 'H1_PROPERTY_PASS GPU',nstep,stage
+  end subroutine check_h1_validation_properties_gpu
+
   attributes(global) subroutine profile_filter_window_kernel(sample,im,jm,km,ci,cj,ck)
     use commarray_gpu, only: q_d
     implicit none
@@ -225,6 +314,10 @@ contains
     deallocate(send_lo_h,send_hi_h,recv_lo_h,recv_hi_h)
     if(allocated(reference_high_d)) deallocate(reference_high_d,reference_delta_d)
     if(allocated(split_plus_d)) deallocate(split_plus_d,split_minus_d)
+#ifdef ASTR_BUILD_TESTING
+    if(allocated(h1_low_d)) deallocate(h1_low_d,h1_residual_d,h1_caps_d,h1_theta_d)
+    if(allocated(h1_common_d)) deallocate(h1_common_d)
+#endif
   end subroutine release_mp_positivity_gpu
 
   attributes(device) logical function admissible_mp_state(q)

@@ -5029,6 +5029,33 @@ module parallel
     if(ierr/=MPI_SUCCESS) error stop 'Expanded shock-mask upper exchange failed'
   end subroutine exchange_shock_mask_faces
 
+#ifdef ASTR_BUILD_TESTING
+  subroutine exchange_h1_candidate_faces(sendbuf,recvbuf,n,axis,tag_base)
+    integer,intent(in) :: n,axis
+    integer,intent(in),optional :: tag_base
+    real(real_kind),intent(in) :: sendbuf(:,:)
+    real(real_kind),intent(out) :: recvbuf(:,:)
+    integer :: lower,upper,ierr,status(MPI_STATUS_SIZE),tag
+    tag=24411
+    if(present(tag_base)) tag=tag_base
+    select case(axis)
+    case(1)
+      lower=mpileft;upper=mpiright
+    case(2)
+      lower=mpidown;upper=mpiup
+    case(3)
+      lower=mpiback;upper=mpifront
+    end select
+    recvbuf=0.e0_real_kind
+    call MPI_Sendrecv(sendbuf(:,1),n,mpi_real_type,lower,tag, &
+      recvbuf(:,2),n,mpi_real_type,upper,tag,MPI_COMM_WORLD,status,ierr)
+    if(ierr/=MPI_SUCCESS) error stop 'H1 strength lower face exchange failed'
+    call MPI_Sendrecv(sendbuf(:,2),n,mpi_real_type,upper,tag+1, &
+      recvbuf(:,1),n,mpi_real_type,lower,tag+1,MPI_COMM_WORLD,status,ierr)
+    if(ierr/=MPI_SUCCESS) error stop 'H1 strength upper face exchange failed'
+  end subroutine exchange_h1_candidate_faces
+#endif
+
   subroutine qswap(timerept)
     !
     use commvar,   only: numq,turbmode,lcomb

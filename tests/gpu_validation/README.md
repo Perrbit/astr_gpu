@@ -202,6 +202,41 @@ the fixed middle x plane. The same file provides a native 12-step HCW-target
 window, with no rendering.
 Use `ASTR_SBLI_GRCBC_EXE` for this file as for the GRCBC tests above.
 Fresh h1 evidence is under `out/hcw_high_order_h1_20261027/`.
+
+The 2026-11-01 continuous-flux prototype is opt-in **only in test builds**:
+`ASTR_VALIDATION_H1_VARIANT=continuous`, checkpoint identity `sbli-grcbc-h1w`.
+It blends the original high-order smooth flux and the original limited flux with
+`theta=t^5*(6-5*t)`, `t=clip(S/shkcrt,0,1)`. The default and non-test builds
+still use the original H1 operator. J1 and the normal-source 225-step window pass,
+but the captured-positive-state admission gate is still red. J2 is not closed,
+and long-window or viscous HCW physical acceptance is not claimed.
+
+```bash
+ASTR_SBLI_GRCBC_EXE="$PWD/build_m12_gpu/bin/astr" \
+ASTR_H1_REPAIR_VARIANT=continuous PYTHONPATH=tests/gpu_validation \
+python3 -m pytest -q tests/gpu_validation/test_h1_continuous_pressure.py \
+  tests/gpu_validation/test_h1_spanwise_continuity.py -x
+```
+
+These tests include expected rejection of the failed v1 and of a legacy exact
+restart. Captured real-state inputs are kept outside Git; missing inputs produce
+explicit skips, not acceptance. The valid strength matrix uses 32x32x16 intervals
+so the NP2 z partition retains eight local intervals for hm=5. The y pressure
+convergence test covers the upper interior strip, not the old 421 wall closure.
+The 225-step GPU gate enables a read-only global check after all 675 RK updates.
+The original timestep, threshold and filter switches are unchanged; the observer
+never edits q. Private shared-strength face synchronization is currently host
+staged, and the candidate bypasses the split cache; no speedup is claimed.
+Evidence and remaining J3 scope:
+`../../documents/ASTR_H1_JOINT_CLOSURE_DESIGN.md`,
+`out/h1_continuous_v2_20261031/`.
+`test_continuous_captured_positive_state` is a genuine failed admission gate,
+not an expected-rejection pass: both the current blend and original H1 can leave
+the admissible set from this same positive input. At the failing cell the blend
+is saturated to the original limited flux. Do not xfail it to admit the candidate;
+the complete low-order/boundary-stage baseline still needs a numerical decision.
+
+For the original h1 operator, not the continuous prototype, historical
 NP1, NP2 x/y/z and NP4 2x2x1 parity, CPU/GPU exact continuation, grazing
 entropy transport and representative memcheck have passed. The unchanged
 Mach-2 seeded/uniform angle/plateau gates and HCW short window also pass.
@@ -9804,6 +9839,183 @@ CUDA context loss, MPI failure, unsafe distributed extraction, actual resource
 budget violations and authoritative statistics/checkpoint persistence errors
 remain fatal. Shared Catalyst initialization failure is checked separately and
 must not be converted to a product success.
+
+## H1 Read-Only Low-Order Audit
+
+`test_h1_low_order_audit.py` compares an independent CPU LLF reference with
+the existing GPU `mp_low_face` on selected first-RK snapshots. A private
+first-order characteristic completion retains transverse contributions from
+the same low-order operator. The audit does not modify q, qrhs, statistics,
+production defaults or the MP positivity switch.
+
+```bash
+ASTR_SBLI_GRCBC_EXE="$BUILD_DIR/bin/astr" python -m pytest -xq \
+  tests/gpu_validation/test_h1_low_order_audit.py
+```
+
+The scope is FP64 Cartesian inviscid five-variable flow. NP=1 and NP=2
+x/y/z fixtures verify read-only behavior and CPU/GPU RHS parity. The captured
+positive pre-failure field must be present for its separate regression;
+the known high-order failure is checked explicitly, and the *low-order*
+complete update is required to be strictly admissible. This does not admit
+the actual high-order candidate, subsequent RK stages or general boundaries.
+Evidence: `out/h1_low_order_audit_20261101/`; design and remaining conservative
+stage-budget work: `documents/ASTR_H1_JOINT_CLOSURE_DESIGN.md`, sections 10–11.
+
+## H1 Complete-Stage Budget Candidate (Not Admitted)
+
+`test_h1_stage_budget.py` selects the test-only `admissible` H1 variant.
+It uses the continuous MP operator as the high-order candidate and a complete
+LLF/characteristic low-order candidate. Six independent face budgets share
+the minimum coefficient across adjacent nodes; open boundaries also budget
+their complete-RHS residual. Prescribed boundary RHS stays unchanged.
+CPU and GPU integration are isolated in `src/h1_stage_budget_cpu.inc` and
+`src_gpu/h1_stage_budget_gpu.inc`. The checkpoint driver identity is `h1p`.
+Production defaults, the old MP switch, filtering and crashfix remain unchanged.
+
+```bash
+ASTR_SBLI_GRCBC_EXE="$BUILD_DIR/bin/astr" python -m pytest -xq \
+  tests/gpu_validation/test_h1_stage_budget.py
+```
+
+**Current status:** the captured positive-state counterexample and the active
+seventh-budget probe pass on CPU/GPU. The NP=1 two-step field comparison is
+2.02e-14, but its additional all-stage RHS gate is red at 2.79e-10. Both fields
+and all three full-RHS snapshots are bitwise identical to the original
+continuous operator within each backend; its budget coefficients are all one.
+The comparison policy awaits human decision. The test has not been weakened
+or marked xfail; NP=2 candidate tests and candidate sanitizer checks have not
+yet run. Earlier LF-audit sanitizer results do not qualify this new candidate.
+
+Evidence: `out/h1_stage_budget_20261101/`. The initial full-width hot-layer
+probe was already inadmissible after the old outlet filter, before budgeting.
+Its replacement confines the layer away from the outlet to isolate the open
+boundary budget. No solver filter was altered. See joint design section 12.
+
+## H1 Positive Outlet-Filter Candidate (Local Bounded Pass)
+
+`test_h1_positive_outlet_filter.py` selects `admissible-filter`, a new test-only
+variant that keeps the high-order NSCBC RHS and scales an inadmissible outlet
+filter candidate along the line from the original five-variable state. One
+coefficient applies to all components; numerically safe candidates are retained bitwise.
+The GPU projection operates on the existing outlet plane, with no full-field
+host calculation. The current checkpoint driver identity is `h1pc`; production
+defaults and the other test variants are unchanged.
+
+```bash
+ASTR_SBLI_GRCBC_EXE="$BUILD_DIR/bin/astr" python -m pytest -xq \
+  tests/gpu_validation/test_h1_positive_outlet_filter.py
+```
+
+**Current bounded scope passes:** six tests cover NP=1/2 x/y/z, repeated active
+filtering through two complete steps, same-phase properties, shared coefficients
+and exact preservation of safe candidates. The two-step maximum scaled field
+and cache errors are 2.15e-13, below the unchanged 2e-10 gate. The captured
+192x192x8 failure also passes with `ASTR_H1_BUDGET_VARIANT=admissible-filter`
+when selecting the captured test in `test_h1_stage_budget.py`.
+
+The low-order characteristic basis now reuses the same refreshed primitive
+state as H1; the tests also compare same-phase state/cache snapshots. The
+filter test uses the two approved kinetic-energy orderings, not a third
+momentum-squared ordering that can round a true near-limit positive value to
+zero. The approved new numerical safety domain uses local E/K scales and
+machine precision, shared by filtering and the stage budget. Gamma-only
+roundoff protection restored finiteness but failed field parity; the current
+conditioning-aware sqrt(u) rule passes this bounded matrix. It is not a strict
+error theorem for arbitrary characteristic matrices. No physical state floor,
+clipping, fallback or field-tolerance relaxation was added.
+
+Final evidence: `out/h1_roundoff_margin_20261101/`, under `conditioned_replay`,
+`conditioned_matrix`, `conditioned_captured` and `conditioned_memcheck_x/y`.
+The latter contain four current zero-error rank memcheck receipts. Earlier
+NaN and gamma-only field-parity failures remain archived, not relabeled as passes.
+See joint design section 14 for that bounded milestone. The subsequent user
+decision and current-candidate checks are recorded in section 15: compare the
+common-initial-state RHS separately from later trajectories, and close viscous
+HCW before replacing any production default. Current h1pc has passed its own
+225-step window and exact continuation. The h1pv viscous candidate reuses the
+same-stage 643e/source increment in its complete low-convection-order reference;
+manufactured convergence, 12-step HCW, CPU/GPU exact restart and two-rank
+memcheck pass. A meaningful viscous window and the remaining physical gates
+are still open, not inferred from those short tests.
+
+```bash
+ASTR_SBLI_GRCBC_EXE="$BUILD_DIR/bin/astr" \
+ASTR_H1_REPAIR_VARIANT=admissible-filter python -m pytest -xq \
+  tests/gpu_validation/test_high_order_boundary_runtime.py
+ASTR_SBLI_GRCBC_EXE="$BUILD_DIR/bin/astr" \
+ASTR_H1_BUDGET_VARIANT=admissible-filter python -m pytest -xq \
+  tests/gpu_validation/test_h1_stage_budget.py -k three_dimensional
+```
+
+Current evidence is under `out/h1_production_closure_20261101/`. First-stage
+state differences are also reported: independent CPU/GPU primitive-to-q
+conversions are not claimed to produce bitwise-identical states. Later RHS
+differences are not mislabeled as same-state operator discrepancies. The
+manufactured tests retain their original raw-J-scaled RHS parity measure and
+also report physical-rate absolute differences. Default H1 is unchanged.
+
+### Viscous HCW Long Window (Known Red)
+
+The approved 64x48x5, NP2 x, original-dt 3360-step and half-dt 6720-step
+matrix is in `test_h1_hcw_long_window.py`, explicitly enabled with
+`ASTR_H1_HCW_LONG=1` and `ASTR_H1_REPAIR_VARIANT=admissible-filter`.
+The first attempt failed the trajectory gate at the first archived step 420:
+scaled density difference 4.90e-10 exceeded 2e-10. At step 840 it was 4.89e-7.
+CPU was deliberately stopped after early GPU-prefix comparison, not after a
+negative-energy crash. The formal half-dt matrix and default promotion did not
+proceed. New native runs first check a 420-step prefix to expose this failure
+before spending the longer budget; this newly added prefix test has not been
+separately rerun or marked passing.
+
+Read-only failure replay, without another native CFD run:
+
+```bash
+python tests/gpu_validation/analyze_h1_hcw_window.py \
+  tests/gpu_validation/out/h1_hcw_long_window_20261101 --check-trajectory
+```
+
+This intentionally returns nonzero on the preserved data. The common-state
+1260-step diagnostic replay passed two native CPU/GPU steps (all-field scaled
+difference 1.36e-14; full physical RHS absolute difference 5.69e-11). Early
+trajectory error includes the spanwise mean near inlet columns, not only
+spanwise fluctuations. A bounded half-dt GPU prefix did not remove growth,
+but stage-wise outlet filtering also changes frequency per physical time, so
+this is not a clean RK temporal-convergence experiment. See joint design
+section 16 and `out/h1_hcw_long_window_20261101/diagnosis.json`.
+
+### Inlet-Interface Attribution Experiment (Not Production)
+
+Native directional/endpoint analysis in `analyze_h1_hcw_sensitivity.py` isolates
+positive error production from the inlet high-order endpoint and mixed-flux
+feedback for the observed step1000 state pair. This is a directional diagnostic,
+not an eigenvalue or physical-instability proof. CPU/GPU each reproduce the
+same response. Dense 840-to-1260 restart and volume-output tests preserve all
+11 final fields bitwise against their respective original trajectories.
+
+The approved `inlet-limited` test variant inherits the complete stage budget
+and outlet safety rule, but uses the existing limited endpoint only at x-minus
+interfaces 0 through 3, including the corresponding adjacent-node flux update.
+The viscous checkpoint identity is `h1iv`; old `h1pv` exact restarts are rejected.
+Production defaults and non-testing builds are unchanged. The old 2/3/5-order
+near-boundary templates can lower accuracy; this is not a sixth-order fix.
+
+```bash
+ASTR_SBLI_GRCBC_EXE="$BUILD_DIR/bin/astr" \
+ASTR_H1_REPAIR_VARIANT=inlet-limited python -m pytest -xq \
+  tests/gpu_validation/test_h1_hcw_inlet_limited.py
+```
+
+The native receives `ASTR_VALIDATION_H1_VARIANT=inlet-limited`; the repair
+variable above is only the Python harness selector. The frozen-direction test,
+old-identity rejection, two-rank memcheck and 420-step trajectory gate pass.
+The observed inlet error factor changes from 1.095660 to 0.966761; at step420,
+scaled density parity changes from 4.90e-10 to 2.48e-11, with an all-field
+maximum of 3.48e-11 under the unchanged 2e-10 gate. Original-candidate 12-step
+fields remain bitwise unchanged. Evidence is under
+`out/h1_hcw_inlet_limited_20261101/`. The original high-order long-window red
+case is not relabeled as passing. A compatible sixth-order inlet closure is
+still required before resuming production promotion; see joint design 17-18.
 
 ## HB6 Local Wall Filter (Validation Builds Only)
 

@@ -4,6 +4,7 @@ import math
 import os
 from pathlib import Path
 import subprocess
+import shutil
 
 import h5py
 import numpy as np
@@ -37,10 +38,10 @@ def analytic_states():
 
 
 def prepare(case,backend,n,steps,initial='shock',restore=None,checkpoint_interval=None,
-            background_v=0.,entry_x=ENTRY):
+            background_v=0.,entry_x=ENTRY,volume_interval=None,z_intervals=8):
     datin=case/'datin'
     datin.mkdir(parents=True)
-    z,y,x=np.meshgrid(np.linspace(0.,.125,9),np.linspace(0.,1.,n+1),np.linspace(0.,1.,n+1),indexing='ij')
+    z,y,x=np.meshgrid(np.linspace(0.,.125,z_intervals+1),np.linspace(0.,1.,n+1),np.linspace(0.,1.,n+1),indexing='ij')
     with h5py.File(datin/'grid.flatplate.h5','w') as file:
         for name,value in [('x',x),('y',y),('z',z)]:
             file[name]=value
@@ -64,7 +65,7 @@ def prepare(case,backend,n,steps,initial='shock',restore=None,checkpoint_interva
         file.write('Uniform Euler inflow density=provided\nrho u v temperature\n1 1 1 1\ny rho u v temperature\n')
         for _ in range(n+1):
             file.write(f'1.0000000000000000e+00 1.0000000000000000e+00 {background_v:.16e} 1.0000000000000000e+00\n')
-    write_input(datin/'input.flatplate',n,n,8,'t' if backend=='gpu' else 'f',
+    write_input(datin/'input.flatplate',n,n,z_intervals,'t' if backend=='gpu' else 'f',
         'f','f','743e','t',.001,1.e6,MACH,288.,1.,52,11,3,0,'prof',1,
         x_max_bctype=22,outlet_pressure=post[0]*post[4],lower_bctype=421,xslip=-1.)
     write_controller(datin/'controller',steps-1,10,DT,feqlist=max(1,min(100,steps//10)))
@@ -80,14 +81,14 @@ def prepare(case,backend,n,steps,initial='shock',restore=None,checkpoint_interva
  enabled=t,interval_steps={checkpoint_interval},keep=2,initial_frame=f
 /
 &volume
- enabled=f
+ enabled={'t' if volume_interval else 'f'},interval_steps={volume_interval or 0}
 /
 &slices
  enabled=f
 /
 """)
     (case/'parameters.json').write_text(json.dumps(dict(mach=MACH,gamma=GAMMA,beta_deg=40.,
-        entry_x=entry_x,background_v=background_v,intervals=[n,n,8],steps=steps,dt=DT,initial=initial,
+        entry_x=entry_x,background_v=background_v,intervals=[n,n,z_intervals],steps=steps,dt=DT,initial=initial,
         pre=pre.tolist(),post=post.tolist(),legacy_xslip=-1.,
         checkpoint_interval=checkpoint_interval,output_mode=output_mode,
         nominal_bottom_crossing=ENTRY+1/math.tan(BETA)),indent=2))
@@ -95,12 +96,16 @@ def prepare(case,backend,n,steps,initial='shock',restore=None,checkpoint_interva
 
 def launch(case,backend,n=64,steps=12,topology=(1,1,1),initial='shock',memcheck=False,restore=None,
            checkpoint_interval=None,background_v=0.,entry_x=ENTRY,field_source=None,diagnostics=False,
-           sanitizer_tool='memcheck'):
-    prepare(case,backend,n,steps,initial,restore,checkpoint_interval,background_v,entry_x)
+           sanitizer_tool='memcheck',validation_steps=(0,),volume_interval=None,validation_step_end=None,
+           split_cache='off',h1_variant=None,inlet_profile_source=None,z_intervals=8,check_stages=False,
+           low_order_audit=False):
+    prepare(case,backend,n,steps,initial,restore,checkpoint_interval,background_v,entry_x,volume_interval,z_intervals)
+    if inlet_profile_source is not None:
+        shutil.copyfile(inlet_profile_source,case/'datin/inlet.prof')
     if field_source is not None:
         with h5py.File(field_source) as file:
             q=np.stack([file[f'q{i:04d}'][...] for i in range(1,6)],axis=-1)
-        assert q.shape==(9,n+1,n+1,5)
+        assert q.shape==(z_intervals+1,n+1,n+1,5)
         rho=q[...,0];velocity=q[...,1:4]/rho[...,None]
         temperature=.4*(q[...,4]-.5*rho*np.sum(velocity**2,axis=-1))*5.6/rho
         with h5py.File(case/'datin/flowini3d.h5','w') as file:
@@ -109,14 +114,26 @@ def launch(case,backend,n=64,steps=12,topology=(1,1,1),initial='shock',memcheck=
                 file[name]=value
     env=runtime(','.join(map(str,topology)))
     env.pop('ASTR_WALL_BLOWING_MODE',None)
-    env.update(ASTR_GPU_MP_POSITIVITY='off',ASTR_GPU_MP_SPLIT_CACHE='off',
+    env.update(ASTR_GPU_MP_POSITIVITY='off',ASTR_GPU_MP_SPLIT_CACHE=split_cache,
         ASTR_NSCBC_FARFIELD_MODE='sbli_grcbc',ASTR_NSCBC_FARFIELD_SHOCK_X=str(entry_x),
         ASTR_NSCBC_FARFIELD_SHOCK_ANGLE_DEG='40',ASTR_NSCBC_FARFIELD_RHO='1',
         ASTR_NSCBC_FARFIELD_U='1',ASTR_NSCBC_FARFIELD_V=str(background_v),ASTR_NSCBC_FARFIELD_W='0',
         ASTR_NSCBC_FARFIELD_T='1')
+    if h1_variant is not None:
+        env['ASTR_VALIDATION_H1_VARIANT']=h1_variant
+    if check_stages:
+        env['ASTR_VALIDATION_H1_STAGE_STATE']='1'
+    if low_order_audit:
+        assert diagnostics,'low-order audit requires selected RHS snapshots'
+        env['ASTR_VALIDATION_H1_LOW_ORDER']='1'
     if diagnostics:
         (case/'diagnostics').mkdir()
-        env.update(ASTR_VALIDATION_RHS_PREFIX='diagnostics/state',ASTR_VALIDATION_RHS_STEP='0')
+        env.update(ASTR_VALIDATION_RHS_PREFIX='diagnostics/state',
+                   ASTR_VALIDATION_RHS_STEP=str(validation_steps[0]))
+        if len(validation_steps)>1:
+            env['ASTR_VALIDATION_RHS_STEP_SECONDARY']=str(validation_steps[1])
+        if validation_step_end is not None:
+            env['ASTR_VALIDATION_RHS_STEP_END']=str(validation_step_end)
     command=mpi_command(MPIEXEC,int(np.prod(topology)),'pinned')
     if memcheck:
         command+=['compute-sanitizer','--tool',sanitizer_tool,'--error-exitcode','99']
@@ -125,6 +142,8 @@ def launch(case,backend,n=64,steps=12,topology=(1,1,1),initial='shock',memcheck=
         result=subprocess.run(command,cwd=case,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=900)
     text=(case/'run.log').read_text()
     assert result.returncode==0 and 'The job is done!' in text,text[-10000:]
+    if h1_variant is not None:
+        assert 'H1_DIAGNOSTIC_VARIANT '+h1_variant in text,'Requested H1 diagnostic variant was not selected'
     if memcheck:
         assert text.count('ERROR SUMMARY: 0 errors')==int(np.prod(topology)),text[-10000:]
     fields(case,steps)

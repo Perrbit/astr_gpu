@@ -60,6 +60,9 @@ module bc
   real(real_kind),save :: wall_blowing_phase(15)=0.e0_real_kind
   integer,save :: wall_blowing_nmod_t=0,wall_blowing_nmod_z=0
   real(real_kind),allocatable,private :: compact_stage_wall_velocity(:,:)
+#ifdef ASTR_BUILD_TESTING
+  real(real_kind),allocatable,private :: h1_outlet_filter_theta(:,:)
+#endif
   !+---------------------+---------------------------------------------+
   !|              bctype | define type of boundary condition.          |
   !|               twall | wall temperature.                           |
@@ -85,8 +88,21 @@ module bc
   subroutine configure_high_order_boundary()
     use astr_precision, only: numerical_precision
     use boundary_high_order, only: high_order_boundary_enabled
+#ifdef ASTR_BUILD_TESTING
+    use boundary_high_order, only: h1_internal_candidate,h1_near_candidate,h1_blend_candidate,h1_stage_budget_candidate, &
+      h1_outlet_filter_candidate,h1_inlet_limited_candidate
+#endif
     use commvar, only: conschm,difschm,recon_schem,bfacmpld,lcomb,nondimen,lfilter,diffterm,ia,ja
     implicit none
+#ifdef ASTR_BUILD_TESTING
+    character(32) :: variant
+    integer :: variant_status
+    h1_internal_candidate=.false.;h1_near_candidate=.false.
+    h1_blend_candidate=.false.
+    h1_stage_budget_candidate=.false.
+    h1_outlet_filter_candidate=.false.
+    h1_inlet_limited_candidate=.false.
+#endif
     call configure_high_order_wall()
     high_order_boundary_enabled=.false.
     if(bctype(1)/=11.or.bctype(2)/=22.or.bctype(4)/=52) return
@@ -97,7 +113,50 @@ module bc
       abs(bfacmpld-0.1e0_real_kind)<=8.e0_real_kind*epsilon(1.e0_real_kind).and. &
       (all(bctype==[11,22,41,52,1,1]).or.(all(bctype==[11,22,421,52,1,1]).and..not.diffterm))
     if(lio.and.high_order_boundary_enabled) write(*,'(a)') ' ** sbli-grcbc-h1 high-order boundary chain'
+#ifdef ASTR_BUILD_TESTING
+    if(high_order_boundary_enabled) then
+      call get_environment_variable('ASTR_VALIDATION_H1_VARIANT',variant,status=variant_status)
+      if(variant_status==0.and.len_trim(variant)>0) then
+        select case(trim(variant))
+        case('legacy')
+        case('internal-only')
+          h1_internal_candidate=.true.
+        case('near-only')
+          h1_near_candidate=.true.
+        case('both')
+          h1_internal_candidate=.true.;h1_near_candidate=.true.
+        case('continuous','admissible','admissible-filter','inlet-limited')
+          block
+            use commvar, only: shkcrt,lchardecomp
+            if(.not.lchardecomp) error stop 'H1 continuous candidate requires the shock-sensor path'
+            if(shkcrt<=0.e0_real_kind) error stop 'H1 continuous candidate requires a positive sensor threshold'
+          end block
+          h1_blend_candidate=.true.
+          if(trim(variant)/='continuous') then
+            h1_stage_budget_candidate=.true.
+          endif
+          h1_outlet_filter_candidate=trim(variant)=='admissible-filter'.or.trim(variant)=='inlet-limited'
+          h1_inlet_limited_candidate=trim(variant)=='inlet-limited'
+        case default
+          error stop 'Unknown test-only ASTR_VALIDATION_H1_VARIANT'
+        end select
+        if(lio) write(*,'(2a)') 'H1_DIAGNOSTIC_VARIANT ',trim(variant)
+      endif
+    endif
+#endif
   end subroutine configure_high_order_boundary
+
+#ifdef ASTR_BUILD_TESTING
+  subroutine write_h1_outlet_filter_validation()
+    use boundary_high_order, only: h1_outlet_filter_candidate
+    use validation_io, only: write_physical_scalar_validation_snapshot
+    real(real_kind),allocatable :: values(:,:,:)
+    if(.not.h1_outlet_filter_candidate) return
+    allocate(values(0:im,0:jm,0:km)); values=1.e0_real_kind
+    if(irk==irkm) values(im,:,:)=h1_outlet_filter_theta
+    call write_physical_scalar_validation_snapshot('outlet_filter_theta',values)
+  end subroutine write_h1_outlet_filter_validation
+#endif
 
   subroutine configure_high_order_wall()
     use astr_precision, only: numerical_precision
@@ -737,6 +796,65 @@ module bc
       error stop 'sbli_grcbc complete boundary RHS failed'
     endif
   end subroutine apply_nscbc_incident_complete_rhs
+
+#ifdef ASTR_BUILD_TESTING
+  subroutine audit_h1_low_boundary_cpu(low)
+    use commvar, only: mach
+    use boundary_high_order, only: boundary_audit_llf5
+    use nscbc_incident, only: audit_incident_low_rhs,audit_outlet_low_rhs,incident_reference
+    real(real_kind),intent(inout) :: low(0:,0:,0:,:)
+    real(real_kind) :: face(5),pre(5),post(5),target(5),external(5),entry,beta, &
+      pnor(5,5),pinv(5,5),metric(3),normal(3),hn,inner(5),outer(5),derivative(5),position(3),tmp_face
+    integer :: i,j,k,axis,point(3),previous(3),status
+    call nscbc_incident_parameters(pre,post,entry,beta)
+    target=[roinf*pout,roinf*pout*uinf,roinf*pout*vinf,roinf*pout*winf, &
+      pinf*pout/(gamma-1.e0_real_kind)+.5e0_real_kind*roinf*pout*(uinf**2+vinf**2+winf**2)]
+    do axis=1,2
+      if(axis==1.and..not.(npdci==2.or.npdci==4)) cycle
+      if(axis==2.and..not.(npdcj==2.or.npdcj==4)) cycle
+      do k=0,km
+      do j=0,jm
+      do i=0,im
+        if(axis==1.and.i/=im) cycle
+        if(axis==2.and.j/=jm) cycle
+        if(i==0.and.(npdci==1.or.npdci==4)) cycle
+        if(j==0.and.(npdcj==1.or.npdcj==4)) cycle
+        point=[i,j,k]; previous=point; previous(axis)=previous(axis)-1
+        face=q(i,j,k,1:5); metric=dxi(i,j,k,axis,:)
+        ! Use the same refreshed characteristic basis as the complete H1 RHS.
+        tmp_face=tmp(i,j,k)
+        if(.not.(tmp_face>0.e0_real_kind)) then
+          print *, 'H1_LOW_TEMPERATURE_FAILURE CPU ',mpirank,point,tmp_face,face
+          error stop 'H1 low reference temperature is not positive'
+        endif
+        pinv=pmatrix(rho(i,j,k),vel(i,j,k,1),vel(i,j,k,2),vel(i,j,k,3), &
+          tmp_face,spc(i,j,k,:),metric,inv=.true.)
+        pnor=pmatrix(rho(i,j,k),vel(i,j,k,1),vel(i,j,k,2),vel(i,j,k,3), &
+          tmp_face,spc(i,j,k,:),metric,inv=.false.)
+        call boundary_audit_llf5(face,face,jacob(i,j,k)*metric,gamma,outer)
+        position=.5e0_real_kind*(jacob(i,j,k)*metric+ &
+          jacob(previous(1),previous(2),previous(3))*dxi(previous(1),previous(2),previous(3),axis,:))
+        call boundary_audit_llf5(q(previous(1),previous(2),previous(3),1:5),face,position,gamma,inner)
+        derivative=outer-inner
+        if(axis==1) then
+          call audit_outlet_low_rhs(low(i,j,k,:),jacob(i,j,k),face,gamma,metric,pnor,pinv,derivative, &
+            xmax-xmin,pinf*pout,target)
+        else
+          normal=metric/sqrt(sum(metric**2)); hn=sum((x(i,j,k,:)-x(i,j-1,k,:))*normal)
+          position=x(i,j,k,:)+hn*normal
+          call incident_reference(position,entry,ymax,beta,pre,post,external)
+          call audit_incident_low_rhs(low(i,j,k,:),jacob(i,j,k),face,external,gamma,metric,hn, &
+            pnor,pinv,derivative,status)
+          if(status/=0) error stop 'H1 diagnostic low-order top completion failed'
+        endif
+      enddo
+      enddo
+      enddo
+    enddo
+    if(npdci==1.or.npdci==4) low(0,0:jm,0:km,:)=0.e0_real_kind
+    if(npdcj==1.or.npdcj==4) low(0:im,0,0:km,:)=0.e0_real_kind
+  end subroutine audit_h1_low_boundary_cpu
+#endif
 
   subroutine high_order_normal_terms(point,axis,derivative,rest)
     implicit none
@@ -6079,6 +6197,9 @@ module bc
     use derivative,only : ddfc
     use filter,    only : spafilter6exp
     use parallel,  only : psum,mpi_imax,qswap
+#ifdef ASTR_BUILD_TESTING
+    use boundary_high_order, only: h1_outlet_filter_candidate,boundary_positive_filter5
+#endif
 #ifdef COMB
     use thermchem, only : aceval
 #endif
@@ -6095,6 +6216,10 @@ module bc
     real(real_kind) :: normal_speed,wave_tolerance,metric_norm
     real(real_kind) :: back_rate,plus_rate,qtarget(5),dq(5)
     logical :: compact_plate_outlet
+#ifdef ASTR_BUILD_TESTING
+    real(real_kind) :: filter_base(5),filter_trial(5),filter_theta
+    integer :: filter_status
+#endif
     !
     compact_plate_outlet=ndir==2.and.numq==5.and..not.lcomb.and. &
       conschm=='743e'.and.difschm=='643c'
@@ -6311,8 +6436,29 @@ module bc
           qfilt(:,jq)=spafilter6exp(q(i,:,k,jq),npdcj,jm)
           if(compact_plate_outlet.and.bctype(3)==41.and.(npdcj==1.or.npdcj==4)) &
             qfilt(0,jq)=q(i,0,k,jq)
-          q(i,0:jm,k,jq)=qfilt(:,jq)
+#ifdef ASTR_BUILD_TESTING
+          if(.not.h1_outlet_filter_candidate) then
+#endif
+            q(i,0:jm,k,jq)=qfilt(:,jq)
+#ifdef ASTR_BUILD_TESTING
+          endif
+#endif
         enddo
+#ifdef ASTR_BUILD_TESTING
+        if(h1_outlet_filter_candidate) then
+          if(.not.allocated(h1_outlet_filter_theta)) allocate(h1_outlet_filter_theta(0:jm,0:km))
+          do j=0,jm
+            filter_base=q(i,j,k,1:5); filter_trial=qfilt(j,1:5)
+            call boundary_positive_filter5(filter_base,filter_trial,filter_theta,filter_status)
+            if(filter_status/=0) then
+              print *, 'H1_OUTLET_FILTER_FAILURE CPU ',mpirank,[i,j,k],filter_status
+              error stop 'H1 outlet filter requires finite candidates and admissible inputs/results'
+            endif
+            q(i,j,k,1:5)=filter_trial
+            h1_outlet_filter_theta(j,k)=filter_theta
+          enddo
+        endif
+#endif
         call q2fvar(      q=  q(i,0:jm,k,:),                   &
                     density=rho(i,0:jm,k),                     &
                    velocity=vel(i,0:jm,k,:),                   &

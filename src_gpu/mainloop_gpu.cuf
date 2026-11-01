@@ -334,7 +334,9 @@ contains
     use gpu_phase_timing, only: begin_gpu_phase,end_gpu_phase
     use crashfix_gpu, only: repair_crashfix_state_gpu,repair_reconciled_state_gpu
 #ifdef ASTR_BUILD_TESTING
-    use mp_positivity_gpu, only: check_profile_validation_state_gpu
+    use mp_positivity_gpu, only: check_profile_validation_state_gpu,check_h1_validation_state_gpu, &
+      check_h1_validation_properties_gpu, &
+      audit_h1_low_order_gpu,limit_h1_stage_gpu,capture_h1_common_gpu
 #endif
     use halo_exchange_gpu, only: exchange_solution_halo_gpu, &
          begin_solution_halo_pipeline_gpu,stage_solution_halo_d2h_gpu, &
@@ -819,6 +821,12 @@ contains
       if(rhs_validation_requested()) then
         call copy_flow_from_gpu()
         call write_q_validation_snapshot('pre_rhs',nstep,rkstep)
+#ifdef ASTR_BUILD_TESTING
+        block
+          use boundary_gpu, only: write_h1_outlet_filter_validation_gpu
+          call write_h1_outlet_filter_validation_gpu(rkstep)
+        end block
+#endif
         if(conservative_case.or.compact_global_enabled().or.flowtype=='tgv'.or.flowtype=='bl') then
           call write_primitive_validation_snapshot('pre_rhs_primitives',nstep,rkstep)
         endif
@@ -886,6 +894,9 @@ contains
         endif
         call apply_nscbc_x_rhs_gpu(gmachmax2_in,gmachmax2_out)
       endif
+#ifdef ASTR_BUILD_TESTING
+      if(high_order_boundary_enabled) call check_h1_validation_properties_gpu(rkstep)
+#endif
       if(shock_sensor_case) call compute_shock_sensor_gpu(rkstep)
       call begin_gpu_phase('convection')
       if(compact_global_enabled().and.conschm=='643c') then
@@ -1231,6 +1242,9 @@ contains
         call copy_rhs_from_gpu()
         call write_rhs_validation_snapshot('conv',nstep,rkstep)
       endif
+#ifdef ASTR_BUILD_TESTING
+      call capture_h1_common_gpu(.true.)
+#endif
 
       if(curvilinear_nscbc52_viscous_case) &
         call capture_nscbc_farfield_y_upper_prediff_rhs_gpu()
@@ -1460,6 +1474,9 @@ contains
 
       call apply_case_sources_gpu()
       call apply_high_order_wall_rhs_gpu()
+#ifdef ASTR_BUILD_TESTING
+      call capture_h1_common_gpu(.false.)
+#endif
       call apply_nscbc_incident_complete_rhs_gpu()
       if(mp_positivity_enabled) &
         call limit_mp_update_gpu(deltat,rk_a(rkstep),rk_b(rkstep),rk_c(rkstep),rkstep)
@@ -1467,6 +1484,10 @@ contains
         call copy_rhs_from_gpu()
         call write_rhs_validation_snapshot('full',nstep,rkstep)
       endif
+#ifdef ASTR_BUILD_TESTING
+      if(high_order_boundary_enabled) call audit_h1_low_order_gpu(rkstep)
+      call limit_h1_stage_gpu(deltat,rk_a(rkstep),rk_b(rkstep),rk_c(rkstep),rkstep)
+#endif
       call begin_gpu_phase('rk_update')
       if(rkstep == 1) then
         call rk3_first_update_global_kernel<<<grid1,block1>>>(deltat,im,jm,km)
@@ -1478,6 +1499,9 @@ contains
       endif
       call end_gpu_phase('rk_update',nstep,rkstep)
       call apply_high_order_wall_state_gpu()
+#ifdef ASTR_BUILD_TESTING
+      if(high_order_boundary_enabled) call check_h1_validation_state_gpu(rkstep)
+#endif
       if(open_shock_sponge_case .or. s2_hbl_selective_roe_sponge_case .or. &
          s2_hbl_selective_roe_c4_sponge_case .or. s2_sbli_nscbc_sponge_case .or. profile_mp_ld_case) then
         if(profile_mp_ld_case) then

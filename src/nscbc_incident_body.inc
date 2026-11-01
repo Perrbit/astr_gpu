@@ -8,7 +8,57 @@
   public :: incident_shock_states,incident_reference
   public :: grcbc_incoming_rate,apply_incident_characteristic_rhs
   public :: incident_normal_characteristics,incident_convective_compatibility
+#ifdef ASTR_BUILD_TESTING
+  public :: audit_incident_low_rhs,audit_outlet_low_rhs
+#endif
 contains
+#ifdef ASTR_BUILD_TESTING
+  INCIDENT_PROC subroutine audit_incident_low_rhs(rhs,jacobian,face,external,gamma,metric,hn,pnor,pinv,derivative,status)
+    real(real_kind),intent(inout) :: rhs(5)
+    real(real_kind),intent(in) :: jacobian,face(5),external(5),gamma,metric(3),hn,pnor(5,5),pinv(5,5),derivative(5)
+    integer,intent(out) :: status
+    real(real_kind) :: rate(5),lambda(5),zero(5),transverse(5),work(5)
+    logical :: incoming(5)
+    integer :: m
+    zero=0.e0_real_kind
+    call grcbc_incoming_rate(face,external,gamma,metric,hn,pinv,zero,rate,lambda,incoming,status)
+    if(status/=0) return
+    ! Low-order diagnostic: replace only the normal incoming part; retain G for all modes.
+    work=rhs+derivative
+    transverse=matmul(pinv,work)/jacobian
+    do m=1,5
+      if(incoming(m)) rate(m)=rate(m)+transverse(m)
+    enddo
+    call apply_incident_characteristic_rhs(rhs,jacobian,pnor,pinv,incoming,rate,status)
+  end subroutine audit_incident_low_rhs
+
+  INCIDENT_PROC subroutine audit_outlet_low_rhs(rhs,jacobian,face,gamma,metric,pnor,pinv,derivative, &
+      length,pressure_target,target)
+    real(real_kind),intent(inout) :: rhs(5)
+    real(real_kind),intent(in) :: jacobian,face(5),gamma,metric(3),pnor(5,5),pinv(5,5),derivative(5), &
+      length,pressure_target,target(5)
+    real(real_kind) :: lodi(5),corrected(5),dq(5),velocity(3),pressure,css,un,tolerance,scale,recovery,work(5)
+    velocity=face(2:4)/face(1)
+    pressure=(gamma-1.e0_real_kind)*(face(5)-.5e0_real_kind*sum(face(2:4)*velocity))
+    css=sqrt(gamma*pressure/face(1)); un=sum(metric*velocity)/sqrt(sum(metric**2))
+    lodi=matmul(pinv,derivative)/jacobian; corrected=lodi
+    tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(un))
+    if(un-css < -tolerance) then
+      scale=3.75e0_real_kind*max(0.e0_real_kind,1.e0_real_kind-(un/css)**2)*css/length
+      corrected(5)=scale*(pressure-pressure_target)/face(1)/css*sqrt(2.e0_real_kind)
+    endif
+    if(un < -tolerance) then
+      work=face-target
+      dq=matmul(pinv,work); recovery=.25e0_real_kind*(-un)/length
+      corrected(1:3)=recovery*dq(1:3)
+      corrected(5)=corrected(5)+recovery*dq(5)
+      if(un+css < -tolerance) corrected(4)=.25e0_real_kind*(-un-css)/length*dq(4)
+    endif
+    work=lodi-corrected
+    dq=matmul(pnor,work)
+    rhs=rhs+jacobian*dq
+  end subroutine audit_outlet_low_rhs
+#endif
   INCIDENT_PROC logical function incident_admissible(q)
     real(real_kind),intent(in) :: q(5)
     incident_admissible=.false.

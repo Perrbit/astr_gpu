@@ -2,12 +2,35 @@
 module high_order_boundary_probe_launch
   use astr_precision, only: real_kind
   use boundary_high_order_gpu, only: boundary_derivative6,boundary_neumann7, &
-    boundary_mp_flux6,boundary_filter6,boundary_incoming_rate7, &
+    boundary_mp_flux6,boundary_mp_flux6_limited,boundary_filter6,boundary_incoming_rate7, &
     boundary_hermite_pressure7,boundary_pressure_gradient7,boundary_temperature5,boundary_temperature_rhs5, &
-    boundary_pressure_neumann6
+    boundary_pressure_neumann6,boundary_sensor_blend_weight
   use cudafor
+#ifdef ASTR_BUILD_TESTING
+  use boundary_high_order_gpu, only: boundary_positive_filter5,boundary_budget_margin5
+#endif
   implicit none
 contains
+#ifdef ASTR_BUILD_TESTING
+  attributes(global) subroutine evaluate_roundoff_filter(base,raw,result,theta,code)
+    real(real_kind),device :: base(5,3),raw(5,3),result(5,3),theta(3)
+    integer,device :: code(3)
+    real(real_kind) :: local_base(5),candidate(5),weight
+    integer :: p,status
+    p=threadIdx%x
+    if(p>3) return
+    local_base=base(:,p); candidate=raw(:,p)
+    call boundary_positive_filter5(local_base,candidate,weight,status)
+    if(.not.boundary_budget_margin5(candidate,32)) status=4
+    result(:,p)=candidate; theta(p)=weight; code(p)=status
+  end subroutine evaluate_roundoff_filter
+#endif
+  attributes(global) subroutine evaluate_blend_weights(sensor,weights)
+    real(real_kind),device :: sensor(0:1004),weights(0:1004)
+    integer :: i
+    i=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(i<=1004) weights(i)=boundary_sensor_blend_weight(sensor(i),1.e0_real_kind)
+  end subroutine evaluate_blend_weights
   attributes(global) subroutine evaluate_wall_temperature(state,rhs,result)
     real(real_kind),device :: state(5,8),rhs(5,8),result(2,8)
     integer :: p
@@ -67,9 +90,9 @@ contains
     if(p<=7) value(p)=boundary_neumann7(f(:,p),slope(p))
   end subroutine reconstruct_neumann
 
-  attributes(global) subroutine evaluate_candidates(samples,primitive,lambda,rhs,lodi,flux,filtered,rates)
+  attributes(global) subroutine evaluate_candidates(samples,primitive,lambda,rhs,lodi,flux,filtered,rates,limited)
     real(real_kind),device :: samples(0:7,10),primitive(5,0:7,10),lambda(5,10),rhs(5,10), &
-      lodi(5,10),flux(0:2,0:1,10),filtered(0:2,10),rates(5,10)
+      lodi(5,10),flux(0:2,0:1,10),filtered(0:2,10),rates(5,10),limited(0:2,0:1,10)
     real(real_kind) :: pinv(5,5)
     logical :: incoming(5)
     integer :: icase,row,wind,m
@@ -78,6 +101,7 @@ contains
     do row=0,2
       do wind=0,1
         flux(row,wind,icase)=boundary_mp_flux6(samples(:,icase),row,wind==1)
+        limited(row,wind,icase)=boundary_mp_flux6_limited(samples(:,icase),row,wind==1)
       enddo
       filtered(row,icase)=boundary_filter6(samples(0:6,icase),row)
     enddo
@@ -96,12 +120,19 @@ end module high_order_boundary_probe_launch
 program high_order_boundary_probe
   use astr_precision, only: real_kind
   use boundary_high_order, only: boundary_derivative6,boundary_neumann7, &
-    boundary_derivative6_weights,boundary_neumann7_weights,boundary_mp_flux6, &
+    boundary_derivative6_weights,boundary_neumann7_weights,boundary_mp_flux6,boundary_mp_flux6_limited, &
     boundary_filter6,boundary_incoming_rate7,boundary_hermite_pressure7,boundary_pressure_gradient7, &
-    boundary_temperature5,boundary_temperature_rhs5,boundary_pressure_neumann6
+    boundary_temperature5,boundary_temperature_rhs5,boundary_pressure_neumann6,boundary_sensor_blend_weight
+#ifdef ASTR_BUILD_TESTING
+  use boundary_high_order, only: boundary_positive_filter5,boundary_budget_margin5,boundary_budget_admissible5
+#endif
 #ifdef TEST_CUDA
   use high_order_boundary_probe_launch, only: differentiate,reconstruct_neumann,evaluate_candidates,evaluate_wall_pressure
   use high_order_boundary_probe_launch, only: evaluate_wall_temperature,evaluate_wall_pressure6
+  use high_order_boundary_probe_launch, only: evaluate_blend_weights
+#ifdef ASTR_BUILD_TESTING
+  use high_order_boundary_probe_launch, only: evaluate_roundoff_filter
+#endif
   use cudafor
 #endif
   implicit none
@@ -119,21 +150,104 @@ program high_order_boundary_probe
     lodi(5,10),candidate_flux(0:2,0:1,10),filtered(0:2,10),rates(5,10),expected_rates(5,10), &
     pinv(5,5),linear(5),quadratic(5),gradient(5),dq(5),source(5),un(10),css
   integer :: icase,wind,m
+  real(real_kind) :: limited_flux(0:2,0:1,10),limited_errors(3),fl,fr
+  real(real_kind) :: blend_sensors(0:1004),blend_weights(0:1004),blend_actual(0:1004)
   real(real_kind) :: thermal_state(5,8),thermal_rhs(5,8),thermal_result(2,8),thermal_expected(2,8), &
     thermal_rho,thermal_vel(3),thermal_dvel(3),thermal_t,thermal_cv
+#ifdef ASTR_BUILD_TESTING
+  real(real_kind) :: safe_base(5,3),safe_raw(5,3),safe_result(5,3),safe_theta(3),state_scale(3), &
+    near_limit(5),safe_warm(5),safe_weight
+  integer :: safe_status
+#ifdef TEST_CUDA
+  real(real_kind),device :: safe_base_d(5,3),safe_raw_d(5,3),safe_result_d(5,3),safe_theta_d(3)
+  integer,device :: safe_status_d(3)
+  real(real_kind) :: safe_actual(5,3),safe_actual_theta(3)
+  integer :: safe_status_h(3)
+#endif
+#endif
 #ifdef TEST_CUDA
   real(real_kind),allocatable,device :: f_d(:),df_d(:)
   real(real_kind),device :: wall_data_d(1:7,0:7),wall_slopes_d(0:7),wall_values_d(0:7)
   integer :: status
   real(real_kind),device :: samples_d(0:7,10),primitive_d(5,0:7,10),lambda_d(5,10),rhs_d(5,10), &
-    lodi_d(5,10),candidate_flux_d(0:2,0:1,10),filtered_d(0:2,10),rates_d(5,10)
+    lodi_d(5,10),candidate_flux_d(0:2,0:1,10),filtered_d(0:2,10),rates_d(5,10),limited_flux_d(0:2,0:1,10)
   real(real_kind) :: flux_actual(0:2,0:1,10),filter_actual(0:2,10),rates_actual(5,10)
+  real(real_kind),device :: blend_sensors_d(0:1004),blend_weights_d(0:1004)
   real(real_kind),device :: pressure_data_d(0:6,0:7),pressure_slope_d(0:7), &
     pressure_ghost_d(3,0:7),pressure_gradient_d(0:2,0:7)
   real(real_kind),device :: thermal_state_d(5,8),thermal_rhs_d(5,8),thermal_result_d(2,8)
 #endif
   if(precision(1.e0_real_kind)<15) error stop 'HB probe requires FP64'
   backend_error=0.e0_real_kind
+#ifdef ASTR_BUILD_TESTING
+  state_scale=[scale(1.e0_real_kind,-100),1.e0_real_kind,scale(1.e0_real_kind,100)]
+  do p=1,3
+    safe_base(:,p)=state_scale(p)*[1.e0_real_kind,1.e0_real_kind,.2e0_real_kind,0.e0_real_kind,1.e0_real_kind]
+    safe_raw(:,p)=state_scale(p)*[1.2e0_real_kind,1.1e0_real_kind,.3e0_real_kind,.1e0_real_kind,.1e0_real_kind]
+    safe_result(:,p)=safe_raw(:,p)
+    call boundary_positive_filter5(safe_base(:,p),safe_result(:,p),safe_theta(p),safe_status)
+    if(safe_status/=0.or..not.boundary_budget_margin5(safe_result(:,p),32)) &
+      error stop 'HB roundoff-safe filter failed'
+    if(safe_theta(p)<=0.e0_real_kind.or.safe_theta(p)>=1.e0_real_kind) &
+      error stop 'HB roundoff filter did not activate'
+  enddo
+  if(any(safe_theta/=safe_theta(2))) error stop 'HB roundoff margin is not scale homogeneous'
+  do p=1,3
+    if(maxval(abs(safe_result(:,p)/state_scale(p)-safe_result(:,2)))>2.e-14_real_kind) &
+      error stop 'HB scaled filter result mismatch'
+  enddo
+  safe_warm=safe_base(:,2)
+  call boundary_positive_filter5(safe_base(:,2),safe_warm,safe_weight,safe_status)
+  if(safe_status/=0.or.safe_weight/=1.e0_real_kind.or.any(safe_warm/=safe_base(:,2))) &
+    error stop 'HB safe filter changed a well-resolved state'
+  near_limit=[1.e0_real_kind,1.e0_real_kind,0.e0_real_kind,0.e0_real_kind,nearest(.5e0_real_kind,1.e0_real_kind)]
+  if(.not.boundary_budget_admissible5(near_limit).or.boundary_budget_margin5(near_limit,32)) &
+    error stop 'HB near-limit roundoff rejection failed'
+#ifdef TEST_CUDA
+  safe_base_d=safe_base; safe_raw_d=safe_raw
+  call evaluate_roundoff_filter<<<1,32>>>(safe_base_d,safe_raw_d,safe_result_d,safe_theta_d,safe_status_d)
+  status=cudaDeviceSynchronize()
+  if(status/=0) error stop 'HB roundoff CUDA kernel failed'
+  safe_actual=safe_result_d; safe_actual_theta=safe_theta_d; safe_status_h=safe_status_d
+  if(any(safe_status_h/=0).or.any(safe_actual_theta/=safe_actual_theta(2))) &
+    error stop 'HB GPU roundoff filter failed'
+  do p=1,3
+    if(maxval(abs(safe_actual(:,p)/state_scale(p)-safe_result(:,p)/state_scale(p)))>2.e-10_real_kind) &
+      error stop 'HB CPU GPU roundoff filter mismatch'
+  enddo
+#endif
+  print *, 'HB_ROUNDOFF_MARGIN_SCALING_PASS'
+#endif
+  do j=0,1000
+    blend_sensors(j)=real(j,real_kind)/1000.e0_real_kind
+  enddo
+  blend_sensors(1001:1004)=[-1.e-8_real_kind,1.e0_real_kind+1.e-8_real_kind, &
+    1.e0_real_kind-1.e-6_real_kind,1.e0_real_kind-1.e-7_real_kind]
+  do j=0,1004
+    blend_weights(j)=boundary_sensor_blend_weight(blend_sensors(j),1.e0_real_kind)
+  enddo
+  if(any(blend_weights<0.e0_real_kind).or.any(blend_weights>1.e0_real_kind)) &
+    error stop 'HB blend weight outside unit interval'
+  if(any(blend_weights(1:1000)<blend_weights(0:999))) error stop 'HB blend weight not monotone'
+  if(blend_weights(0)/=0.e0_real_kind.or.blend_weights(1000)/=1.e0_real_kind) &
+    error stop 'HB blend endpoint value mismatch'
+  if(blend_weights(1001)/=0.e0_real_kind.or.blend_weights(1002)/=1.e0_real_kind) &
+    error stop 'HB blend clamped value mismatch'
+  if((1.e0_real_kind-blend_weights(1003))/1.e-6_real_kind>2.e-5_real_kind.or. &
+     (1.e0_real_kind-blend_weights(1004))/1.e-7_real_kind>2.e-6_real_kind) &
+    error stop 'HB blend threshold derivative not approaching zero'
+  if(log(boundary_sensor_blend_weight(.01e0_real_kind,1.e0_real_kind)/ &
+         boundary_sensor_blend_weight(.005e0_real_kind,1.e0_real_kind))/log(2.e0_real_kind) &
+      <4.9e0_real_kind) error stop 'HB blend weak activation lost fifth power'
+#ifdef TEST_CUDA
+  blend_sensors_d=blend_sensors
+  call evaluate_blend_weights<<<4,256>>>(blend_sensors_d,blend_weights_d)
+  status=cudaDeviceSynchronize()
+  if(status/=0) error stop 'HB blend weight CUDA launch failed'
+  blend_actual=blend_weights_d
+  backend_error=max(backend_error,maxval(abs(blend_actual-blend_weights)))
+#endif
+  write(*,'(a)') 'HB_CONTINUOUS_BLEND_WEIGHT_PASS'
   thermal_cv=2.5e0_real_kind/0.126e0_real_kind
   thermal_dvel=[0.07e0_real_kind,-0.03e0_real_kind,0.02e0_real_kind]
   do p=1,8
@@ -296,6 +410,7 @@ program high_order_boundary_probe
     do row=0,2
       do wind=0,1
         candidate_flux(row,wind,icase)=boundary_mp_flux6(samples(:,icase),row,wind==1)
+        limited_flux(row,wind,icase)=boundary_mp_flux6_limited(samples(:,icase),row,wind==1)
       enddo
       filtered(row,icase)=boundary_filter6(samples(0:6,icase),row)
     enddo
@@ -304,6 +419,43 @@ program high_order_boundary_probe
   if(error>2.e-12_real_kind) error stop 'HB incoming source or external derivative mismatch'
   if(any(candidate_flux(:,:,9)/=1.e0_real_kind).or.any(filtered(:,9)/=1.e0_real_kind)) &
     error stop 'HB candidate changed a constant'
+  if(any(limited_flux(:,:,9)/=1.e0_real_kind)) error stop 'HB limited flux changed a constant'
+  if(any(limited_flux(:,:,10)<0.e0_real_kind).or.any(limited_flux(:,:,10)>1.e0_real_kind)) &
+    error stop 'HB limited step flux outside bounds'
+  do p=1,2
+    do j=0,7
+      sample(j)=(real(j,real_kind)/7.e0_real_kind)**p
+    enddo
+    do row=0,2
+    do wind=0,1
+      if(abs(boundary_mp_flux6_limited(sample,row,wind==1)-boundary_mp_flux6(sample,row,wind==1)) &
+         >2.e-12_real_kind) error stop 'HB limited linear or quadratic changed'
+    enddo
+    enddo
+  enddo
+  do k=1,3
+    h=1.e0_real_kind/real(sizes(k),real_kind)
+    limited_errors(k)=0.e0_real_kind
+    do icase=1,2
+      do j=0,7
+        z=4.e0_real_kind*real(j,real_kind)*h
+        sample(j)=sin(z+.3e0_real_kind)
+        if(icase==2) sample(j)=cos(z)
+      enddo
+      do wind=0,1
+      do row=1,2
+        fl=boundary_mp_flux6_limited(sample,row-1,wind==1)
+        fr=boundary_mp_flux6_limited(sample,row,wind==1)
+        expected=4.e0_real_kind*cos(4.e0_real_kind*real(row,real_kind)*h+.3e0_real_kind)
+        if(icase==2) expected=-4.e0_real_kind*sin(4.e0_real_kind*real(row,real_kind)*h)
+        limited_errors(k)=max(limited_errors(k),abs((fr-fl)/h-expected))
+      enddo
+      enddo
+    enddo
+  enddo
+  orders=log(limited_errors(1:2)/limited_errors(2:3))/log(2.e0_real_kind)
+  if(any(orders<5.5e0_real_kind)) error stop 'HB limited flux smooth accuracy failed'
+  write(*,'(a,3es25.17,2es25.17)') 'HB_LIMITED_FLUX_ERRORS_ORDERS ',limited_errors,orders
   do row=0,2
     do wind=0,1
       write(*,'(a,2(i0,1x),8(es25.17,1x))') 'HB_FLUX ',row,wind,candidate_flux(row,wind,1:8)
@@ -314,12 +466,14 @@ program high_order_boundary_probe
 #ifdef TEST_CUDA
   samples_d=samples; primitive_d=primitive; lambda_d=test_lambda; rhs_d=rhs; lodi_d=lodi
   call evaluate_candidates<<<1,16>>>(samples_d,primitive_d,lambda_d,rhs_d,lodi_d, &
-    candidate_flux_d,filtered_d,rates_d)
+    candidate_flux_d,filtered_d,rates_d,limited_flux_d)
   status=cudaDeviceSynchronize()
   if(status/=0) error stop 'HB candidate CUDA launch failed'
   flux_actual=candidate_flux_d; filter_actual=filtered_d; rates_actual=rates_d
   backend_error=max(backend_error,maxval(abs(flux_actual-candidate_flux)), &
     maxval(abs(filter_actual-filtered)),maxval(abs(rates_actual-rates)))
+  flux_actual=limited_flux_d
+  backend_error=max(backend_error,maxval(abs(flux_actual-limited_flux)))
 #endif
   do k=1,size(sizes)
     n=sizes(k); h=1.e0_real_kind/real(n,real_kind)

@@ -902,6 +902,7 @@ if(BUILD_TESTING)
   # Isolate probe modules from the production boundary modules.
   add_executable(high_order_boundary_cpu_probe EXCLUDE_FROM_ALL
     boundary_high_order.F90 ../tests/gpu_validation/high_order_boundary_probe.F90)
+  target_compile_definitions(high_order_boundary_cpu_probe PRIVATE ASTR_BUILD_TESTING)
   set_target_properties(high_order_boundary_cpu_probe PROPERTIES
     Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/high_order_boundary_cpu_modules")
   target_include_directories(high_order_boundary_cpu_probe PRIVATE
@@ -910,7 +911,7 @@ if(BUILD_TESTING)
     add_executable(high_order_boundary_gpu_probe EXCLUDE_FROM_ALL
       boundary_high_order.F90 ../src_gpu/boundary_high_order_gpu.cuf
       ../tests/gpu_validation/high_order_boundary_probe.F90)
-    target_compile_definitions(high_order_boundary_gpu_probe PRIVATE TEST_CUDA)
+    target_compile_definitions(high_order_boundary_gpu_probe PRIVATE TEST_CUDA ASTR_BUILD_TESTING)
     set_target_properties(high_order_boundary_gpu_probe PROPERTIES
       Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/high_order_boundary_gpu_modules")
     target_include_directories(high_order_boundary_gpu_probe PRIVATE

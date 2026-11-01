@@ -21,6 +21,10 @@ module boundary_gpu
                                       s1_bl_tmp_prof_d(:),s1_bl_vel_prof_d(:,:)
   real(real_kind),allocatable,device :: nscbc52_prediff_rhs_d(:,:,:)
   real(real_kind),allocatable,device :: nscbc_outflow_plane_d(:,:,:)
+#ifdef ASTR_BUILD_TESTING
+  real(real_kind),allocatable,device :: h1_outlet_filter_theta_d(:,:)
+  integer,device :: h1_outlet_filter_status_d=0
+#endif
   logical,save :: s1_bl_profile_ready = .false.
   logical,save :: nscbc52_prediff_rhs_ready = .false.
   logical,save :: nscbc_incident_reference_ready=.false.
@@ -53,6 +57,9 @@ contains
     if(allocated(s1_bl_rho_prof_d)) deallocate(s1_bl_rho_prof_d)
     if(allocated(nscbc52_prediff_rhs_d)) deallocate(nscbc52_prediff_rhs_d)
     if(allocated(nscbc_outflow_plane_d)) deallocate(nscbc_outflow_plane_d)
+#ifdef ASTR_BUILD_TESTING
+    if(allocated(h1_outlet_filter_theta_d)) deallocate(h1_outlet_filter_theta_d)
+#endif
     if(allocated(legacy_wall_velocity_d)) deallocate(legacy_wall_velocity_d)
     if(allocated(legacy_wall_velocity_h)) deallocate(legacy_wall_velocity_h)
     legacy_wall_forcing_gpu=.false.
@@ -2251,12 +2258,58 @@ contains
     q_d(im,j,k,m)=nscbc_outflow_plane_d(j,k,m)
   end subroutine
 
+#ifdef ASTR_BUILD_TESTING
+  attributes(global) subroutine h1_positive_outlet_filter_kernel(im,jm,km,apply_right)
+    use commarray_gpu, only: q_d
+    use boundary_high_order_gpu, only: boundary_positive_filter5
+    integer,value :: im,jm,km,apply_right
+    integer :: id,j,k,status,previous
+    real(real_kind) :: base(5),candidate(5),theta
+    if(apply_right==0) return
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    if(id>=(jm+1)*(km+1)) return
+    j=mod(id,jm+1); k=id/(jm+1)
+    base=q_d(im,j,k,1:5); candidate=nscbc_outflow_plane_d(j,k,1:5)
+    call boundary_positive_filter5(base,candidate,theta,status)
+    if(status/=0) then
+      previous=atomicmax(h1_outlet_filter_status_d,status)
+      if(previous==0) print *, 'H1_OUTLET_FILTER_FAILURE GPU ',im,j,k,status
+      return
+    endif
+    nscbc_outflow_plane_d(j,k,1:5)=candidate
+    h1_outlet_filter_theta_d(j,k)=theta
+  end subroutine h1_positive_outlet_filter_kernel
+
+  subroutine write_h1_outlet_filter_validation_gpu(stage)
+    use boundary_high_order, only: h1_outlet_filter_candidate
+    use commvar, only: im,jm,km
+    use validation_io, only: write_physical_scalar_validation_snapshot
+    integer,intent(in) :: stage
+    integer :: left,right
+    real(real_kind),allocatable :: values(:,:,:),plane(:,:)
+    if(.not.h1_outlet_filter_candidate) return
+    allocate(values(0:im,0:jm,0:km)); values=1.e0_real_kind
+    call gpu_physical_boundary_apply_mask(1,left,right)
+    if(right/=0) then
+      allocate(plane(0:jm,0:km)); plane=h1_outlet_filter_theta_d
+      values(im,:,:)=plane
+    endif
+    call write_physical_scalar_validation_snapshot('outlet_filter_theta',values,stage)
+  end subroutine write_h1_outlet_filter_validation_gpu
+#endif
+
   subroutine apply_nscbc_outflow_physical_filter_gpu()
     use commvar, only: im,jm,km,hm,npdcj
     use gpu_check, only: sync_after_kernel
+#ifdef ASTR_BUILD_TESTING
+    use boundary_high_order, only: h1_outlet_filter_candidate
+#endif
     implicit none
     type(dim3) :: block,grid
     integer :: apply_left,apply_right,n
+#ifdef ASTR_BUILD_TESTING
+    integer :: filter_status
+#endif
 
     call gpu_physical_boundary_apply_mask(1,apply_left,apply_right)
     if(apply_right/=0.and..not.allocated(nscbc_outflow_plane_d)) allocate(nscbc_outflow_plane_d(0:jm,0:km,5))
@@ -2264,6 +2317,17 @@ contains
     grid=dim3((n+block%x-1)/block%x,1,1)
     call nscbc_outflow_filter_y_physical_kernel<<<grid,block>>>(im,jm,km,hm,npdcj,apply_right)
     call sync_after_kernel('nscbc_outflow_filter_y_physical_kernel')
+#ifdef ASTR_BUILD_TESTING
+    if(h1_outlet_filter_candidate) then
+      if(apply_right/=0.and..not.allocated(h1_outlet_filter_theta_d)) &
+        allocate(h1_outlet_filter_theta_d(0:jm,0:km))
+      h1_outlet_filter_status_d=0
+      call h1_positive_outlet_filter_kernel<<<((jm+1)*(km+1)+255)/256,256>>>(im,jm,km,apply_right)
+      call sync_after_kernel('h1_positive_outlet_filter_kernel',.true.)
+      filter_status=h1_outlet_filter_status_d
+      if(filter_status/=0) error stop 'H1 outlet filter requires finite candidates and admissible inputs/results'
+    endif
+#endif
     call nscbc_copy_outflow_physical_filter_kernel<<<grid,block>>>(im,jm,km,apply_right)
     call sync_after_kernel('nscbc_outflow_filter_y_physical_copy_kernel')
   end subroutine apply_nscbc_outflow_physical_filter_gpu
@@ -2755,6 +2819,101 @@ contains
          farfield_policy,gmachmax2,apply_up)
     call sync_after_kernel('nscbc_farfield_y_upper_rhs_kernel')
   end subroutine apply_nscbc_farfield_y_upper_rhs_gpu
+
+#ifdef ASTR_BUILD_TESTING
+  attributes(global) subroutine h1_low_boundary_audit_kernel(low,im,jm,km,axis,gamma,mach, &
+      length,pressure_target,target,entry,beta,top_y,pre,post)
+    use commarray_gpu, only: q_d,jacob_d,dxi_d,x_d,rho_d,vel_d,tmp_d
+    use boundary_high_order_gpu, only: boundary_audit_llf5
+    use nscbc_incident_gpu, only: audit_incident_low_rhs,audit_outlet_low_rhs,incident_reference
+    integer,value :: im,jm,km,axis
+    real(real_kind),value :: gamma,mach,length,pressure_target,entry,beta,top_y
+    real(real_kind),device,intent(in) :: target(5),pre(5),post(5)
+    real(real_kind),device,intent(inout) :: low(0:im,0:jm,0:km,5)
+    real(real_kind) :: face(5),external(5),pnor(5,5),pinv(5,5),metric(3),normal(3),hn, &
+      inner(5),outer(5),derivative(5),position(3),temp,flux_metric(3),neighbor(5),rhs(5)
+    integer :: id,i,j,k,previous(3),status,old_error,dim
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    dim=jm
+    if(axis==2) dim=im
+    if(id>=(dim+1)*(km+1)) return
+    i=im; j=mod(id,dim+1); k=id/(dim+1)
+    if(axis==2) then
+      i=j; j=jm
+    endif
+    previous=[i,j,k]; previous(axis)=previous(axis)-1
+    face=q_d(i,j,k,1:5); metric=dxi_d(i,j,k,axis,:)
+    temp=tmp_d(i,j,k)
+    if(.not.(temp>0.e0_real_kind.and.temp<=huge(1.e0_real_kind))) then
+      old_error=atomicMax(nscbc_incident_status_d,3)
+      if(old_error==0) print *, 'H1_LOW_TEMPERATURE_FAILURE GPU ',i,j,k,temp
+      return
+    endif
+    call nscbc_pmatrix(rho_d(i,j,k),vel_d(i,j,k,1),vel_d(i,j,k,2),vel_d(i,j,k,3),temp, &
+      metric,gamma,mach,.true.,pinv)
+    call nscbc_pmatrix(rho_d(i,j,k),vel_d(i,j,k,1),vel_d(i,j,k,2),vel_d(i,j,k,3),temp, &
+      metric,gamma,mach,.false.,pnor)
+    flux_metric=jacob_d(i,j,k)*metric
+    call boundary_audit_llf5(face,face,flux_metric,gamma,outer)
+    position=.5e0_real_kind*(jacob_d(i,j,k)*metric+ &
+      jacob_d(previous(1),previous(2),previous(3))*dxi_d(previous(1),previous(2),previous(3),axis,:))
+    neighbor=q_d(previous(1),previous(2),previous(3),1:5)
+    call boundary_audit_llf5(neighbor,face,position,gamma,inner)
+    derivative=outer-inner
+    rhs=low(i,j,k,:)
+    if(axis==1) then
+      call audit_outlet_low_rhs(rhs,jacob_d(i,j,k),face,gamma,metric,pnor,pinv,derivative, &
+        length,pressure_target,target)
+    else
+      normal=metric/sqrt(sum(metric**2)); hn=sum((x_d(i,j,k,:)-x_d(i,j-1,k,:))*normal)
+      position=x_d(i,j,k,:)+hn*normal
+      call incident_reference(position,entry,top_y,beta,pre,post,external)
+      call audit_incident_low_rhs(rhs,jacob_d(i,j,k),face,external,gamma,metric,hn, &
+        pnor,pinv,derivative,status)
+      if(status/=0) old_error=atomicMax(nscbc_incident_status_d,status)
+    endif
+    low(i,j,k,:)=rhs
+  end subroutine h1_low_boundary_audit_kernel
+
+  attributes(global) subroutine h1_low_zero_audit_kernel(low,im,jm,km,left,down)
+    real(real_kind),device,intent(inout) :: low(0:im,0:jm,0:km,5)
+    integer,value :: im,jm,km,left,down
+    integer :: id,s,k,stride
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x-1
+    stride=max(im+1,jm+1); s=mod(id,stride); k=id/stride
+    if(k>km) return
+    if(left/=0.and.s<=jm) low(0,s,k,:)=0.e0_real_kind
+    if(down/=0.and.s<=im.and..not.(left/=0.and.s==0)) low(s,0,k,:)=0.e0_real_kind
+  end subroutine h1_low_zero_audit_kernel
+
+  subroutine audit_h1_low_boundary_gpu(low)
+    use commvar, only: im,jm,km,gamma,mach,xmin,xmax,ymax,roinf,uinf,vinf,winf,pinf
+    use bc, only: pout,nscbc_incident_parameters
+    use gpu_check, only: sync_after_kernel
+    real(real_kind),device,intent(inout) :: low(0:im,0:jm,0:km,5)
+    real(real_kind) :: pre(5),post(5),entry,beta
+    real(real_kind),device :: pre_d(5),post_d(5),target_d(5)
+    integer :: axis,left,right,down,up,status
+    call gpu_physical_boundary_apply_mask(1,left,right)
+    call gpu_physical_boundary_apply_mask(2,down,up)
+    call nscbc_incident_parameters(pre,post,entry,beta)
+    pre_d=pre; post_d=post
+    target_d=[roinf*pout,roinf*pout*uinf,roinf*pout*vinf,roinf*pout*winf, &
+      pinf*pout/(gamma-1.e0_real_kind)+.5e0_real_kind*roinf*pout*(uinf**2+vinf**2+winf**2)]
+    nscbc_incident_status_d=0
+    do axis=1,2
+      if(axis==1.and.right==0) cycle
+      if(axis==2.and.up==0) cycle
+      call h1_low_boundary_audit_kernel<<<(max(im+1,jm+1)*(km+1)+127)/128,128>>>( &
+        low,im,jm,km,axis,gamma,mach,xmax-xmin,pinf*pout,target_d,entry,beta,ymax,pre_d,post_d)
+      call sync_after_kernel('h1_low_boundary_audit_kernel',.true.)
+    enddo
+    status=nscbc_incident_status_d
+    if(status/=0) error stop 'H1 diagnostic low-order GPU top completion failed'
+    call h1_low_zero_audit_kernel<<<(max(im+1,jm+1)*(km+1)+127)/128,128>>>(low,im,jm,km,left,down)
+    call sync_after_kernel('h1_low_zero_audit_kernel',.true.)
+  end subroutine audit_h1_low_boundary_gpu
+#endif
 
   attributes(device) subroutine high_order_normal_terms_gpu(i,j,k,axis,derivative,rest)
     use commarray_gpu, only: q_d,vel_d,prs_d,jacob_d,dxi_d

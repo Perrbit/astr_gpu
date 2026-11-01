@@ -7,7 +7,83 @@ module shock_sensor_gpu
   integer(1),allocatable,pinned,private :: mask_send_h(:,:),mask_recv_h(:,:)
   real(real_kind),allocatable,device,private :: snapshot_sensor_d(:)
   integer(1),allocatable,device,private :: snapshot_mask_d(:)
+#ifdef ASTR_BUILD_TESTING
+  real(real_kind),allocatable,device,private :: h1_face_send_d(:,:),h1_face_recv_d(:,:)
+  real(real_kind),allocatable,pinned,private :: h1_face_send_h(:,:),h1_face_recv_h(:,:)
+#endif
 contains
+#ifdef ASTR_BUILD_TESTING
+  attributes(global) subroutine pack_h1_strength_snapshot(im,jm,n)
+    use boundary_high_order_gpu, only: h1_strength_d
+    integer,value :: im,jm,n
+    integer :: id,i,j,k
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    if(id>n) return
+    i=mod(id-1,im+1);j=mod((id-1)/(im+1),jm+1);k=(id-1)/((im+1)*(jm+1))
+    snapshot_sensor_d(id)=h1_strength_d(i,j,k,1)
+  end subroutine pack_h1_strength_snapshot
+
+  attributes(global) subroutine h1_strength_face_kernel(im,jm,km,n,axis,ntype,unpack)
+    use boundary_high_order_gpu, only: h1_strength_d
+    integer,value :: im,jm,km,n,axis,ntype,unpack
+    integer :: id,lo(3),hi(3),dims(3)
+    id=(blockIdx%x-1)*blockDim%x+threadIdx%x
+    if(id>n) return
+    select case(axis)
+    case(1);lo=[0,mod(id-1,jm+1),(id-1)/(jm+1)]
+    case(2);lo=[mod(id-1,im+1),0,(id-1)/(im+1)]
+    case(3);lo=[mod(id-1,im+1),(id-1)/(im+1),0]
+    end select
+    dims=[im,jm,km];hi=lo;hi(axis)=dims(axis)
+    if(unpack==0) then
+      h1_face_send_d(id,1)=h1_strength_d(lo(1),lo(2),lo(3),1)
+      h1_face_send_d(id,2)=h1_strength_d(hi(1),hi(2),hi(3),1)
+    else
+      if(ntype==2.or.ntype==3) h1_strength_d(lo(1),lo(2),lo(3),1)= &
+        max(h1_strength_d(lo(1),lo(2),lo(3),1),h1_face_recv_d(id,1))
+      if(ntype==1.or.ntype==3) h1_strength_d(hi(1),hi(2),hi(3),1)= &
+        max(h1_strength_d(hi(1),hi(2),hi(3),1),h1_face_recv_d(id,2))
+    endif
+  end subroutine h1_strength_face_kernel
+
+  subroutine synchronize_h1_strength_gpu()
+    use commvar, only: im,jm,km,npdci,npdcj,npdck
+    use boundary_high_order_gpu, only: h1_strength_d
+    use parallel, only: exchange_h1_candidate_faces
+    use halo_exchange_gpu, only: exchange_field_halo_gpu
+    use gpu_check, only: sync_after_kernel
+    integer :: counts(3),types(3),axis,n,side,status
+    logical :: pinned_ok
+    counts=[(jm+1)*(km+1),(im+1)*(km+1),(im+1)*(jm+1)]
+    types=[npdci,npdcj,npdck]
+    if(.not.allocated(h1_face_send_d)) then
+      n=maxval(counts)
+      allocate(h1_face_send_d(n,2),h1_face_recv_d(n,2))
+      allocate(h1_face_send_h(n,2),pinned=pinned_ok)
+      if(.not.pinned_ok) error stop 'H1 strength send buffer is not pinned'
+      allocate(h1_face_recv_h(n,2),pinned=pinned_ok)
+      if(.not.pinned_ok) error stop 'H1 strength receive buffer is not pinned'
+    endif
+    do axis=1,3
+      if(types(axis)==4) cycle
+      n=counts(axis)
+      call h1_strength_face_kernel<<<(n+255)/256,256>>>(im,jm,km,n,axis,types(axis),0)
+      call sync_after_kernel('pack_h1_strength',.true.)
+      do side=1,2
+        status=cudaMemcpy(h1_face_send_h(1,side),h1_face_send_d(1,side),n,cudaMemcpyDeviceToHost)
+        if(status/=cudaSuccess) error stop 'H1 strength face download failed'
+      enddo
+      call exchange_h1_candidate_faces(h1_face_send_h,h1_face_recv_h,n,axis)
+      do side=1,2
+        status=cudaMemcpy(h1_face_recv_d(1,side),h1_face_recv_h(1,side),n,cudaMemcpyHostToDevice)
+        if(status/=cudaSuccess) error stop 'H1 strength face upload failed'
+      enddo
+      call h1_strength_face_kernel<<<(n+255)/256,256>>>(im,jm,km,n,axis,types(axis),1)
+      call sync_after_kernel('max_h1_strength_shared')
+    enddo
+    call exchange_field_halo_gpu(h1_strength_d,1)
+  end subroutine synchronize_h1_strength_gpu
+#endif
   attributes(global) subroutine pack_shock_snapshot_kernel(im,jm,km,n)
     use commarray_gpu, only: shock_sensor_d,shock_mask_d
     integer,value :: im,jm,km,n
@@ -101,6 +177,11 @@ contains
   end subroutine
 
   subroutine release_shock_mask_buffers_gpu()
+#ifdef ASTR_BUILD_TESTING
+    use boundary_high_order_gpu, only: h1_strength_d
+    if(allocated(h1_strength_d)) deallocate(h1_strength_d)
+    if(allocated(h1_face_send_d)) deallocate(h1_face_send_d,h1_face_recv_d,h1_face_send_h,h1_face_recv_h)
+#endif
     if(allocated(mask_send_d)) deallocate(mask_send_d,mask_recv_d,mask_send_h,mask_recv_h)
     if(allocated(snapshot_sensor_d)) deallocate(snapshot_sensor_d,snapshot_mask_d)
   end subroutine
@@ -195,6 +276,9 @@ contains
                                                             apply_down_y,apply_up_y, &
                                                             apply_back_z,apply_front_z)
     use commarray_gpu, only: shock_sensor_d,shock_mask_d
+#ifdef ASTR_BUILD_TESTING
+    use boundary_high_order_gpu, only: h1_blend_candidate_d,h1_strength_d,boundary_sensor_blend_weight
+#endif
     implicit none
     integer,value :: im,jm,km,hm,apply_left_x,apply_right_x,apply_down_y,apply_up_y, &
                      apply_back_z,apply_front_z
@@ -222,6 +306,9 @@ contains
       local_maximum = max(local_maximum,shock_sensor_d(i,jj,k,1))
       local_maximum = max(local_maximum,shock_sensor_d(i,j,kk,1))
     enddo
+#ifdef ASTR_BUILD_TESTING
+    if(h1_blend_candidate_d) h1_strength_d(i,j,k,1)=boundary_sensor_blend_weight(local_maximum,threshold)
+#endif
     if(local_maximum > threshold) then
       shock_mask_d(i,j,k) = 1_1
     else
@@ -273,6 +360,11 @@ contains
   end subroutine dump_shock_sensor_gpu_validation
 
   subroutine compute_shock_sensor_gpu(stage_index,force_active)
+#ifdef ASTR_BUILD_TESTING
+    use boundary_high_order, only: h1_blend_candidate
+    use boundary_high_order_gpu, only: h1_strength_d
+    use validation_io, only: write_physical_scalar_validation_snapshot
+#endif
     use commvar, only: im,jm,km,hm,shkcrt,lchardecomp,npdci,npdcj,npdck,nstep
     use commcal, only: shock_sensor_validation_enabled,compact_expanded_mask_enabled
     use gradcal_gpu, only: compute_gradcal_gpu
@@ -292,6 +384,9 @@ contains
     real(real_kind),allocatable :: gradient_host(:,:,:,:,:),pressure_host(:,:,:)
     integer(1),allocatable :: mask_host(:,:,:)
     logical :: active
+#ifdef ASTR_BUILD_TESTING
+    integer :: h1_n,h1_copy_status
+#endif
 
     active=shock_sensor_validation_enabled() .or. lchardecomp
     if(present(force_active)) active=active .or. force_active
@@ -341,17 +436,34 @@ contains
       call exchange_field_halo_gpu(shock_sensor_d,1)
     endif
 
+#ifdef ASTR_BUILD_TESTING
+    if(h1_blend_candidate.and..not.allocated(h1_strength_d)) &
+      allocate(h1_strength_d(-hm:im+hm,-hm:jm+hm,-hm:km+hm,1))
+#endif
     call expand_shock_sensor_kernel<<<grid3,block3>>>(im,jm,km,hm,shkcrt, &
                                                         apply_left_x,apply_right_x, &
                                                         apply_down_y,apply_up_y, &
                                                         apply_back_z,apply_front_z)
     call sync_after_kernel('expand_shock_sensor_kernel')
+#ifdef ASTR_BUILD_TESTING
+    if(h1_blend_candidate) call synchronize_h1_strength_gpu()
+#endif
     expanded_shock_halo_d=compact_expanded_mask_enabled()
     if(compact_expanded_mask_enabled()) call refresh_expanded_shock_mask_gpu()
     if(rhs_validation_requested()) then
       allocate(sensor_host(0:im,0:jm,0:km),mask_host(0:im,0:jm,0:km))
       call read_shock_physical_snapshot_gpu(sensor_host,mask_host)
       call write_sensor_validation_snapshot('sensor',sensor_host,mask_host,nstep,stage_index)
+#ifdef ASTR_BUILD_TESTING
+      if(h1_blend_candidate) then
+        h1_n=(im+1)*(jm+1)*(km+1)
+        call pack_h1_strength_snapshot<<<(h1_n+255)/256,256>>>(im,jm,h1_n)
+        call sync_after_kernel('pack_h1_strength_snapshot')
+        h1_copy_status=cudaMemcpy(sensor_host(0,0,0),snapshot_sensor_d(1),h1_n,cudaMemcpyDeviceToHost)
+        if(h1_copy_status/=cudaSuccess) error stop 'H1 strength snapshot download failed'
+        call write_physical_scalar_validation_snapshot('h1_strength',sensor_host,stage_index)
+      endif
+#endif
       deallocate(sensor_host,mask_host)
     endif
     if(sensor_detail_requested(stage_index)) then

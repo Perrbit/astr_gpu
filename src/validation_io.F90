@@ -8,6 +8,9 @@ module validation_io
             write_sensor_validation_snapshot, &
             write_compact_statistics_validation_snapshot,write_scalar_validation_snapshot
   public :: sensor_detail_requested,write_sensor_detail_validation_snapshot
+  public :: write_physical_scalar_validation_snapshot
+  public :: h1_stage_validation_requested,check_h1_cpu_stage_state,check_h1_cpu_properties
+  public :: h1_low_order_validation_requested
   public :: gradient_validation_requested,write_gradient_validation_snapshot
   logical,save :: configured=.false.,enabled=.false.
   character(len=1024),save :: prefix=''
@@ -16,6 +19,110 @@ module validation_io
   character(len=1024),save :: compact_prefix=''
   logical,save :: gradient_configured=.false.,gradient_enabled=.false.
 contains
+  logical function h1_low_order_validation_requested(stage)
+    use commvar, only: rkstep,numq,diffterm,lcomb
+    logical,save :: configured_low=.false.,enabled_low=.false.
+    character(16) :: value
+    integer :: status
+    integer,intent(in),optional :: stage
+    integer :: stage_value
+    h1_low_order_validation_requested=.false.
+#ifdef ASTR_BUILD_TESTING
+    if(.not.configured_low) then
+      call get_environment_variable('ASTR_VALIDATION_H1_LOW_ORDER',value,status=status)
+      enabled_low=status==0.and.trim(value)=='1'
+      configured_low=.true.
+    endif
+    stage_value=rkstep
+    if(present(stage)) stage_value=stage
+    if(.not.enabled_low.or.stage_value/=1) return
+    if(numq/=5.or.diffterm.or.lcomb) error stop 'H1 LF audit requires inviscid ideal five-variable flow'
+    h1_low_order_validation_requested=rhs_validation_requested()
+#endif
+  end function h1_low_order_validation_requested
+
+  logical function h1_stage_validation_requested()
+    logical,save :: configured_h1=.false.,enabled_h1=.false.
+    character(16) :: value
+    integer :: status
+    if(.not.configured_h1) then
+      call get_environment_variable('ASTR_VALIDATION_H1_STAGE_STATE',value,status=status)
+      enabled_h1=status==0.and.trim(value)=='1'
+      configured_h1=.true.
+    endif
+    h1_stage_validation_requested=enabled_h1
+  end function h1_stage_validation_requested
+
+  subroutine check_h1_cpu_stage_state()
+    use commvar, only: im,jm,km,rkstep
+    use commarray, only: q
+    use parallel, only: pmax,lio
+    real(real_kind) :: state(5),velocity(3),products(3),kinetic,squares(3),primitive_kinetic
+    integer :: i,j,k,bad
+    logical :: valid
+    if(.not.h1_stage_validation_requested()) return
+    bad=0
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      state=q(i,j,k,1:5)
+      valid=all(abs(state)<=huge(1.e0_real_kind)).and.state(1)>0.e0_real_kind
+      if(valid) then
+        velocity=state(2:4)/state(1)
+        valid=all(abs(velocity)<=huge(1.e0_real_kind))
+      endif
+      if(valid) then
+        products=.5e0_real_kind*state(2:4)*velocity
+        valid=all(abs(products)<=huge(1.e0_real_kind))
+      endif
+      if(valid) then
+        kinetic=sum(products)
+        valid=abs(kinetic)<=huge(1.e0_real_kind).and.state(5)>kinetic
+      endif
+      if(valid) then
+        squares=velocity*velocity
+        valid=all(abs(squares)<=huge(1.e0_real_kind))
+      endif
+      if(valid) then
+        primitive_kinetic=.5e0_real_kind*state(1)*sum(squares)
+        valid=abs(primitive_kinetic)<=huge(1.e0_real_kind).and.state(5)>primitive_kinetic
+      endif
+      if(.not.valid) bad=1
+    enddo
+    enddo
+    enddo
+    bad=pmax(bad)
+    if(bad/=0) then
+      print *, 'H1_STAGE_STATE_FAILURE CPU ',nstep,rkstep
+      error stop 'H1 CPU RK state is not admissible'
+    endif
+    if(lio) write(*,'(a,2(1x,i0))') 'H1_STAGE_STATE_PASS CPU',nstep,rkstep
+  end subroutine check_h1_cpu_stage_state
+
+  subroutine check_h1_cpu_properties()
+    use commvar, only: im,jm,km,rkstep
+    use commarray, only: rho,vel,prs,tmp
+    use parallel, only: pmax,lio
+    integer :: i,j,k,bad
+    real(real_kind) :: values(6)
+    if(.not.h1_stage_validation_requested()) return
+    bad=0
+    do k=0,km
+    do j=0,jm
+    do i=0,im
+      values=[rho(i,j,k),vel(i,j,k,:),prs(i,j,k),tmp(i,j,k)]
+      if(all(abs(values)<=huge(1.e0_real_kind)).and. &
+         values(1)>0.e0_real_kind.and.values(5)>0.e0_real_kind.and.values(6)>0.e0_real_kind) cycle
+      if(bad==0) print *, 'H1_PROPERTY_FAILURE CPU ',nstep,rkstep,[i,j,k],values
+      bad=1
+    enddo
+    enddo
+    enddo
+    bad=pmax(bad)
+    if(bad/=0) error stop 'H1 CPU stage properties are not admissible'
+    if(lio) write(*,'(a,2(1x,i0))') 'H1_PROPERTY_PASS CPU',nstep,rkstep
+  end subroutine check_h1_cpu_properties
+
   subroutine configure_rhs_validation()
     character(len=64) :: step_buffer
     integer :: status,length,step_status,step_length,ios
@@ -199,12 +306,13 @@ contains
     close(unit)
   end subroutine write_compact_statistics_validation_snapshot
 
-  subroutine write_rhs_validation_snapshot(label,step_index,stage_index)
+  subroutine write_rhs_validation_snapshot(label,step_index,stage_index,values)
     use commvar, only: im,jm,km,numq,nstep,rkstep
     use commarray, only: qrhs
     use parallel, only: mpirank
     character(len=*),intent(in) :: label
     integer,intent(in),optional :: step_index,stage_index
+    real(real_kind),intent(in),optional :: values(0:,0:,0:,:)
     character(len=1200) :: filename
     integer :: unit,step_value,stage_value
     call configure_rhs_validation()
@@ -216,10 +324,34 @@ contains
     write(filename,'(A,".",A,".step",I8.8,".rk",I2.2,".rank",I8.8,".bin")') &
       trim(prefix),trim(label),step_value,stage_value,mpirank
     open(newunit=unit,file=trim(filename),access='stream',form='unformatted',status='new',action='write')
-    write(unit) im,jm,km,numq
-    write(unit) qrhs
+    if(present(values)) then
+      write(unit) im,jm,km,size(values,4)
+      write(unit) values
+    else
+      write(unit) im,jm,km,numq
+      write(unit) qrhs
+    endif
     close(unit)
   end subroutine write_rhs_validation_snapshot
+
+  subroutine write_physical_scalar_validation_snapshot(label,values,stage_index)
+    use commvar, only: im,jm,km,rkstep
+    use parallel, only: mpirank
+    character(*),intent(in) :: label
+    real(real_kind),intent(in) :: values(0:,0:,0:)
+    integer,intent(in),optional :: stage_index
+    character(1200) :: filename
+    integer :: unit,stage_value
+    if(.not.rhs_validation_requested()) return
+    stage_value=rkstep
+    if(present(stage_index)) stage_value=stage_index
+    write(filename,'(a,".",a,".step",i8.8,".rk",i2.2,".rank",i8.8,".bin")') &
+      trim(prefix),trim(label),nstep,stage_value,mpirank
+    open(newunit=unit,file=trim(filename),access='stream',form='unformatted',status='new',action='write')
+    write(unit) im,jm,km,1
+    write(unit) values(0:im,0:jm,0:km)
+    close(unit)
+  end subroutine write_physical_scalar_validation_snapshot
 
   subroutine write_scalar_validation_snapshot(label,values,stage_index)
     use commvar, only: im,jm,km,hm,rkstep

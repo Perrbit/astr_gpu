@@ -3,7 +3,8 @@ module solver_gpu
   use astr_precision_mpi, only: mpi_real_type
   use cudafor
   use boundary_high_order_gpu, only: high_order_boundary_enabled_d,high_order_wall_enabled_d,boundary_derivative6, &
-    boundary_mp_flux6,boundary_interface_position,boundary_pressure_gradient7,high_order_wall_axis_d, &
+    boundary_mp_flux6,boundary_mp_flux6_limited,boundary_interface_position,boundary_pressure_gradient7,high_order_wall_axis_d, &
+    h1_internal_candidate_d,h1_near_candidate_d,h1_blend_candidate_d,h1_inlet_limited_candidate_d, &
     boundary_pressure_neumann6,high_order_adiabatic_wall_enabled_d,boundary_wall_filter6
   use constdef, only: num1d60,num193d256,num105d512,num15d128, &
                       num45d1024,num5d512,num1d1024
@@ -1310,10 +1311,59 @@ contains
     endif
   end subroutine roe_characteristic_state
 
+#ifdef ASTR_BUILD_TESTING
   attributes(device) subroutine mp_ld_interface_flux( &
        i,j,k,idir,im,jm,km,gamma,hm,npdc,physical_dir,weight_bw,fh)
+#ifdef ASTR_BUILD_TESTING
+    use boundary_high_order_gpu, only: h1_strength_d
+#endif
+    integer,value :: i,j,k,idir,im,jm,km,hm,npdc,physical_dir
+    real(real_kind),value :: gamma,weight_bw
+    real(real_kind) :: fh(5)
+#ifdef ASTR_BUILD_TESTING
+    integer :: p(3),neighbor(3),dims(3)
+    real(real_kind) :: theta,high_flux(5),low_flux(5)
+    if(h1_blend_candidate_d) then
+      if(h1_inlet_limited_candidate_d.and.idir==1.and.physical_dir/=0.and. &
+         (npdc==1.or.npdc==4).and.i>=0.and.i<=3) then
+        call mp_ld_interface_flux_core(i,j,k,idir,im,jm,km,gamma,hm,npdc,physical_dir,weight_bw,2,fh)
+        return
+      endif
+      p=[i,j,k];neighbor=p;neighbor(idir)=neighbor(idir)+1;dims=[im,jm,km]
+      if(physical_dir/=0) then
+        if(npdc==1.or.npdc==4) p(idir)=max(0,p(idir))
+        if(npdc==2.or.npdc==4) neighbor(idir)=min(dims(idir),neighbor(idir))
+      endif
+      theta=max(h1_strength_d(p(1),p(2),p(3),1), &
+        h1_strength_d(neighbor(1),neighbor(2),neighbor(3),1))
+      if(theta==0.e0_real_kind) then
+        call mp_ld_interface_flux_core(i,j,k,idir,im,jm,km,gamma,hm,npdc,physical_dir,weight_bw,1,fh)
+      elseif(theta==1.e0_real_kind) then
+        call mp_ld_interface_flux_core(i,j,k,idir,im,jm,km,gamma,hm,npdc,physical_dir,weight_bw,2,fh)
+      else
+        call mp_ld_interface_flux_core(i,j,k,idir,im,jm,km,gamma,hm,npdc,physical_dir,weight_bw,1,high_flux)
+        call mp_ld_interface_flux_core(i,j,k,idir,im,jm,km,gamma,hm,npdc,physical_dir,weight_bw,2,low_flux)
+        fh=high_flux+theta*(low_flux-high_flux)
+      endif
+      return
+    endif
+#endif
+    call mp_ld_interface_flux_core(i,j,k,idir,im,jm,km,gamma,hm,npdc,physical_dir,weight_bw,0,fh)
+  end subroutine mp_ld_interface_flux
+
+  attributes(device) subroutine mp_ld_interface_flux_core( &
+       i,j,k,idir,im,jm,km,gamma,hm,npdc,physical_dir,weight_bw,mode,fh)
+#else
+  attributes(device) subroutine mp_ld_interface_flux( &
+       i,j,k,idir,im,jm,km,gamma,hm,npdc,physical_dir,weight_bw,fh)
+#endif
     implicit none
     integer,value :: i,j,k,idir,im,jm,km,hm,npdc,physical_dir
+#ifdef ASTR_BUILD_TESTING
+    integer,value :: mode
+#else
+    integer,parameter :: mode=0
+#endif
     real(real_kind),value :: gamma,weight_bw
     real(real_kind) :: fh(5)
     real(real_kind) :: split_plus(5,8),split_minus(5,8),fp(8),fm(8),hc(5),lev(5,5),rev(5,5)
@@ -1339,7 +1389,12 @@ contains
     shock=shock_interface_active(i,j,k,idir,im,jm,km)
     hdiss=critical_interface_active(i,j,k,idir,im,jm,km)
     call boundary_interface_position(inode,dim,ntype,row,side)
-    if(high_order_boundary_enabled_d.and.row>=0.and..not.shock.and..not.hdiss) then
+    if(h1_internal_candidate_d.and.row<0) shock=.true.
+    if(h1_near_candidate_d.and.row>=0) shock=.true.
+    if(mode==1) shock=.false.
+    if(mode==2) shock=.true.
+    if(high_order_boundary_enabled_d.and.row>=0.and.(h1_near_candidate_d.or..not.shock).and..not.hdiss) then
+      if(h1_near_candidate_d.and.mode==0) call roe_characteristic_matrices(i,j,k,idir,gamma,lev,rev)
       do n=1,8
         idx=n-1
         if(side==-1) idx=dim-n+1
@@ -1353,9 +1408,19 @@ contains
         call steger_warming_split_physical_vector_at(ii,jj,kk,idir,-1,im,jm,km,gamma,split_minus(:,n))
       enddo
       do m=1,5
-        fp=split_plus(m,:); fm=split_minus(m,:)
-        fh(m)=boundary_mp_flux6(fp,row,side==1)+boundary_mp_flux6(fm,row,side==-1)
+        if(h1_near_candidate_d.and.mode==0) then
+          do n=1,8
+            fp(n)=sum(lev(m,:)*split_plus(:,n))
+            fm(n)=sum(lev(m,:)*split_minus(:,n))
+          enddo
+          hc(m)=boundary_mp_flux6_limited(fp,row,side==1)+boundary_mp_flux6_limited(fm,row,side==-1)
+        else
+          fp=split_plus(m,:);fm=split_minus(m,:)
+          hc(m)=boundary_mp_flux6(fp,row,side==1)+boundary_mp_flux6(fm,row,side==-1)
+        endif
       enddo
+      fh=hc
+      if(h1_near_candidate_d.and.mode==0) fh=matmul(rev,hc)
       return
     endif
     if(shock) call roe_characteristic_matrices(i,j,k,idir,gamma,lev,rev)
@@ -1410,7 +1475,11 @@ contains
     else
       fh=hc
     endif
+#ifdef ASTR_BUILD_TESTING
+  end subroutine mp_ld_interface_flux_core
+#else
   end subroutine mp_ld_interface_flux
+#endif
 
   attributes(device) subroutine mp_ld_interface_flux_cached( &
        i,j,k,idir,im,jm,km,gamma,hm,npdc,physical_dir,weight_bw,plus_cache,minus_cache,fh)
@@ -1424,6 +1493,10 @@ contains
     integer :: n,m,ii,jj,kk,offset,inode,dim,ntype,lower,upper,idx,row,side
     logical :: shock,hdiss
 
+    if(h1_blend_candidate_d) then
+      call mp_ld_interface_flux(i,j,k,idir,im,jm,km,gamma,hm,npdc,physical_dir,weight_bw,fh)
+      return
+    endif
     select case(idir)
     case(1)
       inode=i; dim=im
@@ -1443,7 +1516,9 @@ contains
     shock=shock_interface_active(i,j,k,idir,im,jm,km)
     hdiss=critical_interface_active(i,j,k,idir,im,jm,km)
     call boundary_interface_position(inode,dim,ntype,row,side)
-    if(high_order_boundary_enabled_d.and.row>=0.and..not.shock.and..not.hdiss) then
+    if(h1_internal_candidate_d.and.row<0) shock=.true.
+    if(h1_near_candidate_d.and.row>=0) shock=.true.
+    if(high_order_boundary_enabled_d.and.row>=0.and.(h1_near_candidate_d.or..not.shock).and..not.hdiss) then
       call mp_ld_interface_flux(i,j,k,idir,im,jm,km,gamma,hm,npdc,physical_dir,weight_bw,fh)
       return
     endif

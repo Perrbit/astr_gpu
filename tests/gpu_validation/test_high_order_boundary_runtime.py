@@ -19,6 +19,7 @@ from compare_flowstate import read_flowstate
 from prepare_hcw_laminar_sbli_case import prepare_case
 
 EXE = os.environ.get('ASTR_SBLI_GRCBC_EXE')
+H1_VARIANT=os.environ.get('ASTR_H1_REPAIR_VARIANT')
 pytestmark = pytest.mark.skipif(not EXE, reason='Set ASTR_SBLI_GRCBC_EXE to a root-CMake executable')
 RHO, MACH, GAMMA, RE = 1024., 2., 1.4, 1.
 NY, NZ = 16, 8
@@ -110,6 +111,8 @@ def run_manufactured(case, backend, nx, ny=NY, axis='x', rho=RHO):
                ASTR_NSCBC_FARFIELD_U='1', ASTR_NSCBC_FARFIELD_V='0', ASTR_NSCBC_FARFIELD_W='0',
                ASTR_NSCBC_FARFIELD_T='1', ASTR_VALIDATION_RHS_PREFIX='diagnostics/state',
                ASTR_VALIDATION_RHS_STEP='0')
+    if H1_VARIANT is not None:
+        env['ASTR_VALIDATION_H1_VARIANT']=H1_VARIANT
     with (case/'run.log').open('w') as log:
         result = subprocess.run(mpi_command(MPIEXEC, 1, 'pinned')+[str(Path(EXE).resolve()), 'run',
                                  'datin/input.flatplate'], cwd=case, env=env, stdout=log,
@@ -135,6 +138,20 @@ def run_manufactured(case, backend, nx, ny=NY, axis='x', rho=RHO):
         mask[:, 1:7, nx//2] = True
         mask[:, -7:, nx//2] = True
     component_errors = np.max(np.abs(actual-reference)[mask], axis=0)
+    if H1_VARIANT == 'admissible-filter':
+        rates = {}
+        for label in ('budget_low_conv', 'budget_common', 'budget_low'):
+            path = case/f'diagnostics/state.{label}.step00000000.rk01.rank00000000.bin'
+            with path.open('rb') as file:
+                np.testing.assert_array_equal(np.fromfile(file, np.int32, 4), [nx, ny, NZ, 5])
+                rates[label] = np.fromfile(file, np.float64).reshape(raw.shape, order='F')
+        np.testing.assert_array_equal(rates['budget_low'], rates['budget_low_conv']+rates['budget_common'])
+        common = rates['budget_common'].transpose(2, 1, 0, 3)/jacobian
+        report = dict(common_source_max=float(np.abs(common).max()),
+                      exact_low_reference_sum=True)
+        if axis == 'y':
+            report['common_viscous_component_errors'] = np.max(np.abs(common-reference)[mask], axis=0).tolist()
+        (case/'common_source.json').write_text(json.dumps(report, indent=2)+'\n')
     return actual, raw, component_errors
 
 
@@ -159,7 +176,7 @@ def test_actual_full_rhs_x_convergence(tmp_path):
 
 
 def test_actual_full_rhs_y_convergence(tmp_path):
-    errors, reports = [], []
+    errors, reports, common_errors = [], [], []
     for ny in (32, 64, 128):
         cpu, cpu_raw, cpu_error = run_manufactured(tmp_path/f'cpu_{ny}', 'cpu', 16, ny, 'y', 1.)
         gpu, gpu_raw, gpu_error = run_manufactured(tmp_path/f'gpu_{ny}', 'gpu', 16, ny, 'y', 1.)
@@ -169,12 +186,83 @@ def test_actual_full_rhs_y_convergence(tmp_path):
         reports.append(dict(ny=ny, cpu_error=cpu_error.tolist(), gpu_error=gpu_error.tolist(),
                             raw_rhs_backend_scaled=parity,
                             physical_rhs_backend_abs=float(np.max(np.abs(cpu-gpu)))))
+        if H1_VARIANT == 'admissible-filter':
+            common = [json.loads((tmp_path/f'{backend}_{ny}'/'common_source.json').read_text())
+                      for backend in ('cpu', 'gpu')]
+            common_errors.append(max(max(item['common_viscous_component_errors']) for item in common))
     orders = np.log2(np.array(errors[:-1])/errors[1:])
     report = dict(scope='first-stage full RHS, y refinement at fixed middle x plane; both physical boundary strips',
                   density=1., fixed_xz_intervals=[16, NZ], source='analytic constant-viscosity Navier-Stokes',
                   cases=reports, errors=errors, orders=orders.tolist())
     (tmp_path/'convergence.json').write_text(json.dumps(report, indent=2)+'\n')
     assert np.all(orders >= 5.5), report
+    if common_errors:
+        common_orders = np.log2(np.array(common_errors[:-1])/common_errors[1:])
+        report.update(common_viscous_errors=common_errors, common_viscous_orders=common_orders.tolist())
+        (tmp_path/'convergence.json').write_text(json.dumps(report, indent=2)+'\n')
+        assert np.all(common_orders >= 5.5), report
+
+
+def launch_hcw(case, backend, steps=12, restore=None, memcheck=False, dt_scale=1.,
+               checkpoint_interval=None, volume_interval=None, field_source=None, diagnostics=False,
+               inlet_flux=False):
+    manifest = prepare_case(case, use_gpu='t' if backend == 'gpu' else 'f', im=64, jm=48, km=5)
+    if field_source is not None:
+        # A diagnostic initial field, never an exact restart across backends.
+        with h5py.File(field_source) as source, h5py.File(case/'datin/flowini3d.h5', 'w') as target:
+            if 'density' in source:
+                target['ro'] = source['density'][...]
+                target['t'] = source['temperature'][...]
+                velocity = source['velocity'][...]
+                for axis in range(3):
+                    target[f'u{axis+1}'] = velocity[..., axis]
+            else:
+                for name, component in [('ro', 6), ('u1', 7), ('u2', 8), ('u3', 9), ('t', 11)]:
+                    target[name] = source[f'q{component:04d}'][...]
+    dt = manifest['run_plan']['dt_nondimensional']*dt_scale
+    write_controller(case/'datin/controller', steps-1, 1, dt, feqlist=1)
+    config = case/'datin/input.output'
+    config.write_text(config.read_text().replace('interval_steps=3000',
+                                                f'interval_steps={checkpoint_interval or steps}')
+                      .replace('&volume\n enabled=f',
+                               f"&volume\n enabled={'t' if volume_interval else 'f'},"
+                               f'interval_steps={volume_interval or 0}')
+                      .replace("directory='outdat/new',", "directory='outdat/new',"
+                               f"restore_directory='{restore or ''}',"
+                               f"restart_output='{'override' if restore else 'saved'}',"))
+    env = runtime('2,1,1')
+    env.pop('ASTR_WALL_BLOWING_MODE', None)
+    for line in (case/'runtime.env').read_text().splitlines():
+        name, value = line.removeprefix('export ').split('=', 1)
+        env[name] = value
+    if H1_VARIANT is not None:
+        env['ASTR_VALIDATION_H1_VARIANT'] = H1_VARIANT
+        env['ASTR_VALIDATION_H1_STAGE_STATE'] = '1'
+    if diagnostics:
+        (case/'diagnostics').mkdir()
+        env['ASTR_VALIDATION_RHS_PREFIX'] = 'diagnostics/state'
+        env['ASTR_VALIDATION_RHS_STEP'] = str(int(restore.name.removeprefix('step'))) if restore else '0'
+    if inlet_flux:
+        assert diagnostics and backend == 'cpu'
+        env['ASTR_VALIDATION_H1_INLET_FLUX'] = '1'
+    command = mpi_command(MPIEXEC, 2, 'pinned')
+    if memcheck:
+        command += ['compute-sanitizer', '--tool', 'memcheck', '--error-exitcode', '99']
+    with (case/'run.log').open('w') as log:
+        result = subprocess.run(command+[str(Path(EXE).resolve()), 'run', 'datin/input.hcw'],
+                                cwd=case, env=env, stdout=log, stderr=subprocess.STDOUT,
+                                timeout=3600 if steps>12 else 180)
+    text = (case/'run.log').read_text()
+    assert result.returncode == 0 and 'The job is done!' in text, text[-8000:]
+    assert 'sbli-grcbc-h1 high-order boundary chain' in text
+    if H1_VARIANT is not None:
+        assert f'H1_DIAGNOSTIC_VARIANT {H1_VARIANT}' in text
+        first = int(restore.name.removeprefix('step')) if restore else 0
+        assert text.count(f'H1_STAGE_STATE_PASS {backend.upper()}') == 3*(steps-first)
+        assert text.count(f'H1_PROPERTY_PASS {backend.upper()}') == 3*(steps-first)
+    if memcheck:
+        assert text.count('ERROR SUMMARY: 0 errors') == 2, text[-8000:]
+    return manifest
 
 
 def test_hcw_native_short_window(tmp_path):
@@ -182,27 +270,14 @@ def test_hcw_native_short_window(tmp_path):
     states, statistics, reports = [], [], []
     for backend in ('cpu', 'gpu'):
         case = tmp_path/backend
-        manifest = prepare_case(case, use_gpu='t' if backend == 'gpu' else 'f', im=64, jm=48, km=5)
+        manifest = launch_hcw(case, backend)
         dt = manifest['run_plan']['dt_nondimensional']
-        write_controller(case/'datin/controller', 11, 1, dt, feqlist=1)
-        config = case/'datin/input.output'
-        config.write_text(config.read_text().replace('interval_steps=3000', 'interval_steps=12'))
-        env = runtime('2,1,1')
-        env.pop('ASTR_WALL_BLOWING_MODE', None)
-        for line in (case/'runtime.env').read_text().splitlines():
-            name, value = line.removeprefix('export ').split('=', 1)
-            env[name] = value
-        with (case/'run.log').open('w') as log:
-            result = subprocess.run(mpi_command(MPIEXEC, 2, 'pinned')+[str(Path(EXE).resolve()), 'run',
-                                     'datin/input.hcw'], cwd=case, env=env, stdout=log,
-                                    stderr=subprocess.STDOUT, timeout=180)
-        text = (case/'run.log').read_text()
-        assert result.returncode == 0 and 'The job is done!' in text, text[-8000:]
-        assert 'sbli-grcbc-h1 high-order boundary chain' in text
         checkpoint = case/'outdat/new/checkpoints/step000000000012'
         with h5py.File(checkpoint/'state.h5') as file:
             state = np.stack([file[f'q{i:04d}'][...] for i in range(1, 12)], axis=-1)
         assert b'sbli-grcbc-h1' in (checkpoint/'control.bin').read_bytes()
+        if H1_VARIANT == 'admissible-filter':
+            assert b'sbli-grcbc-h1pv' in (checkpoint/'control.bin').read_bytes()
         rho = state[..., 0]
         internal = state[..., 4]-.5*np.sum(state[..., 1:4]**2, axis=-1)/rho
         temperature = .4*internal*1.4*manifest['flow']['mach']**2/rho
@@ -220,3 +295,28 @@ def test_hcw_native_short_window(tmp_path):
         cases=reports, maximum_scaled_field_error=field_error,
         maximum_absolute_statistics_error=statistics_error), indent=2)+'\n')
     assert field_error <= 2e-10 and statistics_error <= 2e-10
+
+
+@pytest.mark.skipif(H1_VARIANT != 'admissible-filter', reason='Current viscous H1 candidate only')
+@pytest.mark.parametrize('backend', ('cpu', 'gpu'))
+def test_hcw_candidate_exact_restart(tmp_path, backend):
+    from run_output_restart_validation import compare_fields
+    full, part, tail = [tmp_path/name for name in ('full', 'part', 'tail')]
+    launch_hcw(full, backend)
+    launch_hcw(part, backend, steps=5)
+    launch_hcw(tail, backend, restore=part/'outdat/new/checkpoints/step000000000005')
+    final = Path('outdat/new/checkpoints/step000000000012')
+    compare_fields(full/final/'state.h5', tail/final/'state.h5')
+    assert b'sbli-grcbc-h1pv' in (tail/final/'control.bin').read_bytes()
+    names, reference = read_flowstate(full)
+    resumed_names, resumed = read_flowstate(tail)
+    assert names == resumed_names
+    np.testing.assert_array_equal(reference[reference[:, 0] >= 5], resumed)
+    (tmp_path/'restart.json').write_text(json.dumps(dict(
+        backend=backend, complete_steps=12, split=[5, 7], identity='sbli-grcbc-h1pv',
+        exact_state_h5=True, exact_resumed_statistics=True), indent=2)+'\n')
+
+
+@pytest.mark.skipif(H1_VARIANT != 'admissible-filter', reason='Current viscous H1 candidate only')
+def test_hcw_candidate_memcheck(tmp_path):
+    launch_hcw(tmp_path/'gpu', 'gpu', steps=2, memcheck=True)

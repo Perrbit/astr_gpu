@@ -1330,14 +1330,44 @@ contains
     if(joint_sbli_output_case()) then
       block
         use boundary_high_order, only: high_order_boundary_enabled
+#ifdef ASTR_BUILD_TESTING
+        use boundary_high_order, only: h1_internal_candidate,h1_near_candidate,h1_blend_candidate,h1_stage_budget_candidate, &
+          h1_outlet_filter_candidate,h1_inlet_limited_candidate
+#endif
         use bc, only: nscbc_farfield_target_state,nscbc_farfield_shock_x,nscbc_farfield_shock_angle, &
           nscbc_farfield_grcbc_enabled
+        use commvar, only: diffterm
         real(real_kind) :: target(7)
         call nscbc_farfield_target_state(target(1),target(2),target(3),target(4),target(5))
         target(6:7)=[nscbc_farfield_shock_x,nscbc_farfield_shock_angle]
         ! Exact target bits fit the existing driver string; no additional sidecar.
         if(high_order_boundary_enabled) then
           write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-h1',real_to_word(target)
+#ifdef ASTR_BUILD_TESTING
+          if(h1_inlet_limited_candidate) then
+            if(diffterm) then
+              write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-h1iv',real_to_word(target)
+            else
+              write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-h1ic',real_to_word(target)
+            endif
+          elseif(h1_outlet_filter_candidate) then
+            if(diffterm) then
+              write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-h1pv',real_to_word(target)
+            else
+              write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-h1pc',real_to_word(target)
+            endif
+          elseif(h1_stage_budget_candidate) then
+            write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-h1p',real_to_word(target)
+          elseif(h1_blend_candidate) then
+            write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-h1w',real_to_word(target)
+          elseif(h1_internal_candidate.and.h1_near_candidate) then
+            write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-h1c',real_to_word(target)
+          elseif(h1_internal_candidate) then
+            write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-h1i',real_to_word(target)
+          elseif(h1_near_candidate) then
+            write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-h1n',real_to_word(target)
+          endif
+#endif
         elseif(nscbc_farfield_grcbc_enabled()) then
           write(driver_config(2),'(a,7(z16.16))') 'sbli-grcbc-v2',real_to_word(target)
         else
