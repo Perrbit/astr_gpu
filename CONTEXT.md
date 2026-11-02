@@ -615,6 +615,18 @@ _Avoid_: Rank-local index used as a global location, identifying fixed j with co
 Read-only conversion of saved continuation state into postprocessing fields with the saved state's physical definitions and required dependencies. It neither advances the flow or chemistry nor accumulates new statistical samples, and does not change the source checkpoint.
 _Avoid_: Running an extra step to produce an output file, reinitializing boundaries before presenting the saved field, treating exported visualization fields as a complete restart state
 
+**ASTR boundary-layer conductive wall heat flux**:
+Fourier conductive heat transfer at a wall, positive into the solid; with the wall-to-fluid normal it equals conductivity times the normal temperature gradient. It excludes energy carried by transpiration and viscous work.
+_Avoid_: Total boundary energy flux, turbulent enthalpy flux, assuming an unqualified legacy `q_w` uses this sign
+
+**ASTR local temporal fluctuation profile**:
+A spatially weighted summary of pointwise temporal variances or stresses. It excludes the spatial variation of pointwise temporal means; a Favre summary retains the corresponding density weights.
+_Avoid_: Pooled space-time variance, variance of a spatially averaged signal
+
+**ASTR statistical Stanton coefficient**:
+A heat-transfer coefficient formed from mean conductive wall heat flux and the difference between a fixed recovery temperature and mean wall temperature, with fixed free-stream references. It is distinct from the mean of instantaneous Stanton coefficients when wall temperature varies.
+_Avoid_: Mean instantaneous Stanton coefficient, total wall energy flux coefficient
+
 **ASTR statistical development monitor**:
 A comparison of flow statistics over specified time blocks used to assess their ongoing evolution. It does not by itself certify statistical stationarity or distinguish turbulent fluctuations from startup drift.
 _Avoid_: Automatic convergence certificate, labeling every short-window RMS as turbulence
