@@ -24,9 +24,11 @@ def configuration_matrix(strong=32, local=16):
     return rows
 
 
-def formal_configuration_matrix():
+def formal_configuration_matrix(backend='all'):
     rows=[r for r in configuration_matrix(512,256) if r['backend']=='gpu' or
           (r['family']=='strong' and r['topology']==CPU_TOPOLOGIES[r['ranks']])]
+    if backend!='all':
+        rows=[row for row in rows if row['backend']==backend]
     return sorted(rows,key=lambda r:(r['backend'],r['family'],r['ranks'],r['topology'],r['scheme']))
 
 

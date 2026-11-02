@@ -1,5 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
+import json
+import sys
 
 import pytest
 
@@ -7,6 +9,7 @@ from run_compact_a800_preflight import CPU_TOPOLOGIES, configuration_matrix, tim
 from compact_benchmark import mpi_environment, formal_configuration_matrix
 from run_compact_performance import preflight_matches
 from run_compact_a800_campaign import summarize_runs
+import run_compact_a800_campaign as campaign
 
 
 def test_matrix_covers_a800_gpu_topologies_and_cpu_physical_core_counts():
@@ -27,6 +30,34 @@ def test_matrix_covers_a800_gpu_topologies_and_cpu_physical_core_counts():
     assert len(formal)==38
     assert len([r for r in formal if r['backend']=='gpu'])==26
     assert len([r for r in formal if r['backend']=='cpu'])==12
+
+
+@pytest.mark.parametrize('backend,count',[('cpu',12),('gpu',26),('all',38)])
+def test_split_campaign_does_not_run_or_require_the_other_backend(backend,count):
+    rows=formal_configuration_matrix(backend)
+    assert len(rows)==count
+    if backend!='all':
+        assert all(row['backend']==backend for row in rows)
+
+
+@pytest.mark.parametrize('backend,count',[('cpu',60),('gpu',130)])
+def test_split_timing_needs_only_its_own_executable(tmp_path,monkeypatch,backend,count):
+    exe=tmp_path/'astr'
+    exe.write_bytes(b'test executable')
+    calls=[]
+    def fake_run(args,row,name,validation):
+        assert not validation and row['backend']==backend
+        calls.append(name)
+        samples=[1.]*(args.steps-2)
+        result=dict(**row,rank_max_rk_samples=samples,median_rk_seconds=1.,gpu_sharing_correctness_only=False)
+        return None,None,result
+    monkeypatch.setattr(campaign,'prepare_and_run',fake_run)
+    output=tmp_path/'campaign'
+    monkeypatch.setattr(sys,'argv',['campaign','--mode','timing','--backend',backend,
+        '--'+backend,str(exe),'--out',str(output)])
+    campaign.main()
+    assert len(calls)==count
+    assert json.loads((output/'runs.json').read_text())['status']=='pass'
 
 
 @pytest.mark.parametrize('halo,compact',[('device-aware','pinned'),('pinned','device-aware'),('device-aware','device-aware')])

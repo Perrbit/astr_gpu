@@ -55,6 +55,9 @@ def main():
     parser.add_argument('--out',type=Path,required=True)
     parser.add_argument('--cpu',type=Path)
     parser.add_argument('--gpu',type=Path)
+    parser.add_argument('--backend',choices=('all','cpu','gpu'),default='all')
+    parser.add_argument('--merge-from',type=Path,action='append',default=[],
+                        help='other completed campaign directory for same-operator CPU/GPU ratios')
     parser.add_argument('--halo-transport',choices=('pinned','device-aware'),default='device-aware')
     parser.add_argument('--compact-transport',choices=('pinned','device-aware'),default='device-aware')
     parser.add_argument('--ucx-tls',default='self,sm,cuda_copy,cuda_ipc')
@@ -62,23 +65,32 @@ def main():
     args.out=args.out.resolve()
     if args.mode=='summarize':
         report=json.loads((args.out/'runs.json').read_text())
+        for directory in args.merge_from:
+            other=json.loads((directory/'runs.json').read_text())
+            report['runs'].extend(other['runs'])
+            report['failed'].update(other['failed'])
         summary=summarize_runs(report['runs'],5)
         (args.out/'performance.json').write_text(json.dumps(summary,indent=2)+'\n')
         print(f'{len(summary)} complete configurations; {len(report["failed"])} failed/skipped')
         return
-    matrix=formal_configuration_matrix()
+    matrix=formal_configuration_matrix(args.backend)
     if args.mode=='manifest':
-        print(json.dumps(dict(configurations=len(matrix),gpu=26,cpu=12,repeats=5,
+        print(json.dumps(dict(configurations=len(matrix),backend=args.backend,
+            gpu=sum(r['backend']=='gpu' for r in matrix),cpu=sum(r['backend']=='cpu' for r in matrix),repeats=5,
             gpu_steps=22,cpu_steps=7,warmup=2,matrix=matrix),indent=2))
         return
-    if args.cpu is None or args.gpu is None:
-        parser.error('timing requires --cpu and --gpu executables')
-    args.cpu=args.cpu.resolve(strict=True);args.gpu=args.gpu.resolve(strict=True)
+    if (args.backend in ('all','cpu') and args.cpu is None) or (args.backend in ('all','gpu') and args.gpu is None):
+        parser.error('timing requires the executable for each selected backend')
+    if args.cpu is not None:
+        args.cpu=args.cpu.resolve(strict=True)
+    if args.gpu is not None:
+        args.gpu=args.gpu.resolve(strict=True)
     args.out.mkdir(parents=True,exist_ok=False)
     (args.out/'matrix.json').write_text(json.dumps(matrix,indent=2)+'\n')
     report=dict(status='running',runs=[],failed={},
-        cpu_sha256=hashlib.file_digest(args.cpu.open('rb'),'sha256').hexdigest(),
-        gpu_sha256=hashlib.file_digest(args.gpu.open('rb'),'sha256').hexdigest(),
+        cpu_sha256=hashlib.file_digest(args.cpu.open('rb'),'sha256').hexdigest() if args.cpu else None,
+        gpu_sha256=hashlib.file_digest(args.gpu.open('rb'),'sha256').hexdigest() if args.gpu else None,
+        backend=args.backend,
         halo_transport=args.halo_transport,compact_transport=args.compact_transport,ucx_tls=args.ucx_tls)
     for repeat in range(5):
         order=matrix[repeat:]+matrix[:repeat]
