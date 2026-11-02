@@ -12,9 +12,10 @@ module output_runtime
     lreadgrid,gridfile,ninit,diffterm,lfilter,nondimen,turbmode,recon_schem,lchardecomp
   use commarray, only: q,rho,vel,prs,tmp,x,jacob,dxi,crinod
   use parallel, only: ig0,jg0,kg0,mpirank,irk,mpisize
+  use bc, only: nscbc_farfield_policy,NSCBC_FARFIELD_POLICY_COMPATIBILITY
   use bc, only: bctype,turbinf,ninflowslice,complete_inflow_cpu_file, &
     configure_wall_blowing,wall_blowing_legacy_random, &
-    explicit_profile_nscbc_corrections_enabled,nscbc_farfield_sbli_shock_enabled
+    explicit_profile_nscbc_corrections_enabled,nscbc_farfield_sbli_shock_enabled,profile_nscbc_outlet_enabled
   use output_input_resources, only: set_inflow_resource_root,inflow_source_path, &
     inflow_source_name,discover_inflow_sources,set_initial_resource_root,initial_source_path,initial_source_name, &
     set_wall_resource_root
@@ -1311,7 +1312,8 @@ contains
       call get_environment_variable('ASTR_PROFILE_INFLOW_MODE',driver_config(3),status=status)
       call check(status==0.or.status==1,'profile inflow mode is truncated')
     endif
-    backflow_outlet=(use_gpu.or.joint_sbli_output_case()).and.numq==5.and.bctype(2)==22.and.trim(flowtype)/='channel'
+    backflow_outlet=(use_gpu.or.joint_sbli_output_case().or.profile_nscbc_outlet_enabled()).and. &
+      numq==5.and.bctype(2)==22.and.trim(flowtype)/='channel'
     if(backflow_outlet) then
       block
         use commvar, only: roinf,uinf,vinf,winf,pinf,gamma,xmin,xmax
@@ -1375,6 +1377,9 @@ contains
         endif
       end block
     endif
+    if(.not.use_gpu.and.numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb.and. &
+       bctype(4)==52.and.nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_COMPATIBILITY) &
+      driver_config(2)='bc52-compat-incoming-v1'
     root_config=driver_config
     call MPI_Bcast(root_config,384,MPI_CHARACTER,0,MPI_COMM_WORLD,ierr)
     call check(ierr==MPI_SUCCESS.and.all(root_config==driver_config),'boundary/driver configuration differs between ranks')
@@ -1425,10 +1430,24 @@ contains
       restored_statistics_saved=.not.btest(saved(8),3)
       saved(8)=ibclr(saved(8),3)
       if(global_compact_enabled()) saved(7)=ibclr(saved(7),0)
+      if(.not.options%exact_restart.and..not.lcomb.and.numq==5.and.saved(6)/=contract(6)) then
+        if(mpirank==0) write(*,'(a,2(1x,i0))') &
+          'ASTR_OUTPUT non-exact backend switch source/target GPU flags:',saved(6),contract(6)
+        saved(6)=contract(6)
+      endif
       call check(all(saved(1:7)==contract(1:7)).and.saved(8)==ibclr(contract(8),3), &
         'numerical/controller contract mismatch')
       call check((magic=='ASTROC06'.or.magic=='ASTROC09').eqv.(expected_magic=='ASTROC09'), &
         'random wall checkpoint RNG mode/version mismatch')
+      if(.not.options%exact_restart.and.numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb.and. &
+         bctype(4)==52.and.nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_COMPATIBILITY) then
+        if((saved_driver_config(2)==''.or.saved_driver_config(2)=='bc52-compat-incoming-v1').and. &
+           (driver_config(2)==''.or.driver_config(2)=='bc52-compat-incoming-v1').and. &
+           saved_driver_config(2)/=driver_config(2)) then
+          if(mpirank==0) write(*,'(a)') 'ASTR_OUTPUT non-exact bc52 compatibility identity migration'
+          saved_driver_config(2)=driver_config(2)
+        endif
+      endif
       if(backflow_outlet.and..not.options%exact_restart) then
         call check(all(saved_driver_config(2:)==driver_config(2:)),'boundary/driver configuration mismatch')
         if(mpirank==0.and.(saved_driver_config(1)/=driver_config(1).or. &
@@ -1471,8 +1490,12 @@ contains
           saved_ranks==mpisize.and.saved_packet==packet_size, &
           'random wall RNG format/rank count mismatch')
         call check(saved_compiler==rng_compiler,'random wall compiler/runtime mismatch')
-        if(.not.precision_changed) call check(saved_options==rng_options.and.all(saved_signature==rng_signature), &
-          'random wall compiler/runtime mismatch')
+        if(.not.precision_changed) then
+          call check(all(saved_signature==rng_signature),'random wall runtime signature mismatch')
+          if(options%exact_restart) call check(saved_options==rng_options,'random wall compiler/runtime mismatch')
+          if(.not.options%exact_restart.and.saved_options/=rng_options.and.mpirank==0) write(*,'(a)') &
+            'ASTR_WALL_RNG non-exact restart: compiler options differ; runtime signature matched'
+        endif
         read(unit,iostat=err) wall_state
         call check(err==0,'missing random wall RNG rank state')
         call check(all(wall_state(:6,mpirank+1)==local_wall_state(:6)), 'random wall topology mismatch')

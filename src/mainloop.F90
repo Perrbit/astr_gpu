@@ -1471,10 +1471,13 @@ module mainloop
   !+-------------------------------------------------------------------+
   subroutine crashfix(subtime,repaired_nodes,max_q_change)
     !
-    use commvar,   only : numq,lreport,nondimen,spcinf
-    use commarray, only : q,rho,tmp,vel,prs,spc,x,nodestat
+    use commvar,   only : numq,lreport,nondimen,spcinf,lcomb
+    use commarray, only : q,rho,tmp,vel,prs,spc,x,nodestat,qrhs,jacob
     use parallel,  only : por,ig0,jg0,kg0,psum,ptime
     use fludyna,   only : q2fvar,thermal
+    use mpi, only: MPI_Abort,MPI_COMM_WORLD
+    use iso_fortran_env, only: output_unit
+    use ieee_arithmetic, only: ieee_is_finite
     !
     ! arguments
     real(clock_kind),intent(inout),optional :: subtime
@@ -1482,17 +1485,30 @@ module mainloop
     real(real_kind),intent(out),optional :: max_q_change(5)
     !
     ! local data
-    integer :: i,j,k,l,fh,ii,jj,kk
+    integer :: i,j,k,l,fh,ii,jj,kk,status,ierr,diagnostic_unit
     real(real_kind) :: qavg(numq)
     integer :: norm,counter
     !
     logical,save :: firstcall = .true.
+    logical,save :: diagnostic_stop=.false.,diagnostic_configured=.false.
+    character(16) :: diagnostic_mode
+    real(real_kind) :: internal
     real(real_kind),save :: eps_rho,eps_prs,eps_tmp
     real(clock_kind),save :: time_beg
     integer,save :: step_normal = 0
     !
     if(present(subtime)) time_beg=ptime()
     !
+    if(.not.diagnostic_configured) then
+      diagnostic_mode=''
+      call get_environment_variable('ASTR_CPU_CRASHFIX_DIAGNOSTIC',diagnostic_mode,status=status)
+      if(status/=0.and.status/=1) error stop 'invalid CPU crashfix diagnostic option'
+      if(len_trim(diagnostic_mode)>0.and.trim(diagnostic_mode)/='stop') &
+        error stop 'ASTR_CPU_CRASHFIX_DIAGNOSTIC accepts only stop'
+      diagnostic_stop=trim(diagnostic_mode)=='stop'
+      if(diagnostic_stop.and.(numq/=5.or.lcomb)) error stop 'CPU crashfix diagnostic requires five-variable flow'
+      diagnostic_configured=.true.
+    endif
     if(firstcall) then
       eps_rho=1.e-5_real_kind
       eps_tmp=1.e-5_real_kind
@@ -1507,7 +1523,7 @@ module mainloop
     counter=0
     if(present(max_q_change)) max_q_change=0.e0_real_kind
     !
-    do k=0,km
+    repair_scan: do k=0,km
     do j=0,jm
     do i=0,im
       !
@@ -1518,6 +1534,25 @@ module mainloop
            tmp(i,j,k)>=eps_tmp) then
           continue
         else
+          if(diagnostic_stop) then
+            open(newunit=diagnostic_unit,file='cpu_first_repair'//mpirankname//'.log',status='replace',action='write')
+            write(diagnostic_unit,'(a,4(1x,i0))') 'ASTR_CPU_FIRST_REPAIR step/stage/rank/finite:', &
+              nstep,rkstep,mpirank,merge(1,0,all(ieee_is_finite(q(i,j,k,:))))
+            write(diagnostic_unit,'(a,3(1x,i0))') 'global_ijk:',i+ig0,j+jg0,k+kg0
+            write(diagnostic_unit,'(a,3(1x,i0))') 'local_ijk:',i,j,k
+            write(diagnostic_unit,'(a,3(1x,es24.16))') 'xyz:',x(i,j,k,:)
+            write(diagnostic_unit,'(a,3(1x,es24.16))') 'rho/pressure/temperature:',rho(i,j,k),prs(i,j,k),tmp(i,j,k)
+            write(diagnostic_unit,'(a,5(1x,es24.16))') 'q_before_repair:',q(i,j,k,1:5)
+            write(diagnostic_unit,'(a,5(1x,es24.16))') 'full_rhs:',qrhs(i,j,k,1:5)
+            write(diagnostic_unit,'(a,es24.16)') 'jacobian:',jacob(i,j,k)
+            if(all(ieee_is_finite(q(i,j,k,1:5))).and.q(i,j,k,1)>0.e0_real_kind) then
+              internal=q(i,j,k,5)-sum(0.5e0_real_kind*q(i,j,k,2:4)*(q(i,j,k,2:4)/q(i,j,k,1)))
+              write(diagnostic_unit,'(a,es24.16)') 'internal_energy_density:',internal
+            endif
+            close(diagnostic_unit)
+            counter=1
+            exit repair_scan
+          endif
           !
           crinod(i,j,k)=.true.
           !
@@ -1580,9 +1615,14 @@ module mainloop
       !
     enddo
     enddo
-    enddo
+    enddo repair_scan
     !
     counter=psum(counter)
+    if(diagnostic_stop.and.counter>0) then
+      if(lio) write(*,'(a,3(1x,i0))') 'ASTR_CPU_FIRST_REPAIR_STOP step/stage/reporting_ranks:',nstep,rkstep,counter
+      flush(output_unit)
+      call MPI_Abort(MPI_COMM_WORLD,93,ierr)
+    endif
     if(present(repaired_nodes)) repaired_nodes=counter
     !
     if(counter==0) then

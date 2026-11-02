@@ -1,0 +1,388 @@
+--- a/src/bc.F90
++++ b/src/bc.F90
+@@ -462,6 +462,16 @@
+       nscbc_farfield_incoming_only_enabled().and..not.nscbc_farfield_sbli_shock_enabled()
+   end function explicit_profile_nscbc_corrections_enabled
+ 
++  logical function profile_nscbc_outlet_enabled()
++    use commvar, only: conschm,difschm,lcomb,nondimen,recon_schem,lchardecomp
++    implicit none
++    profile_nscbc_outlet_enabled=flowtype=='bl'.and.ndims==3.and.numq==5.and. &
++      num_species==0.and.num_modequ==0.and..not.lcomb.and.nondimen.and. &
++      conschm=='743e'.and.(difschm=='643e'.or.difschm=='643c').and. &
++      recon_schem==5.and.lchardecomp.and.turbinf=='prof'.and. &
++      all(bctype==[11,22,41,52,1,1])
++  end function profile_nscbc_outlet_enabled
++
+   subroutine nscbc_farfield_target_state(rho_target,u_target,v_target, &
+                                           w_target,t_target)
+     implicit none
+@@ -689,6 +699,31 @@
+       endif
+     enddo
+   end subroutine nscbc_farfield_y_upper_incoming_lodi
++
++  subroutine nscbc_farfield_y_upper_compat_lodi(lodi,pinv,i,j,k,css)
++    implicit none
++    real(real_kind),intent(inout) :: lodi(5)
++    real(real_kind),intent(in) :: pinv(5,5),css
++    integer,intent(in) :: i,j,k
++    real(real_kind) :: un,norm,lambda(5),tolerance,target(5),delta(5),rate
++    integer :: m
++    norm=sqrt(sum(dxi(i,j,k,2,:)*dxi(i,j,k,2,:)))
++    un=sum(dxi(i,j,k,2,:)*vel(i,j,k,:))/norm
++    lambda=[un,un,un,un+css,un-css]
++    tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(un))
++    if(un<0.e0_real_kind) then
++      target=[roinf,roinf*uinf,roinf*vinf,roinf*winf, &
++        pinf*const6+0.5e0_real_kind*roinf*(uinf*uinf+vinf*vinf+winf*winf)]
++      delta=q(i,j,k,1:5)-target
++      rate=0.25e0_real_kind*css/(ymax-ymin)
++      do m=1,5
++        if(lambda(m)<-tolerance) lodi(m)=rate*sum(pinv(m,:)*delta)
++      enddo
++    elseif(lambda(5)<-tolerance) then
++      rate=0.25e0_real_kind*max(0.e0_real_kind,1.e0_real_kind-(un/css)**2)*css/(ymax-ymin)
++      lodi(5)=rate*((prs(i,j,k)-pinf)/rho(i,j,k)/css)*sqrt(2.e0_real_kind)
++    endif
++  end subroutine nscbc_farfield_y_upper_compat_lodi
+   !
+   ! Table of values for parameter (ibc(ilat))
+   ! ilat = 1,6
+@@ -978,7 +1013,7 @@
+     !
+     ! local data
+     integer :: n
+-    logical :: compact_stage_wall
++    logical :: compact_stage_wall,split_profile_outlet
+     real(clock_kind) :: time_beg
+     !
+     if(bctype(3)==41 .or. bctype(3)==42 .or. bctype(3)==411 .or.       &
+@@ -987,6 +1022,9 @@
+       numq==5.and..not.lcomb.and.nondimen.and.ndims==3.and. &
+       trim(flowtype)=='bl'.and.bctype(2)==22.and.bctype(3)==41.and.jrk==0
+     compact_stage_wall=compact_stage_wall.or.(explicit_profile_nscbc_corrections_enabled().and.jrk==0)
++    split_profile_outlet=profile_nscbc_outlet_enabled().and.difschm=='643e'.and. &
++      .not.explicit_profile_nscbc_corrections_enabled()
++    compact_stage_wall=compact_stage_wall.or.(split_profile_outlet.and.jrk==0)
+     !
+     do n=1,6
+       if(n==2.and.compact_stage_wall) then
+@@ -995,7 +1033,7 @@
+         compact_stage_wall_velocity=0.e0_real_kind
+         if(abs(wall_blowing_amplitude)>1.e-10_real_kind) &
+           compact_stage_wall_velocity=wall_blowing_velocity()
+-        call noslip(3,twall(3),supplied_velocity=compact_stage_wall_velocity,outlet_only=.true.)
++        call noslip(3,twall(3),supplied_velocity=compact_stage_wall_velocity,outlet_only=.not.split_profile_outlet)
+       endif
+       !
+       if(bctype(n)==12) then
+@@ -1003,7 +1041,7 @@
+       endif
+       !
+       if(bctype(n)==22) then
+-        call outflow_nscbc(n)
++        call outflow_nscbc(n,filter_only=split_profile_outlet)
+       endif
+       !
+       if(bctype(n)==52) then
+@@ -1012,7 +1050,7 @@
+       !
+       if(bctype(n)==41) then
+         if(compact_stage_wall.and.n==3) then
+-          call noslip(n,twall(n),supplied_velocity=compact_stage_wall_velocity)
++          if(.not.split_profile_outlet) call noslip(n,twall(n),supplied_velocity=compact_stage_wall_velocity)
+         else
+           call noslip(n,twall(n))
+         endif
+@@ -1064,6 +1102,8 @@
+       
+     enddo
+     !
++    ! Compatibility GPU stages filter the outlet before the top, then assemble its RHS.
++    if(split_profile_outlet) call outflow_nscbc(2,rhs_only=.true.)
+     ! if(present(subtime)) time_beg=ptime()
+     !
+     ! if(present(subtime)) subtime=subtime+ptime()-time_beg
+@@ -4481,7 +4521,7 @@
+   !+-------------------------------------------------------------------+
+   subroutine farfield_nscbc(ndir)
+     !
+-    use commvar,   only : xmin,xmax,ymin,ymax,mach,lfilter
++    use commvar,   only : xmin,xmax,ymin,ymax,mach,lfilter,lcomb
+     use fludyna,   only : thermal,fvar2q,q2fvar,sos
+     use commfunc,  only : deriv
+     use derivative,only : ddfc
+@@ -4971,10 +5011,12 @@
+           call nscbc_farfield_y_upper_incoming_lodi(LODi,pinv,i,j,k,css,&
+                                                      gmachmax2)
+         case default
+-          kinout=0.25e0_real_kind*(1.e0_real_kind-gmachmax2)*css/(ymax-ymin)
+-            ! LODi(5)=kinout*(prs(i,j,k)-pinf)/rho(i,j,k)/css
+-            ! LODi(5)=kinout*(prs(i,j,k)-prs_prof(jm))/rho(i,j,k)/css
+-          LODi(5)=kinout*(prs(i,j,k)-pinf)
++          if(numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb) then
++            call nscbc_farfield_y_upper_compat_lodi(LODi,pinv,i,j,k,css)
++          else
++            kinout=0.25e0_real_kind*(1.e0_real_kind-gmachmax2)*css/(ymax-ymin)
++            LODi(5)=kinout*(prs(i,j,k)-pinf)
++          endif
+         end select
+         ! else
+         !   var1=1.d0/sqrt( dxi(i,j,k,2,1)**2+dxi(i,j,k,2,2)**2+         &
+@@ -5542,7 +5584,7 @@
+   !| -------------                                                     |
+   !| 25-02-2021: Created by J. Fang @ Warrington                       |
+   !+-------------------------------------------------------------------+
+-  subroutine outflow_nscbc(ndir)
++  subroutine outflow_nscbc(ndir,filter_only,rhs_only)
+     !
+     use commvar,   only : xmin,xmax,mach,nondimen,conschm,difschm,lcomb
+     use fludyna,   only : thermal,fvar2q,q2fvar,sos
+@@ -5556,6 +5598,7 @@
+     !
+     ! arguments
+     integer,intent(in) :: ndir
++    logical,intent(in),optional :: filter_only,rhs_only
+     !
+     ! local data
+     integer :: i,j,k,l,jspc,jq,ii,n,m
+@@ -5564,11 +5607,16 @@
+     real(real_kind),allocatable :: Ecs(:,:),dEcs(:),fcs(:,:),dfcs(:,:),qfilt(:,:)
+     real(real_kind) :: uu,css,gmachmax2,kinout,kin,var1,var2,psonic,rncout,fdamp
+     real(real_kind) :: normal_speed,wave_tolerance,metric_norm
+-    logical :: compact_plate_outlet
++    real(real_kind) :: back_rate,plus_rate,qtarget(5),dq(5)
++    logical :: compact_plate_outlet,only_filter,only_rhs
+     !
++    only_filter=.false.; only_rhs=.false.
++    if(present(filter_only)) only_filter=filter_only
++    if(present(rhs_only)) only_rhs=rhs_only
+     compact_plate_outlet=ndir==2.and.numq==5.and..not.lcomb.and. &
+       conschm=='743e'.and.difschm=='643c'
+     compact_plate_outlet=compact_plate_outlet.or.(ndir==2.and.explicit_profile_nscbc_corrections_enabled())
++    compact_plate_outlet=compact_plate_outlet.or.(ndir==2.and.profile_nscbc_outlet_enabled())
+     gmachmax2=0.e0_real_kind
+     !
+     if(ndir==1 .and. irk==0) then
+@@ -5770,7 +5818,7 @@
+       !
+     endif
+       !
+-    if(ndir==2 .and. irk==irkm) then
++    if(ndir==2 .and. irk==irkm.and..not.only_rhs) then
+       !
+       i=im
+ 
+@@ -5795,6 +5843,7 @@
+     endif
+     ! All ranks participate: transverse derivatives must see the filtered face.
+     if(compact_plate_outlet) call qswap()
++    if(only_filter) return
+     if(ndir==2 .and. irk==irkm) then
+       i=im
+ 
+@@ -5921,7 +5970,7 @@
+           metric_norm=sqrt(sum(dxi(i,j,k,1,:)**2))
+           normal_speed=sum(dxi(i,j,k,1,:)*vel(i,j,k,:))/metric_norm
+           wave_tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(normal_speed))
+-          if(normal_speed < -wave_tolerance) then
++          if(normal_speed < -wave_tolerance.and..not.profile_nscbc_outlet_enabled()) then
+             print *,'bc22 right-x outlet does not support backflow',i,j,k,normal_speed
+             error stop 'bc22 right-x outlet backflow'
+           endif
+@@ -5929,6 +5978,20 @@
+             kinout=3.75e0_real_kind*max(0.e0_real_kind,1.e0_real_kind-(normal_speed/css)**2)*css/(xmax-xmin)
+             LODi(5)=kinout*((prs(i,j,k)-pinf*pout)/rho(i,j,k)/css)*sqrt(2.e0_real_kind)
+           endif
++          if(normal_speed < -wave_tolerance.and.profile_nscbc_outlet_enabled()) then
++            qtarget=[roinf*pout,roinf*pout*uinf,roinf*pout*vinf,roinf*pout*winf, &
++              pinf*pout/(gamma-1.e0_real_kind)+0.5e0_real_kind*roinf*pout*(uinf*uinf+vinf*vinf+winf*winf)]
++            dq=q(i,j,k,1:5)-qtarget
++            back_rate=0.25e0_real_kind*(-normal_speed)/(xmax-xmin)
++            do m=1,3
++              LODi(m)=back_rate*sum(pinv(m,:)*dq)
++            enddo
++            LODi(5)=LODi(5)+back_rate*sum(pinv(5,:)*dq)
++            if(normal_speed+css < -wave_tolerance) then
++              plus_rate=0.25e0_real_kind*(-normal_speed-css)/(xmax-xmin)
++              LODi(4)=plus_rate*sum(pinv(4,:)*dq)
++            endif
++          endif
+         else
+           kinout=3.75e0_real_kind*(1.e0_real_kind-gmachmax2)*css/(xmax-xmin)
+           LODi(5)=kinout*(prs(i,j,k)-pinf*pout)
+--- a/src/mainloop.F90
++++ b/src/mainloop.F90
+@@ -1412,10 +1412,13 @@
+   !+-------------------------------------------------------------------+
+   subroutine crashfix(subtime,repaired_nodes,max_q_change)
+     !
+-    use commvar,   only : numq,lreport,nondimen,spcinf
+-    use commarray, only : q,rho,tmp,vel,prs,spc,x,nodestat
++    use commvar,   only : numq,lreport,nondimen,spcinf,lcomb
++    use commarray, only : q,rho,tmp,vel,prs,spc,x,nodestat,qrhs,jacob
+     use parallel,  only : por,ig0,jg0,kg0,psum,ptime
+     use fludyna,   only : q2fvar,thermal
++    use mpi, only: MPI_Abort,MPI_COMM_WORLD
++    use iso_fortran_env, only: output_unit
++    use ieee_arithmetic, only: ieee_is_finite
+     !
+     ! arguments
+     real(clock_kind),intent(inout),optional :: subtime
+@@ -1423,17 +1426,30 @@
+     real(real_kind),intent(out),optional :: max_q_change(5)
+     !
+     ! local data
+-    integer :: i,j,k,l,fh,ii,jj,kk
++    integer :: i,j,k,l,fh,ii,jj,kk,status,ierr,diagnostic_unit
+     real(real_kind) :: qavg(numq)
+     integer :: norm,counter
+     !
+     logical,save :: firstcall = .true.
++    logical,save :: diagnostic_stop=.false.,diagnostic_configured=.false.
++    character(16) :: diagnostic_mode
++    real(real_kind) :: internal
+     real(real_kind),save :: eps_rho,eps_prs,eps_tmp
+     real(clock_kind),save :: time_beg
+     integer,save :: step_normal = 0
+     !
+     if(present(subtime)) time_beg=ptime()
+     !
++    if(.not.diagnostic_configured) then
++      diagnostic_mode=''
++      call get_environment_variable('ASTR_CPU_CRASHFIX_DIAGNOSTIC',diagnostic_mode,status=status)
++      if(status/=0.and.status/=1) error stop 'invalid CPU crashfix diagnostic option'
++      if(len_trim(diagnostic_mode)>0.and.trim(diagnostic_mode)/='stop') &
++        error stop 'ASTR_CPU_CRASHFIX_DIAGNOSTIC accepts only stop'
++      diagnostic_stop=trim(diagnostic_mode)=='stop'
++      if(diagnostic_stop.and.(numq/=5.or.lcomb)) error stop 'CPU crashfix diagnostic requires five-variable flow'
++      diagnostic_configured=.true.
++    endif
+     if(firstcall) then
+       eps_rho=1.e-5_real_kind
+       eps_tmp=1.e-5_real_kind
+@@ -1448,7 +1464,7 @@
+     counter=0
+     if(present(max_q_change)) max_q_change=0.e0_real_kind
+     !
+-    do k=0,km
++    repair_scan: do k=0,km
+     do j=0,jm
+     do i=0,im
+       !
+@@ -1459,6 +1475,25 @@
+            tmp(i,j,k)>=eps_tmp) then
+           continue
+         else
++          if(diagnostic_stop) then
++            open(newunit=diagnostic_unit,file='cpu_first_repair'//mpirankname//'.log',status='replace',action='write')
++            write(diagnostic_unit,'(a,4(1x,i0))') 'ASTR_CPU_FIRST_REPAIR step/stage/rank/finite:', &
++              nstep,rkstep,mpirank,merge(1,0,all(ieee_is_finite(q(i,j,k,:))))
++            write(diagnostic_unit,'(a,3(1x,i0))') 'global_ijk:',i+ig0,j+jg0,k+kg0
++            write(diagnostic_unit,'(a,3(1x,i0))') 'local_ijk:',i,j,k
++            write(diagnostic_unit,'(a,3(1x,es24.16))') 'xyz:',x(i,j,k,:)
++            write(diagnostic_unit,'(a,3(1x,es24.16))') 'rho/pressure/temperature:',rho(i,j,k),prs(i,j,k),tmp(i,j,k)
++            write(diagnostic_unit,'(a,5(1x,es24.16))') 'q_before_repair:',q(i,j,k,1:5)
++            write(diagnostic_unit,'(a,5(1x,es24.16))') 'full_rhs:',qrhs(i,j,k,1:5)
++            write(diagnostic_unit,'(a,es24.16)') 'jacobian:',jacob(i,j,k)
++            if(all(ieee_is_finite(q(i,j,k,1:5))).and.q(i,j,k,1)>0.e0_real_kind) then
++              internal=q(i,j,k,5)-sum(0.5e0_real_kind*q(i,j,k,2:4)*(q(i,j,k,2:4)/q(i,j,k,1)))
++              write(diagnostic_unit,'(a,es24.16)') 'internal_energy_density:',internal
++            endif
++            close(diagnostic_unit)
++            counter=1
++            exit repair_scan
++          endif
+           !
+           crinod(i,j,k)=.true.
+           !
+@@ -1521,9 +1556,14 @@
+       !
+     enddo
+     enddo
+-    enddo
++    enddo repair_scan
+     !
+     counter=psum(counter)
++    if(diagnostic_stop.and.counter>0) then
++      if(lio) write(*,'(a,3(1x,i0))') 'ASTR_CPU_FIRST_REPAIR_STOP step/stage/reporting_ranks:',nstep,rkstep,counter
++      flush(output_unit)
++      call MPI_Abort(MPI_COMM_WORLD,93,ierr)
++    endif
+     if(present(repaired_nodes)) repaired_nodes=counter
+     !
+     if(counter==0) then
+--- a/src/output_runtime.F90
++++ b/src/output_runtime.F90
+@@ -12,8 +12,9 @@
+     lreadgrid,gridfile,ninit,diffterm,lfilter,nondimen,turbmode,recon_schem,lchardecomp
+   use commarray, only: q,rho,vel,prs,tmp,x,jacob,dxi,crinod
+   use parallel, only: ig0,jg0,kg0,mpirank,irk,mpisize
++  use bc, only: nscbc_farfield_policy,NSCBC_FARFIELD_POLICY_COMPATIBILITY
+   use bc, only: bctype,turbinf,ninflowslice,complete_inflow_cpu_file, &
+-    configure_wall_blowing,wall_blowing_legacy_random
++    configure_wall_blowing,wall_blowing_legacy_random,profile_nscbc_outlet_enabled
+   use output_input_resources, only: set_inflow_resource_root,inflow_source_path, &
+     inflow_source_name,discover_inflow_sources,set_initial_resource_root,initial_source_path,initial_source_name, &
+     set_wall_resource_root
+@@ -1249,7 +1250,8 @@
+       call get_environment_variable('ASTR_PROFILE_INFLOW_MODE',driver_config(3),status=status)
+       call check(status==0.or.status==1,'profile inflow mode is truncated')
+     endif
+-    backflow_outlet=use_gpu.and.numq==5.and.bctype(2)==22.and.trim(flowtype)/='channel'
++    backflow_outlet=(use_gpu.or.profile_nscbc_outlet_enabled()).and.numq==5.and. &
++      bctype(2)==22.and.trim(flowtype)/='channel'
+     if(backflow_outlet) then
+       block
+         use commvar, only: roinf,uinf,vinf,winf,pinf,gamma,xmin,xmax
+@@ -1265,6 +1267,9 @@
+       call check(ierr==MPI_SUCCESS.and.all(real_to_word(root_driver)==real_to_word(driver)), &
+         'bc22 reference differs between ranks')
+     endif
++    if(.not.use_gpu.and.numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb.and. &
++       bctype(4)==52.and.nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_COMPATIBILITY) &
++      driver_config(2)='bc52-compat-incoming-v1'
+     root_config=driver_config
+     call MPI_Bcast(root_config,384,MPI_CHARACTER,0,MPI_COMM_WORLD,ierr)
+     call check(ierr==MPI_SUCCESS.and.all(root_config==driver_config),'boundary/driver configuration differs between ranks')
+@@ -1315,10 +1320,24 @@
+       restored_statistics_saved=.not.btest(saved(8),3)
+       saved(8)=ibclr(saved(8),3)
+       if(global_compact_enabled()) saved(7)=ibclr(saved(7),0)
++      if(.not.options%exact_restart.and..not.lcomb.and.numq==5.and.saved(6)/=contract(6)) then
++        if(mpirank==0) write(*,'(a,2(1x,i0))') &
++          'ASTR_OUTPUT non-exact backend switch source/target GPU flags:',saved(6),contract(6)
++        saved(6)=contract(6)
++      endif
+       call check(all(saved(1:7)==contract(1:7)).and.saved(8)==ibclr(contract(8),3), &
+         'numerical/controller contract mismatch')
+       call check((magic=='ASTROC06'.or.magic=='ASTROC09').eqv.(expected_magic=='ASTROC09'), &
+         'random wall checkpoint RNG mode/version mismatch')
++      if(.not.options%exact_restart.and.numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb.and. &
++         bctype(4)==52.and.nscbc_farfield_policy==NSCBC_FARFIELD_POLICY_COMPATIBILITY) then
++        if((saved_driver_config(2)==''.or.saved_driver_config(2)=='bc52-compat-incoming-v1').and. &
++           (driver_config(2)==''.or.driver_config(2)=='bc52-compat-incoming-v1').and. &
++           saved_driver_config(2)/=driver_config(2)) then
++          if(mpirank==0) write(*,'(a)') 'ASTR_OUTPUT non-exact bc52 compatibility identity migration'
++          saved_driver_config(2)=driver_config(2)
++        endif
++      endif
+       if(backflow_outlet.and..not.options%exact_restart) then
+         call check(all(saved_driver_config(2:)==driver_config(2:)),'boundary/driver configuration mismatch')
+         if(mpirank==0.and.(saved_driver_config(1)/=driver_config(1).or. &
+@@ -1361,8 +1380,12 @@
+           saved_ranks==mpisize.and.saved_packet==packet_size, &
+           'random wall RNG format/rank count mismatch')
+         call check(saved_compiler==rng_compiler,'random wall compiler/runtime mismatch')
+-        if(.not.precision_changed) call check(saved_options==rng_options.and.all(saved_signature==rng_signature), &
+-          'random wall compiler/runtime mismatch')
++        if(.not.precision_changed) then
++          call check(all(saved_signature==rng_signature),'random wall runtime signature mismatch')
++          if(options%exact_restart) call check(saved_options==rng_options,'random wall compiler/runtime mismatch')
++          if(.not.options%exact_restart.and.saved_options/=rng_options.and.mpirank==0) write(*,'(a)') &
++            'ASTR_WALL_RNG non-exact restart: compiler options differ; runtime signature matched'
++        endif
+         read(unit,iostat=err) wall_state
+         call check(err==0,'missing random wall RNG rank state')
+         call check(all(wall_state(:6,mpirank+1)==local_wall_state(:6)), 'random wall topology mismatch')

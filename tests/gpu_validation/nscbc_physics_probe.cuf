@@ -8,13 +8,14 @@ contains
   subroutine check_nscbc_physics_gpu()
     use mpi
     use commvar, only: im,jm,km,hm,gamma,mach,lihomo,ljhomo,lkhomo, &
-                      npdci,npdcj,npdck,xmin,xmax,uinf,vinf,winf,roinf,pinf
+                      npdci,npdcj,npdck,xmin,xmax,uinf,vinf,winf,roinf,pinf,ymin,ymax,nondimen,const6
     use parallel, only: mpirank,mpisize,mpileft,mpiright
     use gpu_check, only: sync_after_kernel
     use boundary_gpu, only: nscbc_outflow_x_rhs_kernel,gpu_nscbc_outflow_mach2, &
                            apply_nscbc_inflow_x_rhs_gpu,apply_nscbc_x_rhs_gpu, &
                            nscbc_farfield_y_upper_rhs_kernel
-    use bc, only: pout
+    use bc, only: pout,pmatrix,nscbc_farfield_y_upper_compat_lodi
+    use commarray, only: host_q=>q,host_vel=>vel,host_prs=>prs,host_metric=>dxi,host_rho=>rho
     use solver_gpu, only: explicit_upwind_rhs_y_physical_global_kernel, &
                           explicit_upwind_rhs_z_xyphysical_global_kernel
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -24,6 +25,7 @@ contains
                           jacobian(:,:,:),rhs(:,:,:,:),flux(:,:,:),checked_state(:,:,:,:)
     real(real_kind) :: error,global_error,expected(5),u,v,w,r,p,reported,target_p,css,rate,enthalpy
     real(real_kind) :: qtarget(5),delta(5),plus(5),minus(5),normal_derivative(5),back_rate,plus_rate,local_p
+    real(real_kind) :: cpu_lodi(5),cpu_pinv(5,5),cpu_pnor(5,5),empty_species(0)
     integer :: i,j,k,m,istat,nblocks,ierr,device_count,axis,apply_right
     logical :: inlet_mode,top_mode,outlet_mode,backflow_mode
     character(len=32) :: mode
@@ -240,6 +242,23 @@ contains
           expected=-.001e0_real_kind*[0.e0_real_kind,0.e0_real_kind,1.e0_real_kind,0.e0_real_kind,gamma*v/(gamma-1.e0_real_kind)]
         rhs=qrhs_d
         error=maxval(abs(rhs(im/2,jm,km/2,:)-expected))
+        if(trim(mode)/='top_sup_gradient') then
+          allocate(host_q,mold=state); host_q=state
+          allocate(host_vel,mold=velocity); host_vel=velocity
+          allocate(host_prs,mold=pressure); host_prs=pressure
+          allocate(host_rho,mold=density); host_rho=density
+          allocate(host_metric,mold=metric); host_metric=metric
+          nondimen=.true.; const6=1.e0_real_kind/(gamma-1.e0_real_kind)
+          ymin=0.e0_real_kind; ymax=8.e0_real_kind
+          cpu_pinv=pmatrix(1.e0_real_kind,u,v,w,temperature(im/2,jm,km/2),empty_species, &
+            metric(im/2,jm,km/2,2,:),.true.)
+          cpu_pnor=pmatrix(1.e0_real_kind,u,v,w,temperature(im/2,jm,km/2),empty_species, &
+            metric(im/2,jm,km/2,2,:),.false.)
+          cpu_lodi=0.e0_real_kind
+          call nscbc_farfield_y_upper_compat_lodi(cpu_lodi,cpu_pinv,im/2,jm,km/2,css)
+          error=max(error,maxval(abs(-matmul(cpu_pnor,cpu_lodi)-rhs(im/2,jm,km/2,:))))
+          deallocate(host_q,host_vel,host_prs,host_metric,host_rho)
+        endif
       endif
     elseif(trim(mode)=='joint') then
       npdci=4

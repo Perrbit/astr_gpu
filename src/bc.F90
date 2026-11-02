@@ -1101,6 +1101,16 @@ module bc
       nscbc_farfield_incoming_only_enabled()
   end function explicit_profile_nscbc_corrections_enabled
 
+  logical function profile_nscbc_outlet_enabled()
+    use commvar, only: conschm,difschm,lcomb,nondimen,recon_schem,lchardecomp
+    implicit none
+    profile_nscbc_outlet_enabled=flowtype=='bl'.and.ndims==3.and.numq==5.and. &
+      num_species==0.and.num_modequ==0.and..not.lcomb.and.nondimen.and. &
+      conschm=='743e'.and.(difschm=='643e'.or.difschm=='643c').and. &
+      recon_schem==5.and.lchardecomp.and.turbinf=='prof'.and. &
+      all(bctype==[11,22,41,52,1,1])
+  end function profile_nscbc_outlet_enabled
+
   subroutine nscbc_farfield_target_state(rho_target,u_target,v_target, &
                                           w_target,t_target)
     implicit none
@@ -1328,6 +1338,31 @@ module bc
       endif
     enddo
   end subroutine nscbc_farfield_y_upper_incoming_lodi
+
+  subroutine nscbc_farfield_y_upper_compat_lodi(lodi,pinv,i,j,k,css)
+    implicit none
+    real(real_kind),intent(inout) :: lodi(5)
+    real(real_kind),intent(in) :: pinv(5,5),css
+    integer,intent(in) :: i,j,k
+    real(real_kind) :: un,norm,lambda(5),tolerance,target(5),delta(5),rate
+    integer :: m
+    norm=sqrt(sum(dxi(i,j,k,2,:)*dxi(i,j,k,2,:)))
+    un=sum(dxi(i,j,k,2,:)*vel(i,j,k,:))/norm
+    lambda=[un,un,un,un+css,un-css]
+    tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(un))
+    if(un<0.e0_real_kind) then
+      target=[roinf,roinf*uinf,roinf*vinf,roinf*winf, &
+        pinf*const6+0.5e0_real_kind*roinf*(uinf*uinf+vinf*vinf+winf*winf)]
+      delta=q(i,j,k,1:5)-target
+      rate=0.25e0_real_kind*css/(ymax-ymin)
+      do m=1,5
+        if(lambda(m)<-tolerance) lodi(m)=rate*sum(pinv(m,:)*delta)
+      enddo
+    elseif(lambda(5)<-tolerance) then
+      rate=0.25e0_real_kind*max(0.e0_real_kind,1.e0_real_kind-(un/css)**2)*css/(ymax-ymin)
+      lodi(5)=rate*((prs(i,j,k)-pinf)/rho(i,j,k)/css)*sqrt(2.e0_real_kind)
+    endif
+  end subroutine nscbc_farfield_y_upper_compat_lodi
   !
   ! Table of values for parameter (ibc(ilat))
   ! ilat = 1,6
@@ -1617,7 +1652,7 @@ module bc
     !
     ! local data
     integer :: n
-    logical :: compact_stage_wall
+    logical :: compact_stage_wall,split_profile_outlet
     real(clock_kind) :: time_beg
     !
     if(bctype(3)==41 .or. bctype(3)==42 .or. bctype(3)==411 .or.       &
@@ -1627,6 +1662,9 @@ module bc
       trim(flowtype)=='bl'.and.bctype(2)==22.and.bctype(3)==41.and.jrk==0
     compact_stage_wall=compact_stage_wall.or.(explicit_profile_nscbc_corrections_enabled().and. &
       bctype(3)==41.and.jrk==0)
+    split_profile_outlet=profile_nscbc_outlet_enabled().and.difschm=='643e'.and. &
+      .not.explicit_profile_nscbc_corrections_enabled()
+    compact_stage_wall=compact_stage_wall.or.(split_profile_outlet.and.jrk==0)
     !
     do n=1,6
       if(n==2.and.compact_stage_wall) then
@@ -1635,7 +1673,7 @@ module bc
         compact_stage_wall_velocity=0.e0_real_kind
         if(abs(wall_blowing_amplitude)>1.e-10_real_kind) &
           compact_stage_wall_velocity=wall_blowing_velocity()
-        call noslip(3,twall(3),supplied_velocity=compact_stage_wall_velocity,outlet_only=.true.)
+        call noslip(3,twall(3),supplied_velocity=compact_stage_wall_velocity,outlet_only=.not.split_profile_outlet)
       endif
       !
       if(bctype(n)==12) then
@@ -1643,7 +1681,7 @@ module bc
       endif
       !
       if(bctype(n)==22) then
-        call outflow_nscbc(n)
+        call outflow_nscbc(n,filter_only=split_profile_outlet)
       endif
       !
       if(bctype(n)==52) then
@@ -1652,7 +1690,7 @@ module bc
       !
       if(bctype(n)==41) then
         if(compact_stage_wall.and.n==3) then
-          call noslip(n,twall(n),supplied_velocity=compact_stage_wall_velocity)
+          if(.not.split_profile_outlet) call noslip(n,twall(n),supplied_velocity=compact_stage_wall_velocity)
         else
           call noslip(n,twall(n))
         endif
@@ -1704,6 +1742,8 @@ module bc
       
     enddo
     !
+    ! Compatibility GPU stages filter the outlet before the top, then assemble its RHS.
+    if(split_profile_outlet) call outflow_nscbc(2,rhs_only=.true.)
     ! if(present(subtime)) time_beg=ptime()
     !
     ! if(present(subtime)) subtime=subtime+ptime()-time_beg
@@ -5121,7 +5161,7 @@ module bc
   !+-------------------------------------------------------------------+
   subroutine farfield_nscbc(ndir)
     !
-    use commvar,   only : xmin,xmax,ymin,ymax,mach,lfilter
+    use commvar,   only : xmin,xmax,ymin,ymax,mach,lfilter,lcomb
     use fludyna,   only : thermal,fvar2q,q2fvar,sos
     use commfunc,  only : deriv
     use derivative,only : ddfc
@@ -5618,10 +5658,12 @@ module bc
           ! Preserve raw normal waves; impose the new closure after diffusion.
           continue
         case default
-          kinout=0.25e0_real_kind*(1.e0_real_kind-gmachmax2)*css/(ymax-ymin)
-            ! LODi(5)=kinout*(prs(i,j,k)-pinf)/rho(i,j,k)/css
-            ! LODi(5)=kinout*(prs(i,j,k)-prs_prof(jm))/rho(i,j,k)/css
-          LODi(5)=kinout*(prs(i,j,k)-pinf)
+          if(numq==5.and.num_species==0.and.num_modequ==0.and..not.lcomb) then
+            call nscbc_farfield_y_upper_compat_lodi(LODi,pinv,i,j,k,css)
+          else
+            kinout=0.25e0_real_kind*(1.e0_real_kind-gmachmax2)*css/(ymax-ymin)
+            LODi(5)=kinout*(prs(i,j,k)-pinf)
+          endif
         end select
         ! else
         !   var1=1.d0/sqrt( dxi(i,j,k,2,1)**2+dxi(i,j,k,2,2)**2+         &
@@ -6189,7 +6231,7 @@ module bc
   !| -------------                                                     |
   !| 25-02-2021: Created by J. Fang @ Warrington                       |
   !+-------------------------------------------------------------------+
-  subroutine outflow_nscbc(ndir)
+  subroutine outflow_nscbc(ndir,filter_only,rhs_only)
     !
     use commvar,   only : xmin,xmax,mach,nondimen,conschm,difschm,lcomb
     use fludyna,   only : thermal,fvar2q,q2fvar,sos
@@ -6206,6 +6248,7 @@ module bc
     !
     ! arguments
     integer,intent(in) :: ndir
+    logical,intent(in),optional :: filter_only,rhs_only
     !
     ! local data
     integer :: i,j,k,l,jspc,jq,ii,n,m
@@ -6215,15 +6258,19 @@ module bc
     real(real_kind) :: uu,css,gmachmax2,kinout,kin,var1,var2,psonic,rncout,fdamp
     real(real_kind) :: normal_speed,wave_tolerance,metric_norm
     real(real_kind) :: back_rate,plus_rate,qtarget(5),dq(5)
-    logical :: compact_plate_outlet
+    logical :: compact_plate_outlet,only_filter,only_rhs
 #ifdef ASTR_BUILD_TESTING
     real(real_kind) :: filter_base(5),filter_trial(5),filter_theta
     integer :: filter_status
 #endif
     !
+    only_filter=.false.; only_rhs=.false.
+    if(present(filter_only)) only_filter=filter_only
+    if(present(rhs_only)) only_rhs=rhs_only
     compact_plate_outlet=ndir==2.and.numq==5.and..not.lcomb.and. &
       conschm=='743e'.and.difschm=='643c'
     compact_plate_outlet=compact_plate_outlet.or.(ndir==2.and.explicit_profile_nscbc_corrections_enabled())
+    compact_plate_outlet=compact_plate_outlet.or.(ndir==2.and.profile_nscbc_outlet_enabled())
     gmachmax2=0.e0_real_kind
     !
     if(ndir==1 .and. irk==0) then
@@ -6425,7 +6472,7 @@ module bc
       !
     endif
       !
-    if(ndir==2 .and. irk==irkm) then
+    if(ndir==2 .and. irk==irkm.and..not.only_rhs) then
       !
       i=im
 
@@ -6471,6 +6518,7 @@ module bc
     endif
     ! All ranks participate: transverse derivatives must see the filtered face.
     if(compact_plate_outlet) call qswap()
+    if(only_filter) return
     if(high_order_boundary_enabled.and.ndir==2) return
     if(ndir==2 .and. irk==irkm) then
       i=im
@@ -6598,7 +6646,8 @@ module bc
           metric_norm=sqrt(sum(dxi(i,j,k,1,:)**2))
           normal_speed=sum(dxi(i,j,k,1,:)*vel(i,j,k,:))/metric_norm
           wave_tolerance=64.e0_real_kind*epsilon(1.e0_real_kind)*max(css,abs(normal_speed))
-          if(normal_speed < -wave_tolerance.and..not.nscbc_farfield_sbli_shock_enabled()) then
+          if(normal_speed < -wave_tolerance.and..not.nscbc_farfield_sbli_shock_enabled().and. &
+             .not.profile_nscbc_outlet_enabled()) then
             print *,'bc22 right-x outlet does not support backflow',i,j,k,normal_speed
             error stop 'bc22 right-x outlet backflow'
           endif
@@ -6606,7 +6655,8 @@ module bc
             kinout=3.75e0_real_kind*max(0.e0_real_kind,1.e0_real_kind-(normal_speed/css)**2)*css/(xmax-xmin)
             LODi(5)=kinout*((prs(i,j,k)-pinf*pout)/rho(i,j,k)/css)*sqrt(2.e0_real_kind)
           endif
-          if(normal_speed < -wave_tolerance.and.nscbc_farfield_sbli_shock_enabled()) then
+          if(normal_speed < -wave_tolerance.and. &
+             (nscbc_farfield_sbli_shock_enabled().or.profile_nscbc_outlet_enabled())) then
             qtarget=[roinf*pout,roinf*pout*uinf,roinf*pout*vinf,roinf*pout*winf, &
               pinf*pout/(gamma-1.e0_real_kind)+0.5e0_real_kind*roinf*pout*(uinf*uinf+vinf*vinf+winf*winf)]
             dq=q(i,j,k,1:5)-qtarget

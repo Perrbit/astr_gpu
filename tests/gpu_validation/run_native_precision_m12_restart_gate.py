@@ -23,6 +23,16 @@ def launch(args, backend, ranks, name, steps, restore=None, exact=True, restore_
     case = args.output / f'{backend}_np{ranks}_{name}'
     prepare(args.source, case, backend, GRID)
     configure(case, 'nscbc', args.diffusion, True, 't' if args.filter else 'f', True)
+    if restore is None and getattr(args, 'backflow_mach', None) is not None:
+        from run_nscbc22_backflow_validation import seed_outlet_backflow
+        seed_outlet_backflow(case, args.backflow_mach)
+    if restore is None and getattr(args, 'wall_amplitude', None) is not None:
+        wall = case / 'datin/wallbs.dat'
+        rows = wall.read_text().splitlines()
+        values = rows[2].split(',')
+        values[0] = str(args.wall_amplitude)
+        rows[2] = ','.join(values)
+        wall.write_text('\n'.join(rows) + '\n')
     controller = case / 'datin/controller'
     lines = controller.read_text().splitlines()
     replace_value(lines, 'maxstep,feqchkpt', f'{steps - 1},1,9999,9999,1,9999')
@@ -30,6 +40,7 @@ def launch(args, backend, ranks, name, steps, restore=None, exact=True, restore_
     (case / 'outdat/new').mkdir()
     (case / 'datin/input.output').write_text(f"""&output
  directory='outdat/new',restore_directory='{restore or ''}',exact_restart={'.true.' if exact else '.false.'},
+ restart_output='{getattr(args, 'restart_output', 'saved')}',
  host_budget_bytes=67108864,device_budget_bytes=67108864,buffer_bytes=1048576,
  checkpoint_statistics=t
 /
@@ -49,7 +60,8 @@ def launch(args, backend, ranks, name, steps, restore=None, exact=True, restore_
             (case / 'datin' / filename).unlink()
     env = {k: v for k, v in os.environ.items() if not k.startswith(('ASTR_', 'OMPI_MCA_', 'UCX_'))}
     env.update(ASTR_FORCE_MPI_TOPOLOGY=f'{ranks},1,1', ASTR_WALL_BLOWING_MODE='legacy_random',
-        ASTR_NSCBC_FARFIELD_MODE='incoming_only', ASTR_NSCBC_FARFIELD_RHO='1', ASTR_NSCBC_FARFIELD_U='1',
+        ASTR_NSCBC_FARFIELD_MODE=getattr(args, 'farfield_mode', 'incoming_only'),
+        ASTR_NSCBC_FARFIELD_RHO='1', ASTR_NSCBC_FARFIELD_U='1',
         ASTR_NSCBC_FARFIELD_V='0', ASTR_NSCBC_FARFIELD_W='0', ASTR_NSCBC_FARFIELD_T='1',
         ASTR_GPU_FILTER_WORKSPACE='scalar', ASTR_GPU_SYNC_MODE='explicit', ASTR_GPU_HALO_TRANSPORT='pinned',
         ASTR_GPU_COMPACT_SYNC='explicit', ASTR_GPU_COMPACT_TRANSPORT='pinned',
@@ -57,6 +69,11 @@ def launch(args, backend, ranks, name, steps, restore=None, exact=True, restore_
         OMPI_MCA_coll='^cuda,hcoll,ucc', OMPI_MCA_opal_cuda_support='0')
     if restore_probe:
         env['ASTR_CHECKPOINT_TEST_RESTORE_PROBE'] = '1'
+    if getattr(args, 'diagnostic_stop', False):
+        env['ASTR_CPU_CRASHFIX_DIAGNOSTIC'] = 'stop'
+    if getattr(args, 'no_field_io', False):
+        env['ASTR_GPU_BENCHMARK_NO_FIELD_IO'] = '1'
+    env.update(getattr(args, 'extra_env', {}))
     with (case / 'run.log').open('w') as log:
         completed = subprocess.run([str(args.mpiexec.resolve()), '--bind-to', 'none', '-np', str(ranks),
             str(getattr(args, backend).resolve()), 'run', 'datin/input.dat'], cwd=case, env=env,
@@ -71,8 +88,9 @@ def launch(args, backend, ranks, name, steps, restore=None, exact=True, restore_
             not all(isfinite(v) and v >= 0 for v in cfl) or max(cfl) > .5):
         raise AssertionError('Ma12 complete-step/CFL gate differs')
     disk = sum(p.stat().st_size for p in case.rglob('*') if p.is_file())
-    if disk > 128 * 1024**2:
-        raise RuntimeError(f'Ma12 exact-checkpoint directory exceeds 128 MiB: {disk}')
+    disk_limit = getattr(args, 'disk_limit_bytes', 128 * 1024**2)
+    if disk > disk_limit:
+        raise RuntimeError(f'Ma12 test directory exceeds {disk_limit} bytes: {disk}')
     return case, max(cfl)
 
 
