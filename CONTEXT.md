@@ -4,6 +4,14 @@ This context defines the project language for migrating ASTR from CPU Fortran/MP
 
 ## Language
 
+**ASTR outer physical timestep**:
+The simulation-time interval advanced by one complete fluid Runge-Kutta step. It is distinct from an internal chemistry substep, a statistical sampling interval, or a visualization output interval.
+_Avoid_: Calling an output interval the fluid timestep, treating chemistry substep adaptation as outer-flow timestep control
+
+**ASTR fluid timestep adaptation**:
+The planned selection of changing outer physical timesteps from the evolving flow, separate from adaptive output cadence. A target estimated before advancing and an acceptance condition checked after advancing are different contracts.
+_Avoid_: Claiming a chosen CFL target guarantees the CFL of all future RK states, interpreting adaptive product output as adaptive integration
+
 **Core solver maintenance scope**:
 The maintained production solver boundary, including CPU orchestration, accelerator execution, build entry points, and the validation evidence needed to change them safely. Peripheral experiments and auxiliary applications are outside this detailed documentation boundary.
 _Avoid_: Whole-repository deep documentation, every example as a core module
